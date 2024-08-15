@@ -114,8 +114,7 @@ export async function loadChiSimFont() {
  * @param {boolean} [forceWorkerUpdate=false] - If true, forces the worker to update the font data even if the font data of this type is already loaded.
  *    This should be used when switching from unvalidated to validated optimized fonts.
  */
-export async function enableDisableFontOpt(enable, useInitial = false, forceWorkerUpdate = false) {
-  const browserMode = typeof process === 'undefined';
+export async function enableFontOpt(enable, useInitial = false, forceWorkerUpdate = false) {
 
   // Enable/disable optimized font
   if (enable && useInitial && fontAll.optInitial) {
@@ -127,7 +126,7 @@ export async function enableDisableFontOpt(enable, useInitial = false, forceWork
   }
 
   // Enable/disable optimized font in workers
-  if (browserMode) {
+  if (typeof process === 'undefined') {
     await setBuiltInFontsWorker(gs.schedulerInner, forceWorkerUpdate);
   } else {
     // const { setFontAll } = await import('./worker/compareOCRModule.js');

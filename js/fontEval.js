@@ -1,7 +1,7 @@
 import { DebugData, fontMetricsObj, pageMetricsArr } from './containers/dataContainer.js';
 import { fontAll } from './containers/fontContainer.js';
 import { ImageCache } from './containers/imageContainer.js';
-import { enableDisableFontOpt, optimizeFontContainerAll, setDefaultFontAuto } from './fontContainerMain.js';
+import { enableFontOpt, optimizeFontContainerAll, setDefaultFontAuto } from './fontContainerMain.js';
 import { gs } from './generalWorkerMain.js';
 
 /**
@@ -188,7 +188,7 @@ export async function runFontOptimization(ocrArr) {
     const pageNum = Math.min(ImageCache.pageCount, 5);
 
     // Set raw font in workers
-    await enableDisableFontOpt(false);
+    await enableFontOpt(false);
 
     // This step needs to happen here as all fonts must be registered before initializing the canvas.
     if (!browserMode) {
@@ -202,7 +202,7 @@ export async function runFontOptimization(ocrArr) {
 
     if (calculateOpt && Object.keys(fontAll.optInitial).length > 0) {
       // Enable optimized fonts
-      await enableDisableFontOpt(true, true, true);
+      await enableFontOpt(true, true, true);
 
       const evalOpt = await evaluateFonts(ocrArr.slice(0, pageNum));
 
@@ -248,7 +248,7 @@ export async function runFontOptimization(ocrArr) {
   }
 
   // Set final fonts in workers
-  await enableDisableFontOpt(true, false, true);
+  await enableFontOpt(true, false, true);
 
   const enableOpt = enableOptSerif || enableOptSans;
 

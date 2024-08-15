@@ -84,3 +84,11 @@ export function LayoutDataTablePage() {
   /** @type {Array<LayoutDataTable>} */
   this.tables = [];
 }
+
+const layout = {
+  LayoutDataColumn,
+  LayoutDataTable,
+  LayoutRegion,
+};
+
+export default layout;
