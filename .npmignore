@@ -2,6 +2,8 @@ ignore
 .DS_Store
 .env
 .vscode
+scrollview-web/app
+scrollview-web/index.html
 node_modules
 dev
 fonts_raw
@@ -18,3 +20,4 @@ venv
 robots.txt
 settings.json
 karma.conf.cjs
+jsconfig.json
