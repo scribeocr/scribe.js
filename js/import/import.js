@@ -11,7 +11,7 @@ import {
 } from '../containers/dataContainer.js';
 import { fontAll } from '../containers/fontContainer.js';
 import { ImageCache, imageUtils, ImageWrapper } from '../containers/imageContainer.js';
-import { enableDisableFontOpt, optimizeFontContainerAll, setDefaultFontAuto } from '../fontContainerMain.js';
+import { enableFontOpt, optimizeFontContainerAll, setDefaultFontAuto } from '../fontContainerMain.js';
 import { runFontOptimization } from '../fontEval.js';
 import { calcFontMetricsFromPages } from '../fontStatistics.js';
 import { gs } from '../generalWorkerMain.js';
@@ -327,7 +327,7 @@ export async function importFiles(files) {
         if (!fontRaw) throw new Error('Raw font data not found.');
         fontAll.opt = await optimizeFontContainerAll(fontRaw, fontMetricsObj);
         opt.enableOpt = true;
-        await enableDisableFontOpt(true);
+        await enableFontOpt(true);
       }
     }
 

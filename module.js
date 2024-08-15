@@ -17,7 +17,7 @@ import { loadBuiltInFontsRaw } from './js/fontContainerMain.js';
 import { gs } from './js/generalWorkerMain.js';
 import { importFiles, importFilesSupp } from './js/import/import.js';
 import { calcBoxOverlap, combineOCRPage } from './js/modifyOCR.js';
-import { calcTableBbox } from './js/objects/layoutObjects.js';
+import layout, { calcTableBbox } from './js/objects/layoutObjects.js';
 import ocr from './js/objects/ocrObjects.js';
 import {
   calcEvalStatsDoc,
@@ -30,6 +30,7 @@ import { imageStrToBlob } from './js/utils/imageUtils.js';
 import { countSubstringOccurrences, getRandomAlphanum, replaceSmartQuotes } from './js/utils/miscUtils.js';
 import { calcConf, mergeOcrWords, splitOcrWord } from './js/utils/ocrUtils.js';
 import { assignParagraphs } from './js/utils/reflowPars.js';
+import { enableFontOpt } from './js/fontContainerMain.js';
 
 /**
  * Initialize the program and optionally pre-load resources.
@@ -157,6 +158,7 @@ export default {
   combineOCRPage,
   compareOCR,
   data,
+  enableFontOpt,
   evalOCRPage,
   exportData,
   download,
@@ -164,6 +166,7 @@ export default {
   importFilesSupp,
   inputData,
   init,
+  layout,
   opt,
   recognize,
   recognizePage,
