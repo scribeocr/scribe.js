@@ -5,7 +5,14 @@ import opentype from '../../lib/opentype.module.js';
 // Defining "window" is needed due to bad browser/node detection in Opentype.js
 // Can hopefully remove in future version
 if (typeof process === 'object') {
-  await import('../../node/require.js');
+  // @ts-ignore
+  globalThis.self = globalThis;
+  // @ts-ignore
+  const { createRequire } = await import('module');
+  globalThis.require = createRequire(import.meta.url);
+  const { fileURLToPath } = await import('url');
+  const { dirname } = await import('path');
+  globalThis.__dirname = dirname(fileURLToPath(import.meta.url));
 } else if (globalThis.window === undefined) {
   globalThis.window = {};
 }
