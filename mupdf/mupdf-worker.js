@@ -77,8 +77,15 @@ function arrayBufferToBase64(arrayBuffer) {
 export const mupdf = {};
 let ready = false;
 
-if (typeof process !== 'undefined') {
-  await import('../node/require.js');
+if (typeof process === 'object') {
+  // @ts-ignore
+  globalThis.self = globalThis;
+  // @ts-ignore
+  const { createRequire } = await import('module');
+  globalThis.require = createRequire(import.meta.url);
+  const { fileURLToPath } = await import('url');
+  const { dirname } = await import('path');
+  globalThis.__dirname = dirname(fileURLToPath(import.meta.url));
 }
 
 const { Module, FS } = await import('./libmupdf.js');

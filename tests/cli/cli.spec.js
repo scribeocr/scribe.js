@@ -3,7 +3,7 @@ import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
 import { getRandomAlphanum } from '../../js/utils/miscUtils.js';
-import { checkCLI, confCLI, overlayCLI } from '../../node/cli.js';
+import { checkCLI, confCLI, overlayCLI } from '../../cli/cli.js';
 
 globalThis.__dirname = path.dirname(fileURLToPath(import.meta.url));
 
