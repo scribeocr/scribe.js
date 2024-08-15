@@ -24,7 +24,6 @@
     "karma-mocha-reporter": "^2.2.5",
     "mocha": "^10.6.0",
     "npm-run-all": "^4.1.5",
-    "selenium-webdriver": "^4.16.0",
     "wait-on": "^7.2.0"
   },
   "scripts": {
@@ -39,14 +38,14 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/scribeocr/scribeocr.git"
+    "url": "git+https://github.com/scribeocr/scribe.js"
   },
   "author": "Balearica",
   "license": "AGPL-3.0",
   "bugs": {
-    "url": "https://github.com/scribeocr/scribeocr/issues"
+    "url": "https://github.com/scribeocr/scribe.js/issues"
   },
-  "homepage": "https://github.com/scribeocr/scribeocr#readme",
+  "homepage": "https://github.com/scribeocr/scribe.js#readme",
   "dependencies": {
     "canvas": "^2.11.2",
     "commander": "^11.1.0",
