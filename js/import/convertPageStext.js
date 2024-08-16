@@ -212,7 +212,7 @@ export async function convertPageStext({ ocrStr, n }) {
 
             // Label as `smallCapsAlt` rather than `smallCaps`, as we confirm the word is all caps before marking as `smallCaps`.
             smallCapsCurrentAlt = smallCapsCurrentAlt ?? smallCapsAltArr[smallCapsAltArr.length - 1];
-            smallCapsCurrent = /(small\W?cap)|sc$/i.test(fontNameStrI);
+            smallCapsCurrent = /(small\W?cap)|(sc$)|(caps$)/i.test(fontNameStrI);
             smallCapsWord = smallCapsCurrent;
 
             if (/italic/i.test(fontNameStrI) || /-\w*ital/i.test(fontNameStrI)) {
