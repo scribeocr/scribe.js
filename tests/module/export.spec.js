@@ -6,7 +6,7 @@ import { renderHOCR } from '../../js/export/exportRenderHOCR.js';
 import { gs } from '../../js/generalWorkerMain.js';
 import { splitHOCRStr } from '../../js/import/importOCR.js';
 import ocr from '../../js/objects/ocrObjects.js';
-import scribe from '../../module.js';
+import scribe from '../../scribe.js';
 import { ASSETS_PATH_KARMA } from '../constants.js';
 
 config.truncateThreshold = 0; // Disable truncation for actual/expected values on assertion failure.
@@ -47,7 +47,6 @@ const standardizeOCRPages = (ocrArr) => {
 describe('Check .hocr export function.', function () {
   this.timeout(10000);
   before(async () => {
-    await scribe.init({ ocr: true, font: true });
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/scribe_test_pdf1_abbyy.xml`]);
   });
 

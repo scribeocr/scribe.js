@@ -4,7 +4,7 @@
 // import { after, it } from 'mocha';
 import { assert, config } from '../../node_modules/chai/chai.js';
 // import path from 'path';
-import scribe from '../../module.js';
+import scribe from '../../scribe.js';
 import { ASSETS_PATH_KARMA } from '../constants.js';
 
 config.truncateThreshold = 0; // Disable truncation for actual/expected values on assertion failure.
@@ -29,7 +29,6 @@ describe('Check basic recognition features.', function () {
 describe('Check recognition-related features.', function () {
   this.timeout(20000);
   before(async () => {
-    await scribe.init({ ocr: true, font: true });
     // For this input image, font optimization significantly improves overlap quality.
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/analyst_report.png`]);
     await scribe.recognize({

@@ -8,12 +8,14 @@ import { renderHOCR } from './exportRenderHOCR.js';
 import { renderText } from './exportRenderText.js';
 
 /**
- * @param {'pdf'|'hocr'|'docx'|'xlsx'|'txt'|'text'} format
+ * Export active OCR data to specified format.
+ * @public
+ * @param {'pdf'|'hocr'|'docx'|'xlsx'|'txt'|'text'} [format='txt']
  * @param {number} [minValue=0]
  * @param {number} [maxValue=-1]
  * @returns {Promise<string|ArrayBuffer>}
  */
-export async function exportData(format, minValue = 0, maxValue = -1) {
+export async function exportData(format = 'txt', minValue = 0, maxValue = -1) {
   if (format === 'text') format = 'txt';
 
   if (maxValue === -1) maxValue = inputData.pageCount - 1;
@@ -184,6 +186,7 @@ export async function exportData(format, minValue = 0, maxValue = -1) {
 
 /**
  * Runs `exportData` and saves the result as a download (browser) or local file (Node.js).
+ * @public
  * @param {'pdf'|'hocr'|'docx'|'xlsx'|'txt'|'text'} format
  * @param {string} fileName
  * @param {number} [minValue=0]

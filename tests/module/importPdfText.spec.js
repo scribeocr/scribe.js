@@ -2,7 +2,7 @@
 /* eslint-disable import/no-relative-packages */
 import { assert, config } from '../../node_modules/chai/chai.js';
 // import mocha from '../../node_modules/mocha/mocha.js';
-import scribe from '../../module.js';
+import scribe from '../../scribe.js';
 import { ASSETS_PATH_KARMA } from '../constants.js';
 
 config.truncateThreshold = 0; // Disable truncation for actual/expected values on assertion failure.
@@ -17,7 +17,6 @@ config.truncateThreshold = 0; // Disable truncation for actual/expected values o
 describe('Check stext import function language support.', function () {
   this.timeout(10000);
   before(async () => {
-    await scribe.init();
     scribe.opt.extractText = true;
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/chi_eng_mixed_sample.pdf`]);
   });
@@ -36,7 +35,6 @@ describe('Check stext import function language support.', function () {
 describe('Check small caps are detected in PDF imports.', function () {
   this.timeout(10000);
   before(async () => {
-    await scribe.init();
     scribe.opt.extractText = true;
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/small_caps_examples.pdf`]);
   });
@@ -65,7 +63,6 @@ describe('Check small caps are detected in PDF imports.', function () {
 describe('Check superscripts are detected in PDF imports.', function () {
   this.timeout(10000);
   before(async () => {
-    await scribe.init();
     scribe.opt.extractText = true;
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples.pdf`]);
   });

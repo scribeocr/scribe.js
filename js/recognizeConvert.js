@@ -149,8 +149,10 @@ export const calcRecognizeRotateArgs = async (n, areaMode) => {
 };
 
 /**
- * Run recognition on a page and save the results, including OCR data and (possibly) auto-rotated images, to the appropriate global array.
+ * Recognize a single page in active document.
+ * Use `recognize` instead to recognize all pages in a document.
  *
+ * @public
  * @param {number} n - Page number to recognize.
  * @param {boolean} legacy -
  * @param {boolean} lstm -
@@ -493,14 +495,16 @@ export async function recognizeAllPages(legacy = true, lstm = true, mainData = f
 }
 
 /**
- *
+ * Recognize all pages in active document.
+ * Files for recognition should already be imported using `importFiles` before calling this function.
+ * The results of recognition can be exported by calling `exportFiles` after this function.
+ * @public
  * @param {Object} options
  * @param {'speed'|'quality'} [options.mode='quality'] - Recognition mode.
  * @param {Array<string>} [options.langs=['eng']] - Language(s) in document.
  * @param {'lstm'|'legacy'|'combined'} [options.modeAdv='combined'] - Alternative method of setting recognition mode.
  * @param {'conf'|'data'} [options.combineMode='data'] - Method of combining OCR results. Used if OCR data already exists.
  * @param {boolean} [options.vanillaMode=false] - Whether to use the vanilla Tesseract.js model.
- *
  */
 export async function recognize(options = {}) {
   await gs.getGeneralScheduler();
