@@ -403,8 +403,28 @@ function calcWordAngleAdj(word) {
  * @param {string} text
  */
 function replaceLigatures(text) {
-  return text.replace(/ﬂ/g, 'fl').replace(/ﬁ/g, 'fi').replace(/ﬀ/g, 'ff').replace(/ﬃ/g, 'ffi')
-    .replace(/ﬄ/g, 'ffl');
+  return text.replace(/Ĳ/g, 'IJ')
+    .replace(/ĳ/g, 'ij')
+    .replace(/ŉ/g, 'ʼn')
+    .replace(/Ǳ/g, 'DZ')
+    .replace(/ǲ/g, 'Dz')
+    .replace(/ǳ/g, 'dz')
+    .replace(/Ǆ/g, 'DŽ')
+    .replace(/ǅ/g, 'Dž')
+    .replace(/ǆ/g, 'dž')
+    .replace(/Ǉ/g, 'LJ')
+    .replace(/ǈ/g, 'Lj')
+    .replace(/ǉ/g, 'lj')
+    .replace(/Ǌ/g, 'NJ')
+    .replace(/ǋ/g, 'Nj')
+    .replace(/ǌ/g, 'nj')
+    .replace(/ﬀ/g, 'ff')
+    .replace(/ﬁ/g, 'fi')
+    .replace(/ﬂ/g, 'fl')
+    .replace(/ﬃ/g, 'ffi')
+    .replace(/ﬄ/g, 'ffl')
+    .replace(/ﬅ/g, 'ſt')
+    .replace(/ﬆ/g, 'st');
 }
 
 /**
