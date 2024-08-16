@@ -5,7 +5,7 @@ import fs from 'fs';
 import path from 'path';
 
 import { tmpUnique } from '../js/worker/compareOCRModule.js';
-import scribe from '../module.js';
+import scribe from '../scribe.js';
 
 // When `debugMode` is enabled:
 // (1) Comparison images are saved as .png files.

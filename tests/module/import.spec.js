@@ -2,7 +2,7 @@
 /* eslint-disable import/no-relative-packages */
 import { assert, config } from '../../node_modules/chai/chai.js';
 // import mocha from '../../node_modules/mocha/mocha.js';
-import scribe from '../../module.js';
+import scribe from '../../scribe.js';
 import { ASSETS_PATH_KARMA } from '../constants.js';
 
 config.truncateThreshold = 0; // Disable truncation for actual/expected values on assertion failure.
@@ -14,7 +14,6 @@ config.truncateThreshold = 0; // Disable truncation for actual/expected values o
 describe('Check Tesseract import function.', function () {
   this.timeout(10000);
   before(async () => {
-    await scribe.init({ font: true });
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/econometrica_example_tess.hocr`]);
   });
 
@@ -36,7 +35,6 @@ describe('Check Tesseract import function.', function () {
 describe('Check Abbyy XML import function.', function () {
   this.timeout(10000);
   before(async () => {
-    await scribe.init({ font: true });
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/econometrica_example_abbyy.xml`]);
   });
 
@@ -58,7 +56,6 @@ describe('Check Abbyy XML import function.', function () {
 describe('Check cleanup functions allow for resetting module.', function () {
   this.timeout(10000);
   it('Check that cleanup functions work properly', async () => {
-    await scribe.init();
     scribe.opt.extractText = true;
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/chi_eng_mixed_sample.pdf`]);
     await scribe.terminate();

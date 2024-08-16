@@ -1,7 +1,9 @@
 import { DebugData, fontMetricsObj, pageMetricsArr } from './containers/dataContainer.js';
 import { fontAll } from './containers/fontContainer.js';
 import { ImageCache } from './containers/imageContainer.js';
-import { enableFontOpt, optimizeFontContainerAll, setDefaultFontAuto } from './fontContainerMain.js';
+import {
+  enableFontOpt, optimizeFontContainerAll, setDefaultFontAuto, loadBuiltInFontsRaw,
+} from './fontContainerMain.js';
 import { gs } from './generalWorkerMain.js';
 
 /**
@@ -161,6 +163,8 @@ export async function evaluateFonts(pageArr) {
  */
 export async function runFontOptimization(ocrArr) {
   const browserMode = typeof process === 'undefined';
+
+  await loadBuiltInFontsRaw();
 
   const fontRaw = fontAll.getContainer('raw');
 

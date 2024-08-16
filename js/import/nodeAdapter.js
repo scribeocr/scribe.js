@@ -11,11 +11,13 @@ export class FileNode {
   /**
      * Creates an instance of the File class.
      * @param {string} filePath - The path to the file.
+     * @param {string} name - The name of the file.
+     * @param {Buffer} fileData - The file's data.
      */
-  constructor(filePath) {
+  constructor(filePath, name, fileData) {
     this.filePath = filePath;
-    this.name = path.basename(filePath);
-    this.fileData = fs.readFileSync(filePath);
+    this.name = name;
+    this.fileData = fileData;
   }
 
   /**
@@ -29,7 +31,20 @@ export class FileNode {
 
 /**
  *
- * @param {Array<string>} files
+ * @param {Array<string>} filePaths
  * @returns
  */
-export const wrapFilesNode = (files) => files.map((file) => (new FileNode(file)));
+export const wrapFilesNode = (filePaths) => {
+  const filePromises = filePaths.map(async (filePath) => {
+    const isUrl = filePath.startsWith('http://') || filePath.startsWith('https://') || filePath.startsWith('moz-extension://')
+    || filePath.startsWith('chrome-extension://') || filePath.startsWith('file://');
+
+    const fileData = isUrl ? Buffer.from(await fetch(filePath).then((res) => res.arrayBuffer())) : fs.readFileSync(filePath);
+
+    const fileName = isUrl ? filePath.split('/').pop() : path.basename(filePath);
+
+    return new FileNode(filePath, fileName, fileData);
+  });
+
+  return Promise.all(filePromises);
+};

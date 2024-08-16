@@ -174,22 +174,6 @@ export class gs {
   };
 
   /** @type {?Function} */
-  static resReadyLoadFonts = null;
-
-  /**
-   * Promise that resolves when the scheduler is ready for font loading.
-   * Only used in browser version, as nothing using fonts is run within workers in Node.js version.
-   * @type {?Promise<void>}
-   */
-  static schedulerReadyLoadFonts = null;
-
-  static setSchedulerReadyLoadFonts = () => {
-    gs.schedulerReadyLoadFonts = new Promise((resolve, reject) => {
-      gs.resReadyLoadFonts = resolve;
-    });
-  };
-
-  /** @type {?Function} */
   static resReadyTesseract = null;
 
   /** @type {?Promise<void>} */
@@ -201,21 +185,7 @@ export class gs {
     });
   };
 
-  /** @type {?Function} */
-  static resReadyFontAllRaw = null;
-
-  /** @type {?Promise<void>} */
-  static fontAllRawReady = null;
-
-  static setFontAllRawReady = () => {
-    gs.fontAllRawReady = new Promise((resolve, reject) => {
-      gs.resReadyFontAllRaw = resolve;
-    });
-    return /** @type {Function} */ (gs.resReadyFontAllRaw);
-  };
-
   static init = async () => {
-    gs.setSchedulerReadyLoadFonts();
     gs.setSchedulerReady();
 
     // Determine number of workers to use in the browser.
@@ -250,16 +220,6 @@ export class gs {
     await Promise.all(resArr);
 
     gs.scheduler = new GeneralScheduler(gs.schedulerInner);
-
-    // Fonts are only loaded in the browser.
-    // The functions we would use fonts in a worker for also require node-canvas, which does not support workers yet.
-    if (typeof process === 'undefined') {
-    // @ts-ignore
-      gs.resReadyLoadFonts(true);
-
-      // Send raw fonts to workers after they have loaded in the main thread.
-      await gs.fontAllRawReady;
-    }
 
     // @ts-ignore
     gs.resReady(true);
@@ -317,11 +277,7 @@ export class gs {
     gs.schedulerInner = null;
     gs.resReady = null;
     gs.schedulerReady = null;
-    gs.resReadyLoadFonts = null;
-    gs.schedulerReadyLoadFonts = null;
     gs.resReadyTesseract = null;
     gs.schedulerReadyTesseract = null;
-    gs.resReadyFontAllRaw = null;
-    gs.fontAllRawReady = null;
   };
 }

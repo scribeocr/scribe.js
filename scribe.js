@@ -13,7 +13,7 @@ import { drawDebugImages } from './js/debug.js';
 import { download, exportData } from './js/export/export.js';
 import { writeDebugCsv } from './js/export/exportDebugCsv.js';
 import { extractSingleTableContent } from './js/export/exportWriteTabular.js';
-import { loadBuiltInFontsRaw } from './js/fontContainerMain.js';
+import { loadBuiltInFontsRaw, enableFontOpt } from './js/fontContainerMain.js';
 import { gs } from './js/generalWorkerMain.js';
 import { importFiles, importFilesSupp } from './js/import/import.js';
 import { calcBoxOverlap, combineOCRPage } from './js/modifyOCR.js';
@@ -30,10 +30,10 @@ import { imageStrToBlob } from './js/utils/imageUtils.js';
 import { countSubstringOccurrences, getRandomAlphanum, replaceSmartQuotes } from './js/utils/miscUtils.js';
 import { calcConf, mergeOcrWords, splitOcrWord } from './js/utils/ocrUtils.js';
 import { assignParagraphs } from './js/utils/reflowPars.js';
-import { enableFontOpt } from './js/fontContainerMain.js';
 
 /**
  * Initialize the program and optionally pre-load resources.
+ * @public
  * @param {Object} [params]
  * @param {boolean} [params.pdf=false] - Load PDF renderer.
  * @param {boolean} [params.ocr=false] - Load OCR engine.
@@ -59,21 +59,23 @@ const init = async (params) => {
   }
 
   if (initFont) {
-    const resReadyFontAllRaw = gs.setFontAllRawReady();
-    promiseArr.push(loadBuiltInFontsRaw().then(() => resReadyFontAllRaw()));
+    promiseArr.push(loadBuiltInFontsRaw());
   }
 
   await Promise.all(promiseArr);
 };
 
 /**
- *
+ * Helper function for recognizing files with a single function call.
+ * For more control, use `init`, `importFiles`, `recognize`, and `exportData` separately.
+ * @public
  * @param {Parameters<typeof importFiles>[0]} files
  * @param {Array<string>} [langs=['eng']]
  * @param {Parameters<typeof exportData>[0]} [outputFormat='txt']
  * @returns
  */
 const recognizeFiles = async (files, langs = ['eng'], outputFormat = 'txt') => {
+  init({ ocr: true, font: true });
   await importFiles(files);
   await recognize({ langs });
   return exportData(outputFormat);
@@ -140,6 +142,7 @@ class utils {
 
 /**
  * Clears all document-specific data.
+ * @public
  */
 const clear = async () => {
   clearData();
@@ -147,6 +150,7 @@ const clear = async () => {
 
 /**
  * Terminates the program and releases resources.
+ * @public
  */
 const terminate = async () => {
   clearData();

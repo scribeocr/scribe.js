@@ -4,7 +4,7 @@
 // import { after, it } from 'mocha';
 import { assert, config } from '../../node_modules/chai/chai.js';
 // import path from 'path';
-import scribe from '../../module.js';
+import scribe from '../../scribe.js';
 import { ASSETS_PATH_KARMA } from '../constants.js';
 
 config.truncateThreshold = 0; // Disable truncation for actual/expected values on assertion failure.
@@ -16,7 +16,6 @@ config.truncateThreshold = 0; // Disable truncation for actual/expected values o
 describe('Check paragraph detection with academic article.', function () {
   this.timeout(20000);
   before(async () => {
-    await scribe.init();
     scribe.opt.extractText = true;
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/academic_article_1.pdf`]);
     scribe.data.ocr.active.forEach((page, index) => {
@@ -40,7 +39,6 @@ describe('Check paragraph detection with academic article.', function () {
 describe('Check paragraph detection with complaint.', function () {
   this.timeout(20000);
   before(async () => {
-    await scribe.init();
     scribe.opt.extractText = true;
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/complaint_1.pdf`]);
     scribe.data.ocr.active.forEach((page, index) => {
@@ -68,7 +66,6 @@ describe('Check paragraph detection with complaint.', function () {
 describe('Check paragraph detection with document with significant line sepacing.', function () {
   this.timeout(20000);
   before(async () => {
-    await scribe.init({ font: true });
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/complaint_2.hocr`]);
     scribe.data.ocr.active.forEach((page, index) => {
       const angle = scribe.data.pageMetrics[index].angle || 0;

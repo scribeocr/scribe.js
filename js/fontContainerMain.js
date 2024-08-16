@@ -80,7 +80,9 @@ export async function loadBuiltInFontsRaw(glyphSet = 'latin') {
   if (!fontAll.active || (!fontAll.active.NimbusSans.normal.opt && !fontAll.active.NimbusRomNo9L.normal.opt)) fontAll.active = fontAll.raw;
 
   if (typeof process === 'undefined') {
-    await gs.schedulerReadyLoadFonts;
+    // This assumes that the scheduler `init` method has at least started.
+    if (gs.schedulerReady === null) console.warn('Failed to load fonts to workers as workers have not been initialized yet.');
+    await gs.schedulerReady;
     await setBuiltInFontsWorker(gs.schedulerInner, true);
   }
 

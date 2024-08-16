@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import scribe from '../module.js';
+import scribe from '../scribe.js';
 
 /**
  *

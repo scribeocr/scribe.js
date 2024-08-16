@@ -11,7 +11,7 @@ import {
 } from '../containers/dataContainer.js';
 import { fontAll } from '../containers/fontContainer.js';
 import { ImageCache, imageUtils, ImageWrapper } from '../containers/imageContainer.js';
-import { enableFontOpt, optimizeFontContainerAll, setDefaultFontAuto } from '../fontContainerMain.js';
+import { enableFontOpt, optimizeFontContainerAll, setDefaultFontAuto, loadBuiltInFontsRaw } from '../fontContainerMain.js';
 import { runFontOptimization } from '../fontEval.js';
 import { calcFontMetricsFromPages } from '../fontStatistics.js';
 import { gs } from '../generalWorkerMain.js';
@@ -169,7 +169,10 @@ export function sortInputFiles(files) {
 }
 
 /**
- *
+ * An object with this shape can be used to provide input to the `importFiles` function,
+ * without needing that function to figure out the file types.
+ * This is required when using ArrayBuffer inputs.
+ * @public
  * @typedef {Object} SortedInputFiles
  * @property {Array<File>|Array<string>|Array<ArrayBuffer>} [pdfFiles]
  * @property {Array<File>|Array<string>|Array<ArrayBuffer>} [imageFiles]
@@ -180,11 +183,13 @@ export function sortInputFiles(files) {
  * Import files for processing.
  * An object with `pdfFiles`, `imageFiles`, and `ocrFiles` arrays can be provided to import multiple types of files.
  * Alternatively, for `File` objects (browser) and file paths (Node.js), a single array can be provided, which is sorted based on extension.
+ * @public
  * @param {Array<File>|FileList|Array<string>|SortedInputFiles} files
  * @returns
  */
 export async function importFiles(files) {
   clearData();
+  gs.getGeneralScheduler();
 
   /** @type {Array<File|FileNode|ArrayBuffer>} */
   let pdfFiles = [];
@@ -310,6 +315,8 @@ export async function importFiles(files) {
 
     // Restore font metrics and optimize font from previous session (if applicable)
     if (ocrData.fontMetricsObj && Object.keys(ocrData.fontMetricsObj).length > 0) {
+      const fontPromise = loadBuiltInFontsRaw()
+
       existingOpt = true;
 
       replaceObjectProperties(fontMetricsObj, ocrData.fontMetricsObj);
@@ -323,6 +330,7 @@ export async function importFiles(files) {
       if (ocrData.enableOpt === 'false') {
         opt.enableOpt = false;
       } else {
+        await fontPromise;
         const fontRaw = fontAll.getContainer('raw');
         if (!fontRaw) throw new Error('Raw font data not found.');
         fontAll.opt = await optimizeFontContainerAll(fontRaw, fontMetricsObj);
@@ -433,8 +441,6 @@ export async function importFiles(files) {
     });
   }
 }
-
-// Import supplemental OCR files (from "Evaluate Accuracy" UI tab)
 
 /**
  * Import supplemental OCR files, such as an alternate OCR version or ground truth data.
