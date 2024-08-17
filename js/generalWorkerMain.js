@@ -263,12 +263,12 @@ export class gs {
   static getGeneralScheduler = async () => {
     if (gs.schedulerReady) {
       await gs.schedulerReady;
-      return gs.scheduler;
+      return /** @type {GeneralScheduler} */ (gs.scheduler);
     }
 
     await gs.init();
 
-    return gs.scheduler;
+    return /** @type {GeneralScheduler} */ (gs.scheduler);
   };
 
   static terminate = async () => {

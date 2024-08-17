@@ -216,51 +216,18 @@ export class ImageCache {
   static pageCount = 0;
 
   /**
- * The dimensions that each page would be, if it was rendered at 300 DPI.
- * @type {Array<dims>}
- */
-  static pdfDims300Arr = [];
+   * The dimensions that each page would be, if it was rendered at 300 DPI.
+   * @type {Array<dims>}
+   */
+  static pdfDims300 = [];
 
   static inputModes = {
     pdf: false,
     image: false,
   };
 
-  static pdfContentStats = {
-    /** Total number of letters in the source PDF. */
-    letterCountTotal: 0,
-    /** Total number of visible letters in the source PDF. */
-    letterCountVis: 0,
-    /** Total number of pages with 100+ letters in the source PDF. */
-    pageCountTotalText: 0,
-    /** Total number of pages with 100+ visible letters in the source PDF. */
-    pageCountVisText: 0,
-  };
-
   /** @type {?('text'|'ocr'|'image')} */
   static pdfType = null;
-
-  static setPdfType = () => {
-    // The PDF is considered text-native if:
-    // (1) The total number of visible letters is at least 100 per page on average.
-    // (2) The total number of visible letters is at least 90% of the total number of letters.
-    // (3) The total number of pages with 100+ visible letters is at least half of the total number of pages.
-    if (ImageCache.pdfContentStats.letterCountTotal >= ImageCache.pageCount * 100
-      && ImageCache.pdfContentStats.letterCountVis >= ImageCache.pdfContentStats.letterCountTotal * 0.9
-      && ImageCache.pdfContentStats.pageCountVisText >= ImageCache.pageCount / 2) {
-      ImageCache.pdfType = 'text';
-    // The PDF is considered ocr-native if:
-    // (1) The total number of letters is at least 100 per page on average.
-    // (2) The total number of letters is at least half of the total number of letters.
-    } else if (ImageCache.pdfContentStats.letterCountTotal >= ImageCache.pageCount * 100
-      && ImageCache.pdfContentStats.letterCountVis >= ImageCache.pageCount / 2) {
-      ImageCache.pdfType = 'ocr';
-    // Otherwise, the PDF is considered image-native.
-    // This includes both literally image-only PDFs, as well as PDFs that have invalid encodings or other issues that prevent valid text extraction.
-    } else {
-      ImageCache.pdfType = 'image';
-    }
-  };
 
   static colorModeDefault = 'gray';
 
@@ -327,7 +294,7 @@ export class ImageCache {
     } if (ImageCache.inputModes.pdf) {
       const pageMetrics = pageMetricsArr[n];
       const targetWidth = pageMetrics.dims.width;
-      const dpi = 300 * (targetWidth / ImageCache.pdfDims300Arr[n].width);
+      const dpi = 300 * (targetWidth / ImageCache.pdfDims300[n].width);
       const muPDFScheduler = await ImageCache.getMuPDFScheduler();
       return muPDFScheduler.drawPageAsPNG({
         page: n + 1, dpi, color, skipText: skipTextMode,
@@ -566,14 +533,10 @@ export class ImageCache {
     ImageCache.inputModes.image = false;
     ImageCache.inputModes.pdf = false;
     ImageCache.pageCount = 0;
-    ImageCache.pdfDims300Arr.length = 0;
+    ImageCache.pdfDims300.length = 0;
     ImageCache.loadCount = 0;
     ImageCache.nativeProps.length = 0;
     ImageCache.binaryProps.length = 0;
-    ImageCache.pdfContentStats.letterCountTotal = 0;
-    ImageCache.pdfContentStats.letterCountVis = 0;
-    ImageCache.pdfContentStats.pageCountTotalText = 0;
-    ImageCache.pdfContentStats.pageCountVisText = 0;
   };
 
   static terminate = async () => {
@@ -600,9 +563,8 @@ export class ImageCache {
    *
    * @param {ArrayBuffer} fileData
    * @param {Boolean} [skipText=false] - Whether to skip native text when rendering PDF to image.
-   * @param {Boolean} [extractStext=false]
    */
-  static openMainPDF = async (fileData, skipText = false, extractStext = false) => {
+  static openMainPDF = async (fileData, skipText = false) => {
     const muPDFScheduler = await ImageCache.getMuPDFScheduler(3);
 
     await ImageCache.#loadFileMuPDFScheduler(fileData);
@@ -611,9 +573,9 @@ export class ImageCache {
 
     const pageDims1 = await muPDFScheduler.workers[0].pageSizes([300]);
 
-    ImageCache.pdfDims300Arr.length = 0;
+    ImageCache.pdfDims300.length = 0;
     pageDims1.forEach((x) => {
-      ImageCache.pdfDims300Arr.push({ width: x[0], height: x[1] });
+      ImageCache.pdfDims300.push({ width: x[0], height: x[1] });
     });
 
     ImageCache.inputModes.pdf = true;
@@ -627,10 +589,10 @@ export class ImageCache {
 
     // For reasons that are unclear, a small number of pages have been rendered into massive files
     // so a hard-cap on resolution must be imposed.
-    const pageDPI = ImageCache.pdfDims300Arr.map((x) => 300 * 2000 / x.width, 2000);
+    const pageDPI = ImageCache.pdfDims300.map((x) => 300 * 2000 / x.width, 2000);
 
     // In addition to capping the resolution, also switch the width/height
-    ImageCache.pdfDims300Arr.forEach((x, i) => {
+    ImageCache.pdfDims300.forEach((x, i) => {
       const pageDims = { width: Math.round(x.width * pageDPI[i] / 300), height: Math.round(x.height * pageDPI[i] / 300) };
       pageMetricsArr[i] = new PageMetrics(pageDims);
     });
@@ -673,24 +635,6 @@ export class ImageCache {
 
         await setUploadFontsWorker(gs.schedulerInner);
       });
-    }
-
-    if (extractStext) {
-      ocrAllRaw.active = Array(ImageCache.pageCount);
-      const resArr = pageDPI.map(async (x, i) => {
-        // While using `pageTextJSON` would save some parsing, unfortunately that format only includes line-level granularity.
-        // The XML format is the only built-in mupdf format that includes character-level granularity.
-        const res = await muPDFScheduler.pageText({
-          page: i + 1, dpi: x, format: 'xml', calcStats: true,
-        });
-        ImageCache.pdfContentStats.letterCountTotal += res.letterCountTotal;
-        ImageCache.pdfContentStats.letterCountVis += res.letterCountVis;
-        if (res.letterCountTotal >= 100) ImageCache.pdfContentStats.pageCountTotalText++;
-        if (res.letterCountVis >= 100) ImageCache.pdfContentStats.pageCountVisText++;
-        ocrAllRaw.active[i] = res.content;
-      });
-      await Promise.all(resArr);
-      ImageCache.setPdfType();
     }
   };
 }

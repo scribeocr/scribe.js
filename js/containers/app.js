@@ -74,9 +74,6 @@ export class inputData {
   /** `true` if user re-uploaded HOCR data created by Scribe OCR */
   static resumeMode = false;
 
-  /** `true` if stext is extracted from a PDF (rather than text layer uploaded seprately) */
-  static extractTextMode = false;
-
   /** `true` if ground truth data is uploaded */
   static evalMode = false;
 

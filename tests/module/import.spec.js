@@ -56,12 +56,10 @@ describe('Check Abbyy XML import function.', function () {
 describe('Check cleanup functions allow for resetting module.', function () {
   this.timeout(10000);
   it('Check that cleanup functions work properly', async () => {
-    scribe.opt.extractText = true;
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/chi_eng_mixed_sample.pdf`]);
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/chi_eng_mixed_sample.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
     await scribe.terminate();
     await scribe.init();
-    scribe.opt.extractText = true;
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/chi_eng_mixed_sample.pdf`]);
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/chi_eng_mixed_sample.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
   }).timeout(10000);
 
   after(async () => {

@@ -5,7 +5,7 @@ import scribe from '../../scribe.js';
 const [,, imagePath] = process.argv;
 
 (async () => {
-  const res = await scribe.recognizeFiles([imagePath]);
+  const res = await scribe.extractText([imagePath]);
   console.log(res);
   await scribe.terminate();
 })();

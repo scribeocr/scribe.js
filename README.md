@@ -25,7 +25,7 @@ import scribe from 'node_modules/scribe.js-ocr/scribe.js';
 import scribe from 'scribe.js-ocr';
 
 // Basic usage
-scribe.recognizeFiles(['https://tesseract.projectnaptha.com/img/eng_bw.png'])
+scribe.extractText(['https://tesseract.projectnaptha.com/img/eng_bw.png'])
 	.then((res) => console.log(res))
 ```
 

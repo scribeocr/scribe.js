@@ -5,6 +5,6 @@ await scribe.init({ ocr: true, font: true });
 const elm = /** @type {HTMLInputElement} */ (document.getElementById('uploader'));
 elm.addEventListener('change', async () => {
   if (!elm.files) return;
-  const text = await scribe.recognizeFiles(elm.files);
+  const text = await scribe.extractText(elm.files);
   console.log(text);
 });

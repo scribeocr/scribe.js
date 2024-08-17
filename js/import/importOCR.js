@@ -28,7 +28,7 @@ export async function importOCRFiles(ocrFilesAll) {
   let pageCountHOCR;
   let hocrRaw;
   /** @type  {?Object.<string, FontMetricsFamily>} */
-  let fontMetricsObj;
+  let fontMetricsObj = null;
   /** @type{?Array<import('../objects/layoutObjects.js').LayoutPage>} */
   let layoutObj = null;
   /** @type{?Array<import('../objects/layoutObjects.js').LayoutDataTablePage>} */
@@ -42,9 +42,9 @@ export async function importOCRFiles(ocrFilesAll) {
     const hocrStrAll = await readOcrFile(ocrFilesAll[0]);
 
     // Check whether input is Abbyy XML
-    const node2 = hocrStrAll.match(/>([^>]+)/)[1];
-    abbyyMode = !!/abbyy/i.test(node2);
-    stextMode = !!/<document name/.test(node2);
+    const node2 = hocrStrAll.match(/>([^>]+)/)?.[1];
+    abbyyMode = !!node2 && !!/abbyy/i.test(node2);
+    stextMode = !!node2 && !!/<document name/.test(node2);
 
     if (abbyyMode) {
       hocrArrPages = hocrStrAll.split(/(?=<page)/).slice(1);
@@ -67,8 +67,8 @@ export async function importOCRFiles(ocrFilesAll) {
 
     // Check whether input is Abbyy XML using the first file
     const hocrStrFirst = await readOcrFile(ocrFilesAll[0]);
-    const node2 = hocrStrFirst.match(/>([^>]+)/)[1];
-    abbyyMode = !!/abbyy/i.test(node2);
+    const node2 = hocrStrFirst.match(/>([^>]+)/)?.[1];
+    abbyyMode = !!node2 && !!/abbyy/i.test(node2);
 
     for (let i = 0; i < pageCountHOCR; i++) {
       const hocrFile = ocrFilesAll[i];
