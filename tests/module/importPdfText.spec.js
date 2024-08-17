@@ -17,8 +17,7 @@ config.truncateThreshold = 0; // Disable truncation for actual/expected values o
 describe('Check stext import function language support.', function () {
   this.timeout(10000);
   before(async () => {
-    scribe.opt.extractText = true;
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/chi_eng_mixed_sample.pdf`]);
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/chi_eng_mixed_sample.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
   });
 
   it('Should import Chinese characters', async () => {
@@ -35,8 +34,7 @@ describe('Check stext import function language support.', function () {
 describe('Check small caps are detected in PDF imports.', function () {
   this.timeout(10000);
   before(async () => {
-    scribe.opt.extractText = true;
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/small_caps_examples.pdf`]);
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/small_caps_examples.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
   });
 
   it('Should correctly import small caps printed using font size adjustments', async () => {
@@ -63,8 +61,7 @@ describe('Check small caps are detected in PDF imports.', function () {
 describe('Check superscripts are detected in PDF imports.', function () {
   this.timeout(10000);
   before(async () => {
-    scribe.opt.extractText = true;
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples.pdf`]);
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
   });
 
   // First document

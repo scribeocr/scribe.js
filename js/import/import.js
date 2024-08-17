@@ -11,7 +11,9 @@ import {
 } from '../containers/dataContainer.js';
 import { fontAll } from '../containers/fontContainer.js';
 import { ImageCache, imageUtils, ImageWrapper } from '../containers/imageContainer.js';
-import { enableFontOpt, optimizeFontContainerAll, setDefaultFontAuto, loadBuiltInFontsRaw } from '../fontContainerMain.js';
+import {
+  enableFontOpt, optimizeFontContainerAll, setDefaultFontAuto, loadBuiltInFontsRaw,
+} from '../fontContainerMain.js';
 import { runFontOptimization } from '../fontEval.js';
 import { calcFontMetricsFromPages } from '../fontStatistics.js';
 import { gs } from '../generalWorkerMain.js';
@@ -20,6 +22,7 @@ import { PageMetrics } from '../objects/pageMetricsObjects.js';
 import { checkCharWarn, convertOCRAll } from '../recognizeConvert.js';
 import { replaceObjectProperties } from '../utils/miscUtils.js';
 import { importOCRFiles } from './importOCR.js';
+import { extractInternalPDFText } from '../extractPDFText.js';
 
 /**
  * Automatically detects the image type (jpeg or png).
@@ -185,11 +188,17 @@ export function sortInputFiles(files) {
  * Alternatively, for `File` objects (browser) and file paths (Node.js), a single array can be provided, which is sorted based on extension.
  * @public
  * @param {Array<File>|FileList|Array<string>|SortedInputFiles} files
+ * @param {Object} [options]
+ * @param {boolean} [options.extractPDFTextNative=false] - Extract text from text-native PDF documents.
+ * @param {boolean} [options.extractPDFTextOCR=false] - Extract text from image-native PDF documents with existing OCR text layers.
  * @returns
  */
-export async function importFiles(files) {
+export async function importFiles(files, options = {}) {
   clearData();
   gs.getGeneralScheduler();
+
+  const extractPDFTextNative = options?.extractPDFTextNative ?? false;
+  const extractPDFTextOCR = options?.extractPDFTextOCR ?? false;
 
   /** @type {Array<File|FileNode|ArrayBuffer>} */
   let pdfFiles = [];
@@ -266,10 +275,6 @@ export async function importFiles(files) {
 
   const xmlModeImport = ocrFiles.length > 0;
 
-  // Extract text from PDF document
-  // Only enabled if (1) user selects this option, (2) user uploads a PDF, and (3) user does not upload XML data.
-  inputData.extractTextMode = opt.extractText && inputData.pdfMode && !xmlModeImport;
-
   let pageCount;
   let pageCountImage;
   let abbyyMode = false;
@@ -284,7 +289,7 @@ export async function importFiles(files) {
     const pdfFileData = pdfFile instanceof ArrayBuffer ? pdfFile : await pdfFile.arrayBuffer();
 
     // If no XML data is provided, page sizes are calculated using muPDF alone
-    await ImageCache.openMainPDF(pdfFileData, opt.omitNativeText, inputData.extractTextMode);
+    await ImageCache.openMainPDF(pdfFileData, opt.omitNativeText);
 
     pageCountImage = ImageCache.pageCount;
     ImageCache.loadCount = ImageCache.pageCount;
@@ -315,7 +320,7 @@ export async function importFiles(files) {
 
     // Restore font metrics and optimize font from previous session (if applicable)
     if (ocrData.fontMetricsObj && Object.keys(ocrData.fontMetricsObj).length > 0) {
-      const fontPromise = loadBuiltInFontsRaw()
+      const fontPromise = loadBuiltInFontsRaw();
 
       existingOpt = true;
 
@@ -368,11 +373,6 @@ export async function importFiles(files) {
     scribeMode = ocrData.scribeMode;
 
     stextMode = ocrData.stextMode;
-  } else if (inputData.extractTextMode) {
-    // Initialize a new array on `ocrAll` if one does not already exist
-    if (!ocrAll[oemName]) ocrAll[oemName] = Array(inputData.pageCount);
-    ocrAll.active = ocrAll[oemName];
-    stextMode = true;
   }
 
   const pageCountHOCR = ocrAllRaw.active?.length;
@@ -424,7 +424,7 @@ export async function importFiles(files) {
     }
   }
 
-  if (xmlModeImport || inputData.extractTextMode) {
+  if (xmlModeImport) {
     /** @type {("hocr" | "abbyy" | "stext")} */
     let format = 'hocr';
     if (abbyyMode) format = 'abbyy';
@@ -439,6 +439,8 @@ export async function importFiles(files) {
         opt.enableOpt = await runFontOptimization(ocrAll.active);
       }
     });
+  } else if (extractPDFTextNative || extractPDFTextOCR) {
+    await extractInternalPDFText({ setActive: true, extractPDFTextNative, extractPDFTextOCR });
   }
 }
 

@@ -4,7 +4,7 @@
 
 *   [init][1]
     *   [Parameters][2]
-*   [recognizeFiles][3]
+*   [extractText][3]
     *   [Parameters][4]
 *   [clear][5]
 *   [terminate][6]
@@ -35,9 +35,10 @@ Initialize the program and optionally pre-load resources.
         The PDF renderer and OCR engine are automatically loaded when needed.
         Therefore, the only reason to set `pdf` or `ocr` to `true` is to pre-load them. (optional, default `false`)
 
-## recognizeFiles
+## extractText
 
-Helper function for recognizing files with a single function call.
+Function for extracting text from image and PDF files with a single function call.
+By default, existing text content is extracted for text-native PDF files; otherwise text is extracted using OCR.
 For more control, use `init`, `importFiles`, `recognize`, and `exportData` separately.
 
 ### Parameters
@@ -45,6 +46,10 @@ For more control, use `init`, `importFiles`, `recognize`, and `exportData` separ
 *   `files` &#x20;
 *   `langs` **[Array][21]<[string][22]>**  (optional, default `['eng']`)
 *   `outputFormat`   (optional, default `'txt'`)
+*   `options` **[Object][19]?**  (optional, default `{}`)
+
+    *   `options.skipRecPDFTextNative` **[boolean][20]** If the input is a text-native PDF, skip recognition and return the existing text. (optional, default `true`)
+    *   `options.skipRecPDFTextOCR` **[boolean][20]** If the input is an image-native PDF with existing OCR layer, skip recognition and return the existing text. (optional, default `false`)
 
 ## clear
 
@@ -100,6 +105,10 @@ Alternatively, for `File` objects (browser) and file paths (Node.js), a single a
 ### Parameters
 
 *   `files` **([Array][21]\<File> | FileList | [Array][21]<[string][22]> | [SortedInputFiles][11])**&#x20;
+*   `options` **[Object][19]?**  (optional, default `{}`)
+
+    *   `options.extractPDFTextNative` **[boolean][20]** Extract text from text-native PDF documents. (optional, default `false`)
+    *   `options.extractPDFTextOCR` **[boolean][20]** Extract text from image-native PDF documents with existing OCR text layers. (optional, default `false`)
 
 ## recognizePage
 
@@ -135,7 +144,7 @@ The results of recognition can be exported by calling `exportFiles` after this f
 
 [2]: #parameters
 
-[3]: #recognizefiles
+[3]: #extracttext
 
 [4]: #parameters-1
 

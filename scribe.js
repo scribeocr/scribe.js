@@ -30,6 +30,7 @@ import { imageStrToBlob } from './js/utils/imageUtils.js';
 import { countSubstringOccurrences, getRandomAlphanum, replaceSmartQuotes } from './js/utils/miscUtils.js';
 import { calcConf, mergeOcrWords, splitOcrWord } from './js/utils/ocrUtils.js';
 import { assignParagraphs } from './js/utils/reflowPars.js';
+import { extractInternalPDFText } from './js/extractPDFText.js';
 
 /**
  * Initialize the program and optionally pre-load resources.
@@ -66,18 +67,23 @@ const init = async (params) => {
 };
 
 /**
- * Helper function for recognizing files with a single function call.
+ * Function for extracting text from image and PDF files with a single function call.
+ * By default, existing text content is extracted for text-native PDF files; otherwise text is extracted using OCR.
  * For more control, use `init`, `importFiles`, `recognize`, and `exportData` separately.
  * @public
  * @param {Parameters<typeof importFiles>[0]} files
  * @param {Array<string>} [langs=['eng']]
  * @param {Parameters<typeof exportData>[0]} [outputFormat='txt']
- * @returns
+ * @param {Object} [options]
+ * @param {boolean} [options.skipRecPDFTextNative=true] - If the input is a text-native PDF, skip recognition and return the existing text.
+ * @param {boolean} [options.skipRecPDFTextOCR=false] - If the input is an image-native PDF with existing OCR layer, skip recognition and return the existing text.
  */
-const recognizeFiles = async (files, langs = ['eng'], outputFormat = 'txt') => {
+const extractText = async (files, langs = ['eng'], outputFormat = 'txt', options = {}) => {
+  const skipRecPDFTextNative = options?.skipRecPDFTextNative ?? true;
+  const skipRecPDFTextOCR = options?.skipRecPDFTextOCR ?? false;
   init({ ocr: true, font: true });
-  await importFiles(files);
-  await recognize({ langs });
+  await importFiles(files, { extractPDFTextNative: skipRecPDFTextNative, extractPDFTextOCR: skipRecPDFTextOCR });
+  if (!(ImageCache.pdfType === 'text' && skipRecPDFTextNative || ImageCache.pdfType === 'ocr' && skipRecPDFTextOCR)) await recognize({ langs });
   return exportData(outputFormat);
 };
 
@@ -174,7 +180,8 @@ export default {
   opt,
   recognize,
   recognizePage,
-  recognizeFiles,
+  extractText,
+  extractInternalPDFText,
   terminate,
   utils,
 };
