@@ -11,7 +11,7 @@ import { ImageCache } from './js/containers/imageContainer.js';
 import coords from './js/coordinates.js';
 import { drawDebugImages } from './js/debug.js';
 import { download, exportData } from './js/export/export.js';
-import { writeDebugCsv } from './js/export/exportDebugCsv.js';
+import { writeDebugCsv, convertToCSV } from './js/export/exportDebugCsv.js';
 import { extractSingleTableContent } from './js/export/exportWriteTabular.js';
 import { loadBuiltInFontsRaw, enableFontOpt } from './js/fontContainerMain.js';
 import { gs } from './js/generalWorkerMain.js';
@@ -130,6 +130,8 @@ class utils {
 
   // Misc utils
   static calcBoxOverlap = calcBoxOverlap;
+
+  static convertToCSV = convertToCSV;
 
   static replaceSmartQuotes = replaceSmartQuotes;
 
