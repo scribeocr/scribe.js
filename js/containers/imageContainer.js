@@ -254,7 +254,7 @@ export class ImageCache {
    * @returns
    */
   static #initMuPDFScheduler = async (numWorkers = 3) => {
-    const Tesseract = typeof process === 'undefined' ? (await import('../../tess/tesseract.esm.min.js')).default : await import('tesseract.js');
+    const Tesseract = typeof process === 'undefined' ? (await import('../../tess/tesseract.esm.min.js')).default : await import('@scribe.js/tesseract.js');
     const scheduler = await Tesseract.createScheduler();
     const workersPromiseArr = range(1, numWorkers).map(async () => {
       const w = await initMuPDFWorker();
