@@ -1,0 +1,250 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en"><head>
+	<title></title>
+	<meta name='font-metrics' content='{"SansDefault":{"normal":{"width":{"45":0.47619,"47":0.52381,"48":0.9047611071430001,"49":0.8571424523810001,"50":0.8571424523810001,"51":0.9047611071430001,"52":0.9523810952380001,"55":0.8571424523810001,"58":0.238095,"67":1.190476,"68":1.095238,"69":1.047619,"70":0.904762,"80":0.952381,"83":1.095238,"84":1.095238,"87":1.714286,"97":0.952381,"99":0.809524,"100":0.809524,"101":0.857143,"102":0.47619,"103":0.857143,"105":0.190476,"108":0.857143,"109":1.333333,"110":0.761905,"111":0.904762,"115":0.809524,"116":0.47619,"117":0.809524,"118":0.952381},"height":{"45":0.190476,"47":1.333333,"48":1.285714345238,"49":1.333333,"50":1.285714345238,"51":1.333333,"52":1.285714345238,"55":1.333333,"58":1.047619,"67":1.333333,"68":1.285714,"69":1.333333,"70":1.285714,"80":1.285714,"83":1.333333,"84":1.333333,"87":1.333333,"97":1,"99":1.047619,"100":1.333333,"101":1,"102":1.333333,"103":1.380952,"105":1.333333,"108":1.333333,"109":1,"110":1,"111":1,"115":1,"116":1.190476,"117":1,"118":1.047619},"kerning":{"67,97":0.142857,"97,115":0.095238,"115,101":0.142857,"108,58":0.238095,"58,49":0.238095,"49,51":0.142857297619,"51,45":0.142857297619,"45,99":0.142857,"99,118":0.047619,"118,45":0.047619,"45,48":0.142857,"48,49":0.19047595238100004,"51,49":0.142857297619,"49,55":0.19047595238100004,"55,45":0.142857297619,"45,84":0.095238,"84,87":0.047619,"87,84":0.047619,"84,45":0.095238,"45,69":0.190476,"69,67":0.142857,"67,83":0.190476,"68,111":0.190476,"111,99":0.142857,"99,117":0.190476,"117,109":0.238095,"109,101":0.190476,"101,110":0.238095,"110,116":0.142857,"70,105":0.190476,"105,108":0.238095,"108,101":0.190476,"101,100":0.190476,"48,52":0.09523864285700001,"52,47":0.04761865476200001,"47,50":0.095238,"50,50":0.142857297619,"50,47":0.142857297619,"47,49":0.142857,"80,97":0.190476,"97,103":0.095238,"103,101":0.190476,"111,102":0.095238,"49,48":0.19047595238100004},"kerning2":{"67,97":0.1428569999999999,"97,115":0.09523799999999993,"115,101":0.142857,"108,58":0.238095,"58,49":0.23809554761899987,"49,51":0.142857297619,"51,45":0.14285784523800005,"45,99":0.142857,"99,118":0.04761899999999997,"118,45":0.047619999999999996,"45,48":0.142857892857,"48,49":0.190475952381,"51,49":0.142857297619,"49,55":0.190475952381,"55,45":0.14285784523800005,"45,84":0.09523800000000016,"84,87":0.04761900000000008,"87,84":0.04761900000000008,"84,45":0.09523899999999996,"45,69":0.19047599999999987,"69,67":0.142857,"67,83":0.1904760000000001,"68,111":0.19047599999999998,"111,99":0.09523799999999993,"99,117":0.19047599999999998,"117,109":0.23809599999999986,"109,101":0.1904760000000001,"101,110":0.23809499999999995,"110,116":0.14285800000000004,"70,105":0.190476,"105,108":-0.428572,"108,101":0.1904760000000001,"101,100":0.19047599999999998,"48,52":0.095237309524,"52,47":0.04761785714300004,"47,50":0.09523854761899997,"50,50":0.142857297619,"50,47":0.09523784523800005,"47,49":0.09523854761899997,"80,97":0.19047599999999998,"97,103":0.09523800000000004,"103,101":0.1904760000000001,"111,102":0.09523899999999996,"49,48":0.142857297619},"variants":{},"heightCaps":1.333333,"obs":55,"obsCaps":10},"italic":{"width":{},"height":{},"kerning":{},"kerning2":{},"variants":{},"heightCaps":0,"obs":0,"obsCaps":0},"smallCaps":{"width":{},"height":{},"kerning":{},"kerning2":{},"variants":{},"heightCaps":0,"obs":0,"obsCaps":0},"bold":{"width":{},"height":{},"kerning":{},"kerning2":{},"variants":{},"heightCaps":0,"obs":0,"obsCaps":0},"obs":55},"SerifDefault":{"normal":{"width":{"40":0.590909,"41":0.590909,"44":0.318182,"46":0.227273,"49":0.500000441349,"52":0.954545016129,"54":0.9090905586510001,"57":0.863636101173,"65":1.454545,"67":1.227273,"68":1.409091,"69":1.181818,"72":1.409091,"73":0.590909,"76":1.136364,"79":1.318182,"80":1.045455,"81":1.318182,"82":1.363636,"84":1.181818,"86":1.5,"87":1.954545,"97":0.863636,"98":1,"99":0.818182,"100":0.954545,"101":0.772727,"102":0.863636,"103":0.954545,"104":1,"105":0.454545,"107":1.045455,"108":0.454545,"109":1.590909,"110":1,"111":0.909091,"112":1,"114":0.681818,"115":0.636364,"116":0.545455,"117":1,"118":1,"119":1.454545,"121":1,"8220":0.818182,"8221":0.772727},"height":{"40":1.863636,"41":1.863636,"44":0.545455,"46":0.227273,"49":1.454545457478,"52":1.363636542522,"54":1.454545457478,"57":1.4999999149560002,"65":1.454545,"67":1.454545,"68":1.409091,"69":1.409091,"72":1.454545,"73":1.409091,"76":1.409091,"79":1.454545,"80":1.409091,"81":1.863636,"82":1.409091,"84":1.409091,"86":1.454545,"87":1.454545,"97":1,"98":1.5,"99":1,"100":1.5,"101":1,"102":1.454545,"103":1.409091,"104":1.454545,"105":1.454545,"107":1.454545,"108":1.454545,"109":1,"110":1,"111":1,"112":1.409091,"114":1,"115":1,"116":1.272727,"117":1,"118":1,"119":1,"121":1.409091,"8220":0.545455,"8221":0.545455},"kerning":{"80,108":0.136364,"108,97":0.090909,"97,105":0.045455,"105,110":0.045455,"110,116":0.045455,"116,105":0.045455,"105,102":0.090909,"102,102":0,"102,44":-0.090909,"118,46":0.136364,"68,101":0.136364,"101,102":0.136364,"102,101":-0.136364,"101,110":0.090909,"110,100":0.045455,"100,97":0.090909,"97,110":0.045455,"116,46":0.181818,"84,104":0.045455,"104,105":0.045455,"105,115":0.136364,"97,99":0.045455,"99,116":0.045455,"105,111":0.136364,"111,110":0.090909,"117,110":0.090909,"100,101":0.090909,"101,114":0.045455,"84,105":0.090909,"105,116":0.090909,"116,108":0.045455,"108,101":0.136364,"86,73":0.090909,"73,73":0.090909,"111,102":0.136364,"116,104":0.045455,"104,101":0.090909,"67,105":0.136364,"105,118":0.090909,"118,105":0.090909,"105,108":0.136364,"82,105":0.090909,"105,103":0.136364,"103,104":0.045455,"104,116":0.045455,"116,115":0.090909,"65,99":0.136364,"49,57":0.36363706891500003,"57,54":0.18181782991200002,"54,52":0.045454457478000004,"40,8220":0.090909,"8220,84":0.136364,"73,8221":0.136364,"8221,41":0.090909,"41,44":0.181818,"97,115":0.090909,"97,109":0.045455,"109,101":0.090909,"101,100":0.090909,"100,44":0.090909,"116,111":0.090909,"99,111":0.136364,"111,114":0.090909,"114,114":0,"114,101":0.045455,"101,99":0.136364,"110,108":0.090909,"97,119":0.045455,"119,102":0.090909,"102,117":0,"117,108":0.090909,"101,109":0.090909,"109,112":-0.045455,"112,108":0.181818,"108,111":0.136364,"111,121":0.136364,"121,109":0.045455,"112,114":0.090909,"114,97":0.090909,"105,99":0.136364,"99,101":0.090909,"101,115":0.136364,"98,97":0.136364,"115,105":0.136364,"101,116":0.090909,"116,97":0.090909,"97,108":0.090909,"108,105":0.136364,"105,97":0.136364,"97,116":0,"114,111":0.045455,"111,118":0.090909,"105,100":0.136364,"97,112":0,"112,112":0.045455,"111,112":0.090909,"114,105":0.045455,"116,101":0.090909,"101,108":0.136364,"105,101":0.136364,"67,104":0.090909,"104,114":0.045455,"115,116":0.090909,"112,104":0.090909,"87,111":0.090909,"111,111":0.136364,"111,100":0.181818,"8220,87":0.090909,"100,8221":0.090909,"119,104":0.045455,"104,111":0.090909,"119,97":0.090909,"97,100":0.045455,"100,118":0.045455,"118,101":0.136364,"114,115":0.090909,"115,101":0.136364,"108,121":0.045455,"97,102":0.045455,"98,121":0.090909,"115,117":0.090909,"117,99":0.090909,"99,104":0.045455,"115,46":0.227273,"108,108":0.090909,"101,103":0.090909,"103,101":0.136364,"104,97":0.090909,"121,101":0.136364,"119,105":0.090909,"72,105":0.136364,"105,114":0.090909,"68,121":0.090909,"121,110":0,"110,97":0.090909,"109,105":0.045455,"99,115":0.181818,"115,44":0.181818,"76,76":0.136364,"76,67":0.136364,"8220,68":0.090909,"116,8221":0.090909,"110,103":0.090909,"111,109":0.090909,"112,97":0.136364,"110,121":0.045455,"121,44":0.136364,"81,117":0.090909,"117,97":0.090909,"116,121":0,"65,117":0.045455,"117,100":0.090909,"100,105":0.045455,"115,115":0.181818,"103,110":0.090909,"110,101":0.090909,"119,111":0.090909,"114,107":0,"102,111":-0.136364,"99,108":0.090909,"117,115":0.136364,"115,112":0.090909,"112,101":0.136364,"119,101":0.090909,"101,101":0.090909,"101,107":0.045455,"108,116":0.090909,"116,44":0.136364,"115,99":0.136364,"99,114":0.090909,"105,109":0.045455,"110,102":0.045455,"114,109":0,"117,112":0,"114,118":0,"115,111":0.090909,"103,111":0.090909,"111,105":0.136364,"69,69":0.090909,"69,79":0.181818,"79,67":0.136364,"110,46":0.181818,"116,117":0,"97,114":0.045455,"114,103":0.045455,"101,118":0.090909,"111,119":0.090909,"117,114":0.045455,"114,110":0,"102,116":-0.181818,"110,115":0.090909,"110,105":0.090909,"117,116":0.045455,"110,109":0,"111,117":0.090909,"117,103":0.090909},"kerning2":{"80,108":0.18181900000000006,"108,97":0.09090900000000002,"97,105":0.09091000000000005,"105,110":0.0909089999999999,"110,116":0.045453999999999994,"116,105":0.09091000000000005,"105,102":0.09090900000000002,"102,102":-0.18181799999999992,"102,44":-0.09090900000000002,"118,46":0.18181799999999998,"68,101":0.13636399999999993,"101,102":0.09090900000000002,"102,101":-0.09090900000000002,"101,110":0.0909089999999999,"110,100":0.09091000000000005,"100,97":0.09090900000000002,"97,110":0.04545500000000002,"116,46":0.18181799999999998,"84,104":0.0909089999999999,"104,105":0.09091000000000005,"105,115":0.136363,"97,99":0.045453999999999994,"99,116":0.09090900000000002,"105,111":0.13636400000000004,"111,110":0.0909089999999999,"117,110":0.13636399999999993,"100,101":0.0909089999999999,"101,114":0.09090900000000002,"84,105":0.09091000000000005,"105,116":0.09090900000000002,"116,108":0.09091000000000005,"108,101":0.13636399999999993,"86,73":0.09090900000000002,"73,73":0.09090900000000002,"111,102":0.09090900000000002,"116,104":0.04545500000000002,"104,101":0.13636399999999993,"67,105":0.18181900000000006,"105,118":0.0909089999999999,"118,105":0.09091000000000005,"105,108":0.13636400000000004,"82,105":0.04545500000000002,"105,103":0.13636399999999993,"103,104":0.04545500000000002,"104,116":0.045453999999999994,"116,115":0.0909089999999999,"65,99":0.09090900000000002,"49,57":0.3636370689149999,"57,54":0.181819239003,"54,52":0.04545445747800003,"40,8220":0.09090900000000002,"8220,84":0.13636399999999993,"73,8221":0.18181799999999992,"8221,41":0.09090900000000002,"41,44":0.18181799999999998,"97,115":0.0909089999999999,"97,109":0.04545500000000002,"109,101":0.0909089999999999,"101,100":0.13636399999999993,"100,44":0.09090899999999996,"116,111":0.09090900000000002,"99,111":0.13636400000000004,"111,114":0.09090900000000002,"114,114":0,"114,101":0.0909089999999999,"101,99":0.09090900000000002,"110,108":0.09091000000000005,"97,119":0,"119,102":0.09090900000000002,"102,117":0.04545500000000002,"117,108":0.09091000000000005,"101,109":0.09090900000000013,"109,112":-0.04545500000000002,"112,108":0.18181900000000006,"108,111":0.09090900000000002,"111,121":0.0909089999999999,"121,109":0.04545500000000002,"112,114":0.09090900000000002,"114,97":0.09090900000000002,"105,99":0.136363,"99,101":0.13636399999999993,"101,115":0.136363,"98,97":0.09090900000000002,"115,105":0.13636400000000004,"101,116":0.136363,"116,97":0.09090900000000002,"97,108":0.09091000000000005,"108,105":0.09091000000000005,"105,97":0.13636400000000004,"97,116":0.045453999999999994,"114,111":0.045453999999999994,"111,118":0.0909089999999999,"105,100":0.18181899999999995,"97,112":-0.04545500000000002,"112,112":0.0909089999999999,"111,112":0.0909089999999999,"114,105":0.04545500000000002,"116,101":0.0909089999999999,"101,108":0.13636400000000004,"105,101":0.13636399999999993,"67,104":0.13636399999999993,"104,114":0,"115,116":0.09090900000000002,"112,104":0.13636399999999993,"87,111":0.09090900000000002,"111,111":0.13636400000000004,"111,100":0.18181899999999995,"8220,87":0.04545500000000002,"100,8221":0.0909089999999999,"119,104":0.0909089999999999,"104,111":0.09090900000000002,"119,97":0.09090900000000002,"97,100":0.04545500000000002,"100,118":0.04545500000000002,"118,101":0.13636399999999993,"114,115":0.0909089999999999,"115,101":0.18181799999999992,"108,121":0.04545500000000002,"97,102":0.04545500000000002,"98,121":0.0909089999999999,"115,117":0.0909089999999999,"117,99":0.09090900000000002,"99,104":0.0909089999999999,"115,46":0.22727199999999997,"108,108":0.09091000000000005,"101,103":0.09091000000000005,"103,101":0.13636399999999993,"104,97":0.04545500000000002,"121,101":0.13636399999999993,"119,105":0.09091000000000005,"72,105":0.13636400000000004,"105,114":0.09090900000000002,"68,121":0.13636399999999993,"121,110":0.04545500000000002,"110,97":0.09090900000000002,"109,105":0.04545500000000002,"99,115":0.18181799999999992,"115,44":0.18181799999999998,"76,76":0.136363,"76,67":0.136363,"8220,68":0.0909089999999999,"116,8221":0.0909089999999999,"110,103":0.09091000000000005,"111,109":0.09090900000000013,"112,97":0.13636400000000004,"110,121":0.04545500000000002,"121,44":0.13636299999999996,"81,117":0.13636399999999993,"117,97":0.09090900000000002,"116,121":0,"65,117":0.0909089999999999,"117,100":0.09091000000000005,"100,105":0.09091000000000005,"115,115":0.18181799999999992,"103,110":0.04545500000000002,"110,101":0.0909089999999999,"119,111":0.09090900000000002,"114,107":0,"102,111":-0.13636399999999993,"99,108":0.09091000000000005,"117,115":0.136363,"115,112":0.0909089999999999,"112,101":0.13636399999999993,"119,101":0.13636399999999993,"101,101":0.13636399999999993,"101,107":0.04545399999999988,"108,116":0.09090900000000002,"116,44":0.13636299999999996,"115,99":0.09090900000000002,"99,114":0.09090900000000002,"105,109":0.09090900000000013,"110,102":0.04545500000000002,"114,109":0.04545500000000002,"117,112":0,"114,118":0,"115,111":0.13636400000000004,"103,111":0.09090900000000002,"111,105":0.18181900000000006,"69,69":0.04545500000000002,"69,79":0.18181800000000004,"79,67":0.136363,"110,46":0.18181799999999998,"116,117":-0.04545500000000002,"97,114":0.04545499999999991,"114,103":0,"101,118":0.0909089999999999,"111,119":0.09091000000000005,"117,114":0.09090900000000002,"114,110":0,"102,116":-0.181819,"110,115":0.136363,"110,105":0.09091000000000005,"117,116":0.136363,"110,109":0.04545500000000002,"111,117":0.0909089999999999,"117,103":0.09091000000000005},"variants":{},"heightCaps":1.409091,"obs":738,"obsCaps":43},"italic":{"width":{},"height":{},"kerning":{},"kerning2":{},"variants":{},"heightCaps":0,"obs":0,"obsCaps":0},"smallCaps":{"width":{},"height":{},"kerning":{},"kerning2":{},"variants":{},"heightCaps":0,"obs":0,"obsCaps":0},"bold":{"width":{},"height":{},"kerning":{},"kerning2":{},"variants":{},"heightCaps":0,"obs":0,"obsCaps":0},"obs":738}}'></meta>
+	<meta name='default-font' content='SerifDefault'></meta>
+	<meta name='sans-font' content='NimbusSans'></meta>
+	<meta name='serif-font' content='NimbusRomNo9L'></meta>
+	<meta name='enable-opt' content='true'></meta>
+	<meta name='layout' content='[{"default":true,"boxes":{}}]'></meta>
+	<meta name='layout-data-table' content='[{"default":true,"tables":[]}]'></meta>
+	<meta http-equiv="Content-Type" content="text/html;charset=utf-8"/>
+	<meta name='ocr-system' content='scribeocr' />
+	<meta name='ocr-capabilities' content='ocr_page ocr_carea ocr_par ocr_line ocrx_word ocrp_wconf ocrp_lang ocrp_dir ocrp_font ocrp_fsize'/>
+</head>
+<body>
+	<div class='ocr_page' title='bbox 0 0 2000 2590'>
+		<span class='ocr_line' title="bbox 341 54 1660 90; baseline 0 -8; x_x_height 21; x_asc_height 27">
+			<span class='ocrx_word' id='word_1_0' title='bbox 341 55 428 82;x_wconf 100;x_font SansDefault' lang='eng' style='font-family:SansDefault'>Case</span>
+			<span class='ocrx_word' id='word_1_1' title='bbox 443 55 881 82;x_wconf 0;x_font SansDefault' lang='eng' style='font-family:SansDefault'>1:13-cv-01317-TWT-ECS</span>
+			<span class='ocrx_word' id='word_1_2' title='bbox 918 55 1093 82;x_wconf 100;x_font SansDefault' lang='eng' style='font-family:SansDefault'>Document</span>
+			<span class='ocrx_word' id='word_1_3' title='bbox 1107 55 1124 82;x_wconf 100;x_font SansDefault' lang='eng' style='font-family:SansDefault'>1</span>
+			<span class='ocrx_word' id='word_1_4' title='bbox 1162 54 1241 82;x_wconf 100;x_font SansDefault' lang='eng' style='font-family:SansDefault'>Filed</span>
+			<span class='ocrx_word' id='word_1_5' title='bbox 1256 54 1405 82;x_wconf 100;x_font SansDefault' lang='eng' style='font-family:SansDefault'>04/22/13</span>
+			<span class='ocrx_word' id='word_1_6' title='bbox 1443 55 1529 90;x_wconf 100;x_font SansDefault' lang='eng' style='font-family:SansDefault'>Page</span>
+			<span class='ocrx_word' id='word_1_7' title='bbox 1545 55 1562 82;x_wconf 100;x_font SansDefault' lang='eng' style='font-family:SansDefault'>1</span>
+			<span class='ocrx_word' id='word_1_8' title='bbox 1576 54 1607 82;x_wconf 100;x_font SansDefault' lang='eng' style='font-family:SansDefault'>of</span>
+			<span class='ocrx_word' id='word_1_9' title='bbox 1621 55 1660 82;x_wconf 100;x_font SansDefault' lang='eng' style='font-family:SansDefault'>10</span>
+		</span>
+		<span class='ocr_line' title="bbox 560 242 1454 277; baseline -0.003356 0; x_x_height 21.56910514831543; x_asc_height 32">
+			<span class='ocrx_word' id='word_1_10' title='bbox 560 245 607 277;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>IN</span>
+			<span class='ocrx_word' id='word_1_11' title='bbox 620 245 707 277;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>THE</span>
+			<span class='ocrx_word' id='word_1_12' title='bbox 720 245 888 277;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>UNITED</span>
+			<span class='ocrx_word' id='word_1_13' title='bbox 904 243 1067 277;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>STATES</span>
+			<span class='ocrx_word' id='word_1_14' title='bbox 1081 243 1286 276;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>DISTRICT</span>
+			<span class='ocrx_word' id='word_1_15' title='bbox 1300 242 1454 275;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>COURT</span>
+		</span>
+		<span class='ocr_line' title="bbox 529 295 1485 330; baseline -0.003138 0; x_x_height 21.56910514831543; x_asc_height 32">
+			<span class='ocrx_word' id='word_1_16' title='bbox 529 298 618 330;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>FOR</span>
+			<span class='ocrx_word' id='word_1_17' title='bbox 630 298 718 329;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>THE</span>
+			<span class='ocrx_word' id='word_1_18' title='bbox 730 297 979 330;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>NORTHERN</span>
+			<span class='ocrx_word' id='word_1_19' title='bbox 991 296 1196 329;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>DISTRICT</span>
+			<span class='ocrx_word' id='word_1_20' title='bbox 1209 295 1266 329;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>OF</span>
+			<span class='ocrx_word' id='word_1_21' title='bbox 1280 295 1485 328;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>GEORGIA</span>
+		</span>
+		<span class='ocr_line' title="bbox 792 349 1221 382; baseline -0.002331 0; x_x_height 21.56910514831543; x_asc_height 32">
+			<span class='ocrx_word' id='word_1_22' title='bbox 792 349 1006 382;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>ATLANTA</span>
+			<span class='ocrx_word' id='word_1_23' title='bbox 1019 349 1221 382;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>DIVISION</span>
+		</span>
+		<span class='ocr_line' title="bbox 241 509 726 551; baseline -0.004124 -9; x_x_height 21.640350341796875; x_asc_height 32">
+			<span class='ocrx_word' id='word_1_24' title='bbox 241 509 394 551;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>EQUAL</span>
+			<span class='ocrx_word' id='word_1_25' title='bbox 407 509 726 541;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>EMPLOYMENT</span>
+		</span>
+		<span class='ocr_line' title="bbox 241 560 873 600; baseline -0.003165 -5; x_x_height 21.640350341796875; x_asc_height 32">
+			<span class='ocrx_word' id='word_1_26' title='bbox 241 562 558 595;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>OPPORTUNITY</span>
+			<span class='ocrx_word' id='word_1_27' title='bbox 572 560 873 600;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>COMMISSION,</span>
+		</span>
+		<span class='ocr_line' title="bbox 595 664 1578 706; baseline -0.003052 -7; x_x_height 23; x_asc_height 32">
+			<span class='ocrx_word' id='word_1_28' title='bbox 595 665 755 706;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>Plaintiff,</span>
+			<span class='ocrx_word' id='word_1_29' title='bbox 1184 665 1305 698;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>CIVIL</span>
+			<span class='ocrx_word' id='word_1_30' title='bbox 1318 664 1491 697;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>ACTION</span>
+			<span class='ocrx_word' id='word_1_31' title='bbox 1502 664 1578 696;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>NO.</span>
+		</span>
+		<span class='ocr_line' title="bbox 476 782 508 804; baseline 0 0; x_x_height 15.333333015441895; x_asc_height 22">
+			<span class='ocrx_word' id='word_1_32' title='bbox 476 782 508 804;x_wconf 0;x_font SerifDefault;x_fsize 48' lang='eng' style='font-family:SerifDefault'>v.</span>
+		</span>
+		<span class='ocr_line' title="bbox 241 874 1718 916; baseline -0.003385 -6; x_x_height 21.058822631835938; x_asc_height 31">
+			<span class='ocrx_word' id='word_1_33' title='bbox 241 879 346 910;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>HIRE</span>
+			<span class='ocrx_word' id='word_1_34' title='bbox 359 877 614 916;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>DYNAMICS,</span>
+			<span class='ocrx_word' id='word_1_35' title='bbox 628 876 723 916;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>LLC,</span>
+			<span class='ocrx_word' id='word_1_37' title='bbox 1184 876 1298 908;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>JURY</span>
+			<span class='ocrx_word' id='word_1_38' title='bbox 1311 875 1445 907;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>TRIAL</span>
+			<span class='ocrx_word' id='word_1_39' title='bbox 1458 874 1718 906;x_wconf 100;x_font SerifDefault' lang='eng' style='font-variant:small-caps;font-family:SerifDefault'>DEMANDED</span>
+		</span>
+		<span class='ocr_line' title="bbox 596 981 795 1014; baseline 0 0; x_x_height 22; x_asc_height 31">
+			<span class='ocrx_word' id='word_1_40' title='bbox 596 981 795 1014;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>Defendant.</span>
+		</span>
+		<span class='ocr_line' title="bbox 867 1141 1148 1173; baseline -0.003559 0; x_x_height 22.724323272705078; x_asc_height 31">
+			<span class='ocrx_word' id='word_1_41' title='bbox 867 1141 1148 1173;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>COMPLAINT</span>
+		</span>
+		<span class='ocr_line' title="bbox 360 1242 1773 1286; baseline -0.002123 -8; x_x_height 22; x_asc_height 31">
+			<span class='ocrx_word' id='word_1_42' title='bbox 360 1246 438 1279;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>This</span>
+			<span class='ocrx_word' id='word_1_43' title='bbox 461 1246 489 1278;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>is</span>
+			<span class='ocrx_word' id='word_1_44' title='bbox 511 1256 553 1278;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>an</span>
+			<span class='ocrx_word' id='word_1_45' title='bbox 574 1245 685 1278;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>action</span>
+			<span class='ocrx_word' id='word_1_46' title='bbox 704 1245 809 1278;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>under</span>
+			<span class='ocrx_word' id='word_1_47' title='bbox 828 1244 913 1277;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>Title</span>
+			<span class='ocrx_word' id='word_1_48' title='bbox 933 1246 995 1277;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>VII</span>
+			<span class='ocrx_word' id='word_1_49' title='bbox 1017 1244 1059 1277;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>of</span>
+			<span class='ocrx_word' id='word_1_50' title='bbox 1074 1244 1128 1277;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>the</span>
+			<span class='ocrx_word' id='word_1_51' title='bbox 1149 1243 1239 1277;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>Civil</span>
+			<span class='ocrx_word' id='word_1_52' title='bbox 1260 1243 1377 1286;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>Rights</span>
+			<span class='ocrx_word' id='word_1_53' title='bbox 1399 1244 1465 1276;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>Act</span>
+			<span class='ocrx_word' id='word_1_54' title='bbox 1486 1243 1528 1275;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>of</span>
+			<span class='ocrx_word' id='word_1_55' title='bbox 1548 1243 1633 1276;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>1964</span>
+			<span class='ocrx_word' id='word_1_56' title='bbox 1655 1242 1773 1284;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>(“Title</span>
+		</span>
+		<span class='ocr_line' title="bbox 241 1347 1773 1392; baseline -0.001958 -8; x_x_height 22; x_asc_height 32">
+			<span class='ocrx_word' id='word_1_57' title='bbox 241 1351 349 1392;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>VII”),</span>
+			<span class='ocrx_word' id='word_1_58' title='bbox 367 1361 401 1384;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>as</span>
+			<span class='ocrx_word' id='word_1_59' title='bbox 418 1350 593 1390;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>amended,</span>
+			<span class='ocrx_word' id='word_1_60' title='bbox 610 1350 676 1383;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>and</span>
+			<span class='ocrx_word' id='word_1_61' title='bbox 691 1349 776 1382;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>Title</span>
+			<span class='ocrx_word' id='word_1_62' title='bbox 792 1351 806 1382;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>I</span>
+			<span class='ocrx_word' id='word_1_63' title='bbox 821 1349 863 1382;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>of</span>
+			<span class='ocrx_word' id='word_1_64' title='bbox 873 1349 927 1382;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>the</span>
+			<span class='ocrx_word' id='word_1_65' title='bbox 944 1349 1033 1382;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>Civil</span>
+			<span class='ocrx_word' id='word_1_66' title='bbox 1049 1348 1165 1391;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>Rights</span>
+			<span class='ocrx_word' id='word_1_67' title='bbox 1181 1349 1247 1381;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>Act</span>
+			<span class='ocrx_word' id='word_1_68' title='bbox 1262 1348 1305 1381;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>of</span>
+			<span class='ocrx_word' id='word_1_69' title='bbox 1320 1349 1400 1381;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>1991</span>
+			<span class='ocrx_word' id='word_1_70' title='bbox 1421 1353 1455 1381;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>to</span>
+			<span class='ocrx_word' id='word_1_71' title='bbox 1472 1353 1598 1381;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>correct</span>
+			<span class='ocrx_word' id='word_1_72' title='bbox 1612 1347 1773 1381;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>unlawful</span>
+		</span>
+		<span class='ocr_line' title="bbox 242 1453 1772 1498; baseline -0.001961 -9; x_x_height 22; x_asc_height 29">
+			<span class='ocrx_word' id='word_1_73' title='bbox 242 1456 469 1498;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>employment</span>
+			<span class='ocrx_word' id='word_1_74' title='bbox 481 1455 643 1497;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>practices</span>
+			<span class='ocrx_word' id='word_1_75' title='bbox 658 1466 703 1488;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>on</span>
+			<span class='ocrx_word' id='word_1_76' title='bbox 715 1455 770 1488;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>the</span>
+			<span class='ocrx_word' id='word_1_77' title='bbox 782 1454 872 1488;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>basis</span>
+			<span class='ocrx_word' id='word_1_78' title='bbox 886 1455 928 1488;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>of</span>
+			<span class='ocrx_word' id='word_1_79' title='bbox 935 1454 1120 1487;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>retaliation</span>
+			<span class='ocrx_word' id='word_1_80' title='bbox 1133 1454 1198 1487;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>and</span>
+			<span class='ocrx_word' id='word_1_81' title='bbox 1210 1458 1244 1487;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>to</span>
+			<span class='ocrx_word' id='word_1_82' title='bbox 1257 1453 1397 1496;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>provide</span>
+			<span class='ocrx_word' id='word_1_83' title='bbox 1411 1453 1618 1496;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>appropriate</span>
+			<span class='ocrx_word' id='word_1_84' title='bbox 1631 1453 1731 1486;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>relief</span>
+			<span class='ocrx_word' id='word_1_85' title='bbox 1738 1458 1772 1486;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>to</span>
+		</span>
+		<span class='ocr_line' title="bbox 242 1558 1773 1603; baseline -0.00196 -9; x_x_height 22; x_asc_height 33">
+			<span class='ocrx_word' id='word_1_86' title='bbox 242 1561 457 1603;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>Christopher</span>
+			<span class='ocrx_word' id='word_1_87' title='bbox 472 1560 584 1593;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>Wood</span>
+			<span class='ocrx_word' id='word_1_88' title='bbox 600 1560 792 1602;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>(“Wood”),</span>
+			<span class='ocrx_word' id='word_1_89' title='bbox 809 1559 886 1592;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>who</span>
+			<span class='ocrx_word' id='word_1_90' title='bbox 902 1570 971 1592;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>was</span>
+			<span class='ocrx_word' id='word_1_91' title='bbox 989 1559 1162 1601;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>adversely</span>
+			<span class='ocrx_word' id='word_1_92' title='bbox 1179 1559 1325 1592;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>affected</span>
+			<span class='ocrx_word' id='word_1_93' title='bbox 1339 1558 1386 1600;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>by</span>
+			<span class='ocrx_word' id='word_1_94' title='bbox 1402 1558 1485 1591;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>such</span>
+			<span class='ocrx_word' id='word_1_95' title='bbox 1500 1558 1671 1600;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>practices.</span>
+			<span class='ocrx_word' id='word_1_96' title='bbox 1704 1558 1773 1591;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>The</span>
+		</span>
+		<span class='ocr_line' title="bbox 241 1663 1772 1707; baseline -0.00196 -9; x_x_height 22; x_asc_height 32">
+			<span class='ocrx_word' id='word_1_97' title='bbox 241 1665 395 1698;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>Plaintiff</span>
+			<span class='ocrx_word' id='word_1_98' title='bbox 422 1665 546 1707;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>alleges</span>
+			<span class='ocrx_word' id='word_1_99' title='bbox 578 1664 647 1697;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>that</span>
+			<span class='ocrx_word' id='word_1_100' title='bbox 676 1664 777 1697;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>while</span>
+			<span class='ocrx_word' id='word_1_101' title='bbox 810 1664 988 1706;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>employed</span>
+			<span class='ocrx_word' id='word_1_102' title='bbox 1018 1663 1098 1696;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>with</span>
+			<span class='ocrx_word' id='word_1_103' title='bbox 1129 1663 1320 1696;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>Defendant</span>
+			<span class='ocrx_word' id='word_1_104' title='bbox 1350 1663 1430 1696;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>Hire</span>
+			<span class='ocrx_word' id='word_1_105' title='bbox 1462 1663 1657 1705;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>Dynamics,</span>
+			<span class='ocrx_word' id='word_1_106' title='bbox 1689 1663 1772 1696;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>LLC</span>
+		</span>
+		<span class='ocr_line' title="bbox 242 1768 1773 1812; baseline -0.00196 -9; x_x_height 22; x_asc_height 32">
+			<span class='ocrx_word' id='word_1_107' title='bbox 242 1769 513 1812;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>(“Defendant”),</span>
+			<span class='ocrx_word' id='word_1_108' title='bbox 531 1780 549 1802;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>a</span>
+			<span class='ocrx_word' id='word_1_109' title='bbox 565 1769 704 1812;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>staffing</span>
+			<span class='ocrx_word' id='word_1_110' title='bbox 720 1779 896 1811;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>company,</span>
+			<span class='ocrx_word' id='word_1_111' title='bbox 914 1779 948 1801;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>as</span>
+			<span class='ocrx_word' id='word_1_112' title='bbox 966 1779 985 1801;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>a</span>
+			<span class='ocrx_word' id='word_1_113' title='bbox 1001 1768 1136 1810;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>Quality</span>
+			<span class='ocrx_word' id='word_1_114' title='bbox 1151 1768 1295 1801;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>Auditor</span>
+			<span class='ocrx_word' id='word_1_115' title='bbox 1310 1768 1467 1810;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>assigned</span>
+			<span class='ocrx_word' id='word_1_116' title='bbox 1482 1772 1517 1801;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>to</span>
+			<span class='ocrx_word' id='word_1_117' title='bbox 1533 1768 1627 1801;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>work</span>
+			<span class='ocrx_word' id='word_1_118' title='bbox 1643 1768 1694 1800;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>for</span>
+			<span class='ocrx_word' id='word_1_119' title='bbox 1709 1778 1773 1801;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>one</span>
+		</span>
+		<span class='ocr_line' title="bbox 242 1842 1778 1917; baseline -0.001953 -8; x_x_height 23; x_asc_height 33">
+			<span class='ocrx_word' id='word_1_120' title='bbox 242 1876 284 1909;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>of</span>
+			<span class='ocrx_word' id='word_1_121' title='bbox 292 1876 333 1909;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>its</span>
+			<span class='ocrx_word' id='word_1_122' title='bbox 348 1875 476 1915;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>clients,</span>
+			<span class='ocrx_word' id='word_1_123' title='bbox 491 1875 603 1908;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>Wood</span>
+			<span class='ocrx_word' id='word_1_124' title='bbox 615 1885 685 1908;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>was</span>
+			<span class='ocrx_word' id='word_1_125' title='bbox 701 1874 890 1917;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>suspended</span>
+			<span class='ocrx_word' id='word_1_126' title='bbox 904 1842 955 1907;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>for</span>
+			<span class='ocrx_word' id='word_1_127' title='bbox 969 1885 1032 1907;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>one</span>
+			<span class='ocrx_word' id='word_1_128' title='bbox 1046 1874 1142 1907;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>week</span>
+			<span class='ocrx_word' id='word_1_129' title='bbox 1155 1874 1230 1914;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>and,</span>
+			<span class='ocrx_word' id='word_1_130' title='bbox 1246 1884 1281 1907;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>as</span>
+			<span class='ocrx_word' id='word_1_131' title='bbox 1296 1884 1316 1907;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>a</span>
+			<span class='ocrx_word' id='word_1_132' title='bbox 1328 1873 1440 1914;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>result,</span>
+			<span class='ocrx_word' id='word_1_133' title='bbox 1455 1873 1497 1907;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>he</span>
+			<span class='ocrx_word' id='word_1_134' title='bbox 1512 1873 1723 1916;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>complained</span>
+			<span class='ocrx_word' id='word_1_135' title='bbox 1737 1873 1778 1906;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>of</span>
+		</span>
+		<span class='ocr_line' title="bbox 242 1957 1773 2022; baseline -0.001306 -8; x_x_height 22; x_asc_height 32">
+			<span class='ocrx_word' id='word_1_136' title='bbox 242 1981 506 2015;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>discrimination</span>
+			<span class='ocrx_word' id='word_1_137' title='bbox 523 1980 588 2013;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>and</span>
+			<span class='ocrx_word' id='word_1_138' title='bbox 605 1980 772 2013;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>informed</span>
+			<span class='ocrx_word' id='word_1_139' title='bbox 788 1980 839 2013;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>his</span>
+			<span class='ocrx_word' id='word_1_140' title='bbox 857 1979 1047 2022;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>supervisor</span>
+			<span class='ocrx_word' id='word_1_141' title='bbox 1063 1985 1095 2012;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>at</span>
+			<span class='ocrx_word' id='word_1_142' title='bbox 1111 1979 1301 2012;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>Defendant</span>
+			<span class='ocrx_word' id='word_1_143' title='bbox 1317 1979 1386 2012;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>that</span>
+			<span class='ocrx_word' id='word_1_144' title='bbox 1402 1957 1444 2012;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>he</span>
+			<span class='ocrx_word' id='word_1_145' title='bbox 1461 1989 1531 2012;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>was</span>
+			<span class='ocrx_word' id='word_1_146' title='bbox 1549 1978 1652 2021;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>going</span>
+			<span class='ocrx_word' id='word_1_147' title='bbox 1668 1983 1701 2012;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>to</span>
+			<span class='ocrx_word' id='word_1_148' title='bbox 1719 1978 1773 2012;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>the</span>
+		</span>
+		<span class='ocr_line' title="bbox 242 2084 1778 2127; baseline -0.001953 -8; x_x_height 22; x_asc_height 32">
+			<span class='ocrx_word' id='word_1_149' title='bbox 242 2087 358 2119;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>EEOC</span>
+			<span class='ocrx_word' id='word_1_150' title='bbox 388 2091 422 2118;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>to</span>
+			<span class='ocrx_word' id='word_1_151' title='bbox 453 2085 623 2127;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>complain</span>
+			<span class='ocrx_word' id='word_1_152' title='bbox 653 2085 694 2118;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>of</span>
+			<span class='ocrx_word' id='word_1_153' title='bbox 719 2084 991 2117;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>discrimination.</span>
+			<span class='ocrx_word' id='word_1_154' title='bbox 1049 2084 1161 2117;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>Wood</span>
+			<span class='ocrx_word' id='word_1_155' title='bbox 1190 2084 1247 2117;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>did</span>
+			<span class='ocrx_word' id='word_1_156' title='bbox 1277 2084 1421 2126;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>actually</span>
+			<span class='ocrx_word' id='word_1_157' title='bbox 1451 2084 1510 2117;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>file</span>
+			<span class='ocrx_word' id='word_1_158' title='bbox 1540 2095 1559 2116;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>a</span>
+			<span class='ocrx_word' id='word_1_159' title='bbox 1588 2084 1707 2126;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>charge</span>
+			<span class='ocrx_word' id='word_1_160' title='bbox 1737 2084 1778 2117;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>of</span>
+		</span>
+		<span class='ocr_line' title="bbox 243 2188 1772 2223; baseline -0.001308 -1; x_x_height 22; x_asc_height 32">
+			<span class='ocrx_word' id='word_1_161' title='bbox 243 2189 515 2223;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>discrimination.</span>
+			<span class='ocrx_word' id='word_1_162' title='bbox 572 2189 763 2222;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>Defendant</span>
+			<span class='ocrx_word' id='word_1_163' title='bbox 790 2200 891 2222;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>never</span>
+			<span class='ocrx_word' id='word_1_164' title='bbox 919 2189 1062 2222;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>allowed</span>
+			<span class='ocrx_word' id='word_1_165' title='bbox 1089 2189 1201 2222;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>Wood</span>
+			<span class='ocrx_word' id='word_1_166' title='bbox 1228 2193 1262 2222;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>to</span>
+			<span class='ocrx_word' id='word_1_167' title='bbox 1291 2193 1400 2222;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>return</span>
+			<span class='ocrx_word' id='word_1_168' title='bbox 1427 2193 1462 2221;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>to</span>
+			<span class='ocrx_word' id='word_1_169' title='bbox 1490 2188 1585 2221;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>work</span>
+			<span class='ocrx_word' id='word_1_170' title='bbox 1613 2189 1695 2221;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>after</span>
+			<span class='ocrx_word' id='word_1_171' title='bbox 1721 2188 1772 2221;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>his</span>
+		</span>
+		<span class='ocr_line' title="bbox 244 2293 1774 2338; baseline -0.001307 -10; x_x_height 22; x_asc_height 33">
+			<span class='ocrx_word' id='word_1_172' title='bbox 244 2295 442 2338;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>suspension</span>
+			<span class='ocrx_word' id='word_1_173' title='bbox 459 2294 524 2327;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>and</span>
+			<span class='ocrx_word' id='word_1_174' title='bbox 541 2294 662 2327;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>denied</span>
+			<span class='ocrx_word' id='word_1_175' title='bbox 677 2294 748 2327;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>him</span>
+			<span class='ocrx_word' id='word_1_176' title='bbox 764 2294 807 2327;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>all</span>
+			<span class='ocrx_word' id='word_1_177' title='bbox 824 2294 931 2327;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>future</span>
+			<span class='ocrx_word' id='word_1_178' title='bbox 948 2294 1169 2336;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>assignments</span>
+			<span class='ocrx_word' id='word_1_179' title='bbox 1186 2304 1271 2327;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>even</span>
+			<span class='ocrx_word' id='word_1_180' title='bbox 1286 2293 1414 2336;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>though</span>
+			<span class='ocrx_word' id='word_1_181' title='bbox 1429 2293 1542 2327;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>Wood</span>
+			<span class='ocrx_word' id='word_1_182' title='bbox 1558 2293 1774 2335;x_wconf 100;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>consistently</span>
+		</span>
+		<span class='ocr_line' title="bbox 1763 2399 1771 2422; baseline 0 0; x_x_height 16; x_asc_height 23">
+			<span class='ocrx_word' id='word_1_183' title='bbox 1763 2399 1771 2422;x_wconf 0;x_font SerifDefault' lang='eng' style='font-family:SerifDefault'>1</span>
+		</span>
+	</div>
+</body>
+</html>

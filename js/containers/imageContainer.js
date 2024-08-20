@@ -300,7 +300,7 @@ export class ImageCache {
         page: n + 1, dpi, color, skipText: skipTextMode,
       }).then((res) => new ImageWrapper(n, res, color ? 'color' : 'gray'));
     }
-    throw new Error('No input mode set');
+    throw new Error('Attempted to render image without image input provided.');
   };
 
   /**

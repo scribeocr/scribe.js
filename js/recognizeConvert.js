@@ -24,7 +24,19 @@ import { replaceObjectProperties } from './utils/miscUtils.js';
  */
 export const compareOCRPage = async (pageA, pageB, options) => {
   const func = typeof process !== 'undefined' ? (await import('./worker/compareOCRModule.js')).compareOCRPageImp : gs.scheduler.compareOCRPageImp;
-  const binaryImage = await ImageCache.getBinary(pageA.n);
+
+  // Some combinations of options require the image to be provided, and some do not.
+  // We skip sending the image for those that do not, as in addition to helping performance,
+  // this is also necessary to run basic comparison scripts (e.g. benchmarking accuracy) without providing the image.
+  // TODO: Rework the options so this works better with types.
+  // At present TypeScript has no way of knowing that certain combinations of options go with each other.
+  const mode = options?.mode || 'stats';
+  const evalConflicts = options?.evalConflicts ?? true;
+  const supplementComp = options?.supplementComp ?? false;
+  const skipImage = (mode === 'stats' && !supplementComp) || (mode === 'comb' && !evalConflicts && !supplementComp);
+
+  const binaryImage = skipImage ? null : await ImageCache.getBinary(pageA.n);
+
   const pageMetricsObj = pageMetricsArr[pageA.n];
   return func({
     pageA, pageB, binaryImage, pageMetricsObj, options,
@@ -51,7 +63,7 @@ export const evalOCRPage = async (params) => {
  * Compare two sets of OCR data.
  * @param {Array<OcrPage>} ocrA
  * @param {Array<OcrPage>} ocrB
- * @param  {Parameters<import('./worker/compareOCRModule.js').compareOCRPageImp>[0]['options']} options
+ * @param  {Parameters<import('./worker/compareOCRModule.js').compareOCRPageImp>[0]['options']} [options]
  */
 export const compareOCR = async (ocrA, ocrB, options) => {
   /** @type {Parameters<typeof compareOCRPage>[2]} */

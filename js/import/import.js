@@ -465,6 +465,8 @@ export async function importFilesSupp(files, ocrName) {
 
   const ocrData = await importOCRFiles(ocrFilesAll);
 
+  const scribeMode = ocrData.scribeMode;
+
   const pageCountHOCR = ocrData.hocrRaw.length;
 
   // If both OCR data and image data are present, confirm they have the same number of pages
@@ -478,5 +480,5 @@ export async function importFilesSupp(files, ocrName) {
   if (ocrData.abbyyMode) format = 'abbyy';
   if (ocrData.stextMode) format = 'stext';
 
-  convertOCRAll(ocrData.hocrRaw, false, format, ocrName);
+  await convertOCRAll(ocrData.hocrRaw, false, format, ocrName, scribeMode);
 }

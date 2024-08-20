@@ -486,10 +486,19 @@ async function penalizeWord(wordObjs) {
 export async function compareOCRPageImp({
   pageA, pageB, binaryImage, pageMetricsObj, options = {},
 }) {
-  const binaryImageBit = binaryImage.imageBitmap || await getImageBitmap(binaryImage.src);
+  // The `binaryImage` argument is not sent for certain operations, which do not require it.
+  // For example, running a basic comparison between a page and the ground truth does not require having the image.
+  // The types do not currently reflect this, so this should be reworked at some point.
+  /** @type {?ImageBitmap} */
+  let binaryImageBit = null;
+  let imageUpscaled = false;
+  let imageRotated = false;
 
-  const imageUpscaled = binaryImage.upscaled;
-  const imageRotated = binaryImage.rotated;
+  if (binaryImage) {
+    binaryImageBit = binaryImage.imageBitmap || await getImageBitmap(binaryImage.src);
+    imageUpscaled = binaryImage.upscaled;
+    imageRotated = binaryImage.rotated;
+  }
 
   const mode = options?.mode === undefined ? 'stats' : options?.mode;
   const editConf = options?.editConf === undefined ? false : options?.editConf;

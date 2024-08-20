@@ -22,10 +22,10 @@ const escapeCSVField = (field) => {
 };
 
 /**
-     * Converts an array of objects with atomic properties (string, number, boolean) to a CSV string.
-     * @param {Array<Object>} data - The array of data objects.
-     * @returns {string} - The CSV string.
-     */
+ * Converts an array of objects with atomic properties (string, number, boolean) to a CSV string.
+ * @param {Array<Object>} data - The array of data objects.
+ * @returns {string} - The CSV string.
+ */
 export const convertToCSV = (data) => {
   if (data.length === 0) {
     return '';
