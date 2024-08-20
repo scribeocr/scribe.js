@@ -17,7 +17,7 @@ import { optimizeFont } from './optimizeFontModule.js';
 // import Tesseract from "../../tess/tesseract.esm.min.js";
 const browserMode = typeof process === 'undefined';
 
-const Tesseract = browserMode ? (await import('../../tess/tesseract.esm.min.js')).default : await import('tesseract.js/src/index.js');
+const Tesseract = browserMode ? (await import('../../tess/tesseract.esm.min.js')).default : await import('@scribe.js/tesseract.js');
 
 const defaultConfigs = {
   // TODO: Add back support for multiple PSM modes.
