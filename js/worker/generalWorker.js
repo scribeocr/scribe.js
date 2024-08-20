@@ -135,7 +135,7 @@ export const recognizeAndConvert = async ({
 
   const keepItalic = oemCurrent === 0;
 
-  const ocrBlocks = /** @type {Array<import('tesseract.js').Block>} */(res1.data.blocks);
+  const ocrBlocks = /** @type {Array<import('@scribe.js/tesseract.js').Block>} */(res1.data.blocks);
 
   const res2 = await convertPageBlocks({
     ocrBlocks, n, pageDims, rotateAngle: angle, keepItalic,
@@ -184,14 +184,14 @@ export const recognizeAndConvert2 = async ({
   let resLegacy;
   let resLSTM;
   if (options.lstm && options.legacy) {
-    const legacyBlocks = /** @type {Array<import('tesseract.js').Block>} */(res0.data.blocks);
+    const legacyBlocks = /** @type {Array<import('@scribe.js/tesseract.js').Block>} */(res0.data.blocks);
     resLegacy = await convertPageBlocks({
       ocrBlocks: legacyBlocks, n, pageDims, rotateAngle: angle, keepItalic: true, upscale: options.upscale,
     });
     (async () => {
       const res1 = await resArr[1];
 
-      const lstmBlocks = /** @type {Array<import('tesseract.js').Block>} */(res1.data.blocks);
+      const lstmBlocks = /** @type {Array<import('@scribe.js/tesseract.js').Block>} */(res1.data.blocks);
       resLSTM = await convertPageBlocks({
         ocrBlocks: lstmBlocks, n, pageDims, rotateAngle: angle, keepItalic: false, upscale: options.upscale,
       });
@@ -201,12 +201,12 @@ export const recognizeAndConvert2 = async ({
       postMessage({ data: xB, id: `${id}b` });
     })();
   } else if (!options.lstm && options.legacy) {
-    const legacyBlocks = /** @type {Array<import('tesseract.js').Block>} */(res0.data.blocks);
+    const legacyBlocks = /** @type {Array<import('@scribe.js/tesseract.js').Block>} */(res0.data.blocks);
     resLegacy = await convertPageBlocks({
       ocrBlocks: legacyBlocks, n, pageDims, rotateAngle: angle, keepItalic: true, upscale: options.upscale,
     });
   } else if (options.lstm && !options.legacy) {
-    const lstmBlocks = /** @type {Array<import('tesseract.js').Block>} */(res0.data.blocks);
+    const lstmBlocks = /** @type {Array<import('@scribe.js/tesseract.js').Block>} */(res0.data.blocks);
     resLSTM = await convertPageBlocks({
       ocrBlocks: lstmBlocks, n, pageDims, rotateAngle: angle, keepItalic: false, upscale: options.upscale,
     });

@@ -9,7 +9,7 @@ import { getTextScript } from '../utils/miscUtils.js';
 
 /**
  * @param {Object} params
- * @param {Array<import('tesseract.js').Block>} params.ocrBlocks
+ * @param {Array<import('@scribe.js/tesseract.js').Block>} params.ocrBlocks
  * @param {number} params.n
  * @param {dims} params.pageDims
  * @param {number} params.rotateAngle - The angle that the input image is rotated prior to recognition.

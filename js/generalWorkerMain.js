@@ -198,7 +198,7 @@ export class gs {
       workerN = Math.min(Math.round((globalThis.navigator.hardwareConcurrency || 8) / 2), 6);
     }
 
-    const Tesseract = typeof process === 'undefined' ? (await import('../tess/tesseract.esm.min.js')).default : await import('tesseract.js');
+    const Tesseract = typeof process === 'undefined' ? (await import('../tess/tesseract.esm.min.js')).default : await import('@scribe.js/tesseract.js');
 
     gs.schedulerInner = await Tesseract.createScheduler();
     gs.schedulerInner.workers = new Array(workerN);
