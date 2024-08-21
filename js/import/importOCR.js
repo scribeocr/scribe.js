@@ -18,13 +18,11 @@ export async function importOCRFiles(ocrFilesAll) {
   // In the case of 1 HOCR file
   const singleHOCRMode = ocrFilesAll.length === 1;
 
-  let hocrStrStart = '';
-  let hocrStrEnd = '';
+  let hocrStrStart = null;
   let abbyyMode = false;
   let stextMode = false;
   let scribeMode = false;
 
-  let hocrArrPages;
   let pageCountHOCR;
   let hocrRaw;
   /** @type  {?Object.<string, FontMetricsFamily>} */
@@ -47,20 +45,16 @@ export async function importOCRFiles(ocrFilesAll) {
     stextMode = !!node2 && !!/<document name/.test(node2);
 
     if (abbyyMode) {
-      hocrArrPages = hocrStrAll.split(/(?=<page)/).slice(1);
+      hocrRaw = hocrStrAll.split(/(?=<page)/).slice(1);
     } else if (stextMode) {
-      hocrArrPages = hocrStrAll.split(/(?=<page)/).slice(1);
+      hocrRaw = hocrStrAll.split(/(?=<page)/).slice(1);
     } else {
-      hocrStrStart = hocrStrAll.match(/[\s\S]*?<body>/)[0];
-      hocrStrEnd = hocrStrAll.match(/<\/body>[\s\S]*$/)[0];
-      hocrArrPages = splitHOCRStr(hocrStrAll);
+      // `hocrStrStart` will be missing for individual HOCR pages created with Tesseract.js or the Tesseract API.
+      hocrStrStart = hocrStrAll.match(/[\s\S]*?<body>/)?.[0];
+      hocrRaw = splitHOCRStr(hocrStrAll);
     }
 
-    pageCountHOCR = hocrArrPages.length;
-    hocrRaw = Array(pageCountHOCR);
-    for (let i = 0; i < pageCountHOCR; i++) {
-      hocrRaw[i] = hocrStrStart + hocrArrPages[i] + hocrStrEnd;
-    }
+    pageCountHOCR = hocrRaw.length;
   } else {
     pageCountHOCR = ocrFilesAll.length;
     hocrRaw = Array(pageCountHOCR);
@@ -76,11 +70,11 @@ export async function importOCRFiles(ocrFilesAll) {
     }
   }
 
-  if (!abbyyMode && !stextMode && hocrRaw[0]) {
+  if (!abbyyMode && !stextMode && hocrStrStart) {
     const getMeta = (name) => {
       const regex = new RegExp(`<meta name=["']${name}["'][^<]+`, 'i');
 
-      const nodeStr = hocrRaw[0].match(regex)?.[0];
+      const nodeStr = hocrStrStart.match(regex)?.[0];
       if (!nodeStr) return null;
       const contentStr = nodeStr.match(/content=["']([\s\S]+?)(?=["']\s{0,5}\/?>)/i)?.[1];
       if (!contentStr) return null;
