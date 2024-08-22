@@ -191,6 +191,8 @@ export function sortInputFiles(files) {
  * @param {Object} [options]
  * @param {boolean} [options.extractPDFTextNative=false] - Extract text from text-native PDF documents.
  * @param {boolean} [options.extractPDFTextOCR=false] - Extract text from image-native PDF documents with existing OCR text layers.
+ * @param {boolean} [options.extractPDFTextImage=false] - Extract text from image-native PDF documents with no existing OCR layer.
+ *   This option exists because documents may still contain some text even if they are determined to be image-native (for example, scanned documents with a text-native header).
  * @returns
  */
 export async function importFiles(files, options = {}) {
@@ -199,6 +201,7 @@ export async function importFiles(files, options = {}) {
 
   const extractPDFTextNative = options?.extractPDFTextNative ?? false;
   const extractPDFTextOCR = options?.extractPDFTextOCR ?? false;
+  const extractPDFTextImage = options?.extractPDFTextImage ?? false;
 
   /** @type {Array<File|FileNode|ArrayBuffer>} */
   let pdfFiles = [];
@@ -440,7 +443,7 @@ export async function importFiles(files, options = {}) {
       }
     });
   } else if (extractPDFTextNative || extractPDFTextOCR) {
-    await extractInternalPDFText({ setActive: true, extractPDFTextNative, extractPDFTextOCR });
+    await extractInternalPDFText({ setActive: true, extractPDFTextNative, extractPDFTextOCR, extractPDFTextImage });
   }
 }
 
