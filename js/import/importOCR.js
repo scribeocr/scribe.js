@@ -1,6 +1,25 @@
 // import { updateDataProgress } from "../main.js";
 import { readOcrFile } from '../utils/miscUtils.js';
 
+/**
+ * Parses string containing layout data tables JSON and deserializes it.
+ * A special function is needed to add back circular references that are removed during serialization.
+ * @param {string} str 
+ * @returns {Array<import('../objects/layoutObjects.js').LayoutDataTablePage>}
+ */
+const deserializeLayoutDataTables = (str) => {
+  const pages = JSON.parse(str);
+  pages.forEach((page) => {
+    page.tables.forEach((table) => {
+      table.boxes.forEach((box) => {
+        box.table = table;
+      });
+    });
+  });
+  return pages;
+}
+
+
 export const splitHOCRStr = (hocrStrAll) => hocrStrAll.replace(/[\s\S]*?<body>/, '')
   .replace(/<\/body>[\s\S]*$/, '')
   .replace(/<\/body>[\s\S]*$/, '')
@@ -102,7 +121,7 @@ export async function importOCRFiles(ocrFilesAll) {
       if (layoutStr) layoutObj = /** @type{Array<import('../objects/layoutObjects.js').LayoutPage>} */ (JSON.parse(layoutStr));
 
       const layoutDataTableStr = getMeta('layout-data-table');
-      if (layoutDataTableStr) layoutDataTableObj = /** @type{Array<import('../objects/layoutObjects.js').LayoutDataTablePage>} */ (JSON.parse(layoutDataTableStr));
+      if (layoutDataTableStr) layoutDataTableObj = deserializeLayoutDataTables(layoutDataTableStr);
 
       const enableOptStr = getMeta('enable-opt');
       if (enableOptStr) enableOpt = enableOptStr;

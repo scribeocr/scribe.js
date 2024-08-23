@@ -46,11 +46,10 @@ const standardizeOCRPages = (ocrArr) => {
 
 describe('Check .hocr export function.', function () {
   this.timeout(10000);
-  before(async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/scribe_test_pdf1_abbyy.xml`]);
-  });
 
   it('Exporting to .hocr and reimporting should restore OCR data without modification', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/scribe_test_pdf1_abbyy.xml`]);
+
     const ocrAllComp1 = standardizeOCRPages(scribe.data.ocr.active);
 
     const hocrOutStrArr = splitHOCRStr(renderHOCR(scribe.data.ocr.active));
@@ -63,6 +62,28 @@ describe('Check .hocr export function.', function () {
 
     assert.deepStrictEqual(ocrAllComp1, ocrAllComp2);
   }).timeout(10000);
+
+
+  it('Exporting to .hocr and reimporting should restore layout tables without modification', async () => {
+
+    // This file should contain data tables when parsed.
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/bill.abbyy.xml`]);
+    assert.isAbove(scribe.data.layoutDataTables.pages[0].tables.length, 0);
+
+    const layoutTables1 = structuredClone(scribe.data.layoutDataTables.pages);
+
+    const hocrOutStr = renderHOCR(scribe.data.ocr.active);
+    const encoder = new TextEncoder();
+    const encoded = encoder.encode(hocrOutStr);
+  
+    await scribe.terminate();
+    await scribe.importFiles({ocrFiles: [encoded.buffer]});
+
+    const layoutTables2 = structuredClone(scribe.data.layoutDataTables.pages);
+
+    assert.deepStrictEqual(layoutTables1, layoutTables2);
+  }).timeout(10000);
+
 
   after(async () => {
     await scribe.terminate();
