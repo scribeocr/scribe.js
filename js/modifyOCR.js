@@ -36,7 +36,6 @@ export function calcBoxOverlap(boxA, boxB) {
  */
 export function combineOCRPage(pageA, pageB, pageMetricsObj, replaceFontSize = false, editWordIds = true) {
   const linesNew = pageA.lines;
-  const { lines } = pageB;
 
   for (let i = 0; i < linesNew.length; i++) {
     const lineNew = linesNew[i];
@@ -61,8 +60,8 @@ export function combineOCRPage(pageA, pageB, pageMetricsObj, replaceFontSize = f
     let afterClosest = true;
     let yDistMin = 1e6;
 
-    for (lineI = 0; lineI < lines.length; lineI++) {
-      const line = lines[lineI];
+    for (lineI = 0; lineI < pageB.lines.length; lineI++) {
+      const line = pageB.lines[lineI];
 
       if (line.words.length === 0) continue;
 
@@ -179,13 +178,13 @@ export function combineOCRPage(pageA, pageB, pageMetricsObj, replaceFontSize = f
         // If this is the first/last line on the page, assume the textbox height is the "A" height.
         // This is done because when a first/last line is added manually, it is often page numbers,
         // and is often not the same font size as other lines.
-        if (lineI === 0 || lineI + 1 === lines.length) {
+        if (lineI === 0 || lineI + 1 === pageB.lines.length) {
           lineNew.ascHeight = lineNew.bbox.bottom - lineNew.bbox.top;
           lineNew.xHeight = null;
 
           // If the new line is between two existing lines, use metrics from nearby line to determine text size
         } else {
-          const closestLine = lines[closestI];
+          const closestLine = pageB.lines[closestI];
           lineNew.ascHeight = closestLine.ascHeight;
           lineNew.xHeight = closestLine.xHeight;
 
@@ -201,9 +200,9 @@ export function combineOCRPage(pageA, pageB, pageMetricsObj, replaceFontSize = f
       lineNew.page = pageB;
 
       if (afterClosest) {
-        lines.splice(lineI + 1, 0, lineNew);
+        pageB.lines.splice(lineI + 1, 0, lineNew);
       } else {
-        lines.splice(lineI, 0, lineNew);
+        pageB.lines.splice(lineI, 0, lineNew);
       }
     }
   }

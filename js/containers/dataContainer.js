@@ -13,11 +13,27 @@ export class layoutRegions {
 }
 
 export class layoutDataTables {
-/** @type {Array<LayoutDataTablePage>} */
+  /** @type {Array<LayoutDataTablePage>} */
   static pages = [];
 
   /** @type {Array<LayoutDataTable>} */
   static defaultTables = [];
+
+  /**
+   * Serialize the layout data tables as JSON.
+   * A special function is needed to remove circular references.
+   */
+  static serialize() {
+    const pages = structuredClone(this.pages);
+    pages.forEach((page) => {
+      page.tables.forEach((table) => {
+        table.boxes.forEach((box) => {
+          delete box.table;
+        });
+      });
+    });
+    return JSON.stringify(pages);
+  }
 }
 
 /** @type {Object<string, Array<import('../objects/ocrObjects.js').OcrPage>>} */

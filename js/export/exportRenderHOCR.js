@@ -23,7 +23,7 @@ export function renderHOCR(ocrData, minValue, maxValue) {
     'serif-font': fontAll.serifDefaultName,
     'enable-opt': opt.enableOpt,
     layout: layoutRegions.pages,
-    'layout-data-table': layoutDataTables.pages,
+    'layout-data-table': layoutDataTables.serialize(),
   };
 
   let hocrOut = String.raw`<?xml version="1.0" encoding="UTF-8"?>
