@@ -80,7 +80,7 @@ export const compareOCR = async (ocrA, ocrB, options) => {
   const ocrArr = [];
   /** @type {Array<?EvalMetrics>} */
   const metricsArr = [];
-  /** @type {Array<?CompDebugBrowser | CompDebugNode>} */
+  /** @type {Array<Array<CompDebugBrowser | CompDebugNode>>} */
   const debugImageArr = [];
 
   // Render binarized versions of images
@@ -93,7 +93,7 @@ export const compareOCR = async (ocrA, ocrB, options) => {
 
     metricsArr[i] = res.metrics;
 
-    debugImageArr[i] = res.debug;
+    if (res.debugImg) debugImageArr[i] = res.debugImg;
   };
 
   // This function is run in the main thread in Node.js, with no mechanism for queuing jobs.
