@@ -122,13 +122,11 @@ export function combineOCRPage(pageA, pageB, pageMetricsObj, replaceFontSize = f
     // (possibly on the other side of the page) just because vertical overlap exists.
     if (match && matchXOverlap === 0 && matchXDist > 2 * yDistMin && pageB.dims.width * 0.05 < matchXDist) match = undefined;
 
-    const wordsNew = lineNew.words;
-
     if (match) {
       const { words } = match;
 
-      for (let j = 0; j < wordsNew.length; j++) {
-        const wordNew = wordsNew[j];
+      for (let j = 0; j < lineNew.words.length; j++) {
+        const wordNew = lineNew.words[j];
         wordNew.line = match;
         const wordBoxNew = wordNew.bbox;
 
@@ -167,8 +165,8 @@ export function combineOCRPage(pageA, pageB, pageMetricsObj, replaceFontSize = f
       // Recalculate bounding box for line
       ocr.updateLineBbox(match);
     } else {
-      for (let j = 0; j < wordsNew.length; j++) {
-        const wordNew = wordsNew[j];
+      for (let j = 0; j < lineNew.words.length; j++) {
+        const wordNew = lineNew.words[j];
 
         // Replace id (which is likely duplicative) with unique id
         if (editWordIds) wordNew.id += getRandomAlphanum(3);
