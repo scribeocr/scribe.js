@@ -10,6 +10,20 @@ export class layoutRegions {
 
   /** @type {Object<string, LayoutRegion>} */
   static defaultRegions = {};
+
+  /**
+   * 
+   * @param {LayoutRegion} region - Region to delete.
+   * @param {number} n - Page number.
+   */
+  static deleteLayoutRegion(region, n) {
+    for (const [key, value] of Object.entries(this.pages[n].boxes)) {
+      if (value.id === region.id) {
+        delete this.pages[n].boxes[key];
+        break;
+      }
+    }
+  }
 }
 
 export class layoutDataTables {
@@ -33,6 +47,18 @@ export class layoutDataTables {
       });
     });
     return JSON.stringify(pages);
+  }
+
+  /**
+   * 
+   * @param {LayoutDataTable} table - Table to delete.
+   * @param {number} n - Page number.
+   */
+  static deleteLayoutDataTable(table, n) {
+    const idx = this.pages[n].tables.findIndex((t) => t.id === table.id);
+    if (idx >= 0) {
+      this.pages[n].tables.splice(idx, 1);
+    }
   }
 }
 
