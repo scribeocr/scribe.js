@@ -2,7 +2,7 @@
 /* eslint-disable no-await-in-loop */
 
 import ocr from '../objects/ocrObjects.js';
-import { calcLineFontSize } from '../utils/fontUtils.js';
+import { calcLineFontSize, calcWordFontSize } from '../utils/fontUtils.js';
 import { getImageBitmap } from '../utils/imageUtils.js';
 import { getRandomAlphanum } from '../utils/miscUtils.js';
 import { drawWordActual, drawWordRender } from './renderWordCanvas.js';
@@ -195,22 +195,10 @@ export async function evalWords({
   if (!calcCtx) throw new Error('Canvases must be defined before running this function.');
 
   const view = options?.view === undefined ? false : options?.view;
-  const useAFontSize = options?.useAFontSize === undefined ? true : options?.useAFontSize;
   const useABaseline = options?.useABaseline === undefined ? true : options?.useABaseline;
 
   const cosAngle = Math.cos(angle * -1 * (Math.PI / 180)) || 1;
   const sinAngle = Math.sin(angle * -1 * (Math.PI / 180)) || 0;
-
-  const lineFontSizeA = calcLineFontSize(wordsA[0].line);
-
-  // If font size cannot be accurately calculated, do not bother comparing.
-  if (!lineFontSizeA) return { metricA: 1, metricB: 1 };
-
-  let lineFontSizeB = lineFontSizeA;
-  if (!useAFontSize && wordsB?.[0]) {
-    const lineFontSizeBCalc = calcLineFontSize(wordsB[0].line);
-    lineFontSizeB = lineFontSizeBCalc || lineFontSizeA;
-  }
 
   // All words are assumed to be on the same line
   const linebox = wordsA[0].line.bbox;
@@ -435,7 +423,6 @@ async function penalizeWord(wordObjs) {
     const word = wordObjs[0];
     const wordTextArr = wordStr.split('');
     const wordFontSize = calcLineFontSize(word.line);
-    if (!wordFontSize) return penalty;
 
     const fontI = fontAll.getWordFont(word);
     const fontOpentypeI = fontI.opentype;
@@ -561,6 +548,9 @@ export async function compareOCRPageImp({
   for (let i = 0; i < pageAInt.lines.length; i++) {
     const lineA = pageAInt.lines[i];
     const lineBoxA = lineA.bbox;
+
+    let lineWordsEditedNew = 0;
+    let lineBReplace = null;
 
     for (let j = 0; j < pageB.lines.length; j++) {
       const lineB = pageB.lines[j];
@@ -730,6 +720,11 @@ export async function compareOCRPageImp({
                   const wordAClone = ocr.cloneWord(wordA);
                   wordAClone.text = wordB.text;
 
+                  if (wordB.smallCaps && !wordA.smallCaps) {
+                    wordAClone.smallCaps = true;
+                    wordAClone.size = calcWordFontSize(wordB);
+                  }
+
                   const evalRes = await evalWords({
                     wordsA: [wordA], wordsB: [wordAClone], binaryImage: binaryImageBit, angle: imgAngle, imgDims, options: { view: Boolean(debugLabel) },
                   });
@@ -789,6 +784,9 @@ export async function compareOCRPageImp({
 
                   if (!skip) {
                     if (oneToOne) {
+                      lineWordsEditedNew += 1;
+                      lineBReplace = lineB;
+
                       wordA.text = wordB.text;
 
                       // Erase character-level data rather than replacing it, as the LSTM data is not expected to be accurate.
@@ -797,13 +795,12 @@ export async function compareOCRPageImp({
 
                       // Switch to small caps/non-small caps based on style of replacement word.
                       // This is not relevant for italics as the LSTM engine does not detect italics.
-                      if (wordB.smallCaps && wordA.smallCaps) {
-                        wordA.smallCaps = true;
-                      } else if (wordB.smallCaps && wordA.smallCaps) {
-                        wordA.smallCaps = false;
-                      }
+                      if (wordB.smallCaps) wordA.smallCaps = true;
                     } else {
                       const wordsBArrRep = wordsBArr.map((x) => ocr.cloneWord(x));
+
+                      lineWordsEditedNew += wordsBArrRep.length;
+                      lineBReplace = lineB;
 
                       wordsBArrRep.forEach((x) => {
                         // Use style from word A (assumed to be Tesseract Legacy)
@@ -841,6 +838,12 @@ export async function compareOCRPageImp({
           }
         }
       }
+    }
+
+    // If a majority of words in line A are replaced, replace the ascender height and x-height with those from line B.
+    if (lineBReplace && lineWordsEditedNew > lineA.words.length * 0.5) {
+      lineA.ascHeight = lineBReplace.ascHeight;
+      lineA.xHeight = lineBReplace.xHeight;
     }
   }
 

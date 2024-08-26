@@ -1,18 +1,19 @@
 import ocr from '../objects/ocrObjects.js';
 
 import {
+  ascCharArr,
   calcBboxUnion,
   determineSansSerif,
   mean50,
   quantile,
   round6, unescapeXml,
+  xCharArr,
 } from '../utils/miscUtils.js';
 
 import {
   LayoutDataColumn, LayoutDataTable, LayoutDataTablePage,
 } from '../objects/layoutObjects.js';
-
-import { ascCharArr, pass3, xCharArr } from './convertPageShared.js';
+import { pass3 } from './convertPageShared.js';
 
 const abbyyDropCapRegex = /<par dropCapCharsCount=['"](\d*)/i;
 const abbyyLineBoxRegex = /<line baseline=['"](\d*)['"] l=['"](\d*)['"] t=['"](\d*)['"] r=['"](\d*)['"] b=['"](\d*)['"]>/i;
