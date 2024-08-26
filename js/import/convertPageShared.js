@@ -1,13 +1,10 @@
 import ocr from '../objects/ocrObjects.js';
 import {
+  ascCharArr,
   mean50,
   quantile,
+  xCharArr,
 } from '../utils/miscUtils.js';
-
-// Includes all capital letters except for "J" and "Q"
-export const ascCharArr = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'K', 'L', 'M', 'N', 'O', 'P', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
-  'b', 'd', 'h', 'k', 'l', 't', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
-export const xCharArr = ['a', 'c', 'e', 'm', 'n', 'o', 'r', 's', 'u', 'v', 'w', 'x', 'z'];
 
 /**
  * Pass 2 iterates over all words/letters in the OCR object, and corrects style and rotation.
@@ -36,13 +33,17 @@ export function pass2(pageObj, rotateAngle) {
   // Flag words that are small caps, incorrectly identified as capital letters in a normal style.
   // Unlike Abbyy, which generally identifies small caps as lowercase letters (and identifies small cap text explicitly as a formatting property),
   // Tesseract (at least the Legacy model) reports them as upper-case letters.
-  for (const lineObj of pageObj.lines) {
+  for (let i = 0; i < pageObj.lines.length; i++) {
+    const lineObj = pageObj.lines[i];
+    let firstWord = false;
     const smallCapsWordArr = [];
     const titleCaseArr = [];
-    for (const wordObj of lineObj.words) {
+    for (let j = 0; j < lineObj.words.length; j++) {
+      const wordObj = lineObj.words[j];
       // Skip words that are already identified as small caps, however they can be used to validate other words.
       if (wordObj.smallCaps) {
         smallCapsWordArr.push(wordObj);
+        firstWord = true;
         continue;
       }
 
@@ -63,6 +64,7 @@ export function pass2(pageObj, rotateAngle) {
           // If the other letters are all around the same size, then the word is small caps.
           if ((otherLetterHeightMax / otherLetterHeightMin) < 1.15) {
             smallCapsWordArr.push(wordObj);
+            if (j === 0) firstWord = true;
             titleCaseArr[smallCapsWordArr.length - 1] = true;
           }
         } else {
@@ -74,13 +76,15 @@ export function pass2(pageObj, rotateAngle) {
 
           if ((allLetterHeightMax / allLetterHeightMin) < 1.15) {
             smallCapsWordArr.push(wordObj);
+            if (j === 0) firstWord = true;
             titleCaseArr[smallCapsWordArr.length - 1] = false;
           }
         }
       }
     }
 
-    if (smallCapsWordArr.length >= 2) {
+    // To avoid false positives, single words in the middle of a line cannot be small caps.
+    if (firstWord || smallCapsWordArr.length >= 2) {
       const titleCaseTotal = titleCaseArr.reduce((x, y) => Number(x) + Number(y), 0);
 
       for (let k = 0; k < smallCapsWordArr.length; k++) {
