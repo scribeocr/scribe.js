@@ -1,6 +1,4 @@
 /* eslint-disable no-bitwise */
-
-const browserMode = typeof process === 'undefined';
 /**
  * Handles various image formats, always returns a ImageBitmap.
  *
@@ -13,7 +11,7 @@ export async function getImageBitmap(img) {
   if (img === null) throw new Error('Input is null');
 
   if (typeof img === 'string') {
-    if (browserMode) {
+    if (typeof process === 'undefined') {
       const imgBlob = imageStrToBlob(img);
       const imgBit = await createImageBitmap(imgBlob);
       return imgBit;
@@ -26,7 +24,7 @@ export async function getImageBitmap(img) {
   // In Node.js the input is assumed to be already compatible with the `canvas.drawImage` method.
   // Additionally, `ImageBitmap` does not exist within the Node canvas package.
   // Second condition exists for type detection purposes.
-  if (!browserMode && (typeof img !== 'string') && (typeof img !== 'number')) return img;
+  if (!(typeof process === 'undefined') && (typeof img !== 'string') && (typeof img !== 'number')) return img;
 
   return img;
 }

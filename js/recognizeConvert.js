@@ -266,12 +266,10 @@ export function checkCharWarn(warnArr) {
   const charWarnCt = warnArr.filter((x) => x?.char === 'char_warning').length;
   const charGoodCt = warnArr.length - charErrorCt - charWarnCt;
 
-  const browserMode = typeof process === 'undefined';
-
   // The UI warning/error messages cannot be thrown within this function,
   // as that would make this file break when imported into contexts that do not have the main UI.
   if (charGoodCt === 0 && charErrorCt > 0) {
-    if (browserMode) {
+    if (typeof process === 'undefined') {
       const errorHTML = `No character-level OCR data detected. Abbyy XML is only supported with character-level data. 
         <a href="https://docs.scribeocr.com/faq.html#is-character-level-ocr-data-required--why" target="_blank" class="alert-link">Learn more.</a>`;
       opt.errorHandler(errorHTML);
@@ -281,7 +279,7 @@ export function checkCharWarn(warnArr) {
       opt.errorHandler(errorText);
     }
   } if (charGoodCt === 0 && charWarnCt > 0) {
-    if (browserMode) {
+    if (typeof process === 'undefined') {
       const warningHTML = `No character-level OCR data detected. Font optimization features will be disabled. 
         <a href="https://docs.scribeocr.com/faq.html#is-character-level-ocr-data-required--why" target="_blank" class="alert-link">Learn more.</a>`;
       opt.warningHandler(warningHTML);

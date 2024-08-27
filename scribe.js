@@ -11,9 +11,10 @@ import { ImageCache } from './js/containers/imageContainer.js';
 import coords from './js/coordinates.js';
 import { drawDebugImages } from './js/debug.js';
 import { download, exportData } from './js/export/export.js';
-import { writeDebugCsv, convertToCSV } from './js/export/exportDebugCsv.js';
+import { convertToCSV, writeDebugCsv } from './js/export/exportDebugCsv.js';
 import { extractSingleTableContent } from './js/export/exportWriteTabular.js';
-import { loadBuiltInFontsRaw, enableFontOpt } from './js/fontContainerMain.js';
+import { extractInternalPDFText } from './js/extractPDFText.js';
+import { enableFontOpt, loadBuiltInFontsRaw } from './js/fontContainerMain.js';
 import { gs } from './js/generalWorkerMain.js';
 import { importFiles, importFilesSupp } from './js/import/import.js';
 import { calcBoxOverlap, combineOCRPage } from './js/modifyOCR.js';
@@ -30,7 +31,6 @@ import { imageStrToBlob } from './js/utils/imageUtils.js';
 import { countSubstringOccurrences, getRandomAlphanum, replaceSmartQuotes } from './js/utils/miscUtils.js';
 import { calcConf, mergeOcrWords, splitOcrWord } from './js/utils/ocrUtils.js';
 import { assignParagraphs } from './js/utils/reflowPars.js';
-import { extractInternalPDFText } from './js/extractPDFText.js';
 
 /**
  * Initialize the program and optionally pre-load resources.
@@ -83,7 +83,8 @@ const extractText = async (files, langs = ['eng'], outputFormat = 'txt', options
   const skipRecPDFTextOCR = options?.skipRecPDFTextOCR ?? false;
   init({ ocr: true, font: true });
   await importFiles(files, { extractPDFTextNative: skipRecPDFTextNative, extractPDFTextOCR: skipRecPDFTextOCR });
-  if (!(ImageCache.pdfType === 'text' && skipRecPDFTextNative || ImageCache.pdfType === 'ocr' && skipRecPDFTextOCR)) await recognize({ langs });
+  const skipRecPDF = inputData.pdfMode && (ImageCache.pdfType === 'text' && skipRecPDFTextNative || ImageCache.pdfType === 'ocr' && skipRecPDFTextOCR);
+  if (!skipRecPDF) await recognize({ langs });
   return exportData(outputFormat);
 };
 

@@ -10,8 +10,6 @@ import { drawWordActual, drawWordRender } from './renderWordCanvas.js';
 import { fontAll } from '../containers/fontContainer.js';
 // import { CompDebug } from '../objects/imageObjects.js';
 
-const browserMode = typeof process === 'undefined';
-
 /** @type {OffscreenCanvasRenderingContext2D} */
 let calcCtx;
 /** @type {OffscreenCanvasRenderingContext2D} */
@@ -22,7 +20,7 @@ let viewCtx1;
 let viewCtx2;
 
 // Browser case
-if (browserMode) {
+if (typeof process === 'undefined') {
   // For whatever reason, this can fail silently in some browsers that do not support OffscreenCanvas, where the worker simply stops running.
   // Therefore, an explicit error message is added here to make the issue evident. Features will still fail, so this is not a fix.
   try {
@@ -327,7 +325,7 @@ export async function evalWords({
   /** @type {?CompDebugBrowser|CompDebugNode} */
   let debugImg = null;
   if (view) {
-    if (browserMode) {
+    if (typeof process === 'undefined') {
       const imageRaw = await viewCtx0.canvas.convertToBlob();
       const imageA = await viewCtx1.canvas.convertToBlob();
       const imageB = await viewCtx2.canvas.convertToBlob();
@@ -979,7 +977,7 @@ export async function checkWords(wordsA, binaryImage, imageRotated, pageMetricsO
     tessedit_pageseg_mode: '6', // "Single block"
   };
 
-  const inputImage = browserMode ? await calcCtx.canvas.convertToBlob() : await calcCtx.canvas.toBuffer('image/png');
+  const inputImage = typeof process === 'undefined' ? await calcCtx.canvas.convertToBlob() : await calcCtx.canvas.toBuffer('image/png');
 
   let res;
   if (options.tessScheduler) {
