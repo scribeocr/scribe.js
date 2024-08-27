@@ -14,16 +14,19 @@ import { gs } from './generalWorkerMain.js';
  * @param {string} fileName
  */
 async function fontPathToArrayBuffer(fileName) {
-  const browserMode = typeof process === 'undefined';
   const absPath = getFontAbsPath(fileName);
 
-  if (browserMode) {
+  if (typeof process === 'undefined') {
     const res = await fetch(absPath);
     return res.arrayBuffer();
+  // Important: Do not remove `else` statement.
+  // Some build tools (Webpack) need it to avoid trying to `node:fs` in the browser.
+  // eslint-disable-next-line no-else-return
+  } else {
+    const { readFileSync } = await import('node:fs');
+    const res = readFileSync(absPath);
+    return res.buffer;
   }
-  const { readFileSync } = await import('node:fs');
-  const res = readFileSync(absPath);
-  return res.buffer;
 }
 
 async function fontPathToArrayBufferAll(fileNameObj) {
@@ -117,7 +120,6 @@ export async function loadChiSimFont() {
  *    This should be used when switching from unvalidated to validated optimized fonts.
  */
 export async function enableFontOpt(enable, useInitial = false, forceWorkerUpdate = false) {
-
   // Enable/disable optimized font
   if (enable && useInitial && fontAll.optInitial) {
     fontAll.active = fontAll.optInitial;

@@ -15,9 +15,8 @@ import {
 import { optimizeFont } from './optimizeFontModule.js';
 
 // import Tesseract from "../../tess/tesseract.esm.min.js";
-const browserMode = typeof process === 'undefined';
 
-const Tesseract = browserMode ? (await import('../../tess/tesseract.esm.min.js')).default : await import('@scribe.js/tesseract.js');
+const Tesseract = typeof process === 'undefined' ? (await import('../../tess/tesseract.esm.min.js')).default : await import('@scribe.js/tesseract.js');
 
 const defaultConfigs = {
   // TODO: Add back support for multiple PSM modes.
@@ -64,7 +63,7 @@ const corePath = vanillaMode_ ? '../tess/core_vanilla/' : '../tess/core/';
 
 // Custom build is currently only used for browser version, while the Node.js version uses the published npm package.
 // If recognition capabilities are ever added for the Node.js version, then we should use the same build for consistency. .
-const tessConfig = browserMode ? {
+const tessConfig = typeof process === 'undefined' ? {
   corePath,
   workerPath: '../../tess/worker.min.js',
   // langPath: '/tess/tessdata_dist',

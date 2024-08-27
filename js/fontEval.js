@@ -2,7 +2,9 @@ import { DebugData, fontMetricsObj, pageMetricsArr } from './containers/dataCont
 import { fontAll } from './containers/fontContainer.js';
 import { ImageCache } from './containers/imageContainer.js';
 import {
-  enableFontOpt, optimizeFontContainerAll, setDefaultFontAuto, loadBuiltInFontsRaw,
+  enableFontOpt,
+  loadBuiltInFontsRaw,
+  optimizeFontContainerAll, setDefaultFontAuto,
 } from './fontContainerMain.js';
 import { gs } from './generalWorkerMain.js';
 
@@ -15,8 +17,6 @@ import { gs } from './generalWorkerMain.js';
 export async function evalPageFonts(font, pageArr, n = 500) {
   if (!gs.scheduler) throw new Error('GeneralScheduler must be defined before this function can run.');
 
-  const browserMode = typeof process === 'undefined';
-
   let metricTotal = 0;
   let wordsTotal = 0;
 
@@ -28,7 +28,7 @@ export async function evalPageFonts(font, pageArr, n = 500) {
     // The Node.js canvas package does not currently support worke threads
     // https://github.com/Automattic/node-canvas/issues/1394
     let res;
-    if (!browserMode) {
+    if (!(typeof process === 'undefined')) {
       const { evalPageFont } = await import('./worker/compareOCRModule.js');
 
       res = await evalPageFont({
@@ -162,8 +162,6 @@ export async function evaluateFonts(pageArr) {
  * and (2) no images are provided to compare against.
  */
 export async function runFontOptimization(ocrArr) {
-  const browserMode = typeof process === 'undefined';
-
   await loadBuiltInFontsRaw();
 
   const fontRaw = fontAll.getContainer('raw');
@@ -195,7 +193,7 @@ export async function runFontOptimization(ocrArr) {
     await enableFontOpt(false);
 
     // This step needs to happen here as all fonts must be registered before initializing the canvas.
-    if (!browserMode) {
+    if (!(typeof process === 'undefined')) {
       const { initCanvasNode } = await import('./worker/compareOCRModule.js');
       await initCanvasNode();
     }
