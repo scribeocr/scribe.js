@@ -442,8 +442,10 @@ export async function importFiles(files, options = {}) {
         opt.enableOpt = await runFontOptimization(ocrAll.active);
       }
     });
-  } else if (extractPDFTextNative || extractPDFTextOCR) {
-    await extractInternalPDFText({ setActive: true, extractPDFTextNative, extractPDFTextOCR, extractPDFTextImage });
+  } else if (inputData.pdfMode && (extractPDFTextNative || extractPDFTextOCR)) {
+    await extractInternalPDFText({
+      setActive: true, extractPDFTextNative, extractPDFTextOCR, extractPDFTextImage,
+    });
   }
 }
 
