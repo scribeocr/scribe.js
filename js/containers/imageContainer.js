@@ -7,7 +7,7 @@ import { initMuPDFWorker } from '../../mupdf/mupdf-async.js';
 import { getImageBitmap, getJpegDimensions, getPngDimensions } from '../utils/imageUtils.js';
 
 import { setUploadFontsWorker } from '../fontContainerMain.js';
-import { ocrAllRaw, pageMetricsArr } from './dataContainer.js';
+import { pageMetricsArr } from './dataContainer.js';
 import {
   FontContainerFont,
   fontAll,

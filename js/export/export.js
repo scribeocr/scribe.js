@@ -172,11 +172,14 @@ export async function exportData(format = 'txt', minValue = 0, maxValue = -1) {
     content = renderHOCR(ocrAll.active, minValue, maxValue);
   } if (format === 'txt') {
     content = renderText(ocrDownload, minValue, maxValue, opt.reflow, false);
-  } if (format === 'docx') {
+  // Defining `DISABLE_DOCX_XLSX` disables docx/xlsx exports when using build tools.
+  // @ts-ignore
+  } if (typeof DISABLE_DOCX_XLSX === 'undefined' && format === 'docx') {
     // Less common export formats are loaded dynamically to reduce initial load time.
     const writeDocx = (await import('./exportWriteDocx.js')).writeDocx;
     content = await writeDocx(ocrDownload, minValue, maxValue);
-  } if (format === 'xlsx') {
+  // @ts-ignore
+  } if (typeof DISABLE_DOCX_XLSX === 'undefined' && format === 'xlsx') {
     // Less common export formats are loaded dynamically to reduce initial load time.
     const writeXlsx = (await import('./exportWriteTabular.js')).writeXlsx;
     content = await writeXlsx(ocrDownload, minValue, maxValue);

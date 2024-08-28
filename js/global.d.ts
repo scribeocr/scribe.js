@@ -12,7 +12,6 @@ declare global {
     type FontMetricsFamily = import("./objects/fontMetricsObjects.js").FontMetricsFamily;
     type FontMetricsRawFont = import("./objects/fontMetricsObjects.js").FontMetricsRawFont;
     type FontContainerFont = import("./containers/fontContainer.js").FontContainerFont;
-    type FontContainerFamily = import("./containers/fontContainer.js").FontContainerFamily;
 
     type FontContainerFamilyBuiltIn = {
         normal: FontContainerFont;
@@ -39,15 +38,15 @@ declare global {
     };
 
     type fontSrcBuiltIn = {
-        normal: string | ArrayBuffer;
-        italic: string | ArrayBuffer;
-        bold: string | ArrayBuffer;
+        normal: ArrayBuffer;
+        italic: ArrayBuffer;
+        bold: ArrayBuffer;
     };
 
     type fontSrcUpload = {
-        normal: string | ArrayBuffer | null;
-        italic: string | ArrayBuffer | null;
-        bold: string | ArrayBuffer | null;
+        normal: ArrayBuffer | null;
+        italic: ArrayBuffer | null;
+        bold: ArrayBuffer | null;
     };
 
     type opentypeFont = import("../lib/opentype.module.js").Font;

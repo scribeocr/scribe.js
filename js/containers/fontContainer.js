@@ -18,40 +18,6 @@ if (typeof process === 'object') {
   globalThis.__dirname = dirname(fileURLToPath(import.meta.url));
 }
 
-// Browser worker case
-// else if (globalThis.window === undefined) {
-//   // @ts-ignore
-//   globalThis.window = {};
-// }
-
-/**
- * @param {string} fileName
- */
-export function relToAbsPath(fileName) {
-  const url = new URL(fileName, import.meta.url);
-  return url.protocol === 'file:' ? url.host + url.pathname : url.href;
-}
-
-/**
- *
- * @param {string} src
- */
-export const getFontAbsPath = (src) => { // eslint-disable-line no-shadow
-  // Do not edit `src` if it is already an absolute URL
-  if (/^(\/|http)/i.test(src)) return src;
-
-  // Alternative .ttf versions of the fonts are used for Node.js, as `node-canvas` does not currently (reliably) support .woff files.
-  // See https://github.com/Automattic/node-canvas/issues/1737
-  if (typeof process === 'object') {
-    const srcStem = src.replace(/.*\//, '').replace(/\.\w{1,5}$/i, '');
-    // The NotoSansSC font used for Chinese characters is shared between the browser and Node.js.
-    if (/NotoSansSC/i.test(srcStem)) return relToAbsPath(`../../fonts/${src}`);
-    return relToAbsPath(`../../fonts/all_ttf/${srcStem}.ttf`);
-  }
-
-  return relToAbsPath(`../../fonts/${src}`);
-};
-
 /**
  * Checks whether `multiFontMode` should be enabled or disabled.
  * @param {Object.<string, FontMetricsFamily>} fontMetricsObj
@@ -137,26 +103,25 @@ export function loadFontFace(fontFamily, fontStyle, fontWeight, src) {
  * @param {string} family
  * @param {string} style
  * @param {("sans"|"serif")} type
- * @param {string|ArrayBuffer} src
+ * @param {ArrayBuffer} src
  * @param {boolean} opt
  *
  */
 export async function loadFont(family, style, type, src, opt) {
-  const srcAbs = typeof src === 'string' ? getFontAbsPath(src) : src;
-  const fontObj = await loadOpentype(srcAbs);
-  return new FontContainerFont(family, style, srcAbs, opt, fontObj);
+  const fontObj = await loadOpentype(src);
+  return new FontContainerFont(family, style, src, opt, fontObj);
 }
 
 /**
  *
  * @param {string} family
  * @param {string} style
- * @param {string|ArrayBuffer} src
+ * @param {ArrayBuffer} src
  * @param {boolean} opt
  * @param {opentype.Font} opentypeObj - Kerning paris to re-apply
  * @property {string} family -
  * @property {string} style -
- * @property {string|ArrayBuffer} src
+ * @property {ArrayBuffer} src
  * @property {opentype.Font} opentype -
  * @property {string} fontFaceName -
  * @property {string} fontFaceStyle -
@@ -179,7 +144,7 @@ export function FontContainerFont(family, style, src, opt, opentypeObj) {
   this.style = style;
   /** @type {boolean} */
   this.opt = opt;
-  /** @type {string|ArrayBuffer} */
+  /** @type {ArrayBuffer} */
   this.src = src;
   /** @type {opentype.Font} */
   this.opentype = opentypeObj;
@@ -201,20 +166,29 @@ export function FontContainerFont(family, style, src, opt, opentypeObj) {
  * @param {string} family
  * @param {fontSrcBuiltIn|fontSrcUpload} src
  * @param {boolean} opt
+ * @returns {Promise<FontContainerFamily>}
  */
 export async function loadFontContainerFamily(family, src, opt = false) {
+  /** @type {FontContainerFamily} */
   const res = {
-    normal: null, italic: null, bold: null,
+    normal: null,
+    italic: null,
+    bold: null,
   };
 
+  /**
+   *
+   * @param {('normal'|'bold'|'italic')} type
+   * @returns
+   */
   const loadType = (type) => new Promise((resolve) => {
-    const srcType = /** @type {string | ArrayBuffer | null} */ (src[type]);
+    const srcType = (src[type]);
     if (!srcType) {
       resolve(false);
       return;
     }
-    const scrNormal = typeof srcType === 'string' ? getFontAbsPath(srcType) : srcType;
-    loadOpentype(scrNormal).then((font) => {
+    // const scrNormal = typeof srcType === 'string' ? getFontAbsPath(srcType) : srcType;
+    loadOpentype(srcType).then((font) => {
       res[type] = new FontContainerFont(family, type, srcType, opt, font);
       resolve(true);
     });

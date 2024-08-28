@@ -2,48 +2,11 @@ import {
   checkMultiFontMode,
   fontAll,
   FontContainerFont,
-  getFontAbsPath,
   loadFont,
   loadFontsFromSource,
   loadOpentype,
 } from './containers/fontContainer.js';
 import { gs } from './generalWorkerMain.js';
-
-/**
- *
- * @param {string} fileName
- */
-async function fontPathToArrayBuffer(fileName) {
-  const absPath = getFontAbsPath(fileName);
-
-  if (typeof process === 'undefined') {
-    const res = await fetch(absPath);
-    return res.arrayBuffer();
-  // Important: Do not remove `else` statement.
-  // Some build tools (Webpack) need it to avoid trying to `node:fs` in the browser.
-  // eslint-disable-next-line no-else-return
-  } else {
-    const { readFileSync } = await import('node:fs');
-    const res = readFileSync(absPath);
-    return res.buffer;
-  }
-}
-
-async function fontPathToArrayBufferAll(fileNameObj) {
-  /** @type {Object<string, fontSrcBuiltIn|fontSrcUpload>} */
-  const result = {};
-  const resArr = Object.entries(fileNameObj).map(async (x) => {
-    const [key, value] = x;
-    result[key] = {
-      normal: await fontPathToArrayBuffer(value.normal),
-      italic: await fontPathToArrayBuffer(value.italic),
-      bold: await fontPathToArrayBuffer(value.bold),
-    };
-    return true;
-  });
-  await Promise.allSettled(resArr);
-  return result;
-}
 
 /**
  * Load all raw (unoptimized) fonts.  This function is where font file names are hard-coded.
@@ -56,28 +19,96 @@ export async function loadBuiltInFontsRaw(glyphSet = 'latin') {
 
   fontAll.glyphSet = glyphSet;
 
-  const srcPathObj = {
-    Carlito: {
-      normal: `${glyphSet}/Carlito-Regular.woff`, italic: `${glyphSet}/Carlito-Italic.woff`, bold: `${glyphSet}/Carlito-Bold.woff`,
-    },
-    Century: {
-      normal: `${glyphSet}/C059-Roman.woff`, italic: `${glyphSet}/C059-Italic.woff`, bold: `${glyphSet}/C059-Bold.woff`,
-    },
-    Garamond: {
-      normal: `${glyphSet}/EBGaramond-Regular.woff`, italic: `${glyphSet}/EBGaramond-Italic.woff`, bold: `${glyphSet}/EBGaramond-Bold.woff`,
-    },
-    Palatino: {
-      normal: `${glyphSet}/P052-Roman.woff`, italic: `${glyphSet}/P052-Italic.woff`, bold: `${glyphSet}/P052-Bold.woff`,
-    },
-    NimbusRomNo9L: {
-      normal: `${glyphSet}/NimbusRoman-Regular.woff`, italic: `${glyphSet}/NimbusRoman-Italic.woff`, bold: `${glyphSet}/NimbusRoman-Bold.woff`,
-    },
-    NimbusSans: {
-      normal: `${glyphSet}/NimbusSans-Regular.woff`, italic: `${glyphSet}/NimbusSans-Italic.woff`, bold: `${glyphSet}/NimbusSans-Bold.woff`,
-    },
-  };
+  // Note: this function is intentionally verbose, and should not be refactored to generate the paths dynamically.
+  // Build systems will not be able to resolve the paths if they are generated dynamically.
+  let /** @type {Promise<ArrayBuffer>} */carlitoNormal;
+  let /** @type {Promise<ArrayBuffer>} */carlitoItalic;
+  let /** @type {Promise<ArrayBuffer>} */carlitoBold;
+  let /** @type {Promise<ArrayBuffer>} */centuryNormal;
+  let /** @type {Promise<ArrayBuffer>} */centuryItalic;
+  let /** @type {Promise<ArrayBuffer>} */centuryBold;
+  let /** @type {Promise<ArrayBuffer>} */garamondNormal;
+  let /** @type {Promise<ArrayBuffer>} */garamondItalic;
+  let /** @type {Promise<ArrayBuffer>} */garamondBold;
+  let /** @type {Promise<ArrayBuffer>} */palatinoNormal;
+  let /** @type {Promise<ArrayBuffer>} */palatinoItalic;
+  let /** @type {Promise<ArrayBuffer>} */palatinoBold;
+  let /** @type {Promise<ArrayBuffer>} */nimbusRomNo9LNormal;
+  let /** @type {Promise<ArrayBuffer>} */nimbusRomNo9LItalic;
+  let /** @type {Promise<ArrayBuffer>} */nimbusRomNo9LBold;
+  let /** @type {Promise<ArrayBuffer>} */nimbusSansNormal;
+  let /** @type {Promise<ArrayBuffer>} */nimbusSansItalic;
+  let /** @type {Promise<ArrayBuffer>} */nimbusSansBold;
+  if (typeof process === 'undefined') {
+    if (glyphSet === 'latin') {
+      carlitoNormal = fetch(new URL('../fonts/latin/Carlito-Regular.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      carlitoItalic = fetch(new URL('../fonts/latin/Carlito-Italic.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      carlitoBold = fetch(new URL('../fonts/latin/Carlito-Bold.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      centuryNormal = fetch(new URL('../fonts/latin/C059-Roman.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      centuryItalic = fetch(new URL('../fonts/latin/C059-Italic.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      centuryBold = fetch(new URL('../fonts/latin/C059-Bold.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      garamondNormal = fetch(new URL('../fonts/latin/EBGaramond-Regular.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      garamondItalic = fetch(new URL('../fonts/latin/EBGaramond-Italic.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      garamondBold = fetch(new URL('../fonts/latin/EBGaramond-Bold.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      palatinoNormal = fetch(new URL('../fonts/latin/P052-Roman.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      palatinoItalic = fetch(new URL('../fonts/latin/P052-Italic.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      palatinoBold = fetch(new URL('../fonts/latin/P052-Bold.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      nimbusRomNo9LNormal = fetch(new URL('../fonts/latin/NimbusRoman-Regular.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      nimbusRomNo9LItalic = fetch(new URL('../fonts/latin/NimbusRoman-Italic.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      nimbusRomNo9LBold = fetch(new URL('../fonts/latin/NimbusRoman-Bold.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      nimbusSansNormal = fetch(new URL('../fonts/latin/NimbusSans-Regular.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      nimbusSansItalic = fetch(new URL('../fonts/latin/NimbusSans-Italic.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      nimbusSansBold = fetch(new URL('../fonts/latin/NimbusSans-Bold.woff', import.meta.url)).then((res) => res.arrayBuffer());
+    } else {
+      carlitoNormal = fetch(new URL('../fonts/all/Carlito-Regular.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      carlitoItalic = fetch(new URL('../fonts/all/Carlito-Italic.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      carlitoBold = fetch(new URL('../fonts/all/Carlito-Bold.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      centuryNormal = fetch(new URL('../fonts/all/C059-Roman.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      centuryItalic = fetch(new URL('../fonts/all/C059-Italic.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      centuryBold = fetch(new URL('../fonts/all/C059-Bold.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      garamondNormal = fetch(new URL('../fonts/all/EBGaramond-Regular.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      garamondItalic = fetch(new URL('../fonts/all/EBGaramond-Italic.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      garamondBold = fetch(new URL('../fonts/all/EBGaramond-Bold.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      palatinoNormal = fetch(new URL('../fonts/all/P052-Roman.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      palatinoItalic = fetch(new URL('../fonts/all/P052-Italic.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      palatinoBold = fetch(new URL('../fonts/all/P052-Bold.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      nimbusRomNo9LNormal = fetch(new URL('../fonts/all/NimbusRoman-Regular.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      nimbusRomNo9LItalic = fetch(new URL('../fonts/all/NimbusRoman-Italic.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      nimbusRomNo9LBold = fetch(new URL('../fonts/all/NimbusRoman-Bold.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      nimbusSansNormal = fetch(new URL('../fonts/all/NimbusSans-Regular.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      nimbusSansItalic = fetch(new URL('../fonts/all/NimbusSans-Italic.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      nimbusSansBold = fetch(new URL('../fonts/all/NimbusSans-Bold.woff', import.meta.url)).then((res) => res.arrayBuffer());
+    }
+  } else {
+    const { readFile } = await import('fs/promises');
+    carlitoNormal = readFile(new URL('../fonts/all_ttf/Carlito-Regular.ttf', import.meta.url)).then((res) => res.buffer);
+    carlitoItalic = readFile(new URL('../fonts/all_ttf/Carlito-Italic.ttf', import.meta.url)).then((res) => res.buffer);
+    carlitoBold = readFile(new URL('../fonts/all_ttf/Carlito-Bold.ttf', import.meta.url)).then((res) => res.buffer);
+    centuryNormal = readFile(new URL('../fonts/all_ttf/C059-Roman.ttf', import.meta.url)).then((res) => res.buffer);
+    centuryItalic = readFile(new URL('../fonts/all_ttf/C059-Italic.ttf', import.meta.url)).then((res) => res.buffer);
+    centuryBold = readFile(new URL('../fonts/all_ttf/C059-Bold.ttf', import.meta.url)).then((res) => res.buffer);
+    garamondNormal = readFile(new URL('../fonts/all_ttf/EBGaramond-Regular.ttf', import.meta.url)).then((res) => res.buffer);
+    garamondItalic = readFile(new URL('../fonts/all_ttf/EBGaramond-Italic.ttf', import.meta.url)).then((res) => res.buffer);
+    garamondBold = readFile(new URL('../fonts/all_ttf/EBGaramond-Bold.ttf', import.meta.url)).then((res) => res.buffer);
+    palatinoNormal = readFile(new URL('../fonts/all_ttf/P052-Roman.ttf', import.meta.url)).then((res) => res.buffer);
+    palatinoItalic = readFile(new URL('../fonts/all_ttf/P052-Italic.ttf', import.meta.url)).then((res) => res.buffer);
+    palatinoBold = readFile(new URL('../fonts/all_ttf/P052-Bold.ttf', import.meta.url)).then((res) => res.buffer);
+    nimbusRomNo9LNormal = readFile(new URL('../fonts/all_ttf/NimbusRoman-Regular.ttf', import.meta.url)).then((res) => res.buffer);
+    nimbusRomNo9LItalic = readFile(new URL('../fonts/all_ttf/NimbusRoman-Italic.ttf', import.meta.url)).then((res) => res.buffer);
+    nimbusRomNo9LBold = readFile(new URL('../fonts/all_ttf/NimbusRoman-Bold.ttf', import.meta.url)).then((res) => res.buffer);
+    nimbusSansNormal = readFile(new URL('../fonts/all_ttf/NimbusSans-Regular.ttf', import.meta.url)).then((res) => res.buffer);
+    nimbusSansItalic = readFile(new URL('../fonts/all_ttf/NimbusSans-Italic.ttf', import.meta.url)).then((res) => res.buffer);
+    nimbusSansBold = readFile(new URL('../fonts/all_ttf/NimbusSans-Bold.ttf', import.meta.url)).then((res) => res.buffer);
+  }
 
-  const srcObj = await fontPathToArrayBufferAll(srcPathObj);
+  const srcObj = {
+    Carlito: { normal: await carlitoNormal, italic: await carlitoItalic, bold: await carlitoBold },
+    Century: { normal: await centuryNormal, italic: await centuryItalic, bold: await centuryBold },
+    Garamond: { normal: await garamondNormal, italic: await garamondItalic, bold: await garamondBold },
+    Palatino: { normal: await palatinoNormal, italic: await palatinoItalic, bold: await palatinoBold },
+    NimbusRomNo9L: { normal: await nimbusRomNo9LNormal, italic: await nimbusRomNo9LItalic, bold: await nimbusRomNo9LBold },
+    NimbusSans: { normal: await nimbusSansNormal, italic: await nimbusSansItalic, bold: await nimbusSansBold },
+  };
 
   fontAll.raw = await /** @type {FontContainer} */(/** @type {any} */(loadFontsFromSource(srcObj)));
   if (!fontAll.active || (!fontAll.active.NimbusSans.normal.opt && !fontAll.active.NimbusRomNo9L.normal.opt)) fontAll.active = fontAll.raw;
@@ -105,7 +136,15 @@ export async function loadChiSimFont() {
     chiReadyRes = resolve;
   });
 
-  fontAll.supp.chi_sim = await loadFont('NotoSansSC', 'normal', 'sans', 'NotoSansSC-Regular.ttf', false);
+  let /** @type {Promise<ArrayBuffer>} */chiSimSrc;
+  if (typeof process === 'undefined') {
+    chiSimSrc = fetch(new URL('../fonts/NotoSansSC-Regular.ttf', import.meta.url)).then((res) => res.arrayBuffer());
+  } else {
+    const { readFile } = await import('fs/promises');
+    chiSimSrc = readFile(new URL('../fonts/NotoSansSC-Regular.ttf', import.meta.url)).then((res) => res.buffer);
+  }
+
+  fontAll.supp.chi_sim = await loadFont('NotoSansSC', 'normal', 'sans', await chiSimSrc, false);
 
   chiReadyRes();
 
@@ -215,7 +254,8 @@ export async function setBuiltInFontsWorker(scheduler, force = false) {
 }
 
 /**
- *
+ * WIP: Import fonts embedded in PDFs.
+ * This function is not currently used.
  * @param {*} scheduler
  */
 export async function setUploadFontsWorker(scheduler) {
@@ -300,17 +340,13 @@ export async function optimizeFontContainerFamily(fontFamily, fontMetricsObj) {
     }
   }
 
-  const scrNormal = typeof fontFamily.normal.src === 'string' ? getFontAbsPath(fontFamily.normal.src) : fontFamily.normal.src;
-  const scrItalic = typeof fontFamily.italic.src === 'string' ? getFontAbsPath(fontFamily.italic.src) : fontFamily.italic.src;
-  const scrBold = typeof fontFamily.bold.src === 'string' ? getFontAbsPath(fontFamily.bold.src) : fontFamily.bold.src;
-
   // If there are no statistics to use for optimization, create "optimized" font by simply copying the raw font without modification.
   // This should only occur when `multiFontMode` is true, but a document contains no sans words or no serif words.
   if (!fontMetricsObj[fontMetricsType] || !fontMetricsObj[fontMetricsType][fontFamily.normal.style]) {
-    const opentypeFontArr = await Promise.all([loadOpentype(scrNormal, null), loadOpentype(scrItalic, null), loadOpentype(scrBold, null)]);
-    const normalOptFont = new FontContainerFont(fontFamily.normal.family, fontFamily.normal.style, scrNormal, true, opentypeFontArr[0]);
-    const italicOptFont = new FontContainerFont(fontFamily.italic.family, fontFamily.italic.style, scrItalic, true, opentypeFontArr[1]);
-    const boldOptFont = new FontContainerFont(fontFamily.bold.family, fontFamily.bold.style, scrBold, true, opentypeFontArr[2]);
+    const opentypeFontArr = await Promise.all([loadOpentype(fontFamily.normal.src, null), loadOpentype(fontFamily.italic.src, null), loadOpentype(fontFamily.bold.src, null)]);
+    const normalOptFont = new FontContainerFont(fontFamily.normal.family, fontFamily.normal.style, fontFamily.normal.src, true, opentypeFontArr[0]);
+    const italicOptFont = new FontContainerFont(fontFamily.italic.family, fontFamily.italic.style, fontFamily.italic.src, true, opentypeFontArr[1]);
+    const boldOptFont = new FontContainerFont(fontFamily.bold.family, fontFamily.bold.style, fontFamily.bold.src, true, opentypeFontArr[2]);
     return {
       normal: await normalOptFont, italic: await italicOptFont, bold: await boldOptFont,
     };
@@ -333,12 +369,12 @@ export async function optimizeFontContainerFamily(fontFamily, fontMetricsObj) {
         return new FontContainerFont(fontFamily.italic.family, fontFamily.italic.style, x.fontData, true, font);
       });
   } else {
-    const font = await loadOpentype(scrItalic, null);
-    italicOptFont = new FontContainerFont(fontFamily.italic.family, fontFamily.italic.style, scrItalic, true, font);
+    const font = await loadOpentype(fontFamily.italic.src, null);
+    italicOptFont = new FontContainerFont(fontFamily.italic.family, fontFamily.italic.style, fontFamily.italic.src, true, font);
   }
 
   // Bold fonts are not optimized, as we currently have no accurate way to determine if characters are bold within OCR, so do not have bold metrics.
-  const boldOptFont = loadOpentype(scrBold, null).then((opentypeFont) => new FontContainerFont(fontFamily.bold.family, fontFamily.bold.style, scrBold, true, opentypeFont));
+  const boldOptFont = loadOpentype(fontFamily.bold.src, null).then((opentypeFont) => new FontContainerFont(fontFamily.bold.family, fontFamily.bold.style, fontFamily.bold.src, true, opentypeFont));
 
   return {
     normal: await normalOptFont, italic: await italicOptFont, bold: await boldOptFont,

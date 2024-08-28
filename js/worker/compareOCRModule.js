@@ -4,10 +4,10 @@
 import ocr from '../objects/ocrObjects.js';
 import { calcLineFontSize, calcWordFontSize } from '../utils/fontUtils.js';
 import { getImageBitmap } from '../utils/imageUtils.js';
-import { getRandomAlphanum } from '../utils/miscUtils.js';
 import { drawWordActual, drawWordRender } from './renderWordCanvas.js';
 
 import { fontAll } from '../containers/fontContainer.js';
+import { getRandomAlphanum } from '../utils/miscUtils.js';
 // import { CompDebug } from '../objects/imageObjects.js';
 
 /** @type {OffscreenCanvasRenderingContext2D} */
@@ -44,110 +44,123 @@ if (typeof process === 'undefined') {
 let tmpUniqueDir = null;
 export const tmpUnique = {
   get: async () => {
-    const { tmpdir } = await import('os');
-    const { mkdirSync } = await import('fs');
+    if (typeof process === 'undefined') {
+      throw new Error('This function is not intended for browser use.');
+    } else {
+      const { tmpdir } = await import('os');
+      const { mkdirSync } = await import('fs');
 
-    if (!tmpUniqueDir) {
-      tmpUniqueDir = `${tmpdir()}/${getRandomAlphanum(8)}`;
-      mkdirSync(tmpUniqueDir);
+      if (!tmpUniqueDir) {
+        tmpUniqueDir = `${tmpdir()}/${getRandomAlphanum(8)}`;
+        mkdirSync(tmpUniqueDir);
       // console.log(`Created directory: ${tmpUniqueDir}`);
+      }
+      return tmpUniqueDir;
     }
-    return tmpUniqueDir;
   },
   delete: async () => {
-    if (tmpUniqueDir) {
-      const { rmSync } = await import('fs');
-      rmSync(tmpUniqueDir, { recursive: true, force: true });
-      // console.log(`Deleted directory: ${tmpUniqueDir}`);
-      tmpUniqueDir = null;
+    if (typeof process === 'undefined') {
+      throw new Error('This function is not intended for browser use.');
+    } else {
+    // eslint-disable-next-line no-lonely-if
+      if (tmpUniqueDir) {
+        const { rmSync } = await import('fs');
+        rmSync(tmpUniqueDir, { recursive: true, force: true });
+        // console.log(`Deleted directory: ${tmpUniqueDir}`);
+        tmpUniqueDir = null;
+      }
     }
   },
 };
 
 export const initCanvasNode = async () => {
-  const { createCanvas, registerFont, deregisterAllFonts } = await import('canvas');
-  // If canvases have already been defined, existing fonts need to be cleared.
-  // This happens when recognizing multiple documents without starting a new process.
-  const clearFonts = calcCtx && viewCtx0 && viewCtx1 && viewCtx2;
+  if (typeof process === 'undefined') {
+    throw new Error('This function is not intended for browser use.');
+  } else {
+    const { createCanvas, registerFont, deregisterAllFonts } = await import('canvas');
+    // If canvases have already been defined, existing fonts need to be cleared.
+    // This happens when recognizing multiple documents without starting a new process.
+    const clearFonts = calcCtx && viewCtx0 && viewCtx1 && viewCtx2;
 
-  if (clearFonts) {
+    if (clearFonts) {
     // Per a Git Issue, the `deregisterAllFonts` function may cause a memory leak.
     // However, this is not an issue that can be solved in this codebase, as it is necessary to deregister old fonts,
     // and leaving them would take up (at least) as much memory.
     // https://github.com/Automattic/node-canvas/issues/1974
-    deregisterAllFonts();
-  }
+      deregisterAllFonts();
+    }
 
-  const { isMainThread } = await import('worker_threads');
+    const { isMainThread } = await import('worker_threads');
 
-  // The Node.js canvas package does not currently support worke threads
-  // https://github.com/Automattic/node-canvas/issues/1394
-  if (!isMainThread) throw new Error('node-canvas is not currently supported on worker threads.');
-  if (!fontAll.raw) throw new Error('Fonts must be defined before running this function.');
+    // The Node.js canvas package does not currently support worke threads
+    // https://github.com/Automattic/node-canvas/issues/1394
+    if (!isMainThread) throw new Error('node-canvas is not currently supported on worker threads.');
+    if (!fontAll.raw) throw new Error('Fonts must be defined before running this function.');
 
-  const { writeFile } = await import('fs');
-  const { promisify } = await import('util');
-  const writeFile2 = promisify(writeFile);
+    const { writeFile } = await import('fs');
+    const { promisify } = await import('util');
+    const writeFile2 = promisify(writeFile);
 
-  /**
+    /**
    *
    * @param {FontContainerFont} fontObj
    */
-  const registerFontObj = async (fontObj) => {
-    if (typeof fontObj.src !== 'string') {
+    const registerFontObj = async (fontObj) => {
+      if (typeof fontObj.src !== 'string') {
       // Create unique temp directory for this process only.
       // This prevents different processes from overwriting eachother when this is run in parallel.
-      const tmpDir = await tmpUnique.get();
+        const tmpDir = await tmpUnique.get();
 
-      // Optimized and non-optimized fonts should not overwrite each other
-      const optStr = fontObj.opt ? '-opt' : '';
+        // Optimized and non-optimized fonts should not overwrite each other
+        const optStr = fontObj.opt ? '-opt' : '';
 
-      const fontPathTmp = `${tmpDir}/${fontObj.family}-${fontObj.style}${optStr}.otf`;
-      await writeFile2(fontPathTmp, Buffer.from(fontObj.src));
-      // console.log(`Writing font to: ${fontPathTmp}`);
+        const fontPathTmp = `${tmpDir}/${fontObj.family}-${fontObj.style}${optStr}.otf`;
+        await writeFile2(fontPathTmp, Buffer.from(fontObj.src));
+        // console.log(`Writing font to: ${fontPathTmp}`);
 
-      registerFont(fontPathTmp, { family: fontObj.fontFaceName, style: fontObj.fontFaceStyle, weight: fontObj.fontFaceWeight });
+        registerFont(fontPathTmp, { family: fontObj.fontFaceName, style: fontObj.fontFaceStyle, weight: fontObj.fontFaceWeight });
 
       // unlinkSync(fontPathTmp);
-    } else {
-      registerFont(fontObj.src, { family: fontObj.fontFaceName, style: fontObj.fontFaceStyle, weight: fontObj.fontFaceWeight });
-    }
-  };
+      } else {
+        registerFont(fontObj.src, { family: fontObj.fontFaceName, style: fontObj.fontFaceStyle, weight: fontObj.fontFaceWeight });
+      }
+    };
 
-  // All fonts must be registered before the canvas is created, so all raw and optimized fonts are loaded.
-  // Even when using optimized fonts, at least one raw font is needed to compare against optimized version.
-  for (const [key1, value1] of Object.entries(fontAll.raw)) {
-    if (['Default', 'SansDefault', 'SerifDefault'].includes(key1)) continue;
-    for (const [key2, value2] of Object.entries(value1)) {
-      await registerFontObj(value2);
-    }
-  }
-
-  // This function is used before font optimization is complete, so `fontAll.opt` does not exist yet.
-  if (fontAll.optInitial) {
-    for (const [key1, value1] of Object.entries(fontAll.optInitial)) {
+    // All fonts must be registered before the canvas is created, so all raw and optimized fonts are loaded.
+    // Even when using optimized fonts, at least one raw font is needed to compare against optimized version.
+    for (const [key1, value1] of Object.entries(fontAll.raw)) {
       if (['Default', 'SansDefault', 'SerifDefault'].includes(key1)) continue;
       for (const [key2, value2] of Object.entries(value1)) {
         await registerFontObj(value2);
       }
     }
+
+    // This function is used before font optimization is complete, so `fontAll.opt` does not exist yet.
+    if (fontAll.optInitial) {
+      for (const [key1, value1] of Object.entries(fontAll.optInitial)) {
+        if (['Default', 'SansDefault', 'SerifDefault'].includes(key1)) continue;
+        for (const [key2, value2] of Object.entries(value1)) {
+          await registerFontObj(value2);
+        }
+      }
+    }
+
+    // This causes type errors in VSCode, as we are assigning an value of type `import('canvas').CanvasRenderingContext2D` to an object of type `OffscreenCanvasRenderingContext2D`.
+    // Leaving for now, as switching the type of `calcCtx`, `viewCtx0`, etc. to allow for either causes more errors than it solves.
+    // The core issue is that multiple object types (the canvas and image inputs) change *together* based on environment (Node.js vs. browser),
+    // and it is unclear how to tell the type interpreter "when `calcCtx` is `import('canvas').CanvasRenderingContext2D` then the image input is always `import('canvas').Image".
+    const canvasAlt = createCanvas(200, 200);
+    calcCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (/** @type {unknown} */ (canvasAlt.getContext('2d')));
+
+    const canvasComp0 = createCanvas(200, 200);
+    viewCtx0 = /** @type {OffscreenCanvasRenderingContext2D} */ (/** @type {unknown} */ (canvasComp0.getContext('2d')));
+
+    const canvasComp1 = createCanvas(200, 200);
+    viewCtx1 = /** @type {OffscreenCanvasRenderingContext2D} */ (/** @type {unknown} */ (canvasComp1.getContext('2d')));
+
+    const canvasComp2 = createCanvas(200, 200);
+    viewCtx2 = /** @type {OffscreenCanvasRenderingContext2D} */ (/** @type {unknown} */ (canvasComp2.getContext('2d')));
   }
-
-  // This causes type errors in VSCode, as we are assigning an value of type `import('canvas').CanvasRenderingContext2D` to an object of type `OffscreenCanvasRenderingContext2D`.
-  // Leaving for now, as switching the type of `calcCtx`, `viewCtx0`, etc. to allow for either causes more errors than it solves.
-  // The core issue is that multiple object types (the canvas and image inputs) change *together* based on environment (Node.js vs. browser),
-  // and it is unclear how to tell the type interpreter "when `calcCtx` is `import('canvas').CanvasRenderingContext2D` then the image input is always `import('canvas').Image".
-  const canvasAlt = createCanvas(200, 200);
-  calcCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (/** @type {unknown} */ (canvasAlt.getContext('2d')));
-
-  const canvasComp0 = createCanvas(200, 200);
-  viewCtx0 = /** @type {OffscreenCanvasRenderingContext2D} */ (/** @type {unknown} */ (canvasComp0.getContext('2d')));
-
-  const canvasComp1 = createCanvas(200, 200);
-  viewCtx1 = /** @type {OffscreenCanvasRenderingContext2D} */ (/** @type {unknown} */ (canvasComp1.getContext('2d')));
-
-  const canvasComp2 = createCanvas(200, 200);
-  viewCtx2 = /** @type {OffscreenCanvasRenderingContext2D} */ (/** @type {unknown} */ (canvasComp2.getContext('2d')));
 };
 
 /**
