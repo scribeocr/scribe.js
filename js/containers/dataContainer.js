@@ -12,7 +12,7 @@ export class layoutRegions {
   static defaultRegions = {};
 
   /**
-   * 
+   *
    * @param {LayoutRegion} region - Region to delete.
    * @param {number} n - Page number.
    */
@@ -50,7 +50,7 @@ export class layoutDataTables {
   }
 
   /**
-   * 
+   *
    * @param {LayoutDataTable} table - Table to delete.
    * @param {number} n - Page number.
    */
