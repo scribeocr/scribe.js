@@ -17,7 +17,7 @@ Install from `npm` by running the following:
 npm i scribe.js-ocr
 ```
 
-Scribe.js is written in JavaScript using ESM, so can be imported directly from browser or Node.js JavaScript code.
+Scribe.js is written in JavaScript using ESM, so can be imported directly from browser or Node.js JavaScript code without a build step.
 ```js
 // Import statement in browser:
 import scribe from 'node_modules/scribe.js-ocr/scribe.js';
@@ -31,6 +31,14 @@ scribe.extractText(['https://tesseract.projectnaptha.com/img/eng_bw.png'])
 
 When using Scribe.js in the browser, all files must be served from the same origin as the file importing Scribe.js.  This means that importing Scribe.js from a CDN will not work.  There is no UMD version.
 
+## Templates
+The following are template repos showing how Scribe.js can be used within various frameworks/build systems.  
+
+- Browser with ESM (no build): https://github.com/scribeocr/scribe.js-example-esm-browser
+- Browser with Webpack 5: https://github.com/scribeocr/scribe.js-example-webpack5
+
+Contributions are appreciated--if you are using Scribe.js within a framework not listed below, consider making a basic repo and adding to this list with a PR, especially if non-obvious steps were required.
+
 # Scribe.js vs. Tesseract.js
 Considering whether Scribe.js or Tesseract.js is better for your project?  Read [this article](./docs/scribe_vs_tesseract.md).
 
@@ -39,6 +47,15 @@ Considering whether Scribe.js or Tesseract.js is better for your project?  Read 
 - [Basic Node.js Examples](./examples/node/)
 - [Scribe.js vs. Tesseract.js Comparison](./docs/scribe_vs_tesseract.md)
 - [API](./docs/API.md)
+
+## Projects and Examples
+The following are examples and projects built using Scribe.js.  Additional examples can be found in the [examples](https://github.com/scribeocr/scribe.js/tree/master/examples) directory. 
+
+- Projects
+   - Scribe OCR: officially supported GUI front-end for Scribe.js
+      - Site at [scribeocr.com](https://scribeocr.com/), repo at [github.com/scribeocr/scribeocr](https://github.com/scribeocr/scribeocr)
+
+If you have a project or example repo that uses Scribe.js, feel free to add it to this list using a pull request. Examples submitted should be well documented such that new users can run them; projects should be functional and actively maintained.
 
 # Contributing
 To work on a local copy, simply clone with `--recurse-submodules` and install.  Please run the automated tests before making a PR.
