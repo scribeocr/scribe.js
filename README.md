@@ -31,7 +31,7 @@ scribe.extractText(['https://tesseract.projectnaptha.com/img/eng_bw.png'])
 
 When using Scribe.js in the browser, all files must be served from the same origin as the file importing Scribe.js.  This means that importing Scribe.js from a CDN will not work.  There is no UMD version.
 
-## Templates
+# Templates
 The following are template repos showing how Scribe.js can be used within various frameworks/build systems.  
 
 - Browser with ESM (no build): https://github.com/scribeocr/scribe.js-example-esm-browser
