@@ -59,13 +59,26 @@ let oemCurrent = 2;
 let langArrCurrent = ['eng'];
 
 let vanillaMode_ = false;
-const corePath = vanillaMode_ ? '../tess/core_vanilla/' : '../tess/core/';
+
+// Explicitly setting these paths with `URL` is necessary for this to work with Webpack.
+// While Tesseract.js users are advised to always point `corePath` to a directory rather than a file,
+// pointing to a file should be fined here.
+// First, we never want to use the LSTM-only version, as every recognition mode (aside from some fringe advanced options) use the Legacy engine.
+// Second, >99% of devices now support the SIMD version, so only using the SIMD version is fine.
+let corePath;
+if (vanillaMode_) {
+  corePath = new URL('../../tess/core_vanilla/tesseract-core-simd.wasm.js', import.meta.url).href;
+} else {
+  corePath = new URL('../../tess/core/tesseract-core-simd.wasm.js', import.meta.url).href;
+}
+
+const workerPath = new URL('../../tess/worker.min.js', import.meta.url).href;
 
 // Custom build is currently only used for browser version, while the Node.js version uses the published npm package.
 // If recognition capabilities are ever added for the Node.js version, then we should use the same build for consistency. .
 const tessConfig = typeof process === 'undefined' ? {
   corePath,
-  workerPath: '../../tess/worker.min.js',
+  workerPath,
   // langPath: '/tess/tessdata_dist',
   legacyCore: true,
   legacyLang: true,
@@ -100,7 +113,12 @@ const reinitialize = async ({ langs, oem, vanillaMode }) => {
   // The worker only needs to be created from scratch if the build of Tesseract being used changes,
   // or if it was never created in the first place.
   if (changeVanilla || !worker) {
-    tessConfig.corePath = vanillaMode_ ? '../tess/core_vanilla/' : '../tess/core/';
+    if (vanillaMode_) {
+      tessConfig.corePath = new URL('../../tess/core_vanilla/tesseract-core-simd.wasm.js', import.meta.url).href;
+    } else {
+      tessConfig.corePath = new URL('../../tess/core/tesseract-core-simd.wasm.js', import.meta.url).href;
+    }
+
     if (worker) await worker.terminate();
     worker = await Tesseract.createWorker(langArrCurrent, oemCurrent, tessConfig, initConfigs);
   } else {

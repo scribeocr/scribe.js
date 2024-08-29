@@ -457,11 +457,13 @@ function findWasmBinary() {
 
 var wasmBinaryFile;
 
-function relToAbsPath(fileName) {
-const url = new URL(fileName, import.meta.url);
-	return url.protocol == "file:" ? url.host + url.pathname : url.href;
+const wasmBinaryFileURL = new URL("./libmupdf.wasm", import.meta.url);
+if (wasmBinaryFileURL.protocol === "file:") {
+	if (!(typeof process === "undefined")) wasmBinaryFile = wasmBinaryFileURL.pathname;
+} else {
+	wasmBinaryFile = wasmBinaryFileURL.href;
 }
-wasmBinaryFile = relToAbsPath("./libmupdf.wasm");
+
 function getBinarySync(file) {
   if (file == wasmBinaryFile && wasmBinary) {
     return new Uint8Array(wasmBinary);
