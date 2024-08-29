@@ -36,6 +36,7 @@ The following are template repos showing how Scribe.js can be used within variou
 
 - Browser with ESM (no build): https://github.com/scribeocr/scribe.js-example-esm-browser
 - Browser with Webpack 5: https://github.com/scribeocr/scribe.js-example-webpack5
+- Browser with Vue.js v2: https://github.com/scribeocr/scribe.js-example-vue2
 
 Contributions are appreciated--if you are using Scribe.js within a framework not listed below, consider making a basic repo and adding to this list with a PR, especially if non-obvious steps were required.
 
