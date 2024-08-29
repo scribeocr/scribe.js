@@ -14,7 +14,7 @@ import { round6 } from '../utils/miscUtils.js';
  */
 export function renderHOCR(ocrData, minValue, maxValue) {
   if (minValue === null || minValue === undefined) minValue = 0;
-  if (maxValue === null || maxValue === undefined) maxValue = ocrData.length - 1;
+  if (maxValue === null || maxValue === undefined || maxValue < 0) maxValue = ocrData.length - 1;
 
   const meta = {
     'font-metrics': fontMetricsObj,
