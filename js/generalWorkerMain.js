@@ -3,14 +3,18 @@
  * @returns {Promise} A promise that resolves to an object with control methods.
  */
 export async function initGeneralWorker() {
-  // Define `Worker` in Node.js version.
-  const Worker = globalThis.Worker || (await import('web-worker')).default;
+  // This method of creating workers works natively in the browser, Node.js, and Webpack 5.
+  // Do not change without confirming compatibility with all three.
+  const obj = {};
+  let worker;
+  if (typeof process === 'undefined') {
+    worker = new Worker(new URL('./worker/generalWorker.js', import.meta.url), { type: 'module' });
+  } else {
+    const WorkerNode = typeof process === 'undefined' ? Worker : (await import('web-worker')).default;
+    worker = new WorkerNode(new URL('./worker/generalWorker.js', import.meta.url), { type: 'module' });
+  }
+
   return new Promise((resolve, reject) => {
-    const obj = {};
-
-    const url = new URL('./worker/generalWorker.js', import.meta.url);
-    const worker = new Worker(url, { type: 'module' });
-
     worker.onerror = (err) => {
       console.error(err);
     };
