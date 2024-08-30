@@ -651,6 +651,46 @@ function getMatchingWordIds(text, ocrPage) {
   return matchIdArr;
 }
 
+/**
+ *
+ * @param {OcrWord} word
+ * @param {"invis" | "ebook" | "eval" | "proof"} displayMode
+ * @param {number} [confThreshMed=75]
+ * @param {number} [confThreshHigh=85]
+ * @param {number} [overlayOpacity=80]
+ */
+export function getWordFillOpacity(word, displayMode, confThreshMed = 75, confThreshHigh = 85, overlayOpacity = 80) {
+  let fillColorHex;
+  if (word.conf > confThreshHigh) {
+    fillColorHex = '#00ff7b';
+  } else if (word.conf > confThreshMed) {
+    fillColorHex = '#ffc800';
+  } else {
+    fillColorHex = '#ff0000';
+  }
+
+  const fillColorHexMatch = word.matchTruth ? '#00ff7b' : '#ff0000';
+
+  let opacity;
+  let fill;
+  // Set current text color and opacity based on display mode selected
+  if (displayMode === 'invis') {
+    opacity = 0;
+    fill = 'black';
+  } else if (displayMode === 'ebook') {
+    opacity = 1;
+    fill = 'black';
+  } else if (displayMode === 'eval') {
+    opacity = overlayOpacity / 100;
+    fill = fillColorHexMatch;
+  } else {
+    opacity = overlayOpacity / 100;
+    fill = fillColorHex;
+  }
+
+  return { opacity, fill };
+}
+
 const ocr = {
   OcrPage,
   OcrPar,
@@ -670,6 +710,7 @@ const ocr = {
   getParText,
   getLineText,
   getPrevLine,
+  getWordFillOpacity,
   clonePage,
   cloneLine,
   cloneWord,

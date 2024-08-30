@@ -9,7 +9,7 @@ import {
 import { fontAll } from './js/containers/fontContainer.js';
 import { ImageCache } from './js/containers/imageContainer.js';
 import coords from './js/coordinates.js';
-import { drawDebugImages } from './js/debug.js';
+import { drawDebugImages, renderPageStatic } from './js/debug.js';
 import { download, exportData } from './js/export/export.js';
 import { convertToCSV, writeDebugCsv } from './js/export/exportDebugCsv.js';
 import { extractInternalPDFText } from './js/extractPDFText.js';
@@ -88,6 +88,62 @@ const extractText = async (files, langs = ['eng'], outputFormat = 'txt', options
   return exportData(outputFormat);
 };
 
+/**
+ *
+ * @param {import('canvas').CanvasRenderingContext2D} ctx
+ * @param {Array<Array<CompDebugNode>>} compDebugArrArr
+ * @param {string} filePath
+ * @public
+ */
+async function writeDebugImages(ctx, compDebugArrArr, filePath) {
+  await drawDebugImages({ ctx, compDebugArrArr, context: 'node' });
+  const buffer0 = ctx.canvas.toBuffer('image/png');
+  const fs = await import('fs');
+  fs.writeFileSync(filePath, buffer0);
+}
+
+/**
+ * Dump all debug images to directory `dir`.
+ * Only available in Node.js.
+ * @param {string} dir
+ * @returns
+ */
+async function dumpDebugImages(dir) {
+  if (typeof process === 'undefined') throw new Error('This function is only available in Node.js.');
+
+  if (!DebugData.debugImg.Combined || DebugData.debugImg.Combined.length === 0) {
+    console.log('No debug images to dump.');
+    return;
+  }
+
+  const { createCanvas } = await import('canvas');
+  const canvasAlt = createCanvas(200, 200);
+  const ctxDebug = canvasAlt.getContext('2d');
+
+  for (const [name, imgArr] of Object.entries(DebugData.debugImg)) {
+    if (!imgArr || imgArr.length === 0) continue;
+    for (let i = 0; i < imgArr.length; i++) {
+      const filePath = `${dir}/${name}_${i}.png`;
+      await writeDebugImages(ctxDebug, [imgArr[i]], filePath);
+    }
+  }
+}
+
+async function dumpHOCR(dir) {
+  if (typeof process === 'undefined') throw new Error('This function is only available in Node.js.');
+
+  const activeCurrent = ocrAll.active;
+
+  const fs = await import('fs');
+  for (const [name, pages] of Object.entries(ocrAll)) {
+    ocrAll.active = pages;
+    const hocrStr = await exportData('hocr');
+    fs.writeFileSync(`${dir}/${name}.hocr`, hocrStr);
+  }
+
+  ocrAll.active = activeCurrent;
+}
+
 class data {
   // TODO: Modify such that debugging data is not calculated by default.
   static debug = DebugData;
@@ -147,6 +203,12 @@ class utils {
   static writeDebugCsv = writeDebugCsv;
 
   static drawDebugImages = drawDebugImages;
+
+  static dumpDebugImages = dumpDebugImages;
+
+  static dumpHOCR = dumpHOCR;
+
+  static renderPageStatic = renderPageStatic;
 }
 
 /**

@@ -243,10 +243,12 @@ export const recognizePage = async (n, legacy, lstm, areaMode, tessOptions = {},
 
   const upscale = tessOptions.upscale || false;
   if (saveBinaryImageArg && res0.recognize.imageBinary && (significantRotation || !ImageCache.binary[n])) {
+    ImageCache.binaryProps[n] = { rotated: isRotated, upscaled: upscale, colorMode: 'binary' };
     ImageCache.binary[n] = new ImageWrapper(n, res0.recognize.imageBinary, 'binary', isRotated, upscale);
   }
 
   if (saveNativeImage && res0.recognize.imageColor && significantRotation) {
+    ImageCache.nativeProps[n] = { rotated: isRotated, upscaled: upscale, colorMode: opt.colorMode };
     ImageCache.native[n] = new ImageWrapper(n, res0.recognize.imageColor, 'native', isRotated, upscale);
   }
 

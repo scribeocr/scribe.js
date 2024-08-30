@@ -85,6 +85,7 @@ export async function initGeneralWorker() {
     obj.recognize = wrap('recognize');
     obj.recognizeAndConvert = wrap('recognizeAndConvert');
     obj.recognizeAndConvert2 = wrap2('recognizeAndConvert2');
+    obj.renderPageStaticImp = wrap('renderPageStaticImp');
 
     obj.loadFontsWorker = wrap('loadFontsWorker');
     obj.setFontActiveWorker = wrap('setFontActiveWorker');
@@ -144,6 +145,11 @@ export class GeneralScheduler {
      * @returns {ReturnType<typeof import('./worker/compareOCRModule.js').evalPageFont>}
      */
     this.evalPageFont = async (args) => (await this.scheduler.addJob('evalPageFont', args));
+    /**
+     * @param {Parameters<typeof import('./worker/compareOCRModule.js').renderPageStaticImp>[0]} args
+     * @returns {ReturnType<typeof import('./worker/compareOCRModule.js').renderPageStaticImp>}
+     */
+    this.renderPageStaticImp = async (args) => (await this.scheduler.addJob('renderPageStaticImp', args));
   }
 }
 

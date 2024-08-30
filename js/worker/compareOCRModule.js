@@ -2,11 +2,12 @@
 /* eslint-disable no-await-in-loop */
 
 import ocr from '../objects/ocrObjects.js';
-import { calcLineFontSize, calcWordFontSize } from '../utils/fontUtils.js';
+import { calcLineFontSize, calcWordFontSize, calcWordMetrics } from '../utils/fontUtils.js';
 import { getImageBitmap } from '../utils/imageUtils.js';
 import { drawWordActual, drawWordRender } from './renderWordCanvas.js';
 
 import { fontAll } from '../containers/fontContainer.js';
+import { imageUtils } from '../objects/imageObjects.js';
 import { getRandomAlphanum } from '../utils/miscUtils.js';
 // import { CompDebug } from '../objects/imageObjects.js';
 
@@ -1249,3 +1250,116 @@ export async function nudgePageBaseline({
     page, binaryImage, imageRotated, imageUpscaled, pageMetricsObj, func, view,
   });
 }
+
+/**
+ * Render a page to a canvas.
+ * This function is a WIP and not all options are implemented.
+ * @param {Object} args
+ * @param {OcrPage} args.page - Page to render.
+ * @param {import('../containers/imageContainer.js').ImageWrapper} args.image
+ * @param {dims} [args.pageDims] - Dimensions of page.
+ * @param {?number} [args.angle=0] - Angle of page.
+ * @param {("proof" | "invis" | "ebook" | "eval")} [args.displayMode='proof'] - Display mode.
+ * @param {number} [args.confThreshMed=75] - Threshold above which words are medium-confidence (0-100).
+ * @param {number} [args.confThreshHigh=85] - Threshold above which words are high-confidence (0-100).
+ * @returns {Promise<Blob>}
+ *
+ * TODO: This function does not belong here, however it is in this file because this is where the canvases live.
+ * Think about how to refactor--the canvases within workers probably belong in their own container.
+ *
+ */
+export const renderPageStaticImp = async ({
+  page, image, angle = 0, displayMode = 'proof', confThreshMed = 75, confThreshHigh = 85,
+}) => {
+  viewCtx0.save();
+
+  if (image) {
+    const dims = imageUtils.getDims(image);
+    viewCtx0.canvas.height = dims.height;
+    viewCtx0.canvas.width = dims.width;
+
+    const imageBit = await getImageBitmap(image.src);
+
+    viewCtx0.drawImage(imageBit, 0, 0);
+  } else {
+    viewCtx0.canvas.height = page.dims.height;
+    viewCtx0.canvas.width = page.dims.width;
+  }
+
+  angle = angle ?? 0;
+
+  viewCtx0.textBaseline = 'alphabetic';
+
+  const sinAngle = Math.sin(angle * (Math.PI / 180));
+  const cosAngle = Math.cos(angle * (Math.PI / 180));
+
+  for (const lineObj of page.lines) {
+    const angleAdjLine = image.rotated ? ocr.calcLineStartAngleAdj(lineObj) : { x: 0, y: 0 };
+
+    const baselineY = lineObj.bbox.bottom + lineObj.baseline[1] + angleAdjLine.y;
+    const lineLeftAdj = lineObj.bbox.left + angleAdjLine.x;
+
+    const rotateText = !image?.rotated;
+
+    if (rotateText) {
+      viewCtx0.setTransform(cosAngle, sinAngle, -sinAngle, cosAngle, lineLeftAdj, baselineY);
+    } else {
+      viewCtx0.setTransform(1, 0, 0, 1, lineLeftAdj, baselineY);
+    }
+
+    for (const wordObj of lineObj.words) {
+      if (!wordObj.text) continue;
+
+      const { fill, opacity } = ocr.getWordFillOpacity(wordObj, displayMode, confThreshMed, confThreshHigh);
+
+      viewCtx0.fillStyle = fill;
+
+      const angleAdjWord = wordObj.sup ? ocr.calcWordAngleAdj(wordObj) : { x: 0, y: 0 };
+      // const angleAdjWordX = image.rotated ? angleAdjWord.x : 0;
+
+      const width = image.rotated ? wordObj.bbox.left - wordObj.line.bbox.left : (wordObj.bbox.left - wordObj.line.bbox.left) / cosAngle;
+
+      const visualLeft = width + angleAdjWord.x;
+
+      const wordMetrics = calcWordMetrics(wordObj);
+      const advanceArr = wordMetrics.advanceArr;
+      const kerningArr = wordMetrics.kerningArr;
+      const charSpacing = wordMetrics.charSpacing;
+      const wordFontSize = wordMetrics.fontSize;
+
+      const advanceArrTotal = [];
+      for (let i = 0; i < advanceArr.length; i++) {
+        let leftI = 0;
+        leftI += advanceArr[i] || 0;
+        leftI += kerningArr[i] || 0;
+        leftI += charSpacing || 0;
+        advanceArrTotal.push(leftI);
+      }
+
+      const font = fontAll.getWordFont(wordObj);
+      viewCtx0.font = `${font.fontFaceStyle} ${font.fontFaceWeight} ${wordFontSize}px ${font.fontFaceName}`;
+
+      let leftI = visualLeft;
+      for (let i = 0; i < wordMetrics.charArr.length; i++) {
+        let charI = wordMetrics.charArr[i];
+
+        if (wordObj.smallCaps) {
+          if (charI === charI.toUpperCase()) {
+            viewCtx0.font = `${font.fontFaceStyle} ${font.fontFaceWeight} ${wordFontSize}px ${font.fontFaceName}`;
+          } else {
+            charI = charI.toUpperCase();
+            viewCtx0.font = `${font.fontFaceStyle} ${font.fontFaceWeight} ${wordFontSize * font.smallCapsMult}px ${font.fontFaceName}`;
+          }
+        }
+
+        viewCtx0.fillText(charI, leftI, 0);
+        leftI += advanceArrTotal[i];
+      }
+    }
+  }
+
+  const img = typeof process === 'undefined' ? await viewCtx0.canvas.convertToBlob() : await viewCtx0.canvas.toBuffer('image/png');
+
+  viewCtx0.restore();
+  return img;
+};

@@ -53,6 +53,9 @@ declare global {
     type opentypeGlyph = import("../lib/opentype.module.js").Glyph;
     type GeneralScheduler = import("./generalWorkerMain.js").GeneralScheduler;
 
+    // Image objects
+    type ImageWrapper = import("./objects/imageObjects.js").ImageWrapper;
+
     type dims = {
         height: number;
         width: number;
