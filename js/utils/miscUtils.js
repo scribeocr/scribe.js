@@ -255,7 +255,7 @@ export function countSubstringOccurrences(string, subString, allowOverlapping, c
  * Modified version of code found in FileSaver.js.
  *
  * @global
- * @param {string|ArrayBuffer} content
+ * @param {string|ArrayBuffer|Blob} content
  * @param {string} fileName - File name.
  */
 export const saveAs = async (content, fileName) => {
@@ -265,7 +265,12 @@ export const saveAs = async (content, fileName) => {
     return;
   }
 
-  const blob = new Blob([content], { type: 'application/octet-stream' });
+  let blob;
+  if (typeof Blob !== 'undefined' && content instanceof Blob) {
+    blob = content;
+  } else {
+    blob = new Blob([content], { type: 'application/octet-stream' });
+  }
 
   const a = document.createElement('a');
   a.download = fileName;
