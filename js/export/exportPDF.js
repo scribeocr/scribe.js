@@ -288,9 +288,6 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
 
   textContentObjStr += 'BT\n';
 
-  // Locations are often specified using an offset against the leftmost point of the current line.
-  const lineOrigin = [0, 0];
-
   // Move cursor to top of the page
   textContentObjStr += `1 0 0 1 0 ${String(outputDims.height)} Tm\n`;
 
@@ -369,9 +366,6 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
     } else {
       textContentObjStr += `${String(1)} ${String(0)} ${String(0)} ${String(1)} ${String(lineLeftAdj)} ${String(outputDims.height - lineTopAdj + 1)} Tm\n`;
     }
-
-    lineOrigin[0] = lineLeftAdj;
-    lineOrigin[1] = lineTopAdj;
 
     textContentObjStr += '[ ';
 

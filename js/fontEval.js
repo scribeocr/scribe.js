@@ -25,7 +25,7 @@ export async function evalPageFonts(font, pageArr, n = 500) {
 
     const imageI = await ImageCache.getBinary(i);
 
-    // The Node.js canvas package does not currently support worke threads
+    // The Node.js canvas package does not currently support worker threads
     // https://github.com/Automattic/node-canvas/issues/1394
     let res;
     if (!(typeof process === 'undefined')) {

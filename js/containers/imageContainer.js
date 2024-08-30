@@ -4,7 +4,7 @@ import {
 
 import { initMuPDFWorker } from '../../mupdf/mupdf-async.js';
 
-import { getImageBitmap, getJpegDimensions, getPngDimensions } from '../utils/imageUtils.js';
+import { getImageBitmap } from '../utils/imageUtils.js';
 
 import { setUploadFontsWorker } from '../fontContainerMain.js';
 import { pageMetricsArr } from './dataContainer.js';
@@ -15,74 +15,9 @@ import {
 } from './fontContainer.js';
 
 import { gs } from '../generalWorkerMain.js';
+import { imageUtils } from '../objects/imageObjects.js';
 import { determineSansSerif, range } from '../utils/miscUtils.js';
 import { opt } from './app.js';
-
-/**
- *
- * @param {ImageWrapper} img
- * @returns
- */
-const getDims = async (img) => {
-  if (!img._dims) {
-    if (img.format === 'jpeg') {
-      img._dims = getJpegDimensions(img.src);
-    } else {
-      img._dims = getPngDimensions(img.src);
-    }
-  }
-  return img._dims;
-};
-
-/**
- * Checks whether existing transformations need to be undone by re-rendering raw image.
- * When an existing image has an unwanted tranformation, it is re-rendered from the original source,
- * rather than attempting to unrotate/downscale/etc. the transformed image.
- *
- * @param {(ImageWrapper|ImageProperties)} img
- * @param {?ImagePropertiesRequest|ImageWrapper} [props]
- * @returns
- */
-const requiresUndo = (img, props) => {
-  if (!props) return false;
-  if (img.rotated && props.rotated === false) return true;
-  if (img.upscaled && props.upscaled === false) return true;
-  // This condition should only apply to PDFs.
-  if (img.colorMode === 'color' && props.colorMode === 'gray' || img.colorMode === 'gray' && props.colorMode === 'color') return true;
-  return false;
-};
-
-/**
- * Whether the image properties are compatible with the requested properties.
- * @param {ImageWrapper|ImageProperties} img
- * @param {?ImagePropertiesRequest|ImageWrapper} [props]
- */
-const compatible = (img, props) => {
-  if (!props) return true;
-  if (props.rotated === false && img.rotated === true) {
-    // Requests to unrotate an image are always respected, even if the angle is very close to 0.
-    // This is because the intent may be to restore the raw user-uploaded image for an export, which should always be possible.
-    return false;
-  } if (props.rotated === true && img.rotated === false) {
-    // An unrotated image is considered compatible with a rotated request if the angle is very close to 0.
-    if (Math.abs(pageMetricsArr[img.n].angle || 0) > 0.05) {
-      return false;
-    }
-  }
-
-  if (props.upscaled === true && img.upscaled === false || props.upscaled === false && img.upscaled === true) return false;
-
-  // The value 'native' is used for images uploaded from the user, and is essentially a default value.
-  // These cannot be considered incompatible with any color mode as the color of user-uploaded images is never edited (binarization aside).
-  if (props.colorMode && props.colorMode !== img.colorMode && img.colorMode !== 'native' && img.colorMode !== 'native') return false;
-  return true;
-};
-
-export const imageUtils = {
-  getDims,
-  requiresUndo,
-  compatible,
-};
 
 let skipTextMode = false;
 
@@ -306,7 +241,7 @@ export class ImageCache {
   /**
    * @param {ImageWrapper} inputImage
    * @param {number} n - Page number
-   * @param {?ImagePropertiesRequest} [props] - Image properties needed.
+   * @param {ImagePropertiesRequest} [props] - Image properties needed.
    *  Image properties should only be defined if needed, as they can require the image to be re-rendered.
    * @param {boolean} [saveNativeImage=true] - Whether the native image should be saved.
    */
@@ -350,20 +285,22 @@ export class ImageCache {
 
   /**
    * @param {number} n - Page number
-   * @param {?ImagePropertiesRequest} [props] - Image properties needed.
+   * @param {ImagePropertiesRequest} [props] - Image properties needed.
    *  Image properties should only be defined if needed, as they can require the image to be re-rendered.
    * @param {boolean} [nativeOnly=true]
    */
   static getImages = (n, props, nativeOnly = true) => {
-    const newNative = !ImageCache.native[n] || !imageUtils.compatible(ImageCache.nativeProps[n], props);
-    const newBinary = !nativeOnly && (!ImageCache.binary[n] || !imageUtils.compatible(ImageCache.binaryProps[n], props));
+    const significantRotation = Math.abs(pageMetricsArr[n].angle || 0) > 0.05;
+
+    const newNative = !ImageCache.native[n] || !imageUtils.compatible(ImageCache.nativeProps[n], props, significantRotation);
+    const newBinary = !nativeOnly && (!ImageCache.binary[n] || !imageUtils.compatible(ImageCache.binaryProps[n], props, significantRotation));
 
     if (newNative || newBinary) {
       const renderRaw = !ImageCache.native[n] || imageUtils.requiresUndo(ImageCache.nativeProps[n], props);
       const propsRaw = {
         colorMode: opt.colorMode, rotated: false, upscaled: false, n,
       };
-      const renderTransform = newBinary || !imageUtils.compatible(propsRaw, props);
+      const renderTransform = newBinary || !imageUtils.compatible(propsRaw, props, significantRotation);
 
       const propsNew = renderRaw ? propsRaw : JSON.parse(JSON.stringify(ImageCache.nativeProps[n]));
       propsNew.colorMode = props?.colorMode || propsNew.colorMode;
@@ -400,20 +337,20 @@ export class ImageCache {
 
   /**
    * @param {number} n
-   * @param {Parameters<ImageCache.getImages>[1]} [props]
+   * @param {ImagePropertiesRequest} [props]
    */
   static getNative = async (n, props) => ImageCache.getImages(n, props, true).native;
 
   /**
    * @param {number} n
-   * @param {Parameters<ImageCache.getImages>[1]} [props]
+   * @param {ImagePropertiesRequest} [props]
    */
   static getBinary = async (n, props) => ImageCache.getImages(n, props, false).binary;
 
   /**
    *
    * @param {number} n - Page number
-   * @param {?ImagePropertiesRequest} [props] - Image properties needed.
+   * @param {ImagePropertiesRequest} [props] - Image properties needed.
    *  Image properties should only be defined if needed, as they can require the image to be re-rendered.
    */
   static getNativeBitmap = async (n, props) => {
@@ -431,7 +368,7 @@ export class ImageCache {
   /**
    *
    * @param {number} n - Page number
-   * @param {?ImagePropertiesRequest} [props] - Image properties needed.
+   * @param {ImagePropertiesRequest} [props] - Image properties needed.
    *  Image properties should only be defined if needed, as they can require the image to be re-rendered.
    */
   static getBinaryBitmap = async (n, props) => {
@@ -454,9 +391,9 @@ export class ImageCache {
    * @param {number} min - Min page to render.
    * @param {number} max - Max page to render.
    * @param {boolean} binary - Whether to render binary images.
-   * @param {?ImagePropertiesRequest} [props=null]
+   * @param {ImagePropertiesRequest} [props]
    */
-  static preRenderRange = async (min, max, binary, props = null) => {
+  static preRenderRange = async (min, max, binary, props) => {
     const pagesArr = range(min, max);
     if (binary) {
       await Promise.all(pagesArr.map((n) => ImageCache.getBinary(n, props).then(() => {

@@ -1,3 +1,7 @@
+import { opt } from './containers/app.js';
+import { pageMetricsArr } from './containers/dataContainer.js';
+import { ImageCache } from './containers/imageContainer.js';
+import { gs } from './generalWorkerMain.js';
 import { loadImageElem } from './utils/imageUtils.js';
 
 /**
@@ -101,4 +105,34 @@ export async function drawDebugImages(args) {
       leftMax = Math.max(leftMax, 3 * colWidth + 30);
     }
   }
+}
+
+/**
+ *
+ * @param {OcrPage} page
+ */
+export async function renderPageStatic(page) {
+  const image = await ImageCache.getNative(page.n, { rotated: opt.autoRotate, upscaled: false });
+
+  // The Node.js canvas package does not currently support worker threads
+  // https://github.com/Automattic/node-canvas/issues/1394
+  let res;
+  if (!(typeof process === 'undefined')) {
+    const { renderPageStaticImp } = await import('./worker/compareOCRModule.js');
+    res = await renderPageStaticImp({
+      page,
+      image,
+      angle: pageMetricsArr[page.n].angle,
+    });
+    // Browser case
+  } else {
+    if (!gs.scheduler) throw new Error('GeneralScheduler must be defined before this function can run.');
+    res = await gs.scheduler.renderPageStaticImp({
+      page,
+      image,
+      angle: pageMetricsArr[page.n].angle,
+    });
+  }
+
+  return res;
 }

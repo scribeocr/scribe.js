@@ -10,19 +10,22 @@ import {
   pageMetricsArr,
 } from '../containers/dataContainer.js';
 import { fontAll } from '../containers/fontContainer.js';
-import { ImageCache, imageUtils, ImageWrapper } from '../containers/imageContainer.js';
+import { ImageCache, ImageWrapper } from '../containers/imageContainer.js';
+import { extractInternalPDFText } from '../extractPDFText.js';
 import {
-  enableFontOpt, optimizeFontContainerAll, setDefaultFontAuto, loadBuiltInFontsRaw,
+  enableFontOpt,
+  loadBuiltInFontsRaw,
+  optimizeFontContainerAll, setDefaultFontAuto,
 } from '../fontContainerMain.js';
 import { runFontOptimization } from '../fontEval.js';
 import { calcFontMetricsFromPages } from '../fontStatistics.js';
 import { gs } from '../generalWorkerMain.js';
+import { imageUtils } from '../objects/imageObjects.js';
 import { LayoutDataTablePage, LayoutPage } from '../objects/layoutObjects.js';
 import { PageMetrics } from '../objects/pageMetricsObjects.js';
 import { checkCharWarn, convertOCRAll } from '../recognizeConvert.js';
 import { replaceObjectProperties } from '../utils/miscUtils.js';
 import { importOCRFiles } from './importOCR.js';
-import { extractInternalPDFText } from '../extractPDFText.js';
 
 /**
  * Automatically detects the image type (jpeg or png).

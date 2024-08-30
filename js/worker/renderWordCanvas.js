@@ -147,7 +147,7 @@ const printWordOnCanvas = async ({
 };
 
 /**
-   * Print word on `ctxCanvas`.
+   * Print word on canvas.
    *
    * @param {CanvasRenderingContext2D|OffscreenCanvasRenderingContext2D} ctx
    * @param {OcrWord} word

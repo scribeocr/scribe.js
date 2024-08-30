@@ -11,6 +11,7 @@ import {
   evalWords,
   nudgePageBaseline,
   nudgePageFontSize,
+  renderPageStaticImp,
 } from './compareOCRModule.js';
 import { optimizeFont } from './optimizeFontModule.js';
 
@@ -325,6 +326,7 @@ addEventListener('message', async (e) => {
     compareOCRPageImp: compareOCRPageImpWrap,
     nudgePageFontSize,
     nudgePageBaseline,
+    renderPageStaticImp,
 
     // Recognition
     reinitialize,
