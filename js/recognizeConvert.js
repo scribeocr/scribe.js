@@ -615,7 +615,7 @@ export async function recognize(options = {}) {
       /** @type {Parameters<typeof compareOCRPage>[2]} */
       const compOptions = {
         mode: 'comb',
-        debugLabel: tessCombinedLabel,
+        debugLabel: opt.saveDebugImages ? tessCombinedLabel : undefined,
         ignoreCap: opt.ignoreCap,
         ignorePunct: opt.ignorePunct,
         confThreshHigh: opt.confThreshHigh,
@@ -634,7 +634,7 @@ export async function recognize(options = {}) {
       if (combineMode === 'conf') {
         /** @type {Parameters<typeof compareOCRPage>[2]} */
         const compOptions = {
-          debugLabel: 'Combined',
+          debugLabel: opt.saveDebugImages ? 'Combined' : undefined,
           supplementComp: true,
           // The `tessScheduler` property must be defined manually for Node.js, which runs this function in the main thread.
           // In the browser, this is run in a worker, and the Tesseract module is defined automatically there.

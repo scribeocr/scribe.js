@@ -9,12 +9,13 @@ import {
 import { gs } from './generalWorkerMain.js';
 
 /**
- *
+ * Evaluate how well a font matches the provided array of pages.
  * @param {FontContainerFamily} font
  * @param {Array<OcrPage>} pageArr
+ * @param {boolean} opt - Whether to use optimized fonts.
  * @param {number} n - Number of words to compare
  */
-export async function evalPageFonts(font, pageArr, n = 500) {
+export async function evalPagesFont(font, pageArr, opt, n = 500) {
   if (!gs.scheduler) throw new Error('GeneralScheduler must be defined before this function can run.');
 
   let metricTotal = 0;
@@ -36,6 +37,7 @@ export async function evalPageFonts(font, pageArr, n = 500) {
         page: pageArr[i],
         binaryImage: imageI,
         pageMetricsObj: pageMetricsArr[i],
+        opt,
       });
       // Browser case
     } else {
@@ -44,6 +46,7 @@ export async function evalPageFonts(font, pageArr, n = 500) {
         page: pageArr[i],
         binaryImage: imageI,
         pageMetricsObj: pageMetricsArr[i],
+        opt,
       });
     }
 
@@ -56,8 +59,9 @@ export async function evalPageFonts(font, pageArr, n = 500) {
 
 /**
 * @param {Array<OcrPage>} pageArr
+* @param {boolean} opt - Whether to use optimized fonts.
 */
-export async function evaluateFonts(pageArr) {
+export async function evaluateFonts(pageArr, opt) {
   const fontActive = fontAll.getContainer('active');
 
   const debug = false;
@@ -69,12 +73,12 @@ export async function evaluateFonts(pageArr) {
   let serifMetrics;
   if (typeof process === 'undefined') {
     const fontMetricsPromises = {
-      carlito: evalPageFonts(fontActive.Carlito, pageArr),
-      nimbusSans: evalPageFonts(fontActive.NimbusSans, pageArr),
-      century: evalPageFonts(fontActive.Century, pageArr),
-      palatino: evalPageFonts(fontActive.Palatino, pageArr),
-      garamond: evalPageFonts(fontActive.Garamond, pageArr),
-      nimbusRomNo9L: evalPageFonts(fontActive.NimbusRomNo9L, pageArr),
+      carlito: evalPagesFont(fontActive.Carlito, pageArr, opt),
+      nimbusSans: evalPagesFont(fontActive.NimbusSans, pageArr, opt),
+      century: evalPagesFont(fontActive.Century, pageArr, opt),
+      palatino: evalPagesFont(fontActive.Palatino, pageArr, opt),
+      garamond: evalPagesFont(fontActive.Garamond, pageArr, opt),
+      nimbusRomNo9L: evalPagesFont(fontActive.NimbusRomNo9L, pageArr, opt),
     };
 
     const fontMetrics = {
@@ -99,12 +103,12 @@ export async function evaluateFonts(pageArr) {
     };
   } else {
     const fontMetrics = {
-      Carlito: await evalPageFonts(fontActive.Carlito, pageArr),
-      NimbusSans: await evalPageFonts(fontActive.NimbusSans, pageArr),
-      Century: await evalPageFonts(fontActive.Century, pageArr),
-      Palatino: await evalPageFonts(fontActive.Palatino, pageArr),
-      Garamond: await evalPageFonts(fontActive.Garamond, pageArr),
-      NimbusRomNo9L: await evalPageFonts(fontActive.NimbusRomNo9L, pageArr),
+      Carlito: await evalPagesFont(fontActive.Carlito, pageArr, opt),
+      NimbusSans: await evalPagesFont(fontActive.NimbusSans, pageArr, opt),
+      Century: await evalPagesFont(fontActive.Century, pageArr, opt),
+      Palatino: await evalPagesFont(fontActive.Palatino, pageArr, opt),
+      Garamond: await evalPagesFont(fontActive.Garamond, pageArr, opt),
+      NimbusRomNo9L: await evalPagesFont(fontActive.NimbusRomNo9L, pageArr, opt),
     };
 
     sansMetrics = {
@@ -171,17 +175,22 @@ export async function runFontOptimization(ocrArr) {
   let enableOptSerif = false;
   let enableOptSans = false;
 
+  let optimizeFontContainerAllPromise;
   if (calculateOpt) {
     setDefaultFontAuto(fontMetricsObj);
-    fontAll.optInitial = await optimizeFontContainerAll(fontRaw, fontMetricsObj);
 
-    // If no image data exists, then `opt` is set to `optInitial`.
-    // This behavior exists so that data can be loaded from previous sessions without changing the appearance of the document.
-    // Arguably, in cases where a user uploads raw OCR data and no images, using the raw font is more prudent than an unvalidated optimized font.
-    // If this ever comes up in actual usage and is a problem, then the behavior can be changed for that specific case.
-    if (!ImageCache.inputModes.image && !ImageCache.inputModes.pdf) {
-      fontAll.opt = { ...fontAll.optInitial };
-    }
+    optimizeFontContainerAllPromise = optimizeFontContainerAll(fontRaw, fontMetricsObj)
+      .then((res) => {
+        fontAll.optInitial = res;
+
+        // If no image data exists, then `opt` is set to `optInitial`.
+        // This behavior exists so that data can be loaded from previous sessions without changing the appearance of the document.
+        // Arguably, in cases where a user uploads raw OCR data and no images, using the raw font is more prudent than an unvalidated optimized font.
+        // If this ever comes up in actual usage and is a problem, then the behavior can be changed for that specific case.
+        if (!ImageCache.inputModes.image && !ImageCache.inputModes.pdf) {
+          fontAll.opt = { ...fontAll.optInitial };
+        }
+      });
   }
 
   // If image data exists, select the correct font by comparing to the image.
@@ -189,25 +198,22 @@ export async function runFontOptimization(ocrArr) {
     // Evaluate default fonts using up to 5 pages.
     const pageNum = Math.min(ImageCache.pageCount, 5);
 
-    // Set raw font in workers
-    await enableFontOpt(false);
-
     // This step needs to happen here as all fonts must be registered before initializing the canvas.
     if (!(typeof process === 'undefined')) {
+      await optimizeFontContainerAllPromise;
       const { initCanvasNode } = await import('./worker/compareOCRModule.js');
       await initCanvasNode();
     }
 
-    const evalRaw = await evaluateFonts(ocrArr.slice(0, pageNum));
-
+    const evalRaw = await evaluateFonts(ocrArr.slice(0, pageNum), false);
     DebugData.evalRaw = evalRaw;
 
+    await optimizeFontContainerAllPromise;
     if (calculateOpt && Object.keys(fontAll.optInitial).length > 0) {
       // Enable optimized fonts
       await enableFontOpt(true, true, true);
 
-      const evalOpt = await evaluateFonts(ocrArr.slice(0, pageNum));
-
+      const evalOpt = await evaluateFonts(ocrArr.slice(0, pageNum), true);
       DebugData.evalOpt = evalOpt;
 
       // The default font for both the optimized and unoptimized versions are set to the same font.

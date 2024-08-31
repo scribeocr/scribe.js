@@ -352,7 +352,16 @@ function calcLineStartAngleAdj(line) {
   const sinAngle = Math.sin(angle * (Math.PI / 180));
   const cosAngle = Math.cos(angle * (Math.PI / 180));
 
-  const bbox = line.words[0].bbox;
+  // Use the bounding box that is closest to the left bound of the line.
+  // Note that we intentionally use real characters here, rather than predicting the baseline using the line bounding box and `baseline`,
+  // as the latter was found to sometimes lead to incoherent results.
+  let bbox;
+  const char0Bbox = line.words[0]?.chars?.[0]?.bbox;
+  if (char0Bbox) {
+    bbox = char0Bbox;
+  } else {
+    bbox = line.words[0].bbox;
+  }
 
   const bboxRot = rotateBbox(bbox, cosAngle, sinAngle, dims.width, dims.height);
 

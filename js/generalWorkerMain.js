@@ -82,6 +82,7 @@ export async function initGeneralWorker() {
     obj.nudgePageBaseline = wrap('nudgePageBaseline');
 
     obj.reinitialize = wrap('reinitialize');
+    obj.reinitialize2 = wrap('reinitialize2');
     obj.recognize = wrap('recognize');
     obj.recognizeAndConvert = wrap('recognizeAndConvert');
     obj.recognizeAndConvert2 = wrap2('recognizeAndConvert2');
@@ -249,6 +250,8 @@ export class gs {
     await gs.schedulerReady;
 
     if (anyOk && gs.schedulerReadyTesseract) return gs.schedulerReadyTesseract;
+
+    if (gs.schedulerReadyTesseract) await gs.schedulerReadyTesseract;
 
     gs.setSchedulerReadyTesseract();
 

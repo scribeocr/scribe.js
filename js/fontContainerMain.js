@@ -117,7 +117,7 @@ export async function loadBuiltInFontsRaw(glyphSet = 'latin') {
     // This assumes that the scheduler `init` method has at least started.
     if (gs.schedulerReady === null) console.warn('Failed to load fonts to workers as workers have not been initialized yet.');
     await gs.schedulerReady;
-    await setBuiltInFontsWorker(gs.schedulerInner, true);
+    await setBuiltInFontsWorkers(gs.schedulerInner, true);
   }
 
   return;
@@ -170,7 +170,7 @@ export async function enableFontOpt(enable, useInitial = false, forceWorkerUpdat
 
   // Enable/disable optimized font in workers
   if (typeof process === 'undefined') {
-    await setBuiltInFontsWorker(gs.schedulerInner, forceWorkerUpdate);
+    await setBuiltInFontsWorkers(gs.schedulerInner, forceWorkerUpdate);
   } else {
     // const { setFontAll } = await import('./worker/compareOCRModule.js');
     // setFontAll(fontAll);
@@ -182,7 +182,7 @@ export async function enableFontOpt(enable, useInitial = false, forceWorkerUpdat
  * @param {*} scheduler
  * @param {boolean} [force=false] - If true, forces the worker to update the font data even if the font data of this type is already loaded.
  */
-export async function setBuiltInFontsWorker(scheduler, force = false) {
+export async function setBuiltInFontsWorkers(scheduler, force = false) {
   if (!fontAll.active) return;
 
   const opt = fontAll.active.Carlito.normal.opt || fontAll.active.NimbusRomNo9L.normal.opt;
@@ -235,7 +235,7 @@ export async function setBuiltInFontsWorker(scheduler, force = false) {
     }
     await Promise.all(resArr);
 
-    // Theoretically this should be changed to use promises to avoid the race condition when `setBuiltInFontsWorker` is called multiple times quickly and `loadFontsWorker` is still running.
+    // Theoretically this should be changed to use promises to avoid the race condition when `setBuiltInFontsWorkers` is called multiple times quickly and `loadFontsWorker` is still running.
     if (opt) {
       fontAll.loadedBuiltInOptWorker = true;
     } else {
