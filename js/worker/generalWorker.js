@@ -89,6 +89,9 @@ const tessConfig = typeof process === 'undefined' ? {
 /** @type {?Tesseract.Worker} */
 let worker;
 
+let workerLegacy;
+let workerLSTM;
+
 /**
  * Function to change language, OEM, and vanilla mode.
  * All arguments can be set to `null` to keep the current settings.
@@ -127,6 +130,58 @@ const reinitialize = async ({ langs, oem, vanillaMode }) => {
   }
 
   await worker.setParameters(defaultConfigs);
+};
+
+/**
+ * Alternative version of `reinitialize` that uses two workers and allows for parallelizing recognition for the same image.
+ * This is experimental and not currently called by anything.
+ * Function to change language, OEM, and vanilla mode.
+ * All arguments can be set to `null` to keep the current settings.
+ * This function should return early if requested settings match the current settings.
+ *
+ * @param {Object} param
+ * @param {?Array<string>} param.langs
+ * @param {?number} param.oem
+ * @param {?boolean} param.vanillaMode
+ */
+const reinitialize2 = async ({ langs, vanillaMode }) => {
+  const langArr = typeof langs === 'string' ? langs.split('+') : langs;
+  const changeLang = langs && JSON.stringify(langArr.sort()) !== JSON.stringify(langArrCurrent.sort());
+  const changeVanilla = vanillaMode && vanillaMode !== vanillaMode_;
+
+  if (!changeLang && !changeVanilla && workerLegacy && workerLSTM) return;
+  if (changeLang) langArrCurrent = langArr;
+  if (changeVanilla) vanillaMode_ = vanillaMode;
+
+  // The worker only needs to be created from scratch if the build of Tesseract being used changes,
+  // or if it was never created in the first place.
+  if (changeVanilla || !workerLegacy || !workerLSTM) {
+    if (vanillaMode_) {
+      tessConfig.corePath = new URL('../../tess/core_vanilla/tesseract-core-simd.wasm.js', import.meta.url).href;
+    } else {
+      tessConfig.corePath = new URL('../../tess/core/tesseract-core-simd.wasm.js', import.meta.url).href;
+    }
+
+    if (workerLegacy) {
+      console.log('terminating legacy');
+      await workerLegacy.terminate();
+      workerLegacy = null;
+    }
+    if (workerLSTM) {
+      console.log('terminating lstm');
+      await workerLSTM.terminate();
+      workerLSTM = null;
+    }
+
+    workerLegacy = await Tesseract.createWorker(langArrCurrent, 0, tessConfig, initConfigs);
+    workerLSTM = await Tesseract.createWorker(langArrCurrent, 1, tessConfig, initConfigs);
+  } else if (changeLang) {
+    await workerLegacy.reinitialize(langArrCurrent, 0, initConfigs);
+    await workerLSTM.reinitialize(langArrCurrent, 1, initConfigs);
+  }
+
+  await workerLegacy.setParameters(defaultConfigs);
+  await workerLSTM.setParameters(defaultConfigs);
 };
 
 /**
@@ -178,7 +233,7 @@ export const recognizeAndConvert = async ({
 export const recognizeAndConvert2 = async ({
   image, options, output, n, pageDims, knownAngle = null,
 }, id) => {
-  if (!worker) throw new Error('Worker not initialized');
+  if (!worker && !(workerLegacy && workerLSTM)) throw new Error('Worker not initialized');
 
   // Disable output formats that are not used.
   // Leaving these enabled can significantly inflate runtimes for no benefit.
@@ -193,7 +248,22 @@ export const recognizeAndConvert2 = async ({
   // If both Legacy and LSTM data are requested, only the second promise will contain the LSTM data.
   // This allows the Legacy data to be used immediately, which halves the amount of delay between user
   // input and something appearing on screen.
-  const resArr = await worker.recognize2(image, options, output);
+  let resArr;
+  if (workerLegacy && workerLSTM) {
+    if (options.legacy && !options.lstm) {
+      const res1Promise = workerLegacy.recognize(image, options, output);
+      resArr = [res1Promise];
+    } else if (!options.legacy && options.lstm) {
+      const res1Promise = workerLSTM.recognize(image, options, output);
+      resArr = [res1Promise];
+    } else {
+      const res1Promise = workerLegacy.recognize(image, options, output);
+      const res2Promise = workerLSTM.recognize(image, options, output);
+      resArr = [res1Promise, res2Promise];
+    }
+  } else {
+    resArr = await worker.recognize2(image, options, output);
+  }
 
   const res0 = await resArr[0];
 
@@ -330,6 +400,7 @@ addEventListener('message', async (e) => {
 
     // Recognition
     reinitialize,
+    reinitialize2,
     recognize,
     recognizeAndConvert,
 

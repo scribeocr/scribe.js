@@ -1093,12 +1093,24 @@ export async function evalPageBase({
  * @param {import('../containers/imageContainer.js').ImageWrapper} params.binaryImage
  * @param {PageMetrics} params.pageMetricsObj
  * @param {string} params.font
+ * @param {boolean} [params.opt=false] - Whether to use the optimized font set
  * @returns
  */
 export async function evalPageFont({
-  page, binaryImage, pageMetricsObj, font,
+  page, binaryImage, pageMetricsObj, font, opt = false,
 }) {
-/**
+  const fontAllActiveSave = fontAll.active;
+
+  // Allowing the font to be set here allows for better performance during font optimization compared to using the `enableFontOpt` function.
+  // This is because the `enableFontOpt` function requires a response from the main thread and *every* worker before completing, which leads to non-trivial waiting time.
+  if (opt === true) {
+    if (!fontAll.opt && !fontAll.optInitial) throw new Error('Optimized fonts requested but not defined.');
+    fontAll.active = fontAll.opt || fontAll.optInitial;
+  } else if (opt === false) {
+    fontAll.active = fontAll.raw;
+  }
+
+  /**
  * @param {OcrLine} ocrLineJ
  */
   const transformLineFont = (ocrLineJ) => {
@@ -1123,9 +1135,13 @@ export async function evalPageFont({
     return ocrLineJClone;
   };
 
-  return await evalPageBase({
+  const res = await evalPageBase({
     page, binaryImage, pageMetricsObj, func: transformLineFont,
   });
+
+  fontAll.active = fontAllActiveSave;
+
+  return res;
 }
 
 /**
@@ -1315,9 +1331,18 @@ export const renderPageStaticImp = async ({
       viewCtx0.fillStyle = fill;
 
       const angleAdjWord = wordObj.sup ? ocr.calcWordAngleAdj(wordObj) : { x: 0, y: 0 };
-      // const angleAdjWordX = image.rotated ? angleAdjWord.x : 0;
 
-      const width = image.rotated ? wordObj.bbox.left - wordObj.line.bbox.left : (wordObj.bbox.left - wordObj.line.bbox.left) / cosAngle;
+      // TODO: Test whether the math here is correct for drop caps.
+      let ts = 0;
+      if (wordObj.sup) {
+        ts = (lineObj.bbox.bottom + lineObj.baseline[1] + angleAdjLine.y) - (wordObj.bbox.bottom + angleAdjLine.y + angleAdjWord.y);
+      } else if (wordObj.dropcap) {
+        ts = (lineObj.bbox.bottom + lineObj.baseline[1]) - wordObj.bbox.bottom + angleAdjLine.y + angleAdjWord.y;
+      } else {
+        ts = 0;
+      }
+
+      const width = (wordObj.bbox.left - wordObj.line.bbox.left) / cosAngle;
 
       const visualLeft = width + angleAdjWord.x;
 
@@ -1326,6 +1351,7 @@ export const renderPageStaticImp = async ({
       const kerningArr = wordMetrics.kerningArr;
       const charSpacing = wordMetrics.charSpacing;
       const wordFontSize = wordMetrics.fontSize;
+      const leftSideBearing = wordMetrics.leftSideBearing;
 
       const advanceArrTotal = [];
       for (let i = 0; i < advanceArr.length; i++) {
@@ -1338,8 +1364,7 @@ export const renderPageStaticImp = async ({
 
       const font = fontAll.getWordFont(wordObj);
       viewCtx0.font = `${font.fontFaceStyle} ${font.fontFaceWeight} ${wordFontSize}px ${font.fontFaceName}`;
-
-      let leftI = visualLeft;
+      let leftI = wordObj.visualCoords ? visualLeft - leftSideBearing : visualLeft;
       for (let i = 0; i < wordMetrics.charArr.length; i++) {
         let charI = wordMetrics.charArr[i];
 
@@ -1352,7 +1377,7 @@ export const renderPageStaticImp = async ({
           }
         }
 
-        viewCtx0.fillText(charI, leftI, 0);
+        viewCtx0.fillText(charI, leftI, -ts);
         leftI += advanceArrTotal[i];
       }
     }
