@@ -3,7 +3,7 @@ import { convertPageBlocks } from '../import/convertPageBlocks.js';
 import { convertPageHocr } from '../import/convertPageHocr.js';
 import { convertPageStext } from '../import/convertPageStext.js';
 
-import { fontAll, loadFontsFromSource } from '../containers/fontContainer.js';
+import { FontCont, loadFontsFromSource } from '../containers/fontContainer.js';
 import {
   compareOCRPageImp,
   evalPageBase,
@@ -286,7 +286,7 @@ export const recognizeAndConvert2 = async ({
 
       const xB = { recognize: res1.data, convert: { legacy: null, lstm: resLSTM } };
 
-      postMessage({ data: xB, id: `${id}b` });
+      postMessage({ data: xB, id: `${id}b`, status: 'resolve' });
     })();
   } else if (!options.lstm && options.legacy) {
     const legacyBlocks = /** @type {Array<import('@scribe.js/tesseract.js').Block>} */(res0.data.blocks);
@@ -302,7 +302,7 @@ export const recognizeAndConvert2 = async ({
 
   const x = { recognize: res0.data, convert: { legacy: resLegacy, lstm: resLSTM } };
 
-  postMessage({ data: x, id });
+  postMessage({ data: x, id, status: 'resolve' });
 
   // Both promises must resolve for the scheduler to move on, even if only one OCR engine is being run.
   if (!options.legacy || !options.lstm) postMessage({ data: null, id: `${id}b` });
@@ -333,32 +333,32 @@ export const recognize = async ({ image, options, output }) => {
 async function loadFontsWorker({ src, opt }) {
   const fonts = await loadFontsFromSource(src, opt);
   if (opt) {
-    if (fontAll.opt) {
-      Object.assign(fontAll.opt, fonts);
+    if (FontCont.opt) {
+      Object.assign(FontCont.opt, fonts);
     } else {
-      fontAll.opt = fonts;
+      FontCont.opt = fonts;
     }
-  } else if (fontAll.raw) {
-    Object.assign(fontAll.raw, fonts);
+  } else if (FontCont.raw) {
+    Object.assign(FontCont.raw, fonts);
   } else {
-    fontAll.raw = fonts;
+    FontCont.raw = fonts;
   }
   return true;
 }
 
 async function setFontActiveWorker({ opt, sansDefaultName, serifDefaultName }) {
   if (opt === true) {
-    fontAll.active = fontAll.opt;
+    FontCont.active = FontCont.opt;
   } else if (opt === false) {
-    fontAll.active = fontAll.raw;
+    FontCont.active = FontCont.raw;
   }
 
-  if (sansDefaultName) fontAll.sansDefaultName = sansDefaultName;
-  if (serifDefaultName) fontAll.serifDefaultName = serifDefaultName;
+  if (sansDefaultName) FontCont.sansDefaultName = sansDefaultName;
+  if (serifDefaultName) FontCont.serifDefaultName = serifDefaultName;
 }
 
 async function setDefaultFontNameWorker({ defaultFontName }) {
-  fontAll.defaultFontName = defaultFontName;
+  FontCont.defaultFontName = defaultFontName;
 }
 
 async function compareOCRPageImpWrap(args) {
@@ -366,7 +366,7 @@ async function compareOCRPageImpWrap(args) {
   return await compareOCRPageImp(args);
 }
 
-postMessage({ data: 'ready', id: 0 });
+postMessage({ data: 'ready', id: 0, status: 'resolve' });
 
 // eslint-disable-next-line no-restricted-globals
 addEventListener('message', async (e) => {
@@ -409,5 +409,6 @@ addEventListener('message', async (e) => {
     setFontActiveWorker,
     setDefaultFontNameWorker,
   })[func](args)
-    .then((x) => postMessage({ data: x, id }));
+    .then((x) => postMessage({ data: x, id, status: 'resolve' }))
+    .catch((err) => postMessage({ data: err, id, status: 'reject' }));
 });

@@ -1,7 +1,7 @@
 // This file contains utility functions for calculating statistics using Opentype.js font objects.
 // The only import/dependency this file should have (aside from importing misc utility functions) should be fontObjects.js.
 
-import { fontAll } from '../containers/fontContainer.js';
+import { FontCont } from '../containers/fontContainer.js';
 import { getPrevLine } from '../objects/ocrObjects.js';
 import { quantile } from './miscUtils.js';
 
@@ -102,7 +102,7 @@ function calcWordFontSizePrecise(wordArr, fontOpentype, nonLatin = false) {
 */
 export function addLigatures(word) {
   if (word.smallCaps || !opt.ligatures) return word.text.split('');
-  const fontI = fontAll.getWordFont(word);
+  const fontI = FontCont.getWordFont(word);
   const fontOpentype = fontI.opentype;
   return addLigaturesText(word.text, fontOpentype);
 }
@@ -208,7 +208,7 @@ function calcWordCharMetrics(wordText, fontOpentype) {
  * @return {WordMetrics}
  */
 export function calcWordMetrics(word, angle = 0) {
-  const fontI = fontAll.getWordFont(word);
+  const fontI = FontCont.getWordFont(word);
   const fontOpentype = fontI.opentype;
 
   const fontSize = calcWordFontSize(word);
@@ -278,7 +278,7 @@ export function calcWordMetrics(word, angle = 0) {
  * @param {OcrWord} word
  */
 export const calcWordFontSize = (word) => {
-  const font = fontAll.getWordFont(word);
+  const font = FontCont.getWordFont(word);
   const fontOpentype = font.opentype;
 
   // If the user manually set a size, then use that
@@ -316,7 +316,7 @@ export const calcLineFontSize = (line) => {
 
   const nonLatin = line.words[0]?.lang === 'chi_sim';
 
-  const font = fontAll.getWordFont(line.words[0]);
+  const font = FontCont.getWordFont(line.words[0]);
 
   // This condition should be handled even if not expected to occur,
   // as some fonts (Chinese) are not loaded synchronously with the main application,

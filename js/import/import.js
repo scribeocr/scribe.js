@@ -9,7 +9,7 @@ import {
   ocrAllRaw,
   pageMetricsArr,
 } from '../containers/dataContainer.js';
-import { fontAll } from '../containers/fontContainer.js';
+import { FontCont } from '../containers/fontContainer.js';
 import { ImageCache, ImageWrapper } from '../containers/imageContainer.js';
 import { extractInternalPDFText } from '../extractPDFText.js';
 import {
@@ -342,22 +342,22 @@ export async function importFiles(files, options = {}) {
         opt.enableOpt = false;
       } else {
         await fontPromise;
-        const fontRaw = fontAll.getContainer('raw');
+        const fontRaw = FontCont.getContainer('raw');
         if (!fontRaw) throw new Error('Raw font data not found.');
-        fontAll.opt = await optimizeFontContainerAll(fontRaw, fontMetricsObj);
+        FontCont.opt = await optimizeFontContainerAll(fontRaw, fontMetricsObj);
         opt.enableOpt = true;
         await enableFontOpt(true);
       }
     }
 
-    if (ocrData.defaultFont) fontAll.defaultFontName = ocrData.defaultFont;
+    if (ocrData.defaultFont) FontCont.defaultFontName = ocrData.defaultFont;
 
     if (ocrData.sansFont) {
-      fontAll.sansDefaultName = ocrData.sansFont;
+      FontCont.sansDefaultName = ocrData.sansFont;
     }
 
     if (ocrData.serifFont) {
-      fontAll.serifDefaultName = ocrData.serifFont;
+      FontCont.serifDefaultName = ocrData.serifFont;
     }
 
     // Restore layout data from previous session (if applicable)

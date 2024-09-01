@@ -221,45 +221,54 @@ export async function loadFontsFromSource(srcObj, opt = false) {
 // FontCont must contain no font data when initialized, and no data should be defined in this file.
 // This is because this file is run both from the main thread and workers, and fonts are defined different ways in each.
 // In the main thread, "raw" fonts are loaded from fetch requests, however in workers they are loaded from the main thread.
-class FontCont {
-  constructor() {
-    /** @type {?FontContainer} */
-    this.raw = null;
-    /** @type {?FontContainer} */
-    this.optInitial = null;
-    /** @type {?FontContainer} */
-    this.opt = null;
-    /** @type {?FontContainer} */
-    this.active = null;
-    /** @type {?FontContainer} */
-    this.export = null;
-    this.supp = {
-      /** @type {?FontContainerFont} */
-      chi_sim: null,
-    };
-    this.defaultFontName = 'SerifDefault';
-    this.serifDefaultName = 'NimbusRomNo9L';
-    this.sansDefaultName = 'NimbusSans';
+export class FontCont {
+  /** @type {?FontContainer} */
+  static raw = null;
 
-    this.loadedBuiltInRawWorker = false;
-    this.loadedBuiltInOptWorker = false;
+  /** @type {?FontContainer} */
+  static optInitial = null;
 
-    /** @type {?('latin'|'all')} */
-    this.glyphSet = null;
-    /**
-     * Get raw/opt/active font, and throw exception if it does not exist.
-     * This method only exists for type inference purposes, as raw/opt/active may be accessed directly, but may be `null`.
-     * This method should therefore only be used in cases where an exception on `null` is a desirable behavior.
-     * @param {('raw'|'opt'|'active'|'optInitial')} container
-     * @returns {FontContainer}
-     */
-    this.getContainer = (container) => {
-      const fontRes = this[container];
-      if (!fontRes) throw new Error(`${container} font container does not exist.`);
-      return fontRes;
-    };
+  /** @type {?FontContainer} */
+  static opt = null;
 
-    /**
+  /** @type {?FontContainer} */
+  static active = null;
+
+  /** @type {?FontContainer} */
+  static export = null;
+
+  static supp = {
+    /** @type {?FontContainerFont} */
+    chi_sim: null,
+  };
+
+  static defaultFontName = 'SerifDefault';
+
+  static serifDefaultName = 'NimbusRomNo9L';
+
+  static sansDefaultName = 'NimbusSans';
+
+  static loadedBuiltInRawWorker = false;
+
+  static loadedBuiltInOptWorker = false;
+
+  /** @type {?('latin'|'all')} */
+  static glyphSet = null;
+
+  /**
+   * Get raw/opt/active font, and throw exception if it does not exist.
+   * This method only exists for type inference purposes, as raw/opt/active may be accessed directly, but may be `null`.
+   * This method should therefore only be used in cases where an exception on `null` is a desirable behavior.
+   * @param {('raw'|'opt'|'active'|'optInitial')} container
+   * @returns {FontContainer}
+   */
+  static getContainer = (container) => {
+    const fontRes = FontCont[container];
+    if (!fontRes) throw new Error(`${container} font container does not exist.`);
+    return fontRes;
+  };
+
+  /**
      * Gets a font object.  Unlike accessing the font containers directly,
      * this method allows for special values 'Default', 'SansDefault', and 'SerifDefault' to be used.
      *
@@ -269,69 +278,71 @@ class FontCont {
      * @param {('raw'|'opt'|'active'|'optInitial')} [container='active']
      * @returns {FontContainerFont}
      */
-    this.getFont = (family, style = 'normal', lang = 'eng', container = 'active') => {
-      const fontCont = this.getContainer(container);
+  static getFont = (family, style = 'normal', lang = 'eng', container = 'active') => {
+    const fontCont = FontCont.getContainer(container);
 
-      if (lang === 'chi_sim') {
-        if (!this.supp.chi_sim) throw new Error('chi_sim font does not exist.');
-        return this.supp.chi_sim;
+    if (lang === 'chi_sim') {
+      if (!FontCont.supp.chi_sim) throw new Error('chi_sim font does not exist.');
+      return FontCont.supp.chi_sim;
+    }
+
+    // Option 1: If we have access to the font, use it.
+    // Option 2: If we do not have access to the font, but it closely resembles a built-in font, use the built-in font.
+    if (!fontCont?.[family]?.[style]) {
+      if (/Times/i.test(family)) {
+        family = 'NimbusRomNo9L';
+      } else if (/Helvetica/i.test(family)) {
+        family = 'NimbusSans';
+      } else if (/Arial/i.test(family)) {
+        family = 'NimbusSans';
+      } else if (/Century/i.test(family)) {
+        family = 'Century';
+      } else if (/Palatino/i.test(family)) {
+        family = 'Palatino';
+      } else if (/Garamond/i.test(family)) {
+        family = 'Garamond';
+      } else if (/Carlito/i.test(family)) {
+        family = 'Carlito';
+      } else if (/Calibri/i.test(family)) {
+        family = 'Carlito';
       }
+    }
 
-      // Option 1: If we have access to the font, use it.
-      // Option 2: If we do not have access to the font, but it closely resembles a built-in font, use the built-in font.
-      if (!fontCont?.[family]?.[style]) {
-        if (/Times/i.test(family)) {
-          family = 'NimbusRomNo9L';
-        } else if (/Helvetica/i.test(family)) {
-          family = 'NimbusSans';
-        } else if (/Arial/i.test(family)) {
-          family = 'NimbusSans';
-        } else if (/Century/i.test(family)) {
-          family = 'Century';
-        } else if (/Palatino/i.test(family)) {
-          family = 'Palatino';
-        } else if (/Garamond/i.test(family)) {
-          family = 'Garamond';
-        } else if (/Carlito/i.test(family)) {
-          family = 'Carlito';
-        } else if (/Calibri/i.test(family)) {
-          family = 'Carlito';
-        }
-      }
+    // Option 3: If the font still is not identified, use the default sans/serif font.
+    if (!fontCont?.[family]?.[style]) {
+      family = determineSansSerif(family);
+    }
 
-      // Option 3: If the font still is not identified, use the default sans/serif font.
-      if (!fontCont?.[family]?.[style]) {
-        family = determineSansSerif(family);
-      }
+    // This needs to come first as `defaultFontName` maps to either 'SerifDefault' or 'SansDefault'.
+    if (family === 'Default') family = FontCont.defaultFontName;
 
-      // This needs to come first as `defaultFontName` maps to either 'SerifDefault' or 'SansDefault'.
-      if (family === 'Default') family = this.defaultFontName;
+    if (family === 'SerifDefault') family = FontCont.serifDefaultName;
+    if (family === 'SansDefault') family = FontCont.sansDefaultName;
+    const fontRes = fontCont[family][style];
+    if (!fontRes) throw new Error(`Font container does not contain ${family} (${style}).`);
+    return fontRes;
+  };
 
-      if (family === 'SerifDefault') family = this.serifDefaultName;
-      if (family === 'SansDefault') family = this.sansDefaultName;
-      const fontRes = fontCont[family][style];
-      if (!fontRes) throw new Error(`Font container does not contain ${family} (${style}).`);
-      return fontRes;
-    };
+  /**
+   *
+   * @param {OcrWord} word
+   * @param {('raw'|'opt'|'active'|'optInitial')} [container='active']
+   */
+  static getWordFont = (word, container = 'active') => {
+    const wordFontFamily = word.font || FontCont.defaultFontName;
+    return FontCont.getFont(wordFontFamily, word.style, word.lang, container);
+  };
 
-    /**
-     *
-     * @param {OcrWord} word
-     * @param {('raw'|'opt'|'active'|'optInitial')} [container='active']
-     */
-    this.getWordFont = (word, container = 'active') => {
-      const wordFontFamily = word.font || fontAll.defaultFontName;
-      return this.getFont(wordFontFamily, word.style, word.lang, container);
-    };
+  static clear = () => {
+    FontCont.active = FontCont.raw;
+    FontCont.optInitial = null;
+    FontCont.opt = null;
+    FontCont.loadedBuiltInRawWorker = false;
+    FontCont.loadedBuiltInOptWorker = false;
+    FontCont.glyphSet = null;
 
-    this.clear = () => {
-      this.active = this.raw;
-      this.optInitial = null;
-      this.opt = null;
-      this.loadedBuiltInRawWorker = false;
-      this.loadedBuiltInOptWorker = false;
-    };
-  }
+    FontCont.defaultFontName = 'SerifDefault';
+    FontCont.serifDefaultName = 'NimbusRomNo9L';
+    FontCont.sansDefaultName = 'NimbusSans';
+  };
 }
-
-export const fontAll = new FontCont();

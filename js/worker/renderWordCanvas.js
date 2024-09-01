@@ -1,7 +1,7 @@
 // These function are used to render a word to a basic HTML Canvas element.
 // This differs from the code that renders to the main viewer canvas, which uses Konva.js.
 
-import { fontAll } from '../containers/fontContainer.js';
+import { FontCont } from '../containers/fontContainer.js';
 import { calcLineFontSize, calcWordMetrics } from '../utils/fontUtils.js';
 
 /**
@@ -14,7 +14,7 @@ import { calcLineFontSize, calcWordMetrics } from '../utils/fontUtils.js';
  * @param {Array<CanvasRenderingContext2D|OffscreenCanvasRenderingContext2D>} [ctxViewArr]
  */
 export async function drawWordActual(ctx, words, imageBinaryBit, imgDims, angle, ctxViewArr) {
-  if (!fontAll.active) throw new Error('Fonts must be defined before running this function.');
+  if (!FontCont.active) throw new Error('Fonts must be defined before running this function.');
   if (!ctx) throw new Error('Canvases must be defined before running this function.');
 
   // The font/style from the first word is used for the purposes of font metrics
@@ -26,7 +26,7 @@ export async function drawWordActual(ctx, words, imageBinaryBit, imgDims, angle,
     return;
   }
 
-  const fontI = fontAll.getWordFont(words[0]);
+  const fontI = FontCont.getWordFont(words[0]);
 
   const fontOpentypeI = fontI.opentype;
   ctx.font = `${fontI.fontFaceStyle} ${fontI.fontFaceWeight} ${1000}px ${fontI.fontFaceName}`;
@@ -157,10 +157,10 @@ const printWordOnCanvas = async ({
    * @param {boolean} [imageRotated=false] -
    */
 export const drawWordRender = async (ctx, word, offsetX = 0, cropY = 0, ctxView = null, imageRotated = false) => {
-  if (!fontAll.active) throw new Error('Fonts must be defined before running this function.');
+  if (!FontCont.active) throw new Error('Fonts must be defined before running this function.');
   if (!ctx) throw new Error('Canvases must be defined before running this function.');
 
-  const fontI = fontAll.getWordFont(word);
+  const fontI = FontCont.getWordFont(word);
 
   let baselineY = word.line.bbox.bottom + word.line.baseline[1];
 

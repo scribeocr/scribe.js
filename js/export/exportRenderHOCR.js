@@ -2,7 +2,7 @@ import { opt } from '../containers/app.js';
 import {
   fontMetricsObj, layoutDataTables, layoutRegions, pageMetricsArr,
 } from '../containers/dataContainer.js';
-import { fontAll } from '../containers/fontContainer.js';
+import { FontCont } from '../containers/fontContainer.js';
 import ocr from '../objects/ocrObjects.js';
 import { round6 } from '../utils/miscUtils.js';
 
@@ -18,9 +18,9 @@ export function renderHOCR(ocrData, minValue, maxValue) {
 
   const meta = {
     'font-metrics': fontMetricsObj,
-    'default-font': fontAll.defaultFontName,
-    'sans-font': fontAll.sansDefaultName,
-    'serif-font': fontAll.serifDefaultName,
+    'default-font': FontCont.defaultFontName,
+    'sans-font': FontCont.sansDefaultName,
+    'serif-font': FontCont.serifDefaultName,
     'enable-opt': opt.enableOpt,
     layout: layoutRegions.pages,
     'layout-data-table': layoutDataTables.serialize(),

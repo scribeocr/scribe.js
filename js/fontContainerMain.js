@@ -1,6 +1,6 @@
 import {
   checkMultiFontMode,
-  fontAll,
+  FontCont,
   FontContainerFont,
   loadFont,
   loadFontsFromSource,
@@ -15,9 +15,12 @@ import { gs } from './generalWorkerMain.js';
  */
 export async function loadBuiltInFontsRaw(glyphSet = 'latin') {
   // Return early if the font set is already loaded, or a superset of the requested set is loaded.
-  if (fontAll.glyphSet === glyphSet || fontAll.glyphSet === 'all' && glyphSet === 'latin') return;
+  if (FontCont.glyphSet === glyphSet || FontCont.glyphSet === 'all' && glyphSet === 'latin') {
+    console.log('Built-in fonts already loaded.');
+    return;
+  }
 
-  fontAll.glyphSet = glyphSet;
+  FontCont.glyphSet = glyphSet;
 
   // Note: this function is intentionally verbose, and should not be refactored to generate the paths dynamically.
   // Build systems will not be able to resolve the paths if they are generated dynamically.
@@ -110,8 +113,8 @@ export async function loadBuiltInFontsRaw(glyphSet = 'latin') {
     NimbusSans: { normal: await nimbusSansNormal, italic: await nimbusSansItalic, bold: await nimbusSansBold },
   };
 
-  fontAll.raw = await /** @type {FontContainer} */(/** @type {any} */(loadFontsFromSource(srcObj)));
-  if (!fontAll.active || (!fontAll.active.NimbusSans.normal.opt && !fontAll.active.NimbusRomNo9L.normal.opt)) fontAll.active = fontAll.raw;
+  FontCont.raw = await /** @type {FontContainer} */(/** @type {any} */(loadFontsFromSource(srcObj)));
+  if (!FontCont.active || (!FontCont.active.NimbusSans.normal.opt && !FontCont.active.NimbusRomNo9L.normal.opt)) FontCont.active = FontCont.raw;
 
   if (typeof process === 'undefined') {
     // This assumes that the scheduler `init` method has at least started.
@@ -144,7 +147,7 @@ export async function loadChiSimFont() {
     chiSimSrc = readFile(new URL('../fonts/NotoSansSC-Regular.ttf', import.meta.url)).then((res) => res.buffer);
   }
 
-  fontAll.supp.chi_sim = await loadFont('NotoSansSC', 'normal', 'sans', await chiSimSrc, false);
+  FontCont.supp.chi_sim = await loadFont('NotoSansSC', 'normal', 'sans', await chiSimSrc, false);
 
   chiReadyRes();
 
@@ -160,12 +163,12 @@ export async function loadChiSimFont() {
  */
 export async function enableFontOpt(enable, useInitial = false, forceWorkerUpdate = false) {
   // Enable/disable optimized font
-  if (enable && useInitial && fontAll.optInitial) {
-    fontAll.active = fontAll.optInitial;
-  } else if (enable && fontAll.opt) {
-    fontAll.active = fontAll.opt;
+  if (enable && useInitial && FontCont.optInitial) {
+    FontCont.active = FontCont.optInitial;
+  } else if (enable && FontCont.opt) {
+    FontCont.active = FontCont.opt;
   } else {
-    fontAll.active = fontAll.raw;
+    FontCont.active = FontCont.raw;
   }
 
   // Enable/disable optimized font in workers
@@ -183,11 +186,14 @@ export async function enableFontOpt(enable, useInitial = false, forceWorkerUpdat
  * @param {boolean} [force=false] - If true, forces the worker to update the font data even if the font data of this type is already loaded.
  */
 export async function setBuiltInFontsWorkers(scheduler, force = false) {
-  if (!fontAll.active) return;
+  if (!FontCont.active) {
+    console.error('Font data not loaded.');
+    return;
+  }
 
-  const opt = fontAll.active.Carlito.normal.opt || fontAll.active.NimbusRomNo9L.normal.opt;
+  const opt = FontCont.active.Carlito.normal.opt || FontCont.active.NimbusRomNo9L.normal.opt;
 
-  const loadedBuiltIn = (!opt && fontAll.loadedBuiltInRawWorker) || (opt && fontAll.loadedBuiltInOptWorker);
+  const loadedBuiltIn = (!opt && FontCont.loadedBuiltInRawWorker) || (opt && FontCont.loadedBuiltInOptWorker);
 
   // If the active font data is not already loaded, load it now.
   // This assumes that only one version of the raw/optimized fonts ever exist--
@@ -199,34 +205,34 @@ export async function setBuiltInFontsWorkers(scheduler, force = false) {
       const res = worker.loadFontsWorker({
         src: {
           Carlito: {
-            normal: fontAll.active.Carlito.normal.src,
-            italic: fontAll.active.Carlito.italic.src,
-            bold: fontAll.active.Carlito.bold.src,
+            normal: FontCont.active.Carlito.normal.src,
+            italic: FontCont.active.Carlito.italic.src,
+            bold: FontCont.active.Carlito.bold.src,
           },
           Century: {
-            normal: fontAll.active.Century.normal.src,
-            italic: fontAll.active.Century.italic.src,
-            bold: fontAll.active.Century.bold.src,
+            normal: FontCont.active.Century.normal.src,
+            italic: FontCont.active.Century.italic.src,
+            bold: FontCont.active.Century.bold.src,
           },
           Garamond: {
-            normal: fontAll.active.Garamond.normal.src,
-            italic: fontAll.active.Garamond.italic.src,
-            bold: fontAll.active.Garamond.bold.src,
+            normal: FontCont.active.Garamond.normal.src,
+            italic: FontCont.active.Garamond.italic.src,
+            bold: FontCont.active.Garamond.bold.src,
           },
           Palatino: {
-            normal: fontAll.active.Palatino.normal.src,
-            italic: fontAll.active.Palatino.italic.src,
-            bold: fontAll.active.Palatino.bold.src,
+            normal: FontCont.active.Palatino.normal.src,
+            italic: FontCont.active.Palatino.italic.src,
+            bold: FontCont.active.Palatino.bold.src,
           },
           NimbusRomNo9L: {
-            normal: fontAll.active.NimbusRomNo9L.normal.src,
-            italic: fontAll.active.NimbusRomNo9L.italic.src,
-            bold: fontAll.active.NimbusRomNo9L.bold.src,
+            normal: FontCont.active.NimbusRomNo9L.normal.src,
+            italic: FontCont.active.NimbusRomNo9L.italic.src,
+            bold: FontCont.active.NimbusRomNo9L.bold.src,
           },
           NimbusSans: {
-            normal: fontAll.active.NimbusSans.normal.src,
-            italic: fontAll.active.NimbusSans.italic.src,
-            bold: fontAll.active.NimbusSans.bold.src,
+            normal: FontCont.active.NimbusSans.normal.src,
+            italic: FontCont.active.NimbusSans.italic.src,
+            bold: FontCont.active.NimbusSans.bold.src,
           },
         },
         opt,
@@ -237,9 +243,9 @@ export async function setBuiltInFontsWorkers(scheduler, force = false) {
 
     // Theoretically this should be changed to use promises to avoid the race condition when `setBuiltInFontsWorkers` is called multiple times quickly and `loadFontsWorker` is still running.
     if (opt) {
-      fontAll.loadedBuiltInOptWorker = true;
+      FontCont.loadedBuiltInOptWorker = true;
     } else {
-      fontAll.loadedBuiltInRawWorker = true;
+      FontCont.loadedBuiltInRawWorker = true;
     }
   }
 
@@ -247,7 +253,7 @@ export async function setBuiltInFontsWorkers(scheduler, force = false) {
   const resArr = [];
   for (let i = 0; i < scheduler.workers.length; i++) {
     const worker = scheduler.workers[i];
-    const res = worker.setFontActiveWorker({ opt, sansDefaultName: fontAll.sansDefaultName, serifDefaultName: fontAll.serifDefaultName });
+    const res = worker.setFontActiveWorker({ opt, sansDefaultName: FontCont.sansDefaultName, serifDefaultName: FontCont.serifDefaultName });
     resArr.push(res);
   }
   await Promise.all(resArr);
@@ -259,11 +265,11 @@ export async function setBuiltInFontsWorkers(scheduler, force = false) {
  * @param {*} scheduler
  */
 export async function setUploadFontsWorker(scheduler) {
-  if (!fontAll.active) return;
+  if (!FontCont.active) return;
 
   /** @type {Object<string, fontSrcBuiltIn|fontSrcUpload>} */
   const fontsUpload = {};
-  for (const [key, value] of Object.entries(fontAll.active)) {
+  for (const [key, value] of Object.entries(FontCont.active)) {
     if (!['Carlito', 'Century', 'Garamond', 'Palatino', 'NimbusRomNo9L', 'NimbusSans'].includes(key)) {
       fontsUpload[key] = {
         normal: value?.normal?.src, italic: value?.italic?.src, bold: value?.bold?.src,
@@ -286,10 +292,10 @@ export async function setUploadFontsWorker(scheduler) {
 
   // Set the active font in the workers to match the active font in `fontAll`
   const resArr = [];
-  const opt = fontAll.active.Carlito.normal.opt || fontAll.active.NimbusRomNo9L.normal.opt;
+  const opt = FontCont.active.Carlito.normal.opt || FontCont.active.NimbusRomNo9L.normal.opt;
   for (let i = 0; i < scheduler.workers.length; i++) {
     const worker = scheduler.workers[i];
-    const res = worker.setFontActiveWorker({ opt, sansDefaultName: fontAll.sansDefaultName, serifDefaultName: fontAll.serifDefaultName });
+    const res = worker.setFontActiveWorker({ opt, sansDefaultName: FontCont.sansDefaultName, serifDefaultName: FontCont.serifDefaultName });
     resArr.push(res);
   }
   await Promise.all(resArr);
@@ -307,15 +313,15 @@ export function setDefaultFontAuto(fontMetricsObj) {
 
   // Change default font to whatever named font appears more
   if ((fontMetricsObj.SerifDefault?.obs || 0) > (fontMetricsObj.SansDefault?.obs || 0)) {
-    fontAll.defaultFontName = 'SerifDefault';
+    FontCont.defaultFontName = 'SerifDefault';
   } else {
-    fontAll.defaultFontName = 'SansDefault';
+    FontCont.defaultFontName = 'SansDefault';
   }
 
   if (gs.schedulerInner) {
     for (let i = 0; i < gs.schedulerInner.workers.length; i++) {
       const worker = gs.schedulerInner.workers[i];
-      worker.setDefaultFontNameWorker({ defaultFontName: fontAll.defaultFontName });
+      worker.setDefaultFontNameWorker({ defaultFontName: FontCont.defaultFontName });
     }
   }
 }

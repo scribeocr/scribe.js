@@ -6,7 +6,7 @@ import {
   layoutRegions,
   ocrAll, pageMetricsArr, visInstructions,
 } from './js/containers/dataContainer.js';
-import { fontAll } from './js/containers/fontContainer.js';
+import { FontCont } from './js/containers/fontContainer.js';
 import { ImageCache } from './js/containers/imageContainer.js';
 import coords from './js/coordinates.js';
 import { drawDebugImages, renderPageStatic } from './js/debug.js';
@@ -148,7 +148,7 @@ class data {
   // TODO: Modify such that debugging data is not calculated by default.
   static debug = DebugData;
 
-  static font = fontAll;
+  static font = FontCont;
 
   static image = ImageCache;
 

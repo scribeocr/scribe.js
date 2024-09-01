@@ -9,8 +9,8 @@ import { getImageBitmap } from '../utils/imageUtils.js';
 import { setUploadFontsWorker } from '../fontContainerMain.js';
 import { pageMetricsArr } from './dataContainer.js';
 import {
+  FontCont,
   FontContainerFont,
-  fontAll,
   loadOpentype,
 } from './fontContainer.js';
 
@@ -561,12 +561,12 @@ export class ImageCache {
           // mupdf replaces spaces with underscores in font names.
           const fontName = fontFamilyEmbedded.replace(/[^+]+\+/g, '').replace(/\s/g, '_');
 
-          if (!fontAll.raw[fontName]) {
-            fontAll.raw[fontName] = {};
+          if (!FontCont.raw[fontName]) {
+            FontCont.raw[fontName] = {};
           }
 
-          if (!fontAll.raw[fontName][fontStyle]) {
-            fontAll.raw[fontName][fontStyle] = new FontContainerFont(fontName, fontStyle, src, false, fontObj);
+          if (!FontCont.raw[fontName][fontStyle]) {
+            FontCont.raw[fontName][fontStyle] = new FontContainerFont(fontName, fontStyle, src, false, fontObj);
           }
         }
 
