@@ -8,7 +8,7 @@ import {
   ocrAllRaw,
   pageMetricsArr,
 } from './containers/dataContainer.js';
-import { fontAll } from './containers/fontContainer.js';
+import { FontCont } from './containers/fontContainer.js';
 import { ImageCache } from './containers/imageContainer.js';
 import { replaceObjectProperties } from './utils/miscUtils.js';
 
@@ -23,5 +23,5 @@ export function clearData() {
   ImageCache.clear();
   // Clear optimized font data and reset fontAll to raw data.
   replaceObjectProperties(fontMetricsObj);
-  fontAll.clear();
+  FontCont.clear();
 }

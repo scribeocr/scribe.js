@@ -1,5 +1,5 @@
 import { DebugData, fontMetricsObj, pageMetricsArr } from './containers/dataContainer.js';
-import { fontAll } from './containers/fontContainer.js';
+import { FontCont } from './containers/fontContainer.js';
 import { ImageCache } from './containers/imageContainer.js';
 import {
   enableFontOpt,
@@ -62,7 +62,7 @@ export async function evalPagesFont(font, pageArr, opt, n = 500) {
 * @param {boolean} opt - Whether to use optimized fonts.
 */
 export async function evaluateFonts(pageArr, opt) {
-  const fontActive = fontAll.getContainer('active');
+  const fontActive = FontCont.getContainer('active');
 
   const debug = false;
 
@@ -168,7 +168,7 @@ export async function evaluateFonts(pageArr, opt) {
 export async function runFontOptimization(ocrArr) {
   await loadBuiltInFontsRaw();
 
-  const fontRaw = fontAll.getContainer('raw');
+  const fontRaw = FontCont.getContainer('raw');
 
   const calculateOpt = fontMetricsObj && Object.keys(fontMetricsObj).length > 0;
 
@@ -181,14 +181,14 @@ export async function runFontOptimization(ocrArr) {
 
     optimizeFontContainerAllPromise = optimizeFontContainerAll(fontRaw, fontMetricsObj)
       .then((res) => {
-        fontAll.optInitial = res;
+        FontCont.optInitial = res;
 
         // If no image data exists, then `opt` is set to `optInitial`.
         // This behavior exists so that data can be loaded from previous sessions without changing the appearance of the document.
         // Arguably, in cases where a user uploads raw OCR data and no images, using the raw font is more prudent than an unvalidated optimized font.
         // If this ever comes up in actual usage and is a problem, then the behavior can be changed for that specific case.
         if (!ImageCache.inputModes.image && !ImageCache.inputModes.pdf) {
-          fontAll.opt = { ...fontAll.optInitial };
+          FontCont.opt = { ...FontCont.optInitial };
         }
       });
   }
@@ -209,7 +209,7 @@ export async function runFontOptimization(ocrArr) {
     DebugData.evalRaw = evalRaw;
 
     await optimizeFontContainerAllPromise;
-    if (calculateOpt && Object.keys(fontAll.optInitial).length > 0) {
+    if (calculateOpt && Object.keys(FontCont.optInitial).length > 0) {
       // Enable optimized fonts
       await enableFontOpt(true, true, true);
 
@@ -219,39 +219,39 @@ export async function runFontOptimization(ocrArr) {
       // The default font for both the optimized and unoptimized versions are set to the same font.
       // This ensures that switching on/off "font optimization" does not change the font, which would be confusing.
       if (evalOpt.sansMetrics[evalOpt.minKeySans] < evalRaw.sansMetrics[evalRaw.minKeySans]) {
-        fontAll.sansDefaultName = evalOpt.minKeySans;
+        FontCont.sansDefaultName = evalOpt.minKeySans;
         enableOptSans = true;
       } else {
-        fontAll.sansDefaultName = evalRaw.minKeySans;
+        FontCont.sansDefaultName = evalRaw.minKeySans;
       }
 
       // Repeat for serif fonts
       if (evalOpt.serifMetrics[evalOpt.minKeySerif] < evalRaw.serifMetrics[evalRaw.minKeySerif]) {
-        fontAll.serifDefaultName = evalOpt.minKeySerif;
+        FontCont.serifDefaultName = evalOpt.minKeySerif;
         enableOptSerif = true;
       } else {
-        fontAll.serifDefaultName = evalRaw.minKeySerif;
+        FontCont.serifDefaultName = evalRaw.minKeySerif;
       }
 
       // Create final optimized font object.
       // The final optimized font is set to either the initial optimized font or the raw font depending on what fits better.
       // Make shallow copy to allow for changing individual fonts without copying the entire object.
-      fontAll.opt = { ...fontAll.optInitial };
+      FontCont.opt = { ...FontCont.optInitial };
 
       if (!enableOptSans) {
-        fontAll.opt.Carlito = fontRaw.Carlito;
-        fontAll.opt.NimbusSans = fontRaw.NimbusSans;
+        FontCont.opt.Carlito = fontRaw.Carlito;
+        FontCont.opt.NimbusSans = fontRaw.NimbusSans;
       }
 
       if (!enableOptSerif) {
-        fontAll.opt.Century = fontRaw.Century;
-        fontAll.opt.Garamond = fontRaw.Garamond;
-        fontAll.opt.NimbusRomNo9L = fontRaw.NimbusRomNo9L;
-        fontAll.opt.Palatino = fontRaw.Palatino;
+        FontCont.opt.Century = fontRaw.Century;
+        FontCont.opt.Garamond = fontRaw.Garamond;
+        FontCont.opt.NimbusRomNo9L = fontRaw.NimbusRomNo9L;
+        FontCont.opt.Palatino = fontRaw.Palatino;
       }
     } else {
-      fontAll.sansDefaultName = evalRaw.minKeySans;
-      fontAll.serifDefaultName = evalRaw.minKeySerif;
+      FontCont.sansDefaultName = evalRaw.minKeySans;
+      FontCont.serifDefaultName = evalRaw.minKeySerif;
     }
   }
 

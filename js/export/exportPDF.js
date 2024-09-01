@@ -1,6 +1,6 @@
 import { winEncodingLookup } from '../../fonts/encoding.js';
 
-import { fontAll } from '../containers/fontContainer.js';
+import { FontCont } from '../containers/fontContainer.js';
 import {
   calcWordMetrics, subsetFont,
 } from '../utils/fontUtils.js';
@@ -35,7 +35,7 @@ export async function hocrToPDF(hocrArr, minpage = 0, maxpage = -1, textMode = '
   dimsLimit = { width: -1, height: -1 }, confThreshHigh = 85, confThreshMed = 75, proofOpacity = 0.8) {
   // TODO: Currently, all fonts are added to the PDF, and mupdf removes the unused fonts.
   // It would likely be more performant to only add the fonts that are actually used up front.
-  const exportFontObj = fontAll.getContainer('active');
+  const exportFontObj = FontCont.getContainer('active');
 
   if (maxpage === -1) {
     maxpage = hocrArr.length - 1;
@@ -86,9 +86,9 @@ export async function hocrToPDF(hocrArr, minpage = 0, maxpage = -1, textMode = '
 
   /** @type {?import('opentype.js').Font} */
   let fontChiSimExport = null;
-  if (fontAll.supp.chi_sim) {
+  if (FontCont.supp.chi_sim) {
     pdfFonts.NotoSansSC = {};
-    const font = fontAll.supp.chi_sim.opentype;
+    const font = FontCont.supp.chi_sim.opentype;
 
     const objectThis = objectI;
 
@@ -322,7 +322,7 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
 
     textContentObjStr += `${fillColor}\n`;
 
-    let wordFont = fontAll.getWordFont(firstWord);
+    let wordFont = FontCont.getWordFont(firstWord);
 
     // The Chinese font is subset to only relevant characters, the others currently are not.
     let wordFontOpentype = (firstWord.lang === 'chi_sim' ? fontChiSim : wordFont.opentype);
@@ -391,7 +391,7 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
       const wordLeftBearing = firstWord.visualCoords ? wordMetrics.leftSideBearing : 0;
       const kerningArr = wordMetrics.kerningArr;
 
-      wordFont = fontAll.getWordFont(firstWord);
+      wordFont = FontCont.getWordFont(firstWord);
       wordFontOpentype = firstWord.lang === 'chi_sim' ? fontChiSim : wordFont.opentype;
 
       if (!wordFontOpentype) {

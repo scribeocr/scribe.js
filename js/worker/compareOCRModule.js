@@ -6,7 +6,7 @@ import { calcLineFontSize, calcWordFontSize, calcWordMetrics } from '../utils/fo
 import { getImageBitmap } from '../utils/imageUtils.js';
 import { drawWordActual, drawWordRender } from './renderWordCanvas.js';
 
-import { fontAll } from '../containers/fontContainer.js';
+import { FontCont } from '../containers/fontContainer.js';
 import { imageUtils } from '../objects/imageObjects.js';
 import { getRandomAlphanum } from '../utils/miscUtils.js';
 // import { CompDebug } from '../objects/imageObjects.js';
@@ -96,7 +96,7 @@ export const initCanvasNode = async () => {
     // The Node.js canvas package does not currently support worke threads
     // https://github.com/Automattic/node-canvas/issues/1394
     if (!isMainThread) throw new Error('node-canvas is not currently supported on worker threads.');
-    if (!fontAll.raw) throw new Error('Fonts must be defined before running this function.');
+    if (!FontCont.raw) throw new Error('Fonts must be defined before running this function.');
 
     const { writeFile } = await import('fs');
     const { promisify } = await import('util');
@@ -129,7 +129,7 @@ export const initCanvasNode = async () => {
 
     // All fonts must be registered before the canvas is created, so all raw and optimized fonts are loaded.
     // Even when using optimized fonts, at least one raw font is needed to compare against optimized version.
-    for (const [key1, value1] of Object.entries(fontAll.raw)) {
+    for (const [key1, value1] of Object.entries(FontCont.raw)) {
       if (['Default', 'SansDefault', 'SerifDefault'].includes(key1)) continue;
       for (const [key2, value2] of Object.entries(value1)) {
         await registerFontObj(value2);
@@ -137,8 +137,8 @@ export const initCanvasNode = async () => {
     }
 
     // This function is used before font optimization is complete, so `fontAll.opt` does not exist yet.
-    if (fontAll.optInitial) {
-      for (const [key1, value1] of Object.entries(fontAll.optInitial)) {
+    if (FontCont.optInitial) {
+      for (const [key1, value1] of Object.entries(FontCont.optInitial)) {
         if (['Default', 'SansDefault', 'SerifDefault'].includes(key1)) continue;
         for (const [key2, value2] of Object.entries(value1)) {
           await registerFontObj(value2);
@@ -203,7 +203,7 @@ export async function evalWords({
 
   const binaryImageBit = await getImageBitmap(binaryImage);
 
-  if (!fontAll.active) throw new Error('Fonts must be defined before running this function.');
+  if (!FontCont.active) throw new Error('Fonts must be defined before running this function.');
   if (!calcCtx) throw new Error('Canvases must be defined before running this function.');
 
   const view = options?.view === undefined ? false : options?.view;
@@ -436,7 +436,7 @@ async function penalizeWord(wordObjs) {
     const wordTextArr = wordStr.split('');
     const wordFontSize = calcLineFontSize(word.line);
 
-    const fontI = fontAll.getWordFont(word);
+    const fontI = FontCont.getWordFont(word);
     const fontOpentypeI = fontI.opentype;
 
     // These calculations differ from the standard word width calculations,
@@ -1054,7 +1054,7 @@ export async function evalPageBase({
 
   const binaryImageBit = binaryImage.imageBitmap || await getImageBitmap(binaryImage.src);
 
-  if (!fontAll.active) throw new Error('Fonts must be defined before running this function.');
+  if (!FontCont.active) throw new Error('Fonts must be defined before running this function.');
   if (!calcCtx) throw new Error('Canvases must be defined before running this function.');
 
   let metricTotal = 0;
@@ -1099,22 +1099,23 @@ export async function evalPageBase({
 export async function evalPageFont({
   page, binaryImage, pageMetricsObj, font, opt = false,
 }) {
-  const fontAllActiveSave = fontAll.active;
+  const fontAllActiveSave = FontCont.active;
 
   // Allowing the font to be set here allows for better performance during font optimization compared to using the `enableFontOpt` function.
   // This is because the `enableFontOpt` function requires a response from the main thread and *every* worker before completing, which leads to non-trivial waiting time.
   if (opt === true) {
-    if (!fontAll.opt && !fontAll.optInitial) throw new Error('Optimized fonts requested but not defined.');
-    fontAll.active = fontAll.opt || fontAll.optInitial;
+    if (!FontCont.opt && !FontCont.optInitial) throw new Error('Optimized fonts requested but not defined.');
+    FontCont.active = FontCont.opt || FontCont.optInitial;
   } else if (opt === false) {
-    fontAll.active = fontAll.raw;
+    if (!FontCont.raw) throw new Error('Raw fonts requested but not defined.');
+    FontCont.active = FontCont.raw;
   }
 
   /**
  * @param {OcrLine} ocrLineJ
  */
   const transformLineFont = (ocrLineJ) => {
-    if (!fontAll.active) throw new Error('Fonts must be defined before running this function.');
+    if (!FontCont.active) throw new Error('Fonts must be defined before running this function.');
 
     if (!ocrLineJ.words[0]) {
       console.log('Line has 0 words, this should not happen.');
@@ -1122,9 +1123,9 @@ export async function evalPageFont({
     }
 
     // If the font is not set for a specific word, whether it is assumed sans/serif will be determined by the default font.
-    const lineFontType = ocrLineJ.words[0].font ? fontAll.getWordFont(ocrLineJ.words[0]).type : fontAll.getFont('Default').type;
+    const lineFontType = ocrLineJ.words[0].font ? FontCont.getWordFont(ocrLineJ.words[0]).type : FontCont.getFont('Default').type;
 
-    if (fontAll.active[font].normal.type !== lineFontType) return null;
+    if (FontCont.active[font].normal.type !== lineFontType) return null;
 
     const ocrLineJClone = ocr.cloneLine(ocrLineJ);
 
@@ -1139,7 +1140,7 @@ export async function evalPageFont({
     page, binaryImage, pageMetricsObj, func: transformLineFont,
   });
 
-  fontAll.active = fontAllActiveSave;
+  FontCont.active = fontAllActiveSave;
 
   return res;
 }
@@ -1174,7 +1175,7 @@ export async function nudgePageBase({
 
   const binaryImageBit = await getImageBitmap(binaryImage);
 
-  if (!fontAll.active) throw new Error('Fonts must be defined before running this function.');
+  if (!FontCont.active) throw new Error('Fonts must be defined before running this function.');
   if (!calcCtx) throw new Error('Canvases must be defined before running this function.');
 
   let improveCt = 0;
@@ -1362,7 +1363,7 @@ export const renderPageStaticImp = async ({
         advanceArrTotal.push(leftI);
       }
 
-      const font = fontAll.getWordFont(wordObj);
+      const font = FontCont.getWordFont(wordObj);
       viewCtx0.font = `${font.fontFaceStyle} ${font.fontFaceWeight} ${wordFontSize}px ${font.fontFaceName}`;
       let leftI = wordObj.visualCoords ? visualLeft - leftSideBearing : visualLeft;
       for (let i = 0; i < wordMetrics.charArr.length; i++) {

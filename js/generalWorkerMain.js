@@ -28,7 +28,12 @@ export async function initGeneralWorker() {
 
     worker.onmessage = async (event) => {
       if (workerPromises[event.data.id]) {
-        workerPromises[event.data.id].resolve(event.data.data);
+        if (event.data.status === 'reject') {
+          console.log(event.data.data);
+          workerPromises[event.data.id].reject(event.data.data);
+        } else {
+          workerPromises[event.data.id].resolve(event.data.data);
+        }
       }
     };
 
