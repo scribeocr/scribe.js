@@ -348,10 +348,10 @@ export async function optimizeFontContainerFamily(fontFamily, fontMetricsObj) {
       return new FontContainerFont(fontFamily.normal.family, fontFamily.normal.style, x.fontData, true, font);
     });
 
-  const metricsItalic = fontMetricsObj[fontMetricsType][fontFamily.italic.style] && fontMetricsObj[fontMetricsType][fontFamily.italic.style].obs >= 200;
+  const metricsItalic = fontMetricsObj[fontMetricsType][fontFamily.italic.style];
   /** @type {?FontContainerFont|Promise<FontContainerFont>} */
   let italicOptFont = null;
-  if (metricsItalic) {
+  if (metricsItalic && metricsItalic.obs >= 200) {
     italicOptFont = gs.scheduler.optimizeFont({ fontData: fontFamily.italic.src, fontMetricsObj: metricsItalic, style: fontFamily.italic.style })
       .then(async (x) => {
         const font = await loadOpentype(x.fontData, x.kerningPairs);

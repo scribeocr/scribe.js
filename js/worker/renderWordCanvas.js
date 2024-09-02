@@ -2,6 +2,7 @@
 // This differs from the code that renders to the main viewer canvas, which uses Konva.js.
 
 import { FontCont } from '../containers/fontContainer.js';
+import ocr from '../objects/ocrObjects.js';
 import { calcLineFontSize, calcWordMetrics } from '../utils/fontUtils.js';
 
 /**
@@ -42,9 +43,6 @@ export async function drawWordActual(ctx, words, imageBinaryBit, imgDims, angle,
   const sinAngle = Math.sin(angle * (Math.PI / 180));
   const cosAngle = Math.cos(angle * (Math.PI / 180));
 
-  const shiftX = sinAngle * (imgDims.height * 0.5) * -1 || 0;
-  const shiftY = sinAngle * ((imgDims.width - shiftX) * 0.5) || 0;
-
   const wordsBox = words.map((x) => x.bbox);
 
   // Union of all bounding boxes
@@ -56,46 +54,33 @@ export async function drawWordActual(ctx, words, imageBinaryBit, imgDims, angle,
   };
 
   // All words are assumed to be on the same line
+  const lineObj = words[0].line;
   const linebox = words[0].line.bbox;
   const { baseline } = words[0].line;
 
-  let angleAdjXLine = 0;
-  let angleAdjYLine = 0;
-  if (Math.abs(angle ?? 0) > 0.05) {
-    const x = linebox.left;
-    const y = linebox.bottom + baseline[1];
+  const imageRotated = angle !== 0;
+  const angleAdjLine = imageRotated ? ocr.calcLineStartAngleAdj(lineObj) : { x: 0, y: 0 };
 
-    const xRot = x * cosAngle - sinAngle * y;
-    // const yRot = x * sinAngle + cosAngle * y;
-
-    const angleAdjXInt = x - xRot;
-
-    const angleAdjYInt = sinAngle * (linebox.left + angleAdjXInt / 2) * -1;
-
-    angleAdjXLine = angleAdjXInt + shiftX;
-    angleAdjYLine = angleAdjYInt + shiftY;
-  }
-
-  const angleAdjXWord = Math.abs(angle) >= 1 ? angleAdjXLine + (1 - cosAngle) * (wordBoxUnion.left - linebox.left) : angleAdjXLine;
+  const start = linebox.left + angleAdjLine.x + (wordBoxUnion.left - linebox.left) / cosAngle;
 
   // We crop to the dimensions of the font (fontAsc and fontDesc) rather than the image bounding box.
   const height = fontAsc && fontDesc ? fontAsc + fontDesc : wordBoxUnion.bottom - wordBoxUnion.top + 1;
   const width = wordBoxUnion.right - wordBoxUnion.left + 1;
 
   const cropY = linebox.bottom + baseline[1] - fontAsc - 1;
-  const cropYAdj = cropY + angleAdjYLine;
+  const cropYAdj = cropY + angleAdjLine.y;
 
   ctx.canvas.height = height;
   ctx.canvas.width = width;
 
-  ctx.drawImage(imageBinaryBit, wordBoxUnion.left + angleAdjXWord - 1, cropYAdj, width, height, 0, 0, width, height);
+  ctx.drawImage(imageBinaryBit, start - 1, cropYAdj, width, height, 0, 0, width, height);
 
   if (ctxViewArr && ctxViewArr.length > 0) {
     for (let i = 0; i < ctxViewArr.length; i++) {
       const ctxI = ctxViewArr[i];
       ctxI.canvas.height = height;
       ctxI.canvas.width = width;
-      ctxI.drawImage(imageBinaryBit, wordBoxUnion.left + angleAdjXWord - 1, cropYAdj, width, height, 0, 0, width, height);
+      ctxI.drawImage(imageBinaryBit, start - 1, cropYAdj, width, height, 0, 0, width, height);
     }
   }
 
