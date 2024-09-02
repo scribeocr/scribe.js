@@ -13,7 +13,7 @@ import { ImageCache } from './containers/imageContainer.js';
 import { replaceObjectProperties } from './utils/miscUtils.js';
 
 export function clearData() {
-  inputData.pageCount = 0;
+  inputData.clear();
   replaceObjectProperties(ocrAll, { active: [] });
   replaceObjectProperties(ocrAllRaw, { active: [] });
   layoutRegions.pages.length = 0;

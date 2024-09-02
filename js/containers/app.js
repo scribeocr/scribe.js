@@ -80,4 +80,15 @@ export class inputData {
   static defaultDownloadFileName = '';
 
   static pageCount = 0;
+
+  static clear = () => {
+    inputData.xmlMode.length = 0;
+    inputData.pdfMode = false;
+    inputData.imageMode = false;
+    inputData.resumeMode = false;
+    inputData.evalMode = false;
+    inputData.inputFileNames = [];
+    inputData.defaultDownloadFileName = '';
+    inputData.pageCount = 0;
+  };
 }
