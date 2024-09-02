@@ -101,6 +101,8 @@ export function OcrWord(line, text, bbox, id) {
   this.smallCaps = false;
   /** @type {string} */
   this.text = text;
+  /** @type {?string} */
+  this.textAlt = null;
   /** @type {('normal'|'italic'|'bold')} */
   this.style = 'normal';
   /** @type {?string} */
