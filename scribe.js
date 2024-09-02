@@ -79,11 +79,11 @@ const init = async (params) => {
  * @param {boolean} [options.skipRecPDFTextOCR=false] - If the input is an image-native PDF with existing OCR layer, skip recognition and return the existing text.
  */
 const extractText = async (files, langs = ['eng'], outputFormat = 'txt', options = {}) => {
-  if (!inputData.xmlMode[0] && !inputData.imageMode && !inputData.pdfMode) throw new Error('No relevant files to process.');
   const skipRecPDFTextNative = options?.skipRecPDFTextNative ?? true;
   const skipRecPDFTextOCR = options?.skipRecPDFTextOCR ?? false;
   init({ ocr: true, font: true });
   await importFiles(files, { extractPDFTextNative: skipRecPDFTextNative, extractPDFTextOCR: skipRecPDFTextOCR });
+  if (!inputData.xmlMode[0] && !inputData.imageMode && !inputData.pdfMode) throw new Error('No relevant files to process.');
   const skipRecPDF = inputData.pdfMode && (ImageCache.pdfType === 'text' && skipRecPDFTextNative || ImageCache.pdfType === 'ocr' && skipRecPDFTextOCR);
   const skipRecOCR = inputData.xmlMode[0] && !inputData.imageMode && !inputData.pdfMode;
   if (!skipRecPDF && !skipRecOCR) await recognize({ langs });
