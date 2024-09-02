@@ -1,16 +1,16 @@
-import { DebugData, fontMetricsObj, pageMetricsArr } from './containers/dataContainer.js';
+import { fontMetricsObj, pageMetricsArr } from './containers/dataContainer.js';
 import { FontCont } from './containers/fontContainer.js';
 import { ImageCache } from './containers/imageContainer.js';
 import {
-  enableFontOpt,
   loadBuiltInFontsRaw,
   optimizeFontContainerAll, setDefaultFontAuto,
+  updateFontContWorkerMain,
 } from './fontContainerMain.js';
 import { gs } from './generalWorkerMain.js';
 
 /**
  * Evaluate how well a font matches the provided array of pages.
- * @param {FontContainerFamily} font
+ * @param {string} font - Name of font family.
  * @param {Array<OcrPage>} pageArr
  * @param {boolean} opt - Whether to use optimized fonts.
  * @param {number} n - Number of words to compare
@@ -33,7 +33,7 @@ export async function evalPagesFont(font, pageArr, opt, n = 500) {
       const { evalPageFont } = await import('./worker/compareOCRModule.js');
 
       res = await evalPageFont({
-        font: font.normal.family,
+        font,
         page: pageArr[i],
         binaryImage: imageI,
         pageMetricsObj: pageMetricsArr[i],
@@ -42,7 +42,7 @@ export async function evalPagesFont(font, pageArr, opt, n = 500) {
       // Browser case
     } else {
       res = await gs.scheduler.evalPageFont({
-        font: font.normal.family,
+        font,
         page: pageArr[i],
         binaryImage: imageI,
         pageMetricsObj: pageMetricsArr[i],
@@ -62,26 +62,28 @@ export async function evalPagesFont(font, pageArr, opt, n = 500) {
 * @param {boolean} opt - Whether to use optimized fonts.
 */
 export async function evaluateFonts(pageArr, opt) {
-  const fontActive = FontCont.getContainer('active');
-
-  const debug = false;
+  const evalCarlito = !!(opt ? FontCont.opt?.Carlito : FontCont.raw?.Carlito);
+  const evalNimbusSans = !!(opt ? FontCont.opt?.NimbusSans : FontCont.raw?.NimbusSans);
+  const evalCentury = !!(opt ? FontCont.opt?.Century : FontCont.raw?.Century);
+  const evalPalatino = !!(opt ? FontCont.opt?.Palatino : FontCont.raw?.Palatino);
+  const evalGaramond = !!(opt ? FontCont.opt?.Garamond : FontCont.raw?.Garamond);
+  const evalNimbusRomNo9L = !!(opt ? FontCont.opt?.NimbusRomNo9L : FontCont.raw?.NimbusRomNo9L);
 
   // The browser version runs in parallel using workers, however the Node.js version runs sequentially,
   // as the canvas package does not support workers, and trying to run in parallel causes problems.
   // The logic is the same in both versions.
-  let sansMetrics;
-  let serifMetrics;
+  let fontMetricsTmp;
   if (typeof process === 'undefined') {
     const fontMetricsPromises = {
-      carlito: evalPagesFont(fontActive.Carlito, pageArr, opt),
-      nimbusSans: evalPagesFont(fontActive.NimbusSans, pageArr, opt),
-      century: evalPagesFont(fontActive.Century, pageArr, opt),
-      palatino: evalPagesFont(fontActive.Palatino, pageArr, opt),
-      garamond: evalPagesFont(fontActive.Garamond, pageArr, opt),
-      nimbusRomNo9L: evalPagesFont(fontActive.NimbusRomNo9L, pageArr, opt),
+      carlito: evalCarlito ? evalPagesFont('Carlito', pageArr, opt) : null,
+      nimbusSans: evalNimbusSans ? evalPagesFont('NimbusSans', pageArr, opt) : null,
+      century: evalCentury ? evalPagesFont('Century', pageArr, opt) : null,
+      palatino: evalPalatino ? evalPagesFont('Palatino', pageArr, opt) : null,
+      garamond: evalGaramond ? evalPagesFont('Garamond', pageArr, opt) : null,
+      nimbusRomNo9L: evalNimbusRomNo9L ? evalPagesFont('NimbusRomNo9L', pageArr, opt) : null,
     };
 
-    const fontMetrics = {
+    fontMetricsTmp = {
       carlito: await fontMetricsPromises.carlito,
       nimbusSans: await fontMetricsPromises.nimbusSans,
       century: await fontMetricsPromises.century,
@@ -89,46 +91,39 @@ export async function evaluateFonts(pageArr, opt) {
       garamond: await fontMetricsPromises.garamond,
       nimbusRomNo9L: await fontMetricsPromises.nimbusRomNo9L,
     };
-
-    sansMetrics = {
-      Carlito: fontMetrics.carlito.metricTotal / fontMetrics.carlito.wordsTotal,
-      NimbusSans: fontMetrics.nimbusSans.metricTotal / fontMetrics.nimbusSans.wordsTotal,
-    };
-
-    serifMetrics = {
-      Century: fontMetrics.century.metricTotal / fontMetrics.century.wordsTotal,
-      Palatino: fontMetrics.palatino.metricTotal / fontMetrics.palatino.wordsTotal,
-      Garamond: fontMetrics.garamond.metricTotal / fontMetrics.garamond.wordsTotal,
-      NimbusRomNo9L: fontMetrics.nimbusRomNo9L.metricTotal / fontMetrics.nimbusRomNo9L.wordsTotal,
-    };
   } else {
-    const fontMetrics = {
-      Carlito: await evalPagesFont(fontActive.Carlito, pageArr, opt),
-      NimbusSans: await evalPagesFont(fontActive.NimbusSans, pageArr, opt),
-      Century: await evalPagesFont(fontActive.Century, pageArr, opt),
-      Palatino: await evalPagesFont(fontActive.Palatino, pageArr, opt),
-      Garamond: await evalPagesFont(fontActive.Garamond, pageArr, opt),
-      NimbusRomNo9L: await evalPagesFont(fontActive.NimbusRomNo9L, pageArr, opt),
-    };
-
-    sansMetrics = {
-      Carlito: fontMetrics.Carlito.metricTotal / fontMetrics.Carlito.wordsTotal,
-      NimbusSans: fontMetrics.NimbusSans.metricTotal / fontMetrics.NimbusSans.wordsTotal,
-    };
-
-    serifMetrics = {
-      Century: fontMetrics.Century.metricTotal / fontMetrics.Century.wordsTotal,
-      Palatino: fontMetrics.Palatino.metricTotal / fontMetrics.Palatino.wordsTotal,
-      Garamond: fontMetrics.Garamond.metricTotal / fontMetrics.Garamond.wordsTotal,
-      NimbusRomNo9L: fontMetrics.NimbusRomNo9L.metricTotal / fontMetrics.NimbusRomNo9L.wordsTotal,
+    fontMetricsTmp = {
+      carlito: evalCarlito ? await evalPagesFont('Carlito', pageArr, opt) : null,
+      nimbusSans: evalNimbusSans ? await evalPagesFont('NimbusSans', pageArr, opt) : null,
+      century: evalCentury ? await evalPagesFont('Century', pageArr, opt) : null,
+      palatino: evalPalatino ? await evalPagesFont('Palatino', pageArr, opt) : null,
+      garamond: evalGaramond ? await evalPagesFont('Garamond', pageArr, opt) : null,
+      nimbusRomNo9L: evalNimbusRomNo9L ? await evalPagesFont('NimbusRomNo9L', pageArr, opt) : null,
     };
   }
 
+  const fontMetrics = {
+    Carlito: fontMetricsTmp.carlito ? fontMetricsTmp.carlito.metricTotal / fontMetricsTmp.carlito.wordsTotal : null,
+    NimbusSans: fontMetricsTmp.nimbusSans ? fontMetricsTmp.nimbusSans.metricTotal / fontMetricsTmp.nimbusSans.wordsTotal : null,
+    Century: fontMetricsTmp.century ? fontMetricsTmp.century.metricTotal / fontMetricsTmp.century.wordsTotal : null,
+    Palatino: fontMetricsTmp.palatino ? fontMetricsTmp.palatino.metricTotal / fontMetricsTmp.palatino.wordsTotal : null,
+    Garamond: fontMetricsTmp.garamond ? fontMetricsTmp.garamond.metricTotal / fontMetricsTmp.garamond.wordsTotal : null,
+    NimbusRomNo9L: fontMetricsTmp.nimbusRomNo9L ? fontMetricsTmp.nimbusRomNo9L.metricTotal / fontMetricsTmp.nimbusRomNo9L.wordsTotal : null,
+  };
+
+  return fontMetrics;
+}
+
+/**
+ *
+ * @param {Awaited<ReturnType<evaluateFonts>>} fontMetrics
+ */
+const calcBestFonts = (fontMetrics) => {
   let minKeySans = 'NimbusSans';
   let minValueSans = Number.MAX_VALUE;
 
-  for (const [key, value] of Object.entries(sansMetrics)) {
-    if (debug) console.log(`${key} metric: ${String(value)}`);
+  for (const [key, value] of Object.entries(fontMetrics)) {
+    if (!['Carlito', 'NimbusSans'].includes(key)) continue;
     if (value < minValueSans) {
       minValueSans = value;
       minKeySans = key;
@@ -138,8 +133,8 @@ export async function evaluateFonts(pageArr, opt) {
   let minKeySerif = 'NimbusRomNo9L';
   let minValueSerif = Number.MAX_VALUE;
 
-  for (const [key, value] of Object.entries(serifMetrics)) {
-    if (debug) console.log(`${key} metric: ${String(value)}`);
+  for (const [key, value] of Object.entries(fontMetrics)) {
+    if (!['Century', 'Palatino', 'Garamond', 'NimbusRomNo9L'].includes(key)) continue;
     if (value < minValueSerif) {
       minValueSerif = value;
       minKeySerif = key;
@@ -147,12 +142,10 @@ export async function evaluateFonts(pageArr, opt) {
   }
 
   return {
-    sansMetrics,
-    serifMetrics,
     minKeySans,
     minKeySerif,
   };
-}
+};
 
 /**
  * Runs font optimization and validation. Sets `fontAll` defaults to best fonts,
@@ -168,8 +161,6 @@ export async function evaluateFonts(pageArr, opt) {
 export async function runFontOptimization(ocrArr) {
   await loadBuiltInFontsRaw();
 
-  const fontRaw = FontCont.getContainer('raw');
-
   const calculateOpt = fontMetricsObj && Object.keys(fontMetricsObj).length > 0;
 
   let enableOptSerif = false;
@@ -179,17 +170,9 @@ export async function runFontOptimization(ocrArr) {
   if (calculateOpt) {
     setDefaultFontAuto(fontMetricsObj);
 
-    optimizeFontContainerAllPromise = optimizeFontContainerAll(fontRaw, fontMetricsObj)
+    optimizeFontContainerAllPromise = optimizeFontContainerAll(FontCont.raw, fontMetricsObj)
       .then((res) => {
-        FontCont.optInitial = res;
-
-        // If no image data exists, then `opt` is set to `optInitial`.
-        // This behavior exists so that data can be loaded from previous sessions without changing the appearance of the document.
-        // Arguably, in cases where a user uploads raw OCR data and no images, using the raw font is more prudent than an unvalidated optimized font.
-        // If this ever comes up in actual usage and is a problem, then the behavior can be changed for that specific case.
-        if (!ImageCache.inputModes.image && !ImageCache.inputModes.pdf) {
-          FontCont.opt = { ...FontCont.optInitial };
-        }
+        FontCont.opt = res;
       });
   }
 
@@ -205,60 +188,43 @@ export async function runFontOptimization(ocrArr) {
       await initCanvasNode();
     }
 
-    const evalRaw = await evaluateFonts(ocrArr.slice(0, pageNum), false);
-    DebugData.evalRaw = evalRaw;
+    FontCont.rawMetrics = await evaluateFonts(ocrArr.slice(0, pageNum), false);
+    const bestMetricsRaw = calcBestFonts(FontCont.rawMetrics);
 
     await optimizeFontContainerAllPromise;
-    if (calculateOpt && Object.keys(FontCont.optInitial).length > 0) {
-      // Enable optimized fonts
-      await enableFontOpt(true, true, true);
+    if (FontCont.opt && Object.keys(FontCont.opt).length > 0) {
+      await updateFontContWorkerMain();
 
-      const evalOpt = await evaluateFonts(ocrArr.slice(0, pageNum), true);
-      DebugData.evalOpt = evalOpt;
+      FontCont.optMetrics = await evaluateFonts(ocrArr.slice(0, pageNum), true);
+
+      const bestMetricsOpt = calcBestFonts(FontCont.optMetrics);
 
       // The default font for both the optimized and unoptimized versions are set to the same font.
       // This ensures that switching on/off "font optimization" does not change the font, which would be confusing.
-      if (evalOpt.sansMetrics[evalOpt.minKeySans] < evalRaw.sansMetrics[evalRaw.minKeySans]) {
-        FontCont.sansDefaultName = evalOpt.minKeySans;
+      if (FontCont.optMetrics[bestMetricsOpt.minKeySans] < FontCont.rawMetrics[bestMetricsRaw.minKeySans]) {
         enableOptSans = true;
+        FontCont.sansDefaultName = bestMetricsOpt.minKeySans;
       } else {
-        FontCont.sansDefaultName = evalRaw.minKeySans;
+        FontCont.sansDefaultName = bestMetricsRaw.minKeySans;
       }
 
       // Repeat for serif fonts
-      if (evalOpt.serifMetrics[evalOpt.minKeySerif] < evalRaw.serifMetrics[evalRaw.minKeySerif]) {
-        FontCont.serifDefaultName = evalOpt.minKeySerif;
+      if (FontCont.optMetrics[bestMetricsOpt.minKeySerif] < FontCont.rawMetrics[bestMetricsRaw.minKeySerif]) {
         enableOptSerif = true;
+        FontCont.serifDefaultName = bestMetricsOpt.minKeySerif;
       } else {
-        FontCont.serifDefaultName = evalRaw.minKeySerif;
-      }
-
-      // Create final optimized font object.
-      // The final optimized font is set to either the initial optimized font or the raw font depending on what fits better.
-      // Make shallow copy to allow for changing individual fonts without copying the entire object.
-      FontCont.opt = { ...FontCont.optInitial };
-
-      if (!enableOptSans) {
-        FontCont.opt.Carlito = fontRaw.Carlito;
-        FontCont.opt.NimbusSans = fontRaw.NimbusSans;
-      }
-
-      if (!enableOptSerif) {
-        FontCont.opt.Century = fontRaw.Century;
-        FontCont.opt.Garamond = fontRaw.Garamond;
-        FontCont.opt.NimbusRomNo9L = fontRaw.NimbusRomNo9L;
-        FontCont.opt.Palatino = fontRaw.Palatino;
+        FontCont.serifDefaultName = bestMetricsRaw.minKeySerif;
       }
     } else {
-      FontCont.sansDefaultName = evalRaw.minKeySans;
-      FontCont.serifDefaultName = evalRaw.minKeySerif;
+      FontCont.sansDefaultName = bestMetricsRaw.minKeySans;
+      FontCont.serifDefaultName = bestMetricsRaw.minKeySerif;
     }
+
+    FontCont.enableOpt = enableOptSerif || enableOptSans;
+
+    // Send updated state to all workers.
+    await updateFontContWorkerMain();
   }
 
-  // Set final fonts in workers
-  await enableFontOpt(true, false, true);
-
-  const enableOpt = enableOptSerif || enableOptSans;
-
-  return enableOpt;
+  return FontCont.enableOpt;
 }

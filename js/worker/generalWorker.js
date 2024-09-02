@@ -346,19 +346,16 @@ async function loadFontsWorker({ src, opt }) {
   return true;
 }
 
-async function setFontActiveWorker({ opt, sansDefaultName, serifDefaultName }) {
-  if (opt === true) {
-    FontCont.active = FontCont.opt;
-  } else if (opt === false) {
-    FontCont.active = FontCont.raw;
-  }
-
+async function updateFontContWorker({
+  rawMetrics, optMetrics, defaultFontName, sansDefaultName, serifDefaultName, enableOpt, forceOpt,
+}) {
   if (sansDefaultName) FontCont.sansDefaultName = sansDefaultName;
   if (serifDefaultName) FontCont.serifDefaultName = serifDefaultName;
-}
-
-async function setDefaultFontNameWorker({ defaultFontName }) {
-  FontCont.defaultFontName = defaultFontName;
+  if (defaultFontName) FontCont.defaultFontName = defaultFontName;
+  if (rawMetrics) FontCont.rawMetrics = rawMetrics;
+  if (optMetrics) FontCont.optMetrics = optMetrics;
+  if (enableOpt === true || enableOpt === false) FontCont.enableOpt = enableOpt;
+  if (forceOpt === true || forceOpt === false) FontCont.forceOpt = forceOpt;
 }
 
 async function compareOCRPageImpWrap(args) {
@@ -406,8 +403,7 @@ addEventListener('message', async (e) => {
 
     // Change state of worker
     loadFontsWorker,
-    setFontActiveWorker,
-    setDefaultFontNameWorker,
+    updateFontContWorker,
   })[func](args)
     .then((x) => postMessage({ data: x, id, status: 'resolve' }))
     .catch((err) => postMessage({ data: err, id, status: 'reject' }));

@@ -37,14 +37,14 @@ describe('Check recognition-related features.', function () {
   });
 
   it('Font optimization improves overlap quality', async () => {
-    if (!scribe.data.debug.evalRaw) throw new Error('DebugData.evalRaw is not defined');
-    if (!scribe.data.debug.evalOpt) throw new Error('DebugData.evalOpt is not defined');
-    assert.isBelow(scribe.data.debug.evalOpt.sansMetrics.NimbusSans, scribe.data.debug.evalRaw.sansMetrics.NimbusSans);
-    assert.isBelow(scribe.data.debug.evalOpt.sansMetrics.NimbusSans, 0.45);
+    if (!scribe.data.font.rawMetrics) throw new Error('DebugData.evalRaw is not defined');
+    if (!scribe.data.font.optMetrics) throw new Error('DebugData.evalOpt is not defined');
+    assert.isBelow(scribe.data.font.optMetrics.NimbusSans, scribe.data.font.rawMetrics.NimbusSans);
+    assert.isBelow(scribe.data.font.optMetrics.NimbusSans, 0.45);
   }).timeout(10000);
 
   it('Font optimization should be enabled when it improves overlap quality', async () => {
-    assert.strictEqual(scribe.opt.enableOpt, true);
+    assert.strictEqual(scribe.data.font.enableOpt, true);
   }).timeout(10000);
 
   after(async () => {

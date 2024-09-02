@@ -2,8 +2,8 @@ import { assert, expect } from 'chai';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { getRandomAlphanum } from '../../js/utils/miscUtils.js';
 import { checkCLI, confCLI, overlayCLI } from '../../cli/cli.js';
+import { getRandomAlphanum } from '../../js/utils/miscUtils.js';
 
 globalThis.__dirname = path.dirname(fileURLToPath(import.meta.url));
 
@@ -61,6 +61,7 @@ describe('Check Node.js commands.', () => {
   }).timeout(10000);
 
   it('Should check contents of Abbyy .xml file.', async () => {
+    // CLI equivalent: node cli/scribe.js check tests/assets/scribe_test_pdf1.pdf tests/assets/scribe_test_pdf1_abbyy.xml
     // Call the function
     await checkCLI(path.join(__dirname, '../assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../assets/scribe_test_pdf1_abbyy.xml'));
 

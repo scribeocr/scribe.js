@@ -94,8 +94,7 @@ export async function initGeneralWorker() {
     obj.renderPageStaticImp = wrap('renderPageStaticImp');
 
     obj.loadFontsWorker = wrap('loadFontsWorker');
-    obj.setFontActiveWorker = wrap('setFontActiveWorker');
-    obj.setDefaultFontNameWorker = wrap('setDefaultFontNameWorker');
+    obj.updateFontContWorker = wrap('updateFontContWorker');
 
     obj.terminate = () => worker.terminate();
 
@@ -170,6 +169,12 @@ export class gs {
   // (2) The scheduler is accessed directly from this object within in many non-async functions,
   //     so storing as a promise would require a lot of refactoring for little benefit.
   //     The scheduler is a singleton that is only set up once, so there is no need to store it in a promise as long as setup race conditions are avoided.
+
+  /** Whether built-in fonts have been loaded in workers. */
+  static loadedBuiltInRawWorker = false;
+
+  /** Whether optimized fonts have been loaded in workers. */
+  static loadedBuiltInOptWorker = false;
 
   /** @type {?GeneralScheduler} */
   static scheduler = null;
@@ -289,7 +294,12 @@ export class gs {
     return /** @type {GeneralScheduler} */ (gs.scheduler);
   };
 
+  static clear = () => {
+    gs.loadedBuiltInOptWorker = false;
+  };
+
   static terminate = async () => {
+    gs.clear();
     gs.scheduler = null;
     await gs.schedulerInner.terminate();
     gs.schedulerInner = null;
@@ -297,5 +307,6 @@ export class gs {
     gs.schedulerReady = null;
     gs.resReadyTesseract = null;
     gs.schedulerReadyTesseract = null;
+    gs.loadedBuiltInRawWorker = false;
   };
 }

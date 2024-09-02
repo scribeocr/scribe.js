@@ -226,13 +226,7 @@ export class FontCont {
   static raw = null;
 
   /** @type {?FontContainer} */
-  static optInitial = null;
-
-  /** @type {?FontContainer} */
   static opt = null;
-
-  /** @type {?FontContainer} */
-  static active = null;
 
   /** @type {?FontContainer} */
   static export = null;
@@ -242,30 +236,56 @@ export class FontCont {
     chi_sim: null,
   };
 
+  /** Optimized fonts will be used when believed to improve quality. */
+  static enableOpt = false;
+
+  /** Optimized fonts will always be used when they exist, even if believed to reduce quality. */
+  static forceOpt = false;
+
+  /** @type {?Awaited<ReturnType<import('../fontEval.js').evaluateFonts>>} */
+  static rawMetrics = null;
+
+  /** @type {?Awaited<ReturnType<import('../fontEval.js').evaluateFonts>>} */
+  static optMetrics = null;
+
   static defaultFontName = 'SerifDefault';
 
   static serifDefaultName = 'NimbusRomNo9L';
 
   static sansDefaultName = 'NimbusSans';
 
-  static loadedBuiltInRawWorker = false;
-
-  static loadedBuiltInOptWorker = false;
-
   /** @type {?('latin'|'all')} */
   static glyphSet = null;
 
   /**
-   * Get raw/opt/active font, and throw exception if it does not exist.
-   * This method only exists for type inference purposes, as raw/opt/active may be accessed directly, but may be `null`.
-   * This method should therefore only be used in cases where an exception on `null` is a desirable behavior.
-   * @param {('raw'|'opt'|'active'|'optInitial')} container
-   * @returns {FontContainer}
+   * Decide whether to use the optimized version of a font family.
+   * Note that even when this function returns `true`, optimized versions of every style will not exist.
+   * @param {string} family - Font family name.
    */
-  static getContainer = (container) => {
-    const fontRes = FontCont[container];
-    if (!fontRes) throw new Error(`${container} font container does not exist.`);
-    return fontRes;
+  static useOptFamily = (family) => {
+    const raw = FontCont.raw?.[family]?.normal;
+    if (!raw) return false;
+    const opt = FontCont.opt?.[family]?.normal;
+    if (opt && FontCont.forceOpt) {
+      return true;
+    // If optimized fonts are enabled (but not forced), the optimized version of a font will be used if:
+    // (1) The optimized version exists
+    // (2) The optimized version has a better metric (so quality should improve).
+    // (3) The optimized version of the default sans/serif font also has a better metric.
+    // This last condition avoids font optimization being enabled in the UI when it only improves an unused font.
+    } if (opt && FontCont.enableOpt) {
+      const defaultFamily = raw.type === 'serif' ? FontCont.serifDefaultName : FontCont.sansDefaultName;
+
+      const rawMetricDefault = FontCont.rawMetrics?.[defaultFamily];
+      const optMetricDefault = FontCont.optMetrics?.[defaultFamily];
+
+      const rawMetric = FontCont.rawMetrics?.[family];
+      const optMetric = FontCont.optMetrics?.[family];
+      if (rawMetric && optMetric && optMetric < rawMetric && optMetricDefault < rawMetricDefault) {
+        return true;
+      }
+    }
+    return false;
   };
 
   /**
@@ -275,20 +295,19 @@ export class FontCont {
      * @param {('Default'|'SansDefault'|'SerifDefault'|string)} family - Font family name.
      * @param {('normal'|'italic'|'bold'|string)} [style='normal']
      * @param {string} [lang='eng']
-     * @param {('raw'|'opt'|'active'|'optInitial')} [container='active']
      * @returns {FontContainerFont}
      */
-  static getFont = (family, style = 'normal', lang = 'eng', container = 'active') => {
-    const fontCont = FontCont.getContainer(container);
-
+  static getFont = (family, style = 'normal', lang = 'eng') => {
     if (lang === 'chi_sim') {
       if (!FontCont.supp.chi_sim) throw new Error('chi_sim font does not exist.');
       return FontCont.supp.chi_sim;
     }
 
+    if (!FontCont.raw) throw new Error('Raw fonts not yet initialized.');
+
     // Option 1: If we have access to the font, use it.
     // Option 2: If we do not have access to the font, but it closely resembles a built-in font, use the built-in font.
-    if (!fontCont?.[family]?.[style]) {
+    if (!FontCont.raw?.[family]?.[style]) {
       if (/Times/i.test(family)) {
         family = 'NimbusRomNo9L';
       } else if (/Helvetica/i.test(family)) {
@@ -309,7 +328,7 @@ export class FontCont {
     }
 
     // Option 3: If the font still is not identified, use the default sans/serif font.
-    if (!fontCont?.[family]?.[style]) {
+    if (!FontCont.raw?.[family]?.[style]) {
       family = determineSansSerif(family);
     }
 
@@ -318,31 +337,43 @@ export class FontCont {
 
     if (family === 'SerifDefault') family = FontCont.serifDefaultName;
     if (family === 'SansDefault') family = FontCont.sansDefaultName;
-    const fontRes = fontCont[family][style];
+
+    /** @type {FontContainerFont} */
+    let fontRes = FontCont.raw?.[family]?.[style];
     if (!fontRes) throw new Error(`Font container does not contain ${family} (${style}).`);
+
+    const opt = FontCont.opt?.[family]?.[style];
+    const useOpt = FontCont.useOptFamily(family);
+    if (opt && useOpt) fontRes = opt;
+
     return fontRes;
   };
 
   /**
    *
    * @param {OcrWord} word
-   * @param {('raw'|'opt'|'active'|'optInitial')} [container='active']
    */
-  static getWordFont = (word, container = 'active') => {
+  static getWordFont = (word) => {
     const wordFontFamily = word.font || FontCont.defaultFontName;
-    return FontCont.getFont(wordFontFamily, word.style, word.lang, container);
+    return FontCont.getFont(wordFontFamily, word.style, word.lang);
   };
 
+  /**
+   * Reset font container to original state but do not unload default resources.
+   */
   static clear = () => {
-    FontCont.active = FontCont.raw;
-    FontCont.optInitial = null;
     FontCont.opt = null;
-    FontCont.loadedBuiltInRawWorker = false;
-    FontCont.loadedBuiltInOptWorker = false;
-    FontCont.glyphSet = null;
+    FontCont.rawMetrics = null;
+    FontCont.optMetrics = null;
 
     FontCont.defaultFontName = 'SerifDefault';
     FontCont.serifDefaultName = 'NimbusRomNo9L';
     FontCont.sansDefaultName = 'NimbusSans';
+  };
+
+  static terminate = () => {
+    FontCont.clear();
+    FontCont.raw = null;
+    FontCont.glyphSet = null;
   };
 }

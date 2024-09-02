@@ -225,7 +225,7 @@ const clear = async () => {
  */
 const terminate = async () => {
   clearData();
-  await Promise.allSettled([gs.terminate(), ImageCache.terminate()]);
+  await Promise.allSettled([gs.terminate(), ImageCache.terminate(), FontCont.terminate()]);
 };
 
 export default {

@@ -339,13 +339,12 @@ export async function importFiles(files, options = {}) {
       // not simply because the user disabled optimization in the view settings.
       // If no `enableOpt` property exists but metrics are present, then optimization is enabled.
       if (ocrData.enableOpt === 'false') {
-        opt.enableOpt = false;
+        FontCont.enableOpt = false;
       } else {
         await fontPromise;
-        const fontRaw = FontCont.getContainer('raw');
-        if (!fontRaw) throw new Error('Raw font data not found.');
-        FontCont.opt = await optimizeFontContainerAll(fontRaw, fontMetricsObj);
-        opt.enableOpt = true;
+        if (!FontCont.raw) throw new Error('Raw font data not found.');
+        FontCont.opt = await optimizeFontContainerAll(FontCont.raw, fontMetricsObj);
+        FontCont.enableOpt = true;
         await enableFontOpt(true);
       }
     }
@@ -442,7 +441,7 @@ export async function importFiles(files, options = {}) {
       if (!existingOpt && !stextMode) {
         await checkCharWarn(convertPageWarn);
         calcFontMetricsFromPages(ocrAll.active);
-        opt.enableOpt = await runFontOptimization(ocrAll.active);
+        await runFontOptimization(ocrAll.active);
       }
     });
   } else if (inputData.pdfMode && (extractPDFTextNative || extractPDFTextOCR)) {
