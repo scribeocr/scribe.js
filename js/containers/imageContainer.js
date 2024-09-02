@@ -324,7 +324,6 @@ export class ImageCache {
         if (renderTransform) {
           return ImageCache.transformImage(img1, n, props, true);
         }
-        console.assert(nativeOnly, 'Binary should not be null when binary is needed');
         return { native: img1, binary: null };
       })();
 

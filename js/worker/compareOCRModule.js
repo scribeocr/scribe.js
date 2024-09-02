@@ -211,7 +211,6 @@ export async function evalWords({
   const useABaseline = options?.useABaseline === undefined ? true : options?.useABaseline;
 
   const cosAngle = Math.cos(angle * -1 * (Math.PI / 180)) || 1;
-  const sinAngle = Math.sin(angle * -1 * (Math.PI / 180)) || 0;
 
   // All words are assumed to be on the same line
   const linebox = wordsA[0].line.bbox;
@@ -239,15 +238,12 @@ export async function evalWords({
 
   // Draw the words in wordsA
   let x0 = wordsA[0].bbox.left;
-  let y0 = linebox.bottom + baselineA[1] + baselineA[0] * (wordsA[0].bbox.left - linebox.left);
+  const y0 = linebox.bottom + baselineA[1] + baselineA[0] * (wordsA[0].bbox.left - linebox.left);
   for (let i = 0; i < wordsA.length; i++) {
     const word = wordsA[i];
     const wordIBox = word.bbox;
-    const baselineY = linebox.bottom + baselineA[1] + baselineA[0] * (wordIBox.left - linebox.left);
-    const x = wordIBox.left;
-    const y = word.sup || word.dropcap ? wordIBox.bottom : baselineY;
 
-    const offsetX = (x - x0) * cosAngle - sinAngle * (y - y0);
+    const offsetX = (wordIBox.left - x0) / cosAngle;
 
     await drawWordRender(calcCtx, word, offsetX, cropY, ctxView, Boolean(angle));
   }
@@ -298,15 +294,10 @@ export async function evalWords({
       // Set style to whatever it is for wordsA.  This is based on the assumption that "A" is Tesseract Legacy and "B" is Tesseract LSTM (which does not have useful style info).
       word.style = wordsA[0].style;
 
-      const baselineY = linebox.bottom + baselineB[1] + baselineB[0] * (word.bbox.left - linebox.left);
       if (i === 0) {
         x0 = word.bbox.left;
-        y0 = baselineY;
       }
-      const x = word.bbox.left;
-      const y = word.sup || word.dropcap ? word.bbox.bottom : baselineY;
-
-      const offsetX = (x - x0) * cosAngle - sinAngle * (y - y0);
+      const offsetX = (word.bbox.left - x0) / cosAngle;
 
       await drawWordRender(calcCtx, word, offsetX, cropY, ctxView, Boolean(angle));
     }

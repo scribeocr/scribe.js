@@ -26,7 +26,7 @@ describe('Check basic recognition features.', function () {
   }).timeout(10000);
 });
 
-describe('Check recognition-related features.', function () {
+describe('Check font optimization features.', function () {
   this.timeout(20000);
   before(async () => {
     // For this input image, font optimization significantly improves overlap quality.
@@ -45,6 +45,73 @@ describe('Check recognition-related features.', function () {
 
   it('Font optimization should be enabled when it improves overlap quality', async () => {
     assert.strictEqual(scribe.data.font.enableOpt, true);
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+});
+
+describe('Check that font optimization works with italics.', function () {
+  this.timeout(20000);
+  before(async () => {
+    // This article page contains mostly italic text.
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/article_italics.png`]);
+    await scribe.recognize({
+      modeAdv: 'legacy',
+    });
+  });
+
+  it('Font optimization improves overlap quality with italics', async () => {
+    if (!scribe.data.font.rawMetrics) throw new Error('DebugData.evalRaw is not defined');
+    if (!scribe.data.font.optMetrics) throw new Error('DebugData.evalOpt is not defined');
+    assert.isBelow(scribe.data.font.optMetrics.Palatino, scribe.data.font.rawMetrics.Palatino);
+    assert.isBelow(scribe.data.font.optMetrics.Palatino, 0.35);
+  }).timeout(10000);
+
+  it('Font optimization should be enabled when it improves overlap quality', async () => {
+    assert.strictEqual(scribe.data.font.enableOpt, true);
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+});
+
+describe('Check auto-rotate features.', function () {
+  this.timeout(20000);
+
+  it('Baseline overlap is decent', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/simple_paragraph.png`]);
+    await scribe.recognize({
+      modeAdv: 'legacy',
+    });
+
+    if (!scribe.data.font.rawMetrics) throw new Error('DebugData.evalRaw is not defined');
+    if (!scribe.data.font.optMetrics) throw new Error('DebugData.evalOpt is not defined');
+    assert.isBelow(scribe.data.font.optMetrics.NimbusRomNo9L, 0.4);
+  }).timeout(10000);
+
+  it('Overlap with clockwise rotation is decent', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/simple_paragraph_rot5.png`]);
+    await scribe.recognize({
+      modeAdv: 'legacy',
+    });
+
+    if (!scribe.data.font.rawMetrics) throw new Error('DebugData.evalRaw is not defined');
+    if (!scribe.data.font.optMetrics) throw new Error('DebugData.evalOpt is not defined');
+    assert.isBelow(scribe.data.font.optMetrics.NimbusRomNo9L, 0.4);
+  }).timeout(10000);
+
+  it('Overlap with counterclockwise rotation is decent', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/simple_paragraph_rotc5.png`]);
+    await scribe.recognize({
+      modeAdv: 'legacy',
+    });
+
+    if (!scribe.data.font.rawMetrics) throw new Error('DebugData.evalRaw is not defined');
+    if (!scribe.data.font.optMetrics) throw new Error('DebugData.evalOpt is not defined');
+    assert.isBelow(scribe.data.font.optMetrics.NimbusRomNo9L, 0.4);
   }).timeout(10000);
 
   after(async () => {
