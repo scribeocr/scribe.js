@@ -552,7 +552,7 @@ export async function recognize(options = {}) {
     // Metrics from the LSTM model are so inaccurate they are not worth using.
     if (oemMode === 'legacy') {
       calcFontMetricsFromPages(ocrAll['Tesseract Legacy']);
-      opt.enableOpt = await runFontOptimization(ocrAll['Tesseract Legacy']);
+      await runFontOptimization(ocrAll['Tesseract Legacy']);
     }
   } else if (oemMode === 'combined') {
     await recognizeAllPages(true, true, true, langs, vanillaMode);
@@ -603,7 +603,7 @@ export async function recognize(options = {}) {
     const pageNum = Math.min(ImageCache.pageCount - 1, 5);
     await ImageCache.preRenderRange(0, pageNum, true);
     calcFontMetricsFromPages(ocrAll['Tesseract Combined Temp']);
-    opt.enableOpt = await runFontOptimization(ocrAll['Tesseract Combined Temp']);
+    await runFontOptimization(ocrAll['Tesseract Combined Temp']);
 
     const oemText = 'Combined';
     if (!ocrAll[oemText]) ocrAll[oemText] = Array(inputData.pageCount);

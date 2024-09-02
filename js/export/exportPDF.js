@@ -33,9 +33,7 @@ import ocr from '../objects/ocrObjects.js';
  */
 export async function hocrToPDF(hocrArr, minpage = 0, maxpage = -1, textMode = 'ebook', rotateText = false, rotateBackground = false,
   dimsLimit = { width: -1, height: -1 }, confThreshHigh = 85, confThreshMed = 75, proofOpacity = 0.8) {
-  // TODO: Currently, all fonts are added to the PDF, and mupdf removes the unused fonts.
-  // It would likely be more performant to only add the fonts that are actually used up front.
-  const exportFontObj = FontCont.getContainer('active');
+  if (!FontCont.raw) throw new Error('No fonts loaded.');
 
   if (maxpage === -1) {
     maxpage = hocrArr.length - 1;
@@ -47,13 +45,20 @@ export async function hocrToPDF(hocrArr, minpage = 0, maxpage = -1, textMode = '
   // Add fonts
   // All fonts are added at this step.
   // The fonts that are not used will be removed by muPDF later.
+  // TODO:  It would likely be more performant to only add the fonts that are actually used up front.
   let fontI = 0;
   let objectI = 3;
   const pdfFonts = {};
   /** @type {Array<string>} */
   const pdfFontObjStrArr = [];
   let pdfFontsStr = '';
-  for (const [familyKey, familyObj] of Object.entries(exportFontObj)) {
+  for (const familyKey of Object.keys(FontCont.raw)) {
+    const useOpt = FontCont.useOptFamily(familyKey);
+    const familyObj = {
+      normal: useOpt && FontCont.opt?.[familyKey]?.normal ? FontCont.opt[familyKey].normal : FontCont.raw[familyKey].normal,
+      italic: useOpt && FontCont.opt?.[familyKey]?.italic ? FontCont.opt[familyKey].italic : FontCont.raw[familyKey].italic,
+      bold: useOpt && FontCont.opt?.[familyKey]?.bold ? FontCont.opt[familyKey].bold : FontCont.raw[familyKey].bold,
+    };
     pdfFonts[familyKey] = {};
     for (const [key, value] of Object.entries(familyObj)) {
       const font = await value.opentype;

@@ -15,10 +15,7 @@ import { gs } from './generalWorkerMain.js';
  */
 export async function loadBuiltInFontsRaw(glyphSet = 'latin') {
   // Return early if the font set is already loaded, or a superset of the requested set is loaded.
-  if (FontCont.glyphSet === glyphSet || FontCont.glyphSet === 'all' && glyphSet === 'latin') {
-    console.log('Built-in fonts already loaded.');
-    return;
-  }
+  if (FontCont.glyphSet === glyphSet || FontCont.glyphSet === 'all' && glyphSet === 'latin') return;
 
   FontCont.glyphSet = glyphSet;
 
@@ -114,13 +111,13 @@ export async function loadBuiltInFontsRaw(glyphSet = 'latin') {
   };
 
   FontCont.raw = await /** @type {FontContainer} */(/** @type {any} */(loadFontsFromSource(srcObj)));
-  if (!FontCont.active || (!FontCont.active.NimbusSans.normal.opt && !FontCont.active.NimbusRomNo9L.normal.opt)) FontCont.active = FontCont.raw;
 
   if (typeof process === 'undefined') {
     // This assumes that the scheduler `init` method has at least started.
     if (gs.schedulerReady === null) console.warn('Failed to load fonts to workers as workers have not been initialized yet.');
     await gs.schedulerReady;
-    await setBuiltInFontsWorkers(gs.schedulerInner, true);
+    // If this is running, presumably a new glyphset is being loaded, so the fonts should be forced to be updated.
+    await updateFontContWorkerMain({ loadRaw: true });
   }
 
   return;
@@ -155,105 +152,89 @@ export async function loadChiSimFont() {
 }
 
 /**
- *
- * @param {boolean} enable
- * @param {boolean} [useInitial=false]
- * @param {boolean} [forceWorkerUpdate=false] - If true, forces the worker to update the font data even if the font data of this type is already loaded.
- *    This should be used when switching from unvalidated to validated optimized fonts.
+ * Enable or disable font optimization settings.
+ * This function is used rather than exposing the settings using the `opt` object, as these settings exist on the font container in both the main thread and the worker threads.
+ * @param {boolean} enableOpt
+ * @param {boolean} [forceOpt]
  */
-export async function enableFontOpt(enable, useInitial = false, forceWorkerUpdate = false) {
-  // Enable/disable optimized font
-  if (enable && useInitial && FontCont.optInitial) {
-    FontCont.active = FontCont.optInitial;
-  } else if (enable && FontCont.opt) {
-    FontCont.active = FontCont.opt;
-  } else {
-    FontCont.active = FontCont.raw;
+export async function enableFontOpt(enableOpt, forceOpt) {
+  let change = false;
+  if (enableOpt === true || enableOpt === false) {
+    if (FontCont.enableOpt !== enableOpt) {
+      change = true;
+      FontCont.enableOpt = enableOpt;
+    }
+  }
+  if (forceOpt === true || forceOpt === false) {
+    if (FontCont.forceOpt !== forceOpt) {
+      change = true;
+      FontCont.forceOpt = forceOpt;
+    }
   }
 
-  // Enable/disable optimized font in workers
-  if (typeof process === 'undefined') {
-    await setBuiltInFontsWorkers(gs.schedulerInner, forceWorkerUpdate);
-  } else {
-    // const { setFontAll } = await import('./worker/compareOCRModule.js');
-    // setFontAll(fontAll);
+  if (typeof process === 'undefined' && change) {
+    await updateFontContWorkerMain();
   }
 }
 
 /**
- *
- * @param {*} scheduler
- * @param {boolean} [force=false] - If true, forces the worker to update the font data even if the font data of this type is already loaded.
+ * @param {Object} [params]
+ * @param {boolean} [params.loadRaw] - By default, raw fonts are loaded if they have not been loaded before.
+ *    Set `loadRaw` to `true` or `false` to force the raw fonts to be loaded or not loaded, respectively.
+ * @param {boolean} [params.loadOpt] - By default, optimized fonts are loaded if they have not been loaded before.
+ *   Set `loadOpt` to `true` or `false` to force the optimized fonts to be loaded or not loaded, respectively.
+ * @param {boolean} [params.updateProps]
  */
-export async function setBuiltInFontsWorkers(scheduler, force = false) {
-  if (!FontCont.active) {
-    console.error('Font data not loaded.');
-    return;
-  }
-
-  const opt = FontCont.active.Carlito.normal.opt || FontCont.active.NimbusRomNo9L.normal.opt;
-
-  const loadedBuiltIn = (!opt && FontCont.loadedBuiltInRawWorker) || (opt && FontCont.loadedBuiltInOptWorker);
+export async function updateFontContWorkerMain(params = {}) {
+  const loadRaw = params.loadRaw === true || (params.loadRaw !== false && FontCont.raw && !gs.loadedBuiltInRawWorker);
+  const loadOpt = params.loadOpt === true || (params.loadOpt !== false && FontCont.opt && !gs.loadedBuiltInOptWorker);
 
   // If the active font data is not already loaded, load it now.
   // This assumes that only one version of the raw/optimized fonts ever exist--
   // it does not check whether the current optimized font changed since it was last loaded.
-  if (!loadedBuiltIn || force) {
+  for (const [type, load] of [['raw', loadRaw], ['opt', loadOpt]]) {
+    if (!load) continue;
+
     const resArr = [];
-    for (let i = 0; i < scheduler.workers.length; i++) {
-      const worker = scheduler.workers[i];
-      const res = worker.loadFontsWorker({
-        src: {
-          Carlito: {
-            normal: FontCont.active.Carlito.normal.src,
-            italic: FontCont.active.Carlito.italic.src,
-            bold: FontCont.active.Carlito.bold.src,
-          },
-          Century: {
-            normal: FontCont.active.Century.normal.src,
-            italic: FontCont.active.Century.italic.src,
-            bold: FontCont.active.Century.bold.src,
-          },
-          Garamond: {
-            normal: FontCont.active.Garamond.normal.src,
-            italic: FontCont.active.Garamond.italic.src,
-            bold: FontCont.active.Garamond.bold.src,
-          },
-          Palatino: {
-            normal: FontCont.active.Palatino.normal.src,
-            italic: FontCont.active.Palatino.italic.src,
-            bold: FontCont.active.Palatino.bold.src,
-          },
-          NimbusRomNo9L: {
-            normal: FontCont.active.NimbusRomNo9L.normal.src,
-            italic: FontCont.active.NimbusRomNo9L.italic.src,
-            bold: FontCont.active.NimbusRomNo9L.bold.src,
-          },
-          NimbusSans: {
-            normal: FontCont.active.NimbusSans.normal.src,
-            italic: FontCont.active.NimbusSans.italic.src,
-            bold: FontCont.active.NimbusSans.bold.src,
-          },
-        },
-        opt,
-      });
+
+    const input = { opt: type === 'opt', src: {} };
+    for (const [key, value] of Object.entries(FontCont[type])) {
+      if (!value || !value.normal) continue;
+      input.src[key] = {
+        normal: value.normal.src,
+      };
+      if (value.italic) input.src[key].italic = value.italic.src;
+      if (value.bold) input.src[key].bold = value.bold.src;
+    }
+
+    for (let i = 0; i < gs.schedulerInner.workers.length; i++) {
+      const worker = gs.schedulerInner.workers[i];
+      const res = worker.loadFontsWorker(input);
       resArr.push(res);
+
+      // TODO: consider the race condition when `setBuiltInFontsWorkers` is called multiple times quickly and `loadFontsWorker` is still running.
+      if (type === 'opt') {
+        gs.loadedBuiltInOptWorker = true;
+      } else {
+        gs.loadedBuiltInRawWorker = true;
+      }
     }
     await Promise.all(resArr);
-
-    // Theoretically this should be changed to use promises to avoid the race condition when `setBuiltInFontsWorkers` is called multiple times quickly and `loadFontsWorker` is still running.
-    if (opt) {
-      FontCont.loadedBuiltInOptWorker = true;
-    } else {
-      FontCont.loadedBuiltInRawWorker = true;
-    }
   }
 
   // Set the active font in the workers to match the active font in `fontAll`
   const resArr = [];
-  for (let i = 0; i < scheduler.workers.length; i++) {
-    const worker = scheduler.workers[i];
-    const res = worker.setFontActiveWorker({ opt, sansDefaultName: FontCont.sansDefaultName, serifDefaultName: FontCont.serifDefaultName });
+  for (let i = 0; i < gs.schedulerInner.workers.length; i++) {
+    const worker = gs.schedulerInner.workers[i];
+    const res = worker.updateFontContWorker({
+      rawMetrics: FontCont.rawMetrics,
+      optMetrics: FontCont.optMetrics,
+      sansDefaultName: FontCont.sansDefaultName,
+      serifDefaultName: FontCont.serifDefaultName,
+      defaultFontName: FontCont.defaultFontName,
+      enableOpt: FontCont.enableOpt,
+      forceOpt: FontCont.forceOpt,
+    });
     resArr.push(res);
   }
   await Promise.all(resArr);
@@ -261,7 +242,7 @@ export async function setBuiltInFontsWorkers(scheduler, force = false) {
 
 /**
  * WIP: Import fonts embedded in PDFs.
- * This function is not currently used.
+ * This function is out of date and not currently used.
  * @param {*} scheduler
  */
 export async function setUploadFontsWorker(scheduler) {
@@ -295,7 +276,15 @@ export async function setUploadFontsWorker(scheduler) {
   const opt = FontCont.active.Carlito.normal.opt || FontCont.active.NimbusRomNo9L.normal.opt;
   for (let i = 0; i < scheduler.workers.length; i++) {
     const worker = scheduler.workers[i];
-    const res = worker.setFontActiveWorker({ opt, sansDefaultName: FontCont.sansDefaultName, serifDefaultName: FontCont.serifDefaultName });
+    const res = worker.updateFontContWorker({
+      rawMetrics: FontCont.rawMetrics,
+      optMetrics: FontCont.optMetrics,
+      sansDefaultName: FontCont.sansDefaultName,
+      serifDefaultName: FontCont.serifDefaultName,
+      defaultFontName: FontCont.defaultFontName,
+      enableOpt: FontCont.enableOpt,
+      forceOpt: FontCont.forceOpt,
+    });
     resArr.push(res);
   }
   await Promise.all(resArr);
@@ -321,7 +310,7 @@ export function setDefaultFontAuto(fontMetricsObj) {
   if (gs.schedulerInner) {
     for (let i = 0; i < gs.schedulerInner.workers.length; i++) {
       const worker = gs.schedulerInner.workers[i];
-      worker.setDefaultFontNameWorker({ defaultFontName: FontCont.defaultFontName });
+      worker.updateFontContWorker({ defaultFontName: FontCont.defaultFontName });
     }
   }
 }
@@ -348,14 +337,8 @@ export async function optimizeFontContainerFamily(fontFamily, fontMetricsObj) {
 
   // If there are no statistics to use for optimization, create "optimized" font by simply copying the raw font without modification.
   // This should only occur when `multiFontMode` is true, but a document contains no sans words or no serif words.
-  if (!fontMetricsObj[fontMetricsType] || !fontMetricsObj[fontMetricsType][fontFamily.normal.style]) {
-    const opentypeFontArr = await Promise.all([loadOpentype(fontFamily.normal.src, null), loadOpentype(fontFamily.italic.src, null), loadOpentype(fontFamily.bold.src, null)]);
-    const normalOptFont = new FontContainerFont(fontFamily.normal.family, fontFamily.normal.style, fontFamily.normal.src, true, opentypeFontArr[0]);
-    const italicOptFont = new FontContainerFont(fontFamily.italic.family, fontFamily.italic.style, fontFamily.italic.src, true, opentypeFontArr[1]);
-    const boldOptFont = new FontContainerFont(fontFamily.bold.family, fontFamily.bold.style, fontFamily.bold.src, true, opentypeFontArr[2]);
-    return {
-      normal: await normalOptFont, italic: await italicOptFont, bold: await boldOptFont,
-    };
+  if (!fontMetricsObj[fontMetricsType] || !fontMetricsObj[fontMetricsType][fontFamily.normal.style] || fontMetricsObj[fontMetricsType][fontFamily.normal.style].obs < 200) {
+    return null;
   }
 
   const metricsNormal = fontMetricsObj[fontMetricsType][fontFamily.normal.style];
@@ -365,30 +348,26 @@ export async function optimizeFontContainerFamily(fontFamily, fontMetricsObj) {
       return new FontContainerFont(fontFamily.normal.family, fontFamily.normal.style, x.fontData, true, font);
     });
 
-  const metricsItalic = fontMetricsObj[fontMetricsType][fontFamily.italic.style];
-  /** @type {FontContainerFont|Promise<FontContainerFont>} */
-  let italicOptFont;
+  const metricsItalic = fontMetricsObj[fontMetricsType][fontFamily.italic.style] && fontMetricsObj[fontMetricsType][fontFamily.italic.style].obs >= 200;
+  /** @type {?FontContainerFont|Promise<FontContainerFont>} */
+  let italicOptFont = null;
   if (metricsItalic) {
     italicOptFont = gs.scheduler.optimizeFont({ fontData: fontFamily.italic.src, fontMetricsObj: metricsItalic, style: fontFamily.italic.style })
       .then(async (x) => {
         const font = await loadOpentype(x.fontData, x.kerningPairs);
         return new FontContainerFont(fontFamily.italic.family, fontFamily.italic.style, x.fontData, true, font);
       });
-  } else {
-    const font = await loadOpentype(fontFamily.italic.src, null);
-    italicOptFont = new FontContainerFont(fontFamily.italic.family, fontFamily.italic.style, fontFamily.italic.src, true, font);
   }
 
   // Bold fonts are not optimized, as we currently have no accurate way to determine if characters are bold within OCR, so do not have bold metrics.
-  const boldOptFont = loadOpentype(fontFamily.bold.src, null).then((opentypeFont) => new FontContainerFont(fontFamily.bold.family, fontFamily.bold.style, fontFamily.bold.src, true, opentypeFont));
-
   return {
-    normal: await normalOptFont, italic: await italicOptFont, bold: await boldOptFont,
+    normal: await normalOptFont, italic: await italicOptFont, bold: null,
   };
 }
 
 /**
  * Optimize all fonts.
+ * If a font cannot be optimized, then the raw font is returned.
  * @param {Object<string, FontContainerFamilyBuiltIn>} fontPrivate
  * @param {Object.<string, FontMetricsFamily>} fontMetricsObj
  */
@@ -401,6 +380,8 @@ export async function optimizeFontContainerAll(fontPrivate, fontMetricsObj) {
   const nimbusSansPromise = optimizeFontContainerFamily(fontPrivate.NimbusSans, fontMetricsObj);
 
   const results = await Promise.all([carlitoPromise, centuryPromise, garamondPromise, palatinoPromise, nimbusRomNo9LPromise, nimbusSansPromise]);
+
+  if (results.every((x) => x === null)) return null;
 
   return {
     Carlito: results[0],

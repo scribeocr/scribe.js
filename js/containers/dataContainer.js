@@ -79,12 +79,6 @@ export const pageMetricsArr = [];
 export class DebugData {
   /** @type {{[key: string]: Array<Array<CompDebugBrowser|CompDebugNode>> | undefined}} */
   static debugImg = {};
-
-  /** @type {?Awaited<ReturnType<import('../fontEval.js').evaluateFonts>>} */
-  static evalRaw;
-
-  /** @type {?Awaited<ReturnType<import('../fontEval.js').evaluateFonts>>} */
-  static evalOpt;
 }
 
 /** @type {Array<Awaited<ReturnType<typeof import('../../scrollview-web/scrollview/ScrollView.js').ScrollView.prototype.getAll>>>} */

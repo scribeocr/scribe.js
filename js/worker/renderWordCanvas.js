@@ -14,7 +14,7 @@ import { calcLineFontSize, calcWordMetrics } from '../utils/fontUtils.js';
  * @param {Array<CanvasRenderingContext2D|OffscreenCanvasRenderingContext2D>} [ctxViewArr]
  */
 export async function drawWordActual(ctx, words, imageBinaryBit, imgDims, angle, ctxViewArr) {
-  if (!FontCont.active) throw new Error('Fonts must be defined before running this function.');
+  if (!FontCont.raw) throw new Error('Fonts must be defined before running this function.');
   if (!ctx) throw new Error('Canvases must be defined before running this function.');
 
   // The font/style from the first word is used for the purposes of font metrics
@@ -157,7 +157,7 @@ const printWordOnCanvas = async ({
    * @param {boolean} [imageRotated=false] -
    */
 export const drawWordRender = async (ctx, word, offsetX = 0, cropY = 0, ctxView = null, imageRotated = false) => {
-  if (!FontCont.active) throw new Error('Fonts must be defined before running this function.');
+  if (!FontCont.raw) throw new Error('Fonts must be defined before running this function.');
   if (!ctx) throw new Error('Canvases must be defined before running this function.');
 
   const fontI = FontCont.getWordFont(word);

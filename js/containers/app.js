@@ -5,8 +5,6 @@ export class opt {
 
   static extractText = false;
 
-  static enableOpt = false;
-
   static enableUpscale = false;
 
   static ignorePunct = false;
