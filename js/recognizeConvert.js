@@ -519,6 +519,8 @@ export async function recognizeAllPages(legacy = true, lstm = true, mainData = f
  * @param {boolean} [options.vanillaMode=false] - Whether to use the vanilla Tesseract.js model.
  */
 export async function recognize(options = {}) {
+  if (!inputData.pdfMode && !inputData.imageMode) throw new Error('No PDF or image data found to recognize.');
+
   await gs.getGeneralScheduler();
 
   const combineMode = options && options.combineMode ? options.combineMode : 'data';
