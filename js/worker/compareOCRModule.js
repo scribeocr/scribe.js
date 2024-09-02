@@ -718,72 +718,87 @@ export async function compareOCRPageImp({
                 if (!evalConflicts) {
                   hocrAError = 1;
                 } else if (oneToOne) {
-                  // TODO: Figure out how to compare between small caps/non small-caps words (this is the only relevant style as it is the only style LSTM detects)
+                  // Some common patterns detected by Tesseract Legacy are so implausible that they are automatically rejected.
+                  if (legacyLSTMComb && rejectWordLegacy(wordA.text, wordB.text)) {
+                    hocrAError = 1;
+                  // If the top choice out of the Tesseract Legacy classifier (but not entire model) is the same as the Tesseract LSTM choice, use the LSTM choice.
+                  // This condition is common when the Legacy model improperly applies a dictionary "correction" to a word that was already correct.
+                  } else if (legacyLSTMComb && wordA.textAlt && wordA.textAlt === wordB.text) {
+                    hocrAError = 1;
+                  // Otherwise, the words are compared visually.
+                  } else {
+                    // TODO: Figure out how to compare between small caps/non small-caps words (this is the only relevant style as it is the only style LSTM detects)
+                    // Clone hocrAWord and set text content equal to hocrBWord
+                    const wordAClone = ocr.cloneWord(wordA);
+                    wordAClone.text = wordB.text;
 
-                  // Clone hocrAWord and set text content equal to hocrBWord
-                  const wordAClone = ocr.cloneWord(wordA);
-                  wordAClone.text = wordB.text;
+                    if (wordB.smallCaps && !wordA.smallCaps) {
+                      wordAClone.smallCaps = true;
+                      wordAClone.size = calcWordFontSize(wordB);
+                    }
 
-                  if (wordB.smallCaps && !wordA.smallCaps) {
-                    wordAClone.smallCaps = true;
-                    wordAClone.size = calcWordFontSize(wordB);
-                  }
+                    const evalRes = await evalWords({
+                      wordsA: [wordA], wordsB: [wordAClone], binaryImage: binaryImageBit, angle: imgAngle, imgDims, options: { view: Boolean(debugLabel) },
+                    });
 
-                  const evalRes = await evalWords({
-                    wordsA: [wordA], wordsB: [wordAClone], binaryImage: binaryImageBit, angle: imgAngle, imgDims, options: { view: Boolean(debugLabel) },
-                  });
+                    hocrAError = evalRes.metricA + (await penalizeWord([wordA]));
+                    hocrBError = evalRes.metricB + (await penalizeWord([wordB]));
 
-                  hocrAError = evalRes.metricA + (await penalizeWord([wordA]));
-                  hocrBError = evalRes.metricB + (await penalizeWord([wordB]));
+                    // Reject Tesseract Legacy word if appropriate
+                    if (legacyLSTMComb && rejectWordLegacy(wordA.text, wordB.text)) hocrAError = 1;
 
-                  // Reject Tesseract Legacy word if appropriate
-                  if (legacyLSTMComb && rejectWordLegacy(wordA.text, wordB.text)) hocrAError = 1;
+                    if (evalRes.debug) {
+                      const debugObj = evalRes.debug;
+                      debugObj.errorAdjA = hocrAError;
+                      debugObj.errorAdjB = hocrBError;
 
-                  if (evalRes.debug) {
-                    const debugObj = evalRes.debug;
-                    debugObj.errorAdjA = hocrAError;
-                    debugObj.errorAdjB = hocrBError;
-
-                    debugImg.push(debugObj);
+                      debugImg.push(debugObj);
+                    }
                   }
                 } else if (twoToOne) {
-                  const evalRes = await evalWords({
-                    wordsA: wordsAArr, wordsB: wordsBArr, binaryImage: binaryImageBit, angle: imgAngle, imgDims, options: { view: Boolean(debugLabel) },
-                  });
-
                   const wordsAText = wordsAArr.map((x) => x.text).join('');
                   const wordsBText = wordsBArr.map((x) => x.text).join('');
 
-                  // The option with more words has a small penalty added, as otherwise words incorrectly split will often score slightly better (due to more precise positioning)
-                  hocrAError = evalRes.metricA + (wordsAArr.length - 1) * 0.025 + (await penalizeWord(wordsAArr));
-                  hocrBError = evalRes.metricB + (wordsBArr.length - 1) * 0.025 + (await penalizeWord(wordsBArr));
+                  if (legacyLSTMComb && rejectWordLegacy(wordsAText, wordsBText)) {
+                    hocrAError = 1;
+                  } else {
+                    const evalRes = await evalWords({
+                      wordsA: wordsAArr, wordsB: wordsBArr, binaryImage: binaryImageBit, angle: imgAngle, imgDims, options: { view: Boolean(debugLabel) },
+                    });
 
-                  // An additional penalty is added to the option with more words when (1) the text is the same in both options and (2) at least one word has no letters.
-                  // This has 2 primary motivations:
-                  //  1. Tesseract Legacy often splits numbers into separate words.
-                  //    For example, the "-" in a negative number may be a different word, or the digits before and after the decimal point may be split into separate words.
-                  //    TODO: It may be worth investigating if this issue can be improved in the engine.
-                  //  1. Punctuation characters should not be their own word (e.g. quotes should come before/after alphanumeric characters)
-                  if (wordsAText === wordsBText) {
-                    if (wordsAArr.map((x) => /[a-z]/i.test(x.text)).filter((x) => !x).length > 0 || wordsBArr.map((x) => /[a-z]/i.test(x.text)).filter((x) => !x).length > 0) {
-                      hocrAError += (wordsAArr.length - 1) * 0.05;
-                      hocrBError += (wordsBArr.length - 1) * 0.05;
+                    // The option with more words has a small penalty added, as otherwise words incorrectly split will often score slightly better (due to more precise positioning)
+                    hocrAError = evalRes.metricA + (wordsAArr.length - 1) * 0.025 + (await penalizeWord(wordsAArr));
+                    hocrBError = evalRes.metricB + (wordsBArr.length - 1) * 0.025 + (await penalizeWord(wordsBArr));
+
+                    // An additional penalty is added to the option with more words when (1) the text is the same in both options and (2) at least one word has no letters.
+                    // This has 2 primary motivations:
+                    //  1. Tesseract Legacy often splits numbers into separate words.
+                    //    For example, the "-" in a negative number may be a different word, or the digits before and after the decimal point may be split into separate words.
+                    //    TODO: It may be worth investigating if this issue can be improved in the engine.
+                    //  1. Punctuation characters should not be their own word (e.g. quotes should come before/after alphanumeric characters)
+                    if (wordsAText === wordsBText) {
+                      if (wordsAArr.map((x) => /[a-z]/i.test(x.text)).filter((x) => !x).length > 0 || wordsBArr.map((x) => /[a-z]/i.test(x.text)).filter((x) => !x).length > 0) {
+                        hocrAError += (wordsAArr.length - 1) * 0.05;
+                        hocrBError += (wordsBArr.length - 1) * 0.05;
+                      }
                     }
-                  }
 
-                  // Reject Tesseract Legacy word if appropriate
-                  if (legacyLSTMComb && rejectWordLegacy(wordsAText, wordsBText)) hocrAError = 1;
+                    // Reject Tesseract Legacy word if appropriate
+                    if (legacyLSTMComb && rejectWordLegacy(wordsAText, wordsBText)) hocrAError = 1;
 
-                  if (evalRes.debug) {
-                    const debugObj = evalRes.debug;
-                    debugObj.errorAdjA = hocrAError;
-                    debugObj.errorAdjB = hocrBError;
+                    if (evalRes.debug) {
+                      const debugObj = evalRes.debug;
+                      debugObj.errorAdjA = hocrAError;
+                      debugObj.errorAdjB = hocrBError;
 
-                    debugImg.push(debugObj);
+                      debugImg.push(debugObj);
+                    }
                   }
                 }
 
-                if (hocrBError < hocrAError) {
+                // The LSTM model is known to be more accurate on average.
+                // Therefore, if both metrics are terrible (indicating the word isn't lined up at all), the LSTM word is used.
+                if (hocrBError < hocrAError || (legacyLSTMComb && hocrAError > 0.7)) {
                   const skip = ['eg', 'ie'].includes(wordA.text.replace(/\W/g, ''));
 
                   if (!skip) {

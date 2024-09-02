@@ -51,16 +51,21 @@ export function pass2(pageObj, rotateAngle) {
       // Word contains multiple capital letters, no lowercase letters, and has character-level data.
       if (!/[a-z]/.test(wordObj.text) && /[A-Z].?[A-Z]/.test(wordObj.text) && wordObj.chars) {
         // Filter to only include letters
-        const filterArr = wordObj.text.split('').map((x) => /[a-z]/i.test(x));
-        const charArrSub = wordObj.chars.filter((x, y) => filterArr[y]);
+        const letterChars = wordObj.chars.filter((x) => /[a-z]/i.test(x.text));
 
-        const firstLetterHeight = charArrSub[0].bbox.bottom - charArrSub[0].bbox.top;
-        const otherLetterHeightArr = charArrSub.slice(1).map((x) => x.bbox.bottom - x.bbox.top);
+        // The letter "Q" is a special case as the capital letter is larger than other capital letters.
+        const firstLetterHeight = letterChars[0].bbox.bottom - letterChars[0].bbox.top;
+        const otherLetters = letterChars.slice(1).filter((x) => !/[q]/i.test(x.text));
+        if (otherLetters.length === 0) continue;
+
+        const otherLetterHeightArr = otherLetters.map((x) => x.bbox.bottom - x.bbox.top);
         const otherLetterHeightMax = Math.max(...otherLetterHeightArr);
         const otherLetterHeightMin = Math.min(...otherLetterHeightArr);
 
+        const firstLetterThresh = ['q', 'Q'].includes(letterChars[0].text) ? 1.3 : 1.1;
+
         // If the first letter is significantly larger than the others, then this word would need to be in title case.
-        if (firstLetterHeight > otherLetterHeightMax * 1.1) {
+        if (firstLetterHeight > otherLetterHeightMax * firstLetterThresh) {
           // If the other letters are all around the same size, then the word is small caps.
           if ((otherLetterHeightMax / otherLetterHeightMin) < 1.15) {
             smallCapsWordArr.push(wordObj);
@@ -69,8 +74,9 @@ export function pass2(pageObj, rotateAngle) {
           }
         } else {
           // Otherwise, all the letters need to be about the same size for this to be small caps.
-          const letterChars = wordObj.chars.filter((x) => /[a-z]/i.test(x.text));
-          const allLetterHeightArr = letterChars.map((x) => x.bbox.bottom - x.bbox.top);
+          const letterCharsAsc = wordObj.chars.filter((x) => /[a-pr-z]/i.test(x.text));
+          if (letterCharsAsc.length < 2) continue;
+          const allLetterHeightArr = letterCharsAsc.map((x) => x.bbox.bottom - x.bbox.top);
           const allLetterHeightMax = Math.max(...allLetterHeightArr);
           const allLetterHeightMin = Math.min(...allLetterHeightArr);
 

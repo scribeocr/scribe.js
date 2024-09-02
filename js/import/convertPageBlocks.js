@@ -120,6 +120,15 @@ export async function convertPageBlocks({
           wordObj.lang = word.language;
           wordObj.conf = word.confidence;
 
+          // Keep alternative choices if they have higher confidence than the primary choice.
+          // This happens when the original "best choice" is rejected due to an ad-hoc penalty, most frequently because it is a non-dictionary word.
+          if (word.choices.length > 0) {
+            word.choices.sort((a, b) => b.confidence - a.confidence);
+            if (word.choices[0].text !== word.text) {
+              wordObj.textAlt = word.choices[0].text;
+            }
+          }
+
           // The `word` object has a `is_italic` property, but it is always false.
           // Therefore, the font name is checked to determine if the word is italic.
           // See: https://github.com/naptha/tesseract.js/issues/907
