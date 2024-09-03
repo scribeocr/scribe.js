@@ -798,7 +798,7 @@ export async function compareOCRPageImp({
 
                 // The LSTM model is known to be more accurate on average.
                 // Therefore, if both metrics are terrible (indicating the word isn't lined up at all), the LSTM word is used.
-                if (hocrBError < hocrAError || (legacyLSTMComb && hocrAError > 0.7)) {
+                if (hocrBError < hocrAError || (legacyLSTMComb && hocrAError > 0.5)) {
                   const skip = ['eg', 'ie'].includes(wordA.text.replace(/\W/g, ''));
 
                   if (!skip) {
@@ -899,11 +899,37 @@ export async function compareOCRPageImp({
   // Note: These metrics leave open the door for some fringe edge cases.
   // For example,
 
+  const hocrBAll = {};
+  ocr.getPageWords(pageB).forEach((x) => {
+    hocrBAll[x.id] = 1;
+  });
+
+  const hocrAAll = {};
+  ocr.getPageWords(pageAInt).forEach((x) => {
+    hocrAAll[x.id] = 1;
+  });
+
+  // Delete any punctuation-only words from the stats if they are being ignored.
+  if (ignorePunct) {
+    const punctOnlyIDsA = ocr.getPageWords(pageA).filter((x) => !x.text.replace(/[\W_]/g, '')).map((x) => x.id);
+    punctOnlyIDsA.forEach((x) => {
+      delete hocrAAll[x];
+      delete hocrAOverlap[x];
+      delete hocrACorrect[x];
+    });
+    const punctOnlyIDsB = ocr.getPageWords(pageB).filter((x) => !x.text.replace(/[\W_]/g, '')).map((x) => x.id);
+    punctOnlyIDsB.forEach((x) => {
+      delete hocrBAll[x];
+      delete hocrBOverlap[x];
+      delete hocrBCorrect[x];
+    });
+  }
+
   // Number of words in ground truth
-  const totalCountB = ocr.getPageWords(pageB).length;
+  const totalCountB = Object.keys(hocrBAll).length;
 
   // Number of words in candidate OCR
-  const totalCountA = ocr.getPageWords(pageAInt).length;
+  const totalCountA = Object.keys(hocrAAll).length;
 
   // Number of words in ground truth with any overlap with candidate OCR
   const overlapCountB = Object.keys(hocrBOverlap).length;
