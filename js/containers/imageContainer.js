@@ -256,12 +256,12 @@ export class ImageCache {
     // If no preference is specified for upscaling, default to false.
     const upscaleArg = props?.upscaled || false;
 
-    const scheduler = await gs.getGeneralScheduler();
+    await gs.getGeneralScheduler();
 
     const resPromise = (async () => {
     // Wait for non-rotated version before replacing with promise
       if (typeof process === 'undefined') await gs.initTesseract({ anyOk: true });
-      return scheduler.recognize({
+      return gs.recognize({
         image: inputImage.src,
         options: { rotateRadians: angleArg, upscale: upscaleArg },
         output: {

@@ -102,62 +102,6 @@ export async function initGeneralWorker() {
   });
 }
 
-export class GeneralScheduler {
-  constructor(scheduler) {
-    this.scheduler = scheduler;
-    /**
-     * @param {Parameters<typeof import('./worker/compareOCRModule.js').compareOCRPageImp>[0]} args
-     * @returns {ReturnType<typeof import('./worker/compareOCRModule.js').compareOCRPageImp>}
-     */
-    this.compareOCRPageImp = async (args) => (await this.scheduler.addJob('compareOCRPageImp', args));
-    /**
-     * @param {Parameters<typeof import('./worker/optimizeFontModule.js').optimizeFont>[0]} args
-     * @returns {ReturnType<typeof import('./worker/optimizeFontModule.js').optimizeFont>}
-     */
-    this.optimizeFont = async (args) => (await this.scheduler.addJob('optimizeFont', args));
-    /**
-    * @template {Partial<Tesseract.OutputFormats>} TO
-    * @param {Object} args
-    * @param {Parameters<Tesseract.Worker['recognize']>[0]} args.image
-    * @param {Parameters<Tesseract.Worker['recognize']>[1]} args.options
-    * @param {TO} args.output
-    * @returns {Promise<Tesseract.Page<TO>>}
-    * Exported for type inference purposes, should not be imported anywhere.
-    */
-    this.recognize = async (args) => (await this.scheduler.addJob('recognize', args));
-    /**
-     * @param {Parameters<typeof import('./worker/generalWorker.js').recognizeAndConvert>[0]} args
-     * @returns {ReturnType<typeof import('./worker/generalWorker.js').recognizeAndConvert>}
-     */
-    this.recognizeAndConvert = async (args) => (await this.scheduler.addJob('recognizeAndConvert', args));
-    /**
-     * @param {Parameters<typeof import('./worker/generalWorker.js').recognizeAndConvert2>[0]} args
-     * @returns {Promise<[ReturnType<typeof import('./worker/generalWorker.js').recognizeAndConvert>, ReturnType<typeof import('./worker/generalWorker.js').recognizeAndConvert>]>}
-     */
-    this.recognizeAndConvert2 = async (args) => (await this.scheduler.addJob('recognizeAndConvert2', args));
-    /**
-     * @param {Parameters<typeof import('./worker/compareOCRModule.js').evalPageBase>[0]} args
-     * @returns {ReturnType<typeof import('./worker/compareOCRModule.js').evalPageBase>}
-     */
-    this.evalPageBase = async (args) => (await this.scheduler.addJob('evalPageBase', args));
-    /**
-     * @param {Parameters<typeof import('./worker/compareOCRModule.js').evalWords>[0]} args
-     * @returns {ReturnType<typeof import('./worker/compareOCRModule.js').evalWords>}
-     */
-    this.evalWords = async (args) => (await this.scheduler.addJob('evalWords', args));
-    /**
-     * @param {Parameters<typeof import('./worker/compareOCRModule.js').evalPageFont>[0]} args
-     * @returns {ReturnType<typeof import('./worker/compareOCRModule.js').evalPageFont>}
-     */
-    this.evalPageFont = async (args) => (await this.scheduler.addJob('evalPageFont', args));
-    /**
-     * @param {Parameters<typeof import('./worker/compareOCRModule.js').renderPageStaticImp>[0]} args
-     * @returns {ReturnType<typeof import('./worker/compareOCRModule.js').renderPageStaticImp>}
-     */
-    this.renderPageStaticImp = async (args) => (await this.scheduler.addJob('renderPageStaticImp', args));
-  }
-}
-
 /**
  * This class stores the scheduler and related promises.
  */
@@ -177,37 +121,112 @@ export class gs {
   static loadedBuiltInOptWorker = false;
 
   /** @type {?GeneralScheduler} */
-  static scheduler = null;
+  // static scheduler = null;
 
   /** @type {?import('../tess/tesseract.esm.min.js').default} */
   static schedulerInner = null;
 
   /** @type {?Function} */
-  static resReady = null;
+  static #resReady = null;
 
   /** @type {?Promise<void>} */
   static schedulerReady = null;
 
-  static setSchedulerReady = () => {
-    gs.schedulerReady = new Promise((resolve, reject) => {
-      gs.resReady = resolve;
-    });
-  };
-
   /** @type {?Function} */
-  static resReadyTesseract = null;
+  static #resReadyTesseract = null;
 
   /** @type {?Promise<void>} */
   static schedulerReadyTesseract = null;
 
-  static setSchedulerReadyTesseract = () => {
-    gs.schedulerReadyTesseract = new Promise((resolve, reject) => {
-      gs.resReadyTesseract = resolve;
-    });
+  /**
+   * @param {Parameters<typeof import('./worker/compareOCRModule.js').compareOCRPageImp>[0]} args
+   * @returns {ReturnType<typeof import('./worker/compareOCRModule.js').compareOCRPageImp>}
+   */
+  static compareOCRPageImp = async (args) => {
+    if (typeof process === 'undefined') {
+      return await gs.schedulerInner.addJob('compareOCRPageImp', args);
+    // eslint-disable-next-line no-else-return
+    } else {
+      // The Node.js canvas package does not currently support worker threads
+      // https://github.com/Automattic/node-canvas/issues/1394
+      const compareOCRPageImp = (await import('./worker/compareOCRModule.js')).compareOCRPageImp;
+      return await compareOCRPageImp(args);
+    }
   };
 
+  /**
+   * @param {Parameters<typeof import('./worker/optimizeFontModule.js').optimizeFont>[0]} args
+   * @returns {ReturnType<typeof import('./worker/optimizeFontModule.js').optimizeFont>}
+   */
+  static optimizeFont = async (args) => (await gs.schedulerInner.addJob('optimizeFont', args));
+
+  /**
+  * @template {Partial<Tesseract.OutputFormats>} TO
+  * @param {Object} args
+  * @param {Parameters<Tesseract.Worker['recognize']>[0]} args.image
+  * @param {Parameters<Tesseract.Worker['recognize']>[1]} args.options
+  * @param {TO} args.output
+  * @returns {Promise<Tesseract.Page<TO>>}
+  * Exported for type inference purposes, should not be imported anywhere.
+  */
+  static recognize = async (args) => (await gs.schedulerInner.addJob('recognize', args));
+
+  /**
+   * @param {Parameters<typeof import('./worker/generalWorker.js').recognizeAndConvert>[0]} args
+   * @returns {ReturnType<typeof import('./worker/generalWorker.js').recognizeAndConvert>}
+   */
+  static recognizeAndConvert = async (args) => (await gs.schedulerInner.addJob('recognizeAndConvert', args));
+
+  /**
+   * @param {Parameters<typeof import('./worker/generalWorker.js').recognizeAndConvert2>[0]} args
+   * @returns {Promise<[ReturnType<typeof import('./worker/generalWorker.js').recognizeAndConvert>, ReturnType<typeof import('./worker/generalWorker.js').recognizeAndConvert>]>}
+   */
+  static recognizeAndConvert2 = async (args) => (await gs.schedulerInner.addJob('recognizeAndConvert2', args));
+
+  /**
+   * @param {Parameters<typeof import('./worker/compareOCRModule.js').evalPageBase>[0]} args
+   * @returns {ReturnType<typeof import('./worker/compareOCRModule.js').evalPageBase>}
+   */
+  static evalPageBase = async (args) => {
+    if (typeof process === 'undefined') {
+      return await gs.schedulerInner.addJob('evalPageBase', args);
+    // eslint-disable-next-line no-else-return
+    } else {
+      const evalPageBase = (await import('./worker/compareOCRModule.js')).evalPageBase;
+      return await evalPageBase(args);
+    }
+  };
+
+  /**
+   * @param {Parameters<typeof import('./worker/compareOCRModule.js').evalWords>[0]} args
+   * @returns {ReturnType<typeof import('./worker/compareOCRModule.js').evalWords>}
+   */
+  static evalWords = async (args) => (await gs.schedulerInner.addJob('evalWords', args));
+
+  /**
+   * @param {Parameters<typeof import('./worker/compareOCRModule.js').evalPageFont>[0]} args
+   * @returns {ReturnType<typeof import('./worker/compareOCRModule.js').evalPageFont>}
+   */
+  static evalPageFont = async (args) => {
+    if (typeof process === 'undefined') {
+      return await gs.schedulerInner.addJob('evalPageFont', args);
+    // eslint-disable-next-line no-else-return
+    } else {
+      const evalPageFont = (await import('./worker/compareOCRModule.js')).evalPageFont;
+      return await evalPageFont(args);
+    }
+  };
+
+  /**
+   * @param {Parameters<typeof import('./worker/compareOCRModule.js').renderPageStaticImp>[0]} args
+   * @returns {ReturnType<typeof import('./worker/compareOCRModule.js').renderPageStaticImp>}
+   */
+  static renderPageStaticImp = async (args) => (await gs.schedulerInner.addJob('renderPageStaticImp', args));
+
   static init = async () => {
-    gs.setSchedulerReady();
+    gs.schedulerReady = new Promise((resolve, reject) => {
+      gs.#resReady = resolve;
+    });
 
     // Determine number of workers to use in the browser.
     // This is the minimum of:
@@ -240,10 +259,8 @@ export class gs {
 
     await Promise.all(resArr);
 
-    gs.scheduler = new GeneralScheduler(gs.schedulerInner);
-
     // @ts-ignore
-    gs.resReady(true);
+    gs.#resReady(true);
   };
 
   /**
@@ -263,7 +280,9 @@ export class gs {
 
     if (gs.schedulerReadyTesseract) await gs.schedulerReadyTesseract;
 
-    gs.setSchedulerReadyTesseract();
+    gs.schedulerReadyTesseract = new Promise((resolve, reject) => {
+      gs.#resReadyTesseract = resolve;
+    });
 
     // Wait for the first worker to load.
     // A behavior (likely bug) was observed where, if the workers are loaded in parallel,
@@ -276,7 +295,7 @@ export class gs {
       await Promise.allSettled(resArr);
     }
     // @ts-ignore
-    gs.resReadyTesseract(true);
+    gs.#resReadyTesseract(true);
     return gs.schedulerReadyTesseract;
   };
 
@@ -286,12 +305,12 @@ export class gs {
   static getGeneralScheduler = async () => {
     if (gs.schedulerReady) {
       await gs.schedulerReady;
-      return /** @type {GeneralScheduler} */ (gs.scheduler);
+      return;
     }
 
     await gs.init();
 
-    return /** @type {GeneralScheduler} */ (gs.scheduler);
+    return;
   };
 
   static clear = () => {
@@ -300,12 +319,11 @@ export class gs {
 
   static terminate = async () => {
     gs.clear();
-    gs.scheduler = null;
     await gs.schedulerInner.terminate();
     gs.schedulerInner = null;
-    gs.resReady = null;
+    gs.#resReady = null;
     gs.schedulerReady = null;
-    gs.resReadyTesseract = null;
+    gs.#resReadyTesseract = null;
     gs.schedulerReadyTesseract = null;
     gs.loadedBuiltInRawWorker = false;
   };

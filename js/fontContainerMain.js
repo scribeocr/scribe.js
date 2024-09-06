@@ -321,8 +321,6 @@ export function setDefaultFontAuto(fontMetricsObj) {
  * @param {Object.<string, FontMetricsFamily>} fontMetricsObj
  */
 export async function optimizeFontContainerFamily(fontFamily, fontMetricsObj) {
-  if (!gs.scheduler) throw new Error('GeneralScheduler must be defined before this function can run.');
-
   // When we have metrics for individual fonts families, those are used to optimize the appropriate fonts.
   // Otherwise, the "default" metric is applied to whatever font the user has selected as the default font.
   const multiFontMode = checkMultiFontMode(fontMetricsObj);
@@ -342,7 +340,7 @@ export async function optimizeFontContainerFamily(fontFamily, fontMetricsObj) {
   }
 
   const metricsNormal = fontMetricsObj[fontMetricsType][fontFamily.normal.style];
-  const normalOptFont = gs.scheduler.optimizeFont({ fontData: fontFamily.normal.src, fontMetricsObj: metricsNormal, style: fontFamily.normal.style })
+  const normalOptFont = gs.optimizeFont({ fontData: fontFamily.normal.src, fontMetricsObj: metricsNormal, style: fontFamily.normal.style })
     .then(async (x) => {
       const font = await loadOpentype(x.fontData, x.kerningPairs);
       return new FontContainerFont(fontFamily.normal.family, fontFamily.normal.style, x.fontData, true, font);
@@ -352,7 +350,7 @@ export async function optimizeFontContainerFamily(fontFamily, fontMetricsObj) {
   /** @type {?FontContainerFont|Promise<FontContainerFont>} */
   let italicOptFont = null;
   if (metricsItalic && metricsItalic.obs >= 200) {
-    italicOptFont = gs.scheduler.optimizeFont({ fontData: fontFamily.italic.src, fontMetricsObj: metricsItalic, style: fontFamily.italic.style })
+    italicOptFont = gs.optimizeFont({ fontData: fontFamily.italic.src, fontMetricsObj: metricsItalic, style: fontFamily.italic.style })
       .then(async (x) => {
         const font = await loadOpentype(x.fontData, x.kerningPairs);
         return new FontContainerFont(fontFamily.italic.family, fontFamily.italic.style, x.fontData, true, font);

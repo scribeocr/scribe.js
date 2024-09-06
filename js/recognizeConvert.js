@@ -23,8 +23,6 @@ import { replaceObjectProperties } from './utils/miscUtils.js';
  * Additionally, this function adds arguments to the function call that are not available in the worker thread.
  */
 export const compareOCRPage = async (pageA, pageB, options) => {
-  const func = typeof process !== 'undefined' ? (await import('./worker/compareOCRModule.js')).compareOCRPageImp : gs.scheduler.compareOCRPageImp;
-
   // Some combinations of options require the image to be provided, and some do not.
   // We skip sending the image for those that do not, as in addition to helping performance,
   // this is also necessary to run basic comparison scripts (e.g. benchmarking accuracy) without providing the image.
@@ -38,7 +36,7 @@ export const compareOCRPage = async (pageA, pageB, options) => {
   const binaryImage = skipImage ? null : await ImageCache.getBinary(pageA.n);
 
   const pageMetricsObj = pageMetricsArr[pageA.n];
-  return func({
+  return gs.compareOCRPageImp({
     pageA, pageB, binaryImage, pageMetricsObj, options,
   });
 };
@@ -50,11 +48,10 @@ export const compareOCRPage = async (pageA, pageB, options) => {
  * @param {boolean} [params.view=false] - Draw results on debugging canvases
  */
 export const evalOCRPage = async (params) => {
-  const func = typeof process !== 'undefined' ? (await import('./worker/compareOCRModule.js')).evalPageBase : gs.scheduler.evalPageBase;
   const n = 'page' in params.page ? params.page.page.n : params.page.n;
   const binaryImage = await ImageCache.getBinary(n);
   const pageMetricsObj = pageMetricsArr[n];
-  return func({
+  return gs.evalPageBase({
     page: params.page, binaryImage, pageMetricsObj, func: params.func, view: params.view,
   });
 };
@@ -195,9 +192,9 @@ export const recognizePage = async (n, legacy, lstm, areaMode, tessOptions = {},
   // is to get debugging images for layout analysis rather than get text.
   const runRecognition = legacy || lstm;
 
-  const scheduler = await gs.getGeneralScheduler();
+  await gs.getGeneralScheduler();
 
-  const resArr = await scheduler.recognizeAndConvert2({
+  const resArr = await gs.recognizeAndConvert2({
     image: nativeN.src,
     options: config,
     output: {
@@ -515,7 +512,7 @@ export async function recognizeAllPages(legacy = true, lstm = true, mainData = f
  * @param {'speed'|'quality'} [options.mode='quality'] - Recognition mode.
  * @param {Array<string>} [options.langs=['eng']] - Language(s) in document.
  * @param {'lstm'|'legacy'|'combined'} [options.modeAdv='combined'] - Alternative method of setting recognition mode.
- * @param {'conf'|'data'} [options.combineMode='data'] - Method of combining OCR results. Used if OCR data already exists.
+ * @param {'conf'|'data'|'none'} [options.combineMode='data'] - Method of combining OCR results. Used if OCR data already exists.
  * @param {boolean} [options.vanillaMode=false] - Whether to use the vanilla Tesseract.js model.
  */
 export async function recognize(options = {}) {
@@ -541,15 +538,14 @@ export async function recognize(options = {}) {
   if (langs.includes('rus') || langs.includes('ukr') || langs.includes('ell')) fontPromiseArr.push(loadBuiltInFontsRaw('all'));
   await Promise.all(fontPromiseArr);
 
-  // Whether user uploaded data will be compared against in addition to both Tesseract engines
-  const userUploadMode = Boolean(ocrAll['User Upload']);
-  const existingOCR = Object.keys(ocrAll).filter((x) => x !== 'active').length > 0;
+  /** @type {?OcrPage[]} */
+  const existingOCR = ocrAll['User Upload'] || ocrAll.pdf;
 
   // A single Tesseract engine can be used (Legacy or LSTM) or the results from both can be used and combined.
   if (oemMode === 'legacy' || oemMode === 'lstm') {
     // Tesseract is used as the "main" data unless user-uploaded data exists and only the LSTM model is being run.
     // This is because Tesseract Legacy provides very strong metrics, and Abbyy often does not.
-    await recognizeAllPages(oemMode === 'legacy', oemMode === 'lstm', !(oemMode === 'lstm' && existingOCR), langs, vanillaMode);
+    await recognizeAllPages(oemMode === 'legacy', oemMode === 'lstm', !(oemMode === 'lstm' && !!existingOCR), langs, vanillaMode);
 
     // Metrics from the LSTM model are so inaccurate they are not worth using.
     if (oemMode === 'legacy') {
@@ -566,7 +562,7 @@ export async function recognize(options = {}) {
       }
     }
 
-    if (userUploadMode) {
+    if (existingOCR) {
       const oemText = 'Tesseract Combined';
       if (!ocrAll[oemText]) ocrAll[oemText] = Array(inputData.pageCount);
       ocrAll.active = ocrAll[oemText];
@@ -612,7 +608,7 @@ export async function recognize(options = {}) {
     ocrAll.active = ocrAll[oemText];
 
     {
-      const tessCombinedLabel = userUploadMode ? 'Tesseract Combined' : 'Combined';
+      const tessCombinedLabel = existingOCR ? 'Tesseract Combined' : 'Combined';
 
       /** @type {Parameters<typeof compareOCRPage>[2]} */
       const compOptions = {
@@ -632,7 +628,7 @@ export async function recognize(options = {}) {
       replaceObjectProperties(ocrAll[tessCombinedLabel], res.ocr);
     }
 
-    if (userUploadMode) {
+    if (existingOCR) {
       if (combineMode === 'conf') {
         /** @type {Parameters<typeof compareOCRPage>[2]} */
         const compOptions = {
@@ -648,12 +644,12 @@ export async function recognize(options = {}) {
           editConf: true,
         };
 
-        const res = await compareOCR(ocrAll['User Upload'], ocrAll['Tesseract Combined'], compOptions);
+        const res = await compareOCR(existingOCR, ocrAll['Tesseract Combined'], compOptions);
 
         if (DebugData.debugImg.Combined) DebugData.debugImg.Combined = res.debug;
 
         replaceObjectProperties(ocrAll.Combined, res.ocr);
-      } else {
+      } else if (combineMode === 'data') {
         /** @type {Parameters<typeof compareOCRPage>[2]} */
         const compOptions = {
           mode: 'comb',
@@ -668,7 +664,7 @@ export async function recognize(options = {}) {
           confThreshMed: opt.confThreshMed,
         };
 
-        const res = await compareOCR(ocrAll['User Upload'], ocrAll['Tesseract Combined'], compOptions);
+        const res = await compareOCR(existingOCR, ocrAll['Tesseract Combined'], compOptions);
 
         if (DebugData.debugImg.Combined) DebugData.debugImg.Combined = res.debug;
 

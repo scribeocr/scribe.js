@@ -16,8 +16,6 @@ import { gs } from './generalWorkerMain.js';
  * @param {number} n - Number of words to compare
  */
 export async function evalPagesFont(font, pageArr, opt, n = 500) {
-  if (!gs.scheduler) throw new Error('GeneralScheduler must be defined before this function can run.');
-
   let metricTotal = 0;
   let wordsTotal = 0;
 
@@ -26,29 +24,13 @@ export async function evalPagesFont(font, pageArr, opt, n = 500) {
 
     const imageI = await ImageCache.getBinary(i);
 
-    // The Node.js canvas package does not currently support worker threads
-    // https://github.com/Automattic/node-canvas/issues/1394
-    let res;
-    if (!(typeof process === 'undefined')) {
-      const { evalPageFont } = await import('./worker/compareOCRModule.js');
-
-      res = await evalPageFont({
-        font,
-        page: pageArr[i],
-        binaryImage: imageI,
-        pageMetricsObj: pageMetricsArr[i],
-        opt,
-      });
-      // Browser case
-    } else {
-      res = await gs.scheduler.evalPageFont({
-        font,
-        page: pageArr[i],
-        binaryImage: imageI,
-        pageMetricsObj: pageMetricsArr[i],
-        opt,
-      });
-    }
+    const res = await gs.evalPageFont({
+      font,
+      page: pageArr[i],
+      binaryImage: imageI,
+      pageMetricsObj: pageMetricsArr[i],
+      opt,
+    });
 
     metricTotal += res.metricTotal;
     wordsTotal += res.wordsTotal;
