@@ -712,19 +712,20 @@ export async function compareOCRPageImp({
                   continue;
                 }
 
-                let hocrAError = 0;
-                let hocrBError = 0;
+                let hocrAError = 1;
+                let hocrBError = 1;
+                let hocrAAltError = 1;
 
                 if (!evalConflicts) {
-                  hocrAError = 1;
+                  hocrBError = 0;
                 } else if (oneToOne) {
                   // Some common patterns detected by Tesseract Legacy are so implausible that they are automatically rejected.
                   if (legacyLSTMComb && rejectWordLegacy(wordA.text, wordB.text)) {
-                    hocrAError = 1;
+                    hocrBError = 0;
                   // If the top choice out of the Tesseract Legacy classifier (but not entire model) is the same as the Tesseract LSTM choice, use the LSTM choice.
                   // This condition is common when the Legacy model improperly applies a dictionary "correction" to a word that was already correct.
                   } else if (legacyLSTMComb && wordA.textAlt && wordA.textAlt === wordB.text) {
-                    hocrAError = 1;
+                    hocrBError = 0;
                   // Otherwise, the words are compared visually.
                   } else {
                     // TODO: Figure out how to compare between small caps/non small-caps words (this is the only relevant style as it is the only style LSTM detects)
@@ -745,7 +746,24 @@ export async function compareOCRPageImp({
                     hocrBError = evalRes.metricB + (await penalizeWord([wordB]));
 
                     // Reject Tesseract Legacy word if appropriate
-                    if (legacyLSTMComb && rejectWordLegacy(wordA.text, wordB.text)) hocrAError = 1;
+                    if (legacyLSTMComb && rejectWordLegacy(wordA.text, wordB.text)) hocrBError = 0;
+
+                    // The alternative word from Tesseract legacy is tested if both other options are rejected.
+                    // This can be useful for relatively high-quality scans of non-dictionary words, which both the LSTM model and the Legacy model (after dictionary correction) may fail on,
+                    // with the raw results from the Legacy classifier being the most accurate.
+                    if (legacyLSTMComb && hocrAError > 0.5 && hocrBError > 0.5 && wordA.textAlt && wordA.textAlt !== wordB.text) {
+                      wordAClone.text = wordA.textAlt;
+
+                      // This would run faster if it was built into the original evalWords function, but this case should be rare enough that it doesn't matter.
+                      const evalResAlt = await evalWords({
+                        wordsA: [wordAClone], binaryImage: binaryImageBit, angle: imgAngle, imgDims, options: { view: Boolean(debugLabel) },
+                      });
+
+                      hocrAAltError = evalResAlt.metricA + (await penalizeWord([wordAClone]));
+
+                      // To use the alt word, the error must be less than 0.5, and the alt word but be at least 0.1 better than both other options.
+                      if (hocrAAltError >= 0.5 || (hocrAError - hocrAAltError) < 0.1 || (hocrBError - hocrAAltError) < 0.1) hocrAAltError = 1;
+                    }
 
                     if (evalRes.debug) {
                       const debugObj = evalRes.debug;
@@ -760,7 +778,7 @@ export async function compareOCRPageImp({
                   const wordsBText = wordsBArr.map((x) => x.text).join('');
 
                   if (legacyLSTMComb && rejectWordLegacy(wordsAText, wordsBText)) {
-                    hocrAError = 1;
+                    hocrBError = 0;
                   } else {
                     const evalRes = await evalWords({
                       wordsA: wordsAArr, wordsB: wordsBArr, binaryImage: binaryImageBit, angle: imgAngle, imgDims, options: { view: Boolean(debugLabel) },
@@ -784,7 +802,7 @@ export async function compareOCRPageImp({
                     }
 
                     // Reject Tesseract Legacy word if appropriate
-                    if (legacyLSTMComb && rejectWordLegacy(wordsAText, wordsBText)) hocrAError = 1;
+                    if (legacyLSTMComb && rejectWordLegacy(wordsAText, wordsBText)) hocrBError = 0;
 
                     if (evalRes.debug) {
                       const debugObj = evalRes.debug;
@@ -798,7 +816,7 @@ export async function compareOCRPageImp({
 
                 // The LSTM model is known to be more accurate on average.
                 // Therefore, if both metrics are terrible (indicating the word isn't lined up at all), the LSTM word is used.
-                if (hocrBError < hocrAError || (legacyLSTMComb && hocrAError > 0.5)) {
+                if ((hocrBError < hocrAError && hocrBError < hocrAAltError) || (legacyLSTMComb && hocrAError > 0.5 && hocrAAltError > 0.5)) {
                   const skip = ['eg', 'ie'].includes(wordA.text.replace(/\W/g, ''));
 
                   if (!skip) {
@@ -851,6 +869,10 @@ export async function compareOCRPageImp({
                       break;
                     }
                   }
+                } else if (wordA.textAlt && hocrAAltError < 0.5 && hocrAAltError < hocrAError) {
+                  lineWordsEditedNew += 1;
+                  if (wordA.text.length !== wordA.textAlt.length) wordA.chars = null;
+                  wordA.text = wordA.textAlt;
                 }
               }
             }
