@@ -155,6 +155,24 @@ export class gs {
   };
 
   /**
+   * @param {Parameters<typeof import('./import/convertPageHocr.js').convertPageHocr>[0]} args
+   * @returns {ReturnType<typeof import('./import/convertPageHocr.js').convertPageHocr>}
+   */
+  static convertPageHocr = async (args) => (await gs.schedulerInner.addJob('convertPageHocr', args));
+
+  /**
+   * @param {Parameters<typeof import('./import/convertPageAbbyy.js').convertPageAbbyy>[0]} args
+   * @returns {ReturnType<typeof import('./import/convertPageAbbyy.js').convertPageAbbyy>}
+   */
+  static convertPageAbbyy = async (args) => (await gs.schedulerInner.addJob('convertPageAbbyy', args));
+
+  /**
+   * @param {Parameters<typeof import('./import/convertPageStext.js').convertPageStext>[0]} args
+   * @returns {ReturnType<typeof import('./import/convertPageStext.js').convertPageStext>}
+   */
+  static convertPageStext = async (args) => (await gs.schedulerInner.addJob('convertPageStext', args));
+
+  /**
    * @param {Parameters<typeof import('./worker/optimizeFontModule.js').optimizeFont>[0]} args
    * @returns {ReturnType<typeof import('./worker/optimizeFontModule.js').optimizeFont>}
    */

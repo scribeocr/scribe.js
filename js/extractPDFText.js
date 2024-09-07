@@ -1,6 +1,6 @@
+import { ocrAll, ocrAllRaw } from './containers/dataContainer.js';
 import { ImageCache } from './containers/imageContainer.js';
-import { convertOCRAll } from './recognizeConvert.js';
-import { ocrAllRaw, ocrAll } from './containers/dataContainer.js';
+import { convertOCR } from './recognizeConvert.js';
 
 /**
  * Extract raw text content from currently loaded PDF.
@@ -102,7 +102,7 @@ export const extractInternalPDFText = async (options = {}) => {
   const format = 'stext';
 
   // Process HOCR using web worker, reading from file first if that has not been done already
-  await convertOCRAll(ocrAllRaw.active, true, format, 'pdf', false);
+  await convertOCR(ocrAllRaw.active, true, format, 'pdf', false);
 
   res.content = ocrAll.pdf;
 
