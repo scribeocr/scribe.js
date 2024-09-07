@@ -304,6 +304,7 @@ export function checkCharWarn(warnArr) {
  * @param {boolean} [scribeMode=false] - Whether this is HOCR data from this program.
  */
 export async function convertOCRPage(ocrRaw, n, mainData, format, engineName, scribeMode = false) {
+  await gs.getGeneralScheduler();
   let res;
   if (format === 'hocr') {
     res = await gs.convertPageHocr({ ocrStr: ocrRaw, n, scribeMode });
