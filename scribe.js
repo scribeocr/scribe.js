@@ -23,6 +23,7 @@ import ocr from './js/objects/ocrObjects.js';
 import {
   calcEvalStatsDoc,
   compareOCR,
+  convertOCRPage,
   evalOCRPage,
   recognize, recognizePage,
 } from './js/recognizeConvert.js';
@@ -242,6 +243,7 @@ export default {
   clear,
   combineOCRPage,
   compareOCR,
+  convertOCRPage,
   data,
   enableFontOpt,
   evalOCRPage,

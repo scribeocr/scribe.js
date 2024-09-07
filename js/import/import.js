@@ -23,7 +23,7 @@ import { gs } from '../generalWorkerMain.js';
 import { imageUtils } from '../objects/imageObjects.js';
 import { LayoutDataTablePage, LayoutPage } from '../objects/layoutObjects.js';
 import { PageMetrics } from '../objects/pageMetricsObjects.js';
-import { checkCharWarn, convertOCRAll } from '../recognizeConvert.js';
+import { checkCharWarn, convertOCR } from '../recognizeConvert.js';
 import { replaceObjectProperties } from '../utils/miscUtils.js';
 import { importOCRFiles } from './importOCR.js';
 
@@ -436,7 +436,7 @@ export async function importFiles(files, options = {}) {
     if (stextMode) format = 'stext';
 
     // Process HOCR using web worker, reading from file first if that has not been done already
-    await convertOCRAll(ocrAllRaw.active, true, format, oemName, scribeMode).then(async () => {
+    await convertOCR(ocrAllRaw.active, true, format, oemName, scribeMode).then(async () => {
       // Skip this step if optimization info was already restored from a previous session, or if using stext (which is character-level but not visually accurate).
       if (!existingOpt && !stextMode) {
         await checkCharWarn(convertPageWarn);
@@ -487,5 +487,5 @@ export async function importFilesSupp(files, ocrName) {
   if (ocrData.abbyyMode) format = 'abbyy';
   if (ocrData.stextMode) format = 'stext';
 
-  await convertOCRAll(ocrData.hocrRaw, false, format, ocrName, scribeMode);
+  await convertOCR(ocrData.hocrRaw, false, format, ocrName, scribeMode);
 }
