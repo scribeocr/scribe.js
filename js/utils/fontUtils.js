@@ -295,8 +295,8 @@ export const calcWordFontSize = (word) => {
 
   // If the user manually set a size, then use that
   if (word.size) {
-    const mult = FontProps.sizeMult[word.font] || 1;
-    return word.size * mult;
+    const mult = FontProps.sizeMult[font.family] || 1;
+    return word.size / mult;
   }
   const lineFontSize = calcLineFontSize(word.line);
 
