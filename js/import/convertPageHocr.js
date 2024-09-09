@@ -1,7 +1,7 @@
 import ocr from '../objects/ocrObjects.js';
 
 import {
-  determineSansSerif, getTextScript,
+  getTextScript,
   unescapeXml,
 } from '../utils/miscUtils.js';
 
@@ -166,9 +166,8 @@ export async function convertPageHocr({
 
       const wordLangRaw = match.match(/lang=['"]([^'"]*)['"]/i)?.[1];
 
-      const fontName = match.match(/^[^>]+?x_font\s*([\w-]+)/)?.[1];
-
-      const fontFamily = determineSansSerif(fontName);
+      let fontName = match.match(/^[^>]+?x_font\s*([^'";]+)/)?.[1];
+      if (fontName) fontName = fontName.trim();
 
       const it = match.matchAll(charRegex);
       const letterArr = [...it];
@@ -246,7 +245,7 @@ export async function convertPageHocr({
       if (debugMode) wordObj.raw = match;
 
       if (italic) wordObj.style = 'italic';
-      if (fontFamily !== 'Default') wordObj.font = fontFamily;
+      if (fontName) wordObj.font = fontName;
 
       wordObj.conf = wordConf;
 
@@ -297,9 +296,8 @@ export async function convertPageHocr({
         bottom: wordBox1[3],
       };
 
-      const fontName = match.match(/^[^>]+?x_font\s*([\w-]+)/)?.[1];
-
-      const fontFamily = determineSansSerif(fontName);
+      let fontName = match.match(/^[^>]+?x_font\s*([^'";]+)/)?.[1];
+      if (fontName) fontName = fontName.trim();
 
       const styleStr = match.match(/style=['"]([^'"]+)/)?.[1];
 
@@ -333,9 +331,7 @@ export async function convertPageHocr({
       }
 
       wordObj.style = fontStyle;
-      if (fontFamily !== 'Default') {
-        wordObj.font = fontFamily;
-      }
+      if (fontName) wordObj.font = fontName;
 
       wordObj.sup = wordSup;
 
