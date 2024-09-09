@@ -142,8 +142,22 @@ export const calcSuppFontInfo = async (ocrArr) => {
 
     if (serifVotes > sansVotes) {
       FontProps.serifFontsDoc.add(key);
+      // console.log('Serif:', key, serifVotes, sansVotes);
     } else {
       FontProps.sansFontsDoc.add(key);
+      // console.log('Sans:', key, serifVotes, sansVotes);
+    }
+  }
+
+  if (Object.keys(FontProps.sizeMult).length === 0) return;
+
+  for (const page of ocrArr) {
+    for (const line of page.lines) {
+      for (const word of line.words) {
+        if (word.font && word.size && FontProps.sizeMult[word.font]) {
+          word.size *= FontProps.sizeMult[word.font];
+        }
+      }
     }
   }
 

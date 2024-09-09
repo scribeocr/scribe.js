@@ -325,8 +325,10 @@ export function replaceObjectProperties(obj, obj2 = {}) {
 // Sans/serif lookup for common font families. These should not include spaces or underscores--multi-word font names should be concatenated.
 // Fonts that should not be added (both Sans and Serif variants):
 // DejaVu
-const serifFonts = ['SerifDefault', 'Baskerville', 'Book', 'C059', 'Cambria', 'Century', 'Courier', 'Garamond', 'Georgia', 'LucidaBright', 'Minion', 'P052', 'Palatino', 'Times'];
-const sansFonts = ['SansDefault', 'Arial', 'Calibri', 'Candara', 'Carlito', 'Comic', 'Franklin', 'Helvetica', 'Impact', 'Interstate', 'Myriad', 'Tahoma', 'Trebuchet', 'UniversNext', 'Verdana'];
+const serifFonts = ['SerifDefault', 'Baskerville', 'C059', 'Calibri', 'Cambria', 'Century', 'Courier', 'Garamond', 'Georgia',
+  'LucidaBright', 'Minion', 'Optima', 'P052', 'Palatino', 'Times'];
+const sansFonts = ['SansDefault', 'Avenir', 'Arial', 'Calibri', 'Candara', 'Carlito', 'Comic', 'Franklin', 'Futura', 'Gotham',
+  'Helvetica', 'Impact', 'Interstate', 'Myriad', 'Tahoma', 'Trebuchet', 'Univers', 'Verdana'];
 
 const serifFontsRegex = new RegExp(serifFonts.reduce((x, y) => `${x}|${y}`), 'i');
 const sansFontsRegex = new RegExp(sansFonts.reduce((x, y) => `${x}|${y}`), 'i');
