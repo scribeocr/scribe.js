@@ -53,7 +53,7 @@ const extractInternalPDFTextRaw = async () => {
       // (1) The total number of letters is at least 100 per page on average.
       // (2) The total number of letters is at least half of the total number of letters.
     } else if (pdfContentStats.letterCountTotal >= ImageCache.pageCount * 100
-      && pdfContentStats.letterCountVis >= ImageCache.pageCount / 2) {
+      && pdfContentStats.pageCountTotalText >= ImageCache.pageCount / 2) {
       type = 'ocr';
       // Otherwise, the PDF is considered image-native.
       // This includes both literally image-only PDFs, as well as PDFs that have invalid encodings or other issues that prevent valid text extraction.
