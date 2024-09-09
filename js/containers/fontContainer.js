@@ -67,6 +67,8 @@ export function loadFontFace(fontFamily, fontStyle, fontWeight, src) {
 
   const fontFace = new FontFace(fontFamily, src1, { style: fontStyle, weight: fontWeight });
 
+  if (fontFace.status === 'error') throw new Error(`FontFace failed to load: ${fontFamily} ${fontStyle} ${fontWeight}`);
+
   // Fonts are stored in `document.fonts` for the main thread and `WorkerGlobalScope.fonts` for workers
   const fontSet = globalThis.document ? globalThis.document.fonts : globalThis.fonts;
 
@@ -157,6 +159,10 @@ export function FontContainerFont(family, style, src, opt, opentypeObj) {
   /** @type {("sans"|"serif")} */
   this.type = determineSansSerif(this.family) === 'SansDefault' ? 'sans' : 'serif';
   this.smallCapsMult = 0.75;
+  /**
+   * @type {boolean} - Disable font. This is used to prevent a flawed font extracted from a PDF from being used.
+   */
+  this.disable = false;
 
   if (typeof FontFace !== 'undefined') loadFontFace(this.fontFaceName, this.fontFaceStyle, this.fontFaceWeight, this.src);
 }
@@ -228,6 +234,9 @@ export class FontCont {
   /** @type {?FontContainer} */
   static opt = null;
 
+  /** @type {?Object<string, FontContainerFamilyUpload>} */
+  static doc = null;
+
   /** @type {?FontContainer} */
   static export = null;
 
@@ -298,6 +307,10 @@ export class FontCont {
      * @returns {FontContainerFont}
      */
   static getFont = (family, style = 'normal', lang = 'eng') => {
+    if (FontCont.doc?.[family]?.[style] && !FontCont.doc?.[family]?.[style]?.disable) {
+      return FontCont.doc[family][style];
+    }
+
     if (lang === 'chi_sim') {
       if (!FontCont.supp.chi_sim) throw new Error('chi_sim font does not exist.');
       return FontCont.supp.chi_sim;

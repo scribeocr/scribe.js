@@ -149,12 +149,23 @@ export const drawWordRender = async (ctx, word, offsetX = 0, cropY = 0, ctxView 
 
   let baselineY = word.line.bbox.bottom + word.line.baseline[1];
 
+  const wordMetrics = calcWordMetrics(word);
+  const advanceArr = wordMetrics.advanceArr;
+  const kerningArr = wordMetrics.kerningArr;
+  const charSpacing = wordMetrics.charSpacing;
+  const wordFontSize = wordMetrics.fontSize;
+
   if (word.sup) {
     const wordboxXMid = word.bbox.left + (word.bbox.right - word.bbox.left) / 2;
 
     const baselineYWord = word.line.bbox.bottom + word.line.baseline[1] + word.line.baseline[0] * (wordboxXMid - word.line.bbox.left);
 
     baselineY -= (baselineYWord - word.bbox.bottom);
+
+    if (!word.visualCoords) {
+      const fontDesc = fontI.opentype.descender / fontI.opentype.unitsPerEm * wordMetrics.fontSize;
+      baselineY += fontDesc;
+    }
   } else if (!imageRotated) {
     const wordboxXMid = word.bbox.left + (word.bbox.right - word.bbox.left) / 2;
 
@@ -162,12 +173,6 @@ export const drawWordRender = async (ctx, word, offsetX = 0, cropY = 0, ctxView 
   }
 
   const y = baselineY - cropY;
-
-  const wordMetrics = calcWordMetrics(word);
-  const advanceArr = wordMetrics.advanceArr;
-  const kerningArr = wordMetrics.kerningArr;
-  const charSpacing = wordMetrics.charSpacing;
-  const wordFontSize = wordMetrics.fontSize;
 
   const advanceArrTotal = [];
   for (let i = 0; i < advanceArr.length; i++) {

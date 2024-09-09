@@ -183,16 +183,19 @@ export async function enableFontOpt(enableOpt, forceOpt) {
  *    Set `loadRaw` to `true` or `false` to force the raw fonts to be loaded or not loaded, respectively.
  * @param {boolean} [params.loadOpt] - By default, optimized fonts are loaded if they have not been loaded before.
  *   Set `loadOpt` to `true` or `false` to force the optimized fonts to be loaded or not loaded, respectively.
+ * @param {boolean} [params.loadDoc] - By default, fonts extracted from PDF documents are loaded if they have not been loaded before.
+ *  Set `loadDoc` to `true` or `false` to force the document fonts to be loaded or not loaded, respectively.
  * @param {boolean} [params.updateProps]
  */
 export async function updateFontContWorkerMain(params = {}) {
-  const loadRaw = params.loadRaw === true || (params.loadRaw !== false && FontCont.raw && !gs.loadedBuiltInRawWorker);
-  const loadOpt = params.loadOpt === true || (params.loadOpt !== false && FontCont.opt && !gs.loadedBuiltInOptWorker);
+  const loadRaw = params.loadRaw === true || (params.loadRaw !== false && FontCont.raw && !gs.loadedBuiltInFontsRawWorker);
+  const loadOpt = params.loadOpt === true || (params.loadOpt !== false && FontCont.opt && !gs.loadedBuiltInFontsOptWorker);
+  const loadDoc = params.loadDoc === true || (params.loadDoc !== false && FontCont.doc && !gs.loadedBuiltInFontsDocWorker);
 
   // If the active font data is not already loaded, load it now.
   // This assumes that only one version of the raw/optimized fonts ever exist--
   // it does not check whether the current optimized font changed since it was last loaded.
-  for (const [type, load] of [['raw', loadRaw], ['opt', loadOpt]]) {
+  for (const [type, load] of [['raw', loadRaw], ['opt', loadOpt], ['doc', loadDoc]]) {
     if (!load) continue;
 
     const resArr = [];
@@ -214,9 +217,11 @@ export async function updateFontContWorkerMain(params = {}) {
 
       // TODO: consider the race condition when `setBuiltInFontsWorkers` is called multiple times quickly and `loadFontsWorker` is still running.
       if (type === 'opt') {
-        gs.loadedBuiltInOptWorker = true;
-      } else {
-        gs.loadedBuiltInRawWorker = true;
+        gs.loadedBuiltInFontsOptWorker = true;
+      } else if (type === 'raw') {
+        gs.loadedBuiltInFontsRawWorker = true;
+      } else if (type === 'doc') {
+        gs.loadedBuiltInFontsDocWorker = true;
       }
     }
     await Promise.all(resArr);

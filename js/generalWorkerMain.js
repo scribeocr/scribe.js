@@ -115,10 +115,12 @@ export class gs {
   //     The scheduler is a singleton that is only set up once, so there is no need to store it in a promise as long as setup race conditions are avoided.
 
   /** Whether built-in fonts have been loaded in workers. */
-  static loadedBuiltInRawWorker = false;
+  static loadedBuiltInFontsRawWorker = false;
 
   /** Whether optimized fonts have been loaded in workers. */
-  static loadedBuiltInOptWorker = false;
+  static loadedBuiltInFontsOptWorker = false;
+
+  static loadedBuiltInFontsDocWorker = false;
 
   /** @type {?GeneralScheduler} */
   // static scheduler = null;
@@ -332,7 +334,7 @@ export class gs {
   };
 
   static clear = () => {
-    gs.loadedBuiltInOptWorker = false;
+    gs.loadedBuiltInFontsOptWorker = false;
   };
 
   static terminate = async () => {
@@ -343,6 +345,6 @@ export class gs {
     gs.schedulerReady = null;
     gs.#resReadyTesseract = null;
     gs.schedulerReadyTesseract = null;
-    gs.loadedBuiltInRawWorker = false;
+    gs.loadedBuiltInFontsRawWorker = false;
   };
 }

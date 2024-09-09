@@ -178,8 +178,7 @@ mupdf.extractAllFonts = function (doc) {
 
   const fontArr = [];
   for (let i = 0; i < fontCount; i++) {
-    // TODO: Make this work for more than 9 fonts
-    const fontFile = `font-000${i + 1}.ttf`;
+    const fontFile = `font-${String(i + 1).padStart(4, '0')}.ttf`;
     fontArr.push(FS.readFile(fontFile));
     FS.unlink(fontFile);
   }

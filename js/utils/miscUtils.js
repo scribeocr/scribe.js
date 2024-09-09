@@ -101,7 +101,8 @@ export function unescapeXml(string) {
     .replace(/&#39;/g, "'")
     .replace(/&#34;/g, '"')
     // The prefix &#x indicates the character is encoded as hexidecimal.
-    .replace(/&#x([0-9a-f]+);/g, replaceFunc);
+    .replace(/&#x([0-9a-f]+);/g, replaceFunc)
+    .replace(/\u00AD/g, '-'); // Replace soft hyphen with regular hyphen. This is unrelated to XML escaping, but should be done for all inputs.
 }
 
 // TODO: There may be duplicated approaches between `calcLang` and `getTextScript`.
@@ -332,6 +333,14 @@ const sansFontsRegex = new RegExp(sansFonts.reduce((x, y) => `${x}|${y}`), 'i');
 
 const unidentifiedFonts = new Set();
 
+export class FontProps {
+  static sansFontsDoc = new Set();
+
+  static serifFontsDoc = new Set();
+
+  static sizeMult = {};
+}
+
 /**
  * Given a font name from Tesseract/Abbyy XML, determine if it should be represented by sans font or serif font.
  *
@@ -364,6 +373,12 @@ export function determineSansSerif(fontName) {
         fontFamily = 'SerifDefault';
       } else if (/san/i.test(fontName)) {
         fontFamily = 'SansDefault';
+      // This comes after the hard-coded values, as the hard-coded values are considered more reliable.
+      // If recognition decides the font named "Arial" is a serif font, it's probably wrong.
+      } else if (FontProps.sansFontsDoc.has(fontName)) {
+        fontFamily = 'SansDefault';
+      } else if (FontProps.serifFontsDoc.has(fontName)) {
+        fontFamily = 'SerifDefault';
       } else if (!unidentifiedFonts.has(fontName)) {
         unidentifiedFonts.add(fontName);
         console.log(`Unidentified font: ${fontName}`);

@@ -3,7 +3,7 @@
 
 import { FontCont } from '../containers/fontContainer.js';
 import { getPrevLine } from '../objects/ocrObjects.js';
-import { quantile } from './miscUtils.js';
+import { FontProps, quantile } from './miscUtils.js';
 
 import opentype from '../../lib/opentype.module.js';
 import { opt } from '../containers/app.js';
@@ -132,7 +132,7 @@ function addLigaturesText(wordText, fontOpentype) {
       }
       if (charLig) {
         const glyphLig = fontOpentype.charToGlyph(charLig);
-        if (glyphLig && glyphLig.index > 0 && glyphLig.name !== '.notdef') {
+        if (glyphLig && glyphLig.index > 0 && glyphLig.name !== '.notdef' && glyphLig.path.commands.length > 0) {
           wordCharArrOut.push(charLig);
           i++;
           continue;
@@ -197,6 +197,7 @@ function calcWordCharMetrics(wordText, fontOpentype) {
  * @property {Array<number>} advanceArr - Array of advance widths for each character in the word in px.
  * @property {Array<number>} kerningArr - Array of kerning values for each character pair in the word in px.
  * @property {number} charSpacing - Character spacing in px.
+ * @property {FontContainerFont} font
  * @property {number} fontSize
  */
 /**
@@ -263,6 +264,7 @@ export function calcWordMetrics(word, angle = 0) {
     advanceArr: advanceArrPx,
     kerningArr: kerningArrPx,
     charSpacing,
+    font: fontI,
     fontSize,
     charArr,
   };
@@ -281,13 +283,20 @@ export const calcWordFontSize = (word) => {
   const font = FontCont.getWordFont(word);
   const fontOpentype = font.opentype;
 
+  // If the word is a superscript or dropcap, then size is calculated dynamically for the word.
+  // The size of these characters are currently not editable by the user.
+  // This is because `size` is currently treated as the size of the main text, and does not vary between main text and superscripts.
+  if (word.sup || word.dropcap) {
+    if (word.visualCoords) {
+      return getFontSize(fontOpentype, word.bbox.bottom - word.bbox.top, word.text);
+    }
+    return (word.bbox.bottom - word.bbox.top) * (fontOpentype.unitsPerEm / (fontOpentype.ascender - fontOpentype.descender));
+  }
+
   // If the user manually set a size, then use that
   if (word.size) {
-    return word.size;
-  // If the word is a superscript, then font size is uniquely calculated for this word
-  } if (word.sup || word.dropcap) {
-    return getFontSize(fontOpentype, word.bbox.bottom - word.bbox.top, word.text);
-  // If the word is a dropcap, then font size is uniquely calculated for this word
+    const mult = FontProps.sizeMult[word.font] || 1;
+    return word.size * mult;
   }
   const lineFontSize = calcLineFontSize(word.line);
 
