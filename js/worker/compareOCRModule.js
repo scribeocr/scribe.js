@@ -1391,12 +1391,22 @@ export const renderPageStaticImp = async ({
 
       const angleAdjWord = wordObj.sup ? ocr.calcWordAngleAdj(wordObj) : { x: 0, y: 0 };
 
+      const wordMetrics = calcWordMetrics(wordObj);
+      const advanceArr = wordMetrics.advanceArr;
+      const kerningArr = wordMetrics.kerningArr;
+      const charSpacing = wordMetrics.charSpacing;
+      const wordFontSize = wordMetrics.fontSize;
+      const leftSideBearing = wordMetrics.leftSideBearing;
+
       // TODO: Test whether the math here is correct for drop caps.
       let ts = 0;
-      if (wordObj.sup) {
+      if (wordObj.sup || wordObj.dropcap) {
         ts = (lineObj.bbox.bottom + lineObj.baseline[1] + angleAdjLine.y) - (wordObj.bbox.bottom + angleAdjLine.y + angleAdjWord.y);
-      } else if (wordObj.dropcap) {
-        ts = (lineObj.bbox.bottom + lineObj.baseline[1]) - wordObj.bbox.bottom + angleAdjLine.y + angleAdjWord.y;
+        if (!wordObj.visualCoords) {
+          const font = FontCont.getWordFont(wordObj);
+          const fontDesc = font.opentype.descender / font.opentype.unitsPerEm * wordMetrics.fontSize;
+          ts -= fontDesc;
+        }
       } else {
         ts = 0;
       }
@@ -1404,13 +1414,6 @@ export const renderPageStaticImp = async ({
       const width = (wordObj.bbox.left - wordObj.line.bbox.left) / cosAngle;
 
       const visualLeft = width + angleAdjWord.x;
-
-      const wordMetrics = calcWordMetrics(wordObj);
-      const advanceArr = wordMetrics.advanceArr;
-      const kerningArr = wordMetrics.kerningArr;
-      const charSpacing = wordMetrics.charSpacing;
-      const wordFontSize = wordMetrics.fontSize;
-      const leftSideBearing = wordMetrics.leftSideBearing;
 
       const advanceArrTotal = [];
       for (let i = 0; i < advanceArr.length; i++) {

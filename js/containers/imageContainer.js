@@ -6,7 +6,7 @@ import { initMuPDFWorker } from '../../mupdf/mupdf-async.js';
 
 import { getImageBitmap } from '../utils/imageUtils.js';
 
-import { setUploadFontsWorker } from '../fontContainerMain.js';
+import { updateFontContWorkerMain } from '../fontContainerMain.js';
 import { pageMetricsArr } from './dataContainer.js';
 import {
   FontCont,
@@ -16,7 +16,7 @@ import {
 
 import { gs } from '../generalWorkerMain.js';
 import { imageUtils } from '../objects/imageObjects.js';
-import { determineSansSerif, range } from '../utils/miscUtils.js';
+import { range } from '../utils/miscUtils.js';
 import { opt } from './app.js';
 
 let skipTextMode = false;
@@ -534,42 +534,61 @@ export class ImageCache {
     });
 
     // WIP: Extract fonts embedded in PDFs.
-    if (false) {
+    // This feature is disabled by default as the results are often bad.
+    // In addition to only working for certain font formats, fonts embedded in PDFs are often subsetted and/or corrupted.
+    // Therefore, before this is enabled by default, more sophisticated rules regarding when fonts should be used are needed.
+    if (opt.extractPDFFonts) {
       muPDFScheduler.extractAllFonts().then(async (x) => {
-        globalImageCache.fontArr = [];
         for (let i = 0; i < x.length; i++) {
           const src = x[i].buffer;
-          const fontObj = await loadOpentype(src);
-          const fontNameEmbedded = fontObj.names.postScriptName.en;
-          const fontFamilyEmbedded = fontObj.names?.fontFamily?.en || fontNameEmbedded.replace(/-\w+$/, '');
+          let fontObj;
+          let fontData;
+          try {
+            fontObj = await loadOpentype(src);
+            // It is common for raw fonts embedded in PDFs to be invalid and rejected by the OTS, but running them through opentype.js fixes them.
+            // This appears to be because of the way that fonts are subsetted in PDFs.
+            fontData = fontObj.toArrayBuffer();
+          } catch (error) {
+            console.error(`Error loading font ${i}.`);
+            console.error(error);
+            continue;
+          }
 
-          // Skip bold and bold-italic fonts for now.
-          if (fontNameEmbedded.match(/bold/i)) continue;
+          const fontNameEmbedded = fontObj.names.postScriptName.en;
 
           let fontStyle = 'normal';
           if (fontNameEmbedded.match(/italic/i)) {
             fontStyle = 'italic';
           } else if (fontNameEmbedded.match(/bold/i)) {
-            // Bold fonts should be enabled at some later point.
-            // While we previously found that we were unable to detect bold fonts reliably,
-            // when importing from PDFs, we do not need to guess.
-            // fontStyle = 'bold';
-          }
-          const type = determineSansSerif(fontFamilyEmbedded) === 'SansDefault' ? 'sans' : 'serif';
-
-          // mupdf replaces spaces with underscores in font names.
-          const fontName = fontFamilyEmbedded.replace(/[^+]+\+/g, '').replace(/\s/g, '_');
-
-          if (!FontCont.raw[fontName]) {
-            FontCont.raw[fontName] = {};
+            fontStyle = 'bold';
           }
 
-          if (!FontCont.raw[fontName][fontStyle]) {
-            FontCont.raw[fontName][fontStyle] = new FontContainerFont(fontName, fontStyle, src, false, fontObj);
+          // mupdf makes changes to font names, so we need to do the same.
+          // Font names in the form `MEDJCO+CenturySchoolbook` are changed to `CenturySchoolbook`.
+          // Spaces are replaced with underscores.
+          const fontName = fontNameEmbedded.replace(/[^+]+\+/g, '').replace(/\s/g, '_');
+
+          if (!FontCont.doc?.[fontName]?.[fontStyle]) {
+            try {
+              const fontContainer = new FontContainerFont(fontName, fontStyle, fontData, false, fontObj);
+
+              if (!FontCont.doc) {
+                FontCont.doc = {};
+              }
+
+              if (!FontCont.doc[fontName]) {
+                FontCont.doc[fontName] = {};
+              }
+
+              FontCont.doc[fontName][fontStyle] = fontContainer;
+            } catch (error) {
+              console.error(`Error loading font ${fontName} ${fontStyle}.`);
+            }
+          } else {
+            console.warn(`Font ${fontName} ${fontStyle} already exists.`);
           }
         }
-
-        await setUploadFontsWorker(gs.schedulerInner);
+        await updateFontContWorkerMain();
       });
     }
   };

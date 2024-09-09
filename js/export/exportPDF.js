@@ -52,13 +52,8 @@ export async function hocrToPDF(hocrArr, minpage = 0, maxpage = -1, textMode = '
   /** @type {Array<string>} */
   const pdfFontObjStrArr = [];
   let pdfFontsStr = '';
-  for (const familyKey of Object.keys(FontCont.raw)) {
-    const useOpt = FontCont.useOptFamily(familyKey);
-    const familyObj = {
-      normal: useOpt && FontCont.opt?.[familyKey]?.normal ? FontCont.opt[familyKey].normal : FontCont.raw[familyKey].normal,
-      italic: useOpt && FontCont.opt?.[familyKey]?.italic ? FontCont.opt[familyKey].italic : FontCont.raw[familyKey].italic,
-      bold: useOpt && FontCont.opt?.[familyKey]?.bold ? FontCont.opt[familyKey].bold : FontCont.raw[familyKey].bold,
-    };
+
+  const addFamilyObj = async (familyKey, familyObj) => {
     pdfFonts[familyKey] = {};
     for (const [key, value] of Object.entries(familyObj)) {
       const font = await value.opentype;
@@ -86,6 +81,22 @@ export async function hocrToPDF(hocrArr, minpage = 0, maxpage = -1, textMode = '
 
       pdfFontsStr += `/F${String(fontI)} ${String(objectThis)} 0 R\n`;
       fontI++;
+    }
+  };
+
+  for (const familyKeyI of Object.keys(FontCont.raw)) {
+    const useOpt = FontCont.useOptFamily(familyKeyI);
+    const familyObjI = {
+      normal: useOpt && FontCont.opt?.[familyKeyI]?.normal ? FontCont.opt[familyKeyI].normal : FontCont.raw[familyKeyI].normal,
+      italic: useOpt && FontCont.opt?.[familyKeyI]?.italic ? FontCont.opt[familyKeyI].italic : FontCont.raw[familyKeyI].italic,
+      bold: useOpt && FontCont.opt?.[familyKeyI]?.bold ? FontCont.opt[familyKeyI].bold : FontCont.raw[familyKeyI].bold,
+    };
+    await addFamilyObj(familyKeyI, familyObjI);
+  }
+
+  if (FontCont.doc) {
+    for (const familyKeyI of Object.keys(FontCont.doc)) {
+      await addFamilyObj(familyKeyI, FontCont.doc[familyKeyI]);
     }
   }
 
@@ -308,13 +319,13 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
     const { baseline } = lineObj;
     const linebox = lineObj.bbox;
 
-    let firstWord = words[0];
+    let wordJ = words[0];
 
     let fillColor = '0 0 0 rg';
     if (textMode === 'proof') {
-      if (firstWord.conf > confThreshHigh) {
+      if (wordJ.conf > confThreshHigh) {
         fillColor = '0 1 0.5 rg';
-      } else if (firstWord.conf > confThreshMed) {
+      } else if (wordJ.conf > confThreshMed) {
         fillColor = '1 0.8 0 rg';
       } else {
         fillColor = '1 0 0 rg';
@@ -327,41 +338,41 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
 
     textContentObjStr += `${fillColor}\n`;
 
-    let wordFont = FontCont.getWordFont(firstWord);
+    let wordFont = FontCont.getWordFont(wordJ);
 
     // The Chinese font is subset to only relevant characters, the others currently are not.
-    let wordFontOpentype = (firstWord.lang === 'chi_sim' ? fontChiSim : wordFont.opentype);
+    let wordFontOpentype = (wordJ.lang === 'chi_sim' ? fontChiSim : wordFont.opentype);
 
     if (!wordFontOpentype) {
-      const fontNameMessage = firstWord.lang === 'chi_sim' ? 'chi_sim' : `${wordFont.family} (${firstWord.style})`;
+      const fontNameMessage = wordJ.lang === 'chi_sim' ? 'chi_sim' : `${wordFont.family} (${wordJ.style})`;
       console.log(`Skipping word due to missing font (${fontNameMessage})`);
       continue;
     }
 
     // let wordFontSize = calcWordFontSize(word);
 
-    const word0Metrics = calcWordMetrics(firstWord, angle);
+    const word0Metrics = calcWordMetrics(wordJ, angle);
 
     let wordFontSize = word0Metrics.fontSize;
 
     // Set font and font size
-    ({ name: pdfFontCurrent, type: pdfFontTypeCurrent } = firstWord.lang === 'chi_sim' ? pdfFonts.NotoSansSC.normal : pdfFonts[wordFont.family][firstWord.style]);
+    ({ name: pdfFontCurrent, type: pdfFontTypeCurrent } = wordJ.lang === 'chi_sim' ? pdfFonts.NotoSansSC.normal : pdfFonts[wordFont.family][wordJ.style]);
 
     textContentObjStr += `${pdfFontCurrent} ${String(wordFontSize)} Tf\n`;
 
     // Reset baseline to line baseline
     textContentObjStr += '0 Ts\n';
 
-    const word0LeftBearing = firstWord.visualCoords ? word0Metrics.leftSideBearing : 0;
+    const word0LeftBearing = wordJ.visualCoords ? word0Metrics.leftSideBearing : 0;
 
     let tz = 100;
-    if (firstWord.dropcap) {
-      const wordWidthActual = firstWord.bbox.right - firstWord.bbox.left;
+    if (wordJ.dropcap) {
+      const wordWidthActual = wordJ.bbox.right - wordJ.bbox.left;
       tz = (wordWidthActual / word0Metrics.visualWidth) * 100;
     }
 
     // Move to next line
-    const lineLeftAdj = firstWord.bbox.left - word0LeftBearing * (tz / 100) + angleAdjLine.x;
+    const lineLeftAdj = wordJ.bbox.left - word0LeftBearing * (tz / 100) + angleAdjLine.x;
     const lineTopAdj = linebox.bottom + baseline[1] + angleAdjLine.y;
 
     if (rotateText) {
@@ -379,7 +390,7 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
     let charSpacingLast = 0;
     let spacingAdj = 0;
     let kernSpacing = false;
-    let wordLast = firstWord;
+    let wordLast = wordJ;
     let wordFontOpentypeLast = wordFontOpentype;
     let fontSizeLast = wordFontSize;
     let tsCurrent = 0;
@@ -387,27 +398,27 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
     let charLig = false;
 
     for (let j = 0; j < words.length; j++) {
-      firstWord = words[j];
+      wordJ = words[j];
 
-      const wordMetrics = calcWordMetrics(firstWord, angle);
+      const wordMetrics = calcWordMetrics(wordJ, angle);
       wordFontSize = wordMetrics.fontSize;
       const charSpacing = wordMetrics.charSpacing;
       const charArr = wordMetrics.charArr;
-      const wordLeftBearing = firstWord.visualCoords ? wordMetrics.leftSideBearing : 0;
+      const wordLeftBearing = wordJ.visualCoords ? wordMetrics.leftSideBearing : 0;
       const kerningArr = wordMetrics.kerningArr;
 
-      wordFont = FontCont.getWordFont(firstWord);
-      wordFontOpentype = firstWord.lang === 'chi_sim' ? fontChiSim : wordFont.opentype;
+      wordFont = FontCont.getWordFont(wordJ);
+      wordFontOpentype = wordJ.lang === 'chi_sim' ? fontChiSim : wordFont.opentype;
 
       if (!wordFontOpentype) {
-        const fontNameMessage = firstWord.lang === 'chi_sim' ? 'chi_sim' : `${wordFont.family} (${firstWord.style})`;
+        const fontNameMessage = wordJ.lang === 'chi_sim' ? 'chi_sim' : `${wordFont.family} (${wordJ.style})`;
         console.log(`Skipping word due to missing font (${fontNameMessage})`);
         continue;
       }
 
       fillColor = '0 0 0 rg';
       if (textMode === 'proof') {
-        const wordConf = firstWord.conf;
+        const wordConf = wordJ.conf;
 
         if (wordConf > confThreshHigh) {
           fillColor = '0 1 0.5 rg';
@@ -417,34 +428,35 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
           fillColor = '1 0 0 rg';
         }
       } else if (textMode === 'eval') {
-        fillColor = firstWord.matchTruth ? '0 1 0.5 rg' : '1 0 0 rg';
+        fillColor = wordJ.matchTruth ? '0 1 0.5 rg' : '1 0 0 rg';
       }
 
-      const angleAdjWord = firstWord.sup ? ocr.calcWordAngleAdj(firstWord) : { x: 0, y: 0 };
+      const angleAdjWord = wordJ.sup ? ocr.calcWordAngleAdj(wordJ) : { x: 0, y: 0 };
       const angleAdjWordX = (rotateBackground && Math.abs(angle ?? 0) > 0.05) ? angleAdjWord.x : 0;
 
-      // TODO: Test whether the math here is correct for drop caps.
       let ts = 0;
-      if (firstWord.sup) {
-        ts = (linebox.bottom + baseline[1] + angleAdjLine.y) - (firstWord.bbox.bottom + angleAdjLine.y + angleAdjWord.y);
-      } else if (firstWord.dropcap) {
-        ts = (linebox.bottom + baseline[1]) - firstWord.bbox.bottom + angleAdjLine.y + angleAdjWord.y;
+      if (wordJ.sup || wordJ.dropcap) {
+        ts = (linebox.bottom + baseline[1] + angleAdjLine.y) - (wordJ.bbox.bottom + angleAdjLine.y + angleAdjWord.y);
+        if (!wordJ.visualCoords) {
+          const fontDesc = wordFont.opentype.descender / wordFont.opentype.unitsPerEm * wordMetrics.fontSize;
+          ts -= fontDesc;
+        }
       } else {
         ts = 0;
       }
 
       // TODO: This probably fails for Chinese, rethink.
       tz = 100;
-      if (firstWord.dropcap) {
-        const wordWidthActual = firstWord.bbox.right - firstWord.bbox.left;
+      if (wordJ.dropcap) {
+        const wordWidthActual = wordJ.bbox.right - wordJ.bbox.left;
         tz = (wordWidthActual / wordMetrics.visualWidth) * 100;
       }
 
       // const pdfFont = word.lang === 'chi_sim' ? pdfFonts.NotoSansSC.normal : pdfFonts[wordFontFamily][word.style];
-      const { name: pdfFont, type: pdfFontType } = firstWord.lang === 'chi_sim' ? pdfFonts.NotoSansSC.normal : pdfFonts[wordFont.family][firstWord.style];
+      const { name: pdfFont, type: pdfFontType } = wordJ.lang === 'chi_sim' ? pdfFonts.NotoSansSC.normal : pdfFonts[wordFont.family][wordJ.style];
 
-      const wordWidthAdj = (firstWord.bbox.right - firstWord.bbox.left) / cosAngle;
-      const wordSpaceAdj = (firstWord.bbox.left - wordBoxLast.right) / cosAngle;
+      const wordWidthAdj = (wordJ.bbox.right - wordJ.bbox.left) / cosAngle;
+      const wordSpaceAdj = (wordJ.bbox.left - wordBoxLast.right) / cosAngle;
 
       // Add space character between words
       if (j > 0 && !kernSpacing) {
@@ -468,13 +480,13 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
       }
       kernSpacing = false;
 
-      wordBoxLast = firstWord.bbox;
+      wordBoxLast = wordJ.bbox;
 
       // In general, we assume that (given our adjustments to character spacing) the rendered word has the same width as the image of that word.
       // However, this assumption does not hold for single-character words, as there is no space between character to adjust.
       // Therefore, we calculate the difference between the rendered and actual word and apply an adjustment to the width of the next space.
       // (This does not apply to drop caps as those have horizontal scaling applied to exactly match the image.)
-      if (charArr.length === 1 && !firstWord.dropcap) {
+      if (charArr.length === 1 && !wordJ.dropcap) {
         const wordLastGlyph = wordFontOpentype.charToGlyph(charArr.at(-1));
         const wordLastGlyphMetrics = wordLastGlyph.getMetrics();
         const lastCharWidth = (wordLast.visualCoords ? (wordLastGlyphMetrics.xMax - wordLastGlyphMetrics.xMin) : wordLastGlyph.advanceWidth) * (wordFontSize / wordFontOpentype.unitsPerEm);
@@ -485,7 +497,7 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
 
       textContentObjStr += ' ] TJ\n';
 
-      const fontSize = firstWord.smallCaps && firstWord.text[0] && firstWord.text[0] !== firstWord.text[0].toUpperCase() ? wordFontSize * wordFont.smallCapsMult : wordFontSize;
+      const fontSize = wordJ.smallCaps && wordJ.text[0] && wordJ.text[0] !== wordJ.text[0].toUpperCase() ? wordFontSize * wordFont.smallCapsMult : wordFontSize;
       if (pdfFont !== pdfFontCurrent || fontSize !== fontSizeLast) {
         textContentObjStr += `${pdfFont} ${String(fontSize)} Tf\n`;
         pdfFontCurrent = pdfFont;
@@ -512,23 +524,23 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
       // Non-ASCII and special characters are encoded/escaped using winEncodingLookup
       for (let k = 0; k < charArr.length; k++) {
         const letterSrc = charArr[k];
-        const letter = firstWord.smallCaps ? charArr[k].toUpperCase() : charArr[k];
-        const fontSizeLetter = firstWord.smallCaps && letterSrc !== letter ? wordFontSize * wordFont.smallCapsMult : wordFontSize;
+        const letter = wordJ.smallCaps ? charArr[k].toUpperCase() : charArr[k];
+        const fontSizeLetter = wordJ.smallCaps && letterSrc !== letter ? wordFontSize * wordFont.smallCapsMult : wordFontSize;
 
         const letterEnc = pdfFontTypeCurrent === 0 ? wordFontOpentype.charToGlyphIndex(letter)?.toString(16).padStart(4, '0') : winEncodingLookup[letter];
         if (letterEnc) {
           let kern = (kerningArr[k] || 0) * (-1000 / fontSizeLetter);
 
-          if (firstWord.lang === 'chi_sim' && j + 1 < words.length && words[j + 1].lang === 'chi_sim') {
+          if (wordJ.lang === 'chi_sim' && j + 1 < words.length && words[j + 1].lang === 'chi_sim') {
             kernSpacing = true;
             const wordNext = words[j + 1];
-            const wordSpaceNextAdj = (wordNext.bbox.left - firstWord.bbox.right) / cosAngle;
+            const wordSpaceNextAdj = (wordNext.bbox.left - wordJ.bbox.right) / cosAngle;
             // const wordSpaceNextAdj = wordNext.bbox.left - wordBox.right;
 
             const wordGlyphMetrics = wordFontOpentype.charToGlyph(charArr.at(-1)).getMetrics();
             const wordNextGlyphMetrics = wordFontOpentype.charToGlyph(wordNext.text.substr(0, 1)).getMetrics();
 
-            const wordRightBearing = firstWord.visualCoords ? wordGlyphMetrics.rightSideBearing * (wordFontSize / wordFontOpentype.unitsPerEm) : 0;
+            const wordRightBearing = wordJ.visualCoords ? wordGlyphMetrics.rightSideBearing * (wordFontSize / wordFontOpentype.unitsPerEm) : 0;
 
             const wordNextLeftBearing = wordNext.visualCoords ? wordNextGlyphMetrics.xMin * (wordFontSize / wordFontOpentype.unitsPerEm) : 0;
 
@@ -581,7 +593,7 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
         }
       }
 
-      wordLast = firstWord;
+      wordLast = wordJ;
       wordRightBearingLast = wordLast.visualCoords ? wordMetrics.rightSideBearing : 0;
       wordFontOpentypeLast = wordFontOpentype;
       charSpacingLast = charSpacing;

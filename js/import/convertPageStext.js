@@ -77,6 +77,8 @@ export async function convertPageStext({ ocrStr, n }) {
 
       /** @type {Array<Array<string>>} */
       const text = [];
+      /** @type {Array<number>} */
+      const wordLetterOrFontArrIndex = [];
       let styleCurrent = 'normal';
       let familyCurrent = 'Default';
       /** Font size at the current position in the PDF, with no modifications. */
@@ -219,7 +221,7 @@ export async function convertPageStext({ ocrStr, n }) {
               // The word is already initialized, so we need to change the last element of the style array.
               // Label as `smallCapsAlt` rather than `smallCaps`, as we confirm the word is all caps before marking as `smallCaps`.
               styleCurrent = 'italic';
-            } else if (/bold/i.test(fontNameStrI)) {
+            } else if (/bold|black/i.test(fontNameStrI)) {
               styleCurrent = 'bold';
             } else {
               styleCurrent = 'normal';
@@ -260,6 +262,7 @@ export async function convertPageStext({ ocrStr, n }) {
 
         if (textWordArr.length === 0) continue;
 
+        wordLetterOrFontArrIndex.push(i);
         text.push(textWordArr);
         bboxes.push(bboxesWordArr);
         styleArr.push(styleWord);
@@ -342,6 +345,8 @@ export async function convertPageStext({ ocrStr, n }) {
           left: bboxesILeft, top: bboxesITop, right: bboxesIRight, bottom: bboxesIBottom,
         };
 
+        if (bbox.left < 0 && bbox.right < 0) continue;
+
         const wordObj = new ocr.OcrWord(lineObj, wordText, bbox, wordID);
         wordObj.size = fontSizeArr[i];
 
@@ -378,7 +383,7 @@ export async function convertPageStext({ ocrStr, n }) {
           wordObj.style = 'bold';
         }
 
-        wordObj.raw = wordStrArr[i];
+        wordObj.raw = wordStrArr[wordLetterOrFontArrIndex[i]];
 
         wordObj.font = fontFamilyArr[i];
 

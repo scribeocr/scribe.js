@@ -57,6 +57,10 @@ export class opt {
 
   /** Generate debug visualizations when running OCR. */
   static debugVis = false;
+
+  static extractPDFFonts = false;
+
+  static calcSuppFontInfo = false;
 }
 
 export class inputData {
