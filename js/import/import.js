@@ -449,7 +449,7 @@ export async function importFiles(files, options = {}) {
     await extractInternalPDFText({
       setActive: true, extractPDFTextNative, extractPDFTextOCR, extractPDFTextImage,
     });
-    if (opt.calcSuppFontInfo) calcSuppFontInfo(ocrAll.pdf);
+    if (opt.calcSuppFontInfo) await calcSuppFontInfo(ocrAll.pdf);
   }
 }
 

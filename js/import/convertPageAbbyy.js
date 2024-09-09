@@ -3,7 +3,6 @@ import ocr from '../objects/ocrObjects.js';
 import {
   ascCharArr,
   calcBboxUnion,
-  determineSansSerif,
   mean50,
   quantile,
   round6, unescapeXml,
@@ -71,8 +70,6 @@ export async function convertPageAbbyy({ ocrStr, n }) {
       const xmlLinePreChar = xmlLine.match(/^[\s\S]*?(?=<charParams)/)?.[0];
       const xmlLineFormatting = xmlLinePreChar?.match(/<formatting[^>]+/)?.[0];
       const fontName = xmlLineFormatting?.match(/ff=['"]([^'"]*)/)?.[1];
-
-      const fontFamily = determineSansSerif(fontName);
 
       let dropCap = false;
       const dropCapMatch = xmlLine.match(abbyyDropCapRegex);
@@ -315,9 +312,7 @@ export async function convertPageAbbyy({ ocrStr, n }) {
 
         wordObj.smallCaps = smallCapsArr[i];
 
-        if (fontFamily !== 'Default') {
-          wordObj.font = fontFamily;
-        }
+        if (fontName) wordObj.font = fontName;
 
         if (styleArr[i] === 'sup') {
           wordObj.sup = true;

@@ -137,7 +137,7 @@ export const calcSuppFontInfo = async (ocrArr) => {
     }
     if (fontSizeMultArr.length >= 3) {
       const fontSizeMult = quantile(fontSizeMultArr, 0.5);
-      FontProps.sizeMult[key] = fontSizeMult;
+      if (fontSizeMult && fontSizeMult > 0.9 && fontSizeMult < 1.5) FontProps.sizeMult[key] = fontSizeMult;
     }
 
     if (serifVotes > sansVotes) {
