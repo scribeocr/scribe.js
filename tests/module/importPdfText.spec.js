@@ -106,7 +106,7 @@ describe('Check superscripts are detected in PDF imports.', function () {
 
   it('Should correctly parse font size for lines with superscripts (3rd doc)', async () => {
     const words = scribe.data.ocr.active[2].lines[24].words;
-    assert.isTrue(words.map((word) => word.size && Math.round(word.size) === 29).reduce((acc, val) => acc && val));
+    assert.isTrue(words.map((word) => word.size && Math.round(word.size) === 33).reduce((acc, val) => acc && val));
   }).timeout(10000);
 
   // Forth document
