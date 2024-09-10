@@ -21,7 +21,7 @@ const extractInternalPDFTextRaw = async () => {
   };
 
   const stextArr = /** @type {Array<string>} */ ([]);
-  const pageDPI = ImageCache.pdfDims300.map((x) => 300 * 2000 / x.width, 2000);
+  const pageDPI = ImageCache.pdfDims300.map((x) => 300 * Math.min(x.width, 3500) / x.width);
   const resArr = pageDPI.map(async (x, i) => {
     // While using `pageTextJSON` would save some parsing, unfortunately that format only includes line-level granularity.
     // The XML format is the only built-in mupdf format that includes character-level granularity.
