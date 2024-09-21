@@ -12,6 +12,9 @@ import coords from './js/coordinates.js';
 import { drawDebugImages, renderPageStatic } from './js/debug.js';
 import { download, exportData } from './js/export/export.js';
 import { convertToCSV, writeDebugCsv } from './js/export/exportDebugCsv.js';
+import { renderPDF } from './js/export/exportPDF.js';
+import { renderHOCR } from './js/export/exportRenderHOCR.js';
+import { renderText } from './js/export/exportRenderText.js';
 import { extractInternalPDFText } from './js/extractPDFText.js';
 import { extractSingleTableContent } from './js/extractTables.js';
 import { enableFontOpt, loadBuiltInFontsRaw } from './js/fontContainerMain.js';
@@ -195,6 +198,13 @@ class utils {
 
   // Font utils
   static calcWordMetrics = calcWordMetrics;
+
+  // Export functions
+  static renderPDF = renderPDF;
+
+  static renderHOCR = renderHOCR;
+
+  static renderText = renderText;
 
   // Misc utils
   static calcBoxOverlap = calcBoxOverlap;
