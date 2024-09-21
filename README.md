@@ -35,6 +35,7 @@ When using Scribe.js in the browser, all files must be served from the same orig
 The following are template repos showing how Scribe.js can be used within various frameworks/build systems.  
 
 - Browser with ESM (no build): https://github.com/scribeocr/scribe.js-example-esm-browser
+- Browser with Next.js: https://github.com/scribeocr/scribe.js-example-next.js
 - Browser with Webpack 5: https://github.com/scribeocr/scribe.js-example-webpack5
 - Browser with Vue.js v2: https://github.com/scribeocr/scribe.js-example-vue2
 
