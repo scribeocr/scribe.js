@@ -3,7 +3,7 @@ import { layoutRegions, ocrAll, pageMetricsArr } from '../containers/dataContain
 import { ImageCache } from '../containers/imageContainer.js';
 import { reorderOcrPage } from '../modifyOCR.js';
 import { saveAs } from '../utils/miscUtils.js';
-import { hocrToPDF } from './exportPDF.js';
+import { renderPDF } from './exportPDF.js';
 import { renderHOCR } from './exportRenderHOCR.js';
 import { renderText } from './exportRenderText.js';
 
@@ -60,7 +60,7 @@ export async function exportData(format = 'txt', minValue = 0, maxValue = -1) {
       // and assume that the overlay PDF is the same size as the input images.
       // The `maxpage` argument must be set manually to `inputData.pageCount-1`, as this avoids an error in the case where there is no OCR data (`hocrDownload` has length 0).
       // In all other cases, this should be equivalent to using the default argument of `-1` (which results in `hocrDownload.length` being used).
-      const pdfStr = await hocrToPDF(ocrDownload, 0, inputData.pageCount - 1, opt.displayMode, rotateText, rotateBackground,
+      const pdfStr = await renderPDF(ocrDownload, 0, inputData.pageCount - 1, opt.displayMode, rotateText, rotateBackground,
         { width: -1, height: -1 }, opt.confThreshHigh, opt.confThreshMed, opt.overlayOpacity / 100);
 
       const enc = new TextEncoder();
@@ -142,7 +142,7 @@ export async function exportData(format = 'txt', minValue = 0, maxValue = -1) {
         });
       }
     } else {
-      const pdfStr = await hocrToPDF(ocrDownload, minValue, maxValue, opt.displayMode, false, true, dimsLimit, opt.confThreshHigh, opt.confThreshMed,
+      const pdfStr = await renderPDF(ocrDownload, minValue, maxValue, opt.displayMode, false, true, dimsLimit, opt.confThreshHigh, opt.confThreshMed,
         opt.overlayOpacity / 100);
 
       // The PDF is still run through muPDF, even thought in eBook mode no background layer is added.

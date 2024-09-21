@@ -227,6 +227,19 @@ export const getPrevLine = (lineObj) => {
 };
 
 /**
+ *
+ * @param {OcrLine} lineObj
+ */
+export const getNextLine = (lineObj) => {
+  // While lines have no unique ID, word IDs are assumed unique.
+  // Therefore, lines are identified using the ID of the first word.
+  if (!lineObj.words[0]) throw new Error('All lines must contain >=1 word');
+  const lineIndex = lineObj.page.lines.findIndex((elem) => elem.words?.[0]?.id === lineObj.words[0].id);
+  if (lineIndex + 1 >= lineObj.page.lines.length) return null;
+  return lineObj.page.lines[lineIndex + 1];
+};
+
+/**
  * @param {OcrPage} page
  * @param {string} id
  */
@@ -721,6 +734,7 @@ const ocr = {
   getParText,
   getLineText,
   getPrevLine,
+  getNextLine,
   getWordFillOpacity,
   clonePage,
   cloneLine,

@@ -11,8 +11,10 @@ import { assignParagraphs } from '../utils/reflowPars.js';
  * @param {number} maxpage - The last page to include in the document.
  * @param {boolean} reflowText - Remove line breaks within what appears to be the same paragraph.
  * @param {boolean} docxMode - Create XML for a word document rather than plain text.
+ * @param {?Array<string>} wordIds - An array of word IDs to include in the document.
+ *    If omitted, all words are included.
  */
-export function renderText(ocrCurrent, minpage = 0, maxpage = -1, reflowText = false, docxMode = false) {
+export function renderText(ocrCurrent, minpage = 0, maxpage = -1, reflowText = false, docxMode = false, wordIds = null) {
   let textStr = '';
 
   if (maxpage === -1) maxpage = ocrCurrent.length - 1;
@@ -47,6 +49,8 @@ export function renderText(ocrCurrent, minpage = 0, maxpage = -1, reflowText = f
       for (let i = 0; i < lineObj.words.length; i++) {
         const wordObj = lineObj.words[i];
         if (!wordObj) continue;
+
+        if (wordIds && !wordIds.includes(wordObj.id)) continue;
 
         if (docxMode) {
           let fontStyle = '';
