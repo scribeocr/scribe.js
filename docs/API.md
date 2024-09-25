@@ -6,20 +6,22 @@
     *   [Parameters][2]
 *   [extractText][3]
     *   [Parameters][4]
-*   [clear][5]
-*   [terminate][6]
-*   [exportData][7]
-    *   [Parameters][8]
-*   [download][9]
+*   [writeDebugImages][5]
+    *   [Parameters][6]
+*   [clear][7]
+*   [terminate][8]
+*   [exportData][9]
     *   [Parameters][10]
-*   [SortedInputFiles][11]
-    *   [Properties][12]
-*   [importFiles][13]
-    *   [Parameters][14]
-*   [recognizePage][15]
+*   [download][11]
+    *   [Parameters][12]
+*   [SortedInputFiles][13]
+    *   [Properties][14]
+*   [importFiles][15]
     *   [Parameters][16]
-*   [recognize][17]
+*   [recognizePage][17]
     *   [Parameters][18]
+*   [recognize][19]
+    *   [Parameters][20]
 
 ## init
 
@@ -27,11 +29,11 @@ Initialize the program and optionally pre-load resources.
 
 ### Parameters
 
-*   `params` **[Object][19]?**&#x20;
+*   `params` **[Object][21]?**&#x20;
 
-    *   `params.pdf` **[boolean][20]** Load PDF renderer. (optional, default `false`)
-    *   `params.ocr` **[boolean][20]** Load OCR engine. (optional, default `false`)
-    *   `params.font` **[boolean][20]** Load built-in fonts.
+    *   `params.pdf` **[boolean][22]** Load PDF renderer. (optional, default `false`)
+    *   `params.ocr` **[boolean][22]** Load OCR engine. (optional, default `false`)
+    *   `params.font` **[boolean][22]** Load built-in fonts.
         The PDF renderer and OCR engine are automatically loaded when needed.
         Therefore, the only reason to set `pdf` or `ocr` to `true` is to pre-load them. (optional, default `false`)
 
@@ -44,12 +46,20 @@ For more control, use `init`, `importFiles`, `recognize`, and `exportData` separ
 ### Parameters
 
 *   `files` &#x20;
-*   `langs` **[Array][21]<[string][22]>**  (optional, default `['eng']`)
+*   `langs` **[Array][23]<[string][24]>**  (optional, default `['eng']`)
 *   `outputFormat`   (optional, default `'txt'`)
-*   `options` **[Object][19]?**  (optional, default `{}`)
+*   `options` **[Object][21]?**  (optional, default `{}`)
 
-    *   `options.skipRecPDFTextNative` **[boolean][20]** If the input is a text-native PDF, skip recognition and return the existing text. (optional, default `true`)
-    *   `options.skipRecPDFTextOCR` **[boolean][20]** If the input is an image-native PDF with existing OCR layer, skip recognition and return the existing text. (optional, default `false`)
+    *   `options.skipRecPDFTextNative` **[boolean][22]** If the input is a text-native PDF, skip recognition and return the existing text. (optional, default `true`)
+    *   `options.skipRecPDFTextOCR` **[boolean][22]** If the input is an image-native PDF with existing OCR layer, skip recognition and return the existing text. (optional, default `false`)
+
+## writeDebugImages
+
+### Parameters
+
+*   `ctx` &#x20;
+*   `compDebugArrArr` **[Array][23]<[Array][23]\<CompDebugNode>>**&#x20;
+*   `filePath` **[string][24]**&#x20;
 
 ## clear
 
@@ -66,10 +76,10 @@ Export active OCR data to specified format.
 ### Parameters
 
 *   `format` **(`"pdf"` | `"hocr"` | `"docx"` | `"xlsx"` | `"txt"` | `"text"`)**  (optional, default `'txt'`)
-*   `minValue` **[number][23]**  (optional, default `0`)
-*   `maxValue` **[number][23]**  (optional, default `-1`)
+*   `minValue` **[number][25]**  (optional, default `0`)
+*   `maxValue` **[number][25]**  (optional, default `-1`)
 
-Returns **[Promise][24]<([string][22] | [ArrayBuffer][25])>**&#x20;
+Returns **[Promise][26]<([string][24] | [ArrayBuffer][27])>**&#x20;
 
 ## download
 
@@ -78,9 +88,9 @@ Runs `exportData` and saves the result as a download (browser) or local file (No
 ### Parameters
 
 *   `format` **(`"pdf"` | `"hocr"` | `"docx"` | `"xlsx"` | `"txt"` | `"text"`)**&#x20;
-*   `fileName` **[string][22]**&#x20;
-*   `minValue` **[number][23]**  (optional, default `0`)
-*   `maxValue` **[number][23]**  (optional, default `-1`)
+*   `fileName` **[string][24]**&#x20;
+*   `minValue` **[number][25]**  (optional, default `0`)
+*   `maxValue` **[number][25]**  (optional, default `-1`)
 
 ## SortedInputFiles
 
@@ -88,13 +98,13 @@ An object with this shape can be used to provide input to the `importFiles` func
 without needing that function to figure out the file types.
 This is required when using ArrayBuffer inputs.
 
-Type: [Object][19]
+Type: [Object][21]
 
 ### Properties
 
-*   `pdfFiles` **([Array][21]\<File> | [Array][21]<[string][22]> | [Array][21]<[ArrayBuffer][25]>)?**&#x20;
-*   `imageFiles` **([Array][21]\<File> | [Array][21]<[string][22]> | [Array][21]<[ArrayBuffer][25]>)?**&#x20;
-*   `ocrFiles` **([Array][21]\<File> | [Array][21]<[string][22]> | [Array][21]<[ArrayBuffer][25]>)?**&#x20;
+*   `pdfFiles` **([Array][23]\<File> | [Array][23]<[string][24]> | [Array][23]<[ArrayBuffer][27]>)?**&#x20;
+*   `imageFiles` **([Array][23]\<File> | [Array][23]<[string][24]> | [Array][23]<[ArrayBuffer][27]>)?**&#x20;
+*   `ocrFiles` **([Array][23]\<File> | [Array][23]<[string][24]> | [Array][23]<[ArrayBuffer][27]>)?**&#x20;
 
 ## importFiles
 
@@ -104,11 +114,13 @@ Alternatively, for `File` objects (browser) and file paths (Node.js), a single a
 
 ### Parameters
 
-*   `files` **([Array][21]\<File> | FileList | [Array][21]<[string][22]> | [SortedInputFiles][11])**&#x20;
-*   `options` **[Object][19]?**  (optional, default `{}`)
+*   `files` **([Array][23]\<File> | FileList | [Array][23]<[string][24]> | [SortedInputFiles][13])**&#x20;
+*   `options` **[Object][21]?**  (optional, default `{}`)
 
-    *   `options.extractPDFTextNative` **[boolean][20]** Extract text from text-native PDF documents. (optional, default `false`)
-    *   `options.extractPDFTextOCR` **[boolean][20]** Extract text from image-native PDF documents with existing OCR text layers. (optional, default `false`)
+    *   `options.extractPDFTextNative` **[boolean][22]** Extract text from text-native PDF documents. (optional, default `false`)
+    *   `options.extractPDFTextOCR` **[boolean][22]** Extract text from image-native PDF documents with existing OCR text layers. (optional, default `false`)
+    *   `options.extractPDFTextImage` **[boolean][22]** Extract text from image-native PDF documents with no existing OCR layer.
+        This option exists because documents may still contain some text even if they are determined to be image-native (for example, scanned documents with a text-native header). (optional, default `false`)
 
 ## recognizePage
 
@@ -117,12 +129,12 @@ Use `recognize` instead to recognize all pages in a document.
 
 ### Parameters
 
-*   `n` **[number][23]** Page number to recognize.
-*   `legacy` **[boolean][20]** *
-*   `lstm` **[boolean][20]** *
-*   `areaMode` **[boolean][20]** *
-*   `tessOptions` **[Object][19]<[string][22], [string][22]>** Options to pass to Tesseract.js. (optional, default `{}`)
-*   `debugVis` **[boolean][20]** Generate instructions for debugging visualizations. (optional, default `false`)
+*   `n` **[number][25]** Page number to recognize.
+*   `legacy` **[boolean][22]** *
+*   `lstm` **[boolean][22]** *
+*   `areaMode` **[boolean][22]** *
+*   `tessOptions` **[Object][21]<[string][24], [string][24]>** Options to pass to Tesseract.js. (optional, default `{}`)
+*   `debugVis` **[boolean][22]** Generate instructions for debugging visualizations. (optional, default `false`)
 
 ## recognize
 
@@ -132,13 +144,13 @@ The results of recognition can be exported by calling `exportFiles` after this f
 
 ### Parameters
 
-*   `options` **[Object][19]**  (optional, default `{}`)
+*   `options` **[Object][21]**  (optional, default `{}`)
 
     *   `options.mode` **(`"speed"` | `"quality"`)** Recognition mode. (optional, default `'quality'`)
-    *   `options.langs` **[Array][21]<[string][22]>** Language(s) in document. (optional, default `['eng']`)
+    *   `options.langs` **[Array][23]<[string][24]>** Language(s) in document. (optional, default `['eng']`)
     *   `options.modeAdv` **(`"lstm"` | `"legacy"` | `"combined"`)** Alternative method of setting recognition mode. (optional, default `'combined'`)
-    *   `options.combineMode` **(`"conf"` | `"data"`)** Method of combining OCR results. Used if OCR data already exists. (optional, default `'data'`)
-    *   `options.vanillaMode` **[boolean][20]** Whether to use the vanilla Tesseract.js model. (optional, default `false`)
+    *   `options.combineMode` **(`"conf"` | `"data"` | `"none"`)** Method of combining OCR results. Used if OCR data already exists. (optional, default `'data'`)
+    *   `options.vanillaMode` **[boolean][22]** Whether to use the vanilla Tesseract.js model. (optional, default `false`)
 
 [1]: #init
 
@@ -148,44 +160,48 @@ The results of recognition can be exported by calling `exportFiles` after this f
 
 [4]: #parameters-1
 
-[5]: #clear
+[5]: #writedebugimages
 
-[6]: #terminate
+[6]: #parameters-2
 
-[7]: #exportdata
+[7]: #clear
 
-[8]: #parameters-2
+[8]: #terminate
 
-[9]: #download
+[9]: #exportdata
 
 [10]: #parameters-3
 
-[11]: #sortedinputfiles
+[11]: #download
 
-[12]: #properties
+[12]: #parameters-4
 
-[13]: #importfiles
+[13]: #sortedinputfiles
 
-[14]: #parameters-4
+[14]: #properties
 
-[15]: #recognizepage
+[15]: #importfiles
 
 [16]: #parameters-5
 
-[17]: #recognize
+[17]: #recognizepage
 
 [18]: #parameters-6
 
-[19]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Object
+[19]: #recognize
 
-[20]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Boolean
+[20]: #parameters-7
 
-[21]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Array
+[21]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Object
 
-[22]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/String
+[22]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Boolean
 
-[23]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Number
+[23]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Array
 
-[24]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Promise
+[24]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/String
 
-[25]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer
+[25]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Number
+
+[26]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Promise
+
+[27]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer
