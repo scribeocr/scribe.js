@@ -40,7 +40,7 @@ const defaultConfigs = {
   tessedit_char_blacklist: '|',
   // This option disables an undesirable behavior where Tesseract categorizes blobs *of any size* as noise,
   // simply because they are too rectangular.  This option should always be enabled outside of debugging purposes.
-  // textord_noise_area_ratio: '1',
+  textord_noise_area_ratio: '1',
   // Table detection appears to interfere with the layout analysis of some documents with multi-column layouts,
   // causing columns to be combined into a single line.  This should be investigated in more detail,
   // but disabling as it does not seem to improve results even when the input document is a table.
