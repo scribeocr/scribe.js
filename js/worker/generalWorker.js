@@ -19,35 +19,37 @@ import { optimizeFont } from './optimizeFontModule.js';
 
 const Tesseract = typeof process === 'undefined' ? (await import('../../tess/tesseract.esm.min.js')).default : await import('@scribe.js/tesseract.js');
 
-const defaultConfigs = {
-  // TODO: Add back support for multiple PSM modes.
-  // There is already an advanced option in the UI that claims to switch this, but it currently does nothing.
-  // tessedit_pageseg_mode: Tesseract.PSM["SINGLE_COLUMN"],
+// TODO: Add back support for multiple PSM modes.
+// There is already an advanced option in the UI that claims to switch this, but it currently does nothing.
+// tessedit_pageseg_mode: Tesseract.PSM["SINGLE_COLUMN"],
+
+const defaultConfigsVanilla = {
   tessedit_pageseg_mode: Tesseract.PSM.AUTO,
   hocr_char_boxes: '1',
-  // TODO: Rework how config options interact with options set by the user.
-  // Specifically, no non-default options (that impact recognition) should be set when the engine is "vanilla",
-  // and the filters for non-English characters should only be set for the English language.
-  // The Tesseract LSTM engine frequently identifies a bar character "|"
-  // This is virtually always a false positive (usually "I").
-  // tessedit_char_blacklist: '|éï',
-  tessedit_char_blacklist: '|',
   max_page_gradient_recognize: '100',
   hocr_font_info: '1',
+};
+
+const defaultConfigs = {
+  tessedit_pageseg_mode: Tesseract.PSM.AUTO,
+  hocr_char_boxes: '1',
+  max_page_gradient_recognize: '100',
+  hocr_font_info: '1',
+
+  // This is virtually always a false positive (usually "I").
+  tessedit_char_blacklist: '|',
   // This option disables an undesirable behavior where Tesseract categorizes blobs *of any size* as noise,
   // simply because they are too rectangular.  This option should always be enabled outside of debugging purposes.
-  textord_noise_area_ratio: '1',
+  // textord_noise_area_ratio: '1',
   // Table detection appears to interfere with the layout analysis of some documents with multi-column layouts,
   // causing columns to be combined into a single line.  This should be investigated in more detail,
   // but disabling as it does not seem to improve results even when the input document is a table.
   textord_tabfind_find_tables: '0',
-  // classify_enable_learning: '0',
-  // classify_enable_adaptive_matcher: '0',
-  // tessedit_enable_doc_dict: '0',
-  // chop_enable: '0'
 };
 
-const initConfigs = {
+const defaultInitConfigsVanilla = {};
+
+const defaultInitConfigs = {
   // load_system_dawg: '0',
   load_freq_dawg: '0',
   // load_unambig_dawg: '0',
@@ -114,6 +116,8 @@ const reinitialize = async ({ langs, oem, vanillaMode }) => {
   if (changeOEM) oemCurrent = oem;
   if (changeVanilla) vanillaMode_ = vanillaMode;
 
+  const initConfigs = vanillaMode_ ? defaultInitConfigsVanilla : defaultInitConfigs;
+
   // The worker only needs to be created from scratch if the build of Tesseract being used changes,
   // or if it was never created in the first place.
   if (changeVanilla || !worker) {
@@ -129,7 +133,9 @@ const reinitialize = async ({ langs, oem, vanillaMode }) => {
     await worker.reinitialize(langArrCurrent, oemCurrent, initConfigs);
   }
 
-  await worker.setParameters(defaultConfigs);
+  const config = vanillaMode_ ? defaultConfigsVanilla : defaultConfigs;
+
+  await worker.setParameters(config);
 };
 
 /**
@@ -152,6 +158,8 @@ const reinitialize2 = async ({ langs, vanillaMode }) => {
   if (!changeLang && !changeVanilla && workerLegacy && workerLSTM) return;
   if (changeLang) langArrCurrent = langArr;
   if (changeVanilla) vanillaMode_ = vanillaMode;
+
+  const initConfigs = vanillaMode_ ? defaultInitConfigsVanilla : defaultInitConfigs;
 
   // The worker only needs to be created from scratch if the build of Tesseract being used changes,
   // or if it was never created in the first place.
@@ -180,8 +188,10 @@ const reinitialize2 = async ({ langs, vanillaMode }) => {
     await workerLSTM.reinitialize(langArrCurrent, 1, initConfigs);
   }
 
-  await workerLegacy.setParameters(defaultConfigs);
-  await workerLSTM.setParameters(defaultConfigs);
+  const config = vanillaMode_ ? defaultConfigsVanilla : defaultConfigs;
+
+  await workerLegacy.setParameters(config);
+  await workerLSTM.setParameters(config);
 };
 
 /**
