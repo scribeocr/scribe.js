@@ -63,6 +63,12 @@ export async function convertPageBlocks({
 
         const baseline = [baselineSlope, baselinePoint];
 
+        if (!Number.isFinite(baselineSlope) || !Number.isFinite(baselinePoint)) {
+          console.warn('Invalid baseline slope or point, replacing with 0:', baselineSlope, baselinePoint);
+          baseline[0] = 0;
+          baseline[1] = 0;
+        }
+
         const ascHeight = line.rowAttributes.row_height - line.rowAttributes.descenders;
         const xHeight = line.rowAttributes.row_height - line.rowAttributes.descenders - line.rowAttributes.ascenders;
 
