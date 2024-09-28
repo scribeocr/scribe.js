@@ -316,9 +316,6 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
 
     if (words.length === 0) continue;
 
-    const { baseline } = lineObj;
-    const linebox = lineObj.bbox;
-
     let wordJ = words[0];
 
     let fillColor = '0 0 0 rg';
@@ -373,7 +370,7 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
 
     // Move to next line
     const lineLeftAdj = wordJ.bbox.left - word0LeftBearing * (tz / 100) + angleAdjLine.x;
-    const lineTopAdj = linebox.bottom + baseline[1] + angleAdjLine.y;
+    const lineTopAdj = lineObj.bbox.bottom + lineObj.baseline[1] + angleAdjLine.y;
 
     if (rotateText) {
       textContentObjStr += `${String(cosAngle)} ${String(-sinAngle)} ${String(sinAngle)} ${String(cosAngle)} ${String(lineLeftAdj)} ${String(outputDims.height - lineTopAdj + 1)} Tm\n`;
@@ -436,7 +433,7 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
 
       let ts = 0;
       if (wordJ.sup || wordJ.dropcap) {
-        ts = (linebox.bottom + baseline[1] + angleAdjLine.y) - (wordJ.bbox.bottom + angleAdjLine.y + angleAdjWord.y);
+        ts = (lineObj.bbox.bottom + lineObj.baseline[1] + angleAdjLine.y) - (wordJ.bbox.bottom + angleAdjLine.y + angleAdjWord.y);
         if (!wordJ.visualCoords) {
           const fontDesc = wordFont.opentype.descender / wordFont.opentype.unitsPerEm * wordMetrics.fontSize;
           ts -= fontDesc;
