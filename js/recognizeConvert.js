@@ -238,7 +238,7 @@ export const recognizePage = async (n, legacy, lstm, areaMode, tessOptions = {},
   // but no significant rotation was actually detected.
   const significantRotation = Math.abs(res0.recognize.rotateRadians || 0) > angleThresh;
 
-  const upscale = tessOptions.upscale || false;
+  const upscale = res0.recognize.upscale || false;
   if (saveBinaryImageArg && res0.recognize.imageBinary && (significantRotation || !ImageCache.binary[n])) {
     ImageCache.binaryProps[n] = { rotated: isRotated, upscaled: upscale, colorMode: 'binary' };
     ImageCache.binary[n] = new ImageWrapper(n, res0.recognize.imageBinary, 'binary', isRotated, upscale);
