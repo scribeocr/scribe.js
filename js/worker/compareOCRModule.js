@@ -672,7 +672,7 @@ export async function compareOCRPageImp({
 
                 let twoToOne = false;
                 const wordsAArr = [];
-                const wordsBArr = [];
+                let wordsBArr = [];
 
                 // If there is no 1-to-1 comparison, check if a 2-to-1 comparison is possible using the next word in either dataset
                 if (!oneToOne) {
@@ -693,13 +693,42 @@ export async function compareOCRPageImp({
                     }
                   } else {
                     const wordBNext = lineB.words[l + 1];
-                    if (wordBNext) {
+                    const wordBoxNext2 = lineB.words[l + 2];
+                    if (wordBoxNext2) {
+                      const wordBoxBNext2 = wordBoxNext2.bbox;
+                      if (Math.abs(wordBoxB.left - wordBoxA.left) + Math.abs(wordBoxA.right - wordBoxBNext2.right) < (wordBoxBNext2.right - wordBoxA.left) * 0.1) {
+                        twoToOne = true;
+                        wordsAArr.push(wordA);
+                        wordsBArr.push(wordB);
+                        wordsBArr.push(wordBNext);
+                        wordsBArr.push(wordBoxNext2);
+                      }
+                    }
+
+                    if (wordBNext && !twoToOne) {
                       const wordBoxBNext = wordBNext.bbox;
                       if (Math.abs(wordBoxB.left - wordBoxA.left) + Math.abs(wordBoxA.right - wordBoxBNext.right) < (wordBoxBNext.right - wordBoxA.left) * 0.1) {
                         twoToOne = true;
                         wordsAArr.push(wordA);
                         wordsBArr.push(wordB);
                         wordsBArr.push(wordBNext);
+                      }
+                    }
+
+                    // If comparing one word from Tesseract Legacy with multiple words from Tesseract LSTM, and the letters are the same (so the only difference is spaces),
+                    // use the bounding boxes from Tesseract Legacy.  These should be more accurate.
+                    if (twoToOne && legacyLSTMComb) {
+                      const wordsAText = wordsAArr.map((x) => x.text).join('');
+                      const wordsBText = wordsBArr.map((x) => x.text).join('');
+                      if (wordsAArr.length === 1 && wordsAText === wordsBText && wordsAArr[0]?.chars?.length === wordsAText.length) {
+                        wordsBArr = wordsBArr.map((x) => ocr.cloneWord(x));
+                        wordsBArr[0].chars = wordsAArr[0].chars.slice(0, wordsBArr[0].text.length).map((x) => ocr.cloneChar(x));
+                        wordsBArr[1].chars = wordsAArr[0].chars.slice(wordsBArr[0].text.length, wordsBArr[1].text.length + wordsBArr[0].text.length).map((x) => ocr.cloneChar(x));
+                        if (wordsBArr[2]) wordsBArr[2].chars = wordsAArr[0].chars.slice(wordsBArr[0].text.length + wordsBArr[1].text.length).map((x) => ocr.cloneChar(x));
+                        for (const word of wordsBArr) {
+                          // @ts-ignore
+                          word.bbox = ocr.calcBboxUnion(word.chars.map((x) => x.bbox));
+                        }
                       }
                     }
                   }

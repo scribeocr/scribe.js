@@ -739,6 +739,7 @@ const ocr = {
   clonePage,
   cloneLine,
   cloneWord,
+  cloneChar,
   rotateLine,
   deletePageWords,
   replaceLigatures,
