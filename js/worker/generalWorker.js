@@ -284,14 +284,14 @@ export const recognizeAndConvert2 = async ({
   if (options.lstm && options.legacy) {
     const legacyBlocks = /** @type {Array<import('@scribe.js/tesseract.js').Block>} */(res0.data.blocks);
     resLegacy = await convertPageBlocks({
-      ocrBlocks: legacyBlocks, n, pageDims, rotateAngle: angle, keepItalic: true, upscale: options.upscale,
+      ocrBlocks: legacyBlocks, n, pageDims, rotateAngle: angle, keepItalic: true, upscale: res0.data.upscale,
     });
     (async () => {
       const res1 = await resArr[1];
 
       const lstmBlocks = /** @type {Array<import('@scribe.js/tesseract.js').Block>} */(res1.data.blocks);
       resLSTM = await convertPageBlocks({
-        ocrBlocks: lstmBlocks, n, pageDims, rotateAngle: angle, keepItalic: false, upscale: options.upscale,
+        ocrBlocks: lstmBlocks, n, pageDims, rotateAngle: angle, keepItalic: false, upscale: res0.data.upscale,
       });
 
       const xB = { recognize: res1.data, convert: { legacy: null, lstm: resLSTM } };
@@ -301,12 +301,12 @@ export const recognizeAndConvert2 = async ({
   } else if (!options.lstm && options.legacy) {
     const legacyBlocks = /** @type {Array<import('@scribe.js/tesseract.js').Block>} */(res0.data.blocks);
     resLegacy = await convertPageBlocks({
-      ocrBlocks: legacyBlocks, n, pageDims, rotateAngle: angle, keepItalic: true, upscale: options.upscale,
+      ocrBlocks: legacyBlocks, n, pageDims, rotateAngle: angle, keepItalic: true, upscale: res0.data.upscale,
     });
   } else if (options.lstm && !options.legacy) {
     const lstmBlocks = /** @type {Array<import('@scribe.js/tesseract.js').Block>} */(res0.data.blocks);
     resLSTM = await convertPageBlocks({
-      ocrBlocks: lstmBlocks, n, pageDims, rotateAngle: angle, keepItalic: false, upscale: options.upscale,
+      ocrBlocks: lstmBlocks, n, pageDims, rotateAngle: angle, keepItalic: false, upscale: res0.data.upscale,
     });
   }
 
