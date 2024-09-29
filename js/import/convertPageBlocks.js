@@ -63,8 +63,8 @@ export async function convertPageBlocks({
 
         const baseline = [baselineSlope, baselinePoint];
 
+        // This case presumably happens for vertical text, which we currently do not support.
         if (!Number.isFinite(baselineSlope) || !Number.isFinite(baselinePoint)) {
-          console.warn('Invalid baseline slope or point, replacing with 0:', baselineSlope, baselinePoint);
           baseline[0] = 0;
           baseline[1] = 0;
         }
