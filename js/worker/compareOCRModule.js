@@ -292,6 +292,7 @@ export async function evalWords({
       const word = ocr.cloneWord(wordsB[i]);
 
       // Set style to whatever it is for wordsA.  This is based on the assumption that "A" is Tesseract Legacy and "B" is Tesseract LSTM (which does not have useful style info).
+      word.font = wordsA[0].font;
       word.style = wordsA[0].style;
 
       if (i === 0) {
@@ -668,7 +669,23 @@ export async function compareOCRPageImp({
                 wordA.matchTruth = false;
 
                 // Check if there is a 1-to-1 comparison between words (this is usually true)
-                const oneToOne = Math.abs(wordBoxB.left - wordBoxA.left) + Math.abs(wordBoxB.right - wordBoxA.right) < (wordBoxA.right - wordBoxA.left) * 0.1;
+                let oneToOne = Math.abs(wordBoxB.left - wordBoxA.left) + Math.abs(wordBoxB.right - wordBoxA.right) < (wordBoxA.right - wordBoxA.left) * 0.1;
+
+                // Due to a bug with the LSTM engine, when a word is split into 3 words (for example), the first and last word can have the right bound.
+                // This condition should catch cases where `oneToOne` is `true`, however the appropriate comparison is actually 2-to-1 or 3-to-1.
+                const wordBNext = lineB.words[l + 1];
+                const wordBNext2 = lineB.words[l + 2];
+                if (oneToOne && legacyLSTMComb) {
+                  if (wordBNext2 && wordBNext2.text.length > 2) {
+                    const wordBoxBNext2 = wordBNext2.bbox;
+                    if (Math.abs(wordBoxB.left - wordBoxA.left) + Math.abs(wordBoxA.right - wordBoxBNext2.right) < (wordBoxBNext2.right - wordBoxA.left) * 0.1) oneToOne = false;
+                  }
+
+                  if (wordBNext && wordBNext.text.length > 2) {
+                    const wordBoxBNext = wordBNext.bbox;
+                    if (Math.abs(wordBoxB.left - wordBoxA.left) + Math.abs(wordBoxA.right - wordBoxBNext.right) < (wordBoxBNext.right - wordBoxA.left) * 0.1) oneToOne = false;
+                  }
+                }
 
                 let twoToOne = false;
                 const wordsAArr = [];
@@ -692,16 +709,14 @@ export async function compareOCRPageImp({
                       }
                     }
                   } else {
-                    const wordBNext = lineB.words[l + 1];
-                    const wordBoxNext2 = lineB.words[l + 2];
-                    if (wordBoxNext2) {
-                      const wordBoxBNext2 = wordBoxNext2.bbox;
+                    if (wordBNext2) {
+                      const wordBoxBNext2 = wordBNext2.bbox;
                       if (Math.abs(wordBoxB.left - wordBoxA.left) + Math.abs(wordBoxA.right - wordBoxBNext2.right) < (wordBoxBNext2.right - wordBoxA.left) * 0.1) {
                         twoToOne = true;
                         wordsAArr.push(wordA);
                         wordsBArr.push(wordB);
                         wordsBArr.push(wordBNext);
-                        wordsBArr.push(wordBoxNext2);
+                        wordsBArr.push(wordBNext2);
                       }
                     }
 
@@ -715,21 +730,39 @@ export async function compareOCRPageImp({
                       }
                     }
 
-                    // If comparing one word from Tesseract Legacy with multiple words from Tesseract LSTM, and the letters are the same (so the only difference is spaces),
+                    // If comparing one word from Tesseract Legacy with multiple words from Tesseract LSTM, and the letters are mostly the same,
                     // use the bounding boxes from Tesseract Legacy.  These should be more accurate.
                     if (twoToOne && legacyLSTMComb) {
                       const wordsAText = wordsAArr.map((x) => x.text).join('');
                       const wordsBText = wordsBArr.map((x) => x.text).join('');
-                      if (wordsAArr.length === 1 && wordsAText === wordsBText && wordsAArr[0]?.chars?.length === wordsAText.length) {
-                        wordsBArr = wordsBArr.map((x) => ocr.cloneWord(x));
-                        wordsBArr[0].chars = wordsAArr[0].chars.slice(0, wordsBArr[0].text.length).map((x) => ocr.cloneChar(x));
-                        wordsBArr[1].chars = wordsAArr[0].chars.slice(wordsBArr[0].text.length, wordsBArr[1].text.length + wordsBArr[0].text.length).map((x) => ocr.cloneChar(x));
-                        if (wordsBArr[2]) wordsBArr[2].chars = wordsAArr[0].chars.slice(wordsBArr[0].text.length + wordsBArr[1].text.length).map((x) => ocr.cloneChar(x));
-                        for (const word of wordsBArr) {
-                          // @ts-ignore
-                          word.bbox = ocr.calcBboxUnion(word.chars.map((x) => x.bbox));
+                      if (wordsAArr.length === 1 && wordsAArr[0]?.chars?.length === wordsAText.length && wordsAText.length === wordsBText.length) {
+
+                        // To make sure the legacy boxes are comparable, either:
+                        // (1) the text must be the same between Legacy and LSTM (aside from one word being split/combined), or
+                        // (2) the LSTM version must have 2 words, one word matches, and the total number of letters is the same.
+                        const match = wordsAText === wordsBText;
+                        const match1 = wordsAArr[0].text.substring(0, wordsBArr[0].text.length) === wordsBArr[0].text;
+                        const match2 = wordsAArr[0].text.substring(wordsBArr[0].text.length, wordsBArr[0].text.length + wordsBArr[1].text.length) === wordsBArr[1].text;
+  
+                        if (match || (wordsBArr.length === 2 && (match1 || match2))) {
+                          wordsBArr = wordsBArr.map((x) => ocr.cloneWord(x));
+                          wordsBArr[0].chars = wordsAArr[0].chars.slice(0, wordsBArr[0].text.length).map((x) => ocr.cloneChar(x));
+                          wordsBArr[1].chars = wordsAArr[0].chars.slice(wordsBArr[0].text.length, wordsBArr[1].text.length + wordsBArr[0].text.length).map((x) => ocr.cloneChar(x));
+                          if (wordsBArr[2]) wordsBArr[2].chars = wordsAArr[0].chars.slice(wordsBArr[0].text.length + wordsBArr[1].text.length).map((x) => ocr.cloneChar(x));
+                          if (!match) {
+                            wordsBArr[0].chars.forEach((x, i) => x.text = wordsBArr[0].text[i]);
+                            wordsBArr[1].chars.forEach((x, i) => x.text = wordsBArr[1].text[i]);
+                            if (wordsBArr[2]) wordsBArr[2].chars.forEach((x, i) => x.text = wordsBArr[2].text[i]);
+                          }
+                          for (const word of wordsBArr) {
+                            // @ts-ignore
+                            word.bbox = ocr.calcBboxUnion(word.chars.map((x) => x.bbox));
+                          }
                         }
                       }
+
+                      
+
                     }
                   }
                 }
@@ -870,8 +903,11 @@ export async function compareOCRPageImp({
 
                       wordsBArrRep.forEach((x) => {
                         // Use style from word A (assumed to be Tesseract Legacy)
-                        x.style = wordA.style;
-                        x.smallCaps = wordA.smallCaps;
+                        if (legacyLSTMComb) {
+                          x.font = wordA.font;
+                          x.style = wordA.style;
+                          x.smallCaps = wordA.smallCaps;
+                        }
 
                         // Set confidence to 0
                         x.conf = 0;
