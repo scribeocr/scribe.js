@@ -27,17 +27,20 @@ export async function initMuPDFWorker() {
   // This method of creating workers works natively in the browser, Node.js, and Webpack 5.
   // Do not change without confirming compatibility with all three.
   const mupdf = {};
-  let worker;
-  if (typeof process === 'undefined') {
-    worker = new Worker(new URL('./mupdf-worker.js', import.meta.url), { type: 'module' });
-  } else {
-    const WorkerNode = typeof process === 'undefined' ? Worker : (await import('web-worker')).default;
-    worker = new WorkerNode(new URL('./mupdf-worker.js', import.meta.url), { type: 'module' });
-  }
+  const Worker = typeof process === 'undefined' ? globalThis.Worker : (await import('worker_threads')).Worker;
+  const worker = new Worker(new URL('./mupdf-worker.js', import.meta.url), { type: 'module' });
 
-  worker.onerror = function (error) {
-    throw error;
+  const errorHandler = (err) => {
+    console.error(err);
   };
+
+  if (typeof process === 'undefined') {
+    // @ts-ignore
+    worker.onerror = errorHandler;
+  } else {
+    // @ts-ignore
+    worker.on('error', errorHandler);
+  }
 
   let readyResolve;
   const readyPromise = new Promise((resolve, reject) => {
@@ -46,12 +49,13 @@ export async function initMuPDFWorker() {
 
   worker.promises = {};
   worker.promiseId = 0;
-  worker.onmessage = async function (event) {
-    if (typeof event.data === 'string' && event.data === 'READY') {
+
+  const messageHandler = async (data) => {
+    if (typeof data === 'string' && data === 'READY') {
       readyResolve();
       return;
     }
-    const [type, id, result] = event.data;
+    const [type, id, result] = data;
     if (type === 'RESULT') {
       // worker.promises[id].resolve(result);
       if (['drawPageAsPNG'].includes(worker.promises[id].func)) {
@@ -68,6 +72,14 @@ export async function initMuPDFWorker() {
       delete worker.promises[id];
     }
   };
+
+  if (typeof process === 'undefined') {
+    // @ts-ignore
+    worker.onmessage = (event) => messageHandler(event.data);
+  } else {
+    // @ts-ignore
+    worker.on('message', messageHandler);
+  }
 
   function wrap(func) {
     return function (...args) {

@@ -15,7 +15,8 @@ import {
 } from './compareOCRModule.js';
 import { optimizeFont } from './optimizeFontModule.js';
 
-// import Tesseract from "../../tess/tesseract.esm.min.js";
+const parentPort = typeof process === 'undefined' ? globalThis : (await import('worker_threads')).parentPort;
+if (!parentPort) throw new Error('This file must be run in a worker');
 
 const Tesseract = typeof process === 'undefined' ? (await import('../../tess/tesseract.esm.min.js')).default : await import('@scribe.js/tesseract.js');
 
@@ -296,7 +297,7 @@ export const recognizeAndConvert2 = async ({
 
       const xB = { recognize: res1.data, convert: { legacy: null, lstm: resLSTM } };
 
-      postMessage({ data: xB, id: `${id}b`, status: 'resolve' });
+      parentPort.postMessage({ data: xB, id: `${id}b`, status: 'resolve' });
     })();
   } else if (!options.lstm && options.legacy) {
     const legacyBlocks = /** @type {Array<import('@scribe.js/tesseract.js').Block>} */(res0.data.blocks);
@@ -312,10 +313,10 @@ export const recognizeAndConvert2 = async ({
 
   const x = { recognize: res0.data, convert: { legacy: resLegacy, lstm: resLSTM } };
 
-  postMessage({ data: x, id, status: 'resolve' });
+  parentPort.postMessage({ data: x, id, status: 'resolve' });
 
   // Both promises must resolve for the scheduler to move on, even if only one OCR engine is being run.
-  if (!options.legacy || !options.lstm) postMessage({ data: null, id: `${id}b` });
+  if (!options.legacy || !options.lstm) parentPort.postMessage({ data: null, id: `${id}b` });
 };
 
 /**
@@ -373,13 +374,11 @@ async function compareOCRPageImpWrap(args) {
   return await compareOCRPageImp(args);
 }
 
-postMessage({ data: 'ready', id: 0, status: 'resolve' });
+const handleMessage = async (data) => {
 
-// eslint-disable-next-line no-restricted-globals
-addEventListener('message', async (e) => {
-  const func = e.data[0];
-  const args = e.data[1];
-  const id = e.data[2];
+  const func = data[0];
+  const args = data[1];
+  const id = data[2];
 
   if (func === 'recognizeAndConvert2') {
     recognizeAndConvert2(args, id);
@@ -415,6 +414,15 @@ addEventListener('message', async (e) => {
     loadFontsWorker,
     updateFontContWorker,
   })[func](args)
-    .then((x) => postMessage({ data: x, id, status: 'resolve' }))
-    .catch((err) => postMessage({ data: err, id, status: 'reject' }));
-});
+    .then((x) => parentPort.postMessage({ data: x, id, status: 'resolve' }))
+    .catch((err) => parentPort.postMessage({ data: err, id, status: 'reject' }));
+};
+
+if (typeof process === 'undefined') {
+  onmessage = (event) => handleMessage(event.data);
+} else {
+  parentPort.on('message', handleMessage);
+}
+
+
+parentPort.postMessage({ data: 'ready', id: 0, status: 'resolve' });
