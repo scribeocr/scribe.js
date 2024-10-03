@@ -6,8 +6,13 @@ export async function initGeneralWorker() {
   // This method of creating workers works natively in the browser, Node.js, and Webpack 5.
   // Do not change without confirming compatibility with all three.
   const obj = {};
-  const Worker = typeof process === 'undefined' ? globalThis.Worker : (await import('worker_threads')).Worker;
-  const worker = new Worker(new URL('./worker/generalWorker.js', import.meta.url), { type: 'module' });
+  let worker;
+  if (typeof process === 'undefined') {
+    worker = new Worker(new URL('./worker/generalWorker.js', import.meta.url), { type: 'module' });
+  } else {
+    const WorkerNode = (await import('worker_threads')).Worker;
+    worker = new WorkerNode(new URL('./worker/generalWorker.js', import.meta.url));
+  }
 
   return new Promise((resolve, reject) => {
 
