@@ -20,6 +20,9 @@
 // Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
 // CA 94945, U.S.A., +1(415)492-9861, for further information.
 
+const parentPort = typeof process === 'undefined' ? globalThis : (await import('worker_threads')).parentPort;
+if (!parentPort) throw new Error('This file must be run in a worker');
+
 // Copied from https://gist.github.com/jonleighton/958841
 function arrayBufferToBase64(arrayBuffer) {
   let base64 = '';
@@ -127,7 +130,7 @@ Module.onRuntimeInitialized = function () {
   mupdf.outlineNext = Module.cwrap('outlineNext', 'number', ['number']);
   wasm_checkNativeText = Module.cwrap('checkNativeText', 'number', ['number', 'number']);
   mupdf.writeDocument = Module.cwrap('writeDocument', 'null', []);
-  postMessage('READY');
+  parentPort.postMessage('READY');
   ready = true;
 };
 
@@ -446,19 +449,25 @@ mupdf.search = function (doc, page, dpi, needle) {
   return JSON.parse(mupdf.searchJSON(doc, page, dpi, needle));
 };
 
-addEventListener('message', (event) => {
-  const [func, args, id] = event.data;
+const handleMessage = (data) => {
+  const [func, args, id] = data;
   if (!ready) {
-    postMessage(['ERROR', id, { name: 'NotReadyError', message: 'WASM module is not ready yet' }]);
+    parentPort.postMessage(['ERROR', id, { name: 'NotReadyError', message: 'WASM module is not ready yet' }]);
     return;
   }
   try {
     const result = mupdf[func](...args);
-    if (result instanceof ArrayBuffer) postMessage(['RESULT', id, result], [result]);
+    if (result instanceof ArrayBuffer) parentPort.postMessage(['RESULT', id, result], [result]);
     else if (result?.buffer instanceof ArrayBuffer) {
-      postMessage(['RESULT', id, result], [result.buffer]);
-    } else postMessage(['RESULT', id, result]);
+      parentPort.postMessage(['RESULT', id, result], [result.buffer]);
+    } else parentPort.postMessage(['RESULT', id, result]);
   } catch (error) {
-    postMessage(['ERROR', id, { name: error.name, message: error.message }]);
+    parentPort.postMessage(['ERROR', id, { name: error.name, message: error.message }]);
   }
-});
+}
+
+if (typeof process === 'undefined') {
+  onmessage = (event) => handleMessage(event.data);
+} else {
+  parentPort.on('message', handleMessage);
+}

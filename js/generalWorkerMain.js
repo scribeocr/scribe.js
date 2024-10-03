@@ -6,18 +6,22 @@ export async function initGeneralWorker() {
   // This method of creating workers works natively in the browser, Node.js, and Webpack 5.
   // Do not change without confirming compatibility with all three.
   const obj = {};
-  let worker;
-  if (typeof process === 'undefined') {
-    worker = new Worker(new URL('./worker/generalWorker.js', import.meta.url), { type: 'module' });
-  } else {
-    const WorkerNode = typeof process === 'undefined' ? Worker : (await import('web-worker')).default;
-    worker = new WorkerNode(new URL('./worker/generalWorker.js', import.meta.url), { type: 'module' });
-  }
+  const Worker = typeof process === 'undefined' ? globalThis.Worker : (await import('worker_threads')).Worker;
+  const worker = new Worker(new URL('./worker/generalWorker.js', import.meta.url), { type: 'module' });
 
   return new Promise((resolve, reject) => {
-    worker.onerror = (err) => {
+
+    const errorHandler = (err) => {
       console.error(err);
     };
+
+    if (typeof process === 'undefined') {
+      // @ts-ignore
+      worker.onerror = errorHandler;
+    } else {
+      // @ts-ignore
+      worker.on('error', errorHandler);
+    }
 
     const workerPromises = {};
     let promiseId = 0;
@@ -26,16 +30,25 @@ export async function initGeneralWorker() {
       workerPromises['0'] = { resolve: innerResolve, reject: innerReject, func: 'ready' };
     });
 
-    worker.onmessage = async (event) => {
-      if (workerPromises[event.data.id]) {
-        if (event.data.status === 'reject') {
-          console.log(event.data.data);
-          workerPromises[event.data.id].reject(event.data.data);
+
+    const messageHandler = async (data) => {
+      if (workerPromises[data.id]) {
+        if (data.status === 'reject') {
+          console.log(data.data);
+          workerPromises[data.id].reject(data.data);
         } else {
-          workerPromises[event.data.id].resolve(event.data.data);
+          workerPromises[data.id].resolve(data.data);
         }
       }
     };
+
+    if (typeof process === 'undefined') {
+      // @ts-ignore
+      worker.onmessage = (event) => messageHandler(event.data);
+    } else {
+      // @ts-ignore
+      worker.on('message', messageHandler);
+    }
 
     /**
        * Wraps a function to be called via worker messages.
