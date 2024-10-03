@@ -27,8 +27,13 @@ export async function initMuPDFWorker() {
   // This method of creating workers works natively in the browser, Node.js, and Webpack 5.
   // Do not change without confirming compatibility with all three.
   const mupdf = {};
-  const Worker = typeof process === 'undefined' ? globalThis.Worker : (await import('worker_threads')).Worker;
-  const worker = new Worker(new URL('./mupdf-worker.js', import.meta.url), { type: 'module' });
+  let worker;
+  if (typeof process === 'undefined') {
+    worker = new Worker(new URL('./mupdf-worker.js', import.meta.url), { type: 'module' });
+  } else {
+    const WorkerNode = (await import('worker_threads')).Worker;
+    worker = new WorkerNode(new URL('./mupdf-worker.js', import.meta.url));
+  }
 
   const errorHandler = (err) => {
     console.error(err);
