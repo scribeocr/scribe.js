@@ -3,9 +3,10 @@ import ocr from '../objects/ocrObjects.js';
 import { pass2, pass3 } from './convertPageShared.js';
 
 import { LayoutDataTablePage } from '../objects/layoutObjects.js';
-import { getTextScript } from '../utils/miscUtils.js';
+import { ascCharArr, getTextScript, mean50, xCharArr } from '../utils/miscUtils.js';
 
-// TODO: Add rotation.
+
+const baselineCharArr = [...xCharArr, ...ascCharArr];
 
 /**
  * @param {Object} params
@@ -161,6 +162,17 @@ export async function convertPageBlocks({
         }
 
         if (lineObj.words.length > 0) {
+          // If the line contains only one word and this is Tesseract Legacy (so bounding boxes are accurate), re-calculate the baseline.
+          // Tesseract calculates the baseline early in the recognition process under the assumption that most text is on the baseline,
+          // so baselines are frequently inaccurate for single-word lines.
+          // `keepItalic` is used to determine if this is using Tesseract Legacy; should be edited for clarity.
+          if (lineObj.words.length === 1 && keepItalic && lineObj.words[0].chars) {
+            const baselineBottomArr = lineObj.words[0].chars.filter((char) => baselineCharArr.includes(char.text)).map((char) => char.bbox.bottom);
+            if (baselineBottomArr.length * 2 > lineObj.words[0].chars.length) {
+              const baselineBottom = mean50(baselineBottomArr);
+              lineObj.baseline[1] = baselineBottom - lineObj.bbox.bottom;
+            }
+          }
           pageObj.lines.push(lineObj);
           parObj.lines.push(lineObj);
         }
