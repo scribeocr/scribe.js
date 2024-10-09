@@ -334,7 +334,11 @@ export async function convertPageCallback({
 }, n, mainData, engineName) {
   const fontPromiseArr = [];
   if (langSet.has('chi_sim')) fontPromiseArr.push(loadChiSimFont());
-  if (langSet.has('rus') || langSet.has('ukr') || langSet.has('ell')) fontPromiseArr.push(loadBuiltInFontsRaw('all'));
+  if (langSet.has('rus') || langSet.has('ukr') || langSet.has('ell')) {
+    fontPromiseArr.push(loadBuiltInFontsRaw('all'));
+  } else {
+    fontPromiseArr.push(loadBuiltInFontsRaw());
+  }
   await Promise.all(fontPromiseArr);
 
   if (['Tesseract Legacy', 'Tesseract LSTM'].includes(engineName)) ocrAll['Tesseract Latest'][n] = pageObj;
