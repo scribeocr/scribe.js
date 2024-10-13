@@ -31,7 +31,7 @@ import {
   recognize, recognizePage,
 } from './js/recognizeConvert.js';
 import { calcWordMetrics } from './js/utils/fontUtils.js';
-import { imageStrToBlob } from './js/utils/imageUtils.js';
+import { getImageBitmap, imageStrToBlob } from './js/utils/imageUtils.js';
 import { countSubstringOccurrences, getRandomAlphanum, replaceSmartQuotes } from './js/utils/miscUtils.js';
 import { calcConf, mergeOcrWords, splitOcrWord } from './js/utils/ocrUtils.js';
 import { assignParagraphs } from './js/utils/reflowPars.js';
@@ -230,6 +230,8 @@ class utils {
   static dumpHOCR = dumpHOCR;
 
   static renderPageStatic = renderPageStatic;
+
+  static getImageBitmap = getImageBitmap;
 }
 
 /**

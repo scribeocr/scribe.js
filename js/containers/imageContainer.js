@@ -4,8 +4,6 @@ import {
 
 import { initMuPDFWorker } from '../../mupdf/mupdf-async.js';
 
-import { getImageBitmap } from '../utils/imageUtils.js';
-
 import { updateFontContWorkerMain } from '../fontContainerMain.js';
 import { pageMetricsArr } from './dataContainer.js';
 import {
@@ -165,21 +163,6 @@ export class ImageCache {
   static pdfType = null;
 
   static colorModeDefault = 'gray';
-
-  static cacheRenderPages = 3;
-
-  static cacheDeletePages = 5;
-
-  // The bitmap images are only created as needed, due to the enormous amount of memory they use.
-  // Additionally, they cannot be stored as promises, as the ImageWrapper object needs to be able to be sent between threads.
-  // Therefore, to avoid a race condition where the bitmap is created multiple times, a promise is stored in this array.
-  // These promises will be pending while the bitmap is being created, and will resolve to true once the bitmap is created.
-
-  /** @type {Array<?Promise<boolean>>} */
-  static #nativeBitmapPromises = [];
-
-  /** @type {Array<?Promise<boolean>>} */
-  static #binaryBitmapPromises = [];
 
   /**
    * Initializes the MuPDF scheduler.
@@ -347,42 +330,6 @@ export class ImageCache {
   static getBinary = async (n, props) => ImageCache.getImages(n, props, false).binary;
 
   /**
-   *
-   * @param {number} n - Page number
-   * @param {ImagePropertiesRequest} [props] - Image properties needed.
-   *  Image properties should only be defined if needed, as they can require the image to be re-rendered.
-   */
-  static getNativeBitmap = async (n, props) => {
-    const nativeN = await ImageCache.getNative(n, props);
-    if (ImageCache.#nativeBitmapPromises[n]) await ImageCache.#nativeBitmapPromises[n];
-    if (!nativeN.imageBitmap) {
-      const bitmapPromise = getImageBitmap(nativeN.src);
-
-      ImageCache.#nativeBitmapPromises[n] = bitmapPromise.then(() => (true));
-      nativeN.imageBitmap = await bitmapPromise;
-    }
-    return nativeN.imageBitmap;
-  };
-
-  /**
-   *
-   * @param {number} n - Page number
-   * @param {ImagePropertiesRequest} [props] - Image properties needed.
-   *  Image properties should only be defined if needed, as they can require the image to be re-rendered.
-   */
-  static getBinaryBitmap = async (n, props) => {
-    const binaryN = await ImageCache.getBinary(n, props);
-    if (ImageCache.#binaryBitmapPromises[n]) await ImageCache.#binaryBitmapPromises[n];
-    if (!binaryN.imageBitmap) {
-      const bitmapPromise = getImageBitmap(binaryN.src);
-
-      ImageCache.#binaryBitmapPromises[n] = bitmapPromise.then(() => (true));
-      binaryN.imageBitmap = await bitmapPromise;
-    }
-    return binaryN.imageBitmap;
-  };
-
-  /**
    * Pre-render a range of pages.
    * This is generally not required, as individual image are rendered as needed.
    * The primary use case is reducing latency in the UI by rendering images in advance.
@@ -402,63 +349,6 @@ export class ImageCache {
       await Promise.all(pagesArr.map((n) => ImageCache.getNative(n, props).then(() => {
         opt.progressHandler({ n, type: 'render', info: { } });
       })));
-    }
-  };
-
-  /**
-   * Pre-render ahead and behind the current page.
-   * This is similar to `preRenderRange`, however has several differences:
-   * (1) Starts rendering at the current page, and goes outward from there.
-   * (2) Also renders image bitmaps (not just the image strings), and deletes them when they are sufficiently far away.
-   * @param {number} curr
-   * @param {boolean} binary
-   */
-  static preRenderAheadBehindBrowser = async (curr, binary = false) => {
-    const resArr = [];
-    if (binary) {
-      resArr.push(ImageCache.getBinaryBitmap(curr));
-    } else {
-      resArr.push(ImageCache.getNativeBitmap(curr));
-    }
-
-    // Delete images that are sufficiently far away from the current page to save memory.
-    ImageCache.#cleanBitmapCache(curr);
-
-    for (let i = 0; i <= ImageCache.cacheRenderPages; i++) {
-      if (curr - i >= 0) {
-        if (binary) {
-          resArr.push(ImageCache.getBinaryBitmap(curr - i));
-        } else {
-          resArr.push(ImageCache.getNativeBitmap(curr - i));
-        }
-      }
-      if (curr + i < ImageCache.loadCount) {
-        if (binary) {
-          resArr.push(ImageCache.getBinaryBitmap(curr + i));
-        } else {
-          resArr.push(ImageCache.getNativeBitmap(curr + i));
-        }
-      }
-    }
-
-    await Promise.all(resArr);
-  };
-
-  static #cleanBitmapCache = (curr) => {
-    // Delete images that are sufficiently far away from the current page to save memory.
-    for (let i = 0; i < ImageCache.pageCount; i++) {
-      if (Math.abs(curr - i) > ImageCache.cacheDeletePages) {
-        if (ImageCache.native[i]) {
-          Promise.resolve(ImageCache.native[i]).then((img) => {
-            img.imageBitmap = null;
-          });
-        }
-        if (ImageCache.binary[i]) {
-          Promise.resolve(ImageCache.binary[i]).then((img) => {
-            img.imageBitmap = null;
-          });
-        }
-      }
     }
   };
 

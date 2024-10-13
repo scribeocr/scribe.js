@@ -79,9 +79,6 @@ const compatible = (img, props, significantRotation) => {
     }
   }
 
-  console.log(props);
-  console.log(img);
-
   if (props.upscaled === true && img.upscaled === false || props.upscaled === false && img.upscaled === true) return false;
 
   // The value 'native' is used for images uploaded from the user, and is essentially a default value.
