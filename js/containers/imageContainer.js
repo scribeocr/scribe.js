@@ -417,7 +417,6 @@ export class ImageCache {
     // so a hard-cap on resolution must be imposed.
     const pageDPI = ImageCache.pdfDims300.map((x) => 300 * Math.min(x.width, 3500) / x.width);
 
-    // In addition to capping the resolution, also switch the width/height
     ImageCache.pdfDims300.forEach((x, i) => {
       const pageDims = { width: Math.round(x.width * pageDPI[i] / 300), height: Math.round(x.height * pageDPI[i] / 300) };
       pageMetricsArr[i] = new PageMetrics(pageDims);
