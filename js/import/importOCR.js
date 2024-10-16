@@ -4,7 +4,7 @@ import { readOcrFile } from '../utils/miscUtils.js';
 /**
  * Parses string containing layout data tables JSON and deserializes it.
  * A special function is needed to add back circular references that are removed during serialization.
- * @param {string} str 
+ * @param {string} str
  * @returns {Array<import('../objects/layoutObjects.js').LayoutDataTablePage>}
  */
 const deserializeLayoutDataTables = (str) => {
@@ -17,8 +17,7 @@ const deserializeLayoutDataTables = (str) => {
     });
   });
   return pages;
-}
-
+};
 
 export const splitHOCRStr = (hocrStrAll) => hocrStrAll.replace(/[\s\S]*?<body>/, '')
   .replace(/<\/body>[\s\S]*$/, '')

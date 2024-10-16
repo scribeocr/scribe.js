@@ -375,7 +375,6 @@ async function compareOCRPageImpWrap(args) {
 }
 
 const handleMessage = async (data) => {
-
   const func = data[0];
   const args = data[1];
   const id = data[2];
@@ -423,6 +422,5 @@ if (typeof process === 'undefined') {
 } else {
   parentPort.on('message', handleMessage);
 }
-
 
 parentPort.postMessage({ data: 'ready', id: 0, status: 'resolve' });
