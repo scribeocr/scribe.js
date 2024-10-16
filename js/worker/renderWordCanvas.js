@@ -10,11 +10,10 @@ import { calcLineFontSize, calcWordMetrics } from '../utils/fontUtils.js';
  * @param {CanvasRenderingContext2D|OffscreenCanvasRenderingContext2D} ctx
  * @param {Array<OcrWord>} words
  * @param {ImageBitmap} imageBinaryBit
- * @param {dims} imgDims
  * @param {number} angle
  * @param {Array<CanvasRenderingContext2D|OffscreenCanvasRenderingContext2D>} [ctxViewArr]
  */
-export async function drawWordActual(ctx, words, imageBinaryBit, imgDims, angle, ctxViewArr) {
+export async function drawWordActual(ctx, words, imageBinaryBit, angle, ctxViewArr) {
   if (!FontCont.raw) throw new Error('Fonts must be defined before running this function.');
   if (!ctx) throw new Error('Canvases must be defined before running this function.');
 
