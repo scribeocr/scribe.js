@@ -514,6 +514,10 @@ export async function compareOCRPageImp({
   }
 
   const imgAngle = imageRotated ? (pageMetricsObj.angle || 0) : 0;
+  if (imageUpscaled) {
+    ocr.scalePage(pageA, 2);
+    ocr.scalePage(pageB, 2);
+  }
 
   const debugImg = [];
 
@@ -1151,6 +1155,11 @@ export async function evalPageBase({
   const lines = 'lines' in page ? page.lines : [page];
 
   const imgAngle = binaryImage.rotated ? (pageMetricsObj.angle || 0) : 0;
+  if (binaryImage.upscaled) {
+    for (let i = 0; i < lines.length; i++) {
+      ocr.scaleLine(lines[i], 2);
+    }
+  }
 
   const binaryImageBit = binaryImage.imageBitmap || await getImageBitmap(binaryImage.src);
 
@@ -1251,15 +1260,14 @@ export async function evalPageFont({
 /**
  * @param {Object} params
  * @param {OcrPage} params.page
- * @param {ImageBitmap} params.binaryImage
- * @param {boolean} params.imageRotated - Whether provided `binaryImage` has been rotated.
+ * @param {import('../containers/imageContainer.js').ImageWrapper} params.binaryImage
  * @param {PageMetrics} params.pageMetricsObj
  * @param {function} params.func
  * @param {boolean} params.view
  * @returns
  */
 export async function nudgePageBase({
-  page, binaryImage, imageRotated, pageMetricsObj, func, view = false,
+  page, binaryImage, pageMetricsObj, func, view = false,
 }) {
   // If this is not being run in a worker, clone the data so the original is not edited.
   // This is not necessary when running in a worker, as the data is already cloned when sent to the worker.
@@ -1267,9 +1275,12 @@ export async function nudgePageBase({
     page = structuredClone(page);
   }
 
-  const imgAngle = imageRotated ? (pageMetricsObj.angle || 0) : 0;
+  const imgAngle = binaryImage.rotated ? (pageMetricsObj.angle || 0) : 0;
+  if (binaryImage.upscaled) {
+    ocr.scalePage(page, 2);
+  }
 
-  const binaryImageBit = await getImageBitmap(binaryImage);
+  const binaryImageBit = binaryImage.imageBitmap || await getImageBitmap(binaryImage.src);
 
   if (!FontCont.raw) throw new Error('Fonts must be defined before running this function.');
   if (!calcCtx) throw new Error('Canvases must be defined before running this function.');
@@ -1321,14 +1332,13 @@ export async function nudgePageBase({
 /**
  * @param {Object} params
  * @param {OcrPage} params.page
- * @param {ImageBitmap} params.binaryImage
- * @param {boolean} params.imageRotated - Whether provided `binaryImage` has been rotated.
+ * @param {import('../containers/imageContainer.js').ImageWrapper} params.binaryImage
  * @param {PageMetrics} params.pageMetricsObj
  * @param {boolean} params.view
  * @returns
  */
 export async function nudgePageFontSize({
-  page, binaryImage, imageRotated, pageMetricsObj, view = false,
+  page, binaryImage, pageMetricsObj, view = false,
 }) {
   const func = async (lineJ, x) => {
     const fontSizeBase = calcLineFontSize(lineJ);
@@ -1337,28 +1347,27 @@ export async function nudgePageFontSize({
   };
 
   return await nudgePageBase({
-    page, binaryImage, imageRotated, pageMetricsObj, func, view,
+    page, binaryImage, pageMetricsObj, func, view,
   });
 }
 
 /**
  * @param {Object} params
  * @param {OcrPage} params.page
- * @param {ImageBitmap} params.binaryImage
- * @param {boolean} params.imageRotated - Whether provided `binaryImage` has been rotated.
+ * @param {import('../containers/imageContainer.js').ImageWrapper} params.binaryImage
  * @param {PageMetrics} params.pageMetricsObj
  * @param {boolean} params.view
  * @returns
  */
 export async function nudgePageBaseline({
-  page, binaryImage, imageRotated, pageMetricsObj, view = false,
+  page, binaryImage, pageMetricsObj, view = false,
 }) {
   const func = async (lineJ, x) => {
     lineJ.baseline[1] += x;
   };
 
   return await nudgePageBase({
-    page, binaryImage, imageRotated, pageMetricsObj, func, view,
+    page, binaryImage, pageMetricsObj, func, view,
   });
 }
 
