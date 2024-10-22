@@ -36,18 +36,25 @@ export class LayoutDataColumn extends LayoutBoxBase {
 export class LayoutRegion extends LayoutBoxBase {
   /**
    * Create a layout data column.
+   * @param {LayoutPage} page
    * @param {number} priority - The priority of the layout data column.
    * @param {bbox} coords - The coordinates of the layout data column.
    * @param {('order'|'exclude')} type - The type of the layout region.
    */
-  constructor(priority, coords, type) {
+  constructor(page, priority, coords, type) {
     super(coords);
+    this.page = page;
     this.type = type;
     this.order = priority;
   }
 }
 
-export function LayoutPage() {
+/**
+ * @param {number} n - Page number.
+ */
+export function LayoutPage(n) {
+  /** @type {number} */
+  this.n = n;
   /** @type {boolean} */
   this.default = true;
   /** @type {Object<string, LayoutRegion>} */
@@ -69,16 +76,22 @@ export const calcTableBbox = (table) => {
 export class LayoutDataTable {
   /**
    * Create a layout data table.
+   * @param {LayoutDataTablePage} page - The layout data table page to which the table belongs.
    */
-  constructor() {
+  constructor(page) {
+    this.page = page;
     this.id = getRandomAlphanum(10);
-
     /** @type {Array<LayoutDataColumn>} */
     this.boxes = [];
   }
 }
 
-export function LayoutDataTablePage() {
+/**
+ * @param {number} n - Page number.
+ */
+export function LayoutDataTablePage(n) {
+  /** @type {number} */
+  this.n = n;
   /** @type {boolean} */
   this.default = true;
   /** @type {Array<LayoutDataTable>} */

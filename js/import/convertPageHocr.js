@@ -377,6 +377,6 @@ export async function convertPageHocr({
   const langSet = pass3(pageObj);
 
   return {
-    pageObj, dataTables: new LayoutDataTablePage(), warn, langSet,
+    pageObj, dataTables: new LayoutDataTablePage(n), warn, langSet,
   };
 }
