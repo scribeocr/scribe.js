@@ -11,6 +11,7 @@ const deserializeLayoutDataTables = (str) => {
   const pages = JSON.parse(str);
   pages.forEach((page) => {
     page.tables.forEach((table) => {
+      table.page = page;
       table.boxes.forEach((box) => {
         box.table = table;
       });

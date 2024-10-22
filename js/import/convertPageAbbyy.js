@@ -44,11 +44,11 @@ export async function convertPageAbbyy({ ocrStr, n }) {
     const warn = { char: 'char_error' };
 
     return {
-      pageObj, fontMetricsObj: {}, dataTables: new LayoutDataTablePage(), warn,
+      pageObj, fontMetricsObj: {}, dataTables: new LayoutDataTablePage(n), warn,
     };
   }
 
-  const tablesPage = convertTableLayoutAbbyy(ocrStr);
+  const tablesPage = convertTableLayoutAbbyy(n, ocrStr);
 
   /** @type {Array<number>} */
   const angleRisePage = [];
@@ -374,16 +374,17 @@ export async function convertPageAbbyy({ ocrStr, n }) {
 }
 
 /**
+ * @param {number} n
  * @param {string} ocrStr
  */
-function convertTableLayoutAbbyy(ocrStr) {
+function convertTableLayoutAbbyy(n, ocrStr) {
   // Note: This assumes that block elements are not nested within table block elements
   // Not sure if this is true or not
   const tableRegex = /<block blockType=["']Table[\s\S]+?(?:<\/block>\s*)/ig;
 
   const tablesStrArr = ocrStr.match(tableRegex);
 
-  const tablesPage = new LayoutDataTablePage();
+  const tablesPage = new LayoutDataTablePage(n);
 
   if (!tablesStrArr) return tablesPage;
 
@@ -416,7 +417,7 @@ function convertTableLayoutAbbyy(ocrStr) {
       continue;
     }
 
-    const table = new LayoutDataTable();
+    const table = new LayoutDataTable(tablesPage);
 
     for (let j = 0; j < firstRowCells.length; j++) {
       const cell = firstRowCells[j];

@@ -41,7 +41,10 @@ export class layoutDataTables {
     const pages = structuredClone(this.pages);
     pages.forEach((page) => {
       page.tables.forEach((table) => {
+        // @ts-ignore
+        delete table.page;
         table.boxes.forEach((box) => {
+          // @ts-ignore
           delete box.table;
         });
       });

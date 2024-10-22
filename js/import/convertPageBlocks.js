@@ -191,6 +191,6 @@ export async function convertPageBlocks({
   const langSet = pass3(pageObj);
 
   return {
-    pageObj, dataTables: new LayoutDataTablePage(), warn: { char: '' }, langSet,
+    pageObj, dataTables: new LayoutDataTablePage(n), warn: { char: '' }, langSet,
   };
 }

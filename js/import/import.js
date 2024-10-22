@@ -397,13 +397,13 @@ export async function importFiles(files, options = {}) {
 
   if (!existingLayout) {
     for (let i = 0; i < inputData.pageCount; i++) {
-      layoutRegions.pages[i] = new LayoutPage();
+      layoutRegions.pages[i] = new LayoutPage(i);
     }
   }
 
   if (!existingLayoutDataTable) {
     for (let i = 0; i < inputData.pageCount; i++) {
-      layoutDataTables.pages[i] = new LayoutDataTablePage();
+      layoutDataTables.pages[i] = new LayoutDataTablePage(i);
     }
   }
 

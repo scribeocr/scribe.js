@@ -436,5 +436,5 @@ export async function convertPageStext({ ocrStr, n }) {
 
   pageObj.angle = angleOut;
 
-  return { pageObj, dataTables: new LayoutDataTablePage(), langSet };
+  return { pageObj, dataTables: new LayoutDataTablePage(n), langSet };
 }
