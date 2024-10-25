@@ -11,10 +11,10 @@ import { ImageCache } from './js/containers/imageContainer.js';
 import coords from './js/coordinates.js';
 import { drawDebugImages, renderPageStatic } from './js/debug.js';
 import { download, exportData } from './js/export/export.js';
-import { convertToCSV, writeDebugCsv } from './js/export/exportDebugCsv.js';
-import { renderPDF } from './js/export/exportPDF.js';
-import { renderHOCR } from './js/export/exportRenderHOCR.js';
-import { renderText } from './js/export/exportRenderText.js';
+import { convertToCsv, writeDebugCsv } from './js/export/exportDebugCsv.js';
+import { writePdf } from './js/export/writePdf.js';
+import { writeHocr } from './js/export/writeHocr.js';
+import { writeText } from './js/export/writeText.js';
 import { extractInternalPDFText } from './js/extractPDFText.js';
 import { extractSingleTableContent } from './js/extractTables.js';
 import { enableFontOpt, loadBuiltInFontsRaw } from './js/fontContainerMain.js';
@@ -33,8 +33,9 @@ import {
 import { calcWordMetrics } from './js/utils/fontUtils.js';
 import { getImageBitmap, imageStrToBlob } from './js/utils/imageUtils.js';
 import { countSubstringOccurrences, getRandomAlphanum, replaceSmartQuotes } from './js/utils/miscUtils.js';
-import { calcConf, mergeOcrWords, splitOcrWord } from './js/utils/ocrUtils.js';
+import { calcConf, checkOcrWordsAdjacent, mergeOcrWords, splitOcrWord } from './js/utils/ocrUtils.js';
 import { assignParagraphs } from './js/utils/reflowPars.js';
+import { writeXlsx } from './js/export/writeTabular.js';
 
 /**
  * Initialize the program and optionally pre-load resources.
@@ -187,6 +188,8 @@ class utils {
 
   static mergeOcrWords = mergeOcrWords;
 
+  static checkOcrWordsAdjacent = checkOcrWordsAdjacent;
+
   static splitOcrWord = splitOcrWord;
 
   static ocr = ocr;
@@ -200,16 +203,18 @@ class utils {
   static calcWordMetrics = calcWordMetrics;
 
   // Export functions
-  static renderPDF = renderPDF;
+  static writePdf = writePdf;
 
-  static renderHOCR = renderHOCR;
+  static writeHocr = writeHocr;
 
-  static renderText = renderText;
+  static writeText = writeText;
+
+  static writeXlsx = writeXlsx;
 
   // Misc utils
   static calcBoxOverlap = calcBoxOverlap;
 
-  static convertToCSV = convertToCSV;
+  static convertToCSV = convertToCsv;
 
   static replaceSmartQuotes = replaceSmartQuotes;
 

@@ -14,7 +14,7 @@ import { assignParagraphs } from '../utils/reflowPars.js';
  * @param {?Array<string>} wordIds - An array of word IDs to include in the document.
  *    If omitted, all words are included.
  */
-export function renderText(ocrCurrent, minpage = 0, maxpage = -1, reflowText = false, docxMode = false, wordIds = null) {
+export function writeText(ocrCurrent, minpage = 0, maxpage = -1, reflowText = false, docxMode = false, wordIds = null) {
   let textStr = '';
 
   if (maxpage === -1) maxpage = ocrCurrent.length - 1;

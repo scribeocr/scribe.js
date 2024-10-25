@@ -5,7 +5,7 @@ import {
   calcWordMetrics, subsetFont,
 } from '../utils/fontUtils.js';
 
-import { createEmbeddedFontType0, createEmbeddedFontType1 } from './exportPDFFonts.js';
+import { createEmbeddedFontType0, createEmbeddedFontType1 } from './writePdfFonts.js';
 
 import { opt } from '../containers/app.js';
 import { pageMetricsArr } from '../containers/dataContainer.js';
@@ -31,7 +31,7 @@ import ocr from '../objects/ocrObjects.js';
  *
  * A valid PDF will be created if an empty array is provided for `hocrArr`, as long as `maxpage` is set manually.
  */
-export async function renderPDF(hocrArr, minpage = 0, maxpage = -1, textMode = 'ebook', rotateText = false, rotateBackground = false,
+export async function writePdf(hocrArr, minpage = 0, maxpage = -1, textMode = 'ebook', rotateText = false, rotateBackground = false,
   dimsLimit = { width: -1, height: -1 }, confThreshHigh = 85, confThreshMed = 75, proofOpacity = 0.8) {
   if (!FontCont.raw) throw new Error('No fonts loaded.');
 

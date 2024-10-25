@@ -2,7 +2,7 @@
 /* eslint-disable import/no-relative-packages */
 import { assert, config } from '../../node_modules/chai/chai.js';
 // import mocha from '../../node_modules/mocha/mocha.js';
-import { renderHOCR } from '../../js/export/exportRenderHOCR.js';
+import { writeHocr } from '../../js/export/writeHocr.js';
 import { gs } from '../../js/generalWorkerMain.js';
 import { splitHOCRStr } from '../../js/import/importOCR.js';
 import ocr from '../../js/objects/ocrObjects.js';
@@ -52,7 +52,7 @@ describe('Check .hocr export function.', function () {
 
     const ocrAllComp1 = standardizeOCRPages(scribe.data.ocr.active);
 
-    const hocrOutStrArr = splitHOCRStr(renderHOCR(scribe.data.ocr.active));
+    const hocrOutStrArr = splitHOCRStr(writeHocr(scribe.data.ocr.active));
 
     const resArrPromises = hocrOutStrArr.map((x, i) => (gs.schedulerInner.addJob('convertPageHocr', { ocrStr: x, n: i, scribeMode: true })));
     const resArr = await Promise.all(resArrPromises);
@@ -72,7 +72,7 @@ describe('Check .hocr export function.', function () {
 
     const layoutTables1 = structuredClone(scribe.data.layoutDataTables.pages);
 
-    const hocrOutStr = renderHOCR(scribe.data.ocr.active);
+    const hocrOutStr = writeHocr(scribe.data.ocr.active);
     const encoder = new TextEncoder();
     const encoded = encoder.encode(hocrOutStr);
   

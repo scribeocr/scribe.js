@@ -10,7 +10,7 @@ import { saveAs } from '../utils/miscUtils.js';
  * Escapes special characters in CSV fields.
  * @param {string|number|boolean|object} field - The field to escape.
  */
-const escapeCSVField = (field) => {
+const escapeCsvField = (field) => {
   if (typeof field === 'object') {
     // return JSON.stringify(field).replace(/"/g, '""');
     return `"${JSON.stringify(field).replace(/"/g, '""')}"`;
@@ -26,13 +26,13 @@ const escapeCSVField = (field) => {
  * @param {Array<Object>} data - The array of data objects.
  * @returns {string} - The CSV string.
  */
-export const convertToCSV = (data) => {
+export const convertToCsv = (data) => {
   if (data.length === 0) {
     return '';
   }
 
   const headers = Object.keys(data[0]);
-  const rows = data.map((item) => headers.map((header) => escapeCSVField(item[header])).join(','));
+  const rows = data.map((item) => headers.map((header) => escapeCsvField(item[header])).join(','));
 
   return [headers.join(','), ...rows].join('\n');
 };
@@ -54,7 +54,7 @@ export const writeDebugCsv = (pages, fileName) => {
       return word;
     });
 
-    let csvStrI = convertToCSV(words);
+    let csvStrI = convertToCsv(words);
 
     // Remove header row if this is not the first page.
     // The leading newline character is not removed, as it is needed to separate the pages.

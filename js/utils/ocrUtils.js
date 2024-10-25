@@ -74,3 +74,18 @@ export function mergeOcrWords(words) {
   if (wordA.chars) wordA.chars = words.flatMap((x) => x.chars || []);
   return wordA;
 }
+
+/**
+ *
+ * @param {Array<OcrWord>} words
+ * @returns
+ */
+export const checkOcrWordsAdjacent = (words) => {
+  const sortedWords = words.slice().sort((a, b) => a.bbox.left - b.bbox.left);
+  const lineWords = words[0].line.words;
+  lineWords.sort((a, b) => a.bbox.left - b.bbox.left);
+
+  const firstIndex = lineWords.findIndex((x) => x.id === sortedWords[0].id);
+  const lastIndex = lineWords.findIndex((x) => x.id === sortedWords[sortedWords.length - 1].id);
+  return lastIndex - firstIndex === sortedWords.length - 1;
+};
