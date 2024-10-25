@@ -10,6 +10,7 @@ import {
 } from '../utils/miscUtils.js';
 
 import { LayoutDataTablePage } from '../objects/layoutObjects.js';
+import { detectTablesInPage, makeTableFromBbox } from '../utils/detectTables.js';
 
 /**
  * @param {Object} params
@@ -436,5 +437,16 @@ export async function convertPageStext({ ocrStr, n }) {
 
   pageObj.angle = angleOut;
 
-  return { pageObj, dataTables: new LayoutDataTablePage(n), langSet };
+  const autoDetectTables = true;
+  const dataTablePage = new LayoutDataTablePage(n);
+  if (autoDetectTables) {
+    const tableBboxes = detectTablesInPage(pageObj);
+    tableBboxes.forEach((bbox) => {
+      const dataTable = makeTableFromBbox(pageObj, bbox);
+      dataTable.page = dataTablePage;
+      dataTablePage.tables.push(dataTable);
+    });
+  } 
+
+  return { pageObj, dataTables: dataTablePage, langSet };
 }

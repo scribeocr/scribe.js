@@ -13,6 +13,8 @@ export class opt {
 
   static ignoreExtra = false;
 
+  static autoDetectTables = false;
+
   static confThreshHigh = 85;
 
   static confThreshMed = 75;
