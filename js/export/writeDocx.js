@@ -1,6 +1,6 @@
 import { documentEnd, documentStart, docxStrings } from './resources/docxFiles.js';
 
-import { renderText } from './exportRenderText.js';
+import { writeText } from './writeText.js';
 
 import { opt } from '../containers/app.js';
 
@@ -19,7 +19,7 @@ export async function writeDocx(hocrCurrent, minpage = 0, maxpage = -1) {
   const zipFileWriter = new Uint8ArrayWriter();
   const zipWriter = new ZipWriter(zipFileWriter);
 
-  const textReader = new TextReader(documentStart + renderText(hocrCurrent, minpage, maxpage, opt.reflow, true) + documentEnd);
+  const textReader = new TextReader(documentStart + writeText(hocrCurrent, minpage, maxpage, opt.reflow, true) + documentEnd);
   await zipWriter.add('word/document.xml', textReader);
 
   for (let i = 0; i < docxStrings.length; i++) {

@@ -1,7 +1,6 @@
 import ocr from '../objects/ocrObjects.js';
 
 import { inputData, opt } from '../containers/app.js';
-import { layoutDataTables } from '../containers/dataContainer.js';
 import { extractTableContent } from '../extractTables.js';
 
 /**
@@ -38,7 +37,7 @@ export function createCells(tableWordObj, extraCols = [], startRow = 0, xlsxMode
 function createCellsSingle(ocrTableWords, extraCols = [], startRow = 0, xlsxMode = true, htmlMode = false, previewMode = true) {
   const letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'];
 
-  let textStr = '';
+  let textStr = htmlMode ? '<table>' : '';
   for (let i = 0; i < ocrTableWords.length; i++) {
     if (xlsxMode) {
       textStr += `<row r="${String(startRow + i + 1)}">`;
@@ -134,16 +133,19 @@ function createCellsSingle(ocrTableWords, extraCols = [], startRow = 0, xlsxMode
     }
   }
 
+  if (htmlMode) textStr += '</table>';
+
   return { content: textStr, rows: ocrTableWords.length };
 }
 
 /**
  *
  * @param {Array<OcrPage>} ocrPageArr
+ * @param {Array<LayoutDataTablePage>} layoutPageArr
  * @param {number} minpage
  * @param {number} maxpage
  */
-export async function writeXlsx(ocrPageArr, minpage = 0, maxpage = -1) {
+export async function writeXlsx(ocrPageArr, layoutPageArr, minpage = 0, maxpage = -1) {
   const { xlsxStrings, sheetStart, sheetEnd } = await import('./resources/xlsxFiles.js');
   const { Uint8ArrayWriter, TextReader, ZipWriter } = await import('../../lib/zip.js/index.js');
 
@@ -166,7 +168,7 @@ export async function writeXlsx(ocrPageArr, minpage = 0, maxpage = -1) {
     }
     if (opt.xlsxPageNumberColumn) extraCols.push(String(i + 1));
 
-    const tableWordObj = extractTableContent(ocrPageArr[i], layoutDataTables.pages[i]);
+    const tableWordObj = extractTableContent(ocrPageArr[i], layoutPageArr[i]);
     const cellsObj = createCells(tableWordObj, extraCols, rowCount);
     rowCount += cellsObj.rows;
     sheetContent += cellsObj.content;

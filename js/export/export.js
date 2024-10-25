@@ -1,11 +1,11 @@
 import { inputData, opt } from '../containers/app.js';
-import { layoutRegions, ocrAll, pageMetricsArr } from '../containers/dataContainer.js';
+import { layoutDataTables, layoutRegions, ocrAll, pageMetricsArr } from '../containers/dataContainer.js';
 import { ImageCache } from '../containers/imageContainer.js';
 import { reorderOcrPage } from '../modifyOCR.js';
 import { saveAs } from '../utils/miscUtils.js';
-import { renderPDF } from './exportPDF.js';
-import { renderHOCR } from './exportRenderHOCR.js';
-import { renderText } from './exportRenderText.js';
+import { writePdf } from './writePdf.js';
+import { writeHocr } from './writeHocr.js';
+import { writeText } from './writeText.js';
 
 /**
  * Export active OCR data to specified format.
@@ -60,7 +60,7 @@ export async function exportData(format = 'txt', minValue = 0, maxValue = -1) {
       // and assume that the overlay PDF is the same size as the input images.
       // The `maxpage` argument must be set manually to `inputData.pageCount-1`, as this avoids an error in the case where there is no OCR data (`hocrDownload` has length 0).
       // In all other cases, this should be equivalent to using the default argument of `-1` (which results in `hocrDownload.length` being used).
-      const pdfStr = await renderPDF(ocrDownload, 0, inputData.pageCount - 1, opt.displayMode, rotateText, rotateBackground,
+      const pdfStr = await writePdf(ocrDownload, 0, inputData.pageCount - 1, opt.displayMode, rotateText, rotateBackground,
         { width: -1, height: -1 }, opt.confThreshHigh, opt.confThreshMed, opt.overlayOpacity / 100);
 
       const enc = new TextEncoder();
@@ -142,7 +142,7 @@ export async function exportData(format = 'txt', minValue = 0, maxValue = -1) {
         });
       }
     } else {
-      const pdfStr = await renderPDF(ocrDownload, minValue, maxValue, opt.displayMode, false, true, dimsLimit, opt.confThreshHigh, opt.confThreshMed,
+      const pdfStr = await writePdf(ocrDownload, minValue, maxValue, opt.displayMode, false, true, dimsLimit, opt.confThreshHigh, opt.confThreshMed,
         opt.overlayOpacity / 100);
 
       // The PDF is still run through muPDF, even thought in eBook mode no background layer is added.
@@ -168,22 +168,23 @@ export async function exportData(format = 'txt', minValue = 0, maxValue = -1) {
         doc1: pdf, minpage: minValue, maxpage: maxValue, pagewidth: dimsLimit.width, pageheight: dimsLimit.height, humanReadable: opt.humanReadablePDF,
       });
     }
-  } if (format === 'hocr') {
-    content = renderHOCR(ocrAll.active, minValue, maxValue);
-  } if (format === 'txt') {
-    content = renderText(ocrDownload, minValue, maxValue, opt.reflow, false);
+  } else if (format === 'hocr') {
+    content = writeHocr(ocrAll.active, minValue, maxValue);
+  } else if (format === 'txt') {
+    content = writeText(ocrDownload, minValue, maxValue, opt.reflow, false);
   // Defining `DISABLE_DOCX_XLSX` disables docx/xlsx exports when using build tools.
   // @ts-ignore
-  } if (typeof DISABLE_DOCX_XLSX === 'undefined' && format === 'docx') {
+  } else if (typeof DISABLE_DOCX_XLSX === 'undefined' && format === 'docx') {
     // Less common export formats are loaded dynamically to reduce initial load time.
-    const writeDocx = (await import('./exportWriteDocx.js')).writeDocx;
+    const writeDocx = (await import('./writeDocx.js')).writeDocx;
     content = await writeDocx(ocrDownload, minValue, maxValue);
   // @ts-ignore
-  } if (typeof DISABLE_DOCX_XLSX === 'undefined' && format === 'xlsx') {
+  } else if (typeof DISABLE_DOCX_XLSX === 'undefined' && format === 'xlsx') {
     // Less common export formats are loaded dynamically to reduce initial load time.
-    const writeXlsx = (await import('./exportWriteTabular.js')).writeXlsx;
-    content = await writeXlsx(ocrDownload, minValue, maxValue);
+    const writeXlsx = (await import('./writeTabular.js')).writeXlsx;
+    content = await writeXlsx(ocrDownload, layoutDataTables.pages, minValue, maxValue);
   }
+
   return content;
 }
 
