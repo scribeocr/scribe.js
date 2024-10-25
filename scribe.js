@@ -36,6 +36,7 @@ import { countSubstringOccurrences, getRandomAlphanum, replaceSmartQuotes } from
 import { calcConf, checkOcrWordsAdjacent, mergeOcrWords, splitOcrWord } from './js/utils/ocrUtils.js';
 import { assignParagraphs } from './js/utils/reflowPars.js';
 import { writeXlsx } from './js/export/writeTabular.js';
+import { calcColumnBounds } from './js/utils/detectTables.js';
 
 /**
  * Initialize the program and optionally pre-load resources.
@@ -195,6 +196,8 @@ class utils {
   static ocr = ocr;
 
   // Layout utils
+  static calcColumnBounds = calcColumnBounds;
+
   static calcTableBbox = calcTableBbox;
 
   static extractSingleTableContent = extractSingleTableContent;
