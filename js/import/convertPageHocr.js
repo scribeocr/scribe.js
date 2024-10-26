@@ -154,10 +154,10 @@ export async function convertPageHocr({
       let text = '';
 
       const titleStrWord = match.match(/title=['"]([^'"]+)/)?.[1];
-      const confMatch = titleStrWord.match(/(?:;|\s)x_wconf\s+(\d+)/);
+      const confMatchStr = titleStrWord?.match(/(?:;|\s)x_wconf\s+(\d+)/)?.[1];
       let wordConf = 0;
-      if (confMatch != null) {
-        wordConf = parseInt(confMatch[1]);
+      if (confMatchStr) {
+        wordConf = parseInt(confMatchStr);
       }
 
       const italic = /<\/em>\s*<\/span>/.test(match);
@@ -272,11 +272,9 @@ export async function convertPageHocr({
         wordText = match.match(/>([^>]*)</)?.[1];
       }
 
-      wordText = unescapeXml(wordText);
+      if (!wordText) return '';
 
-      if (!wordText) {
-        return '';
-      }
+      wordText = unescapeXml(wordText);
 
       const titleStrWord = match.match(/title=['"]([^'"]+)/)?.[1];
 
