@@ -57,10 +57,14 @@ export function getRandomAlphanum(num) {
  * Calculates the nth quantile of a given array of numbers.
  * @param {number[]} arr - The array of numbers.
  * @param {number} ntile - The quantile to calculate. Should be a value between 0 and 1.
- * @returns {number|null} The nth quantile value if the array is not empty; otherwise, null.
+ * @returns {number}
+ * This function returns `null` if the array is empty, however the TypeScript definition does not reflect this.
+ * Needing to implement type checks on every result is cumbersome, and generally not useful,
+ * as other application logic often prevents empty arrays from being passed to this function.
  */
 export function quantile(arr, ntile) {
   if (arr.length === 0) {
+    // @ts-ignore
     return null;
   }
   const arr1 = [...arr];
@@ -72,8 +76,17 @@ export function quantile(arr, ntile) {
   return arr1[mid];
 }
 
+/**
+ * 
+ * @param {Array<number>} arr 
+ * @returns {number}
+ * This function returns `null` if the array is empty, however the TypeScript definition does not reflect this.
+ * Needing to implement type checks on every result is cumbersome, and generally not useful,
+ * as other application logic often prevents empty arrays from being passed to this function.
+ */
 export const mean50 = (arr) => {
   if (arr.length === 0) {
+    // @ts-ignore
     return null;
   }
   const per25 = Math.floor(arr.length / 4) - 1;
