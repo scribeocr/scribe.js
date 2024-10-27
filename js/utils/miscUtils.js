@@ -77,8 +77,8 @@ export function quantile(arr, ntile) {
 }
 
 /**
- * 
- * @param {Array<number>} arr 
+ *
+ * @param {Array<number>} arr
  * @returns {number}
  * This function returns `null` if the array is empty, however the TypeScript definition does not reflect this.
  * Needing to implement type checks on every result is cumbersome, and generally not useful,
