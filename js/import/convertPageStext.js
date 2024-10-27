@@ -146,7 +146,6 @@ export async function convertPageStext({ ocrStr, n }) {
           const fontSizeStrI = fontStr?.match(/size=['"]([^'"]*)/)?.[1];
           const baseline = parseFloat(letterOrFontArr[j][6]);
           if (fontNameStrI && fontSizeStrI) {
-
             // While small caps can be printed using special "small caps" fonts, they can also be printed using a regular font with a size change.
             // This block of code detects small caps printed in title case by checking for a decrease in font size after the first letter.
             // TODO: This logic currently fails when:

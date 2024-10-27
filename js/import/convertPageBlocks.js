@@ -3,8 +3,9 @@ import ocr from '../objects/ocrObjects.js';
 import { pass2, pass3 } from './convertPageShared.js';
 
 import { LayoutDataTablePage } from '../objects/layoutObjects.js';
-import { ascCharArr, getTextScript, mean50, xCharArr } from '../utils/miscUtils.js';
-
+import {
+  ascCharArr, getTextScript, mean50, xCharArr,
+} from '../utils/miscUtils.js';
 
 const baselineCharArr = [...xCharArr, ...ascCharArr];
 
