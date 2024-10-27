@@ -1,7 +1,7 @@
 import { calcBoxOverlap } from "../modifyOCR.js";
 import { LayoutDataColumn, LayoutDataTable } from "../objects/layoutObjects.js";
 import ocr from "../objects/ocrObjects.js";
-import { calcBboxUnion } from "./miscUtils.js";
+import { calcBboxUnion, mean50 } from "./miscUtils.js";
 
 /**
  *
@@ -74,11 +74,6 @@ export function detectTablesInPage(ocrPage) {
   lines.forEach(item => {
     let addedToRow = false;
 
-    // // Only consider lines with at most 5 words
-    // if (item.words.length > 5) {
-    //   return; // Skip this line as it doesn't meet the requirement
-    // }
-
     for (let row of rows) {
       // Check if the line is vertically aligned with the row
       if (Math.abs(item.bbox.top - row.avgTop) <= rowThreshold) {
@@ -105,16 +100,17 @@ export function detectTablesInPage(ocrPage) {
    * 
    * @param {{avgTop: number, items: Array<OcrLine>}} row 
    */
-  const checkRow = (row) => {
+  const isTableRow = (row) => {
     if (row.items.length < 4) return false;
     let fewWordsN = 0;
     let majorityNumbersN = 0;
     row.items.forEach((line) => {
       const totalN = line.words.map((word) => word.text.length).reduce((a, b) => a + b, 0);
-      const digitN = line.words.map((word) => word.text.split('').filter((char) => /[0-9]/.test(char)).length).reduce((a, b) => a + b, 0);
+      const digitN = line.words.map((word) => word.text.split('').filter((char) => /[0-9\W]/.test(char)).length).reduce((a, b) => a + b, 0);
 
       if (line.words.length <= 2) fewWordsN++;
-      if (digitN / totalN > 0.5) majorityNumbersN++;
+      // if (digitN / totalN > 0.5) majorityNumbersN++;
+      if (digitN > 0) majorityNumbersN++;
     });
 
     if (fewWordsN < row.items.length  * 0.75) return false;
@@ -122,45 +118,98 @@ export function detectTablesInPage(ocrPage) {
     return true;
   }
 
+  /**
+   * 
+   * @param {Array<{avgTop: number, items: Array<OcrLine>}>} tableRows
+   * @param {{avgTop: number, items: Array<OcrLine>}} row 
+   */
+  const isCompat = (tableRows, row) => {
+    if (!tableRows || tableRows.length === 0) return false;
+
+    const expectedColumns = mean50(tableRows.map((x) => x.items.length));
+
+    // const lastRow = tableRows[tableRows.length - 1];
+    if (Math.abs(expectedColumns - row.items.length) <= 1) {
+      return true;
+    }
+    return false;
+  }
+
   const minRows = 4; // Minimum number of rows to consider a table
 
   /**@type {Array<Array<{avgTop: number, items: Array<OcrLine>}>>} */
   const tables = [];
-  const tablesBboxes = [];
   /**@type {Array<{avgTop: number, items: Array<OcrLine>}>} */
   let currentTable = [];
+  /**@type {Array<{avgTop: number, items: Array<OcrLine>}>} */
+  let currentTableCompat = [];
+  /**@type {?{avgTop: number, items: Array<OcrLine>}} */
+  let headerRow = null;
 
   // Detect tables by finding consecutive rows with similar numbers of items
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
 
-    if (checkRow(row)) {
+    if (isTableRow(row)) {
 
       if (currentTable.length > 0) {
 
-        const prevRow = currentTable[currentTable.length - 1];
-        if (Math.abs(row.items.length - prevRow.items.length) <= 1) {
+        // const prevRow = currentTable[currentTable.length - 1];
+        if (isCompat(currentTableCompat, row)) {
           // Continue the current table
           currentTable.push(row);
+          currentTableCompat.push(row);
         } else {
+          // TODO: Handle case where the the header row is a table row but is not compatible
+          // with the rows that come afterwards, which puts us in this block.
           // End the current table and start a new one
           if (currentTable.length >= minRows) {
-            tables.push(currentTable);
+            if (headerRow && Math.abs(headerRow.items.length - currentTable[0].items.length) <= 1) {
+              tables.push([headerRow, ...currentTable]);
+            } else {
+              tables.push(currentTable);
+            }
+            
+          } else if (currentTable.length === 1) {
+            headerRow = currentTable[0];
+            currentTable = [row];
+            
+  
+          } else {
+            currentTable = [row];
+            headerRow = null;
+  
           }
-          currentTable = [row];
         }
       } else {
         currentTable.push(row);
-
+        currentTableCompat.push(row);
       }
 
 
     } else {
+
+      // If the current row does not pass the checks, but the next two rows do, it is still included.
+      const nextRow = rows[i + 1];
+      const nextRow2 = rows[i + 2];
+      if (nextRow && nextRow2 && isTableRow(nextRow) && isTableRow(nextRow2) 
+        && isCompat(currentTableCompat, nextRow) && isCompat(currentTableCompat, nextRow2)) {
+        currentTable.push(row);
+        continue;
+      }
+
+
       // Not a table row
       if (currentTable.length >= minRows) {
-        tables.push(currentTable);
+        if (headerRow && Math.abs(headerRow.items.length - currentTable[0].items.length) <= 1) {
+          tables.push([headerRow, ...currentTable]);
+        } else {
+          tables.push(currentTable);
+        }
+        
       }
       currentTable = [];
+      headerRow = row;
     }
   }
 
