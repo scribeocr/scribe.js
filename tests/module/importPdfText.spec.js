@@ -63,7 +63,7 @@ describe('Check superscripts are detected in PDF imports.', function () {
   before(async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
   });
-
+ 
   // First document
   it('Should correctly import trailing superscripts printed using font size adjustments (1st doc)', async () => {
     assert.strictEqual(scribe.data.ocr.active[0].lines[25].words[8].sup, true);
@@ -121,15 +121,27 @@ describe('Check superscripts are detected in PDF imports.', function () {
   }).timeout(10000);
 
   // Fifth document
-  it('Should correctly import trailing superscripts printed using font size adjustments (4th doc)', async () => {
+  it('Should correctly import trailing superscripts printed using font size adjustments (5th doc)', async () => {
     assert.strictEqual(scribe.data.ocr.active[4].lines[11].words[16].sup, true);
     assert.strictEqual(scribe.data.ocr.active[4].lines[11].words[16].text, '2');
   }).timeout(10000);
 
-  it('Should correctly parse font size for lines with superscripts (4th doc)', async () => {
+  it('Should correctly parse font size for lines with superscripts (5th doc)', async () => {
     assert.strictEqual(scribe.data.ocr.active[4].lines[21].words[0].sup, true);
     assert.strictEqual(scribe.data.ocr.active[4].lines[21].words[0].text, '2');
   }).timeout(10000);
+
+  // Sixth document
+  it('Should correctly import trailing superscripts printed using font size adjustments (6th doc)', async () => {
+    assert.strictEqual(scribe.data.ocr.active[5].lines[76].words[1].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[5].lines[76].words[1].text, 'a');
+  }).timeout(10000);
+
+  it('Should correctly parse font size for lines with superscripts (6th doc)', async () => {
+    assert.strictEqual(scribe.data.ocr.active[5].lines[205].words[0].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[5].lines[205].words[0].text, 'a');
+  }).timeout(10000);
+
 
   after(async () => {
     await scribe.terminate();
