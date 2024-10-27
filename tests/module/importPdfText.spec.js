@@ -63,7 +63,7 @@ describe('Check superscripts are detected in PDF imports.', function () {
   before(async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
   });
- 
+
   // First document
   it('Should correctly import trailing superscripts printed using font size adjustments (1st doc)', async () => {
     assert.strictEqual(scribe.data.ocr.active[0].lines[25].words[8].sup, true);
@@ -142,7 +142,6 @@ describe('Check superscripts are detected in PDF imports.', function () {
     assert.strictEqual(scribe.data.ocr.active[5].lines[205].words[0].text, 'a');
   }).timeout(10000);
 
-
   // This document breaks when used with `mutool convert` so is not combined with the others.
   // Any more tests included in the main stacked document should be inserted above this point.
   it('Should correctly parse font size for lines with superscripts (addtl doc)', async () => {
@@ -163,6 +162,22 @@ describe('Check superscripts are detected in PDF imports.', function () {
 
     assert.strictEqual(scribe.data.ocr.active[0].lines[35].words[4].sup, true);
     assert.strictEqual(scribe.data.ocr.active[0].lines[35].words[4].text, '(1)');
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);
+
+// Note that these font sizes will not match the scribeocr.com interface, as `calcSuppFontInfo` is enabled in the interface but not the tests,
+// and this setting scales the font sizes reported by the PDF parser.
+describe('Check font size is correctly parsed in PDF imports.', function () {
+  this.timeout(10000);
+  // This word was problematic at one point due to the change in font size between the first and second word.
+  it('Should correctly parse font sizes (1st doc)', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+    assert.strictEqual(scribe.data.ocr.active[0].lines[249].words[1].size, 32.5);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[249].words[1].text, 'Agent');
   }).timeout(10000);
 
   after(async () => {

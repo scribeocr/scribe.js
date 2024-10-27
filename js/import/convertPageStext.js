@@ -153,7 +153,7 @@ export async function convertPageStext({ ocrStr, n }) {
             // (2) Runs of small caps that start with lower-case letters, which do not conform to the expectation that runs of small caps start with a capital letter.
             const sizePrevRaw = sizeCurrentRaw;
             sizeCurrentRaw = parseFloat(fontSizeStrI);
-            const secondLetter = wordInit && bboxesWordArr.length === 1;
+            const secondLetter = wordInit && textWordArr.length === 1 && /[A-Z]/.test(textWordArr[0]);
             const baselineNextLetter = parseFloat(letterOrFontArr[j + 1]?.[6]) || parseFloat(wordLetterOrFontArr[i + 1]?.[0]?.[6])
               || parseFloat(wordLetterOrFontArr[i + 1]?.[1]?.[6]) || parseFloat(wordLetterOrFontArr[i + 1]?.[2]?.[6]);
             const fontSizeMin = Math.min(sizeCurrentRaw, sizePrevRaw);
