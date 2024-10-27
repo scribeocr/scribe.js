@@ -162,7 +162,7 @@ export async function convertPageStext({ ocrStr, n }) {
               // We need to be able to detect superscripts using either a start or end font change,
               // as only using one would miss some cases.
               } else if (Number.isFinite(baselineDelta) && Number.isFinite(sizeDelta)
-              && ((baselineDelta < -0.2 && sizeDelta < -0.2) || (baselineDelta > 0.2 && sizeDelta > 0.2))) {
+              && ((baselineDelta < -0.25 && sizeDelta < -0.05) || (baselineDelta > 0.25 && sizeDelta > 0.05))) {
                 // Split word when superscript starts or ends.
                 if (textWordArr.length > 0) {
                   text.push(textWordArr);
