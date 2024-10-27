@@ -65,6 +65,14 @@ export async function convertPageStext({ ocrStr, n }) {
       // If the last element is a closing font tag, remove it.
       if (wordStrArr[wordStrArr.length - 1] && wordStrArr[wordStrArr.length - 1].trim() === '</font>') wordStrArr.pop();
 
+      // Delete any empty elements.
+      // This can happen when multiple spaces are present and is problematic later in the code.
+      for (let i = wordStrArr.length - 1; i >= 0; i--) {
+        if (wordStrArr[i].trim() === '') {
+          wordStrArr.splice(i, 1);
+        }
+      }
+
       if (wordStrArr.length === 0) return;
 
       /** @type {Array<Array<{left: number, top: number, right: number, bottom: number}>>} */
@@ -85,6 +93,7 @@ export async function convertPageStext({ ocrStr, n }) {
       let sizeCurrentRaw = 0;
       /** Font size at the current position in the PDF, with changes for typographical reasons (small caps, superscripts) ignored. */
       let sizeCurrent = 0;
+      let superCurrent = false;
       let smallCapsCurrent;
       let smallCapsCurrentAlt;
       /** @type {Array<string>} */
@@ -123,7 +132,6 @@ export async function convertPageStext({ ocrStr, n }) {
         let smallCapsWordAlt = smallCapsCurrentAlt || false;
         // Title case adjustment does not carry forward between words. A word in title case may be followed by a word in all lower case.
         let smallCapsWordAltTitleCaseAdj = false;
-        let superWord = false;
         let styleWord = 'normal';
 
         const letterOrFontArr = wordLetterOrFontArr[i];
@@ -144,70 +152,68 @@ export async function convertPageStext({ ocrStr, n }) {
             // TODO: This logic currently fails when:
             // (1) Runs of small caps include punctuation, which is printed at the full size (and therefore is counted as a size increase ending small caps).
             // (2) Runs of small caps that start with lower-case letters, which do not conform to the expectation that runs of small caps start with a capital letter.
-            if (fontSizeStrI) {
-              const sizePrevRaw = sizeCurrentRaw;
-              sizeCurrentRaw = parseFloat(fontSizeStrI);
-              const secondLetter = wordInit && bboxesWordArr.length === 1;
-              const baselineNextLetter = parseFloat(letterOrFontArr[j + 1]?.[6]) || parseFloat(wordLetterOrFontArr[i + 1]?.[0]?.[6])
-                || parseFloat(wordLetterOrFontArr[i + 1]?.[1]?.[6]) || parseFloat(wordLetterOrFontArr[i + 1]?.[2]?.[6]);
-              const fontSizeMin = Math.min(sizeCurrentRaw, sizePrevRaw);
-              const baselineDelta = (baselineNextLetter - baselineCurrent) / fontSizeMin;
-              const sizeDelta = (sizeCurrentRaw - sizePrevRaw) / fontSizeMin;
-              if (secondLetter && sizeCurrentRaw < sizePrevRaw && sizePrevRaw > 0 && baselineNextLetter && Math.abs(baselineDelta) < 0.1) {
-                smallCapsCurrentAlt = true;
-                smallCapsWordAlt = true;
-                smallCapsWordAltTitleCaseAdj = true;
-              // Handle case where superscript is starting or ending.
-              // We need to be able to detect superscripts using either a start or end font change,
-              // as only using one would miss some cases.
-              } else if (Number.isFinite(baselineDelta) && Number.isFinite(sizeDelta)
-              && ((baselineDelta < -0.25 && sizeDelta < -0.05) || (baselineDelta > 0.25 && sizeDelta > 0.05))) {
-                // Split word when superscript starts or ends.
-                if (textWordArr.length > 0) {
-                  text.push(textWordArr);
-                  bboxes.push(bboxesWordArr);
-                  styleArr.push(styleWord);
-                  fontFamilyArr.push(fontFamily);
-                  fontSizeArr.push(fontSizeWord);
-                  smallCapsArr.push(smallCapsWord);
-                  smallCapsAltArr.push(smallCapsWordAlt);
-                  smallCapsAltTitleCaseArr.push(smallCapsWordAltTitleCaseAdj);
-                  superArr.push(sizeDelta > 0);
+            const sizePrevRaw = sizeCurrentRaw;
+            sizeCurrentRaw = parseFloat(fontSizeStrI);
+            const secondLetter = wordInit && bboxesWordArr.length === 1;
+            const baselineNextLetter = parseFloat(letterOrFontArr[j + 1]?.[6]) || parseFloat(wordLetterOrFontArr[i + 1]?.[0]?.[6])
+              || parseFloat(wordLetterOrFontArr[i + 1]?.[1]?.[6]) || parseFloat(wordLetterOrFontArr[i + 1]?.[2]?.[6]);
+            const fontSizeMin = Math.min(sizeCurrentRaw, sizePrevRaw);
+            const baselineDelta = (baselineNextLetter - baselineCurrent) / fontSizeMin;
+            const sizeDelta = (sizeCurrentRaw - sizePrevRaw) / fontSizeMin;
+            if (secondLetter && sizeCurrentRaw < sizePrevRaw && sizePrevRaw > 0 && baselineNextLetter && Math.abs(baselineDelta) < 0.1) {
+              smallCapsCurrentAlt = true;
+              smallCapsWordAlt = true;
+              smallCapsWordAltTitleCaseAdj = true;
+            // Handle case where superscript is starting or ending.
+            // We need to be able to detect superscripts using either a start or end font change,
+            // as only using one would miss some cases.
+            } else if (Number.isFinite(baselineDelta) && Number.isFinite(sizeDelta)
+            && ((baselineDelta < -0.25 && sizeDelta < -0.05) || (baselineDelta > 0.25 && sizeDelta > 0.05))) {
+              // Split word when superscript starts or ends.
+              if (textWordArr.length > 0) {
+                text.push(textWordArr);
+                bboxes.push(bboxesWordArr);
+                styleArr.push(styleWord);
+                fontFamilyArr.push(fontFamily);
+                fontSizeArr.push(fontSizeWord);
+                smallCapsArr.push(smallCapsWord);
+                smallCapsAltArr.push(smallCapsWordAlt);
+                smallCapsAltTitleCaseArr.push(smallCapsWordAltTitleCaseAdj);
+                superArr.push(sizeDelta > 0);
 
-                  textWordArr = [];
-                  bboxesWordArr = [];
-                }
+                textWordArr = [];
+                bboxesWordArr = [];
+              }
 
-                // If the first word was determined to be a superscript, reset `baselineFirst` to avoid skewing the slope calculation.
-                if (sizeDelta > 0) {
-                  baselineFirst.length = 0;
-                  familyCurrent = fontNameStrI || familyCurrent;
-                  sizeCurrent = sizeCurrentRaw || sizeCurrent;
-                  fontSizeWord = sizeCurrent;
-                  fontFamily = familyCurrent;
-                  superArr[superArr.length - 1] = true;
-                  fontSizeArr[fontSizeArr.length - 1] = sizeCurrentRaw;
-                }
-
-                superWord = sizeDelta < 0;
-              } else {
-                sizeCurrent = sizeCurrentRaw || sizeCurrent;
+              // If the first word was determined to be a superscript, reset `baselineFirst` to avoid skewing the slope calculation.
+              if (sizeDelta > 0) {
+                baselineFirst.length = 0;
                 familyCurrent = fontNameStrI || familyCurrent;
-                // Update current word only if this is before every letter in the word.
+                sizeCurrent = sizeCurrentRaw || sizeCurrent;
+                fontSizeWord = sizeCurrent;
+                fontFamily = familyCurrent;
+                superArr[superArr.length - 1] = true;
+                fontSizeArr[fontSizeArr.length - 1] = sizeCurrentRaw;
+              }
+
+              superCurrent = sizeDelta < 0;
+            } else {
+              sizeCurrent = sizeCurrentRaw || sizeCurrent;
+              familyCurrent = fontNameStrI || familyCurrent;
+              // Update current word only if this is before every letter in the word.
+              if (textWordArr.length === 0) {
+                fontSizeWord = sizeCurrent;
+                fontFamily = familyCurrent;
+              }
+              // An increase in font size ends any small caps sequence.
+              // A threshold is necessary because stext data has been observed to have small variations without a clear reason.
+              // eslint-disable-next-line no-lonely-if
+              if (Math.abs(sizeDelta) > 0.05) {
+                smallCapsCurrentAlt = false;
                 if (textWordArr.length === 0) {
-                  fontSizeWord = sizeCurrent;
-                  fontFamily = familyCurrent;
-                }
-                // An increase in font size ends any small caps sequence.
-                // A threshold is necessary because stext data has been observed to have small variations without a clear reason.
-                // eslint-disable-next-line no-lonely-if
-                if (Math.abs(sizeDelta) > 0.05) {
-                  smallCapsCurrentAlt = false;
-                  if (textWordArr.length === 0) {
-                    superWord = false;
-                    smallCapsWordAlt = false;
-                    smallCapsWordAltTitleCaseAdj = false;
-                  }
+                  superCurrent = false;
+                  smallCapsWordAlt = false;
+                  smallCapsWordAltTitleCaseAdj = false;
                 }
               }
             }
@@ -244,7 +250,7 @@ export async function convertPageStext({ ocrStr, n }) {
             bottom: Math.round(parseFloat(letterOrFontArr[j][5])),
           };
 
-          if (!superWord) {
+          if (!superCurrent) {
             if (baselineFirst.length === 0) {
               baselineFirst.push(bbox.left, baseline);
             } else {
@@ -271,7 +277,15 @@ export async function convertPageStext({ ocrStr, n }) {
         smallCapsAltArr.push(smallCapsWordAlt);
         smallCapsArr.push(smallCapsWord);
         smallCapsAltTitleCaseArr.push(smallCapsWordAltTitleCaseAdj);
-        superArr.push(superWord);
+
+        // Superscripts are only allowed to be one word long.
+        // Any identiciation of 2+ words as a superscript is assumed a false positive and disabled.
+        if (superCurrent && superArr[superArr.length - 1]) {
+          superArr[superArr.length - 1] = false;
+          superCurrent = false;
+        }
+
+        superArr.push(superCurrent);
       }
 
       // Return if there are no letters in the line.
