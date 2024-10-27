@@ -143,6 +143,28 @@ describe('Check superscripts are detected in PDF imports.', function () {
   }).timeout(10000);
 
 
+  // This document breaks when used with `mutool convert` so is not combined with the others.
+  // Any more tests included in the main stacked document should be inserted above this point.
+  it('Should correctly parse font size for lines with superscripts (addtl doc)', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_example_report1.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+
+    assert.strictEqual(scribe.data.ocr.active[0].lines[96].words[0].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[96].words[0].text, '(1)');
+
+    assert.strictEqual(scribe.data.ocr.active[0].lines[104].words[0].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[104].words[0].text, '(3)');
+  }).timeout(10000);
+
+  it('Should correctly parse font size for lines with superscripts (addtl doc 2)', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_example_report2.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+
+    assert.strictEqual(scribe.data.ocr.active[0].lines[32].words[4].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[32].words[4].text, '(1)');
+
+    assert.strictEqual(scribe.data.ocr.active[0].lines[35].words[4].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[35].words[4].text, '(1)');
+  }).timeout(10000);
+
   after(async () => {
     await scribe.terminate();
   });
