@@ -1,5 +1,7 @@
 import { inputData, opt } from '../containers/app.js';
-import { layoutDataTables, layoutRegions, ocrAll, pageMetricsArr } from '../containers/dataContainer.js';
+import {
+  layoutDataTables, layoutRegions, ocrAll, pageMetricsArr,
+} from '../containers/dataContainer.js';
 import { ImageCache } from '../containers/imageContainer.js';
 import { reorderOcrPage } from '../modifyOCR.js';
 import { saveAs } from '../utils/miscUtils.js';

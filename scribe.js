@@ -33,7 +33,9 @@ import {
 import { calcWordMetrics } from './js/utils/fontUtils.js';
 import { getImageBitmap, imageStrToBlob } from './js/utils/imageUtils.js';
 import { countSubstringOccurrences, getRandomAlphanum, replaceSmartQuotes } from './js/utils/miscUtils.js';
-import { calcConf, checkOcrWordsAdjacent, mergeOcrWords, splitOcrWord } from './js/utils/ocrUtils.js';
+import {
+  calcConf, checkOcrWordsAdjacent, mergeOcrWords, splitOcrWord,
+} from './js/utils/ocrUtils.js';
 import { assignParagraphs } from './js/utils/reflowPars.js';
 import { writeXlsx } from './js/export/writeTabular.js';
 import { calcColumnBounds } from './js/utils/detectTables.js';

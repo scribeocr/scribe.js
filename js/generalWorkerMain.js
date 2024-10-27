@@ -15,7 +15,6 @@ export async function initGeneralWorker() {
   }
 
   return new Promise((resolve, reject) => {
-
     const errorHandler = (err) => {
       console.error(err);
     };
@@ -34,7 +33,6 @@ export async function initGeneralWorker() {
     const ready = new Promise((innerResolve, innerReject) => {
       workerPromises['0'] = { resolve: innerResolve, reject: innerReject, func: 'ready' };
     });
-
 
     const messageHandler = async (data) => {
       if (workerPromises[data.id]) {
