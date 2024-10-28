@@ -86,6 +86,9 @@ export const calcSuppFontInfo = async (ocrArr) => {
         if (word.font) {
           if (skipFonts.has(word.font)) {
             continue;
+          // Printing words off screen is a common method of hiding text in PDFs.
+          } else if (word.bbox.left < 0 || word.bbox.top < 0 || word.bbox.right > page.dims.width || word.bbox.bottom > page.dims.height) {
+            continue;
           } else if (!calcFonts.has(word.font)) {
             const sansSerifUnknown = determineSansSerif(word.font) === 'Default';
             if (sansSerifUnknown || !word.visualCoords) {
