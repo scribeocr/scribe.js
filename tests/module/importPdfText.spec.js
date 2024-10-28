@@ -175,15 +175,15 @@ describe('Check font size is correctly parsed in PDF imports.', function () {
   it('Should correctly parse font sizes (1st doc)', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
     // This word was problematic at one point due to the change in font size between the first and second word.
-    assert.strictEqual(scribe.data.ocr.active[0].lines[249].words[1].size, 32.5);
-    assert.strictEqual(scribe.data.ocr.active[0].lines[249].words[1].text, 'Agent');
+    assert.strictEqual(scribe.data.ocr.active[0].lines[253].words[1].size, 32.5);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[253].words[1].text, 'Agent');
   }).timeout(10000);
 
   it('Should correctly parse font sizes and scale using calcSuppFontInfo option (1st doc)', async () => {
     scribe.opt.calcSuppFontInfo = true;
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
-    assert.strictEqual(scribe.data.ocr.active[0].lines[249].words[1].size, 39);
-    assert.strictEqual(scribe.data.ocr.active[0].lines[249].words[1].text, 'Agent');
+    assert.strictEqual(scribe.data.ocr.active[0].lines[253].words[1].size, 39);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[253].words[1].text, 'Agent');
   }).timeout(10000);
 
   scribe.opt.calcSuppFontInfo = false;
@@ -206,6 +206,22 @@ describe('Check that text-native PDFs with broken encoding dictionaries are dete
   }).timeout(10000);
 
   scribe.opt.calcSuppFontInfo = false;
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);
+
+describe('Check that PDF imports split lines correctly.', function () {
+  this.timeout(10000);
+  // Note: the version which uses `calcSuppFontInfo` corresponds to the scribeocr.com interface, which enables this option.
+  it('Should correctly parse PDF lines (1st doc)', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+
+    // A previous version of the build 5 words across 3 distinct lines (including this one) are combined into a single line.
+    assert.strictEqual(scribe.data.ocr.active[0].lines[3].words.length, 1);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[3].words[0].text, 'Apprehensions');
+  }).timeout(10000);
 
   after(async () => {
     await scribe.terminate();
