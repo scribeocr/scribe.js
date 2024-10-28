@@ -70,6 +70,7 @@ const calcSuppFontInfoForWords = async (words) => {
    * and we need to determine how large to render the text.
    */
 export const calcSuppFontInfo = async (ocrArr) => {
+  if (!ocrArr) return;
   await gs.initTesseract({ anyOk: true, langs: ['eng'] });
   // console.time('calcSuppFontInfo');
   const calcFonts = new Set();
