@@ -1,7 +1,9 @@
-import { calcBoxOverlap } from "../modifyOCR.js";
-import { LayoutDataColumn, LayoutDataTable } from "../objects/layoutObjects.js";
-import ocr from "../objects/ocrObjects.js";
-import { calcBboxUnion, mean50 } from "./miscUtils.js";
+import { LayoutDataColumn, LayoutDataTable } from '../objects/layoutObjects.js';
+import ocr from '../objects/ocrObjects.js';
+import {
+  calcBboxUnion, calcBoxOverlap, calcHorizontalOverlap, mean50,
+} from './miscUtils.js';
+import { splitLineAgressively } from './ocrUtils.js';
 
 /**
  *
@@ -42,7 +44,6 @@ export function calcColumnBounds(boundingBoxes) {
     }
   });
 
-
   // Expand column bounds so there is no empty space between columns.
   for (let i = 0; i < columnBounds.length - 1; i++) {
     const boundRight = (columnBounds[i].right + columnBounds[i + 1].left) / 2;
@@ -59,22 +60,21 @@ export function calcColumnBounds(boundingBoxes) {
  * @param {OcrPage} ocrPage - OcrPage object containing OcrLine objects.
  */
 export function detectTablesInPage(ocrPage) {
-
   const lines = ocr.clonePage(ocrPage).lines;
 
   // Sort lines by the top position of their bounding boxes
   lines.sort((a, b) => a.bbox.top - b.bbox.top);
 
-  /**@type {Array<{avgTop: number, items: Array<OcrLine>}>} */
+  /** @type {Array<{avgTop: number, items: Array<OcrLine>}>} */
   const rows = [];
   // TODO: Make this dynamic so it adjusts based on font size.
   const rowThreshold = 10; // Threshold for vertical alignment
 
   // Group lines into rows based on vertical proximity
-  lines.forEach(item => {
+  lines.forEach((item) => {
     let addedToRow = false;
 
-    for (let row of rows) {
+    for (const row of rows) {
       // Check if the line is vertically aligned with the row
       if (Math.abs(item.bbox.top - row.avgTop) <= rowThreshold) {
         row.items.push(item);
@@ -92,36 +92,79 @@ export function detectTablesInPage(ocrPage) {
   });
 
   // Sort the lines within each row by their left position
-  rows.forEach(row => {
+  rows.forEach((row) => {
     row.items.sort((a, b) => a.bbox.left - b.bbox.left);
   });
 
   /**
-   * 
-   * @param {{avgTop: number, items: Array<OcrLine>}} row 
+   *
+   * @param {{avgTop: number, items: Array<OcrLine>}} row
    */
-  const isTableRow = (row) => {
-    if (row.items.length < 4) return false;
-    let fewWordsN = 0;
-    let majorityNumbersN = 0;
+  const containsNumbers = (row) => {
+    let wordsNumN = 0;
     row.items.forEach((line) => {
-      const totalN = line.words.map((word) => word.text.length).reduce((a, b) => a + b, 0);
-      const digitN = line.words.map((word) => word.text.split('').filter((char) => /[0-9\W]/.test(char)).length).reduce((a, b) => a + b, 0);
-
-      if (line.words.length <= 2) fewWordsN++;
-      // if (digitN / totalN > 0.5) majorityNumbersN++;
-      if (digitN > 0) majorityNumbersN++;
+      line.words.forEach((word) => {
+        if (/[0-9]/.test(word.text)) wordsNumN++;
+      });
     });
 
-    if (fewWordsN < row.items.length  * 0.75) return false;
-    if (majorityNumbersN < row.items.length * 0.75) return false;
+    if (wordsNumN < 4) return false;
     return true;
-  }
+  };
 
   /**
-   * 
+   *
+   * @param {{avgTop: number, items: Array<OcrLine>}} row
+   */
+  const splitRowLinesAgressively = (row) => {
+    const row2 = { avgTop: row.avgTop, items: /** @type {Array<OcrLine>} */ ([]) };
+    row.items.forEach((line) => {
+      row2.items.push(...splitLineAgressively(line));
+    });
+    return row2;
+  };
+
+  /**
+   *
+   * @param {Array<OcrLine>} linesA
+   * @param {Array<OcrLine>} linesB
+   */
+  const hasWordOverlap = (linesA, linesB) => {
+    for (let i = 0; i < linesA.length; i++) {
+      const lineI = linesA[i];
+      const lineJOverlapArr = [];
+      for (let j = 0; j < linesB.length; j++) {
+        const lineJ = linesB[j];
+        if (lineI.bbox.right < lineJ.bbox.left) break;
+        if (calcHorizontalOverlap(lineI.bbox, lineJ.bbox) > 0) {
+          lineJOverlapArr.push(lineJ);
+        }
+      }
+      if (lineJOverlapArr.length > 1) {
+        const wordsI = lineI.words;
+        const wordsJ = lineJOverlapArr.map((line) => line.words).flat();
+
+        for (const wordI of wordsI) {
+          let overlapCount = 0;
+
+          for (const wordJ of wordsJ) {
+            if (calcHorizontalOverlap(wordI.bbox, wordJ.bbox) > 0) {
+              overlapCount++;
+              if (overlapCount >= 2) {
+                return true;
+              }
+            }
+          }
+        }
+      }
+    }
+    return false;
+  };
+
+  /**
+   *
    * @param {Array<{avgTop: number, items: Array<OcrLine>}>} tableRows
-   * @param {{avgTop: number, items: Array<OcrLine>}} row 
+   * @param {{avgTop: number, items: Array<OcrLine>}} row
    */
   const isCompat = (tableRows, row) => {
     if (!tableRows || tableRows.length === 0) return false;
@@ -129,87 +172,101 @@ export function detectTablesInPage(ocrPage) {
     const expectedColumns = mean50(tableRows.map((x) => x.items.length));
 
     // const lastRow = tableRows[tableRows.length - 1];
+
+    const existingLines = tableRows.map((x) => x.items).flat();
+
     if (Math.abs(expectedColumns - row.items.length) <= 1) {
       return true;
     }
-    return false;
-  }
+
+    if (globalThis.testControl) return false;
+
+    if (hasWordOverlap(existingLines, row.items) || hasWordOverlap(row.items, existingLines)) {
+      return false;
+    }
+
+    return true;
+  };
 
   const minRows = 4; // Minimum number of rows to consider a table
 
-  /**@type {Array<Array<{avgTop: number, items: Array<OcrLine>}>>} */
+  /** @type {Array<Array<{avgTop: number, items: Array<OcrLine>}>>} */
   const tables = [];
-  /**@type {Array<{avgTop: number, items: Array<OcrLine>}>} */
+  /** @type {Array<{avgTop: number, items: Array<OcrLine>}>} */
   let currentTable = [];
-  /**@type {Array<{avgTop: number, items: Array<OcrLine>}>} */
+  /** @type {Array<{avgTop: number, items: Array<OcrLine>}>} */
   let currentTableCompat = [];
-  /**@type {?{avgTop: number, items: Array<OcrLine>}} */
-  let headerRow = null;
+  let currentTableStartIndex = 0;
+
+  const rowsSplit = rows.map((row) => splitRowLinesAgressively(row));
 
   // Detect tables by finding consecutive rows with similar numbers of items
-  for (let i = 0; i < rows.length; i++) {
-    const row = rows[i];
+  for (let i = 0; i < rowsSplit.length; i++) {
+    const rowSplit = rowsSplit[i];
+    // const rowSplit = rows[i];
+    // let rowSplit = rowsSplit[i];
+    // let rowSplit;
 
-    if (isTableRow(row)) {
-
+    if (containsNumbers(rowsSplit[i])) {
+      // rowSplit = splitLinesAgressively(row);
       if (currentTable.length > 0) {
-
-        // const prevRow = currentTable[currentTable.length - 1];
-        if (isCompat(currentTableCompat, row)) {
+        if (isCompat(currentTableCompat, rowSplit)) {
           // Continue the current table
-          currentTable.push(row);
-          currentTableCompat.push(row);
-        } else {
+          currentTable.push(rowSplit);
+          currentTableCompat.push(rowSplit);
+        } else if (currentTable.length >= minRows) {
           // TODO: Handle case where the the header row is a table row but is not compatible
           // with the rows that come afterwards, which puts us in this block.
           // End the current table and start a new one
-          if (currentTable.length >= minRows) {
-            if (headerRow && Math.abs(headerRow.items.length - currentTable[0].items.length) <= 1) {
-              tables.push([headerRow, ...currentTable]);
-            } else {
-              tables.push(currentTable);
+          const headerRows = [];
+          if (rowsSplit[currentTableStartIndex - 1] && (tables.length === 0 || !tables[tables.length - 1].includes(rowsSplit[currentTableStartIndex - 1]))
+            && isCompat(currentTableCompat, rowsSplit[currentTableStartIndex - 1])) {
+            headerRows.push(rowsSplit[currentTableStartIndex - 1]);
+            if (rowsSplit[currentTableStartIndex - 2] && (tables.length === 0 || !tables[tables.length - 1].includes(rowsSplit[currentTableStartIndex - 2]))
+              && isCompat(currentTableCompat, rowsSplit[currentTableStartIndex - 2])) {
+              headerRows.push(rowsSplit[currentTableStartIndex - 2]);
             }
-            
-          } else if (currentTable.length === 1) {
-            headerRow = currentTable[0];
-            currentTable = [row];
-            
-  
-          } else {
-            currentTable = [row];
-            headerRow = null;
-  
           }
+          tables.push([...headerRows, ...currentTable]);
+
+          currentTable = [rowSplit];
+          currentTableCompat = [rowSplit];
+          currentTableStartIndex = i;
+        } else {
+          currentTable = [rowSplit];
+          currentTableCompat = [rowSplit];
+          currentTableStartIndex = i;
         }
       } else {
-        currentTable.push(row);
-        currentTableCompat.push(row);
+        currentTable.push(rowSplit);
+        currentTableCompat.push(rowSplit);
+        currentTableStartIndex = i;
       }
-
-
-    } else {
-
+    } else if (currentTable.length > 0) {
       // If the current row does not pass the checks, but the next two rows do, it is still included.
-      const nextRow = rows[i + 1];
-      const nextRow2 = rows[i + 2];
-      if (nextRow && nextRow2 && isTableRow(nextRow) && isTableRow(nextRow2) 
-        && isCompat(currentTableCompat, nextRow) && isCompat(currentTableCompat, nextRow2)) {
-        currentTable.push(row);
+      const nextRowSplit = rowsSplit[i + 1];
+      const nextRowSplit2 = rowsSplit[i + 2];
+      if (nextRowSplit && nextRowSplit2 && containsNumbers(nextRowSplit) && containsNumbers(nextRowSplit2)
+        && isCompat(currentTableCompat, nextRowSplit) && isCompat(currentTableCompat, nextRowSplit2)) {
+        currentTable.push(rowSplit);
         continue;
       }
 
-
-      // Not a table row
       if (currentTable.length >= minRows) {
-        if (headerRow && Math.abs(headerRow.items.length - currentTable[0].items.length) <= 1) {
-          tables.push([headerRow, ...currentTable]);
-        } else {
-          tables.push(currentTable);
+        const headerRows = [];
+        if (rowsSplit[currentTableStartIndex - 1] && (tables.length === 0 || !tables[tables.length - 1].includes(rowsSplit[currentTableStartIndex - 1]))
+          && isCompat(currentTableCompat, rowsSplit[currentTableStartIndex - 1])) {
+          headerRows.push(rowsSplit[currentTableStartIndex - 1]);
+          if (rowsSplit[currentTableStartIndex - 2] && (tables.length === 0 || !tables[tables.length - 1].includes(rowsSplit[currentTableStartIndex - 2]))
+            && isCompat(currentTableCompat, rowsSplit[currentTableStartIndex - 2])) {
+            headerRows.push(rowsSplit[currentTableStartIndex - 2]);
+          }
         }
-        
+        tables.push([...headerRows, ...currentTable]);
       }
+
       currentTable = [];
-      headerRow = row;
+      currentTableCompat = [];
     }
   }
 
@@ -223,11 +280,10 @@ export function detectTablesInPage(ocrPage) {
   return tableLineBboxes;
 }
 
-
 /**
- * 
- * @param {OcrPage} page 
- * @param {bbox} bbox 
+ *
+ * @param {OcrPage} page
+ * @param {bbox} bbox
  */
 export const makeTableFromBbox = (page, bbox) => {
   const lines = page.lines.filter((line) => calcBoxOverlap(line.bbox, bbox) > 0.5);
@@ -263,5 +319,4 @@ export const makeTableFromBbox = (page, bbox) => {
   });
 
   return dataTable;
-}
-
+};

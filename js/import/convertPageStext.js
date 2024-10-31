@@ -2,6 +2,7 @@ import ocr from '../objects/ocrObjects.js';
 
 import {
   calcBboxUnion,
+  calcBoxOverlap,
   calcLang,
   mean50,
   quantile,
@@ -11,6 +12,7 @@ import {
 
 import { LayoutDataTablePage } from '../objects/layoutObjects.js';
 import { detectTablesInPage, makeTableFromBbox } from '../utils/detectTables.js';
+import { splitLineAgressively } from '../utils/ocrUtils.js';
 
 /**
  * @param {Object} params
@@ -411,6 +413,10 @@ export async function convertPageStext({ ocrStr, n }) {
       // If there are no letters in the line, drop the entire line element
       if (lettersKept === 0) return;
 
+      // Recalculate the bounding box.
+      // The bounding boxes reported by mupdf are often significantly larger than the actual text.
+      ocr.updateLineBbox(lineObj);
+
       pageObj.lines.push(lineObj);
       parLineArr.push(lineObj);
       // eslint-disable-next-line consistent-return
@@ -450,16 +456,32 @@ export async function convertPageStext({ ocrStr, n }) {
 
   pageObj.angle = angleOut;
 
-  const autoDetectTables = true;
+  const autoDetectTables = false;
   const dataTablePage = new LayoutDataTablePage(n);
   if (autoDetectTables) {
     const tableBboxes = detectTablesInPage(pageObj);
+
+    for (let i = 0; i < pageObj.lines.length; i++) {
+      const line = pageObj.lines[i];
+      let inTable = false;
+      for (let j = 0; j < tableBboxes.length; j++) {
+        if (calcBoxOverlap(line.bbox, tableBboxes[j]) > 0.25) {
+          inTable = true;
+          break;
+        }
+      }
+      if (inTable) {
+        const newLines = splitLineAgressively(line);
+        pageObj.lines.splice(i, 1, ...newLines);
+      }
+    }
+
     tableBboxes.forEach((bbox) => {
       const dataTable = makeTableFromBbox(pageObj, bbox);
       dataTable.page = dataTablePage;
       dataTablePage.tables.push(dataTable);
     });
-  } 
+  }
 
   return { pageObj, dataTables: dataTablePage, langSet };
 }
