@@ -165,6 +165,8 @@ mupdf.pageText = function (doc, {
 
   const content = Module.UTF8ToString(dataPtr);
 
+  Module._free(dataPtr);
+
   return {
     letterCountTotal,
     letterCountVis,
@@ -464,7 +466,7 @@ const handleMessage = (data) => {
   } catch (error) {
     parentPort.postMessage(['ERROR', id, { name: error.name, message: error.message }]);
   }
-}
+};
 
 if (typeof process === 'undefined') {
   onmessage = (event) => handleMessage(event.data);

@@ -143,6 +143,8 @@ export async function exportData(format = 'txt', minValue = 0, maxValue = -1) {
           doc1: pdfOverlay, minpage: minValue, maxpage: maxValue, pagewidth: dimsLimit.width, pageheight: dimsLimit.height, humanReadable: opt.humanReadablePDF,
         });
       }
+
+      w.freeDocument(pdfOverlay);
     } else {
       const pdfStr = await writePdf(ocrDownload, minValue, maxValue, opt.displayMode, false, true, dimsLimit, opt.confThreshHigh, opt.confThreshMed,
         opt.overlayOpacity / 100);
@@ -169,6 +171,8 @@ export async function exportData(format = 'txt', minValue = 0, maxValue = -1) {
       content = await w.write({
         doc1: pdf, minpage: minValue, maxpage: maxValue, pagewidth: dimsLimit.width, pageheight: dimsLimit.height, humanReadable: opt.humanReadablePDF,
       });
+
+      w.freeDocument(pdf);
     }
   } else if (format === 'hocr') {
     content = writeHocr(ocrAll.active, minValue, maxValue);

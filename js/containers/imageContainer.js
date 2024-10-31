@@ -196,6 +196,9 @@ export class ImageCache {
 
     const workersPromiseArr = range(0, scheduler.workers.length - 1).map(async (x) => {
       const w = scheduler.workers[x];
+
+      if (w.pdfDoc) await w.freeDocument(w.pdfDoc);
+
       // The ArrayBuffer is transferred to the worker, so a new one must be created for each worker.
       // const fileData = await file.arrayBuffer();
       const fileDataCopy = fileData.slice(0);

@@ -90,7 +90,7 @@ export async function initMuPDFWorker() {
     return function (...args) {
       return new Promise((resolve, reject) => {
         // Add the PDF as the first argument for most functions
-        if (!['openDocument', 'cleanFile'].includes(func)) {
+        if (!['openDocument', 'cleanFile', 'freeDocument'].includes(func)) {
           // Remove job number (appended by Tesseract scheduler function)
           // args = args.slice(0,-1)
 
