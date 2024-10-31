@@ -375,7 +375,7 @@ export async function convertPageHocr({
   pass2(pageObj, rotateAngle);
   const langSet = pass3(pageObj);
 
-  const autoDetectTables = true;
+  const autoDetectTables = false;
   const dataTablePage = new LayoutDataTablePage(n);
   if (autoDetectTables) {
     const tableBboxes = detectTablesInPage(pageObj);
@@ -384,7 +384,7 @@ export async function convertPageHocr({
       dataTable.page = dataTablePage;
       dataTablePage.tables.push(dataTable);
     });
-  } 
+  }
 
   return {
     pageObj, dataTables: dataTablePage, warn, langSet,

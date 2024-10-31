@@ -20,7 +20,10 @@ import { extractSingleTableContent } from './js/extractTables.js';
 import { enableFontOpt, loadBuiltInFontsRaw } from './js/fontContainerMain.js';
 import { gs } from './js/generalWorkerMain.js';
 import { importFiles, importFilesSupp } from './js/import/import.js';
-import { calcBoxOverlap, combineOCRPage } from './js/modifyOCR.js';
+import { combineOCRPage } from './js/modifyOCR.js';
+import {
+  calcBoxOverlap, countSubstringOccurrences, getRandomAlphanum, replaceSmartQuotes,
+} from './js/utils/miscUtils.js';
 import layout, { calcTableBbox } from './js/objects/layoutObjects.js';
 import ocr from './js/objects/ocrObjects.js';
 import {
@@ -32,7 +35,6 @@ import {
 } from './js/recognizeConvert.js';
 import { calcWordMetrics } from './js/utils/fontUtils.js';
 import { getImageBitmap, imageStrToBlob } from './js/utils/imageUtils.js';
-import { countSubstringOccurrences, getRandomAlphanum, replaceSmartQuotes } from './js/utils/miscUtils.js';
 import {
   calcConf, checkOcrWordsAdjacent, mergeOcrWords, splitOcrWord,
 } from './js/utils/ocrUtils.js';

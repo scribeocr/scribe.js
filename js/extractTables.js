@@ -1,5 +1,5 @@
-import { calcBoxOverlap } from './modifyOCR.js';
 import ocr from './objects/ocrObjects.js';
+import { calcBoxOverlap } from './utils/miscUtils.js';
 
 /**
  *
