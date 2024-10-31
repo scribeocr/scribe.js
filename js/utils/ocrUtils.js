@@ -89,3 +89,36 @@ export const checkOcrWordsAdjacent = (words) => {
   const lastIndex = lineWords.findIndex((x) => x.id === sortedWords[sortedWords.length - 1].id);
   return lastIndex - firstIndex === sortedWords.length - 1;
 };
+
+/**
+ *
+ * @param {OcrLine} line
+ */
+export const splitLineAgressively = (line) => {
+  /** @type {Array<OcrLine>} */
+  const linesOut = [];
+  const lineHeight = line.bbox.bottom - line.bbox.top;
+  let wordPrev = line.words[0];
+  let lineCurrent = ocr.cloneLine(line);
+  lineCurrent.words = [line.words[0]];
+  for (let i = 1; i < line.words.length; i++) {
+    const word = ocr.cloneWord(line.words[i]);
+    if (word.bbox.left - wordPrev.bbox.right > lineHeight) {
+      linesOut.push(lineCurrent);
+      lineCurrent = ocr.cloneLine(line);
+      word.line = lineCurrent;
+      lineCurrent.words = [word];
+    } else {
+      word.line = lineCurrent;
+      lineCurrent.words.push(word);
+    }
+    wordPrev = word;
+  }
+  linesOut.push(lineCurrent);
+
+  linesOut.forEach((x) => {
+    ocr.updateLineBbox(x);
+  });
+
+  return linesOut;
+};
