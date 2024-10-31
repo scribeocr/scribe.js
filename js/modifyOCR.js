@@ -1,27 +1,5 @@
 import ocr from './objects/ocrObjects.js';
-import { getRandomAlphanum } from './utils/miscUtils.js';
-
-/**
- * Returns the proportion of boxA's area contained in boxB
- * @param {bbox} boxA
- * @param {bbox} boxB
- */
-export function calcBoxOverlap(boxA, boxB) {
-  const left = Math.max(boxA.left, boxB.left);
-  const top = Math.max(boxA.top, boxB.top);
-  const right = Math.min(boxA.right, boxB.right);
-  const bottom = Math.min(boxA.bottom, boxB.bottom);
-
-  const width = right - left;
-  const height = bottom - top;
-
-  if (width < 0 || height < 0) return 0;
-
-  const areaA = (boxA.bottom - boxA.top) * (boxA.right - boxA.left);
-  const area = width * height;
-
-  return area / areaA;
-}
+import { calcBoxOverlap, getRandomAlphanum } from './utils/miscUtils.js';
 
 /**
  * Adds lines from a new page to an existing page.

@@ -7,6 +7,7 @@ import {
 
 import { LayoutDataTablePage } from '../objects/layoutObjects.js';
 import { pass2, pass3 } from './convertPageShared.js';
+import { detectTablesInPage, makeTableFromBbox } from '../utils/detectTables.js';
 
 // If enabled, raw strings are saved in OCR objects for debugging purposes.
 const debugMode = true;
@@ -374,7 +375,18 @@ export async function convertPageHocr({
   pass2(pageObj, rotateAngle);
   const langSet = pass3(pageObj);
 
+  const autoDetectTables = false;
+  const dataTablePage = new LayoutDataTablePage(n);
+  if (autoDetectTables) {
+    const tableBboxes = detectTablesInPage(pageObj);
+    tableBboxes.forEach((bbox) => {
+      const dataTable = makeTableFromBbox(pageObj, bbox);
+      dataTable.page = dataTablePage;
+      dataTablePage.tables.push(dataTable);
+    });
+  }
+
   return {
-    pageObj, dataTables: new LayoutDataTablePage(n), warn, langSet,
+    pageObj, dataTables: dataTablePage, warn, langSet,
   };
 }

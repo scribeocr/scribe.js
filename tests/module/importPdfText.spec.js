@@ -100,8 +100,8 @@ describe('Check superscripts are detected in PDF imports.', function () {
 
   // Third document
   it('Should correctly import leading superscripts printed using font size adjustments (3rd doc)', async () => {
-    assert.strictEqual(scribe.data.ocr.active[2].lines[24].words[0].sup, true);
-    assert.strictEqual(scribe.data.ocr.active[2].lines[24].words[0].text, '2');
+    assert.strictEqual(scribe.data.ocr.active[2].lines[22].words[4].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[2].lines[22].words[4].text, '2');
   }).timeout(10000);
 
   it('Should correctly parse font size for lines with superscripts (3rd doc)', async () => {
@@ -150,8 +150,8 @@ describe('Check superscripts are detected in PDF imports.', function () {
     assert.strictEqual(scribe.data.ocr.active[0].lines[96].words[0].sup, true);
     assert.strictEqual(scribe.data.ocr.active[0].lines[96].words[0].text, '(1)');
 
-    assert.strictEqual(scribe.data.ocr.active[0].lines[104].words[0].sup, true);
-    assert.strictEqual(scribe.data.ocr.active[0].lines[104].words[0].text, '(3)');
+    assert.strictEqual(scribe.data.ocr.active[0].lines[103].words[0].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[103].words[0].text, '(3)');
   }).timeout(10000);
 
   it('Should correctly parse font size for lines with superscripts (addtl doc 2)', async () => {
@@ -221,6 +221,20 @@ describe('Check that PDF imports split lines correctly.', function () {
     // A previous version of the build 5 words across 3 distinct lines (including this one) are combined into a single line.
     assert.strictEqual(scribe.data.ocr.active[0].lines[3].words.length, 1);
     assert.strictEqual(scribe.data.ocr.active[0].lines[3].words[0].text, 'Apprehensions');
+  }).timeout(10000);
+
+  it('Should correctly parse PDF lines (2nd doc)', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+
+    // A previous version of the build split this line into 9 separate lines.
+    assert.strictEqual(scribe.data.ocr.active[2].lines[58].words.map((x) => x.text).join(' '), 'ment’s (DOE’s) issuance of Accounting and Auditing Enforcement Releases');
+  }).timeout(10000);
+
+  it('Should correctly parse PDF lines (3rd doc)', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_example_report1.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+
+    // A previous version of the build split this line into 2 separate lines, by putting the leading superscript on a separate line.
+    assert.strictEqual(scribe.data.ocr.active[0].lines[99].words.map((x) => x.text).join(' '), '(2) Beginning with the year ended December 31, 2023, the Company changed the presentation of interest income on forgivable loans on our Consolidated Statement of');
   }).timeout(10000);
 
   after(async () => {
