@@ -263,6 +263,13 @@ export class FontCont {
 
   static sansDefaultName = 'NimbusSans';
 
+  /**
+   * If `false`, 'Courier' will not be cleaned to Nimbus Mono.
+   * This setting is useful because Tesseract sometimes misidentifies fonts as Courier, and when not the document default, Nimbus Mono is almost always incorrect.
+   * Even with this setting `false`, Nimbus Mono will still be used when the font is exactly 'NimbusMono' and Nimbus Mono can still be the document default font.
+   */
+  static enableCleanToNimbusMono = false;
+
   /** @type {?('latin'|'all')} */
   static glyphSet = null;
 
@@ -337,6 +344,8 @@ export class FontCont {
         family = 'Carlito';
       } else if (/Calibri/i.test(family)) {
         family = 'Carlito';
+      } else if (/Courier/i.test(family) && FontCont.enableCleanToNimbusMono) {
+        family = 'NimbusMono';
       }
     }
 

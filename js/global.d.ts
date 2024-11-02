@@ -34,6 +34,7 @@ declare global {
         Palatino: FontContainerFamilyBuiltIn;
         NimbusRomNo9L: FontContainerFamilyBuiltIn;
         NimbusSans: FontContainerFamilyBuiltIn;
+        NimbusMono: FontContainerFamilyBuiltIn;
         [key: string]: FontContainerFamily;
     };
 

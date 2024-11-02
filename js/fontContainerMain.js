@@ -39,6 +39,9 @@ export async function loadBuiltInFontsRaw(glyphSet = 'latin') {
   let /** @type {Promise<ArrayBuffer>} */nimbusSansNormal;
   let /** @type {Promise<ArrayBuffer>} */nimbusSansItalic;
   let /** @type {Promise<ArrayBuffer>} */nimbusSansBold;
+  let /** @type {Promise<ArrayBuffer>} */nimbusMonoNormal;
+  let /** @type {Promise<ArrayBuffer>} */nimbusMonoItalic;
+  let /** @type {Promise<ArrayBuffer>} */nimbusMonoBold;
   if (typeof process === 'undefined') {
     if (glyphSet === 'latin') {
       carlitoNormal = fetch(new URL('../fonts/latin/Carlito-Regular.woff', import.meta.url)).then((res) => res.arrayBuffer());
@@ -59,6 +62,9 @@ export async function loadBuiltInFontsRaw(glyphSet = 'latin') {
       nimbusSansNormal = fetch(new URL('../fonts/latin/NimbusSans-Regular.woff', import.meta.url)).then((res) => res.arrayBuffer());
       nimbusSansItalic = fetch(new URL('../fonts/latin/NimbusSans-Italic.woff', import.meta.url)).then((res) => res.arrayBuffer());
       nimbusSansBold = fetch(new URL('../fonts/latin/NimbusSans-Bold.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      nimbusMonoNormal = fetch(new URL('../fonts/latin/NimbusMonoPS-Regular.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      nimbusMonoItalic = fetch(new URL('../fonts/latin/NimbusMonoPS-Italic.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      nimbusMonoBold = fetch(new URL('../fonts/latin/NimbusMonoPS-Bold.woff', import.meta.url)).then((res) => res.arrayBuffer());
     } else {
       carlitoNormal = fetch(new URL('../fonts/all/Carlito-Regular.woff', import.meta.url)).then((res) => res.arrayBuffer());
       carlitoItalic = fetch(new URL('../fonts/all/Carlito-Italic.woff', import.meta.url)).then((res) => res.arrayBuffer());
@@ -78,6 +84,9 @@ export async function loadBuiltInFontsRaw(glyphSet = 'latin') {
       nimbusSansNormal = fetch(new URL('../fonts/all/NimbusSans-Regular.woff', import.meta.url)).then((res) => res.arrayBuffer());
       nimbusSansItalic = fetch(new URL('../fonts/all/NimbusSans-Italic.woff', import.meta.url)).then((res) => res.arrayBuffer());
       nimbusSansBold = fetch(new URL('../fonts/all/NimbusSans-Bold.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      nimbusMonoNormal = fetch(new URL('../fonts/all/NimbusMonoPS-Regular.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      nimbusMonoItalic = fetch(new URL('../fonts/all/NimbusMonoPS-Italic.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      nimbusMonoBold = fetch(new URL('../fonts/all/NimbusMonoPS-Bold.woff', import.meta.url)).then((res) => res.arrayBuffer());
     }
   } else {
     const { readFile } = await import('fs/promises');
@@ -99,6 +108,9 @@ export async function loadBuiltInFontsRaw(glyphSet = 'latin') {
     nimbusSansNormal = readFile(new URL('../fonts/all_ttf/NimbusSans-Regular.ttf', import.meta.url)).then((res) => res.buffer);
     nimbusSansItalic = readFile(new URL('../fonts/all_ttf/NimbusSans-Italic.ttf', import.meta.url)).then((res) => res.buffer);
     nimbusSansBold = readFile(new URL('../fonts/all_ttf/NimbusSans-Bold.ttf', import.meta.url)).then((res) => res.buffer);
+    nimbusMonoNormal = readFile(new URL('../fonts/all_ttf/NimbusMonoPS-Regular.ttf', import.meta.url)).then((res) => res.buffer);
+    nimbusMonoItalic = readFile(new URL('../fonts/all_ttf/NimbusMonoPS-Italic.ttf', import.meta.url)).then((res) => res.buffer);
+    nimbusMonoBold = readFile(new URL('../fonts/all_ttf/NimbusMonoPS-Bold.ttf', import.meta.url)).then((res) => res.buffer);
   }
 
   const srcObj = {
@@ -108,6 +120,7 @@ export async function loadBuiltInFontsRaw(glyphSet = 'latin') {
     Palatino: { normal: await palatinoNormal, italic: await palatinoItalic, bold: await palatinoBold },
     NimbusRomNo9L: { normal: await nimbusRomNo9LNormal, italic: await nimbusRomNo9LItalic, bold: await nimbusRomNo9LBold },
     NimbusSans: { normal: await nimbusSansNormal, italic: await nimbusSansItalic, bold: await nimbusSansBold },
+    NimbusMono: { normal: await nimbusMonoNormal, italic: await nimbusMonoItalic, bold: await nimbusMonoBold },
   };
 
   FontCont.raw = await /** @type {FontContainer} */(/** @type {any} */(loadFontsFromSource(srcObj)));
@@ -256,7 +269,7 @@ export async function setUploadFontsWorker(scheduler) {
   /** @type {Object<string, fontSrcBuiltIn|fontSrcUpload>} */
   const fontsUpload = {};
   for (const [key, value] of Object.entries(FontCont.active)) {
-    if (!['Carlito', 'Century', 'Garamond', 'Palatino', 'NimbusRomNo9L', 'NimbusSans'].includes(key)) {
+    if (!['Carlito', 'Century', 'Garamond', 'Palatino', 'NimbusRomNo9L', 'NimbusSans', 'NimbusMono'].includes(key)) {
       fontsUpload[key] = {
         normal: value?.normal?.src, italic: value?.italic?.src, bold: value?.bold?.src,
       };
@@ -381,8 +394,9 @@ export async function optimizeFontContainerAll(fontPrivate, fontMetricsObj) {
   const palatinoPromise = optimizeFontContainerFamily(fontPrivate.Palatino, fontMetricsObj);
   const nimbusRomNo9LPromise = optimizeFontContainerFamily(fontPrivate.NimbusRomNo9L, fontMetricsObj);
   const nimbusSansPromise = optimizeFontContainerFamily(fontPrivate.NimbusSans, fontMetricsObj);
+  const nimbusMonoPromise = optimizeFontContainerFamily(fontPrivate.NimbusMono, fontMetricsObj);
 
-  const results = await Promise.all([carlitoPromise, centuryPromise, garamondPromise, palatinoPromise, nimbusRomNo9LPromise, nimbusSansPromise]);
+  const results = await Promise.all([carlitoPromise, centuryPromise, garamondPromise, palatinoPromise, nimbusRomNo9LPromise, nimbusSansPromise, nimbusMonoPromise]);
 
   if (results.every((x) => x === null)) return null;
 
@@ -393,5 +407,6 @@ export async function optimizeFontContainerAll(fontPrivate, fontMetricsObj) {
     Palatino: results[3],
     NimbusRomNo9L: results[4],
     NimbusSans: results[5],
+    NimbusMono: results[6],
   };
 }

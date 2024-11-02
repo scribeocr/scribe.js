@@ -379,7 +379,7 @@ export function replaceObjectProperties(obj, obj2 = {}) {
 // Fonts that should not be added (both Sans and Serif variants):
 // DejaVu
 const serifFonts = ['SerifDefault', 'Baskerville', 'Bookman', 'C059', 'Calibri', 'Cambria', 'Century', 'Courier', 'Garamond', 'Georgia',
-  'LucidaBright', 'Minion', 'Optima', 'P052', 'Palatino', 'Times'];
+  'LucidaBright', 'Minion', 'NimbusMono', 'Optima', 'P052', 'Palatino', 'Times'];
 const sansFonts = ['SansDefault', 'Avenir', 'Arial', 'Calibri', 'Candara', 'Carlito', 'Comic', 'Franklin', 'Futura', 'Gotham',
   'Helvetica', 'Impact', 'Interstate', 'Myriad', 'Tahoma', 'Trebuchet', 'Univers', 'Verdana'];
 

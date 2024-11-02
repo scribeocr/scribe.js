@@ -237,8 +237,9 @@ export function calcWordMetrics(word, angle = 0) {
   const wordLastGlyphMetrics = fontOpentype.charToGlyph(charArr2.at(-1)).getMetrics();
   const wordFirstGlyphMetrics = fontOpentype.charToGlyph(charArr2[0]).getMetrics();
 
-  let wordLeftBearing = wordFirstGlyphMetrics.leftSideBearing || 0;
-  let wordRightBearing = wordLastGlyphMetrics.rightSideBearing || 0;
+  // The `leftSideBearing`/`rightSideBearing`/ numbers reported by Opentype.js are not accurate for mono-spaced fonts.
+  let wordLeftBearing = wordFirstGlyphMetrics.xMin || 0;
+  let wordRightBearing = advanceArr[advanceArr.length - 1] - wordLastGlyphMetrics.xMax || 0;
   if (word.smallCaps && charArr2[0] !== charArr[0]) wordLeftBearing *= fontI.smallCapsMult;
   if (word.smallCaps && charArr2[charArr2.length - 1] !== charArr[charArr2.length - 1]) wordRightBearing *= fontI.smallCapsMult;
 

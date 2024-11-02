@@ -534,10 +534,11 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
             const wordSpaceNextAdj = (wordNext.bbox.left - wordJ.bbox.right) / cosAngle;
             // const wordSpaceNextAdj = wordNext.bbox.left - wordBox.right;
 
-            const wordGlyphMetrics = wordFontOpentype.charToGlyph(charArr.at(-1)).getMetrics();
+            const wordGlyph = wordFontOpentype.charToGlyph(charArr.at(-1));
+            const wordGlyphMetrics = wordGlyph.getMetrics();
             const wordNextGlyphMetrics = wordFontOpentype.charToGlyph(wordNext.text.substr(0, 1)).getMetrics();
 
-            const wordRightBearing = wordJ.visualCoords ? wordGlyphMetrics.rightSideBearing * (wordFontSize / wordFontOpentype.unitsPerEm) : 0;
+            const wordRightBearing = wordJ.visualCoords ? (wordGlyph.advanceWidth - wordGlyphMetrics.xMax) * (wordFontSize / wordFontOpentype.unitsPerEm) : 0;
 
             const wordNextLeftBearing = wordNext.visualCoords ? wordNextGlyphMetrics.xMin * (wordFontSize / wordFontOpentype.unitsPerEm) : 0;
 
