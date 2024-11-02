@@ -101,8 +101,11 @@ const calculateKerningPairs = (font, fontMetricsObj, xHeight, style) => {
     const indexFirst = font.charToGlyphIndex(charFirst);
     const indexSecond = font.charToGlyphIndex(charSecond);
 
-    const metricsFirst = font.glyphs.glyphs[indexFirst].getMetrics();
-    const metricsSecond = font.glyphs.glyphs[indexSecond].getMetrics();
+    const glyphFirst = font.glyphs.glyphs[indexFirst];
+    const glyphSecond = font.glyphs.glyphs[indexSecond];
+
+    const metricsFirst = glyphFirst.getMetrics();
+    const metricsSecond = glyphSecond.getMetrics();
 
     const fontKern1 = Math.round(value * xHeight);
     let spaceTarget = fontKern1;
@@ -119,7 +122,7 @@ const calculateKerningPairs = (font, fontMetricsObj, xHeight, style) => {
     }
 
     // Calculate current space between these 2 glyphs (without kerning adjustments)
-    const spaceCurrent = metricsFirst.rightSideBearing + metricsSecond.leftSideBearing;
+    const spaceCurrent = (glyphFirst.advanceWidth - metricsFirst.xMax) + metricsSecond.xMin;
 
     // Calculate kerning adjustment needed
     let fontKern = spaceTarget - spaceCurrent;

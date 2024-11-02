@@ -449,6 +449,7 @@ export async function importFiles(files, options = {}) {
     await extractInternalPDFText({
       setActive: true, extractPDFTextNative, extractPDFTextOCR, extractPDFTextImage,
     });
+    if (ImageCache.pdfType === 'text') FontCont.enableCleanToNimbusMono = true;
     if (opt.calcSuppFontInfo) await calcSuppFontInfo(ocrAll.pdf);
   }
 }

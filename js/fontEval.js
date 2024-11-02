@@ -50,6 +50,7 @@ export async function evaluateFonts(pageArr, opt) {
   const evalPalatino = !!(opt ? FontCont.opt?.Palatino : FontCont.raw?.Palatino);
   const evalGaramond = !!(opt ? FontCont.opt?.Garamond : FontCont.raw?.Garamond);
   const evalNimbusRomNo9L = !!(opt ? FontCont.opt?.NimbusRomNo9L : FontCont.raw?.NimbusRomNo9L);
+  const evalNimbusMono = !!(opt ? FontCont.opt?.NimbusMono : FontCont.raw?.NimbusMono);
 
   // The browser version runs in parallel using workers, however the Node.js version runs sequentially,
   // as the canvas package does not support workers, and trying to run in parallel causes problems.
@@ -63,6 +64,7 @@ export async function evaluateFonts(pageArr, opt) {
       palatino: evalPalatino ? evalPagesFont('Palatino', pageArr, opt) : null,
       garamond: evalGaramond ? evalPagesFont('Garamond', pageArr, opt) : null,
       nimbusRomNo9L: evalNimbusRomNo9L ? evalPagesFont('NimbusRomNo9L', pageArr, opt) : null,
+      nimbusMono: evalNimbusMono ? evalPagesFont('NimbusMono', pageArr, opt) : null,
     };
 
     fontMetricsTmp = {
@@ -72,6 +74,7 @@ export async function evaluateFonts(pageArr, opt) {
       palatino: await fontMetricsPromises.palatino,
       garamond: await fontMetricsPromises.garamond,
       nimbusRomNo9L: await fontMetricsPromises.nimbusRomNo9L,
+      nimbusMono: await fontMetricsPromises.nimbusMono,
     };
   } else {
     fontMetricsTmp = {
@@ -81,6 +84,7 @@ export async function evaluateFonts(pageArr, opt) {
       palatino: evalPalatino ? await evalPagesFont('Palatino', pageArr, opt) : null,
       garamond: evalGaramond ? await evalPagesFont('Garamond', pageArr, opt) : null,
       nimbusRomNo9L: evalNimbusRomNo9L ? await evalPagesFont('NimbusRomNo9L', pageArr, opt) : null,
+      nimbusMono: evalNimbusMono ? await evalPagesFont('NimbusMono', pageArr, opt) : null,
     };
   }
 
@@ -91,6 +95,7 @@ export async function evaluateFonts(pageArr, opt) {
     Palatino: fontMetricsTmp.palatino ? fontMetricsTmp.palatino.metricTotal / fontMetricsTmp.palatino.wordsTotal : null,
     Garamond: fontMetricsTmp.garamond ? fontMetricsTmp.garamond.metricTotal / fontMetricsTmp.garamond.wordsTotal : null,
     NimbusRomNo9L: fontMetricsTmp.nimbusRomNo9L ? fontMetricsTmp.nimbusRomNo9L.metricTotal / fontMetricsTmp.nimbusRomNo9L.wordsTotal : null,
+    NimbusMono: fontMetricsTmp.nimbusMono ? fontMetricsTmp.nimbusMono.metricTotal / fontMetricsTmp.nimbusMono.wordsTotal : null,
   };
 
   return fontMetrics;
@@ -106,7 +111,7 @@ const calcBestFonts = (fontMetrics) => {
 
   for (const [key, value] of Object.entries(fontMetrics)) {
     if (!['Carlito', 'NimbusSans'].includes(key)) continue;
-    if (value < minValueSans) {
+    if (value && value < minValueSans) {
       minValueSans = value;
       minKeySans = key;
     }
@@ -116,8 +121,8 @@ const calcBestFonts = (fontMetrics) => {
   let minValueSerif = Number.MAX_VALUE;
 
   for (const [key, value] of Object.entries(fontMetrics)) {
-    if (!['Century', 'Palatino', 'Garamond', 'NimbusRomNo9L'].includes(key)) continue;
-    if (value < minValueSerif) {
+    if (!['Century', 'Palatino', 'Garamond', 'NimbusRomNo9L', 'NimbusMono'].includes(key)) continue;
+    if (value && value < minValueSerif) {
       minValueSerif = value;
       minKeySerif = key;
     }
