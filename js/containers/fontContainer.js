@@ -388,6 +388,8 @@ export class FontCont {
     FontCont.rawMetrics = null;
     FontCont.optMetrics = null;
 
+    FontCont.enableCleanToNimbusMono = false;
+
     FontCont.defaultFontName = 'SerifDefault';
     FontCont.serifDefaultName = 'NimbusRomNo9L';
     FontCont.sansDefaultName = 'NimbusSans';
