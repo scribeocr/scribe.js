@@ -111,13 +111,13 @@ describe('Check superscripts are detected in PDF imports.', function () {
 
   // Forth document
   it('Should correctly import trailing superscripts printed using font size adjustments (4th doc)', async () => {
-    assert.strictEqual(scribe.data.ocr.active[3].lines[114].words[2].sup, true);
-    assert.strictEqual(scribe.data.ocr.active[3].lines[114].words[2].text, '20');
+    assert.strictEqual(scribe.data.ocr.active[3].lines[113].words[2].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[3].lines[113].words[2].text, '20');
   }).timeout(10000);
 
   it('Should correctly parse font size for lines with superscripts (4th doc)', async () => {
-    assert.strictEqual(scribe.data.ocr.active[3].lines[250].words[1].sup, true);
-    assert.strictEqual(scribe.data.ocr.active[3].lines[250].words[1].text, '20');
+    assert.strictEqual(scribe.data.ocr.active[3].lines[249].words[1].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[3].lines[249].words[1].text, '20');
   }).timeout(10000);
 
   // Fifth document
