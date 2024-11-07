@@ -505,6 +505,7 @@ export async function recognizeAllPages(legacy = true, lstm = true, mainData = f
  * @param {'lstm'|'legacy'|'combined'} [options.modeAdv='combined'] - Alternative method of setting recognition mode.
  * @param {'conf'|'data'|'none'} [options.combineMode='data'] - Method of combining OCR results. Used if OCR data already exists.
  * @param {boolean} [options.vanillaMode=false] - Whether to use the vanilla Tesseract.js model.
+ * @param {boolean} [options.forceMainData=false] - Force this to be the "main" data even if other data exists.
  */
 export async function recognize(options = {}) {
   if (!inputData.pdfMode && !inputData.imageMode) throw new Error('No PDF or image data found to recognize.');
@@ -529,14 +530,18 @@ export async function recognize(options = {}) {
   if (langs.includes('rus') || langs.includes('ukr') || langs.includes('ell')) fontPromiseArr.push(loadBuiltInFontsRaw('all'));
   await Promise.all(fontPromiseArr);
 
-  /** @type {?OcrPage[]} */
-  const existingOCR = ocrAll['User Upload'] || ocrAll.pdf;
+  let existingOCR;
+  if (ocrAll['User Upload']) {
+    existingOCR = ocrAll['User Upload'];
+  } else if (opt.usePDFText && ocrAll.pdf) {
+    existingOCR = ocrAll.pdf;
+  }
 
   // A single Tesseract engine can be used (Legacy or LSTM) or the results from both can be used and combined.
   if (oemMode === 'legacy' || oemMode === 'lstm') {
     // Tesseract is used as the "main" data unless user-uploaded data exists and only the LSTM model is being run.
     // This is because Tesseract Legacy provides very strong metrics, and Abbyy often does not.
-    await recognizeAllPages(oemMode === 'legacy', oemMode === 'lstm', !(oemMode === 'lstm' && !!existingOCR), langs, vanillaMode);
+    await recognizeAllPages(oemMode === 'legacy', oemMode === 'lstm', !existingOCR, langs, vanillaMode);
 
     // Metrics from the LSTM model are so inaccurate they are not worth using.
     if (oemMode === 'legacy') {
@@ -544,7 +549,7 @@ export async function recognize(options = {}) {
       await runFontOptimization(ocrAll['Tesseract Legacy']);
     }
   } else if (oemMode === 'combined') {
-    await recognizeAllPages(true, true, true, langs, vanillaMode);
+    await recognizeAllPages(true, true, !existingOCR, langs, vanillaMode);
 
     if (opt.saveDebugImages) {
       DebugData.debugImg.Combined = new Array(ImageCache.pageCount);
@@ -641,6 +646,9 @@ export async function recognize(options = {}) {
 
         replaceObjectProperties(ocrAll.Combined, res.ocr);
       } else if (combineMode === 'data') {
+
+        const forceMainData = options.forceMainData ?? false;
+
         /** @type {Parameters<typeof compareOCRPage>[2]} */
         const compOptions = {
           mode: 'comb',
@@ -653,9 +661,18 @@ export async function recognize(options = {}) {
           ignorePunct: opt.ignorePunct,
           confThreshHigh: opt.confThreshHigh,
           confThreshMed: opt.confThreshMed,
+          // If the existing data was invisible OCR text extracted from a PDF, it is assumed to not have accurate bounding boxes.
+          useBboxB: !forceMainData && existingOCR === ocrAll.pdf && inputData.pdfMode && !!inputData.pdfType && ['image', 'ocr'].includes(inputData.pdfType),
         };
 
-        const res = await compareOCR(existingOCR, ocrAll['Tesseract Combined'], compOptions);
+        let res;
+        if (forceMainData) {
+          res = await compareOCR(ocrAll['Tesseract Combined'], existingOCR, compOptions);
+        } else {
+          res = await compareOCR(existingOCR, ocrAll['Tesseract Combined'], compOptions);
+        }
+
+        // const res = await compareOCR(existingOCR, ocrAll['Tesseract Combined'], compOptions);
 
         if (DebugData.debugImg.Combined) DebugData.debugImg.Combined = res.debug;
 
