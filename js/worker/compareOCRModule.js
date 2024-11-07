@@ -463,6 +463,7 @@ async function penalizeWord(wordObjs) {
  *    rather than simply setting `compTruth`/`matchTruth`. Enabled when using recognition to update confidence metrics, but not when comparing to ground truth.
  * @param {boolean} [params.options.legacyLSTMComb] - Whether Tesseract Legacy and Tesseract LSTM are being combined, when `mode = 'comb'`.
  *    When `legacyLSTMComb` is enabled, additional heuristics are applied that are based on specific behaviors of the Tesseract Legacy engine.
+ * @param {boolean} [params.options.useBboxB] - Use bounding boxes from `pageB` in combined output.
  * @param {string} [params.options.debugLabel]
  * @param {boolean} [params.options.evalConflicts] - Whether to evaluate word quality on conflicts. If `false` the text from `pageB` is always assumed correct.
  *    This option is useful for combining the style from Tesseract Legacy with the text from Tesseract LSTM.
@@ -494,6 +495,7 @@ export async function compareOCRPageImp({
   const mode = options?.mode === undefined ? 'stats' : options?.mode;
   const editConf = options?.editConf === undefined ? false : options?.editConf;
   const legacyLSTMComb = options?.legacyLSTMComb === undefined ? false : options?.legacyLSTMComb;
+  const useBboxB = options?.useBboxB === undefined ? false : options?.useBboxB;
   const debugLabel = options?.debugLabel === undefined ? '' : options?.debugLabel;
   const evalConflicts = options?.evalConflicts === undefined ? true : options?.evalConflicts;
   const supplementComp = options?.supplementComp === undefined ? false : options?.supplementComp;
@@ -597,8 +599,13 @@ export async function compareOCRPageImp({
 
           const wordBoxACore = JSON.parse(JSON.stringify(wordBoxA));
 
-          wordBoxACore.top = wordBoxA.top + Math.round(wordBoxAHeight * 0.1);
-          wordBoxACore.bottom = wordBoxA.bottom - Math.round(wordBoxAHeight * 0.1);
+          if (wordA.visualCoords) {
+            wordBoxACore.top = wordBoxA.top + Math.round(wordBoxAHeight * 0.1);
+            wordBoxACore.bottom = wordBoxA.bottom - Math.round(wordBoxAHeight * 0.1);
+          } else {
+            wordBoxACore.top = wordBoxA.top + Math.round(wordBoxAHeight * 0.25);
+            wordBoxACore.bottom = wordBoxA.bottom - Math.round(wordBoxAHeight * 0.25);
+          }
 
           for (let l = minWordB; l < lineB.words.length; l++) {
             const wordB = lineB.words[l];
@@ -612,8 +619,13 @@ export async function compareOCRPageImp({
 
             const wordBoxBCore = JSON.parse(JSON.stringify(wordBoxB));
 
-            wordBoxBCore.top = wordBoxB.top + Math.round(wordBoxBHeight * 0.1);
-            wordBoxBCore.bottom = wordBoxB.bottom - Math.round(wordBoxBHeight * 0.1);
+            if (wordB.visualCoords) {
+              wordBoxBCore.top = wordBoxB.top + Math.round(wordBoxBHeight * 0.1);
+              wordBoxBCore.bottom = wordBoxB.bottom - Math.round(wordBoxBHeight * 0.1);
+            } else {
+              wordBoxBCore.top = wordBoxB.top + Math.round(wordBoxBHeight * 0.25);
+              wordBoxBCore.bottom = wordBoxB.bottom - Math.round(wordBoxBHeight * 0.25);
+            }
 
             // If left of word A is past right of word B, move to next word B
             if (wordBoxACore.left > wordBoxBCore.right) {
@@ -660,6 +672,11 @@ export async function compareOCRPageImp({
                 if (mode === 'comb') wordA.conf = 100;
                 hocrACorrect[wordA.id] = 1;
                 hocrBCorrect[wordB.id] = 1;
+                if (mode === 'comb' && useBboxB) {
+                  wordA.bbox = structuredClone(wordB.bbox);
+                  wordA.visualCoords = true;
+                  wordA.chars = structuredClone(wordB.chars);
+                }
               } else if (mode === 'comb') {
                 wordA.conf = 0;
                 wordA.matchTruth = false;
@@ -758,6 +775,11 @@ export async function compareOCRPageImp({
                     }
                   }
                 }
+
+                // if (useBboxB && oneToOne) {
+                //   wordA.bbox = wordBoxB;
+                //   wordA.visualCoords = true;
+                // }
 
                 // Only consider switching word contents if their bounding boxes are close together
                 // This should filter off cases where 2+ words in one dataset match to 1 word in another

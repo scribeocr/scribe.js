@@ -456,7 +456,7 @@ export async function convertPageStext({ ocrStr, n }) {
 
   pageObj.angle = angleOut;
 
-  const autoDetectTables = false;
+  const autoDetectTables = true;
   const dataTablePage = new LayoutDataTablePage(n);
   if (autoDetectTables) {
     const tableBboxes = detectTablesInPage(pageObj);

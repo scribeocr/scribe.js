@@ -1,3 +1,4 @@
+import { inputData } from './containers/app.js';
 import { ocrAll, ocrAllRaw } from './containers/dataContainer.js';
 import { ImageCache } from './containers/imageContainer.js';
 import { convertOCR } from './recognizeConvert.js';
@@ -83,7 +84,7 @@ export const extractInternalPDFText = async (options = {}) => {
 
   const res = await extractInternalPDFTextRaw();
 
-  ImageCache.pdfType = res.type;
+  inputData.pdfType = res.type;
   ocrAllRaw.pdf = res.contentRaw;
 
   if (!extractPDFTextImage && res.type === 'image') return res;

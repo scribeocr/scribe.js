@@ -94,7 +94,7 @@ const extractText = async (files, langs = ['eng'], outputFormat = 'txt', options
   init({ ocr: true, font: true });
   await importFiles(files, { extractPDFTextNative: skipRecPDFTextNative, extractPDFTextOCR: skipRecPDFTextOCR });
   if (!inputData.xmlMode[0] && !inputData.imageMode && !inputData.pdfMode) throw new Error('No relevant files to process.');
-  const skipRecPDF = inputData.pdfMode && (ImageCache.pdfType === 'text' && skipRecPDFTextNative || ImageCache.pdfType === 'ocr' && skipRecPDFTextOCR);
+  const skipRecPDF = inputData.pdfMode && (inputData.pdfType === 'text' && skipRecPDFTextNative || inputData.pdfType === 'ocr' && skipRecPDFTextOCR);
   const skipRecOCR = inputData.xmlMode[0] && !inputData.imageMode && !inputData.pdfMode;
   if (!skipRecPDF && !skipRecOCR) await recognize({ langs });
   return exportData(outputFormat);
