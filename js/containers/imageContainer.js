@@ -159,9 +159,6 @@ export class ImageCache {
     image: false,
   };
 
-  /** @type {?('text'|'ocr'|'image')} */
-  static pdfType = null;
-
   static colorModeDefault = 'gray';
 
   /**

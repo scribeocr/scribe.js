@@ -463,6 +463,7 @@ async function penalizeWord(wordObjs) {
  *    rather than simply setting `compTruth`/`matchTruth`. Enabled when using recognition to update confidence metrics, but not when comparing to ground truth.
  * @param {boolean} [params.options.legacyLSTMComb] - Whether Tesseract Legacy and Tesseract LSTM are being combined, when `mode = 'comb'`.
  *    When `legacyLSTMComb` is enabled, additional heuristics are applied that are based on specific behaviors of the Tesseract Legacy engine.
+ * @param {boolean} [params.options.useBboxB] - Use bounding boxes from `pageB` in combined output.
  * @param {string} [params.options.debugLabel]
  * @param {boolean} [params.options.evalConflicts] - Whether to evaluate word quality on conflicts. If `false` the text from `pageB` is always assumed correct.
  *    This option is useful for combining the style from Tesseract Legacy with the text from Tesseract LSTM.
@@ -494,6 +495,7 @@ export async function compareOCRPageImp({
   const mode = options?.mode === undefined ? 'stats' : options?.mode;
   const editConf = options?.editConf === undefined ? false : options?.editConf;
   const legacyLSTMComb = options?.legacyLSTMComb === undefined ? false : options?.legacyLSTMComb;
+  const useBboxB = options?.useBboxB === undefined ? false : options?.useBboxB;
   const debugLabel = options?.debugLabel === undefined ? '' : options?.debugLabel;
   const evalConflicts = options?.evalConflicts === undefined ? true : options?.evalConflicts;
   const supplementComp = options?.supplementComp === undefined ? false : options?.supplementComp;
@@ -660,6 +662,11 @@ export async function compareOCRPageImp({
                 if (mode === 'comb') wordA.conf = 100;
                 hocrACorrect[wordA.id] = 1;
                 hocrBCorrect[wordB.id] = 1;
+                if (mode === 'comb' && useBboxB) {
+                  wordA.bbox = structuredClone(wordB.bbox);
+                  wordA.visualCoords = true;
+                  wordA.chars = structuredClone(wordB.chars);
+                }
               } else if (mode === 'comb') {
                 wordA.conf = 0;
                 wordA.matchTruth = false;
