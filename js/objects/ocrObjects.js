@@ -645,6 +645,37 @@ function cloneChar(char) {
 }
 
 /**
+ * Gets words that match the provided text.
+ * @param {string} text
+ * @param {OcrPage} ocrPage
+ */
+function getMatchingWords(text, ocrPage) {
+  text = text.trim().toLowerCase();
+
+  if (!text) return [];
+  const textArr = text.split(' ');
+
+  const wordArr = ocr.getPageWords(ocrPage);
+
+  const matchArr = [];
+
+  for (let i = 0; i < wordArr.length - (textArr.length - 1); i++) {
+    const word = wordArr[i];
+
+    if (!word.text.toLowerCase().includes(textArr[0])) continue;
+
+    const candArr = wordArr.slice(i, i + textArr.length);
+    const candText = candArr.map((x) => x.text).join(' ').toLowerCase();
+
+    if (candText.toLowerCase().includes(text)) {
+      matchArr.push(...candArr);
+    }
+  }
+
+  return matchArr;
+}
+
+/**
  * Gets word IDs that match the provided text.
  * @param {string} text
  * @param {OcrPage} ocrPage
@@ -729,6 +760,7 @@ const ocr = {
   getPageWord,
   getPageWords,
   getDistinctChars,
+  getMatchingWords,
   getMatchingWordIds,
   getPageText,
   getParText,
