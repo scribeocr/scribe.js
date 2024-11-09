@@ -293,6 +293,11 @@ export const calcWordFontSize = (word) => {
     if (word.visualCoords) {
       return getFontSize(fontOpentype, word.bbox.bottom - word.bbox.top, word.text);
     }
+    if (word.size) {
+      const mult = FontProps.sizeMult[font.family] || 1;
+      return word.size / mult;
+    }
+
     return (word.bbox.bottom - word.bbox.top) * (fontOpentype.unitsPerEm / (fontOpentype.ascender - fontOpentype.descender));
   }
 

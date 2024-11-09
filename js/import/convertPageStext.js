@@ -177,7 +177,13 @@ export async function convertPageStext({ ocrStr, n }) {
                 bboxes.push(bboxesWordArr);
                 styleArr.push(styleWord);
                 fontFamilyArr.push(fontFamily);
-                fontSizeArr.push(fontSizeWord);
+
+                if (sizeDelta > 0) {
+                  fontSizeArr.push(sizePrevRaw);
+                } else {
+                  fontSizeArr.push(fontSizeWord);
+                }
+
                 smallCapsArr.push(smallCapsWord);
                 smallCapsAltArr.push(smallCapsWordAlt);
                 smallCapsAltTitleCaseArr.push(smallCapsWordAltTitleCaseAdj);
@@ -195,7 +201,6 @@ export async function convertPageStext({ ocrStr, n }) {
                 fontSizeWord = sizeCurrent;
                 fontFamily = familyCurrent;
                 superArr[superArr.length - 1] = true;
-                fontSizeArr[fontSizeArr.length - 1] = sizeCurrentRaw;
               }
 
               superCurrent = sizeDelta < 0;
@@ -288,6 +293,7 @@ export async function convertPageStext({ ocrStr, n }) {
         }
 
         superArr.push(superCurrent);
+        if (superCurrent) fontSizeArr[fontSizeArr.length - 1] = sizeCurrentRaw;
       }
 
       // Return if there are no letters in the line.

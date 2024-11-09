@@ -228,13 +228,19 @@ describe('Check that PDF imports split lines correctly.', function () {
 
     // A previous version of the build split this line into 9 separate lines.
     assert.strictEqual(scribe.data.ocr.active[2].lines[58].words.map((x) => x.text).join(' '), 'ment’s (DOE’s) issuance of Accounting and Auditing Enforcement Releases');
+
+    // A previous version of the build split this line into 2 separate lines.
+    // Sidenote: This seems like it should be only one word, however there appears to be a space in the middle within the source PDF.
+    assert.strictEqual(scribe.data.ocr.active[3].lines[109].words.length, 2);
+    assert.strictEqual(scribe.data.ocr.active[3].lines[109].words[0].text, 'Anyfi');
   }).timeout(10000);
 
   it('Should correctly parse PDF lines (3rd doc)', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_example_report1.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
 
     // A previous version of the build split this line into 2 separate lines, by putting the leading superscript on a separate line.
-    assert.strictEqual(scribe.data.ocr.active[0].lines[99].words.map((x) => x.text).join(' '), '(2) Beginning with the year ended December 31, 2023, the Company changed the presentation of interest income on forgivable loans on our Consolidated Statement of');
+    assert.strictEqual(scribe.data.ocr.active[0].lines[99].words.map((x) => x.text).join(' '),
+      '(2) Beginning with the year ended December 31, 2023, the Company changed the presentation of interest income on forgivable loans on our Consolidated Statement of');
   }).timeout(10000);
 
   after(async () => {
