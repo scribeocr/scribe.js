@@ -247,3 +247,17 @@ describe('Check that PDF imports split lines correctly.', function () {
     await scribe.terminate();
   });
 }).timeout(120000);
+
+describe('Check that line baselines are imported correctly.', function () {
+  this.timeout(10000);
+
+  it('Should correctly parse line baselines for pages with rotation', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples_rotated.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+    assert.strictEqual(Math.round(scribe.data.ocr.active[0].lines[25].baseline[1]), -10);
+    assert.strictEqual(Math.round(scribe.data.ocr.active[1].lines[25].baseline[1]), -165);
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);

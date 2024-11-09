@@ -82,6 +82,7 @@ export async function convertPageStext({ ocrStr, n }) {
       const bboxes = [];
 
       const baselineSlopeArr = /** @type {Array<Number>} */ ([]);
+      let baselineFirstDone = false;
       const baselineFirst = /** @type {Array<Number>} */ ([]);
 
       let baselineCurrent = 0;
@@ -193,14 +194,19 @@ export async function convertPageStext({ ocrStr, n }) {
                 bboxesWordArr = [];
               }
 
-              // If the first word was determined to be a superscript, reset `baselineFirst` to avoid skewing the slope calculation.
               if (sizeDelta > 0) {
-                baselineFirst.length = 0;
+                // If the first word was determined to be a superscript, reset `baselineFirst` to avoid skewing the slope calculation.
+                if (!baselineFirstDone) baselineFirst.length = 0;
                 familyCurrent = fontNameStrI || familyCurrent;
                 sizeCurrent = sizeCurrentRaw || sizeCurrent;
                 fontSizeWord = sizeCurrent;
                 fontFamily = familyCurrent;
                 superArr[superArr.length - 1] = true;
+              }
+
+              // If `baselineFirstDone` was set using a non-superscript word, mark it as done.
+              if (superArr.length > 0 && !superArr[superArr.length - 1] && baselineFirst.length > 0) {
+                baselineFirstDone = true;
               }
 
               superCurrent = sizeDelta < 0;
