@@ -599,8 +599,13 @@ export async function compareOCRPageImp({
 
           const wordBoxACore = JSON.parse(JSON.stringify(wordBoxA));
 
-          wordBoxACore.top = wordBoxA.top + Math.round(wordBoxAHeight * 0.1);
-          wordBoxACore.bottom = wordBoxA.bottom - Math.round(wordBoxAHeight * 0.1);
+          if (wordA.visualCoords) {
+            wordBoxACore.top = wordBoxA.top + Math.round(wordBoxAHeight * 0.1);
+            wordBoxACore.bottom = wordBoxA.bottom - Math.round(wordBoxAHeight * 0.1);
+          } else {
+            wordBoxACore.top = wordBoxA.top + Math.round(wordBoxAHeight * 0.25);
+            wordBoxACore.bottom = wordBoxA.bottom - Math.round(wordBoxAHeight * 0.25);
+          }
 
           for (let l = minWordB; l < lineB.words.length; l++) {
             const wordB = lineB.words[l];
@@ -614,8 +619,13 @@ export async function compareOCRPageImp({
 
             const wordBoxBCore = JSON.parse(JSON.stringify(wordBoxB));
 
-            wordBoxBCore.top = wordBoxB.top + Math.round(wordBoxBHeight * 0.1);
-            wordBoxBCore.bottom = wordBoxB.bottom - Math.round(wordBoxBHeight * 0.1);
+            if (wordB.visualCoords) {
+              wordBoxBCore.top = wordBoxB.top + Math.round(wordBoxBHeight * 0.1);
+              wordBoxBCore.bottom = wordBoxB.bottom - Math.round(wordBoxBHeight * 0.1);
+            } else {
+              wordBoxBCore.top = wordBoxB.top + Math.round(wordBoxBHeight * 0.25);
+              wordBoxBCore.bottom = wordBoxB.bottom - Math.round(wordBoxBHeight * 0.25);
+            }
 
             // If left of word A is past right of word B, move to next word B
             if (wordBoxACore.left > wordBoxBCore.right) {
