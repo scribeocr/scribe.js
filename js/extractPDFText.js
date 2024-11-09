@@ -1,3 +1,4 @@
+import { inputData } from './containers/app.js';
 import { ocrAll, ocrAllRaw } from './containers/dataContainer.js';
 import { ImageCache } from './containers/imageContainer.js';
 import { convertOCR } from './recognizeConvert.js';
@@ -83,7 +84,7 @@ export const extractInternalPDFText = async (options = {}) => {
 
   const res = await extractInternalPDFTextRaw();
 
-  ImageCache.pdfType = res.type;
+  inputData.pdfType = res.type;
   ocrAllRaw.pdf = res.contentRaw;
 
   if (!extractPDFTextImage && res.type === 'image') return res;
@@ -102,7 +103,7 @@ export const extractInternalPDFText = async (options = {}) => {
   const format = 'stext';
 
   // Process HOCR using web worker, reading from file first if that has not been done already
-  await convertOCR(ocrAllRaw.active, true, format, 'pdf', false);
+  await convertOCR(ocrAllRaw.pdf, true, format, 'pdf', false);
 
   res.content = ocrAll.pdf;
 

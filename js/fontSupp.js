@@ -159,7 +159,7 @@ export const calcSuppFontInfo = async (ocrArr) => {
     for (const line of page.lines) {
       for (const word of line.words) {
         if (word.font && word.size && FontProps.sizeMult[word.font]) {
-          word.size *= FontProps.sizeMult[word.font];
+          word.size = Math.round(word.size * FontProps.sizeMult[word.font] * 1000) / 1000;
         }
       }
     }

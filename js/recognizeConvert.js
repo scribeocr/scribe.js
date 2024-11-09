@@ -529,14 +529,21 @@ export async function recognize(options = {}) {
   if (langs.includes('rus') || langs.includes('ukr') || langs.includes('ell')) fontPromiseArr.push(loadBuiltInFontsRaw('all'));
   await Promise.all(fontPromiseArr);
 
-  /** @type {?OcrPage[]} */
-  const existingOCR = ocrAll['User Upload'] || ocrAll.pdf;
+  let forceMainData = false;
+  let existingOCR;
+  if (ocrAll['User Upload']) {
+    existingOCR = ocrAll['User Upload'];
+  } else if (opt.usePDFTextSupp && ocrAll.pdf) {
+    existingOCR = ocrAll.pdf;
+    // If the PDF text is not the active data, it is assumed to be for supplemental purposes only.
+    forceMainData = ocrAll.pdf !== ocrAll.active;
+  }
 
   // A single Tesseract engine can be used (Legacy or LSTM) or the results from both can be used and combined.
   if (oemMode === 'legacy' || oemMode === 'lstm') {
     // Tesseract is used as the "main" data unless user-uploaded data exists and only the LSTM model is being run.
     // This is because Tesseract Legacy provides very strong metrics, and Abbyy often does not.
-    await recognizeAllPages(oemMode === 'legacy', oemMode === 'lstm', !(oemMode === 'lstm' && !!existingOCR), langs, vanillaMode);
+    await recognizeAllPages(oemMode === 'legacy', oemMode === 'lstm', !existingOCR, langs, vanillaMode);
 
     // Metrics from the LSTM model are so inaccurate they are not worth using.
     if (oemMode === 'legacy') {
@@ -544,7 +551,7 @@ export async function recognize(options = {}) {
       await runFontOptimization(ocrAll['Tesseract Legacy']);
     }
   } else if (oemMode === 'combined') {
-    await recognizeAllPages(true, true, true, langs, vanillaMode);
+    await recognizeAllPages(true, true, !existingOCR, langs, vanillaMode);
 
     if (opt.saveDebugImages) {
       DebugData.debugImg.Combined = new Array(ImageCache.pageCount);
@@ -653,9 +660,16 @@ export async function recognize(options = {}) {
           ignorePunct: opt.ignorePunct,
           confThreshHigh: opt.confThreshHigh,
           confThreshMed: opt.confThreshMed,
+          // If the existing data was invisible OCR text extracted from a PDF, it is assumed to not have accurate bounding boxes.
+          useBboxB: !forceMainData && existingOCR === ocrAll.pdf && inputData.pdfMode && !!inputData.pdfType && ['image', 'ocr'].includes(inputData.pdfType),
         };
 
-        const res = await compareOCR(existingOCR, ocrAll['Tesseract Combined'], compOptions);
+        let res;
+        if (forceMainData) {
+          res = await compareOCR(ocrAll['Tesseract Combined'], existingOCR, compOptions);
+        } else {
+          res = await compareOCR(existingOCR, ocrAll['Tesseract Combined'], compOptions);
+        }
 
         if (DebugData.debugImg.Combined) DebugData.debugImg.Combined = res.debug;
 

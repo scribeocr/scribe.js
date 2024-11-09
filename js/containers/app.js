@@ -61,6 +61,10 @@ export class opt {
   static extractPDFFonts = false;
 
   static calcSuppFontInfo = false;
+
+  static usePDFTextSupp = true;
+
+  static usePDFTextMain = true;
 }
 
 export class inputData {
@@ -69,6 +73,9 @@ export class inputData {
 
   /** `true` if user uploaded pdf */
   static pdfMode = false;
+
+  /** @type {?('text'|'ocr'|'image')} */
+  static pdfType = null;
 
   /** `true` if user uploaded image files (.png, .jpeg) */
   static imageMode = false;

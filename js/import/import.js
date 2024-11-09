@@ -447,10 +447,12 @@ export async function importFiles(files, options = {}) {
     });
   } else if (inputData.pdfMode && (extractPDFTextNative || extractPDFTextOCR)) {
     await extractInternalPDFText({
-      setActive: true, extractPDFTextNative, extractPDFTextOCR, extractPDFTextImage,
+      setActive: opt.usePDFTextMain, extractPDFTextNative, extractPDFTextOCR, extractPDFTextImage,
     });
-    if (ImageCache.pdfType === 'text') FontCont.enableCleanToNimbusMono = true;
-    if (opt.calcSuppFontInfo) await calcSuppFontInfo(ocrAll.pdf);
+    if (opt.usePDFTextMain) {
+      if (inputData.pdfType === 'text') FontCont.enableCleanToNimbusMono = true;
+      if (opt.calcSuppFontInfo) await calcSuppFontInfo(ocrAll.pdf);
+    }
   }
 }
 
