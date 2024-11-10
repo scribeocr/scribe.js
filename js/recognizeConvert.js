@@ -533,7 +533,7 @@ export async function recognize(options = {}) {
   let existingOCR;
   if (ocrAll['User Upload']) {
     existingOCR = ocrAll['User Upload'];
-  } else if (opt.usePDFTextSupp && ocrAll.pdf) {
+  } else if (ocrAll.pdf && (inputData.pdfType === 'text' && opt.usePDFText.native.supp || inputData.pdfType === 'ocr' && opt.usePDFText.ocr.supp)) {
     existingOCR = ocrAll.pdf;
     // If the PDF text is not the active data, it is assumed to be for supplemental purposes only.
     forceMainData = ocrAll.pdf !== ocrAll.active;

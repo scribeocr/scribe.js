@@ -62,9 +62,23 @@ export class opt {
 
   static calcSuppFontInfo = false;
 
-  static usePDFTextSupp = true;
-
-  static usePDFTextMain = true;
+  /**
+   * How to use PDF text data extracted from input PDFs (if any).
+   * The `native` option controls how native text data is used (i.e. visible text rendered by the PDF viewer),
+   * while the `ocr` option controls how OCR text data is used (i.e. invisible text printed over an image).
+   * If `main` is true, then the data will be used as the primary data source.
+   * If `supp` is true, then the data will be used as a supplemental data source (may be used to correct errors in the primary data source).
+   */
+  static usePDFText = {
+    native: {
+      supp: true,
+      main: true,
+    },
+    ocr: {
+      supp: true,
+      main: false,
+    },
+  };
 
   /**
    * Number of workers to use. Must be set prior to initialization.

@@ -79,20 +79,18 @@ const init = async (params) => {
 /**
  * Function for extracting text from image and PDF files with a single function call.
  * By default, existing text content is extracted for text-native PDF files; otherwise text is extracted using OCR.
+ * To control how text from PDF files is handled, set the options in the `opt.usePDFText` object.
  * For more control, use `init`, `importFiles`, `recognize`, and `exportData` separately.
  * @public
  * @param {Parameters<typeof importFiles>[0]} files
  * @param {Array<string>} [langs=['eng']]
  * @param {Parameters<typeof exportData>[0]} [outputFormat='txt']
- * @param {Object} [options]
- * @param {boolean} [options.skipRecPDFTextNative=true] - If the input is a text-native PDF, skip recognition and return the existing text.
- * @param {boolean} [options.skipRecPDFTextOCR=false] - If the input is an image-native PDF with existing OCR layer, skip recognition and return the existing text.
  */
 const extractText = async (files, langs = ['eng'], outputFormat = 'txt', options = {}) => {
   const skipRecPDFTextNative = options?.skipRecPDFTextNative ?? true;
   const skipRecPDFTextOCR = options?.skipRecPDFTextOCR ?? false;
   init({ ocr: true, font: true });
-  await importFiles(files, { extractPDFTextNative: skipRecPDFTextNative, extractPDFTextOCR: skipRecPDFTextOCR });
+  await importFiles(files);
   if (!inputData.xmlMode[0] && !inputData.imageMode && !inputData.pdfMode) throw new Error('No relevant files to process.');
   const skipRecPDF = inputData.pdfMode && (inputData.pdfType === 'text' && skipRecPDFTextNative || inputData.pdfType === 'ocr' && skipRecPDFTextOCR);
   const skipRecOCR = inputData.xmlMode[0] && !inputData.imageMode && !inputData.pdfMode;

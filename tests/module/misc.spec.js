@@ -14,10 +14,10 @@ config.truncateThreshold = 0; // Disable truncation for actual/expected values o
 describe('Check cleanup functions allow for resetting module.', function () {
   this.timeout(10000);
   it('Check that cleanup functions work properly', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/chi_eng_mixed_sample.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/chi_eng_mixed_sample.pdf`]);
     await scribe.terminate();
     await scribe.init();
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/chi_eng_mixed_sample.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/chi_eng_mixed_sample.pdf`]);
   }).timeout(10000);
 
   after(async () => {

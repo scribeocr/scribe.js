@@ -1,4 +1,4 @@
-import { inputData } from './containers/app.js';
+import { inputData, opt } from './containers/app.js';
 import { ocrAll, ocrAllRaw } from './containers/dataContainer.js';
 import { ImageCache } from './containers/imageContainer.js';
 import { convertOCR } from './recognizeConvert.js';
@@ -68,19 +68,11 @@ const extractInternalPDFTextRaw = async () => {
 
 /**
  * Extract and parse text from currently loaded PDF.
- * @param {Object} [options]
- * @param {boolean} [options.extractPDFTextNative=true] - Extract text from text-native PDF documents.
- * @param {boolean} [options.extractPDFTextOCR=false] - Extract text from image-native PDF documents with existing OCR text layers.
- * @param {boolean} [options.extractPDFTextImage=false] - Extract text from image-native PDF documents with no existing OCR layer.
- *   This option exists because documents may still contain some text even if they are determined to be image-native (for example, scanned documents with a text-native header).
- * @param {boolean} [options.setActive=false] - Set the active OCR data to the extracted text.
  */
-export const extractInternalPDFText = async (options = {}) => {
-  const extractPDFTextNative = options?.extractPDFTextNative ?? true;
-  const extractPDFTextOCR = options?.extractPDFTextOCR ?? false;
-  const extractPDFTextImage = options?.extractPDFTextImage ?? false;
-
-  const setActive = options?.setActive ?? false;
+export const extractInternalPDFText = async () => {
+  const extractPDFTextNative = opt.usePDFText.native.main || opt.usePDFText.native.supp;
+  const extractPDFTextOCR = opt.usePDFText.ocr.main || opt.usePDFText.ocr.supp;
+  const extractPDFTextImage = false;
 
   const res = await extractInternalPDFTextRaw();
 
@@ -95,7 +87,7 @@ export const extractInternalPDFText = async (options = {}) => {
 
   ocrAll.pdf = Array(ImageCache.pageCount);
 
-  if (setActive) {
+  if (inputData.pdfType === 'text' && opt.usePDFText.native.main || inputData.pdfType === 'ocr' && opt.usePDFText.ocr.main) {
     ocrAllRaw.active = ocrAllRaw.pdf;
     ocrAll.active = ocrAll.pdf;
   }

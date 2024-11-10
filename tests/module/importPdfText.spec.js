@@ -17,7 +17,7 @@ config.truncateThreshold = 0; // Disable truncation for actual/expected values o
 describe('Check stext import function language support.', function () {
   this.timeout(10000);
   before(async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/chi_eng_mixed_sample.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/chi_eng_mixed_sample.pdf`]);
   });
 
   it('Should import Chinese characters', async () => {
@@ -34,7 +34,7 @@ describe('Check stext import function language support.', function () {
 describe('Check small caps are detected in PDF imports.', function () {
   this.timeout(10000);
   before(async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/small_caps_examples.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/small_caps_examples.pdf`]);
   });
 
   it('Should correctly import small caps printed using font size adjustments', async () => {
@@ -61,7 +61,7 @@ describe('Check small caps are detected in PDF imports.', function () {
 describe('Check superscripts are detected in PDF imports.', function () {
   this.timeout(10000);
   before(async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples.pdf`]);
   });
 
   // First document
@@ -145,7 +145,7 @@ describe('Check superscripts are detected in PDF imports.', function () {
   // This document breaks when used with `mutool convert` so is not combined with the others.
   // Any more tests included in the main stacked document should be inserted above this point.
   it('Should correctly parse font size for lines with superscripts (addtl doc)', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_example_report1.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_example_report1.pdf`]);
 
     assert.strictEqual(scribe.data.ocr.active[0].lines[96].words[0].sup, true);
     assert.strictEqual(scribe.data.ocr.active[0].lines[96].words[0].text, '(1)');
@@ -155,7 +155,7 @@ describe('Check superscripts are detected in PDF imports.', function () {
   }).timeout(10000);
 
   it('Should correctly parse font size for lines with superscripts (addtl doc 2)', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_example_report2.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_example_report2.pdf`]);
 
     assert.strictEqual(scribe.data.ocr.active[0].lines[32].words[4].sup, true);
     assert.strictEqual(scribe.data.ocr.active[0].lines[32].words[4].text, '(1)');
@@ -173,7 +173,7 @@ describe('Check font size is correctly parsed in PDF imports.', function () {
   this.timeout(10000);
   // Note: the version which uses `calcSuppFontInfo` corresponds to the scribeocr.com interface, which enables this option.
   it('Should correctly parse font sizes (1st doc)', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.pdf`]);
     // This word was problematic at one point due to the change in font size between the first and second word.
     assert.strictEqual(scribe.data.ocr.active[0].lines[253].words[1].size, 32.5);
     assert.strictEqual(scribe.data.ocr.active[0].lines[253].words[1].text, 'Agent');
@@ -181,7 +181,7 @@ describe('Check font size is correctly parsed in PDF imports.', function () {
 
   it('Should correctly parse font sizes and scale using calcSuppFontInfo option (1st doc)', async () => {
     scribe.opt.calcSuppFontInfo = true;
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.pdf`]);
     assert.strictEqual(scribe.data.ocr.active[0].lines[253].words[1].size, 39);
     assert.strictEqual(scribe.data.ocr.active[0].lines[253].words[1].text, 'Agent');
   }).timeout(10000);
@@ -200,7 +200,7 @@ describe('Check that text-native PDFs with broken encoding dictionaries are dete
     // Set `calcSuppFontInfo` to `true` as this option previously crashed the program with this type of PDFs.
     scribe.opt.calcSuppFontInfo = true;
 
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/coca-cola-business-and-sustainability-report-2022.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/coca-cola-business-and-sustainability-report-2022.pdf`]);
 
     assert.strictEqual(scribe.data.ocr.active.length, 0);
   }).timeout(10000);
@@ -216,7 +216,7 @@ describe('Check that PDF imports split lines correctly.', function () {
   this.timeout(10000);
   // Note: the version which uses `calcSuppFontInfo` corresponds to the scribeocr.com interface, which enables this option.
   it('Should correctly parse PDF lines (1st doc)', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.pdf`]);
 
     // A previous version of the build 5 words across 3 distinct lines (including this one) are combined into a single line.
     assert.strictEqual(scribe.data.ocr.active[0].lines[3].words.length, 1);
@@ -224,7 +224,7 @@ describe('Check that PDF imports split lines correctly.', function () {
   }).timeout(10000);
 
   it('Should correctly parse PDF lines (2nd doc)', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples.pdf`]);
 
     // A previous version of the build split this line into 9 separate lines.
     assert.strictEqual(scribe.data.ocr.active[2].lines[58].words.map((x) => x.text).join(' '), 'ment’s (DOE’s) issuance of Accounting and Auditing Enforcement Releases');
@@ -236,7 +236,7 @@ describe('Check that PDF imports split lines correctly.', function () {
   }).timeout(10000);
 
   it('Should correctly parse PDF lines (3rd doc)', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_example_report1.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_example_report1.pdf`]);
 
     // A previous version of the build split this line into 2 separate lines, by putting the leading superscript on a separate line.
     assert.strictEqual(scribe.data.ocr.active[0].lines[99].words.map((x) => x.text).join(' '),
@@ -252,7 +252,7 @@ describe('Check that line baselines are imported correctly.', function () {
   this.timeout(10000);
 
   it('Should correctly parse line baselines for pages with rotation', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples_rotated.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples_rotated.pdf`]);
     assert.strictEqual(Math.round(scribe.data.ocr.active[0].lines[25].baseline[1]), -11);
     assert.strictEqual(Math.round(scribe.data.ocr.active[1].lines[25].baseline[1]), -165);
   }).timeout(10000);
@@ -266,15 +266,57 @@ describe('Check that page angle is calculated correctly.', function () {
   this.timeout(10000);
 
   it('Average text angle is correctly calculated', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples_rotated.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples_rotated.pdf`]);
     assert.strictEqual(Math.round(scribe.data.pageMetrics[0].angle || 0), -5);
     assert.strictEqual(Math.round(scribe.data.pageMetrics[1].angle || 0), 5);
   }).timeout(10000);
 
   it('Different orientations should not impact page angle.', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/CSF_Proposed_Budget_Book_June_2024_r8_30.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/CSF_Proposed_Budget_Book_June_2024_r8_30.pdf`]);
     assert.strictEqual(scribe.data.pageMetrics[0].angle, 0);
   }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);
+
+describe('Check that PDF text types are detected and imported correctly.', function () {
+  this.timeout(10000);
+
+  it('Native text is detected and set as main data `usePDFText.native.main` is true', async () => {
+    scribe.opt.usePDFText.native.main = true;
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples_rotated.pdf`]);
+    assert.strictEqual(scribe.inputData.pdfType, 'text');
+    assert.isTrue(scribe.data.ocr.active[0]?.lines?.length > 0);
+  }).timeout(10000);
+
+  scribe.opt.usePDFText.native.main = false;
+  it('Native text is detected and not set as main data `usePDFText.native.main` is false', async () => {
+    scribe.opt.usePDFText.native.main = false;
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples_rotated.pdf`]);
+    assert.strictEqual(scribe.inputData.pdfType, 'text');
+    assert.isFalse(!!scribe.data.ocr.active[0]);
+  }).timeout(10000);
+
+  it('OCR text is detected and set as main data `usePDFText.ocr.main` is true', async () => {
+    scribe.opt.usePDFText.ocr.main = true;
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/scribe_test_pdf1.pdf`]);
+    assert.strictEqual(scribe.inputData.pdfType, 'ocr');
+    assert.isTrue(scribe.data.ocr.active[0]?.lines?.length > 0);
+  }).timeout(10000);
+
+  scribe.opt.usePDFText.native.main = false;
+  it('OCR text is detected and set as main data `usePDFText.ocr.main` is false', async () => {
+    scribe.opt.usePDFText.ocr.main = false;
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/scribe_test_pdf1.pdf`]);
+    assert.strictEqual(scribe.inputData.pdfType, 'ocr');
+    assert.isFalse(!!scribe.data.ocr.active[0]);
+  }).timeout(10000);
+
+  // Reset to defaults
+  scribe.opt.usePDFText.native.main = true;
+  scribe.opt.usePDFText.ocr.main = false;
 
   after(async () => {
     await scribe.terminate();
