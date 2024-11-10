@@ -50,6 +50,10 @@ export async function convertPageStext({ ocrStr, n }) {
       const xmlLinePreChar = xmlLine.match(/^[\s\S]*?(?=<char)/)?.[0];
       if (!xmlLinePreChar) return;
 
+      const dirStr = xmlLinePreChar.match(/dir=['"]([^'"]*)/)?.[1];
+      const dirSlopeStr = dirStr?.match(/[-\d.]+$/)?.[0];
+      const dirSlope = dirSlopeStr ? parseFloat(dirSlopeStr) : null;
+
       const xmlLineFormatting = xmlLinePreChar?.match(/<font[^>]+/)?.[0];
       const fontName = xmlLineFormatting?.match(/name=['"]([^'"]*)/)?.[1];
       const fontSizeStr = xmlLineFormatting?.match(/size=['"]([^'"]*)/)?.[1];
@@ -81,7 +85,6 @@ export async function convertPageStext({ ocrStr, n }) {
       /** @type {Array<Array<{left: number, top: number, right: number, bottom: number}>>} */
       const bboxes = [];
 
-      const baselineSlopeArr = /** @type {Array<Number>} */ ([]);
       let baselineFirstDone = false;
       const baselineFirst = /** @type {Array<Number>} */ ([]);
 
@@ -115,17 +118,72 @@ export async function convertPageStext({ ocrStr, n }) {
       /** @type {Array<boolean>} */
       const superArr = [];
 
-      const wordLetterOrFontArr = /** @type {Array<Array<RegExpExecArray>>} */([]);
+      /**
+       * @typedef {Object} Point
+       * @property {number} x - The x coordinate.
+       * @property {number} y - The y coordinate.
+       */
+
+      /**
+       * @typedef {Object} Quad
+       * @property {Point} ul - Upper left corner.
+       * @property {Point} ur - Upper right corner.
+       * @property {Point} ll - Lower left corner.
+       * @property {Point} lr - Lower right corner.
+       */
+
+      /**
+       * @typedef {Object} StextChar
+       * @property {Quad} quad
+       * @property {Point} origin
+       * @property {string} text
+       */
+
+      /**
+       * @typedef {Object} StextFont
+       * @property {string} name
+       * @property {number} size
+       */
+
+      const wordCharOrFontArr = /** @type {Array<Array<StextChar|StextFont>>} */([]);
       for (let i = 0; i < wordStrArr.length; i++) {
         // Fonts can be changed at any point in the word string.
         // Sometimes the font is changed before a space character, and othertimes it is changed after the space character.
         // This regex splits the string into elements that contain either (1) a font change or (2) a character.
         // The "quad" attribute includes 8 numbers (x and y coordinates for all 4 corners) however we only use capturing groups for 4
-        const stextCharRegex = /(<font[^>]+>\s*)|<char quad=['"](\s*[\d.-]+)(\s*[\d.-]+)(?:\s*[\d.-]+)(?:\s*[\d.-]+)(?:\s*[\d.-]+)(?:\s*[\d.-]+)(\s*[\d.-]+)(\s*[\d.-]+)[^>]*?y=['"]([\d.-]+)['"][^>]*?c=['"]([^'"]+)['"]\s*\/>/ig;
-        wordLetterOrFontArr[i] = [...wordStrArr[i].matchAll(stextCharRegex)];
+        const stextCharRegex = /(<font[^>]+>\s*)|<char quad=['"](\s*[\d.-]+)(\s*[\d.-]+)(\s*[\d.-]+)(\s*[\d.-]+)(\s*[\d.-]+)(\s*[\d.-]+)(\s*[\d.-]+)(\s*[\d.-]+)[^>]*?x=['"]([\d.-]+)[^>]*?y=['"]([\d.-]+)['"][^>]*?c=['"]([^'"]+)['"]\s*\/>/ig;
+
+        const stextMatches = [...wordStrArr[i].matchAll(stextCharRegex)];
+
+        wordCharOrFontArr[i] = [];
+        for (let j = 0; j < stextMatches.length; j++) {
+          const fontStr = stextMatches[j][1];
+          const fontNameStrI = fontStr?.match(/name=['"]([^'"]*)/)?.[1];
+          const fontSizeStrI = fontStr?.match(/size=['"]([^'"]*)/)?.[1];
+          if (fontNameStrI && fontSizeStrI) {
+            wordCharOrFontArr[i][j] = {
+              name: fontNameStrI,
+              size: parseFloat(fontSizeStrI),
+            };
+            continue;
+          }
+
+          const quad = {
+            ul: { x: parseFloat(stextMatches[j][2]), y: parseFloat(stextMatches[j][3]) },
+            ur: { x: parseFloat(stextMatches[j][4]), y: parseFloat(stextMatches[j][5]) },
+            ll: { x: parseFloat(stextMatches[j][6]), y: parseFloat(stextMatches[j][7]) },
+            lr: { x: parseFloat(stextMatches[j][8]), y: parseFloat(stextMatches[j][9]) },
+          };
+
+          wordCharOrFontArr[i][j] = {
+            quad,
+            origin: { x: parseFloat(stextMatches[j][10]), y: parseFloat(stextMatches[j][11]) },
+            text: stextMatches[j][12],
+          };
+        }
       }
 
-      for (let i = 0; i < wordLetterOrFontArr.length; i++) {
+      for (let i = 0; i < wordCharOrFontArr.length; i++) {
         let textWordArr = [];
         let bboxesWordArr = [];
         let fontFamily = familyCurrent || fontFamilyLine || 'Default';
@@ -138,28 +196,38 @@ export async function convertPageStext({ ocrStr, n }) {
         let smallCapsWordAltTitleCaseAdj = false;
         let styleWord = 'normal';
 
-        const letterOrFontArr = wordLetterOrFontArr[i];
-
-        if (letterOrFontArr.length === 0) continue;
+        if (wordCharOrFontArr[i].length === 0) continue;
 
         let wordInit = false;
 
-        for (let j = 0; j < letterOrFontArr.length; j++) {
-          const fontStr = letterOrFontArr[j][1];
-          const fontNameStrI = fontStr?.match(/name=['"]([^'"]*)/)?.[1];
-          const fontSizeStrI = fontStr?.match(/size=['"]([^'"]*)/)?.[1];
-          const baseline = parseFloat(letterOrFontArr[j][6]);
-          if (fontNameStrI && fontSizeStrI) {
+        for (let j = 0; j < wordCharOrFontArr[i].length; j++) {
+          const charOrFont = wordCharOrFontArr[i][j];
+          if ('name' in charOrFont) {
             // While small caps can be printed using special "small caps" fonts, they can also be printed using a regular font with a size change.
             // This block of code detects small caps printed in title case by checking for a decrease in font size after the first letter.
             // TODO: This logic currently fails when:
             // (1) Runs of small caps include punctuation, which is printed at the full size (and therefore is counted as a size increase ending small caps).
             // (2) Runs of small caps that start with lower-case letters, which do not conform to the expectation that runs of small caps start with a capital letter.
             const sizePrevRaw = sizeCurrentRaw;
-            sizeCurrentRaw = parseFloat(fontSizeStrI);
+            sizeCurrentRaw = charOrFont.size;
             const secondLetter = wordInit && textWordArr.length === 1 && /[A-Z]/.test(textWordArr[0]);
-            const baselineNextLetter = parseFloat(letterOrFontArr[j + 1]?.[6]) || parseFloat(wordLetterOrFontArr[i + 1]?.[0]?.[6])
-              || parseFloat(wordLetterOrFontArr[i + 1]?.[1]?.[6]) || parseFloat(wordLetterOrFontArr[i + 1]?.[2]?.[6]);
+
+            let baselineNextLetter;
+            const possibleNextLetter1 = wordCharOrFontArr[i][j + 1];
+            const possibleNextLetter2 = wordCharOrFontArr[i + 1]?.[0];
+            const possibleNextLetter3 = wordCharOrFontArr[i + 1]?.[1];
+            const possibleNextLetter4 = wordCharOrFontArr[i + 1]?.[2];
+
+            if (possibleNextLetter1 && 'origin' in possibleNextLetter1) {
+              baselineNextLetter = possibleNextLetter1.origin.y;
+            } else if (possibleNextLetter2 && 'origin' in possibleNextLetter2) {
+              baselineNextLetter = possibleNextLetter2.origin.y;
+            } else if (possibleNextLetter3 && 'origin' in possibleNextLetter3) {
+              baselineNextLetter = possibleNextLetter3.origin.y;
+            } else if (possibleNextLetter4 && 'origin' in possibleNextLetter4) {
+              baselineNextLetter = possibleNextLetter4.origin.y;
+            }
+
             const fontSizeMin = Math.min(sizeCurrentRaw, sizePrevRaw);
             const baselineDelta = (baselineNextLetter - baselineCurrent) / fontSizeMin;
             const sizeDelta = (sizeCurrentRaw - sizePrevRaw) / fontSizeMin;
@@ -197,7 +265,7 @@ export async function convertPageStext({ ocrStr, n }) {
               if (sizeDelta > 0) {
                 // If the first word was determined to be a superscript, reset `baselineFirst` to avoid skewing the slope calculation.
                 if (!baselineFirstDone) baselineFirst.length = 0;
-                familyCurrent = fontNameStrI || familyCurrent;
+                familyCurrent = charOrFont.name || familyCurrent;
                 sizeCurrent = sizeCurrentRaw || sizeCurrent;
                 fontSizeWord = sizeCurrent;
                 fontFamily = familyCurrent;
@@ -212,7 +280,7 @@ export async function convertPageStext({ ocrStr, n }) {
               superCurrent = sizeDelta < 0;
             } else {
               sizeCurrent = sizeCurrentRaw || sizeCurrent;
-              familyCurrent = fontNameStrI || familyCurrent;
+              familyCurrent = charOrFont.name || familyCurrent;
               // Update current word only if this is before every letter in the word.
               if (textWordArr.length === 0) {
                 fontSizeWord = sizeCurrent;
@@ -221,7 +289,7 @@ export async function convertPageStext({ ocrStr, n }) {
               // An increase in font size ends any small caps sequence.
               // A threshold is necessary because stext data has been observed to have small variations without a clear reason.
               // eslint-disable-next-line no-lonely-if
-              if (Math.abs(sizeDelta) > 0.05) {
+              if (Number.isFinite(sizeDelta) && Math.abs(sizeDelta) > 0.05) {
                 smallCapsCurrentAlt = false;
                 if (textWordArr.length === 0) {
                   superCurrent = false;
@@ -233,14 +301,14 @@ export async function convertPageStext({ ocrStr, n }) {
 
             // Label as `smallCapsAlt` rather than `smallCaps`, as we confirm the word is all caps before marking as `smallCaps`.
             smallCapsCurrentAlt = smallCapsCurrentAlt ?? smallCapsAltArr[smallCapsAltArr.length - 1];
-            smallCapsCurrent = /(small\W?cap)|(sc$)|(caps$)/i.test(fontNameStrI);
+            smallCapsCurrent = /(small\W?cap)|(sc$)|(caps$)/i.test(charOrFont.name);
             smallCapsWord = smallCapsCurrent;
 
-            if (/italic/i.test(fontNameStrI) || /-\w*ital/i.test(fontNameStrI)) {
+            if (/italic/i.test(charOrFont.name) || /-\w*ital/i.test(charOrFont.name)) {
               // The word is already initialized, so we need to change the last element of the style array.
               // Label as `smallCapsAlt` rather than `smallCaps`, as we confirm the word is all caps before marking as `smallCaps`.
               styleCurrent = 'italic';
-            } else if (/bold|black/i.test(fontNameStrI)) {
+            } else if (/bold|black/i.test(charOrFont.name)) {
               styleCurrent = 'bold';
             } else {
               styleCurrent = 'normal';
@@ -248,7 +316,7 @@ export async function convertPageStext({ ocrStr, n }) {
 
             continue;
           } else {
-            baselineCurrent = baseline;
+            baselineCurrent = charOrFont.origin.y;
           }
 
           if (!wordInit) {
@@ -257,24 +325,22 @@ export async function convertPageStext({ ocrStr, n }) {
           }
 
           const bbox = {
-            left: Math.round(parseFloat(letterOrFontArr[j][2])),
-            top: Math.round(parseFloat(letterOrFontArr[j][3])),
-            right: Math.round(parseFloat(letterOrFontArr[j][4])),
-            bottom: Math.round(parseFloat(letterOrFontArr[j][5])),
+            left: Math.round(charOrFont.origin.x),
+            top: Math.round(Math.min(charOrFont.quad.ul.y, charOrFont.quad.ur.y)),
+            right: Math.round(charOrFont.origin.x + (charOrFont.quad.ur.x - charOrFont.quad.ul.x)),
+            bottom: Math.round(Math.max(charOrFont.quad.ll.y, charOrFont.quad.lr.y)),
           };
 
           if (!superCurrent) {
             if (baselineFirst.length === 0) {
-              baselineFirst.push(bbox.left, baseline);
-            } else {
-              baselineSlopeArr.push((baseline - baselineFirst[1]) / (bbox.left - baselineFirst[0]));
+              baselineFirst.push(bbox.left, charOrFont.origin.y);
             }
           }
 
           // Small caps created by reducing font size can carry forward across multiple words.
           smallCapsCurrentAlt = smallCapsCurrentAlt ?? smallCapsAltArr[smallCapsAltArr.length - 1];
 
-          textWordArr.push(letterOrFontArr[j][7]);
+          textWordArr.push(charOrFont.text);
 
           bboxesWordArr.push(bbox);
         }
@@ -306,7 +372,12 @@ export async function convertPageStext({ ocrStr, n }) {
       // This commonly happens for "lines" that contain only space characters.
       if (bboxes.length === 0) return;
 
-      const baselineSlope = quantile(baselineSlopeArr, 0.5) || 0;
+      let baselineSlope = 0;
+      if (dirSlope !== null) {
+        baselineSlope = dirSlope;
+      } else {
+        console.log('Unable to parse slope.');
+      }
 
       const lineBbox = {
         left: lineBoxArr[0], top: lineBoxArr[1], right: lineBoxArr[2], bottom: lineBoxArr[3],
