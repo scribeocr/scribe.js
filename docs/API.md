@@ -41,6 +41,7 @@ Initialize the program and optionally pre-load resources.
 
 Function for extracting text from image and PDF files with a single function call.
 By default, existing text content is extracted for text-native PDF files; otherwise text is extracted using OCR.
+To control how text from PDF files is handled, set the options in the `opt.usePDFText` object.
 For more control, use `init`, `importFiles`, `recognize`, and `exportData` separately.
 
 ### Parameters
@@ -48,10 +49,7 @@ For more control, use `init`, `importFiles`, `recognize`, and `exportData` separ
 *   `files` &#x20;
 *   `langs` **[Array][23]<[string][24]>**  (optional, default `['eng']`)
 *   `outputFormat`   (optional, default `'txt'`)
-*   `options` **[Object][21]?**  (optional, default `{}`)
-
-    *   `options.skipRecPDFTextNative` **[boolean][22]** If the input is a text-native PDF, skip recognition and return the existing text. (optional, default `true`)
-    *   `options.skipRecPDFTextOCR` **[boolean][22]** If the input is an image-native PDF with existing OCR layer, skip recognition and return the existing text. (optional, default `false`)
+*   `options`   (optional, default `{}`)
 
 ## writeDebugImages
 
@@ -115,12 +113,6 @@ Alternatively, for `File` objects (browser) and file paths (Node.js), a single a
 ### Parameters
 
 *   `files` **([Array][23]\<File> | FileList | [Array][23]<[string][24]> | [SortedInputFiles][13])**&#x20;
-*   `options` **[Object][21]?**  (optional, default `{}`)
-
-    *   `options.extractPDFTextNative` **[boolean][22]** Extract text from text-native PDF documents. (optional, default `false`)
-    *   `options.extractPDFTextOCR` **[boolean][22]** Extract text from image-native PDF documents with existing OCR text layers. (optional, default `false`)
-    *   `options.extractPDFTextImage` **[boolean][22]** Extract text from image-native PDF documents with no existing OCR layer.
-        This option exists because documents may still contain some text even if they are determined to be image-native (for example, scanned documents with a text-native header). (optional, default `false`)
 
 ## recognizePage
 
