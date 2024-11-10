@@ -261,3 +261,22 @@ describe('Check that line baselines are imported correctly.', function () {
     await scribe.terminate();
   });
 }).timeout(120000);
+
+describe('Check that page angle is calculated correctly.', function () {
+  this.timeout(10000);
+
+  it('Average text angle is correctly calculated', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples_rotated.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+    assert.strictEqual(Math.round(scribe.data.pageMetrics[0].angle || 0), -5);
+    assert.strictEqual(Math.round(scribe.data.pageMetrics[1].angle || 0), 5);
+  }).timeout(10000);
+
+  it('Different orientations should not impact page angle.', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/CSF_Proposed_Budget_Book_June_2024_r8_30.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+    assert.strictEqual(scribe.data.pageMetrics[0].angle, 0);
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);
