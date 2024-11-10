@@ -19,6 +19,7 @@ program
   .command('check')
   .argument('<pdf_file>', 'Input PDF file.')
   .argument('<ocr_file>', 'Input OCR file.  Accepts .hocr and Abbyy .xml (with character-level data enabled).')
+  .option('-w, --workers <number>', 'Number of workers to use. Default is up to 8.')
   .description('Calculate confidence metric for OCR data by running Tesseract OCR and comparing results.')
   .action(checkCLI);
 
@@ -26,6 +27,7 @@ program
   .command('eval')
   .argument('<pdf_file>', 'Input PDF file.')
   .argument('<ocr_file>', 'Input OCR file.  Accepts .hocr and Abbyy .xml (with character-level data enabled).')
+  .option('-w, --workers <number>', 'Number of workers to use. Default is up to 8.')
   .description('Evaluate internal OCR engine by recognizing document (provided PDF file), and comparing to ground truth (provided OCR file).')
   .action(evalInternalCLI);
 
@@ -46,6 +48,7 @@ program
   .option('-v, --vis', 'Print OCR text visibly over provided PDF file with colors coded by confidence.')
   .option('-c, --conf', 'Print average confidence metric for document.')
   .option('-r, --robust', 'Generate confidence metrics by running Tesseract OCR and comparing, rather than using confidence info in provided data.')
+  .option('-w, --workers <number>', 'Number of workers to use. Default is up to 8.')
   .description('Add OCR data to provided PDF file and save result as PDF.')
   .action(overlayCLI);
 
@@ -54,6 +57,7 @@ program
   .argument('<pdf_file>', 'Input PDF file.')
   .description('Recognize text in PDF file using internal OCR engine.')
   .option('-v, --vis', 'Print OCR text visibly over provided PDF file with colors coded by confidence.')
+  .option('-w, --workers <number>', 'Number of workers to use. Default is up to 8.')
   .action(recognizeCLI);
 
 program

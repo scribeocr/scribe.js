@@ -65,6 +65,14 @@ export class opt {
   static usePDFTextSupp = true;
 
   static usePDFTextMain = true;
+
+  /**
+   * Number of workers to use. Must be set prior to initialization.
+   * If set to `null` (default), the number of workers will be set up to 6 (browser) or 8 (node),
+   * if the system has enough resources.
+   * @type {?number}
+   */
+  static workerN = null;
 }
 
 export class inputData {
