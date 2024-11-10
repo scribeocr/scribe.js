@@ -510,7 +510,10 @@ export async function convertPageStext({ ocrStr, n }) {
 
     for (let i = 0; i < lineStrArr.length; i++) {
       const angle = convertLineStext(lineStrArr[i]);
-      if (typeof angle === 'number' && !Number.isNaN(angle)) angleRisePage.push(angle);
+      // The `Math.abs(angle) < 0.3` condition avoids vertical text impacting the angle calculation.
+      // The page angle is intended to account for page skew, not different orientations (90/180/270 degrees).
+      // TODO: Eventually different orientations should be supported.
+      if (typeof angle === 'number' && !Number.isNaN(angle) && Math.abs(angle) < 0.3) angleRisePage.push(angle);
     }
 
     if (parLineArr.length === 0) return;
