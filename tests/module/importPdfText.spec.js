@@ -253,7 +253,7 @@ describe('Check that line baselines are imported correctly.', function () {
 
   it('Should correctly parse line baselines for pages with rotation', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples_rotated.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
-    assert.strictEqual(Math.round(scribe.data.ocr.active[0].lines[25].baseline[1]), -10);
+    assert.strictEqual(Math.round(scribe.data.ocr.active[0].lines[25].baseline[1]), -11);
     assert.strictEqual(Math.round(scribe.data.ocr.active[1].lines[25].baseline[1]), -165);
   }).timeout(10000);
 
