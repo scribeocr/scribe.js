@@ -62,8 +62,8 @@ describe('Check Node.js commands.', () => {
 
   it('Should check contents of Abbyy .xml file.', async () => {
     // CLI equivalent: node cli/scribe.js check tests/assets/scribe_test_pdf1.pdf tests/assets/scribe_test_pdf1_abbyy.xml
-    // Call the function
-    await checkCLI(path.join(__dirname, '../assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../assets/scribe_test_pdf1_abbyy.xml'));
+    // Workers is set to 1 to avoid results changing based on the number of CPU cores due to the OCR engine learning.
+    await checkCLI(path.join(__dirname, '../assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../assets/scribe_test_pdf1_abbyy.xml'), { workers: 1 });
 
     // originalConsoleLog(consoleOutput);
 
@@ -111,7 +111,9 @@ describe('Check Node.js commands.', () => {
     const tmpDir = await tmpUnique.get();
 
     // Call the function
-    await overlayCLI(path.join(__dirname, '../assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../assets/scribe_test_pdf1_abbyy.xml'), tmpDir, { robust: true, conf: true, vis: true });
+    await overlayCLI(path.join(__dirname, '../assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../assets/scribe_test_pdf1_abbyy.xml'), tmpDir, {
+      robust: true, conf: true, vis: true, workers: 1,
+    });
 
     if (!/387 of 404/.test(consoleOutput)) originalConsoleLog(consoleOutput);
 

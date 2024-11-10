@@ -11,13 +11,13 @@ export const confCLI = async (ocrFile) => {
   process.exitCode = 0;
 };
 
-export const checkCLI = async (pdfFile, ocrFile) => {
-  await check(pdfFile, ocrFile);
+export const checkCLI = async (pdfFile, ocrFile, options) => {
+  await check(pdfFile, ocrFile, options);
   process.exitCode = 0;
 };
 
-export const evalInternalCLI = async (pdfFile, ocrFile) => {
-  const { evalMetrics } = await evalInternal(pdfFile, ocrFile);
+export const evalInternalCLI = async (pdfFile, ocrFile, options) => {
+  const { evalMetrics } = await evalInternal(pdfFile, ocrFile, options);
 
   const ignoreExtra = true;
   let metricWER;
@@ -53,6 +53,7 @@ export const extractCLI = async (pdfFile, outputDir, options) => {
  * @param {boolean} [options.robust]
  * @param {boolean} [options.conf]
  * @param {boolean} [options.vis]
+ * @param {number} [options.workers]
  */
 export const overlayCLI = async (pdfFile, ocrFile, outputDir, options) => {
   options.overlayMode = options.vis ? 'proof' : 'invis';

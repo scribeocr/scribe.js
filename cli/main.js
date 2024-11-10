@@ -21,9 +21,11 @@ scribe.opt.saveDebugImages = debugMode;
  * @param {boolean} [params.robustConfMode]
  * @param {boolean} [params.printConf]
  * @param {"eval" | "ebook" | "proof" | "invis"} [params.overlayMode]
- *
+ * @param {number} [params.workerN]
  */
 async function main(func, params) {
+  scribe.opt.workerN = params.workerN || null;
+
   await scribe.init({
     pdf: true,
     ocr: true,
@@ -118,16 +120,20 @@ export const conf = async (ocrFile) => (main('conf', { ocrFile }));
  *
  * @param {string} pdfFile - Path to PDF file.
  * @param {string} ocrFile
+ * @param {Object} options
+ * @param {number} [options.workers]
  */
-export const check = async (pdfFile, ocrFile) => (main('check', { pdfFile, ocrFile }));
+export const check = async (pdfFile, ocrFile, options) => (main('check', { pdfFile, ocrFile, workerN: options?.workers }));
 
 /**
  * Evaluate internal OCR engine.
  *
  * @param {string} pdfFile - Path to PDF file.
  * @param {string} ocrFile - Path to OCR file containing ground truth.
+ * @param {Object} options
+ * @param {number} [options.workers]
  */
-export const evalInternal = async (pdfFile, ocrFile) => (main('eval', { pdfFile, ocrFile }));
+export const evalInternal = async (pdfFile, ocrFile, options) => (main('eval', { pdfFile, ocrFile, workerN: options?.workers }));
 
 /**
  *
@@ -138,10 +144,10 @@ export const evalInternal = async (pdfFile, ocrFile) => (main('eval', { pdfFile,
  * @param {boolean} [options.robust]
  * @param {boolean} [options.conf]
  * @param {"eval" | "ebook" | "proof" | "invis"} [options.overlayMode]
- * @returns
+ * @param {number} [options.workers]
  */
 export const overlay = async (pdfFile, ocrFile, outputDir, options) => (main('overlay', {
-  pdfFile, ocrFile, outputDir, robustConfMode: options?.robust || false, printConf: options?.conf || false, overlayMode: options?.overlayMode || 'invis',
+  pdfFile, ocrFile, outputDir, robustConfMode: options?.robust || false, printConf: options?.conf || false, overlayMode: options?.overlayMode || 'invis', workerN: options?.workers,
 }));
 
 /**
@@ -149,9 +155,9 @@ export const overlay = async (pdfFile, ocrFile, outputDir, options) => (main('ov
  * @param {string} pdfFile - Path to PDF file.
  * @param {Object} options
  * @param {"eval" | "ebook" | "proof" | "invis"} [options.overlayMode]
- * @returns
+ * @param {number} [options.workers]
  */
-export const recognize = async (pdfFile, options) => (main('recognize', { pdfFile, overlayMode: options?.overlayMode || 'invis' }));
+export const recognize = async (pdfFile, options) => (main('recognize', { pdfFile, overlayMode: options?.overlayMode || 'invis', workerN: options?.workers }));
 
 /**
  *

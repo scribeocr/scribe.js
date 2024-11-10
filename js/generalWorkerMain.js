@@ -1,3 +1,5 @@
+import { opt } from './containers/app.js';
+
 /**
  * Initializes a general worker and returns an object with methods controlled by the worker.
  * @returns {Promise} A promise that resolves to an object with control methods.
@@ -265,14 +267,14 @@ export class gs {
       gs.#resReady = resolve;
     });
 
-    // Determine number of workers to use in the browser.
-    // This is the minimum of:
-    //      1. The number of cores
-    //      3. 6 (browser-imposed memory limits make going higher than 6 problematic, even on hardware that could support it)
-    // Node.js version only uses 1 worker.
-    let workerN = 1;
-    if (typeof process === 'undefined') {
+    let workerN;
+    if (opt.workerN) {
+      workerN = opt.workerN;
+    } else if (typeof process === 'undefined') {
       workerN = Math.min(Math.round((globalThis.navigator.hardwareConcurrency || 8) / 2), 6);
+    } else {
+      const cpuN = Math.floor((await import('os')).cpus().length / 2);
+      workerN = Math.min(cpuN - 1, 8);
     }
 
     const Tesseract = typeof process === 'undefined' ? (await import('../tess/tesseract.esm.min.js')).default : await import('@scribe.js/tesseract.js');
