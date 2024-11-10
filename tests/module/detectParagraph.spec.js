@@ -16,7 +16,8 @@ config.truncateThreshold = 0; // Disable truncation for actual/expected values o
 describe('Check paragraph detection with academic article.', function () {
   this.timeout(20000);
   before(async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/academic_article_1.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+    console.log(scribe.opt.usePDFText);
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/academic_article_1.pdf`]);
     scribe.data.ocr.active.forEach((page, index) => {
       const angle = scribe.data.pageMetrics[index].angle || 0;
       scribe.utils.assignParagraphs(page, angle);
@@ -38,7 +39,7 @@ describe('Check paragraph detection with academic article.', function () {
 describe('Check paragraph detection with complaint.', function () {
   this.timeout(20000);
   before(async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/complaint_1.pdf`], { extractPDFTextNative: true, extractPDFTextOCR: true });
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/complaint_1.pdf`]);
     scribe.data.ocr.active.forEach((page, index) => {
       const angle = scribe.data.pageMetrics[index].angle || 0;
       scribe.utils.assignParagraphs(page, angle);

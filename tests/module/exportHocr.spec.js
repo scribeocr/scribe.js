@@ -63,9 +63,7 @@ describe('Check .hocr export function.', function () {
     assert.deepStrictEqual(ocrAllComp1, ocrAllComp2);
   }).timeout(10000);
 
-
   it('Exporting to .hocr and reimporting should restore layout tables without modification', async () => {
-
     // This file should contain data tables when parsed.
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/bill.abbyy.xml`]);
     assert.isAbove(scribe.data.layoutDataTables.pages[0].tables.length, 0);
@@ -75,15 +73,14 @@ describe('Check .hocr export function.', function () {
     const hocrOutStr = writeHocr(scribe.data.ocr.active);
     const encoder = new TextEncoder();
     const encoded = encoder.encode(hocrOutStr);
-  
+
     await scribe.terminate();
-    await scribe.importFiles({ocrFiles: [encoded.buffer]});
+    await scribe.importFiles({ ocrFiles: [encoded.buffer] });
 
     const layoutTables2 = structuredClone(scribe.data.layoutDataTables.pages);
 
     assert.deepStrictEqual(layoutTables1, layoutTables2);
   }).timeout(10000);
-
 
   after(async () => {
     await scribe.terminate();
