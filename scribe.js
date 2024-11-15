@@ -23,6 +23,7 @@ import { importFiles, importFilesSupp } from './js/import/import.js';
 import { combineOCRPage } from './js/modifyOCR.js';
 import {
   calcBoxOverlap, countSubstringOccurrences, getRandomAlphanum, replaceSmartQuotes,
+  saveAs,
 } from './js/utils/miscUtils.js';
 import layout, { calcTableBbox } from './js/objects/layoutObjects.js';
 import ocr from './js/objects/ocrObjects.js';
@@ -246,6 +247,8 @@ class utils {
   static renderPageStatic = renderPageStatic;
 
   static getImageBitmap = getImageBitmap;
+
+  static saveAs = saveAs;
 }
 
 /**
