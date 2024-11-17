@@ -44,13 +44,15 @@ describe('Check .hocr import function (basic)', function () {
   });
 }).timeout(120000);
 
-describe('Check Tesseract .hocr import function (small caps).', function () {
+describe('Check Tesseract .hocr import function imports styles correctly.', function () {
   this.timeout(10000);
   before(async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/econometrica_example_tess.hocr`]);
+
   });
 
   it('Should correctly import small caps printed using font size adjustments', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/econometrica_example_tess.hocr`]);
+
     const text1 = scribe.data.ocr.active[0].lines[4].words.map((x) => x.text).join(' ');
 
     const text2 = scribe.data.ocr.active[0].lines[23].words.map((x) => x.text).join(' ');
@@ -58,6 +60,19 @@ describe('Check Tesseract .hocr import function (small caps).', function () {
     assert.strictEqual(text1, 'Shubhdeep Deb');
 
     assert.strictEqual(text2, 'Wage inequality in the United States has risen sharply since the 1980s. The skill');
+  }).timeout(10000);
+
+  it('Should ignore italics in imports from Tesseract', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/tesseract_italics_example_1a.hocr`]);
+
+    assert.strictEqual(scribe.data.ocr.active[0].lines[0].words[0].style, 'normal');
+  }).timeout(10000);
+
+  // This version was created with the hocr_font_info and hocr_char_boxes options enabled.
+  it('Should ignore italics in imports from Tesseract (alt configs)', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/tesseract_italics_example_1b.hocr`]);
+
+    assert.strictEqual(scribe.data.ocr.active[0].lines[0].words[0].style, 'normal');
   }).timeout(10000);
 
   after(async () => {

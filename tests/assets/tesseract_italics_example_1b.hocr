@@ -1,0 +1,282 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE html PUBLIC "-//W3C//DTD XHTML 1.0 Transitional//EN"
+    "http://www.w3.org/TR/xhtml1/DTD/xhtml1-transitional.dtd">
+<html xmlns="http://www.w3.org/1999/xhtml" xml:lang="en" lang="en">
+ <head>
+  <title></title>
+  <meta http-equiv="Content-Type" content="text/html;charset=utf-8"/>
+  <meta name='ocr-system' content='tesseract 5.1.0-471-gbc490' />
+  <meta name='ocr-capabilities' content='ocr_page ocr_carea ocr_par ocr_line ocrx_word ocrp_wconf ocrp_lang ocrp_dir ocrp_font ocrp_fsize'/>
+ </head>
+ <body>
+  <div class='ocr_page' id='page_1' title='image "italics_example.png"; bbox 0 0 962 167; ppageno 0; scan_res 96 96'>
+   <div class='ocr_carea' id='block_1_1' title="bbox 13 0 934 39">
+    <p class='ocr_par' id='par_1_1' lang='eng' title="bbox 13 0 934 39">
+     <span class='ocr_line' id='line_1_1' title="bbox 13 0 934 39; baseline 0 -7; x_size 28; x_descenders 6; x_ascenders 5">
+      <span class='ocrx_word' id='word_1_1' title='bbox 13 10 129 38; x_wconf 86; x_font Verdana_Italic; x_fsize 21'><em>
+       <span class='ocrx_cinfo' title='x_bboxes 13 10 33 32; x_conf 92.184639'>E</span>
+       <span class='ocrx_cinfo' title='x_bboxes 32 15 47 32; x_conf 86.170174'>a</span>
+       <span class='ocrx_cinfo' title='x_bboxes 49 15 60 32; x_conf 96.35717'>r</span>
+       <span class='ocrx_cinfo' title='x_bboxes 59 15 74 32; x_conf 94.124207'>n</span>
+       <span class='ocrx_cinfo' title='x_bboxes 75 10 83 32; x_conf 97.14241'>i</span>
+       <span class='ocrx_cinfo' title='x_bboxes 82 15 97 32; x_conf 95.467827'>n</span>
+       <span class='ocrx_cinfo' title='x_bboxes 97 15 115 38; x_conf 91.441727'>g</span>
+       <span class='ocrx_cinfo' title='x_bboxes 115 15 129 32; x_conf 91.443634'>s</span></em>
+      </span>
+      <span class='ocrx_word' id='word_1_2' title='bbox 140 10 162 32; x_wconf 91; x_font Verdana_Italic; x_fsize 21'><em>
+       <span class='ocrx_cinfo' title='x_bboxes 140 10 147 32; x_conf 91.643143'>I</span>
+       <span class='ocrx_cinfo' title='x_bboxes 147 15 162 32; x_conf 95.337753'>n</span></em>
+      </span>
+      <span class='ocrx_word' id='word_1_3' title='bbox 172 10 227 32; x_wconf 90; x_font Verdana_Italic; x_fsize 21'><em>
+       <span class='ocrx_cinfo' title='x_bboxes 172 10 186 32; x_conf 97.927032'>L</span>
+       <span class='ocrx_cinfo' title='x_bboxes 188 10 195 32; x_conf 90.223312'>i</span>
+       <span class='ocrx_cinfo' title='x_bboxes 194 15 210 32; x_conf 95.405945'>n</span>
+       <span class='ocrx_cinfo' title='x_bboxes 211 15 227 32; x_conf 92.341614'>e</span></em>
+      </span>
+      <span class='ocrx_word' id='word_1_4' title='bbox 237 0 336 38; x_wconf 79; x_font Verdana_Italic; x_fsize 21'><em>
+       <span class='ocrx_cinfo' title='x_bboxes 237 0 257 32; x_conf 79.910675'>b</span>
+       <span class='ocrx_cinfo' title='x_bboxes 257 15 273 32; x_conf 92.748466'>e</span>
+       <span class='ocrx_cinfo' title='x_bboxes 274 15 288 32; x_conf 88.193069'>s</span>
+       <span class='ocrx_cinfo' title='x_bboxes 287 15 305 38; x_conf 94.597084'>p</span>
+       <span class='ocrx_cinfo' title='x_bboxes 305 10 313 32; x_conf 93.887627'>i</span>
+       <span class='ocrx_cinfo' title='x_bboxes 312 11 321 32; x_conf 79.662155'>t</span>
+       <span class='ocrx_cinfo' title='x_bboxes 320 0 336 32; x_conf 82.170105'>e</span></em>
+      </span>
+      <span class='ocrx_word' id='word_1_5' title='bbox 345 10 420 32; x_wconf 88; x_font Verdana_Italic; x_fsize 21'><em>
+       <span class='ocrx_cinfo' title='x_bboxes 345 10 365 32; x_conf 93.180222'>P</span>
+       <span class='ocrx_cinfo' title='x_bboxes 365 15 376 32; x_conf 92.308044'>r</span>
+       <span class='ocrx_cinfo' title='x_bboxes 375 15 390 32; x_conf 90.834274'>e</span>
+       <span class='ocrx_cinfo' title='x_bboxes 391 15 405 32; x_conf 88.239868'>s</span>
+       <span class='ocrx_cinfo' title='x_bboxes 406 15 420 32; x_conf 89.20298'>s</span></em>
+      </span>
+      <span class='ocrx_word' id='word_1_6' title='bbox 430 9 549 38; x_wconf 82; x_font Verdana_Italic; x_fsize 21'><em>
+       <span class='ocrx_cinfo' title='x_bboxes 430 9 452 32; x_conf 92.719666'>O</span>
+       <span class='ocrx_cinfo' title='x_bboxes 453 15 468 32; x_conf 90.771851'>u</span>
+       <span class='ocrx_cinfo' title='x_bboxes 469 11 478 32; x_conf 82.767159'>t</span>
+       <span class='ocrx_cinfo' title='x_bboxes 477 15 493 32; x_conf 90.551758'>a</span>
+       <span class='ocrx_cinfo' title='x_bboxes 493 15 511 38; x_conf 91.567818'>g</span>
+       <span class='ocrx_cinfo' title='x_bboxes 511 15 526 32; x_conf 94.111656'>e</span>
+       <span class='ocrx_cinfo' title='x_bboxes 527 15 541 32; x_conf 90.062592'>s</span>
+       <span class='ocrx_cinfo' title='x_bboxes 542 16 549 36; x_conf 85.007736'>;</span></em>
+      </span>
+      <span class='ocrx_word' id='word_1_7' title='bbox 559 0 657 39; x_wconf 77; x_font Arial_Italic; x_fsize 21'><em>
+       <span class='ocrx_cinfo' title='x_bboxes 559 0 578 32; x_conf 77.788887'>S</span>
+       <span class='ocrx_cinfo' title='x_bboxes 578 11 587 32; x_conf 79.202011'>t</span>
+       <span class='ocrx_cinfo' title='x_bboxes 586 15 601 32; x_conf 85.86602'>a</span>
+       <span class='ocrx_cinfo' title='x_bboxes 601 15 619 39; x_conf 92.33564'>y</span>
+       <span class='ocrx_cinfo' title='x_bboxes 618 10 626 32; x_conf 95.613098'>i</span>
+       <span class='ocrx_cinfo' title='x_bboxes 625 15 640 32; x_conf 92.464897'>n</span>
+       <span class='ocrx_cinfo' title='x_bboxes 639 15 657 38; x_conf 86.55143'>g</span></em>
+      </span>
+      <span class='ocrx_word' id='word_1_8' title='bbox 665 0 762 32; x_wconf 77; x_font Verdana_Italic; x_fsize 21'><em>
+       <span class='ocrx_cinfo' title='x_bboxes 665 0 688 32; x_conf 77.369331'>N</span>
+       <span class='ocrx_cinfo' title='x_bboxes 687 15 703 32; x_conf 92.093124'>e</span>
+       <span class='ocrx_cinfo' title='x_bboxes 704 15 720 32; x_conf 93.737793'>u</span>
+       <span class='ocrx_cinfo' title='x_bboxes 720 11 729 32; x_conf 82.489304'>t</span>
+       <span class='ocrx_cinfo' title='x_bboxes 728 15 740 32; x_conf 87.894348'>r</span>
+       <span class='ocrx_cinfo' title='x_bboxes 739 15 754 32; x_conf 87.214661'>a</span>
+       <span class='ocrx_cinfo' title='x_bboxes 755 10 762 32; x_conf 94.476631'>l</span></em>
+      </span>
+      <span class='ocrx_word' id='word_1_9' title='bbox 770 15 802 32; x_wconf 91; x_font Verdana_Italic; x_fsize 21'><em>
+       <span class='ocrx_cinfo' title='x_bboxes 770 15 785 32; x_conf 91.587807'>o</span>
+       <span class='ocrx_cinfo' title='x_bboxes 787 15 802 32; x_conf 95.68634'>n</span></em>
+      </span>
+      <span class='ocrx_word' id='word_1_10' title='bbox 815 10 934 32; x_wconf 84; x_font Verdana_Italic; x_fsize 21'><em>
+       <span class='ocrx_cinfo' title='x_bboxes 815 10 834 32; x_conf 94.575188'>V</span>
+       <span class='ocrx_cinfo' title='x_bboxes 830 15 846 32; x_conf 88.934326'>a</span>
+       <span class='ocrx_cinfo' title='x_bboxes 848 10 855 32; x_conf 94.744095'>l</span>
+       <span class='ocrx_cinfo' title='x_bboxes 854 15 870 32; x_conf 91.6754'>u</span>
+       <span class='ocrx_cinfo' title='x_bboxes 870 15 886 32; x_conf 92.390442'>a</span>
+       <span class='ocrx_cinfo' title='x_bboxes 887 12 896 32; x_conf 84.451729'>t</span>
+       <span class='ocrx_cinfo' title='x_bboxes 895 10 903 32; x_conf 91.166916'>i</span>
+       <span class='ocrx_cinfo' title='x_bboxes 902 15 918 32; x_conf 94.297348'>o</span>
+       <span class='ocrx_cinfo' title='x_bboxes 918 15 934 32; x_conf 93.610504'>n</span></em>
+      </span>
+     </span>
+    </p>
+   </div>
+   <div class='ocr_carea' id='block_1_2' title="bbox 11 70 795 149">
+    <p class='ocr_par' id='par_1_2' lang='eng' title="bbox 11 70 795 149">
+     <span class='ocr_line' id='line_1_2' title="bbox 11 70 518 90; baseline 0 0; x_size 25.460993; x_descenders 5.4609933; x_ascenders 5">
+      <span class='ocrx_word' id='word_1_11' title='bbox 11 75 90 90; x_wconf 71; x_font Verdana_Italic; x_fsize 19'><em>
+       <span class='ocrx_cinfo' title='x_bboxes 11 75 37 90; x_conf 71.705872'>m</span>
+       <span class='ocrx_cinfo' title='x_bboxes 38 75 54 90; x_conf 79.753479'>n</span>
+       <span class='ocrx_cinfo' title='x_bboxes 55 75 67 90; x_conf 77.014328'>u</span>
+       <span class='ocrx_cinfo' title='x_bboxes 69 75 82 90; x_conf 77.221756'>c</span>
+       <span class='ocrx_cinfo' title='x_bboxes 87 75 90 90; x_conf 89.794472'>:</span></em>
+      </span>
+      <span class='ocrx_word' id='word_1_12' title='bbox 100 70 179 90; x_wconf 80; x_font Verdana_Italic; x_fsize 19'><em>
+       <span class='ocrx_cinfo' title='x_bboxes 100 70 115 90; x_conf 96.915726'>N</span>
+       <span class='ocrx_cinfo' title='x_bboxes 118 75 130 90; x_conf 87.079361'>e</span>
+       <span class='ocrx_cinfo' title='x_bboxes 133 76 143 90; x_conf 90.386734'>u</span>
+       <span class='ocrx_cinfo' title='x_bboxes 145 72 152 90; x_conf 80.287552'>t</span>
+       <span class='ocrx_cinfo' title='x_bboxes 154 76 161 89; x_conf 86.161591'>r</span>
+       <span class='ocrx_cinfo' title='x_bboxes 161 75 174 90; x_conf 88.633049'>a</span>
+       <span class='ocrx_cinfo' title='x_bboxes 176 70 179 90; x_conf 95.735931'>l</span></em>
+      </span>
+      <span class='ocrx_word' id='word_1_13' title='bbox 352 75 435 90; x_wconf 83; x_font Verdana_Bold; x_fsize 19'><strong>
+       <span class='ocrx_cinfo' title='x_bboxes 352 75 364 90; x_conf 85.656937'>S</span>
+       <span class='ocrx_cinfo' title='x_bboxes 365 75 376 90; x_conf 87.014359'>E</span>
+       <span class='ocrx_cinfo' title='x_bboxes 377 75 391 90; x_conf 83.673813'>C</span>
+       <span class='ocrx_cinfo' title='x_bboxes 388 75 401 90; x_conf 88.692314'>T</span>
+       <span class='ocrx_cinfo' title='x_bboxes 402 75 416 90; x_conf 87.176468'>O</span>
+       <span class='ocrx_cinfo' title='x_bboxes 417 75 429 90; x_conf 83.764816'>R</span>
+       <span class='ocrx_cinfo' title='x_bboxes 432 79 435 90; x_conf 87.636307'>:</span></strong>
+      </span>
+      <span class='ocrx_word' id='word_1_14' title='bbox 446 70 518 90; x_wconf 84; x_font Verdana_Italic; x_fsize 19'><em>
+       <span class='ocrx_cinfo' title='x_bboxes 446 70 464 90; x_conf 90.798279'>M</span>
+       <span class='ocrx_cinfo' title='x_bboxes 466 75 479 90; x_conf 92.349709'>e</span>
+       <span class='ocrx_cinfo' title='x_bboxes 480 72 486 90; x_conf 84.427231'>t</span>
+       <span class='ocrx_cinfo' title='x_bboxes 487 75 500 90; x_conf 89.979622'>a</span>
+       <span class='ocrx_cinfo' title='x_bboxes 502 70 505 90; x_conf 97.544624'>l</span>
+       <span class='ocrx_cinfo' title='x_bboxes 507 75 518 90; x_conf 89.908844'>s</span></em>
+      </span>
+     </span>
+     <span class='ocr_line' id='line_1_3' title="bbox 11 98 795 124; baseline 0 -6; x_size 24; x_descenders 5; x_ascenders 5">
+      <span class='ocrx_word' id='word_1_15' title='bbox 11 104 88 119; x_wconf 78; x_font Verdana_Bold; x_fsize 18'><strong>
+       <span class='ocrx_cinfo' title='x_bboxes 11 104 22 118; x_conf 87.272644'>T</span>
+       <span class='ocrx_cinfo' title='x_bboxes 23 104 35 118; x_conf 85.612808'>A</span>
+       <span class='ocrx_cinfo' title='x_bboxes 37 104 49 118; x_conf 78.872574'>R</span>
+       <span class='ocrx_cinfo' title='x_bboxes 50 104 63 119; x_conf 80.801102'>G</span>
+       <span class='ocrx_cinfo' title='x_bboxes 65 104 76 118; x_conf 79.601143'>E</span>
+       <span class='ocrx_cinfo' title='x_bboxes 76 104 88 118; x_conf 84.314384'>T</span></strong>
+      </span>
+      <span class='ocrx_word' id='word_1_16' title='bbox 94 104 156 119; x_wconf 81; x_font Arial_Bold; x_fsize 18'><strong>
+       <span class='ocrx_cinfo' title='x_bboxes 94 104 106 118; x_conf 88.199142'>P</span>
+       <span class='ocrx_cinfo' title='x_bboxes 107 104 119 118; x_conf 81.166756'>R</span>
+       <span class='ocrx_cinfo' title='x_bboxes 121 104 126 119; x_conf 89.553108'>I</span>
+       <span class='ocrx_cinfo' title='x_bboxes 121 104 138 119; x_conf 88.991089'>C</span>
+       <span class='ocrx_cinfo' title='x_bboxes 139 104 151 118; x_conf 86.784729'>E</span>
+       <span class='ocrx_cinfo' title='x_bboxes 153 108 156 118; x_conf 86.797073'>:</span></strong>
+      </span>
+      <span class='ocrx_word' id='word_1_17' title='bbox 167 98 257 121; x_wconf 86; x_font Arial; x_fsize 18'>
+       <span class='ocrx_cinfo' title='x_bboxes 167 99 183 119; x_conf 97.38385'>U</span>
+       <span class='ocrx_cinfo' title='x_bboxes 185 99 200 119; x_conf 92.539886'>S</span>
+       <span class='ocrx_cinfo' title='x_bboxes 202 98 214 121; x_conf 86.388901'>$</span>
+       <span class='ocrx_cinfo' title='x_bboxes 218 99 224 118; x_conf 87.431404'>1</span>
+       <span class='ocrx_cinfo' title='x_bboxes 230 99 243 118; x_conf 94.121635'>7</span>
+       <span class='ocrx_cinfo' title='x_bboxes 245 99 257 119; x_conf 92.462326'>0</span>
+      </span>
+      <span class='ocrx_word' id='word_1_18' title='bbox 352 104 429 119; x_wconf 75; x_font Verdana_Italic; x_fsize 18'><em>
+       <span class='ocrx_cinfo' title='x_bboxes 352 104 364 119; x_conf 85.457611'>s</span>
+       <span class='ocrx_cinfo' title='x_bboxes 365 104 376 118; x_conf 75.859543'>s</span>
+       <span class='ocrx_cinfo' title='x_bboxes 377 104 391 119; x_conf 88.748085'>c</span>
+       <span class='ocrx_cinfo' title='x_bboxes 388 104 393 110; x_conf 75.578812'>’</span>
+       <span class='ocrx_cinfo' title='x_bboxes 391 104 401 119; x_conf 82.800674'>r</span>
+       <span class='ocrx_cinfo' title='x_bboxes 401 104 416 119; x_conf 88.629242'>o</span>
+       <span class='ocrx_cinfo' title='x_bboxes 417 104 429 118; x_conf 77.830551'>n</span></em>
+      </span>
+      <span class='ocrx_word' id='word_1_19' title='bbox 436 104 626 119; x_wconf 78; x_font Verdana_Bold; x_fsize 18'><strong>
+       <span class='ocrx_cinfo' title='x_bboxes 436 104 448 118; x_conf 85.867752'>R</span>
+       <span class='ocrx_cinfo' title='x_bboxes 449 104 461 118; x_conf 86.507233'>E</span>
+       <span class='ocrx_cinfo' title='x_bboxes 461 104 474 119; x_conf 90.615265'>C</span>
+       <span class='ocrx_cinfo' title='x_bboxes 476 104 489 119; x_conf 83.870338'>O</span>
+       <span class='ocrx_cinfo' title='x_bboxes 491 104 504 118; x_conf 85.021515'>M</span>
+       <span class='ocrx_cinfo' title='x_bboxes 507 104 520 118; x_conf 87.718468'>M</span>
+       <span class='ocrx_cinfo' title='x_bboxes 522 104 533 118; x_conf 85.014198'>E</span>
+       <span class='ocrx_cinfo' title='x_bboxes 535 104 547 118; x_conf 89.448044'>N</span>
+       <span class='ocrx_cinfo' title='x_bboxes 549 104 561 118; x_conf 88.755394'>D</span>
+       <span class='ocrx_cinfo' title='x_bboxes 562 104 575 118; x_conf 84.761253'>A</span>
+       <span class='ocrx_cinfo' title='x_bboxes 575 104 580 110; x_conf 84.668884'>&#39;</span>
+       <span class='ocrx_cinfo' title='x_bboxes 578 104 591 118; x_conf 78.581604'>H</span>
+       <span class='ocrx_cinfo' title='x_bboxes 592 104 606 119; x_conf 86.71077'>O</span>
+       <span class='ocrx_cinfo' title='x_bboxes 607 104 619 118; x_conf 91.40097'>N</span>
+       <span class='ocrx_cinfo' title='x_bboxes 622 108 626 118; x_conf 88.144394'>:</span></strong>
+      </span>
+      <span class='ocrx_word' id='word_1_20' title='bbox 636 99 795 124; x_wconf 62; x_font Verdana_Italic; x_fsize 18'><em>
+       <span class='ocrx_cinfo' title='x_bboxes 636 99 654 118; x_conf 92.158936'>M</span>
+       <span class='ocrx_cinfo' title='x_bboxes 656 104 669 119; x_conf 88.048019'>a</span>
+       <span class='ocrx_cinfo' title='x_bboxes 671 102 680 119; x_conf 91.547394'>r</span>
+       <span class='ocrx_cinfo' title='x_bboxes 678 99 691 119; x_conf 91.197838'>k</span>
+       <span class='ocrx_cinfo' title='x_bboxes 692 104 704 119; x_conf 84.831238'>e</span>
+       <span class='ocrx_cinfo' title='x_bboxes 706 101 711 119; x_conf 75.542786'>t</span>
+       <span class='ocrx_cinfo' title='x_bboxes 713 110 719 113; x_conf 93.155739'>-</span>
+       <span class='ocrx_cinfo' title='x_bboxes 721 104 739 118; x_conf 96.386971'>w</span>
+       <span class='ocrx_cinfo' title='x_bboxes 740 104 753 119; x_conf 88.554565'>e</span>
+       <span class='ocrx_cinfo' title='x_bboxes 756 99 757 118; x_conf 62.459053'>i</span>
+       <span class='ocrx_cinfo' title='x_bboxes 760 104 772 124; x_conf 89.138885'>g</span>
+       <span class='ocrx_cinfo' title='x_bboxes 775 99 787 118; x_conf 93.956223'>h</span>
+       <span class='ocrx_cinfo' title='x_bboxes 788 101 795 119; x_conf 86.144455'>t</span></em>
+      </span>
+     </span>
+     <span class='ocr_line' id='line_1_4' title="bbox 11 127 759 149; baseline -0.001 -2; x_size 25.460993; x_descenders 5.4609933; x_ascenders 5">
+      <span class='ocrx_word' id='word_1_21' title='bbox 11 132 68 147; x_wconf 84; x_font Trebuchet_MS_Bold; x_fsize 19'><strong>
+       <span class='ocrx_cinfo' title='x_bboxes 11 132 24 147; x_conf 87.328438'>B</span>
+       <span class='ocrx_cinfo' title='x_bboxes 25 132 37 146; x_conf 84.250641'>A</span>
+       <span class='ocrx_cinfo' title='x_bboxes 39 132 50 147; x_conf 89.961617'>S</span>
+       <span class='ocrx_cinfo' title='x_bboxes 51 132 55 147; x_conf 90.312576'>I</span>
+       <span class='ocrx_cinfo' title='x_bboxes 56 132 68 147; x_conf 85.224617'>S</span></strong>
+      </span>
+      <span class='ocrx_word' id='word_1_22' title='bbox 75 132 188 147; x_wconf 79; x_font Verdana_Bold; x_fsize 19'><strong>
+       <span class='ocrx_cinfo' title='x_bboxes 75 132 88 147; x_conf 88.757652'>O</span>
+       <span class='ocrx_cinfo' title='x_bboxes 90 132 100 146; x_conf 88.056305'>F</span>
+       <span class='ocrx_cinfo' title='x_bboxes 105 132 116 147; x_conf 97.490753'>T</span>
+       <span class='ocrx_cinfo' title='x_bboxes 117 132 129 146; x_conf 84.034668'>A</span>
+       <span class='ocrx_cinfo' title='x_bboxes 131 132 143 147; x_conf 79.038788'>R</span>
+       <span class='ocrx_cinfo' title='x_bboxes 144 132 157 147; x_conf 88.056076'>G</span>
+       <span class='ocrx_cinfo' title='x_bboxes 160 132 171 147; x_conf 91.00415'>E</span>
+       <span class='ocrx_cinfo' title='x_bboxes 172 132 183 147; x_conf 97.473289'>T</span>
+       <span class='ocrx_cinfo' title='x_bboxes 184 136 188 147; x_conf 88.400497'>:</span></strong>
+      </span>
+      <span class='ocrx_word' id='word_1_23' title='bbox 207 127 245 147; x_wconf 87; x_font Verdana_Italic; x_fsize 19'><em>
+       <span class='ocrx_cinfo' title='x_bboxes 207 127 221 146; x_conf 87.972275'>P</span>
+       <span class='ocrx_cinfo' title='x_bboxes 222 127 229 146; x_conf 89.033272'>/</span>
+       <span class='ocrx_cinfo' title='x_bboxes 231 127 245 147; x_conf 93.247253'>E</span></em>
+      </span>
+      <span class='ocrx_word' id='word_1_24' title='bbox 253 127 274 147; x_wconf 73; x_font Verdana_Italic; x_fsize 19'><em>
+       <span class='ocrx_cinfo' title='x_bboxes 253 132 266 147; x_conf 91.696671'>o</span>
+       <span class='ocrx_cinfo' title='x_bboxes 268 127 274 146; x_conf 73.886536'>f</span></em>
+      </span>
+      <span class='ocrx_word' id='word_1_25' title='bbox 285 128 322 147; x_wconf 87; x_font Verdana_Italic; x_fsize 19'><em>
+       <span class='ocrx_cinfo' title='x_bboxes 285 128 291 147; x_conf 88.451324'>1</span>
+       <span class='ocrx_cinfo' title='x_bboxes 297 128 310 147; x_conf 87.963799'>5</span>
+       <span class='ocrx_cinfo' title='x_bboxes 311 132 322 147; x_conf 89.299316'>x</span></em>
+      </span>
+      <span class='ocrx_word' id='word_1_26' title='bbox 331 132 357 147; x_wconf 87; x_font Verdana_Italic; x_fsize 19'><em>
+       <span class='ocrx_cinfo' title='x_bboxes 331 132 343 147; x_conf 87.115685'>o</span>
+       <span class='ocrx_cinfo' title='x_bboxes 346 132 357 146; x_conf 98.850021'>n</span></em>
+      </span>
+      <span class='ocrx_word' id='word_1_27' title='bbox 366 132 402 147; x_wconf 87; x_font Verdana_Italic; x_fsize 19'><em>
+       <span class='ocrx_cinfo' title='x_bboxes 366 132 379 147; x_conf 89.156082'>o</span>
+       <span class='ocrx_cinfo' title='x_bboxes 382 132 393 147; x_conf 91.331139'>u</span>
+       <span class='ocrx_cinfo' title='x_bboxes 396 132 402 146; x_conf 87.106323'>r</span></em>
+      </span>
+      <span class='ocrx_word' id='word_1_28' title='bbox 412 127 477 146; x_wconf 90; x_font Trebuchet_MS_Bold; x_fsize 19'><strong>
+       <span class='ocrx_cinfo' title='x_bboxes 412 127 425 146; x_conf 93.119965'>F</span>
+       <span class='ocrx_cinfo' title='x_bboxes 427 127 443 146; x_conf 98.548996'>Y</span>
+       <span class='ocrx_cinfo' title='x_bboxes 445 127 447 133; x_conf 97.549438'>&#39;</span>
+       <span class='ocrx_cinfo' title='x_bboxes 451 128 458 146; x_conf 90.469742'>1</span>
+       <span class='ocrx_cinfo' title='x_bboxes 464 128 477 146; x_conf 90.207603'>4</span></strong>
+      </span>
+      <span class='ocrx_word' id='word_1_29' title='bbox 487 127 535 147; x_wconf 89; x_font Verdana_Italic; x_fsize 19'><em>
+       <span class='ocrx_cinfo' title='x_bboxes 487 127 500 146; x_conf 89.487167'>E</span>
+       <span class='ocrx_cinfo' title='x_bboxes 504 127 518 146; x_conf 94.09864'>P</span>
+       <span class='ocrx_cinfo' title='x_bboxes 520 127 535 147; x_conf 90.344376'>S</span></em>
+      </span>
+      <span class='ocrx_word' id='word_1_30' title='bbox 545 127 639 147; x_wconf 79; x_font Verdana_Italic; x_fsize 19'><em>
+       <span class='ocrx_cinfo' title='x_bboxes 545 132 557 147; x_conf 82.354736'>e</span>
+       <span class='ocrx_cinfo' title='x_bboxes 559 132 570 147; x_conf 89.352417'>s</span>
+       <span class='ocrx_cinfo' title='x_bboxes 571 129 578 147; x_conf 81.147018'>t</span>
+       <span class='ocrx_cinfo' title='x_bboxes 579 127 582 146; x_conf 95.706177'>i</span>
+       <span class='ocrx_cinfo' title='x_bboxes 584 132 603 146; x_conf 95.569229'>m</span>
+       <span class='ocrx_cinfo' title='x_bboxes 606 132 618 147; x_conf 87.880814'>a</span>
+       <span class='ocrx_cinfo' title='x_bboxes 619 129 626 147; x_conf 79.552841'>t</span>
+       <span class='ocrx_cinfo' title='x_bboxes 627 132 639 147; x_conf 83.924164'>e</span></em>
+      </span>
+      <span class='ocrx_word' id='word_1_31' title='bbox 648 127 759 149; x_wconf 78; x_font Arial_Bold; x_fsize 19'><strong>
+       <span class='ocrx_cinfo' title='x_bboxes 648 132 660 147; x_conf 84.20842'>o</span>
+       <span class='ocrx_cinfo' title='x_bboxes 662 127 668 146; x_conf 78.463631'>f</span>
+       <span class='ocrx_cinfo' title='x_bboxes 676 127 689 149; x_conf 85.795502'>$</span>
+       <span class='ocrx_cinfo' title='x_bboxes 692 128 699 147; x_conf 93.401054'>1</span>
+       <span class='ocrx_cinfo' title='x_bboxes 707 128 714 146; x_conf 86.767197'>1</span>
+       <span class='ocrx_cinfo' title='x_bboxes 721 143 724 147; x_conf 91.455078'>.</span>
+       <span class='ocrx_cinfo' title='x_bboxes 726 128 740 146; x_conf 93.503624'>4</span>
+       <span class='ocrx_cinfo' title='x_bboxes 738 128 754 146; x_conf 91.334534'>4</span>
+       <span class='ocrx_cinfo' title='x_bboxes 756 143 759 147; x_conf 90.777588'>,</span></strong>
+      </span>
+     </span>
+    </p>
+   </div>
+  </div>
+ </body>
+</html>
