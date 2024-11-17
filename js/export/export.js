@@ -13,14 +13,14 @@ import { writeText } from './writeText.js';
  * Export active OCR data to specified format.
  * @public
  * @param {'pdf'|'hocr'|'docx'|'xlsx'|'txt'|'text'} [format='txt']
- * @param {number} [minValue=0]
- * @param {number} [maxValue=-1]
+ * @param {number} [minPage=0] - First page to export.
+ * @param {number} [maxPage=-1] - Last page to export (inclusive). -1 exports through the last page.
  * @returns {Promise<string|ArrayBuffer>}
  */
-export async function exportData(format = 'txt', minValue = 0, maxValue = -1) {
+export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
   if (format === 'text') format = 'txt';
 
-  if (maxValue === -1) maxValue = inputData.pageCount - 1;
+  if (maxPage === -1) maxPage = inputData.pageCount - 1;
 
   /** @type {Array<OcrPage>} */
   let ocrDownload = [];
@@ -40,7 +40,7 @@ export async function exportData(format = 'txt', minValue = 0, maxValue = -1) {
   if (format === 'pdf') {
     const dimsLimit = { width: -1, height: -1 };
     if (opt.standardizePageSize) {
-      for (let i = minValue; i <= maxValue; i++) {
+      for (let i = minPage; i <= maxPage; i++) {
         dimsLimit.height = Math.max(dimsLimit.height, pageMetricsArr[i].dims.height);
         dimsLimit.width = Math.max(dimsLimit.width, pageMetricsArr[i].dims.width);
       }
@@ -88,8 +88,8 @@ export async function exportData(format = 'txt', minValue = 0, maxValue = -1) {
         try {
           content = await w.overlayText({
             doc2: pdfOverlay,
-            minpage: minValue,
-            maxpage: maxValue,
+            minpage: minPage,
+            maxpage: maxPage,
             pagewidth: dimsLimit.width,
             pageheight: dimsLimit.height,
             humanReadable: opt.humanReadablePDF,
@@ -111,10 +111,10 @@ export async function exportData(format = 'txt', minValue = 0, maxValue = -1) {
         const renderImage = binary || inputData.pdfMode;
 
         // Pre-render to benefit from parallel processing, since the loop below is synchronous.
-        if (renderImage) await ImageCache.preRenderRange(minValue, maxValue, binary, props);
+        if (renderImage) await ImageCache.preRenderRange(minPage, maxPage, binary, props);
 
         await w.overlayTextImageStart({ humanReadable: opt.humanReadablePDF });
-        for (let i = minValue; i < maxValue + 1; i++) {
+        for (let i = minPage; i < maxPage + 1; i++) {
           /** @type {import('../containers/imageContainer.js').ImageWrapper} */
           let image;
           if (binary) {
@@ -140,13 +140,13 @@ export async function exportData(format = 'txt', minValue = 0, maxValue = -1) {
         // Otherwise, there is only OCR data and not image data.
       } else if (!insertInputPDF) {
         content = await w.write({
-          doc1: pdfOverlay, minpage: minValue, maxpage: maxValue, pagewidth: dimsLimit.width, pageheight: dimsLimit.height, humanReadable: opt.humanReadablePDF,
+          doc1: pdfOverlay, minpage: minPage, maxpage: maxPage, pagewidth: dimsLimit.width, pageheight: dimsLimit.height, humanReadable: opt.humanReadablePDF,
         });
       }
 
       w.freeDocument(pdfOverlay);
     } else {
-      const pdfStr = await writePdf(ocrDownload, minValue, maxValue, opt.displayMode, false, true, dimsLimit, opt.confThreshHigh, opt.confThreshMed,
+      const pdfStr = await writePdf(ocrDownload, minPage, maxPage, opt.displayMode, false, true, dimsLimit, opt.confThreshHigh, opt.confThreshMed,
         opt.overlayOpacity / 100);
 
       // The PDF is still run through muPDF, even thought in eBook mode no background layer is added.
@@ -169,26 +169,26 @@ export async function exportData(format = 'txt', minValue = 0, maxValue = -1) {
       const pdf = await w.openDocument(pdfEnc.buffer, 'document.pdf');
 
       content = await w.write({
-        doc1: pdf, minpage: minValue, maxpage: maxValue, pagewidth: dimsLimit.width, pageheight: dimsLimit.height, humanReadable: opt.humanReadablePDF,
+        doc1: pdf, minpage: minPage, maxpage: maxPage, pagewidth: dimsLimit.width, pageheight: dimsLimit.height, humanReadable: opt.humanReadablePDF,
       });
 
       w.freeDocument(pdf);
     }
   } else if (format === 'hocr') {
-    content = writeHocr(ocrAll.active, minValue, maxValue);
+    content = writeHocr(ocrAll.active, minPage, maxPage);
   } else if (format === 'txt') {
-    content = writeText(ocrDownload, minValue, maxValue, opt.reflow, false);
+    content = writeText(ocrDownload, minPage, maxPage, opt.reflow, false);
   // Defining `DISABLE_DOCX_XLSX` disables docx/xlsx exports when using build tools.
   // @ts-ignore
   } else if (typeof DISABLE_DOCX_XLSX === 'undefined' && format === 'docx') {
     // Less common export formats are loaded dynamically to reduce initial load time.
     const writeDocx = (await import('./writeDocx.js')).writeDocx;
-    content = await writeDocx(ocrDownload, minValue, maxValue);
+    content = await writeDocx(ocrDownload, minPage, maxPage);
   // @ts-ignore
   } else if (typeof DISABLE_DOCX_XLSX === 'undefined' && format === 'xlsx') {
     // Less common export formats are loaded dynamically to reduce initial load time.
     const writeXlsx = (await import('./writeTabular.js')).writeXlsx;
-    content = await writeXlsx(ocrDownload, layoutDataTables.pages, minValue, maxValue);
+    content = await writeXlsx(ocrDownload, layoutDataTables.pages, minPage, maxPage);
   }
 
   return content;
@@ -199,12 +199,12 @@ export async function exportData(format = 'txt', minValue = 0, maxValue = -1) {
  * @public
  * @param {'pdf'|'hocr'|'docx'|'xlsx'|'txt'|'text'} format
  * @param {string} fileName
- * @param {number} [minValue=0]
- * @param {number} [maxValue=-1]
+ * @param {number} [minPage=0] - First page to export.
+ * @param {number} [maxPage=-1] - Last page to export (inclusive). -1 exports through the last page.
  */
-export async function download(format, fileName, minValue = 0, maxValue = -1) {
+export async function download(format, fileName, minPage = 0, maxPage = -1) {
   if (format === 'text') format = 'txt';
   fileName = fileName.replace(/\.\w{1,4}$/, `.${format}`);
-  const content = await exportData(format, minValue, maxValue);
+  const content = await exportData(format, minPage, maxPage);
   saveAs(content, fileName);
 }
