@@ -18,7 +18,6 @@ describe('Check .hocr import function (basic)', function () {
   });
 
   it('Should import HOCR created with Tesseract CLI', async () => {
-
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/bill.hocr`]);
 
     const page = scribe.data.ocr.active[0];
@@ -28,11 +27,9 @@ describe('Check .hocr import function (basic)', function () {
     assert.strictEqual(text1, 'FIRST CHEQUING');
   }).timeout(10000);
 
-
   // When using Tesseract.js or the Tesseract API to save individual pages as .hocr files, the output is different from the output of the Tesseract CLI,
   // as they only include the div with the class 'ocr_page' and the text content of the page, not the entire HTML structure.
   it('Should import HOCR pages created with Tesseract API/Tesseract.js', async () => {
-
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/bill.tesseractjs.hocr`]);
 
     const page = scribe.data.ocr.active[0];
@@ -42,12 +39,10 @@ describe('Check .hocr import function (basic)', function () {
     assert.strictEqual(text1, 'FIRST CHEQUING');
   }).timeout(10000);
 
-
   after(async () => {
     await scribe.terminate();
   });
 }).timeout(120000);
-
 
 describe('Check Tesseract .hocr import function (small caps).', function () {
   this.timeout(10000);
