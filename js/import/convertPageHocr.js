@@ -16,19 +16,12 @@ const debugMode = true;
  * @param {Object} params
  * @param {string} params.ocrStr
  * @param {number} params.n
- * @param {?dims} params.pageDims
- * @param {number} params.rotateAngle - The angle that the input image is rotated prior to recognition.
- *    This is used to transform OCR coordinates back to the original coordinate space after recognizing a rotated intermediate image.
- * @param {boolean} params.keepItalic - If true, italic tags (`<em>`) are honored.  This is false by default,
- *    as vanilla Tesseract does not recognize italic text in a way that is reliable.
- *    This is fixed for Legacy recognition in the included custom build of Tesseract.
+ * @param {?dims} [params.pageDims]
  * @param {boolean} params.scribeMode
  */
 export async function convertPageHocr({
-  ocrStr, n, pageDims = null, rotateAngle = 0, keepItalic = false, scribeMode = false,
+  ocrStr, n, pageDims = null, scribeMode = false,
 }) {
-  rotateAngle = rotateAngle || 0;
-
   let currentLang = 'eng';
 
   const angleRisePage = [];
@@ -68,12 +61,9 @@ export async function convertPageHocr({
   const charRegex = /<span class=["']ocrx_cinfo["'] title='([^'"]+)["']>([^<]*)<\/span>/ig;
 
   // Remove all bold/italics tags.  These complicate the syntax and are unfortunately virtually always wrong anyway (coming from Tesseract).
+  // This does not impact re-uploads of .hocr files created with Scribe.
   ocrStr = ocrStr.replaceAll(/<\/?strong>/ig, '');
-
-  // The custom built-in Tesseract build should reliably identify italics (for Legacy only)
-  if (!keepItalic) {
-    ocrStr = ocrStr.replaceAll(/<\/?em>/ig, '');
-  }
+  ocrStr = ocrStr.replaceAll(/<\/?em>/ig, '');
 
   // Delete namespace to simplify xpath
   ocrStr = ocrStr.replace(/<html[^>]*>/i, '<html>');
@@ -368,11 +358,9 @@ export async function convertPageHocr({
 
   ocrStr = ocrStr.replaceAll(lineRegex, convertLine);
 
-  pageObj.angle = rotateAngle;
-
   const warn = { char: charMode ? '' : 'char_warning' };
 
-  pass2(pageObj, rotateAngle);
+  pass2(pageObj, 0);
   const langSet = pass3(pageObj);
 
   const autoDetectTables = false;

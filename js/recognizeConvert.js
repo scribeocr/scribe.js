@@ -309,9 +309,9 @@ export async function convertOCRPage(ocrRaw, n, mainData, format, engineName, sc
   if (format === 'hocr') {
     res = await gs.convertPageHocr({ ocrStr: ocrRaw, n, scribeMode });
   } else if (format === 'abbyy') {
-    res = await gs.convertPageAbbyy({ ocrStr: ocrRaw, n, scribeMode });
+    res = await gs.convertPageAbbyy({ ocrStr: ocrRaw, n });
   } else if (format === 'stext') {
-    res = await gs.convertPageStext({ ocrStr: ocrRaw, n, scribeMode });
+    res = await gs.convertPageStext({ ocrStr: ocrRaw, n });
   } else {
     throw new Error(`Invalid format: ${format}`);
   }
