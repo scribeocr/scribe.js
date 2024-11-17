@@ -1,6 +1,6 @@
 import { gs } from './generalWorkerMain.js';
 import ocr from './objects/ocrObjects.js';
-import { recognizePage } from './recognizeConvert.js';
+import { recognizePageImp } from './recognizeConvert.js';
 import { calcWordFontSize } from './utils/fontUtils.js';
 import {
   calcBboxUnion, determineSansSerif,
@@ -32,7 +32,7 @@ const calcSuppFontInfoForWords = async (words) => {
 
   let pageNew;
   try {
-    const res0 = await recognizePage(words[0].line.page.n, legacy, lstm, true, { rectangle: rect, tessedit_pageseg_mode: '6' });
+    const res0 = await recognizePageImp(words[0].line.page.n, legacy, lstm, true, { rectangle: rect, tessedit_pageseg_mode: '6' });
 
     const resLegacy = await res0[0];
     pageNew = resLegacy.convert.legacy.pageObj;

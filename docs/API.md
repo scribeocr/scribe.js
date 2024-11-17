@@ -18,10 +18,8 @@
     *   [Properties][14]
 *   [importFiles][15]
     *   [Parameters][16]
-*   [recognizePage][17]
+*   [recognize][17]
     *   [Parameters][18]
-*   [recognize][19]
-    *   [Parameters][20]
 
 ## init
 
@@ -29,11 +27,11 @@ Initialize the program and optionally pre-load resources.
 
 ### Parameters
 
-*   `params` **[Object][21]?**&#x20;
+*   `params` **[Object][19]?**&#x20;
 
-    *   `params.pdf` **[boolean][22]** Load PDF renderer. (optional, default `false`)
-    *   `params.ocr` **[boolean][22]** Load OCR engine. (optional, default `false`)
-    *   `params.font` **[boolean][22]** Load built-in fonts.
+    *   `params.pdf` **[boolean][20]** Load PDF renderer. (optional, default `false`)
+    *   `params.ocr` **[boolean][20]** Load OCR engine. (optional, default `false`)
+    *   `params.font` **[boolean][20]** Load built-in fonts.
         The PDF renderer and OCR engine are automatically loaded when needed.
         Therefore, the only reason to set `pdf` or `ocr` to `true` is to pre-load them. (optional, default `false`)
 
@@ -47,7 +45,7 @@ For more control, use `init`, `importFiles`, `recognize`, and `exportData` separ
 ### Parameters
 
 *   `files` &#x20;
-*   `langs` **[Array][23]<[string][24]>**  (optional, default `['eng']`)
+*   `langs` **[Array][21]<[string][22]>**  (optional, default `['eng']`)
 *   `outputFormat`   (optional, default `'txt'`)
 *   `options`   (optional, default `{}`)
 
@@ -56,8 +54,8 @@ For more control, use `init`, `importFiles`, `recognize`, and `exportData` separ
 ### Parameters
 
 *   `ctx` &#x20;
-*   `compDebugArrArr` **[Array][23]<[Array][23]\<CompDebugNode>>**&#x20;
-*   `filePath` **[string][24]**&#x20;
+*   `compDebugArrArr` **[Array][21]<[Array][21]\<CompDebugNode>>**&#x20;
+*   `filePath` **[string][22]**&#x20;
 
 ## clear
 
@@ -74,10 +72,10 @@ Export active OCR data to specified format.
 ### Parameters
 
 *   `format` **(`"pdf"` | `"hocr"` | `"docx"` | `"xlsx"` | `"txt"` | `"text"`)**  (optional, default `'txt'`)
-*   `minValue` **[number][25]**  (optional, default `0`)
-*   `maxValue` **[number][25]**  (optional, default `-1`)
+*   `minPage` **[number][23]** First page to export. (optional, default `0`)
+*   `maxPage` **[number][23]** Last page to export (inclusive). -1 exports through the last page. (optional, default `-1`)
 
-Returns **[Promise][26]<([string][24] | [ArrayBuffer][27])>**&#x20;
+Returns **[Promise][24]<([string][22] | [ArrayBuffer][25])>**&#x20;
 
 ## download
 
@@ -86,9 +84,9 @@ Runs `exportData` and saves the result as a download (browser) or local file (No
 ### Parameters
 
 *   `format` **(`"pdf"` | `"hocr"` | `"docx"` | `"xlsx"` | `"txt"` | `"text"`)**&#x20;
-*   `fileName` **[string][24]**&#x20;
-*   `minValue` **[number][25]**  (optional, default `0`)
-*   `maxValue` **[number][25]**  (optional, default `-1`)
+*   `fileName` **[string][22]**&#x20;
+*   `minPage` **[number][23]** First page to export. (optional, default `0`)
+*   `maxPage` **[number][23]** Last page to export (inclusive). -1 exports through the last page. (optional, default `-1`)
 
 ## SortedInputFiles
 
@@ -96,13 +94,13 @@ An object with this shape can be used to provide input to the `importFiles` func
 without needing that function to figure out the file types.
 This is required when using ArrayBuffer inputs.
 
-Type: [Object][21]
+Type: [Object][19]
 
 ### Properties
 
-*   `pdfFiles` **([Array][23]\<File> | [Array][23]<[string][24]> | [Array][23]<[ArrayBuffer][27]>)?**&#x20;
-*   `imageFiles` **([Array][23]\<File> | [Array][23]<[string][24]> | [Array][23]<[ArrayBuffer][27]>)?**&#x20;
-*   `ocrFiles` **([Array][23]\<File> | [Array][23]<[string][24]> | [Array][23]<[ArrayBuffer][27]>)?**&#x20;
+*   `pdfFiles` **([Array][21]\<File> | [Array][21]<[string][22]> | [Array][21]<[ArrayBuffer][25]>)?**&#x20;
+*   `imageFiles` **([Array][21]\<File> | [Array][21]<[string][22]> | [Array][21]<[ArrayBuffer][25]>)?**&#x20;
+*   `ocrFiles` **([Array][21]\<File> | [Array][21]<[string][22]> | [Array][21]<[ArrayBuffer][25]>)?**&#x20;
 
 ## importFiles
 
@@ -112,21 +110,7 @@ Alternatively, for `File` objects (browser) and file paths (Node.js), a single a
 
 ### Parameters
 
-*   `files` **([Array][23]\<File> | FileList | [Array][23]<[string][24]> | [SortedInputFiles][13])**&#x20;
-
-## recognizePage
-
-Recognize a single page in active document.
-Use `recognize` instead to recognize all pages in a document.
-
-### Parameters
-
-*   `n` **[number][25]** Page number to recognize.
-*   `legacy` **[boolean][22]** *
-*   `lstm` **[boolean][22]** *
-*   `areaMode` **[boolean][22]** *
-*   `tessOptions` **[Object][21]<[string][24], [string][24]>** Options to pass to Tesseract.js. (optional, default `{}`)
-*   `debugVis` **[boolean][22]** Generate instructions for debugging visualizations. (optional, default `false`)
+*   `files` **([Array][21]\<File> | FileList | [Array][21]<[string][22]> | [SortedInputFiles][13])**&#x20;
 
 ## recognize
 
@@ -136,13 +120,13 @@ The results of recognition can be exported by calling `exportFiles` after this f
 
 ### Parameters
 
-*   `options` **[Object][21]**  (optional, default `{}`)
+*   `options` **[Object][19]**  (optional, default `{}`)
 
     *   `options.mode` **(`"speed"` | `"quality"`)** Recognition mode. (optional, default `'quality'`)
-    *   `options.langs` **[Array][23]<[string][24]>** Language(s) in document. (optional, default `['eng']`)
+    *   `options.langs` **[Array][21]<[string][22]>** Language(s) in document. (optional, default `['eng']`)
     *   `options.modeAdv` **(`"lstm"` | `"legacy"` | `"combined"`)** Alternative method of setting recognition mode. (optional, default `'combined'`)
     *   `options.combineMode` **(`"conf"` | `"data"` | `"none"`)** Method of combining OCR results. Used if OCR data already exists. (optional, default `'data'`)
-    *   `options.vanillaMode` **[boolean][22]** Whether to use the vanilla Tesseract.js model. (optional, default `false`)
+    *   `options.vanillaMode` **[boolean][20]** Whether to use the vanilla Tesseract.js model. (optional, default `false`)
 
 [1]: #init
 
@@ -176,24 +160,20 @@ The results of recognition can be exported by calling `exportFiles` after this f
 
 [16]: #parameters-5
 
-[17]: #recognizepage
+[17]: #recognize
 
 [18]: #parameters-6
 
-[19]: #recognize
+[19]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Object
 
-[20]: #parameters-7
+[20]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Boolean
 
-[21]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Object
+[21]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Array
 
-[22]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Boolean
+[22]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/String
 
-[23]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Array
+[23]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Number
 
-[24]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/String
+[24]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Promise
 
-[25]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Number
-
-[26]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/Promise
-
-[27]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer
+[25]: https://developer.mozilla.org/docs/Web/JavaScript/Reference/Global_Objects/ArrayBuffer

@@ -32,7 +32,7 @@ import {
   compareOCR,
   convertOCRPage,
   evalOCRPage,
-  recognize, recognizePage,
+  recognize, recognizePageImp,
 } from './js/recognizeConvert.js';
 import { calcWordMetrics } from './js/utils/fontUtils.js';
 import { getImageBitmap, imageStrToBlob } from './js/utils/imageUtils.js';
@@ -285,7 +285,7 @@ export default {
   layout,
   opt,
   recognize,
-  recognizePage,
+  recognizePageImp,
   extractText,
   extractInternalPDFText,
   terminate,

@@ -158,10 +158,10 @@ export const calcRecognizeRotateArgs = async (n, areaMode) => {
 };
 
 /**
- * Recognize a single page in active document.
- * Use `recognize` instead to recognize all pages in a document.
+ * Lower-level function to run OCR for a single page.
+ * Requires additional code to handle the results; for advanced users only.
+ * Most users should use `recognize` instead to recognize all pages in a document.
  *
- * @public
  * @param {number} n - Page number to recognize.
  * @param {boolean} legacy -
  * @param {boolean} lstm -
@@ -169,7 +169,7 @@ export const calcRecognizeRotateArgs = async (n, areaMode) => {
  * @param {Object<string, string>} tessOptions - Options to pass to Tesseract.js.
  * @param {boolean} [debugVis=false] - Generate instructions for debugging visualizations.
  */
-export const recognizePage = async (n, legacy, lstm, areaMode, tessOptions = {}, debugVis = false) => {
+export const recognizePageImp = async (n, legacy, lstm, areaMode, tessOptions = {}, debugVis = false) => {
   const {
     angleThresh, angleKnown, rotateRadians, saveNativeImage, saveBinaryImageArg,
   } = await calcRecognizeRotateArgs(n, areaMode);
@@ -449,7 +449,7 @@ export async function recognizeAllPages(legacy = true, lstm = true, mainData = f
   const config = { upscale };
 
   for (const x of inputPages) {
-    recognizePage(x, legacy, lstm, false, config, opt.debugVis).then(async (resArr) => {
+    recognizePageImp(x, legacy, lstm, false, config, opt.debugVis).then(async (resArr) => {
       const res0 = await resArr[0];
 
       if (res0.recognize.debugVis) {
