@@ -340,7 +340,7 @@ export async function convertPageStext({ ocrStr, n }) {
             smallCapsCurrent = /(small\W?cap)|(sc$)|(caps$)/i.test(charOrFont.name);
             smallCapsWord = smallCapsCurrent;
 
-            if (/italic/i.test(charOrFont.name) || /-\w*ital/i.test(charOrFont.name) || /oblique/i.test(charOrFont.name)) {
+            if (/italic/i.test(charOrFont.name) || /-\w*ital/i.test(charOrFont.name) || /-it$/i.test(charOrFont.name) || /oblique/i.test(charOrFont.name)) {
               // The word is already initialized, so we need to change the last element of the style array.
               // Label as `smallCapsAlt` rather than `smallCaps`, as we confirm the word is all caps before marking as `smallCaps`.
               styleCurrent = 'italic';

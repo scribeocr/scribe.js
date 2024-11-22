@@ -364,3 +364,21 @@ describe('Check that PDF text types are detected and imported correctly.', funct
     await scribe.terminate();
   });
 }).timeout(120000);
+
+describe('Check that font style is detected for PDF imports.', function () {
+  this.timeout(10000);
+
+  it('Bold style is detected', async () => {
+    scribe.opt.usePDFText.native.main = true;
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples.pdf`]);
+    assert.strictEqual(scribe.data.ocr.active[5].lines[26].words[0].style, 'bold');
+  }).timeout(10000);
+
+  it('Italic style is detected', async () => {
+    assert.strictEqual(scribe.data.ocr.active[5].lines[22].words[4].style, 'italic');
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);
