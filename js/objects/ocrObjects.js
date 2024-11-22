@@ -84,6 +84,8 @@ export function OcrLine(page, bbox, baseline, ascHeight = null, xHeight = null) 
   this._angleAdj = null;
   /** @type {OcrPar} */
   this.par = null;
+  /** @type {number} */
+  this.orientation = 0;
 }
 
 /**

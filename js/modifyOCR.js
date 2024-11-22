@@ -41,7 +41,10 @@ export function combineOCRPage(pageA, pageB, pageMetricsObj, replaceFontSize = f
     for (lineI = 0; lineI < pageB.lines.length; lineI++) {
       const line = pageB.lines[lineI];
 
-      if (line.words.length === 0) continue;
+      // Skip lines that are not horizontal for now.
+      // Horizontal lines should not be combined with vertical lines,
+      // and combining vertical lines likely brings up some edge cases we have not considered.
+      if (line.words.length === 0 || line.orientation !== 0) continue;
 
       const lineRot = ocr.cloneLine(line);
       if (pageMetricsObj.angle) ocr.rotateLine(lineRot, pageMetricsObj.angle * -1, pageMetricsObj.dims);

@@ -50,9 +50,18 @@ export async function convertPageStext({ ocrStr, n }) {
       const xmlLinePreChar = xmlLine.match(/^[\s\S]*?(?=<char)/)?.[0];
       if (!xmlLinePreChar) return;
 
-      const dirStr = xmlLinePreChar.match(/dir=['"]([^'"]*)/)?.[1];
-      const dirSlopeStr = dirStr?.match(/[-\d.]+$/)?.[0];
-      const dirSlope = dirSlopeStr ? parseFloat(dirSlopeStr) : null;
+      const dir = xmlLinePreChar.match(/dir=['"](\s*[\d.-]+)(\s*[\d.-]+)/)?.slice(1, 3).map((x) => parseFloat(x));
+
+      // TODO: This only works when the text gradient is 0.
+      // It should work with text with both a non-zero gradient and a non-zero orientation.
+      let orientation = 0;
+      if (dir && dir[0] === 0 && dir[1] === 1) {
+        orientation = 1;
+      } else if (dir && dir[0] === -1 && dir[1] === 0) {
+        orientation = 2;
+      } else if (dir && dir[0] === 0 && dir[1] === -1) {
+        orientation = 3;
+      }
 
       const xmlLineFormatting = xmlLinePreChar?.match(/<font[^>]+/)?.[0];
       const fontName = xmlLineFormatting?.match(/name=['"]([^'"]*)/)?.[1];
@@ -168,12 +177,36 @@ export async function convertPageStext({ ocrStr, n }) {
             continue;
           }
 
-          const quad = {
-            ul: { x: parseFloat(stextMatches[j][2]), y: parseFloat(stextMatches[j][3]) },
-            ur: { x: parseFloat(stextMatches[j][4]), y: parseFloat(stextMatches[j][5]) },
-            ll: { x: parseFloat(stextMatches[j][6]), y: parseFloat(stextMatches[j][7]) },
-            lr: { x: parseFloat(stextMatches[j][8]), y: parseFloat(stextMatches[j][9]) },
-          };
+          let quad;
+          if (orientation === 1) {
+            quad = {
+              ul: { x: parseFloat(stextMatches[j][6]), y: parseFloat(stextMatches[j][7]) },
+              ur: { x: parseFloat(stextMatches[j][2]), y: parseFloat(stextMatches[j][3]) },
+              ll: { x: parseFloat(stextMatches[j][8]), y: parseFloat(stextMatches[j][9]) },
+              lr: { x: parseFloat(stextMatches[j][4]), y: parseFloat(stextMatches[j][5]) },
+            };
+          } else if (orientation === 2) {
+            quad = {
+              ul: { x: parseFloat(stextMatches[j][8]), y: parseFloat(stextMatches[j][9]) },
+              ur: { x: parseFloat(stextMatches[j][6]), y: parseFloat(stextMatches[j][7]) },
+              ll: { x: parseFloat(stextMatches[j][4]), y: parseFloat(stextMatches[j][5]) },
+              lr: { x: parseFloat(stextMatches[j][2]), y: parseFloat(stextMatches[j][3]) },
+            };
+          } else if (orientation === 3) {
+            quad = {
+              ul: { x: parseFloat(stextMatches[j][4]), y: parseFloat(stextMatches[j][5]) },
+              ur: { x: parseFloat(stextMatches[j][8]), y: parseFloat(stextMatches[j][9]) },
+              ll: { x: parseFloat(stextMatches[j][2]), y: parseFloat(stextMatches[j][3]) },
+              lr: { x: parseFloat(stextMatches[j][6]), y: parseFloat(stextMatches[j][7]) },
+            };
+          } else {
+            quad = {
+              ul: { x: parseFloat(stextMatches[j][2]), y: parseFloat(stextMatches[j][3]) },
+              ur: { x: parseFloat(stextMatches[j][4]), y: parseFloat(stextMatches[j][5]) },
+              ll: { x: parseFloat(stextMatches[j][6]), y: parseFloat(stextMatches[j][7]) },
+              lr: { x: parseFloat(stextMatches[j][8]), y: parseFloat(stextMatches[j][9]) },
+            };
+          }
 
           wordCharOrFontArr[i][j] = {
             quad,
@@ -324,16 +357,51 @@ export async function convertPageStext({ ocrStr, n }) {
             wordInit = true;
           }
 
-          const bbox = {
-            left: Math.round(charOrFont.origin.x),
-            top: Math.round(Math.min(charOrFont.quad.ul.y, charOrFont.quad.ur.y)),
-            right: Math.round(charOrFont.origin.x + (charOrFont.quad.ur.x - charOrFont.quad.ul.x)),
-            bottom: Math.round(Math.max(charOrFont.quad.ll.y, charOrFont.quad.lr.y)),
-          };
+          let bbox;
+          if (orientation === 1) {
+            bbox = {
+              left: Math.round(charOrFont.origin.y),
+              top: Math.round(pageDims.width - Math.max(charOrFont.quad.ur.x, charOrFont.quad.lr.x)),
+              right: Math.round(charOrFont.origin.y + (charOrFont.quad.lr.y - charOrFont.quad.ur.y)),
+              bottom: Math.round(pageDims.width - Math.min(charOrFont.quad.ul.x, charOrFont.quad.ll.x)),
+            };
+          } else if (orientation === 2) {
+            bbox = {
+              left: Math.round(pageDims.width - charOrFont.origin.x),
+              top: Math.round(pageDims.height - Math.max(charOrFont.quad.ll.y, charOrFont.quad.lr.y)),
+              right: Math.round(pageDims.width - (charOrFont.origin.x - (charOrFont.quad.ur.x - charOrFont.quad.ul.x))),
+              bottom: Math.round(pageDims.height - Math.min(charOrFont.quad.ul.y, charOrFont.quad.ur.y)),
+            };
+          } else if (orientation === 3) {
+            bbox = {
+              left: Math.round(pageDims.height - charOrFont.origin.y),
+              top: Math.round(Math.min(charOrFont.quad.ul.x, charOrFont.quad.ll.x)),
+              right: Math.round(pageDims.height - charOrFont.origin.y + (charOrFont.quad.lr.y - charOrFont.quad.ur.y)),
+              bottom: Math.round(Math.max(charOrFont.quad.ur.x, charOrFont.quad.lr.x)),
+            };
+          } else {
+            bbox = {
+              left: Math.round(charOrFont.origin.x),
+              top: Math.round(Math.min(charOrFont.quad.ul.y, charOrFont.quad.ur.y)),
+              right: Math.round(charOrFont.origin.x + (charOrFont.quad.ur.x - charOrFont.quad.ul.x)),
+              bottom: Math.round(Math.max(charOrFont.quad.ll.y, charOrFont.quad.lr.y)),
+            };
+          }
 
           if (!superCurrent) {
             if (baselineFirst.length === 0) {
-              baselineFirst.push(bbox.left, charOrFont.origin.y);
+              let originY;
+              if (orientation === 1) {
+                originY = pageDims.width - charOrFont.origin.x;
+              } else if (orientation === 2) {
+                originY = pageDims.height - charOrFont.origin.y;
+              } else if (orientation === 3) {
+                originY = charOrFont.origin.x;
+              } else {
+                originY = charOrFont.origin.y;
+              }
+
+              baselineFirst.push(bbox.left, originY);
             }
           }
 
@@ -373,8 +441,8 @@ export async function convertPageStext({ ocrStr, n }) {
       if (bboxes.length === 0) return;
 
       let baselineSlope = 0;
-      if (dirSlope !== null) {
-        baselineSlope = dirSlope;
+      if (dir && dir[1] !== undefined && !Number.isNaN(dir[1])) {
+        baselineSlope = dir[1];
       } else {
         console.log('Unable to parse slope.');
       }
@@ -393,6 +461,8 @@ export async function convertPageStext({ ocrStr, n }) {
       const letterHeightOut = fontSizeLine * 0.6;
 
       const lineObj = new ocr.OcrLine(pageObj, lineBbox, baselineOut, letterHeightOut, null);
+
+      lineObj.orientation = orientation;
 
       lineObj.raw = xmlLine;
 
