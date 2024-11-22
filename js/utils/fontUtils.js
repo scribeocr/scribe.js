@@ -178,9 +178,13 @@ function calcWordCharMetrics(wordText, fontOpentype) {
     advanceArr.push(glyphI.advanceWidth);
 
     if (charJ) {
-      const glyphJ = fontOpentype.charToGlyph(charJ);
-      const kerning = fontOpentype.getKerningValue(glyphI, glyphJ);
-      kerningArr.push(kerning);
+      if (opt.kerning) {
+        const glyphJ = fontOpentype.charToGlyph(charJ);
+        const kerning = fontOpentype.getKerningValue(glyphI, glyphJ);
+        kerningArr.push(kerning);  
+      } else {
+        kerningArr.push(0);  
+      }
     }
   }
 

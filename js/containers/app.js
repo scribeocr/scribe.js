@@ -1,6 +1,8 @@
 export class opt {
   static ligatures = true;
 
+  static kerning = true;
+
   static omitNativeText = false;
 
   static extractText = false;
