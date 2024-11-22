@@ -170,6 +170,9 @@ export async function convertPageStext({ ocrStr, n }) {
           const fontNameStrI = fontStr?.match(/name=['"]([^'"]*)/)?.[1];
           const fontSizeStrI = fontStr?.match(/size=['"]([^'"]*)/)?.[1];
           if (fontNameStrI && fontSizeStrI) {
+            // Skip font changes that occur at the end of a line.
+            // In addition to being unnecessary, these are problematic when parsing superscripts.
+            if (i + 1 === wordStrArr.length && j + 1 === stextMatches.length) continue;
             wordCharOrFontArr[i][j] = {
               name: fontNameStrI,
               size: parseFloat(fontSizeStrI),
