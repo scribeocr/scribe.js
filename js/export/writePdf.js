@@ -11,6 +11,11 @@ import { opt } from '../containers/app.js';
 import { pageMetricsArr } from '../containers/dataContainer.js';
 import ocr from '../objects/ocrObjects.js';
 
+/**
+ * @param {number} x
+ */
+const formatNum = (x) => String(Math.round(x * 1e6) / 1e6);
+
 // Creates 3 PDF objects necessary to embed font.
 // These are (1) the font dictionary, (2) the font descriptor, and (3) the font file,
 // which will be located at objects firstObjIndex, firstObjIndex + 1, and firstObjIndex + 2 (respectively).
@@ -290,8 +295,7 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
   rotateText = false, rotateBackground = false, confThreshHigh = 85, confThreshMed = 75, fontChiSim = null) {
   const { lines } = pageObj;
 
-  const sinAngle = Math.sin(angle * (Math.PI / 180));
-  const cosAngle = Math.cos(angle * (Math.PI / 180));
+  const cosAnglePage = Math.cos(angle * (Math.PI / 180));
 
   // Start 1st object: Text Content
   let textContentObjStr = '';
@@ -372,10 +376,19 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
     const lineLeftAdj = wordJ.bbox.left - word0LeftBearing * (tz / 100) + angleAdjLine.x;
     const lineTopAdj = lineObj.bbox.bottom + lineObj.baseline[1] + angleAdjLine.y;
 
-    if (rotateText) {
-      textContentObjStr += `${String(cosAngle)} ${String(-sinAngle)} ${String(sinAngle)} ${String(cosAngle)} ${String(lineLeftAdj)} ${String(outputDims.height - lineTopAdj + 1)} Tm\n`;
+    const lineAngleDeg = Number(rotateText) * angle + 90 * lineObj.orientation;
+
+    const sinAngleTm = Math.sin(lineAngleDeg * (Math.PI / 180));
+    const cosAngleTm = Math.cos(lineAngleDeg * (Math.PI / 180));
+
+    if (lineObj.orientation === 1) {
+      textContentObjStr += `${formatNum(cosAngleTm)} ${formatNum(-sinAngleTm)} ${formatNum(sinAngleTm)} ${formatNum(cosAngleTm)} ${formatNum(outputDims.width - lineTopAdj + 1)} ${formatNum(outputDims.height - lineLeftAdj)} Tm\n`;
+    } else if (lineObj.orientation === 2) {
+      textContentObjStr += `${formatNum(cosAngleTm)} ${formatNum(-sinAngleTm)} ${formatNum(sinAngleTm)} ${formatNum(cosAngleTm)} ${formatNum(outputDims.width - lineLeftAdj + 1)} ${formatNum(lineTopAdj)} Tm\n`;
+    } else if (lineObj.orientation === 3) {
+      textContentObjStr += `${formatNum(cosAngleTm)} ${formatNum(-sinAngleTm)} ${formatNum(sinAngleTm)} ${formatNum(cosAngleTm)} ${formatNum(lineTopAdj)} ${formatNum(lineLeftAdj)} Tm\n`;
     } else {
-      textContentObjStr += `${String(1)} ${String(0)} ${String(0)} ${String(1)} ${String(lineLeftAdj)} ${String(outputDims.height - lineTopAdj + 1)} Tm\n`;
+      textContentObjStr += `${formatNum(cosAngleTm)} ${formatNum(-sinAngleTm)} ${formatNum(sinAngleTm)} ${formatNum(cosAngleTm)} ${formatNum(lineLeftAdj)} ${formatNum(outputDims.height - lineTopAdj + 1)} Tm\n`;
     }
 
     textContentObjStr += '[ ';
@@ -452,8 +465,8 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
       // const pdfFont = word.lang === 'chi_sim' ? pdfFonts.NotoSansSC.normal : pdfFonts[wordFontFamily][word.style];
       const { name: pdfFont, type: pdfFontType } = wordJ.lang === 'chi_sim' ? pdfFonts.NotoSansSC.normal : pdfFonts[wordFont.family][wordJ.style];
 
-      const wordWidthAdj = (wordJ.bbox.right - wordJ.bbox.left) / cosAngle;
-      const wordSpaceAdj = (wordJ.bbox.left - wordBoxLast.right) / cosAngle;
+      const wordWidthAdj = (wordJ.bbox.right - wordJ.bbox.left) / cosAnglePage;
+      const wordSpaceAdj = (wordJ.bbox.left - wordBoxLast.right) / cosAnglePage;
 
       // Add space character between words
       if (j > 0 && !kernSpacing) {
@@ -531,7 +544,7 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
           if (wordJ.lang === 'chi_sim' && j + 1 < words.length && words[j + 1].lang === 'chi_sim') {
             kernSpacing = true;
             const wordNext = words[j + 1];
-            const wordSpaceNextAdj = (wordNext.bbox.left - wordJ.bbox.right) / cosAngle;
+            const wordSpaceNextAdj = (wordNext.bbox.left - wordJ.bbox.right) / cosAngleTm;
             // const wordSpaceNextAdj = wordNext.bbox.left - wordBox.right;
 
             const wordGlyph = wordFontOpentype.charToGlyph(charArr.at(-1));

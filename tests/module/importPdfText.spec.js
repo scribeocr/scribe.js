@@ -272,8 +272,48 @@ describe('Check that page angle is calculated correctly.', function () {
   }).timeout(10000);
 
   it('Different orientations should not impact page angle.', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/CSF_Proposed_Budget_Book_June_2024_r8_30.pdf`]);
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/CSF_Proposed_Budget_Book_June_2024_r8_30_all_orientations.pdf`]);
     assert.strictEqual(scribe.data.pageMetrics[0].angle, 0);
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);
+
+describe('Check that text orientation is handled correctly.', function () {
+  this.timeout(10000);
+
+  it('Lines printed at exactly 90/180/270 degrees have orientation detected correctly', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/CSF_Proposed_Budget_Book_June_2024_r8_30_all_orientations.pdf`]);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[2].words[0].line.orientation, 3);
+    assert.strictEqual(scribe.data.ocr.active[3].lines[2].words[0].line.orientation, 2);
+    assert.strictEqual(scribe.data.ocr.active[2].lines[2].words[0].line.orientation, 1);
+  }).timeout(10000);
+
+  // The following tests compare the coordinates of a rotated line to the same line in a non-rotated version of the same document.
+  it('Rotating text exactly 90 degrees counterclockwise does not have significant impact on word coordinates after parsing', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/CSF_Proposed_Budget_Book_June_2024_r8_30_all_orientations.pdf`]);
+    assert.approximately(scribe.data.ocr.active[0].lines[2].words[0].bbox.left, scribe.data.ocr.active[1].lines[2].words[0].bbox.left, 1);
+    assert.approximately(scribe.data.ocr.active[0].lines[2].words[0].bbox.right, scribe.data.ocr.active[1].lines[2].words[0].bbox.right, 1);
+    assert.approximately(scribe.data.ocr.active[0].lines[2].words[0].bbox.top, scribe.data.ocr.active[1].lines[2].words[0].bbox.top, 1);
+    assert.approximately(scribe.data.ocr.active[0].lines[2].words[0].bbox.bottom, scribe.data.ocr.active[1].lines[2].words[0].bbox.bottom, 1);
+  }).timeout(10000);
+
+  it('Rotating text exactly 90 degrees clockwise does not have significant impact on word coordinates after parsing', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/CSF_Proposed_Budget_Book_June_2024_r8_30_all_orientations.pdf`]);
+    assert.approximately(scribe.data.ocr.active[2].lines[2].words[0].bbox.left, scribe.data.ocr.active[1].lines[2].words[0].bbox.left, 1);
+    assert.approximately(scribe.data.ocr.active[2].lines[2].words[0].bbox.right, scribe.data.ocr.active[1].lines[2].words[0].bbox.right, 1);
+    assert.approximately(scribe.data.ocr.active[2].lines[2].words[0].bbox.top, scribe.data.ocr.active[1].lines[2].words[0].bbox.top, 1);
+    assert.approximately(scribe.data.ocr.active[2].lines[2].words[0].bbox.bottom, scribe.data.ocr.active[1].lines[2].words[0].bbox.bottom, 1);
+  }).timeout(10000);
+
+  it('Rotating text exactly 180 degrees does not have significant impact on word coordinates after parsing', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/CSF_Proposed_Budget_Book_June_2024_r8_30_all_orientations.pdf`]);
+    assert.approximately(scribe.data.ocr.active[3].lines[2].words[0].bbox.left, scribe.data.ocr.active[1].lines[2].words[0].bbox.left, 1);
+    assert.approximately(scribe.data.ocr.active[3].lines[2].words[0].bbox.right, scribe.data.ocr.active[1].lines[2].words[0].bbox.right, 1);
+    assert.approximately(scribe.data.ocr.active[3].lines[2].words[0].bbox.top, scribe.data.ocr.active[1].lines[2].words[0].bbox.top, 1);
+    assert.approximately(scribe.data.ocr.active[3].lines[2].words[0].bbox.bottom, scribe.data.ocr.active[1].lines[2].words[0].bbox.bottom, 1);
   }).timeout(10000);
 
   after(async () => {
