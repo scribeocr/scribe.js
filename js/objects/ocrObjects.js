@@ -380,7 +380,10 @@ function calcLineStartAngleAdj(line) {
     bbox = line.words[0].bbox;
   }
 
-  const bboxRot = rotateBbox(bbox, cosAngle, sinAngle, dims.width, dims.height);
+  const width = line.orientation % 2 === 0 ? dims.width : dims.height;
+  const height = line.orientation % 2 === 0 ? dims.height : dims.width;
+
+  const bboxRot = rotateBbox(bbox, cosAngle, sinAngle, width, height);
 
   line._angleAdj = { x: bboxRot.left - bbox.left, y: bboxRot.bottom - bbox.bottom };
 

@@ -52,14 +52,12 @@ export async function convertPageStext({ ocrStr, n }) {
 
       const dir = xmlLinePreChar.match(/dir=['"](\s*[\d.-]+)(\s*[\d.-]+)/)?.slice(1, 3).map((x) => parseFloat(x));
 
-      // TODO: This only works when the text gradient is 0.
-      // It should work with text with both a non-zero gradient and a non-zero orientation.
       let orientation = 0;
-      if (dir && dir[0] === 0 && dir[1] === 1) {
+      if (dir && Math.abs(dir[0]) < 0.5 && dir[1] >= 0.5) {
         orientation = 1;
-      } else if (dir && dir[0] === -1 && dir[1] === 0) {
+      } else if (dir && dir[0] <= -0.5 && Math.abs(dir[1]) < 0.5) {
         orientation = 2;
-      } else if (dir && dir[0] === 0 && dir[1] === -1) {
+      } else if (dir && Math.abs(dir[0]) < 0.5 && dir[1] <= -0.5) {
         orientation = 3;
       }
 
@@ -444,8 +442,16 @@ export async function convertPageStext({ ocrStr, n }) {
       if (bboxes.length === 0) return;
 
       let baselineSlope = 0;
-      if (dir && dir[1] !== undefined && !Number.isNaN(dir[1])) {
-        baselineSlope = dir[1];
+      if (dir && dir[0] !== undefined && !Number.isNaN(dir[0]) && dir[1] !== undefined && !Number.isNaN(dir[1])) {
+        if (orientation === 1) {
+          baselineSlope = -dir[0];
+        } else if (orientation === 2) {
+          baselineSlope = -dir[1];
+        } else if (orientation === 3) {
+          baselineSlope = dir[0];
+        } else {
+          baselineSlope = dir[1];
+        }
       } else {
         console.log('Unable to parse slope.');
       }
