@@ -684,11 +684,18 @@ export async function compareOCRPageImp({
                 // Check if there is a 1-to-1 comparison between words (this is usually true)
                 let oneToOne = Math.abs(wordBoxB.left - wordBoxA.left) + Math.abs(wordBoxB.right - wordBoxA.right) < (wordBoxA.right - wordBoxA.left) * 0.1;
 
+                // Note: The following block solves an issue that I believe has been patched in our version of Tesseract.
                 // Due to a bug with the LSTM engine, when a word is split into 3 words (for example), the first and last word can have the right bound.
                 // This condition should catch cases where `oneToOne` is `true`, however the appropriate comparison is actually 2-to-1 or 3-to-1.
                 const wordBNext = lineB.words[l + 1];
                 const wordBNext2 = lineB.words[l + 2];
+                const wordBNext3 = lineB.words[l + 3];
                 if (oneToOne && legacyLSTMComb) {
+                  if (wordBNext3 && wordBNext3.text.length > 2) {
+                    const wordBoxBNext3 = wordBNext3.bbox;
+                    if (Math.abs(wordBoxB.left - wordBoxA.left) + Math.abs(wordBoxA.right - wordBoxBNext3.right) < (wordBoxBNext3.right - wordBoxA.left) * 0.1) oneToOne = false;
+                  }
+
                   if (wordBNext2 && wordBNext2.text.length > 2) {
                     const wordBoxBNext2 = wordBNext2.bbox;
                     if (Math.abs(wordBoxB.left - wordBoxA.left) + Math.abs(wordBoxA.right - wordBoxBNext2.right) < (wordBoxBNext2.right - wordBoxA.left) * 0.1) oneToOne = false;
@@ -722,7 +729,19 @@ export async function compareOCRPageImp({
                       }
                     }
                   } else {
-                    if (wordBNext2) {
+                    if (wordBNext3) {
+                      const wordBoxBNext3 = wordBNext3.bbox;
+                      if (Math.abs(wordBoxB.left - wordBoxA.left) + Math.abs(wordBoxA.right - wordBoxBNext3.right) < (wordBoxBNext3.right - wordBoxA.left) * 0.1) {
+                        twoToOne = true;
+                        wordsAArr.push(wordA);
+                        wordsBArr.push(wordB);
+                        wordsBArr.push(wordBNext);
+                        wordsBArr.push(wordBNext2);
+                        wordsBArr.push(wordBNext3);
+                      }
+                    }
+
+                    if (wordBNext2 && !twoToOne) {
                       const wordBoxBNext2 = wordBNext2.bbox;
                       if (Math.abs(wordBoxB.left - wordBoxA.left) + Math.abs(wordBoxA.right - wordBoxBNext2.right) < (wordBoxBNext2.right - wordBoxA.left) * 0.1) {
                         twoToOne = true;
@@ -759,8 +778,15 @@ export async function compareOCRPageImp({
                         if (match || (wordsBArr.length === 2 && (match1 || match2))) {
                           wordsBArr = wordsBArr.map((x) => ocr.cloneWord(x));
                           wordsBArr[0].chars = wordsAArr[0].chars.slice(0, wordsBArr[0].text.length).map((x) => ocr.cloneChar(x));
-                          wordsBArr[1].chars = wordsAArr[0].chars.slice(wordsBArr[0].text.length, wordsBArr[1].text.length + wordsBArr[0].text.length).map((x) => ocr.cloneChar(x));
-                          if (wordsBArr[2]) wordsBArr[2].chars = wordsAArr[0].chars.slice(wordsBArr[0].text.length + wordsBArr[1].text.length).map((x) => ocr.cloneChar(x));
+                          wordsBArr[1].chars = wordsAArr[0].chars.slice(wordsBArr[0].text.length, wordsBArr[0].text.length + wordsBArr[1].text.length).map((x) => ocr.cloneChar(x));
+                          if (wordsBArr[2]) {
+                            wordsBArr[2].chars = wordsAArr[0].chars.slice(wordsBArr[0].text.length + wordsBArr[1].text.length,
+                              wordsBArr[0].text.length + wordsBArr[1].text.length + wordsBArr[2].text.length).map((x) => ocr.cloneChar(x));
+                          }
+                          if (wordsBArr[3]) {
+                            wordsBArr[3].chars = wordsAArr[0].chars.slice(wordsBArr[0].text.length + wordsBArr[1].text.length + wordsBArr[2].text.length,
+                              wordsBArr[0].text.length + wordsBArr[1].text.length + wordsBArr[2].text.length + wordsBArr[3].text.length).map((x) => ocr.cloneChar(x));
+                          }
                           if (!match) {
                             wordsBArr[0].chars.forEach((x, i) => x.text = wordsBArr[0].text[i]);
                             wordsBArr[1].chars.forEach((x, i) => x.text = wordsBArr[1].text[i]);
