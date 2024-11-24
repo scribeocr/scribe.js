@@ -52,6 +52,6 @@
     "canvas": "^2.11.2",
     "commander": "^11.1.0",
     "puppeteer": "^22.13.0",
-    "@scribe.js/tesseract.js": "^5.1.2"
+    "@scribe.js/tesseract.js": "^5.1.3"
   }
 }
