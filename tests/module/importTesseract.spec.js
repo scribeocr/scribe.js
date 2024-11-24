@@ -44,6 +44,32 @@ describe('Check .hocr import function (basic)', function () {
   });
 }).timeout(120000);
 
+describe('Check .hocr import function (alt settings)', function () {
+  this.timeout(10000);
+  before(async () => {
+  });
+
+  it('Should import HOCR created with Tesseract CLI using lstm_choice_mode=1', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/simple_paragraph_lstm_choice_mode1.hocr`]);
+
+    const text1 = scribe.data.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
+
+    assert.strictEqual(text1, 'JNJ announced this morning the acquisition of privately-held Aragon for $650 million');
+  }).timeout(10000);
+
+  it('Should import HOCR created with Tesseract CLI using lstm_choice_mode=2', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/simple_paragraph_lstm_choice_mode2.hocr`]);
+
+    const text1 = scribe.data.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
+
+    assert.strictEqual(text1, 'JNJ announced this morning the acquisition of privately-held Aragon for $650 million');
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);
+
 describe('Check Tesseract .hocr import function imports styles correctly.', function () {
   this.timeout(10000);
   before(async () => {

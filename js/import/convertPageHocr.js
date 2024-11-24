@@ -74,6 +74,18 @@ export async function convertPageHocr({
   ocrStr = ocrStr.replace(/(class=')ocr_textfloat/ig, '$1ocr_line');
   ocrStr = ocrStr.replace(/(class=')ocr_header/ig, '$1ocr_line');
 
+  // Delete additional elements created by the `lstm_choice_mode` option in Tesseract
+  const lstmChoiceMode1 = !!/id='timestep1/.test(ocrStr);
+  const lstmChoiceMode2 = !!/id='lstm_choices/.test(ocrStr);
+
+  if (lstmChoiceMode1) {
+    ocrStr = ocrStr.replace(/<span class='ocr_symbol'[\s\S]+?(?:<\/span>\s*){3}/ig, '');
+  }
+
+  if (lstmChoiceMode2) {
+    ocrStr = ocrStr.replace(/<span class='ocrx_cinfo' id='lstm_choices[\s\S]+?(?:<\/span>\s*){2}/ig, '');
+  }
+
   /**
      * @param {string} match
      */
