@@ -127,6 +127,7 @@ The results of recognition can be exported by calling `exportFiles` after this f
     *   `options.modeAdv` **(`"lstm"` | `"legacy"` | `"combined"`)** Alternative method of setting recognition mode. (optional, default `'combined'`)
     *   `options.combineMode` **(`"conf"` | `"data"` | `"none"`)** Method of combining OCR results. Used if OCR data already exists. (optional, default `'data'`)
     *   `options.vanillaMode` **[boolean][20]** Whether to use the vanilla Tesseract.js model. (optional, default `false`)
+    *   `options.config` **[Object][19]<[string][22], [string][22]>** Config params to pass to to Tesseract.js. (optional, default `{}`)
 
 [1]: #init
 
