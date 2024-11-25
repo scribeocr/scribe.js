@@ -26,16 +26,10 @@ const Tesseract = typeof process === 'undefined' ? (await import('../../tess/tes
 
 const defaultConfigsVanilla = {
   tessedit_pageseg_mode: Tesseract.PSM.AUTO,
-  hocr_char_boxes: '1',
-  max_page_gradient_recognize: '100',
-  hocr_font_info: '1',
 };
 
 const defaultConfigs = {
   tessedit_pageseg_mode: Tesseract.PSM.AUTO,
-  hocr_char_boxes: '1',
-  max_page_gradient_recognize: '100',
-  hocr_font_info: '1',
 
   // This is virtually always a false positive (usually "I").
   tessedit_char_blacklist: '|',
@@ -80,7 +74,7 @@ const workerPath = new URL('../../tess/worker.min.js', import.meta.url).href;
 
 // Custom build is currently only used for browser version, while the Node.js version uses the published npm package.
 // If recognition capabilities are ever added for the Node.js version, then we should use the same build for consistency. .
-const tessConfig = typeof process === 'undefined' ? {
+const tessOptions = typeof process === 'undefined' ? {
   corePath,
   workerPath,
   // langPath: '/tess/tessdata_dist',
@@ -104,39 +98,54 @@ let workerLSTM;
  * @param {?Array<string>} param.langs
  * @param {?number} param.oem
  * @param {?boolean} param.vanillaMode
+ * @param {Object<string, string>} param.config - Config params to pass to to Tesseract.js.
  */
-const reinitialize = async ({ langs, oem, vanillaMode }) => {
+const reinitialize = async ({
+  langs, oem, vanillaMode, config,
+}) => {
   const langArr = typeof langs === 'string' ? langs.split('+') : langs;
   const changeLang = langs && JSON.stringify(langArr.sort()) !== JSON.stringify(langArrCurrent.sort());
   // oem can be 0, so using "truthy" checks does not work
   const changeOEM = oem !== null && oem !== undefined && oem !== oemCurrent;
   const changeVanilla = vanillaMode && vanillaMode !== vanillaMode_;
 
-  if (!changeLang && !changeOEM && !changeVanilla && worker) return;
+  if (!changeLang && !changeOEM && !changeVanilla && worker) {
+    if (config && Object.keys(config).length > 0) {
+      await worker.setParameters(config);
+    }
+    return;
+  }
   if (changeLang) langArrCurrent = langArr;
   if (changeOEM) oemCurrent = oem;
   if (changeVanilla) vanillaMode_ = vanillaMode;
 
-  const initConfigs = vanillaMode_ ? defaultInitConfigsVanilla : defaultInitConfigs;
+  const initConfigs = vanillaMode_ ? structuredClone(defaultInitConfigsVanilla) : structuredClone(defaultInitConfigs);
+
+  const defaultConfigsI = vanillaMode_ ? defaultConfigsVanilla : defaultConfigs;
+  for (const [key, value] of Object.entries(defaultConfigsI)) {
+    initConfigs[key] = value;
+  }
+
+  if (config) {
+    for (const [key, value] of Object.entries(config)) {
+      initConfigs[key] = value;
+    }
+  }
 
   // The worker only needs to be created from scratch if the build of Tesseract being used changes,
   // or if it was never created in the first place.
   if (changeVanilla || !worker) {
     if (vanillaMode_) {
-      tessConfig.corePath = new URL('../../tess/core_vanilla/tesseract-core-simd.wasm.js', import.meta.url).href;
+      tessOptions.corePath = new URL('../../tess/core_vanilla/tesseract-core-simd.wasm.js', import.meta.url).href;
     } else {
-      tessConfig.corePath = new URL('../../tess/core/tesseract-core-simd.wasm.js', import.meta.url).href;
+      tessOptions.corePath = new URL('../../tess/core/tesseract-core-simd.wasm.js', import.meta.url).href;
     }
 
     if (worker) await worker.terminate();
-    worker = await Tesseract.createWorker(langArrCurrent, oemCurrent, tessConfig, initConfigs);
+    worker = await Tesseract.createWorker(langArrCurrent, oemCurrent, tessOptions, initConfigs);
   } else {
     await worker.reinitialize(langArrCurrent, oemCurrent, initConfigs);
   }
-
-  const config = vanillaMode_ ? defaultConfigsVanilla : defaultConfigs;
-
-  await worker.setParameters(config);
 };
 
 /**
@@ -166,9 +175,9 @@ const reinitialize2 = async ({ langs, vanillaMode }) => {
   // or if it was never created in the first place.
   if (changeVanilla || !workerLegacy || !workerLSTM) {
     if (vanillaMode_) {
-      tessConfig.corePath = new URL('../../tess/core_vanilla/tesseract-core-simd.wasm.js', import.meta.url).href;
+      tessOptions.corePath = new URL('../../tess/core_vanilla/tesseract-core-simd.wasm.js', import.meta.url).href;
     } else {
-      tessConfig.corePath = new URL('../../tess/core/tesseract-core-simd.wasm.js', import.meta.url).href;
+      tessOptions.corePath = new URL('../../tess/core/tesseract-core-simd.wasm.js', import.meta.url).href;
     }
 
     if (workerLegacy) {
@@ -182,8 +191,8 @@ const reinitialize2 = async ({ langs, vanillaMode }) => {
       workerLSTM = null;
     }
 
-    workerLegacy = await Tesseract.createWorker(langArrCurrent, 0, tessConfig, initConfigs);
-    workerLSTM = await Tesseract.createWorker(langArrCurrent, 1, tessConfig, initConfigs);
+    workerLegacy = await Tesseract.createWorker(langArrCurrent, 0, tessOptions, initConfigs);
+    workerLSTM = await Tesseract.createWorker(langArrCurrent, 1, tessOptions, initConfigs);
   } else if (changeLang) {
     await workerLegacy.reinitialize(langArrCurrent, 0, initConfigs);
     await workerLSTM.reinitialize(langArrCurrent, 1, initConfigs);

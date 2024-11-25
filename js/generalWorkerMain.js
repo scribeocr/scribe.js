@@ -310,9 +310,12 @@ export class gs {
    *    without checking the particular language/oem settings.
    * @param {boolean} [params.vanillaMode=false] - Use vanilla Tesseract rather than Scribe OCR fork.
    * @param {string[]} [params.langs] - Array of language codes to load. If not provided, all languages are loaded.
+   * @param {Object<string, string>} [params.config={}] - Config params to pass to to Tesseract.js.
    * @returns
    */
-  static initTesseract = async ({ anyOk = true, vanillaMode = false, langs = ['eng'] }) => {
+  static initTesseract = async ({
+    anyOk = true, vanillaMode = false, langs = ['eng'], config = {},
+  }) => {
     await gs.schedulerReady;
 
     if (anyOk && gs.schedulerReadyTesseract) return gs.schedulerReadyTesseract;
@@ -327,10 +330,10 @@ export class gs {
     // A behavior (likely bug) was observed where, if the workers are loaded in parallel,
     // data will be loaded over network from all workers (rather than downloading once and caching).
     const worker0 = gs.schedulerInner.workers[0];
-    await worker0.reinitialize({ langs, vanillaMode });
+    await worker0.reinitialize({ langs, vanillaMode, config });
 
     if (gs.schedulerInner.workers.length > 0) {
-      const resArr = gs.schedulerInner.workers.slice(1).map((x) => x.reinitialize({ langs, vanillaMode }));
+      const resArr = gs.schedulerInner.workers.slice(1).map((x) => x.reinitialize({ langs, vanillaMode, config }));
       await Promise.allSettled(resArr);
     }
     // @ts-ignore

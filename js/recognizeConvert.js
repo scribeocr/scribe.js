@@ -392,8 +392,9 @@ export async function convertOCR(ocrRawArr, mainData, format, engineName, scribe
  * @param {boolean} mainData
  * @param {Array<string>} [langs=['eng']]
  * @param {boolean} [vanillaMode=false]
+ * @param {Object<string, string>} [config={}]
  */
-export async function recognizeAllPages(legacy = true, lstm = true, mainData = false, langs = ['eng'], vanillaMode = false) {
+export async function recognizeAllPages(legacy = true, lstm = true, mainData = false, langs = ['eng'], vanillaMode = false, config = {}) {
   // Render all PDF pages to PNG if needed
   // This step should not create binarized images as they will be created by Tesseract during recognition.
   if (inputData.pdfMode) await ImageCache.preRenderRange(0, ImageCache.pageCount - 1, false);
@@ -419,7 +420,9 @@ export async function recognizeAllPages(legacy = true, lstm = true, mainData = f
     ocrAll.active = ocrAll[oemText];
   }
 
-  await gs.initTesseract({ anyOk: false, vanillaMode, langs });
+  await gs.initTesseract({
+    anyOk: false, vanillaMode, langs, config,
+  });
 
   // If Legacy and LSTM are both requested, LSTM completion is tracked by a second array of promises (`promisesB`).
   // In this case, `convertPageCallbackBrowser` can be run after the Legacy recognition is finished,
@@ -446,10 +449,10 @@ export async function recognizeAllPages(legacy = true, lstm = true, mainData = f
   // const upscale = inputData.imageMode && elem.recognize.enableUpscale.checked;
   const upscale = inputData.imageMode && opt.enableUpscale;
 
-  const config = { upscale };
+  const configPage = { upscale };
 
   for (const x of inputPages) {
-    recognizePageImp(x, legacy, lstm, false, config, opt.debugVis).then(async (resArr) => {
+    recognizePageImp(x, legacy, lstm, false, configPage, opt.debugVis).then(async (resArr) => {
       const res0 = await resArr[0];
 
       if (res0.recognize.debugVis) {
@@ -505,6 +508,7 @@ export async function recognizeAllPages(legacy = true, lstm = true, mainData = f
  * @param {'lstm'|'legacy'|'combined'} [options.modeAdv='combined'] - Alternative method of setting recognition mode.
  * @param {'conf'|'data'|'none'} [options.combineMode='data'] - Method of combining OCR results. Used if OCR data already exists.
  * @param {boolean} [options.vanillaMode=false] - Whether to use the vanilla Tesseract.js model.
+ * @param {Object<string, string>} [options.config={}] - Config params to pass to to Tesseract.js.
  */
 export async function recognize(options = {}) {
   if (!inputData.pdfMode && !inputData.imageMode) throw new Error('No PDF or image data found to recognize.');
@@ -513,6 +517,7 @@ export async function recognize(options = {}) {
 
   const combineMode = options && options.combineMode ? options.combineMode : 'data';
   const vanillaMode = options && options.vanillaMode !== undefined ? options.vanillaMode : false;
+  const config = options && options.config ? options.config : {};
 
   const langs = options && options.langs ? options.langs : ['eng'];
   let oemMode = 'combined';
@@ -543,7 +548,7 @@ export async function recognize(options = {}) {
   if (oemMode === 'legacy' || oemMode === 'lstm') {
     // Tesseract is used as the "main" data unless user-uploaded data exists and only the LSTM model is being run.
     // This is because Tesseract Legacy provides very strong metrics, and Abbyy often does not.
-    await recognizeAllPages(oemMode === 'legacy', oemMode === 'lstm', !existingOCR, langs, vanillaMode);
+    await recognizeAllPages(oemMode === 'legacy', oemMode === 'lstm', !existingOCR, langs, vanillaMode, config);
 
     // Metrics from the LSTM model are so inaccurate they are not worth using.
     if (oemMode === 'legacy') {
@@ -551,7 +556,7 @@ export async function recognize(options = {}) {
       await runFontOptimization(ocrAll['Tesseract Legacy']);
     }
   } else if (oemMode === 'combined') {
-    await recognizeAllPages(true, true, !existingOCR, langs, vanillaMode);
+    await recognizeAllPages(true, true, !existingOCR, langs, vanillaMode, config);
 
     if (opt.saveDebugImages) {
       DebugData.debugImg.Combined = new Array(ImageCache.pageCount);
