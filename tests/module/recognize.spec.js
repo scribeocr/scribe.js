@@ -118,3 +118,33 @@ describe('Check auto-rotate features.', function () {
     await scribe.terminate();
   });
 });
+
+describe('Check Tesseract.js parameters can be set.', function () {
+  this.timeout(20000);
+
+  it('Config option tessedit_char_whitelist can be set', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/simple.png`]);
+    await scribe.recognize({
+      config: {
+        tessedit_char_whitelist: '0123456789',
+      },
+    });
+    const txt = await scribe.exportData('text');
+    assert.isTrue(/\d{3,}/.test(txt) && !/[A-Za-z]/.test(txt));
+  }).timeout(10000);
+
+  it('Config option tessedit_char_whitelist can be restored', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/simple.png`]);
+    await scribe.recognize({
+      config: {
+        tessedit_char_whitelist: '',
+      },
+    });
+    const txt = await scribe.exportData('text');
+    assert.strictEqual(txt, 'Tesseract.js');
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+});
