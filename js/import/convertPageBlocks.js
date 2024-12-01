@@ -124,7 +124,7 @@ export async function convertPageBlocks({
             continue;
           }
 
-          const wordObj = new ocr.OcrWord(lineObj, word.text, wordbox, id);
+          const wordObj = new ocr.OcrWord(lineObj, word.text.trim(), wordbox, id);
           wordObj.lang = word.language;
           wordObj.conf = word.confidence;
 
@@ -149,6 +149,9 @@ export async function convertPageBlocks({
           wordObj.chars = [];
           for (let m = 0; m < word.symbols.length; m++) {
             const symbol = word.symbols[m];
+
+            // The LSTM model sometimes produces space characters.
+            if (!symbol.text?.trim()) continue;
 
             const symbolbox = {
               left: symbol.bbox.x0, top: symbol.bbox.y0, right: symbol.bbox.x1, bottom: symbol.bbox.y1,
