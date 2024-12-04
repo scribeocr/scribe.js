@@ -274,6 +274,61 @@ export class FontCont {
   static glyphSet = null;
 
   /**
+   * Load fonts from an ArrayBuffer containing arbitrary font data.
+   * Supports .ttf, .otf, and .woff formats.
+   * This function should only be used for fonts we do not provide, such as user-uploaded fonts.
+   * @param {ArrayBuffer} src
+   */
+  static addFontFromFile = async (src) => {
+    let fontObj;
+    let fontData;
+    try {
+      fontObj = await loadOpentype(src);
+      // It is common for raw fonts embedded in PDFs to be invalid and rejected by the OTS, but running them through opentype.js fixes them.
+      // This appears to be because of the way that fonts are subsetted in PDFs.
+      fontData = fontObj.toArrayBuffer();
+    } catch (error) {
+      console.error('Error loading font.');
+      console.error(error);
+      return;
+    }
+
+    const fontNameEmbedded = fontObj.names.postScriptName.en;
+
+    let fontStyle = 'normal';
+    if (fontNameEmbedded.match(/italic/i)) {
+      fontStyle = 'italic';
+    } else if (fontNameEmbedded.match(/bold/i)) {
+      fontStyle = 'bold';
+    }
+
+    // mupdf makes changes to font names, so we need to do the same.
+    // Font names in the form `MEDJCO+CenturySchoolbook` are changed to `CenturySchoolbook`.
+    // Spaces are replaced with underscores.
+    const fontName = fontNameEmbedded.replace(/[^+]+\+/g, '').replace(/\s/g, '_');
+
+    if (!FontCont.doc?.[fontName]?.[fontStyle]) {
+      try {
+        const fontContainer = new FontContainerFont(fontName, fontStyle, fontData, false, fontObj);
+
+        if (!FontCont.doc) {
+          FontCont.doc = {};
+        }
+
+        if (!FontCont.doc[fontName]) {
+          FontCont.doc[fontName] = {};
+        }
+
+        FontCont.doc[fontName][fontStyle] = fontContainer;
+      } catch (error) {
+        console.error(`Error loading font ${fontName} ${fontStyle}.`);
+      }
+    } else {
+      console.warn(`Font ${fontName} ${fontStyle} already exists.`);
+    }
+  };
+
+  /**
    * Decide whether to use the optimized version of a font family.
    * Note that even when this function returns `true`, optimized versions of every style will not exist.
    * @param {string} family - Font family name.
