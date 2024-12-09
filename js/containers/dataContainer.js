@@ -8,9 +8,6 @@ export class layoutRegions {
   /** @type {Array<LayoutPage>} */
   static pages = [];
 
-  /** @type {Object<string, LayoutRegion>} */
-  static defaultRegions = {};
-
   /**
    *
    * @param {LayoutRegion} region - Region to delete.
@@ -29,9 +26,6 @@ export class layoutRegions {
 export class layoutDataTables {
   /** @type {Array<LayoutDataTablePage>} */
   static pages = [];
-
-  /** @type {Array<LayoutDataTable>} */
-  static defaultTables = [];
 
   /**
    * Serialize the layout data tables as JSON.
