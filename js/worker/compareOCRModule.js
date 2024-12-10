@@ -11,6 +11,12 @@ import { imageUtils } from '../objects/imageObjects.js';
 import { getRandomAlphanum } from '../utils/miscUtils.js';
 // import { CompDebug } from '../objects/imageObjects.js';
 
+// Function that logs to stderr and then waits for the log to be flushed to the console.
+// This should only be used for debugging purposes.
+const debugLog = (x) => new Promise((resolve) => {
+  process.stderr.write(`${String(x)}\n`, resolve);
+});
+
 /** @type {OffscreenCanvasRenderingContext2D} */
 let calcCtx;
 /** @type {OffscreenCanvasRenderingContext2D} */
@@ -1150,15 +1156,18 @@ export async function checkWords(wordsA, binaryImage, imageRotated, pageMetricsO
 
   let res;
   if (options.tessScheduler) {
-    res = (await options.tessScheduler.addJob('recognize', inputImage, extraConfig)).data;
+    res = (await options.tessScheduler.addJob('recognize', {
+      image: inputImage,
+      options: extraConfig,
+    }));
   } else if (options.tessWorker) {
-    res = await options.tessWorker.recognize(inputImage, extraConfig);
+    res = (await options.tessWorker.recognize(inputImage, extraConfig)).data;
   } else {
     throw new Error('`tessScheduler` and `tessWorker` missing. One must be provided for words to be checked.');
   }
 
   let wordTextA = wordsA.map((x) => x.text).join(' ');
-  let wordTextB = res.data.text.trim();
+  let wordTextB = res.text.trim();
 
   wordTextA = ocr.replaceLigatures(wordTextA);
   wordTextB = ocr.replaceLigatures(wordTextB);
