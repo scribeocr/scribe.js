@@ -148,3 +148,61 @@ describe('Check Tesseract.js parameters can be set.', function () {
     await scribe.terminate();
   });
 });
+
+describe('Check comparison between OCR versions.', function () {
+  this.timeout(20000);
+
+  it('Errors in uploaded OCR data are corrected', async () => {
+    // These functions still require various dependencies to be loaded to run properly.
+    // In some future version this should be fixed.
+    await scribe.init({ ocr: true, font: true });
+
+    if (!(typeof process === 'undefined')) {
+      const { initCanvasNode } = await import('../../js/worker/compareOCRModule.js');
+      await initCanvasNode();
+    }
+
+    /** @type {Parameters<typeof scribe.compareOCR>[2]} */
+    const compOptions = {
+      mode: 'comb',
+      supplementComp: false,
+    };
+
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/testocr.png`, `${ASSETS_PATH_KARMA}/testocr_errors.hocr`]);
+
+    await scribe.importFilesSupp([`${ASSETS_PATH_KARMA}/testocr_missing_word.hocr`], 'Missing Word');
+
+    const res = await scribe.compareOCR(scribe.data.ocr['User Upload'], scribe.data.ocr['Missing Word'], compOptions);
+
+    // The first word is present in the 'Missing Word' OCR data.
+    assert.strictEqual(res.ocr[0].lines[0].words[0].text, 'This');
+  }).timeout(10000);
+
+  it('Comparisons handled correctly when word is missing from comparison OCR', async () => {
+    /** @type {Parameters<typeof scribe.compareOCR>[2]} */
+    const compOptions1 = {
+      mode: 'comb',
+      supplementComp: false,
+    };
+
+    const res1 = await scribe.compareOCR(scribe.data.ocr['User Upload'], scribe.data.ocr['Missing Word'], compOptions1);
+
+    // The second word is missing in the 'Missing Word' OCR data, so the confidence should be 0 when compared to itself.
+    assert.strictEqual(res1.ocr[0].lines[0].words[2].conf, 0);
+
+    /** @type {Parameters<typeof scribe.compareOCR>[2]} */
+    const compOptions2 = {
+      mode: 'comb',
+      supplementComp: true,
+    };
+
+    const res2 = await scribe.compareOCR(scribe.data.ocr['User Upload'], scribe.data.ocr['Missing Word'], compOptions2);
+
+    // When the `supplementComp` option is set to `true`, missing words should be supplemented with new recognition, so the confidence should be 100.
+    assert.strictEqual(res2.ocr[0].lines[0].words[2].conf, 100);
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+});
