@@ -20,6 +20,7 @@ scribe.opt.saveDebugImages = debugMode;
  * @param {Array<string>} [params.list]
  * @param {boolean} [params.robustConfMode]
  * @param {boolean} [params.printConf]
+ * @param {boolean} [params.hocr]
  * @param {"eval" | "ebook" | "proof" | "invis"} [params.overlayMode]
  * @param {number} [params.workerN]
  */
@@ -89,6 +90,11 @@ async function main(func, params) {
 
     const outputPath = `${outputDir}/${path.basename(backgroundArg).replace(/\.\w{1,5}$/i, `${outputSuffix}.pdf`)}`;
     await scribe.download('pdf', outputPath);
+
+    if (params.hocr) {
+      const outputPathHocr = `${outputDir}/${path.basename(backgroundArg).replace(/\.\w{1,5}$/i, '.hocr')}`;
+      await scribe.download('hocr', outputPathHocr);
+    }
   }
 
   if (debugMode) {
@@ -155,9 +161,12 @@ export const overlay = async (pdfFile, ocrFile, outputDir, options) => (main('ov
  * @param {string} pdfFile - Path to PDF file.
  * @param {Object} options
  * @param {"eval" | "ebook" | "proof" | "invis"} [options.overlayMode]
+ * @param {boolean} [options.hocr]
  * @param {number} [options.workers]
  */
-export const recognize = async (pdfFile, options) => (main('recognize', { pdfFile, overlayMode: options?.overlayMode || 'invis', workerN: options?.workers }));
+export const recognize = async (pdfFile, options) => (main('recognize', {
+  pdfFile, overlayMode: options?.overlayMode || 'invis', workerN: options?.workers, hocr: options?.hocr,
+}));
 
 /**
  *

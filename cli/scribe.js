@@ -57,6 +57,7 @@ program
   .argument('<pdf_file>', 'Input PDF file.')
   .description('Recognize text in PDF file using internal OCR engine.')
   .option('-v, --vis', 'Print OCR text visibly over provided PDF file with colors coded by confidence.')
+  .option('-h, --hocr', 'Output .hocr intermediate data in addition to .pdf.')
   .option('-w, --workers <number>', 'Number of workers to use. Default is up to 8.')
   .action(recognizeCLI);
 
