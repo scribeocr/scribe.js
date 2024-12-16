@@ -75,18 +75,13 @@ export async function drawDebugImages(args) {
       ctx.fillRect(rectX, rectY, rectWidth, rectHeight);
 
       if (context === 'browser' && compDebugObj.context === 'browser') {
-        const imgElem0 = document.createElement('img');
-        const p1 = loadImageElem(compDebugObj.imageRaw, imgElem0);
-        const imgElem1 = document.createElement('img');
-        const p2 = loadImageElem(compDebugObj.imageA, imgElem1);
-        const imgElem2 = document.createElement('img');
-        const p3 = loadImageElem(compDebugObj.imageB, imgElem2);
-
-        await Promise.allSettled([p1, p2, p3]);
-
-        ctx.drawImage(imgElem0, 5, top);
-        ctx.drawImage(imgElem1, 5 + colWidth + 10, top);
-        ctx.drawImage(imgElem2, 5 + 2 * (colWidth + 10), top);
+        const topI = top;
+        await [compDebugObj.imageRaw, compDebugObj.imageA, compDebugObj.imageB].forEach(async (image, i) => {
+          if (!image) return;
+          const imgElem = document.createElement('img');
+          await loadImageElem(image, imgElem);
+          ctx.drawImage(imgElem, 5 + i * (colWidth + 10), topI);
+        });
       } else if (context === 'node' && compDebugObj.context === 'node') {
         const imgElem0 = await ca.getImageBitmap(compDebugObj.imageRaw);
         const imgElem1 = await ca.getImageBitmap(compDebugObj.imageA);
@@ -99,16 +94,17 @@ export async function drawDebugImages(args) {
         throw new Error('Attempted to draw debug images in wrong context.');
       }
 
-      // errorAdjA and errorAdjB should never be null, so this should eventually be edited on the types and code that constructs these objects.
-      if (compDebugObj.errorAdjA) {
-        const debugStr1 = `${String(Math.round((compDebugObj.errorAdjA) * 1e3) / 1e3)} [${String(Math.round((compDebugObj.errorRawA) * 1e3) / 1e3)}]`;
-
+      if (compDebugObj.errorRawA || compDebugObj.errorAdjA) {
+        let debugStr1 = '';
+        if (compDebugObj.errorAdjA) debugStr1 += `${String(Math.round((compDebugObj.errorAdjA) * 1e3) / 1e3)} `;
+        if (compDebugObj.errorRawA) debugStr1 += `[${String(Math.round((compDebugObj.errorRawA) * 1e3) / 1e3)}]`;
         ctx.fillText(debugStr1, 5 + colWidth + 10, top + compDebugObj.dims.height + fontSize + 3);
       }
 
-      if (compDebugObj.errorAdjB) {
-        const debugStr2 = `${String(Math.round((compDebugObj.errorAdjB) * 1e3) / 1e3)} [${String(Math.round((compDebugObj.errorRawB) * 1e3) / 1e3)}]`;
-
+      if (compDebugObj.errorRawB || compDebugObj.errorAdjB) {
+        let debugStr2 = '';
+        if (compDebugObj.errorRawB) debugStr2 += `${String(Math.round((compDebugObj.errorRawB) * 1e3) / 1e3)} `;
+        if (compDebugObj.errorAdjB) debugStr2 += `[${String(Math.round((compDebugObj.errorAdjB) * 1e3) / 1e3)}]`;
         ctx.fillText(debugStr2, 5 + 2 * (colWidth + 10), top + compDebugObj.dims.height + fontSize + 3);
       }
 
