@@ -35,12 +35,6 @@ export const compareOCRPage = async (pageA, pageB, options) => {
 
   const binaryImage = skipImage ? null : await ImageCache.getBinary(pageA.n);
 
-  // The `tessScheduler` property must be defined manually for Node.js, which runs this function in the main thread.
-  // In the browser, this is run in a worker, and the Tesseract module is defined automatically there.
-  if (typeof process !== 'undefined') {
-    options.tessScheduler = gs.schedulerInner;
-  }
-
   const pageMetricsObj = pageMetricsArr[pageA.n];
   return gs.compareOCRPageImp({
     pageA, pageB, binaryImage, pageMetricsObj, options,

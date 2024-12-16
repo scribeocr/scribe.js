@@ -35,13 +35,14 @@ import {
   recognize, recognizePageImp,
 } from './js/recognizeConvert.js';
 import { calcWordMetrics } from './js/utils/fontUtils.js';
-import { getImageBitmap, imageStrToBlob } from './js/utils/imageUtils.js';
+import { imageStrToBlob } from './js/utils/imageUtils.js';
 import {
   calcConf, checkOcrWordsAdjacent, mergeOcrWords, splitOcrWord,
 } from './js/utils/ocrUtils.js';
 import { assignParagraphs } from './js/utils/reflowPars.js';
 import { writeXlsx } from './js/export/writeTabular.js';
 import { calcColumnBounds, detectTablesInPage, makeTableFromBbox } from './js/utils/detectTables.js';
+import { ca } from './js/canvasAdapter.js';
 
 /**
  * Initialize the program and optionally pre-load resources.
@@ -101,19 +102,23 @@ const extractText = async (files, langs = ['eng'], outputFormat = 'txt', options
 
 /**
  *
- * @param {import('canvas').CanvasRenderingContext2D} ctx
+ * @param {OffscreenCanvas} canvas
  * @param {Array<Array<CompDebugNode>>} compDebugArrArr
  * @param {string} filePath
  * @public
  */
-async function writeDebugImages(ctx, compDebugArrArr, filePath) {
+async function writeDebugImages(canvas, compDebugArrArr, filePath) {
   if (typeof process === 'undefined') {
     throw new Error('This function is only available in Node.js.');
   } else {
-    await drawDebugImages({ ctx, compDebugArrArr, context: 'node' });
-    const buffer0 = ctx.canvas.toBuffer('image/png');
+    const canvas = await drawDebugImages({ compDebugArrArr, context: 'node' });
+
+    const imgURL = canvas.toDataURL();
+    const imgData = new Uint8Array(atob(imgURL.split(',')[1])
+      .split('')
+      .map((c) => c.charCodeAt(0)));
     const fs = await import('fs');
-    fs.writeFileSync(filePath, buffer0);
+    fs.writeFileSync(filePath, imgData);
   }
 }
 
@@ -132,15 +137,14 @@ async function dumpDebugImages(dir) {
       return;
     }
 
-    const { createCanvas } = await import('canvas');
-    const canvasAlt = createCanvas(200, 200);
+    const canvasAlt = await ca.createCanvas(200, 200);
     const ctxDebug = canvasAlt.getContext('2d');
 
     for (const [name, imgArr] of Object.entries(DebugData.debugImg)) {
       if (!imgArr || imgArr.length === 0) continue;
       for (let i = 0; i < imgArr.length; i++) {
         const filePath = `${dir}/${name}_${i}.png`;
-        await writeDebugImages(ctxDebug, [imgArr[i]], filePath);
+        await writeDebugImages(canvasAlt, [imgArr[i]], filePath);
       }
     }
   }
@@ -245,8 +249,6 @@ class utils {
   static dumpHOCR = dumpHOCR;
 
   static renderPageStatic = renderPageStatic;
-
-  static getImageBitmap = getImageBitmap;
 
   static saveAs = saveAs;
 }

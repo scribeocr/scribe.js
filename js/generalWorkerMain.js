@@ -163,17 +163,7 @@ export class gs {
    * @param {Parameters<typeof import('./worker/compareOCRModule.js').compareOCRPageImp>[0]} args
    * @returns {ReturnType<typeof import('./worker/compareOCRModule.js').compareOCRPageImp>}
    */
-  static compareOCRPageImp = async (args) => {
-    if (typeof process === 'undefined') {
-      return await gs.schedulerInner.addJob('compareOCRPageImp', args);
-    // eslint-disable-next-line no-else-return
-    } else {
-      // The Node.js canvas package does not currently support worker threads
-      // https://github.com/Automattic/node-canvas/issues/1394
-      const compareOCRPageImp = (await import('./worker/compareOCRModule.js')).compareOCRPageImp;
-      return await compareOCRPageImp(args);
-    }
-  };
+  static compareOCRPageImp = async (args) => await gs.schedulerInner.addJob('compareOCRPageImp', args);
 
   /**
    * @param {Parameters<typeof import('./import/convertPageHocr.js').convertPageHocr>[0]} args
@@ -226,15 +216,7 @@ export class gs {
    * @param {Parameters<typeof import('./worker/compareOCRModule.js').evalPageBase>[0]} args
    * @returns {ReturnType<typeof import('./worker/compareOCRModule.js').evalPageBase>}
    */
-  static evalPageBase = async (args) => {
-    if (typeof process === 'undefined') {
-      return await gs.schedulerInner.addJob('evalPageBase', args);
-    // eslint-disable-next-line no-else-return
-    } else {
-      const evalPageBase = (await import('./worker/compareOCRModule.js')).evalPageBase;
-      return await evalPageBase(args);
-    }
-  };
+  static evalPageBase = async (args) => await gs.schedulerInner.addJob('evalPageBase', args);
 
   /**
    * @param {Parameters<typeof import('./worker/compareOCRModule.js').evalWords>[0]} args
@@ -246,15 +228,7 @@ export class gs {
    * @param {Parameters<typeof import('./worker/compareOCRModule.js').evalPageFont>[0]} args
    * @returns {ReturnType<typeof import('./worker/compareOCRModule.js').evalPageFont>}
    */
-  static evalPageFont = async (args) => {
-    if (typeof process === 'undefined') {
-      return await gs.schedulerInner.addJob('evalPageFont', args);
-    // eslint-disable-next-line no-else-return
-    } else {
-      const evalPageFont = (await import('./worker/compareOCRModule.js')).evalPageFont;
-      return await evalPageFont(args);
-    }
-  };
+  static evalPageFont = async (args) => await gs.schedulerInner.addJob('evalPageFont', args);
 
   /**
    * @param {Parameters<typeof import('./worker/compareOCRModule.js').renderPageStaticImp>[0]} args

@@ -168,13 +168,6 @@ export async function runFontOptimization(ocrArr) {
     // Evaluate default fonts using up to 5 pages.
     const pageNum = Math.min(ImageCache.pageCount, 5);
 
-    // This step needs to happen here as all fonts must be registered before initializing the canvas.
-    if (!(typeof process === 'undefined')) {
-      await optimizeFontContainerAllPromise;
-      const { initCanvasNode } = await import('./worker/compareOCRModule.js');
-      await initCanvasNode();
-    }
-
     FontCont.rawMetrics = await evaluateFonts(ocrArr.slice(0, pageNum), false);
     const bestMetricsRaw = calcBestFonts(FontCont.rawMetrics);
 

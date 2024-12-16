@@ -125,13 +125,11 @@ export async function loadBuiltInFontsRaw(glyphSet = 'latin') {
 
   FontCont.raw = await /** @type {FontContainer} */(/** @type {any} */(loadFontsFromSource(srcObj)));
 
-  if (typeof process === 'undefined') {
-    // This assumes that the scheduler `init` method has at least started.
-    if (gs.schedulerReady === null) console.warn('Failed to load fonts to workers as workers have not been initialized yet.');
-    await gs.schedulerReady;
-    // If this is running, presumably a new glyphset is being loaded, so the fonts should be forced to be updated.
-    await updateFontContWorkerMain({ loadRaw: true });
-  }
+  // This assumes that the scheduler `init` method has at least started.
+  if (gs.schedulerReady === null) console.warn('Failed to load fonts to workers as workers have not been initialized yet.');
+  await gs.schedulerReady;
+  // If this is running, presumably a new glyphset is being loaded, so the fonts should be forced to be updated.
+  await updateFontContWorkerMain({ loadRaw: true });
 
   return;
 }
@@ -185,9 +183,7 @@ export async function enableFontOpt(enableOpt, forceOpt) {
     }
   }
 
-  if (typeof process === 'undefined' && change) {
-    await updateFontContWorkerMain();
-  }
+  await updateFontContWorkerMain();
 }
 
 /**

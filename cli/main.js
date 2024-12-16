@@ -4,7 +4,6 @@
 import fs from 'fs';
 import path from 'path';
 
-import { tmpUnique } from '../js/worker/compareOCRModule.js';
 import scribe from '../scribe.js';
 
 const debugMode = false;
@@ -105,10 +104,16 @@ async function main(func, params) {
 
     scribe.utils.dumpDebugImages(debugDir);
     scribe.utils.dumpHOCR(debugDir);
-  }
 
-  // Delete temp directory with fonts
-  await tmpUnique.delete();
+    for (let i = 0; i < scribe.data.ocr.active.length; i++) {
+      const outputPathPngI = `${debugDir}/page_vis_${i}.png`;
+      const img = await scribe.utils.renderPageStatic(scribe.data.ocr.active[i]);
+      const imgData = new Uint8Array(atob(img.split(',')[1])
+        .split('')
+        .map((c) => c.charCodeAt(0)));
+      fs.writeFileSync(outputPathPngI, imgData);
+    }
+  }
 
   scribe.terminate();
 

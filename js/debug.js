@@ -3,17 +3,17 @@ import { pageMetricsArr } from './containers/dataContainer.js';
 import { ImageCache } from './containers/imageContainer.js';
 import { gs } from './generalWorkerMain.js';
 import { loadImageElem } from './utils/imageUtils.js';
+import { ca } from './canvasAdapter.js';
 
 /**
  * @typedef {Object} CompDebugParamsBrowser
- * @property {CanvasRenderingContext2D|OffscreenCanvasRenderingContext2D} ctx
+ * @property {HTMLCanvasElement|OffscreenCanvas} canvas
  * @property {Array<Array<CompDebugBrowser>>} compDebugArrArr
  * @property {'browser'} context
  */
 
 /**
  * @typedef {Object} CompDebugParamsNode
- * @property {import('canvas').CanvasRenderingContext2D} ctx
  * @property {Array<Array<CompDebugNode>>} compDebugArrArr
  * @property {'node'} context
  */
@@ -22,30 +22,41 @@ import { loadImageElem } from './utils/imageUtils.js';
  * @param {CompDebugParamsBrowser|CompDebugParamsNode} args
  */
 export async function drawDebugImages(args) {
-  const { ctx, compDebugArrArr, context } = args;
+  let canvas = args.canvas;
+  const compDebugArrArr = args.compDebugArrArr;
+  const context = args.context;
 
   let top = 5;
-  let leftMax = 150;
 
   let canvasHeight = 5;
   let canvasWidth = 200;
 
-  compDebugArrArr.forEach((a) => canvasHeight += a.map((x) => x.dims.height + 25).reduce((x, y) => x + y, canvasHeight));
-  compDebugArrArr.forEach((a) => canvasWidth = Math.max(a.map((x) => x.dims.width * 3 + 30).reduce((x, y) => Math.max(x, y), canvasWidth), canvasWidth));
+  compDebugArrArr.forEach((a) => {
+    a.forEach((x) => {
+      canvasHeight += x.dims.height + 25;
+      canvasWidth = Math.max(x.dims.width * 3 + 30, canvasWidth);
+    });
+  });
 
-  ctx.canvas.height = canvasHeight;
-  ctx.canvas.width = canvasWidth;
+  if (!canvas) {
+    canvas = await ca.createCanvas(canvasWidth, canvasHeight);
+  } else {
+    canvas.height = canvasHeight;
+    canvas.width = canvasWidth;
+  }
+
+  const ctx = canvas.getContext('2d');
 
   ctx.fillStyle = 'white';
-  ctx.fillRect(0, 0, ctx.canvas.width, ctx.canvas.height);
+  ctx.fillRect(0, 0, canvasWidth, canvasHeight);
 
   const fontSize = 10;
   ctx.fillStyle = 'black';
-  ctx.font = `${fontSize}px sans-serif`;
+  ctx.font = `${fontSize}px NimbusSans`;
 
   for (const compDebugArr of compDebugArrArr) {
     for (const compDebugObj of compDebugArr) {
-    // Whether "B" option is chosen
+      // Whether "B" option is chosen
       let chosen = compDebugObj.errorRawB < compDebugObj.errorRawA;
       if (compDebugObj.errorAdjB && compDebugObj.errorAdjA) {
         chosen = compDebugObj.errorAdjB < compDebugObj.errorAdjA;
@@ -77,9 +88,9 @@ export async function drawDebugImages(args) {
         ctx.drawImage(imgElem1, 5 + colWidth + 10, top);
         ctx.drawImage(imgElem2, 5 + 2 * (colWidth + 10), top);
       } else if (context === 'node' && compDebugObj.context === 'node') {
-        const imgElem0 = compDebugObj.imageRaw;
-        const imgElem1 = compDebugObj.imageA;
-        const imgElem2 = compDebugObj.imageB;
+        const imgElem0 = await ca.getImageBitmap(compDebugObj.imageRaw);
+        const imgElem1 = await ca.getImageBitmap(compDebugObj.imageA);
+        const imgElem2 = await ca.getImageBitmap(compDebugObj.imageB);
 
         ctx.drawImage(imgElem0, 5, top);
         ctx.drawImage(imgElem1, 5 + colWidth + 10, top);
@@ -102,9 +113,10 @@ export async function drawDebugImages(args) {
       }
 
       top += compDebugObj.dims.height + 25;
-      leftMax = Math.max(leftMax, 3 * colWidth + 30);
     }
   }
+
+  return canvas;
 }
 
 /**
