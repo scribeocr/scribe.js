@@ -6,6 +6,7 @@
 // Node.js case
 import opentype from '../../lib/opentype.module.js';
 import { determineSansSerif } from '../utils/miscUtils.js';
+import { ca } from '../canvasAdapter.js';
 
 if (typeof process === 'object') {
   // @ts-ignore
@@ -164,7 +165,11 @@ export function FontContainerFont(family, style, src, opt, opentypeObj) {
    */
   this.disable = false;
 
-  if (typeof FontFace !== 'undefined') loadFontFace(this.fontFaceName, this.fontFaceStyle, this.fontFaceWeight, this.src);
+  if (typeof FontFace !== 'undefined') {
+    loadFontFace(this.fontFaceName, this.fontFaceStyle, this.fontFaceWeight, this.src);
+  } else {
+    ca.registerFontObj(this);
+  }
 }
 
 /**

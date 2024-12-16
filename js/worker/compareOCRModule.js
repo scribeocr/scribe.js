@@ -3,171 +3,183 @@
 
 import ocr from '../objects/ocrObjects.js';
 import { calcLineFontSize, calcWordFontSize, calcWordMetrics } from '../utils/fontUtils.js';
-import { getImageBitmap } from '../utils/imageUtils.js';
-import { drawWordActual, drawWordRender } from './renderWordCanvas.js';
 
 import { FontCont } from '../containers/fontContainer.js';
 import { imageUtils } from '../objects/imageObjects.js';
-import { getRandomAlphanum } from '../utils/miscUtils.js';
-// import { CompDebug } from '../objects/imageObjects.js';
+import { ca } from '../canvasAdapter.js';
 
-// Function that logs to stderr and then waits for the log to be flushed to the console.
-// This should only be used for debugging purposes.
-const debugLog = (x) => new Promise((resolve) => {
-  process.stderr.write(`${String(x)}\n`, resolve);
-});
+/**
+ * Crop the image data the area containing `words` and render to the `calcCanvas` canvas.
+ * @param {Array<OcrWord>} words
+ * @param {ImageBitmap} imageBinaryBit
+ * @param {number} angle
+ */
+export async function drawWordActual(words, imageBinaryBit, angle) {
+  if (!FontCont.raw) throw new Error('Fonts must be defined before running this function.');
 
-/** @type {OffscreenCanvasRenderingContext2D} */
-let calcCtx;
-/** @type {OffscreenCanvasRenderingContext2D} */
-let viewCtx0;
-/** @type {OffscreenCanvasRenderingContext2D} */
-let viewCtx1;
-/** @type {OffscreenCanvasRenderingContext2D} */
-let viewCtx2;
+  // The font/style from the first word is used for the purposes of font metrics
+  const lineFontSize = calcLineFontSize(words[0].line);
 
-// Browser case
-if (typeof process === 'undefined') {
-  // For whatever reason, this can fail silently in some browsers that do not support OffscreenCanvas, where the worker simply stops running.
-  // Therefore, an explicit error message is added here to make the issue evident. Features will still fail, so this is not a fix.
-  try {
-    const canvasAlt = new OffscreenCanvas(200, 200);
-    calcCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvasAlt.getContext('2d'));
+  const fontI = FontCont.getWordFont(words[0]);
 
-    const canvasComp0 = new OffscreenCanvas(200, 200);
-    viewCtx0 = /** @type {OffscreenCanvasRenderingContext2D} */ (canvasComp0.getContext('2d'));
+  const fontOpentypeI = fontI.opentype;
 
-    const canvasComp1 = new OffscreenCanvas(200, 200);
-    viewCtx1 = /** @type {OffscreenCanvasRenderingContext2D} */ (canvasComp1.getContext('2d'));
+  const fontAscApprox = fontOpentypeI.charToGlyph('A').getMetrics().yMax * 1.1;
+  const fontDescApprox = fontOpentypeI.charToGlyph('j').getMetrics().yMin * 1.1;
 
-    const canvasComp2 = new OffscreenCanvas(200, 200);
-    viewCtx2 = /** @type {OffscreenCanvasRenderingContext2D} */ (canvasComp2.getContext('2d'));
-  } catch (error) {
-    console.log('Failed to create OffscreenCanvas. This browser likely does not support OffscreenCanvas.');
-    console.error(error);
-  }
+  const fontDesc = Math.round(fontDescApprox * (lineFontSize / 1000));
+  const fontAsc = Math.round(fontAscApprox * (lineFontSize / 1000));
+
+  const sinAngle = Math.sin(angle * (Math.PI / 180));
+  const cosAngle = Math.cos(angle * (Math.PI / 180));
+
+  const wordsBox = words.map((x) => x.bbox);
+
+  // Union of all bounding boxes
+  const wordBoxUnion = {
+    left: Math.min(...wordsBox.map((x) => x.left)),
+    top: Math.min(...wordsBox.map((x) => x.top)),
+    right: Math.max(...wordsBox.map((x) => x.right)),
+    bottom: Math.max(...wordsBox.map((x) => x.bottom)),
+  };
+
+  // All words are assumed to be on the same line
+  const lineObj = words[0].line;
+  const linebox = words[0].line.bbox;
+  const { baseline } = words[0].line;
+
+  const imageRotated = angle !== 0;
+  const angleAdjLine = imageRotated ? ocr.calcLineStartAngleAdj(lineObj) : { x: 0, y: 0 };
+
+  const start = linebox.left + angleAdjLine.x + (wordBoxUnion.left - linebox.left) / cosAngle;
+
+  // We crop to the dimensions of the font (fontAsc and fontDesc) rather than the image bounding box.
+  const height = Math.round(fontAsc - fontDesc);
+  const width = Math.round(wordBoxUnion.right - wordBoxUnion.left + 1);
+
+  const cropY = linebox.bottom + baseline[1] - fontAsc - 1;
+  const cropYAdj = cropY + angleAdjLine.y;
+
+  const canvas = await ca.createCanvas(width, height);
+  const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d'));
+
+  ctx.drawImage(imageBinaryBit, start - 1, cropYAdj, width, height, 0, 0, width, height);
+
+  return {
+    canvas,
+    cropY,
+    width,
+    height,
+  };
 }
 
-let tmpUniqueDir = null;
-export const tmpUnique = {
-  get: async () => {
-    if (typeof process === 'undefined') {
-      throw new Error('This function is not intended for browser use.');
-    } else {
-      const { tmpdir } = await import('os');
-      const { mkdirSync } = await import('fs');
+/**
+   * Function that draws a word on a canvas.
+   * This code was factored out to allow for drawing multiple times while only calculating metrics once.
+   * Therefore, only the drawing code should be in this function; the metrics should be calculated elsewhere
+   * and passed to this function, rather than calcualting from an `OcrWord` object.
+   *
+   * @param {Object} params
+   * @param {CanvasRenderingContext2D|OffscreenCanvasRenderingContext2D} params.ctx
+   * @param {Array<string>} params.charArr
+   * @param {number} params.left
+   * @param {number} params.bottom
+   * @param {Array<number>} params.advanceArr - Array of pixels to advance for each character.
+   *    Unlike the "advance" property of a glyph, this is the actual distance to advance on the canvas,
+   *    and should include kerning and character spacing.
+   * @param {FontContainerFont} params.font
+   * @param {number} params.size
+   * @param {boolean} params.smallCaps
+   * @param {string} [params.fillStyle='black']
+   */
+const printWordOnCanvas = async ({
+  ctx, charArr, left, bottom, advanceArr, font, size, smallCaps, fillStyle = 'black',
+}) => {
+  ctx.font = `${font.fontFaceStyle} ${font.fontFaceWeight} ${size}px ${font.fontFaceName}`;
+  ctx.fillStyle = fillStyle;
+  ctx.textBaseline = 'alphabetic';
 
-      if (!tmpUniqueDir) {
-        tmpUniqueDir = `${tmpdir()}/${getRandomAlphanum(8)}`;
-        mkdirSync(tmpUniqueDir);
-      // console.log(`Created directory: ${tmpUniqueDir}`);
-      }
-      return tmpUniqueDir;
-    }
-  },
-  delete: async () => {
-    if (typeof process === 'undefined') {
-      throw new Error('This function is not intended for browser use.');
-    } else {
-    // eslint-disable-next-line no-lonely-if
-      if (tmpUniqueDir) {
-        const { rmSync } = await import('fs');
-        rmSync(tmpUniqueDir, { recursive: true, force: true });
-        // console.log(`Deleted directory: ${tmpUniqueDir}`);
-        tmpUniqueDir = null;
+  let leftI = left;
+  for (let i = 0; i < charArr.length; i++) {
+    let charI = charArr[i];
+
+    if (smallCaps) {
+      if (charI === charI.toUpperCase()) {
+        ctx.font = `${font.fontFaceStyle} ${font.fontFaceWeight} ${size}px ${font.fontFaceName}`;
+      } else {
+        charI = charI.toUpperCase();
+        ctx.font = `${font.fontFaceStyle} ${font.fontFaceWeight} ${size * font.smallCapsMult}px ${font.fontFaceName}`;
       }
     }
-  },
+
+    ctx.fillText(charI, leftI, bottom);
+    leftI += advanceArr[i];
+  }
 };
 
-export const initCanvasNode = async () => {
-  if (typeof process === 'undefined') {
-    throw new Error('This function is not intended for browser use.');
-  } else {
-    const { createCanvas, registerFont, deregisterAllFonts } = await import('canvas');
-    // If canvases have already been defined, existing fonts need to be cleared.
-    // This happens when recognizing multiple documents without starting a new process.
-    const clearFonts = calcCtx && viewCtx0 && viewCtx1 && viewCtx2;
-
-    if (clearFonts) {
-    // Per a Git Issue, the `deregisterAllFonts` function may cause a memory leak.
-    // However, this is not an issue that can be solved in this codebase, as it is necessary to deregister old fonts,
-    // and leaving them would take up (at least) as much memory.
-    // https://github.com/Automattic/node-canvas/issues/1974
-      deregisterAllFonts();
-    }
-
-    const { isMainThread } = await import('worker_threads');
-
-    // The Node.js canvas package does not currently support worke threads
-    // https://github.com/Automattic/node-canvas/issues/1394
-    if (!isMainThread) throw new Error('node-canvas is not currently supported on worker threads.');
-    if (!FontCont.raw) throw new Error('Fonts must be defined before running this function.');
-
-    const { writeFile } = await import('fs');
-    const { promisify } = await import('util');
-    const writeFile2 = promisify(writeFile);
-
-    /**
+/**
+   * Print word on canvas.
    *
-   * @param {FontContainerFont} fontObj
+   * @param {CanvasRenderingContext2D|OffscreenCanvasRenderingContext2D} ctx
+   * @param {OcrWord} word
+   * @param {number} offsetX
+   * @param {number} cropY
+   * @param {?CanvasRenderingContext2D|OffscreenCanvasRenderingContext2D} ctxView
+   * @param {boolean} [imageRotated=false] -
    */
-    const registerFontObj = async (fontObj) => {
-      if (typeof fontObj.src !== 'string') {
-      // Create unique temp directory for this process only.
-      // This prevents different processes from overwriting eachother when this is run in parallel.
-        const tmpDir = await tmpUnique.get();
+export const drawWordRender = async (ctx, word, offsetX = 0, cropY = 0, ctxView = null, imageRotated = false) => {
+  if (!FontCont.raw) throw new Error('Fonts must be defined before running this function.');
+  if (!ctx) throw new Error('Canvases must be defined before running this function.');
 
-        // Optimized and non-optimized fonts should not overwrite each other
-        const optStr = fontObj.opt ? '-opt' : '';
+  const fontI = FontCont.getWordFont(word);
 
-        const fontPathTmp = `${tmpDir}/${fontObj.family}-${fontObj.style}${optStr}.otf`;
-        await writeFile2(fontPathTmp, Buffer.from(fontObj.src));
-        // console.log(`Writing font to: ${fontPathTmp}`);
+  let baselineY = word.line.bbox.bottom + word.line.baseline[1];
 
-        registerFont(fontPathTmp, { family: fontObj.fontFaceName, style: fontObj.fontFaceStyle, weight: fontObj.fontFaceWeight });
+  const wordMetrics = calcWordMetrics(word);
+  const advanceArr = wordMetrics.advanceArr;
+  const kerningArr = wordMetrics.kerningArr;
+  const charSpacing = wordMetrics.charSpacing;
+  const wordFontSize = wordMetrics.fontSize;
 
-      // unlinkSync(fontPathTmp);
-      } else {
-        registerFont(fontObj.src, { family: fontObj.fontFaceName, style: fontObj.fontFaceStyle, weight: fontObj.fontFaceWeight });
-      }
-    };
+  if (word.sup) {
+    const wordboxXMid = word.bbox.left + (word.bbox.right - word.bbox.left) / 2;
 
-    // All fonts must be registered before the canvas is created, so all raw and optimized fonts are loaded.
-    // Even when using optimized fonts, at least one raw font is needed to compare against optimized version.
-    for (const [key1, value1] of Object.entries(FontCont.raw)) {
-      if (['Default', 'SansDefault', 'SerifDefault'].includes(key1)) continue;
-      for (const [key2, value2] of Object.entries(value1)) {
-        await registerFontObj(value2);
-      }
+    const baselineYWord = word.line.bbox.bottom + word.line.baseline[1] + word.line.baseline[0] * (wordboxXMid - word.line.bbox.left);
+
+    baselineY -= (baselineYWord - word.bbox.bottom);
+
+    if (!word.visualCoords) {
+      const fontDesc = fontI.opentype.descender / fontI.opentype.unitsPerEm * wordMetrics.fontSize;
+      baselineY += fontDesc;
     }
+  } else if (!imageRotated) {
+    const wordboxXMid = word.bbox.left + (word.bbox.right - word.bbox.left) / 2;
 
-    // This function is used before font optimization is complete, so `fontAll.opt` does not exist yet.
-    if (FontCont.opt) {
-      for (const [key1, value1] of Object.entries(FontCont.opt)) {
-        if (['Default', 'SansDefault', 'SerifDefault'].includes(key1) || !value1) continue;
-        for (const [key2, value2] of Object.entries(value1)) {
-          if (!value2) continue;
-          await registerFontObj(value2);
-        }
-      }
-    }
+    baselineY = word.line.bbox.bottom + word.line.baseline[1] + word.line.baseline[0] * (wordboxXMid - word.line.bbox.left);
+  }
 
-    // This causes type errors in VSCode, as we are assigning an value of type `import('canvas').CanvasRenderingContext2D` to an object of type `OffscreenCanvasRenderingContext2D`.
-    // Leaving for now, as switching the type of `calcCtx`, `viewCtx0`, etc. to allow for either causes more errors than it solves.
-    // The core issue is that multiple object types (the canvas and image inputs) change *together* based on environment (Node.js vs. browser),
-    // and it is unclear how to tell the type interpreter "when `calcCtx` is `import('canvas').CanvasRenderingContext2D` then the image input is always `import('canvas').Image".
-    const canvasAlt = createCanvas(200, 200);
-    calcCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (/** @type {unknown} */ (canvasAlt.getContext('2d')));
+  const y = baselineY - cropY;
 
-    const canvasComp0 = createCanvas(200, 200);
-    viewCtx0 = /** @type {OffscreenCanvasRenderingContext2D} */ (/** @type {unknown} */ (canvasComp0.getContext('2d')));
+  const advanceArrTotal = [];
+  for (let i = 0; i < advanceArr.length; i++) {
+    let leftI = 0;
+    leftI += advanceArr[i] || 0;
+    leftI += kerningArr[i] || 0;
+    leftI += charSpacing || 0;
+    advanceArrTotal.push(leftI);
+  }
 
-    const canvasComp1 = createCanvas(200, 200);
-    viewCtx1 = /** @type {OffscreenCanvasRenderingContext2D} */ (/** @type {unknown} */ (canvasComp1.getContext('2d')));
+  let left = 1 + offsetX;
+  if (word.visualCoords) left -= wordMetrics.leftSideBearing;
 
-    const canvasComp2 = createCanvas(200, 200);
-    viewCtx2 = /** @type {OffscreenCanvasRenderingContext2D} */ (/** @type {unknown} */ (canvasComp2.getContext('2d')));
+  await printWordOnCanvas({
+    ctx, charArr: wordMetrics.charArr, left, bottom: y, advanceArr: advanceArrTotal, font: fontI, size: wordFontSize, smallCaps: word.smallCaps,
+  });
+
+  if (ctxView) {
+    await printWordOnCanvas({
+      ctx: ctxView, charArr: wordMetrics.charArr, left, bottom: y, advanceArr: advanceArrTotal, font: fontI, size: wordFontSize, smallCaps: word.smallCaps, fillStyle: 'red',
+    });
   }
 };
 
@@ -207,10 +219,9 @@ export async function evalWords({
 
   if (anyChinese) return { metricA: 1, metricB: 0, debug: null };
 
-  const binaryImageBit = await getImageBitmap(binaryImage);
+  const binaryImageBit = await ca.getImageBitmap(binaryImage);
 
   if (!FontCont.raw) throw new Error('Fonts must be defined before running this function.');
-  if (!calcCtx) throw new Error('Canvases must be defined before running this function.');
 
   const view = options?.view === undefined ? false : options?.view;
   const useABaseline = options?.useABaseline === undefined ? true : options?.useABaseline;
@@ -221,25 +232,50 @@ export async function evalWords({
   const linebox = wordsA[0].line.bbox;
   const baselineA = wordsA[0].line.baseline;
 
-  calcCtx.clearRect(0, 0, calcCtx.canvas.width, calcCtx.canvas.height);
+  // Draw the actual words (from the user-provided image)
+  const {
+    canvas, cropY, width, height,
+  } = await drawWordActual([...wordsA, ...wordsB], binaryImageBit, angle);
 
+  const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d'));
+
+  const imageDataActual = ctx.getImageData(0, 0, width, height).data;
+
+  let canvasView0;
+  let ctxView0;
+  let canvasView1;
+  let ctxView1;
+  let canvasView2;
+  let ctxView2;
   if (view) {
-    viewCtx0.clearRect(0, 0, viewCtx0.canvas.width, viewCtx0.canvas.height);
-    viewCtx1.clearRect(0, 0, viewCtx1.canvas.width, viewCtx1.canvas.height);
-    viewCtx2.clearRect(0, 0, viewCtx2.canvas.width, viewCtx2.canvas.height);
+    let img;
+    if (typeof process === 'undefined') {
+      img = canvas;
+    } else {
+      img = ca.CanvasKit.MakeImage({
+        width,
+        height,
+        alphaType: ca.CanvasKit.AlphaType.Unpremul,
+        colorType: ca.CanvasKit.ColorType.RGBA_8888,
+        colorSpace: ca.CanvasKit.ColorSpace.SRGB,
+      }, imageDataActual, 4 * width);
+    }
+
+    canvasView0 = await ca.createCanvas(width, height);
+    ctxView0 = /** @type {OffscreenCanvasRenderingContext2D} */ (canvasView0.getContext('2d'));
+    ctxView0.drawImage(img, 0, 0);
+    canvasView1 = await ca.createCanvas(width, height);
+    ctxView1 = /** @type {OffscreenCanvasRenderingContext2D} */ (canvasView1.getContext('2d'));
+    ctxView1.drawImage(img, 0, 0);
+    if (wordsB.length > 0) {
+      canvasView2 = await ca.createCanvas(width, height);
+      ctxView2 = /** @type {OffscreenCanvasRenderingContext2D} */ (canvasView2.getContext('2d'));
+      ctxView2.drawImage(img, 0, 0);
+    }
   }
 
-  // Draw the actual words (from the user-provided image)
-  const ctxViewArr = view ? [viewCtx0, viewCtx1, viewCtx2] : undefined;
-  const cropY = await drawWordActual(calcCtx, [...wordsA, ...wordsB], binaryImageBit, angle, ctxViewArr);
-
-  const imageDataActual = calcCtx.getImageData(0, 0, calcCtx.canvas.width, calcCtx.canvas.height).data;
-
-  calcCtx.clearRect(0, 0, calcCtx.canvas.width, calcCtx.canvas.height);
-  calcCtx.fillStyle = 'white';
-  calcCtx.fillRect(0, 0, calcCtx.canvas.width, calcCtx.canvas.height);
-
-  let ctxView = view ? viewCtx1 : null;
+  ctx.fillStyle = 'white';
+  ctx.fillRect(0, 0, width, height);
 
   // Draw the words in wordsA
   let x0 = wordsA[0].bbox.left;
@@ -250,10 +286,10 @@ export async function evalWords({
 
     const offsetX = (wordIBox.left - x0) / cosAngle;
 
-    await drawWordRender(calcCtx, word, offsetX, cropY, ctxView, Boolean(angle));
+    await drawWordRender(ctx, word, offsetX, cropY, ctxView1, Boolean(angle));
   }
 
-  const imageDataExpectedA = calcCtx.getImageData(0, 0, calcCtx.canvas.width, calcCtx.canvas.height).data;
+  const imageDataExpectedA = ctx.getImageData(0, 0, width, height).data;
 
   if (imageDataActual.length !== imageDataExpectedA.length) {
     console.log('Actual and expected images are different sizes');
@@ -283,13 +319,8 @@ export async function evalWords({
 
   let metricB = 1;
   if (wordsB.length > 0) {
-    const baselineB = useABaseline ? baselineA : wordsB[0].line.baseline;
-
-    calcCtx.clearRect(0, 0, calcCtx.canvas.width, calcCtx.canvas.height);
-    calcCtx.fillStyle = 'white';
-    calcCtx.fillRect(0, 0, calcCtx.canvas.width, calcCtx.canvas.height);
-
-    ctxView = view ? viewCtx2 : null;
+    ctx.fillStyle = 'white';
+    ctx.fillRect(0, 0, width, height);
 
     // Draw the words in wordsB
     for (let i = 0; i < wordsB.length; i++) {
@@ -305,12 +336,12 @@ export async function evalWords({
       }
       const offsetX = (word.bbox.left - x0) / cosAngle;
 
-      await drawWordRender(calcCtx, word, offsetX, cropY, ctxView, Boolean(angle));
+      await drawWordRender(ctx, word, offsetX, cropY, ctxView2, Boolean(angle));
     }
 
-    const imageDataExpectedB = calcCtx.getImageData(0, 0, calcCtx.canvas.width, calcCtx.canvas.height).data;
+    const imageDataExpectedB = ctx.getImageData(0, 0, width, height).data;
 
-    calcCtx.clearRect(0, 0, calcCtx.canvas.width, calcCtx.canvas.height);
+    ctx.clearRect(0, 0, width, height);
 
     let diffB = 0;
     let totalB = 0;
@@ -338,27 +369,40 @@ export async function evalWords({
   let debugImg = null;
   if (view) {
     if (typeof process === 'undefined') {
-      const imageRaw = await viewCtx0.canvas.convertToBlob();
-      const imageA = await viewCtx1.canvas.convertToBlob();
-      const imageB = await viewCtx2.canvas.convertToBlob();
-      const dims = { width: viewCtx0.canvas.width, height: viewCtx0.canvas.height };
+      let imageRaw;
+      let imageA;
+      let imageB;
+
+      if (canvasView0) imageRaw = await canvasView0.convertToBlob();
+      if (canvasView1) imageA = await canvasView1.convertToBlob();
+      if (canvasView2) imageB = await canvasView2.convertToBlob();
+      const dims = { width, height };
 
       debugImg = {
         context: 'browser', imageRaw, imageA, imageB, dims, errorRawA: metricA, errorRawB: metricB, errorAdjA: null, errorAdjB: null,
       };
     } else {
-      const { loadImage } = await import('canvas');
+      let imageRaw;
+      let imageA;
+      let imageB;
 
-      const imageRaw = await loadImage(viewCtx0.canvas.toBuffer('image/png'));
-      const imageA = await loadImage(viewCtx1.canvas.toBuffer('image/png'));
-      const imageB = await loadImage(viewCtx2.canvas.toBuffer('image/png'));
+      if (canvasView0) imageRaw = canvasView0.toDataURL('image/png');
+      if (canvasView1) imageA = canvasView1.toDataURL('image/png');
+      if (canvasView2) imageB = canvasView2.toDataURL('image/png');
 
-      const dims = { width: viewCtx0.canvas.width, height: viewCtx0.canvas.height };
+      const dims = { width, height };
 
       debugImg = {
         context: 'node', imageRaw, imageA, imageB, dims, errorRawA: metricA, errorRawB: metricB, errorAdjA: null, errorAdjB: null,
       };
     }
+  }
+
+  if (typeof process !== 'undefined') {
+    canvas.dispose();
+    if (canvasView0) canvasView0.dispose();
+    if (canvasView1) canvasView1.dispose();
+    if (canvasView2) canvasView2.dispose();
   }
 
   return { metricA, metricB, debug: debugImg };
@@ -474,8 +518,7 @@ async function penalizeWord(wordObjs) {
  * @param {boolean} [params.options.evalConflicts] - Whether to evaluate word quality on conflicts. If `false` the text from `pageB` is always assumed correct.
  *    This option is useful for combining the style from Tesseract Legacy with the text from Tesseract LSTM.
  * @param {boolean} [params.options.supplementComp] - Whether to run additional recognition jobs for words in `pageA` not in `pageB`
- * @param {Tesseract.Scheduler} [params.options.tessScheduler] - Tesseract scheduler to use for recognizing text. `tessScheduler` or `tessWorker` must be provided if `supplementComp` is `true`.
- * @param {Tesseract.Worker} [params.options.tessWorker] - Tesseract scheduler to use for recognizing text. `tessScheduler` or `tessWorker` must be provided if `supplementComp` is `true`.
+ * @param {Tesseract.Worker} [params.options.tessWorker] - Tesseract worker to use for recognizing text. Must be provided if `supplementComp` is `true`.
  * @param {boolean} [params.options.ignorePunct]
  * @param {boolean} [params.options.ignoreCap]
  * @param {number} [params.options.confThreshHigh]
@@ -493,7 +536,7 @@ export async function compareOCRPageImp({
   let imageRotated = false;
 
   if (binaryImage) {
-    binaryImageBit = binaryImage.imageBitmap || await getImageBitmap(binaryImage.src);
+    binaryImageBit = binaryImage.imageBitmap || await ca.getImageBitmap(binaryImage.src);
     imageUpscaled = binaryImage.upscaled;
     imageRotated = binaryImage.rotated;
   }
@@ -505,14 +548,13 @@ export async function compareOCRPageImp({
   const debugLabel = options?.debugLabel === undefined ? '' : options?.debugLabel;
   const evalConflicts = options?.evalConflicts === undefined ? true : options?.evalConflicts;
   const supplementComp = options?.supplementComp === undefined ? false : options?.supplementComp;
-  const tessScheduler = options?.tessScheduler === undefined ? null : options?.tessScheduler;
   const tessWorker = options?.tessWorker === undefined ? null : options?.tessWorker;
   const ignorePunct = options?.ignorePunct === undefined ? false : options?.ignorePunct;
   const ignoreCap = options?.ignoreCap === undefined ? false : options?.ignoreCap;
   const confThreshHigh = options?.confThreshHigh === undefined ? 85 : options?.confThreshHigh;
   const confThreshMed = options?.confThreshMed === undefined ? 75 : options?.confThreshMed;
 
-  if (supplementComp && !(tessScheduler || tessWorker)) console.log('`supplementComp` enabled, but no scheduler was provided. This step will be skipped.');
+  if (supplementComp && !tessWorker) console.log('`supplementComp` enabled, but no scheduler was provided. This step will be skipped.');
 
   // If this is not being run in a worker, clone the data so the original is not edited.
   // This is not necessary when running in a worker, as the data is already cloned when sent to the worker.
@@ -997,14 +1039,14 @@ export async function compareOCRPageImp({
   // If `supplementComp` is enabled, we run OCR for any words in pageA without an existing comparison in pageB.
   // This ensures that every word has been checked.
   // Unlike the comparisons above, this is strictly for confidence purposes--if conflicts are identified the text is not edited.
-  if (supplementComp && (tessScheduler || tessWorker) && evalConflicts) {
+  if (supplementComp && tessWorker && evalConflicts) {
     for (let i = 0; i < pageAInt.lines.length; i++) {
       const line = pageAInt.lines[i];
       for (let j = 0; j < line.words.length; j++) {
         const word = line.words[j];
         if (!word.compTruth) {
-          const res = await checkWords([word], binaryImageBit, imageRotated, pageMetricsObj, {
-            ignorePunct, tessScheduler, tessWorker, view: false,
+          const res = await checkWords([word], binaryImageBit, imageRotated, pageMetricsObj, tessWorker, {
+            ignorePunct, tessWorker, view: false,
           });
           word.matchTruth = res.match;
           word.conf = word.matchTruth ? 100 : 0;
@@ -1135,36 +1177,24 @@ export async function compareOCRPageImp({
  * @param {boolean} [options.view] - TODO: make this functional or remove
  * @param {boolean} [options.ignorePunct]
  * @param {boolean} [options.ignoreCap]
- * @param {Tesseract.Scheduler} [options.tessScheduler]
- * @param {Tesseract.Worker} [options.tessWorker]
  */
-export async function checkWords(wordsA, binaryImage, imageRotated, pageMetricsObj, options = {}) {
+export async function checkWords(wordsA, binaryImage, imageRotated, pageMetricsObj, tessWorker, options = {}) {
   const view = options?.view === undefined ? false : options?.view;
   const ignorePunct = options?.ignorePunct === undefined ? false : options?.ignorePunct;
   const ignoreCap = options?.ignoreCap === undefined ? false : options?.ignoreCap;
 
   // Draw the actual words (from the user-provided image)
   const angle = imageRotated ? (pageMetricsObj.angle || 0) : 0;
-  const ctxViewArr = view ? [viewCtx0, viewCtx1, viewCtx2] : undefined;
-  await drawWordActual(calcCtx, wordsA, binaryImage, angle, ctxViewArr);
+  // const ctxViewArr = view ? [{ canvas: viewCanvas0, ctx: viewCtx0 }, { canvas: viewCanvas1, ctx: viewCtx1 }, { canvas: viewCanvas2, ctx: viewCtx2 }] : undefined;
+  const { canvas } = await drawWordActual(wordsA, binaryImage, angle);
 
   const extraConfig = {
     tessedit_pageseg_mode: '6', // "Single block"
   };
 
-  const inputImage = typeof process === 'undefined' ? await calcCtx.canvas.convertToBlob() : await calcCtx.canvas.toBuffer('image/png');
+  const inputImage = typeof process === 'undefined' ? await canvas.convertToBlob() : await canvas.toDataURL();
 
-  let res;
-  if (options.tessScheduler) {
-    res = (await options.tessScheduler.addJob('recognize', {
-      image: inputImage,
-      options: extraConfig,
-    }));
-  } else if (options.tessWorker) {
-    res = (await options.tessWorker.recognize(inputImage, extraConfig)).data;
-  } else {
-    throw new Error('`tessScheduler` and `tessWorker` missing. One must be provided for words to be checked.');
-  }
+  const res = (await tessWorker.recognize(inputImage, extraConfig)).data;
 
   let wordTextA = wordsA.map((x) => x.text).join(' ');
   let wordTextB = res.text.trim();
@@ -1213,10 +1243,9 @@ export async function evalPageBase({
     }
   }
 
-  const binaryImageBit = binaryImage.imageBitmap || await getImageBitmap(binaryImage.src);
+  const binaryImageBit = binaryImage.imageBitmap || await ca.getImageBitmap(binaryImage.src);
 
   if (!FontCont.raw) throw new Error('Fonts must be defined before running this function.');
-  if (!calcCtx) throw new Error('Canvases must be defined before running this function.');
 
   let metricTotal = 0;
   let wordsTotal = 0;
@@ -1332,7 +1361,7 @@ export async function nudgePageBase({
     ocr.scalePage(page, 2);
   }
 
-  const binaryImageBit = binaryImage.imageBitmap || await getImageBitmap(binaryImage.src);
+  const binaryImageBit = binaryImage.imageBitmap || await ca.getImageBitmap(binaryImage.src);
 
   if (!FontCont.raw) throw new Error('Fonts must be defined before running this function.');
   if (!calcCtx) throw new Error('Canvases must be defined before running this function.');
@@ -1443,24 +1472,17 @@ export async function nudgePageBaseline({
 export const renderPageStaticImp = async ({
   page, image, angle = 0, displayMode = 'proof', confThreshMed = 75, confThreshHigh = 85,
 }) => {
-  viewCtx0.save();
+  const dims = image ? imageUtils.getDims(image) : page.dims;
 
-  if (image) {
-    const dims = imageUtils.getDims(image);
-    viewCtx0.canvas.height = dims.height;
-    viewCtx0.canvas.width = dims.width;
+  const canvas = await ca.createCanvas(dims.width, dims.height);
+  const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (/** @type {unknown} */ (canvas.getContext('2d')));
 
-    const imageBit = await getImageBitmap(image.src);
-
-    viewCtx0.drawImage(imageBit, 0, 0);
-  } else {
-    viewCtx0.canvas.height = page.dims.height;
-    viewCtx0.canvas.width = page.dims.width;
-  }
+  const imageBit = await ca.getImageBitmap(image.src);
+  if (image) ctx.drawImage(imageBit, 0, 0);
 
   angle = angle ?? 0;
 
-  viewCtx0.textBaseline = 'alphabetic';
+  ctx.textBaseline = 'alphabetic';
 
   const sinAngle = Math.sin(angle * (Math.PI / 180));
   const cosAngle = Math.cos(angle * (Math.PI / 180));
@@ -1474,9 +1496,9 @@ export const renderPageStaticImp = async ({
     const rotateText = !image?.rotated;
 
     if (rotateText) {
-      viewCtx0.setTransform(cosAngle, sinAngle, -sinAngle, cosAngle, lineLeftAdj, baselineY);
+      ctx.setTransform(cosAngle, sinAngle, -sinAngle, cosAngle, lineLeftAdj, baselineY);
     } else {
-      viewCtx0.setTransform(1, 0, 0, 1, lineLeftAdj, baselineY);
+      ctx.setTransform(1, 0, 0, 1, lineLeftAdj, baselineY);
     }
 
     for (const wordObj of lineObj.words) {
@@ -1484,7 +1506,7 @@ export const renderPageStaticImp = async ({
 
       const { fill, opacity } = ocr.getWordFillOpacity(wordObj, displayMode, confThreshMed, confThreshHigh);
 
-      viewCtx0.fillStyle = fill;
+      ctx.fillStyle = fill;
 
       const angleAdjWord = wordObj.sup ? ocr.calcWordAngleAdj(wordObj) : { x: 0, y: 0 };
 
@@ -1522,28 +1544,27 @@ export const renderPageStaticImp = async ({
       }
 
       const font = FontCont.getWordFont(wordObj);
-      viewCtx0.font = `${font.fontFaceStyle} ${font.fontFaceWeight} ${wordFontSize}px ${font.fontFaceName}`;
+      ctx.font = `${font.fontFaceStyle} ${font.fontFaceWeight} ${wordFontSize}px ${font.fontFaceName}`;
       let leftI = wordObj.visualCoords ? visualLeft - leftSideBearing : visualLeft;
       for (let i = 0; i < wordMetrics.charArr.length; i++) {
         let charI = wordMetrics.charArr[i];
 
         if (wordObj.smallCaps) {
           if (charI === charI.toUpperCase()) {
-            viewCtx0.font = `${font.fontFaceStyle} ${font.fontFaceWeight} ${wordFontSize}px ${font.fontFaceName}`;
+            ctx.font = `${font.fontFaceStyle} ${font.fontFaceWeight} ${wordFontSize}px ${font.fontFaceName}`;
           } else {
             charI = charI.toUpperCase();
-            viewCtx0.font = `${font.fontFaceStyle} ${font.fontFaceWeight} ${wordFontSize * font.smallCapsMult}px ${font.fontFaceName}`;
+            ctx.font = `${font.fontFaceStyle} ${font.fontFaceWeight} ${wordFontSize * font.smallCapsMult}px ${font.fontFaceName}`;
           }
         }
 
-        viewCtx0.fillText(charI, leftI, -ts);
+        ctx.fillText(charI, leftI, -ts);
         leftI += advanceArrTotal[i];
       }
     }
   }
 
-  const img = typeof process === 'undefined' ? await viewCtx0.canvas.convertToBlob() : await viewCtx0.canvas.toBuffer('image/png');
+  const img = typeof process === 'undefined' ? await canvas.convertToBlob() : await canvas.toDataURL();
 
-  viewCtx0.restore();
   return img;
 };

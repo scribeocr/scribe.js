@@ -1,33 +1,5 @@
 /* eslint-disable no-bitwise */
-/**
- * Handles various image formats, always returns a ImageBitmap.
- *
- * @param {string|ImageBitmap|Promise<string>|Promise<ImageBitmap>} img
- * @returns {Promise<ImageBitmap>}
- */
-export async function getImageBitmap(img) {
-  img = await img;
-  if (img === undefined) throw new Error('Input is undefined');
-  if (img === null) throw new Error('Input is null');
 
-  if (typeof img === 'string') {
-    if (typeof process === 'undefined') {
-      const imgBlob = imageStrToBlob(img);
-      const imgBit = await createImageBitmap(imgBlob);
-      return imgBit;
-    }
-    const { loadImage } = await import('canvas');
-    const imgBit = await loadImage(img);
-    return imgBit;
-  }
-
-  // In Node.js the input is assumed to be already compatible with the `canvas.drawImage` method.
-  // Additionally, `ImageBitmap` does not exist within the Node canvas package.
-  // Second condition exists for type detection purposes.
-  if (!(typeof process === 'undefined') && (typeof img !== 'string') && (typeof img !== 'number')) return img;
-
-  return img;
-}
 
 /**
  * Loads an image from a given URL and sets it to a specified HTML element.

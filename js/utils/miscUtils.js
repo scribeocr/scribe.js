@@ -484,3 +484,9 @@ export function range(min, max) {
   }
   return result;
 }
+
+// Function that logs to stderr and then waits for the log to be flushed to the console.
+// This should only be used for debugging purposes.
+export const debugLog = (x) => new Promise((resolve) => {
+  process.stderr.write(`${String(x)}\n`, resolve);
+});

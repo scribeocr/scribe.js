@@ -157,11 +157,6 @@ describe('Check comparison between OCR versions.', function () {
     // In some future version this should be fixed.
     await scribe.init({ ocr: true, font: true });
 
-    if (!(typeof process === 'undefined')) {
-      const { initCanvasNode } = await import('../../js/worker/compareOCRModule.js');
-      await initCanvasNode();
-    }
-
     /** @type {Parameters<typeof scribe.compareOCR>[2]} */
     const compOptions = {
       mode: 'comb',

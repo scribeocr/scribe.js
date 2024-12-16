@@ -206,5 +206,5 @@ export async function download(format, fileName, minPage = 0, maxPage = -1) {
   if (format === 'text') format = 'txt';
   fileName = fileName.replace(/\.\w{1,4}$/, `.${format}`);
   const content = await exportData(format, minPage, maxPage);
-  saveAs(content, fileName);
+  await saveAs(content, fileName);
 }
