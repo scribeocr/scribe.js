@@ -8,7 +8,6 @@
   },
   "type": "module",
   "devDependencies": {
-    "@playwright/test": "^1.40.1",
     "@types/mocha": "^10.0.7",
     "@types/node": "^18.0.6",
     "@types/opentype.js": "^1.3.8",
@@ -51,7 +50,6 @@
   "dependencies": {
     "canvaskit-wasm": "^0.39.1",
     "commander": "^11.1.0",
-    "puppeteer": "^22.13.0",
     "@scribe.js/tesseract.js": "^5.1.6"
   }
 }
