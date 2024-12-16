@@ -1,3 +1,4 @@
+import { ca } from './canvasAdapter.js';
 import { inputData, opt } from './containers/app.js';
 import {
   convertPageWarn,
@@ -457,7 +458,10 @@ export async function recognizeAllPages(legacy = true, lstm = true, mainData = f
 
       if (res0.recognize.debugVis) {
         const { ScrollView } = await import('../scrollview-web/scrollview/ScrollView.js');
-        const sv = new ScrollView(true);
+        const sv = new ScrollView({
+          lightTheme: true,
+          CanvasKit: ca.CanvasKit,
+        });
         await sv.processVisStr(res0.recognize.debugVis);
         visInstructions[x] = await sv.getAll(true);
       }

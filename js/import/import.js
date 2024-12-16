@@ -194,6 +194,8 @@ export function sortInputFiles(files) {
  * @param {Array<File>|FileList|Array<string>|SortedInputFiles} files
  */
 export async function importFiles(files) {
+  if (!files) throw new Error('No files provided.');
+
   clearData();
   gs.getGeneralScheduler();
 
