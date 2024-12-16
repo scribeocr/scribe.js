@@ -15,7 +15,17 @@ module.exports = function (config) {
     files: [
       { pattern: 'tests/module/*spec.js', type: 'module' },
       // Non-test files are not served by default, even if referenced in the test files.
-      { pattern: '**/*', included: false, served: true },
+      // While listing all files manually is verbose, simply including everything (pattern: '**/*')
+      // causes the tests to throw errors on some Windows systems.
+      { pattern: 'node_modules/chai/*', included: false, served: true },
+      { pattern: 'scribe.js', included: false, served: true },
+      { pattern: 'tests/**', included: false, served: true },
+      { pattern: 'js/**', included: false, served: true },
+      { pattern: 'lib/**', included: false, served: true },
+      { pattern: 'mupdf/**', included: false, served: true },
+      { pattern: 'fonts/**', included: false, served: true },
+      { pattern: 'tess/**', included: false, served: true },
+      // { pattern: '**/*', included: false, served: true },
     ],
 
     // list of files / patterns to exclude

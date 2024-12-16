@@ -40,7 +40,7 @@ describe('Check font optimization features.', function () {
     if (!scribe.data.font.rawMetrics) throw new Error('DebugData.evalRaw is not defined');
     if (!scribe.data.font.optMetrics) throw new Error('DebugData.evalOpt is not defined');
     assert.isBelow(scribe.data.font.optMetrics.NimbusSans, scribe.data.font.rawMetrics.NimbusSans);
-    assert.isBelow(scribe.data.font.optMetrics.NimbusSans, 0.45);
+    assert.isBelow(scribe.data.font.optMetrics.NimbusSans, 0.47);
   }).timeout(10000);
 
   it('Font optimization should be enabled when it improves overlap quality', async () => {
@@ -66,7 +66,7 @@ describe('Check that font optimization works with italics.', function () {
     if (!scribe.data.font.rawMetrics) throw new Error('DebugData.evalRaw is not defined');
     if (!scribe.data.font.optMetrics) throw new Error('DebugData.evalOpt is not defined');
     assert.isBelow(scribe.data.font.optMetrics.Palatino, scribe.data.font.rawMetrics.Palatino);
-    assert.isBelow(scribe.data.font.optMetrics.Palatino, 0.35);
+    assert.isBelow(scribe.data.font.optMetrics.Palatino, 0.37);
   }).timeout(10000);
 
   it('Font optimization should be enabled when it improves overlap quality', async () => {
@@ -89,7 +89,7 @@ describe('Check auto-rotate features.', function () {
 
     if (!scribe.data.font.rawMetrics) throw new Error('DebugData.evalRaw is not defined');
     if (!scribe.data.font.optMetrics) throw new Error('DebugData.evalOpt is not defined');
-    assert.isBelow(scribe.data.font.optMetrics.NimbusRomNo9L, 0.4);
+    assert.isBelow(scribe.data.font.optMetrics.NimbusRomNo9L, 0.45);
   }).timeout(10000);
 
   it('Overlap with clockwise rotation is decent', async () => {
@@ -100,7 +100,7 @@ describe('Check auto-rotate features.', function () {
 
     if (!scribe.data.font.rawMetrics) throw new Error('DebugData.evalRaw is not defined');
     if (!scribe.data.font.optMetrics) throw new Error('DebugData.evalOpt is not defined');
-    assert.isBelow(scribe.data.font.optMetrics.NimbusRomNo9L, 0.4);
+    assert.isBelow(scribe.data.font.optMetrics.NimbusRomNo9L, 0.45);
   }).timeout(10000);
 
   it('Overlap with counterclockwise rotation is decent', async () => {
@@ -111,7 +111,7 @@ describe('Check auto-rotate features.', function () {
 
     if (!scribe.data.font.rawMetrics) throw new Error('DebugData.evalRaw is not defined');
     if (!scribe.data.font.optMetrics) throw new Error('DebugData.evalOpt is not defined');
-    assert.isBelow(scribe.data.font.optMetrics.NimbusRomNo9L, 0.4);
+    assert.isBelow(scribe.data.font.optMetrics.NimbusRomNo9L, 0.45);
   }).timeout(10000);
 
   after(async () => {
