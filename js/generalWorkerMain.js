@@ -147,9 +147,6 @@ export class gs {
   /** @type {?import('../tess/tesseract.esm.min.js').default} */
   static schedulerInner = null;
 
-  /** @type {?Function} */
-  static #resReady = null;
-
   /** @type {?Promise<void>} */
   static schedulerReady = null;
 
@@ -237,10 +234,6 @@ export class gs {
   static renderPageStaticImp = async (args) => (await gs.schedulerInner.addJob('renderPageStaticImp', args));
 
   static init = async () => {
-    gs.schedulerReady = new Promise((resolve, reject) => {
-      gs.#resReady = resolve;
-    });
-
     let workerN;
     if (opt.workerN) {
       workerN = opt.workerN;
@@ -272,8 +265,7 @@ export class gs {
 
     await Promise.all(resArr);
 
-    // @ts-ignore
-    gs.#resReady(true);
+    return;
   };
 
   /**
@@ -318,15 +310,14 @@ export class gs {
   /**
    * Gets the general scheduler if it exists, otherwise creates a new one.
    */
-  static getGeneralScheduler = async () => {
+  static getGeneralScheduler = () => {
     if (gs.schedulerReady) {
-      await gs.schedulerReady;
-      return;
+      return gs.schedulerReady;
     }
 
-    await gs.init();
+    gs.schedulerReady = gs.init();
 
-    return;
+    return gs.schedulerReady;
   };
 
   static clear = () => {
@@ -337,7 +328,6 @@ export class gs {
     gs.clear();
     await gs.schedulerInner.terminate();
     gs.schedulerInner = null;
-    gs.#resReady = null;
     gs.schedulerReady = null;
     gs.#resReadyTesseract = null;
     gs.schedulerReadyTesseract = null;

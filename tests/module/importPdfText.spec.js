@@ -184,11 +184,10 @@ describe('Check font size is correctly parsed in PDF imports.', function () {
   it('Should correctly parse font sizes and scale using calcSuppFontInfo option (1st doc)', async () => {
     scribe.opt.calcSuppFontInfo = true;
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.pdf`]);
+    scribe.opt.calcSuppFontInfo = false;
     assert.strictEqual(scribe.data.ocr.active[0].lines[253].words[1].size, 39);
     assert.strictEqual(scribe.data.ocr.active[0].lines[253].words[1].text, 'Agent');
   }).timeout(10000);
-
-  scribe.opt.calcSuppFontInfo = false;
 
   after(async () => {
     await scribe.terminate();
@@ -201,13 +200,11 @@ describe('Check that text-native PDFs with broken encoding dictionaries are dete
   it('Should correctly parse font sizes (1st doc)', async () => {
     // Set `calcSuppFontInfo` to `true` as this option previously crashed the program with this type of PDFs.
     scribe.opt.calcSuppFontInfo = true;
-
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/coca-cola-business-and-sustainability-report-2022.pdf`]);
+    scribe.opt.calcSuppFontInfo = false;
 
     assert.strictEqual(scribe.data.ocr.active.length, 0);
   }).timeout(10000);
-
-  scribe.opt.calcSuppFontInfo = false;
 
   after(async () => {
     await scribe.terminate();
@@ -346,11 +343,11 @@ describe('Check that PDF text types are detected and imported correctly.', funct
   it('Native text is detected and set as main data `usePDFText.native.main` is true', async () => {
     scribe.opt.usePDFText.native.main = true;
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples_rotated.pdf`]);
+    scribe.opt.usePDFText.native.main = false;
     assert.strictEqual(scribe.inputData.pdfType, 'text');
     assert.isTrue(scribe.data.ocr.active[0]?.lines?.length > 0);
   }).timeout(10000);
 
-  scribe.opt.usePDFText.native.main = false;
   it('Native text is detected and not set as main data `usePDFText.native.main` is false', async () => {
     scribe.opt.usePDFText.native.main = false;
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples_rotated.pdf`]);
@@ -361,21 +358,20 @@ describe('Check that PDF text types are detected and imported correctly.', funct
   it('OCR text is detected and set as main data `usePDFText.ocr.main` is true', async () => {
     scribe.opt.usePDFText.ocr.main = true;
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/scribe_test_pdf1.pdf`]);
+    scribe.opt.usePDFText.native.main = false;
     assert.strictEqual(scribe.inputData.pdfType, 'ocr');
     assert.isTrue(scribe.data.ocr.active[0]?.lines?.length > 0);
   }).timeout(10000);
 
-  scribe.opt.usePDFText.native.main = false;
   it('OCR text is detected and set as main data `usePDFText.ocr.main` is false', async () => {
     scribe.opt.usePDFText.ocr.main = false;
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/scribe_test_pdf1.pdf`]);
+    // Reset to defaults
+    scribe.opt.usePDFText.native.main = true;
+    scribe.opt.usePDFText.ocr.main = false;
     assert.strictEqual(scribe.inputData.pdfType, 'ocr');
     assert.isFalse(!!scribe.data.ocr.active[0]);
   }).timeout(10000);
-
-  // Reset to defaults
-  scribe.opt.usePDFText.native.main = true;
-  scribe.opt.usePDFText.ocr.main = false;
 
   after(async () => {
     await scribe.terminate();
