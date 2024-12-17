@@ -52,41 +52,25 @@ export async function evaluateFonts(pageArr, opt) {
   const evalNimbusRomNo9L = !!(opt ? FontCont.opt?.NimbusRomNo9L : FontCont.raw?.NimbusRomNo9L);
   const evalNimbusMono = !!(opt ? FontCont.opt?.NimbusMono : FontCont.raw?.NimbusMono);
 
-  // The browser version runs in parallel using workers, however the Node.js version runs sequentially,
-  // as the canvas package does not support workers, and trying to run in parallel causes problems.
-  // The logic is the same in both versions.
-  let fontMetricsTmp;
-  if (typeof process === 'undefined') {
-    const fontMetricsPromises = {
-      carlito: evalCarlito ? evalPagesFont('Carlito', pageArr, opt) : null,
-      nimbusSans: evalNimbusSans ? evalPagesFont('NimbusSans', pageArr, opt) : null,
-      century: evalCentury ? evalPagesFont('Century', pageArr, opt) : null,
-      palatino: evalPalatino ? evalPagesFont('Palatino', pageArr, opt) : null,
-      garamond: evalGaramond ? evalPagesFont('Garamond', pageArr, opt) : null,
-      nimbusRomNo9L: evalNimbusRomNo9L ? evalPagesFont('NimbusRomNo9L', pageArr, opt) : null,
-      nimbusMono: evalNimbusMono ? evalPagesFont('NimbusMono', pageArr, opt) : null,
-    };
+  const fontMetricsPromises = {
+    carlito: evalCarlito ? evalPagesFont('Carlito', pageArr, opt) : null,
+    nimbusSans: evalNimbusSans ? evalPagesFont('NimbusSans', pageArr, opt) : null,
+    century: evalCentury ? evalPagesFont('Century', pageArr, opt) : null,
+    palatino: evalPalatino ? evalPagesFont('Palatino', pageArr, opt) : null,
+    garamond: evalGaramond ? evalPagesFont('Garamond', pageArr, opt) : null,
+    nimbusRomNo9L: evalNimbusRomNo9L ? evalPagesFont('NimbusRomNo9L', pageArr, opt) : null,
+    nimbusMono: evalNimbusMono ? evalPagesFont('NimbusMono', pageArr, opt) : null,
+  };
 
-    fontMetricsTmp = {
-      carlito: await fontMetricsPromises.carlito,
-      nimbusSans: await fontMetricsPromises.nimbusSans,
-      century: await fontMetricsPromises.century,
-      palatino: await fontMetricsPromises.palatino,
-      garamond: await fontMetricsPromises.garamond,
-      nimbusRomNo9L: await fontMetricsPromises.nimbusRomNo9L,
-      nimbusMono: await fontMetricsPromises.nimbusMono,
-    };
-  } else {
-    fontMetricsTmp = {
-      carlito: evalCarlito ? await evalPagesFont('Carlito', pageArr, opt) : null,
-      nimbusSans: evalNimbusSans ? await evalPagesFont('NimbusSans', pageArr, opt) : null,
-      century: evalCentury ? await evalPagesFont('Century', pageArr, opt) : null,
-      palatino: evalPalatino ? await evalPagesFont('Palatino', pageArr, opt) : null,
-      garamond: evalGaramond ? await evalPagesFont('Garamond', pageArr, opt) : null,
-      nimbusRomNo9L: evalNimbusRomNo9L ? await evalPagesFont('NimbusRomNo9L', pageArr, opt) : null,
-      nimbusMono: evalNimbusMono ? await evalPagesFont('NimbusMono', pageArr, opt) : null,
-    };
-  }
+  const fontMetricsTmp = {
+    carlito: await fontMetricsPromises.carlito,
+    nimbusSans: await fontMetricsPromises.nimbusSans,
+    century: await fontMetricsPromises.century,
+    palatino: await fontMetricsPromises.palatino,
+    garamond: await fontMetricsPromises.garamond,
+    nimbusRomNo9L: await fontMetricsPromises.nimbusRomNo9L,
+    nimbusMono: await fontMetricsPromises.nimbusMono,
+  };
 
   const fontMetrics = {
     Carlito: fontMetricsTmp.carlito ? fontMetricsTmp.carlito.metricTotal / fontMetricsTmp.carlito.wordsTotal : null,

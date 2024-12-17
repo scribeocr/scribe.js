@@ -94,19 +94,9 @@ export const compareOCR = async (ocrA, ocrB, options) => {
     if (res.debugImg) debugImageArr[i] = res.debugImg;
   };
 
-  // This function is run in the main thread in Node.js, with no mechanism for queuing jobs.
-  // Therefore, this needs to be run one at a time in Node.js.
-  if (typeof process === 'undefined') {
-    const indices = [...Array(ocrA.length).keys()];
-    const compPromises = indices.map(async (i) => comparePageI(i));
-    await Promise.allSettled(compPromises);
-  } else {
-    // This needs to be run one at a time in Node.js, as this is run in the main thread,
-    // and there is no mechanism for queuing jobs, so side effects will interfere with each other.
-    for (let i = 0; i < ocrA.length; i++) {
-      await comparePageI(i);
-    }
-  }
+  const indices = [...Array(ocrA.length).keys()];
+  const compPromises = indices.map(async (i) => comparePageI(i));
+  await Promise.allSettled(compPromises);
 
   return { ocr: ocrArr, metrics: metricsArr, debug: debugImageArr };
 };
@@ -192,8 +182,6 @@ export const recognizePageImp = async (n, legacy, lstm, areaMode, tessOptions = 
   // This combination of options would be set for debug mode, where the point of running Tesseract
   // is to get debugging images for layout analysis rather than get text.
   const runRecognition = legacy || lstm;
-
-  await gs.getGeneralScheduler();
 
   const resArr = await gs.recognizeAndConvert2({
     image: nativeN.src,
