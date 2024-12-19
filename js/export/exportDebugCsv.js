@@ -48,7 +48,7 @@ export const writeDebugCsv = (pages, fileName) => {
 
   for (let i = 0; i < pages.length; i++) {
     const words = ocr.getPageWords(pages[i]).map((word) => {
-      word = structuredClone(word);
+      word = ocr.cloneWord(word);
       // @ts-ignore
       delete word.line;
       return word;
