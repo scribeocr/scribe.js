@@ -337,7 +337,9 @@ export async function convertPageAbbyy({ ocrStr, n }) {
 
         lineObj.orientation = textOrientationFinal;
 
-        lineObj.raw = xmlText;
+        // This should be kept disabled as a rule unless debugging.
+        // Enabling has caused crashes with large documents.
+        if (debugMode) lineObj.raw = xmlText;
 
         let lettersKept = 0;
         for (let i = 0; i < text.length; i++) {

@@ -322,8 +322,8 @@ export async function convertPageCallback({
   pageObj, dataTables, warn, langSet,
 }, n, mainData, engineName) {
   const fontPromiseArr = [];
-  if (langSet.has('chi_sim')) fontPromiseArr.push(loadChiSimFont());
-  if (langSet.has('rus') || langSet.has('ukr') || langSet.has('ell')) {
+  if (langSet && langSet.has('chi_sim')) fontPromiseArr.push(loadChiSimFont());
+  if (langSet && (langSet.has('rus') || langSet.has('ukr') || langSet.has('ell'))) {
     fontPromiseArr.push(loadBuiltInFontsRaw('all'));
   } else {
     fontPromiseArr.push(loadBuiltInFontsRaw());

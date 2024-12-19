@@ -89,3 +89,17 @@ describe('Check that text orientation is handled correctly in Abbyy imports.', f
     await scribe.terminate();
   });
 }).timeout(120000);
+
+describe('Check that empty pages are handled correctly in Abbyy imports.', function () {
+  this.timeout(10000);
+
+  it('Check that empty pages are handled correctly in Abbyy imports.', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/yearbook_of_foreign_trade_statistics_of_poland_2024.xml`]);
+    assert.strictEqual(scribe.data.ocr.active[0].lines.length, 7);
+    assert.strictEqual(scribe.data.ocr.active[1].lines.length, 0);
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);
