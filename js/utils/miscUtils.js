@@ -145,7 +145,7 @@ export const mean50 = (arr) => {
 export function unescapeXml(string) {
   const replaceFunc = (match, p1) => String.fromCharCode(parseInt(p1, 16));
 
-  return string.replace(/&amp;/, '&')
+  return string.replace(/&amp;/g, '&')
     .replace(/&quot;/g, '"')
     .replace(/&apos;/g, "'")
     .replace(/&lt;/g, '<')
