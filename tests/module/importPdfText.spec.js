@@ -247,6 +247,21 @@ describe('Check that PDF imports split lines correctly.', function () {
   });
 }).timeout(120000);
 
+describe('Check that PDF imports split words correctly.', function () {
+  this.timeout(10000);
+
+  it('Should correctly split words not separated by space or any character defined in may_add_space', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/fti_filing_p25.pdf`]);
+
+    assert.strictEqual(scribe.data.ocr.active[0].lines[4].words[0].text, '☒');
+    assert.strictEqual(scribe.data.ocr.active[0].lines[4].words[1].text, 'ANNUAL');
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);
+
 describe('Check that line baselines are imported correctly.', function () {
   this.timeout(10000);
 
