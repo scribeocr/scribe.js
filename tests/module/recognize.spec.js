@@ -26,6 +26,28 @@ describe('Check basic recognition features.', function () {
   }).timeout(10000);
 });
 
+describe('Check style detection.', function () {
+  this.timeout(20000);
+  before(async () => {
+    // This article page contains mostly italic text.
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/italics_1.png`]);
+    await scribe.recognize({
+      modeAdv: 'legacy',
+    });
+  });
+
+  it('Italic words are identified correctly', async () => {
+    assert.strictEqual(scribe.data.ocr.active[0].lines[0].words[3].style, 'normal');
+    assert.strictEqual(scribe.data.ocr.active[0].lines[0].words[4].style, 'italic');
+    assert.strictEqual(scribe.data.ocr.active[0].lines[0].words[5].style, 'italic');
+    assert.strictEqual(scribe.data.ocr.active[0].lines[0].words[6].style, 'normal');
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+});
+
 describe('Check font optimization features.', function () {
   this.timeout(20000);
   before(async () => {
