@@ -29,6 +29,57 @@ export function hex(arrayBuffer) {
 }
 
 /**
+ * Creates a ToUnicode CMap string for a font.
+ * The CMap maps character codes to Unicode values to enable text extraction.
+ *
+ * @param {import('opentype.js').Font} font - Opentype.js font object
+ * @returns {string} The ToUnicode CMap content string
+ */
+export function createToUnicode(font) {
+  let cmapStr = `/CIDInit /ProcSet findresource begin
+12 dict begin
+begincmap
+/CIDSystemInfo
+<< /Registry (Adobe)
+   /Ordering (UCS)
+   /Supplement 0
+>> def
+/CMapName /Adobe-Identity-UCS def
+/CMapType 2 def
+1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange\n`;
+
+  // Get all glyphs and their unicode values
+  const entries = [];
+  for (let i = 0; i < font.glyphs.length; i++) {
+    const glyph = font.glyphs.glyphs[String(i)];
+    if (glyph.unicode !== undefined) {
+      // Format the entry as: <srcCode> <unicode>
+      const srcHex = i.toString(16).padStart(4, '0');
+      const unicodeHex = glyph.unicode.toString(16).padStart(4, '0');
+      entries.push(`<${srcHex}> <${unicodeHex}>`);
+    }
+  }
+
+  // Write entries in chunks of 100
+  const chunkSize = 100;
+  for (let i = 0; i < entries.length; i += chunkSize) {
+    const chunk = entries.slice(i, i + chunkSize);
+    cmapStr += `${chunk.length} beginbfchar\n`;
+    cmapStr += chunk.join('\n');
+    cmapStr += '\nendbfchar\n';
+  }
+
+  cmapStr += `endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end`;
+
+  return cmapStr;
+}
+
+/**
  * Generates the flags value for a PDF font descriptor.
  *
  * @param {boolean} serif - Whether the font has serifs.
@@ -216,21 +267,19 @@ export function createEmbeddedFontType0(font, firstObjIndex, style = 'normal') {
 
   fontDictObjStr += '/Encoding/Identity-H';
 
-  // objOut += `/ToUnicode ${String(firstObjIndex + 1)} 0 R`;
+  fontDictObjStr += `/ToUnicode ${String(firstObjIndex + 5)} 0 R`;
 
   fontDictObjStr += `/DescendantFonts[${String(firstObjIndex + 4)} 0 R]`;
 
-  fontDictObjStr += '>>endobj\n\n';
+  fontDictObjStr += '>>\nendobj\n\n';
 
   // Start 2nd object: ToUnicode CMap
-  // objOut += `${String(firstObjIndex + 1)} 0 obj\n`;
-
+  const toUnicodeStr0 = createToUnicode(font);
+  let toUnicodeStr = `${String(firstObjIndex + 5)} 0 obj\n`;
   // Add 2 to length to account for \n characters
-  // objOut += `<</Length ${toUnicodeStr.length + 2}>>\nstream\n`;
-
-  // objOut += toUnicodeStr;
-
-  // objOut += '\nendstream\nendobj\n\n';
+  toUnicodeStr += `<</Length ${toUnicodeStr0.length + 2}>>\nstream\n`;
+  toUnicodeStr += toUnicodeStr0;
+  toUnicodeStr += '\nendstream\nendobj\n\n';
 
   // Start 3rd object: FontDescriptor
   const fontDescObjStr = createFontDescriptor(font, firstObjIndex + 1, style, firstObjIndex + 3);
@@ -284,5 +333,5 @@ export function createEmbeddedFontType0(font, firstObjIndex, style = 'normal') {
 
   fontObjStr += '>>\nendobj\n\n';
 
-  return [fontDictObjStr, fontDescObjStr, widthsObjStr, fontFileObjStr, fontObjStr];
+  return [fontDictObjStr, fontDescObjStr, widthsObjStr, fontFileObjStr, fontObjStr, toUnicodeStr];
 }

@@ -54,15 +54,9 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
 
       const rotateText = !rotateBackground;
 
-      // Currently makes a pdf with all pages, regardless of what the user requests
-      // (as the mupdf part of the code expects both the background and overlay pdf to have corresponding page numbers)
-      // Consider reworking if performance hit is meaningful.
-
       // Page sizes should not be standardized at this step, as the overlayText/overlayTextImage functions will perform this,
       // and assume that the overlay PDF is the same size as the input images.
-      // The `maxpage` argument must be set manually to `inputData.pageCount-1`, as this avoids an error in the case where there is no OCR data (`hocrDownload` has length 0).
-      // In all other cases, this should be equivalent to using the default argument of `-1` (which results in `hocrDownload.length` being used).
-      const pdfStr = await writePdf(ocrDownload, 0, inputData.pageCount - 1, opt.displayMode, rotateText, rotateBackground,
+      const pdfStr = await writePdf(ocrDownload, minPage, maxPage, opt.displayMode, rotateText, rotateBackground,
         { width: -1, height: -1 }, opt.confThreshHigh, opt.confThreshMed, opt.overlayOpacity / 100);
 
       const enc = new TextEncoder();
@@ -74,8 +68,6 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
       // This would be the case for image uploads.
       const muPDFScheduler = await ImageCache.getMuPDFScheduler(1);
       const w = muPDFScheduler.workers[0];
-      // const fileData = await pdfOverlayBlob.arrayBuffer();
-      // The file name is only used to detect the ".pdf" extension
       const pdfOverlay = await w.openDocument(pdfEnc.buffer, 'document.pdf');
 
       let insertInputFailed = false;
@@ -86,13 +78,18 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
         // An earlier version handled this by deleting the text in the source document,
         // however this resulted in results that were not as expected by the user (a visual element disappeared).
         try {
-          content = await w.overlayText({
-            doc2: pdfOverlay,
-            minpage: minPage,
-            maxpage: maxPage,
-            pagewidth: dimsLimit.width,
-            pageheight: dimsLimit.height,
-            humanReadable: opt.humanReadablePDF,
+          // Make a new PDF with invisible text removed to avoid duplication.
+          // Making a new PDF object is also required as the `overlayDocuments` function modifies the input PDF in place.
+          const basePdfNoInvisData = await w.save({
+            doc1: w.pdfDoc, minpage: minPage, maxpage: maxPage, pagewidth: dimsLimit.width, pageheight: dimsLimit.height, humanReadable: opt.humanReadablePDF, skipTextInvis: true,
+          });
+          const basePdfNoInvis = await w.openDocument(basePdfNoInvisData, 'document.pdf');
+          if (minPage > 0 || maxPage < inputData.pageCount - 1) {
+            await w.subsetPages(basePdfNoInvis, minPage, maxPage);
+          }
+          await w.overlayDocuments(basePdfNoInvis, pdfOverlay);
+          content = await w.save({
+            doc1: basePdfNoInvis, minpage: minPage, maxpage: maxPage, pagewidth: dimsLimit.width, pageheight: dimsLimit.height, humanReadable: opt.humanReadablePDF,
           });
         } catch (error) {
           console.error('Failed to insert contents into input PDF, creating new PDF from rendered images instead.');
@@ -113,7 +110,7 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
         // Pre-render to benefit from parallel processing, since the loop below is synchronous.
         if (renderImage) await ImageCache.preRenderRange(minPage, maxPage, binary, props);
 
-        await w.overlayTextImageStart({ humanReadable: opt.humanReadablePDF });
+        await w.convertImageStart({ humanReadable: opt.humanReadablePDF });
         for (let i = minPage; i < maxPage + 1; i++) {
           /** @type {import('../containers/imageContainer.js').ImageWrapper} */
           let image;
@@ -130,16 +127,21 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
           // If the images are being rendered, then rotation is expected to be applied within the rendering process.
           const angleImagePdf = rotateBackground && !renderImage ? (pageMetricsArr[i].angle || 0) * -1 : 0;
 
-          await w.overlayTextImageAddPage({
-            doc1: pdfOverlay, image: image.src, i, pagewidth: dimsLimit.width, pageheight: dimsLimit.height, angle: angleImagePdf,
+          await w.convertImageAddPage({
+            image: image.src, i, pagewidth: dimsLimit.width, pageheight: dimsLimit.height, angle: angleImagePdf,
           });
-          opt.progressHandler({ n: i, type: 'export', info: { } });
+          opt.progressHandler({ n: i, type: 'export', info: {} });
         }
-        content = await w.overlayTextImageEnd();
+        const contentImage = await w.convertImageEnd();
+        const pdfBase = await w.openDocument(contentImage, 'document.pdf');
+        await w.overlayDocuments(pdfBase, pdfOverlay);
+        content = await w.save({
+          doc1: pdfBase, minpage: minPage, maxpage: maxPage, pagewidth: dimsLimit.width, pageheight: dimsLimit.height, humanReadable: opt.humanReadablePDF,
+        });
 
         // Otherwise, there is only OCR data and not image data.
       } else if (!insertInputPDF) {
-        content = await w.write({
+        content = await w.save({
           doc1: pdfOverlay, minpage: minPage, maxpage: maxPage, pagewidth: dimsLimit.width, pageheight: dimsLimit.height, humanReadable: opt.humanReadablePDF,
         });
       }
@@ -168,7 +170,7 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
       // The file name is only used to detect the ".pdf" extension
       const pdf = await w.openDocument(pdfEnc.buffer, 'document.pdf');
 
-      content = await w.write({
+      content = await w.save({
         doc1: pdf, minpage: minPage, maxpage: maxPage, pagewidth: dimsLimit.width, pageheight: dimsLimit.height, humanReadable: opt.humanReadablePDF,
       });
 
