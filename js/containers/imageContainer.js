@@ -108,6 +108,9 @@ export class ImageCache {
   /** @type {Array<ImageProperties>} */
   static binaryProps = [];
 
+  /** @type {?ArrayBuffer} */
+  static pdfData = null;
+
   /**
    * @param {ImagePropertiesRequest} props
    * @param {ImageWrapper} inputImage

@@ -78,10 +78,13 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
         // An earlier version handled this by deleting the text in the source document,
         // however this resulted in results that were not as expected by the user (a visual element disappeared).
         try {
+          // The `save` function modifies the original PDF, so we need a new PDF object to avoid modifying the original.
+          const basePdfDataCopy = structuredClone(ImageCache.pdfData);
+          const basePdf = await w.openDocument(basePdfDataCopy, 'document.pdf');
           // Make a new PDF with invisible text removed to avoid duplication.
           // Making a new PDF object is also required as the `overlayDocuments` function modifies the input PDF in place.
           const basePdfNoInvisData = await w.save({
-            doc1: w.pdfDoc, minpage: minPage, maxpage: maxPage, pagewidth: dimsLimit.width, pageheight: dimsLimit.height, humanReadable: opt.humanReadablePDF, skipTextInvis: true,
+            doc1: basePdf, minpage: minPage, maxpage: maxPage, pagewidth: dimsLimit.width, pageheight: dimsLimit.height, humanReadable: opt.humanReadablePDF, skipTextInvis: true,
           });
           const basePdfNoInvis = await w.openDocument(basePdfNoInvisData, 'document.pdf');
           if (minPage > 0 || maxPage < inputData.pageCount - 1) {
@@ -91,6 +94,8 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
           content = await w.save({
             doc1: basePdfNoInvis, minpage: minPage, maxpage: maxPage, pagewidth: dimsLimit.width, pageheight: dimsLimit.height, humanReadable: opt.humanReadablePDF,
           });
+          w.freeDocument(basePdf);
+          w.freeDocument(basePdfNoInvis);
         } catch (error) {
           console.error('Failed to insert contents into input PDF, creating new PDF from rendered images instead.');
           console.error(error);
@@ -138,7 +143,7 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
         content = await w.save({
           doc1: pdfBase, minpage: minPage, maxpage: maxPage, pagewidth: dimsLimit.width, pageheight: dimsLimit.height, humanReadable: opt.humanReadablePDF,
         });
-
+        w.freeDocument(pdfBase);
         // Otherwise, there is only OCR data and not image data.
       } else if (!insertInputPDF) {
         content = await w.save({
