@@ -626,13 +626,13 @@ function unexportedRuntimeSymbol(sym) {
 }
 
 var ASM_CONSTS = {
-  1868304: () => {
+  1868496: () => {
     throw new libmupdf.TryLaterError("operation in progress");
   },
-  1868367: $0 => {
+  1868559: $0 => {
     throw new Error(UTF8ToString($0));
   },
-  1868406: () => {
+  1868598: () => {
     throw new Error("Cannot create MuPDF context!");
   }
 };
@@ -4353,23 +4353,25 @@ var _countPages = Module["_countPages"] = createExportWrapper("countPages", 1);
 
 var _checkNativeText = Module["_checkNativeText"] = createExportWrapper("checkNativeText", 2);
 
+var _pdfOverlayDocuments = Module["_pdfOverlayDocuments"] = createExportWrapper("pdfOverlayDocuments", 2);
+
 var _pageText = Module["_pageText"] = createExportWrapper("pageText", 7);
 
 var _doDrawPageAsPNG = Module["_doDrawPageAsPNG"] = createExportWrapper("doDrawPageAsPNG", 4);
 
 var _doDrawPageAsPNGGray = Module["_doDrawPageAsPNGGray"] = createExportWrapper("doDrawPageAsPNGGray", 4);
 
-var _overlayPDFText = Module["_overlayPDFText"] = createExportWrapper("overlayPDFText", 8);
+var _convertImageStart = Module["_convertImageStart"] = createExportWrapper("convertImageStart", 1);
 
-var _overlayPDFTextImageStart = Module["_overlayPDFTextImageStart"] = createExportWrapper("overlayPDFTextImageStart", 1);
+var _convertImageAddPage = Module["_convertImageAddPage"] = createExportWrapper("convertImageAddPage", 4);
 
-var _overlayPDFTextImageAddPage = Module["_overlayPDFTextImageAddPage"] = createExportWrapper("overlayPDFTextImageAddPage", 5);
+var _convertImageEnd = Module["_convertImageEnd"] = createExportWrapper("convertImageEnd", 0);
 
-var _overlayPDFTextImageEnd = Module["_overlayPDFTextImageEnd"] = createExportWrapper("overlayPDFTextImageEnd", 0);
+var _runPDF = Module["_runPDF"] = createExportWrapper("runPDF", 6);
 
-var _overlayPDFTextImage = Module["_overlayPDFTextImage"] = createExportWrapper("overlayPDFTextImage", 6);
+var _pdfSubsetPages = Module["_pdfSubsetPages"] = createExportWrapper("pdfSubsetPages", 3);
 
-var _writePDF = Module["_writePDF"] = createExportWrapper("writePDF", 6);
+var _pdfSaveDocument = Module["_pdfSaveDocument"] = createExportWrapper("pdfSaveDocument", 8);
 
 var _getLastDrawData = Module["_getLastDrawData"] = createExportWrapper("getLastDrawData", 0);
 

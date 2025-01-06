@@ -56,7 +56,6 @@ export async function writePdf(hocrArr, minpage = 0, maxpage = -1, textMode = 'e
   const pdfFonts = {};
   /** @type {Array<string>} */
   const pdfFontObjStrArr = [];
-  let pdfFontsStr = '';
 
   const addFamilyObj = async (familyKey, familyObj) => {
     pdfFonts[familyKey] = {};
@@ -67,6 +66,10 @@ export async function writePdf(hocrArr, minpage = 0, maxpage = -1, textMode = 'e
 
       // This should include both (1) if this is a standard 14 font and (2) if characters outside of the Windows-1252 range are used.
       // If the latter is true, then a composite font is needed, even if the font is a standard 14 font.
+      // TODO: We currently have no mechanism for resolving name conflicts between fonts in the base and overlay document.
+      // As a workaround, we use the names `/FO[n]` rather than the more common `/F[n]`.
+      // However, this likely will cause issues if this application is used to create visible text, and then the resulting PDF is uploaded.
+      // This would move the fonts from the overlay document to the base document, and the names would conflict.
       const isStandardFont = false;
       if (isStandardFont) {
         const fontObjArrI = createEmbeddedFontType1(font, objectThis);
@@ -74,17 +77,16 @@ export async function writePdf(hocrArr, minpage = 0, maxpage = -1, textMode = 'e
           pdfFontObjStrArr.push(fontObjArrI[j]);
         }
         objectI += fontObjArrI.length;
-        pdfFonts[familyKey][key] = { type: 1, name: `/F${String(fontI)}` };
+        pdfFonts[familyKey][key] = { type: 1, name: `/FO${String(fontI)}`, objN: objectThis };
       } else {
         const fontObjArrI = createEmbeddedFontType0(font, objectThis);
         for (let j = 0; j < fontObjArrI.length; j++) {
           pdfFontObjStrArr.push(fontObjArrI[j]);
         }
         objectI += fontObjArrI.length;
-        pdfFonts[familyKey][key] = { type: 0, name: `/F${String(fontI)}` };
+        pdfFonts[familyKey][key] = { type: 0, name: `/FO${String(fontI)}`, objN: objectThis };
       }
 
-      pdfFontsStr += `/F${String(fontI)} ${String(objectThis)} 0 R\n`;
       fontI++;
     }
   };
@@ -122,34 +124,13 @@ export async function writePdf(hocrArr, minpage = 0, maxpage = -1, textMode = 'e
     }
     objectI += fontObjArr.length;
 
-    pdfFonts.NotoSansSC.normal = { type: 0, name: `/F${String(fontI)}` };
+    pdfFonts.NotoSansSC.normal = { type: 0, name: `/FO${String(fontI)}`, objN: objectThis };
 
-    pdfFontsStr += `/F${String(fontI)} ${String(objectThis)} 0 R\n`;
     fontI++;
   }
 
-  // Add resource dictionary
-  // For simplicity, all pages currently get the same resource dictionary.
-  // It contains references to every font, as well as a graphics state with 0 opacity (used for invisible text in OCR mode).
-  let resourceDictObjStr = `${String(objectI)} 0 obj\n<<`;
-
-  resourceDictObjStr += `/Font<<${pdfFontsStr}>>`;
-
-  resourceDictObjStr += '/ExtGState<<';
-  resourceDictObjStr += '/GS0 <</ca 0.0>>';
-  resourceDictObjStr += `/GS1 <</ca ${proofOpacity}>>`;
-  resourceDictObjStr += '>>';
-
-  resourceDictObjStr += '>>\nendobj\n\n';
-
   /** @type {Array<string>} */
   const pdfPageObjStrArr = [];
-
-  pdfPageObjStrArr.push(resourceDictObjStr);
-
-  const pageResourceStr = `/Resources ${String(objectI)} 0 R`;
-
-  objectI++;
 
   // Add pages
   const pageIndexArr = [];
@@ -158,17 +139,17 @@ export async function writePdf(hocrArr, minpage = 0, maxpage = -1, textMode = 'e
     const { dims } = pageMetricsArr[i];
 
     // eslint-disable-next-line no-await-in-loop
-    const objArr = (await ocrPageToPDF(hocrArr[i], dims, dimsLimit, objectI, 2, pageResourceStr, pdfFonts,
+    const objArr = (await ocrPageToPDF(hocrArr[i], dims, dimsLimit, objectI, 2, proofOpacity, pdfFonts,
       textMode, angle, rotateText, rotateBackground, confThreshHigh, confThreshMed, fontChiSimExport));
 
     for (let j = 0; j < objArr.length; j++) {
       pdfPageObjStrArr.push(objArr[j]);
     }
 
-    objectI += objArr.length;
+    // This assumes the "page" is always the first object returned by `ocrPageToPDF`.
+    pageIndexArr.push(objectI);
 
-    // This assumes the "page" is always the last object returned by `ocrPageToPDF`.
-    pageIndexArr.push(objectI - 1);
+    objectI += objArr.length;
 
     opt.progressHandler({ n: i, type: 'export', info: { } });
   }
@@ -239,7 +220,7 @@ ${xrefOffset}
  * @param {dims} outputDims
  * @param {number} firstObjIndex
  * @param {number} parentIndex
- * @param {string} pageResourceStr
+ * @param {number} proofOpacity
  * @param {*} pdfFonts
  * @param {("ebook"|"eval"|"proof"|"invis")} textMode -
  * @param {number} angle
@@ -250,7 +231,7 @@ ${xrefOffset}
  * @param {?import('opentype.js').Font} fontChiSim
  * @returns {Promise<string[]>}
  */
-async function ocrPageToPDF(pageObj, inputDims, outputDims, firstObjIndex, parentIndex, pageResourceStr, pdfFonts, textMode, angle,
+async function ocrPageToPDF(pageObj, inputDims, outputDims, firstObjIndex, parentIndex, proofOpacity, pdfFonts, textMode, angle,
   rotateText = false, rotateBackground = false, confThreshHigh = 85, confThreshMed = 75, fontChiSim = null) {
   if (outputDims.width < 1) {
     outputDims = inputDims;
@@ -258,23 +239,44 @@ async function ocrPageToPDF(pageObj, inputDims, outputDims, firstObjIndex, paren
 
   const noContent = !pageObj || pageObj.lines.length === 0;
 
-  // Start 2nd object: Page
-  const pageIndex = noContent ? firstObjIndex : firstObjIndex + 1;
+  const pageIndex = firstObjIndex;
   let pageObjStr = `${String(pageIndex)} 0 obj\n<</Type/Page/MediaBox[0 0 ${String(outputDims.width)} ${String(outputDims.height)}]`;
 
-  if (!noContent) pageObjStr += `/Contents ${String(firstObjIndex)} 0 R`;
+  if (noContent) {
+    pageObjStr += '/Resources<<>>';
+    pageObjStr += `/Parent ${parentIndex} 0 R>>\nendobj\n\n`;
+    return [pageObjStr];
+  }
+
+  pageObjStr += `/Contents ${String(firstObjIndex + 2)} 0 R`;
+
+  let { textContentObjStr, pdfFontsUsed } = await ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle,
+    rotateText, rotateBackground, confThreshHigh, confThreshMed, fontChiSim);
+
+  let pdfFontsStr = '';
+  for (const font of pdfFontsUsed) {
+    pdfFontsStr += `${String(font.name)} ${String(font.objN)} 0 R\n`;
+  }
+
+  let resourceDictObjStr = `${String(firstObjIndex + 1)} 0 obj\n<<`;
+
+  resourceDictObjStr += `/Font<<${pdfFontsStr}>>`;
+
+  // Use `GSO` prefix to avoid conflicts with other graphics states, which are normally named `/GS[n]` by convention.
+  resourceDictObjStr += '/ExtGState<<';
+  resourceDictObjStr += '/GSO0 <</ca 0.0>>';
+  resourceDictObjStr += `/GSO1 <</ca ${proofOpacity}>>`;
+  resourceDictObjStr += '>>';
+
+  resourceDictObjStr += '>>\nendobj\n\n';
+
+  const pageResourceStr = `/Resources ${String(firstObjIndex + 1)} 0 R`;
 
   pageObjStr += `${pageResourceStr}/Parent ${parentIndex} 0 R>>\nendobj\n\n`;
 
-  // If there is no text content, return the empty page with no contents
-  if (noContent) return [pageObjStr];
+  textContentObjStr = `${String(firstObjIndex + 2)} 0 obj\n<</Length ${String(textContentObjStr.length)} >>\nstream\n${textContentObjStr}\nendstream\nendobj\n\n`;
 
-  let textContentObjStr = await ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle,
-    rotateText, rotateBackground, confThreshHigh, confThreshMed, fontChiSim);
-
-  textContentObjStr = `${String(firstObjIndex)} 0 obj\n<</Length ${String(textContentObjStr.length)} >>\nstream\n${textContentObjStr}\nendstream\nendobj\n\n`;
-
-  return [textContentObjStr, pageObjStr];
+  return [pageObjStr, resourceDictObjStr, textContentObjStr];
 }
 
 /**
@@ -297,13 +299,15 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
 
   const cosAnglePage = Math.cos(angle * (Math.PI / 180));
 
+  const pdfFontsUsed = new Set();
+
   // Start 1st object: Text Content
   let textContentObjStr = '';
 
   if (textMode === 'invis') {
-    textContentObjStr += '/GS0 gs\n';
+    textContentObjStr += '/GSO0 gs\n';
   } else if (['proof', 'eval'].includes(textMode)) {
-    textContentObjStr += '/GS1 gs\n';
+    textContentObjStr += '/GSO1 gs\n';
   }
 
   textContentObjStr += 'BT\n';
@@ -311,7 +315,7 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
   // Move cursor to top of the page
   textContentObjStr += `1 0 0 1 0 ${String(outputDims.height)} Tm\n`;
 
-  let pdfFontCurrent = '';
+  let pdfFontNameCurrent = '';
   let pdfFontTypeCurrent = 0;
 
   for (let i = 0; i < lines.length; i++) {
@@ -350,16 +354,17 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
       continue;
     }
 
-    // let wordFontSize = calcWordFontSize(word);
-
     const word0Metrics = calcWordMetrics(wordJ, angle);
 
     let wordFontSize = word0Metrics.fontSize;
 
     // Set font and font size
-    ({ name: pdfFontCurrent, type: pdfFontTypeCurrent } = wordJ.lang === 'chi_sim' ? pdfFonts.NotoSansSC.normal : pdfFonts[wordFont.family][wordJ.style]);
+    const pdfFontCurrent = wordJ.lang === 'chi_sim' ? pdfFonts.NotoSansSC.normal : pdfFonts[wordFont.family][wordJ.style];
+    pdfFontNameCurrent = pdfFontCurrent.name;
+    pdfFontTypeCurrent = pdfFontCurrent.type;
+    pdfFontsUsed.add(pdfFontCurrent);
 
-    textContentObjStr += `${pdfFontCurrent} ${String(wordFontSize)} Tf\n`;
+    textContentObjStr += `${pdfFontNameCurrent} ${String(wordFontSize)} Tf\n`;
 
     // Reset baseline to line baseline
     textContentObjStr += '0 Ts\n';
@@ -462,8 +467,10 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
         tz = (wordWidthActual / wordMetrics.visualWidth) * 100;
       }
 
-      // const pdfFont = word.lang === 'chi_sim' ? pdfFonts.NotoSansSC.normal : pdfFonts[wordFontFamily][word.style];
-      const { name: pdfFont, type: pdfFontType } = wordJ.lang === 'chi_sim' ? pdfFonts.NotoSansSC.normal : pdfFonts[wordFont.family][wordJ.style];
+      const pdfFont = wordJ.lang === 'chi_sim' ? pdfFonts.NotoSansSC.normal : pdfFonts[wordFont.family][wordJ.style];
+      const pdfFontName = pdfFont.name;
+      const pdfFontType = pdfFont.type;
+      pdfFontsUsed.add(pdfFont);
 
       const wordWidthAdj = (wordJ.bbox.right - wordJ.bbox.left) / cosAnglePage;
       const wordSpaceAdj = (wordJ.bbox.left - wordBoxLast.right) / cosAnglePage;
@@ -508,9 +515,9 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
       textContentObjStr += ' ] TJ\n';
 
       const fontSize = wordJ.smallCaps && wordJ.text[0] && wordJ.text[0] !== wordJ.text[0].toUpperCase() ? wordFontSize * wordFont.smallCapsMult : wordFontSize;
-      if (pdfFont !== pdfFontCurrent || fontSize !== fontSizeLast) {
-        textContentObjStr += `${pdfFont} ${String(fontSize)} Tf\n`;
-        pdfFontCurrent = pdfFont;
+      if (pdfFontName !== pdfFontNameCurrent || fontSize !== fontSizeLast) {
+        textContentObjStr += `${pdfFontName} ${String(fontSize)} Tf\n`;
+        pdfFontNameCurrent = pdfFontName;
         pdfFontTypeCurrent = pdfFontType;
         fontSizeLast = fontSize;
       }
@@ -573,9 +580,9 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
 
           const charAdj = kern + charWidthError;
 
-          if (pdfFont !== pdfFontCurrent || fontSizeLetter !== fontSizeLast) {
+          if (pdfFontName !== pdfFontNameCurrent || fontSizeLetter !== fontSizeLast) {
             textContentObjStr += ' ] TJ\n';
-            textContentObjStr += `${pdfFont} ${String(fontSizeLetter)} Tf\n`;
+            textContentObjStr += `${pdfFontName} ${String(fontSizeLetter)} Tf\n`;
             fontSizeLast = fontSizeLetter;
             textContentObjStr += `${String(Math.round(charSpacing * 1e6) / 1e6)} Tc\n`;
             textContentObjStr += '[ ';
@@ -615,5 +622,5 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
 
   textContentObjStr += 'ET';
 
-  return textContentObjStr;
+  return { textContentObjStr, pdfFontsUsed };
 }

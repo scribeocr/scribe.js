@@ -90,7 +90,7 @@ export async function initMuPDFWorker() {
     return function (...args) {
       return new Promise((resolve, reject) => {
         // Add the PDF as the first argument for most functions
-        if (!['openDocument', 'cleanFile', 'freeDocument'].includes(func)) {
+        if (!['openDocument', 'cleanFile', 'freeDocument', 'overlayDocuments', 'subsetPages'].includes(func)) {
           // Remove job number (appended by Tesseract scheduler function)
           // args = args.slice(0,-1)
 
@@ -132,15 +132,16 @@ export async function initMuPDFWorker() {
   mupdf.extractAllFonts = wrap('extractAllFonts');
   mupdf.search = wrap('search');
   mupdf.drawPageAsPNG = wrap('drawPageAsPNG');
-  mupdf.overlayText = wrap('overlayText');
-  mupdf.overlayTextImageStart = wrap('overlayTextImageStart');
-  mupdf.overlayTextImageAddPage = wrap('overlayTextImageAddPage');
-  mupdf.overlayTextImageEnd = wrap('overlayTextImageEnd');
-  mupdf.overlayTextImage = wrap('overlayTextImage');
+  mupdf.convertImageStart = wrap('convertImageStart');
+  mupdf.convertImageAddPage = wrap('convertImageAddPage');
+  mupdf.convertImageEnd = wrap('convertImageEnd');
   mupdf.checkNativeText = wrap('checkNativeText');
   mupdf.detectExtractText = wrap('detectExtractText');
-  mupdf.write = wrap('write');
+  mupdf.save = wrap('save');
+  mupdf.run = wrap('run');
   mupdf.cleanFile = wrap('cleanFile');
+  mupdf.overlayDocuments = wrap('overlayDocuments');
+  mupdf.subsetPages = wrap('subsetPages');
   mupdf.terminate = function () { worker.terminate(); };
 
   await readyPromise;
