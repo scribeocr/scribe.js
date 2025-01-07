@@ -277,7 +277,7 @@ export function createEmbeddedFontType0(font, firstObjIndex, style = 'normal') {
   const toUnicodeStr0 = createToUnicode(font);
   let toUnicodeStr = `${String(firstObjIndex + 5)} 0 obj\n`;
   // Add 2 to length to account for \n characters
-  toUnicodeStr += `<</Length ${toUnicodeStr0.length + 2}>>\nstream\n`;
+  toUnicodeStr += `<</Length ${toUnicodeStr0.length}>>\nstream\n`;
   toUnicodeStr += toUnicodeStr0;
   toUnicodeStr += '\nendstream\nendobj\n\n';
 
