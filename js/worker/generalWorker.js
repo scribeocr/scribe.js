@@ -329,14 +329,14 @@ export const recognizeAndConvert2 = async ({
 };
 
 /**
-* @template {Partial<Tesseract.OutputFormats>} TO
-* @param {Object} args
-* @param {Parameters<Tesseract.Worker['recognize']>[0]} args.image
-* @param {Parameters<Tesseract.Worker['recognize']>[1]} args.options
-* @param {TO} args.output
-* @returns {Promise<Tesseract.Page<TO>>}
-* Exported for type inference purposes, should not be imported anywhere.
-*/
+ * @template {Partial<Tesseract.OutputFormats>} TO
+ * @param {Object} args
+ * @param {Parameters<Tesseract.Worker['recognize']>[0]} args.image
+ * @param {Parameters<Tesseract.Worker['recognize']>[1]} args.options
+ * @param {TO} args.output
+ * @returns {Promise<Tesseract.Page<TO>>}
+ * Exported for type inference purposes, should not be imported anywhere.
+ */
 export const recognize = async ({ image, options, output }) => {
   if (!worker) throw new Error('Worker not initialized');
   const res1 = await worker.recognize(image, options, output);

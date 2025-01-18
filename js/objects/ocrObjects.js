@@ -134,7 +134,7 @@ export function OcrWord(line, text, bbox, id) {
   /**
    * @type {boolean} - If `true`, left/right coordinates represent the left/rightmost pixel.
    * If `false`, left/right coordinates represent the start/end of the font bounding box.
-  */
+   */
   this.visualCoords = true;
 }
 
@@ -331,7 +331,7 @@ export const getLineText = (line) => {
 
 /**
  * @param {OcrPar} par
-*/
+ */
 export const getParText = (par) => {
   let text = '';
   for (let i = 0; i < par.lines.length; i++) {
@@ -584,7 +584,7 @@ function rotateLine(line, angle, dims = null, useCharLevel = false) {
 /**
  * Clones page object.
  * @param {OcrPage} page
-  */
+ */
 function clonePage(page) {
   const pageNew = new OcrPage(page.n, { ...page.dims });
   for (const line of page.lines) {

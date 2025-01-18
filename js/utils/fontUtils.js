@@ -99,7 +99,7 @@ function calcWordFontSizePrecise(wordArr, fontOpentype, nonLatin = false) {
  * Adds ligatures to text of `OcrWord` object. Returns an array of letters.
  * @param {OcrWord} word
  * @returns {Array<string>}
-*/
+ */
 export function addLigatures(word) {
   if (word.smallCaps || !opt.ligatures) return word.text.split('');
   const fontI = FontCont.getWordFont(word);
@@ -181,9 +181,9 @@ function calcWordCharMetrics(wordText, fontOpentype) {
       if (opt.kerning) {
         const glyphJ = fontOpentype.charToGlyph(charJ);
         const kerning = fontOpentype.getKerningValue(glyphI, glyphJ);
-        kerningArr.push(kerning);  
+        kerningArr.push(kerning);
       } else {
-        kerningArr.push(0);  
+        kerningArr.push(0);
       }
     }
   }
@@ -322,11 +322,11 @@ export const calcWordFontSize = (word) => {
 // Therefore, the appropriate font size must be calculated using (1) the character stats from the input image and
 // (2) stats regarding the font being used.
 /**
-* Get or calculate font size for line.
-* This value will either be (1) a manually set value or (2) a value calculated using line metrics.
-* @param {OcrLine} line
-* @returns {number}
-*/
+ * Get or calculate font size for line.
+ * This value will either be (1) a manually set value or (2) a value calculated using line metrics.
+ * @param {OcrLine} line
+ * @returns {number}
+ */
 export const calcLineFontSize = (line) => {
   if (line._size) return line._size;
 

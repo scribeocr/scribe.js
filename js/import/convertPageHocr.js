@@ -87,8 +87,8 @@ export async function convertPageHocr({
   }
 
   /**
-     * @param {string} match
-     */
+   * @param {string} match
+   */
   function convertLine(match) {
     const titleStrLine = match.match(/title=['"]([^'"]+)/)?.[1];
     if (!titleStrLine) return '';
@@ -258,8 +258,8 @@ export async function convertPageHocr({
     }
 
     /**
-       * @param {string} match
-       */
+     * @param {string} match
+     */
     function convertWord(match) {
       const wordID = match.match(/id=['"]([^'"]*)['"]/i)?.[1] || `word_${n + 1}_${pageObj.lines.length + 1}_${lineObj.words.length + 1}`;
 
@@ -357,8 +357,8 @@ export async function convertPageHocr({
   }
 
   /**
-     * @param {string} match
-     */
+   * @param {string} match
+   */
   const convertPar = (match) => {
     const parLang = match.match(/^.+?lang=['"]([^'"]*)['"]/i)?.[1];
     if (parLang) currentLang = parLang;

@@ -40,9 +40,9 @@ export async function evalPagesFont(font, pageArr, opt, n = 500) {
 }
 
 /**
-* @param {Array<OcrPage>} pageArr
-* @param {boolean} opt - Whether to use optimized fonts.
-*/
+ * @param {Array<OcrPage>} pageArr
+ * @param {boolean} opt - Whether to use optimized fonts.
+ */
 export async function evaluateFonts(pageArr, opt) {
   const evalCarlito = !!(opt ? FontCont.opt?.Carlito : FontCont.raw?.Carlito);
   const evalNimbusSans = !!(opt ? FontCont.opt?.NimbusSans : FontCont.raw?.NimbusSans);
