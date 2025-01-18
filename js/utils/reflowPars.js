@@ -51,11 +51,11 @@ export function assignParagraphs(page, angle) {
   }
 
   /**
-     * Calculates expected line start and end positions based on surrounding lines.
-     * If this line varies from those values, it may be the first or last line of a paragraph.
-     * @param {number} lineIndex - Index of the line to calculate the expected values for.
-     * @returns
-     */
+   * Calculates expected line start and end positions based on surrounding lines.
+   * If this line varies from those values, it may be the first or last line of a paragraph.
+   * @param {number} lineIndex - Index of the line to calculate the expected values for.
+   * @returns
+   */
   const calcExpected = (lineIndex) => {
     // Ideally, we compare the current line to the next 5 lines.
     // When there are fewer than 5 lines after the current line, we add previous lines to the window.

@@ -1,6 +1,5 @@
 /* eslint-disable no-bitwise */
 
-
 /**
  * Loads an image from a given URL and sets it to a specified HTML element.
  *
@@ -53,15 +52,15 @@ export function base64ToBytes(base64) {
 }
 
 /**
-  * Extracts the width and height from the IHDR chunk of a PNG image encoded in base64.
-  *
-  * This function decodes the base64 to bytes and parses the IHDR chunk to extract the image dimensions.
-  * It assumes the base64 string is a valid PNG image and directly starts parsing the binary data.
-  * Note: This is a basic implementation without extensive error handling or validation.
-  *
-  * @param {string} base64 - The base64 encoded string of the PNG image.
-  * @returns {dims} An object containing the width and height of the image.
-  */
+ * Extracts the width and height from the IHDR chunk of a PNG image encoded in base64.
+ *
+ * This function decodes the base64 to bytes and parses the IHDR chunk to extract the image dimensions.
+ * It assumes the base64 string is a valid PNG image and directly starts parsing the binary data.
+ * Note: This is a basic implementation without extensive error handling or validation.
+ *
+ * @param {string} base64 - The base64 encoded string of the PNG image.
+ * @returns {dims} An object containing the width and height of the image.
+ */
 export function getPngDimensions(base64) {
   // The number 96 is chosen to line up leanly with byte boundaries (97 would result in an error)
   // but is otherwise arbitrary, while being large enough to contain the IHDR chunk.

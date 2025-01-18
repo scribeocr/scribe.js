@@ -2,15 +2,15 @@ import { getJpegDimensions, getPngDimensions } from '../utils/imageUtils.js';
 
 export class ImageWrapper {
   /**
-     * @param {number} n - Page number
-     * @param {string} imageStr - Base-64 encoded image string. Should start with "data:image/png" or "data:image/jpeg".
-     * @param {string} colorMode - Color mode ("color", "gray", or "binary").
-     * @param {boolean} rotated - Whether image has been rotated.
-     * @param {boolean} upscaled - Whether image has been upscaled.
-     *
-     * All properties of this object must be serializable, as ImageWrapper objects are sent between threads.
-     * This means that no promises can be used.
-     */
+   * @param {number} n - Page number
+   * @param {string} imageStr - Base-64 encoded image string. Should start with "data:image/png" or "data:image/jpeg".
+   * @param {string} colorMode - Color mode ("color", "gray", or "binary").
+   * @param {boolean} rotated - Whether image has been rotated.
+   * @param {boolean} upscaled - Whether image has been upscaled.
+   *
+   * All properties of this object must be serializable, as ImageWrapper objects are sent between threads.
+   * This means that no promises can be used.
+   */
   constructor(n, imageStr, colorMode, rotated = false, upscaled = false) {
     this.n = n;
     this.src = imageStr;

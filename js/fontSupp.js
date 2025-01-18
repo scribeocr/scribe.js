@@ -62,13 +62,13 @@ const calcSuppFontInfoForWords = async (words) => {
 };
 
 /**
-   *
-   * @param {Array<OcrPage>} ocrArr
-   * @returns
-   * This function runs recognition on certain fonts when we need more information about them.
-   * Fonts are included when either (1) we need to know if they are sans or serif or (2) if the text is extracted from a PDF,
-   * and we need to determine how large to render the text.
-   */
+ *
+ * @param {Array<OcrPage>} ocrArr
+ * @returns
+ * This function runs recognition on certain fonts when we need more information about them.
+ * Fonts are included when either (1) we need to know if they are sans or serif or (2) if the text is extracted from a PDF,
+ * and we need to determine how large to render the text.
+ */
 export const calcSuppFontInfo = async (ocrArr) => {
   if (!ocrArr) return;
   await gs.initTesseract({ anyOk: true, langs: ['eng'] });

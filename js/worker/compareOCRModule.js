@@ -74,24 +74,24 @@ export async function drawWordActual(words, imageBinaryBit, angle) {
 }
 
 /**
-   * Function that draws a word on a canvas.
-   * This code was factored out to allow for drawing multiple times while only calculating metrics once.
-   * Therefore, only the drawing code should be in this function; the metrics should be calculated elsewhere
-   * and passed to this function, rather than calcualting from an `OcrWord` object.
-   *
-   * @param {Object} params
-   * @param {CanvasRenderingContext2D|OffscreenCanvasRenderingContext2D} params.ctx
-   * @param {Array<string>} params.charArr
-   * @param {number} params.left
-   * @param {number} params.bottom
-   * @param {Array<number>} params.advanceArr - Array of pixels to advance for each character.
-   *    Unlike the "advance" property of a glyph, this is the actual distance to advance on the canvas,
-   *    and should include kerning and character spacing.
-   * @param {FontContainerFont} params.font
-   * @param {number} params.size
-   * @param {boolean} params.smallCaps
-   * @param {string} [params.fillStyle='black']
-   */
+ * Function that draws a word on a canvas.
+ * This code was factored out to allow for drawing multiple times while only calculating metrics once.
+ * Therefore, only the drawing code should be in this function; the metrics should be calculated elsewhere
+ * and passed to this function, rather than calcualting from an `OcrWord` object.
+ *
+ * @param {Object} params
+ * @param {CanvasRenderingContext2D|OffscreenCanvasRenderingContext2D} params.ctx
+ * @param {Array<string>} params.charArr
+ * @param {number} params.left
+ * @param {number} params.bottom
+ * @param {Array<number>} params.advanceArr - Array of pixels to advance for each character.
+ *    Unlike the "advance" property of a glyph, this is the actual distance to advance on the canvas,
+ *    and should include kerning and character spacing.
+ * @param {FontContainerFont} params.font
+ * @param {number} params.size
+ * @param {boolean} params.smallCaps
+ * @param {string} [params.fillStyle='black']
+ */
 const printWordOnCanvas = async ({
   ctx, charArr, left, bottom, advanceArr, font, size, smallCaps, fillStyle = 'black',
 }) => {
@@ -118,15 +118,15 @@ const printWordOnCanvas = async ({
 };
 
 /**
-   * Print word on canvas.
-   *
-   * @param {CanvasRenderingContext2D|OffscreenCanvasRenderingContext2D} ctx
-   * @param {OcrWord} word
-   * @param {number} offsetX
-   * @param {number} cropY
-   * @param {?CanvasRenderingContext2D|OffscreenCanvasRenderingContext2D} ctxView
-   * @param {boolean} [imageRotated=false] -
-   */
+ * Print word on canvas.
+ *
+ * @param {CanvasRenderingContext2D|OffscreenCanvasRenderingContext2D} ctx
+ * @param {OcrWord} word
+ * @param {number} offsetX
+ * @param {number} cropY
+ * @param {?CanvasRenderingContext2D|OffscreenCanvasRenderingContext2D} ctxView
+ * @param {boolean} [imageRotated=false] -
+ */
 export const drawWordRender = async (ctx, word, offsetX = 0, cropY = 0, ctxView = null, imageRotated = false) => {
   if (!FontCont.raw) throw new Error('Fonts must be defined before running this function.');
   if (!ctx) throw new Error('Canvases must be defined before running this function.');
@@ -1304,8 +1304,8 @@ export async function evalPageFont({
   }
 
   /**
- * @param {OcrLine} ocrLineJ
- */
+   * @param {OcrLine} ocrLineJ
+   */
   const transformLineFont = (ocrLineJ) => {
     if (!FontCont.raw) throw new Error('Fonts must be defined before running this function.');
 

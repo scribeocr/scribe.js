@@ -57,10 +57,10 @@ export async function initGeneralWorker() {
     }
 
     /**
-       * Wraps a function to be called via worker messages.
-       * @param {string} func The function name to call.
-       * @returns {Function} A function that returns a promise resolving to the worker's response.
-       */
+     * Wraps a function to be called via worker messages.
+     * @param {string} func The function name to call.
+     * @returns {Function} A function that returns a promise resolving to the worker's response.
+     */
     function wrap(func) {
       return function (...args) {
         return new Promise((innerResolve, innerReject) => {
@@ -72,10 +72,10 @@ export async function initGeneralWorker() {
     }
 
     /**
-       * Similar to wrap, but handles two promises.
-       * @param {string} func The function name to call.
-       * @returns {Array} Returns two promises in an array.
-       */
+     * Similar to wrap, but handles two promises.
+     * @param {string} func The function name to call.
+     * @returns {Array} Returns two promises in an array.
+     */
     function wrap2(func) {
       return function (...args) {
         const id = promiseId++;
@@ -187,14 +187,14 @@ export class gs {
   static optimizeFont = async (args) => (await gs.schedulerInner.addJob('optimizeFont', args));
 
   /**
-  * @template {Partial<Tesseract.OutputFormats>} TO
-  * @param {Object} args
-  * @param {Parameters<Tesseract.Worker['recognize']>[0]} args.image
-  * @param {Parameters<Tesseract.Worker['recognize']>[1]} args.options
-  * @param {TO} args.output
-  * @returns {Promise<Tesseract.Page<TO>>}
-  * Exported for type inference purposes, should not be imported anywhere.
-  */
+   * @template {Partial<Tesseract.OutputFormats>} TO
+   * @param {Object} args
+   * @param {Parameters<Tesseract.Worker['recognize']>[0]} args.image
+   * @param {Parameters<Tesseract.Worker['recognize']>[1]} args.options
+   * @param {TO} args.output
+   * @returns {Promise<Tesseract.Page<TO>>}
+   * Exported for type inference purposes, should not be imported anywhere.
+   */
   static recognize = async (args) => (await gs.schedulerInner.addJob('recognize', args));
 
   /**

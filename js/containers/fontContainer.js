@@ -365,14 +365,14 @@ export class FontCont {
   };
 
   /**
-     * Gets a font object.  Unlike accessing the font containers directly,
-     * this method allows for special values 'Default', 'SansDefault', and 'SerifDefault' to be used.
-     *
-     * @param {('Default'|'SansDefault'|'SerifDefault'|string)} family - Font family name.
-     * @param {('normal'|'italic'|'bold'|string)} [style='normal']
-     * @param {string} [lang='eng']
-     * @returns {FontContainerFont}
-     */
+   * Gets a font object.  Unlike accessing the font containers directly,
+   * this method allows for special values 'Default', 'SansDefault', and 'SerifDefault' to be used.
+   *
+   * @param {('Default'|'SansDefault'|'SerifDefault'|string)} family - Font family name.
+   * @param {('normal'|'italic'|'bold'|string)} [style='normal']
+   * @param {string} [lang='eng']
+   * @returns {FontContainerFont}
+   */
   static getFont = (family, style = 'normal', lang = 'eng') => {
     if (FontCont.doc?.[family]?.[style] && !FontCont.doc?.[family]?.[style]?.disable) {
       return FontCont.doc[family][style];
