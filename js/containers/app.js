@@ -29,6 +29,8 @@ export class opt {
 
   static reflow = true;
 
+  static removeMargins = false;
+
   static pageBreaks = true;
 
   /** @type {("invis"|"ebook"|"eval"|"proof")} */

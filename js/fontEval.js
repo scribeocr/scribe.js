@@ -49,7 +49,7 @@ export async function evaluateFonts(pageArr, opt) {
   const evalCentury = !!(opt ? FontCont.opt?.Century : FontCont.raw?.Century);
   const evalPalatino = !!(opt ? FontCont.opt?.Palatino : FontCont.raw?.Palatino);
   const evalGaramond = !!(opt ? FontCont.opt?.Garamond : FontCont.raw?.Garamond);
-  const evalNimbusRomNo9L = !!(opt ? FontCont.opt?.NimbusRomNo9L : FontCont.raw?.NimbusRomNo9L);
+  const evalNimbusRoman = !!(opt ? FontCont.opt?.NimbusRoman : FontCont.raw?.NimbusRoman);
   const evalNimbusMono = !!(opt ? FontCont.opt?.NimbusMono : FontCont.raw?.NimbusMono);
 
   const fontMetricsPromises = {
@@ -58,7 +58,7 @@ export async function evaluateFonts(pageArr, opt) {
     century: evalCentury ? evalPagesFont('Century', pageArr, opt) : null,
     palatino: evalPalatino ? evalPagesFont('Palatino', pageArr, opt) : null,
     garamond: evalGaramond ? evalPagesFont('Garamond', pageArr, opt) : null,
-    nimbusRomNo9L: evalNimbusRomNo9L ? evalPagesFont('NimbusRomNo9L', pageArr, opt) : null,
+    nimbusRoman: evalNimbusRoman ? evalPagesFont('NimbusRoman', pageArr, opt) : null,
     nimbusMono: evalNimbusMono ? evalPagesFont('NimbusMono', pageArr, opt) : null,
   };
 
@@ -68,7 +68,7 @@ export async function evaluateFonts(pageArr, opt) {
     century: await fontMetricsPromises.century,
     palatino: await fontMetricsPromises.palatino,
     garamond: await fontMetricsPromises.garamond,
-    nimbusRomNo9L: await fontMetricsPromises.nimbusRomNo9L,
+    nimbusRoman: await fontMetricsPromises.nimbusRoman,
     nimbusMono: await fontMetricsPromises.nimbusMono,
   };
 
@@ -78,7 +78,7 @@ export async function evaluateFonts(pageArr, opt) {
     Century: fontMetricsTmp.century ? fontMetricsTmp.century.metricTotal / fontMetricsTmp.century.wordsTotal : null,
     Palatino: fontMetricsTmp.palatino ? fontMetricsTmp.palatino.metricTotal / fontMetricsTmp.palatino.wordsTotal : null,
     Garamond: fontMetricsTmp.garamond ? fontMetricsTmp.garamond.metricTotal / fontMetricsTmp.garamond.wordsTotal : null,
-    NimbusRomNo9L: fontMetricsTmp.nimbusRomNo9L ? fontMetricsTmp.nimbusRomNo9L.metricTotal / fontMetricsTmp.nimbusRomNo9L.wordsTotal : null,
+    NimbusRoman: fontMetricsTmp.nimbusRoman ? fontMetricsTmp.nimbusRoman.metricTotal / fontMetricsTmp.nimbusRoman.wordsTotal : null,
     NimbusMono: fontMetricsTmp.nimbusMono ? fontMetricsTmp.nimbusMono.metricTotal / fontMetricsTmp.nimbusMono.wordsTotal : null,
   };
 
@@ -101,11 +101,11 @@ const calcBestFonts = (fontMetrics) => {
     }
   }
 
-  let minKeySerif = 'NimbusRomNo9L';
+  let minKeySerif = 'NimbusRoman';
   let minValueSerif = Number.MAX_VALUE;
 
   for (const [key, value] of Object.entries(fontMetrics)) {
-    if (!['Century', 'Palatino', 'Garamond', 'NimbusRomNo9L', 'NimbusMono'].includes(key)) continue;
+    if (!['Century', 'Palatino', 'Garamond', 'NimbusRoman', 'NimbusMono'].includes(key)) continue;
     if (value && value < minValueSerif) {
       minValueSerif = value;
       minKeySerif = key;

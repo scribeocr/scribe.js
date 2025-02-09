@@ -264,7 +264,7 @@ export class FontCont {
 
   static defaultFontName = 'SerifDefault';
 
-  static serifDefaultName = 'NimbusRomNo9L';
+  static serifDefaultName = 'NimbusRoman';
 
   static sansDefaultName = 'NimbusSans';
 
@@ -388,8 +388,12 @@ export class FontCont {
     // Option 1: If we have access to the font, use it.
     // Option 2: If we do not have access to the font, but it closely resembles a built-in font, use the built-in font.
     if (!FontCont.raw?.[family]?.[style]) {
-      if (/Times/i.test(family)) {
-        family = 'NimbusRomNo9L';
+      if (/NimbusRom/i.test(family)) {
+        family = 'NimbusRoman';
+      } else if (/Times/i.test(family)) {
+        family = 'NimbusRoman';
+      } else if (/NimbusSan/i.test(family)) {
+        family = 'NimbusSans';
       } else if (/Helvetica/i.test(family)) {
         family = 'NimbusSans';
       } else if (/Arial/i.test(family)) {
@@ -405,6 +409,8 @@ export class FontCont {
       } else if (/Calibri/i.test(family)) {
         family = 'Carlito';
       } else if (/Courier/i.test(family) && FontCont.enableCleanToNimbusMono) {
+        family = 'NimbusMono';
+      } else if (/NimbusMono/i.test(family) && FontCont.enableCleanToNimbusMono) {
         family = 'NimbusMono';
       }
     }
@@ -451,7 +457,7 @@ export class FontCont {
     FontCont.enableCleanToNimbusMono = false;
 
     FontCont.defaultFontName = 'SerifDefault';
-    FontCont.serifDefaultName = 'NimbusRomNo9L';
+    FontCont.serifDefaultName = 'NimbusRoman';
     FontCont.sansDefaultName = 'NimbusSans';
   };
 
