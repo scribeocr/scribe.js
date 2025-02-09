@@ -5,13 +5,8 @@ This directory contains development scripts that are not used by the main applic
 The fonts included in the live site are standardized versions of the raw fonts found in `fonts_raw`.  The appearance of the fonts should not change, however modifications are made to either (1) reduce file sizes or (2) standardize the fonts to make working with them easier.  For example, all files are converted to `.woff` (compressed and optimized for web) and subset to include a standard set of characters.  The following 4 bash scripts are used to create the fonts used by the application.
 
 1. `generate_fonts.sh`
-	1. Generate fonts for browser.
-3. `generate_fonts_ttf.sh`
-	1. Generate `.ttf` versions of all fonts.
-	1. Due to a bug in `canvas` for Node.js, `.ttf` fonts must be used instead of `.woff` fonts.
-		1. https://github.com/Automattic/node-canvas/issues/1737
-		1. If this bug is ever fixed, the Node.js code should switch to using the `.woff` fonts.
-4. `check_fonts.sh`
+	1. Generate fonts.
+2. `check_fonts.sh`
 	1. Check that all desired characters were actually included in the final fonts.
 	2. This is necessary because the `hb-subset` command used by `generate_fonts.sh` does not fail or throw a warning if character in the list to subset to is not in the font.
 
