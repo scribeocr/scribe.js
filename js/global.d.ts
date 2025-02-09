@@ -32,7 +32,7 @@ declare global {
         Century: FontContainerFamilyBuiltIn;
         Garamond: FontContainerFamilyBuiltIn;
         Palatino: FontContainerFamilyBuiltIn;
-        NimbusRomNo9L: FontContainerFamilyBuiltIn;
+        NimbusRoman: FontContainerFamilyBuiltIn;
         NimbusSans: FontContainerFamilyBuiltIn;
         NimbusMono: FontContainerFamilyBuiltIn;
         [key: string]: FontContainerFamily;

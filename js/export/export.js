@@ -8,11 +8,12 @@ import { saveAs } from '../utils/miscUtils.js';
 import { writePdf } from './writePdf.js';
 import { writeHocr } from './writeHocr.js';
 import { writeText } from './writeText.js';
+import { writeHtml } from './writeHtml.js';
 
 /**
  * Export active OCR data to specified format.
  * @public
- * @param {'pdf'|'hocr'|'docx'|'xlsx'|'txt'|'text'} [format='txt']
+ * @param {'pdf'|'hocr'|'docx'|'html'|'xlsx'|'txt'|'text'} [format='txt']
  * @param {number} [minPage=0] - First page to export.
  * @param {number} [maxPage=-1] - Last page to export (inclusive). -1 exports through the last page.
  * @returns {Promise<string|ArrayBuffer>}
@@ -183,6 +184,8 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
     }
   } else if (format === 'hocr') {
     content = writeHocr(ocrAll.active, minPage, maxPage);
+  } else if (format === 'html') {
+    content = writeHtml(ocrAll.active, minPage, maxPage, opt.reflow, opt.removeMargins);
   } else if (format === 'txt') {
     content = writeText(ocrDownload, minPage, maxPage, opt.reflow, false);
   // Defining `DISABLE_DOCX_XLSX` disables docx/xlsx exports when using build tools.

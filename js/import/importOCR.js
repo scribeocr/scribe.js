@@ -133,7 +133,9 @@ export async function importOCRFiles(ocrFilesAll) {
     const sansFontStr = getMeta('sans-font');
     if (sansFontStr) sansFont = sansFontStr;
 
-    const serifFontStr = getMeta('serif-font');
+    let serifFontStr = getMeta('serif-font');
+    // Older versions of Scribe used 'NimbusRomNo9L' instead of 'NimbusRoman'.
+    if (serifFontStr && serifFontStr === 'NimbusRomNo9L') serifFontStr = 'NimbusRoman';
     if (serifFontStr) serifFont = serifFontStr;
   }
 
