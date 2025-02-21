@@ -207,7 +207,7 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
 /**
  * Runs `exportData` and saves the result as a download (browser) or local file (Node.js).
  * @public
- * @param {'pdf'|'hocr'|'docx'|'xlsx'|'txt'|'text'} format
+ * @param {'pdf'|'hocr'|'docx'|'xlsx'|'txt'|'text'|'html'} format
  * @param {string} fileName
  * @param {number} [minPage=0] - First page to export.
  * @param {number} [maxPage=-1] - Last page to export (inclusive). -1 exports through the last page.
