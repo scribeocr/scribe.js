@@ -1,20 +1,17 @@
-// Code for adding visualization to OCR output
-
 import fs from 'fs';
-import { createRequire } from 'module';
-import Worker from 'web-worker';
-import { initMuPDFWorker } from '../mupdf/mupdf-async.js';
+import scribe from '../scribe.js';
 
-globalThis.Worker = Worker;
-globalThis.require = createRequire(import.meta.url);
+/**
+ *
+ * @param {string} pdfFile - Path to PDF file.
+ * @param {string} [outputPath] - Output file path.
+ *    If provided, the text will be extracted and saved to this path.
+ */
+export const detectPDFType = async (pdfFile, outputPath) => {
+  const mupdfScheduler = await scribe.data.image.getMuPDFScheduler(1);
+  const w = mupdfScheduler.workers[0];
 
-const args = process.argv.slice(2);
-
-async function main() {
-  const w = await initMuPDFWorker();
-  const fileData = await fs.readFileSync(args[0]);
-
-  const outputPath = args[1];
+  const fileData = await fs.readFileSync(pdfFile);
 
   const pdfDoc = await w.openDocument(fileData, 'file.pdf');
   w.pdfDoc = pdfDoc;
@@ -32,10 +29,6 @@ async function main() {
 
   console.log('PDF Type:', type);
 
-  // Terminate all workers
-  w.terminate();
+  mupdfScheduler.scheduler.terminate();
 
-  process.exitCode = 0;
-}
-
-main();
+};

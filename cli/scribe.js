@@ -4,6 +4,7 @@ import {
   checkCLI,
   confCLI,
   debugCLI,
+  detectPDFTypeCLI,
   evalInternalCLI, extractCLI, overlayCLI, recognizeCLI,
 } from './cli.js';
 
@@ -35,7 +36,7 @@ program
   .command('extract')
   .argument('<pdf_file>', 'Input PDF file.')
   .argument('[output]', 'Output directory or file to save results.', '.')
-  .addOption(new Option('-f, --format <ext>', 'Output format.').choices(['txt']).default('txt'))
+  .addOption(new Option('-f, --format <ext>', 'Output format.').choices(['pdf', 'hocr', 'docx', 'xlsx', 'txt', 'text', 'html']).default('txt'))
   .option('-r, --reflow', 'Reflow text by combining lines into paragraphs.')
   .description('Extract text from PDF file and save in requested format.')
   .action(extractCLI);
@@ -60,6 +61,13 @@ program
   .option('-h, --hocr', 'Output .hocr intermediate data in addition to .pdf.')
   .option('-w, --workers <number>', 'Number of workers to use. Default is up to 8.')
   .action(recognizeCLI);
+
+program
+  .command('type')
+  .argument('<pdf_file>', 'Input PDF file.')
+  .argument('[output]', 'Output file path to save text.')
+  .description('Detect PDF file type (\'Text native\', \'Image + OCR text\', or \'Image native\').')
+  .action(detectPDFTypeCLI);
 
 program
   .command('debug')

@@ -1,3 +1,4 @@
+import { detectPDFType } from './detectPDFType.js';
 import { extract } from './extract.js';
 import {
   check,
@@ -36,11 +37,21 @@ export const evalInternalCLI = async (pdfFile, ocrFile, options) => {
  * @param {string} pdfFile - Path to PDF file.
  * @param {?string} [outputDir='.'] - Output directory.
  * @param {Object} [options]
- * @param {'txt'} [options.format]
+ * @param {"pdf" | "hocr" | "docx" | "xlsx" | "txt" | "text" | "html"} [options.format]
  * @param {boolean} [options.reflow]
  */
 export const extractCLI = async (pdfFile, outputDir, options) => {
   await extract(pdfFile, outputDir, options);
+  process.exitCode = 0;
+};
+
+/**
+ *
+ * @param {string} pdfFile - Path to PDF file.
+ * @param {string} [outputPath] - Output file path.
+ */
+export const detectPDFTypeCLI = async (pdfFile, outputPath) => {
+  await detectPDFType(pdfFile, outputPath);
   process.exitCode = 0;
 };
 
