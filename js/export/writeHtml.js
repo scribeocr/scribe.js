@@ -6,6 +6,31 @@ import { pageMetricsArr } from '../containers/dataContainer.js';
 import ocr from '../objects/ocrObjects.js';
 
 /**
+ * Calculate the font metrics for a given font and font size.
+ * This is used to get metrics that match `ctx.measureText`, but without requiring a canvas.
+ * @param {FontContainerFont} fontI
+ * @param {number} fontSize
+ */
+const calcFontMetrics = (fontI, fontSize) => {
+  const os2 = fontI.opentype.tables.os2;
+  const unitsPerEm = fontI.opentype.unitsPerEm;
+
+  // Bit 7: Use_Typo_Metrics (1 = Yes)
+  // eslint-disable-next-line no-bitwise
+  if (os2.fsSelection >> 7 & 1) {
+    return {
+      fontBoundingBoxAscent: Math.round(os2.sTypoAscender * (fontSize / unitsPerEm)),
+      fontBoundingBoxDescent: Math.round(os2.sTypoDescender * (fontSize / unitsPerEm)),
+    };
+  }
+
+  return {
+    fontBoundingBoxAscent: Math.round(os2.usWinAscent * (fontSize / unitsPerEm)),
+    fontBoundingBoxDescent: Math.round(os2.usWinDescent * (fontSize / unitsPerEm)),
+  };
+};
+
+/**
  *
  * @param {string} text
  * @param {number} fontSizeHTMLSmallCaps
@@ -33,18 +58,11 @@ const makeSmallCapsDivs = (text, fontSizeHTMLSmallCaps) => {
  *    If omitted, all words are included.
  */
 export function writeHtml(ocrCurrent, minpage = 0, maxpage = -1, reflowText = false, removeMargins = false, wordIds = null) {
-  if (!(typeof process === 'undefined')) {
-    throw new Error('HTML exports are not supported in Node.js');
-  }
-
-  const canvas = new OffscreenCanvas(1, 1);
-  const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d'));
-
   const fontsUsed = new Set();
 
   const pad = 5;
 
-  let bodyStr = '<body>';
+  let bodyStr = '<body>\n';
 
   if (maxpage === -1) maxpage = ocrCurrent.length - 1;
 
@@ -71,7 +89,7 @@ export function writeHtml(ocrCurrent, minpage = 0, maxpage = -1, reflowText = fa
       }
     }
 
-    bodyStr += `<div class="scribe-page" id="page${g}" style="position:absolute;top:${top}px;">`;
+    bodyStr += `  <div class="scribe-page" id="page${g}" style="position:absolute;top:${top}px;">\n`;
     if (removeMargins) {
       top += Math.min((maxBottom - minTop) + 200, pageMetricsArr[g].dims.height + 10);
     } else {
@@ -130,9 +148,7 @@ export function writeHtml(ocrCurrent, minpage = 0, maxpage = -1, reflowText = fa
 
         const fontSizeHTML = fontSize * scale;
 
-        ctx.font = `${fontI.fontFaceStyle} ${fontI.fontFaceWeight} ${fontSizeHTML}px ${fontI.fontFaceName}`;
-
-        const metrics = ctx.measureText(wordStr);
+        const metrics = calcFontMetrics(fontI, fontSizeHTML);
 
         const fontSizeHTMLSmallCaps = fontSize * scale * fontI.smallCapsMult;
 
@@ -174,29 +190,29 @@ export function writeHtml(ocrCurrent, minpage = 0, maxpage = -1, reflowText = fa
         // Line height must match the height of the font bounding box for the font metrics to be accurate.
         styleStr += `line-height:${metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent}px;`;
 
-        bodyStr += `<span class="scribe-word" id="${wordObj.id}" style="${styleStr}">${innerHTML}</span>`;
+        bodyStr += `    <span class="scribe-word" id="${wordObj.id}" style="${styleStr}">${innerHTML}</span>`;
       }
     }
 
-    bodyStr += '</div>';
+    bodyStr += '\n  </div>\n';
 
     opt.progressHandler({ n: g, type: 'export', info: { } });
   }
 
-  let styleStr = '<style>.scribe-word {';
+  let styleStr = '<style>\n  .scribe-word {\n';
 
-  styleStr += 'position:absolute;';
-  styleStr += `padding-left:${pad}px;`;
-  styleStr += `padding-right:${pad}px;`;
-  styleStr += 'z-index:1;';
-  styleStr += 'white-space:nowrap;';
+  styleStr += '    position:absolute;\n';
+  styleStr += `    padding-left:${pad}px;\n`;
+  styleStr += `    padding-right:${pad}px;\n`;
+  styleStr += '    z-index:1;\n';
+  styleStr += '    white-space:nowrap;\n';
   if (opt.kerning) {
-    styleStr += 'font-kerning:normal;';
+    styleStr += '    font-kerning:normal;\n';
   } else {
-    styleStr += 'font-kerning:none;';
+    styleStr += '    font-kerning:none;\n';
   }
 
-  styleStr += '}';
+  styleStr += '  }\n';
 
   for (const fontI of fontsUsed) {
     const cdnPath = 'https://cdn.jsdelivr.net/npm/scribe.js-ocr@0.7.1/fonts/all/';
@@ -205,19 +221,19 @@ export function writeHtml(ocrCurrent, minpage = 0, maxpage = -1, reflowText = fa
     const fontName = `${fontI.family}-${styleTitleCase}.woff`;
     const fontPath = cdnPath + fontName;
 
-    styleStr += `@font-face {
+    styleStr += `  @font-face {
     font-family: '${fontI.fontFaceName}';
     font-style: ${fontI.fontFaceStyle};
     font-weight: ${fontI.fontFaceWeight};
     src: url('${fontPath}');
-}\n`;
+  }\n`;
   }
 
-  styleStr += '</style>';
+  styleStr += '</style>\n';
 
-  bodyStr += '</body>';
+  bodyStr += '</body>\n';
 
-  const htmlStr = `<html><head>${styleStr}</head>${bodyStr}</html>`;
+  const htmlStr = `<html>\n<head>\n${styleStr}</head>\n${bodyStr}</html>`;
 
   return htmlStr;
 }
