@@ -167,7 +167,8 @@ export async function convertPageStext({ ocrStr, n }) {
           const fontStr = stextMatches[j][1];
           const fontNameStrI = fontStr?.match(/name=['"]([^'"]*)/)?.[1];
           const fontSizeStrI = fontStr?.match(/size=['"]([^'"]*)/)?.[1];
-          if (fontNameStrI && fontSizeStrI) {
+          // fontNameStrI can exist but be an empty string. Therefore, truthy/falsy checks are not sufficient.
+          if (fontNameStrI !== undefined && fontSizeStrI !== undefined) {
             // Skip font changes that occur at the end of a line.
             // In addition to being unnecessary, these are problematic when parsing superscripts.
             if (i + 1 === wordStrArr.length && j + 1 === stextMatches.length) continue;
