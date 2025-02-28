@@ -98,7 +98,7 @@ export async function convertPageStext({ ocrStr, n }) {
       let baselineCurrent = 0;
 
       /** @type {Array<Array<string>>} */
-      const text = [];
+      const textArr = [];
       /** @type {Array<number>} */
       const wordLetterOrFontArrIndex = [];
       let styleCurrent = 'normal';
@@ -112,6 +112,8 @@ export async function convertPageStext({ ocrStr, n }) {
       let smallCapsCurrentAlt;
       /** @type {Array<string>} */
       const styleArr = [];
+      /** @type {Array<boolean>} */
+      const underlineArr = [];
       /** @type {Array<boolean>} */
       const smallCapsArr = [];
       /** @type {Array<boolean>} */
@@ -144,6 +146,7 @@ export async function convertPageStext({ ocrStr, n }) {
        * @property {Quad} quad
        * @property {Point} origin
        * @property {string} text
+       * @property {number} flags
        */
 
       /**
@@ -158,8 +161,7 @@ export async function convertPageStext({ ocrStr, n }) {
         // Sometimes the font is changed before a space character, and othertimes it is changed after the space character.
         // This regex splits the string into elements that contain either (1) a font change or (2) a character.
         // The "quad" attribute includes 8 numbers (x and y coordinates for all 4 corners) however we only use capturing groups for 4
-        const stextCharRegex = /(<font[^>]+>\s*)|<char quad=['"](\s*[\d.-]+)(\s*[\d.-]+)(\s*[\d.-]+)(\s*[\d.-]+)(\s*[\d.-]+)(\s*[\d.-]+)(\s*[\d.-]+)(\s*[\d.-]+)[^>]*?x=['"]([\d.-]+)[^>]*?y=['"]([\d.-]+)['"][^>]*?c=['"]([^'"]+)['"]\s*\/>/ig;
-
+        const stextCharRegex = /(<font[^>]+>\s*)|<char quad=['"](\s*[\d.-]+)(\s*[\d.-]+)(\s*[\d.-]+)(\s*[\d.-]+)(\s*[\d.-]+)(\s*[\d.-]+)(\s*[\d.-]+)(\s*[\d.-]+)[^>]*?x=['"]([\d.-]+)[^>]*?y=['"]([\d.-]+)['"]([^>]*?c=['"][^'"]+['"])\s*\/>/ig;
         const stextMatches = [...wordStrArr[i].matchAll(stextCharRegex)];
 
         wordCharOrFontArr[i] = [];
@@ -210,10 +212,14 @@ export async function convertPageStext({ ocrStr, n }) {
             };
           }
 
+          const flags = parseInt(stextMatches[j][12]?.match(/flags=['"]([^'"]*)/)?.[1]);
+          const text = stextMatches[j][12]?.match(/c=['"]([^'"]*)/)?.[1];
+
           wordCharOrFontArr[i][j] = {
             quad,
             origin: { x: parseFloat(stextMatches[j][10]), y: parseFloat(stextMatches[j][11]) },
-            text: stextMatches[j][12],
+            flags,
+            text,
           };
         }
       }
@@ -221,6 +227,7 @@ export async function convertPageStext({ ocrStr, n }) {
       for (let i = 0; i < wordCharOrFontArr.length; i++) {
         let textWordArr = [];
         let bboxesWordArr = [];
+        const underlineWordArr = [];
         let fontFamily = familyCurrent || fontFamilyLine || 'Default';
         // Font size for the word is a separate variable, as if a font size changes at the end of the word,
         // that should not be reflected until the following word.
@@ -277,7 +284,7 @@ export async function convertPageStext({ ocrStr, n }) {
             && ((baselineDelta < -0.25 && sizeDelta < -0.05) || (baselineDelta > 0.25 && sizeDelta > 0.05))) {
               // Split word when superscript starts or ends.
               if (textWordArr.length > 0) {
-                text.push(textWordArr);
+                textArr.push(textWordArr);
                 bboxes.push(bboxesWordArr);
                 styleArr.push(styleWord);
                 fontFamilyArr.push(fontFamily);
@@ -412,13 +419,18 @@ export async function convertPageStext({ ocrStr, n }) {
 
           textWordArr.push(charOrFont.text);
 
+          underlineWordArr.push(charOrFont.flags === 2);
+
           bboxesWordArr.push(bbox);
         }
 
         if (textWordArr.length === 0) continue;
 
+        const underlineWord = underlineWordArr.reduce((a, b) => Number(a) + Number(b), 0) / underlineWordArr.length > 0.5;
+        underlineArr.push(underlineWord);
+
         wordLetterOrFontArrIndex.push(i);
-        text.push(textWordArr);
+        textArr.push(textWordArr);
         bboxes.push(bboxesWordArr);
         styleArr.push(styleWord);
         fontFamilyArr.push(fontFamily);
@@ -477,8 +489,8 @@ export async function convertPageStext({ ocrStr, n }) {
       lineObj.raw = xmlLine;
 
       let lettersKept = 0;
-      for (let i = 0; i < text.length; i++) {
-        const wordText = unescapeXml(text[i].join(''));
+      for (let i = 0; i < textArr.length; i++) {
+        const wordText = unescapeXml(textArr[i].join(''));
 
         if (wordText.trim() === '') continue;
 
@@ -491,8 +503,8 @@ export async function convertPageStext({ ocrStr, n }) {
         /** @type {Array<OcrChar>} */
         const charObjArr = [];
 
-        for (let j = 0; j < text[i].length; j++) {
-          const letter = unescapeXml(text[i][j]);
+        for (let j = 0; j < textArr[i].length; j++) {
+          const letter = unescapeXml(textArr[i][j]);
 
           const bbox = bboxesI[j];
 
@@ -567,6 +579,8 @@ export async function convertPageStext({ ocrStr, n }) {
         wordObj.font = fontFamilyArr[i];
 
         wordObj.sup = superArr[i];
+
+        wordObj.underline = underlineArr[i];
 
         lineObj.words.push(wordObj);
 
