@@ -116,8 +116,8 @@ describe('Check superscripts are detected in PDF imports.', function () {
   }).timeout(10000);
 
   it('Should correctly parse font size for lines with superscripts (4th doc)', async () => {
-    assert.strictEqual(scribe.data.ocr.active[3].lines[249].words[1].sup, true);
-    assert.strictEqual(scribe.data.ocr.active[3].lines[249].words[1].text, '20');
+    assert.strictEqual(scribe.data.ocr.active[3].lines[248].words[1].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[3].lines[248].words[1].text, '20');
   }).timeout(10000);
 
   // Fifth document
@@ -267,8 +267,8 @@ describe('Check that line baselines are imported correctly.', function () {
 
   it('Should correctly parse line baselines for pages with rotation', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples_rotated.pdf`]);
-    assert.strictEqual(Math.round(scribe.data.ocr.active[0].lines[25].baseline[1]), -11);
-    assert.strictEqual(Math.round(scribe.data.ocr.active[1].lines[25].baseline[1]), -165);
+    assert.strictEqual(Math.round(scribe.data.ocr.active[0].lines[25].baseline[1]), -10);
+    assert.strictEqual(Math.round(scribe.data.ocr.active[1].lines[25].baseline[1]), -164);
   }).timeout(10000);
 
   after(async () => {

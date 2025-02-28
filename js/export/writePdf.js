@@ -301,6 +301,8 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
 
   const pdfFontsUsed = new Set();
 
+  const underlines = /** @type {Array<{left: number, right: number, top: number, height: number, fontSize: number, fontStyle: ('normal'|'bold'|'italic')}>} */ ([]);
+
   // Start 1st object: Text Content
   let textContentObjStr = '';
 
@@ -406,6 +408,8 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
     let spacingAdj = 0;
     let kernSpacing = false;
     let wordLast = wordJ;
+    let underlineLeft = /** @type {?number} */ null;
+    let underlineRight = /** @type {?number} */ null;
     let wordFontOpentypeLast = wordFontOpentype;
     let fontSizeLast = wordFontSize;
     let tsCurrent = 0;
@@ -611,6 +615,28 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
         }
       }
 
+      if (wordJ.underline && underlineLeft === null) {
+        underlineLeft = wordJ.bbox.left;
+      }
+
+      if (wordJ.underline) {
+        underlineRight = wordJ.bbox.right;
+      }
+
+      if (underlineLeft !== null && (!wordJ.underline || j === words.length - 1)) {
+        underlines.push({
+          left: underlineLeft,
+          right: underlineRight,
+          top: lineTopAdj,
+          height: lineObj.bbox.bottom - lineObj.bbox.top,
+          fontSize: wordFontSize,
+          fontStyle: wordJ.style,
+        });
+
+        underlineLeft = null;
+        underlineRight = null;
+      }
+
       wordLast = wordJ;
       wordRightBearingLast = wordLast.visualCoords ? wordMetrics.rightSideBearing : 0;
       wordFontOpentypeLast = wordFontOpentype;
@@ -621,6 +647,14 @@ async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle
   }
 
   textContentObjStr += 'ET';
+
+  // Add underlines
+  underlines.forEach((underline) => {
+    const underlineThickness = underline.fontStyle === 'bold' ? Math.ceil(underline.fontSize / 12) : Math.ceil(underline.fontSize / 24);
+    const underlineOffset = Math.ceil(underline.fontSize / 12) + underlineThickness;
+
+    textContentObjStr += `\n${String(underline.left)} ${String(outputDims.height - underline.top - underlineOffset)} ${String(underline.right - underline.left)} ${underlineThickness} re\nf\n`;
+  });
 
   return { textContentObjStr, pdfFontsUsed };
 }

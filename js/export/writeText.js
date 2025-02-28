@@ -64,6 +64,10 @@ export function writeText(ocrCurrent, minpage = 0, maxpage = -1, reflowText = fa
             fontStyle += '<w:smallCaps/>';
           }
 
+          if (wordObj.underline) {
+            fontStyle += '<w:u w:val="single"/>';
+          }
+
           if (wordObj.sup) {
             fontStyle += '<w:vertAlign w:val="superscript"/>';
           }
