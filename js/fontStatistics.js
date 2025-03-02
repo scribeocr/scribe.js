@@ -278,6 +278,8 @@ function calcFontMetricsPage(pageObj) {
 
           const styleLookup = getStyleLookup(wordObj.style);
 
+          if (!['normal', 'italic', 'bold'].includes(styleLookup)) continue;
+
           if (!fontMetricsRawLine[wordFontFamily][styleLookup].width[charUnicode]) {
             fontMetricsRawLine[wordFontFamily][styleLookup].width[charUnicode] = [];
             fontMetricsRawLine[wordFontFamily][styleLookup].height[charUnicode] = [];
