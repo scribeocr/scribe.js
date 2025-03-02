@@ -1,5 +1,5 @@
 export class opt {
-  static ligatures = true;
+  static ligatures = false;
 
   static kerning = true;
 
