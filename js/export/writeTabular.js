@@ -86,9 +86,9 @@ function createCellsSingle(ocrTableWords, extraCols = [], startRow = 0, xlsxMode
 
         if (xlsxMode) {
           let fontStyle;
-          if (wordObj.style === 'italic') {
+          if (wordObj.style.italic) {
             fontStyle = '<i/>';
-          } else if (wordObj.smallCaps) {
+          } else if (wordObj.style.smallCaps) {
             fontStyle = '<smallCaps/>';
           } else {
             fontStyle = '';

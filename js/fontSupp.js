@@ -44,7 +44,7 @@ const calcSuppFontInfoForWords = async (words) => {
   const fontSizeArr = [];
   for (const word of wordsRes) {
     fontSizeArr.push(calcWordFontSize(word));
-    const sansSerif = determineSansSerif(word.font);
+    const sansSerif = determineSansSerif(word.style.font);
     if (sansSerif !== 'Default') {
       if (sansSerif === 'SansDefault') {
         sansVotes++;
@@ -53,9 +53,9 @@ const calcSuppFontInfoForWords = async (words) => {
       }
     }
   }
-  if (words[0].size) {
-    // @ts-ignore
-    fontSizeMult = quantile(fontSizeArr, 0.5) / words[0].size;
+
+  if (words[0].style.size) {
+    fontSizeMult = quantile(fontSizeArr, 0.5) / words[0].style.size;
   }
 
   return { sansVotes, serifVotes, fontSizeMult };
@@ -83,36 +83,36 @@ export const calcSuppFontInfo = async (ocrArr) => {
       let wordFontLast;
       let wordFontSizeLast;
       for (const word of line.words) {
-        if (word.font) {
-          if (skipFonts.has(word.font)) {
+        if (word.style.font) {
+          if (skipFonts.has(word.style.font)) {
             continue;
           // Printing words off screen is a common method of hiding text in PDFs.
           } else if (word.bbox.left < 0 || word.bbox.top < 0 || word.bbox.right > page.dims.width || word.bbox.bottom > page.dims.height) {
             continue;
-          } else if (!calcFonts.has(word.font)) {
-            const sansSerifUnknown = determineSansSerif(word.font) === 'Default';
+          } else if (!calcFonts.has(word.style.font)) {
+            const sansSerifUnknown = determineSansSerif(word.style.font) === 'Default';
             if (sansSerifUnknown || !word.visualCoords) {
-              calcFonts.add(word.font);
+              calcFonts.add(word.style.font);
             } else {
-              skipFonts.add(word.font);
+              skipFonts.add(word.style.font);
               continue;
             }
           }
 
-          if (!fontExamples[word.font]) {
-            fontExamples[word.font] = [];
-          } else if (fontExamples[word.font].length > 3) {
+          if (!fontExamples[word.style.font]) {
+            fontExamples[word.style.font] = [];
+          } else if (fontExamples[word.style.font].length > 3) {
             continue;
           }
 
-          if (word.font !== wordFontLast || word.size !== wordFontSizeLast) {
-            fontExamples[word.font].push([word]);
+          if (word.style.font !== wordFontLast || word.style.size !== wordFontSizeLast) {
+            fontExamples[word.style.font].push([word]);
           } else {
-            fontExamples[word.font][fontExamples[word.font].length - 1].push(word);
+            fontExamples[word.style.font][fontExamples[word.style.font].length - 1].push(word);
           }
 
-          wordFontLast = word.font;
-          wordFontSizeLast = word.size;
+          wordFontLast = word.style.font;
+          wordFontSizeLast = word.style.size;
         }
       }
     }
@@ -158,8 +158,8 @@ export const calcSuppFontInfo = async (ocrArr) => {
   for (const page of ocrArr) {
     for (const line of page.lines) {
       for (const word of line.words) {
-        if (word.font && word.size && FontProps.sizeMult[word.font]) {
-          word.size = Math.round(word.size * FontProps.sizeMult[word.font] * 1000) / 1000;
+        if (word.style.font && word.style.size && FontProps.sizeMult[word.style.font]) {
+          word.style.size = Math.round(word.style.size * FontProps.sizeMult[word.style.font] * 1000) / 1000;
         }
       }
     }

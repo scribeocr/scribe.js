@@ -54,21 +54,21 @@ export function writeText(ocrCurrent, minpage = 0, maxpage = -1, reflowText = fa
 
         if (docxMode) {
           let fontStyle = '';
-          if (wordObj.style === 'italic') {
+          if (wordObj.style.italic) {
             fontStyle += '<w:i/>';
-          } else if (wordObj.style === 'bold') {
+          } else if (wordObj.style.bold) {
             fontStyle += '<w:b/>';
           }
 
-          if (wordObj.smallCaps) {
+          if (wordObj.style.smallCaps) {
             fontStyle += '<w:smallCaps/>';
           }
 
-          if (wordObj.underline) {
+          if (wordObj.style.underline) {
             fontStyle += '<w:u w:val="single"/>';
           }
 
-          if (wordObj.sup) {
+          if (wordObj.style.sup) {
             fontStyle += '<w:vertAlign w:val="superscript"/>';
           }
 
@@ -83,7 +83,7 @@ export function writeText(ocrCurrent, minpage = 0, maxpage = -1, reflowText = fa
             } else if (supPrev) {
               textStr = `${textStr}</w:t></w:r><w:r>${styleStr}<w:t xml:space="preserve"> `;
             // If this word is a superscript, no space is added between words.
-            } else if (wordObj.sup && i > 0) {
+            } else if (wordObj.style.sup && i > 0) {
               textStr = `${textStr}</w:t></w:r><w:r>${styleStr}<w:t xml:space="preserve">`;
             } else {
               textStr = `${textStr} </w:t></w:r><w:r>${styleStr}<w:t xml:space="preserve">`;
@@ -93,7 +93,7 @@ export function writeText(ocrCurrent, minpage = 0, maxpage = -1, reflowText = fa
           }
 
           fontStylePrev = fontStyle;
-          supPrev = wordObj.sup;
+          supPrev = wordObj.style.sup;
         } else if (newLine) {
           textStr = `${textStr}\n`;
         } else if (h > 0 || g > 0 || i > 0) {

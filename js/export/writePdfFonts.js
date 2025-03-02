@@ -108,12 +108,12 @@ const generateFontFlags = (serif, italic, smallcap, symbolic) => { /* eslint-dis
  *
  * @param {opentype.Font} font - Opentype.js font object
  * @param {number} objIndex - Index for font descriptor PDF object
- * @param {('normal'|'italic'|'bold')} style - Style of the font
+ * @param {boolean} italic
  * @param {?number} embeddedObjIndex - Index for embedded font file PDF object.
  *  If not provided, the font will not be embedded in the PDF.
  * @returns {string} The font descriptor object string.
  */
-function createFontDescriptor(font, objIndex, style = 'normal', embeddedObjIndex = null) {
+function createFontDescriptor(font, objIndex, italic, embeddedObjIndex = null) {
   let objOut = `${String(objIndex)} 0 obj\n<</Type/FontDescriptor`;
 
   const namesTable = font.names.windows || font.names;
@@ -155,7 +155,7 @@ function createFontDescriptor(font, objIndex, style = 'normal', embeddedObjIndex
 
   // Symbolic is always set to false, even if the font contains glyphs outside the Adobe standard Latin character set.
   // This is because symbolic fonts are only used when embedded, and this does not appear to matter for embedded fonts.
-  objOut += `/Flags ${String(generateFontFlags(serif, style === 'italic', false, false))}`;
+  objOut += `/Flags ${String(generateFontFlags(serif, italic, false, false))}`;
 
   if (embeddedObjIndex === null || embeddedObjIndex === undefined) {
     objOut += '>>\nendobj\n\n';
@@ -175,12 +175,12 @@ function createFontDescriptor(font, objIndex, style = 'normal', embeddedObjIndex
  *
  * @param {opentype.Font} font - Opentype.js font object
  * @param {number} firstObjIndex - Index for the first PDF object
- * @param {('normal'|'italic'|'bold')} style - Style of the font
+ * @param {boolean} [italic=false] - Whether the font is italic.
  * @param {boolean} [isStandardFont=false] - Whether the font is a standard font.
  *  Standard fonts are not embedded in the PDF.
  * @returns {Array<string>}
  */
-export function createEmbeddedFontType1(font, firstObjIndex, style = 'normal', isStandardFont = false) {
+export function createEmbeddedFontType1(font, firstObjIndex, italic = false, isStandardFont = false) {
   // Start 1st object: Font Dictionary
   let fontDictObjStr = `${String(firstObjIndex)} 0 obj\n<</Type/Font/Subtype/Type1`;
 
@@ -193,7 +193,8 @@ export function createEmbeddedFontType1(font, firstObjIndex, style = 'normal', i
 
   fontDictObjStr += '/Widths[';
   for (let i = 0; i < win1252Chars.length; i++) {
-    const advanceNorm = Math.round(font.charToGlyph(win1252Chars[i]).advanceWidth * (1000 / font.unitsPerEm));
+    const advance = font.charToGlyph(win1252Chars[i]).advanceWidth || font.unitsPerEm;
+    const advanceNorm = Math.round(advance * (1000 / font.unitsPerEm));
     fontDictObjStr += `${String(advanceNorm)} `;
   }
   fontDictObjStr += ']/FirstChar 32/LastChar 255';
@@ -201,7 +202,7 @@ export function createEmbeddedFontType1(font, firstObjIndex, style = 'normal', i
   fontDictObjStr += `/FontDescriptor ${String(firstObjIndex + 1)} 0 R>>\nendobj\n\n`;
 
   // Start 2nd object: Font Descriptor
-  const fontDescObjStr = createFontDescriptor(font, firstObjIndex + 1, style, isStandardFont ? null : firstObjIndex + 2);
+  const fontDescObjStr = createFontDescriptor(font, firstObjIndex + 1, italic, isStandardFont ? null : firstObjIndex + 2);
 
   // objOut += `${String(firstObjIndex + 1)} 0 obj\n<</Type/FontDescriptor`;
 
@@ -249,13 +250,14 @@ export function createEmbeddedFontType1(font, firstObjIndex, style = 'normal', i
  *
  * @param {opentype.Font} font - Opentype.js font object
  * @param {number} firstObjIndex - Index for the first PDF object
+ * @param {boolean} [italic=false] - Whether the font is italic.
  *
  * This function does not produce "toUnicode" or "Widths" objects,
  * so any PDF it creates directly will lack usable copy/paste.
  * However, both of these objects will be created from the embedded file
  * when the result is run through mupdf.
  */
-export function createEmbeddedFontType0(font, firstObjIndex, style = 'normal') {
+export function createEmbeddedFontType0(font, firstObjIndex, italic = false) {
   // Start 1st object: Font Dictionary
   let fontDictObjStr = `${String(firstObjIndex)} 0 obj\n<</Type/Font/Subtype/Type0`;
 
@@ -282,7 +284,7 @@ export function createEmbeddedFontType0(font, firstObjIndex, style = 'normal') {
   toUnicodeStr += '\nendstream\nendobj\n\n';
 
   // Start 3rd object: FontDescriptor
-  const fontDescObjStr = createFontDescriptor(font, firstObjIndex + 1, style, firstObjIndex + 3);
+  const fontDescObjStr = createFontDescriptor(font, firstObjIndex + 1, italic, firstObjIndex + 3);
 
   // objOut += `${String(firstObjIndex + 2)} 0 obj\n`;
 

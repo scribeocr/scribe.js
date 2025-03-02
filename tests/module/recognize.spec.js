@@ -37,10 +37,10 @@ describe('Check style detection.', function () {
   });
 
   it('Italic words are identified correctly', async () => {
-    assert.strictEqual(scribe.data.ocr.active[0].lines[0].words[3].style, 'normal');
-    assert.strictEqual(scribe.data.ocr.active[0].lines[0].words[4].style, 'italic');
-    assert.strictEqual(scribe.data.ocr.active[0].lines[0].words[5].style, 'italic');
-    assert.strictEqual(scribe.data.ocr.active[0].lines[0].words[6].style, 'normal');
+    assert.isFalse(scribe.data.ocr.active[0].lines[0].words[3].style.italic);
+    assert.isTrue(scribe.data.ocr.active[0].lines[0].words[4].style.italic);
+    assert.isTrue(scribe.data.ocr.active[0].lines[0].words[5].style.italic);
+    assert.isFalse(scribe.data.ocr.active[0].lines[0].words[6].style.italic);
   }).timeout(10000);
 
   after(async () => {

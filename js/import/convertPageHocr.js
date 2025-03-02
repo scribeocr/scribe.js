@@ -247,8 +247,8 @@ export async function convertPageHocr({
 
       if (debugMode) wordObj.raw = match;
 
-      if (italic) wordObj.style = 'italic';
-      if (fontName) wordObj.font = fontName;
+      if (italic) wordObj.style.italic = true;
+      if (fontName) wordObj.style.font = fontName;
 
       wordObj.conf = wordConf;
 
@@ -302,19 +302,6 @@ export async function convertPageHocr({
 
       const styleStr = match.match(/style=['"]([^'"]+)/)?.[1];
 
-      let smallCaps = false;
-      /** @type {('normal'|'italic'|'bold')} */
-      let fontStyle = 'normal';
-      if (styleStr && /italic/i.test(styleStr)) {
-        fontStyle = 'italic';
-      } else if (styleStr && /bold/i.test(styleStr)) {
-        fontStyle = 'bold';
-      }
-
-      if (styleStr && /small-caps/i.test(styleStr)) {
-        smallCaps = true;
-      }
-
       const confMatch = titleStrWord.match(/(?:;|\s)x_wconf\s+(\d+)/)?.[1] || '0';
       const wordConf = parseInt(confMatch) || 0;
 
@@ -327,16 +314,19 @@ export async function convertPageHocr({
         const wordFontSizeStr = titleStrWord.match(/(?:;|\s)x_fsize\s+(\d+)/)?.[1];
         if (wordFontSizeStr) {
           const wordFontSize = parseInt(wordFontSizeStr);
-          if (wordFontSize) wordObj.size = wordFontSize;
+          if (wordFontSize) wordObj.style.size = wordFontSize;
         }
       }
 
-      wordObj.style = fontStyle;
-      if (fontName) wordObj.font = fontName;
+      if (styleStr) {
+        if (/italic/i.test(styleStr)) wordObj.style.italic = true;
+        if (/bold/i.test(styleStr)) wordObj.style.bold = true;
+        if (/small-caps/i.test(styleStr)) wordObj.style.smallCaps = true;
+      }
 
-      wordObj.sup = wordSup;
+      if (wordSup) wordObj.style.sup = true;
 
-      wordObj.smallCaps = smallCaps;
+      if (fontName) wordObj.style.font = fontName;
 
       wordObj.conf = wordConf;
 

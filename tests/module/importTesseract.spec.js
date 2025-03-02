@@ -91,14 +91,14 @@ describe('Check Tesseract .hocr import function imports styles correctly.', func
   it('Should ignore italics in imports from Tesseract', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/tesseract_italics_example_1a.hocr`]);
 
-    assert.strictEqual(scribe.data.ocr.active[0].lines[0].words[0].style, 'normal');
+    assert.isFalse(scribe.data.ocr.active[0].lines[0].words[0].style.italic);
   }).timeout(10000);
 
   // This version was created with the hocr_font_info and hocr_char_boxes options enabled.
   it('Should ignore italics in imports from Tesseract (alt configs)', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/tesseract_italics_example_1b.hocr`]);
 
-    assert.strictEqual(scribe.data.ocr.active[0].lines[0].words[0].style, 'normal');
+    assert.isFalse(scribe.data.ocr.active[0].lines[0].words[0].style.italic);
   }).timeout(10000);
 
   after(async () => {

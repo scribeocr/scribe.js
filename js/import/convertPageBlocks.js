@@ -140,11 +140,11 @@ export async function convertPageBlocks({
           // The `word` object has a `is_italic` property, but it is always false.
           // Therefore, the font name is checked to determine if the word is italic.
           // See: https://github.com/naptha/tesseract.js/issues/907
-          if (keepItalic && /italic/i.test(word.font_name)) wordObj.style = 'italic';
+          if (keepItalic && /italic/i.test(word.font_name)) wordObj.style.italic = true;
 
           // Our fork of Tesseract Legacy should be able to recognize fonts, so this information is included.
           // The generic HOCR importer does not include font information, as this is assumed to be unreliable.
-          wordObj.font = word.font_name;
+          wordObj.style.font = word.font_name;
 
           wordObj.chars = [];
           for (let m = 0; m < word.symbols.length; m++) {

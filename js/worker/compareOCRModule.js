@@ -141,7 +141,7 @@ export const drawWordRender = async (ctx, word, offsetX = 0, cropY = 0, ctxView 
   const charSpacing = wordMetrics.charSpacing;
   const wordFontSize = wordMetrics.fontSize;
 
-  if (word.sup) {
+  if (word.style.sup) {
     const wordboxXMid = word.bbox.left + (word.bbox.right - word.bbox.left) / 2;
 
     const baselineYWord = word.line.bbox.bottom + word.line.baseline[1] + word.line.baseline[0] * (wordboxXMid - word.line.bbox.left);
@@ -173,12 +173,12 @@ export const drawWordRender = async (ctx, word, offsetX = 0, cropY = 0, ctxView 
   if (word.visualCoords) left -= wordMetrics.leftSideBearing;
 
   await printWordOnCanvas({
-    ctx, charArr: wordMetrics.charArr, left, bottom: y, advanceArr: advanceArrTotal, font: fontI, size: wordFontSize, smallCaps: word.smallCaps,
+    ctx, charArr: wordMetrics.charArr, left, bottom: y, advanceArr: advanceArrTotal, font: fontI, size: wordFontSize, smallCaps: word.style.smallCaps,
   });
 
   if (ctxView) {
     await printWordOnCanvas({
-      ctx: ctxView, charArr: wordMetrics.charArr, left, bottom: y, advanceArr: advanceArrTotal, font: fontI, size: wordFontSize, smallCaps: word.smallCaps, fillStyle: 'red',
+      ctx: ctxView, charArr: wordMetrics.charArr, left, bottom: y, advanceArr: advanceArrTotal, font: fontI, size: wordFontSize, smallCaps: word.style.smallCaps, fillStyle: 'red',
     });
   }
 };
@@ -328,8 +328,7 @@ export async function evalWords({
       const word = ocr.cloneWord(wordsB[i]);
 
       // Set style to whatever it is for wordsA.  This is based on the assumption that "A" is Tesseract Legacy and "B" is Tesseract LSTM (which does not have useful style info).
-      word.font = wordsA[0].font;
-      word.style = wordsA[0].style;
+      word.style = { ...wordsA[0].style };
 
       if (i === 0) {
         x0 = word.bbox.left;
@@ -878,9 +877,9 @@ export async function compareOCRPageImp({
                     const wordAClone = ocr.cloneWord(wordA);
                     wordAClone.text = wordB.text;
 
-                    if (wordB.smallCaps && !wordA.smallCaps) {
-                      wordAClone.smallCaps = true;
-                      wordAClone.size = calcWordFontSize(wordB);
+                    if (wordB.style.smallCaps && !wordA.style.smallCaps) {
+                      wordAClone.style.smallCaps = true;
+                      wordAClone.style.size = calcWordFontSize(wordB);
                     }
 
                     const evalRes = await evalWords({
@@ -977,7 +976,7 @@ export async function compareOCRPageImp({
 
                       // Switch to small caps/non-small caps based on style of replacement word.
                       // This is not relevant for italics as the LSTM engine does not detect italics.
-                      if (wordB.smallCaps) wordA.smallCaps = true;
+                      if (wordB.style.smallCaps) wordA.style.smallCaps = true;
                     } else {
                       const wordsBArrRep = wordsBArr.map((x) => ocr.cloneWord(x));
 
@@ -987,9 +986,7 @@ export async function compareOCRPageImp({
                       wordsBArrRep.forEach((x) => {
                         // Use style from word A (assumed to be Tesseract Legacy)
                         if (legacyLSTMComb) {
-                          x.font = wordA.font;
-                          x.style = wordA.style;
-                          x.smallCaps = wordA.smallCaps;
+                          x.style = { ...wordA.style };
                         }
 
                         // Set confidence to 0
@@ -1315,14 +1312,14 @@ export async function evalPageFont({
     }
 
     // If the font is not set for a specific word, whether it is assumed sans/serif will be determined by the default font.
-    const lineFontType = ocrLineJ.words[0].font ? FontCont.getWordFont(ocrLineJ.words[0]).type : FontCont.getFont('Default').type;
+    const lineFontType = FontCont.getWordFont(ocrLineJ.words[0]).type;
 
     if (FontCont.raw[font].normal.type !== lineFontType) return null;
 
     const ocrLineJClone = ocr.cloneLine(ocrLineJ);
 
     ocrLineJClone.words.forEach((x) => {
-      x.font = font;
+      x.style.font = font;
     });
 
     return ocrLineJClone;
@@ -1519,7 +1516,7 @@ export const renderPageStaticImp = async ({
 
       // TODO: Test whether the math here is correct for drop caps.
       let ts = 0;
-      if (wordObj.sup || wordObj.dropcap) {
+      if (wordObj.style.sup || wordObj.style.dropcap) {
         ts = (lineObj.bbox.bottom + lineObj.baseline[1] + angleAdjLine.y) - (wordObj.bbox.bottom + angleAdjLine.y + angleAdjWord.y);
         if (!wordObj.visualCoords) {
           const font = FontCont.getWordFont(wordObj);
@@ -1549,7 +1546,7 @@ export const renderPageStaticImp = async ({
       for (let i = 0; i < wordMetrics.charArr.length; i++) {
         let charI = wordMetrics.charArr[i];
 
-        if (wordObj.smallCaps) {
+        if (wordObj.style.smallCaps) {
           if (charI === charI.toUpperCase()) {
             ctx.font = `${font.fontFaceStyle} ${font.fontFaceWeight} ${wordFontSize}px ${font.fontFaceName}`;
           } else {
