@@ -101,7 +101,8 @@ export async function convertPageStext({ ocrStr, n }) {
       const textArr = [];
       /** @type {Array<number>} */
       const wordLetterOrFontArrIndex = [];
-      let styleCurrent = 'normal';
+      let boldCurrent = false;
+      let italicCurrent = false;
       let familyCurrent = 'Default';
       /** Font size at the current position in the PDF, with no modifications. */
       let sizeCurrentRaw = 0;
@@ -111,11 +112,11 @@ export async function convertPageStext({ ocrStr, n }) {
       let smallCapsCurrent;
       let smallCapsCurrentAlt;
 
-      /** @type {Array<Style>} */
-      const styleArr = [];
+      /** @type {Array<boolean>} */
+      const boldArr = [];
+      /** @type {Array<boolean>} */
+      const italicArr = [];
 
-      /** @type {Array<string>} */
-      const boldItalicsArr = [];
       /** @type {Array<boolean>} */
       const underlineArr = [];
       /** @type {Array<boolean>} */
@@ -240,7 +241,8 @@ export async function convertPageStext({ ocrStr, n }) {
         let smallCapsWordAlt = smallCapsCurrentAlt || false;
         // Title case adjustment does not carry forward between words. A word in title case may be followed by a word in all lower case.
         let smallCapsWordAltTitleCaseAdj = false;
-        let styleWord = 'normal';
+        let boldWord = false;
+        let italicWord = false;
 
         if (wordCharOrFontArr[i].length === 0) continue;
 
@@ -290,7 +292,10 @@ export async function convertPageStext({ ocrStr, n }) {
               if (textWordArr.length > 0) {
                 textArr.push(textWordArr);
                 bboxes.push(bboxesWordArr);
-                boldItalicsArr.push(styleWord);
+
+                boldArr.push(boldWord);
+                italicArr.push(italicWord);
+
                 fontFamilyArr.push(fontFamily);
 
                 if (sizeDelta > 0) {
@@ -353,11 +358,15 @@ export async function convertPageStext({ ocrStr, n }) {
             if (/italic/i.test(charOrFont.name) || /-\w*ital/i.test(charOrFont.name) || /-it$/i.test(charOrFont.name) || /oblique/i.test(charOrFont.name)) {
               // The word is already initialized, so we need to change the last element of the style array.
               // Label as `smallCapsAlt` rather than `smallCaps`, as we confirm the word is all caps before marking as `smallCaps`.
-              styleCurrent = 'italic';
-            } else if (/bold|black/i.test(charOrFont.name)) {
-              styleCurrent = 'bold';
+              italicCurrent = true;
             } else {
-              styleCurrent = 'normal';
+              italicCurrent = false;
+            }
+
+            if (/bold|black/i.test(charOrFont.name)) {
+              boldCurrent = true;
+            } else {
+              boldCurrent = false;
             }
 
             continue;
@@ -366,7 +375,9 @@ export async function convertPageStext({ ocrStr, n }) {
           }
 
           if (!wordInit) {
-            styleWord = styleCurrent;
+            boldWord = boldCurrent;
+            italicWord = italicCurrent;
+
             wordInit = true;
           }
 
@@ -436,7 +447,10 @@ export async function convertPageStext({ ocrStr, n }) {
         wordLetterOrFontArrIndex.push(i);
         textArr.push(textWordArr);
         bboxes.push(bboxesWordArr);
-        boldItalicsArr.push(styleWord);
+
+        boldArr.push(boldWord);
+        italicArr.push(italicWord);
+
         fontFamilyArr.push(fontFamily);
         fontSizeArr.push(fontSizeWord);
         smallCapsAltArr.push(smallCapsWordAlt);
@@ -572,9 +586,11 @@ export async function convertPageStext({ ocrStr, n }) {
           wordObj.style.smallCaps = true;
         }
 
-        if (boldItalicsArr[i] === 'italic') {
+        if (italicArr[i]) {
           wordObj.style.italic = true;
-        } if (boldItalicsArr[i] === 'bold') {
+        }
+
+        if (boldArr[i]) {
           wordObj.style.bold = true;
         }
 
