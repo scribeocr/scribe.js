@@ -259,6 +259,7 @@ export async function updateFontContWorkerMain(params = {}) {
       };
       if (value.italic) input.src[key].italic = value.italic.src;
       if (value.bold) input.src[key].bold = value.bold.src;
+      if (value.boldItalic) input.src[key].boldItalic = value.boldItalic.src;
     }
 
     for (let i = 0; i < gs.schedulerInner.workers.length; i++) {

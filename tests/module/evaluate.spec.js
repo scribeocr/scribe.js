@@ -17,16 +17,16 @@ describe('Check evaluate function.', function () {
   });
 
   it('Should correctly compare page to ground truth', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/complaint_1.xml`]);
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/complaint_1.hocr`]);
     await scribe.importFilesSupp([`${ASSETS_PATH_KARMA}/complaint_1.truth.hocr`], 'Ground Truth');
 
     const res = await scribe.compareOCR(scribe.data.ocr.active, scribe.data.ocr['Ground Truth']);
 
     const evalStatsDoc = scribe.utils.calcEvalStatsDoc(res.metrics);
 
-    assert.strictEqual(evalStatsDoc.total, 183);
-    assert.strictEqual(evalStatsDoc.correct, 181);
-    assert.strictEqual(evalStatsDoc.incorrect, 2);
+    assert.strictEqual(evalStatsDoc.total, 654);
+    assert.strictEqual(evalStatsDoc.correct, 650);
+    assert.strictEqual(evalStatsDoc.incorrect, 4);
     assert.strictEqual(evalStatsDoc.missed, 0);
     assert.strictEqual(evalStatsDoc.extra, 0);
   }).timeout(10000);

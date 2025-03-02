@@ -171,8 +171,18 @@ export async function convertPageAbbyy({ ocrStr, n }) {
         /** @type {Array<Array<OcrChar>>} */
         const charObjArrLine = Array(wordStrArr.length);
         text = text.fill('');
-        let styleArr = Array(wordStrArr.length);
-        styleArr = styleArr.fill('normal');
+
+        /** @type {Array<boolean>} */
+        const italicArr = Array(wordStrArr.length).fill(false);
+        /** @type {Array<boolean>} */
+        const boldArr = Array(wordStrArr.length).fill(false);
+        /** @type {Array<boolean>} */
+        const underlineArr = Array(wordStrArr.length).fill(false);
+        /** @type {Array<boolean>} */
+        const supArr = Array(wordStrArr.length).fill(false);
+        /** @type {Array<boolean>} */
+        const dropcapArr = Array(wordStrArr.length).fill(false);
+
         /** @type {Array<boolean>} */
         const smallCapsArr = Array(wordStrArr.length).fill(false);
         /** @type {Array<boolean>} */
@@ -184,28 +194,32 @@ export async function convertPageAbbyy({ ocrStr, n }) {
 
           if (typeof (letterArr[0][1]) !== 'undefined') {
             if (dropCap && i === 0) {
-              styleArr[i] = 'dropcap';
+              dropcapArr[i] = true;
             } else if (/superscript=['"](1|true)/i.test(letterArr[0][1])) {
-              styleArr[i] = 'sup';
-            } else if (/italic=['"](1|true)/i.test(letterArr[0][1])) {
-              styleArr[i] = 'italic';
-              stylesLine.italic = true;
+              supArr[i] = true;
             } else {
-              styleArr[i] = 'normal';
-              stylesLine.normal = true;
+              if (/italic=['"](1|true)/i.test(letterArr[0][1])) {
+                italicArr[i] = true;
+              }
+
+              if (/bold=['"](1|true)/i.test(letterArr[0][1])) {
+                boldArr[i] = true;
+              }
+
+              if (/underline=['"](1|true)/i.test(letterArr[0][1])) {
+                underlineArr[i] = true;
+              }
             }
 
             if (/smallcaps=['"](1|true)/i.test(letterArr[0][1])) {
               smallCapsArr[i] = true;
             }
-          } else if (i > 0) {
-            if (styleArr[i - 1] === 'dropcap') {
-              styleArr[i] = 'normal';
-              smallCapsArr[i] = false;
-            } else {
-              styleArr[i] = styleArr[i - 1];
-              smallCapsArr[i] = smallCapsArr[i - 1];
-            }
+          } else if (i > 0 && !dropcapArr[i - 1]) {
+            italicArr[i] = italicArr[i - 1];
+            boldArr[i] = boldArr[i - 1];
+            underlineArr[i] = underlineArr[i - 1];
+            supArr[i] = supArr[i - 1];
+            smallCapsArr[i] = smallCapsArr[i - 1];
           }
 
           // Abbyy will sometimes misidentify capital letters immediately following drop caps as small caps,
@@ -372,17 +386,25 @@ export async function convertPageAbbyy({ ocrStr, n }) {
 
           console.assert(wordObj.chars.length === text[i].length, `Likely parsing error for word: ${id}. Number of letters in text does not match number of \`ocrChar\` objects.`);
 
-          if (styleArr[i] === 'italic') {
+          if (italicArr[i]) {
             wordObj.style.italic = true;
+          }
+
+          if (boldArr[i]) {
+            wordObj.style.bold = true;
+          }
+
+          if (underlineArr[i]) {
+            wordObj.style.underline = true;
           }
 
           wordObj.style.smallCaps = smallCapsArr[i];
 
           if (fontName) wordObj.style.font = fontName;
 
-          if (styleArr[i] === 'sup') {
+          if (supArr[i]) {
             wordObj.style.sup = true;
-          } else if (styleArr[i] === 'dropcap') {
+          } else if (dropcapArr[i]) {
             wordObj.style.dropcap = true;
           }
 
