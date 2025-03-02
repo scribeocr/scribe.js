@@ -490,3 +490,19 @@ export function range(min, max) {
 export const debugLog = (x) => new Promise((resolve) => {
   process.stderr.write(`${String(x)}\n`, resolve);
 });
+
+/**
+ *
+ * @param {Partial<Style>} style
+ */
+export const getStyleLookup = (style) => {
+  let styleStr = 'normal';
+  if (style.bold && style.italic) {
+    styleStr = 'boldItalic';
+  } else if (style.bold) {
+    styleStr = 'bold';
+  } else if (style.italic) {
+    styleStr = 'italic';
+  }
+  return styleStr;
+};

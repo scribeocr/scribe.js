@@ -5,7 +5,7 @@
 
 // Node.js case
 import opentype from '../../lib/opentype.module.js';
-import { determineSansSerif } from '../utils/miscUtils.js';
+import { determineSansSerif, getStyleLookup } from '../utils/miscUtils.js';
 import { ca } from '../canvasAdapter.js';
 
 if (typeof process === 'object') {
@@ -104,26 +104,26 @@ export function loadFontFace(fontFamily, fontStyle, fontWeight, src) {
  * Load font from source and return a FontContainerFont object.
  * This function is used to load the Chinese font.
  * @param {string} family
- * @param {string} style
+ * @param {StyleLookup} styleLookup
  * @param {("sans"|"serif")} type
  * @param {ArrayBuffer} src
  * @param {boolean} opt
  *
  */
-export async function loadFont(family, style, type, src, opt) {
+export async function loadFont(family, styleLookup, type, src, opt) {
   const fontObj = await loadOpentype(src);
-  return new FontContainerFont(family, style, src, opt, fontObj);
+  return new FontContainerFont(family, styleLookup, src, opt, fontObj);
 }
 
 /**
  *
  * @param {string} family
- * @param {string} style
+ * @param {StyleLookup} styleLookup
  * @param {ArrayBuffer} src
  * @param {boolean} opt
  * @param {opentype.Font} opentypeObj - Kerning paris to re-apply
  * @property {string} family -
- * @property {string} style -
+ * @property {StyleLookup} style -
  * @property {ArrayBuffer} src
  * @property {opentype.Font} opentype -
  * @property {string} fontFaceName -
@@ -135,7 +135,7 @@ export async function loadFont(family, style, type, src, opt) {
  * First, it is not necessary.  Setting the font on a canvas (the only reason loading a `FontFace` is needed) is done through refering `fontFaceName` and `fontFaceStyle`.
  * Second, it results in errors being thrown when used in Node.js, as `FontFace` will be undefined in this case.
  */
-export function FontContainerFont(family, style, src, opt, opentypeObj) {
+export function FontContainerFont(family, styleLookup, src, opt, opentypeObj) {
   // As FontFace objects are included in the document FontFaceSet object,
   // they need to all have unique names.
   let fontFaceName = family;
@@ -143,8 +143,8 @@ export function FontContainerFont(family, style, src, opt, opentypeObj) {
 
   /** @type {string} */
   this.family = family;
-  /** @type {string} */
-  this.style = style;
+  /** @type {StyleLookup} */
+  this.style = styleLookup;
   /** @type {boolean} */
   this.opt = opt;
   /** @type {ArrayBuffer} */
@@ -154,9 +154,9 @@ export function FontContainerFont(family, style, src, opt, opentypeObj) {
   /** @type {string} */
   this.fontFaceName = fontFaceName;
   /** @type {('normal'|'italic')} */
-  this.fontFaceStyle = this.style === 'italic' ? 'italic' : 'normal';
+  this.fontFaceStyle = ['italic', 'boldItalic'].includes(this.style) ? 'italic' : 'normal';
   /** @type {('normal'|'bold')} */
-  this.fontFaceWeight = this.style === 'bold' ? 'bold' : 'normal';
+  this.fontFaceWeight = ['bold', 'boldItalic'].includes(this.style) ? 'bold' : 'normal';
   /** @type {("sans"|"serif")} */
   this.type = determineSansSerif(this.family) === 'SansDefault' ? 'sans' : 'serif';
   this.smallCapsMult = 0.75;
@@ -185,27 +185,27 @@ export async function loadFontContainerFamily(family, src, opt = false) {
     normal: null,
     italic: null,
     bold: null,
+    boldItalic: null,
   };
 
   /**
    *
-   * @param {('normal'|'bold'|'italic')} type
+   * @param {StyleLookup} styleLookup
    * @returns
    */
-  const loadType = (type) => new Promise((resolve) => {
-    const srcType = (src[type]);
+  const loadType = (styleLookup) => new Promise((resolve) => {
+    const srcType = (src[styleLookup]);
     if (!srcType) {
       resolve(false);
       return;
     }
-    // const scrNormal = typeof srcType === 'string' ? getFontAbsPath(srcType) : srcType;
     loadOpentype(srcType).then((font) => {
-      res[type] = new FontContainerFont(family, type, srcType, opt, font);
+      res[styleLookup] = new FontContainerFont(family, styleLookup, srcType, opt, font);
       resolve(true);
     });
   });
 
-  Promise.allSettled([loadType('normal'), loadType('italic'), loadType('bold')]);
+  Promise.allSettled([loadType('normal'), loadType('italic'), loadType('bold'), loadType('boldItalic')]);
 
   return res;
 }
@@ -300,11 +300,13 @@ export class FontCont {
 
     const fontNameEmbedded = fontObj.names.postScriptName.en;
 
-    let fontStyle = 'normal';
-    if (fontNameEmbedded.match(/italic/i)) {
-      fontStyle = 'italic';
+    let styleLookup = /** @type {StyleLookup} */ ('normal');
+    if (fontNameEmbedded.match(/boldit|bdit/i)) {
+      styleLookup = 'boldItalic';
+    } else if (fontNameEmbedded.match(/italic/i)) {
+      styleLookup = 'italic';
     } else if (fontNameEmbedded.match(/bold/i)) {
-      fontStyle = 'bold';
+      styleLookup = 'bold';
     }
 
     // mupdf makes changes to font names, so we need to do the same.
@@ -312,9 +314,9 @@ export class FontCont {
     // Spaces are replaced with underscores.
     const fontName = fontNameEmbedded.replace(/[^+]+\+/g, '').replace(/\s/g, '_');
 
-    if (!FontCont.doc?.[fontName]?.[fontStyle]) {
+    if (!FontCont.doc?.[fontName]?.[styleLookup]) {
       try {
-        const fontContainer = new FontContainerFont(fontName, fontStyle, fontData, false, fontObj);
+        const fontContainer = new FontContainerFont(fontName, styleLookup, fontData, false, fontObj);
 
         if (!FontCont.doc) {
           FontCont.doc = {};
@@ -324,12 +326,12 @@ export class FontCont {
           FontCont.doc[fontName] = {};
         }
 
-        FontCont.doc[fontName][fontStyle] = fontContainer;
+        FontCont.doc[fontName][styleLookup] = fontContainer;
       } catch (error) {
-        console.error(`Error loading font ${fontName} ${fontStyle}.`);
+        console.error(`Error loading font ${fontName} ${styleLookup}.`);
       }
     } else {
-      console.warn(`Font ${fontName} ${fontStyle} already exists.`);
+      console.warn(`Font ${fontName} ${styleLookup} already exists.`);
     }
   };
 
@@ -368,14 +370,17 @@ export class FontCont {
    * Gets a font object.  Unlike accessing the font containers directly,
    * this method allows for special values 'Default', 'SansDefault', and 'SerifDefault' to be used.
    *
-   * @param {('Default'|'SansDefault'|'SerifDefault'|string)} family - Font family name.
-   * @param {('normal'|'italic'|'bold'|string)} [style='normal']
+   * @param {Partial<Style>} style
    * @param {string} [lang='eng']
    * @returns {FontContainerFont}
    */
-  static getFont = (family, style = 'normal', lang = 'eng') => {
-    if (FontCont.doc?.[family]?.[style] && !FontCont.doc?.[family]?.[style]?.disable) {
-      return FontCont.doc[family][style];
+  static getFont = (style, lang = 'eng') => {
+    let family = style.font || FontCont.defaultFontName;
+
+    const styleLookup = getStyleLookup(style);
+
+    if (FontCont.doc?.[family]?.[styleLookup] && !FontCont.doc?.[family]?.[styleLookup]?.disable) {
+      return FontCont.doc[family][styleLookup];
     }
 
     if (lang === 'chi_sim') {
@@ -387,7 +392,7 @@ export class FontCont {
 
     // Option 1: If we have access to the font, use it.
     // Option 2: If we do not have access to the font, but it closely resembles a built-in font, use the built-in font.
-    if (!FontCont.raw?.[family]?.[style]) {
+    if (!FontCont.raw?.[family]?.[styleLookup]) {
       if (/NimbusRom/i.test(family)) {
         family = 'NimbusRoman';
       } else if (/Times/i.test(family)) {
@@ -416,7 +421,7 @@ export class FontCont {
     }
 
     // Option 3: If the font still is not identified, use the default sans/serif font.
-    if (!FontCont.raw?.[family]?.[style]) {
+    if (!FontCont.raw?.[family]?.[styleLookup]) {
       family = determineSansSerif(family);
     }
 
@@ -427,10 +432,10 @@ export class FontCont {
     if (family === 'SansDefault') family = FontCont.sansDefaultName;
 
     /** @type {FontContainerFont} */
-    let fontRes = FontCont.raw?.[family]?.[style];
-    if (!fontRes) throw new Error(`Font container does not contain ${family} (${style}).`);
+    let fontRes = FontCont.raw?.[family]?.[styleLookup];
+    if (!fontRes) throw new Error(`Font container does not contain ${family} (${styleLookup}).`);
 
-    const opt = FontCont.opt?.[family]?.[style];
+    const opt = FontCont.opt?.[family]?.[styleLookup];
     const useOpt = FontCont.useOptFamily(family);
     if (opt && useOpt) fontRes = opt;
 
@@ -441,10 +446,7 @@ export class FontCont {
    *
    * @param {OcrWord} word
    */
-  static getWordFont = (word) => {
-    const wordFontFamily = word.font || FontCont.defaultFontName;
-    return FontCont.getFont(wordFontFamily, word.style, word.lang);
-  };
+  static getWordFont = (word) => FontCont.getFont(word.style, word.lang);
 
   /**
    * Reset font container to original state but do not unload default resources.

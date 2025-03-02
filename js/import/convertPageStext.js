@@ -110,8 +110,12 @@ export async function convertPageStext({ ocrStr, n }) {
       let superCurrent = false;
       let smallCapsCurrent;
       let smallCapsCurrentAlt;
-      /** @type {Array<string>} */
+
+      /** @type {Array<Style>} */
       const styleArr = [];
+
+      /** @type {Array<string>} */
+      const boldItalicsArr = [];
       /** @type {Array<boolean>} */
       const underlineArr = [];
       /** @type {Array<boolean>} */
@@ -286,7 +290,7 @@ export async function convertPageStext({ ocrStr, n }) {
               if (textWordArr.length > 0) {
                 textArr.push(textWordArr);
                 bboxes.push(bboxesWordArr);
-                styleArr.push(styleWord);
+                boldItalicsArr.push(styleWord);
                 fontFamilyArr.push(fontFamily);
 
                 if (sizeDelta > 0) {
@@ -432,7 +436,7 @@ export async function convertPageStext({ ocrStr, n }) {
         wordLetterOrFontArrIndex.push(i);
         textArr.push(textWordArr);
         bboxes.push(bboxesWordArr);
-        styleArr.push(styleWord);
+        boldItalicsArr.push(styleWord);
         fontFamilyArr.push(fontFamily);
         fontSizeArr.push(fontSizeWord);
         smallCapsAltArr.push(smallCapsWordAlt);
@@ -539,7 +543,7 @@ export async function convertPageStext({ ocrStr, n }) {
         if (bbox.left < 0 && bbox.right < 0) continue;
 
         const wordObj = new ocr.OcrWord(lineObj, wordText, bbox, wordID);
-        wordObj.size = fontSizeArr[i];
+        wordObj.style.size = fontSizeArr[i];
 
         wordObj.lang = wordLang;
 
@@ -553,7 +557,7 @@ export async function convertPageStext({ ocrStr, n }) {
         wordObj.conf = 100;
 
         if (smallCapsAltArr[i] && !/[a-z]/.test(wordObj.text) && /[A-Z].?[A-Z]/.test(wordObj.text)) {
-          wordObj.smallCaps = true;
+          wordObj.style.smallCaps = true;
           if (smallCapsAltTitleCaseArr[i]) {
             wordObj.chars.slice(1).forEach((x) => {
               x.text = x.text.toLowerCase();
@@ -565,22 +569,22 @@ export async function convertPageStext({ ocrStr, n }) {
           }
           wordObj.text = wordObj.chars.map((x) => x.text).join('');
         } else if (smallCapsArr[i]) {
-          wordObj.smallCaps = true;
+          wordObj.style.smallCaps = true;
         }
 
-        if (styleArr[i] === 'italic') {
-          wordObj.style = 'italic';
-        } if (styleArr[i] === 'bold') {
-          wordObj.style = 'bold';
+        if (boldItalicsArr[i] === 'italic') {
+          wordObj.style.italic = true;
+        } if (boldItalicsArr[i] === 'bold') {
+          wordObj.style.bold = true;
         }
 
         wordObj.raw = wordStrArr[wordLetterOrFontArrIndex[i]];
 
-        wordObj.font = fontFamilyArr[i];
+        wordObj.style.font = fontFamilyArr[i];
 
-        wordObj.sup = superArr[i];
+        wordObj.style.sup = superArr[i];
 
-        wordObj.underline = underlineArr[i];
+        wordObj.style.underline = underlineArr[i];
 
         lineObj.words.push(wordObj);
 

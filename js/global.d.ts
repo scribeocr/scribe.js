@@ -1,5 +1,18 @@
 declare global {
 
+    type Style = {
+        font: ?string;
+        size: ?number;
+        bold: boolean;
+        italic: boolean;
+        underline: boolean;
+        smallCaps: boolean;
+        sup: boolean;
+        dropcap: boolean;
+    };
+
+    type StyleLookup = ('normal'|'bold'|'italic'|'boldItalic');
+      
     // OCR objects
     type OcrPage = import("./objects/ocrObjects.js").OcrPage;
     type OcrLine = import("./objects/ocrObjects.js").OcrLine;
@@ -17,12 +30,14 @@ declare global {
         normal: FontContainerFont;
         italic: FontContainerFont;
         bold: FontContainerFont;
+        boldItalic: FontContainerFont;
     };
 
     type FontContainerFamilyUpload = {
         normal: FontContainerFont | null;
         italic: FontContainerFont | null;
         bold: FontContainerFont | null;
+        boldItalic: FontContainerFont | null;
     };
 
     type FontContainerFamily = FontContainerFamilyBuiltIn | FontContainerFamilyUpload;
@@ -42,12 +57,14 @@ declare global {
         normal: ArrayBuffer;
         italic: ArrayBuffer;
         bold: ArrayBuffer;
+        boldItalic: ArrayBuffer;
     };
 
     type fontSrcUpload = {
         normal: ArrayBuffer | null;
         italic: ArrayBuffer | null;
         bold: ArrayBuffer | null;
+        boldItalic: ArrayBuffer | null;
     };
 
     type opentypeFont = import("../lib/opentype.module.js").Font;

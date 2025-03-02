@@ -175,7 +175,7 @@ export function writeHtml(ocrCurrent, minpage = 0, maxpage = -1, reflowText = fa
         // Therefore, we handle small caps by making all text print as uppercase using the `text-transform` CSS property,
         // and then wrapping each letter in a span with a smaller font size.
         let innerHTML;
-        if (wordObj.smallCaps) {
+        if (wordObj.style.smallCaps) {
           styleStr += 'text-transform:uppercase;';
           innerHTML = makeSmallCapsDivs(wordStr, fontSizeHTMLSmallCaps);
         } else {

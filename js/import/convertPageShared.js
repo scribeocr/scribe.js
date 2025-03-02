@@ -41,7 +41,7 @@ export function pass2(pageObj, rotateAngle) {
     for (let j = 0; j < lineObj.words.length; j++) {
       const wordObj = lineObj.words[j];
       // Skip words that are already identified as small caps, however they can be used to validate other words.
-      if (wordObj.smallCaps) {
+      if (wordObj.style.smallCaps) {
         smallCapsWordArr.push(wordObj);
         firstWord = true;
         continue;
@@ -95,7 +95,7 @@ export function pass2(pageObj, rotateAngle) {
 
       for (let k = 0; k < smallCapsWordArr.length; k++) {
         const wordObj = smallCapsWordArr[k];
-        wordObj.smallCaps = true;
+        wordObj.style.smallCaps = true;
         if (!wordObj.chars || !titleCaseTotal) continue;
 
         // If title case, convert all letters after the first to lowercase.
@@ -161,8 +161,10 @@ export function pass2(pageObj, rotateAngle) {
 
       // If the entire word is a superscript, it does not need to be split.
       if (superN === wordObj.text.length) {
-        wordObj.sup = true;
-        wordObj.style = 'normal';
+        wordObj.style.sup = true;
+        wordObj.style.bold = false;
+        wordObj.style.italic = false;
+        wordObj.style.underline = false;
         continue;
       }
 
@@ -182,8 +184,10 @@ export function pass2(pageObj, rotateAngle) {
 
       wordObjSup.text = textSuper;
       wordObjSup.chars = charSuperArr;
-      wordObjSup.style = 'normal';
-      wordObjSup.sup = true;
+      wordObjSup.style.bold = false;
+      wordObjSup.style.italic = false;
+      wordObjSup.style.underline = false;
+      wordObjSup.style.sup = true;
       wordObjSup.id = `${wordObj.id}a`;
       ocr.calcWordBbox(wordObjSup);
 
@@ -280,13 +284,13 @@ export function pass3(pageObj) {
 
           // Do not include superscripts, dropcaps, and low-confidence words in all statistics.
           // Low-confidence words are included for font size calculations, as some lines only contain low-confidence words.
-          if (wordObj.sup || wordObj.dropcap) continue;
+          if (wordObj.style.sup || wordObj.style.dropcap) continue;
 
           const contentStrLetter = letterArr[k];
           const charHeight = charObj.bbox.bottom - charObj.bbox.top;
 
-          const ascChar = wordObj.smallCaps && /[A-Z0-9]/.test(contentStrLetter) || !wordObj.smallCaps && ascCharArr.includes(contentStrLetter);
-          const xChar = wordObj.smallCaps && /[a-z]/.test(contentStrLetter) || !wordObj.smallCaps && xCharArr.includes(contentStrLetter);
+          const ascChar = wordObj.style.smallCaps && /[A-Z0-9]/.test(contentStrLetter) || !wordObj.style.smallCaps && ascCharArr.includes(contentStrLetter);
+          const xChar = wordObj.style.smallCaps && /[a-z]/.test(contentStrLetter) || !wordObj.style.smallCaps && xCharArr.includes(contentStrLetter);
 
           // Save character heights to array for font size calculations
           lineAllHeightArr.push(charHeight);

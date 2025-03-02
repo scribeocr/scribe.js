@@ -101,7 +101,7 @@ function calcWordFontSizePrecise(wordArr, fontOpentype, nonLatin = false) {
  * @returns {Array<string>}
  */
 export function addLigatures(word) {
-  if (word.smallCaps || !opt.ligatures) return word.text.split('');
+  if (word.style.smallCaps || !opt.ligatures) return word.text.split('');
   const fontI = FontCont.getWordFont(word);
   const fontOpentype = fontI.opentype;
   return addLigaturesText(word.text, fontOpentype);
@@ -220,11 +220,11 @@ export function calcWordMetrics(word, angle = 0) {
 
   const charArr = addLigatures(word);
 
-  const charArr2 = word.smallCaps ? charArr.map((x) => (x.toUpperCase())) : charArr;
+  const charArr2 = word.style.smallCaps ? charArr.map((x) => (x.toUpperCase())) : charArr;
 
   const { advanceArr, kerningArr } = calcWordCharMetrics(charArr2, fontOpentype);
 
-  if (word.smallCaps) {
+  if (word.style.smallCaps) {
     for (let i = 0; i < charArr2.length; i++) {
       if (charArr2[i] !== charArr[i]) {
         advanceArr[i] *= fontI.smallCapsMult;
@@ -244,10 +244,10 @@ export function calcWordMetrics(word, angle = 0) {
   // The `leftSideBearing`/`rightSideBearing`/ numbers reported by Opentype.js are not accurate for mono-spaced fonts, so `xMin`/`xMax` are used instead.
   let wordLeftBearing = wordFirstGlyphMetrics.xMin || 0;
   let lastGlyphMax = wordLastGlyphMetrics.xMax || 0;
-  if (word.smallCaps && charArr2[charArr2.length - 1] !== charArr[charArr2.length - 1]) lastGlyphMax *= fontI.smallCapsMult;
+  if (word.style.smallCaps && charArr2[charArr2.length - 1] !== charArr[charArr2.length - 1]) lastGlyphMax *= fontI.smallCapsMult;
   let wordRightBearing = advanceArr[advanceArr.length - 1] - lastGlyphMax;
-  if (word.smallCaps && charArr2[0] !== charArr[0]) wordLeftBearing *= fontI.smallCapsMult;
-  if (word.smallCaps && charArr2[charArr2.length - 1] !== charArr[charArr2.length - 1]) wordRightBearing *= fontI.smallCapsMult;
+  if (word.style.smallCaps && charArr2[0] !== charArr[0]) wordLeftBearing *= fontI.smallCapsMult;
+  if (word.style.smallCaps && charArr2[charArr2.length - 1] !== charArr[charArr2.length - 1]) wordRightBearing *= fontI.smallCapsMult;
 
   const wordWidth = word.visualCoords ? wordWidth1 - wordRightBearing - wordLeftBearing : wordWidth1;
   const wordWidthPx = wordWidth * (fontSize / fontOpentype.unitsPerEm);
@@ -293,22 +293,22 @@ export const calcWordFontSize = (word) => {
   // If the word is a superscript or dropcap, then size is calculated dynamically for the word.
   // The size of these characters are currently not editable by the user.
   // This is because `size` is currently treated as the size of the main text, and does not vary between main text and superscripts.
-  if (word.sup || word.dropcap) {
+  if (word.style.sup || word.style.dropcap) {
     if (word.visualCoords) {
       return getFontSize(fontOpentype, word.bbox.bottom - word.bbox.top, word.text);
     }
-    if (word.size) {
+    if (word.style.size) {
       const mult = FontProps.sizeMult[font.family] || 1;
-      return word.size / mult;
+      return word.style.size / mult;
     }
 
     return (word.bbox.bottom - word.bbox.top) * (fontOpentype.unitsPerEm / (fontOpentype.ascender - fontOpentype.descender));
   }
 
   // If the user manually set a size, then use that
-  if (word.size) {
+  if (word.style.size) {
     const mult = FontProps.sizeMult[font.family] || 1;
-    return word.size / mult;
+    return word.style.size / mult;
   }
   const lineFontSize = calcLineFontSize(word.line);
 

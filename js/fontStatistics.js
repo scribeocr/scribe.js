@@ -3,6 +3,7 @@
 
 import {
   determineSansSerif,
+  getStyleLookup,
   quantile,
   replaceObjectProperties,
   round6,
@@ -243,13 +244,13 @@ function calcFontMetricsPage(pageObj) {
 
   for (const lineObj of pageObj.lines) {
     for (const wordObj of lineObj.words) {
-      const wordFontFamily = determineSansSerif(wordObj.font) || 'Default';
+      const wordFontFamily = determineSansSerif(wordObj.style.font) || 'Default';
 
       // This condition should not occur, however has in the past due to parsing bugs.  Skipping to avoid entire program crashing if this occurs.
       if (wordObj.chars && wordObj.chars.length !== wordObj.text.length) continue;
 
       // Do not include superscripts, dropcaps, and low-confidence words in statistics for font optimization.
-      if (wordObj.conf < 80 || wordObj.lang === 'chi_sim' || wordObj.sup || wordObj.smallCaps) continue;
+      if (wordObj.conf < 80 || wordObj.lang === 'chi_sim' || wordObj.style.sup || wordObj.style.smallCaps) continue;
       /** @type {Object.<string, FontMetricsRawFamily>} */
       const fontMetricsRawLine = {};
 
@@ -275,14 +276,16 @@ function calcFontMetricsPage(pageObj) {
             fontMetricsRawLine[wordFontFamily] = new FontMetricsRawFamily();
           }
 
-          if (!fontMetricsRawLine[wordFontFamily][wordObj.style].width[charUnicode]) {
-            fontMetricsRawLine[wordFontFamily][wordObj.style].width[charUnicode] = [];
-            fontMetricsRawLine[wordFontFamily][wordObj.style].height[charUnicode] = [];
+          const styleLookup = getStyleLookup(wordObj.style);
+
+          if (!fontMetricsRawLine[wordFontFamily][styleLookup].width[charUnicode]) {
+            fontMetricsRawLine[wordFontFamily][styleLookup].width[charUnicode] = [];
+            fontMetricsRawLine[wordFontFamily][styleLookup].height[charUnicode] = [];
           }
 
-          fontMetricsRawLine[wordFontFamily][wordObj.style].width[charUnicode].push(charWidth / charNorm);
-          fontMetricsRawLine[wordFontFamily][wordObj.style].height[charUnicode].push(charHeight / charNorm);
-          fontMetricsRawLine[wordFontFamily][wordObj.style].obs += 1;
+          fontMetricsRawLine[wordFontFamily][styleLookup].width[charUnicode].push(charWidth / charNorm);
+          fontMetricsRawLine[wordFontFamily][styleLookup].height[charUnicode].push(charHeight / charNorm);
+          fontMetricsRawLine[wordFontFamily][styleLookup].obs += 1;
 
           if (k + 1 < wordObj.chars.length) {
             const charObjNext = wordObj.chars[k + 1];
@@ -295,12 +298,12 @@ function calcFontMetricsPage(pageObj) {
             if (trailingSpace + charWidthNext > 0) {
               const bigramUnicode = `${charUnicode},${wordObj.chars[k + 1].text.charCodeAt(0)}`;
 
-              if (!fontMetricsRawLine[wordFontFamily][wordObj.style].kerning[bigramUnicode]) {
-                fontMetricsRawLine[wordFontFamily][wordObj.style].kerning[bigramUnicode] = [];
-                fontMetricsRawLine[wordFontFamily][wordObj.style].kerning2[bigramUnicode] = [];
+              if (!fontMetricsRawLine[wordFontFamily][styleLookup].kerning[bigramUnicode]) {
+                fontMetricsRawLine[wordFontFamily][styleLookup].kerning[bigramUnicode] = [];
+                fontMetricsRawLine[wordFontFamily][styleLookup].kerning2[bigramUnicode] = [];
               }
-              fontMetricsRawLine[wordFontFamily][wordObj.style].kerning[bigramUnicode].push(trailingSpace / charNorm);
-              fontMetricsRawLine[wordFontFamily][wordObj.style].kerning2[bigramUnicode].push((trailingSpace + charWidthNext) / charNorm);
+              fontMetricsRawLine[wordFontFamily][styleLookup].kerning[bigramUnicode].push(trailingSpace / charNorm);
+              fontMetricsRawLine[wordFontFamily][styleLookup].kerning2[bigramUnicode].push((trailingSpace + charWidthNext) / charNorm);
             }
           }
         }

@@ -78,9 +78,9 @@ function transformGlyph(glyph, func, transX = false, transY = false) {
  * @param {opentype.Font} font
  * @param {FontMetricsFont} fontMetricsObj
  * @param {number} xHeight
- * @param {string} style
+ * @param {StyleLookup} styleLookup
  */
-const calculateKerningPairs = (font, fontMetricsObj, xHeight, style) => {
+const calculateKerningPairs = (font, fontMetricsObj, xHeight, styleLookup) => {
   const fontKerningObj = {};
 
   // Kerning is limited to +/-10% of the em size for most pairs.  Anything beyond this is likely not correct.
@@ -90,7 +90,7 @@ const calculateKerningPairs = (font, fontMetricsObj, xHeight, style) => {
   for (const [key, value] of Object.entries(fontMetricsObj.kerning)) {
     // Do not adjust pair kerning for italic "ff".
     // Given the amount of overlap between these glyphs, this metric is rarely accurate.
-    if (key === '102,102' && style === 'italic') continue;
+    if (key === '102,102' && ['italic', 'boldItalic'].includes(styleLookup)) continue;
 
     const nameFirst = key.match(/\w+/)[0];
     const nameSecond = key.match(/\w+$/)[0];
@@ -152,7 +152,7 @@ const calculateKerningPairs = (font, fontMetricsObj, xHeight, style) => {
  * @param {Object} params
  * @param {string|ArrayBuffer} params.fontData
  * @param {FontMetricsFont} params.fontMetricsObj
- * @param {string} params.style -
+ * @param {StyleLookup} params.style -
  * @param {boolean} [params.adjustAllLeftBearings] - Edit left bearings for all characters based on provided metrics.
  * @param {boolean} [params.standardizeSize] - Scale such that size of 'o' is 0.47x em size.
  * @param {?number} [params.targetEmSize] - If non-null, font is scaled to this em size.

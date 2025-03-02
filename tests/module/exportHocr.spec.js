@@ -35,7 +35,8 @@ const standardizeOCRPages = (ocrArr) => {
         word.bbox.top = Math.round(word.bbox.top);
         word.bbox.right = Math.round(word.bbox.right);
         word.bbox.bottom = Math.round(word.bbox.bottom);
-        if (word.size) word.size = Math.round(word.size);
+        word.style = { ...word.style };
+        if (word.style.size) word.style.size = Math.round(word.style.size);
         word.chars = null;
       });
     });

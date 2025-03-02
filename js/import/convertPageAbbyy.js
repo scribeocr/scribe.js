@@ -373,17 +373,17 @@ export async function convertPageAbbyy({ ocrStr, n }) {
           console.assert(wordObj.chars.length === text[i].length, `Likely parsing error for word: ${id}. Number of letters in text does not match number of \`ocrChar\` objects.`);
 
           if (styleArr[i] === 'italic') {
-            wordObj.style = 'italic';
+            wordObj.style.italic = true;
           }
 
-          wordObj.smallCaps = smallCapsArr[i];
+          wordObj.style.smallCaps = smallCapsArr[i];
 
-          if (fontName) wordObj.font = fontName;
+          if (fontName) wordObj.style.font = fontName;
 
           if (styleArr[i] === 'sup') {
-            wordObj.sup = true;
+            wordObj.style.sup = true;
           } else if (styleArr[i] === 'dropcap') {
-            wordObj.dropcap = true;
+            wordObj.style.dropcap = true;
           }
 
           lineObj.words.push(wordObj);

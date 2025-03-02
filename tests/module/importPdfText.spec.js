@@ -48,7 +48,7 @@ describe('Check small caps are detected in PDF imports.', function () {
   }).timeout(10000);
 
   it('Should correctly import small caps printed using small caps font.', async () => {
-    assert.strictEqual(scribe.data.ocr.active[1].lines[4].words[0].smallCaps, true);
+    assert.strictEqual(scribe.data.ocr.active[1].lines[4].words[0].style.smallCaps, true);
 
     assert.strictEqual(scribe.data.ocr.active[1].lines[4].words.map((x) => x.text).join(' '), 'Abstract');
   }).timeout(10000);
@@ -66,12 +66,12 @@ describe('Check superscripts are detected in PDF imports.', function () {
 
   // First document
   it('Should correctly import trailing superscripts printed using font size adjustments (1st doc)', async () => {
-    assert.strictEqual(scribe.data.ocr.active[0].lines[25].words[8].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[25].words[8].style.sup, true);
     assert.strictEqual(scribe.data.ocr.active[0].lines[25].words[8].text, '1');
   }).timeout(10000);
 
   it('Should correctly import leading superscripts printed using font size adjustments (1st doc)', async () => {
-    assert.strictEqual(scribe.data.ocr.active[0].lines[43].words[0].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[43].words[0].style.sup, true);
     assert.strictEqual(scribe.data.ocr.active[0].lines[43].words[0].text, '1');
   }).timeout(10000);
 
@@ -84,12 +84,12 @@ describe('Check superscripts are detected in PDF imports.', function () {
 
   // Second document
   it('Should correctly import trailing superscripts printed using font size adjustments (2nd doc)', async () => {
-    assert.strictEqual(scribe.data.ocr.active[1].lines[1].words[2].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[1].lines[1].words[2].style.sup, true);
     assert.strictEqual(scribe.data.ocr.active[1].lines[1].words[2].text, '1');
   }).timeout(10000);
 
   it('Should correctly import leading superscripts printed using font size adjustments (2nd doc)', async () => {
-    assert.strictEqual(scribe.data.ocr.active[1].lines[36].words[0].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[1].lines[36].words[0].style.sup, true);
     assert.strictEqual(scribe.data.ocr.active[1].lines[36].words[0].text, '1');
   }).timeout(10000);
 
@@ -100,47 +100,47 @@ describe('Check superscripts are detected in PDF imports.', function () {
 
   // Third document
   it('Should correctly import leading superscripts printed using font size adjustments (3rd doc)', async () => {
-    assert.strictEqual(scribe.data.ocr.active[2].lines[22].words[4].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[2].lines[22].words[4].style.sup, true);
     assert.strictEqual(scribe.data.ocr.active[2].lines[22].words[4].text, '2');
   }).timeout(10000);
 
   it('Should correctly parse font size for lines with superscripts (3rd doc)', async () => {
     const words = scribe.data.ocr.active[2].lines[24].words;
-    assert.isTrue(words.map((word) => word.size && Math.round(word.size) === 33).reduce((acc, val) => acc && val));
+    assert.isTrue(words.map((word) => word.style.size && Math.round(word.style.size) === 33).reduce((acc, val) => acc && val));
   }).timeout(10000);
 
   // Forth document
   it('Should correctly import trailing superscripts printed using font size adjustments (4th doc)', async () => {
-    assert.strictEqual(scribe.data.ocr.active[3].lines[113].words[2].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[3].lines[113].words[2].style.sup, true);
     assert.strictEqual(scribe.data.ocr.active[3].lines[113].words[2].text, '20');
   }).timeout(10000);
 
   it('Should correctly parse font size for lines with superscripts (4th doc)', async () => {
-    assert.strictEqual(scribe.data.ocr.active[3].lines[248].words[1].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[3].lines[248].words[1].style.sup, true);
     assert.strictEqual(scribe.data.ocr.active[3].lines[248].words[1].text, '20');
   }).timeout(10000);
 
   // Fifth document
   it('Should correctly import trailing superscripts printed using font size adjustments (5th doc)', async () => {
-    assert.strictEqual(scribe.data.ocr.active[4].lines[11].words[16].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[4].lines[11].words[16].style.sup, true);
     assert.strictEqual(scribe.data.ocr.active[4].lines[11].words[16].text, '2');
-    assert.strictEqual(scribe.data.ocr.active[4].lines[11].words[16].size, 33.5);
+    assert.strictEqual(scribe.data.ocr.active[4].lines[11].words[16].style.size, 33.5);
   }).timeout(10000);
 
   it('Should correctly parse font size for lines with superscripts (5th doc)', async () => {
-    assert.strictEqual(scribe.data.ocr.active[4].lines[21].words[0].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[4].lines[21].words[0].style.sup, true);
     assert.strictEqual(scribe.data.ocr.active[4].lines[21].words[0].text, '2');
-    assert.strictEqual(scribe.data.ocr.active[4].lines[21].words[0].size, 27);
+    assert.strictEqual(scribe.data.ocr.active[4].lines[21].words[0].style.size, 27);
   }).timeout(10000);
 
   // Sixth document
   it('Should correctly import trailing superscripts printed using font size adjustments (6th doc)', async () => {
-    assert.strictEqual(scribe.data.ocr.active[5].lines[76].words[1].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[5].lines[76].words[1].style.sup, true);
     assert.strictEqual(scribe.data.ocr.active[5].lines[76].words[1].text, 'a');
   }).timeout(10000);
 
   it('Should correctly parse font size for lines with superscripts (6th doc)', async () => {
-    assert.strictEqual(scribe.data.ocr.active[5].lines[205].words[0].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[5].lines[205].words[0].style.sup, true);
     assert.strictEqual(scribe.data.ocr.active[5].lines[205].words[0].text, 'a');
   }).timeout(10000);
 
@@ -149,20 +149,20 @@ describe('Check superscripts are detected in PDF imports.', function () {
   it('Should correctly parse font size for lines with superscripts (addtl doc)', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_example_report1.pdf`]);
 
-    assert.strictEqual(scribe.data.ocr.active[0].lines[96].words[0].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[96].words[0].style.sup, true);
     assert.strictEqual(scribe.data.ocr.active[0].lines[96].words[0].text, '(1)');
 
-    assert.strictEqual(scribe.data.ocr.active[0].lines[103].words[0].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[103].words[0].style.sup, true);
     assert.strictEqual(scribe.data.ocr.active[0].lines[103].words[0].text, '(3)');
   }).timeout(10000);
 
   it('Should correctly parse font size for lines with superscripts (addtl doc 2)', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_example_report2.pdf`]);
 
-    assert.strictEqual(scribe.data.ocr.active[0].lines[32].words[4].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[32].words[4].style.sup, true);
     assert.strictEqual(scribe.data.ocr.active[0].lines[32].words[4].text, '(1)');
 
-    assert.strictEqual(scribe.data.ocr.active[0].lines[35].words[4].sup, true);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[35].words[4].style.sup, true);
     assert.strictEqual(scribe.data.ocr.active[0].lines[35].words[4].text, '(1)');
   }).timeout(10000);
 
@@ -177,7 +177,7 @@ describe('Check font size is correctly parsed in PDF imports.', function () {
   it('Should correctly parse font sizes (1st doc)', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.pdf`]);
     // This word was problematic at one point due to the change in font size between the first and second word.
-    assert.strictEqual(scribe.data.ocr.active[0].lines[253].words[1].size, 32.5);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[253].words[1].style.size, 32.5);
     assert.strictEqual(scribe.data.ocr.active[0].lines[253].words[1].text, 'Agent');
   }).timeout(10000);
 
@@ -185,7 +185,7 @@ describe('Check font size is correctly parsed in PDF imports.', function () {
     scribe.opt.calcSuppFontInfo = true;
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.pdf`]);
     scribe.opt.calcSuppFontInfo = false;
-    assert.strictEqual(scribe.data.ocr.active[0].lines[253].words[1].size, 39);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[253].words[1].style.size, 39);
     assert.strictEqual(scribe.data.ocr.active[0].lines[253].words[1].text, 'Agent');
   }).timeout(10000);
 
@@ -399,11 +399,11 @@ describe('Check that font style is detected for PDF imports.', function () {
   it('Bold style is detected', async () => {
     scribe.opt.usePDFText.native.main = true;
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples.pdf`]);
-    assert.strictEqual(scribe.data.ocr.active[5].lines[26].words[0].style, 'bold');
+    assert.isTrue(scribe.data.ocr.active[5].lines[26].words[0].style.bold);
   }).timeout(10000);
 
   it('Italic style is detected', async () => {
-    assert.strictEqual(scribe.data.ocr.active[5].lines[22].words[4].style, 'italic');
+    assert.isTrue(scribe.data.ocr.active[5].lines[22].words[4].style.italic);
   }).timeout(10000);
 
   after(async () => {

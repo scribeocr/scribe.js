@@ -22,11 +22,11 @@ export function extractTableContent(pageObj, layoutObj) {
 
 // TODO: This currently creates junk rows with only punctuation, as those bounding boxes are so small they often do not overlap with other lines.
 /**
-   * Extracts words from a page that are within the bounding boxes of the table, organized into arrays of rows and columns.
-   * The output is in the form of a 3D array, where the first dimension is the row, the second dimension is the column, and the third dimension is the word.
-   * @param {OcrPage} pageObj
-   * @param {Array<import('./objects/layoutObjects.js').LayoutBoxBase>} boxes
-   */
+ * Extracts words from a page that are within the bounding boxes of the table, organized into arrays of rows and columns.
+ * The output is in the form of a 3D array, where the first dimension is the row, the second dimension is the column, and the third dimension is the word.
+ * @param {OcrPage} pageObj
+ * @param {Array<import('./objects/layoutObjects.js').LayoutBoxBase>} boxes
+ */
 export function extractSingleTableContent(pageObj, boxes) {
   /** @type {Array<OcrWord>} */
   const wordArr = [];

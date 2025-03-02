@@ -75,38 +75,40 @@ export function writeHocr(ocrData, minValue, maxValue) {
         hocrOut += `bbox ${Math.round(wordObj.bbox.left)} ${Math.round(wordObj.bbox.top)} ${Math.round(wordObj.bbox.right)} ${Math.round(wordObj.bbox.bottom)}`;
         hocrOut += `;x_wconf ${wordObj.conf}`;
 
-        if (wordObj.font && wordObj.font !== 'Default') {
-          hocrOut += `;x_font ${wordObj.font}`;
+        if (wordObj.style.font && wordObj.style.font !== 'Default') {
+          hocrOut += `;x_font ${wordObj.style.font}`;
         }
 
-        if (wordObj.size) {
-          hocrOut += `;x_fsize ${wordObj.size}`;
+        if (wordObj.style.size) {
+          hocrOut += `;x_fsize ${wordObj.style.size}`;
         }
 
         hocrOut += "'";
 
         // Tesseract HOCR specifies default language for a paragraph in the "ocr_par" element,
         // however as ScribeOCR does not currently have a paragarph object, every word must have its language specified.
-        hocrOut += ` lang='${wordObj.lang}'`;
+        if (wordObj.lang) hocrOut += ` lang='${wordObj.lang}'`;
 
         // TODO: Why are we representing font family and style using the `style` HTML element here?
         // This is not how Tesseract does things, and our own parsing script does not appear to be written to re-import it properly.
         // Add "style" attribute (if applicable)
-        if (['italic', 'bold'].includes(wordObj.style) || wordObj.smallCaps || (wordObj.font && wordObj.font !== 'Default')) {
+        if (wordObj.style.bold || wordObj.style.italic || wordObj.style.smallCaps || (wordObj.style.font && wordObj.style.font !== 'Default')) {
           hocrOut += ' style=\'';
 
-          if (wordObj.style === 'italic') {
+          if (wordObj.style.italic) {
             hocrOut += 'font-style:italic;';
-          } else if (wordObj.style === 'bold') {
+          }
+
+          if (wordObj.style.bold) {
             hocrOut += 'font-weight:bold;';
           }
 
-          if (wordObj.smallCaps) {
+          if (wordObj.style.smallCaps) {
             hocrOut += 'font-variant:small-caps;';
           }
 
-          if (wordObj.font && wordObj.font !== 'Default') {
-            hocrOut += `font-family:${wordObj.font}`;
+          if (wordObj.style.font && wordObj.style.font !== 'Default') {
+            hocrOut += `font-family:${wordObj.style.font}`;
           }
 
           hocrOut += '\'>';
@@ -115,9 +117,9 @@ export function writeHocr(ocrData, minValue, maxValue) {
         }
 
         // Add word text, along with any formatting that uses nested elements rather than attributes
-        if (wordObj.sup) {
+        if (wordObj.style.sup) {
           hocrOut += `<sup>${ocr.escapeXml(wordObj.text)}</sup>`;
-        } else if (wordObj.dropcap) {
+        } else if (wordObj.style.dropcap) {
           hocrOut += `<span class='ocr_dropcap'>${ocr.escapeXml(wordObj.text)}</span>`;
         } else {
           hocrOut += ocr.escapeXml(wordObj.text);

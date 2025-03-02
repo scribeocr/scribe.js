@@ -95,24 +95,21 @@ export function OcrLine(page, bbox, baseline, ascHeight = null, xHeight = null) 
  * @param {string} id
  */
 export function OcrWord(line, text, bbox, id) {
-  /** @type {boolean} */
-  this.sup = false;
-  /** @type {boolean} */
-  this.dropcap = false;
-  /** @type {boolean} */
-  this.smallCaps = false;
-  /** @type {boolean} */
-  this.underline = false;
   /** @type {string} */
   this.text = text;
   /** @type {?string} */
   this.textAlt = null;
-  /** @type {('normal'|'italic'|'bold')} */
-  this.style = 'normal';
-  /** @type {?string} */
-  this.font = null;
-  /** @type {?number} */
-  this.size = null;
+  /** @type {Style} */
+  this.style = {
+    font: null,
+    size: null,
+    bold: false,
+    italic: false,
+    underline: false,
+    smallCaps: false,
+    sup: false,
+    dropcap: false,
+  };
   /** @type {string} */
   this.lang = 'eng';
   /** @type {number} */
@@ -412,7 +409,7 @@ function calcWordAngleAdj(word) {
       const x = word.bbox.left - word.line.bbox.left;
       const y = word.bbox.bottom - (word.line.bbox.bottom + word.line.baseline[1]);
 
-      if (word.sup || word.dropcap) {
+      if (word.style.sup || word.style.dropcap) {
         const tanAngle = sinAngle / cosAngle;
         const angleAdjYSup = (y - (x * tanAngle)) * cosAngle - y;
 
@@ -621,12 +618,7 @@ function cloneLine(line) {
 function cloneWord(word) {
   const wordNew = new OcrWord(word.line, word.text, { ...word.bbox }, word.id);
   wordNew.conf = word.conf;
-  wordNew.sup = word.sup;
-  wordNew.smallCaps = word.smallCaps;
-  wordNew.dropcap = word.dropcap;
-  wordNew.font = word.font;
-  wordNew.size = word.size;
-  wordNew.style = word.style;
+  wordNew.style = { ...word.style };
   wordNew.lang = word.lang;
   wordNew.compTruth = word.compTruth;
   wordNew.matchTruth = word.matchTruth;
