@@ -400,10 +400,28 @@ describe('Check that font style is detected for PDF imports.', function () {
     scribe.opt.usePDFText.native.main = true;
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples.pdf`]);
     assert.isTrue(scribe.data.ocr.active[5].lines[26].words[0].style.bold);
+    assert.isFalse(scribe.data.ocr.active[5].lines[26].words[0].style.italic);
+    assert.isFalse(scribe.data.ocr.active[5].lines[26].words[0].style.underline);
   }).timeout(10000);
 
   it('Italic style is detected', async () => {
     assert.isTrue(scribe.data.ocr.active[5].lines[22].words[4].style.italic);
+    assert.isFalse(scribe.data.ocr.active[5].lines[22].words[4].style.bold);
+    assert.isFalse(scribe.data.ocr.active[5].lines[22].words[4].style.underline);
+  }).timeout(10000);
+
+  it('Bold + italic style is detected', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/complaint_1.pdf`]);
+    assert.isTrue(scribe.data.ocr.active[0].lines[1].words[0].style.italic);
+    assert.isTrue(scribe.data.ocr.active[0].lines[1].words[0].style.bold);
+    assert.isFalse(scribe.data.ocr.active[0].lines[1].words[0].style.underline);
+  }).timeout(10000);
+
+  it('Bold + underlined style is detected', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
+    assert.isFalse(scribe.data.ocr.active[0].lines[22].words[0].style.italic);
+    assert.isTrue(scribe.data.ocr.active[0].lines[22].words[0].style.bold);
+    assert.isTrue(scribe.data.ocr.active[0].lines[22].words[0].style.underline);
   }).timeout(10000);
 
   after(async () => {
