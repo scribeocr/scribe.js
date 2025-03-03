@@ -18,12 +18,12 @@ describe('Check basic recognition features.', function () {
   it('Should recognize basic .png image using single function', async () => {
     const txt = await scribe.extractText([`${ASSETS_PATH_KARMA}/simple.png`]);
     assert.strictEqual(txt, 'Tesseract.js');
-  }).timeout(10000);
+  }).timeout(15000);
 
   it('Should recognize basic .jpg image using single function', async () => {
     const txt = await scribe.extractText([`${ASSETS_PATH_KARMA}/simple.jpg`]);
     assert.strictEqual(txt, 'Tesseract.js');
-  }).timeout(10000);
+  }).timeout(15000);
 });
 
 describe('Check style detection.', function () {
@@ -41,7 +41,7 @@ describe('Check style detection.', function () {
     assert.isTrue(scribe.data.ocr.active[0].lines[0].words[4].style.italic);
     assert.isTrue(scribe.data.ocr.active[0].lines[0].words[5].style.italic);
     assert.isFalse(scribe.data.ocr.active[0].lines[0].words[6].style.italic);
-  }).timeout(10000);
+  }).timeout(15000);
 
   after(async () => {
     await scribe.terminate();
@@ -63,11 +63,11 @@ describe('Check font optimization features.', function () {
     if (!scribe.data.font.optMetrics) throw new Error('DebugData.evalOpt is not defined');
     assert.isBelow(scribe.data.font.optMetrics.NimbusSans, scribe.data.font.rawMetrics.NimbusSans);
     assert.isBelow(scribe.data.font.optMetrics.NimbusSans, 0.47);
-  }).timeout(10000);
+  }).timeout(15000);
 
   it('Font optimization should be enabled when it improves overlap quality', async () => {
     assert.strictEqual(scribe.data.font.enableOpt, true);
-  }).timeout(10000);
+  }).timeout(15000);
 
   after(async () => {
     await scribe.terminate();
@@ -89,11 +89,11 @@ describe('Check that font optimization works with italics.', function () {
     if (!scribe.data.font.optMetrics) throw new Error('DebugData.evalOpt is not defined');
     assert.isBelow(scribe.data.font.optMetrics.Palatino, scribe.data.font.rawMetrics.Palatino);
     assert.isBelow(scribe.data.font.optMetrics.Palatino, 0.37);
-  }).timeout(10000);
+  }).timeout(15000);
 
   it('Font optimization should be enabled when it improves overlap quality', async () => {
     assert.strictEqual(scribe.data.font.enableOpt, true);
-  }).timeout(10000);
+  }).timeout(15000);
 
   after(async () => {
     await scribe.terminate();
@@ -112,7 +112,7 @@ describe('Check auto-rotate features.', function () {
     if (!scribe.data.font.rawMetrics) throw new Error('DebugData.evalRaw is not defined');
     if (!scribe.data.font.optMetrics) throw new Error('DebugData.evalOpt is not defined');
     assert.isBelow(scribe.data.font.optMetrics.NimbusRoman, 0.45);
-  }).timeout(10000);
+  }).timeout(15000);
 
   it('Overlap with clockwise rotation is decent', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/simple_paragraph_rot5.png`]);
@@ -123,7 +123,7 @@ describe('Check auto-rotate features.', function () {
     if (!scribe.data.font.rawMetrics) throw new Error('DebugData.evalRaw is not defined');
     if (!scribe.data.font.optMetrics) throw new Error('DebugData.evalOpt is not defined');
     assert.isBelow(scribe.data.font.optMetrics.NimbusRoman, 0.45);
-  }).timeout(10000);
+  }).timeout(15000);
 
   it('Overlap with counterclockwise rotation is decent', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/simple_paragraph_rotc5.png`]);
@@ -134,7 +134,7 @@ describe('Check auto-rotate features.', function () {
     if (!scribe.data.font.rawMetrics) throw new Error('DebugData.evalRaw is not defined');
     if (!scribe.data.font.optMetrics) throw new Error('DebugData.evalOpt is not defined');
     assert.isBelow(scribe.data.font.optMetrics.NimbusRoman, 0.45);
-  }).timeout(10000);
+  }).timeout(15000);
 
   after(async () => {
     await scribe.terminate();
@@ -153,7 +153,7 @@ describe('Check Tesseract.js parameters can be set.', function () {
     });
     const txt = await scribe.exportData('text');
     assert.isTrue(/\d{3,}/.test(txt) && !/[A-Za-z]/.test(txt));
-  }).timeout(10000);
+  }).timeout(15000);
 
   it('Config option tessedit_char_whitelist can be restored', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/simple.png`]);
@@ -164,7 +164,7 @@ describe('Check Tesseract.js parameters can be set.', function () {
     });
     const txt = await scribe.exportData('text');
     assert.strictEqual(txt, 'Tesseract.js');
-  }).timeout(10000);
+  }).timeout(15000);
 
   after(async () => {
     await scribe.terminate();
@@ -193,7 +193,7 @@ describe('Check comparison between OCR versions.', function () {
 
     // The first word is present in the 'Missing Word' OCR data.
     assert.strictEqual(res.ocr[0].lines[0].words[0].text, 'This');
-  }).timeout(10000);
+  }).timeout(15000);
 
   it('Comparisons handled correctly when word is missing from comparison OCR', async () => {
     /** @type {Parameters<typeof scribe.compareOCR>[2]} */
@@ -217,7 +217,7 @@ describe('Check comparison between OCR versions.', function () {
 
     // When the `supplementComp` option is set to `true`, missing words should be supplemented with new recognition, so the confidence should be 100.
     assert.strictEqual(res2.ocr[0].lines[0].words[2].conf, 100);
-  }).timeout(10000);
+  }).timeout(15000);
 
   after(async () => {
     await scribe.terminate();

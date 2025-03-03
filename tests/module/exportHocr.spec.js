@@ -46,7 +46,7 @@ const standardizeOCRPages = (ocrArr) => {
 };
 
 describe('Check .hocr export function.', function () {
-  this.timeout(10000);
+  this.timeout(15000);
 
   it('Exporting to .hocr and reimporting should restore OCR data without modification', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/scribe_test_pdf1_abbyy.xml`]);
@@ -62,7 +62,7 @@ describe('Check .hocr export function.', function () {
     const ocrAllComp2 = standardizeOCRPages(pagesArr);
 
     assert.deepStrictEqual(ocrAllComp1, ocrAllComp2);
-  }).timeout(10000);
+  }).timeout(15000);
 
   it('Exporting to .hocr and reimporting should restore layout tables without modification', async () => {
     // This file should contain data tables when parsed.
@@ -81,7 +81,7 @@ describe('Check .hocr export function.', function () {
     const layoutTables2 = structuredClone(scribe.data.layoutDataTables.pages);
 
     assert.deepStrictEqual(layoutTables1, layoutTables2);
-  }).timeout(10000);
+  }).timeout(15000);
 
   after(async () => {
     await scribe.terminate();

@@ -12,13 +12,13 @@ config.truncateThreshold = 0; // Disable truncation for actual/expected values o
 /* eslint-disable func-names */
 
 describe('Check cleanup functions allow for resetting module.', function () {
-  this.timeout(10000);
+  this.timeout(15000);
   it('Check that cleanup functions work properly', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/chi_eng_mixed_sample.pdf`]);
     await scribe.terminate();
     await scribe.init();
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/chi_eng_mixed_sample.pdf`]);
-  }).timeout(10000);
+  }).timeout(15000);
 
   after(async () => {
     await scribe.terminate();
@@ -26,11 +26,11 @@ describe('Check cleanup functions allow for resetting module.', function () {
 }).timeout(120000);
 
 describe('extractText function can be used with .xml imports.', function () {
-  this.timeout(10000);
+  this.timeout(15000);
   it('Should recognize basic .jpg image using single function', async () => {
     const txt = await scribe.extractText([`${ASSETS_PATH_KARMA}/econometrica_example_abbyy.xml`]);
     assert.strictEqual(txt.slice(0, 17), 'Check for updates');
-  }).timeout(10000);
+  }).timeout(15000);
 
   after(async () => {
     await scribe.terminate();

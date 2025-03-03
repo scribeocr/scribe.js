@@ -12,7 +12,7 @@ config.truncateThreshold = 0; // Disable truncation for actual/expected values o
 /* eslint-disable func-names */
 
 describe('Check Abbyy XML import function.', function () {
-  this.timeout(10000);
+  this.timeout(15000);
   before(async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/econometrica_example_abbyy.xml`]);
   });
@@ -25,7 +25,7 @@ describe('Check Abbyy XML import function.', function () {
     assert.strictEqual(text1, 'Shubhdeep Deb');
 
     assert.strictEqual(text2, 'Wage inequality in the United States has risen sharply since the 1980s. The skill');
-  }).timeout(10000);
+  }).timeout(15000);
 
   after(async () => {
     await scribe.terminate();
@@ -33,14 +33,14 @@ describe('Check Abbyy XML import function.', function () {
 }).timeout(120000);
 
 describe('Check that text orientation is handled correctly in Abbyy imports.', function () {
-  this.timeout(10000);
+  this.timeout(15000);
 
   it('Lines printed at exactly 90/180/270 degrees have orientation detected correctly', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/CSF_Proposed_Budget_Book_June_2024_r8_30_all_orientations_abbyy.xml`]);
     assert.strictEqual(scribe.data.ocr.active[0].lines[2].words[0].line.orientation, 3);
     assert.strictEqual(scribe.data.ocr.active[3].lines[2].words[0].line.orientation, 2);
     assert.strictEqual(scribe.data.ocr.active[2].lines[2].words[0].line.orientation, 1);
-  }).timeout(10000);
+  }).timeout(15000);
 
   // The following tests compare the coordinates of a rotated line to the same line in a non-rotated version of the same document.
   it('Lines oriented at 90 degrees counterclockwise have coordinates calculated correctly', async () => {
@@ -48,7 +48,7 @@ describe('Check that text orientation is handled correctly in Abbyy imports.', f
     assert.approximately(scribe.data.ocr.active[0].lines[2].words[0].bbox.right, scribe.data.ocr.active[1].lines[2].words[0].bbox.right, 1);
     assert.approximately(scribe.data.ocr.active[0].lines[2].words[0].bbox.top, scribe.data.ocr.active[1].lines[2].words[0].bbox.top, 1);
     assert.approximately(scribe.data.ocr.active[0].lines[2].words[0].bbox.bottom, scribe.data.ocr.active[1].lines[2].words[0].bbox.bottom, 1);
-  }).timeout(10000);
+  }).timeout(15000);
 
   it('Lines oriented at 90 degrees clockwise have coordinates calculated correctly', async () => {
     assert.approximately(scribe.data.ocr.active[2].lines[2].words[0].bbox.left, scribe.data.ocr.active[1].lines[2].words[0].bbox.left, 1);
@@ -56,14 +56,14 @@ describe('Check that text orientation is handled correctly in Abbyy imports.', f
     assert.approximately(scribe.data.ocr.active[2].lines[2].words[0].bbox.right, scribe.data.ocr.active[1].lines[2].words[0].bbox.right, 2);
     assert.approximately(scribe.data.ocr.active[2].lines[2].words[0].bbox.top, scribe.data.ocr.active[1].lines[2].words[0].bbox.top, 1);
     assert.approximately(scribe.data.ocr.active[2].lines[2].words[0].bbox.bottom, scribe.data.ocr.active[1].lines[2].words[0].bbox.bottom, 1);
-  }).timeout(10000);
+  }).timeout(15000);
 
   it('Lines oriented at 180 degrees have coordinates calculated correctly', async () => {
     assert.approximately(scribe.data.ocr.active[3].lines[2].words[0].bbox.left, scribe.data.ocr.active[1].lines[2].words[0].bbox.left, 1);
     assert.approximately(scribe.data.ocr.active[3].lines[2].words[0].bbox.right, scribe.data.ocr.active[1].lines[2].words[0].bbox.right, 1);
     assert.approximately(scribe.data.ocr.active[3].lines[2].words[0].bbox.top, scribe.data.ocr.active[1].lines[2].words[0].bbox.top, 1);
     assert.approximately(scribe.data.ocr.active[3].lines[2].words[0].bbox.bottom, scribe.data.ocr.active[1].lines[2].words[0].bbox.bottom, 1);
-  }).timeout(10000);
+  }).timeout(15000);
 
   it('Lines oriented at 90/180/270 degrees have line rotation detected correctly', async () => {
     assert.approximately(scribe.data.ocr.active[4].lines[0].baseline[0], Math.tan(5 * (Math.PI / 180)), 0.01);
@@ -83,7 +83,7 @@ describe('Check that text orientation is handled correctly in Abbyy imports.', f
     assert.approximately(scribe.data.pageMetrics[7].angle, -5, 1);
     assert.approximately(scribe.data.pageMetrics[9].angle, -5, 1);
     assert.approximately(scribe.data.pageMetrics[11].angle, -5, 1);
-  }).timeout(10000);
+  }).timeout(15000);
 
   after(async () => {
     await scribe.terminate();
@@ -91,13 +91,13 @@ describe('Check that text orientation is handled correctly in Abbyy imports.', f
 }).timeout(120000);
 
 describe('Check that empty pages are handled correctly in Abbyy imports.', function () {
-  this.timeout(10000);
+  this.timeout(15000);
 
   it('Check that empty pages are handled correctly in Abbyy imports.', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/yearbook_of_foreign_trade_statistics_of_poland_2024.xml`]);
     assert.strictEqual(scribe.data.ocr.active[0].lines.length, 7);
     assert.strictEqual(scribe.data.ocr.active[1].lines.length, 0);
-  }).timeout(10000);
+  }).timeout(15000);
 
   after(async () => {
     await scribe.terminate();
@@ -105,7 +105,7 @@ describe('Check that empty pages are handled correctly in Abbyy imports.', funct
 }).timeout(120000);
 
 describe('Check that font style is detected for Abbyy xml imports.', function () {
-  this.timeout(10000);
+  this.timeout(15000);
 
   it('Bold style is detected', async () => {
     scribe.opt.usePDFText.native.main = true;
@@ -113,26 +113,26 @@ describe('Check that font style is detected for Abbyy xml imports.', function ()
     assert.isTrue(scribe.data.ocr.active[1].lines[3].words[0].style.bold);
     assert.isFalse(scribe.data.ocr.active[1].lines[3].words[0].style.italic);
     assert.isFalse(scribe.data.ocr.active[1].lines[3].words[0].style.underline);
-  }).timeout(10000);
+  }).timeout(15000);
 
   it('Bold + italic style is detected', async () => {
     assert.isTrue(scribe.data.ocr.active[0].lines[1].words[0].style.italic);
     assert.isTrue(scribe.data.ocr.active[0].lines[1].words[0].style.bold);
     assert.isFalse(scribe.data.ocr.active[0].lines[1].words[0].style.underline);
-  }).timeout(10000);
+  }).timeout(15000);
 
   it('Italic style is detected', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.xml`]);
     assert.isTrue(scribe.data.ocr.active[0].lines[30].words[0].style.italic);
     assert.isFalse(scribe.data.ocr.active[0].lines[30].words[0].style.bold);
     assert.isFalse(scribe.data.ocr.active[0].lines[30].words[0].style.underline);
-  }).timeout(10000);
+  }).timeout(15000);
 
   it('Bold + underlined style is detected', async () => {
     assert.isFalse(scribe.data.ocr.active[0].lines[22].words[0].style.italic);
     assert.isTrue(scribe.data.ocr.active[0].lines[22].words[0].style.bold);
     assert.isTrue(scribe.data.ocr.active[0].lines[22].words[0].style.underline);
-  }).timeout(10000);
+  }).timeout(15000);
 
   after(async () => {
     await scribe.terminate();

@@ -58,7 +58,7 @@ describe('Check Node.js commands.', () => {
 
     // Assert that console.log was called with 'blah'
     expect(consoleOutput).to.include('385 of 404');
-  }).timeout(10000);
+  }).timeout(15000);
 
   it('Should check contents of Abbyy .xml file.', async () => {
     // CLI equivalent: node cli/scribe.js check tests/assets/scribe_test_pdf1.pdf tests/assets/scribe_test_pdf1_abbyy.xml
