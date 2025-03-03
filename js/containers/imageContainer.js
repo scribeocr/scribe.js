@@ -177,7 +177,10 @@ export class ImageCache {
     const scheduler = await Tesseract.createScheduler();
     const workersPromiseArr = range(1, numWorkers).map(async () => {
       console.log('await initMuPDFWorker()');
-      const w = await initMuPDFWorker();
+      const w = await Promise.race([
+      initMuPDFWorker(),
+      new Promise((_, reject) => setTimeout(() => reject(new Error('Worker initialization timed out')), 5000))
+      ]);
       w.id = `png-${Math.random().toString(16).slice(3, 8)}`;
       console.log('scheduler.addWorker(w)');
       scheduler.addWorker(w);
@@ -186,7 +189,7 @@ export class ImageCache {
 
 
     console.log('await Promise.all(workersPromiseArr)');
-    const workers = await Promise.all(workersPromiseArr);
+    const workers = await Promise.allSettled(workersPromiseArr);
 
     console.log('new MuPDFScheduler(scheduler, workers)');
     return new MuPDFScheduler(scheduler, workers);
