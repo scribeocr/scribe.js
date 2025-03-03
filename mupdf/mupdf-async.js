@@ -20,13 +20,18 @@
 // Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
 // CA 94945, U.S.A., +1(415)492-9861, for further information.
 
+import { getRandomAlphanum } from '../js/utils/miscUtils.js';
+
 // import { arrayBufferToBase64 } from "./js/miscUtils.js";
 // import Worker from 'web-worker';
 
 export async function initMuPDFWorker() {
+
+  const workerId = getRandomAlphanum(5);
+
   // This method of creating workers works natively in the browser, Node.js, and Webpack 5.
   // Do not change without confirming compatibility with all three.
-  console.log('const mupdf = {}');
+  console.log(`Creating MuPDF worker ${workerId}`);
   const mupdf = {};
   let worker;
   if (typeof process === 'undefined') {
@@ -175,16 +180,19 @@ export async function initMuPDFWorker() {
 
   setTimeout(() => {
     if (ready) {
-      console.log('Worker ready after timeout');
+
+      console.log(`Worker ${workerId} is ready after timeout`);
       return;
     }
-    console.log('workerResReject(\'Worker initialization timed out\')');
+    console.log(`Worker ${workerId} initialization timed out`);
     workerResReject('Worker initialization timed out');
   }, 5000);
 
-  console.log('await workerRes');
+  console.log(`Awaiting workerRes for ${workerId}`);
 
   await workerRes;
+
+  console.log(`Worker ${workerId} is ready`);
 
   return mupdf;
 }
