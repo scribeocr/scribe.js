@@ -48,9 +48,21 @@ export async function initMuPDFWorker() {
     worker.on('error', errorHandler);
   }
 
-  let readyResolve;
-  const readyPromise = new Promise((resolve, reject) => {
-    readyResolve = resolve;
+  // There are a number of possible race conditions that can occur when using web workers.
+  // It should be assumed that the code in the worker and this function can load in any order.
+  // This includes:
+  // (1) the worker code loading before the event handler in the main thread is set up
+  // (2) the main thread code finishing before the event handler in the worker is set up.
+  // To handle this, we currently (1) automatically send a "READY" message from the worker to the main thread
+  // when the worker is ready, and (2) send a "PING" message from the main thread to the worker,
+  // which causes the worker to send a "READY" message back to the main thread.
+  // And (3) automatically reject the promise if the worker does not send a "READY" message within 5 seconds.
+  let ready = false;
+  let workerResReject;
+  let workerResResolve;
+  const workerRes = new Promise((resolve, reject) => {
+    workerResResolve = resolve;
+    workerResReject = reject;
   });
 
   worker.promises = {};
@@ -58,8 +70,9 @@ export async function initMuPDFWorker() {
 
   const messageHandler = async (data) => {
     if (typeof data === 'string' && data === 'READY') {
+      ready = true;
       console.log(data);
-      readyResolve();
+      workerResResolve();
       console.log('return');
       return;
     } else {
@@ -78,6 +91,12 @@ export async function initMuPDFWorker() {
         delete worker.promises[id];
       }
     } else {
+
+      if (!ready) {
+        workerResReject(result);
+        return;
+      } 
+
       worker.promises[id].reject(result);
       delete worker.promises[id];
     }
@@ -150,9 +169,14 @@ export async function initMuPDFWorker() {
   mupdf.terminate = function () { worker.terminate(); };
 
   console.log('await readyPromise');
-  await readyPromise;
 
-  console.log('return mupdf');
+  if (!ready) worker.postMessage(['PING']);
+
+  setTimeout(() => {
+    workerResReject(new Error('Worker initialization timed out'));
+  }, 5000);
+
+  await workerRes;
 
   return mupdf;
 }

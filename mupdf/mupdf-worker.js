@@ -418,6 +418,11 @@ const handleMessage = (data) => {
     parentPort.postMessage(['ERROR', id, { name: 'NotReadyError', message: 'WASM module is not ready yet' }]);
     return;
   }
+
+  if (func === 'PING') {
+    parentPort.postMessage(['READY']);
+  }
+
   try {
     const result = mupdf[func](...args);
     if (result instanceof ArrayBuffer) parentPort.postMessage(['RESULT', id, result], [result]);
