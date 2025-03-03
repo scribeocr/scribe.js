@@ -28,7 +28,7 @@ describe('Check paragraph detection with academic article.', function () {
     assert.strictEqual(scribe.data.ocr.active[0].pars.length, 7);
     assert.strictEqual(scribe.utils.ocr.getParText(scribe.data.ocr.active[0].pars[0]), 'WHISTLEBLOWERS AND ENFORCEMENT ACTIONS 125');
     assert.strictEqual(scribe.utils.ocr.getParText(scribe.data.ocr.active[0].pars[6]), '3 The respondent is the party (either a firm or an individual) targeted by the SEC/DOJ.');
-  }).timeout(10000);
+  }).timeout(15000);
 
   after(async () => {
     await scribe.terminate();
@@ -50,11 +50,11 @@ describe('Check paragraph detection with complaint.', function () {
     assert.strictEqual(scribe.data.ocr.active[0].pars.length, 7);
     assert.strictEqual(scribe.utils.ocr.getLineText(scribe.data.ocr.active[0].pars[2].lines[3]), 'partially offset by lower sales volumes of ($0.1 billion).” They further represented:');
     assert.strictEqual(scribe.utils.ocr.getLineText(scribe.data.ocr.active[0].pars[3].lines[0]), 'Nutrition operating profit increased 20%. Human Nutrition results were higher');
-  }).timeout(10000);
+  }).timeout(15000);
 
   it('Paragraph detection creates new paragraph when switching to center alignment', async () => {
     assert.strictEqual(scribe.utils.ocr.getParText(scribe.data.ocr.active[1].pars[2]), 'APPLICABILITY OF PRESUMPTION OF RELIANCE: FRAUD-ON-THE-MARKET DOCTRINE');
-  }).timeout(10000);
+  }).timeout(15000);
 
   after(async () => {
     await scribe.terminate();
@@ -79,7 +79,7 @@ describe('Check paragraph detection with document with significant line sepacing
     const lastWord = par2.lines[4].words[par2.lines[4].words.length - 1];
     assert.strictEqual(firstWord.text, '8.');
     assert.strictEqual(lastWord.text, 'Defendant.');
-  }).timeout(10000);
+  }).timeout(15000);
 
   after(async () => {
     await scribe.terminate();

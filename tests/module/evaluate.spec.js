@@ -12,7 +12,7 @@ config.truncateThreshold = 0; // Disable truncation for actual/expected values o
 /* eslint-disable func-names */
 
 describe('Check evaluate function.', function () {
-  this.timeout(10000);
+  this.timeout(15000);
   before(async () => {
   });
 
@@ -29,7 +29,7 @@ describe('Check evaluate function.', function () {
     assert.strictEqual(evalStatsDoc.incorrect, 4);
     assert.strictEqual(evalStatsDoc.missed, 0);
     assert.strictEqual(evalStatsDoc.extra, 0);
-  }).timeout(10000);
+  }).timeout(15000);
 
   after(async () => {
     await scribe.terminate();

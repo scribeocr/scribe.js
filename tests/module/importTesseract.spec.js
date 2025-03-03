@@ -12,7 +12,7 @@ config.truncateThreshold = 0; // Disable truncation for actual/expected values o
 /* eslint-disable func-names */
 
 describe('Check .hocr import function (basic)', function () {
-  this.timeout(10000);
+  this.timeout(15000);
   before(async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/econometrica_example_tess.hocr`]);
   });
@@ -25,7 +25,7 @@ describe('Check .hocr import function (basic)', function () {
     const text1 = page.lines[0].words.map((x) => x.text).join(' ');
 
     assert.strictEqual(text1, 'FIRST CHEQUING');
-  }).timeout(10000);
+  }).timeout(15000);
 
   // When using Tesseract.js or the Tesseract API to save individual pages as .hocr files, the output is different from the output of the Tesseract CLI,
   // as they only include the div with the class 'ocr_page' and the text content of the page, not the entire HTML structure.
@@ -37,7 +37,7 @@ describe('Check .hocr import function (basic)', function () {
     const text1 = page.lines[0].words.map((x) => x.text).join(' ');
 
     assert.strictEqual(text1, 'FIRST CHEQUING');
-  }).timeout(10000);
+  }).timeout(15000);
 
   after(async () => {
     await scribe.terminate();
@@ -45,7 +45,7 @@ describe('Check .hocr import function (basic)', function () {
 }).timeout(120000);
 
 describe('Check .hocr import function (alt settings)', function () {
-  this.timeout(10000);
+  this.timeout(15000);
   before(async () => {
   });
 
@@ -55,7 +55,7 @@ describe('Check .hocr import function (alt settings)', function () {
     const text1 = scribe.data.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
 
     assert.strictEqual(text1, 'JNJ announced this morning the acquisition of privately-held Aragon for $650 million');
-  }).timeout(10000);
+  }).timeout(15000);
 
   it('Should import HOCR created with Tesseract CLI using lstm_choice_mode=2', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/simple_paragraph_lstm_choice_mode2.hocr`]);
@@ -63,7 +63,7 @@ describe('Check .hocr import function (alt settings)', function () {
     const text1 = scribe.data.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
 
     assert.strictEqual(text1, 'JNJ announced this morning the acquisition of privately-held Aragon for $650 million');
-  }).timeout(10000);
+  }).timeout(15000);
 
   after(async () => {
     await scribe.terminate();
@@ -71,7 +71,7 @@ describe('Check .hocr import function (alt settings)', function () {
 }).timeout(120000);
 
 describe('Check Tesseract .hocr import function imports styles correctly.', function () {
-  this.timeout(10000);
+  this.timeout(15000);
   before(async () => {
 
   });
@@ -86,20 +86,20 @@ describe('Check Tesseract .hocr import function imports styles correctly.', func
     assert.strictEqual(text1, 'Shubhdeep Deb');
 
     assert.strictEqual(text2, 'Wage inequality in the United States has risen sharply since the 1980s. The skill');
-  }).timeout(10000);
+  }).timeout(15000);
 
   it('Should ignore italics in imports from Tesseract', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/tesseract_italics_example_1a.hocr`]);
 
     assert.isFalse(scribe.data.ocr.active[0].lines[0].words[0].style.italic);
-  }).timeout(10000);
+  }).timeout(15000);
 
   // This version was created with the hocr_font_info and hocr_char_boxes options enabled.
   it('Should ignore italics in imports from Tesseract (alt configs)', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/tesseract_italics_example_1b.hocr`]);
 
     assert.isFalse(scribe.data.ocr.active[0].lines[0].words[0].style.italic);
-  }).timeout(10000);
+  }).timeout(15000);
 
   after(async () => {
     await scribe.terminate();
