@@ -410,14 +410,15 @@ mupdf.search = function (doc, page, dpi, needle) {
 
 const handleMessage = (data) => {
   const [func, args, id] = data;
-  if (!ready) {
-    parentPort.postMessage(['ERROR', id, { name: 'NotReadyError', message: 'WASM module is not ready yet' }]);
-    return;
-  }
 
   if (func === 'PING') {
     ready = true;
     parentPort.postMessage('READY');
+  }
+
+  if (!ready) {
+    parentPort.postMessage(['ERROR', id, { name: 'NotReadyError', message: 'WASM module is not ready yet' }]);
+    return;
   }
 
   try {

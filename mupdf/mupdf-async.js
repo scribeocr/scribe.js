@@ -174,7 +174,7 @@ export async function initMuPDFWorker() {
   } 
 
   setTimeout(() => {
-    workerResReject(new Error('Worker initialization timed out'));
+    workerResReject('Worker initialization timed out');
   }, 5000);
 
   console.log('await workerRes');
