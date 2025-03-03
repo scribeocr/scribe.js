@@ -138,12 +138,8 @@ Module.onRuntimeInitialized = function () {
   mupdf.outlineNext = Module.cwrap('outlineNext', 'number', ['number']);
   wasm_checkNativeText = Module.cwrap('checkNativeText', 'number', ['number', 'number']);
   mupdf.writeDocument = Module.cwrap('writeDocument', 'null', []);
-  console.log('Module ready');
-  setTimeout(() => {
-    console.log('Sending READY');
-    parentPort.postMessage('READY');
-    ready = true;
-  }, 1000);
+  parentPort.postMessage('READY');
+  ready = true;
 };
 
 /**
@@ -420,6 +416,7 @@ const handleMessage = (data) => {
   }
 
   if (func === 'PING') {
+    ready = true;
     parentPort.postMessage(['READY']);
   }
 
