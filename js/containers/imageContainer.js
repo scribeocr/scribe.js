@@ -187,11 +187,18 @@ export class ImageCache {
     const workersPromiseArr = [];
     for (let i = 0; i < numWorkers; i++) {
       console.log('await initMuPDFWorker()');
-      const w = await initMuPDFWorker();
-      w.id = `png-${Math.random().toString(16).slice(3, 8)}`;
-      console.log('scheduler.addWorker(w)');
-      scheduler.addWorker(w);
-      workersPromiseArr.push(w);
+      workersPromiseArr.push(initMuPDFWorker().then((w) => {
+        w.id = `png-${Math.random().toString(16).slice(3, 8)}`;
+        console.log('scheduler.addWorker(w)');
+        scheduler.addWorker(w);
+        return w;
+      }));
+
+      // const w = await initMuPDFWorker();
+      // w.id = `png-${Math.random().toString(16).slice(3, 8)}`;
+      // console.log('scheduler.addWorker(w)');
+      // scheduler.addWorker(w);
+      // workersPromiseArr.push(w);
     }
 
     console.log('await Promise.all(workersPromiseArr)');

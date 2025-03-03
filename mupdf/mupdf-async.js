@@ -26,6 +26,7 @@
 export async function initMuPDFWorker() {
   // This method of creating workers works natively in the browser, Node.js, and Webpack 5.
   // Do not change without confirming compatibility with all three.
+  console.log('const mupdf = {}');
   const mupdf = {};
   let worker;
   if (typeof process === 'undefined') {
@@ -56,6 +57,7 @@ export async function initMuPDFWorker() {
   worker.promiseId = 0;
 
   const messageHandler = async (data) => {
+    console.log(data);
     if (typeof data === 'string' && data === 'READY') {
       readyResolve();
       return;
@@ -144,7 +146,10 @@ export async function initMuPDFWorker() {
   mupdf.subsetPages = wrap('subsetPages');
   mupdf.terminate = function () { worker.terminate(); };
 
+  console.log('await readyPromise');
   await readyPromise;
+
+  console.log('return mupdf');
 
   return mupdf;
 }
