@@ -369,10 +369,14 @@ export class ImageCache {
   };
 
   static terminate = async () => {
+    console.log('ImageCache.clear');
     ImageCache.clear();
     if (ImageCache.muPDFScheduler) {
+      console.log('await ImageCache.muPDFScheduler');
       const muPDFScheduler = await ImageCache.muPDFScheduler;
+      console.log('await muPDFScheduler.scheduler.terminate');
       await muPDFScheduler.scheduler.terminate();
+      console.log('ImageCache.muPDFScheduler = null');
       ImageCache.muPDFScheduler = null;
     }
   };
@@ -384,6 +388,7 @@ export class ImageCache {
    */
   static getMuPDFScheduler = async (numWorkers = 3) => {
     if (ImageCache.muPDFScheduler) return ImageCache.muPDFScheduler;
+    console.log('ImageCache.#initMuPDFScheduler');
     ImageCache.muPDFScheduler = ImageCache.#initMuPDFScheduler(numWorkers);
     return ImageCache.muPDFScheduler;
   };
