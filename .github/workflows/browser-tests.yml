@@ -5,7 +5,7 @@ on: [push, pull_request]
 jobs:
   build:
 
-    runs-on: ubuntu-22.04
+    runs-on: windows-latest
 
     strategy:
       max-parallel: 1
