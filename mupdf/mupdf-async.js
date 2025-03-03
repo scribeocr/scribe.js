@@ -178,15 +178,15 @@ export async function initMuPDFWorker() {
     worker.postMessage(['PING']);
   } 
 
-  setTimeout(() => {
-    if (ready) {
+  // setTimeout(() => {
+  //   if (ready) {
 
-      console.log(`Worker ${workerId} is ready after timeout`);
-      return;
-    }
-    console.log(`Worker ${workerId} initialization timed out`);
-    workerResReject('Worker initialization timed out');
-  }, 5000);
+  //     console.log(`Worker ${workerId} is ready after timeout`);
+  //     return;
+  //   }
+  //   console.log(`Worker ${workerId} initialization timed out`);
+  //   workerResReject('Worker initialization timed out');
+  // }, 5000);
 
   console.log(`Awaiting workerRes for ${workerId}`);
 
