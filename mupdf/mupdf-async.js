@@ -168,13 +168,16 @@ export async function initMuPDFWorker() {
   mupdf.subsetPages = wrap('subsetPages');
   mupdf.terminate = function () { worker.terminate(); };
 
-  console.log('await readyPromise');
-
-  if (!ready) worker.postMessage(['PING']);
+  if (!ready) {
+    console.log('worker.postMessage([\'PING\'])');
+    worker.postMessage(['PING']);
+  } 
 
   setTimeout(() => {
     workerResReject(new Error('Worker initialization timed out'));
   }, 5000);
+
+  console.log('await workerRes');
 
   await workerRes;
 
