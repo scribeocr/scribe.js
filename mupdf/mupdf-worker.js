@@ -417,7 +417,7 @@ const handleMessage = (data) => {
 
   if (func === 'PING') {
     ready = true;
-    parentPort.postMessage(['READY']);
+    parentPort.postMessage('READY');
   }
 
   try {
