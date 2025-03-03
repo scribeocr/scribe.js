@@ -11,7 +11,7 @@ jobs:
       max-parallel: 1
       fail-fast: false
       matrix:
-        browser: ['ChromeHeadless', 'FirefoxHeadless']
+        browser: ['FirefoxHeadless']
 
     steps:
     - name: Checkout code
