@@ -57,10 +57,13 @@ export async function initMuPDFWorker() {
   worker.promiseId = 0;
 
   const messageHandler = async (data) => {
-    console.log(data);
     if (typeof data === 'string' && data === 'READY') {
+      console.log(data);
       readyResolve();
+      console.log('return');
       return;
+    } else {
+      console.log('Other type of message');
     }
     const [type, id, result] = data;
     if (type === 'RESULT') {
