@@ -266,8 +266,16 @@ const clear = async () => {
  * @public
  */
 const terminate = async () => {
+  console.log('Terminating program...');
   clearData();
-  await Promise.allSettled([gs.terminate(), ImageCache.terminate(), FontCont.terminate()]);
+  console.log('gs.terminate');
+  await gs.terminate();
+  console.log('ImageCache.terminate');
+  await ImageCache.terminate();
+  console.log('FontCont.terminate');
+  await FontCont.terminate();
+  console.log('Program terminated.');
+  // await Promise.allSettled([gs.terminate(), ImageCache.terminate(), FontCont.terminate()]);
 };
 
 export default {
