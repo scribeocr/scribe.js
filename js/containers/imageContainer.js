@@ -176,8 +176,10 @@ export class ImageCache {
     console.log('Tesseract.createScheduler');
     const scheduler = await Tesseract.createScheduler();
     const workersPromiseArr = range(1, numWorkers).map(async () => {
+      console.log('await initMuPDFWorker()');
       const w = await initMuPDFWorker();
       w.id = `png-${Math.random().toString(16).slice(3, 8)}`;
+      console.log('scheduler.addWorker(w)');
       scheduler.addWorker(w);
       return w;
     });
