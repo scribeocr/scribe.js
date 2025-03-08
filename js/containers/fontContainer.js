@@ -5,7 +5,7 @@
 
 // Node.js case
 import opentype from '../../lib/opentype.module.js';
-import { determineSansSerif, getStyleLookup, replaceObjectProperties } from '../utils/miscUtils.js';
+import { determineSansSerif, getStyleLookup, clearObjectProperties } from '../utils/miscUtils.js';
 import { ca } from '../canvasAdapter.js';
 
 if (typeof process === 'object') {
@@ -472,7 +472,7 @@ export class FontCont {
     FontCont.state.serifDefaultName = 'NimbusRoman';
     FontCont.state.sansDefaultName = 'NimbusSans';
 
-    replaceObjectProperties(FontCont.state.charMetrics);
+    clearObjectProperties(FontCont.state.charMetrics);
   };
 
   static terminate = () => {

@@ -46,10 +46,10 @@ describe('Check .scribe export function.', function () {
 
     const ocrAllComp1 = standardizeOCRPages(scribe.data.ocr.active);
 
-    const scribeStr = /** @type {string} */ (await scribe.exportData('scribe'));
-    const scribeArrayBuffer = new TextEncoder().encode(scribeStr).buffer;
+    const scribeData = await scribe.exportData('scribe');
+
     await scribe.terminate();
-    await scribe.importFiles({ scribeFiles: [scribeArrayBuffer] });
+    await scribe.importFiles({ scribeFiles: [scribeData] });
 
     const ocrAllComp2 = standardizeOCRPages(scribe.data.ocr.active);
 

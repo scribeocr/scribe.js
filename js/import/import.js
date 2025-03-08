@@ -25,7 +25,7 @@ import { addCircularRefsDataTables, LayoutDataTablePage, LayoutPage } from '../o
 import { addCircularRefsOcr } from '../objects/ocrObjects.js';
 import { PageMetrics } from '../objects/pageMetricsObjects.js';
 import { checkCharWarn, convertOCR } from '../recognizeConvert.js';
-import { readOcrFile, replaceObjectProperties } from '../utils/miscUtils.js';
+import { readOcrFile, clearObjectProperties, objectAssignDefined } from '../utils/miscUtils.js';
 import { importOCRFiles } from './importOCR.js';
 
 /**
@@ -300,7 +300,7 @@ export async function importFiles(files) {
     /** @type {ScribeSaveData} */
     const scribeRestoreObj = JSON.parse(scribeRestoreStr);
     if (scribeRestoreObj.fontState) {
-      replaceObjectProperties(FontCont.state, scribeRestoreObj.fontState);
+      objectAssignDefined(FontCont.state, scribeRestoreObj.fontState);
       await runFontOptimization(ocrAll.active);
     }
     if (scribeRestoreObj.layoutRegions) {
@@ -318,6 +318,14 @@ export async function importFiles(files) {
     addCircularRefsOcr(scribeRestoreObj.ocr);
     ocrAll[oemName] = scribeRestoreObj.ocr;
     ocrAll.active = ocrAll[oemName];
+
+    for (let i = 0; i < ocrAll[oemName].length; i++) {
+      inputData.xmlMode[i] = true;
+      if (ocrAll[oemName][i].dims.height && ocrAll[oemName][i].dims.width) {
+        pageMetricsArr[i] = new PageMetrics(ocrAll[oemName][i].dims);
+      }
+      pageMetricsArr[i].angle = ocrAll[oemName][i].angle;
+    }
   }
 
   const xmlModeImport = ocrFiles.length > 0;
@@ -363,8 +371,7 @@ export async function importFiles(files) {
       ocrAllRaw.active = ocrAllRaw.active.slice(0, pageCountImage);
     }
 
-    replaceObjectProperties(FontCont.state, ocrData.fontState);
-    if (!FontCont.state.charMetrics) FontCont.state.charMetrics = {};
+    objectAssignDefined(FontCont.state, ocrData.fontState);
 
     // Restore font metrics and optimize font from previous session (if applicable)
     if (ocrData.fontState.charMetrics && Object.keys(ocrData.fontState.charMetrics).length > 0) {
@@ -437,10 +444,6 @@ export async function importFiles(files) {
     }
   }
 
-  inputData.xmlMode = new Array(inputData.pageCount);
-
-  inputData.xmlMode.fill(false);
-
   // Render first page for PDF only
   if (inputData.pdfMode && !xmlModeImport) {
     opt.progressHandler({ n: 0, type: 'importPDF', info: { } });
@@ -473,7 +476,10 @@ export async function importFiles(files) {
         await checkCharWarn(convertPageWarn);
         const charMetrics = calcCharMetricsFromPages(ocrAll.active);
 
-        if (Object.keys(charMetrics).length > 0) replaceObjectProperties(FontCont.state.charMetrics, charMetrics);
+        if (Object.keys(charMetrics).length > 0) {
+          clearObjectProperties(FontCont.state.charMetrics);
+          Object.assign(FontCont.state.charMetrics, charMetrics);
+        }
         await runFontOptimization(ocrAll.active);
       }
     });

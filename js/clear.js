@@ -9,12 +9,14 @@ import {
 } from './containers/dataContainer.js';
 import { FontCont } from './containers/fontContainer.js';
 import { ImageCache } from './containers/imageContainer.js';
-import { replaceObjectProperties } from './utils/miscUtils.js';
+import { clearObjectProperties } from './utils/miscUtils.js';
 
 export function clearData() {
   inputData.clear();
-  replaceObjectProperties(ocrAll, { active: [] });
-  replaceObjectProperties(ocrAllRaw, { active: [] });
+  clearObjectProperties(ocrAll);
+  ocrAll.active = [];
+  clearObjectProperties(ocrAllRaw);
+  ocrAllRaw.active = [];
   layoutRegions.pages.length = 0;
   layoutDataTables.pages.length = 0;
   pageMetricsArr.length = 0;

@@ -12,7 +12,7 @@ import { runFontOptimization } from './fontEval.js';
 import { calcCharMetricsFromPages } from './fontStatistics.js';
 import { gs } from './generalWorkerMain.js';
 import { PageMetrics } from './objects/pageMetricsObjects.js';
-import { replaceObjectProperties } from './utils/miscUtils.js';
+import { clearObjectProperties } from './utils/miscUtils.js';
 
 /**
  * Compare two sets of OCR data for single page.
@@ -546,7 +546,10 @@ export async function recognize(options = {}) {
     // Metrics from the LSTM model are so inaccurate they are not worth using.
     if (oemMode === 'legacy') {
       const charMetrics = calcCharMetricsFromPages(ocrAll['Tesseract Legacy']);
-      if (Object.keys(charMetrics).length > 0) replaceObjectProperties(FontCont.state.charMetrics, charMetrics);
+      if (Object.keys(charMetrics).length > 0) {
+        clearObjectProperties(FontCont.state.charMetrics);
+        Object.assign(FontCont.state.charMetrics, charMetrics);
+      }
       await runFontOptimization(ocrAll['Tesseract Legacy']);
     }
   } else if (oemMode === 'combined') {
@@ -591,14 +594,18 @@ export async function recognize(options = {}) {
 
       const res = await compareOCR(ocrAll['Tesseract Legacy'], ocrAll['Tesseract LSTM'], compOptions);
 
-      replaceObjectProperties(ocrAll['Tesseract Combined Temp'], res.ocr);
+      clearObjectProperties(ocrAll['Tesseract Combined Temp']);
+      Object.assign(ocrAll['Tesseract Combined Temp'], res.ocr);
     }
 
     // Evaluate default fonts using up to 5 pages.
     const pageNum = Math.min(ImageCache.pageCount - 1, 5);
     await ImageCache.preRenderRange(0, pageNum, true);
     const charMetrics = calcCharMetricsFromPages(ocrAll['Tesseract Combined Temp']);
-    if (Object.keys(charMetrics).length > 0) replaceObjectProperties(FontCont.state.charMetrics, charMetrics);
+    if (Object.keys(charMetrics).length > 0) {
+      clearObjectProperties(FontCont.state.charMetrics);
+      Object.assign(FontCont.state.charMetrics, charMetrics);
+    }
     await runFontOptimization(ocrAll['Tesseract Combined Temp']);
 
     const oemText = 'Combined';
@@ -623,7 +630,8 @@ export async function recognize(options = {}) {
 
       if (DebugData.debugImg[tessCombinedLabel]) DebugData.debugImg[tessCombinedLabel] = res.debug;
 
-      replaceObjectProperties(ocrAll[tessCombinedLabel], res.ocr);
+      clearObjectProperties(ocrAll[tessCombinedLabel]);
+      Object.assign(ocrAll[tessCombinedLabel], res.ocr);
     }
 
     if (existingOCR) {
@@ -643,7 +651,8 @@ export async function recognize(options = {}) {
 
         if (DebugData.debugImg.Combined) DebugData.debugImg.Combined = res.debug;
 
-        replaceObjectProperties(ocrAll.Combined, res.ocr);
+        clearObjectProperties(ocrAll.Combined);
+        Object.assign(ocrAll.Combined, res.ocr);
       } else if (combineMode === 'data') {
         /** @type {Parameters<typeof compareOCRPage>[2]} */
         const compOptions = {
@@ -666,7 +675,8 @@ export async function recognize(options = {}) {
 
         if (DebugData.debugImg.Combined) DebugData.debugImg.Combined = res.debug;
 
-        replaceObjectProperties(ocrAll.Combined, res.ocr);
+        clearObjectProperties(ocrAll.Combined);
+        Object.assign(ocrAll.Combined, res.ocr);
       }
     }
   }
