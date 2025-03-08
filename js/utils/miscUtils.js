@@ -201,6 +201,13 @@ export function calcLang(str) {
  */
 export async function readOcrFile(file) {
   if (file instanceof ArrayBuffer) {
+    const fileUint8Array = new Uint8Array(file);
+
+    const isGzipped = fileUint8Array[0] === 0x1F && fileUint8Array[1] === 0x8B;
+    if (isGzipped) {
+      const pako = await import('../../lib/pako.esm.min.js');
+      file = pako.inflate(file)?.buffer;
+    }
     const decoder = new TextDecoder('utf-8');
     return decoder.decode(file);
   }
@@ -210,7 +217,7 @@ export async function readOcrFile(file) {
 
   // The `typeof process` condition is necessary to avoid error in Node.js versions <20, where `File` is not defined.
   if (typeof process === 'undefined' && file instanceof File) {
-    if (/\.gz$/i.test(file.name)) {
+    if (/\.gz|\.scribe$/i.test(file.name)) {
       return (readTextFileGz(file));
     }
     return (readTextFile(file));
@@ -361,18 +368,32 @@ export const reduceEvalMetrics = (evalMetricsArr) => evalMetricsArr.reduce((acc,
 });
 
 /**
- * Delete all properties from `obj` and replace with properties from `obj2`.
- * By default `obj2 = {}`, which clears `obj`.
+ * Delete all properties from `obj`.
+ * This should be used instead of `obj = {}` to avoid creating a new object.
  * @param {Object} obj
- * @param {Object} [obj2={}]
  */
-export function replaceObjectProperties(obj, obj2 = {}) {
+export function clearObjectProperties(obj) {
   for (const prop in obj) {
     if (Object.hasOwnProperty.call(obj, prop)) {
       delete obj[prop];
     }
   }
-  Object.assign(obj, obj2);
+}
+
+/**
+ * Version of `Object.assign` that only assigns properties that are not `undefined`.
+ * @param {Object} target - The target object to assign properties to.
+ * @param {...Object} sources - The source objects to assign properties from.
+ */
+export function objectAssignDefined(target, ...sources) {
+  for (const source of sources) {
+    for (const key in source) {
+      if (Object.hasOwnProperty.call(source, key) && source[key] !== undefined) {
+        target[key] = source[key];
+      }
+    }
+  }
+  return target;
 }
 
 // Sans/serif lookup for common font families. These should not include spaces or underscores--multi-word font names should be concatenated.

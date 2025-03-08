@@ -209,7 +209,11 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
       layoutRegions: layoutRegions.pages,
       layoutDataTables: removeCircularRefsDataTables(layoutDataTables.pages),
     };
-    content = JSON.stringify(data);
+    const contentStr = JSON.stringify(data);
+
+    const pako = await import('../../lib/pako.esm.mjs');
+    const enc = new TextEncoder();
+    content = pako.gzip(enc.encode(contentStr))?.buffer;
   }
 
   return content;
