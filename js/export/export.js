@@ -9,11 +9,14 @@ import { writePdf } from './writePdf.js';
 import { writeHocr } from './writeHocr.js';
 import { writeText } from './writeText.js';
 import { writeHtml } from './writeHtml.js';
+import { removeCircularRefsOcr } from '../objects/ocrObjects.js';
+import { removeCircularRefsDataTables } from '../objects/layoutObjects.js';
+import { FontCont } from '../containers/fontContainer.js';
 
 /**
  * Export active OCR data to specified format.
  * @public
- * @param {'pdf'|'hocr'|'docx'|'html'|'xlsx'|'txt'|'text'} [format='txt']
+ * @param {'pdf'|'hocr'|'docx'|'html'|'xlsx'|'txt'|'text'|'scribe'} [format='txt']
  * @param {number} [minPage=0] - First page to export.
  * @param {number} [maxPage=-1] - Last page to export (inclusive). -1 exports through the last page.
  * @returns {Promise<string|ArrayBuffer>}
@@ -183,9 +186,9 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
       w.freeDocument(pdf);
     }
   } else if (format === 'hocr') {
-    content = writeHocr(ocrAll.active, minPage, maxPage);
+    content = writeHocr(ocrDownload, minPage, maxPage);
   } else if (format === 'html') {
-    content = writeHtml(ocrAll.active, minPage, maxPage, opt.reflow, opt.removeMargins);
+    content = writeHtml(ocrDownload, minPage, maxPage, opt.reflow, opt.removeMargins);
   } else if (format === 'txt') {
     content = writeText(ocrDownload, minPage, maxPage, opt.reflow, false);
   // Defining `DISABLE_DOCX_XLSX` disables docx/xlsx exports when using build tools.
@@ -199,6 +202,14 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
     // Less common export formats are loaded dynamically to reduce initial load time.
     const writeXlsx = (await import('./writeTabular.js')).writeXlsx;
     content = await writeXlsx(ocrDownload, layoutDataTables.pages, minPage, maxPage);
+  } else if (format === 'scribe') {
+    const data = {
+      ocr: removeCircularRefsOcr(ocrDownload),
+      fontState: FontCont.state,
+      layoutRegions: layoutRegions.pages,
+      layoutDataTables: removeCircularRefsDataTables(layoutDataTables.pages),
+    };
+    content = JSON.stringify(data);
   }
 
   return content;
@@ -207,14 +218,14 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
 /**
  * Runs `exportData` and saves the result as a download (browser) or local file (Node.js).
  * @public
- * @param {'pdf'|'hocr'|'docx'|'xlsx'|'txt'|'text'|'html'} format
+ * @param {'pdf'|'hocr'|'docx'|'xlsx'|'txt'|'text'|'html'|'scribe'} format
  * @param {string} fileName
  * @param {number} [minPage=0] - First page to export.
  * @param {number} [maxPage=-1] - Last page to export (inclusive). -1 exports through the last page.
  */
 export async function download(format, fileName, minPage = 0, maxPage = -1) {
   if (format === 'text') format = 'txt';
-  fileName = fileName.replace(/\.\w{1,4}$/, `.${format}`);
+  fileName = fileName.replace(/\.\w{1,6}$/, `.${format}`);
   const content = await exportData(format, minPage, maxPage);
   await saveAs(content, fileName);
 }

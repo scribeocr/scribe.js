@@ -1,6 +1,6 @@
 import { opt } from '../containers/app.js';
 import {
-  fontMetricsObj, layoutDataTables, layoutRegions, pageMetricsArr,
+  layoutDataTables, layoutRegions, pageMetricsArr,
 } from '../containers/dataContainer.js';
 import { FontCont } from '../containers/fontContainer.js';
 import ocr from '../objects/ocrObjects.js';
@@ -17,10 +17,10 @@ export function writeHocr(ocrData, minValue, maxValue) {
   if (maxValue === null || maxValue === undefined || maxValue < 0) maxValue = ocrData.length - 1;
 
   const meta = {
-    'font-metrics': fontMetricsObj,
-    'default-font': FontCont.defaultFontName,
-    'sans-font': FontCont.sansDefaultName,
-    'serif-font': FontCont.serifDefaultName,
+    'font-metrics': FontCont.state.charMetrics,
+    'default-font': FontCont.state.defaultFontName,
+    'sans-font': FontCont.state.sansDefaultName,
+    'serif-font': FontCont.state.serifDefaultName,
     'enable-opt': opt.enableOpt,
     layout: layoutRegions.pages,
     'layout-data-table': layoutDataTables.serialize(),

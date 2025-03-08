@@ -98,6 +98,43 @@ export function LayoutDataTablePage(n) {
   this.tables = [];
 }
 
+/**
+ * Serialize the layout data tables as JSON.
+ * A special function is needed to remove circular references.
+ * @param {Array<LayoutDataTablePage>} pages - Layout data tables.
+ */
+export const removeCircularRefsDataTables = (pages) => {
+  const pagesClone = structuredClone(pages);
+  pagesClone.forEach((page) => {
+    page.tables.forEach((table) => {
+    // @ts-ignore
+      delete table.page;
+      table.boxes.forEach((box) => {
+        // @ts-ignore
+        delete box.table;
+      });
+    });
+  });
+};
+
+/**
+ * Restores circular references to array of OcrPage objects.
+ * Used to restore circular references after deserializing.
+ * @param {*} pages
+ * @returns {Array<OcrPage>}
+ */
+export const addCircularRefsDataTables = (pages) => {
+  pages.forEach((page) => {
+    page.tables.forEach((table) => {
+      table.page = page;
+      table.boxes.forEach((box) => {
+        box.table = table;
+      });
+    });
+  });
+  return pages;
+};
+
 const layout = {
   LayoutDataColumn,
   LayoutDataTable,

@@ -1286,18 +1286,18 @@ export async function evalPageBase({
 export async function evalPageFont({
   page, binaryImage, pageMetricsObj, font, opt = false,
 }) {
-  const enableOptSave = FontCont.enableOpt;
-  const forceOptSave = FontCont.forceOpt;
+  const enableOptSave = FontCont.state.enableOpt;
+  const forceOptSave = FontCont.state.forceOpt;
 
   // Allowing the font to be set here allows for better performance during font optimization compared to using the `enableFontOpt` function.
   // This is because the `enableFontOpt` function requires a response from the main thread and *every* worker before completing, which leads to non-trivial waiting time.
   if (opt === true) {
     if (!FontCont.opt) throw new Error('Optimized fonts requested but not defined.');
-    FontCont.forceOpt = true;
+    FontCont.state.forceOpt = true;
   } else if (opt === false) {
     if (!FontCont.raw) throw new Error('Raw fonts requested but not defined.');
-    FontCont.enableOpt = false;
-    FontCont.forceOpt = false;
+    FontCont.state.enableOpt = false;
+    FontCont.state.forceOpt = false;
   }
 
   /**
@@ -1329,8 +1329,8 @@ export async function evalPageFont({
     page, binaryImage, pageMetricsObj, func: transformLineFont,
   });
 
-  FontCont.enableOpt = enableOptSave;
-  FontCont.forceOpt = forceOptSave;
+  FontCont.state.enableOpt = enableOptSave;
+  FontCont.state.forceOpt = forceOptSave;
 
   return res;
 }

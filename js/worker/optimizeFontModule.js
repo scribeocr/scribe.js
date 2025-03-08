@@ -76,18 +76,18 @@ function transformGlyph(glyph, func, transX = false, transY = false) {
  * Calculate pair kerning adjustments for font given provided metrics.
  *
  * @param {opentype.Font} font
- * @param {FontMetricsFont} fontMetricsObj
+ * @param {CharMetricsFont} charMetricsObj
  * @param {number} xHeight
  * @param {StyleLookup} styleLookup
  */
-const calculateKerningPairs = (font, fontMetricsObj, xHeight, styleLookup) => {
+const calculateKerningPairs = (font, charMetricsObj, xHeight, styleLookup) => {
   const fontKerningObj = {};
 
   // Kerning is limited to +/-10% of the em size for most pairs.  Anything beyond this is likely not correct.
   const maxKern = Math.round(font.unitsPerEm * 0.1);
   const minKern = maxKern * -1;
 
-  for (const [key, value] of Object.entries(fontMetricsObj.kerning)) {
+  for (const [key, value] of Object.entries(charMetricsObj.kerning)) {
     // Do not adjust pair kerning for italic "ff".
     // Given the amount of overlap between these glyphs, this metric is rarely accurate.
     if (key === '102,102' && ['italic', 'boldItalic'].includes(styleLookup)) continue;
@@ -113,8 +113,8 @@ const calculateKerningPairs = (font, fontMetricsObj, xHeight, styleLookup) => {
     // Calculate target (measured) space between two characters.
     // This is calculated as the average between two measurements.
     // This did not exist in an older version of the code, so this should be optional and skipped if the data is not present.
-    if (fontMetricsObj.kerning2) {
-      const value2 = fontMetricsObj.kerning2[key];
+    if (charMetricsObj.kerning2) {
+      const value2 = charMetricsObj.kerning2[key];
       if (value2) {
         const fontKern2 = Math.round(value2 * xHeight);
         spaceTarget = Math.round((fontKern1 + fontKern2) / 2);
@@ -151,7 +151,7 @@ const calculateKerningPairs = (font, fontMetricsObj, xHeight, styleLookup) => {
  * Creates optimized version of font based on metrics provided.
  * @param {Object} params
  * @param {string|ArrayBuffer} params.fontData
- * @param {FontMetricsFont} params.fontMetricsObj
+ * @param {CharMetricsFont} params.charMetricsObj
  * @param {StyleLookup} params.style -
  * @param {boolean} [params.adjustAllLeftBearings] - Edit left bearings for all characters based on provided metrics.
  * @param {boolean} [params.standardizeSize] - Scale such that size of 'o' is 0.47x em size.
@@ -160,7 +160,7 @@ const calculateKerningPairs = (font, fontMetricsObj, xHeight, styleLookup) => {
  *    If `false`, only font-level transformations (adjusting em size and standardizing 'o' height) are performed.
  */
 export async function optimizeFont({
-  fontData, fontMetricsObj, style, adjustAllLeftBearings = false, standardizeSize = false, targetEmSize = null, transGlyphs = true,
+  fontData, charMetricsObj, style, adjustAllLeftBearings = false, standardizeSize = false, targetEmSize = null, transGlyphs = true,
 }) {
   /** @type {opentype.Font} */
   const workingFont = typeof (fontData) === 'string' ? await opentype.load(fontData) : opentype.parse(fontData, { lowMemory: false });
@@ -202,7 +202,7 @@ export async function optimizeFont({
 
   // If no glyph-level transformations are requested, return early.
   if (!transGlyphs) {
-    workingFont.kerningPairs = calculateKerningPairs(workingFont, fontMetricsObj, xHeight, style);
+    workingFont.kerningPairs = calculateKerningPairs(workingFont, charMetricsObj, xHeight, style);
 
     return { fontData: workingFont.toArrayBuffer(), kerningPairs: workingFont.kerningPairs };
   }
@@ -210,7 +210,7 @@ export async function optimizeFont({
   oGlyph = workingFont.charToGlyph('o').getMetrics();
   xHeight = oGlyph.yMax - oGlyph.yMin;
 
-  const heightCapsBelievable = fontMetricsObj.obsCaps >= 10 && fontMetricsObj.heightCaps >= 1.1 && fontMetricsObj.heightCaps < 2;
+  const heightCapsBelievable = charMetricsObj.obsCaps >= 10 && charMetricsObj.heightCaps >= 1.1 && charMetricsObj.heightCaps < 2;
 
   const fontAscHeight = workingFont.charToGlyph('A').getMetrics().yMax;
 
@@ -224,7 +224,7 @@ export async function optimizeFont({
   // console.log("workingFontRightBearingMedian: " + workingFontRightBearingMedian);
 
   // Adjust character width and advance
-  for (const [key, value] of Object.entries(fontMetricsObj.width)) {
+  for (const [key, value] of Object.entries(charMetricsObj.width)) {
     // 33 is the first latin glyph (excluding space which is 32)
     if (parseInt(key) < 33) { continue; }
 
@@ -305,7 +305,7 @@ export async function optimizeFont({
 
   // Adjust height for capital letters (if heightCaps is believable)
   if (heightCapsBelievable) {
-    const capsMult = xHeight * fontMetricsObj.heightCaps / fontAscHeight;
+    const capsMult = xHeight * charMetricsObj.heightCaps / fontAscHeight;
     for (const key of [...Array(26).keys()].map((x) => x + 65)) {
       const charLit = String.fromCharCode(key);
 
@@ -320,8 +320,8 @@ export async function optimizeFont({
   // This purposefully does not include numbers, as those are normalized differently.
   const upperAsc = ['A', 'B', 'D', 'E', 'F', 'H', 'I', 'K', 'L', 'M', 'N', 'P', 'R', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'];
   const upperAscCodes = upperAsc.map((x) => String(x.charCodeAt(0)));
-  const charHeightKeys = Object.keys(fontMetricsObj.height);
-  const heightAscArr = Object.values(fontMetricsObj.height).filter((element, index) => upperAscCodes.includes(charHeightKeys[index]));
+  const charHeightKeys = Object.keys(charMetricsObj.height);
+  const heightAscArr = Object.values(charMetricsObj.height).filter((element, index) => upperAscCodes.includes(charHeightKeys[index]));
 
   // At least 10 observations are required to adjust from the default.
   if (heightAscArr.length >= 10) {
@@ -332,7 +332,7 @@ export async function optimizeFont({
       // TODO: Extend similar logic to apply to other descenders such as "p" and "q"
       // Adjust height of capital J (which often has a height greater than other capital letters)
       // All height from "J" above that of "A" is assumed to occur under the baseline
-      const actJMult = Math.max(round6(fontMetricsObj.height[74]) / charHeightA, 0);
+      const actJMult = Math.max(round6(charMetricsObj.height[74]) / charHeightA, 0);
       const fontJMetrics = workingFont.charToGlyph('J').getMetrics();
       const fontAMetrics = workingFont.charToGlyph('A').getMetrics();
       const fontJMult = Math.max((fontJMetrics.yMax - fontJMetrics.yMin) / (fontAMetrics.yMax - fontAMetrics.yMin), 1);
@@ -358,7 +358,7 @@ export async function optimizeFont({
   for (let i = 0; i < descAdjArr.length; i++) {
     const charI = descAdjArr[i];
     const charICode = charI.charCodeAt(0);
-    const actMult = Math.max(fontMetricsObj.height[charICode] / fontMetricsObj.height[97], 0);
+    const actMult = Math.max(charMetricsObj.height[charICode] / charMetricsObj.height[97], 0);
     const metrics = workingFont.charToGlyph(charI).getMetrics();
     const fontMult = (metrics.yMax - metrics.yMin) / (fontAMetrics.yMax - fontAMetrics.yMin);
     const actFontMult = actMult / fontMult;
@@ -391,7 +391,7 @@ export async function optimizeFont({
     }
   }
 
-  workingFont.kerningPairs = calculateKerningPairs(workingFont, fontMetricsObj, xHeight, style);
+  workingFont.kerningPairs = calculateKerningPairs(workingFont, charMetricsObj, xHeight, style);
 
   // Append suffix to avoid naming conflict with raw font.
   // This is necessary for the Node.js version due to quirks with node-canvas.

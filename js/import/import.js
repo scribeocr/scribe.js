@@ -2,7 +2,6 @@ import { clearData } from '../clear.js';
 import { inputData, opt } from '../containers/app.js';
 import {
   convertPageWarn,
-  fontMetricsObj,
   layoutDataTables,
   layoutRegions,
   ocrAll,
@@ -18,14 +17,15 @@ import {
   optimizeFontContainerAll, setDefaultFontAuto,
 } from '../fontContainerMain.js';
 import { runFontOptimization } from '../fontEval.js';
-import { calcFontMetricsFromPages } from '../fontStatistics.js';
+import { calcCharMetricsFromPages } from '../fontStatistics.js';
 import { calcSuppFontInfo } from '../fontSupp.js';
 import { gs } from '../generalWorkerMain.js';
 import { imageUtils } from '../objects/imageObjects.js';
-import { LayoutDataTablePage, LayoutPage } from '../objects/layoutObjects.js';
+import { addCircularRefsDataTables, LayoutDataTablePage, LayoutPage } from '../objects/layoutObjects.js';
+import { addCircularRefsOcr } from '../objects/ocrObjects.js';
 import { PageMetrics } from '../objects/pageMetricsObjects.js';
 import { checkCharWarn, convertOCR } from '../recognizeConvert.js';
-import { replaceObjectProperties } from '../utils/miscUtils.js';
+import { readOcrFile, replaceObjectProperties } from '../utils/miscUtils.js';
 import { importOCRFiles } from './importOCR.js';
 
 /**
@@ -141,6 +141,8 @@ export function sortInputFiles(files) {
   /** @type {Array<File|FileNode>} */
   const pdfFilesAll = [];
   /** @type {Array<File|FileNode>} */
+  const scribeFilesAll = [];
+  /** @type {Array<File|FileNode>} */
   const unsupportedFilesAll = [];
   const unsupportedExt = {};
   for (let i = 0; i < files.length; i++) {
@@ -156,6 +158,8 @@ export function sortInputFiles(files) {
       // All .gz files are assumed to be OCR data (xml) since all other file types can be compressed already
     } else if (['hocr', 'xml', 'html', 'gz', 'stext'].includes(fileExt)) {
       ocrFilesAll.push(file);
+    } else if (['scribe'].includes(fileExt)) {
+      scribeFilesAll.push(file);
     } else if (['pdf'].includes(fileExt)) {
       pdfFilesAll.push(file);
     } else {
@@ -172,7 +176,9 @@ export function sortInputFiles(files) {
   imageFilesAll.sort((a, b) => ((a.name > b.name) ? 1 : ((b.name > a.name) ? -1 : 0)));
   ocrFilesAll.sort((a, b) => ((a.name > b.name) ? 1 : ((b.name > a.name) ? -1 : 0)));
 
-  return { pdfFiles: pdfFilesAll, imageFiles: imageFilesAll, ocrFiles: ocrFilesAll };
+  return {
+    pdfFiles: pdfFilesAll, imageFiles: imageFilesAll, ocrFiles: ocrFilesAll, scribeFiles: scribeFilesAll,
+  };
 }
 
 /**
@@ -184,6 +190,7 @@ export function sortInputFiles(files) {
  * @property {Array<File>|Array<string>|Array<ArrayBuffer>} [pdfFiles]
  * @property {Array<File>|Array<string>|Array<ArrayBuffer>} [imageFiles]
  * @property {Array<File>|Array<string>|Array<ArrayBuffer>} [ocrFiles]
+ * @property {Array<File>|Array<string>|Array<ArrayBuffer>} [scribeFiles]
  */
 
 /**
@@ -205,9 +212,11 @@ export async function importFiles(files) {
   let imageFiles = [];
   /** @type {Array<File|FileNode|ArrayBuffer>} */
   let ocrFiles = [];
+  /** @type {Array<File|FileNode|ArrayBuffer>} */
+  let scribeFiles = [];
   // These statements contain many ts-ignore comments, because the TypeScript interpreter apparently cannot properly narrow arrays.
   // See: https://github.com/microsoft/TypeScript/issues/42384
-  if ('pdfFiles' in files || 'imageFiles' in files || 'ocrFiles' in files) {
+  if ('pdfFiles' in files || 'imageFiles' in files || 'ocrFiles' in files || 'scribeFiles' in files) {
     if (files.pdfFiles && files.pdfFiles[0] instanceof ArrayBuffer) {
       // @ts-ignore
       pdfFiles = files.pdfFiles;
@@ -229,14 +238,23 @@ export async function importFiles(files) {
       // @ts-ignore
       ocrFiles = await standardizeFiles(files.ocrFiles);
     }
+    if (files.scribeFiles && files.scribeFiles[0] instanceof ArrayBuffer) {
+      // @ts-ignore
+      scribeFiles = files.scribeFiles;
+    } else if (files.scribeFiles) {
+      // @ts-ignore
+      scribeFiles = await standardizeFiles(files.scribeFiles);
+    }
   } else {
     // @ts-ignore
     const filesStand = await standardizeFiles(files);
     if (files[0] instanceof ArrayBuffer) throw new Error('ArrayBuffer inputs must be sorted by file type.');
-    ({ pdfFiles, imageFiles, ocrFiles } = sortInputFiles(filesStand));
+    ({
+      pdfFiles, imageFiles, ocrFiles, scribeFiles,
+    } = sortInputFiles(filesStand));
   }
 
-  if (pdfFiles.length === 0 && imageFiles.length === 0 && ocrFiles.length === 0) {
+  if (pdfFiles.length === 0 && imageFiles.length === 0 && ocrFiles.length === 0 && scribeFiles.length === 0) {
     const errorText = 'No supported files found.';
     opt.errorHandler(errorText);
     return;
@@ -261,23 +279,53 @@ export async function importFiles(files) {
 
   // Set default download name
   if (pdfFiles.length > 0 && 'name' in pdfFiles[0]) {
-    inputData.defaultDownloadFileName = `${pdfFiles[0].name.replace(/\.\w{1,4}$/, '')}.pdf`;
+    inputData.defaultDownloadFileName = `${pdfFiles[0].name.replace(/\.\w{1,6}$/, '')}.pdf`;
   } else if (imageFiles.length > 0 && 'name' in imageFiles[0]) {
-    inputData.defaultDownloadFileName = `${imageFiles[0].name.replace(/\.\w{1,4}$/, '')}.pdf`;
+    inputData.defaultDownloadFileName = `${imageFiles[0].name.replace(/\.\w{1,6}$/, '')}.pdf`;
   } else if (ocrFiles.length > 0 && 'name' in ocrFiles[0]) {
-    inputData.defaultDownloadFileName = `${ocrFiles[0].name.replace(/\.\w{1,4}$/, '')}.pdf`;
+    inputData.defaultDownloadFileName = `${ocrFiles[0].name.replace(/\.\w{1,6}$/, '')}.pdf`;
+  } else if (scribeFiles.length > 0 && 'name' in scribeFiles[0]) {
+    inputData.defaultDownloadFileName = `${scribeFiles[0].name.replace(/\.\w{1,6}$/, '')}.pdf`;
   }
+
+  let existingLayout = false;
+  let existingLayoutDataTable = false;
 
   inputData.pdfMode = pdfFiles.length === 1;
   inputData.imageMode = !!(imageFiles.length > 0 && !inputData.pdfMode);
   ImageCache.inputModes.image = !!(imageFiles.length > 0 && !inputData.pdfMode);
+
+  if (scribeFiles.length > 0) {
+    const scribeRestoreStr = await readOcrFile(scribeFiles[0]);
+    /** @type {ScribeSaveData} */
+    const scribeRestoreObj = JSON.parse(scribeRestoreStr);
+    if (scribeRestoreObj.fontState) {
+      replaceObjectProperties(FontCont.state, scribeRestoreObj.fontState);
+      await runFontOptimization(ocrAll.active);
+    }
+    if (scribeRestoreObj.layoutRegions) {
+      existingLayout = true;
+      layoutRegions.pages = scribeRestoreObj.layoutRegions;
+    }
+    if (scribeRestoreObj.layoutDataTables) {
+      existingLayoutDataTable = true;
+      addCircularRefsDataTables(scribeRestoreObj.layoutDataTables);
+      layoutDataTables.pages = scribeRestoreObj.layoutDataTables;
+    }
+
+    const oemName = 'User Upload';
+    if (!ocrAll[oemName]) ocrAll[oemName] = Array(inputData.pageCount);
+    addCircularRefsOcr(scribeRestoreObj.ocr);
+    ocrAll[oemName] = scribeRestoreObj.ocr;
+    ocrAll.active = ocrAll[oemName];
+  }
 
   const xmlModeImport = ocrFiles.length > 0;
 
   let pageCount;
   let pageCountImage;
   let abbyyMode = false;
-  let scribeMode = false;
+  let reimportHocrMode = false;
 
   if (inputData.pdfMode) {
     const pdfFile = pdfFiles[0];
@@ -296,8 +344,6 @@ export async function importFiles(files) {
     pageCountImage = imageFiles.length;
   }
 
-  let existingLayout = false;
-  let existingLayoutDataTable = false;
   let existingOpt = false;
   const oemName = 'User Upload';
   let stextMode;
@@ -317,39 +363,31 @@ export async function importFiles(files) {
       ocrAllRaw.active = ocrAllRaw.active.slice(0, pageCountImage);
     }
 
+    replaceObjectProperties(FontCont.state, ocrData.fontState);
+    if (!FontCont.state.charMetrics) FontCont.state.charMetrics = {};
+
     // Restore font metrics and optimize font from previous session (if applicable)
-    if (ocrData.fontMetricsObj && Object.keys(ocrData.fontMetricsObj).length > 0) {
+    if (ocrData.fontState.charMetrics && Object.keys(ocrData.fontState.charMetrics).length > 0) {
       const fontPromise = loadBuiltInFontsRaw();
 
       existingOpt = true;
 
-      replaceObjectProperties(fontMetricsObj, ocrData.fontMetricsObj);
       await gs.schedulerReady;
-      setDefaultFontAuto(fontMetricsObj);
+      setDefaultFontAuto(FontCont.state.charMetrics);
 
       // If `ocrData.enableOpt` is `false`, then the metrics are present but ignored.
       // This occurs if optimization was found to decrease accuracy for both sans and serif,
       // not simply because the user disabled optimization in the view settings.
       // If no `enableOpt` property exists but metrics are present, then optimization is enabled.
       if (ocrData.enableOpt === 'false') {
-        FontCont.enableOpt = false;
+        FontCont.state.enableOpt = false;
       } else {
         await fontPromise;
         if (!FontCont.raw) throw new Error('Raw font data not found.');
-        FontCont.opt = await optimizeFontContainerAll(FontCont.raw, fontMetricsObj);
-        FontCont.enableOpt = true;
+        FontCont.opt = await optimizeFontContainerAll(FontCont.raw, FontCont.state.charMetrics);
+        FontCont.state.enableOpt = true;
         await enableFontOpt(true);
       }
-    }
-
-    if (ocrData.defaultFont) FontCont.defaultFontName = ocrData.defaultFont;
-
-    if (ocrData.sansFont) {
-      FontCont.sansDefaultName = ocrData.sansFont;
-    }
-
-    if (ocrData.serifFont) {
-      FontCont.serifDefaultName = ocrData.serifFont;
     }
 
     // Restore layout data from previous session (if applicable)
@@ -368,22 +406,22 @@ export async function importFiles(files) {
     }
 
     abbyyMode = ocrData.abbyyMode;
-    scribeMode = ocrData.scribeMode;
+    reimportHocrMode = ocrData.reimportHocrMode;
 
     stextMode = ocrData.stextMode;
   }
 
-  const pageCountHOCR = ocrAllRaw.active?.length;
+  const pageCountOcr = ocrAllRaw.active?.length || ocrAll.active?.length || 0;
 
   // If both OCR data and image data are present, confirm they have the same number of pages
   if (xmlModeImport && (inputData.imageMode || inputData.pdfMode)) {
-    if (pageCountImage !== pageCountHOCR) {
-      const warningHTML = `Page mismatch detected. Image data has ${pageCountImage} pages while OCR data has ${pageCountHOCR} pages.`;
+    if (pageCountImage !== pageCountOcr) {
+      const warningHTML = `Page mismatch detected. Image data has ${pageCountImage} pages while OCR data has ${pageCountOcr} pages.`;
       opt.warningHandler(warningHTML);
     }
   }
 
-  inputData.pageCount = pageCountImage ?? pageCountHOCR;
+  inputData.pageCount = pageCountImage ?? pageCountOcr;
 
   ocrAllRaw.active = ocrAllRaw.active || Array(pageCount);
 
@@ -429,18 +467,20 @@ export async function importFiles(files) {
     if (stextMode) format = 'stext';
 
     // Process HOCR using web worker, reading from file first if that has not been done already
-    await convertOCR(ocrAllRaw.active, true, format, oemName, scribeMode).then(async () => {
+    await convertOCR(ocrAllRaw.active, true, format, oemName, reimportHocrMode).then(async () => {
       // Skip this step if optimization info was already restored from a previous session, or if using stext (which is character-level but not visually accurate).
       if (!existingOpt && !stextMode) {
         await checkCharWarn(convertPageWarn);
-        calcFontMetricsFromPages(ocrAll.active);
+        const charMetrics = calcCharMetricsFromPages(ocrAll.active);
+
+        if (Object.keys(charMetrics).length > 0) replaceObjectProperties(FontCont.state.charMetrics, charMetrics);
         await runFontOptimization(ocrAll.active);
       }
     });
   } else if (inputData.pdfMode && (opt.usePDFText.native.main || opt.usePDFText.native.supp || opt.usePDFText.ocr.main || opt.usePDFText.ocr.supp)) {
     await extractInternalPDFText();
     if (inputData.pdfType === 'text' && opt.usePDFText.native.main || inputData.pdfType === 'ocr' && opt.usePDFText.ocr.main) {
-      if (inputData.pdfType === 'text') FontCont.enableCleanToNimbusMono = true;
+      if (inputData.pdfType === 'text') FontCont.state.enableCleanToNimbusMono = true;
       if (opt.calcSuppFontInfo) await calcSuppFontInfo(ocrAll.pdf);
     }
   }
@@ -467,8 +507,6 @@ export async function importFilesSupp(files, ocrName) {
 
   const ocrData = await importOCRFiles(ocrFilesAll);
 
-  const scribeMode = ocrData.scribeMode;
-
   const pageCountHOCR = ocrData.hocrRaw.length;
 
   // If both OCR data and image data are present, confirm they have the same number of pages
@@ -482,5 +520,5 @@ export async function importFilesSupp(files, ocrName) {
   if (ocrData.abbyyMode) format = 'abbyy';
   if (ocrData.stextMode) format = 'stext';
 
-  await convertOCR(ocrData.hocrRaw, false, format, ocrName, scribeMode);
+  await convertOCR(ocrData.hocrRaw, false, format, ocrName, ocrData.reimportHocrMode);
 }

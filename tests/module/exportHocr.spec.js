@@ -5,7 +5,6 @@ import { assert, config } from '../../node_modules/chai/chai.js';
 import { writeHocr } from '../../js/export/writeHocr.js';
 import { gs } from '../../js/generalWorkerMain.js';
 import { splitHOCRStr } from '../../js/import/importOCR.js';
-import ocr from '../../js/objects/ocrObjects.js';
 import scribe from '../../scribe.js';
 import { ASSETS_PATH_KARMA } from '../constants.js';
 
@@ -20,7 +19,7 @@ config.truncateThreshold = 0; // Disable truncation for actual/expected values o
  * @param {Array<OcrPage>} ocrArr
  */
 const standardizeOCRPages = (ocrArr) => {
-  const ocrArrCopy = ocrArr.map((x) => ocr.clonePage(x));
+  const ocrArrCopy = ocrArr.map((x) => scribe.utils.ocr.clonePage(x));
 
   ocrArrCopy.forEach((page) => {
     page.lines.forEach((line) => {

@@ -326,6 +326,10 @@ export class gs {
 
   static terminate = async () => {
     gs.clear();
+    // This function can be run while the scheduler is still initializing.
+    // This happens when we pre-load the scheduler, but then terminate before it finishes loading,
+    // and it is never actually used.
+    await gs.schedulerReady;
     await gs.schedulerInner.terminate();
     gs.schedulerInner = null;
     gs.schedulerReady = null;

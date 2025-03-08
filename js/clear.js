@@ -1,7 +1,6 @@
 import { inputData } from './containers/app.js';
 import {
   convertPageWarn,
-  fontMetricsObj,
   layoutDataTables,
   layoutRegions,
   ocrAll,
@@ -21,7 +20,5 @@ export function clearData() {
   pageMetricsArr.length = 0;
   convertPageWarn.length = 0;
   ImageCache.clear();
-  // Clear optimized font data and reset fontAll to raw data.
-  replaceObjectProperties(fontMetricsObj);
   FontCont.clear();
 }

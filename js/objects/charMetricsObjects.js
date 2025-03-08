@@ -12,7 +12,7 @@
  * This is because most characters used for this calculation are slightly larger than "x",
  * and Tesseract does not take this into account when performing this calculation.
  */
-export function FontMetricsFont() {
+export function CharMetricsFont() {
   /** @type {Object.<string, number>} */
   this.width = {};
   /** @type {Object.<string, number>} */
@@ -35,18 +35,18 @@ export function FontMetricsFont() {
   this.obsCaps = 0;
 }
 
-export function FontMetricsFamily() {
-  this.normal = new FontMetricsFont();
-  this.italic = new FontMetricsFont();
-  this.smallCaps = new FontMetricsFont();
-  this.bold = new FontMetricsFont();
+export function CharMetricsFamily() {
+  this.normal = new CharMetricsFont();
+  this.italic = new CharMetricsFont();
+  this.smallCaps = new CharMetricsFont();
+  this.bold = new CharMetricsFont();
   this.obs = 0;
 }
 
 /**
  * Object containing individual observations of various character metrics.
  */
-export function FontMetricsRawFont() {
+export function CharMetricsRawFont() {
   /** @type {Object.<string, Array.<number>>} */
   this.width = {};
   /** @type {Object.<string, Array.<number>>} */
@@ -63,9 +63,9 @@ export function FontMetricsRawFont() {
   this.obs = 0;
 }
 
-export function FontMetricsRawFamily() {
-  this.normal = new FontMetricsRawFont();
-  this.italic = new FontMetricsRawFont();
-  this.smallCaps = new FontMetricsRawFont();
-  this.bold = new FontMetricsRawFont();
+export function CharMetricsRawFamily() {
+  this.normal = new CharMetricsRawFont();
+  this.italic = new CharMetricsRawFont();
+  this.smallCaps = new CharMetricsRawFont();
+  this.bold = new CharMetricsRawFont();
 }

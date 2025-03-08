@@ -58,7 +58,7 @@ export async function convertPageAbbyy({ ocrStr, n }) {
     const warn = { char: 'char_error' };
 
     return {
-      pageObj, fontMetricsObj: {}, dataTables: new LayoutDataTablePage(n), warn,
+      pageObj, charMetricsObj: {}, dataTables: new LayoutDataTablePage(n), warn,
     };
   }
 
@@ -82,6 +82,13 @@ export async function convertPageAbbyy({ ocrStr, n }) {
 
     const textOrientationFinal = (pageOrientation + textOrientation) % 4;
 
+    /**
+     * Convert Abbyy XML paragraph to internal format.
+     * Note that Abbyy XML paragraphs are not preserved because paragraphs are re-assigned by the `assignParagraphs` function.
+     * Even if this function call was skipped in the code, when saving/restoring the state using .scribe files, paragraph data is not saved.
+     * Further development would be needed to preserve paragraph data.
+     * @param {string} xmlPar
+     */
     function convertParAbbyy(xmlPar) {
       /** @type {Array<OcrLine>} */
       const parLineArr = [];

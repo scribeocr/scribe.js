@@ -1,4 +1,4 @@
-import { fontMetricsObj, pageMetricsArr } from './containers/dataContainer.js';
+import { pageMetricsArr } from './containers/dataContainer.js';
 import { FontCont } from './containers/fontContainer.js';
 import { ImageCache } from './containers/imageContainer.js';
 import {
@@ -132,16 +132,16 @@ const calcBestFonts = (fontMetrics) => {
 export async function runFontOptimization(ocrArr) {
   await loadBuiltInFontsRaw();
 
-  const calculateOpt = fontMetricsObj && Object.keys(fontMetricsObj).length > 0;
+  const calculateOpt = FontCont.state.charMetrics && Object.keys(FontCont.state.charMetrics).length > 0;
 
   let enableOptSerif = false;
   let enableOptSans = false;
 
   let optimizeFontContainerAllPromise;
   if (calculateOpt) {
-    setDefaultFontAuto(fontMetricsObj);
+    setDefaultFontAuto(FontCont.state.charMetrics);
 
-    optimizeFontContainerAllPromise = optimizeFontContainerAll(FontCont.raw, fontMetricsObj)
+    optimizeFontContainerAllPromise = optimizeFontContainerAll(FontCont.raw, FontCont.state.charMetrics)
       .then((res) => {
         FontCont.opt = res;
       });
@@ -167,28 +167,28 @@ export async function runFontOptimization(ocrArr) {
       // This ensures that switching on/off "font optimization" does not change the font, which would be confusing.
       if (FontCont.optMetrics[bestMetricsOpt.minKeySans] < FontCont.rawMetrics[bestMetricsRaw.minKeySans]) {
         enableOptSans = true;
-        FontCont.sansDefaultName = bestMetricsOpt.minKeySans;
+        FontCont.state.sansDefaultName = bestMetricsOpt.minKeySans;
       } else {
-        FontCont.sansDefaultName = bestMetricsRaw.minKeySans;
+        FontCont.state.sansDefaultName = bestMetricsRaw.minKeySans;
       }
 
       // Repeat for serif fonts
       if (FontCont.optMetrics[bestMetricsOpt.minKeySerif] < FontCont.rawMetrics[bestMetricsRaw.minKeySerif]) {
         enableOptSerif = true;
-        FontCont.serifDefaultName = bestMetricsOpt.minKeySerif;
+        FontCont.state.serifDefaultName = bestMetricsOpt.minKeySerif;
       } else {
-        FontCont.serifDefaultName = bestMetricsRaw.minKeySerif;
+        FontCont.state.serifDefaultName = bestMetricsRaw.minKeySerif;
       }
     } else {
-      FontCont.sansDefaultName = bestMetricsRaw.minKeySans;
-      FontCont.serifDefaultName = bestMetricsRaw.minKeySerif;
+      FontCont.state.sansDefaultName = bestMetricsRaw.minKeySans;
+      FontCont.state.serifDefaultName = bestMetricsRaw.minKeySerif;
     }
 
-    FontCont.enableOpt = enableOptSerif || enableOptSans;
+    FontCont.state.enableOpt = enableOptSerif || enableOptSans;
 
     // Send updated state to all workers.
     await updateFontContWorkerMain();
   }
 
-  return FontCont.enableOpt;
+  return FontCont.state.enableOpt;
 }

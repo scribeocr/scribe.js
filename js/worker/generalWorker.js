@@ -369,13 +369,13 @@ async function loadFontsWorker({ src, opt }) {
 async function updateFontContWorker({
   rawMetrics, optMetrics, defaultFontName, sansDefaultName, serifDefaultName, enableOpt, forceOpt,
 }) {
-  if (sansDefaultName) FontCont.sansDefaultName = sansDefaultName;
-  if (serifDefaultName) FontCont.serifDefaultName = serifDefaultName;
-  if (defaultFontName) FontCont.defaultFontName = defaultFontName;
+  if (sansDefaultName) FontCont.state.sansDefaultName = sansDefaultName;
+  if (serifDefaultName) FontCont.state.serifDefaultName = serifDefaultName;
+  if (defaultFontName) FontCont.state.defaultFontName = defaultFontName;
   if (rawMetrics) FontCont.rawMetrics = rawMetrics;
   if (optMetrics) FontCont.optMetrics = optMetrics;
-  if (enableOpt === true || enableOpt === false) FontCont.enableOpt = enableOpt;
-  if (forceOpt === true || forceOpt === false) FontCont.forceOpt = forceOpt;
+  if (enableOpt === true || enableOpt === false) FontCont.state.enableOpt = enableOpt;
+  if (forceOpt === true || forceOpt === false) FontCont.state.forceOpt = forceOpt;
 }
 
 async function compareOCRPageImpWrap(args) {
