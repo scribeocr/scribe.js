@@ -15,9 +15,9 @@ import { gs } from './generalWorkerMain.js';
  */
 export async function loadBuiltInFontsRaw(glyphSet = 'latin') {
   // Return early if the font set is already loaded, or a superset of the requested set is loaded.
-  if (FontCont.glyphSet === glyphSet || FontCont.glyphSet === 'all' && glyphSet === 'latin') return;
+  if (FontCont.state.glyphSet === glyphSet || FontCont.state.glyphSet === 'all' && glyphSet === 'latin') return;
 
-  FontCont.glyphSet = glyphSet;
+  FontCont.state.glyphSet = glyphSet;
 
   // Note: this function is intentionally verbose, and should not be refactored to generate the paths dynamically.
   // Build systems will not be able to resolve the paths if they are generated dynamically.
@@ -213,15 +213,15 @@ export async function loadChiSimFont() {
 export async function enableFontOpt(enableOpt, forceOpt) {
   let change = false;
   if (enableOpt === true || enableOpt === false) {
-    if (FontCont.enableOpt !== enableOpt) {
+    if (FontCont.state.enableOpt !== enableOpt) {
       change = true;
-      FontCont.enableOpt = enableOpt;
+      FontCont.state.enableOpt = enableOpt;
     }
   }
   if (forceOpt === true || forceOpt === false) {
-    if (FontCont.forceOpt !== forceOpt) {
+    if (FontCont.state.forceOpt !== forceOpt) {
       change = true;
-      FontCont.forceOpt = forceOpt;
+      FontCont.state.forceOpt = forceOpt;
     }
   }
 
@@ -286,11 +286,11 @@ export async function updateFontContWorkerMain(params = {}) {
     const res = worker.updateFontContWorker({
       rawMetrics: FontCont.rawMetrics,
       optMetrics: FontCont.optMetrics,
-      sansDefaultName: FontCont.sansDefaultName,
-      serifDefaultName: FontCont.serifDefaultName,
-      defaultFontName: FontCont.defaultFontName,
-      enableOpt: FontCont.enableOpt,
-      forceOpt: FontCont.forceOpt,
+      sansDefaultName: FontCont.state.sansDefaultName,
+      serifDefaultName: FontCont.state.serifDefaultName,
+      defaultFontName: FontCont.state.defaultFontName,
+      enableOpt: FontCont.state.enableOpt,
+      forceOpt: FontCont.state.forceOpt,
     });
     resArr.push(res);
   }
@@ -336,11 +336,11 @@ export async function setUploadFontsWorker(scheduler) {
     const res = worker.updateFontContWorker({
       rawMetrics: FontCont.rawMetrics,
       optMetrics: FontCont.optMetrics,
-      sansDefaultName: FontCont.sansDefaultName,
-      serifDefaultName: FontCont.serifDefaultName,
-      defaultFontName: FontCont.defaultFontName,
-      enableOpt: FontCont.enableOpt,
-      forceOpt: FontCont.forceOpt,
+      sansDefaultName: FontCont.state.sansDefaultName,
+      serifDefaultName: FontCont.state.serifDefaultName,
+      defaultFontName: FontCont.state.defaultFontName,
+      enableOpt: FontCont.state.enableOpt,
+      forceOpt: FontCont.state.forceOpt,
     });
     resArr.push(res);
   }
@@ -351,23 +351,23 @@ export async function setUploadFontsWorker(scheduler) {
  * Automatically sets the default font to whatever font is most common in the provided font metrics.
  *
  */
-export function setDefaultFontAuto(fontMetricsObj) {
-  const multiFontMode = checkMultiFontMode(fontMetricsObj);
+export function setDefaultFontAuto(charMetricsObj) {
+  const multiFontMode = checkMultiFontMode(charMetricsObj);
 
   // Return early if the OCR data does not contain font info.
   if (!multiFontMode) return;
 
   // Change default font to whatever named font appears more
-  if ((fontMetricsObj.SerifDefault?.obs || 0) > (fontMetricsObj.SansDefault?.obs || 0)) {
-    FontCont.defaultFontName = 'SerifDefault';
+  if ((charMetricsObj.SerifDefault?.obs || 0) > (charMetricsObj.SansDefault?.obs || 0)) {
+    FontCont.state.defaultFontName = 'SerifDefault';
   } else {
-    FontCont.defaultFontName = 'SansDefault';
+    FontCont.state.defaultFontName = 'SansDefault';
   }
 
   if (gs.schedulerInner) {
     for (let i = 0; i < gs.schedulerInner.workers.length; i++) {
       const worker = gs.schedulerInner.workers[i];
-      worker.updateFontContWorker({ defaultFontName: FontCont.defaultFontName });
+      worker.updateFontContWorker({ defaultFontName: FontCont.state.defaultFontName });
     }
   }
 }
@@ -375,39 +375,39 @@ export function setDefaultFontAuto(fontMetricsObj) {
 /**
  *
  * @param {FontContainerFamilyBuiltIn} fontFamily
- * @param {Object.<string, FontMetricsFamily>} fontMetricsObj
+ * @param {Object.<string, CharMetricsFamily>} charMetricsObj
  */
-export async function optimizeFontContainerFamily(fontFamily, fontMetricsObj) {
+export async function optimizeFontContainerFamily(fontFamily, charMetricsObj) {
   // When we have metrics for individual fonts families, those are used to optimize the appropriate fonts.
   // Otherwise, the "default" metric is applied to whatever font the user has selected as the default font.
-  const multiFontMode = checkMultiFontMode(fontMetricsObj);
-  let fontMetricsType = 'Default';
+  const multiFontMode = checkMultiFontMode(charMetricsObj);
+  let charMetricsType = 'Default';
   if (multiFontMode) {
     if (fontFamily.normal.type === 'sans') {
-      fontMetricsType = 'SansDefault';
+      charMetricsType = 'SansDefault';
     } else {
-      fontMetricsType = 'SerifDefault';
+      charMetricsType = 'SerifDefault';
     }
   }
 
   // If there are no statistics to use for optimization, create "optimized" font by simply copying the raw font without modification.
   // This should only occur when `multiFontMode` is true, but a document contains no sans words or no serif words.
-  if (!fontMetricsObj[fontMetricsType] || !fontMetricsObj[fontMetricsType][fontFamily.normal.style] || fontMetricsObj[fontMetricsType][fontFamily.normal.style].obs < 200) {
+  if (!charMetricsObj[charMetricsType] || !charMetricsObj[charMetricsType][fontFamily.normal.style] || charMetricsObj[charMetricsType][fontFamily.normal.style].obs < 200) {
     return null;
   }
 
-  const metricsNormal = fontMetricsObj[fontMetricsType][fontFamily.normal.style];
-  const normalOptFont = gs.optimizeFont({ fontData: fontFamily.normal.src, fontMetricsObj: metricsNormal, style: fontFamily.normal.style })
+  const metricsNormal = charMetricsObj[charMetricsType][fontFamily.normal.style];
+  const normalOptFont = gs.optimizeFont({ fontData: fontFamily.normal.src, charMetricsObj: metricsNormal, style: fontFamily.normal.style })
     .then(async (x) => {
       const font = await loadOpentype(x.fontData, x.kerningPairs);
       return new FontContainerFont(fontFamily.normal.family, fontFamily.normal.style, x.fontData, true, font);
     });
 
-  const metricsItalic = fontMetricsObj[fontMetricsType][fontFamily.italic.style];
+  const metricsItalic = charMetricsObj[charMetricsType][fontFamily.italic.style];
   /** @type {?FontContainerFont|Promise<FontContainerFont>} */
   let italicOptFont = null;
   if (metricsItalic && metricsItalic.obs >= 200) {
-    italicOptFont = gs.optimizeFont({ fontData: fontFamily.italic.src, fontMetricsObj: metricsItalic, style: fontFamily.italic.style })
+    italicOptFont = gs.optimizeFont({ fontData: fontFamily.italic.src, charMetricsObj: metricsItalic, style: fontFamily.italic.style })
       .then(async (x) => {
         const font = await loadOpentype(x.fontData, x.kerningPairs);
         return new FontContainerFont(fontFamily.italic.family, fontFamily.italic.style, x.fontData, true, font);
@@ -424,16 +424,16 @@ export async function optimizeFontContainerFamily(fontFamily, fontMetricsObj) {
  * Optimize all fonts.
  * If a font cannot be optimized, then the raw font is returned.
  * @param {Object<string, FontContainerFamilyBuiltIn>} fontPrivate
- * @param {Object.<string, FontMetricsFamily>} fontMetricsObj
+ * @param {Object.<string, CharMetricsFamily>} charMetricsObj
  */
-export async function optimizeFontContainerAll(fontPrivate, fontMetricsObj) {
-  const carlitoPromise = optimizeFontContainerFamily(fontPrivate.Carlito, fontMetricsObj);
-  const centuryPromise = optimizeFontContainerFamily(fontPrivate.Century, fontMetricsObj);
-  const garamondPromise = optimizeFontContainerFamily(fontPrivate.Garamond, fontMetricsObj);
-  const palatinoPromise = optimizeFontContainerFamily(fontPrivate.Palatino, fontMetricsObj);
-  const nimbusRomanPromise = optimizeFontContainerFamily(fontPrivate.NimbusRoman, fontMetricsObj);
-  const nimbusSansPromise = optimizeFontContainerFamily(fontPrivate.NimbusSans, fontMetricsObj);
-  const nimbusMonoPromise = optimizeFontContainerFamily(fontPrivate.NimbusMono, fontMetricsObj);
+export async function optimizeFontContainerAll(fontPrivate, charMetricsObj) {
+  const carlitoPromise = optimizeFontContainerFamily(fontPrivate.Carlito, charMetricsObj);
+  const centuryPromise = optimizeFontContainerFamily(fontPrivate.Century, charMetricsObj);
+  const garamondPromise = optimizeFontContainerFamily(fontPrivate.Garamond, charMetricsObj);
+  const palatinoPromise = optimizeFontContainerFamily(fontPrivate.Palatino, charMetricsObj);
+  const nimbusRomanPromise = optimizeFontContainerFamily(fontPrivate.NimbusRoman, charMetricsObj);
+  const nimbusSansPromise = optimizeFontContainerFamily(fontPrivate.NimbusSans, charMetricsObj);
+  const nimbusMonoPromise = optimizeFontContainerFamily(fontPrivate.NimbusMono, charMetricsObj);
 
   const results = await Promise.all([carlitoPromise, centuryPromise, garamondPromise, palatinoPromise, nimbusRomanPromise, nimbusSansPromise, nimbusMonoPromise]);
 

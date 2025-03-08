@@ -5,15 +5,10 @@ import {
   determineSansSerif,
   getStyleLookup,
   quantile,
-  replaceObjectProperties,
   round6,
 } from './utils/miscUtils.js';
 
-import { FontMetricsFamily, FontMetricsFont, FontMetricsRawFamily } from './objects/fontMetricsObjects.js';
-
-import { fontMetricsObj } from './containers/dataContainer.js';
-
-// import { glyphAlts } from "../fonts/glyphs.js";
+import { CharMetricsFamily, CharMetricsFont, CharMetricsRawFamily } from './objects/charMetricsObjects.js';
 
 /**
  * Combine page-level character statistics to calculate overall font metrics.
@@ -21,102 +16,102 @@ import { fontMetricsObj } from './containers/dataContainer.js';
  *
  * @param {Array<OcrPage>} pageArr
  */
-export function calcFontMetricsFromPages(pageArr) {
-  const pageFontMetricsArr = pageArr.map((x) => calcFontMetricsPage(x));
+export function calcCharMetricsFromPages(pageArr) {
+  const pageCharMetricsArr = pageArr.map((x) => calcCharMetricsPage(x));
 
-  const fontMetricsRawObj = pageFontMetricsArr.reduce((x, y) => unionFontMetricsRawObj(x, y));
+  const charMetricsRawObj = pageCharMetricsArr.reduce((x, y) => unionCharMetricsRawObj(x, y));
 
-  /** @type {Object.<string, FontMetricsFamily>} */
-  const fontMetricsOut = {};
+  /** @type {Object.<string, CharMetricsFamily>} */
+  const charMetricsOut = {};
 
-  for (const [family, obj] of Object.entries(fontMetricsRawObj)) {
-    fontMetricsOut[family] = new FontMetricsFamily();
+  for (const [family, obj] of Object.entries(charMetricsRawObj)) {
+    charMetricsOut[family] = new CharMetricsFamily();
     for (const [style, obj2] of Object.entries(obj)) {
-      fontMetricsOut[family][style] = calculateFontMetrics(obj2);
-      fontMetricsOut[family].obs += fontMetricsOut[family][style].obs;
+      charMetricsOut[family][style] = calculateCharMetrics(obj2);
+      charMetricsOut[family].obs += charMetricsOut[family][style].obs;
     }
   }
 
-  if (Object.keys(fontMetricsOut).length > 0) replaceObjectProperties(fontMetricsObj, fontMetricsOut);
+  return charMetricsOut;
 }
 
-// The following functions are used for combining an array of page-level fontMetrics objects produced by convertPage.js into a single document-level object.
+// The following functions are used for combining an array of page-level charMetrics objects produced by convertPage.js into a single document-level object.
 
 /**
- * Adds observations from `fontMetricsB` into `fontMetricsA`. Modifies `fontMetricsA` in place.
+ * Adds observations from `charMetricsRawFontB` into `charMetricsRawFontA`. Modifies `charMetricsRawFontA` in place.
  *
- * @param {?FontMetricsRawFont} fontMetricsRawFontA
- * @param {?FontMetricsRawFont} fontMetricsRawFontB
- * @param {?number} xHeight - If specified, values from `fontMetricsRawFontB` will be normalized by dividing by `xHeight`.
- * @returns {?FontMetricsRawFont} - Returns fontMetricsFontA after modifying in place
+ * @param {?CharMetricsRawFont} charMetricsRawFontA
+ * @param {?CharMetricsRawFont} charMetricsRawFontB
+ * @param {?number} xHeight - If specified, values from `charMetricsRawFontB` will be normalized by dividing by `xHeight`.
+ * @returns {?CharMetricsRawFont} - Returns charMetricsRawFontA after modifying in place
  */
-export function unionFontMetricsFont(fontMetricsRawFontA, fontMetricsRawFontB, xHeight = null) {
+function unionCharMetricsFont(charMetricsRawFontA, charMetricsRawFontB, xHeight = null) {
   // If one of the inputs is undefined, return early with the only valid object
-  if (!fontMetricsRawFontA) {
-    if (!fontMetricsRawFontB) return null;
-    fontMetricsRawFontA = structuredClone(fontMetricsRawFontB);
-    return fontMetricsRawFontA;
+  if (!charMetricsRawFontA) {
+    if (!charMetricsRawFontB) return null;
+    charMetricsRawFontA = structuredClone(charMetricsRawFontB);
+    return charMetricsRawFontA;
   }
-  if (!fontMetricsRawFontB) {
-    return fontMetricsRawFontA;
+  if (!charMetricsRawFontB) {
+    return charMetricsRawFontA;
   }
 
-  if (fontMetricsRawFontB?.obs) fontMetricsRawFontA.obs += fontMetricsRawFontB.obs;
+  if (charMetricsRawFontB?.obs) charMetricsRawFontA.obs += charMetricsRawFontB.obs;
 
-  for (const [prop, obj] of Object.entries(fontMetricsRawFontB)) {
+  for (const [prop, obj] of Object.entries(charMetricsRawFontB)) {
     for (const [key, value] of Object.entries(obj)) {
-      if (!fontMetricsRawFontA[prop][key]) {
-        fontMetricsRawFontA[prop][key] = [];
+      if (!charMetricsRawFontA[prop][key]) {
+        charMetricsRawFontA[prop][key] = [];
       }
       if (xHeight) {
         const valueNorm = value.map((x) => x / xHeight).filter((x) => x);
-        Array.prototype.push.apply(fontMetricsRawFontA[prop][key], valueNorm);
+        Array.prototype.push.apply(charMetricsRawFontA[prop][key], valueNorm);
       } else {
-        Array.prototype.push.apply(fontMetricsRawFontA[prop][key], value);
+        Array.prototype.push.apply(charMetricsRawFontA[prop][key], value);
       }
     }
   }
-  return (fontMetricsRawFontA);
+  return (charMetricsRawFontA);
 }
 
 /**
- * Adds observations from `fontMetricsB` into `fontMetricsA`. Modifies `fontMetricsA` in place.
+ * Adds observations from `charMetricsRawObjB` into `charMetricsRawObjA`. Modifies `charMetricsRawObjA` in place.
  *
- * @param {Object.<string, FontMetricsRawFamily>} fontMetricsRawObjA
- * @param {Object.<string, FontMetricsRawFamily>} fontMetricsRawObjB
- * @returns {Object.<string, FontMetricsRawFamily>} - Returns fontMetricsObjA after modifying in place
+ * @param {Object.<string, CharMetricsRawFamily>} charMetricsRawObjA
+ * @param {Object.<string, CharMetricsRawFamily>} charMetricsRawObjB
+ * @returns {Object.<string, CharMetricsRawFamily>} - Returns charMetricsRawObjA after modifying in place
  */
-function unionFontMetricsRawObj(fontMetricsRawObjA, fontMetricsRawObjB) {
-  for (const [family, obj] of Object.entries(fontMetricsRawObjB)) {
+function unionCharMetricsRawObj(charMetricsRawObjA, charMetricsRawObjB) {
+  for (const [family, obj] of Object.entries(charMetricsRawObjB)) {
     for (const [style, obj2] of Object.entries(obj)) {
       if (Object.keys(obj2.width).length === 0) continue;
-      if (!fontMetricsRawObjA[family]) {
-        fontMetricsRawObjA[family] = new FontMetricsRawFamily();
+      if (!charMetricsRawObjA[family]) {
+        charMetricsRawObjA[family] = new CharMetricsRawFamily();
       }
     }
   }
 
-  for (const [family, obj] of Object.entries(fontMetricsRawObjA)) {
+  for (const [family, obj] of Object.entries(charMetricsRawObjA)) {
     for (const [style, obj2] of Object.entries(obj)) {
-      unionFontMetricsFont(fontMetricsRawObjA?.[family]?.[style], fontMetricsRawObjB?.[family]?.[style]);
+      unionCharMetricsFont(charMetricsRawObjA?.[family]?.[style], charMetricsRawObjB?.[family]?.[style]);
     }
   }
 
-  return (fontMetricsRawObjA);
+  return (charMetricsRawObjA);
 }
 
 /**
  * Calculates final font statistics from individual observations.
  *
- * @param {FontMetricsRawFont} fontMetricsRawFontObj
- * @returns {FontMetricsFont} -
+ * @param {CharMetricsRawFont} charMetricsRawFontObj
+ * @returns {CharMetricsFont} -
  */
-function calculateFontMetrics(fontMetricsRawFontObj) {
-  const fontMetricOut = new FontMetricsFont();
+function calculateCharMetrics(charMetricsRawFontObj) {
+  const fontMetricOut = new CharMetricsFont();
 
   // Take the median of each array
   for (const prop of ['width', 'height', 'kerning', 'kerning2']) {
-    for (const [key, value] of Object.entries(fontMetricsRawFontObj[prop])) {
+    for (const [key, value] of Object.entries(charMetricsRawFontObj[prop])) {
       if (value.length > 0) {
         fontMetricOut[prop][key] = round6(quantile(value, 0.5));
       }
@@ -125,7 +120,7 @@ function calculateFontMetrics(fontMetricsRawFontObj) {
 
   // Calculate median hight of capital letters only
   const heightCapsArr = [];
-  for (const [key, value] of Object.entries(fontMetricsRawFontObj.height)) {
+  for (const [key, value] of Object.entries(charMetricsRawFontObj.height)) {
     if (/[A-Z]/.test(String.fromCharCode(parseInt(key)))) {
       Array.prototype.push.apply(heightCapsArr, value);
     }
@@ -134,12 +129,12 @@ function calculateFontMetrics(fontMetricsRawFontObj) {
   fontMetricOut.heightCaps = round6(quantile(heightCapsArr, 0.5));
   fontMetricOut.obsCaps = heightCapsArr.length;
 
-  fontMetricOut.obs = fontMetricsRawFontObj.obs;
+  fontMetricOut.obs = charMetricsRawFontObj.obs;
 
   // Standardize all metrics be normalized by x-height
   // The raw metrics may be normalized by ascHeight (for numbers) or x-height (for all other characters).
   for (const prop of ['width', 'height', 'kerning', 'kerning2']) {
-    for (const [key, value] of Object.entries(fontMetricsRawFontObj[prop])) {
+    for (const [key, value] of Object.entries(charMetricsRawFontObj[prop])) {
       const nameFirst = key.match(/\w+/)[0];
       const charFirst = String.fromCharCode(parseInt(nameFirst));
       if (/\d/.test(charFirst)) {
@@ -151,7 +146,7 @@ function calculateFontMetrics(fontMetricsRawFontObj) {
   // The `kerning2` observations contain the measurement between the end of char 1 and the end of char 2.
   // Therefore, the width of char 2 must be subtracted to get a measurement comparable with `kerning`.
   for (const prop of ['kerning2']) {
-    for (const [key, value] of Object.entries(fontMetricsRawFontObj[prop])) {
+    for (const [key, value] of Object.entries(charMetricsRawFontObj[prop])) {
       if (value.length > 0) {
         const nameSecond = key.match(/\w+$/)[0];
 
@@ -205,42 +200,43 @@ const roundedVWRegex = new RegExp(roundedVWArr.reduce((x, y) => `${x}|${y}`), 'i
 const serifStemSerifPQArr = ['Bookman', 'Century_Schoolbook', 'Courier', 'Georgia', 'Times'];
 const serifStemSerifPQRegex = new RegExp(serifStemSerifPQArr.reduce((x, y) => `${x}|${y}`), 'i');
 
+// This function is currently unused. Keeping as we may restore this feature in the future.
 // While the majority of glyphs can be approximated by applying geometric transformations to a single sans and serif font,
 // there are some exceptions (e.g. the lowercase "g" has 2 distinct variations).
 // This function identifies variations that require switching out a glyph from the default font entirely.
-export function identifyFontVariants(fontScores, fontMetrics) {
-  if (fontMetrics?.SansDefault?.normal) {
+function identifyFontVariants(fontScores, charMetrics) {
+  if (charMetrics?.SansDefault?.normal) {
     const sansG = calcTopFont(fontScores?.SansDefault?.normal?.g);
-    fontMetrics.SansDefault.normal.variants.sans_g = singleGRegex.test(sansG);
+    charMetrics.SansDefault.normal.variants.sans_g = singleGRegex.test(sansG);
     const sans1 = calcTopFont(fontScores?.SansDefault?.normal?.['1']);
-    fontMetrics.SansDefault.normal.variants.sans_1 = base1Regex.test(sans1);
+    charMetrics.SansDefault.normal.variants.sans_1 = base1Regex.test(sans1);
   }
 
-  if (fontMetrics?.SerifDefault?.italic) {
+  if (charMetrics?.SerifDefault?.italic) {
     const minY = calcTopFont(fontScores?.SerifDefault?.italic?.y);
-    fontMetrics.SerifDefault.italic.variants.serif_italic_y = minYRegex.test(minY);
+    charMetrics.SerifDefault.italic.variants.serif_italic_y = minYRegex.test(minY);
     const closedK = calcTopFont(fontScores?.SerifDefault?.italic?.y);
-    fontMetrics.SerifDefault.italic.variants.serif_open_k = !closedKRegex.test(closedK);
+    charMetrics.SerifDefault.italic.variants.serif_open_k = !closedKRegex.test(closedK);
 
     const roundedV = calcTopFont(fontScores?.SerifDefault?.italic?.v);
     const roundedW = calcTopFont(fontScores?.SerifDefault?.italic?.w);
-    fontMetrics.SerifDefault.italic.variants.serif_pointy_vw = !(roundedVWRegex.test(roundedV) || roundedVWRegex.test(roundedW));
+    charMetrics.SerifDefault.italic.variants.serif_pointy_vw = !(roundedVWRegex.test(roundedV) || roundedVWRegex.test(roundedW));
 
     const serifItalicP = calcTopFont(fontScores?.SerifDefault?.italic?.p);
     const serifItalicQ = calcTopFont(fontScores?.SerifDefault?.italic?.q);
-    fontMetrics.SerifDefault.italic.variants.serif_stem_sans_pq = !(serifStemSerifPQRegex.test(serifItalicP) || serifStemSerifPQRegex.test(serifItalicQ));
+    charMetrics.SerifDefault.italic.variants.serif_stem_sans_pq = !(serifStemSerifPQRegex.test(serifItalicP) || serifStemSerifPQRegex.test(serifItalicQ));
   }
 
-  return fontMetrics;
+  return charMetrics;
 }
 
 /**
  *
  * @param {OcrPage} pageObj
  */
-function calcFontMetricsPage(pageObj) {
-  /** @type {Object.<string, FontMetricsRawFamily>} */
-  const fontMetricsRawPage = {};
+function calcCharMetricsPage(pageObj) {
+  /** @type {Object.<string, CharMetricsRawFamily>} */
+  const charMetricsRawPage = {};
 
   for (const lineObj of pageObj.lines) {
     for (const wordObj of lineObj.words) {
@@ -251,8 +247,8 @@ function calcFontMetricsPage(pageObj) {
 
       // Do not include superscripts, dropcaps, and low-confidence words in statistics for font optimization.
       if (wordObj.conf < 80 || wordObj.lang === 'chi_sim' || wordObj.style.sup || wordObj.style.smallCaps) continue;
-      /** @type {Object.<string, FontMetricsRawFamily>} */
-      const fontMetricsRawLine = {};
+      /** @type {Object.<string, CharMetricsRawFamily>} */
+      const charMetricsRawLine = {};
 
       if (wordObj.chars) {
         for (let k = 0; k < wordObj.chars.length; k++) {
@@ -272,22 +268,22 @@ function calcFontMetricsPage(pageObj) {
           // May cause future issues as this code assumes one character per <ocrx_cinfo> tag.
           const charUnicode = String(charObj.text.charCodeAt(0));
 
-          if (!fontMetricsRawLine[wordFontFamily]) {
-            fontMetricsRawLine[wordFontFamily] = new FontMetricsRawFamily();
+          if (!charMetricsRawLine[wordFontFamily]) {
+            charMetricsRawLine[wordFontFamily] = new CharMetricsRawFamily();
           }
 
           const styleLookup = getStyleLookup(wordObj.style);
 
           if (!['normal', 'italic', 'bold'].includes(styleLookup)) continue;
 
-          if (!fontMetricsRawLine[wordFontFamily][styleLookup].width[charUnicode]) {
-            fontMetricsRawLine[wordFontFamily][styleLookup].width[charUnicode] = [];
-            fontMetricsRawLine[wordFontFamily][styleLookup].height[charUnicode] = [];
+          if (!charMetricsRawLine[wordFontFamily][styleLookup].width[charUnicode]) {
+            charMetricsRawLine[wordFontFamily][styleLookup].width[charUnicode] = [];
+            charMetricsRawLine[wordFontFamily][styleLookup].height[charUnicode] = [];
           }
 
-          fontMetricsRawLine[wordFontFamily][styleLookup].width[charUnicode].push(charWidth / charNorm);
-          fontMetricsRawLine[wordFontFamily][styleLookup].height[charUnicode].push(charHeight / charNorm);
-          fontMetricsRawLine[wordFontFamily][styleLookup].obs += 1;
+          charMetricsRawLine[wordFontFamily][styleLookup].width[charUnicode].push(charWidth / charNorm);
+          charMetricsRawLine[wordFontFamily][styleLookup].height[charUnicode].push(charHeight / charNorm);
+          charMetricsRawLine[wordFontFamily][styleLookup].obs += 1;
 
           if (k + 1 < wordObj.chars.length) {
             const charObjNext = wordObj.chars[k + 1];
@@ -300,33 +296,33 @@ function calcFontMetricsPage(pageObj) {
             if (trailingSpace + charWidthNext > 0) {
               const bigramUnicode = `${charUnicode},${wordObj.chars[k + 1].text.charCodeAt(0)}`;
 
-              if (!fontMetricsRawLine[wordFontFamily][styleLookup].kerning[bigramUnicode]) {
-                fontMetricsRawLine[wordFontFamily][styleLookup].kerning[bigramUnicode] = [];
-                fontMetricsRawLine[wordFontFamily][styleLookup].kerning2[bigramUnicode] = [];
+              if (!charMetricsRawLine[wordFontFamily][styleLookup].kerning[bigramUnicode]) {
+                charMetricsRawLine[wordFontFamily][styleLookup].kerning[bigramUnicode] = [];
+                charMetricsRawLine[wordFontFamily][styleLookup].kerning2[bigramUnicode] = [];
               }
-              fontMetricsRawLine[wordFontFamily][styleLookup].kerning[bigramUnicode].push(trailingSpace / charNorm);
-              fontMetricsRawLine[wordFontFamily][styleLookup].kerning2[bigramUnicode].push((trailingSpace + charWidthNext) / charNorm);
+              charMetricsRawLine[wordFontFamily][styleLookup].kerning[bigramUnicode].push(trailingSpace / charNorm);
+              charMetricsRawLine[wordFontFamily][styleLookup].kerning2[bigramUnicode].push((trailingSpace + charWidthNext) / charNorm);
             }
           }
         }
       }
 
-      for (const [family, obj] of Object.entries(fontMetricsRawLine)) {
+      for (const [family, obj] of Object.entries(charMetricsRawLine)) {
         for (const [style, obj2] of Object.entries(obj)) {
           if (Object.keys(obj2.width).length === 0) continue;
-          if (!fontMetricsRawPage[family]) {
-            fontMetricsRawPage[family] = new FontMetricsRawFamily();
+          if (!charMetricsRawPage[family]) {
+            charMetricsRawPage[family] = new CharMetricsRawFamily();
           }
         }
       }
 
-      for (const [family, obj] of Object.entries(fontMetricsRawPage)) {
+      for (const [family, obj] of Object.entries(charMetricsRawPage)) {
         for (const [style, obj2] of Object.entries(obj)) {
-          unionFontMetricsFont(fontMetricsRawPage?.[family]?.[style], fontMetricsRawLine?.[family]?.[style]);
+          unionCharMetricsFont(charMetricsRawPage?.[family]?.[style], charMetricsRawLine?.[family]?.[style]);
         }
       }
     }
   }
 
-  return fontMetricsRawPage;
+  return charMetricsRawPage;
 }

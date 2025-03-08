@@ -10,6 +10,24 @@ declare global {
         sup: boolean;
         dropcap: boolean;
     };
+    
+    type FontState = {
+        enableOpt: boolean;
+        forceOpt: boolean;
+        enableCleanToNimbusMono: boolean;
+        defaultFontName: string;
+        serifDefaultName: string;
+        sansDefaultName: string;
+        glyphSet: null | 'latin' | 'all';
+        charMetrics: { [key: string]: CharMetricsFamily };
+    }    
+
+    type ScribeSaveData = {
+        ocr: OcrPage[];
+        fontState: FontState;
+        layoutRegions: LayoutPage[];
+        layoutDataTables: LayoutDataTablePage[];
+    }
 
     type StyleLookup = ('normal'|'bold'|'italic'|'boldItalic');
       
@@ -20,10 +38,10 @@ declare global {
     type OcrChar = import("./objects/ocrObjects.js").OcrChar;
 
     // Font objects
-    type FontMetricsFont = import("./objects/fontMetricsObjects.js").FontMetricsFont;
-    type FontMetricsRawFamily = import("./objects/fontMetricsObjects.js").FontMetricsRawFamily;
-    type FontMetricsFamily = import("./objects/fontMetricsObjects.js").FontMetricsFamily;
-    type FontMetricsRawFont = import("./objects/fontMetricsObjects.js").FontMetricsRawFont;
+    type CharMetricsFont = import("./objects/charMetricsObjects.js").CharMetricsFont;
+    type CharMetricsRawFamily = import("./objects/charMetricsObjects.js").CharMetricsRawFamily;
+    type CharMetricsFamily = import("./objects/charMetricsObjects.js").CharMetricsFamily;
+    type CharMetricsRawFont = import("./objects/charMetricsObjects.js").CharMetricsRawFont;
     type FontContainerFont = import("./containers/fontContainer.js").FontContainerFont;
 
     type FontContainerFamilyBuiltIn = {

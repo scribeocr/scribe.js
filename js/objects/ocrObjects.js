@@ -745,6 +745,48 @@ export function getWordFillOpacity(word, displayMode, confThreshMed = 75, confTh
   return { opacity, fill };
 }
 
+/**
+ * Serialize the OCR data as JSON.
+ * A special function is needed to remove circular references.
+ * @param {Array<OcrPage>} pages - Layout data tables.
+ */
+export const removeCircularRefsOcr = (pages) => {
+  const pagesClone = structuredClone(pages);
+  pagesClone.forEach((page) => {
+    page.pars.length = 0;
+    page.lines.forEach((line) => {
+      // @ts-ignore
+      delete line.page;
+      // @ts-ignore
+      delete line.par;
+      line.words.forEach((word) => {
+        // @ts-ignore
+        delete word.line;
+      });
+    });
+  });
+  return pagesClone;
+};
+
+/**
+ * Restores circular references to array of OcrPage objects.
+ * Used to restore circular references after deserializing.
+ * @param {*} pages
+ * @returns {Array<OcrPage>}
+ */
+export const addCircularRefsOcr = (pages) => {
+  pages.forEach((page) => {
+    page.lines.forEach((line) => {
+      line.page = page;
+      line.words.forEach((word) => {
+        word.line = line;
+      });
+    });
+  },
+  );
+  return pages;
+};
+
 const ocr = {
   OcrPage,
   OcrPar,

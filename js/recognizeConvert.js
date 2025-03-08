@@ -5,10 +5,11 @@ import {
   DebugData,
   layoutDataTables, ocrAll, pageMetricsArr, visInstructions,
 } from './containers/dataContainer.js';
+import { FontCont } from './containers/fontContainer.js';
 import { ImageCache, ImageWrapper } from './containers/imageContainer.js';
 import { loadBuiltInFontsRaw, loadChiSimFont } from './fontContainerMain.js';
 import { runFontOptimization } from './fontEval.js';
-import { calcFontMetricsFromPages } from './fontStatistics.js';
+import { calcCharMetricsFromPages } from './fontStatistics.js';
 import { gs } from './generalWorkerMain.js';
 import { PageMetrics } from './objects/pageMetricsObjects.js';
 import { replaceObjectProperties } from './utils/miscUtils.js';
@@ -544,7 +545,8 @@ export async function recognize(options = {}) {
 
     // Metrics from the LSTM model are so inaccurate they are not worth using.
     if (oemMode === 'legacy') {
-      calcFontMetricsFromPages(ocrAll['Tesseract Legacy']);
+      const charMetrics = calcCharMetricsFromPages(ocrAll['Tesseract Legacy']);
+      if (Object.keys(charMetrics).length > 0) replaceObjectProperties(FontCont.state.charMetrics, charMetrics);
       await runFontOptimization(ocrAll['Tesseract Legacy']);
     }
   } else if (oemMode === 'combined') {
@@ -595,7 +597,8 @@ export async function recognize(options = {}) {
     // Evaluate default fonts using up to 5 pages.
     const pageNum = Math.min(ImageCache.pageCount - 1, 5);
     await ImageCache.preRenderRange(0, pageNum, true);
-    calcFontMetricsFromPages(ocrAll['Tesseract Combined Temp']);
+    const charMetrics = calcCharMetricsFromPages(ocrAll['Tesseract Combined Temp']);
+    if (Object.keys(charMetrics).length > 0) replaceObjectProperties(FontCont.state.charMetrics, charMetrics);
     await runFontOptimization(ocrAll['Tesseract Combined Temp']);
 
     const oemText = 'Combined';

@@ -66,7 +66,7 @@ describe('Check font optimization features.', function () {
   }).timeout(10000);
 
   it('Font optimization should be enabled when it improves overlap quality', async () => {
-    assert.strictEqual(scribe.data.font.enableOpt, true);
+    assert.strictEqual(scribe.data.font.state.enableOpt, true);
   }).timeout(10000);
 
   after(async () => {
@@ -92,7 +92,7 @@ describe('Check that font optimization works with italics.', function () {
   }).timeout(10000);
 
   it('Font optimization should be enabled when it improves overlap quality', async () => {
-    assert.strictEqual(scribe.data.font.enableOpt, true);
+    assert.strictEqual(scribe.data.font.state.enableOpt, true);
   }).timeout(10000);
 
   after(async () => {

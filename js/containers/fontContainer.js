@@ -5,7 +5,7 @@
 
 // Node.js case
 import opentype from '../../lib/opentype.module.js';
-import { determineSansSerif, getStyleLookup } from '../utils/miscUtils.js';
+import { determineSansSerif, getStyleLookup, replaceObjectProperties } from '../utils/miscUtils.js';
 import { ca } from '../canvasAdapter.js';
 
 if (typeof process === 'object') {
@@ -21,7 +21,7 @@ if (typeof process === 'object') {
 
 /**
  * Checks whether `multiFontMode` should be enabled or disabled.
- * @param {Object.<string, FontMetricsFamily>} fontMetricsObj
+ * @param {Object.<string, CharMetricsFamily>} charMetricsObj
  *
  * Usually (including when the built-in OCR engine is used) we will have metrics for individual font families,
  * which are used to optimize the appropriate fonts ("multiFontMode" is `true` in this case).
@@ -29,12 +29,12 @@ if (typeof process === 'object') {
  * but no font identification information for most or all words.
  * If this is encountered the "default" metric is applied to the default font ("multiFontMode" is `false` in this case).
  */
-export function checkMultiFontMode(fontMetricsObj) {
+export function checkMultiFontMode(charMetricsObj) {
   let defaultFontObs = 0;
   let namedFontObs = 0;
-  if (fontMetricsObj.Default?.obs) { defaultFontObs += (fontMetricsObj.Default?.obs || 0); }
-  if (fontMetricsObj.SerifDefault?.obs) { namedFontObs += (fontMetricsObj.SerifDefault?.obs || 0); }
-  if (fontMetricsObj.SansDefault?.obs) { namedFontObs += (fontMetricsObj.SansDefault?.obs || 0); }
+  if (charMetricsObj.Default?.obs) { defaultFontObs += (charMetricsObj.Default?.obs || 0); }
+  if (charMetricsObj.SerifDefault?.obs) { namedFontObs += (charMetricsObj.SerifDefault?.obs || 0); }
+  if (charMetricsObj.SansDefault?.obs) { namedFontObs += (charMetricsObj.SansDefault?.obs || 0); }
 
   return namedFontObs > defaultFontObs;
 }
@@ -250,33 +250,43 @@ export class FontCont {
     chi_sim: null,
   };
 
-  /** Optimized fonts will be used when believed to improve quality. */
-  static enableOpt = false;
+  /**
+   * This object contains all data that is saved and restored from intermediate .scribe files.
+   * Anything outside of this object is not saved or restored.
+   * @type {FontState}
+   */
+  static state = {
+    /** Optimized fonts will be used when believed to improve quality. */
+    enableOpt: false,
 
-  /** Optimized fonts will always be used when they exist, even if believed to reduce quality. */
-  static forceOpt = false;
+    /** Optimized fonts will always be used when they exist, even if believed to reduce quality. */
+    forceOpt: false,
+
+    /**
+     * If `false`, 'Courier' will not be cleaned to Nimbus Mono.
+     * This setting is useful because Tesseract sometimes misidentifies fonts as Courier, and when not the document default, Nimbus Mono is almost always incorrect.
+     * Even with this setting `false`, Nimbus Mono will still be used when the font is exactly 'NimbusMono' and Nimbus Mono can still be the document default font.
+     */
+    enableCleanToNimbusMono: false,
+
+    defaultFontName: 'SerifDefault',
+
+    serifDefaultName: 'NimbusRoman',
+
+    sansDefaultName: 'NimbusSans',
+
+    glyphSet: null,
+
+    /** @type {Object.<string, CharMetricsFamily>} */
+    charMetrics: {},
+
+  };
 
   /** @type {?Awaited<ReturnType<import('../fontEval.js').evaluateFonts>>} */
   static rawMetrics = null;
 
   /** @type {?Awaited<ReturnType<import('../fontEval.js').evaluateFonts>>} */
   static optMetrics = null;
-
-  static defaultFontName = 'SerifDefault';
-
-  static serifDefaultName = 'NimbusRoman';
-
-  static sansDefaultName = 'NimbusSans';
-
-  /**
-   * If `false`, 'Courier' will not be cleaned to Nimbus Mono.
-   * This setting is useful because Tesseract sometimes misidentifies fonts as Courier, and when not the document default, Nimbus Mono is almost always incorrect.
-   * Even with this setting `false`, Nimbus Mono will still be used when the font is exactly 'NimbusMono' and Nimbus Mono can still be the document default font.
-   */
-  static enableCleanToNimbusMono = false;
-
-  /** @type {?('latin'|'all')} */
-  static glyphSet = null;
 
   /**
    * Load fonts from an ArrayBuffer containing arbitrary font data.
@@ -344,15 +354,15 @@ export class FontCont {
     const raw = FontCont.raw?.[family]?.normal;
     if (!raw) return false;
     const opt = FontCont.opt?.[family]?.normal;
-    if (opt && FontCont.forceOpt) {
+    if (opt && FontCont.state.forceOpt) {
       return true;
     // If optimized fonts are enabled (but not forced), the optimized version of a font will be used if:
     // (1) The optimized version exists
     // (2) The optimized version has a better metric (so quality should improve).
     // (3) The optimized version of the default sans/serif font also has a better metric.
     // This last condition avoids font optimization being enabled in the UI when it only improves an unused font.
-    } if (opt && FontCont.enableOpt) {
-      const defaultFamily = raw.type === 'serif' ? FontCont.serifDefaultName : FontCont.sansDefaultName;
+    } if (opt && FontCont.state.enableOpt) {
+      const defaultFamily = raw.type === 'serif' ? FontCont.state.serifDefaultName : FontCont.state.sansDefaultName;
 
       const rawMetricDefault = FontCont.rawMetrics?.[defaultFamily];
       const optMetricDefault = FontCont.optMetrics?.[defaultFamily];
@@ -375,7 +385,7 @@ export class FontCont {
    * @returns {FontContainerFont}
    */
   static getFont = (style, lang = 'eng') => {
-    let family = style.font || FontCont.defaultFontName;
+    let family = style.font || FontCont.state.defaultFontName;
 
     const styleLookup = getStyleLookup(style);
 
@@ -413,9 +423,9 @@ export class FontCont {
         family = 'Carlito';
       } else if (/Calibri/i.test(family)) {
         family = 'Carlito';
-      } else if (/Courier/i.test(family) && FontCont.enableCleanToNimbusMono) {
+      } else if (/Courier/i.test(family) && FontCont.state.enableCleanToNimbusMono) {
         family = 'NimbusMono';
-      } else if (/NimbusMono/i.test(family) && FontCont.enableCleanToNimbusMono) {
+      } else if (/NimbusMono/i.test(family) && FontCont.state.enableCleanToNimbusMono) {
         family = 'NimbusMono';
       }
     }
@@ -426,10 +436,10 @@ export class FontCont {
     }
 
     // This needs to come first as `defaultFontName` maps to either 'SerifDefault' or 'SansDefault'.
-    if (family === 'Default') family = FontCont.defaultFontName;
+    if (family === 'Default') family = FontCont.state.defaultFontName;
 
-    if (family === 'SerifDefault') family = FontCont.serifDefaultName;
-    if (family === 'SansDefault') family = FontCont.sansDefaultName;
+    if (family === 'SerifDefault') family = FontCont.state.serifDefaultName;
+    if (family === 'SansDefault') family = FontCont.state.sansDefaultName;
 
     /** @type {FontContainerFont} */
     let fontRes = FontCont.raw?.[family]?.[styleLookup];
@@ -456,16 +466,18 @@ export class FontCont {
     FontCont.rawMetrics = null;
     FontCont.optMetrics = null;
 
-    FontCont.enableCleanToNimbusMono = false;
+    FontCont.state.enableCleanToNimbusMono = false;
 
-    FontCont.defaultFontName = 'SerifDefault';
-    FontCont.serifDefaultName = 'NimbusRoman';
-    FontCont.sansDefaultName = 'NimbusSans';
+    FontCont.state.defaultFontName = 'SerifDefault';
+    FontCont.state.serifDefaultName = 'NimbusRoman';
+    FontCont.state.sansDefaultName = 'NimbusSans';
+
+    replaceObjectProperties(FontCont.state.charMetrics);
   };
 
   static terminate = () => {
     FontCont.clear();
     FontCont.raw = null;
-    FontCont.glyphSet = null;
+    FontCont.state.glyphSet = null;
   };
 }

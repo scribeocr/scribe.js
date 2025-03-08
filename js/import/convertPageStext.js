@@ -5,7 +5,6 @@ import {
   calcBoxOverlap,
   calcLang,
   mean50,
-  quantile,
   round6,
   unescapeXml,
 } from '../utils/miscUtils.js';
@@ -295,6 +294,7 @@ export async function convertPageStext({ ocrStr, n }) {
 
                 boldArr.push(boldWord);
                 italicArr.push(italicWord);
+                underlineArr.push(underlineWordArr.reduce((a, b) => Number(a) + Number(b), 0) / underlineWordArr.length > 0.5);
 
                 fontFamilyArr.push(fontFamily);
 
