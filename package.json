@@ -38,6 +38,9 @@
     "test:cli": "mocha tests/cli",
     "wait": "wait-on http://localhost:3031/"
   },
+  "bin": {
+    "scribe": "cli/scribe.js"
+  },
   "repository": {
     "type": "git",
     "url": "git+https://github.com/scribeocr/scribe.js"
