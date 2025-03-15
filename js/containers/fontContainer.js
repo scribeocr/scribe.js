@@ -191,7 +191,6 @@ export async function loadFontContainerFamily(family, src, opt = false) {
   /**
    *
    * @param {StyleLookup} styleLookup
-   * @returns
    */
   const loadType = (styleLookup) => new Promise((resolve) => {
     const srcType = (src[styleLookup]);
@@ -419,6 +418,10 @@ export class FontCont {
         family = 'Palatino';
       } else if (/Garamond/i.test(family)) {
         family = 'Garamond';
+      } else if (/CenturyGothic/i.test(family)) {
+        family = 'Gothic';
+      } else if (/AvantGarde/i.test(family)) {
+        family = 'Gothic';
       } else if (/Carlito/i.test(family)) {
         family = 'Carlito';
       } else if (/Calibri/i.test(family)) {

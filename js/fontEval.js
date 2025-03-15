@@ -49,6 +49,7 @@ export async function evaluateFonts(pageArr, opt) {
   const evalCentury = !!(opt ? FontCont.opt?.Century : FontCont.raw?.Century);
   const evalPalatino = !!(opt ? FontCont.opt?.Palatino : FontCont.raw?.Palatino);
   const evalGaramond = !!(opt ? FontCont.opt?.Garamond : FontCont.raw?.Garamond);
+  const evalGothic = !!(opt ? FontCont.opt?.Gothic : FontCont.raw?.Gothic);
   const evalNimbusRoman = !!(opt ? FontCont.opt?.NimbusRoman : FontCont.raw?.NimbusRoman);
   const evalNimbusMono = !!(opt ? FontCont.opt?.NimbusMono : FontCont.raw?.NimbusMono);
 
@@ -58,6 +59,7 @@ export async function evaluateFonts(pageArr, opt) {
     century: evalCentury ? evalPagesFont('Century', pageArr, opt) : null,
     palatino: evalPalatino ? evalPagesFont('Palatino', pageArr, opt) : null,
     garamond: evalGaramond ? evalPagesFont('Garamond', pageArr, opt) : null,
+    gothic: evalGothic ? evalPagesFont('Gothic', pageArr, opt) : null,
     nimbusRoman: evalNimbusRoman ? evalPagesFont('NimbusRoman', pageArr, opt) : null,
     nimbusMono: evalNimbusMono ? evalPagesFont('NimbusMono', pageArr, opt) : null,
   };
@@ -68,6 +70,7 @@ export async function evaluateFonts(pageArr, opt) {
     century: await fontMetricsPromises.century,
     palatino: await fontMetricsPromises.palatino,
     garamond: await fontMetricsPromises.garamond,
+    gothic: await fontMetricsPromises.gothic,
     nimbusRoman: await fontMetricsPromises.nimbusRoman,
     nimbusMono: await fontMetricsPromises.nimbusMono,
   };
@@ -78,6 +81,7 @@ export async function evaluateFonts(pageArr, opt) {
     Century: fontMetricsTmp.century ? fontMetricsTmp.century.metricTotal / fontMetricsTmp.century.wordsTotal : null,
     Palatino: fontMetricsTmp.palatino ? fontMetricsTmp.palatino.metricTotal / fontMetricsTmp.palatino.wordsTotal : null,
     Garamond: fontMetricsTmp.garamond ? fontMetricsTmp.garamond.metricTotal / fontMetricsTmp.garamond.wordsTotal : null,
+    Gothic: fontMetricsTmp.gothic ? fontMetricsTmp.gothic.metricTotal / fontMetricsTmp.gothic.wordsTotal : null,
     NimbusRoman: fontMetricsTmp.nimbusRoman ? fontMetricsTmp.nimbusRoman.metricTotal / fontMetricsTmp.nimbusRoman.wordsTotal : null,
     NimbusMono: fontMetricsTmp.nimbusMono ? fontMetricsTmp.nimbusMono.metricTotal / fontMetricsTmp.nimbusMono.wordsTotal : null,
   };
@@ -94,7 +98,7 @@ const calcBestFonts = (fontMetrics) => {
   let minValueSans = Number.MAX_VALUE;
 
   for (const [key, value] of Object.entries(fontMetrics)) {
-    if (!['Carlito', 'NimbusSans'].includes(key)) continue;
+    if (!['Carlito', 'Gothic', 'NimbusSans'].includes(key)) continue;
     if (value && value < minValueSans) {
       minValueSans = value;
       minKeySans = key;

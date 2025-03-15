@@ -49,6 +49,10 @@ export async function loadBuiltInFontsRaw(glyphSet = 'latin') {
   let /** @type {Promise<ArrayBuffer>} */nimbusMonoItalic;
   let /** @type {Promise<ArrayBuffer>} */nimbusMonoBold;
   let /** @type {Promise<ArrayBuffer>} */nimbusMonoBoldItalic;
+  let /** @type {Promise<ArrayBuffer>} */gothicNormal;
+  let /** @type {Promise<ArrayBuffer>} */gothicItalic;
+  let /** @type {Promise<ArrayBuffer>} */gothicBold;
+  let /** @type {Promise<ArrayBuffer>} */gothicBoldItalic;
   if (typeof process === 'undefined') {
     if (glyphSet === 'latin') {
       carlitoNormal = fetch(new URL('../fonts/latin/Carlito-Regular.woff', import.meta.url)).then((res) => res.arrayBuffer());
@@ -79,6 +83,10 @@ export async function loadBuiltInFontsRaw(glyphSet = 'latin') {
       nimbusMonoItalic = fetch(new URL('../fonts/latin/NimbusMono-Italic.woff', import.meta.url)).then((res) => res.arrayBuffer());
       nimbusMonoBold = fetch(new URL('../fonts/latin/NimbusMono-Bold.woff', import.meta.url)).then((res) => res.arrayBuffer());
       nimbusMonoBoldItalic = fetch(new URL('../fonts/latin/NimbusMono-BoldItalic.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      gothicNormal = fetch(new URL('../fonts/latin/URWGothicBook-Regular.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      gothicItalic = fetch(new URL('../fonts/latin/URWGothicBook-Italic.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      gothicBold = fetch(new URL('../fonts/latin/URWGothicBook-Bold.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      gothicBoldItalic = fetch(new URL('../fonts/latin/URWGothicBook-BoldItalic.woff', import.meta.url)).then((res) => res.arrayBuffer());
     } else {
       carlitoNormal = fetch(new URL('../fonts/all/Carlito-Regular.woff', import.meta.url)).then((res) => res.arrayBuffer());
       carlitoItalic = fetch(new URL('../fonts/all/Carlito-Italic.woff', import.meta.url)).then((res) => res.arrayBuffer());
@@ -108,6 +116,10 @@ export async function loadBuiltInFontsRaw(glyphSet = 'latin') {
       nimbusMonoItalic = fetch(new URL('../fonts/all/NimbusMono-Italic.woff', import.meta.url)).then((res) => res.arrayBuffer());
       nimbusMonoBold = fetch(new URL('../fonts/all/NimbusMono-Bold.woff', import.meta.url)).then((res) => res.arrayBuffer());
       nimbusMonoBoldItalic = fetch(new URL('../fonts/all/NimbusMono-BoldItalic.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      gothicNormal = fetch(new URL('../fonts/all/URWGothicBook-Regular.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      gothicItalic = fetch(new URL('../fonts/all/URWGothicBook-Italic.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      gothicBold = fetch(new URL('../fonts/all/URWGothicBook-Bold.woff', import.meta.url)).then((res) => res.arrayBuffer());
+      gothicBoldItalic = fetch(new URL('../fonts/all/URWGothicBook-BoldItalic.woff', import.meta.url)).then((res) => res.arrayBuffer());
     }
   } else {
     const { readFile } = await import('fs/promises');
@@ -139,6 +151,10 @@ export async function loadBuiltInFontsRaw(glyphSet = 'latin') {
     nimbusMonoItalic = readFile(new URL('../fonts/all/NimbusMono-Italic.woff', import.meta.url)).then((res) => res.buffer);
     nimbusMonoBold = readFile(new URL('../fonts/all/NimbusMono-Bold.woff', import.meta.url)).then((res) => res.buffer);
     nimbusMonoBoldItalic = readFile(new URL('../fonts/all/NimbusMono-BoldItalic.woff', import.meta.url)).then((res) => res.buffer);
+    gothicNormal = readFile(new URL('../fonts/all/URWGothicBook-Regular.woff', import.meta.url)).then((res) => res.buffer);
+    gothicItalic = readFile(new URL('../fonts/all/URWGothicBook-Italic.woff', import.meta.url)).then((res) => res.buffer);
+    gothicBold = readFile(new URL('../fonts/all/URWGothicBook-Bold.woff', import.meta.url)).then((res) => res.buffer);
+    gothicBoldItalic = readFile(new URL('../fonts/all/URWGothicBook-BoldItalic.woff', import.meta.url)).then((res) => res.buffer);
   }
 
   const srcObj = {
@@ -150,6 +166,9 @@ export async function loadBuiltInFontsRaw(glyphSet = 'latin') {
     },
     Garamond: {
       normal: await garamondNormal, italic: await garamondItalic, bold: await garamondBold, boldItalic: await garamondBoldItalic,
+    },
+    Gothic: {
+      normal: await gothicNormal, italic: await gothicItalic, bold: await gothicBold, boldItalic: await gothicBoldItalic,
     },
     Palatino: {
       normal: await palatinoNormal, italic: await palatinoItalic, bold: await palatinoBold, boldItalic: await palatinoBoldItalic,
@@ -430,12 +449,14 @@ export async function optimizeFontContainerAll(fontPrivate, charMetricsObj) {
   const carlitoPromise = optimizeFontContainerFamily(fontPrivate.Carlito, charMetricsObj);
   const centuryPromise = optimizeFontContainerFamily(fontPrivate.Century, charMetricsObj);
   const garamondPromise = optimizeFontContainerFamily(fontPrivate.Garamond, charMetricsObj);
+  const gothicPromise = optimizeFontContainerFamily(fontPrivate.Gothic, charMetricsObj);
   const palatinoPromise = optimizeFontContainerFamily(fontPrivate.Palatino, charMetricsObj);
   const nimbusRomanPromise = optimizeFontContainerFamily(fontPrivate.NimbusRoman, charMetricsObj);
   const nimbusSansPromise = optimizeFontContainerFamily(fontPrivate.NimbusSans, charMetricsObj);
   const nimbusMonoPromise = optimizeFontContainerFamily(fontPrivate.NimbusMono, charMetricsObj);
 
-  const results = await Promise.all([carlitoPromise, centuryPromise, garamondPromise, palatinoPromise, nimbusRomanPromise, nimbusSansPromise, nimbusMonoPromise]);
+  const results = await Promise.all([carlitoPromise, centuryPromise, garamondPromise, gothicPromise,
+    palatinoPromise, nimbusRomanPromise, nimbusSansPromise, nimbusMonoPromise]);
 
   if (results.every((x) => x === null)) return null;
 
@@ -443,9 +464,10 @@ export async function optimizeFontContainerAll(fontPrivate, charMetricsObj) {
     Carlito: results[0],
     Century: results[1],
     Garamond: results[2],
-    Palatino: results[3],
-    NimbusRoman: results[4],
-    NimbusSans: results[5],
-    NimbusMono: results[6],
+    Gothic: results[3],
+    Palatino: results[4],
+    NimbusRoman: results[5],
+    NimbusSans: results[6],
+    NimbusMono: results[7],
   };
 }
