@@ -31,6 +31,8 @@ export class opt {
 
   static removeMargins = false;
 
+  static includeImages = false;
+
   static pageBreaks = true;
 
   /** @type {("invis"|"ebook"|"eval"|"proof")} */

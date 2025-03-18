@@ -20,7 +20,7 @@ const calcFontMetrics = (fontI, fontSize) => {
   if (os2.fsSelection >> 7 & 1) {
     return {
       fontBoundingBoxAscent: Math.round(os2.sTypoAscender * (fontSize / unitsPerEm)),
-      fontBoundingBoxDescent: Math.round(os2.sTypoDescender * (fontSize / unitsPerEm)),
+      fontBoundingBoxDescent: Math.abs(Math.round(os2.sTypoDescender * (fontSize / unitsPerEm))),
     };
   }
 
@@ -49,31 +49,64 @@ const makeSmallCapsDivs = (text, fontSizeHTMLSmallCaps) => {
 /**
  * Convert an array of ocrPage objects to HTML.
  *
- * @param {Array<OcrPage>} ocrCurrent -
- * @param {number} minpage - The first page to include in the document.
- * @param {number} maxpage - The last page to include in the document.
- * @param {boolean} reflowText - Remove line breaks within what appears to be the same paragraph.
- * @param {boolean} removeMargins - Remove the margins from the text.
- * @param {?Array<string>} wordIds - An array of word IDs to include in the document.
+ * @param {Object} params
+ * @param {Array<OcrPage>} params.ocrPages -
+ * @param {Array<ImageWrapper>} [params.images] -
+ * @param {number} [params.minpage=0] - The first page to include in the document.
+ * @param {number} [params.maxpage=-1] - The last page to include in the document.
+ * @param {boolean} [params.reflowText=false] - Remove line breaks within what appears to be the same paragraph.
+ * @param {boolean} [params.removeMargins=false] - Remove the margins from the text.
+ * @param {?Array<string>} [params.wordIds] - An array of word IDs to include in the document.
  *    If omitted, all words are included.
  */
-export function writeHtml(ocrCurrent, minpage = 0, maxpage = -1, reflowText = false, removeMargins = false, wordIds = null) {
+export function writeHtml({
+  ocrPages, images, minpage = 0, maxpage = -1, reflowText = false, removeMargins = false, wordIds = null,
+}) {
   const fontsUsed = new Set();
 
-  const pad = 5;
+  const enableOptSaved = FontCont.state.enableOpt;
+  FontCont.state.enableOpt = false;
+
+  if (images && images.length === 0) images = undefined;
+
+  // This does not work well yet, so hard-code it to false for now.
+  reflowText = false;
 
   let bodyStr = '<body>\n';
 
-  if (maxpage === -1) maxpage = ocrCurrent.length - 1;
+  if (maxpage === -1) maxpage = ocrPages.length - 1;
 
   let newLine = false;
 
+  const activeLine = {
+    left: 0,
+    y1: 0,
+    maxFontBoundingBoxAscentLine: 0,
+    bodyWordsStr: '',
+  };
+
+  const addLine = () => {
+    if (activeLine.bodyWordsStr !== '') {
+      const topHTML = Math.round((activeLine.y1 - activeLine.maxFontBoundingBoxAscentLine) * 1000) / 1000;
+      bodyStr += `    <div class="scribe-line" style="left:${activeLine.left}px;top:${topHTML}px;">\n`;
+      bodyStr += activeLine.bodyWordsStr;
+      bodyStr += '    </div>\n';
+    }
+    activeLine.bodyWordsStr = '';
+    activeLine.maxFontBoundingBoxAscentLine = 0;
+    activeLine.y1 = 0;
+    activeLine.left = 0;
+  };
+
   let top = 0;
 
-  for (let g = minpage; g <= maxpage; g++) {
-    if (!ocrCurrent[g] || ocrCurrent[g].lines.length === 0) continue;
+  let firstPage = true;
 
-    const pageObj = ocrCurrent[g];
+  for (let g = minpage; g <= maxpage; g++) {
+    // TODO: change this when an image is included.
+    if (!ocrPages[g] || ocrPages[g].lines.length === 0) continue;
+
+    const pageObj = ocrPages[g];
 
     let minLeft = 0;
     let minTop = 0;
@@ -89,7 +122,15 @@ export function writeHtml(ocrCurrent, minpage = 0, maxpage = -1, reflowText = fa
       }
     }
 
+    if (!firstPage) bodyStr += '\n</div>\n';
+    firstPage = false;
     bodyStr += `  <div class="scribe-page" id="page${g}" style="position:absolute;top:${top}px;">\n`;
+
+    const imageObj = images ? images[g] : null;
+    if (imageObj) {
+      bodyStr += `  <img src="${imageObj.src}">\n`;
+    }
+
     if (removeMargins) {
       top += Math.min((maxBottom - minTop) + 200, pageMetricsArr[g].dims.height + 10);
     } else {
@@ -102,12 +143,15 @@ export function writeHtml(ocrCurrent, minpage = 0, maxpage = -1, reflowText = fa
     }
 
     let parCurrent = pageObj.lines[0].par;
+    let wordObjPrev = /** @type {?OcrWord} */ (null);
+    let rightSideBearingPrev = 0;
+    let charSpacingHTMLPrev = 0;
 
     for (let h = 0; h < pageObj.lines.length; h++) {
       const lineObj = pageObj.lines[h];
 
       if (reflowText) {
-        if (g > 0 && h === 0 || lineObj.par !== parCurrent) newLine = true;
+        if (h === 0 || lineObj.par !== parCurrent) newLine = true;
         parCurrent = lineObj.par;
       } else {
         newLine = true;
@@ -120,7 +164,20 @@ export function writeHtml(ocrCurrent, minpage = 0, maxpage = -1, reflowText = fa
         if (wordIds && !wordIds.includes(wordObj.id)) continue;
 
         if (newLine) {
-          bodyStr += '\n';
+          wordObjPrev = null;
+
+          addLine();
+
+          const scale = 1;
+
+          const {
+            charSpacing, leftSideBearing, rightSideBearing, fontSize, charArr, advanceArr, kerningArr, font,
+          } = calcWordMetrics(wordObj);
+
+          activeLine.y1 = wordObj.line.bbox.bottom + wordObj.line.baseline[1] - minTop;
+
+          activeLine.left = wordObj.bbox.left - minLeft;
+          if (wordObj.visualCoords) activeLine.left -= leftSideBearing * scale;
         } else if (h > 0 || g > 0 || i > 0) {
           bodyStr += ' ';
         }
@@ -130,6 +187,7 @@ export function writeHtml(ocrCurrent, minpage = 0, maxpage = -1, reflowText = fa
         const scale = 1;
         const angle = 0;
 
+        // HTML exports currently only use raw fonts, as the fonts are retrieved from a CDN.
         const fontI = FontCont.getWordFont(wordObj);
         fontsUsed.add(fontI);
 
@@ -141,10 +199,7 @@ export function writeHtml(ocrCurrent, minpage = 0, maxpage = -1, reflowText = fa
 
         const charSpacingHTML = charSpacing * scale;
 
-        let x1 = wordObj.bbox.left - minLeft;
         const y1 = wordObj.line.bbox.bottom + wordObj.line.baseline[1] - minTop;
-
-        if (wordObj.visualCoords) x1 -= leftSideBearing * scale;
 
         const fontSizeHTML = fontSize * scale;
 
@@ -152,22 +207,33 @@ export function writeHtml(ocrCurrent, minpage = 0, maxpage = -1, reflowText = fa
 
         const fontSizeHTMLSmallCaps = fontSize * scale * fontI.smallCapsMult;
 
+        if (metrics.fontBoundingBoxAscent > activeLine.maxFontBoundingBoxAscentLine) {
+          activeLine.maxFontBoundingBoxAscentLine = metrics.fontBoundingBoxAscent;
+        }
+
         // Align with baseline
-        const topHTML = Math.round((y1 - metrics.fontBoundingBoxAscent + fontSizeHTML * 0.6) * 1000) / 1000;
+        const topHTML = Math.round((y1 - metrics.fontBoundingBoxAscent) * 1000) / 1000;
 
         let styleStr = '';
 
-        const topPadOffset = 5 * Math.sin(angle * (Math.PI / 180));
-        const leftPadOffset = 5 * Math.cos(angle * (Math.PI / 180));
-
-        styleStr += `left:${x1 - leftPadOffset}px;`;
-        styleStr += `top:${topHTML - topPadOffset}px;`;
         styleStr += `font-size:${fontSizeHTML}px;`;
         styleStr += `font-family:${fontI.fontFaceName};`;
 
         if (Math.abs(angle ?? 0) > 0.05) {
           styleStr += `transform-origin:left ${y1 - topHTML}px;`;
           styleStr += `transform:rotate(${angle}deg);`;
+        }
+
+        const { fill, opacity } = ocr.getWordFillOpacity(wordObj, opt.displayMode,
+          opt.confThreshMed, opt.confThreshHigh, opt.overlayOpacity);
+
+        // Text with opacity 0 is not selectable, so we make it transparent instead.
+        if (opacity === 0) {
+          styleStr += 'color:transparent;';
+          styleStr += 'opacity:1;';
+        } else {
+          styleStr += `color:${fill};`;
+          styleStr += `opacity:${opacity};`;
         }
 
         // We cannot make the text uppercase in the input field, as this would result in the text being saved as uppercase.
@@ -182,18 +248,39 @@ export function writeHtml(ocrCurrent, minpage = 0, maxpage = -1, reflowText = fa
           innerHTML = wordStr;
         }
 
+        let leftPad = 0;
+        if (wordObjPrev) {
+          let bearingAdj = 0;
+          if (wordObj.visualCoords) {
+            bearingAdj = leftSideBearing + rightSideBearingPrev;
+          }
+
+          leftPad = (wordObj.bbox.left - wordObjPrev.bbox.right - bearingAdj - charSpacingHTMLPrev) / Math.cos(angle);
+        }
+
         styleStr += `letter-spacing:${charSpacingHTML}px;`;
 
         styleStr += `font-weight:${fontI.fontFaceWeight};`;
         styleStr += `font-style:${fontI.fontFaceStyle};`;
+        styleStr += `padding-left:${leftPad}px;`;
 
         // Line height must match the height of the font bounding box for the font metrics to be accurate.
         styleStr += `line-height:${metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent}px;`;
 
-        bodyStr += `    <span class="scribe-word" id="${wordObj.id}" style="${styleStr}">${innerHTML}</span>`;
+        if (wordObj.style.sup) {
+          const supOffset = Math.round(wordObj.line.bbox.bottom + wordObj.line.baseline[1] - wordObj.bbox.bottom);
+          styleStr += `vertical-align:${supOffset}px;`;
+        }
+
+        activeLine.bodyWordsStr += `      <span class="scribe-word" id="${wordObj.id}" style="${styleStr}">${innerHTML}</span>\n`;
+
+        wordObjPrev = wordObj;
+        rightSideBearingPrev = rightSideBearing;
+        charSpacingHTMLPrev = charSpacingHTML;
       }
     }
 
+    addLine();
     bodyStr += '\n  </div>\n';
 
     opt.progressHandler({ n: g, type: 'export', info: { } });
@@ -201,9 +288,6 @@ export function writeHtml(ocrCurrent, minpage = 0, maxpage = -1, reflowText = fa
 
   let styleStr = '<style>\n  .scribe-word {\n';
 
-  styleStr += '    position:absolute;\n';
-  styleStr += `    padding-left:${pad}px;\n`;
-  styleStr += `    padding-right:${pad}px;\n`;
   styleStr += '    z-index:1;\n';
   styleStr += '    white-space:nowrap;\n';
   if (opt.kerning) {
@@ -212,6 +296,12 @@ export function writeHtml(ocrCurrent, minpage = 0, maxpage = -1, reflowText = fa
     styleStr += '    font-kerning:none;\n';
   }
 
+  styleStr += '  }\n';
+
+  styleStr += '  .scribe-line {\n';
+  styleStr += '    font-size:0px;\n';
+  styleStr += '    position:absolute;\n';
+  styleStr += '    white-space:nowrap;\n';
   styleStr += '  }\n';
 
   for (const fontI of fontsUsed) {
@@ -233,7 +323,11 @@ export function writeHtml(ocrCurrent, minpage = 0, maxpage = -1, reflowText = fa
 
   bodyStr += '</body>\n';
 
-  const htmlStr = `<html>\n<head>\n${styleStr}</head>\n${bodyStr}</html>`;
+  const metaStr = '<meta charset="UTF-8">\n';
+
+  const htmlStr = `<html>\n<head>\n${metaStr}${styleStr}</head>\n${bodyStr}</html>`;
+
+  FontCont.state.enableOpt = enableOptSaved;
 
   return htmlStr;
 }
