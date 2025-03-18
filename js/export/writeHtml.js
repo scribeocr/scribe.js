@@ -157,6 +157,8 @@ export function writeHtml({
         newLine = true;
       }
 
+      let underlinePrev = false;
+
       for (let i = 0; i < lineObj.words.length; i++) {
         const wordObj = lineObj.words[i];
         if (!wordObj) continue;
@@ -262,7 +264,6 @@ export function writeHtml({
 
         styleStr += `font-weight:${fontI.fontFaceWeight};`;
         styleStr += `font-style:${fontI.fontFaceStyle};`;
-        styleStr += `padding-left:${leftPad}px;`;
 
         // Line height must match the height of the font bounding box for the font metrics to be accurate.
         styleStr += `line-height:${metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent}px;`;
@@ -272,7 +273,42 @@ export function writeHtml({
           styleStr += `vertical-align:${supOffset}px;`;
         }
 
-        activeLine.bodyWordsStr += `      <span class="scribe-word" id="${wordObj.id}" style="${styleStr}">${innerHTML}</span>\n`;
+        if (wordObj.style.underline) {
+          styleStr += 'text-decoration:underline;';
+          styleStr += `text-decoration-color:${fill};`;
+          styleStr += `text-decoration-thickness:${Math.ceil(fontSizeHTML / 12)}px;`;
+          styleStr += `text-underline-offset:${Math.ceil(fontSizeHTML / 12) + Math.ceil(fontSizeHTML / 24)}px;`;
+        }
+
+        if (i > 0) {
+          let styleStrSpace = `font-family:${fontI.fontFaceName};`;
+          const spaceAdvancePx = (fontI.opentype.charToGlyph(' ').advanceWidth / fontI.opentype.unitsPerEm);
+          const fontSizeHTMLSpace = leftPad / spaceAdvancePx;
+          if (fontSizeHTMLSpace > fontSizeHTML * 3) {
+            styleStrSpace += `font-size:${fontSizeHTML}px;`;
+
+            const leftPadFinal = leftPad - spaceAdvancePx * fontSizeHTML;
+
+            styleStrSpace += `padding-left:${leftPadFinal}px;`;
+          } else {
+            styleStrSpace += `font-size:${fontSizeHTML}px;`;
+            const leftPadFinal = leftPad - spaceAdvancePx * fontSizeHTML;
+            styleStrSpace += `word-spacing:${leftPadFinal}px;`;
+          }
+
+          if (underlinePrev) {
+            styleStrSpace += 'text-decoration:underline;';
+            styleStrSpace += `text-decoration-color:${fill};`;
+            styleStrSpace += `text-decoration-thickness:${Math.ceil(fontSizeHTML / 12)}px;`;
+            styleStrSpace += `text-underline-offset:${Math.ceil(fontSizeHTML / 12) + Math.ceil(fontSizeHTML / 24)}px;`;
+          }
+
+          activeLine.bodyWordsStr += `<span class="scribe-space" style=${styleStrSpace}> </span>`;
+        }
+
+        activeLine.bodyWordsStr += `<span class="scribe-word" id="${wordObj.id}" style="${styleStr}">${innerHTML}</span>`;
+
+        underlinePrev = wordObj.style.underline;
 
         wordObjPrev = wordObj;
         rightSideBearingPrev = rightSideBearing;
@@ -299,7 +335,6 @@ export function writeHtml({
   styleStr += '  }\n';
 
   styleStr += '  .scribe-line {\n';
-  styleStr += '    font-size:0px;\n';
   styleStr += '    position:absolute;\n';
   styleStr += '    white-space:nowrap;\n';
   styleStr += '  }\n';
@@ -325,7 +360,7 @@ export function writeHtml({
 
   const metaStr = '<meta charset="UTF-8">\n';
 
-  const htmlStr = `<html>\n<head>\n${metaStr}${styleStr}</head>\n${bodyStr}</html>`;
+  const htmlStr = `<!doctype html>\n<html>\n<head>\n${metaStr}${styleStr}</head>\n${bodyStr}</html>`;
 
   FontCont.state.enableOpt = enableOptSaved;
 
