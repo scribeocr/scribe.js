@@ -188,7 +188,35 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
   } else if (format === 'hocr') {
     content = writeHocr(ocrDownload, minPage, maxPage);
   } else if (format === 'html') {
-    content = writeHtml(ocrDownload, minPage, maxPage, opt.reflow, opt.removeMargins);
+    const images = /** @type {Array<ImageWrapper>} */ ([]);
+    if (opt.includeImages) {
+      const props = { rotated: opt.autoRotate, upscaled: false, colorMode: opt.colorMode };
+      const binary = opt.colorMode === 'binary';
+
+      // An image could be rendered if either (1) binary is selected or (2) the input data is a PDF.
+      // Otherwise, the images uploaded by the user are used.
+      const renderImage = binary || inputData.pdfMode;
+
+      // Pre-render to benefit from parallel processing, since the loop below is synchronous.
+      if (renderImage) await ImageCache.preRenderRange(minPage, maxPage, binary, props);
+
+      for (let i = minPage; i < maxPage + 1; i++) {
+        /** @type {ImageWrapper} */
+        let image;
+        if (binary) {
+          image = await ImageCache.getBinary(i, props);
+        } else if (inputData.pdfMode) {
+          image = await ImageCache.getNative(i, props);
+        } else {
+          image = await ImageCache.nativeSrc[i];
+        }
+        images.push(image);
+      }
+    }
+
+    content = writeHtml({
+      ocrPages: ocrDownload, images, minpage: minPage, maxpage: maxPage, reflowText: opt.reflow, removeMargins: opt.removeMargins,
+    });
   } else if (format === 'txt') {
     content = writeText(ocrDownload, minPage, maxPage, opt.reflow, false);
   // Defining `DISABLE_DOCX_XLSX` disables docx/xlsx exports when using build tools.

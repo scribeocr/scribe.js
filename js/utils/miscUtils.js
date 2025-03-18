@@ -399,7 +399,7 @@ export function objectAssignDefined(target, ...sources) {
 // Sans/serif lookup for common font families. These should not include spaces or underscores--multi-word font names should be concatenated.
 // Fonts that should not be added (both Sans and Serif variants):
 // DejaVu
-const serifFonts = ['SerifDefault', 'Baskerville', 'Bookman', 'C059', 'Calibri', 'Cambria', 'Century', 'Courier', 'Garamond', 'Georgia',
+const serifFonts = ['SerifDefault', 'Baskerville', 'Bembo', 'Bodoni', 'Bookman', 'C059', 'Calibri', 'Cambria', 'Century', 'Cheltenham', 'Courier', 'Garamond', 'Georgia',
   'LucidaBright', 'Minion', 'NimbusMono', 'Optima', 'P052', 'Palatino', 'Times'];
 const sansFonts = ['SansDefault', 'Avenir', 'Arial', 'Calibri', 'Candara', 'Carlito', 'Comic', 'Franklin', 'Futura', 'Gotham', 'Gothic',
   'Helvetica', 'Impact', 'Interstate', 'Myriad', 'Tahoma', 'Trebuchet', 'Univers', 'Verdana'];
