@@ -90,6 +90,7 @@ export function writeHtml({
       const topHTML = Math.round((activeLine.y1 - activeLine.maxFontBoundingBoxAscentLine) * 1000) / 1000;
       bodyStr += `    <div class="scribe-line" style="left:${activeLine.left}px;top:${topHTML}px;">\n`;
       bodyStr += activeLine.bodyWordsStr;
+      bodyStr += '       <br>\n';
       bodyStr += '    </div>\n';
     }
     activeLine.bodyWordsStr = '';
@@ -128,7 +129,7 @@ export function writeHtml({
 
     const imageObj = images ? images[g] : null;
     if (imageObj) {
-      bodyStr += `  <img src="${imageObj.src}">\n`;
+      bodyStr += `  <img class="scribe-image" src="${imageObj.src}">\n`;
     }
 
     if (removeMargins) {
@@ -337,6 +338,12 @@ export function writeHtml({
   styleStr += '  .scribe-line {\n';
   styleStr += '    position:absolute;\n';
   styleStr += '    white-space:nowrap;\n';
+  styleStr += '  }\n';
+
+  styleStr += '  .scribe-image {\n';
+  styleStr += '    position:absolute;\n';
+  styleStr += '    user-select:none;\n';
+  styleStr += '    pointer-events:none;\n';
   styleStr += '  }\n';
 
   for (const fontI of fontsUsed) {
