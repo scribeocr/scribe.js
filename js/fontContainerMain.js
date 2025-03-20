@@ -122,7 +122,7 @@ export async function loadBuiltInFontsRaw(glyphSet = 'latin') {
       gothicBoldItalic = fetch(new URL('../fonts/all/URWGothicBook-BoldItalic.woff', import.meta.url)).then((res) => res.arrayBuffer());
     }
   } else {
-    const { readFile } = await import('fs/promises');
+    const { readFile } = await import('node:fs/promises');
     carlitoNormal = readFile(new URL('../fonts/all/Carlito-Regular.woff', import.meta.url)).then((res) => res.buffer);
     carlitoItalic = readFile(new URL('../fonts/all/Carlito-Italic.woff', import.meta.url)).then((res) => res.buffer);
     carlitoBold = readFile(new URL('../fonts/all/Carlito-Bold.woff', import.meta.url)).then((res) => res.buffer);
@@ -212,7 +212,7 @@ export async function loadChiSimFont() {
   if (typeof process === 'undefined') {
     chiSimSrc = fetch(new URL('../fonts/NotoSansSC-Regular.ttf', import.meta.url)).then((res) => res.arrayBuffer());
   } else {
-    const { readFile } = await import('fs/promises');
+    const { readFile } = await import('node:fs/promises');
     chiSimSrc = readFile(new URL('../fonts/NotoSansSC-Regular.ttf', import.meta.url)).then((res) => res.buffer);
   }
 

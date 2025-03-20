@@ -15,7 +15,7 @@ import {
 } from './compareOCRModule.js';
 import { optimizeFont } from './optimizeFontModule.js';
 
-const parentPort = typeof process === 'undefined' ? globalThis : (await import('worker_threads')).parentPort;
+const parentPort = typeof process === 'undefined' ? globalThis : (await import('node:worker_threads')).parentPort;
 if (!parentPort) throw new Error('This file must be run in a worker');
 
 const Tesseract = typeof process === 'undefined' ? (await import('../../tess/tesseract.esm.min.js')).default : await import('@scribe.js/tesseract.js');

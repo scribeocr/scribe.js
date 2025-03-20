@@ -12,10 +12,10 @@ if (typeof process === 'object') {
   // @ts-ignore
   globalThis.self = globalThis;
   // @ts-ignore
-  const { createRequire } = await import('module');
+  const { createRequire } = await import('node:module');
   globalThis.require = createRequire(import.meta.url);
-  const { fileURLToPath } = await import('url');
-  const { dirname } = await import('path');
+  const { fileURLToPath } = await import('node:url');
+  const { dirname } = await import('node:path');
   globalThis.__dirname = dirname(fileURLToPath(import.meta.url));
 }
 

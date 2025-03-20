@@ -17,7 +17,7 @@ describe('Check Node.js commands.', () => {
   const tmpUnique = {
     get: async () => {
       const { tmpdir } = await import('os');
-      const { mkdirSync } = await import('fs');
+      const { mkdirSync } = await import('node:fs');
 
       if (!tmpUniqueDir) {
         tmpUniqueDir = `${tmpdir()}/${getRandomAlphanum(8)}`;
@@ -27,7 +27,7 @@ describe('Check Node.js commands.', () => {
     },
     delete: async () => {
       if (tmpUniqueDir) {
-        const { rmSync } = await import('fs');
+        const { rmSync } = await import('node:fs');
         rmSync(tmpUniqueDir, { recursive: true, force: true });
       }
     },

@@ -117,7 +117,7 @@ async function writeDebugImages(canvas, compDebugArrArr, filePath) {
     const imgData = new Uint8Array(atob(imgURL.split(',')[1])
       .split('')
       .map((c) => c.charCodeAt(0)));
-    const fs = await import('fs');
+    const fs = await import('node:fs');
     fs.writeFileSync(filePath, imgData);
   }
 }
@@ -156,7 +156,7 @@ async function dumpHOCR(dir) {
   } else {
     const activeCurrent = ocrAll.active;
 
-    const fs = await import('fs');
+    const fs = await import('node:fs');
     for (const [name, pages] of Object.entries(ocrAll)) {
       ocrAll.active = pages;
       const hocrStr = await exportData('hocr');

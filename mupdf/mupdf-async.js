@@ -31,7 +31,7 @@ export async function initMuPDFWorker() {
   if (typeof process === 'undefined') {
     worker = new Worker(new URL('./mupdf-worker.js', import.meta.url), { type: 'module' });
   } else {
-    const WorkerNode = (await import('worker_threads')).Worker;
+    const WorkerNode = (await import('node:worker_threads')).Worker;
     worker = new WorkerNode(new URL('./mupdf-worker.js', import.meta.url));
   }
 

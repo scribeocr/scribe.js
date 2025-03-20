@@ -1,8 +1,8 @@
 // Code for adding visualization to OCR output
 // Use: `node addOverlay.js [PDF file] [OCR data file] [output directory]`
 
-import fs from 'fs';
-import path from 'path';
+import fs from 'node:fs';
+import path from 'node:path';
 
 import scribe from '../scribe.js';
 
