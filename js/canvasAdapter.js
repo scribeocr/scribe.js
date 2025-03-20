@@ -80,7 +80,7 @@ export class ca {
     } else {
       const dummyCanvas = await ca.dummyCanvasPromise;
 
-      const fs = await import('fs');
+      const fs = await import('node:fs');
       const fontBuffer = typeof fontObj.src === 'string' ? fs.readFileSync(fontObj.src) : fontObj.src;
 
       dummyCanvas.loadFont(fontBuffer, {

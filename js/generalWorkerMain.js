@@ -12,7 +12,7 @@ export async function initGeneralWorker() {
   if (typeof process === 'undefined') {
     worker = new Worker(new URL('./worker/generalWorker.js', import.meta.url), { type: 'module' });
   } else {
-    const WorkerNode = (await import('worker_threads')).Worker;
+    const WorkerNode = (await import('node:worker_threads')).Worker;
     worker = new WorkerNode(new URL('./worker/generalWorker.js', import.meta.url));
   }
 
@@ -240,7 +240,7 @@ export class gs {
     } else if (typeof process === 'undefined') {
       workerN = Math.min(Math.round((globalThis.navigator.hardwareConcurrency || 8) / 2), 6);
     } else {
-      const cpuN = Math.floor((await import('os')).cpus().length / 2);
+      const cpuN = Math.floor((await import('node:os')).cpus().length / 2);
       workerN = Math.min(cpuN - 1, 8);
     }
 

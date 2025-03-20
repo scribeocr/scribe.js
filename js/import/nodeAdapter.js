@@ -1,5 +1,5 @@
-import fs from 'fs';
-import path from 'path';
+import fs from 'node:fs';
+import path from 'node:path';
 
 // Note: Node.js 20 added a File class in the `buffer` module in Node.js 20.0.0,
 // so this class can eventually be replaced with that.

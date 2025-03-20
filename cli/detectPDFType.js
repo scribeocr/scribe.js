@@ -1,4 +1,4 @@
-import fs from 'fs';
+import fs from 'node:fs';
 import scribe from '../scribe.js';
 
 /**
@@ -30,5 +30,4 @@ export const detectPDFType = async (pdfFile, outputPath) => {
   console.log('PDF Type:', type);
 
   mupdfScheduler.scheduler.terminate();
-
 };

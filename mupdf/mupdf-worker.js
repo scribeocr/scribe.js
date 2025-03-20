@@ -20,7 +20,7 @@
 // Artifex Software, Inc., 1305 Grant Avenue - Suite 200, Novato,
 // CA 94945, U.S.A., +1(415)492-9861, for further information.
 
-const parentPort = typeof process === 'undefined' ? globalThis : (await import('worker_threads')).parentPort;
+const parentPort = typeof process === 'undefined' ? globalThis : (await import('node:worker_threads')).parentPort;
 if (!parentPort) throw new Error('This file must be run in a worker');
 
 // Copied from https://gist.github.com/jonleighton/958841
@@ -86,10 +86,10 @@ if (typeof process === 'object') {
   // @ts-ignore
   globalThis.self = globalThis;
   // @ts-ignore
-  const { createRequire } = await import('module');
+  const { createRequire } = await import('node:module');
   globalThis.require = createRequire(import.meta.url);
-  const { fileURLToPath } = await import('url');
-  const { dirname } = await import('path');
+  const { fileURLToPath } = await import('node:url');
+  const { dirname } = await import('node:path');
   globalThis.__dirname = dirname(fileURLToPath(import.meta.url));
 }
 
@@ -141,6 +141,11 @@ Module.onRuntimeInitialized = function () {
   parentPort.postMessage('READY');
   ready = true;
 };
+
+// In certain environments, `onRuntimeInitialized` may be defined after it is called in the module code.
+if (Module.calledRun && !ready) {
+  Module.onRuntimeInitialized();
+}
 
 /**
  *
