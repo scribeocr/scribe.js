@@ -5,6 +5,8 @@ import { assignParagraphs } from '../utils/reflowPars.js';
 import { pageMetricsArr } from '../containers/dataContainer.js';
 import ocr from '../objects/ocrObjects.js';
 
+const formatNum = (num) => (num.toFixed(5).replace(/\.?0+$/, ''));
+
 /**
  * Calculate the font metrics for a given font and font size.
  * This is used to get metrics that match `ctx.measureText`, but without requiring a canvas.
@@ -89,8 +91,9 @@ export function writeHtml({
     if (activeLine.bodyWordsStr !== '') {
       const topHTML = Math.round((activeLine.y1 - activeLine.maxFontBoundingBoxAscentLine) * 1000) / 1000;
       bodyStr += `    <div class="scribe-line" style="left:${activeLine.left}px;top:${topHTML}px;">\n`;
+      bodyStr += '        ';
       bodyStr += activeLine.bodyWordsStr;
-      bodyStr += '       <br>\n';
+      bodyStr += '<br>\n';
       bodyStr += '    </div>\n';
     }
     activeLine.bodyWordsStr = '';
@@ -100,8 +103,6 @@ export function writeHtml({
   };
 
   let top = 0;
-
-  let firstPage = true;
 
   for (let g = minpage; g <= maxpage; g++) {
     // TODO: change this when an image is included.
@@ -123,8 +124,6 @@ export function writeHtml({
       }
     }
 
-    if (!firstPage) bodyStr += '\n</div>\n';
-    firstPage = false;
     bodyStr += `  <div class="scribe-page" id="page${g}" style="position:absolute;top:${top}px;">\n`;
 
     const imageObj = images ? images[g] : null;
@@ -145,6 +144,7 @@ export function writeHtml({
 
     let parCurrent = pageObj.lines[0].par;
     let wordObjPrev = /** @type {?OcrWord} */ (null);
+    let advanceDiffPrev = 0;
     let rightSideBearingPrev = 0;
     let charSpacingHTMLPrev = 0;
 
@@ -181,8 +181,6 @@ export function writeHtml({
 
           activeLine.left = wordObj.bbox.left - minLeft;
           if (wordObj.visualCoords) activeLine.left -= leftSideBearing * scale;
-        } else if (h > 0 || g > 0 || i > 0) {
-          bodyStr += ' ';
         }
 
         newLine = false;
@@ -253,15 +251,19 @@ export function writeHtml({
 
         let leftPad = 0;
         if (wordObjPrev) {
-          let bearingAdj = 0;
+          let spaceAdj = 0;
           if (wordObj.visualCoords) {
-            bearingAdj = leftSideBearing + rightSideBearingPrev;
+            spaceAdj = leftSideBearing + rightSideBearingPrev;
+          } else {
+            // This is usually 0, however can be non-zero when the PDF glyph advances
+            // are different from the HTML glyph advances.
+            spaceAdj = advanceDiffPrev;
           }
 
-          leftPad = (wordObj.bbox.left - wordObjPrev.bbox.right - bearingAdj - charSpacingHTMLPrev) / Math.cos(angle);
+          leftPad = (wordObj.bbox.left - wordObjPrev.bbox.right - spaceAdj - charSpacingHTMLPrev) / Math.cos(angle);
         }
 
-        styleStr += `letter-spacing:${charSpacingHTML}px;`;
+        styleStr += `letter-spacing:${formatNum(charSpacingHTML)}px;`;
 
         styleStr += `font-weight:${fontI.fontFaceWeight};`;
         styleStr += `font-style:${fontI.fontFaceStyle};`;
@@ -294,10 +296,12 @@ export function writeHtml({
           } else {
             styleStrSpace += `font-size:${fontSizeHTML}px;`;
             const leftPadFinal = leftPad - spaceAdvancePx * fontSizeHTML;
-            styleStrSpace += `word-spacing:${leftPadFinal}px;`;
+            styleStrSpace += `word-spacing:${formatNum(leftPadFinal)}px;`;
           }
 
           if (underlinePrev) {
+            styleStrSpace += `color:${fill};`;
+            styleStrSpace += `opacity:${opacity};`;
             styleStrSpace += 'text-decoration:underline;';
             styleStrSpace += `text-decoration-color:${fill};`;
             styleStrSpace += `text-decoration-thickness:${Math.ceil(fontSizeHTML / 12)}px;`;
@@ -311,6 +315,11 @@ export function writeHtml({
 
         underlinePrev = wordObj.style.underline;
 
+        const advanceTotalHTML = advanceArr.reduce((a, b) => a + b, 0)
+          + kerningArr.reduce((a, b) => a + b, 0)
+          + charSpacingHTML * (charArr.length - 1);
+        advanceDiffPrev = advanceTotalHTML - (wordObj.bbox.right - wordObj.bbox.left);
+
         wordObjPrev = wordObj;
         rightSideBearingPrev = rightSideBearing;
         charSpacingHTMLPrev = charSpacingHTML;
@@ -318,7 +327,7 @@ export function writeHtml({
     }
 
     addLine();
-    bodyStr += '\n  </div>\n';
+    bodyStr += '  </div>\n';
 
     opt.progressHandler({ n: g, type: 'export', info: { } });
   }
@@ -338,6 +347,10 @@ export function writeHtml({
   styleStr += '  .scribe-line {\n';
   styleStr += '    position:absolute;\n';
   styleStr += '    white-space:nowrap;\n';
+  styleStr += '  }\n';
+
+  styleStr += '  .scribe-page {\n';
+  styleStr += '    text-decoration-skip-ink:none;\n';
   styleStr += '  }\n';
 
   styleStr += '  .scribe-image {\n';
