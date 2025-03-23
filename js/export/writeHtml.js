@@ -285,7 +285,9 @@ export function writeHtml({
 
         if (i > 0) {
           let styleStrSpace = `font-family:${fontI.fontFaceName};`;
-          const spaceAdvancePx = (fontI.opentype.charToGlyph(' ').advanceWidth / fontI.opentype.unitsPerEm);
+          styleStrSpace += `font-style:${fontI.fontFaceStyle};`;
+          const spaceAdvance = fontI.opentype.charToGlyph(' ').advanceWidth || fontI.opentype.unitsPerEm * 0.35;
+          const spaceAdvancePx = (spaceAdvance / fontI.opentype.unitsPerEm);
           const fontSizeHTMLSpace = leftPad / spaceAdvancePx;
           if (fontSizeHTMLSpace > fontSizeHTML * 3) {
             styleStrSpace += `font-size:${fontSizeHTML}px;`;
