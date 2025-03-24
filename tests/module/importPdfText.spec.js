@@ -410,6 +410,12 @@ describe('Check that font style is detected for PDF imports.', function () {
     assert.isFalse(scribe.data.ocr.active[5].lines[22].words[4].style.underline);
   }).timeout(10000);
 
+  it('Italic style is detected when leading punctuation is non-italic', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/high-risk_protection_order_application_for_and_declaration_in_support_of_mandatory_use.pdf`]);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[15].words[1].text, '(Print');
+    assert.isTrue(scribe.data.ocr.active[0].lines[15].words[1].style.italic);
+  }).timeout(10000);
+
   it('Bold + italic style is detected', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/complaint_1.pdf`]);
     assert.isTrue(scribe.data.ocr.active[0].lines[1].words[0].style.italic);

@@ -4,6 +4,7 @@ import {
   calcBboxUnion,
   calcBoxOverlap,
   calcLang,
+  cleanFamilyName,
   mean50,
   round6,
   unescapeXml,
@@ -32,6 +33,9 @@ export async function convertPageStext({ ocrStr, n }) {
 
   /** @type {Set<string>} */
   const langSet = new Set();
+
+  /** @type {Set<string>} */
+  const fontSet = new Set();
 
   function convertParStext(xmlPar) {
     /** @type {Array<OcrLine>} */
@@ -245,7 +249,7 @@ export async function convertPageStext({ ocrStr, n }) {
 
         if (wordCharOrFontArr[i].length === 0) continue;
 
-        let wordInit = false;
+        let wordCharN = 0;
 
         for (let j = 0; j < wordCharOrFontArr[i].length; j++) {
           const charOrFont = wordCharOrFontArr[i][j];
@@ -257,7 +261,7 @@ export async function convertPageStext({ ocrStr, n }) {
             // (2) Runs of small caps that start with lower-case letters, which do not conform to the expectation that runs of small caps start with a capital letter.
             const sizePrevRaw = sizeCurrentRaw;
             sizeCurrentRaw = charOrFont.size;
-            const secondLetter = wordInit && textWordArr.length === 1 && /[A-Z]/.test(textWordArr[0]);
+            const secondLetter = wordCharN > 0 && textWordArr.length === 1 && /[A-Z]/.test(textWordArr[0]);
 
             let baselineNextLetter;
             const possibleNextLetter1 = wordCharOrFontArr[i][j + 1];
@@ -356,8 +360,6 @@ export async function convertPageStext({ ocrStr, n }) {
             smallCapsWord = smallCapsCurrent;
 
             if (/italic/i.test(charOrFont.name) || /-\w*ital/i.test(charOrFont.name) || /-it$/i.test(charOrFont.name) || /oblique/i.test(charOrFont.name)) {
-              // The word is already initialized, so we need to change the last element of the style array.
-              // Label as `smallCapsAlt` rather than `smallCaps`, as we confirm the word is all caps before marking as `smallCaps`.
               italicCurrent = true;
             } else {
               italicCurrent = false;
@@ -374,11 +376,13 @@ export async function convertPageStext({ ocrStr, n }) {
             baselineCurrent = charOrFont.origin.y;
           }
 
-          if (!wordInit) {
+          // This condition should make a word italic if the characters themselves are italic,
+          // even if leading/trailing punctuation is not italic.
+          if (wordCharN === 0 || wordCharN < 3 && /[A-Z\d]/i.test(charOrFont.text)) {
             boldWord = boldCurrent;
             italicWord = italicCurrent;
 
-            wordInit = true;
+            wordCharN++;
           }
 
           let bbox;
@@ -598,6 +602,8 @@ export async function convertPageStext({ ocrStr, n }) {
 
         wordObj.style.font = fontFamilyArr[i];
 
+        fontSet.add(cleanFamilyName(wordObj.style.font));
+
         wordObj.style.sup = superArr[i];
 
         wordObj.style.underline = underlineArr[i];
@@ -683,5 +689,7 @@ export async function convertPageStext({ ocrStr, n }) {
     });
   }
 
-  return { pageObj, dataTables: dataTablePage, langSet };
+  return {
+    pageObj, dataTables: dataTablePage, langSet, fontSet,
+  };
 }

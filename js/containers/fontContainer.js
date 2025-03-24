@@ -412,7 +412,7 @@ export class FontCont {
         family = 'NimbusSans';
       } else if (/Arial/i.test(family)) {
         family = 'NimbusSans';
-      } else if (/Century/i.test(family)) {
+      } else if (/CenturySch/i.test(family)) {
         family = 'Century';
       } else if (/Palatino/i.test(family)) {
         family = 'Palatino';
