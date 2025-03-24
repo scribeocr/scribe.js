@@ -626,13 +626,13 @@ function unexportedRuntimeSymbol(sym) {
 }
 
 var ASM_CONSTS = {
-  2200888: () => {
+  2200904: () => {
     throw new libmupdf.TryLaterError("operation in progress");
   },
-  2200951: $0 => {
+  2200967: $0 => {
     throw new Error(UTF8ToString($0));
   },
-  2200990: () => {
+  2201006: () => {
     throw new Error("Cannot create MuPDF context!");
   }
 };
