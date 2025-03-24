@@ -202,8 +202,9 @@ export function reorderOcrPage(page, layoutObj, applyExclude = true, editInPlace
 
   const orderArr = Array(hocrALines.length);
 
-  // 10 assumed to be lowest priority for text included in the output and is assigned to any word that does not overlap with a "order" layout box
-  orderArr.fill(10);
+  // All assigned priorities are assumed to be 0-99.
+  // 100 should be lower priority than every assigned value.
+  orderArr.fill(100);
 
   for (let i = 0; i < hocrALines.length; i++) {
     const hocrALine = hocrALines[i];
@@ -215,14 +216,14 @@ export function reorderOcrPage(page, layoutObj, applyExclude = true, editInPlace
         if (obj.type === 'order') {
           orderArr[i] = obj.order;
         } else if (obj.type === 'exclude' && applyExclude) {
-          // Priority "11" is used to remove lines
-          orderArr[i] = 11;
+          // Priority "101" is used to remove lines
+          orderArr[i] = 101;
         }
       }
     }
   }
 
-  for (let i = 0; i <= 10; i++) {
+  for (let i = 0; i <= 100; i++) {
     for (let j = 0; j < orderArr.length; j++) {
       if (orderArr[j] === i) {
         linesNew.push(hocrALines[j]);
