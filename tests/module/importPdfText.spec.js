@@ -428,3 +428,19 @@ describe('Check that font style is detected for PDF imports.', function () {
     await scribe.terminate();
   });
 }).timeout(120000);
+
+describe('Check that symbols are detected for PDF imports.', function () {
+  this.timeout(10000);
+
+  it('Symbols are not combined with words', async () => {
+    scribe.opt.usePDFText.native.main = true;
+    // An earlier version combined the checkbox with the first word.
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/high-risk_protection_order_application_for_and_declaration_in_support_of_mandatory_use.pdf`]);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[9].words.length, 4);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[9].words[1].text, 'Attorney,');
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);
