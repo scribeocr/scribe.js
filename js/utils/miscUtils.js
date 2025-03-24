@@ -527,3 +527,47 @@ export const getStyleLookup = (style) => {
   }
   return styleStr;
 };
+
+/**
+ * Identify specific font families and return a standardized name.
+ * This function is not intended to map names to fonts supported by this program,
+ * but rather simply to normalize the names of common fonts to a single name.
+ */
+export const cleanFamilyName = (family) => {
+  let familyClean = family;
+  if (/NimbusRom/i.test(family)) {
+    familyClean = 'NimbusRoman';
+  } else if (/TimesNewRom/i.test(family)) {
+    familyClean = 'TimesNewRoman';
+  } else if (/NimbusSan/i.test(family)) {
+    familyClean = 'NimbusSans';
+  } else if (/Helvetica/i.test(family)) {
+    familyClean = 'Helvetica';
+  } else if (/Arial/i.test(family)) {
+    familyClean = 'Arial';
+  } else if (/CenturySch/i.test(family)) {
+    familyClean = 'CenturySchoolbook';
+  } else if (/Palatino/i.test(family)) {
+    familyClean = 'Palatino';
+  } else if (/Garamond/i.test(family)) {
+    familyClean = 'Garamond';
+  } else if (/CenturyGothic/i.test(family)) {
+    familyClean = 'CenturyGothic';
+  } else if (/AvantGarde/i.test(family)) {
+    familyClean = 'AvantGarde';
+  } else if (/Carlito/i.test(family)) {
+    familyClean = 'Carlito';
+  } else if (/Calibri/i.test(family)) {
+    familyClean = 'Calibri';
+  } else if (/Courier/i.test(family)) {
+    familyClean = 'Courier';
+  } else if (/NimbusMono/i.test(family)) {
+    familyClean = 'NimbusMono';
+  } else if (/Dingbats/i.test(family)) {
+    familyClean = 'Dingbats';
+  } else if (/Wingdings/i.test(family)) {
+    familyClean = 'Wingdings';
+  }
+
+  return familyClean;
+};
