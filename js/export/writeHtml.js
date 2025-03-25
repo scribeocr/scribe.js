@@ -188,13 +188,11 @@ export function writeHtml({
         const scale = 1;
         const angle = 0;
 
-        // HTML exports currently only use raw fonts, as the fonts are retrieved from a CDN.
-        const fontI = FontCont.getWordFont(wordObj);
-        fontsUsed.add(fontI);
-
         const {
           charSpacing, leftSideBearing, rightSideBearing, fontSize, charArr, advanceArr, kerningArr, font,
         } = calcWordMetrics(wordObj);
+
+        fontsUsed.add(font);
 
         const wordStr = charArr.join('');
 
@@ -204,9 +202,9 @@ export function writeHtml({
 
         const fontSizeHTML = fontSize * scale;
 
-        const metrics = calcFontMetrics(fontI, fontSizeHTML);
+        const metrics = calcFontMetrics(font, fontSizeHTML);
 
-        const fontSizeHTMLSmallCaps = fontSize * scale * fontI.smallCapsMult;
+        const fontSizeHTMLSmallCaps = fontSize * scale * font.smallCapsMult;
 
         if (metrics.fontBoundingBoxAscent > activeLine.maxFontBoundingBoxAscentLine) {
           activeLine.maxFontBoundingBoxAscentLine = metrics.fontBoundingBoxAscent;
@@ -218,7 +216,7 @@ export function writeHtml({
         let styleStr = '';
 
         styleStr += `font-size:${fontSizeHTML}px;`;
-        styleStr += `font-family:${fontI.fontFaceName};`;
+        styleStr += `font-family:${font.fontFaceName};`;
 
         if (Math.abs(angle ?? 0) > 0.05) {
           styleStr += `transform-origin:left ${y1 - topHTML}px;`;
@@ -265,8 +263,8 @@ export function writeHtml({
 
         styleStr += `letter-spacing:${formatNum(charSpacingHTML)}px;`;
 
-        styleStr += `font-weight:${fontI.fontFaceWeight};`;
-        styleStr += `font-style:${fontI.fontFaceStyle};`;
+        styleStr += `font-weight:${font.fontFaceWeight};`;
+        styleStr += `font-style:${font.fontFaceStyle};`;
 
         // Line height must match the height of the font bounding box for the font metrics to be accurate.
         styleStr += `line-height:${metrics.fontBoundingBoxAscent + metrics.fontBoundingBoxDescent}px;`;
@@ -284,10 +282,9 @@ export function writeHtml({
         }
 
         if (i > 0) {
-          let styleStrSpace = `font-family:${fontI.fontFaceName};`;
-          styleStrSpace += `font-style:${fontI.fontFaceStyle};`;
-          const spaceAdvance = fontI.opentype.charToGlyph(' ').advanceWidth || fontI.opentype.unitsPerEm * 0.35;
-          const spaceAdvancePx = (spaceAdvance / fontI.opentype.unitsPerEm);
+          let styleStrSpace = '';
+          const spaceAdvance = font.opentype.charToGlyph(' ').advanceWidth || font.opentype.unitsPerEm * 0.35;
+          const spaceAdvancePx = (spaceAdvance / font.opentype.unitsPerEm);
           const fontSizeHTMLSpace = leftPad / spaceAdvancePx;
           if (fontSizeHTMLSpace > fontSizeHTML * 3) {
             styleStrSpace += `font-size:${fontSizeHTML}px;`;
@@ -300,6 +297,10 @@ export function writeHtml({
             const leftPadFinal = leftPad - spaceAdvancePx * fontSizeHTML;
             styleStrSpace += `word-spacing:${formatNum(leftPadFinal)}px;`;
           }
+
+          styleStrSpace += `font-family:${font.fontFaceName};`;
+          styleStrSpace += `font-style:${font.fontFaceStyle};`;
+          styleStrSpace += `font-weight:${font.fontFaceWeight};`;
 
           if (underlinePrev) {
             styleStrSpace += `color:${fill};`;
@@ -362,9 +363,16 @@ export function writeHtml({
   styleStr += '  }\n';
 
   for (const fontI of fontsUsed) {
-    const cdnPath = 'https://cdn.jsdelivr.net/npm/scribe.js-ocr@0.7.1/fonts/all/';
-    let styleTitleCase = fontI.style.charAt(0).toUpperCase() + fontI.style.slice(1).toLowerCase();
-    if (styleTitleCase === 'Normal') styleTitleCase = 'Regular';
+    const cdnPath = 'https://cdn.jsdelivr.net/npm/scribe.js-ocr@0.8.0/fonts/all/';
+    let styleTitleCase = 'Regular';
+    if (fontI.style === 'italic') {
+      styleTitleCase = 'Italic';
+    } else if (fontI.style === 'bold') {
+      styleTitleCase = 'Bold';
+    } else if (fontI.style === 'boldItalic') {
+      styleTitleCase = 'BoldItalic';
+    }
+
     const fontName = `${fontI.family}-${styleTitleCase}.woff`;
     const fontPath = cdnPath + fontName;
 
