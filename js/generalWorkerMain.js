@@ -175,6 +175,12 @@ export class gs {
   static convertPageAbbyy = async (args) => (await gs.schedulerInner.addJob('convertPageAbbyy', args));
 
   /**
+   * @param {Parameters<typeof import('./import/convertPageTextract.js').convertPageTextract>[0]} args
+   * @returns {ReturnType<typeof import('./import/convertPageTextract.js').convertPageTextract>}
+   */
+  static convertPageTextract = async (args) => (await gs.schedulerInner.addJob('convertPageAbbyy', args));
+
+  /**
    * @param {Parameters<typeof import('./import/convertPageStext.js').convertPageStext>[0]} args
    * @returns {ReturnType<typeof import('./import/convertPageStext.js').convertPageStext>}
    */

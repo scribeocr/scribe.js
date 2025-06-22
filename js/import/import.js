@@ -156,7 +156,7 @@ export function sortInputFiles(files) {
     if (['png', 'jpeg', 'jpg'].includes(fileExt)) {
       imageFilesAll.push(file);
       // All .gz files are assumed to be OCR data (xml) since all other file types can be compressed already
-    } else if (['hocr', 'xml', 'html', 'gz', 'stext'].includes(fileExt)) {
+    } else if (['hocr', 'xml', 'html', 'gz', 'stext', 'json'].includes(fileExt)) {
       ocrFilesAll.push(file);
     } else if (['scribe'].includes(fileExt)) {
       scribeFilesAll.push(file);
@@ -333,6 +333,7 @@ export async function importFiles(files) {
   let pageCount;
   let pageCountImage;
   let abbyyMode = false;
+  let textractMode = false;
   let reimportHocrMode = false;
 
   if (inputData.pdfMode) {
@@ -416,6 +417,7 @@ export async function importFiles(files) {
     reimportHocrMode = ocrData.reimportHocrMode;
 
     stextMode = ocrData.stextMode;
+    textractMode = ocrData.textractMode;
   }
 
   const pageCountOcr = ocrAllRaw.active?.length || ocrAll.active?.length || 0;
@@ -464,10 +466,11 @@ export async function importFiles(files) {
   }
 
   if (xmlModeImport) {
-    /** @type {("hocr" | "abbyy" | "stext")} */
+    /** @type {("hocr" | "abbyy" | "stext" | "textract")} */
     let format = 'hocr';
     if (abbyyMode) format = 'abbyy';
     if (stextMode) format = 'stext';
+    if (textractMode) format = 'textract';
 
     // Process HOCR using web worker, reading from file first if that has not been done already
     await convertOCR(ocrAllRaw.active, true, format, oemName, reimportHocrMode).then(async () => {
@@ -521,10 +524,11 @@ export async function importFilesSupp(files, ocrName) {
     opt.warningHandler(warningHTML);
   }
 
-  /** @type {("hocr" | "abbyy" | "stext")} */
+  /** @type {("hocr" | "abbyy" | "stext" | "textract")} */
   let format = 'hocr';
   if (ocrData.abbyyMode) format = 'abbyy';
   if (ocrData.stextMode) format = 'stext';
+  if (ocrData.textractMode) format = 'textract';
 
   await convertOCR(ocrData.hocrRaw, false, format, ocrName, ocrData.reimportHocrMode);
 }

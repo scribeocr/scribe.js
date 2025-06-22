@@ -2,6 +2,7 @@ import { convertPageAbbyy } from '../import/convertPageAbbyy.js';
 import { convertPageBlocks } from '../import/convertPageBlocks.js';
 import { convertPageHocr } from '../import/convertPageHocr.js';
 import { convertPageStext } from '../import/convertPageStext.js';
+import { convertPageTextract } from '../import/convertPageTextract.js';
 
 import { FontCont, loadFontsFromSource } from '../containers/fontContainer.js';
 import {
@@ -398,6 +399,7 @@ const handleMessage = async (data) => {
     convertPageAbbyy,
     convertPageHocr,
     convertPageStext,
+    convertPageTextract,
     convertPageBlocks,
 
     // Optimize font functions
