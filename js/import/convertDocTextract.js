@@ -17,9 +17,8 @@ const debugMode = false;
 /**
  * @param {Object} params
  * @param {string} params.ocrStr - Textract JSON as string
- * @param {number} params.n - Page number
  */
-export async function convertPageTextract({ ocrStr, n }) {
+export async function convertDocTextract({ ocrStr }) {
   let textractData;
   try {
     textractData = JSON.parse(ocrStr);
@@ -35,91 +34,99 @@ export async function convertPageTextract({ ocrStr, n }) {
     throw new Error('No PAGE block found in Textract data.');
   }
 
+  const pageBlocks = blocks.filter((block) => block.BlockType === 'PAGE');
+
+  const resArr = [];
+
+  for (let n = 0; n < pageBlocks.length; n++) {
   // Textract uses normalized coordinates (0-1), we need to convert to pixels
-  // We'll assume standard page dimensions since Textract doesn't provide pixel dimensions
-  const pageDims = { width: 1000, height: 1300 }; // Default letter size approximation
+    // We'll assume standard page dimensions since Textract doesn't provide pixel dimensions
+    const pageDims = { width: 1000, height: 1300 }; // Default letter size approximation
 
-  const pageObj = new ocr.OcrPage(n, pageDims);
+    const pageObj = new ocr.OcrPage(n, pageDims);
 
-  // Check if we have any text content
-  const lineBlocks = blocks.filter((block) => block.BlockType === 'LINE');
-  if (lineBlocks.length === 0) {
-    const warn = { char: 'char_error' };
-    return {
-      pageObj,
-      charMetricsObj: {},
-      dataTables: new LayoutDataTablePage(n),
-      warn,
-    };
-  }
-
-  // Process tables
-  const tablesPage = convertTableLayoutTextract(n, blocks, pageDims);
-
-  // Build relationships map for quick lookup
-  const relationshipMap = new Map();
-  blocks.forEach((block) => {
-    if (block.Relationships) {
-      block.Relationships.forEach((rel) => {
-        if (rel.Type === 'CHILD') {
-          relationshipMap.set(block.Id, rel.Ids || []);
-        }
-      });
+    // Check if we have any text content
+    const lineBlocks = blocks.filter((block) => block.BlockType === 'LINE');
+    if (lineBlocks.length === 0) {
+      const warn = { char: 'char_error' };
+      return {
+        pageObj,
+        charMetricsObj: {},
+        dataTables: new LayoutDataTablePage(n),
+        warn,
+      };
     }
-  });
 
-  // Create a map of blocks by ID for quick lookup
-  const blockMap = new Map();
-  blocks.forEach((block) => {
-    blockMap.set(block.Id, block);
-  });
+    // Process tables
+    const tablesPage = convertTableLayoutTextract(n, blocks, pageDims);
 
-  /** @type {Array<number>} */
-  const angleRisePage = [];
-
-  // Process layout blocks (paragraphs) and their lines
-  const layoutBlocks = blocks.filter((block) => block.BlockType && block.BlockType.startsWith('LAYOUT_'),
-  );
-
-  // Create a map to track which lines belong to which layout blocks
-  const lineToLayoutMap = new Map();
-
-  layoutBlocks.forEach((layoutBlock) => {
-    const childIds = relationshipMap.get(layoutBlock.Id) || [];
-    childIds.forEach((childId) => {
-      const childBlock = blockMap.get(childId);
-      if (childBlock && childBlock.BlockType === 'LINE') {
-        lineToLayoutMap.set(childId, layoutBlock);
+    // Build relationships map for quick lookup
+    const relationshipMap = new Map();
+    blocks.forEach((block) => {
+      if (block.Relationships) {
+        block.Relationships.forEach((rel) => {
+          if (rel.Type === 'CHILD') {
+            relationshipMap.set(block.Id, rel.Ids || []);
+          }
+        });
       }
     });
-  });
 
-  // Process lines and convert to OCR format
-  const lineObjMap = new Map();
-  lineBlocks.forEach((lineBlock, lineIndex) => {
-    const lineObj = convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, n, lineIndex, pageDims);
-    if (lineObj) {
-      pageObj.lines.push(lineObj);
-      lineObjMap.set(lineBlock.Id, lineObj);
+    // Create a map of blocks by ID for quick lookup
+    const blockMap = new Map();
+    blocks.forEach((block) => {
+      blockMap.set(block.Id, block);
+    });
 
-      // Collect baseline slopes for angle calculation
-      if (lineObj.baseline && Math.abs(lineObj.baseline[0]) > 0.001) {
-        angleRisePage.push(lineObj.baseline[0]);
+    /** @type {Array<number>} */
+    const angleRisePage = [];
+
+    // Process layout blocks (paragraphs) and their lines
+    const layoutBlocks = blocks.filter((block) => block.BlockType && block.BlockType.startsWith('LAYOUT_'),
+    );
+
+    // Create a map to track which lines belong to which layout blocks
+    const lineToLayoutMap = new Map();
+
+    layoutBlocks.forEach((layoutBlock) => {
+      const childIds = relationshipMap.get(layoutBlock.Id) || [];
+      childIds.forEach((childId) => {
+        const childBlock = blockMap.get(childId);
+        if (childBlock && childBlock.BlockType === 'LINE') {
+          lineToLayoutMap.set(childId, layoutBlock);
+        }
+      });
+    });
+
+    // Process lines and convert to OCR format
+    const lineObjMap = new Map();
+    lineBlocks.forEach((lineBlock, lineIndex) => {
+      const lineObj = convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, n, lineIndex, pageDims);
+      if (lineObj) {
+        pageObj.lines.push(lineObj);
+        lineObjMap.set(lineBlock.Id, lineObj);
+
+        // Collect baseline slopes for angle calculation
+        if (lineObj.baseline && Math.abs(lineObj.baseline[0]) > 0.001) {
+          angleRisePage.push(lineObj.baseline[0]);
+        }
       }
-    }
-  });
+    });
 
-  // Calculate page angle from line baselines
-  const angleRiseMedian = mean50(angleRisePage) || 0;
-  const angleOut = Math.asin(angleRiseMedian) * (180 / Math.PI);
-  pageObj.angle = angleOut;
+    // Calculate page angle from line baselines
+    const angleRiseMedian = mean50(angleRisePage) || 0;
+    const angleOut = Math.asin(angleRiseMedian) * (180 / Math.PI);
+    pageObj.angle = angleOut;
 
-  // Create paragraphs from Textract layout blocks
-  createParagraphsFromLayout(pageObj, layoutBlocks, relationshipMap, blockMap, lineObjMap);
+    // Create paragraphs from Textract layout blocks
+    createParagraphsFromLayout(pageObj, layoutBlocks, relationshipMap, blockMap, lineObjMap);
 
-  const langSet = pass3(pageObj);
+    const langSet = pass3(pageObj);
 
-  return { pageObj, dataTables: tablesPage, langSet };
+    resArr.push({ pageObj, dataTables: tablesPage, langSet });
+  }
+
+  return resArr;
 }
 
 /**
@@ -165,9 +172,9 @@ function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, page
   });
 
   // Calculate line metrics from word data
-  if (lineObj.words.length > 0) {
-    calculateLineMetrics(lineObj);
-  }
+  // if (lineObj.words.length > 0) {
+  //   calculateLineMetrics(lineObj);
+  // }
 
   return lineObj.words.length > 0 ? lineObj : null;
 }
@@ -185,10 +192,10 @@ function convertWordTextract(wordBlock, lineObj, pageNum, lineIndex, wordIndex, 
   wordObj.conf = wordBlock.Confidence || 100;
   wordObj.lang = 'eng'; // Textract doesn't provide language per word in this format
 
-  // Create character-level data by estimating positions within the word
-  if (wordBlock.Text.length > 0) {
-    wordObj.chars = createCharacterData(wordBlock.Text, bbox);
-  }
+  // // Create character-level data by estimating positions within the word
+  // if (wordBlock.Text.length > 0) {
+  //   wordObj.chars = createCharacterData(wordBlock.Text, bbox);
+  // }
 
   // Set default style - Textract doesn't provide detailed font information in basic output
   wordObj.style = {
@@ -209,28 +216,6 @@ function convertWordTextract(wordBlock, lineObj, pageNum, lineIndex, wordIndex, 
 }
 
 /**
- * Create estimated character-level data from word text and bbox
- * Since Textract doesn't provide character-level coordinates, we estimate them
- */
-function createCharacterData(text, wordBbox) {
-  const chars = [];
-  const charWidth = (wordBbox.right - wordBbox.left) / text.length;
-
-  for (let i = 0; i < text.length; i++) {
-    const charBbox = {
-      left: Math.round(wordBbox.left + (i * charWidth)),
-      top: wordBbox.top,
-      right: Math.round(wordBbox.left + ((i + 1) * charWidth)),
-      bottom: wordBbox.bottom,
-    };
-
-    chars.push(new ocr.OcrChar(text[i], charBbox));
-  }
-
-  return chars;
-}
-
-/**
  * Convert Textract normalized coordinates to pixel coordinates
  */
 function convertBoundingBox(textractBbox, pageDims) {
@@ -240,38 +225,6 @@ function convertBoundingBox(textractBbox, pageDims) {
     right: Math.round((textractBbox.Left + textractBbox.Width) * pageDims.width),
     bottom: Math.round((textractBbox.Top + textractBbox.Height) * pageDims.height),
   };
-}
-
-/**
- * Calculate line metrics (ascHeight, xHeight) from word character data
- */
-function calculateLineMetrics(lineObj) {
-  const ascHeightArr = [];
-  const xHeightArr = [];
-
-  for (const wordObj of lineObj.words) {
-    if (!wordObj.chars) continue;
-
-    for (let i = 0; i < wordObj.text.length; i++) {
-      const char = wordObj.text[i];
-      const charObj = wordObj.chars[i];
-      const charHeight = charObj.bbox.bottom - charObj.bbox.top;
-
-      // Use simple heuristics to classify character types
-      if (/[A-Z0-9bdhklt]/.test(char)) {
-        ascHeightArr.push(charHeight);
-      } else if (/[acemnorsuvwxz]/.test(char)) {
-        xHeightArr.push(charHeight);
-      }
-    }
-  }
-
-  if (ascHeightArr.length > 0) {
-    lineObj.ascHeight = quantile(ascHeightArr, 0.5);
-  }
-  if (xHeightArr.length > 0) {
-    lineObj.xHeight = quantile(xHeightArr, 0.5);
-  }
 }
 
 /**

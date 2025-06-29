@@ -7,7 +7,7 @@ import {
 } from './containers/dataContainer.js';
 import { FontCont } from './containers/fontContainer.js';
 import { ImageCache, ImageWrapper } from './containers/imageContainer.js';
-import { loadBuiltInFontsRaw, loadChiSimFont, loadDingbatsFont } from './fontContainerMain.js';
+import { loadBuiltInFontsRaw, loadChiSimFont } from './fontContainerMain.js';
 import { runFontOptimization } from './fontEval.js';
 import { calcCharMetricsFromPages } from './fontStatistics.js';
 import { gs } from './generalWorkerMain.js';
@@ -300,8 +300,8 @@ export async function convertOCRPage(ocrRaw, n, mainData, format, engineName, sc
     res = await gs.convertPageHocr({ ocrStr: ocrRaw, n, scribeMode });
   } else if (format === 'abbyy') {
     res = await gs.convertPageAbbyy({ ocrStr: ocrRaw, n });
-  } else if (format === 'textract') {
-    res = await gs.convertPageTextract({ ocrStr: ocrRaw, n });
+  // } else if (format === 'textract') {
+  //   res = await gs.convertPageTextract({ ocrStr: ocrRaw, n });
   } else if (format === 'stext') {
     res = await gs.convertPageStext({ ocrStr: ocrRaw, n });
   } else {
@@ -331,7 +331,7 @@ export async function convertPageCallback({
   } else {
     fontPromiseArr.push(loadBuiltInFontsRaw());
   }
-  if (fontSet && fontSet.has('Dingbats')) fontPromiseArr.push(loadDingbatsFont());
+  // if (fontSet && fontSet.has('Dingbats')) fontPromiseArr.push(loadDingbatsFont());
   await Promise.all(fontPromiseArr);
 
   if (['Tesseract Legacy', 'Tesseract LSTM'].includes(engineName)) ocrAll['Tesseract Latest'][n] = pageObj;
@@ -370,8 +370,15 @@ export async function convertPageCallback({
  * @param {boolean} [scribeMode=false] - Whether this is HOCR data from this program.
  */
 export async function convertOCR(ocrRawArr, mainData, format, engineName, scribeMode) {
-  // For each page, process OCR using web worker
   const promiseArr = [];
+  if (format === 'textract') {
+    const res = await gs.convertDocTextract({ ocrStr: ocrRawArr[0] });
+    for (let n = 0; n < res.length; n++) {
+      await convertPageCallback(res[n], n, mainData, engineName);
+    }
+    return;
+  }
+
   for (let n = 0; n < ocrRawArr.length; n++) {
     promiseArr.push(convertOCRPage(ocrRawArr[n], n, mainData, format, engineName, scribeMode));
   }

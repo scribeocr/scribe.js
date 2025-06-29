@@ -45,10 +45,14 @@ export async function importOCRFiles(ocrFilesAll) {
     const node2 = hocrStrAll.match(/>([^>]+)/)?.[1];
     abbyyMode = !!node2 && !!/abbyy/i.test(node2);
     stextMode = !!node2 && !!/<document name/.test(node2);
-    textractMode = !!node2 && !!/"AnalyzeDocumentModelVersion"/i.test(node2);
+    textractMode = !node2 && !!/"AnalyzeDocumentModelVersion"/i.test(hocrStrAll);
 
     if (textractMode) {
+      hocrRaw = [hocrStrAll];
+      // const textractObj = JSON.parse(hocrStrAll);
+      // console.log(textractObj);
       // TODO
+      // hocrRaw = hocrStrAll.split(/(?!,\s*)?(?={\s*"BlockType":\s?"PAGE")/i).slice(1);
     } else if (abbyyMode) {
       hocrRaw = hocrStrAll.split(/(?=<page)/).slice(1);
     } else if (stextMode) {
