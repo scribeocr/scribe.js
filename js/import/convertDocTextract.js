@@ -5,6 +5,9 @@ import {
   mean50,
   quantile,
   round6,
+  descCharArr,
+  ascCharArr,
+  xCharArr,
 } from '../utils/miscUtils.js';
 
 import {
@@ -17,8 +20,9 @@ const debugMode = false;
 /**
  * @param {Object} params
  * @param {string} params.ocrStr - Textract JSON as string
+ * @param {dims[]} params.pageDims - Page metrics to use for the pages (Textract only).
  */
-export async function convertDocTextract({ ocrStr }) {
+export async function convertDocTextract({ ocrStr, pageDims }) {
   let textractData;
   try {
     textractData = JSON.parse(ocrStr);
@@ -39,11 +43,14 @@ export async function convertDocTextract({ ocrStr }) {
   const resArr = [];
 
   for (let n = 0; n < pageBlocks.length; n++) {
-  // Textract uses normalized coordinates (0-1), we need to convert to pixels
+    // Textract uses normalized coordinates (0-1), we need to convert to pixels
     // We'll assume standard page dimensions since Textract doesn't provide pixel dimensions
-    const pageDims = { width: 1000, height: 1300 }; // Default letter size approximation
+    const pageDimsN = pageDims[n];
+    if (!pageDimsN) {
+      throw new Error(`No page dimensions provided for page ${n + 1}.`);
+    }
 
-    const pageObj = new ocr.OcrPage(n, pageDims);
+    const pageObj = new ocr.OcrPage(n, pageDimsN);
 
     // Check if we have any text content
     const lineBlocks = blocks.filter((block) => block.BlockType === 'LINE');
@@ -58,7 +65,7 @@ export async function convertDocTextract({ ocrStr }) {
     }
 
     // Process tables
-    const tablesPage = convertTableLayoutTextract(n, blocks, pageDims);
+    const tablesPage = convertTableLayoutTextract(n, blocks, pageDimsN);
 
     // Build relationships map for quick lookup
     const relationshipMap = new Map();
@@ -101,7 +108,7 @@ export async function convertDocTextract({ ocrStr }) {
     // Process lines and convert to OCR format
     const lineObjMap = new Map();
     lineBlocks.forEach((lineBlock, lineIndex) => {
-      const lineObj = convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, n, lineIndex, pageDims);
+      const lineObj = convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, n, lineIndex, pageDimsN);
       if (lineObj) {
         pageObj.lines.push(lineObj);
         lineObjMap.set(lineBlock.Id, lineObj);
@@ -130,10 +137,76 @@ export async function convertDocTextract({ ocrStr }) {
 }
 
 /**
+ * Calculate the baseline for a line object based on its words, and modify the line object in place.
+ * The information available in Textract is limited, so we estimate the baseline
+ * based on the positions of words that contain descenders, ascenders, or x-height characters.
+ * @param {OcrLine} lineObj
+ */
+const calcLineBaseline = (lineObj) => {
+  const descCharRegex = new RegExp(`[${descCharArr.join('')}]`);
+  const ascCharRegex = new RegExp(`[${ascCharArr.join('')}]`);
+  const xCharRegex = new RegExp(`[${xCharArr.join('')}]`);
+
+  const descWords = /** @type {OcrWord[]} */([]);
+  const nonDescWords = /** @type {OcrWord[]} */([]);
+  const xOnlyWords = /** @type {OcrWord[]} */([]);
+  const ascOnlyWords = /** @type {OcrWord[]} */([]);
+  const descOnlyWords = /** @type {OcrWord[]} */([]);
+  const ascDescWords = /** @type {OcrWord[]} */([]);
+
+  for (const word of lineObj.words) {
+    if (word.text && descCharRegex.test(word.text)) {
+      descWords.push(word);
+    }
+    if (word.text && (xCharRegex.test(word.text) || ascCharRegex.test(word.text))) {
+      nonDescWords.push(word);
+    }
+    // The `ascCharRegex` array purposefully does not contain `f`, as it varies wildly in height,
+    // and this array was primarily created for formats where we have character-level data.
+    // Therefore, additional characters are added here as appropriate.
+    if (word.text && xCharRegex.test(word.text) && !ascCharRegex.test(word.text)
+      && !descCharRegex.test(word.text) && !/[fi]/.test(word.text)) {
+      xOnlyWords.push(word);
+    }
+    if (word.text && ascCharRegex.test(word.text) && !descCharRegex.test(word.text)) {
+      ascOnlyWords.push(word);
+    }
+    if (word.text && descCharRegex.test(word.text) && !ascCharRegex.test(word.text)) {
+      descOnlyWords.push(word);
+    }
+    if (word.text && ascCharRegex.test(word.text) && descCharRegex.test(word.text)) {
+      ascDescWords.push(word);
+    }
+  }
+
+  const nonDescBottoms = nonDescWords.map((word) => word.bbox.bottom);
+  const nonDescBottom = mean50(nonDescBottoms);
+
+  const lineHeight = lineObj.bbox.bottom - lineObj.bbox.top;
+  const lineMid = lineObj.bbox.top + lineHeight / 2;
+  if (Number.isFinite(nonDescBottom) && nonDescBottom < lineObj.bbox.bottom && nonDescBottom > lineMid) {
+    lineObj.baseline[1] = nonDescBottom - lineObj.bbox.bottom;
+  } else if (descWords.length > 0) {
+    lineObj.baseline[1] = -lineHeight / 3;
+  }
+
+  let xHeight = /** @type {?number} */ (mean50(xOnlyWords.map((word) => (word.bbox.bottom - word.bbox.top))));
+  const ascHeight = mean50(ascOnlyWords.map((word) => (word.bbox.bottom - word.bbox.top)));
+  if (xHeight && ascHeight && xHeight > ascHeight * 0.8) {
+    if (ascOnlyWords.length > xOnlyWords.length) {
+      xHeight = null;
+    }
+  }
+
+  if (xHeight) lineObj.xHeight = xHeight;
+  if (ascHeight) lineObj.ascHeight = ascHeight;
+};
+
+/**
  * Convert Textract LINE block to OcrLine
  */
 function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, pageNum, lineIndex, pageDims) {
-  if (!lineBlock.Text || !lineBlock.Geometry) return null;
+  if (!lineBlock.Text || !lineBlock.Geometry || lineBlock.Page - 1 !== pageNum) return null;
 
   // Convert normalized coordinates to pixels
   const bbox = convertBoundingBox(lineBlock.Geometry.BoundingBox, pageDims);
@@ -171,10 +244,7 @@ function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, page
     }
   });
 
-  // Calculate line metrics from word data
-  // if (lineObj.words.length > 0) {
-  //   calculateLineMetrics(lineObj);
-  // }
+  calcLineBaseline(lineObj);
 
   return lineObj.words.length > 0 ? lineObj : null;
 }
@@ -191,11 +261,6 @@ function convertWordTextract(wordBlock, lineObj, pageNum, lineIndex, wordIndex, 
   const wordObj = new ocr.OcrWord(lineObj, wordBlock.Text, bbox, id);
   wordObj.conf = wordBlock.Confidence || 100;
   wordObj.lang = 'eng'; // Textract doesn't provide language per word in this format
-
-  // // Create character-level data by estimating positions within the word
-  // if (wordBlock.Text.length > 0) {
-  //   wordObj.chars = createCharacterData(wordBlock.Text, bbox);
-  // }
 
   // Set default style - Textract doesn't provide detailed font information in basic output
   wordObj.style = {

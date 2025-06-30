@@ -420,7 +420,13 @@ export async function importFiles(files) {
     textractMode = ocrData.textractMode;
   }
 
-  const pageCountOcr = ocrAllRaw.active?.length || ocrAll.active?.length || 0;
+  let pageCountOcr = ocrAllRaw.active?.length || ocrAll.active?.length || 0;
+
+  // For Textract, `ocrAllRaw.active[0]` is a string containing the Textract JSON data for all pages.
+  // This ad-hoc solution counts the number of "PAGE" blocks in the Textract JSON data.
+  if (textractMode && ocrAllRaw.active?.length) {
+    pageCountOcr = ocrAllRaw.active[0].match(/"BLOCKTYPE":\s*"PAGE"/ig)?.length || pageCountOcr;
+  }
 
   // If both OCR data and image data are present, confirm they have the same number of pages
   if (xmlModeImport && (inputData.imageMode || inputData.pdfMode)) {
@@ -473,7 +479,7 @@ export async function importFiles(files) {
     if (textractMode) format = 'textract';
 
     // Process HOCR using web worker, reading from file first if that has not been done already
-    await convertOCR(ocrAllRaw.active, true, format, oemName, reimportHocrMode).then(async () => {
+    await convertOCR(ocrAllRaw.active, true, format, oemName, reimportHocrMode, pageMetricsArr).then(async () => {
       // Skip this step if optimization info was already restored from a previous session, or if using stext (which is character-level but not visually accurate).
       if (!existingOpt && !stextMode) {
         await checkCharWarn(convertPageWarn);

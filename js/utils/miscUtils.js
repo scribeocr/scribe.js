@@ -5,6 +5,7 @@
 export const ascCharArr = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'K', 'L', 'M', 'N', 'O', 'P', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
   'b', 'd', 'h', 'k', 'l', 't', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
 export const xCharArr = ['a', 'c', 'e', 'm', 'n', 'o', 'r', 's', 'u', 'v', 'w', 'x', 'z'];
+export const descCharArr = ['g', 'j', 'p', 'q', 'y'];
 
 /**
  *

@@ -368,11 +368,14 @@ export async function convertPageCallback({
  * @param {("hocr"|"abbyy"|"stext"|"textract")} format - Format of raw data.
  * @param {string} engineName - Name of OCR engine.
  * @param {boolean} [scribeMode=false] - Whether this is HOCR data from this program.
+ * @param {?PageMetrics[]} [pageMetrics=null] - Page metrics to use for the pages (Textract only).
  */
-export async function convertOCR(ocrRawArr, mainData, format, engineName, scribeMode) {
+export async function convertOCR(ocrRawArr, mainData, format, engineName, scribeMode, pageMetrics = null) {
   const promiseArr = [];
   if (format === 'textract') {
-    const res = await gs.convertDocTextract({ ocrStr: ocrRawArr[0] });
+    if (!pageMetrics) throw new Error('Page metrics must be provided for Textract data.');
+    const pageDims = pageMetrics.map((metrics) => (metrics.dims));
+    const res = await gs.convertDocTextract({ ocrStr: ocrRawArr[0], pageDims });
     for (let n = 0; n < res.length; n++) {
       await convertPageCallback(res[n], n, mainData, engineName);
     }
