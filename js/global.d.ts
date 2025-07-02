@@ -10,6 +10,10 @@ declare global {
         sup: boolean;
         dropcap: boolean;
     };
+
+    // Strings representing supported sources of text.
+    // `stext` indicates the text was extracted directly from a PDF using mupdf.
+    type TextSource = null | 'tesseract' | 'textract' | 'abbyy' | 'stext' | 'hocr';
     
     type FontState = {
         enableOpt: boolean;

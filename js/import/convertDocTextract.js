@@ -124,9 +124,23 @@ export async function convertDocTextract({ ocrStr, pageDims }) {
     const angleRiseMedian = mean50(angleRisePage) || 0;
     const angleOut = Math.asin(angleRiseMedian) * (180 / Math.PI);
     pageObj.angle = angleOut;
+    pageObj.textSource = 'textract';
 
     // Create paragraphs from Textract layout blocks
     createParagraphsFromLayout(pageObj, layoutBlocks, relationshipMap, blockMap, lineObjMap);
+
+    // Reorder lines based on paragraphs to ensure line order matches logical reading order.
+    // Unlike most other programs, Textract does not do this automatically.
+    const lines2 = /** @type {OcrLine[]} */ ([]);
+    pageObj.pars.forEach((par) => {
+      lines2.push(...par.lines);
+    });
+
+    if (lines2.length !== pageObj.lines.length) {
+      console.warn(`Warning: Mismatch in number of lines (${lines2.length}) and lines in paragraphs (${pageObj.lines.length}) on page ${n + 1}. Lines will not be reordered.`);
+    } else {
+      pageObj.lines = lines2;
+    }
 
     const langSet = pass3(pageObj);
 
