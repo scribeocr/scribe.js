@@ -220,7 +220,8 @@ const calcLineBaseline = (lineObj) => {
  * Convert Textract LINE block to OcrLine
  */
 function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, pageNum, lineIndex, pageDims) {
-  if (!lineBlock.Text || !lineBlock.Geometry || lineBlock.Page - 1 !== pageNum) return null;
+  // `lineBlock.Page` will be undefined when the entire document is a single page.
+  if (!lineBlock.Text || !lineBlock.Geometry || (lineBlock.Page || 1) - 1 !== pageNum) return null;
 
   // Convert normalized coordinates to pixels
   const bbox = convertBoundingBox(lineBlock.Geometry.BoundingBox, pageDims);
@@ -229,12 +230,12 @@ function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, page
   // We'll estimate it based on the polygon points if available
   let baselineSlope = 0;
   if (lineBlock.Geometry.Polygon && lineBlock.Geometry.Polygon.length >= 4) {
-    const poly = lineBlock.Geometry.Polygon;
+    const poly = convertPolygon(lineBlock.Geometry.Polygon, pageDims);
     // Calculate slope using bottom points of the polygon
     const leftBottom = poly[3];
     const rightBottom = poly[2];
-    if (rightBottom.X !== leftBottom.X) {
-      baselineSlope = (rightBottom.Y - leftBottom.Y) / (rightBottom.X - leftBottom.X);
+    if (rightBottom.x !== leftBottom.x) {
+      baselineSlope = (rightBottom.y - leftBottom.y) / (rightBottom.x - leftBottom.x);
     }
   }
 
@@ -274,9 +275,8 @@ function convertWordTextract(wordBlock, lineObj, pageNum, lineIndex, wordIndex, 
 
   const wordObj = new ocr.OcrWord(lineObj, wordBlock.Text, bbox, id);
   wordObj.conf = wordBlock.Confidence || 100;
-  wordObj.lang = 'eng'; // Textract doesn't provide language per word in this format
+  wordObj.lang = 'eng';
 
-  // Set default style - Textract doesn't provide detailed font information in basic output
   wordObj.style = {
     font: null,
     size: null,
@@ -288,14 +288,12 @@ function convertWordTextract(wordBlock, lineObj, pageNum, lineIndex, wordIndex, 
     dropcap: false,
   };
 
-  // Detect potential formatting based on text characteristics
-  detectTextFormatting(wordObj);
-
   return wordObj;
 }
 
 /**
  * Convert Textract normalized coordinates to pixel coordinates
+ * @returns {bbox}
  */
 function convertBoundingBox(textractBbox, pageDims) {
   return {
@@ -306,34 +304,11 @@ function convertBoundingBox(textractBbox, pageDims) {
   };
 }
 
-/**
- * Detect basic text formatting based on text characteristics
- */
-function detectTextFormatting(wordObj) {
-  const text = wordObj.text;
-
-  // Detect all caps (potential small caps)
-  if (text.length > 1 && /^[A-Z][A-Z]+$/.test(text) && !/^[0-9]+$/.test(text)) {
-    const wordHeight = wordObj.bbox.bottom - wordObj.bbox.top;
-    const lineHeight = wordObj.line.bbox.bottom - wordObj.line.bbox.top;
-
-    // If word is significantly smaller than line, it might be small caps
-    if (wordHeight < lineHeight * 0.8) {
-      wordObj.style.smallCaps = true;
-    }
-  }
-
-  // Detect potential superscripts based on position and size
-  if (wordObj.line.words.length > 1) {
-    const wordHeight = wordObj.bbox.bottom - wordObj.bbox.top;
-    const lineHeight = wordObj.line.bbox.bottom - wordObj.line.bbox.top;
-    const wordTop = wordObj.bbox.top;
-    const lineTop = wordObj.line.bbox.top;
-
-    if (wordHeight < lineHeight * 0.7 && (wordTop - lineTop) > lineHeight * 0.2) {
-      wordObj.style.sup = true;
-    }
-  }
+function convertPolygon(textractPolygon, pageDims) {
+  return textractPolygon.map((point) => ({
+    x: Math.round(point.X * pageDims.width),
+    y: Math.round(point.Y * pageDims.height),
+  }));
 }
 
 /**
