@@ -180,6 +180,53 @@ declare global {
     type LayoutDataColumn = import("./objects/layoutObjects.js").LayoutDataColumn;
     type LayoutRegion = import("./objects/layoutObjects.js").LayoutRegion;
 
+    interface Point {
+        x: number;
+        y: number;
+    }
+
+    interface Polygon {
+        br: Point;
+        bl: Point;
+        tr: Point;
+        tl: Point;
+    }
+
+    interface TextractBoundingBox {
+        Width: number;
+        Height: number;
+        Left: number;
+        Top: number;
+    }
+
+    interface TextractPoint {
+        X: number;
+        Y: number;
+    }
+
+    interface TextractGeometry {
+        BoundingBox: TextractBoundingBox;
+        Polygon: TextractPoint[];
+        RotationAngle: number;
+    }
+
+    interface Relationship {
+        Type: string;
+        Ids: string[];
+    }
+
+    interface TextractBlock {
+        BlockType: "WORD" | "LINE" | "PAGE" | "KEY_VALUE_SET" | "CELL" | "MERGED_CELL" | "SELECTION_ELEMENT" | "TABLE"; 
+        Confidence: number;
+        Text: string;
+        TextType: "PRINTED" | "HANDWRITING";
+        Geometry: TextractGeometry;
+        Id: string;
+        Page?: number;
+        Relationships?: Relationship[];
+    }
+
+
 }
 
 export { };

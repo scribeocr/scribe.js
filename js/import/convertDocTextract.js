@@ -15,8 +15,6 @@ import {
 } from '../objects/layoutObjects.js';
 import { pass3 } from './convertPageShared.js';
 
-const debugMode = false;
-
 /**
  * @param {Object} params
  * @param {string} params.ocrStr - Textract JSON as string
@@ -31,12 +29,6 @@ export async function convertDocTextract({ ocrStr, pageDims }) {
   }
 
   const blocks = textractData.Blocks || [];
-
-  // Find the PAGE block to get page dimensions
-  const pageBlock = blocks.find((block) => block.BlockType === 'PAGE');
-  if (!pageBlock) {
-    throw new Error('No PAGE block found in Textract data.');
-  }
 
   const pageBlocks = blocks.filter((block) => block.BlockType === 'PAGE');
 
@@ -64,10 +56,8 @@ export async function convertDocTextract({ ocrStr, pageDims }) {
       };
     }
 
-    // Process tables
     const tablesPage = convertTableLayoutTextract(n, blocks, pageDimsN);
 
-    // Build relationships map for quick lookup
     const relationshipMap = new Map();
     blocks.forEach((block) => {
       if (block.Relationships) {
@@ -79,7 +69,6 @@ export async function convertDocTextract({ ocrStr, pageDims }) {
       }
     });
 
-    // Create a map of blocks by ID for quick lookup
     const blockMap = new Map();
     blocks.forEach((block) => {
       blockMap.set(block.Id, block);
@@ -151,29 +140,75 @@ export async function convertDocTextract({ ocrStr, pageDims }) {
 }
 
 /**
- * Calculate the baseline for a line object based on its words, and modify the line object in place.
- * The information available in Textract is limited, so we estimate the baseline
- * based on the positions of words that contain descenders, ascenders, or x-height characters.
- * @param {OcrLine} lineObj
+ * Convert Textract LINE block to OcrLine
+ * @param {TextractBlock} lineBlock - Textract LINE block
+ * @param {Map<string, TextractBlock>} blockMap - Map of Textract blocks by ID
+ * @param {Map<string, string[]>} relationshipMap - Map of Textract relationships by block ID
+ * @param {OcrPage} pageObj - OcrPage object for the current page
+ * @param {number} pageNum - Page number (0-indexed)
+ * @param {number} lineIndex - Index of the line block on the page
+ * @param {dims} pageDims - Dimensions of the page in pixels
  */
-const calcLineBaseline = (lineObj) => {
+function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, pageNum, lineIndex, pageDims) {
+  // `lineBlock.Page` will be undefined when the entire document is a single page.
+  if (!lineBlock.Text || !lineBlock.Geometry || (lineBlock.Page || 1) - 1 !== pageNum) return null;
+
+  // Convert normalized coordinates to pixels
+  const bboxLine = convertBoundingBox(lineBlock.Geometry.BoundingBox, pageDims);
+
+  const polyLine = convertPolygon(lineBlock.Geometry.Polygon, pageDims);
+
+  // Calculate baseline from geometry - Textract doesn't provide explicit baseline
+  // We'll estimate it based on the polygon points if available
+  let baselineSlope = 0;
+  if (polyLine.br.x !== polyLine.bl.x) {
+    baselineSlope = (polyLine.br.y - polyLine.bl.y) / (polyLine.br.x - polyLine.bl.x);
+  }
+
+  const baseline = [baselineSlope, 0];
+  const lineObj = new ocr.OcrLine(pageObj, bboxLine, baseline);
+  const wordPolyArr = /** @type {Polygon[]} */ ([]);
+
+  const childIds = relationshipMap.get(lineBlock.Id) || [];
+
+  childIds.forEach((wordId, wordIndex) => {
+    const wordBlock = blockMap.get(wordId);
+    if (wordBlock && wordBlock.BlockType === 'WORD') {
+      if (!wordBlock.Text || !wordBlock.Geometry) return;
+
+      const bboxWord = convertBoundingBox(wordBlock.Geometry.BoundingBox, pageDims);
+      const id = `word_${pageNum + 1}_${lineIndex + 1}_${wordIndex + 1}`;
+
+      const wordObj = new ocr.OcrWord(lineObj, wordBlock.Text, bboxWord, id);
+      wordObj.conf = wordBlock.Confidence || 100;
+
+      lineObj.words.push(wordObj);
+      wordPolyArr.push(convertPolygon(wordBlock.Geometry.Polygon, pageDims));
+    }
+  });
+
   const descCharRegex = new RegExp(`[${descCharArr.join('')}]`);
   const ascCharRegex = new RegExp(`[${ascCharArr.join('')}]`);
   const xCharRegex = new RegExp(`[${xCharArr.join('')}]`);
 
   const descWords = /** @type {OcrWord[]} */([]);
   const nonDescWords = /** @type {OcrWord[]} */([]);
+  const nonDescWordsPoly = /** @type {Polygon[]} */([]);
   const xOnlyWords = /** @type {OcrWord[]} */([]);
   const ascOnlyWords = /** @type {OcrWord[]} */([]);
   const descOnlyWords = /** @type {OcrWord[]} */([]);
   const ascDescWords = /** @type {OcrWord[]} */([]);
 
-  for (const word of lineObj.words) {
+  for (let i = 0; i < lineObj.words.length; i++) {
+    const word = lineObj.words[i];
+    const polyWord = wordPolyArr[i];
+
     if (word.text && descCharRegex.test(word.text)) {
       descWords.push(word);
     }
     if (word.text && (xCharRegex.test(word.text) || ascCharRegex.test(word.text))) {
       nonDescWords.push(word);
+      nonDescWordsPoly.push(polyWord);
     }
     // The `ascCharRegex` array purposefully does not contain `f`, as it varies wildly in height,
     // and this array was primarily created for formats where we have character-level data.
@@ -193,17 +228,6 @@ const calcLineBaseline = (lineObj) => {
     }
   }
 
-  const nonDescBottoms = nonDescWords.map((word) => word.bbox.bottom);
-  const nonDescBottom = mean50(nonDescBottoms);
-
-  const lineHeight = lineObj.bbox.bottom - lineObj.bbox.top;
-  const lineMid = lineObj.bbox.top + lineHeight / 2;
-  if (Number.isFinite(nonDescBottom) && nonDescBottom < lineObj.bbox.bottom && nonDescBottom > lineMid) {
-    lineObj.baseline[1] = nonDescBottom - lineObj.bbox.bottom;
-  } else if (descWords.length > 0) {
-    lineObj.baseline[1] = -lineHeight / 3;
-  }
-
   let xHeight = /** @type {?number} */ (mean50(xOnlyWords.map((word) => (word.bbox.bottom - word.bbox.top))));
   const ascHeight = mean50(ascOnlyWords.map((word) => (word.bbox.bottom - word.bbox.top)));
   if (xHeight && ascHeight && xHeight > ascHeight * 0.8) {
@@ -212,87 +236,32 @@ const calcLineBaseline = (lineObj) => {
     }
   }
 
-  if (xHeight) lineObj.xHeight = xHeight;
-  if (ascHeight) lineObj.ascHeight = ascHeight;
-};
+  const nonDescBottomDeltaArr = nonDescWordsPoly.map((wordPoly) => {
+    const wordBottomMid = Math.round((wordPoly.bl.y + wordPoly.br.y) / 2);
+    const wordXMid = Math.round((wordPoly.bl.x + wordPoly.br.x) / 2);
+    const wordXMidOffset = wordXMid - lineObj.bbox.left;
+    const wordBottomExp = polyLine.bl.y + (baseline[0] * wordXMidOffset);
+    return wordBottomMid - wordBottomExp;
+  });
+  const nonDescBottomDelta = mean50(nonDescBottomDeltaArr);
 
-/**
- * Convert Textract LINE block to OcrLine
- */
-function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, pageNum, lineIndex, pageDims) {
-  // `lineBlock.Page` will be undefined when the entire document is a single page.
-  if (!lineBlock.Text || !lineBlock.Geometry || (lineBlock.Page || 1) - 1 !== pageNum) return null;
-
-  // Convert normalized coordinates to pixels
-  const bbox = convertBoundingBox(lineBlock.Geometry.BoundingBox, pageDims);
-
-  // Calculate baseline from geometry - Textract doesn't provide explicit baseline
-  // We'll estimate it based on the polygon points if available
-  let baselineSlope = 0;
-  if (lineBlock.Geometry.Polygon && lineBlock.Geometry.Polygon.length >= 4) {
-    const poly = convertPolygon(lineBlock.Geometry.Polygon, pageDims);
-    // Calculate slope using bottom points of the polygon
-    const leftBottom = poly[3];
-    const rightBottom = poly[2];
-    if (rightBottom.x !== leftBottom.x) {
-      baselineSlope = (rightBottom.y - leftBottom.y) / (rightBottom.x - leftBottom.x);
-    }
+  const lineHeight = ((polyLine.tr.y - polyLine.br.y) + (polyLine.tr.y - polyLine.br.y)) / 2;
+  if (Number.isFinite(nonDescBottomDelta) && nonDescBottomDelta < lineObj.bbox.bottom && nonDescBottomDelta > (lineHeight / 2)) {
+    lineObj.baseline[1] = nonDescBottomDelta - (lineObj.bbox.bottom - polyLine.bl.y);
+  } else if (descWords.length > 0) {
+    lineObj.baseline[1] = -lineHeight / 3 - (lineObj.bbox.bottom - polyLine.bl.y);
   }
 
-  const baseline = [baselineSlope, 0]; // [slope, offset]
-  const lineObj = new ocr.OcrLine(pageObj, bbox, baseline);
-
-  // This should be kept disabled as a rule unless debugging
-  if (debugMode) lineObj.raw = JSON.stringify(lineBlock);
-
-  // Get child word IDs
-  const childIds = relationshipMap.get(lineBlock.Id) || [];
-
-  // Process words
-  childIds.forEach((wordId, wordIndex) => {
-    const wordBlock = blockMap.get(wordId);
-    if (wordBlock && wordBlock.BlockType === 'WORD') {
-      const wordObj = convertWordTextract(wordBlock, lineObj, pageNum, lineIndex, wordIndex, pageDims);
-      if (wordObj) {
-        lineObj.words.push(wordObj);
-      }
-    }
-  });
-
-  calcLineBaseline(lineObj);
+  if (xHeight) lineObj.xHeight = xHeight;
+  if (ascHeight) lineObj.ascHeight = ascHeight;
 
   return lineObj.words.length > 0 ? lineObj : null;
 }
 
 /**
- * Convert Textract WORD block to OcrWord
- */
-function convertWordTextract(wordBlock, lineObj, pageNum, lineIndex, wordIndex, pageDims) {
-  if (!wordBlock.Text || !wordBlock.Geometry) return null;
-
-  const bbox = convertBoundingBox(wordBlock.Geometry.BoundingBox, pageDims);
-  const id = `word_${pageNum + 1}_${lineIndex + 1}_${wordIndex + 1}`;
-
-  const wordObj = new ocr.OcrWord(lineObj, wordBlock.Text, bbox, id);
-  wordObj.conf = wordBlock.Confidence || 100;
-  wordObj.lang = 'eng';
-
-  wordObj.style = {
-    font: null,
-    size: null,
-    bold: false,
-    italic: false,
-    underline: false,
-    smallCaps: false,
-    sup: false,
-    dropcap: false,
-  };
-
-  return wordObj;
-}
-
-/**
  * Convert Textract normalized coordinates to pixel coordinates
+ * @param {TextractBoundingBox} textractBbox - Textract bounding box with normalized coordinates
+ * @param {dims} pageDims - Dimensions of the page in pixels
  * @returns {bbox}
  */
 function convertBoundingBox(textractBbox, pageDims) {
@@ -304,15 +273,40 @@ function convertBoundingBox(textractBbox, pageDims) {
   };
 }
 
+/**
+ *
+ * @param {TextractPoint[]} textractPolygon
+ * @param {dims} pageDims
+ * @return {Polygon}
+ */
 function convertPolygon(textractPolygon, pageDims) {
-  return textractPolygon.map((point) => ({
-    x: Math.round(point.X * pageDims.width),
-    y: Math.round(point.Y * pageDims.height),
-  }));
+  return {
+    br: {
+      x: Math.round(textractPolygon[2].X * pageDims.width),
+      y: Math.round(textractPolygon[2].Y * pageDims.height),
+    },
+    bl: {
+      x: Math.round(textractPolygon[3].X * pageDims.width),
+      y: Math.round(textractPolygon[3].Y * pageDims.height),
+    },
+    tr: {
+      x: Math.round(textractPolygon[1].X * pageDims.width),
+      y: Math.round(textractPolygon[1].Y * pageDims.height),
+    },
+    tl: {
+      x: Math.round(textractPolygon[0].X * pageDims.width),
+      y: Math.round(textractPolygon[0].Y * pageDims.height),
+    },
+  };
 }
 
 /**
- * Create paragraphs from Textract layout blocks
+ *
+ * @param {OcrPage} pageObj
+ * @param {TextractBlock[]} layoutBlocks
+ * @param {Map<string, string[]>} relationshipMap - Map of Textract relationships by block ID
+ * @param {Map<string, TextractBlock>} blockMap - Map of Textract blocks by ID
+ * @param {Map<string, OcrLine>} lineObjMap - Map of OcrLine objects by block ID
  */
 function createParagraphsFromLayout(pageObj, layoutBlocks, relationshipMap, blockMap, lineObjMap) {
   // Process each layout block as a paragraph
@@ -369,15 +363,16 @@ function createParagraphsFromLayout(pageObj, layoutBlocks, relationshipMap, bloc
 }
 
 /**
- * Convert Textract table layout data
+ *
+ * @param {number} pageNum
+ * @param {TextractBlock[]} blocks
+ * @param {dims} pageDims
  */
 function convertTableLayoutTextract(pageNum, blocks, pageDims) {
   const tablesPage = new LayoutDataTablePage(pageNum);
 
-  // Find TABLE blocks
   const tableBlocks = blocks.filter((block) => block.BlockType === 'TABLE');
 
-  // Build relationships map for tables
   const relationshipMap = new Map();
   blocks.forEach((block) => {
     if (block.Relationships) {
