@@ -3,11 +3,10 @@ import ocr from '../objects/ocrObjects.js';
 import {
   calcBboxUnion,
   mean50,
-  quantile,
-  round6,
   descCharArr,
   ascCharArr,
   xCharArr,
+  removeSuperscript,
 } from '../utils/miscUtils.js';
 
 import {
@@ -28,7 +27,7 @@ export async function convertDocTextract({ ocrStr, pageDims }) {
     throw new Error('Failed to parse Textract JSON.');
   }
 
-  const blocks = textractData.Blocks || [];
+  const blocks = /** @type {TextractBlock[]} */ (textractData.Blocks || []);
 
   const pageBlocks = blocks.filter((block) => block.BlockType === 'PAGE');
 
@@ -45,7 +44,7 @@ export async function convertDocTextract({ ocrStr, pageDims }) {
     const pageObj = new ocr.OcrPage(n, pageDimsN);
 
     // Check if we have any text content
-    const lineBlocks = blocks.filter((block) => block.BlockType === 'LINE');
+    const lineBlocks = blocks.filter((block) => block.BlockType === 'LINE' && (!block.Page && n === 0 || block.Page === n + 1));
     if (lineBlocks.length === 0) {
       const warn = { char: 'char_error' };
       return {
@@ -195,7 +194,9 @@ function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, page
   const nonDescWords = /** @type {OcrWord[]} */([]);
   const nonDescWordsPoly = /** @type {Polygon[]} */([]);
   const xOnlyWords = /** @type {OcrWord[]} */([]);
+  const xOnlyWordsPoly = /** @type {Polygon[]} */([]);
   const ascOnlyWords = /** @type {OcrWord[]} */([]);
+  const ascOnlyWordsPoly = /** @type {Polygon[]} */([]);
   const descOnlyWords = /** @type {OcrWord[]} */([]);
   const ascDescWords = /** @type {OcrWord[]} */([]);
 
@@ -216,9 +217,11 @@ function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, page
     if (word.text && xCharRegex.test(word.text) && !ascCharRegex.test(word.text)
       && !descCharRegex.test(word.text) && !/[fi]/.test(word.text)) {
       xOnlyWords.push(word);
+      xOnlyWordsPoly.push(polyWord);
     }
     if (word.text && ascCharRegex.test(word.text) && !descCharRegex.test(word.text)) {
       ascOnlyWords.push(word);
+      ascOnlyWordsPoly.push(polyWord);
     }
     if (word.text && descCharRegex.test(word.text) && !ascCharRegex.test(word.text)) {
       descOnlyWords.push(word);
@@ -226,10 +229,16 @@ function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, page
     if (word.text && ascCharRegex.test(word.text) && descCharRegex.test(word.text)) {
       ascDescWords.push(word);
     }
+
+    // Replace unicode superscript characters with regular text.
+    // TODO: This should be updated to properly handle superscripts rather than removing them.
+    if (/[⁰¹²³⁴⁵⁶⁷⁸⁹ᵃᵇᶜᵈᵉᶠᵍʰⁱʲᵏˡᵐⁿᵒᵖʳˢᵗᵘᵛʷˣʸᶻᴬᴮᴰᴱᴳᴴᴵᴶᴷᴸᴹᴺᴼᴾᴿᵀᵁⱽᵂ⁺⁻⁼⁽⁾]/g.test(word.text)) {
+      word.text = removeSuperscript(word.text);
+    }
   }
 
-  let xHeight = /** @type {?number} */ (mean50(xOnlyWords.map((word) => (word.bbox.bottom - word.bbox.top))));
-  const ascHeight = mean50(ascOnlyWords.map((word) => (word.bbox.bottom - word.bbox.top)));
+  let xHeight = /** @type {?number} */ (mean50(xOnlyWordsPoly.map((wordPoly) => ((wordPoly.bl.y - wordPoly.tl.y) + (wordPoly.br.y - wordPoly.tr.y)) / 2)));
+  const ascHeight = mean50(ascOnlyWordsPoly.map((wordPoly) => ((wordPoly.bl.y - wordPoly.tl.y) + (wordPoly.br.y - wordPoly.tr.y)) / 2));
   if (xHeight && ascHeight && xHeight > ascHeight * 0.8) {
     if (ascOnlyWords.length > xOnlyWords.length) {
       xHeight = null;
@@ -371,10 +380,10 @@ function createParagraphsFromLayout(pageObj, layoutBlocks, relationshipMap, bloc
 function convertTableLayoutTextract(pageNum, blocks, pageDims) {
   const tablesPage = new LayoutDataTablePage(pageNum);
 
-  const tableBlocks = blocks.filter((block) => block.BlockType === 'TABLE');
+  const tableBlocks = blocks.filter((block) => block.BlockType === 'TABLE' && (!block.Page && pageNum === 0 || block.Page === pageNum + 1));
 
   const relationshipMap = new Map();
-  blocks.forEach((block) => {
+  tableBlocks.forEach((block) => {
     if (block.Relationships) {
       block.Relationships.forEach((rel) => {
         if (rel.Type === 'CHILD') {
