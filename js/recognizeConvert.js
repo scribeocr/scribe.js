@@ -375,7 +375,7 @@ export async function convertOCR(ocrRawArr, mainData, format, engineName, scribe
   if (format === 'textract') {
     if (!pageMetrics) throw new Error('Page metrics must be provided for Textract data.');
     const pageDims = pageMetrics.map((metrics) => (metrics.dims));
-    const res = await gs.convertDocTextract({ ocrStr: ocrRawArr[0], pageDims });
+    const res = await gs.convertDocTextract({ ocrStr: ocrRawArr, pageDims });
     for (let n = 0; n < res.length; n++) {
       await convertPageCallback(res[n], n, mainData, engineName);
     }

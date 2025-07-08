@@ -72,6 +72,7 @@ export async function importOCRFiles(ocrFilesAll) {
     const hocrStrFirst = await readOcrFile(ocrFilesAll[0]);
     const node2 = hocrStrFirst.match(/>([^>]+)/)?.[1];
     abbyyMode = !!node2 && !!/abbyy/i.test(node2);
+    textractMode = !node2 && !!/"AnalyzeDocumentModelVersion"/i.test(hocrStrFirst);
 
     for (let i = 0; i < pageCountHOCR; i++) {
       const hocrFile = ocrFilesAll[i];

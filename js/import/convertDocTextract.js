@@ -16,18 +16,27 @@ import { pass3 } from './convertPageShared.js';
 
 /**
  * @param {Object} params
- * @param {string} params.ocrStr - Textract JSON as string
+ * @param {string|string[]} params.ocrStr - String or array of strings containing Textract JSON data.
  * @param {dims[]} params.pageDims - Page metrics to use for the pages (Textract only).
  */
 export async function convertDocTextract({ ocrStr, pageDims }) {
-  let textractData;
+  const blocks = /** @type {TextractBlock[]} */ ([]);
   try {
-    textractData = JSON.parse(ocrStr);
+    if (typeof ocrStr === 'string') {
+      ocrStr = [ocrStr];
+    }
+
+    for (let i = 0; i < ocrStr.length; i++) {
+      const textractData = JSON.parse(ocrStr[i]);
+      if (!textractData || !Array.isArray(textractData.Blocks)) {
+        console.warn(`Invalid Textract JSON data at index ${i}. Expected an array of blocks.`);
+        continue;
+      }
+      blocks.push(...textractData.Blocks);
+    }
   } catch (error) {
     throw new Error('Failed to parse Textract JSON.');
   }
-
-  const blocks = /** @type {TextractBlock[]} */ (textractData.Blocks || []);
 
   const pageBlocks = blocks.filter((block) => block.BlockType === 'PAGE');
 
