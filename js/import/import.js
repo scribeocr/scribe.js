@@ -25,7 +25,9 @@ import { addCircularRefsDataTables, LayoutDataTablePage, LayoutPage } from '../o
 import { addCircularRefsOcr } from '../objects/ocrObjects.js';
 import { PageMetrics } from '../objects/pageMetricsObjects.js';
 import { checkCharWarn, convertOCR } from '../recognizeConvert.js';
-import { readOcrFile, clearObjectProperties, objectAssignDefined } from '../utils/miscUtils.js';
+import {
+  readOcrFile, clearObjectProperties, objectAssignDefined, readTextFile,
+} from '../utils/miscUtils.js';
 import { importOCRFiles } from './importOCR.js';
 
 /**
@@ -132,7 +134,7 @@ export async function standardizeFiles(files) {
  * @param {Array<File>|Array<FileNode>|FileList} files
  * @returns
  */
-export function sortInputFiles(files) {
+export async function sortInputFiles(files) {
   // Sort files into (1) HOCR files, (2) image files, or (3) unsupported using extension.
   /** @type {Array<File|FileNode>} */
   const imageFilesAll = [];
@@ -163,6 +165,19 @@ export function sortInputFiles(files) {
     } else if (['pdf'].includes(fileExt)) {
       pdfFilesAll.push(file);
     } else {
+      // Check if file without an extension could be a textract JSON file.
+      // This is currently a hack and should be re-implemented in a better way.
+      // Notably, (1) this only works for Textract JSON files stored in specific object types, and
+      // (2) this reads the file content as text and then discards it after checking the content,
+      // which is not ideal for performance.
+      if ([''].includes(fileExt) && typeof process === 'undefined' && file instanceof File) {
+        const content = await readTextFile(file);
+        if (/"AnalyzeDocumentModelVersion"/i.test(content)) {
+          ocrFilesAll.push(file);
+          continue;
+        }
+      }
+
       unsupportedFilesAll.push(file);
       unsupportedExt[fileExt] = true;
     }
@@ -251,7 +266,7 @@ export async function importFiles(files) {
     if (files[0] instanceof ArrayBuffer) throw new Error('ArrayBuffer inputs must be sorted by file type.');
     ({
       pdfFiles, imageFiles, ocrFiles, scribeFiles,
-    } = sortInputFiles(filesStand));
+    } = await sortInputFiles(filesStand));
   }
 
   if (pdfFiles.length === 0 && imageFiles.length === 0 && ocrFiles.length === 0 && scribeFiles.length === 0) {
