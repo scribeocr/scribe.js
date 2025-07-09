@@ -49,10 +49,6 @@ export async function importOCRFiles(ocrFilesAll) {
 
     if (textractMode) {
       hocrRaw = [hocrStrAll];
-      // const textractObj = JSON.parse(hocrStrAll);
-      // console.log(textractObj);
-      // TODO
-      // hocrRaw = hocrStrAll.split(/(?!,\s*)?(?={\s*"BlockType":\s?"PAGE")/i).slice(1);
     } else if (abbyyMode) {
       hocrRaw = hocrStrAll.split(/(?=<page)/).slice(1);
     } else if (stextMode) {
