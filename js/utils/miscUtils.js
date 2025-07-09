@@ -5,6 +5,7 @@
 export const ascCharArr = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'K', 'L', 'M', 'N', 'O', 'P', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
   'b', 'd', 'h', 'k', 'l', 't', '0', '1', '2', '3', '4', '5', '6', '7', '8', '9'];
 export const xCharArr = ['a', 'c', 'e', 'm', 'n', 'o', 'r', 's', 'u', 'v', 'w', 'x', 'z'];
+export const descCharArr = ['g', 'j', 'p', 'q', 'y'];
 
 /**
  *
@@ -490,6 +491,89 @@ export const replaceSmartQuotes = (text) => {
     .replace(/"(?=$|[-–—])/, '”')
     .replace(/([a-z])'(?=[a-z]$)/i, '$1’');
 };
+
+const superscriptMap = {
+  // Superscript digits
+  '⁰': '0',
+  '¹': '1',
+  '²': '2',
+  '³': '3',
+  '⁴': '4',
+  '⁵': '5',
+  '⁶': '6',
+  '⁷': '7',
+  '⁸': '8',
+  '⁹': '9',
+
+  // Superscript lowercase Latin letters
+  ᵃ: 'a',
+  ᵇ: 'b',
+  ᶜ: 'c',
+  ᵈ: 'd',
+  ᵉ: 'e',
+  ᶠ: 'f',
+  ᵍ: 'g',
+  ʰ: 'h',
+  ⁱ: 'i',
+  ʲ: 'j',
+  ᵏ: 'k',
+  ˡ: 'l',
+  ᵐ: 'm',
+  ⁿ: 'n',
+  ᵒ: 'o',
+  ᵖ: 'p',
+  ʳ: 'r',
+  ˢ: 's',
+  ᵗ: 't',
+  ᵘ: 'u',
+  ᵛ: 'v',
+  ʷ: 'w',
+  ˣ: 'x',
+  ʸ: 'y',
+  ᶻ: 'z',
+
+  // Superscript uppercase Latin letters
+  ᴬ: 'A',
+  ᴮ: 'B',
+  ᴰ: 'D',
+  ᴱ: 'E',
+  ᴳ: 'G',
+  ᴴ: 'H',
+  ᴵ: 'I',
+  ᴶ: 'J',
+  ᴷ: 'K',
+  ᴸ: 'L',
+  ᴹ: 'M',
+  ᴺ: 'N',
+  ᴼ: 'O',
+  ᴾ: 'P',
+  ᴿ: 'R',
+  ᵀ: 'T',
+  ᵁ: 'U',
+  ⱽ: 'V',
+  ᵂ: 'W',
+
+  // Superscript symbols and punctuation
+  '⁺': '+',
+  '⁻': '-',
+  '⁼': '=',
+  '⁽': '(',
+  '⁾': ')',
+
+};
+
+/**
+ * Converts superscript characters to their normal equivalents
+ * @param {string} text - The text containing superscript characters
+ * @returns {string} - The text with superscript characters converted to normal
+ */
+export function removeSuperscript(text) {
+  if (typeof text !== 'string') {
+    throw new TypeError('Input must be a string');
+  }
+
+  return text.replace(/[⁰¹²³⁴⁵⁶⁷⁸⁹ᵃᵇᶜᵈᵉᶠᵍʰⁱʲᵏˡᵐⁿᵒᵖʳˢᵗᵘᵛʷˣʸᶻᴬᴮᴰᴱᴳᴴᴵᴶᴷᴸᴹᴺᴼᴾᴿᵀᵁⱽᵂ⁺⁻⁼⁽⁾ᵅᵝᵞᵟᵋᶿᶥᶲᵠᵡ]/g, (match) => superscriptMap[match] || match);
+}
 
 /**
  *

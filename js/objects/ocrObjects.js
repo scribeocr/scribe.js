@@ -19,6 +19,8 @@ export function OcrPage(n, dims) {
   this.pars = [];
   /** @type {Array<OcrLine>} */
   this.lines = [];
+  /** @type {TextSource} */
+  this.textSource = null;
 }
 
 /**
