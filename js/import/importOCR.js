@@ -22,6 +22,7 @@ export async function importOCRFiles(ocrFilesAll) {
   let hocrStrStart = null;
   let abbyyMode = false;
   let stextMode = false;
+  let textractMode = false;
   let reimportHocrMode = false;
 
   let pageCountHOCR;
@@ -44,8 +45,11 @@ export async function importOCRFiles(ocrFilesAll) {
     const node2 = hocrStrAll.match(/>([^>]+)/)?.[1];
     abbyyMode = !!node2 && !!/abbyy/i.test(node2);
     stextMode = !!node2 && !!/<document name/.test(node2);
+    textractMode = !node2 && !!/"AnalyzeDocumentModelVersion"/i.test(hocrStrAll);
 
-    if (abbyyMode) {
+    if (textractMode) {
+      hocrRaw = [hocrStrAll];
+    } else if (abbyyMode) {
       hocrRaw = hocrStrAll.split(/(?=<page)/).slice(1);
     } else if (stextMode) {
       hocrRaw = hocrStrAll.split(/(?=<page)/).slice(1);
@@ -64,6 +68,7 @@ export async function importOCRFiles(ocrFilesAll) {
     const hocrStrFirst = await readOcrFile(ocrFilesAll[0]);
     const node2 = hocrStrFirst.match(/>([^>]+)/)?.[1];
     abbyyMode = !!node2 && !!/abbyy/i.test(node2);
+    textractMode = !node2 && !!/"AnalyzeDocumentModelVersion"/i.test(hocrStrFirst);
 
     for (let i = 0; i < pageCountHOCR; i++) {
       const hocrFile = ocrFilesAll[i];
@@ -134,6 +139,6 @@ export async function importOCRFiles(ocrFilesAll) {
   };
 
   return {
-    hocrRaw, layoutObj, fontState, layoutDataTableObj, abbyyMode, stextMode, reimportHocrMode,
+    hocrRaw, layoutObj, fontState, layoutDataTableObj, abbyyMode, stextMode, textractMode, reimportHocrMode,
   };
 }

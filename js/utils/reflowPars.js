@@ -3,6 +3,10 @@ import { calcBboxUnion, quantile, range } from './miscUtils.js';
 
 /**
  * Assigns paragraphs based on our own heuristics.
+ * This function assumes that the lines are already sorted according to their reading order,
+ * and simply decides where to split paragraphs.
+ * This limits the power of the function, but also eliminates the potential for a catastrophic failure,
+ * where correct text becomes unreadable due to lines being move around.
  *
  * @param {OcrPage} page
  * @param {number} angle

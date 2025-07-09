@@ -4,6 +4,7 @@ import {
   mean50,
   quantile,
   xCharArr,
+  descCharArr,
 } from '../utils/miscUtils.js';
 
 /**

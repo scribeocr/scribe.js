@@ -289,7 +289,7 @@ export function checkCharWarn(warnArr) {
  * @param {boolean} mainData - Whether this is the "main" data that document metrics are calculated from.
  *  For imports of user-provided data, the first data provided should be flagged as the "main" data.
  *  For Tesseract.js recognition, the Tesseract Legacy results should be flagged as the "main" data.
- * @param {("hocr"|"abbyy"|"stext")} format - Format of raw data.
+ * @param {("hocr"|"abbyy"|"stext"|"textract")} format - Format of raw data.
  * @param {string} engineName - Name of OCR engine.
  * @param {boolean} [scribeMode=false] - Whether this is HOCR data from this program.
  */
@@ -300,6 +300,8 @@ export async function convertOCRPage(ocrRaw, n, mainData, format, engineName, sc
     res = await gs.convertPageHocr({ ocrStr: ocrRaw, n, scribeMode });
   } else if (format === 'abbyy') {
     res = await gs.convertPageAbbyy({ ocrStr: ocrRaw, n });
+  // } else if (format === 'textract') {
+  //   res = await gs.convertPageTextract({ ocrStr: ocrRaw, n });
   } else if (format === 'stext') {
     res = await gs.convertPageStext({ ocrStr: ocrRaw, n });
   } else {
@@ -320,7 +322,7 @@ export async function convertOCRPage(ocrRaw, n, mainData, format, engineName, sc
  * @returns
  */
 export async function convertPageCallback({
-  pageObj, dataTables, warn, langSet,
+  pageObj, dataTables, warn, langSet, fontSet,
 }, n, mainData, engineName) {
   const fontPromiseArr = [];
   if (langSet && langSet.has('chi_sim')) fontPromiseArr.push(loadChiSimFont());
@@ -329,6 +331,7 @@ export async function convertPageCallback({
   } else {
     fontPromiseArr.push(loadBuiltInFontsRaw());
   }
+  // if (fontSet && fontSet.has('Dingbats')) fontPromiseArr.push(loadDingbatsFont());
   await Promise.all(fontPromiseArr);
 
   if (['Tesseract Legacy', 'Tesseract LSTM'].includes(engineName)) ocrAll['Tesseract Latest'][n] = pageObj;
@@ -362,13 +365,23 @@ export async function convertPageCallback({
  * @param {boolean} mainData - Whether this is the "main" data that document metrics are calculated from.
  *  For imports of user-provided data, the first data provided should be flagged as the "main" data.
  *  For Tesseract.js recognition, the Tesseract Legacy results should be flagged as the "main" data.
- * @param {("hocr"|"abbyy"|"stext")} format - Format of raw data.
+ * @param {("hocr"|"abbyy"|"stext"|"textract")} format - Format of raw data.
  * @param {string} engineName - Name of OCR engine.
  * @param {boolean} [scribeMode=false] - Whether this is HOCR data from this program.
+ * @param {?PageMetrics[]} [pageMetrics=null] - Page metrics to use for the pages (Textract only).
  */
-export async function convertOCR(ocrRawArr, mainData, format, engineName, scribeMode) {
-  // For each page, process OCR using web worker
+export async function convertOCR(ocrRawArr, mainData, format, engineName, scribeMode, pageMetrics = null) {
   const promiseArr = [];
+  if (format === 'textract') {
+    if (!pageMetrics) throw new Error('Page metrics must be provided for Textract data.');
+    const pageDims = pageMetrics.map((metrics) => (metrics.dims));
+    const res = await gs.convertDocTextract({ ocrStr: ocrRawArr, pageDims });
+    for (let n = 0; n < res.length; n++) {
+      await convertPageCallback(res[n], n, mainData, engineName);
+    }
+    return;
+  }
+
   for (let n = 0; n < ocrRawArr.length; n++) {
     promiseArr.push(convertOCRPage(ocrRawArr[n], n, mainData, format, engineName, scribeMode));
   }

@@ -25,7 +25,9 @@ import { addCircularRefsDataTables, LayoutDataTablePage, LayoutPage } from '../o
 import { addCircularRefsOcr } from '../objects/ocrObjects.js';
 import { PageMetrics } from '../objects/pageMetricsObjects.js';
 import { checkCharWarn, convertOCR } from '../recognizeConvert.js';
-import { readOcrFile, clearObjectProperties, objectAssignDefined } from '../utils/miscUtils.js';
+import {
+  readOcrFile, clearObjectProperties, objectAssignDefined, readTextFile,
+} from '../utils/miscUtils.js';
 import { importOCRFiles } from './importOCR.js';
 
 /**
@@ -132,7 +134,7 @@ export async function standardizeFiles(files) {
  * @param {Array<File>|Array<FileNode>|FileList} files
  * @returns
  */
-export function sortInputFiles(files) {
+export async function sortInputFiles(files) {
   // Sort files into (1) HOCR files, (2) image files, or (3) unsupported using extension.
   /** @type {Array<File|FileNode>} */
   const imageFilesAll = [];
@@ -156,13 +158,26 @@ export function sortInputFiles(files) {
     if (['png', 'jpeg', 'jpg'].includes(fileExt)) {
       imageFilesAll.push(file);
       // All .gz files are assumed to be OCR data (xml) since all other file types can be compressed already
-    } else if (['hocr', 'xml', 'html', 'gz', 'stext'].includes(fileExt)) {
+    } else if (['hocr', 'xml', 'html', 'gz', 'stext', 'json'].includes(fileExt)) {
       ocrFilesAll.push(file);
     } else if (['scribe'].includes(fileExt)) {
       scribeFilesAll.push(file);
     } else if (['pdf'].includes(fileExt)) {
       pdfFilesAll.push(file);
     } else {
+      // Check if file without an extension could be a textract JSON file.
+      // This is currently a hack and should be re-implemented in a better way.
+      // Notably, (1) this only works for Textract JSON files stored in specific object types, and
+      // (2) this reads the file content as text and then discards it after checking the content,
+      // which is not ideal for performance.
+      if ([''].includes(fileExt) && typeof process === 'undefined' && file instanceof File) {
+        const content = await readTextFile(file);
+        if (/"AnalyzeDocumentModelVersion"/i.test(content)) {
+          ocrFilesAll.push(file);
+          continue;
+        }
+      }
+
       unsupportedFilesAll.push(file);
       unsupportedExt[fileExt] = true;
     }
@@ -251,7 +266,7 @@ export async function importFiles(files) {
     if (files[0] instanceof ArrayBuffer) throw new Error('ArrayBuffer inputs must be sorted by file type.');
     ({
       pdfFiles, imageFiles, ocrFiles, scribeFiles,
-    } = sortInputFiles(filesStand));
+    } = await sortInputFiles(filesStand));
   }
 
   if (pdfFiles.length === 0 && imageFiles.length === 0 && ocrFiles.length === 0 && scribeFiles.length === 0) {
@@ -333,6 +348,7 @@ export async function importFiles(files) {
   let pageCount;
   let pageCountImage;
   let abbyyMode = false;
+  let textractMode = false;
   let reimportHocrMode = false;
 
   if (inputData.pdfMode) {
@@ -366,7 +382,9 @@ export async function importFiles(files) {
     // Subset OCR data to avoid uncaught error that occurs when there are more pages of OCR data than image data.
     // While this should be rare, it appears to be fairly common with Archive.org documents.
     // TODO: Add warning message displayed to user for this.
-    if (pageCountImage && ocrAllRaw.active.length > pageCountImage) {
+    // Textract JSON data is returned in arbitrary chunks (multiple pages may be in one file, or one page may be in multiple files).
+    // Therefore, it is impossible to know how many pages of OCR data there are based only on the length of `ocrAllRaw.active`.
+    if (pageCountImage && ocrAllRaw.active.length > pageCountImage && !ocrData.textractMode) {
       console.log(`Identified ${ocrAllRaw.active.length} pages of OCR data but ${pageCountImage} pages of image/pdf data. Only first ${pageCountImage} pages will be used.`);
       ocrAllRaw.active = ocrAllRaw.active.slice(0, pageCountImage);
     }
@@ -416,9 +434,16 @@ export async function importFiles(files) {
     reimportHocrMode = ocrData.reimportHocrMode;
 
     stextMode = ocrData.stextMode;
+    textractMode = ocrData.textractMode;
   }
 
-  const pageCountOcr = ocrAllRaw.active?.length || ocrAll.active?.length || 0;
+  let pageCountOcr = ocrAllRaw.active?.length || ocrAll.active?.length || 0;
+
+  // For Textract, `ocrAllRaw.active[0]` is a string containing the Textract JSON data for all pages.
+  // This ad-hoc solution counts the number of "PAGE" blocks in the Textract JSON data.
+  if (textractMode && ocrAllRaw.active?.length) {
+    pageCountOcr = ocrAllRaw.active[0].match(/"BLOCKTYPE":\s*"PAGE"/ig)?.length || pageCountOcr;
+  }
 
   // If both OCR data and image data are present, confirm they have the same number of pages
   if (xmlModeImport && (inputData.imageMode || inputData.pdfMode)) {
@@ -464,13 +489,14 @@ export async function importFiles(files) {
   }
 
   if (xmlModeImport) {
-    /** @type {("hocr" | "abbyy" | "stext")} */
+    /** @type {("hocr" | "abbyy" | "stext" | "textract")} */
     let format = 'hocr';
     if (abbyyMode) format = 'abbyy';
     if (stextMode) format = 'stext';
+    if (textractMode) format = 'textract';
 
     // Process HOCR using web worker, reading from file first if that has not been done already
-    await convertOCR(ocrAllRaw.active, true, format, oemName, reimportHocrMode).then(async () => {
+    await convertOCR(ocrAllRaw.active, true, format, oemName, reimportHocrMode, pageMetricsArr).then(async () => {
       // Skip this step if optimization info was already restored from a previous session, or if using stext (which is character-level but not visually accurate).
       if (!existingOpt && !stextMode) {
         await checkCharWarn(convertPageWarn);
@@ -521,10 +547,11 @@ export async function importFilesSupp(files, ocrName) {
     opt.warningHandler(warningHTML);
   }
 
-  /** @type {("hocr" | "abbyy" | "stext")} */
+  /** @type {("hocr" | "abbyy" | "stext" | "textract")} */
   let format = 'hocr';
   if (ocrData.abbyyMode) format = 'abbyy';
   if (ocrData.stextMode) format = 'stext';
+  if (ocrData.textractMode) format = 'textract';
 
   await convertOCR(ocrData.hocrRaw, false, format, ocrName, ocrData.reimportHocrMode);
 }

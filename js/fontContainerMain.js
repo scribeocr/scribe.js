@@ -223,6 +223,35 @@ export async function loadChiSimFont() {
   return chiReady;
 }
 
+let dingbatsReadyRes;
+let dingbatsReady;
+
+/**
+ * Loads dingbats font. Returns early if already loaded.
+ */
+export async function loadDingbatsFont() {
+  console.log('Loading Dingbats font');
+  if (dingbatsReady) return dingbatsReady;
+
+  dingbatsReady = new Promise((resolve, reject) => {
+    dingbatsReadyRes = resolve;
+  });
+
+  let /** @type {Promise<ArrayBuffer>} */ dingbatsSrc;
+  if (typeof process === 'undefined') {
+    dingbatsSrc = fetch(new URL('../fonts/Dingbats.woff', import.meta.url)).then((res) => res.arrayBuffer());
+  } else {
+    const { readFile } = await import('node:fs/promises');
+    dingbatsSrc = readFile(new URL('../fonts/Dingbats.woff', import.meta.url)).then((res) => res.buffer);
+  }
+
+  FontCont.supp.dingbats = await loadFont('Dingbats', 'normal', 'sans', await dingbatsSrc, false);
+
+  dingbatsReadyRes();
+
+  return dingbatsReady;
+}
+
 /**
  * Enable or disable font optimization settings.
  * This function is used rather than exposing the settings using the `opt` object, as these settings exist on the font container in both the main thread and the worker threads.

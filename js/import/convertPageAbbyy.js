@@ -51,6 +51,7 @@ export async function convertPageAbbyy({ ocrStr, n }) {
   const pageDims = { height: parseInt(heightStr), width: parseInt(widthStr) };
 
   const pageObj = new ocr.OcrPage(n, pageDims);
+  pageObj.textSource = 'abbyy';
 
   // This condition is met for actual character errors (xml data lacks character-level data), as well as for empty pages.
   // However, the error is only shown to the user if there are no pages with valid character data.
