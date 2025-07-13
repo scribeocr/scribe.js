@@ -170,12 +170,14 @@ export async function sortInputFiles(files) {
       // Notably, (1) this only works for Textract JSON files stored in specific object types, and
       // (2) this reads the file content as text and then discards it after checking the content,
       // which is not ideal for performance.
-      if ([''].includes(fileExt) && typeof process === 'undefined' && file instanceof File) {
-        const content = await readTextFile(file);
-        if (/"AnalyzeDocumentModelVersion"/i.test(content)) {
-          ocrFilesAll.push(file);
-          continue;
-        }
+      if ([''].includes(fileExt)) {
+        try {
+          const content = await readOcrFile(file);
+          if (/"AnalyzeDocumentModelVersion"/i.test(content)) {
+            ocrFilesAll.push(file);
+            continue;
+          }
+        } catch (error) { /* empty */ }
       }
 
       unsupportedFilesAll.push(file);
