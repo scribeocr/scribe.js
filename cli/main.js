@@ -77,7 +77,6 @@ async function main(func, params) {
     if (scribe.opt.displayMode === 'proof') {
       outputSuffix = '_vis';
     } else if (scribe.opt.displayMode === 'invis') {
-
       // Check if output file would overwrite any input file, and if so, add a suffix to avoid overwriting.
       // This software is still in development--nobody should be ovewriting input files.
       const resolvedOutputFileTmp = path.resolve(`${outputDir}/${outputStem}.pdf`);
