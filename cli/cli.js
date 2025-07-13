@@ -7,18 +7,36 @@ import {
   evalInternal, overlay, recognize,
 } from './main.js';
 
-export const confCLI = async (ocrFile) => {
-  await conf(ocrFile);
+/**
+ * Print confidence of Abbyy .xml file.
+ *
+ * @param {string[]} files - Paths to input files.
+ */
+export const confCLI = async (files) => {
+  await conf(files);
   process.exitCode = 0;
 };
 
-export const checkCLI = async (pdfFile, ocrFile, options) => {
-  await check(pdfFile, ocrFile, options);
+/**
+ *
+ * @param {string[]} files - Paths to input files.
+ * @param {Object} options
+ * @param {number} [options.workers]
+ */
+export const checkCLI = async (files, options) => {
+  await check(files, options);
   process.exitCode = 0;
 };
 
-export const evalInternalCLI = async (pdfFile, ocrFile, options) => {
-  const { evalMetrics } = await evalInternal(pdfFile, ocrFile, options);
+/**
+ * Evaluate internal OCR engine.
+ *
+ * @param {string[]} files - Paths to input files.
+ * @param {Object} options
+ * @param {number} [options.workers]
+ */
+export const evalInternalCLI = async (files, options) => {
+  const { evalMetrics } = await evalInternal(files, options);
 
   const ignoreExtra = true;
   let metricWER;
@@ -57,28 +75,38 @@ export const detectPDFTypeCLI = async (pdfFile, outputPath) => {
 
 /**
  *
- * @param {string} pdfFile - Path to PDF file.
- * @param {*} ocrFile
- * @param {*} outputDir
+ * @param {string[]} files - Paths to input files.
  * @param {Object} options
+ * @param {string} [options.output] - Output directory for the resulting PDF.
  * @param {boolean} [options.robust]
  * @param {boolean} [options.conf]
  * @param {boolean} [options.vis]
  * @param {number} [options.workers]
  */
-export const overlayCLI = async (pdfFile, ocrFile, outputDir, options) => {
+export const overlayCLI = async (files, options) => {
   options.overlayMode = options.vis ? 'proof' : 'invis';
-  await overlay(pdfFile, ocrFile, outputDir, options);
+  await overlay(files, options.output, options);
   process.exitCode = 0;
 };
 
-export const recognizeCLI = async (pdfFile, options) => {
+/**
+ *
+ * @param {string[]} files - Paths to input files.
+ * @param {*} options
+ */
+export const recognizeCLI = async (files, options) => {
   options.overlayMode = options.vis ? 'proof' : 'invis';
-  await recognize(pdfFile, options);
+  await recognize(files, options);
   process.exitCode = 0;
 };
 
-export const debugCLI = async (pdfFile, outputDir, options) => {
-  await debug(pdfFile, outputDir, options);
+/**
+ *
+ * @param {string[]} files - Paths to input files.
+ * @param {*} outputDir
+ * @param {*} options
+ */
+export const debugCLI = async (files, outputDir, options) => {
+  await debug(files, outputDir, options);
   process.exitCode = 0;
 };

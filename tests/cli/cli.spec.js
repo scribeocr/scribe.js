@@ -52,7 +52,7 @@ describe('Check Node.js commands.', () => {
 
   it('Should print confidence of Abbyy .xml file.', async () => {
     // Call the function
-    await confCLI(path.join(__dirname, '../assets/scribe_test_pdf1_abbyy.xml'));
+    await confCLI([path.join(__dirname, '../assets/scribe_test_pdf1_abbyy.xml')]);
 
     // originalConsoleLog(consoleOutput);
 
@@ -63,7 +63,7 @@ describe('Check Node.js commands.', () => {
   it('Should check contents of Abbyy .xml file.', async () => {
     // CLI equivalent: node cli/scribe.js check tests/assets/scribe_test_pdf1.pdf tests/assets/scribe_test_pdf1_abbyy.xml
     // Workers is set to 1 to avoid results changing based on the number of CPU cores due to the OCR engine learning.
-    await checkCLI(path.join(__dirname, '../assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../assets/scribe_test_pdf1_abbyy.xml'), { workers: 1 });
+    await checkCLI([path.join(__dirname, '../assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../assets/scribe_test_pdf1_abbyy.xml')], { workers: 1 });
 
     // originalConsoleLog(consoleOutput);
 
@@ -75,7 +75,7 @@ describe('Check Node.js commands.', () => {
     const tmpDir = await tmpUnique.get();
 
     // Call the function
-    await overlayCLI(path.join(__dirname, '../assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../assets/scribe_test_pdf1_abbyy.xml'), tmpDir, { vis: true });
+    await overlayCLI([path.join(__dirname, '../assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../assets/scribe_test_pdf1_abbyy.xml')], { output: tmpDir, vis: true });
 
     const outputPath = `${tmpDir}/scribe_test_pdf1_vis.pdf`;
 
@@ -86,7 +86,7 @@ describe('Check Node.js commands.', () => {
     const tmpDir = await tmpUnique.get();
 
     // Call the function
-    await overlayCLI(path.join(__dirname, '../assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../assets/scribe_test_pdf1_abbyy.xml'), tmpDir, { conf: true, vis: true });
+    await overlayCLI([path.join(__dirname, '../assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../assets/scribe_test_pdf1_abbyy.xml')], { output: tmpDir, conf: true, vis: true });
 
     expect(consoleOutput).to.include('385 of 404');
 
@@ -100,7 +100,7 @@ describe('Check Node.js commands.', () => {
     const tmpDir = await tmpUnique.get();
 
     // Call the function
-    await overlayCLI(path.join(__dirname, '../assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../assets/scribe_test_pdf1_abbyy.xml'), tmpDir, { robust: true, vis: true });
+    await overlayCLI([path.join(__dirname, '../assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../assets/scribe_test_pdf1_abbyy.xml')], { output: tmpDir, robust: true, vis: true });
 
     const outputPath = `${tmpDir}/scribe_test_pdf1_vis.pdf`;
 
@@ -111,8 +111,8 @@ describe('Check Node.js commands.', () => {
     const tmpDir = await tmpUnique.get();
 
     // Call the function
-    await overlayCLI(path.join(__dirname, '../assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../assets/scribe_test_pdf1_abbyy.xml'), tmpDir, {
-      robust: true, conf: true, vis: true, workers: 1,
+    await overlayCLI([path.join(__dirname, '../assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../assets/scribe_test_pdf1_abbyy.xml')], {
+      output: tmpDir, robust: true, conf: true, vis: true, workers: 1,
     });
 
     if (!/387 of 404/.test(consoleOutput)) originalConsoleLog(consoleOutput);

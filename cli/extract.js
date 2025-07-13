@@ -15,7 +15,7 @@ export const extract = async (pdfFile, output, options) => {
 
   output = output || '.';
   const outputDir = path.dirname(output);
-  const outputFile = outputDir === output ? `${path.basename(pdfFile).replace(/\.\w{1,5}$/i, `.${format}`)}` : path.basename(output);
+  const outputFile = outputDir === output ? `${path.basename(pdfFile).replace(/\.\w{1,6}$/i, `.${format}`)}` : path.basename(output);
   const outputPath = `${outputDir}/${outputFile}`;
 
   scribe.opt.reflow = true;

@@ -13,8 +13,7 @@ scribe.opt.saveDebugImages = debugMode;
 /**
  * @param {string} func
  * @param {Object} params
- * @param {string} [params.pdfFile]
- * @param {string} [params.ocrFile]
+ * @param {string[]} [params.files]
  * @param {string} [params.outputDir]
  * @param {Array<string>} [params.list]
  * @param {boolean} [params.robustConfMode]
@@ -25,6 +24,10 @@ scribe.opt.saveDebugImages = debugMode;
  */
 async function main(func, params) {
   scribe.opt.workerN = params.workerN || null;
+
+  if (!params.files || params.files.length === 0) {
+    throw new Error('No input files provided.');
+  }
 
   await scribe.init({
     pdf: true,
@@ -39,15 +42,9 @@ async function main(func, params) {
 
   const output = {};
 
-  const files = [];
-  if (params.pdfFile) files.push(params.pdfFile);
-  if (params.ocrFile) files.push(params.ocrFile);
-  await scribe.importFiles(files);
+  await scribe.importFiles(params.files);
 
-  const backgroundArg = params.pdfFile;
-  const backgroundStem = backgroundArg ? path.basename(backgroundArg).replace(/\.\w{1,5}$/i, '') : undefined;
-  const ocrStem = params.ocrFile ? path.basename(params.ocrFile).replace(/\.\w{1,5}$/i, '') : undefined;
-  const outputStem = backgroundStem || ocrStem || 'output';
+  const outputStem = scribe.inputData.defaultDownloadFileName.replace(/\.\w{1,6}$/i, '') || 'output';
 
   const outputDir = params.outputDir || '.';
 
@@ -75,23 +72,30 @@ async function main(func, params) {
     }
   }
 
-  if (['overlay', 'recognize'].includes(func) && backgroundArg) {
+  if (['overlay', 'recognize'].includes(func) && (scribe.inputData.pdfMode || scribe.inputData.imageMode)) {
     let outputSuffix = '';
     if (scribe.opt.displayMode === 'proof') {
       outputSuffix = '_vis';
     } else if (scribe.opt.displayMode === 'invis') {
-      const resolvedInputFile = path.dirname(path.resolve(backgroundArg));
-      const resolvedOutputDir = path.resolve(outputDir);
-      if (resolvedInputFile === resolvedOutputDir) {
-        outputSuffix = '_ocr';
+
+      // Check if output file would overwrite any input file, and if so, add a suffix to avoid overwriting.
+      // This software is still in development--nobody should be ovewriting input files.
+      const resolvedOutputFileTmp = path.resolve(`${outputDir}/${outputStem}.pdf`);
+      for (let i = 0; i < params.files.length; i++) {
+        const resolvedInputFile = path.resolve(params.files[i]);
+        if (resolvedInputFile === resolvedOutputFileTmp) {
+          outputSuffix = '_ocr';
+          console.log(`Saving output with ${outputSuffix} suffix to avoid overwriting input: ${resolvedInputFile}`);
+          break;
+        }
       }
     }
 
-    const outputPath = `${outputDir}/${path.basename(backgroundArg).replace(/\.\w{1,5}$/i, `${outputSuffix}.pdf`)}`;
+    const outputPath = path.resolve(`${outputDir}/${outputStem}${outputSuffix}.pdf`);
     await scribe.download('pdf', outputPath);
 
     if (params.hocr) {
-      const outputPathHocr = `${outputDir}/${path.basename(backgroundArg).replace(/\.\w{1,5}$/i, '.hocr')}`;
+      const outputPathHocr = path.resolve(`${outputDir}/${outputStem}.hocr`);
       await scribe.download('hocr', outputPathHocr);
     }
   }
@@ -123,33 +127,30 @@ async function main(func, params) {
 /**
  * Print confidence of Abbyy .xml file.
  *
- * @param {string} ocrFile
+ * @param {string[]} files - Paths to input files.
  */
-export const conf = async (ocrFile) => (main('conf', { ocrFile }));
+export const conf = async (files) => (main('conf', { files }));
 
 /**
  *
- * @param {string} pdfFile - Path to PDF file.
- * @param {string} ocrFile
+ * @param {string[]} files - Paths to input files.
  * @param {Object} options
  * @param {number} [options.workers]
  */
-export const check = async (pdfFile, ocrFile, options) => (main('check', { pdfFile, ocrFile, workerN: options?.workers }));
+export const check = async (files, options) => (main('check', { files, workerN: options?.workers }));
 
 /**
  * Evaluate internal OCR engine.
  *
- * @param {string} pdfFile - Path to PDF file.
- * @param {string} ocrFile - Path to OCR file containing ground truth.
+ * @param {string[]} files - Paths to input files.
  * @param {Object} options
  * @param {number} [options.workers]
  */
-export const evalInternal = async (pdfFile, ocrFile, options) => (main('eval', { pdfFile, ocrFile, workerN: options?.workers }));
+export const evalInternal = async (files, options) => (main('eval', { files, workerN: options?.workers }));
 
 /**
  *
- * @param {string} pdfFile - Path to PDF file.
- * @param {*} ocrFile
+ * @param {string[]} files - Paths to input files.
  * @param {*} outputDir
  * @param {Object} options
  * @param {boolean} [options.robust]
@@ -157,29 +158,28 @@ export const evalInternal = async (pdfFile, ocrFile, options) => (main('eval', {
  * @param {"eval" | "ebook" | "proof" | "invis"} [options.overlayMode]
  * @param {number} [options.workers]
  */
-export const overlay = async (pdfFile, ocrFile, outputDir, options) => (main('overlay', {
-  pdfFile, ocrFile, outputDir, robustConfMode: options?.robust || false, printConf: options?.conf || false, overlayMode: options?.overlayMode || 'invis', workerN: options?.workers,
+export const overlay = async (files, outputDir, options) => (main('overlay', {
+  files, outputDir, robustConfMode: options?.robust || false, printConf: options?.conf || false, overlayMode: options?.overlayMode || 'invis', workerN: options?.workers,
 }));
 
 /**
  *
- * @param {string} pdfFile - Path to PDF file.
+ * @param {string[]} files - Paths to input files.
  * @param {Object} options
  * @param {"eval" | "ebook" | "proof" | "invis"} [options.overlayMode]
  * @param {boolean} [options.hocr]
  * @param {number} [options.workers]
  */
-export const recognize = async (pdfFile, options) => (main('recognize', {
-  pdfFile, overlayMode: options?.overlayMode || 'invis', workerN: options?.workers, hocr: options?.hocr,
+export const recognize = async (files, options) => (main('recognize', {
+  files, overlayMode: options?.overlayMode || 'invis', workerN: options?.workers, hocr: options?.hocr,
 }));
 
 /**
  *
- * @param {string} pdfFile - Path to PDF file.
+ * @param {string[]} files - Paths to input files.
  * @param {*} outputDir
  * @param {*} options
- * @returns
  */
-export const debug = async (pdfFile, outputDir, options) => (main('debug', {
-  pdfFile, outputDir, list: options?.list,
+export const debug = async (files, outputDir, options) => (main('debug', {
+  files, outputDir, list: options?.list,
 }));
