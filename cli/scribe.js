@@ -54,11 +54,12 @@ program
 
 program
   .command('recognize')
-  .description('Recognize text in PDF file using internal OCR engine.')
+  .option('-o, --output <directory>', 'Directory for output file(s). Default is current directory.')
   .option('-v, --vis', 'Print OCR text visibly over provided PDF file with colors coded by confidence.')
   .option('-h, --hocr', 'Output .hocr intermediate data in addition to .pdf.')
   .option('-w, --workers <number>', 'Number of workers to use. Default is up to 8.')
   .argument('<files...>', 'Input PDF file and OCR file(s).  Accepts .hocr and Abbyy .xml (with character-level data enabled).')
+  .description('Recognize text in PDF file using internal OCR engine.')
   .action(recognizeCLI);
 
 program

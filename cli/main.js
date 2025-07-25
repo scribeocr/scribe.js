@@ -165,12 +165,13 @@ export const overlay = async (files, outputDir, options) => (main('overlay', {
  *
  * @param {string[]} files - Paths to input files.
  * @param {Object} options
+ * @param {string} [options.output]
  * @param {"eval" | "ebook" | "proof" | "invis"} [options.overlayMode]
  * @param {boolean} [options.hocr]
  * @param {number} [options.workers]
  */
 export const recognize = async (files, options) => (main('recognize', {
-  files, overlayMode: options?.overlayMode || 'invis', workerN: options?.workers, hocr: options?.hocr,
+  files, overlayMode: options?.overlayMode || 'invis', workerN: options?.workers, hocr: options?.hocr, outputDir: options?.output || '.',
 }));
 
 /**
