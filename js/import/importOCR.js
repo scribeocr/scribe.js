@@ -42,10 +42,12 @@ export async function importOCRFiles(ocrFilesAll) {
     const hocrStrAll = await readOcrFile(ocrFilesAll[0]);
 
     // Check whether input is Abbyy XML
+    // TODO: The auto-detection of formats needs to be more robust.
+    // At present, any string that contains ">" and "abbyy" is considered Abbyy XML.
     const node2 = hocrStrAll.match(/>([^>]+)/)?.[1];
     abbyyMode = !!node2 && !!/abbyy/i.test(node2);
     stextMode = !!node2 && !!/<document name/.test(node2);
-    textractMode = !node2 && !!/"AnalyzeDocumentModelVersion"/i.test(hocrStrAll);
+    textractMode = !abbyyMode && !stextMode && !!/"AnalyzeDocumentModelVersion"/i.test(hocrStrAll);
 
     if (textractMode) {
       hocrRaw = [hocrStrAll];
@@ -68,7 +70,7 @@ export async function importOCRFiles(ocrFilesAll) {
     const hocrStrFirst = await readOcrFile(ocrFilesAll[0]);
     const node2 = hocrStrFirst.match(/>([^>]+)/)?.[1];
     abbyyMode = !!node2 && !!/abbyy/i.test(node2);
-    textractMode = !node2 && !!/"AnalyzeDocumentModelVersion"/i.test(hocrStrFirst);
+    textractMode = !abbyyMode && !!/"AnalyzeDocumentModelVersion"/i.test(hocrStrFirst);
 
     for (let i = 0; i < pageCountHOCR; i++) {
       const hocrFile = ocrFilesAll[i];
