@@ -17,7 +17,11 @@ import { CharMetricsFamily, CharMetricsFont, CharMetricsRawFamily } from './obje
  * @param {Array<OcrPage>} pageArr
  */
 export function calcCharMetricsFromPages(pageArr) {
+  if (!pageArr || pageArr.length === 0) return {};
+
   const pageCharMetricsArr = pageArr.map((x) => calcCharMetricsPage(x));
+
+  if (pageCharMetricsArr.length === 0) return {};
 
   const charMetricsRawObj = pageCharMetricsArr.reduce((x, y) => unionCharMetricsRawObj(x, y));
 
