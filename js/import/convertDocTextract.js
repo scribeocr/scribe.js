@@ -270,8 +270,11 @@ function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, page
     lineObj.baseline[1] = -lineHeight / 3 - (lineObj.bbox.bottom - polyLine.bl.y);
   }
 
-  if (xHeight) lineObj.xHeight = xHeight;
-  if (ascHeight) lineObj.ascHeight = ascHeight;
+  // TODO: Properly process metrics when these are negative.
+  // This seems to happen for certain orientations of text.
+  // For now, we skip to ignore an error being thrown due to a negative value.
+  if (xHeight && xHeight > 0) lineObj.xHeight = xHeight;
+  if (ascHeight && ascHeight > 0) lineObj.ascHeight = ascHeight;
 
   return lineObj.words.length > 0 ? lineObj : null;
 }
