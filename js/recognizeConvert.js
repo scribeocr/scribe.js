@@ -3,7 +3,7 @@ import { inputData, opt } from './containers/app.js';
 import {
   convertPageWarn,
   DebugData,
-  layoutDataTables, ocrAll, pageMetricsArr, visInstructions,
+  layoutDataTables, layoutRegions, ocrAll, pageMetricsArr, visInstructions,
 } from './containers/dataContainer.js';
 import { FontCont } from './containers/fontContainer.js';
 import { ImageCache, ImageWrapper } from './containers/imageContainer.js';
@@ -11,6 +11,7 @@ import { loadBuiltInFontsRaw, loadChiSimFont } from './fontContainerMain.js';
 import { runFontOptimization } from './fontEval.js';
 import { calcCharMetricsFromPages } from './fontStatistics.js';
 import { gs } from './generalWorkerMain.js';
+import { LayoutDataTablePage, LayoutPage } from './objects/layoutObjects.js';
 import { PageMetrics } from './objects/pageMetricsObjects.js';
 import { clearObjectProperties } from './utils/miscUtils.js';
 
@@ -289,7 +290,7 @@ export function checkCharWarn(warnArr) {
  * @param {boolean} mainData - Whether this is the "main" data that document metrics are calculated from.
  *  For imports of user-provided data, the first data provided should be flagged as the "main" data.
  *  For Tesseract.js recognition, the Tesseract Legacy results should be flagged as the "main" data.
- * @param {("hocr"|"abbyy"|"stext"|"textract")} format - Format of raw data.
+ * @param {("hocr"|"abbyy"|"stext"|"textract"|"text")} format - Format of raw data.
  * @param {string} engineName - Name of OCR engine.
  * @param {boolean} [scribeMode=false] - Whether this is HOCR data from this program.
  */
@@ -304,6 +305,8 @@ export async function convertOCRPage(ocrRaw, n, mainData, format, engineName, sc
   //   res = await gs.convertPageTextract({ ocrStr: ocrRaw, n });
   } else if (format === 'stext') {
     res = await gs.convertPageStext({ ocrStr: ocrRaw, n });
+  } else if (format === 'text') {
+    res = await gs.convertPageText({ textStr: ocrRaw });
   } else {
     throw new Error(`Invalid format: ${format}`);
   }
@@ -365,7 +368,7 @@ export async function convertPageCallback({
  * @param {boolean} mainData - Whether this is the "main" data that document metrics are calculated from.
  *  For imports of user-provided data, the first data provided should be flagged as the "main" data.
  *  For Tesseract.js recognition, the Tesseract Legacy results should be flagged as the "main" data.
- * @param {("hocr"|"abbyy"|"stext"|"textract")} format - Format of raw data.
+ * @param {("hocr"|"abbyy"|"stext"|"textract"|"text")} format - Format of raw data.
  * @param {string} engineName - Name of OCR engine.
  * @param {boolean} [scribeMode=false] - Whether this is HOCR data from this program.
  * @param {?PageMetrics[]} [pageMetrics=null] - Page metrics to use for the pages (Textract only).
@@ -376,6 +379,25 @@ export async function convertOCR(ocrRawArr, mainData, format, engineName, scribe
     if (!pageMetrics) throw new Error('Page metrics must be provided for Textract data.');
     const pageDims = pageMetrics.map((metrics) => (metrics.dims));
     const res = await gs.convertDocTextract({ ocrStr: ocrRawArr, pageDims });
+    for (let n = 0; n < res.length; n++) {
+      await convertPageCallback(res[n], n, mainData, engineName);
+    }
+    return;
+  }
+
+  if (format === 'text') {
+    const res = await gs.convertPageText({ textStr: ocrRawArr[0] });
+
+    if (res.length > inputData.pageCount) inputData.pageCount = res.length;
+
+    for (let i = 0; i < res.length; i++) {
+      if (!layoutRegions.pages[i]) layoutRegions.pages[i] = new LayoutPage(i);
+    }
+
+    for (let i = 0; i < res.length; i++) {
+      if (!layoutDataTables.pages[i]) layoutDataTables.pages[i] = new LayoutDataTablePage(i);
+    }
+
     for (let n = 0; n < res.length; n++) {
       await convertPageCallback(res[n], n, mainData, engineName);
     }

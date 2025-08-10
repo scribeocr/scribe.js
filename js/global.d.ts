@@ -13,8 +13,8 @@ declare global {
 
     // Strings representing supported sources of text.
     // `stext` indicates the text was extracted directly from a PDF using mupdf.
-    type TextSource = null | 'tesseract' | 'textract' | 'abbyy' | 'stext' | 'hocr';
-    
+    type TextSource = null | 'tesseract' | 'textract' | 'abbyy' | 'stext' | 'hocr' | 'text';
+
     type FontState = {
         enableOpt: boolean;
         forceOpt: boolean;
@@ -24,7 +24,7 @@ declare global {
         sansDefaultName: string;
         glyphSet: null | 'latin' | 'all';
         charMetrics: { [key: string]: CharMetricsFamily };
-    }    
+    }
 
     type ScribeSaveData = {
         ocr: OcrPage[];
@@ -33,8 +33,8 @@ declare global {
         layoutDataTables: LayoutDataTablePage[];
     }
 
-    type StyleLookup = ('normal'|'bold'|'italic'|'boldItalic');
-      
+    type StyleLookup = ('normal' | 'bold' | 'italic' | 'boldItalic');
+
     // OCR objects
     type OcrPage = import("./objects/ocrObjects.js").OcrPage;
     type OcrLine = import("./objects/ocrObjects.js").OcrLine;
@@ -216,7 +216,7 @@ declare global {
     }
 
     interface TextractBlock {
-        BlockType: "WORD" | "LINE" | "PAGE" | "KEY_VALUE_SET" | "CELL" | "MERGED_CELL" | "SELECTION_ELEMENT" | "TABLE"; 
+        BlockType: "WORD" | "LINE" | "PAGE" | "KEY_VALUE_SET" | "CELL" | "MERGED_CELL" | "SELECTION_ELEMENT" | "TABLE";
         Confidence: number;
         Text: string;
         TextType: "PRINTED" | "HANDWRITING";

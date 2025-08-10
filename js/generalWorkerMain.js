@@ -96,6 +96,7 @@ export async function initGeneralWorker() {
     obj.convertPageAbbyy = wrap('convertPageAbbyy');
     obj.convertPageStext = wrap('convertPageStext');
     obj.convertDocTextract = wrap('convertDocTextract');
+    obj.convertPageText = wrap('convertPageText');
 
     obj.optimizeFont = wrap('optimizeFont');
 
@@ -186,6 +187,12 @@ export class gs {
    * @returns {ReturnType<typeof import('./import/convertPageStext.js').convertPageStext>}
    */
   static convertPageStext = async (args) => (await gs.schedulerInner.addJob('convertPageStext', args));
+
+  /**
+   * @param {Parameters<typeof import('./import/convertPageText.js').convertPageText>[0]} args
+   * @returns {ReturnType<typeof import('./import/convertPageText.js').convertPageText>}
+   */
+  static convertPageText = async (args) => (await gs.schedulerInner.addJob('convertPageText', args));
 
   /**
    * @param {Parameters<typeof import('./worker/optimizeFontModule.js').optimizeFont>[0]} args

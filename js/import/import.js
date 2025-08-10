@@ -158,7 +158,7 @@ export async function sortInputFiles(files) {
     if (['png', 'jpeg', 'jpg'].includes(fileExt)) {
       imageFilesAll.push(file);
       // All .gz files are assumed to be OCR data (xml) since all other file types can be compressed already
-    } else if (['hocr', 'xml', 'html', 'gz', 'stext', 'json'].includes(fileExt)) {
+    } else if (['hocr', 'xml', 'html', 'gz', 'stext', 'json', 'txt'].includes(fileExt)) {
       ocrFilesAll.push(file);
     } else if (['scribe'].includes(fileExt)) {
       scribeFilesAll.push(file);
@@ -352,6 +352,7 @@ export async function importFiles(files) {
   let abbyyMode = false;
   let textractMode = false;
   let reimportHocrMode = false;
+  let textMode = false;
 
   if (inputData.pdfMode) {
     const pdfFile = pdfFiles[0];
@@ -437,6 +438,7 @@ export async function importFiles(files) {
 
     stextMode = ocrData.stextMode;
     textractMode = ocrData.textractMode;
+    textMode = ocrData.textMode;
   }
 
   let pageCountOcr = ocrAllRaw.active?.length || ocrAll.active?.length || 0;
@@ -491,11 +493,12 @@ export async function importFiles(files) {
   }
 
   if (xmlModeImport) {
-    /** @type {("hocr" | "abbyy" | "stext" | "textract")} */
+    /** @type {("hocr" | "abbyy" | "stext" | "textract" | "text")} */
     let format = 'hocr';
     if (abbyyMode) format = 'abbyy';
     if (stextMode) format = 'stext';
     if (textractMode) format = 'textract';
+    if (textMode) format = 'text';
 
     // Process HOCR using web worker, reading from file first if that has not been done already
     await convertOCR(ocrAllRaw.active, true, format, oemName, reimportHocrMode, pageMetricsArr).then(async () => {
@@ -549,11 +552,12 @@ export async function importFilesSupp(files, ocrName) {
     opt.warningHandler(warningHTML);
   }
 
-  /** @type {("hocr" | "abbyy" | "stext" | "textract")} */
+  /** @type {("hocr" | "abbyy" | "stext" | "textract" | "text")} */
   let format = 'hocr';
   if (ocrData.abbyyMode) format = 'abbyy';
   if (ocrData.stextMode) format = 'stext';
   if (ocrData.textractMode) format = 'textract';
+  if (ocrData.textMode) format = 'text';
 
   await convertOCR(ocrData.hocrRaw, false, format, ocrName, ocrData.reimportHocrMode);
 }

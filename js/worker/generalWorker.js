@@ -3,6 +3,7 @@ import { convertPageBlocks } from '../import/convertPageBlocks.js';
 import { convertPageHocr } from '../import/convertPageHocr.js';
 import { convertPageStext } from '../import/convertPageStext.js';
 import { convertDocTextract } from '../import/convertDocTextract.js';
+import { convertPageText } from '../import/convertPageText.js';
 
 import { FontCont, loadFontsFromSource } from '../containers/fontContainer.js';
 import {
@@ -401,6 +402,7 @@ const handleMessage = async (data) => {
     convertPageStext,
     convertDocTextract,
     convertPageBlocks,
+    convertPageText,
 
     // Optimize font functions
     optimizeFont,
