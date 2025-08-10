@@ -14,7 +14,6 @@ export const splitHOCRStr = (hocrStrAll) => hocrStrAll.replace(/[\s\S]*?<body>/,
  *
  * @param {Array<File|FileNode|ArrayBuffer>} ocrFilesAll - Array of OCR files
  */
-
 export async function importOCRFiles(ocrFilesAll) {
   // In the case of 1 HOCR file
   const singleHOCRMode = ocrFilesAll.length === 1;
@@ -24,6 +23,8 @@ export async function importOCRFiles(ocrFilesAll) {
   let stextMode = false;
   let textractMode = false;
   let reimportHocrMode = false;
+  let hocrMode = false;
+  let textMode = false;
 
   let pageCountHOCR;
   let hocrRaw;
@@ -48,6 +49,10 @@ export async function importOCRFiles(ocrFilesAll) {
     abbyyMode = !!node2 && !!/abbyy/i.test(node2);
     stextMode = !!node2 && !!/<document name/.test(node2);
     textractMode = !abbyyMode && !stextMode && !!/"AnalyzeDocumentModelVersion"/i.test(hocrStrAll);
+    hocrMode = !abbyyMode && !stextMode && !textractMode && (!!/class=['"]ocr_page['"]/i.test(hocrStrAll)
+      || !!/<\?xml version/i.test(hocrStrAll));
+    textMode = !abbyyMode && !stextMode && !textractMode && !/class=['"]ocr_page['"]/i.test(hocrStrAll)
+      && !/<\?xml version/i.test(hocrStrAll) && ocrFilesAll[0]?.name?.endsWith('.txt');
 
     if (textractMode) {
       hocrRaw = [hocrStrAll];
@@ -55,10 +60,15 @@ export async function importOCRFiles(ocrFilesAll) {
       hocrRaw = hocrStrAll.split(/(?=<page)/).slice(1);
     } else if (stextMode) {
       hocrRaw = hocrStrAll.split(/(?=<page)/).slice(1);
-    } else {
+    } else if (textMode) {
+      hocrRaw = [hocrStrAll];
+    } else if (hocrMode) {
       // `hocrStrStart` will be missing for individual HOCR pages created with Tesseract.js or the Tesseract API.
       hocrStrStart = hocrStrAll.match(/[\s\S]*?<body>/)?.[0];
       hocrRaw = splitHOCRStr(hocrStrAll);
+    } else {
+      console.error(ocrFilesAll[0]);
+      throw new Error('No supported OCR format detected.');
     }
 
     pageCountHOCR = hocrRaw.length;
@@ -78,7 +88,7 @@ export async function importOCRFiles(ocrFilesAll) {
     }
   }
 
-  if (!abbyyMode && !stextMode && hocrStrStart) {
+  if (hocrMode && hocrStrStart) {
     const getMeta = (name) => {
       const regex = new RegExp(`<meta name=["']${name}["'][^<]+`, 'i');
 
@@ -141,6 +151,6 @@ export async function importOCRFiles(ocrFilesAll) {
   };
 
   return {
-    hocrRaw, layoutObj, fontState, layoutDataTableObj, abbyyMode, stextMode, textractMode, reimportHocrMode,
+    hocrRaw, layoutObj, fontState, layoutDataTableObj, abbyyMode, stextMode, textractMode, reimportHocrMode, textMode, hocrMode,
   };
 }

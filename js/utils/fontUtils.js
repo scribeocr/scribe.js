@@ -158,7 +158,7 @@ export const missingGlyphs = {};
  * @param {Array<string>|string} wordText
  * @param {opentype.Font} fontOpentype
  */
-function calcWordCharMetrics(wordText, fontOpentype) {
+export function calcWordCharMetrics(wordText, fontOpentype) {
   const wordTextArr = typeof wordText === 'string' ? wordText.split('') : wordText;
 
   /** @type {Array<number>} */
