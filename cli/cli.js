@@ -52,14 +52,14 @@ export const evalInternalCLI = async (files, options) => {
 
 /**
  *
- * @param {string} pdfFile - Path to PDF file.
+ * @param {string} inputFile - Path to PDF file.
  * @param {?string} [outputDir='.'] - Output directory.
  * @param {Object} [options]
  * @param {"pdf" | "hocr" | "docx" | "xlsx" | "txt" | "text" | "html"} [options.format]
  * @param {boolean} [options.reflow]
  */
-export const extractCLI = async (pdfFile, outputDir, options) => {
-  await extract(pdfFile, outputDir, options);
+export const extractCLI = async (inputFile, outputDir, options) => {
+  await extract(inputFile, outputDir, options);
   process.exitCode = 0;
 };
 

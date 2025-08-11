@@ -34,7 +34,7 @@ program
 
 program
   .command('extract')
-  .argument('<pdf_file>', 'Input PDF file.')
+  .argument('<input_file>', 'Input PDF file.')
   .argument('[output]', 'Output directory or file to save results.', '.')
   .addOption(new Option('-f, --format <ext>', 'Output format.').choices(['pdf', 'hocr', 'docx', 'xlsx', 'txt', 'text', 'html']).default('txt'))
   .option('-r, --reflow', 'Reflow text by combining lines into paragraphs.')
