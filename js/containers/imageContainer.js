@@ -276,6 +276,10 @@ export class ImageCache {
    * @param {boolean} [nativeOnly=true]
    */
   static getImages = (n, props, nativeOnly = true) => {
+    if (!ImageCache.inputModes.image && !ImageCache.inputModes.pdf) {
+      return { native: undefined, binary: undefined };
+    }
+
     const significantRotation = Math.abs(pageMetricsArr[n].angle || 0) > 0.05;
 
     const newNative = !ImageCache.native[n] || !imageUtils.compatible(ImageCache.nativeProps[n], props, significantRotation);
