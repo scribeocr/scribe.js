@@ -1454,7 +1454,7 @@ export async function nudgePageBaseline({
  * This function is a WIP and not all options are implemented.
  * @param {Object} args
  * @param {OcrPage} args.page - Page to render.
- * @param {import('../containers/imageContainer.js').ImageWrapper} args.image
+ * @param {import('../containers/imageContainer.js').ImageWrapper} [args.image]
  * @param {dims} [args.pageDims] - Dimensions of page.
  * @param {?number} [args.angle=0] - Angle of page.
  * @param {("proof" | "invis" | "ebook" | "eval")} [args.displayMode='proof'] - Display mode.
@@ -1474,8 +1474,10 @@ export const renderPageStaticImp = async ({
   const canvas = await ca.createCanvas(dims.width, dims.height);
   const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (/** @type {unknown} */ (canvas.getContext('2d')));
 
-  const imageBit = await ca.getImageBitmap(image.src);
-  if (image) ctx.drawImage(imageBit, 0, 0);
+  if (image) {
+    const imageBit = await ca.getImageBitmap(image.src);
+    ctx.drawImage(imageBit, 0, 0);
+  }
 
   angle = angle ?? 0;
 
@@ -1485,7 +1487,7 @@ export const renderPageStaticImp = async ({
   const cosAngle = Math.cos(angle * (Math.PI / 180));
 
   for (const lineObj of page.lines) {
-    const angleAdjLine = image.rotated ? ocr.calcLineStartAngleAdj(lineObj) : { x: 0, y: 0 };
+    const angleAdjLine = image?.rotated ? ocr.calcLineStartAngleAdj(lineObj) : { x: 0, y: 0 };
 
     const baselineY = lineObj.bbox.bottom + lineObj.baseline[1] + angleAdjLine.y;
     const lineLeftAdj = lineObj.bbox.left + angleAdjLine.x;
@@ -1505,7 +1507,7 @@ export const renderPageStaticImp = async ({
 
       ctx.fillStyle = fill;
 
-      const angleAdjWord = wordObj.sup ? ocr.calcWordAngleAdj(wordObj) : { x: 0, y: 0 };
+      const angleAdjWord = wordObj.style.sup ? ocr.calcWordAngleAdj(wordObj) : { x: 0, y: 0 };
 
       const wordMetrics = calcWordMetrics(wordObj);
       const advanceArr = wordMetrics.advanceArr;

@@ -4,11 +4,12 @@ import { calcWordCharMetrics } from '../utils/fontUtils.js';
 import { FontCont } from '../containers/fontContainer.js';
 
 const FONT_FAMILY = 'Times New Roman';
-const FONT_SIZE = 12;
-const CHAR_SPACING = 1;
+const FONT_SIZE = 14;
+const CHAR_SPACING = 0;
+const WORD_SPACING = 0;
 const LINE_HEIGHT = 14.4;
-const ASCENDER_HEIGHT = 9.6;
-const DESCENDER_HEIGHT = 2.4;
+const MARGIN_VERTICAL = 30;
+const MARGIN_HORIZONTAL = 20;
 
 /** @type {?opentype.Font} */
 let fontOpentype = null;
@@ -19,15 +20,24 @@ let fontOpentype = null;
  * @param {number} size
  * @param {opentype.Font} font
  */
-function getTextAdvance(text, size, font) {
+function getTextWidth(text, size, font) {
   const { advanceArr, kerningArr } = calcWordCharMetrics(text, font);
 
   const advanceTotal = advanceArr.reduce((a, b) => a + b, 0);
   const kerningTotal = kerningArr.reduce((a, b) => a + b, 0);
 
-  const wordWidth1 = (advanceTotal + kerningTotal) * (size / font.unitsPerEm);
+  const wordLastGlyphMetrics = font.charToGlyph(text.at(-1)).getMetrics();
+  const wordFirstGlyphMetrics = font.charToGlyph(text[0]).getMetrics();
+
+  // The `leftSideBearing`/`rightSideBearing`/ numbers reported by Opentype.js are not accurate for mono-spaced fonts, so `xMin`/`xMax` are used instead.
+  const wordLeftBearing = wordFirstGlyphMetrics.xMin || 0;
+  const lastGlyphMax = wordLastGlyphMetrics.xMax || 0;
+  const wordRightBearing = advanceArr[advanceArr.length - 1] - lastGlyphMax;
+
+  const wordWidth1 = (advanceTotal + kerningTotal - wordLeftBearing - wordRightBearing);
+  const wordWidth1Px = wordWidth1 * (size / font.unitsPerEm);
   const spacingTotalPx = (text.length - 1) * CHAR_SPACING;
-  const wordWidth = wordWidth1 + spacingTotalPx;
+  const wordWidth = wordWidth1Px + spacingTotalPx;
 
   return wordWidth;
 }
@@ -76,6 +86,9 @@ export async function convertPageText({ textStr, pageDims = null }) {
     fontOpentype = (await FontCont.getFont({ font: FONT_FAMILY })).opentype;
   }
 
+  const ASCENDER_HEIGHT = fontOpentype.ascender * (FONT_SIZE / fontOpentype.unitsPerEm);
+  const DESCENDER_HEIGHT = fontOpentype.descender * (FONT_SIZE / fontOpentype.unitsPerEm);
+
   const lines = textStr.split(/\r?\n/);
 
   if (!pageDims) {
@@ -97,17 +110,16 @@ export async function convertPageText({ textStr, pageDims = null }) {
 
   let tablesPage = new LayoutDataTablePage(0);
   const pagesOut = [{ pageObj, dataTables: tablesPage }];
-  const margin = 20;
-  const availableWidth = pageDims.width - margin * 2;
+  const availableWidth = pageDims.width - MARGIN_HORIZONTAL * 2;
 
-  let currentY = margin + ASCENDER_HEIGHT;
+  let currentY = MARGIN_VERTICAL + LINE_HEIGHT / 2;
 
   for (let lineIndex = 0; lineIndex < lines.length; lineIndex++) {
     const lineText = lines[lineIndex];
 
     if (lineText.length === 0 || lineText.trim().length === 0) {
       currentY += LINE_HEIGHT;
-      if (currentY + DESCENDER_HEIGHT > pageDims.height - margin) {
+      if (currentY + FONT_SIZE > pageDims.height - MARGIN_VERTICAL) {
         pageIndex++;
         const newPage = new ocr.OcrPage(pageIndex, pageDims);
         newPage.textSource = 'text';
@@ -115,7 +127,7 @@ export async function convertPageText({ textStr, pageDims = null }) {
         pagesOut.push({ pageObj: newPage, dataTables: newTables });
         pageObj = newPage;
         tablesPage = newTables;
-        currentY = margin + ASCENDER_HEIGHT;
+        currentY = MARGIN_VERTICAL + LINE_HEIGHT / 2;
       }
       continue;
     }
@@ -123,13 +135,13 @@ export async function convertPageText({ textStr, pageDims = null }) {
     const wordTokens = splitIntoWords(lineText);
 
     const parLines = [];
-    let parRight = margin;
+    let parRight = MARGIN_HORIZONTAL;
 
     for (let idx = 0; idx < wordTokens.length;) {
-      if (currentY + DESCENDER_HEIGHT > pageDims.height - margin) {
+      if (currentY + FONT_SIZE > pageDims.height - MARGIN_VERTICAL) {
         if (parLines.length > 0) {
           const parBbox = {
-            left: margin,
+            left: MARGIN_HORIZONTAL,
             top: parLines[0].bbox.top,
             right: parRight,
             bottom: parLines[parLines.length - 1].bbox.bottom,
@@ -139,7 +151,7 @@ export async function convertPageText({ textStr, pageDims = null }) {
           for (const ln of parLines) ln.par = parObj;
           pageObj.pars.push(parObj);
           parLines.length = 0;
-          parRight = margin;
+          parRight = MARGIN_HORIZONTAL;
         }
         pageIndex++;
         const newPage = new ocr.OcrPage(pageIndex, pageDims);
@@ -148,20 +160,20 @@ export async function convertPageText({ textStr, pageDims = null }) {
         pagesOut.push({ pageObj: newPage, dataTables: newTables });
         pageObj = newPage;
         tablesPage = newTables;
-        currentY = margin + ASCENDER_HEIGHT;
+        currentY = MARGIN_VERTICAL + LINE_HEIGHT / 2;
       }
 
       const baseline = [0, DESCENDER_HEIGHT];
       const lineTop = Math.round(currentY - ASCENDER_HEIGHT);
       const lineBottom = Math.round(currentY + DESCENDER_HEIGHT);
 
-      let currentX = margin;
+      let currentX = MARGIN_HORIZONTAL;
       let widthSoFar = 0;
 
       const lineBbox = {
-        left: margin,
+        left: MARGIN_HORIZONTAL,
         top: lineTop,
-        right: margin,
+        right: MARGIN_HORIZONTAL,
         bottom: lineBottom,
       };
       const lineObj = new ocr.OcrLine(
@@ -169,13 +181,14 @@ export async function convertPageText({ textStr, pageDims = null }) {
         lineBbox,
         baseline,
         ASCENDER_HEIGHT,
-        ASCENDER_HEIGHT - DESCENDER_HEIGHT,
+        null,
       );
 
       let lastConsumed = idx;
       for (let j = idx; j < wordTokens.length; j++) {
         const tok = wordTokens[j];
-        const tokWidth = getTextAdvance(tok.text, FONT_SIZE, fontOpentype);
+        let tokWidth = getTextWidth(tok.text, FONT_SIZE, fontOpentype);
+        if (tok.isWhitespace) tokWidth += WORD_SPACING;
 
         if (tok.isWhitespace) {
           if (lineObj.words.length === 0) {
@@ -218,7 +231,7 @@ export async function convertPageText({ textStr, pageDims = null }) {
       if (lineObj.words.length === 0) {
         const nextTok = wordTokens[idx];
         if (nextTok && !nextTok.isWhitespace) {
-          const tokWidth = getTextAdvance(nextTok.text, FONT_SIZE, fontOpentype);
+          const tokWidth = getTextWidth(nextTok.text, FONT_SIZE, fontOpentype);
           const wordBbox = {
             left: Math.round(currentX),
             top: lineTop,
@@ -258,7 +271,7 @@ export async function convertPageText({ textStr, pageDims = null }) {
 
     if (parLines.length > 0) {
       const parBbox = {
-        left: margin,
+        left: MARGIN_HORIZONTAL,
         top: parLines[0].bbox.top,
         right: parRight,
         bottom: parLines[parLines.length - 1].bbox.bottom,
