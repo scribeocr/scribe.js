@@ -36,6 +36,61 @@ export function imageStrToBlob(imgStr) {
 }
 
 /**
+ * Automatically detects the image type (jpeg or png).
+ * @param {Uint8Array} image
+ * @returns {('jpeg'|'png')}
+ */
+const detectImageFormat = (image) => {
+  if (image[0] === 0xFF && image[1] === 0xD8) {
+    return 'jpeg';
+  } if (image[0] === 0x89 && image[1] === 0x50) {
+    return 'png';
+  }
+  throw new Error('Unsupported image type');
+};
+
+/**
+ *
+ * @param {File|FileNode|ArrayBuffer} file
+ * @returns {Promise<string>}
+ */
+export const importImageFileToBase64 = async (file) => new Promise((resolve, reject) => {
+  if (file instanceof ArrayBuffer) {
+    const imageUint8 = new Uint8Array(file);
+    const format = detectImageFormat(imageUint8);
+    const binary = String.fromCharCode(...imageUint8);
+    resolve(`data:image/${format};base64,${btoa(binary)}`);
+    return;
+  }
+
+  // The `typeof process` condition is necessary to avoid error in Node.js versions <20, where `File` is not defined.
+  if (typeof process === 'undefined' && file instanceof File) {
+    const reader = new FileReader();
+
+    reader.onloadend = async () => {
+      resolve(/** @type {string} */(reader.result));
+    };
+
+    reader.onerror = (error) => {
+      reject(error);
+    };
+
+    reader.readAsDataURL(file);
+    return;
+  }
+
+  if (typeof process !== 'undefined') {
+    if (!file?.name) reject(new Error('Invalid input. Must be a FileNode or ArrayBuffer.'));
+    const format = file.name.match(/jpe?g$/i) ? 'jpeg' : 'png';
+    // @ts-ignore
+    resolve(`data:image/${format};base64,${file.fileData.toString('base64')}`);
+    return;
+  }
+
+  reject(new Error('Invalid input. Must be a File or ArrayBuffer.'));
+});
+
+/**
  * Converts a base64 encoded string to an array of bytes.
  *
  * @param {string} base64 - The base64 encoded string of the PNG image.

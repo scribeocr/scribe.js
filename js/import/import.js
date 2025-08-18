@@ -25,65 +25,11 @@ import { addCircularRefsDataTables, LayoutDataTablePage, LayoutPage } from '../o
 import { addCircularRefsOcr } from '../objects/ocrObjects.js';
 import { PageMetrics } from '../objects/pageMetricsObjects.js';
 import { checkCharWarn, convertOCR } from '../recognizeConvert.js';
+import { importImageFileToBase64 } from '../utils/imageUtils.js';
 import {
   readOcrFile, clearObjectProperties, objectAssignDefined, readTextFile,
 } from '../utils/miscUtils.js';
 import { importOCRFiles } from './importOCR.js';
-
-/**
- * Automatically detects the image type (jpeg or png).
- * @param {Uint8Array} image
- * @returns {('jpeg'|'png')}
- */
-const detectImageFormat = (image) => {
-  if (image[0] === 0xFF && image[1] === 0xD8) {
-    return 'jpeg';
-  } if (image[0] === 0x89 && image[1] === 0x50) {
-    return 'png';
-  }
-  throw new Error('Unsupported image type');
-};
-
-/**
- *
- * @param {File|FileNode|ArrayBuffer} file
- * @returns {Promise<string>}
- */
-const importImageFile = async (file) => new Promise((resolve, reject) => {
-  if (file instanceof ArrayBuffer) {
-    const imageUint8 = new Uint8Array(file);
-    const format = detectImageFormat(imageUint8);
-    const binary = String.fromCharCode(...imageUint8);
-    resolve(`data:image/${format};base64,${btoa(binary)}`);
-    return;
-  }
-
-  // The `typeof process` condition is necessary to avoid error in Node.js versions <20, where `File` is not defined.
-  if (typeof process === 'undefined' && file instanceof File) {
-    const reader = new FileReader();
-
-    reader.onloadend = async () => {
-      resolve(/** @type {string} */(reader.result));
-    };
-
-    reader.onerror = (error) => {
-      reject(error);
-    };
-
-    reader.readAsDataURL(file);
-    return;
-  }
-
-  if (typeof process !== 'undefined') {
-    if (!file?.name) reject(new Error('Invalid input. Must be a FileNode or ArrayBuffer.'));
-    const format = file.name.match(/jpe?g$/i) ? 'jpeg' : 'png';
-    // @ts-ignore
-    resolve(`data:image/${format};base64,${file.fileData.toString('base64')}`);
-    return;
-  }
-
-  reject(new Error('Invalid input. Must be a File or ArrayBuffer.'));
-});
 
 /**
  * Standardize file-like inputs between platforms.
@@ -481,7 +427,7 @@ export async function importFiles(files) {
   if (inputData.imageMode) {
     ImageCache.pageCount = inputData.pageCount;
     for (let i = 0; i < inputData.pageCount; i++) {
-      ImageCache.nativeSrc[i] = await importImageFile(imageFiles[i]).then(async (imgStr) => {
+      ImageCache.nativeSrc[i] = await importImageFileToBase64(imageFiles[i]).then(async (imgStr) => {
         const imgWrapper = new ImageWrapper(i, imgStr, 'native', false, false);
         const imageDims = await imageUtils.getDims(imgWrapper);
         pageMetricsArr[i] = new PageMetrics(imageDims);
