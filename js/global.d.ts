@@ -226,6 +226,21 @@ declare global {
         Relationships?: Relationship[];
     }
 
+    type PdfFontInfo = {
+        type: number;
+        index: number;
+        name: string;
+        objN: number;
+        opentype: opentypeFont;
+    };
+
+    type PdfFontFamily = {
+        normal?: PdfFontInfo;
+        italic?: PdfFontInfo;
+        bold?: PdfFontInfo;
+        boldItalic?: PdfFontInfo;
+        [style: string]: PdfFontInfo | undefined;
+    };
 
 }
 

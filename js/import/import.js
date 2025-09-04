@@ -448,8 +448,9 @@ export async function importFiles(files) {
 
     // Process HOCR using web worker, reading from file first if that has not been done already
     await convertOCR(ocrAllRaw.active, true, format, oemName, reimportHocrMode, pageMetricsArr).then(async () => {
-      // Skip this step if optimization info was already restored from a previous session, or if using stext (which is character-level but not visually accurate).
-      if (!existingOpt && !stextMode) {
+      // Skip this step if optimization info was already restored from a previous session,
+      // or if using stext/textract (which are character-level but not visually accurate).
+      if (!existingOpt && !stextMode && !textractMode) {
         await checkCharWarn(convertPageWarn);
         const charMetrics = calcCharMetricsFromPages(ocrAll.active);
 
