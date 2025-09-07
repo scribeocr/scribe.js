@@ -534,7 +534,7 @@ export async function convertPageStext({ ocrStr, n }) {
           // Tesseract LSTM already does this, however Tesseract Legacy combines entire lines into the same "word",
           // which makes good alignment impossible.
           if (wordLang === 'chi_sim') {
-            const wordObj = new ocr.OcrWord(lineObj, letter, bbox, `${wordID}_${j}`);
+            const wordObj = new ocr.OcrWord(lineObj, `${wordID}_${j}`, letter, bbox);
             wordObj.conf = 100;
             wordObj.lang = wordLang;
             wordObj.visualCoords = false;
@@ -560,7 +560,7 @@ export async function convertPageStext({ ocrStr, n }) {
 
         if (bbox.left < 0 && bbox.right < 0) continue;
 
-        const wordObj = new ocr.OcrWord(lineObj, wordText, bbox, wordID);
+        const wordObj = new ocr.OcrWord(lineObj, wordID, wordText, bbox);
         wordObj.style.size = fontSizeArr[i];
 
         wordObj.lang = wordLang;

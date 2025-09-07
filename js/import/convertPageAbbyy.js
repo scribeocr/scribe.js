@@ -95,8 +95,6 @@ export async function convertPageAbbyy({ ocrStr, n }) {
       const parLineArr = [];
 
       function convertLineAbbyy(xmlLine) {
-        const stylesLine = {};
-
         // Unlike Tesseract HOCR, Abbyy XML does not provide accurate metrics for determining font size, so they are calculated here.
         // Strangely, while Abbyy XML does provide a "baseline" attribute, it is often wildly incorrect (sometimes falling outside of the bounding box entirely).
         // One guess as to why is that coordinates calculated pre-dewarping are used along with a baseline calculated post-dewarping.
@@ -388,7 +386,7 @@ export async function convertPageAbbyy({ ocrStr, n }) {
 
           const id = `word_${n + 1}_${pageObj.lines.length + 1}_${i + 1}`;
 
-          const wordObj = new ocr.OcrWord(lineObj, text[i], bboxWord, id);
+          const wordObj = new ocr.OcrWord(lineObj, id, text[i], bboxWord);
           wordObj.chars = charObjArrLine[i];
           wordObj.conf = wordSusp[i] ? 0 : 100;
 

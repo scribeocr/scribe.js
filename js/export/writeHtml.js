@@ -2,7 +2,7 @@ import { FontCont } from '../containers/fontContainer.js';
 import { opt } from '../containers/app.js';
 import { calcWordMetrics } from '../utils/fontUtils.js';
 import { assignParagraphs } from '../utils/reflowPars.js';
-import { pageMetricsArr } from '../containers/dataContainer.js';
+import { pageMetricsAll } from '../containers/dataContainer.js';
 import ocr from '../objects/ocrObjects.js';
 
 const formatNum = (num) => (num.toFixed(5).replace(/\.?0+$/, ''));
@@ -132,14 +132,14 @@ export function writeHtml({
     }
 
     if (removeMargins) {
-      top += Math.min((maxBottom - minTop) + 200, pageMetricsArr[g].dims.height + 10);
+      top += Math.min((maxBottom - minTop) + 200, pageMetricsAll[g].dims.height + 10);
     } else {
-      top += pageMetricsArr[g].dims.height + 10;
+      top += pageMetricsAll[g].dims.height + 10;
     }
 
     // Do not overwrite paragraphs from Abbyy or Textract.
     if (reflowText && (!pageObj.textSource || !['textract', 'abbyy'].includes(pageObj.textSource))) {
-      const angle = pageMetricsArr[g].angle || 0;
+      const angle = pageMetricsAll[g].angle || 0;
       assignParagraphs(pageObj, angle);
     }
 

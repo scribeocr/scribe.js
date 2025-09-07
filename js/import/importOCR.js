@@ -9,6 +9,48 @@ export const splitHOCRStr = (hocrStrAll) => hocrStrAll.replace(/[\s\S]*?<body>/,
   .split(/(?=<div class=['"]ocr_page['"])/);
 
 /**
+ *
+ * @param {string} ocrStr - The OCR string to detect the format of.
+ * @param {string} [ext] - The file extension of the OCR file.
+ * @returns {"hocr" | "stext" | "abbyy" | "textract" | "google_vision" | "text" | null}
+ */
+const detectOcrFormat = (ocrStr, ext) => {
+  if (ext) {
+    ext = ext.replace(/^\./, '').toLowerCase();
+    if (ext === 'hocr') {
+      return 'hocr';
+    } if (ext === 'stext') {
+      return 'stext';
+    }
+  }
+
+  // Check whether input is Abbyy XML
+  // TODO: The auto-detection of formats needs to be more robust.
+  // At present, any string that contains ">" and "abbyy" is considered Abbyy XML.
+  const node2 = ocrStr.match(/>([^>]+)/)?.[1];
+
+  if (!!node2 && !!/abbyy/i.test(node2)) {
+    return 'abbyy';
+  } if (!!node2 && !!/<document name/.test(node2)) {
+    return 'stext';
+  // AWS Textract without layout detection.
+  } if (!node2 && !!/"DetectDocumentTextModelVersion"/i.test(ocrStr)) {
+    return 'textract';
+  // AWS Textract using layout detection.
+  } if (!node2 && !!/"AnalyzeDocumentModelVersion"/i.test(ocrStr)) {
+    return 'textract';
+  } if (!node2 && !!/"faceAnnotations"/i.test(ocrStr) && !!/"textAnnotations"/i.test(ocrStr)) {
+    return 'google_vision';
+  } if (!!node2 && !!/class=['"]ocr_page['"]/i.test(ocrStr)
+      || !!/<\?xml version/i.test(ocrStr)) {
+    return 'hocr';
+  } if (ext && ext.toLowerCase() === 'txt') {
+    return 'text';
+  }
+  return null;
+};
+
+/**
  * Import raw OCR data from files.
  * Currently supports .hocr (used by Tesseract), Abbyy .xml, and stext (an intermediate data format used by mupdf).
  *
@@ -19,12 +61,8 @@ export async function importOCRFiles(ocrFilesAll) {
   const singleHOCRMode = ocrFilesAll.length === 1;
 
   let hocrStrStart = null;
-  let abbyyMode = false;
-  let stextMode = false;
-  let textractMode = false;
+  let format = null;
   let reimportHocrMode = false;
-  let hocrMode = false;
-  let textMode = false;
 
   let pageCountHOCR;
   let hocrRaw;
@@ -42,33 +80,27 @@ export async function importOCRFiles(ocrFilesAll) {
   if (singleHOCRMode) {
     const hocrStrAll = await readOcrFile(ocrFilesAll[0]);
 
-    // Check whether input is Abbyy XML
-    // TODO: The auto-detection of formats needs to be more robust.
-    // At present, any string that contains ">" and "abbyy" is considered Abbyy XML.
-    const node2 = hocrStrAll.match(/>([^>]+)/)?.[1];
-    abbyyMode = !!node2 && !!/abbyy/i.test(node2);
-    stextMode = !!node2 && !!/<document name/.test(node2);
-    textractMode = !abbyyMode && !stextMode && !!/"AnalyzeDocumentModelVersion"/i.test(hocrStrAll);
-    hocrMode = !abbyyMode && !stextMode && !textractMode && (!!/class=['"]ocr_page['"]/i.test(hocrStrAll)
-      || !!/<\?xml version/i.test(hocrStrAll));
-    textMode = !abbyyMode && !stextMode && !textractMode && !/class=['"]ocr_page['"]/i.test(hocrStrAll)
-      && !/<\?xml version/i.test(hocrStrAll) && ocrFilesAll[0]?.name?.endsWith('.txt');
+    format = detectOcrFormat(hocrStrAll);
 
-    if (textractMode) {
+    if (!format) {
+      console.error(ocrFilesAll[0]);
+      throw new Error('No supported OCR format detected.');
+    }
+
+    if (format === 'textract') {
       hocrRaw = [hocrStrAll];
-    } else if (abbyyMode) {
-      hocrRaw = hocrStrAll.split(/(?=<page)/).slice(1);
-    } else if (stextMode) {
-      hocrRaw = hocrStrAll.split(/(?=<page)/).slice(1);
-    } else if (textMode) {
+    } else if (format === 'google_vision') {
       hocrRaw = [hocrStrAll];
-    } else if (hocrMode) {
+    } else if (format === 'abbyy') {
+      hocrRaw = hocrStrAll.split(/(?=<page)/).slice(1);
+    } else if (format === 'stext') {
+      hocrRaw = hocrStrAll.split(/(?=<page)/).slice(1);
+    } else if (format === 'text') {
+      hocrRaw = [hocrStrAll];
+    } else if (format === 'hocr') {
       // `hocrStrStart` will be missing for individual HOCR pages created with Tesseract.js or the Tesseract API.
       hocrStrStart = hocrStrAll.match(/[\s\S]*?<body>/)?.[0];
       hocrRaw = splitHOCRStr(hocrStrAll);
-    } else {
-      console.error(ocrFilesAll[0]);
-      throw new Error('No supported OCR format detected.');
     }
 
     pageCountHOCR = hocrRaw.length;
@@ -78,9 +110,13 @@ export async function importOCRFiles(ocrFilesAll) {
 
     // Check whether input is Abbyy XML using the first file
     const hocrStrFirst = await readOcrFile(ocrFilesAll[0]);
-    const node2 = hocrStrFirst.match(/>([^>]+)/)?.[1];
-    abbyyMode = !!node2 && !!/abbyy/i.test(node2);
-    textractMode = !abbyyMode && !!/"AnalyzeDocumentModelVersion"/i.test(hocrStrFirst);
+
+    format = detectOcrFormat(hocrStrFirst);
+
+    if (!format) {
+      console.error(ocrFilesAll[0]);
+      throw new Error('No supported OCR format detected.');
+    }
 
     for (let i = 0; i < pageCountHOCR; i++) {
       const hocrFile = ocrFilesAll[i];
@@ -88,7 +124,7 @@ export async function importOCRFiles(ocrFilesAll) {
     }
   }
 
-  if (hocrMode && hocrStrStart) {
+  if (format === 'hocr' && hocrStrStart) {
     const getMeta = (name) => {
       const regex = new RegExp(`<meta name=["']${name}["'][^<]+`, 'i');
 
@@ -151,6 +187,11 @@ export async function importOCRFiles(ocrFilesAll) {
   };
 
   return {
-    hocrRaw, layoutObj, fontState, layoutDataTableObj, abbyyMode, stextMode, textractMode, reimportHocrMode, textMode, hocrMode,
+    hocrRaw,
+    layoutObj,
+    fontState,
+    layoutDataTableObj,
+    format,
+    reimportHocrMode,
   };
 }

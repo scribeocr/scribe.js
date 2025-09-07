@@ -103,7 +103,7 @@ async function main(func, params) {
     const debugDir = `${outputDir}/${outputStem}_debug`;
     fs.mkdirSync(debugDir, { recursive: true });
     const outputPathCsv = `${debugDir}/_debug.csv`;
-    scribe.utils.writeDebugCsv(scribe.data.ocr.active, outputPathCsv);
+    scribe.utils.writeDebugCsv({ pages: scribe.data.ocr.active, fileName: outputPathCsv });
 
     scribe.utils.dumpDebugImages(debugDir);
     scribe.utils.dumpHOCR(debugDir);

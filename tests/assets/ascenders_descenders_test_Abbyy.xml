@@ -1,0 +1,40 @@
+﻿<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<document xmlns="http://www.abbyy.com/FineReader_xml/FineReader10-schema-v1.xml" version="1.0" producer="ABBYY FineReader Engine 12" languages="" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.abbyy.com/FineReader_xml/FineReader10-schema-v1.xml http://www.abbyy.com/FineReader_xml/FineReader10-schema-v1.xml">
+<page width="648" height="382" resolution="144">
+<block blockType="Text" blockName="" l="60" t="66" r="493" b="320"><region><rect l="60" t="66" r="493" b="320"/></region>
+<text>
+<par lineSpacing="4850">
+<line baseline="123" l="63" t="69" r="490" b="123"><formatting lang="EnglishUnitedStates" ff="Times New Roman" fs="38">
+<charParams l="63" t="70" r="116" b="122">A</charParams>
+<charParams l="120" t="87" r="143" b="123">s</charParams>
+<charParams l="149" t="87" r="177" b="123">c</charParams>
+<charParams l="183" t="87" r="211" b="123">e</charParams>
+<charParams l="214" t="87" r="251" b="122">n</charParams>
+<charParams l="254" t="69" r="288" b="123">d</charParams>
+<charParams l="292" t="87" r="320" b="123">e</charParams>
+<charParams l="324" t="87" r="349" b="122">r</charParams>
+<charParams l="352" t="87" r="375" b="123">s</charParams>
+<charParams l="376" t="70" r="399" b="123"> </charParams>
+<charParams l="400" t="70" r="449" b="123">O</charParams>
+<charParams l="453" t="87" r="490" b="122">n</charParams></formatting></line>
+<line baseline="219" l="65" t="184" r="367" b="235"><formatting lang="EnglishUnitedStates" ff="Times New Roman" fs="38">
+<charParams l="65" t="184" r="100" b="235">q</charParams>
+<charParams l="100" t="185" r="138" b="220">u</charParams>
+<charParams l="141" t="184" r="169" b="220">e</charParams>
+<charParams l="172" t="184" r="197" b="219">r</charParams>
+<charParams l="197" t="185" r="234" b="235">y</charParams>
+<charParams l="235" t="184" r="253" b="235"> </charParams>
+<charParams l="254" t="184" r="289" b="235">p</charParams>
+<charParams l="293" t="184" r="330" b="219">n</charParams>
+<charParams l="332" t="184" r="367" b="235">g</charParams></formatting></line>
+<line baseline="317" l="62" t="281" r="275" b="317"><formatting lang="EnglishUnitedStates" ff="Times New Roman" fs="38">
+<charParams l="62" t="282" r="116" b="317">w</charParams>
+<charParams l="119" t="281" r="147" b="317">e</charParams>
+<charParams l="148" t="281" r="171" b="317"> </charParams>
+<charParams l="172" t="281" r="200" b="317">c</charParams>
+<charParams l="206" t="281" r="237" b="317">a</charParams>
+<charParams l="238" t="281" r="275" b="316">n</charParams></formatting></line></par>
+</text>
+</block>
+</page>
+</document>

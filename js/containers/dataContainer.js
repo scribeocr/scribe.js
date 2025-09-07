@@ -63,7 +63,7 @@ export const ocrAll = { active: [] };
 export const ocrAllRaw = { active: [] };
 
 /** @type {Array<PageMetrics>} */
-export const pageMetricsArr = [];
+export const pageMetricsAll = [];
 
 /**
  * Class that stores various debug data.

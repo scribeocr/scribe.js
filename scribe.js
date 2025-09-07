@@ -4,7 +4,7 @@ import {
   DebugData,
   layoutDataTables,
   layoutRegions,
-  ocrAll, pageMetricsArr, visInstructions,
+  ocrAll, pageMetricsAll, visInstructions,
 } from './js/containers/dataContainer.js';
 import { FontCont } from './js/containers/fontContainer.js';
 import { ImageCache } from './js/containers/imageContainer.js';
@@ -12,7 +12,7 @@ import coords from './js/coordinates.js';
 import { drawDebugImages, renderPageStatic } from './js/debug.js';
 import { download, exportData } from './js/export/export.js';
 import { convertToCsv, writeDebugCsv } from './js/export/exportDebugCsv.js';
-import { writePdf } from './js/export/writePdf.js';
+import { writePdf } from './js/export/pdf/writePdf.js';
 import { writeHocr } from './js/export/writeHocr.js';
 import { writeText } from './js/export/writeText.js';
 import { extractInternalPDFText } from './js/extractPDFText.js';
@@ -181,7 +181,7 @@ class data {
 
   static ocr = ocrAll;
 
-  static pageMetrics = pageMetricsArr;
+  static pageMetrics = pageMetricsAll;
 
   static vis = visInstructions;
 }

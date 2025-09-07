@@ -1,4 +1,4 @@
-import { pageMetricsArr } from './containers/dataContainer.js';
+import { pageMetricsAll } from './containers/dataContainer.js';
 import { FontCont } from './containers/fontContainer.js';
 import { ImageCache } from './containers/imageContainer.js';
 import {
@@ -28,7 +28,7 @@ export async function evalPagesFont(font, pageArr, opt, n = 500) {
       font,
       page: pageArr[i],
       binaryImage: imageI,
-      pageMetricsObj: pageMetricsArr[i],
+      pageMetricsObj: pageMetricsAll[i],
       opt,
     });
 

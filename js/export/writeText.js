@@ -1,20 +1,21 @@
 import { opt } from '../containers/app.js';
-import { pageMetricsArr } from '../containers/dataContainer.js';
+import { pageMetricsAll } from '../containers/dataContainer.js';
 import ocr from '../objects/ocrObjects.js';
 import { assignParagraphs } from '../utils/reflowPars.js';
 
 /**
  * Convert an array of ocrPage objects to plain text, or XML for a Word document.
  *
- * @param {Array<OcrPage>} ocrCurrent -
- * @param {number} minpage - The first page to include in the document.
- * @param {number} maxpage - The last page to include in the document.
- * @param {boolean} reflowText - Remove line breaks within what appears to be the same paragraph.
- * @param {boolean} docxMode - Create XML for a word document rather than plain text.
- * @param {?Array<string>} wordIds - An array of word IDs to include in the document.
+ * @param {Object} params
+ * @param {Array<OcrPage>} params.ocrCurrent -
+ * @param {number} [params.minpage=0] - The first page to include in the document.
+ * @param {number} [params.maxpage=-1] - The last page to include in the document.
+ * @param {boolean} [params.reflowText=false] - Remove line breaks within what appears to be the same paragraph.
+ * @param {boolean} [params.docxMode=false] - Create XML for a word document rather than plain text.
+ * @param {?Array<string>} [params.wordIds=null] - An array of word IDs to include in the document.
  *    If omitted, all words are included.
  */
-export function writeText(ocrCurrent, minpage = 0, maxpage = -1, reflowText = false, docxMode = false, wordIds = null) {
+export function writeText({ ocrCurrent, minpage = 0, maxpage = -1, reflowText = false, docxMode = false, wordIds = null }) {
   let textStr = '';
 
   if (maxpage === -1) maxpage = ocrCurrent.length - 1;
@@ -28,7 +29,7 @@ export function writeText(ocrCurrent, minpage = 0, maxpage = -1, reflowText = fa
 
     // Do not overwrite paragraphs from Abbyy or Textract.
     if (reflowText && (!pageObj.textSource || !['textract', 'abbyy'].includes(pageObj.textSource))) {
-      const angle = pageMetricsArr[g].angle || 0;
+      const angle = pageMetricsAll[g].angle || 0;
       assignParagraphs(pageObj, angle);
     }
 

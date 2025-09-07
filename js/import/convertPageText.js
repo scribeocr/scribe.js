@@ -216,7 +216,7 @@ export async function convertPageText({ textStr, pageDims = null }) {
             bottom: lineBottom,
           };
           const wordId = `word_${pageIndex + 1}_${pageObj.lines.length + 1}_${lineObj.words.length + 1}`;
-          const wordObj = new ocr.OcrWord(lineObj, tok.text, wordBbox, wordId);
+          const wordObj = new ocr.OcrWord(lineObj, wordId, tok.text, wordBbox);
           wordObj.conf = 100;
           wordObj.style.font = FONT_FAMILY;
           lineObj.words.push(wordObj);
@@ -239,7 +239,7 @@ export async function convertPageText({ textStr, pageDims = null }) {
             bottom: lineBottom,
           };
           const wordId = `word_${pageIndex + 1}_${pageObj.lines.length + 1}_${lineObj.words.length + 1}`;
-          const wordObj = new ocr.OcrWord(lineObj, nextTok.text, wordBbox, wordId);
+          const wordObj = new ocr.OcrWord(lineObj, wordId, nextTok.text, wordBbox);
           wordObj.conf = 100;
           wordObj.style.font = FONT_FAMILY;
           lineObj.words.push(wordObj);

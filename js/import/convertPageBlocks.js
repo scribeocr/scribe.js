@@ -71,8 +71,13 @@ export async function convertPageBlocks({
           baseline[1] = 0;
         }
 
-        const ascHeight = line.rowAttributes.row_height - line.rowAttributes.descenders;
-        const xHeight = line.rowAttributes.row_height - line.rowAttributes.descenders - line.rowAttributes.ascenders;
+        // Tesseract.js lists `row_height` instead of `rowHeight` in the types file, which is wrong.
+        // This has been fixed in the upstream, so the `ts-ignore` comments
+        // can be removed once Tesseract.js is updated in our dependencies.
+        // @ts-ignore
+        const ascHeight = line.rowAttributes.rowHeight - line.rowAttributes.descenders;
+        // @ts-ignore
+        const xHeight = line.rowAttributes.rowHeight - line.rowAttributes.descenders - line.rowAttributes.ascenders;
 
         const lineObj = new ocr.OcrLine(pageObj, linebox, baseline, ascHeight, xHeight);
         lineObj.par = parObj;
@@ -115,7 +120,7 @@ export async function convertPageBlocks({
                 left: symbol.bbox.x0, top: symbol.bbox.y0, right: symbol.bbox.x1, bottom: symbol.bbox.y1,
               };
 
-              const wordObj = new ocr.OcrWord(lineObj, symbol.text, symbolbox, `${id}_${m}`);
+              const wordObj = new ocr.OcrWord(lineObj, `${id}_${m}`, symbol.text, symbolbox);
               wordObj.conf = symbol.confidence;
               wordObj.lang = wordLang;
 
@@ -124,7 +129,7 @@ export async function convertPageBlocks({
             continue;
           }
 
-          const wordObj = new ocr.OcrWord(lineObj, word.text.trim(), wordbox, id);
+          const wordObj = new ocr.OcrWord(lineObj, id, word.text.trim(), wordbox);
           wordObj.lang = word.language;
           wordObj.conf = word.confidence;
 

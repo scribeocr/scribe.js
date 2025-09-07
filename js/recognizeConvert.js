@@ -3,14 +3,15 @@ import { inputData, opt } from './containers/app.js';
 import {
   convertPageWarn,
   DebugData,
-  layoutDataTables, layoutRegions, ocrAll, pageMetricsArr, visInstructions,
+  layoutDataTables, layoutRegions, ocrAll, pageMetricsAll, visInstructions,
 } from './containers/dataContainer.js';
 import { FontCont } from './containers/fontContainer.js';
-import { ImageCache, ImageWrapper } from './containers/imageContainer.js';
+import { ImageCache } from './containers/imageContainer.js';
 import { loadBuiltInFontsRaw, loadChiSimFont } from './fontContainerMain.js';
 import { runFontOptimization } from './fontEval.js';
 import { calcCharMetricsFromPages } from './fontStatistics.js';
 import { gs } from './generalWorkerMain.js';
+import { ImageWrapper } from './objects/imageObjects.js';
 import { LayoutDataTablePage, LayoutPage } from './objects/layoutObjects.js';
 import { PageMetrics } from './objects/pageMetricsObjects.js';
 import { clearObjectProperties } from './utils/miscUtils.js';
@@ -38,7 +39,7 @@ export const compareOCRPage = async (pageA, pageB, options) => {
 
   const binaryImage = skipImage ? null : await ImageCache.getBinary(pageA.n);
 
-  const pageMetricsObj = pageMetricsArr[pageA.n];
+  const pageMetricsObj = pageMetricsAll[pageA.n];
   return gs.compareOCRPageImp({
     pageA, pageB, binaryImage, pageMetricsObj, options,
   });
@@ -53,7 +54,7 @@ export const compareOCRPage = async (pageA, pageB, options) => {
 export const evalOCRPage = async (params) => {
   const n = 'page' in params.page ? params.page.page.n : params.page.n;
   const binaryImage = await ImageCache.getBinary(n);
-  const pageMetricsObj = pageMetricsArr[n];
+  const pageMetricsObj = pageMetricsAll[n];
   return gs.evalPageBase({
     page: params.page, binaryImage, pageMetricsObj, func: params.func, view: params.view,
   });
@@ -119,7 +120,7 @@ export const calcRecognizeRotateArgs = async (n, areaMode) => {
   // Threshold (in radians) under which page angle is considered to be effectively 0.
   const angleThresh = 0.0008726646;
 
-  const angle = pageMetricsArr[n]?.angle;
+  const angle = pageMetricsAll[n]?.angle;
 
   // Whether the page angle is already known (or needs to be detected)
   const angleKnown = typeof (angle) === 'number';
@@ -178,7 +179,7 @@ export const recognizePageImp = async (n, legacy, lstm, areaMode, tessOptions = 
     ...tessOptions,
   };
 
-  const pageDims = pageMetricsArr[n].dims;
+  const pageDims = pageMetricsAll[n].dims;
 
   // If `legacy` and `lstm` are both `false`, recognition is not run, but layout analysis is.
   // This combination of options would be set for debug mode, where the point of running Tesseract
@@ -201,7 +202,7 @@ export const recognizePageImp = async (n, legacy, lstm, areaMode, tessOptions = 
       debugVis,
     },
     n,
-    knownAngle: pageMetricsArr[n].angle,
+    knownAngle: pageMetricsAll[n].angle,
     pageDims,
   });
 
@@ -220,7 +221,7 @@ export const recognizePageImp = async (n, legacy, lstm, areaMode, tessOptions = 
 
   // parseDebugInfo(res0.recognize.debug);
 
-  if (!angleKnown) pageMetricsArr[n].angle = (res0.recognize.rotateRadians || 0) * (180 / Math.PI) * -1;
+  if (!angleKnown) pageMetricsAll[n].angle = (res0.recognize.rotateRadians || 0) * (180 / Math.PI) * -1;
 
   // An image is rotated if either the source was rotated or rotation was applied by Tesseract.
   const isRotated = Boolean(res0.recognize.rotateRadians || 0) || nativeN.rotated;
@@ -290,7 +291,7 @@ export function checkCharWarn(warnArr) {
  * @param {boolean} mainData - Whether this is the "main" data that document metrics are calculated from.
  *  For imports of user-provided data, the first data provided should be flagged as the "main" data.
  *  For Tesseract.js recognition, the Tesseract Legacy results should be flagged as the "main" data.
- * @param {("hocr"|"abbyy"|"stext"|"textract"|"text")} format - Format of raw data.
+ * @param {("hocr"|"abbyy"|"stext"|"textract"|"google_vision"|"text")} format - Format of raw data.
  * @param {string} engineName - Name of OCR engine.
  * @param {boolean} [scribeMode=false] - Whether this is HOCR data from this program.
  */
@@ -301,8 +302,10 @@ export async function convertOCRPage(ocrRaw, n, mainData, format, engineName, sc
     res = await gs.convertPageHocr({ ocrStr: ocrRaw, n, scribeMode });
   } else if (format === 'abbyy') {
     res = await gs.convertPageAbbyy({ ocrStr: ocrRaw, n });
-  // } else if (format === 'textract') {
-  //   res = await gs.convertPageTextract({ ocrStr: ocrRaw, n });
+  } else if (format === 'textract') {
+    // res = await gs.convertPageTextract({ ocrStr: ocrRaw, n });
+  } else if (format === 'google_vision') {
+    res = await gs.convertPageGoogleVision({ ocrStr: ocrRaw, n });
   } else if (format === 'stext') {
     res = await gs.convertPageStext({ ocrStr: ocrRaw, n });
   } else if (format === 'text') {
@@ -347,9 +350,9 @@ export async function convertPageCallback({
 
     // The main OCR data is always preferred for setting page metrics.
     // This matters when the user uploads their own data, as the images are expected to be rendered at the same resolution as the OCR data.
-    if (pageObj.dims.height && pageObj.dims.width) pageMetricsArr[n] = new PageMetrics(pageObj.dims);
+    if (pageObj.dims.height && pageObj.dims.width) pageMetricsAll[n] = new PageMetrics(pageObj.dims);
 
-    pageMetricsArr[n].angle = pageObj.angle;
+    pageMetricsAll[n].angle = pageObj.angle;
   }
 
   inputData.xmlMode[n] = true;
@@ -368,7 +371,7 @@ export async function convertPageCallback({
  * @param {boolean} mainData - Whether this is the "main" data that document metrics are calculated from.
  *  For imports of user-provided data, the first data provided should be flagged as the "main" data.
  *  For Tesseract.js recognition, the Tesseract Legacy results should be flagged as the "main" data.
- * @param {("hocr"|"abbyy"|"stext"|"textract"|"text")} format - Format of raw data.
+ * @param {("hocr"|"abbyy"|"stext"|"textract"|"google_vision"|"text")} format - Format of raw data.
  * @param {string} engineName - Name of OCR engine.
  * @param {boolean} [scribeMode=false] - Whether this is HOCR data from this program.
  * @param {?PageMetrics[]} [pageMetrics=null] - Page metrics to use for the pages (Textract only).
@@ -376,7 +379,7 @@ export async function convertPageCallback({
 export async function convertOCR(ocrRawArr, mainData, format, engineName, scribeMode, pageMetrics = null) {
   const promiseArr = [];
   if (format === 'textract') {
-    if (!pageMetrics) throw new Error('Page metrics must be provided for Textract data.');
+    if (!pageMetrics || !pageMetrics[0]?.dims) throw new Error('Page metrics must be provided for Textract data.');
     const pageDims = pageMetrics.map((metrics) => (metrics.dims));
     const res = await gs.convertDocTextract({ ocrStr: ocrRawArr, pageDims });
     for (let n = 0; n < res.length; n++) {

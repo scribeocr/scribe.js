@@ -14,8 +14,9 @@ export class ImageWrapper {
   constructor(n, imageStr, colorMode, rotated = false, upscaled = false) {
     this.n = n;
     this.src = imageStr;
-    const format0 = imageStr.match(/^data:image\/(png|jpeg)/)?.[1];
+    const format0 = /** @type {'png'|'jpeg'|undefined} */ (imageStr.match(/^data:image\/(png|jpeg)/)?.[1]);
     if (!format0 || !['png', 'jpeg'].includes(format0)) throw new Error(`Invalid image format: ${format0}`);
+    /** @type {'png'|'jpeg'} */
     this.format = format0;
     this._dims = null;
     this.rotated = rotated;
@@ -28,7 +29,7 @@ export class ImageWrapper {
 
 /**
  *
- * @param {import('../containers/imageContainer.js').ImageWrapper} img
+ * @param {ImageWrapper} img
  * @returns {dims}
  */
 const getDims = (img) => {
