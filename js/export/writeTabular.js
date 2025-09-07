@@ -4,19 +4,24 @@ import { inputData, opt } from '../containers/app.js';
 import { extractTableContent } from '../extractTables.js';
 
 /**
- * @param {ReturnType<extractTableContent>} tableWordObj
- * @param {Array<string>} extraCols
- * @param {number} startRow
- * @param {boolean} xlsxMode
- * @param {boolean} htmlMode
+ * @param {Object} params
+ * @param {ReturnType<extractTableContent>} params.tableWordObj
+ * @param {Array<string>} [params.extraCols=[]]
+ * @param {number} [params.startRow=0]
+ * @param {boolean} [params.xlsxMode=true]
+ * @param {boolean} [params.htmlMode=false]
  */
-export function createCells(tableWordObj, extraCols = [], startRow = 0, xlsxMode = true, htmlMode = false) {
+export function createCells({
+  tableWordObj, extraCols = [], startRow = 0, xlsxMode = true, htmlMode = false,
+}) {
   let textStr = '';
   let rowIndex = startRow;
   let rowCount = 0;
 
   for (const [key, value] of Object.entries(tableWordObj)) {
-    const cellsSingle = createCellsSingle(value.rowWordArr, extraCols, rowIndex, xlsxMode, htmlMode);
+    const cellsSingle = createCellsSingle({
+      ocrTableWords: value.rowWordArr, extraCols, startRow: rowIndex, xlsxMode, htmlMode,
+    });
     textStr += cellsSingle.content;
     rowIndex += cellsSingle.rows;
     rowCount += cellsSingle.rows;
@@ -27,14 +32,17 @@ export function createCells(tableWordObj, extraCols = [], startRow = 0, xlsxMode
 
 /**
  * Convert a single table into HTML or Excel XML rows
- * @param {ReturnType<import('../extractTables.js').extractSingleTableContent>['rowWordArr']} ocrTableWords
- * @param {Array<string>} extraCols
- * @param {number} startRow
- * @param {boolean} xlsxMode
- * @param {boolean} htmlMode
- * @param {boolean} previewMode
+ * @param {Object} params
+ * @param {ReturnType<import('../extractTables.js').extractSingleTableContent>['rowWordArr']} params.ocrTableWords
+ * @param {Array<string>} [params.extraCols=[]]
+ * @param {number} [params.startRow=0]
+ * @param {boolean} [params.xlsxMode=true]
+ * @param {boolean} [params.htmlMode=false]
+ * @param {boolean} [params.previewMode=true]
  */
-function createCellsSingle(ocrTableWords, extraCols = [], startRow = 0, xlsxMode = true, htmlMode = false, previewMode = true) {
+function createCellsSingle({
+  ocrTableWords, extraCols = [], startRow = 0, xlsxMode = true, htmlMode = false, previewMode = true,
+}) {
   const letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'];
 
   let textStr = htmlMode ? '<table>' : '';
@@ -140,12 +148,15 @@ function createCellsSingle(ocrTableWords, extraCols = [], startRow = 0, xlsxMode
 
 /**
  *
- * @param {Array<OcrPage>} ocrPageArr
- * @param {Array<LayoutDataTablePage>} layoutPageArr
- * @param {number} minpage
- * @param {number} maxpage
+ * @param {Object} params
+ * @param {Array<OcrPage>} params.ocrPageArr
+ * @param {Array<LayoutDataTablePage>} params.layoutPageArr
+ * @param {number} [params.minpage=0]
+ * @param {number} [params.maxpage=-1]
  */
-export async function writeXlsx(ocrPageArr, layoutPageArr, minpage = 0, maxpage = -1) {
+export async function writeXlsx({
+  ocrPageArr, layoutPageArr, minpage = 0, maxpage = -1,
+}) {
   const { xlsxStrings, sheetStart, sheetEnd } = await import('./resources/xlsxFiles.js');
   const { Uint8ArrayWriter, TextReader, ZipWriter } = await import('../../lib/zip.js/index.js');
 
@@ -169,7 +180,7 @@ export async function writeXlsx(ocrPageArr, layoutPageArr, minpage = 0, maxpage 
     if (opt.xlsxPageNumberColumn) extraCols.push(String(i + 1));
 
     const tableWordObj = extractTableContent(ocrPageArr[i], layoutPageArr[i]);
-    const cellsObj = createCells(tableWordObj, extraCols, rowCount);
+    const cellsObj = createCells({ tableWordObj, extraCols, startRow: rowCount });
     rowCount += cellsObj.rows;
     sheetContent += cellsObj.content;
     opt.progressHandler({ n: i, type: 'export', info: { } });

@@ -6,10 +6,10 @@ import {
   layoutRegions,
   ocrAll,
   ocrAllRaw,
-  pageMetricsArr,
+  pageMetricsAll,
 } from '../containers/dataContainer.js';
 import { FontCont } from '../containers/fontContainer.js';
-import { ImageCache, ImageWrapper } from '../containers/imageContainer.js';
+import { ImageCache } from '../containers/imageContainer.js';
 import { extractInternalPDFText } from '../extractPDFText.js';
 import {
   enableFontOpt,
@@ -20,7 +20,7 @@ import { runFontOptimization } from '../fontEval.js';
 import { calcCharMetricsFromPages } from '../fontStatistics.js';
 import { calcSuppFontInfo } from '../fontSupp.js';
 import { gs } from '../generalWorkerMain.js';
-import { imageUtils } from '../objects/imageObjects.js';
+import { imageUtils, ImageWrapper } from '../objects/imageObjects.js';
 import { addCircularRefsDataTables, LayoutDataTablePage, LayoutPage } from '../objects/layoutObjects.js';
 import { addCircularRefsOcr } from '../objects/ocrObjects.js';
 import { PageMetrics } from '../objects/pageMetricsObjects.js';
@@ -285,9 +285,9 @@ export async function importFiles(files) {
     for (let i = 0; i < ocrAll[oemName].length; i++) {
       inputData.xmlMode[i] = true;
       if (ocrAll[oemName][i].dims.height && ocrAll[oemName][i].dims.width) {
-        pageMetricsArr[i] = new PageMetrics(ocrAll[oemName][i].dims);
+        pageMetricsAll[i] = new PageMetrics(ocrAll[oemName][i].dims);
       }
-      pageMetricsArr[i].angle = ocrAll[oemName][i].angle;
+      pageMetricsAll[i].angle = ocrAll[oemName][i].angle;
     }
   }
 
@@ -295,10 +295,9 @@ export async function importFiles(files) {
 
   let pageCount;
   let pageCountImage;
-  let abbyyMode = false;
-  let textractMode = false;
+  /** @type {("hocr" | "abbyy" | "stext" | "textract" | "text")} */
+  let format;
   let reimportHocrMode = false;
-  let textMode = false;
 
   if (inputData.pdfMode) {
     const pdfFile = pdfFiles[0];
@@ -319,13 +318,14 @@ export async function importFiles(files) {
 
   let existingOpt = false;
   const oemName = 'User Upload';
-  let stextMode;
   if (xmlModeImport) {
     // Initialize a new array on `ocrAll` if one does not already exist
     if (!ocrAll[oemName]) ocrAll[oemName] = Array(inputData.pageCount);
     ocrAll.active = ocrAll[oemName];
 
     const ocrData = await importOCRFiles(Array.from(ocrFiles));
+
+    format = /** @type {("hocr" | "abbyy" | "stext" | "textract" | "text")} */ (ocrData.format);
 
     ocrAllRaw.active = ocrData.hocrRaw;
     // Subset OCR data to avoid uncaught error that occurs when there are more pages of OCR data than image data.
@@ -379,19 +379,15 @@ export async function importFiles(files) {
       existingLayoutDataTable = true;
     }
 
-    abbyyMode = ocrData.abbyyMode;
+    format = /** @type {("hocr" | "abbyy" | "stext" | "textract" | "text")} */ (ocrData.format);
     reimportHocrMode = ocrData.reimportHocrMode;
-
-    stextMode = ocrData.stextMode;
-    textractMode = ocrData.textractMode;
-    textMode = ocrData.textMode;
   }
 
   let pageCountOcr = ocrAllRaw.active?.length || ocrAll.active?.length || 0;
 
   // For Textract, `ocrAllRaw.active[0]` is a string containing the Textract JSON data for all pages.
   // This ad-hoc solution counts the number of "PAGE" blocks in the Textract JSON data.
-  if (textractMode && ocrAllRaw.active?.length) {
+  if (format === 'textract' && ocrAllRaw.active?.length) {
     pageCountOcr = ocrAllRaw.active[0].match(/"BLOCKTYPE":\s*"PAGE"/ig)?.length || pageCountOcr;
   }
 
@@ -430,7 +426,7 @@ export async function importFiles(files) {
       ImageCache.nativeSrc[i] = await importImageFileToBase64(imageFiles[i]).then(async (imgStr) => {
         const imgWrapper = new ImageWrapper(i, imgStr, 'native', false, false);
         const imageDims = await imageUtils.getDims(imgWrapper);
-        pageMetricsArr[i] = new PageMetrics(imageDims);
+        pageMetricsAll[i] = new PageMetrics(imageDims);
         return imgWrapper;
       });
       ImageCache.loadCount++;
@@ -439,17 +435,11 @@ export async function importFiles(files) {
   }
 
   if (xmlModeImport) {
-    /** @type {("hocr" | "abbyy" | "stext" | "textract" | "text")} */
-    let format = 'hocr';
-    if (abbyyMode) format = 'abbyy';
-    if (stextMode) format = 'stext';
-    if (textractMode) format = 'textract';
-    if (textMode) format = 'text';
-
-    // Process HOCR using web worker, reading from file first if that has not been done already
-    await convertOCR(ocrAllRaw.active, true, format, oemName, reimportHocrMode, pageMetricsArr).then(async () => {
-      // Skip this step if optimization info was already restored from a previous session, or if using stext (which is character-level but not visually accurate).
-      if (!existingOpt && !stextMode) {
+    // Process OCR using web worker, reading from file first if that has not been done already
+    await convertOCR(ocrAllRaw.active, true, format, oemName, reimportHocrMode, pageMetricsAll).then(async () => {
+      // Skip this step if optimization info was already restored from a previous session,
+      // or if using stext/textract (which are character-level but not visually accurate).
+      if (!existingOpt && !['stext', 'textract'].includes(format)) {
         await checkCharWarn(convertPageWarn);
         const charMetrics = calcCharMetricsFromPages(ocrAll.active);
 
@@ -498,12 +488,7 @@ export async function importFilesSupp(files, ocrName) {
     opt.warningHandler(warningHTML);
   }
 
-  /** @type {("hocr" | "abbyy" | "stext" | "textract" | "text")} */
-  let format = 'hocr';
-  if (ocrData.abbyyMode) format = 'abbyy';
-  if (ocrData.stextMode) format = 'stext';
-  if (ocrData.textractMode) format = 'textract';
-  if (ocrData.textMode) format = 'text';
+  const format = /** @type {("hocr" | "abbyy" | "stext" | "textract" | "text")} */ (ocrData.format);
 
   await convertOCR(ocrData.hocrRaw, false, format, ocrName, ocrData.reimportHocrMode);
 }

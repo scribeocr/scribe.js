@@ -1,11 +1,11 @@
 import { inputData, opt } from '../containers/app.js';
 import {
-  layoutDataTables, layoutRegions, ocrAll, pageMetricsArr,
+  layoutDataTables, layoutRegions, ocrAll, pageMetricsAll,
 } from '../containers/dataContainer.js';
 import { ImageCache } from '../containers/imageContainer.js';
 import { reorderOcrPage } from '../modifyOCR.js';
 import { saveAs } from '../utils/miscUtils.js';
-import { writePdf } from './writePdf.js';
+import { writePdf } from './pdf/writePdf.js';
 import { writeHocr } from './writeHocr.js';
 import { writeText } from './writeText.js';
 import { writeHtml } from './writeHtml.js';
@@ -45,8 +45,8 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
     const dimsLimit = { width: -1, height: -1 };
     if (opt.standardizePageSize) {
       for (let i = minPage; i <= maxPage; i++) {
-        dimsLimit.height = Math.max(dimsLimit.height, pageMetricsArr[i].dims.height);
-        dimsLimit.width = Math.max(dimsLimit.width, pageMetricsArr[i].dims.width);
+        dimsLimit.height = Math.max(dimsLimit.height, pageMetricsAll[i].dims.height);
+        dimsLimit.width = Math.max(dimsLimit.width, pageMetricsAll[i].dims.width);
       }
     }
 
@@ -58,10 +58,30 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
 
       const rotateText = !rotateBackground;
 
+      const includeImages = false;
+      /** @type {ImageWrapper[]} */
+      let images = [];
+      if (includeImages) {
+        images = await Promise.all(ImageCache.nativeSrc);
+      }
+
       // Page sizes should not be standardized at this step, as the overlayText/overlayTextImage functions will perform this,
       // and assume that the overlay PDF is the same size as the input images.
-      const pdfStr = await writePdf(ocrDownload, minPage, maxPage, opt.displayMode, rotateText, rotateBackground,
-        { width: -1, height: -1 }, opt.confThreshHigh, opt.confThreshMed, opt.overlayOpacity / 100);
+      const pdfStr = await writePdf({
+        ocrArr: ocrDownload,
+        pageMetricsArr: pageMetricsAll,
+        minpage: minPage,
+        maxpage: maxPage,
+        textMode: opt.displayMode,
+        rotateText,
+        rotateBackground,
+        dimsLimit: { width: -1, height: -1 },
+        confThreshHigh: opt.confThreshHigh,
+        confThreshMed: opt.confThreshMed,
+        proofOpacity: opt.overlayOpacity / 100,
+        images,
+        includeImages,
+      });
 
       const enc = new TextEncoder();
       const pdfEnc = enc.encode(pdfStr);
@@ -121,7 +141,7 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
 
         await w.convertImageStart({ humanReadable: opt.humanReadablePDF });
         for (let i = minPage; i < maxPage + 1; i++) {
-          /** @type {import('../containers/imageContainer.js').ImageWrapper} */
+          /** @type {ImageWrapper} */
           let image;
           if (binary) {
             image = await ImageCache.getBinary(i, props);
@@ -134,7 +154,7 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
           // Angle the PDF viewer is instructed to rotated the image by.
           // This method is currently only used when rotation is needed but the user's (unrotated) source images are being used.
           // If the images are being rendered, then rotation is expected to be applied within the rendering process.
-          const angleImagePdf = rotateBackground && !renderImage ? (pageMetricsArr[i].angle || 0) * -1 : 0;
+          const angleImagePdf = rotateBackground && !renderImage ? (pageMetricsAll[i].angle || 0) * -1 : 0;
 
           await w.convertImageAddPage({
             image: image.src, i, pagewidth: dimsLimit.width, pageheight: dimsLimit.height, angle: angleImagePdf,
@@ -157,8 +177,19 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
 
       w.freeDocument(pdfOverlay);
     } else {
-      const pdfStr = await writePdf(ocrDownload, minPage, maxPage, opt.displayMode, false, true, dimsLimit, opt.confThreshHigh, opt.confThreshMed,
-        opt.overlayOpacity / 100);
+      const pdfStr = await writePdf({
+        ocrArr: ocrDownload,
+        pageMetricsArr: pageMetricsAll,
+        minpage: minPage,
+        maxpage: maxPage,
+        textMode: opt.displayMode,
+        rotateText: false,
+        rotateBackground: true,
+        dimsLimit,
+        confThreshHigh: opt.confThreshHigh,
+        confThreshMed: opt.confThreshMed,
+        proofOpacity: opt.overlayOpacity / 100,
+      });
 
       // The PDF is still run through muPDF, even thought in eBook mode no background layer is added.
       // This is because muPDF cleans up the PDF we made in the previous step, including:
@@ -186,7 +217,7 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
       w.freeDocument(pdf);
     }
   } else if (format === 'hocr') {
-    content = writeHocr(ocrDownload, minPage, maxPage);
+    content = writeHocr({ ocrData: ocrDownload, minValue: minPage, maxValue: maxPage });
   } else if (format === 'html') {
     const images = /** @type {Array<ImageWrapper>} */ ([]);
     if (opt.includeImages) {
@@ -218,18 +249,29 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
       ocrPages: ocrDownload, images, minpage: minPage, maxpage: maxPage, reflowText: opt.reflow, removeMargins: opt.removeMargins,
     });
   } else if (format === 'txt') {
-    content = writeText(ocrDownload, minPage, maxPage, opt.reflow, false);
+    content = writeText({
+      ocrCurrent: ocrDownload,
+      minpage: minPage,
+      maxpage: maxPage,
+      reflowText: opt.reflow,
+      docxMode: false,
+    });
   // Defining `DISABLE_DOCX_XLSX` disables docx/xlsx exports when using build tools.
   // @ts-ignore
   } else if (typeof DISABLE_DOCX_XLSX === 'undefined' && format === 'docx') {
     // Less common export formats are loaded dynamically to reduce initial load time.
     const writeDocx = (await import('./writeDocx.js')).writeDocx;
-    content = await writeDocx(ocrDownload, minPage, maxPage);
+    content = await writeDocx({ hocrCurrent: ocrDownload, minpage: minPage, maxpage: maxPage });
   // @ts-ignore
   } else if (typeof DISABLE_DOCX_XLSX === 'undefined' && format === 'xlsx') {
     // Less common export formats are loaded dynamically to reduce initial load time.
     const writeXlsx = (await import('./writeTabular.js')).writeXlsx;
-    content = await writeXlsx(ocrDownload, layoutDataTables.pages, minPage, maxPage);
+    content = await writeXlsx({
+      ocrPageArr: ocrDownload,
+      layoutPageArr: layoutDataTables.pages,
+      minpage: minPage,
+      maxpage: maxPage,
+    });
   } else if (format === 'scribe') {
     const data = {
       ocr: removeCircularRefsOcr(ocrDownload),

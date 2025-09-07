@@ -13,7 +13,31 @@ config.truncateThreshold = 0; // Disable truncation for actual/expected values o
 
 describe('Check Abbyy XML import function.', function () {
   this.timeout(10000);
-  before(async () => {
+
+  it('Should import Abbyy XML with PNG image', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/ascenders_descenders_test.png`,
+      `${ASSETS_PATH_KARMA}/ascenders_descenders_test_Abbyy.xml`]);
+  });
+
+  it('Should correctly import text content from Abbyy XML (default settings)', async () => {
+    const text1 = scribe.data.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
+    const text2 = scribe.data.ocr.active[0].lines[1].words.map((x) => x.text).join(' ');
+    const text3 = scribe.data.ocr.active[0].lines[2].words.map((x) => x.text).join(' ');
+
+    assert.strictEqual(text1, 'Ascenders On');
+    assert.strictEqual(text2, 'query png');
+    assert.strictEqual(text3, 'we can');
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);
+
+describe('Check Abbyy XML import function.', function () {
+  this.timeout(10000);
+
+  it('Should import Abbyy XML without image/PDF inputs', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/econometrica_example_abbyy.xml`]);
   });
 
@@ -132,6 +156,32 @@ describe('Check that font style is detected for Abbyy xml imports.', function ()
     assert.isFalse(scribe.data.ocr.active[0].lines[22].words[0].style.italic);
     assert.isTrue(scribe.data.ocr.active[0].lines[22].words[0].style.bold);
     assert.isTrue(scribe.data.ocr.active[0].lines[22].words[0].style.underline);
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);
+
+describe('Check Abbyy XML table import.', function () {
+  this.timeout(20000);
+
+  it('Should import Abbyy XML with PDF document', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.pdf`,
+      `${ASSETS_PATH_KARMA}/border_patrol_tables_Abbyy.xml`]);
+
+    assert.isTrue(scribe.data.ocr.active[0].lines.length > 0);
+  }).timeout(20000);
+
+  it('Should correctly import table structures from Abbyy XML', async () => {
+    assert.isTrue(scribe.data.layoutDataTables.pages[0].tables.length === 1);
+    assert.isTrue(scribe.data.layoutDataTables.pages[0].tables[0].boxes.length === 10);
+  }).timeout(10000);
+
+  it('Should correctly import table structures from Abbyy XML', async () => {
+    assert.isTrue(scribe.data.layoutDataTables.pages[0].tables.length === 1);
+
+    assert.isTrue(scribe.data.layoutDataTables.pages[0].tables[0].boxes.length === 10);
   }).timeout(10000);
 
   after(async () => {

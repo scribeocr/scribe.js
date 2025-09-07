@@ -52,7 +52,6 @@ export async function convertDocTextract({ ocrStr, pageDims }) {
 
     const pageObj = new ocr.OcrPage(n, pageDimsN);
 
-    // Check if we have any text content
     const lineBlocks = blocks.filter((block) => block.BlockType === 'LINE' && (!block.Page && n === 0 || block.Page === n + 1));
     if (lineBlocks.length === 0) {
       const warn = { char: 'char_error' };
@@ -175,7 +174,6 @@ function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, page
 
   const baseline = [baselineSlope, 0];
   const lineObj = new ocr.OcrLine(pageObj, bboxLine, baseline);
-  const wordPolyArr = /** @type {Polygon[]} */ ([]);
 
   const childIds = relationshipMap.get(lineBlock.Id) || [];
 
@@ -187,11 +185,12 @@ function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, page
       const bboxWord = convertBoundingBox(wordBlock.Geometry.BoundingBox, pageDims);
       const id = `word_${pageNum + 1}_${lineIndex + 1}_${wordIndex + 1}`;
 
-      const wordObj = new ocr.OcrWord(lineObj, wordBlock.Text, bboxWord, id);
+      const poly = convertPolygon(wordBlock.Geometry.Polygon, pageDims);
+
+      const wordObj = new ocr.OcrWord(lineObj, id, wordBlock.Text, bboxWord, poly);
       wordObj.conf = wordBlock.Confidence || 100;
 
       lineObj.words.push(wordObj);
-      wordPolyArr.push(convertPolygon(wordBlock.Geometry.Polygon, pageDims));
     }
   });
 
@@ -207,36 +206,31 @@ function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, page
   const ascOnlyWords = /** @type {OcrWord[]} */([]);
   const ascOnlyWordsPoly = /** @type {Polygon[]} */([]);
   const descOnlyWords = /** @type {OcrWord[]} */([]);
-  const ascDescWords = /** @type {OcrWord[]} */([]);
 
   for (let i = 0; i < lineObj.words.length; i++) {
     const word = lineObj.words[i];
-    const polyWord = wordPolyArr[i];
 
-    if (word.text && descCharRegex.test(word.text)) {
+    if (descCharRegex.test(word.text)) {
       descWords.push(word);
     }
-    if (word.text && (xCharRegex.test(word.text) || ascCharRegex.test(word.text))) {
+    if (!descCharRegex.test(word.text) && (xCharRegex.test(word.text) || ascCharRegex.test(word.text))) {
       nonDescWords.push(word);
-      nonDescWordsPoly.push(polyWord);
+      nonDescWordsPoly.push(word.poly);
     }
     // The `ascCharRegex` array purposefully does not contain `f`, as it varies wildly in height,
     // and this array was primarily created for formats where we have character-level data.
     // Therefore, additional characters are added here as appropriate.
-    if (word.text && xCharRegex.test(word.text) && !ascCharRegex.test(word.text)
+    if (xCharRegex.test(word.text) && !ascCharRegex.test(word.text)
       && !descCharRegex.test(word.text) && !/[fi]/.test(word.text)) {
       xOnlyWords.push(word);
-      xOnlyWordsPoly.push(polyWord);
+      xOnlyWordsPoly.push(word.poly);
     }
-    if (word.text && ascCharRegex.test(word.text) && !descCharRegex.test(word.text)) {
+    if (ascCharRegex.test(word.text) && !descCharRegex.test(word.text)) {
       ascOnlyWords.push(word);
-      ascOnlyWordsPoly.push(polyWord);
+      ascOnlyWordsPoly.push(word.poly);
     }
-    if (word.text && descCharRegex.test(word.text) && !ascCharRegex.test(word.text)) {
+    if (descCharRegex.test(word.text) && !ascCharRegex.test(word.text)) {
       descOnlyWords.push(word);
-    }
-    if (word.text && ascCharRegex.test(word.text) && descCharRegex.test(word.text)) {
-      ascDescWords.push(word);
     }
 
     // Replace unicode superscript characters with regular text.
@@ -267,7 +261,7 @@ function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, page
   if (Number.isFinite(nonDescBottomDelta) && nonDescBottomDelta < lineObj.bbox.bottom && nonDescBottomDelta > (lineHeight / 2)) {
     lineObj.baseline[1] = nonDescBottomDelta - (lineObj.bbox.bottom - polyLine.bl.y);
   } else if (descWords.length > 0) {
-    lineObj.baseline[1] = -lineHeight / 3 - (lineObj.bbox.bottom - polyLine.bl.y);
+    lineObj.baseline[1] = lineHeight / 3 - (lineObj.bbox.bottom - polyLine.bl.y);
   }
 
   // TODO: Properly process metrics when these are negative.
@@ -346,7 +340,6 @@ function createParagraphsFromLayout(pageObj, layoutBlocks, relationshipMap, bloc
       }
     });
 
-    // Create paragraph if we have lines
     if (paragraphLines.length > 0) {
       // Calculate paragraph bounding box from line bounding boxes
       const parBbox = calcBboxUnion(paragraphLines.map((line) => line.bbox));
@@ -355,7 +348,6 @@ function createParagraphsFromLayout(pageObj, layoutBlocks, relationshipMap, bloc
       // Set the layout block type as a reason for debugging
       parObj.reason = layoutBlock.BlockType || 'LAYOUT_UNKNOWN';
 
-      // Assign lines to paragraph
       paragraphLines.forEach((lineObj) => {
         lineObj.par = parObj;
       });

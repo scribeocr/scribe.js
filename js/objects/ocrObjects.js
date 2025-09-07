@@ -92,11 +92,12 @@ export function OcrLine(page, bbox, baseline, ascHeight = null, xHeight = null) 
 
 /**
  * @param {OcrLine} line
+ * @param {string} id
  * @param {string} text
  * @param {bbox} bbox
- * @param {string} id
+ * @param {Polygon} [poly]
  */
-export function OcrWord(line, text, bbox, id) {
+export function OcrWord(line, id, text, bbox, poly) {
   /** @type {string} */
   this.text = text;
   /** @type {?string} */
@@ -118,6 +119,8 @@ export function OcrWord(line, text, bbox, id) {
   this.conf = 0;
   /** @type {bbox} */
   this.bbox = bbox;
+  /** @type {?Polygon} */
+  this.poly = poly || null;
   /** @type {boolean} */
   this.compTruth = false;
   /** @type {boolean} */
@@ -618,7 +621,8 @@ function cloneLine(line) {
  * @param {OcrWord} word
  */
 function cloneWord(word) {
-  const wordNew = new OcrWord(word.line, word.text, { ...word.bbox }, word.id);
+  const wordNew = new OcrWord(word.line, word.id, word.text, { ...word.bbox });
+  if (word.poly) wordNew.poly = { ...word.poly };
   wordNew.conf = word.conf;
   wordNew.style = { ...word.style };
   wordNew.lang = word.lang;
