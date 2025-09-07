@@ -1,5 +1,5 @@
 import { opt } from './containers/app.js';
-import { pageMetricsArr } from './containers/dataContainer.js';
+import { pageMetricsAll } from './containers/dataContainer.js';
 import { ImageCache } from './containers/imageContainer.js';
 import { gs } from './generalWorkerMain.js';
 import { loadImageElem } from './utils/imageUtils.js';
@@ -125,7 +125,7 @@ export async function renderPageStatic(page) {
   const res = gs.renderPageStaticImp({
     page,
     image,
-    angle: pageMetricsArr[page.n].angle,
+    angle: pageMetricsAll[page.n].angle,
   });
 
   return res;

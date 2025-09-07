@@ -1,4 +1,4 @@
-import { DebugData, ocrAll, pageMetricsArr } from './containers/dataContainer.js';
+import { DebugData, ocrAll, pageMetricsAll } from './containers/dataContainer.js';
 import { ImageCache } from './containers/imageContainer.js';
 import { gs } from './generalWorkerMain.js';
 
@@ -19,7 +19,7 @@ export async function evalOverlapDocument() {
     promiseArr.push(gs.schedulerInner.evalPage({
       page: ocrPageI,
       binaryImage: imgBinary,
-      pageMetricsObj: pageMetricsArr[i],
+      pageMetricsObj: pageMetricsAll[i],
     }));
   }
 
@@ -55,7 +55,7 @@ export async function nudgeDoc(func, view = false) {
     const imgBinary = await ImageCache.getBinary(i);
 
     promiseArr.push(gs.schedulerInner.addJob(func, {
-      page: ocrPageI, binaryImage: imgBinary, pageMetricsObj: pageMetricsArr[i], view,
+      page: ocrPageI, binaryImage: imgBinary, pageMetricsObj: pageMetricsAll[i], view,
     }).then((res) => {
       ocrAll.active[i] = res.data.page;
       improveCt += res.data.improveCt;

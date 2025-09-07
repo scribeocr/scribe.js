@@ -96,6 +96,7 @@ export async function initGeneralWorker() {
     obj.convertPageAbbyy = wrap('convertPageAbbyy');
     obj.convertPageStext = wrap('convertPageStext');
     obj.convertDocTextract = wrap('convertDocTextract');
+    obj.convertPageGoogleVision = wrap('convertPageGoogleVision');
     obj.convertPageText = wrap('convertPageText');
 
     obj.optimizeFont = wrap('optimizeFont');
@@ -168,37 +169,64 @@ export class gs {
    * @param {Parameters<typeof import('./import/convertPageHocr.js').convertPageHocr>[0]} args
    * @returns {ReturnType<typeof import('./import/convertPageHocr.js').convertPageHocr>}
    */
-  static convertPageHocr = async (args) => (await gs.schedulerInner.addJob('convertPageHocr', args));
+  static convertPageHocr = async (args) => {
+    await gs.getGeneralScheduler();
+    return gs.schedulerInner.addJob('convertPageHocr', args);
+  };
 
   /**
    * @param {Parameters<typeof import('./import/convertPageAbbyy.js').convertPageAbbyy>[0]} args
    * @returns {ReturnType<typeof import('./import/convertPageAbbyy.js').convertPageAbbyy>}
    */
-  static convertPageAbbyy = async (args) => (await gs.schedulerInner.addJob('convertPageAbbyy', args));
+  static convertPageAbbyy = async (args) => {
+    await gs.getGeneralScheduler();
+    return gs.schedulerInner.addJob('convertPageAbbyy', args);
+  };
 
   /**
    * @param {Parameters<typeof import('./import/convertDocTextract.js').convertDocTextract>[0]} args
    * @returns {ReturnType<typeof import('./import/convertDocTextract.js').convertDocTextract>}
    */
-  static convertDocTextract = async (args) => (await gs.schedulerInner.addJob('convertDocTextract', args));
+  static convertDocTextract = async (args) => {
+    await gs.getGeneralScheduler();
+    return gs.schedulerInner.addJob('convertDocTextract', args);
+  };
+
+  /**
+   * @param {Parameters<typeof import('./import/convertPageGoogleVision.js').convertPageGoogleVision>[0]} args
+   * @returns {ReturnType<typeof import('./import/convertPageGoogleVision.js').convertPageGoogleVision>}
+   */
+  static convertPageGoogleVision = async (args) => {
+    await gs.getGeneralScheduler();
+    return gs.schedulerInner.addJob('convertPageGoogleVision', args);
+  };
 
   /**
    * @param {Parameters<typeof import('./import/convertPageStext.js').convertPageStext>[0]} args
    * @returns {ReturnType<typeof import('./import/convertPageStext.js').convertPageStext>}
    */
-  static convertPageStext = async (args) => (await gs.schedulerInner.addJob('convertPageStext', args));
+  static convertPageStext = async (args) => {
+    await gs.getGeneralScheduler();
+    return gs.schedulerInner.addJob('convertPageStext', args);
+  };
 
   /**
    * @param {Parameters<typeof import('./import/convertPageText.js').convertPageText>[0]} args
    * @returns {ReturnType<typeof import('./import/convertPageText.js').convertPageText>}
    */
-  static convertPageText = async (args) => (await gs.schedulerInner.addJob('convertPageText', args));
+  static convertPageText = async (args) => {
+    await gs.getGeneralScheduler();
+    return gs.schedulerInner.addJob('convertPageText', args);
+  };
 
   /**
    * @param {Parameters<typeof import('./worker/optimizeFontModule.js').optimizeFont>[0]} args
    * @returns {ReturnType<typeof import('./worker/optimizeFontModule.js').optimizeFont>}
    */
-  static optimizeFont = async (args) => (await gs.schedulerInner.addJob('optimizeFont', args));
+  static optimizeFont = async (args) => {
+    await gs.getGeneralScheduler();
+    return gs.schedulerInner.addJob('optimizeFont', args);
+  };
 
   /**
    * @template {Partial<Tesseract.OutputFormats>} TO

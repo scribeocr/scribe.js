@@ -5,7 +5,7 @@ import {
   layoutRegions,
   ocrAll,
   ocrAllRaw,
-  pageMetricsArr,
+  pageMetricsAll,
 } from './containers/dataContainer.js';
 import { FontCont } from './containers/fontContainer.js';
 import { ImageCache } from './containers/imageContainer.js';
@@ -19,7 +19,7 @@ export function clearData() {
   ocrAllRaw.active = [];
   layoutRegions.pages.length = 0;
   layoutDataTables.pages.length = 0;
-  pageMetricsArr.length = 0;
+  pageMetricsAll.length = 0;
   convertPageWarn.length = 0;
   ImageCache.clear();
   FontCont.clear();

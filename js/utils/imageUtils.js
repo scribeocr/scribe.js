@@ -97,6 +97,10 @@ export const importImageFileToBase64 = async (file) => new Promise((resolve, rej
  * @returns {Uint8Array} The byte array representation of the image data.
  */
 export function base64ToBytes(base64) {
+  const commaIndex = base64.slice(0, 100).indexOf(',');
+  if (commaIndex > 0) {
+    base64 = base64.slice(commaIndex + 1);
+  }
   const binaryString = atob(base64);
   const len = binaryString.length;
   const bytes = new Uint8Array(len);
@@ -104,6 +108,46 @@ export function base64ToBytes(base64) {
     bytes[i] = binaryString.charCodeAt(i);
   }
   return bytes;
+}
+
+/**
+ * Extracts complete IHDR information from a PNG image encoded in base64.
+ *
+ * @param {Uint8Array<ArrayBufferLike>} bytes - The base64 encoded string of the PNG image.
+ * @returns {PngIHDRInfo}
+ */
+export function getPngIHDRInfo(bytes) {
+  // The IHDR chunk data starts at byte 16 (after PNG signature and IHDR chunk header)
+  // Width: bytes 16-19 (4 bytes, big-endian)
+  const width = (bytes[16] << 24) | (bytes[17] << 16) | (bytes[18] << 8) | bytes[19];
+
+  // Height: bytes 20-23 (4 bytes, big-endian)
+  const height = (bytes[20] << 24) | (bytes[21] << 16) | (bytes[22] << 8) | bytes[23];
+
+  // Bit depth: byte 24 (1 byte)
+  const bitDepth = bytes[24];
+
+  // Color type: byte 25 (1 byte)
+  const colorType = bytes[25];
+
+  // Compression method: byte 26 (1 byte, always 0 for PNG)
+  const compressionMethod = bytes[26];
+
+  // Filter method: byte 27 (1 byte, always 0 for PNG)
+  const filterMethod = bytes[27];
+
+  // Interlace method: byte 28 (1 byte, 0=none, 1=Adam7)
+  const interlaceMethod = bytes[28];
+
+  return {
+    width,
+    height,
+    bitDepth,
+    colorType,
+    compressionMethod,
+    filterMethod,
+    interlaceMethod,
+  };
 }
 
 /**

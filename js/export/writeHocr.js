@@ -1,6 +1,6 @@
 import { opt } from '../containers/app.js';
 import {
-  layoutDataTables, layoutRegions, pageMetricsArr,
+  layoutDataTables, layoutRegions, pageMetricsAll,
 } from '../containers/dataContainer.js';
 import { FontCont } from '../containers/fontContainer.js';
 import ocr from '../objects/ocrObjects.js';
@@ -8,11 +8,12 @@ import { round6 } from '../utils/miscUtils.js';
 
 /**
  *
- * @param {Array<OcrPage>} ocrData
- * @param {number} [minValue]
- * @param {number} [maxValue]
+ * @param {Object} params
+ * @param {Array<OcrPage>} params.ocrData
+ * @param {number} [params.minValue]
+ * @param {number} [params.maxValue]
  */
-export function writeHocr(ocrData, minValue, maxValue) {
+export function writeHocr({ ocrData, minValue, maxValue }) {
   if (minValue === null || minValue === undefined) minValue = 0;
   if (maxValue === null || maxValue === undefined || maxValue < 0) maxValue = ocrData.length - 1;
 
@@ -51,7 +52,7 @@ export function writeHocr(ocrData, minValue, maxValue) {
 
     // Handle case where ocrPage object does not exist.
     if (!pageObj) {
-      hocrOut += `\n\t<div class='ocr_page' title='bbox 0 0 ${pageMetricsArr[i].dims.width} ${pageMetricsArr[i].dims.height}'>`;
+      hocrOut += `\n\t<div class='ocr_page' title='bbox 0 0 ${pageMetricsAll[i].dims.width} ${pageMetricsAll[i].dims.height}'>`;
       hocrOut += '\n\t</div>';
       continue;
     }

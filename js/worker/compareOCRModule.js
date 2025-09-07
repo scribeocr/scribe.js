@@ -503,7 +503,7 @@ async function penalizeWord(wordObjs) {
  * @param {object} params
  * @param {OcrPage} params.pageA
  * @param {OcrPage} params.pageB
- * @param {import('../containers/imageContainer.js').ImageWrapper} params.binaryImage
+ * @param {ImageWrapper} params.binaryImage
  * @param {PageMetrics} params.pageMetricsObj
  * @param {object} params.options
  * @param {("stats"|"comb")} [params.options.mode='stats'] - If `mode = 'stats'` stats quantifying the number of matches/mismatches are returned.
@@ -1216,7 +1216,7 @@ export async function checkWords(wordsA, binaryImage, imageRotated, pageMetricsO
 /**
  * @param {Object} params
  * @param {OcrPage|OcrLine} params.page
- * @param {import('../containers/imageContainer.js').ImageWrapper} params.binaryImage
+ * @param {ImageWrapper} params.binaryImage
  * @param {PageMetrics} params.pageMetricsObj
  * @param {?function} [params.func=null]
  * @param {boolean} [params.view=false] - Draw results on debugging canvases
@@ -1277,7 +1277,7 @@ export async function evalPageBase({
 /**
  * @param {Object} params
  * @param {OcrPage} params.page
- * @param {import('../containers/imageContainer.js').ImageWrapper} params.binaryImage
+ * @param {ImageWrapper} params.binaryImage
  * @param {PageMetrics} params.pageMetricsObj
  * @param {string} params.font
  * @param {boolean} [params.opt=false] - Whether to use the optimized font set
@@ -1338,7 +1338,7 @@ export async function evalPageFont({
 /**
  * @param {Object} params
  * @param {OcrPage} params.page
- * @param {import('../containers/imageContainer.js').ImageWrapper} params.binaryImage
+ * @param {ImageWrapper} params.binaryImage
  * @param {PageMetrics} params.pageMetricsObj
  * @param {function} params.func
  * @param {boolean} params.view
@@ -1410,7 +1410,7 @@ export async function nudgePageBase({
 /**
  * @param {Object} params
  * @param {OcrPage} params.page
- * @param {import('../containers/imageContainer.js').ImageWrapper} params.binaryImage
+ * @param {ImageWrapper} params.binaryImage
  * @param {PageMetrics} params.pageMetricsObj
  * @param {boolean} params.view
  * @returns
@@ -1432,7 +1432,7 @@ export async function nudgePageFontSize({
 /**
  * @param {Object} params
  * @param {OcrPage} params.page
- * @param {import('../containers/imageContainer.js').ImageWrapper} params.binaryImage
+ * @param {ImageWrapper} params.binaryImage
  * @param {PageMetrics} params.pageMetricsObj
  * @param {boolean} params.view
  * @returns
@@ -1454,7 +1454,7 @@ export async function nudgePageBaseline({
  * This function is a WIP and not all options are implemented.
  * @param {Object} args
  * @param {OcrPage} args.page - Page to render.
- * @param {import('../containers/imageContainer.js').ImageWrapper} [args.image]
+ * @param {ImageWrapper} [args.image]
  * @param {dims} [args.pageDims] - Dimensions of page.
  * @param {?number} [args.angle=0] - Angle of page.
  * @param {("proof" | "invis" | "ebook" | "eval")} [args.displayMode='proof'] - Display mode.

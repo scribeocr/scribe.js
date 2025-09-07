@@ -211,7 +211,7 @@ export async function convertPageHocr({
         // Tesseract LSTM already does this, however Tesseract Legacy combines entire lines into the same "word",
         // which makes good alignment impossible.
         if (wordLang === 'chi_sim') {
-          const wordObj = new ocr.OcrWord(lineObj, contentStrLetter, bbox, `${wordID}_${j}`);
+          const wordObj = new ocr.OcrWord(lineObj, `${wordID}_${j}`, contentStrLetter, bbox);
           wordObj.conf = wordConf;
           wordObj.lang = wordLang;
 
@@ -240,7 +240,7 @@ export async function convertPageHocr({
         bottom: Math.max(...bboxesCore.map((x) => x[3])),
       };
 
-      const wordObj = new ocr.OcrWord(lineObj, text, wordBoxCore, wordID);
+      const wordObj = new ocr.OcrWord(lineObj, wordID, text, wordBoxCore);
       wordObj.lang = wordLang;
 
       wordObj.chars = charObjArr;
@@ -305,7 +305,7 @@ export async function convertPageHocr({
       const confMatch = titleStrWord.match(/(?:;|\s)x_wconf\s+(\d+)/)?.[1] || '0';
       const wordConf = parseInt(confMatch) || 0;
 
-      const wordObj = new ocr.OcrWord(lineObj, wordText, wordBox, wordID);
+      const wordObj = new ocr.OcrWord(lineObj, wordID, wordText, wordBox);
       wordObj.lang = wordLang;
 
       // Font size is only respected if this is a re-import, as if an ocrWord object has `size` set, it will be used over line metrics.

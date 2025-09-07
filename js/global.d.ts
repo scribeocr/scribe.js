@@ -13,7 +13,7 @@ declare global {
 
     // Strings representing supported sources of text.
     // `stext` indicates the text was extracted directly from a PDF using mupdf.
-    type TextSource = null | 'tesseract' | 'textract' | 'abbyy' | 'stext' | 'hocr' | 'text';
+    type TextSource = null | 'tesseract' | 'textract' | 'google_vision' | 'abbyy' | 'stext' | 'hocr' | 'text';
 
     type FontState = {
         enableOpt: boolean;
@@ -95,6 +95,26 @@ declare global {
 
     // Image objects
     type ImageWrapper = import("./objects/imageObjects.js").ImageWrapper;
+
+    /**
+     * Information from the IHDR chunk of a PNG file.
+     */
+    type PngIHDRInfo = {
+        /** Image width in pixels. */
+        width: number;
+        /** Image height in pixels. */
+        height: number;
+        /** Bits per sample or per palette index. */
+        bitDepth: number;
+        /** Color type (e.g., grayscale, RGB, palette). */
+        colorType: number;
+        /** Compression method (always 0 for PNG). */
+        compressionMethod: number;
+        /** Filter method (always 0 for PNG). */
+        filterMethod: number;
+        /** Interlace method (0 for none, 1 for Adam7). */
+        interlaceMethod: number;
+    };
 
     type dims = {
         height: number;
@@ -204,6 +224,22 @@ declare global {
         Y: number;
     }
 
+    type PdfFontInfo = {
+        type: number;
+        index: number;
+        name: string;
+        objN: number;
+        opentype: opentypeFont;
+    };
+
+    type PdfFontFamily = {
+        normal?: PdfFontInfo;
+        italic?: PdfFontInfo;
+        bold?: PdfFontInfo;
+        boldItalic?: PdfFontInfo;
+        [style: string]: PdfFontInfo | undefined;
+    };
+
     interface TextractGeometry {
         BoundingBox: TextractBoundingBox;
         Polygon: TextractPoint[];
@@ -226,6 +262,73 @@ declare global {
         Relationships?: Relationship[];
     }
 
+    // Google Vision types
+    interface GoogleVisionVertex {
+        x: number;
+        y: number;
+    }
+
+    interface GoogleVisionBoundingPoly {
+        vertices: GoogleVisionVertex[];
+        normalizedVertices: GoogleVisionVertex[];
+    }
+
+    interface GoogleVisionDetectedLanguage {
+        languageCode: string;
+        confidence: number;
+    }
+
+    interface GoogleVisionDetectedBreak {
+        type: 'UNKNOWN' | 'SPACE' | 'SURE_SPACE' | 'EOL_SURE_SPACE' | 'HYPHEN' | 'LINE_BREAK';
+        isPrefix: boolean;
+    }
+
+    interface GoogleVisionTextProperty {
+        detectedLanguages: GoogleVisionDetectedLanguage[];
+        detectedBreak?: GoogleVisionDetectedBreak;
+    }
+
+    interface GoogleVisionSymbol {
+        property?: GoogleVisionTextProperty;
+        boundingBox: GoogleVisionBoundingPoly;
+        text: string;
+        confidence: number;
+    }
+
+    interface GoogleVisionWord {
+        property?: GoogleVisionTextProperty;
+        boundingBox: GoogleVisionBoundingPoly;
+        symbols: GoogleVisionSymbol[];
+        confidence: number;
+    }
+
+    interface GoogleVisionParagraph {
+        property?: GoogleVisionTextProperty;
+        boundingBox: GoogleVisionBoundingPoly;
+        words: GoogleVisionWord[];
+        confidence: number;
+    }
+
+    interface GoogleVisionBlock {
+        property?: GoogleVisionTextProperty;
+        boundingBox: GoogleVisionBoundingPoly;
+        paragraphs: GoogleVisionParagraph[];
+        blockType: 'UNKNOWN' | 'TEXT' | 'TABLE' | 'PICTURE' | 'RULER' | 'BARCODE';
+        confidence: number;
+    }
+
+    interface GoogleVisionPage {
+        property?: GoogleVisionTextProperty;
+        width: number;
+        height: number;
+        blocks: GoogleVisionBlock[];
+        confidence: number;
+    }
+
+    interface GoogleVisionFullTextAnnotation {
+        pages: GoogleVisionPage[];
+        text: string;
+    }
 
 }
 

@@ -52,7 +52,7 @@ describe('Check .hocr export function.', function () {
 
     const ocrAllComp1 = standardizeOCRPages(scribe.data.ocr.active);
 
-    const hocrOutStrArr = splitHOCRStr(writeHocr(scribe.data.ocr.active));
+    const hocrOutStrArr = splitHOCRStr(writeHocr({ ocrData: scribe.data.ocr.active }));
 
     const resArrPromises = hocrOutStrArr.map((x, i) => (gs.schedulerInner.addJob('convertPageHocr', { ocrStr: x, n: i, scribeMode: true })));
     const resArr = await Promise.all(resArrPromises);
@@ -70,7 +70,7 @@ describe('Check .hocr export function.', function () {
 
     const layoutTables1 = structuredClone(scribe.data.layoutDataTables.pages);
 
-    const hocrOutStr = writeHocr(scribe.data.ocr.active);
+    const hocrOutStr = writeHocr({ ocrData: scribe.data.ocr.active });
     const encoder = new TextEncoder();
     const encoded = encoder.encode(hocrOutStr);
 

@@ -5,7 +5,7 @@ import {
 import { initMuPDFWorker } from '../../mupdf/mupdf-async.js';
 
 import { updateFontContWorkerMain } from '../fontContainerMain.js';
-import { pageMetricsArr } from './dataContainer.js';
+import { pageMetricsAll } from './dataContainer.js';
 import {
   FontCont,
   FontContainerFont,
@@ -13,7 +13,7 @@ import {
 } from './fontContainer.js';
 
 import { gs } from '../generalWorkerMain.js';
-import { imageUtils } from '../objects/imageObjects.js';
+import { imageUtils, ImageWrapper } from '../objects/imageObjects.js';
 import { range } from '../utils/miscUtils.js';
 import { opt } from './app.js';
 
@@ -39,32 +39,6 @@ export class MuPDFScheduler {
      * @returns {Promise<ReturnType<typeof import('../../mupdf/mupdf-worker.js').mupdf.drawPageAsPNG>>}
      */
     this.drawPageAsPNG = (args) => (this.scheduler.addJob('drawPageAsPNG', args));
-  }
-}
-
-export class ImageWrapper {
-  /**
-   * @param {number} n - Page number
-   * @param {string} imageStr - Base-64 encoded image string. Should start with "data:image/png" or "data:image/jpeg".
-   * @param {string} colorMode - Color mode ("color", "gray", or "binary").
-   * @param {boolean} rotated - Whether image has been rotated.
-   * @param {boolean} upscaled - Whether image has been upscaled.
-   *
-   * All properties of this object must be serializable, as ImageWrapper objects are sent between threads.
-   * This means that no promises can be used.
-   */
-  constructor(n, imageStr, colorMode, rotated = false, upscaled = false) {
-    this.n = n;
-    this.src = imageStr;
-    const format0 = imageStr.match(/^data:image\/(png|jpeg)/)?.[1];
-    if (!format0 || !['png', 'jpeg'].includes(format0)) throw new Error(`Invalid image format: ${format0}`);
-    this.format = format0;
-    this._dims = null;
-    this.rotated = rotated;
-    this.upscaled = upscaled;
-    this.colorMode = colorMode;
-    /** @type {?ImageBitmap} */
-    this.imageBitmap = null;
   }
 }
 
@@ -126,7 +100,7 @@ export class ImageCache {
       colorMode = color ? 'color' : 'gray';
     }
 
-    let pageAngle = pageMetricsArr[n].angle || 0;
+    let pageAngle = pageMetricsAll[n].angle || 0;
     if (Math.abs(pageAngle) < 0.05) pageAngle = 0;
 
     // If no preference is specified for rotation, default to true.
@@ -213,7 +187,7 @@ export class ImageCache {
     if (ImageCache.inputModes.image) {
       return ImageCache.nativeSrc[n];
     } if (ImageCache.inputModes.pdf) {
-      const pageMetrics = pageMetricsArr[n];
+      const pageMetrics = pageMetricsAll[n];
       const targetWidth = pageMetrics.dims.width;
       const dpi = 300 * (targetWidth / ImageCache.pdfDims300[n].width);
       const muPDFScheduler = await ImageCache.getMuPDFScheduler();
@@ -232,7 +206,7 @@ export class ImageCache {
    * @param {boolean} [saveNativeImage=true] - Whether the native image should be saved.
    */
   static transformImage = async (inputImage, n, props, saveNativeImage = true) => {
-    let pageAngle = pageMetricsArr[n].angle || 0;
+    let pageAngle = pageMetricsAll[n].angle || 0;
     if (Math.abs(pageAngle) < 0.05) pageAngle = 0;
 
     // If no preference is specified for rotation, default to true.
@@ -245,8 +219,8 @@ export class ImageCache {
     await gs.getGeneralScheduler();
 
     const resPromise = (async () => {
-    // Wait for non-rotated version before replacing with promise
-      if (typeof process === 'undefined') await gs.initTesseract({ anyOk: true });
+      // Wait for non-rotated version before replacing with promise
+      await gs.initTesseract({ anyOk: true });
       return gs.recognize({
         image: inputImage.src,
         options: { rotateRadians: angleArg, upscale: upscaleArg },
@@ -280,7 +254,7 @@ export class ImageCache {
       return { native: undefined, binary: undefined };
     }
 
-    const significantRotation = Math.abs(pageMetricsArr[n].angle || 0) > 0.05;
+    const significantRotation = Math.abs(pageMetricsAll[n].angle || 0) > 0.05;
 
     const newNative = !ImageCache.native[n] || !imageUtils.compatible(ImageCache.nativeProps[n], props, significantRotation);
     const newBinary = !nativeOnly && (!ImageCache.binary[n] || !imageUtils.compatible(ImageCache.binaryProps[n], props, significantRotation));
@@ -426,7 +400,7 @@ export class ImageCache {
 
     ImageCache.pdfDims300.forEach((x, i) => {
       const pageDims = { width: Math.round(x.width * pageDPI[i] / 300), height: Math.round(x.height * pageDPI[i] / 300) };
-      pageMetricsArr[i] = new PageMetrics(pageDims);
+      pageMetricsAll[i] = new PageMetrics(pageDims);
     });
 
     // WIP: Extract fonts embedded in PDFs.

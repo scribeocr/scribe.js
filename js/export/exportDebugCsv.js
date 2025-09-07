@@ -39,11 +39,12 @@ export const convertToCsv = (data) => {
 
 /**
  *
- * @param {Array<OcrPage>} pages
- * @param {string} fileName
+ * @param {Object} params
+ * @param {Array<OcrPage>} params.pages
+ * @param {string} params.fileName
  * @returns
  */
-export const writeDebugCsv = (pages, fileName) => {
+export const writeDebugCsv = ({ pages, fileName }) => {
   let csvStr = '';
 
   for (let i = 0; i < pages.length; i++) {

@@ -9,6 +9,37 @@ import opentype from '../../lib/opentype.module.js';
 import { opt } from '../containers/app.js';
 
 /**
+ * Return an array of all characters used in the provided OCR data.
+ * Used for subsetting fonts to only the necessary characters.
+ * @param {Array<OcrPage>} ocrPageArr
+ * @param {string} [family] - Font family to filter by. If empty, all fonts are included.
+ * @param {string} [style] - Font style to filter by. If empty, all styles are included.
+ *
+ */
+export const getDistinctCharsFont = (ocrPageArr, family, style) => {
+  const charsAll = {};
+  for (const ocrPage of ocrPageArr) {
+    for (const ocrLine of ocrPage.lines) {
+      for (const ocrWord of ocrLine.words) {
+        if (family || style) {
+          const wordFont = FontCont.getWordFont(ocrWord);
+          if (!wordFont) continue;
+          if (family && wordFont.family !== family) continue;
+          // Sometimes the font is 'normal' even when the requested style is 'bold' or 'italic'.
+          // For example, this currently happens for the Chinese font, which has no bold or italic variants.
+          // Therefore, as a quick fix for now, only filter by style if the current style is not 'normal'.
+          if (style && wordFont.style !== style && (wordFont.style !== 'normal')) continue;
+        }
+        ocrWord.text.split('').forEach((x) => {
+          charsAll[x] = true;
+        });
+      }
+    }
+  }
+  return Object.keys(charsAll);
+};
+
+/**
  *
  * @param {import('opentype.js').Font} font
  * @param {Array<string>} charArr
