@@ -28,6 +28,9 @@ export class ca {
     if (typeof process === 'undefined') {
       return new OffscreenCanvas(width, height);
     }
+    if (!width || !height || width <= 0 || height <= 0) {
+      throw new Error(`Invalid canvas size: ${width}x${height}`);
+    }
     const canvasKit = await ca.getCanvasKit();
     return canvasKit.MakeCanvas(width, height);
   };

@@ -71,12 +71,7 @@ export async function convertPageBlocks({
           baseline[1] = 0;
         }
 
-        // Tesseract.js lists `row_height` instead of `rowHeight` in the types file, which is wrong.
-        // This has been fixed in the upstream, so the `ts-ignore` comments
-        // can be removed once Tesseract.js is updated in our dependencies.
-        // @ts-ignore
         const ascHeight = line.rowAttributes.rowHeight - line.rowAttributes.descenders;
-        // @ts-ignore
         const xHeight = line.rowAttributes.rowHeight - line.rowAttributes.descenders - line.rowAttributes.ascenders;
 
         const lineObj = new ocr.OcrLine(pageObj, linebox, baseline, ascHeight, xHeight);
