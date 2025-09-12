@@ -4,6 +4,11 @@ import { base64ToBytes, getPngIHDRInfo } from '../../utils/imageUtils.js';
 import { hex } from './writePdfFonts.js';
 
 /**
+ * @param {number} x
+ */
+const formatNum = (x) => String(Math.round(x * 1e6) / 1e6);
+
+/**
  * Extracts the concatenated data from all IDAT chunks of a PNG file.
  * @param {Uint8Array} pngBytes - The raw bytes of the PNG file.
  * @returns {Uint8Array} The concatenated zlib-compressed image data.
@@ -46,8 +51,7 @@ function extractPngIdatData(pngBytes) {
   }
 
   if (idatChunks.length === 0) {
-    console.warn('No IDAT chunks found in PNG image.');
-    return pngBytes; // Fallback if no IDAT chunks are found
+    throw new Error('No IDAT chunks found in PNG file');
   }
 
   const totalLength = idatChunks.reduce((acc, chunk) => acc + chunk.length, 0);
@@ -91,12 +95,51 @@ const createImageXObjectJpeg = (objIndex, imageData, width, height) => {
 };
 
 /**
+ * Creates a DeviceN color space PDF object for RGBA.
+ * This allows for supporting RGBA by simply ignoring the alpha channel in rendering.
+ *
+ * @param {number} colorSpaceObjIndex - The object index for the color space object.
+ */
+export function createDeviceNRGBA(colorSpaceObjIndex) {
+  const tintFuncObjIndex = colorSpaceObjIndex + 1;
+
+  const tintTransformFunction = '{ pop }';
+
+  const colorSpaceObj = `${colorSpaceObjIndex} 0 obj
+[
+  /DeviceN
+  [ /Red /Green /Blue /Alpha ]
+  /DeviceRGB
+  ${tintFuncObjIndex} 0 R
+]
+endobj
+`;
+
+  const tintFuncObj = `${tintFuncObjIndex} 0 obj
+<<
+  /FunctionType 4
+  /Domain [ 0 1 0 1 0 1 0 1 ]
+  /Range [ 0 1 0 1 0 1 ]
+  /Length ${tintTransformFunction.length}
+>>
+stream
+${tintTransformFunction}
+endstream
+endobj
+`;
+
+  return [colorSpaceObj, tintFuncObj];
+}
+
+/**
  * Creates PDF XObject for an .png image
  * @param {number} objIndex - PDF object index
  * @param {ArrayBufferLike} imageData - Raw image data
+ * @param {number} [objDevN] - Object index of associated DeviceN color space for supporting RGBA.
+ *    This is necessary to handle PNGs with alpha channels without re-encoding.
  * @returns {string} PDF XObject string
  */
-const createImageXObjectPng = (objIndex, imageData) => {
+const createImageXObjectPng = (objIndex, imageData, objDevN) => {
   const imageBytes = new Uint8Array(imageData);
   let objStr = `${String(objIndex)} 0 obj\n`;
   objStr += '<</Type /XObject\n';
@@ -124,7 +167,13 @@ const createImageXObjectPng = (objIndex, imageData) => {
     colorSpace = '/DeviceGray';
   } else if (idhr.colorType === 6) {
     colors = 4;
-    colorSpace = '/DeviceRGB';
+    if (!objDevN) {
+      console.warn('PNG has alpha channel but no DeviceN color space provided. PNG will not be rendered correctly.');
+    } else {
+      colorSpace = `${objDevN} 0 R`;
+    }
+  } else {
+    console.warn(`Unsupported PNG color type: ${idhr.colorType}, defaulting to RGB`);
   }
 
   objStr += '/DecodeParms [ null <<';
@@ -149,8 +198,10 @@ const createImageXObjectPng = (objIndex, imageData) => {
  * Creates PDF objects for multiple images
  * @param {ImageWrapper[]} images - Array of image data
  * @param {number} firstObjIndex - Starting object index
+ * @param {number} [objDevN] - Object index of associated DeviceN color space for supporting RGBA.
+ *    This is necessary to handle PNGs with alpha channels without re-encoding.
  */
-export function createEmbeddedImages(images, firstObjIndex) {
+export function createEmbeddedImages(images, firstObjIndex, objDevN) {
   /** @type {string[]} */
   const imageObjArr = [];
 
@@ -162,7 +213,7 @@ export function createEmbeddedImages(images, firstObjIndex) {
     if (image.format === 'jpeg') {
       objParts = createImageXObjectJpeg(objIndex, imageBytes.buffer, dims.width, dims.height);
     } else {
-      objParts = createImageXObjectPng(objIndex, imageBytes.buffer);
+      objParts = createImageXObjectPng(objIndex, imageBytes.buffer, objDevN);
     }
     imageObjArr.push(objParts);
   });
@@ -189,7 +240,7 @@ export function createImageResourceDict(imageObjIndices) {
 
 /**
  * Generates PDF drawing commands to place an image on a page with optional rotation
- * @param {number} imageIndex - Index of the image (for /Im naming)
+ * @param {string} imageName
  * @param {number} x - X position
  * @param {number} y - Y position
  * @param {number} width - Display width
@@ -197,7 +248,7 @@ export function createImageResourceDict(imageObjIndices) {
  * @param {number} rotation - Rotation angle in degrees (default: 0)
  * @returns {string} PDF drawing commands
  */
-export function drawImageCommands(imageIndex, x, y, width, height, rotation = 0) {
+export function drawImageCommands(imageName, x, y, width, height, rotation = 0) {
   const angle = (rotation * Math.PI) / 180;
 
   const centerX = x + width / 2;
@@ -214,5 +265,5 @@ export function drawImageCommands(imageIndex, x, y, width, height, rotation = 0)
   const e = centerX - (width * cos - height * sin) / 2;
   const f = centerY - (width * sin + height * cos) / 2;
 
-  return `q\n${a} ${b} ${c} ${d} ${e} ${f} cm\n/Im${imageIndex} Do\nQ\n`;
+  return `q\n${formatNum(a)} ${formatNum(b)} ${formatNum(c)} ${formatNum(d)} ${formatNum(e)} ${formatNum(f)} cm\n/${imageName} Do\nQ\n`;
 }

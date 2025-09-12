@@ -1,70 +1,30 @@
 import { FontCont } from '../../containers/fontContainer.js';
 
 import { createEmbeddedFontType0, createEmbeddedFontType1 } from './writePdfFonts.js';
-import { createEmbeddedImages, createImageResourceDict, drawImageCommands } from './writePdfImages.js';
+import {
+  createDeviceNRGBA, createEmbeddedImages, createImageResourceDict, drawImageCommands,
+} from './writePdfImages.js';
 
 import { opt } from '../../containers/app.js';
 import { ocrPageToPDFStream } from './writePdfText.js';
 import { getDistinctCharsFont, subsetFont } from '../../utils/fontUtils.js';
 
-// Creates 3 PDF objects necessary to embed font.
-// These are (1) the font dictionary, (2) the font descriptor, and (3) the font file,
-// which will be located at objects firstObjIndex, firstObjIndex + 1, and firstObjIndex + 2 (respectively).
-
 /**
- * Create a PDF from an array of ocrPage objects.
- *
- * @param {Object} params
- * @param {Array<OcrPage>} params.ocrArr -
- * @param {PageMetrics[]} params.pageMetricsArr -
- * @param {number} [params.minpage=0] -
- * @param {number} [params.maxpage=-1] -
- * @param {("ebook"|"eval"|"proof"|"invis")} [params.textMode="ebook"] -
- * @param {boolean} [params.rotateText=false] -
- * @param {boolean} [params.rotateBackground=false] -
- * @param {dims} [params.dimsLimit] -
- * @param {number} [params.confThreshHigh=85] -
- * @param {number} [params.confThreshMed=75] -
- * @param {number} [params.proofOpacity=0.8] -
- * @param {Array<ImageWrapper>} [params.images=[]] - Array of images to include in PDF
- * @param {boolean} [params.includeImages=false] - Whether to include images in the PDF
- *
- * A valid PDF will be created if an empty array is provided for `ocrArr`, as long as `maxpage` is set manually.
+ * Generate PDF font objects, not including the actual font data.
+ * @param {?Array<OcrPage>} [ocrArr] - Array of OcrPage objects
+ *    Used to subset supplementary fonts to only the characters that are actually used.
  */
-export async function writePdf({
-  ocrArr,
-  pageMetricsArr,
-  minpage = 0,
-  maxpage = -1,
-  textMode = 'ebook',
-  rotateText = false,
-  rotateBackground = false,
-  dimsLimit = { width: -1, height: -1 },
-  confThreshHigh = 85,
-  confThreshMed = 75,
-  proofOpacity = 0.8,
-  images = [],
-  includeImages = false,
-}) {
+const createPdfFontRefs = async (ocrArr) => {
   if (!FontCont.raw) throw new Error('No fonts loaded.');
 
-  if (maxpage === -1) {
-    maxpage = ocrArr.length - 1;
-  }
-
-  // This can happen if (1) `ocrArr` is length 0 and (2) `maxpage` is left as the default (-1).
-  if (maxpage < 0) throw new Error('PDF with negative page count requested.');
-
   let fontI = 0;
-  let objectI = 3;
+  let objectI = 0;
   /** @type {Object<string, PdfFontFamily>} */
   const pdfFonts = {};
   /** @type {{familyKey: string, key: string}[]} */
   const pdfFontRefs = [];
   /** @type {string[][]} */
   const pdfFontObjStrArr = [];
-  /** @type {Set<PdfFontInfo>} */
-  const pdfFontsUsed = new Set();
 
   /**
    *
@@ -119,7 +79,7 @@ export async function writePdf({
     }
   }
 
-  if (FontCont.supp.chi_sim) {
+  if (FontCont.supp.chi_sim && ocrArr) {
     const charArr = getDistinctCharsFont(ocrArr, FontCont.supp.chi_sim.family);
 
     if (charArr.length > 0) {
@@ -134,7 +94,77 @@ export async function writePdf({
       objectI += 6;
       fontI++;
     }
+  } else if (FontCont.supp.chi_sim) {
+    console.warn('Chinese font loaded but no OCR data available to determine if it is needed. Font will not be included in PDF.');
   }
+
+  return {
+    pdfFonts, pdfFontRefs, pdfFontObjStrArr, objectI,
+  };
+};
+
+/**
+ * Create a PDF from an array of ocrPage objects.
+ *
+ * @param {Object} params
+ * @param {PageMetrics[]} params.pageMetricsArr -
+ * @param {?Array<OcrPage>} [params.ocrArr] -
+ * @param {number} [params.minpage=0] -
+ * @param {number} [params.maxpage=-1] -
+ * @param {("ebook"|"eval"|"proof"|"invis")} [params.textMode="ebook"] -
+ * @param {boolean} [params.rotateText=false] -
+ * @param {boolean} [params.rotateBackground=false] -
+ * @param {dims} [params.dimsLimit] -
+ * @param {number} [params.confThreshHigh=85] -
+ * @param {number} [params.confThreshMed=75] -
+ * @param {number} [params.proofOpacity=0.8] -
+ * @param {?Array<ImageWrapper>} [params.images=null] - Array of images to include in PDF
+ * @param {boolean} [params.includeImages=false] - Whether to include images in the PDF
+ *
+ * A valid PDF will be created if an empty array is provided for `ocrArr`, as long as `maxpage` is set manually.
+ */
+export async function writePdf({
+  pageMetricsArr,
+  ocrArr = null,
+  minpage = 0,
+  maxpage = -1,
+  textMode = 'ebook',
+  rotateText = false,
+  rotateBackground = false,
+  dimsLimit = { width: -1, height: -1 },
+  confThreshHigh = 85,
+  confThreshMed = 75,
+  proofOpacity = 0.8,
+  images = null,
+  includeImages = false,
+}) {
+  if (!FontCont.raw) throw new Error('No fonts loaded.');
+
+  if (maxpage === -1) {
+    maxpage = pageMetricsArr.length - 1;
+  }
+
+  // This can happen if (1) `ocrArr` is length 0 and (2) `maxpage` is left as the default (-1).
+  if (maxpage < 0) throw new Error('PDF with negative page count requested.');
+
+  let objectI = 3;
+  /** @type {Object<string, PdfFontFamily>} */
+  let pdfFonts = {};
+  /** @type {{familyKey: string, key: string}[]} */
+  let pdfFontRefs = [];
+  /** @type {string[][]} */
+  let pdfFontObjStrArr = [];
+
+  if (ocrArr && ocrArr.length > 0) {
+    const fontRefs = await createPdfFontRefs(ocrArr);
+    pdfFonts = fontRefs.pdfFonts;
+    pdfFontRefs = fontRefs.pdfFontRefs;
+    pdfFontObjStrArr = fontRefs.pdfFontObjStrArr;
+    objectI = fontRefs.objectI;
+  }
+
+  /** @type {Set<PdfFontInfo>} */
+  const pdfFontsUsed = new Set();
 
   // Add images [WIP]
   /** @type {Array<string>} */
@@ -142,7 +172,14 @@ export async function writePdf({
   const imageObjIndices = [];
 
   if (includeImages && images && images.length > 0) {
-    const imageObjects = createEmbeddedImages(images, objectI);
+    const objectIDeviceN = objectI;
+    const colorDevObjects = await createDeviceNRGBA(objectI);
+    for (let i = 0; i < colorDevObjects.length; i++) {
+      pdfImageObjStrArr.push(colorDevObjects[i]);
+      objectI++;
+    }
+
+    const imageObjects = createEmbeddedImages(images, objectI, objectIDeviceN);
     for (let i = 0; i < imageObjects.length; i++) {
       pdfImageObjStrArr.push(imageObjects[i]);
       imageObjIndices.push(objectI + i);
@@ -159,9 +196,11 @@ export async function writePdf({
     const angle = pageMetricsArr[i].angle || 0;
     const { dims } = pageMetricsArr[i];
 
+    const imageName = includeImages && images && images.length > 0 ? `Im${String(i % images.length)}` : null;
+
     // eslint-disable-next-line no-await-in-loop
     const { pdfObj, pdfFontsUsed: pdfFontsUsedI } = (await ocrPageToPDF({
-      pageObj: ocrArr[i],
+      pageObj: ocrArr?.[i],
       inputDims: dims,
       outputDims: dimsLimit,
       firstObjIndex: objectI,
@@ -175,7 +214,7 @@ export async function writePdf({
       confThreshHigh,
       confThreshMed,
       imageObjIndices,
-      includeImages,
+      imageName,
     }));
 
     for (const font of pdfFontsUsedI) {
@@ -288,7 +327,7 @@ ${xrefOffset}
  * Generally returns an array of 2 strings, the first being the text content object, and the second being the page object.
  * If there is no text content, only the page object is returned.
  * @param {Object} params - Parameters object
- * @param {OcrPage} params.pageObj
+ * @param {OcrPage} [params.pageObj]
  * @param {dims} params.inputDims
  * @param {dims} params.outputDims
  * @param {number} params.firstObjIndex
@@ -303,7 +342,7 @@ ${xrefOffset}
  * @param {number} [params.confThreshMed=75]
  * @param {?import('opentype.js').Font} [params.fontChiSim=null]
  * @param {Array<number>} [params.imageObjIndices=[]] - Array of image object indices
- * @param {boolean} [params.includeImages=false] - Whether to include images
+ * @param {?string} [params.imageName=null]
  */
 async function ocrPageToPDF({
   pageObj,
@@ -320,36 +359,48 @@ async function ocrPageToPDF({
   confThreshHigh = 85,
   confThreshMed = 75,
   imageObjIndices = [],
-  includeImages = false,
+  imageName = null,
 }) {
   if (outputDims.width < 1) {
     outputDims = inputDims;
   }
 
   const noTextContent = !pageObj || pageObj.lines.length === 0;
-  const noImageContent = !includeImages || imageObjIndices.length === 0;
+  const noImageContent = !imageName || !imageObjIndices || imageObjIndices.length === 0;
 
   const pageIndex = firstObjIndex;
   let pageObjStr = `${String(pageIndex)} 0 obj\n<</Type/Page/MediaBox[0 0 ${String(outputDims.width)} ${String(outputDims.height)}]`;
+  pageObjStr += `/Parent ${parentIndex} 0 R`;
 
   if (noTextContent && noImageContent) {
     pageObjStr += '/Resources<<>>';
-    pageObjStr += `/Parent ${parentIndex} 0 R>>\nendobj\n\n`;
+    pageObjStr += '>>\nendobj\n\n';
     return { pdfObj: [pageObjStr], pdfFontsUsed: /** @type {Set<PdfFontInfo>} */ (new Set()) };
   }
 
-  pageObjStr += `/Contents ${String(firstObjIndex + 2)} 0 R`;
+  let resourceDictObjStr = `${String(firstObjIndex + 1)} 0 obj\n<<`;
 
+  pageObjStr += `/Contents ${String(firstObjIndex + 2)} 0 R`;
+  pageObjStr += `/Resources ${String(firstObjIndex + 1)} 0 R`;
+  pageObjStr += '>>\nendobj\n\n';
+
+  let imageResourceStr = '';
   let imageContentObjStr = '';
 
-  if (includeImages && imageObjIndices.length > 0) {
-    if (imageObjIndices.length > 0) {
-      let rotation = 0;
-      if (rotateBackground && Math.abs(angle ?? 0) > 0.05) {
-        rotation = angle;
-      }
-      imageContentObjStr += drawImageCommands(0, 0, 0, outputDims.width, outputDims.height, rotation);
+  if (imageName && imageObjIndices.length > 0) {
+    imageResourceStr = createImageResourceDict(imageObjIndices);
+    let rotation = 0;
+    if (rotateBackground && Math.abs(angle ?? 0) > 0.05) {
+      rotation = angle;
     }
+    imageContentObjStr += drawImageCommands(imageName, 0, 0, outputDims.width, outputDims.height, rotation);
+  }
+
+  if (noTextContent) {
+    resourceDictObjStr += imageResourceStr;
+    resourceDictObjStr += '>>\nendobj\n\n';
+    const pageContentObjStr = `${String(firstObjIndex + 2)} 0 obj\n<</Length ${String(imageContentObjStr.length)} >>\nstream\n${imageContentObjStr}\nendstream\nendobj\n\n`;
+    return { pdfObj: [pageObjStr, resourceDictObjStr, pageContentObjStr], pdfFontsUsed: /** @type {Set<PdfFontInfo>} */ (new Set()) };
   }
 
   const { textContentObjStr, pdfFontsUsed } = await ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle,
@@ -360,14 +411,8 @@ async function ocrPageToPDF({
     pdfFontsStr += `${String(font.name)} ${String(font.objN)} 0 R\n`;
   }
 
-  let resourceDictObjStr = `${String(firstObjIndex + 1)} 0 obj\n<<`;
-
   resourceDictObjStr += `/Font<<${pdfFontsStr}>>`;
-
-  if (includeImages && imageObjIndices.length > 0) {
-    const imageResourceStr = createImageResourceDict(imageObjIndices);
-    resourceDictObjStr += imageResourceStr;
-  }
+  resourceDictObjStr += imageResourceStr;
 
   // Use `GSO` prefix to avoid conflicts with other graphics states, which are normally named `/GS[n]` by convention.
   resourceDictObjStr += '/ExtGState<<';
@@ -376,10 +421,6 @@ async function ocrPageToPDF({
   resourceDictObjStr += '>>';
 
   resourceDictObjStr += '>>\nendobj\n\n';
-
-  const pageResourceStr = `/Resources ${String(firstObjIndex + 1)} 0 R`;
-
-  pageObjStr += `${pageResourceStr}/Parent ${parentIndex} 0 R>>\nendobj\n\n`;
 
   const pageContentObjStr = `${String(firstObjIndex + 2)} 0 obj\n<</Length ${String(imageContentObjStr.length + textContentObjStr.length)} >>\nstream\n${imageContentObjStr}${textContentObjStr}\nendstream\nendobj\n\n`;
 

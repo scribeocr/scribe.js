@@ -20,7 +20,7 @@ export function PageMetrics(dims) {
   /** @type {?number} */
   this.angle = null;
   /** @type {dims} */
-  this.dims = dims;
+  this.dims = { ...dims };
   /** @type {?number} */
   this.left = null;
   /** @type {number} */
