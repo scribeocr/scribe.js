@@ -145,6 +145,24 @@ export async function sortInputFiles(files) {
 }
 
 /**
+ * Read image files and return array of `ImageWrapper` objects,
+ * without modifying any global state.
+ * @param {Array<File>|FileList|Array<string>} files
+ */
+export const importImageFilesP = async (files) => {
+  const files2 = await standardizeFiles(files);
+  /** @type {ImageWrapper[]} */
+  const images = [];
+  for (let i = 0; i < files2.length; i++) {
+    images[i] = await importImageFileToBase64(files2[i]).then(async (imgStr) => {
+      const imgWrapper = new ImageWrapper(i, imgStr, 'native', false, false);
+      return imgWrapper;
+    });
+  }
+  return images;
+};
+
+/**
  * An object with this shape can be used to provide input to the `importFiles` function,
  * without needing that function to figure out the file types.
  * This is required when using ArrayBuffer inputs.
