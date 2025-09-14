@@ -11,7 +11,7 @@ config.truncateThreshold = 0; // Disable truncation for actual/expected values o
 /* eslint-disable prefer-arrow-callback */
 /* eslint-disable func-names */
 
-describe('Check AWS Textract JSON import function.', function () {
+describe('Check AWS Textract JSON import function (syncronous API).', function () {
   this.timeout(10000);
 
   it('Should import AWS Textract with PNG image', async () => {
@@ -34,7 +34,7 @@ describe('Check AWS Textract JSON import function.', function () {
   });
 }).timeout(120000);
 
-describe('Check AWS Textract JSON import function (layout analysis enabled).', function () {
+describe('Check AWS Textract JSON import function (layout analysis enabled) (syncronous API).', function () {
   this.timeout(10000);
   before(async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/ascenders_descenders_test.png`,
@@ -56,7 +56,7 @@ describe('Check AWS Textract JSON import function (layout analysis enabled).', f
   });
 }).timeout(120000);
 
-describe('Check AWS Textract table import.', function () {
+describe('Check AWS Textract table import (syncronous API).', function () {
   this.timeout(10000);
 
   it('Should import AWS Textract with PDF document', async () => {

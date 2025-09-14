@@ -39,7 +39,7 @@ const detectOcrFormat = (ocrStr, ext) => {
   // AWS Textract using layout detection.
   } if (!node2 && !!/"AnalyzeDocumentModelVersion"/i.test(ocrStr)) {
     return 'textract';
-  } if (!node2 && !!/"faceAnnotations"/i.test(ocrStr) && !!/"textAnnotations"/i.test(ocrStr)) {
+  } if (!node2 && !!/"pages"/i.test(ocrStr) && !!/"fullTextAnnotation"/i.test(ocrStr)) {
     return 'google_vision';
   } if (!!node2 && !!/class=['"]ocr_page['"]/i.test(ocrStr)
       || !!/<\?xml version/i.test(ocrStr)) {

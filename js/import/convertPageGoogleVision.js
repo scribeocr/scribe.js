@@ -21,7 +21,15 @@ import { pass3 } from './convertPageShared.js';
  */
 export async function convertPageGoogleVision({ ocrStr, n }) {
   const ocrJson = JSON.parse(ocrStr);
-  const visionResult = ocrJson.fullTextAnnotation ? ocrJson : ocrJson?.[0];
+  let visionResult;
+  if (ocrJson.fullTextAnnotation) {
+    visionResult = ocrJson;
+  } else if (ocrJson?.responses?.[0]?.fullTextAnnotation) {
+    visionResult = ocrJson?.responses?.[0];
+  } else {
+    visionResult = ocrJson?.[0];
+  }
+
   if (!visionResult || !visionResult.fullTextAnnotation) {
     throw new Error('Failed to parse Google Vision OCR data.');
   }
@@ -32,6 +40,23 @@ export async function convertPageGoogleVision({ ocrStr, n }) {
   if (!pageWidth || !pageHeight) {
     throw new Error('Failed to parse page dimensions.');
   }
+
+  /**
+   * @param {GoogleVisionParagraph["boundingBox"]} boundingBox - The bounding box object.
+   * @returns {Array<{x: number, y: number}>} - An array of vertex coordinates.
+   */
+  const getVertices = (boundingBox) => {
+    if (boundingBox.vertices) {
+      return boundingBox.vertices;
+    }
+    if (boundingBox.normalizedVertices) {
+      return boundingBox.normalizedVertices.map((v) => ({
+        x: (v.x || 0) * pageWidth,
+        y: (v.y || 0) * pageHeight,
+      }));
+    }
+    throw new Error('No vertices found in bounding box.');
+  };
 
   const pageDims = { width: pageWidth, height: pageHeight };
 
@@ -59,8 +84,9 @@ export async function convertPageGoogleVision({ ocrStr, n }) {
       const wordsVision = paragraph.words;
       if (!wordsVision || wordsVision.length === 0) return;
 
-      const xsPar = paragraph.boundingBox.vertices.map((v) => v.x || 0);
-      const ysPar = paragraph.boundingBox.vertices.map((v) => v.y || 0);
+      const parVertices = getVertices(paragraph.boundingBox);
+      const xsPar = parVertices.map((v) => v.x || 0);
+      const ysPar = parVertices.map((v) => v.y || 0);
 
       const bboxPar = {
         left: Math.min(...xsPar),
@@ -78,8 +104,9 @@ export async function convertPageGoogleVision({ ocrStr, n }) {
       wordsVision.forEach((word, wordIndex) => {
         if (!word.symbols || word.symbols.length === 0) return;
 
-        const xs = word.boundingBox.vertices.map((v) => v.x || 0);
-        const ys = word.boundingBox.vertices.map((v) => v.y || 0);
+        const wordVertices = getVertices(word.boundingBox);
+        const xs = wordVertices.map((v) => v.x || 0);
+        const ys = wordVertices.map((v) => v.y || 0);
 
         const bboxWord = {
           left: Math.min(...xs),
@@ -98,8 +125,9 @@ export async function convertPageGoogleVision({ ocrStr, n }) {
           charObjs = [];
           if (word.symbols) {
             word.symbols.forEach((symbol) => {
-              const charXs = symbol.boundingBox.vertices.map((v) => v.x || 0);
-              const charYs = symbol.boundingBox.vertices.map((v) => v.y || 0);
+              const charVertices = getVertices(symbol.boundingBox);
+              const charXs = charVertices.map((v) => v.x || 0);
+              const charYs = charVertices.map((v) => v.y || 0);
               const charBbox = {
                 left: Math.min(...charXs),
                 top: Math.min(...charYs),

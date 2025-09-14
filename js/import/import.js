@@ -351,7 +351,7 @@ export async function importFiles(files) {
     // TODO: Add warning message displayed to user for this.
     // Textract JSON data is returned in arbitrary chunks (multiple pages may be in one file, or one page may be in multiple files).
     // Therefore, it is impossible to know how many pages of OCR data there are based only on the length of `ocrAllRaw.active`.
-    if (pageCountImage && ocrAllRaw.active.length > pageCountImage && !ocrData.textractMode) {
+    if (pageCountImage && ocrAllRaw.active.length > pageCountImage && ocrData.format !== 'textract') {
       console.log(`Identified ${ocrAllRaw.active.length} pages of OCR data but ${pageCountImage} pages of image/pdf data. Only first ${pageCountImage} pages will be used.`);
       ocrAllRaw.active = ocrAllRaw.active.slice(0, pageCountImage);
     }
