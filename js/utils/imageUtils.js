@@ -56,7 +56,8 @@ const detectImageFormat = (image) => {
  */
 export const importImageFileToBase64 = async (file) => new Promise((resolve, reject) => {
   if (file instanceof ArrayBuffer) {
-    const format = detectImageFormat(file.subarray(0, 64));
+    const imageUint8 = new Uint8Array(file);
+    const format = detectImageFormat(imageUint8);
     const binary = file.toString('latin1');
     resolve(`data:image/${format};base64,${btoa(binary)}`);
     return;
