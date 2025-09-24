@@ -655,3 +655,40 @@ export const cleanFamilyName = (family) => {
 
   return familyClean;
 };
+
+/**
+ * Detect the JavaScript runtime environment.
+ *
+ * @returns {('node'|'deno'|'bun'|'browser'|'other')}
+ */
+function getRuntime() {
+  // Bun
+  // eslint-disable-next-line no-undef
+  if (typeof Bun !== 'undefined' && typeof Bun.version?.bun === 'string') {
+    return 'bun';
+  }
+
+  // Deno
+  // eslint-disable-next-line no-undef
+  if (typeof Deno !== 'undefined' && typeof Deno.version?.deno === 'string') {
+    return 'deno';
+  }
+
+  // Node.js
+  if (typeof process !== 'undefined' && typeof process.versions?.node === 'string') {
+    return 'node';
+  }
+
+  // Browser (or a web worker)
+  if (
+    typeof window !== 'undefined' // normal browser
+    // eslint-disable-next-line no-restricted-globals
+    || typeof self !== 'undefined' // Web Workers / Service Workers
+  ) {
+    return 'browser';
+  }
+
+  return 'other';
+}
+
+export const runtime = getRuntime();
