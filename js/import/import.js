@@ -313,7 +313,7 @@ export async function importFiles(files) {
 
   let pageCount;
   let pageCountImage;
-  /** @type {("hocr" | "abbyy" | "stext" | "textract" | "text")} */
+  /** @type {TextSource} */
   let format;
   let reimportHocrMode = false;
 
@@ -457,7 +457,7 @@ export async function importFiles(files) {
     await convertOCR(ocrAllRaw.active, true, format, oemName, reimportHocrMode, pageMetricsAll).then(async () => {
       // Skip this step if optimization info was already restored from a previous session,
       // or if using stext/textract (which are character-level but not visually accurate).
-      if (!existingOpt && !['stext', 'textract'].includes(format)) {
+      if (!existingOpt && !['stext', 'textract', 'google_vision', 'azure_doc_intel'].includes(format)) {
         await checkCharWarn(convertPageWarn);
         const charMetrics = calcCharMetricsFromPages(ocrAll.active);
 

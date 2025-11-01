@@ -114,6 +114,8 @@ const createPdfFontRefs = async (ocrArr) => {
  * @param {("ebook"|"eval"|"proof"|"invis")} [params.textMode="ebook"] -
  * @param {boolean} [params.rotateText=false] -
  * @param {boolean} [params.rotateBackground=false] -
+ * @param {boolean} [params.rotateOrientation=false] - If true, canvas is adjusted to flip width/height to account for image rotation
+ *    of 90 or 270 degrees. This argument is currently only used in a dev script and may not be the best approach.
  * @param {dims} [params.dimsLimit] -
  * @param {number} [params.confThreshHigh=85] -
  * @param {number} [params.confThreshMed=75] -
@@ -131,6 +133,7 @@ export async function writePdf({
   textMode = 'ebook',
   rotateText = false,
   rotateBackground = false,
+  rotateOrientation = false,
   dimsLimit = { width: -1, height: -1 },
   confThreshHigh = 85,
   confThreshMed = 75,
@@ -209,6 +212,7 @@ export async function writePdf({
       pdfFonts,
       textMode,
       angle,
+      rotateOrientation,
       rotateText,
       rotateBackground,
       confThreshHigh,
@@ -336,6 +340,8 @@ ${xrefOffset}
  * @param {Object<string, PdfFontFamily>} params.pdfFonts
  * @param {("ebook"|"eval"|"proof"|"invis")} params.textMode -
  * @param {number} params.angle
+ * @param {boolean} [params.rotateOrientation=false] - If true, canvas is adjusted to flip width/height to account for image rotation
+ *    of 90 or 270 degrees. This argument is currently only used in a dev script and may not be the best approach.
  * @param {boolean} [params.rotateText=false]
  * @param {boolean} [params.rotateBackground=false]
  * @param {number} [params.confThreshHigh=85]
@@ -354,6 +360,7 @@ async function ocrPageToPDF({
   pdfFonts,
   textMode,
   angle,
+  rotateOrientation = false,
   rotateText = false,
   rotateBackground = false,
   confThreshHigh = 85,
@@ -370,6 +377,11 @@ async function ocrPageToPDF({
 
   const pageIndex = firstObjIndex;
   let pageObjStr = `${String(pageIndex)} 0 obj\n<</Type/Page/MediaBox[0 0 ${String(outputDims.width)} ${String(outputDims.height)}]`;
+
+  if (rotateOrientation && (angle > 45 && angle < 135 || angle > 225 && angle < 315)) {
+    pageObjStr = `${String(pageIndex)} 0 obj\n<</Type/Page/MediaBox[0 0 ${String(outputDims.height)} ${String(outputDims.width)}]`;
+  }
+
   pageObjStr += `/Parent ${parentIndex} 0 R`;
 
   if (noTextContent && noImageContent) {
@@ -393,7 +405,15 @@ async function ocrPageToPDF({
     if (rotateBackground && Math.abs(angle ?? 0) > 0.05) {
       rotation = angle;
     }
-    imageContentObjStr += drawImageCommands(imageName, 0, 0, outputDims.width, outputDims.height, rotation);
+
+    let x = 0;
+    let y = 0;
+    if (rotateOrientation && (rotation > 45 && rotation < 135 || rotation > 225 && rotation < 315)) {
+      x = (outputDims.height - outputDims.width) / 2;
+      y = (outputDims.width - outputDims.height) / 2;
+    }
+
+    imageContentObjStr += drawImageCommands(imageName, x, y, outputDims.width, outputDims.height, rotation);
   }
 
   if (noTextContent) {
