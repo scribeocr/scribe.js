@@ -13,7 +13,7 @@ declare global {
 
     // Strings representing supported sources of text.
     // `stext` indicates the text was extracted directly from a PDF using mupdf.
-    type TextSource = null | 'tesseract' | 'textract' | 'google_vision' | 'abbyy' | 'stext' | 'hocr' | 'text';
+    type TextSource = null | 'tesseract' | 'textract' | 'google_vision' | 'abbyy' | 'stext' | 'hocr' | 'text' | 'azure_doc_intel';
 
     type FontState = {
         enableOpt: boolean;
@@ -328,6 +328,62 @@ declare global {
     interface GoogleVisionFullTextAnnotation {
         pages: GoogleVisionPage[];
         text: string;
+    }
+
+    // Azure Document Intelligence types
+    interface AzureDocIntelPoint {
+        x: number;
+        y: number;
+    }
+
+    interface AzureDocIntelSpan {
+        offset: number;
+        length: number;
+    }
+
+    interface AzureDocIntelWord {
+        content: string;
+        polygon: AzureDocIntelPoint[];
+        span: AzureDocIntelSpan;
+        confidence: number;
+    }
+
+    interface AzureDocIntelLine {
+        content: string;
+        polygon: AzureDocIntelPoint[];
+        spans: AzureDocIntelSpan[];
+    }
+
+    interface AzureDocIntelStyle {
+        isHandwritten?: boolean;
+        spans: AzureDocIntelSpan[];
+        confidence: number;
+    }
+
+    interface AzureDocIntelPage {
+        pageNumber: number;
+        angle: number;
+        width: number;
+        height: number;
+        unit: 'pixel' | 'inch';
+        words: AzureDocIntelWord[];
+        lines: AzureDocIntelLine[];
+        spans: AzureDocIntelSpan[];
+    }
+
+    interface AzureDocIntelAnalyzeResult {
+        apiVersion: string;
+        modelId: string;
+        content: string;
+        pages: AzureDocIntelPage[];
+        styles: AzureDocIntelStyle[];
+    }
+
+    interface AzureDocIntelResponse {
+        status: 'succeeded' | 'failed' | 'running';
+        createdDateTime: string;
+        lastUpdatedDateTime: string;
+        analyzeResult: AzureDocIntelAnalyzeResult;
     }
 
 }

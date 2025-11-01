@@ -3,6 +3,7 @@ import { convertPageBlocks } from '../import/convertPageBlocks.js';
 import { convertPageHocr } from '../import/convertPageHocr.js';
 import { convertPageStext } from '../import/convertPageStext.js';
 import { convertDocTextract } from '../import/convertDocTextract.js';
+import { convertDocAzureDocIntel } from '../import/convertDocAzureDocIntel.js';
 import { convertPageGoogleVision } from '../import/convertPageGoogleVision.js';
 import { convertPageText } from '../import/convertPageText.js';
 
@@ -402,6 +403,7 @@ const handleMessage = async (data) => {
     convertPageHocr,
     convertPageStext,
     convertDocTextract,
+    convertDocAzureDocIntel,
     convertPageGoogleVision,
     convertPageBlocks,
     convertPageText,
