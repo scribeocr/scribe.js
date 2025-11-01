@@ -12,7 +12,7 @@ export const splitHOCRStr = (hocrStrAll) => hocrStrAll.replace(/[\s\S]*?<body>/,
  *
  * @param {string} ocrStr - The OCR string to detect the format of.
  * @param {string} [ext] - The file extension of the OCR file.
- * @returns {"hocr" | "stext" | "abbyy" | "textract" | "google_vision" | "text" | null}
+ * @returns {?TextSource}
  */
 const detectOcrFormat = (ocrStr, ext) => {
   if (ext) {
@@ -31,22 +31,37 @@ const detectOcrFormat = (ocrStr, ext) => {
 
   if (!!node2 && !!/abbyy/i.test(node2)) {
     return 'abbyy';
-  } if (!!node2 && !!/<document name/.test(node2)) {
+  }
+
+  if (!!node2 && !!/<document name/.test(node2)) {
     return 'stext';
-  // AWS Textract without layout detection.
-  } if (!node2 && !!/"DetectDocumentTextModelVersion"/i.test(ocrStr)) {
+  }
+
+  if (!node2 && !!/"DetectDocumentTextModelVersion"/i.test(ocrStr)) {
     return 'textract';
-  // AWS Textract using layout detection.
-  } if (!node2 && !!/"AnalyzeDocumentModelVersion"/i.test(ocrStr)) {
+  }
+
+  if (!node2 && !!/"AnalyzeDocumentModelVersion"/i.test(ocrStr)) {
     return 'textract';
-  } if (!node2 && !!/"pages"/i.test(ocrStr) && !!/"fullTextAnnotation"/i.test(ocrStr)) {
+  }
+
+  if (!node2 && !!/"pages"/i.test(ocrStr) && !!/"fullTextAnnotation"/i.test(ocrStr)) {
     return 'google_vision';
-  } if (!!node2 && !!/class=['"]ocr_page['"]/i.test(ocrStr)
+  }
+
+  if (/"createdDateTime"/i.test(ocrStr) && /"analyzeResult"/i.test(ocrStr) && /"modelId"/i.test(ocrStr)) {
+    return 'azure_doc_intel';
+  }
+
+  if (!!node2 && !!/class=['"]ocr_page['"]/i.test(ocrStr)
       || !!/<\?xml version/i.test(ocrStr)) {
     return 'hocr';
-  } if (ext && ext.toLowerCase() === 'txt') {
+  }
+
+  if (ext && ext.toLowerCase() === 'txt') {
     return 'text';
   }
+
   return null;
 };
 
@@ -90,6 +105,14 @@ export async function importOCRFiles(ocrFilesAll) {
     if (format === 'textract') {
       hocrRaw = [hocrStrAll];
     } else if (format === 'google_vision') {
+      hocrRaw = [hocrStrAll];
+      if (hocrStrAll.substring(0, 500).includes('"responses"')) {
+        const responses = JSON.parse(hocrStrAll).responses;
+        hocrRaw = responses
+          .sort((a, b) => a.context.pageNumber - b.context.pageNumber)
+          .map((resp) => JSON.stringify(resp));
+      }
+    } else if (format === 'azure_doc_intel') {
       hocrRaw = [hocrStrAll];
     } else if (format === 'abbyy') {
       hocrRaw = hocrStrAll.split(/(?=<page)/).slice(1);

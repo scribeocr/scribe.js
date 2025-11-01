@@ -15,6 +15,30 @@ import {
 import { pass3 } from './convertPageShared.js';
 
 /**
+ *
+ * @param {TextractPoint[]} poly
+ */
+const detectPolyOrientation = (poly) => {
+  // 90 degrees clockwise
+  if (poly[0].X > poly[2].X && poly[0].Y < poly[2].Y) {
+    return 1;
+  }
+
+  // 180 degrees
+  if (poly[0].X > poly[2].X && poly[0].Y > poly[2].Y) {
+    return 2;
+  }
+
+  // 90 degrees counter-clockwise
+  if (poly[0].X < poly[2].X && poly[1].X < poly[3].X && poly[0].Y > poly[2].Y) {
+    return 3;
+  }
+
+  // Default
+  return 0;
+};
+
+/**
  * @param {Object} params
  * @param {string|string[]} params.ocrStr - String or array of strings containing Textract JSON data.
  * @param {dims[]} params.pageDims - Page metrics to use for the pages (Textract only).
@@ -43,12 +67,21 @@ export async function convertDocTextract({ ocrStr, pageDims }) {
   const resArr = [];
 
   for (let n = 0; n < pageBlocks.length; n++) {
+    const pageBlock = pageBlocks[n];
+
     // Textract uses normalized coordinates (0-1), we need to convert to pixels
     // We'll assume standard page dimensions since Textract doesn't provide pixel dimensions
     const pageDimsN = pageDims[n];
     if (!pageDimsN) {
       throw new Error(`No page dimensions provided for page ${n + 1}.`);
     }
+
+    const pagePoly = pageBlock.Geometry && pageBlock.Geometry.Polygon ? pageBlock.Geometry.Polygon : null;
+    if (!pagePoly) throw new Error(`No page polygon data for page ${n + 1}.`);
+
+    const pageOrientation = detectPolyOrientation(pagePoly);
+
+    console.log(`Page ${n + 1} orientation: ${pageOrientation * 90} degrees`);
 
     const pageObj = new ocr.OcrPage(n, pageDimsN);
 
@@ -81,9 +114,6 @@ export async function convertDocTextract({ ocrStr, pageDims }) {
       blockMap.set(block.Id, block);
     });
 
-    /** @type {Array<number>} */
-    const angleRisePage = [];
-
     // Process layout blocks (paragraphs) and their lines
     const layoutBlocks = blocks.filter((block) => block.BlockType && block.BlockType.startsWith('LAYOUT_'),
     );
@@ -104,22 +134,13 @@ export async function convertDocTextract({ ocrStr, pageDims }) {
     // Process lines and convert to OCR format
     const lineObjMap = new Map();
     lineBlocks.forEach((lineBlock, lineIndex) => {
-      const lineObj = convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, n, lineIndex, pageDimsN);
+      const lineObj = convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, n, lineIndex, pageDimsN, pageOrientation);
       if (lineObj) {
         pageObj.lines.push(lineObj);
         lineObjMap.set(lineBlock.Id, lineObj);
-
-        // Collect baseline slopes for angle calculation
-        if (lineObj.baseline && Math.abs(lineObj.baseline[0]) > 0.001) {
-          angleRisePage.push(lineObj.baseline[0]);
-        }
       }
     });
 
-    // Calculate page angle from line baselines
-    const angleRiseMedian = mean50(angleRisePage) || 0;
-    const angleOut = Math.asin(angleRiseMedian) * (180 / Math.PI);
-    pageObj.angle = angleOut;
     pageObj.textSource = 'textract';
 
     // Create paragraphs from Textract layout blocks
@@ -155,44 +176,132 @@ export async function convertDocTextract({ ocrStr, pageDims }) {
  * @param {number} pageNum - Page number (0-indexed)
  * @param {number} lineIndex - Index of the line block on the page
  * @param {dims} pageDims - Dimensions of the page in pixels
+ * @param {number} pageOrientation - Orientation of the page (0-3)
  */
-function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, pageNum, lineIndex, pageDims) {
+function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, pageNum, lineIndex, pageDims, pageOrientation) {
   // `lineBlock.Page` will be undefined when the entire document is a single page.
   if (!lineBlock.Text || !lineBlock.Geometry || (lineBlock.Page || 1) - 1 !== pageNum) return null;
 
   // Convert normalized coordinates to pixels
   const bboxLine = convertBoundingBox(lineBlock.Geometry.BoundingBox, pageDims);
 
-  const polyLine = convertPolygon(lineBlock.Geometry.Polygon, pageDims);
+  const polyLine0 = convertPolygon(lineBlock.Geometry.Polygon, pageDims, pageOrientation);
+  let polyLine = /** @type {Polygon} */ (JSON.parse(JSON.stringify(polyLine0)));
 
-  // Calculate baseline from geometry - Textract doesn't provide explicit baseline
-  // We'll estimate it based on the polygon points if available
-  let baselineSlope = 0;
-  if (polyLine.br.x !== polyLine.bl.x) {
-    baselineSlope = (polyLine.br.y - polyLine.bl.y) / (polyLine.br.x - polyLine.bl.x);
-  }
-
-  const baseline = [baselineSlope, 0];
+  const baseline = [0, 0];
   const lineObj = new ocr.OcrLine(pageObj, bboxLine, baseline);
 
   const childIds = relationshipMap.get(lineBlock.Id) || [];
 
-  childIds.forEach((wordId, wordIndex) => {
-    const wordBlock = blockMap.get(wordId);
-    if (wordBlock && wordBlock.BlockType === 'WORD') {
-      if (!wordBlock.Text || !wordBlock.Geometry) return;
+  const wordBlocks = /** @type {TextractBlock[]} */ (childIds.map((wordId) => blockMap.get(wordId)).filter((block) => block && block.BlockType === 'WORD'));
 
-      const bboxWord = convertBoundingBox(wordBlock.Geometry.BoundingBox, pageDims);
-      const id = `word_${pageNum + 1}_${lineIndex + 1}_${wordIndex + 1}`;
+  wordBlocks.forEach((wordBlock, wordIndex) => {
+    const bboxWord = convertBoundingBox(wordBlock.Geometry.BoundingBox, pageDims);
+    const id = `word_${pageNum + 1}_${lineIndex + 1}_${wordIndex + 1}`;
 
-      const poly = convertPolygon(wordBlock.Geometry.Polygon, pageDims);
+    const poly = convertPolygon(wordBlock.Geometry.Polygon, pageDims, pageOrientation);
 
-      const wordObj = new ocr.OcrWord(lineObj, id, wordBlock.Text, bboxWord, poly);
-      wordObj.conf = wordBlock.Confidence || 100;
+    const wordObj = new ocr.OcrWord(lineObj, id, wordBlock.Text, bboxWord, poly);
+    wordObj.conf = wordBlock.Confidence || 100;
 
-      lineObj.words.push(wordObj);
-    }
+    lineObj.words.push(wordObj);
   });
+
+  if (!wordBlocks.length || !lineObj.words.length) {
+    console.warn(`Warning: Line with no words on page ${pageNum + 1}, line index ${lineIndex + 1}. Skipping line.`);
+    return null;
+  }
+
+  const lineOrientation = (wordBlocks[0].Geometry.RotationAngle || 0) / 90;
+
+  // @ts-ignore
+  lineObj.orientation = pageOrientation - lineOrientation;
+  if (lineObj.orientation < 0) {
+    lineObj.orientation += 4;
+  }
+
+  if (lineObj.orientation === 1) {
+    const lineBox = { ...lineObj.bbox };
+    lineObj.bbox.left = lineBox.top;
+    lineObj.bbox.top = pageDims.width - lineBox.right;
+    lineObj.bbox.right = lineBox.bottom;
+    lineObj.bbox.bottom = pageDims.width - lineBox.left;
+    lineObj.words.forEach((word) => {
+      const wordBox = { ...word.bbox };
+      word.bbox.left = word.bbox.top;
+      word.bbox.top = pageDims.width - wordBox.right;
+      word.bbox.right = wordBox.bottom;
+      word.bbox.bottom = pageDims.width - wordBox.left;
+      word.poly = {
+        tl: { x: word.poly.tr.y, y: pageDims.width - word.poly.tr.x },
+        tr: { x: word.poly.br.y, y: pageDims.width - word.poly.br.x },
+        br: { x: word.poly.bl.y, y: pageDims.width - word.poly.bl.x },
+        bl: { x: word.poly.tl.y, y: pageDims.width - word.poly.tl.x },
+      };
+    });
+    polyLine = {
+      tl: { x: polyLine0.tr.y, y: pageDims.width - polyLine0.tr.x },
+      tr: { x: polyLine0.br.y, y: pageDims.width - polyLine0.br.x },
+      br: { x: polyLine0.bl.y, y: pageDims.width - polyLine0.bl.x },
+      bl: { x: polyLine0.tl.y, y: pageDims.width - polyLine0.tl.x },
+    };
+  } else if (lineObj.orientation === 2) {
+    const lineBox = { ...lineObj.bbox };
+    lineObj.bbox.left = pageDims.width - lineBox.right;
+    lineObj.bbox.top = pageDims.height - lineBox.bottom;
+    lineObj.bbox.right = pageDims.width - lineBox.left;
+    lineObj.bbox.bottom = pageDims.height - lineBox.top;
+    lineObj.words.forEach((word) => {
+      const wordBox = { ...word.bbox };
+      word.bbox.left = pageDims.width - wordBox.right;
+      word.bbox.top = pageDims.height - wordBox.bottom;
+      word.bbox.right = pageDims.width - wordBox.left;
+      word.bbox.bottom = pageDims.height - wordBox.top;
+      word.poly = {
+        tl: { x: pageDims.width - word.poly.br.x, y: pageDims.height - word.poly.br.y },
+        tr: { x: pageDims.width - word.poly.bl.x, y: pageDims.height - word.poly.bl.y },
+        br: { x: pageDims.width - word.poly.tl.x, y: pageDims.height - word.poly.tl.y },
+        bl: { x: pageDims.width - word.poly.tr.x, y: pageDims.height - word.poly.tr.y },
+      };
+    });
+    polyLine = {
+      tl: { x: pageDims.width - polyLine0.br.x, y: pageDims.height - polyLine0.br.y },
+      tr: { x: pageDims.width - polyLine0.bl.x, y: pageDims.height - polyLine0.bl.y },
+      br: { x: pageDims.width - polyLine0.tl.x, y: pageDims.height - polyLine0.tl.y },
+      bl: { x: pageDims.width - polyLine0.tr.x, y: pageDims.height - polyLine0.tr.y },
+    };
+  } else if (lineObj.orientation === 3) {
+    const lineBox = { ...lineObj.bbox };
+    lineObj.bbox.left = pageDims.height - lineBox.bottom;
+    lineObj.bbox.top = lineBox.left;
+    lineObj.bbox.right = pageDims.height - lineBox.top;
+    lineObj.bbox.bottom = lineBox.right;
+    lineObj.words.forEach((word) => {
+      const wordBox = { ...word.bbox };
+      word.bbox.left = pageDims.height - wordBox.bottom;
+      word.bbox.top = wordBox.left;
+      word.bbox.right = pageDims.height - wordBox.top;
+      word.bbox.bottom = wordBox.right;
+      word.poly = {
+        tl: { x: pageDims.height - word.poly.bl.y, y: word.poly.bl.x },
+        tr: { x: pageDims.height - word.poly.tl.y, y: word.poly.tl.x },
+        br: { x: pageDims.height - word.poly.tr.y, y: word.poly.tr.x },
+        bl: { x: pageDims.height - word.poly.br.y, y: word.poly.br.x },
+      };
+    });
+    polyLine = {
+      tl: { x: pageDims.height - polyLine0.bl.y, y: polyLine0.bl.x },
+      tr: { x: pageDims.height - polyLine0.tl.y, y: polyLine0.tl.x },
+      br: { x: pageDims.height - polyLine0.tr.y, y: polyLine0.tr.x },
+      bl: { x: pageDims.height - polyLine0.br.y, y: polyLine0.br.x },
+    };
+  }
+
+  // Calculate baseline from geometry - Textract doesn't provide explicit baseline
+  // We'll estimate it based on the polygon points if available
+  if (polyLine.br.x !== polyLine.bl.x) {
+    lineObj.baseline[0] = (polyLine.br.y - polyLine.bl.y) / (polyLine.br.x - polyLine.bl.x);
+  }
 
   const descCharRegex = new RegExp(`[${descCharArr.join('')}]`);
   const ascCharRegex = new RegExp(`[${ascCharArr.join('')}]`);
@@ -257,11 +366,11 @@ function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, page
   });
   const nonDescBottomDelta = mean50(nonDescBottomDeltaArr);
 
-  const lineHeight = ((polyLine.tr.y - polyLine.br.y) + (polyLine.tr.y - polyLine.br.y)) / 2;
-  if (Number.isFinite(nonDescBottomDelta) && nonDescBottomDelta < lineObj.bbox.bottom && nonDescBottomDelta > (lineHeight / 2)) {
+  const lineHeight = ((polyLine.br.y - polyLine.tr.y) + (polyLine.bl.y - polyLine.tl.y)) / 2;
+  if (Number.isFinite(nonDescBottomDelta) && nonDescBottomDelta < lineObj.bbox.bottom && nonDescBottomDelta < (lineHeight / 2)) {
     lineObj.baseline[1] = nonDescBottomDelta - (lineObj.bbox.bottom - polyLine.bl.y);
-  } else if (descWords.length > 0) {
-    lineObj.baseline[1] = lineHeight / 3 - (lineObj.bbox.bottom - polyLine.bl.y);
+  } else {
+    lineObj.baseline[1] = lineHeight * -1 / 3 - (lineObj.bbox.bottom - polyLine.bl.y);
   }
 
   // TODO: Properly process metrics when these are negative.
@@ -270,7 +379,7 @@ function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, page
   if (xHeight && xHeight > 0) lineObj.xHeight = xHeight;
   if (ascHeight && ascHeight > 0) lineObj.ascHeight = ascHeight;
 
-  return lineObj.words.length > 0 ? lineObj : null;
+  return lineObj;
 }
 
 /**
@@ -292,25 +401,48 @@ function convertBoundingBox(textractBbox, pageDims) {
  *
  * @param {TextractPoint[]} textractPolygon
  * @param {dims} pageDims
+ * @param {number} orientation
  * @return {Polygon}
  */
-function convertPolygon(textractPolygon, pageDims) {
+function convertPolygon(textractPolygon, pageDims, orientation) {
+  let br = 2;
+  let bl = 3;
+  let tr = 1;
+  let tl = 0;
+
+  if (orientation === 1) {
+    br = 1;
+    bl = 2;
+    tr = 0;
+    tl = 3;
+  } else if (orientation === 2) {
+    br = 0;
+    bl = 1;
+    tr = 3;
+    tl = 2;
+  } else if (orientation === 3) {
+    br = 3;
+    bl = 0;
+    tr = 2;
+    tl = 1;
+  }
+
   return {
     br: {
-      x: Math.round(textractPolygon[2].X * pageDims.width),
-      y: Math.round(textractPolygon[2].Y * pageDims.height),
+      x: Math.round(textractPolygon[br].X * pageDims.width),
+      y: Math.round(textractPolygon[br].Y * pageDims.height),
     },
     bl: {
-      x: Math.round(textractPolygon[3].X * pageDims.width),
-      y: Math.round(textractPolygon[3].Y * pageDims.height),
+      x: Math.round(textractPolygon[bl].X * pageDims.width),
+      y: Math.round(textractPolygon[bl].Y * pageDims.height),
     },
     tr: {
-      x: Math.round(textractPolygon[1].X * pageDims.width),
-      y: Math.round(textractPolygon[1].Y * pageDims.height),
+      x: Math.round(textractPolygon[tr].X * pageDims.width),
+      y: Math.round(textractPolygon[tr].Y * pageDims.height),
     },
     tl: {
-      x: Math.round(textractPolygon[0].X * pageDims.width),
-      y: Math.round(textractPolygon[0].Y * pageDims.height),
+      x: Math.round(textractPolygon[tl].X * pageDims.width),
+      y: Math.round(textractPolygon[tl].Y * pageDims.height),
     },
   };
 }
