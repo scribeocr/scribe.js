@@ -72,18 +72,17 @@ const extractInternalPDFTextRaw = async () => {
 export const extractInternalPDFText = async () => {
   const extractPDFTextNative = opt.usePDFText.native.main || opt.usePDFText.native.supp;
   const extractPDFTextOCR = opt.usePDFText.ocr.main || opt.usePDFText.ocr.supp;
-  const extractPDFTextImage = false;
 
   const res = await extractInternalPDFTextRaw();
 
   inputData.pdfType = res.type;
   ocrAllRaw.pdf = res.contentRaw;
 
-  if (!extractPDFTextImage && res.type === 'image') return res;
+  if (!opt.keepPDFTextAlways) {
+    if (!extractPDFTextOCR && res.type === 'ocr') return res;
 
-  if (!extractPDFTextOCR && res.type === 'ocr') return res;
-
-  if (!extractPDFTextNative && res.type === 'text') return res;
+    if (!extractPDFTextNative && res.type === 'text') return res;
+  }
 
   ocrAll.pdf = Array(ImageCache.pageCount);
 

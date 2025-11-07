@@ -468,7 +468,7 @@ export async function importFiles(files) {
         await runFontOptimization(ocrAll.active);
       }
     });
-  } else if (inputData.pdfMode && (opt.usePDFText.native.main || opt.usePDFText.native.supp || opt.usePDFText.ocr.main || opt.usePDFText.ocr.supp)) {
+  } else if (inputData.pdfMode && (opt.usePDFText.native.main || opt.usePDFText.native.supp || opt.usePDFText.ocr.main || opt.usePDFText.ocr.supp || opt.keepPDFTextAlways)) {
     await extractInternalPDFText();
     if (inputData.pdfType === 'text' && opt.usePDFText.native.main || inputData.pdfType === 'ocr' && opt.usePDFText.ocr.main) {
       if (inputData.pdfType === 'text') FontCont.state.enableCleanToNimbusMono = true;

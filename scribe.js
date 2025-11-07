@@ -87,6 +87,9 @@ const init = async (params) => {
  * @param {Parameters<typeof importFiles>[0]} files
  * @param {Array<string>} [langs=['eng']]
  * @param {Parameters<typeof exportData>[0]} [outputFormat='txt']
+ * @param {Object} [options]
+ * @param {boolean} [options.skipRecPDFTextNative=true] - Skip recognition if input is text-native PDF.
+ * @param {boolean} [options.skipRecPDFTextOCR=false] - Skip recognition if input is image-based PDF with existing invisible text layer.
  */
 const extractText = async (files, langs = ['eng'], outputFormat = 'txt', options = {}) => {
   const skipRecPDFTextNative = options?.skipRecPDFTextNative ?? true;

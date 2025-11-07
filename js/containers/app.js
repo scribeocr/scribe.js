@@ -87,6 +87,15 @@ export class opt {
   };
 
   /**
+   * Always convert and retain existing PDF text data.
+   * By default (`false`), if the existing PDF text data will not be used (per the `usePDFText` settings),
+   * it is discarded and never converted into the internal OCR format.
+   * This performance/memory optimization can be disabled by setting this option to `true`,
+   * resulting in the PDF text being converted and retained even if (for example) it is corrupted.
+   */
+  static keepPDFTextAlways = false;
+
+  /**
    * Number of workers to use. Must be set prior to initialization.
    * If set to `null` (default), the number of workers will be set up to 6 (browser) or 8 (node),
    * if the system has enough resources.
