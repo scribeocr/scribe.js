@@ -3,4 +3,4 @@
 	url = https://github.com/scribeocr/scrollview-web.git
 [submodule "cloud-adapters"]
 	path = cloud-adapters
-	url = git@github.com:scribeocr/cloud-adapters.git
+	url = https://github.com/scribeocr/cloud-adapters.git
