@@ -450,3 +450,20 @@ describe('Check that symbols are detected for PDF imports.', function () {
     await scribe.terminate();
   });
 }).timeout(120000);
+
+describe('Check that `keepPDFTextAlways` option works.', function () {
+  this.timeout(10000);
+
+  it('Text-native headers are imported for image-based PDF document.', async () => {
+    scribe.opt.keepPDFTextAlways = true;
+    // This PDF is an image-based court document but has a text-native header added by the court system.
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/gov.uscourts.cand.249697.1.0_2.pdf`]);
+    assert.strictEqual(scribe.inputData.pdfType, 'image');
+    assert.strictEqual(!!scribe.data.ocr.active[0]?.lines?.length, false);
+    assert.strictEqual(scribe.data.ocr.pdf[0].lines.length, 1);
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);
