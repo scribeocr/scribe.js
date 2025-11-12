@@ -293,7 +293,7 @@ export class gs {
       workerN = Math.min(Math.round((globalThis.navigator.hardwareConcurrency || 8) / 2), 6);
     } else {
       const cpuN = Math.floor((await import('node:os')).cpus().length / 2);
-      workerN = Math.min(cpuN - 1, 8);
+      workerN = Math.max(Math.min(cpuN - 1, 8), 1);
     }
 
     const Tesseract = typeof process === 'undefined' ? (await import('../tess/tesseract.esm.min.js')).default : await import('@scribe.js/tesseract.js');
