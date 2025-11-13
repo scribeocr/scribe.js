@@ -95,7 +95,7 @@ export async function importOCRFiles(ocrFilesAll) {
   if (singleHOCRMode) {
     const hocrStrAll = await readOcrFile(ocrFilesAll[0]);
 
-    format = detectOcrFormat(hocrStrAll);
+    format = detectOcrFormat(hocrStrAll, ocrFilesAll[0]?.name?.split('.').pop());
 
     if (!format) {
       console.error(ocrFilesAll[0]);
@@ -134,7 +134,7 @@ export async function importOCRFiles(ocrFilesAll) {
     // Check whether input is Abbyy XML using the first file
     const hocrStrFirst = await readOcrFile(ocrFilesAll[0]);
 
-    format = detectOcrFormat(hocrStrFirst);
+    format = detectOcrFormat(hocrStrFirst, ocrFilesAll[0]?.name?.split('.').pop());
 
     if (!format) {
       console.error(ocrFilesAll[0]);

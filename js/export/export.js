@@ -254,7 +254,6 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
       minpage: minPage,
       maxpage: maxPage,
       reflowText: opt.reflow,
-      docxMode: false,
     });
   // Defining `DISABLE_DOCX_XLSX` disables docx/xlsx exports when using build tools.
   // @ts-ignore

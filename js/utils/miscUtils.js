@@ -323,7 +323,8 @@ export function countSubstringOccurrences(string, subString, allowOverlapping, c
 export const saveAs = async (content, fileName) => {
   if (typeof process !== 'undefined') {
     const { promises: fsPromises } = await import('node:fs');
-    await fsPromises.writeFile(fileName, content);
+    const buffer = content instanceof ArrayBuffer ? Buffer.from(content) : content;
+    await fsPromises.writeFile(fileName, buffer);
     return;
   }
 

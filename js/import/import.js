@@ -345,6 +345,11 @@ export async function importFiles(files) {
 
     format = /** @type {("hocr" | "abbyy" | "stext" | "textract" | "text")} */ (ocrData.format);
 
+    // The text import function requires built-in fonts to be loaded.
+    if (format === 'text') {
+      await loadBuiltInFontsRaw();
+    }
+
     ocrAllRaw.active = ocrData.hocrRaw;
     // Subset OCR data to avoid uncaught error that occurs when there are more pages of OCR data than image data.
     // While this should be rare, it appears to be fairly common with Archive.org documents.
