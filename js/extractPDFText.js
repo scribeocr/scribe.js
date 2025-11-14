@@ -8,7 +8,7 @@ import { convertOCR } from './recognizeConvert.js';
  * Reports whether PDF is text-native, contains invisible OCR text, or is image-only.
  */
 const extractInternalPDFTextRaw = async () => {
-  const muPDFScheduler = await ImageCache.getMuPDFScheduler(3);
+  const muPDFScheduler = await ImageCache.getMuPDFScheduler();
 
   const pdfContentStats = {
     /** Total number of letters in the source PDF. */

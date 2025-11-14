@@ -142,10 +142,23 @@ export class ImageCache {
    * Initializes the MuPDF scheduler.
    * This is separate from the function that loads the file (`#loadFileMuPDFScheduler`),
    * as the scheduler starts loading ahead of the file being available for performance reasons.
-   * @param {number} numWorkers
-   * @returns
+   * @param {number} [numWorkers]
    */
-  static #initMuPDFScheduler = async (numWorkers = 3) => {
+  static #initMuPDFScheduler = async (numWorkers) => {
+    // If `numbWorkers` is not specified, use up to 3 workers based on hardware concurrency
+    // and the global `opt.workerN` setting.
+    if (!numWorkers) {
+      if (typeof process === 'undefined') {
+        numWorkers = Math.min(Math.round((globalThis.navigator.hardwareConcurrency || 8) / 2), 3);
+      } else {
+        const cpuN = Math.floor((await import('node:os')).cpus().length / 2);
+        numWorkers = Math.max(Math.min(cpuN - 1, 3), 1);
+      }
+      if (opt.workerN && opt.workerN < numWorkers) {
+        numWorkers = opt.workerN;
+      }
+    }
+
     const Tesseract = typeof process === 'undefined' ? (await import('../../tess/tesseract.esm.min.js')).default : await import('@scribe.js/tesseract.js');
     const scheduler = await Tesseract.createScheduler();
     const workersPromiseArr = range(1, numWorkers).map(async () => {
@@ -357,10 +370,9 @@ export class ImageCache {
 
   /**
    * Gets the MuPDF scheduler if it exists, otherwise creates a new one.
-   * @param {number} [numWorkers=3] - Number of workers to create.
-   * @returns
+   * @param {number} [numWorkers] - Number of workers to create.
    */
-  static getMuPDFScheduler = async (numWorkers = 3) => {
+  static getMuPDFScheduler = async (numWorkers) => {
     if (ImageCache.muPDFScheduler) return ImageCache.muPDFScheduler;
     ImageCache.muPDFScheduler = ImageCache.#initMuPDFScheduler(numWorkers);
     return ImageCache.muPDFScheduler;
@@ -372,7 +384,7 @@ export class ImageCache {
    * @param {Boolean} [skipText=false] - Whether to skip native text when rendering PDF to image.
    */
   static openMainPDF = async (fileData, skipText = false) => {
-    const muPDFScheduler = await ImageCache.getMuPDFScheduler(3);
+    const muPDFScheduler = await ImageCache.getMuPDFScheduler();
 
     await ImageCache.#loadFileMuPDFScheduler(fileData);
 
