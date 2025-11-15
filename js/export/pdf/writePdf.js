@@ -11,14 +11,16 @@ import { getDistinctCharsFont, subsetFont } from '../../utils/fontUtils.js';
 
 /**
  * Generate PDF font objects, not including the actual font data.
+ * @param {number} objectIStart - Starting object index
  * @param {?Array<OcrPage>} [ocrArr] - Array of OcrPage objects
  *    Used to subset supplementary fonts to only the characters that are actually used.
  */
-const createPdfFontRefs = async (ocrArr) => {
+const createPdfFontRefs = async (objectIStart, ocrArr) => {
   if (!FontCont.raw) throw new Error('No fonts loaded.');
 
+  let objectI = objectIStart;
+
   let fontI = 0;
-  let objectI = 0;
   /** @type {Object<string, PdfFontFamily>} */
   const pdfFonts = {};
   /** @type {{familyKey: string, key: string}[]} */
@@ -159,7 +161,7 @@ export async function writePdf({
   let pdfFontObjStrArr = [];
 
   if (ocrArr && ocrArr.length > 0) {
-    const fontRefs = await createPdfFontRefs(ocrArr);
+    const fontRefs = await createPdfFontRefs(objectI, ocrArr);
     pdfFonts = fontRefs.pdfFonts;
     pdfFontRefs = fontRefs.pdfFontRefs;
     pdfFontObjStrArr = fontRefs.pdfFontObjStrArr;
