@@ -323,7 +323,7 @@ export async function importFiles(files) {
     // Start loading mupdf workers as soon as possible, without waiting for `pdfFile.arrayBuffer` (which can take a while).
     ImageCache.getMuPDFScheduler();
 
-    ImageCache.pdfData = pdfFile instanceof ArrayBuffer ? pdfFile : await pdfFile.arrayBuffer();
+    ImageCache.pdfData = pdfFile.arrayBuffer ? await pdfFile.arrayBuffer() : pdfFile;
 
     // If no XML data is provided, page sizes are calculated using muPDF alone
     await ImageCache.openMainPDF(ImageCache.pdfData, opt.omitNativeText);
