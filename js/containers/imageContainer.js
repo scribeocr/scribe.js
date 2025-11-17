@@ -38,7 +38,7 @@ export class MuPDFScheduler {
      * @param {Parameters<typeof import('../../mupdf/mupdf-worker.js').mupdf.drawPageAsPNG>[1]} args
      * @returns {Promise<ReturnType<typeof import('../../mupdf/mupdf-worker.js').mupdf.drawPageAsPNG>>}
      */
-    this.drawPageAsPNG = (args) => (this.scheduler.addJob('drawPageAsPNG', args));
+    this.drawPageAsPNG = (args, priorityJob = false) => (this.scheduler.addJob('drawPageAsPNG', args, priorityJob));
   }
 }
 
@@ -196,7 +196,7 @@ export class ImageCache {
     await Promise.all(workersPromiseArr);
   };
 
-  static #renderImage = async (n, color = false) => {
+  static #renderImage = async (n, color = false, priorityJob = false) => {
     if (ImageCache.inputModes.image) {
       return ImageCache.nativeSrc[n];
     } if (ImageCache.inputModes.pdf) {
@@ -206,7 +206,7 @@ export class ImageCache {
       const muPDFScheduler = await ImageCache.getMuPDFScheduler();
       return muPDFScheduler.drawPageAsPNG({
         page: n + 1, dpi, color, skipText: skipTextMode,
-      }).then((res) => new ImageWrapper(n, res, color ? 'color' : 'gray'));
+      }, priorityJob).then((res) => new ImageWrapper(n, res, color ? 'color' : 'gray'));
     }
     throw new Error('Attempted to render image without image input provided.');
   };
@@ -261,8 +261,10 @@ export class ImageCache {
    * @param {ImagePropertiesRequest} [props] - Image properties needed.
    *  Image properties should only be defined if needed, as they can require the image to be re-rendered.
    * @param {boolean} [nativeOnly=true]
+   * @param {boolean} [priorityJob=false] - Whether to make this a priority job, cutting ahead of non-priority jobs.
+   *    This is used to keep the UI responsive when many jobs are queued.
    */
-  static getImages = (n, props, nativeOnly = true) => {
+  static getImages = (n, props, nativeOnly = true, priorityJob = false) => {
     if (!ImageCache.inputModes.image && !ImageCache.inputModes.pdf) {
       return { native: undefined, binary: undefined };
     }
@@ -294,7 +296,7 @@ export class ImageCache {
         let img1;
         if (renderRaw) {
           const color = props?.colorMode === 'color' || !props?.colorMode && opt.colorMode === 'color';
-          img1 = await ImageCache.#renderImage(n, color);
+          img1 = await ImageCache.#renderImage(n, color, priorityJob);
         } else {
           img1 = await inputNative;
         }
@@ -314,14 +316,18 @@ export class ImageCache {
   /**
    * @param {number} n
    * @param {ImagePropertiesRequest} [props]
+   * @param {boolean} [priorityJob=false] - Whether to make this a priority job, cutting ahead of non-priority jobs.
+   *    This is used to keep the UI responsive when many jobs are queued.
    */
-  static getNative = async (n, props) => ImageCache.getImages(n, props, true).native;
+  static getNative = async (n, props, priorityJob) => ImageCache.getImages(n, props, true, priorityJob || false).native;
 
   /**
    * @param {number} n
    * @param {ImagePropertiesRequest} [props]
+   * @param {boolean} [priorityJob=false] - Whether to make this a priority job, cutting ahead of non-priority jobs.
+   *    This is used to keep the UI responsive when many jobs are queued.
    */
-  static getBinary = async (n, props) => ImageCache.getImages(n, props, false).binary;
+  static getBinary = async (n, props, priorityJob) => ImageCache.getImages(n, props, false, priorityJob || false).binary;
 
   /**
    * Pre-render a range of pages.
@@ -380,13 +386,18 @@ export class ImageCache {
 
   /**
    *
-   * @param {ArrayBuffer} fileData
+   * @param {ArrayBuffer | Uint8Array | Blob} fileData
    * @param {Boolean} [skipText=false] - Whether to skip native text when rendering PDF to image.
    */
   static openMainPDF = async (fileData, skipText = false) => {
-    const muPDFScheduler = await ImageCache.getMuPDFScheduler();
+    // Start loading the scheduler ASAP. `pdfFile.arrayBuffer` can take time to run.
+    const muPDFSchedulerP = ImageCache.getMuPDFScheduler();
 
-    await ImageCache.#loadFileMuPDFScheduler(fileData);
+    ImageCache.pdfData = fileData.arrayBuffer ? await fileData.arrayBuffer() : fileData;
+
+    const muPDFScheduler = await muPDFSchedulerP;
+
+    await ImageCache.#loadFileMuPDFScheduler(ImageCache.pdfData);
 
     ImageCache.pageCount = await muPDFScheduler.workers[0].countPages();
 
