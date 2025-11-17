@@ -163,6 +163,99 @@ export const importImageFilesP = async (files) => {
 };
 
 /**
+ * Read a .scribe file and restore session data.
+ * @param {string | File | FileNode | ArrayBuffer} scribeFile
+ */
+const restoreSessionFromFile = async (scribeFile) => {
+  const scribeRestoreStr = await readOcrFile(scribeFile);
+  /** @type {ScribeSaveData} */
+  const scribeRestoreObj = JSON.parse(scribeRestoreStr);
+  if (scribeRestoreObj.fontState) {
+    objectAssignDefined(FontCont.state, scribeRestoreObj.fontState);
+    await runFontOptimization(ocrAll.active);
+  }
+  if (scribeRestoreObj.layoutRegions) {
+    // existingLayout = true;
+    layoutRegions.pages = scribeRestoreObj.layoutRegions;
+  }
+  if (scribeRestoreObj.layoutDataTables) {
+    // existingLayoutDataTable = true;
+    addCircularRefsDataTables(scribeRestoreObj.layoutDataTables);
+    layoutDataTables.pages = scribeRestoreObj.layoutDataTables;
+  }
+
+  const oemName = 'User Upload';
+  if (!ocrAll[oemName]) ocrAll[oemName] = Array(inputData.pageCount);
+  addCircularRefsOcr(scribeRestoreObj.ocr);
+  ocrAll[oemName] = scribeRestoreObj.ocr;
+  ocrAll.active = ocrAll[oemName];
+
+  for (let i = 0; i < ocrAll[oemName].length; i++) {
+    inputData.xmlMode[i] = true;
+    if (ocrAll[oemName][i].dims.height && ocrAll[oemName][i].dims.width) {
+      pageMetricsAll[i] = new PageMetrics(ocrAll[oemName][i].dims);
+    }
+    pageMetricsAll[i].angle = ocrAll[oemName][i].angle;
+  }
+};
+
+/**
+ * Restore session data from legacy HOCR exports.
+ * Originally HOCR was used as the primary format for saving and restoring sessions,
+ * which lead to a significant amount of session data being stored in HOCR files.
+ * This function extracts that data and restores it to the current session format.
+ * Eventually this function can be deprecated and removed.
+ * Users should use the .scribe format for saving and restoring sessions instead.
+ * @param {Awaited<ReturnType<importOCRFiles>>} ocrData
+ */
+const restoreSessionFromLegacyHocr = async (ocrData) => {
+  let existingOpt = false;
+
+  objectAssignDefined(FontCont.state, ocrData.fontState);
+
+  // Restore font metrics and optimize font from previous session (if applicable)
+  if (ocrData.fontState.charMetrics && Object.keys(ocrData.fontState.charMetrics).length > 0) {
+    const fontPromise = loadBuiltInFontsRaw();
+
+    existingOpt = true;
+
+    await gs.schedulerReady;
+    setDefaultFontAuto(FontCont.state.charMetrics);
+
+    // If `ocrData.enableOpt` is `false`, then the metrics are present but ignored.
+    // This occurs if optimization was found to decrease accuracy for both sans and serif,
+    // not simply because the user disabled optimization in the view settings.
+    // If no `enableOpt` property exists but metrics are present, then optimization is enabled.
+    if (ocrData.enableOpt === 'false') {
+      FontCont.state.enableOpt = false;
+    } else {
+      await fontPromise;
+      if (!FontCont.raw) throw new Error('Raw font data not found.');
+      FontCont.opt = await optimizeFontContainerAll(FontCont.raw, FontCont.state.charMetrics);
+      FontCont.state.enableOpt = true;
+      await enableFontOpt(true);
+    }
+  }
+
+  // Restore layout data from previous session (if applicable)
+  if (ocrData.layoutObj) {
+    for (let i = 0; i < ocrData.layoutObj.length; i++) {
+      layoutRegions.pages[i] = ocrData.layoutObj[i];
+    }
+  }
+
+  if (ocrData.layoutDataTableObj) {
+    for (let i = 0; i < ocrData.layoutDataTableObj.length; i++) {
+      layoutDataTables.pages[i] = ocrData.layoutDataTableObj[i];
+    }
+  }
+
+  return {
+    existingOpt,
+  };
+};
+
+/**
  * An object with this shape can be used to provide input to the `importFiles` function,
  * without needing that function to figure out the file types.
  * This is required when using ArrayBuffer inputs.
@@ -269,44 +362,12 @@ export async function importFiles(files) {
     inputData.defaultDownloadFileName = `${scribeFiles[0].name.replace(/\.\w{1,6}$/, '')}.pdf`;
   }
 
-  let existingLayout = false;
-  let existingLayoutDataTable = false;
-
   inputData.pdfMode = pdfFiles.length === 1;
   inputData.imageMode = !!(imageFiles.length > 0 && !inputData.pdfMode);
   ImageCache.inputModes.image = !!(imageFiles.length > 0 && !inputData.pdfMode);
 
-  if (scribeFiles.length > 0) {
-    const scribeRestoreStr = await readOcrFile(scribeFiles[0]);
-    /** @type {ScribeSaveData} */
-    const scribeRestoreObj = JSON.parse(scribeRestoreStr);
-    if (scribeRestoreObj.fontState) {
-      objectAssignDefined(FontCont.state, scribeRestoreObj.fontState);
-      await runFontOptimization(ocrAll.active);
-    }
-    if (scribeRestoreObj.layoutRegions) {
-      existingLayout = true;
-      layoutRegions.pages = scribeRestoreObj.layoutRegions;
-    }
-    if (scribeRestoreObj.layoutDataTables) {
-      existingLayoutDataTable = true;
-      addCircularRefsDataTables(scribeRestoreObj.layoutDataTables);
-      layoutDataTables.pages = scribeRestoreObj.layoutDataTables;
-    }
-
-    const oemName = 'User Upload';
-    if (!ocrAll[oemName]) ocrAll[oemName] = Array(inputData.pageCount);
-    addCircularRefsOcr(scribeRestoreObj.ocr);
-    ocrAll[oemName] = scribeRestoreObj.ocr;
-    ocrAll.active = ocrAll[oemName];
-
-    for (let i = 0; i < ocrAll[oemName].length; i++) {
-      inputData.xmlMode[i] = true;
-      if (ocrAll[oemName][i].dims.height && ocrAll[oemName][i].dims.width) {
-        pageMetricsAll[i] = new PageMetrics(ocrAll[oemName][i].dims);
-      }
-      pageMetricsAll[i].angle = ocrAll[oemName][i].angle;
-    }
+  if (scribeFiles[0]) {
+    await restoreSessionFromFile(scribeFiles[0]);
   }
 
   const xmlModeImport = ocrFiles.length > 0;
@@ -318,15 +379,8 @@ export async function importFiles(files) {
   let reimportHocrMode = false;
 
   if (inputData.pdfMode) {
-    const pdfFile = pdfFiles[0];
-
-    // Start loading mupdf workers as soon as possible, without waiting for `pdfFile.arrayBuffer` (which can take a while).
-    ImageCache.getMuPDFScheduler();
-
-    ImageCache.pdfData = pdfFile.arrayBuffer ? await pdfFile.arrayBuffer() : pdfFile;
-
     // If no XML data is provided, page sizes are calculated using muPDF alone
-    await ImageCache.openMainPDF(ImageCache.pdfData, opt.omitNativeText);
+    await ImageCache.openMainPDF(pdfFiles[0], opt.omitNativeText);
 
     pageCountImage = ImageCache.pageCount;
     ImageCache.loadCount = ImageCache.pageCount;
@@ -361,49 +415,13 @@ export async function importFiles(files) {
       ocrAllRaw.active = ocrAllRaw.active.slice(0, pageCountImage);
     }
 
-    objectAssignDefined(FontCont.state, ocrData.fontState);
-
-    // Restore font metrics and optimize font from previous session (if applicable)
-    if (ocrData.fontState.charMetrics && Object.keys(ocrData.fontState.charMetrics).length > 0) {
-      const fontPromise = loadBuiltInFontsRaw();
-
-      existingOpt = true;
-
-      await gs.schedulerReady;
-      setDefaultFontAuto(FontCont.state.charMetrics);
-
-      // If `ocrData.enableOpt` is `false`, then the metrics are present but ignored.
-      // This occurs if optimization was found to decrease accuracy for both sans and serif,
-      // not simply because the user disabled optimization in the view settings.
-      // If no `enableOpt` property exists but metrics are present, then optimization is enabled.
-      if (ocrData.enableOpt === 'false') {
-        FontCont.state.enableOpt = false;
-      } else {
-        await fontPromise;
-        if (!FontCont.raw) throw new Error('Raw font data not found.');
-        FontCont.opt = await optimizeFontContainerAll(FontCont.raw, FontCont.state.charMetrics);
-        FontCont.state.enableOpt = true;
-        await enableFontOpt(true);
-      }
-    }
-
-    // Restore layout data from previous session (if applicable)
-    if (ocrData.layoutObj) {
-      for (let i = 0; i < ocrData.layoutObj.length; i++) {
-        layoutRegions.pages[i] = ocrData.layoutObj[i];
-      }
-      existingLayout = true;
-    }
-
-    if (ocrData.layoutDataTableObj) {
-      for (let i = 0; i < ocrData.layoutDataTableObj.length; i++) {
-        layoutDataTables.pages[i] = ocrData.layoutDataTableObj[i];
-      }
-      existingLayoutDataTable = true;
-    }
-
     format = /** @type {("hocr" | "abbyy" | "stext" | "textract" | "text")} */ (ocrData.format);
     reimportHocrMode = ocrData.reimportHocrMode;
+
+    if (ocrData.reimportHocrMode) {
+      const restoreRes = await restoreSessionFromLegacyHocr(ocrData);
+      existingOpt = restoreRes.existingOpt;
+    }
   }
 
   let pageCountOcr = ocrAllRaw.active?.length || ocrAll.active?.length || 0;
@@ -426,14 +444,14 @@ export async function importFiles(files) {
 
   ocrAllRaw.active = ocrAllRaw.active || Array(pageCount);
 
-  if (!existingLayout) {
-    for (let i = 0; i < inputData.pageCount; i++) {
+  for (let i = 0; i < inputData.pageCount; i++) {
+    if (!layoutRegions.pages[i]) {
       layoutRegions.pages[i] = new LayoutPage(i);
     }
   }
 
-  if (!existingLayoutDataTable) {
-    for (let i = 0; i < inputData.pageCount; i++) {
+  for (let i = 0; i < inputData.pageCount; i++) {
+    if (!layoutDataTables.pages[i]) {
       layoutDataTables.pages[i] = new LayoutDataTablePage(i);
     }
   }
