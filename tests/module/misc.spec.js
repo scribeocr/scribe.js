@@ -28,7 +28,7 @@ describe('Check cleanup functions allow for resetting module.', function () {
 describe('extractText function can be used with .xml imports.', function () {
   this.timeout(10000);
   it('Should recognize basic .jpg image using single function', async () => {
-    const txt = await scribe.extractText([`${ASSETS_PATH_KARMA}/econometrica_example_abbyy.xml`]);
+    const txt = await scribe.extractText([`${ASSETS_PATH_KARMA}/econometrica_example.abbyy.xml`]);
     assert.strictEqual(txt.slice(0, 17), 'Check for updates');
   }).timeout(10000);
 

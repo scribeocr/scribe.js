@@ -48,7 +48,7 @@ describe('Check .hocr export function.', function () {
   this.timeout(10000);
 
   it('Exporting to .hocr and reimporting should restore OCR data without modification', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/scribe_test_pdf1_abbyy.xml`]);
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/scribe_test_pdf1.abbyy.xml`]);
 
     const ocrAllComp1 = standardizeOCRPages(scribe.data.ocr.active);
 
