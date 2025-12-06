@@ -38,7 +38,7 @@ describe('Check export for .pdf files.', function () {
   it('Export -> import of image + text (visible, proofreading) PDF retains text content', async () => {
     scribe.opt.displayMode = 'proof';
 
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/testocr.png`, `${ASSETS_PATH_KARMA}/testocr.xml`]);
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/testocr.png`, `${ASSETS_PATH_KARMA}/testocr.abbyy.xml`]);
 
     const exportedPdf = await scribe.exportData('pdf');
     const exportedText = await scribe.exportData('text');

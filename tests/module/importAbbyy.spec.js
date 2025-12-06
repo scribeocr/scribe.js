@@ -16,7 +16,7 @@ describe('Check Abbyy XML import function.', function () {
 
   it('Should import Abbyy XML with PNG image', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/ascenders_descenders_test.png`,
-      `${ASSETS_PATH_KARMA}/ascenders_descenders_test_Abbyy.xml`]);
+      `${ASSETS_PATH_KARMA}/ascenders_descenders_test.abbyy.xml`]);
   });
 
   it('Should correctly import text content from Abbyy XML (default settings)', async () => {
@@ -38,7 +38,7 @@ describe('Check Abbyy XML import function.', function () {
   this.timeout(10000);
 
   it('Should import Abbyy XML without image/PDF inputs', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/econometrica_example_abbyy.xml`]);
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/econometrica_example.abbyy.xml`]);
   });
 
   it('Should correctly import smallcaps attribute', async () => {
@@ -60,7 +60,7 @@ describe('Check that text orientation is handled correctly in Abbyy imports.', f
   this.timeout(10000);
 
   it('Lines printed at exactly 90/180/270 degrees have orientation detected correctly', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/CSF_Proposed_Budget_Book_June_2024_r8_30_all_orientations_abbyy.xml`]);
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/CSF_Proposed_Budget_Book_June_2024_r8_30_all_orientations.abbyy.xml`]);
     assert.strictEqual(scribe.data.ocr.active[0].lines[2].words[0].line.orientation, 3);
     assert.strictEqual(scribe.data.ocr.active[3].lines[2].words[0].line.orientation, 2);
     assert.strictEqual(scribe.data.ocr.active[2].lines[2].words[0].line.orientation, 1);
@@ -118,7 +118,7 @@ describe('Check that empty pages are handled correctly in Abbyy imports.', funct
   this.timeout(10000);
 
   it('Check that empty pages are handled correctly in Abbyy imports.', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/yearbook_of_foreign_trade_statistics_of_poland_2024.xml`]);
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/yearbook_of_foreign_trade_statistics_of_poland_2024.abbyy.xml`]);
     assert.strictEqual(scribe.data.ocr.active[0].lines.length, 7);
     assert.strictEqual(scribe.data.ocr.active[1].lines.length, 0);
   }).timeout(10000);
@@ -133,7 +133,7 @@ describe('Check that font style is detected for Abbyy xml imports.', function ()
 
   it('Bold style is detected', async () => {
     scribe.opt.usePDFText.native.main = true;
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/complaint_1.xml`]);
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/complaint_1.abbyy.xml`]);
     assert.isTrue(scribe.data.ocr.active[1].lines[3].words[0].style.bold);
     assert.isFalse(scribe.data.ocr.active[1].lines[3].words[0].style.italic);
     assert.isFalse(scribe.data.ocr.active[1].lines[3].words[0].style.underline);
@@ -168,7 +168,7 @@ describe('Check Abbyy XML table import.', function () {
 
   it('Should import Abbyy XML with PDF document', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.pdf`,
-      `${ASSETS_PATH_KARMA}/border_patrol_tables_Abbyy.xml`]);
+      `${ASSETS_PATH_KARMA}/border_patrol_tables.abbyy.xml`]);
 
     assert.isTrue(scribe.data.ocr.active[0].lines.length > 0);
   }).timeout(20000);

@@ -14,7 +14,7 @@ describe('Check export for .txt files.', function () {
   this.timeout(10000);
 
   it('Exporting simple paragraph to text works properly', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/testocr.xml`]);
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/testocr.abbyy.xml`]);
 
     const exportedText = await scribe.exportData('text');
 
