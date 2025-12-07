@@ -1,4 +1,5 @@
 import { convertPageAbbyy } from '../import/convertPageAbbyy.js';
+import { convertPageAlto } from '../import/convertPageAlto.js';
 import { convertPageBlocks } from '../import/convertPageBlocks.js';
 import { convertPageHocr } from '../import/convertPageHocr.js';
 import { convertPageStext } from '../import/convertPageStext.js';
@@ -400,6 +401,7 @@ const handleMessage = async (data) => {
   ({
     // Convert page functions
     convertPageAbbyy,
+    convertPageAlto,
     convertPageHocr,
     convertPageStext,
     convertDocTextract,

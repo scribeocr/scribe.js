@@ -56,6 +56,30 @@ describe('Check Abbyy XML import function.', function () {
   });
 }).timeout(120000);
 
+describe('Check that text orientation is handled correctly in Abbyy imports (simple layout).', function () {
+  this.timeout(10000);
+
+  it('Lines printed at exactly 90/180/270 degrees have orientation detected correctly', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/testocr_all_orientations.abbyy.xml`]);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[0].words[0].line.orientation, 0);
+    assert.strictEqual(scribe.data.ocr.active[1].lines[0].words[0].line.orientation, 0);
+    assert.strictEqual(scribe.data.ocr.active[2].lines[0].words[0].line.orientation, 0);
+    assert.strictEqual(scribe.data.ocr.active[3].lines[0].words[0].line.orientation, 3);
+    assert.strictEqual(scribe.data.ocr.active[4].lines[0].words[0].line.orientation, 3);
+    assert.strictEqual(scribe.data.ocr.active[5].lines[0].words[0].line.orientation, 3);
+    assert.strictEqual(scribe.data.ocr.active[6].lines[0].words[0].line.orientation, 2);
+    assert.strictEqual(scribe.data.ocr.active[7].lines[0].words[0].line.orientation, 2);
+    assert.strictEqual(scribe.data.ocr.active[8].lines[0].words[0].line.orientation, 2);
+    assert.strictEqual(scribe.data.ocr.active[9].lines[0].words[0].line.orientation, 1);
+    assert.strictEqual(scribe.data.ocr.active[10].lines[0].words[0].line.orientation, 1);
+    assert.strictEqual(scribe.data.ocr.active[11].lines[0].words[0].line.orientation, 1);
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);
+
 describe('Check that text orientation is handled correctly in Abbyy imports.', function () {
   this.timeout(10000);
 
