@@ -397,7 +397,7 @@ export async function importFiles(files) {
 
     const ocrData = await importOCRFiles(Array.from(ocrFiles));
 
-    format = /** @type {("hocr" | "abbyy" | "stext" | "textract" | "text")} */ (ocrData.format);
+    format = /** @type {("hocr" | "abbyy" | "alto" | "stext" | "textract" | "text")} */ (ocrData.format);
 
     // The text import function requires built-in fonts to be loaded.
     if (format === 'text') {
@@ -415,7 +415,7 @@ export async function importFiles(files) {
       ocrAllRaw.active = ocrAllRaw.active.slice(0, pageCountImage);
     }
 
-    format = /** @type {("hocr" | "abbyy" | "stext" | "textract" | "text")} */ (ocrData.format);
+    format = /** @type {("hocr" | "abbyy" | "alto" | "stext" | "textract" | "text")} */ (ocrData.format);
     reimportHocrMode = ocrData.reimportHocrMode;
 
     if (ocrData.reimportHocrMode) {

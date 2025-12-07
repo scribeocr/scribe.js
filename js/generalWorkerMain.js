@@ -94,6 +94,7 @@ export async function initGeneralWorker() {
 
     obj.convertPageHocr = wrap('convertPageHocr');
     obj.convertPageAbbyy = wrap('convertPageAbbyy');
+    obj.convertPageAlto = wrap('convertPageAlto');
     obj.convertPageStext = wrap('convertPageStext');
     obj.convertDocTextract = wrap('convertDocTextract');
     obj.convertDocAzureDocIntel = wrap('convertDocAzureDocIntel');
@@ -182,6 +183,15 @@ export class gs {
   static convertPageAbbyy = async (args) => {
     await gs.getGeneralScheduler();
     return gs.schedulerInner.addJob('convertPageAbbyy', args);
+  };
+
+  /**
+   * @param {Parameters<typeof import('./import/convertPageAlto.js').convertPageAlto>[0]} args
+   * @returns {ReturnType<typeof import('./import/convertPageAlto.js').convertPageAlto>}
+   */
+  static convertPageAlto = async (args) => {
+    await gs.getGeneralScheduler();
+    return gs.schedulerInner.addJob('convertPageAlto', args);
   };
 
   /**

@@ -24,6 +24,11 @@ const detectOcrFormat = (ocrStr, ext) => {
     }
   }
 
+  // Check whether input is ALTO XML
+  if (/<alto[\s>]/i.test(ocrStr) && /xmlns="http:\/\/www\.loc\.gov\/standards\/alto/i.test(ocrStr)) {
+    return 'alto';
+  }
+
   // Check whether input is Abbyy XML
   // TODO: The auto-detection of formats needs to be more robust.
   // At present, any string that contains ">" and "abbyy" is considered Abbyy XML.
@@ -114,6 +119,16 @@ export async function importOCRFiles(ocrFilesAll) {
       }
     } else if (format === 'azure_doc_intel') {
       hocrRaw = [hocrStrAll];
+    } else if (format === 'alto') {
+      // Extract the Styles section to prepend to each page
+      const stylesMatch = hocrStrAll.match(/<Styles>[\s\S]*?<\/Styles>/i);
+      const stylesSection = stylesMatch ? stylesMatch[0] : '';
+
+      // Split by Page elements
+      const pages = hocrStrAll.split(/(?=<Page\s)/).slice(1);
+
+      // Prepend Styles section to each page so font lookups work
+      hocrRaw = pages.map((page) => stylesSection + page);
     } else if (format === 'abbyy') {
       hocrRaw = hocrStrAll.split(/(?=<page)/).slice(1);
     } else if (format === 'stext') {

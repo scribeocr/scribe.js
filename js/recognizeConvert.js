@@ -302,6 +302,8 @@ export async function convertOCRPage(ocrRaw, n, mainData, format, engineName, sc
     res = await gs.convertPageHocr({ ocrStr: ocrRaw, n, scribeMode });
   } else if (format === 'abbyy') {
     res = await gs.convertPageAbbyy({ ocrStr: ocrRaw, n });
+  } else if (format === 'alto') {
+    res = await gs.convertPageAlto({ ocrStr: ocrRaw, n });
   } else if (format === 'textract') {
     // res = await gs.convertPageTextract({ ocrStr: ocrRaw, n });
   } else if (format === 'azure_doc_intel') {
