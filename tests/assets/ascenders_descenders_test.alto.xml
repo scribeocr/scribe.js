@@ -1,0 +1,28 @@
+﻿<?xml version="1.0" encoding="UTF-8" standalone="yes"?>
+<alto xmlns="http://www.loc.gov/standards/alto/ns-v2#" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xsi:schemaLocation="http://www.loc.gov/standards/alto/ns-v2# http://www.loc.gov/standards/alto/alto-v2.0.xsd">
+<Description>
+<MeasurementUnit>pixel</MeasurementUnit>
+<OCRProcessing ID="IdOcr"><ocrProcessingStep><processingDateTime>2025-12-06</processingDateTime><processingSoftware><softwareCreator>ABBYY</softwareCreator><softwareName>ABBYY FineReader Engine</softwareName><softwareVersion>12</softwareVersion></processingSoftware></ocrProcessingStep></OCRProcessing>
+</Description>
+<Styles><TextStyle ID="font0" FONTFAMILY="Times New Roman" FONTSIZE="38"/>
+</Styles>
+<Layout>
+<Page ID="Page1" PHYSICAL_IMG_NR="1" HEIGHT="382" WIDTH="648">
+<TopMargin HEIGHT="51" WIDTH="648" VPOS="0" HPOS="0">
+</TopMargin>
+<LeftMargin HEIGHT="293" WIDTH="58" VPOS="51" HPOS="0">
+</LeftMargin>
+<RightMargin HEIGHT="293" WIDTH="151" VPOS="51" HPOS="497">
+</RightMargin>
+<BottomMargin HEIGHT="38" WIDTH="648" VPOS="344" HPOS="0">
+</BottomMargin>
+<PrintSpace HEIGHT="293" WIDTH="439" VPOS="51" HPOS="58">
+<TextBlock ID="Page1_Block1" HEIGHT="254" WIDTH="433" VPOS="66" HPOS="60" language="en-US" STYLEREFS="font0">
+<TextLine HEIGHT="54" WIDTH="427" VPOS="69" HPOS="63"><String WC="0.85777777433395386" CONTENT="Ascenders" HEIGHT="54" WIDTH="312" VPOS="69" HPOS="63"/><SP WIDTH="23" VPOS="70" HPOS="376"/><String WC="0.56499999761581421" CONTENT="On" HEIGHT="53" WIDTH="90" VPOS="70" HPOS="400"/></TextLine>
+<TextLine HEIGHT="51" WIDTH="302" VPOS="184" HPOS="65"><String WC="0.77399998903274536" CONTENT="query" HEIGHT="51" WIDTH="169" VPOS="184" HPOS="65"/><SP WIDTH="18" VPOS="184" HPOS="235"/><String WC="0.76666665077209473" CONTENT="png" HEIGHT="51" WIDTH="113" VPOS="184" HPOS="254"/></TextLine>
+<TextLine HEIGHT="36" WIDTH="213" VPOS="281" HPOS="62"><String WC="0.98000001907348633" CONTENT="we" HEIGHT="36" WIDTH="85" VPOS="281" HPOS="62"/><SP WIDTH="23" VPOS="281" HPOS="148"/><String WC="0.73666667938232422" CONTENT="can" HEIGHT="36" WIDTH="103" VPOS="281" HPOS="172"/></TextLine>
+</TextBlock>
+</PrintSpace>
+</Page>
+</Layout>
+</alto>
