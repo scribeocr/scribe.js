@@ -7,6 +7,7 @@ import { convertDocTextract } from '../import/convertDocTextract.js';
 import { convertDocAzureDocIntel } from '../import/convertDocAzureDocIntel.js';
 import { convertPageGoogleVision } from '../import/convertPageGoogleVision.js';
 import { convertPageText } from '../import/convertPageText.js';
+import { convertDocDocx } from '../import/convertDocDocx.js';
 
 import { FontCont, loadFontsFromSource } from '../containers/fontContainer.js';
 import {
@@ -409,6 +410,7 @@ const handleMessage = async (data) => {
     convertPageGoogleVision,
     convertPageBlocks,
     convertPageText,
+    convertDocDocx,
 
     // Optimize font functions
     optimizeFont,

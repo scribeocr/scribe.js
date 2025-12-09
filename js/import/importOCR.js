@@ -67,6 +67,10 @@ const detectOcrFormat = (ocrStr, ext) => {
     return 'text';
   }
 
+  if (ext && ext.toLowerCase() === 'docx') {
+    return 'docx';
+  }
+
   return null;
 };
 
@@ -98,9 +102,15 @@ export async function importOCRFiles(ocrFilesAll) {
   let serifFont;
 
   if (singleHOCRMode) {
-    const hocrStrAll = await readOcrFile(ocrFilesAll[0]);
-
-    format = detectOcrFormat(hocrStrAll, ocrFilesAll[0]?.name?.split('.').pop());
+    const fileExt = ocrFilesAll[0]?.name?.split('.').pop();
+    let ocrFilesContent;
+    if (fileExt === 'docx') {
+      ocrFilesContent = await ocrFilesAll[0].arrayBuffer();
+      format = 'docx';
+    } else {
+      ocrFilesContent = await readOcrFile(ocrFilesAll[0]);
+      format = detectOcrFormat(ocrFilesContent, fileExt);
+    }
 
     if (!format) {
       console.error(ocrFilesAll[0]);
@@ -108,37 +118,40 @@ export async function importOCRFiles(ocrFilesAll) {
     }
 
     if (format === 'textract') {
-      hocrRaw = [hocrStrAll];
+      hocrRaw = [ocrFilesContent];
     } else if (format === 'google_vision') {
-      hocrRaw = [hocrStrAll];
-      if (hocrStrAll.substring(0, 500).includes('"responses"')) {
-        const responses = JSON.parse(hocrStrAll).responses;
+      hocrRaw = [ocrFilesContent];
+      if (ocrFilesContent.substring(0, 500).includes('"responses"')) {
+        const responses = JSON.parse(ocrFilesContent).responses;
         hocrRaw = responses
           .sort((a, b) => a.context.pageNumber - b.context.pageNumber)
           .map((resp) => JSON.stringify(resp));
       }
     } else if (format === 'azure_doc_intel') {
-      hocrRaw = [hocrStrAll];
+      hocrRaw = [ocrFilesContent];
     } else if (format === 'alto') {
       // Extract the Styles section to prepend to each page
-      const stylesMatch = hocrStrAll.match(/<Styles>[\s\S]*?<\/Styles>/i);
+      const stylesMatch = ocrFilesContent.match(/<Styles>[\s\S]*?<\/Styles>/i);
       const stylesSection = stylesMatch ? stylesMatch[0] : '';
 
       // Split by Page elements
-      const pages = hocrStrAll.split(/(?=<Page\s)/).slice(1);
+      const pages = ocrFilesContent.split(/(?=<Page\s)/).slice(1);
 
       // Prepend Styles section to each page so font lookups work
       hocrRaw = pages.map((page) => stylesSection + page);
     } else if (format === 'abbyy') {
-      hocrRaw = hocrStrAll.split(/(?=<page)/).slice(1);
+      hocrRaw = ocrFilesContent.split(/(?=<page)/).slice(1);
     } else if (format === 'stext') {
-      hocrRaw = hocrStrAll.split(/(?=<page)/).slice(1);
+      hocrRaw = ocrFilesContent.split(/(?=<page)/).slice(1);
     } else if (format === 'text') {
-      hocrRaw = [hocrStrAll];
+      hocrRaw = [ocrFilesContent];
+    } else if (format === 'docx') {
+      // For .docx, pass the full file contents to the read function.
+      hocrRaw = [ocrFilesContent];
     } else if (format === 'hocr') {
       // `hocrStrStart` will be missing for individual HOCR pages created with Tesseract.js or the Tesseract API.
-      hocrStrStart = hocrStrAll.match(/[\s\S]*?<body>/)?.[0];
-      hocrRaw = splitHOCRStr(hocrStrAll);
+      hocrStrStart = ocrFilesContent.match(/[\s\S]*?<body>/)?.[0];
+      hocrRaw = splitHOCRStr(ocrFilesContent);
     }
 
     pageCountHOCR = hocrRaw.length;

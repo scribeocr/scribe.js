@@ -314,6 +314,9 @@ export async function convertOCRPage(ocrRaw, n, mainData, format, engineName, sc
     res = await gs.convertPageStext({ ocrStr: ocrRaw, n });
   } else if (format === 'text') {
     res = await gs.convertPageText({ textStr: ocrRaw });
+  } else if (format === 'docx') {
+    console.error('format does not support page-level import.');
+    // res = await gs.convertDocDocx({ docxData: ocrRaw });
   } else {
     throw new Error(`Invalid format: ${format}`);
   }
@@ -404,6 +407,25 @@ export async function convertOCR(ocrRawArr, mainData, format, engineName, scribe
 
   if (format === 'text') {
     const res = await gs.convertPageText({ textStr: ocrRawArr[0] });
+
+    if (res.length > inputData.pageCount) inputData.pageCount = res.length;
+
+    for (let i = 0; i < res.length; i++) {
+      if (!layoutRegions.pages[i]) layoutRegions.pages[i] = new LayoutPage(i);
+    }
+
+    for (let i = 0; i < res.length; i++) {
+      if (!layoutDataTables.pages[i]) layoutDataTables.pages[i] = new LayoutDataTablePage(i);
+    }
+
+    for (let n = 0; n < res.length; n++) {
+      await convertPageCallback(res[n], n, mainData, engineName);
+    }
+    return;
+  }
+
+  if (format === 'docx') {
+    const res = await gs.convertDocDocx({ docxData: ocrRawArr[0] });
 
     if (res.length > inputData.pageCount) inputData.pageCount = res.length;
 
