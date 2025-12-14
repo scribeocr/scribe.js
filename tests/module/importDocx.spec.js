@@ -10,10 +10,15 @@ config.truncateThreshold = 0; // Disable truncation for actual/expected values o
 /* eslint-disable prefer-arrow-callback */
 /* eslint-disable func-names */
 
+// Skip tests prior to Node.js EOL (20.x) where the native File class is available.
+// While the library should be compatible with earlier versions of Node.js,
+// getting every test to run on versions that are already EOL is not a priority.
+const itSkipNodeEOL = typeof process === 'undefined' || parseInt(process.versions.node.split('.')[0]) >= 20 ? it : xit;
+
 describe('Check docx import function.', function () {
   this.timeout(10000);
 
-  it('Should import docx file', async () => {
+  itSkipNodeEOL('Should import docx file', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/testocr.abbyy.xml`]);
     const docxData = await scribe.exportData('docx');
 
@@ -24,13 +29,13 @@ describe('Check docx import function.', function () {
     await scribe.importFiles([docxFile]);
   });
 
-  it('Should correctly import text content from docx', async () => {
+  itSkipNodeEOL('Should correctly import text content from docx', async () => {
     const text1 = scribe.data.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
 
     assert.include(text1, 'This is a lot of 12 point text');
   }).timeout(10000);
 
-  it('Should correctly import paragraphs from docx', async () => {
+  itSkipNodeEOL('Should correctly import paragraphs from docx', async () => {
     assert.isTrue(scribe.data.ocr.active[0].lines.length > 0);
     assert.isTrue(scribe.data.ocr.active[0].pars.length > 0);
   }).timeout(10000);
@@ -43,7 +48,7 @@ describe('Check docx import function.', function () {
 describe('Check export -> import round-trip for docx files.', function () {
   this.timeout(10000);
 
-  it('Exporting and importing docx should preserve text content', async () => {
+  itSkipNodeEOL('Exporting and importing docx should preserve text content', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/testocr.abbyy.xml`]);
 
     const originalText = scribe.data.ocr.active.map((page) => page.lines.map((line) => line.words.map((word) => word.text).join(' ')).join('\n')).join('\n\n');
@@ -68,7 +73,7 @@ describe('Check export -> import round-trip for docx files.', function () {
 describe('Check that font styles are preserved in docx round-trip.', function () {
   this.timeout(10000);
 
-  it('Bold style is preserved in round-trip', async () => {
+  itSkipNodeEOL('Bold style is preserved in round-trip', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/complaint_1.abbyy.xml`]);
 
     const originalBoldWord = scribe.data.ocr.active[1].lines[3].words[0];
@@ -97,7 +102,7 @@ describe('Check that font styles are preserved in docx round-trip.', function ()
     assert.isTrue(foundBoldWord, 'Should have at least one bold word after round-trip');
   }).timeout(10000);
 
-  it('Italic style is preserved in round-trip', async () => {
+  itSkipNodeEOL('Italic style is preserved in round-trip', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.xml`]);
 
     const originalItalicWord = scribe.data.ocr.active[0].lines[30].words[0];
@@ -134,7 +139,7 @@ describe('Check that font styles are preserved in docx round-trip.', function ()
 describe('Check that small caps are preserved in docx round-trip.', function () {
   this.timeout(10000);
 
-  it('Small caps style is preserved in round-trip', async () => {
+  itSkipNodeEOL('Small caps style is preserved in round-trip', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/econometrica_example.abbyy.xml`]);
 
     const originalSmallCapsWord = scribe.data.ocr.active[0].lines[4].words[0];
@@ -171,7 +176,7 @@ describe('Check that small caps are preserved in docx round-trip.', function () 
 describe('Check multi-page docx import.', function () {
   this.timeout(10000);
 
-  it('Should correctly handle multi-page documents', async () => {
+  itSkipNodeEOL('Should correctly handle multi-page documents', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/CSF_Proposed_Budget_Book_June_2024_r8_30_all_orientations.abbyy.xml`]);
 
     const originalPageCount = scribe.data.ocr.active.length;
@@ -197,7 +202,7 @@ describe('Check multi-page docx import.', function () {
 describe('Check that font families are preserved in docx round-trip.', function () {
   this.timeout(10000);
 
-  it('Font family is preserved in round-trip', async () => {
+  itSkipNodeEOL('Font family is preserved in round-trip', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/testocr.abbyy.xml`]);
 
     const originalFontWord = scribe.data.ocr.active[0].lines[0].words[0];
