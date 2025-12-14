@@ -100,6 +100,7 @@ export async function initGeneralWorker() {
     obj.convertDocAzureDocIntel = wrap('convertDocAzureDocIntel');
     obj.convertPageGoogleVision = wrap('convertPageGoogleVision');
     obj.convertPageText = wrap('convertPageText');
+    obj.convertDocDocx = wrap('convertDocDocx');
 
     obj.optimizeFont = wrap('optimizeFont');
 
@@ -210,6 +211,15 @@ export class gs {
   static convertDocAzureDocIntel = async (args) => {
     await gs.getGeneralScheduler();
     return gs.schedulerInner.addJob('convertDocAzureDocIntel', args);
+  };
+
+  /**
+   * @param {Parameters<typeof import('./import/convertDocDocx.js').convertDocDocx>[0]} args
+   * @returns {ReturnType<typeof import('./import/convertDocDocx.js').convertDocDocx>}
+   */
+  static convertDocDocx = async (args) => {
+    await gs.getGeneralScheduler();
+    return gs.schedulerInner.addJob('convertDocDocx', args);
   };
 
   /**

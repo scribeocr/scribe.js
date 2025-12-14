@@ -9,6 +9,7 @@ import { writePdf } from './pdf/writePdf.js';
 import { writeHocr } from './writeHocr.js';
 import { writeText } from './writeText.js';
 import { writeHtml } from './writeHtml.js';
+import { writeAlto } from './writeAlto.js';
 import { removeCircularRefsOcr } from '../objects/ocrObjects.js';
 import { removeCircularRefsDataTables } from '../objects/layoutObjects.js';
 import { FontCont } from '../containers/fontContainer.js';
@@ -16,7 +17,7 @@ import { FontCont } from '../containers/fontContainer.js';
 /**
  * Export active OCR data to specified format.
  * @public
- * @param {'pdf'|'hocr'|'docx'|'html'|'xlsx'|'txt'|'text'|'scribe'} [format='txt']
+ * @param {'pdf'|'hocr'|'alto'|'docx'|'html'|'xlsx'|'txt'|'text'|'scribe'} [format='txt']
  * @param {number} [minPage=0] - First page to export.
  * @param {number} [maxPage=-1] - Last page to export (inclusive). -1 exports through the last page.
  * @returns {Promise<string|ArrayBuffer>}
@@ -218,6 +219,8 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
     }
   } else if (format === 'hocr') {
     content = writeHocr({ ocrData: ocrDownload, minValue: minPage, maxValue: maxPage });
+  } else if (format === 'alto') {
+    content = writeAlto({ ocrData: ocrDownload, minValue: minPage, maxValue: maxPage });
   } else if (format === 'html') {
     const images = /** @type {Array<ImageWrapper>} */ ([]);
     if (opt.includeImages) {
@@ -291,14 +294,15 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
 /**
  * Runs `exportData` and saves the result as a download (browser) or local file (Node.js).
  * @public
- * @param {'pdf'|'hocr'|'docx'|'xlsx'|'txt'|'text'|'html'|'scribe'} format
+ * @param {'pdf'|'hocr'|'alto'|'docx'|'xlsx'|'txt'|'text'|'html'|'scribe'} format
  * @param {string} fileName
  * @param {number} [minPage=0] - First page to export.
  * @param {number} [maxPage=-1] - Last page to export (inclusive). -1 exports through the last page.
  */
 export async function download(format, fileName, minPage = 0, maxPage = -1) {
   if (format === 'text') format = 'txt';
-  fileName = fileName.replace(/\.\w{1,6}$/, `.${format}`);
+  const ext = format === 'alto' ? 'xml' : format;
+  fileName = fileName.replace(/\.\w{1,6}$/, `.${ext}`);
   const content = await exportData(format, minPage, maxPage);
   await saveAs(content, fileName);
 }

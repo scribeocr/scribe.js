@@ -13,7 +13,7 @@ declare global {
 
     // Strings representing supported sources of text.
     // `stext` indicates the text was extracted directly from a PDF using mupdf.
-    type TextSource = null | 'tesseract' | 'textract' | 'google_vision' | 'abbyy' | 'alto' | 'stext' | 'hocr' | 'text' | 'azure_doc_intel';
+    type TextSource = null | 'tesseract' | 'textract' | 'google_vision' | 'abbyy' | 'alto' | 'stext' | 'hocr' | 'text' | 'azure_doc_intel' | 'docx';
 
     type FontState = {
         enableOpt: boolean;
