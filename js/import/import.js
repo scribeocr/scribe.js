@@ -104,7 +104,7 @@ export async function sortInputFiles(files) {
     if (['png', 'jpeg', 'jpg'].includes(fileExt)) {
       imageFilesAll.push(file);
       // All .gz files are assumed to be OCR data (xml) since all other file types can be compressed already
-    } else if (['hocr', 'xml', 'html', 'gz', 'stext', 'json', 'txt'].includes(fileExt)) {
+    } else if (['hocr', 'xml', 'html', 'gz', 'stext', 'json', 'txt', 'docx'].includes(fileExt)) {
       ocrFilesAll.push(file);
     } else if (['scribe'].includes(fileExt)) {
       scribeFilesAll.push(file);
@@ -400,7 +400,7 @@ export async function importFiles(files) {
     format = /** @type {("hocr" | "abbyy" | "alto" | "stext" | "textract" | "text")} */ (ocrData.format);
 
     // The text import function requires built-in fonts to be loaded.
-    if (format === 'text') {
+    if (['text', 'docx'].includes(format)) {
       await loadBuiltInFontsRaw();
     }
 

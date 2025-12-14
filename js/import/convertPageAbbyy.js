@@ -85,9 +85,6 @@ export async function convertPageAbbyy({ ocrStr, n }) {
 
     /**
      * Convert Abbyy XML paragraph to internal format.
-     * Note that Abbyy XML paragraphs are not preserved because paragraphs are re-assigned by the `assignParagraphs` function.
-     * Even if this function call was skipped in the code, when saving/restoring the state using .scribe files, paragraph data is not saved.
-     * Further development would be needed to preserve paragraph data.
      * @param {string} xmlPar
      */
     function convertParAbbyy(xmlPar) {

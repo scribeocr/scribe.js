@@ -27,8 +27,7 @@ export function writeText({
 
     const pageObj = ocrCurrent[g];
 
-    // Do not overwrite paragraphs from Abbyy or Textract.
-    if (reflowText && (!pageObj.textSource || !['textract', 'abbyy'].includes(pageObj.textSource))) {
+    if (reflowText && (!pageObj.textSource || !['textract', 'abbyy', 'google_vision', 'azure_doc_intel', 'docx'].includes(pageObj.textSource))) {
       const angle = pageMetricsAll[g].angle || 0;
       assignParagraphs(pageObj, angle);
     }

@@ -1,6 +1,7 @@
 import ocr from '../objects/ocrObjects.js';
 
 import {
+  calcBboxUnion,
   unescapeXml,
 } from '../utils/miscUtils.js';
 
@@ -115,7 +116,6 @@ export async function convertPageAlto({ ocrStr, n }) {
         wordObj.conf = Math.round(parseFloat(wcStr) * 100);
       }
 
-      // Parse style attributes
       const styleAttr = getAttr(contentMatch, 'STYLE');
       if (styleAttr) {
         if (/bold/i.test(styleAttr)) wordObj.style.bold = true;
@@ -129,7 +129,6 @@ export async function convertPageAlto({ ocrStr, n }) {
       // Use String's STYLEREFS first, fall back to TextBlock's STYLEREFS
       const styleRefs = getAttr(contentMatch, 'STYLEREFS') || blockStyleRefs;
       if (styleRefs) {
-        // Look up the TextStyle definition in the document
         const styleRegex = new RegExp(`<TextStyle\\s*ID=["']${styleRefs}["'][^>]*>`, 'i');
         const styleMatch = ocrStr.match(styleRegex);
         if (styleMatch) {
@@ -161,9 +160,28 @@ export async function convertPageAlto({ ocrStr, n }) {
     const blockStyleRefs = blockTag ? getAttr(blockTag, 'STYLEREFS') : null;
     const blockContent = blockMatch[1];
 
+    /** @type {Array<OcrLine>} */
+    const parLineArr = [];
+
     const textLinesInBlock = [...blockContent.matchAll(textLineRegex)];
     for (const lineMatch of textLinesInBlock) {
+      const lineCountBefore = pageObj.lines.length;
       convertLine(lineMatch[0], blockStyleRefs);
+      if (pageObj.lines.length > lineCountBefore) {
+        parLineArr.push(pageObj.lines[pageObj.lines.length - 1]);
+      }
+    }
+
+    if (parLineArr.length > 0) {
+      const parbox = calcBboxUnion(parLineArr.map((x) => x.bbox));
+      const parObj = new ocr.OcrPar(pageObj, parbox);
+
+      parLineArr.forEach((x) => {
+        x.par = parObj;
+      });
+
+      parObj.lines = parLineArr;
+      pageObj.pars.push(parObj);
     }
   }
 
