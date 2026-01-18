@@ -32,7 +32,7 @@ const detectOcrFormat = (ocrStr, ext) => {
   // Check whether input is Abbyy XML
   // TODO: The auto-detection of formats needs to be more robust.
   // At present, any string that contains ">" and "abbyy" is considered Abbyy XML.
-  const node2 = ocrStr.match(/>([^>]+)/)?.[1];
+  const node2 = ocrStr.substring(0, 500).match(/>([^>]+)/)?.[1];
 
   if (!!node2 && !!/abbyy/i.test(node2)) {
     return 'abbyy';
