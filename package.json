@@ -52,7 +52,6 @@
   },
   "homepage": "https://github.com/scribeocr/scribe.js#readme",
   "dependencies": {
-    "@scribe.js/tesseract.js": "^6.0.4",
     "canvaskit-wasm": "^0.39.1",
     "commander": "^11.1.0"
   }

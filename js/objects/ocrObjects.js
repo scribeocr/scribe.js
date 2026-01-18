@@ -1,4 +1,4 @@
-import { calcBboxUnion } from '../utils/miscUtils.js';
+import { calcBboxUnion, calcBoxOverlap } from '../utils/miscUtils.js';
 
 /**
  * @param {number} n
@@ -354,6 +354,44 @@ const getPageText = (page) => {
     if (i > 0) text += '\n';
     text += getLineText(page.lines[i]);
   }
+  return text;
+};
+
+/**
+ * Get text from words in a specific region of the page.
+ * This is a simple helper function that is used primarily for testing.
+ * The actual logic for checking whether words are in a specific layout area
+ * is more complex and is handled elsewhere.
+ * @param {OcrPage} page
+ * @param {bbox} bbox
+ */
+const getRegionText = (page, bbox) => {
+  const regionWords = /** @type {OcrWord[]} */ ([]);
+
+  for (let i = 0; i < page.lines.length; i++) {
+    const line = page.lines[i];
+    for (let j = 0; j < line.words.length; j++) {
+      const word = line.words[j];
+      if (calcBoxOverlap(word.bbox, bbox) > 0) {
+        regionWords.push(word);
+      }
+    }
+  }
+
+  if (regionWords.length === 0) return '';
+
+  let text = '';
+
+  for (let i = 0; i < regionWords.length; i++) {
+    if (i > 0 && regionWords[i - 1].line !== regionWords[i].line) {
+      text += '\n';
+    } else if (i > 0) {
+      text += ' ';
+    }
+
+    text += regionWords[i].text;
+  }
+
   return text;
 };
 
@@ -812,6 +850,7 @@ const ocr = {
   getPageText,
   getParText,
   getLineText,
+  getRegionText,
   getPrevLine,
   getNextLine,
   getWordFillOpacity,

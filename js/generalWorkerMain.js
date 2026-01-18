@@ -1,4 +1,5 @@
 import { opt } from './containers/app.js';
+import { createScheduler } from '../tesseract.js/src/index.js';
 
 /**
  * Initializes a general worker and returns an object with methods controlled by the worker.
@@ -150,7 +151,6 @@ export class gs {
   /** @type {?GeneralScheduler} */
   // static scheduler = null;
 
-  /** @type {?import('../tess/tesseract.esm.min.js').default} */
   static schedulerInner = null;
 
   /** @type {?Promise<void>} */
@@ -316,9 +316,7 @@ export class gs {
       workerN = Math.max(Math.min(cpuN - 1, 8), 1);
     }
 
-    const Tesseract = typeof process === 'undefined' ? (await import('../tess/tesseract.esm.min.js')).default : await import('@scribe.js/tesseract.js');
-
-    gs.schedulerInner = await Tesseract.createScheduler();
+    gs.schedulerInner = await createScheduler();
     gs.schedulerInner.workers = new Array(workerN);
 
     const addGeneralWorker = async (i) => {
