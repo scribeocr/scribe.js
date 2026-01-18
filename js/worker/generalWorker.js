@@ -20,11 +20,10 @@ import {
   renderPageStaticImp,
 } from './compareOCRModule.js';
 import { optimizeFont } from './optimizeFontModule.js';
+import Tesseract from '../../tesseract.js/src/index.js';
 
 const parentPort = typeof process === 'undefined' ? globalThis : (await import('node:worker_threads')).parentPort;
 if (!parentPort) throw new Error('This file must be run in a worker');
-
-const Tesseract = typeof process === 'undefined' ? (await import('../../tess/tesseract.esm.min.js')).default : await import('@scribe.js/tesseract.js');
 
 // TODO: Add back support for multiple PSM modes.
 // There is already an advanced option in the UI that claims to switch this, but it currently does nothing.
@@ -64,26 +63,9 @@ let langArrCurrent = ['eng'];
 
 let vanillaMode_ = false;
 
-// Explicitly setting these paths with `URL` is necessary for this to work with Webpack.
-// While Tesseract.js users are advised to always point `corePath` to a directory rather than a file,
-// pointing to a file should be fined here.
-// First, we never want to use the LSTM-only version, as every recognition mode (aside from some fringe advanced options) use the Legacy engine.
-// Second, >99% of devices now support the SIMD version, so only using the SIMD version is fine.
-let corePath;
-if (vanillaMode_) {
-  corePath = new URL('../../tess/core_vanilla/tesseract-core-simd.wasm.js', import.meta.url).href;
-} else {
-  corePath = new URL('../../tess/core/tesseract-core-simd.wasm.js', import.meta.url).href;
-}
-
-const workerPath = new URL('../../tess/worker.min.js', import.meta.url).href;
-
 // Custom build is currently only used for browser version, while the Node.js version uses the published npm package.
 // If recognition capabilities are ever added for the Node.js version, then we should use the same build for consistency. .
 const tessOptions = typeof process === 'undefined' ? {
-  corePath,
-  workerPath,
-  // langPath: '/tess/tessdata_dist',
   legacyCore: true,
   legacyLang: true,
   workerBlobURL: false,
@@ -142,9 +124,9 @@ const reinitialize = async ({
   // or if it was never created in the first place.
   if (changeVanilla || !worker) {
     if (vanillaMode_) {
-      tessOptions.corePath = new URL('../../tess/core_vanilla/tesseract-core-simd.wasm.js', import.meta.url).href;
+      tessOptions.vanillaEngine = true;
     } else {
-      tessOptions.corePath = new URL('../../tess/core/tesseract-core-simd.wasm.js', import.meta.url).href;
+      tessOptions.vanillaEngine = false;
     }
 
     if (worker) await worker.terminate();
@@ -181,9 +163,9 @@ const reinitialize2 = async ({ langs, vanillaMode }) => {
   // or if it was never created in the first place.
   if (changeVanilla || !workerLegacy || !workerLSTM) {
     if (vanillaMode_) {
-      tessOptions.corePath = new URL('../../tess/core_vanilla/tesseract-core-simd.wasm.js', import.meta.url).href;
+      tessOptions.vanillaEngine = true;
     } else {
-      tessOptions.corePath = new URL('../../tess/core/tesseract-core-simd.wasm.js', import.meta.url).href;
+      tessOptions.vanillaEngine = false;
     }
 
     if (workerLegacy) {
@@ -234,7 +216,7 @@ export const recognizeAndConvert = async ({
 
   const keepItalic = oemCurrent === 0;
 
-  const ocrBlocks = /** @type {Array<import('@scribe.js/tesseract.js').Block>} */(res1.data.blocks);
+  const ocrBlocks = /** @type {Array<import('../../tesseract.js').Block>} */(res1.data.blocks);
 
   const res2 = await convertPageBlocks({
     ocrBlocks, n, pageDims, rotateAngle: angle, keepItalic,
@@ -298,14 +280,14 @@ export const recognizeAndConvert2 = async ({
   let resLegacy;
   let resLSTM;
   if (options.lstm && options.legacy) {
-    const legacyBlocks = /** @type {Array<import('@scribe.js/tesseract.js').Block>} */(res0.data.blocks);
+    const legacyBlocks = /** @type {Array<import('../../tesseract.js').Block>} */(res0.data.blocks);
     resLegacy = await convertPageBlocks({
       ocrBlocks: legacyBlocks, n, pageDims, rotateAngle: angle, keepItalic: true, upscale: res0.data.upscale,
     });
     (async () => {
       const res1 = await resArr[1];
 
-      const lstmBlocks = /** @type {Array<import('@scribe.js/tesseract.js').Block>} */(res1.data.blocks);
+      const lstmBlocks = /** @type {Array<import('../../tesseract.js').Block>} */(res1.data.blocks);
       resLSTM = await convertPageBlocks({
         ocrBlocks: lstmBlocks, n, pageDims, rotateAngle: angle, keepItalic: false, upscale: res0.data.upscale,
       });
@@ -315,12 +297,12 @@ export const recognizeAndConvert2 = async ({
       parentPort.postMessage({ data: xB, id: `${id}b`, status: 'resolve' });
     })();
   } else if (!options.lstm && options.legacy) {
-    const legacyBlocks = /** @type {Array<import('@scribe.js/tesseract.js').Block>} */(res0.data.blocks);
+    const legacyBlocks = /** @type {Array<import('../../tesseract.js').Block>} */(res0.data.blocks);
     resLegacy = await convertPageBlocks({
       ocrBlocks: legacyBlocks, n, pageDims, rotateAngle: angle, keepItalic: true, upscale: res0.data.upscale,
     });
   } else if (options.lstm && !options.legacy) {
-    const lstmBlocks = /** @type {Array<import('@scribe.js/tesseract.js').Block>} */(res0.data.blocks);
+    const lstmBlocks = /** @type {Array<import('../../tesseract.js').Block>} */(res0.data.blocks);
     resLSTM = await convertPageBlocks({
       ocrBlocks: lstmBlocks, n, pageDims, rotateAngle: angle, keepItalic: false, upscale: res0.data.upscale,
     });

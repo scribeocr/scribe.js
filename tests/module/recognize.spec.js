@@ -223,3 +223,27 @@ describe('Check comparison between OCR versions.', function () {
     await scribe.terminate();
   });
 });
+
+describe('Check vanilla recognition engine.', function () {
+  this.timeout(20000);
+
+  it('Enabling vanillaMode option should use unmodified recognition engine', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/bill.png`]);
+    await scribe.recognize({
+      vanillaMode: true,
+    });
+    // This region contains text that is recognized by the modified engine
+    // however is missed by the unmodified ("vanilla") engine.
+    // This test confirms that the unmodified Tesseract.js engine was used.
+    const txt = scribe.utils.ocr.getRegionText(scribe.data.ocr.active[0],
+      {
+        left: 24, top: 54, right: 930, bottom: 91,
+      });
+
+    assert.strictEqual(txt, 'Debits Credits Balance');
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+});
