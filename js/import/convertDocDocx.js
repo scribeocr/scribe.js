@@ -79,12 +79,56 @@ function parseRunElement(runXml) {
 }
 
 /**
+ * Parse footnotes from docx footnotes.xml content
+ * @param {string} footnotesXml
+ * @returns {Map<string, Array<{text: string, styles: {bold: boolean, italic: boolean, smallCaps: boolean, underline: boolean, sup: boolean, font: string | null}}>>}
+ */
+export function parseFootnotes(footnotesXml) {
+  /** @type {Map<string, Array<{text: string, styles: {bold: boolean, italic: boolean, smallCaps: boolean, underline: boolean, sup: boolean, font: string | null}}>>} */
+  const footnotes = new Map();
+
+  const footnoteMatches = footnotesXml.matchAll(/<w:footnote\s+[^>]*w:id="([^"]+)"[^>]*>(.*?)<\/w:footnote>/gs);
+
+  for (const footnoteMatch of footnoteMatches) {
+    const footnoteId = footnoteMatch[1];
+    const footnoteContent = footnoteMatch[2];
+
+    // Skip separator footnotes (id -1 and 0 are typically separators)
+    if (footnoteId === '-1' || footnoteId === '0') continue;
+
+    const runs = [];
+    const runMatches = footnoteContent.matchAll(/<w:r[^>]*>(.*?)<\/w:r>/gs);
+
+    for (const runMatch of runMatches) {
+      const runContent = runMatch[1];
+
+      // Skip footnote reference markers (<w:footnoteRef/>)
+      if (/<w:footnoteRef\s*\/>/.test(runContent)) continue;
+
+      const parsed = parseRunElement(runContent);
+      if (parsed.text) {
+        runs.push(parsed);
+      }
+    }
+
+    if (runs.length > 0) {
+      footnotes.set(footnoteId, runs);
+    }
+  }
+
+  return footnotes;
+}
+
+/**
  * Parse paragraphs from docx document.xml content
  * @param {string} docXml - The content of word/document.xml
+ * @param {Map<string, Array<{text: string, styles: {bold: boolean, italic: boolean, smallCaps: boolean, underline: boolean, sup: boolean, font: string | null}}>>} [footnotesMap]
  * @returns {Array<Array<{text: string, styles: {bold: boolean, italic: boolean, smallCaps: boolean, underline: boolean, sup: boolean, font: string | null}}>>}
  */
-function parseParagraphs(docXml) {
+export function parseParagraphs(docXml, footnotesMap = new Map()) {
   const paragraphs = [];
+  /** @type {Array<string>} */
+  const footnoteOrder = [];
 
   const paragraphMatches = docXml.matchAll(/<w:p[^>]*>(.*?)<\/w:p>/gs);
 
@@ -96,6 +140,30 @@ function parseParagraphs(docXml) {
 
     for (const runMatch of runMatches) {
       const runContent = runMatch[1];
+
+      // Check for footnote references
+      const footnoteRefMatch = runContent.match(/<w:footnoteReference\s+[^>]*w:id="([^"]+)"/);
+      if (footnoteRefMatch) {
+        const footnoteId = footnoteRefMatch[1];
+        if (footnotesMap.has(footnoteId) && !footnoteOrder.includes(footnoteId)) {
+          footnoteOrder.push(footnoteId);
+        }
+        // Add a superscript marker for the footnote number
+        const footnoteIndex = footnoteOrder.indexOf(footnoteId) + 1;
+        runs.push({
+          text: String(footnoteIndex),
+          styles: {
+            bold: false,
+            italic: false,
+            smallCaps: false,
+            underline: false,
+            sup: true,
+            font: null,
+          },
+        });
+        continue;
+      }
+
       const parsed = parseRunElement(runContent);
 
       if (parsed.text) {
@@ -105,6 +173,45 @@ function parseParagraphs(docXml) {
 
     if (runs.length > 0) {
       paragraphs.push(runs);
+    }
+  }
+
+  // Append footnotes at the end of the document
+  if (footnoteOrder.length > 0) {
+    for (const footnoteId of footnoteOrder) {
+      const footnoteRuns = footnotesMap.get(footnoteId);
+      if (footnoteRuns) {
+        const footnoteIndex = footnoteOrder.indexOf(footnoteId) + 1;
+        // Add footnote number as superscript at the start
+        // TODO: This should be handled by the rendering functions.
+        /** @type {Array<{text: string, styles: {bold: boolean, italic: boolean, smallCaps: boolean, underline: boolean, sup: boolean, font: string | null}}>} */
+        const footnoteParagraph = [
+          {
+            text: String(footnoteIndex),
+            styles: {
+              bold: false,
+              italic: false,
+              smallCaps: false,
+              underline: false,
+              sup: true,
+              font: null,
+            },
+          },
+          {
+            text: ' ',
+            styles: {
+              bold: false,
+              italic: false,
+              smallCaps: false,
+              underline: false,
+              sup: false,
+              font: null,
+            },
+          },
+          ...footnoteRuns,
+        ];
+        paragraphs.push(footnoteParagraph);
+      }
     }
   }
 
@@ -135,9 +242,19 @@ export async function convertDocDocx({ docxData, pageDims = null }) {
   const documentBlob = await writer.getData();
   const documentXml = await documentBlob.text();
 
+  // Read footnotes.xml if it exists
+  let footnotesXml = null;
+  const footnotesEntry = entries.find((entry) => entry.filename === 'word/footnotes.xml');
+  if (footnotesEntry) {
+    const footnotesWriter = new BlobWriter();
+    await footnotesEntry.getData(footnotesWriter);
+    const footnotesBlob = await footnotesWriter.getData();
+    footnotesXml = await footnotesBlob.text();
+  }
+
   await zipReader.close();
 
-  const pagesOut = await convertDocumentXML({ documentXml, pageDims });
+  const pagesOut = await convertDocumentXML({ documentXml, footnotesXml, pageDims });
 
   return pagesOut;
 }
@@ -146,9 +263,10 @@ export async function convertDocDocx({ docxData, pageDims = null }) {
  * Convert a docx file to internal OCR format
  * @param {Object} params
  * @param {string} params.documentXml
+ * @param {?string} [params.footnotesXml] - The content of word/footnotes.xml (optional)
  * @param {?{width: number, height: number}} [params.pageDims] - Page dimensions (will be calculated if not provided)
  */
-const convertDocumentXML = async ({ documentXml, pageDims = null }) => {
+const convertDocumentXML = async ({ documentXml, footnotesXml = null, pageDims = null }) => {
   if (!fontOpentype) {
     fontOpentype = (await FontCont.getFont({ font: FONT_FAMILY })).opentype;
   }
@@ -160,7 +278,9 @@ const convertDocumentXML = async ({ documentXml, pageDims = null }) => {
     pageDims = { width: 612, height: 792 };
   }
 
-  const paragraphs = parseParagraphs(documentXml);
+  const footnotesMap = footnotesXml ? parseFootnotes(footnotesXml) : new Map();
+
+  const paragraphs = parseParagraphs(documentXml, footnotesMap);
 
   const pagesOut = [];
   let pageIndex = 0;
@@ -247,7 +367,8 @@ const convertDocumentXML = async ({ documentXml, pageDims = null }) => {
             // Check if we should append to the previous word (word continues across runs)
             // Only append if: we're at the start of a new run AND the last item was NOT whitespace
             const lastWord = lineObj.words[lineObj.words.length - 1];
-            const shouldAppend = lastWord && wordIdx === 0 && charIndexInRun === 0 && !lastItemWasWhitespace;
+            const stylesMatch = lastWord && lastWord.style.sup === run.styles.sup;
+            const shouldAppend = lastWord && wordIdx === 0 && charIndexInRun === 0 && !lastItemWasWhitespace && stylesMatch;
 
             if (shouldAppend) {
               const combinedText = lastWord.text + word;
@@ -263,18 +384,34 @@ const convertDocumentXML = async ({ documentXml, pageDims = null }) => {
               currentX = lastWord.bbox.right;
               charIndexInRun += word.length;
             } else {
-              const wordWidth = getTextWidth(word, FONT_SIZE, fontOpentype);
+              // Superscripts are typically rendered at ~60% of normal font size
+              const supFontSizeRatio = 0.6;
+              const effectiveFontSize = run.styles.sup ? FONT_SIZE * supFontSizeRatio : FONT_SIZE;
+              const wordWidth = getTextWidth(word, effectiveFontSize, fontOpentype);
 
               if (lineObj.words.length > 0 && currentX + wordWidth > MARGIN_HORIZONTAL + availableWidth) {
                 lineComplete = true;
                 break;
               }
 
+              // For superscripts, adjust vertical position to be above the baseline
+              // The baseline is at currentY (from DESCENDER_HEIGHT), so superscripts should be above it
+              let wordTop = lineTop;
+              let wordBottom = lineBottom;
+              if (run.styles.sup) {
+                // Superscript height is proportional to the reduced font size
+                const supHeight = ASCENDER_HEIGHT * supFontSizeRatio;
+                // Position superscript with its bottom at the x-height (roughly 70% of ascender)
+                const xHeight = ASCENDER_HEIGHT * 0.7;
+                wordBottom = Math.round(currentY - xHeight);
+                wordTop = Math.round(wordBottom - supHeight);
+              }
+
               const wordBbox = {
                 left: Math.round(currentX),
-                top: lineTop,
+                top: wordTop,
                 right: Math.round(currentX + wordWidth),
-                bottom: lineBottom,
+                bottom: wordBottom,
               };
               const wordId = `word_${pageIndex + 1}_${pageObj.lines.length + 1}_${lineObj.words.length + 1}`;
               const wordObj = new ocr.OcrWord(lineObj, wordId, word, wordBbox);
