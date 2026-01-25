@@ -78,7 +78,7 @@ export async function convertPageStext({ ocrStr, n }) {
 
       // Unlike Tesseract, stext does not have a native "word" unit (it provides only lines and letters).
       // Therefore, lines are split into words on either (1) a space character or (2) a change in formatting.
-      const wordStrArr = xmlLine.split(/(?:<char[^>]*?c=['"]\s+['"]\/>)/ig);
+      const wordStrArr = xmlLine.split(/(?:<char[^>]*?c=['"]\s+['"]\s*\/>)/ig);
       // If the last element is a closing font tag, remove it.
       if (wordStrArr[wordStrArr.length - 1] && wordStrArr[wordStrArr.length - 1].trim() === '</font>') wordStrArr.pop();
 
