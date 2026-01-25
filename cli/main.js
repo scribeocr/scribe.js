@@ -67,7 +67,7 @@ async function main(func, params) {
     const { highConf, total } = scribe.utils.calcConf(scribe.data.ocr.active);
     console.log(`Confidence: ${highConf / total} (${highConf} of ${total})`);
     if (func === 'conf') {
-      scribe.terminate();
+      await scribe.terminate();
       return output;
     }
   }
@@ -118,7 +118,7 @@ async function main(func, params) {
     }
   }
 
-  scribe.terminate();
+  await scribe.terminate();
 
   return output;
 }

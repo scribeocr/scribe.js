@@ -81,3 +81,24 @@ describe('Check AWS Textract table import (syncronous API).', function () {
     await scribe.terminate();
   });
 }).timeout(120000);
+
+describe('Check AWS Textract JSON import correctly handles angle brackets.', function () {
+  this.timeout(10000);
+
+  before(async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/dictionary_spelling.png`,
+      `${ASSETS_PATH_KARMA}/dictionary_spelling-AwsTextractLayoutSync.json`]);
+  });
+
+  it('Should correctly import < and > signs from AWS Textract', async () => {
+    // The document contains text with angle brackets like <th>, <e>, <wh>, etc.
+    const allText = scribe.data.ocr.active[0].lines.map((line) => line.words.map((x) => x.text).join(' ')).join(' ');
+
+    assert.include(allText, '<th>');
+    assert.include(allText, '<e>');
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);

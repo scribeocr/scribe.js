@@ -17,7 +17,7 @@ import { imageUtils, ImageWrapper } from '../objects/imageObjects.js';
 import { range } from '../utils/miscUtils.js';
 import { opt } from './app.js';
 
-import { createScheduler } from '../../tesseract.js/src/index.js';
+import { TessScheduler } from '../../tesseract.js/src/TessScheduler.js';
 
 let skipTextMode = false;
 
@@ -161,7 +161,7 @@ export class ImageCache {
       }
     }
 
-    const scheduler = await createScheduler();
+    const scheduler = new TessScheduler();
     const workersPromiseArr = range(1, numWorkers).map(async () => {
       const w = await initMuPDFWorker();
       w.id = `png-${Math.random().toString(16).slice(3, 8)}`;

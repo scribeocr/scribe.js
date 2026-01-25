@@ -1,5 +1,5 @@
 import { opt } from './containers/app.js';
-import { createScheduler } from '../tesseract.js/src/index.js';
+import { TessScheduler } from '../tesseract.js/src/TessScheduler.js';
 
 /**
  * Initializes a general worker and returns an object with methods controlled by the worker.
@@ -259,12 +259,10 @@ export class gs {
   };
 
   /**
-   * @template {Partial<Tesseract.OutputFormats>} TO
    * @param {Object} args
-   * @param {Parameters<Tesseract.Worker['recognize']>[0]} args.image
-   * @param {Parameters<Tesseract.Worker['recognize']>[1]} args.options
-   * @param {TO} args.output
-   * @returns {Promise<Tesseract.Page<TO>>}
+   * @param {Parameters<import('../tesseract.js/src/index.js').TessWorker['recognize']>[0]} args.image
+   * @param {Parameters<import('../tesseract.js/src/index.js').TessWorker['recognize']>[1]} args.options
+   * @param {Parameters<import('../tesseract.js/src/index.js').TessWorker['recognize']>[2]} args.output
    * Exported for type inference purposes, should not be imported anywhere.
    */
   static recognize = async (args) => (await gs.schedulerInner.addJob('recognize', args));
@@ -316,7 +314,7 @@ export class gs {
       workerN = Math.max(Math.min(cpuN - 1, 8), 1);
     }
 
-    gs.schedulerInner = await createScheduler();
+    gs.schedulerInner = new TessScheduler();
     gs.schedulerInner.workers = new Array(workerN);
 
     const addGeneralWorker = async (i) => {

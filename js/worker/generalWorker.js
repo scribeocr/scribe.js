@@ -20,7 +20,7 @@ import {
   renderPageStaticImp,
 } from './compareOCRModule.js';
 import { optimizeFont } from './optimizeFontModule.js';
-import Tesseract from '../../tesseract.js/src/index.js';
+import { TessWorker } from '../../tesseract.js/src/TessWorker.js';
 
 const parentPort = typeof process === 'undefined' ? globalThis : (await import('node:worker_threads')).parentPort;
 if (!parentPort) throw new Error('This file must be run in a worker');
@@ -30,12 +30,11 @@ if (!parentPort) throw new Error('This file must be run in a worker');
 // tessedit_pageseg_mode: Tesseract.PSM["SINGLE_COLUMN"],
 
 const defaultConfigsVanilla = {
-  tessedit_pageseg_mode: Tesseract.PSM.AUTO,
+  tessedit_pageseg_mode: TessWorker.PSM.AUTO,
 };
 
 const defaultConfigs = {
-  tessedit_pageseg_mode: Tesseract.PSM.AUTO,
-
+  tessedit_pageseg_mode: TessWorker.PSM.AUTO,
   // This is virtually always a false positive (usually "I").
   tessedit_char_blacklist: '|',
   // This option disables an undesirable behavior where Tesseract categorizes blobs *of any size* as noise,
@@ -71,10 +70,12 @@ const tessOptions = typeof process === 'undefined' ? {
   workerBlobURL: false,
 } : { legacyCore: true, legacyLang: true };
 
-/** @type {?Tesseract.Worker} */
+/** @type {?TessWorker} */
 let worker;
 
+/** @type {?TessWorker} */
 let workerLegacy;
+/** @type {?TessWorker} */
 let workerLSTM;
 
 /**
@@ -130,7 +131,7 @@ const reinitialize = async ({
     }
 
     if (worker) await worker.terminate();
-    worker = await Tesseract.createWorker(langArrCurrent, oemCurrent, tessOptions, initConfigs);
+    worker = await TessWorker.create(langArrCurrent, oemCurrent, tessOptions, initConfigs);
   } else {
     await worker.reinitialize(langArrCurrent, oemCurrent, initConfigs);
   }
@@ -179,8 +180,8 @@ const reinitialize2 = async ({ langs, vanillaMode }) => {
       workerLSTM = null;
     }
 
-    workerLegacy = await Tesseract.createWorker(langArrCurrent, 0, tessOptions, initConfigs);
-    workerLSTM = await Tesseract.createWorker(langArrCurrent, 1, tessOptions, initConfigs);
+    workerLegacy = await TessWorker.create(langArrCurrent, 0, tessOptions, initConfigs);
+    workerLSTM = await TessWorker.create(langArrCurrent, 1, tessOptions, initConfigs);
   } else if (changeLang) {
     await workerLegacy.reinitialize(langArrCurrent, 0, initConfigs);
     await workerLSTM.reinitialize(langArrCurrent, 1, initConfigs);
@@ -198,7 +199,7 @@ const reinitialize2 = async ({ langs, vanillaMode }) => {
  * @param {Object} params -
  * @param {ArrayBuffer} params.image -
  * @param {Object} params.options -
- * @param {Parameters<Tesseract.Worker['recognize']>[2]} params.output
+ * @param {Parameters<TessWorker['recognize']>[2]} params.output
  * @param {number} params.n -
  * @param {dims} params.pageDims - Original (unrotated) dimensions of input image.
  * @param {?number} [params.knownAngle] - The known angle, or `null` if the angle is not known at the time of recognition.
@@ -216,7 +217,11 @@ export const recognizeAndConvert = async ({
 
   const keepItalic = oemCurrent === 0;
 
-  const ocrBlocks = /** @type {Array<import('../../tesseract.js').Block>} */(res1.data.blocks);
+  const ocrBlocks = res1.data.blocks;
+
+  if (!ocrBlocks) {
+    throw new Error('No OCR blocks returned from recognition.');
+  }
 
   const res2 = await convertPageBlocks({
     ocrBlocks, n, pageDims, rotateAngle: angle, keepItalic,
@@ -231,7 +236,7 @@ export const recognizeAndConvert = async ({
  * @param {Object} params -
  * @param {ArrayBuffer} params.image -
  * @param {Object} params.options -
- * @param {Parameters<Tesseract.Worker['recognize']>[2]} params.output
+ * @param {Parameters<TessWorker['recognize']>[2]} params.output
  * @param {number} params.n -
  * @param {dims} params.pageDims - Original (unrotated) dimensions of input image.
  * @param {?number} [params.knownAngle] - The known angle, or `null` if the angle is not known at the time of recognition.
@@ -241,8 +246,6 @@ export const recognizeAndConvert = async ({
 export const recognizeAndConvert2 = async ({
   image, options, output, n, pageDims, knownAngle = null,
 }, id) => {
-  if (!worker && !(workerLegacy && workerLSTM)) throw new Error('Worker not initialized');
-
   // Disable output formats that are not used.
   // Leaving these enabled can significantly inflate runtimes for no benefit.
   if (!output) output = {};
@@ -269,8 +272,10 @@ export const recognizeAndConvert2 = async ({
       const res2Promise = workerLSTM.recognize(image, options, output);
       resArr = [res1Promise, res2Promise];
     }
-  } else {
+  } else if (worker) {
     resArr = await worker.recognize2(image, options, output);
+  } else {
+    throw new Error('Worker not initialized');
   }
 
   const res0 = await resArr[0];
@@ -280,14 +285,16 @@ export const recognizeAndConvert2 = async ({
   let resLegacy;
   let resLSTM;
   if (options.lstm && options.legacy) {
-    const legacyBlocks = /** @type {Array<import('../../tesseract.js').Block>} */(res0.data.blocks);
+    const legacyBlocks = res0.data.blocks;
+    if (!legacyBlocks) throw new Error('No OCR blocks returned from recognition.');
     resLegacy = await convertPageBlocks({
       ocrBlocks: legacyBlocks, n, pageDims, rotateAngle: angle, keepItalic: true, upscale: res0.data.upscale,
     });
     (async () => {
       const res1 = await resArr[1];
 
-      const lstmBlocks = /** @type {Array<import('../../tesseract.js').Block>} */(res1.data.blocks);
+      const lstmBlocks = res1.data.blocks;
+      if (!lstmBlocks) throw new Error('No OCR blocks returned from recognition.');
       resLSTM = await convertPageBlocks({
         ocrBlocks: lstmBlocks, n, pageDims, rotateAngle: angle, keepItalic: false, upscale: res0.data.upscale,
       });
@@ -297,12 +304,14 @@ export const recognizeAndConvert2 = async ({
       parentPort.postMessage({ data: xB, id: `${id}b`, status: 'resolve' });
     })();
   } else if (!options.lstm && options.legacy) {
-    const legacyBlocks = /** @type {Array<import('../../tesseract.js').Block>} */(res0.data.blocks);
+    const legacyBlocks = res0.data.blocks;
+    if (!legacyBlocks) throw new Error('No OCR blocks returned from recognition.');
     resLegacy = await convertPageBlocks({
       ocrBlocks: legacyBlocks, n, pageDims, rotateAngle: angle, keepItalic: true, upscale: res0.data.upscale,
     });
   } else if (options.lstm && !options.legacy) {
-    const lstmBlocks = /** @type {Array<import('../../tesseract.js').Block>} */(res0.data.blocks);
+    const lstmBlocks = res0.data.blocks;
+    if (!lstmBlocks) throw new Error('No OCR blocks returned from recognition.');
     resLSTM = await convertPageBlocks({
       ocrBlocks: lstmBlocks, n, pageDims, rotateAngle: angle, keepItalic: false, upscale: res0.data.upscale,
     });
@@ -317,12 +326,10 @@ export const recognizeAndConvert2 = async ({
 };
 
 /**
- * @template {Partial<Tesseract.OutputFormats>} TO
  * @param {Object} args
- * @param {Parameters<Tesseract.Worker['recognize']>[0]} args.image
- * @param {Parameters<Tesseract.Worker['recognize']>[1]} args.options
- * @param {TO} args.output
- * @returns {Promise<Tesseract.Page<TO>>}
+ * @param {Parameters<TessWorker['recognize']>[0]} args.image
+ * @param {Parameters<TessWorker['recognize']>[1]} args.options
+ * @param {Parameters<TessWorker['recognize']>[2]} args.output
  * Exported for type inference purposes, should not be imported anywhere.
  */
 export const recognize = async ({ image, options, output }) => {
