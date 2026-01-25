@@ -25,17 +25,19 @@ async function readFileContent(filePath) {
 // Validate that the test stext files have not been modified (e.g., by a linter changing whitespace).
 // The difference between testocr.stext and testocr.spacing.stext is specifically about whitespace/formatting,
 // so any modification would invalidate the tests.
+// Note: Line endings may differ when cloned on Windows vs. Unix systems,
+// so we accept both LF and CRLF counts.
 describe('Validate stext test file integrity.', function () {
   this.timeout(10000);
 
-  it('testocr.stext should have exactly 44382 bytes (detect linter modifications)', async () => {
+  it('testocr.stext should have expected byte count (detect linter modifications)', async () => {
     const text = await readFileContent(`${ASSETS_PATH_KARMA}/testocr.stext`);
-    assert.strictEqual(text.length, 44382, 'testocr.stext has been modified - file size changed from expected 44382 bytes');
+    assert.oneOf(text.length, [44382, 44712], 'testocr.stext has been modified - file size changed from expected values');
   });
 
-  it('testocr.spacing.stext should have exactly 57774 bytes (detect linter modifications)', async () => {
+  it('testocr.spacing.stext should have expected byte count (detect linter modifications)', async () => {
     const text = await readFileContent(`${ASSETS_PATH_KARMA}/testocr.spacing.stext`);
-    assert.strictEqual(text.length, 57774, 'testocr.spacing.stext has been modified - file size changed from expected 57774 bytes');
+    assert.oneOf(text.length, [57774, 58388], 'testocr.spacing.stext has been modified - file size changed from expected values');
   });
 }).timeout(120000);
 
