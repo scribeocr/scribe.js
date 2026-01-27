@@ -93,7 +93,9 @@ export async function convertDocAzureDocIntel({ ocrStr, pageDims }) {
       const baseline = [0, 0];
 
       const lineObj = new ocr.OcrLine(pageObj, lineBbox, baseline);
-      if (debugMode) lineObj.raw = JSON.stringify(lineWordsInput);
+      if (debugMode) {
+        lineObj.debug.raw = JSON.stringify(lineWordsInput);
+      }
 
       for (let j = 0; j < lineWordsInput.length; j++) {
         const wordData = lineWordsInput[j];
@@ -115,7 +117,9 @@ export async function convertDocAzureDocIntel({ ocrStr, pageDims }) {
 
         wordObj.conf = Math.round((wordData.confidence || 0) * 100);
 
-        if (debugMode) wordObj.raw = JSON.stringify(wordData);
+        if (debugMode) {
+          wordObj.debug.raw = JSON.stringify(wordData);
+        }
 
         lineObj.words.push(wordObj);
       }

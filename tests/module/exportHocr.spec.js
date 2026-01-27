@@ -23,13 +23,13 @@ const standardizeOCRPages = (ocrArr) => {
 
   ocrArrCopy.forEach((page) => {
     page.lines.forEach((line) => {
-      line.raw = null;
+      line.debug = new scribe.utils.ocr.LineDebugInfo();
       line.bbox.left = Math.round(line.bbox.left);
       line.bbox.top = Math.round(line.bbox.top);
       line.bbox.right = Math.round(line.bbox.right);
       line.bbox.bottom = Math.round(line.bbox.bottom);
       line.words.forEach((word) => {
-        word.raw = null;
+        word.debug = new scribe.utils.ocr.WordDebugInfo();
         word.bbox.left = Math.round(word.bbox.left);
         word.bbox.top = Math.round(word.bbox.top);
         word.bbox.right = Math.round(word.bbox.right);

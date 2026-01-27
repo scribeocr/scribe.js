@@ -79,7 +79,9 @@ export async function convertPageAlto({ ocrStr, n }) {
 
     const lineObj = new ocr.OcrLine(pageObj, linebox, baseline, lineAscHeightFinal, lineXHeightFinal);
 
-    if (debugMode) lineObj.raw = match;
+    if (debugMode) {
+      lineObj.debug.raw = match;
+    }
 
     const contentRegex = /<(?:String)\s+[^>]+\/?>/gi;
     const contentMatches = [...match.matchAll(contentRegex)];
@@ -140,7 +142,9 @@ export async function convertPageAlto({ ocrStr, n }) {
         }
       }
 
-      if (debugMode) wordObj.raw = contentMatch;
+      if (debugMode) {
+        wordObj.debug.raw = contentMatch;
+      }
 
       lineObj.words.push(wordObj);
     }
