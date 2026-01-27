@@ -218,10 +218,16 @@ export async function readOcrFile(file) {
 
   // The `typeof process` condition is necessary to avoid error in Node.js versions <20, where `File` is not defined.
   if (typeof process === 'undefined' && file instanceof File) {
-    if (/\.gz|\.scribe$/i.test(file.name)) {
-      return (readTextFileGz(file));
+    // Check for gzip magic bytes instead of relying on filename
+    const arrayBuffer = await file.arrayBuffer();
+    const fileUint8Array = new Uint8Array(arrayBuffer);
+    const isGzipped = fileUint8Array[0] === 0x1F && fileUint8Array[1] === 0x8B;
+    if (isGzipped) {
+      const pako = await import('../../lib/pako.esm.min.js');
+      return pako.inflate(arrayBuffer, { to: 'string' });
     }
-    return (readTextFile(file));
+    const decoder = new TextDecoder('utf-8');
+    return decoder.decode(arrayBuffer);
   }
 
   if (typeof process !== 'undefined') {

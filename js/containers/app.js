@@ -53,6 +53,8 @@ export class opt {
 
   static saveDebugImages = false;
 
+  static compressScribe = true;
+
   static warningHandler = (x) => console.warn(x);
 
   static errorHandler = (x) => console.error(x);
