@@ -22,7 +22,7 @@ import { calcSuppFontInfo } from '../fontSupp.js';
 import { gs } from '../generalWorkerMain.js';
 import { imageUtils, ImageWrapper } from '../objects/imageObjects.js';
 import { addCircularRefsDataTables, LayoutDataTablePage, LayoutPage } from '../objects/layoutObjects.js';
-import { addCircularRefsOcr } from '../objects/ocrObjects.js';
+import { addCircularRefsOcr, updateOcrFormat } from '../objects/ocrObjects.js';
 import { PageMetrics } from '../objects/pageMetricsObjects.js';
 import { checkCharWarn, convertOCR } from '../recognizeConvert.js';
 import { importImageFileToBase64 } from '../utils/imageUtils.js';
@@ -186,6 +186,7 @@ const restoreSessionFromFile = async (scribeFile) => {
 
   const oemName = 'User Upload';
   if (!ocrAll[oemName]) ocrAll[oemName] = Array(inputData.pageCount);
+  updateOcrFormat(scribeRestoreObj.ocr);
   addCircularRefsOcr(scribeRestoreObj.ocr);
   ocrAll[oemName] = scribeRestoreObj.ocr;
   ocrAll.active = ocrAll[oemName];

@@ -24,6 +24,11 @@ export function OcrPage(n, dims) {
 }
 
 /**
+ * Paragraph type indicating the semantic role of the paragraph.
+ * @typedef {'title' | 'body' | 'footnote'} ParType
+ */
+
+/**
  *
  * @param {OcrPage} page
  * @param {bbox} bbox
@@ -40,6 +45,16 @@ export function OcrPar(page, bbox) {
    * @type {string}
    */
   this.reason = '';
+  /**
+   * Type of paragraph indicating its semantic role.
+   * @type {ParType}
+   */
+  this.type = 'body';
+}
+
+export function LineDebugInfo() {
+  /** @type {?string} */
+  this.raw = null;
 }
 
 /**
@@ -80,14 +95,19 @@ export function OcrLine(page, bbox, baseline, ascHeight = null, xHeight = null) 
   this._sizeCalc = null;
   /** @type {?number} */
   this._size = null;
-  /** @type {?string} */
-  this.raw = null;
   /** @type {?{x: number, y: number}} */
   this._angleAdj = null;
   /** @type {OcrPar} */
   this.par = null;
   /** @type {number} */
   this.orientation = 0;
+  /** @type {LineDebugInfo} */
+  this.debug = new LineDebugInfo();
+}
+
+export function WordDebugInfo() {
+  /** @type {?string} */
+  this.raw = null;
 }
 
 /**
@@ -129,8 +149,6 @@ export function OcrWord(line, id, text, bbox, poly) {
   this.id = id;
   /** @type {OcrLine} */
   this.line = line;
-  /** @type {?string} */
-  this.raw = null;
   /** @type {?Array<OcrChar>} */
   this.chars = null;
   /** @type {?{x: number, y: number}} */
@@ -140,6 +158,8 @@ export function OcrWord(line, id, text, bbox, poly) {
    * If `false`, left/right coordinates represent the start/end of the font bounding box.
    */
   this.visualCoords = true;
+  /** @type {WordDebugInfo} */
+  this.debug = new WordDebugInfo();
 }
 
 /**
@@ -644,6 +664,7 @@ function clonePage(page) {
  */
 function cloneLine(line) {
   const lineNew = new OcrLine(line.page, { ...line.bbox }, line.baseline.slice(), line.ascHeight, line.xHeight);
+  lineNew.debug.raw = line.debug.raw;
   for (const word of line.words) {
     const wordNew = cloneWord(word);
     wordNew.line = lineNew;
@@ -667,7 +688,7 @@ function cloneWord(word) {
   wordNew.compTruth = word.compTruth;
   wordNew.matchTruth = word.matchTruth;
   wordNew.visualCoords = word.visualCoords;
-  wordNew.raw = word.raw;
+  wordNew.debug.raw = word.debug.raw;
   if (word.chars) {
     wordNew.chars = [];
     for (const char of word.chars) {
@@ -831,12 +852,50 @@ export const addCircularRefsOcr = (pages) => {
   return pages;
 };
 
+/**
+ * Updates OCR format to latest version.
+ * This function should be modified whenever the OCR data format changes
+ * to ensure backward compatibility with older .scribe files.
+ * @param {OcrPage[]} pages
+ */
+export const updateOcrFormat = (pages) => {
+  pages.forEach((page) => {
+    page.lines.forEach((line) => {
+      if (!line.debug) {
+        line.debug = new LineDebugInfo();
+        // @ts-ignore
+        if (line.raw) {
+          // @ts-ignore
+          line.debug.raw = line.raw;
+        }
+      }
+      // @ts-ignore
+      delete line.raw;
+
+      line.words.forEach((word) => {
+        if (!word.debug) {
+          word.debug = new WordDebugInfo();
+          // @ts-ignore
+          if (word.raw) {
+            // @ts-ignore
+            word.debug.raw = word.raw;
+          }
+        }
+        // @ts-ignore
+        delete word.raw;
+      });
+    });
+  });
+};
+
 const ocr = {
   OcrPage,
   OcrPar,
   OcrLine,
   OcrWord,
   OcrChar,
+  WordDebugInfo,
+  LineDebugInfo,
   calcLineStartAngleAdj,
   updateLineBbox,
   calcBboxUnion,

@@ -14,6 +14,8 @@ import { LayoutDataTablePage } from '../objects/layoutObjects.js';
 import { detectTablesInPage, makeTableFromBbox } from '../utils/detectTables.js';
 import { splitLineAgressively } from '../utils/ocrUtils.js';
 
+const debugMode = false;
+
 /**
  * @param {Object} params
  * @param {string} params.ocrStr
@@ -508,7 +510,9 @@ export async function convertPageStext({ ocrStr, n }) {
 
       lineObj.orientation = orientation;
 
-      lineObj.raw = xmlLine;
+      if (debugMode) {
+        lineObj.debug.raw = xmlLine;
+      }
 
       let lettersKept = 0;
       for (let i = 0; i < textArr.length; i++) {
@@ -598,7 +602,9 @@ export async function convertPageStext({ ocrStr, n }) {
           wordObj.style.bold = true;
         }
 
-        wordObj.raw = wordStrArr[wordLetterOrFontArrIndex[i]];
+        if (debugMode) {
+          wordObj.debug.raw = wordStrArr[wordLetterOrFontArrIndex[i]];
+        }
 
         wordObj.style.font = fontFamilyArr[i];
 

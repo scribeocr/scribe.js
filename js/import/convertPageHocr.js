@@ -148,7 +148,9 @@ export async function convertPageHocr({
     console.assert(lineAscHeightFinal || lineXHeightFinal, 'Line height metrics missing.');
     const lineObj = new ocr.OcrLine(pageObj, linebox, baseline, lineAscHeightFinal, lineXHeightFinal);
 
-    if (debugMode) lineObj.raw = match;
+    if (debugMode) {
+      lineObj.debug.raw = match;
+    }
 
     /**
      * @param {string} match
@@ -245,7 +247,9 @@ export async function convertPageHocr({
 
       wordObj.chars = charObjArr;
 
-      if (debugMode) wordObj.raw = match;
+      if (debugMode) {
+        wordObj.debug.raw = match;
+      }
 
       if (italic) wordObj.style.italic = true;
       if (fontName) wordObj.style.font = fontName;

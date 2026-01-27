@@ -22,17 +22,17 @@ let fontOpentype = null;
  * @param {opentype.Font} font
  */
 function getTextWidth(text, size, font) {
-  const { advanceArr, kerningArr } = calcWordCharMetrics(text, font);
+  const charMetrics = calcWordCharMetrics(text, font);
 
-  const advanceTotal = advanceArr.reduce((a, b) => a + b, 0);
-  const kerningTotal = kerningArr.reduce((a, b) => a + b, 0);
+  const advanceTotal = charMetrics.advanceArr.reduce((a, b) => a + b, 0);
+  const kerningTotal = charMetrics.kerningArr.reduce((a, b) => a + b, 0);
 
   const wordLastGlyphMetrics = font.charToGlyph(text.at(-1)).getMetrics();
   const wordFirstGlyphMetrics = font.charToGlyph(text[0]).getMetrics();
 
   const wordLeftBearing = wordFirstGlyphMetrics.xMin || 0;
   const lastGlyphMax = wordLastGlyphMetrics.xMax || 0;
-  const wordRightBearing = advanceArr[advanceArr.length - 1] - lastGlyphMax;
+  const wordRightBearing = charMetrics.advanceArr[charMetrics.advanceArr.length - 1] - lastGlyphMax;
 
   const wordWidth1 = (advanceTotal + kerningTotal - wordLeftBearing - wordRightBearing);
   const wordWidth1Px = wordWidth1 * (size / font.unitsPerEm);
@@ -43,11 +43,89 @@ function getTextWidth(text, size, font) {
 }
 
 /**
- * Parse XML text content from a docx run element
- * @param {string} runXml - XML string of a <w:r> element
- * @returns {{text: string, styles: {bold: boolean, italic: boolean, smallCaps: boolean, underline: boolean, sup: boolean, font: string | null}}}
+ * @typedef {Object} StyleInfo
+ * @property {number | null} fontSize - Font size in points
+ * @property {string | null} font - Font family name
+ * @property {boolean} bold
+ * @property {boolean} italic
+ */
+
+/**
+ * @typedef {Object} ParsedStyles
+ * @property {Map<string, StyleInfo>} styles - Map of style ID to style properties
+ * @property {number | null} defaultFontSize - Default font size from docDefaults in points
+ */
+
+/**
+ * Parse styles.xml from docx to extract style definitions
+ * @param {string} stylesXml - The content of word/styles.xml
+ * @returns {ParsedStyles} Parsed styles including default font size
+ */
+export function parseStyles(stylesXml) {
+  /** @type {Map<string, StyleInfo>} */
+  const styles = new Map();
+  let defaultFontSize = null;
+
+  const docDefaultsMatch = stylesXml.match(/<w:docDefaults>.*?<\/w:docDefaults>/s);
+  if (docDefaultsMatch) {
+    const defaultSzMatch = docDefaultsMatch[0].match(/<w:sz\s+w:val="(\d+)"/);
+    if (defaultSzMatch) {
+      defaultFontSize = parseInt(defaultSzMatch[1], 10) / 2;
+    }
+  }
+
+  const styleMatches = stylesXml.matchAll(/<w:style\s+[^>]*w:styleId="([^"]+)"[^>]*>(.*?)<\/w:style>/gs);
+
+  for (const styleMatch of styleMatches) {
+    const styleId = styleMatch[1];
+    const styleContent = styleMatch[2];
+
+    /** @type {StyleInfo} */
+    const styleInfo = {
+      fontSize: null,
+      font: null,
+      bold: false,
+      italic: false,
+    };
+
+    const szMatch = styleContent.match(/<w:sz\s+w:val="(\d+)"/);
+    if (szMatch) {
+      styleInfo.fontSize = parseInt(szMatch[1], 10) / 2;
+    }
+
+    const fontMatch = styleContent.match(/<w:rFonts\s+[^>]*w:ascii="([^"]+)"/);
+    if (fontMatch) {
+      styleInfo.font = unescapeXml(fontMatch[1]);
+    }
+
+    styleInfo.bold = /<w:b\s*\/>/.test(styleContent) || /<w:b\s+w:val="true"/.test(styleContent) || /<w:b\s+w:val="1"/.test(styleContent);
+
+    styleInfo.italic = /<w:i\s*\/>/.test(styleContent) || /<w:i\s+w:val="true"/.test(styleContent) || /<w:i\s+w:val="1"/.test(styleContent);
+
+    styles.set(styleId, styleInfo);
+  }
+
+  return { styles, defaultFontSize };
+}
+
+/**
+ * @typedef {Object} RunStyles
+ * @property {boolean} bold
+ * @property {boolean} italic
+ * @property {boolean} smallCaps
+ * @property {boolean} underline
+ * @property {boolean} sup
+ * @property {string | null} font
+ * @property {number | null} fontSize
+ */
+
+/**
+ * Parse XML text content docx run element (<w:r>)
+ * @param {string} runXml
+ * @returns {{text: string, styles: RunStyles}}
  */
 function parseRunElement(runXml) {
+  /** @type {RunStyles} */
   const styles = {
     bold: /<w:b\s*\/>/.test(runXml) || /<w:b\s+w:val="true"/.test(runXml) || /<w:b\s+w:val="1"/.test(runXml),
     italic: /<w:i\s*\/>/.test(runXml) || /<w:i\s+w:val="true"/.test(runXml) || /<w:i\s+w:val="1"/.test(runXml),
@@ -55,18 +133,22 @@ function parseRunElement(runXml) {
     underline: /<w:u\s+w:val="single"/.test(runXml) || (/<w:u\s*\/>/.test(runXml) && !/<w:u\s+w:val="none"/.test(runXml)),
     sup: /<w:vertAlign\s+w:val="superscript"/.test(runXml),
     font: null,
+    fontSize: null,
   };
 
-  // Extract font family from <w:rFonts> element
   const fontMatch = runXml.match(/<w:rFonts\s+[^>]*w:ascii="([^"]+)"/);
   if (fontMatch) {
     styles.font = unescapeXml(fontMatch[1]);
   } else {
-    // Try w:hAnsi if ascii not found
     const fontMatchHAnsi = runXml.match(/<w:rFonts\s+[^>]*w:hAnsi="([^"]+)"/);
     if (fontMatchHAnsi) {
       styles.font = unescapeXml(fontMatchHAnsi[1]);
     }
+  }
+
+  const szMatch = runXml.match(/<w:sz\s+w:val="(\d+)"/);
+  if (szMatch) {
+    styles.fontSize = parseInt(szMatch[1], 10) / 2;
   }
 
   const textMatches = runXml.matchAll(/<w:t[^>]*>([^<]*)<\/w:t>/g);
@@ -81,10 +163,10 @@ function parseRunElement(runXml) {
 /**
  * Parse footnotes from docx footnotes.xml content
  * @param {string} footnotesXml
- * @returns {Map<string, Array<{text: string, styles: {bold: boolean, italic: boolean, smallCaps: boolean, underline: boolean, sup: boolean, font: string | null}}>>}
+ * @returns {Map<string, Array<{text: string, styles: RunStyles}>>}
  */
 export function parseFootnotes(footnotesXml) {
-  /** @type {Map<string, Array<{text: string, styles: {bold: boolean, italic: boolean, smallCaps: boolean, underline: boolean, sup: boolean, font: string | null}}>>} */
+  /** @type {Map<string, Array<{text: string, styles: RunStyles}>>} */
   const footnotes = new Map();
 
   const footnoteMatches = footnotesXml.matchAll(/<w:footnote\s+[^>]*w:id="([^"]+)"[^>]*>(.*?)<\/w:footnote>/gs);
@@ -120,12 +202,25 @@ export function parseFootnotes(footnotesXml) {
 }
 
 /**
- * Parse paragraphs from docx document.xml content
- * @param {string} docXml - The content of word/document.xml
- * @param {Map<string, Array<{text: string, styles: {bold: boolean, italic: boolean, smallCaps: boolean, underline: boolean, sup: boolean, font: string | null}}>>} [footnotesMap]
- * @returns {Array<Array<{text: string, styles: {bold: boolean, italic: boolean, smallCaps: boolean, underline: boolean, sup: boolean, font: string | null}}>>}
+ * @typedef {'title' | 'body' | 'footnote'} ParType
  */
-export function parseParagraphs(docXml, footnotesMap = new Map()) {
+
+/**
+ * @typedef {Object} ParsedParagraph
+ * @property {Array<{text: string, styles: RunStyles}>} runs
+ * @property {ParType} type
+ */
+
+/**
+ * Parse paragraphs from docx document.xml content
+ * @param {string} docXml
+ * @param {Map<string, Array<{text: string, styles: RunStyles}>>} [footnotesMap]
+ * @param {Map<string, StyleInfo>} [stylesMap]
+ * @param {number | null} [defaultFontSize]
+ * @returns {Array<ParsedParagraph>}
+ */
+export function parseParagraphs(docXml, footnotesMap = new Map(), stylesMap = new Map(), defaultFontSize = null) {
+  /** @type {Array<ParsedParagraph>} */
   const paragraphs = [];
   /** @type {Array<string>} */
   const footnoteOrder = [];
@@ -134,14 +229,27 @@ export function parseParagraphs(docXml, footnotesMap = new Map()) {
 
   for (const parMatch of paragraphMatches) {
     const parContent = parMatch[1];
+    /** @type {Array<{text: string, styles: RunStyles}>} */
     const runs = [];
+
+    const pStyleMatch = parContent.match(/<w:pStyle\s+w:val="([^"]+)"/);
+    const styleId = pStyleMatch ? pStyleMatch[1] : null;
+    /** @type {ParType} */
+    let parType = 'body';
+    if (styleId) {
+      const styleName = styleId.toLowerCase();
+      if (styleName === 'title' || styleName.startsWith('heading') || styleName.startsWith('toc')) {
+        parType = 'title';
+      }
+    }
+
+    const parStyle = styleId ? stylesMap.get(styleId) : null;
 
     const runMatches = parContent.matchAll(/<w:r[^>]*>(.*?)<\/w:r>/gs);
 
     for (const runMatch of runMatches) {
       const runContent = runMatch[1];
 
-      // Check for footnote references
       const footnoteRefMatch = runContent.match(/<w:footnoteReference\s+[^>]*w:id="([^"]+)"/);
       if (footnoteRefMatch) {
         const footnoteId = footnoteRefMatch[1];
@@ -159,6 +267,7 @@ export function parseParagraphs(docXml, footnotesMap = new Map()) {
             underline: false,
             sup: true,
             font: null,
+            fontSize: null,
           },
         });
         continue;
@@ -167,25 +276,34 @@ export function parseParagraphs(docXml, footnotesMap = new Map()) {
       const parsed = parseRunElement(runContent);
 
       if (parsed.text) {
+        if (parsed.styles.fontSize === null) {
+          if (parStyle?.fontSize) {
+            parsed.styles.fontSize = parStyle.fontSize;
+          } else if (defaultFontSize !== null) {
+            parsed.styles.fontSize = defaultFontSize;
+          }
+        }
         runs.push(parsed);
       }
     }
 
     if (runs.length > 0) {
-      paragraphs.push(runs);
+      paragraphs.push({ runs, type: parType });
     }
   }
 
-  // Append footnotes at the end of the document
   if (footnoteOrder.length > 0) {
+    const footnoteTextStyle = stylesMap.get('FootnoteText');
+    const footnoteFontSize = footnoteTextStyle?.fontSize ?? defaultFontSize;
+
     for (const footnoteId of footnoteOrder) {
       const footnoteRuns = footnotesMap.get(footnoteId);
       if (footnoteRuns) {
         const footnoteIndex = footnoteOrder.indexOf(footnoteId) + 1;
         // Add footnote number as superscript at the start
         // TODO: This should be handled by the rendering functions.
-        /** @type {Array<{text: string, styles: {bold: boolean, italic: boolean, smallCaps: boolean, underline: boolean, sup: boolean, font: string | null}}>} */
-        const footnoteParagraph = [
+        /** @type {Array<{text: string, styles: RunStyles}>} */
+        const footnoteParagraphRuns = [
           {
             text: String(footnoteIndex),
             styles: {
@@ -195,6 +313,7 @@ export function parseParagraphs(docXml, footnotesMap = new Map()) {
               underline: false,
               sup: true,
               font: null,
+              fontSize: footnoteFontSize,
             },
           },
           {
@@ -206,11 +325,23 @@ export function parseParagraphs(docXml, footnotesMap = new Map()) {
               underline: false,
               sup: false,
               font: null,
+              fontSize: footnoteFontSize,
             },
           },
-          ...footnoteRuns,
         ];
-        paragraphs.push(footnoteParagraph);
+
+        for (const run of footnoteRuns) {
+          const runWithSize = {
+            text: run.text,
+            styles: {
+              ...run.styles,
+              fontSize: run.styles.fontSize ?? footnoteFontSize,
+            },
+          };
+          footnoteParagraphRuns.push(runWithSize);
+        }
+
+        paragraphs.push({ runs: footnoteParagraphRuns, type: 'footnote' });
       }
     }
   }
@@ -225,11 +356,11 @@ export function parseParagraphs(docXml, footnotesMap = new Map()) {
  * @param {?{width: number, height: number}} [params.pageDims] - Page dimensions (will be calculated if not provided)
  */
 export async function convertDocDocx({ docxData, pageDims = null }) {
-  const { BlobReader, BlobWriter, ZipReader } = await import('../../lib/zip.js/index.js');
+  const zipModule = await import('../../lib/zip.js/index.js');
 
   const blob = new Blob([docxData]);
 
-  const zipReader = new ZipReader(new BlobReader(blob));
+  const zipReader = new zipModule.ZipReader(new zipModule.BlobReader(blob));
   const entries = await zipReader.getEntries();
 
   const documentEntry = entries.find((entry) => entry.filename === 'word/document.xml');
@@ -237,7 +368,7 @@ export async function convertDocDocx({ docxData, pageDims = null }) {
     throw new Error('No word/document.xml found in docx file');
   }
 
-  const writer = new BlobWriter();
+  const writer = new zipModule.BlobWriter();
   await documentEntry.getData(writer);
   const documentBlob = await writer.getData();
   const documentXml = await documentBlob.text();
@@ -246,15 +377,27 @@ export async function convertDocDocx({ docxData, pageDims = null }) {
   let footnotesXml = null;
   const footnotesEntry = entries.find((entry) => entry.filename === 'word/footnotes.xml');
   if (footnotesEntry) {
-    const footnotesWriter = new BlobWriter();
+    const footnotesWriter = new zipModule.BlobWriter();
     await footnotesEntry.getData(footnotesWriter);
     const footnotesBlob = await footnotesWriter.getData();
     footnotesXml = await footnotesBlob.text();
   }
 
+  // Read styles.xml if it exists
+  let stylesXml = null;
+  const stylesEntry = entries.find((entry) => entry.filename === 'word/styles.xml');
+  if (stylesEntry) {
+    const stylesWriter = new zipModule.BlobWriter();
+    await stylesEntry.getData(stylesWriter);
+    const stylesBlob = await stylesWriter.getData();
+    stylesXml = await stylesBlob.text();
+  }
+
   await zipReader.close();
 
-  const pagesOut = await convertDocumentXML({ documentXml, footnotesXml, pageDims });
+  const pagesOut = await convertDocumentXML({
+    documentXml, footnotesXml, stylesXml, pageDims,
+  });
 
   return pagesOut;
 }
@@ -264,9 +407,12 @@ export async function convertDocDocx({ docxData, pageDims = null }) {
  * @param {Object} params
  * @param {string} params.documentXml
  * @param {?string} [params.footnotesXml] - The content of word/footnotes.xml (optional)
+ * @param {?string} [params.stylesXml] - The content of word/styles.xml (optional)
  * @param {?{width: number, height: number}} [params.pageDims] - Page dimensions (will be calculated if not provided)
  */
-const convertDocumentXML = async ({ documentXml, footnotesXml = null, pageDims = null }) => {
+const convertDocumentXML = async ({
+  documentXml, footnotesXml = null, stylesXml = null, pageDims = null,
+}) => {
   if (!fontOpentype) {
     fontOpentype = (await FontCont.getFont({ font: FONT_FAMILY })).opentype;
   }
@@ -279,8 +425,9 @@ const convertDocumentXML = async ({ documentXml, footnotesXml = null, pageDims =
   }
 
   const footnotesMap = footnotesXml ? parseFootnotes(footnotesXml) : new Map();
+  const parsedStyles = stylesXml ? parseStyles(stylesXml) : { styles: new Map(), defaultFontSize: null };
 
-  const paragraphs = parseParagraphs(documentXml, footnotesMap);
+  const paragraphs = parseParagraphs(documentXml, footnotesMap, parsedStyles.styles, parsedStyles.defaultFontSize);
 
   const pagesOut = [];
   let pageIndex = 0;
@@ -297,8 +444,10 @@ const convertDocumentXML = async ({ documentXml, footnotesXml = null, pageDims =
     let parRight = MARGIN_HORIZONTAL;
     let runIndex = 0;
     let charIndexInRun = 0;
+    const parRuns = paragraph.runs;
+    const parType = paragraph.type;
 
-    while (runIndex < paragraph.length) {
+    while (runIndex < parRuns.length) {
       if (currentY + FONT_SIZE > pageDims.height - MARGIN_VERTICAL) {
         if (parLines.length > 0) {
           const parBbox = {
@@ -309,6 +458,7 @@ const convertDocumentXML = async ({ documentXml, footnotesXml = null, pageDims =
           };
           const parObj = new ocr.OcrPar(pageObj, parBbox);
           parObj.lines = parLines;
+          parObj.type = parType;
           for (const ln of parLines) ln.par = parObj;
           pageObj.pars.push(parObj);
           parLines.length = 0;
@@ -346,8 +496,8 @@ const convertDocumentXML = async ({ documentXml, footnotesXml = null, pageDims =
       let lineComplete = false;
       let lastItemWasWhitespace = false;
 
-      while (runIndex < paragraph.length && !lineComplete) {
-        const run = paragraph[runIndex];
+      while (runIndex < parRuns.length && !lineComplete) {
+        const run = parRuns[runIndex];
         const remainingText = run.text.substring(charIndexInRun);
 
         const words = remainingText.split(/(\s+)/);
@@ -359,20 +509,23 @@ const convertDocumentXML = async ({ documentXml, footnotesXml = null, pageDims =
           const isWhitespace = /^\s+$/.test(word);
 
           if (isWhitespace) {
-            const spaceWidth = getTextWidth(' ', FONT_SIZE, fontOpentype) + WORD_SPACING;
+            const runFontSize = run.styles.fontSize || FONT_SIZE;
+            const spaceWidth = getTextWidth(' ', runFontSize, fontOpentype) + WORD_SPACING;
             currentX += spaceWidth * word.length;
             charIndexInRun += word.length;
             lastItemWasWhitespace = true;
           } else {
+            const runFontSize = run.styles.fontSize || FONT_SIZE;
+
             // Check if we should append to the previous word (word continues across runs)
             // Only append if: we're at the start of a new run AND the last item was NOT whitespace
             const lastWord = lineObj.words[lineObj.words.length - 1];
-            const stylesMatch = lastWord && lastWord.style.sup === run.styles.sup;
+            const stylesMatch = lastWord && lastWord.style.sup === run.styles.sup && lastWord.style.size === run.styles.fontSize;
             const shouldAppend = lastWord && wordIdx === 0 && charIndexInRun === 0 && !lastItemWasWhitespace && stylesMatch;
 
             if (shouldAppend) {
               const combinedText = lastWord.text + word;
-              const combinedWidth = getTextWidth(combinedText, FONT_SIZE, fontOpentype);
+              const combinedWidth = getTextWidth(combinedText, runFontSize, fontOpentype);
 
               if (lastWord.bbox.left + combinedWidth > MARGIN_HORIZONTAL + availableWidth) {
                 lineComplete = true;
@@ -386,7 +539,7 @@ const convertDocumentXML = async ({ documentXml, footnotesXml = null, pageDims =
             } else {
               // Superscripts are typically rendered at ~60% of normal font size
               const supFontSizeRatio = 0.6;
-              const effectiveFontSize = run.styles.sup ? FONT_SIZE * supFontSizeRatio : FONT_SIZE;
+              const effectiveFontSize = run.styles.sup ? runFontSize * supFontSizeRatio : runFontSize;
               const wordWidth = getTextWidth(word, effectiveFontSize, fontOpentype);
 
               if (lineObj.words.length > 0 && currentX + wordWidth > MARGIN_HORIZONTAL + availableWidth) {
@@ -394,15 +547,18 @@ const convertDocumentXML = async ({ documentXml, footnotesXml = null, pageDims =
                 break;
               }
 
+              const wordAscenderHeight = fontOpentype.ascender * (runFontSize / fontOpentype.unitsPerEm);
+              const wordDescenderHeight = fontOpentype.descender * (runFontSize / fontOpentype.unitsPerEm);
+
               // For superscripts, adjust vertical position to be above the baseline
               // The baseline is at currentY (from DESCENDER_HEIGHT), so superscripts should be above it
-              let wordTop = lineTop;
-              let wordBottom = lineBottom;
+              let wordTop = Math.round(currentY - wordAscenderHeight);
+              let wordBottom = Math.round(currentY + wordDescenderHeight);
               if (run.styles.sup) {
                 // Superscript height is proportional to the reduced font size
-                const supHeight = ASCENDER_HEIGHT * supFontSizeRatio;
+                const supHeight = wordAscenderHeight * supFontSizeRatio;
                 // Position superscript with its bottom at the x-height (roughly 70% of ascender)
-                const xHeight = ASCENDER_HEIGHT * 0.7;
+                const xHeight = wordAscenderHeight * 0.7;
                 wordBottom = Math.round(currentY - xHeight);
                 wordTop = Math.round(wordBottom - supHeight);
               }
@@ -423,6 +579,7 @@ const convertDocumentXML = async ({ documentXml, footnotesXml = null, pageDims =
               wordObj.style.smallCaps = run.styles.smallCaps;
               wordObj.style.underline = run.styles.underline;
               wordObj.style.sup = run.styles.sup;
+              wordObj.style.size = run.styles.fontSize;
 
               lineObj.words.push(wordObj);
               currentX += wordWidth;
@@ -465,6 +622,7 @@ const convertDocumentXML = async ({ documentXml, footnotesXml = null, pageDims =
       };
       const parObj = new ocr.OcrPar(pageObj, parBbox);
       parObj.lines = parLines;
+      parObj.type = parType;
       for (const ln of parLines) ln.par = parObj;
       pageObj.pars.push(parObj);
     }

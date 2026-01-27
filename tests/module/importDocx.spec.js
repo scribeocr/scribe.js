@@ -238,3 +238,74 @@ describe('Check that font families are preserved in docx round-trip.', function 
     await scribe.terminate();
   });
 }).timeout(120000);
+
+describe('Check iris.docx import extracts footnotes and paragraph types.', function () {
+  this.timeout(10000);
+
+  itSkipNodeEOL('Should extract correct number of footnotes from iris.docx', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/iris.docx`]);
+
+    let footnoteCount = 0;
+    for (const page of scribe.data.ocr.active) {
+      for (const par of page.pars) {
+        if (par.type === 'footnote') {
+          footnoteCount++;
+        }
+      }
+    }
+
+    assert.strictEqual(footnoteCount, 13, 'iris.docx should have 13 footnotes');
+  }).timeout(10000);
+
+  itSkipNodeEOL('Should identify first paragraph as title in iris.docx', async () => {
+    const firstPar = scribe.data.ocr.active[0].pars[0];
+
+    assert.strictEqual(firstPar.type, 'title', 'First paragraph should be identified as title');
+  }).timeout(10000);
+
+  itSkipNodeEOL('Should parse title text as 20pt in iris.docx', async () => {
+    const firstPar = scribe.data.ocr.active[0].pars[0];
+    const firstWord = firstPar.lines[0].words[0];
+
+    assert.strictEqual(firstWord.style.size, 20, 'First title word should be 20pt');
+  }).timeout(10000);
+
+  itSkipNodeEOL('Should parse body text as 12pt in iris.docx', async () => {
+    // Find first body paragraph
+    let bodyPar = null;
+    for (const par of scribe.data.ocr.active[0].pars) {
+      if (par.type === 'body') {
+        bodyPar = par;
+        break;
+      }
+    }
+
+    assert.isNotNull(bodyPar, 'Should have at least one body paragraph');
+    const bodyWord = bodyPar.lines[0].words[0];
+    assert.strictEqual(bodyWord.style.size, 12, 'Body text should be 12pt');
+  }).timeout(10000);
+
+  itSkipNodeEOL('Should parse footnote text as 10pt in iris.docx', async () => {
+    // Find first footnote paragraph
+    let footnotePar = null;
+    for (const page of scribe.data.ocr.active) {
+      for (const par of page.pars) {
+        if (par.type === 'footnote') {
+          footnotePar = par;
+          break;
+        }
+      }
+      if (footnotePar) break;
+    }
+
+    assert.isNotNull(footnotePar, 'Should have at least one footnote paragraph');
+    // Skip the superscript number, check the actual footnote text
+    const footnoteWord = footnotePar.lines[0].words.find((w) => !w.style.sup);
+    assert.isNotNull(footnoteWord, 'Should have non-superscript text in footnote');
+    assert.strictEqual(footnoteWord.style.size, 10, 'Footnote text should be 10pt');
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);
