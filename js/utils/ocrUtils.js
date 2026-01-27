@@ -1,7 +1,7 @@
 import { opt } from '../containers/app.js';
 import ocr from '../objects/ocrObjects.js';
 import { calcWordMetrics } from './fontUtils.js';
-import { calcBboxUnion } from './miscUtils.js';
+import { calcBboxUnion, getRandomAlphanum } from './miscUtils.js';
 
 /**
  *
@@ -119,6 +119,11 @@ export const splitLineAgressively = (line) => {
   linesOut.forEach((x) => {
     ocr.updateLineBbox(x);
   });
+
+  // Generate new IDs for all split lines except the first (which keeps the original ID)
+  for (let i = 1; i < linesOut.length; i++) {
+    linesOut[i].id = getRandomAlphanum(8);
+  }
 
   return linesOut;
 };

@@ -23,6 +23,8 @@ const standardizeOCRPages = (ocrArr) => {
 
   ocrArrCopy.forEach((page) => {
     page.lines.forEach((line) => {
+      // HOCR does not preserve line IDs
+      line.id = '';
       line.debug = new scribe.utils.ocr.LineDebugInfo();
       line.bbox.left = Math.round(line.bbox.left);
       line.bbox.top = Math.round(line.bbox.top);

@@ -161,12 +161,18 @@ function parseRunElement(runXml) {
 }
 
 /**
+ * @typedef {Object} ParsedFootnote
+ * @property {Array<{text: string, styles: RunStyles}>} runs
+ * @property {string} [paraId] - The paragraph ID from Word (w14:paraId attribute)
+ */
+
+/**
  * Parse footnotes from docx footnotes.xml content
  * @param {string} footnotesXml
- * @returns {Map<string, Array<{text: string, styles: RunStyles}>>}
+ * @returns {Map<string, ParsedFootnote>}
  */
 export function parseFootnotes(footnotesXml) {
-  /** @type {Map<string, Array<{text: string, styles: RunStyles}>>} */
+  /** @type {Map<string, ParsedFootnote>} */
   const footnotes = new Map();
 
   const footnoteMatches = footnotesXml.matchAll(/<w:footnote\s+[^>]*w:id="([^"]+)"[^>]*>(.*?)<\/w:footnote>/gs);
@@ -177,6 +183,11 @@ export function parseFootnotes(footnotesXml) {
 
     // Skip separator footnotes (id -1 and 0 are typically separators)
     if (footnoteId === '-1' || footnoteId === '0') continue;
+
+    const parMatch = footnoteContent.match(/<w:p([^>]*)>/);
+    const parAttrs = parMatch ? parMatch[1] : '';
+    const paraIdMatch = parAttrs.match(/w14:paraId="([^"]+)"/);
+    const paraId = paraIdMatch ? paraIdMatch[1] : undefined;
 
     const runs = [];
     const runMatches = footnoteContent.matchAll(/<w:r[^>]*>(.*?)<\/w:r>/gs);
@@ -194,7 +205,7 @@ export function parseFootnotes(footnotesXml) {
     }
 
     if (runs.length > 0) {
-      footnotes.set(footnoteId, runs);
+      footnotes.set(footnoteId, { runs, paraId });
     }
   }
 
@@ -206,15 +217,24 @@ export function parseFootnotes(footnotesXml) {
  */
 
 /**
+ * @typedef {Object} ParsedRun
+ * @property {string} text
+ * @property {RunStyles} styles
+ * @property {string} [footnoteId] - If set, this run is a footnote reference with this ID
+ */
+
+/**
  * @typedef {Object} ParsedParagraph
- * @property {Array<{text: string, styles: RunStyles}>} runs
+ * @property {Array<ParsedRun>} runs
  * @property {ParType} type
+ * @property {string} [footnoteId] - If type is 'footnote', this is the footnote ID
+ * @property {string} [paraId] - The paragraph ID from Word (w14:paraId attribute)
  */
 
 /**
  * Parse paragraphs from docx document.xml content
  * @param {string} docXml
- * @param {Map<string, Array<{text: string, styles: RunStyles}>>} [footnotesMap]
+ * @param {Map<string, ParsedFootnote>} [footnotesMap]
  * @param {Map<string, StyleInfo>} [stylesMap]
  * @param {number | null} [defaultFontSize]
  * @returns {Array<ParsedParagraph>}
@@ -225,11 +245,16 @@ export function parseParagraphs(docXml, footnotesMap = new Map(), stylesMap = ne
   /** @type {Array<string>} */
   const footnoteOrder = [];
 
-  const paragraphMatches = docXml.matchAll(/<w:p[^>]*>(.*?)<\/w:p>/gs);
+  const paragraphMatches = docXml.matchAll(/<w:p([^>]*)>(.*?)<\/w:p>/gs);
 
   for (const parMatch of paragraphMatches) {
-    const parContent = parMatch[1];
-    /** @type {Array<{text: string, styles: RunStyles}>} */
+    const parAttrs = parMatch[1];
+    const parContent = parMatch[2];
+
+    // Extract Word paragraph ID from w14:paraId attribute
+    const paraIdMatch = parAttrs.match(/w14:paraId="([^"]+)"/);
+    const paraId = paraIdMatch ? paraIdMatch[1] : undefined;
+    /** @type {Array<ParsedRun>} */
     const runs = [];
 
     const pStyleMatch = parContent.match(/<w:pStyle\s+w:val="([^"]+)"/);
@@ -269,6 +294,7 @@ export function parseParagraphs(docXml, footnotesMap = new Map(), stylesMap = ne
             font: null,
             fontSize: null,
           },
+          footnoteId,
         });
         continue;
       }
@@ -288,7 +314,7 @@ export function parseParagraphs(docXml, footnotesMap = new Map(), stylesMap = ne
     }
 
     if (runs.length > 0) {
-      paragraphs.push({ runs, type: parType });
+      paragraphs.push({ runs, type: parType, paraId });
     }
   }
 
@@ -297,12 +323,12 @@ export function parseParagraphs(docXml, footnotesMap = new Map(), stylesMap = ne
     const footnoteFontSize = footnoteTextStyle?.fontSize ?? defaultFontSize;
 
     for (const footnoteId of footnoteOrder) {
-      const footnoteRuns = footnotesMap.get(footnoteId);
-      if (footnoteRuns) {
+      const footnoteData = footnotesMap.get(footnoteId);
+      if (footnoteData) {
         const footnoteIndex = footnoteOrder.indexOf(footnoteId) + 1;
         // Add footnote number as superscript at the start
         // TODO: This should be handled by the rendering functions.
-        /** @type {Array<{text: string, styles: RunStyles}>} */
+        /** @type {Array<ParsedRun>} */
         const footnoteParagraphRuns = [
           {
             text: String(footnoteIndex),
@@ -330,7 +356,7 @@ export function parseParagraphs(docXml, footnotesMap = new Map(), stylesMap = ne
           },
         ];
 
-        for (const run of footnoteRuns) {
+        for (const run of footnoteData.runs) {
           const runWithSize = {
             text: run.text,
             styles: {
@@ -341,7 +367,9 @@ export function parseParagraphs(docXml, footnotesMap = new Map(), stylesMap = ne
           footnoteParagraphRuns.push(runWithSize);
         }
 
-        paragraphs.push({ runs: footnoteParagraphRuns, type: 'footnote' });
+        paragraphs.push({
+          runs: footnoteParagraphRuns, type: 'footnote', footnoteId, paraId: footnoteData.paraId,
+        });
       }
     }
   }
@@ -439,6 +467,10 @@ const convertDocumentXML = async ({
   const availableWidth = pageDims.width - MARGIN_HORIZONTAL * 2;
   let currentY = MARGIN_VERTICAL + LINE_HEIGHT / 2;
 
+  // Track footnote reference words by their footnote ID for linking
+  /** @type {Map<string, import('../objects/ocrObjects.js').OcrWord>} */
+  const footnoteRefWords = new Map();
+
   for (const paragraph of paragraphs) {
     const parLines = [];
     let parRight = MARGIN_HORIZONTAL;
@@ -446,6 +478,8 @@ const convertDocumentXML = async ({
     let charIndexInRun = 0;
     const parRuns = paragraph.runs;
     const parType = paragraph.type;
+    const parFootnoteId = paragraph.footnoteId;
+    const parParaId = paragraph.paraId;
 
     while (runIndex < parRuns.length) {
       if (currentY + FONT_SIZE > pageDims.height - MARGIN_VERTICAL) {
@@ -457,6 +491,7 @@ const convertDocumentXML = async ({
             bottom: parLines[parLines.length - 1].bbox.bottom,
           };
           const parObj = new ocr.OcrPar(pageObj, parBbox);
+          if (parParaId) parObj.id = parParaId;
           parObj.lines = parLines;
           parObj.type = parType;
           for (const ln of parLines) ln.par = parObj;
@@ -511,7 +546,7 @@ const convertDocumentXML = async ({
           if (isWhitespace) {
             const runFontSize = run.styles.fontSize || FONT_SIZE;
             const spaceWidth = getTextWidth(' ', runFontSize, fontOpentype) + WORD_SPACING;
-            currentX += spaceWidth * word.length;
+            currentX += spaceWidth;
             charIndexInRun += word.length;
             lastItemWasWhitespace = true;
           } else {
@@ -581,6 +616,10 @@ const convertDocumentXML = async ({
               wordObj.style.sup = run.styles.sup;
               wordObj.style.size = run.styles.fontSize;
 
+              if (run.footnoteId) {
+                footnoteRefWords.set(run.footnoteId, wordObj);
+              }
+
               lineObj.words.push(wordObj);
               currentX += wordWidth;
               charIndexInRun += word.length;
@@ -621,9 +660,20 @@ const convertDocumentXML = async ({
         bottom: parLines[parLines.length - 1].bbox.bottom,
       };
       const parObj = new ocr.OcrPar(pageObj, parBbox);
+      if (parParaId) parObj.id = parParaId;
       parObj.lines = parLines;
       parObj.type = parType;
       for (const ln of parLines) ln.par = parObj;
+
+      // Link footnote paragraphs to their reference words (bidirectional)
+      if (parFootnoteId) {
+        const refWord = footnoteRefWords.get(parFootnoteId);
+        if (refWord) {
+          parObj.footnoteRefId = refWord.id;
+          refWord.footnoteParId = parObj.id;
+        }
+      }
+
       pageObj.pars.push(parObj);
     }
   }

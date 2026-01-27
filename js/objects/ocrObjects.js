@@ -1,4 +1,4 @@
-import { calcBboxUnion, calcBoxOverlap } from '../utils/miscUtils.js';
+import { calcBboxUnion, calcBoxOverlap, getRandomAlphanum } from '../utils/miscUtils.js';
 
 /**
  * @param {number} n
@@ -39,6 +39,7 @@ export function OcrPar(page, bbox) {
   this.bbox = bbox;
   /** @type {Array<OcrLine>} */
   this.lines = [];
+  this.id = getRandomAlphanum(8);
   /**
    * Reason for paragraph break.
    * Used for debugging purposes.
@@ -50,6 +51,12 @@ export function OcrPar(page, bbox) {
    * @type {ParType}
    */
   this.type = 'body';
+  /**
+   * ID of the footnote reference word that links to this footnote.
+   * Only set when type === 'footnote'.
+   * @type {string | null}
+   */
+  this.footnoteRefId = null;
 }
 
 export function LineDebugInfo() {
@@ -79,6 +86,7 @@ export function LineDebugInfo() {
 export function OcrLine(page, bbox, baseline, ascHeight = null, xHeight = null) {
   // These inline comments are required for types to work correctly with VSCode Intellisense.
   // Unfortunately, the @property tags above are not sufficient.
+  this.id = getRandomAlphanum(8);
   /** @type {bbox} */
   this.bbox = bbox;
   /** @type {Array<number>} - baseline [slope, offset] */
@@ -160,6 +168,12 @@ export function OcrWord(line, id, text, bbox, poly) {
   this.visualCoords = true;
   /** @type {WordDebugInfo} */
   this.debug = new WordDebugInfo();
+  /**
+   * ID of the footnote paragraph that this word references.
+   * Only set when this word is a footnote reference (superscript number linking to a footnote).
+   * @type {string | null}
+   */
+  this.footnoteParId = null;
 }
 
 /**
@@ -664,6 +678,7 @@ function clonePage(page) {
  */
 function cloneLine(line) {
   const lineNew = new OcrLine(line.page, { ...line.bbox }, line.baseline.slice(), line.ascHeight, line.xHeight);
+  lineNew.id = line.id;
   lineNew.debug.raw = line.debug.raw;
   for (const word of line.words) {
     const wordNew = cloneWord(word);
@@ -689,6 +704,7 @@ function cloneWord(word) {
   wordNew.matchTruth = word.matchTruth;
   wordNew.visualCoords = word.visualCoords;
   wordNew.debug.raw = word.debug.raw;
+  wordNew.footnoteParId = word.footnoteParId;
   if (word.chars) {
     wordNew.chars = [];
     for (const char of word.chars) {
@@ -818,10 +834,25 @@ export function getWordFillOpacity(word, displayMode, confThreshMed = 75, confTh
 export const removeCircularRefsOcr = (pages) => {
   const pagesClone = structuredClone(pages);
   pagesClone.forEach((page) => {
-    page.pars.length = 0;
+    // Process paragraphs - convert line references to IDs
+    page.pars.forEach((par) => {
+      // @ts-ignore
+      delete par.page;
+      // Convert lines array to array of line IDs
+      // @ts-ignore
+      par.lineIds = par.lines.map((line) => line.id);
+      // @ts-ignore
+      delete par.lines;
+    });
+
     page.lines.forEach((line) => {
       // @ts-ignore
       delete line.page;
+      // Store par ID for deserialization
+      if (line.par) {
+        // @ts-ignore
+        line.parId = line.par.id;
+      }
       // @ts-ignore
       delete line.par;
       line.words.forEach((word) => {
@@ -845,10 +876,51 @@ export const addCircularRefsOcr = (pages) => {
       line.page = page;
       line.words.forEach((word) => {
         word.line = line;
+        if (word.footnoteParId === undefined) {
+          word.footnoteParId = null;
+        }
       });
     });
-  },
-  );
+
+    // Initialize pars array if not present
+    if (!page.pars) {
+      page.pars = [];
+    }
+
+    // Restore paragraph references
+    page.pars.forEach((par) => {
+      par.page = page;
+      // Initialize footnoteRefId to null if not present
+      if (par.footnoteRefId === undefined) {
+        par.footnoteRefId = null;
+      }
+      // Restore lines array from lineIds
+      // @ts-ignore
+      if (par.lineIds && !par.lines) {
+        // @ts-ignore
+        par.lines = par.lineIds.map((id) => page.lines.find((line) => line.id === id)).filter((line) => line !== undefined);
+        // @ts-ignore
+        delete par.lineIds;
+      }
+      // Initialize lines array if not present
+      if (!par.lines) {
+        par.lines = [];
+      }
+    });
+
+    // Restore line.par references from parId
+    page.lines.forEach((line) => {
+      // @ts-ignore
+      if (line.parId !== undefined) {
+        // @ts-ignore
+        line.par = page.pars.find((par) => par.id === line.parId) || null;
+        // @ts-ignore
+        delete line.parId;
+      } else if (line.par === undefined) {
+        line.par = null;
+      }
+    });
+  });
   return pages;
 };
 
