@@ -291,9 +291,14 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
     };
     const contentStr = JSON.stringify(data);
 
-    const pako = await import('../../lib/pako.esm.mjs');
-    const enc = new TextEncoder();
-    content = pako.gzip(enc.encode(contentStr))?.buffer;
+    if (opt.compressScribe) {
+      const pako = await import('../../lib/pako.esm.mjs');
+      const enc = new TextEncoder();
+      const gzipped = pako.gzip(enc.encode(contentStr));
+      content = gzipped ? gzipped.buffer : contentStr;
+    } else {
+      content = contentStr;
+    }
   }
 
   return content;
@@ -302,7 +307,7 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
 /**
  * Runs `exportData` and saves the result as a download (browser) or local file (Node.js).
  * @public
- * @param {'pdf'|'hocr'|'alto'|'docx'|'xlsx'|'txt'|'text'|'html'|'scribe'} format
+ * @param {'pdf'|'hocr'|'alto'|'docx'|'xlsx'|'txt'|'text'|'md'|'html'|'scribe'} format
  * @param {string} fileName
  * @param {number} [minPage=0] - First page to export.
  * @param {number} [maxPage=-1] - Last page to export (inclusive). -1 exports through the last page.
