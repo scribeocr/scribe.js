@@ -10,6 +10,7 @@ import { writeHocr } from './writeHocr.js';
 import { writeText } from './writeText.js';
 import { writeHtml } from './writeHtml.js';
 import { writeAlto } from './writeAlto.js';
+import { writeMarkdown } from './writeMarkdown.js';
 import { removeCircularRefsOcr } from '../objects/ocrObjects.js';
 import { removeCircularRefsDataTables } from '../objects/layoutObjects.js';
 import { FontCont } from '../containers/fontContainer.js';
@@ -17,7 +18,7 @@ import { FontCont } from '../containers/fontContainer.js';
 /**
  * Export active OCR data to specified format.
  * @public
- * @param {'pdf'|'hocr'|'alto'|'docx'|'html'|'xlsx'|'txt'|'text'|'scribe'} [format='txt']
+ * @param {'pdf'|'hocr'|'alto'|'docx'|'html'|'xlsx'|'txt'|'text'|'md'|'scribe'} [format='txt']
  * @param {number} [minPage=0] - First page to export.
  * @param {number} [maxPage=-1] - Last page to export (inclusive). -1 exports through the last page.
  * @returns {Promise<string|ArrayBuffer>}
@@ -253,6 +254,13 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
     });
   } else if (format === 'txt') {
     content = writeText({
+      ocrCurrent: ocrDownload,
+      minpage: minPage,
+      maxpage: maxPage,
+      reflowText: opt.reflow,
+    });
+  } else if (format === 'md') {
+    content = writeMarkdown({
       ocrCurrent: ocrDownload,
       minpage: minPage,
       maxpage: maxPage,
