@@ -102,3 +102,37 @@ describe('Check AWS Textract JSON import correctly handles angle brackets.', fun
     await scribe.terminate();
   });
 }).timeout(120000);
+
+describe('Check AWS Textract properly splits unicode superscript footnotes.', function () {
+  this.timeout(10000);
+
+  before(async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/econometrica_example_all_orientations.pdf`,
+      `${ASSETS_PATH_KARMA}/econometrica_example_all_orientations-AwsTextractLayout.json`]);
+  });
+
+  it('Should split unicode superscripts into separate words', async () => {
+    // The original Textract data has "years.¹" as one word, which should be split into "years." and "1"
+    const page = scribe.data.ocr.active[0];
+    const allWords = page.lines.flatMap((line) => line.words);
+
+    const yearsWordIndex = allWords.findIndex((w) => w.text === 'years.');
+    assert.strictEqual(allWords[yearsWordIndex - 1].text, 'recent');
+    assert.strictEqual(allWords[yearsWordIndex].text, 'years.');
+    assert.strictEqual(allWords[yearsWordIndex + 1].text, '1');
+    assert.strictEqual(allWords[yearsWordIndex + 1].style.sup, true);
+  }).timeout(10000);
+
+  it('Should convert unicode superscript characters to regular numbers and mark with style.sup', async () => {
+    const page = scribe.data.ocr.active[0];
+    const allWords = page.lines.flatMap((line) => line.words);
+
+    const supWords = allWords.filter((w) => w.style.sup === true);
+    const supTexts = supWords.map((w) => w.text);
+    assert.deepStrictEqual(supTexts, ['1', '2', '3', '1', '3', '2']);
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);

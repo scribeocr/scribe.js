@@ -28,6 +28,13 @@ export function OcrPage(n, dims) {
  * @typedef {'title' | 'body' | 'footnote'} ParType
  */
 
+export function ParDebugInfo() {
+  /** @type {?string} */
+  this.raw = null;
+  /** @type {?string} */
+  this.sourceType = null;
+}
+
 /**
  *
  * @param {OcrPage} page
@@ -57,6 +64,7 @@ export function OcrPar(page, bbox) {
    * @type {string | null}
    */
   this.footnoteRefId = null;
+  this.debug = new ParDebugInfo();
 }
 
 export function LineDebugInfo() {
@@ -81,7 +89,6 @@ export function LineDebugInfo() {
  *  `_size` should be preferred over `_sizeCalc` when both exist.
  * @property {?string} raw - Raw string this object was parsed from.
  *    Exists only for debugging purposes, should be `null` in production contexts.
- * @property {?{x: number, y: number}} _angleAdj - Cached x/y adjustments that must be made to coordinates when rotation is enabled.
  */
 export function OcrLine(page, bbox, baseline, ascHeight = null, xHeight = null) {
   // These inline comments are required for types to work correctly with VSCode Intellisense.
@@ -103,8 +110,6 @@ export function OcrLine(page, bbox, baseline, ascHeight = null, xHeight = null) 
   this._sizeCalc = null;
   /** @type {?number} */
   this._size = null;
-  /** @type {?{x: number, y: number}} */
-  this._angleAdj = null;
   /** @type {OcrPar} */
   this.par = null;
   /** @type {number} */
@@ -159,8 +164,6 @@ export function OcrWord(line, id, text, bbox, poly) {
   this.line = line;
   /** @type {?Array<OcrChar>} */
   this.chars = null;
-  /** @type {?{x: number, y: number}} */
-  this._angleAdj = null;
   /**
    * @type {boolean} - If `true`, left/right coordinates represent the left/rightmost pixel.
    * If `false`, left/right coordinates represent the start/end of the font bounding box.
@@ -461,9 +464,7 @@ function calcLineStartAngleAdj(line) {
 
   const bboxRot = rotateBbox(bbox, cosAngle, sinAngle, width, height);
 
-  line._angleAdj = { x: bboxRot.left - bbox.left, y: bboxRot.bottom - bbox.bottom };
-
-  return line._angleAdj;
+  return { x: bboxRot.left - bbox.left, y: bboxRot.bottom - bbox.bottom };
 }
 
 /**
@@ -473,34 +474,28 @@ function calcLineStartAngleAdj(line) {
  * @param {OcrWord} word
  */
 function calcWordAngleAdj(word) {
-  // if (word._angleAdj === null) {
-  if (true) {
-    word._angleAdj = { x: 0, y: 0 };
+  const { angle } = word.line.page;
 
-    const { angle } = word.line.page;
+  if (Math.abs(angle ?? 0) > 0.05) {
+    const sinAngle = Math.sin(angle * (Math.PI / 180));
+    const cosAngle = Math.cos(angle * (Math.PI / 180));
 
-    if (Math.abs(angle ?? 0) > 0.05) {
-      const sinAngle = Math.sin(angle * (Math.PI / 180));
-      const cosAngle = Math.cos(angle * (Math.PI / 180));
+    const x = word.bbox.left - word.line.bbox.left;
+    const y = word.bbox.bottom - (word.line.bbox.bottom + word.line.baseline[1]);
 
-      const x = word.bbox.left - word.line.bbox.left;
-      const y = word.bbox.bottom - (word.line.bbox.bottom + word.line.baseline[1]);
+    if (word.style.sup || word.style.dropcap) {
+      const tanAngle = sinAngle / cosAngle;
+      const angleAdjYSup = (y - (x * tanAngle)) * cosAngle - y;
 
-      if (word.style.sup || word.style.dropcap) {
-        const tanAngle = sinAngle / cosAngle;
-        const angleAdjYSup = (y - (x * tanAngle)) * cosAngle - y;
+      const angleAdjXSup = angle > 0 ? 0 : angleAdjYSup * tanAngle;
 
-        const angleAdjXSup = angle > 0 ? 0 : angleAdjYSup * tanAngle;
-
-        word._angleAdj = { x: 0 - angleAdjXSup, y: angleAdjYSup };
-      } else {
-        const angleAdjXBaseline = x / cosAngle - x;
-        word._angleAdj = { x: angleAdjXBaseline, y: 0 };
-      }
+      return { x: 0 - angleAdjXSup, y: angleAdjYSup };
     }
+    const angleAdjXBaseline = x / cosAngle - x;
+    return { x: angleAdjXBaseline, y: 0 };
   }
 
-  return word._angleAdj;
+  return { x: 0, y: 0 };
 }
 
 /**
@@ -830,12 +825,26 @@ export function getWordFillOpacity(word, displayMode, confThreshMed = 75, confTh
  * Serialize the OCR data as JSON.
  * A special function is needed to remove circular references.
  * @param {Array<OcrPage>} pages - Layout data tables.
+ * @param {Object} [options]
+ * @param {boolean} [options.includeText=false] - Include text properties at page, par, and line level.
  */
-export const removeCircularRefsOcr = (pages) => {
+export const removeCircularRefsOcr = (pages, options = {}) => {
+  const { includeText = false } = options;
   const pagesClone = structuredClone(pages);
   pagesClone.forEach((page) => {
+    // Add page-level text if requested (must be done before modifying lines)
+    if (includeText) {
+      // @ts-ignore
+      page.text = getPageText(page);
+    }
+
     // Process paragraphs - convert line references to IDs
     page.pars.forEach((par) => {
+      // Add par-level text if requested (must be done before deleting lines)
+      if (includeText) {
+        // @ts-ignore
+        par.text = getParText(par);
+      }
       // @ts-ignore
       delete par.page;
       // Convert lines array to array of line IDs
@@ -843,9 +852,19 @@ export const removeCircularRefsOcr = (pages) => {
       par.lineIds = par.lines.map((line) => line.id);
       // @ts-ignore
       delete par.lines;
+      // Delete debug if all values are empty/null
+      if (par.debug && !par.debug.raw && !par.debug.sourceType) {
+        // @ts-ignore
+        delete par.debug;
+      }
     });
 
     page.lines.forEach((line) => {
+      // Add line-level text if requested
+      if (includeText) {
+        // @ts-ignore
+        line.text = getLineText(line);
+      }
       // @ts-ignore
       delete line.page;
       // Store par ID for deserialization
@@ -855,9 +874,19 @@ export const removeCircularRefsOcr = (pages) => {
       }
       // @ts-ignore
       delete line.par;
+      // Delete debug if all values are empty/null
+      if (line.debug && !line.debug.raw) {
+        // @ts-ignore
+        delete line.debug;
+      }
       line.words.forEach((word) => {
         // @ts-ignore
         delete word.line;
+        // Delete debug if all values are empty/null
+        if (word.debug && !word.debug.raw) {
+          // @ts-ignore
+          delete word.debug;
+        }
       });
     });
   });
@@ -872,12 +901,27 @@ export const removeCircularRefsOcr = (pages) => {
  */
 export const addCircularRefsOcr = (pages) => {
   pages.forEach((page) => {
+    // Remove text property if present (added during export with includeText option)
+    // @ts-ignore
+    delete page.text;
+
     page.lines.forEach((line) => {
+      // Remove text property if present
+      // @ts-ignore
+      delete line.text;
       line.page = page;
+      // Restore debug object if not present
+      if (!line.debug) {
+        line.debug = new LineDebugInfo();
+      }
       line.words.forEach((word) => {
         word.line = line;
         if (word.footnoteParId === undefined) {
           word.footnoteParId = null;
+        }
+        // Restore debug object if not present
+        if (!word.debug) {
+          word.debug = new WordDebugInfo();
         }
       });
     });
@@ -889,7 +933,14 @@ export const addCircularRefsOcr = (pages) => {
 
     // Restore paragraph references
     page.pars.forEach((par) => {
+      // Remove text property if present
+      // @ts-ignore
+      delete par.text;
       par.page = page;
+      // Restore debug object if not present
+      if (!par.debug) {
+        par.debug = new ParDebugInfo();
+      }
       // Initialize footnoteRefId to null if not present
       if (par.footnoteRefId === undefined) {
         par.footnoteRefId = null;
@@ -966,6 +1017,7 @@ const ocr = {
   OcrLine,
   OcrWord,
   OcrChar,
+  ParDebugInfo,
   WordDebugInfo,
   LineDebugInfo,
   calcLineStartAngleAdj,

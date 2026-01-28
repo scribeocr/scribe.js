@@ -91,6 +91,48 @@ describe('Check .scribe export function.', function () {
     await scribe.terminate();
   }).timeout(10000);
 
+  it('Exporting with includeExtraTextScribe should add text properties, which are removed on import', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
+
+    const ocrAllComp1 = standardizeOCRPages(scribe.data.ocr.active);
+
+    scribe.opt.compressScribe = false;
+    scribe.opt.includeExtraTextScribe = true;
+    const scribeData = await scribe.exportData('scribe');
+
+    // Verify data contains correct text properties
+    const parsedData = JSON.parse(scribeData);
+    const page = parsedData.ocr[0];
+
+    assert.strictEqual(page.lines[0].text, 'UNITED STATES DISTRICT COURT', 'Line text should be correct');
+    assert.strictEqual(page.pars[0].text, 'UNITED STATES DISTRICT COURT FOR THE EASTERN DISTRICT OF MICHIGAN', 'Paragraph text should be correct');
+    assert.isTrue(page.text.startsWith('UNITED STATES DISTRICT COURT\nFOR THE EASTERN DISTRICT OF MICHIGAN'), 'Page text should start correctly');
+    assert.isTrue(page.text.endsWith('Case 2:12-cv-13821-AC-DRG ECF No. 1, PageID.1 Filed 08/29/12 Page 1 of 6'), 'Page text should end correctly');
+
+    const encoder = new TextEncoder();
+    const scribeDataBuffer = encoder.encode(scribeData).buffer;
+
+    await scribe.terminate();
+    await scribe.importFiles({ scribeFiles: [scribeDataBuffer] });
+
+    // Verify text properties are removed after import
+    const activeOcr = scribe.data.ocr.active;
+    assert.isFalse('text' in activeOcr[0], 'Page should not have text property after import');
+    assert.isFalse('text' in activeOcr[0].lines[0], 'Line should not have text property after import');
+    if (activeOcr[0].pars && activeOcr[0].pars.length > 0) {
+      assert.isFalse('text' in activeOcr[0].pars[0], 'Paragraph should not have text property after import');
+    }
+
+    // Verify OCR data is unchanged
+    const ocrAllComp2 = standardizeOCRPages(scribe.data.ocr.active);
+    assert.deepStrictEqual(ocrAllComp1, ocrAllComp2);
+
+    scribe.opt.compressScribe = true;
+    scribe.opt.includeExtraTextScribe = false;
+    await scribe.clear();
+    await scribe.terminate();
+  }).timeout(10000);
+
   after(async () => {
     await scribe.terminate();
   });
