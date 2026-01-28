@@ -55,6 +55,16 @@ export class opt {
 
   static compressScribe = true;
 
+  /**
+   * Include extra text data in .scribe/.scribe.json exports.
+   * Enabling this option adds `text` fields at the line/paragraph/page level.
+   * This should be disabled if using .scribe files for saving/restoring full OCR data,
+   * as it increases file size and duplicates data already present in the OCR structure.
+   * This can be convenient when using .scribe/.scribe.json files for programs
+   * end users write themselves.
+   */
+  static includeExtraTextScribe = false;
+
   static warningHandler = (x) => console.warn(x);
 
   static errorHandler = (x) => console.error(x);

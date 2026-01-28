@@ -284,20 +284,19 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
     });
   } else if (format === 'scribe') {
     const data = {
-      ocr: removeCircularRefsOcr(ocrDownload),
+      ocr: removeCircularRefsOcr(ocrDownload, { includeText: opt.includeExtraTextScribe }),
       fontState: FontCont.state,
       layoutRegions: layoutRegions.pages,
       layoutDataTables: removeCircularRefsDataTables(layoutDataTables.pages),
     };
-    const contentStr = JSON.stringify(data);
-
     if (opt.compressScribe) {
+      const contentStr = JSON.stringify(data);
       const pako = await import('../../lib/pako.esm.mjs');
       const enc = new TextEncoder();
       const gzipped = pako.gzip(enc.encode(contentStr));
       content = gzipped ? gzipped.buffer : contentStr;
     } else {
-      content = contentStr;
+      content = JSON.stringify(data, null, 2);
     }
   }
 
@@ -314,7 +313,14 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
  */
 export async function download(format, fileName, minPage = 0, maxPage = -1) {
   if (format === 'text') format = 'txt';
-  const ext = format === 'alto' ? 'xml' : format;
+  let ext;
+  if (format === 'alto') {
+    ext = 'xml';
+  } else if (format === 'scribe' && !opt.compressScribe) {
+    ext = 'scribe.json';
+  } else {
+    ext = format;
+  }
   fileName = fileName.replace(/\.\w{1,6}$/, `.${ext}`);
   const content = await exportData(format, minPage, maxPage);
   await saveAs(content, fileName);
