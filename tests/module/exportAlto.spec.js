@@ -34,6 +34,8 @@ const normalizeAlto = (xmlStr) => {
   xmlStr = xmlStr.replace(/<softwareCreator>[^<]*<\/softwareCreator>/g, '');
   xmlStr = xmlStr.replace(/<softwareName>[^<]*<\/softwareName>/g, '');
   xmlStr = xmlStr.replace(/<softwareVersion>[^<]*<\/softwareVersion>/g, '');
+  // We delete the FONTSIZE attribute on import as it often appears to be inaccurate.
+  xmlStr = xmlStr.replace(/\s*FONTSIZE="[^"]*"/g, '');
 
   xmlStr = xmlStr.replace(/<TopMargin[^>]*>\s*<\/TopMargin>/g, '');
   xmlStr = xmlStr.replace(/<LeftMargin[^>]*>\s*<\/LeftMargin>/g, '');

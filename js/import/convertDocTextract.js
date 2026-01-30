@@ -249,8 +249,6 @@ export async function convertDocTextract({ ocrStr, pageDims }) {
 
     const pageOrientation = detectPolyOrientation(pagePoly);
 
-    console.log(`Page ${n + 1} orientation: ${pageOrientation * 90} degrees`);
-
     const pageObj = new ocr.OcrPage(n, pageDimsN);
 
     const pageData = blocksByPage.get(n + 1) || { lines: [], layouts: [], tables: [] };
@@ -259,13 +257,8 @@ export async function convertDocTextract({ ocrStr, pageDims }) {
     const tableBlocks = pageData.tables;
 
     if (lineBlocks.length === 0) {
-      const warn = { char: 'char_error' };
-      return {
-        pageObj,
-        charMetricsObj: {},
-        dataTables: new LayoutDataTablePage(n),
-        warn,
-      };
+      resArr.push({ pageObj, dataTables: new LayoutDataTablePage(n), langSet: new Set() });
+      continue;
     }
 
     const tablesPage = convertTableLayoutTextract(n, tableBlocks, pageDimsN, blockMap);
