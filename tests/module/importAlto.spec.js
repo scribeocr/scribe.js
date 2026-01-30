@@ -107,3 +107,105 @@ describe('Check ALTO XML multi-page import.', function () {
     await scribe.terminate();
   });
 }).timeout(120000);
+
+describe('Check ALTO XML import positioning matches Abbyy.', function () {
+  this.timeout(60000);
+
+  /** @type {Object<number, {baseline: Array<number>, fontSize: number, baselineY: number}>} */
+  let abbyyLineMetrics;
+  /** @type {Object<number, {baseline: Array<number>, fontSize: number, baselineY: number}>} */
+  let altoLineMetrics;
+
+  before(async () => {
+    await scribe.init({ ocr: true, font: true });
+
+    // First, import Abbyy XML to get accurate line metrics (ground truth)
+    await scribe.importFiles([
+      `${ASSETS_PATH_KARMA}/ascenders_descenders_test.png`,
+      `${ASSETS_PATH_KARMA}/ascenders_descenders_test.abbyy.xml`,
+    ]);
+
+    abbyyLineMetrics = {};
+    const abbyyPage = scribe.data.ocr.active[0];
+    for (let lineIdx = 0; lineIdx < abbyyPage.lines.length; lineIdx++) {
+      const line = abbyyPage.lines[lineIdx];
+      const wordMetrics = scribe.utils.calcWordMetrics(line.words[0]);
+      abbyyLineMetrics[lineIdx] = {
+        baseline: [...line.baseline],
+        fontSize: wordMetrics.fontSize,
+        baselineY: line.bbox.bottom + line.baseline[1],
+      };
+    }
+
+    await scribe.clear();
+    await scribe.importFiles([
+      `${ASSETS_PATH_KARMA}/ascenders_descenders_test.png`,
+      `${ASSETS_PATH_KARMA}/ascenders_descenders_test.alto.xml`,
+    ]);
+
+    altoLineMetrics = {};
+    const altoPage = scribe.data.ocr.active[0];
+    for (let lineIdx = 0; lineIdx < altoPage.lines.length; lineIdx++) {
+      const line = altoPage.lines[lineIdx];
+      const wordMetrics = scribe.utils.calcWordMetrics(line.words[0]);
+      altoLineMetrics[lineIdx] = {
+        baseline: [...line.baseline],
+        fontSize: wordMetrics.fontSize,
+        baselineY: line.bbox.bottom + line.baseline[1],
+      };
+    }
+  });
+
+  it('ALTO line 0 font size should match Abbyy font size', async () => {
+    const altoFontSize = altoLineMetrics[0].fontSize;
+    const abbyyFontSize = abbyyLineMetrics[0].fontSize;
+    const percentDiff = Math.abs(altoFontSize - abbyyFontSize) / abbyyFontSize;
+    assert.approximately(altoFontSize, abbyyFontSize, 5, 'Line 0 font size should be within 5px');
+    assert.isBelow(percentDiff, 0.1, 'Line 0 font size should be within 10%');
+  }).timeout(10000);
+
+  it('ALTO line 1 font size should match Abbyy font size', async () => {
+    const altoFontSize = altoLineMetrics[1].fontSize;
+    const abbyyFontSize = abbyyLineMetrics[1].fontSize;
+    const percentDiff = Math.abs(altoFontSize - abbyyFontSize) / abbyyFontSize;
+    console.log(`Line 1: ALTO fontSize=${altoFontSize}, Abbyy fontSize=${abbyyFontSize}, diff=${(percentDiff * 100).toFixed(1)}%`);
+    assert.approximately(altoFontSize, abbyyFontSize, 5, 'Line 1 font size should be within 5px');
+    assert.isBelow(percentDiff, 0.1, 'Line 1 font size should be within 10%');
+  }).timeout(10000);
+
+  it('ALTO line 2 font size should match Abbyy font size', async () => {
+    const altoFontSize = altoLineMetrics[2].fontSize;
+    const abbyyFontSize = abbyyLineMetrics[2].fontSize;
+    const percentDiff = Math.abs(altoFontSize - abbyyFontSize) / abbyyFontSize;
+    assert.approximately(altoFontSize, abbyyFontSize, 5, 'Line 2 font size should be within 5px');
+    assert.isBelow(percentDiff, 0.1, 'Line 2 font size should be within 10%');
+  }).timeout(10000);
+
+  it('ALTO line 0 baseline Y should match Abbyy baseline Y', async () => {
+    const altoBaselineY = altoLineMetrics[0].baselineY;
+    const abbyyBaselineY = abbyyLineMetrics[0].baselineY;
+    const percentDiff = Math.abs(altoBaselineY - abbyyBaselineY) / abbyyBaselineY;
+    assert.approximately(altoBaselineY, abbyyBaselineY, 3, 'Line 0 baseline Y should be within 3px');
+    assert.isBelow(percentDiff, 0.1, 'Line 0 baseline Y should be within 10%');
+  }).timeout(10000);
+
+  it('ALTO line 1 baseline Y should match Abbyy baseline Y', async () => {
+    const altoBaselineY = altoLineMetrics[1].baselineY;
+    const abbyyBaselineY = abbyyLineMetrics[1].baselineY;
+    const percentDiff = Math.abs(altoBaselineY - abbyyBaselineY) / abbyyBaselineY;
+    assert.approximately(altoBaselineY, abbyyBaselineY, 3, 'Line 1 baseline Y should be within 3px');
+    assert.isBelow(percentDiff, 0.1, 'Line 1 baseline Y should be within 10%');
+  }).timeout(10000);
+
+  it('ALTO line 2 baseline Y should match Abbyy baseline Y', async () => {
+    const altoBaselineY = altoLineMetrics[2].baselineY;
+    const abbyyBaselineY = abbyyLineMetrics[2].baselineY;
+    const percentDiff = Math.abs(altoBaselineY - abbyyBaselineY) / abbyyBaselineY;
+    assert.approximately(altoBaselineY, abbyyBaselineY, 3, 'Line 2 baseline Y should be within 3px');
+    assert.isBelow(percentDiff, 0.1, 'Line 2 baseline Y should be within 10%');
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);

@@ -1,8 +1,11 @@
 import ocr from '../objects/ocrObjects.js';
 
 import {
+  ascCharArr,
   calcBboxUnion,
+  descCharArr,
   unescapeXml,
+  xCharArr,
 } from '../utils/miscUtils.js';
 
 import { LayoutDataTablePage } from '../objects/layoutObjects.js';
@@ -31,6 +34,7 @@ export async function convertPageAlto({ ocrStr, n }) {
   const pageDims = { height: parseInt(heightStr), width: parseInt(widthStr) };
 
   const pageObj = new ocr.OcrPage(n, pageDims);
+  pageObj.textSource = 'alto';
 
   const textLineRegex = /<TextLine[^>]*>([\s\S]*?)<\/TextLine>/gi;
 
@@ -72,12 +76,7 @@ export async function convertPageAlto({ ocrStr, n }) {
 
     const baseline = [0, 0];
 
-    // Height used as rough estimate for ascender height
-    const height = parseInt(lineHeightheightStr);
-    const lineAscHeightFinal = height * 0.75;
-    const lineXHeightFinal = height * 0.5;
-
-    const lineObj = new ocr.OcrLine(pageObj, linebox, baseline, lineAscHeightFinal, lineXHeightFinal);
+    const lineObj = new ocr.OcrLine(pageObj, linebox, baseline, null, null);
 
     if (debugMode) {
       lineObj.debug.raw = match;
@@ -136,9 +135,9 @@ export async function convertPageAlto({ ocrStr, n }) {
         if (styleMatch) {
           const fontFamily = getAttr(styleMatch[0], 'FONTFAMILY');
           if (fontFamily) wordObj.style.font = fontFamily;
-
-          const fontSize = getAttr(styleMatch[0], 'FONTSIZE');
-          if (fontSize) wordObj.style.size = parseInt(fontSize);
+          // Note: We intentionally don't set word.style.size from FONTSIZE.
+          // When word.style.size is set, we expect it to be accurate and prioritize it during rendering.
+          // However, the ALTO FONTSIZE often doesn't match the actual rendered size.
         }
       }
 
@@ -150,6 +149,60 @@ export async function convertPageAlto({ ocrStr, n }) {
     }
 
     if (lineObj.words.length > 0) {
+      const wordsWithDescenders = /** @type {OcrWord[]} */ ([]);
+      const wordsWithoutDescenders = /** @type {OcrWord[]} */ ([]);
+
+      for (const word of lineObj.words) {
+        const hasDescender = word.text.split('').some((char) => descCharArr.includes(char));
+        if (hasDescender) {
+          wordsWithDescenders.push(word);
+        } else {
+          wordsWithoutDescenders.push(word);
+        }
+      }
+
+      // Calculate baseline offset
+      if (wordsWithoutDescenders.length > 0) {
+        // Words without descenders have their bottom on the baseline
+        const bottoms = wordsWithoutDescenders.map((w) => w.bbox.bottom);
+        const medianBottom = bottoms.sort((a, b) => a - b)[Math.floor(bottoms.length / 2)];
+        lineObj.baseline[1] = medianBottom - lineObj.bbox.bottom;
+      } else if (wordsWithDescenders.length > 0) {
+        // All words have descenders - estimate baseline using typical descender ratio
+        // Descenders typically extend about 20-25% below the baseline
+        // So baseline is at about 75-80% of the line height from top
+        const lineHeight = lineObj.bbox.bottom - lineObj.bbox.top;
+        const estimatedDescenderDepth = Math.round(lineHeight * 0.25);
+        lineObj.baseline[1] = -estimatedDescenderDepth;
+      }
+
+      // Calculate xHeight from words with only x-height characters (no ascenders, no descenders)
+      const xHeightOnlyWords = lineObj.words.filter((word) => {
+        const chars = word.text.split('');
+        return chars.every((char) => xCharArr.includes(char));
+      });
+
+      const hasAscenders = lineObj.words.some((word) => word.text.split('').some((char) => ascCharArr.includes(char)));
+
+      if (xHeightOnlyWords.length > 0) {
+        // We have words with only x-height characters - use their height directly
+        const heights = xHeightOnlyWords.map((w) => w.bbox.bottom - w.bbox.top);
+        lineObj.xHeight = heights.sort((a, b) => a - b)[Math.floor(heights.length / 2)];
+      } else {
+        // No x-height only words - estimate based on baseline and whether we have ascenders
+        const baselineY = lineObj.bbox.bottom + lineObj.baseline[1];
+        const topToBaseline = baselineY - lineObj.bbox.top;
+
+        if (!hasAscenders) {
+          // Line has no ascenders (e.g., "query png") - x-height is approximately topToBaseline
+          lineObj.xHeight = Math.round(topToBaseline);
+        } else {
+          // Line has ascenders but no x-height only words
+          // x-height is typically ~65-70% of the distance from line top to baseline
+          lineObj.xHeight = Math.round(topToBaseline * 0.67);
+        }
+      }
+
       pageObj.lines.push(lineObj);
     }
 
