@@ -186,13 +186,51 @@ export async function convertDocTextract({ ocrStr, pageDims }) {
         console.warn(`Invalid Textract JSON data at index ${i}. Expected an array of blocks.`);
         continue;
       }
-      blocks.push(...textractData.Blocks);
+      for (const block of textractData.Blocks) {
+        blocks.push(block);
+      }
     }
   } catch (error) {
+    console.error(error);
     throw new Error('Failed to parse Textract JSON.');
   }
 
   const pageBlocks = blocks.filter((block) => block.BlockType === 'PAGE');
+
+  // Build maps once for all blocks for better performance with large documents.
+  const relationshipMap = new Map();
+  blocks.forEach((block) => {
+    if (block.Relationships) {
+      block.Relationships.forEach((rel) => {
+        if (rel.Type === 'CHILD') {
+          relationshipMap.set(block.Id, rel.Ids || []);
+        }
+      });
+    }
+  });
+
+  const blockMap = new Map();
+  blocks.forEach((block) => {
+    blockMap.set(block.Id, block);
+  });
+
+  /** @type {Map<number, {lines: TextractBlock[], layouts: TextractBlock[], tables: TextractBlock[]}>} */
+  const blocksByPage = new Map();
+  blocks.forEach((block) => {
+    const pageNum = block.Page || 1;
+    let pageData = blocksByPage.get(pageNum);
+    if (!pageData) {
+      pageData = { lines: [], layouts: [], tables: [] };
+      blocksByPage.set(pageNum, pageData);
+    }
+    if (block.BlockType === 'LINE') {
+      pageData.lines.push(block);
+    } else if (block.BlockType === 'TABLE') {
+      pageData.tables.push(block);
+    } else if (block.BlockType && block.BlockType.startsWith('LAYOUT_')) {
+      pageData.layouts.push(block);
+    }
+  });
 
   const resArr = [];
 
@@ -215,7 +253,11 @@ export async function convertDocTextract({ ocrStr, pageDims }) {
 
     const pageObj = new ocr.OcrPage(n, pageDimsN);
 
-    const lineBlocks = blocks.filter((block) => block.BlockType === 'LINE' && (!block.Page && n === 0 || block.Page === n + 1));
+    const pageData = blocksByPage.get(n + 1) || { lines: [], layouts: [], tables: [] };
+    const lineBlocks = pageData.lines;
+    const layoutBlocks = pageData.layouts;
+    const tableBlocks = pageData.tables;
+
     if (lineBlocks.length === 0) {
       const warn = { char: 'char_error' };
       return {
@@ -226,27 +268,7 @@ export async function convertDocTextract({ ocrStr, pageDims }) {
       };
     }
 
-    const tablesPage = convertTableLayoutTextract(n, blocks, pageDimsN);
-
-    const relationshipMap = new Map();
-    blocks.forEach((block) => {
-      if (block.Relationships) {
-        block.Relationships.forEach((rel) => {
-          if (rel.Type === 'CHILD') {
-            relationshipMap.set(block.Id, rel.Ids || []);
-          }
-        });
-      }
-    });
-
-    const blockMap = new Map();
-    blocks.forEach((block) => {
-      blockMap.set(block.Id, block);
-    });
-
-    // Process layout blocks (paragraphs) and their lines
-    const layoutBlocks = blocks.filter((block) => block.BlockType && block.BlockType.startsWith('LAYOUT_'),
-    );
+    const tablesPage = convertTableLayoutTextract(n, tableBlocks, pageDimsN, blockMap);
 
     // Create a map to track which lines belong to which layout blocks
     const lineToLayoutMap = new Map();
@@ -640,14 +662,14 @@ function createParagraphsFromLayout(pageObj, layoutBlocks, relationshipMap, bloc
 /**
  *
  * @param {number} pageNum
- * @param {TextractBlock[]} blocks
+ * @param {TextractBlock[]} tableBlocks - Pre-filtered table blocks for this page
  * @param {dims} pageDims
+ * @param {Map<string, TextractBlock>} blockMap - Map of Textract blocks by ID
  */
-function convertTableLayoutTextract(pageNum, blocks, pageDims) {
+function convertTableLayoutTextract(pageNum, tableBlocks, pageDims, blockMap) {
   const tablesPage = new LayoutDataTablePage(pageNum);
 
-  const tableBlocks = blocks.filter((block) => block.BlockType === 'TABLE' && (!block.Page && pageNum === 0 || block.Page === pageNum + 1));
-
+  // Build relationship map only for table blocks
   const relationshipMap = new Map();
   tableBlocks.forEach((block) => {
     if (block.Relationships) {
@@ -657,11 +679,6 @@ function convertTableLayoutTextract(pageNum, blocks, pageDims) {
         }
       });
     }
-  });
-
-  const blockMap = new Map();
-  blocks.forEach((block) => {
-    blockMap.set(block.Id, block);
   });
 
   for (const tableBlock of tableBlocks) {
