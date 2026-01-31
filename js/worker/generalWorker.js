@@ -15,8 +15,6 @@ import {
   evalPageBase,
   evalPageFont,
   evalWords,
-  nudgePageBaseline,
-  nudgePageFontSize,
   renderPageStaticImp,
 } from './compareOCRModule.js';
 import { optimizeFont } from './optimizeFontModule.js';
@@ -409,8 +407,6 @@ const handleMessage = async (data) => {
     evalPageBase,
     evalWords,
     compareOCRPageImp: compareOCRPageImpWrap,
-    nudgePageFontSize,
-    nudgePageBaseline,
     renderPageStaticImp,
 
     // Recognition

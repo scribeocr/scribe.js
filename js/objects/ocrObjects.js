@@ -84,7 +84,6 @@ export function LineDebugInfo() {
  * @property {?number} xHeight -
  * @property {Array<OcrWord>} words - words in line
  * @property {OcrPage} page - page line belongs to
- * @property {?number} _size - line font size set (set through other means)
  * @property {?string} raw - Raw string this object was parsed from.
  *    Exists only for debugging purposes, should be `null` in production contexts.
  */
@@ -104,8 +103,6 @@ export function OcrLine(page, bbox, baseline, ascHeight = null, xHeight = null) 
   this.words = [];
   /** @type {OcrPage} */
   this.page = page;
-  /** @type {?number} */
-  this._size = null;
   /** @type {OcrPar} */
   this.par = null;
   /** @type {number} */

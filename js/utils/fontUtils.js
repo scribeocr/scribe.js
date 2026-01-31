@@ -359,8 +359,6 @@ export const calcWordFontSize = (word) => {
  * @returns {number}
  */
 export const calcLineFontSize = (line) => {
-  if (line._size) return line._size;
-
   const nonLatin = line.words[0]?.lang === 'chi_sim';
 
   const font = FontCont.getWordFont(line.words[0]);
