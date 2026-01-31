@@ -109,8 +109,6 @@ export async function initGeneralWorker() {
     obj.evalPageBase = wrap('evalPageBase');
     obj.evalWords = wrap('evalWords');
     obj.compareOCRPageImp = wrap('compareOCRPageImp');
-    obj.nudgePageFontSize = wrap('nudgePageFontSize');
-    obj.nudgePageBaseline = wrap('nudgePageBaseline');
 
     obj.reinitialize = wrap('reinitialize');
     obj.reinitialize2 = wrap('reinitialize2');
