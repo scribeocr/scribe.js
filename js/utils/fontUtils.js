@@ -361,11 +361,6 @@ export const calcWordFontSize = (word) => {
 export const calcLineFontSize = (line) => {
   if (line._size) return line._size;
 
-  // TODO: Add back cache when there are also functions that clear cache at appropriate times.
-  // if (line._sizeCalc) return line._sizeCalc;
-
-  // const anyChinese = line.words.filter((x) => x.lang === 'chi_sim').length > 0;
-
   const nonLatin = line.words[0]?.lang === 'chi_sim';
 
   const font = FontCont.getWordFont(line.words[0]);
@@ -377,12 +372,10 @@ export const calcLineFontSize = (line) => {
     // If no font metrics are known, use the font size from the previous line.
     const linePrev = getPrevLine(line);
     if (linePrev) {
-      line._sizeCalc = calcLineFontSize(linePrev);
-    // If there is no previous line, as a last resort, use a hard-coded default value.
-    } else {
-      line._sizeCalc = 15;
+      return calcLineFontSize(linePrev);
     }
-    return line._sizeCalc;
+    // If there is no previous line, as a last resort, use a hard-coded default value.
+    return 15;
   }
 
   const fontOpentype = font.opentype;
@@ -393,8 +386,7 @@ export const calcLineFontSize = (line) => {
     const fontSizeCalc = calcWordFontSizePrecise(line.words, fontOpentype, nonLatin);
     // `fontSizeCalc` has been negative under fringe conditions, so check for that.
     if (fontSizeCalc && fontSizeCalc > 0) {
-      line._sizeCalc = fontSizeCalc;
-      return line._sizeCalc;
+      return fontSizeCalc;
     }
   }
 
@@ -422,23 +414,25 @@ export const calcLineFontSize = (line) => {
       }
     }
 
-    line._sizeCalc = sizeFinal;
-  // If only x-height is known, calculate font size using x-height.
-  } else if (!line.ascHeight && line.xHeight) {
-    line._sizeCalc = getFontSize(fontOpentype, line.xHeight, 'o');
-  // If only ascender height is known, calculate font size using ascender height.
-  } else if (line.ascHeight && !line.xHeight) {
-    line._sizeCalc = getFontSize(fontOpentype, line.ascHeight, 'A');
-  } else {
-    // If no font metrics are known, use the font size from the previous line.
-    const linePrev = getPrevLine(line);
-    if (linePrev) {
-      line._sizeCalc = calcLineFontSize(linePrev);
-    // If there is no previous line, as a last resort, use a hard-coded default value.
-    } else {
-      line._sizeCalc = 15;
-    }
+    return sizeFinal;
   }
 
-  return line._sizeCalc;
+  // If only x-height is known, calculate font size using x-height.
+  if (!line.ascHeight && line.xHeight) {
+    return getFontSize(fontOpentype, line.xHeight, 'o');
+  }
+
+  // If only ascender height is known, calculate font size using ascender height.
+  if (line.ascHeight && !line.xHeight) {
+    return getFontSize(fontOpentype, line.ascHeight, 'A');
+  }
+
+  // If no font metrics are known, use the font size from the previous line.
+  const linePrev = getPrevLine(line);
+  if (linePrev) {
+    return calcLineFontSize(linePrev);
+  }
+
+  // If there is no previous line, as a last resort, use a hard-coded default value.
+  return 15;
 };

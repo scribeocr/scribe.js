@@ -14,6 +14,8 @@ import {
 } from '../objects/layoutObjects.js';
 import { pass3 } from './convertPageShared.js';
 
+const debugMode = false;
+
 /**
  * @param {Object} params
  * @param {string} params.ocrStr - String or array of strings containing Google Vision JSON data.
@@ -98,6 +100,10 @@ export async function convertPageGoogleVision({ ocrStr, n }) {
       const parObj = new ocr.OcrPar(pageObj, bboxPar);
       parObj.reason = String(block.blockType || 'TEXT');
 
+      if (debugMode) {
+        parObj.debug.sourceType = block.blockType || null;
+      }
+
       let lineObj = new ocr.OcrLine(pageObj, null, [0, 0]);
       let lineIndex = 0;
 
@@ -143,6 +149,11 @@ export async function convertPageGoogleVision({ ocrStr, n }) {
         const wordObj = new ocr.OcrWord(lineObj, id, wordText, bboxWord);
         wordObj.conf = (word.confidence || 0) * 100;
         wordObj.chars = charObjs;
+
+        if (debugMode) {
+          wordObj.debug.raw = JSON.stringify(word);
+        }
+
         lineObj.words.push(wordObj);
 
         const hasLineBreak = word.symbols.some((symbol) => {
