@@ -94,7 +94,6 @@ export function assignParagraphs(page, angle) {
     let endsEarlyInt = false;
     let startsLate = false;
 
-    // Bullet points violate some heuristics, so we need to track them separately.
     // For a bullet point list, the first line *after* the line containing the bullet point appears to be indented.
     const bullet = /^([•◦▪▫●○◼◻➢«»]|((i+|\d+|[a-z])(\.|\)))$)/.test(line.words[0].text);
     // This will not work with non-English alphabets.  Should be replaced with a more general solution at some point.
@@ -104,6 +103,17 @@ export function assignParagraphs(page, angle) {
     // they are likely part of the same paragraph.
     // This heuristic can override some but not all other heuristics that would otherwise split the paragraph.
     const lowerConnection = lowerStart && letterEndPrev;
+
+    if (bullet && h > 0) {
+      newPar = true;
+      reason = 'bullet/list item';
+    }
+
+    const firstWordSup = line.words[0].style && line.words[0].style.sup;
+    if (firstWordSup && h > 0) {
+      newPar = true;
+      reason = 'superscript/footnote';
+    }
 
     let parLineIndices = /** @type {?Array<number>} */[];
     if (parArr[parArr.length - 1] && parArr[parArr.length - 1].lines.length > 0) {
