@@ -6,4 +6,4 @@
 	url = https://github.com/scribeocr/cloud-adapters.git
 [submodule "tesseract.js"]
 	path = tesseract.js
-	url = git@github.com:scribeocr/tesseract.js.git
+	url = https://github.com/scribeocr/tesseract.js.git
