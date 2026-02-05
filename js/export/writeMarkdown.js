@@ -12,29 +12,33 @@ function escapeMarkdown(text) {
 }
 
 /**
- * Apply markdown formatting to a word based on its style.
+ * Apply markdown formatting wrapper to text based on style key.
+ * @param {string} text
+ * @param {string} styleKey - 'b', 'i', 'bi', or ''
+ * @returns {string}
+ */
+function applyStyleWrapper(text, styleKey) {
+  if (styleKey === 'bi') {
+    return `***${text}***`;
+  } if (styleKey === 'b') {
+    return `**${text}**`;
+  } if (styleKey === 'i') {
+    return `*${text}*`;
+  }
+  return text;
+}
+
+/**
+ * Apply superscript formatting to a word if needed.
  * @param {string} text
  * @param {Object} style
+ * @returns {string}
  */
-function applyWordFormatting(text, style) {
-  if (!text) return '';
-
-  let result = escapeMarkdown(text);
-
-  // Apply formatting in order: superscript, then bold/italic
-  if (style.sup) {
-    result = `<sup>${result}</sup>`;
+function applySuperscript(text, style) {
+  if (style?.sup) {
+    return `<sup>${text}</sup>`;
   }
-
-  if (style.bold && style.italic) {
-    result = `***${result}***`;
-  } else if (style.bold) {
-    result = `**${result}**`;
-  } else if (style.italic) {
-    result = `*${result}*`;
-  }
-
-  return result;
+  return text;
 }
 
 /**
@@ -86,25 +90,52 @@ export function writeMarkdown({
         newLine = true;
       }
 
+      // Group consecutive words with the same bold/italic style
+      let currentStyleKey = null;
+      let styledWords = [];
+
+      // eslint-disable-next-line no-loop-func
+      const flushStyledWords = () => {
+        if (styledWords.length === 0) return;
+        const text = styledWords.join(' ');
+        if (applyFormatting) {
+          mdStr += applyStyleWrapper(text, currentStyleKey);
+        } else {
+          mdStr += text;
+        }
+        styledWords = [];
+      };
+
       for (let i = 0; i < lineObj.words.length; i++) {
         const wordObj = lineObj.words[i];
         if (!wordObj) continue;
 
+        const styleKey = applyFormatting ? (wordObj.style?.bold ? 'b' : '') + (wordObj.style?.italic ? 'i' : '') : '';
+        let wordText = escapeMarkdown(wordObj.text);
+        if (applyFormatting) {
+          wordText = applySuperscript(wordText, wordObj.style);
+        }
+
+        // Check if style changed
+        if (styleKey !== currentStyleKey && styledWords.length > 0) {
+          flushStyledWords();
+        }
+
         if (newLine && !isFirstContent) {
+          flushStyledWords();
           mdStr += '\n';
-        } else if (!isFirstContent) {
+        } else if (!isFirstContent && styledWords.length === 0) {
           mdStr += ' ';
         }
 
         newLine = false;
         isFirstContent = false;
-
-        if (applyFormatting) {
-          mdStr += applyWordFormatting(wordObj.text, wordObj.style);
-        } else {
-          mdStr += escapeMarkdown(wordObj.text);
-        }
+        currentStyleKey = styleKey;
+        styledWords.push(wordText);
       }
+
+      // Flush remaining words at end of line
+      flushStyledWords();
     }
     opt.progressHandler({ n: g, type: 'export', info: { } });
   }

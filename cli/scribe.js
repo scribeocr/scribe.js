@@ -34,10 +34,11 @@ program
 
 program
   .command('extract')
-  .argument('<input_file>', 'Input PDF file.')
+  .argument('<input_file>', 'Input PDF file or directory (with --dir).')
   .argument('[output]', 'Output directory or file to save results.', '.')
-  .addOption(new Option('-f, --format <ext>', 'Output format.').choices(['pdf', 'hocr', 'docx', 'xlsx', 'txt', 'text', 'html']).default('txt'))
+  .addOption(new Option('-f, --format <ext>', 'Output format.').choices(['pdf', 'hocr', 'docx', 'xlsx', 'txt', 'text', 'html', 'md']).default('txt'))
   .option('-r, --reflow', 'Reflow text by combining lines into paragraphs.')
+  .option('-d, --dir', 'Process all supported files in the input directory.')
   .description('Extract text from PDF file and save in requested format.')
   .action(extractCLI);
 

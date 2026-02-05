@@ -46,7 +46,7 @@ describe('Check markdown formatting export.', function () {
 
     const exportedMd = await scribe.exportData('md');
 
-    assert.include(exportedMd, '**Investments**');
+    assert.include(exportedMd, '**Investments & Acquisitions**');
   }).timeout(10000);
 
   after(async () => {

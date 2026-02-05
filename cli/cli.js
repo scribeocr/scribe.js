@@ -1,3 +1,6 @@
+import fs from 'node:fs';
+import path from 'node:path';
+
 import { detectPDFType } from './detectPDFType.js';
 import { extract } from './extract.js';
 import {
@@ -50,16 +53,40 @@ export const evalInternalCLI = async (files, options) => {
   process.exitCode = 0;
 };
 
+const supportedExtensions = ['.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.tif'];
+
 /**
  *
- * @param {string} inputFile - Path to PDF file.
+ * @param {string} inputFile - Path to PDF file or directory.
  * @param {?string} [outputDir='.'] - Output directory.
  * @param {Object} [options]
  * @param {"pdf" | "hocr" | "docx" | "xlsx" | "txt" | "text" | "html"} [options.format]
  * @param {boolean} [options.reflow]
+ * @param {boolean} [options.dir]
  */
 export const extractCLI = async (inputFile, outputDir, options) => {
-  await extract(inputFile, outputDir, options);
+  if (options?.dir) {
+    const files = fs.readdirSync(inputFile)
+      .filter((file) => supportedExtensions.includes(path.extname(file).toLowerCase()))
+      .map((file) => path.join(inputFile, file));
+
+    if (files.length === 0) {
+      console.error(`No supported files found in directory: ${inputFile}`);
+      process.exitCode = 1;
+      return;
+    }
+
+    const format = options?.format || 'txt';
+    const outDir = outputDir || '.';
+
+    for (const file of files) {
+      const outputFileName = path.basename(file).replace(/\.\w{1,6}$/i, `.${format}`);
+      const outputPath = path.join(outDir, outputFileName);
+      await extract(file, outputPath, options);
+    }
+  } else {
+    await extract(inputFile, outputDir, options);
+  }
   process.exitCode = 0;
 };
 

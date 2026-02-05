@@ -33,6 +33,8 @@ export function ParDebugInfo() {
   this.raw = null;
   /** @type {?string} */
   this.sourceType = null;
+  /** @type {?string} */
+  this.sourceStyle = null;
 }
 
 /**
@@ -58,6 +60,13 @@ export function OcrPar(page, bbox) {
    * @type {ParType}
    */
   this.type = 'body';
+
+  /**
+   * Contains the paragraph / list number if applicable.
+   * This is not an index, but the actual number/letter as it appears in the text.
+   * @type {string | null}
+   */
+  this.parNum = null;
   /**
    * ID of the footnote reference word that links to this footnote.
    * Only set when type === 'footnote'.
@@ -846,7 +855,7 @@ export const removeCircularRefsOcr = (pages, options = {}) => {
       // @ts-ignore
       delete par.lines;
       // Delete debug if all values are empty/null
-      if (par.debug && !par.debug.raw && !par.debug.sourceType) {
+      if (par.debug && !par.debug.raw && !par.debug.sourceType && !par.debug.sourceStyle) {
         // @ts-ignore
         delete par.debug;
       }
