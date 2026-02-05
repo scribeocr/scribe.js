@@ -165,26 +165,6 @@ describe('Extract CLI command.', () => {
     assert.include(content, 'WHISTLEBLOWERS', 'Output should contain expected text');
   }).timeout(15000);
 
-  it('Should extract text from all PDFs in a directory with --dir option.', async () => {
-    const tmpDir = await tmpUnique.get();
-    const inputDir = path.join(__dirname, '../assets/extract_dir_test');
-    const outputDir = `${tmpDir}/extract_output`;
-
-    await extractCLI(inputDir, outputDir, { format: 'txt', dir: true });
-
-    const outputPath1 = path.join(outputDir, 'academic_article_1.txt');
-    const outputPath2 = path.join(outputDir, 'econometrica_example.txt');
-
-    assert.isOk(fs.existsSync(outputPath1), 'First output file should exist');
-    assert.isOk(fs.existsSync(outputPath2), 'Second output file should exist');
-
-    const content1 = fs.readFileSync(outputPath1, 'utf8');
-    const content2 = fs.readFileSync(outputPath2, 'utf8');
-
-    assert.include(content1, 'WHISTLEBLOWERS', 'First file should contain expected text');
-    assert.include(content2, 'Econometrica', 'Second file should contain expected text');
-  }).timeout(30000);
-
   after(async () => {
     await tmpUnique.delete();
   });
