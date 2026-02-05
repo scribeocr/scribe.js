@@ -262,34 +262,60 @@ describe('Check iris.docx import extracts footnotes and paragraph types.', funct
 
     assert.strictEqual(firstPar.type, 'title', 'First paragraph should be identified as title');
     // Verify paragraph ID matches Word's w14:paraId
-    assert.strictEqual(firstPar.id, '2DF84262', 'Title paragraph should have Word paraId');
+    assert.strictEqual(firstPar.id, '30416D11', 'Title paragraph should have Word paraId');
     // Verify title text content
     const titleText = scribe.utils.ocr.getParText(firstPar);
     assert.strictEqual(titleText, 'Iris (plant)', 'Title text should match');
   }).timeout(10000);
 
-  itSkipNodeEOL('Should parse title text as 20pt in iris.docx', async () => {
+  itSkipNodeEOL('Should parse title text as 28pt in iris.docx', async () => {
     const firstPar = scribe.data.ocr.active[0].pars[0];
     const firstWord = firstPar.lines[0].words[0];
 
     assert.strictEqual(firstWord.text, 'Iris', 'First title word should be "Iris"');
-    assert.strictEqual(firstWord.style.size, 20, 'First title word should be 20pt');
+    assert.strictEqual(firstWord.style.size, 28, 'First title word should be 28pt');
   }).timeout(10000);
 
-  itSkipNodeEOL('Should parse body text as 12pt in iris.docx', async () => {
-    // Second paragraph is the first body paragraph (paraId="0D29F581")
-    const bodyPar = scribe.data.ocr.active[0].pars.find((par) => par.id === '0D29F581');
+  itSkipNodeEOL('Should parse title font as Gill Sans in iris.docx', async () => {
+    const firstPar = scribe.data.ocr.active[0].pars[0];
+    const firstWord = firstPar.lines[0].words[0];
+
+    assert.strictEqual(firstWord.text, 'Iris', 'First title word should be "Iris"');
+    assert.strictEqual(firstWord.style.font, 'Gill Sans', 'Title font should be "Gill Sans"');
+  }).timeout(10000);
+
+  itSkipNodeEOL('Should parse level 2 heading font as Arial in iris.docx', async () => {
+    const overviewPar = scribe.data.ocr.active[0].pars.find((par) => par.id === '63BCB147');
+    assert.isNotNull(overviewPar, 'Should find Overview paragraph');
+
+    const firstWord = overviewPar.lines[0].words[0];
+    assert.strictEqual(firstWord.text, 'Overview', 'First word should be "Overview"');
+    assert.strictEqual(firstWord.style.font, 'Arial', 'Heading 2 font should be "Arial"');
+  }).timeout(10000);
+
+  itSkipNodeEOL('Should parse body text as 10pt in iris.docx', async () => {
+    const bodyPar = scribe.data.ocr.active[0].pars.find((par) => par.id === '38168435');
 
     assert.isNotNull(bodyPar, 'Should find body paragraph with expected ID');
     assert.strictEqual(bodyPar.type, 'body', 'Paragraph should be body type');
     const bodyWord = bodyPar.lines[0].words[0];
     assert.strictEqual(bodyWord.text, 'Iris', 'First body word should be "Iris"');
-    assert.strictEqual(bodyWord.style.size, 12, 'Body text should be 12pt');
+    assert.strictEqual(bodyWord.style.size, 10, 'Body text should be 10pt');
+  }).timeout(10000);
+
+  itSkipNodeEOL('Should save Word style name in debug.sourceStyle', async () => {
+    const titlePar = scribe.data.ocr.active[0].pars[0];
+    assert.strictEqual(titlePar.debug.sourceStyle, 'Heading1Legal1', 'Title paragraph should have Heading1Legal1 style');
+
+    const bodyPar = scribe.data.ocr.active[0].pars.find((par) => par.id === '38168435');
+    assert.strictEqual(bodyPar.debug.sourceStyle, 'ParaLegal1', 'Body paragraph should have ParaLegal1 style');
+
+    const footnotePar = scribe.data.ocr.active[0].pars.find((par) => par.id === '11821BFA');
+    assert.strictEqual(footnotePar.debug.sourceStyle, 'FootnoteText', 'Footnote paragraph should have FootnoteText style');
   }).timeout(10000);
 
   itSkipNodeEOL('Should parse first footnote with correct ID and text', async () => {
-    // First footnote has paraId="731CBC24" and starts with citation text
-    const footnotePar = scribe.data.ocr.active[0].pars.find((par) => par.id === '731CBC24');
+    const footnotePar = scribe.data.ocr.active[0].pars.find((par) => par.id === '11821BFA');
 
     assert.isNotNull(footnotePar, 'Should find first footnote paragraph by ID');
     assert.strictEqual(footnotePar.type, 'footnote', 'Paragraph should be footnote type');
@@ -302,8 +328,7 @@ describe('Check iris.docx import extracts footnotes and paragraph types.', funct
   }).timeout(10000);
 
   itSkipNodeEOL('Should link first footnote reference to first footnote paragraph', async () => {
-    // First footnote paragraph (paraId="731CBC24") should link to its reference word
-    const footnotePar = scribe.data.ocr.active[0].pars.find((par) => par.id === '731CBC24');
+    const footnotePar = scribe.data.ocr.active[0].pars.find((par) => par.id === '11821BFA');
     assert.isNotNull(footnotePar, 'Should find first footnote paragraph');
 
     assert.isNotNull(footnotePar.footnoteRefId, 'Footnote paragraph should have footnoteRefId');
@@ -313,11 +338,10 @@ describe('Check iris.docx import extracts footnotes and paragraph types.', funct
     assert.isNotNull(refWord, 'Should find footnote ref word by ID');
     assert.strictEqual(refWord.text, '1', 'First footnote reference should be "1"');
     assert.isTrue(refWord.style.sup, 'Footnote reference should be superscript');
-    assert.strictEqual(refWord.footnoteParId, '731CBC24', 'Footnote ref word should link to footnote paragraph ID');
+    assert.strictEqual(refWord.footnoteParId, '11821BFA', 'Footnote ref word should link to footnote paragraph ID');
   }).timeout(10000);
 
   itSkipNodeEOL('Should identify all 13 footnote reference words', async () => {
-    // iris.docx has 13 footnotes, so there should be 13 reference words
     const footnoteRefWords = [];
     for (const page of scribe.data.ocr.active) {
       for (const line of page.lines) {
@@ -336,6 +360,37 @@ describe('Check iris.docx import extracts footnotes and paragraph types.', funct
     }
 
     assert.strictEqual(footnoteRefWords[0].text, '1', 'First footnote reference should be "1"');
+  }).timeout(10000);
+
+  itSkipNodeEOL('Should set parNum on footnote paragraphs', async () => {
+    const footnotePars = [];
+    for (const page of scribe.data.ocr.active) {
+      for (const par of page.pars) {
+        if (par.type === 'footnote') {
+          footnotePars.push(par);
+        }
+      }
+    }
+
+    assert.strictEqual(footnotePars.length, 13, 'Should have 13 footnote paragraph objects');
+
+    for (const par of footnotePars) {
+      assert.isNotNull(par.parNum, 'Each footnote paragraph should have parNum set');
+      assert.match(par.parNum, /^\d+$/, 'parNum should be a numeric string');
+    }
+
+    const firstFootnote = scribe.data.ocr.active[0].pars.find((par) => par.id === '11821BFA');
+    assert.strictEqual(firstFootnote.parNum, '1', 'First footnote paragraph should have parNum "1"');
+  }).timeout(10000);
+
+  itSkipNodeEOL('Should set parNum on numbered body paragraphs', async () => {
+    const bodyPar = scribe.data.ocr.active[0].pars.find((par) => par.id === '38168435');
+    assert.isNotNull(bodyPar, 'Should find body paragraph');
+    assert.strictEqual(bodyPar.parNum, '1.1', 'First body paragraph should have parNum "1.1"');
+
+    const parText = scribe.utils.ocr.getParText(bodyPar);
+    assert.isFalse(parText.startsWith('1.1'), 'Paragraph text should not start with the parNum');
+    assert.isTrue(parText.startsWith('Iris'), 'Paragraph text should start with "Iris"');
   }).timeout(10000);
 
   after(async () => {
@@ -363,28 +418,28 @@ describe('Check iris.docx footnote data survives .scribe export/import round-tri
   }).timeout(20000);
 
   itSkipNodeEOL('Should preserve paragraph IDs after .scribe round-trip', async () => {
-    const titlePar = scribe.data.ocr.active[0].pars.find((par) => par.id === '2DF84262');
+    const titlePar = scribe.data.ocr.active[0].pars.find((par) => par.id === '30416D11');
     assert.isNotNull(titlePar, 'Title paragraph ID should be preserved');
     assert.strictEqual(titlePar.type, 'title', 'Title paragraph type should be preserved');
 
-    const bodyPar = scribe.data.ocr.active[0].pars.find((par) => par.id === '0D29F581');
+    const bodyPar = scribe.data.ocr.active[0].pars.find((par) => par.id === '38168435');
     assert.isNotNull(bodyPar, 'Body paragraph ID should be preserved');
     assert.strictEqual(bodyPar.type, 'body', 'Body paragraph type should be preserved');
 
-    const footnotePar = scribe.data.ocr.active[0].pars.find((par) => par.id === '731CBC24');
+    const footnotePar = scribe.data.ocr.active[0].pars.find((par) => par.id === '11821BFA');
     assert.isNotNull(footnotePar, 'Footnote paragraph ID should be preserved');
     assert.strictEqual(footnotePar.type, 'footnote', 'Footnote paragraph type should be preserved');
   }).timeout(10000);
 
   itSkipNodeEOL('Should preserve footnote bidirectional links after .scribe round-trip', async () => {
-    const footnotePar = scribe.data.ocr.active[0].pars.find((par) => par.id === '731CBC24');
+    const footnotePar = scribe.data.ocr.active[0].pars.find((par) => par.id === '11821BFA');
     assert.isNotNull(footnotePar, 'Should find first footnote paragraph');
     assert.isNotNull(footnotePar.footnoteRefId, 'Footnote paragraph should have footnoteRefId');
 
     const refWord = scribe.utils.ocr.getPageWord(footnotePar.page, footnotePar.footnoteRefId);
     assert.isNotNull(refWord, 'Should find footnote ref word by ID');
     assert.strictEqual(refWord.text, '1', 'First footnote reference should be "1"');
-    assert.strictEqual(refWord.footnoteParId, '731CBC24', 'Footnote ref word should link to footnote paragraph ID');
+    assert.strictEqual(refWord.footnoteParId, '11821BFA', 'Footnote ref word should link to footnote paragraph ID');
   }).timeout(10000);
 
   after(async () => {

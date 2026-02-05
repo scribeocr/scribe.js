@@ -96,12 +96,15 @@ export async function sortInputFiles(files) {
   for (let i = 0; i < files.length; i++) {
     const file = files[i];
     const fileExt = file.name.match(/\.([^.]+)$/)?.[1].toLowerCase() || '';
+    const fileNameLower = file.name.toLowerCase();
 
+    if (fileNameLower.endsWith('.scribe.json')) {
+      scribeFilesAll.push(file);
     // TODO: Investigate whether other file formats are supported (without additional changes)
     // Tesseract.js definitely supports more formats, so if the .pdfs we make also support a format,
     // then we should be able to expand the list of supported types without issue.
     // Update: It looks like .bmp does not work.
-    if (['png', 'jpeg', 'jpg'].includes(fileExt)) {
+    } else if (['png', 'jpeg', 'jpg'].includes(fileExt)) {
       imageFilesAll.push(file);
       // All .gz files are assumed to be OCR data (xml) since all other file types can be compressed already
     } else if (['hocr', 'xml', 'html', 'gz', 'stext', 'json', 'txt', 'docx'].includes(fileExt)) {

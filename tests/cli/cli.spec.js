@@ -2,7 +2,9 @@ import { assert, expect } from 'chai';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { checkCLI, confCLI, overlayCLI } from '../../cli/cli.js';
+import {
+  checkCLI, confCLI, extractCLI, overlayCLI,
+} from '../../cli/cli.js';
 import { getRandomAlphanum } from '../../js/utils/miscUtils.js';
 
 globalThis.__dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -128,3 +130,62 @@ describe('Check Node.js commands.', () => {
     await tmpUnique.delete();
   });
 }).timeout(120000);
+
+describe('Extract CLI command.', () => {
+  let tmpUniqueDir;
+  const tmpUnique = {
+    get: async () => {
+      const { tmpdir } = await import('os');
+      const { mkdirSync } = await import('node:fs');
+
+      if (!tmpUniqueDir) {
+        tmpUniqueDir = `${tmpdir()}/${getRandomAlphanum(8)}`;
+        mkdirSync(tmpUniqueDir);
+      }
+      return tmpUniqueDir;
+    },
+    delete: async () => {
+      if (tmpUniqueDir) {
+        const { rmSync } = await import('node:fs');
+        rmSync(tmpUniqueDir, { recursive: true, force: true });
+      }
+    },
+  };
+
+  it('Should extract text from a single PDF file.', async () => {
+    const tmpDir = await tmpUnique.get();
+    const inputFile = path.join(__dirname, '../assets/academic_article_1.pdf');
+    const outputPath = `${tmpDir}/academic_article_1.txt`;
+
+    await extractCLI(inputFile, outputPath, { format: 'txt' });
+
+    assert.isOk(fs.existsSync(outputPath), 'Output file should exist');
+
+    const content = fs.readFileSync(outputPath, 'utf8');
+    assert.include(content, 'WHISTLEBLOWERS', 'Output should contain expected text');
+  }).timeout(15000);
+
+  it('Should extract text from all PDFs in a directory with --dir option.', async () => {
+    const tmpDir = await tmpUnique.get();
+    const inputDir = path.join(__dirname, '../assets/extract_dir_test');
+    const outputDir = `${tmpDir}/extract_output`;
+
+    await extractCLI(inputDir, outputDir, { format: 'txt', dir: true });
+
+    const outputPath1 = path.join(outputDir, 'academic_article_1.txt');
+    const outputPath2 = path.join(outputDir, 'econometrica_example.txt');
+
+    assert.isOk(fs.existsSync(outputPath1), 'First output file should exist');
+    assert.isOk(fs.existsSync(outputPath2), 'Second output file should exist');
+
+    const content1 = fs.readFileSync(outputPath1, 'utf8');
+    const content2 = fs.readFileSync(outputPath2, 'utf8');
+
+    assert.include(content1, 'WHISTLEBLOWERS', 'First file should contain expected text');
+    assert.include(content2, 'Econometrica', 'Second file should contain expected text');
+  }).timeout(30000);
+
+  after(async () => {
+    await tmpUnique.delete();
+  });
+}).timeout(60000);
