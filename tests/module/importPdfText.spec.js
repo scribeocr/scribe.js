@@ -206,6 +206,13 @@ describe('Check that text-native PDFs with broken encoding dictionaries are dete
     assert.strictEqual(scribe.data.ocr.active.length, 0);
   }).timeout(10000);
 
+  it('PDF with invalid encoding dictionary is detected and text is not imported', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/Iris (plant) - Wikipedia_AdobePDF123.pdf`]);
+
+    assert.strictEqual(scribe.inputData.pdfType, 'image');
+    assert.strictEqual(scribe.data.ocr.active.length, 0);
+  }).timeout(10000);
+
   after(async () => {
     await scribe.terminate();
   });
