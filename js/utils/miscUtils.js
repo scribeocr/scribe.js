@@ -206,8 +206,9 @@ export async function readOcrFile(file) {
 
     const isGzipped = fileUint8Array[0] === 0x1F && fileUint8Array[1] === 0x8B;
     if (isGzipped) {
-      const pako = await import('../../lib/pako.esm.min.js');
-      file = pako.inflate(file)?.buffer;
+      const ds = new DecompressionStream('gzip');
+      const decompressedStream = new Blob([file]).stream().pipeThrough(ds);
+      file = await new Response(decompressedStream).arrayBuffer();
     }
     const decoder = new TextDecoder('utf-8');
     return decoder.decode(file);
@@ -223,8 +224,10 @@ export async function readOcrFile(file) {
     const fileUint8Array = new Uint8Array(arrayBuffer);
     const isGzipped = fileUint8Array[0] === 0x1F && fileUint8Array[1] === 0x8B;
     if (isGzipped) {
-      const pako = await import('../../lib/pako.esm.min.js');
-      return pako.inflate(arrayBuffer, { to: 'string' });
+      const ds = new DecompressionStream('gzip');
+      const decompressedStream = new Blob([arrayBuffer]).stream().pipeThrough(ds);
+      const decompressed = await new Response(decompressedStream).arrayBuffer();
+      return new TextDecoder('utf-8').decode(decompressed);
     }
     const decoder = new TextDecoder('utf-8');
     return decoder.decode(arrayBuffer);
@@ -236,22 +239,6 @@ export async function readOcrFile(file) {
     return file.fileData.toString();
   }
   throw new Error('Invalid input. Must be a File, ArrayBuffer, or string.');
-}
-
-/**
- * Reads the contents of a Gzip-compressed text file and returns them as a promise.
- *
- * @param {File} file - The File object representing the Gzip-compressed text file to read.
- * @returns {Promise<string>} A promise that resolves with the decompressed text content of the file
- *                           or rejects with an error if reading or decompression fails.
- */
-async function readTextFileGz(file) {
-  const pako = await import('../../lib/pako.esm.min.js');
-  return new Promise(async (resolve, reject) => {
-    const zip1 = await file.arrayBuffer();
-    const zip2 = await pako.inflate(zip1, { to: 'string' });
-    resolve(zip2);
-  });
 }
 
 /**

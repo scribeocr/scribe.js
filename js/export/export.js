@@ -291,10 +291,9 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
     };
     if (opt.compressScribe) {
       const contentStr = JSON.stringify(data);
-      const pako = await import('../../lib/pako.esm.mjs');
-      const enc = new TextEncoder();
-      const gzipped = pako.gzip(enc.encode(contentStr));
-      content = gzipped ? gzipped.buffer : contentStr;
+      const cs = new CompressionStream('gzip');
+      const compressedStream = new Blob([new TextEncoder().encode(contentStr)]).stream().pipeThrough(cs);
+      content = await new Response(compressedStream).arrayBuffer();
     } else {
       content = JSON.stringify(data, null, 2);
     }
