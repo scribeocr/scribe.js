@@ -565,6 +565,110 @@ export async function recognizeAllPages(legacy = true, lstm = true, mainData = f
 }
 
 /**
+ * Recognize all pages using a custom (external) recognition model.
+ * Called by `recognize` when `options.model` is provided.
+ *
+ * @param {Object} options - Options object from `recognize`, guaranteed non-null with `model` set.
+ * @param {RecognitionModel} options.model
+ * @param {Object} [options.modelOptions]
+ * @param {Array<string>} [options.langs]
+ */
+async function recognizeCustomModel(options) {
+  const model = options.model;
+  const modelOptions = options.modelOptions || {};
+  const engineName = model.config.name;
+  const outputFormat = model.config.outputFormat;
+
+  const knownFormats = ['hocr', 'abbyy', 'alto', 'textract', 'azure_doc_intel', 'google_vision', 'stext', 'text'];
+  if (!knownFormats.includes(outputFormat) && !model.convertPage) {
+    throw new Error(`Model output format '${outputFormat}' is not supported. Provide a convertPage method on the model.`);
+  }
+
+  await gs.getGeneralScheduler();
+
+  // Pre-render PDF pages to images if needed
+  if (inputData.pdfMode) await ImageCache.preRenderRange(0, ImageCache.pageCount - 1, false);
+
+
+  // Initialize array for custom model results
+  if (!ocrAll[engineName]) ocrAll[engineName] = Array(inputData.pageCount);
+
+
+  // Determine concurrency limit (copy/pasted from internal model).
+  // This makes much less sense for the cloud models, so may need to rethink.
+  let concurrency;
+  if (opt.workerN) {
+    concurrency = opt.workerN;
+  } else if (typeof process === 'undefined') {
+    concurrency = Math.min(Math.round((globalThis.navigator.hardwareConcurrency || 8) / 2), 6);
+  } else {
+    const cpuN = Math.floor((await import('node:os')).cpus().length / 2);
+    concurrency = Math.max(Math.min(cpuN - 1, 8), 1);
+  }
+
+  // Process all pages with limited concurrency
+  const pages = [...Array(ImageCache.pageCount).keys()];
+  const executing = new Set();
+
+  for (const n of pages) {
+    const p = (async () => {
+      const nativeN = await ImageCache.getNative(n);
+      if (!nativeN) {
+        opt.warningHandler(`No image found for page ${n}, skipping.`);
+        return;
+      }
+
+      // Convert base64 data URL to Uint8Array for the model
+      const base64Data = nativeN.src.split(',')[1];
+      const binaryStr = atob(base64Data);
+      const imageData = new Uint8Array(binaryStr.length);
+      for (let i = 0; i < binaryStr.length; i++) {
+        imageData[i] = binaryStr.charCodeAt(i);
+      }
+
+      const result = await model.recognizeImage(imageData, modelOptions);
+      if (!result.success || !result.rawData) {
+        const errMsg = result.error ? result.error.message : 'Unknown error';
+        opt.warningHandler(`Recognition failed for page ${n}: ${errMsg}`);
+        return;
+      }
+
+      const { rawData } = result;
+
+      const mainData = true;
+
+      // Convert raw data to internal format
+      if (model.convertPage) {
+        const convertResult = await model.convertPage(rawData, n);
+        await convertPageCallback(convertResult, n, mainData, engineName);
+      } else if (outputFormat === 'textract') {
+        const pageDims = [pageMetricsAll[n].dims];
+        const res = await gs.convertDocTextract({ ocrStr: rawData, pageDims });
+        for (let i = 0; i < res.length; i++) {
+          await convertPageCallback(res[i], n + i, mainData, engineName);
+        }
+      } else if (outputFormat === 'azure_doc_intel') {
+        const pageDims = [pageMetricsAll[n].dims];
+        const res = await gs.convertDocAzureDocIntel({ ocrStr: rawData, pageDims });
+        for (let i = 0; i < res.length; i++) {
+          await convertPageCallback(res[i], n + i, mainData, engineName);
+        }
+      } else {
+        await convertOCRPage(rawData, n, mainData, /** @type {TextSource} */ (outputFormat), engineName);
+      }
+    })().then(() => executing.delete(p));
+
+    executing.add(p);
+    if (executing.size >= concurrency) await Promise.race(executing);
+  }
+  await Promise.all(executing);
+
+  // Set active OCR to custom model results
+  ocrAll.active = ocrAll[engineName];
+  return ocrAll.active;
+}
+
+/**
  * Recognize all pages in active document.
  * Files for recognition should already be imported using `importFiles` before calling this function.
  * The results of recognition can be exported by calling `exportFiles` after this function.
@@ -576,9 +680,16 @@ export async function recognizeAllPages(legacy = true, lstm = true, mainData = f
  * @param {'conf'|'data'|'none'} [options.combineMode='data'] - Method of combining OCR results. Used if OCR data already exists.
  * @param {boolean} [options.vanillaMode=false] - Whether to use the vanilla Tesseract.js model.
  * @param {Object<string, string>} [options.config={}] - Config params to pass to to Tesseract.js.
+ * @param {RecognitionModel} [options.model] - Custom recognition model. See docs.
+ * @param {Object} [options.modelOptions={}] - Options passed to the model's `recognizeImage` method.
  */
 export async function recognize(options = {}) {
   if (!inputData.pdfMode && !inputData.imageMode) throw new Error('No PDF or image data found to recognize.');
+
+  // Custom recognition model path
+  if (options.model) {
+    return recognizeCustomModel(/** @type {{ model: RecognitionModel }} */ (options));
+  }
 
   await gs.getGeneralScheduler();
 

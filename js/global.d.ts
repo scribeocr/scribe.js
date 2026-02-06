@@ -330,6 +330,31 @@ declare global {
         text: string;
     }
 
+    // Recognition model types (for custom/external recognition models)
+    type RecognitionResult = {
+        success: boolean;
+        rawData?: string;
+        format: string;
+        error?: Error;
+    };
+
+    interface RecognitionModelConfig {
+        name: string;
+        outputFormat: string;
+    }
+
+    interface RecognitionModel {
+        config: RecognitionModelConfig;
+        recognizeImage(imageData: Uint8Array | ArrayBuffer, options?: any): Promise<RecognitionResult>;
+        convertPage?(rawData: string, n: number): Promise<{
+            pageObj: OcrPage;
+            dataTables: LayoutDataTablePage;
+            warn: object;
+            langSet: Set<string>;
+            fontSet: Set<string>;
+        }>;
+    }
+
     // Azure Document Intelligence types
     interface AzureDocIntelPoint {
         x: number;
