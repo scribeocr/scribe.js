@@ -1,9 +1,42 @@
 import getEnvironment from '../utils/getEnvironment.js';
-import isURL from '../utils/isURL.js';
 import arrayBufferToBase64 from './utils/arrayBufferToBase64.js';
 import {
   OEM, PSM, imageType, defaultParams, defaultOutput,
 } from '../constants.js';
+
+/**
+ * Loosely validate a URL `string`.
+ * Logic copied from `is-url` package.
+ * https://github.com/segmentio/is-url/blob/master/index.js
+ *
+ * @param {String} string
+ */
+const isURL = (string) => {
+  const protocolAndDomainRE = /^(?:\w+:)?\/\/(\S+)$/;
+  const localhostDomainRE = /^localhost[:?\d]*(?:[^:?\d]\S*)?$/;
+  const nonLocalhostDomainRE = /^[^\s.]+\.\S{2,}$/;
+
+  if (typeof string !== 'string') {
+    return false;
+  }
+
+  const match = string.match(protocolAndDomainRE);
+  if (!match) {
+    return false;
+  }
+
+  const everythingAfterProtocol = match[1];
+  if (!everythingAfterProtocol) {
+    return false;
+  }
+
+  if (localhostDomainRE.test(everythingAfterProtocol)
+      || nonLocalhostDomainRE.test(everythingAfterProtocol)) {
+    return true;
+  }
+
+  return false;
+};
 
 // Function logic copied from `wasm-feature-detect` package (v1.8.0).
 // https://github.com/GoogleChromeLabs/wasm-feature-detect
@@ -20,27 +53,27 @@ const cache = {
   readCache: async (...args) => {
     let readCacheImp;
     if (env === 'browser') {
-      readCacheImp = (await import('./browser/cache.js')).readCache;
+      readCacheImp = (await import('./utils/cache-browser.js')).readCache;
     } else {
-      readCacheImp = (await import('./node/cache.js')).readCache;
+      readCacheImp = (await import('./utils/cache-node.js')).readCache;
     }
     return readCacheImp(...args);
   },
   writeCache: async (...args) => {
     let writeCacheImp;
     if (env === 'browser') {
-      writeCacheImp = (await import('./browser/cache.js')).writeCache;
+      writeCacheImp = (await import('./utils/cache-browser.js')).writeCache;
     } else {
-      writeCacheImp = (await import('./node/cache.js')).writeCache;
+      writeCacheImp = (await import('./utils/cache-node.js')).writeCache;
     }
     return writeCacheImp(...args);
   },
   deleteCache: async (...args) => {
     let deleteCacheImp;
     if (env === 'browser') {
-      deleteCacheImp = (await import('./browser/cache.js')).deleteCache;
+      deleteCacheImp = (await import('./utils/cache-browser.js')).deleteCache;
     } else {
-      deleteCacheImp = (await import('./node/cache.js')).deleteCache;
+      deleteCacheImp = (await import('./utils/cache-node.js')).deleteCache;
     }
     return deleteCacheImp(...args);
   },
