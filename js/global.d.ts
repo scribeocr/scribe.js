@@ -421,7 +421,6 @@ declare global {
         box: boolean;
         unlv: boolean;
         osd: boolean;
-        pdf: boolean;
         imageColor: boolean;
         imageGrey: boolean;
         imageBinary: boolean;
@@ -430,8 +429,6 @@ declare global {
 
     type TessRecognizeOptions = {
         rectangle: TessRectangle;
-        pdfTitle: string;
-        pdfTextOnly: boolean;
         rotateAuto: boolean;
         rotateRadians: number;
     };
@@ -448,8 +445,7 @@ declare global {
         height: number;
     };
 
-    type TessImageLike = string | HTMLImageElement | HTMLCanvasElement | HTMLVideoElement | ArrayBuffer |
-        CanvasRenderingContext2D | File | Blob | ImageData | Buffer | OffscreenCanvas;
+    type TessImageLike = string | Blob;
 
     type TessBaseline = {
         x0: number;
@@ -583,7 +579,6 @@ declare global {
         rotateRadians: number | null;
         debug: string | null;
         debugVis: string | null;
-        pdf: number[] | null;
     };
 
 }

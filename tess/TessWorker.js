@@ -1,6 +1,17 @@
-import createJob from './createJob.js';
 import getEnvironment from './utils/getEnvironment.js';
 import { OEM, PSM } from './constants.js';
+
+const loadImage = async (image) => {
+  let data = image;
+  if (typeof image === 'string') {
+    data = atob(image.split(',')[1])
+      .split('')
+      .map((c) => c.charCodeAt(0));
+  } else if (image instanceof Blob) {
+    data = await new Response(image).arrayBuffer();
+  }
+  return new Uint8Array(data);
+};
 
 /** @typedef {TessImageLike} ImageLike */
 /** @typedef {TessRecognizeOptions} RecognizeOptions */
@@ -62,18 +73,10 @@ const circularize = (page) => {
   };
 };
 
-const loadImage = async (image) => {
-  let loadImageImp;
-  if (typeof process === 'undefined') {
-    loadImageImp = (await import('./worker/browser/loadImage.js')).default;
-  } else {
-    loadImageImp = (await import('./worker/node/loadImage.js')).default;
-  }
-  return loadImageImp(image);
-};
-
 export class TessWorker {
   static #workerCounter = 0;
+
+  static #jobCounter = 0;
 
   static PSM = PSM;
 
@@ -213,13 +216,14 @@ export class TessWorker {
     this.#worker.postMessage(packet);
   }
 
-  #startJob({ id: jobId, action, payload }) {
+  #startJob(action, payload, jobId) {
+    const id = jobId ?? `Job-${TessWorker.#jobCounter++}-${Math.random().toString(16).slice(3, 8)}`;
     return new Promise((resolve, reject) => {
-      const promiseId = `${action}-${jobId}`;
+      const promiseId = `${action}-${id}`;
       this.#promises[promiseId] = { resolve, reject };
       this.#send({
         workerId: this.#id,
-        jobId,
+        jobId: id,
         action,
         payload,
       });
@@ -229,20 +233,21 @@ export class TessWorker {
   /**
    * @returns {[Promise<RecognizeResult>, Promise<RecognizeResult>]}
    */
-  #startJob2({ id: jobId, action, payload }) {
+  #startJob2(action, payload, jobId) {
+    const id = jobId ?? `Job-${TessWorker.#jobCounter++}-${Math.random().toString(16).slice(3, 8)}`;
     /** @type {Promise<RecognizeResult>} */
     const promiseB = new Promise((resolve, reject) => {
-      const promiseId = `${action}-${jobId}b`;
+      const promiseId = `${action}-${id}b`;
       this.#promises[promiseId] = { resolve, reject };
     });
 
     /** @type {Promise<RecognizeResult>} */
     const promiseA = new Promise((resolve, reject) => {
-      const promiseId = `${action}-${jobId}`;
+      const promiseId = `${action}-${id}`;
       this.#promises[promiseId] = { resolve, reject };
       this.#send({
         workerId: this.#id,
-        jobId,
+        jobId: id,
         action,
         payload,
       });
@@ -252,44 +257,32 @@ export class TessWorker {
   }
 
   #loadInternal(jobId) {
-    return this.#startJob(createJob({
-      id: jobId,
-      action: 'load',
-      payload: {
-        options: {
-          lstmOnly: this.#lstmOnlyCore,
-          vanillaEngine: this.#options.vanillaEngine,
-          logging: this.#options.logging,
-        },
+    return this.#startJob('load', {
+      options: {
+        lstmOnly: this.#lstmOnlyCore,
+        vanillaEngine: this.#options.vanillaEngine,
+        logging: this.#options.logging,
       },
-    }));
+    }, jobId);
   }
 
   #loadLanguageInternal(langs, jobId) {
-    return this.#startJob(createJob({
-      id: jobId,
-      action: 'loadLanguage',
-      payload: {
-        langs,
-        options: {
-          langPath: this.#options.langPath,
-          dataPath: this.#options.dataPath,
-          cachePath: this.#options.cachePath,
-          cacheMethod: this.#options.cacheMethod,
-          gzip: this.#options.gzip,
-          lstmOnly: [OEM.LSTM_ONLY, OEM.TESSERACT_LSTM_COMBINED].includes(this.#currentOem)
-            && !this.#options.legacyLang,
-        },
+    return this.#startJob('loadLanguage', {
+      langs,
+      options: {
+        langPath: this.#options.langPath,
+        dataPath: this.#options.dataPath,
+        cachePath: this.#options.cachePath,
+        cacheMethod: this.#options.cacheMethod,
+        gzip: this.#options.gzip,
+        lstmOnly: [OEM.LSTM_ONLY, OEM.TESSERACT_LSTM_COMBINED].includes(this.#currentOem)
+          && !this.#options.legacyLang,
       },
-    }));
+    }, jobId);
   }
 
   #initializeInternal(langs, oem, config, jobId) {
-    return this.#startJob(createJob({
-      id: jobId,
-      action: 'initialize',
-      payload: { langs, oem, config },
-    }));
+    return this.#startJob('initialize', { langs, oem, config }, jobId);
   }
 
   reinitialize(langs = 'eng', oem, config, jobId) {
@@ -316,11 +309,7 @@ export class TessWorker {
   }
 
   setParameters(params = {}, jobId) {
-    return this.#startJob(createJob({
-      id: jobId,
-      action: 'setParameters',
-      payload: { params },
-    }));
+    return this.#startJob('setParameters', { params }, jobId);
   }
 
   /**
@@ -333,11 +322,7 @@ export class TessWorker {
   async recognize(image, opts = {}, output = {
     blocks: true, text: true,
   }, jobId) {
-    return this.#startJob(createJob({
-      id: jobId,
-      action: 'recognize',
-      payload: { image: await loadImage(image), options: opts, output },
-    }));
+    return this.#startJob('recognize', { image: await loadImage(image), options: opts, output }, jobId);
   }
 
   /**
@@ -350,11 +335,7 @@ export class TessWorker {
   async recognize2(image, opts = {}, output = {
     blocks: true, text: true,
   }, jobId) {
-    return this.#startJob2(createJob({
-      id: jobId,
-      action: 'recognize2',
-      payload: { image: await loadImage(image), options: opts, output },
-    }));
+    return this.#startJob2('recognize2', { image: await loadImage(image), options: opts, output }, jobId);
   }
 
   async terminate() {
