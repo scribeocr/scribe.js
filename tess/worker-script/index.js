@@ -1,4 +1,3 @@
-import getEnvironment from '../utils/getEnvironment.js';
 import arrayBufferToBase64 from './utils/arrayBufferToBase64.js';
 import {
   OEM, PSM, imageType, defaultParams, defaultOutput,
@@ -47,12 +46,10 @@ export const relaxedSimd = async () => WebAssembly.validate(new Uint8Array([0, 9
 // eslint-disable-next-line max-len
 export const simd = async () => WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]));
 
-const env = getEnvironment('type');
-
 const cache = {
   readCache: async (...args) => {
     let readCacheImp;
-    if (env === 'browser') {
+    if (typeof process === 'undefined') {
       readCacheImp = (await import('./utils/cache-browser.js')).readCache;
     } else {
       readCacheImp = (await import('./utils/cache-node.js')).readCache;
@@ -61,7 +58,7 @@ const cache = {
   },
   writeCache: async (...args) => {
     let writeCacheImp;
-    if (env === 'browser') {
+    if (typeof process === 'undefined') {
       writeCacheImp = (await import('./utils/cache-browser.js')).writeCache;
     } else {
       writeCacheImp = (await import('./utils/cache-node.js')).writeCache;
@@ -70,7 +67,7 @@ const cache = {
   },
   deleteCache: async (...args) => {
     let deleteCacheImp;
-    if (env === 'browser') {
+    if (typeof process === 'undefined') {
       deleteCacheImp = (await import('./utils/cache-browser.js')).deleteCache;
     } else {
       deleteCacheImp = (await import('./utils/cache-node.js')).deleteCache;
@@ -330,7 +327,7 @@ const loadLanguage = async (
 
         // For Node.js, langPath may be a URL or local file path
         // For the browser version, langPath is assumed to be a URL
-        if (env !== 'node' || isURL(langPathDownload) || langPathDownload.startsWith('moz-extension://') || langPathDownload.startsWith('chrome-extension://') || langPathDownload.startsWith('file://')) { /** When langPathDownload is an URL */
+        if (typeof process === 'undefined' || isURL(langPathDownload) || langPathDownload.startsWith('moz-extension://') || langPathDownload.startsWith('chrome-extension://') || langPathDownload.startsWith('file://')) { /** When langPathDownload is an URL */
           path = langPathDownload.replace(/\/$/, '');
         }
 
