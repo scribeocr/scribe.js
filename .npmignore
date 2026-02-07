@@ -2,6 +2,8 @@ ignore
 .DS_Store
 .env
 .vscode
+.claude
+cloud-adapters
 scrollview-web/app
 scrollview-web/index.html
 node_modules
@@ -14,10 +16,12 @@ browserstack.json
 .clinic
 gui
 tests
-dev
 tmp
 venv
 robots.txt
 settings.json
 karma.conf.cjs
 jsconfig.json
+.eslintrc.json
+.gitmodules
+build-deno-compile.sh
