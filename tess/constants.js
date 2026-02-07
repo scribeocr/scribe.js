@@ -50,7 +50,6 @@ export const defaultOutput = {
   box: false,
   unlv: false,
   osd: false,
-  pdf: false,
   imageColor: false,
   imageGrey: false,
   imageBinary: false,

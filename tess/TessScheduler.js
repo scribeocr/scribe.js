@@ -1,6 +1,7 @@
-import createJob from './createJob.js';
 export class TessScheduler {
   static #schedulerCounter = 0;
+
+  static #jobCounter = 0;
 
   #id;
 
@@ -41,7 +42,10 @@ export class TessScheduler {
 
   #queue(action, payload, priorityJob = false) {
     return new Promise((resolve, reject) => {
-      const job = createJob({ action, payload, priorityJob });
+      const id = `Job-${TessScheduler.#jobCounter++}-${Math.random().toString(16).slice(3, 8)}`;
+      const job = {
+        id, action, payload, priorityJob,
+      };
       const jobFunction = async (w) => {
         this.#jobQueue.shift();
         this.#runningWorkers[w.id] = job;

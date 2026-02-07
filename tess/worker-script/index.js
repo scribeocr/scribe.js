@@ -1,10 +1,18 @@
 import getEnvironment from '../utils/getEnvironment.js';
 import isURL from '../utils/isURL.js';
-import { simd, relaxedSimd } from '../utils/wasmFeatureDetect.js';
 import arrayBufferToBase64 from './utils/arrayBufferToBase64.js';
 import {
   OEM, PSM, imageType, defaultParams, defaultOutput,
 } from '../constants.js';
+
+// Function logic copied from `wasm-feature-detect` package (v1.8.0).
+// https://github.com/GoogleChromeLabs/wasm-feature-detect
+// Apache License 2.0
+
+// eslint-disable-next-line max-len
+export const relaxedSimd = async () => WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 15, 1, 13, 0, 65, 1, 253, 15, 65, 2, 253, 15, 253, 128, 2, 11]));
+// eslint-disable-next-line max-len
+export const simd = async () => WebAssembly.validate(new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 5, 1, 96, 0, 1, 123, 3, 2, 1, 0, 10, 10, 1, 8, 0, 65, 0, 253, 15, 253, 98, 11]));
 
 const env = getEnvironment('type');
 
@@ -162,16 +170,6 @@ const dump = (TessModule, api, output, options) => {
     return pngStr;
   };
 
-  const getPDFInternal = (title, textonly) => {
-    const pdfRenderer = new TessModule.TessPDFRenderer('tesseract-ocr', '/', textonly);
-    pdfRenderer.BeginDocument(title);
-    pdfRenderer.AddImage(api);
-    pdfRenderer.EndDocument();
-    TessModule._free(pdfRenderer);
-
-    return TessModule.FS.readFile('/tesseract-ocr.pdf');
-  };
-
   return {
     text: output.text ? api.GetUTF8Text() : null,
     hocr: output.hocr ? deindent(api.GetHOCRText()) : null,
@@ -179,7 +177,6 @@ const dump = (TessModule, api, output, options) => {
     box: output.box ? api.GetBoxText() : null,
     unlv: output.unlv ? api.GetUNLVText() : null,
     osd: output.osd ? api.GetOsdText() : null,
-    pdf: output.pdf ? getPDFInternal(options.pdfTitle ?? 'Tesseract OCR Result', options.pdfTextOnly ?? false) : null,
     imageColor: output.imageColor ? getImage(imageType.COLOR) : null,
     imageGrey: output.imageGrey ? getImage(imageType.GREY) : null,
     imageBinary: output.imageBinary ? getImage(imageType.BINARY) : null,
@@ -508,7 +505,7 @@ const processOutput = (output) => {
 
 // List of options for Tesseract.js (rather than passed through to Tesseract),
 // not including those with prefix "tessjs_"
-const tessjsOptions = ['rectangle', 'pdfTitle', 'pdfTextOnly', 'rotateAuto', 'rotateRadians', 'lstm', 'legacy', 'upscale'];
+const tessjsOptions = ['rectangle', 'rotateAuto', 'rotateRadians', 'lstm', 'legacy', 'upscale'];
 
 const recognize = async ({
   payload: {
@@ -594,9 +591,7 @@ const recognize = async ({
     } else if (output.layoutBlocks) {
       api.AnalyseLayout();
     }
-    const { pdfTitle } = options;
-    const { pdfTextOnly } = options;
-    const result = dump(TessModule, api, workingOutput, { pdfTitle, pdfTextOnly, skipRecognition });
+    const result = dump(TessModule, api, workingOutput, { skipRecognition });
     result.rotateRadians = rotateRadiansFinal;
 
     if (output.debug) TessModule.FS.unlink('/debugInternal.txt');
@@ -737,9 +732,7 @@ const recognize2 = async ({
     } else if (output.layoutBlocks) {
       api.AnalyseLayout();
     }
-    const { pdfTitle } = options;
-    const { pdfTextOnly } = options;
-    const result = dump(TessModule, api, workingOutput, { pdfTitle, pdfTextOnly, skipRecognition });
+    const result = dump(TessModule, api, workingOutput, { skipRecognition });
     result.rotateRadians = rotateRadiansFinal;
     result.upscale = upscaleFinal;
 
@@ -773,7 +766,7 @@ const recognize2 = async ({
       workingOutput.imageColor = false;
       workingOutput.imageGrey = false;
       workingOutput.imageBinary = false;
-      result2 = dump(TessModule, api, workingOutput, { pdfTitle, pdfTextOnly, skipRecognition });
+      result2 = dump(TessModule, api, workingOutput, { skipRecognition });
     }
 
     if (output.debug) TessModule.FS.unlink('/debugInternal.txt');
