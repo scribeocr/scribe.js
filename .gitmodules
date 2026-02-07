@@ -4,6 +4,3 @@
 [submodule "cloud-adapters"]
 	path = cloud-adapters
 	url = https://github.com/scribeocr/cloud-adapters.git
-[submodule "tesseract.js"]
-	path = tesseract.js
-	url = https://github.com/scribeocr/tesseract.js.git

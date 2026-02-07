@@ -18,7 +18,7 @@ import {
   renderPageStaticImp,
 } from './compareOCRModule.js';
 import { optimizeFont } from './optimizeFontModule.js';
-import { TessWorker } from '../../tesseract.js/src/TessWorker.js';
+import { TessWorker } from '../../tess/TessWorker.js';
 
 const parentPort = typeof process === 'undefined' ? globalThis : (await import('node:worker_threads')).parentPort;
 if (!parentPort) throw new Error('This file must be run in a worker');
