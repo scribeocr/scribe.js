@@ -2,6 +2,7 @@ ignore
 .DS_Store
 .env
 .vscode
+.claude
 node_modules/
 dev/debug
 cypress/downloads
