@@ -1,4 +1,3 @@
-import getEnvironment from './utils/getEnvironment.js';
 import { OEM, PSM } from './constants.js';
 
 const loadImage = async (image) => {
@@ -18,20 +17,6 @@ const loadImage = async (image) => {
 /** @typedef {TessOutputFormats} OutputFormats */
 /** @typedef {TessRecognizeResult} RecognizeResult */
 /** @typedef {TessPage} Page */
-
-const isBrowser = getEnvironment('type') === 'browser';
-
-const resolveURL = isBrowser ? (s) => (new URL(s, window.location.href)).href : (s) => s;
-
-const resolvePaths = (options) => {
-  const opts = { ...options };
-  ['corePath', 'langPath'].forEach((key) => {
-    if (options[key]) {
-      opts[key] = resolveURL(opts[key]);
-    }
-  });
-  return opts;
-};
 
 const circularize = (page) => {
   const blocks = [];
@@ -109,10 +94,10 @@ export class TessWorker {
       logger,
       errorHandler,
       ...options
-    } = resolvePaths({
+    } = {
       logger: () => {},
       ..._options,
-    });
+    };
 
     this.#id = `Worker-${TessWorker.#workerCounter}-${Math.random().toString(16).slice(3, 8)}`;
     this.#logger = logger;
