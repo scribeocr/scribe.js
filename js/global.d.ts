@@ -411,6 +411,181 @@ declare global {
         analyzeResult: AzureDocIntelAnalyzeResult;
     }
 
+    // Tesseract types
+    type TessOutputFormats = {
+        text: boolean;
+        blocks: boolean;
+        layoutBlocks: boolean;
+        hocr: boolean;
+        tsv: boolean;
+        box: boolean;
+        unlv: boolean;
+        osd: boolean;
+        pdf: boolean;
+        imageColor: boolean;
+        imageGrey: boolean;
+        imageBinary: boolean;
+        debug: boolean;
+    };
+
+    type TessRecognizeOptions = {
+        rectangle: TessRectangle;
+        pdfTitle: string;
+        pdfTextOnly: boolean;
+        rotateAuto: boolean;
+        rotateRadians: number;
+    };
+
+    type TessRecognizeResult = {
+        jobId: string;
+        data: TessPage;
+    };
+
+    type TessRectangle = {
+        left: number;
+        top: number;
+        width: number;
+        height: number;
+    };
+
+    type TessImageLike = string | HTMLImageElement | HTMLCanvasElement | HTMLVideoElement | ArrayBuffer |
+        CanvasRenderingContext2D | File | Blob | ImageData | Buffer | OffscreenCanvas;
+
+    type TessBaseline = {
+        x0: number;
+        y0: number;
+        x1: number;
+        y1: number;
+        has_baseline: boolean;
+    };
+
+    type TessRowAttributes = {
+        ascenders: number;
+        descenders: number;
+        rowHeight: number;
+    };
+
+    type TessBbox = {
+        x0: number;
+        y0: number;
+        x1: number;
+        y1: number;
+    };
+
+    type TessChoice = {
+        text: string;
+        confidence: number;
+    };
+
+    type TessSymbol = {
+        choices: TessChoice[];
+        image: any;
+        text: string;
+        confidence: number;
+        baseline: TessBaseline;
+        bbox: TessBbox;
+        is_superscript: boolean;
+        is_subscript: boolean;
+        is_dropcap: boolean;
+        word: TessWord;
+        line: TessLine;
+        paragraph: TessParagraph;
+        block: TessBlock;
+        page: TessPage;
+    };
+
+    type TessWord = {
+        symbols: TessSymbol[];
+        choices: TessChoice[];
+        text: string;
+        confidence: number;
+        baseline: TessBaseline;
+        bbox: TessBbox;
+        is_numeric: boolean;
+        in_dictionary: boolean;
+        direction: string;
+        language: string;
+        is_bold: boolean;
+        is_italic: boolean;
+        is_underlined: boolean;
+        is_monospace: boolean;
+        is_serif: boolean;
+        is_smallcaps: boolean;
+        font_size: number;
+        font_id: number;
+        font_name: string;
+        line: TessLine;
+        paragraph: TessParagraph;
+        block: TessBlock;
+        page: TessPage;
+    };
+
+    type TessLine = {
+        words: TessWord[];
+        text: string;
+        confidence: number;
+        baseline: TessBaseline;
+        rowAttributes: TessRowAttributes;
+        bbox: TessBbox;
+        paragraph: TessParagraph;
+        block: TessBlock;
+        page: TessPage;
+        symbols: TessSymbol[];
+    };
+
+    type TessParagraph = {
+        lines: TessLine[];
+        text: string;
+        confidence: number;
+        baseline: TessBaseline;
+        bbox: TessBbox;
+        is_ltr: boolean;
+        block: TessBlock;
+        page: TessPage;
+        words: TessWord[];
+        symbols: TessSymbol[];
+    };
+
+    type TessBlock = {
+        paragraphs: TessParagraph[];
+        text: string;
+        confidence: number;
+        baseline: TessBaseline;
+        bbox: TessBbox;
+        blocktype: string;
+        polygon: any;
+        page: TessPage;
+        lines: TessLine[];
+        words: TessWord[];
+        symbols: TessSymbol[];
+    };
+
+    type TessPage = {
+        blocks: TessBlock[] | null;
+        confidence: number;
+        lines: TessLine[];
+        oem: string;
+        osd: string;
+        paragraphs: TessParagraph[];
+        psm: string;
+        symbols: TessSymbol[];
+        text: string;
+        version: string;
+        words: TessWord[];
+        hocr: string | null;
+        tsv: string | null;
+        box: string | null;
+        unlv: string | null;
+        sd: string | null;
+        imageColor: string | null;
+        imageGrey: string | null;
+        imageBinary: string | null;
+        rotateRadians: number | null;
+        debug: string | null;
+        debugVis: string | null;
+        pdf: number[] | null;
+    };
+
 }
 
 export { };

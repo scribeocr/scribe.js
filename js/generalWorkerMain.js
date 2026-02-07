@@ -1,5 +1,5 @@
 import { opt } from './containers/app.js';
-import { TessScheduler } from '../tesseract.js/src/TessScheduler.js';
+import { TessScheduler } from '../tess/TessScheduler.js';
 
 /**
  * Initializes a general worker and returns an object with methods controlled by the worker.
@@ -258,9 +258,9 @@ export class gs {
 
   /**
    * @param {Object} args
-   * @param {Parameters<import('../tesseract.js/src/index.js').TessWorker['recognize']>[0]} args.image
-   * @param {Parameters<import('../tesseract.js/src/index.js').TessWorker['recognize']>[1]} args.options
-   * @param {Parameters<import('../tesseract.js/src/index.js').TessWorker['recognize']>[2]} args.output
+   * @param {Parameters<import('../tess/TessWorker.js').TessWorker['recognize']>[0]} args.image
+   * @param {Parameters<import('../tess/TessWorker.js').TessWorker['recognize']>[1]} args.options
+   * @param {Parameters<import('../tess/TessWorker.js').TessWorker['recognize']>[2]} args.output
    * Exported for type inference purposes, should not be imported anywhere.
    */
   static recognize = async (args) => (await gs.schedulerInner.addJob('recognize', args));

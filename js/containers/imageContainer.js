@@ -17,7 +17,7 @@ import { imageUtils, ImageWrapper } from '../objects/imageObjects.js';
 import { range } from '../utils/miscUtils.js';
 import { opt } from './app.js';
 
-import { TessScheduler } from '../../tesseract.js/src/TessScheduler.js';
+import { TessScheduler } from '../../tess/TessScheduler.js';
 
 let skipTextMode = false;
 

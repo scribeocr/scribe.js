@@ -24,7 +24,7 @@ module.exports = function (config) {
       { pattern: 'lib/**', included: false, served: true },
       { pattern: 'mupdf/**', included: false, served: true },
       { pattern: 'fonts/**', included: false, served: true },
-      { pattern: 'tesseract.js/**', included: false, served: true },
+      { pattern: 'tess/**', included: false, served: true },
       // { pattern: '**/*', included: false, served: true },
     ],
 
