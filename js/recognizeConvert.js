@@ -425,7 +425,7 @@ export async function convertOCR(ocrRawArr, mainData, format, engineName, scribe
   }
 
   if (format === 'docx') {
-    const res = await gs.convertDocDocx({ docxData: ocrRawArr[0] });
+    const res = await gs.convertDocDocx({ docxData: ocrRawArr[0], lineSplitMode: opt.docxLineSplitMode });
 
     if (res.length > inputData.pageCount) inputData.pageCount = res.length;
 

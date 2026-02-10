@@ -76,6 +76,9 @@ export class opt {
   /** Generate debug visualizations when running OCR. */
   static debugVis = false;
 
+  /** @type {'width' | 'sentence'} */
+  static docxLineSplitMode = 'width';
+
   static extractPDFFonts = false;
 
   static calcSuppFontInfo = false;
