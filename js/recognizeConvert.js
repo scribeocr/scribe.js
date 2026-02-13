@@ -65,8 +65,9 @@ export const evalOCRPage = async (params) => {
  * @param {Array<OcrPage>} ocrA
  * @param {Array<OcrPage>} ocrB
  * @param  {Parameters<import('./worker/compareOCRModule.js').compareOCRPageImp>[0]['options']} [options]
+ * @param {?function} [progressCallback=null]
  */
-export const compareOCR = async (ocrA, ocrB, options) => {
+export const compareOCR = async (ocrA, ocrB, options, progressCallback = null) => {
   /** @type {Parameters<typeof compareOCRPage>[2]} */
   const compOptions = {
     ignorePunct: opt.ignorePunct,
@@ -95,6 +96,7 @@ export const compareOCR = async (ocrA, ocrB, options) => {
     metricsArr[i] = res.metrics;
 
     if (res.debugImg) debugImageArr[i] = res.debugImg;
+    if (progressCallback) progressCallback();
   };
 
   const indices = [...Array(ocrA.length).keys()];
@@ -589,10 +591,8 @@ async function recognizeCustomModel(options) {
   // Pre-render PDF pages to images if needed
   if (inputData.pdfMode) await ImageCache.preRenderRange(0, ImageCache.pageCount - 1, false);
 
-
   // Initialize array for custom model results
   if (!ocrAll[engineName]) ocrAll[engineName] = Array(inputData.pageCount);
-
 
   // Determine concurrency limit (copy/pasted from internal model).
   // This makes much less sense for the cloud models, so may need to rethink.
@@ -740,6 +740,8 @@ export async function recognize(options = {}) {
   } else if (oemMode === 'combined') {
     await recognizeAllPages(true, true, !existingOCR, langs, vanillaMode, config);
 
+    const progressCb = () => opt.progressHandler({ type: 'recognize' });
+
     if (opt.saveDebugImages) {
       DebugData.debugImg.Combined = new Array(ImageCache.pageCount);
       for (let i = 0; i < ImageCache.pageCount; i++) {
@@ -777,7 +779,7 @@ export async function recognize(options = {}) {
         legacyLSTMComb: true,
       };
 
-      const res = await compareOCR(ocrAll['Tesseract Legacy'], ocrAll['Tesseract LSTM'], compOptions);
+      const res = await compareOCR(ocrAll['Tesseract Legacy'], ocrAll['Tesseract LSTM'], compOptions, progressCb);
 
       clearObjectProperties(ocrAll['Tesseract Combined Temp']);
       Object.assign(ocrAll['Tesseract Combined Temp'], res.ocr);
@@ -811,7 +813,7 @@ export async function recognize(options = {}) {
         legacyLSTMComb: true,
       };
 
-      const res = await compareOCR(ocrAll['Tesseract Legacy'], ocrAll['Tesseract LSTM'], compOptions);
+      const res = await compareOCR(ocrAll['Tesseract Legacy'], ocrAll['Tesseract LSTM'], compOptions, progressCb);
 
       if (DebugData.debugImg[tessCombinedLabel]) DebugData.debugImg[tessCombinedLabel] = res.debug;
 
@@ -832,7 +834,7 @@ export async function recognize(options = {}) {
           editConf: true,
         };
 
-        const res = await compareOCR(existingOCR, ocrAll['Tesseract Combined'], compOptions);
+        const res = await compareOCR(existingOCR, ocrAll['Tesseract Combined'], compOptions, progressCb);
 
         if (DebugData.debugImg.Combined) DebugData.debugImg.Combined = res.debug;
 
@@ -853,9 +855,9 @@ export async function recognize(options = {}) {
 
         let res;
         if (forceMainData) {
-          res = await compareOCR(ocrAll['Tesseract Combined'], existingOCR, compOptions);
+          res = await compareOCR(ocrAll['Tesseract Combined'], existingOCR, compOptions, progressCb);
         } else {
-          res = await compareOCR(existingOCR, ocrAll['Tesseract Combined'], compOptions);
+          res = await compareOCR(existingOCR, ocrAll['Tesseract Combined'], compOptions, progressCb);
         }
 
         if (DebugData.debugImg.Combined) DebugData.debugImg.Combined = res.debug;
