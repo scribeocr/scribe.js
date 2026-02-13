@@ -1,0 +1,27 @@
+{
+  "name": "@scribe.js/aws-textract",
+  "version": "0.1.0",
+  "description": "AWS Textract adapter for Scribe.js OCR.",
+  "type": "module",
+  "license": "AGPL-3.0",
+  "exports": {
+    ".": "./RecognitionModelAwsTextract.js",
+    "./engine": "./ocrEngineAwsTextract.js"
+  },
+  "main": "./RecognitionModelAwsTextract.js",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/scribeocr/scribe.js.git",
+    "directory": "packages/aws-textract"
+  },
+  "author": "Balearica",
+  "dependencies": {
+    "@aws-sdk/client-textract": "^3.887.0",
+    "@aws-sdk/client-s3": "^3.887.0"
+  },
+  "files": [
+    "ocrEngineAwsTextract.js",
+    "RecognitionModelAwsTextract.js",
+    "LICENSE"
+  ]
+}
