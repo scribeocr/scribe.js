@@ -1,22 +1,31 @@
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { OcrEngineAWSTextract } from '../ocrEngineAwsTextract.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-const filePath = path.join(__dirname, './textract_testing');
+const args = process.argv.slice(2);
+const dirMode = args.includes('--dir');
+const splitMode = args.includes('--split');
+const filePath = args.find((a) => !a.startsWith('--'));
+const s3BucketArg = args.find((a) => a.startsWith('--s3-bucket='));
+const s3Bucket = s3BucketArg ? s3BucketArg.split('=')[1] : process.env.AWS_S3_BUCKET;
 
-const combineResponses = true;
+if (!filePath || !s3Bucket) {
+  console.error('Usage: node runAwsTextractAsync.js <file-or-directory> --s3-bucket=<bucket> [--dir] [--layout] [--tables] [--split]');
+  console.error('');
+  console.error('  <file-or-directory>  File or directory to process');
+  console.error('  --s3-bucket=<name>   S3 bucket for async processing (or set AWS_S3_BUCKET env var)');
+  console.error('  --dir                Treat the path as a directory and process all supported files');
+  console.error('  --layout             Enable layout analysis');
+  console.error('  --tables             Enable table analysis');
+  console.error('  --split              Write separate files per page instead of combining');
+  process.exit(1);
+}
 
 const options = {
-  analyzeLayout: true,
-  analyzeLayoutTables: false,
-  // Enter your S3 bucket name here to use asynchronous processing.
-  // Sync processing does not require an S3 bucket.
-  s3Bucket: 'textract-test-misc-us-east-1',
-  // Set to true to process all PDF/image files in a directory.
-  processDirectory: true,
+  analyzeLayout: args.includes('--layout'),
+  analyzeLayoutTables: args.includes('--tables'),
+  s3Bucket,
+  processDirectory: dirMode,
 };
 
 const SUPPORTED_EXTENSIONS = ['.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.tif'];
@@ -36,7 +45,7 @@ async function processFile(inputPath) {
     suffix = 'AwsTextractLayout.json';
   }
 
-  if (combineResponses) {
+  if (!splitMode) {
     const outputFileName = `${parsedPath.name}-${suffix}`;
     const outputPath = path.join(parsedPath.dir, outputFileName);
     console.log(`Writing combined result to ${outputPath}`);
@@ -55,9 +64,8 @@ async function processFile(inputPath) {
 const stat = await fs.promises.stat(filePath);
 
 if (stat.isDirectory()) {
-  if (!options.processDirectory) {
-    console.error('Input is a directory but processDirectory option is not enabled.');
-    console.error('Set processDirectory: true in options to process all files in the directory.');
+  if (!dirMode) {
+    console.error('Input is a directory. Pass --dir to process all files in it.');
     process.exit(1);
   }
 

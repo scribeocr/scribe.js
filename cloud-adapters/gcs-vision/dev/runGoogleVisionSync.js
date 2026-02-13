@@ -1,12 +1,16 @@
 import fs from 'fs';
 import path from 'path';
-import { fileURLToPath } from 'url';
 import { OcrEngineGoogleVision } from '../ocrEngineGoogleVision.js';
 
-const __filename = fileURLToPath(import.meta.url);
-const __dirname = path.dirname(__filename);
-// Note: The sync interface does not support .pdf files.
-const filePath = path.join(__dirname, './assets/trident_v_connecticut_general/trident_v_connecticut_general_006.png');
+const args = process.argv.slice(2);
+const filePath = args.find((a) => !a.startsWith('--'));
+
+if (!filePath) {
+  console.error('Usage: node runGoogleVisionSync.js <file>');
+  console.error('');
+  console.error('  <file>  Image file to process (PDF not supported by sync API)');
+  process.exit(1);
+}
 
 const options = {
 };
