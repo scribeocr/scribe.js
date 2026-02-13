@@ -407,6 +407,14 @@ export async function convertOCR(ocrRawArr, mainData, format, engineName, scribe
     return;
   }
 
+  if (format === 'google_vision' && pageMetrics && pageMetrics[0]?.dims) {
+    for (let n = 0; n < ocrRawArr.length; n++) {
+      const res = await gs.convertPageGoogleVision({ ocrStr: ocrRawArr[n], n, pageDims: pageMetrics[n].dims });
+      await convertPageCallback(res, n, mainData, engineName);
+    }
+    return;
+  }
+
   if (format === 'text') {
     const res = await gs.convertPageText({ textStr: ocrRawArr[0] });
 
@@ -653,6 +661,9 @@ async function recognizeCustomModel(options) {
         for (let i = 0; i < res.length; i++) {
           await convertPageCallback(res[i], n + i, mainData, engineName);
         }
+      } else if (outputFormat === 'google_vision') {
+        const res = await gs.convertPageGoogleVision({ ocrStr: rawData, n, pageDims: pageMetricsAll[n].dims });
+        await convertPageCallback(res, n, mainData, engineName);
       } else {
         await convertOCRPage(rawData, n, mainData, /** @type {TextSource} */ (outputFormat), engineName);
       }

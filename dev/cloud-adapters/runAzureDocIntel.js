@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { OcrEngineAzureDocIntel } from '../ocrEngineAzureDocIntel.js';
+import { OcrEngineAzureDocIntel } from '../../cloud-adapters/azure-doc-intel/ocrEngineAzureDocIntel.js';
 
 const args = process.argv.slice(2);
 const dirMode = args.includes('--dir');
