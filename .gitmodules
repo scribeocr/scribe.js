@@ -1,6 +1,3 @@
 [submodule "scrollview-web"]
 	path = scrollview-web
 	url = https://github.com/scribeocr/scrollview-web.git
-[submodule "cloud-adapters"]
-	path = cloud-adapters
-	url = https://github.com/scribeocr/cloud-adapters.git
