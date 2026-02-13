@@ -1,10 +1,7 @@
 import ocr from '../objects/ocrObjects.js';
 
 import { LayoutDataTablePage } from '../objects/layoutObjects.js';
-import { pass2, pass3 } from './convertPageShared.js';
-
-// NOTE: This is a WIP and incomplete.
-// The Azure Document Intelligence format is not yet supported.
+import { pass3 } from './convertPageShared.js';
 
 const debugMode = false;
 
@@ -80,8 +77,8 @@ export async function convertDocAzureDocIntel({ ocrStr, pageDims }) {
 
       if (lineWordsInput.length === 0) continue;
 
-      const allX = lineWordsInput.flatMap((w) => w.polygon.filter((_, i) => i % 2 === 0));
-      const allY = lineWordsInput.flatMap((w) => w.polygon.filter((_, i) => i % 2 === 1));
+      const allX = lineWordsInput.flatMap((w) => w.polygon.filter((_, idx) => idx % 2 === 0));
+      const allY = lineWordsInput.flatMap((w) => w.polygon.filter((_, idx) => idx % 2 === 1));
 
       const lineBbox = {
         left: Math.min(...allX),
@@ -102,8 +99,8 @@ export async function convertDocAzureDocIntel({ ocrStr, pageDims }) {
 
         if (!wordData.content || wordData.content.trim() === '') continue;
 
-        const wordX = wordData.polygon.filter((_, i) => i % 2 === 0);
-        const wordY = wordData.polygon.filter((_, i) => i % 2 === 1);
+        const wordX = wordData.polygon.filter((_, idx) => idx % 2 === 0);
+        const wordY = wordData.polygon.filter((_, idx) => idx % 2 === 1);
 
         const wordBbox = {
           left: Math.min(...wordX),
@@ -112,8 +109,15 @@ export async function convertDocAzureDocIntel({ ocrStr, pageDims }) {
           bottom: Math.max(...wordY),
         };
 
+        const wordPoly = {
+          tl: { x: wordData.polygon[0], y: wordData.polygon[1] },
+          tr: { x: wordData.polygon[2], y: wordData.polygon[3] },
+          br: { x: wordData.polygon[4], y: wordData.polygon[5] },
+          bl: { x: wordData.polygon[6], y: wordData.polygon[7] },
+        };
+
         const wordId = `word_${n + 1}_${pageObj.lines.length + 1}_${j + 1}`;
-        const wordObj = new ocr.OcrWord(lineObj, wordId, wordData.content, wordBbox);
+        const wordObj = new ocr.OcrWord(lineObj, wordId, wordData.content, wordBbox, wordPoly);
 
         wordObj.conf = Math.round((wordData.confidence || 0) * 100);
 
@@ -125,6 +129,28 @@ export async function convertDocAzureDocIntel({ ocrStr, pageDims }) {
       }
 
       if (lineObj.words.length > 0) {
+        const linePolyRaw = pageData.lines[i].polygon;
+        const polyLine = {
+          tl: { x: linePolyRaw[0], y: linePolyRaw[1] },
+          tr: { x: linePolyRaw[2], y: linePolyRaw[3] },
+          br: { x: linePolyRaw[4], y: linePolyRaw[5] },
+          bl: { x: linePolyRaw[6], y: linePolyRaw[7] },
+        };
+
+        if (polyLine.br.x !== polyLine.bl.x) {
+          lineObj.baseline[0] = (polyLine.br.y - polyLine.bl.y) / (polyLine.br.x - polyLine.bl.x);
+        }
+
+        // Azure word polygons are line-height rectangles (not tight to character bounds),
+        // so we cannot use word polygon heights to distinguish ascender vs x-height words.
+        // Instead, use heuristics based on the line polygon height.
+        const lineHeight = ((polyLine.br.y - polyLine.tr.y) + (polyLine.bl.y - polyLine.tl.y)) / 2;
+
+        lineObj.baseline[1] = lineHeight * -1 / 4 - (lineObj.bbox.bottom - polyLine.bl.y);
+
+        const ascHeight = lineHeight * 3 / 5;
+        if (ascHeight > 0) lineObj.ascHeight = ascHeight;
+
         pageObj.lines.push(lineObj);
       }
     }

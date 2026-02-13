@@ -25,19 +25,6 @@ function convertTextractToTxt(textractData) {
   // Find all LAYOUT_TEXT blocks (these represent paragraphs)
   const layoutTextBlocks = blocks.filter((block) => block.BlockType === 'LAYOUT_TEXT');
 
-  // // Sort by page number and vertical position
-  // layoutTextBlocks.sort((a, b) => {
-  //   const pageA = a.Page || 0;
-  //   const pageB = b.Page || 0;
-  //   if (pageA !== pageB) {
-  //     return pageA - pageB;
-  //   }
-  //   // Sort by vertical position (Top of bounding box)
-  //   const topA = a.Geometry?.BoundingBox?.Top || 0;
-  //   const topB = b.Geometry?.BoundingBox?.Top || 0;
-  //   return topA - topB;
-  // });
-
   const paragraphs = [];
 
   // Process each LAYOUT_TEXT block
@@ -74,17 +61,6 @@ function convertTextractToTxt(textractData) {
 
   // Also include LAYOUT_TITLE blocks as separate lines
   const layoutTitleBlocks = blocks.filter((block) => block.BlockType === 'LAYOUT_TITLE');
-
-  // layoutTitleBlocks.sort((a, b) => {
-  //   const pageA = a.Page || 0;
-  //   const pageB = b.Page || 0;
-  //   if (pageA !== pageB) {
-  //     return pageA - pageB;
-  //   }
-  //   const topA = a.Geometry?.BoundingBox?.Top || 0;
-  //   const topB = b.Geometry?.BoundingBox?.Top || 0;
-  //   return topA - topB;
-  // });
 
   const titles = [];
   for (const titleBlock of layoutTitleBlocks) {

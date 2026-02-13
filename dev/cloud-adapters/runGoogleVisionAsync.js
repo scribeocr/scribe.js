@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { OcrEngineGoogleVision } from '../ocrEngineGoogleVision.js';
+import { OcrEngineGoogleVision } from '../../cloud-adapters/gcs-vision/ocrEngineGoogleVision.js';
 
 const args = process.argv.slice(2);
 const splitMode = args.includes('--split');

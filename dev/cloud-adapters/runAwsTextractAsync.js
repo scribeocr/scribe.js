@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { OcrEngineAWSTextract } from '../ocrEngineAwsTextract.js';
+import { OcrEngineAWSTextract } from '../../cloud-adapters/aws-textract/ocrEngineAwsTextract.js';
 
 const args = process.argv.slice(2);
 const dirMode = args.includes('--dir');

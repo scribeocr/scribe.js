@@ -3,10 +3,6 @@ import ocr from '../objects/ocrObjects.js';
 import {
   calcBboxUnion,
   mean50,
-  descCharArr,
-  ascCharArr,
-  xCharArr,
-  removeSuperscript,
 } from '../utils/miscUtils.js';
 
 import {
@@ -20,8 +16,9 @@ const debugMode = false;
  * @param {Object} params
  * @param {string} params.ocrStr - String or array of strings containing Google Vision JSON data.
  * @param {number} params.n
+ * @param {dims} [params.pageDims]
  */
-export async function convertPageGoogleVision({ ocrStr, n }) {
+export async function convertPageGoogleVision({ ocrStr, n, pageDims }) {
   const ocrJson = JSON.parse(ocrStr);
   let visionResult;
   if (ocrJson.fullTextAnnotation) {
@@ -43,26 +40,32 @@ export async function convertPageGoogleVision({ ocrStr, n }) {
     throw new Error('Failed to parse page dimensions.');
   }
 
+  const scaleX = pageDims ? pageDims.width / pageWidth : 1;
+  const scaleY = pageDims ? pageDims.height / pageHeight : 1;
+
   /**
    * @param {GoogleVisionParagraph["boundingBox"]} boundingBox - The bounding box object.
    * @returns {Array<{x: number, y: number}>} - An array of vertex coordinates.
    */
   const getVertices = (boundingBox) => {
     if (boundingBox.vertices) {
-      return boundingBox.vertices;
+      return boundingBox.vertices.map((v) => ({
+        x: (v.x || 0) * scaleX,
+        y: (v.y || 0) * scaleY,
+      }));
     }
     if (boundingBox.normalizedVertices) {
       return boundingBox.normalizedVertices.map((v) => ({
-        x: (v.x || 0) * pageWidth,
-        y: (v.y || 0) * pageHeight,
+        x: (v.x || 0) * pageWidth * scaleX,
+        y: (v.y || 0) * pageHeight * scaleY,
       }));
     }
     throw new Error('No vertices found in bounding box.');
   };
 
-  const pageDims = { width: pageWidth, height: pageHeight };
+  const pageDimsOut = pageDims || { width: pageWidth, height: pageHeight };
 
-  const pageObj = new ocr.OcrPage(n, pageDims);
+  const pageObj = new ocr.OcrPage(n, pageDimsOut);
 
   if (!pageVision.blocks || pageVision.blocks.length === 0) {
     const warn = { char: 'char_error' };
@@ -202,42 +205,16 @@ export async function convertPageGoogleVision({ ocrStr, n }) {
 }
 
 /**
- * Calculate text metrics for the line based on character types
+ *
  * @param {OcrLine} lineObj - The line object to update
  */
 function calculateTextMetrics(lineObj) {
-  const descCharRegex = new RegExp(`[${descCharArr.join('')}]`);
-  const ascCharRegex = new RegExp(`[${ascCharArr.join('')}]`);
-  const xCharRegex = new RegExp(`[${xCharArr.join('')}]`);
+  const wordHeights = lineObj.words.map((w) => w.bbox.bottom - w.bbox.top);
+  if (wordHeights.length === 0) return;
 
-  const xOnlyWords = /** @type {OcrWord[]} */([]);
-  const ascOnlyWords = /** @type {OcrWord[]} */([]);
+  const sortedHeights = [...wordHeights].sort((a, b) => a - b);
+  const medianHeight = sortedHeights[Math.floor(sortedHeights.length / 2)];
 
-  lineObj.words.forEach((word) => {
-    if (word.text && xCharRegex.test(word.text) && !ascCharRegex.test(word.text)
-      && !descCharRegex.test(word.text) && !/[fi]/.test(word.text)) {
-      xOnlyWords.push(word);
-    }
-    if (word.text && ascCharRegex.test(word.text) && !descCharRegex.test(word.text)) {
-      ascOnlyWords.push(word);
-    }
-  });
-
-  let xHeight = null;
-  if (xOnlyWords.length > 0) {
-    xHeight = mean50(xOnlyWords.map((word) => word.bbox.bottom - word.bbox.top));
-  }
-
-  const ascHeight = ascOnlyWords.length > 0
-    ? mean50(ascOnlyWords.map((word) => word.bbox.bottom - word.bbox.top))
-    : null;
-
-  if (xHeight && ascHeight && xHeight > ascHeight * 0.8) {
-    if (ascOnlyWords.length > xOnlyWords.length) {
-      xHeight = null;
-    }
-  }
-
-  if (xHeight && xHeight > 0) lineObj.xHeight = xHeight;
-  if (ascHeight && ascHeight > 0) lineObj.ascHeight = ascHeight;
+  lineObj.ascHeight = medianHeight * 2 / 3;
+  lineObj.baseline[1] = medianHeight * -1 / 3;
 }

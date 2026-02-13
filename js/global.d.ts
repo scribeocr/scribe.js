@@ -175,7 +175,7 @@ declare global {
         errorAdjB: number | null; // Adjusted error of "B" words. Null until calculated.
     };
 
-    type ProgressMessage = ProgressMessageConvert | ProgressMessageGeneral;
+    type ProgressMessage = ProgressMessageConvert | ProgressMessageGeneral | ProgressMessageRecognize;
 
     type ProgressMessageGeneral = {
         type: 'export' | 'importImage' | 'importPDF' | 'render';
@@ -189,6 +189,10 @@ declare global {
         info: {
             engineName: string;
         };
+    }
+
+    type ProgressMessageRecognize = {
+        type: 'recognize';
     }
 
     type FileNode = import("./import/nodeAdapter.js").FileNode;
@@ -356,11 +360,6 @@ declare global {
     }
 
     // Azure Document Intelligence types
-    interface AzureDocIntelPoint {
-        x: number;
-        y: number;
-    }
-
     interface AzureDocIntelSpan {
         offset: number;
         length: number;
@@ -368,14 +367,14 @@ declare global {
 
     interface AzureDocIntelWord {
         content: string;
-        polygon: AzureDocIntelPoint[];
+        polygon: number[];
         span: AzureDocIntelSpan;
         confidence: number;
     }
 
     interface AzureDocIntelLine {
         content: string;
-        polygon: AzureDocIntelPoint[];
+        polygon: number[];
         spans: AzureDocIntelSpan[];
     }
 
