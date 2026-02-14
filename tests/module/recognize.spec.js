@@ -224,15 +224,31 @@ describe('Check comparison between OCR versions.', function () {
   });
 });
 
-describe('Check monospace font detection (D.Md.).', function () {
+describe('Check monospace font detection and optimization (M.D.Fla.).', function () {
   this.timeout(30000);
   before(async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/D.Md._8_25-cr-00006-LKG_402_2.pdf`]);
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/M.D.Fla._8_25-cv-03557-MSS-AEP_1_4_p5-8.pdf`]);
     await scribe.recognize({ modeAdv: 'combined' });
   });
 
   it('NimbusMono is selected as serif default for monospace legal document', async () => {
     assert.strictEqual(scribe.data.font.state.serifDefaultName, 'NimbusMono');
+  }).timeout(10000);
+
+  it('Font optimization is enabled and improves quality for monospace document', async () => {
+    assert.strictEqual(scribe.data.font.state.enableOpt, true);
+    assert.isBelow(scribe.data.font.optMetrics.NimbusMono, scribe.data.font.rawMetrics.NimbusMono);
+  }).timeout(10000);
+
+  it('Optimized NimbusMono font maintains uniform advance widths', async () => {
+    const optFont = scribe.data.font.opt.NimbusMono.normal.opentype;
+    const advances = new Set();
+    for (const char of 'abcdefghijklmnopqrstuvwxyz') {
+      const glyph = optFont.charToGlyph(char);
+      if (glyph && glyph.advanceWidth) advances.add(glyph.advanceWidth);
+    }
+    assert.strictEqual(advances.size, 1,
+      `Expected uniform advance widths but found ${advances.size} distinct values: ${[...advances].join(', ')}`);
   }).timeout(10000);
 
   after(async () => {
