@@ -200,9 +200,16 @@ export async function optimizeFont({
     workingFont.unitsPerEm = targetEmSize;
   }
 
+  // Detect monospace before any early return so kerning can be skipped.
+  // A monospace font has identical advance widths for narrow ('i') and wide ('m') characters.
+  const monoGlyphI = workingFont.charToGlyph('i');
+  const monoGlyphM = workingFont.charToGlyph('m');
+  const isMonospace = monoGlyphI?.advanceWidth > 0 && monoGlyphI.advanceWidth === monoGlyphM?.advanceWidth;
+  const monoAdvanceWidth = isMonospace ? monoGlyphI.advanceWidth : 0;
+
   // If no glyph-level transformations are requested, return early.
-  if (!transGlyphs) {
-    workingFont.kerningPairs = calculateKerningPairs(workingFont, charMetricsObj, xHeight, style);
+  if (!transGlyphs && !isMonospace) {
+    workingFont.kerningPairs = isMonospace ? {} : calculateKerningPairs(workingFont, charMetricsObj, xHeight, style);
 
     return { fontData: workingFont.toArrayBuffer(), kerningPairs: workingFont.kerningPairs };
   }
@@ -303,6 +310,25 @@ export async function optimizeFont({
     glyphI.leftSideBearing = glyphIMetrics.xMin;
   }
 
+  // For monospace fonts, enforce a uniform advance width across all glyphs.
+  if (isMonospace) {
+    const ocrWidthValues = Object.values(charMetricsObj.width).filter((v) => v > 0);
+    if (ocrWidthValues.length > 0) {
+      const medianOcrWidth = quantile(ocrWidthValues, 0.5);
+      const targetAdvance = Math.round(medianOcrWidth * xHeight);
+      const originalMonoAdvance = monoAdvanceWidth;
+
+      // Limit to +/-30% of original advance width, matching the general scaling limits.
+      const uniformAdvance = Math.round(Math.max(Math.min(targetAdvance, originalMonoAdvance * 1.3), originalMonoAdvance * 0.7));
+
+      for (const [key, glyph] of Object.entries(workingFont.glyphs.glyphs)) {
+        if (glyph.advanceWidth > 0) {
+          glyph.advanceWidth = uniformAdvance;
+        }
+      }
+    }
+  }
+
   // Adjust height for capital letters (if heightCaps is believable)
   if (heightCapsBelievable) {
     const capsMult = xHeight * charMetricsObj.heightCaps / fontAscHeight;
@@ -391,7 +417,7 @@ export async function optimizeFont({
     }
   }
 
-  workingFont.kerningPairs = calculateKerningPairs(workingFont, charMetricsObj, xHeight, style);
+  workingFont.kerningPairs = isMonospace ? {} : calculateKerningPairs(workingFont, charMetricsObj, xHeight, style);
 
   // Append suffix to avoid naming conflict with raw font.
   // This is necessary for the Node.js version due to quirks with node-canvas.
