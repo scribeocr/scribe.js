@@ -224,6 +224,22 @@ describe('Check comparison between OCR versions.', function () {
   });
 });
 
+describe('Check monospace font detection (D.Md.).', function () {
+  this.timeout(30000);
+  before(async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/D.Md._8_25-cr-00006-LKG_402_2.pdf`]);
+    await scribe.recognize({ modeAdv: 'combined' });
+  });
+
+  it('NimbusMono is selected as serif default for monospace legal document', async () => {
+    assert.strictEqual(scribe.data.font.state.serifDefaultName, 'NimbusMono');
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+});
+
 describe('Check vanilla recognition engine.', function () {
   this.timeout(20000);
 

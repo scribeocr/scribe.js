@@ -1,6 +1,7 @@
 /**
  * Object containing font metrics for individual font.
  * @property {Object.<string, number>} width - Width of glyph as proportion of x-height
+ * @property {Object.<string, number>} widthObs - Number of observations used to calculate width median
  * @property {Object.<string, number>} height - height of glyph as proportion of x-height
  * @property {Object.<string, number>} kerning -
  * @property {Object.<string, boolean>} variants -
@@ -15,6 +16,8 @@
 export function CharMetricsFont() {
   /** @type {Object.<string, number>} */
   this.width = {};
+  /** @type {Object.<string, number>} */
+  this.widthObs = {};
   /** @type {Object.<string, number>} */
   this.height = {};
   // /** @type {Object.<string, number>} */

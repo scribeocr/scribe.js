@@ -86,15 +86,15 @@ export const extractInternalPDFText = async () => {
 
   ocrAll.pdf = Array(ImageCache.pageCount);
 
-  if (inputData.pdfType === 'text' && opt.usePDFText.native.main || inputData.pdfType === 'ocr' && opt.usePDFText.ocr.main) {
+  const isMainData = (res.type === 'text' && opt.usePDFText.native.main)
+    || (res.type === 'ocr' && opt.usePDFText.ocr.main);
+
+  if (isMainData) {
     ocrAllRaw.active = ocrAllRaw.pdf;
     ocrAll.active = ocrAll.pdf;
   }
 
-  const format = 'stext';
-
-  // Process HOCR using web worker, reading from file first if that has not been done already
-  await convertOCR(ocrAllRaw.pdf, true, format, 'pdf', false);
+  await convertOCR(ocrAllRaw.pdf, isMainData, 'stext', 'pdf', false);
 
   res.content = ocrAll.pdf;
 

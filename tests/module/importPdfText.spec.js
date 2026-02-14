@@ -385,14 +385,21 @@ describe('Check that PDF text types are detected and imported correctly.', funct
     assert.isTrue(scribe.data.ocr.active[0]?.lines?.length > 0);
   }).timeout(10000);
 
-  it('OCR text is detected and set as main data `usePDFText.ocr.main` is false', async () => {
+  it('OCR text is detected and extracted but not set to main data when `usePDFText.ocr.main` is false', async () => {
     scribe.opt.usePDFText.ocr.main = false;
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/scribe_test_pdf1.pdf`]);
     // Reset to defaults
     scribe.opt.usePDFText.native.main = true;
     scribe.opt.usePDFText.ocr.main = false;
     assert.strictEqual(scribe.inputData.pdfType, 'ocr');
-    assert.isFalse(!!scribe.data.ocr.active[0]);
+    assert.isTrue(scribe.data.ocr.pdf[0]?.lines?.length > 0);
+    assert.isUndefined(scribe.data.ocr.active[0]);
+  }).timeout(10000);
+
+  // If angle is set it would not be replaced by the accurate angle
+  // when higher quality OCR text is imported or created.
+  it('Page angle is not set from invisible OCR text when usePDFText.ocr.main is false', async () => {
+    assert.strictEqual(scribe.data.pageMetrics[0].angle, null);
   }).timeout(10000);
 
   after(async () => {

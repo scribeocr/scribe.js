@@ -118,6 +118,7 @@ function calculateCharMetrics(charMetricsRawFontObj) {
     for (const [key, value] of Object.entries(charMetricsRawFontObj[prop])) {
       if (value.length > 0) {
         fontMetricOut[prop][key] = round6(quantile(value, 0.5));
+        if (prop === 'width') fontMetricOut.widthObs[key] = value.length;
       }
     }
   }
