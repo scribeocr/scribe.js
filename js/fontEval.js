@@ -9,6 +9,126 @@ import {
 import { gs } from './generalWorkerMain.js';
 
 /**
+ * Compute the RMSD between OCR character widths and a font's glyph advance widths.
+ *
+ * @param {opentype.Font} fontOpentype
+ * @param {CharMetricsFont} charMetrics
+ * @returns {number}
+ */
+function calcFontWidthRMSD(fontOpentype, charMetrics) {
+  const oMetrics = fontOpentype.charToGlyph('o').getMetrics();
+  const xHeight = oMetrics.yMax - oMetrics.yMin;
+  if (!xHeight || xHeight <= 0) return Infinity;
+
+  let sumSqDiff = 0;
+  let count = 0;
+
+  for (const [charCode, ocrWidth] of Object.entries(charMetrics.width)) {
+    const char = String.fromCharCode(parseInt(charCode));
+    const glyph = fontOpentype.charToGlyph(char);
+    if (!glyph || !glyph.advanceWidth) continue;
+
+    const fontWidth = glyph.advanceWidth / xHeight;
+    const diff = ocrWidth - fontWidth;
+    sumSqDiff += diff * diff;
+    count++;
+  }
+
+  if (count === 0) return Infinity;
+  return Math.sqrt(sumSqDiff / count);
+}
+
+/**
+ * Check whether the document is monospace using ratio between narrow and wide character widths.
+ *
+ * @param {CharMetricsFont} serifMetrics
+ */
+export function checkMonoWidthRatio(serifMetrics) {
+  const minObs = 5;
+  const getWidth = (char) => {
+    const code = String(char.charCodeAt(0));
+    if ((serifMetrics.widthObs[code] || 0) < minObs) return null;
+    return serifMetrics.width[code] ?? null;
+  };
+
+  const narrowWidths = ['i', 'l'].map(getWidth).filter((w) => w !== null);
+  const wideWidths = ['m', 'w'].map(getWidth).filter((w) => w !== null);
+
+  if (narrowWidths.length === 0 || wideWidths.length === 0) return false;
+
+  const narrowMean = narrowWidths.reduce((a, b) => a + b) / narrowWidths.length;
+  const wideMean = wideWidths.reduce((a, b) => a + b) / wideWidths.length;
+
+  return narrowMean / wideMean > 0.7;
+}
+
+/**
+ * Check for monospace using font names in OCR data.
+ *
+ * @param {Array<OcrPage>} ocrArr
+ */
+export function checkMonoCourierPct(ocrArr) {
+  let courierWords = 0;
+  let totalWords = 0;
+  for (const page of ocrArr) {
+    for (const line of page.lines) {
+      for (const word of line.words) {
+        totalWords++;
+        if (/Courier/i.test(word.style.font)) courierWords++;
+      }
+    }
+  }
+  if (totalWords === 0) return false;
+  return courierWords / totalWords > 0.5;
+}
+
+/**
+ * Use character metrics to select candidate serif fonts for evaluation.
+ *
+ * @param {Object.<string, CharMetricsFamily>} charMetricsObj
+ * @param {Array<OcrPage>} ocrArr
+ */
+function getSerifCandidateFonts(charMetricsObj, ocrArr) {
+  const allSerifFonts = ['Century', 'Palatino', 'Garamond', 'NimbusRoman', 'NimbusMono'];
+
+  const serifMetrics = charMetricsObj?.SerifDefault?.normal;
+  if (!serifMetrics || serifMetrics.obs < 200 || Object.keys(serifMetrics.width).length < 5) {
+    return new Set(allSerifFonts);
+  }
+
+  const monoByWidth = checkMonoWidthRatio(serifMetrics);
+  const monoByCourier = checkMonoCourierPct(ocrArr);
+
+  if (monoByWidth && monoByCourier) {
+    return new Set(['NimbusMono']);
+  }
+
+  const candidates = new Set();
+
+  if (monoByWidth || monoByCourier) {
+    candidates.add('NimbusMono');
+  }
+
+  // Keep the top 3 candidate proportional serif fonts
+  const serifFonts = allSerifFonts.filter((f) => f !== 'NimbusMono');
+  const rmsdScores = [];
+
+  for (const fontName of serifFonts) {
+    const fontObj = FontCont.raw?.[fontName]?.normal;
+    if (!fontObj?.opentype) continue;
+    rmsdScores.push({ fontName, rmsd: calcFontWidthRMSD(fontObj.opentype, serifMetrics) });
+  }
+
+  rmsdScores.sort((a, b) => a.rmsd - b.rmsd);
+
+  for (let i = 0; i < Math.min(3, rmsdScores.length); i++) {
+    candidates.add(rmsdScores[i].fontName);
+  }
+
+  return candidates;
+}
+
+/**
  * Evaluate how well a font matches the provided array of pages.
  * @param {string} font - Name of font family.
  * @param {Array<OcrPage>} pageArr
@@ -42,16 +162,18 @@ export async function evalPagesFont(font, pageArr, opt, n = 500) {
 /**
  * @param {Array<OcrPage>} pageArr
  * @param {boolean} opt - Whether to use optimized fonts.
+ * @param {Set<string>|null} [serifCandidates] - Serif font names to evaluate (from pre-filtering).
+ *    If omitted or null, all serif fonts will be evaluated.
  */
-export async function evaluateFonts(pageArr, opt) {
+export async function evaluateFonts(pageArr, opt, serifCandidates = null) {
   const evalCarlito = !!(opt ? FontCont.opt?.Carlito : FontCont.raw?.Carlito);
   const evalNimbusSans = !!(opt ? FontCont.opt?.NimbusSans : FontCont.raw?.NimbusSans);
-  const evalCentury = !!(opt ? FontCont.opt?.Century : FontCont.raw?.Century);
-  const evalPalatino = !!(opt ? FontCont.opt?.Palatino : FontCont.raw?.Palatino);
-  const evalGaramond = !!(opt ? FontCont.opt?.Garamond : FontCont.raw?.Garamond);
+  const evalCentury = (!serifCandidates || serifCandidates.has('Century')) && !!(opt ? FontCont.opt?.Century : FontCont.raw?.Century);
+  const evalPalatino = (!serifCandidates || serifCandidates.has('Palatino')) && !!(opt ? FontCont.opt?.Palatino : FontCont.raw?.Palatino);
+  const evalGaramond = (!serifCandidates || serifCandidates.has('Garamond')) && !!(opt ? FontCont.opt?.Garamond : FontCont.raw?.Garamond);
   const evalGothic = !!(opt ? FontCont.opt?.Gothic : FontCont.raw?.Gothic);
-  const evalNimbusRoman = !!(opt ? FontCont.opt?.NimbusRoman : FontCont.raw?.NimbusRoman);
-  const evalNimbusMono = !!(opt ? FontCont.opt?.NimbusMono : FontCont.raw?.NimbusMono);
+  const evalNimbusRoman = (!serifCandidates || serifCandidates.has('NimbusRoman')) && !!(opt ? FontCont.opt?.NimbusRoman : FontCont.raw?.NimbusRoman);
+  const evalNimbusMono = (!serifCandidates || serifCandidates.has('NimbusMono')) && !!(opt ? FontCont.opt?.NimbusMono : FontCont.raw?.NimbusMono);
 
   const fontMetricsPromises = {
     carlito: evalCarlito ? evalPagesFont('Carlito', pageArr, opt) : null,
@@ -156,14 +278,16 @@ export async function runFontOptimization(ocrArr) {
     // Evaluate default fonts using up to 5 pages.
     const pageNum = Math.min(ImageCache.pageCount, 5);
 
-    FontCont.rawMetrics = await evaluateFonts(ocrArr.slice(0, pageNum), false);
+    const serifCandidates = getSerifCandidateFonts(FontCont.state.charMetrics, ocrArr);
+
+    FontCont.rawMetrics = await evaluateFonts(ocrArr.slice(0, pageNum), false, serifCandidates);
     const bestMetricsRaw = calcBestFonts(FontCont.rawMetrics);
 
     await optimizeFontContainerAllPromise;
     if (FontCont.opt && Object.keys(FontCont.opt).length > 0) {
       await updateFontContWorkerMain();
 
-      FontCont.optMetrics = await evaluateFonts(ocrArr.slice(0, pageNum), true);
+      FontCont.optMetrics = await evaluateFonts(ocrArr.slice(0, pageNum), true, serifCandidates);
 
       const bestMetricsOpt = calcBestFonts(FontCont.optMetrics);
 
