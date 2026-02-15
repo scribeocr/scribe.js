@@ -54,6 +54,10 @@ const detectOcrFormat = (ocrStr, ext) => {
     return 'google_vision';
   }
 
+  if (!node2 && !!/"pages"/i.test(ocrStr) && !!/"textAnchor"/i.test(ocrStr) && !!/"tokens"/i.test(ocrStr)) {
+    return 'google_doc_ai';
+  }
+
   if (/"createdDateTime"/i.test(ocrStr) && /"analyzeResult"/i.test(ocrStr) && /"modelId"/i.test(ocrStr)) {
     return 'azure_doc_intel';
   }
@@ -128,6 +132,8 @@ export async function importOCRFiles(ocrFilesAll) {
           .map((resp) => JSON.stringify(resp));
       }
     } else if (format === 'azure_doc_intel') {
+      hocrRaw = [ocrFilesContent];
+    } else if (format === 'google_doc_ai') {
       hocrRaw = [ocrFilesContent];
     } else if (format === 'alto') {
       // Extract the Styles section to prepend to each page

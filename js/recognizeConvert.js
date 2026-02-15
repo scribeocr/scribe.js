@@ -310,6 +310,8 @@ export async function convertOCRPage(ocrRaw, n, mainData, format, engineName, sc
     // res = await gs.convertPageTextract({ ocrStr: ocrRaw, n });
   } else if (format === 'azure_doc_intel') {
     // res = await gs.convertDocAzureDocIntel({ ocrStr: ocrRaw, });
+  } else if (format === 'google_doc_ai') {
+    // Document-level format, handled in convertOCR
   } else if (format === 'google_vision') {
     res = await gs.convertPageGoogleVision({ ocrStr: ocrRaw, n });
   } else if (format === 'stext') {
@@ -401,6 +403,16 @@ export async function convertOCR(ocrRawArr, mainData, format, engineName, scribe
     if (!pageMetrics || !pageMetrics[0]?.dims) throw new Error('Page metrics must be provided for Azure Document Intelligence data.');
     const pageDims = pageMetrics.map((metrics) => (metrics.dims));
     const res = await gs.convertDocAzureDocIntel({ ocrStr: ocrRawArr, pageDims });
+    for (let n = 0; n < res.length; n++) {
+      await convertPageCallback(res[n], n, mainData, engineName);
+    }
+    return;
+  }
+
+  if (format === 'google_doc_ai') {
+    if (!pageMetrics || !pageMetrics[0]?.dims) throw new Error('Page metrics must be provided for Google Document AI data.');
+    const pageDims = pageMetrics.map((metrics) => (metrics.dims));
+    const res = await gs.convertDocGoogleDocAI({ ocrStr: ocrRawArr, pageDims });
     for (let n = 0; n < res.length; n++) {
       await convertPageCallback(res[n], n, mainData, engineName);
     }
@@ -589,7 +601,7 @@ async function recognizeCustomModel(options) {
   const engineName = model.config.name;
   const outputFormat = model.config.outputFormat;
 
-  const knownFormats = ['hocr', 'abbyy', 'alto', 'textract', 'azure_doc_intel', 'google_vision', 'stext', 'text'];
+  const knownFormats = ['hocr', 'abbyy', 'alto', 'textract', 'azure_doc_intel', 'google_doc_ai', 'google_vision', 'stext', 'text'];
   if (!knownFormats.includes(outputFormat) && !model.convertPage) {
     throw new Error(`Model output format '${outputFormat}' is not supported. Provide a convertPage method on the model.`);
   }
@@ -658,6 +670,12 @@ async function recognizeCustomModel(options) {
       } else if (outputFormat === 'azure_doc_intel') {
         const pageDims = [pageMetricsAll[n].dims];
         const res = await gs.convertDocAzureDocIntel({ ocrStr: rawData, pageDims });
+        for (let i = 0; i < res.length; i++) {
+          await convertPageCallback(res[i], n + i, mainData, engineName);
+        }
+      } else if (outputFormat === 'google_doc_ai') {
+        const pageDims = [pageMetricsAll[n].dims];
+        const res = await gs.convertDocGoogleDocAI({ ocrStr: rawData, pageDims });
         for (let i = 0; i < res.length; i++) {
           await convertPageCallback(res[i], n + i, mainData, engineName);
         }

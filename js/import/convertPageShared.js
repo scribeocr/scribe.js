@@ -3,9 +3,136 @@ import {
   ascCharArr,
   mean50,
   quantile,
+  removeSuperscript,
   xCharArr,
   descCharArr,
 } from '../utils/miscUtils.js';
+
+/** Unicode superscript characters regex */
+const superscriptCharsRegex = /[⁰¹²³⁴⁵⁶⁷⁸⁹ᵃᵇᶜᵈᵉᶠᵍʰⁱʲᵏˡᵐⁿᵒᵖʳˢᵗᵘᵛʷˣʸᶻᴬᴮᴰᴱᴳᴴᴵᴶᴷᴸᴹᴺᴼᴾᴿᵀᵁⱽᵂ⁺⁻⁼⁽⁾]+/g;
+
+/**
+ * Splits words containing unicode superscript characters into separate words.
+ * @param {OcrLine} lineObj
+ */
+export function splitUnicodeSuperscripts(lineObj) {
+  const newWords = [];
+
+  for (let i = 0; i < lineObj.words.length; i++) {
+    const wordObj = lineObj.words[i];
+    const text = wordObj.text;
+
+    if (!superscriptCharsRegex.test(text)) {
+      newWords.push(wordObj);
+      continue;
+    }
+
+    superscriptCharsRegex.lastIndex = 0;
+
+    const segments = [];
+    let lastIndex = 0;
+    let match;
+
+    while (true) {
+      match = superscriptCharsRegex.exec(text);
+      if (match === null) break;
+      if (match.index > lastIndex) {
+        segments.push({ text: text.slice(lastIndex, match.index), isSup: false });
+      }
+      segments.push({ text: match[0], isSup: true });
+      lastIndex = match.index + match[0].length;
+    }
+
+    if (lastIndex < text.length) {
+      segments.push({ text: text.slice(lastIndex), isSup: false });
+    }
+
+    if (segments.length === 1) {
+      wordObj.text = removeSuperscript(wordObj.text);
+      wordObj.style.sup = segments[0].isSup;
+      newWords.push(wordObj);
+      continue;
+    }
+
+    const wordWidth = wordObj.bbox.right - wordObj.bbox.left;
+    const totalChars = text.length;
+    let charOffset = 0;
+
+    for (let j = 0; j < segments.length; j++) {
+      const segment = segments[j];
+      const segmentChars = segment.text.length;
+
+      const startRatio = charOffset / totalChars;
+      const endRatio = (charOffset + segmentChars) / totalChars;
+
+      const wordHeight = wordObj.bbox.bottom - wordObj.bbox.top;
+
+      // For superscripts: smaller size (~58% height) positioned at top
+      // The bottom of the superscript should align roughly with the x-height of regular text
+      const supHeightRatio = 0.58;
+      const supBottomOffset = wordHeight * 0.42;
+
+      const segmentBbox = {
+        left: Math.round(wordObj.bbox.left + wordWidth * startRatio),
+        top: wordObj.bbox.top,
+        right: Math.round(wordObj.bbox.left + wordWidth * endRatio),
+        bottom: segment.isSup
+          ? Math.round(wordObj.bbox.top + supBottomOffset)
+          : wordObj.bbox.bottom,
+      };
+
+      const segmentId = j === 0 ? wordObj.id : `${wordObj.id}_${j}`;
+      const segmentText = segment.isSup ? removeSuperscript(segment.text) : segment.text;
+
+      // Calculate proportional polygon based on character position
+      let segmentPoly;
+      if (wordObj.poly) {
+        const polyWidth = wordObj.poly.tr.x - wordObj.poly.tl.x;
+        const polyBottomWidth = wordObj.poly.br.x - wordObj.poly.bl.x;
+        const polyHeight = ((wordObj.poly.bl.y - wordObj.poly.tl.y) + (wordObj.poly.br.y - wordObj.poly.tr.y)) / 2;
+
+        const blY = segment.isSup
+          ? wordObj.poly.tl.y + polyHeight * supHeightRatio
+          : wordObj.poly.bl.y;
+        const brY = segment.isSup
+          ? wordObj.poly.tr.y + polyHeight * supHeightRatio
+          : wordObj.poly.br.y;
+
+        segmentPoly = {
+          tl: {
+            x: wordObj.poly.tl.x + polyWidth * startRatio,
+            y: wordObj.poly.tl.y,
+          },
+          tr: {
+            x: wordObj.poly.tl.x + polyWidth * endRatio,
+            y: wordObj.poly.tr.y,
+          },
+          bl: {
+            x: wordObj.poly.bl.x + polyBottomWidth * startRatio,
+            y: blY,
+          },
+          br: {
+            x: wordObj.poly.bl.x + polyBottomWidth * endRatio,
+            y: brY,
+          },
+        };
+      }
+
+      const segmentWord = new ocr.OcrWord(lineObj, segmentId, segmentText, segmentBbox, segmentPoly);
+      segmentWord.conf = wordObj.conf;
+      segmentWord.lang = wordObj.lang;
+
+      if (segment.isSup) {
+        segmentWord.style.sup = true;
+      }
+
+      newWords.push(segmentWord);
+      charOffset += segmentChars;
+    }
+  }
+
+  lineObj.words = newWords;
+}
 
 /**
  * Pass 2 iterates over all words/letters in the OCR object, and corrects style and rotation.
