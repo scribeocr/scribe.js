@@ -414,7 +414,7 @@ export async function importFiles(files) {
     // TODO: Add warning message displayed to user for this.
     // Textract JSON data is returned in arbitrary chunks (multiple pages may be in one file, or one page may be in multiple files).
     // Therefore, it is impossible to know how many pages of OCR data there are based only on the length of `ocrAllRaw.active`.
-    if (pageCountImage && ocrAllRaw.active.length > pageCountImage && ocrData.format !== 'textract') {
+    if (pageCountImage && ocrAllRaw.active.length > pageCountImage && ocrData.format !== 'textract' && ocrData.format !== 'google_doc_ai') {
       console.log(`Identified ${ocrAllRaw.active.length} pages of OCR data but ${pageCountImage} pages of image/pdf data. Only first ${pageCountImage} pages will be used.`);
       ocrAllRaw.active = ocrAllRaw.active.slice(0, pageCountImage);
     }
@@ -434,6 +434,10 @@ export async function importFiles(files) {
   // This ad-hoc solution counts the number of "PAGE" blocks in the Textract JSON data.
   if (format === 'textract' && ocrAllRaw.active?.length) {
     pageCountOcr = ocrAllRaw.active[0].match(/"BLOCKTYPE":\s*"PAGE"/ig)?.length || pageCountOcr;
+  }
+
+  if (format === 'google_doc_ai' && ocrAllRaw.active?.length) {
+    pageCountOcr = ocrAllRaw.active[0].match(/"pageNumber":\s*\d+/g)?.length || pageCountOcr;
   }
 
   // If both OCR data and image data are present, confirm they have the same number of pages
@@ -484,7 +488,7 @@ export async function importFiles(files) {
     await convertOCR(ocrAllRaw.active, true, format, oemName, reimportHocrMode, pageMetricsAll).then(async () => {
       // Skip this step if optimization info was already restored from a previous session,
       // or if using stext/textract (which are character-level but not visually accurate).
-      if (!existingOpt && !['stext', 'textract', 'google_vision', 'azure_doc_intel'].includes(format)) {
+      if (!existingOpt && !['stext', 'textract', 'google_vision', 'google_doc_ai', 'azure_doc_intel'].includes(format)) {
         await checkCharWarn(convertPageWarn);
         const charMetrics = calcCharMetricsFromPages(ocrAll.active);
 

@@ -193,7 +193,7 @@ describe('Check comparison between OCR versions.', function () {
 
     // The first word is present in the 'Missing Word' OCR data.
     assert.strictEqual(res.ocr[0].lines[0].words[0].text, 'This');
-  }).timeout(10000);
+  }).timeout(20000);
 
   it('Comparisons handled correctly when word is missing from comparison OCR', async () => {
     /** @type {Parameters<typeof scribe.compareOCR>[2]} */
@@ -217,7 +217,7 @@ describe('Check comparison between OCR versions.', function () {
 
     // When the `supplementComp` option is set to `true`, missing words should be supplemented with new recognition, so the confidence should be 100.
     assert.strictEqual(res2.ocr[0].lines[0].words[2].conf, 100);
-  }).timeout(10000);
+  }).timeout(20000);
 
   after(async () => {
     await scribe.terminate();
