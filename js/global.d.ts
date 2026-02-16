@@ -335,16 +335,18 @@ declare global {
     }
 
     // Recognition model types (for custom/external recognition models)
+    type RecognitionOutputFormat = 'textract' | 'google_vision' | 'google_doc_ai' | 'azure_doc_intel' | 'hocr' | 'abbyy' | 'alto' | 'stext' | 'text';
+
     type RecognitionResult = {
         success: boolean;
         rawData?: string;
-        format: string;
+        format: RecognitionOutputFormat | string;
         error?: Error;
     };
 
     interface RecognitionModelConfig {
         name: string;
-        outputFormat: string;
+        outputFormat: RecognitionOutputFormat | null;
     }
 
     interface RecognitionModel {
