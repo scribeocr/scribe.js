@@ -5,8 +5,7 @@
   "type": "module",
   "license": "AGPL-3.0",
   "exports": {
-    ".": "./RecognitionModelGoogleVision.js",
-    "./engine": "./ocrEngineGoogleVision.js"
+    ".": "./RecognitionModelGoogleVision.js"
   },
   "main": "./RecognitionModelGoogleVision.js",
   "repository": {
@@ -20,7 +19,6 @@
     "@google-cloud/storage": "^7.17.1"
   },
   "files": [
-    "ocrEngineGoogleVision.js",
     "RecognitionModelGoogleVision.js",
     "LICENSE"
   ]

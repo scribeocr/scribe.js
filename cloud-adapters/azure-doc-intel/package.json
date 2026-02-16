@@ -5,8 +5,7 @@
   "type": "module",
   "license": "AGPL-3.0",
   "exports": {
-    ".": "./RecognitionModelAzureDocIntel.js",
-    "./engine": "./ocrEngineAzureDocIntel.js"
+    ".": "./RecognitionModelAzureDocIntel.js"
   },
   "main": "./RecognitionModelAzureDocIntel.js",
   "repository": {
@@ -19,7 +18,6 @@
     "@azure-rest/ai-document-intelligence": "^1.1.0"
   },
   "files": [
-    "ocrEngineAzureDocIntel.js",
     "RecognitionModelAzureDocIntel.js",
     "LICENSE"
   ]

@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { OcrEngineGoogleDocAI } from '../../cloud-adapters/gcs-doc-ai/ocrEngineGoogleDocAI.js';
+import { RecognitionModelGoogleDocAI, MIME_TYPES } from '../../cloud-adapters/gcs-doc-ai/RecognitionModelGoogleDocAI.js';
 
 const args = process.argv.slice(2);
 const dirMode = args.includes('--dir');
@@ -33,7 +33,9 @@ const SUPPORTED_EXTENSIONS = ['.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.tif', 
 
 async function processFile(inputPath) {
   console.log(`Processing: ${inputPath}`);
-  const result = await OcrEngineGoogleDocAI.recognizeFileAsync(inputPath, { gcsBucket });
+  const fileData = new Uint8Array(await fs.promises.readFile(inputPath));
+  const mimeType = MIME_TYPES[path.extname(inputPath).toLowerCase()];
+  const result = await RecognitionModelGoogleDocAI.recognizeDocumentAsync(fileData, { gcsBucket, mimeType });
 
   if (!result.success) {
     console.error(`Error processing ${inputPath}:`, result.error);

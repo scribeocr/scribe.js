@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { OcrEngineAWSTextract } from '../../cloud-adapters/aws-textract/ocrEngineAwsTextract.js';
+import { RecognitionModelTextract } from '../../cloud-adapters/aws-textract/RecognitionModelAwsTextract.js';
 
 const args = process.argv.slice(2);
 const dirMode = args.includes('--dir');
@@ -32,7 +32,8 @@ const SUPPORTED_EXTENSIONS = ['.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.tif'];
 
 async function processFile(inputPath) {
   console.log(`Processing: ${inputPath}`);
-  const result = await OcrEngineAWSTextract.recognizeFileAsync(inputPath, options);
+  const fileData = await fs.promises.readFile(inputPath);
+  const result = await RecognitionModelTextract.recognizePdfAsync(fileData, options);
 
   if (!result.success) {
     console.error(`Error processing ${inputPath}:`, result.error);
@@ -49,7 +50,7 @@ async function processFile(inputPath) {
     const outputFileName = `${parsedPath.name}-${suffix}`;
     const outputPath = path.join(parsedPath.dir, outputFileName);
     console.log(`Writing combined result to ${outputPath}`);
-    await fs.promises.writeFile(outputPath, JSON.stringify(OcrEngineAWSTextract.combineTextractAsyncResponses(result.data), null, 2));
+    await fs.promises.writeFile(outputPath, JSON.stringify(RecognitionModelTextract.combineTextractAsyncResponses(result.data), null, 2));
   } else {
     for (let i = 0; i < result.data.length; i++) {
       const outputFileName = `${parsedPath.name}-p${i}-${suffix}`;

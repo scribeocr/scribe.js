@@ -5,8 +5,7 @@
   "type": "module",
   "license": "AGPL-3.0",
   "exports": {
-    ".": "./RecognitionModelGoogleDocAI.js",
-    "./engine": "./ocrEngineGoogleDocAI.js"
+    ".": "./RecognitionModelGoogleDocAI.js"
   },
   "main": "./RecognitionModelGoogleDocAI.js",
   "repository": {
@@ -20,7 +19,6 @@
     "@google-cloud/storage": "^7.17.1"
   },
   "files": [
-    "ocrEngineGoogleDocAI.js",
     "RecognitionModelGoogleDocAI.js",
     "LICENSE"
   ]

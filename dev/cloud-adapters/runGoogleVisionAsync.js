@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { OcrEngineGoogleVision } from '../../cloud-adapters/gcs-vision/ocrEngineGoogleVision.js';
+import { GoogleVisionModel } from '../../cloud-adapters/gcs-vision/RecognitionModelGoogleVision.js';
 
 const args = process.argv.slice(2);
 const splitMode = args.includes('--split');
@@ -21,7 +21,9 @@ const options = {
   gcsBucket,
 };
 
-const result = await OcrEngineGoogleVision.recognizeFileAsync(filePath, options);
+const fileData = await fs.promises.readFile(filePath);
+const fileExtension = path.extname(filePath).toLowerCase();
+const result = await GoogleVisionModel.recognizeDocumentAsync(fileData, { ...options, fileExtension });
 
 if (!result.success) {
   console.error('Error:', result.error);
@@ -35,7 +37,7 @@ if (!splitMode) {
   const outputFileName = `${parsedPath.name}-${suffix}`;
   const outputPath = path.join(parsedPath.dir, outputFileName);
   console.log(`Writing combined result to ${outputPath}`);
-  await fs.promises.writeFile(outputPath, JSON.stringify(OcrEngineGoogleVision.combineGoogleVisionAsyncResponses(result.data), null, 2));
+  await fs.promises.writeFile(outputPath, JSON.stringify(GoogleVisionModel.combineGoogleVisionAsyncResponses(result.data), null, 2));
 } else {
   for (let i = 0; i < result.data.length; i++) {
     const outputFileName = `${parsedPath.name}-p${i}-${suffix}`;

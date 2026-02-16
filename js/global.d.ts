@@ -350,6 +350,7 @@ declare global {
     interface RecognitionModel {
         config: RecognitionModelConfig;
         recognizeImage(imageData: Uint8Array | ArrayBuffer, options?: any): Promise<RecognitionResult>;
+        recognizeDocument?(documentData: Uint8Array | ArrayBuffer, options?: any): Promise<RecognitionResult>;
         convertPage?(rawData: string, n: number): Promise<{
             pageObj: OcrPage;
             dataTables: LayoutDataTablePage;

@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { initMuPDFWorker } from '../../mupdf/mupdf-async.js';
-import { OcrEngineAWSTextract } from '../../cloud-adapters/aws-textract/ocrEngineAwsTextract.js';
+import { RecognitionModelTextract } from '../../cloud-adapters/aws-textract/RecognitionModelAwsTextract.js';
 
 const args = process.argv.slice(2);
 const splitMode = args.includes('--split');
@@ -57,7 +57,7 @@ if (isPdf) {
     const base64Data = pngDataUrl.replace(/^data:image\/png;base64,/, '');
     const imageBuffer = new Uint8Array(Buffer.from(base64Data, 'base64'));
 
-    const result = await OcrEngineAWSTextract.recognizeImageSync(imageBuffer, options);
+    const result = await RecognitionModelTextract.recognizeImageSync(imageBuffer, options);
 
     if (!result.success) {
       console.error(`Error on page ${i + 1}:`, result.error);
@@ -72,7 +72,7 @@ if (isPdf) {
   mupdf.terminate();
 
   if (!splitMode) {
-    const combined = OcrEngineAWSTextract.combineTextractAsyncResponses(pageResults);
+    const combined = RecognitionModelTextract.combineTextractAsyncResponses(pageResults);
 
     const outputFileName = `${parsedPath.name}-${suffix}`;
     const outputPath = path.join(parsedPath.dir, outputFileName);
@@ -87,7 +87,8 @@ if (isPdf) {
     }
   }
 } else {
-  const result = await OcrEngineAWSTextract.recognizeFileSync(filePath, options);
+  const fileData = await fs.promises.readFile(filePath);
+  const result = await RecognitionModelTextract.recognizeImageSync(fileData, options);
 
   if (!result.success) {
     console.error('Error:', result.error);

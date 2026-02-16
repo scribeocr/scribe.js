@@ -5,8 +5,7 @@
   "type": "module",
   "license": "AGPL-3.0",
   "exports": {
-    ".": "./RecognitionModelAwsTextract.js",
-    "./engine": "./ocrEngineAwsTextract.js"
+    ".": "./RecognitionModelAwsTextract.js"
   },
   "main": "./RecognitionModelAwsTextract.js",
   "repository": {
@@ -20,7 +19,6 @@
     "@aws-sdk/client-s3": "^3.887.0"
   },
   "files": [
-    "ocrEngineAwsTextract.js",
     "RecognitionModelAwsTextract.js",
     "LICENSE"
   ]

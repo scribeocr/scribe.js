@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { OcrEngineAzureDocIntel } from '../../cloud-adapters/azure-doc-intel/ocrEngineAzureDocIntel.js';
+import { RecognitionModelAzureDocIntel } from '../../cloud-adapters/azure-doc-intel/RecognitionModelAzureDocIntel.js';
 
 const args = process.argv.slice(2);
 const dirMode = args.includes('--dir');
@@ -22,7 +22,8 @@ const SUPPORTED_EXTENSIONS = ['.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.tif', 
 
 async function processFile(inputPath) {
   console.log(`Processing: ${inputPath}`);
-  const result = await OcrEngineAzureDocIntel.recognizeFile(inputPath);
+  const fileData = new Uint8Array(await fs.promises.readFile(inputPath));
+  const result = await RecognitionModelAzureDocIntel.recognizeImageRaw(fileData);
 
   if (!result.success) {
     console.error(`Error processing ${inputPath}:`, result.error);

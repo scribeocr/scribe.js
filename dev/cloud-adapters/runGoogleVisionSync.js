@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { initMuPDFWorker } from '../../mupdf/mupdf-async.js';
-import { OcrEngineGoogleVision } from '../../cloud-adapters/gcs-vision/ocrEngineGoogleVision.js';
+import { GoogleVisionModel } from '../../cloud-adapters/gcs-vision/RecognitionModelGoogleVision.js';
 
 const args = process.argv.slice(2);
 const splitMode = args.includes('--split');
@@ -45,7 +45,7 @@ if (isPdf) {
     const base64Data = pngDataUrl.replace(/^data:image\/png;base64,/, '');
     const imageBuffer = new Uint8Array(Buffer.from(base64Data, 'base64'));
 
-    const result = await OcrEngineGoogleVision.recognizeImageSync(imageBuffer);
+    const result = await GoogleVisionModel.recognizeImageSync(imageBuffer);
 
     if (!result.success) {
       console.error(`Error on page ${i + 1}:`, result.error);
@@ -77,7 +77,8 @@ if (isPdf) {
     }
   }
 } else {
-  const result = await OcrEngineGoogleVision.recognizeFileSync(filePath);
+  const fileData = await fs.promises.readFile(filePath);
+  const result = await GoogleVisionModel.recognizeImageSync(fileData);
 
   if (!result.success) {
     console.error('Error:', result.error);
