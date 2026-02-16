@@ -7,17 +7,26 @@ const dirMode = args.includes('--dir');
 const splitMode = args.includes('--split');
 const filePath = args.find((a) => !a.startsWith('--'));
 const s3BucketArg = args.find((a) => a.startsWith('--s3-bucket='));
-const s3Bucket = s3BucketArg ? s3BucketArg.split('=')[1] : process.env.AWS_S3_BUCKET;
+const s3Bucket = s3BucketArg ? s3BucketArg.split('=')[1] : process.env.SCRIBE_AWS_S3_BUCKET;
 
 if (!filePath || !s3Bucket) {
   console.error('Usage: node runAwsTextractAsync.js <file-or-directory> --s3-bucket=<bucket> [--dir] [--layout] [--tables] [--split]');
   console.error('');
   console.error('  <file-or-directory>  File or directory to process');
-  console.error('  --s3-bucket=<name>   S3 bucket for async processing (or set AWS_S3_BUCKET env var)');
+  console.error('  --s3-bucket=<name>   S3 bucket for async processing (or set SCRIBE_AWS_S3_BUCKET env var)');
   console.error('  --dir                Treat the path as a directory and process all supported files');
   console.error('  --layout             Enable layout analysis');
   console.error('  --tables             Enable table analysis');
   console.error('  --split              Write separate files per page instead of combining');
+  console.error('');
+  console.error('');
+  console.error('Environment variables:');
+  console.error('  SCRIBE_AWS_S3_BUCKET  S3 bucket name (alternative to --s3-bucket flag)');
+  console.error('');
+  console.error('AWS credentials and region must be configured via one of:');
+  console.error('  - AWS_REGION, AWS_ACCESS_KEY_ID, and AWS_SECRET_ACCESS_KEY env vars');
+  console.error('  - ~/.aws/credentials and ~/.aws/config files (with optional AWS_PROFILE)');
+  console.error('  - IAM role (when running on EC2/ECS/Lambda)');
   process.exit(1);
 }
 

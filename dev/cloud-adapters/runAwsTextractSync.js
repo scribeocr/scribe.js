@@ -14,6 +14,11 @@ if (!filePath) {
   console.error('  --layout   Enable layout analysis');
   console.error('  --tables   Enable table analysis');
   console.error('  --split    Write separate files per page instead of combining (PDF only)');
+  console.error('');
+  console.error('AWS credentials and region must be configured via one of:');
+  console.error('  - AWS_REGION, AWS_ACCESS_KEY_ID, and AWS_SECRET_ACCESS_KEY env vars');
+  console.error('  - ~/.aws/credentials and ~/.aws/config files (with optional AWS_PROFILE)');
+  console.error('  - IAM role (when running on EC2/ECS/Lambda)');
   process.exit(1);
 }
 
@@ -57,7 +62,7 @@ if (isPdf) {
     const base64Data = pngDataUrl.replace(/^data:image\/png;base64,/, '');
     const imageBuffer = new Uint8Array(Buffer.from(base64Data, 'base64'));
 
-    const result = await RecognitionModelTextract.recognizeImageSync(imageBuffer, options);
+    const result = await RecognitionModelTextract.recognizeImage(imageBuffer, options);
 
     if (!result.success) {
       console.error(`Error on page ${i + 1}:`, result.error);
@@ -65,7 +70,7 @@ if (isPdf) {
       process.exit(1);
     }
 
-    pageResults.push(result.data);
+    pageResults.push(JSON.parse(result.rawData));
     console.log(`  Page ${i + 1} done.`);
   }
 
@@ -88,7 +93,7 @@ if (isPdf) {
   }
 } else {
   const fileData = await fs.promises.readFile(filePath);
-  const result = await RecognitionModelTextract.recognizeImageSync(fileData, options);
+  const result = await RecognitionModelTextract.recognizeImage(fileData, options);
 
   if (!result.success) {
     console.error('Error:', result.error);
@@ -98,7 +103,7 @@ if (isPdf) {
   const outputFileName = `${parsedPath.name}-${suffix}`;
   const outputPath = path.join(parsedPath.dir, outputFileName);
   console.log(`Writing result to ${outputPath}`);
-  await fs.promises.writeFile(outputPath, JSON.stringify(result.data, null, 2));
+  await fs.promises.writeFile(outputPath, JSON.stringify(JSON.parse(result.rawData), null, 2));
 }
 
 console.log('Done.');

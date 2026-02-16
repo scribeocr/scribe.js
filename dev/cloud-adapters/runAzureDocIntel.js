@@ -13,8 +13,8 @@ if (!filePath) {
   console.error('  --dir    Treat the path as a directory and process all supported files');
   console.error('');
   console.error('Environment variables:');
-  console.error('  AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT  (required)');
-  console.error('  AZURE_DOCUMENT_INTELLIGENCE_KEY       (required)');
+  console.error('  SCRIBE_AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT  (required)');
+  console.error('  SCRIBE_AZURE_DOCUMENT_INTELLIGENCE_KEY       (required)');
   process.exit(1);
 }
 
@@ -23,7 +23,7 @@ const SUPPORTED_EXTENSIONS = ['.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.tif', 
 async function processFile(inputPath) {
   console.log(`Processing: ${inputPath}`);
   const fileData = new Uint8Array(await fs.promises.readFile(inputPath));
-  const result = await RecognitionModelAzureDocIntel.recognizeImageRaw(fileData);
+  const result = await RecognitionModelAzureDocIntel.recognizeImage(fileData);
 
   if (!result.success) {
     console.error(`Error processing ${inputPath}:`, result.error);
@@ -34,7 +34,7 @@ async function processFile(inputPath) {
   const outputFileName = `${parsedPath.name}-AzureDocIntel.json`;
   const outputPath = path.join(parsedPath.dir, outputFileName);
   console.log(`Writing result to ${outputPath}`);
-  await fs.promises.writeFile(outputPath, JSON.stringify(result.data, null, 2));
+  await fs.promises.writeFile(outputPath, JSON.stringify(JSON.parse(result.rawData), null, 2));
   return true;
 }
 

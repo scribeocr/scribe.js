@@ -13,7 +13,7 @@ if (!filePath) {
   console.error('  --dir    Treat the path as a directory and process all supported files');
   console.error('');
   console.error('Environment variables:');
-  console.error('  GOOGLE_DOC_AI_PROCESSOR  (required) Full resource name of a Document AI processor.');
+  console.error('  SCRIBE_GOOGLE_DOC_AI_PROCESSOR  (required) Full resource name of a Document AI processor.');
   console.error('    This is found in the Google Cloud Console under Document AI > Processors > processor details.');
   console.error('    Format: projects/{project-id}/locations/{location}/processors/{processor-id}');
   console.error('    Example: projects/my-project-123/locations/us/processors/a1b2c3d4e5f6');
@@ -30,7 +30,7 @@ async function processFile(inputPath) {
   console.log(`Processing: ${inputPath}`);
   const fileData = new Uint8Array(await fs.promises.readFile(inputPath));
   const mimeType = MIME_TYPES[path.extname(inputPath).toLowerCase()];
-  const result = await RecognitionModelGoogleDocAI.recognizeImageRaw(fileData, { mimeType });
+  const result = await RecognitionModelGoogleDocAI.recognizeImage(fileData, { mimeType });
 
   if (!result.success) {
     console.error(`Error processing ${inputPath}:`, result.error);
@@ -41,7 +41,7 @@ async function processFile(inputPath) {
   const outputFileName = `${parsedPath.name}-GoogleDocAI.json`;
   const outputPath = path.join(parsedPath.dir, outputFileName);
   console.log(`Writing result to ${outputPath}`);
-  await fs.promises.writeFile(outputPath, JSON.stringify(result.data, null, 2));
+  await fs.promises.writeFile(outputPath, JSON.stringify(JSON.parse(result.rawData), null, 2));
   return true;
 }
 

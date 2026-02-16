@@ -6,14 +6,18 @@ const args = process.argv.slice(2);
 const splitMode = args.includes('--split');
 const filePath = args.find((a) => !a.startsWith('--'));
 const gcsBucketArg = args.find((a) => a.startsWith('--gcs-bucket='));
-const gcsBucket = gcsBucketArg ? gcsBucketArg.split('=')[1] : process.env.GCS_BUCKET;
+const gcsBucket = gcsBucketArg ? gcsBucketArg.split('=')[1] : process.env.SCRIBE_GCS_BUCKET;
 
 if (!filePath || !gcsBucket) {
   console.error('Usage: node runGoogleVisionAsync.js <file> --gcs-bucket=<bucket> [--split]');
   console.error('');
   console.error('  <file>               File to process');
-  console.error('  --gcs-bucket=<name>  GCS bucket for async processing (or set GCS_BUCKET env var)');
+  console.error('  --gcs-bucket=<name>  GCS bucket for async processing (or set SCRIBE_GCS_BUCKET env var)');
   console.error('  --split              Write separate files per page instead of combining');
+  console.error('');
+  console.error('Google Cloud credentials must be configured.');
+  console.error('Set GOOGLE_APPLICATION_CREDENTIALS to a service account key file path,');
+  console.error('or run: gcloud auth application-default login');
   process.exit(1);
 }
 

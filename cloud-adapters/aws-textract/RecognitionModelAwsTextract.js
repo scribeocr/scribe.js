@@ -32,6 +32,18 @@ export class RecognitionModelTextract {
 
   /**
    * Recognize text from an image using AWS Textract.
+   *
+   * Region is resolved in this order:
+   * 1. `options.region` — explicit region string
+   * 2. Standard AWS SDK resolution: `AWS_REGION` env var → `AWS_DEFAULT_REGION` → `~/.aws/config`
+   *
+   * Credentials are resolved in this order:
+   * 1. `options.credentials` — explicit `{ accessKeyId, secretAccessKey }` object
+   * 2. Standard AWS SDK credential chain:
+   *    - `AWS_ACCESS_KEY_ID` / `AWS_SECRET_ACCESS_KEY` env vars
+   *    - `~/.aws/credentials` file (with optional `AWS_PROFILE`)
+   *    - IAM role (when running on EC2/ECS/Lambda)
+   *
    * @param {Uint8Array|ArrayBuffer} imageData - Image data
    * @param {Object} [options]
    * @param {boolean} [options.analyzeLayout=false] - Whether to enable layout analysis.
@@ -39,32 +51,58 @@ export class RecognitionModelTextract {
    * @param {boolean} [options.analyzeLayoutTables=false] - Whether to enable table analysis.
    *    Enabling table analysis automatically enables layout analysis.
    *    Note that enabling table analysis significantly increases AWS costs.
+   * @param {string} [options.region] - AWS region (e.g. 'us-east-1').
+   *    If not provided, the SDK resolves from AWS_REGION env var, ~/.aws/config, or instance metadata.
+   * @param {{accessKeyId: string, secretAccessKey: string}} [options.credentials] - AWS credentials.
+   *    If not provided, the standard AWS SDK credential chain is used.
    * @returns {Promise<RecognitionResult>}
    */
   static async recognizeImage(imageData, options = {}) {
     const data = imageData instanceof ArrayBuffer ? new Uint8Array(imageData) : imageData;
+    const analyzeLayout = options.analyzeLayout ?? false;
+    const analyzeLayoutTables = options.analyzeLayoutTables ?? false;
+    const region = options.region || undefined;
+    const credentials = options.credentials || undefined;
 
-    const result = await this.recognizeImageSync(data, {
-      analyzeLayout: options.analyzeLayout ?? false,
-      analyzeLayoutTables: options.analyzeLayoutTables ?? false,
-    });
+    try {
+      const textractClient = new TextractClient({
+        ...(region && { region }),
+        ...(credentials && { credentials }),
+      });
 
-    if (result.success) {
+      let command;
+      if (analyzeLayout) {
+        const FeatureTypes = analyzeLayoutTables ? ['TABLES'] : ['LAYOUT'];
+        command = new AnalyzeDocumentCommand({
+          Document: { Bytes: data },
+          FeatureTypes,
+        });
+      } else {
+        command = new DetectDocumentTextCommand({
+          Document: { Bytes: data },
+        });
+      }
+
+      const response = await textractClient.send(command);
       return {
         success: true,
-        rawData: JSON.stringify(result.data),
+        rawData: JSON.stringify(response),
+        format: 'textract',
+      };
+    } catch (error) {
+      return {
+        success: false,
+        error,
         format: 'textract',
       };
     }
-    return {
-      success: false,
-      error: new Error(result.error),
-      format: 'textract',
-    };
   }
 
   /**
    * Recognize text from a PDF document using AWS Textract's asynchronous API.
+   *
+   * Region and credentials are resolved the same way as `recognizeImage()`.
+   *
    * @param {Uint8Array|ArrayBuffer} documentData - PDF data
    * @param {Object} [options]
    * @param {boolean} [options.analyzeLayout=false] - Whether to enable layout analysis.
@@ -74,6 +112,8 @@ export class RecognitionModelTextract {
    * @param {boolean} [options.keepS3File=false] - Whether to keep the uploaded S3 file after processing
    * @param {number} [options.pollingInterval=5000] - Polling interval in milliseconds
    * @param {number} [options.maxWaitTime=1800000] - Maximum wait time in milliseconds (default: 30 minutes)
+   * @param {string} [options.region] - AWS region.
+   * @param {{accessKeyId: string, secretAccessKey: string}} [options.credentials] - AWS credentials.
    * @returns {Promise<RecognitionResult>}
    */
   static async recognizeDocument(documentData, options = {}) {
@@ -87,6 +127,8 @@ export class RecognitionModelTextract {
       keepS3File: options.keepS3File ?? false,
       pollingInterval: options.pollingInterval ?? 5000,
       maxWaitTime: options.maxWaitTime ?? 1800000,
+      region: options.region,
+      credentials: options.credentials,
     });
 
     if (result.success) {
@@ -109,47 +151,18 @@ export class RecognitionModelTextract {
   }
 
   /**
-   * Synchronous image recognition.
-   * @param {Uint8Array} imageData
-   * @param {Object} options
-   */
-  static recognizeImageSync = async (imageData, {
-    analyzeLayout = false,
-    analyzeLayoutTables = false,
-  } = {}) => {
-    try {
-      const textractClient = new TextractClient({
-        region: process.env.AWS_REGION || 'us-east-1',
-      });
-
-      let command;
-      if (analyzeLayout) {
-        const FeatureTypes = analyzeLayoutTables ? ['TABLES'] : ['LAYOUT'];
-        command = new AnalyzeDocumentCommand({
-          Document: { Bytes: imageData },
-          FeatureTypes,
-        });
-      } else {
-        command = new DetectDocumentTextCommand({
-          Document: { Bytes: imageData },
-        });
-      }
-
-      const response = await textractClient.send(command);
-      return { success: true, data: response };
-    } catch (error) {
-      return {
-        success: false,
-        error: error.message,
-        errorCode: error.name,
-      };
-    }
-  };
-
-  /**
    * Asynchronous PDF recognition
    * @param {Uint8Array} pdfData
    * @param {Object} options
+   * @param {boolean} [options.analyzeLayout]
+   * @param {boolean} [options.analyzeLayoutTables]
+   * @param {string} options.s3Bucket
+   * @param {string} [options.s3Key]
+   * @param {boolean} [options.keepS3File]
+   * @param {number} [options.pollingInterval]
+   * @param {number} [options.maxWaitTime]
+   * @param {string} [options.region] - AWS region.
+   * @param {{accessKeyId: string, secretAccessKey: string}} [options.credentials] - AWS credentials.
    */
   static recognizePdfAsync = async (pdfData, {
     analyzeLayout = false,
@@ -159,13 +172,17 @@ export class RecognitionModelTextract {
     keepS3File = false,
     pollingInterval = 5000,
     maxWaitTime = 1800000,
+    region,
+    credentials,
   } = {}) => {
     const textractClient = new TextractClient({
-      region: process.env.AWS_REGION || 'us-east-1',
+      ...(region && { region }),
+      ...(credentials && { credentials }),
     });
 
     const s3Client = new S3Client({
-      region: process.env.AWS_REGION || 'us-east-1',
+      ...(region && { region }),
+      ...(credentials && { credentials }),
     });
 
     const finalS3Key = s3Key || `textract-temp/${Date.now()}-${Math.random().toString(36).substr(2, 9)}.pdf`;

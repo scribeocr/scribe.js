@@ -119,88 +119,53 @@ export class RecognitionModelGoogleDocAI {
   };
 
   /**
-   * Recognize text from an image using Google Document AI.
-   * @param {Uint8Array|ArrayBuffer} imageData - Image data
-   * @param {Object} [options]
-   * @param {string} [options.processorName] - Full Document AI processor resource name (overrides GOOGLE_DOCUMENT_AI_PROCESSOR env var).
-   *    Format: projects/{project-id}/locations/{location}/processors/{processor-id}
-   *    Example: projects/my-project-123/locations/us/processors/a1b2c3d4e5f6
-   * @param {string} [options.mimeType] - MIME type of the document (default: 'application/pdf')
-   * @param {boolean} [options.skipHumanReview] - Whether to skip human review (default: true)
-   * @returns {Promise<RecognitionResult>}
-   */
-  static async recognizeImage(imageData, options = {}) {
-    const data = imageData instanceof ArrayBuffer ? new Uint8Array(imageData) : imageData;
-
-    const result = await this.recognizeImageRaw(data, options);
-
-    if (result.success) {
-      return {
-        success: true,
-        rawData: JSON.stringify(result.data),
-        format: 'google_doc_ai',
-      };
-    }
-    return {
-      success: false,
-      error: new Error(result.error),
-      format: 'google_doc_ai',
-    };
-  }
-
-  /**
-   * Recognize text from a document using Google Document AI.
-   * Document AI handles PDFs inline (up to 20MB), so this delegates to the same underlying method as recognizeImage.
+   * Recognize text from an image or document using Google Document AI.
+   * Sends the data inline to the processDocument endpoint (up to 20MB).
    * For documents exceeding 20MB, use recognizeDocumentAsync with a GCS bucket.
-   * @param {Uint8Array|ArrayBuffer} documentData - Document data
+   *
+   * Credentials are resolved in this order:
+   * 1. `options.keyFilename` — path to a service account JSON key file
+   * 2. Standard Google Cloud Application Default Credentials (ADC):
+   *    - `GOOGLE_APPLICATION_CREDENTIALS` env var pointing to a key file
+   *    - Credentials from `gcloud auth application-default login`
+   *    - GCE/GKE metadata service (when running on Google Cloud)
+   *
+   * @param {Uint8Array|ArrayBuffer} imageData - Image or document data
    * @param {Object} [options]
-   * @param {string} [options.processorName] - Full Document AI processor resource name (overrides GOOGLE_DOCUMENT_AI_PROCESSOR env var).
-   * @param {string} [options.mimeType] - MIME type of the document (default: 'application/pdf')
-   * @param {boolean} [options.skipHumanReview] - Whether to skip human review (default: true)
-   * @returns {Promise<RecognitionResult>}
-   */
-  static async recognizeDocument(documentData, options = {}) {
-    return this.recognizeImage(documentData, options);
-  }
-
-  static async checkAvailability() {
-    return { available: true };
-  }
-
-  /**
-   * Recognize text from image/document data.
-   * Sends the data inline to Google Document AI's processDocument endpoint.
-   * @param {Uint8Array} imageData - File data as bytes
-   * @param {Object} [options]
-   * @param {string} [options.processorName] - Full Document AI processor resource name (overrides GOOGLE_DOC_AI_PROCESSOR env var).
+   * @param {string} [options.processorName] - Full Document AI processor resource name (overrides SCRIBE_GOOGLE_DOC_AI_PROCESSOR env var).
    *    Format: projects/{project-id}/locations/{location}/processors/{processor-id}
    *    Example: projects/my-project-123/locations/us/processors/a1b2c3d4e5f6
    * @param {string} [options.mimeType] - MIME type of the document (default: 'application/pdf')
    * @param {boolean} [options.skipHumanReview] - Whether to skip human review (default: true)
    * @param {Object} [options.fieldMask] - Field mask to limit response fields
+   * @param {string} [options.keyFilename] - Path to a Google Cloud service account JSON key file.
+   *    If not provided, Application Default Credentials are used.
+   * @returns {Promise<RecognitionResult>}
    */
-  static recognizeImageRaw = async (imageData, options = {}) => {
-    const processorName = options.processorName || process.env.GOOGLE_DOC_AI_PROCESSOR;
+  static async recognizeImage(imageData, options = {}) {
+    const data = imageData instanceof ArrayBuffer ? new Uint8Array(imageData) : imageData;
+    const processorName = options.processorName || process.env.SCRIBE_GOOGLE_DOC_AI_PROCESSOR;
     const mimeType = options.mimeType || 'application/pdf';
     const skipHumanReview = options.skipHumanReview ?? true;
+    const keyFilename = options.keyFilename || undefined;
 
     if (!processorName) {
       return {
         success: false,
-        error: 'Processor name is required. Set GOOGLE_DOC_AI_PROCESSOR env var or pass options.processorName. '
-          + 'Format: projects/{project-id}/locations/{location}/processors/{processor-id}',
-        errorCode: 'MissingProcessorName',
+        error: new Error('Processor name is required. Set SCRIBE_GOOGLE_DOC_AI_PROCESSOR env var or pass options.processorName. '
+          + 'Format: projects/{project-id}/locations/{location}/processors/{processor-id}'),
+        format: 'google_doc_ai',
       };
     }
 
     try {
       const parsed = parseProcessorValue(processorName);
-      const client = new DocumentProcessorServiceClient({ apiEndpoint: parsed.apiEndpoint });
+      const client = new DocumentProcessorServiceClient({ apiEndpoint: parsed.apiEndpoint, ...(keyFilename && { keyFilename }) });
 
       const request = {
         name: parsed.processorName,
         rawDocument: {
-          content: Buffer.from(imageData).toString('base64'),
+          content: Buffer.from(data).toString('base64'),
           mimeType,
         },
         skipHumanReview,
@@ -212,15 +177,39 @@ export class RecognitionModelGoogleDocAI {
 
       const [result] = await client.processDocument(request);
 
-      return { success: true, data: result.document };
+      return {
+        success: true,
+        rawData: JSON.stringify(result.document),
+        format: 'google_doc_ai',
+      };
     } catch (error) {
       return {
         success: false,
-        error: error.message,
-        errorCode: error.name,
+        error,
+        format: 'google_doc_ai',
       };
     }
-  };
+  }
+
+  /**
+   * Recognize text from a document using Google Document AI.
+   * Document AI handles PDFs inline (up to 20MB), so this delegates to recognizeImage.
+   * For documents exceeding 20MB, use recognizeDocumentAsync with a GCS bucket.
+   * @param {Uint8Array|ArrayBuffer} documentData - Document data
+   * @param {Object} [options]
+   * @param {string} [options.processorName] - Full Document AI processor resource name (overrides SCRIBE_GOOGLE_DOC_AI_PROCESSOR env var).
+   * @param {string} [options.mimeType] - MIME type of the document (default: 'application/pdf')
+   * @param {boolean} [options.skipHumanReview] - Whether to skip human review (default: true)
+   * @param {string} [options.keyFilename] - Path to a Google Cloud service account JSON key file.
+   * @returns {Promise<RecognitionResult>}
+   */
+  static async recognizeDocument(documentData, options = {}) {
+    return this.recognizeImage(documentData, options);
+  }
+
+  static async checkAvailability() {
+    return { available: true };
+  }
 
   /**
    * Recognize text from document data using async batch processing via GCS.
@@ -232,8 +221,9 @@ export class RecognitionModelGoogleDocAI {
    * @param {string} [options.gcsKey] - GCS key prefix (auto-generated if not provided)
    * @param {boolean} [options.keepGcsFile] - Whether to keep GCS artifacts after processing (default: false)
    * @param {string} [options.mimeType] - MIME type of the document (default: 'application/pdf')
-   * @param {string} [options.processorName] - Full Document AI processor resource name (overrides GOOGLE_DOC_AI_PROCESSOR env var).
+   * @param {string} [options.processorName] - Full Document AI processor resource name (overrides SCRIBE_GOOGLE_DOC_AI_PROCESSOR env var).
    * @param {boolean} [options.skipHumanReview] - Whether to skip human review (default: true)
+   * @param {string} [options.keyFilename] - Path to a Google Cloud service account JSON key file.
    */
   static recognizeDocumentAsync = async (documentData, options = {}) => {
     const {
@@ -242,13 +232,14 @@ export class RecognitionModelGoogleDocAI {
       keepGcsFile = false,
     } = options;
 
-    const processorName = options.processorName || process.env.GOOGLE_DOC_AI_PROCESSOR;
+    const processorName = options.processorName || process.env.SCRIBE_GOOGLE_DOC_AI_PROCESSOR;
     const mimeType = options.mimeType || 'application/pdf';
+    const keyFilename = options.keyFilename || undefined;
 
     if (!processorName) {
       return {
         success: false,
-        error: 'Processor name is required. Set GOOGLE_DOC_AI_PROCESSOR env var or pass options.processorName. '
+        error: 'Processor name is required. Set SCRIBE_GOOGLE_DOC_AI_PROCESSOR env var or pass options.processorName. '
           + 'Format: projects/{project-id}/locations/{location}/processors/{processor-id}',
         errorCode: 'MissingProcessorName',
       };
@@ -262,7 +253,7 @@ export class RecognitionModelGoogleDocAI {
       };
     }
 
-    const storage = new Storage();
+    const storage = new Storage({ ...(keyFilename && { keyFilename }) });
     const parsed = parseProcessorValue(processorName);
 
     // Derive a file extension from the MIME type for the GCS key
@@ -279,7 +270,7 @@ export class RecognitionModelGoogleDocAI {
         contentType: mimeType,
       });
 
-      const client = new DocumentProcessorServiceClient({ apiEndpoint: parsed.apiEndpoint });
+      const client = new DocumentProcessorServiceClient({ apiEndpoint: parsed.apiEndpoint, ...(keyFilename && { keyFilename }) });
 
       const request = {
         name: parsed.processorName,

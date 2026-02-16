@@ -6,22 +6,22 @@ const args = process.argv.slice(2);
 const dirMode = args.includes('--dir');
 const filePath = args.find((a) => !a.startsWith('--'));
 const gcsBucketArg = args.find((a) => a.startsWith('--gcs-bucket='));
-const gcsBucket = gcsBucketArg ? gcsBucketArg.split('=')[1] : process.env.GCS_BUCKET;
+const gcsBucket = gcsBucketArg ? gcsBucketArg.split('=')[1] : process.env.SCRIBE_GCS_BUCKET;
 
 if (!filePath || !gcsBucket) {
   console.error('Usage: node runGoogleDocAIAsync.js <file-or-directory> --gcs-bucket=<bucket> [--dir]');
   console.error('');
   console.error('  <file>               File or directory to process');
-  console.error('  --gcs-bucket=<name>  GCS bucket for async processing (or set GCS_BUCKET env var)');
+  console.error('  --gcs-bucket=<name>  GCS bucket for async processing (or set SCRIBE_GCS_BUCKET env var)');
   console.error('  --dir                Treat the path as a directory and process all supported files');
   console.error('');
   console.error('Environment variables:');
-  console.error('  GOOGLE_DOC_AI_PROCESSOR  (required) Full resource name of a Document AI processor.');
+  console.error('  SCRIBE_GOOGLE_DOC_AI_PROCESSOR  (required) Full resource name of a Document AI processor.');
   console.error('    This is found in the Google Cloud Console under Document AI > Processors > processor details.');
   console.error('    Format: projects/{project-id}/locations/{location}/processors/{processor-id}');
   console.error('    Example: projects/my-project-123/locations/us/processors/a1b2c3d4e5f6');
   console.error('');
-  console.error('  GCS_BUCKET  GCS bucket name (alternative to --gcs-bucket flag)');
+  console.error('  SCRIBE_GCS_BUCKET  GCS bucket name (alternative to --gcs-bucket flag)');
   console.error('');
   console.error('  Google Application Default Credentials must also be configured.');
   console.error('  Set GOOGLE_APPLICATION_CREDENTIALS to a service account key file path,');

@@ -12,6 +12,10 @@ if (!filePath) {
   console.error('');
   console.error('  <file>     Image or PDF file to process');
   console.error('  --split    Write separate files per page instead of combining (PDF only)');
+  console.error('');
+  console.error('Google Cloud credentials must be configured.');
+  console.error('Set GOOGLE_APPLICATION_CREDENTIALS to a service account key file path,');
+  console.error('or run: gcloud auth application-default login');
   process.exit(1);
 }
 
@@ -45,7 +49,7 @@ if (isPdf) {
     const base64Data = pngDataUrl.replace(/^data:image\/png;base64,/, '');
     const imageBuffer = new Uint8Array(Buffer.from(base64Data, 'base64'));
 
-    const result = await GoogleVisionModel.recognizeImageSync(imageBuffer);
+    const result = await GoogleVisionModel.recognizeImage(imageBuffer);
 
     if (!result.success) {
       console.error(`Error on page ${i + 1}:`, result.error);
@@ -53,7 +57,7 @@ if (isPdf) {
       process.exit(1);
     }
 
-    pageResults.push(result.data);
+    pageResults.push(JSON.parse(result.rawData));
     console.log(`  Page ${i + 1} done.`);
   }
 
@@ -78,7 +82,7 @@ if (isPdf) {
   }
 } else {
   const fileData = await fs.promises.readFile(filePath);
-  const result = await GoogleVisionModel.recognizeImageSync(fileData);
+  const result = await GoogleVisionModel.recognizeImage(fileData);
 
   if (!result.success) {
     console.error('Error:', result.error);
@@ -88,7 +92,7 @@ if (isPdf) {
   const outputFileName = `${parsedPath.name}-GoogleVisionSync.json`;
   const outputPath = path.join(parsedPath.dir, outputFileName);
   console.log(`Writing result to ${outputPath}`);
-  await fs.promises.writeFile(outputPath, JSON.stringify(result.data, null, 2));
+  await fs.promises.writeFile(outputPath, JSON.stringify(JSON.parse(result.rawData), null, 2));
 }
 
 console.log('Done.');
