@@ -4,7 +4,7 @@ import {
   DebugData,
   layoutDataTables,
   layoutRegions,
-  ocrAll, pageMetricsAll, visInstructions,
+  ocrAll, ocrAllRaw, pageMetricsAll, visInstructions,
 } from './js/containers/dataContainer.js';
 import { FontCont } from './js/containers/fontContainer.js';
 import { ImageCache } from './js/containers/imageContainer.js';
@@ -183,6 +183,8 @@ class data {
   static layoutDataTables = layoutDataTables;
 
   static ocr = ocrAll;
+
+  static ocrRaw = ocrAllRaw;
 
   static pageMetrics = pageMetricsAll;
 

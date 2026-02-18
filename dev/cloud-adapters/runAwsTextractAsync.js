@@ -59,7 +59,7 @@ async function processFile(inputPath) {
     const outputFileName = `${parsedPath.name}-${suffix}`;
     const outputPath = path.join(parsedPath.dir, outputFileName);
     console.log(`Writing combined result to ${outputPath}`);
-    await fs.promises.writeFile(outputPath, JSON.stringify(RecognitionModelTextract.combineTextractAsyncResponses(result.data), null, 2));
+    await fs.promises.writeFile(outputPath, JSON.stringify(RecognitionModelTextract.combineTextractResponses(result.data), null, 2));
   } else {
     for (let i = 0; i < result.data.length; i++) {
       const outputFileName = `${parsedPath.name}-p${i}-${suffix}`;

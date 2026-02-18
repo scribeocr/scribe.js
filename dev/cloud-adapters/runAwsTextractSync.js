@@ -77,7 +77,7 @@ if (isPdf) {
   mupdf.terminate();
 
   if (!splitMode) {
-    const combined = RecognitionModelTextract.combineTextractAsyncResponses(pageResults);
+    const combined = RecognitionModelTextract.combineTextractResponses(pageResults);
 
     const outputFileName = `${parsedPath.name}-${suffix}`;
     const outputPath = path.join(parsedPath.dir, outputFileName);

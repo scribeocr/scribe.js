@@ -132,7 +132,7 @@ export class RecognitionModelTextract {
     });
 
     if (result.success) {
-      const combined = this.combineTextractAsyncResponses(result.data);
+      const combined = this.combineTextractResponses(result.data);
       return {
         success: true,
         rawData: JSON.stringify(combined),
@@ -334,7 +334,7 @@ export class RecognitionModelTextract {
    * @param {Array<Object>} responses - An array of response objects from GetDocumentAnalysisCommand or GetDocumentTextDetectionCommand.
    * @returns {Object} A single, combined response object.
    */
-  static combineTextractAsyncResponses = (responses) => {
+  static combineTextractResponses = (responses) => {
     if (!responses || responses.length === 0) {
       return {};
     }

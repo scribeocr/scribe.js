@@ -3,7 +3,7 @@ import { inputData, opt } from './containers/app.js';
 import {
   convertPageWarn,
   DebugData,
-  layoutDataTables, layoutRegions, ocrAll, pageMetricsAll, visInstructions,
+  layoutDataTables, layoutRegions, ocrAll, ocrAllRaw, pageMetricsAll, visInstructions,
 } from './containers/dataContainer.js';
 import { FontCont } from './containers/fontContainer.js';
 import { ImageCache } from './containers/imageContainer.js';
@@ -613,6 +613,7 @@ async function recognizeCustomModel(options) {
 
   // Initialize array for custom model results
   if (!ocrAll[engineName]) ocrAll[engineName] = Array(inputData.pageCount);
+  if (opt.keepRawData && !ocrAllRaw[engineName]) ocrAllRaw[engineName] = Array(inputData.pageCount);
 
   // Determine concurrency limit (copy/pasted from internal model).
   // This makes much less sense for the cloud models, so may need to rethink.
@@ -653,7 +654,8 @@ async function recognizeCustomModel(options) {
         return;
       }
 
-      const { rawData } = result;
+      const rawData = result.rawData;
+      if (opt.keepRawData) ocrAllRaw[engineName][n] = rawData;
 
       const mainData = true;
 
@@ -694,6 +696,9 @@ async function recognizeCustomModel(options) {
 
   // Set active OCR to custom model results
   ocrAll.active = ocrAll[engineName];
+  if (opt.keepRawData) {
+    ocrAllRaw.active = ocrAllRaw[engineName];
+  }
   return ocrAll.active;
 }
 

@@ -53,6 +53,13 @@ export class opt {
 
   static saveDebugImages = false;
 
+  /**
+   * Whether to keep the raw OCR data (e.g. AWS Textract JSON) in the internal data structure.
+   * This can significantly increase memory usage, so should only be used for debugging purposes.
+   * If `true`, raw OCR data can be exported with `scribe.exportData('raw')`.
+   */
+  static keepRawData = false;
+
   static compressScribe = true;
 
   /**
