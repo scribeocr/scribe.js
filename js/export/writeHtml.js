@@ -275,7 +275,7 @@ export function writeHtml({
           styleStr += `vertical-align:${supOffset}px;`;
         }
 
-        if (wordObj.style.underline) {
+        if (wordObj.style.underline && opacity !== 0) {
           styleStr += 'text-decoration:underline;';
           styleStr += `text-decoration-color:${fill};`;
           styleStr += `text-decoration-thickness:${Math.ceil(fontSizeHTML / 12)}px;`;
@@ -303,7 +303,7 @@ export function writeHtml({
           styleStrSpace += `font-style:${font.fontFaceStyle};`;
           styleStrSpace += `font-weight:${font.fontFaceWeight};`;
 
-          if (underlinePrev) {
+          if (underlinePrev && opacity !== 0) {
             styleStrSpace += `color:${fill};`;
             styleStrSpace += `opacity:${opacity};`;
             styleStrSpace += 'text-decoration:underline;';
