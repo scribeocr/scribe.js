@@ -10,8 +10,11 @@ const debugMode = false;
  * @param {Object} params
  * @param {string} params.ocrStr
  * @param {dims[]} params.pageDims - Page metrics to use for the pages
+ * @param {number} [params.pageNum] - Page number to assign.
+ *    Should only be provided if running per-page recognition with multi-page document,
+ *    where it is needed to prevent every page number from being 0.
  */
-export async function convertDocGoogleDocAI({ ocrStr, pageDims }) {
+export async function convertDocGoogleDocAI({ ocrStr, pageDims, pageNum }) {
   let ocrData;
   try {
     ocrData = JSON.parse(ocrStr);
@@ -27,9 +30,14 @@ export async function convertDocGoogleDocAI({ ocrStr, pageDims }) {
 
   const resArr = [];
 
-  for (let n = 0; n < ocrData.pages.length; n++) {
-    const pageData = ocrData.pages[n];
-    const pageDimsN = pageDims[n];
+  if (pageNum !== undefined && ocrData.pages.length > 1) {
+    console.warn('Multiple PAGE blocks found but pageNum is specified. Using pageNum for all pages.');
+  }
+
+  for (let i = 0; i < ocrData.pages.length; i++) {
+    const n = pageNum ?? i;
+    const pageData = ocrData.pages[i];
+    const pageDimsN = pageDims[i];
 
     const pageWidth = pageData.dimension?.width;
     const pageHeight = pageData.dimension?.height;
@@ -71,8 +79,8 @@ export async function convertDocGoogleDocAI({ ocrStr, pageDims }) {
     const lineTextRanges = [];
 
     // Assign tokens to lines based on text segment overlap
-    for (let i = 0; i < lineSegments.length; i++) {
-      const lineSeg = lineSegments[i];
+    for (let j = 0; j < lineSegments.length; j++) {
+      const lineSeg = lineSegments[j];
       const lineLayout = lineSeg.line.layout;
 
       const lineVertices = getScaledVertices(lineLayout.boundingPoly, pageWidth, pageHeight, scaleX, scaleY);
@@ -105,8 +113,8 @@ export async function convertDocGoogleDocAI({ ocrStr, pageDims }) {
       }
 
       const lineTokens = [];
-      for (let j = 0; j < pageTokens.length; j++) {
-        const token = pageTokens[j];
+      for (let k = 0; k < pageTokens.length; k++) {
+        const token = pageTokens[k];
         const tokenSeg = token.layout?.textAnchor?.textSegments?.[0];
         const tokenStart = parseInt(tokenSeg?.startIndex || '0', 10);
         const tokenEnd = parseInt(tokenSeg?.endIndex || '0', 10);
@@ -118,8 +126,8 @@ export async function convertDocGoogleDocAI({ ocrStr, pageDims }) {
 
       if (lineTokens.length === 0) continue;
 
-      for (let j = 0; j < lineTokens.length; j++) {
-        const token = lineTokens[j];
+      for (let l = 0; l < lineTokens.length; l++) {
+        const token = lineTokens[l];
         const tokenLayout = token.layout;
 
         const tokenSeg = tokenLayout?.textAnchor?.textSegments?.[0];
@@ -147,7 +155,7 @@ export async function convertDocGoogleDocAI({ ocrStr, pageDims }) {
           bl: tokenVertices[3],
         };
 
-        const wordId = `word_${n + 1}_${pageObj.lines.length + 1}_${j + 1}`;
+        const wordId = `word_${n + 1}_${pageObj.lines.length + 1}_${l + 1}`;
         const wordObj = new ocr.OcrWord(lineObj, wordId, wordText, wordBbox, wordPoly);
 
         wordObj.conf = Math.round((tokenLayout.confidence || 0) * 100);

@@ -192,11 +192,12 @@ export class RecognitionModelGoogleDocAI {
   }
 
   /**
-   * Recognize text from a document using Google Document AI.
-   * Document AI handles PDFs inline (up to 20MB), so this delegates to recognizeImage.
-   * For documents exceeding 20MB, use recognizeDocumentAsync with a GCS bucket.
+   * Recognize text from a document using Google Document AI batch processing via GCS.
    * @param {Uint8Array|ArrayBuffer} documentData - Document data
    * @param {Object} [options]
+   * @param {string} options.gcsBucket - GCS bucket name for temporary storage (required)
+   * @param {string} [options.gcsKey] - GCS key prefix (auto-generated if not provided)
+   * @param {boolean} [options.keepGcsFile] - Whether to keep GCS artifacts after processing (default: false)
    * @param {string} [options.processorName] - Full Document AI processor resource name (overrides SCRIBE_GOOGLE_DOC_AI_PROCESSOR env var).
    * @param {string} [options.mimeType] - MIME type of the document (default: 'application/pdf')
    * @param {boolean} [options.skipHumanReview] - Whether to skip human review (default: true)
@@ -204,7 +205,30 @@ export class RecognitionModelGoogleDocAI {
    * @returns {Promise<RecognitionResult>}
    */
   static async recognizeDocument(documentData, options = {}) {
-    return this.recognizeImage(documentData, options);
+    const data = documentData instanceof ArrayBuffer ? new Uint8Array(documentData) : documentData;
+
+    const result = await this.recognizeDocumentAsync(data, {
+      gcsBucket: options.gcsBucket,
+      gcsKey: options.gcsKey,
+      keepGcsFile: options.keepGcsFile ?? false,
+      mimeType: options.mimeType,
+      processorName: options.processorName,
+      skipHumanReview: options.skipHumanReview,
+      keyFilename: options.keyFilename,
+    });
+
+    if (result.success) {
+      return {
+        success: true,
+        rawData: JSON.stringify(result.data),
+        format: 'google_doc_ai',
+      };
+    }
+    return {
+      success: false,
+      error: new Error(result.error),
+      format: 'google_doc_ai',
+    };
   }
 
   static async checkAvailability() {

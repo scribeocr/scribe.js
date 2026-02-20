@@ -631,8 +631,18 @@ async function recognizeCustomModel(options) {
   const pages = [...Array(ImageCache.pageCount).keys()];
   const executing = new Set();
 
+  const maxConsecutiveFailures = 3;
+  let consecutiveFailures = 0;
+  let lastErrorMessage = '';
+  let quitEarly = false;
+  const failedPages = [];
+
   for (const n of pages) {
+    if (quitEarly) break;
+    // eslint-disable-next-line no-loop-func
     const p = (async () => {
+      if (quitEarly) return;
+
       const nativeN = await ImageCache.getNative(n);
       if (!nativeN) {
         opt.warningHandler(`No image found for page ${n}, skipping.`);
@@ -650,9 +660,17 @@ async function recognizeCustomModel(options) {
       const result = await model.recognizeImage(imageData, modelOptions);
       if (!result.success || !result.rawData) {
         const errMsg = result.error ? result.error.message : 'Unknown error';
+        failedPages.push(n);
         opt.warningHandler(`Recognition failed for page ${n}: ${errMsg}`);
+        consecutiveFailures++;
+        lastErrorMessage = errMsg;
+        if (consecutiveFailures >= maxConsecutiveFailures) {
+          quitEarly = true;
+        }
         return;
       }
+
+      consecutiveFailures = 0;
 
       const rawData = result.rawData;
       if (opt.keepRawData) ocrAllRaw[engineName][n] = rawData;
@@ -665,7 +683,7 @@ async function recognizeCustomModel(options) {
         await convertPageCallback(convertResult, n, mainData, engineName);
       } else if (outputFormat === 'textract') {
         const pageDims = [pageMetricsAll[n].dims];
-        const res = await gs.convertDocTextract({ ocrStr: rawData, pageDims });
+        const res = await gs.convertDocTextract({ ocrStr: rawData, pageDims, pageNum: n });
         for (let i = 0; i < res.length; i++) {
           await convertPageCallback(res[i], n + i, mainData, engineName);
         }
@@ -677,7 +695,7 @@ async function recognizeCustomModel(options) {
         }
       } else if (outputFormat === 'google_doc_ai') {
         const pageDims = [pageMetricsAll[n].dims];
-        const res = await gs.convertDocGoogleDocAI({ ocrStr: rawData, pageDims });
+        const res = await gs.convertDocGoogleDocAI({ ocrStr: rawData, pageDims, pageNum: n });
         for (let i = 0; i < res.length; i++) {
           await convertPageCallback(res[i], n + i, mainData, engineName);
         }
@@ -693,6 +711,25 @@ async function recognizeCustomModel(options) {
     if (executing.size >= concurrency) await Promise.race(executing);
   }
   await Promise.all(executing);
+
+  if (consecutiveFailures === ImageCache.pageCount) {
+    throw new Error(
+      `Recognition failed for all pages. Last error message: ${lastErrorMessage}`,
+    );
+  }
+
+  if (quitEarly) {
+    throw new Error(
+      `Recognition aborted after ${consecutiveFailures} consecutive failures. Last error message: ${lastErrorMessage}`,
+    );
+  }
+
+  if (failedPages.length > 0) {
+    failedPages.sort((a, b) => a - b);
+    opt.warningHandler(
+      `Recognition failed for ${failedPages.length} page(s) (${failedPages.join(', ')}). These pages will have no OCR data.`,
+    );
+  }
 
   // Set active OCR to custom model results
   ocrAll.active = ocrAll[engineName];

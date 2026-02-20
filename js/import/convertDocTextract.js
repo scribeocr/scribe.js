@@ -43,8 +43,11 @@ const detectPolyOrientation = (poly) => {
  * @param {Object} params
  * @param {string|string[]} params.ocrStr - String or array of strings containing Textract JSON data.
  * @param {dims[]} params.pageDims - Page metrics to use for the pages (Textract only).
+ * @param {number} [params.pageNum] - Page number to assign.
+ *    Should only be provided if running per-page recognition with multi-page document,
+ *    where it is needed to prevent every page number from being 0.
  */
-export async function convertDocTextract({ ocrStr, pageDims }) {
+export async function convertDocTextract({ ocrStr, pageDims, pageNum }) {
   const blocks = /** @type {TextractBlock[]} */ ([]);
   try {
     if (typeof ocrStr === 'string') {
@@ -68,6 +71,10 @@ export async function convertDocTextract({ ocrStr, pageDims }) {
 
   const pageBlocks = blocks.filter((block) => block.BlockType === 'PAGE');
 
+  if (pageNum !== undefined && pageBlocks.length > 1) {
+    console.warn('Multiple PAGE blocks found but pageNum is specified. Using pageNum for all pages.');
+  }
+
   // Build maps once for all blocks for better performance with large documents.
   const relationshipMap = new Map();
   blocks.forEach((block) => {
@@ -88,11 +95,11 @@ export async function convertDocTextract({ ocrStr, pageDims }) {
   /** @type {Map<number, {lines: TextractBlock[], layouts: TextractBlock[], tables: TextractBlock[]}>} */
   const blocksByPage = new Map();
   blocks.forEach((block) => {
-    const pageNum = block.Page || 1;
-    let pageData = blocksByPage.get(pageNum);
+    const n = block.Page || 1;
+    let pageData = blocksByPage.get(n);
     if (!pageData) {
       pageData = { lines: [], layouts: [], tables: [] };
-      blocksByPage.set(pageNum, pageData);
+      blocksByPage.set(n, pageData);
     }
     if (block.BlockType === 'LINE') {
       pageData.lines.push(block);
@@ -105,12 +112,13 @@ export async function convertDocTextract({ ocrStr, pageDims }) {
 
   const resArr = [];
 
-  for (let n = 0; n < pageBlocks.length; n++) {
-    const pageBlock = pageBlocks[n];
+  for (let i = 0; i < pageBlocks.length; i++) {
+    const n = pageNum ?? i;
+    const pageBlock = pageBlocks[i];
 
     // Textract uses normalized coordinates (0-1), we need to convert to pixels
     // We'll assume standard page dimensions since Textract doesn't provide pixel dimensions
-    const pageDimsN = pageDims[n];
+    const pageDimsN = pageDims[i];
     if (!pageDimsN) {
       throw new Error(`No page dimensions provided for page ${n + 1}.`);
     }
@@ -122,7 +130,7 @@ export async function convertDocTextract({ ocrStr, pageDims }) {
 
     const pageObj = new ocr.OcrPage(n, pageDimsN);
 
-    const pageData = blocksByPage.get(n + 1) || { lines: [], layouts: [], tables: [] };
+    const pageData = blocksByPage.get(i + 1) || { lines: [], layouts: [], tables: [] };
     const lineBlocks = pageData.lines;
     const layoutBlocks = pageData.layouts;
     const tableBlocks = pageData.tables;
@@ -195,8 +203,7 @@ export async function convertDocTextract({ ocrStr, pageDims }) {
  * @param {number} pageOrientation - Orientation of the page (0-3)
  */
 function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, pageNum, lineIndex, pageDims, pageOrientation) {
-  // `lineBlock.Page` will be undefined when the entire document is a single page.
-  if (!lineBlock.Text || !lineBlock.Geometry || (lineBlock.Page || 1) - 1 !== pageNum) return null;
+  if (!lineBlock.Text || !lineBlock.Geometry) return null;
 
   // Convert normalized coordinates to pixels
   const bboxLine = convertBoundingBox(lineBlock.Geometry.BoundingBox, pageDims);
