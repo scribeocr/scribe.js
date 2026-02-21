@@ -193,6 +193,11 @@ declare global {
 
     type ProgressMessageRecognize = {
         type: 'recognize';
+        info?: {
+            status?: string;
+            elapsedMs?: number;
+            responsesReceived?: number;
+        };
     }
 
     type FileNode = import("./import/nodeAdapter.js").FileNode;

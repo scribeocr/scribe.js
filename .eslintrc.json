@@ -60,6 +60,7 @@
         "max-classes-per-file": "off",
 
         // Disable various subjective style rules
+        "no-bitwise": "off",
         "no-plusplus": "off",
         "radix": "off",
         "no-continue": "off",

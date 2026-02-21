@@ -5,7 +5,8 @@
   "type": "module",
   "license": "AGPL-3.0",
   "exports": {
-    ".": "./RecognitionModelAwsTextract.js"
+    ".": "./RecognitionModelAwsTextract.js",
+    "./browser": "./RecognitionModelAwsTextractBrowser.js"
   },
   "main": "./RecognitionModelAwsTextract.js",
   "repository": {

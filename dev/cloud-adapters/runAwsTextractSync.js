@@ -24,7 +24,7 @@ if (!filePath) {
 
 const options = {
   analyzeLayout: args.includes('--layout'),
-  analyzeLayoutTables: args.includes('--tables'),
+  analyzeTables: args.includes('--tables'),
 };
 
 const fileExtension = path.extname(filePath).toLowerCase();

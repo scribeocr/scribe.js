@@ -32,7 +32,7 @@ if (!filePath || !s3Bucket) {
 
 const options = {
   analyzeLayout: args.includes('--layout'),
-  analyzeLayoutTables: args.includes('--tables'),
+  analyzeTables: args.includes('--tables'),
   s3Bucket,
   processDirectory: dirMode,
 };

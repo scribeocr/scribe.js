@@ -48,7 +48,7 @@ export class RecognitionModelTextract {
    * @param {Object} [options]
    * @param {boolean} [options.analyzeLayout=false] - Whether to enable layout analysis.
    *    Note that enabling layout analysis increases AWS costs.
-   * @param {boolean} [options.analyzeLayoutTables=false] - Whether to enable table analysis.
+   * @param {boolean} [options.analyzeTables=false] - Whether to enable table analysis.
    *    Enabling table analysis automatically enables layout analysis.
    *    Note that enabling table analysis significantly increases AWS costs.
    * @param {string} [options.region] - AWS region (e.g. 'us-east-1').
@@ -60,7 +60,7 @@ export class RecognitionModelTextract {
   static async recognizeImage(imageData, options = {}) {
     const data = imageData instanceof ArrayBuffer ? new Uint8Array(imageData) : imageData;
     const analyzeLayout = options.analyzeLayout ?? false;
-    const analyzeLayoutTables = options.analyzeLayoutTables ?? false;
+    const analyzeTables = options.analyzeTables ?? false;
     const region = options.region || undefined;
     const credentials = options.credentials || undefined;
 
@@ -71,8 +71,10 @@ export class RecognitionModelTextract {
       });
 
       let command;
-      if (analyzeLayout) {
-        const FeatureTypes = analyzeLayoutTables ? ['TABLES'] : ['LAYOUT'];
+      if (analyzeLayout || analyzeTables) {
+        const FeatureTypes = [];
+        if (analyzeLayout) FeatureTypes.push('LAYOUT');
+        if (analyzeTables) FeatureTypes.push('TABLES');
         command = new AnalyzeDocumentCommand({
           Document: { Bytes: data },
           FeatureTypes,
@@ -106,7 +108,7 @@ export class RecognitionModelTextract {
    * @param {Uint8Array|ArrayBuffer} documentData - PDF data
    * @param {Object} [options]
    * @param {boolean} [options.analyzeLayout=false] - Whether to enable layout analysis.
-   * @param {boolean} [options.analyzeLayoutTables=false] - Whether to enable table analysis.
+   * @param {boolean} [options.analyzeTables=false] - Whether to enable table analysis.
    * @param {string} options.s3Bucket - S3 bucket name (required)
    * @param {string} [options.s3Key] - S3 key prefix (optional, auto-generated if not provided)
    * @param {boolean} [options.keepS3File=false] - Whether to keep the uploaded S3 file after processing
@@ -114,6 +116,7 @@ export class RecognitionModelTextract {
    * @param {number} [options.maxWaitTime=1800000] - Maximum wait time in milliseconds (default: 30 minutes)
    * @param {string} [options.region] - AWS region.
    * @param {{accessKeyId: string, secretAccessKey: string}} [options.credentials] - AWS credentials.
+   * @param {function} [options.progressCallback] - Optional callback for progress reporting.
    * @returns {Promise<RecognitionResult>}
    */
   static async recognizeDocument(documentData, options = {}) {
@@ -121,7 +124,7 @@ export class RecognitionModelTextract {
 
     const result = await this.recognizePdfAsync(data, {
       analyzeLayout: options.analyzeLayout ?? false,
-      analyzeLayoutTables: options.analyzeLayoutTables ?? false,
+      analyzeTables: options.analyzeTables ?? false,
       s3Bucket: options.s3Bucket,
       s3Key: options.s3Key,
       keepS3File: options.keepS3File ?? false,
@@ -129,6 +132,7 @@ export class RecognitionModelTextract {
       maxWaitTime: options.maxWaitTime ?? 1800000,
       region: options.region,
       credentials: options.credentials,
+      progressCallback: options.progressCallback,
     });
 
     if (result.success) {
@@ -155,7 +159,7 @@ export class RecognitionModelTextract {
    * @param {Uint8Array} pdfData
    * @param {Object} options
    * @param {boolean} [options.analyzeLayout]
-   * @param {boolean} [options.analyzeLayoutTables]
+   * @param {boolean} [options.analyzeTables]
    * @param {string} options.s3Bucket
    * @param {string} [options.s3Key]
    * @param {boolean} [options.keepS3File]
@@ -163,10 +167,11 @@ export class RecognitionModelTextract {
    * @param {number} [options.maxWaitTime]
    * @param {string} [options.region] - AWS region.
    * @param {{accessKeyId: string, secretAccessKey: string}} [options.credentials] - AWS credentials.
+   * @param {function} [options.progressCallback] - Optional callback for progress reporting.
    */
   static recognizePdfAsync = async (pdfData, {
     analyzeLayout = false,
-    analyzeLayoutTables = false,
+    analyzeTables = false,
     s3Bucket,
     s3Key,
     keepS3File = false,
@@ -174,6 +179,7 @@ export class RecognitionModelTextract {
     maxWaitTime = 1800000,
     region,
     credentials,
+    progressCallback,
   } = {}) => {
     const textractClient = new TextractClient({
       ...(region && { region }),
@@ -188,7 +194,7 @@ export class RecognitionModelTextract {
     const finalS3Key = s3Key || `textract-temp/${Date.now()}-${Math.random().toString(36).substr(2, 9)}.pdf`;
 
     try {
-      console.log(`Uploading PDF to S3: s3://${s3Bucket}/${finalS3Key}`);
+      if (progressCallback) progressCallback({ status: 'uploading' });
       await s3Client.send(new PutObjectCommand({
         Bucket: s3Bucket,
         Key: finalS3Key,
@@ -198,10 +204,10 @@ export class RecognitionModelTextract {
 
       let startCommand;
 
-      if (analyzeLayout) {
+      if (analyzeLayout || analyzeTables) {
         const FeatureTypes = [];
-        if (analyzeLayoutTables) FeatureTypes.push('TABLES');
-        if (!analyzeLayoutTables) FeatureTypes.push('LAYOUT');
+        if (analyzeLayout) FeatureTypes.push('LAYOUT');
+        if (analyzeTables) FeatureTypes.push('TABLES');
 
         startCommand = new StartDocumentAnalysisCommand({
           DocumentLocation: {
@@ -223,17 +229,17 @@ export class RecognitionModelTextract {
         });
       }
 
-      console.log('Starting Textract job...');
+      if (progressCallback) progressCallback({ status: 'starting' });
       const startResponse = await textractClient.send(startCommand);
       const jobId = startResponse.JobId;
-      console.log(`Job started with ID: ${jobId}`);
 
       const result = await this.pollForCompletion(
         textractClient,
         jobId,
-        analyzeLayout,
+        analyzeLayout || analyzeTables,
         pollingInterval,
         maxWaitTime,
+        progressCallback,
       );
 
       return result;
@@ -246,7 +252,7 @@ export class RecognitionModelTextract {
     } finally {
       if (!keepS3File) {
         try {
-          console.log(`Cleaning up S3 file: s3://${s3Bucket}/${finalS3Key}`);
+          if (progressCallback) progressCallback({ status: 'cleanup' });
           await s3Client.send(new DeleteObjectCommand({
             Bucket: s3Bucket,
             Key: finalS3Key,
@@ -265,8 +271,9 @@ export class RecognitionModelTextract {
    * @param {boolean} isAnalysis
    * @param {number} pollingInterval
    * @param {number} maxWaitTime
+   * @param {function} [progressCallback] - Optional callback for progress reporting.
    */
-  static pollForCompletion = async (textractClient, jobId, isAnalysis, pollingInterval, maxWaitTime) => {
+  static pollForCompletion = async (textractClient, jobId, isAnalysis, pollingInterval, maxWaitTime, progressCallback) => {
     const startTime = Date.now();
     let nextToken = null;
     const allResponses = [];
@@ -291,6 +298,8 @@ export class RecognitionModelTextract {
         if (response.JobStatus === 'SUCCEEDED') {
           allResponses.push(response);
 
+          if (progressCallback) progressCallback({ status: 'retrieving', responsesReceived: allResponses.length });
+
           if (response.NextToken) {
             nextToken = response.NextToken;
             continue;
@@ -307,7 +316,7 @@ export class RecognitionModelTextract {
             errorCode: 'TextractJobFailed',
           };
         } else if (response.JobStatus === 'IN_PROGRESS') {
-          console.log(`Job still in progress... (${Math.round((Date.now() - startTime) / 1000)}s elapsed)`);
+          if (progressCallback) progressCallback({ status: 'polling', elapsedMs: Date.now() - startTime });
           await new Promise((resolve) => setTimeout(resolve, pollingInterval));
         }
       } catch (error) {
