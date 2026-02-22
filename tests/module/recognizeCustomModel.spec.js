@@ -102,7 +102,7 @@ describe('Check custom model recognition with Google Vision format.', function (
   this.timeout(60000);
 
   before(async function () {
-    const gvDir = `${ASSETS_PATH_KARMA}/tests/assets/trident_v_connecticut_general/googleVision`;
+    const gvDir = `${ASSETS_PATH_KARMA}/tests/test-assets/trident_v_connecticut_general/googleVision`;
     const gvDirAlt = `${ASSETS_PATH_KARMA}/trident_v_connecticut_general/googleVision`;
 
     MockGoogleVisionModel.fixturePages = [];

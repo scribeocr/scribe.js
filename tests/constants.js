@@ -11,4 +11,4 @@ if (typeof process !== 'undefined') {
 }
 
 export const BASE_PATH_KARMA = basepath;
-export const ASSETS_PATH_KARMA = `${BASE_PATH_KARMA}/tests/assets`;
+export const ASSETS_PATH_KARMA = `${BASE_PATH_KARMA}/tests/test-assets`;

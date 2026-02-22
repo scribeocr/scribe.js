@@ -54,7 +54,7 @@ describe('Check Node.js commands.', () => {
 
   it('Should print confidence of Abbyy .xml file.', async () => {
     // Call the function
-    await confCLI([path.join(__dirname, '../assets/scribe_test_pdf1.abbyy.xml')]);
+    await confCLI([path.join(__dirname, '../test-assets/scribe_test_pdf1.abbyy.xml')]);
 
     // originalConsoleLog(consoleOutput);
 
@@ -63,9 +63,9 @@ describe('Check Node.js commands.', () => {
   }).timeout(10000);
 
   it('Should check contents of Abbyy .xml file.', async () => {
-    // CLI equivalent: node cli/scribe.js check tests/assets/scribe_test_pdf1.pdf tests/assets/scribe_test_pdf1.abbyy.xml
+    // CLI equivalent: node cli/scribe.js check tests/test-assets/scribe_test_pdf1.pdf tests/test-assets/scribe_test_pdf1.abbyy.xml
     // Workers is set to 1 to avoid results changing based on the number of CPU cores due to the OCR engine learning.
-    await checkCLI([path.join(__dirname, '../assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../assets/scribe_test_pdf1.abbyy.xml')], { workers: 1 });
+    await checkCLI([path.join(__dirname, '../test-assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../test-assets/scribe_test_pdf1.abbyy.xml')], { workers: 1 });
 
     // originalConsoleLog(consoleOutput);
 
@@ -77,7 +77,7 @@ describe('Check Node.js commands.', () => {
     const tmpDir = await tmpUnique.get();
 
     // Call the function
-    await overlayCLI([path.join(__dirname, '../assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../assets/scribe_test_pdf1.abbyy.xml')], { output: tmpDir, vis: true });
+    await overlayCLI([path.join(__dirname, '../test-assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../test-assets/scribe_test_pdf1.abbyy.xml')], { output: tmpDir, vis: true });
 
     const outputPath = `${tmpDir}/scribe_test_pdf1_vis.pdf`;
 
@@ -88,7 +88,7 @@ describe('Check Node.js commands.', () => {
     const tmpDir = await tmpUnique.get();
 
     // Call the function
-    await overlayCLI([path.join(__dirname, '../assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../assets/scribe_test_pdf1.abbyy.xml')], { output: tmpDir, conf: true, vis: true });
+    await overlayCLI([path.join(__dirname, '../test-assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../test-assets/scribe_test_pdf1.abbyy.xml')], { output: tmpDir, conf: true, vis: true });
 
     expect(consoleOutput).to.include('385 of 404');
 
@@ -102,7 +102,7 @@ describe('Check Node.js commands.', () => {
     const tmpDir = await tmpUnique.get();
 
     // Call the function
-    await overlayCLI([path.join(__dirname, '../assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../assets/scribe_test_pdf1.abbyy.xml')], { output: tmpDir, robust: true, vis: true });
+    await overlayCLI([path.join(__dirname, '../test-assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../test-assets/scribe_test_pdf1.abbyy.xml')], { output: tmpDir, robust: true, vis: true });
 
     const outputPath = `${tmpDir}/scribe_test_pdf1_vis.pdf`;
 
@@ -113,7 +113,7 @@ describe('Check Node.js commands.', () => {
     const tmpDir = await tmpUnique.get();
 
     // Call the function
-    await overlayCLI([path.join(__dirname, '../assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../assets/scribe_test_pdf1.abbyy.xml')], {
+    await overlayCLI([path.join(__dirname, '../test-assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../test-assets/scribe_test_pdf1.abbyy.xml')], {
       output: tmpDir, robust: true, conf: true, vis: true, workers: 1,
     });
 
@@ -154,7 +154,7 @@ describe('Extract CLI command.', () => {
 
   it('Should extract text from a single PDF file.', async () => {
     const tmpDir = await tmpUnique.get();
-    const inputFile = path.join(__dirname, '../assets/academic_article_1.pdf');
+    const inputFile = path.join(__dirname, '../test-assets/academic_article_1.pdf');
     const outputPath = `${tmpDir}/academic_article_1.txt`;
 
     await extractCLI(inputFile, outputPath, { format: 'txt' });

@@ -7,7 +7,7 @@ import { imageUtils } from '../js/objects/imageObjects.js';
 
 await scribe.init({ font: true });
 const images = await importImageFilesP([
-  './tests/assets/testocr.png',
+  './tests/test-assets/testocr.png',
 ]);
 
 const pageMetricsImages = images.map((image) => {
@@ -39,5 +39,5 @@ const pdfStr = await writePdf({
 const enc = new TextEncoder();
 const pdfEnc = enc.encode(pdfStr);
 
-await writeFile('./tests/assets/testocr_all_orientations.pdf', pdfEnc);
+await writeFile('./tests/test-assets/testocr_all_orientations.pdf', pdfEnc);
 await scribe.terminate();

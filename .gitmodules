@@ -1,3 +1,6 @@
 [submodule "scrollview-web"]
 	path = scrollview-web
 	url = https://github.com/scribeocr/scrollview-web.git
+[submodule "tests/test-assets"]
+	path = tests/test-assets
+	url = https://github.com/scribe-js/test-assets.git
