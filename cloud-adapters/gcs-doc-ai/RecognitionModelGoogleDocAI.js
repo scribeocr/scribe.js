@@ -140,6 +140,8 @@ export class RecognitionModelGoogleDocAI {
    * @param {Object} [options.fieldMask] - Field mask to limit response fields
    * @param {string} [options.keyFilename] - Path to a Google Cloud service account JSON key file.
    *    If not provided, Application Default Credentials are used.
+   * @param {boolean} [options.excludeImages] - Whether to exclude page images from the output (default: false).
+   *    Set to true to strip embedded images from the response, significantly reducing output size.
    * @returns {Promise<RecognitionResult>}
    */
   static async recognizeImage(imageData, options = {}) {
@@ -148,6 +150,7 @@ export class RecognitionModelGoogleDocAI {
     const mimeType = options.mimeType || 'application/pdf';
     const skipHumanReview = options.skipHumanReview ?? true;
     const keyFilename = options.keyFilename || undefined;
+    const excludeImages = options.excludeImages ?? false;
 
     if (!processorName) {
       return {
@@ -177,9 +180,16 @@ export class RecognitionModelGoogleDocAI {
 
       const [result] = await client.processDocument(request);
 
+      const doc = result.document;
+      if (excludeImages && doc?.pages) {
+        for (const page of doc.pages) {
+          delete page.image;
+        }
+      }
+
       return {
         success: true,
-        rawData: JSON.stringify(result.document),
+        rawData: JSON.stringify(doc),
         format: 'google_doc_ai',
       };
     } catch (error) {
@@ -202,6 +212,8 @@ export class RecognitionModelGoogleDocAI {
    * @param {string} [options.mimeType] - MIME type of the document (default: 'application/pdf')
    * @param {boolean} [options.skipHumanReview] - Whether to skip human review (default: true)
    * @param {string} [options.keyFilename] - Path to a Google Cloud service account JSON key file.
+   * @param {boolean} [options.excludeImages] - Whether to exclude page images from the output (default: false).
+   *    Set to true to strip embedded images from the response, significantly reducing output size.
    * @returns {Promise<RecognitionResult>}
    */
   static async recognizeDocument(documentData, options = {}) {
@@ -215,6 +227,7 @@ export class RecognitionModelGoogleDocAI {
       processorName: options.processorName,
       skipHumanReview: options.skipHumanReview,
       keyFilename: options.keyFilename,
+      excludeImages: options.excludeImages,
     });
 
     if (result.success) {
@@ -248,6 +261,8 @@ export class RecognitionModelGoogleDocAI {
    * @param {string} [options.processorName] - Full Document AI processor resource name (overrides SCRIBE_GOOGLE_DOC_AI_PROCESSOR env var).
    * @param {boolean} [options.skipHumanReview] - Whether to skip human review (default: true)
    * @param {string} [options.keyFilename] - Path to a Google Cloud service account JSON key file.
+   * @param {boolean} [options.excludeImages] - Whether to exclude page images from the output (default: false).
+   *    Set to true to strip embedded images from the response, significantly reducing output size.
    */
   static recognizeDocumentAsync = async (documentData, options = {}) => {
     const {
@@ -255,6 +270,7 @@ export class RecognitionModelGoogleDocAI {
       gcsKey,
       keepGcsFile = false,
     } = options;
+    const excludeImages = options.excludeImages ?? false;
 
     const processorName = options.processorName || process.env.SCRIBE_GOOGLE_DOC_AI_PROCESSOR;
     const mimeType = options.mimeType || 'application/pdf';
@@ -333,6 +349,12 @@ export class RecognitionModelGoogleDocAI {
       }
 
       const data = mergeShards(shards);
+
+      if (excludeImages && data?.pages) {
+        for (const page of data.pages) {
+          delete page.image;
+        }
+      }
 
       if (!keepGcsFile) {
         console.log(`Cleaning up GCS output files with prefix: ${outputPrefix}`);

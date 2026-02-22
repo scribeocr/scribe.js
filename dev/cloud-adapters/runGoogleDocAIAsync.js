@@ -4,6 +4,7 @@ import { RecognitionModelGoogleDocAI, MIME_TYPES } from '../../cloud-adapters/gc
 
 const args = process.argv.slice(2);
 const dirMode = args.includes('--dir');
+const excludeImages = args.includes('--exclude-images');
 const filePath = args.find((a) => !a.startsWith('--'));
 const gcsBucketArg = args.find((a) => a.startsWith('--gcs-bucket='));
 const gcsBucket = gcsBucketArg ? gcsBucketArg.split('=')[1] : process.env.SCRIBE_GCS_BUCKET;
@@ -14,6 +15,7 @@ if (!filePath || !gcsBucket) {
   console.error('  <file>               File or directory to process');
   console.error('  --gcs-bucket=<name>  GCS bucket for async processing (or set SCRIBE_GCS_BUCKET env var)');
   console.error('  --dir                Treat the path as a directory and process all supported files');
+  console.error('  --exclude-images     Strip embedded page images from the output JSON');
   console.error('');
   console.error('Environment variables:');
   console.error('  SCRIBE_GOOGLE_DOC_AI_PROCESSOR  (required) Full resource name of a Document AI processor.');
@@ -35,7 +37,7 @@ async function processFile(inputPath) {
   console.log(`Processing: ${inputPath}`);
   const fileData = new Uint8Array(await fs.promises.readFile(inputPath));
   const mimeType = MIME_TYPES[path.extname(inputPath).toLowerCase()];
-  const result = await RecognitionModelGoogleDocAI.recognizeDocumentAsync(fileData, { gcsBucket, mimeType });
+  const result = await RecognitionModelGoogleDocAI.recognizeDocumentAsync(fileData, { gcsBucket, mimeType, excludeImages });
 
   if (!result.success) {
     console.error(`Error processing ${inputPath}:`, result.error);
