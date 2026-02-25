@@ -615,10 +615,23 @@ async function recognizeCustomModel(options) {
   if (!ocrAll[engineName]) ocrAll[engineName] = Array(inputData.pageCount);
   if (opt.keepRawData && !ocrAllRaw[engineName]) ocrAllRaw[engineName] = Array(inputData.pageCount);
 
-  // Determine concurrency limit (copy/pasted from internal model).
-  // This makes much less sense for the cloud models, so may need to rethink.
+  // Different cloud providers implement usage quotas in different ways.
+  // AWS Textract (Sync) uses transactions per second (TPS).
+  // AWS Textract (Async) uses both transactions per second (TPS) and concurrent request limits.
+  // Google Vision (Sync) uses requests per minute (RPM).
+  // The core distinction is that TPS limits the number of requests SENT per second,
+  // rather than the number of live requests at any given time.
+  const configRateLimit = modelOptions.rateLimit ?? model.config.rateLimit ?? null;
+  const tps = configRateLimit?.tps ?? (configRateLimit?.rpm ? configRateLimit.rpm / 60 : null);
+  let adaptiveTps = tps;
+  let lastRequestTime = 0;
+
   let concurrency;
-  if (opt.workerN) {
+  if (tps != null) {
+    // When tps is set, that is the primary means of limiting concurrency.
+    // This is set to a large number as a safeguard.
+    concurrency = 10;
+  } else if (opt.workerN) {
     concurrency = opt.workerN;
   } else if (typeof process === 'undefined') {
     concurrency = Math.min(Math.round((globalThis.navigator.hardwareConcurrency || 8) / 2), 6);
@@ -657,7 +670,47 @@ async function recognizeCustomModel(options) {
         imageData[i] = binaryStr.charCodeAt(i);
       }
 
-      const result = await model.recognizeImage(imageData, modelOptions);
+      const maxThrottleRetries = 3;
+      /** @type {RecognitionResult} */
+      let result = { success: false, format: '' };
+
+      // Attempt recognition with up to maxThrottleRetries retries for throttling errors.
+      // Attempt 0 is the initial request; attempts 1–maxThrottleRetries are retries.
+      for (let attempt = 0; attempt <= maxThrottleRetries; attempt++) {
+        // TPS pacing: claim the next available dispatch slot before yielding.
+        if (adaptiveTps != null && adaptiveTps > 0) {
+          const now = Date.now();
+          // Using a number slightly above 1 second to account for variation.
+          const minInterval = 1050 / adaptiveTps;
+          const targetTime = Math.max(now, lastRequestTime + minInterval);
+          lastRequestTime = targetTime;
+          const waitMs = targetTime - now;
+          if (waitMs > 0) {
+            await new Promise((resolve) => setTimeout(resolve, waitMs));
+          }
+        }
+
+        opt.progressHandler({ n, type: 'recognize', info: { status: 'sending', engineName, timestamp: Date.now() } });
+        result = await model.recognizeImage(imageData, modelOptions);
+
+        if (result.success) break;
+
+        // Only throttling errors are retried.
+        const isThrottle = model.isThrottlingError && result.error && model.isThrottlingError(result.error);
+        if (!isThrottle) break;
+
+        if (attempt === maxThrottleRetries) {
+          opt.warningHandler(`Page ${n}: throttled ${maxThrottleRetries + 1} times, giving up.`);
+          break;
+        }
+        const backoffMs = Math.min(1000 * (2 ** attempt), 16000);
+        opt.warningHandler(`Page ${n}: throttled by API, retrying in ${backoffMs}ms (attempt ${attempt + 1}/${maxThrottleRetries})`);
+        if (adaptiveTps != null && adaptiveTps > 0.5) {
+          adaptiveTps *= 0.9;
+        }
+        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+      }
+
       if (!result.success || !result.rawData) {
         const errMsg = result.error ? result.error.message : 'Unknown error';
         failedPages.push(n);

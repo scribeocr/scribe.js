@@ -16,7 +16,13 @@ export class GoogleVisionModel {
   static config = {
     name: 'Google Vision',
     outputFormat: 'google_vision',
+    rateLimit: { rpm: 120 },
   };
+
+  static isThrottlingError(error) {
+    return error?.code === 8
+      || error?.status === 'RESOURCE_EXHAUSTED';
+  }
 
   /**
    * Recognize text from an image using Google Cloud Vision.

@@ -15,7 +15,14 @@ export class RecognitionModelAzureDocIntel {
   static config = {
     name: 'Azure Document Intelligence',
     outputFormat: 'azure_doc_intel',
+    rateLimit: { tps: 1 },
   };
+
+  static isThrottlingError(error) {
+    return error?.statusCode === 429
+      || error?.code === '429'
+      || error?.code === 'TooManyRequests';
+  }
 
   /**
    * Recognize text from an image or document using Azure Document Intelligence.
@@ -62,9 +69,12 @@ export class RecognitionModelAzureDocIntel {
         });
 
       if (isUnexpected(initialResponse)) {
+        const err = new Error(initialResponse.body.error?.message || 'Unexpected response from Azure Document Intelligence');
+        err.statusCode = parseInt(initialResponse.status, 10);
+        err.code = initialResponse.body.error?.code;
         return {
           success: false,
-          error: new Error(initialResponse.body.error?.message || 'Unexpected response from Azure Document Intelligence'),
+          error: err,
           format: 'azure_doc_intel',
         };
       }

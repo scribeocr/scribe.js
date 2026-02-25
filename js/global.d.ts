@@ -193,10 +193,13 @@ declare global {
 
     type ProgressMessageRecognize = {
         type: 'recognize';
+        n?: number;
         info?: {
             status?: string;
+            engineName?: string;
             elapsedMs?: number;
             responsesReceived?: number;
+            timestamp?: number;
         };
     }
 
@@ -352,6 +355,7 @@ declare global {
     interface RecognitionModelConfig {
         name: string;
         outputFormat: RecognitionOutputFormat | null;
+        rateLimit?: { tps: number } | { rpm: number };
     }
 
     interface RecognitionModel {
@@ -365,6 +369,7 @@ declare global {
             langSet: Set<string>;
             fontSet: Set<string>;
         }>;
+        isThrottlingError?(error: Error): boolean;
     }
 
     // Azure Document Intelligence types

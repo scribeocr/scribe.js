@@ -21,7 +21,15 @@ export class RecognitionModelTextractBrowser {
   static config = {
     name: 'AWS Textract',
     outputFormat: 'textract',
+    rateLimit: { tps: 1 },
   };
+
+  static isThrottlingError(error) {
+    return error?.$metadata?.httpStatusCode === 429
+      || error?.name === 'ThrottlingException'
+      || error?.name === 'ProvisionedThroughputExceededException'
+      || error?.name === 'LimitExceededException';
+  }
 
   /**
    * Recognize text from an image using AWS Textract.

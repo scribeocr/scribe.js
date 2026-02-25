@@ -116,7 +116,13 @@ export class RecognitionModelGoogleDocAI {
   static config = {
     name: 'Google Doc AI',
     outputFormat: 'google_doc_ai',
+    rateLimit: { rpm: 40 },
   };
+
+  static isThrottlingError(error) {
+    return error?.code === 8
+      || error?.status === 'RESOURCE_EXHAUSTED';
+  }
 
   /**
    * Recognize text from an image or document using Google Document AI.
