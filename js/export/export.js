@@ -1,6 +1,6 @@
 import { inputData, opt } from '../containers/app.js';
 import {
-  layoutDataTables, layoutRegions, ocrAll, pageMetricsAll,
+  annotations, layoutDataTables, layoutRegions, ocrAll, pageMetricsAll,
 } from '../containers/dataContainer.js';
 import { ImageCache } from '../containers/imageContainer.js';
 import { reorderOcrPage } from '../modifyOCR.js';
@@ -83,6 +83,7 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
         proofOpacity: opt.overlayOpacity / 100,
         images,
         includeImages,
+        annotationsPages: annotations.pages,
       });
 
       const enc = new TextEncoder();
@@ -191,6 +192,7 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
         confThreshHigh: opt.confThreshHigh,
         confThreshMed: opt.confThreshMed,
         proofOpacity: opt.overlayOpacity / 100,
+        annotationsPages: annotations.pages,
       });
 
       // The PDF is still run through muPDF, even thought in eBook mode no background layer is added.
@@ -288,6 +290,7 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
       fontState: FontCont.state,
       layoutRegions: layoutRegions.pages,
       layoutDataTables: removeCircularRefsDataTables(layoutDataTables.pages),
+      annotations: annotations.pages,
     };
     if (opt.compressScribe) {
       const contentStr = JSON.stringify(data);

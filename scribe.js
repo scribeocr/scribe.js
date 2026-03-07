@@ -1,6 +1,7 @@
 import { clearData } from './js/clear.js';
 import { inputData, opt } from './js/containers/app.js';
 import {
+  annotations,
   DebugData,
   layoutDataTables,
   layoutRegions,
@@ -177,6 +178,8 @@ class data {
   static font = FontCont;
 
   static image = ImageCache;
+
+  static annotations = annotations;
 
   static layoutRegions = layoutRegions;
 

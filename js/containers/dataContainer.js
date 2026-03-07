@@ -20,6 +20,11 @@ export class layoutRegions {
   }
 }
 
+export class annotations {
+  /** @type {Array<Array<AnnotationHighlight>>} */
+  static pages = [];
+}
+
 export class layoutDataTables {
   /** @type {Array<LayoutDataTablePage>} */
   static pages = [];

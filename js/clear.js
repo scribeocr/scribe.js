@@ -1,5 +1,6 @@
 import { inputData } from './containers/app.js';
 import {
+  annotations,
   convertPageWarn,
   layoutDataTables,
   layoutRegions,
@@ -17,6 +18,7 @@ export function clearData() {
   ocrAll.active = [];
   clearObjectProperties(ocrAllRaw);
   ocrAllRaw.active = [];
+  annotations.pages.length = 0;
   layoutRegions.pages.length = 0;
   layoutDataTables.pages.length = 0;
   pageMetricsAll.length = 0;

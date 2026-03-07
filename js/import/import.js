@@ -1,6 +1,7 @@
 import { clearData } from '../clear.js';
 import { inputData, opt } from '../containers/app.js';
 import {
+  annotations,
   convertPageWarn,
   layoutDataTables,
   layoutRegions,
@@ -185,6 +186,9 @@ const restoreSessionFromFile = async (scribeFile) => {
     // existingLayoutDataTable = true;
     addCircularRefsDataTables(scribeRestoreObj.layoutDataTables);
     layoutDataTables.pages = scribeRestoreObj.layoutDataTables;
+  }
+  if (scribeRestoreObj.annotations) {
+    annotations.pages = scribeRestoreObj.annotations;
   }
 
   const oemName = 'User Upload';
@@ -461,6 +465,12 @@ export async function importFiles(files) {
   for (let i = 0; i < inputData.pageCount; i++) {
     if (!layoutDataTables.pages[i]) {
       layoutDataTables.pages[i] = new LayoutDataTablePage(i);
+    }
+  }
+
+  for (let i = 0; i < inputData.pageCount; i++) {
+    if (!annotations.pages[i]) {
+      annotations.pages[i] = [];
     }
   }
 

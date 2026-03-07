@@ -124,6 +124,7 @@ const createPdfFontRefs = async (objectIStart, ocrArr) => {
  * @param {number} [params.proofOpacity=0.8] -
  * @param {?Array<ImageWrapper>} [params.images=null] - Array of images to include in PDF
  * @param {boolean} [params.includeImages=false] - Whether to include images in the PDF
+ * @param {?Array<Array<AnnotationHighlight>>} [params.annotationsPages=null] - Per-page annotation arrays
  *
  * A valid PDF will be created if an empty array is provided for `ocrArr`, as long as `maxpage` is set manually.
  */
@@ -142,6 +143,7 @@ export async function writePdf({
   proofOpacity = 0.8,
   images = null,
   includeImages = false,
+  annotationsPages = null,
 }) {
   if (!FontCont.raw) throw new Error('No fonts loaded.');
 
@@ -221,6 +223,7 @@ export async function writePdf({
       confThreshMed,
       imageObjIndices,
       imageName,
+      pageAnnotations: consolidateAnnotations(annotationsPages?.[i] || [], ocrArr?.[i]),
     }));
 
     for (const font of pdfFontsUsedI) {
@@ -329,6 +332,129 @@ ${xrefOffset}
 }
 
 /**
+ * Consolidates highlight annotations by using the OCR line/word structure.
+ * For each annotation, overlapping words are found in the page object.
+ * Words are grouped by their parent line, and consecutive highlighted words
+ * within a line are merged into a single quad. Adjacent lines with highlights
+ * are combined into multi-quad annotations.
+ *
+ * @param {Array<AnnotationHighlight>} pageAnnotations
+ * @param {OcrPage} [pageObj]
+ * @returns {Array<AnnotationHighlight>}
+ */
+function consolidateAnnotations(pageAnnotations, pageObj) {
+  if (pageAnnotations.length === 0 || !pageObj || pageObj.lines.length === 0) return [];
+
+  // Group annotations by style key (color + opacity) and groupId.
+  const groups = {};
+  for (let i = 0; i < pageAnnotations.length; i++) {
+    const annot = pageAnnotations[i];
+    const key = annot.groupId || `style_${annot.color}_${annot.opacity}`;
+    if (!groups[key]) {
+      groups[key] = {
+        color: annot.color, opacity: annot.opacity, comment: annot.comment || '', annotations: [],
+      };
+    }
+    groups[key].annotations.push(annot);
+  }
+
+  const result = [];
+
+  for (const groupKey of Object.keys(groups)) {
+    const group = groups[groupKey];
+
+    // For each line in the page, find which word indices are highlighted by any annotation in this group.
+    // Use a map of lineIndex -> Set<wordIndex> to track highlighted words.
+    /** @type {Map<number, Set<number>>} */
+    const highlightedWords = new Map();
+    for (let li = 0; li < pageObj.lines.length; li++) {
+      const line = pageObj.lines[li];
+      for (let wi = 0; wi < line.words.length; wi++) {
+        const word = line.words[wi];
+        for (let ai = 0; ai < group.annotations.length; ai++) {
+          const annot = group.annotations[ai];
+          // Check if the annotation bbox overlaps with the word bbox.
+          if (annot.bbox.left < word.bbox.right && annot.bbox.right > word.bbox.left
+            && annot.bbox.top < word.bbox.bottom && annot.bbox.bottom > word.bbox.top) {
+            if (!highlightedWords.has(li)) highlightedWords.set(li, new Set());
+            /** @type {Set<number>} */ (highlightedWords.get(li)).add(wi);
+            break;
+          }
+        }
+      }
+    }
+
+    if (highlightedWords.size === 0) continue;
+
+    // For each line with highlighted words, split into runs of consecutive word indices.
+    // Each run produces one quad bbox.
+    /** @type {Array<{lineIndex: number, bbox: bbox}>} */
+    const lineQuads = [];
+    const sortedLineIndices = [...highlightedWords.keys()].sort((a, b) => a - b);
+
+    for (const li of sortedLineIndices) {
+      const wordSet = /** @type {Set<number>} */ (highlightedWords.get(li));
+      const wordIndices = [...wordSet].sort((a, b) => a - b);
+      const line = pageObj.lines[li];
+
+      let runStart = 0;
+      for (let i = 1; i <= wordIndices.length; i++) {
+        if (i === wordIndices.length || wordIndices[i] !== wordIndices[i - 1] + 1) {
+          // End of a consecutive run: merge bboxes of words in this run.
+          let left = line.words[wordIndices[runStart]].bbox.left;
+          let top = line.words[wordIndices[runStart]].bbox.top;
+          let right = line.words[wordIndices[runStart]].bbox.right;
+          let bottom = line.words[wordIndices[runStart]].bbox.bottom;
+          for (let j = runStart + 1; j < i; j++) {
+            const wb = line.words[wordIndices[j]].bbox;
+            left = Math.min(left, wb.left);
+            top = Math.min(top, wb.top);
+            right = Math.max(right, wb.right);
+            bottom = Math.max(bottom, wb.bottom);
+          }
+          lineQuads.push({
+            lineIndex: li,
+            bbox: {
+              left, top, right, bottom,
+            },
+          });
+          runStart = i;
+        }
+      }
+    }
+
+    // Merge quads from consecutive lines into multi-quad annotations.
+    // Separate runs on the same line remain separate annotations.
+    let currentQuads = [{ ...lineQuads[0].bbox }];
+    let currentBbox = { ...lineQuads[0].bbox };
+    let prevLineIndex = lineQuads[0].lineIndex;
+
+    for (let i = 1; i < lineQuads.length; i++) {
+      const isNextLine = lineQuads[i].lineIndex === prevLineIndex + 1;
+      if (isNextLine) {
+        currentQuads.push({ ...lineQuads[i].bbox });
+        currentBbox.left = Math.min(currentBbox.left, lineQuads[i].bbox.left);
+        currentBbox.top = Math.min(currentBbox.top, lineQuads[i].bbox.top);
+        currentBbox.right = Math.max(currentBbox.right, lineQuads[i].bbox.right);
+        currentBbox.bottom = Math.max(currentBbox.bottom, lineQuads[i].bbox.bottom);
+      } else {
+        result.push({
+          bbox: currentBbox, quads: currentQuads, color: group.color, opacity: group.opacity, comment: group.comment,
+        });
+        currentQuads = [{ ...lineQuads[i].bbox }];
+        currentBbox = { ...lineQuads[i].bbox };
+      }
+      prevLineIndex = lineQuads[i].lineIndex;
+    }
+    result.push({
+      bbox: currentBbox, quads: currentQuads, color: group.color, opacity: group.opacity, comment: group.comment,
+    });
+  }
+
+  return result;
+}
+
+/**
  * Generates PDF objects for a single page of OCR data.
  * Generally returns an array of 2 strings, the first being the text content object, and the second being the page object.
  * If there is no text content, only the page object is returned.
@@ -351,6 +477,7 @@ ${xrefOffset}
  * @param {?import('opentype.js').Font} [params.fontChiSim=null]
  * @param {Array<number>} [params.imageObjIndices=[]] - Array of image object indices
  * @param {?string} [params.imageName=null]
+ * @param {Array<AnnotationHighlight>} [params.pageAnnotations=[]] - Highlight annotations for this page
  */
 async function ocrPageToPDF({
   pageObj,
@@ -369,6 +496,7 @@ async function ocrPageToPDF({
   confThreshMed = 75,
   imageObjIndices = [],
   imageName = null,
+  pageAnnotations = [],
 }) {
   if (outputDims.width < 1) {
     outputDims = inputDims;
@@ -386,67 +514,121 @@ async function ocrPageToPDF({
 
   pageObjStr += `/Parent ${parentIndex} 0 R`;
 
+  /** @type {string[]} */
+  const pdfObj = [];
+  let pdfFontsUsed = /** @type {Set<PdfFontInfo>} */ (new Set());
+
   if (noTextContent && noImageContent) {
     pageObjStr += '/Resources<<>>';
-    pageObjStr += '>>\nendobj\n\n';
-    return { pdfObj: [pageObjStr], pdfFontsUsed: /** @type {Set<PdfFontInfo>} */ (new Set()) };
+  } else {
+    let resourceDictObjStr = `${String(firstObjIndex + 1)} 0 obj\n<<`;
+
+    pageObjStr += `/Contents ${String(firstObjIndex + 2)} 0 R`;
+    pageObjStr += `/Resources ${String(firstObjIndex + 1)} 0 R`;
+
+    let imageResourceStr = '';
+    let imageContentObjStr = '';
+
+    if (imageName && imageObjIndices.length > 0) {
+      imageResourceStr = createImageResourceDict(imageObjIndices);
+      let rotation = 0;
+      if (rotateBackground && Math.abs(angle ?? 0) > 0.05) {
+        rotation = angle;
+      }
+
+      let x = 0;
+      let y = 0;
+      if (rotateOrientation && (rotation > 45 && rotation < 135 || rotation > 225 && rotation < 315)) {
+        x = (outputDims.height - outputDims.width) / 2;
+        y = (outputDims.width - outputDims.height) / 2;
+      }
+
+      imageContentObjStr += drawImageCommands(imageName, x, y, outputDims.width, outputDims.height, rotation);
+    }
+
+    if (noTextContent) {
+      resourceDictObjStr += imageResourceStr;
+      resourceDictObjStr += '>>\nendobj\n\n';
+      const pageContentObjStr = `${String(firstObjIndex + 2)} 0 obj\n<</Length ${String(imageContentObjStr.length)} >>\nstream\n${imageContentObjStr}\nendstream\nendobj\n\n`;
+      pdfObj.push(resourceDictObjStr, pageContentObjStr);
+    } else {
+      const textResult = await ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle,
+        rotateText, rotateBackground, confThreshHigh, confThreshMed);
+      pdfFontsUsed = textResult.pdfFontsUsed;
+
+      let pdfFontsStr = '';
+      for (const font of pdfFontsUsed) {
+        pdfFontsStr += `${String(font.name)} ${String(font.objN)} 0 R\n`;
+      }
+
+      resourceDictObjStr += `/Font<<${pdfFontsStr}>>`;
+      resourceDictObjStr += imageResourceStr;
+
+      // Use `GSO` prefix to avoid conflicts with other graphics states, which are normally named `/GS[n]` by convention.
+      resourceDictObjStr += '/ExtGState<<';
+      resourceDictObjStr += '/GSO0 <</ca 0.0>>';
+      resourceDictObjStr += `/GSO1 <</ca ${proofOpacity}>>`;
+      resourceDictObjStr += '>>';
+
+      resourceDictObjStr += '>>\nendobj\n\n';
+
+      const pageContentObjStr = `${String(firstObjIndex + 2)} 0 obj\n<</Length ${String(imageContentObjStr.length + textResult.textContentObjStr.length)} >>\nstream\n${imageContentObjStr}${textResult.textContentObjStr}\nendstream\nendobj\n\n`;
+      pdfObj.push(resourceDictObjStr, pageContentObjStr);
+    }
   }
 
-  let resourceDictObjStr = `${String(firstObjIndex + 1)} 0 obj\n<<`;
+  // Build annotation objects.
+  // pdfObj contains 0 items (empty page) or 2 items (resourceDict + contentStream).
+  // The page dict (prepended below) is always at firstObjIndex, so annotation objects
+  // start at firstObjIndex + pdfObj.length + 1.
+  if (pageAnnotations.length > 0) {
+    const annotObjStart = firstObjIndex + pdfObj.length + 1;
+    let annotsRef = '/Annots [';
+    for (let a = 0; a < pageAnnotations.length; a++) {
+      const annotObjIndex = annotObjStart + a;
+      annotsRef += `${String(annotObjIndex)} 0 R `;
 
-  pageObjStr += `/Contents ${String(firstObjIndex + 2)} 0 R`;
-  pageObjStr += `/Resources ${String(firstObjIndex + 1)} 0 R`;
+      const annot = pageAnnotations[a];
+      const hex = annot.color.replace('#', '');
+      const r = parseInt(hex.substring(0, 2), 16) / 255;
+      const g = parseInt(hex.substring(2, 4), 16) / 255;
+      const b = parseInt(hex.substring(4, 6), 16) / 255;
+
+      // Convert to PDF coordinates (origin bottom-left, y increases upward)
+      const pdfRectTop = outputDims.height - annot.bbox.top;
+      const pdfRectBottom = outputDims.height - annot.bbox.bottom;
+
+      let annotStr = `${String(annotObjIndex)} 0 obj\n`;
+      annotStr += '<</Type /Annot /Subtype /Highlight';
+      annotStr += ` /Rect [${annot.bbox.left} ${pdfRectBottom} ${annot.bbox.right} ${pdfRectTop}]`;
+
+      // Build QuadPoints from per-line quads.
+      let quadPoints = '';
+      const quads = annot.quads || [annot.bbox];
+      for (const q of quads) {
+        const qTop = outputDims.height - q.top;
+        const qBottom = outputDims.height - q.bottom;
+        quadPoints += `${q.left} ${qTop} ${q.right} ${qTop} ${q.left} ${qBottom} ${q.right} ${qBottom} `;
+      }
+      annotStr += ` /QuadPoints [${quadPoints.trim()}]`;
+
+      annotStr += ` /C [${r} ${g} ${b}]`;
+      annotStr += ` /CA ${annot.opacity}`;
+      annotStr += ' /F 4';
+      if (annot.comment) {
+        const escapedComment = annot.comment.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
+        annotStr += ` /Contents (${escapedComment})`;
+      }
+      annotStr += '>>\nendobj\n\n';
+
+      pdfObj.push(annotStr);
+    }
+    annotsRef += ']';
+    pageObjStr += annotsRef;
+  }
+
   pageObjStr += '>>\nendobj\n\n';
+  pdfObj.unshift(pageObjStr);
 
-  let imageResourceStr = '';
-  let imageContentObjStr = '';
-
-  if (imageName && imageObjIndices.length > 0) {
-    imageResourceStr = createImageResourceDict(imageObjIndices);
-    let rotation = 0;
-    if (rotateBackground && Math.abs(angle ?? 0) > 0.05) {
-      rotation = angle;
-    }
-
-    let x = 0;
-    let y = 0;
-    if (rotateOrientation && (rotation > 45 && rotation < 135 || rotation > 225 && rotation < 315)) {
-      x = (outputDims.height - outputDims.width) / 2;
-      y = (outputDims.width - outputDims.height) / 2;
-    }
-
-    imageContentObjStr += drawImageCommands(imageName, x, y, outputDims.width, outputDims.height, rotation);
-  }
-
-  if (noTextContent) {
-    resourceDictObjStr += imageResourceStr;
-    resourceDictObjStr += '>>\nendobj\n\n';
-    const pageContentObjStr = `${String(firstObjIndex + 2)} 0 obj\n<</Length ${String(imageContentObjStr.length)} >>\nstream\n${imageContentObjStr}\nendstream\nendobj\n\n`;
-    return { pdfObj: [pageObjStr, resourceDictObjStr, pageContentObjStr], pdfFontsUsed: /** @type {Set<PdfFontInfo>} */ (new Set()) };
-  }
-
-  const { textContentObjStr, pdfFontsUsed } = await ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle,
-    rotateText, rotateBackground, confThreshHigh, confThreshMed);
-
-  let pdfFontsStr = '';
-  for (const font of pdfFontsUsed) {
-    pdfFontsStr += `${String(font.name)} ${String(font.objN)} 0 R\n`;
-  }
-
-  resourceDictObjStr += `/Font<<${pdfFontsStr}>>`;
-  resourceDictObjStr += imageResourceStr;
-
-  // Use `GSO` prefix to avoid conflicts with other graphics states, which are normally named `/GS[n]` by convention.
-  resourceDictObjStr += '/ExtGState<<';
-  resourceDictObjStr += '/GSO0 <</ca 0.0>>';
-  resourceDictObjStr += `/GSO1 <</ca ${proofOpacity}>>`;
-  resourceDictObjStr += '>>';
-
-  resourceDictObjStr += '>>\nendobj\n\n';
-
-  const pageContentObjStr = `${String(firstObjIndex + 2)} 0 obj\n<</Length ${String(imageContentObjStr.length + textContentObjStr.length)} >>\nstream\n${imageContentObjStr}${textContentObjStr}\nendstream\nendobj\n\n`;
-
-  return {
-    pdfObj: [pageObjStr, resourceDictObjStr, pageContentObjStr], pdfFontsUsed,
-  };
+  return { pdfObj, pdfFontsUsed };
 }

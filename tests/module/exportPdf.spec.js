@@ -118,6 +118,40 @@ describe('Check export for .pdf files.', function () {
     await scribe.clear();
   }).timeout(30000);
 
+  it('Annotations container is initialized for each page on import', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/testocr.png`, `${ASSETS_PATH_KARMA}/testocr.abbyy.xml`]);
+
+    assert.isArray(scribe.data.annotations.pages[0]);
+    assert.strictEqual(scribe.data.annotations.pages[0].length, 0);
+  }).timeout(10000);
+
+  it('Highlight annotations are preserved through .scribe export and import', async () => {
+    scribe.data.annotations.pages[0].push({
+      bbox: {
+        left: 100, top: 200, right: 300, bottom: 220,
+      },
+      color: '#ffff00',
+      opacity: 0.35,
+    });
+
+    scribe.opt.compressScribe = false;
+    const scribeData = await scribe.exportData('scribe');
+
+    await scribe.clear();
+
+    const encoder = new TextEncoder();
+    await scribe.importFiles({ scribeFiles: [encoder.encode(scribeData).buffer] });
+
+    assert.strictEqual(scribe.data.annotations.pages[0].length, 1);
+    assert.strictEqual(scribe.data.annotations.pages[0][0].color, '#ffff00');
+    assert.strictEqual(scribe.data.annotations.pages[0][0].opacity, 0.35);
+    assert.strictEqual(scribe.data.annotations.pages[0][0].bbox.left, 100);
+    assert.strictEqual(scribe.data.annotations.pages[0][0].bbox.right, 300);
+
+    scribe.opt.compressScribe = true;
+    await scribe.clear();
+  }).timeout(10000);
+
   after(async () => {
     await scribe.terminate();
   });

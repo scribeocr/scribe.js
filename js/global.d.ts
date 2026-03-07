@@ -31,6 +31,7 @@ declare global {
         fontState: FontState;
         layoutRegions: LayoutPage[];
         layoutDataTables: LayoutDataTablePage[];
+        annotations: AnnotationHighlight[][];
     }
 
     type StyleLookup = ('normal' | 'bold' | 'italic' | 'boldItalic');
@@ -204,6 +205,15 @@ declare global {
     }
 
     type FileNode = import("./import/nodeAdapter.js").FileNode;
+
+    type AnnotationHighlight = {
+        bbox: bbox;
+        color: string;
+        opacity: number;
+        groupId?: string;
+        comment?: string;
+        quads?: bbox[];
+    };
 
     // Layout objects
     type LayoutPage = import("./objects/layoutObjects.js").LayoutPage;
