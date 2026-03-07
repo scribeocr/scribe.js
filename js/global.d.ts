@@ -210,7 +210,7 @@ declare global {
         bbox: bbox;
         color: string;
         opacity: number;
-        groupId?: string;
+        groupId: string;
         comment?: string;
         quads?: bbox[];
     };

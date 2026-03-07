@@ -132,6 +132,7 @@ describe('Check export for .pdf files.', function () {
       },
       color: '#ffff00',
       opacity: 0.35,
+      groupId: 'test-export-1',
     });
 
     scribe.opt.compressScribe = false;
