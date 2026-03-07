@@ -474,6 +474,32 @@ export async function importFiles(files) {
     }
   }
 
+  // Read highlight annotations from PDF
+  if (inputData.pdfMode) {
+    const muPDFScheduler = await ImageCache.getMuPDFScheduler();
+    const pageDPI = ImageCache.pdfDims300.map((x) => 300 * Math.min(x.width, 3500) / x.width);
+    const annotPromises = pageDPI.map(async (dpi, i) => {
+      /** @type {Array<{rect: bbox, color: Array<number>, opacity: number, comment?: string, quads?: Array<bbox>}>} */
+      const rawAnnots = await muPDFScheduler.pageAnnotations({ page: i + 1, dpi });
+      for (const raw of rawAnnots) {
+        const r = Math.round(raw.color[0] * 255);
+        const g = Math.round(raw.color[1] * 255);
+        const b = Math.round(raw.color[2] * 255);
+        /** @type {AnnotationHighlight} */
+        const annot = {
+          bbox: raw.rect,
+          color: `#${r.toString(16).padStart(2, '0')}${g.toString(16).padStart(2, '0')}${b.toString(16).padStart(2, '0')}`,
+          opacity: raw.opacity,
+          groupId: `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`,
+        };
+        if (raw.comment) annot.comment = raw.comment;
+        if (raw.quads) annot.quads = raw.quads;
+        annotations.pages[i].push(annot);
+      }
+    });
+    await Promise.all(annotPromises);
+  }
+
   // Render first page for PDF only
   if (inputData.pdfMode && !xmlModeImport) {
     opt.progressHandler({ n: 0, type: 'importPDF', info: { } });

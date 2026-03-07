@@ -374,12 +374,17 @@ function consolidateAnnotations(pageAnnotations, pageObj) {
         for (let ai = 0; ai < group.annotations.length; ai++) {
           const annot = group.annotations[ai];
           // Check if the annotation bbox overlaps with the word bbox.
-          if (annot.bbox.left < word.bbox.right && annot.bbox.right > word.bbox.left
-            && annot.bbox.top < word.bbox.bottom && annot.bbox.bottom > word.bbox.top) {
-            if (!highlightedWords.has(li)) highlightedWords.set(li, new Set());
-            /** @type {Set<number>} */ (highlightedWords.get(li)).add(wi);
-            break;
+          if (!(annot.bbox.left < word.bbox.right && annot.bbox.right > word.bbox.left
+            && annot.bbox.top < word.bbox.bottom && annot.bbox.bottom > word.bbox.top)) continue;
+          // If annotation has quads, require overlap with at least one quad.
+          if (annot.quads) {
+            const matchesQuad = annot.quads.some((quad) => quad.left < word.bbox.right && quad.right > word.bbox.left
+              && quad.top < word.bbox.bottom && quad.bottom > word.bbox.top);
+            if (!matchesQuad) continue;
           }
+          if (!highlightedWords.has(li)) highlightedWords.set(li, new Set());
+          /** @type {Set<number>} */ (highlightedWords.get(li)).add(wi);
+          break;
         }
       }
     }

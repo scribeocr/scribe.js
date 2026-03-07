@@ -41,6 +41,11 @@ export class MuPDFScheduler {
      * @returns {Promise<ReturnType<typeof import('../../mupdf/mupdf-worker.js').mupdf.drawPageAsPNG>>}
      */
     this.drawPageAsPNG = (args, priorityJob = false) => (this.scheduler.addJob('drawPageAsPNG', args, priorityJob));
+    /**
+     * @param {Parameters<typeof import('../../mupdf/mupdf-worker.js').mupdf.pageAnnotations>[1]} args
+     * @returns {Promise<ReturnType<typeof import('../../mupdf/mupdf-worker.js').mupdf.pageAnnotations>>}
+     */
+    this.pageAnnotations = (args) => (this.scheduler.addJob('pageAnnotations', args));
   }
 }
 

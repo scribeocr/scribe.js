@@ -116,8 +116,9 @@ Module.onRuntimeInitialized = function () {
   mupdf.pageWidth = Module.cwrap('pageWidth', 'number', ['number', 'number', 'number']);
   mupdf.pageHeight = Module.cwrap('pageHeight', 'number', ['number', 'number', 'number']);
   mupdf.pageLinksJSON = Module.cwrap('pageLinks', 'string', ['number', 'number', 'number']);
-  mupdf.doDrawPageAsPNG = Module.cwrap('doDrawPageAsPNG', 'null', ['number', 'number', 'number', 'number']);
-  mupdf.doDrawPageAsPNGGray = Module.cwrap('doDrawPageAsPNGGray', 'null', ['number', 'number', 'number', 'number']);
+  mupdf.pageAnnotationsJSON = Module.cwrap('pageAnnotations', 'string', ['number', 'number', 'number']);
+  mupdf.doDrawPageAsPNG = Module.cwrap('doDrawPageAsPNG', 'null', ['number', 'number', 'number', 'number', 'number']);
+  mupdf.doDrawPageAsPNGGray = Module.cwrap('doDrawPageAsPNGGray', 'null', ['number', 'number', 'number', 'number', 'number']);
   wasm_convertImageStart = Module.cwrap('convertImageStart', 'null', ['number']);
   wasm_convertImageAddPage = Module.cwrap('convertImageAddPage', 'null', ['number', 'number', 'number', 'number', 'number']);
   wasm_convertImageEnd = Module.cwrap('convertImageEnd', 'null', ['number']);
@@ -350,15 +351,16 @@ mupdf.openDocument = function (data, magic) {
  * @param {number} args.dpi
  * @param {boolean} [args.color=true]
  * @param {boolean} [args.skipText=false]
+ * @param {boolean} [args.skipAnnots=true]
  * @returns
  */
 mupdf.drawPageAsPNG = function (doc, {
-  page, dpi, color = true, skipText = false,
+  page, dpi, color = true, skipText = false, skipAnnots = true,
 }) {
   if (color) {
-    mupdf.doDrawPageAsPNG(doc, page, dpi, skipText);
+    mupdf.doDrawPageAsPNG(doc, page, dpi, skipText, skipAnnots);
   } else {
-    mupdf.doDrawPageAsPNGGray(doc, page, dpi, skipText);
+    mupdf.doDrawPageAsPNGGray(doc, page, dpi, skipText, skipAnnots);
   }
 
   const n = mupdf.getLastDrawSize();
@@ -407,6 +409,10 @@ mupdf.pageSizes = function (doc, dpi) {
 
 mupdf.pageLinks = function (doc, page, dpi) {
   return JSON.parse(mupdf.pageLinksJSON(doc, page, dpi));
+};
+
+mupdf.pageAnnotations = function (doc, { page, dpi = 72 }) {
+  return JSON.parse(mupdf.pageAnnotationsJSON(doc, page, dpi));
 };
 
 mupdf.search = function (doc, page, dpi, needle) {

@@ -124,6 +124,7 @@ export async function initMuPDFWorker() {
   mupdf.pageWidth = wrap('pageWidth');
   mupdf.pageHeight = wrap('pageHeight');
   mupdf.pageLinks = wrap('pageLinks');
+  mupdf.pageAnnotations = wrap('pageAnnotations');
   mupdf.pageText = wrap('pageText');
   mupdf.pageTextHTML = wrap('pageTextHTML');
   mupdf.pageTextXHTML = wrap('pageTextXHTML');

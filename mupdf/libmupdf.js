@@ -4376,13 +4376,13 @@ function checkIncomingModuleAPI() {
 }
 
 var ASM_CONSTS = {
-  2199208: () => {
+  2199304: () => {
     throw new libmupdf.TryLaterError("operation in progress");
   },
-  2199271: $0 => {
+  2199367: $0 => {
     throw new Error(UTF8ToString($0));
   },
-  2199310: () => {
+  2199406: () => {
     throw new Error("Cannot create MuPDF context!");
   }
 };
@@ -4429,6 +4429,8 @@ var _pageWidth = Module["_pageWidth"] = makeInvalidEarlyAccess("_pageWidth");
 var _pageHeight = Module["_pageHeight"] = makeInvalidEarlyAccess("_pageHeight");
 
 var _pageLinks = Module["_pageLinks"] = makeInvalidEarlyAccess("_pageLinks");
+
+var _pageAnnotations = Module["_pageAnnotations"] = makeInvalidEarlyAccess("_pageAnnotations");
 
 var _search = Module["_search"] = makeInvalidEarlyAccess("_search");
 
@@ -4502,6 +4504,7 @@ function assignWasmExports(wasmExports) {
   assert(typeof wasmExports["pageWidth"] != "undefined", "missing Wasm export: pageWidth");
   assert(typeof wasmExports["pageHeight"] != "undefined", "missing Wasm export: pageHeight");
   assert(typeof wasmExports["pageLinks"] != "undefined", "missing Wasm export: pageLinks");
+  assert(typeof wasmExports["pageAnnotations"] != "undefined", "missing Wasm export: pageAnnotations");
   assert(typeof wasmExports["search"] != "undefined", "missing Wasm export: search");
   assert(typeof wasmExports["documentTitle"] != "undefined", "missing Wasm export: documentTitle");
   assert(typeof wasmExports["loadOutline"] != "undefined", "missing Wasm export: loadOutline");
@@ -4533,8 +4536,8 @@ function assignWasmExports(wasmExports) {
   _checkNativeText = Module["_checkNativeText"] = createExportWrapper("checkNativeText", 2);
   _pdfOverlayDocuments = Module["_pdfOverlayDocuments"] = createExportWrapper("pdfOverlayDocuments", 2);
   _pageText = Module["_pageText"] = createExportWrapper("pageText", 7);
-  _doDrawPageAsPNG = Module["_doDrawPageAsPNG"] = createExportWrapper("doDrawPageAsPNG", 4);
-  _doDrawPageAsPNGGray = Module["_doDrawPageAsPNGGray"] = createExportWrapper("doDrawPageAsPNGGray", 4);
+  _doDrawPageAsPNG = Module["_doDrawPageAsPNG"] = createExportWrapper("doDrawPageAsPNG", 5);
+  _doDrawPageAsPNGGray = Module["_doDrawPageAsPNGGray"] = createExportWrapper("doDrawPageAsPNGGray", 5);
   _convertImageStart = Module["_convertImageStart"] = createExportWrapper("convertImageStart", 1);
   _convertImageAddPage = Module["_convertImageAddPage"] = createExportWrapper("convertImageAddPage", 4);
   _convertImageEnd = Module["_convertImageEnd"] = createExportWrapper("convertImageEnd", 0);
@@ -4546,6 +4549,7 @@ function assignWasmExports(wasmExports) {
   _pageWidth = Module["_pageWidth"] = createExportWrapper("pageWidth", 3);
   _pageHeight = Module["_pageHeight"] = createExportWrapper("pageHeight", 3);
   _pageLinks = Module["_pageLinks"] = createExportWrapper("pageLinks", 3);
+  _pageAnnotations = Module["_pageAnnotations"] = createExportWrapper("pageAnnotations", 3);
   _search = Module["_search"] = createExportWrapper("search", 4);
   _documentTitle = Module["_documentTitle"] = createExportWrapper("documentTitle", 1);
   _loadOutline = Module["_loadOutline"] = createExportWrapper("loadOutline", 1);
@@ -4817,10 +4821,10 @@ function invoke_viff(index, a1, a2, a3) {
   }
 }
 
-function invoke_iiiiiii(index, a1, a2, a3, a4, a5, a6) {
+function invoke_iiiiii(index, a1, a2, a3, a4, a5) {
   var sp = stackSave();
   try {
-    return getWasmTableEntry(index)(a1, a2, a3, a4, a5, a6);
+    return getWasmTableEntry(index)(a1, a2, a3, a4, a5);
   } catch (e) {
     stackRestore(sp);
     if (e !== e + 0) throw e;
@@ -4850,10 +4854,21 @@ function invoke_viiiiii(index, a1, a2, a3, a4, a5, a6) {
   }
 }
 
-function invoke_iiiiii(index, a1, a2, a3, a4, a5) {
+function invoke_fii(index, a1, a2) {
   var sp = stackSave();
   try {
-    return getWasmTableEntry(index)(a1, a2, a3, a4, a5);
+    return getWasmTableEntry(index)(a1, a2);
+  } catch (e) {
+    stackRestore(sp);
+    if (e !== e + 0) throw e;
+    _setThrew(1, 0);
+  }
+}
+
+function invoke_iiiiiii(index, a1, a2, a3, a4, a5, a6) {
+  var sp = stackSave();
+  try {
+    return getWasmTableEntry(index)(a1, a2, a3, a4, a5, a6);
   } catch (e) {
     stackRestore(sp);
     if (e !== e + 0) throw e;
@@ -5148,17 +5163,6 @@ function invoke_vij(index, a1, a2) {
   }
 }
 
-function invoke_fii(index, a1, a2) {
-  var sp = stackSave();
-  try {
-    return getWasmTableEntry(index)(a1, a2);
-  } catch (e) {
-    stackRestore(sp);
-    if (e !== e + 0) throw e;
-    _setThrew(1, 0);
-  }
-}
-
 function invoke_viiiiiiiiiii(index, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10, a11) {
   var sp = stackSave();
   try {
@@ -5215,17 +5219,6 @@ function invoke_viiij(index, a1, a2, a3, a4) {
   }
 }
 
-function invoke_viid(index, a1, a2, a3) {
-  var sp = stackSave();
-  try {
-    getWasmTableEntry(index)(a1, a2, a3);
-  } catch (e) {
-    stackRestore(sp);
-    if (e !== e + 0) throw e;
-    _setThrew(1, 0);
-  }
-}
-
 function invoke_fiii(index, a1, a2, a3) {
   var sp = stackSave();
   try {
@@ -5241,6 +5234,17 @@ function invoke_viiid(index, a1, a2, a3, a4) {
   var sp = stackSave();
   try {
     getWasmTableEntry(index)(a1, a2, a3, a4);
+  } catch (e) {
+    stackRestore(sp);
+    if (e !== e + 0) throw e;
+    _setThrew(1, 0);
+  }
+}
+
+function invoke_viid(index, a1, a2, a3) {
+  var sp = stackSave();
+  try {
+    getWasmTableEntry(index)(a1, a2, a3);
   } catch (e) {
     stackRestore(sp);
     if (e !== e + 0) throw e;
@@ -5271,39 +5275,6 @@ function invoke_jiii(index, a1, a2, a3) {
   }
 }
 
-function invoke_iiiif(index, a1, a2, a3, a4) {
-  var sp = stackSave();
-  try {
-    return getWasmTableEntry(index)(a1, a2, a3, a4);
-  } catch (e) {
-    stackRestore(sp);
-    if (e !== e + 0) throw e;
-    _setThrew(1, 0);
-  }
-}
-
-function invoke_viifi(index, a1, a2, a3, a4) {
-  var sp = stackSave();
-  try {
-    getWasmTableEntry(index)(a1, a2, a3, a4);
-  } catch (e) {
-    stackRestore(sp);
-    if (e !== e + 0) throw e;
-    _setThrew(1, 0);
-  }
-}
-
-function invoke_iiiiiiifi(index, a1, a2, a3, a4, a5, a6, a7, a8) {
-  var sp = stackSave();
-  try {
-    return getWasmTableEntry(index)(a1, a2, a3, a4, a5, a6, a7, a8);
-  } catch (e) {
-    stackRestore(sp);
-    if (e !== e + 0) throw e;
-    _setThrew(1, 0);
-  }
-}
-
 function invoke_fiiii(index, a1, a2, a3, a4) {
   var sp = stackSave();
   try {
@@ -5330,17 +5301,6 @@ function invoke_viiffffff(index, a1, a2, a3, a4, a5, a6, a7, a8) {
   var sp = stackSave();
   try {
     getWasmTableEntry(index)(a1, a2, a3, a4, a5, a6, a7, a8);
-  } catch (e) {
-    stackRestore(sp);
-    if (e !== e + 0) throw e;
-    _setThrew(1, 0);
-  }
-}
-
-function invoke_iiiifi(index, a1, a2, a3, a4, a5) {
-  var sp = stackSave();
-  try {
-    return getWasmTableEntry(index)(a1, a2, a3, a4, a5);
   } catch (e) {
     stackRestore(sp);
     if (e !== e + 0) throw e;
@@ -5462,6 +5422,50 @@ function invoke_viiiiiiffff(index, a1, a2, a3, a4, a5, a6, a7, a8, a9, a10) {
   var sp = stackSave();
   try {
     getWasmTableEntry(index)(a1, a2, a3, a4, a5, a6, a7, a8, a9, a10);
+  } catch (e) {
+    stackRestore(sp);
+    if (e !== e + 0) throw e;
+    _setThrew(1, 0);
+  }
+}
+
+function invoke_iiiifi(index, a1, a2, a3, a4, a5) {
+  var sp = stackSave();
+  try {
+    return getWasmTableEntry(index)(a1, a2, a3, a4, a5);
+  } catch (e) {
+    stackRestore(sp);
+    if (e !== e + 0) throw e;
+    _setThrew(1, 0);
+  }
+}
+
+function invoke_viifi(index, a1, a2, a3, a4) {
+  var sp = stackSave();
+  try {
+    getWasmTableEntry(index)(a1, a2, a3, a4);
+  } catch (e) {
+    stackRestore(sp);
+    if (e !== e + 0) throw e;
+    _setThrew(1, 0);
+  }
+}
+
+function invoke_iiiiiiifi(index, a1, a2, a3, a4, a5, a6, a7, a8) {
+  var sp = stackSave();
+  try {
+    return getWasmTableEntry(index)(a1, a2, a3, a4, a5, a6, a7, a8);
+  } catch (e) {
+    stackRestore(sp);
+    if (e !== e + 0) throw e;
+    _setThrew(1, 0);
+  }
+}
+
+function invoke_iiiif(index, a1, a2, a3, a4) {
+  var sp = stackSave();
+  try {
+    return getWasmTableEntry(index)(a1, a2, a3, a4);
   } catch (e) {
     stackRestore(sp);
     if (e !== e + 0) throw e;
