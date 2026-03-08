@@ -13,7 +13,7 @@ const formatNum = (x) => String(Math.round(x * 1e6) / 1e6);
  * @param {OcrPage} pageObj
  * @param {dims} outputDims
  * @param {Object<string, PdfFontFamily>} pdfFonts
- * @param {("ebook"|"eval"|"proof"|"invis")} textMode -
+ * @param {('ebook'|'eval'|'proof'|'invis'|'annot')} textMode -
  * @param {number} angle
  * @param {boolean} rotateText
  * @param {boolean} rotateBackground

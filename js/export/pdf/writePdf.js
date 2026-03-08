@@ -113,7 +113,7 @@ const createPdfFontRefs = async (objectIStart, ocrArr) => {
  * @param {?Array<OcrPage>} [params.ocrArr] -
  * @param {number} [params.minpage=0] -
  * @param {number} [params.maxpage=-1] -
- * @param {("ebook"|"eval"|"proof"|"invis")} [params.textMode="ebook"] -
+ * @param {('ebook'|'eval'|'proof'|'invis'|'annot')} [params.textMode='ebook'] -
  * @param {boolean} [params.rotateText=false] -
  * @param {boolean} [params.rotateBackground=false] -
  * @param {boolean} [params.rotateOrientation=false] - If true, canvas is adjusted to flip width/height to account for image rotation
@@ -162,7 +162,7 @@ export async function writePdf({
   /** @type {string[][]} */
   let pdfFontObjStrArr = [];
 
-  if (ocrArr && ocrArr.length > 0) {
+  if (ocrArr && ocrArr.length > 0 && textMode !== 'annot') {
     const fontRefs = await createPdfFontRefs(objectI, ocrArr);
     pdfFonts = fontRefs.pdfFonts;
     pdfFontRefs = fontRefs.pdfFontRefs;
@@ -471,7 +471,7 @@ function consolidateAnnotations(pageAnnotations, pageObj) {
  * @param {number} params.parentIndex
  * @param {number} params.proofOpacity
  * @param {Object<string, PdfFontFamily>} params.pdfFonts
- * @param {("ebook"|"eval"|"proof"|"invis")} params.textMode -
+ * @param {('ebook'|'eval'|'proof'|'invis'|'annot')} params.textMode -
  * @param {number} params.angle
  * @param {boolean} [params.rotateOrientation=false] - If true, canvas is adjusted to flip width/height to account for image rotation
  *    of 90 or 270 degrees. This argument is currently only used in a dev script and may not be the best approach.
@@ -507,7 +507,7 @@ async function ocrPageToPDF({
     outputDims = inputDims;
   }
 
-  const noTextContent = !pageObj || pageObj.lines.length === 0;
+  const noTextContent = !pageObj || pageObj.lines.length === 0 || textMode === 'annot';
   const noImageContent = !imageName || !imageObjIndices || imageObjIndices.length === 0;
 
   const pageIndex = firstObjIndex;
@@ -525,6 +525,9 @@ async function ocrPageToPDF({
 
   if (noTextContent && noImageContent) {
     pageObjStr += '/Resources<<>>';
+    pageObjStr += `/Contents ${String(firstObjIndex + 1)} 0 R`;
+    const emptyContentStr = `${String(firstObjIndex + 1)} 0 obj\n<</Length 0 >>\nstream\n\nendstream\nendobj\n\n`;
+    pdfObj.push(emptyContentStr);
   } else {
     let resourceDictObjStr = `${String(firstObjIndex + 1)} 0 obj\n<<`;
 
@@ -621,8 +624,12 @@ async function ocrPageToPDF({
       annotStr += ` /CA ${annot.opacity}`;
       annotStr += ' /F 4';
       if (annot.comment) {
-        const escapedComment = annot.comment.replace(/\\/g, '\\\\').replace(/\(/g, '\\(').replace(/\)/g, '\\)');
-        annotStr += ` /Contents (${escapedComment})`;
+        // Use UTF-16BE hex string with BOM for Unicode compatibility.
+        let hexStr = 'FEFF';
+        for (let ci = 0; ci < annot.comment.length; ci++) {
+          hexStr += annot.comment.charCodeAt(ci).toString(16).toUpperCase().padStart(4, '0');
+        }
+        annotStr += ` /Contents <${hexStr}>`;
       }
       annotStr += '>>\nendobj\n\n';
 

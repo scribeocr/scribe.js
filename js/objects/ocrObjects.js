@@ -753,6 +753,37 @@ function getMatchingWords(text, ocrPage) {
 }
 
 /**
+ * Gets words in a line that match the provided text.
+ * @param {string} text
+ * @param {OcrLine} line
+ */
+function getMatchingWordsInLine(text, line) {
+  text = text.trim().toLowerCase();
+
+  if (!text) return [];
+  const textArr = text.split(' ');
+
+  const wordArr = line.words;
+
+  const matchArr = [];
+
+  for (let i = 0; i <= wordArr.length - textArr.length; i++) {
+    const word = wordArr[i];
+
+    if (!word.text.toLowerCase().includes(textArr[0])) continue;
+
+    const candArr = wordArr.slice(i, i + textArr.length);
+    const candText = candArr.map((x) => x.text).join(' ').toLowerCase();
+
+    if (candText.includes(text)) {
+      matchArr.push(...candArr);
+    }
+  }
+
+  return matchArr;
+}
+
+/**
  * Gets word IDs that match the provided text.
  * @param {string} text
  * @param {OcrPage} ocrPage
@@ -1031,6 +1062,7 @@ const ocr = {
   getPageWords,
   getDistinctChars,
   getMatchingWords,
+  getMatchingWordsInLine,
   getMatchingWordIds,
   getPageText,
   getParText,

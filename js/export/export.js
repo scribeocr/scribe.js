@@ -111,7 +111,7 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
           // Make a new PDF with invisible text removed to avoid duplication.
           // Making a new PDF object is also required as the `overlayDocuments` function modifies the input PDF in place.
           const basePdfNoInvisData = await w.save({
-            doc1: basePdf, minpage: minPage, maxpage: maxPage, pagewidth: dimsLimit.width, pageheight: dimsLimit.height, humanReadable: opt.humanReadablePDF, skipTextInvis: true,
+            doc1: basePdf, minpage: minPage, maxpage: maxPage, pagewidth: dimsLimit.width, pageheight: dimsLimit.height, humanReadable: opt.humanReadablePDF, skipTextInvis: opt.displayMode !== 'annot',
           });
           const basePdfNoInvis = await w.openDocument(basePdfNoInvisData, 'document.pdf');
           if (minPage > 0 || maxPage < inputData.pageCount - 1) {
@@ -260,6 +260,7 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
       minpage: minPage,
       maxpage: maxPage,
       reflowText: opt.reflow,
+      lineNumbers: opt.lineNumbers,
     });
   } else if (format === 'md') {
     content = writeMarkdown({

@@ -13,6 +13,7 @@ import scribe from '../scribe.js';
  * @param {Object} [options]
  * @param {Parameters<typeof scribe.download>[0]} [options.format]
  * @param {boolean} [options.reflow]
+ * @param {boolean} [options.lineNumbers]
  */
 export const extract = async (inputFile, output, options) => {
   const format = options?.format || 'txt';
@@ -32,6 +33,8 @@ export const extract = async (inputFile, output, options) => {
   await scribe.importFiles([inputFile]);
 
   if (outputDir) fs.mkdirSync(outputDir, { recursive: true });
+
+  if (options?.lineNumbers) scribe.opt.lineNumbers = true;
 
   await scribe.download(format, outputPath);
 

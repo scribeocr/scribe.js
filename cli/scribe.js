@@ -39,6 +39,7 @@ program
   .addOption(new Option('-f, --format <ext>', 'Output format.').choices(['pdf', 'hocr', 'docx', 'xlsx', 'txt', 'text', 'html', 'md']).default('txt'))
   .option('-r, --reflow', 'Reflow text by combining lines into paragraphs.')
   .option('-d, --dir', 'Process all supported files in the input directory.')
+  .option('-l, --line-numbers', 'Prepend page:line numbers to each line (e.g. 0:5  text). Only applies to txt format.')
   .description('Extract text from PDF file and save in requested format.')
   .action(extractCLI);
 

@@ -29,13 +29,15 @@ export class opt {
 
   static reflow = true;
 
+  static lineNumbers = false;
+
   static removeMargins = false;
 
   static includeImages = false;
 
   static pageBreaks = true;
 
-  /** @type {("invis"|"ebook"|"eval"|"proof")} */
+  /** @type {('invis'|'ebook'|'eval'|'proof'|'annot')} */
   static displayMode = 'proof';
 
   /** @type {('color'|'gray'|'binary')} */
