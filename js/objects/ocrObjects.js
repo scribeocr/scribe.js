@@ -817,7 +817,7 @@ function getMatchingWordIds(text, ocrPage) {
 /**
  *
  * @param {OcrWord} word
- * @param {"invis" | "ebook" | "eval" | "proof"} displayMode
+ * @param {'invis' | 'ebook' | 'eval' | 'proof' | 'annot'} displayMode
  * @param {number} [confThreshMed=75]
  * @param {number} [confThreshHigh=85]
  * @param {number} [overlayOpacity=80]
@@ -839,6 +839,9 @@ export function getWordFillOpacity(word, displayMode, confThreshMed = 75, confTh
   // Set current text color and opacity based on display mode selected
   if (displayMode === 'invis') {
     opacity = 0;
+    fill = 'black';
+  } else if (displayMode === 'annot') {
+    opacity = 1;
     fill = 'black';
   } else if (displayMode === 'ebook') {
     opacity = 1;

@@ -111,6 +111,7 @@ const createPdfFontRefs = async (objectIStart, ocrArr) => {
  * @param {Object} params
  * @param {PageMetrics[]} params.pageMetricsArr -
  * @param {?Array<OcrPage>} [params.ocrArr] -
+ * @param {?Array<number>} [params.pageArr=null] - Array of 0-based page indices to include. Overrides minpage/maxpage when provided.
  * @param {number} [params.minpage=0] -
  * @param {number} [params.maxpage=-1] -
  * @param {('ebook'|'eval'|'proof'|'invis'|'annot')} [params.textMode='ebook'] -
@@ -131,6 +132,7 @@ const createPdfFontRefs = async (objectIStart, ocrArr) => {
 export async function writePdf({
   pageMetricsArr,
   ocrArr = null,
+  pageArr = null,
   minpage = 0,
   maxpage = -1,
   textMode = 'ebook',
@@ -147,12 +149,15 @@ export async function writePdf({
 }) {
   if (!FontCont.raw) throw new Error('No fonts loaded.');
 
-  if (maxpage === -1) {
-    maxpage = pageMetricsArr.length - 1;
+  if (!pageArr) {
+    if (maxpage === -1) {
+      maxpage = pageMetricsArr.length - 1;
+    }
+    // This can happen if (1) `ocrArr` is length 0 and (2) `maxpage` is left as the default (-1).
+    if (maxpage < 0) throw new Error('PDF with negative page count requested.');
+    pageArr = [];
+    for (let i = minpage; i <= maxpage; i++) pageArr.push(i);
   }
-
-  // This can happen if (1) `ocrArr` is length 0 and (2) `maxpage` is left as the default (-1).
-  if (maxpage < 0) throw new Error('PDF with negative page count requested.');
 
   let objectI = 3;
   /** @type {Object<string, PdfFontFamily>} */
@@ -199,7 +204,7 @@ export async function writePdf({
 
   // Add pages
   const pageIndexArr = [];
-  for (let i = minpage; i <= maxpage; i++) {
+  for (const i of pageArr) {
     const angle = pageMetricsArr[i].angle || 0;
     const { dims } = pageMetricsArr[i];
 
@@ -261,10 +266,10 @@ export async function writePdf({
   pdfObjStrArr.push('1 0 obj\n<</Type /Catalog\n/Pages 2 0 R>>\nendobj\n\n');
 
   let pagesObjStr = '2 0 obj\n<</Type /Pages\n/Kids [';
-  for (let i = 0; i < (maxpage - minpage + 1); i++) {
+  for (let i = 0; i < pageArr.length; i++) {
     pagesObjStr += `${String(pageIndexArr[i])} 0 R\n`;
   }
-  pagesObjStr += `]\n/Count ${String(maxpage - minpage + 1)}>>\nendobj\n\n`;
+  pagesObjStr += `]\n/Count ${String(pageArr.length)}>>\nendobj\n\n`;
 
   pdfObjStrArr.push(pagesObjStr);
 

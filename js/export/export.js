@@ -21,12 +21,21 @@ import { FontCont } from '../containers/fontContainer.js';
  * @param {'pdf'|'hocr'|'alto'|'docx'|'html'|'xlsx'|'txt'|'text'|'md'|'scribe'} [format='txt']
  * @param {number} [minPage=0] - First page to export.
  * @param {number} [maxPage=-1] - Last page to export (inclusive). -1 exports through the last page.
+ * @param {?Array<number>} [pageArr=null] - Array of 0-based page indices to include. Overrides minPage/maxPage when provided.
  * @returns {Promise<string|ArrayBuffer>}
  */
-export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
+export async function exportData(format = 'txt', minPage = 0, maxPage = -1, pageArr = null) {
   if (format === 'text') format = 'txt';
 
-  if (maxPage === -1) maxPage = inputData.pageCount - 1;
+  if (!pageArr) {
+    if (maxPage === -1) maxPage = inputData.pageCount - 1;
+    pageArr = [];
+    for (let i = minPage; i <= maxPage; i++) pageArr.push(i);
+  } else {
+    // Set minPage/maxPage from pageArr for non-PDF formats that still use them.
+    minPage = Math.min(...pageArr);
+    maxPage = Math.max(...pageArr);
+  }
 
   /** @type {Array<OcrPage>} */
   let ocrDownload = [];
@@ -46,7 +55,7 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
   if (format === 'pdf') {
     const dimsLimit = { width: -1, height: -1 };
     if (opt.standardizePageSize) {
-      for (let i = minPage; i <= maxPage; i++) {
+      for (const i of pageArr) {
         dimsLimit.height = Math.max(dimsLimit.height, pageMetricsAll[i].dims.height);
         dimsLimit.width = Math.max(dimsLimit.width, pageMetricsAll[i].dims.width);
       }
@@ -72,8 +81,7 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
       const pdfStr = await writePdf({
         ocrArr: ocrDownload,
         pageMetricsArr: pageMetricsAll,
-        minpage: minPage,
-        maxpage: maxPage,
+        pageArr,
         textMode: opt.displayMode,
         rotateText,
         rotateBackground,
@@ -114,8 +122,8 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
             doc1: basePdf, minpage: minPage, maxpage: maxPage, pagewidth: dimsLimit.width, pageheight: dimsLimit.height, humanReadable: opt.humanReadablePDF, skipTextInvis: opt.displayMode !== 'annot',
           });
           const basePdfNoInvis = await w.openDocument(basePdfNoInvisData, 'document.pdf');
-          if (minPage > 0 || maxPage < inputData.pageCount - 1) {
-            await w.subsetPages(basePdfNoInvis, minPage, maxPage);
+          if (pageArr.length < inputData.pageCount) {
+            await w.subsetPages(basePdfNoInvis, { pageArr });
           }
           await w.overlayDocuments(basePdfNoInvis, pdfOverlay);
           content = await w.save({
@@ -140,10 +148,10 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
         const renderImage = binary || inputData.pdfMode;
 
         // Pre-render to benefit from parallel processing, since the loop below is synchronous.
-        if (renderImage) await ImageCache.preRenderRange(minPage, maxPage, binary, props);
+        if (renderImage) await ImageCache.preRenderRange(Math.min(...pageArr), Math.max(...pageArr), binary, props);
 
         await w.convertImageStart({ humanReadable: opt.humanReadablePDF });
-        for (let i = minPage; i < maxPage + 1; i++) {
+        for (const i of pageArr) {
           /** @type {ImageWrapper} */
           let image;
           if (binary) {
@@ -183,8 +191,7 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
       const pdfStr = await writePdf({
         ocrArr: ocrDownload,
         pageMetricsArr: pageMetricsAll,
-        minpage: minPage,
-        maxpage: maxPage,
+        pageArr,
         textMode: opt.displayMode,
         rotateText: false,
         rotateBackground: true,
@@ -313,8 +320,9 @@ export async function exportData(format = 'txt', minPage = 0, maxPage = -1) {
  * @param {string} fileName
  * @param {number} [minPage=0] - First page to export.
  * @param {number} [maxPage=-1] - Last page to export (inclusive). -1 exports through the last page.
+ * @param {?Array<number>} [pageArr=null] - Array of 0-based page indices to include. Overrides minPage/maxPage when provided.
  */
-export async function download(format, fileName, minPage = 0, maxPage = -1) {
+export async function download(format, fileName, minPage = 0, maxPage = -1, pageArr = null) {
   if (format === 'text') format = 'txt';
   let ext;
   if (format === 'alto') {
@@ -325,6 +333,6 @@ export async function download(format, fileName, minPage = 0, maxPage = -1) {
     ext = format;
   }
   fileName = fileName.replace(/\.\w{1,6}$/, `.${ext}`);
-  const content = await exportData(format, minPage, maxPage);
+  const content = await exportData(format, minPage, maxPage, pageArr);
   await saveAs(content, fileName);
 }

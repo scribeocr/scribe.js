@@ -4376,13 +4376,13 @@ function checkIncomingModuleAPI() {
 }
 
 var ASM_CONSTS = {
-  2199304: () => {
+  2199352: () => {
     throw new libmupdf.TryLaterError("operation in progress");
   },
-  2199367: $0 => {
+  2199415: $0 => {
     throw new Error(UTF8ToString($0));
   },
-  2199406: () => {
+  2199454: () => {
     throw new Error("Cannot create MuPDF context!");
   }
 };
@@ -4417,6 +4417,8 @@ var _convertImageEnd = Module["_convertImageEnd"] = makeInvalidEarlyAccess("_con
 var _runPDF = Module["_runPDF"] = makeInvalidEarlyAccess("_runPDF");
 
 var _pdfSubsetPages = Module["_pdfSubsetPages"] = makeInvalidEarlyAccess("_pdfSubsetPages");
+
+var _pdfMergeFrom = Module["_pdfMergeFrom"] = makeInvalidEarlyAccess("_pdfMergeFrom");
 
 var _pdfSaveDocument = Module["_pdfSaveDocument"] = makeInvalidEarlyAccess("_pdfSaveDocument");
 
@@ -4498,6 +4500,7 @@ function assignWasmExports(wasmExports) {
   assert(typeof wasmExports["convertImageEnd"] != "undefined", "missing Wasm export: convertImageEnd");
   assert(typeof wasmExports["runPDF"] != "undefined", "missing Wasm export: runPDF");
   assert(typeof wasmExports["pdfSubsetPages"] != "undefined", "missing Wasm export: pdfSubsetPages");
+  assert(typeof wasmExports["pdfMergeFrom"] != "undefined", "missing Wasm export: pdfMergeFrom");
   assert(typeof wasmExports["pdfSaveDocument"] != "undefined", "missing Wasm export: pdfSaveDocument");
   assert(typeof wasmExports["getLastDrawData"] != "undefined", "missing Wasm export: getLastDrawData");
   assert(typeof wasmExports["getLastDrawSize"] != "undefined", "missing Wasm export: getLastDrawSize");
@@ -4542,7 +4545,8 @@ function assignWasmExports(wasmExports) {
   _convertImageAddPage = Module["_convertImageAddPage"] = createExportWrapper("convertImageAddPage", 4);
   _convertImageEnd = Module["_convertImageEnd"] = createExportWrapper("convertImageEnd", 0);
   _runPDF = Module["_runPDF"] = createExportWrapper("runPDF", 6);
-  _pdfSubsetPages = Module["_pdfSubsetPages"] = createExportWrapper("pdfSubsetPages", 3);
+  _pdfSubsetPages = Module["_pdfSubsetPages"] = createExportWrapper("pdfSubsetPages", 2);
+  _pdfMergeFrom = Module["_pdfMergeFrom"] = createExportWrapper("pdfMergeFrom", 3);
   _pdfSaveDocument = Module["_pdfSaveDocument"] = createExportWrapper("pdfSaveDocument", 8);
   _getLastDrawData = Module["_getLastDrawData"] = createExportWrapper("getLastDrawData", 0);
   _getLastDrawSize = Module["_getLastDrawSize"] = createExportWrapper("getLastDrawSize", 0);

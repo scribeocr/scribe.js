@@ -1,0 +1,10 @@
+{
+  "name": "scribe-document-tools-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for semantic document search and highlighted PDF generation using scribe.js",
+  "type": "module",
+  "main": "index.js",
+  "bin": {
+    "scribe-mcp": "index.js"
+  }
+}
