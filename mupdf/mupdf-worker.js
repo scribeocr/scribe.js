@@ -129,7 +129,63 @@ Module.onRuntimeInitialized = function () {
   wasm_extractAllFonts = Module.cwrap('extractAllFonts', 'number', ['number']);
   wasm_pageText0 = Module.cwrap('pageText', 'PageTextResults', ['number', 'number', 'number', 'number', 'number', 'number', 'number']);
   mupdf.overlayDocuments = Module.cwrap('pdfOverlayDocuments', 'null', ['number', 'number']);
-  mupdf.subsetPages = Module.cwrap('pdfSubsetPages', 'null', ['number', 'number', 'number']);
+  const wasm_subsetPages = Module.cwrap('pdfSubsetPages', 'null', ['number', 'string']);
+
+  /**
+   * Subset pages in a PDF document.
+   * @param {number} doc - Document handle.
+   * @param {Object} args
+   * @param {Array<number>} [args.pageArr] - Array of 0-based page indices.
+   * @param {number} [args.minpage] - First page of a continuous range (used when pageArr is not provided).
+   * @param {number} [args.maxpage] - Last page of a continuous range, inclusive (used when pageArr is not provided).
+   */
+  mupdf.subsetPages = function (doc, { pageArr, minpage = 0, maxpage = 0 }) {
+    if (!pageArr) {
+      pageArr = [];
+      for (let i = minpage; i <= maxpage; i++) pageArr.push(i);
+    }
+    // Compress array into range string (e.g. [0,1,2,5,6] -> "0-2,5-6")
+    const parts = [];
+    let i = 0;
+    while (i < pageArr.length) {
+      const start = pageArr[i];
+      let end = start;
+      while (i + 1 < pageArr.length && pageArr[i + 1] === end + 1) {
+        end = pageArr[++i];
+      }
+      parts.push(start === end ? String(start) : `${start}-${end}`);
+      i++;
+    }
+    wasm_subsetPages(doc, parts.join(','));
+  };
+  const wasm_mergeFrom = Module.cwrap('pdfMergeFrom', 'null', ['number', 'number', 'string']);
+
+  /**
+   * Merge pages from a source document into a destination document.
+   * @param {number} dst - Destination document handle.
+   * @param {number} src - Source document handle.
+   * @param {Object} [args]
+   * @param {Array<number>} [args.pageArr] - Array of 0-based page indices from the source. If omitted, all pages are merged.
+   */
+  mupdf.mergeFrom = function (dst, src, { pageArr } = {}) {
+    let pagestr = '';
+    if (pageArr) {
+      const parts = [];
+      let i = 0;
+      while (i < pageArr.length) {
+        const start = pageArr[i];
+        let end = start;
+        while (i + 1 < pageArr.length && pageArr[i + 1] === end + 1) {
+          end = pageArr[++i];
+        }
+        parts.push(start === end ? String(start) : `${start}-${end}`);
+        i++;
+      }
+      pagestr = parts.join(',');
+    }
+    wasm_mergeFrom(dst, src, pagestr);
+  };
+
   mupdf.searchJSON = Module.cwrap('search', 'string', ['number', 'number', 'number', 'string']);
   mupdf.loadOutline = Module.cwrap('loadOutline', 'number', ['number']);
   mupdf.freeOutline = Module.cwrap('freeOutline', null, ['number']);

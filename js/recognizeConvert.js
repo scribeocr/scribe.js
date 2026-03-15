@@ -483,7 +483,7 @@ export async function convertOCR(ocrRawArr, mainData, format, engineName, scribe
 export async function recognizeAllPages(legacy = true, lstm = true, mainData = false, langs = ['eng'], vanillaMode = false, config = {}) {
   // Render all PDF pages to PNG if needed
   // This step should not create binarized images as they will be created by Tesseract during recognition.
-  if (inputData.pdfMode) await ImageCache.preRenderRange(0, ImageCache.pageCount - 1, false);
+  if (inputData.pdfMode) await ImageCache.preRenderRange({ min: 0, max: ImageCache.pageCount - 1, binary: false });
 
   if (legacy) {
     const oemText = 'Tesseract Legacy';
@@ -609,7 +609,7 @@ async function recognizeCustomModel(options) {
   await gs.getGeneralScheduler();
 
   // Pre-render PDF pages to images if needed
-  if (inputData.pdfMode) await ImageCache.preRenderRange(0, ImageCache.pageCount - 1, false);
+  if (inputData.pdfMode) await ImageCache.preRenderRange({ min: 0, max: ImageCache.pageCount - 1, binary: false });
 
   // Initialize array for custom model results
   if (!ocrAll[engineName]) ocrAll[engineName] = Array(inputData.pageCount);
@@ -911,7 +911,7 @@ export async function recognize(options = {}) {
 
     // Evaluate default fonts using up to 5 pages.
     const pageNum = Math.min(ImageCache.pageCount - 1, 5);
-    await ImageCache.preRenderRange(0, pageNum, true);
+    await ImageCache.preRenderRange({ min: 0, max: pageNum, binary: true });
     const charMetrics = calcCharMetricsFromPages(ocrAll['Tesseract Combined Temp']);
     if (Object.keys(charMetrics).length > 0) {
       clearObjectProperties(FontCont.state.charMetrics);

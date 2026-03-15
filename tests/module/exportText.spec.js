@@ -32,6 +32,31 @@ The quick brown dog jumped over the lazy fox. The quick brown dog jumped over th
   });
 }).timeout(120000);
 
+describe('Check non-contiguous pageArr subsetting for text export.', function () {
+  this.timeout(10000);
+
+  // trident_v_connecticut_general.abbyy.xml has 7 pages.
+  // Page 0 contains "Officer Comstock" (unique to page 0).
+  // Page 1 contains "Munger, Tolles" (unique to page 1).
+  // Page 2 contains "Security First Life" (unique to page 2).
+  it('Exporting pages [0, 2] should include pages 0 and 2 but not page 1', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/trident_v_connecticut_general.abbyy.xml`]);
+
+    const exportedText = await scribe.exportData('text', { pageArr: [0, 2] });
+
+    // "Comstock" only appears on page 0 — should be present
+    assert.include(exportedText, 'Comstock');
+    // "Security" only appears on page 2 — should be present
+    assert.include(exportedText, 'Security');
+    // "Munger" only appears on page 1 — should not be present
+    assert.notInclude(exportedText, 'Munger');
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);
+
 describe('Check export -> import for .txt files.', function () {
   this.timeout(10000);
 

@@ -50,13 +50,20 @@ function tesseractToISO6392(tesseractLang) {
  * Exports OCR data to ALTO XML format (v2.0)
  * @param {Object} params
  * @param {Array<OcrPage>} params.ocrData - OCR data to export
+ * @param {?Array<number>} [params.pageArr=null] - Array of 0-based page indices to include. Overrides minValue/maxValue when provided.
  * @param {number} [params.minValue] - First page to export (inclusive)
  * @param {number} [params.maxValue] - Last page to export (inclusive)
  * @returns {string} ALTO XML formatted string
  */
-export function writeAlto({ ocrData, minValue, maxValue }) {
-  if (minValue === null || minValue === undefined) minValue = 0;
-  if (maxValue === null || maxValue === undefined || maxValue < 0) maxValue = ocrData.length - 1;
+export function writeAlto({
+  ocrData, pageArr = null, minValue, maxValue,
+}) {
+  if (!pageArr) {
+    if (minValue === null || minValue === undefined) minValue = 0;
+    if (maxValue === null || maxValue === undefined || maxValue < 0) maxValue = ocrData.length - 1;
+    pageArr = [];
+    for (let i = minValue; i <= maxValue; i++) pageArr.push(i);
+  }
 
   const stylesMap = new Map();
   let styleIdCounter = 0;
@@ -76,7 +83,7 @@ export function writeAlto({ ocrData, minValue, maxValue }) {
     return stylesMap.get(key).id;
   }
 
-  for (let i = minValue; i <= maxValue; i++) {
+  for (const i of pageArr) {
     const pageObj = ocrData[i];
     if (!pageObj) continue;
 
@@ -117,7 +124,7 @@ export function writeAlto({ ocrData, minValue, maxValue }) {
 
   altoOut += '<Layout>\n';
 
-  for (let pageIndex = minValue; pageIndex <= maxValue; pageIndex++) {
+  for (const pageIndex of pageArr) {
     const pageObj = ocrData[pageIndex];
 
     let pageHeight = 0;

@@ -54,6 +54,7 @@ const makeSmallCapsDivs = (text, fontSizeHTMLSmallCaps) => {
  * @param {Object} params
  * @param {Array<OcrPage>} params.ocrPages -
  * @param {Array<ImageWrapper>} [params.images] -
+ * @param {?Array<number>} [params.pageArr=null] - Array of 0-based page indices to include. Overrides minpage/maxpage when provided.
  * @param {number} [params.minpage=0] - The first page to include in the document.
  * @param {number} [params.maxpage=-1] - The last page to include in the document.
  * @param {boolean} [params.reflowText=false] - Remove line breaks within what appears to be the same paragraph.
@@ -62,7 +63,8 @@ const makeSmallCapsDivs = (text, fontSizeHTMLSmallCaps) => {
  *    If omitted, all words are included.
  */
 export function writeHtml({
-  ocrPages, images, minpage = 0, maxpage = -1, reflowText = false, removeMargins = false, wordIds = null,
+  ocrPages, images, pageArr = null, minpage = 0, maxpage = -1,
+  reflowText = false, removeMargins = false, wordIds = null,
 }) {
   const fontsUsed = new Set();
 
@@ -76,7 +78,11 @@ export function writeHtml({
 
   let bodyStr = '<body>\n';
 
-  if (maxpage === -1) maxpage = ocrPages.length - 1;
+  if (!pageArr) {
+    if (maxpage === -1) maxpage = ocrPages.length - 1;
+    pageArr = [];
+    for (let i = minpage; i <= maxpage; i++) pageArr.push(i);
+  }
 
   let newLine = false;
 
@@ -104,7 +110,7 @@ export function writeHtml({
 
   let top = 0;
 
-  for (let g = minpage; g <= maxpage; g++) {
+  for (const g of pageArr) {
     // TODO: change this when an image is included.
     if (!ocrPages[g] || ocrPages[g].lines.length === 0) continue;
 

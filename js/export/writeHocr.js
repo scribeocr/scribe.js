@@ -10,12 +10,19 @@ import { round6 } from '../utils/miscUtils.js';
  *
  * @param {Object} params
  * @param {Array<OcrPage>} params.ocrData
+ * @param {?Array<number>} [params.pageArr=null] - Array of 0-based page indices to include. Overrides minValue/maxValue when provided.
  * @param {number} [params.minValue]
  * @param {number} [params.maxValue]
  */
-export function writeHocr({ ocrData, minValue, maxValue }) {
-  if (minValue === null || minValue === undefined) minValue = 0;
-  if (maxValue === null || maxValue === undefined || maxValue < 0) maxValue = ocrData.length - 1;
+export function writeHocr({
+  ocrData, pageArr = null, minValue, maxValue,
+}) {
+  if (!pageArr) {
+    if (minValue === null || minValue === undefined) minValue = 0;
+    if (maxValue === null || maxValue === undefined || maxValue < 0) maxValue = ocrData.length - 1;
+    pageArr = [];
+    for (let i = minValue; i <= maxValue; i++) pageArr.push(i);
+  }
 
   const meta = {
     'font-metrics': FontCont.state.charMetrics,
@@ -47,7 +54,7 @@ export function writeHocr({ ocrData, minValue, maxValue }) {
   hocrOut += '\n</head>';
   hocrOut += '\n<body>';
 
-  for (let i = minValue; i <= maxValue; i++) {
+  for (const i of pageArr) {
     const pageObj = ocrData[i];
 
     // Handle case where ocrPage object does not exist.

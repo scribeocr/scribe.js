@@ -151,23 +151,28 @@ function createCellsSingle({
  * @param {Object} params
  * @param {Array<OcrPage>} params.ocrPageArr
  * @param {Array<LayoutDataTablePage>} params.layoutPageArr
+ * @param {?Array<number>} [params.pageArr=null] - Array of 0-based page indices to include. Overrides minpage/maxpage when provided.
  * @param {number} [params.minpage=0]
  * @param {number} [params.maxpage=-1]
  */
 export async function writeXlsx({
-  ocrPageArr, layoutPageArr, minpage = 0, maxpage = -1,
+  ocrPageArr, layoutPageArr, pageArr = null, minpage = 0, maxpage = -1,
 }) {
   const { xlsxStrings, sheetStart, sheetEnd } = await import('./resources/xlsxFiles.js');
   const { Uint8ArrayWriter, TextReader, ZipWriter } = await import('../../lib/zip.js/index.js');
 
-  if (maxpage === -1) maxpage = ocrPageArr.length - 1;
+  if (!pageArr) {
+    if (maxpage === -1) maxpage = ocrPageArr.length - 1;
+    pageArr = [];
+    for (let i = minpage; i <= maxpage; i++) pageArr.push(i);
+  }
 
   const zipFileWriter = new Uint8ArrayWriter();
   const zipWriter = new ZipWriter(zipFileWriter);
 
   let sheetContent = sheetStart;
   let rowCount = 0;
-  for (let i = minpage; i <= maxpage; i++) {
+  for (const i of pageArr) {
     /** @type {Array<string>} */
     const extraCols = [];
     if (opt.xlsxFilenameColumn) {

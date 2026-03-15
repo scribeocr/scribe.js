@@ -88,3 +88,24 @@ describe('Check .hocr export function.', function () {
     await scribe.terminate();
   });
 }).timeout(120000);
+
+describe('Check non-contiguous pageArr subsetting for .hocr export.', function () {
+  this.timeout(10000);
+
+  it('Exporting pages [0, 2] should include pages 0 and 2 but not page 1', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/trident_v_connecticut_general.abbyy.xml`]);
+
+    const exportedHocr = await scribe.exportData('hocr', { pageArr: [0, 2] });
+
+    // "Comstock" only appears on page 0 — should be present
+    assert.include(exportedHocr, 'Comstock');
+    // "Security" only appears on page 2 — should be present
+    assert.include(exportedHocr, 'Security');
+    // "Munger" only appears on page 1 — should not be present
+    assert.notInclude(exportedHocr, 'Munger');
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);

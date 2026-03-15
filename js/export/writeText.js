@@ -7,6 +7,7 @@ import { assignParagraphs } from '../utils/reflowPars.js';
  *
  * @param {Object} params
  * @param {Array<OcrPage>} params.ocrCurrent -
+ * @param {?Array<number>} [params.pageArr=null] - Array of 0-based page indices to include. Overrides minpage/maxpage when provided.
  * @param {number} [params.minpage=0] - The first page to include in the document.
  * @param {number} [params.maxpage=-1] - The last page to include in the document.
  * @param {boolean} [params.reflowText=false] - Remove line breaks within what appears to be the same paragraph.
@@ -16,18 +17,23 @@ import { assignParagraphs } from '../utils/reflowPars.js';
  *    When enabled, reflowText is ignored.
  */
 export function writeText({
-  ocrCurrent, minpage = 0, maxpage = -1, reflowText = false, wordIds = null, lineNumbers = false,
+  ocrCurrent, pageArr = null, minpage = 0, maxpage = -1, reflowText = false,
+  wordIds = null, lineNumbers = false,
 }) {
   let textStr = '';
 
-  if (maxpage === -1) maxpage = ocrCurrent.length - 1;
+  if (!pageArr) {
+    if (maxpage === -1) maxpage = ocrCurrent.length - 1;
+    pageArr = [];
+    for (let i = minpage; i <= maxpage; i++) pageArr.push(i);
+  }
 
   let newLine = false;
 
   // lineNumbers mode is incompatible with reflowText
   const doReflow = reflowText && !lineNumbers;
 
-  for (let g = minpage; g <= maxpage; g++) {
+  for (const g of pageArr) {
     if (!ocrCurrent[g] || ocrCurrent[g].lines.length === 0) continue;
 
     const pageObj = ocrCurrent[g];

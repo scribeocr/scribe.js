@@ -336,17 +336,21 @@ export class ImageCache {
   static getBinary = async (n, props, priorityJob) => ImageCache.getImages(n, props, false, priorityJob || false).binary;
 
   /**
-   * Pre-render a range of pages.
-   * This is generally not required, as individual image are rendered as needed.
+   * Pre-render pages.
+   * This is generally not required, as individual images are rendered as needed.
    * The primary use case is reducing latency in the UI by rendering images in advance.
    *
-   * @param {number} min - Min page to render.
-   * @param {number} max - Max page to render.
-   * @param {boolean} binary - Whether to render binary images.
-   * @param {ImagePropertiesRequest} [props]
+   * @param {Object} params
+   * @param {boolean} params.binary - Whether to render binary images.
+   * @param {?Array<number>} [params.pageArr=null] - Array of 0-based page indices to render. Overrides min/max when provided.
+   * @param {number} [params.min=0] - Min page to render (used when pageArr is not provided).
+   * @param {number} [params.max=0] - Max page to render (used when pageArr is not provided).
+   * @param {ImagePropertiesRequest} [params.props]
    */
-  static preRenderRange = async (min, max, binary, props) => {
-    const pagesArr = range(min, max);
+  static preRenderRange = async ({
+    binary, pageArr = null, min = 0, max = 0, props,
+  }) => {
+    const pagesArr = pageArr || range(min, max);
     if (binary) {
       await Promise.all(pagesArr.map((n) => ImageCache.getBinary(n, props).then(() => {
         opt.progressHandler({ n, type: 'render', info: { } });
