@@ -56,6 +56,11 @@ async function ensureInit() {
 let currentFile = null;
 let currentDataFile = null;
 async function ensureFileLoaded(filePath, dataFilePath) {
+  // If no data file was explicitly provided and the same file is already loaded,
+  // reuse the current data file to avoid re-importing without companion OCR data.
+  if (dataFilePath === undefined && currentFile === filePath) {
+    dataFilePath = currentDataFile;
+  }
   if (currentFile !== filePath || currentDataFile !== (dataFilePath || null)) {
     await ensureInit();
     const filesToImport = [filePath];
@@ -986,3 +991,10 @@ function processLines() {
 }
 
 process.stderr.write('scribe-document-tools MCP server started\n');
+
+// Exports for testing.
+export { ensureFileLoaded };
+export function resetState() {
+  currentFile = null;
+  currentDataFile = null;
+}
