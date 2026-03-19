@@ -471,6 +471,44 @@ async function extractTablesHandler({
   return result;
 }
 
+async function convertDocxToJson({ file, outputPath, lineSplitMode }) {
+  const filePath = resolve(file);
+  if (!fs.existsSync(filePath)) {
+    return { error: `File not found: ${filePath}` };
+  }
+  if (extname(filePath).toLowerCase() !== '.docx') {
+    return { error: `File is not a .docx file: ${filePath}` };
+  }
+
+  const outPath = outputPath
+    ? resolve(outputPath)
+    : filePath.replace(/\.docx$/i, '.scribe.json');
+
+  await ensureInit();
+
+  const prevLineSplitMode = scribe.opt.docxLineSplitMode;
+  if (lineSplitMode) {
+    scribe.opt.docxLineSplitMode = lineSplitMode;
+  }
+
+  try {
+    await scribe.importFiles([filePath]);
+    currentFile = filePath;
+    currentDataFile = null;
+
+    const scribeJson = await scribe.exportData('scribe');
+    fs.writeFileSync(outPath, scribeJson);
+
+    return {
+      outputPath: outPath,
+      pageCount: scribe.inputData.pageCount,
+      lineSplitMode: scribe.opt.docxLineSplitMode,
+    };
+  } finally {
+    scribe.opt.docxLineSplitMode = prevLineSplitMode;
+  }
+}
+
 // --- MCP Protocol (JSON-RPC over stdio) ---
 
 const TOOLS = [
@@ -776,6 +814,30 @@ const TOOLS = [
       required: [],
     },
   },
+  {
+    name: 'convert_docx_to_json',
+    description: 'Convert a .docx file to .scribe.json format. '
+      + 'Parses the docx document structure and exports it as a scribe.json file containing page/line/word data with styling and font information.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        file: {
+          type: 'string',
+          description: 'Path to the .docx file to convert.',
+        },
+        outputPath: {
+          type: 'string',
+          description: 'Path for the output .scribe.json file. Default: same directory and basename as input with .scribe.json extension.',
+        },
+        lineSplitMode: {
+          type: 'string',
+          enum: ['width', 'sentence'],
+          description: 'How to split text into lines. "width" wraps at page width (default). "sentence" splits at sentence boundaries.',
+        },
+      },
+      required: ['file'],
+    },
+  },
 ];
 
 const toolHandlers = {
@@ -789,6 +851,7 @@ const toolHandlers = {
   merge_pdfs: (args) => enqueue(() => mergePdfs(args)),
   define_tables: (args) => enqueue(() => defineTablesHandler(args)),
   extract_tables: (args) => enqueue(() => extractTablesHandler(args)),
+  convert_docx_to_json: (args) => enqueue(() => convertDocxToJson(args)),
 };
 
 // JSON-RPC message handling
