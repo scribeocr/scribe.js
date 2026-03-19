@@ -30,6 +30,7 @@ const writeTextModule = await import(resolve(__dirname, '..', 'js', 'export', 'w
 const { writeText } = writeTextModule;
 
 const SUPPORTED_EXTENSIONS = ['.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.tif'];
+const DATA_EXTENSIONS = ['.scribe.json', '.json', '.json.gz', '.hocr', '.xml', '.stext', '.txt', '.docx'];
 
 const logFile = resolve(__dirname, 'mcp.log');
 function mcpLog(msg) {
@@ -51,35 +52,76 @@ async function ensureInit() {
   }
 }
 
-// Track loaded file to avoid redundant re-imports.
+// Track loaded file (and optional companion data file) to avoid redundant re-imports.
 let currentFile = null;
-async function ensureFileLoaded(filePath) {
-  if (currentFile !== filePath) {
+let currentDataFile = null;
+async function ensureFileLoaded(filePath, dataFilePath) {
+  if (currentFile !== filePath || currentDataFile !== (dataFilePath || null)) {
     await ensureInit();
-    await scribe.importFiles([filePath]);
+    const filesToImport = [filePath];
+    if (dataFilePath) filesToImport.push(dataFilePath);
+    await scribe.importFiles(filesToImport);
     currentFile = filePath;
+    currentDataFile = dataFilePath || null;
   }
 }
 
 // --- Tool implementations ---
 
-async function loadDocument({ file }) {
+async function loadDocument({ file, dataFile }) {
   const filePath = resolve(file);
   if (!fs.existsSync(filePath)) {
     return { error: `File not found: ${filePath}` };
   }
-  await ensureFileLoaded(filePath);
+  let dataFilePath;
+  if (dataFile) {
+    dataFilePath = resolve(dataFile);
+    if (!fs.existsSync(dataFilePath)) {
+      return { error: `Data file not found: ${dataFilePath}` };
+    }
+  }
+  await ensureFileLoaded(filePath, dataFilePath);
   const pageCount = scribe.inputData.pageCount;
-  return { file: filePath, pageCount, loaded: true };
+  const hasOcrData = scribe.data.ocr.active?.some((page) => page?.lines?.length > 0) || false;
+  return {
+    file: filePath, dataFile: dataFilePath || null, pageCount, loaded: true, hasOcrData,
+  };
 }
 
-async function listDocuments({ directory }) {
+/**
+ * Check if a filename ends with one of the known data extensions.
+ * Handles compound extensions like `.scribe.json` and `.json.gz`.
+ */
+function hasDataExtension(fileName) {
+  const lower = fileName.toLowerCase();
+  return DATA_EXTENSIONS.some((ext) => lower.endsWith(ext));
+}
+
+async function listDocuments({ directory, dataDir }) {
   const dir = resolve(directory);
   let entries;
   try {
     entries = fs.readdirSync(dir, { withFileTypes: true });
   } catch (e) {
     return { error: `Cannot read directory: ${dir}` };
+  }
+
+  // Collect all filenames in the main directory for companion lookup.
+  const fileNames = [];
+  for (const entry of entries) {
+    if (entry.isFile()) fileNames.push(entry.name);
+  }
+
+  // Also collect filenames from the optional dataDir subdirectory.
+  let dataDirFiles = [];
+  if (dataDir) {
+    const dataDirPath = join(dir, dataDir);
+    try {
+      const dataDirEntries = fs.readdirSync(dataDirPath, { withFileTypes: true });
+      dataDirFiles = dataDirEntries.filter((e) => e.isFile()).map((e) => e.name);
+    } catch (e) {
+      // dataDir doesn't exist or isn't readable — not an error, just no extra companions.
+    }
   }
 
   const docs = [];
@@ -89,32 +131,60 @@ async function listDocuments({ directory }) {
     if (!SUPPORTED_EXTENSIONS.includes(ext)) continue;
     const fullPath = join(dir, entry.name);
     const stats = fs.statSync(fullPath);
-    docs.push({
+    const stem = entry.name.replace(/\.[^.]+$/, '').toLowerCase();
+
+    // Find companion data files: files that start with the same stem and have a data extension.
+    const companions = [];
+    for (const fn of fileNames) {
+      if (fn === entry.name) continue;
+      if (fn.toLowerCase().startsWith(stem) && hasDataExtension(fn)) {
+        companions.push({ path: join(dir, fn), name: fn });
+      }
+    }
+    if (dataDir) {
+      for (const fn of dataDirFiles) {
+        if (fn.toLowerCase().startsWith(stem) && hasDataExtension(fn)) {
+          companions.push({ path: join(dir, dataDir, fn), name: `${dataDir}/${fn}` });
+        }
+      }
+    }
+
+    const docEntry = {
       path: fullPath,
       name: entry.name,
       sizeKb: Math.round(stats.size / 1024),
       extension: ext,
-    });
+    };
+    if (companions.length > 0) docEntry.companionDataFiles = companions;
+    docs.push(docEntry);
   }
   return { documents: docs, count: docs.length };
 }
 
 async function extractDocumentText({
-  file, startPage, maxChars, preserveSpacing,
+  file, startPage, maxChars, preserveSpacing, dataFile,
 }) {
   let filePath;
+  let dataFilePath;
   if (file) {
     filePath = resolve(file);
     if (!fs.existsSync(filePath)) {
       return { error: `File not found: ${filePath}` };
     }
+    if (dataFile) {
+      dataFilePath = resolve(dataFile);
+      if (!fs.existsSync(dataFilePath)) {
+        return { error: `Data file not found: ${dataFilePath}` };
+      }
+    }
   } else if (currentFile) {
     filePath = currentFile;
+    dataFilePath = currentDataFile;
   } else {
     return { error: 'No file specified and no document is currently loaded. Use load_document first or provide a file path.' };
   }
 
-  await ensureFileLoaded(filePath);
+  await ensureFileLoaded(filePath, dataFilePath);
   const pageCount = scribe.inputData.pageCount;
   const start = startPage ?? 0;
   const limit = maxChars ?? 20000;
@@ -143,34 +213,49 @@ async function extractDocumentText({
   };
 }
 
-async function recognizeDocument({ file, langs }) {
+async function recognizeDocument({ file, langs, dataFile }) {
   let filePath;
+  let dataFilePath;
   if (file) {
     filePath = resolve(file);
     if (!fs.existsSync(filePath)) {
       return { error: `File not found: ${filePath}` };
     }
+    if (dataFile) {
+      dataFilePath = resolve(dataFile);
+      if (!fs.existsSync(dataFilePath)) {
+        return { error: `Data file not found: ${dataFilePath}` };
+      }
+    }
   } else if (currentFile) {
     filePath = currentFile;
+    dataFilePath = currentDataFile;
   } else {
     return { error: 'No file specified and no document is currently loaded. Use load_document first or provide a file path.' };
   }
 
-  await ensureFileLoaded(filePath);
+  await ensureFileLoaded(filePath, dataFilePath);
   await scribe.recognize({ langs: langs || ['eng'] });
   return { file: filePath, pageCount: scribe.inputData.pageCount, recognized: true };
 }
 
 async function createHighlightedPdf({
-  file, outputPath, highlights, pages,
+  file, outputPath, highlights, pages, dataFile,
 }) {
   const filePath = resolve(file);
   if (!fs.existsSync(filePath)) {
     return { error: `File not found: ${filePath}` };
   }
+  let dataFilePath;
+  if (dataFile) {
+    dataFilePath = resolve(dataFile);
+    if (!fs.existsSync(dataFilePath)) {
+      return { error: `Data file not found: ${dataFilePath}` };
+    }
+  }
 
   const outPath = resolve(outputPath);
-  await ensureFileLoaded(filePath);
+  await ensureFileLoaded(filePath, dataFilePath);
 
   const result = scribe.addHighlights(highlights);
 
@@ -182,13 +267,22 @@ async function createHighlightedPdf({
   return { outputPath: outPath, ...result };
 }
 
-async function renderPage({ file, page, dpi }) {
+async function renderPage({
+  file, page, dpi, dataFile,
+}) {
   const filePath = resolve(file);
   if (!fs.existsSync(filePath)) {
     return { error: `File not found: ${filePath}` };
   }
+  let dataFilePath;
+  if (dataFile) {
+    dataFilePath = resolve(dataFile);
+    if (!fs.existsSync(dataFilePath)) {
+      return { error: `Data file not found: ${dataFilePath}` };
+    }
+  }
 
-  await ensureFileLoaded(filePath);
+  await ensureFileLoaded(filePath, dataFilePath);
 
   const pageCount = scribe.inputData.pageCount;
   const pageNum = page ?? 0;
@@ -316,11 +410,18 @@ async function mergePdfs({ files, outputPath }) {
   };
 }
 
-async function defineTablesHandler({ file, page, tables }) {
+async function defineTablesHandler({
+  file, page, tables, dataFile,
+}) {
   if (file) {
     const filePath = resolve(file);
     if (!fs.existsSync(filePath)) return { error: `File not found: ${filePath}` };
-    await ensureFileLoaded(filePath);
+    let dataFilePath;
+    if (dataFile) {
+      dataFilePath = resolve(dataFile);
+      if (!fs.existsSync(dataFilePath)) return { error: `Data file not found: ${dataFilePath}` };
+    }
+    await ensureFileLoaded(filePath, dataFilePath);
   } else if (!currentFile) {
     return { error: 'No file specified and no document is currently loaded.' };
   }
@@ -330,11 +431,18 @@ async function defineTablesHandler({ file, page, tables }) {
   return { page, tablesCreated: tables.length, totalRows: tables.reduce((sum, t) => sum + (t.rows?.length || 0), 0) };
 }
 
-async function extractTablesHandler({ file, page, outputPath }) {
+async function extractTablesHandler({
+  file, page, outputPath, dataFile,
+}) {
   if (file) {
     const filePath = resolve(file);
     if (!fs.existsSync(filePath)) return { error: `File not found: ${filePath}` };
-    await ensureFileLoaded(filePath);
+    let dataFilePath;
+    if (dataFile) {
+      dataFilePath = resolve(dataFile);
+      if (!fs.existsSync(dataFilePath)) return { error: `Data file not found: ${dataFilePath}` };
+    }
+    await ensureFileLoaded(filePath, dataFilePath);
   } else if (!currentFile) {
     return { error: 'No file specified and no document is currently loaded.' };
   }
@@ -368,7 +476,7 @@ async function extractTablesHandler({ file, page, outputPath }) {
 const TOOLS = [
   {
     name: 'list_documents',
-    description: 'List PDF and image documents in a directory.',
+    description: 'List PDF and image documents in a directory. Discovers companion data files (OCR exports, .scribe.json) that can be loaded alongside documents.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -376,13 +484,18 @@ const TOOLS = [
           type: 'string',
           description: 'Directory path to search for documents.',
         },
+        dataDir: {
+          type: 'string',
+          description: 'Optional subdirectory name to also search for companion data files (e.g., "_data"). By default, only the same directory as the documents is searched.',
+        },
       },
       required: ['directory'],
     },
   },
   {
     name: 'load_document',
-    description: 'Load a document into memory for subsequent operations. Returns page count and file info. Use this before calling extract_document_text multiple times to avoid reloading the document each time.',
+    description: 'Load a document into memory for subsequent operations. Returns page count, file info, and whether OCR data is available. '
+      + 'Optionally provide a companion data file to use existing OCR data instead of re-running recognition.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -390,19 +503,29 @@ const TOOLS = [
           type: 'string',
           description: 'Path to the document file.',
         },
+        dataFile: {
+          type: 'string',
+          description: 'Path to a companion data file (.scribe.json, Textract JSON, .hocr, .stext, etc.) with OCR/text data to use instead of extracting from the PDF.',
+        },
       },
       required: ['file'],
     },
   },
   {
     name: 'extract_document_text',
-    description: 'Extract text from a PDF or image document. Returns text with page:line number prefixes (e.g. "0:5  some text") so lines can be referenced for highlighting. Handles text-native and image-based PDFs (via OCR). For large documents, returns text in chunks — check "hasMore" and use "startPage" to get the next chunk.',
+    description: 'Extract text from a PDF or image document. Returns text with page:line number prefixes (e.g. "0:5  some text") so lines can be referenced for highlighting. '
+      + 'Handles text-native and image-based PDFs (via OCR). For large documents, returns text in chunks — check "hasMore" and use "startPage" to get the next chunk. '
+      + 'A companion data file can be provided to use existing OCR data instead of re-running recognition.',
     inputSchema: {
       type: 'object',
       properties: {
         file: {
           type: 'string',
           description: 'Path to the document file. Optional if a document is already loaded via load_document.',
+        },
+        dataFile: {
+          type: 'string',
+          description: 'Path to a companion data file (.scribe.json, Textract JSON, .hocr, .stext, etc.) with OCR/text data to use instead of extracting from the PDF.',
         },
         startPage: {
           type: 'integer',
@@ -422,13 +545,18 @@ const TOOLS = [
   },
   {
     name: 'recognize',
-    description: 'Run OCR on a loaded document to recognize text from images. Required for image-based PDFs and scanned documents before extracting text. Not needed for text-native PDFs.',
+    description: 'Run OCR on a loaded document to recognize text from images. Required for image-based PDFs and scanned documents before extracting text. '
+      + 'Not needed for text-native PDFs or when a companion data file was loaded.',
     inputSchema: {
       type: 'object',
       properties: {
         file: {
           type: 'string',
           description: 'Path to the document file. Optional if a document is already loaded via load_document.',
+        },
+        dataFile: {
+          type: 'string',
+          description: 'Path to a companion data file (.scribe.json, Textract JSON, .hocr, .stext, etc.) with OCR/text data to use instead of running recognition.',
         },
         langs: {
           type: 'array',
@@ -450,6 +578,10 @@ const TOOLS = [
         file: {
           type: 'string',
           description: 'Path to the source document.',
+        },
+        dataFile: {
+          type: 'string',
+          description: 'Path to a companion data file (.scribe.json, Textract JSON, .hocr, .stext, etc.) with OCR/text data.',
         },
         outputPath: {
           type: 'string',
@@ -507,6 +639,10 @@ const TOOLS = [
         file: {
           type: 'string',
           description: 'Path to the document file.',
+        },
+        dataFile: {
+          type: 'string',
+          description: 'Path to a companion data file (.scribe.json, Textract JSON, .hocr, .stext, etc.) with OCR/text data.',
         },
         page: {
           type: 'integer',
@@ -584,6 +720,10 @@ const TOOLS = [
           type: 'string',
           description: 'Path to the document file. Optional if already loaded.',
         },
+        dataFile: {
+          type: 'string',
+          description: 'Path to a companion data file (.scribe.json, Textract JSON, .hocr, .stext, etc.) with OCR/text data.',
+        },
         page: {
           type: 'integer',
           description: 'Page number (0-indexed).',
@@ -619,6 +759,10 @@ const TOOLS = [
         file: {
           type: 'string',
           description: 'Path to the document file. Optional if already loaded.',
+        },
+        dataFile: {
+          type: 'string',
+          description: 'Path to a companion data file (.scribe.json, Textract JSON, .hocr, .stext, etc.) with OCR/text data.',
         },
         page: {
           type: 'integer',
