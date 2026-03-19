@@ -1,6 +1,6 @@
 import ocr from '../objects/ocrObjects.js';
 
-import { LayoutDataTablePage } from '../objects/layoutObjects.js';
+import { LayoutDataColumn, LayoutDataTable, LayoutDataTablePage } from '../objects/layoutObjects.js';
 import { pass3 } from './convertPageShared.js';
 
 const debugMode = false;
@@ -161,10 +161,101 @@ export async function convertDocAzureDocIntel({ ocrStr, pageDims }) {
     // pass2(pageObj, 0);
     const langSet = pass3(pageObj);
 
-    const dataTables = new LayoutDataTablePage(n);
+    resArr.push({ pageObj, dataTables: null, langSet });
+  }
 
-    resArr.push({ pageObj, dataTables, langSet });
+  const tablesByPage = convertTableLayoutAzure(ocrData.analyzeResult.tables, pageDims, analyzeResultPages);
+  for (let n = 0; n < resArr.length; n++) {
+    resArr[n].dataTables = tablesByPage.get(n) || new LayoutDataTablePage(n);
   }
 
   return resArr;
+}
+
+/**
+ * Convert Azure Document Intelligence table data into LayoutDataTable objects.
+ *
+ * @param {Array} [tables]
+ * @param {dims[]} pageDims
+ * @param {Array} pagesData
+ */
+function convertTableLayoutAzure(tables, pageDims, pagesData) {
+  /** @type {Map<number, LayoutDataTablePage>} */
+  const result = new Map();
+
+  if (!tables || tables.length === 0) return result;
+
+  for (const tableData of tables) {
+    const pageNumber = tableData.boundingRegions?.[0]?.pageNumber;
+    if (!pageNumber) continue;
+    const pageIdx = pageNumber - 1; // Azure is 1-indexed
+
+    if (!result.has(pageIdx)) {
+      result.set(pageIdx, new LayoutDataTablePage(pageIdx));
+    }
+    const tablesPage = result.get(pageIdx);
+
+    const table = new LayoutDataTable(tablesPage);
+    const { rowCount } = tableData;
+
+    const pageData = pagesData[pageIdx];
+    const pageDimsN = pageDims[pageIdx];
+    let multW = 1;
+    let multH = 1;
+    if (pageData && pageDimsN && pageData.unit !== 'pixel') {
+      multW = pageDimsN.width / pageData.width;
+      multH = pageDimsN.height / pageData.height;
+    }
+
+    const cellsByRow = new Map();
+    for (const cell of tableData.cells) {
+      const r = cell.rowIndex;
+      if (!cellsByRow.has(r)) cellsByRow.set(r, []);
+      cellsByRow.get(r).push(cell);
+    }
+
+    const firstRowCells = (cellsByRow.get(0) || []).sort((a, b) => a.columnIndex - b.columnIndex);
+
+    let tableTop = Infinity;
+    let tableBottom = -Infinity;
+    for (const cell of tableData.cells) {
+      const poly = cell.boundingRegions?.[0]?.polygon;
+      if (!poly) continue;
+      const yCoords = poly.filter((_, i) => i % 2 === 1).map((y) => y * multH);
+      tableTop = Math.min(tableTop, ...yCoords);
+      tableBottom = Math.max(tableBottom, ...yCoords);
+    }
+
+    for (const cell of firstRowCells) {
+      const poly = cell.boundingRegions?.[0]?.polygon;
+      if (!poly) continue;
+      const left = poly[0] * multW; // x1 (top-left)
+      const right = poly[2] * multW; // x2 (top-right)
+      table.boxes.push(new LayoutDataColumn({
+        left: Math.round(left),
+        top: Math.round(tableTop),
+        right: Math.round(right),
+        bottom: Math.round(tableBottom),
+      }, table));
+    }
+
+    table.rowBounds = [];
+    for (let r = 0; r < rowCount; r++) {
+      const rowCells = cellsByRow.get(r) || [];
+      let maxBottom = 0;
+      for (const cell of rowCells) {
+        const poly = cell.boundingRegions?.[0]?.polygon;
+        if (!poly) continue;
+        const bottom = Math.max(poly[5], poly[7]) * multH; // y3 or y4
+        if (bottom > maxBottom) maxBottom = bottom;
+      }
+      table.rowBounds.push(Math.round(maxBottom));
+    }
+
+    if (table.boxes.length > 0) {
+      tablesPage.tables.push(table);
+    }
+  }
+
+  return result;
 }

@@ -284,6 +284,7 @@ export async function exportData(format = 'txt', { minPage = 0, maxPage = -1, pa
   } else if (format === 'md') {
     content = writeMarkdown({
       ocrCurrent: ocrDownload,
+      layoutPageArr: layoutDataTables.pages,
       pageArr,
       reflowText: opt.reflow,
     });

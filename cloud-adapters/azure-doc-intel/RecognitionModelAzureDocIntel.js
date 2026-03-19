@@ -29,16 +29,20 @@ export class RecognitionModelAzureDocIntel {
    * Sends the data as base64 and polls until completion.
    * @param {Uint8Array|ArrayBuffer} imageData - Image or document data
    * @param {Object} [options]
+   * @param {boolean} [options.analyzeLayout=false] - Whether to enable layout analysis.
+   *    Uses the 'prebuilt-layout' model which includes paragraphs, tables, and selection marks.
    * @param {string} [options.endpoint] - Azure endpoint (overrides SCRIBE_AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT env var)
    * @param {string} [options.key] - Azure API key (overrides SCRIBE_AZURE_DOCUMENT_INTELLIGENCE_KEY env var)
-   * @param {string} [options.modelId] - Azure model ID (default: 'prebuilt-read')
+   * @param {string} [options.modelId] - Azure model ID. Overrides the default model selection.
+   *    Default is 'prebuilt-read', or 'prebuilt-layout' when analyzeLayout is enabled.
    * @returns {Promise<RecognitionResult>}
    */
   static async recognizeImage(imageData, options = {}) {
     const data = imageData instanceof ArrayBuffer ? new Uint8Array(imageData) : imageData;
     const endpoint = options.endpoint || process.env.SCRIBE_AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT;
     const key = options.key || process.env.SCRIBE_AZURE_DOCUMENT_INTELLIGENCE_KEY;
-    const modelId = options.modelId || 'prebuilt-read';
+    const analyzeLayout = options.analyzeLayout ?? false;
+    const modelId = options.modelId || (analyzeLayout ? 'prebuilt-layout' : 'prebuilt-read');
 
     if (!endpoint) {
       return {
@@ -101,9 +105,10 @@ export class RecognitionModelAzureDocIntel {
    * Azure handles PDFs inline (as base64), so this delegates to recognizeImage.
    * @param {Uint8Array|ArrayBuffer} documentData - Document data (PDF, image, etc.)
    * @param {Object} [options]
+   * @param {boolean} [options.analyzeLayout=false] - Whether to enable layout analysis.
    * @param {string} [options.endpoint] - Azure endpoint (overrides SCRIBE_AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT env var)
    * @param {string} [options.key] - Azure API key (overrides SCRIBE_AZURE_DOCUMENT_INTELLIGENCE_KEY env var)
-   * @param {string} [options.modelId] - Azure model ID (default: 'prebuilt-read')
+   * @param {string} [options.modelId] - Azure model ID.
    * @returns {Promise<RecognitionResult>}
    */
   static async recognizeDocument(documentData, options = {}) {

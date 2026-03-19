@@ -586,6 +586,20 @@ function convertTableLayoutTextract(pageNum, tableBlocks, pageDims, blockMap) {
         }, table);
         table.boxes.push(column);
       });
+
+      // Build row boundaries from cell bounding boxes.
+      const maxRow = Math.max(...cellBlocks.map((c) => c.RowIndex || 0));
+      const startRow = cellsByRow.has(0) ? 0 : 1;
+      table.rowBounds = [];
+      for (let r = startRow; r <= maxRow; r++) {
+        const rowCells = cellsByRow.get(r) || [];
+        let maxBottom = 0;
+        for (const cell of rowCells) {
+          const cellBbox = convertBoundingBox(cell.Geometry.BoundingBox, pageDims);
+          if (cellBbox.bottom > maxBottom) maxBottom = cellBbox.bottom;
+        }
+        table.rowBounds.push(maxBottom);
+      }
     }
 
     if (table.boxes.length > 0) {

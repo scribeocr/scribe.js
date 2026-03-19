@@ -74,3 +74,45 @@ describe('Check non-contiguous pageArr subsetting for markdown export.', functio
     await scribe.terminate();
   });
 }).timeout(120000);
+
+describe('Check markdown table export.', function () {
+  this.timeout(10000);
+
+  it('Should export tables as markdown pipe tables', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.pdf`,
+      `${ASSETS_PATH_KARMA}/border_patrol_tables.abbyy.xml`]);
+
+    const exportedMd = await scribe.exportData('md', { pageArr: [2] });
+
+    // Header row with pipe separators
+    assert.include(exportedMd, '| **SECTOR** | **Female** | **Male** | **Total Apprehensions** |');
+    // Separator row after header
+    assert.include(exportedMd, '| --- | --- | --- | --- |');
+    // Specific data row
+    assert.include(exportedMd, '| Miami | 220 | 1,671 | 1,891 |');
+    assert.include(exportedMd, '| Ramey | 76 | 486 | 562 |');
+  }).timeout(10000);
+
+  it('Text outside the table is rendered as regular text', async () => {
+    const exportedMd = await scribe.exportData('md', { pageArr: [2] });
+
+    // Page title text appears outside the table
+    assert.include(exportedMd, '**United States Border Patrol**');
+    assert.include(exportedMd, 'Apprehensions by Gender');
+  }).timeout(10000);
+
+  it('Pages without tables export normally', async () => {
+    // testocr.abbyy.xml has no tables
+    await scribe.clear();
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/testocr.abbyy.xml`]);
+
+    const exportedMd = await scribe.exportData('md');
+
+    assert.include(exportedMd, 'This is a lot of 12 point text');
+    assert.notInclude(exportedMd, '| --- |');
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);

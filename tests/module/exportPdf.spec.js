@@ -157,3 +157,41 @@ describe('Check export for .pdf files.', function () {
     await scribe.terminate();
   });
 }).timeout(120000);
+
+describe('Check addHighlights and clearHighlights.', function () {
+  this.timeout(10000);
+
+  it('Should import document for highlight tests', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/testocr.abbyy.xml`]);
+    assert.strictEqual(scribe.data.ocr.active[0].lines.length, 8);
+  }).timeout(10000);
+
+  it('addHighlights with startLine/endLine creates one annotation per word on that line', async () => {
+    const result = scribe.addHighlights([{ page: 0, startLine: 0, endLine: 0 }]);
+    assert.strictEqual(result.highlightsApplied, 1);
+    assert.strictEqual(result.totalLinesHighlighted, 1);
+    // Line 0 has 11 words: "This is a lot of 12 point text to test the"
+    assert.strictEqual(scribe.data.annotations.pages[0].length, 11);
+  }).timeout(10000);
+
+  it('clearHighlights removes all programmatic highlights', async () => {
+    scribe.clearHighlights();
+    assert.strictEqual(scribe.data.annotations.pages[0].length, 0);
+  }).timeout(10000);
+
+  it('addHighlights with text in quote-only mode highlights matching words', async () => {
+    // "ocr code" matches 2 words on line 1
+    const result = scribe.addHighlights([{ page: 0, text: 'ocr code' }]);
+    assert.strictEqual(result.highlightsApplied, 1);
+    assert.strictEqual(scribe.data.annotations.pages[0].length, 2);
+    scribe.clearHighlights();
+  }).timeout(10000);
+
+  it('addHighlights throws when neither startLine nor text is provided', async () => {
+    assert.throws(() => scribe.addHighlights([{ page: 0 }]));
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);

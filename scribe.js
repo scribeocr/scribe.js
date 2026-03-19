@@ -44,6 +44,7 @@ import { assignParagraphs } from './js/utils/reflowPars.js';
 import { writeXlsx } from './js/export/writeTabular.js';
 import { calcColumnBounds, detectTablesInPage, makeTableFromBbox } from './js/utils/detectTables.js';
 import { ca } from './js/canvasAdapter.js';
+import { addHighlights, clearHighlights } from './js/addHighlights.js';
 
 /**
  * Initialize the program and optionally pre-load resources.
@@ -279,11 +280,14 @@ const terminate = async () => {
 };
 
 export default {
+  addHighlights,
   clear,
+  clearHighlights,
   combineOCRPage,
   compareOCR,
   convertOCRPage,
   data,
+  createTablesFromText,
   enableFontOpt,
   evalOCRPage,
   exportData,
@@ -298,6 +302,7 @@ export default {
   recognizePageImp,
   extractText,
   extractInternalPDFText,
+  extractTextFromTables,
   terminate,
   utils,
 };

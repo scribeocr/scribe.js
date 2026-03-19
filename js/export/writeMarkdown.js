@@ -1,6 +1,9 @@
 import { opt } from '../containers/app.js';
 import { pageMetricsAll } from '../containers/dataContainer.js';
 import { assignParagraphs } from '../utils/reflowPars.js';
+import { extractTableContent } from '../extractTables.js';
+import { calcTableBbox } from '../objects/layoutObjects.js';
+import { calcBoxOverlap } from '../utils/miscUtils.js';
 
 /**
  * Escape markdown special characters in text.
@@ -42,10 +45,64 @@ function applySuperscript(text, style) {
 }
 
 /**
+ * Render a table as a markdown pipe table.
+ * @param {{ rowWordArr: Array<Array<Array<OcrWord>>>, rowBottomArr: Array<number> }} tableResult
+ * @param {boolean} applyFormatting
+ */
+function renderMarkdownTable(tableResult, applyFormatting) {
+  const { rowWordArr } = tableResult;
+  if (!rowWordArr || rowWordArr.length === 0) return '';
+
+  const numCols = Math.max(...rowWordArr.map((row) => row.length));
+  let md = '';
+
+  for (let r = 0; r < rowWordArr.length; r++) {
+    const cells = [];
+    for (let c = 0; c < numCols; c++) {
+      const words = rowWordArr[r]?.[c] || [];
+      if (words.length === 0) {
+        cells.push('');
+      } else {
+        words.sort((a, b) => a.bbox.left - b.bbox.left);
+        let cellText = '';
+        let currentStyleKey = '';
+        let styledGroup = [];
+        for (const w of words) {
+          let text = escapeMarkdown(w.text).replace(/\|/g, '\\|');
+          if (applyFormatting) text = applySuperscript(text, w.style);
+          const styleKey = applyFormatting ? (w.style?.bold ? 'b' : '') + (w.style?.italic ? 'i' : '') : '';
+          if (styleKey !== currentStyleKey && styledGroup.length > 0) {
+            if (cellText) cellText += ' ';
+            cellText += applyStyleWrapper(styledGroup.join(' '), currentStyleKey);
+            styledGroup = [];
+          }
+          currentStyleKey = styleKey;
+          styledGroup.push(text);
+        }
+        if (styledGroup.length > 0) {
+          if (cellText) cellText += ' ';
+          cellText += applyFormatting ? applyStyleWrapper(styledGroup.join(' '), currentStyleKey) : styledGroup.join(' ');
+        }
+        cells.push(cellText);
+      }
+    }
+    md += `| ${cells.join(' | ')} |\n`;
+
+    // Insert separator row after the header (first row)
+    if (r === 0) {
+      md += `| ${Array(numCols).fill('---').join(' | ')} |\n`;
+    }
+  }
+
+  return md;
+}
+
+/**
  * Convert an array of ocrPage objects to markdown text.
  *
  * @param {Object} params
  * @param {Array<OcrPage>} params.ocrCurrent - The OCR data to convert
+ * @param {Array<import('../objects/layoutObjects.js').LayoutDataTablePage>} [params.layoutPageArr] - Table layout data per page.
  * @param {?Array<number>} [params.pageArr=null] - Array of 0-based page indices to include. Overrides minpage/maxpage when provided.
  * @param {number} [params.minpage=0] - The first page to include in the document.
  * @param {number} [params.maxpage=-1] - The last page to include in the document.
@@ -53,7 +110,8 @@ function applySuperscript(text, style) {
  * @param {boolean} [params.applyFormatting=true] - Whether to apply markdown formatting (bold, italic, etc.)
  */
 export function writeMarkdown({
-  ocrCurrent, pageArr = null, minpage = 0, maxpage = -1, reflowText = false, applyFormatting = true,
+  ocrCurrent, layoutPageArr, pageArr = null, minpage = 0, maxpage = -1,
+  reflowText = false, applyFormatting = true,
 }) {
   let mdStr = '';
 
@@ -83,10 +141,52 @@ export function writeMarkdown({
       mdStr += '\n\n---\n\n';
     }
 
+    const layoutPage = layoutPageArr?.[g];
+    const tableWordObj = layoutPage && layoutPage.tables && layoutPage.tables.length > 0
+      ? extractTableContent(pageObj, layoutPage)
+      : {};
+
+    // Compute table bounding boxes and track which tables have been rendered.
+    const tableBboxes = [];
+    const tablesRendered = new Set();
+    if (layoutPage?.tables) {
+      for (let t = 0; t < layoutPage.tables.length; t++) {
+        const table = layoutPage.tables[t];
+        if (table.boxes.length > 0) {
+          tableBboxes.push({ idx: t, key: String(t), bbox: calcTableBbox(table) });
+        }
+      }
+    }
+
     let parCurrent = pageObj.lines[0].par;
 
     for (let h = 0; h < pageObj.lines.length; h++) {
       const lineObj = pageObj.lines[h];
+
+      // Check if this line falls inside a table.
+      let insideTable = null;
+      for (const tb of tableBboxes) {
+        const overlap = calcBoxOverlap(lineObj.bbox, tb.bbox);
+        if (overlap > 0.5) {
+          insideTable = tb;
+          break;
+        }
+      }
+
+      if (insideTable) {
+        // If this table hasn't been rendered yet, render it now.
+        if (!tablesRendered.has(insideTable.key)) {
+          tablesRendered.add(insideTable.key);
+          const tableResult = tableWordObj[insideTable.key];
+          if (tableResult) {
+            if (!isFirstContent) mdStr += '\n\n';
+            mdStr += renderMarkdownTable(tableResult, applyFormatting);
+            isFirstContent = false;
+          }
+        }
+        // Skip this line (it's part of the table).
+        continue;
+      }
 
       if (reflowText) {
         if (h === 0 && !isFirstContent || lineObj.par !== parCurrent) newLine = true;

@@ -83,6 +83,8 @@ export class LayoutDataTable {
     this.id = getRandomAlphanum(10);
     /** @type {Array<LayoutDataColumn>} */
     this.boxes = [];
+    /** @type {?Array<number>} Bottom y-coordinate of each row. Rows will be detected automatically if not set. */
+    this.rowBounds = null;
   }
 }
 

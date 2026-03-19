@@ -8,7 +8,7 @@ const excludeImages = args.includes('--exclude-images');
 const filePath = args.find((a) => !a.startsWith('--'));
 
 if (!filePath) {
-  console.error('Usage: node runGoogleDocAI.js <file-or-directory> [--dir]');
+  console.error('Usage: node runGoogleDocAI.js <file-or-directory> [--dir] [--exclude-images]');
   console.error('');
   console.error('  <file>            Process a single file (image or PDF)');
   console.error('  --dir             Treat the path as a directory and process all supported files');

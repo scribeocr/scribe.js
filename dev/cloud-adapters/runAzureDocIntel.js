@@ -7,10 +7,11 @@ const dirMode = args.includes('--dir');
 const filePath = args.find((a) => !a.startsWith('--'));
 
 if (!filePath) {
-  console.error('Usage: node runAzureDocIntel.js <file-or-directory> [--dir]');
+  console.error('Usage: node runAzureDocIntel.js <file-or-directory> [--layout] [--dir]');
   console.error('');
-  console.error('  <file>   Process a single file (image or PDF)');
-  console.error('  --dir    Treat the path as a directory and process all supported files');
+  console.error('  <file>     Process a single file (image or PDF)');
+  console.error('  --layout   Enable layout analysis (uses prebuilt-layout model, includes tables)');
+  console.error('  --dir      Treat the path as a directory and process all supported files');
   console.error('');
   console.error('Environment variables:');
   console.error('  SCRIBE_AZURE_DOCUMENT_INTELLIGENCE_ENDPOINT  (required)');
@@ -18,12 +19,21 @@ if (!filePath) {
   process.exit(1);
 }
 
+const options = {
+  analyzeLayout: args.includes('--layout'),
+};
+
 const SUPPORTED_EXTENSIONS = ['.pdf', '.png', '.jpg', '.jpeg', '.tiff', '.tif', '.bmp'];
+
+let suffix = 'AzureDocIntel.json';
+if (options.analyzeLayout) {
+  suffix = 'AzureDocIntelLayout.json';
+}
 
 async function processFile(inputPath) {
   console.log(`Processing: ${inputPath}`);
   const fileData = new Uint8Array(await fs.promises.readFile(inputPath));
-  const result = await RecognitionModelAzureDocIntel.recognizeImage(fileData);
+  const result = await RecognitionModelAzureDocIntel.recognizeImage(fileData, options);
 
   if (!result.success) {
     console.error(`Error processing ${inputPath}:`, result.error);
@@ -31,7 +41,7 @@ async function processFile(inputPath) {
   }
 
   const parsedPath = path.parse(inputPath);
-  const outputFileName = `${parsedPath.name}-AzureDocIntel.json`;
+  const outputFileName = `${parsedPath.name}-${suffix}`;
   const outputPath = path.join(parsedPath.dir, outputFileName);
   console.log(`Writing result to ${outputPath}`);
   await fs.promises.writeFile(outputPath, JSON.stringify(JSON.parse(result.rawData), null, 2));

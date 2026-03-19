@@ -609,8 +609,21 @@ function convertTableLayoutAbbyy(n, ocrStr) {
       if (debugMode) console.log(`Table width does not match sum of rows (${String(tableCoords[2])} vs ${String(leftLast)}), calculated new layout boxes using column contents.`);
     }
 
-    // const table = new LayoutDataTable(i);
     table.boxes = tableBoxes;
+
+    // Build row boundaries from cell coordinates.
+    table.rowBounds = [];
+    for (const rowStr of rows) {
+      const coordsArrStr = rowStr.match(/l=['"]\d+['"] t=['"]\d+['"] r=['"]\d+['"] b=['"](\d+)['"]/ig);
+      let maxBottom = 0;
+      if (coordsArrStr) {
+        for (const coordStr of coordsArrStr) {
+          const b = parseInt(coordStr.match(/b=['"](\d+)['"]/i)?.[1] || '0');
+          if (b > maxBottom) maxBottom = b;
+        }
+      }
+      table.rowBounds.push(maxBottom);
+    }
 
     tablesPage.tables.push(table);
   }

@@ -208,6 +208,13 @@ describe('Check Abbyy XML table import.', function () {
     assert.isTrue(scribe.data.layoutDataTables.pages[0].tables[0].boxes.length === 10);
   }).timeout(10000);
 
+  it('Should populate rowBounds from Abbyy cell data', async () => {
+    const table = scribe.data.layoutDataTables.pages[0].tables[0];
+    assert.strictEqual(table.rowBounds && table.rowBounds.length, 25);
+    assert.strictEqual(table.rowBounds && table.rowBounds[0], 544);
+    assert.strictEqual(table.rowBounds && table.rowBounds[1], 622);
+  }).timeout(10000);
+
   after(async () => {
     await scribe.terminate();
   });

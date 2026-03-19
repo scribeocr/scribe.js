@@ -2,6 +2,7 @@
 /* eslint-disable import/no-relative-packages */
 import { assert, config } from '../../node_modules/chai/chai.js';
 import scribe from '../../scribe.js';
+import { writeText } from '../../js/export/writeText.js';
 import { ASSETS_PATH_KARMA } from '../constants.js';
 
 config.truncateThreshold = 0; // Disable truncation for actual/expected values on assertion failure.
@@ -70,6 +71,36 @@ describe('Check export -> import for .txt files.', function () {
     assert.strictEqual(exportedText, importedText);
 
     assert.include(exportedText, 'Tesseract.js');
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);
+
+describe('Check preserveSpacing text export.', function () {
+  this.timeout(10000);
+
+  it('preserveSpacing output is longer than compact output due to padding', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.pdf`]);
+    const compact = writeText({
+      ocrCurrent: scribe.data.ocr.active, pageArr: [0], lineNumbers: true,
+    });
+    const spaced = writeText({
+      ocrCurrent: scribe.data.ocr.active, pageArr: [0], lineNumbers: true, preserveSpacing: true,
+    });
+    assert.strictEqual(compact.length, 3593);
+    assert.strictEqual(spaced.length, 20567);
+  }).timeout(10000);
+
+  it('preserveSpacing indents words based on their horizontal position', async () => {
+    const spaced = writeText({
+      ocrCurrent: scribe.data.ocr.active, pageArr: [0], lineNumbers: true, preserveSpacing: true,
+    });
+    // "SECTOR" starts with significant left indent in the document
+    assert.include(spaced, '0:0             SECTOR');
+    // "Miami" appears at the left edge of the data area
+    assert.include(spaced, '0:15     Miami');
   }).timeout(10000);
 
   after(async () => {
