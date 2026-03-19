@@ -17,7 +17,7 @@ import { writePdf } from './js/export/pdf/writePdf.js';
 import { writeHocr } from './js/export/writeHocr.js';
 import { writeText } from './js/export/writeText.js';
 import { extractInternalPDFText } from './js/extractPDFText.js';
-import { extractSingleTableContent } from './js/extractTables.js';
+import { createTablesFromText, extractSingleTableContent, extractTextFromTables } from './js/extractTables.js';
 import { enableFontOpt, loadBuiltInFontsRaw } from './js/fontContainerMain.js';
 import { gs } from './js/generalWorkerMain.js';
 import { importFiles, importFilesSupp } from './js/import/import.js';
