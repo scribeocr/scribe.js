@@ -29,6 +29,14 @@ const scribe = scribeModule.default;
 const writeTextModule = await import(resolve(__dirname, '..', 'js', 'export', 'writeText.js'));
 const { writeText } = writeTextModule;
 
+// Import assignParagraphs for paragraph detection when not already assigned.
+const reflowParsModule = await import(resolve(__dirname, '..', 'js', 'utils', 'reflowPars.js'));
+const { assignParagraphs } = reflowParsModule;
+
+// Import pageMetricsAll for angle data needed by assignParagraphs.
+const dataContainerModule = await import(resolve(__dirname, '..', 'js', 'containers', 'dataContainer.js'));
+const { pageMetricsAll } = dataContainerModule;
+
 const SUPPORTED_EXTENSIONS = ['.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.tif'];
 const DATA_EXTENSIONS = ['.scribe.json', '.json', '.json.gz', '.hocr', '.xml', '.stext', '.txt', '.docx'];
 
@@ -168,6 +176,7 @@ async function listDocuments({ directory, dataDir }) {
 
 async function extractDocumentText({
   file, startPage, maxChars, preserveSpacing, dataFile,
+  parAnnots, footnoteAnnots,
 }) {
   let filePath;
   let dataFilePath;
@@ -196,17 +205,27 @@ async function extractDocumentText({
 
   let text = '';
   let endPage = start;
-  for (let p = start; p < pageCount; p++) {
-    // Call writeText directly with lineNumbers param instead of mutating scribe.opt.
-    const pageText = writeText({
-      ocrCurrent: scribe.data.ocr.active,
-      pageArr: [p],
-      lineNumbers: true,
-      preserveSpacing: preserveSpacing || false,
-    });
-    if (text.length > 0 && text.length + pageText.length > limit) break;
-    text += pageText;
-    endPage = p;
+
+  if (parAnnots || footnoteAnnots) {
+    for (let p = start; p < pageCount; p++) {
+      const pageText = buildStructuredPageText(p, { parAnnots, footnoteAnnots });
+      if (text.length > 0 && text.length + pageText.length > limit) break;
+      text += pageText;
+      endPage = p;
+    }
+  } else {
+    for (let p = start; p < pageCount; p++) {
+      // Call writeText directly with lineNumbers param instead of mutating scribe.opt.
+      const pageText = writeText({
+        ocrCurrent: scribe.data.ocr.active,
+        pageArr: [p],
+        lineNumbers: true,
+        preserveSpacing: preserveSpacing || false,
+      });
+      if (text.length > 0 && text.length + pageText.length > limit) break;
+      text += pageText;
+      endPage = p;
+    }
   }
 
   return {
@@ -216,6 +235,73 @@ async function extractDocumentText({
     hasMore: endPage < pageCount - 1,
     text,
   };
+}
+
+/**
+ * Build structured text for a single page, with optional paragraph boundaries and footnote annotations.
+ * @param {number} pageIdx - 0-based page index
+ * @param {Object} opts
+ * @param {boolean} [opts.parAnnots]
+ * @param {boolean} [opts.footnoteAnnots]
+ * @returns {string}
+ */
+function buildStructuredPageText(pageIdx, { parAnnots, footnoteAnnots }) {
+  const pageObj = scribe.data.ocr.active[pageIdx];
+  if (!pageObj || pageObj.lines.length === 0) return '';
+
+  // Ensure paragraphs are assigned if not already present.
+  const hasPars = pageObj.pars && pageObj.pars.length > 0;
+  if (!hasPars && parAnnots) {
+    const angle = pageMetricsAll[pageIdx]?.angle || 0;
+    assignParagraphs(pageObj, angle);
+  }
+
+  let out = '';
+  let currentParId = null;
+
+  for (let h = 0; h < pageObj.lines.length; h++) {
+    const line = pageObj.lines[h];
+    if (!line || line.words.length === 0) continue;
+
+    // Insert paragraph header when the paragraph changes.
+    const par = line.par || null;
+    const parId = par?.id || null;
+
+    if (parAnnots && parId !== currentParId) {
+      let header = `\n--- par:${parId || 'unknown'} [${par?.type || 'body'}]`;
+      // For footnote paragraphs, show what word/line they reference.
+      if (footnoteAnnots && par?.type === 'footnote' && par.footnoteRefId) {
+        const refWordId = par.footnoteRefId;
+        // Find the reference word to show its location.
+        let refInfo = refWordId;
+        for (let li = 0; li < pageObj.lines.length; li++) {
+          const refWord = pageObj.lines[li].words.find((w) => w.id === refWordId);
+          if (refWord) {
+            refInfo = `${pageIdx}:${li} "${refWord.text}"`;
+            break;
+          }
+        }
+        header += ` ref:${refInfo}`;
+      }
+      header += ' ---';
+      out += header;
+      currentParId = parId;
+    }
+
+    // Build line text.
+    const lineText = line.words.map((w) => w.text).join(' ');
+    out += `\n${pageIdx}:${h}  ${lineText}`;
+
+    // Annotate footnote references on this line.
+    if (footnoteAnnots) {
+      const fnWords = line.words.filter((w) => w.footnoteParId);
+      for (const w of fnWords) {
+        out += ` [footnote "${w.text}" → par:${w.footnoteParId}]`;
+      }
+    }
+  }
+
+  return out;
 }
 
 async function recognizeDocument({ file, langs, dataFile }) {
@@ -561,7 +647,8 @@ const TOOLS = [
     name: 'extract_document_text',
     description: 'Extract text from a PDF or image document. Returns text with page:line number prefixes (e.g. "0:5  some text") so lines can be referenced for highlighting. '
       + 'Handles text-native and image-based PDFs (via OCR). For large documents, returns text in chunks — check "hasMore" and use "startPage" to get the next chunk. '
-      + 'A companion data file can be provided to use existing OCR data instead of re-running recognition.',
+      + 'A companion data file can be provided to use existing OCR data instead of re-running recognition. '
+      + 'Use parAnnots and/or footnoteAnnots to add document structure annotations to the output.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -583,7 +670,20 @@ const TOOLS = [
         },
         preserveSpacing: {
           type: 'boolean',
-          description: 'Preserve horizontal spacing from the document layout by padding words with spaces based on their position. Makes table columns visually aligned in the output. Default: false.',
+          description: 'Preserve horizontal spacing from the document layout by padding words with spaces based on their position. '
+            + 'Makes table columns visually aligned in the output. Default: false.',
+        },
+        parAnnots: {
+          type: 'boolean',
+          description: 'Annotate each group of lines with its paragraph ID and type '
+            + '(body, title, or footnote), e.g. "--- par:abc123 [body] ---". '
+            + 'Use this to identify which lines belong to the same paragraph. Default: false.',
+        },
+        footnoteAnnots: {
+          type: 'boolean',
+          description: 'Include footnote cross-reference annotations. Words that reference a footnote are annotated with '
+            + '[footnote "word" → par:ID], and footnote paragraphs show which line/word they are linked from. '
+            + 'Best used together with parAnnots. Default: false.',
         },
       },
       required: [],
