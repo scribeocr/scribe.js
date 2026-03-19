@@ -487,9 +487,11 @@ async function convertDocxToJson({ file, outputPath, lineSplitMode }) {
   await ensureInit();
 
   const prevLineSplitMode = scribe.opt.docxLineSplitMode;
+  const prevCompressScribe = scribe.opt.compressScribe;
   if (lineSplitMode) {
     scribe.opt.docxLineSplitMode = lineSplitMode;
   }
+  scribe.opt.compressScribe = false;
 
   try {
     await scribe.importFiles([filePath]);
@@ -506,6 +508,7 @@ async function convertDocxToJson({ file, outputPath, lineSplitMode }) {
     };
   } finally {
     scribe.opt.docxLineSplitMode = prevLineSplitMode;
+    scribe.opt.compressScribe = prevCompressScribe;
   }
 }
 
