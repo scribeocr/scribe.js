@@ -1,0 +1,10 @@
+{
+  "name": "scribe-document-tools-mcp",
+  "version": "0.1.0",
+  "description": "MCP server for document tools using scribe.js",
+  "type": "module",
+  "main": "index.js",
+  "bin": {
+    "scribe-mcp": "index.js"
+  }
+}
