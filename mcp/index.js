@@ -176,7 +176,7 @@ async function listDocuments({ directory, dataDir }) {
 
 async function extractDocumentText({
   file, startPage, maxChars, preserveSpacing, dataFile,
-  parAnnots, footnoteAnnots,
+  parAnnots, footnoteAnnots, outputPath,
 }) {
   let filePath;
   let dataFilePath;
@@ -200,6 +200,29 @@ async function extractDocumentText({
 
   await ensureFileLoaded(filePath, dataFilePath);
   const pageCount = scribe.inputData.pageCount;
+  // When outputPath is provided, extract ALL pages to a file and return metadata only.
+  // Claude can then read the file directly with its native Read tool (much faster than paginating).
+  if (outputPath) {
+    const outPath = resolve(outputPath);
+    let text = '';
+    if (parAnnots || footnoteAnnots) {
+      for (let p = 0; p < pageCount; p++) {
+        text += buildStructuredPageText(p, { parAnnots, footnoteAnnots });
+      }
+    } else {
+      text = writeText({
+        ocrCurrent: scribe.data.ocr.active,
+        pageArr: null,
+        lineNumbers: true,
+        preserveSpacing: preserveSpacing || false,
+      });
+    }
+    fs.writeFileSync(outPath, text);
+    return {
+      outputPath: outPath, pageCount, charCount: text.length, file: filePath,
+    };
+  }
+
   const start = startPage ?? 0;
   const limit = maxChars ?? 20000;
 
@@ -302,6 +325,103 @@ function buildStructuredPageText(pageIdx, { parAnnots, footnoteAnnots }) {
   }
 
   return out;
+}
+
+async function batchExtractText({
+  directory, outputDir, dataDir, files, preserveSpacing, parAnnots, footnoteAnnots,
+}) {
+  const dir = resolve(directory);
+  const outDir = resolve(outputDir);
+
+  let entries;
+  try {
+    entries = fs.readdirSync(dir, { withFileTypes: true });
+  } catch (e) {
+    return { error: `Cannot read directory: ${dir}` };
+  }
+
+  fs.mkdirSync(outDir, { recursive: true });
+
+  // Collect filenames for companion lookup.
+  const fileNames = [];
+  for (const entry of entries) {
+    if (entry.isFile()) fileNames.push(entry.name);
+  }
+
+  let dataDirFiles = [];
+  if (dataDir) {
+    try {
+      const dataDirEntries = fs.readdirSync(join(dir, dataDir), { withFileTypes: true });
+      dataDirFiles = dataDirEntries.filter((e) => e.isFile()).map((e) => e.name);
+    } catch (e) { /* dataDir doesn't exist — not an error */ }
+  }
+
+  // Filter to supported document files.
+  let docEntries = entries.filter((e) => e.isFile() && SUPPORTED_EXTENSIONS.includes(extname(e.name).toLowerCase()));
+  if (files) {
+    const fileSet = new Set(files);
+    docEntries = docEntries.filter((e) => fileSet.has(e.name));
+  }
+
+  const results = [];
+  let successCount = 0;
+  let errorCount = 0;
+
+  for (const entry of docEntries) {
+    const docPath = join(dir, entry.name);
+    const stem = entry.name.replace(/\.[^.]+$/, '');
+    const stemLower = stem.toLowerCase();
+
+    // Find best companion data file (prefer .scribe.json).
+    const allCompanions = [];
+    for (const fn of fileNames) {
+      if (fn === entry.name) continue;
+      if (fn.toLowerCase().startsWith(stemLower) && hasDataExtension(fn)) {
+        allCompanions.push(join(dir, fn));
+      }
+    }
+    if (dataDir) {
+      for (const fn of dataDirFiles) {
+        if (fn.toLowerCase().startsWith(stemLower) && hasDataExtension(fn)) {
+          allCompanions.push(join(dir, dataDir, fn));
+        }
+      }
+    }
+    const companionPath = allCompanions.find((p) => p.endsWith('.scribe.json')) || allCompanions[0] || null;
+
+    try {
+      await ensureFileLoaded(docPath, companionPath);
+      const pageCount = scribe.inputData.pageCount;
+
+      let text = '';
+      if (parAnnots || footnoteAnnots) {
+        for (let p = 0; p < pageCount; p++) {
+          text += buildStructuredPageText(p, { parAnnots, footnoteAnnots });
+        }
+      } else {
+        text = writeText({
+          ocrCurrent: scribe.data.ocr.active,
+          pageArr: null,
+          lineNumbers: true,
+          preserveSpacing: preserveSpacing || false,
+        });
+      }
+
+      const outPath = join(outDir, `${stem}.mtxt`);
+      fs.writeFileSync(outPath, text);
+      results.push({
+        file: docPath, outputPath: outPath, pageCount, charCount: text.length,
+      });
+      successCount++;
+    } catch (e) {
+      results.push({ file: docPath, error: e.message });
+      errorCount++;
+    }
+  }
+
+  return {
+    outputDir: outDir, results, totalDocuments: results.length, successCount, errorCount,
+  };
 }
 
 async function recognizeDocument({ file, langs, dataFile }) {
@@ -603,6 +723,21 @@ async function convertDocxToJson({ file, outputPath, lineSplitMode }) {
   }
 }
 
+// async function createXlsxHandler({ outputPath, rows }) {
+//   const outPath = resolve(outputPath);
+//
+//   const { writeXlsxFromStrings } = await import(resolve(__dirname, '..', 'js', 'export', 'writeTabular.js'));
+//   const xlsxData = await writeXlsxFromStrings(rows);
+//
+//   fs.writeFileSync(outPath, xlsxData);
+//
+//   return {
+//     outputPath: outPath,
+//     rows: rows.length,
+//     columns: Math.max(...rows.map((r) => r.length)),
+//   };
+// }
+
 // --- MCP Protocol (JSON-RPC over stdio) ---
 
 const TOOLS = [
@@ -646,7 +781,10 @@ const TOOLS = [
   {
     name: 'extract_document_text',
     description: 'Extract text from a PDF or image document. Returns text with page:line number prefixes (e.g. "0:5  some text") so lines can be referenced for highlighting. '
-      + 'Handles text-native and image-based PDFs (via OCR). For large documents, returns text in chunks — check "hasMore" and use "startPage" to get the next chunk. '
+      + 'Handles text-native and image-based PDFs (via OCR). '
+      + 'For large documents, provide "outputPath" to write ALL text to a file and get metadata back — then read the file directly. '
+      + 'Without outputPath, returns text in optimally-sized chunks — leave startPage and maxChars at defaults unless you need a specific page range. '
+      + 'Check "hasMore" in the response; if true, set startPage to endPage + 1 to continue. '
       + 'A companion data file can be provided to use existing OCR data instead of re-running recognition. '
       + 'Use parAnnots and/or footnoteAnnots to add document structure annotations to the output.',
     inputSchema: {
@@ -660,13 +798,20 @@ const TOOLS = [
           type: 'string',
           description: 'Path to a companion data file (.scribe.json, Textract JSON, .hocr, .stext, etc.) with OCR/text data to use instead of extracting from the PDF.',
         },
+        outputPath: {
+          type: 'string',
+          description: 'Path to write the full extracted text to a file. When provided, ALL pages are extracted (startPage/maxChars are ignored) '
+            + 'and the result contains only metadata (path, page count, character count). Read the output file directly for content.',
+        },
         startPage: {
           type: 'integer',
-          description: 'Page to start extraction from (0-indexed). Default: 0.',
+          description: '0-indexed page to start from. Use to jump to a specific page or to continue paginating (set to endPage + 1 from the previous response). '
+            + 'Default: 0. Ignored when outputPath is provided.',
         },
         maxChars: {
           type: 'integer',
-          description: 'Maximum characters to return. The server will include as many complete pages as fit within this limit. Default: 20000.',
+          description: 'The default (20000) is optimized for typical use — do NOT override unless you have a specific reason. '
+            + 'Maximum characters to return per chunk. The server includes as many complete pages as fit within this limit.',
         },
         preserveSpacing: {
           type: 'boolean',
@@ -946,6 +1091,70 @@ const TOOLS = [
       required: ['file'],
     },
   },
+  // {
+  //   name: 'create_xlsx',
+  //   description: 'Create an Excel workbook with a single sheet from structured data. Does not require a loaded document. '
+  //     + 'Provide a 2D array of cell value strings. The first row is typically used as a header.',
+  //   inputSchema: {
+  //     type: 'object',
+  //     properties: {
+  //       outputPath: {
+  //         type: 'string',
+  //         description: 'Path for the output .xlsx file.',
+  //       },
+  //       rows: {
+  //         type: 'array',
+  //         description: 'Rows of the sheet. Each row is an array of cell value strings.',
+  //         items: {
+  //           type: 'array',
+  //           items: { type: 'string' },
+  //         },
+  //       },
+  //     },
+  //     required: ['outputPath', 'rows'],
+  //   },
+  // },
+  {
+    name: 'batch_extract_text',
+    description: 'Extract text from multiple documents in a directory, writing each to a .mtxt file. '
+      + 'Returns metadata (paths, page counts, character counts) for all documents. '
+      + 'Automatically discovers companion data files. Read the output .mtxt files directly for content.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        directory: {
+          type: 'string',
+          description: 'Directory containing the documents to process.',
+        },
+        outputDir: {
+          type: 'string',
+          description: 'Directory to write extracted .mtxt text files into. Created if it does not exist.',
+        },
+        dataDir: {
+          type: 'string',
+          description: 'Optional subdirectory name to search for companion data files (e.g., "_data").',
+        },
+        files: {
+          type: 'array',
+          items: { type: 'string' },
+          description: 'Optional list of specific filenames to process. If omitted, processes all supported documents in the directory.',
+        },
+        preserveSpacing: {
+          type: 'boolean',
+          description: 'Preserve horizontal spacing from document layout. Default: false.',
+        },
+        parAnnots: {
+          type: 'boolean',
+          description: 'Annotate paragraph boundaries and types. Default: false.',
+        },
+        footnoteAnnots: {
+          type: 'boolean',
+          description: 'Include footnote cross-reference annotations. Default: false.',
+        },
+      },
+      required: ['directory', 'outputDir'],
+    },
+  },
 ];
 
 const toolHandlers = {
@@ -960,6 +1169,8 @@ const toolHandlers = {
   define_tables: (args) => enqueue(() => defineTablesHandler(args)),
   extract_tables: (args) => enqueue(() => extractTablesHandler(args)),
   convert_docx_to_json: (args) => enqueue(() => convertDocxToJson(args)),
+  // create_xlsx: (args) => enqueue(() => createXlsxHandler(args)),
+  batch_extract_text: (args) => enqueue(() => batchExtractText(args)),
 };
 
 // JSON-RPC message handling
