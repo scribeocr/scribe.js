@@ -23,7 +23,7 @@ import { calcSuppFontInfo } from '../fontSupp.js';
 import { gs } from '../generalWorkerMain.js';
 import { imageUtils, ImageWrapper } from '../objects/imageObjects.js';
 import { addCircularRefsDataTables, LayoutDataTablePage, LayoutPage } from '../objects/layoutObjects.js';
-import { addCircularRefsOcr, updateOcrFormat } from '../objects/ocrObjects.js';
+import { OcrPage, addCircularRefsOcr, updateOcrFormat } from '../objects/ocrObjects.js';
 import { PageMetrics } from '../objects/pageMetricsObjects.js';
 import { checkCharWarn, convertOCR } from '../recognizeConvert.js';
 import { importImageFileToBase64 } from '../utils/imageUtils.js';
@@ -199,10 +199,11 @@ const restoreSessionFromFile = async (scribeFile) => {
   ocrAll.active = ocrAll[oemName];
 
   for (let i = 0; i < ocrAll[oemName].length; i++) {
-    inputData.xmlMode[i] = true;
-    if (ocrAll[oemName][i].dims.height && ocrAll[oemName][i].dims.width) {
-      pageMetricsAll[i] = new PageMetrics(ocrAll[oemName][i].dims);
+    if (!ocrAll[oemName][i]) {
+      ocrAll[oemName][i] = new OcrPage(i, { height: 1920, width: 1080 });
     }
+    inputData.xmlMode[i] = true;
+    pageMetricsAll[i] = new PageMetrics(ocrAll[oemName][i].dims);
     pageMetricsAll[i].angle = ocrAll[oemName][i].angle;
   }
 };
