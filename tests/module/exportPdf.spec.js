@@ -191,6 +191,65 @@ describe('Check addHighlights and clearHighlights.', function () {
     assert.throws(() => scribe.addHighlights([{ page: 0 }]));
   }).timeout(10000);
 
+  it('addHighlights with multi-line range highlights all lines including the last', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/testocr.abbyy.xml`]);
+    const lineCount = scribe.data.ocr.active[0].lines.length;
+    assert.isAbove(lineCount, 3, 'Document should have more than 3 lines');
+
+    const result = scribe.addHighlights([{ page: 0, startLine: 0, endLine: lineCount - 1 }]);
+    assert.strictEqual(result.totalLinesHighlighted, lineCount);
+
+    // Verify the last line specifically has all words annotated
+    const lastLine = scribe.data.ocr.active[0].lines[lineCount - 1];
+    const annots = scribe.data.annotations.pages[0];
+    let lastLineAnnotCount = 0;
+    for (const word of lastLine.words) {
+      if (annots.some((a) => a.bbox === word.bbox)) lastLineAnnotCount++;
+    }
+    assert.strictEqual(lastLineAnnotCount, lastLine.words.length, 'All words on the last line should be annotated');
+    scribe.clearHighlights();
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);
+
+describe('Check MCP highlight flow preserves data file.', function () {
+  this.timeout(30000);
+
+  it('Multi-line highlights should work when ensureFileLoaded is called without dataFile on already-loaded document', async () => {
+    const { ensureFileLoaded, resetState } = await import('../../mcp/index.js');
+    resetState();
+
+    const imgPath = `${ASSETS_PATH_KARMA}/testocr.png`;
+    const dataPath = `${ASSETS_PATH_KARMA}/testocr.abbyy.xml`;
+
+    await ensureFileLoaded(imgPath, dataPath);
+    const lineCount = scribe.data.ocr.active[0].lines.length;
+    assert.strictEqual(lineCount, 8);
+
+    await ensureFileLoaded(imgPath, undefined);
+    const lineCountAfter = scribe.data.ocr.active[0]?.lines?.length ?? 0;
+
+    assert.strictEqual(lineCountAfter, 8);
+
+    // Verify multi-line highlights work for the full range including the last line
+    const result = scribe.addHighlights([{ page: 0, startLine: 0, endLine: lineCount - 1 }]);
+    assert.strictEqual(result.totalLinesHighlighted, lineCount);
+
+    const lastLine = scribe.data.ocr.active[0].lines[lineCount - 1];
+    const annots = scribe.data.annotations.pages[0];
+    let lastLineAnnotCount = 0;
+    for (const word of lastLine.words) {
+      if (annots.some((a) => a.bbox === word.bbox)) lastLineAnnotCount++;
+    }
+    assert.strictEqual(lastLineAnnotCount, 7);
+
+    scribe.clearHighlights();
+    resetState();
+  }).timeout(20000);
+
   after(async () => {
     await scribe.terminate();
   });

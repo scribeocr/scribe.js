@@ -4,6 +4,20 @@ import { inputData, opt } from '../containers/app.js';
 import { extractTableContent } from '../extractTables.js';
 
 /**
+ * Convert a 0-based column index to an Excel column reference (A, B, ..., Z, AA, AB, ...).
+ * @param {number} index
+ */
+function colIndexToRef(index) {
+  let ref = '';
+  let n = index;
+  do {
+    ref = String.fromCharCode(65 + (n % 26)) + ref;
+    n = Math.floor(n / 26) - 1;
+  } while (n >= 0);
+  return ref;
+}
+
+/**
  * @param {Object} params
  * @param {ReturnType<extractTableContent>} params.tableWordObj
  * @param {Array<string>} [params.extraCols=[]]
@@ -205,4 +219,36 @@ export async function writeXlsx({
   const zipFileData = await zipFileWriter.getData();
 
   return zipFileData;
+}
+
+/**
+ * Create a single-sheet xlsx workbook from plain string data.
+ * @param {Array<Array<string>>} rows - 2D array of cell values.
+ */
+export async function writeXlsxFromStrings(rows) {
+  const { xlsxStrings, sheetStart, sheetEnd } = await import('./resources/xlsxFiles.js');
+  const { Uint8ArrayWriter, TextReader, ZipWriter } = await import('../../lib/zip.js/index.js');
+
+  let sheetContent = sheetStart;
+  for (let i = 0; i < rows.length; i++) {
+    sheetContent += `<row r="${String(i + 1)}">`;
+    for (let j = 0; j < rows[i].length; j++) {
+      const cellText = ocr.escapeXml(rows[i][j] ?? '');
+      sheetContent += `<c r="${colIndexToRef(j)}${String(i + 1)}" t="inlineStr"><is><t xml:space="preserve">${cellText}</t></is></c>`;
+    }
+    sheetContent += '</row>';
+  }
+  sheetContent += sheetEnd;
+
+  const zipFileWriter = new Uint8ArrayWriter();
+  const zipWriter = new ZipWriter(zipFileWriter);
+
+  await zipWriter.add('xl/worksheets/sheet1.xml', new TextReader(sheetContent));
+
+  for (let i = 0; i < xlsxStrings.length; i++) {
+    await zipWriter.add(xlsxStrings[i].path, new TextReader(xlsxStrings[i].content));
+  }
+
+  await zipWriter.close();
+  return await zipFileWriter.getData();
 }

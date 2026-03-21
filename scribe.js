@@ -41,7 +41,7 @@ import {
   calcConf, checkOcrWordsAdjacent, mergeOcrWords, splitOcrWord,
 } from './js/utils/ocrUtils.js';
 import { assignParagraphs } from './js/utils/reflowPars.js';
-import { writeXlsx } from './js/export/writeTabular.js';
+import { writeXlsx, writeXlsxFromStrings } from './js/export/writeTabular.js';
 import { calcColumnBounds, detectTablesInPage, makeTableFromBbox } from './js/utils/detectTables.js';
 import { ca } from './js/canvasAdapter.js';
 import { addHighlights, clearHighlights } from './js/addHighlights.js';
@@ -233,6 +233,8 @@ class utils {
   static writeText = writeText;
 
   static writeXlsx = writeXlsx;
+
+  static writeXlsxFromStrings = writeXlsxFromStrings;
 
   // Misc utils
   static calcBoxOverlap = calcBoxOverlap;
