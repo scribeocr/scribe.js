@@ -322,9 +322,9 @@ describe('Check custom model scattered failure handling.', function () {
       assert.isTrue(scribe.data.ocr.active[i].lines.length > 0, `Page ${i} should have lines`);
     }
 
-    // Failed pages should not have OCR data
-    assert.isNotOk(scribe.data.ocr.active[2]);
-    assert.isNotOk(scribe.data.ocr.active[5]);
+    // Failed pages should have no lines
+    assert.strictEqual(scribe.data.ocr.active[2].lines.length, 0);
+    assert.strictEqual(scribe.data.ocr.active[5].lines.length, 0);
   }).timeout(30000);
 
   after(async function () {
