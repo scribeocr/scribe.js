@@ -4,6 +4,20 @@ import { inputData, opt } from '../containers/app.js';
 import { extractTableContent } from '../extractTables.js';
 
 /**
+ * Convert a 0-based column index to an Excel column reference (A, B, ..., Z, AA, AB, ...).
+ * @param {number} index
+ */
+function colIndexToRef(index) {
+  let ref = '';
+  let n = index;
+  do {
+    ref = String.fromCharCode(65 + (n % 26)) + ref;
+    n = Math.floor(n / 26) - 1;
+  } while (n >= 0);
+  return ref;
+}
+
+/**
  * @param {Object} params
  * @param {ReturnType<extractTableContent>} params.tableWordObj
  * @param {Array<string>} [params.extraCols=[]]
@@ -43,8 +57,6 @@ export function createCells({
 function createCellsSingle({
   ocrTableWords, extraCols = [], startRow = 0, xlsxMode = true, htmlMode = false, previewMode = true,
 }) {
-  const letters = ['A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z'];
-
   let textStr = htmlMode ? '<table>' : '';
   for (let i = 0; i < ocrTableWords.length; i++) {
     if (xlsxMode) {
@@ -57,7 +69,7 @@ function createCellsSingle({
       // Escape special characters for XML
       let colTxt = ocr.escapeXml(extraCols[j]);
       if (xlsxMode) {
-        textStr += `<c r="${letters[j]}${String(startRow + i + 1)}" t="inlineStr"><is><r><t xml:space="preserve">${colTxt}</t></r></is></c>`;
+        textStr += `<c r="${colIndexToRef(j)}${String(startRow + i + 1)}" t="inlineStr"><is><r><t xml:space="preserve">${colTxt}</t></r></is></c>`;
       } else if (htmlMode) {
         // When generating an HTML preview, file names are abbreviated for readability
         if (previewMode && colTxt.length > 13) {
@@ -82,7 +94,7 @@ function createCellsSingle({
       words.sort((a, b) => a.bbox.left - b.bbox.left);
 
       if (xlsxMode) {
-        textStr += `<c r="${letters[j + extraCols.length]}${String(startRow + i + 1)}" t="inlineStr"><is>`;
+        textStr += `<c r="${colIndexToRef(j + extraCols.length)}${String(startRow + i + 1)}" t="inlineStr"><is>`;
       } else if (htmlMode) {
         textStr += '<td>';
       }
@@ -147,6 +159,24 @@ function createCellsSingle({
 }
 
 /**
+ * Build an XLSX ZIP archive from complete sheet XML and boilerplate files.
+ * @param {string} sheetXml - Complete XML for xl/worksheets/sheet1.xml.
+ * @param {Array<{path: string, content: string}>} xlsxStrings - Boilerplate files.
+ * @returns {Promise<Uint8Array>}
+ */
+async function buildXlsxZip(sheetXml, xlsxStrings) {
+  const { Uint8ArrayWriter, TextReader, ZipWriter } = await import('../../lib/zip.js/index.js');
+  const zipFileWriter = new Uint8ArrayWriter();
+  const zipWriter = new ZipWriter(zipFileWriter);
+  await zipWriter.add('xl/worksheets/sheet1.xml', new TextReader(sheetXml));
+  for (let i = 0; i < xlsxStrings.length; i++) {
+    await zipWriter.add(xlsxStrings[i].path, new TextReader(xlsxStrings[i].content));
+  }
+  await zipWriter.close();
+  return zipFileWriter.getData();
+}
+
+/**
  *
  * @param {Object} params
  * @param {Array<OcrPage>} params.ocrPageArr
@@ -158,8 +188,7 @@ function createCellsSingle({
 export async function writeXlsx({
   ocrPageArr, layoutPageArr, pageArr = null, minpage = 0, maxpage = -1,
 }) {
-  const { xlsxStrings, sheetStart, sheetEnd } = await import('./resources/xlsxFiles.js');
-  const { Uint8ArrayWriter, TextReader, ZipWriter } = await import('../../lib/zip.js/index.js');
+  const { xlsxStrings, sheetPreamble, sheetClose } = await import('./resources/xlsxFiles.js');
 
   if (!pageArr) {
     if (maxpage === -1) maxpage = ocrPageArr.length - 1;
@@ -167,10 +196,7 @@ export async function writeXlsx({
     for (let i = minpage; i <= maxpage; i++) pageArr.push(i);
   }
 
-  const zipFileWriter = new Uint8ArrayWriter();
-  const zipWriter = new ZipWriter(zipFileWriter);
-
-  let sheetContent = sheetStart;
+  let cellContent = '';
   let rowCount = 0;
   for (const i of pageArr) {
     /** @type {Array<string>} */
@@ -187,22 +213,81 @@ export async function writeXlsx({
     const tableWordObj = extractTableContent(ocrPageArr[i], layoutPageArr[i]);
     const cellsObj = createCells({ tableWordObj, extraCols, startRow: rowCount });
     rowCount += cellsObj.rows;
-    sheetContent += cellsObj.content;
+    cellContent += cellsObj.content;
     opt.progressHandler({ n: i, type: 'export', info: { } });
   }
-  sheetContent += sheetEnd;
 
-  const textReader = new TextReader(sheetContent);
-  await zipWriter.add('xl/worksheets/sheet1.xml', textReader);
+  const sheetXml = `${sheetPreamble}<sheetData>${cellContent}</sheetData>${sheetClose}`;
+  return buildXlsxZip(sheetXml, xlsxStrings);
+}
 
-  for (let i = 0; i < xlsxStrings.length; i++) {
-    const textReaderI = new TextReader(xlsxStrings[i].content);
-    await zipWriter.add(xlsxStrings[i].path, textReaderI);
+/**
+ * Create a single-sheet xlsx workbook from plain data.
+ * @param {Array<Array<string|number|null|undefined>>} rows - 2D array of cell values.
+ * @param {Object} [options]
+ * @param {number} [options.headerRows=0] - Number of leading rows to bold+underline.
+ * @param {boolean} [options.autoFilter=false] - Add dropdown filters spanning the data range.
+ * @param {'auto'|Array<number>} [options.columnWidths] - Column width strategy.
+ */
+export async function writeXlsxFromRows(rows, options = {}) {
+  const { xlsxStrings, sheetPreamble, sheetClose } = await import('./resources/xlsxFiles.js');
+
+  const { headerRows = 0, autoFilter = false, columnWidths } = options;
+
+  let maxCols = 0;
+  for (let i = 0; i < rows.length; i++) {
+    if (rows[i].length > maxCols) maxCols = rows[i].length;
   }
 
-  await zipWriter.close();
+  let colsXml = '';
+  if (columnWidths) {
+    let widths;
+    if (columnWidths === 'auto') {
+      widths = new Array(maxCols).fill(0);
+      for (let i = 0; i < rows.length; i++) {
+        for (let j = 0; j < rows[i].length; j++) {
+          const val = rows[i][j];
+          const len = val == null ? 0 : String(val).length;
+          if (len > widths[j]) widths[j] = len;
+        }
+      }
+      for (let c = 0; c < widths.length; c++) {
+        widths[c] = Math.min(Math.max(widths[c] * 1.2 + 2, 8), 60);
+      }
+    } else {
+      widths = columnWidths;
+    }
+    colsXml = '<cols>';
+    for (let c = 0; c < widths.length; c++) {
+      colsXml += `<col min="${c + 1}" max="${c + 1}" width="${widths[c]}" customWidth="1"/>`;
+    }
+    colsXml += '</cols>';
+  }
 
-  const zipFileData = await zipFileWriter.getData();
+  let cellContent = '';
+  for (let i = 0; i < rows.length; i++) {
+    cellContent += `<row r="${String(i + 1)}">`;
+    const isHeader = i < headerRows;
+    for (let j = 0; j < rows[i].length; j++) {
+      const val = rows[i][j];
+      const cellRef = `${colIndexToRef(j)}${String(i + 1)}`;
+      const styleAttr = isHeader ? ' s="1"' : '';
 
-  return zipFileData;
+      if (typeof val === 'number' && Number.isFinite(val)) {
+        cellContent += `<c r="${cellRef}"${styleAttr}><v>${val}</v></c>`;
+      } else {
+        const cellText = ocr.escapeXml(val == null ? '' : String(val));
+        cellContent += `<c r="${cellRef}"${styleAttr} t="inlineStr"><is><t xml:space="preserve">${cellText}</t></is></c>`;
+      }
+    }
+    cellContent += '</row>';
+  }
+
+  let autoFilterXml = '';
+  if (autoFilter && rows.length > 0 && maxCols > 0) {
+    autoFilterXml = `<autoFilter ref="A1:${colIndexToRef(maxCols - 1)}${rows.length}"/>`;
+  }
+
+  const sheetXml = `${sheetPreamble}${colsXml}<sheetData>${cellContent}</sheetData>${autoFilterXml}${sheetClose}`;
+  return buildXlsxZip(sheetXml, xlsxStrings);
 }
