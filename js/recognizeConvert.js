@@ -13,6 +13,7 @@ import { calcCharMetricsFromPages } from './fontStatistics.js';
 import { gs } from './generalWorkerMain.js';
 import { ImageWrapper } from './objects/imageObjects.js';
 import { LayoutDataTablePage, LayoutPage } from './objects/layoutObjects.js';
+import { OcrPage } from './objects/ocrObjects.js';
 import { PageMetrics } from './objects/pageMetricsObjects.js';
 import { clearObjectProperties } from './utils/miscUtils.js';
 
@@ -659,6 +660,7 @@ async function recognizeCustomModel(options) {
       const nativeN = await ImageCache.getNative(n);
       if (!nativeN) {
         opt.warningHandler(`No image found for page ${n}, skipping.`);
+        ocrAll[engineName][n] = new OcrPage(n, pageMetricsAll[n].dims);
         return;
       }
 
@@ -715,6 +717,7 @@ async function recognizeCustomModel(options) {
         const errMsg = result.error ? result.error.message : 'Unknown error';
         failedPages.push(n);
         opt.warningHandler(`Recognition failed for page ${n}: ${errMsg}`);
+        ocrAll[engineName][n] = new OcrPage(n, pageMetricsAll[n].dims);
         consecutiveFailures++;
         lastErrorMessage = errMsg;
         if (consecutiveFailures >= maxConsecutiveFailures) {

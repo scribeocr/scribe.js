@@ -868,6 +868,7 @@ export const removeCircularRefsOcr = (pages, options = {}) => {
   const { includeText = false } = options;
   const pagesClone = structuredClone(pages);
   pagesClone.forEach((page) => {
+    if (!page) return;
     // Add page-level text if requested (must be done before modifying lines)
     if (includeText) {
       // @ts-ignore
@@ -937,6 +938,7 @@ export const removeCircularRefsOcr = (pages, options = {}) => {
  */
 export const addCircularRefsOcr = (pages) => {
   pages.forEach((page) => {
+    if (!page) return;
     // Remove text property if present (added during export with includeText option)
     // @ts-ignore
     delete page.text;
@@ -1019,6 +1021,7 @@ export const addCircularRefsOcr = (pages) => {
  */
 export const updateOcrFormat = (pages) => {
   pages.forEach((page) => {
+    if (!page) return;
     page.lines.forEach((line) => {
       if (!line.debug) {
         line.debug = new LineDebugInfo();

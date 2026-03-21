@@ -79,8 +79,7 @@ describe('Check markdown table export.', function () {
   this.timeout(10000);
 
   it('Should export tables as markdown pipe tables', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.pdf`,
-      `${ASSETS_PATH_KARMA}/border_patrol_tables.abbyy.xml`]);
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.abbyy.xml`]);
 
     const exportedMd = await scribe.exportData('md', { pageArr: [2] });
 

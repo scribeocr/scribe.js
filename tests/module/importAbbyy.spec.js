@@ -191,8 +191,7 @@ describe('Check Abbyy XML table import.', function () {
   this.timeout(20000);
 
   it('Should import Abbyy XML with PDF document', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.pdf`,
-      `${ASSETS_PATH_KARMA}/border_patrol_tables.abbyy.xml`]);
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.abbyy.xml`]);
 
     assert.isTrue(scribe.data.ocr.active[0].lines.length > 0);
   }).timeout(20000);

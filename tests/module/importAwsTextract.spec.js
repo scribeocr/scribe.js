@@ -110,6 +110,44 @@ describe('Check AWS Textract JSON import correctly handles angle brackets.', fun
   });
 }).timeout(120000);
 
+describe('Check scribe JSON import handles null OCR pages (blank pages).', function () {
+  this.timeout(10000);
+
+  it('Should import scribe JSON that has null entries in the OCR array without crashing', async () => {
+    // Import a known-good scribe file, export it, then inject null pages to simulate blank pages.
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
+
+    scribe.opt.compressScribe = false;
+    const scribeStr = await scribe.exportData('scribe');
+    const scribeObj = JSON.parse(scribeStr);
+
+    // Inject null at the beginning and end to simulate blank/cover pages.
+    scribeObj.ocr.unshift(null);
+    scribeObj.ocr.push(null);
+
+    const modified = JSON.stringify(scribeObj);
+    const encoder = new TextEncoder();
+    const buffer = encoder.encode(modified).buffer;
+
+    await scribe.terminate();
+    await scribe.importFiles({ scribeFiles: [buffer] });
+
+    // Page 0 was null in the input, so it should be an empty placeholder page with default dims.
+    assert.strictEqual(scribe.data.ocr.active[0].lines.length, 0);
+    assert.strictEqual(scribe.data.ocr.active[0].dims.width, 1080);
+    assert.strictEqual(scribe.data.ocr.active[0].dims.height, 1920);
+    // Page 1 should be the original first page with real OCR data.
+    assert.isTrue(scribe.data.ocr.active[1].lines.length > 0);
+    assert.strictEqual(scribe.data.ocr.active[1].lines[0].words[0].text, 'UNITED');
+  }).timeout(10000);
+
+  after(async () => {
+    scribe.opt.compressScribe = true;
+    await scribe.clear();
+    await scribe.terminate();
+  });
+}).timeout(120000);
+
 describe('Check AWS Textract properly splits unicode superscript footnotes.', function () {
   this.timeout(10000);
 
