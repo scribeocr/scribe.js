@@ -25,3 +25,5 @@ jsconfig.json
 .eslintrc.json
 .gitmodules
 build-deno-compile.sh
+js/font-parser/fonts
+js/font-parser/test

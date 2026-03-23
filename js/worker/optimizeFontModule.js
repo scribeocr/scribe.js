@@ -1,6 +1,6 @@
 import { quantile } from '../utils/miscUtils.js';
 
-import opentype from '../../lib/opentype.module.js';
+import opentype from '../font-parser/src/index.js';
 
 // Defining "window" is needed due to bad browser/node detection in Opentype.js
 // Can hopefully remove in future version
@@ -162,15 +162,11 @@ const calculateKerningPairs = (font, charMetricsObj, xHeight, styleLookup) => {
 export async function optimizeFont({
   fontData, charMetricsObj, style, adjustAllLeftBearings = false, standardizeSize = false, targetEmSize = null, transGlyphs = true,
 }) {
+  const skipTables = ['GSUB', 'GPOS', 'OS/2', 'cvt ', 'fpgm', 'prep', 'COLR', 'CPAL', 'meta'];
   /** @type {opentype.Font} */
-  const workingFont = typeof (fontData) === 'string' ? await opentype.load(fontData) : opentype.parse(fontData, { lowMemory: false });
-
-  // let workingFont;
-  // if (typeof (fontData) == "string") {
-  //   workingFont = await opentype.load(fontData);
-  // } else {
-  //   workingFont = opentype.parse(fontData, { lowMemory: false });
-  // }
+  const workingFont = typeof (fontData) === 'string'
+    ? await opentype.parse(await fetch(fontData).then((r) => r.arrayBuffer()), { skipTables })
+    : await opentype.parse(fontData, { skipTables });
 
   // Remove GSUB table (in most Latin fonts this table is responsible for ligatures, if it is used at all).
   // The presence of ligatures (such as ﬁ and ﬂ) is not properly accounted for when setting character metrics.
@@ -185,8 +181,8 @@ export async function optimizeFont({
   const scaleGlyph = (x) => x * xHeightScale;
   if (Math.abs(1 - xHeightScale) > 0.01) {
     if (standardizeSize) {
-      for (const [key, value] of Object.entries(workingFont.glyphs.glyphs)) {
-        transformGlyph(value, scaleGlyph, true, true);
+      for (let i = 0; i < workingFont.glyphs.length; i++) {
+        transformGlyph(workingFont.glyphs.get(i), scaleGlyph, true, true);
       }
     } else {
       console.log("Font is not standard size ('o' 0.47x em size).  Either standardize the font ahead of time or enable `standardizeSize = true` to standardize on the fly.");
@@ -194,8 +190,8 @@ export async function optimizeFont({
   }
 
   if (targetEmSize && targetEmSize !== workingFont.unitsPerEm) {
-    for (const [key, value] of Object.entries(workingFont.glyphs.glyphs)) {
-      transformGlyph(value, (x) => x * (targetEmSize / workingFont.unitsPerEm), true, true);
+    for (let i = 0; i < workingFont.glyphs.length; i++) {
+      transformGlyph(workingFont.glyphs.get(i), (x) => x * (targetEmSize / workingFont.unitsPerEm), true, true);
     }
     workingFont.unitsPerEm = targetEmSize;
   }
@@ -321,7 +317,8 @@ export async function optimizeFont({
       // Limit to +/-30% of original advance width, matching the general scaling limits.
       const uniformAdvance = Math.round(Math.max(Math.min(targetAdvance, originalMonoAdvance * 1.3), originalMonoAdvance * 0.7));
 
-      for (const [key, glyph] of Object.entries(workingFont.glyphs.glyphs)) {
+      for (let i = 0; i < workingFont.glyphs.length; i++) {
+        const glyph = workingFont.glyphs.get(i);
         if (glyph.advanceWidth > 0) {
           glyph.advanceWidth = uniformAdvance;
         }

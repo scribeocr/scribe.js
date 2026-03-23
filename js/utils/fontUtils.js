@@ -5,7 +5,7 @@ import { FontCont } from '../containers/fontContainer.js';
 import { getPrevLine } from '../objects/ocrObjects.js';
 import { FontProps, quantile } from './miscUtils.js';
 
-import opentype from '../../lib/opentype.module.js';
+import opentype from '../font-parser/src/index.js';
 import { opt } from '../containers/app.js';
 
 /**
@@ -41,7 +41,7 @@ export const getDistinctCharsFont = (ocrPageArr, family, style) => {
 
 /**
  *
- * @param {import('opentype.js').Font} font
+ * @param {opentype.Font} font
  * @param {Array<string>} charArr
  * @returns
  */
@@ -80,7 +80,7 @@ export async function subsetFont(font, charArr = []) {
 /**
  * Calculates font size by comparing provided character height to font metrics.
  *
- * @param {import('opentype.js').Font} fontOpentype
+ * @param {opentype.Font} fontOpentype
  * @param {number} heightActual - Actual, measured height of text in pixels.
  * @param {string} text - Text to compare `heightActual` against.
  *
@@ -107,7 +107,7 @@ function getFontSize(fontOpentype, heightActual, text) {
 /**
  * Calculates font size for an array of words using the most granular bounding box available (character or word-level) rather than using line-level metrics.
  * @param {Array<OcrWord>} wordArr
- * @param {import('opentype.js').Font} fontOpentype
+ * @param {opentype.Font} fontOpentype
  * @param {Boolean} [nonLatin=false]
  *
  */

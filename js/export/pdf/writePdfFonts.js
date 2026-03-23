@@ -33,7 +33,7 @@ export function hex(arrayBuffer) {
  * Creates a ToUnicode CMap string for a font.
  * The CMap maps character codes to Unicode values to enable text extraction.
  *
- * @param {import('opentype.js').Font} font - Opentype.js font object
+ * @param {import('../../font-parser/src/font.js').Font} font - Opentype.js font object
  * @returns {string} The ToUnicode CMap content string
  */
 export function createToUnicode(font) {
@@ -107,7 +107,7 @@ const generateFontFlags = (serif, italic, smallcap, symbolic) => { /* eslint-dis
 
 /**
  *
- * @param {opentype.Font} font - Opentype.js font object
+ * @param {opentypeFont} font - Opentype.js font object
  * @param {number} objIndex - Index for font descriptor PDF object
  * @param {boolean} italic
  * @param {?number} embeddedObjIndex - Index for embedded font file PDF object.
@@ -174,7 +174,7 @@ function createFontDescriptor(font, objIndex, italic, embeddedObjIndex = null) {
  * Converts a Opentype.js font object into an array of strings containing PDF objects.
  * The font is represented as a simple "Type 1" font.
  *
- * @param {opentype.Font} font - Opentype.js font object
+ * @param {opentypeFont} font - Opentype.js font object
  * @param {number} firstObjIndex - Index for the first PDF object
  * @param {boolean} [italic=false] - Whether the font is italic.
  * @param {boolean} [isStandardFont=false] - Whether the font is a standard font.
@@ -250,7 +250,7 @@ export function createEmbeddedFontType1(font, firstObjIndex, italic = false, isS
  * The font is represented as a composite "Type 0" font.
  *
  * @param {Object} options - Configuration object
- * @param {opentype.Font} options.font - Opentype.js font object
+ * @param {opentypeFont} options.font - Opentype.js font object
  * @param {number} options.firstObjIndex - Index for the first PDF object
  * @param {boolean} [options.italic=false] - Whether the font is italic.
  *

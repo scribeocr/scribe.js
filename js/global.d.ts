@@ -90,8 +90,8 @@ declare global {
         boldItalic: ArrayBuffer | null;
     };
 
-    type opentypeFont = import("../lib/opentype.module.js").Font;
-    type opentypeGlyph = import("../lib/opentype.module.js").Glyph;
+    type opentypeFont = import("./font-parser/src/index.js").Font;
+    type opentypeGlyph = import("./font-parser/src/index.js").Glyph;
     type GeneralScheduler = import("./generalWorkerMain.js").GeneralScheduler;
 
     // Image objects

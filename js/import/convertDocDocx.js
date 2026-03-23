@@ -57,14 +57,14 @@ function isSentenceEnding(word) {
   return true;
 }
 
-/** @type {?opentype.Font} */
+/** @type {?opentypeFont} */
 let fontOpentype = null;
 
 /**
  * Calculates the advance of a string in pixels.
  * @param {string} text
  * @param {number} size
- * @param {opentype.Font} font
+ * @param {opentypeFont} font
  */
 function getTextWidth(text, size, font) {
   const charMetrics = calcWordCharMetrics(text, font);

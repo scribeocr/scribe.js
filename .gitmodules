@@ -4,3 +4,6 @@
 [submodule "tests/test-assets"]
 	path = tests/test-assets
 	url = https://github.com/scribe-js/test-assets.git
+[submodule "js/font-parser"]
+	path = js/font-parser
+	url = https://github.com/scribe-js/font-parser.git

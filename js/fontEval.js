@@ -11,7 +11,7 @@ import { gs } from './generalWorkerMain.js';
 /**
  * Compute the RMSD between OCR character widths and a font's glyph advance widths.
  *
- * @param {opentype.Font} fontOpentype
+ * @param {opentypeFont} fontOpentype
  * @param {CharMetricsFont} charMetrics
  * @returns {number}
  */

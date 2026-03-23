@@ -11,14 +11,14 @@ const LINE_HEIGHT = 14.4;
 const MARGIN_VERTICAL = 30;
 const MARGIN_HORIZONTAL = 20;
 
-/** @type {?opentype.Font} */
+/** @type {?opentypeFont} */
 let fontOpentype = null;
 
 /**
  * Calculates the advance of a string in pixels.
  * @param {string} text
  * @param {number} size
- * @param {opentype.Font} font
+ * @param {opentypeFont} font
  */
 function getTextWidth(text, size, font) {
   const { advanceArr, kerningArr } = calcWordCharMetrics(text, font);

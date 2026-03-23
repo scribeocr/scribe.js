@@ -4,7 +4,7 @@
 // all fonts should have an identical OpenType.js and FontFace version.
 
 // Node.js case
-import opentype from '../../lib/opentype.module.js';
+import opentype from '../font-parser/src/index.js';
 import { determineSansSerif, getStyleLookup, clearObjectProperties } from '../utils/miscUtils.js';
 import { ca } from '../canvasAdapter.js';
 
@@ -43,9 +43,13 @@ export function checkMultiFontMode(charMetricsObj) {
  * @param {string|ArrayBuffer} src
  * @param {?Object.<string, number>} [kerningPairs=null]
  */
+/** Tables not used by scribe.js — skipping them avoids decompression and parsing overhead. */
+const defaultSkipTables = ['GSUB', 'GPOS', 'OS/2', 'cvt ', 'fpgm', 'prep', 'COLR', 'CPAL', 'meta'];
+
 export async function loadOpentype(src, kerningPairs = null) {
-  const font = typeof (src) === 'string' ? await opentype.load(src) : await opentype.parse(src, { lowMemory: false });
-  font.tables.gsub = null;
+  const font = typeof (src) === 'string'
+    ? opentype.parse(await fetch(src).then((r) => r.arrayBuffer()), { skipTables: defaultSkipTables })
+    : opentype.parse(src, { skipTables: defaultSkipTables });
   // Re-apply kerningPairs object so when toArrayBuffer is called on this font later (when making a pdf) kerning data will be included
   if (kerningPairs) font.kerningPairs = kerningPairs;
   return font;

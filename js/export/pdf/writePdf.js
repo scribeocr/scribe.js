@@ -484,7 +484,7 @@ function consolidateAnnotations(pageAnnotations, pageObj) {
  * @param {boolean} [params.rotateBackground=false]
  * @param {number} [params.confThreshHigh=85]
  * @param {number} [params.confThreshMed=75]
- * @param {?import('opentype.js').Font} [params.fontChiSim=null]
+ * @param {?import('../../font-parser/src/font.js').Font} [params.fontChiSim=null]
  * @param {Array<number>} [params.imageObjIndices=[]] - Array of image object indices
  * @param {?string} [params.imageName=null]
  * @param {Array<AnnotationHighlight>} [params.pageAnnotations=[]] - Highlight annotations for this page
