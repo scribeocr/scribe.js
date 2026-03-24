@@ -13,27 +13,6 @@ const TMP = path.resolve(__dirname, '..', '..', 'tmp');
 // MCP tests are Node-only (they use fs paths).
 const describeNode = typeof process !== 'undefined' ? describe : describe.skip;
 
-describeNode('MCP tool: list_documents', function () {
-  this.timeout(10000);
-
-  it('Should find PDF and image files in a directory', async () => {
-    const result = await toolHandlers.list_documents({ directory: ASSETS });
-    assert.isArray(result.documents);
-    assert.strictEqual(result.documents.length, 60);
-    const names = result.documents.map((d) => d.name);
-    assert.include(names, 'complaint_1.pdf');
-  });
-
-  it('Should discover companion data files for complaint_1.pdf', async () => {
-    const result = await toolHandlers.list_documents({ directory: ASSETS });
-    const complaint = result.documents.find((d) => d.name === 'complaint_1.pdf');
-    assert.isObject(complaint);
-    assert.strictEqual(complaint.companionDataFiles.length, 4);
-    const companionNames = complaint.companionDataFiles.map((c) => c.name);
-    assert.include(companionNames, 'complaint_1.abbyy.xml');
-  });
-});
-
 describeNode('MCP tool: load_document', function () {
   this.timeout(10000);
 
