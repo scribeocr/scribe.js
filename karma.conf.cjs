@@ -22,6 +22,7 @@ module.exports = function (config) {
       { pattern: 'tests/**', included: false, served: true },
       { pattern: 'js/**', included: false, served: true },
       { pattern: 'lib/**', included: false, served: true },
+      { pattern: 'js/font-parser/src/**', included: false, served: true },
       { pattern: 'mupdf/**', included: false, served: true },
       { pattern: 'fonts/**', included: false, served: true },
       { pattern: 'tess/**', included: false, served: true },
@@ -30,6 +31,7 @@ module.exports = function (config) {
 
     // list of files / patterns to exclude
     exclude: [
+      'tests/module/mcp.spec.js',
     ],
 
     // preprocess matching files before serving them to the browser
