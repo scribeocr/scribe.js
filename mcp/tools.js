@@ -3,7 +3,7 @@
  * This module contains all tool logic but no JSON-RPC / stdio server code.
  */
 
-import { fileURLToPath } from 'url';
+import { fileURLToPath, pathToFileURL } from 'url';
 import {
   dirname, resolve, join, extname,
 } from 'path';
@@ -12,18 +12,14 @@ import fs from 'node:fs';
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
 
-const scribePath = resolve(__dirname, '..', 'scribe.js');
-const scribeModule = await import(scribePath);
+const scribeModule = await import(pathToFileURL(resolve(__dirname, '..', 'scribe.js')).href);
 const scribe = scribeModule.default;
 
-const writeTextModule = await import(resolve(__dirname, '..', 'js', 'export', 'writeText.js'));
-const { writeText } = writeTextModule;
+const { writeText } = await import(pathToFileURL(resolve(__dirname, '..', 'js', 'export', 'writeText.js')).href);
 
-const reflowParsModule = await import(resolve(__dirname, '..', 'js', 'utils', 'reflowPars.js'));
-const { assignParagraphs } = reflowParsModule;
+const { assignParagraphs } = await import(pathToFileURL(resolve(__dirname, '..', 'js', 'utils', 'reflowPars.js')).href);
 
-const dataContainerModule = await import(resolve(__dirname, '..', 'js', 'containers', 'dataContainer.js'));
-const { pageMetricsAll } = dataContainerModule;
+const { pageMetricsAll } = await import(pathToFileURL(resolve(__dirname, '..', 'js', 'containers', 'dataContainer.js')).href);
 
 const SUPPORTED_EXTENSIONS = ['.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.tif'];
 const DATA_EXTENSIONS = ['.scribe.json', '.json', '.json.gz', '.hocr', '.xml', '.stext', '.txt', '.docx'];
