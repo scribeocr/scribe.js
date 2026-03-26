@@ -520,6 +520,16 @@ export async function importFiles(files) {
     }
   }
 
+  // Re-apply page angles from .scribe data after PDF/image loading overwrites pageMetrics.
+  // The PDF/image loading creates new PageMetrics with correct dimensions but angle=null.
+  if (scribeFiles[0] && ocrAll.active) {
+    for (let i = 0; i < ocrAll.active.length; i++) {
+      if (ocrAll.active[i]?.angle != null && pageMetricsAll[i]) {
+        pageMetricsAll[i].angle = ocrAll.active[i].angle;
+      }
+    }
+  }
+
   if (xmlModeImport) {
     // Process OCR using web worker, reading from file first if that has not been done already
     await convertOCR(ocrAllRaw.active, true, format, oemName, reimportHocrMode, pageMetricsAll).then(async () => {
@@ -536,7 +546,7 @@ export async function importFiles(files) {
         await runFontOptimization(ocrAll.active);
       }
     });
-  } else if (inputData.pdfMode && (opt.usePDFText.native.main || opt.usePDFText.native.supp || opt.usePDFText.ocr.main || opt.usePDFText.ocr.supp || opt.keepPDFTextAlways)) {
+  } else if (!scribeFiles[0] && inputData.pdfMode && (opt.usePDFText.native.main || opt.usePDFText.native.supp || opt.usePDFText.ocr.main || opt.usePDFText.ocr.supp || opt.keepPDFTextAlways)) {
     await extractInternalPDFText();
     if (inputData.pdfType === 'text' && opt.usePDFText.native.main || inputData.pdfType === 'ocr' && opt.usePDFText.ocr.main) {
       if (inputData.pdfType === 'text') FontCont.state.enableCleanToNimbusMono = true;

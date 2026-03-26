@@ -91,6 +91,26 @@ describe('Check .scribe export function.', function () {
     await scribe.terminate();
   }).timeout(10000);
 
+  it('Reimporting .scribe alongside PDF should preserve page angle', async () => {
+    const pdfPath = `${ASSETS_PATH_KARMA}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`;
+    await scribe.importFiles([pdfPath]);
+
+    scribe.data.ocr.active[0].angle = 2.5;
+
+    scribe.opt.compressScribe = false;
+    const scribeData = await scribe.exportData('scribe');
+    const encoder = new TextEncoder();
+    const scribeDataBuffer = encoder.encode(scribeData).buffer;
+
+    await scribe.terminate();
+    await scribe.importFiles({ scribeFiles: [scribeDataBuffer], pdfFiles: [pdfPath] });
+
+    assert.strictEqual(scribe.data.pageMetrics[0].angle, 2.5, 'Page angle should be preserved after reimporting .scribe with PDF');
+
+    await scribe.clear();
+    await scribe.terminate();
+  }).timeout(10000);
+
   it('Exporting with includeExtraTextScribe should add text properties, which are removed on import', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
 
