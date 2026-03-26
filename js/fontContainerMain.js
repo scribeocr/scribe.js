@@ -15,7 +15,8 @@ import { gs } from './generalWorkerMain.js';
  */
 export async function loadBuiltInFontsRaw(glyphSet = 'latin') {
   // Return early if the font set is already loaded, or a superset of the requested set is loaded.
-  if (FontCont.state.glyphSet === glyphSet || FontCont.state.glyphSet === 'all' && glyphSet === 'latin') return;
+  if (FontCont.raw && (FontCont.state.glyphSet === glyphSet
+    || FontCont.state.glyphSet === 'all' && glyphSet === 'latin')) return;
 
   FontCont.state.glyphSet = glyphSet;
 

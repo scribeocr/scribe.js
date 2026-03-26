@@ -16,8 +16,16 @@ describe('Check export for .pdf files.', function () {
   it('Export -> import of simple text-only ebook-style PDF retains text content', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/text_simple.txt`]);
 
-    const exportedPdf = await scribe.exportData('pdf');
     const exportedText = await scribe.exportData('text');
+
+    // Inject an empty-text word to verify empty words do not cause errors during PDF export.
+    // See: https://github.com/scribeocr/scribeocr/issues/91
+    const line0 = scribe.data.ocr.active[0].lines[0];
+    line0.words.push(new scribe.utils.ocr.OcrWord(line0, 'empty_word_test', '', {
+      left: 100, top: 100, right: 100, bottom: 120,
+    }));
+
+    const exportedPdf = await scribe.exportData('pdf');
 
     scribe.opt.displayMode = 'ebook';
 
@@ -42,6 +50,16 @@ describe('Check export for .pdf files.', function () {
 
     const exportedPdf = await scribe.exportData('pdf');
     const exportedText = await scribe.exportData('text');
+
+    // Inject an empty-text word to verify empty words do not cause errors during HTML export.
+    // See: https://github.com/scribeocr/scribeocr/issues/91
+    const line0html = scribe.data.ocr.active[0].lines[0];
+    line0html.words.push(new scribe.utils.ocr.OcrWord(line0html, 'empty_word_html_test', '', {
+      left: 100, top: 100, right: 100, bottom: 120,
+    }));
+
+    const exportedHtml = await scribe.exportData('html');
+    assert.include(exportedHtml, '>point<');
 
     await scribe.clear();
     scribe.opt.usePDFText.native.main = true;

@@ -44,7 +44,7 @@ export function checkMultiFontMode(charMetricsObj) {
  * @param {?Object.<string, number>} [kerningPairs=null]
  */
 /** Tables not used by scribe.js — skipping them avoids decompression and parsing overhead. */
-const defaultSkipTables = ['GSUB', 'GPOS', 'OS/2', 'cvt ', 'fpgm', 'prep', 'COLR', 'CPAL', 'meta'];
+const defaultSkipTables = ['GSUB', 'GPOS', 'cvt ', 'fpgm', 'prep', 'COLR', 'CPAL', 'meta'];
 
 export async function loadOpentype(src, kerningPairs = null) {
   const font = typeof (src) === 'string'

@@ -52,7 +52,7 @@ export async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode
 
   for (let i = 0; i < pageObj.lines.length; i++) {
     const lineObj = pageObj.lines[i];
-    const { words } = lineObj;
+    const words = lineObj.words.filter((w) => w.text);
 
     if (words.length === 0) continue;
 

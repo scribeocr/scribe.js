@@ -133,6 +133,24 @@ describe('Check .scribe export function.', function () {
     await scribe.terminate();
   }).timeout(10000);
 
+  it('Importing .scribe after terminate() and exporting to PDF should succeed without font errors', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
+
+    scribe.opt.compressScribe = true;
+    const scribeData = await scribe.exportData('scribe');
+
+    await scribe.terminate();
+    await scribe.importFiles({ scribeFiles: [scribeData] });
+
+    scribe.opt.displayMode = 'ebook';
+    const pdfData = await scribe.exportData('pdf');
+
+    assert.isAbove(pdfData.byteLength || pdfData.length, 0);
+
+    await scribe.clear();
+    await scribe.terminate();
+  }).timeout(10000);
+
   after(async () => {
     await scribe.terminate();
   });

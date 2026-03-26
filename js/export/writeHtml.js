@@ -169,7 +169,7 @@ export function writeHtml({
 
       for (let i = 0; i < lineObj.words.length; i++) {
         const wordObj = lineObj.words[i];
-        if (!wordObj) continue;
+        if (!wordObj || !wordObj.text) continue;
 
         if (wordIds && !wordIds.includes(wordObj.id)) continue;
 
