@@ -393,9 +393,22 @@ export async function convertOCR(ocrRawArr, mainData, format, engineName, scribe
   if (format === 'textract') {
     if (!pageMetrics || !pageMetrics[0]?.dims) throw new Error('Page metrics must be provided for Textract data.');
     const pageDims = pageMetrics.map((metrics) => (metrics.dims));
-    const res = await gs.convertDocTextract({ ocrStr: ocrRawArr, pageDims });
-    for (let n = 0; n < res.length; n++) {
-      await convertPageCallback(res[n], n, mainData, engineName);
+
+    // When multiple Textract entries exist (per-page files), each file contains
+    // blocks with Page=1. Process each individually with the correct pageNum
+    // to avoid merging all pages into page 0.
+    if (ocrRawArr.length > 1) {
+      for (let i = 0; i < ocrRawArr.length; i++) {
+        const res = await gs.convertDocTextract({ ocrStr: [ocrRawArr[i]], pageDims: [pageDims[i]], pageNum: i });
+        if (res.length > 0) {
+          await convertPageCallback(res[0], i, mainData, engineName);
+        }
+      }
+    } else {
+      const res = await gs.convertDocTextract({ ocrStr: ocrRawArr, pageDims });
+      for (let n = 0; n < res.length; n++) {
+        await convertPageCallback(res[n], n, mainData, engineName);
+      }
     }
     return;
   }

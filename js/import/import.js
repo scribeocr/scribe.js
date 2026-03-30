@@ -586,5 +586,5 @@ export async function importFilesSupp(files, ocrName) {
 
   const format = /** @type {("hocr" | "abbyy" | "stext" | "textract" | "text")} */ (ocrData.format);
 
-  await convertOCR(ocrData.hocrRaw, false, format, ocrName, ocrData.reimportHocrMode);
+  await convertOCR(ocrData.hocrRaw, false, format, ocrName, ocrData.reimportHocrMode, pageMetricsAll);
 }
