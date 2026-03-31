@@ -27,3 +27,4 @@ jsconfig.json
 build-deno-compile.sh
 js/font-parser/fonts
 js/font-parser/test
+scribe-ui

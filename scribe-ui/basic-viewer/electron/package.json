@@ -1,0 +1,12 @@
+{
+  "name": "scribe-viewer",
+  "version": "0.1.0",
+  "type": "commonjs",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron ."
+  },
+  "dependencies": {
+    "electron": "^33.0.0"
+  }
+}

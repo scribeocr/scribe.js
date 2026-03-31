@@ -1,0 +1,36 @@
+{
+  "$schema": "https://raw.githubusercontent.com/tauri-apps/tauri/dev/crates/tauri-config-schema/schema.json",
+  "productName": "Scribe Viewer",
+  "version": "0.1.0",
+  "identifier": "com.scribeocr.viewer",
+  "build": {
+    "beforeBuildCommand": "bash tauri/prepare-dist.sh",
+    "beforeDevCommand": "bash tauri/prepare-dist.sh",
+    "frontendDist": "dist"
+  },
+  "app": {
+    "withGlobalTauri": true,
+    "windows": [
+      {
+        "title": "Scribe Viewer",
+        "width": 900,
+        "height": 1100,
+        "decorations": false,
+        "url": "basic-viewer/tauri.html"
+      }
+    ],
+    "security": {
+      "csp": null
+    }
+  },
+  "plugins": {
+    "cli": {
+      "args": [
+        { "name": "file", "takesValue": true, "short": "f" },
+        { "name": "action", "takesValue": true, "short": "a" },
+        { "name": "page", "takesValue": true, "short": "p" },
+        { "name": "highlights", "takesValue": true, "short": "H" }
+      ]
+    }
+  }
+}

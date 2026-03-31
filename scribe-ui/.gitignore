@@ -2,7 +2,6 @@ ignore
 .DS_Store
 .env
 .vscode
-.claude
 node_modules/
 dev/debug
 cypress/downloads
@@ -21,10 +20,6 @@ results
 *.traineddata.gz
 settings.json
 tmp
-/build/
-mcp/mcp.log
-
-# scribe-ui
-scribe-ui/basic-viewer/tauri/target/
-scribe-ui/basic-viewer/tauri/dist/
-scribe-ui/basic-viewer/tauri/gen/
+basic-viewer/tauri/target/
+basic-viewer/tauri/dist/
+basic-viewer/tauri/gen/
