@@ -85,6 +85,9 @@ export class opt {
   /** Generate debug visualizations when running OCR. */
   static debugVis = false;
 
+  /** Print recognition runtime for each page to console. */
+  static printRecognitionTime = false;
+
   /** @type {'width' | 'sentence'} */
   static docxLineSplitMode = 'width';
 

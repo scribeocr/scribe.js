@@ -245,6 +245,7 @@ export const recognizeAndConvert = async ({
 export const recognizeAndConvert2 = async ({
   image, options, output, n, pageDims, knownAngle = null,
 }, id) => {
+  const startTime = performance.now();
   // Disable output formats that are not used.
   // Leaving these enabled can significantly inflate runtimes for no benefit.
   if (!output) output = {};
@@ -316,7 +317,9 @@ export const recognizeAndConvert2 = async ({
     });
   }
 
-  const x = { recognize: res0.data, convert: { legacy: resLegacy, lstm: resLSTM } };
+  const elapsedTime = performance.now() - startTime;
+
+  const x = { recognize: res0.data, convert: { legacy: resLegacy, lstm: resLSTM }, recognitionTime: elapsedTime };
 
   parentPort.postMessage({ data: x, id, status: 'resolve' });
 

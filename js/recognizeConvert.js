@@ -211,6 +211,10 @@ export const recognizePageImp = async (n, legacy, lstm, areaMode, tessOptions = 
 
   const res0 = await resArr[0];
 
+  if (opt.printRecognitionTime) {
+    console.log(`Page ${n} recognition time: ${(res0.recognitionTime / 1000).toFixed(2)}s`);
+  }
+
   // const printDebug = true;
   // if (printDebug && typeof process === 'undefined') {
   //   if (legacy && lstm) {
