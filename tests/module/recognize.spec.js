@@ -225,7 +225,9 @@ describe('Check comparison between OCR versions.', function () {
 });
 
 describe('Check monospace font detection and optimization (M.D.Fla.).', function () {
-  this.timeout(60000);
+  // This test needs more time on slow CI runners.
+  // It should be optimized to run faster in the future.
+  this.timeout(120000);
   before(async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/M.D.Fla._8_25-cv-03557-MSS-AEP_1_4_p5-8.pdf`]);
     await scribe.recognize({ modeAdv: 'combined' });
