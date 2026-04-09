@@ -640,7 +640,9 @@ async function recognizeCustomModel(options) {
   // The core distinction is that TPS limits the number of requests SENT per second,
   // rather than the number of live requests at any given time.
   const configRateLimit = modelOptions.rateLimit ?? model.config.rateLimit ?? null;
-  const tps = configRateLimit?.tps ?? (configRateLimit?.rpm ? configRateLimit.rpm / 60 : null);
+  const regionCount = Array.isArray(modelOptions?.region) ? modelOptions.region.length : 1;
+  const baseTps = configRateLimit?.tps ?? (configRateLimit?.rpm ? configRateLimit.rpm / 60 : null);
+  const tps = baseTps != null ? baseTps * regionCount : null;
   let adaptiveTps = tps;
   let lastRequestTime = 0;
 
@@ -648,7 +650,7 @@ async function recognizeCustomModel(options) {
   if (tps != null) {
     // When tps is set, that is the primary means of limiting concurrency.
     // This is set to a large number as a safeguard.
-    concurrency = 10;
+    concurrency = 30;
   } else if (opt.workerN) {
     concurrency = opt.workerN;
   } else if (typeof process === 'undefined') {
@@ -710,9 +712,15 @@ async function recognizeCustomModel(options) {
         }
 
         opt.progressHandler({ n, type: 'recognize', info: { status: 'sending', engineName, timestamp: Date.now() } });
+        const recognizeStart = Date.now();
         result = await model.recognizeImage(imageData, modelOptions);
 
-        if (result.success) break;
+        if (result.success) {
+          if (opt.printRecognitionTime) {
+            console.log(`Page ${n} recognition time: ${((Date.now() - recognizeStart) / 1000).toFixed(2)}s`);
+          }
+          break;
+        }
 
         // Only throttling errors are retried.
         const isThrottle = model.isThrottlingError && result.error && model.isThrottlingError(result.error);
