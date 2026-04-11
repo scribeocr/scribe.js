@@ -12,6 +12,11 @@ const regions = regionsValue ? regionsValue.split(',').map((r) => r.trim()).filt
 const skipIndices = new Set(regionsArgIdx !== -1 ? [regionsArgIdx, regionsArgIdx + 1] : []);
 const filePath = args.find((a, i) => !a.startsWith('--') && !skipIndices.has(i));
 
+// AWS Regions:
+// US: us-east-1, us-east-2, us-west-1, us-west-2
+// Canada: ca-central-1
+// Europe: eu-west-1, eu-west-2, eu-west-3, eu-central-1
+
 if (!filePath) {
   console.error('Usage: node runAwsTextractSync.js <file> [--layout] [--tables] [--split] [--regions us-east-1,us-west-2,...]');
   console.error('');

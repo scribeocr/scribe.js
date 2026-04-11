@@ -505,9 +505,26 @@ export class RecognitionModelTextract {
 
     let documentMetadata = null;
 
-    for (const response of responses) {
+    // Detect per-page sync responses: each response is for a single page image,
+    // so blocks have Page=1 or no Page property. In this case we must set the
+    // correct Page number based on the response index.
+    // Paginated async responses already have correct Page values (potentially > 1).
+    const isPerPage = responses.length > 1 && responses.every((r) => {
+      if (!r.Blocks) return true;
+      return r.Blocks.every((b) => !b.Page || b.Page === 1);
+    });
+
+    for (let ri = 0; ri < responses.length; ri++) {
+      const response = responses[ri];
       if (response.Blocks) {
-        combined.Blocks.push(...response.Blocks);
+        if (isPerPage) {
+          for (const block of response.Blocks) {
+            block.Page = ri + 1;
+            combined.Blocks.push(block);
+          }
+        } else {
+          combined.Blocks.push(...response.Blocks);
+        }
       }
       if (response.Warnings) {
         combined.Warnings.push(...response.Warnings);
@@ -518,7 +535,10 @@ export class RecognitionModelTextract {
     }
 
     if (documentMetadata) {
-      combined.DocumentMetadata = documentMetadata;
+      combined.DocumentMetadata = { ...documentMetadata };
+      if (isPerPage) {
+        combined.DocumentMetadata.Pages = responses.length;
+      }
     }
 
     // Carry over other relevant top-level fields from the first response, except for pagination tokens.

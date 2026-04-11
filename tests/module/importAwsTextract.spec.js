@@ -148,6 +148,70 @@ describe('Check scribe JSON import handles null OCR pages (blank pages).', funct
   });
 }).timeout(120000);
 
+describe('Check combined per-page Textract sync responses import to correct pages.', function () {
+  this.timeout(10000);
+
+  // Helper that works in both Node.js and browser environments.
+  async function readTextFile(filePath) {
+    if (typeof process !== 'undefined' && process.versions && process.versions.node) {
+      const fs = await import('node:fs/promises');
+      return fs.readFile(filePath, 'utf-8');
+    }
+    const response = await fetch(filePath);
+    return response.text();
+  }
+
+  before(async () => {
+    // Read per-page sync Textract responses (blocks lack the Page property).
+    const pageResponses = [];
+    for (let i = 0; i < 7; i++) {
+      const filename = `${ASSETS_PATH_KARMA}/trident_v_connecticut_general/awsTextract/trident_v_connecticut_general_${String(i).padStart(3, '0')}-AwsTextractLayoutSync.json`;
+      pageResponses.push(JSON.parse(await readTextFile(filename)));
+    }
+
+    // Combine per-page responses into a single Textract JSON, setting the
+    // correct Page number on each block. This is what the fixed
+    // combineTextractResponses does; we inline the logic here to avoid
+    // importing the Node-only AWS adapter in the browser.
+    const combined = { ...pageResponses[0], Blocks: [], Warnings: [] };
+    for (let ri = 0; ri < pageResponses.length; ri++) {
+      for (const block of pageResponses[ri].Blocks) {
+        block.Page = ri + 1;
+        combined.Blocks.push(block);
+      }
+    }
+
+    // Import the PDF together with the combined OCR data as an ArrayBuffer.
+    const combinedBuffer = new TextEncoder().encode(JSON.stringify(combined)).buffer;
+    await scribe.importFiles({
+      pdfFiles: [`${ASSETS_PATH_KARMA}/trident_v_connecticut_general.pdf`],
+      ocrFiles: [combinedBuffer],
+    });
+  });
+
+  it('Should distribute blocks across all pages (not put everything on page 0)', async () => {
+    // Before the fix, all blocks had Page=1/undefined so everything landed on page 0.
+    for (let i = 0; i < 7; i++) {
+      assert.isOk(scribe.data.ocr.active[i], `Page ${i} should have OCR data`);
+      assert.isTrue(scribe.data.ocr.active[i].lines.length > 0, `Page ${i} should have lines`);
+    }
+  }).timeout(10000);
+
+  it('Should have correct first word on page 0', async () => {
+    const firstWord = scribe.data.ocr.active[0].lines[0].words[0].text;
+    assert.strictEqual(firstWord, '564');
+  }).timeout(10000);
+
+  it('Should have correct first word on page 6', async () => {
+    const firstWord = scribe.data.ocr.active[6].lines[0].words[0].text;
+    assert.strictEqual(firstWord, '570');
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);
+
 describe('Check AWS Textract properly splits unicode superscript footnotes.', function () {
   this.timeout(10000);
 
