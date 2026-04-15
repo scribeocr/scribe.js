@@ -93,6 +93,16 @@ export class ImageCache {
   static pdfData = null;
 
   /**
+   * Return the bytes of the currently-loaded PDF as a Uint8Array.
+   */
+  static getPDFBytes = () => {
+    if (!ImageCache.pdfData) {
+      throw new Error('No PDF loaded. Call importFiles with a PDF before getPDFBytes.');
+    }
+    return new Uint8Array(ImageCache.pdfData);
+  };
+
+  /**
    * @param {ImagePropertiesRequest} props
    * @param {ImageWrapper} inputImage
    * @param {number} n - Page number

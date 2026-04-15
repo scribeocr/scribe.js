@@ -79,6 +79,25 @@ class ScatteredFailModel {
   }
 }
 
+class MockTextractDocumentModeModel {
+  static config = {
+    name: 'Mock Textract DocumentMode',
+    outputFormat: 'textract',
+    documentMode: true,
+  };
+
+  static fixturePages = [];
+
+  static lastDocInput = null;
+
+  static async * recognizeDocument(doc, options = {}) {
+    MockTextractDocumentModeModel.lastDocInput = doc;
+    for (let i = 0; i < MockTextractDocumentModeModel.fixturePages.length; i++) {
+      yield { pageNum: i, rawData: MockTextractDocumentModeModel.fixturePages[i] };
+    }
+  }
+}
+
 class FailingModel {
   static config = {
     name: 'Failing Model',
@@ -95,6 +114,48 @@ class FailingModel {
     }
     // Return empty success for other pages (will produce empty OCR)
     return { success: false, error: new Error('Not a real model'), format: 'hocr' };
+  }
+}
+
+class SlowAbortModel {
+  static config = {
+    name: 'Slow Abort Textract',
+    outputFormat: 'textract',
+  };
+
+  static sharedFixture = null;
+
+  static perCallDelayMs = 300;
+
+  static async recognizeImage(imageData, options = {}) {
+    await new Promise((resolve) => setTimeout(resolve, SlowAbortModel.perCallDelayMs));
+    if (options.signal && options.signal.aborted) {
+      return { success: false, error: new Error('aborted by signal'), format: 'textract' };
+    }
+    return { success: true, rawData: SlowAbortModel.sharedFixture, format: 'textract' };
+  }
+}
+
+class SlowAbortDocumentModeModel {
+  static config = {
+    name: 'Slow Abort DocumentMode',
+    outputFormat: 'textract',
+    documentMode: true,
+  };
+
+  static fixturePages = [];
+
+  static perPageDelayMs = 300;
+
+  static lastOptionsSignal = null;
+
+  static async * recognizeDocument(doc, options = {}) {
+    SlowAbortDocumentModeModel.lastOptionsSignal = options.signal || null;
+    for (let i = 0; i < SlowAbortDocumentModeModel.fixturePages.length; i++) {
+      await new Promise((resolve) => setTimeout(resolve, SlowAbortDocumentModeModel.perPageDelayMs));
+      if (options.signal && options.signal.aborted) return;
+      yield { pageNum: i, rawData: SlowAbortDocumentModeModel.fixturePages[i] };
+    }
   }
 }
 
@@ -205,6 +266,77 @@ describe('Check custom model recognition with Textract format.', function () {
     }
     const uniqueIds = new Set(allIds);
     assert.strictEqual(uniqueIds.size, allIds.length, `Found ${allIds.length - uniqueIds.size} duplicate word IDs`);
+  }).timeout(10000);
+
+  after(async function () {
+    await scribe.terminate();
+  });
+}).timeout(120000);
+
+describe('Check custom model recognition in documentMode (Textract).', function () {
+  this.timeout(60000);
+
+  let preRenderSpyCalls = 0;
+  let originalPreRender;
+
+  before(async function () {
+    const txDir = `${ASSETS_PATH_KARMA}/trident_v_connecticut_general/awsTextract`;
+
+    MockTextractDocumentModeModel.fixturePages = [];
+    MockTextractDocumentModeModel.lastDocInput = null;
+
+    for (let i = 0; i < PAGE_COUNT; i++) {
+      const filename = `trident_v_connecticut_general_${String(i).padStart(3, '0')}-AwsTextractLayoutSync.json`;
+      MockTextractDocumentModeModel.fixturePages[i] = await readFileContent(`${txDir}/${filename}`);
+    }
+
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/trident_v_connecticut_general.pdf`]);
+
+    originalPreRender = scribe.data.image.preRenderRange;
+    preRenderSpyCalls = 0;
+    scribe.data.image.preRenderRange = async function (...args) {
+      preRenderSpyCalls++;
+      return originalPreRender.apply(this, args);
+    };
+
+    try {
+      await scribe.recognize({ model: MockTextractDocumentModeModel });
+    } finally {
+      scribe.data.image.preRenderRange = originalPreRender;
+    }
+  });
+
+  it('Should skip ImageCache.preRenderRange on the documentMode path', async function () {
+    assert.strictEqual(preRenderSpyCalls, 0);
+  }).timeout(10000);
+
+  it('Should hand the PDF bytes and page count to recognizeDocument', async function () {
+    assert.isOk(MockTextractDocumentModeModel.lastDocInput);
+    assert.instanceOf(MockTextractDocumentModeModel.lastDocInput.pdfBytes, Uint8Array);
+    assert.isTrue(MockTextractDocumentModeModel.lastDocInput.pdfBytes.byteLength > 0);
+    assert.strictEqual(MockTextractDocumentModeModel.lastDocInput.pageCount, PAGE_COUNT);
+    assert.strictEqual(MockTextractDocumentModeModel.lastDocInput.pageDims.length, PAGE_COUNT);
+  }).timeout(10000);
+
+  it('Should produce OCR data for all 7 pages', async function () {
+    for (let i = 0; i < PAGE_COUNT; i++) {
+      assert.isOk(scribe.data.ocr.active[i], `Page ${i} should have OCR data`);
+      assert.isTrue(scribe.data.ocr.active[i].lines.length > 0, `Page ${i} should have lines`);
+    }
+  }).timeout(10000);
+
+  it('Should correctly recognize text on page 0', async function () {
+    const firstWord = scribe.data.ocr.active[0].lines[0].words[0].text;
+    assert.strictEqual(firstWord, '564');
+  }).timeout(10000);
+
+  it('Should correctly recognize text on page 6', async function () {
+    const firstWord = scribe.data.ocr.active[6].lines[0].words[0].text;
+    assert.strictEqual(firstWord, '570');
+  }).timeout(10000);
+
+  it('Should set active OCR to the documentMode model results', async function () {
+    assert.strictEqual(scribe.data.ocr.active, scribe.data.ocr['Mock Textract DocumentMode']);
   }).timeout(10000);
 
   after(async function () {
@@ -326,6 +458,123 @@ describe('Check custom model scattered failure handling.', function () {
     assert.strictEqual(scribe.data.ocr.active[2].lines.length, 0);
     assert.strictEqual(scribe.data.ocr.active[5].lines.length, 0);
   }).timeout(30000);
+
+  after(async function () {
+    await scribe.terminate();
+  });
+}).timeout(120000);
+
+describe('Check AbortSignal handling on the per-image path.', function () {
+  this.timeout(60000);
+
+  let thrownError = null;
+
+  before(async function () {
+    const txDir = `${ASSETS_PATH_KARMA}/trident_v_connecticut_general/awsTextract`;
+    const filename = 'trident_v_connecticut_general_000-AwsTextractLayoutSync.json';
+    SlowAbortModel.sharedFixture = await readFileContent(`${txDir}/${filename}`);
+    SlowAbortModel.perCallDelayMs = 300;
+
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/trident_v_connecticut_general.pdf`]);
+
+    // Force sequential dispatch so the abort window is deterministic.
+    const originalWorkerN = scribe.opt.workerN;
+    scribe.opt.workerN = 1;
+
+    // Abort after the first page has completed and been converted, guaranteeing partial
+    // results. Hooking the progress handler avoids racing against preRenderRange, which
+    // could otherwise eat a fixed-delay abort window before any page dispatches.
+    const ac = new AbortController();
+    const originalProgressHandler = scribe.opt.progressHandler;
+    let convertCount = 0;
+    scribe.opt.progressHandler = (msg) => {
+      if (msg && msg.type === 'convert' && msg.info && msg.info.engineName === 'Slow Abort Textract') {
+        convertCount++;
+        if (convertCount === 1) ac.abort();
+      }
+    };
+
+    try {
+      await scribe.recognize({ model: SlowAbortModel, signal: ac.signal });
+    } catch (err) {
+      thrownError = err;
+    } finally {
+      scribe.opt.workerN = originalWorkerN;
+      scribe.opt.progressHandler = originalProgressHandler;
+    }
+  });
+
+  it('Should throw an AbortError when aborted mid-run', async function () {
+    assert.isNotNull(thrownError);
+    assert.strictEqual(thrownError.name, 'AbortError');
+  }).timeout(10000);
+
+  it('Should preserve partial OCR results for pages that completed before abort', async function () {
+    const engineOcr = scribe.data.ocr['Slow Abort Textract'] || [];
+    const completedPages = engineOcr.filter((p) => p && p.lines && p.lines.length > 0);
+    assert.isTrue(completedPages.length > 0, 'at least one page should have completed');
+    assert.isTrue(completedPages.length < PAGE_COUNT, 'not all pages should have completed');
+  }).timeout(10000);
+
+  after(async function () {
+    await scribe.terminate();
+  });
+}).timeout(120000);
+
+describe('Check AbortSignal handling on the documentMode path.', function () {
+  this.timeout(60000);
+
+  let thrownError = null;
+
+  before(async function () {
+    const txDir = `${ASSETS_PATH_KARMA}/trident_v_connecticut_general/awsTextract`;
+    SlowAbortDocumentModeModel.fixturePages = [];
+    for (let i = 0; i < PAGE_COUNT; i++) {
+      const filename = `trident_v_connecticut_general_${String(i).padStart(3, '0')}-AwsTextractLayoutSync.json`;
+      SlowAbortDocumentModeModel.fixturePages[i] = await readFileContent(`${txDir}/${filename}`);
+    }
+    SlowAbortDocumentModeModel.perPageDelayMs = 300;
+    SlowAbortDocumentModeModel.lastOptionsSignal = null;
+
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/trident_v_connecticut_general.pdf`]);
+
+    // Abort once the first page has been received and converted — guarantees partial
+    // results regardless of how long the library takes to start consuming the stream.
+    const ac = new AbortController();
+    const originalProgressHandler = scribe.opt.progressHandler;
+    let convertCount = 0;
+    scribe.opt.progressHandler = (msg) => {
+      if (msg && msg.type === 'convert' && msg.info && msg.info.engineName === 'Slow Abort DocumentMode') {
+        convertCount++;
+        if (convertCount === 1) ac.abort();
+      }
+    };
+
+    try {
+      await scribe.recognize({ model: SlowAbortDocumentModeModel, signal: ac.signal });
+    } catch (err) {
+      thrownError = err;
+    } finally {
+      scribe.opt.progressHandler = originalProgressHandler;
+    }
+  });
+
+  it('Should throw an AbortError when aborted mid-stream', async function () {
+    assert.isNotNull(thrownError);
+    assert.strictEqual(thrownError.name, 'AbortError');
+  }).timeout(10000);
+
+  it('Should forward the signal into the model via options', async function () {
+    assert.isOk(SlowAbortDocumentModeModel.lastOptionsSignal);
+    assert.isTrue(SlowAbortDocumentModeModel.lastOptionsSignal.aborted);
+  }).timeout(10000);
+
+  it('Should preserve partial OCR results on the documentMode engine', async function () {
+    const engineOcr = scribe.data.ocr['Slow Abort DocumentMode'] || [];
+    const completedPages = engineOcr.filter((p) => p && p.lines && p.lines.length > 0);
+    assert.isTrue(completedPages.length > 0, 'at least one page should have completed');
+    assert.isTrue(completedPages.length < PAGE_COUNT, 'not all pages should have completed');
+  }).timeout(10000);
 
   after(async function () {
     await scribe.terminate();

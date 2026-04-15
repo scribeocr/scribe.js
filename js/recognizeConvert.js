@@ -605,6 +605,165 @@ export async function recognizeAllPages(legacy = true, lstm = true, mainData = f
 }
 
 /**
+ * Throw an AbortError if the given signal has fired.
+ * Matches the shape of fetch()/streams APIs so callers can `if (e.name === 'AbortError')`.
+ * @param {AbortSignal} [signal]
+ */
+const throwIfAborted = (signal) => {
+  if (!signal || !signal.aborted) return;
+  const reason = signal.reason instanceof Error ? signal.reason : undefined;
+  if (typeof DOMException !== 'undefined') {
+    throw new DOMException(reason ? reason.message : 'Recognition aborted', 'AbortError');
+  }
+  const err = new Error(reason ? reason.message : 'Recognition aborted');
+  err.name = 'AbortError';
+  throw err;
+};
+
+/**
+ * setTimeout that resolves early when `signal` fires. Never rejects.
+ * @param {number} ms
+ * @param {AbortSignal} [signal]
+ */
+const abortableDelay = (ms, signal) => new Promise((resolve) => {
+  if (signal && signal.aborted) { resolve(); return; }
+  const onAbort = () => {
+    clearTimeout(t);
+    if (signal) signal.removeEventListener('abort', onAbort);
+    resolve();
+  };
+  const t = setTimeout(() => {
+    if (signal) signal.removeEventListener('abort', onAbort);
+    resolve();
+  }, ms);
+  if (signal) signal.addEventListener('abort', onAbort, { once: true });
+});
+
+/**
+ * Convert a page of raw model output (HOCR string, Textract JSON string, etc.) into
+ * the internal OcrPage model and store it under the given engine name. Shared between
+ * the per-image and document-mode custom recognition paths.
+ * @param {string} rawData
+ * @param {number} n - Page index.
+ * @param {RecognitionModel} model
+ */
+const convertModelRawPage = async (rawData, n, model) => {
+  const engineName = model.config.name;
+  const outputFormat = model.config.outputFormat;
+  if (model.convertPage) {
+    const convertResult = await model.convertPage(rawData, n);
+    await convertPageCallback(convertResult, n, true, engineName);
+  } else if (outputFormat === 'textract') {
+    const pageDims = [pageMetricsAll[n].dims];
+    const res = await gs.convertDocTextract({ ocrStr: rawData, pageDims, pageNum: n });
+    for (let i = 0; i < res.length; i++) {
+      await convertPageCallback(res[i], n + i, true, engineName);
+    }
+  } else if (outputFormat === 'azure_doc_intel') {
+    const pageDims = [pageMetricsAll[n].dims];
+    const res = await gs.convertDocAzureDocIntel({ ocrStr: rawData, pageDims });
+    for (let i = 0; i < res.length; i++) {
+      await convertPageCallback(res[i], n + i, true, engineName);
+    }
+  } else if (outputFormat === 'google_doc_ai') {
+    const pageDims = [pageMetricsAll[n].dims];
+    const res = await gs.convertDocGoogleDocAI({ ocrStr: rawData, pageDims, pageNum: n });
+    for (let i = 0; i < res.length; i++) {
+      await convertPageCallback(res[i], n + i, true, engineName);
+    }
+  } else if (outputFormat === 'google_vision') {
+    const res = await gs.convertPageGoogleVision({ ocrStr: rawData, n, pageDims: pageMetricsAll[n].dims });
+    await convertPageCallback(res, n, true, engineName);
+  } else {
+    await convertOCRPage(rawData, n, true, /** @type {TextSource} */ (outputFormat), engineName);
+  }
+};
+
+/**
+ * Document-mode recognition path: the model consumes the whole PDF at once (e.g. a
+ * server proxy that renders pages and runs OCR remotely) and streams back per-page raw
+ * results. Skips browser-side pre-rendering and the per-image dispatch loop entirely.
+ * @param {Object} options
+ * @param {RecognitionModel} options.model
+ * @param {Object} [options.modelOptions]
+ * @param {AbortSignal} [options.signal]
+ */
+async function recognizeCustomModelDocumentMode(options) {
+  const model = options.model;
+  const modelOptions = options.modelOptions || {};
+  const signal = options.signal;
+  const engineName = model.config.name;
+  // modelOptions passed to the model has `signal` merged in so network-backed models
+  // can cancel their in-flight HTTP requests. We keep the caller's modelOptions object
+  // untouched to avoid mutating a user-supplied reference.
+  const modelOptionsWithSignal = { ...modelOptions, signal };
+
+  if (!ocrAll[engineName]) ocrAll[engineName] = Array(inputData.pageCount);
+  if (opt.keepRawData && !ocrAllRaw[engineName]) ocrAllRaw[engineName] = Array(inputData.pageCount);
+
+  throwIfAborted(signal);
+
+  const pageDims = pageMetricsAll.map((m) => m.dims);
+  const pdfBytes = inputData.pdfMode ? ImageCache.getPDFBytes() : null;
+
+  const stream = await model.recognizeDocument(
+    { pdfBytes, pageCount: inputData.pageCount, pageDims },
+    modelOptionsWithSignal,
+  );
+
+  const failedPagesDoc = [];
+  let lastErrMsg = '';
+  let docAborted = false;
+  try {
+    for await (const entry of stream) {
+      if (signal && signal.aborted) { docAborted = true; break; }
+      if (!entry) continue;
+      if (entry.error) {
+        const errMsg = entry.error.message || String(entry.error);
+        failedPagesDoc.push(entry.pageNum);
+        lastErrMsg = errMsg;
+        opt.warningHandler(`Recognition failed for page ${entry.pageNum}: ${errMsg}`);
+        ocrAll[engineName][entry.pageNum] = new OcrPage(entry.pageNum, pageMetricsAll[entry.pageNum].dims);
+        continue;
+      }
+      const { pageNum, rawData } = entry;
+      if (opt.keepRawData) ocrAllRaw[engineName][pageNum] = rawData;
+      opt.progressHandler({
+        n: pageNum, type: 'recognize', info: { status: 'received', engineName, timestamp: Date.now() },
+      });
+      await convertModelRawPage(rawData, pageNum, model);
+    }
+  } finally {
+    // Best-effort: if the model's generator supports early termination via return(),
+    // give it a chance to clean up (e.g. cancel an in-flight fetch). Works for both
+    // native async generators (have .return) and hand-rolled async iterators.
+    if (docAborted && stream && typeof stream.return === 'function') {
+      try { await stream.return(); } catch (_) { /* ignore */ }
+    }
+  }
+
+  // Preserve partial results on abort — caller (and any resume layer) may want them.
+  ocrAll.active = ocrAll[engineName];
+  if (opt.keepRawData) ocrAllRaw.active = ocrAllRaw[engineName];
+
+  // Always throw if the signal is aborted, regardless of whether the library or the
+  // model's own early-return terminated the for-await loop first.
+  throwIfAborted(signal);
+
+  if (failedPagesDoc.length === inputData.pageCount) {
+    throw new Error(`Recognition failed for all pages. Last error message: ${lastErrMsg}`);
+  }
+  if (failedPagesDoc.length > 0) {
+    failedPagesDoc.sort((a, b) => a - b);
+    opt.warningHandler(
+      `Recognition failed for ${failedPagesDoc.length} page(s) (${failedPagesDoc.join(', ')}). These pages will have no OCR data.`,
+    );
+  }
+
+  return ocrAll.active;
+}
+
+/**
  * Recognize all pages using a custom (external) recognition model.
  * Called by `recognize` when `options.model` is provided.
  *
@@ -612,12 +771,20 @@ export async function recognizeAllPages(legacy = true, lstm = true, mainData = f
  * @param {RecognitionModel} options.model
  * @param {Object} [options.modelOptions]
  * @param {Array<string>} [options.langs]
+ * @param {AbortSignal} [options.signal] - Optional abort signal.
+ *   When aborted, recognition stops scheduling new pages, drains in-flight work,
+ *   preserves whatever pages completed, and throws an AbortError.
  */
 async function recognizeCustomModel(options) {
   const model = options.model;
   const modelOptions = options.modelOptions || {};
+  const signal = options.signal;
   const engineName = model.config.name;
   const outputFormat = model.config.outputFormat;
+  // modelOptions passed to the model has `signal` merged in so network-backed models
+  // can cancel their in-flight HTTP requests. We keep the caller's modelOptions object
+  // untouched to avoid mutating a user-supplied reference.
+  const modelOptionsWithSignal = { ...modelOptions, signal };
 
   const knownFormats = ['hocr', 'abbyy', 'alto', 'textract', 'azure_doc_intel', 'google_doc_ai', 'google_vision', 'stext', 'text'];
   if (!knownFormats.includes(outputFormat) && !model.convertPage) {
@@ -625,6 +792,8 @@ async function recognizeCustomModel(options) {
   }
 
   await gs.getGeneralScheduler();
+
+  if (model.config.documentMode) return recognizeCustomModelDocumentMode(options);
 
   // Pre-render PDF pages to images if needed
   if (inputData.pdfMode) await ImageCache.preRenderRange({ min: 0, max: ImageCache.pageCount - 1, binary: false });
@@ -672,9 +841,11 @@ async function recognizeCustomModel(options) {
 
   for (const n of pages) {
     if (quitEarly) break;
+    if (signal && signal.aborted) break;
     // eslint-disable-next-line no-loop-func
     const p = (async () => {
       if (quitEarly) return;
+      if (signal && signal.aborted) return;
 
       const nativeN = await ImageCache.getNative(n);
       if (!nativeN) {
@@ -698,6 +869,7 @@ async function recognizeCustomModel(options) {
       // Attempt recognition with up to maxThrottleRetries retries for throttling errors.
       // Attempt 0 is the initial request; attempts 1–maxThrottleRetries are retries.
       for (let attempt = 0; attempt <= maxThrottleRetries; attempt++) {
+        if (signal && signal.aborted) return;
         // TPS pacing: claim the next available dispatch slot before yielding.
         if (adaptiveTps != null && adaptiveTps > 0) {
           const now = Date.now();
@@ -707,13 +879,14 @@ async function recognizeCustomModel(options) {
           lastRequestTime = targetTime;
           const waitMs = targetTime - now;
           if (waitMs > 0) {
-            await new Promise((resolve) => setTimeout(resolve, waitMs));
+            await abortableDelay(waitMs, signal);
+            if (signal && signal.aborted) return;
           }
         }
 
         opt.progressHandler({ n, type: 'recognize', info: { status: 'sending', engineName, timestamp: Date.now() } });
         const recognizeStart = Date.now();
-        result = await model.recognizeImage(imageData, modelOptions);
+        result = await model.recognizeImage(imageData, modelOptionsWithSignal);
 
         if (result.success) {
           if (opt.printRecognitionTime) {
@@ -735,8 +908,10 @@ async function recognizeCustomModel(options) {
         if (adaptiveTps != null && adaptiveTps > 0.5) {
           adaptiveTps *= 0.9;
         }
-        await new Promise((resolve) => setTimeout(resolve, backoffMs));
+        await abortableDelay(backoffMs, signal);
       }
+
+      if (signal && signal.aborted) return;
 
       if (!result.success || !result.rawData) {
         const errMsg = result.error ? result.error.message : 'Unknown error';
@@ -756,42 +931,22 @@ async function recognizeCustomModel(options) {
       const rawData = result.rawData;
       if (opt.keepRawData) ocrAllRaw[engineName][n] = rawData;
 
-      const mainData = true;
-
-      // Convert raw data to internal format
-      if (model.convertPage) {
-        const convertResult = await model.convertPage(rawData, n);
-        await convertPageCallback(convertResult, n, mainData, engineName);
-      } else if (outputFormat === 'textract') {
-        const pageDims = [pageMetricsAll[n].dims];
-        const res = await gs.convertDocTextract({ ocrStr: rawData, pageDims, pageNum: n });
-        for (let i = 0; i < res.length; i++) {
-          await convertPageCallback(res[i], n + i, mainData, engineName);
-        }
-      } else if (outputFormat === 'azure_doc_intel') {
-        const pageDims = [pageMetricsAll[n].dims];
-        const res = await gs.convertDocAzureDocIntel({ ocrStr: rawData, pageDims });
-        for (let i = 0; i < res.length; i++) {
-          await convertPageCallback(res[i], n + i, mainData, engineName);
-        }
-      } else if (outputFormat === 'google_doc_ai') {
-        const pageDims = [pageMetricsAll[n].dims];
-        const res = await gs.convertDocGoogleDocAI({ ocrStr: rawData, pageDims, pageNum: n });
-        for (let i = 0; i < res.length; i++) {
-          await convertPageCallback(res[i], n + i, mainData, engineName);
-        }
-      } else if (outputFormat === 'google_vision') {
-        const res = await gs.convertPageGoogleVision({ ocrStr: rawData, n, pageDims: pageMetricsAll[n].dims });
-        await convertPageCallback(res, n, mainData, engineName);
-      } else {
-        await convertOCRPage(rawData, n, mainData, /** @type {TextSource} */ (outputFormat), engineName);
-      }
+      await convertModelRawPage(rawData, n, model);
     })().then(() => executing.delete(p));
 
     executing.add(p);
     if (executing.size >= concurrency) await Promise.race(executing);
   }
-  await Promise.all(executing);
+
+  await Promise.allSettled(executing);
+
+  // On abort: preserve whatever pages completed and throw an AbortError.
+  // A caller (e.g. the server proxy's resume-cache layer) may want the partial results.
+  if (signal && signal.aborted) {
+    ocrAll.active = ocrAll[engineName];
+    if (opt.keepRawData) ocrAllRaw.active = ocrAllRaw[engineName];
+    throwIfAborted(signal);
+  }
 
   if (consecutiveFailures === ImageCache.pageCount) {
     throw new Error(
@@ -834,6 +989,10 @@ async function recognizeCustomModel(options) {
  * @param {Object<string, string>} [options.config={}] - Config params to pass to to Tesseract.js.
  * @param {RecognitionModel} [options.model] - Custom recognition model. See docs.
  * @param {Object} [options.modelOptions={}] - Options passed to the model's `recognizeImage` method.
+ * @param {AbortSignal} [options.signal] - Optional abort signal for cancelling a custom-model
+ *    recognition run. When aborted, scribe.js stops scheduling new pages, drains any in-flight
+ *    page requests (so their network activity is not wasted), preserves the OCR data of pages
+ *    that already completed, and throws an AbortError. Only applies when `options.model` is set.
  */
 export async function recognize(options = {}) {
   if (!inputData.pdfMode && !inputData.imageMode) throw new Error('No PDF or image data found to recognize.');
