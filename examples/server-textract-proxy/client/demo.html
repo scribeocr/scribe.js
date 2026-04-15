@@ -1,0 +1,56 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="utf-8" />
+    <title>scribe.js · server-Textract proxy demo</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <style>
+      body { font-family: system-ui, sans-serif; max-width: 720px; margin: 24px auto; padding: 0 16px; }
+      h1 { font-size: 20px; margin-bottom: 4px; }
+      .lede { color: #666; margin-top: 0; font-size: 14px; }
+      fieldset { border: 1px solid #ddd; border-radius: 6px; padding: 12px 16px; margin: 16px 0; }
+      legend { padding: 0 6px; font-size: 13px; color: #444; }
+      label { display: block; font-size: 13px; color: #555; margin-top: 8px; }
+      input[type="text"] { width: 100%; padding: 6px; font-size: 14px; box-sizing: border-box; }
+      input[type="file"] { font-size: 14px; }
+      button { padding: 6px 14px; font-size: 14px; margin-right: 6px; }
+      button:disabled { color: #999; }
+      #status { font-size: 13px; color: #333; margin: 8px 0; min-height: 1.2em; }
+      #log { font-family: ui-monospace, monospace; font-size: 12px; background: #f6f6f6; border: 1px solid #ddd;
+             border-radius: 4px; padding: 8px; height: 220px; overflow-y: auto; white-space: pre-wrap; }
+      #log div { line-height: 1.4em; }
+      .muted { color: #888; }
+    </style>
+  </head>
+  <body>
+    <h1>scribe.js · server-Textract proxy demo</h1>
+    <p class="lede">
+      Uploads a PDF to the reference server at <code id="serverUrlDisplay"></code>, streams per-page
+      Textract results back via NDJSON, and merges them into scribe.js. Use the Cancel button to
+      exercise disconnect handling. Use Export to save a searchable PDF of the result.
+    </p>
+
+    <fieldset>
+      <legend>Server</legend>
+      <label for="serverUrl">Proxy URL</label>
+      <input type="text" id="serverUrl" value="http://localhost:3000/ocr" />
+    </fieldset>
+
+    <fieldset>
+      <legend>Input</legend>
+      <label for="uploader">PDF file</label>
+      <input type="file" id="uploader" accept="application/pdf" />
+    </fieldset>
+
+    <div>
+      <button id="run" disabled>Recognize</button>
+      <button id="cancel" disabled>Cancel</button>
+      <button id="export" disabled>Export searchable PDF</button>
+    </div>
+
+    <p id="status" class="muted">Pick a PDF to begin.</p>
+    <div id="log"></div>
+
+    <script src="./demo.js" type="module"></script>
+  </body>
+</html>

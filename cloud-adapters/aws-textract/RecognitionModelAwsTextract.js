@@ -123,14 +123,30 @@ export class RecognitionModelTextract {
   static async _recognizeWithPool(data, options, analyzeLayout, analyzeTables) {
     const pool = this._regionPool;
     const maxAttempts = pool.entries.length;
+    const signal = options.signal;
 
     for (let attempt = 0; attempt < maxAttempts; attempt++) {
+      if (signal && signal.aborted) {
+        return { success: false, error: signal.reason instanceof Error ? signal.reason : new Error('Aborted'), format: 'textract' };
+      }
       const entry = pool.getNext();
 
-      // If this region is in backoff, wait for it.
+      // If this region is in backoff, wait for it — but wake early on abort.
       const now = Date.now();
       if (entry.backoffUntil > now) {
-        await new Promise((resolve) => setTimeout(resolve, entry.backoffUntil - now));
+        const waitMs = entry.backoffUntil - now;
+        await new Promise((resolve) => {
+          if (signal && signal.aborted) { resolve(); return; }
+          const onAbort = () => { clearTimeout(t); resolve(); };
+          const t = setTimeout(() => {
+            if (signal) signal.removeEventListener('abort', onAbort);
+            resolve();
+          }, waitMs);
+          if (signal) signal.addEventListener('abort', onAbort, { once: true });
+        });
+        if (signal && signal.aborted) {
+          return { success: false, error: signal.reason instanceof Error ? signal.reason : new Error('Aborted'), format: 'textract' };
+        }
       }
 
       try {
@@ -154,7 +170,7 @@ export class RecognitionModelTextract {
           });
         }
 
-        const response = await textractClient.send(command);
+        const response = await textractClient.send(command, signal ? { abortSignal: signal } : undefined);
         pool.markSuccess(entry);
         return { success: true, rawData: JSON.stringify(response), format: 'textract' };
       } catch (error) {
@@ -197,12 +213,19 @@ export class RecognitionModelTextract {
    *    If not provided, the SDK resolves from AWS_REGION env var, ~/.aws/config, or instance metadata.
    * @param {{accessKeyId: string, secretAccessKey: string}} [options.credentials] - AWS credentials.
    *    If not provided, the standard AWS SDK credential chain is used.
+   * @param {AbortSignal} [options.signal] - Optional abort signal. When fired, the in-flight
+   *    AWS SDK call is cancelled via `client.send(cmd, { abortSignal })`.
    * @returns {Promise<RecognitionResult>}
    */
   static async recognizeImage(imageData, options = {}) {
     const data = imageData instanceof ArrayBuffer ? new Uint8Array(imageData) : imageData;
     const analyzeLayout = options.analyzeLayout ?? false;
     const analyzeTables = options.analyzeTables ?? false;
+    const signal = options.signal;
+
+    if (signal && signal.aborted) {
+      return { success: false, error: signal.reason instanceof Error ? signal.reason : new Error('Aborted'), format: 'textract' };
+    }
 
     // Multi-region path: distribute across regions with per-region backoff.
     this._ensureRegionPool(options);
@@ -235,7 +258,7 @@ export class RecognitionModelTextract {
         });
       }
 
-      const response = await textractClient.send(command);
+      const response = await textractClient.send(command, signal ? { abortSignal: signal } : undefined);
       return {
         success: true,
         rawData: JSON.stringify(response),
