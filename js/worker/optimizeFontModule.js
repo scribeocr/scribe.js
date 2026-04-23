@@ -154,13 +154,12 @@ const calculateKerningPairs = (font, charMetricsObj, xHeight, styleLookup) => {
  * @param {CharMetricsFont} params.charMetricsObj
  * @param {StyleLookup} params.style -
  * @param {boolean} [params.adjustAllLeftBearings] - Edit left bearings for all characters based on provided metrics.
- * @param {boolean} [params.standardizeSize] - Scale such that size of 'o' is 0.47x em size.
  * @param {?number} [params.targetEmSize] - If non-null, font is scaled to this em size.
  * @param {boolean} [params.transGlyphs] - Whether individual glyphs should be transformed based on provided metrics.
- *    If `false`, only font-level transformations (adjusting em size and standardizing 'o' height) are performed.
+ *    If `false`, only font-level transformations (adjusting em size) are performed.
  */
 export async function optimizeFont({
-  fontData, charMetricsObj, style, adjustAllLeftBearings = false, standardizeSize = false, targetEmSize = null, transGlyphs = true,
+  fontData, charMetricsObj, style, adjustAllLeftBearings = false, targetEmSize = null, transGlyphs = true,
 }) {
   const skipTables = ['GSUB', 'GPOS', 'OS/2', 'cvt ', 'fpgm', 'prep', 'COLR', 'CPAL', 'meta'];
   /** @type {opentype.Font} */
@@ -172,29 +171,15 @@ export async function optimizeFont({
   // The presence of ligatures (such as ﬁ and ﬂ) is not properly accounted for when setting character metrics.
   workingFont.tables.gsub = null;
 
-  // Scale font to standardize x-height
-  // TODO: Make this optional or move to a separate script so the default fonts can be pre-scaled.
-  const xHeightStandard = 0.47 * workingFont.unitsPerEm;
-  let oGlyph = workingFont.charToGlyph('o').getMetrics();
-  let xHeight = oGlyph.yMax - oGlyph.yMin;
-  const xHeightScale = xHeightStandard / xHeight;
-  const scaleGlyph = (x) => x * xHeightScale;
-  if (Math.abs(1 - xHeightScale) > 0.01) {
-    if (standardizeSize) {
-      for (let i = 0; i < workingFont.glyphs.length; i++) {
-        transformGlyph(workingFont.glyphs.get(i), scaleGlyph, true, true);
-      }
-    } else {
-      console.log("Font is not standard size ('o' 0.47x em size).  Either standardize the font ahead of time or enable `standardizeSize = true` to standardize on the fly.");
-    }
-  }
-
   if (targetEmSize && targetEmSize !== workingFont.unitsPerEm) {
     for (let i = 0; i < workingFont.glyphs.length; i++) {
       transformGlyph(workingFont.glyphs.get(i), (x) => x * (targetEmSize / workingFont.unitsPerEm), true, true);
     }
     workingFont.unitsPerEm = targetEmSize;
   }
+
+  let oGlyph = workingFont.charToGlyph('o').getMetrics();
+  let xHeight = oGlyph.yMax - oGlyph.yMin;
 
   // Detect monospace before any early return so kerning can be skipped.
   // A monospace font has identical advance widths for narrow ('i') and wide ('m') characters.

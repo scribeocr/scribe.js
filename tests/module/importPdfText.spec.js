@@ -185,7 +185,7 @@ describe('Check font size is correctly parsed in PDF imports.', function () {
     scribe.opt.calcSuppFontInfo = true;
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.pdf`]);
     scribe.opt.calcSuppFontInfo = false;
-    assert.strictEqual(scribe.data.ocr.active[0].lines[253].words[1].style.size, 39);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[253].words[1].style.size, 33);
     assert.strictEqual(scribe.data.ocr.active[0].lines[253].words[1].text, 'Agent');
   }).timeout(10000);
 

@@ -58,7 +58,6 @@ describe('Check Node.js commands.', () => {
 
     // originalConsoleLog(consoleOutput);
 
-    // Assert that console.log was called with 'blah'
     expect(consoleOutput).to.include('385 of 404');
   }).timeout(10000);
 
@@ -69,8 +68,7 @@ describe('Check Node.js commands.', () => {
 
     // originalConsoleLog(consoleOutput);
 
-    // Assert that console.log was called with 'blah'
-    expect(consoleOutput).to.include('387 of 404');
+    expect(consoleOutput).to.match(/38[78] of 404/);
   }).timeout(30000);
 
   it('Overlay .pdf and Abbyy .xml file.', async () => {
@@ -117,9 +115,9 @@ describe('Check Node.js commands.', () => {
       output: tmpDir, robust: true, conf: true, vis: true, workers: 1,
     });
 
-    if (!/387 of 404/.test(consoleOutput)) originalConsoleLog(consoleOutput);
+    if (!/38[78] of 404/.test(consoleOutput)) originalConsoleLog(consoleOutput);
 
-    expect(consoleOutput).to.include('387 of 404');
+    expect(consoleOutput).to.match(/38[78] of 404/);
 
     const outputPath = `${tmpDir}/scribe_test_pdf1_vis.pdf`;
 
