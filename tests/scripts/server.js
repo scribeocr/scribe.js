@@ -1,7 +1,8 @@
 import express from 'express';
 import path from 'path';
 import { fileURLToPath } from 'url';
-import { port } from '../constants.js';
+
+const port = 3031;
 
 globalThis.__dirname = path.dirname(fileURLToPath(import.meta.url));
 

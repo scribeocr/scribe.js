@@ -5,20 +5,32 @@ on: [push, pull_request]
 jobs:
   build:
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest] 
-        node-version: [18.x, 20.x, 22.x, 24.x]
+        # Vitest 4 requires Node 20+. Node 18 hit EOL April 2025.
+        os: [ubuntu-latest, windows-latest]
+        node-version: [20.x, 22.x, 24.x]
 
     runs-on: ${{ matrix.os }}
 
     steps:
-    - uses: actions/checkout@v3
-      with:
-        submodules: recursive
-    - name: Use Node.js ${{ matrix.node-version }}
-      uses: actions/setup-node@v3
-      with:
-        node-version: ${{ matrix.node-version }}
-    - run: npm ci
-    - run: npm run test:cli
-    - run: npm run test:module:node
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: ${{ matrix.node-version }}
+          cache: 'npm'
+
+      - run: npm ci
+
+      - name: Download Tesseract trained data
+        shell: bash
+        run: |
+          mkdir -p tests/test-lang-data
+          curl -fsSL -o tests/test-lang-data/eng.traineddata.gz \
+            https://cdn.jsdelivr.net/npm/@tesseract.js-data/eng/4.0.0/eng.traineddata.gz
+
+      - run: npm run test:cli
+      - run: npm run test:module:node

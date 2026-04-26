@@ -17,6 +17,8 @@ results
 /playwright-report/
 /blob-report/
 /playwright/.cache/
+.vitest-attachments/
+**/__screenshots__/
 *.traineddata
 *.traineddata.gz
 settings.json

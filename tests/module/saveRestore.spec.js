@@ -1,14 +1,13 @@
-// Relative imports are required to run in browser.
-/* eslint-disable import/no-relative-packages */
-import { assert, config } from '../../node_modules/chai/chai.js';
+import {
+  describe, test, expect, beforeAll, afterAll,
+} from 'vitest';
 import scribe from '../../scribe.js';
-import { ASSETS_PATH_KARMA } from '../constants.js';
+import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 
 scribe.opt.workerN = 1;
+scribe.opt.langPath = LANG_PATH;
 
 // Using arrow functions breaks references to `this`.
-/* eslint-disable prefer-arrow-callback */
-/* eslint-disable func-names */
 
 /**
  *
@@ -40,11 +39,9 @@ const standardizeOCRPages = (ocrArr) => {
   return ocrArrCopy;
 };
 
-describe('Check .scribe export function.', function () {
-  this.timeout(10000);
-
-  it('Exporting to .scribe (gzipped, default) and reimporting should restore OCR data without modification', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
+describe('Check .scribe export function.', () => {
+  test('Exporting to .scribe (gzipped, default) and reimporting should restore OCR data without modification', async () => {
+    await scribe.importFiles([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
 
     const ocrAllComp1 = standardizeOCRPages(scribe.data.ocr.active);
 
@@ -53,21 +50,21 @@ describe('Check .scribe export function.', function () {
 
     // Verify data is gzipped by checking magic bytes
     const dataArray = new Uint8Array(scribeData);
-    assert.strictEqual(dataArray[0], 0x1F, 'First byte should be gzip magic byte 0x1F');
-    assert.strictEqual(dataArray[1], 0x8B, 'Second byte should be gzip magic byte 0x8B');
+    expect(dataArray[0]).toBe(0x1F);
+    expect(dataArray[1]).toBe(0x8B);
 
     await scribe.terminate();
     await scribe.importFiles({ scribeFiles: [scribeData] });
 
     const ocrAllComp2 = standardizeOCRPages(scribe.data.ocr.active);
 
-    assert.deepStrictEqual(ocrAllComp1, ocrAllComp2);
+    expect(ocrAllComp1).toEqual(ocrAllComp2);
     await scribe.clear();
     await scribe.terminate();
-  }).timeout(10000);
+  });
 
-  it('Exporting to .scribe (non-gzipped) and reimporting should restore OCR data without modification', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
+  test('Exporting to .scribe (non-gzipped) and reimporting should restore OCR data without modification', async () => {
+    await scribe.importFiles([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
 
     const ocrAllComp1 = standardizeOCRPages(scribe.data.ocr.active);
 
@@ -75,8 +72,8 @@ describe('Check .scribe export function.', function () {
     const scribeData = await scribe.exportData('scribe');
 
     // Verify data is not gzipped
-    assert.strictEqual(typeof scribeData, 'string', 'Non-gzipped data should be a string');
-    assert.strictEqual(scribeData[0], '{', 'Non-gzipped data should start with {');
+    expect(typeof scribeData).toBe('string');
+    expect(scribeData[0]).toBe('{');
 
     const encoder = new TextEncoder();
     const scribeDataBuffer = encoder.encode(scribeData).buffer;
@@ -86,15 +83,15 @@ describe('Check .scribe export function.', function () {
 
     const ocrAllComp2 = standardizeOCRPages(scribe.data.ocr.active);
 
-    assert.deepStrictEqual(ocrAllComp1, ocrAllComp2);
+    expect(ocrAllComp1).toEqual(ocrAllComp2);
 
     scribe.opt.compressScribe = true;
     await scribe.clear();
     await scribe.terminate();
-  }).timeout(10000);
+  });
 
-  it('Reimporting .scribe alongside PDF should preserve page angle', async () => {
-    const pdfPath = `${ASSETS_PATH_KARMA}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`;
+  test('Reimporting .scribe alongside PDF should preserve page angle', async () => {
+    const pdfPath = `${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`;
     await scribe.importFiles([pdfPath]);
 
     scribe.data.ocr.active[0].angle = 2.5;
@@ -107,14 +104,14 @@ describe('Check .scribe export function.', function () {
     await scribe.terminate();
     await scribe.importFiles({ scribeFiles: [scribeDataBuffer], pdfFiles: [pdfPath] });
 
-    assert.strictEqual(scribe.data.pageMetrics[0].angle, 2.5, 'Page angle should be preserved after reimporting .scribe with PDF');
+    expect(scribe.data.pageMetrics[0].angle).toBe(2.5);
 
     await scribe.clear();
     await scribe.terminate();
-  }).timeout(10000);
+  });
 
-  it('Exporting with includeExtraTextScribe should add text properties, which are removed on import', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
+  test('Exporting with includeExtraTextScribe should add text properties, which are removed on import', async () => {
+    await scribe.importFiles([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
 
     const ocrAllComp1 = standardizeOCRPages(scribe.data.ocr.active);
 
@@ -126,15 +123,13 @@ describe('Check .scribe export function.', function () {
     const parsedData = JSON.parse(scribeData);
     const page = parsedData.ocr[0];
 
-    assert.strictEqual(page.lines[0].text, 'UNITED STATES DISTRICT COURT');
-    assert.strictEqual(page.lines[1].text, 'FOR THE EASTERN DISTRICT OF MICHIGAN');
+    expect(page.lines[0].text).toBe('UNITED STATES DISTRICT COURT');
+    expect(page.lines[1].text).toBe('FOR THE EASTERN DISTRICT OF MICHIGAN');
     // Page-level text join: pin length, header start, court-system footer.
-    assert.strictEqual(page.text.length, 1450);
-    assert.strictEqual(page.text.slice(0, 65),
-      'UNITED STATES DISTRICT COURT\nFOR THE EASTERN DISTRICT OF MICHIGAN');
-    assert.strictEqual(page.text.slice(-72),
-      'Case 2:12-cv-13821-AC-DRG ECF No. 1, PageID.1 Filed 08/29/12 Page 1 of 6');
-    assert.strictEqual(page.pars[0].text, 'UNITED STATES DISTRICT COURT FOR THE EASTERN DISTRICT OF MICHIGAN');
+    expect(page.text.length).toBe(1450);
+    expect(page.text.slice(0, 65)).toBe('UNITED STATES DISTRICT COURT\nFOR THE EASTERN DISTRICT OF MICHIGAN');
+    expect(page.text.slice(-72)).toBe('Case 2:12-cv-13821-AC-DRG ECF No. 1, PageID.1 Filed 08/29/12 Page 1 of 6');
+    expect(page.pars[0].text).toBe('UNITED STATES DISTRICT COURT FOR THE EASTERN DISTRICT OF MICHIGAN');
 
     const encoder = new TextEncoder();
     const scribeDataBuffer = encoder.encode(scribeData).buffer;
@@ -144,24 +139,24 @@ describe('Check .scribe export function.', function () {
 
     // Verify text properties are removed after import
     const activeOcr = scribe.data.ocr.active;
-    assert.isFalse('text' in activeOcr[0], 'Page should not have text property after import');
-    assert.isFalse('text' in activeOcr[0].lines[0], 'Line should not have text property after import');
+    expect('text' in activeOcr[0]).toBe(false);
+    expect('text' in activeOcr[0].lines[0]).toBe(false);
     if (activeOcr[0].pars && activeOcr[0].pars.length > 0) {
-      assert.isFalse('text' in activeOcr[0].pars[0], 'Paragraph should not have text property after import');
+      expect('text' in activeOcr[0].pars[0]).toBe(false);
     }
 
     // Verify OCR data is unchanged
     const ocrAllComp2 = standardizeOCRPages(scribe.data.ocr.active);
-    assert.deepStrictEqual(ocrAllComp1, ocrAllComp2);
+    expect(ocrAllComp1).toEqual(ocrAllComp2);
 
     scribe.opt.compressScribe = true;
     scribe.opt.includeExtraTextScribe = false;
     await scribe.clear();
     await scribe.terminate();
-  }).timeout(10000);
+  });
 
-  it('Importing .scribe after terminate() and exporting to PDF should succeed without font errors', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
+  test('Importing .scribe after terminate() and exporting to PDF should succeed without font errors', async () => {
+    await scribe.importFiles([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
 
     scribe.opt.compressScribe = true;
     const scribeData = await scribe.exportData('scribe');
@@ -172,13 +167,13 @@ describe('Check .scribe export function.', function () {
     scribe.opt.displayMode = 'ebook';
     const pdfData = await scribe.exportData('pdf');
 
-    assert.isAbove(pdfData.byteLength || pdfData.length, 0);
+    expect(pdfData.byteLength || pdfData.length).toBeGreaterThan(0);
 
     await scribe.clear();
     await scribe.terminate();
-  }).timeout(10000);
+  });
 
-  after(async () => {
+  afterAll(async () => {
     await scribe.terminate();
   });
-}).timeout(120000);
+});

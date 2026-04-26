@@ -1,22 +1,17 @@
-// Relative imports are required to run in browser.
-/* eslint-disable import/no-relative-packages */
-import { assert, config } from '../../node_modules/chai/chai.js';
+import {
+  describe, test, expect, beforeAll, afterAll,
+} from 'vitest';
 import scribe from '../../scribe.js';
-import { ASSETS_PATH_KARMA } from '../constants.js';
+import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 
 scribe.opt.workerN = 1;
-
-config.truncateThreshold = 0; // Disable truncation for actual/expected values on assertion failure.
+scribe.opt.langPath = LANG_PATH;
 
 // Using arrow functions breaks references to `this`.
-/* eslint-disable prefer-arrow-callback */
-/* eslint-disable func-names */
 
-describe('Check export for .pdf files.', function () {
-  this.timeout(10000);
-
-  it('Export -> import of simple text-only ebook-style PDF retains text content', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/text_simple.txt`]);
+describe('Check export for .pdf files.', () => {
+  test('Export -> import of simple text-only ebook-style PDF retains text content', async () => {
+    await scribe.importFiles([`${ASSETS_PATH}/text_simple.txt`]);
 
     const exportedText = await scribe.exportData('text');
 
@@ -40,15 +35,15 @@ describe('Check export for .pdf files.', function () {
     scribe.data.ocr.active = scribe.data.ocr.pdf;
     const reExportedText = await scribe.exportData('text');
 
-    assert.strictEqual(reExportedText, exportedText);
-    assert.strictEqual(reExportedText, 'Tesseract.js');
+    expect(reExportedText).toBe(exportedText);
+    expect(reExportedText).toBe('Tesseract.js');
     await scribe.clear();
-  }).timeout(10000);
+  });
 
-  it('Export -> import of image + text (visible, proofreading) PDF retains text content', async () => {
+  test('Export -> import of image + text (visible, proofreading) PDF retains text content', async () => {
     scribe.opt.displayMode = 'proof';
 
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/testocr.png`, `${ASSETS_PATH_KARMA}/testocr.abbyy.xml`]);
+    await scribe.importFiles([`${ASSETS_PATH}/testocr.png`, `${ASSETS_PATH}/testocr.abbyy.xml`]);
 
     const exportedPdf = await scribe.exportData('pdf');
     const exportedText = await scribe.exportData('text');
@@ -61,7 +56,7 @@ describe('Check export for .pdf files.', function () {
     }));
 
     const exportedHtml = await scribe.exportData('html');
-    assert.include(exportedHtml, '>point<');
+    expect(exportedHtml).toContain('>point<');
 
     await scribe.clear();
     scribe.opt.usePDFText.native.main = true;
@@ -71,16 +66,16 @@ describe('Check export for .pdf files.', function () {
     scribe.data.ocr.active = scribe.data.ocr.pdf;
     const reExportedText = await scribe.exportData('text');
 
-    assert.strictEqual(reExportedText, exportedText);
-    assert.include(reExportedText, 'This is a lot of 12 point text');
-  }).timeout(10000);
+    expect(reExportedText).toBe(exportedText);
+    expect(reExportedText).toContain('This is a lot of 12 point text');
+  });
 
-  it('Export of PDF with existing invisible text layer should not create duplicate text', async () => {
+  test('Export of PDF with existing invisible text layer should not create duplicate text', async () => {
     scribe.opt.usePDFText.ocr.main = true;
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/scribe_test_pdf1.pdf`]);
+    await scribe.importFiles([`${ASSETS_PATH}/scribe_test_pdf1.pdf`]);
 
-    assert.strictEqual(scribe.inputData.pdfType, 'ocr');
-    assert.isTrue(scribe.data.ocr.active[0]?.lines?.length > 0);
+    expect(scribe.inputData.pdfType).toBe('ocr');
+    expect(scribe.data.ocr.active[0]?.lines?.length > 0).toBe(true);
 
     const originalLineCount = scribe.data.ocr.active[0].lines.length;
     const originalText = await scribe.exportData('text');
@@ -92,30 +87,26 @@ describe('Check export for .pdf files.', function () {
     scribe.opt.usePDFText.ocr.main = true;
     await scribe.importFiles({ pdfFiles: [exportedPdf] });
 
-    assert.strictEqual(scribe.inputData.pdfType, 'ocr');
-    assert.isTrue(scribe.data.ocr.active[0]?.lines?.length > 0);
+    expect(scribe.inputData.pdfType).toBe('ocr');
+    expect(scribe.data.ocr.active[0]?.lines?.length > 0).toBe(true);
 
     const reImportedLineCount = scribe.data.ocr.active[0].lines.length;
     const reImportedText = await scribe.exportData('text');
 
-    assert.isBelow(reImportedLineCount, originalLineCount * 1.5,
-      `Line count after re-export (${reImportedLineCount}) should not be much larger than original (${originalLineCount}). `
-      + 'A significantly higher count indicates duplicate text layers.');
+    expect(reImportedLineCount).toBeLessThan(originalLineCount * 1.5);
 
-    assert.isBelow(reImportedText.length, originalText.length * 1.5,
-      `Text length after re-export (${reImportedText.length}) should not be much larger than original (${originalText.length}). `
-      + 'A significantly longer text indicates duplicate text layers.');
+    expect(reImportedText.length).toBeLessThan(originalText.length * 1.5);
 
     scribe.opt.displayMode = 'proof';
     scribe.opt.usePDFText.ocr.main = false;
     await scribe.clear();
-  }).timeout(30000);
+  });
 
-  it('Export of text-native PDF preserves visible text when adding overlay', async () => {
+  test('Export of text-native PDF preserves visible text when adding overlay', async () => {
     scribe.opt.usePDFText.native.main = true;
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/small_caps_examples.pdf`]);
+    await scribe.importFiles([`${ASSETS_PATH}/small_caps_examples.pdf`]);
 
-    assert.strictEqual(scribe.inputData.pdfType, 'text');
+    expect(scribe.inputData.pdfType).toBe('text');
 
     // Delete the active OCR data before export so no invisible text overlay is added.
     // Without this, the native text extracted on import would be written back as an
@@ -129,23 +120,23 @@ describe('Check export for .pdf files.', function () {
     scribe.opt.usePDFText.native.main = true;
     await scribe.importFiles({ pdfFiles: [exportedPdf] });
 
-    assert.strictEqual(scribe.inputData.pdfType, 'text');
+    expect(scribe.inputData.pdfType).toBe('text');
 
     const text = scribe.data.ocr.active[0].lines[3].words.map((x) => x.text).join(' ');
-    assert.strictEqual(text, 'Shubhdeep Deb');
+    expect(text).toBe('Shubhdeep Deb');
 
     scribe.opt.displayMode = 'proof';
     await scribe.clear();
-  }).timeout(30000);
+  });
 
-  it('Annotations container is initialized for each page on import', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/testocr.png`, `${ASSETS_PATH_KARMA}/testocr.abbyy.xml`]);
+  test('Annotations container is initialized for each page on import', async () => {
+    await scribe.importFiles([`${ASSETS_PATH}/testocr.png`, `${ASSETS_PATH}/testocr.abbyy.xml`]);
 
-    assert.isArray(scribe.data.annotations.pages[0]);
-    assert.strictEqual(scribe.data.annotations.pages[0].length, 0);
-  }).timeout(10000);
+    expect(Array.isArray(scribe.data.annotations.pages[0])).toBe(true);
+    expect(scribe.data.annotations.pages[0].length).toBe(0);
+  });
 
-  it('Highlight annotations are preserved through .scribe export and import', async () => {
+  test('Highlight annotations are preserved through .scribe export and import', async () => {
     scribe.data.annotations.pages[0].push({
       bbox: {
         left: 100, top: 200, right: 300, bottom: 220,
@@ -163,22 +154,22 @@ describe('Check export for .pdf files.', function () {
     const encoder = new TextEncoder();
     await scribe.importFiles({ scribeFiles: [encoder.encode(scribeData).buffer] });
 
-    assert.strictEqual(scribe.data.annotations.pages[0].length, 1);
-    assert.strictEqual(scribe.data.annotations.pages[0][0].color, '#ffff00');
-    assert.strictEqual(scribe.data.annotations.pages[0][0].opacity, 0.35);
-    assert.strictEqual(scribe.data.annotations.pages[0][0].bbox.left, 100);
-    assert.strictEqual(scribe.data.annotations.pages[0][0].bbox.right, 300);
+    expect(scribe.data.annotations.pages[0].length).toBe(1);
+    expect(scribe.data.annotations.pages[0][0].color).toBe('#ffff00');
+    expect(scribe.data.annotations.pages[0][0].opacity).toBe(0.35);
+    expect(scribe.data.annotations.pages[0][0].bbox.left).toBe(100);
+    expect(scribe.data.annotations.pages[0][0].bbox.right).toBe(300);
 
     scribe.opt.compressScribe = true;
     await scribe.clear();
-  }).timeout(10000);
+  });
 
-  it('Highlight annotations are preserved through PDF export and re-import', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/complaint_1.pdf`]);
+  test('Highlight annotations are preserved through PDF export and re-import', async () => {
+    await scribe.importFiles([`${ASSETS_PATH}/complaint_1.pdf`]);
     await scribe.recognize();
     scribe.addHighlights([{ page: 0, startLine: 0, endLine: 2 }]);
     // addHighlights emits one entry per word; line 0-2 of complaint_1.pdf has 29 words.
-    assert.strictEqual(scribe.data.annotations.pages[0].length, 29);
+    expect(scribe.data.annotations.pages[0].length).toBe(29);
 
     const pdfBytes = await scribe.exportData('pdf');
     await scribe.clear();
@@ -187,37 +178,37 @@ describe('Check export for .pdf files.', function () {
     const highlights = scribe.data.annotations.pages.flatMap((p) => p || []);
     // Export consolidates the 29 per-word highlights into a single multi-quad
     // annotation spanning lines 0-2.
-    assert.strictEqual(highlights.length, 1);
-    assert.strictEqual(highlights[0].quads.length, 3);
-    assert.strictEqual(highlights[0].color, '#ffe93b');
-    assert.strictEqual(highlights[0].opacity, 0.4);
+    expect(highlights.length).toBe(1);
+    expect(highlights[0].quads.length).toBe(3);
+    expect(highlights[0].color).toBe('#ffe93b');
+    expect(highlights[0].opacity).toBe(0.4);
     await scribe.clear();
-  }).timeout(60000);
+  });
 
-  it('Exported PDF is compressed (FlateDecode) by default and larger under humanReadablePDF', async () => {
+  test('Exported PDF is compressed (FlateDecode) by default and larger under humanReadablePDF', async () => {
     // Regression gate for the compression + font-subsetting pipeline. The
     // compressed output on testocr.png + .abbyy.xml was ~220 KB before
     // FlateDecode + Latin-font subsetting landed; it is ~57 KB after. The
     // `humanReadablePDF` branch preserves pre-compression diffing by
     // emitting ASCII-hex streams, which bloats the output back up.
     scribe.opt.displayMode = 'proof';
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/testocr.png`, `${ASSETS_PATH_KARMA}/testocr.abbyy.xml`]);
+    await scribe.importFiles([`${ASSETS_PATH}/testocr.png`, `${ASSETS_PATH}/testocr.abbyy.xml`]);
 
     scribe.opt.humanReadablePDF = false;
     const compressed = await scribe.exportData('pdf');
-    assert.isBelow(compressed.byteLength, 70000, `compressed PDF should be < 70 KB; got ${compressed.byteLength}`);
+    expect(compressed.byteLength).toBeLessThan(70000);
 
     scribe.opt.humanReadablePDF = true;
     const humanReadable = await scribe.exportData('pdf');
-    assert.isAbove(humanReadable.byteLength, compressed.byteLength, 'humanReadable PDF should be larger than compressed');
+    expect(humanReadable.byteLength).toBeGreaterThan(compressed.byteLength);
 
     scribe.opt.humanReadablePDF = false;
     await scribe.clear();
-  }).timeout(20000);
+  });
 
-  it('humanReadablePDF round-trip yields same text as compressed round-trip', async () => {
+  test('humanReadablePDF round-trip yields same text as compressed round-trip', async () => {
     scribe.opt.displayMode = 'proof';
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/testocr.png`, `${ASSETS_PATH_KARMA}/testocr.abbyy.xml`]);
+    await scribe.importFiles([`${ASSETS_PATH}/testocr.png`, `${ASSETS_PATH}/testocr.abbyy.xml`]);
 
     scribe.opt.humanReadablePDF = false;
     const pdfCompressed = await scribe.exportData('pdf');
@@ -236,52 +227,50 @@ describe('Check export for .pdf files.', function () {
     scribe.data.ocr.active = scribe.data.ocr.pdf;
     const textHuman = await scribe.exportData('text');
 
-    assert.strictEqual(textCompressed, textHuman);
-    assert.include(textCompressed, 'This is a lot of 12 point text');
+    expect(textCompressed).toBe(textHuman);
+    expect(textCompressed).toContain('This is a lot of 12 point text');
 
     scribe.opt.humanReadablePDF = false;
     await scribe.clear();
-  }).timeout(30000);
+  });
 
-  after(async () => {
+  afterAll(async () => {
     await scribe.terminate();
   });
-}).timeout(120000);
+});
 
-describe('Check addHighlights and clearHighlights.', function () {
-  this.timeout(10000);
+describe('Check addHighlights and clearHighlights.', () => {
+  test('Should import document for highlight tests', async () => {
+    await scribe.importFiles([`${ASSETS_PATH}/testocr.abbyy.xml`]);
+    expect(scribe.data.ocr.active[0].lines.length).toBe(8);
+  });
 
-  it('Should import document for highlight tests', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/testocr.abbyy.xml`]);
-    assert.strictEqual(scribe.data.ocr.active[0].lines.length, 8);
-  }).timeout(10000);
-
-  it('addHighlights with startLine/endLine creates one annotation per word on that line', async () => {
+  test('addHighlights with startLine/endLine creates one annotation per word on that line', async () => {
     const result = scribe.addHighlights([{ page: 0, startLine: 0, endLine: 0 }]);
-    assert.strictEqual(result.highlightsApplied, 1);
-    assert.strictEqual(result.totalLinesHighlighted, 1);
+    expect(result.highlightsApplied).toBe(1);
+    expect(result.totalLinesHighlighted).toBe(1);
     // Line 0 has 11 words: "This is a lot of 12 point text to test the"
-    assert.strictEqual(scribe.data.annotations.pages[0].length, 11);
-  }).timeout(10000);
+    expect(scribe.data.annotations.pages[0].length).toBe(11);
+  });
 
-  it('clearHighlights removes all programmatic highlights', async () => {
+  test('clearHighlights removes all programmatic highlights', async () => {
     scribe.clearHighlights();
-    assert.strictEqual(scribe.data.annotations.pages[0].length, 0);
-  }).timeout(10000);
+    expect(scribe.data.annotations.pages[0].length).toBe(0);
+  });
 
-  it('addHighlights with text in quote-only mode highlights matching words', async () => {
+  test('addHighlights with text in quote-only mode highlights matching words', async () => {
     // "ocr code" matches 2 words on line 1
     const result = scribe.addHighlights([{ page: 0, text: 'ocr code' }]);
-    assert.strictEqual(result.highlightsApplied, 1);
-    assert.strictEqual(scribe.data.annotations.pages[0].length, 2);
+    expect(result.highlightsApplied).toBe(1);
+    expect(scribe.data.annotations.pages[0].length).toBe(2);
     scribe.clearHighlights();
-  }).timeout(10000);
+  });
 
-  it('addHighlights throws when neither startLine nor text is provided', async () => {
-    assert.throws(() => scribe.addHighlights([{ page: 0 }]));
-  }).timeout(10000);
+  test('addHighlights throws when neither startLine nor text is provided', async () => {
+    expect(() => scribe.addHighlights([{ page: 0 }])).toThrow(undefined);
+  });
 
-  after(async () => {
+  afterAll(async () => {
     await scribe.terminate();
   });
-}).timeout(120000);
+});

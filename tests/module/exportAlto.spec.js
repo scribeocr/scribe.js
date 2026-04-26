@@ -1,13 +1,12 @@
-// Relative imports are required to run in browser.
-/* eslint-disable import/no-relative-packages */
-import { assert, config } from '../../node_modules/chai/chai.js';
+import {
+  describe, test, expect, beforeAll, afterAll,
+} from 'vitest';
 import { writeAlto } from '../../js/export/writeAlto.js';
 import scribe from '../../scribe.js';
-import { ASSETS_PATH_KARMA } from '../constants.js';
+import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 
 scribe.opt.workerN = 1;
-
-config.truncateThreshold = 0; // Disable truncation for actual/expected values on assertion failure.
+scribe.opt.langPath = LANG_PATH;
 
 /**
  * Reads a text file in any environment (browser or Node.js).
@@ -79,15 +78,11 @@ const normalizeAlto = (xmlStr) => {
 };
 
 // Using arrow functions breaks references to `this`.
-/* eslint-disable prefer-arrow-callback */
-/* eslint-disable func-names */
 
-describe('Check .alto export function.', function () {
-  this.timeout(10000);
-
-  it('Should correctly export and reimport text content', async () => {
+describe('Check .alto export function.', () => {
+  test('Should correctly export and reimport text content', async () => {
     await scribe.terminate();
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/the_past.alto.xml`]);
+    await scribe.importFiles([`${ASSETS_PATH}/the_past.alto.xml`]);
 
     const text1Before = scribe.data.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
     const text3Before = scribe.data.ocr.active[0].lines[2].words.map((x) => x.text).join(' ');
@@ -103,13 +98,13 @@ describe('Check .alto export function.', function () {
     const text1After = scribe.data.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
     const text3After = scribe.data.ocr.active[0].lines[2].words.map((x) => x.text).join(' ');
 
-    assert.strictEqual(text1Before, text1After);
-    assert.strictEqual(text3Before, text3After);
-  }).timeout(10000);
+    expect(text1Before).toBe(text1After);
+    expect(text3Before).toBe(text3After);
+  });
 
-  it('Should correctly export and reimport confidence scores', async () => {
+  test('Should correctly export and reimport confidence scores', async () => {
     await scribe.terminate();
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/the_past.alto.xml`]);
+    await scribe.importFiles([`${ASSETS_PATH}/the_past.alto.xml`]);
 
     const word1Before = scribe.data.ocr.active[0].lines[0].words[0];
     const word2Before = scribe.data.ocr.active[0].lines[0].words[1];
@@ -127,13 +122,13 @@ describe('Check .alto export function.', function () {
     const word1After = scribe.data.ocr.active[0].lines[0].words[0];
     const word2After = scribe.data.ocr.active[0].lines[0].words[1];
 
-    assert.approximately(word1After.conf, conf1Before, 1, 'Word 1 confidence should be approximately the same');
-    assert.approximately(word2After.conf, conf2Before, 1, 'Word 2 confidence should be approximately the same');
-  }).timeout(10000);
+    expect(Math.abs((word1After.conf) - (conf1Before))).toBeLessThanOrEqual(1);
+    expect(Math.abs((word2After.conf) - (conf2Before))).toBeLessThanOrEqual(1);
+  });
 
-  it('Should correctly export and reimport font styles', async () => {
+  test('Should correctly export and reimport font styles', async () => {
     await scribe.terminate();
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/the_past.alto.xml`]);
+    await scribe.importFiles([`${ASSETS_PATH}/the_past.alto.xml`]);
 
     const boldBefore1 = scribe.data.ocr.active[0].lines[0].words[0].style.bold;
     const boldBefore2 = scribe.data.ocr.active[0].lines[0].words[1].style.bold;
@@ -149,13 +144,13 @@ describe('Check .alto export function.', function () {
     const boldAfter1 = scribe.data.ocr.active[0].lines[0].words[0].style.bold;
     const boldAfter2 = scribe.data.ocr.active[0].lines[0].words[1].style.bold;
 
-    assert.strictEqual(boldBefore1, boldAfter1, 'Word 1 bold style should be preserved');
-    assert.strictEqual(boldBefore2, boldAfter2, 'Word 2 bold style should be preserved');
-  }).timeout(10000);
+    expect(boldBefore1).toBe(boldAfter1);
+    expect(boldBefore2).toBe(boldAfter2);
+  });
 
-  it('Should correctly export and reimport font family', async () => {
+  test('Should correctly export and reimport font family', async () => {
     await scribe.terminate();
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/the_past.alto.xml`]);
+    await scribe.importFiles([`${ASSETS_PATH}/the_past.alto.xml`]);
 
     const fontBefore = scribe.data.ocr.active[0].lines[0].words[0].style.font;
 
@@ -169,44 +164,42 @@ describe('Check .alto export function.', function () {
 
     const fontAfter = scribe.data.ocr.active[0].lines[0].words[0].style.font;
 
-    assert.strictEqual(fontBefore, fontAfter, 'Font family should be preserved');
-  }).timeout(10000);
+    expect(fontBefore).toBe(fontAfter);
+  });
 
-  it('Should match original ALTO XML structure after round-trip (content-only comparison)', async () => {
+  test('Should match original ALTO XML structure after round-trip (content-only comparison)', async () => {
     await scribe.terminate();
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/simple_paragraph.alto.xml`]);
+    await scribe.importFiles([`${ASSETS_PATH}/simple_paragraph.alto.xml`]);
 
-    const originalAltoStr = await readTextFileUniversal(`${ASSETS_PATH_KARMA}/simple_paragraph.alto.xml`);
+    const originalAltoStr = await readTextFileUniversal(`${ASSETS_PATH}/simple_paragraph.alto.xml`);
     const altoOutStr = writeAlto({ ocrData: scribe.data.ocr.active });
 
     const normalizedOriginal = normalizeAlto(originalAltoStr);
     const normalizedExported = normalizeAlto(altoOutStr);
 
-    assert.strictEqual(normalizedExported, normalizedOriginal, 'Exported ALTO should match original after normalization');
-  }).timeout(10000);
+    expect(normalizedExported).toBe(normalizedOriginal);
+  });
 
-  after(async () => {
+  afterAll(async () => {
     await scribe.terminate();
   });
-}).timeout(120000);
+});
 
-describe('Check non-contiguous pageArr subsetting for .alto export.', function () {
-  this.timeout(10000);
-
-  it('Exporting pages [0, 2] should include pages 0 and 2 but not page 1', async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/trident_v_connecticut_general.abbyy.xml`]);
+describe('Check non-contiguous pageArr subsetting for .alto export.', () => {
+  test('Exporting pages [0, 2] should include pages 0 and 2 but not page 1', async () => {
+    await scribe.importFiles([`${ASSETS_PATH}/trident_v_connecticut_general.abbyy.xml`]);
 
     const exportedAlto = await scribe.exportData('alto', { pageArr: [0, 2] });
 
     // "Comstock" only appears on page 0 — should be present
-    assert.include(exportedAlto, 'Comstock');
+    expect(exportedAlto).toContain('Comstock');
     // "Security" only appears on page 2 — should be present
-    assert.include(exportedAlto, 'Security');
+    expect(exportedAlto).toContain('Security');
     // "Munger" only appears on page 1 — should not be present
-    assert.notInclude(exportedAlto, 'Munger');
-  }).timeout(10000);
+    expect(exportedAlto).not.toContain('Munger');
+  });
 
-  after(async () => {
+  afterAll(async () => {
     await scribe.terminate();
   });
-}).timeout(120000);
+});

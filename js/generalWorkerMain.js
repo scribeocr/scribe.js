@@ -372,10 +372,14 @@ export class gs {
     // A behavior (likely bug) was observed where, if the workers are loaded in parallel,
     // data will be loaded over network from all workers (rather than downloading once and caching).
     const worker0 = gs.schedulerInner.workers[0];
-    await worker0.reinitialize({ langs, vanillaMode, config });
+    await worker0.reinitialize({
+      langs, vanillaMode, config, langPath: opt.langPath,
+    });
 
     if (gs.schedulerInner.workers.length > 0) {
-      const resArr = gs.schedulerInner.workers.slice(1).map((x) => x.reinitialize({ langs, vanillaMode, config }));
+      const resArr = gs.schedulerInner.workers.slice(1).map((x) => x.reinitialize({
+        langs, vanillaMode, config, langPath: opt.langPath,
+      }));
       await Promise.allSettled(resArr);
     }
     // @ts-ignore

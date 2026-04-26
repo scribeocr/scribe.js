@@ -1,16 +1,13 @@
-// Relative imports are required to run in browser.
-/* eslint-disable import/no-relative-packages */
-import { assert, config } from '../../node_modules/chai/chai.js';
+import {
+  describe, test, expect, beforeAll, afterAll,
+} from 'vitest';
 import scribe from '../../scribe.js';
-import { ASSETS_PATH_KARMA } from '../constants.js';
+import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 
 scribe.opt.workerN = 1;
-
-config.truncateThreshold = 0; // Disable truncation for actual/expected values on assertion failure.
+scribe.opt.langPath = LANG_PATH;
 
 // Using arrow functions breaks references to `this`.
-/* eslint-disable prefer-arrow-callback */
-/* eslint-disable func-names */
 
 /**
  * Find a line containing the given words in sequence within a page.
@@ -35,137 +32,134 @@ function findLineWithWords(page, wordTexts) {
   return null;
 }
 
-describe('Check Google Document AI JSON import function (ascenders_descenders_test).', function () {
-  this.timeout(10000);
-  before(async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/ascenders_descenders_test.png`,
-      `${ASSETS_PATH_KARMA}/ascenders_descenders_test-GoogleDocAI.json`]);
+describe('Check Google Document AI JSON import function (ascenders_descenders_test).', () => {
+  beforeAll(async () => {
+    await scribe.importFiles([`${ASSETS_PATH}/ascenders_descenders_test.png`,
+      `${ASSETS_PATH}/ascenders_descenders_test-GoogleDocAI.json`]);
   });
 
-  it('Should correctly import text content', async () => {
+  test('Should correctly import text content', async () => {
     const text1 = scribe.data.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
     const text2 = scribe.data.ocr.active[0].lines[1].words.map((x) => x.text).join(' ');
     const text3 = scribe.data.ocr.active[0].lines[2].words.map((x) => x.text).join(' ');
 
-    assert.strictEqual(text1, 'Ascenders On');
-    assert.strictEqual(text2, 'query png');
-    assert.strictEqual(text3, 'we can');
-  }).timeout(10000);
+    expect(text1).toBe('Ascenders On');
+    expect(text2).toBe('query png');
+    expect(text3).toBe('we can');
+  });
 
-  it('Should import correct number of lines', async () => {
-    assert.strictEqual(scribe.data.ocr.active[0].lines.length, 3);
-  }).timeout(10000);
+  test('Should import correct number of lines', async () => {
+    expect(scribe.data.ocr.active[0].lines.length).toBe(3);
+  });
 
-  it('Should import correct number of words per line', async () => {
-    assert.strictEqual(scribe.data.ocr.active[0].lines[0].words.length, 2);
-    assert.strictEqual(scribe.data.ocr.active[0].lines[1].words.length, 2);
-    assert.strictEqual(scribe.data.ocr.active[0].lines[2].words.length, 2);
-  }).timeout(10000);
+  test('Should import correct number of words per line', async () => {
+    expect(scribe.data.ocr.active[0].lines[0].words.length).toBe(2);
+    expect(scribe.data.ocr.active[0].lines[1].words.length).toBe(2);
+    expect(scribe.data.ocr.active[0].lines[2].words.length).toBe(2);
+  });
 
-  it('Should have high confidence values for clear text', async () => {
+  test('Should have high confidence values for clear text', async () => {
     // The "Ascenders" word should have >90% confidence (it reads 99 from the JSON)
     const conf = scribe.data.ocr.active[0].lines[0].words[0].conf;
-    assert.isAbove(conf, 90, 'Confidence for clear text should be above 90');
-    assert.isAtMost(conf, 100, 'Confidence should be at most 100');
-  }).timeout(10000);
+    expect(conf).toBeGreaterThan(90);
+    expect(conf).toBeLessThanOrEqual(100);
+  });
 
-  it('Should create 3 paragraphs (one per line)', async () => {
-    assert.strictEqual(scribe.data.ocr.active[0].pars.length, 3);
-  }).timeout(10000);
+  test('Should create 3 paragraphs (one per line)', async () => {
+    expect(scribe.data.ocr.active[0].pars.length).toBe(3);
+  });
 
-  it('All lines should have paragraph back-references', async () => {
+  test('All lines should have paragraph back-references', async () => {
     for (const line of scribe.data.ocr.active[0].lines) {
-      assert.isNotNull(line.par, 'Every line should have a paragraph reference');
+      expect(line.par).not.toBeNull();
     }
-  }).timeout(10000);
+  });
 
-  it('Paragraph text should match line text', async () => {
+  test('Paragraph text should match line text', async () => {
     const par0Text = scribe.data.ocr.active[0].pars[0].lines.map((l) => l.words.map((w) => w.text).join(' ')).join(' ');
     const par1Text = scribe.data.ocr.active[0].pars[1].lines.map((l) => l.words.map((w) => w.text).join(' ')).join(' ');
     const par2Text = scribe.data.ocr.active[0].pars[2].lines.map((l) => l.words.map((w) => w.text).join(' ')).join(' ');
-    assert.strictEqual(par0Text, 'Ascenders On');
-    assert.strictEqual(par1Text, 'query png');
-    assert.strictEqual(par2Text, 'we can');
-  }).timeout(10000);
+    expect(par0Text).toBe('Ascenders On');
+    expect(par1Text).toBe('query png');
+    expect(par2Text).toBe('we can');
+  });
 
-  it('Word "Ascenders" bbox should have correct approximate position', async () => {
+  test('Word "Ascenders" bbox should have correct approximate position', async () => {
     const word = scribe.data.ocr.active[0].lines[0].words[0]; // "Ascenders"
-    assert.strictEqual(word.text, 'Ascenders');
+    expect(word.text).toBe('Ascenders');
     // From the JSON: vertices x=[61,376], y=[70,123]
-    assert.approximately(word.bbox.left, 61, 5, 'Left should be ~61');
-    assert.approximately(word.bbox.right, 376, 5, 'Right should be ~376');
-    assert.approximately(word.bbox.top, 70, 5, 'Top should be ~70');
-    assert.approximately(word.bbox.bottom, 123, 5, 'Bottom should be ~123');
-  }).timeout(10000);
+    expect(Math.abs((word.bbox.left) - (61))).toBeLessThanOrEqual(5);
+    expect(Math.abs((word.bbox.right) - (376))).toBeLessThanOrEqual(5);
+    expect(Math.abs((word.bbox.top) - (70))).toBeLessThanOrEqual(5);
+    expect(Math.abs((word.bbox.bottom) - (123))).toBeLessThanOrEqual(5);
+  });
 
-  after(async () => {
+  afterAll(async () => {
     await scribe.terminate();
   });
-}).timeout(120000);
+});
 
-describe('Check Google Document AI import for 070823vanliere (superscript handling).', function () {
-  this.timeout(60000);
-
+describe('Check Google Document AI import for 070823vanliere (superscript handling).', () => {
   /** @type {Array} */
   let gdaiPages;
 
-  before(async () => {
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/070823vanliere.pdf`,
-      `${ASSETS_PATH_KARMA}/070823vanliere-GoogleDocAI.json`]);
+  beforeAll(async () => {
+    await scribe.importFiles([`${ASSETS_PATH}/070823vanliere.pdf`,
+      `${ASSETS_PATH}/070823vanliere-GoogleDocAI.json`]);
     gdaiPages = scribe.data.ocr.active;
   });
 
-  it('Should import 41 pages', async () => {
-    assert.strictEqual(gdaiPages.length, 41);
-  }).timeout(10000);
+  test('Should import 41 pages', async () => {
+    expect(gdaiPages.length).toBe(41);
+  });
 
-  describe('Unicode superscripts should be split into separate words', function () {
-    it('"merger.²" on page 5 should be split into "merger." and "2"', async () => {
+  describe('Unicode superscripts should be split into separate words', () => {
+    test('"merger.²" on page 5 should be split into "merger." and "2"', async () => {
       const result = findLineWithWords(gdaiPages[5], ['proposed', 'merger.']);
-      assert.isNotNull(result, 'Should find "proposed merger." on page 5');
+      expect(result).not.toBeNull();
       const mergerWord = result.line.words[result.startIdx + 1];
-      assert.strictEqual(mergerWord.text, 'merger.');
+      expect(mergerWord.text).toBe('merger.');
 
       const supWord = result.line.words[result.startIdx + 2];
-      assert.strictEqual(supWord.text, '2');
-      assert.strictEqual(supWord.style.sup, true);
-    }).timeout(10000);
+      expect(supWord.text).toBe('2');
+      expect(supWord.style.sup).toBe(true);
+    });
 
-    it('"formulas.¹" on page 9 should be split into "formulas." and "1"', async () => {
+    test('"formulas.¹" on page 9 should be split into "formulas." and "1"', async () => {
       const result = findLineWithWords(gdaiPages[9], ['various', 'formulas.']);
-      assert.isNotNull(result, 'Should find "various formulas." on page 9');
+      expect(result).not.toBeNull();
       const formulasWord = result.line.words[result.startIdx + 1];
-      assert.strictEqual(formulasWord.text, 'formulas.');
+      expect(formulasWord.text).toBe('formulas.');
 
       const supWord = result.line.words[result.startIdx + 2];
-      assert.strictEqual(supWord.text, '1');
-      assert.strictEqual(supWord.style.sup, true);
-    }).timeout(10000);
+      expect(supWord.text).toBe('1');
+      expect(supWord.style.sup).toBe(true);
+    });
 
-    it('Standalone "²" footnote marker on page 5 should become "2" with sup style', async () => {
+    test('Standalone "²" footnote marker on page 5 should become "2" with sup style', async () => {
       const result = findLineWithWords(gdaiPages[5], ['2', 'Expert', 'Report']);
-      assert.isNotNull(result, 'Should find footnote line starting with "2 Expert Report"');
+      expect(result).not.toBeNull();
       const supWord = result.line.words[result.startIdx];
-      assert.strictEqual(supWord.text, '2');
-      assert.strictEqual(supWord.style.sup, true);
-    }).timeout(10000);
+      expect(supWord.text).toBe('2');
+      expect(supWord.style.sup).toBe(true);
+    });
 
-    it('".³" on page 6 should be split into "." and "3"', async () => {
+    test('".³" on page 6 should be split into "." and "3"', async () => {
       const allWords = gdaiPages[6].lines.flatMap((line) => line.words);
       const supThreeIdx = allWords.findIndex((w) => w.text === '3' && w.style.sup === true);
-      assert.isAbove(supThreeIdx, -1, 'Should find superscript "3" on page 6');
-      assert.strictEqual(allWords[supThreeIdx].text, '3');
-    }).timeout(10000);
+      expect(supThreeIdx).toBeGreaterThan(-1);
+      expect(allWords[supThreeIdx].text).toBe('3');
+    });
 
-    it('Superscript words should not contain unicode superscript characters', async () => {
+    test('Superscript words should not contain unicode superscript characters', async () => {
       const allWords = gdaiPages.flatMap((page) => page.lines.flatMap((line) => line.words));
       const unicodeSuperRegex = /[⁰¹²³⁴⁵⁶⁷⁸⁹]/;
       const wordsWithUnicode = allWords.filter((w) => unicodeSuperRegex.test(w.text));
-      assert.strictEqual(wordsWithUnicode.length, 0, 'No words should contain unicode superscript characters');
-    }).timeout(10000);
+      expect(wordsWithUnicode.length).toBe(0);
+    });
   });
 
-  after(async () => {
+  afterAll(async () => {
     await scribe.terminate();
   });
-}).timeout(120000);
+});

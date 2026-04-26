@@ -127,6 +127,16 @@ export class opt {
   static workerN = null;
 
   /**
+   * Custom URL or path to load Tesseract `.traineddata` files from.
+   * If `null` (default), files are fetched from the jsdelivr CDN.
+   * Set this to a directory containing `<lang>.traineddata.gz` to use a local
+   * mirror — useful in sandboxed/offline environments. The path is used as-is
+   * with the language code appended, e.g. `${langPath}/eng.traineddata.gz`.
+   * @type {?string}
+   */
+  static langPath = null;
+
+  /**
    * Share the loaded PDF across PDF workers via `SharedArrayBuffer` instead of giving each worker its own clone.
    * Only supported within specific environments (e.g. Chrome with COOP/COEP headers, Node with worker threads and shared memory enabled).
    */

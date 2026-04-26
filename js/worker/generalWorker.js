@@ -87,10 +87,15 @@ let workerLSTM;
  * @param {?number} param.oem
  * @param {?boolean} param.vanillaMode
  * @param {Object<string, string>} param.config - Config params to pass to to Tesseract.js.
+ * @param {?string} [param.langPath] - Custom path/URL to load `.traineddata` files from.
+ *   Forwarded to `tessOptions.langPath` so subsequent worker creates load language data
+ *   from this location instead of the default CDN. `null`/`undefined` leaves the current
+ *   value unchanged.
  */
 const reinitialize = async ({
-  langs, oem, vanillaMode, config,
+  langs, oem, vanillaMode, config, langPath,
 }) => {
+  if (langPath !== undefined && langPath !== null) tessOptions.langPath = langPath;
   const langArr = typeof langs === 'string' ? langs.split('+') : langs;
   const changeLang = langs && JSON.stringify(langArr.sort()) !== JSON.stringify(langArrCurrent.sort());
   // oem can be 0, so using "truthy" checks does not work
@@ -147,8 +152,10 @@ const reinitialize = async ({
  * @param {?Array<string>} param.langs
  * @param {?number} param.oem
  * @param {?boolean} param.vanillaMode
+ * @param {?string} [param.langPath] - Custom path/URL to load `.traineddata` files from.
  */
-const reinitialize2 = async ({ langs, vanillaMode }) => {
+const reinitialize2 = async ({ langs, vanillaMode, langPath }) => {
+  if (langPath !== undefined && langPath !== null) tessOptions.langPath = langPath;
   const langArr = typeof langs === 'string' ? langs.split('+') : langs;
   const changeLang = langs && JSON.stringify(langArr.sort()) !== JSON.stringify(langArrCurrent.sort());
   const changeVanilla = vanillaMode && vanillaMode !== vanillaMode_;
