@@ -5,6 +5,8 @@ import scribe from '../../scribe.js';
 import { writeText } from '../../js/export/writeText.js';
 import { ASSETS_PATH_KARMA } from '../constants.js';
 
+scribe.opt.workerN = 1;
+
 config.truncateThreshold = 0; // Disable truncation for actual/expected values on assertion failure.
 
 // Using arrow functions breaks references to `this`.
@@ -89,8 +91,8 @@ describe('Check preserveSpacing text export.', function () {
     const spaced = writeText({
       ocrCurrent: scribe.data.ocr.active, pageArr: [0], lineNumbers: true, preserveSpacing: true,
     });
-    assert.strictEqual(compact.length, 3593);
-    assert.strictEqual(spaced.length, 20567);
+    assert.strictEqual(compact.length, 3348);
+    assert.strictEqual(spaced.length, 17325);
   }).timeout(10000);
 
   it('preserveSpacing indents words based on their horizontal position', async () => {

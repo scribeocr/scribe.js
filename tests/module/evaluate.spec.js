@@ -5,6 +5,8 @@ import { assert, config } from '../../node_modules/chai/chai.js';
 import scribe from '../../scribe.js';
 import { ASSETS_PATH_KARMA } from '../constants.js';
 
+scribe.opt.workerN = 1;
+
 config.truncateThreshold = 0; // Disable truncation for actual/expected values on assertion failure.
 
 // Using arrow functions breaks references to `this`.
@@ -57,8 +59,6 @@ describe('Check importFilesSupp works with Textract data.', function () {
     assert.strictEqual(textractPage.lines[0].words.map((x) => x.text).join(' '), 'Ascenders On');
     assert.strictEqual(textractPage.lines[1].words.map((x) => x.text).join(' '), 'query png');
     assert.strictEqual(textractPage.lines[2].words.map((x) => x.text).join(' '), 'we can');
-
-
   }).timeout(20000);
 
   after(async () => {

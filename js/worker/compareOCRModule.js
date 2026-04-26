@@ -248,29 +248,16 @@ export async function evalWords({
   let canvasView2;
   let ctxView2;
   if (view) {
-    let img;
-    if (typeof process === 'undefined') {
-      img = canvas;
-    } else {
-      img = ca.CanvasKit.MakeImage({
-        width,
-        height,
-        alphaType: ca.CanvasKit.AlphaType.Unpremul,
-        colorType: ca.CanvasKit.ColorType.RGBA_8888,
-        colorSpace: ca.CanvasKit.ColorSpace.SRGB,
-      }, imageDataActual, 4 * width);
-    }
-
     canvasView0 = await ca.createCanvas(width, height);
     ctxView0 = /** @type {OffscreenCanvasRenderingContext2D} */ (canvasView0.getContext('2d'));
-    ctxView0.drawImage(img, 0, 0);
+    ctxView0.drawImage(canvas, 0, 0);
     canvasView1 = await ca.createCanvas(width, height);
     ctxView1 = /** @type {OffscreenCanvasRenderingContext2D} */ (canvasView1.getContext('2d'));
-    ctxView1.drawImage(img, 0, 0);
+    ctxView1.drawImage(canvas, 0, 0);
     if (wordsB.length > 0) {
       canvasView2 = await ca.createCanvas(width, height);
       ctxView2 = /** @type {OffscreenCanvasRenderingContext2D} */ (canvasView2.getContext('2d'));
-      ctxView2.drawImage(img, 0, 0);
+      ctxView2.drawImage(canvas, 0, 0);
     }
   }
 

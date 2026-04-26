@@ -5,6 +5,19 @@ import { fileURLToPath } from 'node:url';
 import { assert } from '../../node_modules/chai/chai.js';
 import scribe from '../../scribe.js';
 import { toolHandlers, resetState } from '../../mcp/tools.js';
+import {
+  findXrefOffset, parseXref, ObjectCache, getPageObjects,
+} from '../../js/pdf/parsePdfUtils.js';
+
+/** @param {Uint8Array} pdfBytes */
+function countPdfPages(pdfBytes) {
+  const xrefOffset = findXrefOffset(pdfBytes);
+  const xrefEntries = parseXref(pdfBytes, xrefOffset);
+  const objCache = new ObjectCache(pdfBytes, xrefEntries);
+  return getPageObjects(objCache).length;
+}
+
+scribe.opt.workerN = 1;
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ASSETS = path.resolve(__dirname, '..', 'test-assets');
@@ -126,9 +139,9 @@ describeNode('MCP tool: subset_pdf', function () {
       pages: [0, 2],
     });
     assert.isTrue(fs.existsSync(outputPath));
-    assert.strictEqual(result.inputPages, 12);
     assert.strictEqual(result.outputPages, 2);
     assert.deepEqual(result.pagesIncluded, [0, 2]);
+    assert.strictEqual(countPdfPages(new Uint8Array(fs.readFileSync(outputPath))), 2);
     fs.unlinkSync(outputPath);
   });
 });
@@ -146,7 +159,7 @@ describeNode('MCP tool: merge_pdfs', function () {
     const outputPath = path.join(TMP, 'mcp_merge_test.pdf');
     if (fs.existsSync(outputPath)) fs.unlinkSync(outputPath);
 
-    const result = await toolHandlers.merge_pdfs({
+    await toolHandlers.merge_pdfs({
       files: [
         { file: path.join(ASSETS, 'complaint_1.pdf') },
         { file: path.join(ASSETS, 'academic_article_1.pdf') },
@@ -154,7 +167,7 @@ describeNode('MCP tool: merge_pdfs', function () {
       outputPath,
     });
     assert.isTrue(fs.existsSync(outputPath));
-    assert.strictEqual(result.totalPages, 3);
+    assert.strictEqual(countPdfPages(new Uint8Array(fs.readFileSync(outputPath))), 3);
     fs.unlinkSync(outputPath);
   });
 });

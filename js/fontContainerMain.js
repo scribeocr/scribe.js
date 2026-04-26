@@ -8,6 +8,8 @@ import {
 } from './containers/fontContainer.js';
 import { gs } from './generalWorkerMain.js';
 
+let loadBuiltInFontsRawInFlight = null;
+
 /**
  * Load all raw (unoptimized) fonts.  This function is where font file names are hard-coded.
  * @param {('latin'|'all')} [glyphSet='latin'] - The set of glyphs to load.  'latin' includes only Latin characters, while 'all' includes Latin, Greek, and Cyrillic characters.
@@ -18,6 +20,27 @@ export async function loadBuiltInFontsRaw(glyphSet = 'latin') {
   if (FontCont.raw && (FontCont.state.glyphSet === glyphSet
     || FontCont.state.glyphSet === 'all' && glyphSet === 'latin')) return;
 
+  // Coalesce with an in-flight call if it's loading the same or a superset.
+  // Without this, multiple concurrent calls to `loadBuiltInFontsRaw` (e.g. from `convertPageCallback` during multi-page import) can each trigger a full load.
+  if (loadBuiltInFontsRawInFlight
+    && (loadBuiltInFontsRawInFlight.glyphSet === glyphSet
+      || loadBuiltInFontsRawInFlight.glyphSet === 'all' && glyphSet === 'latin')) {
+    return loadBuiltInFontsRawInFlight.promise;
+  }
+
+  loadBuiltInFontsRawInFlight = {
+    glyphSet,
+    promise: loadBuiltInFontsRawInner(glyphSet).finally(() => {
+      loadBuiltInFontsRawInFlight = null;
+    }),
+  };
+  return loadBuiltInFontsRawInFlight.promise;
+}
+
+/**
+ * @param {'latin'|'all'} glyphSet
+ */
+async function loadBuiltInFontsRawInner(glyphSet) {
   FontCont.state.glyphSet = glyphSet;
 
   // Note: this function is intentionally verbose, and should not be refactored to generate the paths dynamically.

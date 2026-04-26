@@ -2,14 +2,10 @@ import {
   PageMetrics,
 } from '../objects/pageMetricsObjects.js';
 
-import { initMuPDFWorker } from '../../mupdf/mupdf-async.js';
-
 import { updateFontContWorkerMain } from '../fontContainerMain.js';
 import { pageMetricsAll } from './dataContainer.js';
 import {
   FontCont,
-  FontContainerFont,
-  loadOpentype,
 } from './fontContainer.js';
 
 import { gs } from '../generalWorkerMain.js';
@@ -17,35 +13,32 @@ import { imageUtils, ImageWrapper } from '../objects/imageObjects.js';
 import { range } from '../utils/miscUtils.js';
 import { opt } from './app.js';
 
-import { TessScheduler } from '../../tess/TessScheduler.js';
+import { initPdfScheduler } from '../pdfWorkerMain.js';
+import { extractType0Fonts } from '../pdf/fonts/parsePdfFonts.js';
 
-let skipTextMode = false;
-
-export class MuPDFScheduler {
-  constructor(scheduler, workers) {
-    this.scheduler = scheduler;
-    /** @type {Array<Awaited<ReturnType<typeof initMuPDFWorker>>>} */
-    this.workers = workers;
-    /**
-     * @param {Parameters<typeof import('../../mupdf/mupdf-worker.js').mupdf.pageText>[1]} args
-     * @returns {Promise<ReturnType<typeof import('../../mupdf/mupdf-worker.js').mupdf.pageText>>}
-     */
-    this.pageText = (args) => (this.scheduler.addJob('pageText', args));
-    /**
-     * @param {Parameters<typeof import('../../mupdf/mupdf-worker.js').mupdf.extractAllFonts>[1]} args
-     * @returns {Promise<ReturnType<typeof import('../../mupdf/mupdf-worker.js').mupdf.extractAllFonts>>}
-     */
-    this.extractAllFonts = (args) => (this.scheduler.addJob('extractAllFonts', args));
-    /**
-     * @param {Parameters<typeof import('../../mupdf/mupdf-worker.js').mupdf.drawPageAsPNG>[1]} args
-     * @returns {Promise<ReturnType<typeof import('../../mupdf/mupdf-worker.js').mupdf.drawPageAsPNG>>}
-     */
-    this.drawPageAsPNG = (args, priorityJob = false) => (this.scheduler.addJob('drawPageAsPNG', args, priorityJob));
-    /**
-     * @param {Parameters<typeof import('../../mupdf/mupdf-worker.js').mupdf.pageAnnotations>[1]} args
-     * @returns {Promise<ReturnType<typeof import('../../mupdf/mupdf-worker.js').mupdf.pageAnnotations>>}
-     */
-    this.pageAnnotations = (args) => (this.scheduler.addJob('pageAnnotations', args));
+/** @type {?boolean} */
+let _sabCapability = null;
+/**
+ * Check whether `SharedArrayBuffer` can actually be allocated and shared
+ * across workers in the current runtime. In Node (worker_threads) this is
+ * unconditional; in browsers it requires COOP/COEP / `crossOriginIsolated`.
+ * Probe result is memoized — capabilities don't change at runtime.
+ */
+function canUseSharedArrayBuffer() {
+  if (_sabCapability !== null) return _sabCapability;
+  try {
+    if (typeof SharedArrayBuffer === 'undefined') return (_sabCapability = false);
+    if (typeof process !== 'undefined') {
+      // eslint-disable-next-line no-new
+      new SharedArrayBuffer(1);
+      return (_sabCapability = true);
+    }
+    if (globalThis.crossOriginIsolated !== true) return (_sabCapability = false);
+    // eslint-disable-next-line no-new
+    new SharedArrayBuffer(1);
+    return (_sabCapability = true);
+  } catch {
+    return (_sabCapability = false);
   }
 }
 
@@ -63,10 +56,6 @@ export class MuPDFScheduler {
  * @property {?boolean} [upscaled]
  * @property {?('color'|'gray'|'binary')} [colorMode]
  */
-
-// TODO: Either separate out the imagebitmap again or edit so it does not get sent between threads.
-// Alternatively, if it is sent between threads, use it reather than making a new one.
-// Actually, definitely do that last option.
 
 export class ImageCache {
   /** @type {Array<ImageWrapper|Promise<ImageWrapper>>} */
@@ -91,16 +80,6 @@ export class ImageCache {
 
   /** @type {?ArrayBuffer} */
   static pdfData = null;
-
-  /**
-   * Return the bytes of the currently-loaded PDF as a Uint8Array.
-   */
-  static getPDFBytes = () => {
-    if (!ImageCache.pdfData) {
-      throw new Error('No PDF loaded. Call importFiles with a PDF before getPDFBytes.');
-    }
-    return new Uint8Array(ImageCache.pdfData);
-  };
 
   /**
    * @param {ImagePropertiesRequest} props
@@ -135,8 +114,26 @@ export class ImageCache {
     };
   };
 
-  /** @type {?Promise<MuPDFScheduler>} */
-  static muPDFScheduler = null;
+  /** @type {?import('../pdfWorkerMain.js').PdfScheduler} */
+  static pdfScheduler = null;
+
+  /** @type {?Promise<import('../pdfWorkerMain.js').PdfScheduler>} */
+  static #pdfSchedulerReady = null;
+
+  /**
+   * Get or lazily initialize the dedicated PDF worker pool.
+   * @returns {Promise<import('../pdfWorkerMain.js').PdfScheduler>}
+   */
+  static getPdfScheduler = async () => {
+    if (ImageCache.pdfScheduler) return ImageCache.pdfScheduler;
+    if (!ImageCache.#pdfSchedulerReady) {
+      ImageCache.#pdfSchedulerReady = initPdfScheduler().then((s) => {
+        ImageCache.pdfScheduler = s;
+        return s;
+      });
+    }
+    return ImageCache.#pdfSchedulerReady;
+  };
 
   static loadCount = 0;
 
@@ -156,73 +153,19 @@ export class ImageCache {
   static colorModeDefault = 'gray';
 
   /**
-   * Initializes the MuPDF scheduler.
-   * This is separate from the function that loads the file (`#loadFileMuPDFScheduler`),
-   * as the scheduler starts loading ahead of the file being available for performance reasons.
-   * @param {number} [numWorkers]
+   * @param {number} n - Page number
+   * @param {boolean} [color=false]
    */
-  static #initMuPDFScheduler = async (numWorkers) => {
-    // If `numbWorkers` is not specified, use up to 3 workers based on hardware concurrency
-    // and the global `opt.workerN` setting.
-    if (!numWorkers) {
-      if (typeof process === 'undefined') {
-        numWorkers = Math.min(Math.round((globalThis.navigator.hardwareConcurrency || 8) / 2), 3);
-      } else {
-        const cpuN = Math.floor((await import('node:os')).cpus().length / 2);
-        numWorkers = Math.max(Math.min(cpuN - 1, 3), 1);
-      }
-      if (opt.workerN && opt.workerN < numWorkers) {
-        numWorkers = opt.workerN;
-      }
-    }
-
-    const scheduler = new TessScheduler();
-    const workersPromiseArr = range(1, numWorkers).map(async () => {
-      const w = await initMuPDFWorker();
-      w.id = `png-${Math.random().toString(16).slice(3, 8)}`;
-      scheduler.addWorker(w);
-      return w;
-    });
-
-    const workers = await Promise.all(workersPromiseArr);
-
-    return new MuPDFScheduler(scheduler, workers);
-  };
-
-  /**
-   *
-   * @param {ArrayBuffer} fileData
-   * @returns
-   */
-  static #loadFileMuPDFScheduler = async (fileData) => {
-    const scheduler = await ImageCache.getMuPDFScheduler();
-
-    const workersPromiseArr = range(0, scheduler.workers.length - 1).map(async (x) => {
-      const w = scheduler.workers[x];
-
-      if (w.pdfDoc) await w.freeDocument(w.pdfDoc);
-
-      // The ArrayBuffer is transferred to the worker, so a new one must be created for each worker.
-      // const fileData = await file.arrayBuffer();
-      const fileDataCopy = fileData.slice(0);
-      const pdfDoc = await w.openDocument(fileDataCopy, 'document.pdf');
-      w.pdfDoc = pdfDoc;
-    });
-
-    await Promise.all(workersPromiseArr);
-  };
-
-  static #renderImage = async (n, color = false, priorityJob = false) => {
+  static #renderImage = async (n, color = false) => {
     if (ImageCache.inputModes.image) {
       return ImageCache.nativeSrc[n];
     } if (ImageCache.inputModes.pdf) {
-      const pageMetrics = pageMetricsAll[n];
-      const targetWidth = pageMetrics.dims.width;
+      const colorMode = color ? 'color' : 'gray';
+      const pdfScheduler = await ImageCache.getPdfScheduler();
+      const targetWidth = pageMetricsAll[n].dims.width;
       const dpi = 300 * (targetWidth / ImageCache.pdfDims300[n].width);
-      const muPDFScheduler = await ImageCache.getMuPDFScheduler();
-      return muPDFScheduler.drawPageAsPNG({
-        page: n + 1, dpi, color, skipText: skipTextMode,
-      }, priorityJob).then((res) => new ImageWrapper(n, res, color ? 'color' : 'gray'));
+      const result = await pdfScheduler.renderPdfPage({ pageIndex: n, colorMode, dpi }, true);
+      return new ImageWrapper(n, result.dataUrl, result.colorMode);
     }
     throw new Error('Attempted to render image without image input provided.');
   };
@@ -387,49 +330,58 @@ export class ImageCache {
 
   static terminate = async () => {
     ImageCache.clear();
-    if (ImageCache.muPDFScheduler) {
-      const muPDFScheduler = await ImageCache.muPDFScheduler;
-      await muPDFScheduler.scheduler.terminate();
-      ImageCache.muPDFScheduler = null;
+    if (ImageCache.pdfScheduler) {
+      await ImageCache.pdfScheduler.terminate();
+      ImageCache.pdfScheduler = null;
+      ImageCache.#pdfSchedulerReady = null;
     }
-  };
-
-  /**
-   * Gets the MuPDF scheduler if it exists, otherwise creates a new one.
-   * @param {number} [numWorkers] - Number of workers to create.
-   */
-  static getMuPDFScheduler = async (numWorkers) => {
-    if (ImageCache.muPDFScheduler) return ImageCache.muPDFScheduler;
-    ImageCache.muPDFScheduler = ImageCache.#initMuPDFScheduler(numWorkers);
-    return ImageCache.muPDFScheduler;
   };
 
   /**
    *
    * @param {ArrayBuffer | Uint8Array | Blob} fileData
-   * @param {Boolean} [skipText=false] - Whether to skip native text when rendering PDF to image.
    */
-  static openMainPDF = async (fileData, skipText = false) => {
-    // Start loading the scheduler ASAP. `pdfFile.arrayBuffer` can take time to run.
-    const muPDFSchedulerP = ImageCache.getMuPDFScheduler();
+  static openMainPDF = async (fileData) => {
+    /** @type {ArrayBuffer} */
+    let arrayBuffer;
+    if (fileData instanceof ArrayBuffer) {
+      arrayBuffer = fileData;
+    } else if (typeof fileData.arrayBuffer === 'function') {
+      arrayBuffer = await fileData.arrayBuffer();
+    } else {
+      arrayBuffer = fileData.buffer.slice(fileData.byteOffset, fileData.byteOffset + fileData.byteLength);
+    }
+    ImageCache.pdfData = arrayBuffer;
 
-    ImageCache.pdfData = fileData.arrayBuffer ? await fileData.arrayBuffer() : fileData;
+    /** @type {Uint8Array} */
+    let pdfBytes;
+    if (opt.usePdfSharedBuffer && canUseSharedArrayBuffer()) {
+      // Allocate a SharedArrayBuffer once; all workers will receive a view
+      // over this same buffer via postMessage (SAB is shared, not cloned).
+      const sab = new SharedArrayBuffer(arrayBuffer.byteLength);
+      pdfBytes = new Uint8Array(sab);
+      pdfBytes.set(new Uint8Array(arrayBuffer));
+    } else {
+      pdfBytes = new Uint8Array(arrayBuffer);
+    }
 
-    const muPDFScheduler = await muPDFSchedulerP;
+    // Initialize dedicated PDF workers and load the PDF into all of them.
+    // Each worker creates its own ObjectCache and page tree.
+    const pdfScheduler = await ImageCache.getPdfScheduler();
+    const { pageCount, pages } = await pdfScheduler.loadPdfInAllWorkers(pdfBytes);
 
-    await ImageCache.#loadFileMuPDFScheduler(ImageCache.pdfData);
-
-    ImageCache.pageCount = await muPDFScheduler.workers[0].countPages();
-
-    const pageDims1 = await muPDFScheduler.workers[0].pageSizes([300]);
+    ImageCache.pageCount = pageCount;
 
     ImageCache.pdfDims300.length = 0;
-    pageDims1.forEach((x) => {
-      ImageCache.pdfDims300.push({ width: x[0], height: x[1] });
-    });
+    for (const page of pages) {
+      const widthPts = Math.abs(page.mediaBox[2] - page.mediaBox[0]);
+      const heightPts = Math.abs(page.mediaBox[3] - page.mediaBox[1]);
+      const width = Math.round(widthPts * 300 / 72);
+      const height = Math.round(heightPts * 300 / 72);
+      ImageCache.pdfDims300.push({ width, height });
+    }
 
     ImageCache.inputModes.pdf = true;
-    skipTextMode = skipText;
 
     // Set page metrics based on PDF dimensions.
     // This is always run, even though it is overwritten almost immediately by OCR data when it is uploaded.
@@ -451,10 +403,10 @@ export class ImageCache {
     // In addition to only working for certain font formats, fonts embedded in PDFs are often subsetted and/or corrupted.
     // Therefore, before this is enabled by default, more sophisticated rules regarding when fonts should be used are needed.
     if (opt.extractPDFFonts) {
-      muPDFScheduler.extractAllFonts().then(async (x) => {
-        for (let i = 0; i < x.length; i++) {
-          const src = x[i].buffer;
-          FontCont.addFontFromFile(src);
+      extractType0Fonts(pdfBytes).then(async (fonts) => {
+        for (const objNum of Object.keys(fonts)) {
+          const fontFile = fonts[Number(objNum)].fontFile;
+          FontCont.addFontFromFile(fontFile.buffer.slice(fontFile.byteOffset, fontFile.byteOffset + fontFile.byteLength));
         }
         await updateFontContWorkerMain();
       });

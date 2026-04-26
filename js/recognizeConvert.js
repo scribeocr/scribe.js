@@ -1,4 +1,3 @@
-import { ca } from './canvasAdapter.js';
 import { inputData, opt } from './containers/app.js';
 import {
   convertPageWarn,
@@ -563,7 +562,6 @@ export async function recognizeAllPages(legacy = true, lstm = true, mainData = f
         const { ScrollView } = await import('../scrollview-web/scrollview/ScrollView.js');
         const sv = new ScrollView({
           lightTheme: true,
-          CanvasKit: ca.CanvasKit,
         });
         await sv.processVisStr(res0.recognize.debugVis);
         visInstructions[x] = await sv.getAll(true);
@@ -704,7 +702,7 @@ async function recognizeCustomModelDocumentMode(options) {
   throwIfAborted(signal);
 
   const pageDims = pageMetricsAll.map((m) => m.dims);
-  const pdfBytes = inputData.pdfMode ? ImageCache.getPDFBytes() : null;
+  const pdfBytes = inputData.pdfMode && ImageCache.pdfData ? new Uint8Array(ImageCache.pdfData) : null;
 
   const stream = await model.recognizeDocument(
     { pdfBytes, pageCount: inputData.pageCount, pageDims },

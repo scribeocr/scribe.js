@@ -25,6 +25,6 @@ cp -r "$SCRIBE_UI_ROOT/js" "$DIST/js"
 find "$SCRIBE_JS_ROOT" -maxdepth 1 -type f -name '*.js' -exec cp {} "$DIST/scribe.js/" \;
 
 # scribe.js: runtime subdirectories
-for dir in fonts js lib mupdf scrollview-web tess tesseract.js; do
+for dir in fonts js lib scrollview-web tess tesseract.js; do
   cp -r "$SCRIBE_JS_ROOT/$dir" "$DIST/scribe.js/$dir"
 done

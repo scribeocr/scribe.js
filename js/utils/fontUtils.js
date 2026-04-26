@@ -3,7 +3,7 @@
 
 import { FontCont } from '../containers/fontContainer.js';
 import { getPrevLine } from '../objects/ocrObjects.js';
-import { FontProps, quantile } from './miscUtils.js';
+import { quantile } from './miscUtils.js';
 
 import opentype from '../font-parser/src/index.js';
 import { opt } from '../containers/app.js';
@@ -329,8 +329,7 @@ export const calcWordFontSize = (word) => {
       return getFontSize(fontOpentype, word.bbox.bottom - word.bbox.top, word.text);
     }
     if (word.style.size) {
-      const mult = FontProps.sizeMult[font.family] || 1;
-      return word.style.size / mult;
+      return word.style.size;
     }
 
     return (word.bbox.bottom - word.bbox.top) * (fontOpentype.unitsPerEm / (fontOpentype.ascender - fontOpentype.descender));
@@ -338,8 +337,7 @@ export const calcWordFontSize = (word) => {
 
   // If the user manually set a size, then use that
   if (word.style.size) {
-    const mult = FontProps.sizeMult[font.family] || 1;
-    return word.style.size / mult;
+    return word.style.size;
   }
   const lineFontSize = calcLineFontSize(word.line);
 

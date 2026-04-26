@@ -21,6 +21,9 @@ const { assignParagraphs } = await import(pathToFileURL(resolve(__dirname, '..',
 
 const { pageMetricsAll } = await import(pathToFileURL(resolve(__dirname, '..', 'js', 'containers', 'dataContainer.js')).href);
 
+const { subsetPdf } = await import(pathToFileURL(resolve(__dirname, '..', 'js', 'export', 'pdf', 'writePdfOverlay.js')).href);
+const { mergePdfs } = await import(pathToFileURL(resolve(__dirname, '..', 'js', 'export', 'pdf', 'mergePdfs.js')).href);
+
 const SUPPORTED_EXTENSIONS = ['.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.tif'];
 const DATA_EXTENSIONS = ['.scribe.json', '.json', '.json.gz', '.hocr', '.xml', '.stext', '.txt', '.docx'];
 
@@ -471,14 +474,13 @@ async function renderPage({
     return { error: 'Document does not have PDF image data available for rendering.' };
   }
 
-  const muPDFScheduler = await ImageCache.getMuPDFScheduler();
+  const pdfScheduler = await ImageCache.getPdfScheduler();
   const requestedDpi = dpi || 150;
-  const dataUrl = await muPDFScheduler.drawPageAsPNG({
-    page: pageNum + 1,
+  const { dataUrl } = await pdfScheduler.renderPdfPage({
+    pageIndex: pageNum,
+    colorMode: 'color',
     dpi: requestedDpi,
-    color: true,
-    skipText: false,
-  });
+  }, true);
 
   // Strip "data:image/png;base64," prefix for MCP image content
   const base64 = dataUrl.split(',')[1];
@@ -488,7 +490,7 @@ async function renderPage({
   };
 }
 
-async function subsetPdf({ file, outputPath, pages }) {
+async function subsetPdfHandler({ file, outputPath, pages }) {
   const filePath = resolve(file);
   if (!fs.existsSync(filePath)) {
     return { error: `File not found: ${filePath}` };
@@ -501,38 +503,26 @@ async function subsetPdf({ file, outputPath, pages }) {
   const outPath = resolve(outputPath);
   await ensureInit();
 
-  const ImageCache = scribe.data.image;
-  const muPDFScheduler = await ImageCache.getMuPDFScheduler(1);
-  const w = muPDFScheduler.workers[0];
+  const pdfBytes = new Uint8Array(fs.readFileSync(filePath));
 
-  const fileData = fs.readFileSync(filePath);
-  const doc = await w.openDocument(fileData.buffer, 'document.pdf');
-  w.pdfDoc = doc;
-  const totalPages = await w.countPages();
-
-  // Validate page indices
-  for (const p of pages) {
-    if (p < 0 || p >= totalPages) {
-      w.freeDocument(doc);
-      return { error: `Page ${p} out of range (0-${totalPages - 1})` };
-    }
+  let outputData;
+  try {
+    outputData = await subsetPdf(pdfBytes.buffer.slice(pdfBytes.byteOffset, pdfBytes.byteOffset + pdfBytes.byteLength), pages);
+  } catch (err) {
+    if (err instanceof RangeError) return { error: err.message };
+    throw err;
   }
-
-  await w.subsetPages(doc, { pageArr: pages });
-  const outputData = await w.save({ doc1: doc });
-  w.freeDocument(doc);
 
   fs.writeFileSync(outPath, Buffer.from(outputData));
 
   return {
     outputPath: outPath,
-    inputPages: totalPages,
     outputPages: pages.length,
     pagesIncluded: pages,
   };
 }
 
-async function mergePdfs({ files, outputPath }) {
+async function mergePdfsHandler({ files, outputPath }) {
   if (!files || files.length === 0) {
     return { error: 'At least one file is required.' };
   }
@@ -546,39 +536,29 @@ async function mergePdfs({ files, outputPath }) {
   const outPath = resolve(outputPath);
   await ensureInit();
 
-  const ImageCache = scribe.data.image;
-  const muPDFScheduler = await ImageCache.getMuPDFScheduler(1);
-  const w = muPDFScheduler.workers[0];
-
-  const first = files[0];
-  const firstPath = resolve(first.file);
-  const firstData = fs.readFileSync(firstPath);
-  const dst = await w.openDocument(firstData.buffer, 'document.pdf');
-  w.pdfDoc = dst;
-
-  if (first.pages) {
-    await w.subsetPages(dst, { pageArr: first.pages });
+  /** @type {Array<Uint8Array>} */
+  const inputs = [];
+  for (const entry of files) {
+    const p = resolve(entry.file);
+    let bytes = new Uint8Array(fs.readFileSync(p));
+    if (entry.pages && entry.pages.length > 0) {
+      let subsetBuf;
+      try {
+        subsetBuf = await subsetPdf(bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength), entry.pages);
+      } catch (err) {
+        if (err instanceof RangeError) return { error: `${err.message} in ${entry.file}` };
+        throw err;
+      }
+      bytes = new Uint8Array(subsetBuf);
+    }
+    inputs.push(bytes);
   }
 
-  for (let i = 1; i < files.length; i++) {
-    const entry = files[i];
-    const srcPath = resolve(entry.file);
-    const srcData = fs.readFileSync(srcPath);
-    const src = await w.openDocument(srcData.buffer, 'document.pdf');
-    await w.mergeFrom(dst, src, { pageArr: entry.pages });
-    w.freeDocument(src);
-  }
-
-  const outputData = await w.save({ doc1: dst });
-  w.pdfDoc = dst;
-  const totalPages = await w.countPages();
-  w.freeDocument(dst);
-
-  fs.writeFileSync(outPath, Buffer.from(outputData));
+  const outputData = await mergePdfs(inputs);
+  fs.writeFileSync(outPath, new Uint8Array(outputData));
 
   return {
     outputPath: outPath,
-    totalPages,
     filesMerged: files.length,
   };
 }
@@ -1126,8 +1106,8 @@ const toolHandlers = {
   recognize: (args) => enqueue(() => recognizeDocument(args)),
   create_highlighted_pdf: (args) => enqueue(() => createHighlightedPdf(args)),
   render_page: (args) => enqueue(() => renderPage(args)),
-  subset_pdf: (args) => enqueue(() => subsetPdf(args)),
-  merge_pdfs: (args) => enqueue(() => mergePdfs(args)),
+  subset_pdf: (args) => enqueue(() => subsetPdfHandler(args)),
+  merge_pdfs: (args) => enqueue(() => mergePdfsHandler(args)),
   define_tables: (args) => enqueue(() => defineTablesHandler(args)),
   extract_tables: (args) => enqueue(() => extractTablesHandler(args)),
   convert_docx_to_json: (args) => enqueue(() => convertDocxToJson(args)),

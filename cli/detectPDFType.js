@@ -8,26 +8,25 @@ import scribe from '../scribe.js';
  *    If provided, the text will be extracted and saved to this path.
  */
 export const detectPDFType = async (pdfFile, outputPath) => {
-  const mupdfScheduler = await scribe.data.image.getMuPDFScheduler(1);
-  const w = mupdfScheduler.workers[0];
+  await scribe.importFiles([pdfFile]);
 
-  const fileData = await fs.readFileSync(pdfFile);
-
-  const pdfDoc = await w.openDocument(fileData, 'file.pdf');
-  w.pdfDoc = pdfDoc;
-
-  let type = 'Image Native';
+  const typeMap = {
+    text: 'Text native',
+    ocr: 'Image + OCR text',
+    image: 'Image native',
+  };
+  const type = typeMap[scribe.inputData.pdfType] || 'Image native';
 
   if (outputPath) {
-    const res = await w.detectExtractText();
-    type = res.type;
-    fs.writeFileSync(outputPath, res.text);
-  } else {
-    const nativeCode = await w.checkNativeText();
-    type = ['Text native', 'Image + OCR text', 'Image native'][nativeCode];
+    const text = scribe.utils.writeText({
+      ocrCurrent: scribe.data.ocr.active,
+      reflowText: false,
+      lineNumbers: false,
+    });
+    fs.writeFileSync(outputPath, text);
   }
 
   console.log('PDF Type:', type);
 
-  mupdfScheduler.scheduler.terminate();
+  await scribe.terminate();
 };

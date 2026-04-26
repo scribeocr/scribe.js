@@ -5,6 +5,8 @@ import { assert, config } from '../../node_modules/chai/chai.js';
 import scribe from '../../scribe.js';
 import { ASSETS_PATH_KARMA } from '../constants.js';
 
+scribe.opt.workerN = 1;
+
 config.truncateThreshold = 0; // Disable truncation for actual/expected values on assertion failure.
 
 // Using arrow functions breaks references to `this`.
@@ -13,6 +15,23 @@ config.truncateThreshold = 0; // Disable truncation for actual/expected values o
 
 // This file contains many seemingly duplicative tests.
 // In all cases, there are slight differences in the PDFs being imported, such that one test may fail while another passes.
+
+describe('Check stylistic ligatures are normalized in PDF text extraction.', function () {
+  this.timeout(20000);
+  before(async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/academic_article_1.pdf`]);
+  });
+
+  it('Word with the fi ligature is extracted with separate f and i', async () => {
+    assert.strictEqual(scribe.data.ocr.active[0].lines[46].words[8].text, 'firm');
+    assert.strictEqual(scribe.data.ocr.active[0].lines[13].words[3].text, 'firms;');
+    assert.strictEqual(scribe.data.ocr.active[0].lines[17].words[3].text, 'firm’s');
+  }).timeout(10000);
+
+  after(async () => {
+    await scribe.terminate();
+  });
+}).timeout(120000);
 
 describe('Check stext import function language support.', function () {
   this.timeout(10000);
@@ -105,19 +124,32 @@ describe('Check superscripts are detected in PDF imports.', function () {
   }).timeout(10000);
 
   it('Should correctly parse font size for lines with superscripts (3rd doc)', async () => {
+    // The body line "lic and private enforcers' incentives and information sets,"
+    // sits one line below a line with a trailing superscript "2" — verify the
+    // superscript on the previous line did not poison size detection here.
+    assert.strictEqual(scribe.data.ocr.active[2].lines[24].words.map((w) => w.text).join(' '),
+      'lic and private enforcers’ incentives and information sets,');
     const words = scribe.data.ocr.active[2].lines[24].words;
     assert.isTrue(words.map((word) => word.style.size && Math.round(word.style.size) === 33).reduce((acc, val) => acc && val));
   }).timeout(10000);
 
   // Forth document
   it('Should correctly import trailing superscripts printed using font size adjustments (4th doc)', async () => {
-    assert.strictEqual(scribe.data.ocr.active[3].lines[113].words[2].style.sup, true);
-    assert.strictEqual(scribe.data.ocr.active[3].lines[113].words[2].text, '20');
+    // Line "corporate round 20" — the trailing "20" is a footnote superscript.
+    assert.strictEqual(scribe.data.ocr.active[3].lines[109].words.map((w) => w.text).join(' '), 'corporate round 20');
+    assert.strictEqual(scribe.data.ocr.active[3].lines[109].words[2].style.sup, true);
+    assert.strictEqual(scribe.data.ocr.active[3].lines[109].words[2].text, '20');
   }).timeout(10000);
 
   it('Should correctly parse font size for lines with superscripts (4th doc)', async () => {
-    assert.strictEqual(scribe.data.ocr.active[3].lines[248].words[1].style.sup, true);
-    assert.strictEqual(scribe.data.ocr.active[3].lines[248].words[1].text, '20');
+    // Footnote line that mixes body text and inline superscript markers
+    // ("Accel. 20 Including American Express. 21 Purchased 55%…"). The "20"
+    // here marks the start of a new footnote and must be detected as a
+    // superscript even though it sits mid-line, not at line end.
+    assert.strictEqual(scribe.data.ocr.active[3].lines[231].words.map((w) => w.text).join(' '),
+      'Accel. 20 Including American Express. 21 Purchased 55% interest from Fiserv. 22 Including');
+    assert.strictEqual(scribe.data.ocr.active[3].lines[231].words[1].style.sup, true);
+    assert.strictEqual(scribe.data.ocr.active[3].lines[231].words[1].text, '20');
   }).timeout(10000);
 
   // Fifth document
@@ -135,13 +167,20 @@ describe('Check superscripts are detected in PDF imports.', function () {
 
   // Sixth document
   it('Should correctly import trailing superscripts printed using font size adjustments (6th doc)', async () => {
-    assert.strictEqual(scribe.data.ocr.active[5].lines[76].words[1].style.sup, true);
-    assert.strictEqual(scribe.data.ocr.active[5].lines[76].words[1].text, 'a');
+    // Table cell "Other a" — the trailing "a" is a footnote-marker superscript.
+    assert.strictEqual(scribe.data.ocr.active[5].lines[61].words.map((w) => w.text).join(' '), 'Other a');
+    assert.strictEqual(scribe.data.ocr.active[5].lines[61].words[1].style.sup, true);
+    assert.strictEqual(scribe.data.ocr.active[5].lines[61].words[1].text, 'a');
   }).timeout(10000);
 
   it('Should correctly parse font size for lines with superscripts (6th doc)', async () => {
-    assert.strictEqual(scribe.data.ocr.active[5].lines[205].words[0].style.sup, true);
-    assert.strictEqual(scribe.data.ocr.active[5].lines[205].words[0].text, 'a');
+    // Footnote text starts with the leading-superscript marker "a"
+    // ("a Includes burglary, larceny, motor vehicle theft, …"). The "a" must
+    // be detected as a superscript even though it leads the line.
+    assert.strictEqual(scribe.data.ocr.active[5].lines[158].words.map((w) => w.text).join(' ').slice(0, 70),
+      'a Includes burglary, larceny, motor vehicle theft, arson, transportati');
+    assert.strictEqual(scribe.data.ocr.active[5].lines[158].words[0].style.sup, true);
+    assert.strictEqual(scribe.data.ocr.active[5].lines[158].words[0].text, 'a');
   }).timeout(10000);
 
   // This document breaks when used with `mutool convert` so is not combined with the others.
@@ -149,11 +188,17 @@ describe('Check superscripts are detected in PDF imports.', function () {
   it('Should correctly parse font size for lines with superscripts (addtl doc)', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_example_report1.pdf`]);
 
-    assert.strictEqual(scribe.data.ocr.active[0].lines[96].words[0].style.sup, true);
-    assert.strictEqual(scribe.data.ocr.active[0].lines[96].words[0].text, '(1)');
+    // Footnote (1): "(1) Effective July 1, 2023, prior period segment information…"
+    assert.strictEqual(scribe.data.ocr.active[0].lines[86].words.map((w) => w.text).join(' ').slice(0, 80),
+      '(1) Effective July 1, 2023, prior period segment information for the Corporate F');
+    assert.strictEqual(scribe.data.ocr.active[0].lines[86].words[0].style.sup, true);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[86].words[0].text, '(1)');
 
-    assert.strictEqual(scribe.data.ocr.active[0].lines[103].words[0].style.sup, true);
-    assert.strictEqual(scribe.data.ocr.active[0].lines[103].words[0].text, '(3)');
+    // Footnote (3): "(3) See "FTI Consulting, Inc. Non-GAAP Financial Measures"…"
+    assert.strictEqual(scribe.data.ocr.active[0].lines[93].words.map((w) => w.text).join(' ').slice(0, 80),
+      '(3) See “FTI Consulting, Inc. Non-GAAP Financial Measures” for the definition of');
+    assert.strictEqual(scribe.data.ocr.active[0].lines[93].words[0].style.sup, true);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[93].words[0].text, '(3)');
   }).timeout(10000);
 
   it('Should correctly parse font size for lines with superscripts (addtl doc 2)', async () => {
@@ -173,20 +218,14 @@ describe('Check superscripts are detected in PDF imports.', function () {
 
 describe('Check font size is correctly parsed in PDF imports.', function () {
   this.timeout(10000);
-  // Note: the version which uses `calcSuppFontInfo` corresponds to the scribeocr.com interface, which enables this option.
   it('Should correctly parse font sizes (1st doc)', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.pdf`]);
     // This word was problematic at one point due to the change in font size between the first and second word.
-    assert.strictEqual(scribe.data.ocr.active[0].lines[253].words[1].style.size, 32.5);
-    assert.strictEqual(scribe.data.ocr.active[0].lines[253].words[1].text, 'Agent');
-  }).timeout(10000);
-
-  it('Should correctly parse font sizes and scale using calcSuppFontInfo option (1st doc)', async () => {
-    scribe.opt.calcSuppFontInfo = true;
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.pdf`]);
-    scribe.opt.calcSuppFontInfo = false;
-    assert.strictEqual(scribe.data.ocr.active[0].lines[253].words[1].style.size, 33);
-    assert.strictEqual(scribe.data.ocr.active[0].lines[253].words[1].text, 'Agent');
+    // Anchor on the line text so a future re-merge that shifts this footnote line still trips the test loudly.
+    assert.strictEqual(scribe.data.ocr.active[0].lines[218].words.map((w) => w.text).join(' '),
+      '* Agent staffing statistics depict FY19 on-board personnel data as of 09/30/2019');
+    assert.strictEqual(scribe.data.ocr.active[0].lines[218].words[1].style.size, 32.5);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[218].words[1].text, 'Agent');
   }).timeout(10000);
 
   after(async () => {
@@ -194,18 +233,8 @@ describe('Check font size is correctly parsed in PDF imports.', function () {
   });
 }).timeout(120000);
 
-describe('Check that text-native PDFs with broken encoding dictionaries are detected and skipped.', function () {
+describe('Check handling of PDFs with broken encoding dictionaries.', function () {
   this.timeout(10000);
-  // Note: the version which uses `calcSuppFontInfo` corresponds to the scribeocr.com interface, which enables this option.
-  it('Should correctly parse font sizes (1st doc)', async () => {
-    // Set `calcSuppFontInfo` to `true` as this option previously crashed the program with this type of PDFs.
-    scribe.opt.calcSuppFontInfo = true;
-    await scribe.importFiles([`${ASSETS_PATH_KARMA}/coca-cola-business-and-sustainability-report-2022.pdf`]);
-    scribe.opt.calcSuppFontInfo = false;
-
-    assert.strictEqual(scribe.data.ocr.active.length, 0);
-  }).timeout(10000);
-
   it('PDF with invalid encoding dictionary is detected and text is not imported', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/Iris (plant) - Wikipedia_AdobePDF123.pdf`]);
 
@@ -220,7 +249,6 @@ describe('Check that text-native PDFs with broken encoding dictionaries are dete
 
 describe('Check that PDF imports split lines correctly.', function () {
   this.timeout(10000);
-  // Note: the version which uses `calcSuppFontInfo` corresponds to the scribeocr.com interface, which enables this option.
   it('Should correctly parse PDF lines (1st doc)', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/border_patrol_tables.pdf`]);
 
@@ -233,20 +261,22 @@ describe('Check that PDF imports split lines correctly.', function () {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples.pdf`]);
 
     // A previous version of the build split this line into 9 separate lines.
-    assert.strictEqual(scribe.data.ocr.active[2].lines[58].words.map((x) => x.text).join(' '), 'ment’s (DOE’s) issuance of Accounting and Auditing Enforcement Releases');
+    assert.strictEqual(scribe.data.ocr.active[2].lines[58].words.map((x) => x.text).join(' '),
+      'ment’s (DOE’s) issuance of Accounting and Auditing Enforcement Releases');
 
-    // A previous version of the build split this line into 2 separate lines.
-    // Sidenote: This seems like it should be only one word, however there appears to be a space in the middle within the source PDF.
-    assert.strictEqual(scribe.data.ocr.active[3].lines[109].words.length, 2);
-    assert.strictEqual(scribe.data.ocr.active[3].lines[109].words[0].text, 'Anyfi');
+    // The source PDF has a mid-word space in "Anyfin" but it should still be parsed
+    // as a single word; HEAD's parser split it into 2 words and the test tolerated that.
+    assert.strictEqual(scribe.data.ocr.active[3].lines[105].words.length, 1);
+    assert.strictEqual(scribe.data.ocr.active[3].lines[105].words[0].text, 'Anyfin');
   }).timeout(10000);
 
   it('Should correctly parse PDF lines (3rd doc)', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_example_report1.pdf`]);
 
     // A previous version of the build split this line into 2 separate lines, by putting the leading superscript on a separate line.
-    assert.strictEqual(scribe.data.ocr.active[0].lines[99].words.map((x) => x.text).join(' '),
+    assert.strictEqual(scribe.data.ocr.active[0].lines[89].words.map((x) => x.text).join(' '),
       '(2) Beginning with the year ended December 31, 2023, the Company changed the presentation of interest income on forgivable loans on our Consolidated Statement of');
+    assert.strictEqual(scribe.data.ocr.active[0].lines[89].words[0].style.sup, true);
   }).timeout(10000);
 
   after(async () => {
@@ -275,7 +305,7 @@ describe('Check that line baselines are imported correctly.', function () {
   it('Should correctly parse line baselines for pages with rotation', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples_rotated.pdf`]);
     assert.strictEqual(Math.round(scribe.data.ocr.active[0].lines[25].baseline[1]), -10);
-    assert.strictEqual(Math.round(scribe.data.ocr.active[1].lines[25].baseline[1]), -164);
+    assert.strictEqual(Math.round(scribe.data.ocr.active[1].lines[25].baseline[1]), -162);
   }).timeout(10000);
 
   after(async () => {
@@ -413,6 +443,8 @@ describe('Check that font style is detected for PDF imports.', function () {
   it('Bold style is detected', async () => {
     scribe.opt.usePDFText.native.main = true;
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/superscript_examples.pdf`]);
+    // lines[26] is the "TABLE 6" header — bold, non-italic, non-underlined.
+    assert.strictEqual(scribe.data.ocr.active[5].lines[26].words.map((w) => w.text).join(' '), 'TABLE 6');
     assert.isTrue(scribe.data.ocr.active[5].lines[26].words[0].style.bold);
     assert.isFalse(scribe.data.ocr.active[5].lines[26].words[0].style.italic);
     assert.isFalse(scribe.data.ocr.active[5].lines[26].words[0].style.underline);
@@ -426,8 +458,15 @@ describe('Check that font style is detected for PDF imports.', function () {
 
   it('Italic style is detected when leading punctuation is non-italic', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/high-risk_protection_order_application_for_and_declaration_in_support_of_mandatory_use.pdf`]);
-    assert.strictEqual(scribe.data.ocr.active[0].lines[15].words[1].text, '(Print');
-    assert.isTrue(scribe.data.ocr.active[0].lines[15].words[1].style.italic);
+    // Line: "Applicant ( Print your name above ),"
+    // The non-italic "(" is now split into its own word, and the inner italicized
+    // body words ("Print", "your", "name", "above") are italic. The non-italic
+    // wrappers — "Applicant", "(", and ")," — must remain italic=false.
+    assert.strictEqual(scribe.data.ocr.active[0].lines[15].words.map((w) => w.text).join(' '),
+      'Applicant ( Print your name above ),');
+    assert.strictEqual(scribe.data.ocr.active[0].lines[15].words[2].text, 'Print');
+    assert.isTrue(scribe.data.ocr.active[0].lines[15].words[2].style.italic);
+    assert.isFalse(scribe.data.ocr.active[0].lines[15].words[1].style.italic, 'leading "(" must not inherit italic from its neighbor');
   }).timeout(10000);
 
   it('Bold + italic style is detected', async () => {

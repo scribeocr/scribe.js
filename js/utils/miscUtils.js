@@ -404,14 +404,6 @@ const sansFontsRegex = new RegExp(sansFonts.reduce((x, y) => `${x}|${y}`), 'i');
 
 const unidentifiedFonts = new Set();
 
-export class FontProps {
-  static sansFontsDoc = new Set();
-
-  static serifFontsDoc = new Set();
-
-  static sizeMult = {};
-}
-
 /**
  * Given a font name from Tesseract/Abbyy XML, determine if it should be represented by sans font or serif font.
  *
@@ -444,12 +436,6 @@ export function determineSansSerif(fontName) {
         fontFamily = 'SerifDefault';
       } else if (/san/i.test(fontName)) {
         fontFamily = 'SansDefault';
-      // This comes after the hard-coded values, as the hard-coded values are considered more reliable.
-      // If recognition decides the font named "Arial" is a serif font, it's probably wrong.
-      } else if (FontProps.sansFontsDoc.has(fontName)) {
-        fontFamily = 'SansDefault';
-      } else if (FontProps.serifFontsDoc.has(fontName)) {
-        fontFamily = 'SerifDefault';
       } else if (!unidentifiedFonts.has(fontName)) {
         unidentifiedFonts.add(fontName);
         console.log(`Unidentified font: ${fontName}`);

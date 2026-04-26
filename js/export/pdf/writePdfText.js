@@ -85,6 +85,9 @@ export async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode
     const pdfFontCurrent = wordJ.lang === 'chi_sim' ? pdfFonts.NotoSansSC.normal : pdfFonts[wordFont.family][getStyleLookup(wordJ.style)];
     pdfFontNameCurrent = pdfFontCurrent.name;
     pdfFontTypeCurrent = pdfFontCurrent.type;
+    // The subset font will have a different glyph index mapping than the un-subset opentype font,
+    // so we need to keep track of both.
+    let pdfFontOpentypeCurrent = pdfFontCurrent.opentype;
     pdfFontsUsed.add(pdfFontCurrent);
 
     textContentObjStr += `${pdfFontNameCurrent} ${String(wordFontSize)} Tf\n`;
@@ -208,7 +211,11 @@ export async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode
         const wordSpaceExtraPx = (wordSpaceAdj - wordSpaceExpectedPx + spacingAdj + angleAdjWordX) * (100 / tzCurrent);
 
         if (pdfFontTypeCurrent === 0) {
-          const spaceChar = wordFont.opentype.charToGlyphIndex(' ').toString(16).padStart(4, '0');
+          // Look up the space glyph in the currently-active (subset) font —
+          // the one a viewer will consult at this point in the stream.
+          // `wordFont.opentype` is the un-subset source and has different
+          // glyph indices.
+          const spaceChar = pdfFontOpentypeCurrent.charToGlyphIndex(' ').toString(16).padStart(4, '0');
           textContentObjStr += `<${spaceChar}> ${String(Math.round(wordSpaceExtraPx * (-1000 / fontSizeLast) * 1e6) / 1e6)}`;
         } else {
           textContentObjStr += `( ) ${String(Math.round(wordSpaceExtraPx * (-1000 / fontSizeLast) * 1e6) / 1e6)}`;
@@ -239,6 +246,7 @@ export async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode
         textContentObjStr += `${pdfFontName} ${String(fontSize)} Tf\n`;
         pdfFontNameCurrent = pdfFontName;
         pdfFontTypeCurrent = pdfFontType;
+        pdfFontOpentypeCurrent = pdfFont.opentype;
         fontSizeLast = fontSize;
       }
       if (fillColor !== fillColorCurrent) {

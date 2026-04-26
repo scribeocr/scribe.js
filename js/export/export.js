@@ -6,6 +6,7 @@ import { ImageCache } from '../containers/imageContainer.js';
 import { reorderOcrPage } from '../modifyOCR.js';
 import { saveAs } from '../utils/miscUtils.js';
 import { writePdf } from './pdf/writePdf.js';
+import { overlayPdfText, subsetPdf } from './pdf/writePdfOverlay.js';
 import { writeHocr } from './writeHocr.js';
 import { writeText } from './writeText.js';
 import { writeHtml } from './writeHtml.js';
@@ -66,139 +67,83 @@ export async function exportData(format = 'txt', { minPage = 0, maxPage = -1, pa
 
       const rotateText = !rotateBackground;
 
-      const includeImages = false;
-      /** @type {ImageWrapper[]} */
-      let images = [];
-      if (includeImages) {
-        images = await Promise.all(ImageCache.nativeSrc);
-      }
-
-      // Page sizes should not be standardized at this step, as the overlayText/overlayTextImage functions will perform this,
-      // and assume that the overlay PDF is the same size as the input images.
-      const pdfStr = await writePdf({
-        ocrArr: ocrDownload,
-        pageMetricsArr: pageMetricsAll,
-        pageArr,
-        textMode: opt.displayMode,
-        rotateText,
-        rotateBackground,
-        dimsLimit: { width: -1, height: -1 },
-        confThreshHigh: opt.confThreshHigh,
-        confThreshMed: opt.confThreshMed,
-        proofOpacity: opt.overlayOpacity / 100,
-        images,
-        includeImages,
-        annotationsPages: annotations.pages,
-      });
-
-      const enc = new TextEncoder();
-      const pdfEnc = enc.encode(pdfStr);
-
-      if (opt.intermediatePDF) return pdfEnc;
-
-      // Create a new scheduler if one does not yet exist.
-      // This would be the case for image uploads.
-      const muPDFScheduler = await ImageCache.getMuPDFScheduler(1);
-      const w = muPDFScheduler.workers[0];
-      const pdfOverlay = await w.openDocument(pdfEnc.buffer, 'document.pdf');
-
       let insertInputFailed = false;
 
-      // If the input document is a .pdf and "Add Text to Import PDF" option is enabled, we insert the text into that pdf (rather than making a new one from scratch)
       if (insertInputPDF) {
-        // TODO: Figure out how to handle duplicative text--where the same text is in the source document and the OCR overlay.
-        // An earlier version handled this by deleting the text in the source document,
-        // however this resulted in results that were not as expected by the user (a visual element disappeared).
         try {
-          // The `save` function modifies the original PDF, so we need a new PDF object to avoid modifying the original.
-          const basePdfDataCopy = structuredClone(ImageCache.pdfData);
-          const basePdf = await w.openDocument(basePdfDataCopy, 'document.pdf');
+          let basePdfData = ImageCache.pdfData;
           if (pageArr.length < inputData.pageCount) {
-            await w.subsetPages(basePdf, { pageArr });
+            basePdfData = await subsetPdf(basePdfData, pageArr);
           }
-          // Make a new PDF with invisible text removed to avoid duplication.
-          // Making a new PDF object is also required as the `overlayDocuments` function modifies the input PDF in place.
-          const basePdfNoInvisData = await w.save({
-            doc1: basePdf,
-            pagewidth: dimsLimit.width,
-            pageheight: dimsLimit.height,
+          content = await overlayPdfText({
+            basePdfData,
+            ocrArr: ocrDownload,
+            pageMetricsArr: pageMetricsAll,
+            textMode: opt.displayMode,
+            rotateText,
+            rotateBackground,
+            confThreshHigh: opt.confThreshHigh,
+            confThreshMed: opt.confThreshMed,
+            proofOpacity: opt.overlayOpacity / 100,
             humanReadable: opt.humanReadablePDF,
-            skipTextInvis: opt.displayMode !== 'annot',
+            annotationsPages: annotations.pages,
           });
-          const basePdfNoInvis = await w.openDocument(basePdfNoInvisData, 'document.pdf');
-          await w.overlayDocuments(basePdfNoInvis, pdfOverlay);
-          content = await w.save({
-            doc1: basePdfNoInvis,
-            pagewidth: dimsLimit.width,
-            pageheight: dimsLimit.height,
-            humanReadable: opt.humanReadablePDF,
-          });
-          w.freeDocument(basePdf);
-          w.freeDocument(basePdfNoInvis);
         } catch (error) {
-          console.error('Failed to insert contents into input PDF, creating new PDF from rendered images instead.');
+          console.error('Failed to overlay text onto input PDF, creating new PDF from rendered images instead.');
           console.error(error);
           insertInputFailed = true;
         }
       }
 
-      // If the input is a series of images, those images need to be inserted into a new pdf
-      if (!insertInputPDF && (inputData.pdfMode || inputData.imageMode) || insertInputFailed) {
+      // Build a fresh PDF (writePdf handles images natively; no mupdf convertImage* needed).
+      if (!insertInputPDF || insertInputFailed) {
         const props = { rotated: rotateBackground, upscaled: false, colorMode: opt.colorMode };
         const binary = opt.colorMode === 'binary';
 
         // An image could be rendered if either (1) binary is selected or (2) the input data is a PDF.
         // Otherwise, the images uploaded by the user are used.
         const renderImage = binary || inputData.pdfMode;
+        const includeImages = inputData.pdfMode || inputData.imageMode;
 
         // Pre-render to benefit from parallel processing, since the loop below is synchronous.
-        if (renderImage) await ImageCache.preRenderRange({ pageArr, binary, props });
+        if (renderImage && includeImages) await ImageCache.preRenderRange({ pageArr, binary, props });
 
-        await w.convertImageStart({ humanReadable: opt.humanReadablePDF });
-        for (const i of pageArr) {
-          /** @type {ImageWrapper} */
-          let image;
-          if (binary) {
-            image = await ImageCache.getBinary(i, props);
-          } else if (inputData.pdfMode) {
-            image = await ImageCache.getNative(i, props);
-          } else {
-            image = await ImageCache.nativeSrc[i];
+        /** @type {ImageWrapper[]} */
+        const images = [];
+        if (includeImages) {
+          for (const i of pageArr) {
+            let image;
+            if (binary) {
+              image = await ImageCache.getBinary(i, props);
+            } else if (inputData.pdfMode) {
+              image = await ImageCache.getNative(i, props);
+            } else {
+              image = await ImageCache.nativeSrc[i];
+            }
+            images.push(image);
+            opt.progressHandler({ n: i, type: 'export', info: {} });
           }
-
-          // Angle the PDF viewer is instructed to rotated the image by.
-          // This method is currently only used when rotation is needed but the user's (unrotated) source images are being used.
-          // If the images are being rendered, then rotation is expected to be applied within the rendering process.
-          const angleImagePdf = rotateBackground && !renderImage ? (pageMetricsAll[i].angle || 0) * -1 : 0;
-
-          await w.convertImageAddPage({
-            image: image.src, i, pagewidth: dimsLimit.width, pageheight: dimsLimit.height, angle: angleImagePdf,
-          });
-          opt.progressHandler({ n: i, type: 'export', info: {} });
         }
-        const contentImage = await w.convertImageEnd();
-        const pdfBase = await w.openDocument(contentImage, 'document.pdf');
-        await w.overlayDocuments(pdfBase, pdfOverlay);
-        content = await w.save({
-          doc1: pdfBase,
-          pagewidth: dimsLimit.width,
-          pageheight: dimsLimit.height,
-          humanReadable: opt.humanReadablePDF,
-        });
-        w.freeDocument(pdfBase);
-        // Otherwise, there is only OCR data and not image data.
-      } else if (!insertInputPDF) {
-        content = await w.save({
-          doc1: pdfOverlay,
-          pagewidth: dimsLimit.width,
-          pageheight: dimsLimit.height,
+
+        content = await writePdf({
+          ocrArr: ocrDownload,
+          pageMetricsArr: pageMetricsAll,
+          pageArr,
+          textMode: opt.displayMode,
+          rotateText,
+          rotateBackground,
+          dimsLimit: { width: -1, height: -1 },
+          confThreshHigh: opt.confThreshHigh,
+          confThreshMed: opt.confThreshMed,
+          proofOpacity: opt.overlayOpacity / 100,
+          images,
+          includeImages,
+          annotationsPages: annotations.pages,
           humanReadable: opt.humanReadablePDF,
         });
       }
-
-      w.freeDocument(pdfOverlay);
     } else {
-      const pdfStr = await writePdf({
+      content = await writePdf({
         ocrArr: ocrDownload,
         pageMetricsArr: pageMetricsAll,
         pageArr,
@@ -210,35 +155,8 @@ export async function exportData(format = 'txt', { minPage = 0, maxPage = -1, pa
         confThreshMed: opt.confThreshMed,
         proofOpacity: opt.overlayOpacity / 100,
         annotationsPages: annotations.pages,
-      });
-
-      // The PDF is still run through muPDF, even thought in eBook mode no background layer is added.
-      // This is because muPDF cleans up the PDF we made in the previous step, including:
-      // (1) Removing fonts that are not used (significantly reduces file size)
-      // (2) Compresses PDF (significantly reduces file size)
-      // (3) Fixes minor errors
-      //      Being slightly outside of the PDF specification often does not impact readability,
-      //      however certain picky programs (e.g. Adobe Acrobat) will throw warning messages.
-      const enc = new TextEncoder();
-      const pdfEnc = enc.encode(pdfStr);
-
-      // Skip mupdf processing if the intermediate PDF is requested. Debugging purposes only.
-      if (opt.intermediatePDF) return pdfEnc;
-
-      const muPDFScheduler = await ImageCache.getMuPDFScheduler(1);
-      const w = muPDFScheduler.workers[0];
-
-      // The file name is only used to detect the ".pdf" extension
-      const pdf = await w.openDocument(pdfEnc.buffer, 'document.pdf');
-
-      content = await w.save({
-        doc1: pdf,
-        pagewidth: dimsLimit.width,
-        pageheight: dimsLimit.height,
         humanReadable: opt.humanReadablePDF,
       });
-
-      w.freeDocument(pdf);
     }
   } else if (format === 'hocr') {
     content = writeHocr({ ocrData: ocrDownload, pageArr });

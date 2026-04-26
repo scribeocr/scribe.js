@@ -4,6 +4,8 @@ import { assert, config } from '../../node_modules/chai/chai.js';
 import scribe from '../../scribe.js';
 import { ASSETS_PATH_KARMA } from '../constants.js';
 
+scribe.opt.workerN = 1;
+
 config.truncateThreshold = 0; // Disable truncation for actual/expected values on assertion failure.
 
 // Using arrow functions breaks references to `this`.
@@ -90,7 +92,7 @@ class MockTextractDocumentModeModel {
 
   static lastDocInput = null;
 
-  static async * recognizeDocument(doc, options = {}) {
+  static async* recognizeDocument(doc, options = {}) {
     MockTextractDocumentModeModel.lastDocInput = doc;
     for (let i = 0; i < MockTextractDocumentModeModel.fixturePages.length; i++) {
       yield { pageNum: i, rawData: MockTextractDocumentModeModel.fixturePages[i] };
@@ -149,7 +151,7 @@ class SlowAbortDocumentModeModel {
 
   static lastOptionsSignal = null;
 
-  static async * recognizeDocument(doc, options = {}) {
+  static async* recognizeDocument(doc, options = {}) {
     SlowAbortDocumentModeModel.lastOptionsSignal = options.signal || null;
     for (let i = 0; i < SlowAbortDocumentModeModel.fixturePages.length; i++) {
       await new Promise((resolve) => setTimeout(resolve, SlowAbortDocumentModeModel.perPageDelayMs));

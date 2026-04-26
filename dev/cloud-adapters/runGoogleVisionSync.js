@@ -1,6 +1,6 @@
 import fs from 'fs';
 import path from 'path';
-import { initMuPDFWorker } from '../../mupdf/mupdf-async.js';
+import { initPdfScheduler } from '../../js/pdfWorkerMain.js';
 import { GoogleVisionModel } from '../../cloud-adapters/gcs-vision/RecognitionModelGoogleVision.js';
 
 const args = process.argv.slice(2);
@@ -25,17 +25,19 @@ const parsedPath = path.parse(filePath);
 
 if (isPdf) {
   const pdfData = await fs.promises.readFile(filePath);
+  const pdfBytes = new Uint8Array(pdfData);
 
-  console.log('Initializing MuPDF worker...');
-  const mupdf = await initMuPDFWorker();
-  const pdfDoc = await mupdf.openDocument(pdfData.buffer, 'document.pdf');
-  mupdf.pdfDoc = pdfDoc;
+  console.log('Initializing PDF worker pool...');
+  const pdfScheduler = await initPdfScheduler(1);
+  const { pageCount, pages } = await pdfScheduler.loadPdfInAllWorkers(pdfBytes);
 
-  const pageCount = await mupdf.countPages();
-  // pageSizes returns a 1-indexed array, so slice(1) to make it 0-indexed.
-  const pageDims300 = (await mupdf.pageSizes([300])).slice(1);
+  // Convert mediaBox (points, 72 DPI) to 300-DPI pixel dimensions to match the main code's cap logic.
+  const pageDims300 = pages.map((p) => {
+    const widthPts = Math.abs(p.mediaBox[2] - p.mediaBox[0]);
+    return Math.round(widthPts * 300 / 72);
+  });
   // Cap width at 3500px to avoid massive renders, matching the main code.
-  const pageDPIs = pageDims300.map((dims) => 300 * Math.min(dims[0], 3500) / dims[0]);
+  const pageDPIs = pageDims300.map((w) => 300 * Math.min(w, 3500) / w);
 
   console.log(`PDF has ${pageCount} pages.`);
 
@@ -45,15 +47,15 @@ if (isPdf) {
     const dpi = pageDPIs[i];
     console.log(`Processing page ${i + 1}/${pageCount} (${Math.round(dpi)} DPI)...`);
 
-    const pngDataUrl = await mupdf.drawPageAsPNG({ page: i + 1, dpi, color: true });
-    const base64Data = pngDataUrl.replace(/^data:image\/png;base64,/, '');
+    const { dataUrl } = await pdfScheduler.renderPdfPage({ pageIndex: i, colorMode: 'color', dpi });
+    const base64Data = dataUrl.replace(/^data:image\/png;base64,/, '');
     const imageBuffer = new Uint8Array(Buffer.from(base64Data, 'base64'));
 
     const result = await GoogleVisionModel.recognizeImage(imageBuffer);
 
     if (!result.success) {
       console.error(`Error on page ${i + 1}:`, result.error);
-      mupdf.terminate();
+      await pdfScheduler.terminate();
       process.exit(1);
     }
 
@@ -61,7 +63,7 @@ if (isPdf) {
     console.log(`  Page ${i + 1} done.`);
   }
 
-  mupdf.terminate();
+  await pdfScheduler.terminate();
 
   if (!splitMode) {
     // Combine into async-style format with a responses array so the output

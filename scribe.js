@@ -64,7 +64,7 @@ const init = async (params) => {
 
   const promiseArr = [];
 
-  promiseArr.push(initPdf ? ImageCache.getMuPDFScheduler() : Promise.resolve());
+  promiseArr.push(initPdf ? ImageCache.getPdfScheduler() : Promise.resolve());
 
   promiseArr.push(gs.getGeneralScheduler());
 

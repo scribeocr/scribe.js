@@ -3,8 +3,6 @@ export class opt {
 
   static kerning = true;
 
-  static omitNativeText = false;
-
   static extractText = false;
 
   static enableUpscale = false;
@@ -93,8 +91,6 @@ export class opt {
 
   static extractPDFFonts = false;
 
-  static calcSuppFontInfo = false;
-
   /**
    * How to use PDF text data extracted from input PDFs (if any).
    * The `native` option controls how native text data is used (i.e. visible text rendered by the PDF viewer),
@@ -129,6 +125,12 @@ export class opt {
    * @type {?number}
    */
   static workerN = null;
+
+  /**
+   * Share the loaded PDF across PDF workers via `SharedArrayBuffer` instead of giving each worker its own clone.
+   * Only supported within specific environments (e.g. Chrome with COOP/COEP headers, Node with worker threads and shared memory enabled).
+   */
+  static usePdfSharedBuffer = false;
 }
 
 export class inputData {

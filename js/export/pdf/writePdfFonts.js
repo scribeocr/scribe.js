@@ -3,6 +3,9 @@
 
 import { win1252Chars } from '../../../fonts/encoding.js';
 import { determineSansSerif } from '../../utils/miscUtils.js';
+import { FontCont } from '../../containers/fontContainer.js';
+import { getDistinctCharsFont, subsetFont } from '../../utils/fontUtils.js';
+import { encodeStreamObject, encodeBinaryStreamObject } from './writePdfStreams.js';
 
 /** @type {Array<string>} */
 const byteToHex = [];
@@ -171,17 +174,20 @@ function createFontDescriptor(font, objIndex, italic, embeddedObjIndex = null) {
 }
 
 /**
- * Converts a Opentype.js font object into an array of strings containing PDF objects.
+ * Converts a Opentype.js font object into an array of PDF objects.
  * The font is represented as a simple "Type 1" font.
+ * This code is currently unused, as Type 0 is used for all fonts.
  *
  * @param {opentypeFont} font - Opentype.js font object
  * @param {number} firstObjIndex - Index for the first PDF object
  * @param {boolean} [italic=false] - Whether the font is italic.
  * @param {boolean} [isStandardFont=false] - Whether the font is a standard font.
  *  Standard fonts are not embedded in the PDF.
- * @returns {Array<string>}
+ * @param {boolean} [humanReadable=false] - If true, embed the font file as
+ *   ASCII-hex instead of Flate-compressed binary.
+ * @returns {Promise<Array<string | import('./writePdfStreams.js').PdfBinaryObject>>}
  */
-export function createEmbeddedFontType1(font, firstObjIndex, italic = false, isStandardFont = false) {
+export async function createEmbeddedFontType1(font, firstObjIndex, italic = false, isStandardFont = false, humanReadable = false) {
   // Start 1st object: Font Dictionary
   let fontDictObjStr = `${String(firstObjIndex)} 0 obj\n<</Type/Font/Subtype/Type1`;
 
@@ -235,32 +241,30 @@ export function createEmbeddedFontType1(font, firstObjIndex, italic = false, isS
   // objOut += '>>\nendobj\n\n';
 
   // Start 3rd object: Font File
-  const fontBuffer = font.toArrayBuffer();
-  const fontHexStr = hex(fontBuffer);
+  const fontBuffer = new Uint8Array(font.toArrayBuffer());
+  const fontFileObj = await encodeBinaryStreamObject(firstObjIndex + 2, fontBuffer, {
+    humanReadable,
+    dictExtras: `/Length1 ${String(fontBuffer.byteLength)}/Subtype/OpenType`,
+  });
 
-  let fontFileObjStr = `${String(firstObjIndex + 2)} 0 obj\n<</Length1 ${String(fontBuffer.byteLength)}/Subtype/OpenType/Length ${String(fontHexStr.length)}/Filter/ASCIIHexDecode>>\nstream\n`;
-
-  fontFileObjStr += `${fontHexStr}\nendstream\nendobj\n\n`;
-
-  return [fontDictObjStr, fontDescObjStr, fontFileObjStr];
+  return [fontDictObjStr, fontDescObjStr, fontFileObj];
 }
 
 /**
- * Converts a Opentype.js font object into an array of strings for adding to a PDF.
+ * Converts a Opentype.js font object into an array of PDF objects.
  * The font is represented as a composite "Type 0" font.
  *
  * @param {Object} options - Configuration object
  * @param {opentypeFont} options.font - Opentype.js font object
  * @param {number} options.firstObjIndex - Index for the first PDF object
  * @param {boolean} [options.italic=false] - Whether the font is italic.
- *
- * This function does not produce "toUnicode" or "Widths" objects,
- * so any PDF it creates directly will lack usable copy/paste.
- * However, both of these objects will be created from the embedded file
- * when the result is run through mupdf.
+ * @param {boolean} [options.humanReadable=false] - If true, emit the font
+ *   file as ASCII-hex and the ToUnicode CMap uncompressed, for debugging.
+ *   When false (default), both are Flate-compressed.
+ * @returns {Promise<Array<string | import('./writePdfStreams.js').PdfBinaryObject>>}
  */
-export function createEmbeddedFontType0({
-  font, firstObjIndex, italic = false,
+export async function createEmbeddedFontType0({
+  font, firstObjIndex, italic = false, humanReadable = false,
 }) {
   // Start 1st object: Font Dictionary
   let fontDictObjStr = `${String(firstObjIndex)} 0 obj\n<</Type/Font/Subtype/Type0`;
@@ -281,24 +285,10 @@ export function createEmbeddedFontType0({
 
   // Start 2nd object: ToUnicode CMap
   const toUnicodeStr0 = createToUnicode(font);
-  let toUnicodeStr = `${String(firstObjIndex + 5)} 0 obj\n`;
-  // Add 2 to length to account for \n characters
-  toUnicodeStr += `<</Length ${toUnicodeStr0.length}>>\nstream\n`;
-  toUnicodeStr += toUnicodeStr0;
-  toUnicodeStr += '\nendstream\nendobj\n\n';
+  const toUnicodeObj = await encodeStreamObject(firstObjIndex + 5, toUnicodeStr0, { humanReadable });
 
   // Start 3rd object: FontDescriptor
   const fontDescObjStr = createFontDescriptor(font, firstObjIndex + 1, italic, firstObjIndex + 3);
-
-  // objOut += `${String(firstObjIndex + 2)} 0 obj\n`;
-
-  // objOut += `<</Type/FontDescriptor/FontName/${namesTable.postScriptName.en}/FontBBox[-1002 -1048 2928 1808]/ItalicAngle 0/`;
-
-  // objOut += `Ascent ${String(font.ascender)}/Descent -288/StemV 80/Flags 32`;
-
-  // objOut += `/FontFile3 ${firstObjIndex + 4} 0 R>>`;
-
-  // objOut += '\nendobj\n\n';
 
   // Start 4th object: widths
   let widthsObjStr = `${String(firstObjIndex + 2)} 0 obj\n`;
@@ -321,12 +311,11 @@ export function createEmbeddedFontType0({
   widthsObjStr += '\nendobj\n\n';
 
   // Start 5th object: Font File
-  const fontBuffer = font.toArrayBuffer();
-  const fontHexStr = hex(fontBuffer);
-
-  let fontFileObjStr = `${String(firstObjIndex + 3)} 0 obj\n<</Length1 ${String(fontBuffer.byteLength)}/Subtype/OpenType/Length ${String(fontHexStr.length)}/Filter/ASCIIHexDecode>>\nstream\n`;
-
-  fontFileObjStr += `${fontHexStr}\nendstream\nendobj\n\n`;
+  const fontBuffer = new Uint8Array(font.toArrayBuffer());
+  const fontFileObj = await encodeBinaryStreamObject(firstObjIndex + 3, fontBuffer, {
+    humanReadable,
+    dictExtras: `/Length1 ${String(fontBuffer.byteLength)}/Subtype/OpenType`,
+  });
 
   // Start 6th object: Font
   let fontObjStr = `${String(firstObjIndex + 4)} 0 obj\n`;
@@ -339,5 +328,109 @@ export function createEmbeddedFontType0({
 
   fontObjStr += '>>\nendobj\n\n';
 
-  return [fontDictObjStr, fontDescObjStr, widthsObjStr, fontFileObjStr, fontObjStr, toUnicodeStr];
+  return [fontDictObjStr, fontDescObjStr, widthsObjStr, fontFileObj, fontObjStr, toUnicodeObj];
 }
+
+/**
+ * Generate PDF font objects, not including the actual font data.
+ * @param {number} objectIStart - Starting object index
+ * @param {?Array<OcrPage>} [ocrArr] - Array of OcrPage objects
+ *    Used to subset supplementary fonts to only the characters that are actually used.
+ */
+export const createPdfFontRefs = async (objectIStart, ocrArr) => {
+  if (!FontCont.raw) throw new Error('No fonts loaded.');
+
+  let objectI = objectIStart;
+
+  let fontI = 0;
+  /** @type {Object<string, PdfFontFamily>} */
+  const pdfFonts = {};
+  /** @type {{familyKey: string, key: string}[]} */
+  const pdfFontRefs = [];
+  /** @type {string[][]} */
+  const pdfFontObjStrArr = [];
+
+  /**
+   *
+   * @param {string} familyKey
+   * @param {FontContainerFamily} familyObj
+   */
+  const addFontFamilyRef = async (familyKey, familyObj) => {
+    pdfFonts[familyKey] = {};
+    for (const [key, value] of Object.entries(familyObj)) {
+      if (!value) continue;
+      // This should include both (1) if this is a standard 14 font and (2) if characters outside of the Windows-1252 range are used.
+      // If the latter is true, then a composite font is needed, even if the font is a standard 14 font.
+      // TODO: We currently have no mechanism for resolving name conflicts between fonts in the base and overlay document.
+      // As a workaround, we use the names `/FO[n]` rather than the more common `/F[n]`.
+      // However, this likely will cause issues if this application is used to create visible text, and then the resulting PDF is uploaded.
+      // This would move the fonts from the overlay document to the base document, and the names would conflict.
+      const isStandardFont = false;
+
+      let opentype = value.opentype;
+      if (ocrArr) {
+        const charArr = getDistinctCharsFont(ocrArr, familyKey, key);
+        opentype = await subsetFont(value.opentype, charArr);
+      }
+
+      if (isStandardFont) {
+        pdfFonts[familyKey][key] = {
+          type: 1, index: fontI, name: `/FO${String(fontI)}`, objN: objectI, opentype,
+        };
+        pdfFontRefs.push({ familyKey, key });
+        pdfFontObjStrArr.push(null);
+        objectI += 3;
+      } else {
+        pdfFonts[familyKey][key] = {
+          type: 0, index: fontI, name: `/FO${String(fontI)}`, objN: objectI, opentype,
+        };
+        pdfFontRefs.push({ familyKey, key });
+        pdfFontObjStrArr.push(null);
+        objectI += 6;
+      }
+      fontI++;
+    }
+  };
+
+  // Create reference to all fonts.
+  // Only the fonts that are actually used will be included in the final PDF.
+  for (const familyKeyI of Object.keys(FontCont.raw)) {
+    const useOpt = FontCont.useOptFamily(familyKeyI);
+    const familyObjI = {
+      normal: useOpt && FontCont.opt?.[familyKeyI]?.normal ? FontCont.opt[familyKeyI].normal : FontCont.raw[familyKeyI].normal,
+      italic: useOpt && FontCont.opt?.[familyKeyI]?.italic ? FontCont.opt[familyKeyI].italic : FontCont.raw[familyKeyI].italic,
+      bold: useOpt && FontCont.opt?.[familyKeyI]?.bold ? FontCont.opt[familyKeyI].bold : FontCont.raw[familyKeyI].bold,
+      boldItalic: useOpt && FontCont.opt?.[familyKeyI]?.boldItalic ? FontCont.opt[familyKeyI].boldItalic : FontCont.raw[familyKeyI].boldItalic,
+    };
+    await addFontFamilyRef(familyKeyI, familyObjI);
+  }
+
+  if (FontCont.doc) {
+    for (const familyKeyI of Object.keys(FontCont.doc)) {
+      await addFontFamilyRef(familyKeyI, FontCont.doc[familyKeyI]);
+    }
+  }
+
+  if (FontCont.supp.chi_sim && ocrArr) {
+    const charArr = getDistinctCharsFont(ocrArr, FontCont.supp.chi_sim.family);
+
+    if (charArr.length > 0) {
+      const fontExport = await subsetFont(FontCont.supp.chi_sim.opentype, charArr);
+
+      pdfFonts.NotoSansSC = {};
+      pdfFonts.NotoSansSC.normal = {
+        type: 0, index: fontI, name: `/FO${String(fontI)}`, objN: objectI, opentype: fontExport,
+      };
+      pdfFontRefs.push({ familyKey: 'NotoSansSC', key: 'normal' });
+      pdfFontObjStrArr.push(null);
+      objectI += 6;
+      fontI++;
+    }
+  } else if (FontCont.supp.chi_sim) {
+    console.warn('Chinese font loaded but no OCR data available to determine if it is needed. Font will not be included in PDF.');
+  }
+
+  return {
+    pdfFonts, pdfFontRefs, pdfFontObjStrArr, objectI,
+  };
+};

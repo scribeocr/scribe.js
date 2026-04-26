@@ -4,6 +4,8 @@ import { assert, config } from '../../node_modules/chai/chai.js';
 import scribe from '../../scribe.js';
 import { ASSETS_PATH_KARMA } from '../constants.js';
 
+scribe.opt.workerN = 1;
+
 config.truncateThreshold = 0; // Disable truncation for actual/expected values on assertion failure.
 
 // Using arrow functions breaks references to `this`.
@@ -170,6 +172,76 @@ describe('Check export for .pdf files.', function () {
     scribe.opt.compressScribe = true;
     await scribe.clear();
   }).timeout(10000);
+
+  it('Highlight annotations are preserved through PDF export and re-import', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/complaint_1.pdf`]);
+    await scribe.recognize();
+    scribe.addHighlights([{ page: 0, startLine: 0, endLine: 2 }]);
+    // addHighlights emits one entry per word; line 0-2 of complaint_1.pdf has 29 words.
+    assert.strictEqual(scribe.data.annotations.pages[0].length, 29);
+
+    const pdfBytes = await scribe.exportData('pdf');
+    await scribe.clear();
+
+    await scribe.importFiles({ pdfFiles: [new Uint8Array(pdfBytes).buffer] });
+    const highlights = scribe.data.annotations.pages.flatMap((p) => p || []);
+    // Export consolidates the 29 per-word highlights into a single multi-quad
+    // annotation spanning lines 0-2.
+    assert.strictEqual(highlights.length, 1);
+    assert.strictEqual(highlights[0].quads.length, 3);
+    assert.strictEqual(highlights[0].color, '#ffe93b');
+    assert.strictEqual(highlights[0].opacity, 0.4);
+    await scribe.clear();
+  }).timeout(60000);
+
+  it('Exported PDF is compressed (FlateDecode) by default and larger under humanReadablePDF', async () => {
+    // Regression gate for the compression + font-subsetting pipeline. The
+    // compressed output on testocr.png + .abbyy.xml was ~220 KB before
+    // FlateDecode + Latin-font subsetting landed; it is ~57 KB after. The
+    // `humanReadablePDF` branch preserves pre-compression diffing by
+    // emitting ASCII-hex streams, which bloats the output back up.
+    scribe.opt.displayMode = 'proof';
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/testocr.png`, `${ASSETS_PATH_KARMA}/testocr.abbyy.xml`]);
+
+    scribe.opt.humanReadablePDF = false;
+    const compressed = await scribe.exportData('pdf');
+    assert.isBelow(compressed.byteLength, 70000, `compressed PDF should be < 70 KB; got ${compressed.byteLength}`);
+
+    scribe.opt.humanReadablePDF = true;
+    const humanReadable = await scribe.exportData('pdf');
+    assert.isAbove(humanReadable.byteLength, compressed.byteLength, 'humanReadable PDF should be larger than compressed');
+
+    scribe.opt.humanReadablePDF = false;
+    await scribe.clear();
+  }).timeout(20000);
+
+  it('humanReadablePDF round-trip yields same text as compressed round-trip', async () => {
+    scribe.opt.displayMode = 'proof';
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/testocr.png`, `${ASSETS_PATH_KARMA}/testocr.abbyy.xml`]);
+
+    scribe.opt.humanReadablePDF = false;
+    const pdfCompressed = await scribe.exportData('pdf');
+    scribe.opt.humanReadablePDF = true;
+    const pdfHuman = await scribe.exportData('pdf');
+
+    await scribe.clear();
+    scribe.opt.usePDFText.native.main = true;
+    await scribe.importFiles({ pdfFiles: [pdfCompressed] });
+    scribe.data.ocr.active = scribe.data.ocr.pdf;
+    const textCompressed = await scribe.exportData('text');
+
+    await scribe.clear();
+    scribe.opt.usePDFText.native.main = true;
+    await scribe.importFiles({ pdfFiles: [pdfHuman] });
+    scribe.data.ocr.active = scribe.data.ocr.pdf;
+    const textHuman = await scribe.exportData('text');
+
+    assert.strictEqual(textCompressed, textHuman);
+    assert.include(textCompressed, 'This is a lot of 12 point text');
+
+    scribe.opt.humanReadablePDF = false;
+    await scribe.clear();
+  }).timeout(30000);
 
   after(async () => {
     await scribe.terminate();

@@ -23,7 +23,6 @@ module.exports = function (config) {
       { pattern: 'js/**', included: false, served: true },
       { pattern: 'lib/**', included: false, served: true },
       { pattern: 'js/font-parser/src/**', included: false, served: true },
-      { pattern: 'mupdf/**', included: false, served: true },
       { pattern: 'fonts/**', included: false, served: true },
       { pattern: 'tess/**', included: false, served: true },
       // { pattern: '**/*', included: false, served: true },
@@ -57,9 +56,20 @@ module.exports = function (config) {
     // enable / disable watching file and executing tests whenever any file changes
     autoWatch: false,
 
+    // Custom headless Chrome launcher that disables the sandbox.
+    // Required in minimal containers (e.g. the Claude Code dev container) where
+    // Chrome can't set up user/PID namespaces and the default ChromeHeadless
+    // launcher fails with "Failed to move to new namespace".
+    customLaunchers: {
+      ChromeHeadlessNoSandbox: {
+        base: 'ChromeHeadless',
+        flags: ['--no-sandbox', '--disable-gpu', '--disable-dev-shm-usage'],
+      },
+    },
+
     // start these browsers
     // available browser launchers: https://www.npmjs.com/search?q=keywords:karma-launcher
-    browsers: [process.env.KARMA_BROWSER || 'ChromeHeadless'],
+    browsers: [process.env.KARMA_BROWSER || 'ChromeHeadlessNoSandbox'],
 
     browserNoActivityTimeout: 120000,
 

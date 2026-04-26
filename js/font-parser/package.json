@@ -1,0 +1,16 @@
+{
+  "name": "font-parser",
+  "description": "OpenType/TrueType font parser",
+  "version": "0.1.0",
+  "type": "module",
+  "main": "src/index.js",
+  "scripts": {
+    "test": "mocha --recursive"
+  },
+  "engines": {
+    "node": ">= 18.0.0"
+  },
+  "devDependencies": {
+    "mocha": "^7.1.1"
+  }
+}

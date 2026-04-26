@@ -51,7 +51,7 @@
   },
   "homepage": "https://github.com/scribeocr/scribe.js#readme",
   "dependencies": {
-    "canvaskit-wasm": "^0.39.1",
+    "@scribe.js/canvas": "^0.1.97-scribe.4",
     "commander": "^11.1.0"
   }
 }

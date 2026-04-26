@@ -2,10 +2,13 @@ import { assert, expect } from 'chai';
 import fs from 'fs';
 import path from 'path';
 import { fileURLToPath } from 'url';
+import scribe from '../../scribe.js';
 import {
   checkCLI, confCLI, extractCLI, overlayCLI,
 } from '../../cli/cli.js';
 import { getRandomAlphanum } from '../../js/utils/miscUtils.js';
+
+scribe.opt.workerN = 1;
 
 globalThis.__dirname = path.dirname(fileURLToPath(import.meta.url));
 

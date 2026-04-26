@@ -8,6 +8,8 @@ import { splitHOCRStr } from '../../js/import/importOCR.js';
 import scribe from '../../scribe.js';
 import { ASSETS_PATH_KARMA } from '../constants.js';
 
+scribe.opt.workerN = 1;
+
 config.truncateThreshold = 0; // Disable truncation for actual/expected values on assertion failure.
 
 // Using arrow functions breaks references to `this`.

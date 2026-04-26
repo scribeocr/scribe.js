@@ -28,7 +28,7 @@ for (let i = 0; i < majorAngles.length; i++) {
   }
 }
 
-const pdfStr = await writePdf({
+const pdfBuf = await writePdf({
   images,
   pageMetricsArr: pageMetricsImages,
   includeImages: true,
@@ -36,8 +36,5 @@ const pdfStr = await writePdf({
   rotateOrientation: true,
 });
 
-const enc = new TextEncoder();
-const pdfEnc = enc.encode(pdfStr);
-
-await writeFile('./tests/test-assets/testocr_all_orientations.pdf', pdfEnc);
+await writeFile('./tests/test-assets/testocr_all_orientations.pdf', new Uint8Array(pdfBuf));
 await scribe.terminate();

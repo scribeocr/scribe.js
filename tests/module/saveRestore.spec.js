@@ -4,6 +4,8 @@ import { assert, config } from '../../node_modules/chai/chai.js';
 import scribe from '../../scribe.js';
 import { ASSETS_PATH_KARMA } from '../constants.js';
 
+scribe.opt.workerN = 1;
+
 // Using arrow functions breaks references to `this`.
 /* eslint-disable prefer-arrow-callback */
 /* eslint-disable func-names */
@@ -124,10 +126,15 @@ describe('Check .scribe export function.', function () {
     const parsedData = JSON.parse(scribeData);
     const page = parsedData.ocr[0];
 
-    assert.strictEqual(page.lines[0].text, 'UNITED STATES DISTRICT COURT', 'Line text should be correct');
-    assert.strictEqual(page.pars[0].text, 'UNITED STATES DISTRICT COURT FOR THE EASTERN DISTRICT OF MICHIGAN', 'Paragraph text should be correct');
-    assert.isTrue(page.text.startsWith('UNITED STATES DISTRICT COURT\nFOR THE EASTERN DISTRICT OF MICHIGAN'), 'Page text should start correctly');
-    assert.isTrue(page.text.endsWith('Case 2:12-cv-13821-AC-DRG ECF No. 1, PageID.1 Filed 08/29/12 Page 1 of 6'), 'Page text should end correctly');
+    assert.strictEqual(page.lines[0].text, 'UNITED STATES DISTRICT COURT');
+    assert.strictEqual(page.lines[1].text, 'FOR THE EASTERN DISTRICT OF MICHIGAN');
+    // Page-level text join: pin length, header start, court-system footer.
+    assert.strictEqual(page.text.length, 1450);
+    assert.strictEqual(page.text.slice(0, 65),
+      'UNITED STATES DISTRICT COURT\nFOR THE EASTERN DISTRICT OF MICHIGAN');
+    assert.strictEqual(page.text.slice(-72),
+      'Case 2:12-cv-13821-AC-DRG ECF No. 1, PageID.1 Filed 08/29/12 Page 1 of 6');
+    assert.strictEqual(page.pars[0].text, 'UNITED STATES DISTRICT COURT FOR THE EASTERN DISTRICT OF MICHIGAN');
 
     const encoder = new TextEncoder();
     const scribeDataBuffer = encoder.encode(scribeData).buffer;

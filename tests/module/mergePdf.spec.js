@@ -1,8 +1,12 @@
 /* eslint-disable import/no-relative-packages */
 import { assert, config } from '../../node_modules/chai/chai.js';
 import scribe from '../../scribe.js';
-import { ImageCache } from '../../js/containers/imageContainer.js';
+import { mergePdfs } from '../../js/export/pdf/mergePdfs.js';
+import { findXrefOffset, parseXref, ObjectCache } from '../../js/pdf/parsePdfUtils.js';
+import { getPageObjects } from '../../js/pdf/parsePdfDoc.js';
 import { ASSETS_PATH_KARMA } from '../constants.js';
+
+scribe.opt.workerN = 1;
 
 config.truncateThreshold = 0;
 
@@ -10,84 +14,70 @@ config.truncateThreshold = 0;
 /* eslint-disable func-names */
 
 /**
- * Helper: open a PDF buffer in muPDF, count annotations on a given page, then free the document.
- * @param {Object} w - muPDF async worker
- * @param {ArrayBuffer} pdfBuffer - PDF data
- * @param {number} page - 1-based page number
- * @returns {Promise<Array>} annotations array
+ * Count pages in a PDF without loading mupdf.
+ * @param {ArrayBuffer|Uint8Array} buf
  */
-async function getAnnotationsForPage(w, pdfBuffer, page) {
-  const doc = await w.openDocument(pdfBuffer, 'document.pdf');
-  w.pdfDoc = doc;
-  const annots = await w.pageAnnotations({ page, dpi: 72 });
-  w.freeDocument(doc);
-  return annots;
+function countPdfPages(buf) {
+  const bytes = buf instanceof Uint8Array ? buf : new Uint8Array(buf);
+  const xrefOffset = findXrefOffset(bytes);
+  const xrefEntries = parseXref(bytes, xrefOffset);
+  const objCache = new ObjectCache(bytes, xrefEntries);
+  return getPageObjects(objCache).length;
 }
 
-describe('Check PDF merge preserves annotations.', function () {
+describe('Check PDF merge preserves page count.', function () {
   this.timeout(120000);
 
-  it('Merged PDF retains highlight annotations from both source documents', async () => {
+  it('Merged PDF contains the sum of source page counts', async () => {
     const docCount = 5;
-    const colors = ['#ffff00', '#ff0000', '#00ff00', '#0000ff', '#ff00ff'];
     const pdfBuffers = [];
 
     for (let d = 0; d < docCount; d++) {
       scribe.opt.usePDFText.ocr.main = true;
       await scribe.importFiles([`${ASSETS_PATH_KARMA}/scribe_test_pdf1.pdf`]);
 
-      const firstWord = scribe.data.ocr.active[0].lines[0].words[0];
-      scribe.data.annotations.pages[0].push({
-        bbox: {
-          left: firstWord.bbox.left,
-          top: firstWord.bbox.top,
-          right: firstWord.bbox.right,
-          bottom: firstWord.bbox.bottom,
-        },
-        color: colors[d],
-        opacity: 0.35,
-        groupId: `doc${d}-highlight`,
-      });
-
-      scribe.opt.displayMode = 'annot';
+      scribe.opt.displayMode = 'proof';
       pdfBuffers.push(await scribe.exportData('pdf'));
       await scribe.clear();
     }
 
-    const muPDFScheduler = await ImageCache.getMuPDFScheduler(1);
-    const w = muPDFScheduler.workers[0];
+    const sourcePages = pdfBuffers.map((b) => countPdfPages(b));
+    const expectedPages = sourcePages.reduce((a, b) => a + b, 0);
 
-    for (let d = 0; d < docCount; d++) {
-      const annots = await getAnnotationsForPage(w, new Uint8Array(pdfBuffers[d]).slice().buffer, 1);
-      assert.isTrue(annots.length > 0, `Source PDF ${d} should have annotations before merge`);
-    }
-    const dst = await w.openDocument(pdfBuffers[0], 'document.pdf');
-    w.pdfDoc = dst;
+    const mergedData = await mergePdfs(pdfBuffers.map((b) => (b instanceof Uint8Array ? b : new Uint8Array(b))));
+    const totalPages = countPdfPages(mergedData);
 
-    for (let i = 1; i < docCount; i++) {
-      const src = await w.openDocument(new Uint8Array(pdfBuffers[i]).slice().buffer, 'document.pdf');
-      await w.mergeFrom(dst, src, {});
-      w.freeDocument(src);
-    }
-
-    const mergedData = await w.save({ doc1: dst });
-    const totalPages = await w.countPages();
-    w.freeDocument(dst);
-
-    const expectedPages = 2 * docCount;
     assert.strictEqual(totalPages, expectedPages, `Merged PDF should have ${expectedPages} pages`);
 
-    const mergedBytes = new Uint8Array(mergedData instanceof ArrayBuffer ? mergedData : mergedData.buffer || mergedData);
-
-    for (let d = 0; d < docCount; d++) {
-      const annotPage = d * 2 + 1;
-      const annots = await getAnnotationsForPage(w, mergedBytes.slice().buffer, annotPage);
-      assert.isTrue(annots.length > 0,
-        `Page ${annotPage} of merged PDF should have annotations from source ${d}`);
-    }
-
-    scribe.opt.displayMode = 'proof';
     scribe.opt.usePDFText.ocr.main = false;
+  }).timeout(120000);
+
+  it('Merged PDF preserves highlight annotations from each source', async () => {
+    scribe.opt.usePDFText.ocr.main = true;
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/scribe_test_pdf1.pdf`]);
+    scribe.addHighlights([{ page: 0, startLine: 0, endLine: 1 }]);
+    const pdfA = await scribe.exportData('pdf');
+    await scribe.clear();
+
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/scribe_test_pdf1.pdf`]);
+    scribe.addHighlights([{ page: 0, startLine: 2, endLine: 2 }]);
+    const pdfB = await scribe.exportData('pdf');
+    await scribe.clear();
+
+    const pagesA = countPdfPages(pdfA);
+    const pagesB = countPdfPages(pdfB);
+
+    const mergedData = await mergePdfs([new Uint8Array(pdfA), new Uint8Array(pdfB)]);
+    assert.strictEqual(countPdfPages(mergedData), pagesA + pagesB);
+
+    await scribe.importFiles({ pdfFiles: [new Uint8Array(mergedData).buffer] });
+    const highlightsFirstSource = scribe.data.annotations.pages[0] || [];
+    const highlightsSecondSource = scribe.data.annotations.pages[pagesA] || [];
+    assert.strictEqual(highlightsFirstSource.length, 1, 'first source page 0 retains one consolidated highlight after merge');
+    assert.strictEqual(highlightsSecondSource.length, 1, 'second source page 0 retains one consolidated highlight after merge');
+
+    scribe.opt.usePDFText.ocr.main = false;
+    await scribe.clear();
   }).timeout(120000);
 
   after(async () => {

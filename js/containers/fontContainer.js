@@ -43,13 +43,11 @@ export function checkMultiFontMode(charMetricsObj) {
  * @param {string|ArrayBuffer} src
  * @param {?Object.<string, number>} [kerningPairs=null]
  */
-/** Tables not used by scribe.js — skipping them avoids decompression and parsing overhead. */
-const defaultSkipTables = ['GSUB', 'GPOS', 'cvt ', 'fpgm', 'prep', 'COLR', 'CPAL', 'meta'];
-
 export async function loadOpentype(src, kerningPairs = null) {
-  const font = typeof (src) === 'string'
-    ? opentype.parse(await fetch(src).then((r) => r.arrayBuffer()), { skipTables: defaultSkipTables })
-    : opentype.parse(src, { skipTables: defaultSkipTables });
+  const font = typeof src === 'string'
+    ? opentype.parse(await fetch(src).then((r) => r.arrayBuffer()))
+    : opentype.parse(src);
+  font.tables.gsub = null;
   // Re-apply kerningPairs object so when toArrayBuffer is called on this font later (when making a pdf) kerning data will be included
   if (kerningPairs) font.kerningPairs = kerningPairs;
   return font;
@@ -68,6 +66,17 @@ const fontFaceObj = {};
  * @param {string|ArrayBuffer} src - Font source
  */
 export function loadFontFace(fontFamily, fontStyle, fontWeight, src) {
+  if (typeof FontFace === 'undefined') {
+    const fontBuffer = src instanceof ArrayBuffer ? new Uint8Array(src) : src;
+    const loaded = ca.registerFontObj({
+      fontFaceName: fontFamily,
+      fontFaceStyle: fontStyle,
+      fontFaceWeight: fontWeight,
+      src: fontBuffer,
+    });
+    return { loaded, status: 'loaded' };
+  }
+
   const src1 = typeof (src) === 'string' ? `url(${src})` : src;
 
   const fontFace = new FontFace(fontFamily, src1, { style: fontStyle, weight: fontWeight });
@@ -102,6 +111,34 @@ export function loadFontFace(fontFamily, fontStyle, fontWeight, src) {
   fontSet.add(fontFace);
 
   return fontFace;
+}
+
+/**
+ * Remove every `FontFace` whose family matches `predicate` from
+ * `document.fonts` (or `WorkerGlobalScope.fonts`) and from `fontFaceObj`.
+ * Browser counterpart to `ca.unregisterFontsMatching`.
+ * No-op in Node.
+ *
+ * @param {(family: string) => boolean} predicate
+ */
+export function unregisterFontFacesMatching(predicate) {
+  if (typeof FontFace === 'undefined') return 0;
+  const fontSet = globalThis.document ? globalThis.document.fonts : globalThis.fonts;
+  if (!fontSet) return 0;
+  let removed = 0;
+  for (const family of Object.keys(fontFaceObj)) {
+    if (!predicate(family)) continue;
+    const styles = fontFaceObj[family];
+    for (const style of Object.keys(styles)) {
+      const weights = styles[style];
+      for (const weight of Object.keys(weights)) {
+        fontSet.delete(weights[weight]);
+        removed++;
+      }
+    }
+    delete fontFaceObj[family];
+  }
+  return removed;
 }
 
 /**
@@ -480,6 +517,9 @@ export class FontCont {
     FontCont.state.sansDefaultName = 'NimbusSans';
 
     clearObjectProperties(FontCont.state.charMetrics);
+
+    ca.unregisterFontsMatching((name) => name.endsWith(' Opt'));
+    unregisterFontFacesMatching((family) => family.endsWith(' Opt'));
   };
 
   static terminate = () => {
