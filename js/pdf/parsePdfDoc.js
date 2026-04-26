@@ -11,11 +11,26 @@ import { parsePageFonts } from './fonts/parsePdfFonts.js';
 import { parsePagePaths } from './parsePdfPaths.js';
 import { detectTableRegions } from './detectPdfTables.js';
 import { extractPdfAnnotations, pdfHighlightToAnnotation } from './parsePdfAnnots.js';
+import { cmykToRgb } from './pdfColorFunctions.js';
 import { assignParagraphs } from '../utils/reflowPars.js';
 
 /** @typedef {import('./parsePdfUtils.js').PDFToken} PDFToken */
 /** @typedef {import('../objects/ocrObjects.js').OcrPage} OcrPage */
 import { LayoutDataTable, LayoutDataColumn, LayoutDataTablePage } from '../objects/layoutObjects.js';
+
+/**
+ * Normalize a PDF color to [r,g,b] in 0-1 for cross-color-space comparison.
+ * @param {number[]} c
+ */
+function colorToRgb(c) {
+  if (c.length === 1) return [c[0], c[0], c[0]];
+  if (c.length === 3) return [c[0], c[1], c[2]];
+  if (c.length === 4) {
+    const [r, g, b] = cmykToRgb(c[0], c[1], c[2], c[3]);
+    return [r / 255, g / 255, b / 255];
+  }
+  return null;
+}
 
 export {
   bytesToLatin1, getPageObjects, getPageContentStream, getPageContentStreams, tokenizeContentStream, collectPageTreeObjNums,
@@ -1650,10 +1665,14 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
             && rect.y <= baselineYWord + wordChars[0].fontSize * 0.15) {
             // Color match: the line color must match the text fill color.
             // Different colors indicate a decorative rule, not a text underline.
-            if (rect.color && charColor
-              && (rect.color.length !== charColor.length
-                || rect.color.some((v, ci) => Math.abs(v - charColor[ci]) > 0.1))) {
-              continue;
+            // Normalize across color spaces — the same black may be stored as
+            // DeviceGray [g] for the text and DeviceRGB [0,0,0] for the path.
+            if (rect.color && charColor) {
+              const rectRgb = colorToRgb(rect.color);
+              const charRgb = colorToRgb(charColor);
+              if (rectRgb && charRgb && rectRgb.some((v, ci) => Math.abs(v - charRgb[ci]) > 0.1)) {
+                continue;
+              }
             }
             wordObj.style.underline = true;
             break;

@@ -471,6 +471,7 @@ describe('Check that font style is detected for PDF imports.', function () {
 
   it('Bold + italic style is detected', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/complaint_1.pdf`]);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[1].words[0].text, 'impressive');
     assert.isTrue(scribe.data.ocr.active[0].lines[1].words[0].style.italic);
     assert.isTrue(scribe.data.ocr.active[0].lines[1].words[0].style.bold);
     assert.isFalse(scribe.data.ocr.active[0].lines[1].words[0].style.underline);
@@ -478,9 +479,20 @@ describe('Check that font style is detected for PDF imports.', function () {
 
   it('Bold + underlined style is detected', async () => {
     await scribe.importFiles([`${ASSETS_PATH_KARMA}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
+    assert.strictEqual(scribe.data.ocr.active[0].lines[22].words[0].text, 'COMPLAINT');
     assert.isFalse(scribe.data.ocr.active[0].lines[22].words[0].style.italic);
     assert.isTrue(scribe.data.ocr.active[0].lines[22].words[0].style.bold);
     assert.isTrue(scribe.data.ocr.active[0].lines[22].words[0].style.underline);
+  }).timeout(10000);
+
+  it('Bold + underlined section heading is detected (NATURE OF THE ACTION)', async () => {
+    await scribe.importFiles([`${ASSETS_PATH_KARMA}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
+    const line = scribe.data.ocr.active[0].lines[26];
+    assert.strictEqual(line.words.map((w) => w.text).join(' '), 'NATURE OF THE ACTION');
+    for (const w of line.words) {
+      assert.isTrue(w.style.bold, `"${w.text}" should be bold`);
+      assert.isTrue(w.style.underline, `"${w.text}" should be underlined`);
+    }
   }).timeout(10000);
 
   after(async () => {
