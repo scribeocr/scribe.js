@@ -39,8 +39,12 @@ const SHARED_VITE_OPTIONS = {
   },
 };
 
-const ALL_TESTS = `${import.meta.dirname}/tests/module/**/*.spec.js`;
-const NODE_ONLY_TESTS = `${import.meta.dirname}/tests/module/**/*.node.spec.js`;
+// Use forward slashes — on Windows, `import.meta.dirname` returns a path with
+// backslashes, and tinyglobby (the matcher behind `test.include`) silently
+// drops mixed-slash patterns, so every test file would be skipped.
+const ROOT = import.meta.dirname.replace(/\\/g, '/');
+const ALL_TESTS = `${ROOT}/tests/module/**/*.spec.js`;
+const NODE_ONLY_TESTS = `${ROOT}/tests/module/**/*.node.spec.js`;
 
 const SHARED_TEST_OPTIONS = {
   testTimeout: 240_000,
