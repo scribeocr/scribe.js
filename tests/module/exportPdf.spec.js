@@ -2,6 +2,8 @@ import {
   describe, test, expect, beforeAll, afterAll,
 } from 'vitest';
 import scribe from '../../scribe.js';
+import { subsetPdf } from '../../js/export/pdf/writePdfOverlay.js';
+import { mergePdfs } from '../../js/export/pdf/mergePdfs.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 
 scribe.opt.workerN = 1;
@@ -231,6 +233,248 @@ describe('Check export for .pdf files.', () => {
     expect(textCompressed).toContain('This is a lot of 12 point text');
 
     scribe.opt.humanReadablePDF = false;
+    await scribe.clear();
+  });
+
+  test('PDF overlay via incremental update inserts extractable text into existing PDF', async () => {
+    await scribe.importFiles([`${ASSETS_PATH}/gov.uscourts.cand.249697.1.0_2.pdf`]);
+    await scribe.recognize();
+
+    const ocrText = /** @type {string} */ (await scribe.exportData('text', { minPage: 0, maxPage: 0 }));
+    expect(ocrText.length).toBeGreaterThan(10);
+
+    scribe.opt.displayMode = 'invis';
+    scribe.opt.addOverlay = true;
+    const exportedPdf = /** @type {ArrayBuffer} */ (await scribe.exportData('pdf'));
+    expect(exportedPdf.byteLength).toBeGreaterThan(1000);
+
+    await scribe.clear();
+    scribe.opt.usePDFText.native.main = true;
+    scribe.opt.keepPDFTextAlways = true;
+    await scribe.importFiles({ pdfFiles: [exportedPdf] });
+
+    scribe.data.ocr.active = scribe.data.ocr.pdf;
+    const reExportedText = /** @type {string} */ (await scribe.exportData('text', { minPage: 0, maxPage: 0 }));
+    expect(reExportedText.length).toBeGreaterThan(10);
+
+    scribe.opt.displayMode = 'proof';
+    scribe.opt.addOverlay = true;
+    await scribe.clear();
+  });
+
+  test('Export of scanned PDF builds new PDF with rendered images and extractable text', async () => {
+    // addOverlay=false forces the image-rendering path (vs. incremental update).
+    await scribe.importFiles([`${ASSETS_PATH}/gov.uscourts.cand.249697.1.0_2.pdf`]);
+    await scribe.recognize();
+
+    const ocrText = /** @type {string} */ (await scribe.exportData('text', { minPage: 0, maxPage: 0 }));
+    expect(ocrText.length).toBeGreaterThan(10);
+
+    scribe.opt.displayMode = 'invis';
+    scribe.opt.addOverlay = false;
+    const exportedPdf = /** @type {ArrayBuffer} */ (await scribe.exportData('pdf', { minPage: 0, maxPage: 0 }));
+    expect(exportedPdf.byteLength).toBeGreaterThan(1000);
+
+    await scribe.clear();
+    scribe.opt.usePDFText.native.main = true;
+    scribe.opt.keepPDFTextAlways = true;
+    await scribe.importFiles({ pdfFiles: [exportedPdf] });
+
+    scribe.data.ocr.active = scribe.data.ocr.pdf;
+    const reExportedText = /** @type {string} */ (await scribe.exportData('text', { minPage: 0, maxPage: 0 }));
+    expect(reExportedText.length).toBeGreaterThan(10);
+
+    scribe.opt.displayMode = 'proof';
+    scribe.opt.addOverlay = true;
+    await scribe.clear();
+  });
+
+  test('PDF overlay with page subset exports only the requested pages and removes unreferenced objects', async () => {
+    scribe.opt.usePDFText.native.main = true;
+    scribe.opt.keepPDFTextAlways = true;
+    await scribe.importFiles([`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`]);
+
+    expect(scribe.data.ocr.active.length).toBe(3);
+    expect(scribe.data.ocr.active[0].lines[0].words[0].text).toBe('Iris');
+
+    scribe.opt.displayMode = 'invis';
+    scribe.opt.addOverlay = true;
+    const fullExportPdf = /** @type {ArrayBuffer} */ (await scribe.exportData('pdf'));
+    const fullExportSize = fullExportPdf.byteLength;
+
+    const exportedPdf = /** @type {ArrayBuffer} */ (await scribe.exportData('pdf', { minPage: 1, maxPage: 2 }));
+    expect(exportedPdf.byteLength).toBeGreaterThan(1000);
+    expect(exportedPdf.byteLength).toBeLessThan(fullExportSize);
+
+    await scribe.clear();
+    scribe.opt.usePDFText.native.main = true;
+    scribe.opt.keepPDFTextAlways = true;
+    await scribe.importFiles({ pdfFiles: [exportedPdf] });
+
+    scribe.data.ocr.active = scribe.data.ocr.pdf;
+    expect(scribe.data.ocr.active.length).toBe(2);
+
+    for (let i = 0; i < 2; i++) {
+      const pageText = /** @type {string} */ (await scribe.exportData('text', { minPage: i, maxPage: i }));
+      expect(pageText.length).toBeGreaterThan(10);
+    }
+
+    const exportedPage0Text = /** @type {string} */ (await scribe.exportData('text', { minPage: 0, maxPage: 0 }));
+    expect(exportedPage0Text).not.toContain('Iris (plant)');
+
+    scribe.opt.displayMode = 'proof';
+    await scribe.clear();
+  });
+
+  test('subsetPdf keeps arbitrary pages and drops unreferenced resource objects', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const originalBytes = (await readFile(`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`)).buffer;
+
+    // Case 1: keep pages 0 and 2, drop the middle page.
+    const subsetBytes02 = /** @type {ArrayBuffer} */ (await subsetPdf(originalBytes, [0, 2]));
+    expect(subsetBytes02.byteLength).toBeGreaterThan(1000);
+    expect(subsetBytes02.byteLength).toBeLessThan(originalBytes.byteLength);
+
+    await scribe.clear();
+    scribe.opt.usePDFText.native.main = true;
+    scribe.opt.keepPDFTextAlways = true;
+    await scribe.importFiles({ pdfFiles: [subsetBytes02] });
+    scribe.data.ocr.active = scribe.data.ocr.pdf;
+
+    expect(scribe.data.ocr.active.length).toBe(2);
+    expect(scribe.data.ocr.active[0].lines[0].words[0].text).toBe('Iris');
+    const subsetPage1Text = /** @type {string} */ (await scribe.exportData('text', { minPage: 1, maxPage: 1 }));
+    expect(subsetPage1Text).not.toContain('Iris (plant)');
+
+    // Case 2: keep just the middle page.
+    await scribe.clear();
+    const subsetBytes1 = /** @type {ArrayBuffer} */ (await subsetPdf(originalBytes, [1]));
+    expect(subsetBytes1.byteLength).toBeGreaterThan(1000);
+
+    scribe.opt.usePDFText.native.main = true;
+    scribe.opt.keepPDFTextAlways = true;
+    await scribe.importFiles({ pdfFiles: [subsetBytes1] });
+    scribe.data.ocr.active = scribe.data.ocr.pdf;
+
+    expect(scribe.data.ocr.active.length).toBe(1);
+    const middlePageText = /** @type {string} */ (await scribe.exportData('text', { minPage: 0, maxPage: 0 }));
+    expect(middlePageText).not.toContain('Iris (plant)');
+
+    await scribe.clear();
+  });
+
+  test('mergePdfs concatenates pages from two input PDFs into one output', async () => {
+    const { readFile } = await import('node:fs/promises');
+    const originalBytes = (await readFile(`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`)).buffer;
+
+    const mergedBytes = /** @type {ArrayBuffer} */ (await mergePdfs([originalBytes, originalBytes]));
+    expect(mergedBytes.byteLength).toBeGreaterThan(1000);
+    // Output should be roughly 2× the original.
+    expect(mergedBytes.byteLength).toBeGreaterThan(originalBytes.byteLength * 1.5);
+    expect(mergedBytes.byteLength).toBeLessThan(originalBytes.byteLength * 2.5);
+
+    await scribe.clear();
+    scribe.opt.usePDFText.native.main = true;
+    scribe.opt.keepPDFTextAlways = true;
+    await scribe.importFiles({ pdfFiles: [mergedBytes] });
+    scribe.data.ocr.active = scribe.data.ocr.pdf;
+
+    expect(scribe.data.ocr.active.length).toBe(6);
+    expect(scribe.data.ocr.active[0].lines[0].words[0].text).toBe('Iris');
+    expect(scribe.data.ocr.active[3].lines[0].words[0].text).toBe('Iris');
+
+    await scribe.clear();
+  });
+
+  test('PDF overlay with full page range retains all pages', async () => {
+    scribe.opt.usePDFText.native.main = true;
+    scribe.opt.keepPDFTextAlways = true;
+    await scribe.importFiles([`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`]);
+
+    scribe.opt.displayMode = 'invis';
+    scribe.opt.addOverlay = true;
+    const exportedPdf = /** @type {ArrayBuffer} */ (await scribe.exportData('pdf'));
+    expect(exportedPdf.byteLength).toBeGreaterThan(1000);
+
+    await scribe.clear();
+    scribe.opt.usePDFText.native.main = true;
+    scribe.opt.keepPDFTextAlways = true;
+    await scribe.importFiles({ pdfFiles: [exportedPdf] });
+
+    scribe.data.ocr.active = scribe.data.ocr.pdf;
+    expect(scribe.data.ocr.active.length).toBe(3);
+
+    const page0Text = /** @type {string} */ (await scribe.exportData('text', { minPage: 0, maxPage: 0 }));
+    expect(page0Text).toContain('Iris');
+
+    scribe.opt.displayMode = 'proof';
+    await scribe.clear();
+  });
+
+  test('Human-readable text-only PDF has uncompressed content streams and hex-encoded fonts', async () => {
+    await scribe.importFiles([`${ASSETS_PATH}/text_simple.txt`]);
+
+    scribe.opt.displayMode = 'ebook';
+    scribe.opt.humanReadablePDF = true;
+    const exportedPdf = /** @type {ArrayBuffer} */ (await scribe.exportData('pdf'));
+    scribe.opt.humanReadablePDF = false;
+
+    const pdfBytes = new Uint8Array(exportedPdf);
+    const pdfText = new TextDecoder().decode(pdfBytes);
+
+    // Content streams should contain readable PDF text operators (not compressed).
+    expect(pdfText).toContain('BT');
+    expect(pdfText).toContain('Tf');
+    expect(pdfText).not.toContain('/Filter/FlateDecode');
+    // Font streams should use ASCIIHexDecode.
+    expect(pdfText).toContain('/Filter/ASCIIHexDecode');
+
+    // Skip the first 30 bytes (well past the header + marker comment) when asserting
+    // the rest of the file is human-readable ASCII.
+    let allAsciiBody = true;
+    for (let i = 30; i < pdfBytes.length; i++) {
+      if (pdfBytes[i] > 127) { allAsciiBody = false; break; }
+    }
+    expect(allAsciiBody).toBe(true);
+
+    await scribe.clear();
+    scribe.opt.usePDFText.native.main = true;
+    scribe.opt.keepPDFTextAlways = true;
+    await scribe.importFiles({ pdfFiles: [exportedPdf] });
+    scribe.data.ocr.active = scribe.data.ocr.pdf;
+    const reExportedText = await scribe.exportData('text');
+    expect(reExportedText).toBe('Tesseract.js');
+
+    scribe.opt.displayMode = 'proof';
+    await scribe.clear();
+  });
+
+  test('Human-readable PDF with images hex-encodes image streams', async () => {
+    scribe.opt.displayMode = 'proof';
+    scribe.opt.humanReadablePDF = true;
+
+    await scribe.importFiles([`${ASSETS_PATH}/testocr.png`, `${ASSETS_PATH}/testocr.abbyy.xml`]);
+    const exportedPdf = /** @type {ArrayBuffer} */ (await scribe.exportData('pdf'));
+
+    scribe.opt.humanReadablePDF = false;
+
+    const pdfBytes = new Uint8Array(exportedPdf);
+    const pdfText = new TextDecoder().decode(pdfBytes);
+
+    // Image streams should use ASCIIHexDecode in a filter array.
+    expect(pdfText).toContain('/ASCIIHexDecode');
+    // No FlateDecode should appear as a standalone filter (only inside filter arrays).
+    expect(pdfText).not.toContain('/Filter/FlateDecode');
+    expect(pdfText).not.toContain('/Filter /FlateDecode');
+
+    // Skip the first 30 bytes (well past the header + marker comment) when asserting
+    // the rest of the file is human-readable ASCII.
+    let allAsciiBody = true;
+    for (let i = 30; i < pdfBytes.length; i++) {
+      if (pdfBytes[i] > 127) { allAsciiBody = false; break; }
+    }
+    expect(allAsciiBody).toBe(true);
+
     await scribe.clear();
   });
 

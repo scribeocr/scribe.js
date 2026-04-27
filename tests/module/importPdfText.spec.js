@@ -2,7 +2,20 @@ import {
   describe, test, expect, beforeAll, afterAll,
 } from 'vitest';
 import scribe from '../../scribe.js';
+import { extractPDFTextDirect } from '../../js/pdf/parsePdfDoc.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
+
+const isNode = typeof window === 'undefined';
+
+/** @param {string} pdfPath */
+async function readPdfBytes(pdfPath) {
+  if (isNode) {
+    const { readFile } = await import('node:fs/promises');
+    return new Uint8Array(await readFile(pdfPath));
+  }
+  const response = await fetch(pdfPath);
+  return new Uint8Array(await response.arrayBuffer());
+}
 
 scribe.opt.workerN = 1;
 scribe.opt.langPath = LANG_PATH;
@@ -172,6 +185,75 @@ describe('Check superscripts are detected in PDF imports.', () => {
     expect(scribe.data.ocr.active[5].lines[158].words[0].text).toBe('a');
   });
 
+  test('Footnote line at lines[43] starts with leading superscript "1" followed by "See" (1st doc)', async () => {
+    // Existing test above verifies lines[43].words[0] is a leading superscript.
+    // This test goes further: the same line is the start of a "See ..."
+    // footnote, so words[1] should be "See" and not be marked as a superscript.
+    const line = scribe.data.ocr.active[0].lines[43];
+    expect(line.words[0].text).toBe('1');
+    expect(line.words[0].style.sup).toBe(true);
+    expect(line.words[1].text).toBe('See');
+    expect(line.words[1].style.sup).toBe(false);
+  });
+
+  test('Trailing superscript "1" at lines[25].words[8] has smaller font size than surrounding non-sup words (1st doc)', async () => {
+    const line = scribe.data.ocr.active[0].lines[25];
+    // words[7] = "years.", words[8] = "1" (sup), words[9] = "Furthermore,"
+    expect(line.words[8].text).toBe('1');
+    expect(line.words[8].style.sup).toBe(true);
+    expect(line.words[8].style.size).toBeCloseTo(26.982, 3);
+    expect(line.words[7].style.sup).toBe(false);
+    expect(line.words[7].style.size).toBeCloseTo(43.587, 3);
+    const supSize = /** @type {number} */ (line.words[8].style.size);
+    const normalSize = /** @type {number} */ (line.words[7].style.size);
+    expect(supSize).toBeLessThan(normalSize);
+  });
+
+  test('Trailing superscript "1" at lines[25].words[8] sits above the non-sup baseline (1st doc)', async () => {
+    const line = scribe.data.ocr.active[0].lines[25];
+    expect(line.words[8].bbox.bottom).toBe(1685);
+    expect(line.words[7].bbox.bottom).toBe(1705);
+    expect(line.words[8].bbox.bottom).toBeLessThan(line.words[7].bbox.bottom);
+  });
+
+  test('Trailing superscript at lines[25].words[8] is positioned within 25px of the surrounding non-sup baseline (1st doc)', async () => {
+    // Without bbox correction, the superscript is shifted up by the full
+    // baseline offset (gap >50px). With correction, the gap should be ≤25px.
+    // Catches the opposite failure mode of the strict "sits above" test above.
+    const line = scribe.data.ocr.active[0].lines[25];
+    expect(line.words[8].text).toBe('1');
+    expect(line.words[8].style.sup).toBe(true);
+    expect(line.words[0].style.sup).toBeFalsy();
+    expect(Math.abs(line.words[8].bbox.bottom - line.words[0].bbox.bottom)).toBeLessThanOrEqual(25);
+  });
+
+  test('Copyright line at lines[46] (1st doc) is split into 18 individual words', async () => {
+    // The "© 2024 The Authors. Econometrica published by..." copyright line
+    // should be split into individual words, not concatenated into a single run.
+    const line = scribe.data.ocr.active[0].lines[46];
+    expect(line.words.length).toBe(18);
+    expect(line.words[0].text).toBe('©');
+    expect(line.words[1].text).toBe('2024');
+  });
+
+  test('Parenthesized citation "(Bayless, 2000;" at page 3 lines[62] is split as two words, not by characters', async () => {
+    // Without correct handling, "(Bayless, 2000;" might split into "(",
+    // "Bayless,", "20", "0", "0", ";".
+    const line = scribe.data.ocr.active[2].lines[62];
+    expect(line.words[8].text).toBe('(Bayless,');
+    expect(line.words[9].text).toBe('2000;');
+  });
+
+  test('Number "71,542" at page 6 lines[35].words[0] is kept as a single word, not split at the comma', async () => {
+    expect(scribe.data.ocr.active[5].lines[35].words[0].text).toBe('71,542');
+  });
+
+  test('Word "Latin" at page 4 lines[4].words[2] is not falsely underlined when the nearest vector path is too far below', async () => {
+    const line = scribe.data.ocr.active[3].lines[4];
+    expect(line.words[2].text).toBe('Latin');
+    expect(line.words[2].style.underline).toBe(false);
+  });
+
   // This document breaks when used with `mutool convert` so is not combined with the others.
   // Any more tests included in the main stacked document should be inserted above this point.
   test('Should correctly parse font size for lines with superscripts (addtl doc)', async () => {
@@ -211,6 +293,95 @@ describe('Check font size is correctly parsed in PDF imports.', () => {
     expect(scribe.data.ocr.active[0].lines[218].words.map((w) => w.text).join(' ')).toBe('* Agent staffing statistics depict FY19 on-board personnel data as of 09/30/2019');
     expect(scribe.data.ocr.active[0].lines[218].words[1].style.size).toBe(32.5);
     expect(scribe.data.ocr.active[0].lines[218].words[1].text).toBe('Agent');
+  });
+
+  afterAll(async () => {
+    await scribe.terminate();
+  });
+});
+
+describe('Check Type0 sibling-font ToUnicode fallback (coca-cola-business-and-sustainability-report-2022.pdf).', () => {
+  beforeAll(async () => {
+    await scribe.importFiles([`${ASSETS_PATH}/coca-cola-business-and-sustainability-report-2022.pdf`]);
+  });
+
+  test('Imports all 15 pages of the report', async () => {
+    expect(scribe.data.ocr.active.length).toBe(15);
+  });
+
+  test('Page 1 heading contains "THE COCA" and "BUSINESS & SUSTAINABILITY REPORT" with no control characters', async () => {
+    const lineTexts = scribe.data.ocr.active[0].lines.map((l) => l.words.map((w) => w.text).join(' '));
+    const headingLine = lineTexts.find((line) => line.includes('BUSINESS & SUSTAINABILITY REPORT'));
+    expect(headingLine).toBeDefined();
+    const heading = /** @type {string} */ (headingLine);
+    expect(heading).toContain('THE COCA');
+    // eslint-disable-next-line no-control-regex
+    expect(/[\x00-\x1F]/.test(heading)).toBe(false);
+  });
+
+  test('Page 1 contains "Net Operating Revenues, Operating Income and Unit Case Volume by Operating Segment"', async () => {
+    const lineTexts = scribe.data.ocr.active[0].lines.map((l) => l.words.map((w) => w.text).join(' '));
+    const segmentLine = lineTexts.find((line) => line.includes('Net Operating Revenues, Operating Income and Unit Case Volume by Operating Segment'));
+    expect(segmentLine).toBeDefined();
+  });
+
+  afterAll(async () => {
+    await scribe.terminate();
+  });
+});
+
+describe('Check direct text extraction from Iris (plant) - Wikipedia_123.pdf.', () => {
+  beforeAll(async () => {
+    await scribe.importFiles([`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`]);
+  });
+
+  test('Extracts all 3 pages', async () => {
+    expect(scribe.data.ocr.active.length).toBe(3);
+  });
+
+  test('Page 1 has dimensions 2550x3300 (300 DPI rendering of US Letter)', async () => {
+    expect(scribe.data.ocr.active[0].dims.width).toBe(2550);
+    expect(scribe.data.ocr.active[0].dims.height).toBe(3300);
+  });
+
+  test('Visual top line of page 1 is "Iris (plant)"', async () => {
+    const sortedLines = [...scribe.data.ocr.active[0].lines].sort(
+      (a, b) => (a.bbox.top - b.bbox.top) || (a.bbox.left - b.bbox.left),
+    );
+    expect(sortedLines[0].words.map((w) => w.text).join(' ')).toBe('Iris (plant)');
+  });
+
+  test('Page 1 contains expected article body text', async () => {
+    const allText = scribe.data.ocr.active[0].lines
+      .map((l) => l.words.map((w) => w.text).join(' '))
+      .join('\n');
+    expect(allText).toContain('Iris is a');
+    expect(allText).toContain('flowering plant genus');
+    expect(allText).toContain('showy flowers');
+  });
+
+  test('Page 1 lines[0].words[0] is "Iris" with 4 chars at expected per-char widths and a uniform height of 35', async () => {
+    const word = scribe.data.ocr.active[0].lines[0].words[0];
+    expect(word.text).toBe('Iris');
+    expect(word.chars).toBeDefined();
+    const chars = /** @type {NonNullable<typeof word.chars>} */ (word.chars);
+    expect(chars.length).toBe(4);
+    expect(chars.map((c) => c.text)).toEqual(['I', 'r', 'i', 's']);
+    expect(chars[0].bbox.right - chars[0].bbox.left).toBe(14);
+    expect(chars[1].bbox.right - chars[1].bbox.left).toBe(20);
+    expect(chars[2].bbox.right - chars[2].bbox.left).toBe(14);
+    expect(chars[3].bbox.right - chars[3].bbox.left).toBe(27);
+    for (const ch of chars) expect(ch.bbox.bottom - ch.bbox.top).toBe(35);
+  });
+
+  test('"Iris sibirica" caption at lines[1] has font size 44', async () => {
+    expect(scribe.data.ocr.active[0].lines[1].words.map((w) => w.text).join(' ')).toBe('Iris sibirica');
+    expect(scribe.data.ocr.active[0].lines[1].words[0].style.size).toBe(44);
+  });
+
+  test('"Kingdom: Plantae" taxonomy line at lines[3] has font size 50', async () => {
+    expect(scribe.data.ocr.active[0].lines[3].words.map((w) => w.text).join(' ')).toBe('Kingdom: Plantae');
+    expect(scribe.data.ocr.active[0].lines[3].words[0].style.size).toBe(50);
   });
 
   afterAll(async () => {
@@ -283,6 +454,20 @@ describe('Check that line baselines are imported correctly.', () => {
     await scribe.importFiles([`${ASSETS_PATH}/superscript_examples_rotated.pdf`]);
     expect(Math.round(scribe.data.ocr.active[0].lines[25].baseline[1])).toBe(-10);
     expect(Math.round(scribe.data.ocr.active[1].lines[25].baseline[1])).toBe(-162);
+  });
+
+  test('Type1 fonts using hex strings do not produce false CJK characters (rotated.pdf page 0)', async () => {
+    // Earlier versions of the Type1 hex-string decoder mis-mapped some byte
+    // values to CJK code points. Asserts (a) page 0 word-by-word has no chars
+    // in the U+3400–U+9FFF range, and (b) the page actually parsed (lines[0]
+    // text matches the expected first word of the Econometrica article).
+    const page0 = scribe.data.ocr.active[0];
+    for (const line of page0.lines) {
+      for (const word of line.words) {
+        expect(/[㐀-鿿]/.test(word.text), `word "${word.text}"`).toBe(false);
+      }
+    }
+    expect(page0.lines[0].words[0].text).toBe('Econometrica');
   });
 
   afterAll(async () => {
@@ -494,5 +679,143 @@ describe('Check that `keepPDFTextAlways` option works.', () => {
 
   afterAll(async () => {
     await scribe.terminate();
+  });
+});
+
+describe('intel-history-1996-annual-report.pdf direct-parser regression', () => {
+  /** @type {Record<number, any>} */
+  const page = {};
+
+  beforeAll(async () => {
+    const pdfBytes = await readPdfBytes(`${ASSETS_PATH}/intel-history-1996-annual-report.pdf`);
+    const pages = /** @type {any[]} */ (extractPDFTextDirect(pdfBytes));
+    for (const i of [7, 8, 10, 18]) page[i] = pages[i].pageObj;
+  });
+
+  describe('page 10 — dot leaders split from preceding text', () => {
+    // Page 10 is a financial statement with dot leaders separating labels from
+    // values. The dots are rendered at a smaller text-matrix size (Tm scale 5)
+    // than the labels (scale 9.5), but use the same font and sit on the same
+    // baseline with zero gap. Without a word split at the font-size boundary,
+    // the dots merge into the preceding word ("equivalents.......").
+    test('"equivalents" should not contain trailing dot leaders', () => {
+      const word = page[10].lines.flatMap((/** @type {any} */ ln) => ln.words).find((/** @type {any} */ w) => w.text.startsWith('equivalents'));
+      expect(word).toBeTruthy();
+      expect(word.text).toBe('equivalents');
+    });
+
+    test('"expenses" should not contain trailing dot leaders', () => {
+      const words = page[10].lines.flatMap((/** @type {any} */ ln) => ln.words).filter((/** @type {any} */ w) => w.text.startsWith('expenses'));
+      expect(words.length).toBeGreaterThan(0);
+      for (const word of words) {
+        expect(word.text).toBe('expenses');
+      }
+    });
+  });
+
+  describe('page 18 — drop caps merge with continuation text', () => {
+    // Page 18 has drop cap letters: a large "I" starting "Intel posted record..."
+    // and a large "T" starting "The Company's financial condition...". The drop
+    // cap is rendered at Tm scale 26.79 while the continuation uses scale 9.5
+    // (same font F17). The drop cap baseline sits lower (it spans multiple
+    // lines), but the continuation should still merge into the same line.
+    test('Line 42: drop cap "I" + "ntel" continuation', () => {
+      expect(page[18].lines[42].words[0].text).toBe('I');
+      expect(page[18].lines[42].words[0].style.dropcap).toBe(true);
+      expect(page[18].lines[42].words[0].bbox.bottom).toBe(353);
+      expect(page[18].lines[42].words[1].text).toBe('ntel');
+      expect(page[18].lines[42].words[1].style.sup).not.toBe(true);
+    });
+
+    test('Line 137: drop cap "T" + "he" continuation', () => {
+      expect(page[18].lines[137].words[0].text).toBe('T');
+      expect(page[18].lines[137].words[0].style.dropcap).toBe(true);
+      expect(page[18].lines[137].words[0].bbox.bottom).toBe(1006);
+      expect(page[18].lines[137].words[1].text).toBe('he');
+      expect(page[18].lines[137].words[1].style.sup).not.toBe(true);
+    });
+
+    // The header has "Management's discussion and analysis" at size 29.5 and
+    // "of financial condition" at size 17.7 on a different baseline. These must
+    // be separate lines, with "of" not flagged as superscript.
+    test('Line 234 large heading "Management’s discussion and analysis"', () => {
+      expect(page[18].lines[234].words[0].text).toBe('Management’s');
+      expect(page[18].lines[234].words[3].text).toBe('analysis');
+    });
+
+    test('Line 235 sub-heading "of financial condition" (not superscript)', () => {
+      expect(page[18].lines[235].words[0].text).toBe('of');
+      expect(page[18].lines[235].words[0].style.sup).not.toBe(true);
+      expect(page[18].lines[235].words[2].text).toBe('condition');
+    });
+  });
+
+  describe('page 7 — curly-quote merging and drop caps', () => {
+    // Page 7 references the Intel jingle as "bong" with curly quotes. The
+    // opening U+201C is emitted later in the content stream than "bong",
+    // landing on a separate line; it must be merged into the same word.
+    test('Line 59 word 0: "“bong”" (curly-quoted, split from "sound")', () => {
+      expect(page[7].lines[59].words[0].text).toBe('“bong”');
+    });
+
+    // Page 7 has 4 drop caps each isolated on their own line instead of being
+    // on the same line as the continuation text:
+    //   "T" + "he Intel Inside..." / "I" + "n 1996, we launched..." /
+    //   "W" + "e have worked..."   / "I" + "n1996, more than..."
+    test('Line 7: drop cap "T" + "he"', () => {
+      expect(page[7].lines[7].words[0].text).toBe('T');
+      expect(page[7].lines[7].words[0].style.dropcap).toBe(true);
+      expect(page[7].lines[7].words[1].text).toBe('he');
+    });
+
+    test('Line 22: drop cap "I" + "n"', () => {
+      expect(page[7].lines[22].words[0].text).toBe('I');
+      expect(page[7].lines[22].words[0].style.dropcap).toBe(true);
+      expect(page[7].lines[22].words[1].text).toBe('n');
+    });
+
+    test('Line 39: drop cap "W" + "e"', () => {
+      expect(page[7].lines[39].words[0].text).toBe('W');
+      expect(page[7].lines[39].words[0].style.dropcap).toBe(true);
+      expect(page[7].lines[39].words[1].text).toBe('e');
+    });
+
+    test('Line 49: drop cap "I" + "n1996,"', () => {
+      expect(page[7].lines[49].words[0].text).toBe('I');
+      expect(page[7].lines[49].words[0].style.dropcap).toBe(true);
+      expect(page[7].lines[49].words[1].text).toBe('n1996,');
+    });
+  });
+
+  describe('page 8 — body text near decorative rules is not falsely underlined', () => {
+    // Page 8 has several words flagged as underlined due to nearby thin
+    // horizontal vector paths that are decorative borders, not real underlines.
+    test('Line 3 word 0 "worldwide"', () => {
+      expect(page[8].lines[3].words[0].text).toBe('worldwide');
+      expect(page[8].lines[3].words[0].style.underline).not.toBe(true);
+    });
+
+    test('Line 34 words 0-2 "Brazil is hot"', () => {
+      expect(page[8].lines[34].words[0].text).toBe('Brazil');
+      expect(page[8].lines[34].words[0].style.underline).not.toBe(true);
+      expect(page[8].lines[34].words[1].text).toBe('is');
+      expect(page[8].lines[34].words[1].style.underline).not.toBe(true);
+      expect(page[8].lines[34].words[2].text).toBe('hot');
+      expect(page[8].lines[34].words[2].style.underline).not.toBe(true);
+    });
+
+    test('Line 49 words 0-1 "of China"', () => {
+      expect(page[8].lines[49].words[0].text).toBe('of');
+      expect(page[8].lines[49].words[0].style.underline).not.toBe(true);
+      expect(page[8].lines[49].words[1].text).toBe('China');
+      expect(page[8].lines[49].words[1].style.underline).not.toBe(true);
+    });
+
+    test('Line 61 words 0-1 "The India"', () => {
+      expect(page[8].lines[61].words[0].text).toBe('The');
+      expect(page[8].lines[61].words[0].style.underline).not.toBe(true);
+      expect(page[8].lines[61].words[1].text).toBe('India');
+      expect(page[8].lines[61].words[1].style.underline).not.toBe(true);
+    });
   });
 });

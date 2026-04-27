@@ -767,20 +767,19 @@ export function convertType1ToOTFNew(pfaBytes, fontObj) {
     for (const [charCode, glyphName] of glyphEncoding) {
       const glyphData = parsed.glyphs.get(glyphName);
       if (!glyphData) continue;
-      let unicode;
+      const euUnicode = fontObj.encodingUnicode && fontObj.encodingUnicode.get(charCode);
       const tuUnicode = fontObj.toUnicode && fontObj.toUnicode.get(charCode);
-      if (tuUnicode) {
+      let unicode;
+      if (euUnicode && [...euUnicode].length === 1) {
+        unicode = euUnicode.codePointAt(0);
+      } else if (tuUnicode && [...tuUnicode].length === 1) {
         unicode = tuUnicode.codePointAt(0);
       } else {
-        const uniStr = aglLookup(glyphName);
-        if (uniStr) {
-          unicode = uniStr.codePointAt(0);
-          // Populate toUnicode for charCodes from the Type1 font's built-in encoding
-          // that have no /Differences or /ToUnicode entry. Without this, the renderer's
-          // showType1Literal falls back to str[i] which is a control char for codes < 0x20
-          // (e.g. charCode 12 = "fi" ligature in TeX fonts), causing trim() to skip it.
-          if (fontObj.toUnicode) fontObj.toUnicode.set(charCode, uniStr);
-          if (fontObj.encodingUnicode) fontObj.encodingUnicode.set(charCode, uniStr);
+        const aglStr = aglLookup(glyphName);
+        if (aglStr && [...aglStr].length === 1) {
+          unicode = aglStr.codePointAt(0);
+          if (fontObj.toUnicode && !fontObj.toUnicode.has(charCode)) fontObj.toUnicode.set(charCode, aglStr);
+          if (fontObj.encodingUnicode && !fontObj.encodingUnicode.has(charCode)) fontObj.encodingUnicode.set(charCode, aglStr);
         }
       }
       if (!unicode || usedUnicodes.has(unicode)) continue;
