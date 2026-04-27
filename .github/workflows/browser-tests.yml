@@ -21,11 +21,16 @@ jobs:
           node-version: 22
           cache: 'npm'
 
-      - name: Install Firefox + geckodriver
+      # Ubuntu 24.04 ('ubuntu-latest') no longer ships firefox-esr / firefox-geckodriver
+      # via apt — Mozilla's binaries are downloaded directly via these actions instead.
+      - name: Install Firefox
         if: matrix.browser == 'firefox'
-        run: |
-          sudo apt-get update
-          sudo apt-get install -y --no-install-recommends firefox-esr firefox-geckodriver
+        id: setup-firefox
+        uses: browser-actions/setup-firefox@v1
+
+      - name: Install geckodriver
+        if: matrix.browser == 'firefox'
+        uses: browser-actions/setup-geckodriver@v0
 
       - name: Install npm dependencies
         run: npm ci
@@ -43,4 +48,5 @@ jobs:
           # apt-installing the snap-based chromium-browser transitional
           # package. (Ignored when matrix.browser == firefox.)
           CHROMIUM_BINARY: /usr/bin/google-chrome
+          FIREFOX_BINARY: ${{ steps.setup-firefox.outputs.firefox-path }}
         run: npx vitest run --project=${{ matrix.browser }}
