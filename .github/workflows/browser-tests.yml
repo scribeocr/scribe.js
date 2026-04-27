@@ -30,7 +30,9 @@ jobs:
 
       - name: Install geckodriver
         if: matrix.browser == 'firefox'
-        uses: browser-actions/setup-geckodriver@v0
+        # browser-actions/setup-geckodriver only publishes a v0.0.0 tag and
+        # documents @latest (a moving branch ref) as the canonical pin.
+        uses: browser-actions/setup-geckodriver@latest
 
       - name: Install npm dependencies
         run: npm ci
