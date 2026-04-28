@@ -6,6 +6,18 @@ import { subsetPdf } from '../../js/export/pdf/writePdfOverlay.js';
 import { mergePdfs } from '../../js/export/pdf/mergePdfs.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 
+const isNode = typeof window === 'undefined';
+
+/** @param {string} pdfPath */
+async function readPdfBytes(pdfPath) {
+  if (isNode) {
+    const { readFile } = await import('node:fs/promises');
+    return new Uint8Array(await readFile(pdfPath));
+  }
+  const response = await fetch(pdfPath);
+  return new Uint8Array(await response.arrayBuffer());
+}
+
 scribe.opt.workerN = 1;
 scribe.opt.langPath = LANG_PATH;
 
