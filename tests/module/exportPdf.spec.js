@@ -339,8 +339,7 @@ describe('Check export for .pdf files.', () => {
   });
 
   test('subsetPdf keeps arbitrary pages and drops unreferenced resource objects', async () => {
-    const { readFile } = await import('node:fs/promises');
-    const originalBytes = (await readFile(`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`)).buffer;
+    const originalBytes = (await readPdfBytes(`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`)).buffer;
 
     // Case 1: keep pages 0 and 2, drop the middle page.
     const subsetBytes02 = /** @type {ArrayBuffer} */ (await subsetPdf(originalBytes, [0, 2]));
@@ -376,8 +375,7 @@ describe('Check export for .pdf files.', () => {
   });
 
   test('mergePdfs concatenates pages from two input PDFs into one output', async () => {
-    const { readFile } = await import('node:fs/promises');
-    const originalBytes = (await readFile(`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`)).buffer;
+    const originalBytes = (await readPdfBytes(`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`)).buffer;
 
     const mergedBytes = /** @type {ArrayBuffer} */ (await mergePdfs([originalBytes, originalBytes]));
     expect(mergedBytes.byteLength).toBeGreaterThan(1000);

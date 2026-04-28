@@ -15,8 +15,8 @@
   },
   "author": "Balearica",
   "dependencies": {
-    "@google-cloud/documentai": "^9.5.0",
-    "@google-cloud/storage": "^7.17.1"
+    "@google-cloud/documentai": "^9.6.0",
+    "@google-cloud/storage": "^7.19.0"
   },
   "files": [
     "RecognitionModelGoogleDocAI.js",

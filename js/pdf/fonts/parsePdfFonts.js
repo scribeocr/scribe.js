@@ -452,7 +452,7 @@ export function parsePageFonts(pageObjText, objCache) {
     // Detect bold/italic/smallCaps from name (augmented by font descriptor below)
     let bold = /Bold|Black/i.test(baseName);
     let italic = /italic/i.test(baseName) || /-\w*ital/i.test(baseName) || /-it$/i.test(baseName) || /oblique/i.test(baseName);
-    const smallCaps = /(small\W?cap)|(sc$)|(caps$)/i.test(baseName);
+    const smallCaps = /(small\W?cap)|(sc(?=-|$))|(caps(?=-|$))/i.test(baseName);
     const familyName = baseName.replace(/-.+/, '').replace(/,.*/, '');
     // Serif flag from font descriptor /Flags bit 2 (PDF spec §9.8.2).
     // Used as last-resort fallback when CSS font name matching fails.
@@ -631,6 +631,13 @@ export function parsePageFonts(pageObjText, objCache) {
     // This matches what wrapCFFInOTF builds into the OTF cmap (glyph names → AGL → Unicode),
     // so it's the correct mapping for rendering. Separate from toUnicode which is for text extraction.
     const encodingUnicode = new Map();
+    // charCode → glyph name from /Encoding. Kept separate from ToUnicode because
+    // they can legitimately disagree (e.g. TeX 0x27 draws 'quoteright' but ToUnicode
+    // reports U+0027) — convertType1ToOTFNew needs the encoding's glyph, not the source char.
+    const charCodeToGlyphName = new Map();
+    let hasFontFile = false;
+    let hasFontFile2 = false;
+    let hasFontFile3 = false;
     {
       // Resolve the Encoding: may be a predefined name, an inline dict, or an indirect reference
       let encodingText = fontObj;
@@ -665,14 +672,14 @@ export function parsePageFonts(pageObjText, objCache) {
         const dt = objCache.getObjectText(Number(descRefMatch[1]));
         if (dt) descriptorText = dt;
       }
-      const hasFontFile = /\/FontFile\s+\d+\s+\d+\s+R/.test(descriptorText);
-      const hasFontFile3 = /\/FontFile3\s+\d+\s+\d+\s+R/.test(descriptorText);
-      // Standard 14 Type1 fonts (Helvetica, Courier, Times) use StandardEncoding as their
-      // built-in encoding. Apply when no BaseEncoding is specified,
-      // for both embedded PFA fonts (/FontFile) and non-embedded Standard 14 fonts.
-      // Match only the actual Standard 14 font names (not Windows aliases like TimesNewRoman/ArialMT)
+      hasFontFile = /\/FontFile\s+\d+\s+\d+\s+R/.test(String(descriptorText));
+      hasFontFile2 = /\/FontFile2\s+\d+\s+\d+\s+R/.test(String(descriptorText));
+      hasFontFile3 = /\/FontFile3\s+\d+\s+\d+\s+R/.test(String(descriptorText));
+      // Type0/CID fonts must be excluded: their byte→CID mapping is arbitrary
+      // (especially for subsets), so StandardEncoding fallback yields garbage.
+      const isType0 = /\/Subtype\s*\/Type0/.test(String(fontObj));
       const isStd14Type1 = /^(Helvetica|Courier|Times-)/i.test(baseName);
-      if (!baseChars && (hasFontFile || isStd14Type1) && !hasFontFile3 && !/ZapfDingbats|Symbol|Wingdings/i.test(baseName)) {
+      if (!baseChars && !isType0 && (hasFontFile || isStd14Type1) && !hasFontFile3 && !/ZapfDingbats|Symbol|Wingdings/i.test(baseName)) {
         const stdEnc = [
           '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',
           '', '', '', '', 'space', 'exclam', 'quotedbl', 'numbersign', 'dollar', 'percent', 'ampersand', 'quoteright',
@@ -695,6 +702,7 @@ export function parsePageFonts(pageObjText, objCache) {
         for (let code = 32; code < stdEnc.length; code++) {
           const glyphName = stdEnc[code];
           if (!glyphName) continue;
+          charCodeToGlyphName.set(code, glyphName);
           const ch = aglLookup(glyphName);
           if (ch) encodingUnicode.set(code, ch);
         }
@@ -708,6 +716,7 @@ export function parsePageFonts(pageObjText, objCache) {
       // The built-in encoding maps charCodes to Dingbats glyph names (e.g. 108 → 'a71' → ● U+25CF).
       if (!baseChars && /ZapfDingbats/i.test(baseName)) {
         for (const [code, glyphName] of Object.entries(dingbatsEncoding)) {
+          charCodeToGlyphName.set(Number(code), glyphName);
           const cp = dingbatsGlyphMap[glyphName];
           if (cp !== undefined) {
             const ch = String.fromCodePoint(cp);
@@ -749,6 +758,8 @@ export function parsePageFonts(pageObjText, objCache) {
             // Name token like /eacute — decode PDF #XX hex escapes (§7.3.5)
             const glyphName = tok[2].slice(1).replace(/#([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
             differences[charCode] = glyphName;
+            // /Differences glyph names override BaseEncoding's glyph names at the same slot
+            charCodeToGlyphName.set(charCode, glyphName);
             // Differences describe modifications from the base encoding (PDF spec §9.6.5, Table 112).
             // Use aglLookup which handles period suffixes (e.g. "one.oldstyle" → "1")
             // and underscore ligatures (e.g. "f_f_i" → "ffi").
@@ -851,6 +862,52 @@ export function parsePageFonts(pageObjText, objCache) {
               encodingUnicode.set(charCode, unicodeStr);
             }
             charCode++;
+          }
+        }
+      }
+    }
+
+    /** @type {Record<string, string>} */
+    const LIGATURE_DECOMP = {
+      fi: 'fi', fl: 'fl', ff: 'ff', ffi: 'ffi', ffl: 'ffl',
+    };
+    if (charCodeToGlyphName.size > 0) {
+      for (const [charCode, glyphName] of charCodeToGlyphName) {
+        const decomp = LIGATURE_DECOMP[glyphName];
+        if (!decomp) continue;
+        const tu = toUnicode.get(charCode);
+        if (tu === decomp) continue;
+        const tuFirstCp = tu ? tu.codePointAt(0) : undefined;
+        const isFirstLetterOnly = tu !== undefined && [...tu].length === 1
+          && tuFirstCp === decomp.codePointAt(0);
+        const isLigatureCp = tu !== undefined && [...tu].length === 1
+          && tuFirstCp >= 0xFB00 && tuFirstCp <= 0xFB04;
+        const isMissing = tu === undefined;
+        if (isFirstLetterOnly || isLigatureCp || isMissing) {
+          toUnicode.set(charCode, decomp);
+        }
+      }
+    }
+
+    {
+      const isEmbedded = hasFontFile || hasFontFile2 || hasFontFile3;
+      let identityHighRangeCount = 0;
+      if (toUnicode.size > 0) {
+        for (let cc = 0x80; cc <= 0xFF; cc++) {
+          const tu = toUnicode.get(cc);
+          if (tu && tu.length === 1 && tu.codePointAt(0) === cc) identityHighRangeCount++;
+        }
+      }
+      const isIdentityPlaceholder = identityHighRangeCount >= 76; // 80% of 96 high-range slots
+      if (isEmbedded && isIdentityPlaceholder && encodingUnicode.size > 0) {
+        for (const [cc, eu] of encodingUnicode) {
+          if (cc < 0x80) continue;
+          const tu = toUnicode.get(cc);
+          if (tu === undefined) continue;
+          const tuCp = tu.codePointAt(0);
+          const euCp = eu.codePointAt(0);
+          if (tu.length === 1 && tuCp === cc && euCp !== cc) {
+            toUnicode.set(cc, eu);
           }
         }
       }
@@ -1532,6 +1589,26 @@ export function parsePageFonts(pageObjText, objCache) {
       preferEncodingCase = caseConflictCount >= 4;
     }
 
+    // Detect charCodes where the PDF's encoding-derived Unicode and the ToUnicode CMap disagree.
+    /** @type {Map<number, { encoding: string, toUnicode: string }>|null} */
+    let encodingToUnicodeConflicts = null;
+    if (encodingUnicode.size > 0 && toUnicode.size > 0) {
+      // Equivalences that aren't byte-for-byte identical but represent the same content
+      // and should NOT be flagged as conflicts. Currently just precomposed ligatures
+      // versus their AGL decompositions.
+      /** @type {Record<string, string>} */
+      const LIGATURE_PRECOMPOSED_TO_DECOMP = {
+        ﬀ: 'ff', ﬁ: 'fi', ﬂ: 'fl', ﬃ: 'ffi', ﬄ: 'ffl',
+      };
+      for (const [code, eu] of encodingUnicode) {
+        const tu = toUnicode.get(code);
+        if (tu === undefined || tu === eu) continue;
+        if (LIGATURE_PRECOMPOSED_TO_DECOMP[eu] === tu) continue;
+        if (!encodingToUnicodeConflicts) encodingToUnicodeConflicts = new Map();
+        encodingToUnicodeConflicts.set(code, { encoding: eu, toUnicode: tu });
+      }
+    }
+
     const fontInfo = {
       baseName,
       toUnicode,
@@ -1555,6 +1632,8 @@ export function parsePageFonts(pageObjText, objCache) {
       validCIDs,
       differences,
       encodingUnicode,
+      charCodeToGlyphName: charCodeToGlyphName.size > 0 ? charCodeToGlyphName : null,
+      encodingToUnicodeConflicts,
       macRomanCmap: detectedMacRomanCmap,
       charCodeToCID,
       codespaceRanges,

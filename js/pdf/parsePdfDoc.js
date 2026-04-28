@@ -1180,6 +1180,63 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
     }
   }
 
+  // Merge line fragments split by an inline superscript's y-shift.
+  // The superscript-size check is the gating signal — same baseline + small gap
+  // alone would also merge unrelated column-aligned lines.
+  const lineAnchorOf = (lineChars) => {
+    let maxSize = 0;
+    for (const ch of lineChars) {
+      if (ch.text !== ' ' && ch.fontSize > maxSize) maxSize = ch.fontSize;
+    }
+    if (maxSize === 0) return null;
+    const ys = [];
+    let leftX = Infinity;
+    let rightX = -Infinity;
+    for (const ch of lineChars) {
+      if (ch.text === ' ') continue;
+      if (ch.fontSize >= maxSize * 0.8) ys.push(ch._perpDist ?? ch.y);
+      if (ch.x < leftX) leftX = ch.x;
+      const r = ch.x + ch.width;
+      if (r > rightX) rightX = r;
+    }
+    if (ys.length === 0) return null;
+    ys.sort((a, b) => a - b);
+    return {
+      anchorFontSize: maxSize,
+      baselineY: ys[Math.floor(ys.length / 2)],
+      leftX,
+      rightX,
+    };
+  };
+  const lastNonSpace = (lineChars) => {
+    for (let k = lineChars.length - 1; k >= 0; k--) {
+      if (lineChars[k].text !== ' ') return lineChars[k];
+    }
+    return null;
+  };
+  const firstNonSpace = (lineChars) => {
+    for (let k = 0; k < lineChars.length; k++) {
+      if (lineChars[k].text !== ' ') return lineChars[k];
+    }
+    return null;
+  };
+  for (let li = lines.length - 2; li >= 0; li--) {
+    const a = lineAnchorOf(lines[li]);
+    const b = lineAnchorOf(lines[li + 1]);
+    if (!a || !b) continue;
+    const anchorSize = Math.max(a.anchorFontSize, b.anchorFontSize);
+    if (Math.abs(a.baselineY - b.baselineY) > anchorSize * 0.25) continue;
+    const gap = b.leftX - a.rightX;
+    if (gap < -anchorSize * 0.1 || gap > anchorSize) continue;
+    const lastA = lastNonSpace(lines[li]);
+    const firstB = firstNonSpace(lines[li + 1]);
+    const supBoundary = (lastA && lastA.fontSize < anchorSize * 0.85)
+      || (firstB && firstB.fontSize < anchorSize * 0.85);
+    if (!supBoundary) continue;
+    lines[li] = [...lines[li], ...lines[li + 1]];
+    lines.splice(li + 1, 1);
+  }
+
   // Process each line (chars are already in stream order)
   for (const lineChars of lines) {
     // Split into words at space characters or large gaps (measured in stream order).
@@ -1221,6 +1278,14 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
         const prevCh = currentWord[currentWord.length - 1];
         const gap = ch.x - (prevCh.x + prevCh.width);
         const fontSizeMin = Math.min(ch.fontSize, prevCh.fontSize);
+        // Sentence-terminal + em-dash is a definitional break ("COMMITTEES.—The…"),
+        // not a closed compound ("respond—this"). Split the em-dash off as its own word.
+        if (ch.text === '—' && /[.!?]/.test(prevCh.text)) {
+          wordsInitial.push(currentWord);
+          wordsInitial.push([ch]);
+          currentWord = [];
+          continue;
+        }
         // Split at bold/italic style change.
         if (ch.fontInfo.bold !== prevCh.fontInfo.bold
           || ch.fontInfo.italic !== prevCh.fontInfo.italic) {
@@ -1662,7 +1727,7 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
         for (const rect of underlineRects) {
           if (rect.right > wordLeft && rect.left < wordRight
             && rect.y >= baselineYWord - wordChars[0].fontSize * 0.1
-            && rect.y <= baselineYWord + wordChars[0].fontSize * 0.15) {
+            && rect.y <= baselineYWord + wordChars[0].fontSize * 0.25) {
             // Color match: the line color must match the text fill color.
             // Different colors indicate a decorative rule, not a text underline.
             // Normalize across color spaces — the same black may be stored as

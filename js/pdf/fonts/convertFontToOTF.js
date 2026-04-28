@@ -9,6 +9,8 @@ import { aglMap, aglLookup } from './standardEncodings.js';
  *   charCodeToCID?: Map<number, number>,
  *   differences?: Record<string, string>,
  *   encodingUnicode?: Map<number, string>,
+ *   charCodeToGlyphName?: Map<number, string>|null,
+ *   encodingToUnicodeConflicts?: Map<number, { encoding: string, toUnicode: string }>|null,
  *   isCIDFont?: boolean,
  *   ascent?: number,
  *   descent?: number,
@@ -726,11 +728,16 @@ export function convertType1ToOTFNew(pfaBytes, fontObj) {
     // encoding at that charCode position maps to a completely unrelated glyph.
     // Falling through to it would render the wrong character (e.g. 'e' → 't').
     const diffCharCodes = fontObj.differences ? new Set(Object.keys(fontObj.differences).map(Number)) : null;
-    if (fontObj.differences) {
-      for (const [charCodeStr, glyphName] of Object.entries(fontObj.differences)) {
-        const code = Number(charCodeStr);
+    // PDF /Encoding wins over Type1 built-in encoding wins over ToUnicode→AGL.
+    // ToUnicode last because it loses glyph identity (e.g. 0x27 → U+0027 → 'quotesingle'
+    // straight, but StandardEncoding says 'quoteright' curly).
+    if (fontObj.charCodeToGlyphName) {
+      for (const [code, glyphName] of fontObj.charCodeToGlyphName) {
         if (parsed.glyphs.has(glyphName)) glyphEncoding.set(code, glyphName);
       }
+    }
+    for (const [code, name] of parsed.encoding) {
+      if (!glyphEncoding.has(code) && !(diffCharCodes && diffCharCodes.has(code)) && parsed.glyphs.has(name)) glyphEncoding.set(code, name);
     }
     if (fontObj.toUnicode && fontObj.toUnicode.size > 0) {
       for (const [charCode, unicode] of fontObj.toUnicode) {
@@ -739,9 +746,6 @@ export function convertType1ToOTFNew(pfaBytes, fontObj) {
         const name = unicodeToAGL(cp);
         if (name && parsed.glyphs.has(name)) glyphEncoding.set(charCode, name);
       }
-    }
-    for (const [code, name] of parsed.encoding) {
-      if (!glyphEncoding.has(code) && !(diffCharCodes && diffCharCodes.has(code)) && parsed.glyphs.has(name)) glyphEncoding.set(code, name);
     }
 
     // If the Type1 parser extracted very few glyphs compared to the Differences entries,

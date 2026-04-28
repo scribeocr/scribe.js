@@ -384,6 +384,20 @@ describe('Check direct text extraction from Iris (plant) - Wikipedia_123.pdf.', 
     expect(scribe.data.ocr.active[0].lines[3].words[0].style.size).toBe(50);
   });
 
+  test('Page 2 line "...The three styles [7] divide..." is not split at the inline superscript', async () => {
+    const page = scribe.data.ocr.active[1];
+    const matches = page.lines.filter((l) => l.words.map((w) => w.text).join(' ').startsWith('parts). The three styles'));
+    expect(matches.length).toBe(1);
+    expect(matches[0].words.map((w) => w.text).join(' ')).toBe('parts). The three styles [7] divide towards the apex into petaloid branches; this is significant in');
+  });
+
+  test('Page 2 line "...with the three [7] stigmatic" is not split at the inline superscript', async () => {
+    const page = scribe.data.ocr.active[1];
+    const matches = page.lines.filter((l) => l.words.map((w) => w.text).join(' ').startsWith('contact with the perianth'));
+    expect(matches.length).toBe(1);
+    expect(matches[0].words.map((w) => w.text).join(' ')).toBe('contact with the perianth, then with the three [7] stigmatic');
+  });
+
   afterAll(async () => {
     await scribe.terminate();
   });

@@ -149,3 +149,25 @@ describe('Check paragraph detection with footnotes.', () => {
     await scribe.terminate();
   });
 });
+
+describe('Check paragraph detection with hanging-indent CV entries.', () => {
+  beforeAll(async () => {
+    scribe.opt.extractText = true;
+    await scribe.importFiles([`${ASSETS_PATH}/070823vanliere.pdf`]);
+    const page = scribe.data.ocr.active[31];
+    const angle = scribe.data.pageMetrics[31].angle || 0;
+    scribe.utils.assignParagraphs(page, angle);
+  });
+
+  test('CV entry whose company name wraps to a second line is kept in one paragraph', async () => {
+    const page = scribe.data.ocr.active[31];
+    const matches = page.pars.filter((p) => scribe.utils.ocr.getParText(p).startsWith('Primen'));
+    expect(matches.length).toBe(1);
+    // eslint-disable-next-line max-len
+    expect(scribe.utils.ocr.getParText(matches[0])).toBe('Primen (a joint venture of the Electric Power Research Institute and the Gas Research Institute) 2000-2002 President and Chief Executive Officer');
+  });
+
+  afterAll(async () => {
+    await scribe.terminate();
+  });
+});
