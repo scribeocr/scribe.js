@@ -45,6 +45,10 @@ const SHARED_VITE_OPTIONS = {
 const ROOT = import.meta.dirname.replace(/\\/g, '/');
 const ALL_TESTS = `${ROOT}/tests/module/**/*.spec.js`;
 const NODE_ONLY_TESTS = `${ROOT}/tests/module/**/*.node.spec.js`;
+// CLI tests live outside tests/module/ — they invoke node-only CLI entry points
+// (fs, process, etc.) and have no browser equivalent, so they're added to the
+// node project's include only.
+const CLI_TESTS = `${ROOT}/tests/cli/**/*.spec.js`;
 
 const SHARED_TEST_OPTIONS = {
   testTimeout: 240_000,
@@ -95,7 +99,7 @@ export default defineConfig({
           ...SHARED_TEST_OPTIONS,
           name: 'node',
           environment: 'node',
-          include: [ALL_TESTS],
+          include: [ALL_TESTS, CLI_TESTS],
         },
       },
       browserProject('chrome'),

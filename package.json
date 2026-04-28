@@ -8,18 +8,15 @@
   },
   "type": "module",
   "devDependencies": {
-    "@types/mocha": "^10.0.7",
     "@types/node": "^20.0.0",
     "@vitest/browser": "^4.1.5",
     "@vitest/browser-webdriverio": "^4.1.5",
-    "chai": "^5.1.1",
     "documentation": "^14.0.3",
     "eslint": "^8.56.0",
     "eslint-config-airbnb-base": "^15.0.0",
     "eslint-plugin-import": "^2.29.1",
     "eslint-plugin-jsdoc": "^50.6.2",
     "express": "^4.21.2",
-    "mocha": "^10.6.0",
     "vitest": "^4.1.5",
     "webdriverio": "^9.27.0"
   },
@@ -27,14 +24,14 @@
     "docs": "documentation build scribe.js -f md --access public > docs/API.md",
     "start": "node tests/scripts/server.js",
     "stop": "curl http://localhost:3031/shutdown",
-    "test": "npm run test:cli && npm run test:module",
+    "test": "npm run test:module",
     "test:module": "npm run test:module:node && npm run test:module:browser",
     "test:module:node": "vitest run --project=node",
     "test:module:browser": "vitest run --project=chrome",
     "test:module:browser:firefox": "vitest run --project=firefox",
     "test:module:browser:all": "vitest run --project=chrome --project=firefox",
     "test:module:all": "vitest run",
-    "test:cli": "mocha tests/cli"
+    "test:cli": "vitest run --project=node tests/cli/cli.spec.js"
   },
   "bin": {
     "scribe": "cli/scribe.js"

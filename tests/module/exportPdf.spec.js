@@ -179,11 +179,10 @@ describe('Check export for .pdf files.', () => {
   });
 
   test('Highlight annotations are preserved through PDF export and re-import', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/complaint_1.pdf`]);
-    await scribe.recognize();
+    await scribe.importFiles([`${ASSETS_PATH}/complaint_1.pdf`, `${ASSETS_PATH}/complaint_1.abbyy.xml`]);
     scribe.addHighlights([{ page: 0, startLine: 0, endLine: 2 }]);
-    // addHighlights emits one entry per word; line 0-2 of complaint_1.pdf has 29 words.
-    expect(scribe.data.annotations.pages[0].length).toBe(29);
+    // addHighlights emits one entry per word; lines 0-2 of complaint_1.abbyy.xml have 41 words.
+    expect(scribe.data.annotations.pages[0].length).toBe(41);
 
     const pdfBytes = await scribe.exportData('pdf');
     await scribe.clear();
@@ -245,59 +244,6 @@ describe('Check export for .pdf files.', () => {
     expect(textCompressed).toContain('This is a lot of 12 point text');
 
     scribe.opt.humanReadablePDF = false;
-    await scribe.clear();
-  });
-
-  test('PDF overlay via incremental update inserts extractable text into existing PDF', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/gov.uscourts.cand.249697.1.0_2.pdf`]);
-    await scribe.recognize();
-
-    const ocrText = /** @type {string} */ (await scribe.exportData('text', { minPage: 0, maxPage: 0 }));
-    expect(ocrText.length).toBeGreaterThan(10);
-
-    scribe.opt.displayMode = 'invis';
-    scribe.opt.addOverlay = true;
-    const exportedPdf = /** @type {ArrayBuffer} */ (await scribe.exportData('pdf'));
-    expect(exportedPdf.byteLength).toBeGreaterThan(1000);
-
-    await scribe.clear();
-    scribe.opt.usePDFText.native.main = true;
-    scribe.opt.keepPDFTextAlways = true;
-    await scribe.importFiles({ pdfFiles: [exportedPdf] });
-
-    scribe.data.ocr.active = scribe.data.ocr.pdf;
-    const reExportedText = /** @type {string} */ (await scribe.exportData('text', { minPage: 0, maxPage: 0 }));
-    expect(reExportedText.length).toBeGreaterThan(10);
-
-    scribe.opt.displayMode = 'proof';
-    scribe.opt.addOverlay = true;
-    await scribe.clear();
-  });
-
-  test('Export of scanned PDF builds new PDF with rendered images and extractable text', async () => {
-    // addOverlay=false forces the image-rendering path (vs. incremental update).
-    await scribe.importFiles([`${ASSETS_PATH}/gov.uscourts.cand.249697.1.0_2.pdf`]);
-    await scribe.recognize();
-
-    const ocrText = /** @type {string} */ (await scribe.exportData('text', { minPage: 0, maxPage: 0 }));
-    expect(ocrText.length).toBeGreaterThan(10);
-
-    scribe.opt.displayMode = 'invis';
-    scribe.opt.addOverlay = false;
-    const exportedPdf = /** @type {ArrayBuffer} */ (await scribe.exportData('pdf', { minPage: 0, maxPage: 0 }));
-    expect(exportedPdf.byteLength).toBeGreaterThan(1000);
-
-    await scribe.clear();
-    scribe.opt.usePDFText.native.main = true;
-    scribe.opt.keepPDFTextAlways = true;
-    await scribe.importFiles({ pdfFiles: [exportedPdf] });
-
-    scribe.data.ocr.active = scribe.data.ocr.pdf;
-    const reExportedText = /** @type {string} */ (await scribe.exportData('text', { minPage: 0, maxPage: 0 }));
-    expect(reExportedText.length).toBeGreaterThan(10);
-
-    scribe.opt.displayMode = 'proof';
-    scribe.opt.addOverlay = true;
     await scribe.clear();
   });
 

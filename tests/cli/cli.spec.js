@@ -1,172 +1,121 @@
-import { assert, expect } from 'chai';
-import fs from 'fs';
-import path from 'path';
-import { fileURLToPath } from 'url';
+import {
+  describe, it, expect, beforeEach, afterEach, afterAll,
+} from 'vitest';
+import fs from 'node:fs';
+import { tmpdir } from 'node:os';
 import scribe from '../../scribe.js';
 import {
   checkCLI, confCLI, extractCLI, overlayCLI,
 } from '../../cli/cli.js';
 import { getRandomAlphanum } from '../../js/utils/miscUtils.js';
+import { ASSETS_PATH } from '../module/_paths.js';
 
 scribe.opt.workerN = 1;
-
-globalThis.__dirname = path.dirname(fileURLToPath(import.meta.url));
 
 describe('Check Node.js commands.', () => {
   let originalConsoleLog;
   let consoleOutput;
 
-  // The temp directory used for testing must be different than the temp directory using in the application code,
+  // The temp directory used for testing must be different than the temp directory used in the application code,
   // as the latter is deleted at the end of the function.
   let tmpUniqueDir;
   const tmpUnique = {
-    get: async () => {
-      const { tmpdir } = await import('os');
-      const { mkdirSync } = await import('node:fs');
-
+    get: () => {
       if (!tmpUniqueDir) {
         tmpUniqueDir = `${tmpdir()}/${getRandomAlphanum(8)}`;
-        mkdirSync(tmpUniqueDir);
+        fs.mkdirSync(tmpUniqueDir);
       }
       return tmpUniqueDir;
     },
-    delete: async () => {
-      if (tmpUniqueDir) {
-        const { rmSync } = await import('node:fs');
-        rmSync(tmpUniqueDir, { recursive: true, force: true });
-      }
+    delete: () => {
+      if (tmpUniqueDir) fs.rmSync(tmpUniqueDir, { recursive: true, force: true });
     },
   };
 
   beforeEach(() => {
-    // Store the original console.log
     originalConsoleLog = console.log;
-
-    // Replace console.log with a function to capture output
     consoleOutput = '';
     console.log = (output) => {
       consoleOutput += output;
-      // originalConsoleLog(output);
     };
   });
 
   afterEach(() => {
-    // Restore the original console.log
     console.log = originalConsoleLog;
   });
 
   it('Should print confidence of Abbyy .xml file.', async () => {
-    // Call the function
-    await confCLI([path.join(__dirname, '../test-assets/scribe_test_pdf1.abbyy.xml')]);
-
-    // originalConsoleLog(consoleOutput);
-
-    expect(consoleOutput).to.include('385 of 404');
-  }).timeout(10000);
+    await confCLI([`${ASSETS_PATH}/henreys_grave.abbyy.xml`]);
+    expect(consoleOutput).toContain('178 of 185');
+  }, 10000);
 
   it('Should check contents of Abbyy .xml file.', async () => {
-    // CLI equivalent: node cli/scribe.js check tests/test-assets/scribe_test_pdf1.pdf tests/test-assets/scribe_test_pdf1.abbyy.xml
+    // CLI equivalent: node cli/scribe.js check tests/test-assets/henreys_grave.pdf tests/test-assets/henreys_grave.abbyy.xml
     // Workers is set to 1 to avoid results changing based on the number of CPU cores due to the OCR engine learning.
-    await checkCLI([path.join(__dirname, '../test-assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../test-assets/scribe_test_pdf1.abbyy.xml')], { workers: 1 });
-
-    // originalConsoleLog(consoleOutput);
-
-    expect(consoleOutput).to.match(/38[78] of 404/);
-  }).timeout(30000);
+    await checkCLI([`${ASSETS_PATH}/henreys_grave.pdf`, `${ASSETS_PATH}/henreys_grave.abbyy.xml`], { workers: 1 });
+    expect(consoleOutput).toContain('181 of 185');
+  }, 30000);
 
   it('Overlay .pdf and Abbyy .xml file.', async () => {
-    const tmpDir = await tmpUnique.get();
-
-    // Call the function
-    await overlayCLI([path.join(__dirname, '../test-assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../test-assets/scribe_test_pdf1.abbyy.xml')], { output: tmpDir, vis: true });
-
-    const outputPath = `${tmpDir}/scribe_test_pdf1_vis.pdf`;
-
-    assert.isOk(fs.existsSync(outputPath));
-  }).timeout(20000);
+    const tmpDir = tmpUnique.get();
+    await overlayCLI([`${ASSETS_PATH}/henreys_grave.pdf`, `${ASSETS_PATH}/henreys_grave.abbyy.xml`], { output: tmpDir, vis: true });
+    expect(fs.existsSync(`${tmpDir}/henreys_grave_vis.pdf`)).toBe(true);
+  }, 20000);
 
   it('Overlay .pdf and Abbyy .xml file and print confidence.', async () => {
-    const tmpDir = await tmpUnique.get();
-
-    // Call the function
-    await overlayCLI([path.join(__dirname, '../test-assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../test-assets/scribe_test_pdf1.abbyy.xml')], { output: tmpDir, conf: true, vis: true });
-
-    expect(consoleOutput).to.include('385 of 404');
-
-    const outputPath = `${tmpDir}/scribe_test_pdf1_vis.pdf`;
-
-    assert.isOk(fs.existsSync(outputPath));
-  }).timeout(20000);
+    const tmpDir = tmpUnique.get();
+    await overlayCLI([`${ASSETS_PATH}/henreys_grave.pdf`, `${ASSETS_PATH}/henreys_grave.abbyy.xml`], { output: tmpDir, conf: true, vis: true });
+    expect(consoleOutput).toContain('178 of 185');
+    expect(fs.existsSync(`${tmpDir}/henreys_grave_vis.pdf`)).toBe(true);
+  }, 20000);
 
   // TODO: The files should be deleted between tests;
   it('Overlay .pdf and Abbyy .xml file, validating OCR results.', async () => {
-    const tmpDir = await tmpUnique.get();
-
-    // Call the function
-    await overlayCLI([path.join(__dirname, '../test-assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../test-assets/scribe_test_pdf1.abbyy.xml')], { output: tmpDir, robust: true, vis: true });
-
-    const outputPath = `${tmpDir}/scribe_test_pdf1_vis.pdf`;
-
-    assert.isOk(fs.existsSync(outputPath));
-  }).timeout(30000);
+    const tmpDir = tmpUnique.get();
+    await overlayCLI([`${ASSETS_PATH}/henreys_grave.pdf`, `${ASSETS_PATH}/henreys_grave.abbyy.xml`], { output: tmpDir, robust: true, vis: true });
+    expect(fs.existsSync(`${tmpDir}/henreys_grave_vis.pdf`)).toBe(true);
+  }, 30000);
 
   it('Overlay .pdf and Abbyy .xml file, validating OCR results and printing confidence.', async () => {
-    const tmpDir = await tmpUnique.get();
-
-    // Call the function
-    await overlayCLI([path.join(__dirname, '../test-assets/scribe_test_pdf1.pdf'), path.join(__dirname, '../test-assets/scribe_test_pdf1.abbyy.xml')], {
+    const tmpDir = tmpUnique.get();
+    await overlayCLI([`${ASSETS_PATH}/henreys_grave.pdf`, `${ASSETS_PATH}/henreys_grave.abbyy.xml`], {
       output: tmpDir, robust: true, conf: true, vis: true, workers: 1,
     });
+    expect(consoleOutput).toContain('181 of 185');
+    expect(fs.existsSync(`${tmpDir}/henreys_grave_vis.pdf`)).toBe(true);
+  }, 30000);
 
-    if (!/38[78] of 404/.test(consoleOutput)) originalConsoleLog(consoleOutput);
-
-    expect(consoleOutput).to.match(/38[78] of 404/);
-
-    const outputPath = `${tmpDir}/scribe_test_pdf1_vis.pdf`;
-
-    assert.isOk(fs.existsSync(outputPath));
-  }).timeout(30000);
-
-  after(async () => {
-    await tmpUnique.delete();
+  afterAll(() => {
+    tmpUnique.delete();
   });
-}).timeout(120000);
+});
 
 describe('Extract CLI command.', () => {
   let tmpUniqueDir;
   const tmpUnique = {
-    get: async () => {
-      const { tmpdir } = await import('os');
-      const { mkdirSync } = await import('node:fs');
-
+    get: () => {
       if (!tmpUniqueDir) {
         tmpUniqueDir = `${tmpdir()}/${getRandomAlphanum(8)}`;
-        mkdirSync(tmpUniqueDir);
+        fs.mkdirSync(tmpUniqueDir);
       }
       return tmpUniqueDir;
     },
-    delete: async () => {
-      if (tmpUniqueDir) {
-        const { rmSync } = await import('node:fs');
-        rmSync(tmpUniqueDir, { recursive: true, force: true });
-      }
+    delete: () => {
+      if (tmpUniqueDir) fs.rmSync(tmpUniqueDir, { recursive: true, force: true });
     },
   };
 
   it('Should extract text from a single PDF file.', async () => {
-    const tmpDir = await tmpUnique.get();
-    const inputFile = path.join(__dirname, '../test-assets/academic_article_1.pdf');
+    const tmpDir = tmpUnique.get();
     const outputPath = `${tmpDir}/academic_article_1.txt`;
 
-    await extractCLI(inputFile, outputPath, { format: 'txt' });
+    await extractCLI(`${ASSETS_PATH}/academic_article_1.pdf`, outputPath, { format: 'txt' });
 
-    assert.isOk(fs.existsSync(outputPath), 'Output file should exist');
+    expect(fs.existsSync(outputPath)).toBe(true);
+    expect(fs.readFileSync(outputPath, 'utf8')).toContain('WHISTLEBLOWERS');
+  }, 15000);
 
-    const content = fs.readFileSync(outputPath, 'utf8');
-    assert.include(content, 'WHISTLEBLOWERS', 'Output should contain expected text');
-  }).timeout(15000);
-
-  after(async () => {
-    await tmpUnique.delete();
+  afterAll(() => {
+    tmpUnique.delete();
   });
-}).timeout(60000);
+});

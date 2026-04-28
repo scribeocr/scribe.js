@@ -1,9 +1,6 @@
 import {
   describe, test, expect, beforeAll, afterAll,
 } from 'vitest';
-
-// import { after, it } from 'mocha';
-// import path from 'path';
 import scribe from '../../scribe.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 
