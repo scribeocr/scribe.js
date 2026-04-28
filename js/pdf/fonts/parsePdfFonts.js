@@ -47,6 +47,18 @@ function buildGidToUnicodeFromTrueType(fontFile) {
 }
 
 /**
+ * Test whether a PDF `BaseFont` / `FontName` value is informative.
+ * Some producers communicate font identity only via the embedded font file and emit a placeholder names in the PDF object.
+ *
+ * @param {string} name
+ */
+function isPlaceholderFontName(name) {
+  return /^CIDFont(?:[+\- ]F?\d+)?$/i.test(name)
+    || /^Font(?:[+\- ]?F?\d+)$/i.test(name)
+    || /^F\d+$/i.test(name);
+}
+
+/**
  * @typedef {{
  *   fontMatrix: number[],
  *   fontBBox: number[],
@@ -447,13 +459,13 @@ export function parsePageFonts(pageObjText, objCache) {
       baseNameRaw = nameMatch ? nameMatch[1] : 'Unknown';
     }
     // Decode PDF hex-encoded name characters (#XX → char)
-    const baseName = baseNameRaw.replace(/#([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+    let baseName = baseNameRaw.replace(/#([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
 
     // Detect bold/italic/smallCaps from name (augmented by font descriptor below)
     let bold = /Bold|Black/i.test(baseName);
     let italic = /italic/i.test(baseName) || /-\w*ital/i.test(baseName) || /-it$/i.test(baseName) || /oblique/i.test(baseName);
     const smallCaps = /(small\W?cap)|(sc(?=-|$))|(caps(?=-|$))/i.test(baseName);
-    const familyName = baseName.replace(/-.+/, '').replace(/,.*/, '');
+    let familyName = baseName.replace(/-.+/, '').replace(/,.*/, '');
     // Serif flag from font descriptor /Flags bit 2 (PDF spec §9.8.2).
     // Used as last-resort fallback when CSS font name matching fails.
     let serifFlag = false;
@@ -1158,6 +1170,35 @@ export function parsePageFonts(pageObjText, objCache) {
           if (ff2RefMatch) {
             const fontFile = objCache.getStreamBytes(Number(ff2RefMatch[1]));
             if (fontFile) {
+              if (isPlaceholderFontName(baseName)) {
+                const dv = new DataView(fontFile.buffer, fontFile.byteOffset, fontFile.byteLength);
+                const sfVersion = dv.byteLength >= 12 ? dv.getUint32(0) : 0;
+                if (sfVersion === 0x00010000 || sfVersion === 0x74727565) {
+                  const numTables = dv.getUint16(4);
+                  let nameOffset = -1;
+                  for (let i = 0; i < numTables; i++) {
+                    const off = 12 + i * 16;
+                    const tag = String.fromCharCode(fontFile[off], fontFile[off + 1], fontFile[off + 2], fontFile[off + 3]);
+                    if (tag === 'name') { nameOffset = dv.getUint32(off + 8); break; }
+                  }
+                  if (nameOffset >= 0) {
+                    const names = /** @type {Object<string, Object<string, string>>} */ (
+                      opentype.parseNameTable(dv, nameOffset, undefined));
+                    const psRaw = ((names.postScriptName && names.postScriptName.en)
+                      || (names.fullName && names.fullName.en) || '').replace(/^[A-Z]{6}\+/, '');
+                    if (psRaw) {
+                      baseName = psRaw;
+                      familyName = ((names.preferredFamily && names.preferredFamily.en)
+                        || (names.fontFamily && names.fontFamily.en)
+                        || baseName.replace(/-.+/, '').replace(/,.*/, ''));
+                    }
+                    const subfamily = ((names.preferredSubfamily && names.preferredSubfamily.en)
+                      || (names.fontSubfamily && names.fontSubfamily.en) || '').toLowerCase();
+                    if (/italic|oblique/.test(subfamily) || /italic|oblique/i.test(baseName)) italic = true;
+                    if (/bold|black/.test(subfamily) || /bold|black/i.test(baseName)) bold = true;
+                  }
+                }
+              }
               let cidToGidMap = 'identity';
               if (!/\/CIDToGIDMap\s*\/Identity/.test(cidFontText)) {
                 const gidMapRef = /\/CIDToGIDMap\s+(\d+)\s+\d+\s+R/.exec(cidFontText);

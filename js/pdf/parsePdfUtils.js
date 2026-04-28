@@ -2337,3 +2337,105 @@ export function tokenizeContentStream(streamText) {
 
   return tokens;
 }
+
+/**
+ * Re-encode a tokenizer token as PDF content-stream syntax.
+ * @param {PDFToken} t
+ */
+function serializeContentToken(t) {
+  switch (t.type) {
+    case 'name':
+      return `/${t.value}`;
+    case 'hexstring':
+      return `<${t.value}>`;
+    case 'number':
+      return String(t.value);
+    case 'operator':
+      return t.value;
+    case 'array':
+      return `[${t.value.map(serializeContentToken).join(' ')}]`;
+    case 'string': {
+      // Tokenizer decoded escape sequences and `\nnn` octals into raw bytes
+      // (latin1 charcodes 0..255). Re-escape: backslash, parens, and any
+      // non-ASCII-printable byte gets a 3-digit octal escape.
+      let out = '';
+      for (let i = 0; i < t.value.length; i++) {
+        const cc = t.value.charCodeAt(i);
+        if (cc === 0x5C) out += '\\\\';
+        else if (cc === 0x28) out += '\\(';
+        else if (cc === 0x29) out += '\\)';
+        else if (cc < 32 || cc > 126) out += `\\${cc.toString(8).padStart(3, '0')}`;
+        else out += t.value[i];
+      }
+      return `(${out})`;
+    }
+    case 'inlineImage':
+      return `BI\n${t.value.dictText}\nID\n${t.value.imageData}\nEI`;
+    default:
+      return '';
+  }
+}
+
+/**
+ * Rewrite a content stream to drop text-showing operators (Tj/TJ/'/").
+ *
+ * @param {string} streamText - Decoded latin1 content stream text.
+ * @param {{ mode?: 'invisible' | 'all' }} [options]
+ */
+export function stripText(streamText, { mode = 'invisible' } = {}) {
+  const tokens = tokenizeContentStream(streamText);
+
+  /** @type {Array<PDFToken>} */
+  const operandBuf = [];
+  let tr = 0;
+  /** @type {Array<number>} */
+  const trStack = [];
+  let out = '';
+
+  /** @param {Array<PDFToken>} ops */
+  const flushOperands = (ops) => {
+    for (let i = 0; i < ops.length; i++) {
+      out += serializeContentToken(ops[i]);
+      out += i + 1 < ops.length ? ' ' : '';
+    }
+  };
+
+  let dropped = false;
+  for (const tok of tokens) {
+    if (tok.type !== 'operator') {
+      operandBuf.push(tok);
+      continue;
+    }
+    const op = tok.value;
+    if (op === 'q') {
+      trStack.push(tr);
+    } else if (op === 'Q') {
+      if (trStack.length > 0) tr = /** @type {number} */ (trStack.pop());
+    } else if (op === 'Tr') {
+      if (operandBuf.length > 0) {
+        const last = operandBuf[operandBuf.length - 1];
+        if (last.type === 'number') tr = last.value;
+      }
+    }
+
+    const isTextShow = op === 'Tj' || op === 'TJ' || op === "'" || op === '"';
+    const shouldDrop = isTextShow && (mode === 'all' || tr === 3);
+    if (shouldDrop) {
+      operandBuf.length = 0;
+      dropped = true;
+      continue;
+    }
+
+    flushOperands(operandBuf);
+    operandBuf.length = 0;
+    if (out.length > 0 && !/\s$/.test(out)) out += ' ';
+    out += op;
+    out += '\n';
+  }
+
+  if (operandBuf.length > 0) {
+    flushOperands(operandBuf);
+  }
+
+  return { text: out, dropped };
+}

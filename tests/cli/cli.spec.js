@@ -1,5 +1,5 @@
 import {
-  describe, it, expect, beforeEach, afterEach, afterAll,
+  describe, it, expect, beforeAll, beforeEach, afterEach, afterAll,
 } from 'vitest';
 import fs from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -56,11 +56,83 @@ describe('Check Node.js commands.', () => {
     expect(consoleOutput).toContain('181 of 185');
   }, 30000);
 
-  it('Overlay .pdf and Abbyy .xml file.', async () => {
-    const tmpDir = tmpUnique.get();
-    await overlayCLI([`${ASSETS_PATH}/henreys_grave.pdf`, `${ASSETS_PATH}/henreys_grave.abbyy.xml`], { output: tmpDir, vis: true });
-    expect(fs.existsSync(`${tmpDir}/henreys_grave_vis.pdf`)).toBe(true);
-  }, 20000);
+  describe('overlayCLI on henreys_grave (vis mode) — output PDF contract', () => {
+    /** @type {string} */
+    let outputPath;
+    /** @type {boolean} */
+    let outputExists;
+    /** @type {string} */
+    let extractedText;
+    /** @type {Map<string, number>} */
+    let colorCounts;
+    /** @type {Set<number>} */
+    let opacities;
+
+    beforeAll(async () => {
+      const tmpDir = tmpUnique.get();
+      await overlayCLI(
+        [`${ASSETS_PATH}/henreys_grave.pdf`, `${ASSETS_PATH}/henreys_grave.abbyy.xml`],
+        { output: tmpDir, vis: true },
+      );
+      outputPath = `${tmpDir}/henreys_grave_vis.pdf`;
+      outputExists = fs.existsSync(outputPath);
+      if (!outputExists) {
+        extractedText = '';
+        colorCounts = new Map();
+        opacities = new Set();
+        return;
+      }
+      const outputBytes = fs.readFileSync(outputPath);
+      const outputArrayBuffer = outputBytes.buffer.slice(outputBytes.byteOffset, outputBytes.byteOffset + outputBytes.byteLength);
+      scribe.opt.usePDFText.native.main = true;
+      scribe.opt.usePDFText.ocr.main = true;
+      scribe.opt.keepPDFTextAlways = true;
+      await scribe.importFiles({ pdfFiles: [outputArrayBuffer] });
+      scribe.data.ocr.active = scribe.data.ocr.pdf;
+      extractedText = /** @type {string} */ (await scribe.exportData('text'));
+      colorCounts = new Map();
+      opacities = new Set();
+      for (const page of scribe.data.ocr.active) {
+        for (const line of page.lines) {
+          for (const w of line.words) {
+            colorCounts.set(w.style.color, (colorCounts.get(w.style.color) || 0) + 1);
+            opacities.add(w.style.opacity);
+          }
+        }
+      }
+      await scribe.clear();
+    }, 20000);
+
+    it('writes the expected output PDF to the requested directory', () => {
+      expect(outputExists).toBe(true);
+    });
+
+    it('round-tripped PDF text contains the source word "HENRY"', () => {
+      expect(extractedText).toContain('HENRY');
+    });
+
+    it('round-tripped PDF text contains the source word "GRAVE"', () => {
+      expect(extractedText).toContain('GRAVE');
+    });
+
+    it('overlays 178 high-confidence words coloured green (#00ff80) per the Abbyy confidence scores', () => {
+      expect(colorCounts.get('#00ff80')).toBe(178);
+    });
+
+    it('overlays 7 low-confidence words coloured red (#ff0000) per the Abbyy confidence scores', () => {
+      expect(colorCounts.get('#ff0000')).toBe(7);
+    });
+
+    it('strips the input PDF\'s pre-existing invisible OCR layer (no third color leaks through)', () => {
+      // If the strip regressed, the 195 default-black words from the input's
+      // `3 Tr` layer would surface as a third color (#000000) here.
+      expect(colorCounts.size).toBe(2);
+    });
+
+    it('every overlaid word renders at the proof-mode opacity of 0.8 (no opacity-0 leakage from input layer)', () => {
+      expect([...opacities]).toEqual([0.8]);
+    });
+  });
 
   it('Overlay .pdf and Abbyy .xml file and print confidence.', async () => {
     const tmpDir = tmpUnique.get();

@@ -29,10 +29,13 @@ async function main(func, params) {
     throw new Error('No input files provided.');
   }
 
+  const needsOcr = func === 'check' || func === 'eval' || func === 'recognize' || params.robustConfMode;
+  const needsPdf = func === 'overlay' || func === 'recognize' || func === 'check' || func === 'eval' || func === 'debug';
+  const needsFont = needsPdf || needsOcr;
   await scribe.init({
-    pdf: true,
-    ocr: true,
-    font: true,
+    pdf: needsPdf,
+    ocr: needsOcr,
+    font: needsFont,
   });
 
   const robustConfMode = func === 'check' || params.robustConfMode || false;

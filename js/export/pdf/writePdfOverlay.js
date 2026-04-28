@@ -1,6 +1,7 @@
 import {
   findXrefOffset, parseXref, ObjectCache, extractDict,
   getPageContentStreams, tokenizeContentStream,
+  bytesToLatin1, stripText,
 } from '../../pdf/parsePdfUtils.js';
 import { getPageObjects, collectPageTreeObjNums } from '../../pdf/parsePdfDoc.js';
 import { createPdfFontRefs, createEmbeddedFontType0 } from './writePdfFonts.js';
@@ -30,6 +31,39 @@ function parseExistingContents(pageObjText) {
     return [`${singleMatch[1]} ${singleMatch[2]} R`];
   }
   return [];
+}
+
+/**
+ *
+ * @param {string[]} existingContentsRefs
+ * @param {ObjectCache} objCache
+ * @param {() => number} allocObjNum
+ * @param {(obj: { objNum: number, content: string | Uint8Array | import('./writePdfStreams.js').PdfBinaryObject }) => void} pushObj
+ * @param {boolean} humanReadable
+ */
+async function rewriteContentsStrippingInvisibleText(existingContentsRefs, objCache, allocObjNum, pushObj, humanReadable) {
+  if (existingContentsRefs.length === 0) return existingContentsRefs;
+  /** @type {string[]} */
+  const parts = [];
+  for (const ref of existingContentsRefs) {
+    const refMatch = /^(\d+)\s+\d+\s+R$/.exec(ref);
+    if (!refMatch) return existingContentsRefs;
+    let bytes;
+    try {
+      bytes = objCache.getStreamBytes(Number(refMatch[1]));
+    } catch {
+      bytes = null;
+    }
+    if (!bytes) return existingContentsRefs;
+    parts.push(bytesToLatin1(bytes));
+  }
+  const merged = parts.join('\n');
+  const { text, dropped } = stripText(merged, { mode: 'invisible' });
+  if (!dropped) return existingContentsRefs;
+  const newObjNum = allocObjNum();
+  const objBin = await encodeStreamObject(newObjNum, text, { humanReadable });
+  pushObj({ objNum: newObjNum, content: objBin });
+  return [`${newObjNum} 0 R`];
 }
 
 /**
@@ -68,41 +102,53 @@ function resolvePageResources(pageObjText, objCache) {
 }
 
 /**
- * Merge overlay font and ExtGState entries into an existing Resources dict.
+ *
+ * @param {string} inner
+ * @param {string} key  e.g. '/Font' or '/ExtGState'
+ * @param {string} newEntries
+ * @param {?ObjectCache} objCache
+ */
+function mergeResourceKey(inner, key, newEntries, objCache) {
+  if (!newEntries) return inner;
+  const idx = inner.indexOf(key);
+  if (idx < 0) return `${inner} ${key}<<${newEntries}>>`;
+  let p = idx + key.length;
+  while (p < inner.length && /\s/.test(inner[p])) p++;
+  if (inner.startsWith('<<', p)) {
+    const dict = extractDict(inner, p);
+    const merged = `${dict.slice(0, -2)} ${newEntries}>>`;
+    return inner.slice(0, p) + merged + inner.slice(p + dict.length);
+  }
+  const refMatch = /^(\d+)\s+\d+\s+R/.exec(inner.slice(p));
+  if (refMatch && objCache) {
+    const resolved = objCache.getObjectText(Number(refMatch[1]));
+    if (resolved) {
+      // Resolved object text may be just the dict body or wrapped — strip
+      // any surrounding `<< >>` and splice into our inline dict.
+      const trimmed = resolved.trim();
+      const inner2 = trimmed.startsWith('<<') && trimmed.endsWith('>>')
+        ? trimmed.slice(2, -2).trim()
+        : trimmed;
+      const merged = `<<${inner2} ${newEntries}>>`;
+      return inner.slice(0, p) + merged + inner.slice(p + refMatch[0].length);
+    }
+  }
+  // Couldn't resolve — leave the original slot alone and append a duplicate
+  // key. PDF readers honor the last entry for duplicate keys, so the new
+  // (overlay) fonts/ExtGStates win.
+  return `${inner} ${key}<<${newEntries}>>`;
+}
+
+/**
  * @param {string} existingDict
  * @param {string} overlayFontsStr
  * @param {string} overlayExtGStateStr
+ * @param {?ObjectCache} [objCache=null]
  */
-function mergeResources(existingDict, overlayFontsStr, overlayExtGStateStr) {
+function mergeResources(existingDict, overlayFontsStr, overlayExtGStateStr, objCache = null) {
   let inner = existingDict.slice(2, -2).trim();
-
-  // Merge /Font entries
-  const fontIdx = inner.indexOf('/Font');
-  if (fontIdx >= 0) {
-    const dictStart = inner.indexOf('<<', fontIdx);
-    if (dictStart >= 0) {
-      const fontDict = extractDict(inner, dictStart);
-      // Insert overlay entries before the closing >>
-      const mergedFontDict = `${fontDict.slice(0, -2)} ${overlayFontsStr}>>`;
-      inner = `${inner.slice(0, fontIdx)}/Font${inner.slice(fontIdx + '/Font'.length, fontIdx + '/Font'.length + (dictStart - fontIdx - '/Font'.length))}${mergedFontDict}${inner.slice(fontIdx + '/Font'.length + (dictStart - fontIdx - '/Font'.length) + fontDict.length)}`;
-    }
-  } else if (overlayFontsStr) {
-    inner += ` /Font<<${overlayFontsStr}>>`;
-  }
-
-  // Merge /ExtGState entries
-  const gsIdx = inner.indexOf('/ExtGState');
-  if (gsIdx >= 0) {
-    const dictStart = inner.indexOf('<<', gsIdx);
-    if (dictStart >= 0) {
-      const gsDict = extractDict(inner, dictStart);
-      const mergedGsDict = `${gsDict.slice(0, -2)} ${overlayExtGStateStr}>>`;
-      inner = `${inner.slice(0, gsIdx)}/ExtGState${inner.slice(gsIdx + '/ExtGState'.length, gsIdx + '/ExtGState'.length + (dictStart - gsIdx - '/ExtGState'.length))}${mergedGsDict}${inner.slice(gsIdx + '/ExtGState'.length + (dictStart - gsIdx - '/ExtGState'.length) + gsDict.length)}`;
-    }
-  } else if (overlayExtGStateStr) {
-    inner += ` /ExtGState<<${overlayExtGStateStr}>>`;
-  }
-
+  inner = mergeResourceKey(inner, '/Font', overlayFontsStr, objCache);
+  inner = mergeResourceKey(inner, '/ExtGState', overlayExtGStateStr, objCache);
   return `<<${inner}>>`;
 }
 
@@ -489,7 +535,8 @@ async function rebuildPdfSubset({
       let pageFontsUsed = new Set();
       if (pageObj && pageObj.lines.length > 0) {
         const angle = pageMetricsArr[i].angle || 0;
-        const res = ocrPageToPDFStream(
+        // eslint-disable-next-line no-await-in-loop
+        const res = await ocrPageToPDFStream(
           pageObj, pixelDims, pdfFonts, /** @type {'ebook'|'eval'|'proof'|'invis'} */ (textMode), angle,
           rotateText, rotateBackground, confThreshHigh, confThreshMed,
         );
@@ -518,9 +565,16 @@ async function rebuildPdfSubset({
         allOutputObjects.push({ objNum: qOverlayObjNum, content: await encodeStreamObject(qOverlayObjNum, qOverlayStr, { humanReadable }) });
 
         const existingContentsRefs = parseExistingContents(pageInfo.objText);
+        const strippedContentsRefs = await rewriteContentsStrippingInvisibleText(
+          existingContentsRefs,
+          objCache,
+          () => nextObjNum++,
+          (obj) => allOutputObjects.push(obj),
+          humanReadable,
+        );
         newContentsArray = [
           `${qSaveObjNum} 0 R`,
-          ...existingContentsRefs,
+          ...strippedContentsRefs,
           `${qOverlayObjNum} 0 R`,
         ];
 
@@ -530,7 +584,7 @@ async function rebuildPdfSubset({
           overlayFontsStr += `${font.name} ${font.objN} 0 R\n`;
         }
         const overlayExtGStateStr = `/GSO0 <</ca 0.0>>/GSO1 <</ca ${proofOpacity}>>`;
-        const mergedResourcesStr = mergeResources(existingResourcesStr, overlayFontsStr, overlayExtGStateStr);
+        const mergedResourcesStr = mergeResources(existingResourcesStr, overlayFontsStr, overlayExtGStateStr, objCache);
 
         resourcesObjNum = nextObjNum++;
         allOutputObjects.push({ objNum: resourcesObjNum, content: `${resourcesObjNum} 0 obj\n${mergedResourcesStr}\nendobj\n\n` });
@@ -852,7 +906,7 @@ export async function overlayPdfText({
     let pageFontsUsed = new Set();
     if (pageObj && pageObj.lines.length > 0) {
       const angle = pageMetricsArr[i].angle || 0;
-      const res = ocrPageToPDFStream(
+      const res = await ocrPageToPDFStream(
         pageObj, pixelDims, pdfFonts, textMode, angle,
         rotateText, rotateBackground, confThreshHigh, confThreshMed,
       );
@@ -881,9 +935,16 @@ export async function overlayPdfText({
       newObjects.push({ objNum: qOverlayObjNum, content: await encodeStreamObject(qOverlayObjNum, qOverlayStr, { humanReadable }) });
 
       const existingContentsRefs = parseExistingContents(pageInfo.objText);
+      const strippedContentsRefs = await rewriteContentsStrippingInvisibleText(
+        existingContentsRefs,
+        objCache,
+        () => nextObjNum++,
+        (obj) => newObjects.push(obj),
+        humanReadable,
+      );
       newContentsArray = [
         `${qSaveObjNum} 0 R`,
-        ...existingContentsRefs,
+        ...strippedContentsRefs,
         `${qOverlayObjNum} 0 R`,
       ];
 
@@ -894,7 +955,7 @@ export async function overlayPdfText({
         overlayFontsStr += `${font.name} ${font.objN} 0 R\n`;
       }
       const overlayExtGStateStr = `/GSO0 <</ca 0.0>>/GSO1 <</ca ${proofOpacity}>>`;
-      const mergedResourcesStr = mergeResources(existingResourcesStr, overlayFontsStr, overlayExtGStateStr);
+      const mergedResourcesStr = mergeResources(existingResourcesStr, overlayFontsStr, overlayExtGStateStr, objCache);
 
       resourcesObjNum = nextObjNum++;
       newObjects.push({ objNum: resourcesObjNum, content: `${resourcesObjNum} 0 obj\n${mergedResourcesStr}\nendobj\n\n` });

@@ -72,13 +72,19 @@ export async function exportData(format = 'txt', { minPage = 0, maxPage = -1, pa
       if (insertInputPDF) {
         try {
           let basePdfData = ImageCache.pdfData;
+          let overlayOcrArr = ocrDownload;
+          let overlayPageMetricsArr = pageMetricsAll;
+          let overlayAnnotationsPages = annotations.pages;
           if (pageArr.length < inputData.pageCount) {
             basePdfData = await subsetPdf(basePdfData, pageArr);
+            overlayOcrArr = pageArr.map((i) => ocrDownload[i]);
+            overlayPageMetricsArr = pageArr.map((i) => pageMetricsAll[i]);
+            overlayAnnotationsPages = pageArr.map((i) => annotations.pages[i] || []);
           }
           content = await overlayPdfText({
             basePdfData,
-            ocrArr: ocrDownload,
-            pageMetricsArr: pageMetricsAll,
+            ocrArr: overlayOcrArr,
+            pageMetricsArr: overlayPageMetricsArr,
             textMode: opt.displayMode,
             rotateText,
             rotateBackground,
@@ -86,7 +92,7 @@ export async function exportData(format = 'txt', { minPage = 0, maxPage = -1, pa
             confThreshMed: opt.confThreshMed,
             proofOpacity: opt.overlayOpacity / 100,
             humanReadable: opt.humanReadablePDF,
-            annotationsPages: annotations.pages,
+            annotationsPages: overlayAnnotationsPages,
           });
         } catch (error) {
           console.error('Failed to overlay text onto input PDF, creating new PDF from rendered images instead.');

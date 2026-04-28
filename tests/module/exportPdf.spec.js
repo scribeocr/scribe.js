@@ -84,37 +84,55 @@ describe('Check export for .pdf files.', () => {
     expect(reExportedText).toContain('This is a lot of 12 point text');
   });
 
-  test('Export of PDF with existing invisible text layer should not create duplicate text', async () => {
-    scribe.opt.usePDFText.ocr.main = true;
-    await scribe.importFiles([`${ASSETS_PATH}/scribe_test_pdf1.pdf`]);
+  for (const mode of /** @type {const} */ (['invis', 'proof'])) {
+    test(`Existing invisible OCR layer is stripped before overlaying (displayMode='${mode}')`, async () => {
+      scribe.opt.usePDFText.ocr.main = true;
+      await scribe.importFiles([`${ASSETS_PATH}/scribe_test_pdf1.pdf`]);
+      expect(scribe.inputData.pdfType).toBe('ocr');
 
-    expect(scribe.inputData.pdfType).toBe('ocr');
-    expect(scribe.data.ocr.active[0]?.lines?.length > 0).toBe(true);
+      scribe.opt.displayMode = mode;
+      const exportedPdf = await scribe.exportData('pdf');
 
-    const originalLineCount = scribe.data.ocr.active[0].lines.length;
-    const originalText = await scribe.exportData('text');
+      await scribe.clear();
+      scribe.opt.usePDFText.ocr.main = true;
+      scribe.opt.keepPDFTextAlways = true;
+      await scribe.importFiles({ pdfFiles: [exportedPdf] });
+      const ocr = scribe.data.ocr.active.length ? scribe.data.ocr.active : scribe.data.ocr.pdf;
 
-    scribe.opt.displayMode = 'invis';
-    const exportedPdf = await scribe.exportData('pdf');
+      let lines = 0;
+      let words = 0;
+      const colors = new Set();
+      const opacities = new Set();
+      for (const page of ocr) {
+        lines += page.lines.length;
+        for (const line of page.lines) {
+          for (const w of line.words) {
+            words++;
+            colors.add(w.style.color);
+            opacities.add(w.style.opacity);
+          }
+        }
+      }
+      expect(lines).toBe(58);
+      expect(words).toBe(419);
+      expect(colors.size).toBe(1);
+      expect(opacities.size).toBe(1);
+      if (mode === 'invis') {
+        expect([...colors]).toEqual(['#000000']);
+        expect([...opacities]).toEqual([0]);
+      } else {
+        // Confidence buckets in the source PDF text default to high → green
+        // (#00ff80) at proofOpacity 0.8 since no recognise pass was run.
+        expect([...colors]).toEqual(['#00ff80']);
+        expect([...opacities]).toEqual([0.8]);
+      }
 
-    await scribe.clear();
-    scribe.opt.usePDFText.ocr.main = true;
-    await scribe.importFiles({ pdfFiles: [exportedPdf] });
-
-    expect(scribe.inputData.pdfType).toBe('ocr');
-    expect(scribe.data.ocr.active[0]?.lines?.length > 0).toBe(true);
-
-    const reImportedLineCount = scribe.data.ocr.active[0].lines.length;
-    const reImportedText = await scribe.exportData('text');
-
-    expect(reImportedLineCount).toBeLessThan(originalLineCount * 1.5);
-
-    expect(reImportedText.length).toBeLessThan(originalText.length * 1.5);
-
-    scribe.opt.displayMode = 'proof';
-    scribe.opt.usePDFText.ocr.main = false;
-    await scribe.clear();
-  });
+      scribe.opt.displayMode = 'proof';
+      scribe.opt.usePDFText.ocr.main = false;
+      scribe.opt.keepPDFTextAlways = false;
+      await scribe.clear();
+    });
+  }
 
   test('Export of text-native PDF preserves visible text when adding overlay', async () => {
     scribe.opt.usePDFText.native.main = true;
@@ -219,32 +237,72 @@ describe('Check export for .pdf files.', () => {
     await scribe.clear();
   });
 
-  test('humanReadablePDF round-trip yields same text as compressed round-trip', async () => {
-    scribe.opt.displayMode = 'proof';
-    await scribe.importFiles([`${ASSETS_PATH}/testocr.png`, `${ASSETS_PATH}/testocr.abbyy.xml`]);
+  describe('Proof-mode round-trip preserves color, opacity, and text', () => {
+    /** @type {Array<{ color: string, opacity: number }>} */
+    let compressedWords;
+    /** @type {string} */
+    let textCompressed;
+    /** @type {string} */
+    let textHuman;
 
-    scribe.opt.humanReadablePDF = false;
-    const pdfCompressed = await scribe.exportData('pdf');
-    scribe.opt.humanReadablePDF = true;
-    const pdfHuman = await scribe.exportData('pdf');
+    beforeAll(async () => {
+      scribe.opt.displayMode = 'proof';
+      await scribe.importFiles([`${ASSETS_PATH}/testocr.png`, `${ASSETS_PATH}/testocr.abbyy.xml`]);
 
-    await scribe.clear();
-    scribe.opt.usePDFText.native.main = true;
-    await scribe.importFiles({ pdfFiles: [pdfCompressed] });
-    scribe.data.ocr.active = scribe.data.ocr.pdf;
-    const textCompressed = await scribe.exportData('text');
+      scribe.opt.humanReadablePDF = false;
+      const pdfCompressed = await scribe.exportData('pdf');
+      scribe.opt.humanReadablePDF = true;
+      const pdfHuman = await scribe.exportData('pdf');
+      scribe.opt.humanReadablePDF = false;
 
-    await scribe.clear();
-    scribe.opt.usePDFText.native.main = true;
-    await scribe.importFiles({ pdfFiles: [pdfHuman] });
-    scribe.data.ocr.active = scribe.data.ocr.pdf;
-    const textHuman = await scribe.exportData('text');
+      await scribe.clear();
+      scribe.opt.usePDFText.native.main = true;
+      await scribe.importFiles({ pdfFiles: [pdfCompressed] });
+      scribe.data.ocr.active = scribe.data.ocr.pdf;
+      compressedWords = [];
+      for (const line of scribe.data.ocr.active[0].lines) {
+        for (const w of line.words) compressedWords.push({ color: w.style.color, opacity: w.style.opacity });
+      }
+      textCompressed = /** @type {string} */ (await scribe.exportData('text'));
 
-    expect(textCompressed).toBe(textHuman);
-    expect(textCompressed).toContain('This is a lot of 12 point text');
+      await scribe.clear();
+      scribe.opt.usePDFText.native.main = true;
+      await scribe.importFiles({ pdfFiles: [pdfHuman] });
+      scribe.data.ocr.active = scribe.data.ocr.pdf;
+      textHuman = /** @type {string} */ (await scribe.exportData('text'));
+    });
 
-    scribe.opt.humanReadablePDF = false;
-    await scribe.clear();
+    afterAll(async () => {
+      await scribe.clear();
+    });
+
+    test('Compressed export round-trips 59 high-confidence words coloured green (#00ff80)', () => {
+      const greenCount = compressedWords.filter((w) => w.color === '#00ff80').length;
+      expect(greenCount).toBe(59);
+    });
+
+    test('Compressed export round-trips 1 low-confidence word coloured red (#ff0000)', () => {
+      const redCount = compressedWords.filter((w) => w.color === '#ff0000').length;
+      expect(redCount).toBe(1);
+    });
+
+    test('Compressed export emits exactly the two confidence colours present in this fixture (no medium-confidence words)', () => {
+      const distinctColors = new Set(compressedWords.map((w) => w.color));
+      expect([...distinctColors].sort()).toEqual(['#00ff80', '#ff0000']);
+    });
+
+    test('Compressed export round-trips proofOpacity 0.8 for every word', () => {
+      const distinctOpacities = new Set(compressedWords.map((w) => w.opacity));
+      expect([...distinctOpacities]).toEqual([0.8]);
+    });
+
+    test('humanReadable export yields identical extracted text to compressed export', () => {
+      expect(textHuman).toBe(textCompressed);
+    });
+
+    test('Round-tripped text contains the expected source content', () => {
+      expect(textCompressed).toContain('This is a lot of 12 point text');
+    });
   });
 
   test('PDF overlay with page subset exports only the requested pages and removes unreferenced objects', async () => {

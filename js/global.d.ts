@@ -9,6 +9,8 @@ declare global {
         smallCaps: boolean;
         sup: boolean;
         dropcap: boolean;
+        color: string;
+        opacity: number;
     };
 
     // Strings representing supported sources of text.

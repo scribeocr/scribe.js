@@ -147,6 +147,8 @@ export function OcrWord(line, id, text, bbox, poly) {
     smallCaps: false,
     sup: false,
     dropcap: false,
+    color: '#000000',
+    opacity: 1,
   };
   /** @type {string} */
   this.lang = 'eng';

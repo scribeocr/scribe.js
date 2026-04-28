@@ -5,7 +5,7 @@ import {
 import {
   findXrefOffset, parseXref, ObjectCache,
   bytesToLatin1, getPageObjects, getPageContentStream, tokenizeContentStream,
-  findFormXObjects,
+  findFormXObjects, extractDict,
 } from './parsePdfUtils.js';
 import { parsePageFonts } from './fonts/parsePdfFonts.js';
 import { parsePagePaths } from './parsePdfPaths.js';
@@ -30,6 +30,79 @@ function colorToRgb(c) {
     return [r / 255, g / 255, b / 255];
   }
   return null;
+}
+
+/**
+ * Format an [r,g,b] (0..1) tuple as a lowercase '#rrggbb' hex string.
+ * @param {number[]} rgb
+ */
+function rgbToHex(rgb) {
+  /** @param {number} x */
+  const clamp = (x) => Math.max(0, Math.min(255, Math.round(x * 255)));
+  /** @param {number} x */
+  const hex = (x) => clamp(x).toString(16).padStart(2, '0');
+  return `#${hex(rgb[0])}${hex(rgb[1])}${hex(rgb[2])}`;
+}
+
+/**
+ * Parse the ExtGState dictionary from a page (or Form XObject) /Resources entry,
+ * returning a map of GS name → { fillAlpha }.
+ * @param {string} containerObjText
+ * @param {ObjectCache} objCache
+ */
+function parseFillAlphaExtGStates(containerObjText, objCache) {
+  /** @type {Map<string, { fillAlpha: ?number }>} */
+  const states = new Map();
+
+  let resourcesText = containerObjText;
+  const resRefMatch = /\/Resources\s+(\d+)\s+\d+\s+R/.exec(containerObjText);
+  if (resRefMatch) {
+    const resObj = objCache.getObjectText(Number(resRefMatch[1]));
+    if (resObj) resourcesText = resObj;
+  }
+
+  const gsStart = resourcesText.indexOf('/ExtGState');
+  if (gsStart === -1) return states;
+
+  let gsDictText;
+  const afterGs = resourcesText.substring(gsStart + 10).trim();
+  if (afterGs.startsWith('<<')) {
+    gsDictText = extractDict(resourcesText, gsStart + 10 + resourcesText.substring(gsStart + 10).indexOf('<<'));
+  } else {
+    const gsRefMatch = /^(\d+)\s+\d+\s+R/.exec(afterGs);
+    if (gsRefMatch) {
+      const gsObj = objCache.getObjectText(Number(gsRefMatch[1]));
+      if (gsObj) gsDictText = gsObj;
+    }
+  }
+  if (!gsDictText) return states;
+
+  let i = 2;
+  while (i < gsDictText.length) {
+    if (gsDictText[i] !== '/') { i++; continue; }
+    let j = i + 1;
+    while (j < gsDictText.length && !/[\s/<>[\]]/.test(gsDictText[j])) j++;
+    const gsName = gsDictText.substring(i + 1, j);
+    while (j < gsDictText.length && /\s/.test(gsDictText[j])) j++;
+    let gsBody;
+    if (gsDictText.startsWith('<<', j)) {
+      gsBody = extractDict(gsDictText, j);
+      i = j + gsBody.length;
+    } else {
+      const refMatch = /^(\d+)\s+\d+\s+R/.exec(gsDictText.substring(j));
+      if (refMatch) {
+        const refObj = objCache.getObjectText(Number(refMatch[1]));
+        gsBody = refObj || '';
+        i = j + refMatch[0].length;
+      } else {
+        i = j + 1;
+        continue;
+      }
+    }
+    const caMatch = /\/ca\s+([0-9.]+)/.exec(gsBody);
+    states.set(gsName, { fillAlpha: caMatch ? parseFloat(caMatch[1]) : null });
+  }
+  return states;
 }
 
 export {
@@ -100,8 +173,9 @@ function findDoOperators(tokens, formXObjects, initialCtm) {
  * @param {number[]} containerCtm - CTM at the container level
  * @param {ObjectCache} objCache
  * @param {Set<number>} visited - Object numbers already visited (cycle detection)
+ * @param {Map<string, { fillAlpha: ?number }>} [parentExtGStates] - ExtGState map inherited from the parent scope
  */
-function extractFormXObjectText(containerObjText, containerTokens, parentFonts, scale, pageHeightPts, containerCtm, objCache, visited) {
+function extractFormXObjectText(containerObjText, containerTokens, parentFonts, scale, pageHeightPts, containerCtm, objCache, visited, parentExtGStates) {
   const chars = [];
   const formXObjects = findFormXObjects(containerObjText, objCache);
   if (formXObjects.size === 0) return chars;
@@ -119,6 +193,10 @@ function extractFormXObjectText(containerObjText, containerTokens, parentFonts, 
     const formContentStream = bytesToLatin1(formBytes);
     const formFonts = parsePageFonts(formObjText, objCache);
     const mergedFonts = new Map([...parentFonts, ...formFonts]);
+    const formExtGStates = parseFillAlphaExtGStates(formObjText, objCache);
+    const mergedExtGStates = formExtGStates.size > 0
+      ? new Map([...(parentExtGStates || []), ...formExtGStates])
+      : parentExtGStates;
     const matrixMatch = /\/Matrix\s*\[\s*([\d.\-\s]+)\]/.exec(formObjText);
     const formMatrix = matrixMatch
       ? matrixMatch[1].trim().split(/\s+/).map(Number)
@@ -126,13 +204,13 @@ function extractFormXObjectText(containerObjText, containerTokens, parentFonts, 
     const formCtm = multiplyMatrices(formMatrix, doOp.ctm);
     const formTokens = tokenizeContentStream(formContentStream);
     const formChars = executeTextOperators(
-      formTokens, mergedFonts, scale, pageHeightPts, formCtm,
+      formTokens, mergedFonts, scale, pageHeightPts, formCtm, mergedExtGStates,
     );
     for (let ci = 0; ci < formChars.length; ci++) chars.push(formChars[ci]);
 
     // Recurse into nested form XObjects within this form's content stream.
     const nestedChars = extractFormXObjectText(
-      formObjText, formTokens, mergedFonts, scale, pageHeightPts, formCtm, objCache, visited,
+      formObjText, formTokens, mergedFonts, scale, pageHeightPts, formCtm, objCache, visited, mergedExtGStates,
     );
     for (let ci = 0; ci < nestedChars.length; ci++) chars.push(nestedChars[ci]);
   }
@@ -297,12 +375,13 @@ export function parseSinglePage(page, objCache, n, dpi) {
   }
 
   const tokens = tokenizeContentStream(contentStreamText);
-  const chars = executeTextOperators(tokens, fonts, scale, visualHeightPts, initialCtm);
+  const extGStates = parseFillAlphaExtGStates(objText, objCache);
+  const chars = executeTextOperators(tokens, fonts, scale, visualHeightPts, initialCtm, extGStates);
 
   // Extract text from Form XObjects referenced by Do operators in the content stream.
   // Recurse into nested form XObjects so that deeply-nested text (e.g. 3+ levels) is extracted.
   const formChars = extractFormXObjectText(
-    objText, tokens, fonts, scale, visualHeightPts, initialCtm, objCache, new Set(),
+    objText, tokens, fonts, scale, visualHeightPts, initialCtm, objCache, new Set(), extGStates,
   );
   for (let ci = 0; ci < formChars.length; ci++) chars.push(formChars[ci]);
 
@@ -439,6 +518,7 @@ export function detectPdfType(pdfBytes) {
  *   orientation: number,
  *   dirX: number, dirY: number,
  *   textColor?: number[],
+ *   alpha?: number,
  *   _perpDist?: number
  * }} PositionedChar
  */
@@ -463,9 +543,10 @@ function multiplyMatrices(a, b) {
  * @param {number} scale - DPI scale factor (dpi/72)
  * @param {number} pageHeightPts - visual page height in PDF points (after /Rotate)
  * @param {number[]} [initialCtm] - initial CTM incorporating /Rotate transform
+ * @param {Map<string, { fillAlpha: ?number }>} [extGStates] - ExtGState map (name → entry) for `gs` operator
  * @returns {Array<PositionedChar>}
  */
-function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm) {
+function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, extGStates) {
   const chars = /** @type {Array<PositionedChar>} */ ([]);
 
   // Graphics state
@@ -473,7 +554,8 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm) {
   let tr = 0; // text rendering mode (0-7; mode 3 = invisible)
   /** @type {number[]} */
   let textColor = [0]; // current non-stroking (fill) color — default black
-  /** @type {Array<{ ctm: number[], tr: number, tc: number, tw: number, tz: number, tl: number, fontSize: number, currentFont: any, textColor: number[] }>} */
+  let fillAlpha = 1; // current non-stroking alpha (from ExtGState /ca via `gs`)
+  /** @type {Array<{ ctm: number[], tr: number, tc: number, tw: number, tz: number, tl: number, fontSize: number, currentFont: any, textColor: number[], fillAlpha: number }>} */
   const gsStack = [];
 
   // Text state
@@ -504,7 +586,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm) {
       // Graphics state operators
       case 'q':
         gsStack.push({
-          ctm: ctm.slice(), tr, tc, tw, tz, tl, fontSize, currentFont, textColor: textColor.slice(),
+          ctm: ctm.slice(), tr, tc, tw, tz, tl, fontSize, currentFont, textColor: textColor.slice(), fillAlpha,
         });
         operandStack.length = 0;
         break;
@@ -521,6 +603,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm) {
           fontSize = saved.fontSize;
           currentFont = saved.currentFont;
           textColor = saved.textColor;
+          fillAlpha = saved.fillAlpha;
         }
         operandStack.length = 0;
         break;
@@ -710,15 +793,31 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm) {
         operandStack.length = 0;
         break;
 
+      // Graphics state parameters (sets non-stroking alpha via /ca).
+      case 'gs': {
+        if (operandStack.length >= 1 && extGStates) {
+          const nameTok = operandStack[operandStack.length - 1];
+          if (nameTok && nameTok.type === 'name') {
+            const entry = extGStates.get(nameTok.value);
+            if (entry && entry.fillAlpha !== null && entry.fillAlpha !== undefined) {
+              fillAlpha = entry.fillAlpha;
+            }
+          }
+        }
+        operandStack.length = 0;
+        break;
+      }
+
       default:
         operandStack.length = 0;
         break;
     }
 
-    // Tag newly-added chars with the current text color.
+    // Tag newly-added chars with the current text color and alpha.
     if (op === 'Tj' || op === 'TJ' || op === "'" || op === '"') {
       for (let ci = charsBeforeOp; ci < chars.length; ci++) {
         chars[ci].textColor = textColor;
+        chars[ci].alpha = fillAlpha;
       }
     }
   }
@@ -1691,6 +1790,16 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
       wordObj.style.font = firstAlphaNum.fontInfo.familyName;
       wordObj.style.bold = firstAlphaNum.fontInfo.bold;
       wordObj.style.italic = firstAlphaNum.fontInfo.italic;
+
+      if (firstAlphaNum.textColor) {
+        const rgb = colorToRgb(firstAlphaNum.textColor);
+        if (rgb) wordObj.style.color = rgbToHex(rgb);
+      }
+      if (firstAlphaNum.invisible) {
+        wordObj.style.opacity = 0;
+      } else if (typeof firstAlphaNum.alpha === 'number') {
+        wordObj.style.opacity = firstAlphaNum.alpha;
+      }
 
       // For superscript and drop cap words, use the raw font size.
       // round3 collapses ~1e-16 drift from the (300/72) scale-factor multiplication chain;

@@ -360,6 +360,23 @@ describe('Check direct text extraction from Iris (plant) - Wikipedia_123.pdf.', 
     expect(allText).toContain('showy flowers');
   });
 
+  test('Page 1 surfaces the literal fill color and opacity 1 for visible text', async () => {
+    // Text-native PDF, default `Tr=0`. Page 0 mixes default-black body text
+    // (243 words) with grey link/caption words (#666666, 4 words).
+    const opacities = new Set();
+    const colors = new Map();
+    for (const line of scribe.data.ocr.active[0].lines) {
+      for (const w of line.words) {
+        opacities.add(w.style.opacity);
+        colors.set(w.style.color, (colors.get(w.style.color) || 0) + 1);
+      }
+    }
+    expect([...opacities]).toEqual([1]);
+    expect(colors.get('#000000')).toBe(243);
+    expect(colors.get('#666666')).toBe(4);
+    expect(colors.size).toBe(2);
+  });
+
   test('Page 1 lines[0].words[0] is "Iris" with 4 chars at expected per-char widths and a uniform height of 35', async () => {
     const word = scribe.data.ocr.active[0].lines[0].words[0];
     expect(word.text).toBe('Iris');
@@ -583,6 +600,21 @@ describe('Check that PDF text types are detected and imported correctly.', () =>
     scribe.opt.usePDFText.native.main = false;
     expect(scribe.inputData.pdfType).toBe('ocr');
     expect(scribe.data.ocr.active[0]?.lines?.length > 0).toBe(true);
+  });
+
+  // This is a distinct test case because the mechanism for hiding OCR text is different.
+  // The OCR layer uses `3 Tr` and has no explicit /ca.
+  test('Words rendered with `3 Tr` (invisible) parse to opacity 0 and default-black color', async () => {
+    const opacities = new Set();
+    const colors = new Set();
+    for (const line of scribe.data.ocr.active[0].lines) {
+      for (const w of line.words) {
+        opacities.add(w.style.opacity);
+        colors.add(w.style.color);
+      }
+    }
+    expect([...opacities]).toEqual([0]);
+    expect([...colors]).toEqual(['#000000']);
   });
 
   test('OCR text is detected and extracted but not set to main data when `usePDFText.ocr.main` is false', async () => {
