@@ -4,3 +4,6 @@
 [submodule "tests/test-assets"]
 	path = tests/test-assets
 	url = https://github.com/scribe-js/test-assets.git
+[submodule "tests/test-lang-data"]
+	path = tests/test-lang-data
+	url = https://github.com/scribe-js/test-lang-data.git

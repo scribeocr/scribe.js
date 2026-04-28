@@ -37,12 +37,6 @@ jobs:
       - name: Install npm dependencies
         run: npm ci
 
-      - name: Download Tesseract trained data
-        run: |
-          mkdir -p tests/test-lang-data
-          curl -fsSL -o tests/test-lang-data/eng.traineddata.gz \
-            https://cdn.jsdelivr.net/npm/@tesseract.js-data/eng/4.0.0/eng.traineddata.gz
-
       - name: Run vitest browser tests
         env:
           # Ubuntu runners ship with Google Chrome and chromedriver
