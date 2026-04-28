@@ -5,7 +5,7 @@ import scribe from '../../scribe.js';
 import { extractPDFTextDirect } from '../../js/pdf/parsePdfDoc.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 
-const isNode = typeof window === 'undefined';
+const isNode = typeof process !== 'undefined' && process.versions && process.versions.node;
 
 /** @param {string} pdfPath */
 async function readPdfBytes(pdfPath) {

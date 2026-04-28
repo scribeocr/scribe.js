@@ -14,7 +14,7 @@ scribe.opt.workerN = 1;
 
 // MCP tools touch the filesystem (paths, output files), so the suite is
 // inherently Node-only. Skip the whole file under browser projects.
-const isNode = typeof window === 'undefined';
+const isNode = typeof process !== 'undefined' && process.versions && process.versions.node;
 const describeNode = isNode ? describe : describe.skip;
 
 /** @param {Uint8Array} pdfBytes */

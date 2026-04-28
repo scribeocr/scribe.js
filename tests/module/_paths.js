@@ -2,7 +2,7 @@
 // environment the test is running in. In the browser, scribe.importFiles
 // fetches URLs relative to the dev-server origin; in Node, scribe's
 // wrapFilesNode uses fs.readFileSync against absolute filesystem paths.
-const isNode = typeof window === 'undefined';
+const isNode = typeof process !== 'undefined' && process.versions && process.versions.node;
 
 let ASSETS_PATH;
 let LANG_PATH;

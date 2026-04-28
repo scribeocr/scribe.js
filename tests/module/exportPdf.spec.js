@@ -6,7 +6,7 @@ import { subsetPdf } from '../../js/export/pdf/writePdfOverlay.js';
 import { mergePdfs } from '../../js/export/pdf/mergePdfs.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 
-const isNode = typeof window === 'undefined';
+const isNode = typeof process !== 'undefined' && process.versions && process.versions.node;
 
 /** @param {string} pdfPath */
 async function readPdfBytes(pdfPath) {
