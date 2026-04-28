@@ -6,22 +6,26 @@ import { webdriverio } from '@vitest/browser-webdriverio';
 // `instances[].capabilities` — it reads only from the factory `options`. Each
 // browser ignores the capability keys it doesn't recognize (firefox ignores
 // goog:* and wdio:chromedriverOptions, chrome ignores moz:*).
+//
+// Browser/driver paths default to webdriverio auto-discovery (selenium-manager).
+// Set CHROMIUM_BINARY / CHROMEDRIVER_BINARY / FIREFOX_BINARY to pin specific
+// binaries in restricted-network environments (dev container, CI).
+/** @type {Record<string, any>} */
+const chromeOptions = { args: ['--no-sandbox', '--disable-dev-shm-usage'] };
+if (process.env.CHROMIUM_BINARY) chromeOptions.binary = process.env.CHROMIUM_BINARY;
+
+/** @type {Record<string, any>} */
+const firefoxOptions = { args: ['-headless'] };
+if (process.env.FIREFOX_BINARY) firefoxOptions.binary = process.env.FIREFOX_BINARY;
+
+/** @type {Record<string, any>} */
 const CAPABILITIES = {
-  'goog:chromeOptions': {
-    binary: process.env.CHROMIUM_BINARY || '/usr/bin/chromium',
-    args: ['--no-sandbox', '--disable-dev-shm-usage'],
-  },
-  // Pin the WebDriver bridge so webdriverio uses the matching apt-installed
-  // chromedriver rather than auto-downloading a different version from the
-  // puppeteer mirror.
-  'wdio:chromedriverOptions': {
-    binary: process.env.CHROMEDRIVER_BINARY || '/usr/bin/chromedriver',
-  },
-  'moz:firefoxOptions': {
-    binary: process.env.FIREFOX_BINARY || '/usr/bin/firefox-esr',
-    args: ['-headless'],
-  },
+  'goog:chromeOptions': chromeOptions,
+  'moz:firefoxOptions': firefoxOptions,
 };
+if (process.env.CHROMEDRIVER_BINARY) {
+  CAPABILITIES['wdio:chromedriverOptions'] = { binary: process.env.CHROMEDRIVER_BINARY };
+}
 
 const SHARED_VITE_OPTIONS = {
   // Vite's default fs.allow only covers the workspace; explicitly include
