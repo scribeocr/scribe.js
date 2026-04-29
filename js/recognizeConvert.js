@@ -814,7 +814,9 @@ async function recognizeCustomModel(options) {
   let lastRequestTime = 0;
 
   let concurrency;
-  if (tps != null) {
+  if (modelOptions.maxConcurrency != null) {
+    concurrency = modelOptions.maxConcurrency;
+  } else if (tps != null) {
     // When tps is set, that is the primary means of limiting concurrency.
     // This is set to a large number as a safeguard.
     concurrency = 30;
