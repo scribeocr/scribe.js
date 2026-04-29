@@ -85,8 +85,8 @@ describe('pdfWorker font cleanup', () => {
     await loadPdfForParsing({ pdfBytes });
     await renderPdfPage({ pageIndex: 0, colorMode: 'color' });
     const scribeDuring = scribeAliases();
-    expect(scribeDuring).toContain('_scribe_nimbussans_bolditalic:normal:normal');
-    expect(scribeDuring).toContain('_scribe_nimbussans_italic:normal:normal');
+    expect(scribeDuring).toContain('_scribe_nimbussans_bolditalic:italic:bold');
+    expect(scribeDuring).toContain('_scribe_nimbussans_italic:italic:normal');
 
     await unloadPdf();
 
