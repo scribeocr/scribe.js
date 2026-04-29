@@ -816,10 +816,24 @@ export class ScribeViewer {
 
   static renderHTMLOverlay = () => {
     const words = ScribeViewer.getKonvaWords();
+    // Words are wrapped in a per-line <div> so that browser triple-click selects a single line,
+    // matching the behavior of other PDF viewers and text applications. Without a block ancestor
+    // per line, triple-click would select every word on the page.
+    const lineToElem = new Map();
     words.forEach((word) => {
       const elem = KonvaIText.itextToElem(word);
       ScribeViewer._wordHTMLArr.push(elem);
-      ScribeViewer.elem.appendChild(elem);
+
+      const line = word.word.line;
+      let lineElem = lineToElem.get(line);
+      if (!lineElem) {
+        lineElem = document.createElement('div');
+        lineElem.classList.add('scribe-line');
+        lineToElem.set(line, lineElem);
+        ScribeViewer._lineHTMLArr.push(lineElem);
+        ScribeViewer.elem.appendChild(lineElem);
+      }
+      lineElem.appendChild(elem);
     });
   };
 
@@ -847,6 +861,12 @@ export class ScribeViewer {
       }
     });
     ScribeViewer._wordHTMLArr.length = 0;
+    ScribeViewer._lineHTMLArr.forEach((elem) => {
+      if (elem.parentNode) {
+        elem.parentNode.removeChild(elem);
+      }
+    });
+    ScribeViewer._lineHTMLArr.length = 0;
   };
 
   static runSetInitial = true;
@@ -1150,6 +1170,9 @@ export class ScribeViewer {
   /** @type {Array<HTMLSpanElement>} */
   static _wordHTMLArr = [];
 
+  /** @type {Array<HTMLDivElement>} */
+  static _lineHTMLArr = [];
+
   /**
    * Contains the x and y coordinates of the last right-click event.
    * This is required for "right click" functions that are position-dependent,
@@ -1361,7 +1384,7 @@ export class ScribeViewer {
 
     ScribeViewer.HTMLOverlayBackstopElem.style.display = '';
 
-    ScribeViewer.elem.insertBefore(ScribeViewer.HTMLOverlayBackstopElem, focusWordElem);
+    focusWordElem.parentNode.insertBefore(ScribeViewer.HTMLOverlayBackstopElem, focusWordElem);
 
     ScribeViewer._prevRange = range.cloneRange();
   };
@@ -1495,11 +1518,12 @@ async function compareGroundTruth() {
  * @param {{x: number, y: number}} angleAdj
  * @param {number} index
  * @param {string} [label]
+ * @param {number} [orientation=0]
  */
-const addBlockOutline = (n, box, angleAdj, index, label) => {
+const addBlockOutline = (n, box, angleAdj, index, label, orientation = 0) => {
   const height = box.bottom - box.top;
 
-  const group = ScribeViewer.getTextGroup(n);
+  const group = ScribeViewer.getTextGroup(n, orientation);
 
   const blockRect = new Konva.Rect({
     x: box.left + angleAdj.x,
@@ -1589,7 +1613,7 @@ function renderCanvasWords(page) {
 
     page.pars.forEach((par, i) => {
       const angleAdj = imageRotated ? scribe.utils.ocr.calcLineStartAngleAdj(par.lines[0]) : { x: 0, y: 0 };
-      addBlockOutline(page.n, par.bbox, angleAdj, i + 1, par.reason);
+      addBlockOutline(page.n, par.bbox, angleAdj, i + 1, par.reason, par.lines[0]?.orientation ?? 0);
     });
   }
 

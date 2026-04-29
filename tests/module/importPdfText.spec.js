@@ -52,6 +52,13 @@ describe('Check stext import function language support.', () => {
     expect(text1).toBe('嚴 重 特 殊 傳 染 性 肺 炎 指 定 處 所 隔 離 通 知 書 及 提 審 權 利 告 知');
   });
 
+  test('Should load chi_sim font so getWordFont works on Chinese words', async () => {
+    const { FontCont } = await import('../../js/containers/fontContainer.js');
+    const chiWord = scribe.data.ocr.active[0].lines.flatMap((l) => l.words).find((w) => w.lang === 'chi_sim');
+    expect(chiWord).toBeDefined();
+    expect(FontCont.getWordFont(chiWord).family).toBe('NotoSansSC');
+  });
+
   afterAll(async () => {
     await scribe.terminate();
   });
@@ -551,6 +558,21 @@ describe('Check that text orientation is handled correctly.', () => {
     expect(Math.abs((scribe.data.ocr.active[3].lines[2].words[0].bbox.right) - (scribe.data.ocr.active[1].lines[2].words[0].bbox.right))).toBeLessThanOrEqual(1);
     expect(Math.abs((scribe.data.ocr.active[3].lines[2].words[0].bbox.top) - (scribe.data.ocr.active[1].lines[2].words[0].bbox.top))).toBeLessThanOrEqual(1);
     expect(Math.abs((scribe.data.ocr.active[3].lines[2].words[0].bbox.bottom) - (scribe.data.ocr.active[1].lines[2].words[0].bbox.bottom))).toBeLessThanOrEqual(1);
+  });
+
+  test('pageMetrics dims match post-rotation ocr dims for all four /Rotate values', () => {
+    // Page 0: /Rotate 0   (portrait)  612x792pt -> 2550x3300 @ 300dpi
+    // Page 1: /Rotate 90  (landscape) post-rotation 792x612pt -> 3300x2550
+    // Page 2: /Rotate 180 (portrait)  612x792pt -> 2550x3300
+    // Page 3: /Rotate 270 (landscape) post-rotation 792x612pt -> 3300x2550
+    for (const i of [0, 1, 2, 3]) {
+      expect(scribe.data.pageMetrics[i].dims.width).toBe(scribe.data.ocr.active[i].dims.width);
+      expect(scribe.data.pageMetrics[i].dims.height).toBe(scribe.data.ocr.active[i].dims.height);
+    }
+    expect(scribe.data.pageMetrics[0].dims).toEqual({ width: 2550, height: 3300 });
+    expect(scribe.data.pageMetrics[1].dims).toEqual({ width: 3300, height: 2550 });
+    expect(scribe.data.pageMetrics[2].dims).toEqual({ width: 2550, height: 3300 });
+    expect(scribe.data.pageMetrics[3].dims).toEqual({ width: 3300, height: 2550 });
   });
 
   test('Lines oriented at 90/180/270 degrees have line rotation detected correctly', async () => {

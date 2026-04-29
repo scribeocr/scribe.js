@@ -441,17 +441,15 @@ class ScribePDFViewer {
     // When .scribe-word elements are removed (scroll/zoom), hide icons immediately.
     // When .scribe-word elements are added (re-render), recreate icons after debounce.
     let commentIconTimer = null;
+    const isWordOrLine = (n) => n instanceof HTMLElement
+      && (n.classList.contains('scribe-word') || n.classList.contains('scribe-line'));
     const observer = new MutationObserver((mutations) => {
-      const hasRemoved = mutations.some((m) => [...m.removedNodes].some(
-        (n) => n instanceof HTMLElement && n.classList.contains('scribe-word'),
-      ));
+      const hasRemoved = mutations.some((m) => [...m.removedNodes].some(isWordOrLine));
       if (hasRemoved) {
         ScribeViewer.elem?.querySelectorAll('.highlight-comment-icon').forEach((el) => el.remove());
         this.commentTooltip.style.display = 'none';
       }
-      const hasAdded = mutations.some((m) => [...m.addedNodes].some(
-        (n) => n instanceof HTMLElement && n.classList.contains('scribe-word'),
-      ));
+      const hasAdded = mutations.some((m) => [...m.addedNodes].some(isWordOrLine));
       if (!hasAdded) return;
       if (commentIconTimer) clearTimeout(commentIconTimer);
       commentIconTimer = setTimeout(() => this.updateCommentIcons(), 100);

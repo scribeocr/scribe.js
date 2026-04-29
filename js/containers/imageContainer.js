@@ -376,8 +376,14 @@ export class ImageCache {
     for (const page of pages) {
       const widthPts = Math.abs(page.mediaBox[2] - page.mediaBox[0]);
       const heightPts = Math.abs(page.mediaBox[3] - page.mediaBox[1]);
-      const width = Math.round(widthPts * 300 / 72);
-      const height = Math.round(heightPts * 300 / 72);
+      // /Rotate swaps the visual page dimensions for 90°/270°.
+      // The renderer and parser (parsePdfDoc.js) both operate in the
+      // post-rotation coordinate space, so pdfDims300 must match.
+      const rotated = page.rotate === 90 || page.rotate === 270;
+      const visualWidthPts = rotated ? heightPts : widthPts;
+      const visualHeightPts = rotated ? widthPts : heightPts;
+      const width = Math.round(visualWidthPts * 300 / 72);
+      const height = Math.round(visualHeightPts * 300 / 72);
       ImageCache.pdfDims300.push({ width, height });
     }
 

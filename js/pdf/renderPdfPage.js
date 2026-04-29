@@ -152,6 +152,11 @@ async function registerNonEmbeddedFont(fontObj, _familyName, targetMap, fontTag)
   const family = isSansSerif ? 'NimbusSans' : 'NimbusRoman';
   // One alias per substitute file; same bytes on every call.
   const subName = `_scribe_${family.toLowerCase()}_${variant.toLowerCase()}`;
+  // Register the FontFace at the variant's actual weight/style.
+  // This is necessary for Firefox, as Firefox will otherwise apply an extra layer
+  // of faux bolding/italicizing on top of the already-bold/italic font.
+  const faceWeight = fontObj.bold ? 'bold' : 'normal';
+  const faceStyle = fontObj.italic ? 'italic' : 'normal';
   try {
     const url = new URL(`../../fonts/all/${family}-${variant}.woff`, import.meta.url);
     let fontBytes;
@@ -162,7 +167,7 @@ async function registerNonEmbeddedFont(fontObj, _familyName, targetMap, fontTag)
     } else {
       fontBytes = await fetch(url).then((r) => r.arrayBuffer());
     }
-    const face = loadFontFace(subName, 'normal', 'normal', fontBytes);
+    const face = loadFontFace(subName, faceStyle, faceWeight, fontBytes);
     await face.loaded;
     targetMap.set(fontTag, subName);
   } catch (_e) {

@@ -1,6 +1,8 @@
 #!/bin/bash
-# Creates a clean dist directory for Tauri embedding,
-# copying only the runtime files needed by the viewer.
+# Creates a clean dist directory for Tauri embedding, mirroring the
+# source layout (scribe-ui as a subdir of the scribe.js project root)
+# so import paths resolve identically to the web build served from the
+# project root.
 set -e
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
@@ -9,22 +11,16 @@ SCRIBE_JS_ROOT="$(cd "$SCRIBE_UI_ROOT/.." && pwd)"
 DIST="$SCRIPT_DIR/dist"
 
 rm -rf "$DIST"
-mkdir -p "$DIST/scribe.js"
+mkdir -p "$DIST/scribe-ui/basic-viewer"
 
-# Top-level runtime files
-cp "$SCRIBE_UI_ROOT/viewer.js" "$DIST/"
-
-# basic-viewer: copy only the top-level files (not electron/tauri subdirs)
-mkdir -p "$DIST/basic-viewer"
-cp "$SCRIBE_UI_ROOT"/basic-viewer/*.js "$DIST/basic-viewer/"
-cp "$SCRIBE_UI_ROOT"/basic-viewer/*.html "$DIST/basic-viewer/"
-
-cp -r "$SCRIBE_UI_ROOT/js" "$DIST/js"
-
-# scribe.js: top-level files only (not directories)
-find "$SCRIBE_JS_ROOT" -maxdepth 1 -type f -name '*.js' -exec cp {} "$DIST/scribe.js/" \;
-
-# scribe.js: runtime subdirectories
-for dir in fonts js lib scrollview-web tess tesseract.js; do
-  cp -r "$SCRIBE_JS_ROOT/$dir" "$DIST/scribe.js/$dir"
+# scribe.js: top-level files (entry point + siblings) and runtime subdirectories
+find "$SCRIBE_JS_ROOT" -maxdepth 1 -type f -name '*.js' -exec cp {} "$DIST/" \;
+for dir in fonts js lib scrollview-web tess; do
+  cp -r "$SCRIBE_JS_ROOT/$dir" "$DIST/$dir"
 done
+
+# scribe-ui: top-level files + js + basic-viewer (excluding electron/tauri subdirs)
+cp "$SCRIBE_UI_ROOT/viewer.js" "$DIST/scribe-ui/"
+cp -r "$SCRIBE_UI_ROOT/js" "$DIST/scribe-ui/js"
+cp "$SCRIBE_UI_ROOT"/basic-viewer/*.js "$DIST/scribe-ui/basic-viewer/"
+cp "$SCRIBE_UI_ROOT"/basic-viewer/*.html "$DIST/scribe-ui/basic-viewer/"

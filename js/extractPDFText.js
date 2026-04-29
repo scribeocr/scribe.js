@@ -3,7 +3,7 @@ import {
   annotations, layoutDataTables, ocrAll, pageMetricsAll,
 } from './containers/dataContainer.js';
 import { ImageCache } from './containers/imageContainer.js';
-import { loadBuiltInFontsRaw } from './fontContainerMain.js';
+import { loadBuiltInFontsRaw, loadChiSimFont } from './fontContainerMain.js';
 import { addCircularRefsDataTables } from './objects/layoutObjects.js';
 import { determinePdfType } from './pdf/parsePdfDoc.js';
 
@@ -48,7 +48,11 @@ export const extractInternalPDFText = async () => {
     layoutDataTables.pages[i] = tablePages[i];
   }
 
-  await loadBuiltInFontsRaw();
+  const fontPromiseArr = [loadBuiltInFontsRaw()];
+  if (pageResults.some((r) => r.langSet && r.langSet.has('chi_sim'))) {
+    fontPromiseArr.push(loadChiSimFont());
+  }
+  await Promise.all(fontPromiseArr);
 
   const isMainData = (type === 'text' && opt.usePDFText.native.main)
     || (type === 'ocr' && opt.usePDFText.ocr.main);

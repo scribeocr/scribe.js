@@ -16,7 +16,7 @@
         "width": 900,
         "height": 1100,
         "decorations": false,
-        "url": "basic-viewer/tauri.html"
+        "url": "scribe-ui/basic-viewer/tauri.html"
       }
     ],
     "security": {

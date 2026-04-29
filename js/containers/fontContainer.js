@@ -60,9 +60,9 @@ const fontFaceObj = {};
  * If a FontFace already exists with the same name, it is deleted and replaced.
  *
  * @param {string} fontFamily - Font family name
- * @param {string} fontStyle - Font style.  May only be "normal" or "italic",
- *   as small-caps fonts should be loaded as a "normal" variant with a different font name.
- * @param {string} fontWeight
+ * @param {'normal'|'italic'} fontStyle - Small-caps fonts should be loaded as a
+ *   "normal" variant with a different font name.
+ * @param {'normal'|'bold'} fontWeight
  * @param {string|ArrayBuffer} src - Font source
  */
 export function loadFontFace(fontFamily, fontStyle, fontWeight, src) {
