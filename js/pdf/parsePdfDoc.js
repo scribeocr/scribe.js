@@ -1013,6 +1013,11 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
     };
   }
 
+  // Replace non-breaking spaces with regular spaces.
+  for (const ch of chars) {
+    if (ch.text === '\u00A0') ch.text = ' ';
+  }
+
   // Dedupe overlapping glyphs from PDFs that use two text-rendering passes
   // (separate fill + stroke) to fake-bold a heading. Without dedup the same
   // glyph appears twice and fragments word grouping. Match on text + font +
@@ -1345,7 +1350,7 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
       const ch = lineChars[i];
       if (ch.text === ' ') {
         // Check if this space is a real word break or a TJ kerning artifact.
-        // If the next non-space char is visually close to the last non-space char,
+        // If the next non-space char is visually close to where the space sits,
         // the space was inserted by TJ kerning but doesn't represent a word gap.
         if (currentWord.length > 0) {
           let nextNonSpace = null;
@@ -1358,12 +1363,11 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
           if (nextNonSpace) {
             const prevCh = currentWord[currentWord.length - 1];
             const visualGap = nextNonSpace.x - (prevCh.x + prevCh.width);
-            // If the visual gap between the last real char and the next real char
-            // is small (less than the word-splitting threshold), skip the space.
-            // Exception: a space after a comma is always a word break — commas
+            // A space after a comma is always a word break — commas
             // are list/sentence delimiters and the space is real even when
             // negative Tc compresses it below the normal gap threshold.
-            if (visualGap <= prevCh.fontSize * 0.15 && prevCh.text !== ',') {
+            const adjacencyTol = prevCh.fontSize * 0.15;
+            if (Math.abs(visualGap) <= adjacencyTol && prevCh.text !== ',') {
               continue;
             }
           }

@@ -2,6 +2,7 @@ import {
   describe, test, expect, beforeAll, afterAll,
 } from 'vitest';
 import scribe from '../../scribe.js';
+import { parseParagraphs } from '../../js/import/convertDocDocx.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 
 scribe.opt.workerN = 1;
@@ -121,6 +122,42 @@ describe('Check that font styles are preserved in docx round-trip.', () => {
     }
 
     expect(foundItalicWord).toBe(true);
+  });
+
+  afterAll(async () => {
+    await scribe.terminate();
+  });
+});
+
+describe('Check that combined bold + italic is preserved in docx round-trip.', () => {
+  test('Word with both bold and italic survives round-trip with both flags set', async () => {
+    await scribe.importFiles([`${ASSETS_PATH}/testocr.abbyy.xml`]);
+
+    const targetWord = scribe.data.ocr.active[0].lines[0].words[0];
+    targetWord.style.bold = true;
+    targetWord.style.italic = true;
+
+    const docxData = await scribe.exportData('docx');
+    const docxFile = new File([docxData], 'test.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
+
+    await scribe.terminate();
+    await scribe.importFiles([docxFile]);
+
+    let foundBoldItalic = false;
+    for (const page of scribe.data.ocr.active) {
+      for (const line of page.lines) {
+        for (const word of line.words) {
+          if (word.style.bold && word.style.italic) {
+            foundBoldItalic = true;
+            break;
+          }
+        }
+        if (foundBoldItalic) break;
+      }
+      if (foundBoldItalic) break;
+    }
+
+    expect(foundBoldItalic).toBe(true);
   });
 
   afterAll(async () => {
@@ -426,5 +463,67 @@ describe('Check iris.docx footnote data survives .scribe export/import round-tri
 
   afterAll(async () => {
     await scribe.terminate();
+  });
+});
+
+describe('parseParagraphs handles footnote references whose target is missing.', () => {
+  test('Should not emit a "0" marker when the referenced footnote is absent from footnotes.xml', () => {
+    const docXml = '<w:document><w:body>'
+      + '<w:p w14:paraId="AAAA1111">'
+      + '<w:r><w:t>Before </w:t></w:r>'
+      + '<w:r><w:footnoteReference w:id="2"/></w:r>'
+      + '<w:r><w:t> after.</w:t></w:r>'
+      + '</w:p>'
+      + '</w:body></w:document>';
+
+    const paragraphs = parseParagraphs(docXml, new Map());
+
+    expect(paragraphs.length).toBe(1);
+    const markerRun = paragraphs[0].runs.find((r) => r.footnoteId === '2');
+    expect(markerRun).toBeUndefined();
+  });
+
+  test('Should not shift numbering of subsequent footnotes when one is missing', () => {
+    const docXml = '<w:document><w:body>'
+      + '<w:p w14:paraId="AAAA1111">'
+      + '<w:r><w:footnoteReference w:id="1"/></w:r>'
+      + '<w:r><w:t> middle </w:t></w:r>'
+      + '<w:r><w:footnoteReference w:id="2"/></w:r>'
+      + '<w:r><w:t> tail </w:t></w:r>'
+      + '<w:r><w:footnoteReference w:id="3"/></w:r>'
+      + '</w:p>'
+      + '</w:body></w:document>';
+
+    const styles = {
+      bold: false,
+      italic: false,
+      smallCaps: false,
+      underline: false,
+      sup: false,
+      font: null,
+      fontSize: null,
+    };
+    const footnotesMap = new Map([
+      ['1', { runs: [{ text: 'first', styles }], paraId: 'F1' }],
+      ['3', { runs: [{ text: 'third', styles }], paraId: 'F3' }],
+    ]);
+
+    const paragraphs = parseParagraphs(docXml, footnotesMap);
+
+    const bodyPar = paragraphs.find((p) => p.type === 'body');
+    if (!bodyPar) throw new Error('expected a body paragraph');
+    const markerRuns = bodyPar.runs.filter((r) => r.footnoteId !== undefined);
+    expect(markerRuns.length).toBe(2);
+    expect(markerRuns[0].footnoteId).toBe('1');
+    expect(markerRuns[0].text).toBe('1');
+    expect(markerRuns[1].footnoteId).toBe('3');
+    expect(markerRuns[1].text).toBe('2');
+
+    const footnotePars = paragraphs.filter((p) => p.type === 'footnote');
+    expect(footnotePars.length).toBe(2);
+    expect(footnotePars[0].footnoteId).toBe('1');
+    expect(footnotePars[0].footnoteIndex).toBe(1);
+    expect(footnotePars[1].footnoteId).toBe('3');
+    expect(footnotePars[1].footnoteIndex).toBe(2);
   });
 });

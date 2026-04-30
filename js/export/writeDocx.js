@@ -64,11 +64,8 @@ export function writeDocxContent({
         if (wordIds && !wordIds.includes(wordObj.id)) continue;
 
         let fontStyle = '';
-        if (wordObj.style.italic) {
-          fontStyle += '<w:i/>';
-        } else if (wordObj.style.bold) {
-          fontStyle += '<w:b/>';
-        }
+        if (wordObj.style.bold) fontStyle += '<w:b/>';
+        if (wordObj.style.italic) fontStyle += '<w:i/>';
 
         if (wordObj.style.smallCaps) {
           fontStyle += '<w:smallCaps/>';

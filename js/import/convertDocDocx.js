@@ -525,10 +525,10 @@ export function parseParagraphs(docXml, footnotesMap = new Map(), stylesMap = ne
       const footnoteRefMatch = runContent.match(/<w:footnoteReference\s+[^>]*w:id="([^"]+)"/);
       if (footnoteRefMatch) {
         const footnoteId = footnoteRefMatch[1];
-        if (footnotesMap.has(footnoteId) && !footnoteOrder.includes(footnoteId)) {
+        if (!footnotesMap.has(footnoteId)) continue;
+        if (!footnoteOrder.includes(footnoteId)) {
           footnoteOrder.push(footnoteId);
         }
-        // Add a superscript marker for the footnote number
         const footnoteIndex = footnoteOrder.indexOf(footnoteId) + 1;
         runs.push({
           text: String(footnoteIndex),

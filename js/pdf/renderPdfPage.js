@@ -7579,7 +7579,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             const mw = tileCtx.measureText(pop.text).width;
             if (mw > 0) {
               tileHScale = pop.pdfGlyphWidth / (1000 * mw);
-              if (!isEmbedded && tileHScale > 1.5) tileHScale = 1;
+              if (!isEmbedded && tileHScale > 2.0) tileHScale = 1;
             }
           }
           tileCtx.setTransform(
@@ -8337,20 +8337,14 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           : `${style} ${weight} 1px "${op.fontFamily}"`;
         rCtx.textBaseline = 'alphabetic';
 
-        // For non-embedded fonts, scale each glyph horizontally so its rendered width
-        // matches the PDF-specified width. The substitute font (e.g. NimbusSans for
-        // ArialNarrow) may have different glyph widths than the original font.
-        // For generic CSS fallback fonts (not _pdf_*), cap the scale factor to avoid
-        // extreme distortion — e.g., CJK full-width metrics (500) on proportional Latin
-        // sans-serif "i" (0.222) would stretch to 225% without capping.
+        // Scale glyph width to match PDF-specified width when using a substitute font.
+        // Cap at 2.0× to reject CJK-on-Latin mismatches and TJ-compensated wide Widths.
         let hScale = 1;
         if (op.pdfGlyphWidth !== undefined) {
           const measuredWidth = rCtx.measureText(op.text).width;
           if (measuredWidth > 0) {
-            // pdfGlyphWidth is in 1/1000 of the font's em square; measuredWidth is in
-            // em-units at 1px font size.
             hScale = op.pdfGlyphWidth / (1000 * measuredWidth);
-            if (!isEmbedded && hScale > 1.5) hScale = 1;
+            if (!isEmbedded && hScale > 2.0) hScale = 1;
           }
         }
 

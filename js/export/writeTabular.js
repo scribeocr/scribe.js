@@ -105,14 +105,10 @@ function createCellsSingle({
         const fontStylePrev = '';
 
         if (xlsxMode) {
-          let fontStyle;
-          if (wordObj.style.italic) {
-            fontStyle = '<i/>';
-          } else if (wordObj.style.smallCaps) {
-            fontStyle = '<smallCaps/>';
-          } else {
-            fontStyle = '';
-          }
+          let fontStyle = '';
+          if (wordObj.style.bold) fontStyle += '<b/>';
+          if (wordObj.style.italic) fontStyle += '<i/>';
+          if (wordObj.style.smallCaps) fontStyle += '<smallCaps/>';
 
           if (fontStyle !== fontStylePrev || k === 0) {
             const styleStr = fontStyle === '' ? '' : `<rPr>${fontStyle}</rPr>`;
