@@ -1006,13 +1006,13 @@ export class ScribeViewer {
 
     if (stateViewer.layoutMode) {
       if (refresh || !ScribeViewer.overlayGroupsRenderIndices.includes(n)) {
-        await layout.renderLayoutBoxes(n);
+        layout.renderLayoutBoxes(n);
       }
       if (n - 1 >= 0 && (refresh || !ScribeViewer.overlayGroupsRenderIndices.includes(n - 1))) {
-        await layout.renderLayoutBoxes(n - 1);
+        layout.renderLayoutBoxes(n - 1);
       }
       if (n + 1 < scribe.data.ocr.active.length && (refresh || !ScribeViewer.overlayGroupsRenderIndices.includes(n + 1))) {
-        await layout.renderLayoutBoxes(n + 1);
+        layout.renderLayoutBoxes(n + 1);
       }
     }
 
@@ -1519,17 +1519,32 @@ async function compareGroundTruth() {
  * @param {number} index
  * @param {string} [label]
  * @param {number} [orientation=0]
+ * @param {Array<OcrLine>} [lines] - When provided, the outline traces each line's
+ *   left/right edges as a rectilinear polygon instead of a single bounding rectangle.
  */
-const addBlockOutline = (n, box, angleAdj, index, label, orientation = 0) => {
-  const height = box.bottom - box.top;
-
+const addBlockOutline = (n, box, angleAdj, index, label, orientation = 0, lines) => {
   const group = ScribeViewer.getTextGroup(n, orientation);
 
-  const blockRect = new Konva.Rect({
-    x: box.left + angleAdj.x,
-    y: box.top + angleAdj.y,
-    width: box.right - box.left,
-    height,
+  const lineBoxes = (lines && lines.length > 0 ? lines.map((l) => l.bbox) : [box])
+    .slice()
+    .sort((a, b) => a.top - b.top);
+
+  const yTopAt = (i) => (i === 0 ? lineBoxes[i].top : (lineBoxes[i - 1].bottom + lineBoxes[i].top) / 2);
+  const yBottomAt = (i) => (i === lineBoxes.length - 1 ? lineBoxes[i].bottom : (lineBoxes[i].bottom + lineBoxes[i + 1].top) / 2);
+
+  const points = [];
+  for (let i = 0; i < lineBoxes.length; i++) {
+    points.push(lineBoxes[i].right + angleAdj.x, yTopAt(i) + angleAdj.y);
+    points.push(lineBoxes[i].right + angleAdj.x, yBottomAt(i) + angleAdj.y);
+  }
+  for (let i = lineBoxes.length - 1; i >= 0; i--) {
+    points.push(lineBoxes[i].left + angleAdj.x, yBottomAt(i) + angleAdj.y);
+    points.push(lineBoxes[i].left + angleAdj.x, yTopAt(i) + angleAdj.y);
+  }
+
+  const blockRect = new Konva.Line({
+    points,
+    closed: true,
     stroke: 'rgba(0,0,255,0.75)',
     strokeWidth: 1,
     draggable: false,
@@ -1613,7 +1628,7 @@ function renderCanvasWords(page) {
 
     page.pars.forEach((par, i) => {
       const angleAdj = imageRotated ? scribe.utils.ocr.calcLineStartAngleAdj(par.lines[0]) : { x: 0, y: 0 };
-      addBlockOutline(page.n, par.bbox, angleAdj, i + 1, par.reason, par.lines[0]?.orientation ?? 0);
+      addBlockOutline(page.n, par.bbox, angleAdj, i + 1, par.reason, par.lines[0]?.orientation ?? 0, par.lines);
     });
   }
 

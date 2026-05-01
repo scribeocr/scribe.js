@@ -555,7 +555,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
   /** @type {number[]} */
   let textColor = [0]; // current non-stroking (fill) color — default black
   let fillAlpha = 1; // current non-stroking alpha (from ExtGState /ca via `gs`)
-  /** @type {Array<{ ctm: number[], tr: number, tc: number, tw: number, tz: number, tl: number, fontSize: number, currentFont: any, textColor: number[], fillAlpha: number }>} */
+  /** @type {Array<{ ctm: number[], tr: number, tc: number, tw: number, tz: number, tl: number, trise: number, fontSize: number, currentFont: any, textColor: number[], fillAlpha: number }>} */
   const gsStack = [];
 
   // Text state
@@ -567,6 +567,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
   let tw = 0; // word spacing
   let tz = 100; // horizontal scaling percentage (PDF spec §9.3.4 Th = Tz/100)
   let tl = 0; // leading
+  let trise = 0; // text rise (unscaled text-space units, applied to glyph y in Trm)
 
   /** @type {Array<any>} */
   const operandStack = [];
@@ -586,7 +587,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
       // Graphics state operators
       case 'q':
         gsStack.push({
-          ctm: ctm.slice(), tr, tc, tw, tz, tl, fontSize, currentFont, textColor: textColor.slice(), fillAlpha,
+          ctm: ctm.slice(), tr, tc, tw, tz, tl, trise, fontSize, currentFont, textColor: textColor.slice(), fillAlpha,
         });
         operandStack.length = 0;
         break;
@@ -600,6 +601,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
           tw = saved.tw;
           tz = saved.tz;
           tl = saved.tl;
+          trise = saved.trise;
           fontSize = saved.fontSize;
           currentFont = saved.currentFont;
           textColor = saved.textColor;
@@ -664,6 +666,11 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
         operandStack.length = 0;
         break;
 
+      case 'Ts':
+        if (operandStack.length >= 1) trise = operandStack[operandStack.length - 1].value;
+        operandStack.length = 0;
+        break;
+
       case 'Tm': {
         if (operandStack.length >= 6) {
           tm = operandStack.slice(operandStack.length - 6).map((t) => t.value);
@@ -715,9 +722,9 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
         if (operandStack.length >= 1 && currentFont) {
           const strTok = operandStack[operandStack.length - 1];
           if (strTok.type === 'hexstring') {
-            showHexString(strTok.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, chars, scale, pageHeightPts);
+            showHexString(strTok.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts);
           } else if (strTok.type === 'string') {
-            showLiteralString(strTok.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, chars, scale, pageHeightPts);
+            showLiteralString(strTok.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts);
           }
         }
         operandStack.length = 0;
@@ -730,9 +737,9 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
           if (arrTok.type === 'array') {
             for (const elem of arrTok.value) {
               if (elem.type === 'hexstring') {
-                showHexString(elem.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, chars, scale, pageHeightPts);
+                showHexString(elem.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts);
               } else if (elem.type === 'string') {
-                showLiteralString(elem.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, chars, scale, pageHeightPts);
+                showLiteralString(elem.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts);
               } else if (elem.type === 'number') {
                 const adjustment = elem.value / 1000 * fontSize * tz / 100;
                 tm[4] -= adjustment * tm[0];
@@ -755,9 +762,9 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
         if (operandStack.length >= 1 && currentFont) {
           const strTok = operandStack[operandStack.length - 1];
           if (strTok.type === 'hexstring') {
-            showHexString(strTok.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, chars, scale, pageHeightPts);
+            showHexString(strTok.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts);
           } else if (strTok.type === 'string') {
-            showLiteralString(strTok.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, chars, scale, pageHeightPts);
+            showLiteralString(strTok.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts);
           }
         }
         operandStack.length = 0;
@@ -778,9 +785,9 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
         if (operandStack.length >= 1 && currentFont) {
           const strTok = operandStack[operandStack.length - 1];
           if (strTok.type === 'hexstring') {
-            showHexString(strTok.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, chars, scale, pageHeightPts);
+            showHexString(strTok.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts);
           } else if (strTok.type === 'string') {
-            showLiteralString(strTok.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, chars, scale, pageHeightPts);
+            showLiteralString(strTok.value, currentFont, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts);
           }
         }
         operandStack.length = 0;
@@ -838,16 +845,17 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
  * @param {number} tw
  * @param {number} tz - horizontal scaling percentage (Tz, 100 = normal)
  * @param {number} tr - text rendering mode
+ * @param {number} trise - text rise (unscaled text-space units)
  * @param {Array<PositionedChar>} chars
  * @param {number} scale
  * @param {number} pageHeightPts - page height in PDF points
  */
-function showHexString(hex, font, fontSize, tm, ctm, tc, tw, tz, tr, chars, scale, pageHeightPts) {
+function showHexString(hex, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts) {
   let str = '';
   for (let i = 0; i + 1 <= hex.length; i += 2) {
     str += String.fromCharCode(parseInt(hex.substring(i, i + 2), 16));
   }
-  showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, chars, scale, pageHeightPts);
+  showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts);
 }
 
 /**
@@ -861,11 +869,12 @@ function showHexString(hex, font, fontSize, tm, ctm, tc, tw, tz, tr, chars, scal
  * @param {number} tw
  * @param {number} tz - horizontal scaling percentage (Tz, 100 = normal)
  * @param {number} tr - text rendering mode
+ * @param {number} trise - text rise (unscaled text-space units)
  * @param {Array<PositionedChar>} chars
  * @param {number} scale
  * @param {number} pageHeightPts
  */
-function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, chars, scale, pageHeightPts) {
+function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, chars, scale, pageHeightPts) {
   const hScale = Math.hypot(tm[0] * ctm[0] + tm[1] * ctm[2], tm[0] * ctm[1] + tm[1] * ctm[3]);
   const vScale = Math.hypot(tm[2] * ctm[0] + tm[3] * ctm[2], tm[2] * ctm[1] + tm[3] * ctm[3]);
 
@@ -955,9 +964,11 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, chars, 
     }
     const glyphWidth = (font.widths.get(charCode) ?? font.defaultWidth) / 1000 * fontSize;
 
-    // Transform text position through CTM to get page-space coordinates
-    const pageX = ctm[0] * tm[4] + ctm[2] * tm[5] + ctm[4];
-    const pageY = ctm[1] * tm[4] + ctm[3] * tm[5] + ctm[5];
+    // Transform text position through CTM to get page-space coordinates.
+    const ox = tm[2] * trise + tm[4];
+    const oy = tm[3] * trise + tm[5];
+    const pageX = ctm[0] * ox + ctm[2] * oy + ctm[4];
+    const pageY = ctm[1] * ox + ctm[3] * oy + ctm[5];
 
     chars.push({
       text: unicode,
@@ -1203,12 +1214,17 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
         else break;
       }
       if (persistCount >= 3) isCut = true;
-    // Baseline drift from anchor: a full-size char whose baseline has shifted
-    // significantly from the line's anchor baseline, even though the immediate
-    // predecessor (e.g., a superscript) was closer. This catches cases like
-    // "offset ᵃ Field" where "a" bridges two different baselines.
-    // Only fire when there's a horizontal gap (not flush against previous char).
-    } else if (!isCut && ch.fontSize >= anchorFontSize * 0.8
+    }
+
+    // Baseline drift: same-size char whose baseline shifted from the anchor,
+    // bridged by an intervening superscript (e.g. "offset ᵃ Field", or a
+    // footnote marker between a table row and a wrapped cell's first line).
+    // Independent of the chain above so the persistent-fs-change branch can't
+    // swallow it. Size match is bidirectional — a line starting with a leading
+    // superscript followed by full-size text is promoting the anchor, not
+    // drifting from it.
+    if (!isCut
+      && ch.fontSize >= anchorFontSize * 0.8 && ch.fontSize <= anchorFontSize * 1.25
       && Math.abs(chY - anchorY) > anchorFontSize * 0.3
       && xGap > maxFont * 0.5) isCut = true;
 
@@ -1366,8 +1382,15 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
             // A space after a comma is always a word break — commas
             // are list/sentence delimiters and the space is real even when
             // negative Tc compresses it below the normal gap threshold.
+            // Drop the space only when the kerning around it cancelled the
+            // glyph advance (visualGap ≈ 0) or the prev glyph's bbox overlaps
+            // the next char by less than the word-split tolerance. Justified
+            // text often shrinks real inter-word gaps to a fraction of the
+            // space-glyph advance; keep those as word breaks.
             const adjacencyTol = prevCh.fontSize * 0.15;
-            if (Math.abs(visualGap) <= adjacencyTol && prevCh.text !== ',') {
+            const positiveTol = Math.max(prevCh.fontSize * 0.05, ch.width * 0.3);
+            const isKerningArtifact = visualGap >= -adjacencyTol && visualGap < positiveTol;
+            if (isKerningArtifact && prevCh.text !== ',') {
               continue;
             }
           }
@@ -1522,6 +1545,18 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
         }
       }
 
+      // Split multiple footnote refs.  E.g. "(1)(3)".
+      if (splitPoints.length === 0 && wordChars.length > 4) {
+        const wText = wordChars.map((/** @type {any} */ c) => c.text).join('');
+        if (/^(\(\d+\))+$/.test(wText)) {
+          for (let ci = 1; ci < wordChars.length; ci++) {
+            if (wordChars[ci - 1].text === ')' && wordChars[ci].text === '(') {
+              splitPoints.push({ index: ci, sizeDelta: 0 });
+            }
+          }
+        }
+      }
+
       if (splitPoints.length === 0) {
         // No superscript boundary — push as a single word.
         words.push({
@@ -1582,66 +1617,74 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
     // Skip drop cap words when searching for comparison neighbors.
     // Guard: if the word immediately following the candidate has a similar font size (within 10%),
     // this is a persistent size transition (e.g., heading → sub-heading), not a superscript.
-    for (let i = 0; i < words.length; i++) {
-      if (words[i].sup || words[i].dropcap || words[i].chars.length === 0 || words[i].chars.length > 4) continue;
-      const wChars = words[i].chars;
-      const wFontSize = wChars.reduce((sum, c) => sum + c.fontSize, 0) / wChars.length;
-      const wBaseline = wChars.reduce((sum, c) => sum + c.y, 0) / wChars.length;
+    let supChanged = true;
+    while (supChanged) {
+      supChanged = false;
+      for (let i = 0; i < words.length; i++) {
+        if (words[i].sup || words[i].dropcap || words[i].chars.length === 0 || words[i].chars.length > 4) continue;
+        const wChars = words[i].chars;
+        const wFontSize = wChars.reduce((sum, c) => sum + c.fontSize, 0) / wChars.length;
+        const wBaseline = wChars.reduce((sum, c) => sum + c.y, 0) / wChars.length;
 
-      // Check if the next word continues at the same small size (size transition, not superscript).
-      let followIdx = i + 1;
-      while (followIdx < words.length && (words[followIdx].sup || words[followIdx].dropcap)) followIdx++;
-      let sizeTransition = false;
-      if (followIdx < words.length && words[followIdx].chars.length > 0) {
-        const followFontSize = words[followIdx].chars.reduce((sum, c) => sum + c.fontSize, 0) / words[followIdx].chars.length;
-        sizeTransition = Math.abs(wFontSize - followFontSize) < Math.max(wFontSize, followFontSize) * 0.1;
-      }
+        // Check if the next word continues at the same small size (size transition, not superscript).
+        let followIdx = i + 1;
+        while (followIdx < words.length && (words[followIdx].sup || words[followIdx].dropcap)) followIdx++;
+        let sizeTransition = false;
+        if (followIdx < words.length && words[followIdx].chars.length > 0) {
+          const followFontSize = words[followIdx].chars.reduce((sum, c) => sum + c.fontSize, 0) / words[followIdx].chars.length;
+          sizeTransition = Math.abs(wFontSize - followFontSize) < Math.max(wFontSize, followFontSize) * 0.1;
+        }
 
-      // Compare with the previous non-sup, non-dropcap word.
-      // Skip when the next word continues at the same small size (size transition, not superscript).
-      let prevIdx = i - 1;
-      while (prevIdx >= 0 && (words[prevIdx].sup || words[prevIdx].dropcap)) prevIdx--;
-      if (!sizeTransition && prevIdx >= 0 && words[prevIdx].chars.length > 0) {
-        const prevChars = words[prevIdx].chars;
-        const prevFontSize = prevChars.reduce((sum, c) => sum + c.fontSize, 0) / prevChars.length;
-        const prevBaseline = prevChars.reduce((sum, c) => sum + c.y, 0) / prevChars.length;
-        const fontSizeMin = Math.min(wFontSize, prevFontSize);
-        if (fontSizeMin > 0) {
-          const sizeDelta = (wFontSize - prevFontSize) / fontSizeMin;
-          const baselineDelta = (wBaseline - prevBaseline) / fontSizeMin;
-          if (sizeDelta < -0.05 && baselineDelta < -0.25) {
-            words[i].sup = true;
-            if (normalBaselineY === null) normalBaselineY = prevBaseline;
-            continue;
-          }
-          if (sizeDelta < -0.3) {
-            words[i].sup = true;
-            if (normalBaselineY === null) normalBaselineY = prevBaseline;
-            continue;
+        // Compare with the previous non-sup, non-dropcap word.
+        // Skip when the next word continues at the same small size (size transition, not superscript).
+        let prevIdx = i - 1;
+        while (prevIdx >= 0 && (words[prevIdx].sup || words[prevIdx].dropcap)) prevIdx--;
+        if (!sizeTransition && prevIdx >= 0 && words[prevIdx].chars.length > 0) {
+          const prevChars = words[prevIdx].chars;
+          const prevFontSize = prevChars.reduce((sum, c) => sum + c.fontSize, 0) / prevChars.length;
+          const prevBaseline = prevChars.reduce((sum, c) => sum + c.y, 0) / prevChars.length;
+          const fontSizeMin = Math.min(wFontSize, prevFontSize);
+          if (fontSizeMin > 0) {
+            const sizeDelta = (wFontSize - prevFontSize) / fontSizeMin;
+            const baselineDelta = (wBaseline - prevBaseline) / fontSizeMin;
+            if (sizeDelta < -0.05 && baselineDelta < -0.25) {
+              words[i].sup = true;
+              supChanged = true;
+              if (normalBaselineY === null) normalBaselineY = prevBaseline;
+              continue;
+            }
+            if (sizeDelta < -0.3) {
+              words[i].sup = true;
+              supChanged = true;
+              if (normalBaselineY === null) normalBaselineY = prevBaseline;
+              continue;
+            }
           }
         }
-      }
 
-      // Compare with the next non-sup, non-dropcap word.
-      let nextNonSupIdx = i + 1;
-      while (nextNonSupIdx < words.length && (words[nextNonSupIdx].sup || words[nextNonSupIdx].dropcap)) nextNonSupIdx++;
-      if (nextNonSupIdx < words.length && words[nextNonSupIdx].chars.length > 0) {
-        const nextChars = words[nextNonSupIdx].chars;
-        const nextFontSize = nextChars.reduce((sum, c) => sum + c.fontSize, 0) / nextChars.length;
-        const nextBaseline = nextChars.reduce((sum, c) => sum + c.y, 0) / nextChars.length;
-        const fontSizeMin = Math.min(wFontSize, nextFontSize);
-        if (fontSizeMin > 0) {
-          const sizeDelta = (wFontSize - nextFontSize) / fontSizeMin;
-          const baselineDelta = (wBaseline - nextBaseline) / fontSizeMin;
-          if (sizeDelta < -0.05 && baselineDelta < -0.25) {
-            words[i].sup = true;
-            if (normalBaselineY === null) normalBaselineY = nextBaseline;
-            continue;
-          }
-          if (sizeDelta < -0.3) {
-            words[i].sup = true;
-            if (normalBaselineY === null) normalBaselineY = nextBaseline;
-            continue;
+        // Compare with the next non-sup, non-dropcap word.
+        let nextNonSupIdx = i + 1;
+        while (nextNonSupIdx < words.length && (words[nextNonSupIdx].sup || words[nextNonSupIdx].dropcap)) nextNonSupIdx++;
+        if (nextNonSupIdx < words.length && words[nextNonSupIdx].chars.length > 0) {
+          const nextChars = words[nextNonSupIdx].chars;
+          const nextFontSize = nextChars.reduce((sum, c) => sum + c.fontSize, 0) / nextChars.length;
+          const nextBaseline = nextChars.reduce((sum, c) => sum + c.y, 0) / nextChars.length;
+          const fontSizeMin = Math.min(wFontSize, nextFontSize);
+          if (fontSizeMin > 0) {
+            const sizeDelta = (wFontSize - nextFontSize) / fontSizeMin;
+            const baselineDelta = (wBaseline - nextBaseline) / fontSizeMin;
+            if (sizeDelta < -0.05 && baselineDelta < -0.25) {
+              words[i].sup = true;
+              supChanged = true;
+              if (normalBaselineY === null) normalBaselineY = nextBaseline;
+              continue;
+            }
+            if (sizeDelta < -0.3) {
+              words[i].sup = true;
+              supChanged = true;
+              if (normalBaselineY === null) normalBaselineY = nextBaseline;
+              continue;
+            }
           }
         }
       }
@@ -1837,10 +1880,17 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
       if (underlineRects.length > 0) {
         const baselineYWord = wordChars[0].y;
         const charColor = wordChars[0].textColor;
+        // Reject rects that extend significantly past the line's text on either
+        // side — those are table-row dividers / section rules that happen to
+        // pass under this word, not text underlines. Tolerance scales with font
+        // size to allow stroke caps and trailing-space overshoot on real underlines.
+        const ruleOverhangLimit = wordChars[0].fontSize * 0.5;
         for (const rect of underlineRects) {
           if (rect.right > wordLeft && rect.left < wordRight
             && rect.y >= baselineYWord - wordChars[0].fontSize * 0.1
-            && rect.y <= baselineYWord + wordChars[0].fontSize * 0.25) {
+            && rect.y <= baselineYWord + wordChars[0].fontSize * 0.25
+            && rect.left >= lineLeft - ruleOverhangLimit
+            && rect.right <= lineRight + ruleOverhangLimit) {
             // Color match: the line color must match the text fill color.
             // Different colors indicate a decorative rule, not a text underline.
             // Normalize across color spaces — the same black may be stored as
@@ -1848,7 +1898,10 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
             if (rect.color && charColor) {
               const rectRgb = colorToRgb(rect.color);
               const charRgb = colorToRgb(charColor);
-              if (rectRgb && charRgb && rectRgb.some((v, ci) => Math.abs(v - charRgb[ci]) > 0.1)) {
+              const bothDark = rectRgb && charRgb
+                && rectRgb.every((v) => v < 0.3) && charRgb.every((v) => v < 0.3);
+              if (rectRgb && charRgb && !bothDark
+                && rectRgb.some((v, ci) => Math.abs(v - charRgb[ci]) > 0.1)) {
                 continue;
               }
             }

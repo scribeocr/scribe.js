@@ -17,9 +17,8 @@ export const extractInternalPDFText = async () => {
   const pageCount = ImageCache.pageCount;
 
   const pageDPI = ImageCache.pdfDims300.map((x) => 300 * Math.min(x.width, 3500) / x.width);
-  const avgDPI = pageDPI.reduce((a, b) => a + b, 0) / pageDPI.length;
   const pageResults = await Promise.all(
-    Array.from({ length: pageCount }, (_, i) => pdfScheduler.parsePdfPage({ pageIndex: i, dpi: avgDPI })),
+    Array.from({ length: pageCount }, (_, i) => pdfScheduler.parsePdfPage({ pageIndex: i, dpi: pageDPI[i] })),
   );
 
   const { type } = determinePdfType(pageResults.map((r) => r.charStats), pageCount);

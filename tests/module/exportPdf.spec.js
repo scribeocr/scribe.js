@@ -114,7 +114,7 @@ describe('Check export for .pdf files.', () => {
         }
       }
       expect(lines).toBe(58);
-      expect(words).toBe(420);
+      expect(words).toBe(421);
       expect(colors.size).toBe(1);
       expect(opacities.size).toBe(1);
       if (mode === 'invis') {

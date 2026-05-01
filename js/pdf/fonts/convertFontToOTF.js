@@ -1058,10 +1058,16 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
       if (!path) continue;
       usedUnicodes.add(unicode);
       origGidToNewIdx.set(gi, glyphs.length);
+      let advanceWidth = g.advanceWidth || head.unitsPerEm;
+      const maxSafeAdvanceWidth = Math.min(32767, head.unitsPerEm * 4);
+      if (advanceWidth > maxSafeAdvanceWidth) {
+        // Corrupt hmtx entries can overflow signed bbox fields in the generated head table.
+        advanceWidth = head.unitsPerEm;
+      }
       const newGlyph = new opentype.Glyph({
         name: `glyph_${gi}`,
         unicode,
-        advanceWidth: g.advanceWidth || head.unitsPerEm,
+        advanceWidth,
         path,
       });
       if (g.points) {

@@ -49,6 +49,31 @@ describe('Check markdown formatting export.', () => {
   });
 });
 
+describe('Check markdown escape characters.', () => {
+  test('Literal asterisks in source text should be escaped with backslash', async () => {
+    await scribe.importFiles([`${ASSETS_PATH}/border_patrol_tables.abbyy.xml`]);
+
+    const exportedMd = await scribe.exportData('md');
+
+    // Bold word containing a literal `*` mid-word — escape keeps the `**...**` wrapper unambiguous.
+    expect(exportedMd).toContain('**Staffing\\* Agent**');
+
+    // Bold word ending with two literal `**` — would close the bold prematurely if not escaped.
+    expect(exportedMd).toContain('**Southwest Border Sectors Total\\*\\***');
+
+    // Literal `*` inside a table cell — escaping must survive both the markdown and pipe-cell encoding.
+    expect(exportedMd).toContain('| **Other Drugs\\* (pounds)** |');
+
+    // Footnote line beginning with a literal `*` followed by a space — without escaping this would
+    // be parsed as a markdown list item.
+    expect(exportedMd).toContain('\\* ***Agent staffing statistics');
+  });
+
+  afterAll(async () => {
+    await scribe.terminate();
+  });
+});
+
 describe('Check non-contiguous pageArr subsetting for markdown export.', () => {
   test('Exporting pages [0, 2] should include pages 0 and 2 but not page 1', async () => {
     await scribe.importFiles([`${ASSETS_PATH}/trident_v_connecticut_general.abbyy.xml`]);
