@@ -761,6 +761,31 @@ export function parsePageFonts(pageObjText, objCache) {
         differences = {};
         // Tokenize: integers and /name tokens (names may be concatenated without whitespace)
         const tokens = [...diffContent.matchAll(/(\d+)|(\/[^\s/<>[\]]+)/g)];
+        // Pre-scan to detect /N-style decimal-Win1252 encoding (e.g. /67 /97 /115)
+        // vs identity-style numeric IDs (e.g. /0 /1 /2). The former encodes the
+        // ASCII codepoint of the rendered char; the latter is just a glyph ID
+        // unrelated to Unicode. Distinguished by offset variance: identity-style
+        // has |num - charCode| consistently small, ASCII-encoding has wildly
+        // varying offsets across the array.
+        let prescanCharCode = 0;
+        let numericCount = 0;
+        let largeOffsetCount = 0;
+        for (const tok of tokens) {
+          if (tok[1]) {
+            prescanCharCode = Number(tok[1]);
+          } else if (tok[2]) {
+            const gn = tok[2].slice(1).replace(/#([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+            if (/^\d+$/.test(gn)) {
+              numericCount++;
+              if (Math.abs(Number(gn) - prescanCharCode) > 3) largeOffsetCount++;
+            }
+            prescanCharCode++;
+          }
+        }
+        // Apply the /N-style resolver only when at least half of numeric glyph
+        // names have a non-trivial offset from charCode. Conservative — avoids
+        // misinterpreting identity-style numeric IDs as ASCII letters.
+        const useNumericNameAsAscii = numericCount >= 2 && largeOffsetCount * 2 >= numericCount;
         let charCode = 0;
         for (const tok of tokens) {
           if (tok[1]) {
@@ -821,6 +846,18 @@ export function parsePageFonts(pageObjText, objCache) {
               const gMatch = /^G(\d+)$/.exec(glyphName);
               if (gMatch) {
                 const cp = Number(gMatch[1]);
+                if (cp >= 0x20 && cp <= 0xFF) {
+                  const ch = win1252Chars[cp - 0x20];
+                  if (ch) unicodeStr = ch;
+                }
+              }
+            }
+            // Plain numeric glyph names like "/67 /97 /115" — same convention
+            // as the Gnnn case but without the leading G.
+            if (!unicodeStr && useNumericNameAsAscii) {
+              const nMatch = /^(\d+)$/.exec(glyphName);
+              if (nMatch) {
+                const cp = Number(nMatch[1]);
                 if (cp >= 0x20 && cp <= 0xFF) {
                   const ch = win1252Chars[cp - 0x20];
                   if (ch) unicodeStr = ch;
