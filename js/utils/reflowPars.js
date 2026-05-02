@@ -94,6 +94,11 @@ export function assignParagraphs(page, angle) {
     let endsEarlyInt = false;
     let startsLate = false;
 
+    if (h > 0 && line.orientation !== page.lines[h - 1].orientation) {
+      newPar = true;
+      reason = 'orientation change';
+    }
+
     // `bullet` is the lenient signal (used to suppress `indented` on the next line).
     // `isRealListItem` is the stricter signal that actually triggers a new paragraph.
     let bullet = /^([•◦▪▫●○◼◻➢«»]|((i+|\d+|[a-z])(\.|\)))$)/.test(line.words[0].text);

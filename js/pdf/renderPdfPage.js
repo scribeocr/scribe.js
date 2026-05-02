@@ -1387,6 +1387,29 @@ function parseDrawOps(
   /** @type {any[]} */
   const gsStack = [];
 
+  // Synthetic small-caps multiplier — must match FontContainerFont.smallCapsMult
+  // (js/containers/fontContainer.js) so the rendered page agrees with the
+  // viewer/OCR small-caps treatment.
+  const SMALL_CAPS_MULT = 0.75;
+
+  /**
+   * Emulate non-embedded small-caps by uppercasing the text and scaling down the font size.
+   *
+   * @param {string} drawText
+   * @param {number[]} trm - per-glyph transform [a,b,c,d,e,f]; mutated when applied.
+   * @param {boolean} smallCaps
+   */
+  function applySmallCaps(drawText, trm, smallCaps) {
+    if (!smallCaps) return { text: drawText, applied: false };
+    const upper = drawText.toUpperCase();
+    if (upper === drawText) return { text: drawText, applied: false };
+    trm[0] *= SMALL_CAPS_MULT;
+    trm[1] *= SMALL_CAPS_MULT;
+    trm[2] *= SMALL_CAPS_MULT;
+    trm[3] *= SMALL_CAPS_MULT;
+    return { text: upper, applied: true };
+  }
+
   // Text state
   let tm = [1, 0, 0, 1, 0, 0];
   let tlm = [1, 0, 0, 1, 0, 0];
@@ -1603,10 +1626,11 @@ function parseDrawOps(
       // Skip zero-width characters
       if (registeredName && textRenderMode !== 3 && glyphWidth !== 0 && drawText && drawText.trim().length > 0) {
         const trm = matMul([fontSize * tz / 100, 0, 0, fontSize, 0, trise], matMul(tm, ctm));
+        const sc = applySmallCaps(drawText, trm, !!currentFont.smallCaps);
         /** @type {Type0TextOp} */
         const textOp = {
           type: 'type0text',
-          text: drawText,
+          text: sc.text,
           fontSize,
           fontFamily: registeredName,
           bold: currentFont.bold,
@@ -1717,10 +1741,11 @@ function parseDrawOps(
           : (currentFont.encodingUnicode?.get(charCode) || unicode);
         if (registeredName && textRenderMode !== 3 && drawText && drawText.trim().length > 0) {
           const trm = matMul([fontSize * tz / 100, 0, 0, fontSize, 0, trise], matMul(tm, ctm));
+          const sc = applySmallCaps(drawText, trm, !!currentFont.smallCaps);
           /** @type {Type0TextOp} */
           const textOp = {
             type: 'type0text',
-            text: drawText,
+            text: sc.text,
             fontSize,
             fontFamily: registeredName,
             bold: currentFont.bold,
@@ -1821,10 +1846,12 @@ function parseDrawOps(
           ? String.fromCodePoint(cidCodepoint(collided ? undefined : currentFont.toUnicode?.get(charCode), cid).codepoint)
           : (currentFont.toUnicode?.get(charCode) || String.fromCharCode(charCode));
         if (unicode && unicode.trim().length > 0) {
+          const isNonEmbedded = !!(currentFont.type0 && !currentFont.type0.fontFile);
+          const sc = applySmallCaps(unicode, trm, isNonEmbedded && !!currentFont.smallCaps);
           /** @type {Type0TextOp} */
           const opObj = {
             type: 'type0text',
-            text: unicode,
+            text: sc.text,
             fontSize,
             fontFamily: registeredName,
             bold: currentFont.bold,
@@ -1842,7 +1869,7 @@ function parseDrawOps(
             strokeAlpha,
             lineWidth,
           };
-          if (currentFont.type0 && !currentFont.type0.fontFile) {
+          if (isNonEmbedded && !sc.applied) {
             opObj.pdfGlyphWidth = rawWidth;
           }
           if (!fillColorExplicit) opObj.fillColorInherited = true;
@@ -1929,10 +1956,12 @@ function parseDrawOps(
           ? String.fromCodePoint(cidCodepoint(collided ? undefined : currentFont.toUnicode?.get(charCode), cid).codepoint)
           : (currentFont.toUnicode?.get(charCode) || String.fromCharCode(charCode));
         if (unicode && unicode.trim().length > 0) {
+          const isNonEmbedded = !!(currentFont.type0 && !currentFont.type0.fontFile);
+          const sc = applySmallCaps(unicode, trm, isNonEmbedded && !!currentFont.smallCaps);
           /** @type {Type0TextOp} */
           const opObj = {
             type: 'type0text',
-            text: unicode,
+            text: sc.text,
             fontSize,
             fontFamily: registeredName,
             bold: currentFont.bold,
@@ -1950,7 +1979,7 @@ function parseDrawOps(
             strokeAlpha,
             lineWidth,
           };
-          if (currentFont.type0 && !currentFont.type0.fontFile) {
+          if (isNonEmbedded && !sc.applied) {
             opObj.pdfGlyphWidth = rawWidth;
           }
           if (!fillColorExplicit) opObj.fillColorInherited = true;
@@ -2048,9 +2077,10 @@ function parseDrawOps(
         } else {
           drawText = currentFont.encodingUnicode?.get(charCode) || unicode;
         }
+        const sc = applySmallCaps(drawText, trm, isNonEmbedded && !!currentFont.smallCaps);
         const opObj = {
           type: 'type0text',
-          text: drawText,
+          text: sc.text,
           fontSize,
           fontFamily: registeredName,
           bold: currentFont.bold,
@@ -2068,7 +2098,7 @@ function parseDrawOps(
           strokeAlpha,
           lineWidth,
         };
-        if (isNonEmbedded) opObj.pdfGlyphWidth = rawWidth;
+        if (isNonEmbedded && !sc.applied) opObj.pdfGlyphWidth = rawWidth;
         if (!fillColorExplicit) opObj.fillColorInherited = true;
         if (!strokeColorExplicit) opObj.strokeColorInherited = true;
         ops.push(opObj);
@@ -2127,9 +2157,10 @@ function parseDrawOps(
         } else {
           drawText = currentFont.encodingUnicode?.get(charCode) || unicode;
         }
+        const sc = applySmallCaps(drawText, trm, isNonEmbedded && !!currentFont.smallCaps);
         const opObj2 = {
           type: 'type0text',
-          text: drawText,
+          text: sc.text,
           fontSize,
           fontFamily: registeredName,
           bold: currentFont.bold,
@@ -2147,7 +2178,7 @@ function parseDrawOps(
           strokeAlpha,
           lineWidth,
         };
-        if (isNonEmbedded) opObj2.pdfGlyphWidth = rawWidth;
+        if (isNonEmbedded && !sc.applied) opObj2.pdfGlyphWidth = rawWidth;
         if (!fillColorExplicit) opObj2.fillColorInherited = true;
         if (!strokeColorExplicit) opObj2.strokeColorInherited = true;
         ops.push(opObj2);

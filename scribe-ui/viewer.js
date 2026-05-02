@@ -15,7 +15,9 @@ import {
 } from './js/viewerModifySelectedWords.js';
 import { getAllFileEntries } from './js/dragAndDrop.js';
 import { deleteSelectedLayoutDataTable, deleteSelectedLayoutRegion } from './js/viewerModifySelectedLayout.js';
-import { applyHighlight, removeHighlight, modifyHighlightComment, updateHighlightGroupOutline } from './js/viewerHighlights.js';
+import {
+  applyHighlight, removeHighlight, modifyHighlightComment, updateHighlightGroupOutline,
+} from './js/viewerHighlights.js';
 
 Konva.autoDrawEnabled = false;
 Konva.dragButtons = [0];
@@ -1450,7 +1452,11 @@ document.addEventListener('copy', (e) => {
   for (let i = 0; i < ScribeViewer.textGroupsRenderIndices.length; i++) {
     if (i > 0) text += '\n\n';
     const n = ScribeViewer.textGroupsRenderIndices[i];
-    text += scribe.utils.writeText([scribe.data.ocr.active[n]], 0, 0, false, false, ids);
+    text += scribe.utils.writeText({
+      ocrCurrent: scribe.data.ocr.active,
+      pageArr: [n],
+      wordIds: ids,
+    });
   }
 
   clipboardData.setData('text/plain', text);
@@ -1525,21 +1531,52 @@ async function compareGroundTruth() {
 const addBlockOutline = (n, box, angleAdj, index, label, orientation = 0, lines) => {
   const group = ScribeViewer.getTextGroup(n, orientation);
 
-  const lineBoxes = (lines && lines.length > 0 ? lines.map((l) => l.bbox) : [box])
+  const sortedLines = (lines && lines.length > 0 ? lines.map((l) => l.bbox) : [box])
     .slice()
     .sort((a, b) => a.top - b.top);
+  const first = sortedLines[0];
+  const last = sortedLines[sortedLines.length - 1];
+  const topAlone = sortedLines.length === 1 || sortedLines[1].top >= first.bottom;
+  const bottomAlone = sortedLines.length === 1 || sortedLines[sortedLines.length - 2].bottom <= last.top;
 
-  const yTopAt = (i) => (i === 0 ? lineBoxes[i].top : (lineBoxes[i - 1].bottom + lineBoxes[i].top) / 2);
-  const yBottomAt = (i) => (i === lineBoxes.length - 1 ? lineBoxes[i].bottom : (lineBoxes[i].bottom + lineBoxes[i + 1].top) / 2);
+  const tlNotch = topAlone && first.left > box.left;
+  const trNotch = topAlone && first.right < box.right;
+  const blNotch = bottomAlone && last.left > box.left;
+  const brNotch = bottomAlone && last.right < box.right;
 
+  const ax = angleAdj.x;
+  const ay = angleAdj.y;
   const points = [];
-  for (let i = 0; i < lineBoxes.length; i++) {
-    points.push(lineBoxes[i].right + angleAdj.x, yTopAt(i) + angleAdj.y);
-    points.push(lineBoxes[i].right + angleAdj.x, yBottomAt(i) + angleAdj.y);
+  if (tlNotch) points.push(first.left + ax, box.top + ay);
+  else points.push(box.left + ax, box.top + ay);
+
+  if (trNotch) {
+    points.push(first.right + ax, box.top + ay);
+    points.push(first.right + ax, first.bottom + ay);
+    points.push(box.right + ax, first.bottom + ay);
+  } else {
+    points.push(box.right + ax, box.top + ay);
   }
-  for (let i = lineBoxes.length - 1; i >= 0; i--) {
-    points.push(lineBoxes[i].left + angleAdj.x, yBottomAt(i) + angleAdj.y);
-    points.push(lineBoxes[i].left + angleAdj.x, yTopAt(i) + angleAdj.y);
+
+  if (brNotch) {
+    points.push(box.right + ax, last.top + ay);
+    points.push(last.right + ax, last.top + ay);
+    points.push(last.right + ax, box.bottom + ay);
+  } else {
+    points.push(box.right + ax, box.bottom + ay);
+  }
+
+  if (blNotch) {
+    points.push(last.left + ax, box.bottom + ay);
+    points.push(last.left + ax, last.top + ay);
+    points.push(box.left + ax, last.top + ay);
+  } else {
+    points.push(box.left + ax, box.bottom + ay);
+  }
+
+  if (tlNotch) {
+    points.push(box.left + ax, first.bottom + ay);
+    points.push(first.left + ax, first.bottom + ay);
   }
 
   const blockRect = new Konva.Line({

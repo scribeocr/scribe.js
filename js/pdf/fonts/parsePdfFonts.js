@@ -1393,8 +1393,8 @@ export function parsePageFonts(pageObjText, objCache) {
       if (fdText) {
         const ascentVal = resolveNumValue(fdText, 'Ascent', objCache);
         const descentVal = resolveNumValue(fdText, 'Descent', objCache);
-        if (ascentVal || /\/Ascent\s/.test(fdText)) ascent = ascentVal;
-        if (descentVal || /\/Descent\s/.test(fdText)) descent = descentVal;
+        if (ascentVal !== 0) ascent = ascentVal;
+        if (descentVal !== 0) descent = descentVal;
 
         // Augment bold/italic/serif from font descriptor properties
         const fontFlags = resolveIntValue(fdText, 'Flags', objCache);
@@ -1507,8 +1507,7 @@ export function parsePageFonts(pageObjText, objCache) {
       if (type1Info?.fontFile) {
         try {
           const charsetInfo = parseCFFCharset(type1Info.fontFile);
-          if (charsetInfo && !charsetInfo.isCID && charsetInfo.glyphToUnicode) {
-            // Parse CFF encoding to map charCode → GID → Unicode
+          if (charsetInfo && !charsetInfo.isCID) {
             const fontShell = {
               tables: {}, encoding: null, isCIDFont: false, unitsPerEm: 1000,
             };
@@ -1517,16 +1516,13 @@ export function parsePageFonts(pageObjText, objCache) {
             );
             opentype.parseCFFTable(dv, 0, fontShell);
             const cffEncObj = fontShell.cffEncoding || fontShell.encoding;
-            if (cffEncObj?.encoding) {
-              const cffCharset = fontShell.tables.cff.charset;
-              for (const [codeStr, idx] of Object.entries(cffEncObj.encoding)) {
-                const code = Number(codeStr);
-                if (!Number.isFinite(code)) continue;
-                const numIdx = typeof idx === 'number' ? idx : Number(idx);
-                if (!Number.isFinite(numIdx)) continue;
-                const glyphName = cffCharset[numIdx + 1];
-                if (!glyphName || toUnicode.has(code) || encodingUnicode.has(code)) continue;
-                const uni = charsetInfo.glyphToUnicode.get(numIdx + 1);
+            const cffEnc = cffEncObj?.encoding;
+            if (Array.isArray(cffEnc)) {
+              for (let code = 0; code < cffEnc.length; code++) {
+                const glyphName = cffEnc[code];
+                if (typeof glyphName !== 'string' || !glyphName) continue;
+                if (toUnicode.has(code) || encodingUnicode.has(code)) continue;
+                const uni = aglLookup(glyphName);
                 if (uni) {
                   toUnicode.set(code, uni);
                   encodingUnicode.set(code, uni);

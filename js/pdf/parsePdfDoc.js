@@ -1180,7 +1180,7 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
     if (ch.orientation !== compPrev.orientation && !inlineSymbolBoundary) isCut = true;
 
     // Large y-jump: always a line break (too big for any superscript).
-    else if (yGap > maxFont * 0.7) isCut = true;
+    else if (yGap > maxFont * 0.7 || yGap > minFont * 1.5) isCut = true;
 
     // Large backward x-jump: moving to start of a new line.
     else if (xGap < -maxFont * 2) isCut = true;

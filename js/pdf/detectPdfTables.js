@@ -1,5 +1,29 @@
 import { calcColumnBounds } from '../utils/detectTables.js';
 
+const isNumToken = (t) => /^[\d,$%.()+-]+$/.test(t);
+const isNumWord = (t) => isNumToken(t) && (/\d/.test(t) || t === '-');
+
+/**
+ * Detect rows where a label is followed by 3+ right-clustered numeric tokens.
+ * @param {Array<{text: string}>} words
+ */
+function isRightClusteredNumeric(words) {
+  if (words.length < 4) return false;
+  let numW = 0;
+  for (const w of words) if (isNumWord(w.text)) numW++;
+  if (numW < 3) return false;
+  let lastTextIdx = -1;
+  for (let i = 0; i < words.length; i++) {
+    if (!isNumToken(words[i].text)) lastTextIdx = i;
+  }
+  let numAfterText = 0;
+  for (let i = lastTextIdx + 1; i < words.length; i++) {
+    if (!isNumToken(words[i].text)) return false;
+    if (isNumWord(words[i].text)) numAfterText++;
+  }
+  return numAfterText >= 3;
+}
+
 /**
  * @typedef {{left: number, right: number, y: number, segments?: Array<{left: number, right: number}>}} HLine - Horizontal line in display coords (y-down, DPI-scaled)
  * @typedef {{top: number, bottom: number, x: number}} VLine - Vertical line in display coords
@@ -39,20 +63,44 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   if (lines.length < 3) return [];
 
   // === Phase 0: Quick bail-out ===
-  // Single pass: count consecutive line pairs that share similar y-positions.
-  // On single-column body text, every line is at a unique y, so this is zero.
+  // Dot-leader rows ("Gold Star ......... 68,300 63,700 58,800") emit each
+  // visual row as one OCR line, so they produce zero same-y line pairs but
+  // are still tables. The ≥3-rows-within-300pt cluster check distinguishes
+  // them from scattered Table-of-Authorities citations.
   let sameYPairs = 0;
   for (let i = 0; i < lines.length - 1; i++) {
     if (Math.abs(lines[i].bbox.top - lines[i + 1].bbox.top) < 5) {
       sameYPairs++;
     }
   }
+  let hasDotLeaderCluster = false;
   if (sameYPairs === 0) {
-    // No text lines share y-positions, so text-based detection won't find tables.
-    // However, the page may still have grid-outlined tables (cells drawn with
-    // individual rectangles) detectable from vector paths alone.
-    const gridOnly = detectGridTables(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY);
-    return gridOnly.filter((t) => t.colSeparators.length > 0);
+    const dotLeaderYs = [];
+    for (const line of lines) {
+      if (isRightClusteredNumeric(line.words)) dotLeaderYs.push(line.bbox.top);
+    }
+    dotLeaderYs.sort((a, b) => a - b);
+    for (let i = 0; i + 2 < dotLeaderYs.length; i++) {
+      if (dotLeaderYs[i + 2] - dotLeaderYs[i] < 300) {
+        hasDotLeaderCluster = true;
+        break;
+      }
+    }
+  }
+  if (sameYPairs === 0 && !hasDotLeaderCluster) {
+    // Path-only fallback: grid + header-rule.
+    const gridOnly = detectGridTables(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY)
+      .filter((t) => t.colSeparators.length > 0);
+    const pathDataEarly = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY);
+    const headerRuleEarly = detectHeaderRuleTables(pathDataEarly.hLines, pageObj);
+    for (const ht of headerRuleEarly) {
+      let blocked = false;
+      for (const v of gridOnly) {
+        if (bboxOverlap(v.bbox, ht.bbox) > 0.3) { blocked = true; break; }
+      }
+      if (!blocked) gridOnly.push(ht);
+    }
+    return gridOnly;
   }
 
   // === Phase 1: Row analysis and table-like row identification ===
@@ -60,26 +108,6 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   // Single-line rows can also qualify if they contain a text label followed by 3+ numbers
   // (e.g., "Total physical volumes (BBtue/d) 51,715 32,429 27,308"). These are table data rows
   // where the PDF produced a single line object containing both the label and all number columns.
-  const isNumToken = (t) => /^[\d,$%.()+-]+$/.test(t);
-  const isNumWord = (t) => isNumToken(t) && (/\d/.test(t) || t === '-');
-  /** @param {Array<{text: string}>} words */
-  const isRightClusteredNumeric = (words) => {
-    if (words.length < 4) return false;
-    let numW = 0;
-    for (const w of words) if (isNumWord(w.text)) numW++;
-    if (numW < 3) return false;
-    let lastTextIdx = -1;
-    for (let i = 0; i < words.length; i++) {
-      if (!isNumToken(words[i].text)) lastTextIdx = i;
-    }
-    let numAfterText = 0;
-    for (let i = lastTextIdx + 1; i < words.length; i++) {
-      if (!isNumToken(words[i].text)) return false;
-      if (isNumWord(words[i].text)) numAfterText++;
-    }
-    return numAfterText >= 3;
-  };
-
   const rows = groupLinesIntoRows(lines);
   const tableLikeRows = [];
 
@@ -181,16 +209,36 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   }
 
   if (tableLikeRows.length === 0) {
-    const gridFallback = detectGridTables(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY);
-    return gridFallback.filter((t) => t.colSeparators.length > 0);
+    const gridFallback = detectGridTables(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY)
+      .filter((t) => t.colSeparators.length > 0);
+    const pathDataFallback = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY);
+    const headerRuleFallback = detectHeaderRuleTables(pathDataFallback.hLines, pageObj);
+    for (const ht of headerRuleFallback) {
+      let blocked = false;
+      for (const v of gridFallback) {
+        if (bboxOverlap(v.bbox, ht.bbox) > 0.3) { blocked = true; break; }
+      }
+      if (!blocked) gridFallback.push(ht);
+    }
+    return gridFallback;
   }
 
   // === Phase 2: Group table-like rows into candidate regions ===
   const candidates = groupRowsIntoCandidates(tableLikeRows, lines);
   if (candidates.length === 0) {
     // Fallback: try grid detection from paths alone (for text-only tables with full grid)
-    const gridFallback = detectGridTables(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY);
-    return gridFallback.filter((t) => t.colSeparators.length > 0);
+    const gridFallback = detectGridTables(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY)
+      .filter((t) => t.colSeparators.length > 0);
+    const pathDataFallback = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY);
+    const headerRuleFallback = detectHeaderRuleTables(pathDataFallback.hLines, pageObj);
+    for (const ht of headerRuleFallback) {
+      let blocked = false;
+      for (const v of gridFallback) {
+        if (bboxOverlap(v.bbox, ht.bbox) > 0.3) { blocked = true; break; }
+      }
+      if (!blocked) gridFallback.push(ht);
+    }
+    return gridFallback;
   }
 
   // === Phase 3: Path data classification ===
@@ -267,6 +315,56 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     extractStructure(table, lines);
   }
 
+  // Header-rule tables (column-spanning underlines). Yield to grid/segmented-hline
+  // (stronger path geometry). Yield to text-derived tables too, except when the
+  // text table has anomalously narrow columns — a sign that text-clustering split
+  // a $ currency glyph into its own column. In that case the header-rule's column
+  // count is more reliable. Runs AFTER extractStructure so text tables have their
+  // colSeparators populated for the comparison.
+  const headerRuleTables = detectHeaderRuleTables(pathData.hLines, pageObj);
+  // A "narrow" text column is one that's too tight to hold a label or full
+  // numeric value — the typical signature of a $ currency glyph split into
+  // its own column. Threshold tuned to catch the $-split pattern (~10–80px)
+  // without flagging legitimate tight numeric columns (>120px).
+  const hasNarrowTextColumn = (table) => {
+    const seps = [table.bbox.left, ...table.colSeparators, table.bbox.right];
+    for (let i = 1; i < seps.length; i++) {
+      if (seps[i] - seps[i - 1] < 100) return true;
+    }
+    return false;
+  };
+  for (const ht of headerRuleTables) {
+    let blocked = false;
+    /** @type {DetectedTable[]} */
+    const overlappingText = [];
+    for (const v of validated) {
+      if (v.detectionMethod === 'grid' || v.detectionMethod === 'segmented-hline') {
+        if (bboxOverlap(v.bbox, ht.bbox) > 0.3) { blocked = true; break; }
+      } else if (bboxOverlap(v.bbox, ht.bbox) > 0.3) {
+        overlappingText.push(v);
+      }
+    }
+    if (blocked) continue;
+    if (overlappingText.length > 0) {
+      const htCols = ht.colSeparators.length + 1;
+      const maxTextCols = Math.max(...overlappingText.map((t) => t.colSeparators.length + 1));
+      const anyNarrow = overlappingText.some(hasNarrowTextColumn);
+      // Keep text only when it found strictly more columns AND none of them
+      // are narrow ($-glyph-split signature). Equal column counts let
+      // header-rule win because its bbox is more often correct (it doesn't
+      // truncate the top header rows).
+      if (maxTextCols > htCols && !anyNarrow) continue;
+    }
+    for (let i = validated.length - 1; i >= 0; i--) {
+      const v = validated[i];
+      if (v.detectionMethod === 'grid' || v.detectionMethod === 'segmented-hline') continue;
+      if (bboxOverlap(v.bbox, ht.bbox) > 0.3) {
+        validated.splice(i, 1);
+      }
+    }
+    validated.push(ht);
+  }
+
   // === Phase 5.5: Refine table top boundaries using header detection ===
   // Now that hLine data is available (from Phase 3 path correlation), replace the
   // generous expansion from Phase 2 with an intelligent header scan. This determines
@@ -279,6 +377,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   for (const table of validated) {
     if (table.rowBandRegion) continue;
     if (table.detectionMethod === 'segmented-hline') continue;
+    if (table.detectionMethod === 'header-rule') continue;
     refineTableTop(table, lines);
   }
 
@@ -287,9 +386,22 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     table.title = detectTableTitle(table, lines);
   }
 
-  // Filter out single-column tables (0 column separators).
-  // A 1-column "table" provides no structural information.
-  const multiCol = validated.filter((t) => t.colSeparators.length > 0);
+  // Filter out single-column tables (0 column separators) and text-detected
+  // tables with sliver columns. A column too narrow to hold cell content
+  // (≤30px) almost always comes from word-clustering on noise — a stray
+  // footnote marker, page-number, or sidebar element pulled into its own
+  // "column" — not from a real data column. Path-derived methods (grid,
+  // segmented-hline, header-rule) carry authoritative column geometry from
+  // the PDF itself and are exempt.
+  const multiCol = validated.filter((t) => {
+    if (t.colSeparators.length === 0) return false;
+    if (t.detectionMethod !== 'text') return true;
+    const seps = [t.bbox.left, ...t.colSeparators, t.bbox.right];
+    for (let i = 1; i < seps.length; i++) {
+      if (seps[i] - seps[i - 1] < 30) return false;
+    }
+    return true;
+  });
 
   // === Phase 5.6: Extend tables to adjacent structural content ===
   // Grid detection derives bbox.left from drawn vector lines, which may not
@@ -306,7 +418,44 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   // pass orthogonal from validation.
   for (const table of multiCol) {
     if (table.detectionMethod === 'segmented-hline') continue;
+    if (table.detectionMethod === 'header-rule') continue;
     extendTableToAdjacentContent(table, lines);
+  }
+
+  // === Phase 5.7: Refine text-table column structure from rule clusters ===
+  // Rule clusters carry authoritative column geometry; word-clustering is a
+  // fallback. Override text seps with rule-gap midpoints when a cluster sits
+  // inside the table; synthesize a label-column sep if the table extends
+  // left of the leftmost rule.
+  const ruleClusters = findDisjointRuleClusters(pathData.hLines, pageObj);
+  for (const table of multiCol) {
+    if (table.detectionMethod !== 'text') continue;
+    /** @type {{y: number, cols: Array<{left: number, right: number}>} | null} */
+    let bestCluster = null;
+    for (const cluster of ruleClusters) {
+      if (cluster.y < table.bbox.top - 30 || cluster.y > table.bbox.bottom + 30) continue;
+      const ruleLeft = cluster.cols[0].left;
+      const ruleRight = cluster.cols[cluster.cols.length - 1].right;
+      if (ruleLeft < table.bbox.left - 30) continue;
+      if (ruleRight > table.bbox.right + 30) continue;
+      if (!bestCluster || cluster.cols.length > bestCluster.cols.length) {
+        bestCluster = cluster;
+      }
+    }
+    if (!bestCluster) continue;
+    // Text > rule col count: rule likely encodes only major groupings while
+    // text captures sub-columns. Keep text.
+    const wouldSynthesizeLabel = table.bbox.left < bestCluster.cols[0].left - 20;
+    const newColCount = bestCluster.cols.length + (wouldSynthesizeLabel ? 1 : 0);
+    const currentColCount = table.colSeparators.length + 1;
+    if (currentColCount > newColCount) continue;
+    const newSeps = [];
+    if (wouldSynthesizeLabel) newSeps.push(bestCluster.cols[0].left);
+    for (let i = 1; i < bestCluster.cols.length; i++) {
+      newSeps.push((bestCluster.cols[i - 1].right + bestCluster.cols[i].left) / 2);
+    }
+    newSeps.sort((a, b) => a - b);
+    table.colSeparators = newSeps;
   }
 
   // === Phase 6: Stream order validation ===
@@ -800,9 +949,42 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
   // represent a single logical line. Detect the pattern and emit reconstituted lines.
   reconstituteDashedLines(paths, hLines, vLines, scale, visualHeightPts, boxOriginX, boxOriginY, pageHeight);
 
+  // Identify ruling-row members: ≥2 hLines at the same y with mutually
+  // disjoint x-extents. Together they form a column-spanning rule (header
+  // underlines or column underlines), not text underlines. Exempt them from
+  // the underline filter below — column-rule lines individually look like
+  // word underlines but together encode the table's column geometry.
+  const rulingRowMembers = new Set();
+  {
+    const yGroups = [];
+    for (const hl of hLines) {
+      let group = null;
+      for (const g of yGroups) {
+        if (Math.abs(g.y - hl.y) <= 3) { group = g; break; }
+      }
+      if (group) {
+        group.lines.push(hl);
+        group.y = group.lines.reduce((s, l) => s + l.y, 0) / group.lines.length;
+      } else {
+        yGroups.push({ y: hl.y, lines: [hl] });
+      }
+    }
+    for (const g of yGroups) {
+      if (g.lines.length < 2) continue;
+      const sorted = [...g.lines].sort((a, b) => a.left - b.left);
+      let disjoint = true;
+      for (let i = 1; i < sorted.length; i++) {
+        if (sorted[i].left < sorted[i - 1].right - 1) { disjoint = false; break; }
+      }
+      if (!disjoint) continue;
+      for (const hl of g.lines) rulingRowMembers.add(hl);
+    }
+  }
+
   // Filter underline horizontal lines: if an hLine's x-extent closely matches
   // a single text line directly above it, it's an underline, not a table border.
   const filteredHLines = hLines.filter((hl) => {
+    if (rulingRowMembers.has(hl)) return true;
     for (const line of pageObj.lines) {
       const lineBottom = line.bbox.bottom;
       const yDist = Math.abs(hl.y - lineBottom);
@@ -1244,8 +1426,14 @@ function correlatePathsWithCandidate(candidate, pathData) {
 function validateCandidate(candidate, lines) {
   const rows = candidate.rows;
 
-  // Check 1: At least 3 rows with 2+ segments
-  const multiSegRows = rows.filter((r) => r.lineIndices.length >= 2);
+  // Check 1: At least 3 rows with 2+ segments. A single-line row counts as
+  // multi-segment-equivalent when it matches the right-clustered-numeric
+  // pattern (label + leader/junk + 3+ trailing numeric tokens) — financial
+  // statements with leader dots emit each visual row as one OCR line, so the
+  // segments are inside the line, not across multiple lines.
+  const rowIsMultiSeg = (r) => r.lineIndices.length >= 2
+    || (r.lineIndices.length === 1 && isRightClusteredNumeric(lines[r.lineIndices[0]].words));
+  const multiSegRows = rows.filter(rowIsMultiSeg);
   if (multiSegRows.length < 3) return false;
 
   // Check 2: Column alignment consistency
@@ -1544,17 +1732,30 @@ function detectSelfContainedGridPaths(paths, scale, visualHeightPts, boxOriginX,
 
     if ((dispRight - dispLeft) < pageObj.dims.width * 0.2) continue;
 
-    const hYs = [...new Set(hGroup.segs.map((s) => s.y))].sort((a, b) => a - b);
-    if (hYs.length >= 3) {
-      const rowHeights = [];
-      for (let ri = 1; ri < hYs.length; ri++) rowHeights.push(Math.abs(hYs[ri] - hYs[ri - 1]));
-      if (Math.min(...rowHeights) > 0 && Math.max(...rowHeights) / Math.min(...rowHeights) > 4) continue;
-    }
-
     const vXs = clusterValues(matchingVSegs.map((s) => (s.x - boxOriginX) * scale), 10);
     const colSeps = vXs.filter((x) => x > dispLeft + 5 && x < dispRight - 5);
     colSeps.sort((a, b) => a - b);
     if (colSeps.length < 1) continue;
+
+    // Guard against chart frames and diagrams where horizontal lines and
+    // vertical segments form a pseudo-grid. The original check rejects 3+
+    // hLines with non-uniform row heights, but that also rejects legitimate
+    // header-divider-only tables (rectangle + column separators + one rule
+    // under the header). Skip the uniformity check only when the column
+    // separators span (close to) the full hGroup vertical extent — i.e., when
+    // the verticals are real cell-spanning column lines, not cosmetic edges
+    // of inner boxes that float between bracketing horizontal lines.
+    const hSpan = Math.max(...hGroup.segs.map((s) => s.y)) - Math.min(...hGroup.segs.map((s) => s.y));
+    const vSpan = vBot - vTop;
+    const vSegsSpanFullHeight = hSpan > 0 && vSpan / hSpan >= 0.85;
+    if (!(colSeps.length >= 2 && vSegsSpanFullHeight)) {
+      const hYs = [...new Set(hGroup.segs.map((s) => s.y))].sort((a, b) => a - b);
+      if (hYs.length >= 3) {
+        const rowHeights = [];
+        for (let ri = 1; ri < hYs.length; ri++) rowHeights.push(Math.abs(hYs[ri] - hYs[ri - 1]));
+        if (Math.min(...rowHeights) > 0 && Math.max(...rowHeights) / Math.min(...rowHeights) > 4) continue;
+      }
+    }
 
     const hLines = hGroup.segs.map((s) => ({
       left: (s.left - boxOriginX) * scale,
@@ -1568,14 +1769,16 @@ function detectSelfContainedGridPaths(paths, scale, visualHeightPts, boxOriginX,
     }));
 
     let headerTop = dispTop;
-    const typicalRowH = (dispBottom - dispTop) / Math.max(1, hLines.length - 1);
-    const headerLimit = dispTop - typicalRowH * 2;
-    const tableWidth = dispRight - dispLeft;
-    for (const line of pageObj.lines) {
-      if (line.bbox.bottom > dispTop || line.bbox.top < headerLimit) continue;
-      if (line.bbox.right < dispLeft + 10 || line.bbox.left > dispRight - 10) continue;
-      if ((line.bbox.right - line.bbox.left) < tableWidth * 0.3) continue;
-      if (line.bbox.top < headerTop) headerTop = line.bbox.top;
+    if (hLines.length >= 4) {
+      const typicalRowH = (dispBottom - dispTop) / (hLines.length - 1);
+      const headerLimit = dispTop - typicalRowH * 2;
+      const tableWidth = dispRight - dispLeft;
+      for (const line of pageObj.lines) {
+        if (line.bbox.bottom > dispTop || line.bbox.top < headerLimit) continue;
+        if (line.bbox.right < dispLeft + 10 || line.bbox.left > dispRight - 10) continue;
+        if ((line.bbox.right - line.bbox.left) < tableWidth * 0.3) continue;
+        if (line.bbox.top < headerTop) headerTop = line.bbox.top;
+      }
     }
 
     const bbox = {
@@ -2330,12 +2533,17 @@ function extractStructure(table, lines) {
   // entirely numeric, so it stays in.
   const candidateWidth = table.bbox.right - table.bbox.left;
   const isNarrativeLine = (line) => {
-    if (line.words.length <= 6) return false;
+    // Skip leader-filler dots
+    let totalCount = 0;
     let numericCount = 0;
     for (const word of line.words) {
+      if (/^[*.]+$/.test(word.text)) continue;
+      totalCount++;
       if (/^[\d,$%.()+-]+$/.test(word.text) && /\d/.test(word.text)) numericCount++;
+      else if (/^[$€£¥¢]+$/.test(word.text)) numericCount++;
     }
-    return numericCount / line.words.length < 0.5;
+    if (totalCount <= 6) return false;
+    return numericCount / totalCount < 0.5;
   };
   // Identify header rows so they can be excluded from column inference.
   //
@@ -2435,8 +2643,14 @@ function extractStructure(table, lines) {
         let current = { ...rowWords[w].bbox };
         let j = w + 1;
         const hasDigit = (s) => /\d/.test(s);
+        const isLeaderFiller = (s) => s.length >= 3 && /^[*.]+$/.test(s);
         const currentHasDigit = hasDigit(rowWords[w].text);
         while (j < rowWords.length && !isCurrencySymbol(rowWords[j].text)) {
+          if (isLeaderFiller(rowWords[j].text)) {
+            current = expand(current, rowWords[j].bbox);
+            j++;
+            continue;
+          }
           if (currentHasDigit || hasDigit(rowWords[j].text)) break;
           const gap = rowWords[j].bbox.left - current.right;
           if (gap > gapThreshold) break;
@@ -2789,6 +3003,297 @@ function refineTableTop(table, lines) {
   }
 
   table.bbox.top = finalTop;
+}
+
+/**
+ * Detect tables anchored to a "ruling row" — a y-band containing 2+ horizontal
+ * paths whose x-extents are mutually disjoint.
+ *
+ * @param {HLine[]} hLines - hLines from classifyPaths (post-filter, post-merge)
+ * @param {import('../objects/ocrObjects.js').OcrPage} pageObj
+ * @returns {DetectedTable[]}
+ */
+function detectHeaderRuleTables(hLines, pageObj) {
+  const lines = pageObj.lines;
+  if (lines.length === 0) return [];
+
+  const yGroups = [];
+  for (const hl of hLines) {
+    let group = null;
+    for (const g of yGroups) {
+      if (Math.abs(g.y - hl.y) <= 3) { group = g; break; }
+    }
+    if (group) {
+      group.lines.push(hl);
+      group.y = group.lines.reduce((s, l) => s + l.y, 0) / group.lines.length;
+    } else {
+      yGroups.push({ y: hl.y, lines: [hl] });
+    }
+  }
+
+  /** @type {Array<{y: number, cols: Array<{left: number, right: number}>, hLines: HLine[]}>} */
+  const rulingRows = [];
+  const pageWidth = pageObj.dims.width;
+  for (const g of yGroups) {
+    // ≥3 lines guards against 2-line decorative coincidences (form-field
+    // underlines, callout boxes). All real financial table rules in the
+    // training set have ≥3 column rules including the label-column rule.
+    if (g.lines.length < 3) continue;
+    const sorted = [...g.lines].sort((a, b) => a.left - b.left);
+    let disjoint = true;
+    for (let i = 1; i < sorted.length; i++) {
+      if (sorted[i].left < sorted[i - 1].right - 1) { disjoint = false; break; }
+    }
+    if (!disjoint) continue;
+    // The combined x-span must cover a significant fraction of the page.
+    // Reject decorative lines clustered in a corner or footnote area.
+    const xSpan = sorted[sorted.length - 1].right - sorted[0].left;
+    if (xSpan < pageWidth * 0.3) continue;
+    rulingRows.push({
+      y: g.y,
+      cols: sorted.map((l) => ({ left: l.left, right: l.right })),
+      hLines: sorted,
+    });
+  }
+
+  if (rulingRows.length === 0) return [];
+  rulingRows.sort((a, b) => a.y - b.y);
+
+  const isSubsetGeometry = (subRow, primaryRow, tol) => {
+    for (const c of subRow.cols) {
+      let matched = false;
+      for (const pc of primaryRow.cols) {
+        if (Math.abs(c.left - pc.left) < tol && Math.abs(c.right - pc.right) < tol) {
+          matched = true; break;
+        }
+      }
+      if (!matched) return false;
+    }
+    return true;
+  };
+
+  /** @type {number[]} */
+  const primaryIndices = [];
+  for (let ri = 0; ri < rulingRows.length; ri++) {
+    let isSubtotal = false;
+    for (const pi of primaryIndices) {
+      if (isSubsetGeometry(rulingRows[ri], rulingRows[pi], 5)) { isSubtotal = true; break; }
+    }
+    if (!isSubtotal) primaryIndices.push(ri);
+  }
+
+  // For each primary, precompute geometry shared between passes.
+  const primaries = primaryIndices.map((ri) => {
+    const rule = rulingRows[ri];
+    const ruleLeft = rule.cols[0].left;
+    const ruleRight = rule.cols[rule.cols.length - 1].right;
+    return {
+      ri,
+      rule,
+      ruleLeft,
+      ruleRight,
+      xSlack: Math.max(20, (ruleRight - ruleLeft) * 0.02),
+      headerTopY: rule.y,
+      headerLineIndices: /** @type {number[]} */ ([]),
+    };
+  });
+
+  // Pass 1: upward header scan for each primary, bounded above by the
+  // previous primary's rule.y. Uses a tight top-to-top gap (1.5× median row
+  // spacing) so a section break or the previous primary's data block stops
+  // the scan.
+  for (let pii = 0; pii < primaries.length; pii++) {
+    const p = primaries[pii];
+    const upperBound = pii > 0 ? primaries[pii - 1].rule.y + 5 : 0;
+    const linesAbove = [];
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i];
+      if (l.bbox.bottom > p.rule.y) continue;
+      if (l.bbox.bottom < upperBound) continue;
+      if (l.bbox.left < p.ruleLeft - p.xSlack) continue;
+      if (l.bbox.right > p.ruleRight + p.xSlack) continue;
+      linesAbove.push({ idx: i, line: l });
+    }
+    linesAbove.sort((a, b) => b.line.bbox.top - a.line.bbox.top);
+
+    // Estimate row spacing from the lines just above the rule (header rows
+    // are tighter; falls back to a reasonable default if too few lines).
+    const tops = linesAbove.slice(0, 8).map((x) => x.line.bbox.top).sort((a, b) => b - a);
+    const headerSpacings = [];
+    for (let i = 1; i < tops.length; i++) headerSpacings.push(tops[i - 1] - tops[i]);
+    headerSpacings.sort((a, b) => a - b);
+    const medianHeaderSpacing = headerSpacings[Math.floor(headerSpacings.length / 2)] || 30;
+    const gapLimit = Math.max(medianHeaderSpacing * 1.5, 45);
+
+    let prevTopU = p.rule.y;
+    for (const { idx, line } of linesAbove) {
+      const gap = prevTopU - line.bbox.top;
+      if (gap > gapLimit) break;
+      p.headerLineIndices.push(idx);
+      p.headerTopY = line.bbox.top;
+      prevTopU = line.bbox.top;
+    }
+  }
+
+  // Pass 2: downward data scan for each primary, bounded below by the next
+  // primary's header top (so adjacent tables on the same page don't leak
+  // into each other).
+  const results = [];
+  for (let pii = 0; pii < primaries.length; pii++) {
+    const p = primaries[pii];
+    const lowerBound = pii + 1 < primaries.length
+      ? primaries[pii + 1].headerTopY - 1
+      : pageObj.dims.height;
+
+    const linesBelow = [];
+    for (let i = 0; i < lines.length; i++) {
+      const l = lines[i];
+      if (l.bbox.top < p.rule.y) continue;
+      if (l.bbox.top > lowerBound) continue;
+      if (l.bbox.left < p.ruleLeft - p.xSlack) continue;
+      if (l.bbox.right > p.ruleRight + p.xSlack) continue;
+      linesBelow.push({ idx: i, line: l });
+    }
+    linesBelow.sort((a, b) => a.line.bbox.top - b.line.bbox.top);
+
+    if (linesBelow.length < 2) continue;
+
+    // Estimate row spacing from the first few rows (most likely table data,
+    // before any prose break). A gap >2.5× this stops the scan — catches
+    // post-table prose that fits inside the column extent.
+    const earlySpacings = [];
+    const earlyN = Math.min(linesBelow.length - 1, 5);
+    for (let i = 1; i <= earlyN; i++) {
+      earlySpacings.push(linesBelow[i].line.bbox.top - linesBelow[i - 1].line.bbox.top);
+    }
+    earlySpacings.sort((a, b) => a - b);
+    const medianDataSpacing = earlySpacings[Math.floor(earlySpacings.length / 2)] || 30;
+    const dataGapLimit = Math.max(medianDataSpacing * 2.5, 80);
+
+    const dataIndices = [];
+    let prevDataTop = p.rule.y;
+    for (const { idx, line } of linesBelow) {
+      const gap = line.bbox.top - prevDataTop;
+      if (dataIndices.length > 0 && gap > dataGapLimit) break;
+      dataIndices.push(idx);
+      prevDataTop = line.bbox.top;
+    }
+    if (dataIndices.length < 2) continue;
+    for (const hIdx of p.headerLineIndices) dataIndices.push(hIdx);
+
+    const colSeparators = [];
+    for (let i = 1; i < p.rule.cols.length; i++) {
+      colSeparators.push((p.rule.cols[i - 1].right + p.rule.cols[i].left) / 2);
+    }
+
+    let bboxBottom = p.rule.y;
+    for (const idx of dataIndices) {
+      if (lines[idx].bbox.bottom > bboxBottom) bboxBottom = lines[idx].bbox.bottom;
+    }
+
+    const regionLines = dataIndices.map((i) => lines[i]);
+    const rowGroups = groupLinesIntoRows(regionLines);
+    const mappedRows = rowGroups.map((rg) => ({
+      lineIndices: rg.lineIndices.map((i) => dataIndices[i]),
+      y: rg.y,
+    }));
+
+    if (mappedRows.length < 3) continue;
+
+    // Validate that rows actually distribute numeric content across multiple
+    // columns. A sequence of prose paragraphs that happens to sit below a
+    // 3-line decorative rule lays words out continuously, with at most one
+    // number per row scattered through prose. A real data row places a
+    // numeric value in each numeric column. Two checks:
+    //   1. ≥5 rows where 2+ distinct columns each contain a numeric word.
+    //   2. ≥1 non-label column contains numeric content in ≥50% of rows
+    //      (column-consistency — prose lacks this; real tables have it
+    //      because each metric's column is filled in every row).
+    const colBounds = [p.ruleLeft, ...colSeparators, p.ruleRight];
+    const numColsCount = colBounds.length - 1;
+    const colNumericRowCount = new Array(numColsCount).fill(0);
+    let numericMultiColRows = 0;
+    for (const row of mappedRows) {
+      const numColsHit = new Set();
+      for (const idx of row.lineIndices) {
+        for (const word of lines[idx].words) {
+          if (!/\d/.test(word.text)) continue;
+          if (!/^[\d,$%.()+-]+$/.test(word.text)) continue;
+          const cx = (word.bbox.left + word.bbox.right) / 2;
+          for (let ci = 0; ci < colBounds.length - 1; ci++) {
+            if (cx >= colBounds[ci] && cx < colBounds[ci + 1]) {
+              numColsHit.add(ci);
+              break;
+            }
+          }
+        }
+      }
+      if (numColsHit.size >= 2) numericMultiColRows++;
+      for (const ci of numColsHit) colNumericRowCount[ci]++;
+    }
+    if (numericMultiColRows < 5) continue;
+    let hasConsistentNumCol = false;
+    for (let ci = 1; ci < numColsCount; ci++) {
+      if (colNumericRowCount[ci] >= mappedRows.length * 0.5) {
+        hasConsistentNumCol = true; break;
+      }
+    }
+    if (!hasConsistentNumCol) continue;
+
+    results.push({
+      bbox: {
+        left: p.ruleLeft, right: p.ruleRight, top: p.headerTopY, bottom: bboxBottom,
+      },
+      rows: mappedRows,
+      colSeparators,
+      hLines: p.rule.hLines,
+      vLines: [],
+      detectionMethod: 'header-rule',
+    });
+  }
+
+  return results;
+}
+
+/**
+ * Group hLines into y-bands of ≥2 disjoint horizontal segments spanning ≥20%
+ * of page width. Used to refine column boundaries of overlapping text tables.
+ * @param {HLine[]} hLines
+ * @param {import('../objects/ocrObjects.js').OcrPage} pageObj
+ */
+function findDisjointRuleClusters(hLines, pageObj) {
+  const yGroups = [];
+  for (const hl of hLines) {
+    let group = null;
+    for (const g of yGroups) {
+      if (Math.abs(g.y - hl.y) <= 3) { group = g; break; }
+    }
+    if (group) {
+      group.lines.push(hl);
+      group.y = group.lines.reduce((s, l) => s + l.y, 0) / group.lines.length;
+    } else {
+      yGroups.push({ y: hl.y, lines: [hl] });
+    }
+  }
+  const pageWidth = pageObj.dims.width;
+  /** @type {Array<{y: number, cols: Array<{left: number, right: number}>}>} */
+  const clusters = [];
+  for (const g of yGroups) {
+    if (g.lines.length < 2) continue;
+    const sorted = [...g.lines].sort((a, b) => a.left - b.left);
+    let disjoint = true;
+    for (let i = 1; i < sorted.length; i++) {
+      if (sorted[i].left < sorted[i - 1].right - 1) { disjoint = false; break; }
+    }
+    if (!disjoint) continue;
+    const xSpan = sorted[sorted.length - 1].right - sorted[0].left;
+    if (xSpan < pageWidth * 0.2) continue;
+    clusters.push({
+      y: g.y,
+      cols: sorted.map((l) => ({ left: l.left, right: l.right })),
+    });
+  }
+  return clusters;
 }
 
 /**
