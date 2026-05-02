@@ -968,10 +968,11 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
     if (/^[\t\n\v\f\r \u00a0]+$/.test(unicode)) unicode = ' ';
     const glyphWidth = (font.widths.get(charCode) ?? font.defaultWidth) / 1000 * fontSize;
 
-    // Drop fallback emissions of unmapped control-byte glyph codes
+    // Drop fallback emissions of unmapped control-byte glyph codes, except in
+    // symbolic fonts where low byte codes legitimately map to printable glyphs.
     const dropFallbackControl = fallbackUsed && !isCID && unicode.length === 1
       && (unicode.charCodeAt(0) < 0x20 || unicode.charCodeAt(0) === 0x7F)
-      && !font.widths.has(charCode);
+      && !font.symbolicFlag;
 
     // Transform text position through CTM to get page-space coordinates.
     const ox = tm[2] * trise + tm[4];

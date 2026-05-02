@@ -469,6 +469,7 @@ export function parsePageFonts(pageObjText, objCache) {
     // Serif flag from font descriptor /Flags bit 2 (PDF spec §9.8.2).
     // Used as last-resort fallback when CSS font name matching fails.
     let serifFlag = false;
+    let symbolicFlag = false;
 
     // Parse ToUnicode CMap — can be an indirect reference (N 0 R) or a name (/Identity-H)
     const toUnicode = new Map();
@@ -1201,6 +1202,7 @@ export function parsePageFonts(pageObjText, objCache) {
           if ((Math.abs(angle) > 0 && Math.abs(angle) < 45) || (fontFlags & 64)) italic = true;
         }
         if (fontFlags & 2) serifFlag = true;
+        if (fontFlags & 4) symbolicFlag = true;
 
         // Extract FontFile2 for CIDFontType2 fonts (TrueType-based composite fonts)
         const isCIDFontType2 = /\/Subtype\s*\/CIDFontType2/.test(cidFontText);
@@ -1446,6 +1448,7 @@ export function parsePageFonts(pageObjText, objCache) {
           if ((Math.abs(angle) > 0 && Math.abs(angle) < 45) || (fontFlags & 64)) italic = true;
         }
         if (fontFlags & 2) serifFlag = true;
+        if (fontFlags & 4) symbolicFlag = true;
 
         // Use MissingWidth from FontDescriptor as defaultWidth for charCodes
         // not covered by the /Widths array (PDF spec §9.6.2, default 0).
@@ -1715,6 +1718,7 @@ export function parsePageFonts(pageObjText, objCache) {
       codespaceRanges,
       hasOwnToUnicode: toUnicode.size > 0,
       serifFlag,
+      symbolicFlag,
       verticalMode,
       preferEncodingCase,
       fontObjNum,
