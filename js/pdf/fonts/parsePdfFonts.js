@@ -1159,7 +1159,9 @@ export function parsePageFonts(pageObjText, objCache) {
         }
         if (!italic) {
           const angle = resolveNumValue(fdText, 'ItalicAngle', objCache);
-          if (Math.abs(angle) > 0 || (fontFlags & 64)) italic = true;
+          // ItalicAngle is degrees CCW from vertical; italics are typically -10..-15.
+          // Reject |angle| >= 45 — values like 180 are producer garbage.
+          if ((Math.abs(angle) > 0 && Math.abs(angle) < 45) || (fontFlags & 64)) italic = true;
         }
         if (fontFlags & 2) serifFlag = true;
 
@@ -1404,7 +1406,7 @@ export function parsePageFonts(pageObjText, objCache) {
         }
         if (!italic) {
           const angle = resolveNumValue(fdText, 'ItalicAngle', objCache);
-          if (Math.abs(angle) > 0 || (fontFlags & 64)) italic = true;
+          if ((Math.abs(angle) > 0 && Math.abs(angle) < 45) || (fontFlags & 64)) italic = true;
         }
         if (fontFlags & 2) serifFlag = true;
 

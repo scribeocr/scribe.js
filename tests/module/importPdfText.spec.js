@@ -41,6 +41,23 @@ describe('Check stylistic ligatures are normalized in PDF text extraction.', () 
   });
 });
 
+describe('Trailing punctuation across italic/roman style boundaries (070823vanliere.pdf).', () => {
+  beforeAll(async () => {
+    await scribe.importFiles([`${ASSETS_PATH}/070823vanliere.pdf`]);
+  });
+
+  test('Italic title "Reference Guide" with trailing roman comma stays as one word', () => {
+    const line = scribe.data.ocr.active[14].lines[24];
+    expect(line.words.map((w) => w.text)).toEqual(
+      ['a', 'dog?', 'Does', 'she', 'live', 'within', '10', 'miles?)”.', 'Reference', 'Guide,', 'p.', '241.'],
+    );
+  });
+
+  afterAll(async () => {
+    await scribe.terminate();
+  });
+});
+
 describe('Check stext import function language support.', () => {
   beforeAll(async () => {
     await scribe.importFiles([`${ASSETS_PATH}/chi_eng_mixed_sample.pdf`]);
@@ -369,7 +386,7 @@ describe('Check direct text extraction from Iris (plant) - Wikipedia_123.pdf.', 
 
   test('Page 1 surfaces the literal fill color and opacity 1 for visible text', async () => {
     // Text-native PDF, default `Tr=0`. Page 0 mixes default-black body text
-    // (243 words) with grey link/caption words (#666666, 4 words).
+    // (236 words) with grey link/caption words (#666666, 4 words).
     const opacities = new Set();
     const colors = new Map();
     for (const line of scribe.data.ocr.active[0].lines) {
@@ -379,7 +396,7 @@ describe('Check direct text extraction from Iris (plant) - Wikipedia_123.pdf.', 
       }
     }
     expect([...opacities]).toEqual([1]);
-    expect(colors.get('#000000')).toBe(243);
+    expect(colors.get('#000000')).toBe(236);
     expect(colors.get('#666666')).toBe(4);
     expect(colors.size).toBe(2);
   });
@@ -505,7 +522,7 @@ describe('Check that line baselines are imported correctly.', () => {
         expect(/[㐀-鿿]/.test(word.text), `word "${word.text}"`).toBe(false);
       }
     }
-    expect(page0.lines[0].words[0].text).toBe('Econometrica');
+    expect(page0.lines[0].words[0].text).toBe('Econometrica,');
   });
 
   afterAll(async () => {
@@ -680,11 +697,10 @@ describe('Check that font style is detected for PDF imports.', () => {
 
   test('Italic style is detected when leading punctuation is non-italic', async () => {
     await scribe.importFiles([`${ASSETS_PATH}/high-risk_protection_order_application_for_and_declaration_in_support_of_mandatory_use.pdf`]);
-    // Line: "Applicant ( Print your name above ),"
-    // The non-italic "(" is now split into its own word, and the inner italicized
-    // body words ("Print", "your", "name", "above") are italic. The non-italic
-    // wrappers — "Applicant", "(", and ")," — must remain italic=false.
-    expect(scribe.data.ocr.active[0].lines[15].words.map((w) => w.text).join(' ')).toBe('Applicant ( Print your name above ),');
+    // Line: "Applicant ( Print your name above),"
+    // The non-italic "(" is split into its own word as a leading wrapper. Trailing
+    // punctuation ")," merges into the preceding word ("above),").
+    expect(scribe.data.ocr.active[0].lines[15].words.map((w) => w.text).join(' ')).toBe('Applicant ( Print your name above),');
     expect(scribe.data.ocr.active[0].lines[15].words[2].text).toBe('Print');
     expect(scribe.data.ocr.active[0].lines[15].words[2].style.italic).toBe(true);
     expect(scribe.data.ocr.active[0].lines[15].words[1].style.italic).toBe(false);

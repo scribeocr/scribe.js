@@ -43,6 +43,7 @@ function isRightClusteredNumeric(words) {
  *   headerFill?: {left: number, top: number, right: number, bottom: number} | null,
  *   headers?: HeaderInfo | null,
  *   title?: { text: string, bbox: {left: number, top: number, right: number, bottom: number} } | null,
+ *   splitTopLocked?: boolean,
  * }} DetectedTable
  */
 
@@ -279,30 +280,156 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     if (!table.detectionMethod) table.detectionMethod = 'text';
   }
 
-  // Attach overlapping row-band regions to each candidate. Used by
-  // extractStructure to seed column positions and row grouping.
-  //
-  // The row band's top is also used to raise bbox.top, since the band top
-  // marks the structural boundary between header and data (Phase 2's
-  // bbox.top is a generous expansion above the first data row). bbox.bottom
-  // is only extended outward by the row band, never cropped: text-based
-  // detection may extend past the row band when data rows exist below the
-  // fill pattern (e.g. trailing subtotal rows without row shading).
-  for (const table of validated) {
-    for (const rbr of rowBandRegions) {
-      const overlap = bboxOverlap(table.bbox, {
+  const pageWidthForRbr = pageObj.dims.width;
+  /** @type {RowBandRegion[]} */
+  const usableRowBandRegions = rowBandRegions.filter(
+    (rbr) => (rbr.right - rbr.left) >= pageWidthForRbr * 0.3,
+  );
+
+  /** @type {Map<RowBandRegion, DetectedTable[]>} */
+  const regionMatches = new Map();
+  for (const rbr of usableRowBandRegions) {
+    const matches = [];
+    for (const cand of validated) {
+      if (bboxOverlap(cand.bbox, {
         left: rbr.left, top: rbr.top, right: rbr.right, bottom: rbr.bottom,
-      });
-      if (overlap > 0.3) {
-        table.rowBandRegion = rbr;
-        table.bbox.top = Math.max(table.bbox.top, rbr.top);
-        table.bbox.bottom = Math.max(table.bbox.bottom, rbr.bottom);
-        break;
+      }) > 0.3) {
+        matches.push(cand);
       }
+    }
+    regionMatches.set(rbr, matches);
+  }
+  /** @type {Map<DetectedTable, RowBandRegion[]>} */
+  const candToRegions = new Map();
+  for (const [rbr, cands] of regionMatches) {
+    for (const c of cands) {
+      let arr = candToRegions.get(c);
+      if (!arr) { arr = []; candToRegions.set(c, arr); }
+      arr.push(rbr);
     }
   }
 
-  // === Phase 5: Column and row structure extraction ===
+  const candsToRemove = new Set();
+  const candsToAdd = [];
+
+  for (const [cand, regions] of candToRegions) {
+    if (regions.length !== 1) continue;
+    const rbr = regions[0];
+    cand.rowBandRegion = rbr;
+    if (cand.detectionMethod === 'grid') continue;
+    const prevTop = cand.bbox.top;
+    const prevBottom = cand.bbox.bottom;
+    const prevLeft = cand.bbox.left;
+    const prevRight = cand.bbox.right;
+    cand.bbox.top = Math.min(cand.bbox.top, rbr.top);
+    cand.bbox.bottom = Math.max(cand.bbox.bottom, rbr.bottom);
+    cand.bbox.left = Math.min(cand.bbox.left, rbr.left);
+    cand.bbox.right = Math.max(cand.bbox.right, rbr.right);
+    // When extending leftward and the candidate's column structure was
+    // derived from path geometry (header-rule / segmented-hline), the old
+    // bbox.left was the boundary between an unmodeled label column and the
+    // first data column — preserve it as a separator so the new label
+    // segment doesn't merge into the first data column.
+    if (cand.bbox.left < prevLeft - 5
+        && (cand.detectionMethod === 'header-rule'
+            || cand.detectionMethod === 'segmented-hline')) {
+      const seps = cand.colSeparators ? [...cand.colSeparators] : [];
+      seps.unshift(prevLeft);
+      seps.sort((a, b) => a - b);
+      cand.colSeparators = seps;
+    }
+    if (cand.bbox.top < prevTop || cand.bbox.bottom > prevBottom
+        || cand.bbox.left < prevLeft - 5 || cand.bbox.right > prevRight + 5) {
+      cand.rows = collectRowsInBbox(cand.bbox, lines);
+    }
+  }
+
+  // Multi-region candidates: split into one candidate per region.
+  //
+  // Two paths trigger a split:
+  //   (a) 3+ regions and every region carries 5+ bands — typical multi-year
+  //       financial summary where each fiscal year is its own banded block
+  //       and section breaks between them are too subtle (just a section
+  //       label) to detect as narrative.
+  //   (b) Adjacent regions are separated by a wide single-segment narrative
+  //       line (paragraph, footnote, or intro prose) — a clear authorial
+  //       section break that confirms the regions belong to different
+  //       tables. Applies for any region count ≥2 (with ≥2 bands each), so
+  //       sibling tables stacked vertically with brief paragraphs between
+  //       them split correctly even when each side has few banded rows.
+  //
+  // Single tables whose internal sub-sections happen to span multiple
+  // banded regions (multi-year reconciliations, segment breakdowns) typically
+  // have narrow section labels between regions, not wide narrative lines —
+  // they remain merged.
+  for (const [cand, regions] of candToRegions) {
+    if (regions.length < 2) continue;
+    const allHaveFiveBands = regions.every((r) => r.rowYs.length >= 5);
+    const allHaveTwoBands = regions.every((r) => r.rowYs.length >= 2);
+    // Sibling tables stacked vertically have their own column layouts;
+    // sub-sections of one table share columns. Compare adjacent regions'
+    // colXs (column anchors inferred from band rectangles) — distinct
+    // anchors signal distinct tables (e.g. p39's stock-option transaction
+    // table with 4 numeric cols vs the weighted-averages table with 3
+    // cols below it), while matching anchors signal one logical table
+    // split by a tall row or warning text (e.g. 560863 p30's
+    // troubleshooting list whose two banded sections share identical
+    // column structure).
+    const sortedByTop = [...regions].sort((a, b) => a.top - b.top);
+    let shouldSplit = false;
+    if (regions.length >= 3 && allHaveFiveBands) {
+      shouldSplit = true;
+    } else if (allHaveTwoBands) {
+      // Sibling tables stacked vertically have THEIR OWN header rows
+      // between the banded sections — column-aligned text cells (multi-
+      // segment row) introducing the next table's columns. Sub-sections
+      // of one table separated by a tall data row or wraparound prose
+      // have NO new column header between sections — the columns continue.
+      let allSeparatedByHeader = true;
+      for (let ri = 1; ri < sortedByTop.length; ri++) {
+        const gapTop = sortedByTop[ri - 1].bottom;
+        const gapBottom = sortedByTop[ri].top;
+        // Group lines in the gap by y (5pt tolerance). A y-group with 2+
+        // line-fragments overlapping the candidate's x-range is a multi-
+        // segment row, characteristic of a new table's column-header band.
+        /** @type {Array<{y: number, count: number}>} */
+        const yGroups = [];
+        for (const line of lines) {
+          if (line.bbox.top < gapTop || line.bbox.top >= gapBottom) continue;
+          if (line.bbox.right < cand.bbox.left || line.bbox.left > cand.bbox.right) continue;
+          let matched = false;
+          for (const g of yGroups) {
+            if (Math.abs(g.y - line.bbox.top) < 5) { g.count++; matched = true; break; }
+          }
+          if (!matched) yGroups.push({ y: line.bbox.top, count: 1 });
+        }
+        const hasHeaderRow = yGroups.some((g) => g.count >= 2);
+        if (!hasHeaderRow) { allSeparatedByHeader = false; break; }
+      }
+      if (allSeparatedByHeader) shouldSplit = true;
+    }
+    if (!shouldSplit) continue;
+    candsToRemove.add(cand);
+    for (const rbr of regions) {
+      for (const c of makeRowBandCandidates(rbr, cand, lines)) candsToAdd.push(c);
+    }
+  }
+
+  // Unattached regions: synthesize candidates from band geometry.
+  // Text clustering missed these because the table relies on row-shading rather
+  // than on column-aligned text patterns to cohere.
+  for (const [rbr, cands] of regionMatches) {
+    if (cands.length === 0 && rbr.rowYs.length >= 8) {
+      for (const c of makeRowBandCandidates(rbr, null, lines)) candsToAdd.push(c);
+    }
+  }
+
+  for (const c of candsToRemove) {
+    const idx = validated.indexOf(c);
+    if (idx >= 0) validated.splice(idx, 1);
+  }
+  for (const c of candsToAdd) validated.push(c);
+
   //
   // Header detection runs FIRST. Downstream passes (column inference in
   // extractStructure, bbox refinement in refineTableTop) consult
@@ -365,6 +492,134 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     validated.push(ht);
   }
 
+  // Phase 5.4: Re-attach row-band regions to header-rule tables
+  for (const cand of validated) {
+    if (cand.rowBandRegion) continue;
+    /** @type {RowBandRegion[]} */
+    const matches = [];
+    for (const rbr of rowBandRegions) {
+      if (bboxOverlap(cand.bbox, {
+        left: rbr.left, top: rbr.top, right: rbr.right, bottom: rbr.bottom,
+      }) > 0.3) {
+        matches.push(rbr);
+      }
+    }
+    if (matches.length !== 1) continue;
+    const rbr = matches[0];
+    cand.rowBandRegion = rbr;
+    if (cand.detectionMethod === 'grid') continue;
+    const prevTop = cand.bbox.top;
+    const prevBottom = cand.bbox.bottom;
+    const prevLeft = cand.bbox.left;
+    const prevRight = cand.bbox.right;
+    cand.bbox.top = Math.min(cand.bbox.top, rbr.top);
+    cand.bbox.bottom = Math.max(cand.bbox.bottom, rbr.bottom);
+    cand.bbox.left = Math.min(cand.bbox.left, rbr.left);
+    cand.bbox.right = Math.max(cand.bbox.right, rbr.right);
+    if (cand.bbox.left < prevLeft - 5
+        && (cand.detectionMethod === 'header-rule'
+            || cand.detectionMethod === 'segmented-hline')) {
+      const seps = cand.colSeparators ? [...cand.colSeparators] : [];
+      seps.unshift(prevLeft);
+      seps.sort((a, b) => a - b);
+      cand.colSeparators = seps;
+    }
+    if (cand.bbox.top < prevTop || cand.bbox.bottom > prevBottom
+        || cand.bbox.left < prevLeft - 5 || cand.bbox.right > prevRight + 5) {
+      cand.rows = collectRowsInBbox(cand.bbox, lines);
+    }
+  }
+
+  // Split row-band-attached candidates when their data rows have a big
+  // y-gap — sibling sub-tables (e.g. Assets / Liabilities) commonly share a
+  // single header rule and a single banded stripe even though they're
+  // structurally separate. Split candidates inherit column structure.
+  /** @type {Array<{cand: DetectedTable, splits: DetectedTable[]}>} */
+  const splitWork = [];
+  for (const cand of validated) {
+    if (!cand.rowBandRegion) continue;
+    if (!cand.rows || cand.rows.length < 4) continue;
+    const sorted = [...cand.rows].sort((a, b) => a.y - b.y);
+    const spacings = [];
+    for (let i = 1; i < sorted.length; i++) spacings.push(sorted[i].y - sorted[i - 1].y);
+    const sortedSpacings = [...spacings].sort((a, b) => a - b);
+    const median = sortedSpacings[Math.floor(sortedSpacings.length / 2)];
+    /** @type {Array<{start: number, end: number}>} */
+    const groups = [{ start: 0, end: 0 }];
+    for (let i = 1; i < sorted.length; i++) {
+      if (spacings[i - 1] > median * 2 && spacings[i - 1] > 50) {
+        groups.push({ start: i, end: i });
+      } else {
+        groups[groups.length - 1].end = i;
+      }
+    }
+    // Only split when exactly two groups appear. Three-or-more groups are
+    // typically internal sub-sections of one larger table (e.g. plan-asset
+    // categories) rather than truly sibling tables — splitting those would
+    // fragment a single logical table.
+    if (groups.length !== 2) continue;
+    // Only split when both groups close with a "Total …" row.
+    /** @param {{lineIndices: number[], y: number}} rowSpec */
+    const endsInTotal = (rowSpec) => {
+      for (const li of rowSpec.lineIndices) {
+        const text = lines[li].words.map((w) => w.text).join(' ').trim();
+        if (/^Total\b/i.test(text)) return true;
+      }
+      return false;
+    };
+    const firstEnd = sorted[groups[0].end];
+    const secondEnd = sorted[groups[1].end];
+    if (!endsInTotal(firstEnd) || !endsInTotal(secondEnd)) continue;
+    const splits = [];
+    for (let gi = 0; gi < groups.length; gi++) {
+      const g = groups[gi];
+      if (g.end - g.start < 1) continue;
+      const groupRows = sorted.slice(g.start, g.end + 1);
+      let groupTop;
+      let groupBottom;
+      if (gi === 0) {
+        groupTop = cand.bbox.top;
+      } else {
+        groupTop = groupRows[0].y;
+      }
+      if (gi === groups.length - 1) {
+        groupBottom = cand.bbox.bottom;
+      } else {
+        let maxBot = -Infinity;
+        for (const r of groupRows) {
+          for (const li of r.lineIndices) {
+            if (lines[li].bbox.bottom > maxBot) maxBot = lines[li].bbox.bottom;
+          }
+        }
+        groupBottom = maxBot + 5;
+      }
+      splits.push({
+        bbox: {
+          left: cand.bbox.left,
+          top: groupTop,
+          right: cand.bbox.right,
+          bottom: groupBottom,
+        },
+        rows: groupRows,
+        colSeparators: [...(cand.colSeparators || [])],
+        hLines: cand.hLines || [],
+        vLines: cand.vLines || [],
+        detectionMethod: cand.detectionMethod,
+        rowBandRegion: cand.rowBandRegion,
+        // Non-first groups must not extend their bbox.top above their own
+        // first row — refineTableTop's gap-scan would otherwise chain upward
+        // through the previous split's data rows and pull bbox.top to the
+        // shared column-header band.
+        splitTopLocked: gi > 0,
+      });
+    }
+    if (splits.length >= 2) splitWork.push({ cand, splits });
+  }
+  for (const { cand, splits } of splitWork) {
+    const idx = validated.indexOf(cand);
+    if (idx >= 0) validated.splice(idx, 1, ...splits);
+  }
+
   // === Phase 5.5: Refine table top boundaries using header detection ===
   // Now that hLine data is available (from Phase 3 path correlation), replace the
   // generous expansion from Phase 2 with an intelligent header scan. This determines
@@ -372,13 +627,30 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   // first detected data row, using hLines as the primary signal and multi-segment /
   // width analysis as fallback.
   //
-  // Skipped when a row-band region is attached: the band top already marks
-  // the structural boundary between header and data.
+  // Path-derived methods (segmented-hline, header-rule) carry authoritative
+  // bbox.top from drawn vector geometry and are exempt — except when a row-band
+  // region was attached, which means the band marks the first data row and any
+  // header rows still need to be picked up above it.
   for (const table of validated) {
-    if (table.rowBandRegion) continue;
-    if (table.detectionMethod === 'segmented-hline') continue;
-    if (table.detectionMethod === 'header-rule') continue;
-    refineTableTop(table, lines);
+    const hasBand = !!table.rowBandRegion;
+    if (table.splitTopLocked) continue;
+    if (!hasBand && table.detectionMethod === 'segmented-hline') continue;
+    if (!hasBand && table.detectionMethod === 'header-rule') continue;
+    // Lines belonging to another table's bbox must not pull this table's top
+    // upward. Without a floor, a stacked sibling whose data rows visually
+    // resemble headers (multi-segment numerics) chains the upward scan
+    // through the entire neighbor and stops only at its intro prose.
+    let topFloor = 0;
+    for (const other of validated) {
+      if (other === table) continue;
+      if (other.bbox.bottom <= table.bbox.top
+          && other.bbox.bottom > topFloor
+          && other.bbox.right >= table.bbox.left
+          && other.bbox.left <= table.bbox.right) {
+        topFloor = other.bbox.bottom;
+      }
+    }
+    refineTableTop(table, lines, topFloor);
   }
 
   // === Phase 5.55: Detect table titles ===
@@ -460,6 +732,115 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
 
   // === Phase 6: Stream order validation ===
   return multiCol.filter((t) => validateStreamOrder(t, lines));
+}
+
+/**
+ * Collect lines whose bbox sits inside `bbox` and group them into rows.
+ * Used by row-band candidate construction and post-snap row repopulation.
+ * @param {{left: number, top: number, right: number, bottom: number}} bbox
+ * @param {any[]} lines
+ */
+function collectRowsInBbox(bbox, lines) {
+  /** @type {number[]} */
+  const regionLineIndices = [];
+  for (let i = 0; i < lines.length; i++) {
+    const line = lines[i];
+    if (line.bbox.top >= bbox.top - 5 && line.bbox.bottom <= bbox.bottom + 5
+        && line.bbox.left >= bbox.left - 10 && line.bbox.right <= bbox.right + 10) {
+      regionLineIndices.push(i);
+    }
+  }
+  const regionLines = regionLineIndices.map((i) => lines[i]);
+  const rowGroups = groupLinesIntoRows(regionLines);
+  return rowGroups.map((rg) => ({
+    lineIndices: rg.lineIndices.map((i) => regionLineIndices[i]),
+    y: rg.y,
+  }));
+}
+
+/**
+ * Build synthetic table candidate(s) seeded from a row-band region. Used both
+ * for unattached regions (no text candidate covered the band) and to split a
+ * text candidate that spans several disjoint regions.
+ *
+ * @param {RowBandRegion} rbr
+ * @param {DetectedTable | null} baseCand
+ * @param {any[]} lines
+ * @returns {DetectedTable[]}
+ */
+function makeRowBandCandidates(rbr, baseCand, lines) {
+  const left = baseCand ? Math.min(baseCand.bbox.left, rbr.left) : rbr.left;
+  const right = baseCand ? Math.max(baseCand.bbox.right, rbr.right) : rbr.right;
+  const bbox = {
+    left, top: rbr.top, right, bottom: rbr.bottom,
+  };
+  const rows = collectRowsInBbox(bbox, lines);
+  if (rows.length < 3) {
+    return [{
+      bbox,
+      rows,
+      colSeparators: [],
+      hLines: [],
+      vLines: [],
+      detectionMethod: 'row-band',
+      rowBandRegion: rbr,
+    }];
+  }
+  const sorted = [...rows].sort((a, b) => a.y - b.y);
+  const spacings = [];
+  for (let i = 1; i < sorted.length; i++) spacings.push(sorted[i].y - sorted[i - 1].y);
+  const sortedSpacings = [...spacings].sort((a, b) => a - b);
+  const medianSpacing = sortedSpacings[Math.floor(sortedSpacings.length / 2)];
+  /** @type {Array<{startIdx: number, endIdx: number}>} */
+  const groups = [{ startIdx: 0, endIdx: 0 }];
+  for (let i = 1; i < sorted.length; i++) {
+    const last = groups[groups.length - 1];
+    if (spacings[i - 1] > medianSpacing * 2 && spacings[i - 1] > 50) {
+      groups.push({ startIdx: i, endIdx: i });
+    } else {
+      last.endIdx = i;
+    }
+  }
+  if (groups.length === 1) {
+    return [{
+      bbox,
+      rows,
+      colSeparators: [],
+      hLines: [],
+      vLines: [],
+      detectionMethod: 'row-band',
+      rowBandRegion: rbr,
+    }];
+  }
+  return groups
+    .filter((g) => g.endIdx - g.startIdx >= 2)
+    .map((g) => {
+      const groupRows = sorted.slice(g.startIdx, g.endIdx + 1);
+      let groupBottom = -Infinity;
+      for (const r of groupRows) {
+        for (const li of r.lineIndices) {
+          if (lines[li].bbox.bottom > groupBottom) groupBottom = lines[li].bbox.bottom;
+        }
+      }
+      // First group keeps the original band-region top so that header rows
+      // above the first data row stay inside; later groups start at their own
+      // first-row y so they don't pull bbox.top back into the previous group.
+      const subBbox = {
+        left,
+        top: g.startIdx === 0 ? bbox.top : groupRows[0].y,
+        right,
+        bottom: g.endIdx === sorted.length - 1 ? bbox.bottom : groupBottom + 5,
+      };
+      return {
+        bbox: subBbox,
+        rows: collectRowsInBbox(subBbox, lines),
+        colSeparators: [],
+        hLines: [],
+        vLines: [],
+        detectionMethod: 'row-band',
+        rowBandRegion: rbr,
+      };
+    });
 }
 
 /**
@@ -751,6 +1132,14 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
   };
   const isPathAchromatic = (path) => isAchromaticColor(path.stroke ? path.strokeColor : path.fillColor);
 
+  /** @param {number[] | null | undefined} color */
+  const isRowBandColor = (color) => {
+    if (isAchromaticColor(color)) return true;
+    if (!color) return false;
+    if (color.length === 3) return color[0] >= 0.5 && color[1] >= 0.5 && color[2] >= 0.5;
+    return false;
+  };
+
   // Pre-pass: identify stroked rectangles that tile (share edges with neighbors).
   // Table cells drawn with `re S` tile perfectly — adjacent cells share their
   // common border. Org chart boxes, diagram outlines, and other non-table rects
@@ -857,6 +1246,50 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
       }
     }
 
+    // Decompose batched filled paths into per-cell FilledRects.
+    // Some PDFs draw alternating row backgrounds — or per-cell cell fills — as a single fill
+    // path containing many M-L-L-L-Z subpath rectangles.
+    if (path.fill && cmds.length >= 10 && isRowBandColor(path.fillColor)) {
+      const subRects = [];
+      for (let k = 0; k + 4 < cmds.length; k++) {
+        if (cmds[k].type !== 'M') continue;
+        if (cmds[k + 1].type !== 'L' || cmds[k + 2].type !== 'L'
+            || cmds[k + 3].type !== 'L' || cmds[k + 4].type !== 'Z') continue;
+        const p0 = cmds[k]; const p1 = cmds[k + 1];
+        const p2 = cmds[k + 2]; const p3 = cmds[k + 3];
+        const tol = 0.01;
+        const horizFirst = Math.abs(p0.y - p1.y) < tol && Math.abs(p2.y - p3.y) < tol
+                        && Math.abs(p0.x - p3.x) < tol && Math.abs(p1.x - p2.x) < tol;
+        const vertFirst = Math.abs(p0.x - p1.x) < tol && Math.abs(p2.x - p3.x) < tol
+                       && Math.abs(p0.y - p3.y) < tol && Math.abs(p1.y - p2.y) < tol;
+        if (!horizFirst && !vertFirst) continue;
+        const sMinX = Math.min(p0.x, p1.x, p2.x, p3.x);
+        const sMaxX = Math.max(p0.x, p1.x, p2.x, p3.x);
+        const sMinY = Math.min(p0.y, p1.y, p2.y, p3.y);
+        const sMaxY = Math.max(p0.y, p1.y, p2.y, p3.y);
+        subRects.push({
+          minX: sMinX, maxX: sMaxX, minY: sMinY, maxY: sMaxY,
+        });
+        k += 4;
+      }
+      if (subRects.length >= 2) {
+        for (const sr of subRects) {
+          const sw = sr.maxX - sr.minX;
+          const sh = sr.maxY - sr.minY;
+          if (sw <= minHLineWidthPts) continue;
+          if (sh <= minHLineWidthPts * 0.3 || sh >= minHLineWidthPts * 5) continue;
+          filledRects.push({
+            left: (sr.minX - boxOriginX) * scale,
+            top: (visualHeightPts - (sr.maxY - boxOriginY)) * scale,
+            right: (sr.maxX - boxOriginX) * scale,
+            bottom: (visualHeightPts - (sr.minY - boxOriginY)) * scale,
+            color: path.fillColor || [],
+          });
+        }
+        continue;
+      }
+    }
+
     // Decompose stroked rectangular paths (M-L-L-L-Z) into individual line segments,
     // but only when the rect tiles with its neighbors (shares an edge). Table cells
     // drawn with `re S` tile perfectly — adjacent cells share their common border.
@@ -919,8 +1352,8 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
       if (vLineHeight > pageHeight * 0.8) continue;
 
       vLines.push({ top: displayTop, bottom: displayBottom, x: displayX });
-    } else if (path.fill && w > minHLineWidthPts && h > minHLineWidthPts * 0.5 && h < minHLineWidthPts * 5) {
-      // Filled rectangle (row-band background)
+    } else if (path.fill && w > minHLineWidthPts && h > minHLineWidthPts * 0.5 && h < minHLineWidthPts * 5
+        && isRowBandColor(path.fillColor)) {
       filledRects.push({
         left: displayLeft,
         top: displayTop,
@@ -1071,16 +1504,22 @@ function extractRowBandStructure(filledRects) {
     else yGroups.push({ top: f.top, bottom: f.bottom, items: [f] });
   }
 
-  // Step 2: within each y-group, compute disjoint x-ranges.
+  // Step 2: within each y-group, compute disjoint x-ranges and keep the raw
+  // per-cell extents.
   // A disjoint range is a maximal set of adjacent/overlapping fills. Cells
   // with a true x-gap between them (fills not touching) produce multiple
-  // disjoint ranges, one per column.
-  /** @type {Array<{top: number, bottom: number, ranges: Array<{left: number, right: number}>}>} */
+  // disjoint ranges, one per column. The merged ranges drive row-bbox geometry;
+  // the raw per-cell extents drive column inference (touching cells share
+  // boundaries that are real column separators, even though they merge into a
+  // single contiguous range).
+  /** @type {Array<{top: number, bottom: number, ranges: Array<{left: number, right: number}>, cells: Array<{left: number, right: number}>}>} */
   const rowCandidates = [];
   for (const g of yGroups) {
     g.items.sort((a, b) => a.left - b.left);
     const ranges = [];
+    const cells = [];
     for (const f of g.items) {
+      cells.push({ left: f.left, right: f.right });
       const last = ranges[ranges.length - 1];
       // Fills exactly touching (last.right === f.left) are merged: adjacent
       // cells typically share a border in the PDF. Use a tiny numeric
@@ -1091,7 +1530,9 @@ function extractRowBandStructure(filledRects) {
         ranges.push({ left: f.left, right: f.right });
       }
     }
-    rowCandidates.push({ top: g.top, bottom: g.bottom, ranges });
+    rowCandidates.push({
+      top: g.top, bottom: g.bottom, ranges, cells,
+    });
   }
 
   // Filter: keep only candidates that look like table row bands.
@@ -1143,21 +1584,13 @@ function extractRowBandStructure(filledRects) {
   for (const region of regions) {
     if (region.length < 3) continue;
 
-    // Collect all disjoint-range boundaries across the region's bands.
-    // The set of column boundary x-positions that appear in a majority of
-    // bands is the "dominant column pattern". A boundary is a pair (left,
-    // right) of an individual disjoint range.
-    //
-    // To infer column x-positions, use the left edges of disjoint ranges as
-    // column anchors. A column anchor that appears (within tolerance) in 50%+
-    // of the region's bands is kept.
     const anchorTol = 3;
     const leftAnchors = [];
     const rightAnchors = [];
     for (const b of region) {
-      for (const r of b.ranges) {
-        leftAnchors.push(r.left);
-        rightAnchors.push(r.right);
+      for (const c of b.cells) {
+        leftAnchors.push(c.left);
+        rightAnchors.push(c.right);
       }
     }
     // Cluster anchors within tolerance
@@ -1192,8 +1625,7 @@ function extractRowBandStructure(filledRects) {
       .map((c) => c.mean)
       .sort((a, b) => a - b);
 
-    // Require at least 2 columns of dominant evidence.
-    if (dominantLefts.length < 2) continue;
+    if (dominantLefts.length < 1) continue;
 
     // The column boundaries (separators) are the midpoints between adjacent
     // dominant right/left pairs. Pair each right with the next left.
@@ -2279,13 +2711,22 @@ function detectHeaders(table, lines) {
   for (const g of yGroups) {
     const cells = extractCells(g.items);
     let allText = true;
+    let alphaCount = 0;
+    let dataCount = 0;
     for (const c of cells) {
       for (const w of c.words) {
-        if (isDataValueToken(w.text)) { allText = false; break; }
+        if (isDataValueToken(w.text)) {
+          allText = false;
+          dataCount++;
+        } else if (/[a-zA-Z]/.test(w.text)) {
+          alphaCount++;
+        }
       }
-      if (!allText) break;
     }
-    annotated.push({ y: g.y, cells, allText });
+    const mostlyText = alphaCount > dataCount;
+    annotated.push({
+      y: g.y, cells, allText, mostlyText,
+    });
   }
 
   // Pick the primary column-header row: the all-text y-group with the most
@@ -2323,9 +2764,8 @@ function detectHeaders(table, lines) {
     return n;
   };
   const isHeaderLikeRow = (a) => {
-    if (!a.allText) return false;
-    if (a.cells.length >= 2) return true;
-    if (a.cells.length === 1) return countAlpha(a.cells[0]) <= 4;
+    if (a.cells.length >= 2) return a.allText;
+    if (a.cells.length === 1) return a.mostlyText && countAlpha(a.cells[0]) <= 4;
     return false;
   };
   let bandTop = firstRowY;
@@ -2501,7 +2941,10 @@ function extractStructure(table, lines) {
     if (hasLabelCol) {
       const halfSpacing = (anchors[1] - anchors[0]) / 2;
       const labelSep = anchors[0] - halfSpacing;
-      if (labelSep > table.bbox.left + 5) seps.unshift(labelSep);
+      if (labelSep > table.bbox.left + 5
+          && anchors[0] - table.bbox.left > halfSpacing * 2) {
+        seps.unshift(labelSep);
+      }
     }
     seps.sort((a, b) => a - b);
     headerSeps = seps;
@@ -2557,7 +3000,9 @@ function extractStructure(table, lines) {
   // the data-row signature marks the start of the data area; everything above
   // it is treated as header.
   const isYearLike = (text) => /^(?:19|20)\d\d$/.test(text);
-  const isDataValueWord = (text) => /^[\d,$%.()+-]+$/.test(text) && /\d/.test(text) && !isYearLike(text);
+  /** @param {string} text */
+  const isFootnoteMarker = (text) => /^\(\d\)$/.test(text);
+  const isDataValueWord = (text) => /^[\d,$%.()+-]+$/.test(text) && /\d/.test(text) && !isYearLike(text) && !isFootnoteMarker(text);
   let firstDataRowIdx = -1;
   for (let ri = 0; ri < table.rows.length; ri++) {
     const r = table.rows[ri];
@@ -2577,10 +3022,30 @@ function extractStructure(table, lines) {
   for (let ri = 0; ri < table.rows.length; ri++) {
     const r = table.rows[ri];
     if (firstDataRowIdx >= 0 && ri < firstDataRowIdx) continue;
+    /** @param {any} line */
+    const lineIsPureText = (line) => {
+      for (const word of line.words) {
+        if (/^[\d,$%.()+-]+$/.test(word.text) && /\d/.test(word.text)) return false;
+        if (/^[$€£¥¢]+$/.test(word.text)) return false;
+      }
+      return true;
+    };
     let hasNarrativeLine = false;
     for (const i of r.lineIndices) {
       const lw = lines[i].bbox.right - lines[i].bbox.left;
       if (candidateWidth > 0 && lw > candidateWidth * 0.5 && isNarrativeLine(lines[i])) {
+        if (r.lineIndices.length > 1 && lineIsPureText(lines[i])) {
+          let otherHasNumeric = false;
+          for (const j of r.lineIndices) {
+            if (j === i) continue;
+            for (const word of lines[j].words) {
+              if (/^[\d,$%.()+-]+$/.test(word.text) && /\d/.test(word.text)) { otherHasNumeric = true; break; }
+              if (/^[$€£¥¢]+$/.test(word.text)) { otherHasNumeric = true; break; }
+            }
+            if (otherHasNumeric) break;
+          }
+          if (otherHasNumeric) continue;
+        }
         hasNarrativeLine = true;
         break;
       }
@@ -2684,17 +3149,61 @@ function extractStructure(table, lines) {
         }
         if (!matched) yRows.push({ y: bbox.top, bboxes: [bbox] });
       }
+      const dataRowCount = yRows.length;
+      /** @type {Array<{y: number, bboxes: any[]}>} */
+      const headerYRows = [];
+      const addHeaderWord = (/** @type {{bbox: any}} */ w) => {
+        let matched = false;
+        for (const row of headerYRows) {
+          if (Math.abs(w.bbox.top - row.y) < yTol) {
+            row.bboxes.push(w.bbox);
+            matched = true;
+            break;
+          }
+        }
+        if (!matched) headerYRows.push({ y: w.bbox.top, bboxes: [w.bbox] });
+      };
+      // Header rows that sit inside table.rows but before firstDataRowIdx.
+      if (firstDataRowIdx > 0) {
+        for (let ri = 0; ri < firstDataRowIdx; ri++) {
+          if (table.rows[ri].lineIndices.length < 2) continue;
+          for (const i of table.rows[ri].lineIndices) {
+            for (const word of lines[i].words) addHeaderWord(word);
+          }
+        }
+      }
+      // Header lines above table.bbox.top (typical for row-band candidates
+      // whose bbox starts at the first banded data row).
+      if (table.headers
+          && typeof table.headers.bandTop === 'number'
+          && typeof table.headers.bandBottom === 'number') {
+        const hTop = table.headers.bandTop;
+        const hBottom = table.headers.bandBottom;
+        for (const line of lines) {
+          if (line.bbox.top < hTop || line.bbox.top >= hBottom) continue;
+          if (line.bbox.top >= table.bbox.top) continue;
+          if (line.bbox.right < table.bbox.left || line.bbox.left > table.bbox.right) continue;
+          for (const word of line.words) addHeaderWord(word);
+        }
+      }
 
+      const coverageFloor = Math.max(2, dataRowCount * 0.25);
+      const colContains = (/** @type {{left: number, right: number}} */ col, /** @type {any} */ b) => {
+        const center = (b.left + b.right) / 2;
+        return center >= col.left && center <= col.right;
+      };
       for (let c = wordColumnBounds.length - 1; c >= 0; c--) {
         if (wordColumnBounds.length <= 2) break;
-        let rowsWithContent = 0;
+        let dataRowsHere = 0;
         for (const row of yRows) {
-          if (row.bboxes.some((b) => {
-            const center = (b.left + b.right) / 2;
-            return center >= wordColumnBounds[c].left && center <= wordColumnBounds[c].right;
-          })) rowsWithContent++;
+          if (row.bboxes.some((b) => colContains(wordColumnBounds[c], b))) dataRowsHere++;
         }
-        if (rowsWithContent < yRows.length * 0.25) {
+        let headerRowsHere = 0;
+        for (const row of headerYRows) {
+          if (row.bboxes.some((b) => colContains(wordColumnBounds[c], b))) headerRowsHere++;
+        }
+        const totalRowsHere = dataRowsHere + headerRowsHere;
+        if (dataRowsHere === 0 || totalRowsHere < coverageFloor) {
           if (c === 0) {
             wordColumnBounds[1].left = wordColumnBounds[0].left;
           } else {
@@ -2734,7 +3243,10 @@ function extractStructure(table, lines) {
     const overSplit = headerSeps.length < table.colSeparators.length
       && headerSeps.length >= 2
       && headerSeps.length <= table.colSeparators.length * 0.5;
-    if (sparseUnderCount || overSplit) {
+    const rowBandOverSplit = table.detectionMethod === 'row-band'
+      && headerSeps.length >= 2
+      && headerSeps.length < table.colSeparators.length;
+    if (sparseUnderCount || overSplit || rowBandOverSplit) {
       table.colSeparators = headerSeps;
     }
   }
@@ -2786,8 +3298,9 @@ function extractStructure(table, lines) {
  *
  * @param {DetectedTable} table
  * @param {Array} lines - All page lines
+ * @param {number} [topFloor=0] - Lower bound for the refined top
  */
-function refineTableTop(table, lines) {
+function refineTableTop(table, lines, topFloor = 0) {
   const rows = table.rows;
   if (rows.length === 0) return;
 
@@ -2800,7 +3313,7 @@ function refineTableTop(table, lines) {
   // alignment evidence to anchor trust, we'd rather let refineTableTop's
   // conservative gap-based logic decide whether to reach them.
   if (table.headers && table.headers.confidence === 'strong') {
-    let strongTop = Math.max(0, table.headers.bandTop - 5);
+    let strongTop = Math.max(topFloor, table.headers.bandTop - 5);
     // Even with a strong header, push past any colon-ending prose lines
     // between strongTop and the first data row.
     const firstDataY = [...rows].sort((a, b) => a.y - b.y)[0].y;
@@ -2818,7 +3331,21 @@ function refineTableTop(table, lines) {
   }
 
   const sortedRows = [...rows].sort((a, b) => a.y - b.y);
-  const firstRowY = sortedRows[0].y;
+  const candidateWidthForSkip = table.bbox.right - table.bbox.left;
+  let firstIdx = 0;
+  while (firstIdx < sortedRows.length - 1) {
+    const r = sortedRows[firstIdx];
+    if (r.lineIndices.length !== 1) break;
+    const line = lines[r.lineIndices[0]];
+    const lastText = line.words.length > 0 ? line.words[line.words.length - 1].text : '';
+    const lastIsNumeric = /^[\d,$%.()+-]+$/.test(lastText) && /\d/.test(lastText) && /[\d)%]$/.test(lastText);
+    if (lastIsNumeric) break;
+    const wide = (line.bbox.right - line.bbox.left) > candidateWidthForSkip * 0.5;
+    const sentenceEnd = /[.!?:]$/.test(lastText) && line.words.length >= 3;
+    if (!wide && !sentenceEnd) break;
+    firstIdx++;
+  }
+  const firstRowY = sortedRows[firstIdx].y;
   const lastRowY = sortedRows[sortedRows.length - 1].y;
   // Use the MEDIAN inter-row spacing as the row height. The mean is biased
   // upward by large gaps from section-break bridging, which makes the
@@ -2879,10 +3406,15 @@ function refineTableTop(table, lines) {
     if (allLineIndicesSet.has(li)) continue;
     const line = lines[li];
     if (line.bbox.top >= firstRowY) continue;
+    if (line.bbox.bottom <= topFloor) continue;
     if (line.bbox.right < table.bbox.left || line.bbox.left > table.bbox.right) continue;
     aboveLines.push({ idx: li, line });
   }
   aboveLines.sort((a, b) => b.line.bbox.top - a.line.bbox.top); // bottom-up
+
+  // Track the running x-extent of consecutive single-segment header lines.
+  /** @type {{left: number, right: number} | null} */
+  let singleSegRange = null;
 
   for (const { idx, line } of aboveLines) {
     const lineWidth = line.bbox.right - line.bbox.left;
@@ -2916,6 +3448,7 @@ function refineTableTop(table, lines) {
     if (isMultiSegment) {
       if (gapToHeader > avgRowHeight * 2.5) break;
       headerTop = Math.min(headerTop, line.bbox.top);
+      singleSegRange = null;
       continue;
     }
     if (gapToHeader > avgRowHeight * 0.45) continue;
@@ -2928,10 +3461,23 @@ function refineTableTop(table, lines) {
     // table content (page-margin section headers vs indented table content).
     if (line.bbox.left < dataLeftEdge - 20) break;
 
+    if (singleSegRange
+        && (line.bbox.right < singleSegRange.left || line.bbox.left > singleSegRange.right)) {
+      break;
+    }
+
     headerTop = Math.min(headerTop, line.bbox.top);
+    if (lineWidth <= candidateWidth * 0.5) {
+      if (!singleSegRange) {
+        singleSegRange = { left: line.bbox.left, right: line.bbox.right };
+      } else {
+        singleSegRange.left = Math.min(singleSegRange.left, line.bbox.left);
+        singleSegRange.right = Math.max(singleSegRange.right, line.bbox.right);
+      }
+    }
   }
 
-  let finalTop = Math.max(0, headerTop - 5);
+  let finalTop = Math.max(topFloor, headerTop - 5);
 
   // Post-scan cleanup: push finalTop past any non-header lines that overlap
   // the region between finalTop and the first detected row. This handles:

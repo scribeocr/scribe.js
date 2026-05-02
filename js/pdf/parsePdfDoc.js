@@ -861,7 +861,7 @@ function showHexString(hex, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, char
 /**
  * Decode literal string and show characters (for simple encodings).
  * @param {string} str
- * @param {object} font
+ * @param {any} font
  * @param {number} fontSize
  * @param {number[]} tm
  * @param {number[]} ctm
@@ -957,12 +957,21 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
       unicode = encodingValue;
     }
 
+    let fallbackUsed = false;
     if (!unicode) {
       // CFF charset says this CID has no glyph — skip emission and advance.
       if (isCID && font.validCIDs && !font.validCIDs.has(charCode)) continue;
       unicode = isCID ? String.fromCharCode(charCode) : str[i - numBytes];
+      fallbackUsed = true;
     }
+    // Collapse any all-whitespace mapping to a single U+0020.
+    if (/^[\t\n\v\f\r \u00a0]+$/.test(unicode)) unicode = ' ';
     const glyphWidth = (font.widths.get(charCode) ?? font.defaultWidth) / 1000 * fontSize;
+
+    // Drop fallback emissions of unmapped control-byte glyph codes
+    const dropFallbackControl = fallbackUsed && !isCID && unicode.length === 1
+      && (unicode.charCodeAt(0) < 0x20 || unicode.charCodeAt(0) === 0x7F)
+      && !font.widths.has(charCode);
 
     // Transform text position through CTM to get page-space coordinates.
     const ox = tm[2] * trise + tm[4];
@@ -970,28 +979,30 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
     const pageX = ctm[0] * ox + ctm[2] * oy + ctm[4];
     const pageY = ctm[1] * ox + ctm[3] * oy + ctm[5];
 
-    chars.push({
-      text: unicode,
-      x: pageX * scale,
-      y: (pageHeightPts - pageY) * scale,
-      width: glyphWidth * tz / 100 * hScale * scale,
-      // Keep fontSize tied to the text rendering matrix scale in device space.
-      // Type3 ascent/descent is handled in bbox computation, not size scaling.
-      fontSize: fontSize * vScale * scale,
-      fontInfo: {
-        baseName: font.baseName,
-        bold: font.bold || tr === 1 || tr === 2,
-        italic: font.italic || (Math.abs(tm[2]) > Math.abs(tm[0]) * 0.05 && Math.abs(tm[1]) < Math.abs(tm[0]) * 0.05),
-        smallCaps: font.smallCaps,
-        familyName: font.familyName,
-        ascent: font.ascent,
-        descent: font.descent,
-      },
-      invisible: tr === 3,
-      orientation,
-      dirX,
-      dirY,
-    });
+    if (!dropFallbackControl) {
+      chars.push({
+        text: unicode,
+        x: pageX * scale,
+        y: (pageHeightPts - pageY) * scale,
+        width: glyphWidth * tz / 100 * hScale * scale,
+        // Keep fontSize tied to the text rendering matrix scale in device space.
+        // Type3 ascent/descent is handled in bbox computation, not size scaling.
+        fontSize: fontSize * vScale * scale,
+        fontInfo: {
+          baseName: font.baseName,
+          bold: font.bold || tr === 1 || tr === 2,
+          italic: font.italic || (Math.abs(tm[2]) > Math.abs(tm[0]) * 0.05 && Math.abs(tm[1]) < Math.abs(tm[0]) * 0.05),
+          smallCaps: font.smallCaps,
+          familyName: font.familyName,
+          ascent: font.ascent,
+          descent: font.descent,
+        },
+        invisible: tr === 3,
+        orientation,
+        dirX,
+        dirY,
+      });
+    }
 
     const isWordSpace = numBytes === 1 && charCode === 0x20;
     const advance = (glyphWidth + tc + (isWordSpace ? tw : 0)) * tz / 100;
@@ -1412,9 +1423,10 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
           currentWord = [];
           continue;
         }
-        // Split at bold/italic style change.
-        if (ch.fontInfo.bold !== prevCh.fontInfo.bold
-          || ch.fontInfo.italic !== prevCh.fontInfo.italic) {
+        // Split at bold/italic style change, except for trailing punctuation.
+        if ((ch.fontInfo.bold !== prevCh.fontInfo.bold
+          || ch.fontInfo.italic !== prevCh.fontInfo.italic)
+          && !(',.;:!?)]}”’'.includes(ch.text) && gap <= fontSizeMin * 0.15)) {
           wordsInitial.push(currentWord);
           currentWord = [];
         // Split at font family change (e.g., Dingbats checkbox → Times text).

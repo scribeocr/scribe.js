@@ -126,7 +126,7 @@ describe('Check .scribe export function.', () => {
     expect(page.lines[0].text).toBe('UNITED STATES DISTRICT COURT');
     expect(page.lines[1].text).toBe('FOR THE EASTERN DISTRICT OF MICHIGAN');
     // Page-level text join: pin length, header start, court-system footer.
-    expect(page.text.length).toBe(1450);
+    expect(page.text.length).toBe(1449);
     expect(page.text.slice(0, 65)).toBe('UNITED STATES DISTRICT COURT\nFOR THE EASTERN DISTRICT OF MICHIGAN');
     expect(page.text.slice(-72)).toBe('Case 2:12-cv-13821-AC-DRG ECF No. 1, PageID.1 Filed 08/29/12 Page 1 of 6');
     expect(page.pars[0].text).toBe('UNITED STATES DISTRICT COURT FOR THE EASTERN DISTRICT OF MICHIGAN');
