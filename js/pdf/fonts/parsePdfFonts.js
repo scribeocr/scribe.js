@@ -589,6 +589,10 @@ export function parsePageFonts(pageObjText, objCache) {
       }
     }
 
+    // Track whether toUnicode came from an explicit, authoritative source
+    // or if a fallback heuristic is being applied.
+    const hasAuthoritativeToUnicode = toUnicode.size > 0 || toUnicodeIsIdentity;
+
     // Wingdings fonts: PDF producers often embed broken ToUnicode CMaps that map
     // charCodes to Latin-1 or MacRoman equivalents instead of the correct Wingdings
     // Unicode symbols. Two patterns exist:
@@ -616,25 +620,15 @@ export function parsePageFonts(pageObjText, objCache) {
       }
     }
 
-    // Symbol fonts: PDF producers often embed broken ToUnicode CMaps that map
-    // charCodes to their MacRoman equivalents instead of the correct Symbol encoding.
-    // E.g., Symbol charCode 234 (⎢ bracket extension) maps to U+0152 (Œ) instead of U+23A2.
-    // Correct these by replacing the entire toUnicode with the known Symbol encoding.
-    if (/^Symbol$/i.test(baseName) && toUnicode.size > 0) {
-      // Detect a broken CMap: in Symbol encoding, charCode 65 is Alpha (Α U+0391),
-      // but a broken MacRoman/Latin CMap maps it to 'A' (U+0041).
-      const testChar = toUnicode.get(65);
-      if (testChar === 'A') {
+    // Symbol font built-in encoding.
+    if (/^Symbol$/i.test(baseName)) {
+      const broken = toUnicode.size > 0 && toUnicode.get(65) === 'A';
+      if (broken || toUnicode.size === 0) {
         for (const [ccStr, unicode] of Object.entries(symbolToUnicode)) {
           toUnicode.set(Number(ccStr), String.fromCodePoint(unicode));
         }
       }
     }
-
-    // Track whether toUnicode already came from an explicit source (real ToUnicode
-    // CMap or /Identity-H). When false, entries in toUnicode may come from fallback
-    // base encodings and should be overridable by /Differences.
-    const hasAuthoritativeToUnicode = toUnicode.size > 0 || toUnicodeIsIdentity;
 
     // Parse /Differences array (always needed — used by wrapCFFInOTF for PUA cmap
     // entries even when ToUnicode partially covers the font's charCodes).

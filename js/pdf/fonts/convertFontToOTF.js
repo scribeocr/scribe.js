@@ -494,12 +494,18 @@ export function buildFontFromCFF(cffData, fontObj, encoding) {
           }
         }
 
-        // PUA entries from the CFF's built-in encoding are only needed when no
-        // /Differences encoding is present. With /Differences, broad built-in PUA
-        // entries can incorrectly claim standard ASCII charCodes.
-        if (!hasDifferencesEncoding) {
+        // PUA entries from the font's intrinsic encoding.
+        const cffTable = /** @type {any} */ (fontShell.tables).cff;
+        const cffEncodingOffset = cffTable?.topDict?.encoding ?? 0;
+        const hasCustomCFFEncoding = cffEncodingOffset > 1;
+        if (hasCustomCFFEncoding || !hasDifferencesEncoding) {
           for (const [code, gid] of cffBaseEncoding) {
             if (fontObj.encodingUnicode?.has(code) && !(diffCodeSet && diffCodeSet.has(code))) continue;
+            // Only add PUA for charcodes the renderer would actually route
+            // through PUA: control bytes (cc < 0x20) whose literal codepoint
+            // has no glyph, and codepoints not already reachable via the
+            // standard charset cmap.
+            if (code >= 0x20 && unicodeToGID.has(code)) continue;
             const puaCode = 0xE000 + code;
             if (!unicodeToGID.has(puaCode)) {
               unicodeToGID.set(puaCode, gid);

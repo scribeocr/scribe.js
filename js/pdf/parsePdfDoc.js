@@ -397,6 +397,19 @@ export function parseSinglePage(page, objCache, n, dpi) {
     }
   }
 
+  // Drop co-located duplicate glyphs.
+  const seenCharKeys = new Set();
+  const dedupedChars = [];
+  for (let i = 0; i < chars.length; i++) {
+    const ch = chars[i];
+    const key = `${ch.text}|${ch.fontInfo.familyName}|${ch.fontInfo.bold ? 1 : 0}|${ch.fontInfo.italic ? 1 : 0}|${Math.round(ch.fontSize * 10)}|${Math.round(ch.x * 2)}|${Math.round(ch.y * 2)}`;
+    if (seenCharKeys.has(key)) continue;
+    seenCharKeys.add(key);
+    dedupedChars.push(ch);
+  }
+  chars.length = 0;
+  for (let i = 0; i < dedupedChars.length; i++) chars.push(dedupedChars[i]);
+
   const charStats = scorePageChars(chars);
 
   // Extract underline candidate rectangles from vector paths. Pass the already-computed
@@ -968,11 +981,9 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
     if (/^[\t\n\v\f\r \u00a0]+$/.test(unicode)) unicode = ' ';
     const glyphWidth = (font.widths.get(charCode) ?? font.defaultWidth) / 1000 * fontSize;
 
-    // Drop fallback emissions of unmapped control-byte glyph codes, except in
-    // symbolic fonts where low byte codes legitimately map to printable glyphs.
+    // Drop fallback emissions of unmapped control-byte glyph codes.
     const dropFallbackControl = fallbackUsed && !isCID && unicode.length === 1
-      && (unicode.charCodeAt(0) < 0x20 || unicode.charCodeAt(0) === 0x7F)
-      && !font.symbolicFlag;
+      && (unicode.charCodeAt(0) < 0x20 || unicode.charCodeAt(0) === 0x7F);
 
     // Transform text position through CTM to get page-space coordinates.
     const ox = tm[2] * trise + tm[4];
@@ -1141,8 +1152,30 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
   for (let i = 1; i < chars.length; i++) {
     const ch = chars[i];
 
-    // Space characters don't drive line breaks — add to current line.
+    // A space at a new fontSize AND a y-jump belongs to what follows, not the
+    // prior line — otherwise orphan-merge below can re-attach the next char
+    // via the bridging space. Both gates required: same-fontSize y-jumps are
+    // routine in multi-column tables and must not cut here.
     if (ch.text === ' ') {
+      let lastNonSpace = null;
+      for (let j = currentLine.length - 1; j >= 0; j--) {
+        if (currentLine[j].text !== ' ') { lastNonSpace = currentLine[j]; break; }
+      }
+      if (lastNonSpace) {
+        const spMaxFs = Math.max(ch.fontSize, lastNonSpace.fontSize);
+        const spFsChange = Math.abs(ch.fontSize - lastNonSpace.fontSize) > spMaxFs * 0.1;
+        const spYGap = Math.abs((ch._perpDist ?? ch.y) - (lastNonSpace._perpDist ?? lastNonSpace.y));
+        if (spFsChange) {
+          const spMinFs = Math.min(ch.fontSize, lastNonSpace.fontSize);
+          if (spYGap > spMaxFs * 0.7 || spYGap > spMinFs * 1.5) {
+            lines.push(currentLine);
+            currentLine = [ch];
+            anchorY = ch._perpDist ?? ch.y;
+            anchorFontSize = ch.fontSize;
+            continue;
+          }
+        }
+      }
       currentLine.push(ch);
       continue;
     }
@@ -1201,10 +1234,12 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
     else if (xGap > maxFont * 4) isCut = true;
 
     // Moderate y-jump with similar font size: line break, not a superscript.
-    // Only applies when chars aren't horizontally adjacent — a new line never
-    // starts flush against the previous character with no gap.
-    else if (yGap > minFont * 0.3 && fontRatio > 0.8 && fontRatio < 1.25
-      && (xGap < -maxFont * 0.1 || xGap > maxFont * 0.5)) isCut = true;
+    // x-proximity guard avoids false cuts from glyph-metric noise on adjacent
+    // chars. Looser y-threshold past one full font size of x-gap, where
+    // sustained mid-line baseline drift is implausible.
+    else if (fontRatio > 0.8 && fontRatio < 1.25
+      && (xGap < -maxFont * 0.1 || xGap > maxFont * 0.5)
+      && yGap > (xGap > maxFont ? minFont * 0.2 : minFont * 0.3)) isCut = true;
 
     // Large font size change with any y-gap: different text region
     // (e.g., 40pt heading adjacent to 7pt body text).

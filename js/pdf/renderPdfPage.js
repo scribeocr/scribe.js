@@ -2038,6 +2038,14 @@ function parseDrawOps(
       const usesPUA = hasPUA && (
         (hasDifferences && inDifferences)
         || (!hasDifferences && (charCode < 0x20 || !currentFont.encodingUnicode?.has(charCode)))
+        // Control-byte charcodes with widths but no encoding entry: route
+        // through PUA so buildFontFromCFF can map them via the embedded
+        // font's intrinsic CFF Encoding (otherwise the JS control char
+        // trims to empty and the glyph vanishes).
+        || (charCode > 0 && charCode < 0x20
+          && currentFont.widths.has(charCode)
+          && !currentFont.toUnicode.has(charCode)
+          && !currentFont.encodingUnicode?.has(charCode))
       );
       // Symbol fonts (e.g. Wingdings) use charCodes in 0x01-0x1F range for visible glyphs
       // (circled numbers, arrows, etc.). These charCodes map to JS control characters
@@ -2131,6 +2139,13 @@ function parseDrawOps(
       const usesPUA = hasPUA && charCode > 0 && (
         (hasDifferences && inDifferences)
         || (!hasDifferences && (charCode < 0x20 || !currentFont.encodingUnicode?.has(charCode)))
+        // See showLiteralString: control bytes (cc < 0x20) with widths but no
+        // toUnicode/encodingUnicode get PUA entries from the embedded font's
+        // intrinsic CFF Encoding via buildFontFromCFF.
+        || (charCode < 0x20
+          && currentFont.widths.has(charCode)
+          && !currentFont.toUnicode.has(charCode)
+          && !currentFont.encodingUnicode?.has(charCode))
       );
       // Skip zero-width characters — the PDF Widths array says these occupy no space,
       // so they should not render visually (common in TeX fonts for unused charCodes).
