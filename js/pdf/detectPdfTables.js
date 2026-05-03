@@ -1133,6 +1133,12 @@ function groupRowsIntoCandidates(tableLikeRows, lines, pageObj) {
 /**
  * Classify vector paths into horizontal lines, vertical lines, and filled rectangles.
  * Applies filtering to remove page borders, margin rules, and underlines.
+ * @param {Array<import('./parsePdfPaths.js').PaintedPath>} paths
+ * @param {number} scale
+ * @param {number} visualHeightPts
+ * @param {import('../objects/ocrObjects.js').OcrPage} pageObj
+ * @param {number} [boxOriginX]
+ * @param {number} [boxOriginY]
  */
 function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, boxOriginY = 0) {
   const pageHeight = pageObj.dims.height;
@@ -1631,6 +1637,7 @@ function extractRowBandStructure(filledRects) {
       }
     }
     // Cluster anchors within tolerance
+    /** @param {number[]} values */
     const cluster = (values) => {
       values.sort((a, b) => a - b);
       const clusters = [];
@@ -1761,6 +1768,15 @@ function mergeCollinearSegments(segments, posKey, startKey, endKey, tolerance, g
  * Dashed-line signature (all must be true):
  * - 5+ collinear segments at the same position (x within 2pt for vertical, y within 2pt for horizontal)
  * - Median gap between consecutive segments < 2pt
+ *
+ * @param {Array<import('./parsePdfPaths.js').PaintedPath>} paths
+ * @param {HLine[]} hLines mutated: any reconstituted horizontal lines are pushed here
+ * @param {VLine[]} vLines mutated: any reconstituted vertical lines are pushed here
+ * @param {number} scale
+ * @param {number} visualHeightPts
+ * @param {number} boxOriginX
+ * @param {number} boxOriginY
+ * @param {number} pageHeight
  */
 function reconstituteDashedLines(paths, hLines, vLines, scale, visualHeightPts, boxOriginX, boxOriginY, pageHeight) {
   // Collect thin 2-cmd stroked segments in raw PDF coordinates (no size filter)
@@ -2074,6 +2090,12 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
   /** @type {VLine[]} */
   const vLines = [];
 
+  /**
+   * @param {number} p1x
+   * @param {number} p1y
+   * @param {number} p2x
+   * @param {number} p2y
+   */
   const addSeg = (p1x, p1y, p2x, p2y) => {
     const segW = Math.abs(p2x - p1x);
     const segH = Math.abs(p2y - p1y);
@@ -2249,7 +2271,13 @@ function clusterValuesLocal(values, tol) {
 }
 
 /**
+ * Test whether the union of `segs` covers the closed interval `[left, right]`
+ * with no gap larger than `tol`.
+ *
  * @param {Array<{left: number, right: number}>} segs sorted ascending by `left`
+ * @param {number} left start of the interval to cover
+ * @param {number} right end of the interval to cover
+ * @param {number} tol gap tolerance applied at both endpoints and between segments
  */
 function unionSpansFully(segs, left, right, tol) {
   if (segs.length === 0) return false;
@@ -2442,7 +2470,7 @@ function detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOr
  * signals on 'strong'.
  *
  * @param {object} table - A validated candidate with .bbox and .rows
- * @param {Array} lines - pageObj.lines
+ * @param {import('../objects/ocrObjects.js').OcrLine[]} lines - pageObj.lines
  * @returns {HeaderInfo|null}
  */
 function detectHeaders(table, lines) {
@@ -2713,6 +2741,8 @@ function detectHeaders(table, lines) {
 
 /**
  * Extract column and row structure for a validated table.
+ * @param {DetectedTable} table
+ * @param {import('../objects/ocrObjects.js').OcrLine[]} lines
  */
 function extractStructure(table, lines) {
   // If we already have colSeparators (from grid detection), keep them
@@ -3116,7 +3146,7 @@ function extractStructure(table, lines) {
  * 2. Header scanning (fallback): chain upward from detected rows accepting header-like lines
  *
  * @param {DetectedTable} table
- * @param {Array} lines - All page lines
+ * @param {import('../objects/ocrObjects.js').OcrLine[]} lines - All page lines
  * @param {number} [topFloor=0] - Lower bound for the refined top
  */
 function refineTableTop(table, lines, topFloor = 0) {
@@ -3792,7 +3822,7 @@ const TABLE_TITLE_RE = /^Table\s+\d+/i;
 /**
  * Detect a table title by scanning for a "Table N" line above or at the top of the table.
  * @param {DetectedTable} table
- * @param {Array} lines - All page lines
+ * @param {import('../objects/ocrObjects.js').OcrLine[]} lines - All page lines
  * @returns {{ text: string, bbox: {left: number, top: number, right: number, bottom: number} } | null}
  */
 function detectTableTitle(table, lines) {
@@ -3867,7 +3897,7 @@ function detectTableTitle(table, lines) {
  * extension is a no-op.
  *
  * @param {DetectedTable} table
- * @param {Array} lines
+ * @param {import('../objects/ocrObjects.js').OcrLine[]} lines
  */
 function extendTableToAdjacentContent(table, lines) {
   if (table.rows.length < 2) return;
@@ -4097,6 +4127,10 @@ function validateStreamOrder(table, lines) {
 
 // === Utility functions ===
 
+/**
+ * @param {number[]} indices
+ * @param {import('../objects/ocrObjects.js').OcrLine[]} lines
+ */
 function computeBboxFromLineIndices(indices, lines) {
   let left = Infinity; let top = Infinity;
   let right = -Infinity; let bottom = -Infinity;
@@ -4112,6 +4146,10 @@ function computeBboxFromLineIndices(indices, lines) {
   };
 }
 
+/**
+ * @param {{left: number, top: number, right: number, bottom: number}} a
+ * @param {{left: number, top: number, right: number, bottom: number}} b
+ */
 function bboxOverlap(a, b) {
   const overlapLeft = Math.max(a.left, b.left);
   const overlapTop = Math.max(a.top, b.top);
@@ -4129,6 +4167,7 @@ function bboxOverlap(a, b) {
  * Split an hLine cluster into sub-clusters by finding large y-gaps.
  * Recursively splits at the largest gap when the gap ratio exceeds the threshold.
  * Returns an array of sub-clusters (each is an array of hLines).
+ * @param {HLine[]} cluster
  */
 function splitClusterByYGap(cluster) {
   const sorted = [...cluster].sort((a, b) => a.y - b.y);
@@ -4168,6 +4207,7 @@ function splitClusterByYGap(cluster) {
 
 /**
  * Cluster horizontal lines by overlapping x-extent (>50% overlap).
+ * @param {HLine[]} hLines
  */
 function clusterHLinesByXExtent(hLines) {
   /** @type {Array<{lines: HLine[], left: number, right: number}>} */
@@ -4206,6 +4246,8 @@ function clusterHLinesByXExtent(hLines) {
 /**
  * Cluster numeric values by proximity (within tolerance).
  * Returns the median of each cluster.
+ * @param {number[]} values
+ * @param {number} tolerance
  */
 function clusterValues(values, tolerance) {
   if (values.length === 0) return [];

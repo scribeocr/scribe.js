@@ -47,6 +47,44 @@ function buildGidToUnicodeFromTrueType(fontFile) {
 }
 
 /**
+ * @param {Uint8Array} fontFile
+ */
+function buildEmptyGlyphSetFromTrueType(fontFile) {
+  try {
+    const data = new DataView(fontFile.buffer, fontFile.byteOffset, fontFile.byteLength);
+    const sfVersion = data.getUint32(0);
+    if (sfVersion !== 0x00010000 && sfVersion !== 0x74727565) return null;
+    const numTables = data.getUint16(4);
+    let glyfOff = -1; let locaOff = -1; let headOff = -1; let maxpOff = -1;
+    for (let i = 0; i < numTables; i++) {
+      const off = 12 + i * 16;
+      const tag = String.fromCharCode(fontFile[off], fontFile[off + 1], fontFile[off + 2], fontFile[off + 3]);
+      const tableOff = data.getUint32(off + 8);
+      if (tag === 'glyf') glyfOff = tableOff;
+      else if (tag === 'loca') locaOff = tableOff;
+      else if (tag === 'head') headOff = tableOff;
+      else if (tag === 'maxp') maxpOff = tableOff;
+    }
+    if (glyfOff < 0 || locaOff < 0 || headOff < 0 || maxpOff < 0) return null;
+    const idxFmt = data.getUint16(headOff + 50);
+    const numGlyphs = data.getUint16(maxpOff + 4);
+    const empty = new Set();
+    for (let gid = 0; gid < numGlyphs; gid++) {
+      const start = idxFmt === 0
+        ? data.getUint16(locaOff + gid * 2) * 2
+        : data.getUint32(locaOff + gid * 4);
+      const end = idxFmt === 0
+        ? data.getUint16(locaOff + (gid + 1) * 2) * 2
+        : data.getUint32(locaOff + (gid + 1) * 4);
+      if (end === start) empty.add(gid);
+    }
+    return empty;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
  * Decide whether an embedded TrueType subset's high-byte encoding is MacRoman
  * or Win1252 by comparing the PDF /Widths array against the standard-font AFM
  * widths for the named font.
@@ -997,6 +1035,21 @@ export function parsePageFonts(pageObjText, objCache) {
       }
     }
 
+    // Broken ToUnicode entries mapping a charcode to a control char (e.g. <31> <0018>):
+    // a printable /Encoding mapping at the same charcode wins.
+    if (toUnicode.size > 0 && encodingUnicode.size > 0) {
+      for (const [cc, tu] of toUnicode) {
+        if (tu.length !== 1) continue;
+        const tuCp = tu.codePointAt(0);
+        if (tuCp >= 0x20 || tuCp === 0x09 || tuCp === 0x0A || tuCp === 0x0D) continue;
+        const eu = encodingUnicode.get(cc);
+        if (!eu || eu.length !== 1) continue;
+        const euCp = eu.codePointAt(0);
+        if (euCp < 0x20) continue;
+        toUnicode.set(cc, eu);
+      }
+    }
+
     // Wingdings encodingUnicode correction: the base encoding (MacRoman/WinAnsi) and
     // Differences→AGL produce wrong Unicode for Wingdings glyphs in encodingUnicode.
     // Apply the same correction as the toUnicode block above so that code paths
@@ -1344,7 +1397,13 @@ export function parsePageFonts(pageObjText, objCache) {
     // For Adobe-Identity ordering, CIDs are Unicode code points directly.
     // For standard Adobe orderings (Japan1, GB1, CNS1, Korea1), use the published
     // CID→Unicode mapping tables from Adobe's cmap-resources.
-    if (toUnicode.size === 0 && cidFontText && /\/Encoding\s*\/Identity-H/.test(fontObj)) {
+    //
+    // Also runs when a ToUnicode CMap is present but doesn't cover every CID the
+    // font defines — some authoring tools emit a partial CMap that maps unknown
+    // CIDs to U+FFFD (which parseToUnicodeCMap drops as noise), leaving gaps.
+    // For an Adobe ROS font those gaps can be filled from the published ROS map;
+    // valid existing entries are preserved.
+    if (cidFontText && /\/Encoding\s*\/Identity-H/.test(fontObj)) {
       // Parse CIDSystemInfo — may be inline or indirect reference
       let cidSysText = cidFontText;
       const cidSysRef = /\/CIDSystemInfo\s+(\d+)\s+\d+\s+R/.exec(cidFontText);
@@ -1403,17 +1462,48 @@ export function parsePageFonts(pageObjText, objCache) {
             }
           }
         }
+        /** @param {number} cid */
+        const isOverridable = (cid) => {
+          const existing = toUnicode.get(cid);
+          if (existing === undefined) return true;
+          if (existing.length !== 1) return false;
+          const cp = existing.codePointAt(0);
+          return cp < 0x20 && cp !== 0x09 && cp !== 0x0A && cp !== 0x0D;
+        };
         if (gidMap && gidMap.size > 0) {
-          // Use cmap-based GID→Unicode mapping
           const cidSet = validCIDs || new Set(widths.keys());
           for (const cid of cidSet) {
+            if (!isOverridable(cid)) continue;
             const unicode = gidMap.get(cid);
             if (unicode && unicode > 0) toUnicode.set(cid, String.fromCodePoint(unicode));
           }
         } else if (validCIDs) {
-          // Fallback for CIDFontType0 (CFF) or when no cmap available: CIDs are Unicode code points
           for (const cid of validCIDs) {
+            if (!isOverridable(cid)) continue;
             if (cid > 0 && cid <= 0xFFFF) toUnicode.set(cid, String.fromCodePoint(cid));
+          }
+        }
+
+        // Override positive-advance CIDs whose ToUnicode is a non-text control
+        // char when the embedded TT confirms the glyph is structurally blank
+        // (zero-byte glyph data).
+        if (isCIDType2 && type0Info?.fontFile) {
+          const candidates = [];
+          for (const [cid, existing] of toUnicode) {
+            if (existing.length !== 1) continue;
+            const cp = existing.codePointAt(0);
+            if (cp >= 0x20 || cp === 0x09 || cp === 0x0A || cp === 0x0D) continue;
+            const w = widths.get(cid);
+            if (!w || w <= 0) continue;
+            candidates.push(cid);
+          }
+          if (candidates.length > 0) {
+            const emptyGlyphs = buildEmptyGlyphSetFromTrueType(type0Info.fontFile);
+            if (emptyGlyphs) {
+              for (const cid of candidates) {
+                if (emptyGlyphs.has(cid)) toUnicode.set(cid, ' ');
+              }
+            }
           }
         }
       } else if (registry === 'Adobe') {
@@ -1421,8 +1511,17 @@ export function parsePageFonts(pageObjText, objCache) {
         if (cidMap) {
           const isEmbedded = type0Info && type0Info.fontFile;
           const cidSet = validCIDs || (isEmbedded ? new Set(widths.keys()) : null);
+          /** @param {number} cid */
+          const isOverridable = (cid) => {
+            const existing = toUnicode.get(cid);
+            if (existing === undefined) return true;
+            if (existing.length !== 1) return false;
+            const cp = existing.codePointAt(0);
+            return cp < 0x20 && cp !== 0x09 && cp !== 0x0A && cp !== 0x0D;
+          };
           if (cidSet) {
             for (const cid of cidSet) {
+              if (!isOverridable(cid)) continue;
               if (cid > 0 && cid < cidMap.length && cidMap[cid] !== 0) {
                 // NFKC-normalize to convert Kangxi radicals (U+2F00-U+2FD5) and CJK Compatibility
                 // Ideographs (U+F900-U+FAD9) to standard CJK Unified Ideographs.
@@ -1435,6 +1534,7 @@ export function parsePageFonts(pageObjText, objCache) {
             // Populate all entries from the published CID→Unicode table so any CID from the
             // content stream can be mapped correctly.
             for (let cid = 1; cid < cidMap.length; cid++) {
+              if (!isOverridable(cid)) continue;
               if (cidMap[cid] !== 0) {
                 toUnicode.set(cid, String.fromCodePoint(cidMap[cid]).normalize('NFKC'));
               }
@@ -1618,6 +1718,24 @@ export function parsePageFonts(pageObjText, objCache) {
                   toUnicode.set(code, uni);
                   encodingUnicode.set(code, uni);
                 }
+              }
+            } else if (cffEnc && typeof cffEnc === 'object' && charsetInfo.glyphToUnicode) {
+              // CFF custom Encoding (charcode → position; GID = position + 1
+              // because GID 0 is .notdef and has no encoding entry).
+              // ASCII codepoints are skipped: symbol/decoration fonts often reuse
+              // Latin glyph names for bullets, and extracting them as letters
+              // would inject wrong characters into the document.
+              for (const [codeStr, encVal] of Object.entries(cffEnc)) {
+                const code = Number(codeStr);
+                if (!Number.isInteger(code) || code < 0 || code > 255) continue;
+                if (toUnicode.has(code) || encodingUnicode.has(code)) continue;
+                if (typeof encVal !== 'number') continue;
+                const gid = encVal + 1;
+                const uni = charsetInfo.glyphToUnicode.get(gid);
+                if (!uni) continue;
+                if (uni.length === 1 && uni.codePointAt(0) <= 0x7F) continue;
+                toUnicode.set(code, uni);
+                encodingUnicode.set(code, uni);
               }
             }
           }
