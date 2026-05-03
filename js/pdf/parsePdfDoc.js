@@ -1052,15 +1052,14 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
     if (ch.text === '\u00A0') ch.text = ' ';
   }
 
-  // Dedupe overlapping glyphs from PDFs that use two text-rendering passes
-  // (separate fill + stroke) to fake-bold a heading. Without dedup the same
-  // glyph appears twice and fragments word grouping. Match on text + font +
-  // orientation + position (~1px); OR the bold flag onto the surviving char.
+  // Dedupe fake-bold double-rendering (fill + stroke at the same Tm).
+  // Threshold scales with fontSize to avoid merging narrow letters at small sizes.
   // eslint-disable-next-line no-param-reassign
   chars = (() => {
     const result = [];
     for (let i = 0; i < chars.length; i++) {
       const ch = chars[i];
+      const posThresh = Math.max(0.05, ch.fontSize * 0.05);
       let dupeIdx = -1;
       // Limit lookback — duplicates are emitted as adjacent passes within the
       // same text run, so a small window keeps this O(n) in practice.
@@ -1069,8 +1068,8 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
         if (prev.text === ch.text
             && prev.fontInfo.baseName === ch.fontInfo.baseName
             && prev.orientation === ch.orientation
-            && Math.abs(prev.x - ch.x) < 1
-            && Math.abs(prev.y - ch.y) < 1) {
+            && Math.abs(prev.x - ch.x) < posThresh
+            && Math.abs(prev.y - ch.y) < posThresh) {
           dupeIdx = j;
           break;
         }

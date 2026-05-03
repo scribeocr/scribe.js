@@ -89,19 +89,27 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     }
   }
   if (sameYPairs === 0 && !hasDotLeaderCluster) {
-    // Path-only fallback: grid + header-rule.
-    const gridOnly = detectGridTables(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY)
+    // Path-only fallback: strict grid + segmented-hline + header-rule.
+    const strictEarly = detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY)
       .filter((t) => t.colSeparators.length > 0);
+    const segEarly = detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY);
+    for (const st of segEarly) {
+      let blocked = false;
+      for (const v of strictEarly) {
+        if (bboxOverlap(v.bbox, st.bbox) > 0.3) { blocked = true; break; }
+      }
+      if (!blocked) strictEarly.push(st);
+    }
     const pathDataEarly = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY);
     const headerRuleEarly = detectHeaderRuleTables(pathDataEarly.hLines, pageObj);
     for (const ht of headerRuleEarly) {
       let blocked = false;
-      for (const v of gridOnly) {
+      for (const v of strictEarly) {
         if (bboxOverlap(v.bbox, ht.bbox) > 0.3) { blocked = true; break; }
       }
-      if (!blocked) gridOnly.push(ht);
+      if (!blocked) strictEarly.push(ht);
     }
-    return gridOnly;
+    return strictEarly;
   }
 
   // === Phase 1: Row analysis and table-like row identification ===
@@ -210,36 +218,51 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   }
 
   if (tableLikeRows.length === 0) {
-    const gridFallback = detectGridTables(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY)
+    const strictFallback = detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY)
       .filter((t) => t.colSeparators.length > 0);
+    const segFallback = detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY);
+    for (const st of segFallback) {
+      let blocked = false;
+      for (const v of strictFallback) {
+        if (bboxOverlap(v.bbox, st.bbox) > 0.3) { blocked = true; break; }
+      }
+      if (!blocked) strictFallback.push(st);
+    }
     const pathDataFallback = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY);
     const headerRuleFallback = detectHeaderRuleTables(pathDataFallback.hLines, pageObj);
     for (const ht of headerRuleFallback) {
       let blocked = false;
-      for (const v of gridFallback) {
+      for (const v of strictFallback) {
         if (bboxOverlap(v.bbox, ht.bbox) > 0.3) { blocked = true; break; }
       }
-      if (!blocked) gridFallback.push(ht);
+      if (!blocked) strictFallback.push(ht);
     }
-    return gridFallback;
+    return strictFallback;
   }
 
   // === Phase 2: Group table-like rows into candidate regions ===
   const candidates = groupRowsIntoCandidates(tableLikeRows, lines);
   if (candidates.length === 0) {
-    // Fallback: try grid detection from paths alone (for text-only tables with full grid)
-    const gridFallback = detectGridTables(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY)
+    const strictFallback = detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY)
       .filter((t) => t.colSeparators.length > 0);
+    const segFallback = detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY);
+    for (const st of segFallback) {
+      let blocked = false;
+      for (const v of strictFallback) {
+        if (bboxOverlap(v.bbox, st.bbox) > 0.3) { blocked = true; break; }
+      }
+      if (!blocked) strictFallback.push(st);
+    }
     const pathDataFallback = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY);
     const headerRuleFallback = detectHeaderRuleTables(pathDataFallback.hLines, pageObj);
     for (const ht of headerRuleFallback) {
       let blocked = false;
-      for (const v of gridFallback) {
+      for (const v of strictFallback) {
         if (bboxOverlap(v.bbox, ht.bbox) > 0.3) { blocked = true; break; }
       }
-      if (!blocked) gridFallback.push(ht);
+      if (!blocked) strictFallback.push(ht);
     }
-    return gridFallback;
+    return strictFallback;
   }
 
   // === Phase 3: Path data classification ===
@@ -265,8 +288,17 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   // which is more reliable than text-alignment-based column inference.
   // Only consider grid tables with 1+ interior column separators — a 0-column
   // grid is just a box, and allowing it to replace a text-based table would destroy valid detections.
-  const gridTables = detectGridTables(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY)
+  const strictGrids = detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY)
     .filter((t) => t.colSeparators.length > 0);
+  const segGrids = detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY);
+  const gridTables = [...strictGrids];
+  for (const st of segGrids) {
+    let blocked = false;
+    for (const v of strictGrids) {
+      if (bboxOverlap(v.bbox, st.bbox) > 0.3) { blocked = true; break; }
+    }
+    if (!blocked) gridTables.push(st);
+  }
   for (const gt of gridTables) {
     for (let i = validated.length - 1; i >= 0; i--) {
       if (bboxOverlap(validated[i].bbox, gt.bbox) > 0.3) {
@@ -316,7 +348,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     if (regions.length !== 1) continue;
     const rbr = regions[0];
     cand.rowBandRegion = rbr;
-    if (cand.detectionMethod === 'grid') continue;
+    if (cand.detectionMethod === 'grid-strong') continue;
     const prevTop = cand.bbox.top;
     const prevBottom = cand.bbox.bottom;
     const prevLeft = cand.bbox.left;
@@ -465,7 +497,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     /** @type {DetectedTable[]} */
     const overlappingText = [];
     for (const v of validated) {
-      if (v.detectionMethod === 'grid' || v.detectionMethod === 'segmented-hline') {
+      if (v.detectionMethod === 'grid-strong' || v.detectionMethod === 'segmented-hline') {
         if (bboxOverlap(v.bbox, ht.bbox) > 0.3) { blocked = true; break; }
       } else if (bboxOverlap(v.bbox, ht.bbox) > 0.3) {
         overlappingText.push(v);
@@ -484,7 +516,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     }
     for (let i = validated.length - 1; i >= 0; i--) {
       const v = validated[i];
-      if (v.detectionMethod === 'grid' || v.detectionMethod === 'segmented-hline') continue;
+      if (v.detectionMethod === 'grid-strong' || v.detectionMethod === 'segmented-hline') continue;
       if (bboxOverlap(v.bbox, ht.bbox) > 0.3) {
         validated.splice(i, 1);
       }
@@ -507,7 +539,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     if (matches.length !== 1) continue;
     const rbr = matches[0];
     cand.rowBandRegion = rbr;
-    if (cand.detectionMethod === 'grid') continue;
+    if (cand.detectionMethod === 'grid-strong') continue;
     const prevTop = cand.bbox.top;
     const prevBottom = cand.bbox.bottom;
     const prevLeft = cand.bbox.left;
@@ -2017,585 +2049,384 @@ function validateCandidate(candidate, lines) {
 }
 
 /**
- * Detect tables from stroked paths that collectively form a complete rectangular
- * grid. The grid may be in a single path (Excel/Word pattern) or split across
- * multiple paths (horizontal rules in one `S`, vertical rules in separate `S`
- * commands). The structural signal is: a set of horizontal M-L segments all
- * sharing the same x-extent, and a set of vertical M-L segments all sharing
- * the same y-extent, where the extents are compatible (they form a rectangle).
- * Because the grid is identified from explicit vector geometry, it is unambiguous
- * and bypasses hLine clustering (which can merge it with chart lines).
+ * Extract horizontal and vertical line segments from raw paths for strict-grid
+ * detection. More inclusive than `classifyPaths`: every edge of every stroked
+ * rectangle is decomposed (no tiling check), and thin filled rectangles are
+ * decomposed into single h/v segments. The looser extraction is what lets the
+ * detector see column separators that `classifyPaths` drops because the
+ * containing per-cell stroked rectangles don't share an edge.
  *
- * @returns {DetectedTable[]}
+ * @param {Array<import('./parsePdfPaths.js').PaintedPath>} paths
+ * @param {number} scale
+ * @param {number} visualHeightPts
+ * @param {number} boxOriginX
+ * @param {number} boxOriginY
+ * @returns {{hLines: HLine[], vLines: VLine[]}}
  */
-function detectSelfContainedGridPaths(paths, scale, visualHeightPts, boxOriginX, boxOriginY, pageObj) {
-  const allHSegs = [];
-  const allVSegs = [];
+function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOriginY) {
+  /** @type {HLine[]} */
+  const hLines = [];
+  /** @type {VLine[]} */
+  const vLines = [];
+
   const addSeg = (p1x, p1y, p2x, p2y) => {
     const segW = Math.abs(p2x - p1x);
     const segH = Math.abs(p2y - p1y);
-    if (segH < 2 && segW > 10) {
-      allHSegs.push({ left: Math.min(p1x, p2x), right: Math.max(p1x, p2x), y: (p1y + p2y) / 2 });
-    } else if (segW < 2 && segH > 10) {
-      allVSegs.push({ x: (p1x + p2x) / 2, top: Math.min(p1y, p2y), bottom: Math.max(p1y, p2y) });
+    if (segH < 2 && segW > 5) {
+      const y = (visualHeightPts - ((p1y + p2y) / 2 - boxOriginY)) * scale;
+      hLines.push({
+        left: (Math.min(p1x, p2x) - boxOriginX) * scale,
+        right: (Math.max(p1x, p2x) - boxOriginX) * scale,
+        y,
+      });
+    } else if (segW < 2 && segH > 5) {
+      const x = ((p1x + p2x) / 2 - boxOriginX) * scale;
+      const top = (visualHeightPts - (Math.max(p1y, p2y) - boxOriginY)) * scale;
+      const bottom = (visualHeightPts - (Math.min(p1y, p2y) - boxOriginY)) * scale;
+      vLines.push({ x, top, bottom });
     }
   };
+
   for (const path of paths) {
-    if (!path.stroke) continue;
+    if (!path.fill && !path.stroke) continue;
     const cmds = path.commands;
-    // Extract edges from stroked rectangles (M-L-L-L-Z from `re S`).
-    if (cmds.length === 5 && cmds[0].type === 'M' && cmds[4].type === 'Z'
-        && cmds[1].type === 'L' && cmds[2].type === 'L' && cmds[3].type === 'L') {
+    if (path.stroke && cmds.length === 5
+        && cmds[0].type === 'M' && cmds[1].type === 'L'
+        && cmds[2].type === 'L' && cmds[3].type === 'L' && cmds[4].type === 'Z') {
+      // Stroked rectangle: emit all 4 edges.
       const pts = [cmds[0], cmds[1], cmds[2], cmds[3]];
       for (let k = 0; k < 4; k++) {
         addSeg(pts[k].x, pts[k].y, pts[(k + 1) % 4].x, pts[(k + 1) % 4].y);
       }
       continue;
     }
-    for (let k = 0; k < cmds.length - 1; k++) {
-      if (cmds[k].type !== 'M' || cmds[k + 1].type !== 'L') continue;
-      addSeg(cmds[k].x, cmds[k].y, cmds[k + 1].x, cmds[k + 1].y);
-    }
-  }
-
-  const hGroups = [];
-  for (const seg of allHSegs) {
-    let added = false;
-    for (const g of hGroups) {
-      if (Math.abs(seg.left - g.left) < 5 && Math.abs(seg.right - g.right) < 5) {
-        g.segs.push(seg);
-        added = true;
-        break;
-      }
-    }
-    if (!added) hGroups.push({ left: seg.left, right: seg.right, segs: [seg] });
-  }
-
-  const results = [];
-  for (const hGroup of hGroups) {
-    if (hGroup.segs.length < 3) continue;
-
-    const hLeft = hGroup.left;
-    const hRight = hGroup.right;
-    const hYMin = Math.min(...hGroup.segs.map((s) => s.y));
-    const hYMax = Math.max(...hGroup.segs.map((s) => s.y));
-    const matchingVSegs = allVSegs.filter((s) => s.x >= hLeft - 5 && s.x <= hRight + 5
-      && s.top <= hYMax + 5 && s.bottom >= hYMin - 5);
-    if (matchingVSegs.length < 3) continue;
-
-    const vTop = matchingVSegs[0].top;
-    const vBot = matchingVSegs[0].bottom;
-    if (!matchingVSegs.every((s) => Math.abs(s.top - vTop) < 5 && Math.abs(s.bottom - vBot) < 5)) {
-      // Multiple y-extents: check for stacked tables (same column structure
-      // repeated vertically). Group vSegs by y-extent, require all groups to
-      // have the same vSeg count at matching x-positions.
-      const vGroups = [];
-      for (const vs of matchingVSegs) {
-        let added = false;
-        for (const vg of vGroups) {
-          if (Math.abs(vs.top - vg.top) < 5 && Math.abs(vs.bottom - vg.bottom) < 5) {
-            vg.segs.push(vs); added = true; break;
-          }
-        }
-        if (!added) vGroups.push({ top: vs.top, bottom: vs.bottom, segs: [vs] });
-      }
-      // Require each group to have 3+ vSegs AND at least 5 hSegs within its
-      // y-range. Stacked tables with every cell outlined have many row
-      // separators per table. Chart frames with axis marks have only 2-3.
-      const validGroups = vGroups.filter((g) => {
-        if (g.segs.length < 3) return false;
-        const subH = hGroup.segs.filter((s) => s.y >= g.top - 5 && s.y <= g.bottom + 5);
-        return [...new Set(subH.map((s) => s.y))].length >= 5;
-      });
-      if (validGroups.length >= 2) {
-        const refXs = validGroups[0].segs.map((s) => s.x).sort((a, b) => a - b);
-        const allMatch = validGroups.every((g) => {
-          if (g.segs.length !== refXs.length) return false;
-          const gXs = g.segs.map((s) => s.x).sort((a, b) => a - b);
-          return gXs.every((x, i) => Math.abs(x - refXs[i]) < 10);
-        });
-        if (allMatch) {
-          for (const vg of validGroups) {
-            const vgLeft = Math.min(...vg.segs.map((s) => s.x));
-            const vgRight = Math.max(...vg.segs.map((s) => s.x));
-            const dL = (vgLeft - boxOriginX) * scale;
-            const dR = (vgRight - boxOriginX) * scale;
-            const dT = (visualHeightPts - (vg.bottom - boxOriginY)) * scale;
-            const dB = (visualHeightPts - (vg.top - boxOriginY)) * scale;
-            if ((dR - dL) < pageObj.dims.width * 0.2) continue;
-            const subH = hGroup.segs.filter((s) => s.y >= vg.top - 5 && s.y <= vg.bottom + 5);
-            const subYs = [...new Set(subH.map((s) => s.y))].sort((a, b) => a - b);
-            if (subYs.length < 3) continue;
-            const rh = []; for (let ri = 1; ri < subYs.length; ri++) rh.push(Math.abs(subYs[ri] - subYs[ri - 1]));
-            if (Math.min(...rh) > 0 && Math.max(...rh) / Math.min(...rh) > 4) continue;
-            const vXs = clusterValues(vg.segs.map((s) => (s.x - boxOriginX) * scale), 10);
-            const cs = vXs.filter((x) => x > dL + 5 && x < dR - 5).sort((a, b) => a - b);
-            if (cs.length < 1) continue;
-            const hl = subH.map((s) => ({ left: (s.left - boxOriginX) * scale, right: (s.right - boxOriginX) * scale, y: (visualHeightPts - (s.y - boxOriginY)) * scale }));
-            const vl = vg.segs.map((s) => ({ x: (s.x - boxOriginX) * scale, top: (visualHeightPts - (s.bottom - boxOriginY)) * scale, bottom: (visualHeightPts - (s.top - boxOriginY)) * scale }));
-            const bbox = {
-              left: dL, top: dT - 5, right: dR, bottom: dB + 5,
-            };
-            const rli = [];
-            for (let i = 0; i < pageObj.lines.length; i++) {
-              const ln = pageObj.lines[i];
-              if (ln.bbox.top >= bbox.top - 5 && ln.bbox.bottom <= bbox.bottom + 5
-                && ln.bbox.left >= bbox.left - 10 && ln.bbox.right <= bbox.right + 10) {
-                rli.push(i);
-              }
-            }
-            if (rli.length < 2) continue;
-            const rg = groupLinesIntoRows(rli.map((i) => pageObj.lines[i]));
-            const mr = rg.map((r) => ({ lineIndices: r.lineIndices.map((i) => rli[i]), y: r.y }));
-            if (mr.length < 2) continue;
-            results.push({
-              bbox, rows: mr, colSeparators: cs, hLines: hl, vLines: vl, detectionMethod: 'grid',
-            });
-          }
+    if (path.stroke) {
+      // Stroked polyline: emit each M-L segment individually.
+      for (let k = 0; k < cmds.length - 1; k++) {
+        if ((cmds[k].type === 'M' || cmds[k].type === 'L') && cmds[k + 1].type === 'L') {
+          addSeg(cmds[k].x, cmds[k].y, cmds[k + 1].x, cmds[k + 1].y);
         }
       }
       continue;
     }
-
-    const dispLeft = (hLeft - boxOriginX) * scale;
-    const dispRight = (hRight - boxOriginX) * scale;
-    const dispTop = (visualHeightPts - (vBot - boxOriginY)) * scale;
-    const dispBottom = (visualHeightPts - (vTop - boxOriginY)) * scale;
-
-    if ((dispRight - dispLeft) < pageObj.dims.width * 0.2) continue;
-
-    const vXs = clusterValues(matchingVSegs.map((s) => (s.x - boxOriginX) * scale), 10);
-    const colSeps = vXs.filter((x) => x > dispLeft + 5 && x < dispRight - 5);
-    colSeps.sort((a, b) => a - b);
-    if (colSeps.length < 1) continue;
-
-    // Guard against chart frames and diagrams where horizontal lines and
-    // vertical segments form a pseudo-grid. The original check rejects 3+
-    // hLines with non-uniform row heights, but that also rejects legitimate
-    // header-divider-only tables (rectangle + column separators + one rule
-    // under the header). Skip the uniformity check only when the column
-    // separators span (close to) the full hGroup vertical extent — i.e., when
-    // the verticals are real cell-spanning column lines, not cosmetic edges
-    // of inner boxes that float between bracketing horizontal lines.
-    const hSpan = Math.max(...hGroup.segs.map((s) => s.y)) - Math.min(...hGroup.segs.map((s) => s.y));
-    const vSpan = vBot - vTop;
-    const vSegsSpanFullHeight = hSpan > 0 && vSpan / hSpan >= 0.85;
-    if (!(colSeps.length >= 2 && vSegsSpanFullHeight)) {
-      const hYs = [...new Set(hGroup.segs.map((s) => s.y))].sort((a, b) => a - b);
-      if (hYs.length >= 3) {
-        const rowHeights = [];
-        for (let ri = 1; ri < hYs.length; ri++) rowHeights.push(Math.abs(hYs[ri] - hYs[ri - 1]));
-        if (Math.min(...rowHeights) > 0 && Math.max(...rowHeights) / Math.min(...rowHeights) > 4) continue;
+    if (path.fill) {
+      // Filled thin rectangle: treat as a single h-seg or v-seg.
+      let minX = Infinity; let maxX = -Infinity;
+      let minY = Infinity; let maxY = -Infinity;
+      for (const c of cmds) {
+        if (c.type === 'Z') continue;
+        if (c.x < minX) minX = c.x; if (c.x > maxX) maxX = c.x;
+        if (c.y < minY) minY = c.y; if (c.y > maxY) maxY = c.y;
+      }
+      if (!Number.isFinite(minX)) continue;
+      const w = maxX - minX;
+      const h = maxY - minY;
+      if (h < 2 && w > 5) {
+        addSeg(minX, (minY + maxY) / 2, maxX, (minY + maxY) / 2);
+      } else if (w < 2 && h > 5) {
+        addSeg((minX + maxX) / 2, minY, (minX + maxX) / 2, maxY);
       }
     }
-
-    const hLines = hGroup.segs.map((s) => ({
-      left: (s.left - boxOriginX) * scale,
-      right: (s.right - boxOriginX) * scale,
-      y: (visualHeightPts - (s.y - boxOriginY)) * scale,
-    }));
-    const vLines = matchingVSegs.map((s) => ({
-      x: (s.x - boxOriginX) * scale,
-      top: (visualHeightPts - (s.bottom - boxOriginY)) * scale,
-      bottom: (visualHeightPts - (s.top - boxOriginY)) * scale,
-    }));
-
-    let headerTop = dispTop;
-    if (hLines.length >= 4) {
-      const typicalRowH = (dispBottom - dispTop) / (hLines.length - 1);
-      const headerLimit = dispTop - typicalRowH * 2;
-      const tableWidth = dispRight - dispLeft;
-      for (const line of pageObj.lines) {
-        if (line.bbox.bottom > dispTop || line.bbox.top < headerLimit) continue;
-        if (line.bbox.right < dispLeft + 10 || line.bbox.left > dispRight - 10) continue;
-        if ((line.bbox.right - line.bbox.left) < tableWidth * 0.3) continue;
-        if (line.bbox.top < headerTop) headerTop = line.bbox.top;
-      }
-    }
-
-    const bbox = {
-      left: dispLeft, top: headerTop - 5, right: dispRight, bottom: dispBottom + 5,
-    };
-
-    const regionLineIndices = [];
-    for (let i = 0; i < pageObj.lines.length; i++) {
-      const line = pageObj.lines[i];
-      if (line.bbox.top >= bbox.top - 5 && line.bbox.bottom <= bbox.bottom + 5
-          && line.bbox.left >= bbox.left - 10 && line.bbox.right <= bbox.right + 10) {
-        regionLineIndices.push(i);
-      }
-    }
-    if (regionLineIndices.length < 2) continue;
-
-    const regionLines = regionLineIndices.map((i) => pageObj.lines[i]);
-    const rowGroups = groupLinesIntoRows(regionLines);
-    const mappedRows = rowGroups.map((rg) => ({
-      lineIndices: rg.lineIndices.map((i) => regionLineIndices[i]),
-      y: rg.y,
-    }));
-    if (mappedRows.length < 2) continue;
-
-    results.push({
-      bbox, rows: mappedRows, colSeparators: colSeps, hLines, vLines, detectionMethod: 'grid',
-    });
   }
 
+  return { hLines, vLines };
+}
+
+/**
+ * Detect tables that are fully bordered grids: outer rectangle + horizontal
+ * separator at every row boundary + vertical separator at every column
+ * boundary, all connected. Geometry alone fully describes the table.
+ *
+ * @param {import('../objects/ocrObjects.js').OcrPage} pageObj
+ * @param {Array<import('./parsePdfPaths.js').PaintedPath>} paths
+ * @param {number} scale
+ * @param {number} visualHeightPts
+ * @param {number} [boxOriginX=0]
+ * @param {number} [boxOriginY=0]
+ * @returns {DetectedTable[]}
+ */
+function detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX = 0, boxOriginY = 0) {
+  const raw = extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOriginY);
+  const hLines = mergeCollinearSegments(raw.hLines, 'y', 'left', 'right', 5, 10);
+  const vLines = mergeCollinearSegments(raw.vLines, 'x', 'top', 'bottom', 5, 10);
+  if (hLines.length < 3 || vLines.length < 2) return [];
+
+  // Two segments are connected when they intersect (an h-seg crosses a v-seg,
+  // two h-segs at the same y abut or overlap in x, two v-segs at the same x
+  // abut or overlap in y). Segments belonging to the same self-contained grid
+  // are connected through the grid's own joins; segments from a separate grid
+  // or chart on the same page form a different component.
+  const TOL = 6;
+  const N = hLines.length + vLines.length;
+  const parent = new Int32Array(N);
+  for (let i = 0; i < N; i++) parent[i] = i;
+  const find = (i) => {
+    let r = i;
+    while (parent[r] !== r) r = parent[r];
+    while (parent[i] !== r) { const next = parent[i]; parent[i] = r; i = next; }
+    return r;
+  };
+  const union = (a, b) => { const ra = find(a); const rb = find(b); if (ra !== rb) parent[ra] = rb; };
+
+  for (let i = 0; i < hLines.length; i++) {
+    const a = hLines[i];
+    for (let j = i + 1; j < hLines.length; j++) {
+      const b = hLines[j];
+      if (Math.abs(a.y - b.y) <= TOL
+          && Math.min(a.right, b.right) >= Math.max(a.left, b.left) - TOL) {
+        union(i, j);
+      }
+    }
+    for (let j = 0; j < vLines.length; j++) {
+      const v = vLines[j];
+      if (v.x >= a.left - TOL && v.x <= a.right + TOL
+          && a.y >= v.top - TOL && a.y <= v.bottom + TOL) {
+        union(i, hLines.length + j);
+      }
+    }
+  }
+  for (let i = 0; i < vLines.length; i++) {
+    const a = vLines[i];
+    for (let j = i + 1; j < vLines.length; j++) {
+      const b = vLines[j];
+      if (Math.abs(a.x - b.x) <= TOL
+          && Math.min(a.bottom, b.bottom) >= Math.max(a.top, b.top) - TOL) {
+        union(hLines.length + i, hLines.length + j);
+      }
+    }
+  }
+
+  /** @type {Map<number, {hs: HLine[], vs: VLine[]}>} */
+  const components = new Map();
+  for (let i = 0; i < hLines.length; i++) {
+    const r = find(i);
+    let c = components.get(r);
+    if (!c) { c = { hs: [], vs: [] }; components.set(r, c); }
+    c.hs.push(hLines[i]);
+  }
+  for (let i = 0; i < vLines.length; i++) {
+    const r = find(hLines.length + i);
+    let c = components.get(r);
+    if (!c) { c = { hs: [], vs: [] }; components.set(r, c); }
+    c.vs.push(vLines[i]);
+  }
+
+  /** @type {DetectedTable[]} */
+  const results = [];
+  for (const comp of components.values()) {
+    if (comp.hs.length < 3 || comp.vs.length < 2) continue;
+    const t = tryDetectStrictGrid(comp.hs, comp.vs, pageObj);
+    if (t) results.push(t);
+  }
   return results;
 }
 
 /**
- * Detect tables using grid structure from paths (fallback for text-only tables).
- * If 2+ hLines and 2+ non-page-spanning vLines form a grid, it's a table.
+ * Cluster a list of values into groups where consecutive sorted values are within `tol` of each other.
+ * @param {number[]} values
+ * @param {number} tol
+ * @returns {number[]}
  */
-function detectGridTables(pageObj, paths, scale, visualHeightPts, boxOriginX = 0, boxOriginY = 0) {
-  const pathData = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY);
+function clusterValuesLocal(values, tol) {
+  if (values.length === 0) return [];
+  const sorted = [...values].sort((a, b) => a - b);
+  /** @type {number[][]} */
+  const clusters = [[sorted[0]]];
+  for (let i = 1; i < sorted.length; i++) {
+    const last = clusters[clusters.length - 1];
+    if (sorted[i] - last[last.length - 1] <= tol) {
+      last.push(sorted[i]);
+    } else {
+      clusters.push([sorted[i]]);
+    }
+  }
+  return clusters.map((c) => c[Math.floor(c.length / 2)]);
+}
 
-  const selfContainedGrids = detectSelfContainedGridPaths(paths, scale, visualHeightPts, boxOriginX, boxOriginY, pageObj);
+/**
+ * @param {Array<{left: number, right: number}>} segs sorted ascending by `left`
+ */
+function unionSpansFully(segs, left, right, tol) {
+  if (segs.length === 0) return false;
+  if (segs[0].left > left + tol) return false;
+  let furthest = segs[0].right;
+  for (let i = 1; i < segs.length; i++) {
+    if (segs[i].left > furthest + tol) return false;
+    if (segs[i].right > furthest) furthest = segs[i].right;
+  }
+  return furthest >= right - tol;
+}
 
-  if (pathData.hLines.length < 3) return selfContainedGrids;
+/**
+ * Validate one connected component as a strict grid and emit the table.
+ * Returns `null` when the component does not satisfy the four strict-grid
+ * conditions (outer border + col separator at every column boundary +
+ * row separator at every row boundary + connected).
+ *
+ * @param {HLine[]} hs h-segments in the component
+ * @param {VLine[]} vs v-segments in the component
+ * @param {{dims: {width: number, height: number}, lines: any[]}} pageObj
+ * @returns {DetectedTable | null}
+ */
+function tryDetectStrictGrid(hs, vs, pageObj) {
+  if (hs.length < 3) return null;
 
-  // Cluster hLines by x-extent overlap
-  const hLineClusters = clusterHLinesByXExtent(pathData.hLines);
+  const left = hs.reduce((m, h) => Math.min(m, h.left), Infinity);
+  const right = hs.reduce((m, h) => Math.max(m, h.right), -Infinity);
+  if ((right - left) < pageObj.dims.width * 0.3) return null;
 
-  const tables = [];
-  // Process each hLine cluster. Split clusters with large y-gaps into sub-clusters
-  // so that decorative outlier hLines (e.g., page title underlines) don't poison
-  // the grid detection for the actual table.
-  /** @type {HLine[][]} */
-  const processedClusters = [];
-  for (const cluster of hLineClusters) {
-    if (cluster.length < 3) continue;
-    const subClusters = splitClusterByYGap(cluster);
-    for (const sub of subClusters) {
-      if (sub.length >= 3) processedClusters.push(sub);
+  const ys = clusterValuesLocal(hs.map((h) => h.y), 5);
+  if (ys.length < 3) return null;
+
+  const minY = ys[0];
+  const maxY = ys[ys.length - 1];
+
+  // x-segments grouped by y, sorted by left, used for row-spans and bottom-
+  // span checks below.
+  const segsByY = new Map();
+  for (const py of ys) {
+    const segs = hs
+      .filter((h) => Math.abs(h.y - py) < 5)
+      .map((h) => ({ left: h.left, right: h.right }))
+      .sort((a, b) => a.left - b.left);
+    segsByY.set(py, segs);
+  }
+
+  /** @type {Array<{top: number, bottom: number, xs: number[]}>} */
+  const strips = [];
+  for (let i = 0; i < ys.length - 1; i++) {
+    const top = ys[i];
+    const bot = ys[i + 1];
+    // v-segments that fully span this strip.
+    const stripVs = vs.filter((v) => v.top <= top + 5 && v.bottom >= bot - 5);
+    const xs = clusterValuesLocal(stripVs.map((v) => v.x), 10);
+    // Outer-border check: the strip's leftmost column boundary aligns with
+    // the component's left edge, the rightmost with the right edge.
+    if (xs.length < 2
+        || Math.abs(xs[0] - left) > 15
+        || Math.abs(xs[xs.length - 1] - right) > 15) return null;
+    // Top and bottom of the strip must be horizontally closed (a chain of
+    // hSegs covering the full strip width, with small gaps tolerated).
+    if (!unionSpansFully(segsByY.get(top), left, right, 15)) return null;
+    if (!unionSpansFully(segsByY.get(bot), left, right, 15)) return null;
+    strips.push({ top, bottom: bot, xs });
+  }
+  if (strips.length < 2) return null;
+
+  // Data strips share the canonical column-boundary set (max cardinality).
+  // The only allowed asymmetry is a header row whose column boundaries are a
+  // strict subset of the data set — i.e., a header cell may span multiple
+  // data columns ("2007" above "Revenue" / "Expenses"). Anything else
+  // disqualifies the component.
+  const maxCols = Math.max(...strips.map((s) => s.xs.length));
+  const dataStrips = strips.filter((s) => s.xs.length === maxCols);
+  if (dataStrips.length < 2) return null;
+  const canonicalXs = dataStrips[0].xs;
+  for (const s of dataStrips) {
+    if (s.xs.length !== canonicalXs.length) return null;
+    for (let i = 0; i < s.xs.length; i++) {
+      if (Math.abs(s.xs[i] - canonicalXs[i]) >= 10) return null;
+    }
+  }
+  for (const s of strips) {
+    if (s.xs.length === maxCols) continue;
+    for (const x of s.xs) {
+      if (!canonicalXs.some((cx) => Math.abs(cx - x) < 10)) return null;
     }
   }
 
-  for (const cluster of processedClusters) {
-    // Find the bounding x-extent
-    let clusterLeft = cluster.reduce((m, h) => Math.min(m, h.left), Infinity);
-    let clusterRight = cluster.reduce((m, h) => Math.max(m, h.right), -Infinity);
-    let clusterTop = cluster.reduce((m, h) => Math.min(m, h.y), Infinity);
-    let clusterBottom = cluster.reduce((m, h) => Math.max(m, h.y), -Infinity);
+  const colSeparators = canonicalXs.slice(1, -1);
+  const bbox = {
+    left, top: minY - 5, right, bottom: maxY + 5,
+  };
 
-    // Find vLines that fall within this region
-    let regionVLines = pathData.vLines.filter((vl) => vl.x >= clusterLeft - 5
+  /** @type {Array<{lineIndices: number[], y: number}>} */
+  const rows = [];
+  for (const strip of strips) {
+    const idxs = [];
+    for (let i = 0; i < pageObj.lines.length; i++) {
+      const ln = pageObj.lines[i];
+      const yC = (ln.bbox.top + ln.bbox.bottom) / 2;
+      if (yC >= strip.top - 5 && yC <= strip.bottom + 5
+          && ln.bbox.left >= bbox.left - 10 && ln.bbox.right <= bbox.right + 10) {
+        idxs.push(i);
+      }
+    }
+    if (idxs.length === 0) continue;
+    const yMean = idxs.reduce((s, i) => s + pageObj.lines[i].bbox.top, 0) / idxs.length;
+    rows.push({ lineIndices: idxs, y: yMean });
+  }
+  if (rows.length < 2) return null;
+
+  // Pull bbox.top up to a title text line that sits immediately above the
+  // outer rectangle (some PDFs draw the table title outside the grid).
+  if (hs.length >= 4) {
+    const typicalRowH = (maxY - minY) / Math.max(1, ys.length - 1);
+    const headerLimit = minY - typicalRowH * 2;
+    const tableWidth = right - left;
+    let headerTop = bbox.top;
+    for (const line of pageObj.lines) {
+      if (line.bbox.bottom > minY || line.bbox.top < headerLimit) continue;
+      if (line.bbox.right < left + 10 || line.bbox.left > right - 10) continue;
+      if ((line.bbox.right - line.bbox.left) < tableWidth * 0.3) continue;
+      if (line.bbox.top < headerTop) headerTop = line.bbox.top;
+    }
+    bbox.top = headerTop;
+  }
+
+  return {
+    bbox,
+    rows,
+    colSeparators,
+    hLines: hs,
+    vLines: vs,
+    detectionMethod: 'grid-strong',
+  };
+}
+
+/**
+ * Detect tables whose column structure is encoded by *segments* of horizontal
+ * rules (no full-height vertical lines). Preserves the only reachability path
+ * to `detectSegmentedHLineTables` after the legacy grid-cluster pipeline was
+ * removed.
+ *
+ * @param {import('../objects/ocrObjects.js').OcrPage} pageObj
+ * @param {Array<import('./parsePdfPaths.js').PaintedPath>} paths
+ * @param {number} scale
+ * @param {number} visualHeightPts
+ * @param {number} [boxOriginX=0]
+ * @param {number} [boxOriginY=0]
+ * @returns {DetectedTable[]}
+ */
+function detectSegmentedHLineGrids(pageObj, paths, scale, visualHeightPts, boxOriginX = 0, boxOriginY = 0) {
+  const pathData = classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX, boxOriginY);
+  if (pathData.hLines.length < 3) return [];
+
+  const hLineClusters = clusterHLinesByXExtent(pathData.hLines);
+  /** @type {HLine[][]} */
+  const processed = [];
+  for (const cluster of hLineClusters) {
+    if (cluster.length < 3) continue;
+    for (const sub of splitClusterByYGap(cluster)) {
+      if (sub.length >= 3) processed.push(sub);
+    }
+  }
+
+  /** @type {DetectedTable[]} */
+  const tables = [];
+  for (const cluster of processed) {
+    const clusterLeft = cluster.reduce((m, h) => Math.min(m, h.left), Infinity);
+    const clusterRight = cluster.reduce((m, h) => Math.max(m, h.right), -Infinity);
+    const clusterTop = cluster.reduce((m, h) => Math.min(m, h.y), Infinity);
+    const clusterBottom = cluster.reduce((m, h) => Math.max(m, h.y), -Infinity);
+    const regionVLines = pathData.vLines.filter((vl) => vl.x >= clusterLeft - 5
       && vl.x <= clusterRight + 5
       && vl.top <= clusterBottom + 5
       && vl.bottom >= clusterTop - 5);
-
-    // Exclude vLines that don't participate in the grid.
-    // Two structural checks:
-    // 1. A real column separator crosses 2+ row lines in the cluster.
-    //    A page-layout divider or decorative rule intersects 0–1.
-    // 2. A real column separator has a y-span proportional to the hLine
-    //    cluster's span. A page-layout column divider that passes through
-    //    the table area has a y-span far exceeding the cluster — it was
-    //    drawn for the page layout, not for the table.
-    const hClusterSpan = clusterBottom - clusterTop;
-    if (regionVLines.length > 0) {
-      regionVLines = regionVLines.filter((vl) => {
-        const vSpan = vl.bottom - vl.top;
-        if (hClusterSpan > 0 && vSpan > hClusterSpan * 3) return false;
-        let count = 0;
-        for (const hl of cluster) {
-          if (hl.y >= vl.top - 5 && hl.y <= vl.bottom + 5
-              && hl.left <= vl.x + 5 && hl.right >= vl.x - 5) {
-            count++;
-            if (count >= 2) return true;
-          }
-        }
-        return false;
-      });
-    }
-
-    // Trim cluster x-extent to only hLines that touch a vLine position.
-    // On pages with charts adjacent to tables, chart gridlines get clustered
-    // with table hLines (via full-width bridging lines). The vLines define
-    // the actual table structure — hLines not touching any vLine are likely
-    // chart gridlines or decorative elements.
-    if (regionVLines.length >= 2) {
-      const vLineXPositions = regionVLines.map((vl) => vl.x);
-      const touchesVLine = (hl) => vLineXPositions.some((vx) => Math.abs(hl.left - vx) < 15 || Math.abs(hl.right - vx) < 15);
-      const touchingHLines = cluster.filter(touchesVLine);
-      // Only trim if it actually reduces the extent (some hLines are untouched).
-      // Don't trim if all or nearly all hLines touch vLines — this means the
-      // entire cluster is a valid grid and trimming would only lose precision.
-      const untouchedCount = cluster.length - touchingHLines.length;
-      if (touchingHLines.length >= 3 && untouchedCount > cluster.length * 0.1) {
-        clusterLeft = touchingHLines.reduce((m, h) => Math.min(m, h.left), Infinity);
-        clusterRight = touchingHLines.reduce((m, h) => Math.max(m, h.right), -Infinity);
-      }
-    }
-
-    // Require 3+ vLines (left + right + at least one interior column separator).
-    // If fewer than 3 vLines, fall back to segmented-hLine detection:
-    // consistent break points in the horizontal line segments can encode
-    // implicit column separators without explicit vertical lines.
-    if (regionVLines.length < 3) {
-      const segTables = detectSegmentedHLineTables(
-        cluster, pathData.headerFills, pageObj,
-      );
-      for (const st of segTables) tables.push(st);
-      continue;
-    }
-
-    // Use vLine y-extent as the grid boundary. When interior column separators
-    // are shorter than border vLines (e.g., border extends into a footnote area
-    // with no interior columns), trim to the interior extent instead. This
-    // prevents decorative areas from inflating the coverage denominator.
-    const allVLineXPositions = clusterValues(regionVLines.map((vl) => vl.x), 10);
-    const interiorVLineXs = allVLineXPositions.filter((x) => x > clusterLeft + 5 && x < clusterRight - 5);
-
-    // Compute interior vLine extent (where actual columns exist)
-    let intTop = Infinity;
-    let intBot = -Infinity;
-    for (const sep of interiorVLineXs) {
-      for (const vl of regionVLines) {
-        if (Math.abs(vl.x - sep) < 15) {
-          if (vl.top < intTop) intTop = vl.top;
-          if (vl.bottom > intBot) intBot = vl.bottom;
-        }
-      }
-    }
-
-    // Also compute full vLine extent (including borders)
-    const allTop = regionVLines.reduce((m, vl) => Math.min(m, vl.top), Infinity);
-    const allBot = regionVLines.reduce((m, vl) => Math.max(m, vl.bottom), -Infinity);
-
-    // Use interior extent when available, fall back to full vLine extent
-    const hLineExtent = clusterBottom - clusterTop;
-    if (Number.isFinite(intTop) && (intBot - intTop) > hLineExtent * 0.3) {
-      clusterTop = intTop;
-      clusterBottom = intBot;
-    } else if ((allBot - allTop) > hLineExtent * 0.3) {
-      clusterTop = allTop;
-      clusterBottom = allBot;
-    }
-
-    // Validate grid structure: at least one interior column separator position
-    // must have vLines that collectively span >=70% of the grid height.
-    const gridHeight = clusterBottom - clusterTop;
-    if (gridHeight > 50) {
-      let maxInteriorSpan = 0;
-      for (const sep of interiorVLineXs) {
-        const colVLines = regionVLines.filter((vl) => Math.abs(vl.x - sep) < 15);
-        let span = 0;
-        for (const vl of colVLines) span += vl.bottom - vl.top;
-        if (span > maxInteriorSpan) maxInteriorSpan = span;
-      }
-      if (maxInteriorSpan < gridHeight * 0.7) continue;
-    }
-
-    // Reject small grids that are likely diagrams, not tables.
-    // A real table grid spans a meaningful portion of the page.
-    const gridWidth = clusterRight - clusterLeft;
-    if (gridWidth < pageObj.dims.width * 0.3) continue;
-
-    // Reject grids that extend significantly beyond page bounds (decorative artifacts).
-    if (clusterLeft < -pageObj.dims.width * 0.1 || clusterRight > pageObj.dims.width * 1.1
-        || clusterTop < -pageObj.dims.height * 0.1 || clusterBottom > pageObj.dims.height * 1.1) continue;
-
-    // We have a grid! Build the table.
-    // Expand top boundary to include header text lines above the grid.
-    // Compute row height from the MEDIAN hLine spacing — this is the actual
-    // structural row pitch. Anchor the expansion from the topmost hLine that
-    // is within a reasonable distance of the main cluster body. An hLine
-    // separated by a gap much larger than the median spacing (e.g., a section
-    // separator above the table) should not pull the header expansion upward.
-    let headerTop = clusterTop;
-    const sortedHLineYs = [...new Set(cluster.map((h) => h.y))].sort((a, b) => a - b);
-    let typicalRowH;
-    if (sortedHLineYs.length > 1) {
-      const spacings = [];
-      for (let i = 1; i < sortedHLineYs.length; i++) spacings.push(sortedHLineYs[i] - sortedHLineYs[i - 1]);
-      spacings.sort((a, b) => a - b);
-      typicalRowH = spacings[Math.floor(spacings.length / 2)];
-    } else {
-      typicalRowH = (clusterBottom - clusterTop) / Math.max(1, cluster.length - 1);
-    }
-    // Find the anchor: walk down from the top of sortedHLineYs, skipping
-    // hLines that are outliers (gap to the next > 3× median).
-    let headerAnchorY = sortedHLineYs[0];
-    for (let hi = 0; hi < sortedHLineYs.length - 1; hi++) {
-      if (sortedHLineYs[hi + 1] - sortedHLineYs[hi] > typicalRowH * 3) {
-        headerAnchorY = sortedHLineYs[hi + 1];
-      } else {
-        break;
-      }
-    }
-    const headerLimit = headerAnchorY - typicalRowH * 2;
-    const tableWidth = clusterRight - clusterLeft;
-    for (const line of pageObj.lines) {
-      if (line.bbox.bottom > clusterTop || line.bbox.top < headerLimit) continue;
-      if (line.bbox.right < clusterLeft + 10 || line.bbox.left > clusterRight - 10) continue;
-      // Header lines must span a meaningful fraction of the table width.
-      // Page headers like "ICC.1:2022" are narrow and shouldn't be included.
-      const lineWidth = line.bbox.right - line.bbox.left;
-      if (lineWidth < tableWidth * 0.3) continue;
-      if (line.bbox.top < headerTop) headerTop = line.bbox.top;
-    }
-    const bbox = {
-      left: clusterLeft,
-      top: headerTop - 5,
-      right: clusterRight,
-      bottom: clusterBottom + 5,
-    };
-
-    // Find lines within this region
-    const regionLineIndices = [];
-    for (let i = 0; i < pageObj.lines.length; i++) {
-      const line = pageObj.lines[i];
-      if (line.bbox.top >= bbox.top - 5 && line.bbox.bottom <= bbox.bottom + 5
-        && line.bbox.left >= bbox.left - 10 && line.bbox.right <= bbox.right + 10) {
-        regionLineIndices.push(i);
-      }
-    }
-
-    if (regionLineIndices.length < 2) continue;
-
-    // Group these lines into rows
-    const regionLines = regionLineIndices.map((i) => pageObj.lines[i]);
-    const rowGroups = groupLinesIntoRows(regionLines);
-
-    // Map back to original indices
-    const mappedRows = rowGroups.map((rg) => ({
-      lineIndices: rg.lineIndices.map((i) => regionLineIndices[i]),
-      y: rg.y,
-    }));
-
-    if (mappedRows.length < 2) continue;
-
-    // Validate: text must demonstrate column structure within the grid.
-    // A grid table organizes text into rows and columns. If the text within
-    // the grid region never appears at the same y-position in multiple columns,
-    // the grid isn't organizing text — it's likely a diagram, chart, or
-    // decorative element whose vector paths happen to form a grid pattern.
-    // Require at least 2 rows with 2+ text segments as evidence of column use.
-    const multiSegGridRows = mappedRows.filter((r) => r.lineIndices.length >= 2).length;
-    if (multiSegGridRows < 2) continue;
-
-    // Extract column separators from vLines
-    const vLineXPositions = clusterValues(regionVLines.map((vl) => vl.x), 10);
-    // Filter out border lines (leftmost and rightmost)
-    const colSeps = vLineXPositions.filter((x) => x > clusterLeft + 5 && x < clusterRight - 5);
-    colSeps.sort((a, b) => a - b);
-
-    // Drop empty columns. A border vLine that survives the tolerance filter
-    // creates an ultra-narrow "column" between itself and the cluster edge;
-    // that column contains no words. This is a direct structural test for
-    // border-vs-separator: a real column contains at least one word inside
-    // its bounds (center-of-word inside [left, right]). If the first or last
-    // column of the computed grid is empty, the outer vLine is a border
-    // artifact, not a separator — drop it.
-    //
-    // Only the outermost columns are checked because an empty interior
-    // column can legitimately occur (a data cell blank in every row) and
-    // shouldn't be stripped. Borders only ever shave off the extremes.
-    const allBoundaries = [clusterLeft, ...colSeps, clusterRight];
-    const wordCenterInRange = (w, l, r) => {
-      const cx = (w.bbox.left + w.bbox.right) / 2;
-      return cx > l && cx < r;
-    };
-    const columnHasWord = (l, r) => {
-      for (const i of regionLineIndices) {
-        for (const word of pageObj.lines[i].words) {
-          if (wordCenterInRange(word, l, r)) return true;
-        }
-      }
-      return false;
-    };
-    // Trim from left
-    while (colSeps.length >= 1) {
-      const leftColLeft = allBoundaries[0];
-      const leftColRight = allBoundaries[1];
-      if (columnHasWord(leftColLeft, leftColRight)) break;
-      colSeps.shift();
-      allBoundaries.splice(1, 1); // drop the first separator from boundaries
-    }
-    // Trim from right
-    while (colSeps.length >= 1) {
-      const rightColLeft = allBoundaries[allBoundaries.length - 2];
-      const rightColRight = allBoundaries[allBoundaries.length - 1];
-      if (columnHasWord(rightColLeft, rightColRight)) break;
-      colSeps.pop();
-      allBoundaries.splice(allBoundaries.length - 2, 1);
-    }
-
-    tables.push({
-      bbox,
-      rows: mappedRows,
-      colSeparators: colSeps,
-      hLines: cluster,
-      vLines: regionVLines,
-      detectionMethod: 'grid',
-    });
+    if (regionVLines.length >= 3) continue;
+    const segTables = detectSegmentedHLineTables(cluster, pathData.headerFills, pageObj);
+    for (const st of segTables) tables.push(st);
   }
-
-  // Merge horizontally adjacent grid tables that share vertical alignment.
-  // Some PDFs draw table grid lines in separate column groups (e.g., one set of
-  // hLines for the label column, another for data columns). These produce
-  // separate sub-tables that should be merged into one.
-  let merged = true;
-  while (merged) {
-    merged = false;
-    for (let i = 0; i < tables.length && !merged; i++) {
-      for (let j = i + 1; j < tables.length && !merged; j++) {
-        const a = tables[i];
-        const b = tables[j];
-        // Check vertical overlap (>50% of the smaller table's height)
-        const overlapTop = Math.max(a.bbox.top, b.bbox.top);
-        const overlapBot = Math.min(a.bbox.bottom, b.bbox.bottom);
-        const vOverlap = Math.max(0, overlapBot - overlapTop);
-        const minHeight = Math.min(a.bbox.bottom - a.bbox.top, b.bbox.bottom - b.bbox.top);
-        if (minHeight <= 0 || vOverlap / minHeight < 0.5) continue;
-        // Check horizontal adjacency (gap < 30px between them)
-        const hGap = Math.max(a.bbox.left, b.bbox.left) - Math.min(a.bbox.right, b.bbox.right);
-        if (hGap > 30) continue;
-        // Merge b into a
-        const mergedBbox = {
-          left: Math.min(a.bbox.left, b.bbox.left),
-          top: Math.min(a.bbox.top, b.bbox.top),
-          right: Math.max(a.bbox.right, b.bbox.right),
-          bottom: Math.max(a.bbox.bottom, b.bbox.bottom),
-        };
-        // Combine rows (deduplicate by lineIndices)
-        const seenLines = new Set(a.rows.flatMap((r) => r.lineIndices));
-        const combinedRows = [...a.rows];
-        for (const row of b.rows) {
-          if (!row.lineIndices.some((li) => seenLines.has(li))) {
-            combinedRows.push(row);
-          }
-        }
-        combinedRows.sort((x, y) => x.y - y.y);
-        // Re-cluster vLines from both sub-tables
-        const allVLines = [...a.vLines, ...b.vLines];
-        const vLineXPositions = clusterValues(allVLines.map((vl) => vl.x), 10);
-        const colSeps = vLineXPositions.filter((x) => x > mergedBbox.left + 5 && x < mergedBbox.right - 5);
-        tables[i] = {
-          bbox: mergedBbox,
-          rows: combinedRows,
-          colSeparators: colSeps.sort((x, y) => x - y),
-          hLines: [...a.hLines, ...b.hLines],
-          vLines: allVLines,
-          detectionMethod: 'grid',
-        };
-        tables.splice(j, 1);
-        merged = true;
-      }
-    }
-  }
-
-  // Self-contained grids (complete grid in explicit vector paths) are higher
-  // confidence than hLine-cluster-based grids. When they overlap, the
-  // self-contained grid replaces the cluster-based result.
-  for (const scg of selfContainedGrids) {
-    for (let i = tables.length - 1; i >= 0; i--) {
-      if (bboxOverlap(tables[i].bbox, scg.bbox) > 0.3) tables.splice(i, 1);
-    }
-    tables.push(scg);
-  }
-
   return tables;
 }
 
@@ -4116,12 +3947,22 @@ function extendTableToAdjacentContent(table, lines) {
   if (leftAdjByRow.size > table.rows.length * 0.5 && leftAdjByRow.size >= 2) {
     let newLeft = Infinity;
     let maxRight = -Infinity;
+    let alphabeticLines = 0;
     for (const arr of leftAdjByRow.values()) {
       for (const { line } of arr) {
         if (line.bbox.left < newLeft) newLeft = line.bbox.left;
         if (line.bbox.right > maxRight) maxRight = line.bbox.right;
+        for (const word of line.words) {
+          if (/[a-zA-Z]/.test(word.text)) { alphabeticLines++; break; }
+        }
       }
     }
+    // Page-furniture guard: court filings, line-numbered legal documents, and
+    // similar layouts emit pure-numeric per-row markers (1..N) in the left
+    // margin. These match the narrow-and-clearly-left criteria but are not a
+    // table label column. A real label column carries at least some
+    // descriptive text.
+    if (alphabeticLines === 0) return;
     // Aggregate-width guard: the candidate label column's TOTAL horizontal
     // span (from leftmost qualifying-line left to rightmost qualifying-line
     // right) must be narrower than half the current bbox width. This keeps

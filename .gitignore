@@ -25,6 +25,7 @@ settings.json
 tmp
 /build/
 mcp/mcp.log
+user-docs
 
 # scribe-ui
 scribe-ui/basic-viewer/tauri/target/

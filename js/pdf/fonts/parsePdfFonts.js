@@ -1506,6 +1506,17 @@ export function parsePageFonts(pageObjText, objCache) {
               }
             }
           }
+
+          if (ff2Match && !detectedMacRomanCmap && toUnicode.size === 0 && encodingUnicode.size === 0
+              && !/ZapfDingbats|Symbol|Wingdings/i.test(baseName)) {
+            for (let code = 32; code <= 255; code++) {
+              const ch = win1252Chars[code - 32];
+              if (ch) {
+                encodingUnicode.set(code, ch);
+                toUnicode.set(code, ch);
+              }
+            }
+          }
         }
       }
 
@@ -1838,6 +1849,14 @@ export function parsePageFonts(pageObjText, objCache) {
  * @param {Map<number, string>} map
  */
 function parseToUnicodeCMap(cmapText, map) {
+  const isOnlyReplacementChars = (s) => {
+    if (s.length === 0) return false;
+    for (let i = 0; i < s.length; i++) {
+      if (s.charCodeAt(i) !== 0xFFFD) return false;
+    }
+    return true;
+  };
+
   const bfcharRegex = /beginbfchar\s*([\s\S]*?)endbfchar/g;
   const bfcharMatches = [...cmapText.matchAll(bfcharRegex)];
   for (const m of bfcharMatches) {
@@ -1845,6 +1864,7 @@ function parseToUnicodeCMap(cmapText, map) {
     for (const entry of entries) {
       const cid = parseInt(entry[1], 16);
       const unicode = hexToUnicode(entry[2]);
+      if (isOnlyReplacementChars(unicode)) continue;
       map.set(cid, unicode);
     }
   }
@@ -1863,14 +1883,18 @@ function parseToUnicodeCMap(cmapText, map) {
         // Single start value: <start> <end> <unicodeStart>
         let unicodeStart = parseInt(entry[4], 16);
         for (let cid = cidStart; cid <= cidEnd; cid++) {
-          if (unicodeStart <= 0x10FFFF) map.set(cid, String.fromCodePoint(unicodeStart));
+          if (unicodeStart <= 0x10FFFF && unicodeStart !== 0xFFFD) {
+            map.set(cid, String.fromCodePoint(unicodeStart));
+          }
           unicodeStart++;
         }
       } else if (entry[3] !== undefined) {
         // Array form: <start> <end> [<u1> <u2> ...]
         const arrayTokens = [...entry[3].matchAll(/<([0-9A-Fa-f]+)>/g)];
         for (let idx = 0; idx < arrayTokens.length && cidStart + idx <= cidEnd; idx++) {
-          map.set(cidStart + idx, hexToUnicode(arrayTokens[idx][1]));
+          const unicode = hexToUnicode(arrayTokens[idx][1]);
+          if (isOnlyReplacementChars(unicode)) continue;
+          map.set(cidStart + idx, unicode);
         }
       }
     }
