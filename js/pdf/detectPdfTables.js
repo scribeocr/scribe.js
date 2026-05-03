@@ -241,7 +241,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   }
 
   // === Phase 2: Group table-like rows into candidate regions ===
-  const candidates = groupRowsIntoCandidates(tableLikeRows, lines);
+  const candidates = groupRowsIntoCandidates(tableLikeRows, lines, pageObj);
   if (candidates.length === 0) {
     const strictFallback = detectStrictGrids(pageObj, paths, scale, visualHeightPts, boxOriginX, boxOriginY)
       .filter((t) => t.colSeparators.length > 0);
@@ -906,7 +906,7 @@ function groupLinesIntoRows(lines) {
  * Find runs of consecutive table-like rows to form candidate regions.
  * Requires 3+ consecutive rows with numbers, or 4+ without numbers.
  */
-function groupRowsIntoCandidates(tableLikeRows, lines) {
+function groupRowsIntoCandidates(tableLikeRows, lines, pageObj) {
   // Sort by y
   tableLikeRows.sort((a, b) => a.y - b.y);
 
@@ -922,6 +922,8 @@ function groupRowsIntoCandidates(tableLikeRows, lines) {
     const medianSpacing = spacings[Math.floor(spacings.length / 2)];
     yGapThreshold = Math.max(medianSpacing * 3, 150);
   }
+  const pageHeight = pageObj && pageObj.dims ? pageObj.dims.height : Infinity;
+  yGapThreshold = Math.min(yGapThreshold, pageHeight * 0.2);
 
   /** @type {DetectedTable[]} */
   const candidates = [];
@@ -2121,9 +2123,9 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
       if (!Number.isFinite(minX)) continue;
       const w = maxX - minX;
       const h = maxY - minY;
-      if (h < 2 && w > 5) {
+      if (h < 5 && w > 5) {
         addSeg(minX, (minY + maxY) / 2, maxX, (minY + maxY) / 2);
-      } else if (w < 2 && h > 5) {
+      } else if (w < 5 && h > 5) {
         addSeg((minX + maxX) / 2, minY, (minX + maxX) / 2, maxY);
       }
     }
@@ -2297,8 +2299,7 @@ function tryDetectStrictGrid(hs, vs, pageObj) {
   for (let i = 0; i < ys.length - 1; i++) {
     const top = ys[i];
     const bot = ys[i + 1];
-    // v-segments that fully span this strip.
-    const stripVs = vs.filter((v) => v.top <= top + 5 && v.bottom >= bot - 5);
+    const stripVs = vs.filter((v) => v.top <= top + 10 && v.bottom >= bot - 10);
     const xs = clusterValuesLocal(stripVs.map((v) => v.x), 10);
     // Outer-border check: the strip's leftmost column boundary aligns with
     // the component's left edge, the rightmost with the right edge.

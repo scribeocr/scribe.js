@@ -621,7 +621,7 @@ export function parsePageFonts(pageObjText, objCache) {
     }
 
     // Symbol font built-in encoding.
-    if (/^Symbol$/i.test(baseName)) {
+    if (/^Symbol(?:[-,]\w+|[A-Za-z\d]*)$/i.test(baseName)) {
       const broken = toUnicode.size > 0 && toUnicode.get(65) === 'A';
       if (broken || toUnicode.size === 0) {
         for (const [ccStr, unicode] of Object.entries(symbolToUnicode)) {
@@ -828,15 +828,8 @@ export function parsePageFonts(pageObjText, objCache) {
                 }
               }
             }
-            // Gnnn pattern: some PDF producers subset TrueType fonts and emit
-            // glyph names of the form "G<decimal>" where the number is the
-            // Windows-1252 character code of the intended character (e.g.
-            // G82='R', G32=' ', G150='–'). These fonts ship with no ToUnicode
-            // CMap, so without this fallback extraction produces garbage. The
-            // name is not an Adobe Glyph List entry (aglLookup returns null),
-            // so this fallback only fires when no standard resolution exists.
-            // TODO: There likely needs to be more validation here.
-            // This likely triggers in cases when it is not intended.
+            // Some PDF producers use readable glyph names (e.g. `G75` for 'u') but don't include a ToUnicode CMap.
+            // When AGL lookup fails, try to extract a Unicode code point from the glyph name.
             if (!unicodeStr) {
               const gMatch = /^G(\d+)$/.exec(glyphName);
               if (gMatch) {
@@ -857,6 +850,13 @@ export function parsePageFonts(pageObjText, objCache) {
                   const ch = win1252Chars[cp - 0x20];
                   if (ch) unicodeStr = ch;
                 }
+              }
+            }
+            if (!unicodeStr) {
+              const kMatch = /^K([0-9A-Fa-f]{2})$/.exec(glyphName);
+              if (kMatch) {
+                const cp = parseInt(kMatch[1], 16);
+                if (cp >= 0x20 && cp <= 0x7E) unicodeStr = String.fromCodePoint(cp);
               }
             }
 
@@ -1660,6 +1660,8 @@ export function parsePageFonts(pageObjText, objCache) {
     let preferEncodingCase = false;
     if (!cidFontText && !type3Info && toUnicode.size > 0 && encodingUnicode.size > 0) {
       let caseConflictCount = 0;
+      let directionConsistent = true;
+      let direction = 0;
       for (let code = 65; code <= 122; code++) {
         if (code > 90 && code < 97) continue;
         const tu = toUnicode.get(code);
@@ -1668,9 +1670,12 @@ export function parsePageFonts(pageObjText, objCache) {
         if (!/[A-Za-z]/.test(tu) || !/[A-Za-z]/.test(eu)) continue;
         if (tu !== eu && tu.toLowerCase() === eu.toLowerCase()) {
           caseConflictCount++;
+          const d = tu === tu.toLowerCase() ? -1 : 1;
+          if (direction === 0) direction = d;
+          else if (direction !== d) directionConsistent = false;
         }
       }
-      preferEncodingCase = caseConflictCount >= 4;
+      preferEncodingCase = caseConflictCount >= 2 && directionConsistent;
     }
 
     // Detect charCodes where the PDF's encoding-derived Unicode and the ToUnicode CMap disagree.
