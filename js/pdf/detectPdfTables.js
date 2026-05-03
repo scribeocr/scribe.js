@@ -347,8 +347,8 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   for (const [cand, regions] of candToRegions) {
     if (regions.length !== 1) continue;
     const rbr = regions[0];
-    cand.rowBandRegion = rbr;
     if (cand.detectionMethod === 'grid-strong') continue;
+    cand.rowBandRegion = rbr;
     const prevTop = cand.bbox.top;
     const prevBottom = cand.bbox.bottom;
     const prevLeft = cand.bbox.left;
@@ -538,8 +538,8 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     }
     if (matches.length !== 1) continue;
     const rbr = matches[0];
-    cand.rowBandRegion = rbr;
     if (cand.detectionMethod === 'grid-strong') continue;
+    cand.rowBandRegion = rbr;
     const prevTop = cand.bbox.top;
     const prevBottom = cand.bbox.bottom;
     const prevLeft = cand.bbox.left;
@@ -662,10 +662,12 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   // Path-derived methods (segmented-hline, header-rule) carry authoritative
   // bbox.top from drawn vector geometry and are exempt — except when a row-band
   // region was attached, which means the band marks the first data row and any
-  // header rows still need to be picked up above it.
+  // header rows still need to be picked up above it. Grid-strong is always
+  // exempt: the stroked outer rectangle is the table's true top.
   for (const table of validated) {
     const hasBand = !!table.rowBandRegion;
     if (table.splitTopLocked) continue;
+    if (table.detectionMethod === 'grid-strong') continue;
     if (!hasBand && table.detectionMethod === 'segmented-hline') continue;
     if (!hasBand && table.detectionMethod === 'header-rule') continue;
     // Lines belonging to another table's bbox must not pull this table's top
@@ -721,6 +723,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   // valid table. Extending only confirmed multi-column tables keeps this
   // pass orthogonal from validation.
   for (const table of multiCol) {
+    if (table.detectionMethod === 'grid-strong') continue;
     if (table.detectionMethod === 'segmented-hline') continue;
     if (table.detectionMethod === 'header-rule') continue;
     extendTableToAdjacentContent(table, lines);
@@ -763,7 +766,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
   }
 
   // === Phase 6: Stream order validation ===
-  return multiCol.filter((t) => validateStreamOrder(t, lines));
+  return multiCol.filter((t) => t.detectionMethod === 'grid-strong' || validateStreamOrder(t, lines));
 }
 
 /**
@@ -2358,22 +2361,6 @@ function tryDetectStrictGrid(hs, vs, pageObj) {
     rows.push({ lineIndices: idxs, y: yMean });
   }
   if (rows.length < 2) return null;
-
-  // Pull bbox.top up to a title text line that sits immediately above the
-  // outer rectangle (some PDFs draw the table title outside the grid).
-  if (hs.length >= 4) {
-    const typicalRowH = (maxY - minY) / Math.max(1, ys.length - 1);
-    const headerLimit = minY - typicalRowH * 2;
-    const tableWidth = right - left;
-    let headerTop = bbox.top;
-    for (const line of pageObj.lines) {
-      if (line.bbox.bottom > minY || line.bbox.top < headerLimit) continue;
-      if (line.bbox.right < left + 10 || line.bbox.left > right - 10) continue;
-      if ((line.bbox.right - line.bbox.left) < tableWidth * 0.3) continue;
-      if (line.bbox.top < headerTop) headerTop = line.bbox.top;
-    }
-    bbox.top = headerTop;
-  }
 
   return {
     bbox,

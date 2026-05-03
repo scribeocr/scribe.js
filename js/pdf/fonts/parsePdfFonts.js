@@ -47,6 +47,46 @@ function buildGidToUnicodeFromTrueType(fontFile) {
 }
 
 /**
+ * Decide whether an embedded TrueType subset's high-byte encoding is MacRoman
+ * or Win1252 by comparing the PDF /Widths array against the standard-font AFM
+ * widths for the named font.
+ *
+ * @param {Map<number, number>} widths
+ * @param {string} baseName
+ */
+function disambiguateMacWinByWidths(widths, baseName) {
+  const stdWidths = new Map();
+  applyStandardFontWidths(baseName, stdWidths);
+  if (stdWidths.size === 0) return null;
+  const winAnsiCharToCC = new Map();
+  for (let cc = 32; cc <= 255; cc++) {
+    const ch = win1252Chars[cc - 32];
+    if (ch) winAnsiCharToCC.set(ch, cc);
+  }
+  let macVotes = 0;
+  let winVotes = 0;
+  for (let cc = 0x80; cc <= 0xFF; cc++) {
+    const actual = widths.get(cc);
+    if (!actual) continue;
+    const macChar = macRomanChars[cc - 32];
+    const winChar = win1252Chars[cc - 32];
+    if (!macChar || !winChar || macChar === winChar) continue;
+    const macAFMcc = winAnsiCharToCC.get(macChar);
+    if (macAFMcc == null) continue;
+    const macExpected = stdWidths.get(macAFMcc);
+    const winExpected = stdWidths.get(cc);
+    if (!macExpected || !winExpected || macExpected === winExpected) continue;
+    const macDiff = Math.abs(actual - macExpected);
+    const winDiff = Math.abs(actual - winExpected);
+    if (macDiff < winDiff) macVotes++;
+    else if (winDiff < macDiff) winVotes++;
+  }
+  if (macVotes >= 2 && macVotes > winVotes * 2) return 'MacRoman';
+  if (winVotes >= 2 && winVotes > macVotes * 2) return 'Win1252';
+  return null;
+}
+
+/**
  * Test whether a PDF `BaseFont` / `FontName` value is informative.
  * Some producers communicate font identity only via the embedded font file and emit a placeholder names in the PDF object.
  *
@@ -686,7 +726,7 @@ export function parsePageFonts(pageObjText, objCache) {
       // (especially for subsets), so StandardEncoding fallback yields garbage.
       const isType0 = /\/Subtype\s*\/Type0/.test(String(fontObj));
       const isStd14Type1 = /^(Helvetica|Courier|Times-)/i.test(baseName);
-      if (!baseChars && !isType0 && (hasFontFile || isStd14Type1) && !hasFontFile3 && !/ZapfDingbats|Symbol|Wingdings/i.test(baseName)) {
+      if (!baseChars && !isType0 && (hasFontFile || isStd14Type1) && !hasFontFile2 && !hasFontFile3 && !/ZapfDingbats|Symbol|Wingdings/i.test(baseName)) {
         const stdEnc = [
           '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',
           '', '', '', '', 'space', 'exclam', 'quotedbl', 'numbersign', 'dollar', 'percent', 'ampersand', 'quoteright',
@@ -1463,12 +1503,8 @@ export function parsePageFonts(pageObjText, objCache) {
             if (fontFile) type1Info = { fontFile };
           }
 
-          // TrueType fonts with no /Encoding and empty ToUnicode: detect Mac-Roman cmap
-          // in the embedded font. When detected, populate toUnicode ONLY for charCodes
-          // where Mac-Roman differs from Latin-1 (0x80-0xFF). This fixes text extraction
-          // (e.g., 0xA5 = bullet • not yen ¥) without affecting the renderer, which uses
-          // rawCharCode path for Mac-only cmap fonts and references toUnicode only for
-          // the whitespace/advance check where ASCII chars are unaffected.
+          // TrueType fonts with no /Encoding and empty ToUnicode.
+          // Apply various heuristics to detect if the embedded font file contains a Mac Roman cmap and populate ToUnicode accordingly.
           if (ff2Match && type1Info?.fontFile && toUnicode.size === 0 && encodingUnicode.size === 0) {
             const fb = type1Info.fontFile;
             if (fb.length >= 12) {
@@ -1497,6 +1533,14 @@ export function parsePageFonts(pageObjText, objCache) {
                 detectedMacRomanCmap = true;
                 // Only set toUnicode for charCodes 0x80-0xFF where Mac-Roman
                 // and Latin-1 produce different Unicode codepoints.
+                for (let code = 0x80; code <= 0xFF; code++) {
+                  const macChar = macRomanChars[code - 32];
+                  if (macChar && macChar !== String.fromCharCode(code)) {
+                    toUnicode.set(code, macChar);
+                  }
+                }
+              } else if (hasMacRomanCmap && disambiguateMacWinByWidths(widths, baseName) === 'MacRoman') {
+                detectedMacRomanCmap = true;
                 for (let code = 0x80; code <= 0xFF; code++) {
                   const macChar = macRomanChars[code - 32];
                   if (macChar && macChar !== String.fromCharCode(code)) {
