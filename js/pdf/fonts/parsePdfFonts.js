@@ -982,12 +982,11 @@ export function parsePageFonts(pageObjText, objCache) {
         // names have a non-trivial offset from charCode. Conservative — avoids
         // misinterpreting identity-style numeric IDs as ASCII letters.
         const useNumericNameAsAscii = numericCount >= 2 && largeOffsetCount * 2 >= numericCount;
-        // Treat /G<XY> as identity-hex across the whole array when at least one
-        // entry's suffix contains a-f (so it can't be a decimal name) AND most
-        // entries decode to printable ASCII via hex. Without this signal, a
-        // mixed-digit suffix like /G46 is ambiguous between hex (0x46='F') and
-        // decimal (46='.'); the presence of a non-decimal sibling resolves it.
-        const useGHexAsIdentity = gHexNonDecimalCount > 0 && gHexAsciiCount * 2 >= gHexCount;
+        // Treat /G<XY> as identity-hex when ALL entries decode to printable ASCII
+        // via hex AND at least one suffix contains a-f (proving it can't be decimal).
+        // 100% threshold is required to exclude conventions where /G<XY> names a GID,
+        // which can produce hex < 0x20.
+        const useGHexAsIdentity = gHexNonDecimalCount > 0 && gHexAsciiCount === gHexCount && gHexCount > 0;
         let charCode = 0;
         for (const tok of tokens) {
           if (tok[1]) {
