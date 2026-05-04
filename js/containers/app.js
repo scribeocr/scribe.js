@@ -141,6 +141,12 @@ export class opt {
    * Only supported within specific environments (e.g. Chrome with COOP/COEP headers, Node with worker threads and shared memory enabled).
    */
   static usePdfSharedBuffer = false;
+
+  /**
+   * Skip font loading and font optimization during `importFiles`.
+   * Intended for callers that only need raw OCR text/confidence and never render or export glyphs (e.g. the `conf` CLI command).
+   */
+  static skipFontOpt = false;
 }
 
 export class inputData {

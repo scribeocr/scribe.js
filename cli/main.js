@@ -24,6 +24,7 @@ scribe.opt.saveDebugImages = debugMode;
  */
 async function main(func, params) {
   scribe.opt.workerN = params.workerN || null;
+  scribe.opt.skipFontOpt = func === 'conf';
 
   if (!params.files || params.files.length === 0) {
     throw new Error('No input files provided.');
