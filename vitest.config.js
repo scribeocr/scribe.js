@@ -55,8 +55,8 @@ const NODE_ONLY_TESTS = `${ROOT}/tests/module/**/*.node.spec.js`;
 const CLI_TESTS = `${ROOT}/tests/cli/**/*.spec.js`;
 
 const SHARED_TEST_OPTIONS = {
-  testTimeout: 240_000,
-  hookTimeout: 240_000,
+  testTimeout: 30_000,
+  hookTimeout: 30_000,
 };
 
 // Build a browser project with a single instance + an explicit project name.

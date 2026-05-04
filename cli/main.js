@@ -131,7 +131,7 @@ async function main(func, params) {
  *
  * @param {string[]} files - Paths to input files.
  */
-export const conf = async (files) => (main('conf', { files }));
+export const conf = async (files) => (main('conf', { files, workerN: 1 }));
 
 /**
  *
