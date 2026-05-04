@@ -51,5 +51,10 @@
   "dependencies": {
     "@scribe.js/canvas": "^0.1.97-scribe.4",
     "commander": "^11.1.0"
+  },
+  "overrides": {
+    "eslint-config-airbnb-base": {
+      "eslint": "$eslint"
+    }
   }
 }
