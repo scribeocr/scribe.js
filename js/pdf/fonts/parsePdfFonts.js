@@ -695,6 +695,32 @@ export function parsePageFonts(pageObjText, objCache) {
       }
     }
 
+    if (toUnicode.size === 0 && /\/DescendantFonts/.test(String(fontObj))) {
+      const b5Match = /\/Encoding\s*\/(B5[\w-]*|ETen[\w-]*|ETenms[\w-]*|HKscs[\w-]*)/.exec(String(fontObj));
+      if (b5Match) {
+        predefinedCJKCMap = true;
+        codespaceRanges = [
+          { bytes: 1, low: 0x00, high: 0x80 },
+          { bytes: 2, low: 0xA140, high: 0xFEFE },
+        ];
+        try {
+          const decoder = new TextDecoder('big5');
+          for (let hi = 0xA1; hi <= 0xFE; hi++) {
+            for (let lo = 0x40; lo <= 0xFE; lo++) {
+              if (lo === 0x7F) continue;
+              const charCode = (hi << 8) | lo;
+              const unicode = decoder.decode(new Uint8Array([hi, lo]));
+              if (unicode && unicode !== '�') {
+                toUnicode.set(charCode, unicode);
+              }
+            }
+          }
+        } catch (_e) {
+          // TextDecoder('big5') not available — text will fall back to raw charCodes
+        }
+      }
+    }
+
     // Handle predefined Korean CMap encodings (KSC-EUC-H, KSCpc-EUC-H, KSCms-UHC-H,
     // and -V/-HW variants). These encode Korean text using 2-byte EUC-KR or its UHC
     // superset; TextDecoder('euc-kr') in WHATWG covers both.
@@ -926,6 +952,13 @@ export function parsePageFonts(pageObjText, objCache) {
         let prescanCharCode = 0;
         let numericCount = 0;
         let largeOffsetCount = 0;
+        // Also detect /G<XY> identity-hex naming (e.g. /G46 /G68 /G20 ... where
+        // the hex digits are the original ASCII codepoint of each glyph).
+        // PDF producers may subset Type1 fonts and re-index charCodes 1..N while
+        // preserving the original ASCII byte in the glyph name's hex suffix.
+        let gHexCount = 0;
+        let gHexAsciiCount = 0;
+        let gHexNonDecimalCount = 0;
         for (const tok of tokens) {
           if (tok[1]) {
             prescanCharCode = Number(tok[1]);
@@ -935,6 +968,13 @@ export function parsePageFonts(pageObjText, objCache) {
               numericCount++;
               if (Math.abs(Number(gn) - prescanCharCode) > 3) largeOffsetCount++;
             }
+            const gHexMatch = /^G([0-9a-fA-F]{2})$/.exec(gn);
+            if (gHexMatch) {
+              gHexCount++;
+              const hexCode = parseInt(gHexMatch[1], 16);
+              if (hexCode >= 0x20 && hexCode <= 0x7E) gHexAsciiCount++;
+              if (/[a-fA-F]/.test(gHexMatch[1])) gHexNonDecimalCount++;
+            }
             prescanCharCode++;
           }
         }
@@ -942,6 +982,12 @@ export function parsePageFonts(pageObjText, objCache) {
         // names have a non-trivial offset from charCode. Conservative — avoids
         // misinterpreting identity-style numeric IDs as ASCII letters.
         const useNumericNameAsAscii = numericCount >= 2 && largeOffsetCount * 2 >= numericCount;
+        // Treat /G<XY> as identity-hex across the whole array when at least one
+        // entry's suffix contains a-f (so it can't be a decimal name) AND most
+        // entries decode to printable ASCII via hex. Without this signal, a
+        // mixed-digit suffix like /G46 is ambiguous between hex (0x46='F') and
+        // decimal (46='.'); the presence of a non-decimal sibling resolves it.
+        const useGHexAsIdentity = gHexNonDecimalCount > 0 && gHexAsciiCount * 2 >= gHexCount;
         let charCode = 0;
         for (const tok of tokens) {
           if (tok[1]) {
@@ -993,7 +1039,8 @@ export function parsePageFonts(pageObjText, objCache) {
               const gHexMatch = /^G([0-9a-fA-F]{2})$/.exec(glyphName);
               if (gHexMatch) {
                 const hexCode = parseInt(gHexMatch[1], 16);
-                if (hexCode === charCode && hexCode >= 0x20 && hexCode <= 0x7E) {
+                const isPrintableAscii = hexCode >= 0x20 && hexCode <= 0x7E;
+                if (isPrintableAscii && (hexCode === charCode || useGHexAsIdentity)) {
                   unicodeStr = String.fromCodePoint(hexCode);
                 }
               }
