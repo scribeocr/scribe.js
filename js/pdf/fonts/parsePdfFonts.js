@@ -47,6 +47,34 @@ function buildGidToUnicodeFromTrueType(fontFile) {
 }
 
 /**
+ * Parse the plaintext `/Encoding ... dup N /glyphname put ...` block at the
+ * start of a Type1 PFA.
+ * @param {Uint8Array} fontFile
+ * @returns {Map<number, string>|null}
+ */
+function parseType1PFAEncoding(fontFile) {
+  try {
+    const sampleLen = Math.min(fontFile.length, 16384);
+    let txt = '';
+    for (let i = 0; i < sampleLen; i++) txt += String.fromCharCode(fontFile[i]);
+    const start = txt.indexOf('/Encoding');
+    if (start < 0) return null;
+    const end = txt.indexOf('currentfile eexec', start);
+    const block = end > 0 ? txt.substring(start, end) : txt.substring(start);
+    const map = new Map();
+    for (const m of block.matchAll(/dup\s+(\d+)\s+\/([^\s/<>[\]]+)\s+put/g)) {
+      const code = Number(m[1]);
+      if (Number.isInteger(code) && code >= 0 && code <= 255) {
+        map.set(code, m[2]);
+      }
+    }
+    return map.size > 0 ? map : null;
+  } catch (e) {
+    return null;
+  }
+}
+
+/**
  * @param {Uint8Array} fontFile
  */
 function buildEmptyGlyphSetFromTrueType(fontFile) {
@@ -667,6 +695,35 @@ export function parsePageFonts(pageObjText, objCache) {
       }
     }
 
+    // Handle predefined Korean CMap encodings (KSC-EUC-H, KSCpc-EUC-H, KSCms-UHC-H,
+    // and -V/-HW variants). These encode Korean text using 2-byte EUC-KR or its UHC
+    // superset; TextDecoder('euc-kr') in WHATWG covers both.
+    if (toUnicode.size === 0 && /\/DescendantFonts/.test(String(fontObj))) {
+      const kscMatch = /\/Encoding\s*\/(KSC[\w-]*|UniKS[\w-]*)/.exec(String(fontObj));
+      if (kscMatch) {
+        predefinedCJKCMap = true;
+        codespaceRanges = [
+          { bytes: 1, low: 0x00, high: 0x80 },
+          { bytes: 2, low: 0x8141, high: 0xFDFE },
+        ];
+        try {
+          const decoder = new TextDecoder('euc-kr');
+          for (let hi = 0x81; hi <= 0xFD; hi++) {
+            for (let lo = 0x41; lo <= 0xFE; lo++) {
+              if (lo === 0x7F) continue;
+              const charCode = (hi << 8) | lo;
+              const unicode = decoder.decode(new Uint8Array([hi, lo]));
+              if (unicode && unicode !== '�') {
+                toUnicode.set(charCode, unicode);
+              }
+            }
+          }
+        } catch (_e) {
+          // TextDecoder('euc-kr') not available — text will fall back to raw charCodes
+        }
+      }
+    }
+
     // Track whether toUnicode came from an explicit, authoritative source
     // or if a fallback heuristic is being applied.
     const hasAuthoritativeToUnicode = toUnicode.size > 0 || toUnicodeIsIdentity;
@@ -763,36 +820,62 @@ export function parsePageFonts(pageObjText, objCache) {
       // Type0/CID fonts must be excluded: their byte→CID mapping is arbitrary
       // (especially for subsets), so StandardEncoding fallback yields garbage.
       const isType0 = /\/Subtype\s*\/Type0/.test(String(fontObj));
+      const isType1Subtype = /\/Subtype\s*\/Type1\b/.test(String(fontObj));
       const isStd14Type1 = /^(Helvetica|Courier|Times-)/i.test(baseName);
-      if (!baseChars && !isType0 && (hasFontFile || isStd14Type1) && !hasFontFile2 && !hasFontFile3 && !/ZapfDingbats|Symbol|Wingdings/i.test(baseName)) {
-        const stdEnc = [
-          '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',
-          '', '', '', '', 'space', 'exclam', 'quotedbl', 'numbersign', 'dollar', 'percent', 'ampersand', 'quoteright',
-          'parenleft', 'parenright', 'asterisk', 'plus', 'comma', 'hyphen', 'period', 'slash', 'zero', 'one', 'two',
-          'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'colon', 'semicolon', 'less', 'equal', 'greater',
-          'question', 'at', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S',
-          'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'bracketleft', 'backslash', 'bracketright', 'asciicircum', 'underscore',
-          'quoteleft', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't',
-          'u', 'v', 'w', 'x', 'y', 'z', 'braceleft', 'bar', 'braceright', 'asciitilde', '', '', '', '', '', '', '', '',
-          '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',
-          'exclamdown', 'cent', 'sterling', 'fraction', 'yen', 'florin', 'section', 'currency', 'quotesingle',
-          'quotedblleft', 'guillemotleft', 'guilsinglleft', 'guilsinglright', 'fi', 'fl', '', 'endash', 'dagger',
-          'daggerdbl', 'periodcentered', '', 'paragraph', 'bullet', 'quotesinglbase', 'quotedblbase', 'quotedblright',
-          'guillemotright', 'ellipsis', 'perthousand', '', 'questiondown', '', 'grave', 'acute', 'circumflex', 'tilde',
-          'macron', 'breve', 'dotaccent', 'dieresis', '', 'ring', 'cedilla', '', 'hungarumlaut', 'ogonek', 'caron',
-          'emdash', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', 'AE', '', 'ordfeminine', '', '', '',
-          '', 'Lslash', 'Oslash', 'OE', 'ordmasculine', '', '', '', '', '', 'ae', '', '', '', 'dotlessi', '', '',
-          'lslash', 'oslash', 'oe', 'germandbls',
-        ];
-        for (let code = 32; code < stdEnc.length; code++) {
-          const glyphName = stdEnc[code];
-          if (!glyphName) continue;
-          charCodeToGlyphName.set(code, glyphName);
-          const ch = aglLookup(glyphName);
-          if (ch) encodingUnicode.set(code, ch);
+      const flagsMatch = /\/Flags\s+(-?\d+)/.exec(String(descriptorText));
+      // For non-embedded non-Std14 Type1 fonts the Symbolic flag is the only
+      // reliable signal that StandardEncoding is the wrong base. (For embedded
+      // fonts the Symbolic flag is unreliable — many normal serif fonts ship
+      // with it set, e.g. CenturyExpandedSC-Regular has Flags=6.)
+      const isSymbolicByFlag = flagsMatch ? (Number(flagsMatch[1]) & 4) !== 0 : false;
+      const eligibleForStdEnc = hasFontFile || isStd14Type1 || !isSymbolicByFlag;
+      if (!baseChars && !isType0 && isType1Subtype && !hasFontFile2 && !hasFontFile3 && eligibleForStdEnc && !/ZapfDingbats|Symbol|Wingdings/i.test(baseName)) {
+        // Prefer the embedded Type1 PFA's own /Encoding declaration when present —
+        // that's the spec-defined implicit base when /BaseEncoding is missing.
+        // Fall back to StandardEncoding only when no PFA or no parseable encoding.
+        /** @type {Map<number, string>|null} */
+        let baseEnc = null;
+        if (hasFontFile) {
+          const ffMatch = /\/FontFile\s+(\d+)\s+\d+\s+R/.exec(String(descriptorText));
+          if (ffMatch) {
+            const fontFile = objCache.getStreamBytes(Number(ffMatch[1]));
+            if (fontFile) baseEnc = parseType1PFAEncoding(fontFile);
+          }
         }
-        if (toUnicode.size === 0) {
-          for (const [code, ch] of encodingUnicode) toUnicode.set(code, ch);
+        if (!baseEnc) {
+          const stdEnc = [
+            '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',
+            '', '', '', '', 'space', 'exclam', 'quotedbl', 'numbersign', 'dollar', 'percent', 'ampersand', 'quoteright',
+            'parenleft', 'parenright', 'asterisk', 'plus', 'comma', 'hyphen', 'period', 'slash', 'zero', 'one', 'two',
+            'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'colon', 'semicolon', 'less', 'equal', 'greater',
+            'question', 'at', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S',
+            'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'bracketleft', 'backslash', 'bracketright', 'asciicircum', 'underscore',
+            'quoteleft', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't',
+            'u', 'v', 'w', 'x', 'y', 'z', 'braceleft', 'bar', 'braceright', 'asciitilde', '', '', '', '', '', '', '', '',
+            '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',
+            'exclamdown', 'cent', 'sterling', 'fraction', 'yen', 'florin', 'section', 'currency', 'quotesingle',
+            'quotedblleft', 'guillemotleft', 'guilsinglleft', 'guilsinglright', 'fi', 'fl', '', 'endash', 'dagger',
+            'daggerdbl', 'periodcentered', '', 'paragraph', 'bullet', 'quotesinglbase', 'quotedblbase', 'quotedblright',
+            'guillemotright', 'ellipsis', 'perthousand', '', 'questiondown', '', 'grave', 'acute', 'circumflex', 'tilde',
+            'macron', 'breve', 'dotaccent', 'dieresis', '', 'ring', 'cedilla', '', 'hungarumlaut', 'ogonek', 'caron',
+            'emdash', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', 'AE', '', 'ordfeminine', '', '', '',
+            '', 'Lslash', 'Oslash', 'OE', 'ordmasculine', '', '', '', '', '', 'ae', '', '', '', 'dotlessi', '', '',
+            'lslash', 'oslash', 'oe', 'germandbls',
+          ];
+          baseEnc = new Map();
+          for (let code = 32; code < stdEnc.length; code++) {
+            if (stdEnc[code]) baseEnc.set(code, stdEnc[code]);
+          }
+        }
+        if (baseEnc) {
+          for (const [code, glyphName] of baseEnc) {
+            charCodeToGlyphName.set(code, glyphName);
+            const ch = aglLookup(glyphName);
+            if (ch) encodingUnicode.set(code, ch);
+          }
+          if (toUnicode.size === 0) {
+            for (const [code, ch] of encodingUnicode) toUnicode.set(code, ch);
+          }
         }
       }
 
@@ -901,6 +984,15 @@ export function parsePageFonts(pageObjText, objCache) {
               const cMatch = /^C([0-9a-fA-F]{1,5})$/.exec(glyphName);
               if (cMatch) {
                 const hexCode = parseInt(cMatch[1], 16);
+                if (hexCode === charCode && hexCode >= 0x20 && hexCode <= 0x7E) {
+                  unicodeStr = String.fromCodePoint(hexCode);
+                }
+              }
+            }
+            if (!unicodeStr) {
+              const gHexMatch = /^G([0-9a-fA-F]{2})$/.exec(glyphName);
+              if (gHexMatch) {
+                const hexCode = parseInt(gHexMatch[1], 16);
                 if (hexCode === charCode && hexCode >= 0x20 && hexCode <= 0x7E) {
                   unicodeStr = String.fromCodePoint(hexCode);
                 }
@@ -1519,14 +1611,20 @@ export function parsePageFonts(pageObjText, objCache) {
             const cp = existing.codePointAt(0);
             return cp < 0x20 && cp !== 0x09 && cp !== 0x0A && cp !== 0x0D;
           };
+          // Apply NFKC only to Kangxi radicals and CJK Compatibility Ideographs —
+          // those decompose to the standard CJK Unified equivalents that substitute
+          // fonts actually have glyphs for. Broader NFKC also flattens Halfwidth/
+          // Fullwidth Forms (U+FF00-U+FFEF) into ASCII, which is wrong in CJK text
+          // where the fullwidth form is the intended visual.
+          /** @param {number} cp */
+          const isCJKVariant = (cp) => (cp >= 0x2F00 && cp <= 0x2FD5) || (cp >= 0xF900 && cp <= 0xFAD9);
           if (cidSet) {
             for (const cid of cidSet) {
               if (!isOverridable(cid)) continue;
               if (cid > 0 && cid < cidMap.length && cidMap[cid] !== 0) {
-                // NFKC-normalize to convert Kangxi radicals (U+2F00-U+2FD5) and CJK Compatibility
-                // Ideographs (U+F900-U+FAD9) to standard CJK Unified Ideographs.
-                // Without this, substitute fonts lack glyphs for these variant codepoints.
-                toUnicode.set(cid, String.fromCodePoint(cidMap[cid]).normalize('NFKC'));
+                const cp = cidMap[cid];
+                const ch = String.fromCodePoint(cp);
+                toUnicode.set(cid, isCJKVariant(cp) ? ch.normalize('NFKC') : ch);
               }
             }
           } else {
@@ -1536,7 +1634,9 @@ export function parsePageFonts(pageObjText, objCache) {
             for (let cid = 1; cid < cidMap.length; cid++) {
               if (!isOverridable(cid)) continue;
               if (cidMap[cid] !== 0) {
-                toUnicode.set(cid, String.fromCodePoint(cidMap[cid]).normalize('NFKC'));
+                const cp = cidMap[cid];
+                const ch = String.fromCodePoint(cp);
+                toUnicode.set(cid, isCJKVariant(cp) ? ch.normalize('NFKC') : ch);
               }
             }
           }
