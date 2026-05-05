@@ -648,7 +648,11 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
         const name = operandStack.length >= 2 ? operandStack[operandStack.length - 2] : null;
         if (name && name.type === 'name' && size && size.type === 'number') {
           currentFont = fonts.get(name.value) || null;
-          fontSize = Math.abs(size.value);
+          // Preserve sign: PDFlib emits negative font size with Y-flip CTM and
+          // negative Tz to compose a positive overall scale. The advance
+          // calculation needs the signed size to land subsequent glyphs to the
+          // visual right; an abs() here reverses the per-line glyph order.
+          fontSize = size.value;
         }
         operandStack.length = 0;
         break;
@@ -996,10 +1000,8 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
         text: unicode,
         x: pageX * scale,
         y: (pageHeightPts - pageY) * scale,
-        width: glyphWidth * tz / 100 * hScale * scale,
-        // Keep fontSize tied to the text rendering matrix scale in device space.
-        // Type3 ascent/descent is handled in bbox computation, not size scaling.
-        fontSize: fontSize * vScale * scale,
+        width: Math.abs(glyphWidth * tz / 100) * hScale * scale,
+        fontSize: Math.abs(fontSize * vScale * scale),
         fontInfo: {
           baseName: font.baseName,
           bold: font.bold || tr === 1 || tr === 2,

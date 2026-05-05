@@ -2170,6 +2170,17 @@ function parseToUnicodeCMap(cmapText, map) {
     return true;
   };
 
+  const usecmapMatch = /\/Adobe-(Japan1|Korea1|GB1|CNS1)-UCS2\s+usecmap/.exec(cmapText);
+  if (usecmapMatch) {
+    const cidMap = getCIDToUnicodeMap(usecmapMatch[1]);
+    if (cidMap) {
+      for (let cid = 0; cid < cidMap.length; cid++) {
+        const cp = cidMap[cid];
+        if (cp !== 0) map.set(cid, String.fromCodePoint(cp));
+      }
+    }
+  }
+
   const bfcharRegex = /beginbfchar\s*([\s\S]*?)endbfchar/g;
   const bfcharMatches = [...cmapText.matchAll(bfcharRegex)];
   for (const m of bfcharMatches) {

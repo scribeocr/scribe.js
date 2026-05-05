@@ -3,8 +3,6 @@ import { imageStrToBlob } from './utils/imageUtils.js';
 export class ca {
   static CanvasNode;
 
-  static isNode = typeof process !== 'undefined';
-
   static _initPromise = null;
 
   /**
@@ -12,18 +10,18 @@ export class ca {
    * Must be called at least once before any canvas operations in Node.
    */
   static getCanvasNode = async () => {
-    if (!ca.isNode) {
-      throw new Error('getCanvasNode is only available in Node.js');
+    if (typeof process !== 'undefined') {
+      if (!ca._initPromise) {
+        ca._initPromise = (async () => {
+          ca.CanvasNode = await import('@scribe.js/canvas');
+          globalThis.ImageData = ca.CanvasNode.ImageData;
+          globalThis.DOMMatrix = ca.CanvasNode.DOMMatrix;
+          return ca.CanvasNode;
+        })();
+      }
+      return ca._initPromise;
     }
-    if (!ca._initPromise) {
-      ca._initPromise = (async () => {
-        ca.CanvasNode = await import('@scribe.js/canvas');
-        globalThis.ImageData = ca.CanvasNode.ImageData;
-        globalThis.DOMMatrix = ca.CanvasNode.DOMMatrix;
-        return ca.CanvasNode;
-      })();
-    }
-    return ca._initPromise;
+    return undefined;
   };
 
   static getCanvasNodeSync = () => {
@@ -37,8 +35,10 @@ export class ca {
    * @param {number} height
    */
   static makeCanvas = (width, height) => {
-    if (!ca.isNode) return new OffscreenCanvas(width, height);
-    return ca.getCanvasNodeSync().createCanvas(width, height);
+    if (typeof process !== 'undefined') {
+      return ca.getCanvasNodeSync().createCanvas(width, height);
+    }
+    return new OffscreenCanvas(width, height);
   };
 
   /**
@@ -46,12 +46,14 @@ export class ca {
    * @param {number} height
    */
   static createCanvas = async (width, height) => {
-    if (!ca.isNode) return new OffscreenCanvas(width, height);
-    if (!width || !height || width <= 0 || height <= 0) {
-      throw new Error(`Invalid canvas size: ${width}x${height}`);
+    if (typeof process !== 'undefined') {
+      if (!width || !height || width <= 0 || height <= 0) {
+        throw new Error(`Invalid canvas size: ${width}x${height}`);
+      }
+      const CanvasNode = await ca.getCanvasNode();
+      return CanvasNode.createCanvas(width, height);
     }
-    const CanvasNode = await ca.getCanvasNode();
-    return CanvasNode.createCanvas(width, height);
+    return new OffscreenCanvas(width, height);
   };
 
   /**
@@ -71,11 +73,11 @@ export class ca {
    * @param {Uint8Array} data - Raw image bytes
    */
   static createImageBitmapFromData = async (data) => {
-    if (!ca.isNode) {
-      return createImageBitmap(new Blob([data]));
+    if (typeof process !== 'undefined') {
+      const CanvasNode = ca.getCanvasNodeSync();
+      return CanvasNode.loadImage(Buffer.from(data));
     }
-    const CanvasNode = ca.getCanvasNodeSync();
-    return CanvasNode.loadImage(Buffer.from(data));
+    return createImageBitmap(new Blob([data]));
   };
 
   /**
@@ -86,11 +88,13 @@ export class ca {
    * @param {ImageData} imgData
    */
   static createImageBitmapFromImageData = async (imgData) => {
-    if (!ca.isNode) return createImageBitmap(imgData);
-    const tmpCanvas = ca.makeCanvas(imgData.width, imgData.height);
-    const tmpCtx = tmpCanvas.getContext('2d');
-    tmpCtx.putImageData(imgData, 0, 0);
-    return tmpCanvas;
+    if (typeof process !== 'undefined') {
+      const tmpCanvas = ca.makeCanvas(imgData.width, imgData.height);
+      const tmpCtx = tmpCanvas.getContext('2d');
+      tmpCtx.putImageData(imgData, 0, 0);
+      return tmpCanvas;
+    }
+    return createImageBitmap(imgData);
   };
 
   /**
@@ -100,8 +104,8 @@ export class ca {
    * @param {*} canvas
    */
   static createImageBitmapFromCanvas = async (canvas) => {
-    if (!ca.isNode) return createImageBitmap(canvas);
-    return canvas;
+    if (typeof process !== 'undefined') return canvas;
+    return createImageBitmap(canvas);
   };
 
   /**
@@ -115,15 +119,15 @@ export class ca {
     if (img === null) throw new Error('Input is null');
 
     if (typeof img === 'string') {
-      if (!ca.isNode) {
-        const imgBlob = imageStrToBlob(img);
-        return createImageBitmap(imgBlob);
+      if (typeof process !== 'undefined') {
+        const CanvasNode = await ca.getCanvasNode();
+        const imgData = new Uint8Array(atob(img.split(',')[1])
+          .split('')
+          .map((c) => c.charCodeAt(0)));
+        return CanvasNode.loadImage(Buffer.from(imgData));
       }
-      const CanvasNode = await ca.getCanvasNode();
-      const imgData = new Uint8Array(atob(img.split(',')[1])
-        .split('')
-        .map((c) => c.charCodeAt(0)));
-      return CanvasNode.loadImage(Buffer.from(imgData));
+      const imgBlob = imageStrToBlob(img);
+      return createImageBitmap(imgBlob);
     }
 
     return img;
@@ -144,22 +148,21 @@ export class ca {
    * @param {FontContainerFont} fontObj
    */
   static registerFontObj = async (fontObj) => {
-    if (!ca.isNode) {
-      throw new Error('registerFontObj is only available in Node.js');
+    if (typeof process !== 'undefined') {
+      const CanvasNode = await ca.getCanvasNode();
+      if (!ca._registeredFonts) ca._registeredFonts = new Map();
+      const dedupKey = `${fontObj.fontFaceName}:${fontObj.fontFaceStyle}:${fontObj.fontFaceWeight}`;
+      if (ca._registeredFonts.has(dedupKey)) return;
+      const fontBuffer = typeof fontObj.src === 'string'
+        ? (await import('node:fs')).readFileSync(fontObj.src)
+        : Buffer.from(fontObj.src);
+      const weight = fontObj.fontFaceWeight === 'bold' ? 700 : 400;
+      const fontKey = CanvasNode.GlobalFonts.register(fontBuffer, fontObj.fontFaceName, {
+        style: fontObj.fontFaceStyle,
+        weight,
+      });
+      ca._registeredFonts.set(dedupKey, { fontKey, fontFaceName: fontObj.fontFaceName });
     }
-    const CanvasNode = await ca.getCanvasNode();
-    if (!ca._registeredFonts) ca._registeredFonts = new Map();
-    const dedupKey = `${fontObj.fontFaceName}:${fontObj.fontFaceStyle}:${fontObj.fontFaceWeight}`;
-    if (ca._registeredFonts.has(dedupKey)) return;
-    const fontBuffer = typeof fontObj.src === 'string'
-      ? (await import('node:fs')).readFileSync(fontObj.src)
-      : Buffer.from(fontObj.src);
-    const weight = fontObj.fontFaceWeight === 'bold' ? 700 : 400;
-    const fontKey = CanvasNode.GlobalFonts.register(fontBuffer, fontObj.fontFaceName, {
-      style: fontObj.fontFaceStyle,
-      weight,
-    });
-    ca._registeredFonts.set(dedupKey, { fontKey, fontFaceName: fontObj.fontFaceName });
   };
 
   /**
@@ -171,22 +174,24 @@ export class ca {
    *   name, i.e. the `fontFaceName` portion of the composite dedup key.
    */
   static unregisterFontsMatching = (predicate) => {
-    if (!ca.isNode || !ca._registeredFonts) return;
-    const toRemove = [];
-    for (const [dedupKey, value] of ca._registeredFonts.entries()) {
-      if (predicate(value.fontFaceName)) toRemove.push(dedupKey);
-    }
-    if (toRemove.length === 0) return;
-    const CanvasNode = ca.getCanvasNodeSync();
-    const keys = [];
-    for (const dedupKey of toRemove) {
-      const v = ca._registeredFonts.get(dedupKey);
-      if (v && v.fontKey) keys.push(v.fontKey);
-      ca._registeredFonts.delete(dedupKey);
-    }
-    if (keys.length > 0) CanvasNode.GlobalFonts.removeBatch(keys);
-    if (typeof CanvasNode.GlobalFonts.clearRetired === 'function') {
-      CanvasNode.GlobalFonts.clearRetired();
+    if (typeof process !== 'undefined') {
+      if (!ca._registeredFonts) return;
+      const toRemove = [];
+      for (const [dedupKey, value] of ca._registeredFonts.entries()) {
+        if (predicate(value.fontFaceName)) toRemove.push(dedupKey);
+      }
+      if (toRemove.length === 0) return;
+      const CanvasNode = ca.getCanvasNodeSync();
+      const keys = [];
+      for (const dedupKey of toRemove) {
+        const v = ca._registeredFonts.get(dedupKey);
+        if (v && v.fontKey) keys.push(v.fontKey);
+        ca._registeredFonts.delete(dedupKey);
+      }
+      if (keys.length > 0) CanvasNode.GlobalFonts.removeBatch(keys);
+      if (typeof CanvasNode.GlobalFonts.clearRetired === 'function') {
+        CanvasNode.GlobalFonts.clearRetired();
+      }
     }
   };
 }

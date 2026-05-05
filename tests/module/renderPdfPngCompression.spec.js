@@ -1,8 +1,8 @@
 import {
-  describe, test, expect, beforeAll,
+  describe, test, expect,
 } from 'vitest';
 import { ca } from '../../js/canvasAdapter.js';
-import { renderPdfPages } from '../../js/pdf/renderPdfPage.js';
+import { renderPdfPage } from '../_renderPdfPage.js';
 import { ASSETS_PATH } from './_paths.js';
 
 const PDF_FILE = `${ASSETS_PATH}/border_patrol_tables.pdf`;
@@ -37,11 +37,7 @@ function dataUrlToPngBytes(dataUrl) {
   return u8;
 }
 
-describe('renderPdfPages PNG compression', () => {
-  beforeAll(async () => {
-    if (ca.isNode) await ca.getCanvasNode();
-  });
-
+describe('renderPdfPage PNG compression', () => {
   test('border_patrol_tables.pdf p0 (color mode) compresses to under 1000 kB', async () => {
     // Sentinel against catastrophic regressions in the color encode path
     // (e.g., reverting to uncompressed PNG output, ~30 MB). The platform
@@ -49,8 +45,8 @@ describe('renderPdfPages PNG compression', () => {
     // gap is fine because color savings come from alpha-stripping rather
     // than 1-channel encoding.
     const bytes = await readFileBytes(PDF_FILE);
-    const { dataUrls } = await renderPdfPages(bytes, 0, 0, 'color');
-    const len = pngByteLength(dataUrls[0]);
+    const { dataUrl } = await renderPdfPage(bytes, 0, 'color');
+    const len = pngByteLength(dataUrl);
     expect(len).toBeLessThan(1000 * 1024);
   });
 
@@ -60,8 +56,8 @@ describe('renderPdfPages PNG compression', () => {
     // 600 kB cleanly fails the platform-encoder regression while leaving
     // ~45% headroom above the custom-encoder output.
     const bytes = await readFileBytes(PDF_FILE);
-    const { dataUrls } = await renderPdfPages(bytes, 0, 0, 'gray');
-    const len = pngByteLength(dataUrls[0]);
+    const { dataUrl } = await renderPdfPage(bytes, 0, 'gray');
+    const len = pngByteLength(dataUrl);
     expect(len).toBeLessThan(600 * 1024);
   });
 
@@ -72,8 +68,8 @@ describe('renderPdfPages PNG compression', () => {
     // that case. Decode the PNG and confirm it contains non-trivial
     // pixel variance.
     const bytes = await readFileBytes(PDF_FILE);
-    const { dataUrls } = await renderPdfPages(bytes, 0, 0, 'color');
-    const pngBytes = dataUrlToPngBytes(dataUrls[0]);
+    const { dataUrl } = await renderPdfPage(bytes, 0, 'color');
+    const pngBytes = dataUrlToPngBytes(dataUrl);
     const img = await ca.createImageBitmapFromData(pngBytes);
     const canvas = ca.makeCanvas(img.width, img.height);
     const ctx = canvas.getContext('2d');

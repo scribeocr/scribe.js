@@ -4,13 +4,15 @@ import {
   tintComponentsToRGB, cmykToRgb,
 } from './pdfColorFunctions.js';
 import {
-  getPageContentStreams, getPageObjects, tokenizeContentStream, bytesToLatin1,
+  getPageContentStreams, tokenizeContentStream, bytesToLatin1,
 } from './parsePdfDoc.js';
 import { extractPdfAnnotations } from './parsePdfAnnots.js';
 import {
-  findXrefOffset, parseXref, ObjectCache, extractDict,
+  extractDict,
   resolveIntValue, resolveNumValue, resolveArrayValue, applyPredictor,
 } from './parsePdfUtils.js';
+
+/** @typedef {import('./parsePdfUtils.js').ObjectCache} ObjectCache */
 import { inflate as pakoInflate, inflatePartial as pakoInflatePartial } from '../../lib/pako-inflate.js';
 import { parsePageFonts, parseGlyphStreamPaths } from './fonts/parsePdfFonts.js';
 import { standardFontToCSS } from './fonts/standardFontMetrics.js';
@@ -121,7 +123,7 @@ async function registerNonEmbeddedFont(fontObj, _familyName, targetMap, fontTag)
     try {
       const url = new URL('../../fonts/Dingbats.woff', import.meta.url);
       let dingbatsBytes;
-      if (ca.isNode) {
+      if (typeof process !== 'undefined') {
         const { fileURLToPath } = await import('node:url');
         const { readFileSync } = await import('node:fs');
         dingbatsBytes = readFileSync(fileURLToPath(url));
@@ -160,7 +162,7 @@ async function registerNonEmbeddedFont(fontObj, _familyName, targetMap, fontTag)
   try {
     const url = new URL(`../../fonts/all/${family}-${variant}.woff`, import.meta.url);
     let fontBytes;
-    if (ca.isNode) {
+    if (typeof process !== 'undefined') {
       const { fileURLToPath } = await import('node:url');
       const { readFileSync } = await import('node:fs');
       fontBytes = readFileSync(fileURLToPath(url));
@@ -9485,58 +9487,3 @@ async function buildPngDataUrl(imageData, colorMode) {
 }
 
 export { buildFontFromCFF as _buildFontFromCFF };
-
-/**
- * Render all pages of a PDF to PNG data URLs.
- *
- * @param {Uint8Array|ArrayBuffer} pdfData - Raw PDF file data
- * @param {number} [minPage=0] - First page to render
- * @param {number} [maxPage=-1] - Last page to render (-1 = all)
- * @param {'color'|'gray'} [colorMode='color'] - Output color mode
- * @returns {Promise<{dataUrls: string[], colorModes: string[]}>} PNG data URLs and per-page effective color modes
- */
-export async function renderPdfPages(pdfData, minPage = 0, maxPage = -1, colorMode = 'color') {
-  // Ensure canvas backend is initialized before any sync canvas operations (Node.js only)
-  if (ca.isNode) await ca.getCanvasNode();
-
-  const pdfBytes = pdfData instanceof Uint8Array ? pdfData : new Uint8Array(pdfData);
-
-  const xrefOffset = findXrefOffset(pdfBytes);
-  const xrefEntries = parseXref(pdfBytes, xrefOffset);
-  const objCache = new ObjectCache(pdfBytes, xrefEntries);
-  const pageObjects = getPageObjects(objCache);
-
-  const lastPage = maxPage === -1 ? pageObjects.length - 1 : Math.min(maxPage, pageObjects.length - 1);
-
-  /** @type {string[]} */
-  const dataUrls = [];
-  /** @type {string[]} */
-  const colorModes = [];
-  try {
-    for (let i = minPage; i <= lastPage; i++) {
-      const {
-        objText, mediaBox, cropBox, rotate,
-      } = pageObjects[i];
-      // Per PDF spec §10.10.1, the effective crop region is the intersection of CropBox
-      // and MediaBox. Some spread PDFs have CropBox spanning two pages while MediaBox
-      // defines the single page — using CropBox alone would render at double width.
-      let effectiveBox = mediaBox;
-      if (cropBox) {
-        effectiveBox = [
-          Math.max(cropBox[0], mediaBox[0]),
-          Math.max(cropBox[1], mediaBox[1]),
-          Math.min(cropBox[2], mediaBox[2]),
-          Math.min(cropBox[3], mediaBox[3]),
-        ];
-      }
-      const result = await renderPdfPageAsImage(objText, objCache, effectiveBox, i, colorMode, rotate);
-      dataUrls.push(result.dataUrl);
-      colorModes.push(result.colorMode);
-    }
-  } finally {
-    // Release per-document fonts even on mid-batch throw.
-    if (ca.isNode) ca.unregisterFontsMatching((name) => name.startsWith(`_pdf_d${objCache.docId}_`));
-  }
-
-  return { dataUrls, colorModes };
-}
