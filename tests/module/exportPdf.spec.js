@@ -507,6 +507,54 @@ describe('Check export for .pdf files.', () => {
     await scribe.clear();
   });
 
+  test('PDF overlay aligns with source text on pages where CropBox differs from MediaBox', async () => {
+    // fti_filing_p25.pdf has CropBox [9 9 603 783] inside MediaBox [0 0 612 792]. The overlay
+    // export must scale and offset relative to the CropBox (the visible region scribe rasterises
+    // as 2475x3225 px), not the MediaBox — using MediaBox produces an overlay scaled ~1.03×
+    // too large and translated to the MediaBox origin, so the proof-mode duplicates land off
+    // the source text.
+    scribe.opt.usePDFText.native.main = true;
+    scribe.opt.keepPDFTextAlways = true;
+    await scribe.importFiles([`${ASSETS_PATH}/fti_filing_p25.pdf`]);
+
+    expect(scribe.inputData.pageCount).toBe(1);
+    expect(scribe.data.ocr.active[0].lines[0].words[0].text).toBe('UNITED');
+    expect(scribe.data.ocr.active[0].lines[0].words[0].bbox).toEqual({
+      left: 1014, top: 83, right: 1234, bottom: 146,
+    });
+
+    scribe.opt.displayMode = 'proof';
+    scribe.opt.addOverlay = true;
+    const exportedPdf = /** @type {ArrayBuffer} */ (await scribe.exportData('pdf'));
+
+    await scribe.clear();
+    scribe.opt.usePDFText.native.main = true;
+    scribe.opt.keepPDFTextAlways = true;
+    await scribe.importFiles({ pdfFiles: [exportedPdf] });
+
+    // In proof mode the export keeps the source text and adds a coloured overlay copy.
+    // Re-importing yields two "UNITED" words; they should sit at the same horizontal
+    // position and approximately the same baseline. (The overlay uses scribe's NimbusRoman
+    // metrics rather than the source's embedded font, so the bbox vertical extent differs
+    // by a handful of pixels from font ascent/descent — this is not a positioning bug.)
+    // Pre-fix the overlay was offset to (1007, 38, 1234, 118): dx=-7 px, dy=-45 px.
+    const reImportedWords = scribe.data.ocr.pdf[0].lines.flatMap((l) => l.words);
+    const unitedWords = reImportedWords.filter((w) => w.text === 'UNITED');
+    expect(unitedWords.length).toBe(2);
+    const sortedByTop = unitedWords.slice().sort((a, b) => a.bbox.top - b.bbox.top);
+    expect(sortedByTop[0].bbox).toEqual({
+      left: 1014, top: 74, right: 1234, bottom: 152,
+    });
+    expect(sortedByTop[1].bbox).toEqual({
+      left: 1014, top: 83, right: 1234, bottom: 146,
+    });
+
+    scribe.opt.displayMode = 'proof';
+    scribe.opt.usePDFText.native.main = false;
+    scribe.opt.keepPDFTextAlways = false;
+    await scribe.clear();
+  });
+
   test('Human-readable PDF with images hex-encodes image streams', async () => {
     scribe.opt.displayMode = 'proof';
     scribe.opt.humanReadablePDF = true;

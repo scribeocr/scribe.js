@@ -523,12 +523,15 @@ async function rebuildPdfSubset({
       const pixelDims = pageMetricsArr[i].dims;
       const pageAnnotations = annotationsPages[i] || [];
 
-      const baseWidth = pageInfo.mediaBox[2] - pageInfo.mediaBox[0];
-      const baseHeight = pageInfo.mediaBox[3] - pageInfo.mediaBox[1];
+      // pixelDims is the rasterised CropBox region; scale and translate the overlay relative
+      // to CropBox so it lands inside the visible area on pages where MediaBox is larger.
+      const overlayBox = pageInfo.cropBox || pageInfo.mediaBox;
+      const baseWidth = overlayBox[2] - overlayBox[0];
+      const baseHeight = overlayBox[3] - overlayBox[1];
       const scaleX = pixelDims ? baseWidth / pixelDims.width : 1;
       const scaleY = pixelDims ? baseHeight / pixelDims.height : 1;
-      const tx = pageInfo.mediaBox[0];
-      const ty = pageInfo.mediaBox[1];
+      const tx = overlayBox[0];
+      const ty = overlayBox[1];
 
       let textContentObjStr = '';
       /** @type {Set<PdfFontInfo>} */
@@ -900,12 +903,15 @@ export async function overlayPdfText({
     const pixelDims = pageMetricsArr[i].dims;
     const pageAnnotations = annotationsPages[i] || [];
 
-    const baseWidth = pageInfo.mediaBox[2] - pageInfo.mediaBox[0];
-    const baseHeight = pageInfo.mediaBox[3] - pageInfo.mediaBox[1];
+    // pixelDims is the rasterised CropBox region; scale and translate the overlay relative
+    // to CropBox so it lands inside the visible area on pages where MediaBox is larger.
+    const overlayBox = pageInfo.cropBox || pageInfo.mediaBox;
+    const baseWidth = overlayBox[2] - overlayBox[0];
+    const baseHeight = overlayBox[3] - overlayBox[1];
     const scaleX = pixelDims ? baseWidth / pixelDims.width : 1;
     const scaleY = pixelDims ? baseHeight / pixelDims.height : 1;
-    const tx = pageInfo.mediaBox[0];
-    const ty = pageInfo.mediaBox[1];
+    const tx = overlayBox[0];
+    const ty = overlayBox[1];
 
     let textContentObjStr = '';
     /** @type {Set<PdfFontInfo>} */
