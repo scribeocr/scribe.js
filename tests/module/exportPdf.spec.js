@@ -463,6 +463,50 @@ describe('Check export for .pdf files.', () => {
     await scribe.clear();
   });
 
+  test('PDF export of encrypted source with proof overlay produces a valid (decrypted) PDF', async () => {
+    scribe.opt.usePDFText.native.main = true;
+    scribe.opt.keepPDFTextAlways = true;
+    await scribe.importFiles([`${ASSETS_PATH}/intel-history-1996-annual-report.pdf`]);
+
+    expect(scribe.inputData.pageCount).toBe(22);
+    expect(scribe.inputData.pdfType).toBe('text');
+
+    scribe.opt.displayMode = 'proof';
+    scribe.opt.addOverlay = true;
+    const exportedPdf = /** @type {ArrayBuffer} */ (await scribe.exportData('pdf'));
+    expect(exportedPdf.byteLength).toBeGreaterThan(1000);
+
+    // The output must not retain a reference to the source PDF's /Encrypt dict.
+    // When /Encrypt stays in the trailer chain, PDF readers RC4-decrypt the
+    // unencrypted overlay objects with the file key, garbling them and breaking
+    // every page (zlib "incorrect header check" on every FlateDecode stream).
+    const exportedText = new TextDecoder('latin1').decode(new Uint8Array(exportedPdf));
+    expect(exportedText.includes('/Encrypt')).toBe(false);
+
+    // Acrobat is stricter than Chrome/Firefox about font dict syntax: PDF arrays use
+    // whitespace as separators, never commas, and the CIDFont subtype must match the
+    // embedded font program (CIDFontType0 for OpenType-CFF "OTTO", CIDFontType2 for
+    // OpenType-TrueType). Either mismatch will silently drop the overlay glyphs in
+    // Acrobat while browsers still render them.
+    expect(exportedText.includes('FontBBox[0, 0, 0, 0]')).toBe(false);
+    expect(exportedText.includes('/Subtype/CIDFontType2')).toBe(false);
+    expect(exportedText.includes('/Subtype/CIDFontType0')).toBe(true);
+
+    await scribe.clear();
+    scribe.opt.usePDFText.native.main = true;
+    scribe.opt.keepPDFTextAlways = true;
+    await scribe.importFiles({ pdfFiles: [exportedPdf] });
+
+    expect(scribe.inputData.pageCount).toBe(22);
+    const page7Words = scribe.data.ocr.pdf[7].lines.flatMap((l) => l.words.map((w) => w.text));
+    expect(page7Words.slice(0, 5)).toEqual(['12', 'Intel', 'Corporation', '1996', 'www.intel.com']);
+
+    scribe.opt.displayMode = 'proof';
+    scribe.opt.usePDFText.native.main = false;
+    scribe.opt.keepPDFTextAlways = false;
+    await scribe.clear();
+  });
+
   test('Human-readable PDF with images hex-encodes image streams', async () => {
     scribe.opt.displayMode = 'proof';
     scribe.opt.humanReadablePDF = true;

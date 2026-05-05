@@ -660,7 +660,7 @@ async function rebuildPdfSubset({
     if (!entry) continue;
 
     if (entry.type === 1) {
-      const rawCopy = copyRawObjectBytes(pdfBytes, text, objCache, entry);
+      const rawCopy = copyRawObjectBytes(pdfBytes, text, objCache, entry, objNum);
       if (!rawCopy) continue;
       allOutputObjects.push({ objNum, content: rawCopy });
     } else if (entry.type === 2) {
@@ -852,12 +852,18 @@ export async function overlayPdfText({
   const { pdfFonts } = fontRefs;
   nextObjNum = fontRefs.objectI;
 
+  // Incremental update appends new objects but leaves the source's trailer chain in
+  // place. For encrypted sources that means /Encrypt stays active and readers will
+  // try to decrypt the unencrypted overlay objects with the file key, garbling them.
+  // Rebuild from scratch (dropping /Encrypt) to keep the output consistently plain.
+  const sourceEncrypted = !!objCache.encryptionKey;
+
   // If exporting a proper subset of pages (fewer pages than the source, or
   // a reordering), rebuild the PDF instead of incremental update. Incremental
   // can only extend existing pages in place — it can't drop or reorder them.
   const isSubset = effectivePageArr.length !== pages.length
     || effectivePageArr.some((v, idx) => v !== idx);
-  if (isSubset) {
+  if (isSubset || sourceEncrypted) {
     return rebuildPdfSubset({
       pdfBytes,
       text,

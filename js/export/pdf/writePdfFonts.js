@@ -133,7 +133,7 @@ function createFontDescriptor(font, objIndex, italic, embeddedObjIndex = null) {
     // on the font bounding box. If any element is nonzero, it is essential that the
     // font bounding box be accurate. If any glyph’s marks fall outside this bounding
     // box, incorrect behavior may result."
-    objOut += '/FontBBox[0, 0, 0, 0]';
+    objOut += '/FontBBox[0 0 0 0]';
   }
 
   const postTable = font.tables.post;
@@ -320,7 +320,7 @@ export async function createEmbeddedFontType0({
   // Start 6th object: Font
   let fontObjStr = `${String(firstObjIndex + 4)} 0 obj\n`;
 
-  fontObjStr += '<</Type/Font/Subtype/CIDFontType2/CIDSystemInfo<</Registry(Adobe)/Ordering(Identity)/Supplement 0>>';
+  fontObjStr += '<</Type/Font/Subtype/CIDFontType0/CIDSystemInfo<</Registry(Adobe)/Ordering(Identity)/Supplement 0>>';
 
   fontObjStr += `/BaseFont/${namesTable.postScriptName.en}/FontDescriptor ${String(firstObjIndex + 1)} 0 R`;
 

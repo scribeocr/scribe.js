@@ -1,4 +1,4 @@
-import { extractDict } from '../../pdf/parsePdfUtils.js';
+import { extractDict, extractRawStreamBytes } from '../../pdf/parsePdfUtils.js';
 
 /**
  * Parse the trailer dict to extract /Root reference and /Size.
@@ -216,14 +216,40 @@ export function locateObjectByteRange(pdfBytes, text, objCache, entry) {
 
 /**
  * Copy a type-1 object's raw bytes from the source PDF, preserving binary stream data exactly.
+ * When the source is encrypted, the stream payload is decrypted on the way out so the copy
+ * is usable in an output PDF that doesn't carry the source's /Encrypt dict.
+ *
  * @param {Uint8Array} pdfBytes
  * @param {string} text
  * @param {import('../../pdf/parsePdfUtils.js').ObjectCache} objCache
  * @param {{type: number, offset: number}} entry
+ * @param {number} [objNum=-1] - Required when copying from an encrypted source.
  */
-export function copyRawObjectBytes(pdfBytes, text, objCache, entry) {
+export function copyRawObjectBytes(pdfBytes, text, objCache, entry, objNum = -1) {
   const range = locateObjectByteRange(pdfBytes, text, objCache, entry);
   if (!range) return null;
+
+  const isEncrypted = !!objCache.encryptionKey && objNum >= 0 && objNum !== objCache.encryptObjNum;
+  const hasStream = range.streamStart < range.streamEnd;
+
+  if (isEncrypted && hasStream) {
+    const raw = extractRawStreamBytes(
+      pdfBytes, entry.offset, objCache.encryptionKey, objCache.encryptObjNum, objCache.cipherMode, objNum,
+    );
+    if (raw) {
+      const { data, dictText } = raw;
+      // AES strips padding so the decrypted byte length differs from the encrypted length.
+      const updatedDict = dictText.replace(/\/Length\s+\d+/, `/Length ${data.length}`);
+      const headerStr = `${updatedDict}stream\n`;
+      const trailerStr = '\nendstream\nendobj\n\n';
+      const out = new Uint8Array(headerStr.length + data.length + trailerStr.length);
+      for (let i = 0; i < headerStr.length; i++) out[i] = headerStr.charCodeAt(i) & 0xFF;
+      out.set(data, headerStr.length);
+      for (let i = 0; i < trailerStr.length; i++) out[headerStr.length + data.length + i] = trailerStr.charCodeAt(i) & 0xFF;
+      return out;
+    }
+  }
+
   const rawCopy = new Uint8Array(range.end - range.start + 2);
   rawCopy.set(pdfBytes.subarray(range.start, range.end));
   rawCopy[range.end - range.start] = 0x0A;

@@ -68,6 +68,7 @@ export async function subsetFont(font, charArr = []) {
   const subset = new opentype.Font({
     familyName: namesTable.postScriptName.en,
     styleName: namesTable.fontSubfamily.en,
+    postScriptName: namesTable.postScriptName.en,
     unitsPerEm: font.unitsPerEm,
     ascender: font.ascender,
     descender: font.descender,

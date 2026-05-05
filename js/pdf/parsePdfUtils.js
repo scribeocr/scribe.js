@@ -524,7 +524,7 @@ export async function deflate(data) {
  * @param {number} objNum
  * @returns {{ data: Uint8Array, dictText: string } | null}
  */
-function extractRawStreamBytes(pdfBytes, objOffset, encryptionKey, encryptObjNum, cipherMode, objNum) {
+export function extractRawStreamBytes(pdfBytes, objOffset, encryptionKey, encryptObjNum, cipherMode, objNum) {
   // Bound the per-object scan: locate endobj first, then materialize the small
   // object slice as a string for the existing dict-text parsing logic.
   const len = pdfBytes.length;

@@ -371,7 +371,7 @@ export async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode
     textContentObjStr += ' ] TJ\n';
   }
 
-  textContentObjStr += 'ET';
+  textContentObjStr += 'ET\n';
 
   // Add underlines
   underlines.forEach((underline) => {
