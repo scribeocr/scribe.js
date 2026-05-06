@@ -154,7 +154,6 @@ export async function writePdf({
 
   // Create font objects for fonts that are used
   for (const pdfFont of pdfFontsUsed) {
-    if (pdfFont.opentype?.names?.postScriptName?.en === 'NotoSansSC-Regular') continue;
     // Type 1 fonts are currently never used.
     const isStandardFont = false;
     if (isStandardFont) {

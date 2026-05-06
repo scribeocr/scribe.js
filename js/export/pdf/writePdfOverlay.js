@@ -1,7 +1,7 @@
 import {
   findXrefOffset, parseXref, ObjectCache, extractDict,
   getPageContentStreams, tokenizeContentStream,
-  bytesToLatin1, stripText,
+  bytesToLatin1, stripText, sourceXrefIsWellFormed,
 } from '../../pdf/parsePdfUtils.js';
 import { getPageObjects, collectPageTreeObjNums } from '../../pdf/parsePdfDoc.js';
 import { createPdfFontRefs, createEmbeddedFontType0 } from './writePdfFonts.js';
@@ -17,10 +17,12 @@ import {
 } from './pdfObjectGraph.js';
 
 /**
- * Parse /Contents from a page dict, returning an array of indirect references.
+ * Parse /Contents from a page dict, returning an array of indirect references to
+ * content stream objects.
  * @param {string} pageObjText
+ * @param {ObjectCache} [objCache]
  */
-function parseExistingContents(pageObjText) {
+function parseExistingContents(pageObjText, objCache) {
   const arrayMatch = /\/Contents\s*\[([\s\S]*?)\]/.exec(pageObjText);
   if (arrayMatch) {
     return [...arrayMatch[1].matchAll(/(\d+)\s+(\d+)\s+R/g)]
@@ -28,7 +30,17 @@ function parseExistingContents(pageObjText) {
   }
   const singleMatch = /\/Contents\s+(\d+)\s+(\d+)\s+R/.exec(pageObjText);
   if (singleMatch) {
-    return [`${singleMatch[1]} ${singleMatch[2]} R`];
+    const ref = `${singleMatch[1]} ${singleMatch[2]} R`;
+    if (objCache) {
+      const refText = objCache.getObjectText(Number(singleMatch[1]));
+      if (refText) {
+        const trimmed = refText.trim();
+        if (trimmed.startsWith('[')) {
+          return [...trimmed.matchAll(/(\d+)\s+(\d+)\s+R/g)].map((m) => `${m[1]} ${m[2]} R`);
+        }
+      }
+    }
+    return [ref];
   }
   return [];
 }
@@ -111,12 +123,15 @@ function resolvePageResources(pageObjText, objCache) {
 function mergeResourceKey(inner, key, newEntries, objCache) {
   if (!newEntries) return inner;
   const idx = inner.indexOf(key);
-  if (idx < 0) return `${inner} ${key}<<${newEntries}>>`;
+  // Use a newline (not just a space) before any appended/spliced content so a trailing
+  // `%` line-comment in `inner` doesn't swallow our content.
+  // Same reason we put a newline before the closing `>>` we synthesise.
+  if (idx < 0) return `${inner}\n${key}<<${newEntries}>>`;
   let p = idx + key.length;
   while (p < inner.length && /\s/.test(inner[p])) p++;
   if (inner.startsWith('<<', p)) {
     const dict = extractDict(inner, p);
-    const merged = `${dict.slice(0, -2)} ${newEntries}>>`;
+    const merged = `${dict.slice(0, -2)}\n${newEntries}\n>>`;
     return inner.slice(0, p) + merged + inner.slice(p + dict.length);
   }
   const refMatch = /^(\d+)\s+\d+\s+R/.exec(inner.slice(p));
@@ -129,14 +144,14 @@ function mergeResourceKey(inner, key, newEntries, objCache) {
       const inner2 = trimmed.startsWith('<<') && trimmed.endsWith('>>')
         ? trimmed.slice(2, -2).trim()
         : trimmed;
-      const merged = `<<${inner2} ${newEntries}>>`;
+      const merged = `<<${inner2}\n${newEntries}\n>>`;
       return inner.slice(0, p) + merged + inner.slice(p + refMatch[0].length);
     }
   }
   // Couldn't resolve — leave the original slot alone and append a duplicate
   // key. PDF readers honor the last entry for duplicate keys, so the new
   // (overlay) fonts/ExtGStates win.
-  return `${inner} ${key}<<${newEntries}>>`;
+  return `${inner}\n${key}<<${newEntries}>>`;
 }
 
 /**
@@ -149,7 +164,8 @@ function mergeResources(existingDict, overlayFontsStr, overlayExtGStateStr, objC
   let inner = existingDict.slice(2, -2).trim();
   inner = mergeResourceKey(inner, '/Font', overlayFontsStr, objCache);
   inner = mergeResourceKey(inner, '/ExtGState', overlayExtGStateStr, objCache);
-  return `<<${inner}>>`;
+  // Newline before `>>` so any trailing `%` line-comment in `inner` ends before the close.
+  return `<<${inner}\n>>`;
 }
 
 /**
@@ -567,7 +583,7 @@ async function rebuildPdfSubset({
         const qOverlayObjNum = nextObjNum++;
         allOutputObjects.push({ objNum: qOverlayObjNum, content: await encodeStreamObject(qOverlayObjNum, qOverlayStr, { humanReadable }) });
 
-        const existingContentsRefs = parseExistingContents(pageInfo.objText);
+        const existingContentsRefs = parseExistingContents(pageInfo.objText, objCache);
         const strippedContentsRefs = await rewriteContentsStrippingInvisibleText(
           existingContentsRefs,
           objCache,
@@ -611,7 +627,6 @@ async function rebuildPdfSubset({
     }
 
     for (const pdfFont of pdfFontsUsed) {
-      if (pdfFont.opentype?.names?.postScriptName?.en === 'NotoSansSC-Regular') continue;
       // eslint-disable-next-line no-await-in-loop
       const objStrArr = await createEmbeddedFontType0({ font: pdfFont.opentype, firstObjIndex: pdfFont.objN, humanReadable });
       for (let j = 0; j < objStrArr.length; j++) {
@@ -861,12 +876,16 @@ export async function overlayPdfText({
   // Rebuild from scratch (dropping /Encrypt) to keep the output consistently plain.
   const sourceEncrypted = !!objCache.encryptionKey;
 
+  // Incremental update keeps the source's bytes (including its malformed startxref/trailer) in place.
+  // Only rebuild can give the output a clean xref.
+  const sourceXrefMalformed = !sourceXrefIsWellFormed(pdfBytes);
+
   // If exporting a proper subset of pages (fewer pages than the source, or
-  // a reordering), rebuild the PDF instead of incremental update. Incremental
-  // can only extend existing pages in place — it can't drop or reorder them.
+  // a reordering), rebuild the PDF instead of incremental update.
+  // Incremental can only extend existing pages in place — it can't drop or reorder them.
   const isSubset = effectivePageArr.length !== pages.length
     || effectivePageArr.some((v, idx) => v !== idx);
-  if (isSubset || sourceEncrypted) {
+  if (isSubset || sourceEncrypted || sourceXrefMalformed) {
     return rebuildPdfSubset({
       pdfBytes,
       text,
@@ -946,7 +965,7 @@ export async function overlayPdfText({
       const qOverlayObjNum = nextObjNum++;
       newObjects.push({ objNum: qOverlayObjNum, content: await encodeStreamObject(qOverlayObjNum, qOverlayStr, { humanReadable }) });
 
-      const existingContentsRefs = parseExistingContents(pageInfo.objText);
+      const existingContentsRefs = parseExistingContents(pageInfo.objText, objCache);
       const strippedContentsRefs = await rewriteContentsStrippingInvisibleText(
         existingContentsRefs,
         objCache,
@@ -993,7 +1012,6 @@ export async function overlayPdfText({
   /** @type {Array<{objNum: number, content: string | import('./writePdfStreams.js').PdfBinaryObject}>} */
   const fontObjects = [];
   for (const pdfFont of pdfFontsUsed) {
-    if (pdfFont.opentype?.names?.postScriptName?.en === 'NotoSansSC-Regular') continue;
     const objStrArr = await createEmbeddedFontType0({ font: pdfFont.opentype, firstObjIndex: pdfFont.objN, humanReadable });
     for (let j = 0; j < objStrArr.length; j++) {
       fontObjects.push({ objNum: pdfFont.objN + j, content: objStrArr[j] });

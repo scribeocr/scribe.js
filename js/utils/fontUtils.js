@@ -204,8 +204,10 @@ export function calcWordCharMetrics(wordText, fontOpentype) {
     const fontName = fontOpentype.tables.name.postScriptName.en;
     if (!glyphI || glyphI.name === '.notdef') {
       if (!missingGlyphs[fontName]) missingGlyphs[fontName] = new Set();
-      missingGlyphs[fontName].add(charI);
-      console.log(`Character ${charI} is not defined in font ${fontName}`);
+      if (!missingGlyphs[fontName].has(charI)) {
+        missingGlyphs[fontName].add(charI);
+        console.log(`Character ${charI} is not defined in font ${fontName}`);
+      }
     }
     advanceArr.push(glyphI.advanceWidth);
 

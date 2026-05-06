@@ -8,12 +8,6 @@ import {
   parsePdfLiteralString, parsePdfHexString,
 } from './pdfCrypto.js';
 
-// ──── Byte-scan primitives ────
-// Used by xref / dict / stream extractors so the parser can operate on the raw
-// PDF Uint8Array without first decoding the entire file to a latin1 JS string
-// (which would otherwise double the in-memory footprint of the PDF — JS strings
-// are UTF-16 internally, so a 1.2 GB PDF becomes a 2.4 GB string).
-
 /**
  * Find the byte offset of `needle` (an ASCII string) inside `bytes`, scanning
  * forward from `from`. Returns -1 if not found.
@@ -155,6 +149,26 @@ export function findXrefOffset(pdfBytes) {
         if (bytesEqualAt(pdfBytes, checkPos, 'xref') || matchesObjHeader(pdfBytes, checkPos) || matchesBareXrefEntry(pdfBytes, checkPos)) {
           return offset;
         }
+        // Some producers write startxref values that are off by a few bytes relative to the actual xref keyword.
+        // Snap to a nearby `xref` keyword before falling back to a whole-file scan,
+        // which on a linearized PDF would land on the secondary xref at end-of-file (whose trailer is incomplete).
+        // Accept any PDF whitespace before the keyword (not just newline) — the next byte before the
+        // wrongly-pointed offset is sometimes a space.
+        const windowStart = Math.max(0, offset - 16);
+        const windowEnd = Math.min(len, offset + 16);
+        /** @param {number} p */
+        const looksLikeXrefStart = (p) => bytesEqualAt(pdfBytes, p, 'xref') && (p === 0 || isPdfWhitespace(pdfBytes[p - 1]));
+        /** @param {number} p */
+        const looksLikeStreamStart = (p) => matchesObjHeader(pdfBytes, p) && (p === 0 || isPdfWhitespace(pdfBytes[p - 1]));
+        for (let p = offset; p >= windowStart; p--) {
+          if (looksLikeXrefStart(p)) return p;
+        }
+        for (let p = offset + 1; p < windowEnd; p++) {
+          if (looksLikeXrefStart(p)) return p;
+        }
+        for (let p = offset; p >= windowStart; p--) {
+          if (looksLikeStreamStart(p)) return p;
+        }
       }
     }
   }
@@ -168,6 +182,41 @@ export function findXrefOffset(pdfBytes) {
     searchFrom = idx - 1;
   }
   throw new Error('Could not find startxref');
+}
+
+/**
+ * Returns true if the final `startxref` value points exactly at an `xref` keyword or
+ * an xref-stream object header. False if it's off-by-N, points into junk, or absent.
+ * @param {Uint8Array} pdfBytes
+ */
+export function sourceXrefIsWellFormed(pdfBytes) {
+  const sx = byteLastIndexOf(pdfBytes, 'startxref');
+  if (sx === -1) return false;
+  let p = sx + 9;
+  while (p < pdfBytes.length && isPdfWhitespace(pdfBytes[p])) p++;
+  let num = 0;
+  let hasDigit = false;
+  while (p < pdfBytes.length && isAsciiDigit(pdfBytes[p])) {
+    num = num * 10 + (pdfBytes[p] - 0x30);
+    p++;
+    hasDigit = true;
+  }
+  if (!hasDigit) return false;
+  const headerOff = byteIndexOf(pdfBytes, '%PDF');
+  const declared = num + (headerOff > 0 ? headerOff : 0);
+  let chk = declared;
+  while (chk < pdfBytes.length && isPdfWhitespace(pdfBytes[chk])) chk++;
+  if (chk >= pdfBytes.length) return false;
+  if (bytesEqualAt(pdfBytes, chk, 'xref')) return true;
+  // Xref stream: starts with "<digits> <digits> obj"
+  let q = chk;
+  while (q < pdfBytes.length && isAsciiDigit(pdfBytes[q])) q++;
+  if (q > chk && pdfBytes[q] === 0x20) {
+    let r = q + 1;
+    while (r < pdfBytes.length && isAsciiDigit(pdfBytes[r])) r++;
+    if (r > q + 1 && pdfBytes[r] === 0x20 && bytesEqualAt(pdfBytes, r + 1, 'obj')) return true;
+  }
+  return false;
 }
 
 /**
@@ -235,10 +284,10 @@ function matchesBareXrefEntry(bytes, pos) {
  * Parse xref table/stream to get object positions.
  * @param {Uint8Array} pdfBytes
  * @param {number} xrefOffset
- * @returns {{ [objNum: number]: { type: number, offset?: number, objStmNum?: number, indexInStm?: number } }}
+ * @returns {{ [objNum: number]: { type: number, offset?: number, gen?: number, objStmNum?: number, indexInStm?: number } }}
  */
 export function parseXref(pdfBytes, xrefOffset) {
-  /** @type {{ [objNum: number]: { type: number, offset?: number, objStmNum?: number, indexInStm?: number } }} */
+  /** @type {{ [objNum: number]: { type: number, offset?: number, gen?: number, objStmNum?: number, indexInStm?: number } }} */
   const entries = {};
   const visited = new Set();
   const len = pdfBytes.length;
@@ -344,7 +393,7 @@ function parseXrefTable(bytes, offset, entries) {
         if (entryMatch && entryMatch[3] === 'n') {
           // Only store if not already set — newer xref sections (processed first) take precedence.
           if (!entries[startObj + j]) {
-            entries[startObj + j] = { type: 1, offset: Number(entryMatch[1]) };
+            entries[startObj + j] = { type: 1, offset: Number(entryMatch[1]), gen: Number(entryMatch[2]) };
           }
         }
       }
@@ -371,7 +420,7 @@ function parseBareXrefTable(bytes, offset, entries) {
     const entryMatch = /^(\d{10})\s+(\d{5})\s+(n|f)$/.exec(trimmed);
     if (entryMatch && entryMatch[3] === 'n') {
       if (!entries[objNum]) {
-        entries[objNum] = { type: 1, offset: Number(entryMatch[1]) };
+        entries[objNum] = { type: 1, offset: Number(entryMatch[1]), gen: Number(entryMatch[2]) };
       }
     }
     if (entryMatch) objNum++;
@@ -437,9 +486,13 @@ function parseXrefStream(pdfBytes, offset, entries) {
       // Only store if not already set — newer xref sections (processed first) take precedence.
       if (!entries[objNum]) {
         if (type === 1) {
-          entries[objNum] = { type: 1, offset: field2 };
+          // Cross-reference stream: field3 is the generation number for type-1 entries.
+          entries[objNum] = { type: 1, offset: field2, gen: field3 };
         } else if (type === 2) {
-          entries[objNum] = { type: 2, objStmNum: field2, indexInStm: field3 };
+          // Objects in an ObjStm always have generation 0 by spec.
+          entries[objNum] = {
+            type: 2, objStmNum: field2, indexInStm: field3, gen: 0,
+          };
         }
       }
       // type 0 = free entry, skip
@@ -581,33 +634,41 @@ export function extractRawStreamBytes(pdfBytes, objOffset, encryptionKey, encryp
 
   let data = pdfBytes.slice(streamStart, streamStart + streamLength);
 
-  // Fallback: if /Length appears incorrect, use endstream marker as boundary.
-  // Strip at most one EOL (CRLF, CR, or LF) before endstream — per PDF spec,
-  // one optional EOL marker precedes endstream. Do NOT strip multiple CR/LF bytes
-  // because the stream data itself may legitimately end with CR/LF values.
+  // PDF spec permits 0/1/2 EOL bytes between stream data and `endstream`; trust
+  // /Length when it matches any of those, otherwise fall back to the endstream position.
   const endstreamIdx = byteIndexOf(pdfBytes, 'endstream', objOffset + streamKeyword);
   if (endstreamIdx !== -1) {
-    let actualEnd = endstreamIdx;
-    // Strip at most one EOL: CRLF, CR, or LF
-    if (actualEnd >= 2 && pdfBytes[actualEnd - 2] === 0x0D && pdfBytes[actualEnd - 1] === 0x0A) {
-      actualEnd -= 2;
-    } else if (actualEnd >= 1 && (pdfBytes[actualEnd - 1] === 0x0A || pdfBytes[actualEnd - 1] === 0x0D)) {
-      actualEnd -= 1;
-    }
-    if (actualEnd - streamStart !== streamLength) {
+    const expectedEnd = streamStart + streamLength;
+    const consistent = endstreamIdx === expectedEnd
+      || (endstreamIdx === expectedEnd + 1
+          && (pdfBytes[expectedEnd] === 0x0A || pdfBytes[expectedEnd] === 0x0D))
+      || (endstreamIdx === expectedEnd + 2
+          && pdfBytes[expectedEnd] === 0x0D && pdfBytes[expectedEnd + 1] === 0x0A);
+    if (!consistent) {
+      let actualEnd = endstreamIdx;
+      if (actualEnd >= 2 && pdfBytes[actualEnd - 2] === 0x0D && pdfBytes[actualEnd - 1] === 0x0A) {
+        actualEnd -= 2;
+      } else if (actualEnd >= 1 && (pdfBytes[actualEnd - 1] === 0x0A || pdfBytes[actualEnd - 1] === 0x0D)) {
+        actualEnd -= 1;
+      }
       data = pdfBytes.slice(streamStart, actualEnd);
     }
   }
 
   // Decrypt stream data if the PDF is encrypted (applied before decompression filters).
+  // The object key derives from (objNum, gen, fileKey); read the generation from the
+  // "<n> <gen> obj" header at objOffset so streams with gen != 0 (common in linearised
+  // and incrementally-updated PDFs) decrypt with the right key.
   if (encryptionKey && objNum >= 0 && objNum !== encryptObjNum) {
+    const headerMatch = /^\s*\d+\s+(\d+)\s+obj/.exec(objText);
+    const genNum = headerMatch ? Number(headerMatch[1]) : 0;
     if (cipherMode === 'AESV3') {
       data = aesDecrypt(encryptionKey, data);
     } else if (cipherMode === 'AESV2') {
-      const objKey = computeObjectKey(encryptionKey, objNum, 0, true);
+      const objKey = computeObjectKey(encryptionKey, objNum, genNum, true);
       data = aesDecrypt(objKey, data);
     } else {
-      const objKey = computeObjectKey(encryptionKey, objNum, 0, false);
+      const objKey = computeObjectKey(encryptionKey, objNum, genNum, false);
       data = rc4(objKey, data);
     }
   }
@@ -1404,18 +1465,19 @@ export class ObjectCache {
    * PDF encryption applies per-object keys to string values (Algorithm 3.1 from spec).
    * @param {Uint8Array} encryptedBytes - Raw encrypted string bytes
    * @param {number} objNum - Object number
-   * @param {number} [genNum=0] - Generation number
+   * @param {number} [genNum] - Generation number; when omitted, looked up from xref entries.
    */
-  decryptStringBytes(encryptedBytes, objNum, genNum = 0) {
+  decryptStringBytes(encryptedBytes, objNum, genNum) {
     if (!this.encryptionKey || objNum === this.encryptObjNum) return encryptedBytes;
+    const gen = genNum !== undefined ? genNum : (this.xrefEntries[objNum]?.gen ?? 0);
     if (this.cipherMode === 'AESV3') {
       return aesDecrypt(this.encryptionKey, encryptedBytes);
     }
     if (this.cipherMode === 'AESV2') {
-      const objKey = computeObjectKey(this.encryptionKey, objNum, genNum, true);
+      const objKey = computeObjectKey(this.encryptionKey, objNum, gen, true);
       return aesDecrypt(objKey, encryptedBytes);
     }
-    const objKey = computeObjectKey(this.encryptionKey, objNum, genNum, false);
+    const objKey = computeObjectKey(this.encryptionKey, objNum, gen, false);
     return rc4(objKey, encryptedBytes);
   }
 
@@ -2390,13 +2452,22 @@ export function stripText(streamText, { mode = 'invisible' } = {}) {
   let tr = 0;
   /** @type {Array<number>} */
   const trStack = [];
-  let out = '';
+  // Array + join, not `+=` accumulation — `+=` is O(N²) on multi-MB streams.
+  /** @type {Array<string>} */
+  const out = [];
+  let lastEndsInWhitespace = true;
 
   /** @param {Array<PDFToken>} ops */
   const flushOperands = (ops) => {
     for (let i = 0; i < ops.length; i++) {
-      out += serializeContentToken(ops[i]);
-      out += i + 1 < ops.length ? ' ' : '';
+      const piece = serializeContentToken(ops[i]);
+      out.push(piece);
+      if (i + 1 < ops.length) {
+        out.push(' ');
+        lastEndsInWhitespace = true;
+      } else {
+        lastEndsInWhitespace = piece.length > 0 && /\s/.test(piece[piece.length - 1]);
+      }
     }
   };
 
@@ -2428,14 +2499,17 @@ export function stripText(streamText, { mode = 'invisible' } = {}) {
 
     flushOperands(operandBuf);
     operandBuf.length = 0;
-    if (out.length > 0 && !/\s$/.test(out)) out += ' ';
-    out += op;
-    out += '\n';
+    if (out.length > 0 && !lastEndsInWhitespace) {
+      out.push(' ');
+    }
+    out.push(op);
+    out.push('\n');
+    lastEndsInWhitespace = true;
   }
 
   if (operandBuf.length > 0) {
     flushOperands(operandBuf);
   }
 
-  return { text: out, dropped };
+  return { text: out.join(''), dropped };
 }

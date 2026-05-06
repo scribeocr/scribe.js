@@ -1,4 +1,70 @@
 import { extractDict, extractRawStreamBytes } from '../../pdf/parsePdfUtils.js';
+import { parsePdfLiteralString, parsePdfHexString } from '../../pdf/pdfCrypto.js';
+
+/**
+ * Walk a byte range and decrypt every PDF literal `(...)` and hex `<...>` string,
+ * returning a new Uint8Array.
+ *
+ * @param {Uint8Array} bytes
+ * @param {number} objNum
+ * @param {import('../../pdf/parsePdfUtils.js').ObjectCache} objCache
+ */
+function decryptObjectStrings(bytes, objNum, objCache) {
+  if (!objCache.encryptionKey || objNum === objCache.encryptObjNum) return bytes;
+  /** @type {number[]} */
+  const out = [];
+  let i = 0;
+  const n = bytes.length;
+  while (i < n) {
+    const b = bytes[i];
+    if (b === 0x28) {
+      const parsed = parsePdfLiteralString(bytes, i);
+      const decrypted = objCache.decryptStringBytes(parsed.value, objNum);
+      out.push(0x28);
+      for (let k = 0; k < decrypted.length; k++) {
+        const v = decrypted[k];
+        if (v === 0x28 || v === 0x29 || v === 0x5C) {
+          out.push(0x5C, v);
+        } else if (v === 0x0A) {
+          out.push(0x5C, 0x6E);
+        } else if (v === 0x0D) {
+          out.push(0x5C, 0x72);
+        } else if (v === 0x09) {
+          out.push(0x5C, 0x74);
+        } else if (v === 0x08) {
+          out.push(0x5C, 0x62);
+        } else if (v === 0x0C) {
+          out.push(0x5C, 0x66);
+        } else {
+          out.push(v);
+        }
+      }
+      out.push(0x29);
+      i = parsed.end;
+    } else if (b === 0x3C && bytes[i + 1] === 0x3C) {
+      out.push(0x3C);
+      out.push(0x3C);
+      i += 2;
+    } else if (b === 0x3C) {
+      const parsed = parsePdfHexString(bytes, i);
+      const decrypted = objCache.decryptStringBytes(parsed.value, objNum);
+      out.push(0x3C);
+      for (let k = 0; k < decrypted.length; k++) {
+        const v = decrypted[k];
+        const hi = (v >> 4) & 0xF;
+        const lo = v & 0xF;
+        out.push(hi < 10 ? hi + 0x30 : hi - 10 + 0x41);
+        out.push(lo < 10 ? lo + 0x30 : lo - 10 + 0x41);
+      }
+      out.push(0x3E);
+      i = parsed.end;
+    } else {
+      out.push(b);
+      i++;
+    }
+  }
+  return new Uint8Array(out);
+}
 
 /**
  * Parse the trailer dict to extract /Root reference and /Size.
@@ -238,14 +304,83 @@ export function copyRawObjectBytes(pdfBytes, text, objCache, entry, objNum = -1)
     );
     if (raw) {
       const { data, dictText } = raw;
-      // AES strips padding so the decrypted byte length differs from the encrypted length.
-      const updatedDict = dictText.replace(/\/Length\s+\d+/, `/Length ${data.length}`);
-      const headerStr = `${updatedDict}stream\n`;
+      // The optional `(?:\s+\d+\s+R)?` is required: indirect `/Length N M R` must
+      // be replaced whole, otherwise the leftover `M R` re-parses as a stray ref.
+      const updatedDict = dictText.replace(/\/Length\s+\d+(?:\s+\d+\s+R)?/, `/Length ${data.length}`);
+      // The dict still carries encrypted string values (e.g. CIDSystemInfo /Registry).
+      // Decrypt them so readers without the file key can interpret the dict correctly.
+      const dictBytes = new Uint8Array(updatedDict.length);
+      for (let i = 0; i < updatedDict.length; i++) dictBytes[i] = updatedDict.charCodeAt(i) & 0xFF;
+      const dictDecrypted = decryptObjectStrings(dictBytes, objNum, objCache);
       const trailerStr = '\nendstream\nendobj\n\n';
-      const out = new Uint8Array(headerStr.length + data.length + trailerStr.length);
-      for (let i = 0; i < headerStr.length; i++) out[i] = headerStr.charCodeAt(i) & 0xFF;
-      out.set(data, headerStr.length);
-      for (let i = 0; i < trailerStr.length; i++) out[headerStr.length + data.length + i] = trailerStr.charCodeAt(i) & 0xFF;
+      const trailerBytes = new Uint8Array(trailerStr.length);
+      for (let i = 0; i < trailerStr.length; i++) trailerBytes[i] = trailerStr.charCodeAt(i) & 0xFF;
+      const streamKw = new Uint8Array([0x73, 0x74, 0x72, 0x65, 0x61, 0x6D, 0x0A]); // 'stream\n'
+      const out = new Uint8Array(dictDecrypted.length + streamKw.length + data.length + trailerBytes.length);
+      out.set(dictDecrypted, 0);
+      out.set(streamKw, dictDecrypted.length);
+      out.set(data, dictDecrypted.length + streamKw.length);
+      out.set(trailerBytes, dictDecrypted.length + streamKw.length + data.length);
+      return out;
+    }
+  }
+
+  if (isEncrypted && !hasStream) {
+    // Gated on `!hasStream`: decryptObjectStrings would scan the binary payload of
+    // a stream object for `(...)` and `<...>` markers and corrupt it.
+    const sliced = pdfBytes.subarray(range.start, range.end);
+    const decrypted = decryptObjectStrings(sliced, objNum, objCache);
+    const out = new Uint8Array(decrypted.length + 2);
+    out.set(decrypted, 0);
+    out[decrypted.length] = 0x0A;
+    out[decrypted.length + 1] = 0x0A;
+    return out;
+  }
+
+  if (hasStream) {
+    // PDF spec permits 0/1/2 EOL bytes between stream data and `endstream`.
+    // Accept the source's /Length when the gap matches any of those,
+    // otherwise rewrite it to the actual byte count so strict readers don't reject the stream.
+    const dictText = text.substring(range.start, range.start + (range.streamStart - range.start));
+    const streamKw = dictText.lastIndexOf('stream');
+    const headerStr = streamKw >= 0 ? dictText.substring(0, streamKw) : dictText;
+    const declaredMatch = /\/Length\s+(\d+)(?!\s+\d+\s+R)/.exec(headerStr);
+    const declared = declaredMatch ? Number(declaredMatch[1]) : null;
+    const endStreamIdx = text.indexOf('endstream', range.streamStart);
+    if (endStreamIdx >= 0) {
+      let actualLength;
+      if (declared !== null) {
+        const expectedEnd = range.streamStart + declared;
+        const consistent = endStreamIdx === expectedEnd
+          || (endStreamIdx === expectedEnd + 1
+              && (pdfBytes[expectedEnd] === 0x0A || pdfBytes[expectedEnd] === 0x0D))
+          || (endStreamIdx === expectedEnd + 2
+              && pdfBytes[expectedEnd] === 0x0D && pdfBytes[expectedEnd + 1] === 0x0A);
+        if (consistent) {
+          actualLength = declared;
+        } else {
+          // Don't strip a trailing EOL — it may be the data's last byte (e.g. a CFF binary ending in 0x0A).
+          // Filters tolerate trailing bytes past their end marker.
+          actualLength = endStreamIdx - range.streamStart;
+        }
+      } else {
+        // Indirect /Length or no /Length in the dict — fall back to the full gap.
+        actualLength = endStreamIdx - range.streamStart;
+      }
+      const updatedHeader = headerStr.replace(/\/Length\s+\d+(?:\s+\d+\s+R)?/, `/Length ${actualLength}`);
+      const headerBytes = new Uint8Array(updatedHeader.length);
+      for (let i = 0; i < updatedHeader.length; i++) headerBytes[i] = updatedHeader.charCodeAt(i) & 0xFF;
+      const streamKwBytes = new Uint8Array([0x73, 0x74, 0x72, 0x65, 0x61, 0x6D, 0x0A]); // 'stream\n'
+      const streamBytes = pdfBytes.subarray(range.streamStart, range.streamStart + actualLength);
+      const trailer = '\nendstream\nendobj\n\n';
+      const trailerBytes = new Uint8Array(trailer.length);
+      for (let i = 0; i < trailer.length; i++) trailerBytes[i] = trailer.charCodeAt(i) & 0xFF;
+      const out = new Uint8Array(headerBytes.length + streamKwBytes.length + streamBytes.length + trailerBytes.length);
+      let off = 0;
+      out.set(headerBytes, off); off += headerBytes.length;
+      out.set(streamKwBytes, off); off += streamKwBytes.length;
+      out.set(streamBytes, off); off += streamBytes.length;
+      out.set(trailerBytes, off);
       return out;
     }
   }

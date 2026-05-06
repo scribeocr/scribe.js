@@ -492,6 +492,48 @@ describe('Check export for .pdf files.', () => {
     expect(exportedText.includes('/Subtype/CIDFontType2')).toBe(false);
     expect(exportedText.includes('/Subtype/CIDFontType0')).toBe(true);
 
+    // Every FlateDecode stream copied from the encrypted source must inflate cleanly under a strict zlib reader.
+    // Pre-fix, the EOL-strip heuristic in extractRawStreamBytes truncated the last data byte of
+    // nine 1px image XObjects whose deflate stream happened to end on 0x0A/0x0D.
+    // Use Node's inflateSync (strict) since scribe's own inflate path is tolerant of truncated streams and would mask the bug.
+    const { findXrefOffset, parseXref, ObjectCache } = await import('../../js/pdf/parsePdfUtils.js');
+    const { inflateSync } = await import('node:zlib');
+    const exportBytes = new Uint8Array(exportedPdf);
+    const xrefOffset = findXrefOffset(exportBytes);
+    const xrefEntries = parseXref(exportBytes, xrefOffset);
+    const objCache = new ObjectCache(exportBytes, xrefEntries);
+    let inflatedCount = 0;
+    const failures = [];
+    for (const [k, entry] of Object.entries(xrefEntries)) {
+      if (entry.type !== 1) continue;
+      const objNum = Number(k);
+      const objText = objCache.getObjectText(objNum);
+      if (!objText || !/\/Filter\s*\/FlateDecode\b/.test(objText)) continue;
+      const objStart = entry.offset;
+      let p = objStart;
+      while (p < exportBytes.length - 6 && !(
+        exportBytes[p] === 0x73 && exportBytes[p + 1] === 0x74
+        && exportBytes[p + 2] === 0x72 && exportBytes[p + 3] === 0x65
+        && exportBytes[p + 4] === 0x61 && exportBytes[p + 5] === 0x6D
+      )) p++;
+      if (p >= exportBytes.length - 6) continue;
+      let s = p + 6;
+      if (exportBytes[s] === 0x0D && exportBytes[s + 1] === 0x0A) s += 2;
+      else if (exportBytes[s] === 0x0A || exportBytes[s] === 0x0D) s += 1;
+      const lengthMatch = /\/Length\s+(\d+)/.exec(objText);
+      if (!lengthMatch) continue;
+      const len = Number(lengthMatch[1]);
+      const slice = exportBytes.subarray(s, s + len);
+      try {
+        inflateSync(Buffer.from(slice));
+        inflatedCount++;
+      } catch (e) {
+        failures.push({ objNum, length: len, msg: e.message });
+      }
+    }
+    expect(failures, `expected all FlateDecode streams to inflate; failures: ${JSON.stringify(failures.slice(0, 5))}`).toEqual([]);
+    expect(inflatedCount).toBeGreaterThan(50);
+
     await scribe.clear();
     scribe.opt.usePDFText.native.main = true;
     scribe.opt.keepPDFTextAlways = true;
