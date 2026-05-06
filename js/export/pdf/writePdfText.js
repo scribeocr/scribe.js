@@ -332,7 +332,7 @@ export async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode
           const kern = (wordFont.opentype.charToGlyph(letter).advanceWidth - wordFont.opentype.charToGlyph(' ').advanceWidth) * (-1000 / wordFont.opentype.unitsPerEm) || 0;
 
           if (pdfFontTypeCurrent === 0) {
-            const spaceChar = wordFont.opentype.charToGlyphIndex(' ').toString(16).padStart(4, '0');
+            const spaceChar = pdfFontOpentypeCurrent.charToGlyphIndex(' ').toString(16).padStart(4, '0');
             textContentObjStr += `<${spaceChar}> ${String(Math.round(kern * 1e6) / 1e6)} `;
           } else {
             textContentObjStr += `( ) ${String(Math.round(kern * 1e6) / 1e6)} `;

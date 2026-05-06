@@ -114,6 +114,66 @@ function resolvePageResources(pageObjText, objCache) {
 }
 
 /**
+ * Find `key` (a PDF name like '/ExtGState') at the top level of a dict body,
+ * skipping over nested dicts/arrays/strings/comments.
+ * Naive `indexOf` would match a nested `/ExtGState`
+ * (e.g. inside a marked-content `/Properties` entry's own resource dict),
+ * causing the overlay merge to splice into the wrong dict.
+ *
+ * @param {string} inner
+ * @param {string} key
+ */
+function findTopLevelKeyIndex(inner, key) {
+  let depth = 0;
+  let i = 0;
+  const len = inner.length;
+  while (i < len) {
+    const c = inner.charCodeAt(i);
+    if (c === 0x3C && inner.charCodeAt(i + 1) === 0x3C) { depth++; i += 2; continue; }
+    if (c === 0x3E && inner.charCodeAt(i + 1) === 0x3E) { depth--; i += 2; continue; }
+    if (c === 0x5B) { depth++; i++; continue; }
+    if (c === 0x5D) { depth--; i++; continue; }
+    if (c === 0x28) {
+      let parenDepth = 1;
+      i++;
+      while (i < len && parenDepth > 0) {
+        const sc = inner.charCodeAt(i);
+        if (sc === 0x5C) { i += 2; continue; }
+        if (sc === 0x28) parenDepth++;
+        else if (sc === 0x29) parenDepth--;
+        i++;
+      }
+      continue;
+    }
+    if (c === 0x3C) {
+      const end = inner.indexOf('>', i);
+      i = end < 0 ? len : end + 1;
+      continue;
+    }
+    if (c === 0x25) {
+      while (i < len) {
+        const cc = inner.charCodeAt(i);
+        if (cc === 0x0A || cc === 0x0D) break;
+        i++;
+      }
+      continue;
+    }
+    if (depth === 0 && c === 0x2F && inner.startsWith(key, i)) {
+      const after = inner.charCodeAt(i + key.length);
+      // PDF name terminates on whitespace or a delimiter (one of /()<>[]{}%).
+      if (Number.isNaN(after)
+          || after === 0x20 || after === 0x09 || after === 0x0A || after === 0x0D || after === 0x0C
+          || after === 0x2F || after === 0x28 || after === 0x29 || after === 0x3C || after === 0x3E
+          || after === 0x5B || after === 0x5D || after === 0x7B || after === 0x7D || after === 0x25) {
+        return i;
+      }
+    }
+    i++;
+  }
+  return -1;
+}
+
+/**
  *
  * @param {string} inner
  * @param {string} key  e.g. '/Font' or '/ExtGState'
@@ -122,7 +182,7 @@ function resolvePageResources(pageObjText, objCache) {
  */
 function mergeResourceKey(inner, key, newEntries, objCache) {
   if (!newEntries) return inner;
-  const idx = inner.indexOf(key);
+  const idx = findTopLevelKeyIndex(inner, key);
   // Use a newline (not just a space) before any appended/spliced content so a trailing
   // `%` line-comment in `inner` doesn't swallow our content.
   // Same reason we put a newline before the closing `>>` we synthesise.
@@ -181,17 +241,29 @@ function annotLinkTargetsDroppedPage(annotObjNum, objCache, keptPageObjNums) {
   if (!annotText) return false;
   if (!/\/Subtype\s*\/Link\b/.test(annotText)) return false;
 
-  const destPage = (destText) => {
-    const arrMatch = /^\s*\[\s*(\d+)\s+\d+\s+R\b/.exec(destText);
-    return arrMatch ? Number(arrMatch[1]) : null;
+  const destArrayPage = (arrText) => {
+    const m = /^\s*\[\s*(\d+)\s+\d+\s+R\b/.exec(arrText);
+    return m ? Number(m[1]) : null;
   };
 
-  // /Dest [N M R ...] inline on the annot.
-  const directDestMatch = /\/Dest\s*(\[[\s\S]*?\])/.exec(annotText);
-  if (directDestMatch) {
-    const pageNum = destPage(directDestMatch[1]);
-    if (pageNum != null) return !keptPageObjNums.has(pageNum);
-  }
+  // Resolve a /Dest or /D value to its target page object number,
+  // following indirect refs to a destination array
+  // (e.g. `/Dest 600 0 R` where obj 600 is `[596 0 R /XYZ ...]`).
+  // Named destinations are not resolved here; they live in the catalog's /Dests or /Names tree
+  // and our current scope is to drop annots whose target is *known* to be a dropped page.
+  const resolveTargetPage = (annotBody, key) => {
+    const inlineArr = new RegExp(`/${key}\\s*(\\[[\\s\\S]*?\\])`).exec(annotBody);
+    if (inlineArr) return destArrayPage(inlineArr[1]);
+    const indirectRef = new RegExp(`/${key}\\s+(\\d+)\\s+\\d+\\s+R`).exec(annotBody);
+    if (indirectRef) {
+      const targetText = objCache.getObjectText(Number(indirectRef[1]));
+      if (targetText) return destArrayPage(targetText);
+    }
+    return null;
+  };
+
+  const directDestPage = resolveTargetPage(annotText, 'Dest');
+  if (directDestPage != null) return !keptPageObjNums.has(directDestPage);
 
   // /A action: indirect ref or inline dict. Either way we need the action's /D.
   let actionText = null;
@@ -204,11 +276,8 @@ function annotLinkTargetsDroppedPage(annotObjNum, objCache, keptPageObjNums) {
   }
   if (actionText) {
     if (!/\/S\s*\/GoTo\b/.test(actionText)) return false;
-    const dMatch = /\/D\s*(\[[\s\S]*?\])/.exec(actionText);
-    if (dMatch) {
-      const pageNum = destPage(dMatch[1]);
-      if (pageNum != null) return !keptPageObjNums.has(pageNum);
-    }
+    const actionDestPage = resolveTargetPage(actionText, 'D');
+    if (actionDestPage != null) return !keptPageObjNums.has(actionDestPage);
   }
 
   return false;
@@ -446,7 +515,11 @@ function collectUsedResourceNames(pageObjText, objCache) {
 
   const streams = getPageContentStreams(pageObjText, objCache);
   if (!streams) return { usedFonts, usedXObjects, usedExtGStates };
-  for (const streamText of streams) walk(streamText, recurseForm);
+  // A page's multiple content streams are interpreted as concatenated.
+  // Walking them separately drops a name/operator pair when the split lands between them
+  // (e.g. `/Fm1` at end of one stream, `Do` at start of the next),
+  // causing /Fm1 to look unused and get pruned.
+  walk(streams.join('\n'), recurseForm);
 
   return { usedFonts, usedXObjects, usedExtGStates };
 }

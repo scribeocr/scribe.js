@@ -459,6 +459,8 @@ function aesCBCEncrypt(key, iv, data) {
  * @param {boolean} [removePadding=true] - whether to strip PKCS#7 padding
  */
 export function aesDecrypt(key, data, removePadding = true) {
+  // 16 bytes = IV only, no ciphertext blocks.
+  if (data.length === 16) return new Uint8Array(0);
   if (data.length < 32 || data.length % 16 !== 0) return data;
   const is256 = key.length === 32;
   const rk = is256 ? aes256ExpandKey(key) : aesExpandKey(key);
