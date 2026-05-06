@@ -1146,22 +1146,23 @@ export class ObjectCache {
         objNum = objNum * 10 + (bytes[pos] - 0x30);
         pos++;
       }
-      // Required: \s+ (one or more whitespace bytes per regex; we accept any PDF whitespace)
-      if (pos >= len || !isPdfWhitespace(bytes[pos])) continue;
+      // On failure, rewind to numStart+1 (not pos) so a real `N M obj` header
+      // overlapping what we just consumed still gets matched — e.g. on input
+      // `%PDF-1.7\n\n4 0 obj`, the `7 4 ...` attempt fails at `obj`, and we
+      // need to retry from `\n\n4 0 obj` rather than skipping past the `4`.
+      if (pos >= len || !isPdfWhitespace(bytes[pos])) { pos = numStart + 1; continue; }
       while (pos < len && isPdfWhitespace(bytes[pos])) pos++;
-      // Required: <gen digits>
-      if (pos >= len || !isAsciiDigit(bytes[pos])) continue;
+      if (pos >= len || !isAsciiDigit(bytes[pos])) { pos = numStart + 1; continue; }
       while (pos < len && isAsciiDigit(bytes[pos])) pos++;
-      // Required: \s+
-      if (pos >= len || !isPdfWhitespace(bytes[pos])) continue;
+      if (pos >= len || !isPdfWhitespace(bytes[pos])) { pos = numStart + 1; continue; }
       while (pos < len && isPdfWhitespace(bytes[pos])) pos++;
       // Required: 'obj' followed by a non-word character (regex's `\b`).
-      if (!bytesEqualAt(bytes, pos, 'obj')) continue;
+      if (!bytesEqualAt(bytes, pos, 'obj')) { pos = numStart + 1; continue; }
       const after = pos + 3;
       if (after < len) {
         const c = bytes[after];
         if (isAsciiDigit(c) || (c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A) || c === 0x5F) {
-          pos = after;
+          pos = numStart + 1;
           continue;
         }
       }

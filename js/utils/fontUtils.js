@@ -19,6 +19,7 @@ import { opt } from '../containers/app.js';
 export const getDistinctCharsFont = (ocrPageArr, family, style) => {
   const charsAll = {};
   for (const ocrPage of ocrPageArr) {
+    if (!ocrPage) continue;
     for (const ocrLine of ocrPage.lines) {
       for (const ocrWord of ocrLine.words) {
         if (family || style) {

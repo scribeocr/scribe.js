@@ -169,6 +169,93 @@ function mergeResources(existingDict, overlayFontsStr, overlayExtGStateStr, objC
 }
 
 /**
+ * Returns true if the annot dict at `annotObjNum` is a /Subtype/Link whose
+ * destination resolves to a page object that is being dropped.
+ *
+ * @param {number} annotObjNum
+ * @param {import('../../pdf/parsePdfUtils.js').ObjectCache} objCache
+ * @param {Set<number>} keptPageObjNums
+ */
+function annotLinkTargetsDroppedPage(annotObjNum, objCache, keptPageObjNums) {
+  const annotText = objCache.getObjectText(annotObjNum);
+  if (!annotText) return false;
+  if (!/\/Subtype\s*\/Link\b/.test(annotText)) return false;
+
+  const destPage = (destText) => {
+    const arrMatch = /^\s*\[\s*(\d+)\s+\d+\s+R\b/.exec(destText);
+    return arrMatch ? Number(arrMatch[1]) : null;
+  };
+
+  // /Dest [N M R ...] inline on the annot.
+  const directDestMatch = /\/Dest\s*(\[[\s\S]*?\])/.exec(annotText);
+  if (directDestMatch) {
+    const pageNum = destPage(directDestMatch[1]);
+    if (pageNum != null) return !keptPageObjNums.has(pageNum);
+  }
+
+  // /A action: indirect ref or inline dict. Either way we need the action's /D.
+  let actionText = null;
+  const actionRefMatch = /\/A\s+(\d+)\s+\d+\s+R/.exec(annotText);
+  if (actionRefMatch) {
+    actionText = objCache.getObjectText(Number(actionRefMatch[1]));
+  } else {
+    const inlineActionMatch = /\/A\s*<<([\s\S]*?)>>/.exec(annotText);
+    if (inlineActionMatch) actionText = inlineActionMatch[1];
+  }
+  if (actionText) {
+    if (!/\/S\s*\/GoTo\b/.test(actionText)) return false;
+    const dMatch = /\/D\s*(\[[\s\S]*?\])/.exec(actionText);
+    if (dMatch) {
+      const pageNum = destPage(dMatch[1]);
+      if (pageNum != null) return !keptPageObjNums.has(pageNum);
+    }
+  }
+
+  return false;
+}
+
+/**
+ * Rewrite a page dict's /Annots entry to drop link annotations whose
+ * destination resolves to a page that is being dropped.
+ * Resolves indirect /Annots arrays by inlining them.
+ * No-op when /Annots is absent or all link targets are kept.
+ *
+ * @param {string} pageText
+ * @param {import('../../pdf/parsePdfUtils.js').ObjectCache} objCache
+ * @param {Set<number>} keptPageObjNums
+ */
+function dropOrphanLinkAnnots(pageText, objCache, keptPageObjNums) {
+  const arrayMatch = /\/Annots\s*\[([\s\S]*?)\]/.exec(pageText);
+  const indirectMatch = arrayMatch ? null : /\/Annots\s+(\d+)\s+\d+\s+R/.exec(pageText);
+
+  /** @type {string[]} */
+  const refs = [];
+  if (arrayMatch) {
+    for (const m of arrayMatch[1].matchAll(/(\d+\s+\d+\s+R)/g)) refs.push(m[1]);
+  } else if (indirectMatch) {
+    const arrayText = objCache.getObjectText(Number(indirectMatch[1]));
+    if (!arrayText) return pageText;
+    for (const m of arrayText.matchAll(/(\d+\s+\d+\s+R)/g)) refs.push(m[1]);
+  } else {
+    return pageText;
+  }
+
+  const filtered = refs.filter((ref) => {
+    const m = /^(\d+)\s+\d+\s+R$/.exec(ref);
+    if (!m) return true;
+    return !annotLinkTargetsDroppedPage(Number(m[1]), objCache, keptPageObjNums);
+  });
+  if (filtered.length === refs.length && arrayMatch) return pageText;
+
+  const replacement = filtered.length > 0 ? `/Annots[${filtered.join(' ')}]` : '';
+  if (arrayMatch) {
+    return pageText.slice(0, arrayMatch.index) + replacement + pageText.slice(arrayMatch.index + arrayMatch[0].length);
+  }
+  // indirectMatch: replace the indirect ref with an inline (possibly empty) array
+  return pageText.slice(0, indirectMatch.index) + replacement + pageText.slice(indirectMatch.index + indirectMatch[0].length);
+}
+
+/**
  * Rebuild a /Page dict with overlay additions.
  *
  * @param {number} objNum
@@ -184,8 +271,10 @@ function mergeResources(existingDict, overlayFontsStr, overlayExtGStateStr, objC
  * @param {import('../../pdf/parsePdfUtils.js').ObjectCache|null} [objCache=null]
  *   Used to resolve an indirect /Annots array so source refs can be
  *   inlined alongside new user-added refs.
+ * @param {?Set<number>} [keptPageObjNums=null] - When non-null (subset rebuild),
+ *   filter out source link annotations whose destination page is not in this set.
  */
-function buildReplacementPageDict(objNum, originalObjText, newContentsArray, resourcesObjNum, parentObjNum = null, extraAnnotRefs = [], objCache = null) {
+function buildReplacementPageDict(objNum, originalObjText, newContentsArray, resourcesObjNum, parentObjNum = null, extraAnnotRefs = [], objCache = null, keptPageObjNums = null) {
   let dictStr = `${objNum} 0 obj\n<<`;
   dictStr += '/Type/Page';
 
@@ -214,7 +303,7 @@ function buildReplacementPageDict(objNum, originalObjText, newContentsArray, res
   // pass-through annotations (links, notes, form widgets) survive unchanged.
   const annotsIndirectMatch = /\/Annots\s+(\d+)\s+\d+\s+R/.exec(originalObjText);
   const annotsArrayMatch = /\/Annots\s*\[([\s\S]*?)\]/.exec(originalObjText);
-  const sourceAnnotRefs = [];
+  let sourceAnnotRefs = [];
   if (annotsIndirectMatch && objCache) {
     const arrayText = objCache.getObjectText(Number(annotsIndirectMatch[1]));
     if (arrayText) {
@@ -222,6 +311,13 @@ function buildReplacementPageDict(objNum, originalObjText, newContentsArray, res
     }
   } else if (annotsArrayMatch) {
     for (const m of annotsArrayMatch[1].matchAll(/(\d+\s+\d+\s+R)/g)) sourceAnnotRefs.push(m[1]);
+  }
+  if (keptPageObjNums && objCache) {
+    sourceAnnotRefs = sourceAnnotRefs.filter((ref) => {
+      const m = /^(\d+)\s+\d+\s+R$/.exec(ref);
+      if (!m) return true;
+      return !annotLinkTargetsDroppedPage(Number(m[1]), objCache, keptPageObjNums);
+    });
   }
   if (extraAnnotRefs.length > 0 || sourceAnnotRefs.length > 0) {
     if (extraAnnotRefs.length === 0 && annotsIndirectMatch && !objCache) {
@@ -286,22 +382,41 @@ function collectUsedResourceNames(pageObjText, objCache) {
   const usedXObjects = new Set();
   const usedExtGStates = new Set();
 
-  const streams = getPageContentStreams(pageObjText, objCache);
-  if (!streams) return { usedFonts, usedXObjects, usedExtGStates };
+  /**
+   * Map a /XObject resource name on the page to the underlying object number.
+   * Returns null when the page's /XObject dict is absent or the name isn't defined.
+   * @param {string} name e.g. '/R12'
+   */
+  const resolvePageXObjectName = (name) => {
+    const resolvedRes = resolvePageResources(pageObjText, objCache);
+    const xobjMatch = /\/XObject\s*(?:<<([\s\S]*?)>>|(\d+)\s+\d+\s+R)/.exec(resolvedRes);
+    if (!xobjMatch) return null;
+    let xobjBody = xobjMatch[1];
+    if (!xobjBody && xobjMatch[2]) {
+      const indirectText = objCache.getObjectText(Number(xobjMatch[2]));
+      if (!indirectText) return null;
+      xobjBody = indirectText;
+    }
+    if (!xobjBody) return null;
+    const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+    const re = new RegExp(`${escaped}\\s+(\\d+)\\s+\\d+\\s+R`);
+    const m = re.exec(xobjBody);
+    return m ? Number(m[1]) : null;
+  };
 
-  for (const streamText of streams) {
+  /** @param {string} streamText */
+  const walk = (streamText, onXObject) => {
     const tokens = tokenizeContentStream(streamText);
     let lastName = null;
     for (const tok of tokens) {
-      if (tok.type === 'name') {
-        lastName = tok.value;
-        continue;
-      }
+      if (tok.type === 'name') { lastName = tok.value; continue; }
       if (tok.type === 'operator') {
         if (lastName !== null) {
           if (tok.value === 'Tf') usedFonts.add(lastName);
-          else if (tok.value === 'Do') usedXObjects.add(lastName);
-          else if (tok.value === 'gs') usedExtGStates.add(lastName);
+          else if (tok.value === 'Do') {
+            usedXObjects.add(lastName);
+            if (onXObject) onXObject(lastName);
+          } else if (tok.value === 'gs') usedExtGStates.add(lastName);
         }
         lastName = null;
         continue;
@@ -309,7 +424,29 @@ function collectUsedResourceNames(pageObjText, objCache) {
       if (tok.type === 'number') continue;
       lastName = null;
     }
-  }
+  };
+
+  // Form XObjects whose content streams reference resources by name resolve those
+  // names via their own /Resources first, then fall through to the page's /Resources
+  // (PDF 32000-1:2008 §7.8.3). Walk used Form XObjects recursively so fall-through
+  // names get included — otherwise pruning drops resources the page actually needs.
+  const visited = new Set();
+  /** @param {string} xobjName */
+  const recurseForm = (xobjName) => {
+    const objNum = resolvePageXObjectName(xobjName);
+    if (objNum == null || visited.has(objNum)) return;
+    visited.add(objNum);
+    const xobjText = objCache.getObjectText(objNum);
+    if (!xobjText || !/\/Subtype\s*\/Form\b/.test(xobjText)) return;
+    let formStreamBytes;
+    try { formStreamBytes = objCache.getStreamBytes(objNum); } catch { formStreamBytes = null; }
+    if (!formStreamBytes) return;
+    walk(bytesToLatin1(formStreamBytes), recurseForm);
+  };
+
+  const streams = getPageContentStreams(pageObjText, objCache);
+  if (!streams) return { usedFonts, usedXObjects, usedExtGStates };
+  for (const streamText of streams) walk(streamText, recurseForm);
 
   return { usedFonts, usedXObjects, usedExtGStates };
 }
@@ -516,6 +653,12 @@ async function rebuildPdfSubset({
 
   const { pageTreeObjNums } = collectPageTreeObjNums(objCache);
 
+  /** @type {Set<number>} */
+  const keptPageObjNums = new Set();
+  for (const i of pageIndices) {
+    if (i >= 0 && i < pages.length) keptPageObjNums.add(pages[i].objNum);
+  }
+
   // Assign new object numbers for catalog and pages root
   const catalogObjNum = nextObjNum++;
   const pagesRootObjNum = nextObjNum++;
@@ -621,7 +764,8 @@ async function rebuildPdfSubset({
         extraAnnotRefs = annotRefs;
       }
 
-      const newPageObj = buildReplacementPageDict(pageInfo.objNum, pageInfo.objText, newContentsArray, resourcesObjNum, pagesRootObjNum, extraAnnotRefs, objCache);
+      const newPageObj = buildReplacementPageDict(pageInfo.objNum, pageInfo.objText, newContentsArray, resourcesObjNum, pagesRootObjNum,
+        extraAnnotRefs, objCache, keptPageObjNums);
       allOutputObjects.push({ objNum: pageInfo.objNum, content: newPageObj });
       modifiedPageObjNums.add(pageInfo.objNum);
     }
@@ -652,6 +796,7 @@ async function rebuildPdfSubset({
     const used = collectUsedResourceNames(pageInfo.objText, objCache);
     const prunedRes = pruneResourcesDict(resolvedRes, used, objCache);
     pageText = replacePageResources(pageText, prunedRes);
+    pageText = dropOrphanLinkAnnots(pageText, objCache, keptPageObjNums);
 
     rewrittenPageTexts.set(pageInfo.objNum, pageText);
     allOutputObjects.push({ objNum: pageInfo.objNum, content: `${pageInfo.objNum} 0 obj\n${pageText}\nendobj\n\n` });
