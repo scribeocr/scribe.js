@@ -1,9 +1,12 @@
-import { findXrefOffset, parseXref, ObjectCache } from '../../pdf/parsePdfUtils.js';
+import {
+  findXrefOffset, parseXref, ObjectCache, extractRawStreamBytes, bytesToLatin1,
+} from '../../pdf/parsePdfUtils.js';
 import { getPageObjects, collectPageTreeObjNums } from '../../pdf/parsePdfDoc.js';
 import {
   traceReferencedObjects,
   buildFullXrefAndTrailer,
   locateObjectByteRange,
+  decryptObjectStrings,
 } from './pdfObjectGraph.js';
 
 /**
@@ -19,6 +22,25 @@ function rewriteIndirectRefs(dictText, objNumMap) {
     const mapped = objNumMap.get(Number(n));
     return mapped !== undefined ? `${mapped} ${m} R` : match;
   });
+}
+
+/**
+ * For an encrypted source, walk a slice of `pdfBytes` and replace every PDF
+ * string (`(...)` literal, `<...>` hex) with its decrypted equivalent.
+ * Returns the latin1-decoded text.
+ *
+ * @param {Uint8Array} sliceBytes
+ * @param {number} oldObjNum
+ * @param {ObjectCache} objCache
+ * @param {number} [streamLength=-1]
+ */
+function decryptObjectSliceToText(sliceBytes, oldObjNum, objCache, streamLength = -1) {
+  const decryptedBytes = decryptObjectStrings(sliceBytes, oldObjNum, objCache);
+  let text = bytesToLatin1(decryptedBytes);
+  if (streamLength >= 0) {
+    text = text.replace(/\/Length\s+\d+(?:\s+\d+\s+R)?/, `/Length ${streamLength}`);
+  }
+  return text;
 }
 
 /**
@@ -101,11 +123,25 @@ export async function mergePdfs(pdfInputs) {
     const src = sources[s];
     const map = sourceMaps[s];
     const pageObjNumSet = new Set(src.pages.map((p) => p.objNum));
+    const isEncryptedSrc = !!src.objCache.encryptionKey;
 
     // Emit each page dict with /Parent re-pointed at the new pages root.
     for (const page of src.pages) {
       const newObjNum = /** @type {number} */ (map.get(page.objNum));
-      let pageText = rewriteIndirectRefs(page.objText, map);
+      let pageText;
+      const entry = src.xrefEntries[page.objNum];
+      if (isEncryptedSrc && page.objNum !== src.objCache.encryptObjNum
+          && entry && entry.type === 1 && entry.offset !== undefined) {
+        const range = locateObjectByteRange(src.pdfBytes, src.text, src.objCache,
+          /** @type {{type: number, offset: number}} */ (entry));
+        if (!range) continue;
+        const slice = src.pdfBytes.subarray(range.start, range.end);
+        const decryptedText = decryptObjectSliceToText(slice, page.objNum, src.objCache);
+        pageText = decryptedText.replace(/^\d+\s+\d+\s+obj\s*/, '').replace(/\s*endobj\s*$/, '');
+      } else {
+        pageText = page.objText;
+      }
+      pageText = rewriteIndirectRefs(pageText, map);
       if (/\/Parent\s+\d+\s+\d+\s+R/.test(pageText)) {
         pageText = pageText.replace(/\/Parent\s+\d+\s+\d+\s+R/, `/Parent ${pagesRootObjNum} 0 R`);
       } else {
@@ -125,6 +161,7 @@ export async function mergePdfs(pdfInputs) {
       const newObjNum = /** @type {number} */ (map.get(oldObjNum));
       const entry = src.xrefEntries[oldObjNum];
       if (!entry) continue;
+      const isObjEncrypted = isEncryptedSrc && oldObjNum !== src.objCache.encryptObjNum;
 
       if (entry.type === 1) {
         const range = locateObjectByteRange(src.pdfBytes, src.text, src.objCache, entry);
@@ -132,18 +169,61 @@ export async function mergePdfs(pdfInputs) {
 
         const isStream = range.streamStart !== range.start;
         if (!isStream) {
-          const objText = src.text.substring(range.start, range.end);
+          let objText;
+          if (isObjEncrypted) {
+            const slice = src.pdfBytes.subarray(range.start, range.end);
+            objText = decryptObjectSliceToText(slice, oldObjNum, src.objCache);
+          } else {
+            objText = src.text.substring(range.start, range.end);
+          }
           const rewritten = rewriteIndirectRefs(objText, map)
             .replace(/^\d+\s+\d+\s+obj/, `${newObjNum} 0 obj`);
           allOutputObjects.push({ objNum: newObjNum, content: `${rewritten}\n\n` });
         } else {
-          // Stream object: rewrite dict header text, byte-copy stream bytes,
-          // rewrite trailer text.
-          const headerText = src.text.substring(range.start, range.streamStart);
+          // Stream object: rewrite dict header text, copy (and decrypt) stream
+          // bytes, rewrite trailer text.
+          let headerText;
+          let streamBytes;
+          let trailerText;
+          if (isObjEncrypted && entry.offset !== undefined) {
+            const raw = extractRawStreamBytes(
+              src.pdfBytes, entry.offset,
+              src.objCache.encryptionKey, src.objCache.encryptObjNum, src.objCache.cipherMode, oldObjNum,
+            );
+            if (!raw) continue;
+            const headerSlice = new Uint8Array(raw.dictText.length);
+            for (let i = 0; i < raw.dictText.length; i++) headerSlice[i] = raw.dictText.charCodeAt(i) & 0xFF;
+            headerText = `${decryptObjectSliceToText(headerSlice, oldObjNum, src.objCache, raw.data.length)}stream\n`;
+            streamBytes = raw.data;
+            trailerText = '\nendstream\nendobj';
+          } else {
+            // PDF allows an optional EOL (CR / LF / CRLF) between stream data and endstream,
+            // which is not counted in /Length.
+            const headerStr = src.text.substring(range.start, range.streamStart - 7);
+            const declaredMatch = /\/Length\s+(\d+)(?!\s+\d+\s+R)/.exec(headerStr);
+            const declared = declaredMatch ? Number(declaredMatch[1]) : null;
+            const endStreamIdx = src.text.indexOf('endstream', range.streamStart);
+            let actualLength = range.streamEnd - range.streamStart;
+            if (endStreamIdx >= 0) {
+              if (declared !== null) {
+                const expectedEnd = range.streamStart + declared;
+                const consistent = endStreamIdx === expectedEnd
+                  || (endStreamIdx === expectedEnd + 1
+                      && (src.pdfBytes[expectedEnd] === 0x0A || src.pdfBytes[expectedEnd] === 0x0D))
+                  || (endStreamIdx === expectedEnd + 2
+                      && src.pdfBytes[expectedEnd] === 0x0D && src.pdfBytes[expectedEnd + 1] === 0x0A);
+                actualLength = consistent ? declared : (endStreamIdx - range.streamStart);
+              } else {
+                actualLength = endStreamIdx - range.streamStart;
+              }
+            }
+            const fullHeader = src.text.substring(range.start, range.streamStart);
+            headerText = fullHeader.replace(/\/Length\s+\d+(?:\s+\d+\s+R)?/, `/Length ${actualLength}`);
+            streamBytes = src.pdfBytes.subarray(range.streamStart, range.streamStart + actualLength);
+            trailerText = '\nendstream\nendobj';
+          }
           const rewrittenHeader = rewriteIndirectRefs(headerText, map)
             .replace(/^\d+\s+\d+\s+obj/, `${newObjNum} 0 obj`);
-          const streamBytes = src.pdfBytes.subarray(range.streamStart, range.streamEnd);
-          const trailerText = src.text.substring(range.streamEnd, range.end);
           const rewrittenTrailer = `${rewriteIndirectRefs(trailerText, map)}\n\n`;
           allOutputObjects.push({
             objNum: newObjNum,
@@ -155,6 +235,9 @@ export async function mergePdfs(pdfInputs) {
           });
         }
       } else if (entry.type === 2) {
+        // Compressed-stream objects come from object streams,
+        // which the parser already decrypts on its way in,
+        // so getObjectText is plaintext here.
         const objText = src.objCache.getObjectText(oldObjNum);
         if (!objText) continue;
         const rewritten = rewriteIndirectRefs(objText, map);
@@ -175,6 +258,22 @@ export async function mergePdfs(pdfInputs) {
     objNum: pagesRootObjNum,
     content: `${pagesRootObjNum} 0 obj\n<</Type/Pages/Kids[${keptPageRefs.join(' ')}]/Count ${keptPageRefs.length}>>\nendobj\n\n`,
   });
+
+  // Source PDFs can ref obj numbers their own xref doesn't define;
+  // we allocate new numbers but never emit content. Backfill with null,
+  // since PDF spec resolves an undefined ref to null anyway.
+  const emittedObjNums = new Set(allOutputObjects.map((o) => o.objNum));
+  for (const map of sourceMaps) {
+    for (const newObjNum of map.values()) {
+      if (!emittedObjNums.has(newObjNum)) {
+        allOutputObjects.push({
+          objNum: newObjNum,
+          content: `${newObjNum} 0 obj\nnull\nendobj\n\n`,
+        });
+        emittedObjNums.add(newObjNum);
+      }
+    }
+  }
 
   // Phase 5: write header, objects, xref, trailer.
   const pdfHeader = '%PDF-1.7\n';
@@ -205,7 +304,8 @@ export async function mergePdfs(pdfInputs) {
   }
 
   const newXrefOffset = byteLen;
-  const totalSize = Math.max(nextObjNum, ...allOutputObjects.map((o) => o.objNum + 1));
+  let totalSize = nextObjNum;
+  for (const o of allOutputObjects) if (o.objNum + 1 > totalSize) totalSize = o.objNum + 1;
   const xrefStr = buildFullXrefAndTrailer(xrefEntryList, totalSize, `${catalogObjNum} 0 R`, newXrefOffset);
   parts.push(xrefStr);
   byteLen += xrefStr.length;

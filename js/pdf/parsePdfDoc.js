@@ -115,6 +115,26 @@ function isSymbolFontFamily(familyName = '') {
   return SYMBOL_FONT_RE.test(familyName);
 }
 
+// Box Drawing, Block Elements, Geometric Shapes, Misc Symbols, Dingbats; plus
+// stray bullet chars from General Punctuation / Math Operators. CJK fonts often
+// supply a U+25A0 bullet glyph adjacent to Latin text — the family name alone
+// won't flag it as a symbol, but the codepoint will.
+const SYMBOL_CHAR_RE = /[•‣⁃∙─-➿]/;
+
+function isSymbolChar(text = '') {
+  return text.length > 0 && SYMBOL_CHAR_RE.test(text);
+}
+
+// List-marker codepoints used as standalone bullets ahead of a word. Same-font
+// bullets (e.g. Times New Roman U+00B7 before "Investment") share family/size
+// with the following text, so the family-change rule can't catch them; this
+// set drives a dedicated split when the bullet sits alone in the current word.
+const BULLET_CHAR_RE = /[·•‣⁃∙■-◿・]/;
+
+function isBulletChar(text = '') {
+  return text.length > 0 && BULLET_CHAR_RE.test(text);
+}
+
 /**
  * Scan content stream tokens for Do operators and record the CTM at each invocation.
  * @param {Array<PDFToken>} tokens
@@ -1056,7 +1076,7 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
 
   // Dedupe fake-bold double-rendering (fill + stroke at the same Tm).
   // Threshold scales with fontSize to avoid merging narrow letters at small sizes.
-  // eslint-disable-next-line no-param-reassign
+
   chars = (() => {
     const result = [];
     for (let i = 0; i < chars.length; i++) {
@@ -1376,18 +1396,6 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
       rightX,
     };
   };
-  const lastNonSpace = (lineChars) => {
-    for (let k = lineChars.length - 1; k >= 0; k--) {
-      if (lineChars[k].text !== ' ') return lineChars[k];
-    }
-    return null;
-  };
-  const firstNonSpace = (lineChars) => {
-    for (let k = 0; k < lineChars.length; k++) {
-      if (lineChars[k].text !== ' ') return lineChars[k];
-    }
-    return null;
-  };
   for (let li = lines.length - 2; li >= 0; li--) {
     const a = lineAnchorOf(lines[li]);
     const b = lineAnchorOf(lines[li + 1]);
@@ -1396,8 +1404,14 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
     if (Math.abs(a.baselineY - b.baselineY) > anchorSize * 0.25) continue;
     const gap = b.leftX - a.rightX;
     if (gap < -anchorSize * 0.1 || gap > anchorSize) continue;
-    const lastA = lastNonSpace(lines[li]);
-    const firstB = firstNonSpace(lines[li + 1]);
+    let lastA = null;
+    for (let k = lines[li].length - 1; k >= 0; k--) {
+      if (lines[li][k].text !== ' ') { lastA = lines[li][k]; break; }
+    }
+    let firstB = null;
+    for (let k = 0; k < lines[li + 1].length; k++) {
+      if (lines[li + 1][k].text !== ' ') { firstB = lines[li + 1][k]; break; }
+    }
     const supBoundary = (lastA && lastA.fontSize < anchorSize * 0.85)
       || (firstB && firstB.fontSize < anchorSize * 0.85);
     if (!supBoundary) continue;
@@ -1460,6 +1474,17 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
           currentWord = [];
           continue;
         }
+        // List bullet sitting alone in front of a letter/digit.
+        // Same-family bullets share size/gap with the following glyph,
+        // so the family-change rule can't catch them.
+        if (currentWord.length === 1
+          && isBulletChar(prevCh.text)
+          && /[A-Za-z0-9]/.test(ch.text)) {
+          wordsInitial.push(currentWord);
+          currentWord = [];
+          currentWord.push(ch);
+          continue;
+        }
         // Split at bold/italic style change, except for trailing punctuation.
         if ((ch.fontInfo.bold !== prevCh.fontInfo.bold
           || ch.fontInfo.italic !== prevCh.fontInfo.italic)
@@ -1470,11 +1495,14 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
         // Skip when chars are visually adjacent (gap near zero), since typeset documents
         // often use a different font for punctuation (e.g., MinionPro comma between MyriadPro digits).
         // Always split at symbol font boundaries (Webdings, Wingdings, Dingbats, Symbol)
-        // regardless of gap — these contain icons/symbols, not text characters.
+        // or symbol-block codepoints regardless of gap — these are icons/markers,
+        // not text characters.
         } else if (ch.fontInfo.familyName !== prevCh.fontInfo.familyName
           && (gap > fontSizeMin * 0.15
             || isSymbolFontFamily(ch.fontInfo.familyName)
-            || isSymbolFontFamily(prevCh.fontInfo.familyName))) {
+            || isSymbolFontFamily(prevCh.fontInfo.familyName)
+            || isSymbolChar(ch.text)
+            || isSymbolChar(prevCh.text))) {
           wordsInitial.push(currentWord);
           currentWord = [];
         // Split after right double quote followed by a letter.
@@ -1499,6 +1527,11 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
           currentWord = [];
         // Split where x goes backward and font size increases — new small caps title-case word.
         } else if (gap < -fontSizeMin * 0.1 && fontSizeMin > 0 && ch.fontSize > prevCh.fontSize * 1.1) {
+          wordsInitial.push(currentWord);
+          currentWord = [];
+        // Oversized ornamental glyph adjacent to body text: shares baseline and font family with its neighbors,
+        // and its wide bbox swallows the gap, so font-size mismatch is the only break signal.
+        } else if (fontSizeMin > 0 && Math.max(ch.fontSize, prevCh.fontSize) >= fontSizeMin * 2) {
           wordsInitial.push(currentWord);
           currentWord = [];
         // Split before dot leaders: a non-period char followed by a run of 5+ periods.

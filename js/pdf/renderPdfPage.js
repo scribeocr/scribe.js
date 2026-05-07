@@ -2776,6 +2776,14 @@ function parseDrawOps(
           // Multi-component DeviceN: evaluate the pre-computed RGB grid via interpolation
           if (fillDeviceNGrid && vals.length === fillDeviceNGrid.nInputs) {
             const grid = fillDeviceNGrid;
+            if (grid.parsedTint) {
+              const rgb = tintComponentsToRGB(grid.parsedTint, vals);
+              if (rgb) {
+                fillColor = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+                operandStack.length = 0;
+                break;
+              }
+            }
             const rgb = grid.rgbSamples;
             const nc = grid.nComponents; // RGB components per sample (3)
             if (grid.nInputs === 2) {
@@ -4191,9 +4199,9 @@ function parsePageColorSpaces(pageObjText, objCache) {
       // equivalent to Separation — needs ink inversion for scn color handling.
       // Multi-colorant DeviceN uses a sampled tint transform grid for color conversion.
       if (csType === 'DeviceN') {
-        const namesMatch = /\/DeviceN\s*\[\s*((?:\/\w+\s*)+)\]/.exec(csObjText);
+        const namesMatch = /\/DeviceN\s*\[\s*((?:\/[^/[\]<>(){}\s]+\s*)+)\]/.exec(csObjText);
         if (namesMatch) {
-          const colorants = namesMatch[1].trim().split(/(?=\/)/).filter((s) => s.startsWith('/'));
+          const colorants = namesMatch[1].match(/\/[^/[\]<>(){}\s]+/g) || [];
           if (colorants.length === 1) {
             csType = 'Separation';
           } else if (colorants.length >= 2) {
@@ -4218,6 +4226,20 @@ function parsePageColorSpaces(pageObjText, objCache) {
                   sizes: gridSizes,
                   rgbSamples: tintInfo.tintSamples,
                   nComponents: tintInfo.nComponents,
+                };
+              }
+            }
+            // FunctionType 2/4 tint transforms have no /Size, so no grid is built.
+            // Keep the parsed tint CS for direct per-call evaluation in scn/SCN.
+            if (!deviceNGrid) {
+              const parsedTint = parseTintColorSpace(csObjText, objCache);
+              if (parsedTint.tintFn && parsedTint.nInputs === colorants.length) {
+                deviceNGrid = {
+                  nInputs: colorants.length,
+                  sizes: null,
+                  rgbSamples: null,
+                  nComponents: 3,
+                  parsedTint,
                 };
               }
             }

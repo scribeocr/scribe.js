@@ -1989,8 +1989,24 @@ function collectPages(objNum, objCache, inheritedMediaBox, inheritedRotate, inhe
  */
 export function getPageObjects(objCache) {
   const { pagesRefMatch } = findCatalogAndPages(objCache);
+  /** @type {Array<{objNum: number, objText: string, mediaBox: number[], cropBox: number[]|null, rotate: number}>} */
   const pages = [];
   collectPages(Number(pagesRefMatch[1]), objCache, [0, 0, 612, 792], 0, '', pages);
+  // Recover orphan /Type/Page objects parented directly at the pages root,
+  // since producers occasionally append a page without updating /Kids.
+  // Orphans parented at intermediate /Pages nodes are excluded —
+  // those are usually deliberately unlinked old pages.
+  const pagesRootObjNum = Number(pagesRefMatch[1]);
+  const collectedObjNums = new Set(pages.map((p) => p.objNum).filter((n) => n > 0));
+  for (const objNumStr of Object.keys(objCache.xrefEntries)) {
+    const objNum = Number(objNumStr);
+    if (collectedObjNums.has(objNum)) continue;
+    const text = objCache.getObjectText(objNum);
+    if (!text || !/\/Type\s*\/Page\b(?!s)/.test(text)) continue;
+    const parentMatch = /\/Parent\s+(\d+)\s+\d+\s+R/.exec(text);
+    if (!parentMatch || Number(parentMatch[1]) !== pagesRootObjNum) continue;
+    collectPages(objNum, objCache, [0, 0, 612, 792], 0, '', pages);
+  }
   return pages;
 }
 

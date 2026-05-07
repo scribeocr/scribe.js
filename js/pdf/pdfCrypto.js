@@ -690,20 +690,15 @@ function sha384(msg) { return sha512Core(msg, SHA384_IV, 48); }
  */
 function computeHashR6(password, salt, userKey) {
   let K = sha256(concatBytes(password, salt, userKey));
-  for (let round = 0; ; round++) {
-    // K1 = password + K + userKey, repeated 64 times
+  for (let round = 1; ; round++) {
     const oneRound = concatBytes(password, K, userKey);
     const K1 = new Uint8Array(oneRound.length * 64);
     for (let i = 0; i < 64; i++) K1.set(oneRound, i * oneRound.length);
-    // AES-128-CBC encrypt K1 with key=K[0:16], iv=K[16:32]
     const E = aesCBCEncrypt(K.subarray(0, 16), K.subarray(16, 32), K1);
-    // Select hash: first 16 bytes of E as big-endian integer mod 3.
-    // Since 256 ≡ 1 (mod 3), this equals (sum of first 16 bytes) mod 3.
     let byteSum = 0;
     for (let j = 0; j < 16; j++) byteSum += E[j];
     const rem = byteSum % 3;
     K = rem === 0 ? sha256(E) : rem === 1 ? sha384(E) : sha512(E);
-    // Rounds 0-63 always execute; exit check starts at round 64
     if (round >= 64 && E[E.length - 1] <= round - 32) break;
   }
   return K.subarray(0, 32);
@@ -722,8 +717,8 @@ function concatBytes(a, b, c) {
  * Derive the file encryption key for V=5/R=6.
  * @param {Uint8Array} U - 48-byte /U value
  * @param {Uint8Array} UE - 32-byte /UE value (encrypted file key)
- * @param {Uint8Array} O - 48-byte /O value
- * @param {Uint8Array} OE - 32-byte /OE value (encrypted file key, owner)
+ * @param {Uint8Array|null} O - 48-byte /O value
+ * @param {Uint8Array|null} OE - 32-byte /OE value (encrypted file key, owner)
  */
 function deriveFileKeyR6(U, UE, O, OE) {
   const password = new Uint8Array(0); // empty password

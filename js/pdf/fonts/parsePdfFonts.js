@@ -570,7 +570,7 @@ export function parsePageFonts(pageObjText, objCache) {
     // Detect bold/italic/smallCaps from name (augmented by font descriptor below)
     let bold = /Bold|Black/i.test(baseName);
     let italic = /italic/i.test(baseName) || /-\w*ital/i.test(baseName) || /-it$/i.test(baseName) || /oblique/i.test(baseName);
-    const smallCaps = /(small\W?cap)|(sc(?=-|$))|(caps(?=-|$))/i.test(baseName);
+    const smallCaps = /(small\W?cap)|(sc(?=[-+]|$))|(caps(?=[-+]|$))/i.test(baseName);
     let familyName = baseName.replace(/-.+/, '').replace(/,.*/, '');
     // Serif flag from font descriptor /Flags bit 2 (PDF spec §9.8.2).
     // Used as last-resort fallback when CSS font name matching fails.

@@ -9,7 +9,7 @@ import { parsePdfLiteralString, parsePdfHexString } from '../../pdf/pdfCrypto.js
  * @param {number} objNum
  * @param {import('../../pdf/parsePdfUtils.js').ObjectCache} objCache
  */
-function decryptObjectStrings(bytes, objNum, objCache) {
+export function decryptObjectStrings(bytes, objNum, objCache) {
   if (!objCache.encryptionKey || objNum === objCache.encryptObjNum) return bytes;
   /** @type {number[]} */
   const out = [];
