@@ -390,11 +390,16 @@ function parseXrefTable(bytes, offset, entries) {
         if (i >= lines.length) break;
         const entryLine = lines[i].trim();
         const entryMatch = /^(\d+)\s+(\d+)\s+(n|f)$/.exec(entryLine);
-        if (entryMatch && entryMatch[3] === 'n') {
-          // Only store if not already set — newer xref sections (processed first) take precedence.
-          if (!entries[startObj + j]) {
-            entries[startObj + j] = { type: 1, offset: Number(entryMatch[1]), gen: Number(entryMatch[2]) };
-          }
+        if (!entryMatch) continue;
+        // Newer xref sections (processed first) take precedence — including
+        // free entries, since incremental updates that *delete* an obj must
+        // shadow that obj's earlier in-use entry rather than be discarded.
+        const objNum = startObj + j;
+        if (entries[objNum]) continue;
+        if (entryMatch[3] === 'n') {
+          entries[objNum] = { type: 1, offset: Number(entryMatch[1]), gen: Number(entryMatch[2]) };
+        } else {
+          entries[objNum] = { type: 0, gen: Number(entryMatch[2]) };
         }
       }
     }
@@ -418,9 +423,11 @@ function parseBareXrefTable(bytes, offset, entries) {
     const trimmed = line.trim();
     if (trimmed === 'trailer' || trimmed === '') break;
     const entryMatch = /^(\d{10})\s+(\d{5})\s+(n|f)$/.exec(trimmed);
-    if (entryMatch && entryMatch[3] === 'n') {
-      if (!entries[objNum]) {
+    if (entryMatch && !entries[objNum]) {
+      if (entryMatch[3] === 'n') {
         entries[objNum] = { type: 1, offset: Number(entryMatch[1]), gen: Number(entryMatch[2]) };
+      } else {
+        entries[objNum] = { type: 0, gen: Number(entryMatch[2]) };
       }
     }
     if (entryMatch) objNum++;
@@ -1229,6 +1236,9 @@ export class ObjectCache {
         }
       }
     }
+
+    // An xref entry with type=0 (free) explicitly says this obj is deleted.
+    if (entry && entry.type === 0) return null;
 
     // Fallback for broken xref: scan raw bytes for "N 0 obj" marker at line boundary.
     // This handles PDFs where the xref table has wrong offsets or missing entries.

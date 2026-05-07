@@ -1,5 +1,6 @@
 import {
   findXrefOffset, parseXref, ObjectCache, extractRawStreamBytes, bytesToLatin1,
+  findRootObjNum,
 } from '../../pdf/parsePdfUtils.js';
 import { getPageObjects, collectPageTreeObjNums } from '../../pdf/parsePdfDoc.js';
 import {
@@ -8,6 +9,37 @@ import {
   locateObjectByteRange,
   decryptObjectStrings,
 } from './pdfObjectGraph.js';
+
+/**
+ * Extract the value of a top-level dict key from a PDF dict text. Returns the
+ * raw substring (an inline `<<...>>` dict, an indirect ref `N M R`, an array,
+ * or null if the key is absent). Bracket-balances inline dicts (`<<`/`>>`)
+ * and arrays (`[`/`]`).
+ *
+ * @param {string} dictText
+ * @param {string} key e.g. '/OCProperties'
+ */
+function extractDictKeyValue(dictText, key) {
+  const re = new RegExp(`${key.replace(/[/]/g, '\\/')}(?![A-Za-z0-9_])`, 'g');
+  const match = re.exec(dictText);
+  if (!match) return null;
+  let i = match.index + match[0].length;
+  while (i < dictText.length && /\s/.test(dictText[i])) i++;
+  if (i >= dictText.length) return null;
+  if (dictText[i] === '<' && dictText[i + 1] === '<') {
+    let depth = 0;
+    let p = i;
+    while (p < dictText.length) {
+      if (dictText[p] === '<' && dictText[p + 1] === '<') { depth++; p += 2; continue; }
+      if (dictText[p] === '>' && dictText[p + 1] === '>') { depth--; p += 2; if (depth === 0) return dictText.substring(i, p); continue; }
+      p++;
+    }
+    return null;
+  }
+  const refMatch = /^\s*(\d+)\s+(\d+)\s+R/.exec(dictText.substring(i));
+  if (refMatch) return `${refMatch[1]} ${refMatch[2]} R`;
+  return null;
+}
 
 /**
  * Rewrite all indirect references `N M R` in PDF dict text using an
@@ -250,9 +282,22 @@ export async function mergePdfs(pdfInputs) {
   }
 
   // Phase 4: catalog and pages root.
+  // Preserve the first source's /OCProperties so OCG visibility (watermarks,
+  // layered drawings) renders consistently with the source.
+  let extraCatalogKeys = '';
+  const firstSrc = sources[0];
+  const firstMap = sourceMaps[0];
+  const firstCatNum = findRootObjNum(firstSrc.pdfBytes);
+  if (firstCatNum) {
+    const catText = firstSrc.objCache.getObjectText(firstCatNum);
+    if (catText) {
+      const ocpValue = extractDictKeyValue(catText, '/OCProperties');
+      if (ocpValue) extraCatalogKeys += `/OCProperties ${rewriteIndirectRefs(ocpValue, firstMap)}`;
+    }
+  }
   allOutputObjects.push({
     objNum: catalogObjNum,
-    content: `${catalogObjNum} 0 obj\n<</Type/Catalog/Pages ${pagesRootObjNum} 0 R>>\nendobj\n\n`,
+    content: `${catalogObjNum} 0 obj\n<</Type/Catalog/Pages ${pagesRootObjNum} 0 R${extraCatalogKeys}>>\nendobj\n\n`,
   });
   allOutputObjects.push({
     objNum: pagesRootObjNum,

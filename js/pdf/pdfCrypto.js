@@ -909,19 +909,18 @@ export function parsePdfHexString(bytes, start) {
 
 /**
  * Scan PDF bytes for "/Encrypt N M R" and return the encrypted-dict object
- * number, or null if no encryption marker is present. Walks all candidate
- * matches because the literal "/Encrypt" can appear in non-trailer contexts
- * (stream data, comments). Stops at the first one whose suffix parses as a
- * valid indirect reference.
+ * number from the last matching reference, or null if no encryption marker
+ * is present.
  * @param {Uint8Array} bytes
  */
 function findEncryptRef(bytes) {
   const marker = '/Encrypt';
   const len = bytes.length;
   let from = 0;
+  let last = null;
   while (true) {
     const idx = byteIndexOf(bytes, marker, from);
-    if (idx === -1) return null;
+    if (idx === -1) return last;
     let p = idx + marker.length;
     // Reject longer key names like /Encryptable
     if (p < len) {
@@ -940,23 +939,24 @@ function findEncryptRef(bytes) {
     while (p < len && isAsciiDigit(bytes[p])) p++;
     while (p < len && isPdfWhitespace(bytes[p])) p++;
     if (p >= len || bytes[p] !== 0x52) { from = p; continue; } // 'R'
-    return objNum;
+    last = objNum;
+    from = p + 1;
   }
 }
 
 /**
- * Scan PDF bytes for "/ID [" and return the byte offset just past the '['.
- * Returns -1 if no /ID array is present.
+ * Scan PDF bytes for "/ID [" and return the byte offset just past the '[' for
+ * the last match. Returns -1 if no /ID array is present.
  * @param {Uint8Array} bytes
  */
 function findIdArrayOpen(bytes) {
   const len = bytes.length;
   let from = 0;
+  let last = -1;
   while (true) {
     const idx = byteIndexOf(bytes, '/ID', from);
-    if (idx === -1) return -1;
+    if (idx === -1) return last;
     let p = idx + 3;
-    // Reject longer keys (/IDTree, etc.)
     if (p < len) {
       const c = bytes[p];
       if ((c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A) || isAsciiDigit(c) || c === 0x5F) {
@@ -965,8 +965,12 @@ function findIdArrayOpen(bytes) {
       }
     }
     while (p < len && isPdfWhitespace(bytes[p])) p++;
-    if (p < len && bytes[p] === 0x5B) return p + 1; // '['
-    from = p;
+    if (p < len && bytes[p] === 0x5B) {
+      last = p + 1;
+      from = p + 1;
+    } else {
+      from = p;
+    }
   }
 }
 

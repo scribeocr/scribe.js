@@ -417,14 +417,23 @@ export function parseSinglePage(page, objCache, n, dpi) {
     }
   }
 
-  // Drop co-located duplicate glyphs.
+  // Drop co-located duplicate glyphs. Check the 3×3 bucket neighborhood so
+  // two near-duplicate positions that straddle a bucket boundary still match.
   const seenCharKeys = new Set();
   const dedupedChars = [];
   for (let i = 0; i < chars.length; i++) {
     const ch = chars[i];
-    const key = `${ch.text}|${ch.fontInfo.familyName}|${ch.fontInfo.bold ? 1 : 0}|${ch.fontInfo.italic ? 1 : 0}|${Math.round(ch.fontSize * 10)}|${Math.round(ch.x * 2)}|${Math.round(ch.y * 2)}`;
-    if (seenCharKeys.has(key)) continue;
-    seenCharKeys.add(key);
+    const fontKey = `${ch.text}|${ch.fontInfo.familyName}|${ch.fontInfo.bold ? 1 : 0}|${ch.fontInfo.italic ? 1 : 0}|${Math.round(ch.fontSize * 10)}`;
+    const xb = Math.round(ch.x);
+    const yb = Math.round(ch.y);
+    let isDup = false;
+    for (let dx = -1; dx <= 1 && !isDup; dx++) {
+      for (let dy = -1; dy <= 1 && !isDup; dy++) {
+        if (seenCharKeys.has(`${fontKey}|${xb + dx}|${yb + dy}`)) isDup = true;
+      }
+    }
+    if (isDup) continue;
+    seenCharKeys.add(`${fontKey}|${xb}|${yb}`);
     dedupedChars.push(ch);
   }
   chars.length = 0;
@@ -1002,7 +1011,7 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
       fallbackUsed = true;
     }
     // Collapse any all-whitespace mapping to a single U+0020.
-    if (/^[\t\n\v\f\r \u00a0]+$/.test(unicode)) unicode = ' ';
+    if (/^\s+$/.test(unicode)) unicode = ' ';
     const glyphWidth = (font.widths.get(charCode) ?? font.defaultWidth) / 1000 * fontSize;
 
     // Drop fallback emissions of unmapped control-byte glyph codes.
@@ -1058,7 +1067,7 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
  * @param {number} [boxOriginX] - X origin of effective page box in points
  * @param {number} [boxOriginY] - Y origin of effective page box in points
  */
-function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = [], paths = [], scale = 1, visualHeightPts = 0, boxOriginX = 0, boxOriginY = 0) {
+export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = [], paths = [], scale = 1, visualHeightPts = 0, boxOriginX = 0, boxOriginY = 0) {
   const pageObj = new ocr.OcrPage(n, { width: pageWidth, height: pageHeight });
   const langSet = new Set();
   const fontSet = new Set();
@@ -1069,38 +1078,67 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
     };
   }
 
-  // Replace non-breaking spaces with regular spaces.
   for (const ch of chars) {
-    if (ch.text === '\u00A0') ch.text = ' ';
+    if (/^\s$/.test(ch.text)) ch.text = ' ';
   }
 
-  // Dedupe fake-bold double-rendering (fill + stroke at the same Tm).
-  // Threshold scales with fontSize to avoid merging narrow letters at small sizes.
+  // Dedupe stroke+fill double-rendering. Two passes catch different shapes:
+  //   1. Exact-Tm duplicate: same Tj re-emitted at identical Tm (e.g. stroke
+  //      pass with Tr 1 + outlined-color, then fill pass with Tr 0). The
+  //      two copies are emitted back-to-back in practice. The cap below
+  //      bounds the worst-case reorder window: matches further apart than
+  //      this are treated as independent and not deduped.
+  //   2. Slightly-offset overlap (fake-bold stroke+fill effect): the same
+  //      glyph drawn twice at offsets of 1–5 pt to create a thicker outline,
+  //      surfacing as e.g. "DDiesel" or "NNotes". The two copies are always
+  //      adjacent in the char stream, so a small local lookback suffices.
+  const SAME_TM_LOOKBACK = 500;
 
   chars = (() => {
     const result = [];
+    /** @type {Map<string, number>} */
+    const positionMap = new Map();
     for (let i = 0; i < chars.length; i++) {
       const ch = chars[i];
-      const posThresh = Math.max(0.05, ch.fontSize * 0.05);
-      let dupeIdx = -1;
-      // Limit lookback — duplicates are emitted as adjacent passes within the
-      // same text run, so a small window keeps this O(n) in practice.
-      for (let j = result.length - 1; j >= Math.max(0, result.length - 8); j--) {
-        const prev = result[j];
-        if (prev.text === ch.text
-            && prev.fontInfo.baseName === ch.fontInfo.baseName
-            && prev.orientation === ch.orientation
-            && Math.abs(prev.x - ch.x) < posThresh
-            && Math.abs(prev.y - ch.y) < posThresh) {
-          dupeIdx = j;
-          break;
+      const posKey = `${ch.text}\x00${ch.fontInfo.baseName}\x00${ch.orientation}\x00${Math.round(ch.x * 100)}\x00${Math.round(ch.y * 100)}`;
+      const mapped = positionMap.get(posKey);
+      let dupeIdx = mapped === undefined || (result.length - mapped) > SAME_TM_LOOKBACK ? -1 : mapped;
+      let dupeKind = dupeIdx >= 0 ? 'sameTm' : '';
+      if (dupeIdx < 0) {
+        for (let j = result.length - 1; j >= Math.max(0, result.length - 8); j--) {
+          const prev = result[j];
+          if (prev.text !== ch.text
+              || prev.fontInfo.baseName !== ch.fontInfo.baseName
+              || prev.orientation !== ch.orientation) continue;
+          if (Math.abs(prev.fontSize - ch.fontSize) < ch.fontSize * 0.05
+              && Math.abs(prev.y - ch.y) < ch.fontSize * 0.2) {
+            const xOverlap = Math.min(prev.x + prev.width, ch.x + ch.width)
+                           - Math.max(prev.x, ch.x);
+            const minWidth = Math.min(prev.width, ch.width);
+            if (xOverlap > 0 && minWidth > 0 && xOverlap / minWidth > 0.5) {
+              dupeIdx = j; dupeKind = 'overlap'; break;
+            }
+          }
         }
       }
       if (dupeIdx >= 0) {
-        if (ch.fontInfo.bold) result[dupeIdx].fontInfo.bold = true;
-        if (!ch.invisible) result[dupeIdx].invisible = false;
+        const prev = result[dupeIdx];
+        if (ch.fontInfo.bold) prev.fontInfo.bold = true;
+        if (!ch.invisible) prev.invisible = false;
+        // For offset-overlap (stroke+fill): keep the later-emitted glyph's
+        // position. The stroke is typically drawn first (wider/offset for
+        // outline) and the fill drawn on top at the visually-correct position.
+        // Using the fill's position avoids misaligning the surviving glyph
+        // and breaking adjacent word-spacing.
+        if (dupeKind === 'overlap') {
+          prev.x = ch.x;
+          prev.y = ch.y;
+          prev.width = ch.width;
+          prev.fontSize = ch.fontSize;
+        }
         continue;
       }
+      positionMap.set(posKey, result.length);
       result.push(ch);
     }
     return result;
@@ -1259,7 +1297,7 @@ function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = []
     // chars. Looser y-threshold past one full font size of x-gap, where
     // sustained mid-line baseline drift is implausible.
     else if (fontRatio > 0.8 && fontRatio < 1.25
-      && (xGap < -maxFont * 0.1 || xGap > maxFont * 0.5)
+      && (xGap < -maxFont * 0.1 || xGap > maxFont * 0.5 || yGap > minFont * 0.5)
       && yGap > (xGap > maxFont ? minFont * 0.2 : minFont * 0.3)) isCut = true;
 
     // Large font size change with any y-gap: different text region
