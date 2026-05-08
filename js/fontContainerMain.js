@@ -269,7 +269,7 @@ export async function loadDingbatsFont() {
     dingbatsSrc = readFile(new URL('../fonts/Dingbats.woff', import.meta.url)).then((res) => res.buffer);
   }
 
-  FontCont.supp.dingbats = await loadFont('Dingbats', 'normal', 'sans', await dingbatsSrc, false);
+  FontCont.supp.dingbats = await loadFont('Dingbats', 'normal', 'symbol', await dingbatsSrc, false);
 
   dingbatsReadyRes();
 
@@ -457,6 +457,8 @@ export async function optimizeFontContainerFamily(fontFamily, charMetricsObj) {
   if (multiFontMode) {
     if (fontFamily.normal.type === 'sans') {
       charMetricsType = 'SansDefault';
+    } else if (fontFamily.normal.type === 'symbol') {
+      return null;
     } else {
       charMetricsType = 'SerifDefault';
     }

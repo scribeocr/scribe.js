@@ -76,9 +76,11 @@ function parsePdfLiteralString(pdfBytes, openParenPos) {
  *   imageMask: boolean,
  *   decodeInvert: boolean,
  *   separationTintSamples: Uint8Array|null,
+ *   deviceNTintCS: {tintFn: any, altCS: any, nInputs: number}|null,
  *   iccProfileObjNum: number|null,
  *   iccTransform: {gamma: number[], matrix: number[]}|null,
  *   labWhitePoint: number[]|null,
+ *   labRange: number[]|null,
  *   paletteHival: number|null,
  *   colorKeyMask: number[]|null,
  * }} ImageInfo
@@ -327,8 +329,10 @@ export function parseImageObject(objText, objNum, objCache) {
   // decoding a stream is expensive (e.g. 17MB ASCIIHexDecode), and pages often
   // reference a shared Resources dict that lists many images only a few of which
   // are actually drawn. Only the DeviceN branch below mutates imageData in place
-  // at parse time, so it requires the eager load.
-  const needsEagerLoad = colorSpace === 'DeviceN';
+  // at parse time, so it requires the eager load — and only when the bytes are
+  // raw samples (encoded image filters' bytes can't be tint-transformed in place).
+  const deviceNNeedsLateDecode = colorSpace === 'DeviceN' && (filter === 'JPXDecode' || filter === 'DCTDecode');
+  const needsEagerLoad = colorSpace === 'DeviceN' && !deviceNNeedsLateDecode;
   let imageData = needsEagerLoad ? objCache.getStreamBytes(objNum) : null;
   if (needsEagerLoad && !imageData) return null;
 
@@ -367,7 +371,8 @@ export function parseImageObject(objText, objNum, objCache) {
     }
   }
 
-  if (colorSpace === 'DeviceN' && imageData) {
+  let deviceNTintCS = null;
+  if (colorSpace === 'DeviceN') {
     let csText = objText;
     const csRefMatchDN = /\/ColorSpace\s+(\d+)\s+\d+\s+R/.exec(objText);
     if (csRefMatchDN) {
@@ -376,28 +381,33 @@ export function parseImageObject(objText, objNum, objCache) {
     }
     const parsedTintCS = parseTintColorSpace(csText, objCache);
     if (parsedTintCS.tintFn && parsedTintCS.nInputs >= 1) {
-      const nComp = parsedTintCS.nInputs;
-      const nPixels = width * height;
-      const rgbData = new Uint8Array(nPixels * 3);
-      let ok = true;
-      const inputs = new Array(nComp);
-      const srcData = imageData;
-      for (let pi = 0; pi < nPixels; pi++) {
-        for (let c = 0; c < nComp; c++) inputs[c] = srcData[pi * nComp + c] / 255;
-        const rgb = tintComponentsToRGB(parsedTintCS, inputs);
-        if (!rgb) { ok = false; break; }
-        rgbData[pi * 3] = rgb[0];
-        rgbData[pi * 3 + 1] = rgb[1];
-        rgbData[pi * 3 + 2] = rgb[2];
-      }
-      if (ok) {
-        imageData = rgbData;
-        colorSpace = 'DeviceRGB';
+      if (deviceNNeedsLateDecode) {
+        deviceNTintCS = parsedTintCS;
+      } else if (imageData) {
+        const nComp = parsedTintCS.nInputs;
+        const nPixels = width * height;
+        const rgbData = new Uint8Array(nPixels * 3);
+        let ok = true;
+        const inputs = new Array(nComp);
+        const srcData = imageData;
+        for (let pi = 0; pi < nPixels; pi++) {
+          for (let c = 0; c < nComp; c++) inputs[c] = srcData[pi * nComp + c] / 255;
+          const rgb = tintComponentsToRGB(parsedTintCS, inputs);
+          if (!rgb) { ok = false; break; }
+          rgbData[pi * 3] = rgb[0];
+          rgbData[pi * 3 + 1] = rgb[1];
+          rgbData[pi * 3 + 2] = rgb[2];
+        }
+        if (ok) {
+          imageData = rgbData;
+          colorSpace = 'DeviceRGB';
+        }
       }
     }
   }
 
   let labWhitePoint = null;
+  let labRange = null;
   if (colorSpace === 'Lab') {
     let csText = objText;
     const csRefMatch3 = /\/ColorSpace\s+(\d+)\s+\d+\s+R/.exec(objText);
@@ -408,6 +418,10 @@ export function parseImageObject(objText, objNum, objCache) {
     const wpMatch = /\/WhitePoint\s*\[\s*([\d.\s]+)\]/.exec(csText);
     if (wpMatch) {
       labWhitePoint = wpMatch[1].trim().split(/\s+/).map(Number);
+    }
+    const rangeMatch = /\/Range\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]/.exec(csText);
+    if (rangeMatch) {
+      labRange = [Number(rangeMatch[1]), Number(rangeMatch[2]), Number(rangeMatch[3]), Number(rangeMatch[4])];
     }
   }
 
@@ -479,9 +493,11 @@ export function parseImageObject(objText, objNum, objCache) {
     imageMask,
     decodeInvert,
     separationTintSamples,
+    deviceNTintCS,
     iccProfileObjNum,
     iccTransform,
     labWhitePoint,
+    labRange,
     colorKeyMask,
     objNum,
   };
@@ -949,7 +965,11 @@ function parseLiteralPalette(csText, regexMatch, objCache, objNum) {
       else if (nc === 0x74) bytes.push(0x09);
       else if (nc === 0x62) bytes.push(0x08);
       else if (nc === 0x66) bytes.push(0x0C);
-      else if (nc >= 0x30 && nc <= 0x37) {
+      else if (nc === 0x0D) {
+        if (i + 1 < csText.length && csText.charCodeAt(i + 1) === 0x0A) i++;
+      } else if (nc === 0x0A) {
+        /* line continuation */
+      } else if (nc >= 0x30 && nc <= 0x37) {
         let oct = String.fromCharCode(nc);
         if (i + 1 < csText.length && csText.charCodeAt(i + 1) >= 0x30 && csText.charCodeAt(i + 1) <= 0x37) oct += csText[++i];
         if (i + 1 < csText.length && csText.charCodeAt(i + 1) >= 0x30 && csText.charCodeAt(i + 1) <= 0x37) oct += csText[++i];

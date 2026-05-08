@@ -109,10 +109,14 @@ export {
   bytesToLatin1, getPageObjects, getPageContentStream, getPageContentStreams, tokenizeContentStream, collectPageTreeObjNums,
 } from './parsePdfUtils.js';
 
-const SYMBOL_FONT_RE = /^(?:Webdings|Wingdings|ZapfDingbats|Symbol)(?:[-\s].*)?$/i;
+const SYMBOL_FONT_RE = /^(?:Webdings|Wingdings|ZapfDingbats|Dingbats|Symbol|SymbolMT|Quivira)(?:[-\s].*)?$/i;
 
-function isSymbolFontFamily(familyName = '') {
-  return SYMBOL_FONT_RE.test(familyName);
+/**
+ * @param {{ familyName?: string, symbolicFlag?: boolean } | null | undefined} fontInfo
+ */
+function isSymbolFont(fontInfo) {
+  if (!fontInfo) return false;
+  return SYMBOL_FONT_RE.test(fontInfo.familyName || '');
 }
 
 // Box Drawing, Block Elements, Geometric Shapes, Misc Symbols, Dingbats; plus
@@ -136,16 +140,23 @@ function isBulletChar(text = '') {
 }
 
 /**
- * Scan content stream tokens for Do operators and record the CTM at each invocation.
  * @param {Array<PDFToken>} tokens
  * @param {Map<string, { objNum: number }>} formXObjects
  * @param {number[]} initialCtm
+ * @param {{ tc: number, tw: number, tl: number, tz: number, trise: number }} [initialTextState]
  */
-function findDoOperators(tokens, formXObjects, initialCtm) {
+function findDoOperators(tokens, formXObjects, initialCtm, initialTextState) {
   const doOps = [];
   let ctm = initialCtm.slice();
   const ctmStack = [];
   const operandStack = [];
+  let tc = initialTextState ? initialTextState.tc : 0;
+  let tw = initialTextState ? initialTextState.tw : 0;
+  let tl = initialTextState ? initialTextState.tl : 0;
+  let tz = initialTextState ? initialTextState.tz : 100;
+  let trise = initialTextState ? initialTextState.trise : 0;
+  /** @type {Array<{ ctm: number[], tc: number, tw: number, tl: number, tz: number, trise: number }>} */
+  const gsStack = [];
 
   for (const tok of tokens) {
     if (tok.type !== 'operator') {
@@ -155,9 +166,16 @@ function findDoOperators(tokens, formXObjects, initialCtm) {
     switch (tok.value) {
       case 'q':
         ctmStack.push(ctm.slice());
+        gsStack.push({
+          ctm: ctm.slice(), tc, tw, tl, tz, trise,
+        });
         break;
       case 'Q':
         if (ctmStack.length > 0) ctm = ctmStack.pop();
+        if (gsStack.length > 0) {
+          const saved = /** @type {NonNullable<ReturnType<typeof gsStack.pop>>} */ (gsStack.pop());
+          tc = saved.tc; tw = saved.tw; tl = saved.tl; tz = saved.tz; trise = saved.trise;
+        }
         break;
       case 'cm':
         if (operandStack.length >= 6) {
@@ -165,11 +183,36 @@ function findDoOperators(tokens, formXObjects, initialCtm) {
           ctm = multiplyMatrices(m, ctm);
         }
         break;
+      case 'Tc':
+        if (operandStack.length >= 1) tc = operandStack[operandStack.length - 1].value;
+        break;
+      case 'Tw':
+        if (operandStack.length >= 1) tw = operandStack[operandStack.length - 1].value;
+        break;
+      case 'TL':
+        if (operandStack.length >= 1) tl = operandStack[operandStack.length - 1].value;
+        break;
+      case 'Tz':
+        if (operandStack.length >= 1) tz = operandStack[operandStack.length - 1].value;
+        break;
+      case 'Ts':
+        if (operandStack.length >= 1) trise = operandStack[operandStack.length - 1].value;
+        break;
+      case 'TD':
+        // TD also sets leading: -ty.
+        if (operandStack.length >= 2) tl = -operandStack[operandStack.length - 1].value;
+        break;
       case 'Do':
         if (operandStack.length >= 1) {
           const name = operandStack[operandStack.length - 1].value;
           if (formXObjects.has(name)) {
-            doOps.push({ name, ctm: ctm.slice() });
+            doOps.push({
+              name,
+              ctm: ctm.slice(),
+              textState: {
+                tc, tw, tl, tz, trise,
+              },
+            });
           }
         }
         break;
@@ -194,13 +237,15 @@ function findDoOperators(tokens, formXObjects, initialCtm) {
  * @param {ObjectCache} objCache
  * @param {Set<number>} visited - Object numbers already visited (cycle detection)
  * @param {Map<string, { fillAlpha: ?number }>} [parentExtGStates] - ExtGState map inherited from the parent scope
+ * @param {{ tc: number, tw: number, tl: number, tz: number, trise: number }} [parentTextState] - Text state inherited from the parent scope at Do time
  */
-function extractFormXObjectText(containerObjText, containerTokens, parentFonts, scale, pageHeightPts, containerCtm, objCache, visited, parentExtGStates) {
+function extractFormXObjectText(containerObjText, containerTokens, parentFonts, scale, pageHeightPts, containerCtm,
+  objCache, visited, parentExtGStates, parentTextState) {
   const chars = [];
   const formXObjects = findFormXObjects(containerObjText, objCache);
   if (formXObjects.size === 0) return chars;
 
-  const doOps = findDoOperators(containerTokens, formXObjects, containerCtm);
+  const doOps = findDoOperators(containerTokens, formXObjects, containerCtm, parentTextState);
   for (const doOp of doOps) {
     const form = formXObjects.get(doOp.name);
     if (visited.has(form.objNum)) continue;
@@ -224,13 +269,13 @@ function extractFormXObjectText(containerObjText, containerTokens, parentFonts, 
     const formCtm = multiplyMatrices(formMatrix, doOp.ctm);
     const formTokens = tokenizeContentStream(formContentStream);
     const formChars = executeTextOperators(
-      formTokens, mergedFonts, scale, pageHeightPts, formCtm, mergedExtGStates,
+      formTokens, mergedFonts, scale, pageHeightPts, formCtm, mergedExtGStates, doOp.textState,
     );
     for (let ci = 0; ci < formChars.length; ci++) chars.push(formChars[ci]);
 
     // Recurse into nested form XObjects within this form's content stream.
     const nestedChars = extractFormXObjectText(
-      formObjText, formTokens, mergedFonts, scale, pageHeightPts, formCtm, objCache, visited, mergedExtGStates,
+      formObjText, formTokens, mergedFonts, scale, pageHeightPts, formCtm, objCache, visited, mergedExtGStates, doOp.textState,
     );
     for (let ci = 0; ci < nestedChars.length; ci++) chars.push(nestedChars[ci]);
   }
@@ -586,9 +631,10 @@ function multiplyMatrices(a, b) {
  * @param {number} pageHeightPts - visual page height in PDF points (after /Rotate)
  * @param {number[]} [initialCtm] - initial CTM incorporating /Rotate transform
  * @param {Map<string, { fillAlpha: ?number }>} [extGStates] - ExtGState map (name → entry) for `gs` operator
+ * @param {{ tc: number, tw: number, tl: number, tz: number, trise: number }} [inheritedTextState] - Text state inherited at Form XObject `Do` call time
  * @returns {Array<PositionedChar>}
  */
-function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, extGStates) {
+function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, extGStates, inheritedTextState) {
   const chars = /** @type {Array<PositionedChar>} */ ([]);
 
   // Graphics state
@@ -600,16 +646,15 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
   /** @type {Array<{ ctm: number[], tr: number, tc: number, tw: number, tz: number, tl: number, trise: number, fontSize: number, currentFont: any, textColor: number[], fillAlpha: number }>} */
   const gsStack = [];
 
-  // Text state
   let tm = [1, 0, 0, 1, 0, 0]; // text matrix
   let tlm = [1, 0, 0, 1, 0, 0]; // text line matrix
   let currentFont = null;
   let fontSize = 12;
-  let tc = 0; // character spacing
-  let tw = 0; // word spacing
-  let tz = 100; // horizontal scaling percentage (PDF spec §9.3.4 Th = Tz/100)
-  let tl = 0; // leading
-  let trise = 0; // text rise (unscaled text-space units, applied to glyph y in Trm)
+  let tc = inheritedTextState ? inheritedTextState.tc : 0;
+  let tw = inheritedTextState ? inheritedTextState.tw : 0;
+  let tz = inheritedTextState ? inheritedTextState.tz : 100;
+  let tl = inheritedTextState ? inheritedTextState.tl : 0;
+  let trise = inheritedTextState ? inheritedTextState.trise : 0;
 
   /** @type {Array<any>} */
   const operandStack = [];
@@ -1271,8 +1316,8 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
     // Inline symbol glyphs (e.g., Webdings arrows between regular words) can carry
     // a different orientation/font size while still belonging to the same visual line.
     // Treat close symbol/text boundaries as inline to avoid fragmenting one sentence.
-    const symbolBoundary = isSymbolFontFamily(ch.fontInfo.familyName)
-      || isSymbolFontFamily(compPrev.fontInfo.familyName);
+    const symbolBoundary = isSymbolFont(ch.fontInfo)
+      || isSymbolFont(compPrev.fontInfo);
     const inlineSymbolBoundary = symbolBoundary
       && yGap < maxFont * 0.5
       && xGap > -maxFont * 0.2
@@ -1537,8 +1582,8 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
         // not text characters.
         } else if (ch.fontInfo.familyName !== prevCh.fontInfo.familyName
           && (gap > fontSizeMin * 0.15
-            || isSymbolFontFamily(ch.fontInfo.familyName)
-            || isSymbolFontFamily(prevCh.fontInfo.familyName)
+            || isSymbolFont(ch.fontInfo)
+            || isSymbolFont(prevCh.fontInfo)
             || isSymbolChar(ch.text)
             || isSymbolChar(prevCh.text))) {
           wordsInitial.push(currentWord);

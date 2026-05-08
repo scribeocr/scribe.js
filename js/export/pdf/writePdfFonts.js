@@ -92,7 +92,7 @@ end`;
  * @param {boolean} symbolic - Whether the font contains glyphs outside the Adobe standard Latin character set.
  * @returns {number} The flags value as an unsigned 32-bit integer.
  */
-const generateFontFlags = (serif, italic, smallcap, symbolic) => { /* eslint-disable no-bitwise */
+const generateFontFlags = (serif, italic, smallcap, symbolic) => {
   let flags = 0;
 
   // Set bits based on the input flags:
@@ -155,11 +155,11 @@ function createFontDescriptor(font, objIndex, italic, embeddedObjIndex = null) {
   // https://stackoverflow.com/questions/35485179/stemv-value-of-the-truetype-font
   objOut += `/StemV ${String(Math.round(0.08 * font.unitsPerEm))}`;
 
-  const serif = determineSansSerif(namesTable.postScriptName.en) !== 'SansDefault';
+  const category = determineSansSerif(namesTable.postScriptName.en);
+  const symbolic = category === 'SymbolDefault';
+  const serif = !symbolic && category !== 'SansDefault';
 
-  // Symbolic is always set to false, even if the font contains glyphs outside the Adobe standard Latin character set.
-  // This is because symbolic fonts are only used when embedded, and this does not appear to matter for embedded fonts.
-  objOut += `/Flags ${String(generateFontFlags(serif, italic, false, false))}`;
+  objOut += `/Flags ${String(generateFontFlags(serif, italic, false, symbolic))}`;
 
   if (embeddedObjIndex === null || embeddedObjIndex === undefined) {
     objOut += '>>\nendobj\n\n';

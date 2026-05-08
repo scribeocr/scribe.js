@@ -1805,11 +1805,9 @@ function transformComponents(context) {
     let y1;
     let y2;
     if (tile.codingStyleDefaultParameters.multipleComponentTransform) {
-      const fourComponents = componentsCount === 4;
       const y0items = transformedTiles[0].items;
       const y1items = transformedTiles[1].items;
       const y2items = transformedTiles[2].items;
-      const y3items = fourComponents ? transformedTiles[3].items : null;
 
       // HACK: The multiple component transform formulas below assume that
       // all components have the same precision. With this in mind, we
@@ -1843,9 +1841,10 @@ function transformComponents(context) {
             out[pos++] = (g + y1) << leftShift;
           }
         }
-        if (fourComponents) {
-          for (j = 0, pos = 3; j < jj; j++, pos += 4) {
-            out[pos] = (y3items[j] + halfRange) << leftShift;
+        for (let cExtra = 3; cExtra < componentsCount; cExtra++) {
+          const ycItems = transformedTiles[cExtra].items;
+          for (j = 0, pos = cExtra; j < jj; j++, pos += componentsCount) {
+            out[pos] = (ycItems[j] + halfRange) << leftShift;
           }
         }
       } else {
@@ -1872,9 +1871,10 @@ function transformComponents(context) {
             out[pos++] = (g + y1) >> shift;
           }
         }
-        if (fourComponents) {
-          for (j = 0, pos = 3; j < jj; j++, pos += 4) {
-            out[pos] = (y3items[j] + offset) >> shift;
+        for (let cExtra = 3; cExtra < componentsCount; cExtra++) {
+          const ycItems = transformedTiles[cExtra].items;
+          for (j = 0, pos = cExtra; j < jj; j++, pos += componentsCount) {
+            out[pos] = (ycItems[j] + offset) >> shift;
           }
         }
       }

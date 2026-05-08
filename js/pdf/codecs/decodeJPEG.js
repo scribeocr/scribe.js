@@ -604,30 +604,27 @@ export function decodeCMYKJpegToRGB(jpegData, decodeInvert = false) {
 }
 
 /**
- * Decode a Lab JPEG and return RGBA pixel data.
- * JPEG raw bytes encode L (0-255→0-100), a (0-255→-128..127), b (0-255→-128..127).
- * Converts Lab → XYZ → sRGB.
+ * Convert raw Lab pixel bytes to RGBA.
  *
- * @param {Uint8Array} jpegData - Raw JPEG bytes
- * @param {number[]} whitePoint - [Xw, Yw, Zw] CIE white point (e.g., D50: [0.9642, 1, 0.82491])
- * @returns {{ width: number, height: number, rgbData: Uint8Array }|null}
+ * @param {Uint8Array|Uint8ClampedArray} data
+ * @param {number} width
+ * @param {number} height
+ * @param {number[]} whitePoint
+ * @param {number[]} [range]
  */
-export function decodeLabJpegToRGB(jpegData, whitePoint) {
-  const raw = decodeJPEGRaw(jpegData);
-  if (!raw || raw.components !== 3) return null;
-
-  const { width, height, data } = raw;
+export function labBytesToRGBA(data, width, height, whitePoint, range) {
   const rgbData = new Uint8Array(width * height * 4);
   const [Xw, Yw, Zw] = whitePoint;
+  const r = range || [-128, 127, -128, 127];
+  const aMin = r[0]; const aSpan = r[1] - r[0];
+  const bMin = r[2]; const bSpan = r[3] - r[2];
 
   for (let i = 0; i < width * height; i++) {
     const si = i * 3;
-    // Map JPEG byte values to Lab ranges
     const L = data[si] * 100 / 255;
-    const a = data[si + 1] - 128;
-    const b = data[si + 2] - 128;
+    const a = data[si + 1] / 255 * aSpan + aMin;
+    const b = data[si + 2] / 255 * bSpan + bMin;
 
-    // Lab → XYZ
     const fy = (L + 16) / 116;
     const fx = a / 500 + fy;
     const fz = fy - b / 200;
@@ -640,13 +637,11 @@ export function decodeLabJpegToRGB(jpegData, whitePoint) {
     const Y = yr * Yw;
     const Z = zr * Zw;
 
-    // XYZ (D50) → sRGB (D65) via Bradford chromatic adaptation + sRGB matrix
-    // Combined D50→D65 adapted sRGB matrix:
+    // Combined D50→D65 Bradford-adapted sRGB matrix.
     const lr = 3.1338561 * X - 1.6168667 * Y - 0.4906146 * Z;
     const lg = -0.9787684 * X + 1.9161415 * Y + 0.0334540 * Z;
     const lb = 0.0719453 * X - 0.2289914 * Y + 1.4052427 * Z;
 
-    // sRGB gamma
     const gamma = (v) => {
       if (v <= 0.0031308) return 12.92 * v;
       return 1.055 * (v ** (1 / 2.4)) - 0.055;
@@ -659,7 +654,20 @@ export function decodeLabJpegToRGB(jpegData, whitePoint) {
     rgbData[di + 3] = 255;
   }
 
-  return { width, height, rgbData };
+  return rgbData;
+}
+
+/**
+ * Decode a Lab JPEG and return RGBA pixel data.
+ *
+ * @param {Uint8Array} jpegData
+ * @param {number[]} whitePoint
+ */
+export function decodeLabJpegToRGB(jpegData, whitePoint) {
+  const raw = decodeJPEGRaw(jpegData);
+  if (!raw || raw.components !== 3) return null;
+  const { width, height, data } = raw;
+  return { width, height, rgbData: labBytesToRGBA(data, width, height, whitePoint) };
 }
 
 /**

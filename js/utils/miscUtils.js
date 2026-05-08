@@ -391,42 +391,42 @@ export function objectAssignDefined(target, ...sources) {
   return target;
 }
 
-// Sans/serif lookup for common font families. These should not include spaces or underscores--multi-word font names should be concatenated.
+// Sans/serif/symbol lookup for common font families. These should not include spaces or underscores--multi-word font names should be concatenated.
 // Fonts that should not be added (both Sans and Serif variants):
 // DejaVu
-const serifFonts = ['SerifDefault', 'Baskerville', 'Bembo', 'Bodoni', 'Bookman', 'C059', 'Calibri', 'Cambria', 'Century', 'Cheltenham', 'Courier', 'Garamond', 'Georgia',
+const serifFonts = ['SerifDefault', 'Archer', 'Baskerville', 'Bembo', 'Bodoni', 'Bookman', 'C059', 'Calibri', 'Cambria', 'Century', 'Cheltenham', 'Courier', 'Garamond', 'Georgia',
   'LucidaBright', 'Minion', 'NimbusMono', 'Optima', 'P052', 'Palatino', 'Times'];
-const sansFonts = ['SansDefault', 'Avenir', 'Arial', 'Calibri', 'Candara', 'Carlito', 'Comic', 'Franklin', 'Frutiger', 'Futura', 'Gotham', 'Gothic',
-  'Helvetica', 'Impact', 'Interstate', 'Myriad', 'Tahoma', 'Trebuchet', 'Univers', 'Verdana'];
+const sansFonts = ['SansDefault', 'Amplitude', 'Avenir', 'Arial', 'Calibri', 'Candara', 'Carlito', 'Comic', 'Franklin', 'Frutiger', 'Futura', 'Gotham', 'Gothic',
+  'Halvorsen', 'Helvetica', 'Impact', 'Interstate', 'Kievit', 'Lato', 'Myriad', 'Segoe', 'Tahoma', 'Trebuchet', 'Univers', 'Verdana'];
+const symbolFonts = ['SymbolDefault', 'Dingbats', 'Wingdings', 'Webdings', 'ZapfDingbats', 'Symbol', 'SymbolMT', 'Quivira'];
 
 const serifFontsRegex = new RegExp(serifFonts.reduce((x, y) => `${x}|${y}`), 'i');
 const sansFontsRegex = new RegExp(sansFonts.reduce((x, y) => `${x}|${y}`), 'i');
+const symbolFontsRegex = new RegExp(symbolFonts.reduce((x, y) => `${x}|${y}`), 'i');
 
 const unidentifiedFonts = new Set();
 
 /**
- * Given a font name from Tesseract/Abbyy XML, determine if it should be represented by sans font or serif font.
+ * Given a font name, determine which built-in font category it should be represented by:
+ * sans-serif, serif, or symbol.
  *
- * @param {string|null|undefined} fontName - The name of the font to determine the type of. If the font name
- * is falsy, the function will return "Default".
- * @returns {('SansDefault'|'SerifDefault'|'Default')}
+ * @param {string|null|undefined} fontName - The name of the font to determine the type of.
+ *    If the font name is falsy, the function will return "Default".
+ * @returns {('SansDefault'|'SerifDefault'|'SymbolDefault'|'Default')}
  */
 export function determineSansSerif(fontName) {
   // Remove underscores and spaces from the font name.
   fontName = fontName?.replaceAll(/[_\s]/gi, '');
 
-  /** @type {('SansDefault'|'SerifDefault'|'Default')} */
+  /** @type {('SansDefault'|'SerifDefault'|'SymbolDefault'|'Default')} */
   let fontFamily = 'Default';
-  // Font support is currently limited to 1 font for Sans and 1 font for Serif.
   if (fontName && !['Default', 'GlyphLessFont', 'HiddenHorzOCR'].includes(fontName)) {
-    // First, test to see if "sans" or "serif" is in the name of the font
-    if (/(^|\W|_)sans($|\W|_)/i.test(fontName)) {
+    if (symbolFontsRegex.test(fontName)) {
+      fontFamily = 'SymbolDefault';
+    } else if (/(^|\W|_)sans($|\W|_)/i.test(fontName)) {
       fontFamily = 'SansDefault';
     } else if (/(^|\W|_)serif($|\W|_)/i.test(fontName)) {
       fontFamily = 'SerifDefault';
-
-    // If not, check against a list of known sans/serif fonts.
-    // This list is almost certainly incomplete, so should be added to when new fonts are encountered.
     } else if (serifFontsRegex.test(fontName)) {
       fontFamily = 'SerifDefault';
     } else if (sansFontsRegex.test(fontName)) {

@@ -501,11 +501,6 @@ export function buildFontFromCFF(cffData, fontObj, encoding) {
         if (hasCustomCFFEncoding || !hasDifferencesEncoding) {
           for (const [code, gid] of cffBaseEncoding) {
             if (fontObj.encodingUnicode?.has(code) && !(diffCodeSet && diffCodeSet.has(code))) continue;
-            // Only add PUA for charcodes the renderer would actually route
-            // through PUA: control bytes (cc < 0x20) whose literal codepoint
-            // has no glyph, and codepoints not already reachable via the
-            // standard charset cmap.
-            if (code >= 0x20 && unicodeToGID.has(code)) continue;
             const puaCode = 0xE000 + code;
             if (!unicodeToGID.has(puaCode)) {
               unicodeToGID.set(puaCode, gid);

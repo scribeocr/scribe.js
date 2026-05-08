@@ -146,7 +146,7 @@ export function unregisterFontFacesMatching(predicate) {
  * This function is used to load the Chinese font.
  * @param {string} family
  * @param {StyleLookup} styleLookup
- * @param {("sans"|"serif")} type
+ * @param {("sans"|"serif"|"symbol")} type
  * @param {ArrayBuffer} src
  * @param {boolean} opt
  *
@@ -198,8 +198,13 @@ export function FontContainerFont(family, styleLookup, src, opt, opentypeObj) {
   this.fontFaceStyle = ['italic', 'boldItalic'].includes(this.style) ? 'italic' : 'normal';
   /** @type {('normal'|'bold')} */
   this.fontFaceWeight = ['bold', 'boldItalic'].includes(this.style) ? 'bold' : 'normal';
-  /** @type {("sans"|"serif")} */
-  this.type = determineSansSerif(this.family) === 'SansDefault' ? 'sans' : 'serif';
+  /** @type {("sans"|"serif"|"symbol")} */
+  this.type = (() => {
+    const category = determineSansSerif(this.family);
+    if (category === 'SansDefault') return 'sans';
+    if (category === 'SymbolDefault') return 'symbol';
+    return 'serif';
+  })();
   this.smallCapsMult = 0.75;
   /**
    * @type {boolean} - Disable font. This is used to prevent a flawed font extracted from a PDF from being used.
@@ -402,7 +407,7 @@ export class FontCont {
     // (3) The optimized version of the default sans/serif font also has a better metric.
     // This last condition avoids font optimization being enabled in the UI when it only improves an unused font.
     } if (opt && FontCont.state.enableOpt) {
-      const defaultFamily = raw.type === 'serif' ? FontCont.state.serifDefaultName : FontCont.state.sansDefaultName;
+      const defaultFamily = raw.type === 'sans' ? FontCont.state.sansDefaultName : FontCont.state.serifDefaultName;
 
       const rawMetricDefault = FontCont.rawMetrics?.[defaultFamily];
       const optMetricDefault = FontCont.optMetrics?.[defaultFamily];
@@ -480,7 +485,7 @@ export class FontCont {
     }
 
     // This needs to come first as `defaultFontName` maps to either 'SerifDefault' or 'SansDefault'.
-    if (family === 'Default') family = FontCont.state.defaultFontName;
+    if (family === 'Default' || family === 'SymbolDefault') family = FontCont.state.defaultFontName;
 
     if (family === 'SerifDefault') family = FontCont.state.serifDefaultName;
     if (family === 'SansDefault') family = FontCont.state.sansDefaultName;

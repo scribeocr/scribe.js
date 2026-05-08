@@ -10,6 +10,7 @@ import {
 import { applyStandardFontWidths, getDingbatsGlyphWidth } from './standardFontMetrics.js';
 import { parseCFFCharset } from './convertFontToOTF.js';
 import { getCIDToUnicodeMap } from './cidToUnicode.js';
+import { determineSansSerif } from '../../utils/miscUtils.js';
 
 /**
  * Parse a TrueType font file's cmap table and build a reverse GID→Unicode map.
@@ -1342,24 +1343,20 @@ export function parsePageFonts(pageObjText, objCache) {
       const dwVal = resolveIntValue(cidFontText, 'DW', objCache);
       if (dwVal || /\/DW\s/.test(cidFontText)) defaultWidth = dwVal;
 
-      // /W can be inline (/W [...]) or an indirect reference (/W 216 0 R).
-      // It can also be inline with indirect refs inside: /W[0 169 0 R]
-      // where "169 0 R" resolves to a width array [250 333 ...].
+      let wArrayContent = null;
       const wRefMatch = /\/W\s+(\d+)\s+\d+\s+R/.exec(cidFontText);
       if (wRefMatch) {
         const wArrayText = objCache.getObjectText(Number(wRefMatch[1]));
         if (wArrayText) {
-          parseCIDWidths(`/W ${wArrayText}`, widths);
+          const ob = wArrayText.indexOf('[');
+          const cb = wArrayText.lastIndexOf(']');
+          wArrayContent = (ob !== -1 && cb !== -1 && cb > ob) ? wArrayText.substring(ob + 1, cb) : wArrayText;
         }
       } else {
-        // Before parsing inline /W, resolve any indirect references inside it.
-        // Pattern like /W[0 169 0 R] contains "169 0 R" which must be resolved.
-        let resolvedCidText = cidFontText;
         const wPos = cidFontText.indexOf('/W');
         if (wPos !== -1) {
           const bracketPos = cidFontText.indexOf('[', wPos);
           if (bracketPos !== -1) {
-            // Find matching ]
             let depth = 0;
             let bracketEndPos = -1;
             for (let j = bracketPos; j < cidFontText.length; j++) {
@@ -1367,26 +1364,22 @@ export function parsePageFonts(pageObjText, objCache) {
               else if (cidFontText[j] === ']') { depth--; if (depth === 0) { bracketEndPos = j; break; } }
             }
             if (bracketEndPos !== -1) {
-              let wContent = cidFontText.substring(bracketPos + 1, bracketEndPos);
-              // Resolve indirect references (N 0 R) inside the /W array
-              const refPattern = /(\d+)\s+0\s+R/g;
-              const replacements = [];
-              for (let refMatch = refPattern.exec(wContent); refMatch !== null; refMatch = refPattern.exec(wContent)) {
-                const refObjNum = Number(refMatch[1]);
-                const refText = objCache.getObjectText(refObjNum);
-                if (refText) {
-                  replacements.push({ start: refMatch.index, end: refMatch.index + refMatch[0].length, text: refText.trim() });
-                }
-              }
-              // Apply replacements in reverse order to preserve positions
-              for (let r = replacements.length - 1; r >= 0; r--) {
-                wContent = wContent.substring(0, replacements[r].start) + replacements[r].text + wContent.substring(replacements[r].end);
-              }
-              resolvedCidText = cidFontText.substring(0, bracketPos + 1) + wContent + cidFontText.substring(bracketEndPos);
+              wArrayContent = cidFontText.substring(bracketPos + 1, bracketEndPos);
             }
           }
         }
-        parseCIDWidths(resolvedCidText, widths);
+      }
+      if (wArrayContent !== null) {
+        const refPattern = /(\d+)\s+0\s+R/g;
+        const replacements = [];
+        for (let refMatch = refPattern.exec(wArrayContent); refMatch !== null; refMatch = refPattern.exec(wArrayContent)) {
+          const refText = objCache.getObjectText(Number(refMatch[1]));
+          if (refText) replacements.push({ start: refMatch.index, end: refMatch.index + refMatch[0].length, text: refText.trim() });
+        }
+        for (let r = replacements.length - 1; r >= 0; r--) {
+          wArrayContent = wArrayContent.substring(0, replacements[r].start) + replacements[r].text + wArrayContent.substring(replacements[r].end);
+        }
+        parseCIDWidths(`/W [${wArrayContent}]`, widths);
       }
 
       // Parse FontDescriptor for ascent/descent and Type0 font file
@@ -1866,9 +1859,11 @@ export function parsePageFonts(pageObjText, objCache) {
                 }
               }
             } else if (cffEnc && typeof cffEnc === 'object' && charsetInfo.glyphToUnicode) {
+              const isSymbolCffByName = determineSansSerif(baseName) === 'SymbolDefault'
+                || determineSansSerif(familyName) === 'SymbolDefault';
               // CFF custom Encoding (charcode → position; GID = position + 1
               // because GID 0 is .notdef and has no encoding entry).
-              // ASCII codepoints are skipped: symbol/decoration fonts often reuse
+              // ASCII codepoints are skipped for symbol/decoration fonts, which often reuse
               // Latin glyph names for bullets, and extracting them as letters
               // would inject wrong characters into the document.
               for (const [codeStr, encVal] of Object.entries(cffEnc)) {
@@ -1879,7 +1874,11 @@ export function parsePageFonts(pageObjText, objCache) {
                 const gid = encVal + 1;
                 const uni = charsetInfo.glyphToUnicode.get(gid);
                 if (!uni) continue;
-                if (uni.length === 1 && uni.codePointAt(0) <= 0x7F) continue;
+                if (uni.length === 1) {
+                  const cp = uni.codePointAt(0);
+                  if (cp <= 0x1F || cp === 0x7F) continue;
+                  if (isSymbolCffByName && cp <= 0x7F) continue;
+                }
                 toUnicode.set(code, uni);
                 encodingUnicode.set(code, uni);
               }
