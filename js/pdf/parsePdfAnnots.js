@@ -1,3 +1,5 @@
+import { resolveArrayValue } from './parsePdfUtils.js';
+
 /**
  * @typedef {Object} PdfHighlightRaw
  * @property {number} objNum
@@ -87,17 +89,21 @@ export function extractPdfAnnotations(objCache, pageObjText) {
       continue;
     }
 
-    const rectMatch = /\/Rect\s*\[\s*([\d.\-+e]+)\s+([\d.\-+e]+)\s+([\d.\-+e]+)\s+([\d.\-+e]+)\s*\]/.exec(annotText);
-    if (!rectMatch) continue;
+    const rectStr = resolveArrayValue(annotText, 'Rect', objCache);
+    if (!rectStr) continue;
+    const rectNums = rectStr.split(/\s+/).map(Number);
+    if (rectNums.length < 4 || rectNums.some(Number.isNaN)) continue;
     /** @type {[number, number, number, number]} */
-    const rect = [Number(rectMatch[1]), Number(rectMatch[2]), Number(rectMatch[3]), Number(rectMatch[4])];
+    const rect = [rectNums[0], rectNums[1], rectNums[2], rectNums[3]];
 
-    const qpMatch = /\/QuadPoints\s*\[\s*([\d.\-+e\s]+)\]/.exec(annotText);
-    const quadPoints = qpMatch ? qpMatch[1].trim().split(/\s+/).map(Number) : null;
+    const qpStr = resolveArrayValue(annotText, 'QuadPoints', objCache);
+    const quadPoints = qpStr ? qpStr.split(/\s+/).map(Number) : null;
 
-    const cMatch = /\/C\s*\[\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\]/.exec(annotText);
+    const cStr = resolveArrayValue(annotText, 'C', objCache);
+    const cNums = cStr ? cStr.split(/\s+/).map(Number) : null;
     /** @type {[number, number, number]|null} */
-    const color = cMatch ? [Number(cMatch[1]), Number(cMatch[2]), Number(cMatch[3])] : null;
+    const color = cNums && cNums.length >= 3 && !cNums.some(Number.isNaN)
+      ? [cNums[0], cNums[1], cNums[2]] : null;
 
     const caMatch = /\/CA\s+([\d.]+)/.exec(annotText);
     const opacity = caMatch ? Number(caMatch[1]) : 1;

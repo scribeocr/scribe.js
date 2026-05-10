@@ -4559,6 +4559,23 @@ export const aglMap = {
 };
 
 /**
+ * Reverse AGL: unicode codepoint → glyph name (only matches single-codepoint entries).
+ * Built lazily on first call because the forward map has ~4300 entries.
+ *
+ * @type {Map<number, string>|null}
+ */
+let aglReverseMap = null;
+export function unicodeToAGL(cp) {
+  if (aglReverseMap === null) {
+    aglReverseMap = new Map();
+    for (const [name, uni] of Object.entries(aglMap)) {
+      if (typeof uni === 'number' && !aglReverseMap.has(uni)) aglReverseMap.set(uni, name);
+    }
+  }
+  return aglReverseMap.get(cp) || null;
+}
+
+/**
  * AGL glyph name → Unicode string, handling period suffixes and underscore ligatures.
  * @param {string} glyphName
  */
@@ -4617,7 +4634,7 @@ export function aglLookup(glyphName) {
 // Used to correct broken ToUnicode CMaps that map Symbol charCodes to MacRoman/Latin-1
 // instead of the correct mathematical/Greek Unicode codepoints.
 // E.g., Symbol charCode 0xEA (⌠ integral top) incorrectly mapped to U+0152 (Œ MacRoman).
-/* eslint-disable object-curly-newline */
+
 export const symbolToUnicode = {
   32: 0x0020,
   33: 0x0021,
@@ -4809,9 +4826,7 @@ export const symbolToUnicode = {
   253: 0x23AC,
   254: 0x23AD,
 };
-/* eslint-enable object-curly-newline */
 
-/* eslint-disable object-curly-newline */
 export const wingdingsToUnicode = {
   32: 0x0020, // space
   33: 0x270F, // ✏ pencil
@@ -5046,7 +5061,6 @@ export const wingdingsToUnicode = {
   254: 0x2611, // ☑ ballot box with check
   255: 0x2B1C, // ⬜ white large square
 };
-/* eslint-enable object-curly-newline */
 
 /**
  * Dingbats Glyph List: maps Dingbats glyph names to Unicode code points.

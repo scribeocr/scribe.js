@@ -1,3 +1,5 @@
+import { resolveNumArray } from './parsePdfUtils.js';
+
 /** @typedef {NonNullable<ReturnType<typeof parseFunction>>} ParsedFunction */
 
 /**
@@ -146,26 +148,19 @@ export function parseFunction(funcDef, objCache) {
   if (!ftMatch) return null;
   const type = /** @type {0|2|3|4} */ (Number(ftMatch[1]));
 
-  const domainMatch = /\/Domain\s*\[\s*([\d.\s-]+)\]/.exec(funcText);
-  const domain = domainMatch ? domainMatch[1].trim().split(/\s+/).map(Number) : [0, 1];
+  const domain = resolveNumArray(funcText, 'Domain', objCache, [0, 1]);
   const nInputs = Math.max(1, Math.floor(domain.length / 2));
 
-  const rangeMatch = /\/Range\s*\[\s*([\d.\s-]+)\]/.exec(funcText);
-  const range = rangeMatch ? rangeMatch[1].trim().split(/\s+/).map(Number) : null;
+  const range = resolveNumArray(funcText, 'Range', objCache, null);
 
   if (type === 0) {
     if (funcObjNum == null) return null;
-    const sizeMatch = /\/Size\s*\[\s*([\d\s]+)\]/.exec(funcText);
-    const size = sizeMatch
-      ? sizeMatch[1].trim().split(/\s+/).map(Number)
-      : new Array(nInputs).fill(256);
+    const size = resolveNumArray(funcText, 'Size', objCache, new Array(nInputs).fill(256));
     const bpsMatch = /\/BitsPerSample\s+(\d+)/.exec(funcText);
     const bps = bpsMatch ? Number(bpsMatch[1]) : 8;
-    const encodeMatch = /\/Encode\s*\[\s*([\d.\s-]+)\]/.exec(funcText);
-    const encode = encodeMatch ? encodeMatch[1].trim().split(/\s+/).map(Number) : null;
-    const decodeMatch = /\/Decode\s*\[\s*([\d.\s-]+)\]/.exec(funcText);
+    const encode = resolveNumArray(funcText, 'Encode', objCache, null);
     // Decode defaults to Range per PDF spec Table 3.36
-    const decode = decodeMatch ? decodeMatch[1].trim().split(/\s+/).map(Number) : range;
+    const decode = resolveNumArray(funcText, 'Decode', objCache, range);
     const samples = objCache.getStreamBytes(funcObjNum);
     if (!samples) return null;
     const nOutputs = range ? Math.floor(range.length / 2) : 1;
@@ -175,11 +170,9 @@ export function parseFunction(funcDef, objCache) {
   }
 
   if (type === 2) {
-    const c0Match = /\/C0\s*\[\s*([\d.\s-]+)\]/.exec(funcText);
-    const c1Match = /\/C1\s*\[\s*([\d.\s-]+)\]/.exec(funcText);
+    const c0 = resolveNumArray(funcText, 'C0', objCache, [0]);
+    const c1 = resolveNumArray(funcText, 'C1', objCache, [1]);
     const nMatch = /\/N\s+([\d.]+)/.exec(funcText);
-    const c0 = c0Match ? c0Match[1].trim().split(/\s+/).map(Number) : [0];
-    const c1 = c1Match ? c1Match[1].trim().split(/\s+/).map(Number) : [1];
     const N = nMatch ? Number(nMatch[1]) : 1.0;
     const nOutputs = Math.max(c0.length, c1.length, 1);
     while (c0.length < nOutputs) c0.push(0);
@@ -195,18 +188,12 @@ export function parseFunction(funcDef, objCache) {
     // Each sub-function can be an indirect ref or an inline <<...>> dict.
     const subFuncs = parseFunctionsArray(funcText, objCache);
     if (!subFuncs || subFuncs.length === 0) return null;
-    const boundsMatch = /\/Bounds\s*\[\s*([\d.\s-]*)\]/.exec(funcText);
-    const bounds = boundsMatch
-      ? boundsMatch[1].trim().split(/\s+/).filter((s) => s.length > 0).map(Number)
-      : [];
-    const stEncMatch = /\/Encode\s*\[\s*([\d.\s-]+)\]/.exec(funcText);
-    const stitchEncode = stEncMatch
-      ? stEncMatch[1].trim().split(/\s+/).map(Number)
-      : (() => {
-        const enc = [];
-        for (const f of subFuncs) { enc.push(f.domain[0], f.domain[1]); }
-        return enc;
-      })();
+    const bounds = resolveNumArray(funcText, 'Bounds', objCache, []);
+    const stitchEncode = resolveNumArray(funcText, 'Encode', objCache, null) || (() => {
+      const enc = [];
+      for (const f of subFuncs) { enc.push(f.domain[0], f.domain[1]); }
+      return enc;
+    })();
     const nOutputs = subFuncs[0].nOutputs;
     return {
       type, domain, range, nInputs: 1, nOutputs, functions: subFuncs, bounds, stitchEncode,
@@ -487,8 +474,8 @@ export function parseAltColorSpace(csText, objCache) {
 
   if (/\/Lab\b/.test(csText)) {
     out.type = 'Lab';
-    const wpMatch = /\/WhitePoint\s*\[\s*([\d.\s]+)\]/.exec(csText);
-    if (wpMatch) out.labWhitePoint = wpMatch[1].trim().split(/\s+/).map(Number);
+    const wp = resolveNumArray(csText, 'WhitePoint', objCache, null);
+    if (wp) out.labWhitePoint = wp;
   } else if (/\/DeviceCMYK/.test(csText)) {
     out.type = 'DeviceCMYK';
     out.nComp = 4;
@@ -501,10 +488,10 @@ export function parseAltColorSpace(csText, objCache) {
   } else if (/\/CalRGB/.test(csText)) {
     out.type = 'CalRGB';
     out.nComp = 3;
-    const gMatch = /\/Gamma\s*\[\s*([\d.\s]+)\]/.exec(csText);
-    if (gMatch) out.calRgbGamma = gMatch[1].trim().split(/\s+/).map(Number);
-    const mMatch = /\/Matrix\s*\[\s*([\d.\s]+)\]/.exec(csText);
-    if (mMatch) out.calRgbMatrix = mMatch[1].trim().split(/\s+/).map(Number);
+    const gamma = resolveNumArray(csText, 'Gamma', objCache, null);
+    if (gamma) out.calRgbGamma = gamma;
+    const matrix = resolveNumArray(csText, 'Matrix', objCache, null);
+    if (matrix) out.calRgbMatrix = matrix;
   } else if (/\/CalGray/.test(csText)) {
     out.type = 'CalGray';
     out.nComp = 1;

@@ -24,34 +24,34 @@ async function readFileBytes(filePath) {
  */
 const EXPECTED_TYPE0 = {
   7: {
-    fontName: 'Arial-BoldItalicMT', fileLen: 16740, numGlyphs: 87, ascender: 1854, descender: -434, serializeLen: 10412,
+    fontName: 'Arial-BoldItalicMT', fileLen: 16740, numGlyphs: 87, ascender: 1854, descender: -434, serializeLen: 10404,
   },
   10: {
-    fontName: 'Arial-ItalicMT', fileLen: 22464, numGlyphs: 93, ascender: 1854, descender: -434, serializeLen: 16204,
+    fontName: 'Arial-ItalicMT', fileLen: 22464, numGlyphs: 93, ascender: 1854, descender: -434, serializeLen: 16076,
   },
   11: {
-    fontName: 'Arial-BoldMT', fileLen: 24744, numGlyphs: 93, ascender: 1854, descender: -434, serializeLen: 18428,
+    fontName: 'Arial-BoldMT', fileLen: 24744, numGlyphs: 93, ascender: 1854, descender: -434, serializeLen: 18308,
   },
   12: {
-    fontName: 'ArialMT', fileLen: 42180, numGlyphs: 239, ascender: 1854, descender: -434, serializeLen: 32396,
+    fontName: 'ArialMT', fileLen: 42180, numGlyphs: 239, ascender: 1854, descender: -434, serializeLen: 32212,
   },
   15: {
-    fontName: 'ArialMT', fileLen: 29948, numGlyphs: 94, ascender: 1854, descender: -434, serializeLen: 23628,
+    fontName: 'ArialMT', fileLen: 29948, numGlyphs: 94, ascender: 1854, descender: -434, serializeLen: 23532,
   },
   16: {
-    fontName: 'Georgia-BoldItalic', fileLen: 11028, numGlyphs: 87, ascender: 1878, descender: -449, serializeLen: 6824,
+    fontName: 'Georgia-BoldItalic', fileLen: 11028, numGlyphs: 87, ascender: 1878, descender: -449, serializeLen: 6816,
   },
   17: {
-    fontName: 'Georgia-Bold', fileLen: 17028, numGlyphs: 93, ascender: 1878, descender: -449, serializeLen: 13432,
+    fontName: 'Georgia-Bold', fileLen: 17028, numGlyphs: 93, ascender: 1878, descender: -449, serializeLen: 13360,
   },
   18: {
-    fontName: 'Georgia', fileLen: 47196, numGlyphs: 465, ascender: 1878, descender: -449, serializeLen: 34068,
+    fontName: 'Georgia', fileLen: 47196, numGlyphs: 465, ascender: 1878, descender: -449, serializeLen: 33684,
   },
   19: {
-    fontName: 'Georgia-Italic', fileLen: 21380, numGlyphs: 119, ascender: 1878, descender: -449, serializeLen: 16328,
+    fontName: 'Georgia-Italic', fileLen: 21380, numGlyphs: 119, ascender: 1878, descender: -449, serializeLen: 16176,
   },
   71: {
-    fontName: 'Arial-ItalicMT', fileLen: 16664, numGlyphs: 87, ascender: 1854, descender: -434, serializeLen: 10404,
+    fontName: 'Arial-ItalicMT', fileLen: 16664, numGlyphs: 87, ascender: 1854, descender: -434, serializeLen: 10372,
   },
   109: {
     fontName: 'TimesNewRomanPSMT', fileLen: 100828, numGlyphs: 2773, ascender: 1825, descender: -443, serializeLen: 30124,

@@ -1,6 +1,6 @@
 import opentype from '../../font-parser/src/index.js';
 import { standardNames, cffStandardEncoding } from '../../font-parser/src/encoding.js';
-import { aglMap, aglLookup } from './standardEncodings.js';
+import { aglLookup, unicodeToAGL } from './standardEncodings.js';
 
 /**
  * @typedef {{
@@ -365,7 +365,13 @@ export function buildFontFromCFF(cffData, fontObj, encoding) {
     };
     opentype.parseCFFTable(dv, 0, fontShell);
 
-    const fm = fontShell.tables.cff.topDict.fontMatrix;
+    // For CIDFontType0C the Top DICT FontMatrix is the CFF default [0.001 0 0 0.001 ...]
+    // even when the per-FD FontMatrix carries the real scale (e.g. 1/2048). Using
+    // the Top default for an FD-scaled font would render glyphs at 2x size.
+    const topFm = fontShell.tables.cff.topDict.fontMatrix;
+    const fdArr = fontShell.tables.cff.topDict._fdArray;
+    const fdFm = (fontShell.isCIDFont && fdArr && fdArr.length > 0) ? fdArr[0].fontMatrix : null;
+    const fm = (fdFm && fdFm[0] > 0 && fdFm[0] < 1) ? fdFm : topFm;
     const unitsPerEm = fm && fm[0] > 0 && fm[0] < 1 ? Math.round(1 / fm[0]) : 1000;
     fontShell.unitsPerEm = unitsPerEm;
     const ascent = fontObj.ascent || Math.round(unitsPerEm * 0.8);
@@ -495,17 +501,13 @@ export function buildFontFromCFF(cffData, fontObj, encoding) {
         }
 
         // PUA entries from the font's intrinsic encoding.
-        const cffTable = /** @type {any} */ (fontShell.tables).cff;
-        const cffEncodingOffset = cffTable?.topDict?.encoding ?? 0;
-        const hasCustomCFFEncoding = cffEncodingOffset > 1;
-        if (hasCustomCFFEncoding || !hasDifferencesEncoding) {
-          for (const [code, gid] of cffBaseEncoding) {
-            if (fontObj.encodingUnicode?.has(code) && !(diffCodeSet && diffCodeSet.has(code))) continue;
-            const puaCode = 0xE000 + code;
-            if (!unicodeToGID.has(puaCode)) {
-              unicodeToGID.set(puaCode, gid);
-              usesPUA = true;
-            }
+        // The renderer routes width-only charcodes (no encodingUnicode/toUnicode entry) through PUA.
+        for (const [code, gid] of cffBaseEncoding) {
+          if (fontObj.encodingUnicode?.has(code) && !(diffCodeSet && diffCodeSet.has(code))) continue;
+          const puaCode = 0xE000 + code;
+          if (!unicodeToGID.has(puaCode)) {
+            unicodeToGID.set(puaCode, gid);
+            usesPUA = true;
           }
         }
 
@@ -692,26 +694,6 @@ export function cidCodepoint(toUniStr, cid) {
 }
 
 /**
- * Reverse AGL: unicode codepoint → glyph name (only matches single-codepoint
- * entries). Built lazily on first call because the full forward map has ~4300
- * entries and a per-call linear scan was the #1 hot spot in PDF rendering —
- * a text-heavy 14-page academic paper spent ~58% of wall time inside this
- * single function before the reverse map was cached.
- *
- * @type {Map<number, string>|null}
- */
-let aglReverseMap = null;
-function unicodeToAGL(cp) {
-  if (aglReverseMap === null) {
-    aglReverseMap = new Map();
-    for (const [name, uni] of Object.entries(aglMap)) {
-      if (!aglReverseMap.has(uni)) aglReverseMap.set(uni, name);
-    }
-  }
-  return aglReverseMap.get(cp) || null;
-}
-
-/**
  * Convert a Type1 PFA/PFB font to OTF by parsing charstrings into Path objects
  * via font-parser's Type1 parser, then constructing a new font.
  * @param {Uint8Array} pfaBytes - raw PFA font program bytes
@@ -763,6 +745,17 @@ export function convertType1ToOTFNew(pfaBytes, fontObj) {
     }
     if (diffMatchCount > 5 && glyphEncoding.size < diffMatchCount * 0.5) return null;
 
+    // Type1 path coords and advance widths are in font units that FontMatrix
+    // scales to em. Output OTF is fixed at unitsPerEm=1000, so multiply by
+    // fm[0]*1000 (no-op when fm[0]=0.001).
+    const fm = parsed.fontMatrix;
+    const isUniformDiag = fm && fm.length >= 4
+      && fm[1] === 0 && fm[2] === 0
+      && fm[0] > 0 && fm[3] > 0
+      && Math.abs(fm[0] - fm[3]) < 1e-9;
+    const pathScale = isUniformDiag ? fm[0] * 1000 : 1;
+    const needsScale = pathScale !== 1 && Math.abs(pathScale - 1) > 1e-9;
+
     const notdefPath = new opentype.Path();
     const glyphs = [new opentype.Glyph({
       name: '.notdef', unicode: 0, advanceWidth: 0, path: notdefPath,
@@ -791,6 +784,22 @@ export function convertType1ToOTFNew(pfaBytes, fontObj) {
       usedUnicodes.add(unicode);
 
       let advanceWidth = glyphData.advanceWidth;
+      let glyphPath = glyphData.path;
+      if (needsScale && glyphPath && glyphPath.commands) {
+        const scaled = new opentype.Path();
+        for (const cmd of glyphPath.commands) {
+          const sc = { ...cmd };
+          if (sc.x !== undefined) sc.x *= pathScale;
+          if (sc.y !== undefined) sc.y *= pathScale;
+          if (sc.x1 !== undefined) sc.x1 *= pathScale;
+          if (sc.y1 !== undefined) sc.y1 *= pathScale;
+          if (sc.x2 !== undefined) sc.x2 *= pathScale;
+          if (sc.y2 !== undefined) sc.y2 *= pathScale;
+          scaled.commands.push(sc);
+        }
+        glyphPath = scaled;
+        if (advanceWidth) advanceWidth *= pathScale;
+      }
       if (fontObj.widths) {
         const pdfWidth = fontObj.widths.get(charCode);
         if (pdfWidth !== undefined) advanceWidth = pdfWidth;
@@ -800,7 +809,7 @@ export function convertType1ToOTFNew(pfaBytes, fontObj) {
         name: glyphName,
         unicode,
         advanceWidth: advanceWidth || 500,
-        path: glyphData.path,
+        path: glyphPath,
       }));
     }
 
@@ -819,9 +828,8 @@ export function convertType1ToOTFNew(pfaBytes, fontObj) {
     const otfData = font.toArrayBuffer();
 
     // Return non-standard FontMatrix so the renderer can apply shear/flip transforms.
-    // Standard FontMatrix [0.001, 0, 0, 0.001, 0, 0] is handled by unitsPerEm=1000;
+    // Uniform diagonal FontMatrix is handled above by pre-scaling paths and widths;
     // only return fontMatrix when it contains off-diagonal or asymmetric terms.
-    const fm = parsed.fontMatrix;
     let fontMatrix = null;
     if (fm && fm.length >= 4
       && (fm[1] !== 0 || fm[2] !== 0 || Math.abs(fm[3]) !== Math.abs(fm[0]))) {
@@ -955,15 +963,11 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
             }
           }
         } else if (fontObj.toUnicode && cmap.platformID === 1) {
-          // Mac-platform cmap: keys are charCodes, not unicode codepoints.
-          // Bridge charCode→GID (cmap) with charCode→unicode (toUnicode).
-          // Multi-codepoint ToUnicode entries (conjunct glyphs in Indic fonts, ligatures, etc.)
-          // map to PUA (0xE000 + charCode) to avoid collisions where multiple GIDs share the
-          // same first-codepoint. Combining marks (Indic vowel signs U+09BE-U+09D7, nuqta
-          // U+09BC, etc.) also get PUA so that fillText() doesn't render them with a dotted
-          // circle placeholder (which occurs because a combining mark has no standalone base).
-          // Without PUA, a conjunct like "দব্" (U+9A6 U+9AC U+9CD) would collide with
-          // single-char "দ" (U+9A6) in the rebuilt font's cmap.
+          // platformID=1 cmap keys are charCodes, not codepoints, so bridge via toUnicode.
+          // Use PUA (0xE000+charCode) when the ToUnicode mapping has multiple codepoints
+          // (Indic conjuncts, ligatures) to avoid collisions on the shared first codepoint,
+          // or when it starts with a combining mark (which fillText would otherwise render
+          // as a dotted-circle placeholder).
           cmapType = 'rawCharCode';
           for (const [charCodeStr, gi] of Object.entries(cmap.glyphIndexMap)) {
             if (gi <= 0) continue;

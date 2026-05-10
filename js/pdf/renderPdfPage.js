@@ -1,7 +1,7 @@
 import { parsePageImages, parseImageObject, parseIndexedColorSpace } from './parsePdfImages.js';
 import {
   parseSeparationTint, parseTintColorSpace,
-  tintComponentsToRGB, cmykToRgb, evaluateFunction, altCSToRGB,
+  tintComponentsToRGB, cmykToRgb, evaluateFunction, altCSToRGB, parseFunction,
 } from './pdfColorFunctions.js';
 import {
   getPageContentStreams, tokenizeContentStream, bytesToLatin1,
@@ -17,7 +17,7 @@ import { inflate as pakoInflate, inflatePartial as pakoInflatePartial } from '..
 import { parsePageFonts, parseGlyphStreamPaths } from './fonts/parsePdfFonts.js';
 import { standardFontToCSS } from './fonts/standardFontMetrics.js';
 import { loadFontFace } from '../containers/fontContainer.js';
-import { decodeCMYKJpegToRGB, decodeLabJpegToRGB } from './codecs/decodeJPEG.js';
+import { decodeCMYKJpegToRGB } from './codecs/decodeJPEG.js';
 import {
   rebuildFontFromGlyphs, buildFontFromCFF, convertType1ToOTFNew, isCombiningOrIndicMark, cidCodepoint,
 } from './fonts/convertFontToOTF.js';
@@ -543,19 +543,41 @@ async function imageInfoToBitmap(imageInfo, objCache) {
       // Fallback to browser decoder if JS decoder fails
     }
 
-    // Lab JPEG: decode raw component data and convert Lab→sRGB.
+    // Photoshop-encoded Lab JPEGs carry an Adobe APP14 marker with
+    // transform=YCbCr, so the browser decoder applies YCbCr→RGB.
+    // Its RGB output is the L*a*b* sample data.
     if (colorSpace === 'Lab') {
-      const jpegBytes = imageData instanceof Uint8Array ? imageData : new Uint8Array(imageData);
-      const wp = imageInfo.labWhitePoint || [0.9505, 1.0, 1.089]; // default D65
-      const labResult = decodeLabJpegToRGB(jpegBytes, wp);
-      if (labResult) {
-        const { width: w, height: h, rgbData } = labResult;
-        const canvas = ca.makeCanvas(w, h);
-        const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d'));
-        const imgData = new ImageData(new Uint8ClampedArray(rgbData.buffer, rgbData.byteOffset, rgbData.byteLength), w, h);
-        ctx.putImageData(imgData, 0, 0);
-        return ca.createImageBitmapFromCanvas(canvas);
+      let jpegBytes = imageData instanceof Uint8Array ? imageData : new Uint8Array(imageData);
+      if (jpegBytes.length >= 2 && !(jpegBytes[jpegBytes.length - 2] === 0xFF && jpegBytes[jpegBytes.length - 1] === 0xD9)) {
+        const f = new Uint8Array(jpegBytes.length + 2);
+        f.set(jpegBytes);
+        f[jpegBytes.length] = 0xFF;
+        f[jpegBytes.length + 1] = 0xD9;
+        jpegBytes = f;
       }
+      try {
+        const labBitmap = await ca.createImageBitmapFromData(stripJpegExif(jpegBytes));
+        const w = labBitmap.width;
+        const h = labBitmap.height;
+        const tmp = ca.makeCanvas(w, h);
+        const tctx = /** @type {OffscreenCanvasRenderingContext2D} */ (tmp.getContext('2d'));
+        tctx.drawImage(labBitmap, 0, 0);
+        const labPixels = tctx.getImageData(0, 0, w, h).data;
+        const labBytes = new Uint8Array(w * h * 3);
+        for (let j = 0; j < w * h; j++) {
+          labBytes[j * 3] = labPixels[j * 4];
+          labBytes[j * 3 + 1] = labPixels[j * 4 + 1];
+          labBytes[j * 3 + 2] = labPixels[j * 4 + 2];
+        }
+        const { labBytesToRGBA } = await import('./codecs/decodeJPEG.js');
+        const wp = imageInfo.labWhitePoint || [0.9642, 1.0, 0.8249];
+        const range = imageInfo.labRange || [-100, 100, -100, 100];
+        const rgba = labBytesToRGBA(labBytes, w, h, wp, range);
+        const out = ca.makeCanvas(w, h);
+        const octx = /** @type {OffscreenCanvasRenderingContext2D} */ (out.getContext('2d'));
+        octx.putImageData(new ImageData(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength), w, h), 0, 0);
+        return ca.createImageBitmapFromCanvas(out);
+      } catch { /* fall through */ }
     }
 
     // Some PDFs contain JPEGs missing the EOI (End-Of-Image) marker (FF D9).
@@ -858,10 +880,10 @@ async function imageInfoToBitmap(imageInfo, objCache) {
       if (colorSpace === 'DeviceCMYK') {
         // CMYK pixel data: convert to RGB using SWOP polynomial approximation
         for (let i = 0; i < w * h; i++) {
-          const c = pixels[i * 4] / 255;
-          const m = pixels[i * 4 + 1] / 255;
-          const y = pixels[i * 4 + 2] / 255;
-          const k = pixels[i * 4 + 3] / 255;
+          const c = decodeInvert ? (1 - pixels[i * 4] / 255) : (pixels[i * 4] / 255);
+          const m = decodeInvert ? (1 - pixels[i * 4 + 1] / 255) : (pixels[i * 4 + 1] / 255);
+          const y = decodeInvert ? (1 - pixels[i * 4 + 2] / 255) : (pixels[i * 4 + 2] / 255);
+          const k = decodeInvert ? (1 - pixels[i * 4 + 3] / 255) : (pixels[i * 4 + 3] / 255);
           const [cr, cg, cb] = cmykToRgb(c, m, y, k);
           rgbaData[i * 4] = cr;
           rgbaData[i * 4 + 1] = cg;
@@ -941,8 +963,13 @@ async function imageInfoToBitmap(imageInfo, objCache) {
     const hival = imageInfo.paletteHival != null ? imageInfo.paletteHival : ((1 << bitsPerComponent) - 1);
     rgbaData = new Uint8ClampedArray(width * height * 4);
     const rowBytes = Math.ceil(width * bitsPerComponent / 8);
+    // imageData can be short of width*height (truncated FlateDecode tail).
+    // Out-of-range reads return undefined, and palette[NaN]=0 then paints
+    // those pixels solid black, so cap iteration to leave the tail transparent.
+    const maxBytes = imageData ? imageData.length : 0;
+    const validRows = rowBytes > 0 ? Math.min(height, Math.floor(maxBytes / rowBytes)) : height;
 
-    for (let y = 0; y < height; y++) {
+    for (let y = 0; y < validRows; y++) {
       for (let x = 0; x < width; x++) {
         let idx;
         if (bitsPerComponent === 8) {
@@ -3085,7 +3112,7 @@ function parseDrawOps(
           const my = operandStack[operandStack.length - 1].value;
           const mpx = ctm[0] * mx + ctm[2] * my + ctm[4];
           const mpy = ctm[1] * mx + ctm[3] * my + ctm[5];
-          if (Math.abs(mpx) < 32768 && Math.abs(mpy) < 32768) {
+          if (Math.abs(mpx) < 10000000 && Math.abs(mpy) < 10000000) {
             pathAnomalyCount = Math.max(0, pathAnomalyCount - 1);
             curX = mx;
             curY = my;
@@ -3108,7 +3135,7 @@ function parseDrawOps(
           const ly = operandStack[operandStack.length - 1].value;
           const pageX = ctm[0] * lx + ctm[2] * ly + ctm[4];
           const pageY = ctm[1] * lx + ctm[3] * ly + ctm[5];
-          if (Math.abs(pageX) < 32768 && Math.abs(pageY) < 32768) {
+          if (Math.abs(pageX) < 10000000 && Math.abs(pageY) < 10000000) {
             pathAnomalyCount = Math.max(0, pathAnomalyCount - 1);
             curX = lx;
             curY = ly;
@@ -3137,9 +3164,9 @@ function parseDrawOps(
           const cp2y = ctm[1] * x2 + ctm[3] * y2 + ctm[5];
           const cp3x = ctm[0] * x3 + ctm[2] * y3 + ctm[4];
           const cp3y = ctm[1] * x3 + ctm[3] * y3 + ctm[5];
-          if (Math.abs(cp1x) < 32768 && Math.abs(cp1y) < 32768
-              && Math.abs(cp2x) < 32768 && Math.abs(cp2y) < 32768
-              && Math.abs(cp3x) < 32768 && Math.abs(cp3y) < 32768) {
+          if (Math.abs(cp1x) < 10000000 && Math.abs(cp1y) < 10000000
+              && Math.abs(cp2x) < 10000000 && Math.abs(cp2y) < 10000000
+              && Math.abs(cp3x) < 10000000 && Math.abs(cp3y) < 10000000) {
             pathAnomalyCount = Math.max(0, pathAnomalyCount - 1);
             curX = x3;
             curY = y3;
@@ -3166,8 +3193,8 @@ function parseDrawOps(
           const vp2y = ctm[1] * x2 + ctm[3] * y2 + ctm[5];
           const vp3x = ctm[0] * x3 + ctm[2] * y3 + ctm[4];
           const vp3y = ctm[1] * x3 + ctm[3] * y3 + ctm[5];
-          if (Math.abs(vp2x) < 32768 && Math.abs(vp2y) < 32768
-              && Math.abs(vp3x) < 32768 && Math.abs(vp3y) < 32768) {
+          if (Math.abs(vp2x) < 10000000 && Math.abs(vp2y) < 10000000
+              && Math.abs(vp3x) < 10000000 && Math.abs(vp3y) < 10000000) {
             pathAnomalyCount = Math.max(0, pathAnomalyCount - 1);
             currentPath.push({
               type: 'C', x1: curX, y1: curY, x2, y2, x: x3, y: y3,
@@ -3193,8 +3220,8 @@ function parseDrawOps(
           const yp1y = ctm[1] * x1 + ctm[3] * y1 + ctm[5];
           const yp2x = ctm[0] * yx + ctm[2] * yy + ctm[4];
           const yp2y = ctm[1] * yx + ctm[3] * yy + ctm[5];
-          if (Math.abs(yp1x) < 32768 && Math.abs(yp1y) < 32768
-              && Math.abs(yp2x) < 32768 && Math.abs(yp2y) < 32768) {
+          if (Math.abs(yp1x) < 10000000 && Math.abs(yp1y) < 10000000
+              && Math.abs(yp2x) < 10000000 && Math.abs(yp2y) < 10000000) {
             pathAnomalyCount = Math.max(0, pathAnomalyCount - 1);
             curX = yx;
             curY = yy;
@@ -3228,8 +3255,8 @@ function parseDrawOps(
           const rpy = ctm[1] * rx + ctm[3] * ry + ctm[5];
           const rpx2 = ctm[0] * (rx + rw) + ctm[2] * (ry + rh) + ctm[4];
           const rpy2 = ctm[1] * (rx + rw) + ctm[3] * (ry + rh) + ctm[5];
-          if (Math.abs(rpx) < 32768 && Math.abs(rpy) < 32768
-              && Math.abs(rpx2) < 32768 && Math.abs(rpy2) < 32768) {
+          if (Math.abs(rpx) < 10000000 && Math.abs(rpy) < 10000000
+              && Math.abs(rpx2) < 10000000 && Math.abs(rpy2) < 10000000) {
             pathAnomalyCount = Math.max(0, pathAnomalyCount - 1);
             currentPath.push({ type: 'M', x: rx, y: ry });
             currentPath.push({ type: 'L', x: rx + rw, y: ry });
@@ -4080,6 +4107,30 @@ function parseBlendMode(gsObjText) {
   return nameMatch ? nameMatch[1] : null;
 }
 
+/**
+ * Parse the /TR transfer function from a soft mask dict. /TR maps mask
+ * luminosity (or alpha) to the final mask alpha; /Identity (or absent)
+ * means no transform. Returns a parsed function or null.
+ *
+ * @param {string} smaskDict
+ * @param {ObjectCache} objCache
+ * @returns {ReturnType<typeof parseFunction>|null}
+ */
+function parseSmaskTR(smaskDict, objCache) {
+  if (/\/TR\s*\/Identity\b/.test(smaskDict)) return null;
+  const refMatch = /\/TR\s+(\d+)\s+\d+\s+R/.exec(smaskDict);
+  if (refMatch) return parseFunction(Number(refMatch[1]), objCache);
+  const inlineIdx = smaskDict.indexOf('/TR');
+  if (inlineIdx !== -1) {
+    const after = smaskDict.substring(inlineIdx + 3).trimStart();
+    if (after.startsWith('<<')) {
+      const dictStart = smaskDict.indexOf('<<', inlineIdx + 3);
+      if (dictStart !== -1) return parseFunction(extractDict(smaskDict, dictStart), objCache);
+    }
+  }
+  return null;
+}
+
 function parseExtGStates(pageObjText, objCache) {
   const states = new Map();
 
@@ -4156,6 +4207,7 @@ function parseExtGStates(pageObjText, objCache) {
           entry.smask = {
             formObjNum: Number(gMatch[1]),
             type: sMatch ? sMatch[1] : 'Luminosity',
+            tr: parseSmaskTR(smaskDict, objCache),
           };
         }
       }
@@ -4218,6 +4270,7 @@ function parseExtGStates(pageObjText, objCache) {
           entry.smask = {
             formObjNum: Number(gMatch[1]),
             type: sMatch ? sMatch[1] : 'Luminosity',
+            tr: parseSmaskTR(smaskDict, objCache),
           };
         }
       }
@@ -4391,8 +4444,8 @@ function parsePageColorSpaces(pageObjText, objCache) {
       }
       let labWhitePoint = null;
       if (csType === 'Lab') {
-        const wpMatch = /\/WhitePoint\s*\[\s*([\d.\s]+)\]/.exec(csObjText);
-        labWhitePoint = wpMatch ? wpMatch[1].trim().split(/\s+/).map(Number) : [0.9505, 1.0, 1.089];
+        const wpStr = resolveArrayValue(csObjText, 'WhitePoint', objCache);
+        labWhitePoint = wpStr ? wpStr.split(/\s+/).map(Number) : [0.9642, 1.0, 0.8249];
       }
       colorSpaces.set(csName, {
         type: csType, tintSamples, nComponents, deviceNGrid, indexedInfo, labWhitePoint,
@@ -4408,36 +4461,36 @@ function parsePageColorSpaces(pageObjText, objCache) {
       let tintSamples = null;
       let nComponents = 3;
       let csType = match[2];
-      // Single-colorant DeviceN → treat as Separation
-      if (csType === 'DeviceN') {
-        const arrStart = csDictText.indexOf(match[0]);
-        const arrEnd = csDictText.indexOf(']', arrStart) + 1;
-        if (arrEnd > 0) {
-          const arrText = csDictText.substring(arrStart, arrEnd);
-          const namesMatch = /\/DeviceN\s*\[\s*((?:\/\w+\s*)+)\]/.exec(arrText);
-          if (namesMatch) {
-            const colorants = namesMatch[1].trim().split(/(?=\/)/).filter((s) => s.startsWith('/'));
-            if (colorants.length === 1) csType = 'Separation';
+      const matchPos = csDictText.indexOf(match[0]);
+      const arrStart = csDictText.indexOf('[', matchPos);
+      let arrEnd = -1;
+      if (arrStart !== -1) {
+        let depth = 0;
+        for (let i = arrStart; i < csDictText.length; i++) {
+          if (csDictText[i] === '[') depth++;
+          else if (csDictText[i] === ']') {
+            depth--;
+            if (depth === 0) { arrEnd = i + 1; break; }
           }
         }
       }
-      if (csType === 'Separation') {
-        const arrStart = csDictText.indexOf(match[0]);
-        const arrEnd = csDictText.indexOf(']', arrStart) + 1;
-        if (arrEnd > 0) {
-          const tintInfo = parseSeparationTint(csDictText.substring(arrStart, arrEnd), objCache);
-          tintSamples = tintInfo.tintSamples;
-          nComponents = tintInfo.nComponents;
+      const arrText = arrEnd > 0 ? csDictText.substring(arrStart, arrEnd) : '';
+      // Single-colorant DeviceN → treat as Separation
+      if (csType === 'DeviceN' && arrText) {
+        const namesMatch = /\/DeviceN\s*\[\s*((?:\/\w+\s*)+)\]/.exec(arrText);
+        if (namesMatch) {
+          const colorants = namesMatch[1].trim().split(/(?=\/)/).filter((s) => s.startsWith('/'));
+          if (colorants.length === 1) csType = 'Separation';
         }
       }
+      if (csType === 'Separation' && arrText) {
+        const tintInfo = parseSeparationTint(arrText, objCache);
+        tintSamples = tintInfo.tintSamples;
+        nComponents = tintInfo.nComponents;
+      }
       let indexedInfo = null;
-      if (csType === 'Indexed') {
-        const arrStart = csDictText.indexOf(match[0]);
-        // Find the matching ']' — need to handle nested brackets in hex strings
-        const arrEnd = csDictText.indexOf(']', arrStart) + 1;
-        if (arrEnd > 0) {
-          indexedInfo = parseIndexedColorSpace(csDictText.substring(arrStart, arrEnd), objCache);
-        }
+      if (csType === 'Indexed' && arrText) {
+        indexedInfo = parseIndexedColorSpace(arrText, objCache);
       }
       colorSpaces.set(csName, {
         type: csType, tintSamples, nComponents, indexedInfo,
@@ -6645,18 +6698,21 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
     }
   }
 
-  // Convert rendered mask to luminosity alpha:
-  // For each pixel, alpha = 0.299*R + 0.587*G + 0.114*B (scaled by pixel alpha)
+  const trFn = smaskInfo.tr || null;
   const maskData = maskCtx.getImageData(0, 0, maskW, maskH);
   const px = maskData.data;
   for (let i = 0; i < px.length; i += 4) {
-    const luminosity = 0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2];
+    const luminosity = (0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]) / 255;
     const alpha = px[i + 3] / 255;
-    // Set pixel to white with alpha = luminosity * alpha
+    let outAlpha = luminosity;
+    if (trFn) {
+      const out = evaluateFunction(trFn, [luminosity]);
+      if (out && out.length > 0) outAlpha = out[0];
+    }
     px[i] = 255;
     px[i + 1] = 255;
     px[i + 2] = 255;
-    px[i + 3] = Math.round(luminosity * alpha);
+    px[i + 3] = Math.round(Math.max(0, Math.min(1, outAlpha)) * alpha * 255);
   }
   maskCtx.putImageData(maskData, 0, 0);
 
@@ -6904,12 +6960,20 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       // Also handle sub-state dictionaries (/AP<</N<</State1 obj1 0 R /State2 obj2 0 R>>>>)
       // used by checkboxes/radio buttons where /AS selects the current state.
       let apObjNum = null;
-      const apDirectMatch = /\/AP\s*<<[\s\S]*?\/N\s+(\d+)\s+\d+\s+R/.exec(annotText);
+      let apDictText = annotText;
+      const apIndirectMatch = /\/AP\s+(\d+)\s+\d+\s+R/.exec(annotText);
+      if (apIndirectMatch) {
+        const refText = objCache.getObjectText(Number(apIndirectMatch[1]));
+        if (refText) apDictText = refText;
+      }
+      const apDirectMatch = /\/AP\s*<<[\s\S]*?\/N\s+(\d+)\s+\d+\s+R/.exec(apDictText)
+        || /^<<[\s\S]*?\/N\s+(\d+)\s+\d+\s+R/.exec(apDictText);
       if (apDirectMatch) {
         apObjNum = Number(apDirectMatch[1]);
       } else {
         // Sub-state dict: /AP << /N << /Yes 31 0 R /Off 32 0 R >> >>
-        const apDictMatch = /\/AP\s*<<[\s\S]*?\/N\s*<<([\s\S]*?)>>/.exec(annotText);
+        const apDictMatch = /\/AP\s*<<[\s\S]*?\/N\s*<<([\s\S]*?)>>/.exec(apDictText)
+          || /^<<[\s\S]*?\/N\s*<<([\s\S]*?)>>/.exec(apDictText);
         if (apDictMatch) {
           const asMatch = /\/AS\s*\/(\w+)/.exec(annotText);
           const currentState = asMatch ? asMatch[1] : 'Off';
@@ -7403,6 +7467,21 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           ];
         }
       }
+      // Shading matrices are in pre-rotation user space, so compose rotCtm to
+      // match the rotated op.ctm and op.clips above. Dedup via Set since a
+      // single shading can be referenced by many ops.
+      const rotatedShadings = new Set();
+      for (const op of drawOps) {
+        const sh = op.patternShading;
+        if (!sh || !sh.matrix || rotatedShadings.has(sh)) continue;
+        rotatedShadings.add(sh);
+        const m = sh.matrix;
+        sh.matrix = [
+          rotCtm[0] * m[0] + rotCtm[2] * m[1], rotCtm[1] * m[0] + rotCtm[3] * m[1],
+          rotCtm[0] * m[2] + rotCtm[2] * m[3], rotCtm[1] * m[2] + rotCtm[3] * m[3],
+          rotCtm[0] * m[4] + rotCtm[2] * m[5] + rotCtm[4], rotCtm[1] * m[4] + rotCtm[3] * m[5] + rotCtm[5],
+        ];
+      }
     }
 
     /**
@@ -7626,7 +7705,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           const imgInfo = patImages.get(pop.name);
           if (!imgInfo) continue;
           const bitmap = imgInfo.imageMask
-            ? await imageMaskToBitmap(imgInfo, 'black', objCache)
+            ? await imageMaskToBitmap(imgInfo, pop.fillColor || 'black', objCache)
             : await imageInfoToBitmap(imgInfo, objCache);
           tileCtx.save();
           tileCtx.setTransform(
@@ -8241,7 +8320,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       }
 
       const invert = decode && decode[0] === 1;
-      if (bpc === 1) {
+      const isIndexedWithPalette = colorSpace === 'Indexed' && resolvedCS && resolvedCS.indexedInfo;
+      if (bpc === 1 && !isIndexedWithPalette) {
         const rgba = new Uint8ClampedArray(width * height * 4);
         const rowBytes = Math.ceil(width / 8);
         if (isImageMask) {
@@ -8282,30 +8362,44 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         return ca.createImageBitmapFromImageData(imgData);
       }
 
-      // Multi-component uncompressed images. Indexed images are always 1 byte
-      // per pixel (the byte is a palette index); we expand to RGB via the palette.
-      // Separation/DeviceN similarly use 1 byte per pixel and go
-      // through a pre-computed tint lookup. Plain DeviceGray/RGB/CMYK unpack
-      // byte-by-byte as before.
       const rgba = new Uint8ClampedArray(width * height * 4);
       if (colorSpace === 'Indexed' && resolvedCS && resolvedCS.indexedInfo) {
         const { palette, hival, base } = resolvedCS.indexedInfo;
         const nComp = base === 'DeviceCMYK' ? 4 : (base === 'DeviceGray' || base === 'CalGray' ? 1 : 3);
         const maxIdx = Math.min(hival, Math.floor(palette.length / nComp) - 1);
-        for (let j = 0; j < width * height; j++) {
-          let idx = data[j] || 0;
-          if (idx > maxIdx) idx = maxIdx;
-          const po = idx * nComp;
-          let r; let g; let b;
-          if (nComp === 3) {
-            r = palette[po]; g = palette[po + 1]; b = palette[po + 2];
-          } else if (nComp === 1) {
-            r = palette[po]; g = r; b = r;
-          } else { // CMYK palette
-            const [cr, cg, cb] = cmykToRgb(palette[po] / 255, palette[po + 1] / 255, palette[po + 2] / 255, palette[po + 3] / 255);
-            r = cr; g = cg; b = cb;
+        const rowBytes = Math.ceil(width * bpc / 8);
+        for (let row = 0; row < height; row++) {
+          for (let col = 0; col < width; col++) {
+            let idx;
+            if (bpc === 8) {
+              idx = data[row * rowBytes + col];
+            } else if (bpc === 4) {
+              const bytePos = row * rowBytes + (col >> 1);
+              idx = (col & 1) === 0 ? (data[bytePos] >> 4) & 0xF : data[bytePos] & 0xF;
+            } else if (bpc === 2) {
+              const bytePos = row * rowBytes + (col >> 2);
+              idx = (data[bytePos] >> (6 - (col & 3) * 2)) & 0x3;
+            } else if (bpc === 1) {
+              const bytePos = row * rowBytes + (col >> 3);
+              idx = (data[bytePos] >> (7 - (col & 7))) & 1;
+            } else {
+              idx = data[row * rowBytes + col];
+            }
+            if (idx === undefined) continue;
+            if (idx > maxIdx) idx = maxIdx;
+            const po = idx * nComp;
+            const j = row * width + col;
+            let r; let g; let b;
+            if (nComp === 3) {
+              r = palette[po]; g = palette[po + 1]; b = palette[po + 2];
+            } else if (nComp === 1) {
+              r = palette[po]; g = r; b = r;
+            } else {
+              const [cr, cg, cb] = cmykToRgb(palette[po] / 255, palette[po + 1] / 255, palette[po + 2] / 255, palette[po + 3] / 255);
+              r = cr; g = cg; b = cb;
+            }
+            rgba[j * 4] = r; rgba[j * 4 + 1] = g; rgba[j * 4 + 2] = b; rgba[j * 4 + 3] = 255;
           }
-          rgba[j * 4] = r; rgba[j * 4 + 1] = g; rgba[j * 4 + 2] = b; rgba[j * 4 + 3] = 255;
         }
       } else if ((colorSpace === 'Separation' || colorSpace === 'DeviceN') && resolvedCS && resolvedCS.tintSamples) {
       // Single-input Separation/DeviceN: 1 byte per pixel, index into a 256-entry RGB tint LUT.

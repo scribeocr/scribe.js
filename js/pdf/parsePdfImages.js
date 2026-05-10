@@ -1,6 +1,6 @@
 import {
   extractDict, ObjectCache, findXrefOffset, parseXref,
-  resolveIntValue,
+  resolveIntValue, resolveArrayValue,
 } from './parsePdfUtils.js';
 import {
   parseTintColorSpace, buildTintLookupTable, tintComponentsToRGB,
@@ -212,9 +212,9 @@ function extractXObjectsFromResources(objText, objCache, prefix, images, forms, 
     } else if (/\/Subtype\s*\/Form/.test(entryObjText)) {
       /** @type {FormXObjectInfo} */
       const formEntry = { tag, objNum };
-      const bboxMatch = /\/BBox\s*\[\s*([\d.\s\-eE]+)\]/.exec(entryObjText);
-      if (bboxMatch) {
-        formEntry.bbox = bboxMatch[1].trim().split(/\s+/).map(Number);
+      const bboxStr = resolveArrayValue(entryObjText, 'BBox', objCache);
+      if (bboxStr) {
+        formEntry.bbox = bboxStr.split(/\s+/).map(Number);
       }
       const transparencyGroup = parseTransparencyGroup(entryObjText, objCache);
       if (transparencyGroup) formEntry.transparencyGroup = transparencyGroup;
@@ -415,13 +415,14 @@ export function parseImageObject(objText, objNum, objCache) {
       const csObj = objCache.getObjectText(Number(csRefMatch3[1]));
       if (csObj) csText = csObj;
     }
-    const wpMatch = /\/WhitePoint\s*\[\s*([\d.\s]+)\]/.exec(csText);
-    if (wpMatch) {
-      labWhitePoint = wpMatch[1].trim().split(/\s+/).map(Number);
+    const wpStr = resolveArrayValue(csText, 'WhitePoint', objCache);
+    if (wpStr) {
+      labWhitePoint = wpStr.split(/\s+/).map(Number);
     }
-    const rangeMatch = /\/Range\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]/.exec(csText);
-    if (rangeMatch) {
-      labRange = [Number(rangeMatch[1]), Number(rangeMatch[2]), Number(rangeMatch[3]), Number(rangeMatch[4])];
+    const rangeStr = resolveArrayValue(csText, 'Range', objCache);
+    if (rangeStr) {
+      const rangeNums = rangeStr.split(/\s+/).map(Number);
+      if (rangeNums.length >= 4) labRange = [rangeNums[0], rangeNums[1], rangeNums[2], rangeNums[3]];
     }
   }
 
@@ -872,13 +873,15 @@ export function parseIndexedColorSpace(rawCsText, objCache, objNum = null) {
 
   // Lab → pre-convert L*a*b* → sRGB
   if (paletteBase === 'Lab' && baseObjText) {
-    const rangeMatch = /\/Range\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]/.exec(baseObjText);
-    const aMin = rangeMatch ? Number(rangeMatch[1]) : -100;
-    const aMax = rangeMatch ? Number(rangeMatch[2]) : 100;
-    const bMin = rangeMatch ? Number(rangeMatch[3]) : -100;
-    const bMax = rangeMatch ? Number(rangeMatch[4]) : 100;
-    const wpMatch = /\/WhitePoint\s*\[\s*([-\d.]+)\s+([-\d.]+)\s+([-\d.]+)\s*\]/.exec(baseObjText);
-    const wp = wpMatch ? [Number(wpMatch[1]), Number(wpMatch[2]), Number(wpMatch[3])] : [0.9505, 1.0, 1.089];
+    const rangeStr = resolveArrayValue(baseObjText, 'Range', objCache);
+    const rangeNums = rangeStr ? rangeStr.split(/\s+/).map(Number) : null;
+    const aMin = rangeNums && rangeNums.length >= 4 ? rangeNums[0] : -100;
+    const aMax = rangeNums && rangeNums.length >= 4 ? rangeNums[1] : 100;
+    const bMin = rangeNums && rangeNums.length >= 4 ? rangeNums[2] : -100;
+    const bMax = rangeNums && rangeNums.length >= 4 ? rangeNums[3] : 100;
+    const wpStr = resolveArrayValue(baseObjText, 'WhitePoint', objCache);
+    const wpNums = wpStr ? wpStr.split(/\s+/).map(Number) : null;
+    const wp = wpNums && wpNums.length >= 3 ? [wpNums[0], wpNums[1], wpNums[2]] : [0.9642, 1.0, 0.8249];
     const nEntries = Math.floor(palette.length / 3);
     const rgbPalette = new Uint8Array(nEntries * 3);
     const delta = 6 / 29;
@@ -894,9 +897,9 @@ export function parseIndexedColorSpace(rawCsText, objCache, objNum = null) {
       const xyzX = wp[0] * fInv(fx);
       const xyzY = wp[1] * fInv(fy);
       const xyzZ = wp[2] * fInv(fz);
-      const lr = 3.2406 * xyzX - 1.5372 * xyzY - 0.4986 * xyzZ;
-      const lg = -0.9689 * xyzX + 1.8758 * xyzY + 0.0415 * xyzZ;
-      const lb = 0.0557 * xyzX - 0.2040 * xyzY + 1.0570 * xyzZ;
+      const lr = 3.1338561 * xyzX - 1.6168667 * xyzY - 0.4906146 * xyzZ;
+      const lg = -0.9787684 * xyzX + 1.9161415 * xyzY + 0.0334540 * xyzZ;
+      const lb = 0.0719453 * xyzX - 0.2289914 * xyzY + 1.4052427 * xyzZ;
       rgbPalette[i * 3] = Math.max(0, Math.min(255, Math.round(255 * gammaEnc(Math.max(0, Math.min(1, lr))))));
       rgbPalette[i * 3 + 1] = Math.max(0, Math.min(255, Math.round(255 * gammaEnc(Math.max(0, Math.min(1, lg))))));
       rgbPalette[i * 3 + 2] = Math.max(0, Math.min(255, Math.round(255 * gammaEnc(Math.max(0, Math.min(1, lb))))));

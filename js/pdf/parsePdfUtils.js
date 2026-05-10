@@ -1182,7 +1182,10 @@ export class ObjectCache {
       const objNum = Number(objNumStr);
       const scannedOffset = scanIndex[objNum];
       const entry = this.xrefEntries[objNum];
-      if (!entry) {
+      if (!entry || entry.type === 0) {
+        // Either no entry at all, or xref marks the slot free even though the
+        // file contains a live "objNum 0 obj" header. Trust the file, since
+        // pages frequently reference such "free" objects.
         this.xrefEntries[objNum] = { type: 1, offset: scannedOffset };
       } else if (entry.type === 1) {
         // Validate the xref offset: the bytes at the offset must be "N <gen> obj"
@@ -1199,6 +1202,22 @@ export class ObjectCache {
       if (entry && entry.type === 1 && !scanIndex[objNum]) {
         if (!matchesObjMarker(bytes, entry.offset, objNum)) delete this.xrefEntries[objNum];
       }
+    }
+
+    // Encrypted-PDF callers return blank when this flag is set.
+    // Clear it if repair has left every entry pointing at a real object header.
+    if (this.xrefSeverelyCorrupt) {
+      let anyStillBad = false;
+      for (const objNumStr of Object.keys(this.xrefEntries)) {
+        const objNum = Number(objNumStr);
+        const entry = this.xrefEntries[objNum];
+        if (!entry || entry.type !== 1) continue;
+        if (entry.offset >= len || !matchesObjMarker(bytes, entry.offset, objNum)) {
+          anyStillBad = true;
+          break;
+        }
+      }
+      if (!anyStillBad) this.xrefSeverelyCorrupt = false;
     }
   }
 
@@ -1634,6 +1653,22 @@ export function resolveArrayValue(dictText, key, objCache) {
 }
 
 /**
+ * Resolve a /Key array of numbers from a PDF dict, handling indirect refs.
+ * Returns an array of numbers or `defaultValue` if the key is absent or unparseable.
+ * @param {string} dictText
+ * @param {string} key
+ * @param {ObjectCache|null} objCache
+ * @param {number[]|null} [defaultValue=null]
+ */
+export function resolveNumArray(dictText, key, objCache, defaultValue = null) {
+  const arrStr = resolveArrayValue(dictText, key, objCache);
+  if (arrStr === null) return defaultValue;
+  const nums = arrStr.split(/\s+/).filter((s) => s.length > 0).map(Number);
+  if (nums.some(Number.isNaN)) return defaultValue;
+  return nums;
+}
+
+/**
  * Resolve a boolean value from a PDF dict, handling indirect refs.
  * @param {string} dictText
  * @param {string} key
@@ -1781,11 +1816,19 @@ export function findRootObjNum(pdfBytes) {
       xrefOffset = xrefOffset * 10 + (pdfBytes[p] - 0x30);
       p++;
     }
-    const xrefDictEnd = Math.min(xrefOffset + 2000, len);
     if (xrefOffset < len) {
-      const xrefDict = bytesToLatin1(pdfBytes, xrefOffset, xrefDictEnd);
-      const rootMatch = /\/Root\s+(\d+)\s+\d+\s+R/.exec(xrefDict);
-      if (rootMatch) return Number(rootMatch[1]);
+      const headerOff = byteIndexOf(pdfBytes, '%PDF');
+      const adjusted = xrefOffset + (headerOff > 0 ? headerOff : 0);
+      const headerEnd = Math.min(adjusted + 200, len);
+      let dictStart = -1;
+      for (let i = adjusted; i < headerEnd - 1; i++) {
+        if (pdfBytes[i] === 0x3C && pdfBytes[i + 1] === 0x3C) { dictStart = i; break; }
+      }
+      if (dictStart !== -1) {
+        const dictText = extractDictFromBytes(pdfBytes, dictStart);
+        const rootMatch = /\/Root\s+(\d+)\s+\d+\s+R/.exec(dictText);
+        if (rootMatch) return Number(rootMatch[1]);
+      }
     }
   }
 
@@ -1872,11 +1915,12 @@ function getKidsArrayContent(objText, objCache) {
  * @param {number} objNum
  * @param {ObjectCache} objCache
  * @param {number[]} inheritedMediaBox
+ * @param {number[]|null} inheritedCropBox
  * @param {number} inheritedRotate
  * @param {string} inheritedResources
  * @param {Array<{ objNum: number, objText: string, mediaBox: number[], cropBox: number[]|null, rotate: number }>} pages
  */
-function collectPages(objNum, objCache, inheritedMediaBox, inheritedRotate, inheritedResources, pages) {
+function collectPages(objNum, objCache, inheritedMediaBox, inheritedCropBox, inheritedRotate, inheritedResources, pages) {
   const objText = objCache.getObjectText(objNum);
   if (!objText) return;
 
@@ -1894,6 +1938,19 @@ function collectPages(objNum, objCache, inheritedMediaBox, inheritedRotate, inhe
         : inheritedMediaBox;
     } else {
       mediaBox = inheritedMediaBox;
+    }
+  }
+
+  const cbMatchAny = /\/CropBox\s*\[\s*([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s*\]/.exec(objText);
+  let cropBoxResolved = inheritedCropBox;
+  if (cbMatchAny) {
+    cropBoxResolved = [Number(cbMatchAny[1]), Number(cbMatchAny[2]), Number(cbMatchAny[3]), Number(cbMatchAny[4])];
+  } else {
+    const cbRefMatchAny = /\/CropBox\s+(\d+)\s+\d+\s+R/.exec(objText);
+    if (cbRefMatchAny) {
+      const cbObjText = objCache.getObjectText(Number(cbRefMatchAny[1]));
+      const cbArr = cbObjText && /\[\s*([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s*\]/.exec(cbObjText);
+      if (cbArr) cropBoxResolved = [Number(cbArr[1]), Number(cbArr[2]), Number(cbArr[3]), Number(cbArr[4])];
     }
   }
 
@@ -1922,7 +1979,7 @@ function collectPages(objNum, objCache, inheritedMediaBox, inheritedRotate, inhe
         const dictIdx = kidsContent.indexOf('<<', pos);
         const refMatch = /(\d+)\s+\d+\s+R/.exec(kidsContent.substring(pos, dictIdx >= 0 ? dictIdx : undefined));
         if (refMatch && (dictIdx < 0 || pos + refMatch.index < dictIdx)) {
-          collectPages(Number(refMatch[1]), objCache, mediaBox, rotate, resources, pages);
+          collectPages(Number(refMatch[1]), objCache, mediaBox, cropBoxResolved, rotate, resources, pages);
           pos += refMatch.index + refMatch[0].length;
         } else if (dictIdx >= 0) {
           const inlineDict = extractDict(kidsContent, dictIdx);
@@ -1937,10 +1994,23 @@ function collectPages(objNum, objCache, inheritedMediaBox, inheritedRotate, inhe
           const inlineMediaBox = inlineMb
             ? [Number(inlineMb[1]), Number(inlineMb[2]), Number(inlineMb[3]), Number(inlineMb[4])]
             : mediaBox;
+          const inlineCb = /\/CropBox\s*\[\s*([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s*\]/.exec(finalObjText);
+          let inlineCropBox = inlineCb
+            ? [Number(inlineCb[1]), Number(inlineCb[2]), Number(inlineCb[3]), Number(inlineCb[4])]
+            : cropBoxResolved;
+          if (inlineCropBox && (inlineCropBox[0] < inlineMediaBox[0] || inlineCropBox[1] < inlineMediaBox[1]
+            || inlineCropBox[2] > inlineMediaBox[2] || inlineCropBox[3] > inlineMediaBox[3])) {
+            inlineCropBox = [
+              Math.max(inlineCropBox[0], inlineMediaBox[0]),
+              Math.max(inlineCropBox[1], inlineMediaBox[1]),
+              Math.min(inlineCropBox[2], inlineMediaBox[2]),
+              Math.min(inlineCropBox[3], inlineMediaBox[3]),
+            ];
+          }
           const inlineHasRot = /\/Rotate\s/.test(finalObjText);
           const inlineRotate = inlineHasRot ? ((resolveIntValue(finalObjText, 'Rotate', objCache) % 360) + 360) % 360 : rotate;
           pages.push({
-            objNum: -1, objText: finalObjText, mediaBox: inlineMediaBox, cropBox: null, rotate: inlineRotate,
+            objNum: -1, objText: finalObjText, mediaBox: inlineMediaBox, cropBox: inlineCropBox, rotate: inlineRotate,
           });
           pos = dictIdx + inlineDict.length;
         } else {
@@ -1950,7 +2020,7 @@ function collectPages(objNum, objCache, inheritedMediaBox, inheritedRotate, inhe
     } else {
       const kidRefs = [...kidsContent.matchAll(/(\d+)\s+\d+\s+R/g)].map((m) => Number(m[1]));
       for (const kidNum of kidRefs) {
-        collectPages(kidNum, objCache, mediaBox, rotate, resources, pages);
+        collectPages(kidNum, objCache, mediaBox, cropBoxResolved, rotate, resources, pages);
       }
     }
   } else {
@@ -1962,22 +2032,7 @@ function collectPages(objNum, objCache, inheritedMediaBox, inheritedRotate, inhe
       }
     }
 
-    const cbMatch = /\/CropBox\s*\[\s*([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s*\]/.exec(finalObjText);
-    let cropBox;
-    if (cbMatch) {
-      cropBox = [Number(cbMatch[1]), Number(cbMatch[2]), Number(cbMatch[3]), Number(cbMatch[4])];
-    } else {
-      const cbRefMatch = /\/CropBox\s+(\d+)\s+\d+\s+R/.exec(finalObjText);
-      if (cbRefMatch) {
-        const cbObjText = objCache.getObjectText(Number(cbRefMatch[1]));
-        const cbArr = cbObjText && /\[\s*([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s*\]/.exec(cbObjText);
-        cropBox = cbArr
-          ? [Number(cbArr[1]), Number(cbArr[2]), Number(cbArr[3]), Number(cbArr[4])]
-          : null;
-      } else {
-        cropBox = null;
-      }
-    }
+    let cropBox = cropBoxResolved;
     if (cropBox && (cropBox[0] < mediaBox[0] || cropBox[1] < mediaBox[1]
       || cropBox[2] > mediaBox[2] || cropBox[3] > mediaBox[3])) {
       cropBox = [
@@ -2001,7 +2056,7 @@ export function getPageObjects(objCache) {
   const { pagesRefMatch } = findCatalogAndPages(objCache);
   /** @type {Array<{objNum: number, objText: string, mediaBox: number[], cropBox: number[]|null, rotate: number}>} */
   const pages = [];
-  collectPages(Number(pagesRefMatch[1]), objCache, [0, 0, 612, 792], 0, '', pages);
+  collectPages(Number(pagesRefMatch[1]), objCache, [0, 0, 612, 792], null, 0, '', pages);
   // Recover orphan /Type/Page objects parented directly at the pages root,
   // since producers occasionally append a page without updating /Kids.
   // Orphans parented at intermediate /Pages nodes are excluded —
@@ -2015,7 +2070,7 @@ export function getPageObjects(objCache) {
     if (!text || !/\/Type\s*\/Page\b(?!s)/.test(text)) continue;
     const parentMatch = /\/Parent\s+(\d+)\s+\d+\s+R/.exec(text);
     if (!parentMatch || Number(parentMatch[1]) !== pagesRootObjNum) continue;
-    collectPages(objNum, objCache, [0, 0, 612, 792], 0, '', pages);
+    collectPages(objNum, objCache, [0, 0, 612, 792], null, 0, '', pages);
   }
   return pages;
 }
@@ -2375,6 +2430,43 @@ export function tokenizeContentStream(streamText) {
           i++;
         }
         const dataStart = i;
+        // Some PDFs emit raw image data whose last byte is non-whitespace.
+        // The spec-strict whitespace-bounded scan below would miss EI, so for
+        // raw images (no /F filter) match EI at the offset computed from /W /H /BPC.
+        const dictTrim = dictText.trim();
+        const hasFilter = /\/(?:F|Filter)\b/.test(dictTrim);
+        let computedDataLen = -1;
+        if (!hasFilter) {
+          const wMatch = /\/(?:W|Width)\s+(\d+)/.exec(dictTrim);
+          const hMatch = /\/(?:H|Height)\s+(\d+)/.exec(dictTrim);
+          const bpcMatch = /\/(?:BPC|BitsPerComponent)\s+(\d+)/.exec(dictTrim);
+          if (wMatch && hMatch) {
+            const w = Number(wMatch[1]);
+            const h = Number(hMatch[1]);
+            const bpc = bpcMatch ? Number(bpcMatch[1]) : 8;
+            let nComp = 1;
+            if (/\/CS\s*\/(?:RGB|DeviceRGB|CalRGB)\b/.test(dictTrim)) nComp = 3;
+            else if (/\/CS\s*\/(?:CMYK|DeviceCMYK)\b/.test(dictTrim)) nComp = 4;
+            else if (/\/CS\s*\/(?:G|DeviceGray|CalGray)\b/.test(dictTrim)) nComp = 1;
+            else if (/\/(?:IM|ImageMask)\s+true\b/.test(dictTrim)) { nComp = 1; } else nComp = 0; // Indexed or unknown — leave to scan
+            if (nComp > 0) {
+              const rowBytes = Math.ceil((w * nComp * bpc) / 8);
+              computedDataLen = rowBytes * h;
+            }
+          }
+        }
+        if (computedDataLen >= 0) {
+          const dataEnd = dataStart + computedDataLen;
+          if (dataEnd + 2 <= len
+              && streamText.charCodeAt(dataEnd) === 0x45
+              && streamText.charCodeAt(dataEnd + 1) === 0x49
+              && (dataEnd + 2 === len || TOK_WS_OR_SLASH[streamText.charCodeAt(dataEnd + 2)])) {
+            const imageData = streamText.substring(dataStart, dataEnd);
+            i = dataEnd + 2;
+            tokens.push({ type: 'inlineImage', value: { dictText: dictTrim, imageData } });
+            continue;
+          }
+        }
         while (i < len) {
           const ec = streamText.charCodeAt(i);
           if (ec === 0x45 && i + 1 < len && streamText.charCodeAt(i + 1) === 0x49
@@ -2386,7 +2478,7 @@ export function tokenizeContentStream(streamText) {
         }
         const imageData = streamText.substring(dataStart, i > dataStart ? i - 1 : i);
         i += 2;
-        tokens.push({ type: 'inlineImage', value: { dictText: dictText.trim(), imageData } });
+        tokens.push({ type: 'inlineImage', value: { dictText: dictTrim, imageData } });
         continue;
       }
 

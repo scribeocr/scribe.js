@@ -974,5 +974,15 @@ export function decodeCCITTFax(data, params = {}) {
   while ((byte = decoder.readNextChar()) !== -1) {
     result.push(byte);
   }
+  // Pad to declared image size when the encoder emitted fewer bytes than Rows demands.
+  // Per the CCITT convention, missing pixels are white.
+  if (params.Rows && params.Columns) {
+    const rowBytes = Math.ceil(params.Columns / 8);
+    const expected = rowBytes * params.Rows;
+    if (result.length < expected) {
+      const padByte = params.BlackIs1 ? 0x00 : 0xFF;
+      while (result.length < expected) result.push(padByte);
+    }
+  }
   return new Uint8Array(result);
 }

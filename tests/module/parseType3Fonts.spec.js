@@ -28,13 +28,13 @@ async function readFileBytes(filePath) {
  */
 const EXPECTED_TYPE3 = {
   246: {
-    fontName: 'T2', fileLen: 19872, numGlyphs: 113, glyphsWithPaths: 111, serializeLen: 19844,
+    fontName: 'T2', fileLen: 18984, numGlyphs: 113, glyphsWithPaths: 111, serializeLen: 18956,
   },
   247: {
-    fontName: 'T3', fileLen: 27556, numGlyphs: 112, glyphsWithPaths: 110, serializeLen: 27528,
+    fontName: 'T3', fileLen: 26676, numGlyphs: 112, glyphsWithPaths: 110, serializeLen: 26648,
   },
   450: {
-    fontName: 'T1', fileLen: 34272, numGlyphs: 176, glyphsWithPaths: 174, serializeLen: 34244,
+    fontName: 'T1', fileLen: 32880, numGlyphs: 176, glyphsWithPaths: 174, serializeLen: 32852,
   },
 };
 

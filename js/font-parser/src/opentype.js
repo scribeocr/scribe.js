@@ -235,152 +235,131 @@ function writeUint32(d, pos, v) {
 
 // Make cmap table, format 4 by default, 12 if needed only
 export function makeCmapTable(glyphs) {
-  // Plan 0 is the base Unicode Plan but emojis, for example are on another plan, and needs cmap 12 format (with 32bit)
-  let isPlan0Only = true;
+  let needFormat12 = false;
   let i;
 
-  // Check if we need to add cmap format 12 or if format 4 only is fine
   for (i = glyphs.length - 1; i > 0; i -= 1) {
     const g = glyphs.get(i);
     if (g.unicode > 65535) {
       console.log('Adding CMAP format 12 (needed!)');
-      isPlan0Only = false;
+      needFormat12 = true;
       break;
     }
   }
 
-  // Build segments (same logic as before).
-  const segments = [];
+  const rawEntries = [];
   for (i = 0; i < glyphs.length; i += 1) {
     const glyph = glyphs.get(i);
     for (let j = 0; j < glyph.unicodes.length; j += 1) {
-      segments.push({
-        end: glyph.unicodes[j],
-        start: glyph.unicodes[j],
-        delta: -(glyph.unicodes[j] - i),
-        offset: 0,
-        glyphIndex: i,
+      rawEntries.push({ unicode: glyph.unicodes[j], glyphIndex: i });
+    }
+  }
+  rawEntries.sort((a, b) => a.unicode - b.unicode);
+
+  // Compact contiguous (unicode, glyphIndex) runs into single segments.
+  // A run qualifies when start = prev.end + 1 AND glyphIndex = prev.endGid + 1,
+  // letting format 4's idDelta cover the whole range with a constant offset.
+  const bmpSegments = [];
+  const nonBmpEntries = [];
+  for (const e of rawEntries) {
+    if (e.unicode > 65535) {
+      nonBmpEntries.push(e);
+      continue;
+    }
+    const last = bmpSegments[bmpSegments.length - 1];
+    if (last && last.end === e.unicode - 1 && last.endGid === e.glyphIndex - 1) {
+      last.end = e.unicode;
+      last.endGid = e.glyphIndex;
+    } else {
+      bmpSegments.push({
+        start: e.unicode, end: e.unicode, startGid: e.glyphIndex, endGid: e.glyphIndex,
       });
     }
   }
 
-  segments.sort((a, b) => a.start - b.start);
-
-  // Add terminator segment.
-  segments.push({
-    end: 0xFFFF,
-    start: 0xFFFF,
-    delta: 1,
-    offset: 0,
+  const cmap4Segments = bmpSegments.map((s) => ({
+    start: s.start, end: s.end, delta: s.startGid - s.start, offset: 0,
+  }));
+  cmap4Segments.push({
+    start: 0xFFFF, end: 0xFFFF, delta: 1, offset: 0,
   });
 
-  // Separate CMAP 4 segments (BMP only) from CMAP 12 groups.
-  const cmap4Segments = [];
-  const cmap12Groups = [];
-  let glyphIdCount = 0;
+  // Format 4's length field is uint16. The subtable is
+  // 14 (header) + 4 * segCount * 2 (arrays) + 2 (reservedPad) bytes.
+  // Once segCount > 8189 the length cannot be expressed and
+  // we have to fall back to format 12 (32-bit fields) only.
+  const segCount4 = cmap4Segments.length;
+  const cmap4Length = 14 + segCount4 * 2 * 4 + 2;
+  const cmap4Overflows = cmap4Length > 0xFFFF || segCount4 * 2 > 0xFFFF;
+  const useFormat12Only = cmap4Overflows;
+  const emitFormat12 = needFormat12 || useFormat12Only;
 
-  for (i = 0; i < segments.length; i += 1) {
-    const seg = segments[i];
-    if (seg.end <= 65535 && seg.start <= 65535) {
-      cmap4Segments.push(seg);
-      if (seg.glyphId !== undefined) {
-        glyphIdCount += 1;
+  // When format 12 is emitted alongside format 4, it must duplicate the BMP
+  // mappings rather than only carry supplementary-plane entries.
+  const cmap12Groups = [];
+  if (emitFormat12) {
+    for (const e of rawEntries) {
+      const last = cmap12Groups[cmap12Groups.length - 1];
+      if (last && last.end === e.unicode - 1 && last.glyphIndex + (last.end - last.start) + 1 === e.glyphIndex) {
+        last.end = e.unicode;
+      } else {
+        cmap12Groups.push({ start: e.unicode, end: e.unicode, glyphIndex: e.glyphIndex });
       }
-    }
-    // CMAP 12: skip terminator segment.
-    if (!isPlan0Only && seg.glyphIndex !== undefined) {
-      cmap12Groups.push(seg);
     }
   }
 
-  const segCount4 = cmap4Segments.length;
+  const numEncodingRecords = useFormat12Only ? 1 : (emitFormat12 ? 2 : 1);
+  const headerSize = 4 + numEncodingRecords * 8;
 
-  // CMAP 4 header values.
   const segCountX2 = segCount4 * 2;
   const searchRange = 2 ** Math.floor(Math.log(segCount4) / Math.log(2)) * 2;
   const entrySelector = Math.log(searchRange / 2) / Math.log(2);
   const rangeShift = segCountX2 - searchRange;
 
-  // CMAP 4 subtable size: header (14) + 4 arrays (2 * segCount4 each) + reservedPad (2) + glyphIds (2 * glyphIdCount)
-  const cmap4Length = 14 + segCount4 * 2 * 4 + 2 + glyphIdCount * 2;
-
-  // Encoding record sizes.
-  const numEncodingRecords = isPlan0Only ? 1 : 2;
-  const headerSize = 4 + numEncodingRecords * 8; // version(2) + numTables(2) + records(8 each)
   const cmap4Offset = headerSize;
+  const cmap12Length = emitFormat12 ? (16 + cmap12Groups.length * 12) : 0;
+  const cmap12Offset = useFormat12Only ? headerSize : cmap4Offset + cmap4Length;
+  const totalSize = headerSize + (useFormat12Only ? 0 : cmap4Length) + cmap12Length;
 
-  // CMAP 12 subtable.
-  const nGroups12 = cmap12Groups.length;
-  const cmap12Length = !isPlan0Only ? (16 + nGroups12 * 12) : 0;
-  const cmap12Offset = cmap4Offset + cmap4Length;
-
-  const totalSize = headerSize + cmap4Length + cmap12Length;
   const d = new Array(totalSize);
-
-  // Write cmap table header.
   let p = 0;
-  writeUint16(d, p, 0); p += 2; // version
-  writeUint16(d, p, numEncodingRecords); p += 2; // numTables
+  writeUint16(d, p, 0); p += 2;
+  writeUint16(d, p, numEncodingRecords); p += 2;
 
-  // Encoding record 1: format 4 (platform 3, encoding 1).
-  writeUint16(d, p, 3); p += 2; // platformID
-  writeUint16(d, p, 1); p += 2; // encodingID
-  writeUint32(d, p, cmap4Offset); p += 4; // offset
-
-  if (!isPlan0Only) {
-    // Encoding record 2: format 12 (platform 3, encoding 10).
+  if (!useFormat12Only) {
+    writeUint16(d, p, 3); p += 2;
+    writeUint16(d, p, 1); p += 2;
+    writeUint32(d, p, cmap4Offset); p += 4;
+  }
+  if (emitFormat12) {
     writeUint16(d, p, 3); p += 2;
     writeUint16(d, p, 10); p += 2;
     writeUint32(d, p, cmap12Offset); p += 4;
   }
 
-  // Write CMAP 4 subtable.
-  writeUint16(d, p, 4); p += 2; // format
-  writeUint16(d, p, cmap4Length); p += 2; // length
-  writeUint16(d, p, 0); p += 2; // language
-  writeUint16(d, p, segCountX2); p += 2;
-  writeUint16(d, p, searchRange); p += 2;
-  writeUint16(d, p, entrySelector); p += 2;
-  writeUint16(d, p, rangeShift); p += 2;
+  if (!useFormat12Only) {
+    writeUint16(d, p, 4); p += 2;
+    writeUint16(d, p, cmap4Length); p += 2;
+    writeUint16(d, p, 0); p += 2;
+    writeUint16(d, p, segCountX2); p += 2;
+    writeUint16(d, p, searchRange); p += 2;
+    writeUint16(d, p, entrySelector); p += 2;
+    writeUint16(d, p, rangeShift); p += 2;
 
-  // endCounts
-  for (i = 0; i < segCount4; i += 1) {
-    writeUint16(d, p, cmap4Segments[i].end); p += 2;
+    for (i = 0; i < segCount4; i += 1) { writeUint16(d, p, cmap4Segments[i].end); p += 2; }
+    writeUint16(d, p, 0); p += 2;
+    for (i = 0; i < segCount4; i += 1) { writeUint16(d, p, cmap4Segments[i].start); p += 2; }
+    for (i = 0; i < segCount4; i += 1) { writeInt16(d, p, cmap4Segments[i].delta); p += 2; }
+    for (i = 0; i < segCount4; i += 1) { writeUint16(d, p, cmap4Segments[i].offset); p += 2; }
   }
 
-  // reservedPad
-  writeUint16(d, p, 0); p += 2;
-
-  // startCounts
-  for (i = 0; i < segCount4; i += 1) {
-    writeUint16(d, p, cmap4Segments[i].start); p += 2;
-  }
-
-  // idDeltas
-  for (i = 0; i < segCount4; i += 1) {
-    writeInt16(d, p, cmap4Segments[i].delta); p += 2;
-  }
-
-  // idRangeOffsets
-  for (i = 0; i < segCount4; i += 1) {
-    writeUint16(d, p, cmap4Segments[i].offset); p += 2;
-  }
-
-  // glyphIds
-  for (i = 0; i < segCount4; i += 1) {
-    if (cmap4Segments[i].glyphId !== undefined) {
-      writeUint16(d, p, cmap4Segments[i].glyphId); p += 2;
-    }
-  }
-
-  // Write CMAP 12 subtable.
-  if (!isPlan0Only) {
-    writeUint16(d, p, 12); p += 2; // format
-    writeUint16(d, p, 0); p += 2; // reserved
-    writeUint32(d, p, cmap12Length); p += 4; // length
-    writeUint32(d, p, 0); p += 4; // language
-    writeUint32(d, p, nGroups12); p += 4; // nGroups
-
+  if (emitFormat12) {
+    const nGroups12 = cmap12Groups.length;
+    writeUint16(d, p, 12); p += 2;
+    writeUint16(d, p, 0); p += 2;
+    writeUint32(d, p, cmap12Length); p += 4;
+    writeUint32(d, p, 0); p += 4;
+    writeUint32(d, p, nGroups12); p += 4;
     for (i = 0; i < nGroups12; i += 1) {
       writeUint32(d, p, cmap12Groups[i].start); p += 4;
       writeUint32(d, p, cmap12Groups[i].end); p += 4;

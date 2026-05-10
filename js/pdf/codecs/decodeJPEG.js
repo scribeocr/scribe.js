@@ -658,19 +658,6 @@ export function labBytesToRGBA(data, width, height, whitePoint, range) {
 }
 
 /**
- * Decode a Lab JPEG and return RGBA pixel data.
- *
- * @param {Uint8Array} jpegData
- * @param {number[]} whitePoint
- */
-export function decodeLabJpegToRGB(jpegData, whitePoint) {
-  const raw = decodeJPEGRaw(jpegData);
-  if (!raw || raw.components !== 3) return null;
-  const { width, height, data } = raw;
-  return { width, height, rgbData: labBytesToRGBA(data, width, height, whitePoint) };
-}
-
-/**
  * Quick check: does this JPEG have 4 components (CMYK)?
  * Scans for SOF0/SOF1 marker and checks component count.
  * @param {Uint8Array} jpegData

@@ -714,6 +714,46 @@ function concatBytes(a, b, c) {
 }
 
 /**
+ * Derive the file encryption key for V=5/R=5.
+ * Uses a single SHA-256 instead of R=6's iterative hash.
+ * @param {Uint8Array} U - 48-byte /U value
+ * @param {Uint8Array} UE - 32-byte /UE value (encrypted file key)
+ * @param {Uint8Array|null} O - 48-byte /O value
+ * @param {Uint8Array|null} OE - 32-byte /OE value (encrypted file key, owner)
+ */
+function deriveFileKeyR5(U, UE, O, OE) {
+  const password = new Uint8Array(0);
+
+  const userValSalt = U.subarray(32, 40);
+  const userHash = sha256(concatBytes(password, userValSalt));
+  let matched = true;
+  for (let i = 0; i < 32; i++) { if (userHash[i] !== U[i]) { matched = false; break; } }
+  if (matched) {
+    const userKeySalt = U.subarray(40, 48);
+    const intermediateKey = sha256(concatBytes(password, userKeySalt));
+    const ivPlusUE = new Uint8Array(16 + UE.length);
+    ivPlusUE.set(UE, 16);
+    return aesDecrypt(intermediateKey, ivPlusUE, false);
+  }
+
+  if (O && OE) {
+    const ownerValSalt = O.subarray(32, 40);
+    const ownerHash = sha256(concatBytes(password, ownerValSalt, U.subarray(0, 48)));
+    matched = true;
+    for (let i = 0; i < 32; i++) { if (ownerHash[i] !== O[i]) { matched = false; break; } }
+    if (matched) {
+      const ownerKeySalt = O.subarray(40, 48);
+      const intermediateKey = sha256(concatBytes(password, ownerKeySalt, U.subarray(0, 48)));
+      const ivPlusOE = new Uint8Array(16 + OE.length);
+      ivPlusOE.set(OE, 16);
+      return aesDecrypt(intermediateKey, ivPlusOE, false);
+    }
+  }
+
+  return null;
+}
+
+/**
  * Derive the file encryption key for V=5/R=6.
  * @param {Uint8Array} U - 48-byte /U value
  * @param {Uint8Array} UE - 32-byte /UE value (encrypted file key)
@@ -1014,9 +1054,9 @@ export function setupEncryption(objCache) {
     return;
   }
 
-  // V=5/R=6: AES-256 with SHA-based key derivation (PDF 2.0)
+  // V=5: AES-256. R=5 (Acrobat 9 / Adobe Extension 3) uses single SHA-256.
+  // R=6 (PDF 2.0) uses an iterative hash with SHA-256/384/512 + AES rounds.
   if (V === 5) {
-    // Parse /U, /UE, /O, /OE from raw bytes
     const U = parsePdfStringAt(pdfBytes, encOffset, encText, '/U');
     const UE = parsePdfStringAt(pdfBytes, encOffset, encText, '/UE');
     const O = parsePdfStringAt(pdfBytes, encOffset, encText, '/O');
@@ -1025,10 +1065,11 @@ export function setupEncryption(objCache) {
       console.warn('[parsePdfUtils] V=5 encryption: missing or invalid /U or /UE');
       return;
     }
-    const fileKey = deriveFileKeyR6(U, UE.subarray(0, 32),
+    const deriveKey = R === 5 ? deriveFileKeyR5 : deriveFileKeyR6;
+    const fileKey = deriveKey(U, UE.subarray(0, 32),
       O && O.length >= 48 ? O : null, OE && OE.length >= 32 ? OE.subarray(0, 32) : null);
     if (!fileKey) {
-      console.warn('[parsePdfUtils] V=5 encryption: password validation failed (non-empty password?)');
+      console.warn(`[parsePdfUtils] V=5 R=${R} encryption: password validation failed (non-empty password?)`);
       return;
     }
     objCache.encryptionKey = fileKey;

@@ -5,7 +5,7 @@ import {
   resolveIntValue, resolveNumValue, resolveArrayValue,
 } from '../parsePdfUtils.js';
 import {
-  win1252Chars, macRomanChars, aglLookup, wingdingsToUnicode, symbolToUnicode, dingbatsGlyphMap, dingbatsEncoding,
+  win1252Chars, macRomanChars, aglLookup, unicodeToAGL, wingdingsToUnicode, symbolToUnicode, dingbatsGlyphMap, dingbatsEncoding,
 } from './standardEncodings.js';
 import { applyStandardFontWidths, getDingbatsGlyphWidth } from './standardFontMetrics.js';
 import { parseCFFCharset } from './convertFontToOTF.js';
@@ -822,7 +822,14 @@ export function parsePageFonts(pageObjText, objCache) {
       if (baseChars) {
         for (let code = 32; code <= 255; code++) {
           const ch = baseChars[code - 32];
-          if (ch) encodingUnicode.set(code, ch);
+          if (ch) {
+            encodingUnicode.set(code, ch);
+            // Pair the charCode with a glyph name so the rebuild can match the
+            // PDF Encoding instead of falling back to the embedded font's
+            // internal Encoding, which is meaningless once the PDF overrides it.
+            const glyphName = unicodeToAGL(ch.codePointAt(0));
+            if (glyphName) charCodeToGlyphName.set(code, glyphName);
+          }
         }
         // When no ToUnicode CMap, use encoding as toUnicode fallback
         if (toUnicode.size === 0) {
@@ -2005,6 +2012,31 @@ export function parsePageFonts(pageObjText, objCache) {
       }
     }
 
+    // Some PDFs encode widths as 32-bit packed values (e.g. 0x00020002 = 131074), far
+    // above any reasonable 1/1000-em width. Unclamped, they poison text-extraction bbox
+    // math and overflow uint16 hmtx entries during OTF rebuild.
+    // Type3 is exempt: widths there come from d1 * fontMatrix[0] * 1000, so a non-standard
+    // fontMatrix (e.g. identity instead of [0.001, 0, 0, 0.001, 0, 0]) can legitimately
+    // yield values >> 4000.
+    if (!type3Info) {
+      const SANE_MAX_WIDTH = 4000;
+      let saneSum = 0; let saneCount = 0;
+      for (const w of widths.values()) {
+        if (Number.isFinite(w) && w >= 0 && w <= SANE_MAX_WIDTH) { saneSum += w; saneCount++; }
+      }
+      const saneFallback = saneCount > 0 ? Math.round(saneSum / saneCount) : 1000;
+      let widthsClamped = false;
+      for (const [cc, w] of widths) {
+        if (!(Number.isFinite(w) && w >= 0 && w <= SANE_MAX_WIDTH)) {
+          widths.set(cc, saneFallback);
+          widthsClamped = true;
+        }
+      }
+      if (widthsClamped && (!Number.isFinite(defaultWidth) || defaultWidth < 0 || defaultWidth > SANE_MAX_WIDTH)) {
+        defaultWidth = saneFallback;
+      }
+    }
+
     const fontInfo = {
       baseName,
       toUnicode,
@@ -2659,6 +2691,11 @@ export function parseGlyphStreamPaths(streamText) {
 
   const numStack = [];
   let inTextBlock = false;
+  // Track where the current sub-path begins so `n` (end-path-no-paint, used
+  // after `W`/`W*` to apply a clip) can drop the sub-path's commands without
+  // them being filled along with subsequent painted sub-paths. Any path-paint
+  // operator (f/S/B/etc.) advances this to the post-paint index.
+  let unpaintedStart = commands.length;
   for (const tok of tokens) {
     // Skip text block contents (BT...ET) to avoid misinterpreting
     // font names/arguments as drawing operators (e.g. 'B' in '/FType3B').
@@ -2726,12 +2763,17 @@ export function parseGlyphStreamPaths(streamText) {
           commands.push({ type: 'Z' });
           numStack.length = 0;
           break;
+        case 'n':
+          commands.length = unpaintedStart;
+          numStack.length = 0;
+          break;
         case 'f':
         case 'F':
           paintMode = 'fill';
           if (commands.length > 0 && commands[commands.length - 1].type !== 'Z') {
             commands.push({ type: 'Z' });
           }
+          unpaintedStart = commands.length;
           numStack.length = 0;
           break;
         case 'f*':
@@ -2740,6 +2782,7 @@ export function parseGlyphStreamPaths(streamText) {
           if (commands.length > 0 && commands[commands.length - 1].type !== 'Z') {
             commands.push({ type: 'Z' });
           }
+          unpaintedStart = commands.length;
           numStack.length = 0;
           break;
         case 'S':
@@ -2748,6 +2791,7 @@ export function parseGlyphStreamPaths(streamText) {
           if (commands.length > 0 && commands[commands.length - 1].type !== 'Z') {
             commands.push({ type: 'Z' });
           }
+          unpaintedStart = commands.length;
           numStack.length = 0;
           break;
         case 'B':
@@ -2756,6 +2800,7 @@ export function parseGlyphStreamPaths(streamText) {
           if (commands.length > 0 && commands[commands.length - 1].type !== 'Z') {
             commands.push({ type: 'Z' });
           }
+          unpaintedStart = commands.length;
           numStack.length = 0;
           break;
         case 'B*':
@@ -2765,6 +2810,7 @@ export function parseGlyphStreamPaths(streamText) {
           if (commands.length > 0 && commands[commands.length - 1].type !== 'Z') {
             commands.push({ type: 'Z' });
           }
+          unpaintedStart = commands.length;
           numStack.length = 0;
           break;
         case 'BT':
