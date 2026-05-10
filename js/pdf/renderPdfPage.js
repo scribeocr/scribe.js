@@ -841,7 +841,7 @@ async function imageInfoToBitmap(imageInfo, objCache) {
       if (tintSamples && tintSamples.length >= 3) {
         const nSamples = Math.floor(tintSamples.length / 3);
         for (let i = 0; i < w * h; i++) {
-          const tint = pixels[i];
+          const tint = decodeInvert ? (255 - pixels[i]) : pixels[i];
           const [r, g, b] = interpolateTint(tintSamples, nSamples, tint);
           rgbaData[i * 4] = r;
           rgbaData[i * 4 + 1] = g;
@@ -850,7 +850,7 @@ async function imageInfoToBitmap(imageInfo, objCache) {
         }
       } else {
         for (let i = 0; i < w * h; i++) {
-          const val = 255 - pixels[i];
+          const val = decodeInvert ? pixels[i] : (255 - pixels[i]);
           // eslint-disable-next-line no-multi-assign
           rgbaData[i * 4] = rgbaData[i * 4 + 1] = rgbaData[i * 4 + 2] = val;
           rgbaData[i * 4 + 3] = 255;
@@ -1520,6 +1520,7 @@ function parseDrawOps(
   /** @type {Uint8Array|null} */
   let strokeTintSamples = null;
   let strokeTintNComponents = 3;
+  let strokeDeviceNGrid = null;
   let fillAlpha = 1;
   let strokeAlpha = 1;
   let overprint = false;
@@ -2396,6 +2397,7 @@ function parseDrawOps(
           fillTintNComponents,
           strokeTintSamples,
           strokeTintNComponents,
+          strokeDeviceNGrid,
           fillAlpha,
           strokeAlpha,
           lineWidth,
@@ -2445,6 +2447,7 @@ function parseDrawOps(
           fillTintNComponents = saved.fillTintNComponents;
           strokeTintSamples = saved.strokeTintSamples;
           strokeTintNComponents = saved.strokeTintNComponents;
+          strokeDeviceNGrid = saved.strokeDeviceNGrid;
           fillAlpha = saved.fillAlpha;
           strokeAlpha = saved.strokeAlpha;
           overprint = saved.overprint;
@@ -2777,6 +2780,7 @@ function parseDrawOps(
         strokeColorSpaceType = 'DeviceGray';
         strokeTintSamples = null;
         strokeTintNComponents = 1;
+        strokeDeviceNGrid = null;
         strokeIndexedInfo = null;
         if (operandStack.length >= 1) {
           const gv = Math.round(operandStack[operandStack.length - 1].value * 255);
@@ -2791,6 +2795,7 @@ function parseDrawOps(
         strokeColorSpaceType = 'DeviceRGB';
         strokeTintSamples = null;
         strokeTintNComponents = 3;
+        strokeDeviceNGrid = null;
         strokeIndexedInfo = null;
         if (operandStack.length >= 3) {
           const r = Math.round(operandStack[operandStack.length - 3].value * 255);
@@ -2807,6 +2812,7 @@ function parseDrawOps(
         strokeColorSpaceType = 'DeviceCMYK';
         strokeTintSamples = null;
         strokeTintNComponents = 4;
+        strokeDeviceNGrid = null;
         strokeIndexedInfo = null;
         if (operandStack.length !== 4) pathAnomalyCount++;
         if (operandStack.length >= 4) {
@@ -2842,6 +2848,7 @@ function parseDrawOps(
         strokeColorSpaceType = csInfoS ? csInfoS.type : csNameS;
         strokeTintSamples = csInfoS ? csInfoS.tintSamples : null;
         strokeTintNComponents = csInfoS ? csInfoS.nComponents : 3;
+        strokeDeviceNGrid = csInfoS ? csInfoS.deviceNGrid : null;
         strokeIndexedInfo = csInfoS ? csInfoS.indexedInfo : null;
         strokePatternShading = null;
         strokeTilingPattern = null;
@@ -3019,6 +3026,51 @@ function parseDrawOps(
             } else if (nComp === 4) {
               const [ri, gi, bi] = cmykToRgb(pal[po] / 255, pal[po + 1] / 255, pal[po + 2] / 255, pal[po + 3] / 255);
               strokeColor = `rgb(${ri},${gi},${bi})`;
+            }
+            operandStack.length = 0;
+            break;
+          }
+          if (strokeDeviceNGrid && vals.length === strokeDeviceNGrid.nInputs) {
+            const grid = strokeDeviceNGrid;
+            if (grid.parsedTint) {
+              const rgb = tintComponentsToRGB(grid.parsedTint, vals);
+              if (rgb) {
+                strokeColor = `rgb(${rgb[0]},${rgb[1]},${rgb[2]})`;
+                operandStack.length = 0;
+                break;
+              }
+            }
+            const rgb = grid.rgbSamples;
+            const nc = grid.nComponents;
+            if (grid.nInputs === 2) {
+              const s0 = grid.sizes[0];
+              const s1 = grid.sizes[1];
+              const fx = vals[0] * (s0 - 1);
+              const fy = vals[1] * (s1 - 1);
+              const x0 = Math.min(Math.floor(fx), s0 - 1);
+              const y0 = Math.min(Math.floor(fy), s1 - 1);
+              const x1 = Math.min(x0 + 1, s0 - 1);
+              const y1 = Math.min(y0 + 1, s1 - 1);
+              const dx = fx - x0;
+              const dy = fy - y0;
+              const i00 = (y0 * s0 + x0) * nc;
+              const i10 = (y0 * s0 + x1) * nc;
+              const i01 = (y1 * s0 + x0) * nc;
+              const i11 = (y1 * s0 + x1) * nc;
+              const r = Math.round((rgb[i00] * (1 - dx) + rgb[i10] * dx) * (1 - dy) + (rgb[i01] * (1 - dx) + rgb[i11] * dx) * dy);
+              const g = Math.round((rgb[i00 + 1] * (1 - dx) + rgb[i10 + 1] * dx) * (1 - dy) + (rgb[i01 + 1] * (1 - dx) + rgb[i11 + 1] * dx) * dy);
+              const bv = Math.round((rgb[i00 + 2] * (1 - dx) + rgb[i10 + 2] * dx) * (1 - dy) + (rgb[i01 + 2] * (1 - dx) + rgb[i11 + 2] * dx) * dy);
+              strokeColor = `rgb(${r},${g},${bv})`;
+            } else {
+              let flatIdx = 0;
+              let stride = 1;
+              for (let d = 0; d < grid.nInputs; d++) {
+                const si = Math.min(Math.round(vals[d] * (grid.sizes[d] - 1)), grid.sizes[d] - 1);
+                flatIdx += si * stride;
+                stride *= grid.sizes[d];
+              }
+              const ri = flatIdx * nc;
+              strokeColor = `rgb(${rgb[ri]},${rgb[ri + 1]},${rgb[ri + 2]})`;
             }
             operandStack.length = 0;
             break;
@@ -4625,14 +4677,14 @@ function parseMeshShading(shObjText, shObjNum, shadingType, objCache) {
   const funcRefMatch = /\/Function\s+(\d+)\s+\d+\s+R/.exec(shObjText);
   if (funcRefMatch) {
     const funcObjText = objCache.getObjectText(Number(funcRefMatch[1]));
-    if (funcObjText) colorFunc = buildColorEvaluatorFromText(funcObjText);
+    if (funcObjText) colorFunc = buildColorEvaluatorFromText(funcObjText, objCache);
   } else {
     const funcIdx = shObjText.indexOf('/Function');
     if (funcIdx !== -1) {
       const funcDictOpen = shObjText.indexOf('<<', funcIdx + 9);
       if (funcDictOpen !== -1) {
         const funcDictText = extractDict(shObjText, funcDictOpen);
-        if (funcDictText) colorFunc = buildColorEvaluatorFromText(funcDictText);
+        if (funcDictText) colorFunc = buildColorEvaluatorFromText(funcDictText, objCache);
       }
     }
   }
@@ -5093,8 +5145,11 @@ function renderGouraudTriangles(ctx, triangles, clipBounds, canvasDims) {
 /**
  * Build a color evaluator from an inline function dict text.
  * Returns a function (comps: number[]) => [r, g, b] (0-255), or null.
+ * @param {string} funcDictText
+ * @param {ObjectCache} [objCache] - When provided, indirect sub-function refs
+ *   inside Type 3 /Functions arrays are resolved.
  */
-function buildColorEvaluatorFromText(funcDictText) {
+function buildColorEvaluatorFromText(funcDictText, objCache = null) {
   const funcTypeMatch = /\/FunctionType\s+(\d+)/.exec(funcDictText);
   const funcType = funcTypeMatch ? Number(funcTypeMatch[1]) : -1;
 
@@ -5125,9 +5180,24 @@ function buildColorEvaluatorFromText(funcDictText) {
     const subFuncs = [];
     const funcsIdx = funcDictText.indexOf('/Functions');
     if (funcsIdx !== -1) {
-      const afterFuncs = funcDictText.substring(funcsIdx + 10);
-      for (const m of afterFuncs.matchAll(/<<([\s\S]*?)>>/g)) {
-        const subText = m[1];
+      const arrStart = funcDictText.indexOf('[', funcsIdx);
+      const arrEnd = arrStart !== -1 ? funcDictText.indexOf(']', arrStart) : -1;
+      const arrText = (arrStart !== -1 && arrEnd !== -1) ? funcDictText.slice(arrStart + 1, arrEnd) : '';
+      const subTexts = [];
+      let lastIdx = 0;
+      for (const rm of arrText.matchAll(/(\d+)\s+\d+\s+R/g)) {
+        const before = arrText.slice(lastIdx, rm.index);
+        for (const im of before.matchAll(/<<([\s\S]*?)>>/g)) subTexts.push(im[1]);
+        if (objCache) {
+          const refText = objCache.getObjectText(Number(rm[1]));
+          if (refText) subTexts.push(refText);
+        }
+        lastIdx = rm.index + rm[0].length;
+      }
+      const tail = arrText.slice(lastIdx);
+      for (const im of tail.matchAll(/<<([\s\S]*?)>>/g)) subTexts.push(im[1]);
+
+      for (const subText of subTexts) {
         const stMatch = /\/FunctionType\s+(\d+)/.exec(subText);
         if (!stMatch || Number(stMatch[1]) !== 2) continue;
         const sc0Match = /\/C0\s*\[\s*([\d.\s-]+)\]/.exec(subText);
@@ -5186,14 +5256,31 @@ function parseType4Shading(shObjText, shObjNum, objCache) {
   const streamBytes = objCache.getStreamBytes(shObjNum);
   if (!streamBytes || streamBytes.length === 0) return null;
 
-  // Detect Separation/DeviceN color space for tint transform
+  let colorFunc = null;
+  const funcRefMatch = /\/Function\s+(\d+)\s+\d+\s+R/.exec(shObjText);
+  if (funcRefMatch) {
+    const funcObjText = objCache.getObjectText(Number(funcRefMatch[1]));
+    if (funcObjText) colorFunc = buildColorEvaluatorFromText(funcObjText, objCache);
+  } else {
+    const funcIdx = shObjText.indexOf('/Function');
+    if (funcIdx !== -1) {
+      const funcDictOpen = shObjText.indexOf('<<', funcIdx + 9);
+      if (funcDictOpen !== -1) {
+        const funcDictText = extractDict(shObjText, funcDictOpen);
+        if (funcDictText) colorFunc = buildColorEvaluatorFromText(funcDictText, objCache);
+      }
+    }
+  }
+
   let sepTintSamples = null;
-  const csRefMatch = /\/ColorSpace\s+(\d+)\s+\d+\s+R/.exec(shObjText);
-  if (csRefMatch) {
-    const csObjText = objCache.getObjectText(Number(csRefMatch[1]));
-    if (csObjText && /\/Separation|\/DeviceN/.test(csObjText)) {
-      const tintInfo = parseSeparationTint(csObjText, objCache);
-      if (tintInfo.tintSamples) sepTintSamples = tintInfo.tintSamples;
+  if (!colorFunc) {
+    const csRefMatch = /\/ColorSpace\s+(\d+)\s+\d+\s+R/.exec(shObjText);
+    if (csRefMatch) {
+      const csObjText = objCache.getObjectText(Number(csRefMatch[1]));
+      if (csObjText && /\/Separation|\/DeviceN/.test(csObjText)) {
+        const tintInfo = parseSeparationTint(csObjText, objCache);
+        if (tintInfo.tintSamples) sepTintSamples = tintInfo.tintSamples;
+      }
     }
   }
 
@@ -5230,7 +5317,9 @@ function parseType4Shading(shObjText, shObjNum, objCache) {
       comps.push(decode[4 + i * 2] + readBits(bpc) * (decode[4 + i * 2 + 1] - decode[4 + i * 2]) / compMax);
     }
     let color;
-    if (sepTintSamples && nComps === 1) {
+    if (colorFunc) {
+      color = colorFunc(comps);
+    } else if (sepTintSamples && nComps === 1) {
       const sepMax = sepTintSamples.length / 3 - 1;
       const idx = Math.round(Math.max(0, Math.min(1, comps[0])) * sepMax) * 3;
       color = [sepTintSamples[idx], sepTintSamples[idx + 1], sepTintSamples[idx + 2]];
@@ -5315,14 +5404,14 @@ function parseLatticeShading(shObjText, shObjNum, objCache) {
   const funcRefMatch = /\/Function\s+(\d+)\s+\d+\s+R/.exec(shObjText);
   if (funcRefMatch) {
     const funcObjText = objCache.getObjectText(Number(funcRefMatch[1]));
-    if (funcObjText) colorFunc = buildColorEvaluatorFromText(funcObjText);
+    if (funcObjText) colorFunc = buildColorEvaluatorFromText(funcObjText, objCache);
   } else {
     const funcIdx = shObjText.indexOf('/Function');
     if (funcIdx !== -1) {
       const funcDictOpen = shObjText.indexOf('<<', funcIdx + 9);
       if (funcDictOpen !== -1) {
         const funcDictText = extractDict(shObjText, funcDictOpen);
-        if (funcDictText) colorFunc = buildColorEvaluatorFromText(funcDictText);
+        if (funcDictText) colorFunc = buildColorEvaluatorFromText(funcDictText, objCache);
       }
     }
   }
@@ -6457,8 +6546,121 @@ function parseShadingFunction(funcDictText, shadingType, coords, objCache, sepTi
 }
 
 /**
- * Render an SMask Form XObject to a canvas and convert to a luminosity alpha mask.
- * Returns an OffscreenCanvas where each pixel's alpha = luminosity of the mask content.
+ * Render the contents of a tiling pattern to a tile-sized canvas.
+ * Used by `renderSMaskToCanvas` when the mask form fills with a tiling pattern.
+ *
+ * @param {{ objNum: number, bbox: number[], matrix: number[] }} tp
+ * @param {ObjectCache} objCache
+ * @param {number} scale
+ */
+async function renderTilingPatternTileForSmask(tp, objCache, scale) {
+  const patObjText = objCache.getObjectText(tp.objNum);
+  const patStreamBytes = objCache.getStreamBytes(tp.objNum);
+  if (!patObjText || !patStreamBytes) return null;
+
+  let patResText = patObjText;
+  const patResRef = /\/Resources\s+(\d+)\s+\d+\s+R/.exec(patObjText);
+  if (patResRef) {
+    const resObj = objCache.getObjectText(Number(patResRef[1]));
+    if (resObj) patResText = resObj;
+  }
+
+  const { images: patImages, forms: patForms } = parsePageImages(patResText, objCache, { recurseForms: false });
+  const patExtGStates = parseExtGStates(patObjText, objCache);
+  const patPatterns = parsePatterns(patObjText, objCache);
+
+  const patStream = bytesToLatin1(patStreamBytes);
+  const rawPatDrawOps = parseDrawOps(patStream, new Map(), patExtGStates, new Map(), new Map(),
+    new Set(), new Set(), new Set(), new Map(), patPatterns);
+
+  let patDrawOps;
+  if (patForms.size > 0) {
+    patDrawOps = [];
+    for (const op of rawPatDrawOps) {
+      if (op.type === 'image' && patForms.has(op.name)) {
+        const sub = await flattenDrawOps(
+          [op], patImages, patForms, objCache, new Map(), new Map(),
+          '', 0, new Set(), new Set(), patExtGStates, new Set(),
+          new Map(), 0, new Set(), new Map(),
+          'black', 'rgb(0,0,0)',
+          null, null,
+        );
+        for (const sop of sub) patDrawOps.push(sop);
+      } else {
+        patDrawOps.push(op);
+      }
+    }
+  } else {
+    patDrawOps = rawPatDrawOps;
+  }
+
+  const bboxW = tp.bbox[2] - tp.bbox[0];
+  const bboxH = tp.bbox[3] - tp.bbox[1];
+  const matScaleX = Math.sqrt(tp.matrix[0] * tp.matrix[0] + tp.matrix[1] * tp.matrix[1]) || 1;
+  const matScaleY = Math.sqrt(tp.matrix[2] * tp.matrix[2] + tp.matrix[3] * tp.matrix[3]) || 1;
+  let tileW = Math.max(1, Math.round(bboxW * matScaleX * scale));
+  let tileH = Math.max(1, Math.round(bboxH * matScaleY * scale));
+  const maxDim = 4096;
+  if (tileW > maxDim || tileH > maxDim) {
+    const reduceFactor = Math.min(maxDim / tileW, maxDim / tileH);
+    tileW = Math.max(1, Math.round(tileW * reduceFactor));
+    tileH = Math.max(1, Math.round(tileH * reduceFactor));
+  }
+
+  const tileCanvas = ca.makeCanvas(tileW, tileH);
+  const tileCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (tileCanvas.getContext('2d'));
+  const tileScaleX = tileW / bboxW;
+  const tileScaleY = tileH / bboxH;
+
+  for (const pop of patDrawOps) {
+    if (pop.type === 'image') {
+      const imageInfo = patImages.get(pop.name);
+      if (!imageInfo) continue;
+      const bitmap = imageInfo.imageMask
+        ? await imageMaskToBitmap(imageInfo, pop.fillColor || 'black', objCache)
+        : await imageInfoToBitmap(imageInfo, objCache);
+      if (!bitmap) continue;
+      tileCtx.save();
+      tileCtx.setTransform(
+        pop.ctm[0] * tileScaleX, -pop.ctm[1] * tileScaleY,
+        pop.ctm[2] * tileScaleX, -pop.ctm[3] * tileScaleY,
+        (pop.ctm[4] - tp.bbox[0]) * tileScaleX,
+        (bboxH + tp.bbox[1] - pop.ctm[5]) * tileScaleY,
+      );
+      tileCtx.transform(1, 0, 0, -1, 0, 1);
+      tileCtx.drawImage(bitmap, 0, 0, 1, 1);
+      tileCtx.restore();
+      ca.closeDrawable(bitmap);
+    } else if (pop.type === 'path' && pop.fill) {
+      tileCtx.save();
+      if (pop.fillAlpha < 1) tileCtx.globalAlpha = pop.fillAlpha;
+      tileCtx.setTransform(
+        pop.ctm[0] * tileScaleX, -pop.ctm[1] * tileScaleY,
+        pop.ctm[2] * tileScaleX, -pop.ctm[3] * tileScaleY,
+        (pop.ctm[4] - tp.bbox[0]) * tileScaleX,
+        (bboxH + tp.bbox[1] - pop.ctm[5]) * tileScaleY,
+      );
+      tileCtx.beginPath();
+      for (const cmd of pop.commands) {
+        switch (cmd.type) {
+          case 'M': tileCtx.moveTo(cmd.x, cmd.y); break;
+          case 'L': tileCtx.lineTo(cmd.x, cmd.y); break;
+          case 'C': tileCtx.bezierCurveTo(cmd.x1, cmd.y1, cmd.x2, cmd.y2, cmd.x, cmd.y); break;
+          case 'Z': tileCtx.closePath(); break;
+          default: break;
+        }
+      }
+      tileCtx.fillStyle = pop.fillColor || 'black';
+      tileCtx.fill(pop.evenOdd ? 'evenodd' : 'nonzero');
+      tileCtx.restore();
+    }
+  }
+
+  return tileCanvas;
+}
+
+/**
+ * Render an SMask Form XObject to a canvas and produce an alpha mask.
  * @param {SmaskRef} smaskInfo
  * @param {ObjectCache} objCache
  * @param {number} canvasWidth
@@ -6483,8 +6685,23 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
   const maskShadings = parseShadings(formObjText, objCache);
   const maskPatterns = parsePatterns(formObjText, objCache);
 
-  const rawFormDrawOps = parseDrawOps(formStream, new Map(), maskExtGStates, new Map(), new Map(),
-    new Set(), new Set(), new Set(), maskShadings, maskPatterns);
+  const maskFonts = parsePageFonts(formObjText, objCache);
+  const maskRegistered = new Map();
+  const maskSymbolTags = new Set();
+  const maskCidPUATags = new Set();
+  const maskRawCharCodeTags = new Set();
+  const maskCidCollisionMap = new Map();
+  for (const [fontTag, fontObj] of maskFonts) {
+    const familyName = pdfFontFamilyName(objCache, fontObj.fontObjNum, `smask_${smaskInfo.formObjNum}_${fontTag}`);
+    await convertAndRegisterFont(
+      fontTag, fontObj, maskRegistered, maskSymbolTags, maskCidPUATags,
+      maskRawCharCodeTags, maskCidCollisionMap, objCache, familyName,
+    );
+  }
+  appendGenericFallbacks(maskRegistered, maskFonts);
+
+  const rawFormDrawOps = parseDrawOps(formStream, maskFonts, maskExtGStates, maskRegistered, new Map(),
+    maskSymbolTags, maskCidPUATags, maskRawCharCodeTags, maskShadings, maskPatterns, maskCidCollisionMap);
 
   let formDrawOps;
   if (maskForms.size > 0) {
@@ -6492,9 +6709,9 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
     for (const op of rawFormDrawOps) {
       if (op.type === 'image' && maskForms.has(op.name)) {
         const sub = await flattenDrawOps(
-          [op], maskImages, maskForms, objCache, new Map(), new Map(),
-          '', 0, new Set(), new Set(), maskExtGStates, new Set(),
-          new Map(), 0, new Set(), new Map(),
+          [op], maskImages, maskForms, objCache, maskFonts, maskRegistered,
+          '', 0, maskSymbolTags, maskCidPUATags, maskExtGStates, maskRawCharCodeTags,
+          new Map(), 0, new Set(), maskCidCollisionMap,
           'black', 'rgb(0,0,0)',
           null, null,
         );
@@ -6545,9 +6762,13 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
   const maskCanvas = ca.makeCanvas(maskW, maskH);
   const maskCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (maskCanvas.getContext('2d'));
 
-  // Fill with black (mask = 0 = fully transparent outside mask content)
-  maskCtx.fillStyle = 'black';
-  maskCtx.fillRect(0, 0, maskW, maskH);
+  // For /S/Luminosity, fill black so areas the form does not paint convert to alpha=0 (luminosity 0 -> mask 0).
+  // For /S/Alpha, leave the canvas fully transparent. The alpha channel itself is the mask.
+  const isAlphaMask = smaskInfo.type === 'Alpha';
+  if (!isAlphaMask) {
+    maskCtx.fillStyle = 'black';
+    maskCtx.fillRect(0, 0, maskW, maskH);
+  }
 
   for (const op of formDrawOps) {
     if (op.type === 'image') {
@@ -6690,10 +6911,62 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
             maskCtx.fill(op.evenOdd ? 'evenodd' : 'nonzero');
           }
         }
+      } else if (op.tilingPattern) {
+        const tp = op.tilingPattern;
+        const tileCanvas = await renderTilingPatternTileForSmask(tp, objCache, scale);
+        if (tileCanvas) {
+          const bboxW = tp.bbox[2] - tp.bbox[0];
+          const bboxH = tp.bbox[3] - tp.bbox[1];
+          const tileW = tileCanvas.width;
+          const tileH = tileCanvas.height;
+          const sx = bboxW / tileW * scale;
+          const sy = bboxH / tileH * scale;
+          maskCtx.clip(op.evenOdd ? 'evenodd' : 'nonzero');
+          maskCtx.setTransform(1, 0, 0, 1, 0, 0);
+          const canvasPat = maskCtx.createPattern(tileCanvas, 'repeat');
+          if (canvasPat) {
+            canvasPat.setTransform(new DOMMatrix([
+              tp.matrix[0] * sx, -tp.matrix[1] * sx,
+              -tp.matrix[2] * sy, tp.matrix[3] * sy,
+              (tp.matrix[0] * tp.bbox[0] + tp.matrix[2] * (tp.bbox[1] + bboxH) + tp.matrix[4] - boxOriginX) * scale - shiftX,
+              (pageHeightPts + boxOriginY - tp.matrix[1] * tp.bbox[0] - tp.matrix[3] * (tp.bbox[1] + bboxH) - tp.matrix[5]) * scale - shiftY,
+            ]));
+            maskCtx.fillStyle = canvasPat;
+            maskCtx.fillRect(0, 0, maskW, maskH);
+          }
+          ca.closeDrawable(tileCanvas);
+        }
       } else {
         maskCtx.fillStyle = op.fillColor || 'black';
         maskCtx.fill(op.evenOdd ? 'evenodd' : 'nonzero');
       }
+      maskCtx.restore();
+    } else if (op.type === 'type0text' && op.fontFamily && op.text) {
+      const isEmbedded = /^"?_pdf_/.test(op.fontFamily);
+      const weight = (!isEmbedded && op.bold) ? 'bold' : 'normal';
+      const style = (!isEmbedded && op.italic) ? 'italic' : 'normal';
+      maskCtx.save();
+      maskCtx.font = /[",]/.test(op.fontFamily)
+        ? `${style} ${weight} 1px ${op.fontFamily}`
+        : `${style} ${weight} 1px "${op.fontFamily}"`;
+      maskCtx.textBaseline = 'alphabetic';
+      let hScale = 1;
+      if (op.pdfGlyphWidth !== undefined) {
+        const mw = maskCtx.measureText(op.text).width;
+        if (mw > 0) {
+          hScale = op.pdfGlyphWidth / (1000 * mw);
+          if (!isEmbedded && hScale > 2.0) hScale = 1;
+        }
+      }
+      maskCtx.setTransform(
+        op.a * scale * hScale, -op.b * scale * hScale,
+        -op.c * scale, op.d * scale,
+        (op.x - boxOriginX) * scale - shiftX,
+        (pageHeightPts + boxOriginY - op.y) * scale - shiftY,
+      );
+      maskCtx.fillStyle = op.fillColor || 'black';
+      if (op.fillAlpha < 1) maskCtx.globalAlpha = op.fillAlpha;
+      maskCtx.fillText(op.text, 0, 0);
       maskCtx.restore();
     }
   }
@@ -6702,17 +6975,30 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
   const maskData = maskCtx.getImageData(0, 0, maskW, maskH);
   const px = maskData.data;
   for (let i = 0; i < px.length; i += 4) {
-    const luminosity = (0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]) / 255;
     const alpha = px[i + 3] / 255;
-    let outAlpha = luminosity;
-    if (trFn) {
-      const out = evaluateFunction(trFn, [luminosity]);
-      if (out && out.length > 0) outAlpha = out[0];
+    let outAlpha;
+    if (isAlphaMask) {
+      outAlpha = alpha;
+      if (trFn) {
+        const out = evaluateFunction(trFn, [alpha]);
+        if (out && out.length > 0) outAlpha = out[0];
+      }
+      px[i] = 255;
+      px[i + 1] = 255;
+      px[i + 2] = 255;
+      px[i + 3] = Math.round(Math.max(0, Math.min(1, outAlpha)) * 255);
+    } else {
+      const luminosity = (0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]) / 255;
+      outAlpha = luminosity;
+      if (trFn) {
+        const out = evaluateFunction(trFn, [luminosity]);
+        if (out && out.length > 0) outAlpha = out[0];
+      }
+      px[i] = 255;
+      px[i + 1] = 255;
+      px[i + 2] = 255;
+      px[i + 3] = Math.round(Math.max(0, Math.min(1, outAlpha)) * alpha * 255);
     }
-    px[i] = 255;
-    px[i + 1] = 255;
-    px[i + 2] = 255;
-    px[i + 3] = Math.round(Math.max(0, Math.min(1, outAlpha)) * alpha * 255);
   }
   maskCtx.putImageData(maskData, 0, 0);
 
@@ -6984,7 +7270,9 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
 
       if (apObjNum !== null) {
         const apObjText = objCache.getObjectText(apObjNum);
-        if (!apObjText || !/\/Subtype\s*\/Form/.test(apObjText)) continue;
+        if (!apObjText) continue;
+        const apSubtypeMatch = /\/Subtype\s*\/(\w+)/.exec(apObjText);
+        if (apSubtypeMatch && apSubtypeMatch[1] !== 'Form') continue;
 
         const bboxMatch = /\/BBox\s*\[\s*([\d.\-+e]+)\s+([\d.\-+e]+)\s+([\d.\-+e]+)\s+([\d.\-+e]+)\s*\]/.exec(apObjText);
         const bbox = bboxMatch ? [Number(bboxMatch[1]), Number(bboxMatch[2]), Number(bboxMatch[3]), Number(bboxMatch[4])] : [0, 0, rectW, rectH];
@@ -8214,9 +8502,10 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           }
         }
         // Handle inline array-form Indexed color space: /CS [ /Indexed ... ]
+        // or its abbreviation /CS [ /I ... ].
         // The getVal regex captures '[' when the value is an array, so detect and parse it here.
         if (!resolvedCS) {
-          const inlineIdxDetect = /\/(?:CS|ColorSpace)\s*\[\s*\/Indexed\s/.exec(dictText);
+          const inlineIdxDetect = /\/(?:CS|ColorSpace)\s*\[\s*\/(?:Indexed|I)\s/.exec(dictText);
           if (inlineIdxDetect) {
             const arrStart = dictText.indexOf('[', inlineIdxDetect.index);
             let depth = 0;
@@ -8225,8 +8514,9 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
               if (dictText[ci] === '[') depth++;
               else if (dictText[ci] === ']') { depth--; if (depth === 0) { arrEnd = ci + 1; break; } }
             }
-            // Expand inline-image abbreviated base names before passing to shared parser
+            // Expand inline-image abbreviated names before passing to shared parser
             let csText = dictText.substring(arrStart, arrEnd);
+            csText = csText.replace(/\/I(\s+)/, '/Indexed$1');
             csText = csText.replace(/\/Indexed(\s+)\/RGB\b/, '/Indexed$1/DeviceRGB')
               .replace(/\/Indexed(\s+)\/G\b/, '/Indexed$1/DeviceGray')
               .replace(/\/Indexed(\s+)\/CMYK\b/, '/Indexed$1/DeviceCMYK');
@@ -8368,6 +8658,10 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         const nComp = base === 'DeviceCMYK' ? 4 : (base === 'DeviceGray' || base === 'CalGray' ? 1 : 3);
         const maxIdx = Math.min(hival, Math.floor(palette.length / nComp) - 1);
         const rowBytes = Math.ceil(width * bpc / 8);
+        // CCITTFaxDecode emits 1=white, 0=black, but a typical 2-entry fax palette puts white at index 0.
+        // Without an explicit /Decode the bit value must be inverted to match the palette index.
+        const ccittImplicitInvert = bpc === 1 && filters.includes('CCITTFaxDecode')
+          && !decode && hival === 1;
         for (let row = 0; row < height; row++) {
           for (let col = 0; col < width; col++) {
             let idx;
@@ -8382,6 +8676,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             } else if (bpc === 1) {
               const bytePos = row * rowBytes + (col >> 3);
               idx = (data[bytePos] >> (7 - (col & 7))) & 1;
+              if (ccittImplicitInvert) idx ^= 1;
             } else {
               idx = data[row * rowBytes + col];
             }

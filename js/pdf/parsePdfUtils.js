@@ -796,9 +796,24 @@ export function extractStream(pdfBytes, objOffset, objCache = null, objNum = -1)
       }
     }
   }
-  const filters = filterArrayMatch
-    ? [...filterArrayMatch[1].matchAll(/\/([^\s/<>[\]]+)/g)].map((m) => m[1])
-    : (filterSingleMatch ? [filterSingleMatch[1]] : []);
+  let filters;
+  if (filterArrayMatch) {
+    filters = [];
+    for (const tm of filterArrayMatch[1].matchAll(/\/([^\s/<>[\]]+)|(\d+)\s+\d+\s+R/g)) {
+      if (tm[1]) {
+        filters.push(tm[1]);
+      } else if (objCache) {
+        const refObjText = objCache.getObjectText(Number(tm[2]));
+        if (refObjText) {
+          const refResolved = refObjText.replace(/^\d+\s+\d+\s+obj\s*/, '').replace(/\s*endobj.*$/, '').trim();
+          const refNameMatch = /^\/([^\s/<>[\]]+)/.exec(refResolved);
+          if (refNameMatch) filters.push(refNameMatch[1]);
+        }
+      }
+    }
+  } else {
+    filters = filterSingleMatch ? [filterSingleMatch[1]] : [];
+  }
 
   // Parse DecodeParms for filters that need parameters (e.g. CCITTFaxDecode).
   // Can be a single dict or an array of dicts/nulls matching the filter array.
