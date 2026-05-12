@@ -503,11 +503,20 @@ export function buildFontFromCFF(cffData, fontObj, encoding) {
         // PUA entries from the font's intrinsic encoding.
         // The renderer routes width-only charcodes (no encodingUnicode/toUnicode entry) through PUA.
         for (const [code, gid] of cffBaseEncoding) {
-          if (fontObj.encodingUnicode?.has(code) && !(diffCodeSet && diffCodeSet.has(code))) continue;
+          const hasEnc = fontObj.encodingUnicode?.has(code);
+          const overridden = diffCodeSet && diffCodeSet.has(code);
+          const encU = fontObj.encodingUnicode?.get(code);
+          const encIsWhitespace = typeof encU === 'string' && encU.trim() === '';
+          // Whitespace codes still need a PUA fallback: fillText() skips whitespace,
+          // but a malformed subset may store a visible outline under a whitespace name.
+          if (hasEnc && !overridden && !encIsWhitespace) continue;
           const puaCode = 0xE000 + code;
           if (!unicodeToGID.has(puaCode)) {
             unicodeToGID.set(puaCode, gid);
-            usesPUA = true;
+            // For a whitespace code, only flag usesPUA when its glyph actually has an outline.
+            if (!encIsWhitespace || (gid > 0 && fontShell.glyphs.get(gid)?.path.commands.some((c) => c.type === 'L' || c.type === 'C' || c.type === 'Q'))) {
+              usesPUA = true;
+            }
           }
         }
 
@@ -698,7 +707,7 @@ export function cidCodepoint(toUniStr, cid) {
  * via font-parser's Type1 parser, then constructing a new font.
  * @param {Uint8Array} pfaBytes - raw PFA font program bytes
  * @param {PdfFontObj} fontObj - parsed PDF font object
- * @returns {{ otfData: ArrayBuffer, fontMatrix: number[]|null }|null}
+ * @returns {{ otfData: ArrayBuffer, fontMatrix: number[]|null, usesPUA: boolean }|null}
  */
 export function convertType1ToOTFNew(pfaBytes, fontObj) {
   try {
@@ -762,6 +771,21 @@ export function convertType1ToOTFNew(pfaBytes, fontObj) {
     })];
     const usedUnicodes = new Set([0]);
 
+    // showType1Literal routes every /Differences-mapped char of a usesPUA font to 0xE000+charCode.
+    // If any glyph lacks a single-codepoint Unicode (AGL/encoding/ToUnicode), every glyph goes to PUA.
+    let usedPUA = false;
+    for (const [charCode, glyphName] of glyphEncoding) {
+      if (charCode < 0 || charCode > 0xFF || !parsed.glyphs.has(glyphName)) continue;
+      const eu = fontObj.encodingUnicode && fontObj.encodingUnicode.get(charCode);
+      if (eu && [...eu].length === 1) continue;
+      const tu = fontObj.toUnicode && fontObj.toUnicode.get(charCode);
+      if (tu && [...tu].length === 1) continue;
+      const agl = aglLookup(glyphName);
+      if (agl && [...agl].length === 1) continue;
+      usedPUA = true;
+      break;
+    }
+
     for (const [charCode, glyphName] of glyphEncoding) {
       const glyphData = parsed.glyphs.get(glyphName);
       if (!glyphData) continue;
@@ -780,8 +804,21 @@ export function convertType1ToOTFNew(pfaBytes, fontObj) {
           if (fontObj.encodingUnicode && !fontObj.encodingUnicode.has(charCode)) fontObj.encodingUnicode.set(charCode, aglStr);
         }
       }
-      if (!unicode || usedUnicodes.has(unicode)) continue;
-      usedUnicodes.add(unicode);
+      let unicodes;
+      if (usedPUA) {
+        if (charCode < 0 || charCode > 0xFF) continue;
+        const puaCode = 0xE000 + charCode;
+        unicodes = [puaCode];
+        usedUnicodes.add(puaCode);
+        if (unicode !== undefined && unicode !== puaCode && !usedUnicodes.has(unicode)) {
+          unicodes.push(unicode);
+          usedUnicodes.add(unicode);
+        }
+      } else {
+        if (!unicode || usedUnicodes.has(unicode)) continue;
+        usedUnicodes.add(unicode);
+        unicodes = [unicode];
+      }
 
       let advanceWidth = glyphData.advanceWidth;
       let glyphPath = glyphData.path;
@@ -807,7 +844,8 @@ export function convertType1ToOTFNew(pfaBytes, fontObj) {
 
       glyphs.push(new opentype.Glyph({
         name: glyphName,
-        unicode,
+        unicode: unicodes[0],
+        unicodes,
         advanceWidth: advanceWidth || 500,
         path: glyphPath,
       }));
@@ -837,7 +875,7 @@ export function convertType1ToOTFNew(pfaBytes, fontObj) {
       fontMatrix = [fm[0] * 1000, fm[1] * 1000, fm[2] * 1000, fm[3] * 1000, 0, 0];
     }
 
-    return { otfData, fontMatrix };
+    return { otfData, fontMatrix, usesPUA: usedPUA };
   } catch (_e) {
     return null;
   }
@@ -1141,12 +1179,14 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
       return null;
     }
 
+    // opentype.Font requires a positive ascender and a non-positive descender;
+    // subsetted embedded fonts sometimes ship an hhea that violates this.
     const newFont = new opentype.Font({
       familyName: fontObj.baseName || 'RebuiltFont',
       styleName: 'Regular',
       unitsPerEm: head.unitsPerEm,
-      ascender: hhea.ascender,
-      descender: hhea.descender,
+      ascender: hhea.ascender > 0 ? hhea.ascender : Math.round(head.unitsPerEm * 0.8),
+      descender: hhea.descender > 0 ? -hhea.descender : hhea.descender,
       glyphs,
     });
     newFont.outlinesFormat = 'truetype';
