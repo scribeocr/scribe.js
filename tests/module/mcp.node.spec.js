@@ -113,6 +113,15 @@ describeNode('MCP tool: create_highlighted_pdf', () => {
     expect(fs.existsSync(outputPath)).toBe(true);
     expect(result.highlightsApplied).toBe(1);
     expect(result.totalLinesHighlighted).toBe(3);
+    expect(result.groups).toEqual([
+      {
+        page: 0,
+        groupId: 'hl-0',
+        bbox: {
+          left: 299, top: 57, right: 2251, bottom: 473,
+        },
+      },
+    ]);
     fs.unlinkSync(outputPath);
   });
 });

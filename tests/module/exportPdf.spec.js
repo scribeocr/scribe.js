@@ -665,6 +665,30 @@ describe('Check addHighlights and clearHighlights.', () => {
     expect(() => scribe.addHighlights([{ page: 0 }])).toThrow(undefined);
   });
 
+  test('addHighlights reports each applied highlight in groups with its union bbox (line mode)', async () => {
+    scribe.clearHighlights();
+    const result = scribe.addHighlights([{ page: 0, startLine: 0, endLine: 0 }]);
+    expect(result.groups.length).toBe(1);
+    expect(result.groups[0].page).toBe(0);
+    expect(result.groups[0].groupId).toBe('hl-0');
+    expect(result.groups[0].bbox).toEqual({
+      left: 36, top: 92, right: 580, bottom: 122,
+    });
+    expect(scribe.data.ocr.active[0].dims.height).toBe(480);
+    const fracY = result.groups[0].bbox.top / scribe.data.ocr.active[0].dims.height;
+    expect(fracY).toBeCloseTo(0.1917, 4);
+  });
+
+  test('addHighlights groups: quote-only mode reports the bbox of the matched words', async () => {
+    scribe.clearHighlights();
+    const result = scribe.addHighlights([{ page: 0, text: 'ocr code' }]);
+    expect(result.groups.length).toBe(1);
+    expect(result.groups[0].groupId).toBe('hl-0');
+    expect(result.groups[0].bbox).toEqual({
+      left: 36, top: 126, right: 160, bottom: 150,
+    });
+  });
+
   afterAll(async () => {
     await scribe.terminate();
   });

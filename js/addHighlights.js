@@ -1,5 +1,6 @@
 import { annotations, ocrAll } from './containers/dataContainer.js';
 import ocr from './objects/ocrObjects.js';
+import { calcBboxUnion } from './utils/miscUtils.js';
 
 const GROUP_PREFIX = 'hl-';
 
@@ -26,11 +27,17 @@ const GROUP_PREFIX = 'hl-';
  *   and highlights the matching words.
  *
  * @param {Array<HighlightSpec>} highlights
- * @returns {{ highlightsApplied: number, totalLinesHighlighted: number }}
+ * @returns {{
+ *   highlightsApplied: number,
+ *   totalLinesHighlighted: number,
+ *   groups: Array<{ page: number, groupId: string, bbox: bbox }>,
+ * }}
  */
 export function addHighlights(highlights) {
   let highlightsApplied = 0;
   let totalLinesHighlighted = 0;
+  /** @type {Array<{ page: number, groupId: string, bbox: bbox }>} */
+  const groups = [];
 
   for (const highlight of highlights) {
     const pageObj = ocrAll.active[highlight.page];
@@ -100,10 +107,15 @@ export function addHighlights(highlights) {
       if (matchWords.length > 0) totalLinesHighlighted++;
     }
 
+    const added = annotations.pages[highlight.page].filter((a) => a.groupId === groupId);
+    if (added.length > 0) {
+      groups.push({ page: highlight.page, groupId, bbox: calcBboxUnion(added.map((a) => a.bbox)) });
+    }
+
     highlightsApplied++;
   }
 
-  return { highlightsApplied, totalLinesHighlighted };
+  return { highlightsApplied, totalLinesHighlighted, groups };
 }
 
 /**
