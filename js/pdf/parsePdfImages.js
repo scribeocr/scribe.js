@@ -466,8 +466,8 @@ export function parseImageObject(objText, objNum, objCache) {
         // The unpacking above produces 0→0, 1→255, so we must invert.
         // A /Decode [1 0] on the mask would cancel this inversion.
         const isExplicitMask = !!explicitMaskRefMatch;
-        const decodeMatch = /\/Decode\s*\[\s*(\d+)\s+(\d+)\s*\]/.exec(sMaskObjText);
-        const decodeInverted = decodeMatch && decodeMatch[1] === '1' && decodeMatch[2] === '0';
+        const decodeMatch = /\/Decode\s*\[\s*([\d.]+)\s+([\d.]+)\s*\]/.exec(sMaskObjText);
+        const decodeInverted = !!decodeMatch && parseFloat(decodeMatch[1]) > parseFloat(decodeMatch[2]);
         // Invert if: explicit stencil mask with default Decode, OR soft mask with /Decode [1 0]
         if ((isExplicitMask && isImageMask && !decodeInverted) || (!isExplicitMask && decodeInverted)) {
           for (let j = 0; j < sMask.length; j++) {

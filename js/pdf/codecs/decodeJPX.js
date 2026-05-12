@@ -1596,13 +1596,16 @@ function copyCoefficients(
   mb,
   reversible,
   segmentationSymbolUsed,
+  xParity,
+  yParity,
 ) {
   const x0 = subband.tbx0;
   const y0 = subband.tby0;
   const width = subband.tbx1 - subband.tbx0;
   const codeblocks = subband.codeblocks;
-  const right = subband.type.charAt(0) === 'H' ? 1 : 0;
-  const bottom = subband.type.charAt(1) === 'H' ? levelWidth : 0;
+  // Detail bands sit opposite the LL band's parity within the level array.
+  const right = subband.type.charAt(0) === 'H' ? 1 - xParity : xParity;
+  const bottom = (subband.type.charAt(1) === 'H' ? 1 - yParity : yParity) * levelWidth;
 
   for (let i = 0, ii = codeblocks.length; i < ii; ++i) {
     const codeblock = codeblocks[i];
@@ -1721,6 +1724,9 @@ function transformTile(context, tile, c) {
     const width = resolution.trx1 - resolution.trx0;
     const height = resolution.try1 - resolution.try0;
     const coefficients = new Float32Array(width * height);
+    // An odd resolution-level origin shifts the interleave/lifting layout.
+    const xParity = resolution.trx0 & 1;
+    const yParity = resolution.try0 & 1;
 
     for (let j = 0, jj = resolution.subbands.length; j < jj; j++) {
       let mu;
@@ -1752,20 +1758,20 @@ function transformTile(context, tile, c) {
         mb,
         reversible,
         segmentationSymbolUsed,
+        xParity,
+        yParity,
       );
     }
     subbandCoefficients.push({
       width,
       height,
       items: coefficients,
+      u0: resolution.trx0,
+      v0: resolution.try0,
     });
   }
 
-  const result = transform.calculate(
-    subbandCoefficients,
-    component.tcx0,
-    component.tcy0,
-  );
+  const result = transform.calculate(subbandCoefficients);
   return {
     left: component.tcx0,
     top: component.tcy0,
@@ -2434,10 +2440,10 @@ class BitModel {
 }
 
 class Transform {
-  calculate(subbands, u0, v0) {
+  calculate(subbands) {
     let ll = subbands[0];
     for (let i = 1, ii = subbands.length; i < ii; i++) {
-      ll = this.iterate(ll, subbands[i], u0, v0);
+      ll = this.iterate(ll, subbands[i]);
     }
     return ll;
   }
@@ -2457,13 +2463,16 @@ class Transform {
     buffer[j2] = buffer[i2];
   }
 
-  iterate(ll, hl_lh_hh, u0, v0) {
+  iterate(ll, hl_lh_hh) {
     const llWidth = ll.width;
     const llHeight = ll.height;
     let llItems = ll.items;
     const width = hl_lh_hh.width;
     const height = hl_lh_hh.height;
     const items = hl_lh_hh.items;
+    // LL-band offset within a row/column: 0 for an even origin, 1 for an odd one.
+    const xParity = hl_lh_hh.u0 & 1;
+    const yParity = hl_lh_hh.v0 & 1;
     let i;
     let j;
     let k;
@@ -2472,7 +2481,7 @@ class Transform {
     let v;
 
     for (k = 0, i = 0; i < llHeight; i++) {
-      l = i * 2 * width;
+      l = (2 * i + yParity) * width + xParity;
       for (j = 0; j < llWidth; j++, k++, l += 2) {
         items[l] = llItems[k];
       }
@@ -2484,8 +2493,8 @@ class Transform {
     const rowBuffer = new Float32Array(width + 2 * bufferPadding);
 
     if (width === 1) {
-      // if width = 1, when u0 even keep items as is, when odd divide by 2
-      if ((u0 & 1) !== 0) {
+      // 1D_SR length-one case (T.800 F.3.6).
+      if (xParity !== 0) {
         for (v = 0, k = 0; v < height; v++, k += width) {
           items[k] *= 0.5;
         }
@@ -2495,7 +2504,7 @@ class Transform {
         rowBuffer.set(items.subarray(k, k + width), bufferPadding);
 
         this.extend(rowBuffer, bufferPadding, width);
-        this.filter(rowBuffer, bufferPadding, width);
+        this.filter(rowBuffer, bufferPadding, width, xParity);
 
         items.set(
           rowBuffer.subarray(bufferPadding, bufferPadding + width),
@@ -2520,8 +2529,8 @@ class Transform {
     const ll_ = bufferPadding + height;
 
     if (height === 1) {
-      // if height = 1, when v0 even keep items as is, when odd divide by 2
-      if ((v0 & 1) !== 0) {
+      // 1D_SR length-one case (T.800 F.3.6).
+      if (yParity !== 0) {
         for (u = 0; u < width; u++) {
           items[u] *= 0.5;
         }
@@ -2542,7 +2551,7 @@ class Transform {
         currentBuffer--;
         const buffer = colBuffers[currentBuffer];
         this.extend(buffer, bufferPadding, height);
-        this.filter(buffer, bufferPadding, height);
+        this.filter(buffer, bufferPadding, height, yParity);
 
         // If this is last buffer in this group of buffers, flush all buffers.
         if (currentBuffer === 0) {
@@ -2565,9 +2574,15 @@ class Transform {
 }
 
 class IrreversibleTransform extends Transform {
-  filter(x, offset, length) {
-    const len = length >> 1;
+  // i0Parity = parity of the first coefficient's reference-grid index.
+  // An odd start shifts every lifting step.
+  filter(x, offset, length, i0Parity) {
     offset |= 0;
+    i0Parity &= 1;
+    const i1Parity = (i0Parity + length) & 1;
+    // m = floor(i1/2) - floor(i0/2).
+    const m = (length - i1Parity + i0Parity) >> 1;
+    const o = offset - i0Parity;
     let j;
     let n;
     let current;
@@ -2583,15 +2598,15 @@ class IrreversibleTransform extends Transform {
     // step 1 is combined with step 3
 
     // step 2
-    j = offset - 3;
-    for (n = len + 4; n--; j += 2) {
+    j = o - 3;
+    for (n = m + 4; n--; j += 2) {
       x[j] *= K_;
     }
 
     // step 1 & 3
-    j = offset - 2;
+    j = o - 2;
     current = delta * x[j - 1];
-    for (n = len + 3; n--; j += 2) {
+    for (n = m + 3; n--; j += 2) {
       next = delta * x[j + 1];
       x[j] = K * x[j] - current - next;
       if (n--) {
@@ -2604,9 +2619,9 @@ class IrreversibleTransform extends Transform {
     }
 
     // step 4
-    j = offset - 1;
+    j = o - 1;
     current = gamma * x[j - 1];
-    for (n = len + 2; n--; j += 2) {
+    for (n = m + 2; n--; j += 2) {
       next = gamma * x[j + 1];
       x[j] -= current + next;
       if (n--) {
@@ -2619,9 +2634,9 @@ class IrreversibleTransform extends Transform {
     }
 
     // step 5
-    j = offset;
+    j = o;
     current = beta * x[j - 1];
-    for (n = len + 1; n--; j += 2) {
+    for (n = m + 1; n--; j += 2) {
       next = beta * x[j + 1];
       x[j] -= current + next;
       if (n--) {
@@ -2634,10 +2649,10 @@ class IrreversibleTransform extends Transform {
     }
 
     // step 6
-    if (len !== 0) {
-      j = offset + 1;
+    if (m !== 0) {
+      j = o + 1;
       current = alpha * x[j - 1];
-      for (n = len; n--; j += 2) {
+      for (n = m; n--; j += 2) {
         next = alpha * x[j + 1];
         x[j] -= current + next;
         if (n--) {
@@ -2653,17 +2668,21 @@ class IrreversibleTransform extends Transform {
 }
 
 class ReversibleTransform extends Transform {
-  filter(x, offset, length) {
-    const len = length >> 1;
+  // i0Parity = parity of the first coefficient's reference-grid index.
+  // An odd start shifts the lifting updates left by one.
+  filter(x, offset, length, i0Parity) {
     offset |= 0;
+    i0Parity &= 1;
+    const i1Parity = (i0Parity + length) & 1;
+    const m = (length - i1Parity + i0Parity) >> 1;
     let j;
     let n;
 
-    for (j = offset, n = len + 1; n--; j += 2) {
+    for (j = offset - i0Parity, n = m + 1; n--; j += 2) {
       x[j] -= (x[j - 1] + x[j + 1] + 2) >> 2;
     }
 
-    for (j = offset + 1, n = len; n--; j += 2) {
+    for (j = offset + 1 - i0Parity, n = m; n--; j += 2) {
       x[j] += (x[j - 1] + x[j + 1]) >> 1;
     }
   }

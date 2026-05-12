@@ -1,7 +1,7 @@
 import { parsePageImages, parseImageObject, parseIndexedColorSpace } from './parsePdfImages.js';
 import {
   parseSeparationTint, parseTintColorSpace,
-  tintComponentsToRGB, cmykToRgb, evaluateFunction, altCSToRGB, parseFunction,
+  tintComponentsToRGB, cmykToRgb, evaluateFunction, parseFunction,
 } from './pdfColorFunctions.js';
 import {
   getPageContentStreams, tokenizeContentStream, bytesToLatin1,
@@ -318,6 +318,7 @@ async function convertAndRegisterFont(
         await face.loaded;
         fontMatrix = type1Result.fontMatrix || null;
         if (fontMatrix && fontObj.type1) fontObj.type1.fontMatrix = fontMatrix;
+        usesPUA = type1Result.usesPUA;
         registered = true;
       } catch (_e) { /* Type1→OTF failed */ }
     }
@@ -1345,7 +1346,7 @@ async function imageMaskToBitmap(imageInfo, fillColor, objCache) {
  * during form XObject flattening (outerSmask). Declared on each op type to avoid
  * "property does not exist" errors from TS checking.
  *
- * @typedef {{ formObjNum: number, type: string, parentCtm?: number[] }} SmaskRef
+ * @typedef {{ formObjNum: number, type: string, parentCtm?: number[], tr?: object|null, bc?: number[]|null }} SmaskRef
  * @typedef {{ path?: any[]|null, ctm: number[], evenOdd: boolean, textClip?: any[], fromFormObjNum?: number }} ClipEntry
  *
  * @typedef {{ isolated: boolean, knockout: boolean, blendMode?: string,
@@ -1366,6 +1367,7 @@ async function imageMaskToBitmap(imageInfo, fillColor, objCache) {
  *   fillColor: string, strokeColor?: string,
  *   patternShading?: PatternShading, tilingPattern?: TilingPatternRef,
  *   overprint?: boolean, fillColorInherited?: boolean, strokeColorInherited?: boolean,
+ *   fillAlphaInherited?: boolean, strokeAlphaInherited?: boolean,
  *   smask?: SmaskRef|null, outerSmask?: SmaskRef|null,
  *   blendMode?: string, clips?: ClipEntry[] }} ImageDrawOp
  * @typedef {{ type: 'type3glyph', charProcObjNum: number, transform: number[], ctm?: number[],
@@ -1373,6 +1375,7 @@ async function imageMaskToBitmap(imageInfo, fillColor, objCache) {
  *   strokeColor?: string, type3XObjects?: { [name: string]: number },
  *   patternShading?: PatternShading, tilingPattern?: TilingPatternRef,
  *   overprint?: boolean, fillColorInherited?: boolean, strokeColorInherited?: boolean,
+ *   fillAlphaInherited?: boolean, strokeAlphaInherited?: boolean,
  *   smask?: SmaskRef|null, outerSmask?: SmaskRef|null,
  *   blendMode?: string, clips?: ClipEntry[] }} Type3GlyphOp
  * @typedef {{
@@ -1382,6 +1385,7 @@ async function imageMaskToBitmap(imageInfo, fillColor, objCache) {
  *   textRenderMode: number, strokeColor: string, strokeAlpha: number, lineWidth: number,
  *   ctm?: number[], patternShading?: PatternShading, tilingPattern?: TilingPatternRef,
  *   overprint?: boolean, fillColorInherited?: boolean, strokeColorInherited?: boolean,
+ *   fillAlphaInherited?: boolean, strokeAlphaInherited?: boolean,
  *   smask?: SmaskRef|null, outerSmask?: SmaskRef|null,
  *   blendMode?: string, clips?: ClipEntry[],
  *   pdfGlyphWidth?: number,
@@ -1396,6 +1400,7 @@ async function imageMaskToBitmap(imageInfo, fillColor, objCache) {
  *   patternShading?: PatternShading, strokePatternShading?: PatternShading,
  *   tilingPattern?: TilingPatternRef, strokeTilingPattern?: TilingPatternRef,
  *   overprint?: boolean, fillColorInherited?: boolean, strokeColorInherited?: boolean,
+ *   fillAlphaInherited?: boolean, strokeAlphaInherited?: boolean,
  *   smask?: SmaskRef|null, outerSmask?: SmaskRef|null,
  *   blendMode?: string, clips?: ClipEntry[],
  * }} PathDrawOp
@@ -1403,12 +1408,14 @@ async function imageMaskToBitmap(imageInfo, fillColor, objCache) {
  *   fillColor?: string, strokeColor?: string, strokeAlpha?: number,
  *   patternShading?: PatternShading, tilingPattern?: TilingPatternRef,
  *   overprint?: boolean, fillColorInherited?: boolean, strokeColorInherited?: boolean,
+ *   fillAlphaInherited?: boolean, strokeAlphaInherited?: boolean,
  *   smask?: SmaskRef|null, outerSmask?: SmaskRef|null,
  *   blendMode?: string, clips?: ClipEntry[] }} ShadingDrawOp
  * @typedef {{ type: 'inlineImage', dictText: string, imageData: string, ctm: number[],
  *   fillColor: string, fillAlpha: number, strokeColor?: string, strokeAlpha?: number,
  *   patternShading?: PatternShading, tilingPattern?: TilingPatternRef,
  *   overprint?: boolean, fillColorInherited?: boolean, strokeColorInherited?: boolean,
+ *   fillAlphaInherited?: boolean, strokeAlphaInherited?: boolean,
  *   smask?: SmaskRef|null, outerSmask?: SmaskRef|null,
  *   blendMode?: string, clips?: ClipEntry[],
  *   colorSpaces?: Map<string, {type: string, tintSamples: Uint8Array|null, nComponents: number, deviceNGrid?: object|null, indexedInfo?: object|null, labWhitePoint?: number[]|null}>,
@@ -1431,13 +1438,15 @@ async function imageMaskToBitmap(imageInfo, fillColor, objCache) {
  * @param {Map<string, object>} [shadings]
  * @param {Map<string, object>} [patterns]
  * @param {Map<string, Set<number>>} [cidCollisionMap]
+ * @param {object|null} [inheritedTextState] - Text state carried in from an enclosing form XObject
+ * @param {Set<string>} [hiddenOCMCNames] - Names in /Resources/Properties whose OCG is OFF; content inside `/OC /<name> BDC ... EMC` for these is not painted
  * @returns {Array<DrawOp>}
  */
 function parseDrawOps(
   contentStream, fonts, extGStates, registeredFontNames, colorSpaces = new Map(),
   symbolFontTags = new Set(), cidPUATags = new Set(), rawCharCodeTags = new Set(),
   shadings = new Map(), patterns = new Map(), cidCollisionMap = new Map(),
-  inheritedTextState = null,
+  inheritedTextState = null, hiddenOCMCNames = new Set(),
 ) {
   /** @type {Array<DrawOp>} */
   const ops = [];
@@ -1450,7 +1459,23 @@ function parseDrawOps(
   // start of the next). Tokenizing each stream individually breaks such
   // PDFs, dropping the entire spanning operator. Concatenate before tokenizing.
   const streams = Array.isArray(contentStream) ? contentStream : [contentStream];
-  const tokens = tokenizeContentStream(streams.join('\n'));
+  const STREAM_SEP = '\n';
+  const tokens = tokenizeContentStream(streams.join(STREAM_SEP));
+
+  // Start offset (in the joined string) of each /Contents entry after the first.
+  // A /Contents entry with a damaged FlateDecode tail emits garbled tokens that
+  // trip the corruption-suppression threshold. Resetting that state at each
+  // boundary keeps the damage from blanking later, intact entries.
+  /** @type {number[]} */
+  const streamBoundaryOffsets = [];
+  if (streams.length > 1) {
+    let acc = 0;
+    for (let i = 0; i < streams.length - 1; i++) {
+      acc += streams[i].length + STREAM_SEP.length;
+      streamBoundaryOffsets.push(acc);
+    }
+  }
+  let nextStreamBoundaryIdx = 0;
 
   // Graphics state
   let ctm = [1, 0, 0, 1, 0, 0];
@@ -1523,6 +1548,11 @@ function parseDrawOps(
   let strokeDeviceNGrid = null;
   let fillAlpha = 1;
   let strokeAlpha = 1;
+  // A `gs` inside a form replaces the inherited fill/stroke alpha rather than
+  // compounding with it, so ops emitted before the first alpha-setting `gs` get
+  // an inheritance marker and the rest do not.
+  let fillAlphaExplicit = false;
+  let strokeAlphaExplicit = false;
   let overprint = false;
   let blendMode = 'Normal';
   let lineWidth = 1;
@@ -1573,6 +1603,10 @@ function parseDrawOps(
   let pathAnomalyCount = 0;
   let streamCorrupted = false;
 
+  /** @type {boolean[]} Nesting of BDC/BMC marked-content blocks; entry = whether hidden by OC */
+  const mcStack = [];
+  let ocHidden = false;
+
   /**
    * Emit Type3 glyph ops for a literal string.
    * @param {string} str
@@ -1596,6 +1630,7 @@ function parseDrawOps(
           type: 'type3glyph', charProcObjNum, transform, fillColor, fillAlpha, type3XObjects,
         };
         if (!fillColorExplicit) type3Op.fillColorInherited = true;
+        if (!fillAlphaExplicit) type3Op.fillAlphaInherited = true;
         ops.push(type3Op);
       }
 
@@ -1630,6 +1665,7 @@ function parseDrawOps(
           type: 'type3glyph', charProcObjNum, transform, fillColor, fillAlpha, type3XObjects,
         };
         if (!fillColorExplicit) type3Op.fillColorInherited = true;
+        if (!fillAlphaExplicit) type3Op.fillAlphaInherited = true;
         ops.push(type3Op);
       }
 
@@ -1720,7 +1756,9 @@ function parseDrawOps(
           lineWidth,
         };
         if (!fillColorExplicit) textOp.fillColorInherited = true;
+        if (!fillAlphaExplicit) textOp.fillAlphaInherited = true;
         if (!strokeColorExplicit) textOp.strokeColorInherited = true;
+        if (!strokeAlphaExplicit) textOp.strokeAlphaInherited = true;
         ops.push(textOp);
       }
       i += numBytes;
@@ -1835,7 +1873,9 @@ function parseDrawOps(
             lineWidth,
           };
           if (!fillColorExplicit) textOp.fillColorInherited = true;
+          if (!fillAlphaExplicit) textOp.fillAlphaInherited = true;
           if (!strokeColorExplicit) textOp.strokeColorInherited = true;
+          if (!strokeAlphaExplicit) textOp.strokeAlphaInherited = true;
           ops.push(textOp);
         }
       }
@@ -1944,7 +1984,9 @@ function parseDrawOps(
             opObj.pdfGlyphWidth = rawWidth;
           }
           if (!fillColorExplicit) opObj.fillColorInherited = true;
+          if (!fillAlphaExplicit) opObj.fillAlphaInherited = true;
           if (!strokeColorExplicit) opObj.strokeColorInherited = true;
+          if (!strokeAlphaExplicit) opObj.strokeAlphaInherited = true;
           ops.push(opObj);
         }
       }
@@ -2054,7 +2096,9 @@ function parseDrawOps(
             opObj.pdfGlyphWidth = rawWidth;
           }
           if (!fillColorExplicit) opObj.fillColorInherited = true;
+          if (!fillAlphaExplicit) opObj.fillAlphaInherited = true;
           if (!strokeColorExplicit) opObj.strokeColorInherited = true;
+          if (!strokeAlphaExplicit) opObj.strokeAlphaInherited = true;
           ops.push(opObj);
         }
       }
@@ -2102,9 +2146,14 @@ function parseDrawOps(
       // (which may map it to a non-AGL glyph name like "boxcheckbld" that only exists in
       // the CFF font's PUA cmap, not in the encoding's Unicode mapping).
       const inDifferences = !!(currentFont.differences && currentFont.differences[charCode] !== undefined);
+      // Some subsetters store a visible outline under a glyph name that resolves to
+      // whitespace (e.g. a letter named "space"). fillText() silently skips whitespace,
+      // so route such codes through their PUA codepoint instead.
+      const encWhitespace = charCode >= 0x20 && (currentFont.encodingUnicode?.get(charCode) ?? 'x').trim() === '';
       const usesPUA = hasPUA && (
         (hasDifferences && inDifferences)
         || (!hasDifferences && (charCode < 0x20 || !currentFont.encodingUnicode?.has(charCode)))
+        || encWhitespace
         // Charcode with width but no /Differences and no encoding mapping: route through
         // PUA so buildFontFromCFF can resolve it via the embedded font's intrinsic CFF Encoding.
         // Without this, control bytes trim to empty and codes >= 0x20 fall back to the
@@ -2176,7 +2225,9 @@ function parseDrawOps(
         };
         if (isNonEmbedded && !sc.applied) opObj.pdfGlyphWidth = rawWidth;
         if (!fillColorExplicit) opObj.fillColorInherited = true;
+        if (!fillAlphaExplicit) opObj.fillAlphaInherited = true;
         if (!strokeColorExplicit) opObj.strokeColorInherited = true;
+        if (!strokeAlphaExplicit) opObj.strokeAlphaInherited = true;
         ops.push(opObj);
       }
       const advance = (glyphWidth + tc + (charCode === 0x20 ? tw : 0)) * tz / 100;
@@ -2204,9 +2255,11 @@ function parseDrawOps(
       const glyphWidth = rawWidth / 1000 * fontSize;
       const unicode = currentFont.toUnicode.get(charCode) || String.fromCharCode(charCode);
       const inDifferences = !!(currentFont.differences && currentFont.differences[charCode] !== undefined);
+      const encWhitespace = charCode >= 0x20 && (currentFont.encodingUnicode?.get(charCode) ?? 'x').trim() === '';
       const usesPUA = hasPUA && charCode > 0 && (
         (hasDifferences && inDifferences)
         || (!hasDifferences && (charCode < 0x20 || !currentFont.encodingUnicode?.has(charCode)))
+        || encWhitespace
         // See showLiteralString: charcodes with widths but no /Differences and no encoding
         // mapping route through PUA so buildFontFromCFF can resolve them via the embedded
         // font's intrinsic CFF Encoding.
@@ -2262,7 +2315,9 @@ function parseDrawOps(
         };
         if (isNonEmbedded && !sc.applied) opObj2.pdfGlyphWidth = rawWidth;
         if (!fillColorExplicit) opObj2.fillColorInherited = true;
+        if (!fillAlphaExplicit) opObj2.fillAlphaInherited = true;
         if (!strokeColorExplicit) opObj2.strokeColorInherited = true;
+        if (!strokeAlphaExplicit) opObj2.strokeAlphaInherited = true;
         ops.push(opObj2);
       }
       const advance = (glyphWidth + tc + (charCode === 0x20 ? tw : 0)) * tz / 100;
@@ -2299,6 +2354,7 @@ function parseDrawOps(
     // Handle inline images (BI/ID/EI) — the tokenizer produces a single 'inlineImage' token
     // containing the image dict text and binary data.
     if (tok.type === 'inlineImage') {
+      if (ocHidden) continue;
       const { dictText, imageData } = tok.value;
       /** @type {InlineImageOp} */
       const inlineOp = {
@@ -2320,6 +2376,7 @@ function parseDrawOps(
         });
       }
       if (!fillColorExplicit) inlineOp.fillColorInherited = true;
+      if (!fillAlphaExplicit) inlineOp.fillAlphaInherited = true;
       ops.push(inlineOp);
       continue;
     }
@@ -2363,6 +2420,18 @@ function parseDrawOps(
       continue;
     }
 
+    // Stream boundary: corruption doesn't carry across /Contents entries, so reset
+    // the suppression state here. A corrupted entry may also leave operands dangling.
+    if (nextStreamBoundaryIdx < streamBoundaryOffsets.length && tok.start != null
+      && tok.start >= streamBoundaryOffsets[nextStreamBoundaryIdx]) {
+      while (nextStreamBoundaryIdx < streamBoundaryOffsets.length
+        && tok.start >= streamBoundaryOffsets[nextStreamBoundaryIdx]) nextStreamBoundaryIdx++;
+      if (streamCorrupted || skipCorruptedPath) operandStack.length = 0;
+      pathAnomalyCount = 0;
+      streamCorrupted = false;
+      skipCorruptedPath = false;
+    }
+
     // If enough path anomalies accumulated (excess operands, out-of-bounds
     // coordinates, leftover operands before paint ops), the content stream is
     // likely corrupted (e.g. damaged deflate data). Stop emitting draw ops to
@@ -2372,6 +2441,30 @@ function parseDrawOps(
       console.warn('[renderPdfPage] Content stream appears corrupted (5+ path/color operand anomalies detected). Suppressing remaining draw operations to preserve valid content.');
     }
     if (streamCorrupted) {
+      operandStack.length = 0;
+      continue;
+    }
+
+    // Content inside an `/OC /<name> BDC ... EMC` whose OCG is OFF is still
+    // processed for graphics-state changes, but nothing it would paint is kept.
+    if (tok.value === 'BDC' || tok.value === 'BMC') {
+      let nowHidden = ocHidden;
+      if (!nowHidden && tok.value === 'BDC' && hiddenOCMCNames.size > 0) {
+        const tagTok = operandStack[operandStack.length - 2];
+        const propTok = operandStack[operandStack.length - 1];
+        if (tagTok && tagTok.type === 'name' && tagTok.value === 'OC'
+          && propTok && propTok.type === 'name' && hiddenOCMCNames.has(propTok.value)) {
+          nowHidden = true;
+        }
+      }
+      mcStack.push(nowHidden);
+      ocHidden = nowHidden;
+      operandStack.length = 0;
+      continue;
+    }
+    if (tok.value === 'EMC') {
+      if (mcStack.length > 0) mcStack.pop();
+      ocHidden = mcStack.length > 0 && mcStack[mcStack.length - 1];
       operandStack.length = 0;
       continue;
     }
@@ -2400,6 +2493,8 @@ function parseDrawOps(
           strokeDeviceNGrid,
           fillAlpha,
           strokeAlpha,
+          fillAlphaExplicit,
+          strokeAlphaExplicit,
           lineWidth,
           lineCap,
           lineJoin,
@@ -2450,6 +2545,8 @@ function parseDrawOps(
           strokeDeviceNGrid = saved.strokeDeviceNGrid;
           fillAlpha = saved.fillAlpha;
           strokeAlpha = saved.strokeAlpha;
+          fillAlphaExplicit = saved.fillAlphaExplicit;
+          strokeAlphaExplicit = saved.strokeAlphaExplicit;
           overprint = saved.overprint;
           blendMode = saved.blendMode;
           lineWidth = saved.lineWidth;
@@ -2486,8 +2583,8 @@ function parseDrawOps(
           const gsName = String(operandStack[operandStack.length - 1].value).replace(/^\//, '');
           const gs = extGStates.get(gsName);
           if (gs) {
-            if (gs.fillAlpha !== undefined) fillAlpha = gs.fillAlpha;
-            if (gs.strokeAlpha !== undefined) strokeAlpha = gs.strokeAlpha;
+            if (gs.fillAlpha !== undefined) { fillAlpha = gs.fillAlpha; fillAlphaExplicit = true; }
+            if (gs.strokeAlpha !== undefined) { strokeAlpha = gs.strokeAlpha; strokeAlphaExplicit = true; }
             if (gs.overprint !== undefined) overprint = gs.overprint;
             if (gs.blendMode !== undefined) blendMode = gs.blendMode;
             if (gs.smask !== undefined) {
@@ -2524,7 +2621,9 @@ function parseDrawOps(
           }
           if (currentSmask) doOp.smask = currentSmask;
           if (!fillColorExplicit) doOp.fillColorInherited = true;
+          if (!fillAlphaExplicit) doOp.fillAlphaInherited = true;
           if (!strokeColorExplicit) doOp.strokeColorInherited = true;
+          if (!strokeAlphaExplicit) doOp.strokeAlphaInherited = true;
           // Form XObject inherits the caller's text state at Do time.
           doOp.textState = {
             tc, tw, tl, tz, trise,
@@ -3358,6 +3457,7 @@ function parseDrawOps(
           if (strokePatternShading) pathOpS.strokePatternShading = strokePatternShading;
           if (strokeTilingPattern) pathOpS.strokeTilingPattern = strokeTilingPattern;
           if (!strokeColorExplicit) pathOpS.strokeColorInherited = true;
+          if (!strokeAlphaExplicit) pathOpS.strokeAlphaInherited = true;
           ops.push(pathOpS);
         }
         currentPath = [];
@@ -3396,6 +3496,7 @@ function parseDrawOps(
           if (strokePatternShading) pathOps2.strokePatternShading = strokePatternShading;
           if (strokeTilingPattern) pathOps2.strokeTilingPattern = strokeTilingPattern;
           if (!strokeColorExplicit) pathOps2.strokeColorInherited = true;
+          if (!strokeAlphaExplicit) pathOps2.strokeAlphaInherited = true;
           ops.push(pathOps2);
         }
         currentPath = [];
@@ -3435,6 +3536,7 @@ function parseDrawOps(
           if (fillPatternShading) pathOpF.patternShading = fillPatternShading;
           if (fillTilingPattern) pathOpF.tilingPattern = fillTilingPattern;
           if (!fillColorExplicit) pathOpF.fillColorInherited = true;
+          if (!fillAlphaExplicit) pathOpF.fillAlphaInherited = true;
           ops.push(pathOpF);
         }
         currentPath = [];
@@ -3472,6 +3574,7 @@ function parseDrawOps(
           if (fillPatternShading) pathOpFS.patternShading = fillPatternShading;
           if (fillTilingPattern) pathOpFS.tilingPattern = fillTilingPattern;
           if (!fillColorExplicit) pathOpFS.fillColorInherited = true;
+          if (!fillAlphaExplicit) pathOpFS.fillAlphaInherited = true;
           ops.push(pathOpFS);
         }
         currentPath = [];
@@ -3511,7 +3614,9 @@ function parseDrawOps(
           if (strokePatternShading) pathOpB.strokePatternShading = strokePatternShading;
           if (strokeTilingPattern) pathOpB.strokeTilingPattern = strokeTilingPattern;
           if (!fillColorExplicit) pathOpB.fillColorInherited = true;
+          if (!fillAlphaExplicit) pathOpB.fillAlphaInherited = true;
           if (!strokeColorExplicit) pathOpB.strokeColorInherited = true;
+          if (!strokeAlphaExplicit) pathOpB.strokeAlphaInherited = true;
           ops.push(pathOpB);
         }
         currentPath = [];
@@ -3551,7 +3656,9 @@ function parseDrawOps(
           if (strokePatternShading) pathOpBS.strokePatternShading = strokePatternShading;
           if (strokeTilingPattern) pathOpBS.strokeTilingPattern = strokeTilingPattern;
           if (!fillColorExplicit) pathOpBS.fillColorInherited = true;
+          if (!fillAlphaExplicit) pathOpBS.fillAlphaInherited = true;
           if (!strokeColorExplicit) pathOpBS.strokeColorInherited = true;
+          if (!strokeAlphaExplicit) pathOpBS.strokeAlphaInherited = true;
           ops.push(pathOpBS);
         }
         currentPath = [];
@@ -3592,7 +3699,9 @@ function parseDrawOps(
           if (strokePatternShading) pathOpb.strokePatternShading = strokePatternShading;
           if (strokeTilingPattern) pathOpb.strokeTilingPattern = strokeTilingPattern;
           if (!fillColorExplicit) pathOpb.fillColorInherited = true;
+          if (!fillAlphaExplicit) pathOpb.fillAlphaInherited = true;
           if (!strokeColorExplicit) pathOpb.strokeColorInherited = true;
+          if (!strokeAlphaExplicit) pathOpb.strokeAlphaInherited = true;
           ops.push(pathOpb);
         }
         currentPath = [];
@@ -3633,7 +3742,9 @@ function parseDrawOps(
           if (strokePatternShading) pathOpbS.strokePatternShading = strokePatternShading;
           if (strokeTilingPattern) pathOpbS.strokeTilingPattern = strokeTilingPattern;
           if (!fillColorExplicit) pathOpbS.fillColorInherited = true;
+          if (!fillAlphaExplicit) pathOpbS.fillAlphaInherited = true;
           if (!strokeColorExplicit) pathOpbS.strokeColorInherited = true;
+          if (!strokeAlphaExplicit) pathOpbS.strokeAlphaInherited = true;
           ops.push(pathOpbS);
         }
         currentPath = [];
@@ -3659,6 +3770,10 @@ function parseDrawOps(
         operandStack.length = 0;
         break;
     }
+
+    // Inside a hidden optional-content block: drop anything painted, keep the
+    // graphics-state changes already applied above.
+    if (ocHidden && ops.length > opsLenBeforeOp) ops.length = opsLenBeforeOp;
 
     // Attach active clip path to any ops pushed during this operator.
     // The clip from W/W* applies to all subsequent drawing operations until Q restores state.
@@ -3984,6 +4099,7 @@ async function flattenDrawOps(
           formStream, effectiveFonts2, effectiveExtGStates2, effectiveRegistered2,
           formColorSpaces.size > 0 ? formColorSpaces : undefined, symbolFontTags, cidPUATags, rawCharCodeTags,
           formShadings, formPatterns, cidCollisionMap, ts,
+          parseHiddenOCMCNames(formObjText, objCache, offOCGs),
         );
       }
 
@@ -4098,6 +4214,10 @@ async function flattenDrawOps(
         transformed.strokeColor = formInheritedStroke;
         delete transformed.strokeColorInherited;
       }
+      const fillAlphaInherited = innerOp.fillAlphaInherited;
+      const strokeAlphaInherited = innerOp.strokeAlphaInherited;
+      delete transformed.fillAlphaInherited;
+      delete transformed.strokeAlphaInherited;
       // Propagate parent clip paths (from W/W* before Do) to inner ops.
       // Clone each clip so the rotation transform (which mutates ctm in-place)
       // doesn't corrupt shared references across sibling ops.
@@ -4120,8 +4240,8 @@ async function flattenDrawOps(
             transformed.smask = op.smask;
           }
         }
-        if (op.fillAlpha < 1) transformed.fillAlpha = (transformed.fillAlpha ?? 1) * op.fillAlpha;
-        if (op.strokeAlpha < 1) transformed.strokeAlpha = (transformed.strokeAlpha ?? 1) * op.strokeAlpha;
+        if (op.fillAlpha < 1 && fillAlphaInherited) transformed.fillAlpha = op.fillAlpha;
+        if (op.strokeAlpha < 1 && strokeAlphaInherited) transformed.strokeAlpha = op.strokeAlpha;
         if (op.blendMode && !transformed.blendMode) transformed.blendMode = op.blendMode;
       }
       if (op.overprint && !transformed.overprint) transformed.overprint = true;
@@ -4181,6 +4301,29 @@ function parseSmaskTR(smaskDict, objCache) {
     }
   }
   return null;
+}
+
+/**
+ * Parse a soft mask's /BC backdrop colour array (components in the mask group's
+ * colour space). Returns null when absent (the spec default is black).
+ * @param {string} smaskDict
+ * @param {ObjectCache} objCache
+ * @returns {number[]|null}
+ */
+function parseSmaskBC(smaskDict, objCache) {
+  let arrStr = null;
+  const refMatch = /\/BC\s+(\d+)\s+\d+\s+R/.exec(smaskDict);
+  if (refMatch) {
+    const t = objCache.getObjectText(Number(refMatch[1]));
+    const m = t && /\[([^\]]*)\]/.exec(t);
+    if (m) arrStr = m[1];
+  } else {
+    const m = /\/BC\s*\[([^\]]*)\]/.exec(smaskDict);
+    if (m) arrStr = m[1];
+  }
+  if (arrStr == null) return null;
+  const arr = arrStr.trim().split(/\s+/).filter((s) => s.length > 0).map(Number);
+  return arr.length > 0 && !arr.some(Number.isNaN) ? arr : null;
 }
 
 function parseExtGStates(pageObjText, objCache) {
@@ -4260,6 +4403,7 @@ function parseExtGStates(pageObjText, objCache) {
             formObjNum: Number(gMatch[1]),
             type: sMatch ? sMatch[1] : 'Luminosity',
             tr: parseSmaskTR(smaskDict, objCache),
+            bc: parseSmaskBC(smaskDict, objCache),
           };
         }
       }
@@ -4323,6 +4467,7 @@ function parseExtGStates(pageObjText, objCache) {
             formObjNum: Number(gMatch[1]),
             type: sMatch ? sMatch[1] : 'Luminosity',
             tr: parseSmaskTR(smaskDict, objCache),
+            bc: parseSmaskBC(smaskDict, objCache),
           };
         }
       }
@@ -4672,39 +4817,7 @@ function parseMeshShading(shObjText, shObjNum, shadingType, objCache) {
   const streamBytes = objCache.getStreamBytes(shObjNum);
   if (!streamBytes || streamBytes.length === 0) return null;
 
-  // Build color evaluator from Function if present
-  let colorFunc = null;
-  const funcRefMatch = /\/Function\s+(\d+)\s+\d+\s+R/.exec(shObjText);
-  if (funcRefMatch) {
-    const funcObjText = objCache.getObjectText(Number(funcRefMatch[1]));
-    if (funcObjText) colorFunc = buildColorEvaluatorFromText(funcObjText, objCache);
-  } else {
-    const funcIdx = shObjText.indexOf('/Function');
-    if (funcIdx !== -1) {
-      const funcDictOpen = shObjText.indexOf('<<', funcIdx + 9);
-      if (funcDictOpen !== -1) {
-        const funcDictText = extractDict(shObjText, funcDictOpen);
-        if (funcDictText) colorFunc = buildColorEvaluatorFromText(funcDictText, objCache);
-      }
-    }
-  }
-
-  let sepTintSamples = null;
-  /** @type {{ tintFn: any, altCS: any, nInputs: number } | null} */
-  let tintCS = null;
-  const csRefMatch = /\/ColorSpace\s+(\d+)\s+\d+\s+R/.exec(shObjText);
-  if (csRefMatch) {
-    const csObjText = objCache.getObjectText(Number(csRefMatch[1]));
-    if (csObjText && /\/Separation|\/DeviceN/.test(csObjText)) {
-      const parsed = parseTintColorSpace(csObjText, objCache);
-      if (parsed.tintFn && parsed.nInputs === 1) {
-        const tintInfo = parseSeparationTint(csObjText, objCache);
-        if (tintInfo.tintSamples) sepTintSamples = tintInfo.tintSamples;
-      } else if (parsed.tintFn) {
-        tintCS = parsed;
-      }
-    }
-  }
+  const colorEval = buildMeshColorEvaluator(shObjText, objCache);
 
   // Bit reader
   let bitPos = 0;
@@ -4743,19 +4856,7 @@ function parseMeshShading(shObjText, shObjNum, shadingType, objCache) {
     for (let i = 0; i < nComps; i++) {
       comps.push(decode[4 + i * 2] + readBits(bpc) * (decode[4 + i * 2 + 1] - decode[4 + i * 2]) / compMax);
     }
-    if (colorFunc) return colorFunc(comps);
-    if (sepTintSamples && nComps === 1) {
-      const sepMax = sepTintSamples.length / 3 - 1;
-      const idx = Math.round(Math.max(0, Math.min(1, comps[0])) * sepMax) * 3;
-      return [sepTintSamples[idx], sepTintSamples[idx + 1], sepTintSamples[idx + 2]];
-    }
-    if (tintCS && comps.length === tintCS.nInputs) {
-      const altComp = evaluateFunction(tintCS.tintFn, comps);
-      if (altComp) return altCSToRGB(tintCS.altCS, altComp);
-    }
-    if (nComps === 4) return cmykToRgb(comps[0], comps[1], comps[2], comps[3]);
-    if (nComps === 1) { const v = Math.round(comps[0] * 255); return [v, v, v]; }
-    return [Math.round(comps[0] * 255), Math.round(comps[1] * 255), Math.round(comps[2] * 255)];
+    return colorEval(comps);
   }
 
   /**
@@ -5143,100 +5244,105 @@ function renderGouraudTriangles(ctx, triangles, clipBounds, canvasDims) {
 }
 
 /**
- * Build a color evaluator from an inline function dict text.
- * Returns a function (comps: number[]) => [r, g, b] (0-255), or null.
- * @param {string} funcDictText
- * @param {ObjectCache} [objCache] - When provided, indirect sub-function refs
- *   inside Type 3 /Functions arrays are resolved.
+ * Build a per-vertex/per-corner color evaluator for a mesh shading (types 4-7).
+ *
+ * The returned function takes the color components decoded from the shading
+ * stream for one vertex/corner. When the shading has a /Function those are the
+ * function's parametric input(s), which it maps to colorant values in /ColorSpace.
+ * Otherwise they are colorant values directly. Either way the colorant values are
+ * converted to sRGB through /ColorSpace (DeviceN/Separation tint transform,
+ * DeviceCMYK, DeviceGray, etc.).
+ *
+ * @param {string} shObjText - Raw text of the Shading object
+ * @param {ObjectCache} objCache
+ * @returns {(comps: number[]) => [number, number, number]}
  */
-function buildColorEvaluatorFromText(funcDictText, objCache = null) {
-  const funcTypeMatch = /\/FunctionType\s+(\d+)/.exec(funcDictText);
-  const funcType = funcTypeMatch ? Number(funcTypeMatch[1]) : -1;
-
-  if (funcType === 2) {
-    const c0Match = /\/C0\s*\[\s*([\d.\s-]+)\]/.exec(funcDictText);
-    const c1Match = /\/C1\s*\[\s*([\d.\s-]+)\]/.exec(funcDictText);
-    const nMatch = /\/N\s+([\d.]+)/.exec(funcDictText);
-    const c0 = c0Match ? c0Match[1].trim().split(/\s+/).map(Number) : [0, 0, 0];
-    const c1 = c1Match ? c1Match[1].trim().split(/\s+/).map(Number) : [1, 1, 1];
-    const n = nMatch ? Number(nMatch[1]) : 1;
-    return (comps) => {
-      const t = Math.max(0, Math.min(1, comps[0]));
-      const tN = t ** n;
-      return [
-        Math.round(Math.max(0, Math.min(1, c0[0] + tN * (c1[0] - c0[0]))) * 255),
-        Math.round(Math.max(0, Math.min(1, (c0[1] ?? 0) + tN * ((c1[1] ?? 1) - (c0[1] ?? 0)))) * 255),
-        Math.round(Math.max(0, Math.min(1, (c0[2] ?? 0) + tN * ((c1[2] ?? 1) - (c0[2] ?? 0)))) * 255),
-      ];
-    };
-  }
-
-  if (funcType === 3) {
-    const boundsMatch = /\/Bounds\s*\[\s*([\d.\s]*)\]/.exec(funcDictText);
-    const encodeMatch = /\/Encode\s*\[\s*([\d.\s-]+)\]/.exec(funcDictText);
-    const bounds = boundsMatch && boundsMatch[1].trim()
-      ? boundsMatch[1].trim().split(/\s+/).map(Number) : [];
-    const encode = encodeMatch ? encodeMatch[1].trim().split(/\s+/).map(Number) : [];
-    const subFuncs = [];
-    const funcsIdx = funcDictText.indexOf('/Functions');
-    if (funcsIdx !== -1) {
-      const arrStart = funcDictText.indexOf('[', funcsIdx);
-      const arrEnd = arrStart !== -1 ? funcDictText.indexOf(']', arrStart) : -1;
-      const arrText = (arrStart !== -1 && arrEnd !== -1) ? funcDictText.slice(arrStart + 1, arrEnd) : '';
-      const subTexts = [];
-      let lastIdx = 0;
-      for (const rm of arrText.matchAll(/(\d+)\s+\d+\s+R/g)) {
-        const before = arrText.slice(lastIdx, rm.index);
-        for (const im of before.matchAll(/<<([\s\S]*?)>>/g)) subTexts.push(im[1]);
-        if (objCache) {
-          const refText = objCache.getObjectText(Number(rm[1]));
-          if (refText) subTexts.push(refText);
+function buildMeshColorEvaluator(shObjText, objCache) {
+  /** @type {import('./pdfColorFunctions.js').ParsedFunction|null} */
+  let tintFn = null;
+  /** @type {Array<import('./pdfColorFunctions.js').ParsedFunction|null>|null} */
+  let tintFnArray = null;
+  const funcArrMatch = /\/Function\s*\[\s*((?:\d+\s+\d+\s+R\s*)+)\]/.exec(shObjText);
+  if (funcArrMatch) {
+    const refs = [...funcArrMatch[1].matchAll(/(\d+)\s+\d+\s+R/g)].map((m) => Number(m[1]));
+    if (refs.length === 1) tintFn = parseFunction(refs[0], objCache);
+    else tintFnArray = refs.map((r) => parseFunction(r, objCache));
+  } else {
+    const funcRefMatch = /\/Function\s+(\d+)\s+\d+\s+R/.exec(shObjText);
+    if (funcRefMatch) {
+      tintFn = parseFunction(Number(funcRefMatch[1]), objCache);
+    } else {
+      const funcIdx = shObjText.indexOf('/Function');
+      if (funcIdx !== -1) {
+        const funcDictOpen = shObjText.indexOf('<<', funcIdx + 9);
+        if (funcDictOpen !== -1) {
+          const funcDictText = extractDict(shObjText, funcDictOpen);
+          if (funcDictText && /\/FunctionType/.test(funcDictText)) tintFn = parseFunction(funcDictText, objCache);
         }
-        lastIdx = rm.index + rm[0].length;
-      }
-      const tail = arrText.slice(lastIdx);
-      for (const im of tail.matchAll(/<<([\s\S]*?)>>/g)) subTexts.push(im[1]);
-
-      for (const subText of subTexts) {
-        const stMatch = /\/FunctionType\s+(\d+)/.exec(subText);
-        if (!stMatch || Number(stMatch[1]) !== 2) continue;
-        const sc0Match = /\/C0\s*\[\s*([\d.\s-]+)\]/.exec(subText);
-        const sc1Match = /\/C1\s*\[\s*([\d.\s-]+)\]/.exec(subText);
-        const snMatch = /\/N\s+([\d.]+)/.exec(subText);
-        subFuncs.push({
-          c0: sc0Match ? sc0Match[1].trim().split(/\s+/).map(Number) : [0],
-          c1: sc1Match ? sc1Match[1].trim().split(/\s+/).map(Number) : [1],
-          n: snMatch ? Number(snMatch[1]) : 1,
-        });
       }
     }
-    if (subFuncs.length === 0) return null;
-    const domainBounds = [0, ...bounds, 1];
-    return (comps) => {
-      const t = Math.max(0, Math.min(1, comps[0]));
-      let si = 0;
-      for (let bi = 0; bi < bounds.length; bi++) {
-        if (t >= bounds[bi]) si = bi + 1;
-      }
-      if (si >= subFuncs.length) si = subFuncs.length - 1;
-      const sub = subFuncs[si];
-      const dLo = domainBounds[si];
-      const dHi = domainBounds[si + 1];
-      const eLo = encode.length > si * 2 ? encode[si * 2] : 0;
-      const eHi = encode.length > si * 2 + 1 ? encode[si * 2 + 1] : 1;
-      const tLocal = dHi > dLo ? (t - dLo) / (dHi - dLo) : 0;
-      const tEncoded = eLo + tLocal * (eHi - eLo);
-      const tClamped = Math.max(0, Math.min(1, tEncoded));
-      const tN = tClamped ** sub.n;
-      return [
-        Math.round(Math.max(0, Math.min(1, sub.c0[0] + tN * (sub.c1[0] - sub.c0[0]))) * 255),
-        Math.round(Math.max(0, Math.min(1, (sub.c0[1] ?? 0) + tN * ((sub.c1[1] ?? 1) - (sub.c0[1] ?? 0)))) * 255),
-        Math.round(Math.max(0, Math.min(1, (sub.c0[2] ?? 0) + tN * ((sub.c1[2] ?? 1) - (sub.c0[2] ?? 0)))) * 255),
-      ];
-    };
   }
 
-  return null;
+  let csText = null;
+  const csArrStart = /\/ColorSpace\s*\[/.exec(shObjText);
+  if (csArrStart) {
+    const bracketIdx = csArrStart.index + csArrStart[0].length - 1;
+    let depth = 1;
+    let endIdx = bracketIdx + 1;
+    while (endIdx < shObjText.length && depth > 0) {
+      const ch = shObjText[endIdx];
+      if (ch === '[') depth++;
+      else if (ch === ']') depth--;
+      if (depth > 0) endIdx++;
+    }
+    csText = shObjText.substring(bracketIdx, endIdx + 1);
+  } else {
+    const csRefMatch = /\/ColorSpace\s+(\d+)\s+\d+\s+R/.exec(shObjText);
+    if (csRefMatch) csText = objCache.getObjectText(Number(csRefMatch[1]));
+    else {
+      const csNameMatch = /\/ColorSpace\s*\/(\w+)/.exec(shObjText);
+      if (csNameMatch) csText = `/${csNameMatch[1]}`;
+    }
+  }
+
+  const grayConvert = (c) => { const v = Math.max(0, Math.min(255, Math.round((c[0] || 0) * 255))); return [v, v, v]; };
+  const rgbConvert = (c) => [
+    Math.max(0, Math.min(255, Math.round((c[0] || 0) * 255))),
+    Math.max(0, Math.min(255, Math.round((c[1] || 0) * 255))),
+    Math.max(0, Math.min(255, Math.round((c[2] || 0) * 255))),
+  ];
+  /** @type {(c: number[]) => [number, number, number]} */
+  let csConvert;
+  if (csText && /\/Separation|\/DeviceN/.test(csText)) {
+    const parsed = parseTintColorSpace(csText, objCache);
+    csConvert = (c) => tintComponentsToRGB(parsed, c) || [128, 128, 128];
+  } else if (csText && /\/DeviceCMYK/.test(csText)) {
+    csConvert = (c) => cmykToRgb(c[0] || 0, c[1] || 0, c[2] || 0, c[3] || 0);
+  } else if (csText && /\/DeviceGray|\/CalGray/.test(csText)) {
+    csConvert = grayConvert;
+  } else if (csText && /\/ICCBased/.test(csText)) {
+    const iccRefMatch = /(\d+)\s+\d+\s+R/.exec(csText);
+    const iccObjText = iccRefMatch ? objCache.getObjectText(Number(iccRefMatch[1])) : null;
+    const nMatch = iccObjText && /\/N\s+(\d+)/.exec(iccObjText);
+    const nComp = nMatch ? Number(nMatch[1]) : 3;
+    if (nComp === 1) csConvert = grayConvert;
+    else if (nComp === 4) csConvert = (c) => cmykToRgb(c[0] || 0, c[1] || 0, c[2] || 0, c[3] || 0);
+    else csConvert = rgbConvert;
+  } else {
+    csConvert = rgbConvert;
+  }
+
+  if (tintFnArray) {
+    return (comps) => csConvert(tintFnArray.map((fn) => {
+      if (!fn) return 0;
+      const o = evaluateFunction(fn, comps);
+      return o ? o[0] : 0;
+    }));
+  }
+  if (tintFn) {
+    return (comps) => csConvert(evaluateFunction(tintFn, comps) || comps);
+  }
+  return (comps) => csConvert(comps);
 }
 
 /**
@@ -5256,33 +5362,7 @@ function parseType4Shading(shObjText, shObjNum, objCache) {
   const streamBytes = objCache.getStreamBytes(shObjNum);
   if (!streamBytes || streamBytes.length === 0) return null;
 
-  let colorFunc = null;
-  const funcRefMatch = /\/Function\s+(\d+)\s+\d+\s+R/.exec(shObjText);
-  if (funcRefMatch) {
-    const funcObjText = objCache.getObjectText(Number(funcRefMatch[1]));
-    if (funcObjText) colorFunc = buildColorEvaluatorFromText(funcObjText, objCache);
-  } else {
-    const funcIdx = shObjText.indexOf('/Function');
-    if (funcIdx !== -1) {
-      const funcDictOpen = shObjText.indexOf('<<', funcIdx + 9);
-      if (funcDictOpen !== -1) {
-        const funcDictText = extractDict(shObjText, funcDictOpen);
-        if (funcDictText) colorFunc = buildColorEvaluatorFromText(funcDictText, objCache);
-      }
-    }
-  }
-
-  let sepTintSamples = null;
-  if (!colorFunc) {
-    const csRefMatch = /\/ColorSpace\s+(\d+)\s+\d+\s+R/.exec(shObjText);
-    if (csRefMatch) {
-      const csObjText = objCache.getObjectText(Number(csRefMatch[1]));
-      if (csObjText && /\/Separation|\/DeviceN/.test(csObjText)) {
-        const tintInfo = parseSeparationTint(csObjText, objCache);
-        if (tintInfo.tintSamples) sepTintSamples = tintInfo.tintSamples;
-      }
-    }
-  }
+  const colorEval = buildMeshColorEvaluator(shObjText, objCache);
 
   // Bit reader
   let bitPos = 0;
@@ -5316,21 +5396,7 @@ function parseType4Shading(shObjText, shObjNum, objCache) {
     for (let i = 0; i < nComps; i++) {
       comps.push(decode[4 + i * 2] + readBits(bpc) * (decode[4 + i * 2 + 1] - decode[4 + i * 2]) / compMax);
     }
-    let color;
-    if (colorFunc) {
-      color = colorFunc(comps);
-    } else if (sepTintSamples && nComps === 1) {
-      const sepMax = sepTintSamples.length / 3 - 1;
-      const idx = Math.round(Math.max(0, Math.min(1, comps[0])) * sepMax) * 3;
-      color = [sepTintSamples[idx], sepTintSamples[idx + 1], sepTintSamples[idx + 2]];
-    } else if (nComps === 4) color = cmykToRgb(comps[0], comps[1], comps[2], comps[3]);
-    else if (nComps === 1) {
-      const v = Math.round(comps[0] * 255);
-      color = [v, v, v];
-    } else {
-      color = [Math.round(comps[0] * 255), Math.round(comps[1] * 255), Math.round(comps[2] * 255)];
-    }
-    return { coord: [x, y], color };
+    return { coord: [x, y], color: colorEval(comps) };
   }
 
   const triangles = [];
@@ -5399,35 +5465,7 @@ function parseLatticeShading(shObjText, shObjNum, objCache) {
   const streamBytes = objCache.getStreamBytes(shObjNum);
   if (!streamBytes || streamBytes.length === 0) return null;
 
-  // Build color evaluator from Function if present
-  let colorFunc = null;
-  const funcRefMatch = /\/Function\s+(\d+)\s+\d+\s+R/.exec(shObjText);
-  if (funcRefMatch) {
-    const funcObjText = objCache.getObjectText(Number(funcRefMatch[1]));
-    if (funcObjText) colorFunc = buildColorEvaluatorFromText(funcObjText, objCache);
-  } else {
-    const funcIdx = shObjText.indexOf('/Function');
-    if (funcIdx !== -1) {
-      const funcDictOpen = shObjText.indexOf('<<', funcIdx + 9);
-      if (funcDictOpen !== -1) {
-        const funcDictText = extractDict(shObjText, funcDictOpen);
-        if (funcDictText) colorFunc = buildColorEvaluatorFromText(funcDictText, objCache);
-      }
-    }
-  }
-
-  // Detect Separation/DeviceN color space for tint transform
-  let sepTintSamples = null;
-  if (!colorFunc) {
-    const csRefMatch = /\/ColorSpace\s+(\d+)\s+\d+\s+R/.exec(shObjText);
-    if (csRefMatch) {
-      const csObjText = objCache.getObjectText(Number(csRefMatch[1]));
-      if (csObjText && /\/Separation|\/DeviceN/.test(csObjText)) {
-        const tintInfo = parseSeparationTint(csObjText, objCache);
-        if (tintInfo.tintSamples) sepTintSamples = tintInfo.tintSamples;
-      }
-    }
-  }
+  const colorEval = buildMeshColorEvaluator(shObjText, objCache);
 
   // Bit reader
   let bitPos = 0;
@@ -5463,22 +5501,7 @@ function parseLatticeShading(shObjText, shObjNum, objCache) {
     for (let i = 0; i < nComps; i++) {
       comps.push(decode[4 + i * 2] + readBits(bpc) * (decode[4 + i * 2 + 1] - decode[4 + i * 2]) / compMax);
     }
-    let color;
-    if (colorFunc) {
-      color = colorFunc(comps);
-    } else if (sepTintSamples && nComps === 1) {
-      const sepMax = sepTintSamples.length / 3 - 1;
-      const idx = Math.round(Math.max(0, Math.min(1, comps[0])) * sepMax) * 3;
-      color = [sepTintSamples[idx], sepTintSamples[idx + 1], sepTintSamples[idx + 2]];
-    } else if (nComps === 4) {
-      color = cmykToRgb(comps[0], comps[1], comps[2], comps[3]);
-    } else if (nComps === 1) {
-      const v = Math.round(comps[0] * 255);
-      color = [v, v, v];
-    } else {
-      color = [Math.round(comps[0] * 255), Math.round(comps[1] * 255), Math.round(comps[2] * 255)];
-    }
-    vertices.push({ x, y, color });
+    vertices.push({ x, y, color: colorEval(comps) });
   }
 
   const nRows = Math.floor(vertices.length / vpr);
@@ -6546,6 +6569,30 @@ function parseShadingFunction(funcDictText, shadingType, coords, objCache, sepTi
 }
 
 /**
+ * Tile-canvas pixel size for a tiling pattern at a given device scale, clamped
+ * so neither axis exceeds the canvas dimension limit. Producer and consumers
+ * must compute this identically or the pattern-space transform will be wrong.
+ *
+ * @param {number} bboxW
+ * @param {number} bboxH
+ * @param {number} matScaleX
+ * @param {number} matScaleY
+ * @param {number} scale
+ * @returns {{ tileW: number, tileH: number }}
+ */
+function tilingTilePixelDims(bboxW, bboxH, matScaleX, matScaleY, scale) {
+  let tileW = Math.max(1, Math.round(bboxW * matScaleX * scale));
+  let tileH = Math.max(1, Math.round(bboxH * matScaleY * scale));
+  const maxDim = 4096;
+  if (tileW > maxDim || tileH > maxDim) {
+    const reduce = Math.min(maxDim / tileW, maxDim / tileH);
+    tileW = Math.max(1, Math.round(tileW * reduce));
+    tileH = Math.max(1, Math.round(tileH * reduce));
+  }
+  return { tileW, tileH };
+}
+
+/**
  * Render the contents of a tiling pattern to a tile-sized canvas.
  * Used by `renderSMaskToCanvas` when the mask form fills with a tiling pattern.
  *
@@ -6762,11 +6809,24 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
   const maskCanvas = ca.makeCanvas(maskW, maskH);
   const maskCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (maskCanvas.getContext('2d'));
 
-  // For /S/Luminosity, fill black so areas the form does not paint convert to alpha=0 (luminosity 0 -> mask 0).
+  // For /S/Luminosity, composite the mask group over an opaque backdrop of colour /BC
+  // (PDF spec 11.6.5.2, default black), so areas the group leaves unpainted take the
+  // backdrop's luminosity rather than alpha 0.
   // For /S/Alpha, leave the canvas fully transparent. The alpha channel itself is the mask.
   const isAlphaMask = smaskInfo.type === 'Alpha';
   if (!isAlphaMask) {
-    maskCtx.fillStyle = 'black';
+    const bc = smaskInfo.bc;
+    let bcColor = 'black';
+    if (bc && bc.length === 1) {
+      const v = Math.round(Math.max(0, Math.min(1, bc[0])) * 255);
+      bcColor = `rgb(${v},${v},${v})`;
+    } else if (bc && bc.length === 3) {
+      bcColor = `rgb(${Math.round(bc[0] * 255)},${Math.round(bc[1] * 255)},${Math.round(bc[2] * 255)})`;
+    } else if (bc && bc.length === 4) {
+      const [r, g, b] = cmykToRgb(bc[0], bc[1], bc[2], bc[3]);
+      bcColor = `rgb(${r},${g},${b})`;
+    }
+    maskCtx.fillStyle = bcColor;
     maskCtx.fillRect(0, 0, maskW, maskH);
   }
 
@@ -7006,25 +7066,19 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
 }
 
 /**
- * Check if a Form XObject is hidden by Optional Content (OC).
- * @param {string} formObjText - The form XObject dictionary text
+ * Resolve an /OCG or /OCMD object to whether it is currently hidden.
+ * @param {number} ocObjNum - Object number of an /OCG or /OCMD dict
  * @param {Set<number>} offOCGs - Set of OCG object numbers that are OFF
  * @param {ObjectCache} objCache - PDF object cache
  */
-function isFormOCHidden(formObjText, offOCGs, objCache) {
+function isOCObjHidden(ocObjNum, offOCGs, objCache) {
   if (offOCGs.size === 0) return false;
-  const ocMatch = /\/OC\s+(\d+)\s+\d+\s+R/.exec(formObjText);
-  if (!ocMatch) return false;
-  const ocObjNum = Number(ocMatch[1]);
   const ocText = objCache.getObjectText(ocObjNum);
   if (!ocText) return false;
-  // Direct OCG reference
   if (/\/Type\s*\/OCG/.test(ocText)) return offOCGs.has(ocObjNum);
-  // OCMD — resolve /OCGs to OCG(s)
   if (/\/Type\s*\/OCMD/.test(ocText)) {
     const singleRef = /\/OCGs\s+(\d+)\s+\d+\s+R/.exec(ocText);
     if (singleRef) return offOCGs.has(Number(singleRef[1]));
-    // Array of OCGs — default policy is AnyOn (visible if any ON)
     const arrayMatch = /\/OCGs\s*\[([^\]]*)\]/.exec(ocText);
     if (arrayMatch) {
       const refs = [...arrayMatch[1].matchAll(/(\d+)\s+\d+\s+R/g)].map((m) => Number(m[1]));
@@ -7037,6 +7091,56 @@ function isFormOCHidden(formObjText, offOCGs, objCache) {
     }
   }
   return false;
+}
+
+/**
+ * Check if a Form XObject is hidden by Optional Content (OC).
+ * @param {string} formObjText - The form XObject dictionary text
+ * @param {Set<number>} offOCGs - Set of OCG object numbers that are OFF
+ * @param {ObjectCache} objCache - PDF object cache
+ */
+function isFormOCHidden(formObjText, offOCGs, objCache) {
+  if (offOCGs.size === 0) return false;
+  const ocMatch = /\/OC\s+(\d+)\s+\d+\s+R/.exec(formObjText);
+  if (!ocMatch) return false;
+  return isOCObjHidden(Number(ocMatch[1]), offOCGs, objCache);
+}
+
+/**
+ * Build the set of /Resources/Properties names whose OCG/OCMD is currently OFF.
+ * Content wrapped in `/OC /<name> BDC ... EMC` for such a name must not be painted.
+ *
+ * @param {string} resourceOwnerText - Page or Form XObject dict text
+ * @param {ObjectCache} objCache - PDF object cache
+ * @param {Set<number>} offOCGs - Set of OCG object numbers that are OFF
+ * @returns {Set<string>}
+ */
+function parseHiddenOCMCNames(resourceOwnerText, objCache, offOCGs) {
+  /** @type {Set<string>} */
+  const hidden = new Set();
+  if (offOCGs.size === 0) return hidden;
+
+  let resourcesText = resourceOwnerText;
+  const resRefMatch = /\/Resources\s+(\d+)\s+\d+\s+R/.exec(resourceOwnerText);
+  if (resRefMatch) {
+    const resObj = objCache.getObjectText(Number(resRefMatch[1]));
+    if (resObj) resourcesText = resObj;
+  }
+  const propStart = resourcesText.indexOf('/Properties');
+  if (propStart === -1) return hidden;
+  let propDictText;
+  const afterProp = resourcesText.substring(propStart + 11).trim();
+  if (afterProp.startsWith('<<')) {
+    propDictText = extractDict(resourcesText, propStart + 11 + resourcesText.substring(propStart + 11).indexOf('<<'));
+  } else {
+    const refMatch = /^(\d+)\s+\d+\s+R/.exec(afterProp);
+    if (refMatch) propDictText = objCache.getObjectText(Number(refMatch[1]));
+  }
+  if (!propDictText) return hidden;
+  for (const m of propDictText.matchAll(/\/([^\s/<>[\]]+)\s+(\d+)\s+\d+\s+R/g)) {
+    if (isOCObjHidden(Number(m[2]), offOCGs, objCache)) hidden.add(m[1]);
+  }
+  return hidden;
 }
 
 /**
@@ -7173,7 +7277,9 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
 
   // Parse content stream for all draw operations (images, Type3 glyphs, Type0 text, paths)
   const rawDrawOps = contentStreams && contentStreams.length > 0
-    ? parseDrawOps(contentStreams, fonts, extGStates, registeredFontNames, colorSpaces, symbolFontTags, cidPUATags, rawCharCodeTags, pageShadings, pagePatterns, cidCollisionMap)
+    ? parseDrawOps(contentStreams, fonts, extGStates, registeredFontNames, colorSpaces, symbolFontTags,
+      cidPUATags, rawCharCodeTags, pageShadings, pagePatterns, cidCollisionMap, null,
+      parseHiddenOCMCNames(pageObjText, objCache, offOCGs))
     : [];
 
   // Yield to the event loop after heavy synchronous parsing (parseDrawOps tokenizes
@@ -7408,6 +7514,103 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
               });
             }
           }
+          continue;
+        }
+
+        // Synthesize appearance for Widget form-field annotations without a usable /AP.
+        // Some PDFs ship a broken /AP (e.g. /N maps the appearance state to a name,
+        // not a stream); viewers then draw the field box from its /MK characteristics.
+        if (/\/Subtype\s*\/Widget\b/.test(annotText)) {
+          const mkMatch = /\/MK\s*<<([\s\S]*?)>>/.exec(annotText);
+          if (!mkMatch) continue;
+          const mk = mkMatch[1];
+          const parseMKColor = (key) => {
+            const m = new RegExp(`\\/${key}\\s*\\[([^\\]]*)\\]`).exec(mk);
+            if (!m) return null;
+            const c = m[1].trim().split(/\s+/).filter((s) => s.length > 0).map(Number);
+            if (c.length === 0 || c.some(Number.isNaN)) return null;
+            if (c.length === 1) { const v = Math.round(c[0] * 255); return `rgb(${v},${v},${v})`; }
+            if (c.length === 3) return `rgb(${Math.round(c[0] * 255)},${Math.round(c[1] * 255)},${Math.round(c[2] * 255)})`;
+            if (c.length === 4) { const [r, g, b] = cmykToRgb(c[0], c[1], c[2], c[3]); return `rgb(${r},${g},${b})`; }
+            return null;
+          };
+          const widgetBorderColor = parseMKColor('BC');
+          const widgetBgColor = parseMKColor('BG');
+          if (!widgetBorderColor && !widgetBgColor) continue;
+
+          let widgetBorderWidth = widgetBorderColor ? 1 : 0;
+          if (widgetBorderColor) {
+            const bsWMatch = /\/BS\s*<<[^>]*\/W\s+([\d.]+)/.exec(annotText);
+            if (bsWMatch) widgetBorderWidth = Number(bsWMatch[1]);
+          }
+
+          const ftMatch = /\/FT\s*\/(\w+)/.exec(annotText);
+          const ft = ftMatch ? ftMatch[1] : '';
+          const ffMatch = /\/Ff\s+(\d+)/.exec(annotText);
+          const ff = ffMatch ? Number(ffMatch[1]) : 0;
+          // Signature fields and push buttons have no synthesizable box appearance.
+          if (ft === 'Sig' || (ft === 'Btn' && (ff & 0x10000))) continue;
+
+          const whw = widgetBorderWidth / 2;
+          const wx0 = rect[0] + whw;
+          const wy0 = rect[1] + whw;
+          const wx1 = rect[2] - whw;
+          const wy1 = rect[3] - whw;
+          /** @type {PathCommand[]} */
+          let widgetCommands;
+          if (ft === 'Btn' && (ff & 0x8000)) {
+            // Radio button — circle inscribed in the (inset) Rect, 4 cubic Beziers
+            const cx = (wx0 + wx1) / 2;
+            const cy = (wy0 + wy1) / 2;
+            const rx = (wx1 - wx0) / 2;
+            const ry = (wy1 - wy0) / 2;
+            const k = 0.5522847498;
+            const kx = rx * k;
+            const ky = ry * k;
+            widgetCommands = [
+              { type: 'M', x: cx + rx, y: cy },
+              {
+                type: 'C', x1: cx + rx, y1: cy + ky, x2: cx + kx, y2: cy + ry, x: cx, y: cy + ry,
+              },
+              {
+                type: 'C', x1: cx - kx, y1: cy + ry, x2: cx - rx, y2: cy + ky, x: cx - rx, y: cy,
+              },
+              {
+                type: 'C', x1: cx - rx, y1: cy - ky, x2: cx - kx, y2: cy - ry, x: cx, y: cy - ry,
+              },
+              {
+                type: 'C', x1: cx + kx, y1: cy - ry, x2: cx + rx, y2: cy - ky, x: cx + rx, y: cy,
+              },
+              { type: 'Z' },
+            ];
+          } else {
+            // Checkbox, text field, or choice field — rectangular box
+            widgetCommands = [
+              { type: 'M', x: wx0, y: wy0 },
+              { type: 'L', x: wx1, y: wy0 },
+              { type: 'L', x: wx1, y: wy1 },
+              { type: 'L', x: wx0, y: wy1 },
+              { type: 'Z' },
+            ];
+          }
+          drawOps.push({
+            type: 'path',
+            commands: widgetCommands,
+            ctm: [1, 0, 0, 1, 0, 0],
+            fill: !!widgetBgColor,
+            stroke: !!widgetBorderColor,
+            evenOdd: false,
+            fillColor: widgetBgColor || 'rgb(255,255,255)',
+            strokeColor: widgetBorderColor || 'rgb(0,0,0)',
+            lineWidth: widgetBorderWidth || 1,
+            lineCap: 0,
+            lineJoin: 0,
+            miterLimit: 10,
+            dashArray: [],
+            dashPhase: 0,
+            fillAlpha: 1,
+            strokeAlpha: 1,
+          });
           continue;
         }
 
@@ -7949,9 +8152,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       const bboxH = tp.bbox[3] - tp.bbox[1];
       const matScaleX = Math.sqrt(tp.matrix[0] * tp.matrix[0] + tp.matrix[1] * tp.matrix[1]);
       const matScaleY = Math.sqrt(tp.matrix[2] * tp.matrix[2] + tp.matrix[3] * tp.matrix[3]);
-      const tileW = Math.max(1, Math.round(bboxW * matScaleX * scale));
-      const tileH = Math.max(1, Math.round(bboxH * matScaleY * scale));
-      if (tileW > 4096 || tileH > 4096) return;
+      const { tileW, tileH } = tilingTilePixelDims(bboxW, bboxH, matScaleX, matScaleY, scale);
 
       const tileCanvas = ca.makeCanvas(tileW, tileH);
       const tileCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (tileCanvas.getContext('2d'));
@@ -8308,8 +8509,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             const bboxH = tp.bbox[3] - tp.bbox[1];
             const matScaleX = Math.sqrt(tp.matrix[0] * tp.matrix[0] + tp.matrix[1] * tp.matrix[1]) || 1;
             const matScaleY = Math.sqrt(tp.matrix[2] * tp.matrix[2] + tp.matrix[3] * tp.matrix[3]) || 1;
-            const tileW = Math.max(1, Math.round(bboxW * matScaleX * scale));
-            const tileH = Math.max(1, Math.round(bboxH * matScaleY * scale));
+            const { tileW, tileH } = tilingTilePixelDims(bboxW, bboxH, matScaleX, matScaleY, scale);
             const sx = bboxW / tileW * scale;
             const sy = bboxH / tileH * scale;
 
@@ -8501,31 +8701,33 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             colorSpace = 'DeviceGray';
           }
         }
-        // Handle inline array-form Indexed color space: /CS [ /Indexed ... ]
-        // or its abbreviation /CS [ /I ... ].
-        // The getVal regex captures '[' when the value is an array, so detect and parse it here.
+        // Inline array-form Indexed colour space, e.g. /CS [ /Indexed /DeviceRGB 15 <hex> ].
+        // Inline-image names may be written with no separating whitespace (`/I/RGB`),
+        // hence the normalization pass before the shared parser.
         if (!resolvedCS) {
-          const inlineIdxDetect = /\/(?:CS|ColorSpace)\s*\[\s*\/(?:Indexed|I)\s/.exec(dictText);
-          if (inlineIdxDetect) {
-            const arrStart = dictText.indexOf('[', inlineIdxDetect.index);
+          const csKeyMatch = /\/(?:CS|ColorSpace)\s*\[/.exec(dictText);
+          if (csKeyMatch) {
+            const arrStart = dictText.indexOf('[', csKeyMatch.index);
             let depth = 0;
             let arrEnd = arrStart;
             for (let ci = arrStart; ci < dictText.length; ci++) {
               if (dictText[ci] === '[') depth++;
               else if (dictText[ci] === ']') { depth--; if (depth === 0) { arrEnd = ci + 1; break; } }
             }
-            // Expand inline-image abbreviated names before passing to shared parser
-            let csText = dictText.substring(arrStart, arrEnd);
-            csText = csText.replace(/\/I(\s+)/, '/Indexed$1');
-            csText = csText.replace(/\/Indexed(\s+)\/RGB\b/, '/Indexed$1/DeviceRGB')
-              .replace(/\/Indexed(\s+)\/G\b/, '/Indexed$1/DeviceGray')
-              .replace(/\/Indexed(\s+)\/CMYK\b/, '/Indexed$1/DeviceCMYK');
-            const idxResult = parseIndexedColorSpace(csText, objCache);
-            if (idxResult) {
-              colorSpace = 'Indexed';
-              resolvedCS = {
-                type: 'Indexed', indexedInfo: idxResult, tintSamples: null, nComponents: 1, deviceNGrid: null,
-              };
+            const csText = dictText.substring(arrStart, arrEnd)
+              .replace(/\/([A-Za-z][\w-]*)/g, ' /$1 ')
+              .replace(/\/I\b/, '/Indexed')
+              .replace(/\/RGB\b/, '/DeviceRGB')
+              .replace(/\/G\b/, '/DeviceGray')
+              .replace(/\/CMYK\b/, '/DeviceCMYK');
+            if (/\/Indexed\b/.test(csText)) {
+              const idxResult = parseIndexedColorSpace(csText, objCache);
+              if (idxResult) {
+                colorSpace = 'Indexed';
+                resolvedCS = {
+                  type: 'Indexed', indexedInfo: idxResult, tintSamples: null, nComponents: 1, deviceNGrid: null,
+                };
+              }
             }
           }
         }
@@ -8578,6 +8780,11 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           else params.Columns = width;
           const blackIs1Match = /\/BlackIs1\s+true/.exec(dpText);
           if (blackIs1Match) params.BlackIs1 = true;
+          // The ID..EI data boundary of an inline image isn't always locatable precisely,
+          // and the stream may lack an EndOfBlock marker, so without a row cap the decoder
+          // runs into trailing whitespace and emits "bad code" garbage. Stop after /H rows.
+          params.Rows = height;
+          params.EndOfBlock = false;
           const decoded = decodeCCITTFax(data, params);
           data = new Uint8Array(decoded.buffer);
         } else if (filter === 'DCTDecode') {
@@ -8633,18 +8840,20 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             }
           }
         } else {
-        // 1-bit grayscale image: render black pixels as opaque, white pixels as transparent.
-        // This prevents white backgrounds in tiling pattern tiles from overwriting underlying content.
+          // White pixels stay transparent only when this image is a tiling-pattern stencil,
+          // so the tile's background doesn't overwrite underlying content.
+          const opaqueWhite = !op.tilingPattern;
           for (let row = 0; row < height; row++) {
             for (let col = 0; col < width; col++) {
               const byteIdx = row * rowBytes + (col >> 3);
               const bit = (data[byteIdx] >> (7 - (col & 7))) & 1;
               const isBlack = invert ? bit === 1 : bit === 0;
+              const px = (row * width + col) * 4;
               if (isBlack) {
-                const px = (row * width + col) * 4;
                 rgba[px] = 0; rgba[px + 1] = 0; rgba[px + 2] = 0; rgba[px + 3] = 255;
+              } else if (opaqueWhite) {
+                rgba[px] = 255; rgba[px + 1] = 255; rgba[px + 2] = 255; rgba[px + 3] = 255;
               }
-            // White pixels remain transparent (0,0,0,0)
             }
           }
         }
@@ -8749,8 +8958,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
               const bboxH = tp.bbox[3] - tp.bbox[1];
               const matScaleX = Math.sqrt(tp.matrix[0] * tp.matrix[0] + tp.matrix[1] * tp.matrix[1]) || 1;
               const matScaleY = Math.sqrt(tp.matrix[2] * tp.matrix[2] + tp.matrix[3] * tp.matrix[3]) || 1;
-              const tileW = Math.max(1, Math.round(bboxW * matScaleX * scale));
-              const tileH = Math.max(1, Math.round(bboxH * matScaleY * scale));
+              const { tileW, tileH } = tilingTilePixelDims(bboxW, bboxH, matScaleX, matScaleY, scale);
               const sx = bboxW / tileW * scale;
               const sy = bboxH / tileH * scale;
               const patOriginX = (tp.matrix[0] * tp.bbox[0] + tp.matrix[2] * (tp.bbox[1] + bboxH) + tp.matrix[4] - boxOriginX) * scale;
@@ -9025,8 +9233,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             const bboxH = tp.bbox[3] - tp.bbox[1];
             const matScaleX = Math.sqrt(tp.matrix[0] * tp.matrix[0] + tp.matrix[1] * tp.matrix[1]);
             const matScaleY = Math.sqrt(tp.matrix[2] * tp.matrix[2] + tp.matrix[3] * tp.matrix[3]);
-            const tileW = Math.max(1, Math.round(bboxW * matScaleX * scale));
-            const tileH = Math.max(1, Math.round(bboxH * matScaleY * scale));
+            const { tileW, tileH } = tilingTilePixelDims(bboxW, bboxH, matScaleX, matScaleY, scale);
             const sx = bboxW / tileW * scale;
             const sy = bboxH / tileH * scale;
             // Device-space pattern matrix: maps pattern source pixels to device pixels.
@@ -9240,8 +9447,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
               const bboxH = tp.bbox[3] - tp.bbox[1];
               const matScaleX = Math.sqrt(tp.matrix[0] * tp.matrix[0] + tp.matrix[1] * tp.matrix[1]) || 1;
               const matScaleY = Math.sqrt(tp.matrix[2] * tp.matrix[2] + tp.matrix[3] * tp.matrix[3]) || 1;
-              const tileW = Math.max(1, Math.round(bboxW * matScaleX * scale));
-              const tileH = Math.max(1, Math.round(bboxH * matScaleY * scale));
+              const { tileW, tileH } = tilingTilePixelDims(bboxW, bboxH, matScaleX, matScaleY, scale);
               const sx = bboxW / tileW * scale;
               const sy = bboxH / tileH * scale;
               const canvasPat = rCtx.createPattern(tileCvs, 'repeat');
@@ -9332,8 +9538,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       } else if (op.type === 'inlineImage') {
       // Decode and render an inline image (BI/ID/EI)
         try {
-        // Skip degenerate transforms (zero-size images from pattern sub-streams)
-          if (Math.abs(op.ctm[0]) < 1e-6 && Math.abs(op.ctm[3]) < 1e-6) {
+        // Skip degenerate transforms (zero-size images from pattern sub-streams).
+          if (Math.abs(op.ctm[0] * op.ctm[3] - op.ctm[1] * op.ctm[2]) < 1e-9) {
           // degenerate CTM — skip
           } else if (op.tilingPattern) {
           // Image mask with tiling pattern fill: render mask as white bitmap,
@@ -9355,8 +9561,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
                 const bboxH = tp.bbox[3] - tp.bbox[1];
                 const matScaleX = Math.sqrt(tp.matrix[0] * tp.matrix[0] + tp.matrix[1] * tp.matrix[1]) || 1;
                 const matScaleY = Math.sqrt(tp.matrix[2] * tp.matrix[2] + tp.matrix[3] * tp.matrix[3]) || 1;
-                const tileW = Math.max(1, Math.round(bboxW * matScaleX * scale));
-                const tileH = Math.max(1, Math.round(bboxH * matScaleY * scale));
+                const { tileW, tileH } = tilingTilePixelDims(bboxW, bboxH, matScaleX, matScaleY, scale);
                 const sx = bboxW / tileW * scale;
                 const sy = bboxH / tileH * scale;
                 const patOriginX = (tp.matrix[0] * tp.bbox[0] + tp.matrix[2] * (tp.bbox[1] + bboxH) + tp.matrix[4] - boxOriginX) * scale;
