@@ -400,15 +400,27 @@ describe('Check export for .pdf files.', () => {
     await scribe.clear();
   });
 
-  test('PDF overlay with full page range retains all pages', async () => {
+  test("PDF overlay with full page range and displayMode='annot' retains all pages, preserves text without duplication, and round-trips highlight annotations", async () => {
     scribe.opt.usePDFText.native.main = true;
     scribe.opt.keepPDFTextAlways = true;
     await scribe.importFiles([`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`]);
 
-    scribe.opt.displayMode = 'invis';
+    const countWords = (pages) => {
+      let n = 0;
+      for (const page of pages) {
+        for (const line of page.lines) n += line.words.filter((w) => w.text).length;
+      }
+      return n;
+    };
+    expect(countWords(scribe.data.ocr.active), 'source PDF native word count baseline').toBe(1062);
+
+    scribe.addHighlights([{ page: 0, startLine: 0, endLine: 0 }]);
+    expect(scribe.data.annotations.pages[0].length, 'addHighlights emits one annotation for the one-word line').toBe(1);
+
+    scribe.opt.displayMode = 'annot';
     scribe.opt.addOverlay = true;
     const exportedPdf = /** @type {ArrayBuffer} */ (await scribe.exportData('pdf'));
-    expect(exportedPdf.byteLength).toBeGreaterThan(1000);
+    expect(exportedPdf.byteLength, 'annot-mode overlay export produces a non-trivial PDF').toBeGreaterThan(1000);
 
     await scribe.clear();
     scribe.opt.usePDFText.native.main = true;
@@ -416,10 +428,17 @@ describe('Check export for .pdf files.', () => {
     await scribe.importFiles({ pdfFiles: [exportedPdf] });
 
     scribe.data.ocr.active = scribe.data.ocr.pdf;
-    expect(scribe.data.ocr.active.length).toBe(3);
+    expect(scribe.data.ocr.active.length, 'all 3 source pages survive the overlay round-trip').toBe(3);
+    expect(
+      countWords(scribe.data.ocr.active),
+      'annot mode must not emit a visible overlay text layer on top of the source text',
+    ).toBe(1062);
 
     const page0Text = /** @type {string} */ (await scribe.exportData('text', { minPage: 0, maxPage: 0 }));
-    expect(page0Text).toContain('Iris');
+    expect(page0Text, 'source page-0 text is preserved through the overlay round-trip').toContain('Iris');
+
+    const highlights = scribe.data.annotations.pages.flatMap((p) => p || []);
+    expect(highlights.length, 'the highlight annotation round-trips through annot-mode export').toBe(1);
 
     scribe.opt.displayMode = 'proof';
     await scribe.clear();

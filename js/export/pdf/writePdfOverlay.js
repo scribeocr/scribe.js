@@ -768,9 +768,8 @@ async function rebuildPdfSubset({
       let textContentObjStr = '';
       /** @type {Set<PdfFontInfo>} */
       let pageFontsUsed = new Set();
-      if (pageObj && pageObj.lines.length > 0) {
+      if (pageObj && pageObj.lines.length > 0 && textMode !== 'annot') {
         const angle = pageMetricsArr[i].angle || 0;
-        // eslint-disable-next-line no-await-in-loop
         const res = await ocrPageToPDFStream(
           pageObj, pixelDims, pdfFonts, /** @type {'ebook'|'eval'|'proof'|'invis'} */ (textMode), angle,
           rotateText, rotateBackground, confThreshHigh, confThreshMed,
@@ -844,7 +843,6 @@ async function rebuildPdfSubset({
     }
 
     for (const pdfFont of pdfFontsUsed) {
-      // eslint-disable-next-line no-await-in-loop
       const objStrArr = await createEmbeddedFontType0({ font: pdfFont.opentype, firstObjIndex: pdfFont.objN, humanReadable });
       for (let j = 0; j < objStrArr.length; j++) {
         allOutputObjects.push({ objNum: pdfFont.objN + j, content: objStrArr[j] });
@@ -901,7 +899,6 @@ async function rebuildPdfSubset({
       allOutputObjects.push({ objNum, content: rawCopy });
     } else if (entry.type === 2) {
       // ObjStm object: write as standalone
-      // eslint-disable-next-line no-await-in-loop
       const objText = objCache.getObjectText(objNum);
       if (!objText) continue;
       allOutputObjects.push({ objNum, content: `${objNum} 0 obj\n${objText}\nendobj\n\n` });
@@ -1153,7 +1150,7 @@ export async function overlayPdfText({
     let textContentObjStr = '';
     /** @type {Set<PdfFontInfo>} */
     let pageFontsUsed = new Set();
-    if (pageObj && pageObj.lines.length > 0) {
+    if (pageObj && pageObj.lines.length > 0 && textMode !== 'annot') {
       const angle = pageMetricsArr[i].angle || 0;
       const res = await ocrPageToPDFStream(
         pageObj, pixelDims, pdfFonts, textMode, angle,
