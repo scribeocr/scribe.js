@@ -470,7 +470,7 @@ async function decodeSmaskJpeg(rawData) {
     const bw = bitmap.width;
     const bh = bitmap.height;
     const canvas = ca.makeCanvas(bw, bh);
-    const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d'));
+    const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d', { willReadFrequently: true }));
     ctx.drawImage(bitmap, 0, 0);
     ca.closeDrawable(bitmap);
     const imgData = ctx.getImageData(0, 0, bw, bh);
@@ -528,7 +528,7 @@ async function imageInfoToBitmap(imageInfo, objCache) {
       if (cmykResult) {
         const { width: w, height: h, rgbData } = cmykResult;
         const canvas = ca.makeCanvas(w, h);
-        const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d'));
+        const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d', { willReadFrequently: true }));
         const imgData = new ImageData(new Uint8ClampedArray(rgbData.buffer, rgbData.byteOffset, rgbData.byteLength), w, h);
         if (sMask && sMaskWidth && sMaskHeight) {
           const px = imgData.data;
@@ -561,7 +561,7 @@ async function imageInfoToBitmap(imageInfo, objCache) {
         const w = labBitmap.width;
         const h = labBitmap.height;
         const tmp = ca.makeCanvas(w, h);
-        const tctx = /** @type {OffscreenCanvasRenderingContext2D} */ (tmp.getContext('2d'));
+        const tctx = /** @type {OffscreenCanvasRenderingContext2D} */ (tmp.getContext('2d', { willReadFrequently: true }));
         tctx.drawImage(labBitmap, 0, 0);
         const labPixels = tctx.getImageData(0, 0, w, h).data;
         const labBytes = new Uint8Array(w * h * 3);
@@ -575,7 +575,7 @@ async function imageInfoToBitmap(imageInfo, objCache) {
         const range = imageInfo.labRange || [-100, 100, -100, 100];
         const rgba = labBytesToRGBA(labBytes, w, h, wp, range);
         const out = ca.makeCanvas(w, h);
-        const octx = /** @type {OffscreenCanvasRenderingContext2D} */ (out.getContext('2d'));
+        const octx = /** @type {OffscreenCanvasRenderingContext2D} */ (out.getContext('2d', { willReadFrequently: true }));
         octx.putImageData(new ImageData(new Uint8ClampedArray(rgba.buffer, rgba.byteOffset, rgba.byteLength), w, h), 0, 0);
         return ca.createImageBitmapFromCanvas(out);
       } catch { /* fall through */ }
@@ -617,7 +617,7 @@ async function imageInfoToBitmap(imageInfo, objCache) {
       const w = jpegBitmap.width;
       const h = jpegBitmap.height;
       const canvas = ca.makeCanvas(w, h);
-      const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d'));
+      const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d', { willReadFrequently: true }));
       ctx.drawImage(jpegBitmap, 0, 0);
       ca.closeDrawable(jpegBitmap);
 
@@ -663,7 +663,7 @@ async function imageInfoToBitmap(imageInfo, objCache) {
       const w = jpegBitmap.width;
       const h = jpegBitmap.height;
       const canvas = ca.makeCanvas(w, h);
-      const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d'));
+      const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d', { willReadFrequently: true }));
       ctx.drawImage(jpegBitmap, 0, 0);
       ca.closeDrawable(jpegBitmap);
       ctx.globalCompositeOperation = 'difference';
@@ -674,7 +674,7 @@ async function imageInfoToBitmap(imageInfo, objCache) {
       // Apply soft mask if present
       if (sMask && sMaskWidth && sMaskHeight) {
         const canvas2 = ca.makeCanvas(w, h);
-        const ctx2 = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas2.getContext('2d'));
+        const ctx2 = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas2.getContext('2d', { willReadFrequently: true }));
         ctx2.drawImage(invertedBitmap, 0, 0);
         ca.closeDrawable(invertedBitmap);
         const imgData = ctx2.getImageData(0, 0, w, h);
@@ -697,7 +697,7 @@ async function imageInfoToBitmap(imageInfo, objCache) {
       if (sMaskWidth === w && sMaskHeight === h) {
         // Mask matches image dimensions — apply directly
         const canvas = ca.makeCanvas(w, h);
-        const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d'));
+        const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d', { willReadFrequently: true }));
         ctx.drawImage(jpegBitmap, 0, 0);
         ca.closeDrawable(jpegBitmap);
         const imgData = ctx.getImageData(0, 0, w, h);
@@ -713,7 +713,7 @@ async function imageInfoToBitmap(imageInfo, objCache) {
         const outW = sMaskWidth;
         const outH = sMaskHeight;
         const canvas = ca.makeCanvas(w, h);
-        const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d'));
+        const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d', { willReadFrequently: true }));
         ctx.drawImage(jpegBitmap, 0, 0);
         ca.closeDrawable(jpegBitmap);
         const imgData = ctx.getImageData(0, 0, w, h);
@@ -735,7 +735,7 @@ async function imageInfoToBitmap(imageInfo, objCache) {
       }
       // Mask is lower resolution — resample mask to image dimensions
       const canvas = ca.makeCanvas(w, h);
-      const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d'));
+      const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d', { willReadFrequently: true }));
       ctx.drawImage(jpegBitmap, 0, 0);
       ca.closeDrawable(jpegBitmap);
       const imgData = ctx.getImageData(0, 0, w, h);
@@ -758,7 +758,7 @@ async function imageInfoToBitmap(imageInfo, objCache) {
       return jpegBitmap;
     }
     const canvas = ca.makeCanvas(width, height);
-    const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d'));
+    const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d', { willReadFrequently: true }));
     // Canvas defaults to transparent black; fill explicitly to match mupdf behavior
     ctx.fillStyle = 'black';
     ctx.fillRect(0, 0, width, height);
@@ -5048,7 +5048,7 @@ function renderMeshPatches(ctx, patches) {
 
   // Rasterize all patches into a pixel buffer
   const tmpCanvas = ca.makeCanvas(w, h);
-  const tmpCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (tmpCanvas.getContext('2d'));
+  const tmpCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (tmpCanvas.getContext('2d', { willReadFrequently: true }));
   const imgData = tmpCtx.createImageData(w, h);
   const pix = imgData.data;
 
@@ -5186,7 +5186,7 @@ function renderGouraudTriangles(ctx, triangles, clipBounds, canvasDims) {
   if (w <= 0 || h <= 0 || w > 8000 || h > 8000) return;
 
   const tmpCanvas = ca.makeCanvas(w, h);
-  const tmpCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (tmpCanvas.getContext('2d'));
+  const tmpCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (tmpCanvas.getContext('2d', { willReadFrequently: true }));
   const imgData = tmpCtx.createImageData(w, h);
   const pix = imgData.data;
 
@@ -6655,7 +6655,7 @@ async function renderTilingPatternTileForSmask(tp, objCache, scale) {
   }
 
   const tileCanvas = ca.makeCanvas(tileW, tileH);
-  const tileCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (tileCanvas.getContext('2d'));
+  const tileCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (tileCanvas.getContext('2d', { willReadFrequently: true }));
   const tileScaleX = tileW / bboxW;
   const tileScaleY = tileH / bboxH;
 
@@ -6807,7 +6807,7 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
   const shiftX = bbox ? bbox.x : 0;
   const shiftY = bbox ? bbox.y : 0;
   const maskCanvas = ca.makeCanvas(maskW, maskH);
-  const maskCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (maskCanvas.getContext('2d'));
+  const maskCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (maskCanvas.getContext('2d', { willReadFrequently: true }));
 
   // For /S/Luminosity, composite the mask group over an opaque backdrop of colour /BC
   // (PDF spec 11.6.5.2, default black), so areas the group leaves unpainted take the
@@ -7194,7 +7194,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     const w = Math.ceil(pageWidthPts * scale);
     const h = Math.ceil(pageHeightPts * scale);
     const c = ca.makeCanvas(w, h);
-    const cCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (c.getContext('2d'));
+    const cCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (c.getContext('2d', { willReadFrequently: true }));
     cCtx.fillStyle = 'white';
     cCtx.fillRect(0, 0, w, h);
     const _imgData = cCtx.getImageData(0, 0, w, h);
@@ -7889,7 +7889,9 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   const canvasHeight = Math.ceil(pageHeightPts * scale - 0.001);
 
   const canvas = ca.makeCanvas(canvasWidth, canvasHeight);
-  const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d'));
+  // `willReadFrequently` forces Chromium's software 2D canvas backend.
+  // The GPU path fails to render certain pages correctly.
+  const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d', { willReadFrequently: true }));
   ctx.imageSmoothingQuality = 'high';
 
   if (drawOps.length === 0) {
@@ -8075,7 +8077,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
      * @param {Array<{text: string, fontFamily: string, fontSize: number, a: number, b: number, c: number, d: number, x: number, y: number}>} chars
      */
     function drawTextClipMask(maskCanvas, chars) {
-      const mCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (maskCanvas.getContext('2d'));
+      const mCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (maskCanvas.getContext('2d', { willReadFrequently: true }));
       mCtx.fillStyle = 'white';
       for (const ch of chars) {
         mCtx.save();
@@ -8155,7 +8157,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       const { tileW, tileH } = tilingTilePixelDims(bboxW, bboxH, matScaleX, matScaleY, scale);
 
       const tileCanvas = ca.makeCanvas(tileW, tileH);
-      const tileCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (tileCanvas.getContext('2d'));
+      const tileCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (tileCanvas.getContext('2d', { willReadFrequently: true }));
 
       // Parse ExtGState, shadings, patterns, and color spaces from the pattern's resources
       const patExtGStates = parseExtGStates(patObjText, objCache);
@@ -8232,7 +8234,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             let tempCanvas = null;
             if (pop.smask) {
               tempCanvas = ca.makeCanvas(tileW, tileH);
-              drawCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (tempCanvas.getContext('2d'));
+              drawCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (tempCanvas.getContext('2d', { willReadFrequently: true }));
             }
 
             drawCtx.save();
@@ -8331,7 +8333,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             if (pop.smask && tempCanvas) {
               const maskCanvas = await renderSMaskToCanvas(pop.smask, objCache, tileW, tileH, bboxH, tp.bbox[0], tp.bbox[1], tileScaleX);
               if (maskCanvas) {
-                const tempCtx2 = /** @type {OffscreenCanvasRenderingContext2D} */ (tempCanvas.getContext('2d'));
+                const tempCtx2 = /** @type {OffscreenCanvasRenderingContext2D} */ (tempCanvas.getContext('2d', { willReadFrequently: true }));
                 tempCtx2.globalCompositeOperation = 'destination-in';
                 tempCtx2.drawImage(maskCanvas, 0, 0);
                 ca.closeDrawable(maskCanvas);
@@ -8950,7 +8952,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             const imgH = Math.max(1, Math.round(Math.sqrt(op.ctm[2] * op.ctm[2] + op.ctm[3] * op.ctm[3]) * scale));
             if (imgW <= 4096 && imgH <= 4096) {
               const tmpCanvas = ca.makeCanvas(imgW, imgH);
-              const tmpCtx = tmpCanvas.getContext('2d');
+              const tmpCtx = tmpCanvas.getContext('2d', { willReadFrequently: true });
               tmpCtx.drawImage(maskBitmap, 0, 0, imgW, imgH);
               tmpCtx.globalCompositeOperation = 'source-in';
               const tp = op.tilingPattern;
@@ -9553,7 +9555,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
               const imgH = Math.max(1, Math.round(Math.sqrt(op.ctm[2] * op.ctm[2] + op.ctm[3] * op.ctm[3]) * scale));
               if (imgW <= 4096 && imgH <= 4096) {
                 const tmpCanvas = ca.makeCanvas(imgW, imgH);
-                const tmpCtx = tmpCanvas.getContext('2d');
+                const tmpCtx = tmpCanvas.getContext('2d', { willReadFrequently: true });
                 tmpCtx.drawImage(maskBitmap, 0, 0, imgW, imgH);
                 tmpCtx.globalCompositeOperation = 'source-in';
                 const tp = op.tilingPattern;
@@ -9703,7 +9705,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         let subCanvas = null;
         if (sub.smask) {
           subCanvas = ca.makeCanvas(canvasWidth, canvasHeight);
-          subCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (subCanvas.getContext('2d'));
+          subCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (subCanvas.getContext('2d', { willReadFrequently: true }));
         }
 
         for (const op of sub.ops) {
@@ -9712,7 +9714,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           let textClipCanvas = null;
           if (textClipCharsForOp) {
             textClipCanvas = ca.makeCanvas(canvasWidth, canvasHeight);
-            subCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (textClipCanvas.getContext('2d'));
+            subCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (textClipCanvas.getContext('2d', { willReadFrequently: true }));
           }
 
           if (!renderPathOpSync(subCtx, op)) await renderSingleOp(subCtx, op);
@@ -9828,7 +9830,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       }
       for (let i = common; i < targetChain.length; i++) {
         const newCanvas = ca.makeCanvas(canvasWidth, canvasHeight);
-        const newCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (newCanvas.getContext('2d'));
+        const newCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (newCanvas.getContext('2d', { willReadFrequently: true }));
         ctxStack.push({ ctx: newCtx, canvas: newCanvas, groupId: targetChain[i] });
       }
 
@@ -9838,7 +9840,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       // Two-level masking: render all ops (with inner SMask handling) to a group canvas,
       // then apply the outer (form-level) SMask to the combined result.
         const groupCanvas = ca.makeCanvas(canvasWidth, canvasHeight);
-        const groupCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (groupCanvas.getContext('2d'));
+        const groupCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (groupCanvas.getContext('2d', { willReadFrequently: true }));
 
         await renderOpsWithInnerSmask(groupCtx, group.ops);
 
@@ -9917,7 +9919,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             );
             if (fastMaskCanvas) {
               const tightCanvas = ca.makeCanvas(bboxW, bboxH);
-              const tightCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (tightCanvas.getContext('2d'));
+              const tightCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (tightCanvas.getContext('2d', { willReadFrequently: true }));
               // Shift op.ctm translation so the image renders at (0,0) of tightCanvas
               // instead of its absolute canvas-pixel position.
               const shiftedOp = {
@@ -10050,7 +10052,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
               );
               if (fbMaskCanvas) {
                 const tightCanvas = ca.makeCanvas(fbBboxW, fbBboxH);
-                const tightCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (tightCanvas.getContext('2d'));
+                const tightCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (tightCanvas.getContext('2d', { willReadFrequently: true }));
                 for (const op of group.ops) {
                   const shiftedOp = shiftOp(op);
                   if (!renderPathOpSync(tightCtx, shiftedOp)) await renderSingleOp(tightCtx, shiftedOp);
@@ -10078,7 +10080,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
 
         // Single-level masking (existing behavior): render ops to group canvas, apply mask
         const groupCanvas = ca.makeCanvas(canvasWidth, canvasHeight);
-        const renderCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (groupCanvas.getContext('2d'));
+        const renderCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (groupCanvas.getContext('2d', { willReadFrequently: true }));
 
         for (const op of group.ops) {
           const textClipCharsForOp = getTextClip(op);
@@ -10086,7 +10088,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           let textClipCanvas = null;
           if (textClipCharsForOp) {
             textClipCanvas = ca.makeCanvas(canvasWidth, canvasHeight);
-            opCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (textClipCanvas.getContext('2d'));
+            opCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (textClipCanvas.getContext('2d', { willReadFrequently: true }));
           }
 
           if (!renderPathOpSync(opCtx, op)) await renderSingleOp(opCtx, op);
@@ -10136,7 +10138,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           let textClipCanvas = null;
           if (textClipCharsForOp) {
             textClipCanvas = ca.makeCanvas(canvasWidth, canvasHeight);
-            opCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (textClipCanvas.getContext('2d'));
+            opCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (textClipCanvas.getContext('2d', { willReadFrequently: true }));
           }
 
           if (!renderPathOpSync(opCtx, op)) await renderSingleOp(opCtx, op);
