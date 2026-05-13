@@ -18,10 +18,10 @@ class ScribePDFViewer {
     this.pdfViewerElem.style.fontFamily = '\'Segoe UI\', Tahoma, sans-serif';
 
     // Create toolbar div
-    const toolbarHeight = 56;
+    this.toolbarHeight = 56;
     this.toolbarElem = document.createElement('div');
     this.toolbarElem.style.width = '100%';
-    this.toolbarElem.style.height = `${toolbarHeight}px`;
+    this.toolbarElem.style.height = `${this.toolbarHeight}px`;
 
     this.toolbarElem.style.alignItems = 'center';
     this.toolbarElem.style.color = '#fff';
@@ -159,7 +159,8 @@ class ScribePDFViewer {
     this.highlightMode = false;
     this.highlightColor = '#ffe93b';
     // Custom highlighter cursor (SVG data URI). Hotspot at center of icon (12, 12).
-    this.highlightCursor = `url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' height='24' width='24' viewBox='0 -960 960 960'%3E%3Cpath fill='white' stroke='black' stroke-width='30' d='m268-212-56-56q-12-12-12-28.5t12-28.5l423-423q12-12 28.5-12t28.5 12l56 56q12 12 12 28.5T748-635L324-212q-11 11-28 11t-28-11Z'/%3E%3C/svg%3E") 12 12, auto`;
+    // eslint-disable-next-line max-len
+    this.highlightCursor = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' height=\'24\' width=\'24\' viewBox=\'0 -960 960 960\'%3E%3Cpath fill=\'white\' stroke=\'black\' stroke-width=\'30\' d=\'m268-212-56-56q-12-12-12-28.5t12-28.5l423-423q12-12 28.5-12t28.5 12l56 56q12 12 12 28.5T748-635L324-212q-11 11-28 11t-28-11Z\'/%3E%3C/svg%3E") 12 12, auto';
 
     this.highlightElem = document.createElement('span');
     this.highlightElem.className = 'cr-icon-button';
@@ -256,9 +257,9 @@ class ScribePDFViewer {
     this.dropZone = document.createElement('div');
     this.dropZone.className = 'upload_dropZone text-center p-4';
     this.dropZone.style.zIndex = '8';
-    this.dropZone.style.top = `${toolbarHeight}px`;
+    this.dropZone.style.top = `${this.toolbarHeight}px`;
     this.dropZone.style.position = 'absolute';
-    this.dropZone.style.height = `${height - toolbarHeight}px`;
+    this.dropZone.style.height = `${height - this.toolbarHeight}px`;
     this.dropZone.style.width = `${width - 6}px`;
 
     // Create the root div
@@ -404,7 +405,7 @@ class ScribePDFViewer {
       this.importFile(files[0]);
     });
 
-    ScribeViewer.init(this.viewerContainer, width, height - toolbarHeight);
+    ScribeViewer.init(this.viewerContainer, width, height - this.toolbarHeight);
 
     document.addEventListener('mouseup', (event) => {
       if (!this.highlightMode) return;
@@ -421,7 +422,7 @@ class ScribePDFViewer {
       ScribeViewer.renderHTMLOverlay();
     });
 
-    // Backup mouseup listener on the document to clear selection state 
+    // Backup mouseup listener on the document to clear selection state
     // if mouseup happens outside of the Konva stage (e.g. on an HTML overlay element).
     document.addEventListener('mouseup', () => {
       if (ScribeViewer.selecting) {
@@ -465,6 +466,20 @@ class ScribePDFViewer {
     };
 
     container.appendChild(this.pdfViewerElem);
+  }
+
+  /**
+   * Resize the viewer to new pixel dimensions.
+   *
+   * @param {number} width
+   * @param {number} height
+   */
+  resize(width, height) {
+    this.pdfViewerElem.style.width = `${width}px`;
+    this.pdfViewerElem.style.height = `${height}px`;
+    this.dropZone.style.width = `${width - 6}px`;
+    this.dropZone.style.height = `${height - this.toolbarHeight}px`;
+    ScribeViewer.resize(width, height - this.toolbarHeight);
   }
 
   /**
@@ -712,6 +727,15 @@ const pdfViewerContElem = /** @type {HTMLDivElement} */(document.getElementById(
 
 const pdfViewer = new ScribePDFViewer(pdfViewerContElem, window.innerWidth, window.innerHeight);
 
+let resizeTimer = null;
+window.addEventListener('resize', () => {
+  if (resizeTimer) clearTimeout(resizeTimer);
+  resizeTimer = setTimeout(() => {
+    resizeTimer = null;
+    pdfViewer.resize(window.innerWidth, window.innerHeight);
+  }, 150);
+});
+
 // Exposing important modules for debugging and testing purposes.
 // These should not be relied upon in code--import/export should be used instead.
 globalThis.df = {
@@ -780,4 +804,6 @@ async function handleHighlights(highlights) {
   }
 }
 
-export { scribe, ScribeViewer, applyHighlight, pdfViewer, ScribePDFViewer, handleLoadFile, handleHighlights };
+export {
+  scribe, ScribeViewer, applyHighlight, pdfViewer, ScribePDFViewer, handleLoadFile, handleHighlights,
+};

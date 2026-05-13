@@ -530,6 +530,24 @@ export class ScribeViewer {
   };
 
   /**
+   * Resize the canvas to new pixel dimensions.
+   *
+   * @param {number} width
+   * @param {number} height
+   */
+  static resize = (width, height) => {
+    if (!ScribeViewer.stage || !(width > 0) || !(height > 0)) return;
+
+    ScribeViewer.stage.width(width);
+    ScribeViewer.stage.height(height);
+    if (ScribeViewer.HTMLOverlayBackstopElem) {
+      ScribeViewer.HTMLOverlayBackstopElem.style.width = `${width}px`;
+      ScribeViewer.HTMLOverlayBackstopElem.style.height = `${height}px`;
+    }
+    ScribeViewer.stage.batchDraw();
+  };
+
+  /**
    * Initiates dragging if the middle mouse button is pressed.
    * @param {MouseEvent} event
    */
@@ -880,7 +898,7 @@ export class ScribeViewer {
   static setInitialPositionZoom = (imgDims) => {
     ScribeViewer.runSetInitial = false;
 
-    const totalHeight = document.documentElement.clientHeight;
+    const totalHeight = ScribeViewer.stage.height();
 
     const interfaceHeight = 100;
     const bottomMarginHeight = 50;
