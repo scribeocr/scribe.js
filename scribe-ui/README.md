@@ -9,14 +9,24 @@ Web applications implemented using Scribe UI are below:
 Scribe UI wraps [Scribe.js](https://github.com/scribeocr/scribe.js), which provides all of the logic unrelated to UI, including reading PDFs, rendering pages to images, and running OCR.
 
 # Usage
-To start using Scribe UI, add this repo as a submodule in your project.  Scribe UI is currently not published to NPM, and is not capable of running using a CDN due to issues with cross-origin policies.
+Scribe UI ships as part of the `scribe.js-ocr` npm package:
+
+```sh
+npm i scribe.js-ocr
+```
+
+```js
+import { ScribeViewer } from 'scribe.js-ocr/scribe-ui/viewer.js';
+```
+
+Individual toolkit modules are available under `scribe.js-ocr/scribe-ui/js/`. Scribe UI cannot run from a CDN due to cross-origin policies; serve it from the same origin as the importing page.
 
 Scribe UI is a UI toolkit for creating viewer and editor interfaces, rather than a single drop-in viewer.  Additionally, Scribe UI is not yet fully documented.  Therefore, the best way to start using Scribe UI is to review the example applications listed above.  The simplest example is the [Scribe PDF Viewer repo](https://github.com/scribeocr/scribe-pdf-viewer), which provides code for creating a basic PDF viewer (visually similar to the Chrome PDF viewer) using Scribe UI.
 
 # Basic Viewer (Web)
 A minimal browser version of the viewer lives at [`basic-viewer/index.html`](basic-viewer/index.html).
 
-From the parent directory (where `scribe-ui/` and `scribe.js/` sit as siblings):
+From the `scribe.js` repository root:
 
 ```bash
 npx http-server

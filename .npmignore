@@ -32,5 +32,15 @@ js/font-parser/fonts
 js/font-parser/test
 js/font-parser/.mocharc.json
 js/font-parser/package-lock.json
-scribe-ui
+scribe-ui/basic-viewer/electron
+scribe-ui/basic-viewer/tauri
+scribe-ui/basic-viewer/tauri-entry.js
+scribe-ui/basic-viewer/tauri.html
+scribe-ui/package.json
+scribe-ui/package-lock.json
+scribe-ui/.npmignore
+scribe-ui/.gitignore
+scribe-ui/.eslintrc.json
+scribe-ui/jsconfig.json
+scribe-ui/global.d.ts
 user-docs
