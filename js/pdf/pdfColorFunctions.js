@@ -555,7 +555,7 @@ export function cmykToRgb(c, m, y, k) {
     + k * (-20.737325471181034 * k - 187.80453709719578);
 
   const b = 255
-    + c * (0.8842522430003296 * c + 8.078677503112928 * m + 30.89978309703729 * y - 0.23883238689178934 * k - 14.183019929975921)
+    + c * (0.8842522430003296 * c + 8.078677503112928 * m + 30.89978309703729 * y - 0.23883238689178934 * k - 14.183576799673286)
     + m * (10.49593273432072 * m + 63.02378494754052 * y + 50.606957656360734 * k - 112.23884253719248)
     + y * (0.03296041114873217 * y + 115.60384449646641 * k - 193.58209356861505)
     + k * (-22.33816807309886 * k - 180.12613974708367);
@@ -578,13 +578,7 @@ export function cmykToRgb(c, m, y, k) {
 export function altCSToRGB(altCS, comp) {
   let r; let g; let b;
   if (altCS.type === 'DeviceCMYK') {
-    const C = comp[0] || 0;
-    const M = comp[1] || 0;
-    const Y = comp[2] || 0;
-    const K = comp[3] || 0;
-    r = Math.round(255 * (1 - C) * (1 - K));
-    g = Math.round(255 * (1 - M) * (1 - K));
-    b = Math.round(255 * (1 - Y) * (1 - K));
+    [r, g, b] = cmykToRgb(comp[0] || 0, comp[1] || 0, comp[2] || 0, comp[3] || 0);
   } else if (altCS.type === 'DeviceGray' || altCS.type === 'CalGray') {
     const gray = Math.round(255 * Math.max(0, Math.min(1, comp[0] || 0)));
     r = gray; g = gray; b = gray;
