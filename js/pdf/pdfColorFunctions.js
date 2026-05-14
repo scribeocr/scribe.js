@@ -488,9 +488,15 @@ export function parseAltColorSpace(csText, objCache) {
   } else if (/\/CalRGB/.test(csText)) {
     out.type = 'CalRGB';
     out.nComp = 3;
-    const gamma = resolveNumArray(csText, 'Gamma', objCache, null);
+    let paramsText = csText;
+    const refMatch = /\/CalRGB\s+(\d+)\s+\d+\s+R/.exec(csText);
+    if (refMatch && objCache) {
+      const refText = objCache.getObjectText(Number(refMatch[1]));
+      if (refText) paramsText = refText;
+    }
+    const gamma = resolveNumArray(paramsText, 'Gamma', objCache, null);
     if (gamma) out.calRgbGamma = gamma;
-    const matrix = resolveNumArray(csText, 'Matrix', objCache, null);
+    const matrix = resolveNumArray(paramsText, 'Matrix', objCache, null);
     if (matrix) out.calRgbMatrix = matrix;
   } else if (/\/CalGray/.test(csText)) {
     out.type = 'CalGray';

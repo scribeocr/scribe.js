@@ -726,7 +726,8 @@ export function parseIndexedColorSpace(rawCsText, objCache, objNum = null) {
   if (directStreamMatch) {
     paletteBase = directStreamMatch[1];
     paletteHival = Number(directStreamMatch[2]);
-    palette = objCache.getStreamBytes(Number(directStreamMatch[3]));
+    const palObjNum = Number(directStreamMatch[3]);
+    palette = objCache.getStreamBytes(palObjNum) || readIndirectLiteralPalette(objCache, palObjNum);
   }
 
   // 1b: indirect base ref + stream: /Indexed 74 0 R 13 67 0 R
@@ -735,7 +736,8 @@ export function parseIndexedColorSpace(rawCsText, objCache, objNum = null) {
     if (refStreamMatch) {
       const baseObjNum = Number(refStreamMatch[1]);
       paletteHival = Number(refStreamMatch[2]);
-      palette = objCache.getStreamBytes(Number(refStreamMatch[3]));
+      const palObjNum = Number(refStreamMatch[3]);
+      palette = objCache.getStreamBytes(palObjNum) || readIndirectLiteralPalette(objCache, palObjNum);
       baseObjText = objCache.getObjectText(baseObjNum);
       if (baseObjText) {
         const m = /\/(\w+)/.exec(baseObjText);
@@ -767,7 +769,8 @@ export function parseIndexedColorSpace(rawCsText, objCache, objNum = null) {
           paletteBase = baseNameMatch[1];
           baseObjText = baseArr;
           paletteHival = Number(streamAfterArr[1]);
-          palette = objCache.getStreamBytes(Number(streamAfterArr[2]));
+          const palObjNum = Number(streamAfterArr[2]);
+          palette = objCache.getStreamBytes(palObjNum) || readIndirectLiteralPalette(objCache, palObjNum);
         } else if (hexAfterArr) {
           paletteBase = baseNameMatch[1];
           baseObjText = baseArr;
@@ -909,6 +912,66 @@ export function parseIndexedColorSpace(rawCsText, objCache, objNum = null) {
   }
 
   return { palette, hival: paletteHival, base: paletteBase };
+}
+
+/**
+ * Read an indirect palette object as a literal string. Used when /Indexed names
+ * an object number whose payload is a `(...)` string literal rather than a stream.
+ * @param {ObjectCache} objCache
+ * @param {number} objNum
+ * @returns {Uint8Array|null}
+ */
+function readIndirectLiteralPalette(objCache, objNum) {
+  const entry = objCache.xrefEntries[objNum];
+  if (entry && entry.type === 1) {
+    const pdfBytes = objCache.pdfBytes;
+    const endSearch = Math.min(entry.offset + 5000, pdfBytes.length);
+    for (let i = entry.offset; i < endSearch; i++) {
+      if (pdfBytes[i] === 0x28) { // '('
+        const bytes = parsePdfLiteralString(pdfBytes, i);
+        if (objCache.encryptionKey) return objCache.decryptStringBytes(bytes, objNum);
+        return bytes;
+      }
+      if (pdfBytes[i] === 0x3C || pdfBytes[i] === 0x2F) return null;
+    }
+  }
+  const text = objCache.getObjectText(objNum);
+  if (!text) return null;
+  const parenIdx = text.indexOf('(');
+  if (parenIdx < 0) return null;
+  const bytes = [];
+  let depth = 1;
+  for (let i = parenIdx + 1; i < text.length && depth > 0; i++) {
+    const c = text.charCodeAt(i);
+    if (c === 0x5C) {
+      i++;
+      if (i >= text.length) break;
+      const nc = text.charCodeAt(i);
+      if (nc === 0x6E) bytes.push(0x0A);
+      else if (nc === 0x72) bytes.push(0x0D);
+      else if (nc === 0x74) bytes.push(0x09);
+      else if (nc === 0x62) bytes.push(0x08);
+      else if (nc === 0x66) bytes.push(0x0C);
+      else if (nc === 0x0D) {
+        if (i + 1 < text.length && text.charCodeAt(i + 1) === 0x0A) i++;
+      } else if (nc === 0x0A) { /* line continuation */
+      } else if (nc >= 0x30 && nc <= 0x37) {
+        let oct = String.fromCharCode(nc);
+        if (i + 1 < text.length && text.charCodeAt(i + 1) >= 0x30 && text.charCodeAt(i + 1) <= 0x37) oct += text[++i];
+        if (i + 1 < text.length && text.charCodeAt(i + 1) >= 0x30 && text.charCodeAt(i + 1) <= 0x37) oct += text[++i];
+        bytes.push(parseInt(oct, 8));
+      } else {
+        bytes.push(nc);
+      }
+    } else if (c === 0x28) {
+      depth++; bytes.push(c);
+    } else if (c === 0x29) {
+      depth--; if (depth > 0) bytes.push(c);
+    } else {
+      bytes.push(c);
+    }
+  }
+  return new Uint8Array(bytes);
 }
 
 /**

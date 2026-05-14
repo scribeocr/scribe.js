@@ -1107,10 +1107,38 @@ async function imageInfoToBitmap(imageInfo, objCache) {
     // (0=no ink/white, 255=full ink). Apply tint transform if available, otherwise invert.
     rgbaData = new Uint8ClampedArray(width * height * 4);
     const tintSamples = imageInfo.separationTintSamples;
+    const readTint = (i) => {
+      if (bitsPerComponent === 8) return imageData[i];
+      if (bitsPerComponent === 4) {
+        const rowBytes = Math.ceil(width / 2);
+        const x = i % width;
+        const y = Math.floor(i / width);
+        const byte = imageData[y * rowBytes + (x >> 1)];
+        const nibble = (x & 1) === 0 ? (byte >> 4) & 0xF : byte & 0xF;
+        return nibble * 17;
+      }
+      if (bitsPerComponent === 2) {
+        const rowBytes = Math.ceil(width / 4);
+        const x = i % width;
+        const y = Math.floor(i / width);
+        const byte = imageData[y * rowBytes + (x >> 2)];
+        const sample = (byte >> (6 - (x & 3) * 2)) & 0x3;
+        return sample * 85;
+      }
+      if (bitsPerComponent === 1) {
+        const rowBytes = Math.ceil(width / 8);
+        const x = i % width;
+        const y = Math.floor(i / width);
+        const byte = imageData[y * rowBytes + (x >> 3)];
+        return ((byte >> (7 - (x & 7))) & 1) ? 255 : 0;
+      }
+      return imageData[i];
+    };
     if (tintSamples && tintSamples.length >= 3) {
       const nSamples = Math.floor(tintSamples.length / 3);
       for (let i = 0; i < width * height; i++) {
-        const tint = decodeInvert ? (255 - imageData[i]) : imageData[i];
+        const raw = readTint(i);
+        const tint = decodeInvert ? (255 - raw) : raw;
         const [r, g, b] = interpolateTint(tintSamples, nSamples, tint);
         rgbaData[i * 4] = r;
         rgbaData[i * 4 + 1] = g;
@@ -1121,7 +1149,8 @@ async function imageInfoToBitmap(imageInfo, objCache) {
       // No sampled tint transform — invert (0=white, 255=black) for typical ink separation.
       // With decodeInvert, /Decode [1 0] and ink conventions cancel out.
       for (let i = 0; i < width * height; i++) {
-        const val = decodeInvert ? imageData[i] : (255 - imageData[i]);
+        const raw = readTint(i);
+        const val = decodeInvert ? raw : (255 - raw);
         rgbaData[i * 4] = val;
         rgbaData[i * 4 + 1] = val;
         rgbaData[i * 4 + 2] = val;
@@ -2490,7 +2519,10 @@ function parseDrawOps(
           fillTintNComponents,
           strokeTintSamples,
           strokeTintNComponents,
+          fillDeviceNGrid,
           strokeDeviceNGrid,
+          fillIndexedInfo,
+          strokeIndexedInfo,
           fillAlpha,
           strokeAlpha,
           fillAlphaExplicit,
@@ -2542,7 +2574,10 @@ function parseDrawOps(
           fillTintNComponents = saved.fillTintNComponents;
           strokeTintSamples = saved.strokeTintSamples;
           strokeTintNComponents = saved.strokeTintNComponents;
+          fillDeviceNGrid = saved.fillDeviceNGrid;
           strokeDeviceNGrid = saved.strokeDeviceNGrid;
+          fillIndexedInfo = saved.fillIndexedInfo;
+          strokeIndexedInfo = saved.strokeIndexedInfo;
           fillAlpha = saved.fillAlpha;
           strokeAlpha = saved.strokeAlpha;
           fillAlphaExplicit = saved.fillAlphaExplicit;
@@ -6707,6 +6742,282 @@ async function renderTilingPatternTileForSmask(tp, objCache, scale) {
 }
 
 /**
+ * Decode an inline image (BI/ID/EI) and return an ImageBitmap.
+ * Supports image masks with CCITTFaxDecode, DCTDecode (JPEG), and uncompressed data.
+ * @param {{dictText: string, imageData: string, fillColor?: string, fillAlpha?: number, tilingPattern?: any, colorSpaces?: Map<string, any>}} op
+ * @param {ObjectCache} objCache
+ * @param {Map<string, any>} [fallbackColorSpaces] - page-level color-space registry used when op.colorSpaces is absent
+ */
+async function decodeInlineImageBitmap(op, objCache, fallbackColorSpaces = new Map()) {
+  const { dictText, imageData } = op;
+  const getVal = (abbrev, full) => {
+    const re = new RegExp(`/${abbrev}(?![a-zA-Z])\\s*/?([^\\s/<>]+)`);
+    const m = re.exec(dictText) || new RegExp(`/${full}(?![a-zA-Z])\\s*/?([^\\s/<>]+)`).exec(dictText);
+    return m ? m[1] : null;
+  };
+  const getArr = (abbrev, full) => {
+    const re = new RegExp(`/${abbrev}(?![a-zA-Z])\\s*\\[\\s*([^\\]]+)\\]`);
+    const m = re.exec(dictText) || new RegExp(`/${full}(?![a-zA-Z])\\s*\\[\\s*([^\\]]+)\\]`).exec(dictText);
+    return m ? m[1].trim().split(/\s+/).map(Number) : null;
+  };
+  const width = Number(getVal('W', 'Width') || 0);
+  const height = Number(getVal('H', 'Height') || 0);
+  if (!width || !height) return null;
+  const bpc = Number(getVal('BPC', 'BitsPerComponent') || 8);
+  const isImageMask = getVal('IM', 'ImageMask') === 'true';
+  const decode = getArr('D', 'Decode');
+  const filterMap = {
+    CCF: 'CCITTFaxDecode', DCT: 'DCTDecode', Fl: 'FlateDecode', LZW: 'LZWDecode', RL: 'RunLengthDecode', AHx: 'ASCIIHexDecode', A85: 'ASCII85Decode',
+  };
+  let filters;
+  const filterArrMatch = /\/(?:F|Filter)\s*\[\s*([^\]]+)\]/.exec(dictText);
+  if (filterArrMatch) {
+    filters = filterArrMatch[1].trim().split(/\s+/).map((f) => {
+      const name = f.replace(/^\//, '');
+      return filterMap[name] || name;
+    });
+  } else {
+    const filterRaw = getVal('F', 'Filter') || '';
+    const f = filterMap[filterRaw] || filterRaw;
+    filters = f ? [f] : [];
+  }
+  const csRaw = getVal('CS', 'ColorSpace') || '';
+  const csMap = { G: 'DeviceGray', RGB: 'DeviceRGB', CMYK: 'DeviceCMYK' };
+  let colorSpace = csMap[csRaw] || csRaw;
+  /** @type {{type: string, indexedInfo: any, tintSamples: Uint8Array|null, nComponents: number, deviceNGrid: any}|null} */
+  let resolvedCS = null;
+  if (!['DeviceGray', 'DeviceRGB', 'DeviceCMYK'].includes(colorSpace)) {
+    const csRegistry = op.colorSpaces || fallbackColorSpaces;
+    const entry = csRegistry.get(csRaw);
+    if (entry) {
+      resolvedCS = entry;
+      if (entry.type === 'Indexed') {
+        colorSpace = 'Indexed';
+      } else if (entry.type === 'Separation' || entry.type === 'DeviceN') {
+        colorSpace = entry.type;
+      } else if (entry.type === 'DeviceRGB' || entry.type === 'CalRGB') {
+        colorSpace = 'DeviceRGB';
+      } else if (entry.type === 'DeviceCMYK') {
+        colorSpace = 'DeviceCMYK';
+      } else if (entry.type === 'DeviceGray' || entry.type === 'CalGray') {
+        colorSpace = 'DeviceGray';
+      }
+    }
+    if (!resolvedCS) {
+      const csKeyMatch = /\/(?:CS|ColorSpace)\s*\[/.exec(dictText);
+      if (csKeyMatch) {
+        const arrStart = dictText.indexOf('[', csKeyMatch.index);
+        let depth = 0;
+        let arrEnd = arrStart;
+        for (let ci = arrStart; ci < dictText.length; ci++) {
+          if (dictText[ci] === '[') depth++;
+          else if (dictText[ci] === ']') { depth--; if (depth === 0) { arrEnd = ci + 1; break; } }
+        }
+        const csText = dictText.substring(arrStart, arrEnd)
+          .replace(/\/([A-Za-z][\w-]*)/g, ' /$1 ')
+          .replace(/\/I\b/, '/Indexed')
+          .replace(/\/RGB\b/, '/DeviceRGB')
+          .replace(/\/G\b/, '/DeviceGray')
+          .replace(/\/CMYK\b/, '/DeviceCMYK');
+        if (/\/Indexed\b/.test(csText)) {
+          const idxResult = parseIndexedColorSpace(csText, objCache);
+          if (idxResult) {
+            colorSpace = 'Indexed';
+            resolvedCS = {
+              type: 'Indexed', indexedInfo: idxResult, tintSamples: null, nComponents: 1, deviceNGrid: null,
+            };
+          }
+        }
+      }
+    }
+  }
+
+  let data = new Uint8Array(imageData.length);
+  for (let j = 0; j < imageData.length; j++) data[j] = imageData.charCodeAt(j);
+
+  for (const filter of filters) {
+    if (filter === 'ASCII85Decode') {
+      const ascii = new TextDecoder('latin1').decode(data);
+      const clean = ascii.replace(/\s/g, '');
+      const endMarker = clean.indexOf('~>');
+      const encoded = endMarker >= 0 ? clean.substring(0, endMarker) : clean;
+      const output = [];
+      let ai = 0;
+      while (ai < encoded.length) {
+        if (encoded[ai] === 'z') {
+          output.push(0, 0, 0, 0);
+          ai++;
+        } else {
+          const groupLen = Math.min(5, encoded.length - ai);
+          const group = [];
+          for (let gj = 0; gj < groupLen; gj++) group.push(encoded.charCodeAt(ai + gj) - 33);
+          while (group.length < 5) group.push(84);
+          let val = 0;
+          for (let gj = 0; gj < 5; gj++) val = val * 85 + group[gj];
+          const numBytes = groupLen === 5 ? 4 : groupLen - 1;
+          const divisors = [16777216, 65536, 256, 1];
+          for (let gj = 0; gj < numBytes; gj++) output.push(Math.floor(val / divisors[gj]) % 256);
+          ai += groupLen;
+        }
+      }
+      data = new Uint8Array(output);
+    } else if (filter === 'ASCIIHexDecode') {
+      const hex = new TextDecoder('latin1').decode(data).replace(/\s/g, '').replace(/>$/, '');
+      const out = new Uint8Array(Math.floor(hex.length / 2));
+      for (let hi = 0; hi < out.length; hi++) out[hi] = parseInt(hex.substring(hi * 2, hi * 2 + 2), 16);
+      data = out;
+    } else if (filter === 'CCITTFaxDecode') {
+      const { decodeCCITTFax } = await import('./codecs/decodeCCITT.js');
+      const dpText = dictText;
+      const params = {};
+      const kMatch = /\/K\s+(-?\d+)/.exec(dpText) || /\/DP\s*<<[^>]*\/K\s+(-?\d+)/.exec(dpText);
+      if (kMatch) params.K = Number(kMatch[1] || kMatch[2]);
+      const colMatch = /\/Columns\s+(\d+)/.exec(dpText) || /\/DP\s*<<[^>]*\/Columns\s+(\d+)/.exec(dpText);
+      if (colMatch) params.Columns = Number(colMatch[1] || colMatch[2]);
+      else params.Columns = width;
+      const blackIs1Match = /\/BlackIs1\s+true/.exec(dpText);
+      if (blackIs1Match) params.BlackIs1 = true;
+      params.Rows = height;
+      params.EndOfBlock = false;
+      const decoded = decodeCCITTFax(data, params);
+      data = new Uint8Array(decoded.buffer);
+    } else if (filter === 'DCTDecode') {
+      if (data.length >= 2 && !(data[data.length - 2] === 0xFF && data[data.length - 1] === 0xD9)) {
+        const fixed = new Uint8Array(data.length + 2);
+        fixed.set(data);
+        fixed[data.length] = 0xFF;
+        fixed[data.length + 1] = 0xD9;
+        data = fixed;
+      }
+      return ca.createImageBitmapFromData(data);
+    } else if (filter === 'FlateDecode') {
+      let inflated = pakoInflate(data);
+      if (!(inflated instanceof Uint8Array)) inflated = pakoInflatePartial(data);
+      data = inflated;
+      const dpMatch = /\/(?:DP|DecodeParms)\s*(?:\[\s*(?:null\s*)?)?<<([^>]*)>>/.exec(dictText);
+      if (dpMatch) {
+        let dpText = dpMatch[1];
+        if (!/\/Columns\s+\d+/.test(dpText)) dpText = `/Columns ${width} ${dpText}`;
+        data = applyPredictor(data, dpText, objCache);
+      }
+    } else if (filter === 'LZWDecode') {
+      const { decodeLZW } = await import('./codecs/decodeLZW.js');
+      data = decodeLZW(data, dictText);
+    }
+  }
+
+  const invert = decode && decode[0] === 1;
+  const isIndexedWithPalette = colorSpace === 'Indexed' && resolvedCS && resolvedCS.indexedInfo;
+  if (bpc === 1 && !isIndexedWithPalette) {
+    const rgba = new Uint8ClampedArray(width * height * 4);
+    const rowBytes = Math.ceil(width / 8);
+    if (isImageMask) {
+      if (!op.fillColor || op.fillColor.includes('NaN')) return null;
+      const cm = op.fillColor.match(/\d+/g) || ['0', '0', '0'];
+      const fr = Number(cm[0]);
+      const fg = Number(cm[1] || 0);
+      const fb = Number(cm[2] || 0);
+      for (let row = 0; row < height; row++) {
+        for (let col = 0; col < width; col++) {
+          const byteIdx = row * rowBytes + (col >> 3);
+          const bit = (data[byteIdx] >> (7 - (col & 7))) & 1;
+          const painted = invert ? bit === 1 : bit === 0;
+          const px = (row * width + col) * 4;
+          if (painted) {
+            rgba[px] = fr; rgba[px + 1] = fg; rgba[px + 2] = fb; rgba[px + 3] = 255;
+          }
+        }
+      }
+    } else {
+      const opaqueWhite = !op.tilingPattern;
+      for (let row = 0; row < height; row++) {
+        for (let col = 0; col < width; col++) {
+          const byteIdx = row * rowBytes + (col >> 3);
+          const bit = (data[byteIdx] >> (7 - (col & 7))) & 1;
+          const isBlack = invert ? bit === 1 : bit === 0;
+          const px = (row * width + col) * 4;
+          if (isBlack) {
+            rgba[px] = 0; rgba[px + 1] = 0; rgba[px + 2] = 0; rgba[px + 3] = 255;
+          } else if (opaqueWhite) {
+            rgba[px] = 255; rgba[px + 1] = 255; rgba[px + 2] = 255; rgba[px + 3] = 255;
+          }
+        }
+      }
+    }
+    const imgData = new ImageData(rgba, width, height);
+    return ca.createImageBitmapFromImageData(imgData);
+  }
+
+  const rgba = new Uint8ClampedArray(width * height * 4);
+  if (colorSpace === 'Indexed' && resolvedCS && resolvedCS.indexedInfo) {
+    const { palette, hival, base } = resolvedCS.indexedInfo;
+    const nComp = base === 'DeviceCMYK' ? 4 : (base === 'DeviceGray' || base === 'CalGray' ? 1 : 3);
+    const maxIdx = Math.min(hival, Math.floor(palette.length / nComp) - 1);
+    const rowBytes = Math.ceil(width * bpc / 8);
+    const ccittImplicitInvert = bpc === 1 && filters.includes('CCITTFaxDecode')
+      && !decode && hival === 1;
+    for (let row = 0; row < height; row++) {
+      for (let col = 0; col < width; col++) {
+        let idx;
+        if (bpc === 8) {
+          idx = data[row * rowBytes + col];
+        } else if (bpc === 4) {
+          const bytePos = row * rowBytes + (col >> 1);
+          idx = (col & 1) === 0 ? (data[bytePos] >> 4) & 0xF : data[bytePos] & 0xF;
+        } else if (bpc === 2) {
+          const bytePos = row * rowBytes + (col >> 2);
+          idx = (data[bytePos] >> (6 - (col & 3) * 2)) & 0x3;
+        } else if (bpc === 1) {
+          const bytePos = row * rowBytes + (col >> 3);
+          idx = (data[bytePos] >> (7 - (col & 7))) & 1;
+          if (ccittImplicitInvert) idx ^= 1;
+        } else {
+          idx = data[row * rowBytes + col];
+        }
+        if (idx === undefined) continue;
+        if (idx > maxIdx) idx = maxIdx;
+        const po = idx * nComp;
+        const j = row * width + col;
+        let r; let g; let b;
+        if (nComp === 3) {
+          r = palette[po]; g = palette[po + 1]; b = palette[po + 2];
+        } else if (nComp === 1) {
+          r = palette[po]; g = r; b = r;
+        } else {
+          const [cr, cg, cb] = cmykToRgb(palette[po] / 255, palette[po + 1] / 255, palette[po + 2] / 255, palette[po + 3] / 255);
+          r = cr; g = cg; b = cb;
+        }
+        rgba[j * 4] = r; rgba[j * 4 + 1] = g; rgba[j * 4 + 2] = b; rgba[j * 4 + 3] = 255;
+      }
+    }
+  } else if ((colorSpace === 'Separation' || colorSpace === 'DeviceN') && resolvedCS && resolvedCS.tintSamples) {
+    const tint = resolvedCS.tintSamples;
+    const tintMax = Math.floor(tint.length / 3) - 1;
+    for (let j = 0; j < width * height; j++) {
+      const idx = Math.min(data[j] || 0, tintMax) * 3;
+      rgba[j * 4] = tint[idx]; rgba[j * 4 + 1] = tint[idx + 1]; rgba[j * 4 + 2] = tint[idx + 2]; rgba[j * 4 + 3] = 255;
+    }
+  } else {
+    const nComponents = colorSpace === 'DeviceRGB' ? 3 : colorSpace === 'DeviceCMYK' ? 4 : 1;
+    for (let j = 0; j < width * height; j++) {
+      if (nComponents === 1) {
+        const g = data[j] || 0;
+        rgba[j * 4] = g; rgba[j * 4 + 1] = g; rgba[j * 4 + 2] = g; rgba[j * 4 + 3] = 255;
+      } else if (nComponents === 3) {
+        rgba[j * 4] = data[j * 3]; rgba[j * 4 + 1] = data[j * 3 + 1]; rgba[j * 4 + 2] = data[j * 3 + 2]; rgba[j * 4 + 3] = 255;
+      } else if (nComponents === 4) {
+        const c0 = data[j * 4]; const m0 = data[j * 4 + 1]; const y0 = data[j * 4 + 2]; const
+          k0 = data[j * 4 + 3];
+        const [cr, cg, cb] = cmykToRgb(c0 / 255, m0 / 255, y0 / 255, k0 / 255);
+        rgba[j * 4] = cr; rgba[j * 4 + 1] = cg; rgba[j * 4 + 2] = cb; rgba[j * 4 + 3] = 255;
+      }
+    }
+  }
+  const imgData = new ImageData(rgba, width, height);
+  return ca.createImageBitmapFromImageData(imgData);
+}
+
+/**
  * Render an SMask Form XObject to a canvas and produce an alpha mask.
  * @param {SmaskRef} smaskInfo
  * @param {ObjectCache} objCache
@@ -6731,6 +7042,7 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
   const maskExtGStates = parseExtGStates(formObjText, objCache);
   const maskShadings = parseShadings(formObjText, objCache);
   const maskPatterns = parsePatterns(formObjText, objCache);
+  const maskColorSpaces = parsePageColorSpaces(formObjText, objCache);
 
   const maskFonts = parsePageFonts(formObjText, objCache);
   const maskRegistered = new Map();
@@ -6747,7 +7059,7 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
   }
   appendGenericFallbacks(maskRegistered, maskFonts);
 
-  const rawFormDrawOps = parseDrawOps(formStream, maskFonts, maskExtGStates, maskRegistered, new Map(),
+  const rawFormDrawOps = parseDrawOps(formStream, maskFonts, maskExtGStates, maskRegistered, maskColorSpaces,
     maskSymbolTags, maskCidPUATags, maskRawCharCodeTags, maskShadings, maskPatterns, maskCidCollisionMap);
 
   let formDrawOps;
@@ -7028,6 +7340,42 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
       if (op.fillAlpha < 1) maskCtx.globalAlpha = op.fillAlpha;
       maskCtx.fillText(op.text, 0, 0);
       maskCtx.restore();
+    } else if (op.type === 'inlineImage') {
+      const bitmap = await decodeInlineImageBitmap(op, objCache);
+      if (!bitmap) continue;
+      if (Math.abs(op.ctm[0] * op.ctm[3] - op.ctm[1] * op.ctm[2]) < 1e-9) {
+        ca.closeDrawable(bitmap);
+        continue;
+      }
+      maskCtx.save();
+      if (op.fillAlpha < 1) maskCtx.globalAlpha = op.fillAlpha;
+      if (op.clips) {
+        for (const clip of op.clips) {
+          if (!clip.path) continue;
+          maskCtx.setTransform(
+            clip.ctm[0] * scale, -clip.ctm[1] * scale, clip.ctm[2] * scale, -clip.ctm[3] * scale,
+            (clip.ctm[4] - boxOriginX) * scale - shiftX, (pageHeightPts + boxOriginY - clip.ctm[5]) * scale - shiftY,
+          );
+          maskCtx.beginPath();
+          for (const cmd of clip.path) {
+            if (cmd.type === 'M') maskCtx.moveTo(cmd.x, cmd.y);
+            else if (cmd.type === 'L') maskCtx.lineTo(cmd.x, cmd.y);
+            else if (cmd.type === 'C') maskCtx.bezierCurveTo(cmd.x1, cmd.y1, cmd.x2, cmd.y2, cmd.x, cmd.y);
+            else if (cmd.type === 'Z') maskCtx.closePath();
+          }
+          maskCtx.clip(clip.evenOdd ? 'evenodd' : 'nonzero');
+        }
+      }
+      maskCtx.setTransform(
+        op.ctm[0] * scale, -op.ctm[1] * scale,
+        op.ctm[2] * scale, -op.ctm[3] * scale,
+        (op.ctm[4] - boxOriginX) * scale - shiftX,
+        (pageHeightPts + boxOriginY - op.ctm[5]) * scale - shiftY,
+      );
+      maskCtx.transform(1, 0, 0, -1, 0, 1);
+      maskCtx.drawImage(bitmap, 0, 0, 1, 1);
+      maskCtx.restore();
+      ca.closeDrawable(bitmap);
     }
   }
 
@@ -8622,318 +8970,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       return true;
     }
 
-    /**
-     * Decode an inline image (BI/ID/EI) and return an ImageBitmap.
-     * Supports image masks with CCITTFaxDecode, DCTDecode (JPEG), and uncompressed data.
-     */
-    async function decodeInlineImage(op) {
-      const { dictText, imageData } = op;
-      // Map abbreviated inline image keys to standard names
-      const getVal = (abbrev, full) => {
-      // Match both `/F CCF` (space-separated) and `/F/CCF` (name value without space).
-      // PDF inline image values can be names (prefixed with /), so capture with optional /.
-      // Use negative lookahead (?![a-zA-Z]) so `/W` does not match inside `/Width`.
-        const re = new RegExp(`/${abbrev}(?![a-zA-Z])\\s*/?([^\\s/<>]+)`);
-        const m = re.exec(dictText) || new RegExp(`/${full}(?![a-zA-Z])\\s*/?([^\\s/<>]+)`).exec(dictText);
-        return m ? m[1] : null;
-      };
-      const getArr = (abbrev, full) => {
-        const re = new RegExp(`/${abbrev}(?![a-zA-Z])\\s*\\[\\s*([^\\]]+)\\]`);
-        const m = re.exec(dictText) || new RegExp(`/${full}(?![a-zA-Z])\\s*\\[\\s*([^\\]]+)\\]`).exec(dictText);
-        return m ? m[1].trim().split(/\s+/).map(Number) : null;
-      };
-      const width = Number(getVal('W', 'Width') || 0);
-      const height = Number(getVal('H', 'Height') || 0);
-      if (!width || !height) return null;
-      const bpc = Number(getVal('BPC', 'BitsPerComponent') || 8);
-      const isImageMask = getVal('IM', 'ImageMask') === 'true';
-      const decode = getArr('D', 'Decode');
-      // Parse filter(s) — can be a single name or an array like [ /A85 /Fl ]
-      const filterMap = {
-        CCF: 'CCITTFaxDecode', DCT: 'DCTDecode', Fl: 'FlateDecode', LZW: 'LZWDecode', RL: 'RunLengthDecode', AHx: 'ASCIIHexDecode', A85: 'ASCII85Decode',
-      };
-      let filters;
-      const filterArrMatch = /\/(?:F|Filter)\s*\[\s*([^\]]+)\]/.exec(dictText);
-      if (filterArrMatch) {
-        filters = filterArrMatch[1].trim().split(/\s+/).map((f) => {
-          const name = f.replace(/^\//, '');
-          return filterMap[name] || name;
-        });
-      } else {
-        const filterRaw = getVal('F', 'Filter') || '';
-        const f = filterMap[filterRaw] || filterRaw;
-        filters = f ? [f] : [];
-      }
-      // Resolve the inline image's color space.
-      //
-      // Per PDF spec §8.9.7, an inline image's /CS value is either one of the
-      // standard device-name abbreviations (G, RGB, CMYK / DeviceGray, DeviceRGB,
-      // DeviceCMYK) OR a name whose definition lives in the current Resources'
-      // /ColorSpace subdictionary. The standard-name case is trivial; the
-      // Resources-name case is the same lookup path that `cs`/`CS` operators
-      // already go through, so we reuse the pre-built `colorSpaces` Map from
-      // `parsePageColorSpaces()` (in closure). This is the broader fix the user
-      // asked for: every code path that resolves a color-space name now consults
-      // the single canonical registry, rather than each site rolling its own
-      // half-supported subset of color-space forms.
-      const csRaw = getVal('CS', 'ColorSpace') || '';
-      const csMap = { G: 'DeviceGray', RGB: 'DeviceRGB', CMYK: 'DeviceCMYK' };
-      let colorSpace = csMap[csRaw] || csRaw;
-      /** @type {{type: string, indexedInfo: any, tintSamples: Uint8Array|null, nComponents: number, deviceNGrid: any}|null} */
-      let resolvedCS = null;
-      if (!['DeviceGray', 'DeviceRGB', 'DeviceCMYK'].includes(colorSpace)) {
-      // Use the op's color space registry if present (carries the Form XObject's
-      // /Resources/ColorSpace when the inline image is inside a Form), falling
-      // back to the page-level registry in the closure.
-        const csRegistry = op.colorSpaces || colorSpaces;
-        const entry = csRegistry.get(csRaw);
-        if (entry) {
-          resolvedCS = entry;
-          // Map the entry's type to a "family" that the byte-unpacker below uses
-          // when it can't use an Indexed/tint lookup.
-          if (entry.type === 'Indexed') {
-            colorSpace = 'Indexed';
-          } else if (entry.type === 'Separation' || entry.type === 'DeviceN') {
-            colorSpace = entry.type;
-          } else if (entry.type === 'DeviceRGB' || entry.type === 'CalRGB') {
-            colorSpace = 'DeviceRGB';
-          } else if (entry.type === 'DeviceCMYK') {
-            colorSpace = 'DeviceCMYK';
-          } else if (entry.type === 'DeviceGray' || entry.type === 'CalGray') {
-            colorSpace = 'DeviceGray';
-          }
-        }
-        // Inline array-form Indexed colour space, e.g. /CS [ /Indexed /DeviceRGB 15 <hex> ].
-        // Inline-image names may be written with no separating whitespace (`/I/RGB`),
-        // hence the normalization pass before the shared parser.
-        if (!resolvedCS) {
-          const csKeyMatch = /\/(?:CS|ColorSpace)\s*\[/.exec(dictText);
-          if (csKeyMatch) {
-            const arrStart = dictText.indexOf('[', csKeyMatch.index);
-            let depth = 0;
-            let arrEnd = arrStart;
-            for (let ci = arrStart; ci < dictText.length; ci++) {
-              if (dictText[ci] === '[') depth++;
-              else if (dictText[ci] === ']') { depth--; if (depth === 0) { arrEnd = ci + 1; break; } }
-            }
-            const csText = dictText.substring(arrStart, arrEnd)
-              .replace(/\/([A-Za-z][\w-]*)/g, ' /$1 ')
-              .replace(/\/I\b/, '/Indexed')
-              .replace(/\/RGB\b/, '/DeviceRGB')
-              .replace(/\/G\b/, '/DeviceGray')
-              .replace(/\/CMYK\b/, '/DeviceCMYK');
-            if (/\/Indexed\b/.test(csText)) {
-              const idxResult = parseIndexedColorSpace(csText, objCache);
-              if (idxResult) {
-                colorSpace = 'Indexed';
-                resolvedCS = {
-                  type: 'Indexed', indexedInfo: idxResult, tintSamples: null, nComponents: 1, deviceNGrid: null,
-                };
-              }
-            }
-          }
-        }
-      }
-
-      // Convert imageData string to bytes (it's in latin1 encoding from the tokenizer)
-      let data = new Uint8Array(imageData.length);
-      for (let j = 0; j < imageData.length; j++) data[j] = imageData.charCodeAt(j);
-
-      // Apply filters in order
-      for (const filter of filters) {
-        if (filter === 'ASCII85Decode') {
-          const ascii = new TextDecoder('latin1').decode(data);
-          const clean = ascii.replace(/\s/g, '');
-          const endMarker = clean.indexOf('~>');
-          const encoded = endMarker >= 0 ? clean.substring(0, endMarker) : clean;
-          const output = [];
-          let ai = 0;
-          while (ai < encoded.length) {
-            if (encoded[ai] === 'z') {
-              output.push(0, 0, 0, 0);
-              ai++;
-            } else {
-              const groupLen = Math.min(5, encoded.length - ai);
-              const group = [];
-              for (let gj = 0; gj < groupLen; gj++) group.push(encoded.charCodeAt(ai + gj) - 33);
-              while (group.length < 5) group.push(84);
-              let val = 0;
-              for (let gj = 0; gj < 5; gj++) val = val * 85 + group[gj];
-              const numBytes = groupLen === 5 ? 4 : groupLen - 1;
-              const divisors = [16777216, 65536, 256, 1];
-              for (let gj = 0; gj < numBytes; gj++) output.push(Math.floor(val / divisors[gj]) % 256);
-              ai += groupLen;
-            }
-          }
-          data = new Uint8Array(output);
-        } else if (filter === 'ASCIIHexDecode') {
-          const hex = new TextDecoder('latin1').decode(data).replace(/\s/g, '').replace(/>$/, '');
-          const out = new Uint8Array(Math.floor(hex.length / 2));
-          for (let hi = 0; hi < out.length; hi++) out[hi] = parseInt(hex.substring(hi * 2, hi * 2 + 2), 16);
-          data = out;
-        } else if (filter === 'CCITTFaxDecode') {
-          const { decodeCCITTFax } = await import('./codecs/decodeCCITT.js');
-          const dpText = dictText;
-          const params = {};
-          const kMatch = /\/K\s+(-?\d+)/.exec(dpText) || /\/DP\s*<<[^>]*\/K\s+(-?\d+)/.exec(dpText);
-          if (kMatch) params.K = Number(kMatch[1] || kMatch[2]);
-          const colMatch = /\/Columns\s+(\d+)/.exec(dpText) || /\/DP\s*<<[^>]*\/Columns\s+(\d+)/.exec(dpText);
-          if (colMatch) params.Columns = Number(colMatch[1] || colMatch[2]);
-          else params.Columns = width;
-          const blackIs1Match = /\/BlackIs1\s+true/.exec(dpText);
-          if (blackIs1Match) params.BlackIs1 = true;
-          // The ID..EI data boundary of an inline image isn't always locatable precisely,
-          // and the stream may lack an EndOfBlock marker, so without a row cap the decoder
-          // runs into trailing whitespace and emits "bad code" garbage. Stop after /H rows.
-          params.Rows = height;
-          params.EndOfBlock = false;
-          const decoded = decodeCCITTFax(data, params);
-          data = new Uint8Array(decoded.buffer);
-        } else if (filter === 'DCTDecode') {
-        // JPEG data — create blob and decode (append EOI if missing)
-          if (data.length >= 2 && !(data[data.length - 2] === 0xFF && data[data.length - 1] === 0xD9)) {
-            const fixed = new Uint8Array(data.length + 2);
-            fixed.set(data);
-            fixed[data.length] = 0xFF;
-            fixed[data.length + 1] = 0xD9;
-            data = fixed;
-          }
-          return ca.createImageBitmapFromData(data);
-        } else if (filter === 'FlateDecode') {
-          let inflated = pakoInflate(data);
-          if (!(inflated instanceof Uint8Array)) inflated = pakoInflatePartial(data);
-          data = inflated;
-          const dpMatch = /\/(?:DP|DecodeParms)\s*(?:\[\s*(?:null\s*)?)?<<([^>]*)>>/.exec(dictText);
-          if (dpMatch) {
-            // Inline images default /Columns to the image width when /DP omits it;
-            // this differs from the spec default of 1 but matches what encoders
-            // meant in practice (the raw predictor row width is the image width).
-            let dpText = dpMatch[1];
-            if (!/\/Columns\s+\d+/.test(dpText)) dpText = `/Columns ${width} ${dpText}`;
-            data = applyPredictor(data, dpText, objCache);
-          }
-        } else if (filter === 'LZWDecode') {
-          const { decodeLZW } = await import('./codecs/decodeLZW.js');
-          data = decodeLZW(data, dictText);
-        }
-      }
-
-      const invert = decode && decode[0] === 1;
-      const isIndexedWithPalette = colorSpace === 'Indexed' && resolvedCS && resolvedCS.indexedInfo;
-      if (bpc === 1 && !isIndexedWithPalette) {
-        const rgba = new Uint8ClampedArray(width * height * 4);
-        const rowBytes = Math.ceil(width / 8);
-        if (isImageMask) {
-        // Image mask: painted pixels use fill color, unpainted are transparent
-          if (!op.fillColor || op.fillColor.includes('NaN')) return null;
-          const cm = op.fillColor.match(/\d+/g) || ['0', '0', '0'];
-          const fr = Number(cm[0]);
-          const fg = Number(cm[1] || 0);
-          const fb = Number(cm[2] || 0);
-          for (let row = 0; row < height; row++) {
-            for (let col = 0; col < width; col++) {
-              const byteIdx = row * rowBytes + (col >> 3);
-              const bit = (data[byteIdx] >> (7 - (col & 7))) & 1;
-              const painted = invert ? bit === 1 : bit === 0;
-              const px = (row * width + col) * 4;
-              if (painted) {
-                rgba[px] = fr; rgba[px + 1] = fg; rgba[px + 2] = fb; rgba[px + 3] = 255;
-              }
-            }
-          }
-        } else {
-          // White pixels stay transparent only when this image is a tiling-pattern stencil,
-          // so the tile's background doesn't overwrite underlying content.
-          const opaqueWhite = !op.tilingPattern;
-          for (let row = 0; row < height; row++) {
-            for (let col = 0; col < width; col++) {
-              const byteIdx = row * rowBytes + (col >> 3);
-              const bit = (data[byteIdx] >> (7 - (col & 7))) & 1;
-              const isBlack = invert ? bit === 1 : bit === 0;
-              const px = (row * width + col) * 4;
-              if (isBlack) {
-                rgba[px] = 0; rgba[px + 1] = 0; rgba[px + 2] = 0; rgba[px + 3] = 255;
-              } else if (opaqueWhite) {
-                rgba[px] = 255; rgba[px + 1] = 255; rgba[px + 2] = 255; rgba[px + 3] = 255;
-              }
-            }
-          }
-        }
-        const imgData = new ImageData(rgba, width, height);
-        return ca.createImageBitmapFromImageData(imgData);
-      }
-
-      const rgba = new Uint8ClampedArray(width * height * 4);
-      if (colorSpace === 'Indexed' && resolvedCS && resolvedCS.indexedInfo) {
-        const { palette, hival, base } = resolvedCS.indexedInfo;
-        const nComp = base === 'DeviceCMYK' ? 4 : (base === 'DeviceGray' || base === 'CalGray' ? 1 : 3);
-        const maxIdx = Math.min(hival, Math.floor(palette.length / nComp) - 1);
-        const rowBytes = Math.ceil(width * bpc / 8);
-        // CCITTFaxDecode emits 1=white, 0=black, but a typical 2-entry fax palette puts white at index 0.
-        // Without an explicit /Decode the bit value must be inverted to match the palette index.
-        const ccittImplicitInvert = bpc === 1 && filters.includes('CCITTFaxDecode')
-          && !decode && hival === 1;
-        for (let row = 0; row < height; row++) {
-          for (let col = 0; col < width; col++) {
-            let idx;
-            if (bpc === 8) {
-              idx = data[row * rowBytes + col];
-            } else if (bpc === 4) {
-              const bytePos = row * rowBytes + (col >> 1);
-              idx = (col & 1) === 0 ? (data[bytePos] >> 4) & 0xF : data[bytePos] & 0xF;
-            } else if (bpc === 2) {
-              const bytePos = row * rowBytes + (col >> 2);
-              idx = (data[bytePos] >> (6 - (col & 3) * 2)) & 0x3;
-            } else if (bpc === 1) {
-              const bytePos = row * rowBytes + (col >> 3);
-              idx = (data[bytePos] >> (7 - (col & 7))) & 1;
-              if (ccittImplicitInvert) idx ^= 1;
-            } else {
-              idx = data[row * rowBytes + col];
-            }
-            if (idx === undefined) continue;
-            if (idx > maxIdx) idx = maxIdx;
-            const po = idx * nComp;
-            const j = row * width + col;
-            let r; let g; let b;
-            if (nComp === 3) {
-              r = palette[po]; g = palette[po + 1]; b = palette[po + 2];
-            } else if (nComp === 1) {
-              r = palette[po]; g = r; b = r;
-            } else {
-              const [cr, cg, cb] = cmykToRgb(palette[po] / 255, palette[po + 1] / 255, palette[po + 2] / 255, palette[po + 3] / 255);
-              r = cr; g = cg; b = cb;
-            }
-            rgba[j * 4] = r; rgba[j * 4 + 1] = g; rgba[j * 4 + 2] = b; rgba[j * 4 + 3] = 255;
-          }
-        }
-      } else if ((colorSpace === 'Separation' || colorSpace === 'DeviceN') && resolvedCS && resolvedCS.tintSamples) {
-      // Single-input Separation/DeviceN: 1 byte per pixel, index into a 256-entry RGB tint LUT.
-        const tint = resolvedCS.tintSamples;
-        const tintMax = Math.floor(tint.length / 3) - 1;
-        for (let j = 0; j < width * height; j++) {
-          const idx = Math.min(data[j] || 0, tintMax) * 3;
-          rgba[j * 4] = tint[idx]; rgba[j * 4 + 1] = tint[idx + 1]; rgba[j * 4 + 2] = tint[idx + 2]; rgba[j * 4 + 3] = 255;
-        }
-      } else {
-        const nComponents = colorSpace === 'DeviceRGB' ? 3 : colorSpace === 'DeviceCMYK' ? 4 : 1;
-        for (let j = 0; j < width * height; j++) {
-          if (nComponents === 1) {
-            const g = data[j] || 0;
-            rgba[j * 4] = g; rgba[j * 4 + 1] = g; rgba[j * 4 + 2] = g; rgba[j * 4 + 3] = 255;
-          } else if (nComponents === 3) {
-            rgba[j * 4] = data[j * 3]; rgba[j * 4 + 1] = data[j * 3 + 1]; rgba[j * 4 + 2] = data[j * 3 + 2]; rgba[j * 4 + 3] = 255;
-          } else if (nComponents === 4) {
-            const c0 = data[j * 4]; const m0 = data[j * 4 + 1]; const y0 = data[j * 4 + 2]; const
-              k0 = data[j * 4 + 3];
-            const [cr, cg, cb] = cmykToRgb(c0 / 255, m0 / 255, y0 / 255, k0 / 255);
-            rgba[j * 4] = cr; rgba[j * 4 + 1] = cg; rgba[j * 4 + 2] = cb; rgba[j * 4 + 3] = 255;
-          }
-        }
-      }
-      const imgData = new ImageData(rgba, width, height);
-      return ca.createImageBitmapFromImageData(imgData);
-    }
+    const decodeInlineImage = (op) => decodeInlineImageBitmap(op, objCache, colorSpaces);
 
     async function renderSingleOp(rCtx, op) {
       if (op.type === 'image') {
@@ -9264,11 +9301,27 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           }
         } else if (op.patternShading) {
           const sh = op.patternShading;
-          // Shading pattern coordinates are in PDF page space; transform to text canvas-local space.
-          // The text canvas setTransform is [op.a, -op.b, -op.c, op.d, ...] with an extra hScale
-          // multiplying the first column. Inverting that system gives these formulas.
+          // Shading coords are in pattern space. Map to page space via sh.matrix,
+          // then to text canvas-local space via the inverse of the text transform.
           const det = op.a * op.d - op.b * op.c;
           if (det !== 0 && sh.coords && sh.stops) {
+            const shMat = sh.matrix;
+            const bctm = op.patternBaseCTM;
+            const toPage = (px, py) => {
+              let x = px;
+              let y = py;
+              if (shMat) {
+                x = shMat[0] * px + shMat[2] * py + shMat[4];
+                y = shMat[1] * px + shMat[3] * py + shMat[5];
+              }
+              if (bctm) {
+                const ox = bctm[0] * x + bctm[2] * y + bctm[4];
+                const oy = bctm[1] * x + bctm[3] * y + bctm[5];
+                x = ox;
+                y = oy;
+              }
+              return [x, y];
+            };
             const txCoord = (px, py) => {
               const dx = px - op.x;
               const dy = op.y - py;
@@ -9279,13 +9332,18 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             };
             let grad;
             if (sh.type === 2) {
-              const [x0, y0] = txCoord(sh.coords[0], sh.coords[1]);
-              const [x1, y1] = txCoord(sh.coords[2], sh.coords[3]);
+              const [px0, py0] = toPage(sh.coords[0], sh.coords[1]);
+              const [px1, py1] = toPage(sh.coords[2], sh.coords[3]);
+              const [x0, y0] = txCoord(px0, py0);
+              const [x1, y1] = txCoord(px1, py1);
               grad = rCtx.createLinearGradient(x0, y0, x1, y1);
             } else if (sh.type === 3) {
-              const [x0, y0] = txCoord(sh.coords[0], sh.coords[1]);
-              const [x1, y1] = txCoord(sh.coords[3], sh.coords[4]);
-              const avgScale = Math.sqrt(Math.abs(det)) * hScale;
+              const [px0, py0] = toPage(sh.coords[0], sh.coords[1]);
+              const [px1, py1] = toPage(sh.coords[3], sh.coords[4]);
+              const [x0, y0] = txCoord(px0, py0);
+              const [x1, y1] = txCoord(px1, py1);
+              const shScale = shMat ? Math.sqrt(Math.abs(shMat[0] * shMat[3] - shMat[1] * shMat[2])) : 1;
+              const avgScale = Math.sqrt(Math.abs(det)) * hScale / shScale;
               const r0 = sh.coords[2] / avgScale;
               const r1 = sh.coords[5] / avgScale;
               grad = rCtx.createRadialGradient(x0, y0, r0, x1, y1, r1);
