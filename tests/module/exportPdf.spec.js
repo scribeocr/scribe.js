@@ -412,7 +412,7 @@ describe('Check export for .pdf files.', () => {
       }
       return n;
     };
-    expect(countWords(scribe.data.ocr.active), 'source PDF native word count baseline').toBe(1062);
+    expect(countWords(scribe.data.ocr.active), 'source PDF native word count baseline').toBe(1064);
 
     scribe.addHighlights([{ page: 0, startLine: 0, endLine: 0 }]);
     expect(scribe.data.annotations.pages[0].length, 'addHighlights emits one annotation for the one-word line').toBe(1);
@@ -432,7 +432,7 @@ describe('Check export for .pdf files.', () => {
     expect(
       countWords(scribe.data.ocr.active),
       'annot mode must not emit a visible overlay text layer on top of the source text',
-    ).toBe(1062);
+    ).toBe(1064);
 
     const page0Text = /** @type {string} */ (await scribe.exportData('text', { minPage: 0, maxPage: 0 }));
     expect(page0Text, 'source page-0 text is preserved through the overlay round-trip').toContain('Iris');

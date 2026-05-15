@@ -1484,9 +1484,19 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
     const b = lineAnchorOf(lines[li + 1]);
     if (!a || !b) continue;
     const anchorSize = Math.max(a.anchorFontSize, b.anchorFontSize);
-    if (Math.abs(a.baselineY - b.baselineY) > anchorSize * 0.25) continue;
     const gap = b.leftX - a.rightX;
     if (gap < -anchorSize * 0.1 || gap > anchorSize) continue;
+    // A sup-sized continuation sitting above the previous line reports its baselineY at the shifted sup baseline,
+    // not the body baseline.
+    // Loosen the tolerance only in that geometry,
+    // so a small sub-heading next to a heading with a real column gap is not merged into it.
+    const smallerIsA = a.anchorFontSize < b.anchorFontSize * 0.85;
+    const smallerIsB = b.anchorFontSize < a.anchorFontSize * 0.85;
+    const supContinuation = Math.abs(gap) < anchorSize * 0.1
+      && ((smallerIsA && a.baselineY < b.baselineY)
+        || (smallerIsB && b.baselineY < a.baselineY));
+    const baselineTol = supContinuation ? anchorSize * 0.5 : anchorSize * 0.25;
+    if (Math.abs(a.baselineY - b.baselineY) > baselineTol) continue;
     let lastA = null;
     for (let k = lines[li].length - 1; k >= 0; k--) {
       if (lines[li][k].text !== ' ') { lastA = lines[li][k]; break; }
@@ -1710,14 +1720,28 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
         }
       }
 
-      // Split multiple footnote refs.  E.g. "(1)(3)".
+      // Split multiple footnote refs.  E.g. "(1)(3)" or "[1][2][3]".
+      let forceSupForSplits = false;
       if (splitPoints.length === 0 && wordChars.length > 4) {
         const wText = wordChars.map((/** @type {any} */ c) => c.text).join('');
-        if (/^(\(\d+\))+$/.test(wText)) {
+        let openClose = null;
+        if (/^(\(\d+\))+$/.test(wText)) openClose = ['(', ')'];
+        else if (/^(\[\d+\])+$/.test(wText)) openClose = ['[', ']'];
+        if (openClose) {
+          const [open, close] = openClose;
           for (let ci = 1; ci < wordChars.length; ci++) {
-            if (wordChars[ci - 1].text === ')' && wordChars[ci].text === '(') {
+            if (wordChars[ci - 1].text === close && wordChars[ci].text === open) {
               splitPoints.push({ index: ci, sizeDelta: 0 });
             }
+          }
+          const wFontSize = wordChars[0].fontSize;
+          const prevNeighbor = wi > 0 ? wordsAfterCJK[wi - 1] : null;
+          const nextNeighbor = wi + 1 < wordsAfterCJK.length ? wordsAfterCJK[wi + 1] : null;
+          const prevFontSize = prevNeighbor && prevNeighbor.length > 0 ? prevNeighbor[0].fontSize : 0;
+          const nextFontSize = nextNeighbor && nextNeighbor.length > 0 ? nextNeighbor[0].fontSize : 0;
+          if ((prevFontSize > 0 && wFontSize < prevFontSize * 0.95)
+            || (nextFontSize > 0 && wFontSize < nextFontSize * 0.95)) {
+            forceSupForSplits = true;
           }
         }
       }
@@ -1733,7 +1757,14 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
         let prevWasSup = false;
         for (const sp of splitPoints) {
           if (sp.index > start) {
-            const supForSegment = sp.sizeDelta > 0 ? prevWasSup : (sp.sizeDelta < 0);
+            let supForSegment;
+            if (forceSupForSplits) {
+              supForSegment = true;
+            } else if (sp.sizeDelta > 0) {
+              supForSegment = prevWasSup;
+            } else {
+              supForSegment = sp.sizeDelta < 0;
+            }
             words.push({
               chars: wordChars.slice(start, sp.index), sup: supForSegment, dropcap: false, smallCapsAlt: false, smallCapsAltTitleCase: false, smallCapsLargeFontSize: 0,
             });
@@ -1744,7 +1775,7 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
           }
           start = sp.index;
           // After splitting, the next segment's sup status is determined by the direction of the transition.
-          prevWasSup = sp.sizeDelta < 0;
+          prevWasSup = forceSupForSplits ? true : sp.sizeDelta < 0;
         }
         // Remaining chars after last split point.
         if (start < wordChars.length) {
@@ -1786,7 +1817,11 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
     while (supChanged) {
       supChanged = false;
       for (let i = 0; i < words.length; i++) {
-        if (words[i].sup || words[i].dropcap || words[i].chars.length === 0 || words[i].chars.length > 4) continue;
+        if (words[i].sup || words[i].dropcap || words[i].chars.length === 0) continue;
+        if (words[i].chars.length > 4) {
+          const wText = words[i].chars.map((c) => c.text).join('');
+          if (!/^[([]\d+[)\]]$/.test(wText)) continue;
+        }
         const wChars = words[i].chars;
         const wFontSize = wChars.reduce((sum, c) => sum + c.fontSize, 0) / wChars.length;
         const wBaseline = wChars.reduce((sum, c) => sum + c.y, 0) / wChars.length;

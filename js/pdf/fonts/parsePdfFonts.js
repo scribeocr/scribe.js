@@ -965,7 +965,8 @@ export function parsePageFonts(pageObjText, objCache) {
         // PDF producers may subset Type1 fonts and re-index charCodes 1..N while
         // preserving the original ASCII byte in the glyph name's hex suffix.
         let gHexCount = 0;
-        let gHexAsciiCount = 0;
+        let gHexWin1252Count = 0;
+        let gHexExtendedCount = 0;
         let gHexNonDecimalCount = 0;
         for (const tok of tokens) {
           if (tok[1]) {
@@ -980,7 +981,10 @@ export function parsePageFonts(pageObjText, objCache) {
             if (gHexMatch) {
               gHexCount++;
               const hexCode = parseInt(gHexMatch[1], 16);
-              if (hexCode >= 0x20 && hexCode <= 0x7E) gHexAsciiCount++;
+              if (hexCode >= 0x20 && hexCode <= 0xFF && win1252Chars[hexCode - 0x20]) {
+                gHexWin1252Count++;
+              }
+              if (hexCode >= 0x80) gHexExtendedCount++;
               if (/[a-fA-F]/.test(gHexMatch[1])) gHexNonDecimalCount++;
             }
             prescanCharCode++;
@@ -990,11 +994,11 @@ export function parsePageFonts(pageObjText, objCache) {
         // names have a non-trivial offset from charCode. Conservative — avoids
         // misinterpreting identity-style numeric IDs as ASCII letters.
         const useNumericNameAsAscii = numericCount >= 2 && largeOffsetCount * 2 >= numericCount;
-        // Treat /G<XY> as identity-hex when ALL entries decode to printable ASCII
-        // via hex AND at least one suffix contains a-f (proving it can't be decimal).
-        // 100% threshold is required to exclude conventions where /G<XY> names a GID,
-        // which can produce hex < 0x20.
-        const useGHexAsIdentity = gHexNonDecimalCount > 0 && gHexAsciiCount === gHexCount && gHexCount > 0;
+        // Treat /G<XY> as identity-hex when all entries decode to Win1252 bytes
+        // and there is evidence that decimal parsing is wrong.
+        const useGHexAsIdentity = gHexCount > 0
+          && gHexWin1252Count === gHexCount
+          && (gHexNonDecimalCount > 0 || gHexExtendedCount > 0);
         let charCode = 0;
         for (const tok of tokens) {
           if (tok[1]) {
@@ -1046,9 +1050,11 @@ export function parsePageFonts(pageObjText, objCache) {
               const gHexMatch = /^G([0-9a-fA-F]{2})$/.exec(glyphName);
               if (gHexMatch) {
                 const hexCode = parseInt(gHexMatch[1], 16);
-                const isPrintableAscii = hexCode >= 0x20 && hexCode <= 0x7E;
-                if (isPrintableAscii && (hexCode === charCode || useGHexAsIdentity)) {
-                  unicodeStr = String.fromCodePoint(hexCode);
+                const hexAsWin1252 = hexCode >= 0x20 && hexCode <= 0xFF
+                  ? win1252Chars[hexCode - 0x20]
+                  : undefined;
+                if (hexAsWin1252 && (hexCode === charCode || useGHexAsIdentity)) {
+                  unicodeStr = hexAsWin1252;
                 }
               }
             }
@@ -1102,6 +1108,11 @@ export function parsePageFonts(pageObjText, objCache) {
                 && existingUnicode !== undefined
                 && existingUnicode !== unicodeStr;
 
+              const shouldOverrideWithGHex = /^G[0-9a-fA-F]{2}$/.test(glyphName)
+                && useGHexAsIdentity
+                && existingUnicode !== undefined
+                && existingUnicode !== unicodeStr;
+
               // Broken ToUnicode entries often use PUA codepoints (e.g. Symbol
               // copyrightserif -> U+F6D9). When Differences resolves to a standard
               // Unicode character, prefer the non-PUA mapping.
@@ -1124,6 +1135,7 @@ export function parsePageFonts(pageObjText, objCache) {
               if (!toUnicode.has(charCode)
                 || shouldOverrideFallbackToUnicode
                 || shouldOverrideWithCPrefix
+                || shouldOverrideWithGHex
                 || shouldOverrideBrokenPUA) {
                 toUnicode.set(charCode, unicodeStr);
               }
@@ -1867,7 +1879,9 @@ export function parsePageFonts(pageObjText, objCache) {
               }
             } else if (cffEnc && typeof cffEnc === 'object' && charsetInfo.glyphToUnicode) {
               const isSymbolCffByName = determineSansSerif(baseName) === 'SymbolDefault'
-                || determineSansSerif(familyName) === 'SymbolDefault';
+                || determineSansSerif(familyName) === 'SymbolDefault'
+                || /sym|ding|wing/i.test(baseName)
+                || /sym|ding|wing/i.test(familyName);
               // CFF custom Encoding (charcode → position; GID = position + 1
               // because GID 0 is .notdef and has no encoding entry).
               // ASCII codepoints are skipped for symbol/decoration fonts, which often reuse

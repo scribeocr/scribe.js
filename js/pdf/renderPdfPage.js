@@ -1089,18 +1089,43 @@ async function imageInfoToBitmap(imageInfo, objCache) {
       }
     }
   } else if (colorSpace === 'DeviceCMYK') {
-    // CMYK → RGB using pdf.js polynomial approximation (SWOP ICC profile match)
     rgbaData = new Uint8ClampedArray(width * height * 4);
-    for (let i = 0; i < width * height; i++) {
-      const c = decodeInvert ? (1 - imageData[i * 4] / 255) : (imageData[i * 4] / 255);
-      const m = decodeInvert ? (1 - imageData[i * 4 + 1] / 255) : (imageData[i * 4 + 1] / 255);
-      const y = decodeInvert ? (1 - imageData[i * 4 + 2] / 255) : (imageData[i * 4 + 2] / 255);
-      const k = decodeInvert ? (1 - imageData[i * 4 + 3] / 255) : (imageData[i * 4 + 3] / 255);
-      const [r, g, b] = cmykToRgb(c, m, y, k);
-      rgbaData[i * 4] = r;
-      rgbaData[i * 4 + 1] = g;
-      rgbaData[i * 4 + 2] = b;
-      rgbaData[i * 4 + 3] = 255;
+    if (bitsPerComponent === 8) {
+      for (let i = 0; i < width * height; i++) {
+        const c = decodeInvert ? (1 - imageData[i * 4] / 255) : (imageData[i * 4] / 255);
+        const m = decodeInvert ? (1 - imageData[i * 4 + 1] / 255) : (imageData[i * 4 + 1] / 255);
+        const y = decodeInvert ? (1 - imageData[i * 4 + 2] / 255) : (imageData[i * 4 + 2] / 255);
+        const k = decodeInvert ? (1 - imageData[i * 4 + 3] / 255) : (imageData[i * 4 + 3] / 255);
+        const [r, g, b] = cmykToRgb(c, m, y, k);
+        rgbaData[i * 4] = r;
+        rgbaData[i * 4 + 1] = g;
+        rgbaData[i * 4 + 2] = b;
+        rgbaData[i * 4 + 3] = 255;
+      }
+    } else {
+      const rowBytes = Math.ceil(width * 4 * bitsPerComponent / 8);
+      const compMax = (1 << bitsPerComponent) - 1;
+      for (let y = 0; y < height; y++) {
+        for (let x = 0; x < width; x++) {
+          const comps = [0, 0, 0, 0];
+          for (let cc = 0; cc < 4; cc++) {
+            const bitOff = (x * 4 + cc) * bitsPerComponent;
+            const byteIdx = y * rowBytes + (bitOff >> 3);
+            const shift = 8 - (bitOff & 7) - bitsPerComponent;
+            comps[cc] = (imageData[byteIdx] >> shift) & compMax;
+          }
+          const cN = decodeInvert ? (1 - comps[0] / compMax) : (comps[0] / compMax);
+          const mN = decodeInvert ? (1 - comps[1] / compMax) : (comps[1] / compMax);
+          const yN = decodeInvert ? (1 - comps[2] / compMax) : (comps[2] / compMax);
+          const kN = decodeInvert ? (1 - comps[3] / compMax) : (comps[3] / compMax);
+          const [r, g, b] = cmykToRgb(cN, mN, yN, kN);
+          const pi = (y * width + x) * 4;
+          rgbaData[pi] = r;
+          rgbaData[pi + 1] = g;
+          rgbaData[pi + 2] = b;
+          rgbaData[pi + 3] = 255;
+        }
+      }
     }
   } else if (colorSpace === 'Separation') {
     // Separation color space (including single-colorant DeviceN): pixel values are tint amounts
@@ -4364,14 +4389,20 @@ function parseSmaskBC(smaskDict, objCache) {
 function parseExtGStates(pageObjText, objCache) {
   const states = new Map();
 
-  let resourcesText = pageObjText;
+  let resourcesText = null;
   const resRefMatch = /\/Resources\s+(\d+)\s+\d+\s+R/.exec(pageObjText);
   if (resRefMatch) {
-    const resObj = objCache.getObjectText(Number(resRefMatch[1]));
-    if (resObj) resourcesText = resObj;
+    resourcesText = objCache.getObjectText(Number(resRefMatch[1])) || null;
+  } else {
+    const resIdx = pageObjText.indexOf('/Resources');
+    if (resIdx !== -1) {
+      const dictStart = pageObjText.indexOf('<<', resIdx);
+      if (dictStart !== -1) resourcesText = extractDict(pageObjText, dictStart);
+    }
   }
+  if (!resourcesText) return states;
 
-  const gsStart = resourcesText.indexOf('/ExtGState');
+  const gsStart = findTopLevelKey(resourcesText, '/ExtGState');
   if (gsStart === -1) return states;
 
   let gsDictText;
@@ -8408,6 +8439,38 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     }
 
     /**
+     * Fill the half-plane "behind" a Type 3 radial gradient's inner circle with the
+     * first stop colour when Extend[0] is true.
+     * Canvas2D's radial gradient leaves pixels transparent where the parameter ω resolves negative
+     * (i.e. the side of the apex opposite the outer circle).
+     * PDF spec §8.7.4.5.4 requires those pixels to take the inner-edge colour when Extend[0] is true.
+     * @param {OffscreenCanvasRenderingContext2D} renderCtx
+     * @param {{coords: number[], extend: boolean[], stops: {offset: number, color: string}[]}} sh
+     */
+    function fillRadialExtendBehind(renderCtx, sh) {
+      if (!sh.extend || !sh.extend[0]) return;
+      const [x0, y0, r0, x1, y1] = sh.coords;
+      if (Math.abs(r0) > 1e-9) return;
+      const dx = x1 - x0;
+      const dy = y1 - y0;
+      const len = Math.sqrt(dx * dx + dy * dy);
+      if (len < 1e-9) return;
+      const ax = dx / len;
+      const ay = dy / len;
+      const px = -ay;
+      const py = ax;
+      const BIG = 1e6;
+      renderCtx.beginPath();
+      renderCtx.moveTo(x0 + BIG * px, y0 + BIG * py);
+      renderCtx.lineTo(x0 - BIG * px, y0 - BIG * py);
+      renderCtx.lineTo(x0 - BIG * px - BIG * ax, y0 - BIG * py - BIG * ay);
+      renderCtx.lineTo(x0 + BIG * px - BIG * ax, y0 + BIG * py - BIG * ay);
+      renderCtx.closePath();
+      renderCtx.fillStyle = sh.stops[0].color;
+      renderCtx.fill();
+    }
+
+    /**
      * Check whether an op has a text clip (from Tr modes 4-7) in its clip stack.
      * Returns the textClip array or null.
      */
@@ -9582,6 +9645,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             rCtx.rect(sh.bbox[0], sh.bbox[1], sh.bbox[2] - sh.bbox[0], sh.bbox[3] - sh.bbox[1]);
             rCtx.clip();
           }
+          fillRadialExtendBehind(rCtx, sh);
           const grad = rCtx.createRadialGradient(
             sh.coords[0], sh.coords[1], sh.coords[2],
             sh.coords[3], sh.coords[4], sh.coords[5],

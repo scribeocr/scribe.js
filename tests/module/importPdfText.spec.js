@@ -439,6 +439,18 @@ describe('Check direct text extraction from Iris (plant) - Wikipedia_123.pdf.', 
     expect(matches[0].words.map((w) => w.text).join(' ')).toBe('contact with the perianth, then with the three [7] stigmatic');
   });
 
+  test('Page 2 "Synonyms [1][2][3]" splits into three superscript refs', async () => {
+    const page = scribe.data.ocr.active[1];
+    const matches = page.lines.filter((l) => l.words.map((w) => w.text).join(' ').startsWith('Synonyms'));
+    expect(matches.length).toBe(1);
+    const line = matches[0];
+    expect(line.words.map((w) => w.text)).toEqual(['Synonyms', '[1]', '[2]', '[3]']);
+    expect(line.words[0].style.sup).toBe(false);
+    expect(line.words[1].style.sup).toBe(true);
+    expect(line.words[2].style.sup).toBe(true);
+    expect(line.words[3].style.sup).toBe(true);
+  });
+
   afterAll(async () => {
     await scribe.terminate();
   });

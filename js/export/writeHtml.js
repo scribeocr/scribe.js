@@ -18,7 +18,6 @@ const calcFontMetrics = (fontI, fontSize) => {
   const unitsPerEm = fontI.opentype.unitsPerEm;
 
   // Bit 7: Use_Typo_Metrics (1 = Yes)
-  // eslint-disable-next-line no-bitwise
   if (os2.fsSelection >> 7 & 1) {
     return {
       fontBoundingBoxAscent: Math.round(os2.sTypoAscender * (fontSize / unitsPerEm)),

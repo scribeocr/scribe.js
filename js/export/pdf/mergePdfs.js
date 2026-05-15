@@ -30,8 +30,17 @@ function extractDictKeyValue(dictText, key) {
     let depth = 0;
     let p = i;
     while (p < dictText.length) {
-      if (dictText[p] === '<' && dictText[p + 1] === '<') { depth++; p += 2; continue; }
-      if (dictText[p] === '>' && dictText[p + 1] === '>') { depth--; p += 2; if (depth === 0) return dictText.substring(i, p); continue; }
+      if (dictText[p] === '<' && dictText[p + 1] === '<') {
+        depth++;
+        p += 2;
+        continue;
+      }
+      if (dictText[p] === '>' && dictText[p + 1] === '>') {
+        depth--;
+        p += 2;
+        if (depth === 0) return dictText.substring(i, p);
+        continue;
+      }
       p++;
     }
     return null;
@@ -340,11 +349,23 @@ export async function mergePdfs(pdfInputs) {
       byteLen += c.length;
     } else {
       const hdr = c.header;
-      if (typeof hdr === 'string') { parts.push(hdr); byteLen += hdr.length; } else { parts.push(hdr); byteLen += hdr.length; }
+      if (typeof hdr === 'string') {
+        parts.push(hdr);
+        byteLen += hdr.length;
+      } else {
+        parts.push(hdr);
+        byteLen += hdr.length;
+      }
       parts.push(c.streamData);
       byteLen += c.streamData.length;
       const tr = c.trailer;
-      if (typeof tr === 'string') { parts.push(tr); byteLen += tr.length; } else { parts.push(tr); byteLen += tr.length; }
+      if (typeof tr === 'string') {
+        parts.push(tr);
+        byteLen += tr.length;
+      } else {
+        parts.push(tr);
+        byteLen += tr.length;
+      }
     }
   }
 

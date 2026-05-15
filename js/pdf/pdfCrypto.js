@@ -957,10 +957,11 @@ function findEncryptRef(bytes) {
   const marker = '/Encrypt';
   const len = bytes.length;
   let from = 0;
-  let last = null;
+  let lastObjNum = null;
+  let lastPos = -1;
   while (true) {
     const idx = byteIndexOf(bytes, marker, from);
-    if (idx === -1) return last;
+    if (idx === -1) return lastObjNum === null ? null : { objNum: lastObjNum, pos: lastPos };
     let p = idx + marker.length;
     // Reject longer key names like /Encryptable
     if (p < len) {
@@ -979,39 +980,88 @@ function findEncryptRef(bytes) {
     while (p < len && isAsciiDigit(bytes[p])) p++;
     while (p < len && isPdfWhitespace(bytes[p])) p++;
     if (p >= len || bytes[p] !== 0x52) { from = p; continue; } // 'R'
-    last = objNum;
+    lastObjNum = objNum;
+    lastPos = idx;
     from = p + 1;
   }
 }
 
 /**
- * Scan PDF bytes for "/ID [" and return the byte offset just past the '[' for
- * the last match. Returns -1 if no /ID array is present.
+ * Scan a byte range for "/ID [" and return the byte offset
+ * just past the '[' for the last match in that range.
  * @param {Uint8Array} bytes
+ * @param {number} from - inclusive start of search range
+ * @param {number} to - exclusive end of search range
  */
-function findIdArrayOpen(bytes) {
-  const len = bytes.length;
-  let from = 0;
+function findIdArrayOpenInRange(bytes, from, to) {
+  const len = Math.min(to, bytes.length);
+  let pos = from;
   let last = -1;
-  while (true) {
-    const idx = byteIndexOf(bytes, '/ID', from);
-    if (idx === -1) return last;
+  while (pos < len) {
+    const idx = byteIndexOf(bytes, '/ID', pos);
+    if (idx === -1 || idx >= len) return last;
     let p = idx + 3;
     if (p < len) {
       const c = bytes[p];
       if ((c >= 0x41 && c <= 0x5A) || (c >= 0x61 && c <= 0x7A) || isAsciiDigit(c) || c === 0x5F) {
-        from = p;
+        pos = p;
         continue;
       }
     }
     while (p < len && isPdfWhitespace(bytes[p])) p++;
     if (p < len && bytes[p] === 0x5B) {
       last = p + 1;
-      from = p + 1;
+      pos = p + 1;
     } else {
-      from = p;
+      pos = p;
     }
   }
+  return last;
+}
+
+/**
+ * Walk backward from `pos` to find the enclosing `<<` of the dict containing
+ * that position, then forward to its matching `>>`.
+ * Linearized PDFs have a second `/ID [` array in the old end-of-file trailer
+ * that does not match the /ID used for encryption key derivation.
+ * The correct /ID lives in the same dict as the /Encrypt reference,
+ * so we need the bounds of that dict.
+ * @param {Uint8Array} bytes
+ * @param {number} pos - byte offset inside the target dict
+ * @param {number} maxLookback - maximum bytes to scan backward
+ * @returns {{lo: number, hi: number} | null}
+ */
+function findEnclosingDictBounds(bytes, pos, maxLookback = 32_768) {
+  const len = bytes.length;
+  const stop = Math.max(0, pos - maxLookback);
+  let depth = 0;
+  let lo = -1;
+  for (let p = pos - 1; p > stop; p--) {
+    if (p >= 1 && bytes[p] === 0x3E && bytes[p - 1] === 0x3E) { // '>>'
+      depth++;
+      p--;
+    } else if (p >= 1 && bytes[p] === 0x3C && bytes[p - 1] === 0x3C) { // '<<'
+      if (depth === 0) { lo = p - 1; break; }
+      depth--;
+      p--;
+    }
+  }
+  if (lo === -1) return null;
+  // Walk forward from lo to find the matching '>>'
+  let hi = -1;
+  depth = 0;
+  for (let p = lo; p < len - 1; p++) {
+    if (bytes[p] === 0x3C && bytes[p + 1] === 0x3C) {
+      depth++;
+      p++;
+    } else if (bytes[p] === 0x3E && bytes[p + 1] === 0x3E) {
+      depth--;
+      p++;
+      if (depth === 0) { hi = p + 1; break; }
+    }
+  }
+  if (hi === -1) return null;
+  return { lo, hi };
 }
 
 /**
@@ -1029,7 +1079,7 @@ export function setupEncryption(objCache) {
   // payload), so we accept any occurrence whose suffix parses as "N N R".
   const encryptMatch = findEncryptRef(pdfBytes);
   if (!encryptMatch) return;
-  const encObjNum = encryptMatch;
+  const { objNum: encObjNum, pos: encryptRefPos } = encryptMatch;
 
   // Read the /Encrypt dict object from raw bytes (it is never encrypted itself)
   const encEntry = xrefEntries[encObjNum];
@@ -1115,7 +1165,13 @@ export function setupEncryption(objCache) {
   // Match /ID followed by '[' to target the trailer's ID array specifically.
   // Page dicts can have /ID as an indirect reference (e.g. /ID 5 0 R for StructParent);
   // those lack the '[' and must not be matched.
-  const idArrayIdx = findIdArrayOpen(pdfBytes);
+  // Linearized PDFs may carry a second /ID array in the old end-of-file trailer
+  // that differs from the /ID used for key derivation. The correct /ID lives in
+  // the same dict as the /Encrypt reference.
+  let idArrayIdx = -1;
+  const encDict = encryptRefPos >= 0 ? findEnclosingDictBounds(pdfBytes, encryptRefPos) : null;
+  if (encDict) idArrayIdx = findIdArrayOpenInRange(pdfBytes, encDict.lo, encDict.hi);
+  if (idArrayIdx === -1) idArrayIdx = findIdArrayOpenInRange(pdfBytes, 0, pdfBytes.length);
   if (idArrayIdx === -1) return;
   let idPos = idArrayIdx;
   while (idPos < pdfBytes.length && (pdfBytes[idPos] === 0x20 || pdfBytes[idPos] === 0x0A || pdfBytes[idPos] === 0x0D || pdfBytes[idPos] === 0x09)) idPos++;

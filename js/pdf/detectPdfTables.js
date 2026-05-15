@@ -674,10 +674,16 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     // upward. Without a floor, a stacked sibling whose data rows visually
     // resemble headers (multi-segment numerics) chains the upward scan
     // through the entire neighbor and stops only at its intro prose.
+    // Compare against this table's first data row, not its bbox.top: bbox.top
+    // was inflated by avgRowHeight*3 in groupRowsIntoCandidates, so sibling
+    // bboxes can overlap by tens of points while their data rows don't.
+    const myFirstRowY = table.rows.length > 0
+      ? Math.min(...table.rows.map((r) => r.y))
+      : table.bbox.top;
     let topFloor = 0;
     for (const other of validated) {
       if (other === table) continue;
-      if (other.bbox.bottom <= table.bbox.top
+      if (other.bbox.bottom <= myFirstRowY
           && other.bbox.bottom > topFloor
           && other.bbox.right >= table.bbox.left
           && other.bbox.left <= table.bbox.right) {
@@ -726,7 +732,7 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     if (table.detectionMethod === 'grid-strong') continue;
     if (table.detectionMethod === 'segmented-hline') continue;
     if (table.detectionMethod === 'header-rule') continue;
-    extendTableToAdjacentContent(table, lines);
+    extendTableToAdjacentContent(table, lines, multiCol);
   }
 
   // === Phase 5.7: Refine text-table column structure from rule clusters ===
@@ -3898,8 +3904,11 @@ function detectTableTitle(table, lines) {
  *
  * @param {DetectedTable} table
  * @param {import('../objects/ocrObjects.js').OcrLine[]} lines
+ * @param {DetectedTable[]} [siblings] - Other detected tables on the page;
+ *   used to clamp the bottom extension so it can't swallow rows belonging
+ *   to a stacked sibling below.
  */
-function extendTableToAdjacentContent(table, lines) {
+function extendTableToAdjacentContent(table, lines, siblings) {
   if (table.rows.length < 2) return;
 
   const sortedRows = [...table.rows].sort((a, b) => a.y - b.y);
@@ -4042,8 +4051,21 @@ function extendTableToAdjacentContent(table, lines) {
   // (Total / Previous Year). Single-line rows below the grid are skipped
   // (likely a footnote); the loop breaks once it hits a row whose segments
   // do NOT align with the table's columns (the table has ended).
+  // Clamp to the next sibling's first data row so this pass can't swallow
+  // a stacked sibling's header band into the current table.
   const colBoundaries = [table.bbox.left, ...table.colSeparators, table.bbox.right];
-  const belowLimit = table.bbox.bottom + medianSpacing * 1.5;
+  let belowLimit = table.bbox.bottom + medianSpacing * 1.5;
+  if (siblings) {
+    for (const other of siblings) {
+      if (other === table || !other.rows || other.rows.length === 0) continue;
+      if (other.bbox.right < table.bbox.left || other.bbox.left > table.bbox.right) continue;
+      let otherFirstRowY = Infinity;
+      for (const r of other.rows) if (r.y < otherFirstRowY) otherFirstRowY = r.y;
+      if (otherFirstRowY > table.bbox.bottom && otherFirstRowY - 5 < belowLimit) {
+        belowLimit = otherFirstRowY - 5;
+      }
+    }
+  }
   const belowLinesByY = new Map();
   for (let i = 0; i < lines.length; i++) {
     if (existingLineSet.has(i)) continue;

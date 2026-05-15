@@ -385,10 +385,10 @@ export async function evalWords({
   }
 
   if (typeof process !== 'undefined') {
-    canvas.dispose();
-    if (canvasView0) canvasView0.dispose();
-    if (canvasView1) canvasView1.dispose();
-    if (canvasView2) canvasView2.dispose();
+    ca.closeDrawable(canvas);
+    ca.closeDrawable(canvasView0);
+    ca.closeDrawable(canvasView1);
+    ca.closeDrawable(canvasView2);
   }
 
   return { metricA, metricB, debug: debugImg };

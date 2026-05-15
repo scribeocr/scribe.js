@@ -883,8 +883,20 @@ export function extractStream(pdfBytes, objOffset, objCache = null, objNum = -1)
   }
 
   for (let fi = 0; fi < filters.length; fi++) {
-    const filter = filters[fi];
+    let filter = filters[fi];
     const dpText = decodeParmsList[fi] || '';
+    // PDF spec Annex H defines short filter names for inline images.
+    // Many PDFs also use them in regular streams.
+    const filterAlias = {
+      AHx: 'ASCIIHexDecode',
+      A85: 'ASCII85Decode',
+      LZW: 'LZWDecode',
+      Fl: 'FlateDecode',
+      RL: 'RunLengthDecode',
+      CCF: 'CCITTFaxDecode',
+      DCT: 'DCTDecode',
+    };
+    if (filterAlias[filter]) filter = filterAlias[filter];
     if (objCache) objCache.filtersUsed.add(filter);
 
     if (filter === 'FlateDecode') {
@@ -1984,7 +1996,9 @@ function collectPages(objNum, objCache, inheritedMediaBox, inheritedCropBox, inh
     }
   }
 
-  if (/\/Type\s*\/Pages\b/.test(objText)) {
+  const looksLikePagesNode = /\/Type\s*\/Pages\b/.test(objText)
+    || (/\/Kids\s*[\[<]/.test(objText) && !/\/Type\s*\/Page\b(?!s)/.test(objText));
+  if (looksLikePagesNode) {
     const kidsContent = getKidsArrayContent(objText, objCache);
     if (kidsContent === null) return;
 
@@ -2099,7 +2113,9 @@ export function getPageObjects(objCache) {
 function collectPageTreeNodes(objNum, objCache, nodeSet) {
   const objText = objCache.getObjectText(objNum);
   if (!objText) return;
-  if (/\/Type\s*\/Pages\b/.test(objText)) {
+  const looksLikePagesNode = /\/Type\s*\/Pages\b/.test(objText)
+    || (/\/Kids\s*[\[<]/.test(objText) && !/\/Type\s*\/Page\b(?!s)/.test(objText));
+  if (looksLikePagesNode) {
     const kidsContent = getKidsArrayContent(objText, objCache);
     if (kidsContent === null) return;
     const kidRefs = [...kidsContent.matchAll(/(\d+)\s+\d+\s+R/g)].map((m) => Number(m[1]));
@@ -2245,6 +2261,8 @@ export function tokenizeContentStream(streamText) {
 
     if (TOK_WS[cc]) { i++; continue; }
 
+    const tokStart = i;
+
     if (cc === 0x25) { // %
       while (i < len) {
         const c2 = streamText.charCodeAt(i);
@@ -2258,7 +2276,7 @@ export function tokenizeContentStream(streamText) {
       i++;
       const nameStart = i;
       while (i < len && !TOK_NAME_DELIM[streamText.charCodeAt(i)]) i++;
-      tokens.push({ type: 'name', value: streamText.slice(nameStart, i) });
+      tokens.push({ type: 'name', value: streamText.slice(nameStart, i), start: tokStart });
       continue;
     }
 
@@ -2288,7 +2306,7 @@ export function tokenizeContentStream(streamText) {
         i++;
       }
       i++;
-      tokens.push({ type: 'hexstring', value: hex });
+      tokens.push({ type: 'hexstring', value: hex, start: tokStart });
       continue;
     }
 
@@ -2338,7 +2356,7 @@ export function tokenizeContentStream(streamText) {
           i++;
         }
       }
-      tokens.push({ type: 'string', value: str });
+      tokens.push({ type: 'string', value: str, start: tokStart });
       continue;
     }
 
@@ -2410,7 +2428,7 @@ export function tokenizeContentStream(streamText) {
         }
         i++;
       }
-      tokens.push({ type: 'array', value: arrTokens });
+      tokens.push({ type: 'array', value: arrTokens, start: tokStart });
       continue;
     }
 
@@ -2423,7 +2441,7 @@ export function tokenizeContentStream(streamText) {
         i++;
       }
       const nv = Number(streamText.slice(nstart, i));
-      tokens.push({ type: 'number', value: Number.isFinite(nv) ? nv : 0 });
+      tokens.push({ type: 'number', value: Number.isFinite(nv) ? nv : 0, start: tokStart });
       continue;
     }
 
@@ -2478,7 +2496,7 @@ export function tokenizeContentStream(streamText) {
               && (dataEnd + 2 === len || TOK_WS_OR_SLASH[streamText.charCodeAt(dataEnd + 2)])) {
             const imageData = streamText.substring(dataStart, dataEnd);
             i = dataEnd + 2;
-            tokens.push({ type: 'inlineImage', value: { dictText: dictTrim, imageData } });
+            tokens.push({ type: 'inlineImage', value: { dictText: dictTrim, imageData }, start: tokStart });
             continue;
           }
         }
@@ -2493,7 +2511,7 @@ export function tokenizeContentStream(streamText) {
         }
         const imageData = streamText.substring(dataStart, i > dataStart ? i - 1 : i);
         i += 2;
-        tokens.push({ type: 'inlineImage', value: { dictText: dictTrim, imageData } });
+        tokens.push({ type: 'inlineImage', value: { dictText: dictTrim, imageData }, start: tokStart });
         continue;
       }
 
@@ -2504,7 +2522,7 @@ export function tokenizeContentStream(streamText) {
         if (TOK_OP_CHAR[c2] && TOK_OP_CHAR[c3]) {
           const op3 = streamText.slice(i, i + 3);
           if (PDF_CONTENT_OPERATORS.has(op3)) {
-            tokens.push({ type: 'operator', value: op3 });
+            tokens.push({ type: 'operator', value: op3, start: tokStart });
             i += 3;
             continue;
           }
@@ -2516,14 +2534,14 @@ export function tokenizeContentStream(streamText) {
         if (TOK_OP_CHAR[c2] || TOK_DIGIT[c2]) {
           const op2 = streamText.slice(i, i + 2);
           if (PDF_CONTENT_OPERATORS.has(op2)) {
-            tokens.push({ type: 'operator', value: op2 });
+            tokens.push({ type: 'operator', value: op2, start: tokStart });
             i += 2;
             continue;
           }
         }
       }
       // 1-char operator
-      tokens.push({ type: 'operator', value: streamText[i] });
+      tokens.push({ type: 'operator', value: streamText[i], start: tokStart });
       i++;
       continue;
     }
