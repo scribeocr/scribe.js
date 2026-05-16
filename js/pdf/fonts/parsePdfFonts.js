@@ -2114,6 +2114,49 @@ export function parsePageFonts(pageObjText, objCache) {
     return { overlap, ratio: overlap > 0 ? equal / overlap : 0 };
   };
 
+  // Some producers write identity-mapped ToUnicode entries (cp === cc) when glyph-name lookup fails,
+  // even when the rest of the CMap follows a consistent non-zero shift.
+  // Override those entries with the dominant shift.
+  // Gate on a high dominance ratio so legitimately-mixed CMaps aren't touched.
+  for (const [, font] of fonts) {
+    if (font.toUnicode.size < 10) continue;
+    if (font.type1 || font.type3) continue;
+    /** @type {Array<[number, number]>} sorted [charCode, codepoint] */
+    const singles = [];
+    for (const [cc, str] of font.toUnicode) {
+      if (typeof str !== 'string' || str.length === 0) continue;
+      if ([...str].length !== 1) continue;
+      const cp = str.codePointAt(0);
+      if (cp === undefined) continue;
+      singles.push([cc, cp]);
+    }
+    if (singles.length < 10) continue;
+    const globalOffsetCounts = new Map();
+    for (const [cc, cp] of singles) {
+      const off = cp - cc;
+      globalOffsetCounts.set(off, (globalOffsetCounts.get(off) || 0) + 1);
+    }
+    let globalDominantOffset = 0;
+    let globalDominantCount = 0;
+    for (const [o, c] of globalOffsetCounts) {
+      if (c > globalDominantCount) {
+        globalDominantCount = c;
+        globalDominantOffset = o;
+      }
+    }
+    if (globalDominantOffset === 0) continue;
+    if (globalDominantCount / singles.length < 0.8) continue;
+    /** @type {Array<[number, string]>} */
+    const fixes = [];
+    for (const [cc, cp] of singles) {
+      if (cp !== cc) continue;
+      const corrected = cc + globalDominantOffset;
+      if (corrected < 0x20 || corrected > 0x10FFFF) continue;
+      fixes.push([cc, String.fromCodePoint(corrected)]);
+    }
+    for (const [cc, str] of fixes) font.toUnicode.set(cc, str);
+  }
+
   // Post-processing: inherit CID→Unicode mappings from sibling fonts when the
   // current font has no ToUnicode. This is common in producer bugs where only
   // some subset/style variants carry a ToUnicode CMap.

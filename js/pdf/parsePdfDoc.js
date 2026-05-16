@@ -462,15 +462,17 @@ export function parseSinglePage(page, objCache, n, dpi) {
     }
   }
 
-  // Drop co-located duplicate glyphs. Check the 3×3 bucket neighborhood so
-  // two near-duplicate positions that straddle a bucket boundary still match.
+  // Narrow adjacent characters (e.g. "ll" at small font sizes) can have spacing
+  // below 1 unit, so the dedup bucket scales with font size. The 3×3 neighborhood
+  // check handles positions that straddle a bucket boundary.
   const seenCharKeys = new Set();
   const dedupedChars = [];
   for (let i = 0; i < chars.length; i++) {
     const ch = chars[i];
     const fontKey = `${ch.text}|${ch.fontInfo.familyName}|${ch.fontInfo.bold ? 1 : 0}|${ch.fontInfo.italic ? 1 : 0}|${Math.round(ch.fontSize * 10)}`;
-    const xb = Math.round(ch.x);
-    const yb = Math.round(ch.y);
+    const bucketSize = Math.max(0.25, ch.fontSize * 0.05);
+    const xb = Math.round(ch.x / bucketSize);
+    const yb = Math.round(ch.y / bucketSize);
     let isDup = false;
     for (let dx = -1; dx <= 1 && !isDup; dx++) {
       for (let dy = -1; dy <= 1 && !isDup; dy++) {
@@ -1543,7 +1545,7 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
             // text often shrinks real inter-word gaps to a fraction of the
             // space-glyph advance; keep those as word breaks.
             const adjacencyTol = prevCh.fontSize * 0.15;
-            const positiveTol = Math.max(prevCh.fontSize * 0.05, ch.width * 0.3);
+            const positiveTol = Math.max(prevCh.fontSize * 0.01, ch.width * 0.1);
             const isKerningArtifact = visualGap >= -adjacencyTol && visualGap < positiveTol;
             if (isKerningArtifact && prevCh.text !== ',') {
               continue;
