@@ -197,7 +197,7 @@ export function addGlyphNames(font) {
       } else {
         glyph.name = font.cffEncoding.charset[i];
       }
-    } else if (font.glyphNames.names) {
+    } else if (font.glyphNames && font.glyphNames.names) {
       glyph.name = font.glyphNames.names[i];
     }
   }

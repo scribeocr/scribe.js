@@ -13,6 +13,35 @@ import { getCIDToUnicodeMap } from './cidToUnicode.js';
 import { determineSansSerif } from '../../utils/miscUtils.js';
 
 /**
+ * Stable hex hash of a parsed Type3 glyph commands array.
+ * Same glyph paths across different fonts (or pages) collapse to the same string.
+ * @param {Array<{ type: string, x?: number, y?: number, x1?: number, y1?: number, x2?: number, y2?: number }>} commands
+ */
+function hashGlyphCommands(commands) {
+  let h1 = 0x811c9dc5 >>> 0;
+  let h2 = 0xcbf29ce4 >>> 0;
+  const mix = (b) => {
+    h1 = Math.imul(h1 ^ (b & 0xff), 16777619) >>> 0;
+    h2 = Math.imul(h2 ^ ((b >>> 8) & 0xff), 16777619) >>> 0;
+  };
+  for (let i = 0; i < commands.length; i++) {
+    const c = commands[i];
+    mix(c.type.charCodeAt(0));
+    const fields = ['x', 'y', 'x1', 'y1', 'x2', 'y2'];
+    for (let k = 0; k < fields.length; k++) {
+      const v = c[fields[k]];
+      if (v === undefined) continue;
+      const n = Math.round(v * 1000) | 0;
+      mix(n);
+      mix(n >>> 8);
+      mix(n >>> 16);
+      mix(n >>> 24);
+    }
+  }
+  return h1.toString(16).padStart(8, '0') + h2.toString(16).padStart(8, '0');
+}
+
+/**
  * Parse a TrueType font file's cmap table and build a reverse GID→Unicode map.
  * Used for CIDFontType2 + Identity-H where CIDs are GIDs and we need GID→Unicode.
  * @param {Uint8Array} fontFile
@@ -178,6 +207,7 @@ function isPlaceholderFontName(name) {
  * @typedef {{
  *   bbox: { x0: number, y0: number, x1: number, y1: number } | null,
  *   advanceWidth: number,
+ *   placeholderD1?: boolean,
  * }} GlyphInfo
  */
 
@@ -209,11 +239,63 @@ export function extractType3GlyphBBoxes(pdfBytes) {
 }
 
 /**
+ * Enumerate every visible Type3 glyph in a PDF, deduplicated by the path-content hash.
+ * The resulting map of pathHash -> string can be passed back into `extractPDFTextDirect` as `options.type3GlyphMappings`.
+ *
+ * @param {Uint8Array} pdfBytes
+ * @returns {Array<{
+ *   pathHash: string,
+ *   commands: any[],
+ *   bbox: { x0: number, y0: number, x1: number, y1: number },
+ *   advanceWidth: number,
+ *   fontMatrix: number[],
+ *   fontBBox: number[],
+ *   exampleCharCode: number,
+ *   exampleGlyphName: string,
+ *   exampleFontObjNum: number,
+ * }>}
+ */
+export function extractType3DistinctGlyphs(pdfBytes) {
+  const xrefOffset = findXrefOffset(pdfBytes);
+  const xrefEntries = parseXref(pdfBytes, xrefOffset);
+  const objCache = new ObjectCache(pdfBytes, xrefEntries);
+
+  const seen = new Map();
+  for (const [objNum] of Object.entries(xrefEntries)) {
+    const objText = objCache.getObjectText(Number(objNum));
+    if (!objText) continue;
+    if (!/\/Subtype\s*\/Type3/.test(objText)) continue;
+
+    const fontInfo = parseType3Font(objText, objCache);
+    if (!fontInfo) continue;
+
+    for (const [charCodeStr, glyphName] of Object.entries(fontInfo.encoding)) {
+      const glyph = fontInfo.glyphs[glyphName];
+      if (!glyph || !glyph.pathHash) continue;
+      if (!glyph.bbox) continue;
+      if (seen.has(glyph.pathHash)) continue;
+      seen.set(glyph.pathHash, {
+        pathHash: glyph.pathHash,
+        commands: glyph.commands,
+        bbox: glyph.bbox,
+        advanceWidth: glyph.advanceWidth,
+        fontMatrix: fontInfo.fontMatrix,
+        fontBBox: fontInfo.fontBBox,
+        exampleCharCode: Number(charCodeStr),
+        exampleGlyphName: glyphName,
+        exampleFontObjNum: Number(objNum),
+      });
+    }
+  }
+  return [...seen.values()];
+}
+
+/**
  * Parse a Type3 font object and extract glyph bounding boxes.
  * @param {string} objText
  * @param {ObjectCache} objCache
  */
-function parseType3Font(objText, objCache) {
+export function parseType3Font(objText, objCache) {
   const fmStr = resolveArrayValue(objText, 'FontMatrix', objCache);
   const fontMatrix = fmStr ? fmStr.split(/\s+/).map(Number) : [0.001, 0, 0, 0.001, 0, 0];
 
@@ -286,7 +368,14 @@ function parseType3Font(objText, objCache) {
     }
 
     const streamText = new TextDecoder('latin1').decode(streamBytes);
-    glyphs[glyphName] = parseGlyphStream(streamText);
+    const parsed = parseGlyphStream(streamText);
+    const pathData = parseGlyphStreamPaths(streamText);
+    glyphs[glyphName] = {
+      ...parsed,
+      commands: pathData.commands,
+      pathHash: pathData.commands && pathData.commands.length
+        ? hashGlyphCommands(pathData.commands) : null,
+    };
   }
 
   // Used for Type3 glyphs that paint via Do.
@@ -332,9 +421,19 @@ function parseType3Font(objText, objCache) {
 function parseGlyphStream(streamText) {
   // Parse d1 operator for advance width: wx wy llx lly urx ury d1
   let advanceWidth = 0;
+  let placeholderD1 = false;
   const d1Match = /([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+([\d.-]+)\s+d1/.exec(streamText);
   if (d1Match) {
     advanceWidth = Number(d1Match[1]);
+    const llx = Number(d1Match[3]);
+    const lly = Number(d1Match[4]);
+    const urx = Number(d1Match[5]);
+    const ury = Number(d1Match[6]);
+    // Some producers emit a placeholder d1 with bbox [-10 -10 10 10] for every glyph.
+    // Both d1's wx and the /Widths array carry no usable metrics in that case.
+    // Callers that need visual extents must use the path-derived bbox.
+    placeholderD1 = Math.abs(llx + 10) < 1e-6 && Math.abs(lly + 10) < 1e-6
+      && Math.abs(urx - 10) < 1e-6 && Math.abs(ury - 10) < 1e-6;
   }
 
   // Parse cm translation: q 1 0 0 1 tx ty cm
@@ -417,12 +516,8 @@ function parseGlyphStream(streamText) {
       const lly = Number(d1Match[4]);
       const urx = Number(d1Match[5]);
       const ury = Number(d1Match[6]);
-      // Type3 producers often emit a placeholder d1 bbox [-10 -10 10 10] for
-      // space/empty glyphs. Treat it as non-drawing so downstream code maps the
-      // glyph as whitespace instead of a visible placeholder.
-      if (Math.abs(llx + 10) < 1e-6 && Math.abs(lly + 10) < 1e-6
-        && Math.abs(urx - 10) < 1e-6 && Math.abs(ury - 10) < 1e-6) {
-        return { bbox: null, advanceWidth };
+      if (placeholderD1) {
+        return { bbox: null, advanceWidth, placeholderD1 };
       }
       if (urx > llx || ury > lly) {
         return {
@@ -430,10 +525,11 @@ function parseGlyphStream(streamText) {
             x0: llx, y0: lly, x1: urx, y1: ury,
           },
           advanceWidth,
+          placeholderD1,
         };
       }
     }
-    return { bbox: null, advanceWidth };
+    return { bbox: null, advanceWidth, placeholderD1 };
   }
 
   let x0 = Infinity;
@@ -454,6 +550,7 @@ function parseGlyphStream(streamText) {
       x0, y0, x1, y1,
     },
     advanceWidth,
+    placeholderD1,
   };
 }
 
@@ -461,8 +558,9 @@ function parseGlyphStream(streamText) {
  * Parse fonts from a page's Resources dictionary.
  * @param {string} pageObjText
  * @param {ObjectCache} objCache
+ * @param {Map<string, string>} [type3GlyphMappings] - See `extractPDFTextDirect` for semantics.
  */
-export function parsePageFonts(pageObjText, objCache) {
+export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
   const fonts = new Map();
 
   // Find Resources — may be inline or indirect reference
@@ -1230,6 +1328,8 @@ export function parsePageFonts(pageObjText, objCache) {
     // Parse width info and metrics
     let defaultWidth = 1000;
     const widths = new Map();
+    /** @type {Map<number, number> | null} */
+    let glyphVisualWidths = null;
     let ascent = 800;
     let descent = -200;
 
@@ -1916,19 +2016,24 @@ export function parsePageFonts(pageObjText, objCache) {
             const glyph = type3Info.glyphs[glyphName];
             if (glyph && glyph.advanceWidth > 0) {
               const charCode = Number(charCodeStr);
-              // Convert glyph-space advance to standard PDF 1/1000 text-space units
               widths.set(charCode, glyph.advanceWidth * type3Info.fontMatrix[0] * 1000);
-              // Only set fallback mappings for charCodes that don't already have
-              // a real Unicode mapping from the /ToUnicode CMap. Overwriting CMap
-              // entries with PUA placeholders breaks text extraction.
+              if (glyph.placeholderD1 && glyph.bbox && glyph.bbox.x1 > 0) {
+                if (!glyphVisualWidths) glyphVisualWidths = new Map();
+                glyphVisualWidths.set(charCode, glyph.bbox.x1 * type3Info.fontMatrix[0] * 1000);
+              }
               if (!toUnicode.has(charCode)) {
                 if (glyph.bbox === null) {
-                  // Space glyph: no drawing commands but positive advance width
                   toUnicode.set(charCode, ' ');
                 } else {
-                  // Visible glyph: map to a placeholder to prevent charCodes like 32 (ASCII space)
-                  // from being misidentified as spaces via the str[i] fallback in showLiteralString
-                  toUnicode.set(charCode, String.fromCodePoint(0xE000 + charCode));
+                  const userMapping = glyph.pathHash && type3GlyphMappings
+                    ? type3GlyphMappings.get(glyph.pathHash) : undefined;
+                  if (userMapping !== undefined) {
+                    toUnicode.set(charCode, userMapping);
+                  } else {
+                    // PUA placeholder so charCodes like 32 don't get mistaken for spaces
+                    // by the str[i] fallback in showLiteralString.
+                    toUnicode.set(charCode, String.fromCodePoint(0xE000 + charCode));
+                  }
                 }
               }
             }
@@ -2055,6 +2160,7 @@ export function parsePageFonts(pageObjText, objCache) {
       baseName,
       toUnicode,
       widths,
+      glyphVisualWidths,
       defaultWidth,
       ascent,
       descent,
@@ -2064,7 +2170,9 @@ export function parsePageFonts(pageObjText, objCache) {
       familyName,
       type3: type3Info ? {
         fontMatrix: type3Info.fontMatrix,
+        fontBBox: type3Info.fontBBox,
         encoding: type3Info.encoding,
+        glyphs: type3Info.glyphs,
         charProcObjNums: type3Info.charProcObjNums,
         xobjectResources: type3Info.xobjectResources,
       } : null,
@@ -3108,21 +3216,19 @@ export function correctType3CharBBoxes(pages, type3Fonts) {
           const glyph = fontInfo.glyphs[glyphName];
           if (!glyph || !glyph.bbox || glyph.advanceWidth === 0) continue;
 
-          // Scale factor: stext width comes from advanceWidth * fontSize * dpi/72
-          // so scale = stextWidth / advanceWidth
-          const stextWidth = char.bbox.right - char.bbox.left;
-          const scale = stextWidth / glyph.advanceWidth;
+          // char.bbox height is one em.
+          // Upstream extractor uses default ascent=800/descent=-200 for Type3 fonts with a placeholder FontBBox.
+          const emHeightPx = char.bbox.bottom - char.bbox.top;
+          if (emHeightPx <= 0) continue;
+          const scaleX = emHeightPx * fontInfo.fontMatrix[0];
+          const scaleY = emHeightPx * fontInfo.fontMatrix[3];
+          const baselineY = char.bbox.bottom - 0.2 * emHeightPx;
 
-          // Baseline position: stext top + fontBBox ury * scale
-          // FontBBox ury (e.g. 10) scaled gives distance from top to baseline
-          const baselineY = char.bbox.top + fontInfo.fontBBox[3] * scale;
-
-          // Corrected bbox from actual glyph outline
           const originX = char.bbox.left;
-          char.bbox.left = Math.round(originX + glyph.bbox.x0 * scale);
-          char.bbox.right = Math.round(originX + glyph.bbox.x1 * scale);
-          char.bbox.top = Math.round(baselineY - glyph.bbox.y1 * scale);
-          char.bbox.bottom = Math.round(baselineY - glyph.bbox.y0 * scale);
+          char.bbox.left = Math.round(originX + glyph.bbox.x0 * scaleX);
+          char.bbox.right = Math.round(originX + glyph.bbox.x1 * scaleX);
+          char.bbox.top = Math.round(baselineY - glyph.bbox.y1 * scaleY);
+          char.bbox.bottom = Math.round(baselineY - glyph.bbox.y0 * scaleY);
 
           wordModified = true;
         }

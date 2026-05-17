@@ -362,8 +362,9 @@ export function determinePdfType(pageStats, pageCount) {
  * @param {ObjectCache} objCache
  * @param {number} n - Page index
  * @param {number} dpi
+ * @param {Map<string, string>} [type3GlyphMappings] - See `extractPDFTextDirect`.
  */
-export function parseSinglePage(page, objCache, n, dpi) {
+export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
   const {
     objText, mediaBox, cropBox, rotate,
   } = page;
@@ -409,7 +410,7 @@ export function parseSinglePage(page, objCache, n, dpi) {
   const pageWidth = Math.round(visualWidthPts * scale);
   const pageHeight = Math.round(visualHeightPts * scale);
 
-  const fonts = parsePageFonts(objText, objCache);
+  const fonts = parsePageFonts(objText, objCache, type3GlyphMappings);
   const fontSummary = [...fonts].map(([tag, f]) => ({
     tag,
     baseName: f.baseName,
@@ -540,11 +541,15 @@ export function parseSinglePage(page, objCache, n, dpi) {
 /**
  * Extract text content directly from PDF raw bytes into OcrPage objects.
  * @param {Uint8Array} pdfBytes
- * @param {{ dpi?: number, pageIndices?: number[] }} [options]
+ * @param {{ dpi?: number, pageIndices?: number[], type3GlyphMappings?: Map<string, string> }} [options]
+ *   `type3GlyphMappings` is a Type3 ToUnicode override keyed by the path-content hash
+ *   from `extractType3DistinctGlyphs`. Fills only-missing entries (existing /ToUnicode wins).
+ *   Values are arbitrary strings, so a ligature glyph can map to e.g. "fi".
  */
 export function extractPDFTextDirect(pdfBytes, options = {}) {
   const dpi = options.dpi || 300;
   const pageIndices = options.pageIndices || null;
+  const type3GlyphMappings = options.type3GlyphMappings;
 
   const xrefOffset = findXrefOffset(pdfBytes);
   const xrefEntries = parseXref(pdfBytes, xrefOffset);
@@ -557,14 +562,14 @@ export function extractPDFTextDirect(pdfBytes, options = {}) {
     const pageSet = new Set(pageIndices);
     for (let n = 0; n < pages.length; n++) {
       if (pageSet.has(n)) {
-        results.push(parseSinglePage(pages[n], objCache, n, dpi));
+        results.push(parseSinglePage(pages[n], objCache, n, dpi, type3GlyphMappings));
       } else {
         results.push(null);
       }
     }
   } else {
     for (let n = 0; n < pages.length; n++) {
-      results.push(parseSinglePage(pages[n], objCache, n, dpi));
+      results.push(parseSinglePage(pages[n], objCache, n, dpi, type3GlyphMappings));
     }
   }
 
@@ -603,6 +608,7 @@ export function detectPdfType(pdfBytes) {
  *   text: string, x: number, y: number, width: number, fontSize: number,
  *   fontInfo: { baseName: string, bold: boolean, italic: boolean, smallCaps: boolean,
  *     familyName: string, ascent: number, descent: number },
+ *   _font?: any,
  *   invisible: boolean,
  *   orientation: number,
  *   dirX: number, dirY: number,
@@ -1060,6 +1066,13 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
     // Collapse any all-whitespace mapping to a single U+0020.
     if (/^\s+$/.test(unicode)) unicode = ' ';
     const glyphWidth = (font.widths.get(charCode) ?? font.defaultWidth) / 1000 * fontSize;
+    // For placeholder-d1 Type3 fonts, font.widths reports 1 em for every glyph.
+    // visualGlyphWidth is the path-derived right edge, used for the emitted rectangle only.
+    // Tm advance keeps glyphWidth so cursor positioning across glyphs is unchanged.
+    const visualWidthRaw = font.glyphVisualWidths?.get(charCode);
+    const visualGlyphWidth = visualWidthRaw !== undefined
+      ? visualWidthRaw / 1000 * fontSize
+      : glyphWidth;
 
     // Drop fallback emissions of unmapped control-byte glyph codes.
     const dropFallbackControl = fallbackUsed && !isCID && unicode.length === 1
@@ -1076,7 +1089,7 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
         text: unicode,
         x: pageX * scale,
         y: (pageHeightPts - pageY) * scale,
-        width: Math.abs(glyphWidth * tz / 100) * hScale * scale,
+        width: Math.abs(visualGlyphWidth * tz / 100) * hScale * scale,
         fontSize: Math.abs(fontSize * vScale * scale),
         fontInfo: {
           baseName: font.baseName,
@@ -1087,6 +1100,7 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
           ascent: font.ascent,
           descent: font.descent,
         },
+        _font: font,
         invisible: tr === 3,
         orientation,
         dirX,
