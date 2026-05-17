@@ -16,6 +16,8 @@ import {
 import { inflate as pakoInflate, inflatePartial as pakoInflatePartial } from '../../lib/pako-inflate.js';
 import { parsePageFonts, parseGlyphStreamPaths } from './fonts/parsePdfFonts.js';
 import { standardFontToCSS } from './fonts/standardFontMetrics.js';
+import { base14ToBundledFont, cssFamilyToBundledFont } from './fonts/base14Substitution.js';
+import { FALLBACK_CHAIN } from '../fallbackFonts.js';
 import { loadFontFace } from '../containers/fontContainer.js';
 import { decodeCMYKJpegToRGB } from './codecs/decodeJPEG.js';
 import {
@@ -98,15 +100,23 @@ function cssGenericForFontObj(fontObj) {
  */
 function appendGenericFallbacks(registeredFontNames, fonts) {
   for (const [fontTag, name] of registeredFontNames) {
-    if (/,\s*(sans-serif|serif|monospace|cursive)\s*$/i.test(name)) continue;
     const fontObj = fonts.get(fontTag);
     if (!fontObj) continue;
-    registeredFontNames.set(fontTag, `"${name}", ${cssGenericForFontObj(fontObj)}`);
+    const trailingGeneric = name.match(/,\s*(sans-serif|serif|monospace|cursive)\s*$/i);
+    if (trailingGeneric) {
+      registeredFontNames.set(fontTag, name.replace(
+        /,\s*(sans-serif|serif|monospace|cursive)\s*$/i,
+        `, ${FALLBACK_CHAIN}, $1`,
+      ));
+    } else {
+      const primary = /[",]/.test(name) ? name : `"${name}"`;
+      registeredFontNames.set(fontTag, `${primary}, ${FALLBACK_CHAIN}, ${cssGenericForFontObj(fontObj)}`);
+    }
   }
 }
 
 /**
- * Register a non-embedded font using bundled Nimbus substitution fonts.
+ * Register a non-embedded font using bundled substitution fonts.
  *
  * @param {{ baseName: string, bold?: boolean, italic?: boolean, serifFlag?: boolean }} fontObj
  * @param {string} _familyName - CSS font-family name to register
@@ -114,70 +124,36 @@ function appendGenericFallbacks(registeredFontNames, fonts) {
  * @param {string} fontTag - Font tag key for targetMap
  */
 async function registerNonEmbeddedFont(fontObj, _familyName, targetMap, fontTag) {
-  // Substitute fonts are the same bytes on every call — use a shared
-  // `_scribe_*` family name (process-global) rather than the caller's
-  // per-document alias so the registration dedups to one per process.
-  // Dingbats: load bundled Dingbats font
-  if (/ZapfDingbats/i.test(fontObj.baseName)) {
-    const subName = '_scribe_dingbats';
+  // FontFaces are registered at the variant's actual weight/style.
+  // Otherwise Firefox stacks an extra faux-bold or italic on top of an already-bold/italic file.
+  const hints = { bold: fontObj.bold, italic: fontObj.italic };
+  const sub = base14ToBundledFont(fontObj.baseName, hints)
+    || cssFamilyToBundledFont(standardFontToCSS(fontObj.baseName), hints);
+  if (sub) {
     try {
-      const url = new URL('../../fonts/Dingbats.woff', import.meta.url);
-      let dingbatsBytes;
+      let fontBytes;
       if (typeof process !== 'undefined') {
         const { fileURLToPath } = await import('node:url');
         const { readFileSync } = await import('node:fs');
-        dingbatsBytes = readFileSync(fileURLToPath(url));
+        fontBytes = readFileSync(fileURLToPath(sub.url));
       } else {
-        dingbatsBytes = await fetch(url).then((r) => r.arrayBuffer());
+        fontBytes = await fetch(sub.url).then((r) => r.arrayBuffer());
       }
-      const face = loadFontFace(subName, 'normal', 'normal', dingbatsBytes);
+      const face = loadFontFace(sub.alias, sub.faceStyle, sub.faceWeight, fontBytes);
       await face.loaded;
-      targetMap.set(fontTag, subName);
+      targetMap.set(fontTag, sub.alias);
+      return;
     } catch (_e) {
-      targetMap.set(fontTag, 'sans-serif');
+      const fallback = standardFontToCSS(fontObj.baseName) || cssGenericForFontObj(fontObj);
+      targetMap.set(fontTag, fallback);
+      console.warn(`[renderPdfPage] Bundled font ${sub.alias} failed to load for "${fontObj.baseName}", using ${fallback} fallback`);
+      return;
     }
-    return;
   }
   const cssFamily = standardFontToCSS(fontObj.baseName);
-  // Monospace/cursive/unrecognized fonts have no bundled substitute — use CSS fallback.
-  const isMonospace = cssFamily && /monospace/i.test(cssFamily);
-  const isCursive = cssFamily && /cursive/i.test(cssFamily);
-  if (isMonospace || isCursive || !cssFamily) {
-    const fallback = isMonospace ? 'monospace' : isCursive ? 'cursive' : cssGenericForFontObj(fontObj);
-    targetMap.set(fontTag, cssFamily || fallback);
-    if (!cssFamily) console.warn(`[renderPdfPage] No font data for "${fontObj.baseName}", using ${fallback} fallback`);
-    return;
-  }
-  const isSansSerif = /sans-serif|sans/i.test(cssFamily);
-  const variant = fontObj.bold && fontObj.italic ? 'BoldItalic'
-    : fontObj.bold ? 'Bold' : fontObj.italic ? 'Italic' : 'Regular';
-  const family = isSansSerif ? 'NimbusSans' : 'NimbusRoman';
-  // One alias per substitute file; same bytes on every call.
-  const subName = `_scribe_${family.toLowerCase()}_${variant.toLowerCase()}`;
-  // Register the FontFace at the variant's actual weight/style.
-  // This is necessary for Firefox, as Firefox will otherwise apply an extra layer
-  // of faux bolding/italicizing on top of the already-bold/italic font.
-  const faceWeight = fontObj.bold ? 'bold' : 'normal';
-  const faceStyle = fontObj.italic ? 'italic' : 'normal';
-  try {
-    const url = new URL(`../../fonts/all/${family}-${variant}.woff`, import.meta.url);
-    let fontBytes;
-    if (typeof process !== 'undefined') {
-      const { fileURLToPath } = await import('node:url');
-      const { readFileSync } = await import('node:fs');
-      fontBytes = readFileSync(fileURLToPath(url));
-    } else {
-      fontBytes = await fetch(url).then((r) => r.arrayBuffer());
-    }
-    const face = loadFontFace(subName, faceStyle, faceWeight, fontBytes);
-    await face.loaded;
-    targetMap.set(fontTag, subName);
-  } catch (_e) {
-    // Bundled font load failed — fall back to CSS font matching
-    const fallback = cssGenericForFontObj(fontObj);
-    targetMap.set(fontTag, cssFamily || fallback);
-    console.warn(`[renderPdfPage] No font data for "${fontObj.baseName}", using ${cssFamily || fallback} fallback`);
-  }
+  const fallback = cssFamily || cssGenericForFontObj(fontObj);
+  targetMap.set(fontTag, fallback);
+  if (!cssFamily) console.warn(`[renderPdfPage] No font data for "${fontObj.baseName}", using ${fallback} fallback`);
 }
 
 /**

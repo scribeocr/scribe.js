@@ -35,11 +35,13 @@ do
         filename_without_extension="${filename%.*}"
         ext="${filename##*.}"
 
-        ## Dingbats ships as a single file with no subsetting and no latin/all split.
+        ## Dingbats and StandardSymbolsPS ship as single files with no subsetting
+        ## and no latin/all split. Their codepoints (Greek, math, dingbats) don't
+        ## overlap the Latin subset list, and the URW sources are already small.
         ## Convert the raw CFF straight to WOFF via FontForge.
-        if [[ "$filename" == "Dingbats.cff" ]]; then
+        if [[ "$filename" == "Dingbats.cff" || "$filename" == "StandardSymbolsPS.cff" ]]; then
             echo "Processing $file (no subset)"
-            fontforge -quiet -lang=ff -c 'Open($1); Generate($2)' "$file" "$proc_fonts_dir/Dingbats.woff"
+            fontforge -quiet -lang=ff -c 'Open($1); Generate($2)' "$file" "$proc_fonts_dir/$filename_without_extension.woff"
             continue
         fi
 

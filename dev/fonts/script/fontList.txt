@@ -31,3 +31,4 @@ raw/URWGothic-BookOblique.otf
 raw/URWGothic-Demi.otf
 raw/URWGothic-DemiOblique.otf
 raw/urw/Dingbats.cff
+raw/urw/StandardSymbolsPS.cff

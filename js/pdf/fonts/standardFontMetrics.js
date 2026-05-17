@@ -418,6 +418,42 @@ export function getDingbatsGlyphWidth(glyphName) {
 }
 
 /**
+ * The 14 canonical Base14 PDF font names.
+ */
+export const BASE14_NAMES = new Set([
+  'Courier', 'Courier-Bold', 'Courier-Oblique', 'Courier-BoldOblique',
+  'Helvetica', 'Helvetica-Bold', 'Helvetica-Oblique', 'Helvetica-BoldOblique',
+  'Times-Roman', 'Times-Bold', 'Times-Italic', 'Times-BoldItalic',
+  'Symbol', 'ZapfDingbats',
+]);
+
+/**
+ * Normalize a PDF BaseFont name to one of the 14 canonical Base14 names.
+ *
+ * @param {string} baseName
+ * @returns {string | null} canonical Base14 name, or null if not a Base14 family
+ */
+export function normalizeBase14Name(baseName) {
+  if (!baseName) return null;
+  if (BASE14_NAMES.has(baseName)) return baseName;
+  const lower = baseName.toLowerCase();
+  if (/^symbol(?:[-,]\w+|[A-Za-z\d]*)$/i.test(baseName)) return 'Symbol';
+  if (/zapfdingbats/i.test(baseName)) return 'ZapfDingbats';
+  const bold = /bold|black/i.test(baseName);
+  const italic = /italic|oblique/i.test(baseName);
+  if (lower.includes('courier')) {
+    return bold && italic ? 'Courier-BoldOblique' : bold ? 'Courier-Bold' : italic ? 'Courier-Oblique' : 'Courier';
+  }
+  if (lower.includes('arial') || lower.includes('helvetica')) {
+    return bold && italic ? 'Helvetica-BoldOblique' : bold ? 'Helvetica-Bold' : italic ? 'Helvetica-Oblique' : 'Helvetica';
+  }
+  if (lower.includes('times')) {
+    return bold && italic ? 'Times-BoldItalic' : bold ? 'Times-Bold' : italic ? 'Times-Italic' : 'Times-Roman';
+  }
+  return null;
+}
+
+/**
  * Look up standard font widths for the given baseName.
  * Populates the widths Map and returns the average width as defaultWidth.
  *
@@ -427,19 +463,7 @@ export function getDingbatsGlyphWidth(glyphName) {
 export function applyStandardFontWidths(baseName, widths) {
   let table = standardFontWidths.get(baseName);
   if (!table) {
-    // Normalize common aliases (e.g. CourierNew, ArialMT, TimesNewRomanPSMT)
-    // to standard PDF font names for width lookup.
-    const lower = baseName.toLowerCase();
-    const bold = /bold|black/i.test(baseName);
-    const italic = /italic|oblique/i.test(baseName);
-    let stdName = null;
-    if (lower.includes('courier')) {
-      stdName = bold && italic ? 'Courier-BoldOblique' : bold ? 'Courier-Bold' : italic ? 'Courier-Oblique' : 'Courier';
-    } else if (lower.includes('arial') || lower.includes('helvetica')) {
-      stdName = bold && italic ? 'Helvetica-BoldOblique' : bold ? 'Helvetica-Bold' : italic ? 'Helvetica-Oblique' : 'Helvetica';
-    } else if (lower.includes('times')) {
-      stdName = bold && italic ? 'Times-BoldItalic' : bold ? 'Times-Bold' : italic ? 'Times-Italic' : 'Times-Roman';
-    }
+    const stdName = normalizeBase14Name(baseName);
     if (stdName) table = standardFontWidths.get(stdName);
   }
   if (!table) return null;

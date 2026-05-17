@@ -71,6 +71,10 @@ The "raw" fonts live in `raw/`. These are fonts downloaded from various 3rd part
 	- Source: URW Base 35 Fonts
 		- mupdf: `resources/fonts/urw/Dingbats.cff`
 	- Built by `script/generate_fonts.sh` without any subsetting (kept as-is from the source) and written to `prod/Dingbats.woff`.
+- Symbol (`urw/StandardSymbolsPS.cff`)
+	- Source: URW Base 35 Fonts
+		- mupdf: `resources/fonts/urw/StandardSymbolsPS.cff`
+	- Built by `script/generate_fonts.sh` without any subsetting (kept as-is from the source) and written to `prod/StandardSymbolsPS.woff`. Used to substitute the Base14 `Symbol` font when a PDF references it without embedding.
 
 # Font Generation
 The fonts included in the live site are standardized versions of the raw fonts found in `raw/`.  The appearance of the fonts should not change, however modifications are made to either (1) reduce file sizes or (2) standardize the fonts to make working with them easier.  For example, all files are converted to `.woff` (compressed and optimized for web) and subset to include a standard set of characters.  The following 4 bash scripts are used to create the fonts used by the application.
@@ -93,7 +97,7 @@ The vast majority of the glyphs in the raw fonts are unused by most users.  Ther
 
 Note that CJK fonts are handled in a different manner, as these require entirely separate font files.
 
-`Dingbats` is a special case: it ships as a single `Dingbats.woff` with no `Latin`/`All` split and no subsetting at all (the URW source is already small).
+`Dingbats` and `StandardSymbolsPS` are special cases: each ships as a single `.woff` with no `Latin`/`All` split and no subsetting at all. Their codepoints (dingbats glyphs, Greek and math symbols) sit outside the Latin subset and the URW sources are already small.
 
 # Reproducibility
 `generate_fonts.sh` sets `SOURCE_DATE_EPOCH=0` before invoking `hb-subset` and `fontforge` so that timestamp-sensitive tables (`head.modified`, FontForge's own `FFTM` table) are written with zero values.  Under this setting both tools produce byte-identical output across runs, which keeps Git diffs to just the glyph changes we actually intend.

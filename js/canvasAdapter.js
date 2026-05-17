@@ -1,4 +1,5 @@
 import { imageStrToBlob } from './utils/imageUtils.js';
+import { registerFallbackFonts } from './fallbackFonts.js';
 
 export class ca {
   static CanvasNode;
@@ -16,6 +17,7 @@ export class ca {
           ca.CanvasNode = await import('@scribe.js/canvas');
           globalThis.ImageData = ca.CanvasNode.ImageData;
           globalThis.DOMMatrix = ca.CanvasNode.DOMMatrix;
+          await registerFallbackFonts(ca.CanvasNode);
           return ca.CanvasNode;
         })();
       }
