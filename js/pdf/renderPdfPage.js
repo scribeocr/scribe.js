@@ -2227,8 +2227,13 @@ function parsePageColorSpaces(pageObjText, objCache) {
       if (csType === 'Indexed' && arrText) {
         indexedInfo = parseIndexedColorSpace(arrText, objCache);
       }
+      let labWhitePoint = null;
+      if (csType === 'Lab' && arrText) {
+        const wpStr = resolveArrayValue(arrText, 'WhitePoint', objCache);
+        labWhitePoint = wpStr ? wpStr.split(/\s+/).map(Number) : [0.9642, 1.0, 0.8249];
+      }
       colorSpaces.set(csName, {
-        type: csType, tintSamples, nComponents, indexedInfo,
+        type: csType, tintSamples, nComponents, indexedInfo, labWhitePoint,
       });
     }
   }

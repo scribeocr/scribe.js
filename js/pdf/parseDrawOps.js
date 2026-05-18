@@ -1,5 +1,5 @@
 import { tokenizeContentStream } from './parsePdfDoc.js';
-import { cmykToRgb, tintComponentsToRGB } from './pdfColorFunctions.js';
+import { cmykToRgb, tintComponentsToRGB, xyzToSRGB } from './pdfColorFunctions.js';
 import { cidCodepoint, isCombiningOrIndicMark } from './fonts/convertFontToOTF.js';
 
 /**
@@ -118,7 +118,7 @@ export function matMul(m1, m2) {
  * @param {Map<string, object>} fonts - Font map from parsePageFonts
  * @param {Map<string, ExtGStateEntry>} [extGStates] - ExtGState map
  * @param {Map<string, string>} [registeredFontNames]
- * @param {Map<string, object>} [colorSpaces]
+ * @param {Map<string, {type: string, tintSamples: Uint8Array|null, nComponents: number, deviceNGrid?: object|null, indexedInfo?: object|null, labWhitePoint?: number[]|null}>} [colorSpaces]
  * @param {Set<string>} [symbolFontTags]
  * @param {Set<string>} [cidPUATags]
  * @param {Set<string>} [rawCharCodeTags]
@@ -233,6 +233,10 @@ export function parseDrawOps(
   let strokeTintSamples = null;
   let strokeTintNComponents = 3;
   let strokeDeviceNGrid = null;
+  /** @type {number[]|null} */
+  let fillLabWhitePoint = null;
+  /** @type {number[]|null} */
+  let strokeLabWhitePoint = null;
   let fillAlpha = 1;
   let strokeAlpha = 1;
   // A `gs` inside a form replaces the inherited fill/stroke alpha rather than
@@ -1212,6 +1216,8 @@ export function parseDrawOps(
           strokeDeviceNGrid,
           fillIndexedInfo,
           strokeIndexedInfo,
+          fillLabWhitePoint,
+          strokeLabWhitePoint,
           fillAlpha,
           strokeAlpha,
           fillAlphaExplicit,
@@ -1267,6 +1273,8 @@ export function parseDrawOps(
           strokeDeviceNGrid = saved.strokeDeviceNGrid;
           fillIndexedInfo = saved.fillIndexedInfo;
           strokeIndexedInfo = saved.strokeIndexedInfo;
+          fillLabWhitePoint = saved.fillLabWhitePoint;
+          strokeLabWhitePoint = saved.strokeLabWhitePoint;
           fillAlpha = saved.fillAlpha;
           strokeAlpha = saved.strokeAlpha;
           fillAlphaExplicit = saved.fillAlphaExplicit;
@@ -1662,6 +1670,7 @@ export function parseDrawOps(
         fillTintNComponents = csInfo ? csInfo.nComponents : 3;
         fillDeviceNGrid = csInfo ? csInfo.deviceNGrid : null;
         fillIndexedInfo = csInfo ? csInfo.indexedInfo : null;
+        fillLabWhitePoint = csInfo ? csInfo.labWhitePoint : null;
         operandStack.length = 0;
         break;
       }
@@ -1673,6 +1682,7 @@ export function parseDrawOps(
         strokeTintNComponents = csInfoS ? csInfoS.nComponents : 3;
         strokeDeviceNGrid = csInfoS ? csInfoS.deviceNGrid : null;
         strokeIndexedInfo = csInfoS ? csInfoS.indexedInfo : null;
+        strokeLabWhitePoint = csInfoS ? csInfoS.labWhitePoint : null;
         strokePatternShading = null;
         strokeTilingPattern = null;
         operandStack.length = 0;
@@ -1796,16 +1806,9 @@ export function parseDrawOps(
               const fz = fy - vals[2] / 200;
               const delta = 6 / 29;
               const fInv = (ft) => (ft > delta ? ft * ft * ft : 3 * delta * delta * (ft - 4 / 29));
-              // Use D65 white point (sRGB) directly instead of Lab's WhitePoint,
-              // which performs XYZ scaling chromatic adaptation from Lab WP to D65.
-              const X = 0.9505 * fInv(fx);
-              const Y = fInv(fy);
-              const Z = 1.089 * fInv(fz);
-              const lr = 3.2406 * X - 1.5372 * Y - 0.4986 * Z;
-              const lg = -0.9689 * X + 1.8758 * Y + 0.0415 * Z;
-              const lb = 0.0557 * X - 0.2040 * Y + 1.0570 * Z;
-              const gammaEnc = (v) => (v <= 0.0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - 0.055);
-              fillColor = `rgb(${Math.round(255 * Math.max(0, Math.min(1, gammaEnc(lr))))},${Math.round(255 * Math.max(0, Math.min(1, gammaEnc(lg))))},${Math.round(255 * Math.max(0, Math.min(1, gammaEnc(lb))))})`;
+              const wp = fillLabWhitePoint || [0.9642, 1.0, 0.8249];
+              const [r, g, b] = xyzToSRGB(wp[0] * fInv(fx), wp[1] * fInv(fy), wp[2] * fInv(fz), wp);
+              fillColor = `rgb(${r},${g},${b})`;
             } else {
               fillColor = `rgb(${Math.round(vals[0] * 255)},${Math.round(vals[1] * 255)},${Math.round(vals[2] * 255)})`;
             }
@@ -1929,15 +1932,9 @@ export function parseDrawOps(
               const fz = fy - vals[2] / 200;
               const delta = 6 / 29;
               const fInv = (ft) => (ft > delta ? ft * ft * ft : 3 * delta * delta * (ft - 4 / 29));
-              // Use D65 white point (sRGB) directly for chromatic adaptation
-              const X = 0.9505 * fInv(fx);
-              const Y = fInv(fy);
-              const Z = 1.089 * fInv(fz);
-              const lr = 3.2406 * X - 1.5372 * Y - 0.4986 * Z;
-              const lg = -0.9689 * X + 1.8758 * Y + 0.0415 * Z;
-              const lb = 0.0557 * X - 0.2040 * Y + 1.0570 * Z;
-              const gammaEnc = (v) => (v <= 0.0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - 0.055);
-              strokeColor = `rgb(${Math.round(255 * Math.max(0, Math.min(1, gammaEnc(lr))))},${Math.round(255 * Math.max(0, Math.min(1, gammaEnc(lg))))},${Math.round(255 * Math.max(0, Math.min(1, gammaEnc(lb))))})`;
+              const wp = strokeLabWhitePoint || [0.9642, 1.0, 0.8249];
+              const [r, g, b] = xyzToSRGB(wp[0] * fInv(fx), wp[1] * fInv(fy), wp[2] * fInv(fz), wp);
+              strokeColor = `rgb(${r},${g},${b})`;
             } else {
               strokeColor = `rgb(${Math.round(vals[0] * 255)},${Math.round(vals[1] * 255)},${Math.round(vals[2] * 255)})`;
             }

@@ -4,6 +4,8 @@
  * Many functions adapted from Mozilla pdf.js (Apache 2.0 license).
  */
 
+import { xyzToSRGB } from '../pdfColorFunctions.js';
+
 const idctCos = new Float64Array(64);
 for (let x = 0; x < 8; x++) {
   for (let u = 0; u < 8; u++) {
@@ -636,21 +638,11 @@ export function labBytesToRGBA(data, width, height, whitePoint, range) {
     const X = xr * Xw;
     const Y = yr * Yw;
     const Z = zr * Zw;
-
-    // Combined D50→D65 Bradford-adapted sRGB matrix.
-    const lr = 3.1338561 * X - 1.6168667 * Y - 0.4906146 * Z;
-    const lg = -0.9787684 * X + 1.9161415 * Y + 0.0334540 * Z;
-    const lb = 0.0719453 * X - 0.2289914 * Y + 1.4052427 * Z;
-
-    const gamma = (v) => {
-      if (v <= 0.0031308) return 12.92 * v;
-      return 1.055 * (v ** (1 / 2.4)) - 0.055;
-    };
-
+    const [rOut, gOut, bOut] = xyzToSRGB(X, Y, Z, whitePoint);
     const di = i * 4;
-    rgbData[di] = Math.max(0, Math.min(255, Math.round(gamma(lr) * 255)));
-    rgbData[di + 1] = Math.max(0, Math.min(255, Math.round(gamma(lg) * 255)));
-    rgbData[di + 2] = Math.max(0, Math.min(255, Math.round(gamma(lb) * 255)));
+    rgbData[di] = rOut;
+    rgbData[di + 1] = gOut;
+    rgbData[di + 2] = bOut;
     rgbData[di + 3] = 255;
   }
 

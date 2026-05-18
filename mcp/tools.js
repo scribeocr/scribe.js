@@ -21,7 +21,7 @@ const { assignParagraphs } = await import(pathToFileURL(resolve(__dirname, '..',
 
 const { pageMetricsAll } = await import(pathToFileURL(resolve(__dirname, '..', 'js', 'containers', 'dataContainer.js')).href);
 
-const { subsetPdf } = await import(pathToFileURL(resolve(__dirname, '..', 'js', 'export', 'pdf', 'writePdfOverlay.js')).href);
+const { subsetPdf } = await import(pathToFileURL(resolve(__dirname, '..', 'js', 'export', 'pdf', 'subsetPdf.js')).href);
 const { mergePdfs } = await import(pathToFileURL(resolve(__dirname, '..', 'js', 'export', 'pdf', 'mergePdfs.js')).href);
 
 const SUPPORTED_EXTENSIONS = ['.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.tif'];

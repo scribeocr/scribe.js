@@ -521,6 +521,35 @@ export function parseAltColorSpace(csText, objCache) {
 const SRGB_GAMMA_ENC = (v) => (v <= 0.0031308 ? 12.92 * v : 1.055 * v ** (1 / 2.4) - 0.055);
 
 /**
+ * Convert absolute XYZ to sRGB bytes.
+ *
+ * @param {number} X
+ * @param {number} Y
+ * @param {number} Z
+ * @param {number[]} sourceWP - XYZ of the source white point (length 3)
+ * @returns {[number, number, number]} RGB triple in [0, 255]
+ */
+export function xyzToSRGB(X, Y, Z, sourceWP) {
+  const wpX = sourceWP[0];
+  const wpY = sourceWP[1];
+  const wpZ = sourceWP[2];
+  const aX = wpX > 0 ? X * 0.9505 / wpX : X;
+  const aY = wpY > 0 ? Y / wpY : Y;
+  const aZ = wpZ > 0 ? Z * 1.089 / wpZ : Z;
+  const lr = 3.2406 * aX - 1.5372 * aY - 0.4986 * aZ;
+  const lg = -0.9689 * aX + 1.8758 * aY + 0.0415 * aZ;
+  const lb = 0.0557 * aX - 0.2040 * aY + 1.0570 * aZ;
+  return [
+    Math.round(255 * Math.max(0, Math.min(1, SRGB_GAMMA_ENC(lr)))),
+    Math.round(255 * Math.max(0, Math.min(1, SRGB_GAMMA_ENC(lg)))),
+    Math.round(255 * Math.max(0, Math.min(1, SRGB_GAMMA_ENC(lb)))),
+  ];
+}
+
+/** Default Lab white point per PDF spec (D50). */
+const DEFAULT_LAB_WHITEPOINT = [0.9642, 1.0, 0.8249];
+
+/**
  * Convert CMYK (0-1) → RGB (0-255).
  *
  * Pure-K (C=M=Y=0) bypasses the polynomial and returns exact gray
@@ -598,12 +627,9 @@ export function altCSToRGB(altCS, comp) {
     const X = m[0] * A + m[3] * B + m[6] * C;
     const Y = m[1] * A + m[4] * B + m[7] * C;
     const Z = m[2] * A + m[5] * B + m[8] * C;
-    const lr = 3.2406 * X - 1.5372 * Y - 0.4986 * Z;
-    const lg = -0.9689 * X + 1.8758 * Y + 0.0415 * Z;
-    const lb = 0.0557 * X - 0.2040 * Y + 1.0570 * Z;
-    r = Math.round(255 * Math.max(0, Math.min(1, SRGB_GAMMA_ENC(lr))));
-    g = Math.round(255 * Math.max(0, Math.min(1, SRGB_GAMMA_ENC(lg))));
-    b = Math.round(255 * Math.max(0, Math.min(1, SRGB_GAMMA_ENC(lb))));
+    // The matrix's column sums equal the source WhitePoint (m·(1,1,1) = WP).
+    const wp = [m[0] + m[3] + m[6], m[1] + m[4] + m[7], m[2] + m[5] + m[8]];
+    [r, g, b] = xyzToSRGB(X, Y, Z, wp);
   } else if (altCS.type === 'Lab') {
     const Lstar = comp[0] || 0;
     const astar = comp[1] || 0;
@@ -613,19 +639,8 @@ export function altCSToRGB(altCS, comp) {
     const fz = fy - bstar / 200;
     const delta = 6 / 29;
     const fInv = (ft) => (ft > delta ? ft * ft * ft : 3 * delta * delta * (ft - 4 / 29));
-    // Scale by the D65 white point regardless of the color space's declared
-    // WhitePoint — the D65 sRGB matrix expects a D65 reference white, and
-    // without a chromatic adaptation step a D50-specified Lab(100,0,0) would
-    // decode to cream instead of pure white. Matches the inline Lab handler in renderPdfPage.js.
-    const xyzX = 0.9505 * fInv(fx);
-    const xyzY = fInv(fy);
-    const xyzZ = 1.089 * fInv(fz);
-    const lr = 3.2406 * xyzX - 1.5372 * xyzY - 0.4986 * xyzZ;
-    const lg = -0.9689 * xyzX + 1.8758 * xyzY + 0.0415 * xyzZ;
-    const lb = 0.0557 * xyzX - 0.2040 * xyzY + 1.0570 * xyzZ;
-    r = Math.round(255 * Math.max(0, Math.min(1, SRGB_GAMMA_ENC(lr))));
-    g = Math.round(255 * Math.max(0, Math.min(1, SRGB_GAMMA_ENC(lg))));
-    b = Math.round(255 * Math.max(0, Math.min(1, SRGB_GAMMA_ENC(lb))));
+    const wp = altCS.labWhitePoint || DEFAULT_LAB_WHITEPOINT;
+    [r, g, b] = xyzToSRGB(wp[0] * fInv(fx), wp[1] * fInv(fy), wp[2] * fInv(fz), wp);
   } else {
     // DeviceRGB or unknown — treat as direct RGB.
     r = Math.round(255 * (comp[0] || 0));
