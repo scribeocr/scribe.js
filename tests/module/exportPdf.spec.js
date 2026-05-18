@@ -2,7 +2,7 @@ import {
   describe, test, expect, beforeAll, afterAll,
 } from 'vitest';
 import scribe from '../../scribe.js';
-import { subsetPdf } from '../../js/export/pdf/writePdfOverlay.js';
+import { subsetPdf } from '../../js/export/pdf/subsetPdf.js';
 import { mergePdfs } from '../../js/export/pdf/mergePdfs.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 
