@@ -37,6 +37,7 @@ export function base14ToBundledFont(baseName, { bold = false, italic = false } =
       faceStyle: 'normal',
     };
   }
+  /** @type {'NimbusMono'|'NimbusSans'|'NimbusRoman'} */
   let family;
   if (canonical.startsWith('Courier')) family = 'NimbusMono';
   else if (canonical.startsWith('Helvetica')) family = 'NimbusSans';
@@ -67,6 +68,31 @@ export function cssFamilyToBundledFont(cssFamily, { bold = false, italic = false
   let family;
   if (/sans-serif/i.test(cssFamily)) family = 'NimbusSans';
   else if (/serif/i.test(cssFamily)) family = 'NimbusRoman';
+  else return null;
+  const variant = bold && italic ? 'BoldItalic' : bold ? 'Bold' : italic ? 'Italic' : 'Regular';
+  return {
+    family,
+    variant,
+    url: new URL(`../../../fonts/all/${family}-${variant}.woff`, import.meta.url),
+    alias: `_scribe_${family.toLowerCase()}_${variant.toLowerCase()}`,
+    faceWeight: bold ? 'bold' : 'normal',
+    faceStyle: italic ? 'italic' : 'normal',
+  };
+}
+
+/**
+ * Build a bundled-font descriptor from a CSS generic keyword. Used as the
+ * third-tier substitution when standardFontToCSS does not recognize the
+ * font's name but a generic style can still be inferred.
+ *
+ * @param {'serif'|'sans-serif'|'monospace'|'cursive'|string|null} generic
+ * @param {{ bold?: boolean, italic?: boolean }} [hints]
+ */
+export function genericToBundledFont(generic, { bold = false, italic = false } = {}) {
+  let family;
+  if (generic === 'sans-serif') family = 'NimbusSans';
+  else if (generic === 'serif') family = 'NimbusRoman';
+  else if (generic === 'monospace') family = 'NimbusMono';
   else return null;
   const variant = bold && italic ? 'BoldItalic' : bold ? 'Bold' : italic ? 'Italic' : 'Regular';
   return {

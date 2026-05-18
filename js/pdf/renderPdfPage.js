@@ -16,7 +16,7 @@ import {
 import { inflate as pakoInflate, inflatePartial as pakoInflatePartial } from '../../lib/pako-inflate.js';
 import { parsePageFonts, parseGlyphStreamPaths } from './fonts/parsePdfFonts.js';
 import { standardFontToCSS } from './fonts/standardFontMetrics.js';
-import { base14ToBundledFont, cssFamilyToBundledFont } from './fonts/base14Substitution.js';
+import { base14ToBundledFont, cssFamilyToBundledFont, genericToBundledFont } from './fonts/base14Substitution.js';
 import { FALLBACK_CHAIN } from '../fallbackFonts.js';
 import { loadFontFace } from '../containers/fontContainer.js';
 import { decodeCMYKJpegToRGB } from './codecs/decodeJPEG.js';
@@ -128,7 +128,8 @@ async function registerNonEmbeddedFont(fontObj, _familyName, targetMap, fontTag)
   // Otherwise Firefox stacks an extra faux-bold or italic on top of an already-bold/italic file.
   const hints = { bold: fontObj.bold, italic: fontObj.italic };
   const sub = base14ToBundledFont(fontObj.baseName, hints)
-    || cssFamilyToBundledFont(standardFontToCSS(fontObj.baseName), hints);
+    || cssFamilyToBundledFont(standardFontToCSS(fontObj.baseName), hints)
+    || genericToBundledFont(cssGenericForFontObj(fontObj), hints);
   if (sub) {
     try {
       let fontBytes;
