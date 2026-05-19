@@ -1,5 +1,5 @@
 import {
-  findXrefOffset, parseXref, ObjectCache, extractDict,
+  findXrefOffset, parseXref, ObjectCache, extractDict, parseDictEntries,
   getPageContentStreams, tokenizeContentStream, bytesToLatin1,
 } from '../../pdf/parsePdfUtils.js';
 import { getPageObjects, collectPageTreeObjNums } from '../../pdf/parsePdfDoc.js';
@@ -14,13 +14,14 @@ import {
 } from './pdfObjectGraph.js';
 import {
   parseExistingContents,
-  rewriteContentsStrippingInvisibleText,
+  rewriteContentsStripAndConvert,
   resolvePageResources,
   mergeResources,
   buildReplacementPageDict,
   overlayAnnotationBbox,
   annotLinkTargetsDroppedPage,
 } from './pdfPageRewrite.js';
+import { createConversionState } from './convertTextRegionsToPaths.js';
 
 /**
  * Rewrite a page dict's /Annots entry to drop link annotations whose
@@ -147,65 +148,6 @@ function collectUsedResourceNames(pageObjText, objCache) {
   walk(streams.join('\n'), recurseForm);
 
   return { usedFonts, usedXObjects, usedExtGStates };
-}
-
-/**
- * Parse the top-level name→value entries of a PDF dict body.
- * @param {string} dictBody - The inner text of a dict (no outer << >>)
- */
-function parseDictEntries(dictBody) {
-  const entries = [];
-  const len = dictBody.length;
-  let i = 0;
-
-  while (i < len) {
-    while (i < len && /\s/.test(dictBody[i])) i++;
-    if (i >= len) break;
-    if (dictBody[i] !== '/') { i++; continue; }
-    i++;
-    let name = '';
-    while (i < len && !/[\s/<>[\](){}%]/.test(dictBody[i])) { name += dictBody[i]; i++; }
-    while (i < len && /\s/.test(dictBody[i])) i++;
-    if (i >= len) break;
-
-    const valueStart = i;
-    const ch = dictBody[i];
-    if (ch === '<' && dictBody[i + 1] === '<') {
-      const sub = extractDict(dictBody, i);
-      i += sub.length;
-    } else if (ch === '[') {
-      let depth = 1; i++;
-      while (i < len && depth > 0) {
-        if (dictBody[i] === '[') depth++;
-        else if (dictBody[i] === ']') depth--;
-        i++;
-      }
-    } else if (ch === '(') {
-      let depth = 1; i++;
-      while (i < len && depth > 0) {
-        if (dictBody[i] === '\\') { i += 2; continue; }
-        if (dictBody[i] === '(') depth++;
-        else if (dictBody[i] === ')') depth--;
-        i++;
-      }
-    } else if (ch === '<') {
-      while (i < len && dictBody[i] !== '>') i++;
-      if (i < len) i++;
-    } else if (ch === '/') {
-      i++;
-      while (i < len && !/[\s/<>[\](){}%]/.test(dictBody[i])) i++;
-    } else {
-      const indirectMatch = /^(\d+)\s+(\d+)\s+R/.exec(dictBody.slice(i));
-      if (indirectMatch) {
-        i += indirectMatch[0].length;
-      } else {
-        while (i < len && !/[\s/<>[\]]/.test(dictBody[i])) i++;
-      }
-    }
-    entries.push({ name, valueText: dictBody.slice(valueStart, i) });
-  }
-
-  return entries;
 }
 
 /**
@@ -336,6 +278,7 @@ function replacePageResources(pageObjText, newResourcesDictText) {
  * @param {number} [params.proofOpacity]
  * @param {boolean} [params.humanReadable=false]
  * @param {Array<Array<AnnotationHighlight>>} [params.annotationsPages=[]]
+ * @param {?Array<{ page: number, bbox: [number, number, number, number] }>} [params.convertRegionsToPaths=null]
  */
 export async function rebuildPdfSubset({
   pdfBytes, text, objCache, xrefEntries, pages,
@@ -345,9 +288,19 @@ export async function rebuildPdfSubset({
   confThreshHigh, confThreshMed, proofOpacity,
   humanReadable = false,
   annotationsPages = [],
+  convertRegionsToPaths = null,
 }) {
   const overlayEnabled = !!(ocrArr && pageMetricsArr && pdfFonts);
   let nextObjNum = startingNextObjNum;
+
+  const regionsByPage = new Map();
+  if (convertRegionsToPaths) {
+    for (const r of convertRegionsToPaths) {
+      if (!regionsByPage.has(r.page)) regionsByPage.set(r.page, []);
+      regionsByPage.get(r.page).push(r.bbox);
+    }
+  }
+  const conversionState = regionsByPage.size > 0 ? createConversionState() : null;
 
   const { pageTreeObjNums } = collectPageTreeObjNums(objCache);
 
@@ -366,6 +319,9 @@ export async function rebuildPdfSubset({
 
   /** @type {Array<{objNum: number, content: string | Uint8Array | import('./writePdfStreams.js').PdfBinaryObject}>} */
   const allOutputObjects = [];
+  const allocObjNum = () => nextObjNum++;
+  /** @param {{objNum: number, content: string | Uint8Array | import('./writePdfStreams.js').PdfBinaryObject}} obj */
+  const pushOutputObj = (obj) => allOutputObjects.push(obj);
 
   /** @type {Set<number>} */
   const modifiedPageObjNums = new Set();
@@ -424,16 +380,19 @@ export async function rebuildPdfSubset({
         allOutputObjects.push({ objNum: qOverlayObjNum, content: await encodeStreamObject(qOverlayObjNum, qOverlayStr, { humanReadable }) });
 
         const existingContentsRefs = parseExistingContents(pageInfo.objText, objCache);
-        const strippedContentsRefs = await rewriteContentsStrippingInvisibleText(
+        const stripConvertResult = await rewriteContentsStripAndConvert({
           existingContentsRefs,
+          pageObjText: pageInfo.objText,
+          bboxes: regionsByPage.get(i) || null,
+          conversionState,
           objCache,
-          () => nextObjNum++,
-          (obj) => allOutputObjects.push(obj),
+          allocObjNum,
+          pushObj: pushOutputObj,
           humanReadable,
-        );
+        });
         newContentsArray = [
           `${qSaveObjNum} 0 R`,
-          ...strippedContentsRefs,
+          ...stripConvertResult.refs,
           `${qOverlayObjNum} 0 R`,
         ];
 
@@ -442,8 +401,17 @@ export async function rebuildPdfSubset({
         for (const font of pageFontsUsed) {
           overlayFontsStr += `${font.name} ${font.objN} 0 R\n`;
         }
+        let overlayXObjectsStr = '';
+        for (const [tag, objN] of stripConvertResult.xobjEntries) {
+          overlayXObjectsStr += `/${tag} ${objN} 0 R\n`;
+        }
+        if (stripConvertResult.formClones) {
+          for (const [name, objN] of stripConvertResult.formClones) {
+            overlayXObjectsStr += `/${name} ${objN} 0 R\n`;
+          }
+        }
         const overlayExtGStateStr = `/GSO0 <</ca 0.0>>/GSO1 <</ca ${proofOpacity}>>`;
-        const mergedResourcesStr = mergeResources(existingResourcesStr, overlayFontsStr, overlayExtGStateStr, objCache);
+        const mergedResourcesStr = mergeResources(existingResourcesStr, overlayFontsStr, overlayExtGStateStr, objCache, overlayXObjectsStr);
 
         resourcesObjNum = nextObjNum++;
         allOutputObjects.push({ objNum: resourcesObjNum, content: `${resourcesObjNum} 0 obj\n${mergedResourcesStr}\nendobj\n\n` });

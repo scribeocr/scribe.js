@@ -548,6 +548,132 @@ export function extractDict(text, start) {
 }
 
 /**
+ * Find a key (PDF name like '/Resources') at the top level of a dict body,
+ * skipping over nested dicts, arrays, strings, and comments.
+ * Naive `indexOf` matches nested occurrences (e.g. `/ExtGState` inside a marked-content
+ * `/Properties` entry's own sub-dict), which produces incorrect splice points.
+ *
+ * @param {string} dictBody - Dict text WITHOUT outer `<<` / `>>` wrapper.
+ *   (Pass `extractDict(text, start).slice(2, -2)` to get the body.)
+ * @param {string} key - Name including leading slash, e.g. `/Resources`.
+ * @returns {number} Index of the key's leading `/` in `dictBody`, or -1.
+ */
+export function findTopLevelKeyIndex(dictBody, key) {
+  let depth = 0;
+  let i = 0;
+  const len = dictBody.length;
+  while (i < len) {
+    const c = dictBody.charCodeAt(i);
+    if (c === 0x3C && dictBody.charCodeAt(i + 1) === 0x3C) { depth++; i += 2; continue; }
+    if (c === 0x3E && dictBody.charCodeAt(i + 1) === 0x3E) { depth--; i += 2; continue; }
+    if (c === 0x5B) { depth++; i++; continue; }
+    if (c === 0x5D) { depth--; i++; continue; }
+    if (c === 0x28) {
+      let parenDepth = 1;
+      i++;
+      while (i < len && parenDepth > 0) {
+        const sc = dictBody.charCodeAt(i);
+        if (sc === 0x5C) { i += 2; continue; }
+        if (sc === 0x28) parenDepth++;
+        else if (sc === 0x29) parenDepth--;
+        i++;
+      }
+      continue;
+    }
+    if (c === 0x3C) {
+      const end = dictBody.indexOf('>', i);
+      i = end < 0 ? len : end + 1;
+      continue;
+    }
+    if (c === 0x25) {
+      while (i < len) {
+        const cc = dictBody.charCodeAt(i);
+        if (cc === 0x0A || cc === 0x0D) break;
+        i++;
+      }
+      continue;
+    }
+    if (depth === 0 && c === 0x2F && dictBody.startsWith(key, i)) {
+      const after = dictBody.charCodeAt(i + key.length);
+      // PDF name terminates on whitespace or a delimiter (one of /()<>[]{}%).
+      if (Number.isNaN(after)
+          || after === 0x20 || after === 0x09 || after === 0x0A || after === 0x0D || after === 0x0C
+          || after === 0x2F || after === 0x28 || after === 0x29 || after === 0x3C || after === 0x3E
+          || after === 0x5B || after === 0x5D || after === 0x7B || after === 0x7D || after === 0x25) {
+        return i;
+      }
+    }
+    i++;
+  }
+  return -1;
+}
+
+/**
+ * Iterate the top-level name→value entries of a PDF dict body.
+ * Walks the body character-by-character with proper handling of nested dicts,
+ * arrays, strings, hex strings, name values, and indirect references.
+ * Returns each entry as a `{ name, valueText }` pair where `valueText` is the literal source text
+ * of the value (including outer brackets for arrays/dicts).
+ *
+ * @param {string} dictBody - Dict text WITHOUT outer `<<` / `>>` wrapper.
+ * @returns {Array<{name: string, valueText: string}>}
+ */
+export function parseDictEntries(dictBody) {
+  const entries = [];
+  const len = dictBody.length;
+  let i = 0;
+
+  while (i < len) {
+    while (i < len && /\s/.test(dictBody[i])) i++;
+    if (i >= len) break;
+    if (dictBody[i] !== '/') { i++; continue; }
+    i++;
+    let name = '';
+    while (i < len && !/[\s/<>[\](){}%]/.test(dictBody[i])) { name += dictBody[i]; i++; }
+    while (i < len && /\s/.test(dictBody[i])) i++;
+    if (i >= len) break;
+
+    const valueStart = i;
+    const ch = dictBody[i];
+    if (ch === '<' && dictBody[i + 1] === '<') {
+      const sub = extractDict(dictBody, i);
+      i += sub.length;
+    } else if (ch === '[') {
+      let depth = 1; i++;
+      while (i < len && depth > 0) {
+        if (dictBody[i] === '[') depth++;
+        else if (dictBody[i] === ']') depth--;
+        i++;
+      }
+    } else if (ch === '(') {
+      let depth = 1; i++;
+      while (i < len && depth > 0) {
+        if (dictBody[i] === '\\') { i += 2; continue; }
+        if (dictBody[i] === '(') depth++;
+        else if (dictBody[i] === ')') depth--;
+        i++;
+      }
+    } else if (ch === '<') {
+      while (i < len && dictBody[i] !== '>') i++;
+      if (i < len) i++;
+    } else if (ch === '/') {
+      i++;
+      while (i < len && !/[\s/<>[\](){}%]/.test(dictBody[i])) i++;
+    } else {
+      const indirectMatch = /^(\d+)\s+(\d+)\s+R/.exec(dictBody.slice(i));
+      if (indirectMatch) {
+        i += indirectMatch[0].length;
+      } else {
+        while (i < len && !/[\s/<>[\]]/.test(dictBody[i])) i++;
+      }
+    }
+    entries.push({ name, valueText: dictBody.slice(valueStart, i) });
+  }
+
+  return entries;
+}
+
+/**
  * Decompress zlib-wrapped deflate data using pako.
  * Throws on any error — callers are expected to catch and handle
  * (e.g. retry without trailing byte, or return null for encrypted streams).
@@ -2216,6 +2342,7 @@ export function getPageContentStreams(pageObjText, objCache) {
  *   { type: 'string', value: string } |
  *   { type: 'hexstring', value: string } |
  *   { type: 'array', value: Array<{ type: string, value: any }> } |
+ *   { type: 'dict', value: string } |
  *   { type: 'operator', value: string } |
  *   { type: 'inlineImage', value: { dictText: string, imageData: string } }
  * )} PDFToken
@@ -2296,7 +2423,7 @@ export function tokenizeContentStream(streamText) {
 
     if (cc === 0x3C) { // <
       if (i + 1 < len && streamText.charCodeAt(i + 1) === 0x3C) {
-        // Dict <<...>> — skip without emitting
+        const dictStart = i;
         i += 2;
         let depth = 1;
         while (i < len && depth > 0) {
@@ -2311,6 +2438,7 @@ export function tokenizeContentStream(streamText) {
             i++;
           }
         }
+        tokens.push({ type: 'dict', value: streamText.slice(dictStart, i), start: tokStart });
         continue;
       }
       i++;
@@ -2567,6 +2695,22 @@ export function tokenizeContentStream(streamText) {
 }
 
 /**
+ * Format a JS number for emission into a PDF content stream.
+ * @param {number} n
+ */
+export function formatPdfNumber(n) {
+  if (!Number.isFinite(n)) return '0';
+  if (Number.isInteger(n) && Math.abs(n) < 1e21) return String(n);
+  const s = String(n);
+  if (!s.includes('e') && !s.includes('E')) return s;
+  const absN = Math.abs(n);
+  if (absN === 0) return '0';
+  const expDigits = Math.max(0, Math.ceil(-Math.log10(absN)));
+  const fixed = n.toFixed(Math.min(expDigits + 6, 20));
+  return fixed.replace(/\.?0+$/, '');
+}
+
+/**
  * Re-encode a tokenizer token as PDF content-stream syntax.
  * @param {PDFToken} t
  */
@@ -2577,7 +2721,7 @@ function serializeContentToken(t) {
     case 'hexstring':
       return `<${t.value}>`;
     case 'number':
-      return String(t.value);
+      return formatPdfNumber(t.value);
     case 'operator':
       return t.value;
     case 'array':

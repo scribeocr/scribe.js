@@ -20,20 +20,24 @@ export async function deflateBytes(bytes) {
 }
 
 /**
- * Build a PDF stream object from a content string.
+ * Build a PDF stream object from a content string. `dictExtras` is spliced
+ * into the stream dict before `/Length` (e.g. `/Subtype/Form/BBox[...]`).
  *
  * @param {number} objNum
  * @param {string} contentStr - The raw (uncompressed) stream content.
- * @param {{ humanReadable?: boolean }} [opts]
+ * @param {{ humanReadable?: boolean, dictExtras?: string }} [opts]
  */
-export async function encodeStreamObject(objNum, contentStr, { humanReadable = false } = {}) {
+export async function encodeStreamObject(objNum, contentStr, { humanReadable = false, dictExtras = '' } = {}) {
   if (humanReadable || contentStr.length === 0) {
-    return `${objNum} 0 obj\n<</Length ${contentStr.length}>>\nstream\n${contentStr}\nendstream\nendobj\n\n`;
+    return `${objNum} 0 obj\n<<${dictExtras}/Length ${contentStr.length}>>\nstream\n${contentStr}\nendstream\nendobj\n\n`;
   }
-  const bytes = new TextEncoder().encode(contentStr);
+  // Latin1 byte-for-byte. PDF content streams can embed inline image binary
+  // via BI...ID...EI; TextEncoder (UTF-8) would double-encode bytes 0x80-0xFF.
+  const bytes = new Uint8Array(contentStr.length);
+  for (let i = 0; i < contentStr.length; i++) bytes[i] = contentStr.charCodeAt(i) & 0xFF;
   const deflated = await deflateBytes(bytes);
   return {
-    header: `${objNum} 0 obj\n<</Length ${deflated.length} /Filter /FlateDecode>>\nstream\n`,
+    header: `${objNum} 0 obj\n<<${dictExtras}/Length ${deflated.length} /Filter /FlateDecode>>\nstream\n`,
     streamData: deflated,
     trailer: '\nendstream\nendobj\n\n',
   };

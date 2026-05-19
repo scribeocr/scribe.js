@@ -12,12 +12,13 @@ import {
 } from './pdfObjectGraph.js';
 import {
   parseExistingContents,
-  rewriteContentsStrippingInvisibleText,
+  rewriteContentsStripAndConvert,
   resolvePageResources,
   mergeResources,
   buildReplacementPageDict,
   overlayAnnotationBbox,
 } from './pdfPageRewrite.js';
+import { createConversionState } from './convertTextRegionsToPaths.js';
 import { rebuildPdfSubset } from './subsetPdf.js';
 
 /**
@@ -39,6 +40,10 @@ import { rebuildPdfSubset } from './subsetPdf.js';
  * @param {number} [params.proofOpacity=0.8]
  * @param {boolean} [params.humanReadable=false]
  * @param {Array<Array<AnnotationHighlight>>} [params.annotationsPages=[]] - Per-page annotation arrays
+ * @param {?Array<{ page: number, bbox: [number, number, number, number] }>} [params.convertRegionsToPaths=null]
+ *   When provided, source-PDF text whose origin (Trm[4], Trm[5]) falls inside any
+ *   of the supplied user-space bboxes is replaced with vector Form XObject calls.
+ *   Glyphs from non-embedded or unsupported fonts are left as text.
  * @returns {Promise<ArrayBuffer>}
  */
 export async function overlayPdfText({
@@ -54,6 +59,7 @@ export async function overlayPdfText({
   proofOpacity = 0.8,
   humanReadable = false,
   annotationsPages = [],
+  convertRegionsToPaths = null,
 }) {
   const pdfBytes = new Uint8Array(basePdfData);
   // Local latin1 view used by overlayPdfText's downstream helpers.
@@ -74,10 +80,15 @@ export async function overlayPdfText({
   // Step 2: Determine next available object number
   let nextObjNum = Math.max(...Object.keys(xrefEntries).map(Number)) + 1;
 
-  // Step 3: Create font references starting at nextObjNum
-  const fontRefs = await createPdfFontRefs(nextObjNum, ocrArr);
-  const { pdfFonts } = fontRefs;
-  nextObjNum = fontRefs.objectI;
+  // Step 3: Create font references starting at nextObjNum when writing text overlay.
+  const needsOcrFonts = !!ocrArr?.some((p) => p?.lines?.length > 0) && textMode !== 'annot';
+  /** @type {Object<string, PdfFontFamily>} */
+  let pdfFonts = {};
+  if (needsOcrFonts) {
+    const fontRefs = await createPdfFontRefs(nextObjNum, ocrArr);
+    pdfFonts = fontRefs.pdfFonts;
+    nextObjNum = fontRefs.objectI;
+  }
 
   // Incremental update appends new objects but leaves the source's trailer chain in
   // place. For encrypted sources that means /Encrypt stays active and readers will
@@ -114,21 +125,35 @@ export async function overlayPdfText({
       startingNextObjNum: nextObjNum,
       humanReadable,
       annotationsPages,
+      convertRegionsToPaths,
     });
   }
+
+  const regionsByPage = new Map();
+  if (convertRegionsToPaths) {
+    for (const r of convertRegionsToPaths) {
+      if (!regionsByPage.has(r.page)) regionsByPage.set(r.page, []);
+      regionsByPage.get(r.page).push(r.bbox);
+    }
+  }
+  const conversionState = regionsByPage.size > 0 ? createConversionState() : null;
 
   /** @type {Set<PdfFontInfo>} */
   const pdfFontsUsed = new Set();
 
   // All new objects to append (font objects are added later)
-  /** @type {Array<{objNum: number, content: string}>} */
+  /** @type {Array<{objNum: number, content: string | Uint8Array | import('./writePdfStreams.js').PdfBinaryObject}>} */
   const newObjects = [];
+  const allocObjNum = () => nextObjNum++;
+  /** @param {{objNum: number, content: string | Uint8Array | import('./writePdfStreams.js').PdfBinaryObject}} obj */
+  const pushNewObj = (obj) => newObjects.push(obj);
 
   // Step 4: For each page, generate text content and build modified objects
   for (const i of effectivePageArr) {
     const pageInfo = pages[i];
     const pageObj = ocrArr?.[i];
-    const pixelDims = pageMetricsArr[i].dims;
+    const pageMetrics = pageMetricsArr?.[i] || null;
+    const pixelDims = pageMetrics?.dims;
     const pageAnnotations = annotationsPages[i] || [];
 
     // pixelDims is the rasterised CropBox region; scale and translate the overlay relative
@@ -144,8 +169,8 @@ export async function overlayPdfText({
     let textContentObjStr = '';
     /** @type {Set<PdfFontInfo>} */
     let pageFontsUsed = new Set();
-    if (pageObj && pageObj.lines.length > 0 && textMode !== 'annot') {
-      const angle = pageMetricsArr[i].angle || 0;
+    if (pageObj && pageObj.lines.length > 0 && textMode !== 'annot' && pixelDims) {
+      const angle = pageMetrics?.angle || 0;
       const res = await ocrPageToPDFStream(
         pageObj, pixelDims, pdfFonts, textMode, angle,
         rotateText, rotateBackground, confThreshHigh, confThreshMed,
@@ -156,49 +181,71 @@ export async function overlayPdfText({
 
     const hasText = textContentObjStr && textContentObjStr.length > 0;
     const hasAnnots = pageAnnotations.length > 0;
-    if (!hasText && !hasAnnots) continue;
+    const hasConvert = regionsByPage.has(i);
+    if (!hasText && !hasAnnots && !hasConvert) continue;
 
     /** @type {string[]|null} */
     let newContentsArray = null;
     /** @type {number|null} */
     let resourcesObjNum = null;
 
-    if (hasText) {
+    if (hasText || hasConvert) {
       for (const font of pageFontsUsed) pdfFontsUsed.add(font);
 
-      const qSaveStr = 'q\n';
-      const qSaveObjNum = nextObjNum++;
-      newObjects.push({ objNum: qSaveObjNum, content: `${qSaveObjNum} 0 obj\n<</Length ${qSaveStr.length}>>\nstream\n${qSaveStr}endstream\nendobj\n\n` });
-
-      const qOverlayStr = `Q\nq ${scaleX} 0 0 ${scaleY} ${tx} ${ty} cm\n${textContentObjStr}Q\n`;
-      const qOverlayObjNum = nextObjNum++;
-      newObjects.push({ objNum: qOverlayObjNum, content: await encodeStreamObject(qOverlayObjNum, qOverlayStr, { humanReadable }) });
-
       const existingContentsRefs = parseExistingContents(pageInfo.objText, objCache);
-      const strippedContentsRefs = await rewriteContentsStrippingInvisibleText(
+      const stripConvertResult = await rewriteContentsStripAndConvert({
         existingContentsRefs,
+        pageObjText: pageInfo.objText,
+        bboxes: regionsByPage.get(i) || null,
+        conversionState,
         objCache,
-        () => nextObjNum++,
-        (obj) => newObjects.push(obj),
+        allocObjNum,
+        pushObj: pushNewObj,
         humanReadable,
-      );
-      newContentsArray = [
-        `${qSaveObjNum} 0 R`,
-        ...strippedContentsRefs,
-        `${qOverlayObjNum} 0 R`,
-      ];
+      });
 
-      // Merge overlay fonts + ExtGState into the page's /Resources.
+      /** @type {string[]} */
+      const contentsArray = [];
+      let qSaveObjNum = null;
+      let qOverlayObjNum = null;
+      if (hasText) {
+        const qSaveStr = 'q\n';
+        qSaveObjNum = allocObjNum();
+        pushNewObj({ objNum: qSaveObjNum, content: `${qSaveObjNum} 0 obj\n<</Length ${qSaveStr.length}>>\nstream\n${qSaveStr}endstream\nendobj\n\n` });
+
+        const qOverlayStr = `Q\nq ${scaleX} 0 0 ${scaleY} ${tx} ${ty} cm\n${textContentObjStr}Q\n`;
+        qOverlayObjNum = allocObjNum();
+        pushNewObj({ objNum: qOverlayObjNum, content: await encodeStreamObject(qOverlayObjNum, qOverlayStr, { humanReadable }) });
+
+        contentsArray.push(`${qSaveObjNum} 0 R`, ...stripConvertResult.refs, `${qOverlayObjNum} 0 R`);
+      } else {
+        contentsArray.push(...stripConvertResult.refs);
+      }
+      newContentsArray = contentsArray;
+
+      // Merge overlay fonts + ExtGState (+ converted-glyph XObjects) into the page's /Resources.
       const existingResourcesStr = resolvePageResources(pageInfo.objText, objCache);
       let overlayFontsStr = '';
       for (const font of pageFontsUsed) {
         overlayFontsStr += `${font.name} ${font.objN} 0 R\n`;
       }
-      const overlayExtGStateStr = `/GSO0 <</ca 0.0>>/GSO1 <</ca ${proofOpacity}>>`;
-      const mergedResourcesStr = mergeResources(existingResourcesStr, overlayFontsStr, overlayExtGStateStr, objCache);
+      let overlayXObjectsStr = '';
+      for (const [tag, objN] of stripConvertResult.xobjEntries) {
+        overlayXObjectsStr += `/${tag} ${objN} 0 R\n`;
+      }
+      // Redirects for Form XObjects that were cloned for path conversion.
+      // PDF dicts use last-wins semantics for duplicate keys, so an entry like
+      // `/Fm2 origN 0 R\n/Fm2 cloneN 0 R` resolves to the clone.
+      if (stripConvertResult.formClones) {
+        for (const [name, objN] of stripConvertResult.formClones) {
+          overlayXObjectsStr += `/${name} ${objN} 0 R\n`;
+        }
+      }
+      const overlayExtGStateStr = hasText ? `/GSO0 <</ca 0.0>>/GSO1 <</ca ${proofOpacity}>>` : '';
+      const mergedResourcesStr = mergeResources(existingResourcesStr, overlayFontsStr, overlayExtGStateStr, objCache, overlayXObjectsStr);
 
-      resourcesObjNum = nextObjNum++;
-      newObjects.push({ objNum: resourcesObjNum, content: `${resourcesObjNum} 0 obj\n${mergedResourcesStr}\nendobj\n\n` });
+      resourcesObjNum = allocObjNum();
+      pushNewObj({ objNum: resourcesObjNum, content: `${resourcesObjNum} 0 obj\n${mergedResourcesStr}\nendobj\n\n` });
     }
 
     /** @type {string[]} */

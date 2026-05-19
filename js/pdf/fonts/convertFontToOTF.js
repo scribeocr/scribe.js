@@ -300,7 +300,7 @@ export function parseCFFCharset(cffData) {
  * In CID CFF fonts, charset entries are CID values (stored as 2-byte SIDs).
  * @param {Uint8Array} cffData
  */
-function extractCIDToGIDFromCFF(cffData) {
+export function extractCIDToGIDFromCFF(cffData) {
   const cidToGID = new Map();
   if (cffData.length < 4 || cffData[0] !== 1) return cidToGID;
 

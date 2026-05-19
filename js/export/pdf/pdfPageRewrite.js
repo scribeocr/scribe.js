@@ -1,5 +1,9 @@
-import { extractDict, bytesToLatin1, stripText } from '../../pdf/parsePdfUtils.js';
+import {
+  extractDict, bytesToLatin1, stripText, findTopLevelKeyIndex,
+  resolveIntValue, resolveNumValue, resolveNumArray,
+} from '../../pdf/parsePdfUtils.js';
 import { encodeStreamObject } from './writePdfStreams.js';
+import { convertSinglePageForRegions } from './convertTextRegionsToPaths.js';
 
 /**
  * Parse /Contents from a page dict, returning an array of indirect references to
@@ -64,6 +68,114 @@ export async function rewriteContentsStrippingInvisibleText(existingContentsRefs
 }
 
 /**
+ * Strip invisible text and optionally convert per-glyph text inside the
+ * supplied user-space bboxes to vector paths via Form XObjects.
+ *
+ * Returns new content stream refs and any Form XObject /Resources entries that must be
+ * merged into the page's /Resources/XObject dict.
+ *
+ * When `bboxes` is null or empty, this is equivalent to
+ * `rewriteContentsStrippingInvisibleText` with an empty `xobjEntries`.
+ *
+ * @param {object} params
+ * @param {string[]} params.existingContentsRefs
+ * @param {string} params.pageObjText
+ * @param {ReadonlyArray<ReadonlyArray<number>> | null} params.bboxes
+ * @param {ReturnType<typeof import('./convertTextRegionsToPaths.js').createConversionState> | null} params.conversionState
+ * @param {import('../../pdf/parsePdfUtils.js').ObjectCache} params.objCache
+ * @param {() => number} params.allocObjNum
+ * @param {(obj: { objNum: number, content: string | Uint8Array | import('./writePdfStreams.js').PdfBinaryObject }) => void} params.pushObj
+ * @param {boolean} params.humanReadable
+ * @returns {Promise<{
+ *   refs: string[],
+ *   xobjEntries: Map<string, number>,
+ *   formClones: Map<string, number>,
+ *   skipped: Array<{fontObjNum: number, charCode: number, reason: string}>,
+ * }>}
+ */
+export async function rewriteContentsStripAndConvert({
+  existingContentsRefs, pageObjText, bboxes, conversionState,
+  objCache, allocObjNum, pushObj, humanReadable,
+}) {
+  /** @type {Map<string, number>} */
+  const emptyXobj = new Map();
+  /** @type {Map<string, number>} */
+  const emptyFormClones = new Map();
+  if (existingContentsRefs.length === 0) {
+    return {
+      refs: existingContentsRefs, xobjEntries: emptyXobj, formClones: emptyFormClones, skipped: [],
+    };
+  }
+
+  /** @type {string[]} */
+  const parts = [];
+  let canMerge = true;
+  for (const ref of existingContentsRefs) {
+    const refMatch = /^(\d+)\s+\d+\s+R$/.exec(ref);
+    if (!refMatch) { canMerge = false; break; }
+    let bytes;
+    try {
+      bytes = objCache.getStreamBytes(Number(refMatch[1]));
+    } catch {
+      bytes = null;
+    }
+    if (!bytes) { canMerge = false; break; }
+    parts.push(bytesToLatin1(bytes));
+  }
+  if (!canMerge) {
+    return {
+      refs: existingContentsRefs, xobjEntries: emptyXobj, formClones: emptyFormClones, skipped: [],
+    };
+  }
+
+  const merged = parts.join('\n');
+  const { text: strippedText, dropped } = stripText(merged, { mode: 'invisible' });
+
+  const wantConvert = !!bboxes && bboxes.length > 0 && !!conversionState;
+  let workingText = strippedText;
+  /** @type {Map<string, number>} */
+  let xobjEntries = emptyXobj;
+  /** @type {Map<string, number>} */
+  let formClones = emptyFormClones;
+  /** @type {Array<{fontObjNum: number, charCode: number, reason: string}>} */
+  let skipped = [];
+  let converted = false;
+
+  if (wantConvert) {
+    const result = await convertSinglePageForRegions({
+      streamText: workingText,
+      pageObjText,
+      bboxes,
+      state: conversionState,
+      objCache,
+      allocObjNum,
+      pushObj,
+      humanReadable,
+    });
+    if (result.skipped) skipped = result.skipped;
+    if (result.changed) {
+      if (result.text !== undefined) workingText = result.text;
+      if (result.xobjEntries) xobjEntries = result.xobjEntries;
+      if (result.formClones) formClones = result.formClones;
+      converted = true;
+    }
+  }
+
+  if (!dropped && !converted) {
+    return {
+      refs: existingContentsRefs, xobjEntries, formClones, skipped,
+    };
+  }
+
+  const newObjNum = allocObjNum();
+  const objBin = await encodeStreamObject(newObjNum, workingText, { humanReadable });
+  pushObj({ objNum: newObjNum, content: objBin });
+  return {
+    refs: [`${newObjNum} 0 R`], xobjEntries, formClones, skipped,
+  };
+}
+
+/**
  * Resolve the effective /Resources dictionary for a page.
  * Handles inline dicts, indirect references, and inherited resources.
  * @param {string} pageObjText
@@ -96,66 +208,6 @@ export function resolvePageResources(pageObjText, objCache) {
   }
 
   return '<<>>';
-}
-
-/**
- * Find `key` (a PDF name like '/ExtGState') at the top level of a dict body,
- * skipping over nested dicts/arrays/strings/comments.
- * Naive `indexOf` would match a nested `/ExtGState`
- * (e.g. inside a marked-content `/Properties` entry's own resource dict),
- * causing the overlay merge to splice into the wrong dict.
- *
- * @param {string} inner
- * @param {string} key
- */
-function findTopLevelKeyIndex(inner, key) {
-  let depth = 0;
-  let i = 0;
-  const len = inner.length;
-  while (i < len) {
-    const c = inner.charCodeAt(i);
-    if (c === 0x3C && inner.charCodeAt(i + 1) === 0x3C) { depth++; i += 2; continue; }
-    if (c === 0x3E && inner.charCodeAt(i + 1) === 0x3E) { depth--; i += 2; continue; }
-    if (c === 0x5B) { depth++; i++; continue; }
-    if (c === 0x5D) { depth--; i++; continue; }
-    if (c === 0x28) {
-      let parenDepth = 1;
-      i++;
-      while (i < len && parenDepth > 0) {
-        const sc = inner.charCodeAt(i);
-        if (sc === 0x5C) { i += 2; continue; }
-        if (sc === 0x28) parenDepth++;
-        else if (sc === 0x29) parenDepth--;
-        i++;
-      }
-      continue;
-    }
-    if (c === 0x3C) {
-      const end = inner.indexOf('>', i);
-      i = end < 0 ? len : end + 1;
-      continue;
-    }
-    if (c === 0x25) {
-      while (i < len) {
-        const cc = inner.charCodeAt(i);
-        if (cc === 0x0A || cc === 0x0D) break;
-        i++;
-      }
-      continue;
-    }
-    if (depth === 0 && c === 0x2F && inner.startsWith(key, i)) {
-      const after = inner.charCodeAt(i + key.length);
-      // PDF name terminates on whitespace or a delimiter (one of /()<>[]{}%).
-      if (Number.isNaN(after)
-          || after === 0x20 || after === 0x09 || after === 0x0A || after === 0x0D || after === 0x0C
-          || after === 0x2F || after === 0x28 || after === 0x29 || after === 0x3C || after === 0x3E
-          || after === 0x5B || after === 0x5D || after === 0x7B || after === 0x7D || after === 0x25) {
-        return i;
-      }
-    }
-    i++;
-  }
-  return -1;
 }
 
 /**
@@ -204,11 +256,13 @@ function mergeResourceKey(inner, key, newEntries, objCache) {
  * @param {string} overlayFontsStr
  * @param {string} overlayExtGStateStr
  * @param {?import('../../pdf/parsePdfUtils.js').ObjectCache} [objCache=null]
+ * @param {string} [overlayXObjectsStr='']
  */
-export function mergeResources(existingDict, overlayFontsStr, overlayExtGStateStr, objCache = null) {
+export function mergeResources(existingDict, overlayFontsStr, overlayExtGStateStr, objCache = null, overlayXObjectsStr = '') {
   let inner = existingDict.slice(2, -2).trim();
   inner = mergeResourceKey(inner, '/Font', overlayFontsStr, objCache);
   inner = mergeResourceKey(inner, '/ExtGState', overlayExtGStateStr, objCache);
+  inner = mergeResourceKey(inner, '/XObject', overlayXObjectsStr, objCache);
   // Newline before `>>` so any trailing `%` line-comment in `inner` ends before the close.
   return `<<${inner}\n>>`;
 }
@@ -299,17 +353,14 @@ export function buildReplacementPageDict(objNum, originalObjText, newContentsArr
     if (parentMatch) dictStr += `/Parent ${parentMatch[1]}`;
   }
 
-  // Copy /MediaBox
-  const mbMatch = /\/MediaBox\s*\[\s*([\d.+\-e\s]+)\s*\]/.exec(originalObjText);
-  if (mbMatch) dictStr += `/MediaBox[${mbMatch[1].trim()}]`;
+  const mediaBox = resolveNumArray(originalObjText, 'MediaBox', objCache);
+  if (mediaBox) dictStr += `/MediaBox[${mediaBox.join(' ')}]`;
 
-  // Copy /CropBox if present
-  const cbMatch = /\/CropBox\s*\[\s*([\d.+\-e\s]+)\s*\]/.exec(originalObjText);
-  if (cbMatch) dictStr += `/CropBox[${cbMatch[1].trim()}]`;
+  const cropBox = resolveNumArray(originalObjText, 'CropBox', objCache);
+  if (cropBox) dictStr += `/CropBox[${cropBox.join(' ')}]`;
 
-  // Copy /Rotate if present
-  const rotMatch = /\/Rotate\s+(\d+)/.exec(originalObjText);
-  if (rotMatch) dictStr += `/Rotate ${rotMatch[1]}`;
+  const rot = resolveIntValue(originalObjText, 'Rotate', objCache, NaN);
+  if (!Number.isNaN(rot)) dictStr += `/Rotate ${rot}`;
 
   // Merge source /Annots with extraAnnotRefs (new user-added highlights).
   // When no extras are supplied we emit the source array verbatim so
@@ -340,17 +391,14 @@ export function buildReplacementPageDict(objNum, originalObjText, newContentsArr
     }
   }
 
-  // Copy /StructParents if present
-  const spMatch = /\/StructParents\s+(\d+)/.exec(originalObjText);
-  if (spMatch) dictStr += `/StructParents ${spMatch[1]}`;
+  const structParents = resolveIntValue(originalObjText, 'StructParents', objCache, NaN);
+  if (!Number.isNaN(structParents)) dictStr += `/StructParents ${structParents}`;
 
-  // Copy /Tabs if present
   const tabsMatch = /\/Tabs\s*\/(\w+)/.exec(originalObjText);
   if (tabsMatch) dictStr += `/Tabs/${tabsMatch[1]}`;
 
-  // Copy /UserUnit if present
-  const uuMatch = /\/UserUnit\s+([\d.]+)/.exec(originalObjText);
-  if (uuMatch) dictStr += `/UserUnit ${uuMatch[1]}`;
+  const userUnit = resolveNumValue(originalObjText, 'UserUnit', objCache, NaN);
+  if (!Number.isNaN(userUnit)) dictStr += `/UserUnit ${userUnit}`;
 
   // /Contents: new array or preserved original
   if (newContentsArray !== null) {
