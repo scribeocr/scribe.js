@@ -7,7 +7,46 @@ ScribeViewer.enableHTMLOverlay = true;
 scribe.opt.displayMode = 'invis';
 
 class ScribePDFViewer {
-  constructor(container, width = 800, height = 1000) {
+  /**
+   * @param {HTMLElement} container
+   * @param {object} [options]
+   * @param {number} [options.width=800]
+   * @param {number} [options.height=1000]
+   * @param {boolean | { colors: string[], defaultColor?: string }} [options.highlight=true]
+   *   Controls the highlight toolbar.
+   *   `true` (default) renders the toggle and all built-in colors.
+   *   `false` removes the toggle and color picker from the toolbar entirely.
+   *   An object restricts the picker to the given hex colors; if `colors` has length 1
+   *   the picker is hidden and only the toggle is shown.
+   *   Disabling the toolbar does not block programmatic calls to `applyHighlight`.
+   */
+  constructor(container, options = {}) {
+    const {
+      width = 800,
+      height = 1000,
+      highlight = true,
+    } = options;
+
+    let highlightColors;
+    let defaultHighlightColor;
+    if (highlight === false) {
+      highlightColors = null;
+    } else if (highlight === true) {
+      highlightColors = ['#ffe93b', '#4dd0e1', '#81c784', '#ffb74d'];
+      defaultHighlightColor = '#ffe93b';
+    } else if (typeof highlight === 'object' && highlight !== null) {
+      if (!Array.isArray(highlight.colors) || highlight.colors.length === 0) {
+        throw new Error('options.highlight.colors must be a non-empty array. Use highlight: false to disable highlighting entirely.');
+      }
+      highlightColors = highlight.colors;
+      defaultHighlightColor = highlight.defaultColor ?? highlight.colors[0];
+      if (!highlightColors.includes(defaultHighlightColor)) {
+        throw new Error('options.highlight.defaultColor must be one of options.highlight.colors.');
+      }
+    } else {
+      throw new Error('options.highlight must be true, false, or an object with a colors array.');
+    }
+
     ScribePDFViewer.addIconButtonStyles();
 
     // Create the root div
@@ -155,71 +194,71 @@ class ScribePDFViewer {
     const verticalSeparator2 = document.createElement('span');
     verticalSeparator2.className = 'vertical-separator';
 
-    // Highlight tool
-    this.highlightMode = false;
-    this.highlightColor = '#ffe93b';
-    // Custom highlighter cursor (SVG data URI). Hotspot at center of icon (12, 12).
-    // eslint-disable-next-line max-len
-    this.highlightCursor = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' height=\'24\' width=\'24\' viewBox=\'0 -960 960 960\'%3E%3Cpath fill=\'white\' stroke=\'black\' stroke-width=\'30\' d=\'m268-212-56-56q-12-12-12-28.5t12-28.5l423-423q12-12 28.5-12t28.5 12l56 56q12 12 12 28.5T748-635L324-212q-11 11-28 11t-28-11Z\'/%3E%3C/svg%3E") 12 12, auto';
+    let colorContainer = null;
+    if (highlightColors) {
+      this.highlightMode = false;
+      this.highlightColor = defaultHighlightColor;
+      // Custom highlighter cursor (SVG data URI). Hotspot at center of icon (12, 12).
+      // eslint-disable-next-line max-len
+      this.highlightCursor = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' height=\'24\' width=\'24\' viewBox=\'0 -960 960 960\'%3E%3Cpath fill=\'white\' stroke=\'black\' stroke-width=\'30\' d=\'m268-212-56-56q-12-12-12-28.5t12-28.5l423-423q12-12 28.5-12t28.5 12l56 56q12 12 12 28.5T748-635L324-212q-11 11-28 11t-28-11Z\'/%3E%3C/svg%3E") 12 12, auto';
 
-    this.highlightElem = document.createElement('span');
-    this.highlightElem.className = 'cr-icon-button';
-    this.highlightElem.title = 'Highlight';
-    this.highlightElem.role = 'button';
-    this.highlightElem.tabIndex = 0;
+      this.highlightElem = document.createElement('span');
+      this.highlightElem.className = 'cr-icon-button';
+      this.highlightElem.title = 'Highlight';
+      this.highlightElem.role = 'button';
+      this.highlightElem.tabIndex = 0;
 
-    const highlightIcon = document.createElement('span');
-    highlightIcon.className = 'cr-icon';
-    highlightIcon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 -960 960 960" fill="currentColor">
-    <path d="M280-320v-440q0-33 23.5-56.5T360-840q9 0 18 2t17 6l240 119q20 10 32.5 29.5T680-641v321H280Zm80-80h240v-241L360-760v360ZM160-120l22-65q8-25 29-40t47-15h444q26 0 47 15t29 40l22 65H160Zm200-280h240-240Z"/>
-    </svg>`;
+      const highlightIcon = document.createElement('span');
+      highlightIcon.className = 'cr-icon';
+      highlightIcon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 -960 960 960" fill="currentColor">
+      <path d="M280-320v-440q0-33 23.5-56.5T360-840q9 0 18 2t17 6l240 119q20 10 32.5 29.5T680-641v321H280Zm80-80h240v-241L360-760v360ZM160-120l22-65q8-25 29-40t47-15h444q26 0 47 15t29 40l22 65H160Zm200-280h240-240Z"/>
+      </svg>`;
 
-    this.highlightElem.appendChild(highlightIcon);
+      this.highlightElem.appendChild(highlightIcon);
 
-    this.highlightElem.addEventListener('mousedown', (e) => e.preventDefault());
-    this.highlightElem.addEventListener('click', () => {
-      this.highlightMode = !this.highlightMode;
-      this.highlightElem.classList.toggle('active', this.highlightMode);
-      this.updateHighlightCursorStyle();
-    });
-
-    // Color preset buttons
-    const colorContainer = document.createElement('span');
-    colorContainer.style.display = 'inline-flex';
-    colorContainer.style.alignItems = 'center';
-    colorContainer.style.gap = '4px';
-    colorContainer.style.marginLeft = '4px';
-
-    const colors = ['#ffe93b', '#4dd0e1', '#81c784', '#ffb74d'];
-    this.colorBtnElems = [];
-    for (const color of colors) {
-      const btn = document.createElement('span');
-      btn.className = 'highlight-color-btn';
-      btn.style.backgroundColor = color;
-      if (color === this.highlightColor) btn.classList.add('active');
-      btn.addEventListener('mousedown', (e) => e.preventDefault());
-      btn.addEventListener('click', () => {
-        this.highlightColor = color;
-        this.colorBtnElems.forEach((b) => b.classList.remove('active'));
-        btn.classList.add('active');
-
-        // If there is an active text selection, highlight it immediately with this color.
-        const matchedWords = this.getSelectedOverlayWords();
-        if (matchedWords.length > 0) {
-          const n = ScribeViewer.state.cp.n;
-          applyHighlight(matchedWords, n, this.highlightColor, 0.5);
-          window.getSelection()?.removeAllRanges();
-          ScribeViewer.deleteHTMLOverlay();
-          ScribeViewer.renderHTMLOverlay();
-        } else if (!this.highlightMode) {
-          // No selection — activating a color also enables highlight mode
-          this.highlightMode = true;
-          this.highlightElem.classList.add('active');
-          this.updateHighlightCursorStyle();
-        }
+      this.highlightElem.addEventListener('mousedown', (e) => e.preventDefault());
+      this.highlightElem.addEventListener('click', () => {
+        this.highlightMode = !this.highlightMode;
+        this.highlightElem.classList.toggle('active', this.highlightMode);
+        this.updateHighlightCursorStyle();
       });
-      this.colorBtnElems.push(btn);
-      colorContainer.appendChild(btn);
+
+      if (highlightColors.length > 1) {
+        colorContainer = document.createElement('span');
+        colorContainer.style.display = 'inline-flex';
+        colorContainer.style.alignItems = 'center';
+        colorContainer.style.gap = '4px';
+        colorContainer.style.marginLeft = '4px';
+
+        this.colorBtnElems = [];
+        for (const color of highlightColors) {
+          const btn = document.createElement('span');
+          btn.className = 'highlight-color-btn';
+          btn.style.backgroundColor = color;
+          if (color === this.highlightColor) btn.classList.add('active');
+          btn.addEventListener('mousedown', (e) => e.preventDefault());
+          btn.addEventListener('click', () => {
+            this.highlightColor = color;
+            this.colorBtnElems.forEach((b) => b.classList.remove('active'));
+            btn.classList.add('active');
+
+            const matchedWords = this.getSelectedOverlayWords();
+            if (matchedWords.length > 0) {
+              const n = ScribeViewer.state.cp.n;
+              applyHighlight(matchedWords, n, this.highlightColor, 0.5);
+              window.getSelection()?.removeAllRanges();
+              ScribeViewer.deleteHTMLOverlay();
+              ScribeViewer.renderHTMLOverlay();
+            } else if (!this.highlightMode) {
+              this.highlightMode = true;
+              this.highlightElem.classList.add('active');
+              this.updateHighlightCursorStyle();
+            }
+          });
+          this.colorBtnElems.push(btn);
+          colorContainer.appendChild(btn);
+        }
+      }
     }
 
     // Append buttons to toolbarButtons
@@ -228,9 +267,11 @@ class ScribePDFViewer {
     toolbarButtons.appendChild(pageInputGroup);
     toolbarButtons.appendChild(verticalSeparator1);
     toolbarButtons.appendChild(zoomControls);
-    toolbarButtons.appendChild(verticalSeparator2);
-    toolbarButtons.appendChild(this.highlightElem);
-    toolbarButtons.appendChild(colorContainer);
+    if (highlightColors) {
+      toolbarButtons.appendChild(verticalSeparator2);
+      toolbarButtons.appendChild(this.highlightElem);
+      if (colorContainer) toolbarButtons.appendChild(colorContainer);
+    }
 
     center.appendChild(toolbarButtons);
 
@@ -407,20 +448,22 @@ class ScribePDFViewer {
 
     ScribeViewer.init(this.viewerContainer, width, height - this.toolbarHeight);
 
-    document.addEventListener('mouseup', (event) => {
-      if (!this.highlightMode) return;
-      if (!(event.target instanceof Node) || !this.pdfViewerElem.contains(event.target)) return;
+    if (highlightColors) {
+      document.addEventListener('mouseup', (event) => {
+        if (!this.highlightMode) return;
+        if (!(event.target instanceof Node) || !this.pdfViewerElem.contains(event.target)) return;
 
-      const matchedWords = this.getSelectedOverlayWords();
-      if (matchedWords.length === 0) return;
+        const matchedWords = this.getSelectedOverlayWords();
+        if (matchedWords.length === 0) return;
 
-      const n = ScribeViewer.state.cp.n;
-      applyHighlight(matchedWords, n, this.highlightColor, 0.5);
+        const n = ScribeViewer.state.cp.n;
+        applyHighlight(matchedWords, n, this.highlightColor, 0.5);
 
-      window.getSelection()?.removeAllRanges();
-      ScribeViewer.deleteHTMLOverlay();
-      ScribeViewer.renderHTMLOverlay();
-    });
+        window.getSelection()?.removeAllRanges();
+        ScribeViewer.deleteHTMLOverlay();
+        ScribeViewer.renderHTMLOverlay();
+      });
+    }
 
     // Backup mouseup listener on the document to clear selection state
     // if mouseup happens outside of the Konva stage (e.g. on an HTML overlay element).
@@ -725,7 +768,7 @@ class ScribePDFViewer {
 
 const pdfViewerContElem = /** @type {HTMLDivElement} */(document.getElementById('pdfViewerCont'));
 
-const pdfViewer = new ScribePDFViewer(pdfViewerContElem, window.innerWidth, window.innerHeight);
+const pdfViewer = new ScribePDFViewer(pdfViewerContElem, { width: window.innerWidth, height: window.innerHeight });
 
 let resizeTimer = null;
 window.addEventListener('resize', () => {
