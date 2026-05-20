@@ -1,6 +1,5 @@
 # @scribe.js/aws-textract
-
-AWS Textract recognition adapter for [scribe.js-ocr](https://www.npmjs.com/package/scribe.js-ocr).
+Convert AWS Textract output into searchable PDFs. AWS Textract recognition adapter for [scribe.js-ocr](https://www.npmjs.com/package/scribe.js-ocr), an open-source OCR and text-extraction toolkit for browser and Node.js.
 
 `scribe.js-ocr` already knows how to parse Textract output into its OCR data model. This package is the thin client that calls AWS Textract and returns that output. It is kept separate so the AWS SDK is only installed by projects that actually use Textract.
 
@@ -104,7 +103,3 @@ npm run build
 ```
 
 The declared `@aws-sdk/*` dependency versions and the bundled version must be kept in sync. Both should match after a fresh `npm install && npm run build`.
-
-## License
-
-AGPL-3.0

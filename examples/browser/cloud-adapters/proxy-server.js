@@ -13,8 +13,8 @@
 // By default this uses AWS Textract. To use a different adapter, change the
 // import and modelOptions below. For example:
 //
-//   import { GoogleVisionModel } from '../../../cloud-adapters/gcs-vision/RecognitionModelGoogleVision.js';
-//   const model = GoogleVisionModel;
+//   import { RecognitionModelGoogleVision } from '../../../cloud-adapters/gcs-vision/RecognitionModelGoogleVision.js';
+//   const model = RecognitionModelGoogleVision;
 //   const modelOptions = {};
 //
 // Prerequisites:
@@ -24,7 +24,7 @@
 import http from 'node:http';
 
 // --- Configure cloud adapter ---
-// Swap this import for any adapter (GoogleVisionModel, RecognitionModelGoogleDocAI, RecognitionModelAzureDocIntel).
+// Swap this import for any adapter (RecognitionModelGoogleVision, RecognitionModelGoogleDocAI, RecognitionModelAzureDocIntel).
 import { RecognitionModelTextract } from '../../../cloud-adapters/aws-textract/RecognitionModelAwsTextract.js';
 
 const model = RecognitionModelTextract;

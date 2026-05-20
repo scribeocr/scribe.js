@@ -305,7 +305,7 @@ export class RecognitionModelGoogleDocAI {
     // Derive a file extension from the MIME type for the GCS key
     const extForMime = Object.entries(MIME_TYPES).find(([, mime]) => mime === mimeType);
     const fileExtension = extForMime ? extForMime[0] : '.pdf';
-    const finalGcsKey = gcsKey || `document-ai-temp/${Date.now()}-${Math.random().toString(36).substr(2, 9)}${fileExtension}`;
+    const finalGcsKey = gcsKey || `document-ai-temp/${Date.now()}-${Math.random().toString(36).slice(2, 11)}${fileExtension}`;
     const gcsInputUri = `gs://${gcsBucket}/${finalGcsKey}`;
     const outputPrefix = `${finalGcsKey}-output/`;
     const gcsOutputUri = `gs://${gcsBucket}/${outputPrefix}`;

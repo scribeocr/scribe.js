@@ -4,19 +4,24 @@
   "description": "Google Cloud Vision adapter for Scribe.js OCR.",
   "type": "module",
   "license": "AGPL-3.0",
+  "engines": {
+    "node": ">=18"
+  },
   "exports": {
     ".": "./RecognitionModelGoogleVision.js"
   },
-  "main": "./RecognitionModelGoogleVision.js",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/scribeocr/scribe.js.git",
     "directory": "cloud-adapters/gcs-vision"
   },
   "author": "Balearica",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
-    "@google-cloud/vision": "^5.3.3",
-    "@google-cloud/storage": "^7.17.1"
+    "@google-cloud/vision": "^5.3.6",
+    "@google-cloud/storage": "^7.19.0"
   },
   "files": [
     "RecognitionModelGoogleVision.js",

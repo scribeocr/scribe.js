@@ -1,7 +1,7 @@
 import fs from 'fs';
 import path from 'path';
 import { initPdfScheduler } from '../../js/pdfWorkerMain.js';
-import { GoogleVisionModel } from '../../cloud-adapters/gcs-vision/RecognitionModelGoogleVision.js';
+import { RecognitionModelGoogleVision } from '../../cloud-adapters/gcs-vision/RecognitionModelGoogleVision.js';
 
 const args = process.argv.slice(2);
 const splitMode = args.includes('--split');
@@ -51,7 +51,7 @@ if (isPdf) {
     const base64Data = dataUrl.replace(/^data:image\/png;base64,/, '');
     const imageBuffer = new Uint8Array(Buffer.from(base64Data, 'base64'));
 
-    const result = await GoogleVisionModel.recognizeImage(imageBuffer);
+    const result = await RecognitionModelGoogleVision.recognizeImage(imageBuffer);
 
     if (!result.success) {
       console.error(`Error on page ${i + 1}:`, result.error);
@@ -84,7 +84,7 @@ if (isPdf) {
   }
 } else {
   const fileData = await fs.promises.readFile(filePath);
-  const result = await GoogleVisionModel.recognizeImage(fileData);
+  const result = await RecognitionModelGoogleVision.recognizeImage(fileData);
 
   if (!result.success) {
     console.error('Error:', result.error);

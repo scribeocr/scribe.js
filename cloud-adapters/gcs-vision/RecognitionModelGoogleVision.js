@@ -12,7 +12,7 @@ import { Storage } from '@google-cloud/storage';
 /**
  * Google Cloud Vision recognition model for use with Scribe.js.
  */
-export class GoogleVisionModel {
+export class RecognitionModelGoogleVision {
   static config = {
     name: 'Google Vision',
     outputFormat: 'google_vision',
@@ -130,7 +130,7 @@ export class GoogleVisionModel {
     const visionClient = new ImageAnnotatorClient({ ...(keyFilename && { keyFilename }) });
     const storage = new Storage({ ...(keyFilename && { keyFilename }) });
 
-    const finalGcsKey = gcsKey || `vision-temp/${Date.now()}-${Math.random().toString(36).substr(2, 9)}${fileExtension}`;
+    const finalGcsKey = gcsKey || `vision-temp/${Date.now()}-${Math.random().toString(36).slice(2, 11)}${fileExtension}`;
     const gcsUri = `gs://${gcsBucket}/${finalGcsKey}`;
 
     const mimeType = fileExtension === '.pdf' ? 'application/pdf' : 'image/tiff';

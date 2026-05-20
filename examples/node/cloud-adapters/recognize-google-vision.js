@@ -15,8 +15,8 @@
 // and prints the extracted text.
 
 import scribe from '../../../scribe.js';
-// If installed via npm: import { GoogleVisionModel } from '@scribe.js/gcs-vision';
-import { GoogleVisionModel } from '../../../cloud-adapters/gcs-vision/RecognitionModelGoogleVision.js';
+// If installed via npm: import { RecognitionModelGoogleVision } from '@scribe.js/gcs-vision';
+import { RecognitionModelGoogleVision } from '../../../cloud-adapters/gcs-vision/RecognitionModelGoogleVision.js';
 
 const [,, filePath] = process.argv;
 
@@ -35,7 +35,7 @@ if (!filePath) {
   await scribe.importFiles([filePath]);
 
   await scribe.recognize({
-    model: GoogleVisionModel,
+    model: RecognitionModelGoogleVision,
   });
 
   const text = await scribe.exportData('text');

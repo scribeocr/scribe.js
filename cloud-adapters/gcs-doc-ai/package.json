@@ -4,18 +4,23 @@
   "description": "Google Document AI adapter for Scribe.js OCR.",
   "type": "module",
   "license": "AGPL-3.0",
+  "engines": {
+    "node": ">=18"
+  },
   "exports": {
     ".": "./RecognitionModelGoogleDocAI.js"
   },
-  "main": "./RecognitionModelGoogleDocAI.js",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/scribeocr/scribe.js.git",
     "directory": "cloud-adapters/gcs-doc-ai"
   },
   "author": "Balearica",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
-    "@google-cloud/documentai": "^9.6.0",
+    "@google-cloud/documentai": "^9.6.1",
     "@google-cloud/storage": "^7.19.0"
   },
   "files": [

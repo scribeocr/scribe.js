@@ -4,16 +4,21 @@
   "description": "Azure Document Intelligence adapter for Scribe.js OCR.",
   "type": "module",
   "license": "AGPL-3.0",
+  "engines": {
+    "node": ">=18"
+  },
   "exports": {
     ".": "./RecognitionModelAzureDocIntel.js"
   },
-  "main": "./RecognitionModelAzureDocIntel.js",
   "repository": {
     "type": "git",
     "url": "git+https://github.com/scribeocr/scribe.js.git",
     "directory": "cloud-adapters/azure-doc-intel"
   },
   "author": "Balearica",
+  "publishConfig": {
+    "access": "public"
+  },
   "dependencies": {
     "@azure-rest/ai-document-intelligence": "^1.1.0"
   },
