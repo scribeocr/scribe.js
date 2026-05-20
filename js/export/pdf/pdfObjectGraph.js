@@ -105,27 +105,39 @@ export function parseTrailerInfo(text, xrefOffset) {
  * @param {number} prevXrefOffset - Offset of the previous xref section
  * @param {string} rootRef - The /Root reference e.g. "1 0 R"
  * @param {number} newXrefOffset - Byte offset where this xref section starts
+ * @param {number[]} [freedObjNums=[]] - Object numbers to mark deleted (free entries).
  */
-export function buildIncrementalXrefAndTrailer(entries, totalSize, prevXrefOffset, rootRef, newXrefOffset) {
-  // Sort entries by object number
-  const sorted = entries.slice().sort((a, b) => a.objNum - b.objNum);
+export function buildIncrementalXrefAndTrailer(entries, totalSize, prevXrefOffset, rootRef, newXrefOffset, freedObjNums = []) {
+  const liveSorted = entries.slice().sort((a, b) => a.objNum - b.objNum);
+
+  /** @type {Array<{objNum: number, status: 'n' | 'f', offset: number}>} */
+  const merged = liveSorted.map((e) => ({ objNum: e.objNum, status: /** @type {'n'} */ ('n'), offset: e.offset }));
+  const liveSet = new Set(liveSorted.map((e) => e.objNum));
+  for (const n of freedObjNums) {
+    if (liveSet.has(n)) continue;
+    merged.push({ objNum: n, status: /** @type {'f'} */ ('f'), offset: 0 });
+  }
+  merged.sort((a, b) => a.objNum - b.objNum);
 
   let xrefStr = 'xref\n';
 
-  // Generate xref subsections (groups of contiguous object numbers)
   let i = 0;
-  while (i < sorted.length) {
+  while (i < merged.length) {
     const rangeStart = i;
     let rangeEnd = i;
-    // Find contiguous range
-    while (rangeEnd + 1 < sorted.length && sorted[rangeEnd + 1].objNum === sorted[rangeEnd].objNum + 1) {
+    while (rangeEnd + 1 < merged.length && merged[rangeEnd + 1].objNum === merged[rangeEnd].objNum + 1) {
       rangeEnd++;
     }
-    const startObj = sorted[rangeStart].objNum;
+    const startObj = merged[rangeStart].objNum;
     const count = rangeEnd - rangeStart + 1;
     xrefStr += `${startObj} ${count}\n`;
     for (let j = rangeStart; j <= rangeEnd; j++) {
-      xrefStr += `${String(sorted[j].offset).padStart(10, '0')} 00000 n \n`;
+      const entry = merged[j];
+      if (entry.status === 'f') {
+        xrefStr += '0000000000 00001 f \n';
+      } else {
+        xrefStr += `${String(entry.offset).padStart(10, '0')} 00000 n \n`;
+      }
     }
     i = rangeEnd + 1;
   }

@@ -980,6 +980,13 @@ function charCodeToGlyphIndex(fontInfo, charCode, loaded) {
     if (gname) {
       const gid = loaded.nameToGid.get(gname);
       if (gid != null) return gid;
+      // AGL "uniXXXX" / "uXXXXXX" names encode a Unicode codepoint directly.
+      const uniMatch = /^uni([0-9A-Fa-f]{4})$/.exec(gname) || /^u([0-9A-Fa-f]{4,6})$/.exec(gname);
+      if (uniMatch && loaded.cmap?.glyphIndexMap) {
+        const cp = parseInt(uniMatch[1], 16);
+        const g = loaded.cmap.glyphIndexMap[cp];
+        if (g > 0) return g;
+      }
     }
   }
   const cmap = loaded && loaded.cmap;

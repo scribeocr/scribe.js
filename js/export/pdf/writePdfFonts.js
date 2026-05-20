@@ -37,9 +37,13 @@ export function hex(arrayBuffer) {
  * The CMap maps character codes to Unicode values to enable text extraction.
  *
  * @param {import('../../font-parser/src/font.js').Font} font - Opentype.js font object
+ * @param {Map<number, string>} [toUnicodeOverride] - Optional per-GID unicode override.
+ *   When present, the GID's entry in the CMap is emitted as the supplied string
+ *   (which may be multi-codepoint, e.g. "fi" for a ligature glyph). Falls back to
+ *   `glyph.unicode` for GIDs not in the map.
  * @returns {string} The ToUnicode CMap content string
  */
-export function createToUnicode(font) {
+export function createToUnicode(font, toUnicodeOverride) {
   let cmapStr = `/CIDInit /ProcSet findresource begin
 12 dict begin
 begincmap
@@ -58,9 +62,15 @@ endcodespacerange\n`;
   const entries = [];
   for (let i = 0; i < font.glyphs.length; i++) {
     const glyph = font.glyphs.glyphs[String(i)];
-    if (glyph.unicode !== undefined) {
-      // Format the entry as: <srcCode> <unicode>
-      const srcHex = i.toString(16).padStart(4, '0');
+    const override = toUnicodeOverride ? toUnicodeOverride.get(i) : undefined;
+    const srcHex = i.toString(16).padStart(4, '0');
+    if (override !== undefined) {
+      let unicodeHex = '';
+      for (const cp of override) {
+        unicodeHex += cp.codePointAt(0).toString(16).padStart(4, '0');
+      }
+      if (unicodeHex) entries.push(`<${srcHex}> <${unicodeHex}>`);
+    } else if (glyph.unicode !== undefined) {
       const unicodeHex = glyph.unicode.toString(16).padStart(4, '0');
       entries.push(`<${srcHex}> <${unicodeHex}>`);
     }
@@ -261,10 +271,13 @@ export async function createEmbeddedFontType1(font, firstObjIndex, italic = fals
  * @param {boolean} [options.humanReadable=false] - If true, emit the font
  *   file as ASCII-hex and the ToUnicode CMap uncompressed, for debugging.
  *   When false (default), both are Flate-compressed.
+ * @param {Map<number, string>} [options.toUnicodeOverride] - Optional per-GID
+ *   ToUnicode override. Values may be multi-codepoint strings (e.g. "fi" for a
+ *   ligature). GIDs absent from the map fall back to `glyph.unicode`.
  * @returns {Promise<Array<string | import('./writePdfStreams.js').PdfBinaryObject>>}
  */
 export async function createEmbeddedFontType0({
-  font, firstObjIndex, italic = false, humanReadable = false,
+  font, firstObjIndex, italic = false, humanReadable = false, toUnicodeOverride,
 }) {
   // Start 1st object: Font Dictionary
   let fontDictObjStr = `${String(firstObjIndex)} 0 obj\n<</Type/Font/Subtype/Type0`;
@@ -284,7 +297,7 @@ export async function createEmbeddedFontType0({
   fontDictObjStr += '>>\nendobj\n\n';
 
   // Start 2nd object: ToUnicode CMap
-  const toUnicodeStr0 = createToUnicode(font);
+  const toUnicodeStr0 = createToUnicode(font, toUnicodeOverride);
   const toUnicodeObj = await encodeStreamObject(firstObjIndex + 5, toUnicodeStr0, { humanReadable });
 
   // Start 3rd object: FontDescriptor

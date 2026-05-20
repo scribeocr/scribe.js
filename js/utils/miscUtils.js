@@ -396,7 +396,7 @@ export function objectAssignDefined(target, ...sources) {
 // DejaVu
 const serifFonts = ['SerifDefault', 'Archer', 'Baskerville', 'Bembo', 'Bodoni', 'Bookman', 'C059', 'Calibri', 'Cambria', 'Century', 'Cheltenham', 'Courier', 'Garamond', 'Georgia',
   'LucidaBright', 'Minion', 'NimbusMono', 'Optima', 'P052', 'Palatino', 'Times'];
-const sansFonts = ['SansDefault', 'Amplitude', 'Avenir', 'Arial', 'Calibri', 'Candara', 'Carlito', 'Comic', 'Franklin', 'Frutiger', 'Futura', 'Gotham', 'Gothic',
+const sansFonts = ['SansDefault', 'Amplitude', 'Avenir', 'Arial', 'Calibri', 'Candara', 'Carlito', 'Clarika', 'Comic', 'Franklin', 'Frutiger', 'Futura', 'Gotham', 'Gothic',
   'Halvorsen', 'Helvetica', 'Impact', 'Interstate', 'Kievit', 'Lato', 'Myriad', 'Segoe', 'Tahoma', 'Trebuchet', 'Univers', 'Verdana'];
 const symbolFonts = ['SymbolDefault', 'Dingbats', 'Wingdings', 'Webdings', 'ZapfDingbats', 'Symbol', 'SymbolMT', 'Quivira'];
 
