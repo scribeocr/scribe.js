@@ -364,7 +364,7 @@ export class RecognitionModelTextract {
       ...(credentials && { credentials }),
     });
 
-    const finalS3Key = s3Key || `textract-temp/${Date.now()}-${Math.random().toString(36).substr(2, 9)}.pdf`;
+    const finalS3Key = s3Key || `textract-temp/${Date.now()}-${Math.random().toString(36).slice(2, 11)}.pdf`;
 
     try {
       if (progressCallback) progressCallback({ status: 'uploading' });
