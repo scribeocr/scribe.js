@@ -3,9 +3,6 @@
 // Image Coordinate Space: coordinate space of a particular image
 // Canvas Coordinate Space: coordinate space of canvas, used for user interactions
 
-import { pageMetricsAll } from './containers/dataContainer.js';
-import { ImageCache } from './containers/imageContainer.js';
-
 /**
  * @typedef {Object} BoundingBox
  * @property {number} top -
@@ -20,14 +17,15 @@ import { ImageCache } from './containers/imageContainer.js';
  * @param {BoundingBox} boundingBox - The bounding box to be rotated.
  * @param {number} rotateAngle - Rotation angle in degrees.
  * @param {number} n - Page number (index 0)
+ * @param {Array<PageMetrics>} pageMetrics - Page metrics for the document.
  *
  * @returns {BoundingBox} A new rotated bounding box.
  */
-function rotateBoundingBox(boundingBox, rotateAngle, n) {
+function rotateBoundingBox(boundingBox, rotateAngle, n, pageMetrics) {
   let angleAdjXRect = 0;
   let angleAdjYRect = 0;
 
-  const pageDims = pageMetricsAll[n].dims;
+  const pageDims = pageMetrics[n].dims;
 
   const sinAngle = Math.sin(rotateAngle * (Math.PI / 180));
   const cosAngle = Math.cos(rotateAngle * (Math.PI / 180));
@@ -55,10 +53,11 @@ function rotateBoundingBox(boundingBox, rotateAngle, n) {
  * @param {boolean} imageRotated - Whether target image is rotated.
  * @param {boolean} canvasRotated - Whether source canvas is rotated.
  * @param {number} n - Page number (index 0)
+ * @param {Array<PageMetrics>} pageMetrics - Page metrics for the document.
  * @param {number} angle - Angle of rotation.
  * @returns {BoundingBox} Bounding box in image coordinates.
  */
-function canvasToImage(canvasCoords, imageRotated, canvasRotated, n, angle = 0) {
+function canvasToImage(canvasCoords, imageRotated, canvasRotated, n, pageMetrics, angle = 0) {
   // If the rendered image has been rotated to match the user-specified rotation setting (or the angle is so small it doesn't matter)
   // the only difference between coordinate systems is the left margin offset.
   if (canvasRotated && imageRotated || !canvasRotated && !imageRotated || Math.abs(angle ?? 0) <= 0.05) {
@@ -70,7 +69,7 @@ function canvasToImage(canvasCoords, imageRotated, canvasRotated, n, angle = 0) 
   // Otherwise, we must also account for rotation applied by the canvas
   const rotateAngle = canvasRotated && !imageRotated ? angle : angle * -1;
 
-  canvasCoords = rotateBoundingBox(canvasCoords, rotateAngle, n);
+  canvasCoords = rotateBoundingBox(canvasCoords, rotateAngle, n, pageMetrics);
 
   // In addition to any roatation, the adjustment to the left margin (from "Auto-Standardize Left Margin" option) is applied
   return {
@@ -83,11 +82,13 @@ function canvasToImage(canvasCoords, imageRotated, canvasRotated, n, angle = 0) 
  *
  * @param {BoundingBox} ocrCoords - Bounding box in OCR coordinates.
  * @param {number} n - Page number (index 0)
+ * @param {import('./containers/imageContainer.js').ImageStore} images - Image cache for the document.
+ * @param {Array<PageMetrics>} pageMetrics - Page metrics for the document.
  * @param {boolean} binary - Use binary image
  * @returns {Promise<BoundingBox>} Bounding box in image coordinates.
  */
-async function ocrToImage(ocrCoords, n, binary = false) {
-  const imageN = binary ? await ImageCache.getBinary(n) : await ImageCache.getNative(n);
+async function ocrToImage(ocrCoords, n, images, pageMetrics, binary = false) {
+  const imageN = binary ? await images.getBinary(n) : await images.getNative(n);
 
   // If the image was never rotated or upscaled, then the xml and image coordinates are the same
   if (!imageN.rotated && !imageN.upscaled) {
@@ -103,9 +104,9 @@ async function ocrToImage(ocrCoords, n, binary = false) {
 
   if (imageN.rotated) {
   // Otherwise, we must also account for rotation applied by the canvas
-    const rotateAngle = (pageMetricsAll[n].angle || 0) * -1;
+    const rotateAngle = (pageMetrics[n].angle || 0) * -1;
 
-    rotateBoundingBox(ocrCoords, rotateAngle, n);
+    rotateBoundingBox(ocrCoords, rotateAngle, n, pageMetrics);
   }
 
   return ocrCoords;

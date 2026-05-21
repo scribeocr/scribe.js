@@ -13,9 +13,9 @@ scribe.opt.langPath = LANG_PATH;
 
 describe('Check export for .txt files.', () => {
   test('Exporting simple paragraph to text works properly', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/testocr.abbyy.xml`]);
+    const doc = await scribe.openDocument([`${ASSETS_PATH}/testocr.abbyy.xml`]);
 
-    const exportedText = await scribe.exportData('text');
+    const exportedText = await doc.exportData('text');
 
     const testText = `This is a lot of 12 point text to test the ocr code and see if it works on all types of file format.
 The quick brown dog jumped over the lazy fox. The quick brown dog jumped over the lazy fox. The quick brown dog jumped over the lazy fox. The quick brown dog jumped over the lazy fox.`;
@@ -37,9 +37,9 @@ describe('Check non-contiguous pageArr subsetting for text export.', () => {
   // Page 1 contains "Munger, Tolles" (unique to page 1).
   // Page 2 contains "Security First Life" (unique to page 2).
   test('Exporting pages [0, 2] should include pages 0 and 2 but not page 1', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/trident_v_connecticut_general.abbyy.xml`]);
+    const doc = await scribe.openDocument([`${ASSETS_PATH}/trident_v_connecticut_general.abbyy.xml`]);
 
-    const exportedText = await scribe.exportData('text', { pageArr: [0, 2] });
+    const exportedText = await doc.exportData('text', { pageArr: [0, 2] });
 
     // "Comstock" only appears on page 0 — should be present
     expect(exportedText).toContain('Comstock');
@@ -56,11 +56,11 @@ describe('Check non-contiguous pageArr subsetting for text export.', () => {
 
 describe('Check export -> import for .txt files.', () => {
   test('Importing .txt file and exporting to text should preserve content (simple example)', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/text_simple.txt`]);
+    const doc = await scribe.openDocument([`${ASSETS_PATH}/text_simple.txt`]);
 
-    const importedText = scribe.data.ocr.active.map((page) => page.lines.map((line) => line.words.map((word) => word.text).join(' ')).join('\n')).join('\n\n');
+    const importedText = doc.ocr.active.map((page) => page.lines.map((line) => line.words.map((word) => word.text).join(' ')).join('\n')).join('\n\n');
 
-    const exportedText = await scribe.exportData('text');
+    const exportedText = await doc.exportData('text');
 
     expect(exportedText).toBe(importedText);
 
@@ -73,13 +73,15 @@ describe('Check export -> import for .txt files.', () => {
 });
 
 describe('Check preserveSpacing text export.', () => {
+  /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+  let doc;
   test('preserveSpacing output is longer than compact output due to padding', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/border_patrol_tables.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/border_patrol_tables.pdf`]);
     const compact = writeText({
-      ocrCurrent: scribe.data.ocr.active, pageArr: [0], lineNumbers: true,
+      ocrCurrent: doc.ocr.active, pageArr: [0], lineNumbers: true, pageMetrics: doc.pageMetrics,
     });
     const spaced = writeText({
-      ocrCurrent: scribe.data.ocr.active, pageArr: [0], lineNumbers: true, preserveSpacing: true,
+      ocrCurrent: doc.ocr.active, pageArr: [0], lineNumbers: true, preserveSpacing: true, pageMetrics: doc.pageMetrics,
     });
     expect(compact.length).toBe(3348);
     expect(spaced.length).toBe(17325);
@@ -87,7 +89,7 @@ describe('Check preserveSpacing text export.', () => {
 
   test('preserveSpacing indents words based on their horizontal position', async () => {
     const spaced = writeText({
-      ocrCurrent: scribe.data.ocr.active, pageArr: [0], lineNumbers: true, preserveSpacing: true,
+      ocrCurrent: doc.ocr.active, pageArr: [0], lineNumbers: true, preserveSpacing: true, pageMetrics: doc.pageMetrics,
     });
     // "SECTOR" starts with significant left indent in the document
     expect(spaced).toContain('0:0             SECTOR');
@@ -96,6 +98,7 @@ describe('Check preserveSpacing text export.', () => {
   });
 
   afterAll(async () => {
+    await doc.terminate();
     await scribe.terminate();
   });
 });

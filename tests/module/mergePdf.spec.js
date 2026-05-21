@@ -30,11 +30,11 @@ describe('Check PDF merge preserves page count.', () => {
 
     for (let d = 0; d < docCount; d++) {
       scribe.opt.usePDFText.ocr.main = true;
-      await scribe.importFiles([`${ASSETS_PATH}/scribe_test_pdf1.pdf`]);
+      const doc = await scribe.openDocument([`${ASSETS_PATH}/scribe_test_pdf1.pdf`]);
 
       scribe.opt.displayMode = 'proof';
-      pdfBuffers.push(await scribe.exportData('pdf'));
-      await scribe.clear();
+      pdfBuffers.push(await doc.exportData('pdf'));
+      await doc.terminate();
     }
 
     const sourcePages = pdfBuffers.map((b) => countPdfPages(b));
@@ -50,15 +50,15 @@ describe('Check PDF merge preserves page count.', () => {
 
   test('Merged PDF preserves highlight annotations from each source', async () => {
     scribe.opt.usePDFText.ocr.main = true;
-    await scribe.importFiles([`${ASSETS_PATH}/scribe_test_pdf1.pdf`]);
-    scribe.addHighlights([{ page: 0, startLine: 0, endLine: 1 }]);
-    const pdfA = await scribe.exportData('pdf');
-    await scribe.clear();
+    const docA = await scribe.openDocument([`${ASSETS_PATH}/scribe_test_pdf1.pdf`]);
+    docA.addHighlights([{ page: 0, startLine: 0, endLine: 1 }]);
+    const pdfA = await docA.exportData('pdf');
+    await docA.terminate();
 
-    await scribe.importFiles([`${ASSETS_PATH}/scribe_test_pdf1.pdf`]);
-    scribe.addHighlights([{ page: 0, startLine: 2, endLine: 2 }]);
-    const pdfB = await scribe.exportData('pdf');
-    await scribe.clear();
+    const docB = await scribe.openDocument([`${ASSETS_PATH}/scribe_test_pdf1.pdf`]);
+    docB.addHighlights([{ page: 0, startLine: 2, endLine: 2 }]);
+    const pdfB = await docB.exportData('pdf');
+    await docB.terminate();
 
     const pagesA = countPdfPages(pdfA);
     const pagesB = countPdfPages(pdfB);
@@ -66,14 +66,14 @@ describe('Check PDF merge preserves page count.', () => {
     const mergedData = await mergePdfs([new Uint8Array(pdfA), new Uint8Array(pdfB)]);
     expect(countPdfPages(mergedData)).toBe(pagesA + pagesB);
 
-    await scribe.importFiles({ pdfFiles: [new Uint8Array(mergedData).buffer] });
-    const highlightsFirstSource = scribe.data.annotations.pages[0] || [];
-    const highlightsSecondSource = scribe.data.annotations.pages[pagesA] || [];
+    const docMerged = await scribe.openDocument({ pdfFiles: [new Uint8Array(mergedData).buffer] });
+    const highlightsFirstSource = docMerged.annotations.pages[0] || [];
+    const highlightsSecondSource = docMerged.annotations.pages[pagesA] || [];
     expect(highlightsFirstSource.length).toBe(1);
     expect(highlightsSecondSource.length).toBe(1);
 
     scribe.opt.usePDFText.ocr.main = false;
-    await scribe.clear();
+    await docMerged.terminate();
   });
 
   afterAll(async () => {

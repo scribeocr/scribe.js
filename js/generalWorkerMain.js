@@ -120,6 +120,7 @@ export async function initGeneralWorker() {
 
     obj.loadFontsWorker = wrap('loadFontsWorker');
     obj.updateFontContWorker = wrap('updateFontContWorker');
+    obj.dropFontsWorker = wrap('dropFontsWorker');
 
     obj.terminate = () => worker.terminate();
 
@@ -410,7 +411,7 @@ export class gs {
     // This happens when we pre-load the scheduler, but then terminate before it finishes loading,
     // and it is never actually used.
     await gs.schedulerReady;
-    await gs.schedulerInner.terminate();
+    if (gs.schedulerInner) await gs.schedulerInner.terminate();
     gs.schedulerInner = null;
     gs.schedulerReady = null;
     gs.#resReadyTesseract = null;

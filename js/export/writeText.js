@@ -1,5 +1,4 @@
 import { opt } from '../containers/app.js';
-import { pageMetricsAll } from '../containers/dataContainer.js';
 import { assignParagraphs } from '../utils/reflowPars.js';
 
 /**
@@ -12,7 +11,8 @@ import { assignParagraphs } from '../utils/reflowPars.js';
  * @param {number} [params.maxpage=-1] - The last page to include in the document.
  * @param {boolean} [params.reflowText=false] - Remove line breaks within what appears to be the same paragraph.
  * @param {?Array<string>} [params.wordIds=null] - An array of word IDs to include in the document.
- *    If omitted, all words are included.
+ * @param {?Array<PageMetrics>} [params.pageMetrics=null] - Page metrics for the document being exported.
+ *   Required when reflow or preserveSpacing is enabled. If omitted, all words are included.
  * @param {boolean} [params.lineNumbers=false] - Prepend `page:line` numbers to each line (e.g. `0:5  text`).
  *    When enabled, reflowText is ignored.
  * @param {boolean} [params.preserveSpacing=false] - Pad words with spaces based on their horizontal
@@ -20,7 +20,7 @@ import { assignParagraphs } from '../utils/reflowPars.js';
  */
 export function writeText({
   ocrCurrent, pageArr = null, minpage = 0, maxpage = -1, reflowText = false,
-  wordIds = null, lineNumbers = false, preserveSpacing = false,
+  wordIds = null, lineNumbers = false, preserveSpacing = false, pageMetrics = null,
 }) {
   let textStr = '';
 
@@ -42,10 +42,10 @@ export function writeText({
     if (!ocrCurrent[g] || ocrCurrent[g].lines.length === 0) continue;
 
     const pageObj = ocrCurrent[g];
-    const pageWidth = preserveSpacing && pageMetricsAll[g] ? pageMetricsAll[g].dims.width : 0;
+    const pageWidth = preserveSpacing && pageMetrics[g] ? pageMetrics[g].dims.width : 0;
 
     if (doReflow && (!pageObj.textSource || !['textract', 'abbyy', 'google_vision', 'azure_doc_intel', 'docx'].includes(pageObj.textSource))) {
-      const angle = pageMetricsAll[g].angle || 0;
+      const angle = pageMetrics[g].angle || 0;
       assignParagraphs(pageObj, angle);
     }
 

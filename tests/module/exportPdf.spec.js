@@ -6,6 +6,9 @@ import { subsetPdf } from '../../js/export/pdf/subsetPdf.js';
 import { mergePdfs } from '../../js/export/pdf/mergePdfs.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 
+/** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+let doc;
+
 const isNode = typeof process !== 'undefined' && process.versions && process.versions.node;
 
 /** @param {string} pdfPath */
@@ -25,60 +28,60 @@ scribe.opt.langPath = LANG_PATH;
 
 describe('Check export for .pdf files.', () => {
   test('Export -> import of simple text-only ebook-style PDF retains text content', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/text_simple.txt`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/text_simple.txt`]);
 
-    const exportedText = await scribe.exportData('text');
+    const exportedText = await doc.exportData('text');
 
     // Inject an empty-text word to verify empty words do not cause errors during PDF export.
     // See: https://github.com/scribeocr/scribeocr/issues/91
-    const line0 = scribe.data.ocr.active[0].lines[0];
+    const line0 = doc.ocr.active[0].lines[0];
     line0.words.push(new scribe.utils.ocr.OcrWord(line0, 'empty_word_test', '', {
       left: 100, top: 100, right: 100, bottom: 120,
     }));
 
-    const exportedPdf = await scribe.exportData('pdf');
+    const exportedPdf = await doc.exportData('pdf');
 
     scribe.opt.displayMode = 'ebook';
 
-    await scribe.clear();
+    await doc.clear();
     scribe.opt.usePDFText.native.main = true;
     scribe.opt.keepPDFTextAlways = true;
 
-    await scribe.importFiles({ pdfFiles: [exportedPdf] });
+    doc = await scribe.openDocument({ pdfFiles: [exportedPdf] });
 
-    scribe.data.ocr.active = scribe.data.ocr.pdf;
-    const reExportedText = await scribe.exportData('text');
+    doc.ocr.active = doc.ocr.pdf;
+    const reExportedText = await doc.exportData('text');
 
     expect(reExportedText).toBe(exportedText);
     expect(reExportedText).toBe('Tesseract.js');
-    await scribe.clear();
+    await doc.clear();
   });
 
   test('Export -> import of image + text (visible, proofreading) PDF retains text content', async () => {
     scribe.opt.displayMode = 'proof';
 
-    await scribe.importFiles([`${ASSETS_PATH}/testocr.png`, `${ASSETS_PATH}/testocr.abbyy.xml`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/testocr.png`, `${ASSETS_PATH}/testocr.abbyy.xml`]);
 
-    const exportedPdf = await scribe.exportData('pdf');
-    const exportedText = await scribe.exportData('text');
+    const exportedPdf = await doc.exportData('pdf');
+    const exportedText = await doc.exportData('text');
 
     // Inject an empty-text word to verify empty words do not cause errors during HTML export.
     // See: https://github.com/scribeocr/scribeocr/issues/91
-    const line0html = scribe.data.ocr.active[0].lines[0];
+    const line0html = doc.ocr.active[0].lines[0];
     line0html.words.push(new scribe.utils.ocr.OcrWord(line0html, 'empty_word_html_test', '', {
       left: 100, top: 100, right: 100, bottom: 120,
     }));
 
-    const exportedHtml = await scribe.exportData('html');
+    const exportedHtml = await doc.exportData('html');
     expect(exportedHtml).toContain('>point<');
 
-    await scribe.clear();
+    await doc.clear();
     scribe.opt.usePDFText.native.main = true;
 
-    await scribe.importFiles({ pdfFiles: [exportedPdf] });
+    doc = await scribe.openDocument({ pdfFiles: [exportedPdf] });
 
-    scribe.data.ocr.active = scribe.data.ocr.pdf;
-    const reExportedText = await scribe.exportData('text');
+    doc.ocr.active = doc.ocr.pdf;
+    const reExportedText = await doc.exportData('text');
 
     expect(reExportedText).toBe(exportedText);
     expect(reExportedText).toContain('This is a lot of 12 point text');
@@ -87,17 +90,17 @@ describe('Check export for .pdf files.', () => {
   for (const mode of /** @type {const} */ (['invis', 'proof'])) {
     test(`Existing invisible OCR layer is stripped before overlaying (displayMode='${mode}')`, async () => {
       scribe.opt.usePDFText.ocr.main = true;
-      await scribe.importFiles([`${ASSETS_PATH}/scribe_test_pdf1.pdf`]);
-      expect(scribe.inputData.pdfType).toBe('ocr');
+      doc = await scribe.openDocument([`${ASSETS_PATH}/scribe_test_pdf1.pdf`]);
+      expect(doc.inputData.pdfType).toBe('ocr');
 
       scribe.opt.displayMode = mode;
-      const exportedPdf = await scribe.exportData('pdf');
+      const exportedPdf = await doc.exportData('pdf');
 
-      await scribe.clear();
+      await doc.clear();
       scribe.opt.usePDFText.ocr.main = true;
       scribe.opt.keepPDFTextAlways = true;
-      await scribe.importFiles({ pdfFiles: [exportedPdf] });
-      const ocr = scribe.data.ocr.active.length ? scribe.data.ocr.active : scribe.data.ocr.pdf;
+      doc = await scribe.openDocument({ pdfFiles: [exportedPdf] });
+      const ocr = doc.ocr.active.length ? doc.ocr.active : doc.ocr.pdf;
 
       let lines = 0;
       let words = 0;
@@ -130,46 +133,46 @@ describe('Check export for .pdf files.', () => {
       scribe.opt.displayMode = 'proof';
       scribe.opt.usePDFText.ocr.main = false;
       scribe.opt.keepPDFTextAlways = false;
-      await scribe.clear();
+      await doc.clear();
     });
   }
 
   test('Export of text-native PDF preserves visible text when adding overlay', async () => {
     scribe.opt.usePDFText.native.main = true;
-    await scribe.importFiles([`${ASSETS_PATH}/small_caps_examples.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/small_caps_examples.pdf`]);
 
-    expect(scribe.inputData.pdfType).toBe('text');
+    expect(doc.inputData.pdfType).toBe('text');
 
     // Delete the active OCR data before export so no invisible text overlay is added.
     // Without this, the native text extracted on import would be written back as an
     // invisible overlay, creating the same duplication issue tested above.
-    scribe.data.ocr.active.length = 0;
+    doc.ocr.active.length = 0;
 
     scribe.opt.displayMode = 'invis';
-    const exportedPdf = await scribe.exportData('pdf');
+    const exportedPdf = await doc.exportData('pdf');
 
-    await scribe.clear();
+    await doc.clear();
     scribe.opt.usePDFText.native.main = true;
-    await scribe.importFiles({ pdfFiles: [exportedPdf] });
+    doc = await scribe.openDocument({ pdfFiles: [exportedPdf] });
 
-    expect(scribe.inputData.pdfType).toBe('text');
+    expect(doc.inputData.pdfType).toBe('text');
 
-    const text = scribe.data.ocr.active[0].lines[3].words.map((x) => x.text).join(' ');
+    const text = doc.ocr.active[0].lines[3].words.map((x) => x.text).join(' ');
     expect(text).toBe('Shubhdeep Deb');
 
     scribe.opt.displayMode = 'proof';
-    await scribe.clear();
+    await doc.clear();
   });
 
   test('Annotations container is initialized for each page on import', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/testocr.png`, `${ASSETS_PATH}/testocr.abbyy.xml`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/testocr.png`, `${ASSETS_PATH}/testocr.abbyy.xml`]);
 
-    expect(Array.isArray(scribe.data.annotations.pages[0])).toBe(true);
-    expect(scribe.data.annotations.pages[0].length).toBe(0);
+    expect(Array.isArray(doc.annotations.pages[0])).toBe(true);
+    expect(doc.annotations.pages[0].length).toBe(0);
   });
 
   test('Highlight annotations are preserved through .scribe export and import', async () => {
-    scribe.data.annotations.pages[0].push({
+    doc.annotations.pages[0].push({
       bbox: {
         left: 100, top: 200, right: 300, bottom: 220,
       },
@@ -179,41 +182,41 @@ describe('Check export for .pdf files.', () => {
     });
 
     scribe.opt.compressScribe = false;
-    const scribeData = await scribe.exportData('scribe');
+    const scribeData = await doc.exportData('scribe');
 
-    await scribe.clear();
+    await doc.clear();
 
     const encoder = new TextEncoder();
-    await scribe.importFiles({ scribeFiles: [encoder.encode(scribeData).buffer] });
+    doc = await scribe.openDocument({ scribeFiles: [encoder.encode(scribeData).buffer] });
 
-    expect(scribe.data.annotations.pages[0].length).toBe(1);
-    expect(scribe.data.annotations.pages[0][0].color).toBe('#ffff00');
-    expect(scribe.data.annotations.pages[0][0].opacity).toBe(0.35);
-    expect(scribe.data.annotations.pages[0][0].bbox.left).toBe(100);
-    expect(scribe.data.annotations.pages[0][0].bbox.right).toBe(300);
+    expect(doc.annotations.pages[0].length).toBe(1);
+    expect(doc.annotations.pages[0][0].color).toBe('#ffff00');
+    expect(doc.annotations.pages[0][0].opacity).toBe(0.35);
+    expect(doc.annotations.pages[0][0].bbox.left).toBe(100);
+    expect(doc.annotations.pages[0][0].bbox.right).toBe(300);
 
     scribe.opt.compressScribe = true;
-    await scribe.clear();
+    await doc.clear();
   });
 
   test('Highlight annotations are preserved through PDF export and re-import', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/complaint_1.pdf`, `${ASSETS_PATH}/complaint_1.abbyy.xml`]);
-    scribe.addHighlights([{ page: 0, startLine: 0, endLine: 2 }]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/complaint_1.pdf`, `${ASSETS_PATH}/complaint_1.abbyy.xml`]);
+    doc.addHighlights([{ page: 0, startLine: 0, endLine: 2 }]);
     // addHighlights emits one entry per word; lines 0-2 of complaint_1.abbyy.xml have 41 words.
-    expect(scribe.data.annotations.pages[0].length).toBe(41);
+    expect(doc.annotations.pages[0].length).toBe(41);
 
-    const pdfBytes = await scribe.exportData('pdf');
-    await scribe.clear();
+    const pdfBytes = await doc.exportData('pdf');
+    await doc.clear();
 
-    await scribe.importFiles({ pdfFiles: [new Uint8Array(pdfBytes).buffer] });
-    const highlights = scribe.data.annotations.pages.flatMap((p) => p || []);
+    doc = await scribe.openDocument({ pdfFiles: [new Uint8Array(pdfBytes).buffer] });
+    const highlights = doc.annotations.pages.flatMap((p) => p || []);
     // Export consolidates the 29 per-word highlights into a single multi-quad
     // annotation spanning lines 0-2.
     expect(highlights.length).toBe(1);
     expect(highlights[0].quads.length).toBe(3);
     expect(highlights[0].color).toBe('#ffe93b');
     expect(highlights[0].opacity).toBe(0.4);
-    await scribe.clear();
+    await doc.clear();
   });
 
   test('Exported PDF is compressed (FlateDecode) by default and larger under humanReadablePDF', async () => {
@@ -223,18 +226,18 @@ describe('Check export for .pdf files.', () => {
     // `humanReadablePDF` branch preserves pre-compression diffing by
     // emitting ASCII-hex streams, which bloats the output back up.
     scribe.opt.displayMode = 'proof';
-    await scribe.importFiles([`${ASSETS_PATH}/testocr.png`, `${ASSETS_PATH}/testocr.abbyy.xml`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/testocr.png`, `${ASSETS_PATH}/testocr.abbyy.xml`]);
 
     scribe.opt.humanReadablePDF = false;
-    const compressed = await scribe.exportData('pdf');
+    const compressed = await doc.exportData('pdf');
     expect(compressed.byteLength).toBeLessThan(70000);
 
     scribe.opt.humanReadablePDF = true;
-    const humanReadable = await scribe.exportData('pdf');
+    const humanReadable = await doc.exportData('pdf');
     expect(humanReadable.byteLength).toBeGreaterThan(compressed.byteLength);
 
     scribe.opt.humanReadablePDF = false;
-    await scribe.clear();
+    await doc.clear();
   });
 
   describe('Proof-mode round-trip preserves color, opacity, and text', () => {
@@ -247,33 +250,33 @@ describe('Check export for .pdf files.', () => {
 
     beforeAll(async () => {
       scribe.opt.displayMode = 'proof';
-      await scribe.importFiles([`${ASSETS_PATH}/testocr.png`, `${ASSETS_PATH}/testocr.abbyy.xml`]);
+      doc = await scribe.openDocument([`${ASSETS_PATH}/testocr.png`, `${ASSETS_PATH}/testocr.abbyy.xml`]);
 
       scribe.opt.humanReadablePDF = false;
-      const pdfCompressed = await scribe.exportData('pdf');
+      const pdfCompressed = await doc.exportData('pdf');
       scribe.opt.humanReadablePDF = true;
-      const pdfHuman = await scribe.exportData('pdf');
+      const pdfHuman = await doc.exportData('pdf');
       scribe.opt.humanReadablePDF = false;
 
-      await scribe.clear();
+      await doc.clear();
       scribe.opt.usePDFText.native.main = true;
-      await scribe.importFiles({ pdfFiles: [pdfCompressed] });
-      scribe.data.ocr.active = scribe.data.ocr.pdf;
+      doc = await scribe.openDocument({ pdfFiles: [pdfCompressed] });
+      doc.ocr.active = doc.ocr.pdf;
       compressedWords = [];
-      for (const line of scribe.data.ocr.active[0].lines) {
+      for (const line of doc.ocr.active[0].lines) {
         for (const w of line.words) compressedWords.push({ color: w.style.color, opacity: w.style.opacity });
       }
-      textCompressed = /** @type {string} */ (await scribe.exportData('text'));
+      textCompressed = /** @type {string} */ (await doc.exportData('text'));
 
-      await scribe.clear();
+      await doc.clear();
       scribe.opt.usePDFText.native.main = true;
-      await scribe.importFiles({ pdfFiles: [pdfHuman] });
-      scribe.data.ocr.active = scribe.data.ocr.pdf;
-      textHuman = /** @type {string} */ (await scribe.exportData('text'));
+      doc = await scribe.openDocument({ pdfFiles: [pdfHuman] });
+      doc.ocr.active = doc.ocr.pdf;
+      textHuman = /** @type {string} */ (await doc.exportData('text'));
     });
 
     afterAll(async () => {
-      await scribe.clear();
+      await doc.clear();
     });
 
     test('Compressed export round-trips 59 high-confidence words coloured green (#00ff80)', () => {
@@ -308,38 +311,38 @@ describe('Check export for .pdf files.', () => {
   test('PDF overlay with page subset exports only the requested pages and removes unreferenced objects', async () => {
     scribe.opt.usePDFText.native.main = true;
     scribe.opt.keepPDFTextAlways = true;
-    await scribe.importFiles([`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`]);
 
-    expect(scribe.data.ocr.active.length).toBe(3);
-    expect(scribe.data.ocr.active[0].lines[0].words[0].text).toBe('Iris');
+    expect(doc.ocr.active.length).toBe(3);
+    expect(doc.ocr.active[0].lines[0].words[0].text).toBe('Iris');
 
     scribe.opt.displayMode = 'invis';
     scribe.opt.addOverlay = true;
-    const fullExportPdf = /** @type {ArrayBuffer} */ (await scribe.exportData('pdf'));
+    const fullExportPdf = /** @type {ArrayBuffer} */ (await doc.exportData('pdf'));
     const fullExportSize = fullExportPdf.byteLength;
 
-    const exportedPdf = /** @type {ArrayBuffer} */ (await scribe.exportData('pdf', { minPage: 1, maxPage: 2 }));
+    const exportedPdf = /** @type {ArrayBuffer} */ (await doc.exportData('pdf', { minPage: 1, maxPage: 2 }));
     expect(exportedPdf.byteLength).toBeGreaterThan(1000);
     expect(exportedPdf.byteLength).toBeLessThan(fullExportSize);
 
-    await scribe.clear();
+    await doc.clear();
     scribe.opt.usePDFText.native.main = true;
     scribe.opt.keepPDFTextAlways = true;
-    await scribe.importFiles({ pdfFiles: [exportedPdf] });
+    doc = await scribe.openDocument({ pdfFiles: [exportedPdf] });
 
-    scribe.data.ocr.active = scribe.data.ocr.pdf;
-    expect(scribe.data.ocr.active.length).toBe(2);
+    doc.ocr.active = doc.ocr.pdf;
+    expect(doc.ocr.active.length).toBe(2);
 
     for (let i = 0; i < 2; i++) {
-      const pageText = /** @type {string} */ (await scribe.exportData('text', { minPage: i, maxPage: i }));
+      const pageText = /** @type {string} */ (await doc.exportData('text', { minPage: i, maxPage: i }));
       expect(pageText.length).toBeGreaterThan(10);
     }
 
-    const exportedPage0Text = /** @type {string} */ (await scribe.exportData('text', { minPage: 0, maxPage: 0 }));
+    const exportedPage0Text = /** @type {string} */ (await doc.exportData('text', { minPage: 0, maxPage: 0 }));
     expect(exportedPage0Text).not.toContain('Iris (plant)');
 
     scribe.opt.displayMode = 'proof';
-    await scribe.clear();
+    await doc.clear();
   });
 
   test('subsetPdf keeps arbitrary pages and drops unreferenced resource objects', async () => {
@@ -350,32 +353,32 @@ describe('Check export for .pdf files.', () => {
     expect(subsetBytes02.byteLength).toBeGreaterThan(1000);
     expect(subsetBytes02.byteLength).toBeLessThan(originalBytes.byteLength);
 
-    await scribe.clear();
+    await doc.clear();
     scribe.opt.usePDFText.native.main = true;
     scribe.opt.keepPDFTextAlways = true;
-    await scribe.importFiles({ pdfFiles: [subsetBytes02] });
-    scribe.data.ocr.active = scribe.data.ocr.pdf;
+    doc = await scribe.openDocument({ pdfFiles: [subsetBytes02] });
+    doc.ocr.active = doc.ocr.pdf;
 
-    expect(scribe.data.ocr.active.length).toBe(2);
-    expect(scribe.data.ocr.active[0].lines[0].words[0].text).toBe('Iris');
-    const subsetPage1Text = /** @type {string} */ (await scribe.exportData('text', { minPage: 1, maxPage: 1 }));
+    expect(doc.ocr.active.length).toBe(2);
+    expect(doc.ocr.active[0].lines[0].words[0].text).toBe('Iris');
+    const subsetPage1Text = /** @type {string} */ (await doc.exportData('text', { minPage: 1, maxPage: 1 }));
     expect(subsetPage1Text).not.toContain('Iris (plant)');
 
     // Case 2: keep just the middle page.
-    await scribe.clear();
+    await doc.clear();
     const subsetBytes1 = /** @type {ArrayBuffer} */ (await subsetPdf(originalBytes, [1]));
     expect(subsetBytes1.byteLength).toBeGreaterThan(1000);
 
     scribe.opt.usePDFText.native.main = true;
     scribe.opt.keepPDFTextAlways = true;
-    await scribe.importFiles({ pdfFiles: [subsetBytes1] });
-    scribe.data.ocr.active = scribe.data.ocr.pdf;
+    doc = await scribe.openDocument({ pdfFiles: [subsetBytes1] });
+    doc.ocr.active = doc.ocr.pdf;
 
-    expect(scribe.data.ocr.active.length).toBe(1);
-    const middlePageText = /** @type {string} */ (await scribe.exportData('text', { minPage: 0, maxPage: 0 }));
+    expect(doc.ocr.active.length).toBe(1);
+    const middlePageText = /** @type {string} */ (await doc.exportData('text', { minPage: 0, maxPage: 0 }));
     expect(middlePageText).not.toContain('Iris (plant)');
 
-    await scribe.clear();
+    await doc.clear();
   });
 
   test('mergePdfs concatenates pages from two input PDFs into one output', async () => {
@@ -387,23 +390,23 @@ describe('Check export for .pdf files.', () => {
     expect(mergedBytes.byteLength).toBeGreaterThan(originalBytes.byteLength * 1.5);
     expect(mergedBytes.byteLength).toBeLessThan(originalBytes.byteLength * 2.5);
 
-    await scribe.clear();
+    await doc.clear();
     scribe.opt.usePDFText.native.main = true;
     scribe.opt.keepPDFTextAlways = true;
-    await scribe.importFiles({ pdfFiles: [mergedBytes] });
-    scribe.data.ocr.active = scribe.data.ocr.pdf;
+    doc = await scribe.openDocument({ pdfFiles: [mergedBytes] });
+    doc.ocr.active = doc.ocr.pdf;
 
-    expect(scribe.data.ocr.active.length).toBe(6);
-    expect(scribe.data.ocr.active[0].lines[0].words[0].text).toBe('Iris');
-    expect(scribe.data.ocr.active[3].lines[0].words[0].text).toBe('Iris');
+    expect(doc.ocr.active.length).toBe(6);
+    expect(doc.ocr.active[0].lines[0].words[0].text).toBe('Iris');
+    expect(doc.ocr.active[3].lines[0].words[0].text).toBe('Iris');
 
-    await scribe.clear();
+    await doc.clear();
   });
 
   test("PDF overlay with full page range and displayMode='annot' retains all pages, preserves text without duplication, and round-trips highlight annotations", async () => {
     scribe.opt.usePDFText.native.main = true;
     scribe.opt.keepPDFTextAlways = true;
-    await scribe.importFiles([`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`]);
 
     const countWords = (pages) => {
       let n = 0;
@@ -412,44 +415,44 @@ describe('Check export for .pdf files.', () => {
       }
       return n;
     };
-    expect(countWords(scribe.data.ocr.active), 'source PDF native word count baseline').toBe(1064);
+    expect(countWords(doc.ocr.active), 'source PDF native word count baseline').toBe(1064);
 
-    scribe.addHighlights([{ page: 0, startLine: 0, endLine: 0 }]);
-    expect(scribe.data.annotations.pages[0].length, 'addHighlights emits one annotation for the one-word line').toBe(1);
+    doc.addHighlights([{ page: 0, startLine: 0, endLine: 0 }]);
+    expect(doc.annotations.pages[0].length, 'addHighlights emits one annotation for the one-word line').toBe(1);
 
     scribe.opt.displayMode = 'annot';
     scribe.opt.addOverlay = true;
-    const exportedPdf = /** @type {ArrayBuffer} */ (await scribe.exportData('pdf'));
+    const exportedPdf = /** @type {ArrayBuffer} */ (await doc.exportData('pdf'));
     expect(exportedPdf.byteLength, 'annot-mode overlay export produces a non-trivial PDF').toBeGreaterThan(1000);
 
-    await scribe.clear();
+    await doc.clear();
     scribe.opt.usePDFText.native.main = true;
     scribe.opt.keepPDFTextAlways = true;
-    await scribe.importFiles({ pdfFiles: [exportedPdf] });
+    doc = await scribe.openDocument({ pdfFiles: [exportedPdf] });
 
-    scribe.data.ocr.active = scribe.data.ocr.pdf;
-    expect(scribe.data.ocr.active.length, 'all 3 source pages survive the overlay round-trip').toBe(3);
+    doc.ocr.active = doc.ocr.pdf;
+    expect(doc.ocr.active.length, 'all 3 source pages survive the overlay round-trip').toBe(3);
     expect(
-      countWords(scribe.data.ocr.active),
+      countWords(doc.ocr.active),
       'annot mode must not emit a visible overlay text layer on top of the source text',
     ).toBe(1064);
 
-    const page0Text = /** @type {string} */ (await scribe.exportData('text', { minPage: 0, maxPage: 0 }));
+    const page0Text = /** @type {string} */ (await doc.exportData('text', { minPage: 0, maxPage: 0 }));
     expect(page0Text, 'source page-0 text is preserved through the overlay round-trip').toContain('Iris');
 
-    const highlights = scribe.data.annotations.pages.flatMap((p) => p || []);
+    const highlights = doc.annotations.pages.flatMap((p) => p || []);
     expect(highlights.length, 'the highlight annotation round-trips through annot-mode export').toBe(1);
 
     scribe.opt.displayMode = 'proof';
-    await scribe.clear();
+    await doc.clear();
   });
 
   test('Human-readable text-only PDF has uncompressed content streams and hex-encoded fonts', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/text_simple.txt`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/text_simple.txt`]);
 
     scribe.opt.displayMode = 'ebook';
     scribe.opt.humanReadablePDF = true;
-    const exportedPdf = /** @type {ArrayBuffer} */ (await scribe.exportData('pdf'));
+    const exportedPdf = /** @type {ArrayBuffer} */ (await doc.exportData('pdf'));
     scribe.opt.humanReadablePDF = false;
 
     const pdfBytes = new Uint8Array(exportedPdf);
@@ -470,29 +473,29 @@ describe('Check export for .pdf files.', () => {
     }
     expect(allAsciiBody).toBe(true);
 
-    await scribe.clear();
+    await doc.clear();
     scribe.opt.usePDFText.native.main = true;
     scribe.opt.keepPDFTextAlways = true;
-    await scribe.importFiles({ pdfFiles: [exportedPdf] });
-    scribe.data.ocr.active = scribe.data.ocr.pdf;
-    const reExportedText = await scribe.exportData('text');
+    doc = await scribe.openDocument({ pdfFiles: [exportedPdf] });
+    doc.ocr.active = doc.ocr.pdf;
+    const reExportedText = await doc.exportData('text');
     expect(reExportedText).toBe('Tesseract.js');
 
     scribe.opt.displayMode = 'proof';
-    await scribe.clear();
+    await doc.clear();
   });
 
   test('PDF export of encrypted source with proof overlay produces a valid (decrypted) PDF', async () => {
     scribe.opt.usePDFText.native.main = true;
     scribe.opt.keepPDFTextAlways = true;
-    await scribe.importFiles([`${ASSETS_PATH}/intel-history-1996-annual-report.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/intel-history-1996-annual-report.pdf`]);
 
-    expect(scribe.inputData.pageCount).toBe(22);
-    expect(scribe.inputData.pdfType).toBe('text');
+    expect(doc.inputData.pageCount).toBe(22);
+    expect(doc.inputData.pdfType).toBe('text');
 
     scribe.opt.displayMode = 'proof';
     scribe.opt.addOverlay = true;
-    const exportedPdf = /** @type {ArrayBuffer} */ (await scribe.exportData('pdf'));
+    const exportedPdf = /** @type {ArrayBuffer} */ (await doc.exportData('pdf'));
     expect(exportedPdf.byteLength).toBeGreaterThan(1000);
 
     // The output must not retain a reference to the source PDF's /Encrypt dict.
@@ -556,19 +559,19 @@ describe('Check export for .pdf files.', () => {
       expect(inflatedCount).toBeGreaterThan(50);
     }
 
-    await scribe.clear();
+    await doc.clear();
     scribe.opt.usePDFText.native.main = true;
     scribe.opt.keepPDFTextAlways = true;
-    await scribe.importFiles({ pdfFiles: [exportedPdf] });
+    doc = await scribe.openDocument({ pdfFiles: [exportedPdf] });
 
-    expect(scribe.inputData.pageCount).toBe(22);
-    const page7Words = scribe.data.ocr.pdf[7].lines.flatMap((l) => l.words.map((w) => w.text));
+    expect(doc.inputData.pageCount).toBe(22);
+    const page7Words = doc.ocr.pdf[7].lines.flatMap((l) => l.words.map((w) => w.text));
     expect(page7Words.slice(0, 5)).toEqual(['12', 'Intel', 'Corporation', '1996', 'www.intel.com']);
 
     scribe.opt.displayMode = 'proof';
     scribe.opt.usePDFText.native.main = false;
     scribe.opt.keepPDFTextAlways = false;
-    await scribe.clear();
+    await doc.clear();
   });
 
   test('PDF overlay aligns with source text on pages where CropBox differs from MediaBox', async () => {
@@ -579,22 +582,22 @@ describe('Check export for .pdf files.', () => {
     // the source text.
     scribe.opt.usePDFText.native.main = true;
     scribe.opt.keepPDFTextAlways = true;
-    await scribe.importFiles([`${ASSETS_PATH}/fti_filing_p25.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/fti_filing_p25.pdf`]);
 
-    expect(scribe.inputData.pageCount).toBe(1);
-    expect(scribe.data.ocr.active[0].lines[0].words[0].text).toBe('UNITED');
-    expect(scribe.data.ocr.active[0].lines[0].words[0].bbox).toEqual({
+    expect(doc.inputData.pageCount).toBe(1);
+    expect(doc.ocr.active[0].lines[0].words[0].text).toBe('UNITED');
+    expect(doc.ocr.active[0].lines[0].words[0].bbox).toEqual({
       left: 1014, top: 83, right: 1234, bottom: 146,
     });
 
     scribe.opt.displayMode = 'proof';
     scribe.opt.addOverlay = true;
-    const exportedPdf = /** @type {ArrayBuffer} */ (await scribe.exportData('pdf'));
+    const exportedPdf = /** @type {ArrayBuffer} */ (await doc.exportData('pdf'));
 
-    await scribe.clear();
+    await doc.clear();
     scribe.opt.usePDFText.native.main = true;
     scribe.opt.keepPDFTextAlways = true;
-    await scribe.importFiles({ pdfFiles: [exportedPdf] });
+    doc = await scribe.openDocument({ pdfFiles: [exportedPdf] });
 
     // In proof mode the export keeps the source text and adds a coloured overlay copy.
     // Re-importing yields two "UNITED" words; they should sit at the same horizontal
@@ -602,7 +605,7 @@ describe('Check export for .pdf files.', () => {
     // metrics rather than the source's embedded font, so the bbox vertical extent differs
     // by a handful of pixels from font ascent/descent — this is not a positioning bug.)
     // Pre-fix the overlay was offset to (1007, 38, 1234, 118): dx=-7 px, dy=-45 px.
-    const reImportedWords = scribe.data.ocr.pdf[0].lines.flatMap((l) => l.words);
+    const reImportedWords = doc.ocr.pdf[0].lines.flatMap((l) => l.words);
     const unitedWords = reImportedWords.filter((w) => w.text === 'UNITED');
     expect(unitedWords.length).toBe(2);
     const sortedByTop = unitedWords.slice().sort((a, b) => a.bbox.top - b.bbox.top);
@@ -616,15 +619,15 @@ describe('Check export for .pdf files.', () => {
     scribe.opt.displayMode = 'proof';
     scribe.opt.usePDFText.native.main = false;
     scribe.opt.keepPDFTextAlways = false;
-    await scribe.clear();
+    await doc.clear();
   });
 
   test('Human-readable PDF with images hex-encodes image streams', async () => {
     scribe.opt.displayMode = 'proof';
     scribe.opt.humanReadablePDF = true;
 
-    await scribe.importFiles([`${ASSETS_PATH}/testocr.png`, `${ASSETS_PATH}/testocr.abbyy.xml`]);
-    const exportedPdf = /** @type {ArrayBuffer} */ (await scribe.exportData('pdf'));
+    doc = await scribe.openDocument([`${ASSETS_PATH}/testocr.png`, `${ASSETS_PATH}/testocr.abbyy.xml`]);
+    const exportedPdf = /** @type {ArrayBuffer} */ (await doc.exportData('pdf'));
 
     scribe.opt.humanReadablePDF = false;
 
@@ -645,7 +648,7 @@ describe('Check export for .pdf files.', () => {
     }
     expect(allAsciiBody).toBe(true);
 
-    await scribe.clear();
+    await doc.clear();
   });
 
   afterAll(async () => {
@@ -655,52 +658,52 @@ describe('Check export for .pdf files.', () => {
 
 describe('Check addHighlights and clearHighlights.', () => {
   test('Should import document for highlight tests', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/testocr.abbyy.xml`]);
-    expect(scribe.data.ocr.active[0].lines.length).toBe(8);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/testocr.abbyy.xml`]);
+    expect(doc.ocr.active[0].lines.length).toBe(8);
   });
 
   test('addHighlights with startLine/endLine creates one annotation per word on that line', async () => {
-    const result = scribe.addHighlights([{ page: 0, startLine: 0, endLine: 0 }]);
+    const result = doc.addHighlights([{ page: 0, startLine: 0, endLine: 0 }]);
     expect(result.highlightsApplied).toBe(1);
     expect(result.totalLinesHighlighted).toBe(1);
     // Line 0 has 11 words: "This is a lot of 12 point text to test the"
-    expect(scribe.data.annotations.pages[0].length).toBe(11);
+    expect(doc.annotations.pages[0].length).toBe(11);
   });
 
   test('clearHighlights removes all programmatic highlights', async () => {
-    scribe.clearHighlights();
-    expect(scribe.data.annotations.pages[0].length).toBe(0);
+    doc.clearHighlights();
+    expect(doc.annotations.pages[0].length).toBe(0);
   });
 
   test('addHighlights with text in quote-only mode highlights matching words', async () => {
     // "ocr code" matches 2 words on line 1
-    const result = scribe.addHighlights([{ page: 0, text: 'ocr code' }]);
+    const result = doc.addHighlights([{ page: 0, text: 'ocr code' }]);
     expect(result.highlightsApplied).toBe(1);
-    expect(scribe.data.annotations.pages[0].length).toBe(2);
-    scribe.clearHighlights();
+    expect(doc.annotations.pages[0].length).toBe(2);
+    doc.clearHighlights();
   });
 
   test('addHighlights throws when neither startLine nor text is provided', async () => {
-    expect(() => scribe.addHighlights([{ page: 0 }])).toThrow(undefined);
+    expect(() => doc.addHighlights([{ page: 0 }])).toThrow(undefined);
   });
 
   test('addHighlights reports each applied highlight in groups with its union bbox (line mode)', async () => {
-    scribe.clearHighlights();
-    const result = scribe.addHighlights([{ page: 0, startLine: 0, endLine: 0 }]);
+    doc.clearHighlights();
+    const result = doc.addHighlights([{ page: 0, startLine: 0, endLine: 0 }]);
     expect(result.groups.length).toBe(1);
     expect(result.groups[0].page).toBe(0);
     expect(result.groups[0].groupId).toBe('hl-0');
     expect(result.groups[0].bbox).toEqual({
       left: 36, top: 92, right: 580, bottom: 122,
     });
-    expect(scribe.data.ocr.active[0].dims.height).toBe(480);
-    const fracY = result.groups[0].bbox.top / scribe.data.ocr.active[0].dims.height;
+    expect(doc.ocr.active[0].dims.height).toBe(480);
+    const fracY = result.groups[0].bbox.top / doc.ocr.active[0].dims.height;
     expect(fracY).toBeCloseTo(0.1917, 4);
   });
 
   test('addHighlights groups: quote-only mode reports the bbox of the matched words', async () => {
-    scribe.clearHighlights();
-    const result = scribe.addHighlights([{ page: 0, text: 'ocr code' }]);
+    doc.clearHighlights();
+    const result = doc.addHighlights([{ page: 0, text: 'ocr code' }]);
     expect(result.groups.length).toBe(1);
     expect(result.groups[0].groupId).toBe('hl-0');
     expect(result.groups[0].bbox).toEqual({

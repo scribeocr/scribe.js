@@ -29,10 +29,10 @@ export class search {
 // We do this once (and then perform incremental updates) to avoid having to parse XML
 // with every search.
 function extractTextAll() {
-  const maxValue = scribe.data.ocr.active.length;
+  const maxValue = ScribeViewer.doc.ocr.active.length;
 
   for (let g = 0; g < maxValue; g++) {
-    search.text[g] = scribe.utils.ocr.getPageText(scribe.data.ocr.active[g]);
+    search.text[g] = scribe.utils.ocr.getPageText(ScribeViewer.doc.ocr.active[g]);
   }
 }
 
@@ -52,7 +52,7 @@ function findAllMatches(text) {
 // Highlight words that include substring in the current page
 function highlightcp(text) {
   if (!text) return;
-  const matchIdArr = scribe.utils.ocr.getMatchingWordIds(text, scribe.data.ocr.active[ScribeViewer.state.cp.n]);
+  const matchIdArr = scribe.utils.ocr.getMatchingWordIds(text, ScribeViewer.doc.ocr.active[ScribeViewer.state.cp.n]);
 
   ScribeViewer.getKonvaWords().forEach((wordObj) => {
     if (matchIdArr.includes(wordObj.word.id)) {
@@ -68,13 +68,13 @@ function highlightcp(text) {
 // Updates data used for "Find" feature on current page
 // Should be called after any edits are made, before moving to a different page
 function updateFindStats() {
-  if (!scribe.data.ocr.active[ScribeViewer.state.cp.n]) {
+  if (!ScribeViewer.doc.ocr.active[ScribeViewer.state.cp.n]) {
     search.text[ScribeViewer.state.cp.n] = '';
     return;
   }
 
   // Re-extract text from XML
-  search.text[ScribeViewer.state.cp.n] = scribe.utils.ocr.getPageText(scribe.data.ocr.active[ScribeViewer.state.cp.n]);
+  search.text[ScribeViewer.state.cp.n] = scribe.utils.ocr.getPageText(ScribeViewer.doc.ocr.active[ScribeViewer.state.cp.n]);
 
   if (search.search) {
     // Count matches in current page

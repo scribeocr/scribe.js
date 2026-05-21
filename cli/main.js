@@ -46,9 +46,9 @@ async function main(func, params) {
 
   const output = {};
 
-  await scribe.importFiles(params.files);
+  const doc = await scribe.openDocument(params.files);
 
-  const outputStem = scribe.inputData.defaultDownloadFileName.replace(/\.\w{1,6}$/i, '') || 'output';
+  const outputStem = doc.inputData.defaultDownloadFileName.replace(/\.\w{1,6}$/i, '') || 'output';
 
   const outputDir = params.outputDir || '.';
 
@@ -58,25 +58,26 @@ async function main(func, params) {
   // TODO: (1) Find out why font data is not being imported correctly from .hocr files.
   // (2) Use Tesseract Legacy font data when (1) recognition is being run anyway and (2) no font metrics data exists already.
   if (robustConfMode || func === 'eval' || func === 'recognize') {
-    await scribe.recognize({
+    await doc.recognize({
       modeAdv: 'combined',
       combineMode,
     });
     if (func === 'recognize') {
-      output.text = scribe.data.ocr.active.map((x) => scribe.utils.ocr.getPageText(x)).join('\n');
+      output.text = doc.ocr.active.map((x) => scribe.utils.ocr.getPageText(x)).join('\n');
     }
   }
 
   if (func === 'check' || func === 'conf' || params.printConf) {
-    const { highConf, total } = scribe.utils.calcConf(scribe.data.ocr.active);
+    const { highConf, total } = scribe.utils.calcConf(doc.ocr.active);
     console.log(`Confidence: ${highConf / total} (${highConf} of ${total})`);
     if (func === 'conf') {
+      await doc.terminate();
       await scribe.terminate();
       return output;
     }
   }
 
-  if (['overlay', 'recognize'].includes(func) && (scribe.inputData.pdfMode || scribe.inputData.imageMode)) {
+  if (['overlay', 'recognize'].includes(func) && (doc.inputData.pdfMode || doc.inputData.imageMode)) {
     let outputSuffix = '';
     if (scribe.opt.displayMode === 'proof') {
       outputSuffix = '_vis';
@@ -95,11 +96,11 @@ async function main(func, params) {
     }
 
     const outputPath = path.resolve(`${outputDir}/${outputStem}${outputSuffix}.pdf`);
-    await scribe.download('pdf', outputPath);
+    await doc.download('pdf', outputPath);
 
     if (params.hocr) {
       const outputPathHocr = path.resolve(`${outputDir}/${outputStem}.hocr`);
-      await scribe.download('hocr', outputPathHocr);
+      await doc.download('hocr', outputPathHocr);
     }
   }
 
@@ -107,14 +108,14 @@ async function main(func, params) {
     const debugDir = `${outputDir}/${outputStem}_debug`;
     fs.mkdirSync(debugDir, { recursive: true });
     const outputPathCsv = `${debugDir}/_debug.csv`;
-    scribe.utils.writeDebugCsv({ pages: scribe.data.ocr.active, fileName: outputPathCsv });
+    scribe.utils.writeDebugCsv({ pages: doc.ocr.active, fileName: outputPathCsv });
 
-    scribe.utils.dumpDebugImages(debugDir);
-    scribe.utils.dumpHOCR(debugDir);
+    scribe.utils.dumpDebugImages(doc, debugDir);
+    scribe.utils.dumpHOCR(doc, debugDir);
 
-    for (let i = 0; i < scribe.data.ocr.active.length; i++) {
+    for (let i = 0; i < doc.ocr.active.length; i++) {
       const outputPathPngI = `${debugDir}/page_vis_${i}.png`;
-      const img = await scribe.utils.renderPageStatic(scribe.data.ocr.active[i]);
+      const img = await doc.renderPageStatic(doc.ocr.active[i]);
       const imgData = new Uint8Array(atob(img.split(',')[1])
         .split('')
         .map((c) => c.charCodeAt(0)));
@@ -122,6 +123,7 @@ async function main(func, params) {
     }
   }
 
+  await doc.terminate();
   await scribe.terminate();
 
   return output;

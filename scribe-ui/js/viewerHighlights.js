@@ -1,6 +1,4 @@
 /* eslint-disable import/no-cycle */
-import scribe from '../../scribe.js';
-
 import { ScribeViewer } from '../viewer.js';
 import { KonvaOcrWord } from './viewerWordObjects.js';
 import Konva from './konva/index.js';
@@ -146,7 +144,7 @@ export function removeHighlight(selectedWords, pageIndex) {
   }
   for (const kw of selectedWords) {
     const wb = kw.word.bbox;
-    scribe.data.annotations.pages[pageIndex] = scribe.data.annotations.pages[pageIndex].filter(
+    ScribeViewer.doc.annotations.pages[pageIndex] = ScribeViewer.doc.annotations.pages[pageIndex].filter(
       (annot) => !annotMatchesWord(annot, wb),
     );
   }
@@ -169,7 +167,7 @@ export function applyHighlight(selectedWords, pageIndex, color, opacity) {
   // Update existing annotations (preserve groupId and comment)
   for (const kw of selectedWords) {
     const wb = kw.word.bbox;
-    const existingAnnot = scribe.data.annotations.pages[pageIndex].find(
+    const existingAnnot = ScribeViewer.doc.annotations.pages[pageIndex].find(
       (annot) => annotMatchesWord(annot, wb),
     );
     if (existingAnnot) {
@@ -187,7 +185,7 @@ export function applyHighlight(selectedWords, pageIndex, color, opacity) {
   // Add annotation data for words that don't already have one
   const wordsWithoutAnnot = selectedWords.filter((kw) => {
     const wb = kw.word.bbox;
-    return !scribe.data.annotations.pages[pageIndex].some(
+    return !ScribeViewer.doc.annotations.pages[pageIndex].some(
       (annot) => annotMatchesWord(annot, wb),
     );
   });
@@ -254,7 +252,7 @@ export function applyHighlight(selectedWords, pageIndex, color, opacity) {
       for (const run of group) {
         for (const kw of run.words) {
           const wb = kw.word.bbox;
-          scribe.data.annotations.pages[pageIndex].push({
+          ScribeViewer.doc.annotations.pages[pageIndex].push({
             bbox: {
               left: wb.left, top: wb.top, right: wb.right, bottom: wb.bottom,
             },
@@ -285,11 +283,11 @@ export function applyHighlight(selectedWords, pageIndex, color, opacity) {
 export function modifyHighlightComment(selectedWords, pageIndex, comment) {
   if (!selectedWords || selectedWords.length === 0) return;
   const wb = selectedWords[0].word.bbox;
-  const matchingAnnot = scribe.data.annotations.pages[pageIndex].find(
+  const matchingAnnot = ScribeViewer.doc.annotations.pages[pageIndex].find(
     (annot) => annotMatchesWord(annot, wb),
   );
   if (!matchingAnnot || !matchingAnnot.groupId) return;
-  for (const annot of scribe.data.annotations.pages[pageIndex]) {
+  for (const annot of ScribeViewer.doc.annotations.pages[pageIndex]) {
     if (annot.groupId === matchingAnnot.groupId) {
       annot.comment = comment;
     }

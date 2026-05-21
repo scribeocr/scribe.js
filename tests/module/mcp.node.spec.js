@@ -31,7 +31,7 @@ const TMP = isNode ? path.resolve(__dirname, '..', '..', 'tmp') : '';
 
 describeNode('MCP tool: load_document', () => {
   afterEach(async () => {
-    resetState();
+    await resetState();
     await scribe.terminate();
   });
 
@@ -47,7 +47,7 @@ describeNode('MCP tool: load_document', () => {
 
 describeNode('MCP tool: extract_document_text', () => {
   afterEach(async () => {
-    resetState();
+    await resetState();
     await scribe.terminate();
   });
 
@@ -95,7 +95,7 @@ describeNode('MCP tool: extract_document_text', () => {
 
 describeNode('MCP tool: create_highlighted_pdf', () => {
   afterEach(async () => {
-    resetState();
+    await resetState();
     await scribe.terminate();
   });
 
@@ -128,7 +128,7 @@ describeNode('MCP tool: create_highlighted_pdf', () => {
 
 describeNode('MCP tool: subset_pdf', () => {
   afterEach(async () => {
-    resetState();
+    await resetState();
     await scribe.terminate();
   });
 
@@ -152,7 +152,7 @@ describeNode('MCP tool: subset_pdf', () => {
 
 describeNode('MCP tool: merge_pdfs', () => {
   afterEach(async () => {
-    resetState();
+    await resetState();
     await scribe.terminate();
   });
 
@@ -176,7 +176,7 @@ describeNode('MCP tool: merge_pdfs', () => {
 
 describeNode('MCP tool: define_tables + extract_tables', () => {
   afterEach(async () => {
-    resetState();
+    await resetState();
     await scribe.terminate();
   });
 
@@ -203,7 +203,7 @@ describeNode('MCP tool: define_tables + extract_tables', () => {
 
 describeNode('MCP tool: convert_docx_to_json', () => {
   afterEach(async () => {
-    resetState();
+    await resetState();
     await scribe.terminate();
   });
 

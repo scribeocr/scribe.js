@@ -1,9 +1,9 @@
 import { opt } from './containers/app.js';
-import { pageMetricsAll } from './containers/dataContainer.js';
-import { ImageCache } from './containers/imageContainer.js';
 import { gs } from './generalWorkerMain.js';
 import { loadImageElem } from './utils/imageUtils.js';
 import { ca } from './canvasAdapter.js';
+
+/** @typedef {import('./containers/scribeDoc.js').ScribeDoc} ScribeDoc */
 
 /**
  * @typedef {Object} CompDebugParamsBrowser
@@ -116,17 +116,17 @@ export async function drawDebugImages(args) {
 }
 
 /**
- *
+ * Render a page to a canvas, including the OCR text drawn over the page image.
+ * @param {ScribeDoc} doc
  * @param {OcrPage} page
  */
-export async function renderPageStatic(page) {
-  const image = await ImageCache.getNative(page.n, { rotated: opt.autoRotate, upscaled: false });
+export async function renderPageStatic(doc, page) {
+  const image = await doc.images.getNative(page.n, { rotated: opt.autoRotate, upscaled: false });
 
-  const res = gs.renderPageStaticImp({
+  return gs.renderPageStaticImp({
     page,
     image,
-    angle: pageMetricsAll[page.n].angle,
+    angle: doc.pageMetrics[page.n].angle,
+    docId: doc.fonts.id,
   });
-
-  return res;
 }

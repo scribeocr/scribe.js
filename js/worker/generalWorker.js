@@ -10,7 +10,10 @@ import { convertPageGoogleVision } from '../import/convertPageGoogleVision.js';
 import { convertPageText } from '../import/convertPageText.js';
 import { convertDocDocx } from '../import/convertDocDocx.js';
 
-import { FontCont, loadFontsFromSource } from '../containers/fontContainer.js';
+import {
+  DocFonts, GlobalFonts, loadFontsFromSource, setActiveDocFonts, unregisterFontFacesMatching,
+} from '../containers/fontContainer.js';
+import { ca } from '../canvasAdapter.js';
 import {
   compareOCRPageImp,
   evalPageBase,
@@ -76,6 +79,31 @@ let worker;
 let workerLegacy;
 /** @type {?TessWorker} */
 let workerLSTM;
+
+// Per-document font state, keyed by document id. The built-in raw fonts are shared globally on
+// `GlobalFonts`; only per-document fonts/metrics/settings live here.
+// Font-dependent jobs carry their `docId` and the dispatcher points `setActiveDocFonts` at the matching entry before the job runs.
+// This is safe without a lock because the scheduler runs one compute job per worker at a time,
+// and font-load/state messages only write their own entry (they never repoint the active pointer).
+/** @type {Map<number, DocFonts>} */
+const workerFonts = new Map();
+
+/** @param {number} [docId] */
+const getWorkerFonts = (docId) => {
+  const key = docId ?? 0;
+  let docFonts = workerFonts.get(key);
+  if (!docFonts) {
+    docFonts = new DocFonts();
+    docFonts.id = key;
+    workerFonts.set(key, docFonts);
+  }
+  return docFonts;
+};
+
+const fontDependentFuncs = new Set([
+  'compareOCRPageImp', 'evalPageBase', 'evalWords', 'evalPageFont', 'renderPageStaticImp',
+  'convertDocDocx',
+]);
 
 /**
  * Function to change language, OEM, and vanilla mode.
@@ -250,8 +278,18 @@ export const recognizeAndConvert = async ({
  * Exported for type inference purposes, should not be imported anywhere.
  */
 export const recognizeAndConvert2 = async ({
-  image, options, output, n, pageDims, knownAngle = null,
+  image, options, output, n, pageDims, knownAngle = null, langs = null, vanillaMode = false,
 }, id) => {
+  // Ensure this worker's Tesseract engine matches the job's language before recognizing.
+  // This makes the config part of the job (not a separate broadcast another document could race),
+  // so documents in different languages can share the pool.
+  // `reinitialize` early-returns when the config is unchanged, so same-language documents pay nothing.
+  if (langs) {
+    await reinitialize({
+      langs, oem: null, vanillaMode: vanillaMode || null, config: {},
+    });
+  }
+
   const startTime = performance.now();
   // Disable output formats that are not used.
   // Leaving these enabled can significantly inflate runtimes for no benefit.
@@ -348,38 +386,67 @@ export const recognize = async ({ image, options, output }) => {
 };
 
 /**
- * Sets font data in `fontAll`.
- * Used to set font data in workers.
+ * Set font data in this worker.
+ * Built-in raw fonts (`kind` unset and `opt` false) are stored globally.
+ * Optimized and document fonts are stored per document under `docId`.
  * @param {Object} args
  * @param {Parameters<loadFontsFromSource>[0]} args.src
  * @param {Parameters<loadFontsFromSource>[1]} args.opt
+ * @param {number} [args.docId]
+ * @param {('raw'|'opt'|'doc')} [args.kind]
  */
-async function loadFontsWorker({ src, opt }) {
-  const fonts = await loadFontsFromSource(src, opt);
-  if (opt) {
-    if (FontCont.opt) {
-      Object.assign(FontCont.opt, fonts);
-    } else {
-      FontCont.opt = fonts;
-    }
-  } else if (FontCont.raw) {
-    Object.assign(FontCont.raw, fonts);
+async function loadFontsWorker({
+  src, opt, docId, kind,
+}) {
+  const fonts = await loadFontsFromSource(src, opt, docId);
+  if (kind === 'opt' || (kind === undefined && opt)) {
+    const docFonts = getWorkerFonts(docId);
+    docFonts.opt = docFonts.opt ? Object.assign(docFonts.opt, fonts) : fonts;
+  } else if (kind === 'doc') {
+    const docFonts = getWorkerFonts(docId);
+    docFonts.doc = docFonts.doc ? Object.assign(docFonts.doc, fonts) : fonts;
   } else {
-    FontCont.raw = fonts;
+    GlobalFonts.raw = GlobalFonts.raw ? Object.assign(GlobalFonts.raw, fonts) : fonts;
   }
   return true;
 }
 
+/**
+ * @param {Object} args
+ * @param {number} [args.docId]
+ * @param {?Awaited<ReturnType<import('../fontEval.js').evaluateFonts>>} [args.rawMetrics]
+ * @param {?Awaited<ReturnType<import('../fontEval.js').evaluateFonts>>} [args.optMetrics]
+ * @param {string} [args.defaultFontName]
+ * @param {string} [args.sansDefaultName]
+ * @param {string} [args.serifDefaultName]
+ * @param {boolean} [args.enableOpt]
+ * @param {boolean} [args.forceOpt]
+ */
 async function updateFontContWorker({
-  rawMetrics, optMetrics, defaultFontName, sansDefaultName, serifDefaultName, enableOpt, forceOpt,
+  docId, rawMetrics, optMetrics, defaultFontName, sansDefaultName, serifDefaultName, enableOpt, forceOpt,
 }) {
-  if (sansDefaultName) FontCont.state.sansDefaultName = sansDefaultName;
-  if (serifDefaultName) FontCont.state.serifDefaultName = serifDefaultName;
-  if (defaultFontName) FontCont.state.defaultFontName = defaultFontName;
-  if (rawMetrics) FontCont.rawMetrics = rawMetrics;
-  if (optMetrics) FontCont.optMetrics = optMetrics;
-  if (enableOpt === true || enableOpt === false) FontCont.state.enableOpt = enableOpt;
-  if (forceOpt === true || forceOpt === false) FontCont.state.forceOpt = forceOpt;
+  const docFonts = getWorkerFonts(docId);
+  if (sansDefaultName) docFonts.state.sansDefaultName = sansDefaultName;
+  if (serifDefaultName) docFonts.state.serifDefaultName = serifDefaultName;
+  if (defaultFontName) docFonts.state.defaultFontName = defaultFontName;
+  if (rawMetrics) docFonts.rawMetrics = rawMetrics;
+  if (optMetrics) docFonts.optMetrics = optMetrics;
+  if (enableOpt === true || enableOpt === false) docFonts.state.enableOpt = enableOpt;
+  if (forceOpt === true || forceOpt === false) docFonts.state.forceOpt = forceOpt;
+}
+
+/**
+ * Drop a document's per-document fonts from this worker and unregister its optimized FontFaces.
+ * The process-wide raw fonts (shared across all documents) are left intact.
+ * @param {Object} args
+ * @param {number} [args.docId]
+ */
+async function dropFontsWorker({ docId }) {
+  const key = docId ?? 0;
+  workerFonts.delete(key);
+  ca.unregisterFontsMatching((name) => name.endsWith(` Opt d${key}`));
+  unregisterFontFacesMatching((family) => family.endsWith(` Opt d${key}`));
+  return true;
 }
 
 async function compareOCRPageImpWrap(args) {
@@ -391,6 +458,9 @@ const handleMessage = async (data) => {
   const func = data[0];
   const args = data[1];
   const id = data[2];
+
+  // Point font lookups at the requesting document's fonts before the job runs.
+  if (fontDependentFuncs.has(func)) setActiveDocFonts(getWorkerFonts(args?.docId));
 
   if (func === 'recognizeAndConvert2') {
     recognizeAndConvert2(args, id);
@@ -430,6 +500,7 @@ const handleMessage = async (data) => {
     // Change state of worker
     loadFontsWorker,
     updateFontContWorker,
+    dropFontsWorker,
   })[func](args)
     .then((x) => parentPort.postMessage({ data: x, id, status: 'resolve' }))
     .catch((err) => parentPort.postMessage({ data: err, id, status: 'reject' }));

@@ -4,7 +4,6 @@ import { opt } from '../containers/app.js';
 
 import { assignParagraphs } from '../utils/reflowPars.js';
 
-import { pageMetricsAll } from '../containers/dataContainer.js';
 import ocr from '../objects/ocrObjects.js';
 
 /**
@@ -18,9 +17,12 @@ import ocr from '../objects/ocrObjects.js';
  * @param {boolean} [params.reflowText=false] - Remove line breaks within what appears to be the same paragraph.
  * @param {?Array<string>} [params.wordIds=null] - An array of word IDs to include in the document.
  *    If omitted, all words are included.
+ * @param {?Array<PageMetrics>} [params.pageMetrics=null] - Page metrics for the document being
+ *    exported. Required when reflow or preserveSpacing is enabled.
  */
 export function writeDocxContent({
   ocrCurrent, pageArr = null, minpage = 0, maxpage = -1, reflowText = false, wordIds = null,
+  pageMetrics = null,
 }) {
   let textStr = '';
 
@@ -38,7 +40,7 @@ export function writeDocxContent({
     const pageObj = ocrCurrent[g];
 
     if (reflowText && (!pageObj.textSource || !['textract', 'abbyy', 'google_vision', 'azure_doc_intel', 'docx'].includes(pageObj.textSource))) {
-      const angle = pageMetricsAll[g].angle || 0;
+      const angle = pageMetrics[g].angle || 0;
       assignParagraphs(pageObj, angle);
     }
 
@@ -130,9 +132,11 @@ export function writeDocxContent({
  * @param {?Array<number>} [params.pageArr=null] - Array of 0-based page indices to include. Overrides minpage/maxpage when provided.
  * @param {number} [params.minpage=0] - The first page to include in the document.
  * @param {number} [params.maxpage=-1] - The last page to include in the document.
+ * @param {?Array<PageMetrics>} [params.pageMetrics=null] - Page metrics for the document being
+ *    exported. Required when reflow or preserveSpacing is enabled.
  */
 export async function writeDocx({
-  hocrCurrent, pageArr = null, minpage = 0, maxpage = -1,
+  hocrCurrent, pageArr = null, minpage = 0, maxpage = -1, pageMetrics = null,
 }) {
   const { Uint8ArrayWriter, TextReader, ZipWriter } = await import('../../lib/zip.js/index.js');
 
@@ -149,6 +153,7 @@ export async function writeDocx({
     ocrCurrent: hocrCurrent,
     pageArr,
     reflowText: opt.reflow,
+    pageMetrics,
   }) + documentEnd);
   await zipWriter.add('word/document.xml', textReader);
 

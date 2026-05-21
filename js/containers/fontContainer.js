@@ -153,7 +153,9 @@ export function unregisterFontFacesMatching(predicate) {
  */
 export async function loadFont(family, styleLookup, type, src, opt) {
   const fontObj = await loadOpentype(src);
-  return new FontContainerFont(family, styleLookup, src, opt, fontObj);
+  const font = new FontContainerFont(family, styleLookup, src, opt, fontObj);
+  await font.registered;
+  return font;
 }
 
 /**
@@ -163,6 +165,8 @@ export async function loadFont(family, styleLookup, type, src, opt) {
  * @param {ArrayBuffer} src
  * @param {boolean} opt
  * @param {opentype.Font} opentypeObj - Kerning paris to re-apply
+ * @param {number} [docId=0] - Owning document id. Scopes optimized-font names so two documents'
+ *   optimized versions of the same family do not collide in the shared canvas/FontFace registry.
  * @property {string} family -
  * @property {StyleLookup} style -
  * @property {ArrayBuffer} src
@@ -171,16 +175,17 @@ export async function loadFont(family, styleLookup, type, src, opt) {
  * @property {string} fontFaceStyle -
  * @property {boolean} opt -
  * @property {string} type -
+ * @property {Promise<void>} registered - Resolves once this font's registry registration has settled.
  *
  * A FontFace object is created and added to the document FontFaceSet, however this FontFace object is intentionally not included in the `fontContainerFont` object.
  * First, it is not necessary.  Setting the font on a canvas (the only reason loading a `FontFace` is needed) is done through refering `fontFaceName` and `fontFaceStyle`.
  * Second, it results in errors being thrown when used in Node.js, as `FontFace` will be undefined in this case.
  */
-export function FontContainerFont(family, styleLookup, src, opt, opentypeObj) {
-  // As FontFace objects are included in the document FontFaceSet object,
-  // they need to all have unique names.
+export function FontContainerFont(family, styleLookup, src, opt, opentypeObj, docId = 0) {
+  // FontFace objects share one process-wide FontFaceSet, so names must be unique across documents.
+  // Optimized fonts differ per document, so their names carry the owning document id.
   let fontFaceName = family;
-  if (opt) fontFaceName += ' Opt';
+  if (opt) fontFaceName += ` Opt d${docId}`;
 
   /** @type {string} */
   this.family = family;
@@ -213,8 +218,11 @@ export function FontContainerFont(family, styleLookup, src, opt, opentypeObj) {
 
   if (typeof FontFace !== 'undefined') {
     loadFontFace(this.fontFaceName, this.fontFaceStyle, this.fontFaceWeight, this.src);
+    this.registered = Promise.resolve();
   } else {
-    ca.registerFontObj(this);
+    this.registered = ca.registerFontObj(this).catch((err) => {
+      console.error(`Failed to register font ${this.fontFaceName}:`, err);
+    });
   }
 }
 
@@ -223,9 +231,10 @@ export function FontContainerFont(family, styleLookup, src, opt, opentypeObj) {
  * @param {string} family
  * @param {fontSrcBuiltIn|fontSrcUpload} src
  * @param {boolean} opt
+ * @param {number} [docId=0] - Owning document id, used to scope optimized-font names.
  * @returns {Promise<FontContainerFamily>}
  */
-export async function loadFontContainerFamily(family, src, opt = false) {
+export async function loadFontContainerFamily(family, src, opt = false, docId = 0) {
   /** @type {FontContainerFamily} */
   const res = {
     normal: null,
@@ -235,22 +244,18 @@ export async function loadFontContainerFamily(family, src, opt = false) {
   };
 
   /**
-   *
    * @param {StyleLookup} styleLookup
    */
-  const loadType = (styleLookup) => new Promise((resolve) => {
-    const srcType = (src[styleLookup]);
-    if (!srcType) {
-      resolve(false);
-      return;
-    }
-    loadOpentype(srcType).then((font) => {
-      res[styleLookup] = new FontContainerFont(family, styleLookup, srcType, opt, font);
-      resolve(true);
-    });
-  });
+  const loadType = async (styleLookup) => {
+    const srcType = src[styleLookup];
+    if (!srcType) return;
+    const font = await loadOpentype(srcType);
+    const fontContainer = new FontContainerFont(family, styleLookup, srcType, opt, font, docId);
+    await fontContainer.registered;
+    res[styleLookup] = fontContainer;
+  };
 
-  Promise.allSettled([loadType('normal'), loadType('italic'), loadType('bold'), loadType('boldItalic')]);
+  await Promise.allSettled([loadType('normal'), loadType('italic'), loadType('bold'), loadType('boldItalic')]);
 
   return res;
 }
@@ -258,13 +263,14 @@ export async function loadFontContainerFamily(family, src, opt = false) {
 /**
  * @param {Object<string, fontSrcBuiltIn|fontSrcUpload>} srcObj
  * @param {boolean} opt
+ * @param {number} [docId=0] - Owning document id, used to scope optimized-font names.
  * @returns
  */
-export async function loadFontsFromSource(srcObj, opt = false) {
+export async function loadFontsFromSource(srcObj, opt = false, docId = 0) {
   /** @type {Object<string, Promise<FontContainerFamily>>} */
   const fontObjPromise = {};
   for (const [family, src] of Object.entries(srcObj)) {
-    fontObjPromise[family] = loadFontContainerFamily(family, src, opt);
+    fontObjPromise[family] = loadFontContainerFamily(family, src, opt, docId);
   }
   /** @type {Object<string, FontContainerFamily>} */
   const fontObj = {};
@@ -274,18 +280,14 @@ export async function loadFontsFromSource(srcObj, opt = false) {
   return fontObj;
 }
 
-// FontCont must contain no font data when initialized, and no data should be defined in this file.
-// This is because this file is run both from the main thread and workers, and fonts are defined different ways in each.
-// In the main thread, "raw" fonts are loaded from fetch requests, however in workers they are loaded from the main thread.
-export class FontCont {
+/**
+ * Process-wide fonts shared across all documents: the built-in raw fonts and the supplemental (CJK/Dingbats) fonts.
+ * Loaded once per process. Per-document selection/optimization state lives on `DocFonts`.
+ * Font lookups take a `DocFonts` so the same built-ins serve every document.
+ */
+export class GlobalFonts {
   /** @type {?FontContainer} */
   static raw = null;
-
-  /** @type {?FontContainer} */
-  static opt = null;
-
-  /** @type {?Object<string, FontContainerFamilyUpload>} */
-  static doc = null;
 
   /** @type {?FontContainer} */
   static export = null;
@@ -293,14 +295,160 @@ export class FontCont {
   static supp = {
     /** @type {?FontContainerFont} */
     chi_sim: null,
+    /** @type {?FontContainerFont} */
+    dingbats: null,
   };
 
   /**
-   * This object contains all data that is saved and restored from intermediate .scribe files.
-   * Anything outside of this object is not saved or restored.
+   * Decide whether to use the optimized version of a font family.
+   * Note that even when this function returns `true`, optimized versions of every style will not exist.
+   * @param {string} family - Font family name.
+   * @param {DocFonts} docFonts - Per-document font state.
+   */
+  static useOptFamily = (family, docFonts) => {
+    const raw = GlobalFonts.raw?.[family]?.normal;
+    if (!raw) return false;
+    const opt = docFonts.opt?.[family]?.normal;
+    if (opt && docFonts.state.forceOpt) {
+      return true;
+    // If optimized fonts are enabled (but not forced), the optimized version of a font will be used if:
+    // (1) The optimized version exists
+    // (2) The optimized version has a better metric (so quality should improve).
+    // (3) The optimized version of the default sans/serif font also has a better metric.
+    // This last condition avoids font optimization being enabled in the UI when it only improves an unused font.
+    } if (opt && docFonts.state.enableOpt) {
+      const defaultFamily = raw.type === 'sans' ? docFonts.state.sansDefaultName : docFonts.state.serifDefaultName;
+
+      const rawMetricDefault = docFonts.rawMetrics?.[defaultFamily];
+      const optMetricDefault = docFonts.optMetrics?.[defaultFamily];
+
+      const rawMetric = docFonts.rawMetrics?.[family];
+      const optMetric = docFonts.optMetrics?.[family];
+      if (rawMetric && optMetric && optMetric < rawMetric && optMetricDefault < rawMetricDefault) {
+        return true;
+      }
+    }
+    return false;
+  };
+
+  /**
+   * Gets a font object.  Unlike accessing the font containers directly,
+   * this method allows for special values 'Default', 'SansDefault', and 'SerifDefault' to be used.
+   *
+   * @param {Partial<Style>} style
+   * @param {DocFonts} docFonts - Per-document font state.
+   * @param {string} [lang='eng']
+   * @returns {FontContainerFont}
+   */
+  static getFont = (style, docFonts, lang = 'eng') => {
+    let family = style.font || docFonts.state.defaultFontName;
+
+    const styleLookup = getStyleLookup(style);
+
+    if (docFonts.doc?.[family]?.[styleLookup] && !docFonts.doc?.[family]?.[styleLookup]?.disable) {
+      return docFonts.doc[family][styleLookup];
+    }
+
+    if (lang === 'chi_sim') {
+      if (!GlobalFonts.supp.chi_sim) throw new Error('chi_sim font does not exist.');
+      return GlobalFonts.supp.chi_sim;
+    }
+
+    if (!GlobalFonts.raw) throw new Error('Raw fonts not yet initialized.');
+
+    // Option 1: If we have access to the font, use it.
+    // Option 2: If we do not have access to the font, but it closely resembles a built-in font, use the built-in font.
+    if (!GlobalFonts.raw?.[family]?.[styleLookup]) {
+      if (/NimbusRom/i.test(family)) {
+        family = 'NimbusRoman';
+      } else if (/Times/i.test(family)) {
+        family = 'NimbusRoman';
+      } else if (/NimbusSan/i.test(family)) {
+        family = 'NimbusSans';
+      } else if (/Helvetica/i.test(family)) {
+        family = 'NimbusSans';
+      } else if (/Arial/i.test(family)) {
+        family = 'NimbusSans';
+      } else if (/CenturySch/i.test(family)) {
+        family = 'Century';
+      } else if (/Palatino/i.test(family)) {
+        family = 'Palatino';
+      } else if (/Garamond/i.test(family)) {
+        family = 'Garamond';
+      } else if (/CenturyGothic/i.test(family)) {
+        family = 'Gothic';
+      } else if (/AvantGarde/i.test(family)) {
+        family = 'Gothic';
+      } else if (/Carlito/i.test(family)) {
+        family = 'Carlito';
+      } else if (/Calibri/i.test(family)) {
+        family = 'Carlito';
+      } else if (/Courier/i.test(family) && docFonts.state.enableCleanToNimbusMono) {
+        family = 'NimbusMono';
+      } else if (/NimbusMono/i.test(family) && docFonts.state.enableCleanToNimbusMono) {
+        family = 'NimbusMono';
+      }
+    }
+
+    // Option 3: If the font still is not identified, use the default sans/serif font.
+    if (!GlobalFonts.raw?.[family]?.[styleLookup]) {
+      family = determineSansSerif(family);
+    }
+
+    // This needs to come first as `defaultFontName` maps to either 'SerifDefault' or 'SansDefault'.
+    if (family === 'Default' || family === 'SymbolDefault') family = docFonts.state.defaultFontName;
+
+    if (family === 'SerifDefault') family = docFonts.state.serifDefaultName;
+    if (family === 'SansDefault') family = docFonts.state.sansDefaultName;
+
+    /** @type {FontContainerFont} */
+    let fontRes = GlobalFonts.raw?.[family]?.[styleLookup];
+    if (!fontRes) throw new Error(`Font container does not contain ${family} (${styleLookup}).`);
+
+    const opt = docFonts.opt?.[family]?.[styleLookup];
+    const useOpt = GlobalFonts.useOptFamily(family, docFonts);
+    if (opt && useOpt) fontRes = opt;
+
+    return fontRes;
+  };
+
+  /**
+   * @param {OcrWord} word
+   * @param {DocFonts} docFonts - Per-document font state.
+   */
+  static getWordFont = (word, docFonts) => GlobalFonts.getFont(word.style, docFonts, word.lang);
+}
+
+/**
+ * Per-document font state: optimized fonts derived from this document's text, fonts embedded in or
+ * uploaded for this document, font-evaluation metrics, and font-selection settings.
+ * The built-in raw and supplemental fonts are shared process-wide on `GlobalFonts`.
+ */
+export class DocFonts {
+  /**
+   * Owning document id, used to key this document's fonts/metrics/settings in the workers'
+   * `Map<docId, DocFonts>`. `0` for the standalone facade instance.
+   * @type {number}
+   */
+  id = 0;
+
+  /** @type {?FontContainer} */
+  opt = null;
+
+  /** @type {?Object<string, FontContainerFamilyUpload>} */
+  doc = null;
+
+  /** @type {?Awaited<ReturnType<import('../fontEval.js').evaluateFonts>>} */
+  rawMetrics = null;
+
+  /** @type {?Awaited<ReturnType<import('../fontEval.js').evaluateFonts>>} */
+  optMetrics = null;
+
+  /**
+   * Settings and metrics saved/restored from intermediate .scribe files. Each document has its own.
    * @type {FontState}
    */
-  static state = {
+  state = {
     /** Optimized fonts will be used when believed to improve quality. */
     enableOpt: false,
 
@@ -324,14 +472,20 @@ export class FontCont {
 
     /** @type {Object.<string, CharMetricsFamily>} */
     charMetrics: {},
-
   };
 
-  /** @type {?Awaited<ReturnType<import('../fontEval.js').evaluateFonts>>} */
-  static rawMetrics = null;
+  /**
+   * @param {Partial<Style>} style
+   * @param {string} [lang='eng']
+   * @returns {FontContainerFont}
+   */
+  getFont(style, lang = 'eng') { return GlobalFonts.getFont(style, this, lang); }
 
-  /** @type {?Awaited<ReturnType<import('../fontEval.js').evaluateFonts>>} */
-  static optMetrics = null;
+  /** @param {OcrWord} word */
+  getWordFont(word) { return GlobalFonts.getFont(word.style, this, word.lang); }
+
+  /** @param {string} family */
+  useOptFamily(family) { return GlobalFonts.useOptFamily(family, this); }
 
   /**
    * Load fonts from an ArrayBuffer containing arbitrary font data.
@@ -339,7 +493,7 @@ export class FontCont {
    * This function should only be used for fonts we do not provide, such as user-uploaded fonts.
    * @param {ArrayBuffer} src
    */
-  static addFontFromFile = async (src) => {
+  addFontFromFile = async (src) => {
     let fontObj;
     let fontData;
     try {
@@ -369,19 +523,20 @@ export class FontCont {
     // Spaces are replaced with underscores.
     const fontName = fontNameEmbedded.replace(/[^+]+\+/g, '').replace(/\s/g, '_');
 
-    if (!FontCont.doc?.[fontName]?.[styleLookup]) {
+    if (!this.doc?.[fontName]?.[styleLookup]) {
       try {
         const fontContainer = new FontContainerFont(fontName, styleLookup, fontData, false, fontObj);
+        await fontContainer.registered;
 
-        if (!FontCont.doc) {
-          FontCont.doc = {};
+        if (!this.doc) {
+          this.doc = {};
         }
 
-        if (!FontCont.doc[fontName]) {
-          FontCont.doc[fontName] = {};
+        if (!this.doc[fontName]) {
+          this.doc[fontName] = {};
         }
 
-        FontCont.doc[fontName][styleLookup] = fontContainer;
+        this.doc[fontName][styleLookup] = fontContainer;
       } catch (error) {
         console.error(`Error loading font ${fontName} ${styleLookup}.`);
       }
@@ -391,145 +546,82 @@ export class FontCont {
   };
 
   /**
-   * Decide whether to use the optimized version of a font family.
-   * Note that even when this function returns `true`, optimized versions of every style will not exist.
-   * @param {string} family - Font family name.
+   * Reset this document's font state. Does not unload process-wide built-in fonts.
    */
-  static useOptFamily = (family) => {
-    const raw = FontCont.raw?.[family]?.normal;
-    if (!raw) return false;
-    const opt = FontCont.opt?.[family]?.normal;
-    if (opt && FontCont.state.forceOpt) {
-      return true;
-    // If optimized fonts are enabled (but not forced), the optimized version of a font will be used if:
-    // (1) The optimized version exists
-    // (2) The optimized version has a better metric (so quality should improve).
-    // (3) The optimized version of the default sans/serif font also has a better metric.
-    // This last condition avoids font optimization being enabled in the UI when it only improves an unused font.
-    } if (opt && FontCont.state.enableOpt) {
-      const defaultFamily = raw.type === 'sans' ? FontCont.state.sansDefaultName : FontCont.state.serifDefaultName;
+  clear() {
+    this.opt = null;
+    this.rawMetrics = null;
+    this.optMetrics = null;
 
-      const rawMetricDefault = FontCont.rawMetrics?.[defaultFamily];
-      const optMetricDefault = FontCont.optMetrics?.[defaultFamily];
+    this.state.enableCleanToNimbusMono = false;
 
-      const rawMetric = FontCont.rawMetrics?.[family];
-      const optMetric = FontCont.optMetrics?.[family];
-      if (rawMetric && optMetric && optMetric < rawMetric && optMetricDefault < rawMetricDefault) {
-        return true;
-      }
-    }
-    return false;
-  };
+    this.state.defaultFontName = 'SerifDefault';
+    this.state.serifDefaultName = 'NimbusRoman';
+    this.state.sansDefaultName = 'NimbusSans';
 
-  /**
-   * Gets a font object.  Unlike accessing the font containers directly,
-   * this method allows for special values 'Default', 'SansDefault', and 'SerifDefault' to be used.
-   *
-   * @param {Partial<Style>} style
-   * @param {string} [lang='eng']
-   * @returns {FontContainerFont}
-   */
-  static getFont = (style, lang = 'eng') => {
-    let family = style.font || FontCont.state.defaultFontName;
+    clearObjectProperties(this.state.charMetrics);
 
-    const styleLookup = getStyleLookup(style);
+    ca.unregisterFontsMatching((name) => name.endsWith(` Opt d${this.id}`));
+    unregisterFontFacesMatching((family) => family.endsWith(` Opt d${this.id}`));
+  }
+}
 
-    if (FontCont.doc?.[family]?.[styleLookup] && !FontCont.doc?.[family]?.[styleLookup]?.disable) {
-      return FontCont.doc[family][styleLookup];
-    }
+// Worker per-job font slot. The OCR/general worker processes one job at a time; its dispatcher points
+// `activeDocFonts` at that job's document fonts (by `docId`) via `setActiveDocFonts` before running it.
+// `FontCont` reads this slot so worker modules (compareOCRModule, convertPageText, convertDocDocx)
+// resolve the current job's document fonts. This is worker-only. Main-thread code passes a document's
+// `DocFonts` explicitly and must not rely on this slot.
+let activeDocFonts = new DocFonts();
 
-    if (lang === 'chi_sim') {
-      if (!FontCont.supp.chi_sim) throw new Error('chi_sim font does not exist.');
-      return FontCont.supp.chi_sim;
-    }
+/** @param {DocFonts} docFonts */
+export const setActiveDocFonts = (docFonts) => { activeDocFonts = docFonts; };
 
-    if (!FontCont.raw) throw new Error('Raw fonts not yet initialized.');
+export class FontCont {
+  static get raw() { return GlobalFonts.raw; }
 
-    // Option 1: If we have access to the font, use it.
-    // Option 2: If we do not have access to the font, but it closely resembles a built-in font, use the built-in font.
-    if (!FontCont.raw?.[family]?.[styleLookup]) {
-      if (/NimbusRom/i.test(family)) {
-        family = 'NimbusRoman';
-      } else if (/Times/i.test(family)) {
-        family = 'NimbusRoman';
-      } else if (/NimbusSan/i.test(family)) {
-        family = 'NimbusSans';
-      } else if (/Helvetica/i.test(family)) {
-        family = 'NimbusSans';
-      } else if (/Arial/i.test(family)) {
-        family = 'NimbusSans';
-      } else if (/CenturySch/i.test(family)) {
-        family = 'Century';
-      } else if (/Palatino/i.test(family)) {
-        family = 'Palatino';
-      } else if (/Garamond/i.test(family)) {
-        family = 'Garamond';
-      } else if (/CenturyGothic/i.test(family)) {
-        family = 'Gothic';
-      } else if (/AvantGarde/i.test(family)) {
-        family = 'Gothic';
-      } else if (/Carlito/i.test(family)) {
-        family = 'Carlito';
-      } else if (/Calibri/i.test(family)) {
-        family = 'Carlito';
-      } else if (/Courier/i.test(family) && FontCont.state.enableCleanToNimbusMono) {
-        family = 'NimbusMono';
-      } else if (/NimbusMono/i.test(family) && FontCont.state.enableCleanToNimbusMono) {
-        family = 'NimbusMono';
-      }
-    }
+  static set raw(v) { GlobalFonts.raw = v; }
 
-    // Option 3: If the font still is not identified, use the default sans/serif font.
-    if (!FontCont.raw?.[family]?.[styleLookup]) {
-      family = determineSansSerif(family);
-    }
+  static get export() { return GlobalFonts.export; }
 
-    // This needs to come first as `defaultFontName` maps to either 'SerifDefault' or 'SansDefault'.
-    if (family === 'Default' || family === 'SymbolDefault') family = FontCont.state.defaultFontName;
+  static set export(v) { GlobalFonts.export = v; }
 
-    if (family === 'SerifDefault') family = FontCont.state.serifDefaultName;
-    if (family === 'SansDefault') family = FontCont.state.sansDefaultName;
+  static get supp() { return GlobalFonts.supp; }
 
-    /** @type {FontContainerFont} */
-    let fontRes = FontCont.raw?.[family]?.[styleLookup];
-    if (!fontRes) throw new Error(`Font container does not contain ${family} (${styleLookup}).`);
+  static set supp(v) { GlobalFonts.supp = v; }
 
-    const opt = FontCont.opt?.[family]?.[styleLookup];
-    const useOpt = FontCont.useOptFamily(family);
-    if (opt && useOpt) fontRes = opt;
+  static get opt() { return activeDocFonts.opt; }
 
-    return fontRes;
-  };
+  static set opt(v) { activeDocFonts.opt = v; }
 
-  /**
-   *
-   * @param {OcrWord} word
-   */
-  static getWordFont = (word) => FontCont.getFont(word.style, word.lang);
+  static get doc() { return activeDocFonts.doc; }
 
-  /**
-   * Reset font container to original state but do not unload default resources.
-   */
-  static clear = () => {
-    FontCont.opt = null;
-    FontCont.rawMetrics = null;
-    FontCont.optMetrics = null;
+  static set doc(v) { activeDocFonts.doc = v; }
 
-    FontCont.state.enableCleanToNimbusMono = false;
+  static get rawMetrics() { return activeDocFonts.rawMetrics; }
 
-    FontCont.state.defaultFontName = 'SerifDefault';
-    FontCont.state.serifDefaultName = 'NimbusRoman';
-    FontCont.state.sansDefaultName = 'NimbusSans';
+  static set rawMetrics(v) { activeDocFonts.rawMetrics = v; }
 
-    clearObjectProperties(FontCont.state.charMetrics);
+  static get optMetrics() { return activeDocFonts.optMetrics; }
 
-    ca.unregisterFontsMatching((name) => name.endsWith(' Opt'));
-    unregisterFontFacesMatching((family) => family.endsWith(' Opt'));
-  };
+  static set optMetrics(v) { activeDocFonts.optMetrics = v; }
+
+  static get state() { return activeDocFonts.state; }
+
+  static set state(v) { activeDocFonts.state = v; }
+
+  static getFont = (style, lang = 'eng') => GlobalFonts.getFont(style, activeDocFonts, lang);
+
+  static getWordFont = (word) => GlobalFonts.getFont(word.style, activeDocFonts, word.lang);
+
+  static useOptFamily = (family) => GlobalFonts.useOptFamily(family, activeDocFonts);
+
+  static addFontFromFile = (src) => activeDocFonts.addFontFromFile(src);
+
+  static clear = () => activeDocFonts.clear();
 
   static terminate = () => {
-    FontCont.clear();
-    FontCont.raw = null;
-    FontCont.state.glyphSet = null;
+    activeDocFonts.clear();
+    GlobalFonts.raw = null;
+    activeDocFonts.state.glyphSet = null;
   };
 }

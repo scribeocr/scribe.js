@@ -18,7 +18,7 @@ export async function drawWordActual(words, imageBinaryBit, angle) {
   if (!FontCont.raw) throw new Error('Fonts must be defined before running this function.');
 
   // The font/style from the first word is used for the purposes of font metrics
-  const lineFontSize = calcLineFontSize(words[0].line);
+  const lineFontSize = calcLineFontSize(words[0].line, FontCont);
 
   const fontI = FontCont.getWordFont(words[0]);
 
@@ -135,7 +135,7 @@ export const drawWordRender = async (ctx, word, offsetX = 0, cropY = 0, ctxView 
 
   let baselineY = word.line.bbox.bottom + word.line.baseline[1];
 
-  const wordMetrics = calcWordMetrics(word);
+  const wordMetrics = calcWordMetrics(word, FontCont);
   const advanceArr = wordMetrics.advanceArr;
   const kerningArr = wordMetrics.kerningArr;
   const charSpacing = wordMetrics.charSpacing;
@@ -462,7 +462,7 @@ async function penalizeWord(wordObjs) {
   if (wordObjs.length === 1 && /^[a-z][.,-]$/i.test(wordStr)) {
     const word = wordObjs[0];
     const wordTextArr = wordStr.split('');
-    const wordFontSize = calcLineFontSize(word.line);
+    const wordFontSize = calcLineFontSize(word.line, FontCont);
 
     const fontI = FontCont.getWordFont(word);
     const fontOpentypeI = fontI.opentype;
@@ -866,7 +866,7 @@ export async function compareOCRPageImp({
 
                     if (wordB.style.smallCaps && !wordA.style.smallCaps) {
                       wordAClone.style.smallCaps = true;
-                      wordAClone.style.size = calcWordFontSize(wordB);
+                      wordAClone.style.size = calcWordFontSize(wordB, FontCont);
                     }
 
                     const evalRes = await evalWords({
@@ -1327,6 +1327,7 @@ export async function evalPageFont({
  * This function is a WIP and not all options are implemented.
  * @param {Object} args
  * @param {OcrPage} args.page - Page to render.
+ * @param {number} [args.docId] - Owning document id, used by the worker dispatcher to select this document's fonts.
  * @param {ImageWrapper} [args.image]
  * @param {dims} [args.pageDims] - Dimensions of page.
  * @param {?number} [args.angle=0] - Angle of page.
@@ -1382,7 +1383,7 @@ export const renderPageStaticImp = async ({
 
       const angleAdjWord = wordObj.style.sup ? ocr.calcWordAngleAdj(wordObj) : { x: 0, y: 0 };
 
-      const wordMetrics = calcWordMetrics(wordObj);
+      const wordMetrics = calcWordMetrics(wordObj, FontCont);
       const advanceArr = wordMetrics.advanceArr;
       const kerningArr = wordMetrics.kerningArr;
       const charSpacing = wordMetrics.charSpacing;

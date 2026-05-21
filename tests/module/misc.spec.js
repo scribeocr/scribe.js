@@ -4,6 +4,9 @@ import {
 import scribe from '../../scribe.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 
+/** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+let doc;
+
 scribe.opt.workerN = 1;
 scribe.opt.langPath = LANG_PATH;
 
@@ -11,10 +14,10 @@ scribe.opt.langPath = LANG_PATH;
 
 describe('Check cleanup functions allow for resetting module.', () => {
   test('Check that cleanup functions work properly', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/chi_eng_mixed_sample.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/chi_eng_mixed_sample.pdf`]);
     await scribe.terminate();
     await scribe.init();
-    await scribe.importFiles([`${ASSETS_PATH}/chi_eng_mixed_sample.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/chi_eng_mixed_sample.pdf`]);
   });
 
   afterAll(async () => {

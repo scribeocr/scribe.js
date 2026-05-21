@@ -1,4 +1,5 @@
 import { TessScheduler } from '../tess/TessScheduler.js';
+import { opt } from './containers/app.js';
 
 /**
  * Creates a single PDF worker and returns an object with wrapped methods.
@@ -120,12 +121,14 @@ export class PdfScheduler {
 
 /**
  * Initialize the dedicated PDF worker pool.
- * Creates 1-3 workers depending on hardware concurrency.
+ * Creates 1-3 workers depending on hardware concurrency, capped by `opt.workerN` when set.
  * @param {number} [numWorkers]
  */
 export async function initPdfScheduler(numWorkers) {
   if (!numWorkers) {
-    if (typeof process === 'undefined') {
+    if (opt.workerN) {
+      numWorkers = Math.min(opt.workerN, 3);
+    } else if (typeof process === 'undefined') {
       numWorkers = Math.min(Math.round((globalThis.navigator.hardwareConcurrency || 8) / 2), 3);
     } else {
       const cpuN = Math.floor((await import('node:os')).cpus().length / 2);

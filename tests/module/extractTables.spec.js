@@ -4,6 +4,9 @@ import {
 import scribe from '../../scribe.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 
+/** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+let doc;
+
 scribe.opt.workerN = 1;
 scribe.opt.langPath = LANG_PATH;
 
@@ -11,14 +14,14 @@ scribe.opt.langPath = LANG_PATH;
 
 describe('Check createTablesFromText and extractTextFromTables.', () => {
   test('Should import document', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/border_patrol_tables.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/border_patrol_tables.pdf`]);
   });
 
   test('createTablesFromText creates table with column boxes and rowBounds', async () => {
     const tablesPage = scribe.createTablesFromText(0, [{
       rows: [['SECTOR', 'Apprehensions'], ['Miami', '1,891']],
-    }], scribe.data.ocr.active[0]);
-    scribe.data.layoutDataTables.pages[0] = tablesPage;
+    }], doc.ocr.active[0]);
+    doc.layoutDataTables.pages[0] = tablesPage;
     const table = tablesPage.tables[0];
     expect(table.boxes.length).toBe(2);
     expect(table.rowBounds.length).toBe(2);

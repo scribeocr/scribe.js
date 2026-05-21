@@ -4,6 +4,9 @@ import {
 import scribe from '../../scribe.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 
+/** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+let doc;
+
 scribe.opt.workerN = 1;
 scribe.opt.langPath = LANG_PATH;
 
@@ -34,14 +37,14 @@ function findLineWithWords(page, wordTexts) {
 
 describe('Check Google Document AI JSON import function (ascenders_descenders_test).', () => {
   beforeAll(async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/ascenders_descenders_test.png`,
+    doc = await scribe.openDocument([`${ASSETS_PATH}/ascenders_descenders_test.png`,
       `${ASSETS_PATH}/ascenders_descenders_test-GoogleDocAI.json`]);
   });
 
   test('Should correctly import text content', async () => {
-    const text1 = scribe.data.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
-    const text2 = scribe.data.ocr.active[0].lines[1].words.map((x) => x.text).join(' ');
-    const text3 = scribe.data.ocr.active[0].lines[2].words.map((x) => x.text).join(' ');
+    const text1 = doc.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
+    const text2 = doc.ocr.active[0].lines[1].words.map((x) => x.text).join(' ');
+    const text3 = doc.ocr.active[0].lines[2].words.map((x) => x.text).join(' ');
 
     expect(text1).toBe('Ascenders On');
     expect(text2).toBe('query png');
@@ -49,43 +52,43 @@ describe('Check Google Document AI JSON import function (ascenders_descenders_te
   });
 
   test('Should import correct number of lines', async () => {
-    expect(scribe.data.ocr.active[0].lines.length).toBe(3);
+    expect(doc.ocr.active[0].lines.length).toBe(3);
   });
 
   test('Should import correct number of words per line', async () => {
-    expect(scribe.data.ocr.active[0].lines[0].words.length).toBe(2);
-    expect(scribe.data.ocr.active[0].lines[1].words.length).toBe(2);
-    expect(scribe.data.ocr.active[0].lines[2].words.length).toBe(2);
+    expect(doc.ocr.active[0].lines[0].words.length).toBe(2);
+    expect(doc.ocr.active[0].lines[1].words.length).toBe(2);
+    expect(doc.ocr.active[0].lines[2].words.length).toBe(2);
   });
 
   test('Should have high confidence values for clear text', async () => {
     // The "Ascenders" word should have >90% confidence (it reads 99 from the JSON)
-    const conf = scribe.data.ocr.active[0].lines[0].words[0].conf;
+    const conf = doc.ocr.active[0].lines[0].words[0].conf;
     expect(conf).toBeGreaterThan(90);
     expect(conf).toBeLessThanOrEqual(100);
   });
 
   test('Should create 3 paragraphs (one per line)', async () => {
-    expect(scribe.data.ocr.active[0].pars.length).toBe(3);
+    expect(doc.ocr.active[0].pars.length).toBe(3);
   });
 
   test('All lines should have paragraph back-references', async () => {
-    for (const line of scribe.data.ocr.active[0].lines) {
+    for (const line of doc.ocr.active[0].lines) {
       expect(line.par).not.toBeNull();
     }
   });
 
   test('Paragraph text should match line text', async () => {
-    const par0Text = scribe.data.ocr.active[0].pars[0].lines.map((l) => l.words.map((w) => w.text).join(' ')).join(' ');
-    const par1Text = scribe.data.ocr.active[0].pars[1].lines.map((l) => l.words.map((w) => w.text).join(' ')).join(' ');
-    const par2Text = scribe.data.ocr.active[0].pars[2].lines.map((l) => l.words.map((w) => w.text).join(' ')).join(' ');
+    const par0Text = doc.ocr.active[0].pars[0].lines.map((l) => l.words.map((w) => w.text).join(' ')).join(' ');
+    const par1Text = doc.ocr.active[0].pars[1].lines.map((l) => l.words.map((w) => w.text).join(' ')).join(' ');
+    const par2Text = doc.ocr.active[0].pars[2].lines.map((l) => l.words.map((w) => w.text).join(' ')).join(' ');
     expect(par0Text).toBe('Ascenders On');
     expect(par1Text).toBe('query png');
     expect(par2Text).toBe('we can');
   });
 
   test('Word "Ascenders" bbox should have correct approximate position', async () => {
-    const word = scribe.data.ocr.active[0].lines[0].words[0]; // "Ascenders"
+    const word = doc.ocr.active[0].lines[0].words[0]; // "Ascenders"
     expect(word.text).toBe('Ascenders');
     // From the JSON: vertices x=[61,376], y=[70,123]
     expect(Math.abs((word.bbox.left) - (61))).toBeLessThanOrEqual(5);
@@ -104,9 +107,9 @@ describe('Check Google Document AI import for 070823vanliere (superscript handli
   let gdaiPages;
 
   beforeAll(async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/070823vanliere.pdf`,
+    doc = await scribe.openDocument([`${ASSETS_PATH}/070823vanliere.pdf`,
       `${ASSETS_PATH}/070823vanliere-GoogleDocAI.json`]);
-    gdaiPages = scribe.data.ocr.active;
+    gdaiPages = doc.ocr.active;
   });
 
   test('Should import 41 pages', async () => {

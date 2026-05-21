@@ -17,6 +17,9 @@ async function readPdfBytes(pdfPath) {
   return new Uint8Array(await response.arrayBuffer());
 }
 
+/** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+let doc;
+
 scribe.opt.workerN = 1;
 scribe.opt.langPath = LANG_PATH;
 
@@ -27,13 +30,13 @@ scribe.opt.langPath = LANG_PATH;
 
 describe('Check stylistic ligatures are normalized in PDF text extraction.', () => {
   beforeAll(async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/academic_article_1.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/academic_article_1.pdf`]);
   });
 
   test('Word with the fi ligature is extracted with separate f and i', async () => {
-    expect(scribe.data.ocr.active[0].lines[46].words[8].text).toBe('firm');
-    expect(scribe.data.ocr.active[0].lines[13].words[3].text).toBe('firms;');
-    expect(scribe.data.ocr.active[0].lines[17].words[3].text).toBe('firm’s');
+    expect(doc.ocr.active[0].lines[46].words[8].text).toBe('firm');
+    expect(doc.ocr.active[0].lines[13].words[3].text).toBe('firms;');
+    expect(doc.ocr.active[0].lines[17].words[3].text).toBe('firm’s');
   });
 
   afterAll(async () => {
@@ -43,11 +46,11 @@ describe('Check stylistic ligatures are normalized in PDF text extraction.', () 
 
 describe('Trailing punctuation across italic/roman style boundaries (070823vanliere.pdf).', () => {
   beforeAll(async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/070823vanliere.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/070823vanliere.pdf`]);
   });
 
   test('Italic title "Reference Guide" with trailing roman comma stays as one word', () => {
-    const line = scribe.data.ocr.active[14].lines[24];
+    const line = doc.ocr.active[14].lines[24];
     expect(line.words.map((w) => w.text)).toEqual(
       ['a', 'dog?', 'Does', 'she', 'live', 'within', '10', 'miles?)”.', 'Reference', 'Guide,', 'p.', '241.'],
     );
@@ -60,18 +63,18 @@ describe('Trailing punctuation across italic/roman style boundaries (070823vanli
 
 describe('Check stext import function language support.', () => {
   beforeAll(async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/chi_eng_mixed_sample.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/chi_eng_mixed_sample.pdf`]);
   });
 
   test('Should import Chinese characters', async () => {
-    const text1 = scribe.data.ocr.active[0].lines[2].words.map((x) => x.text).join(' ');
+    const text1 = doc.ocr.active[0].lines[2].words.map((x) => x.text).join(' ');
 
     expect(text1).toBe('嚴 重 特 殊 傳 染 性 肺 炎 指 定 處 所 隔 離 通 知 書 及 提 審 權 利 告 知');
   });
 
   test('Should load chi_sim font so getWordFont works on Chinese words', async () => {
     const { FontCont } = await import('../../js/containers/fontContainer.js');
-    const chiWord = scribe.data.ocr.active[0].lines.flatMap((l) => l.words).find((w) => w.lang === 'chi_sim');
+    const chiWord = doc.ocr.active[0].lines.flatMap((l) => l.words).find((w) => w.lang === 'chi_sim');
     expect(chiWord).toBeDefined();
     expect(FontCont.getWordFont(chiWord).family).toBe('NotoSansSC');
   });
@@ -83,13 +86,13 @@ describe('Check stext import function language support.', () => {
 
 describe('Check small caps are detected in PDF imports.', () => {
   beforeAll(async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/small_caps_examples.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/small_caps_examples.pdf`]);
   });
 
   test('Should correctly import small caps printed using font size adjustments', async () => {
-    const text1 = scribe.data.ocr.active[0].lines[3].words.map((x) => x.text).join(' ');
+    const text1 = doc.ocr.active[0].lines[3].words.map((x) => x.text).join(' ');
 
-    const text2 = scribe.data.ocr.active[0].lines[22].words.map((x) => x.text).join(' ');
+    const text2 = doc.ocr.active[0].lines[22].words.map((x) => x.text).join(' ');
 
     expect(text1).toBe('Shubhdeep Deb');
 
@@ -97,9 +100,9 @@ describe('Check small caps are detected in PDF imports.', () => {
   });
 
   test('Should correctly import small caps printed using small caps font.', async () => {
-    expect(scribe.data.ocr.active[1].lines[4].words[0].style.smallCaps).toBe(true);
+    expect(doc.ocr.active[1].lines[4].words[0].style.smallCaps).toBe(true);
 
-    expect(scribe.data.ocr.active[1].lines[4].words.map((x) => x.text).join(' ')).toBe('Abstract');
+    expect(doc.ocr.active[1].lines[4].words.map((x) => x.text).join(' ')).toBe('Abstract');
   });
 
   afterAll(async () => {
@@ -109,64 +112,64 @@ describe('Check small caps are detected in PDF imports.', () => {
 
 describe('Check superscripts are detected in PDF imports.', () => {
   beforeAll(async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/superscript_examples.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/superscript_examples.pdf`]);
   });
 
   // First document
   test('Should correctly import trailing superscripts printed using font size adjustments (1st doc)', async () => {
-    expect(scribe.data.ocr.active[0].lines[25].words[8].style.sup).toBe(true);
-    expect(scribe.data.ocr.active[0].lines[25].words[8].text).toBe('1');
+    expect(doc.ocr.active[0].lines[25].words[8].style.sup).toBe(true);
+    expect(doc.ocr.active[0].lines[25].words[8].text).toBe('1');
   });
 
   test('Should correctly import leading superscripts printed using font size adjustments (1st doc)', async () => {
-    expect(scribe.data.ocr.active[0].lines[43].words[0].style.sup).toBe(true);
-    expect(scribe.data.ocr.active[0].lines[43].words[0].text).toBe('1');
+    expect(doc.ocr.active[0].lines[43].words[0].style.sup).toBe(true);
+    expect(doc.ocr.active[0].lines[43].words[0].text).toBe('1');
   });
 
   test('Should correctly calculate line angle for lines that start or end with superscripts (1st doc)', async () => {
     // Line that ends with superscript.
-    expect(scribe.data.ocr.active[0].lines[28].baseline[0]).toBe(0);
+    expect(doc.ocr.active[0].lines[28].baseline[0]).toBe(0);
     // Line that starts with superscript.
-    expect(scribe.data.ocr.active[0].lines[43].baseline[0]).toBe(0);
+    expect(doc.ocr.active[0].lines[43].baseline[0]).toBe(0);
   });
 
   // Second document
   test('Should correctly import trailing superscripts printed using font size adjustments (2nd doc)', async () => {
-    expect(scribe.data.ocr.active[1].lines[1].words[2].style.sup).toBe(true);
-    expect(scribe.data.ocr.active[1].lines[1].words[2].text).toBe('1');
+    expect(doc.ocr.active[1].lines[1].words[2].style.sup).toBe(true);
+    expect(doc.ocr.active[1].lines[1].words[2].text).toBe('1');
   });
 
   test('Should correctly import leading superscripts printed using font size adjustments (2nd doc)', async () => {
-    expect(scribe.data.ocr.active[1].lines[36].words[0].style.sup).toBe(true);
-    expect(scribe.data.ocr.active[1].lines[36].words[0].text).toBe('1');
+    expect(doc.ocr.active[1].lines[36].words[0].style.sup).toBe(true);
+    expect(doc.ocr.active[1].lines[36].words[0].text).toBe('1');
   });
 
   test('Should correctly calculate line angle for lines that start with superscripts (2nd doc)', async () => {
     // Line that starts with superscript.
-    expect(scribe.data.ocr.active[1].lines[36].baseline[0]).toBe(0);
+    expect(doc.ocr.active[1].lines[36].baseline[0]).toBe(0);
   });
 
   // Third document
   test('Should correctly import leading superscripts printed using font size adjustments (3rd doc)', async () => {
-    expect(scribe.data.ocr.active[2].lines[22].words[4].style.sup).toBe(true);
-    expect(scribe.data.ocr.active[2].lines[22].words[4].text).toBe('2');
+    expect(doc.ocr.active[2].lines[22].words[4].style.sup).toBe(true);
+    expect(doc.ocr.active[2].lines[22].words[4].text).toBe('2');
   });
 
   test('Should correctly parse font size for lines with superscripts (3rd doc)', async () => {
     // The body line "lic and private enforcers' incentives and information sets,"
     // sits one line below a line with a trailing superscript "2" — verify the
     // superscript on the previous line did not poison size detection here.
-    expect(scribe.data.ocr.active[2].lines[24].words.map((w) => w.text).join(' ')).toBe('lic and private enforcers’ incentives and information sets,');
-    const words = scribe.data.ocr.active[2].lines[24].words;
+    expect(doc.ocr.active[2].lines[24].words.map((w) => w.text).join(' ')).toBe('lic and private enforcers’ incentives and information sets,');
+    const words = doc.ocr.active[2].lines[24].words;
     expect(words.map((word) => word.style.size && Math.round(word.style.size) === 33).reduce((acc, val) => acc && val)).toBe(true);
   });
 
   // Forth document
   test('Should correctly import trailing superscripts printed using font size adjustments (4th doc)', async () => {
     // Line "corporate round 20" — the trailing "20" is a footnote superscript.
-    expect(scribe.data.ocr.active[3].lines[109].words.map((w) => w.text).join(' ')).toBe('corporate round 20');
-    expect(scribe.data.ocr.active[3].lines[109].words[2].style.sup).toBe(true);
-    expect(scribe.data.ocr.active[3].lines[109].words[2].text).toBe('20');
+    expect(doc.ocr.active[3].lines[109].words.map((w) => w.text).join(' ')).toBe('corporate round 20');
+    expect(doc.ocr.active[3].lines[109].words[2].style.sup).toBe(true);
+    expect(doc.ocr.active[3].lines[109].words[2].text).toBe('20');
   });
 
   test('Should correctly parse font size for lines with superscripts (4th doc)', async () => {
@@ -174,46 +177,46 @@ describe('Check superscripts are detected in PDF imports.', () => {
     // ("Accel. 20 Including American Express. 21 Purchased 55%…"). The "20"
     // here marks the start of a new footnote and must be detected as a
     // superscript even though it sits mid-line, not at line end.
-    expect(scribe.data.ocr.active[3].lines[231].words.map((w) => w.text).join(' ')).toBe('Accel. 20 Including American Express. 21 Purchased 55% interest from Fiserv. 22 Including');
-    expect(scribe.data.ocr.active[3].lines[231].words[1].style.sup).toBe(true);
-    expect(scribe.data.ocr.active[3].lines[231].words[1].text).toBe('20');
+    expect(doc.ocr.active[3].lines[231].words.map((w) => w.text).join(' ')).toBe('Accel. 20 Including American Express. 21 Purchased 55% interest from Fiserv. 22 Including');
+    expect(doc.ocr.active[3].lines[231].words[1].style.sup).toBe(true);
+    expect(doc.ocr.active[3].lines[231].words[1].text).toBe('20');
   });
 
   // Fifth document
   test('Should correctly import trailing superscripts printed using font size adjustments (5th doc)', async () => {
-    expect(scribe.data.ocr.active[4].lines[11].words[16].style.sup).toBe(true);
-    expect(scribe.data.ocr.active[4].lines[11].words[16].text).toBe('2');
-    expect(scribe.data.ocr.active[4].lines[11].words[16].style.size).toBe(33.5);
+    expect(doc.ocr.active[4].lines[11].words[16].style.sup).toBe(true);
+    expect(doc.ocr.active[4].lines[11].words[16].text).toBe('2');
+    expect(doc.ocr.active[4].lines[11].words[16].style.size).toBe(33.5);
   });
 
   test('Should correctly parse font size for lines with superscripts (5th doc)', async () => {
-    expect(scribe.data.ocr.active[4].lines[21].words[0].style.sup).toBe(true);
-    expect(scribe.data.ocr.active[4].lines[21].words[0].text).toBe('2');
-    expect(scribe.data.ocr.active[4].lines[21].words[0].style.size).toBe(27);
+    expect(doc.ocr.active[4].lines[21].words[0].style.sup).toBe(true);
+    expect(doc.ocr.active[4].lines[21].words[0].text).toBe('2');
+    expect(doc.ocr.active[4].lines[21].words[0].style.size).toBe(27);
   });
 
   // Sixth document
   test('Should correctly import trailing superscripts printed using font size adjustments (6th doc)', async () => {
     // Table cell "Other a" — the trailing "a" is a footnote-marker superscript.
-    expect(scribe.data.ocr.active[5].lines[61].words.map((w) => w.text).join(' ')).toBe('Other a');
-    expect(scribe.data.ocr.active[5].lines[61].words[1].style.sup).toBe(true);
-    expect(scribe.data.ocr.active[5].lines[61].words[1].text).toBe('a');
+    expect(doc.ocr.active[5].lines[61].words.map((w) => w.text).join(' ')).toBe('Other a');
+    expect(doc.ocr.active[5].lines[61].words[1].style.sup).toBe(true);
+    expect(doc.ocr.active[5].lines[61].words[1].text).toBe('a');
   });
 
   test('Should correctly parse font size for lines with superscripts (6th doc)', async () => {
     // Footnote text starts with the leading-superscript marker "a"
     // ("a Includes burglary, larceny, motor vehicle theft, …"). The "a" must
     // be detected as a superscript even though it leads the line.
-    expect(scribe.data.ocr.active[5].lines[158].words.map((w) => w.text).join(' ').slice(0, 70)).toBe('a Includes burglary, larceny, motor vehicle theft, arson, transportati');
-    expect(scribe.data.ocr.active[5].lines[158].words[0].style.sup).toBe(true);
-    expect(scribe.data.ocr.active[5].lines[158].words[0].text).toBe('a');
+    expect(doc.ocr.active[5].lines[158].words.map((w) => w.text).join(' ').slice(0, 70)).toBe('a Includes burglary, larceny, motor vehicle theft, arson, transportati');
+    expect(doc.ocr.active[5].lines[158].words[0].style.sup).toBe(true);
+    expect(doc.ocr.active[5].lines[158].words[0].text).toBe('a');
   });
 
   test('Footnote line at lines[43] starts with leading superscript "1" followed by "See" (1st doc)', async () => {
     // Existing test above verifies lines[43].words[0] is a leading superscript.
     // This test goes further: the same line is the start of a "See ..."
     // footnote, so words[1] should be "See" and not be marked as a superscript.
-    const line = scribe.data.ocr.active[0].lines[43];
+    const line = doc.ocr.active[0].lines[43];
     expect(line.words[0].text).toBe('1');
     expect(line.words[0].style.sup).toBe(true);
     expect(line.words[1].text).toBe('See');
@@ -221,7 +224,7 @@ describe('Check superscripts are detected in PDF imports.', () => {
   });
 
   test('Trailing superscript "1" at lines[25].words[8] has smaller font size than surrounding non-sup words (1st doc)', async () => {
-    const line = scribe.data.ocr.active[0].lines[25];
+    const line = doc.ocr.active[0].lines[25];
     // words[7] = "years.", words[8] = "1" (sup), words[9] = "Furthermore,"
     expect(line.words[8].text).toBe('1');
     expect(line.words[8].style.sup).toBe(true);
@@ -234,7 +237,7 @@ describe('Check superscripts are detected in PDF imports.', () => {
   });
 
   test('Trailing superscript "1" at lines[25].words[8] sits above the non-sup baseline (1st doc)', async () => {
-    const line = scribe.data.ocr.active[0].lines[25];
+    const line = doc.ocr.active[0].lines[25];
     expect(line.words[8].bbox.bottom).toBe(1685);
     expect(line.words[7].bbox.bottom).toBe(1705);
     expect(line.words[8].bbox.bottom).toBeLessThan(line.words[7].bbox.bottom);
@@ -244,7 +247,7 @@ describe('Check superscripts are detected in PDF imports.', () => {
     // Without bbox correction, the superscript is shifted up by the full
     // baseline offset (gap >50px). With correction, the gap should be ≤25px.
     // Catches the opposite failure mode of the strict "sits above" test above.
-    const line = scribe.data.ocr.active[0].lines[25];
+    const line = doc.ocr.active[0].lines[25];
     expect(line.words[8].text).toBe('1');
     expect(line.words[8].style.sup).toBe(true);
     expect(line.words[0].style.sup).toBeFalsy();
@@ -254,7 +257,7 @@ describe('Check superscripts are detected in PDF imports.', () => {
   test('Copyright line at lines[46] (1st doc) is split into 18 individual words', async () => {
     // The "© 2024 The Authors. Econometrica published by..." copyright line
     // should be split into individual words, not concatenated into a single run.
-    const line = scribe.data.ocr.active[0].lines[46];
+    const line = doc.ocr.active[0].lines[46];
     expect(line.words.length).toBe(18);
     expect(line.words[0].text).toBe('©');
     expect(line.words[1].text).toBe('2024');
@@ -263,17 +266,17 @@ describe('Check superscripts are detected in PDF imports.', () => {
   test('Parenthesized citation "(Bayless, 2000;" at page 3 lines[62] is split as two words, not by characters', async () => {
     // Without correct handling, "(Bayless, 2000;" might split into "(",
     // "Bayless,", "20", "0", "0", ";".
-    const line = scribe.data.ocr.active[2].lines[62];
+    const line = doc.ocr.active[2].lines[62];
     expect(line.words[8].text).toBe('(Bayless,');
     expect(line.words[9].text).toBe('2000;');
   });
 
   test('Number "71,542" at page 6 lines[35].words[0] is kept as a single word, not split at the comma', async () => {
-    expect(scribe.data.ocr.active[5].lines[35].words[0].text).toBe('71,542');
+    expect(doc.ocr.active[5].lines[35].words[0].text).toBe('71,542');
   });
 
   test('Word "Latin" at page 4 lines[4].words[2] is not falsely underlined when the nearest vector path is too far below', async () => {
-    const line = scribe.data.ocr.active[3].lines[4];
+    const line = doc.ocr.active[3].lines[4];
     expect(line.words[2].text).toBe('Latin');
     expect(line.words[2].style.underline).toBe(false);
   });
@@ -281,27 +284,27 @@ describe('Check superscripts are detected in PDF imports.', () => {
   // This document breaks when used with `mutool convert` so is not combined with the others.
   // Any more tests included in the main stacked document should be inserted above this point.
   test('Should correctly parse font size for lines with superscripts (addtl doc)', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/superscript_example_report1.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/superscript_example_report1.pdf`]);
 
     // Footnote (1): "(1) Effective July 1, 2023, prior period segment information…"
-    expect(scribe.data.ocr.active[0].lines[86].words.map((w) => w.text).join(' ').slice(0, 80)).toBe('(1) Effective July 1, 2023, prior period segment information for the Corporate F');
-    expect(scribe.data.ocr.active[0].lines[86].words[0].style.sup).toBe(true);
-    expect(scribe.data.ocr.active[0].lines[86].words[0].text).toBe('(1)');
+    expect(doc.ocr.active[0].lines[86].words.map((w) => w.text).join(' ').slice(0, 80)).toBe('(1) Effective July 1, 2023, prior period segment information for the Corporate F');
+    expect(doc.ocr.active[0].lines[86].words[0].style.sup).toBe(true);
+    expect(doc.ocr.active[0].lines[86].words[0].text).toBe('(1)');
 
     // Footnote (3): "(3) See "FTI Consulting, Inc. Non-GAAP Financial Measures"…"
-    expect(scribe.data.ocr.active[0].lines[93].words.map((w) => w.text).join(' ').slice(0, 80)).toBe('(3) See “FTI Consulting, Inc. Non-GAAP Financial Measures” for the definition of');
-    expect(scribe.data.ocr.active[0].lines[93].words[0].style.sup).toBe(true);
-    expect(scribe.data.ocr.active[0].lines[93].words[0].text).toBe('(3)');
+    expect(doc.ocr.active[0].lines[93].words.map((w) => w.text).join(' ').slice(0, 80)).toBe('(3) See “FTI Consulting, Inc. Non-GAAP Financial Measures” for the definition of');
+    expect(doc.ocr.active[0].lines[93].words[0].style.sup).toBe(true);
+    expect(doc.ocr.active[0].lines[93].words[0].text).toBe('(3)');
   });
 
   test('Should correctly parse font size for lines with superscripts (addtl doc 2)', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/superscript_example_report2.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/superscript_example_report2.pdf`]);
 
-    expect(scribe.data.ocr.active[0].lines[32].words[4].style.sup).toBe(true);
-    expect(scribe.data.ocr.active[0].lines[32].words[4].text).toBe('(1)');
+    expect(doc.ocr.active[0].lines[32].words[4].style.sup).toBe(true);
+    expect(doc.ocr.active[0].lines[32].words[4].text).toBe('(1)');
 
-    expect(scribe.data.ocr.active[0].lines[35].words[4].style.sup).toBe(true);
-    expect(scribe.data.ocr.active[0].lines[35].words[4].text).toBe('(1)');
+    expect(doc.ocr.active[0].lines[35].words[4].style.sup).toBe(true);
+    expect(doc.ocr.active[0].lines[35].words[4].text).toBe('(1)');
   });
 
   afterAll(async () => {
@@ -311,12 +314,12 @@ describe('Check superscripts are detected in PDF imports.', () => {
 
 describe('Check font size is correctly parsed in PDF imports.', () => {
   test('Should correctly parse font sizes (1st doc)', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/border_patrol_tables.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/border_patrol_tables.pdf`]);
     // This word was problematic at one point due to the change in font size between the first and second word.
     // Anchor on the line text so a future re-merge that shifts this footnote line still trips the test loudly.
-    expect(scribe.data.ocr.active[0].lines[218].words.map((w) => w.text).join(' ')).toBe('* Agent staffing statistics depict FY19 on-board personnel data as of 09/30/2019');
-    expect(scribe.data.ocr.active[0].lines[218].words[1].style.size).toBe(32.5);
-    expect(scribe.data.ocr.active[0].lines[218].words[1].text).toBe('Agent');
+    expect(doc.ocr.active[0].lines[218].words.map((w) => w.text).join(' ')).toBe('* Agent staffing statistics depict FY19 on-board personnel data as of 09/30/2019');
+    expect(doc.ocr.active[0].lines[218].words[1].style.size).toBe(32.5);
+    expect(doc.ocr.active[0].lines[218].words[1].text).toBe('Agent');
   });
 
   afterAll(async () => {
@@ -326,15 +329,15 @@ describe('Check font size is correctly parsed in PDF imports.', () => {
 
 describe('Check Type0 sibling-font ToUnicode fallback (coca-cola-business-and-sustainability-report-2022.pdf).', () => {
   beforeAll(async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/coca-cola-business-and-sustainability-report-2022.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/coca-cola-business-and-sustainability-report-2022.pdf`]);
   });
 
   test('Imports all 15 pages of the report', async () => {
-    expect(scribe.data.ocr.active.length).toBe(15);
+    expect(doc.ocr.active.length).toBe(15);
   });
 
   test('Page 1 heading contains "THE COCA" and "BUSINESS & SUSTAINABILITY REPORT" with no control characters', async () => {
-    const lineTexts = scribe.data.ocr.active[0].lines.map((l) => l.words.map((w) => w.text).join(' '));
+    const lineTexts = doc.ocr.active[0].lines.map((l) => l.words.map((w) => w.text).join(' '));
     const headingLine = lineTexts.find((line) => line.includes('BUSINESS & SUSTAINABILITY REPORT'));
     expect(headingLine).toBeDefined();
     const heading = /** @type {string} */ (headingLine);
@@ -344,7 +347,7 @@ describe('Check Type0 sibling-font ToUnicode fallback (coca-cola-business-and-su
   });
 
   test('Page 1 contains "Net Operating Revenues, Operating Income and Unit Case Volume by Operating Segment"', async () => {
-    const lineTexts = scribe.data.ocr.active[0].lines.map((l) => l.words.map((w) => w.text).join(' '));
+    const lineTexts = doc.ocr.active[0].lines.map((l) => l.words.map((w) => w.text).join(' '));
     const segmentLine = lineTexts.find((line) => line.includes('Net Operating Revenues, Operating Income and Unit Case Volume by Operating Segment'));
     expect(segmentLine).toBeDefined();
   });
@@ -356,27 +359,27 @@ describe('Check Type0 sibling-font ToUnicode fallback (coca-cola-business-and-su
 
 describe('Check direct text extraction from Iris (plant) - Wikipedia_123.pdf.', () => {
   beforeAll(async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`]);
   });
 
   test('Extracts all 3 pages', async () => {
-    expect(scribe.data.ocr.active.length).toBe(3);
+    expect(doc.ocr.active.length).toBe(3);
   });
 
   test('Page 1 has dimensions 2550x3300 (300 DPI rendering of US Letter)', async () => {
-    expect(scribe.data.ocr.active[0].dims.width).toBe(2550);
-    expect(scribe.data.ocr.active[0].dims.height).toBe(3300);
+    expect(doc.ocr.active[0].dims.width).toBe(2550);
+    expect(doc.ocr.active[0].dims.height).toBe(3300);
   });
 
   test('Visual top line of page 1 is "Iris (plant)"', async () => {
-    const sortedLines = [...scribe.data.ocr.active[0].lines].sort(
+    const sortedLines = [...doc.ocr.active[0].lines].sort(
       (a, b) => (a.bbox.top - b.bbox.top) || (a.bbox.left - b.bbox.left),
     );
     expect(sortedLines[0].words.map((w) => w.text).join(' ')).toBe('Iris (plant)');
   });
 
   test('Page 1 contains expected article body text', async () => {
-    const allText = scribe.data.ocr.active[0].lines
+    const allText = doc.ocr.active[0].lines
       .map((l) => l.words.map((w) => w.text).join(' '))
       .join('\n');
     expect(allText).toContain('Iris is a');
@@ -389,7 +392,7 @@ describe('Check direct text extraction from Iris (plant) - Wikipedia_123.pdf.', 
     // (236 words) with grey link/caption words (#666666, 4 words).
     const opacities = new Set();
     const colors = new Map();
-    for (const line of scribe.data.ocr.active[0].lines) {
+    for (const line of doc.ocr.active[0].lines) {
       for (const w of line.words) {
         opacities.add(w.style.opacity);
         colors.set(w.style.color, (colors.get(w.style.color) || 0) + 1);
@@ -402,7 +405,7 @@ describe('Check direct text extraction from Iris (plant) - Wikipedia_123.pdf.', 
   });
 
   test('Page 1 lines[0].words[0] is "Iris" with 4 chars at expected per-char widths and a uniform height of 35', async () => {
-    const word = scribe.data.ocr.active[0].lines[0].words[0];
+    const word = doc.ocr.active[0].lines[0].words[0];
     expect(word.text).toBe('Iris');
     expect(word.chars).toBeDefined();
     const chars = /** @type {NonNullable<typeof word.chars>} */ (word.chars);
@@ -416,31 +419,31 @@ describe('Check direct text extraction from Iris (plant) - Wikipedia_123.pdf.', 
   });
 
   test('"Iris sibirica" caption at lines[1] has font size 44', async () => {
-    expect(scribe.data.ocr.active[0].lines[1].words.map((w) => w.text).join(' ')).toBe('Iris sibirica');
-    expect(scribe.data.ocr.active[0].lines[1].words[0].style.size).toBe(44);
+    expect(doc.ocr.active[0].lines[1].words.map((w) => w.text).join(' ')).toBe('Iris sibirica');
+    expect(doc.ocr.active[0].lines[1].words[0].style.size).toBe(44);
   });
 
   test('"Kingdom: Plantae" taxonomy line at lines[3] has font size 50', async () => {
-    expect(scribe.data.ocr.active[0].lines[3].words.map((w) => w.text).join(' ')).toBe('Kingdom: Plantae');
-    expect(scribe.data.ocr.active[0].lines[3].words[0].style.size).toBe(50);
+    expect(doc.ocr.active[0].lines[3].words.map((w) => w.text).join(' ')).toBe('Kingdom: Plantae');
+    expect(doc.ocr.active[0].lines[3].words[0].style.size).toBe(50);
   });
 
   test('Page 2 line "...The three styles [7] divide..." is not split at the inline superscript', async () => {
-    const page = scribe.data.ocr.active[1];
+    const page = doc.ocr.active[1];
     const matches = page.lines.filter((l) => l.words.map((w) => w.text).join(' ').startsWith('parts). The three styles'));
     expect(matches.length).toBe(1);
     expect(matches[0].words.map((w) => w.text).join(' ')).toBe('parts). The three styles [7] divide towards the apex into petaloid branches; this is significant in');
   });
 
   test('Page 2 line "...with the three [7] stigmatic" is not split at the inline superscript', async () => {
-    const page = scribe.data.ocr.active[1];
+    const page = doc.ocr.active[1];
     const matches = page.lines.filter((l) => l.words.map((w) => w.text).join(' ').startsWith('contact with the perianth'));
     expect(matches.length).toBe(1);
     expect(matches[0].words.map((w) => w.text).join(' ')).toBe('contact with the perianth, then with the three [7] stigmatic');
   });
 
   test('Page 2 "Synonyms [1][2][3]" splits into three superscript refs', async () => {
-    const page = scribe.data.ocr.active[1];
+    const page = doc.ocr.active[1];
     const matches = page.lines.filter((l) => l.words.map((w) => w.text).join(' ').startsWith('Synonyms'));
     expect(matches.length).toBe(1);
     const line = matches[0];
@@ -458,10 +461,10 @@ describe('Check direct text extraction from Iris (plant) - Wikipedia_123.pdf.', 
 
 describe('Check handling of PDFs with broken encoding dictionaries.', () => {
   test('PDF with invalid encoding dictionary is detected and text is not imported', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/Iris (plant) - Wikipedia_AdobePDF123.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/Iris (plant) - Wikipedia_AdobePDF123.pdf`]);
 
-    expect(scribe.inputData.pdfType).toBe('image');
-    expect(scribe.data.ocr.active.length).toBe(0);
+    expect(doc.inputData.pdfType).toBe('image');
+    expect(doc.ocr.active.length).toBe(0);
   });
 
   afterAll(async () => {
@@ -471,31 +474,31 @@ describe('Check handling of PDFs with broken encoding dictionaries.', () => {
 
 describe('Check that PDF imports split lines correctly.', () => {
   test('Should correctly parse PDF lines (1st doc)', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/border_patrol_tables.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/border_patrol_tables.pdf`]);
 
     // A previous version of the build 5 words across 3 distinct lines (including this one) are combined into a single line.
-    expect(scribe.data.ocr.active[0].lines[3].words.length).toBe(1);
-    expect(scribe.data.ocr.active[0].lines[3].words[0].text).toBe('Apprehensions');
+    expect(doc.ocr.active[0].lines[3].words.length).toBe(1);
+    expect(doc.ocr.active[0].lines[3].words[0].text).toBe('Apprehensions');
   });
 
   test('Should correctly parse PDF lines (2nd doc)', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/superscript_examples.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/superscript_examples.pdf`]);
 
     // A previous version of the build split this line into 9 separate lines.
-    expect(scribe.data.ocr.active[2].lines[58].words.map((x) => x.text).join(' ')).toBe('ment’s (DOE’s) issuance of Accounting and Auditing Enforcement Releases');
+    expect(doc.ocr.active[2].lines[58].words.map((x) => x.text).join(' ')).toBe('ment’s (DOE’s) issuance of Accounting and Auditing Enforcement Releases');
 
     // The source PDF has a mid-word space in "Anyfin" but it should still be parsed
     // as a single word; HEAD's parser split it into 2 words and the test tolerated that.
-    expect(scribe.data.ocr.active[3].lines[105].words.length).toBe(1);
-    expect(scribe.data.ocr.active[3].lines[105].words[0].text).toBe('Anyfin');
+    expect(doc.ocr.active[3].lines[105].words.length).toBe(1);
+    expect(doc.ocr.active[3].lines[105].words[0].text).toBe('Anyfin');
   });
 
   test('Should correctly parse PDF lines (3rd doc)', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/superscript_example_report1.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/superscript_example_report1.pdf`]);
 
     // A previous version of the build split this line into 2 separate lines, by putting the leading superscript on a separate line.
-    expect(scribe.data.ocr.active[0].lines[89].words.map((x) => x.text).join(' ')).toBe('(2) Beginning with the year ended December 31, 2023, the Company changed the presentation of interest income on forgivable loans on our Consolidated Statement of');
-    expect(scribe.data.ocr.active[0].lines[89].words[0].style.sup).toBe(true);
+    expect(doc.ocr.active[0].lines[89].words.map((x) => x.text).join(' ')).toBe('(2) Beginning with the year ended December 31, 2023, the Company changed the presentation of interest income on forgivable loans on our Consolidated Statement of');
+    expect(doc.ocr.active[0].lines[89].words[0].style.sup).toBe(true);
   });
 
   afterAll(async () => {
@@ -505,10 +508,10 @@ describe('Check that PDF imports split lines correctly.', () => {
 
 describe('Check that PDF imports split words correctly.', () => {
   test('Should correctly split words not separated by space or any character defined in may_add_space', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/fti_filing_p25.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/fti_filing_p25.pdf`]);
 
-    expect(scribe.data.ocr.active[0].lines[4].words[0].text).toBe('☒');
-    expect(scribe.data.ocr.active[0].lines[4].words[1].text).toBe('ANNUAL');
+    expect(doc.ocr.active[0].lines[4].words[0].text).toBe('☒');
+    expect(doc.ocr.active[0].lines[4].words[1].text).toBe('ANNUAL');
   });
 
   afterAll(async () => {
@@ -518,9 +521,9 @@ describe('Check that PDF imports split words correctly.', () => {
 
 describe('Check that line baselines are imported correctly.', () => {
   test('Should correctly parse line baselines for pages with rotation', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/superscript_examples_rotated.pdf`]);
-    expect(Math.round(scribe.data.ocr.active[0].lines[25].baseline[1])).toBe(-10);
-    expect(Math.round(scribe.data.ocr.active[1].lines[25].baseline[1])).toBe(-162);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/superscript_examples_rotated.pdf`]);
+    expect(Math.round(doc.ocr.active[0].lines[25].baseline[1])).toBe(-10);
+    expect(Math.round(doc.ocr.active[1].lines[25].baseline[1])).toBe(-162);
   });
 
   test('Type1 fonts using hex strings do not produce false CJK characters (rotated.pdf page 0)', async () => {
@@ -528,7 +531,7 @@ describe('Check that line baselines are imported correctly.', () => {
     // values to CJK code points. Asserts (a) page 0 word-by-word has no chars
     // in the U+3400–U+9FFF range, and (b) the page actually parsed (lines[0]
     // text matches the expected first word of the Econometrica article).
-    const page0 = scribe.data.ocr.active[0];
+    const page0 = doc.ocr.active[0];
     for (const line of page0.lines) {
       for (const word of line.words) {
         expect(/[㐀-鿿]/.test(word.text), `word "${word.text}"`).toBe(false);
@@ -544,14 +547,14 @@ describe('Check that line baselines are imported correctly.', () => {
 
 describe('Check that page angle is calculated correctly.', () => {
   test('Average text angle is correctly calculated', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/superscript_examples_rotated.pdf`]);
-    expect(Math.round(scribe.data.pageMetrics[0].angle || 0)).toBe(-5);
-    expect(Math.round(scribe.data.pageMetrics[1].angle || 0)).toBe(5);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/superscript_examples_rotated.pdf`]);
+    expect(Math.round(doc.pageMetrics[0].angle || 0)).toBe(-5);
+    expect(Math.round(doc.pageMetrics[1].angle || 0)).toBe(5);
   });
 
   test('Different orientations should not impact page angle.', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/CSF_Proposed_Budget_Book_June_2024_r8_30_all_orientations.pdf`]);
-    expect(scribe.data.pageMetrics[0].angle).toBe(0);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/CSF_Proposed_Budget_Book_June_2024_r8_30_all_orientations.pdf`]);
+    expect(doc.pageMetrics[0].angle).toBe(0);
   });
 
   afterAll(async () => {
@@ -561,32 +564,32 @@ describe('Check that page angle is calculated correctly.', () => {
 
 describe('Check that text orientation is handled correctly.', () => {
   test('Lines printed at exactly 90/180/270 degrees have orientation detected correctly', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/CSF_Proposed_Budget_Book_June_2024_r8_30_all_orientations.pdf`]);
-    expect(scribe.data.ocr.active[0].lines[2].words[0].line.orientation).toBe(3);
-    expect(scribe.data.ocr.active[3].lines[2].words[0].line.orientation).toBe(2);
-    expect(scribe.data.ocr.active[2].lines[2].words[0].line.orientation).toBe(1);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/CSF_Proposed_Budget_Book_June_2024_r8_30_all_orientations.pdf`]);
+    expect(doc.ocr.active[0].lines[2].words[0].line.orientation).toBe(3);
+    expect(doc.ocr.active[3].lines[2].words[0].line.orientation).toBe(2);
+    expect(doc.ocr.active[2].lines[2].words[0].line.orientation).toBe(1);
   });
 
   // The following tests compare the coordinates of a rotated line to the same line in a non-rotated version of the same document.
   test('Lines oriented at 90 degrees counterclockwise have coordinates calculated correctly', async () => {
-    expect(Math.abs((scribe.data.ocr.active[0].lines[2].words[0].bbox.left) - (scribe.data.ocr.active[1].lines[2].words[0].bbox.left))).toBeLessThanOrEqual(1);
-    expect(Math.abs((scribe.data.ocr.active[0].lines[2].words[0].bbox.right) - (scribe.data.ocr.active[1].lines[2].words[0].bbox.right))).toBeLessThanOrEqual(1);
-    expect(Math.abs((scribe.data.ocr.active[0].lines[2].words[0].bbox.top) - (scribe.data.ocr.active[1].lines[2].words[0].bbox.top))).toBeLessThanOrEqual(1);
-    expect(Math.abs((scribe.data.ocr.active[0].lines[2].words[0].bbox.bottom) - (scribe.data.ocr.active[1].lines[2].words[0].bbox.bottom))).toBeLessThanOrEqual(1);
+    expect(Math.abs((doc.ocr.active[0].lines[2].words[0].bbox.left) - (doc.ocr.active[1].lines[2].words[0].bbox.left))).toBeLessThanOrEqual(1);
+    expect(Math.abs((doc.ocr.active[0].lines[2].words[0].bbox.right) - (doc.ocr.active[1].lines[2].words[0].bbox.right))).toBeLessThanOrEqual(1);
+    expect(Math.abs((doc.ocr.active[0].lines[2].words[0].bbox.top) - (doc.ocr.active[1].lines[2].words[0].bbox.top))).toBeLessThanOrEqual(1);
+    expect(Math.abs((doc.ocr.active[0].lines[2].words[0].bbox.bottom) - (doc.ocr.active[1].lines[2].words[0].bbox.bottom))).toBeLessThanOrEqual(1);
   });
 
   test('Lines oriented at 90 degrees clockwise have coordinates calculated correctly', async () => {
-    expect(Math.abs((scribe.data.ocr.active[2].lines[2].words[0].bbox.left) - (scribe.data.ocr.active[1].lines[2].words[0].bbox.left))).toBeLessThanOrEqual(1);
-    expect(Math.abs((scribe.data.ocr.active[2].lines[2].words[0].bbox.right) - (scribe.data.ocr.active[1].lines[2].words[0].bbox.right))).toBeLessThanOrEqual(1);
-    expect(Math.abs((scribe.data.ocr.active[2].lines[2].words[0].bbox.top) - (scribe.data.ocr.active[1].lines[2].words[0].bbox.top))).toBeLessThanOrEqual(1);
-    expect(Math.abs((scribe.data.ocr.active[2].lines[2].words[0].bbox.bottom) - (scribe.data.ocr.active[1].lines[2].words[0].bbox.bottom))).toBeLessThanOrEqual(1);
+    expect(Math.abs((doc.ocr.active[2].lines[2].words[0].bbox.left) - (doc.ocr.active[1].lines[2].words[0].bbox.left))).toBeLessThanOrEqual(1);
+    expect(Math.abs((doc.ocr.active[2].lines[2].words[0].bbox.right) - (doc.ocr.active[1].lines[2].words[0].bbox.right))).toBeLessThanOrEqual(1);
+    expect(Math.abs((doc.ocr.active[2].lines[2].words[0].bbox.top) - (doc.ocr.active[1].lines[2].words[0].bbox.top))).toBeLessThanOrEqual(1);
+    expect(Math.abs((doc.ocr.active[2].lines[2].words[0].bbox.bottom) - (doc.ocr.active[1].lines[2].words[0].bbox.bottom))).toBeLessThanOrEqual(1);
   });
 
   test('Lines oriented at 180 degrees have coordinates calculated correctly', async () => {
-    expect(Math.abs((scribe.data.ocr.active[3].lines[2].words[0].bbox.left) - (scribe.data.ocr.active[1].lines[2].words[0].bbox.left))).toBeLessThanOrEqual(1);
-    expect(Math.abs((scribe.data.ocr.active[3].lines[2].words[0].bbox.right) - (scribe.data.ocr.active[1].lines[2].words[0].bbox.right))).toBeLessThanOrEqual(1);
-    expect(Math.abs((scribe.data.ocr.active[3].lines[2].words[0].bbox.top) - (scribe.data.ocr.active[1].lines[2].words[0].bbox.top))).toBeLessThanOrEqual(1);
-    expect(Math.abs((scribe.data.ocr.active[3].lines[2].words[0].bbox.bottom) - (scribe.data.ocr.active[1].lines[2].words[0].bbox.bottom))).toBeLessThanOrEqual(1);
+    expect(Math.abs((doc.ocr.active[3].lines[2].words[0].bbox.left) - (doc.ocr.active[1].lines[2].words[0].bbox.left))).toBeLessThanOrEqual(1);
+    expect(Math.abs((doc.ocr.active[3].lines[2].words[0].bbox.right) - (doc.ocr.active[1].lines[2].words[0].bbox.right))).toBeLessThanOrEqual(1);
+    expect(Math.abs((doc.ocr.active[3].lines[2].words[0].bbox.top) - (doc.ocr.active[1].lines[2].words[0].bbox.top))).toBeLessThanOrEqual(1);
+    expect(Math.abs((doc.ocr.active[3].lines[2].words[0].bbox.bottom) - (doc.ocr.active[1].lines[2].words[0].bbox.bottom))).toBeLessThanOrEqual(1);
   });
 
   test('pageMetrics dims match post-rotation ocr dims for all four /Rotate values', () => {
@@ -595,33 +598,33 @@ describe('Check that text orientation is handled correctly.', () => {
     // Page 2: /Rotate 180 (portrait)  612x792pt -> 2550x3300
     // Page 3: /Rotate 270 (landscape) post-rotation 792x612pt -> 3300x2550
     for (const i of [0, 1, 2, 3]) {
-      expect(scribe.data.pageMetrics[i].dims.width).toBe(scribe.data.ocr.active[i].dims.width);
-      expect(scribe.data.pageMetrics[i].dims.height).toBe(scribe.data.ocr.active[i].dims.height);
+      expect(doc.pageMetrics[i].dims.width).toBe(doc.ocr.active[i].dims.width);
+      expect(doc.pageMetrics[i].dims.height).toBe(doc.ocr.active[i].dims.height);
     }
-    expect(scribe.data.pageMetrics[0].dims).toEqual({ width: 2550, height: 3300 });
-    expect(scribe.data.pageMetrics[1].dims).toEqual({ width: 3300, height: 2550 });
-    expect(scribe.data.pageMetrics[2].dims).toEqual({ width: 2550, height: 3300 });
-    expect(scribe.data.pageMetrics[3].dims).toEqual({ width: 3300, height: 2550 });
+    expect(doc.pageMetrics[0].dims).toEqual({ width: 2550, height: 3300 });
+    expect(doc.pageMetrics[1].dims).toEqual({ width: 3300, height: 2550 });
+    expect(doc.pageMetrics[2].dims).toEqual({ width: 2550, height: 3300 });
+    expect(doc.pageMetrics[3].dims).toEqual({ width: 3300, height: 2550 });
   });
 
   test('Lines oriented at 90/180/270 degrees have line rotation detected correctly', async () => {
-    expect(Math.abs((scribe.data.ocr.active[4].lines[0].baseline[0]) - (Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
-    expect(Math.abs((scribe.data.ocr.active[6].lines[0].baseline[0]) - (Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
-    expect(Math.abs((scribe.data.ocr.active[8].lines[0].baseline[0]) - (Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
-    expect(Math.abs((scribe.data.ocr.active[10].lines[0].baseline[0]) - (Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
-    expect(Math.abs((scribe.data.ocr.active[5].lines[0].baseline[0]) - (-Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
-    expect(Math.abs((scribe.data.ocr.active[7].lines[0].baseline[0]) - (-Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
-    expect(Math.abs((scribe.data.ocr.active[9].lines[0].baseline[0]) - (-Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
-    expect(Math.abs((scribe.data.ocr.active[11].lines[0].baseline[0]) - (-Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
+    expect(Math.abs((doc.ocr.active[4].lines[0].baseline[0]) - (Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
+    expect(Math.abs((doc.ocr.active[6].lines[0].baseline[0]) - (Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
+    expect(Math.abs((doc.ocr.active[8].lines[0].baseline[0]) - (Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
+    expect(Math.abs((doc.ocr.active[10].lines[0].baseline[0]) - (Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
+    expect(Math.abs((doc.ocr.active[5].lines[0].baseline[0]) - (-Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
+    expect(Math.abs((doc.ocr.active[7].lines[0].baseline[0]) - (-Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
+    expect(Math.abs((doc.ocr.active[9].lines[0].baseline[0]) - (-Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
+    expect(Math.abs((doc.ocr.active[11].lines[0].baseline[0]) - (-Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
 
-    expect(Math.abs((scribe.data.ocr.active[4].lines[2].baseline[0]) - (Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
-    expect(Math.abs((scribe.data.ocr.active[6].lines[2].baseline[0]) - (Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
-    expect(Math.abs((scribe.data.ocr.active[8].lines[2].baseline[0]) - (Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
-    expect(Math.abs((scribe.data.ocr.active[10].lines[2].baseline[0]) - (Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
-    expect(Math.abs((scribe.data.ocr.active[5].lines[2].baseline[0]) - (-Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
-    expect(Math.abs((scribe.data.ocr.active[7].lines[2].baseline[0]) - (-Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
-    expect(Math.abs((scribe.data.ocr.active[9].lines[2].baseline[0]) - (-Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
-    expect(Math.abs((scribe.data.ocr.active[11].lines[2].baseline[0]) - (-Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
+    expect(Math.abs((doc.ocr.active[4].lines[2].baseline[0]) - (Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
+    expect(Math.abs((doc.ocr.active[6].lines[2].baseline[0]) - (Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
+    expect(Math.abs((doc.ocr.active[8].lines[2].baseline[0]) - (Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
+    expect(Math.abs((doc.ocr.active[10].lines[2].baseline[0]) - (Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
+    expect(Math.abs((doc.ocr.active[5].lines[2].baseline[0]) - (-Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
+    expect(Math.abs((doc.ocr.active[7].lines[2].baseline[0]) - (-Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
+    expect(Math.abs((doc.ocr.active[9].lines[2].baseline[0]) - (-Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
+    expect(Math.abs((doc.ocr.active[11].lines[2].baseline[0]) - (-Math.tan(5 * (Math.PI / 180))))).toBeLessThanOrEqual(0.01);
   });
 
   afterAll(async () => {
@@ -632,25 +635,25 @@ describe('Check that text orientation is handled correctly.', () => {
 describe('Check that PDF text types are detected and imported correctly.', () => {
   test('Native text is detected and set as main data `usePDFText.native.main` is true', async () => {
     scribe.opt.usePDFText.native.main = true;
-    await scribe.importFiles([`${ASSETS_PATH}/superscript_examples_rotated.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/superscript_examples_rotated.pdf`]);
     scribe.opt.usePDFText.native.main = false;
-    expect(scribe.inputData.pdfType).toBe('text');
-    expect(scribe.data.ocr.active[0]?.lines?.length > 0).toBe(true);
+    expect(doc.inputData.pdfType).toBe('text');
+    expect(doc.ocr.active[0]?.lines?.length > 0).toBe(true);
   });
 
   test('Native text is detected and not set as main data `usePDFText.native.main` is false', async () => {
     scribe.opt.usePDFText.native.main = false;
-    await scribe.importFiles([`${ASSETS_PATH}/superscript_examples_rotated.pdf`]);
-    expect(scribe.inputData.pdfType).toBe('text');
-    expect(!!scribe.data.ocr.active[0]).toBe(false);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/superscript_examples_rotated.pdf`]);
+    expect(doc.inputData.pdfType).toBe('text');
+    expect(!!doc.ocr.active[0]).toBe(false);
   });
 
   test('OCR text is detected and set as main data `usePDFText.ocr.main` is true', async () => {
     scribe.opt.usePDFText.ocr.main = true;
-    await scribe.importFiles([`${ASSETS_PATH}/scribe_test_pdf1.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/scribe_test_pdf1.pdf`]);
     scribe.opt.usePDFText.native.main = false;
-    expect(scribe.inputData.pdfType).toBe('ocr');
-    expect(scribe.data.ocr.active[0]?.lines?.length > 0).toBe(true);
+    expect(doc.inputData.pdfType).toBe('ocr');
+    expect(doc.ocr.active[0]?.lines?.length > 0).toBe(true);
   });
 
   // This is a distinct test case because the mechanism for hiding OCR text is different.
@@ -658,7 +661,7 @@ describe('Check that PDF text types are detected and imported correctly.', () =>
   test('Words rendered with `3 Tr` (invisible) parse to opacity 0 and default-black color', async () => {
     const opacities = new Set();
     const colors = new Set();
-    for (const line of scribe.data.ocr.active[0].lines) {
+    for (const line of doc.ocr.active[0].lines) {
       for (const w of line.words) {
         opacities.add(w.style.opacity);
         colors.add(w.style.color);
@@ -670,19 +673,19 @@ describe('Check that PDF text types are detected and imported correctly.', () =>
 
   test('OCR text is detected and extracted but not set to main data when `usePDFText.ocr.main` is false', async () => {
     scribe.opt.usePDFText.ocr.main = false;
-    await scribe.importFiles([`${ASSETS_PATH}/scribe_test_pdf1.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/scribe_test_pdf1.pdf`]);
     // Reset to defaults
     scribe.opt.usePDFText.native.main = true;
     scribe.opt.usePDFText.ocr.main = false;
-    expect(scribe.inputData.pdfType).toBe('ocr');
-    expect(scribe.data.ocr.pdf[0]?.lines?.length > 0).toBe(true);
-    expect(scribe.data.ocr.active[0]).toBeUndefined();
+    expect(doc.inputData.pdfType).toBe('ocr');
+    expect(doc.ocr.pdf[0]?.lines?.length > 0).toBe(true);
+    expect(doc.ocr.active[0]).toBeUndefined();
   });
 
   // If angle is set it would not be replaced by the accurate angle
   // when higher quality OCR text is imported or created.
   test('Page angle is not set from invisible OCR text when usePDFText.ocr.main is false', async () => {
-    expect(scribe.data.pageMetrics[0].angle).toBe(null);
+    expect(doc.pageMetrics[0].angle).toBe(null);
   });
 
   afterAll(async () => {
@@ -693,50 +696,50 @@ describe('Check that PDF text types are detected and imported correctly.', () =>
 describe('Check that font style is detected for PDF imports.', () => {
   test('Bold style is detected', async () => {
     scribe.opt.usePDFText.native.main = true;
-    await scribe.importFiles([`${ASSETS_PATH}/superscript_examples.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/superscript_examples.pdf`]);
     // lines[26] is the "TABLE 6" header — bold, non-italic, non-underlined.
-    expect(scribe.data.ocr.active[5].lines[26].words.map((w) => w.text).join(' ')).toBe('TABLE 6');
-    expect(scribe.data.ocr.active[5].lines[26].words[0].style.bold).toBe(true);
-    expect(scribe.data.ocr.active[5].lines[26].words[0].style.italic).toBe(false);
-    expect(scribe.data.ocr.active[5].lines[26].words[0].style.underline).toBe(false);
+    expect(doc.ocr.active[5].lines[26].words.map((w) => w.text).join(' ')).toBe('TABLE 6');
+    expect(doc.ocr.active[5].lines[26].words[0].style.bold).toBe(true);
+    expect(doc.ocr.active[5].lines[26].words[0].style.italic).toBe(false);
+    expect(doc.ocr.active[5].lines[26].words[0].style.underline).toBe(false);
   });
 
   test('Italic style is detected', async () => {
-    expect(scribe.data.ocr.active[5].lines[22].words[4].style.italic).toBe(true);
-    expect(scribe.data.ocr.active[5].lines[22].words[4].style.bold).toBe(false);
-    expect(scribe.data.ocr.active[5].lines[22].words[4].style.underline).toBe(false);
+    expect(doc.ocr.active[5].lines[22].words[4].style.italic).toBe(true);
+    expect(doc.ocr.active[5].lines[22].words[4].style.bold).toBe(false);
+    expect(doc.ocr.active[5].lines[22].words[4].style.underline).toBe(false);
   });
 
   test('Italic style is detected when leading punctuation is non-italic', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/high-risk_protection_order_application_for_and_declaration_in_support_of_mandatory_use.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/high-risk_protection_order_application_for_and_declaration_in_support_of_mandatory_use.pdf`]);
     // Line: "Applicant ( Print your name above),"
     // The non-italic "(" is split into its own word as a leading wrapper. Trailing
     // punctuation ")," merges into the preceding word ("above),").
-    expect(scribe.data.ocr.active[0].lines[15].words.map((w) => w.text).join(' ')).toBe('Applicant ( Print your name above),');
-    expect(scribe.data.ocr.active[0].lines[15].words[2].text).toBe('Print');
-    expect(scribe.data.ocr.active[0].lines[15].words[2].style.italic).toBe(true);
-    expect(scribe.data.ocr.active[0].lines[15].words[1].style.italic).toBe(false);
+    expect(doc.ocr.active[0].lines[15].words.map((w) => w.text).join(' ')).toBe('Applicant ( Print your name above),');
+    expect(doc.ocr.active[0].lines[15].words[2].text).toBe('Print');
+    expect(doc.ocr.active[0].lines[15].words[2].style.italic).toBe(true);
+    expect(doc.ocr.active[0].lines[15].words[1].style.italic).toBe(false);
   });
 
   test('Bold + italic style is detected', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/complaint_1.pdf`]);
-    expect(scribe.data.ocr.active[0].lines[1].words[0].text).toBe('impressive');
-    expect(scribe.data.ocr.active[0].lines[1].words[0].style.italic).toBe(true);
-    expect(scribe.data.ocr.active[0].lines[1].words[0].style.bold).toBe(true);
-    expect(scribe.data.ocr.active[0].lines[1].words[0].style.underline).toBe(false);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/complaint_1.pdf`]);
+    expect(doc.ocr.active[0].lines[1].words[0].text).toBe('impressive');
+    expect(doc.ocr.active[0].lines[1].words[0].style.italic).toBe(true);
+    expect(doc.ocr.active[0].lines[1].words[0].style.bold).toBe(true);
+    expect(doc.ocr.active[0].lines[1].words[0].style.underline).toBe(false);
   });
 
   test('Bold + underlined style is detected', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
-    expect(scribe.data.ocr.active[0].lines[22].words[0].text).toBe('COMPLAINT');
-    expect(scribe.data.ocr.active[0].lines[22].words[0].style.italic).toBe(false);
-    expect(scribe.data.ocr.active[0].lines[22].words[0].style.bold).toBe(true);
-    expect(scribe.data.ocr.active[0].lines[22].words[0].style.underline).toBe(true);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
+    expect(doc.ocr.active[0].lines[22].words[0].text).toBe('COMPLAINT');
+    expect(doc.ocr.active[0].lines[22].words[0].style.italic).toBe(false);
+    expect(doc.ocr.active[0].lines[22].words[0].style.bold).toBe(true);
+    expect(doc.ocr.active[0].lines[22].words[0].style.underline).toBe(true);
   });
 
   test('Bold + underlined section heading is detected (NATURE OF THE ACTION)', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
-    const line = scribe.data.ocr.active[0].lines[26];
+    doc = await scribe.openDocument([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
+    const line = doc.ocr.active[0].lines[26];
     expect(line.words.map((w) => w.text).join(' ')).toBe('NATURE OF THE ACTION');
     for (const w of line.words) {
       expect(w.style.bold).toBe(true);
@@ -753,9 +756,9 @@ describe('Check that symbols are detected for PDF imports.', () => {
   test('Symbols are not combined with words', async () => {
     scribe.opt.usePDFText.native.main = true;
     // An earlier version combined the checkbox with the first word.
-    await scribe.importFiles([`${ASSETS_PATH}/high-risk_protection_order_application_for_and_declaration_in_support_of_mandatory_use.pdf`]);
-    expect(scribe.data.ocr.active[0].lines[9].words.length).toBe(4);
-    expect(scribe.data.ocr.active[0].lines[9].words[1].text).toBe('Attorney,');
+    doc = await scribe.openDocument([`${ASSETS_PATH}/high-risk_protection_order_application_for_and_declaration_in_support_of_mandatory_use.pdf`]);
+    expect(doc.ocr.active[0].lines[9].words.length).toBe(4);
+    expect(doc.ocr.active[0].lines[9].words[1].text).toBe('Attorney,');
   });
 
   afterAll(async () => {
@@ -767,10 +770,10 @@ describe('Check that `keepPDFTextAlways` option works.', () => {
   test('Text-native headers are imported for image-based PDF document.', async () => {
     scribe.opt.keepPDFTextAlways = true;
     // This PDF is an image-based court document but has a text-native header added by the court system.
-    await scribe.importFiles([`${ASSETS_PATH}/gov.uscourts.cand.249697.1.0_2.pdf`]);
-    expect(scribe.inputData.pdfType).toBe('image');
-    expect(!!scribe.data.ocr.active[0]?.lines?.length).toBe(false);
-    expect(scribe.data.ocr.pdf[0].lines.length).toBe(1);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/gov.uscourts.cand.249697.1.0_2.pdf`]);
+    expect(doc.inputData.pdfType).toBe('image');
+    expect(!!doc.ocr.active[0]?.lines?.length).toBe(false);
+    expect(doc.ocr.pdf[0].lines.length).toBe(1);
   });
 
   afterAll(async () => {

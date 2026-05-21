@@ -3,9 +3,11 @@
 
 import { win1252Chars } from '../../../fonts/encoding.js';
 import { determineSansSerif } from '../../utils/miscUtils.js';
-import { FontCont } from '../../containers/fontContainer.js';
+import { GlobalFonts } from '../../containers/fontContainer.js';
 import { getDistinctCharsFont, subsetFont } from '../../utils/fontUtils.js';
 import { encodeStreamObject, encodeBinaryStreamObject } from './writePdfStreams.js';
+
+/** @typedef {import('../../containers/fontContainer.js').DocFonts} DocFonts */
 
 /** @type {Array<string>} */
 const byteToHex = [];
@@ -349,9 +351,12 @@ export async function createEmbeddedFontType0({
  * @param {number} objectIStart - Starting object index
  * @param {?Array<OcrPage>} [ocrArr] - Array of OcrPage objects
  *    Used to subset supplementary fonts to only the characters that are actually used.
+ * @param {DocFonts} [docFonts] - Per-document fonts.
  */
-export const createPdfFontRefs = async (objectIStart, ocrArr) => {
-  if (!FontCont.raw) throw new Error('No fonts loaded.');
+export const createPdfFontRefs = async (objectIStart, ocrArr, docFonts) => {
+  if (!GlobalFonts.raw) throw new Error('No fonts loaded.');
+
+  const fonts = docFonts;
 
   let objectI = objectIStart;
 
@@ -382,7 +387,7 @@ export const createPdfFontRefs = async (objectIStart, ocrArr) => {
 
       let opentype = value.opentype;
       if (ocrArr) {
-        const charArr = getDistinctCharsFont(ocrArr, familyKey, key);
+        const charArr = getDistinctCharsFont(ocrArr, docFonts, familyKey, key);
         opentype = await subsetFont(value.opentype, charArr);
       }
 
@@ -407,28 +412,28 @@ export const createPdfFontRefs = async (objectIStart, ocrArr) => {
 
   // Create reference to all fonts.
   // Only the fonts that are actually used will be included in the final PDF.
-  for (const familyKeyI of Object.keys(FontCont.raw)) {
-    const useOpt = FontCont.useOptFamily(familyKeyI);
+  for (const familyKeyI of Object.keys(GlobalFonts.raw)) {
+    const useOpt = fonts.useOptFamily(familyKeyI);
     const familyObjI = {
-      normal: useOpt && FontCont.opt?.[familyKeyI]?.normal ? FontCont.opt[familyKeyI].normal : FontCont.raw[familyKeyI].normal,
-      italic: useOpt && FontCont.opt?.[familyKeyI]?.italic ? FontCont.opt[familyKeyI].italic : FontCont.raw[familyKeyI].italic,
-      bold: useOpt && FontCont.opt?.[familyKeyI]?.bold ? FontCont.opt[familyKeyI].bold : FontCont.raw[familyKeyI].bold,
-      boldItalic: useOpt && FontCont.opt?.[familyKeyI]?.boldItalic ? FontCont.opt[familyKeyI].boldItalic : FontCont.raw[familyKeyI].boldItalic,
+      normal: useOpt && fonts.opt?.[familyKeyI]?.normal ? fonts.opt[familyKeyI].normal : GlobalFonts.raw[familyKeyI].normal,
+      italic: useOpt && fonts.opt?.[familyKeyI]?.italic ? fonts.opt[familyKeyI].italic : GlobalFonts.raw[familyKeyI].italic,
+      bold: useOpt && fonts.opt?.[familyKeyI]?.bold ? fonts.opt[familyKeyI].bold : GlobalFonts.raw[familyKeyI].bold,
+      boldItalic: useOpt && fonts.opt?.[familyKeyI]?.boldItalic ? fonts.opt[familyKeyI].boldItalic : GlobalFonts.raw[familyKeyI].boldItalic,
     };
     await addFontFamilyRef(familyKeyI, familyObjI);
   }
 
-  if (FontCont.doc) {
-    for (const familyKeyI of Object.keys(FontCont.doc)) {
-      await addFontFamilyRef(familyKeyI, FontCont.doc[familyKeyI]);
+  if (fonts.doc) {
+    for (const familyKeyI of Object.keys(fonts.doc)) {
+      await addFontFamilyRef(familyKeyI, fonts.doc[familyKeyI]);
     }
   }
 
-  if (FontCont.supp.chi_sim && ocrArr) {
-    const charArr = getDistinctCharsFont(ocrArr, FontCont.supp.chi_sim.family);
+  if (GlobalFonts.supp.chi_sim && ocrArr) {
+    const charArr = getDistinctCharsFont(ocrArr, docFonts, GlobalFonts.supp.chi_sim.family);
 
     if (charArr.length > 0) {
-      const fontExport = await subsetFont(FontCont.supp.chi_sim.opentype, charArr);
+      const fontExport = await subsetFont(GlobalFonts.supp.chi_sim.opentype, charArr);
 
       pdfFonts.NotoSansSC = {};
       pdfFonts.NotoSansSC.normal = {
@@ -439,7 +444,7 @@ export const createPdfFontRefs = async (objectIStart, ocrArr) => {
       objectI += 6;
       fontI++;
     }
-  } else if (FontCont.supp.chi_sim) {
+  } else if (GlobalFonts.supp.chi_sim) {
     console.warn('Chinese font loaded but no OCR data available to determine if it is needed. Font will not be included in PDF.');
   }
 

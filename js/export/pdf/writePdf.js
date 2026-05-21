@@ -1,4 +1,4 @@
-import { FontCont } from '../../containers/fontContainer.js';
+import { GlobalFonts } from '../../containers/fontContainer.js';
 
 import { createEmbeddedFontType0, createEmbeddedFontType1, createPdfFontRefs } from './writePdfFonts.js';
 import {
@@ -33,6 +33,7 @@ import { encodeStreamObject } from './writePdfStreams.js';
  * @param {?Array<Array<AnnotationHighlight>>} [params.annotationsPages=null] - Per-page annotation arrays
  * @param {boolean} [params.humanReadable=false] - If true, emit uncompressed
  *   streams + hex-wrapped fonts for diffing. Default emits FlateDecode.
+ * @param {import('../../containers/fontContainer.js').DocFonts} [params.docFonts] - Per-document fonts.
  *
  * A valid PDF will be created if an empty array is provided for `ocrArr`, as long as `pageArr` is non-empty.
  */
@@ -54,8 +55,9 @@ export async function writePdf({
   includeImages = false,
   annotationsPages = null,
   humanReadable = false,
+  docFonts,
 }) {
-  if (!FontCont.raw) throw new Error('No fonts loaded.');
+  if (!GlobalFonts.raw) throw new Error('No fonts loaded.');
 
   if (!pageArr) {
     const start = Math.max(0, minpage);
@@ -74,7 +76,7 @@ export async function writePdf({
   let pdfFontObjStrArr = [];
 
   if (ocrArr && ocrArr.length > 0 && textMode !== 'annot') {
-    const fontRefs = await createPdfFontRefs(objectI, ocrArr);
+    const fontRefs = await createPdfFontRefs(objectI, ocrArr, docFonts);
     pdfFonts = fontRefs.pdfFonts;
     pdfFontRefs = fontRefs.pdfFontRefs;
     pdfFontObjStrArr = fontRefs.pdfFontObjStrArr;
@@ -114,7 +116,6 @@ export async function writePdf({
 
     const imageName = includeImages && images && images.length > 0 ? `Im${String(i % images.length)}` : null;
 
-    // eslint-disable-next-line no-await-in-loop
     const { pdfObj, pdfFontsUsed: pdfFontsUsedI } = (await ocrPageToPDF({
       pageObj: ocrArr?.[i],
       inputDims: dims,
@@ -134,6 +135,7 @@ export async function writePdf({
       imageName,
       pageAnnotations: consolidateAnnotations(annotationsPages?.[i] || [], ocrArr?.[i]),
       humanReadable,
+      docFonts,
     }));
 
     for (const font of pdfFontsUsedI) {
@@ -282,6 +284,7 @@ ${xrefOffset}
  * @param {?string} [params.imageName=null]
  * @param {Array<AnnotationHighlight>} [params.pageAnnotations=[]] - Highlight annotations for this page
  * @param {boolean} [params.humanReadable=false]
+ * @param {import('../../containers/fontContainer.js').DocFonts} [params.docFonts] - Per-document fonts.
  */
 async function ocrPageToPDF({
   pageObj,
@@ -302,6 +305,7 @@ async function ocrPageToPDF({
   imageName = null,
   pageAnnotations = [],
   humanReadable = false,
+  docFonts,
 }) {
   if (outputDims.width < 1) {
     outputDims = inputDims;
@@ -361,7 +365,7 @@ async function ocrPageToPDF({
       pdfObj.push(resourceDictObjStr);
       pdfObj.push(await encodeStreamObject(firstObjIndex + 2, imageContentObjStr, { humanReadable }));
     } else {
-      const textResult = await ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle,
+      const textResult = await ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle, docFonts,
         rotateText, rotateBackground, confThreshHigh, confThreshMed);
       pdfFontsUsed = textResult.pdfFontsUsed;
 

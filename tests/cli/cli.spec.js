@@ -87,12 +87,12 @@ describe('Check Node.js commands.', () => {
       scribe.opt.usePDFText.native.main = true;
       scribe.opt.usePDFText.ocr.main = true;
       scribe.opt.keepPDFTextAlways = true;
-      await scribe.importFiles({ pdfFiles: [outputArrayBuffer] });
-      scribe.data.ocr.active = scribe.data.ocr.pdf;
-      extractedText = /** @type {string} */ (await scribe.exportData('text'));
+      const doc = await scribe.openDocument({ pdfFiles: [outputArrayBuffer] });
+      doc.ocr.active = doc.ocr.pdf;
+      extractedText = /** @type {string} */ (await doc.exportData('text'));
       colorCounts = new Map();
       opacities = new Set();
-      for (const page of scribe.data.ocr.active) {
+      for (const page of doc.ocr.active) {
         for (const line of page.lines) {
           for (const w of line.words) {
             colorCounts.set(w.style.color, (colorCounts.get(w.style.color) || 0) + 1);
@@ -100,7 +100,7 @@ describe('Check Node.js commands.', () => {
           }
         }
       }
-      await scribe.clear();
+      await doc.terminate();
     }, 20000);
 
     it('writes the expected output PDF to the requested directory', () => {

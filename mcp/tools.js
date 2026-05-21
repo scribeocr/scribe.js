@@ -19,15 +19,14 @@ const { writeText } = await import(pathToFileURL(resolve(__dirname, '..', 'js', 
 
 const { assignParagraphs } = await import(pathToFileURL(resolve(__dirname, '..', 'js', 'utils', 'reflowPars.js')).href);
 
-const { pageMetricsAll } = await import(pathToFileURL(resolve(__dirname, '..', 'js', 'containers', 'dataContainer.js')).href);
-
 const { subsetPdf } = await import(pathToFileURL(resolve(__dirname, '..', 'js', 'export', 'pdf', 'subsetPdf.js')).href);
 const { mergePdfs } = await import(pathToFileURL(resolve(__dirname, '..', 'js', 'export', 'pdf', 'mergePdfs.js')).href);
 
 const SUPPORTED_EXTENSIONS = ['.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.tif'];
 const DATA_EXTENSIONS = ['.scribe.json', '.json', '.json.gz', '.hocr', '.xml', '.stext', '.txt', '.docx'];
 
-// Serialize document operations since scribe.js uses global mutable state.
+// The MCP session operates on one current document at a time. Operations are serialized so that one
+// tool call cannot swap the current document out from under another.
 let operationQueue = Promise.resolve();
 function enqueue(fn) {
   operationQueue = operationQueue.then(fn, fn);
@@ -42,7 +41,10 @@ async function ensureInit() {
   }
 }
 
-// Track loaded file (and optional companion data file) to avoid redundant re-imports.
+// Track the loaded document (and its source files) to avoid redundant re-imports. Switching to a
+// different document terminates the previous one so only one document's resources are held at a time.
+/** @type {?import('../js/containers/scribeDoc.js').ScribeDoc} */
+let currentDoc = null;
 let currentFile = null;
 let currentDataFile = null;
 async function ensureFileLoaded(filePath, dataFilePath) {
@@ -51,14 +53,15 @@ async function ensureFileLoaded(filePath, dataFilePath) {
   if (dataFilePath === undefined && currentFile === filePath) {
     dataFilePath = currentDataFile;
   }
-  if (currentFile !== filePath || currentDataFile !== (dataFilePath || null)) {
-    await ensureInit();
+  if (!currentDoc || currentFile !== filePath || currentDataFile !== (dataFilePath || null)) {
+    if (currentDoc) await currentDoc.terminate();
     const filesToImport = [filePath];
     if (dataFilePath) filesToImport.push(dataFilePath);
-    await scribe.importFiles(filesToImport);
+    currentDoc = await scribe.openDocument(filesToImport);
     currentFile = filePath;
     currentDataFile = dataFilePath || null;
   }
+  return currentDoc;
 }
 
 // --- Tool implementations ---
@@ -75,9 +78,9 @@ async function loadDocument({ file, dataFile }) {
       return { error: `Data file not found: ${dataFilePath}` };
     }
   }
-  await ensureFileLoaded(filePath, dataFilePath);
-  const pageCount = scribe.inputData.pageCount;
-  const hasOcrData = scribe.data.ocr.active?.some((page) => page?.lines?.length > 0) || false;
+  const doc = await ensureFileLoaded(filePath, dataFilePath);
+  const pageCount = doc.inputData.pageCount;
+  const hasOcrData = doc.ocr.active?.some((page) => page?.lines?.length > 0) || false;
   return {
     file: filePath, dataFile: dataFilePath || null, pageCount, loaded: true, hasOcrData,
   };
@@ -178,21 +181,22 @@ async function extractDocumentText({
     return { error: 'No file specified and no document is currently loaded. Use load_document first or provide a file path.' };
   }
 
-  await ensureFileLoaded(filePath, dataFilePath);
-  const pageCount = scribe.inputData.pageCount;
+  const doc = await ensureFileLoaded(filePath, dataFilePath);
+  const pageCount = doc.inputData.pageCount;
   if (outputPath) {
     const outPath = resolve(outputPath);
     let text = '';
     if (parAnnots || footnoteAnnots) {
       for (let p = 0; p < pageCount; p++) {
-        text += buildStructuredPageText(p, { parAnnots, footnoteAnnots });
+        text += buildStructuredPageText(doc, p, { parAnnots, footnoteAnnots });
       }
     } else {
       text = writeText({
-        ocrCurrent: scribe.data.ocr.active,
+        ocrCurrent: doc.ocr.active,
         pageArr: null,
         lineNumbers: true,
         preserveSpacing: preserveSpacing || false,
+        pageMetrics: doc.pageMetrics,
       });
     }
     fs.writeFileSync(outPath, text);
@@ -209,7 +213,7 @@ async function extractDocumentText({
 
   if (parAnnots || footnoteAnnots) {
     for (let p = start; p < pageCount; p++) {
-      const pageText = buildStructuredPageText(p, { parAnnots, footnoteAnnots });
+      const pageText = buildStructuredPageText(doc, p, { parAnnots, footnoteAnnots });
       if (text.length > 0 && text.length + pageText.length > limit) break;
       text += pageText;
       endPage = p;
@@ -217,10 +221,11 @@ async function extractDocumentText({
   } else {
     for (let p = start; p < pageCount; p++) {
       const pageText = writeText({
-        ocrCurrent: scribe.data.ocr.active,
+        ocrCurrent: doc.ocr.active,
         pageArr: [p],
         lineNumbers: true,
         preserveSpacing: preserveSpacing || false,
+        pageMetrics: doc.pageMetrics,
       });
       if (text.length > 0 && text.length + pageText.length > limit) break;
       text += pageText;
@@ -239,19 +244,20 @@ async function extractDocumentText({
 
 /**
  * Build structured text for a single page, with optional paragraph boundaries and footnote annotations.
+ * @param {import('../js/containers/scribeDoc.js').ScribeDoc} doc - Document to read from.
  * @param {number} pageIdx - 0-based page index
  * @param {Object} opts
  * @param {boolean} [opts.parAnnots]
  * @param {boolean} [opts.footnoteAnnots]
  * @returns {string}
  */
-function buildStructuredPageText(pageIdx, { parAnnots, footnoteAnnots }) {
-  const pageObj = scribe.data.ocr.active[pageIdx];
+function buildStructuredPageText(doc, pageIdx, { parAnnots, footnoteAnnots }) {
+  const pageObj = doc.ocr.active[pageIdx];
   if (!pageObj || pageObj.lines.length === 0) return '';
 
   const hasPars = pageObj.pars && pageObj.pars.length > 0;
   if (!hasPars && parAnnots) {
-    const angle = pageMetricsAll[pageIdx]?.angle || 0;
+    const angle = doc.pageMetrics[pageIdx]?.angle || 0;
     assignParagraphs(pageObj, angle);
   }
 
@@ -358,20 +364,21 @@ async function batchExtractText({
     const companionPath = allCompanions.find((p) => p.endsWith('.scribe.json')) || allCompanions[0] || null;
 
     try {
-      await ensureFileLoaded(docPath, companionPath);
-      const pageCount = scribe.inputData.pageCount;
+      const doc = await ensureFileLoaded(docPath, companionPath);
+      const pageCount = doc.inputData.pageCount;
 
       let text = '';
       if (parAnnots || footnoteAnnots) {
         for (let p = 0; p < pageCount; p++) {
-          text += buildStructuredPageText(p, { parAnnots, footnoteAnnots });
+          text += buildStructuredPageText(doc, p, { parAnnots, footnoteAnnots });
         }
       } else {
         text = writeText({
-          ocrCurrent: scribe.data.ocr.active,
+          ocrCurrent: doc.ocr.active,
           pageArr: null,
           lineNumbers: true,
           preserveSpacing: preserveSpacing || false,
+          pageMetrics: doc.pageMetrics,
         });
       }
 
@@ -413,9 +420,9 @@ async function recognizeDocument({ file, langs, dataFile }) {
     return { error: 'No file specified and no document is currently loaded. Use load_document first or provide a file path.' };
   }
 
-  await ensureFileLoaded(filePath, dataFilePath);
-  await scribe.recognize({ langs: langs || ['eng'] });
-  return { file: filePath, pageCount: scribe.inputData.pageCount, recognized: true };
+  const doc = await ensureFileLoaded(filePath, dataFilePath);
+  await doc.recognize({ langs: langs || ['eng'] });
+  return { file: filePath, pageCount: doc.inputData.pageCount, recognized: true };
 }
 
 async function createHighlightedPdf({
@@ -434,14 +441,14 @@ async function createHighlightedPdf({
   }
 
   const outPath = resolve(outputPath);
-  await ensureFileLoaded(filePath, dataFilePath);
+  const doc = await ensureFileLoaded(filePath, dataFilePath);
 
-  const result = scribe.addHighlights(highlights);
+  const result = doc.addHighlights(highlights);
 
   scribe.opt.displayMode = 'annot';
-  await scribe.download('pdf', outPath, { pageArr: pages || null });
+  await doc.download('pdf', outPath, { pageArr: pages || null });
 
-  scribe.clearHighlights();
+  doc.clearHighlights();
 
   return { outputPath: outPath, ...result };
 }
@@ -461,20 +468,20 @@ async function renderPage({
     }
   }
 
-  await ensureFileLoaded(filePath, dataFilePath);
+  const doc = await ensureFileLoaded(filePath, dataFilePath);
 
-  const pageCount = scribe.inputData.pageCount;
+  const pageCount = doc.inputData.pageCount;
   const pageNum = page ?? 0;
   if (pageNum < 0 || pageNum >= pageCount) {
     return { error: `Page ${pageNum} out of range (0-${pageCount - 1})` };
   }
 
-  const ImageCache = scribe.data.image;
-  if (!ImageCache.pdfDims300 || !ImageCache.pdfDims300[pageNum]) {
+  const images = doc.images;
+  if (!images.pdfDims300 || !images.pdfDims300[pageNum]) {
     return { error: 'Document does not have PDF image data available for rendering.' };
   }
 
-  const pdfScheduler = await ImageCache.getPdfScheduler();
+  const pdfScheduler = await images.getPdfScheduler();
   const requestedDpi = dpi || 150;
   const { dataUrl } = await pdfScheduler.renderPdfPage({
     pageIndex: pageNum,
@@ -575,12 +582,13 @@ async function defineTablesHandler({
       if (!fs.existsSync(dataFilePath)) return { error: `Data file not found: ${dataFilePath}` };
     }
     await ensureFileLoaded(filePath, dataFilePath);
-  } else if (!currentFile) {
+  } else if (!currentDoc) {
     return { error: 'No file specified and no document is currently loaded.' };
   }
 
-  const tablesPage = scribe.createTablesFromText(page, tables, scribe.data.ocr.active[page]);
-  scribe.data.layoutDataTables.pages[page] = tablesPage;
+  const doc = currentDoc;
+  const tablesPage = scribe.createTablesFromText(page, tables, doc.ocr.active[page]);
+  doc.layoutDataTables.pages[page] = tablesPage;
   return { page, tablesCreated: tables.length, totalRows: tables.reduce((sum, t) => sum + (t.rows?.length || 0), 0) };
 }
 
@@ -596,28 +604,29 @@ async function extractTablesHandler({
       if (!fs.existsSync(dataFilePath)) return { error: `Data file not found: ${dataFilePath}` };
     }
     await ensureFileLoaded(filePath, dataFilePath);
-  } else if (!currentFile) {
+  } else if (!currentDoc) {
     return { error: 'No file specified and no document is currently loaded.' };
   }
 
-  const pageCount = scribe.inputData.pageCount;
+  const doc = currentDoc;
+  const pageCount = doc.inputData.pageCount;
   const result = {};
 
   if (page != null) {
-    result.tables = scribe.extractTextFromTables(scribe.data.ocr.active[page], scribe.data.layoutDataTables.pages[page]);
+    result.tables = scribe.extractTextFromTables(doc.ocr.active[page], doc.layoutDataTables.pages[page]);
     result.page = page;
   } else {
     // Return tables for all pages
     result.pages = {};
     for (let p = 0; p < pageCount; p++) {
-      const tables = scribe.extractTextFromTables(scribe.data.ocr.active[p], scribe.data.layoutDataTables.pages[p]);
+      const tables = scribe.extractTextFromTables(doc.ocr.active[p], doc.layoutDataTables.pages[p]);
       if (tables.length > 0) result.pages[p] = tables;
     }
   }
 
   if (outputPath) {
     const outPath = resolve(outputPath);
-    await scribe.download('xlsx', outPath);
+    await doc.download('xlsx', outPath);
     result.outputPath = outPath;
   }
 
@@ -637,8 +646,6 @@ async function convertDocxToJson({ file, outputPath, lineSplitMode }) {
     ? resolve(outputPath)
     : filePath.replace(/\.docx$/i, '.scribe.json');
 
-  await ensureInit();
-
   const prevLineSplitMode = scribe.opt.docxLineSplitMode;
   const prevCompressScribe = scribe.opt.compressScribe;
   if (lineSplitMode) {
@@ -647,16 +654,14 @@ async function convertDocxToJson({ file, outputPath, lineSplitMode }) {
   scribe.opt.compressScribe = false;
 
   try {
-    await scribe.importFiles([filePath]);
-    currentFile = filePath;
-    currentDataFile = null;
+    const doc = await ensureFileLoaded(filePath, undefined);
 
-    const scribeJson = await scribe.exportData('scribe');
+    const scribeJson = await doc.exportData('scribe');
     fs.writeFileSync(outPath, scribeJson);
 
     return {
       outputPath: outPath,
-      pageCount: scribe.inputData.pageCount,
+      pageCount: doc.inputData.pageCount,
       lineSplitMode: scribe.opt.docxLineSplitMode,
     };
   } finally {
@@ -1117,7 +1122,9 @@ const toolHandlers = {
 
 export { TOOLS, toolHandlers, ensureFileLoaded };
 
-export function resetState() {
+export async function resetState() {
+  if (currentDoc) await currentDoc.terminate();
+  currentDoc = null;
   currentFile = null;
   currentDataFile = null;
 }

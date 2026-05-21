@@ -17,7 +17,7 @@ export function deleteSelectedWord() {
   }
 
   for (const [n, ids] of Object.entries(selectedIds)) {
-    scribe.utils.ocr.deletePageWords(scribe.data.ocr.active[n], ids);
+    scribe.utils.ocr.deletePageWords(ScribeViewer.doc.ocr.active[n], ids);
   }
 
   ScribeViewer.destroyControls();
@@ -74,7 +74,7 @@ export async function modifySelectedWordStyle(style) {
     if (style.smallCaps !== undefined) wordI.word.style.smallCaps = style.smallCaps;
     if (style.sup !== undefined) wordI.word.style.sup = style.sup;
 
-    const fontI = scribe.data.font.getFont(wordI.word.style, wordI.word.lang);
+    const fontI = ScribeViewer.doc.fonts.getFont(wordI.word.style, wordI.word.lang);
 
     wordI.fontFaceName = fontI.fontFaceName;
     wordI.fontFaceStyle = fontI.fontFaceStyle;

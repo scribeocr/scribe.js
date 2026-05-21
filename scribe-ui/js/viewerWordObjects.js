@@ -1,5 +1,7 @@
 import Konva from './konva/index.js';
 import scribe from '../../scribe.js';
+// eslint-disable-next-line import/no-cycle
+import { ScribeViewer } from '../viewer.js';
 
 export class KonvaIText extends Konva.Shape {
   /** @type {?HTMLSpanElement} */
@@ -53,7 +55,7 @@ export class KonvaIText extends Konva.Shape {
   }) {
     const {
       charSpacing, leftSideBearing, rightSideBearing, fontSize, charArr, advanceArr, kerningArr, font,
-    } = scribe.utils.calcWordMetrics(word);
+    } = scribe.utils.calcWordMetrics(word, ScribeViewer.doc.fonts);
 
     const charSpacingFinal = !dynamicWidth ? charSpacing : 0;
 
@@ -117,7 +119,7 @@ export class KonvaIText extends Konva.Shape {
         context.lineWidth = 1;
 
         if (!shape.word.visualCoords && (shape.word.style.sup || shape.word.style.dropcap)) {
-          const fontI = scribe.data.font.getWordFont(shape.word);
+          const fontI = ScribeViewer.doc.fonts.getWordFont(shape.word);
           const fontDesc = fontI.opentype.descender / fontI.opentype.unitsPerEm * shape.fontSize;
           shape.setAttr('y', shape.yActual - shape.fontSize * 0.6 + fontDesc);
         } else {
@@ -284,7 +286,7 @@ export class KonvaIText extends Konva.Shape {
     // Re-calculate left position given potentially new left bearing
     const {
       advanceArr, fontSize, kerningArr, charSpacing, charArr, leftSideBearing, rightSideBearing,
-    } = scribe.utils.calcWordMetrics(wordI.word);
+    } = scribe.utils.calcWordMetrics(wordI.word, ScribeViewer.doc.fonts);
 
     wordI.charArr = charArr;
 
@@ -326,7 +328,7 @@ export class KonvaIText extends Konva.Shape {
 
     let y = wordI.yActual - fontSize * 0.6;
     if (!wordI.word.visualCoords && (wordI.word.style.sup || wordI.word.style.dropcap)) {
-      const fontI = scribe.data.font.getWordFont(wordI.word);
+      const fontI = ScribeViewer.doc.fonts.getWordFont(wordI.word);
       const fontDesc = fontI.opentype.descender / fontI.opentype.unitsPerEm * fontSize;
       y = wordI.yActual - fontSize * 0.6 + fontDesc;
     }
@@ -363,7 +365,7 @@ export class KonvaIText extends Konva.Shape {
     const canvas = /** @type {HTMLCanvasElement} */ (document.createElement('canvas'));
     const ctx = /** @type {CanvasRenderingContext2D} */ (canvas.getContext('2d'));
 
-    const fontI = scribe.data.font.getWordFont(itext.word);
+    const fontI = ScribeViewer.doc.fonts.getWordFont(itext.word);
 
     ctx.font = `${itext.fontFaceStyle} ${itext.fontFaceWeight} ${fontSizeHTML}px ${fontI.fontFaceName}`;
 
@@ -516,7 +518,7 @@ export class KonvaIText extends Konva.Shape {
 
     const scale = layer.getAbsoluteScale().y;
 
-    const fontI = scribe.data.font.getWordFont(itext.word);
+    const fontI = ScribeViewer.doc.fonts.getWordFont(itext.word);
 
     const fontSizeHTMLSmallCaps = itext.fontSize * scale * fontI.smallCapsMult;
 

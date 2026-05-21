@@ -46,11 +46,17 @@ const standardizeOCRPages = (ocrArr) => {
 
 describe('Check .hocr export function.', () => {
   test('Exporting to .hocr and reimporting should restore OCR data without modification', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/scribe_test_pdf1.abbyy.xml`]);
+    const doc = await scribe.openDocument([`${ASSETS_PATH}/scribe_test_pdf1.abbyy.xml`]);
 
-    const ocrAllComp1 = standardizeOCRPages(scribe.data.ocr.active);
+    const ocrAllComp1 = standardizeOCRPages(doc.ocr.active);
 
-    const hocrOutStrArr = splitHOCRStr(writeHocr({ ocrData: scribe.data.ocr.active }));
+    const hocrOutStrArr = splitHOCRStr(writeHocr({
+      ocrData: doc.ocr.active,
+      docFonts: doc.fonts,
+      layoutRegions: doc.layoutRegions,
+      pageMetrics: doc.pageMetrics,
+      dataTablesSerialized: doc.serializeLayoutDataTables(),
+    }));
 
     const resArrPromises = hocrOutStrArr.map((x, i) => (gs.schedulerInner.addJob('convertPageHocr', { ocrStr: x, n: i, scribeMode: true })));
     const resArr = await Promise.all(resArrPromises);
@@ -63,19 +69,25 @@ describe('Check .hocr export function.', () => {
 
   test('Exporting to .hocr and reimporting should restore layout tables without modification', async () => {
     // This file should contain data tables when parsed.
-    await scribe.importFiles([`${ASSETS_PATH}/bill.abbyy.xml`]);
-    expect(scribe.data.layoutDataTables.pages[0].tables.length).toBeGreaterThan(0);
+    const doc = await scribe.openDocument([`${ASSETS_PATH}/bill.abbyy.xml`]);
+    expect(doc.layoutDataTables.pages[0].tables.length).toBeGreaterThan(0);
 
-    const layoutTables1 = structuredClone(scribe.data.layoutDataTables.pages);
+    const layoutTables1 = structuredClone(doc.layoutDataTables.pages);
 
-    const hocrOutStr = writeHocr({ ocrData: scribe.data.ocr.active });
+    const hocrOutStr = writeHocr({
+      ocrData: doc.ocr.active,
+      docFonts: doc.fonts,
+      layoutRegions: doc.layoutRegions,
+      pageMetrics: doc.pageMetrics,
+      dataTablesSerialized: doc.serializeLayoutDataTables(),
+    });
     const encoder = new TextEncoder();
     const encoded = encoder.encode(hocrOutStr);
 
     await scribe.terminate();
-    await scribe.importFiles({ ocrFiles: [encoded.buffer] });
+    const doc2 = await scribe.openDocument({ ocrFiles: [encoded.buffer] });
 
-    const layoutTables2 = structuredClone(scribe.data.layoutDataTables.pages);
+    const layoutTables2 = structuredClone(doc2.layoutDataTables.pages);
 
     expect(layoutTables1).toEqual(layoutTables2);
   });
@@ -87,9 +99,9 @@ describe('Check .hocr export function.', () => {
 
 describe('Check non-contiguous pageArr subsetting for .hocr export.', () => {
   test('Exporting pages [0, 2] should include pages 0 and 2 but not page 1', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/trident_v_connecticut_general.abbyy.xml`]);
+    const doc = await scribe.openDocument([`${ASSETS_PATH}/trident_v_connecticut_general.abbyy.xml`]);
 
-    const exportedHocr = await scribe.exportData('hocr', { pageArr: [0, 2] });
+    const exportedHocr = await doc.exportData('hocr', { pageArr: [0, 2] });
 
     // "Comstock" only appears on page 0 — should be present
     expect(exportedHocr).toContain('Comstock');

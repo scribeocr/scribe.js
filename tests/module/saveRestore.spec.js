@@ -4,6 +4,9 @@ import {
 import scribe from '../../scribe.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 
+/** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+let doc;
+
 scribe.opt.workerN = 1;
 scribe.opt.langPath = LANG_PATH;
 
@@ -41,12 +44,12 @@ const standardizeOCRPages = (ocrArr) => {
 
 describe('Check .scribe export function.', () => {
   test('Exporting to .scribe (gzipped, default) and reimporting should restore OCR data without modification', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
 
-    const ocrAllComp1 = standardizeOCRPages(scribe.data.ocr.active);
+    const ocrAllComp1 = standardizeOCRPages(doc.ocr.active);
 
     scribe.opt.compressScribe = true;
-    const scribeData = await scribe.exportData('scribe');
+    const scribeData = await doc.exportData('scribe');
 
     // Verify data is gzipped by checking magic bytes
     const dataArray = new Uint8Array(scribeData);
@@ -54,22 +57,22 @@ describe('Check .scribe export function.', () => {
     expect(dataArray[1]).toBe(0x8B);
 
     await scribe.terminate();
-    await scribe.importFiles({ scribeFiles: [scribeData] });
+    doc = await scribe.openDocument({ scribeFiles: [scribeData] });
 
-    const ocrAllComp2 = standardizeOCRPages(scribe.data.ocr.active);
+    const ocrAllComp2 = standardizeOCRPages(doc.ocr.active);
 
     expect(ocrAllComp1).toEqual(ocrAllComp2);
-    await scribe.clear();
+    await doc.clear();
     await scribe.terminate();
   });
 
   test('Exporting to .scribe (non-gzipped) and reimporting should restore OCR data without modification', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
 
-    const ocrAllComp1 = standardizeOCRPages(scribe.data.ocr.active);
+    const ocrAllComp1 = standardizeOCRPages(doc.ocr.active);
 
     scribe.opt.compressScribe = false;
-    const scribeData = await scribe.exportData('scribe');
+    const scribeData = await doc.exportData('scribe');
 
     // Verify data is not gzipped
     expect(typeof scribeData).toBe('string');
@@ -79,45 +82,45 @@ describe('Check .scribe export function.', () => {
     const scribeDataBuffer = encoder.encode(scribeData).buffer;
 
     await scribe.terminate();
-    await scribe.importFiles({ scribeFiles: [scribeDataBuffer] });
+    doc = await scribe.openDocument({ scribeFiles: [scribeDataBuffer] });
 
-    const ocrAllComp2 = standardizeOCRPages(scribe.data.ocr.active);
+    const ocrAllComp2 = standardizeOCRPages(doc.ocr.active);
 
     expect(ocrAllComp1).toEqual(ocrAllComp2);
 
     scribe.opt.compressScribe = true;
-    await scribe.clear();
+    await doc.clear();
     await scribe.terminate();
   });
 
   test('Reimporting .scribe alongside PDF should preserve page angle', async () => {
     const pdfPath = `${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`;
-    await scribe.importFiles([pdfPath]);
+    doc = await scribe.openDocument([pdfPath]);
 
-    scribe.data.ocr.active[0].angle = 2.5;
+    doc.ocr.active[0].angle = 2.5;
 
     scribe.opt.compressScribe = false;
-    const scribeData = await scribe.exportData('scribe');
+    const scribeData = await doc.exportData('scribe');
     const encoder = new TextEncoder();
     const scribeDataBuffer = encoder.encode(scribeData).buffer;
 
     await scribe.terminate();
-    await scribe.importFiles({ scribeFiles: [scribeDataBuffer], pdfFiles: [pdfPath] });
+    doc = await scribe.openDocument({ scribeFiles: [scribeDataBuffer], pdfFiles: [pdfPath] });
 
-    expect(scribe.data.pageMetrics[0].angle).toBe(2.5);
+    expect(doc.pageMetrics[0].angle).toBe(2.5);
 
-    await scribe.clear();
+    await doc.clear();
     await scribe.terminate();
   });
 
   test('Exporting with includeExtraTextScribe should add text properties, which are removed on import', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
 
-    const ocrAllComp1 = standardizeOCRPages(scribe.data.ocr.active);
+    const ocrAllComp1 = standardizeOCRPages(doc.ocr.active);
 
     scribe.opt.compressScribe = false;
     scribe.opt.includeExtraTextScribe = true;
-    const scribeData = await scribe.exportData('scribe');
+    const scribeData = await doc.exportData('scribe');
 
     // Verify data contains correct text properties
     const parsedData = JSON.parse(scribeData);
@@ -135,10 +138,10 @@ describe('Check .scribe export function.', () => {
     const scribeDataBuffer = encoder.encode(scribeData).buffer;
 
     await scribe.terminate();
-    await scribe.importFiles({ scribeFiles: [scribeDataBuffer] });
+    doc = await scribe.openDocument({ scribeFiles: [scribeDataBuffer] });
 
     // Verify text properties are removed after import
-    const activeOcr = scribe.data.ocr.active;
+    const activeOcr = doc.ocr.active;
     expect('text' in activeOcr[0]).toBe(false);
     expect('text' in activeOcr[0].lines[0]).toBe(false);
     if (activeOcr[0].pars && activeOcr[0].pars.length > 0) {
@@ -146,30 +149,30 @@ describe('Check .scribe export function.', () => {
     }
 
     // Verify OCR data is unchanged
-    const ocrAllComp2 = standardizeOCRPages(scribe.data.ocr.active);
+    const ocrAllComp2 = standardizeOCRPages(doc.ocr.active);
     expect(ocrAllComp1).toEqual(ocrAllComp2);
 
     scribe.opt.compressScribe = true;
     scribe.opt.includeExtraTextScribe = false;
-    await scribe.clear();
+    await doc.clear();
     await scribe.terminate();
   });
 
   test('Importing .scribe after terminate() and exporting to PDF should succeed without font errors', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
 
     scribe.opt.compressScribe = true;
-    const scribeData = await scribe.exportData('scribe');
+    const scribeData = await doc.exportData('scribe');
 
     await scribe.terminate();
-    await scribe.importFiles({ scribeFiles: [scribeData] });
+    doc = await scribe.openDocument({ scribeFiles: [scribeData] });
 
     scribe.opt.displayMode = 'ebook';
-    const pdfData = await scribe.exportData('pdf');
+    const pdfData = await doc.exportData('pdf');
 
     expect(pdfData.byteLength || pdfData.length).toBeGreaterThan(0);
 
-    await scribe.clear();
+    await doc.clear();
     await scribe.terminate();
   });
 

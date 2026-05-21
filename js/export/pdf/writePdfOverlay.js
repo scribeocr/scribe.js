@@ -44,6 +44,7 @@ import { rebuildPdfSubset } from './subsetPdf.js';
  *   When provided, source-PDF text whose origin (Trm[4], Trm[5]) falls inside any
  *   of the supplied user-space bboxes is replaced with vector Form XObject calls.
  *   Glyphs from non-embedded or unsupported fonts are left as text.
+ * @param {import('../../containers/fontContainer.js').DocFonts} [params.docFonts] - Per-document fonts.
  * @returns {Promise<ArrayBuffer>}
  */
 export async function overlayPdfText({
@@ -60,6 +61,7 @@ export async function overlayPdfText({
   humanReadable = false,
   annotationsPages = [],
   convertRegionsToPaths = null,
+  docFonts,
 }) {
   const pdfBytes = new Uint8Array(basePdfData);
   // Local latin1 view used by overlayPdfText's downstream helpers.
@@ -85,7 +87,7 @@ export async function overlayPdfText({
   /** @type {Object<string, PdfFontFamily>} */
   let pdfFonts = {};
   if (needsOcrFonts) {
-    const fontRefs = await createPdfFontRefs(nextObjNum, ocrArr);
+    const fontRefs = await createPdfFontRefs(nextObjNum, ocrArr, docFonts);
     pdfFonts = fontRefs.pdfFonts;
     nextObjNum = fontRefs.objectI;
   }
@@ -125,6 +127,7 @@ export async function overlayPdfText({
       startingNextObjNum: nextObjNum,
       humanReadable,
       annotationsPages,
+      docFonts,
       convertRegionsToPaths,
     });
   }
@@ -172,7 +175,7 @@ export async function overlayPdfText({
     if (pageObj && pageObj.lines.length > 0 && textMode !== 'annot' && pixelDims) {
       const angle = pageMetrics?.angle || 0;
       const res = await ocrPageToPDFStream(
-        pageObj, pixelDims, pdfFonts, textMode, angle,
+        pageObj, pixelDims, pdfFonts, textMode, angle, docFonts,
         rotateText, rotateBackground, confThreshHigh, confThreshMed,
       );
       textContentObjStr = res.textContentObjStr || '';

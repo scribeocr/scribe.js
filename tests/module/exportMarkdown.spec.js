@@ -11,9 +11,9 @@ scribe.opt.langPath = LANG_PATH;
 
 describe('Check export for markdown files.', () => {
   test('Exporting simple paragraph to markdown works properly', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/testocr.abbyy.xml`]);
+    const doc = await scribe.openDocument([`${ASSETS_PATH}/testocr.abbyy.xml`]);
 
-    const exportedMd = await scribe.exportData('md');
+    const exportedMd = await doc.exportData('md');
 
     expect(exportedMd).toContain('This is a lot of 12 point text');
     expect(exportedMd).toContain('The quick brown dog jumped');
@@ -27,9 +27,9 @@ describe('Check export for markdown files.', () => {
 describe('Check markdown formatting export.', () => {
   test('Italic text should be wrapped with asterisks', async () => {
     // Use ABBYY format which properly captures italic styling
-    await scribe.importFiles([`${ASSETS_PATH}/superscript_examples.abbyy.xml`]);
+    const doc = await scribe.openDocument([`${ASSETS_PATH}/superscript_examples.abbyy.xml`]);
 
-    const exportedMd = await scribe.exportData('md');
+    const exportedMd = await doc.exportData('md');
 
     // "Econometrica" is italic in the source document
     expect(exportedMd).toContain('*Econometrica*');
@@ -37,9 +37,9 @@ describe('Check markdown formatting export.', () => {
 
   test('Bold text should be wrapped with double asterisks', async () => {
     // Use ABBYY format which properly captures bold styling
-    await scribe.importFiles([`${ASSETS_PATH}/superscript_examples.abbyy.xml`]);
+    const doc = await scribe.openDocument([`${ASSETS_PATH}/superscript_examples.abbyy.xml`]);
 
-    const exportedMd = await scribe.exportData('md');
+    const exportedMd = await doc.exportData('md');
 
     expect(exportedMd).toContain('**Investments & Acquisitions**');
   });
@@ -51,9 +51,9 @@ describe('Check markdown formatting export.', () => {
 
 describe('Check markdown escape characters.', () => {
   test('Literal asterisks in source text should be escaped with backslash', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/border_patrol_tables.abbyy.xml`]);
+    const doc = await scribe.openDocument([`${ASSETS_PATH}/border_patrol_tables.abbyy.xml`]);
 
-    const exportedMd = await scribe.exportData('md');
+    const exportedMd = await doc.exportData('md');
 
     // Bold word containing a literal `*` mid-word — escape keeps the `**...**` wrapper unambiguous.
     expect(exportedMd).toContain('**Staffing\\* Agent**');
@@ -76,9 +76,9 @@ describe('Check markdown escape characters.', () => {
 
 describe('Check non-contiguous pageArr subsetting for markdown export.', () => {
   test('Exporting pages [0, 2] should include pages 0 and 2 but not page 1', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/trident_v_connecticut_general.abbyy.xml`]);
+    const doc = await scribe.openDocument([`${ASSETS_PATH}/trident_v_connecticut_general.abbyy.xml`]);
 
-    const exportedMd = await scribe.exportData('md', { pageArr: [0, 2] });
+    const exportedMd = await doc.exportData('md', { pageArr: [0, 2] });
 
     // "Comstock" only appears on page 0 — should be present
     expect(exportedMd).toContain('Comstock');
@@ -94,10 +94,12 @@ describe('Check non-contiguous pageArr subsetting for markdown export.', () => {
 });
 
 describe('Check markdown table export.', () => {
+  /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+  let doc;
   test('Should export tables as markdown pipe tables', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/border_patrol_tables.abbyy.xml`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/border_patrol_tables.abbyy.xml`]);
 
-    const exportedMd = await scribe.exportData('md', { pageArr: [2] });
+    const exportedMd = await doc.exportData('md', { pageArr: [2] });
 
     // Header row with pipe separators
     expect(exportedMd).toContain('| **SECTOR** | **Female** | **Male** | **Total Apprehensions** |');
@@ -109,7 +111,7 @@ describe('Check markdown table export.', () => {
   });
 
   test('Text outside the table is rendered as regular text', async () => {
-    const exportedMd = await scribe.exportData('md', { pageArr: [2] });
+    const exportedMd = await doc.exportData('md', { pageArr: [2] });
 
     // Page title text appears outside the table
     expect(exportedMd).toContain('**United States Border Patrol**');
@@ -118,10 +120,10 @@ describe('Check markdown table export.', () => {
 
   test('Pages without tables export normally', async () => {
     // testocr.abbyy.xml has no tables
-    await scribe.clear();
-    await scribe.importFiles([`${ASSETS_PATH}/testocr.abbyy.xml`]);
+    await doc.clear();
+    doc = await scribe.openDocument([`${ASSETS_PATH}/testocr.abbyy.xml`]);
 
-    const exportedMd = await scribe.exportData('md');
+    const exportedMd = await doc.exportData('md');
 
     expect(exportedMd).toContain('This is a lot of 12 point text');
     expect(exportedMd).not.toContain('| --- |');

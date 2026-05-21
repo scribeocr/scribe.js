@@ -351,14 +351,15 @@ class ScribePDFViewer {
     this.pdfViewerElem.appendChild(this.dropZone);
 
     this.importFile = async (file, initialPage = 0) => {
-      await scribe.importFiles([file]);
+      await ScribeViewer.doc.terminate();
+      ScribeViewer.doc = await scribe.openDocument([file]);
 
       // Initialize annotation pages array for each page
-      for (let i = 0; i < scribe.inputData.pageCount; i++) {
-        if (!scribe.data.annotations.pages[i]) scribe.data.annotations.pages[i] = [];
+      for (let i = 0; i < ScribeViewer.doc.inputData.pageCount; i++) {
+        if (!ScribeViewer.doc.annotations.pages[i]) ScribeViewer.doc.annotations.pages[i] = [];
       }
 
-      this.pageCountElem.textContent = scribe.inputData.pageCount.toString();
+      this.pageCountElem.textContent = ScribeViewer.doc.inputData.pageCount.toString();
       this.pageNumElem.value = (initialPage + 1).toString();
 
       await ScribeViewer.displayPage(initialPage, initialPage > 0);
@@ -806,7 +807,7 @@ async function handleLoadFile(file, page, readFileFn) {
 async function handleHighlights(highlights) {
   for (const highlight of highlights) {
     const pageNum = highlight.page;
-    const page = scribe.data.ocr.active[pageNum];
+    const page = ScribeViewer.doc.ocr.active[pageNum];
     if (!page) continue;
 
     const lines = highlight.lines;

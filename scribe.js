@@ -1,26 +1,16 @@
-import { clearData } from './js/clear.js';
-import { inputData, opt } from './js/containers/app.js';
-import {
-  annotations,
-  DebugData,
-  layoutDataTables,
-  layoutRegions,
-  ocrAll, ocrAllRaw, pageMetricsAll, visInstructions,
-} from './js/containers/dataContainer.js';
-import { FontCont } from './js/containers/fontContainer.js';
-import { ImageCache } from './js/containers/imageContainer.js';
+import { opt } from './js/containers/app.js';
 import coords from './js/coordinates.js';
-import { drawDebugImages, renderPageStatic } from './js/debug.js';
-import { download, exportData } from './js/export/export.js';
+import { drawDebugImages } from './js/debug.js';
 import { convertToCsv, writeDebugCsv } from './js/export/exportDebugCsv.js';
 import { writePdf } from './js/export/pdf/writePdf.js';
+import { replaceType3FontsWithCorrected } from './js/export/pdf/replaceType3Fonts.js';
+import { extractType3DistinctGlyphs } from './js/pdf/fonts/parsePdfFonts.js';
 import { writeHocr } from './js/export/writeHocr.js';
 import { writeText } from './js/export/writeText.js';
-import { extractInternalPDFText } from './js/extractPDFText.js';
 import { createTablesFromText, extractSingleTableContent, extractTextFromTables } from './js/extractTables.js';
-import { enableFontOpt, loadBuiltInFontsRaw } from './js/fontContainerMain.js';
+import { loadBuiltInFontsRaw } from './js/fontContainerMain.js';
+import { GlobalFonts } from './js/containers/fontContainer.js';
 import { gs } from './js/generalWorkerMain.js';
-import { importFiles, importFilesSupp } from './js/import/import.js';
 import { combineOCRPage } from './js/modifyOCR.js';
 import {
   calcBoxOverlap, countSubstringOccurrences, getRandomAlphanum, replaceSmartQuotes,
@@ -28,13 +18,7 @@ import {
 } from './js/utils/miscUtils.js';
 import layout, { calcTableBbox } from './js/objects/layoutObjects.js';
 import ocr from './js/objects/ocrObjects.js';
-import {
-  calcEvalStatsDoc,
-  compareOCR,
-  convertOCRPage,
-  evalOCRPage,
-  recognize, recognizePageImp,
-} from './js/recognizeConvert.js';
+import { calcEvalStatsDoc } from './js/recognizeConvert.js';
 import { calcWordMetrics } from './js/utils/fontUtils.js';
 import { imageStrToBlob } from './js/utils/imageUtils.js';
 import {
@@ -43,28 +27,23 @@ import {
 import { assignParagraphs } from './js/utils/reflowPars.js';
 import { writeXlsx, writeXlsxFromRows } from './js/export/writeTabular.js';
 import { calcColumnBounds, detectTablesInPage, makeTableFromBbox } from './js/utils/detectTables.js';
-import { ca } from './js/canvasAdapter.js';
-import { addHighlights, clearHighlights } from './js/addHighlights.js';
+import { ScribeDoc } from './js/containers/scribeDoc.js';
 
 /**
- * Initialize the program and optionally pre-load resources.
+ * Initialize the program and optionally pre-load shared resources.
  * @public
  * @param {Object} [params]
- * @param {boolean} [params.pdf=false] - Load PDF renderer.
  * @param {boolean} [params.ocr=false] - Load OCR engine.
  * @param {boolean} [params.font=false] - Load built-in fonts.
- * The PDF renderer and OCR engine are automatically loaded when needed.
- * Therefore, the only reason to set `pdf` or `ocr` to `true` is to pre-load them.
+ * The OCR engine and built-in fonts are loaded automatically when needed; pre-loading only reduces
+ * first-use latency. Each document's PDF renderer is created lazily when that document opens a PDF.
  * @param {Parameters<typeof import('./js/generalWorkerMain.js').gs.initTesseract>[0]} [params.ocrParams] - Parameters for initializing OCR.
  */
 const init = async (params) => {
-  const initPdf = params && params.pdf ? params.pdf : false;
   const initOcr = params && params.ocr ? params.ocr : false;
   const initFont = params && params.font ? params.font : false;
 
   const promiseArr = [];
-
-  promiseArr.push(initPdf ? ImageCache.getPdfScheduler() : Promise.resolve());
 
   promiseArr.push(gs.getGeneralScheduler());
 
@@ -81,14 +60,29 @@ const init = async (params) => {
 };
 
 /**
+ * Open a new document from the provided files and return a handle to it.
+ * The returned `ScribeDoc` can be operated on directly (`doc.recognize()`, `doc.exportData()`,
+ * `doc.ocr`, …). Multiple documents can be open at once; each operates on its own state.
+ * @public
+ * @param {Parameters<ScribeDoc['importFiles']>[0]} files
+ * @returns {Promise<ScribeDoc>}
+ */
+const openDocument = async (files) => {
+  await init({ font: true });
+  const doc = new ScribeDoc();
+  await doc.importFiles(files);
+  return doc;
+};
+
+/**
  * Function for extracting text from image and PDF files with a single function call.
  * By default, existing text content is extracted for text-native PDF files; otherwise text is extracted using OCR.
  * To control how text from PDF files is handled, set the options in the `opt.usePDFText` object.
- * For more control, use `init`, `importFiles`, `recognize`, and `exportData` separately.
+ * For more control, use `openDocument` and the document's own `recognize`/`exportData` methods.
  * @public
- * @param {Parameters<typeof importFiles>[0]} files
+ * @param {Parameters<ScribeDoc['importFiles']>[0]} files
  * @param {Array<string>} [langs=['eng']]
- * @param {Parameters<typeof exportData>[0]} [outputFormat='txt']
+ * @param {Parameters<ScribeDoc['exportData']>[0]} [outputFormat='txt']
  * @param {Object} [options]
  * @param {boolean} [options.skipRecPDFTextNative=true] - Skip recognition if input is text-native PDF.
  * @param {boolean} [options.skipRecPDFTextOCR=false] - Skip recognition if input is image-based PDF with existing invisible text layer.
@@ -96,23 +90,26 @@ const init = async (params) => {
 const extractText = async (files, langs = ['eng'], outputFormat = 'txt', options = {}) => {
   const skipRecPDFTextNative = options?.skipRecPDFTextNative ?? true;
   const skipRecPDFTextOCR = options?.skipRecPDFTextOCR ?? false;
-  init({ ocr: true, font: true });
-  await importFiles(files);
-  if (!inputData.xmlMode[0] && !inputData.imageMode && !inputData.pdfMode) throw new Error('No relevant files to process.');
-  const skipRecPDF = inputData.pdfMode && (inputData.pdfType === 'text' && skipRecPDFTextNative || inputData.pdfType === 'ocr' && skipRecPDFTextOCR);
-  const skipRecOCR = inputData.xmlMode[0] && !inputData.imageMode && !inputData.pdfMode;
-  if (!skipRecPDF && !skipRecOCR) await recognize({ langs });
-  return exportData(outputFormat);
+  const doc = await openDocument(files);
+  if (!doc.inputData.xmlMode[0] && !doc.inputData.imageMode && !doc.inputData.pdfMode) {
+    await doc.terminate();
+    throw new Error('No relevant files to process.');
+  }
+  const skipRecPDF = doc.inputData.pdfMode && (doc.inputData.pdfType === 'text' && skipRecPDFTextNative || doc.inputData.pdfType === 'ocr' && skipRecPDFTextOCR);
+  const skipRecOCR = doc.inputData.xmlMode[0] && !doc.inputData.imageMode && !doc.inputData.pdfMode;
+  if (!skipRecPDF && !skipRecOCR) await doc.recognize({ langs });
+  const output = await doc.exportData(outputFormat);
+  await doc.terminate();
+  return output;
 };
 
 /**
  *
- * @param {OffscreenCanvas} canvas
  * @param {Array<Array<CompDebugNode>>} compDebugArrArr
  * @param {string} filePath
  * @public
  */
-async function writeDebugImages(canvas, compDebugArrArr, filePath) {
+async function writeDebugImages(compDebugArrArr, filePath) {
   if (typeof process === 'undefined') {
     throw new Error('This function is only available in Node.js.');
   } else {
@@ -128,71 +125,52 @@ async function writeDebugImages(canvas, compDebugArrArr, filePath) {
 }
 
 /**
- * Dump all debug images to directory `dir`.
+ * Dump all of a document's debug images to directory `dir`.
  * Only available in Node.js.
+ * @param {ScribeDoc} doc
  * @param {string} dir
  * @returns
  */
-async function dumpDebugImages(dir) {
+async function dumpDebugImages(doc, dir) {
   if (typeof process === 'undefined') {
     throw new Error('This function is only available in Node.js.');
   } else {
-    if (!DebugData.debugImg.Combined || DebugData.debugImg.Combined.length === 0) {
+    if (!doc.debug.debugImg.Combined || doc.debug.debugImg.Combined.length === 0) {
       console.log('No debug images to dump.');
       return;
     }
 
-    const canvasAlt = await ca.createCanvas(200, 200);
-    const ctxDebug = canvasAlt.getContext('2d');
-
-    for (const [name, imgArr] of Object.entries(DebugData.debugImg)) {
+    for (const [name, imgArr] of Object.entries(doc.debug.debugImg)) {
       if (!imgArr || imgArr.length === 0) continue;
       for (let i = 0; i < imgArr.length; i++) {
         const filePath = `${dir}/${name}_${i}.png`;
-        await writeDebugImages(canvasAlt, [imgArr[i]], filePath);
+        await writeDebugImages([imgArr[i]], filePath);
       }
     }
   }
 }
 
-async function dumpHOCR(dir) {
+/**
+ * Dump each of a document's OCR versions to a `.hocr` file in directory `dir`.
+ * Only available in Node.js.
+ * @param {ScribeDoc} doc
+ * @param {string} dir
+ */
+async function dumpHOCR(doc, dir) {
   if (typeof process === 'undefined') {
     throw new Error('This function is only available in Node.js.');
   } else {
-    const activeCurrent = ocrAll.active;
+    const activeCurrent = doc.ocr.active;
 
     const fs = await import('node:fs');
-    for (const [name, pages] of Object.entries(ocrAll)) {
-      ocrAll.active = pages;
-      const hocrStr = await exportData('hocr');
+    for (const [name, pages] of Object.entries(doc.ocr)) {
+      doc.ocr.active = pages;
+      const hocrStr = await doc.exportData('hocr');
       fs.writeFileSync(`${dir}/${name}.hocr`, hocrStr);
     }
 
-    ocrAll.active = activeCurrent;
+    doc.ocr.active = activeCurrent;
   }
-}
-
-class data {
-  // TODO: Modify such that debugging data is not calculated by default.
-  static debug = DebugData;
-
-  static font = FontCont;
-
-  static image = ImageCache;
-
-  static annotations = annotations;
-
-  static layoutRegions = layoutRegions;
-
-  static layoutDataTables = layoutDataTables;
-
-  static ocr = ocrAll;
-
-  static ocrRaw = ocrAllRaw;
-
-  static pageMetrics = pageMetricsAll;
-
-  static vis = visInstructions;
 }
 
 class utils {
@@ -228,6 +206,10 @@ class utils {
   // Export functions
   static writePdf = writePdf;
 
+  static replaceType3FontsWithCorrected = replaceType3FontsWithCorrected;
+
+  static extractType3DistinctGlyphs = extractType3DistinctGlyphs;
+
   static writeHocr = writeHocr;
 
   static writeText = writeText;
@@ -259,51 +241,28 @@ class utils {
 
   static dumpHOCR = dumpHOCR;
 
-  static renderPageStatic = renderPageStatic;
-
   static saveAs = saveAs;
 }
 
 /**
- * Clears all document-specific data.
- * @public
- */
-const clear = async () => {
-  clearData();
-};
-
-/**
- * Terminates the program and releases resources.
+ * Terminate the shared resources (the general/OCR worker pool and built-in fonts).
+ * Per-document resources are released with `doc.terminate()`.
  * @public
  */
 const terminate = async () => {
-  clearData();
-  await Promise.allSettled([gs.terminate(), ImageCache.terminate(), FontCont.terminate()]);
+  await gs.terminate();
+  GlobalFonts.raw = null;
 };
 
 export default {
-  addHighlights,
-  clear,
-  clearHighlights,
   combineOCRPage,
-  compareOCR,
-  convertOCRPage,
-  data,
   createTablesFromText,
-  enableFontOpt,
-  evalOCRPage,
-  exportData,
-  download,
-  importFiles,
-  importFilesSupp,
-  inputData,
   init,
   layout,
   opt,
-  recognize,
-  recognizePageImp,
+  openDocument,
+  ScribeDoc,
   extractText,
-  extractInternalPDFText,
   extractTextFromTables,
   terminate,
   utils,

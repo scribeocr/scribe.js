@@ -11,7 +11,7 @@ import scribe from '../scribe.js';
  * @param {string} inputFile - Path to input file.
  * @param {?string} [output='.'] - Output file or directory.
  * @param {Object} [options]
- * @param {Parameters<typeof scribe.download>[0]} [options.format]
+ * @param {'pdf'|'hocr'|'alto'|'docx'|'xlsx'|'txt'|'text'|'md'|'html'|'scribe'} [options.format]
  * @param {boolean} [options.reflow]
  * @param {boolean} [options.lineNumbers]
  */
@@ -29,14 +29,14 @@ export const extract = async (inputFile, output, options) => {
 
   // TODO: Fonts do not need to be loaded for .txt output, but are needed for .pdf output.
   // so a more robust implementation would consider the arguments and only load fonts if necessary.
-  await scribe.init({ font: true });
-  await scribe.importFiles([inputFile]);
+  const doc = await scribe.openDocument([inputFile]);
 
   if (outputDir) fs.mkdirSync(outputDir, { recursive: true });
 
   if (options?.lineNumbers) scribe.opt.lineNumbers = true;
 
-  await scribe.download(format, outputPath);
+  await doc.download(format, outputPath);
 
+  await doc.terminate();
   await scribe.terminate();
 };

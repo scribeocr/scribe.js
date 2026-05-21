@@ -26,9 +26,11 @@ export const calcConf = (pages) => {
  *
  * @param {OcrWord} word
  * @param {number} splitIndex
+ * @param {import('../containers/fontContainer.js').DocFonts} docFonts - Fonts used to estimate the
+ *   split point when character-level metrics are missing or unreliable.
  * @returns
  */
-export function splitOcrWord(word, splitIndex) {
+export function splitOcrWord(word, splitIndex, docFonts) {
   const wordA = ocr.cloneWord(word);
   const wordB = ocr.cloneWord(word);
 
@@ -47,7 +49,7 @@ export function splitOcrWord(word, splitIndex) {
 
   // TODO: This is a quick fix; figure out how to get this math correct.
   if (!validCharData) {
-    const metrics = calcWordMetrics(wordA);
+    const metrics = calcWordMetrics(wordA, docFonts);
     wordA.bbox.right -= metrics.advanceArr.slice(splitIndex).reduce((a, b) => a + b, 0);
     wordB.bbox.left = wordA.bbox.right;
   }

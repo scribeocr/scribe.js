@@ -1,7 +1,7 @@
 import ocr from '../objects/ocrObjects.js';
 import { LayoutDataTablePage } from '../objects/layoutObjects.js';
 import { calcWordCharMetrics } from '../utils/fontUtils.js';
-import { FontCont } from '../containers/fontContainer.js';
+import { GlobalFonts, DocFonts } from '../containers/fontContainer.js';
 
 const FONT_FAMILY = 'Times New Roman';
 const FONT_SIZE = 14;
@@ -83,7 +83,8 @@ export async function convertPageText({ textStr, pageDims = null }) {
   let pageIndex = 0;
 
   if (!fontOpentype) {
-    fontOpentype = (await FontCont.getFont({ font: FONT_FAMILY })).opentype;
+    // Text imports have no document or optimized fonts, so resolve against the built-ins.
+    fontOpentype = GlobalFonts.getFont({ font: FONT_FAMILY }, new DocFonts()).opentype;
   }
 
   const ASCENDER_HEIGHT = fontOpentype.ascender * (FONT_SIZE / fontOpentype.unitsPerEm);

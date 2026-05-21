@@ -1,6 +1,7 @@
-import { annotations, ocrAll } from './containers/dataContainer.js';
 import ocr from './objects/ocrObjects.js';
 import { calcBboxUnion } from './utils/miscUtils.js';
+
+/** @typedef {import('./containers/scribeDoc.js').ScribeDoc} ScribeDoc */
 
 const GROUP_PREFIX = 'hl-';
 
@@ -26,6 +27,7 @@ const GROUP_PREFIX = 'hl-';
  * - **Quote-only mode** (only `page` + `text`): searches the entire page for the quote
  *   and highlights the matching words.
  *
+ * @param {ScribeDoc} doc
  * @param {Array<HighlightSpec>} highlights
  * @returns {{
  *   highlightsApplied: number,
@@ -33,14 +35,14 @@ const GROUP_PREFIX = 'hl-';
  *   groups: Array<{ page: number, groupId: string, bbox: bbox }>,
  * }}
  */
-export function addHighlights(highlights) {
+export function addHighlights(doc, highlights) {
   let highlightsApplied = 0;
   let totalLinesHighlighted = 0;
   /** @type {Array<{ page: number, groupId: string, bbox: bbox }>} */
   const groups = [];
 
   for (const highlight of highlights) {
-    const pageObj = ocrAll.active[highlight.page];
+    const pageObj = doc.ocr.active[highlight.page];
     if (!pageObj) continue;
 
     if (highlight.startLine == null && !highlight.text) {
@@ -91,7 +93,7 @@ export function addHighlights(highlights) {
         }
 
         for (const word of wordsToHighlight) {
-          annotations.pages[highlight.page].push({
+          doc.annotations.pages[highlight.page].push({
             bbox: word.bbox, color, opacity, groupId, comment,
           });
         }
@@ -100,14 +102,14 @@ export function addHighlights(highlights) {
     } else if (highlight.text) {
       const matchWords = ocr.getMatchingWords(highlight.text, pageObj);
       for (const word of matchWords) {
-        annotations.pages[highlight.page].push({
+        doc.annotations.pages[highlight.page].push({
           bbox: word.bbox, color, opacity, groupId, comment,
         });
       }
       if (matchWords.length > 0) totalLinesHighlighted++;
     }
 
-    const added = annotations.pages[highlight.page].filter((a) => a.groupId === groupId);
+    const added = doc.annotations.pages[highlight.page].filter((a) => a.groupId === groupId);
     if (added.length > 0) {
       groups.push({ page: highlight.page, groupId, bbox: calcBboxUnion(added.map((a) => a.bbox)) });
     }
@@ -119,11 +121,12 @@ export function addHighlights(highlights) {
 }
 
 /**
- * Remove all highlights previously added by {@link addHighlights}.
+ * Remove all highlights previously added by `addHighlights`.
+ * @param {ScribeDoc} doc
  */
-export function clearHighlights() {
-  for (let p = 0; p < annotations.pages.length; p++) {
-    annotations.pages[p] = annotations.pages[p]
+export function clearHighlights(doc) {
+  for (let p = 0; p < doc.annotations.pages.length; p++) {
+    doc.annotations.pages[p] = doc.annotations.pages[p]
       .filter((a) => !a.groupId?.startsWith(GROUP_PREFIX));
   }
 }

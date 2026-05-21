@@ -149,39 +149,43 @@ export class opt {
   static skipFontOpt = false;
 }
 
-export class inputData {
+/**
+ * Per-document input metadata: which input modes are active and basic file info.
+ * Each `ScribeDoc` owns one.
+ */
+export class InputData {
   /** `true` if OCR data exists (whether from upload or built-in engine) */
-  static xmlMode = [];
+  xmlMode = [];
 
   /** `true` if user uploaded pdf */
-  static pdfMode = false;
+  pdfMode = false;
 
   /** @type {?('text'|'ocr'|'image')} */
-  static pdfType = null;
+  pdfType = null;
 
   /** `true` if user uploaded image files (.png, .jpeg) */
-  static imageMode = false;
+  imageMode = false;
 
   /** `true` if user re-uploaded HOCR data created by Scribe OCR */
-  static resumeMode = false;
+  resumeMode = false;
 
   /** `true` if ground truth data is uploaded */
-  static evalMode = false;
+  evalMode = false;
 
-  static inputFileNames = [];
+  inputFileNames = [];
 
-  static defaultDownloadFileName = '';
+  defaultDownloadFileName = '';
 
-  static pageCount = 0;
+  pageCount = 0;
 
-  static clear = () => {
-    inputData.xmlMode.length = 0;
-    inputData.pdfMode = false;
-    inputData.imageMode = false;
-    inputData.resumeMode = false;
-    inputData.evalMode = false;
-    inputData.inputFileNames = [];
-    inputData.defaultDownloadFileName = '';
-    inputData.pageCount = 0;
-  };
+  clear() {
+    this.xmlMode.length = 0;
+    this.pdfMode = false;
+    this.imageMode = false;
+    this.resumeMode = false;
+    this.evalMode = false;
+    this.inputFileNames = [];
+    this.defaultDownloadFileName = '';
+    this.pageCount = 0;
+  }
 }

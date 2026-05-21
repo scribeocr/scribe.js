@@ -315,6 +315,14 @@ export class ScribeViewer {
   static #pageStopsEnd = [];
 
   /**
+   * Document currently displayed in the viewer.
+   * The viewer is single-document, so it holds one handle here and library operations act on it explicitly.
+   * Replaced by `scribe.openDocument` on import (see the importer in basic-viewer/pdf-viewer.js).
+   * @type {import('../js/containers/scribeDoc.js').ScribeDoc}
+   */
+  static doc = new scribe.ScribeDoc();
+
+  /**
    *
    * @param {number} n
    * @param {boolean} start
@@ -347,14 +355,14 @@ export class ScribeViewer {
   static calcPageStops = () => {
     const margin = 30;
     let y = margin;
-    for (let i = 0; i < scribe.data.pageMetrics.length; i++) {
+    for (let i = 0; i < ScribeViewer.doc.pageMetrics.length; i++) {
       ScribeViewer.#pageStopsStart[i] = y;
-      const dims = scribe.data.pageMetrics[i]?.dims;
+      const dims = ScribeViewer.doc.pageMetrics[i]?.dims;
       if (!dims) return;
 
       // TODO: This does not work because angle is not populated at this point.
       // This is true even when uploading a PDF with existing OCR data, as dims are defined before parsing the OCR data.
-      const rotation = (scribe.data.pageMetrics[i].angle || 0) * -1;
+      const rotation = (ScribeViewer.doc.pageMetrics[i].angle || 0) * -1;
       y += dims.height + margin;
       ScribeViewer.#pageStopsEnd[i] = y;
 
@@ -483,7 +491,7 @@ export class ScribeViewer {
       deltaY = Math.min(deltaY, maxYDelta);
     }
 
-    if (stateViewer.cp.n === scribe.data.pageMetrics.length - 1) {
+    if (stateViewer.cp.n === ScribeViewer.doc.pageMetrics.length - 1) {
       const minY = ScribeViewer.getPageStop(stateViewer.cp.n, false) * ScribeViewer.stage.getAbsoluteScale().y * -1
         + ScribeViewer.stage.height() / 2;
       const minYDelta = Math.max(0, y - minY);
@@ -494,13 +502,13 @@ export class ScribeViewer {
     // These limits impose the less restrictive of:
     // (1) half of the document must be within the viewport, or
     // (2) half of the viewport must contain the document.
-    const minX1 = (scribe.data.pageMetrics[stateViewer.cp.n].dims.width / 2) * ScribeViewer.stage.getAbsoluteScale().y * -1;
-    const minX2 = scribe.data.pageMetrics[stateViewer.cp.n].dims.width * ScribeViewer.stage.getAbsoluteScale().y * -1 + ScribeViewer.stage.width() / 2;
+    const minX1 = (ScribeViewer.doc.pageMetrics[stateViewer.cp.n].dims.width / 2) * ScribeViewer.stage.getAbsoluteScale().y * -1;
+    const minX2 = ScribeViewer.doc.pageMetrics[stateViewer.cp.n].dims.width * ScribeViewer.stage.getAbsoluteScale().y * -1 + ScribeViewer.stage.width() / 2;
     const minX = Math.min(minX1, minX2);
     const minXDelta = Math.max(0, x - minX);
     deltaX = Math.max(deltaX, -minXDelta);
 
-    const maxX1 = (scribe.data.pageMetrics[stateViewer.cp.n].dims.width / 2) * ScribeViewer.stage.getAbsoluteScale().y * -1
+    const maxX1 = (ScribeViewer.doc.pageMetrics[stateViewer.cp.n].dims.width / 2) * ScribeViewer.stage.getAbsoluteScale().y * -1
       + ScribeViewer.stage.width();
     const maxX2 = ScribeViewer.stage.width() / 2;
     const maxX = Math.max(maxX1, maxX2);
@@ -735,7 +743,7 @@ export class ScribeViewer {
     });
 
     ScribeViewer.stage.on('mousedown touchstart', (event) => {
-      if (scribe.data.pageMetrics.length === 0) return;
+      if (ScribeViewer.doc.pageMetrics.length === 0) return;
 
       // Left click only
       if (event.type === 'mousedown' && event.evt.button !== 0) return;
@@ -914,16 +922,16 @@ export class ScribeViewer {
 
   // Function that handles page-level info for rendering to canvas
   static renderWords = async (n) => {
-    let ocrData = scribe.data.ocr.active?.[n];
+    let ocrData = ScribeViewer.doc.ocr.active?.[n];
 
     // Return early if there is not enough data to render a page yet
     // (0) Necessary info is not defined yet
-    const noInfo = scribe.inputData.xmlMode[n] === undefined;
+    const noInfo = ScribeViewer.doc.inputData.xmlMode[n] === undefined;
     // (1) No data has been imported
-    const noInput = !scribe.inputData.xmlMode[n] && !(scribe.inputData.imageMode || scribe.inputData.pdfMode);
+    const noInput = !ScribeViewer.doc.inputData.xmlMode[n] && !(ScribeViewer.doc.inputData.imageMode || ScribeViewer.doc.inputData.pdfMode);
     // (2) XML data should exist but does not (yet)
-    const xmlMissing = scribe.inputData.xmlMode[n]
-    && (ocrData === undefined || ocrData === null || scribe.data.pageMetrics[n].dims === undefined);
+    const xmlMissing = ScribeViewer.doc.inputData.xmlMode[n]
+    && (ocrData === undefined || ocrData === null || ScribeViewer.doc.pageMetrics[n].dims === undefined);
 
     const pageStopsMissing = ScribeViewer.getPageStop(n) === null;
 
@@ -947,13 +955,13 @@ export class ScribeViewer {
       return;
     }
 
-    if (scribe.inputData.evalMode) {
+    if (ScribeViewer.doc.inputData.evalMode) {
       await compareGroundTruth();
       // ocrData must be re-assigned after comparing to ground truth or it will not update.
-      ocrData = scribe.data.ocr.active?.[n];
+      ocrData = ScribeViewer.doc.ocr.active?.[n];
     }
 
-    if (scribe.inputData.xmlMode[n]) {
+    if (ScribeViewer.doc.inputData.xmlMode[n]) {
       renderCanvasWords(ocrData);
     }
   };
@@ -967,7 +975,7 @@ export class ScribeViewer {
    */
   static async displayPage(n, scroll = false, refresh = true) {
     // Return early if (1) page does not exist or (2) another page is actively being rendered.
-    if (Number.isNaN(n) || n < 0 || n > (scribe.inputData.pageCount - 1)) {
+    if (Number.isNaN(n) || n < 0 || n > (ScribeViewer.doc.inputData.pageCount - 1)) {
       // Reset the value of pageNumElem (number in UI) to match the internal value of the page
       // elem.nav.pageNum.value = (stateGUI.cp.n + 1).toString();
       if (ScribeViewer.displayPageCallback) ScribeViewer.displayPageCallback();
@@ -975,12 +983,12 @@ export class ScribeViewer {
     }
 
     if (ScribeViewer.runSetInitial) {
-      ScribeViewer.setInitialPositionZoom(scribe.data.pageMetrics[n].dims);
+      ScribeViewer.setInitialPositionZoom(ScribeViewer.doc.pageMetrics[n].dims);
     }
 
     ScribeViewer.deleteHTMLOverlay();
 
-    if (scribe.inputData.xmlMode[stateViewer.cp.n]) {
+    if (ScribeViewer.doc.inputData.xmlMode[stateViewer.cp.n]) {
       // TODO: This is currently run whenever the page is changed.
       // If this adds any meaningful overhead, we should only have stats updated when edits are actually made.
       search.updateFindStats();
@@ -1003,7 +1011,7 @@ export class ScribeViewer {
     if (n - 1 >= 0 && (refresh || !ScribeViewer.textGroupsRenderIndices.includes(n - 1))) {
       await ScribeViewer.renderWords(n - 1);
     }
-    if (n + 1 < scribe.data.ocr.active.length && (refresh || !ScribeViewer.textGroupsRenderIndices.includes(n + 1))) {
+    if (n + 1 < ScribeViewer.doc.ocr.active.length && (refresh || !ScribeViewer.textGroupsRenderIndices.includes(n + 1))) {
       await ScribeViewer.renderWords(n + 1);
     }
 
@@ -1031,13 +1039,13 @@ export class ScribeViewer {
       if (n - 1 >= 0 && (refresh || !ScribeViewer.overlayGroupsRenderIndices.includes(n - 1))) {
         layout.renderLayoutBoxes(n - 1);
       }
-      if (n + 1 < scribe.data.ocr.active.length && (refresh || !ScribeViewer.overlayGroupsRenderIndices.includes(n + 1))) {
+      if (n + 1 < ScribeViewer.doc.ocr.active.length && (refresh || !ScribeViewer.overlayGroupsRenderIndices.includes(n + 1))) {
         layout.renderLayoutBoxes(n + 1);
       }
     }
 
     // Render background images ahead and behind current page to reduce delay when switching pages
-    if ((scribe.inputData.pdfMode || scribe.inputData.imageMode)) {
+    if ((ScribeViewer.doc.inputData.pdfMode || ScribeViewer.doc.inputData.imageMode)) {
       ViewerImageCache.renderAheadBehindBrowser(n);
     }
   }
@@ -1064,8 +1072,8 @@ export class ScribeViewer {
    */
   static createGroup = (n, orientation = 0) => {
     const group = new Konva.Group();
-    const dims = scribe.data.pageMetrics[n].dims;
-    const angle = scribe.data.pageMetrics[n].angle || 0;
+    const dims = ScribeViewer.doc.pageMetrics[n].dims;
+    const angle = ScribeViewer.doc.pageMetrics[n].angle || 0;
     const textRotation = scribe.opt.autoRotate ? 0 : angle;
     const pageOffsetY = ScribeViewer.getPageStop(n) ?? 30;
     group.rotation(textRotation + orientation * 90);
@@ -1159,9 +1167,9 @@ export class ScribeViewer {
 
     // This should always be running on a rotated image, as the recognize area button is only enabled after the angle is already known.
     const imageRotated = true;
-    const angle = scribe.data.pageMetrics[n].angle || 0;
+    const angle = ScribeViewer.doc.pageMetrics[n].angle || 0;
 
-    const imageCoords = scribe.utils.coords.canvasToImage(canvasCoordsPage, imageRotated, scribe.opt.autoRotate, n, angle);
+    const imageCoords = scribe.utils.coords.canvasToImage(canvasCoordsPage, imageRotated, scribe.opt.autoRotate, n, ScribeViewer.doc.pageMetrics, angle);
 
     imageCoords.left = Math.round(imageCoords.left);
     imageCoords.top = Math.round(imageCoords.top);
@@ -1169,7 +1177,7 @@ export class ScribeViewer {
     imageCoords.height = Math.round(imageCoords.height);
 
     // Restrict the rectangle to the page dimensions.
-    const pageDims = scribe.data.pageMetrics[n].dims;
+    const pageDims = ScribeViewer.doc.pageMetrics[n].dims;
     const leftClip = Math.max(0, imageCoords.left);
     const topClip = Math.max(0, imageCoords.top);
     // Tesseract has a bug that subtracting 1 from the width and height (when setting the rectangle to the full image) fixes.
@@ -1471,7 +1479,7 @@ document.addEventListener('copy', (e) => {
     if (i > 0) text += '\n\n';
     const n = ScribeViewer.textGroupsRenderIndices[i];
     text += scribe.utils.writeText({
-      ocrCurrent: scribe.data.ocr.active,
+      ocrCurrent: ScribeViewer.doc.ocr.active,
       pageArr: [n],
       wordIds: ids,
     });
@@ -1498,7 +1506,7 @@ function setWordColorOpacity() {
 }
 
 async function compareGroundTruth() {
-  const oemActive = Object.keys(scribe.data.ocr).find((key) => scribe.data.ocr[key] === scribe.data.ocr.active && key !== 'active');
+  const oemActive = Object.keys(ScribeViewer.doc.ocr).find((key) => ScribeViewer.doc.ocr[key] === ScribeViewer.doc.ocr.active && key !== 'active');
 
   if (!oemActive) {
     console.error('No OCR data active');
@@ -1511,7 +1519,7 @@ async function compareGroundTruth() {
     ignoreCap: scribe.opt.ignoreCap,
     ignoreExtra: scribe.opt.ignoreExtra,
   };
-  /** @type {Parameters<typeof scribe.compareOCR>[2]} */
+  /** @type {Parameters<typeof ScribeViewer.doc.compareOCR>[2]} */
   const compOptions = {
     ignorePunct: scribe.opt.ignorePunct,
     ignoreCap: scribe.opt.ignoreCap,
@@ -1525,10 +1533,10 @@ async function compareGroundTruth() {
 
     // TODO: This will overwrite any edits made by the user while `compareOCR` is running.
     // Is this a problem that is likely to occur in real use? If so, how should it be fixed?
-    const res = await scribe.compareOCR(scribe.data.ocr.active, scribe.data.ocr['Ground Truth'], compOptions);
+    const res = await ScribeViewer.doc.compareOCR(ScribeViewer.doc.ocr.active, ScribeViewer.doc.ocr['Ground Truth'], compOptions);
 
-    scribe.data.ocr[oemActive] = res.ocr;
-    scribe.data.ocr.active = scribe.data.ocr[oemActive];
+    ScribeViewer.doc.ocr[oemActive] = res.ocr;
+    ScribeViewer.doc.ocr.active = ScribeViewer.doc.ocr[oemActive];
 
     clearObjectProperties(evalStats);
     Object.assign(evalStats, res.metrics);
@@ -1662,18 +1670,18 @@ const addBlockOutline = (n, box, angleAdj, index, label, orientation = 0, lines)
  * @param {OcrPage} page
  */
 function renderCanvasWords(page) {
-  const angle = scribe.data.pageMetrics[page.n].angle || 0;
+  const angle = ScribeViewer.doc.pageMetrics[page.n].angle || 0;
   const textRotation = scribe.opt.autoRotate ? 0 : angle;
 
   ScribeViewer.setTextGroupRotation(page.n, textRotation);
 
   if (!ScribeViewer.textGroupsRenderIndices.includes(page.n)) ScribeViewer.textGroupsRenderIndices.push(page.n);
 
-  const matchIdArr = stateViewer.searchMode ? scribe.utils.ocr.getMatchingWordIds(search.search, scribe.data.ocr.active[page.n]) : [];
+  const matchIdArr = stateViewer.searchMode ? scribe.utils.ocr.getMatchingWordIds(search.search, ScribeViewer.doc.ocr.active[page.n]) : [];
 
   const imageRotated = Math.abs(angle ?? 0) > 0.05;
 
-  const pageAnnotations = scribe.data.annotations.pages[page.n] || [];
+  const pageAnnotations = ScribeViewer.doc.annotations.pages[page.n] || [];
 
   if (optViewer.outlinePars && page) {
     // Do not overwrite paragraphs from programs with more advanced layout analysis.
@@ -1853,13 +1861,13 @@ const handleWheel = (event) => {
 // These are added to the document because adding only to the canvas does not work when overlay text is clicked.
 // To avoid unintended interactions, the event listeners are only triggered when the target is within the canvas.
 document.addEventListener('wheel', (event) => {
-  if (event.target instanceof Node && ScribeViewer.elem.contains(event.target) && scribe.data.pageMetrics.length > 0) {
+  if (event.target instanceof Node && ScribeViewer.elem.contains(event.target) && ScribeViewer.doc.pageMetrics.length > 0) {
     handleWheel(event);
   }
 }, { passive: false });
 
 document.addEventListener('mousedown', (event) => {
-  if (event.target instanceof Node && ScribeViewer.elem.contains(event.target) && scribe.data.pageMetrics.length > 0) {
+  if (event.target instanceof Node && ScribeViewer.elem.contains(event.target) && ScribeViewer.doc.pageMetrics.length > 0) {
     if (event.button === 1) { // Middle mouse button
       ScribeViewer.startDrag(event);
     }

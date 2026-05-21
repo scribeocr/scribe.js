@@ -1,7 +1,8 @@
-import { FontCont } from '../../containers/fontContainer.js';
 import ocr from '../../objects/ocrObjects.js';
 import { calcWordMetrics } from '../../utils/fontUtils.js';
 import { getStyleLookup } from '../../utils/miscUtils.js';
+
+/** @typedef {import('../../containers/fontContainer.js').DocFonts} DocFonts */
 
 /**
  * @param {number} x
@@ -15,12 +16,13 @@ const formatNum = (x) => String(Math.round(x * 1e6) / 1e6);
  * @param {Object<string, PdfFontFamily>} pdfFonts
  * @param {('ebook'|'eval'|'proof'|'invis'|'annot')} textMode -
  * @param {number} angle
+ * @param {DocFonts} [docFonts] - Per-document fonts.
  * @param {boolean} rotateText
  * @param {boolean} rotateBackground
  * @param {number} confThreshHigh
  * @param {number} confThreshMed
  */
-export async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle,
+export async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode, angle, docFonts,
   rotateText = false, rotateBackground = false, confThreshHigh = 85, confThreshMed = 75) {
   if (!pageObj || pageObj.lines.length === 0) {
     return { textContentObjStr: '', pdfFontsUsed: new Set() };
@@ -75,9 +77,9 @@ export async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode
 
     textContentObjStr += `${fillColor}\n`;
 
-    let wordFont = FontCont.getWordFont(wordJ);
+    let wordFont = docFonts.getWordFont(wordJ);
 
-    const word0Metrics = calcWordMetrics(wordJ, angle);
+    const word0Metrics = calcWordMetrics(wordJ, docFonts, angle);
 
     let wordFontSize = word0Metrics.fontSize;
 
@@ -143,14 +145,14 @@ export async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode
     for (let j = 0; j < words.length; j++) {
       wordJ = words[j];
 
-      const wordMetrics = calcWordMetrics(wordJ, angle);
+      const wordMetrics = calcWordMetrics(wordJ, docFonts, angle);
       wordFontSize = wordMetrics.fontSize;
       const charSpacing = wordMetrics.charSpacing;
       const charArr = wordMetrics.charArr;
       const wordLeftBearing = wordJ.visualCoords ? wordMetrics.leftSideBearing : 0;
       const kerningArr = wordMetrics.kerningArr;
 
-      wordFont = FontCont.getWordFont(wordJ);
+      wordFont = docFonts.getWordFont(wordJ);
 
       fillColor = '0 0 0 rg';
       if (textMode === 'proof') {

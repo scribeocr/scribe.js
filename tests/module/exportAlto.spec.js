@@ -82,21 +82,21 @@ const normalizeAlto = (xmlStr) => {
 describe('Check .alto export function.', () => {
   test('Should correctly export and reimport text content', async () => {
     await scribe.terminate();
-    await scribe.importFiles([`${ASSETS_PATH}/the_past.alto.xml`]);
+    const doc = await scribe.openDocument([`${ASSETS_PATH}/the_past.alto.xml`]);
 
-    const text1Before = scribe.data.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
-    const text3Before = scribe.data.ocr.active[0].lines[2].words.map((x) => x.text).join(' ');
+    const text1Before = doc.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
+    const text3Before = doc.ocr.active[0].lines[2].words.map((x) => x.text).join(' ');
 
-    const altoOutStr = writeAlto({ ocrData: scribe.data.ocr.active });
+    const altoOutStr = writeAlto({ ocrData: doc.ocr.active });
 
     const encoder = new TextEncoder();
     const encoded = encoder.encode(altoOutStr);
 
     await scribe.terminate();
-    await scribe.importFiles({ ocrFiles: [encoded.buffer] });
+    const doc2 = await scribe.openDocument({ ocrFiles: [encoded.buffer] });
 
-    const text1After = scribe.data.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
-    const text3After = scribe.data.ocr.active[0].lines[2].words.map((x) => x.text).join(' ');
+    const text1After = doc2.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
+    const text3After = doc2.ocr.active[0].lines[2].words.map((x) => x.text).join(' ');
 
     expect(text1Before).toBe(text1After);
     expect(text3Before).toBe(text3After);
@@ -104,23 +104,23 @@ describe('Check .alto export function.', () => {
 
   test('Should correctly export and reimport confidence scores', async () => {
     await scribe.terminate();
-    await scribe.importFiles([`${ASSETS_PATH}/the_past.alto.xml`]);
+    const doc = await scribe.openDocument([`${ASSETS_PATH}/the_past.alto.xml`]);
 
-    const word1Before = scribe.data.ocr.active[0].lines[0].words[0];
-    const word2Before = scribe.data.ocr.active[0].lines[0].words[1];
+    const word1Before = doc.ocr.active[0].lines[0].words[0];
+    const word2Before = doc.ocr.active[0].lines[0].words[1];
     const conf1Before = word1Before.conf;
     const conf2Before = word2Before.conf;
 
-    const altoOutStr = writeAlto({ ocrData: scribe.data.ocr.active });
+    const altoOutStr = writeAlto({ ocrData: doc.ocr.active });
 
     const encoder = new TextEncoder();
     const encoded = encoder.encode(altoOutStr);
 
     await scribe.terminate();
-    await scribe.importFiles({ ocrFiles: [encoded.buffer] });
+    const doc2 = await scribe.openDocument({ ocrFiles: [encoded.buffer] });
 
-    const word1After = scribe.data.ocr.active[0].lines[0].words[0];
-    const word2After = scribe.data.ocr.active[0].lines[0].words[1];
+    const word1After = doc2.ocr.active[0].lines[0].words[0];
+    const word2After = doc2.ocr.active[0].lines[0].words[1];
 
     expect(Math.abs((word1After.conf) - (conf1Before))).toBeLessThanOrEqual(1);
     expect(Math.abs((word2After.conf) - (conf2Before))).toBeLessThanOrEqual(1);
@@ -128,21 +128,21 @@ describe('Check .alto export function.', () => {
 
   test('Should correctly export and reimport font styles', async () => {
     await scribe.terminate();
-    await scribe.importFiles([`${ASSETS_PATH}/the_past.alto.xml`]);
+    const doc = await scribe.openDocument([`${ASSETS_PATH}/the_past.alto.xml`]);
 
-    const boldBefore1 = scribe.data.ocr.active[0].lines[0].words[0].style.bold;
-    const boldBefore2 = scribe.data.ocr.active[0].lines[0].words[1].style.bold;
+    const boldBefore1 = doc.ocr.active[0].lines[0].words[0].style.bold;
+    const boldBefore2 = doc.ocr.active[0].lines[0].words[1].style.bold;
 
-    const altoOutStr = writeAlto({ ocrData: scribe.data.ocr.active });
+    const altoOutStr = writeAlto({ ocrData: doc.ocr.active });
 
     const encoder = new TextEncoder();
     const encoded = encoder.encode(altoOutStr);
 
     await scribe.terminate();
-    await scribe.importFiles({ ocrFiles: [encoded.buffer] });
+    const doc2 = await scribe.openDocument({ ocrFiles: [encoded.buffer] });
 
-    const boldAfter1 = scribe.data.ocr.active[0].lines[0].words[0].style.bold;
-    const boldAfter2 = scribe.data.ocr.active[0].lines[0].words[1].style.bold;
+    const boldAfter1 = doc2.ocr.active[0].lines[0].words[0].style.bold;
+    const boldAfter2 = doc2.ocr.active[0].lines[0].words[1].style.bold;
 
     expect(boldBefore1).toBe(boldAfter1);
     expect(boldBefore2).toBe(boldAfter2);
@@ -150,29 +150,29 @@ describe('Check .alto export function.', () => {
 
   test('Should correctly export and reimport font family', async () => {
     await scribe.terminate();
-    await scribe.importFiles([`${ASSETS_PATH}/the_past.alto.xml`]);
+    const doc = await scribe.openDocument([`${ASSETS_PATH}/the_past.alto.xml`]);
 
-    const fontBefore = scribe.data.ocr.active[0].lines[0].words[0].style.font;
+    const fontBefore = doc.ocr.active[0].lines[0].words[0].style.font;
 
-    const altoOutStr = writeAlto({ ocrData: scribe.data.ocr.active });
+    const altoOutStr = writeAlto({ ocrData: doc.ocr.active });
 
     const encoder = new TextEncoder();
     const encoded = encoder.encode(altoOutStr);
 
     await scribe.terminate();
-    await scribe.importFiles({ ocrFiles: [encoded.buffer] });
+    const doc2 = await scribe.openDocument({ ocrFiles: [encoded.buffer] });
 
-    const fontAfter = scribe.data.ocr.active[0].lines[0].words[0].style.font;
+    const fontAfter = doc2.ocr.active[0].lines[0].words[0].style.font;
 
     expect(fontBefore).toBe(fontAfter);
   });
 
   test('Should match original ALTO XML structure after round-trip (content-only comparison)', async () => {
     await scribe.terminate();
-    await scribe.importFiles([`${ASSETS_PATH}/simple_paragraph.alto.xml`]);
+    const doc = await scribe.openDocument([`${ASSETS_PATH}/simple_paragraph.alto.xml`]);
 
     const originalAltoStr = await readTextFileUniversal(`${ASSETS_PATH}/simple_paragraph.alto.xml`);
-    const altoOutStr = writeAlto({ ocrData: scribe.data.ocr.active });
+    const altoOutStr = writeAlto({ ocrData: doc.ocr.active });
 
     const normalizedOriginal = normalizeAlto(originalAltoStr);
     const normalizedExported = normalizeAlto(altoOutStr);
@@ -187,9 +187,9 @@ describe('Check .alto export function.', () => {
 
 describe('Check non-contiguous pageArr subsetting for .alto export.', () => {
   test('Exporting pages [0, 2] should include pages 0 and 2 but not page 1', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/trident_v_connecticut_general.abbyy.xml`]);
+    const doc = await scribe.openDocument([`${ASSETS_PATH}/trident_v_connecticut_general.abbyy.xml`]);
 
-    const exportedAlto = await scribe.exportData('alto', { pageArr: [0, 2] });
+    const exportedAlto = await doc.exportData('alto', { pageArr: [0, 2] });
 
     // "Comstock" only appears on page 0 — should be present
     expect(exportedAlto).toContain('Comstock');

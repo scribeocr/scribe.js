@@ -8,6 +8,9 @@ import {
 import opentype from '../../js/font-parser/src/index.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 
+/** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+let doc;
+
 scribe.opt.workerN = 1;
 scribe.opt.langPath = LANG_PATH;
 
@@ -274,10 +277,10 @@ describe('correctType3CharBBoxes restores OcrPage character dimensions.', () => 
 
   beforeAll(async () => {
     // Ground truth from the parallel Type0 PDF (same content, working encoding).
-    await scribe.importFiles([`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`]);
     const gtH = [];
     const gtW = [];
-    for (const line of scribe.data.ocr.active[0].lines) {
+    for (const line of doc.ocr.active[0].lines) {
       for (const word of line.words) {
         if (!word.chars) continue;
         for (const ch of word.chars) {
@@ -293,9 +296,9 @@ describe('correctType3CharBBoxes restores OcrPage character dimensions.', () => 
     await scribe.terminate();
 
     // Broken Type3 PDF — record before-correction baseline, then apply.
-    await scribe.importFiles([`${ASSETS_PATH}/Iris (plant) - Wikipedia_AdobePDF123.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/Iris (plant) - Wikipedia_AdobePDF123.pdf`]);
     const beforeH = [];
-    for (const line of scribe.data.ocr.pdf[0].lines) {
+    for (const line of doc.ocr.pdf[0].lines) {
       for (const word of line.words) {
         if (!word.chars) continue;
         for (const ch of word.chars) {
@@ -309,11 +312,11 @@ describe('correctType3CharBBoxes restores OcrPage character dimensions.', () => 
 
     const pdfBytes = await readFileBytes(`${ASSETS_PATH}/Iris (plant) - Wikipedia_AdobePDF123.pdf`);
     const type3Fonts = extractType3GlyphBBoxes(pdfBytes);
-    correctType3CharBBoxes(scribe.data.ocr.pdf, type3Fonts);
+    correctType3CharBBoxes(doc.ocr.pdf, type3Fonts);
 
     const afterH = [];
     const afterW = [];
-    for (const line of scribe.data.ocr.pdf[0].lines) {
+    for (const line of doc.ocr.pdf[0].lines) {
       for (const word of line.words) {
         if (!word.chars) continue;
         for (const ch of word.chars) {

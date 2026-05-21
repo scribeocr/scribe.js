@@ -4,6 +4,9 @@ import {
 import scribe from '../../scribe.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 
+/** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+let doc;
+
 scribe.opt.workerN = 1;
 scribe.opt.langPath = LANG_PATH;
 
@@ -11,14 +14,14 @@ scribe.opt.langPath = LANG_PATH;
 
 describe('Check ALTO XML import function.', () => {
   test('Should import ALTO XML with PNG image', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/ascenders_descenders_test.png`,
+    doc = await scribe.openDocument([`${ASSETS_PATH}/ascenders_descenders_test.png`,
       `${ASSETS_PATH}/ascenders_descenders_test.alto.xml`]);
   });
 
   test('Should correctly import text content from ALTO XML (default settings)', async () => {
-    const text1 = scribe.data.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
-    const text2 = scribe.data.ocr.active[0].lines[1].words.map((x) => x.text).join(' ');
-    const text3 = scribe.data.ocr.active[0].lines[2].words.map((x) => x.text).join(' ');
+    const text1 = doc.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
+    const text2 = doc.ocr.active[0].lines[1].words.map((x) => x.text).join(' ');
+    const text3 = doc.ocr.active[0].lines[2].words.map((x) => x.text).join(' ');
 
     expect(text1).toBe('Ascenders On');
     expect(text2).toBe('query png');
@@ -32,20 +35,20 @@ describe('Check ALTO XML import function.', () => {
 
 describe('Check ALTO XML import function without image.', () => {
   test('Should import ALTO XML without image/PDF inputs', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/the_past.alto.xml`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/the_past.alto.xml`]);
   });
 
   test('Should correctly import text content', async () => {
-    const text1 = scribe.data.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
-    const text3 = scribe.data.ocr.active[0].lines[2].words.map((x) => x.text).join(' ');
+    const text1 = doc.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
+    const text3 = doc.ocr.active[0].lines[2].words.map((x) => x.text).join(' ');
 
     expect(text1).toBe('THE PAST.');
     expect(text3).toBe('THE PAST.');
   });
 
   test('Should correctly import confidence scores', async () => {
-    const word1 = scribe.data.ocr.active[0].lines[0].words[0];
-    const word2 = scribe.data.ocr.active[0].lines[0].words[1];
+    const word1 = doc.ocr.active[0].lines[0].words[0];
+    const word2 = doc.ocr.active[0].lines[0].words[1];
 
     expect(word1.conf).toBeGreaterThan(1);
     expect(word2.conf).toBeGreaterThan(1);
@@ -60,16 +63,16 @@ describe('Check ALTO XML import function without image.', () => {
 
 describe('Check that font style is detected for ALTO xml imports.', () => {
   test('Bold style is detected', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/the_past.alto.xml`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/the_past.alto.xml`]);
     // First line has STYLE="bold" on both words
-    expect(scribe.data.ocr.active[0].lines[0].words[0].style.bold).toBe(true);
-    expect(scribe.data.ocr.active[0].lines[0].words[1].style.bold).toBe(true);
+    expect(doc.ocr.active[0].lines[0].words[0].style.bold).toBe(true);
+    expect(doc.ocr.active[0].lines[0].words[1].style.bold).toBe(true);
   });
 
   test('Font family is detected from STYLEREFS', async () => {
     // Check that font family is extracted from TextStyle definitions
     // The first TextBlock in TopMargin uses font2 which is Times New Roman
-    const word = scribe.data.ocr.active[0].lines[0].words[0];
+    const word = doc.ocr.active[0].lines[0].words[0];
     // STYLEREFS at TextBlock level should be inherited by words
     expect(word.style.font).toBe('Times New Roman');
   });
@@ -81,14 +84,14 @@ describe('Check that font style is detected for ALTO xml imports.', () => {
 
 describe('Check ALTO XML multi-page import.', () => {
   test('Should import multi-page ALTO XML document', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/testocr_all_orientations.alto.xml`]);
-    expect(scribe.data.ocr.active.length).toBe(12);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/testocr_all_orientations.alto.xml`]);
+    expect(doc.ocr.active.length).toBe(12);
   });
 
   test('Should correctly parse page dimensions', async () => {
-    const page = scribe.data.ocr.active[0];
-    expect(scribe.data.ocr.active[0].dims.height).toBe(480);
-    expect(scribe.data.ocr.active[0].dims.width).toBe(640);
+    const page = doc.ocr.active[0];
+    expect(doc.ocr.active[0].dims.height).toBe(480);
+    expect(doc.ocr.active[0].dims.width).toBe(640);
     expect(page.dims.height > 0).toBe(true);
     expect(page.dims.width > 0).toBe(true);
   });
@@ -108,16 +111,16 @@ describe('Check ALTO XML import positioning matches Abbyy.', () => {
     await scribe.init({ ocr: true, font: true });
 
     // First, import Abbyy XML to get accurate line metrics (ground truth)
-    await scribe.importFiles([
+    doc = await scribe.openDocument([
       `${ASSETS_PATH}/ascenders_descenders_test.png`,
       `${ASSETS_PATH}/ascenders_descenders_test.abbyy.xml`,
     ]);
 
     abbyyLineMetrics = {};
-    const abbyyPage = scribe.data.ocr.active[0];
+    const abbyyPage = doc.ocr.active[0];
     for (let lineIdx = 0; lineIdx < abbyyPage.lines.length; lineIdx++) {
       const line = abbyyPage.lines[lineIdx];
-      const wordMetrics = scribe.utils.calcWordMetrics(line.words[0]);
+      const wordMetrics = scribe.utils.calcWordMetrics(line.words[0], doc.fonts);
       abbyyLineMetrics[lineIdx] = {
         baseline: [...line.baseline],
         fontSize: wordMetrics.fontSize,
@@ -125,17 +128,17 @@ describe('Check ALTO XML import positioning matches Abbyy.', () => {
       };
     }
 
-    await scribe.clear();
-    await scribe.importFiles([
+    await doc.clear();
+    doc = await scribe.openDocument([
       `${ASSETS_PATH}/ascenders_descenders_test.png`,
       `${ASSETS_PATH}/ascenders_descenders_test.alto.xml`,
     ]);
 
     altoLineMetrics = {};
-    const altoPage = scribe.data.ocr.active[0];
+    const altoPage = doc.ocr.active[0];
     for (let lineIdx = 0; lineIdx < altoPage.lines.length; lineIdx++) {
       const line = altoPage.lines[lineIdx];
-      const wordMetrics = scribe.utils.calcWordMetrics(line.words[0]);
+      const wordMetrics = scribe.utils.calcWordMetrics(line.words[0], doc.fonts);
       altoLineMetrics[lineIdx] = {
         baseline: [...line.baseline],
         fontSize: wordMetrics.fontSize,

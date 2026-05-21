@@ -23,6 +23,8 @@ import {
 } from './pdfPageRewrite.js';
 import { createConversionState } from './convertTextRegionsToPaths.js';
 
+/** @typedef {import('../../containers/fontContainer.js').DocFonts} DocFonts */
+
 /**
  * Rewrite a page dict's /Annots entry to drop link annotations whose
  * destination resolves to a page that is being dropped.
@@ -279,6 +281,7 @@ function replacePageResources(pageObjText, newResourcesDictText) {
  * @param {boolean} [params.humanReadable=false]
  * @param {Array<Array<AnnotationHighlight>>} [params.annotationsPages=[]]
  * @param {?Array<{ page: number, bbox: [number, number, number, number] }>} [params.convertRegionsToPaths=null]
+ * @param {DocFonts} [params.docFonts] - Per-document fonts for the OCR overlay text layer.
  */
 export async function rebuildPdfSubset({
   pdfBytes, text, objCache, xrefEntries, pages,
@@ -289,6 +292,7 @@ export async function rebuildPdfSubset({
   humanReadable = false,
   annotationsPages = [],
   convertRegionsToPaths = null,
+  docFonts,
 }) {
   const overlayEnabled = !!(ocrArr && pageMetricsArr && pdfFonts);
   let nextObjNum = startingNextObjNum;
@@ -352,7 +356,7 @@ export async function rebuildPdfSubset({
       if (pageObj && pageObj.lines.length > 0 && textMode !== 'annot') {
         const angle = pageMetricsArr[i].angle || 0;
         const res = await ocrPageToPDFStream(
-          pageObj, pixelDims, pdfFonts, /** @type {'ebook'|'eval'|'proof'|'invis'} */ (textMode), angle,
+          pageObj, pixelDims, pdfFonts, /** @type {'ebook'|'eval'|'proof'|'invis'} */ (textMode), angle, docFonts,
           rotateText, rotateBackground, confThreshHigh, confThreshMed,
         );
         textContentObjStr = res.textContentObjStr || '';

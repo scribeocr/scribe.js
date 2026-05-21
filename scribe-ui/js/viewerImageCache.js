@@ -109,16 +109,16 @@ export class ViewerImageCache {
    * @param {number} n
    */
   static getKonvaImage = async (n) => {
-    const pageDims = scribe.data.pageMetrics[n].dims;
+    const pageDims = ScribeViewer.doc.pageMetrics[n].dims;
 
-    const backgroundImage = scribe.opt.colorMode === 'binary' ? await scribe.data.image.getBinary(n, undefined, true) : await scribe.data.image.getNative(n, undefined, true);
+    const backgroundImage = scribe.opt.colorMode === 'binary' ? await ScribeViewer.doc.images.getBinary(n, undefined, true) : await ScribeViewer.doc.images.getNative(n, undefined, true);
     const image = scribe.opt.colorMode === 'binary' ? await ViewerImageCache.getBinaryBitmap(n) : await ViewerImageCache.getNativeBitmap(n);
 
     let rotation = 0;
     if (scribe.opt.autoRotate && !backgroundImage.rotated) {
-      rotation = (scribe.data.pageMetrics[n].angle || 0) * -1;
+      rotation = (ScribeViewer.doc.pageMetrics[n].angle || 0) * -1;
     } else if (!scribe.opt.autoRotate && backgroundImage.rotated) {
-      rotation = (scribe.data.pageMetrics[n].angle || 0);
+      rotation = (ScribeViewer.doc.pageMetrics[n].angle || 0);
     }
 
     const pageOffsetY = ScribeViewer.getPageStop(n) ?? 30;
@@ -162,7 +162,7 @@ export class ViewerImageCache {
    *  Image properties should only be defined if needed, as they can require the image to be re-rendered.
    */
   static getNativeBitmap = async (n, props) => {
-    const nativeN = await scribe.data.image.getNative(n, props, true);
+    const nativeN = await ScribeViewer.doc.images.getNative(n, props, true);
     if (ViewerImageCache.#nativeBitmapPromises[n]) await ViewerImageCache.#nativeBitmapPromises[n];
     if (!nativeN.imageBitmap) {
       const bitmapPromise = ViewerImageCache.imageStrToBitmap(nativeN.src);
@@ -180,7 +180,7 @@ export class ViewerImageCache {
    *  Image properties should only be defined if needed, as they can require the image to be re-rendered.
    */
   static getBinaryBitmap = async (n, props) => {
-    const binaryN = await scribe.data.image.getBinary(n, props, true);
+    const binaryN = await ScribeViewer.doc.images.getBinary(n, props, true);
     if (ViewerImageCache.#binaryBitmapPromises[n]) await ViewerImageCache.#binaryBitmapPromises[n];
     if (!binaryN.imageBitmap) {
       const bitmapPromise = ViewerImageCache.imageStrToBitmap(binaryN.src);
@@ -205,9 +205,9 @@ export class ViewerImageCache {
           const konvaImage = await ViewerImageCache.konvaImages[n];
           let rotation = 0;
           if (scribe.opt.autoRotate && !ViewerImageCache.konvaImagesProps[n].rotated) {
-            rotation = (scribe.data.pageMetrics[n].angle || 0) * -1;
+            rotation = (ScribeViewer.doc.pageMetrics[n].angle || 0) * -1;
           } else if (!scribe.opt.autoRotate && ViewerImageCache.konvaImagesProps[n].rotated) {
-            rotation = (scribe.data.pageMetrics[n].angle || 0);
+            rotation = (ScribeViewer.doc.pageMetrics[n].angle || 0);
           }
 
           if (Math.abs(konvaImage.rotation() - rotation) > 0.01) {
@@ -270,13 +270,13 @@ export class ViewerImageCache {
 
     // Do not render the following pages when a PDF is being uploaded alongside OCR data, and the OCR dimensions are not yet available.
     // There is currently no mechanism for re-rendering at the correct dimensions.
-    if (curr === 0 && scribe.data.ocr?.active?.[curr] && !scribe.data.ocr?.active?.[curr + 1] && scribe.data.pageMetrics.length > curr + 1) return;
+    if (curr === 0 && ScribeViewer.doc.ocr?.active?.[curr] && !ScribeViewer.doc.ocr?.active?.[curr + 1] && ScribeViewer.doc.pageMetrics.length > curr + 1) return;
 
     for (let i = 0; i <= ViewerImageCache.cacheRenderPages; i++) {
       if (curr - i >= 0) {
         resArr.push(ViewerImageCache.addKonvaImage(curr - i));
       }
-      if (curr + i < scribe.data.image.loadCount) {
+      if (curr + i < ScribeViewer.doc.images.loadCount) {
         resArr.push(ViewerImageCache.addKonvaImage(curr + i));
       }
     }
@@ -286,15 +286,15 @@ export class ViewerImageCache {
 
   static #cleanBitmapCache = (curr) => {
     // Delete images that are sufficiently far away from the current page to save memory.
-    for (let i = 0; i < scribe.data.image.pageCount; i++) {
+    for (let i = 0; i < ScribeViewer.doc.images.pageCount; i++) {
       if (Math.abs(curr - i) > ViewerImageCache.cacheDeletePages) {
-        if (scribe.data.image.native[i]) {
-          Promise.resolve(scribe.data.image.native[i]).then((img) => {
+        if (ScribeViewer.doc.images.native[i]) {
+          Promise.resolve(ScribeViewer.doc.images.native[i]).then((img) => {
             img.imageBitmap = null;
           });
         }
-        if (scribe.data.image.binary[i]) {
-          Promise.resolve(scribe.data.image.binary[i]).then((img) => {
+        if (ScribeViewer.doc.images.binary[i]) {
+          Promise.resolve(ScribeViewer.doc.images.binary[i]).then((img) => {
             img.imageBitmap = null;
           });
         }
@@ -304,7 +304,7 @@ export class ViewerImageCache {
 
   static #cleanBitmapCache2 = (curr) => {
     // Delete images that are sufficiently far away from the current page to save memory.
-    for (let i = 0; i < scribe.data.image.pageCount; i++) {
+    for (let i = 0; i < ScribeViewer.doc.images.pageCount; i++) {
       if (Math.abs(curr - i) > ViewerImageCache.cacheDeletePages) {
         if (ScribeViewer.placeholderRectArr[i]) ScribeViewer.placeholderRectArr[i].show();
         ViewerImageCache.deleteKonvaImage(i);

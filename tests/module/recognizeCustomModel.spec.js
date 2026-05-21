@@ -4,6 +4,9 @@ import {
 import scribe from '../../scribe.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 
+/** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+let doc;
+
 scribe.opt.workerN = 1;
 scribe.opt.langPath = LANG_PATH;
 
@@ -171,34 +174,34 @@ describe('Check custom model recognition with Google Vision format.', () => {
       MockGoogleVisionModel.fixturePages[i] = await readFileContent(`${gvDirAlt}/${filename}`);
     }
 
-    await scribe.importFiles([`${ASSETS_PATH}/trident_v_connecticut_general.pdf`]);
-    await scribe.recognize({ model: MockGoogleVisionModel });
+    doc = await scribe.openDocument([`${ASSETS_PATH}/trident_v_connecticut_general.pdf`]);
+    await doc.recognize({ model: MockGoogleVisionModel });
   });
 
   test('Should produce OCR data for all 7 pages', async () => {
     for (let i = 0; i < PAGE_COUNT; i++) {
-      expect(scribe.data.ocr.active[i]).toBeTruthy();
-      expect(scribe.data.ocr.active[i].lines.length > 0).toBe(true);
+      expect(doc.ocr.active[i]).toBeTruthy();
+      expect(doc.ocr.active[i].lines.length > 0).toBe(true);
     }
   });
 
   test('Should correctly recognize text on page 0', async () => {
-    const firstWord = scribe.data.ocr.active[0].lines[0].words[0].text;
+    const firstWord = doc.ocr.active[0].lines[0].words[0].text;
     expect(firstWord).toBe('564');
   });
 
   test('Should correctly recognize text on page 6', async () => {
-    const firstWord = scribe.data.ocr.active[6].lines[0].words[0].text;
+    const firstWord = doc.ocr.active[6].lines[0].words[0].text;
     expect(firstWord).toBe('570');
   });
 
   test('Should set active OCR to the custom model results', async () => {
-    expect(scribe.data.ocr.active).toBe(scribe.data.ocr['Mock Google Vision']);
+    expect(doc.ocr.active).toBe(doc.ocr['Mock Google Vision']);
   });
 
   test('Should have correct page numbers on OcrPage objects', async () => {
     for (let i = 0; i < PAGE_COUNT; i++) {
-      expect(scribe.data.ocr.active[i].n).toBe(i);
+      expect(doc.ocr.active[i].n).toBe(i);
     }
   });
 
@@ -219,41 +222,41 @@ describe('Check custom model recognition with Textract format.', () => {
       MockTextractModel.fixturePages[i] = await readFileContent(`${txDir}/${filename}`);
     }
 
-    await scribe.importFiles([`${ASSETS_PATH}/trident_v_connecticut_general.pdf`]);
-    await scribe.recognize({ model: MockTextractModel });
+    doc = await scribe.openDocument([`${ASSETS_PATH}/trident_v_connecticut_general.pdf`]);
+    await doc.recognize({ model: MockTextractModel });
   });
 
   test('Should produce OCR data for all 7 pages', async () => {
     for (let i = 0; i < PAGE_COUNT; i++) {
-      expect(scribe.data.ocr.active[i]).toBeTruthy();
-      expect(scribe.data.ocr.active[i].lines.length > 0).toBe(true);
+      expect(doc.ocr.active[i]).toBeTruthy();
+      expect(doc.ocr.active[i].lines.length > 0).toBe(true);
     }
   });
 
   test('Should correctly recognize text on page 0', async () => {
-    const firstWord = scribe.data.ocr.active[0].lines[0].words[0].text;
+    const firstWord = doc.ocr.active[0].lines[0].words[0].text;
     expect(firstWord).toBe('564');
   });
 
   test('Should correctly recognize text on page 6', async () => {
-    const firstWord = scribe.data.ocr.active[6].lines[0].words[0].text;
+    const firstWord = doc.ocr.active[6].lines[0].words[0].text;
     expect(firstWord).toBe('570');
   });
 
   test('Should set active OCR to the custom model results', async () => {
-    expect(scribe.data.ocr.active).toBe(scribe.data.ocr['Mock Textract']);
+    expect(doc.ocr.active).toBe(doc.ocr['Mock Textract']);
   });
 
   test('Should have correct page numbers on OcrPage objects', async () => {
     for (let i = 0; i < PAGE_COUNT; i++) {
-      expect(scribe.data.ocr.active[i].n).toBe(i);
+      expect(doc.ocr.active[i].n).toBe(i);
     }
   });
 
   test('Should have unique word IDs across all pages', async () => {
     const allIds = [];
     for (let i = 0; i < PAGE_COUNT; i++) {
-      for (const line of scribe.data.ocr.active[i].lines) {
+      for (const line of doc.ocr.active[i].lines) {
         for (const word of line.words) {
           allIds.push(word.id);
         }
@@ -283,19 +286,19 @@ describe('Check custom model recognition in documentMode (Textract).', () => {
       MockTextractDocumentModeModel.fixturePages[i] = await readFileContent(`${txDir}/${filename}`);
     }
 
-    await scribe.importFiles([`${ASSETS_PATH}/trident_v_connecticut_general.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/trident_v_connecticut_general.pdf`]);
 
-    originalPreRender = scribe.data.image.preRenderRange;
+    originalPreRender = doc.images.preRenderRange;
     preRenderSpyCalls = 0;
-    scribe.data.image.preRenderRange = async function (...args) {
+    doc.images.preRenderRange = async function (...args) {
       preRenderSpyCalls++;
       return originalPreRender.apply(this, args);
     };
 
     try {
-      await scribe.recognize({ model: MockTextractDocumentModeModel });
+      await doc.recognize({ model: MockTextractDocumentModeModel });
     } finally {
-      scribe.data.image.preRenderRange = originalPreRender;
+      doc.images.preRenderRange = originalPreRender;
     }
   });
 
@@ -313,23 +316,23 @@ describe('Check custom model recognition in documentMode (Textract).', () => {
 
   test('Should produce OCR data for all 7 pages', async () => {
     for (let i = 0; i < PAGE_COUNT; i++) {
-      expect(scribe.data.ocr.active[i]).toBeTruthy();
-      expect(scribe.data.ocr.active[i].lines.length > 0).toBe(true);
+      expect(doc.ocr.active[i]).toBeTruthy();
+      expect(doc.ocr.active[i].lines.length > 0).toBe(true);
     }
   });
 
   test('Should correctly recognize text on page 0', async () => {
-    const firstWord = scribe.data.ocr.active[0].lines[0].words[0].text;
+    const firstWord = doc.ocr.active[0].lines[0].words[0].text;
     expect(firstWord).toBe('564');
   });
 
   test('Should correctly recognize text on page 6', async () => {
-    const firstWord = scribe.data.ocr.active[6].lines[0].words[0].text;
+    const firstWord = doc.ocr.active[6].lines[0].words[0].text;
     expect(firstWord).toBe('570');
   });
 
   test('Should set active OCR to the documentMode model results', async () => {
-    expect(scribe.data.ocr.active).toBe(scribe.data.ocr['Mock Textract DocumentMode']);
+    expect(doc.ocr.active).toBe(doc.ocr['Mock Textract DocumentMode']);
   });
 
   afterAll(async () => {
@@ -341,7 +344,7 @@ describe('Check custom model progress reporting.', () => {
   test('Should report progress for each page', async () => {
     MockGoogleVisionModel.pageIndex = 0;
 
-    await scribe.importFiles([`${ASSETS_PATH}/trident_v_connecticut_general.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/trident_v_connecticut_general.pdf`]);
 
     const progressPages = [];
     const originalHandler = scribe.opt.progressHandler;
@@ -351,7 +354,7 @@ describe('Check custom model progress reporting.', () => {
       }
     };
 
-    await scribe.recognize({ model: MockGoogleVisionModel });
+    await doc.recognize({ model: MockGoogleVisionModel });
 
     scribe.opt.progressHandler = originalHandler;
 
@@ -369,7 +372,7 @@ describe('Check custom model error handling.', () => {
   test('Should abort after consecutive failures', async () => {
     FailingModel.pageIndex = 0;
 
-    await scribe.importFiles([`${ASSETS_PATH}/trident_v_connecticut_general.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/trident_v_connecticut_general.pdf`]);
 
     const warnings = [];
     const originalHandler = scribe.opt.warningHandler;
@@ -383,7 +386,7 @@ describe('Check custom model error handling.', () => {
 
     let thrownError = null;
     try {
-      await scribe.recognize({ model: FailingModel });
+      await doc.recognize({ model: FailingModel });
     } catch (err) {
       thrownError = err;
     }
@@ -415,7 +418,7 @@ describe('Check custom model scattered failure handling.', () => {
       ScatteredFailModel.fixturePages[i] = await readFileContent(`${gvDirAlt}/${filename}`);
     }
 
-    await scribe.importFiles([`${ASSETS_PATH}/trident_v_connecticut_general.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/trident_v_connecticut_general.pdf`]);
   });
 
   test('Should return partial results and warn about failed pages', async () => {
@@ -425,7 +428,7 @@ describe('Check custom model scattered failure handling.', () => {
       warnings.push(msg);
     };
 
-    await scribe.recognize({ model: ScatteredFailModel });
+    await doc.recognize({ model: ScatteredFailModel });
 
     scribe.opt.warningHandler = originalHandler;
 
@@ -437,13 +440,13 @@ describe('Check custom model scattered failure handling.', () => {
 
     // Successful pages should have OCR data
     for (const i of [0, 1, 3, 4, 6]) {
-      expect(scribe.data.ocr.active[i]).toBeTruthy();
-      expect(scribe.data.ocr.active[i].lines.length > 0).toBe(true);
+      expect(doc.ocr.active[i]).toBeTruthy();
+      expect(doc.ocr.active[i].lines.length > 0).toBe(true);
     }
 
     // Failed pages should have no lines
-    expect(scribe.data.ocr.active[2].lines.length).toBe(0);
-    expect(scribe.data.ocr.active[5].lines.length).toBe(0);
+    expect(doc.ocr.active[2].lines.length).toBe(0);
+    expect(doc.ocr.active[5].lines.length).toBe(0);
   });
 
   afterAll(async () => {
@@ -460,7 +463,7 @@ describe('Check AbortSignal handling on the per-image path.', () => {
     SlowAbortModel.sharedFixture = await readFileContent(`${txDir}/${filename}`);
     SlowAbortModel.perCallDelayMs = 300;
 
-    await scribe.importFiles([`${ASSETS_PATH}/trident_v_connecticut_general.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/trident_v_connecticut_general.pdf`]);
 
     // Force sequential dispatch so the abort window is deterministic.
     const originalWorkerN = scribe.opt.workerN;
@@ -480,7 +483,7 @@ describe('Check AbortSignal handling on the per-image path.', () => {
     };
 
     try {
-      await scribe.recognize({ model: SlowAbortModel, signal: ac.signal });
+      await doc.recognize({ model: SlowAbortModel, signal: ac.signal });
     } catch (err) {
       thrownError = err;
     } finally {
@@ -495,7 +498,7 @@ describe('Check AbortSignal handling on the per-image path.', () => {
   });
 
   test('Should preserve partial OCR results for pages that completed before abort', async () => {
-    const engineOcr = scribe.data.ocr['Slow Abort Textract'] || [];
+    const engineOcr = doc.ocr['Slow Abort Textract'] || [];
     const completedPages = engineOcr.filter((p) => p && p.lines && p.lines.length > 0);
     expect(completedPages.length > 0).toBe(true);
     expect(completedPages.length < PAGE_COUNT).toBe(true);
@@ -519,7 +522,7 @@ describe('Check AbortSignal handling on the documentMode path.', () => {
     SlowAbortDocumentModeModel.perPageDelayMs = 300;
     SlowAbortDocumentModeModel.lastOptionsSignal = null;
 
-    await scribe.importFiles([`${ASSETS_PATH}/trident_v_connecticut_general.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/trident_v_connecticut_general.pdf`]);
 
     // Abort once the first page has been received and converted — guarantees partial
     // results regardless of how long the library takes to start consuming the stream.
@@ -534,7 +537,7 @@ describe('Check AbortSignal handling on the documentMode path.', () => {
     };
 
     try {
-      await scribe.recognize({ model: SlowAbortDocumentModeModel, signal: ac.signal });
+      await doc.recognize({ model: SlowAbortDocumentModeModel, signal: ac.signal });
     } catch (err) {
       thrownError = err;
     } finally {
@@ -553,7 +556,7 @@ describe('Check AbortSignal handling on the documentMode path.', () => {
   });
 
   test('Should preserve partial OCR results on the documentMode engine', async () => {
-    const engineOcr = scribe.data.ocr['Slow Abort DocumentMode'] || [];
+    const engineOcr = doc.ocr['Slow Abort DocumentMode'] || [];
     const completedPages = engineOcr.filter((p) => p && p.lines && p.lines.length > 0);
     expect(completedPages.length > 0).toBe(true);
     expect(completedPages.length < PAGE_COUNT).toBe(true);

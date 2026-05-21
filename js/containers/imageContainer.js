@@ -2,12 +2,6 @@ import {
   PageMetrics,
 } from '../objects/pageMetricsObjects.js';
 
-import { updateFontContWorkerMain } from '../fontContainerMain.js';
-import { pageMetricsAll } from './dataContainer.js';
-import {
-  FontCont,
-} from './fontContainer.js';
-
 import { gs } from '../generalWorkerMain.js';
 import { imageUtils, ImageWrapper } from '../objects/imageObjects.js';
 import { range } from '../utils/miscUtils.js';
@@ -15,6 +9,7 @@ import { opt } from './app.js';
 
 import { initPdfScheduler } from '../pdfWorkerMain.js';
 import { extractType0Fonts } from '../pdf/fonts/parsePdfFonts.js';
+import { syncToWorkers } from '../fontContainerMain.js';
 
 /** @type {?boolean} */
 let _sabCapability = null;
@@ -57,15 +52,19 @@ function canUseSharedArrayBuffer() {
  * @property {?('color'|'gray'|'binary')} [colorMode]
  */
 
-export class ImageCache {
+/**
+ * Per-document image cache and PDF worker pool. Holds the document's rendered images, the loaded
+ * PDF bytes, and a dedicated `PdfScheduler`.
+ */
+export class ImageStore {
   /** @type {Array<ImageWrapper|Promise<ImageWrapper>>} */
-  static nativeSrc = [];
+  nativeSrc = [];
 
   /** @type {Array<ImageWrapper|Promise<ImageWrapper>>} */
-  static native = [];
+  native = [];
 
   /** @type {Array<ImageWrapper|Promise<ImageWrapper>>} */
-  static binary = [];
+  binary = [];
 
   // These arrays store the properties of the images.
   // While they are redundant with the properties stored in the ImageWrapper objects,
@@ -73,13 +72,36 @@ export class ImageCache {
   // The imagewrappers are stored as promises, and needing to await them would break things without further changes.
   // See: https://developer.mozilla.org/en-US/docs/Web/JavaScript/Reference/Operators/await#control_flow_effects_of_await
   /** @type {Array<ImageProperties>} */
-  static nativeProps = [];
+  nativeProps = [];
 
   /** @type {Array<ImageProperties>} */
-  static binaryProps = [];
+  binaryProps = [];
 
   /** @type {?ArrayBuffer} */
-  static pdfData = null;
+  pdfData = null;
+
+  /**
+   * The owning document's page metrics. Held by reference (the document mutates this array in place
+   * and never reassigns it) so this cache reads its own document's metrics, not the active document's.
+   * @type {Array<PageMetrics>}
+   */
+  #pageMetrics;
+
+  /**
+   * The owning document's fonts, used only by the optional embedded-PDF-font extraction path
+   * (`opt.extractPDFFonts`). Held by reference so extracted fonts land on this document's `DocFonts`.
+   * @type {?import('./fontContainer.js').DocFonts}
+   */
+  #fonts;
+
+  /**
+   * @param {Array<PageMetrics>} [pageMetrics] - The owning document's page-metrics array.
+   * @param {?import('./fontContainer.js').DocFonts} [fonts] - The owning document's fonts.
+   */
+  constructor(pageMetrics = [], fonts = null) {
+    this.#pageMetrics = pageMetrics;
+    this.#fonts = fonts;
+  }
 
   /**
    * @param {ImagePropertiesRequest} props
@@ -88,7 +110,7 @@ export class ImageCache {
    * @param {boolean} [binary=false]
    * @returns {ImageProperties}
    */
-  static fillPropsDefault = (props, inputImage, n, binary = false) => {
+  fillPropsDefault = (props, inputImage, n, binary = false) => {
     /** @type {"binary" | "color" | "gray"} */
     let colorMode = 'binary';
     if (!binary) {
@@ -96,7 +118,7 @@ export class ImageCache {
       colorMode = color ? 'color' : 'gray';
     }
 
-    let pageAngle = pageMetricsAll[n].angle || 0;
+    let pageAngle = this.#pageMetrics[n].angle || 0;
     if (Math.abs(pageAngle) < 0.05) pageAngle = 0;
 
     // If no preference is specified for rotation, default to true.
@@ -115,55 +137,55 @@ export class ImageCache {
   };
 
   /** @type {?import('../pdfWorkerMain.js').PdfScheduler} */
-  static pdfScheduler = null;
+  pdfScheduler = null;
 
   /** @type {?Promise<import('../pdfWorkerMain.js').PdfScheduler>} */
-  static #pdfSchedulerReady = null;
+  #pdfSchedulerReady = null;
 
   /**
    * Get or lazily initialize the dedicated PDF worker pool.
    * @returns {Promise<import('../pdfWorkerMain.js').PdfScheduler>}
    */
-  static getPdfScheduler = async () => {
-    if (ImageCache.pdfScheduler) return ImageCache.pdfScheduler;
-    if (!ImageCache.#pdfSchedulerReady) {
-      ImageCache.#pdfSchedulerReady = initPdfScheduler().then((s) => {
-        ImageCache.pdfScheduler = s;
+  getPdfScheduler = async () => {
+    if (this.pdfScheduler) return this.pdfScheduler;
+    if (!this.#pdfSchedulerReady) {
+      this.#pdfSchedulerReady = initPdfScheduler().then((s) => {
+        this.pdfScheduler = s;
         return s;
       });
     }
-    return ImageCache.#pdfSchedulerReady;
+    return this.#pdfSchedulerReady;
   };
 
-  static loadCount = 0;
+  loadCount = 0;
 
-  static pageCount = 0;
+  pageCount = 0;
 
   /**
    * The dimensions that each page would be, if it was rendered at 300 DPI.
    * @type {Array<dims>}
    */
-  static pdfDims300 = [];
+  pdfDims300 = [];
 
-  static inputModes = {
+  inputModes = {
     pdf: false,
     image: false,
   };
 
-  static colorModeDefault = 'gray';
+  colorModeDefault = 'gray';
 
   /**
    * @param {number} n - Page number
    * @param {boolean} [color=false]
    */
-  static #renderImage = async (n, color = false) => {
-    if (ImageCache.inputModes.image) {
-      return ImageCache.nativeSrc[n];
-    } if (ImageCache.inputModes.pdf) {
+  #renderImage = async (n, color = false) => {
+    if (this.inputModes.image) {
+      return this.nativeSrc[n];
+    } if (this.inputModes.pdf) {
       const colorMode = color ? 'color' : 'gray';
-      const pdfScheduler = await ImageCache.getPdfScheduler();
-      const targetWidth = pageMetricsAll[n].dims.width;
-      const dpi = 300 * (targetWidth / ImageCache.pdfDims300[n].width);
+      const pdfScheduler = await this.getPdfScheduler();
+      const targetWidth = this.#pageMetrics[n].dims.width;
+      const dpi = 300 * (targetWidth / this.pdfDims300[n].width);
       const result = await pdfScheduler.renderPdfPage({ pageIndex: n, colorMode, dpi }, true);
       return new ImageWrapper(n, result.dataUrl, result.colorMode);
     }
@@ -177,8 +199,8 @@ export class ImageCache {
    *  Image properties should only be defined if needed, as they can require the image to be re-rendered.
    * @param {boolean} [saveNativeImage=true] - Whether the native image should be saved.
    */
-  static transformImage = async (inputImage, n, props, saveNativeImage = true) => {
-    let pageAngle = pageMetricsAll[n].angle || 0;
+  transformImage = async (inputImage, n, props, saveNativeImage = true) => {
+    let pageAngle = this.#pageMetrics[n].angle || 0;
     if (Math.abs(pageAngle) < 0.05) pageAngle = 0;
 
     // If no preference is specified for rotation, default to true.
@@ -223,53 +245,53 @@ export class ImageCache {
    * @param {boolean} [priorityJob=false] - Whether to make this a priority job, cutting ahead of non-priority jobs.
    *    This is used to keep the UI responsive when many jobs are queued.
    */
-  static getImages = (n, props, nativeOnly = true, priorityJob = false) => {
-    if (!ImageCache.inputModes.image && !ImageCache.inputModes.pdf) {
+  getImages = (n, props, nativeOnly = true, priorityJob = false) => {
+    if (!this.inputModes.image && !this.inputModes.pdf) {
       return { native: undefined, binary: undefined };
     }
 
-    const significantRotation = Math.abs(pageMetricsAll[n].angle || 0) > 0.05;
+    const significantRotation = Math.abs(this.#pageMetrics[n].angle || 0) > 0.05;
 
-    const newNative = !ImageCache.native[n] || !imageUtils.compatible(ImageCache.nativeProps[n], props, significantRotation);
-    const newBinary = !nativeOnly && (!ImageCache.binary[n] || !imageUtils.compatible(ImageCache.binaryProps[n], props, significantRotation));
+    const newNative = !this.native[n] || !imageUtils.compatible(this.nativeProps[n], props, significantRotation);
+    const newBinary = !nativeOnly && (!this.binary[n] || !imageUtils.compatible(this.binaryProps[n], props, significantRotation));
 
     if (newNative || newBinary) {
-      const renderRaw = !ImageCache.native[n] || imageUtils.requiresUndo(ImageCache.nativeProps[n], props);
+      const renderRaw = !this.native[n] || imageUtils.requiresUndo(this.nativeProps[n], props);
       const propsRaw = {
         colorMode: opt.colorMode, rotated: false, upscaled: false, n,
       };
       const renderTransform = newBinary || !imageUtils.compatible(propsRaw, props, significantRotation);
 
-      const propsNew = renderRaw ? propsRaw : JSON.parse(JSON.stringify(ImageCache.nativeProps[n]));
+      const propsNew = renderRaw ? propsRaw : JSON.parse(JSON.stringify(this.nativeProps[n]));
       propsNew.colorMode = props?.colorMode || propsNew.colorMode;
       propsNew.rotated = props?.rotated ?? propsNew.rotated;
       propsNew.upscaled = props?.upscaled ?? propsNew.upscaled;
       const propsNewBinary = JSON.parse(JSON.stringify(propsNew));
       propsNewBinary.colorMode = 'binary';
 
-      const inputNative = ImageCache.native[n];
-      if (newNative) ImageCache.nativeProps[n] = propsNew;
-      if (newBinary) ImageCache.binaryProps[n] = propsNewBinary;
+      const inputNative = this.native[n];
+      if (newNative) this.nativeProps[n] = propsNew;
+      if (newBinary) this.binaryProps[n] = propsNewBinary;
       const res = (async () => {
         /** @type {?ImageWrapper} */
         let img1;
         if (renderRaw) {
           const color = props?.colorMode === 'color' || !props?.colorMode && opt.colorMode === 'color';
-          img1 = await ImageCache.#renderImage(n, color, priorityJob);
+          img1 = await this.#renderImage(n, color, priorityJob);
         } else {
           img1 = await inputNative;
         }
         if (renderTransform) {
-          return ImageCache.transformImage(img1, n, props, true);
+          return this.transformImage(img1, n, props, true);
         }
         return { native: img1, binary: null };
       })();
 
-      if (newNative) ImageCache.native[n] = res.then((r) => r.native);
-      if (newBinary) ImageCache.binary[n] = res.then((r) => r.binary);
+      if (newNative) this.native[n] = res.then((r) => r.native);
+      if (newBinary) this.binary[n] = res.then((r) => r.binary);
     }
 
-    return { native: ImageCache.native[n], binary: ImageCache.binary[n] };
+    return { native: this.native[n], binary: this.binary[n] };
   };
 
   /**
@@ -278,7 +300,7 @@ export class ImageCache {
    * @param {boolean} [priorityJob=false] - Whether to make this a priority job, cutting ahead of non-priority jobs.
    *    This is used to keep the UI responsive when many jobs are queued.
    */
-  static getNative = async (n, props, priorityJob) => ImageCache.getImages(n, props, true, priorityJob || false).native;
+  getNative = async (n, props, priorityJob) => this.getImages(n, props, true, priorityJob || false).native;
 
   /**
    * @param {number} n
@@ -286,7 +308,7 @@ export class ImageCache {
    * @param {boolean} [priorityJob=false] - Whether to make this a priority job, cutting ahead of non-priority jobs.
    *    This is used to keep the UI responsive when many jobs are queued.
    */
-  static getBinary = async (n, props, priorityJob) => ImageCache.getImages(n, props, false, priorityJob || false).binary;
+  getBinary = async (n, props, priorityJob) => this.getImages(n, props, false, priorityJob || false).binary;
 
   /**
    * Pre-render pages.
@@ -300,40 +322,40 @@ export class ImageCache {
    * @param {number} [params.max=0] - Max page to render (used when pageArr is not provided).
    * @param {ImagePropertiesRequest} [params.props]
    */
-  static preRenderRange = async ({
+  preRenderRange = async ({
     binary, pageArr = null, min = 0, max = 0, props,
   }) => {
     const pagesArr = pageArr || range(min, max);
     if (binary) {
-      await Promise.all(pagesArr.map((n) => ImageCache.getBinary(n, props).then(() => {
+      await Promise.all(pagesArr.map((n) => this.getBinary(n, props).then(() => {
         opt.progressHandler({ n, type: 'render', info: { } });
       })));
     } else {
-      await Promise.all(pagesArr.map((n) => ImageCache.getNative(n, props).then(() => {
+      await Promise.all(pagesArr.map((n) => this.getNative(n, props).then(() => {
         opt.progressHandler({ n, type: 'render', info: { } });
       })));
     }
   };
 
-  static clear = () => {
-    ImageCache.nativeSrc = [];
-    ImageCache.native = [];
-    ImageCache.binary = [];
-    ImageCache.inputModes.image = false;
-    ImageCache.inputModes.pdf = false;
-    ImageCache.pageCount = 0;
-    ImageCache.pdfDims300.length = 0;
-    ImageCache.loadCount = 0;
-    ImageCache.nativeProps.length = 0;
-    ImageCache.binaryProps.length = 0;
+  clear = () => {
+    this.nativeSrc = [];
+    this.native = [];
+    this.binary = [];
+    this.inputModes.image = false;
+    this.inputModes.pdf = false;
+    this.pageCount = 0;
+    this.pdfDims300.length = 0;
+    this.loadCount = 0;
+    this.nativeProps.length = 0;
+    this.binaryProps.length = 0;
   };
 
-  static terminate = async () => {
-    ImageCache.clear();
-    if (ImageCache.pdfScheduler) {
-      await ImageCache.pdfScheduler.terminate();
-      ImageCache.pdfScheduler = null;
-      ImageCache.#pdfSchedulerReady = null;
+  terminate = async () => {
+    this.clear();
+    if (this.pdfScheduler) {
+      await this.pdfScheduler.terminate();
+      this.pdfScheduler = null;
+      this.#pdfSchedulerReady = null;
     }
   };
 
@@ -341,7 +363,7 @@ export class ImageCache {
    *
    * @param {ArrayBuffer | Uint8Array | Blob} fileData
    */
-  static openMainPDF = async (fileData) => {
+  openMainPDF = async (fileData) => {
     /** @type {ArrayBuffer} */
     let arrayBuffer;
     if (fileData instanceof ArrayBuffer) {
@@ -351,7 +373,7 @@ export class ImageCache {
     } else {
       arrayBuffer = fileData.buffer.slice(fileData.byteOffset, fileData.byteOffset + fileData.byteLength);
     }
-    ImageCache.pdfData = arrayBuffer;
+    this.pdfData = arrayBuffer;
 
     /** @type {Uint8Array} */
     let pdfBytes;
@@ -367,12 +389,12 @@ export class ImageCache {
 
     // Initialize dedicated PDF workers and load the PDF into all of them.
     // Each worker creates its own ObjectCache and page tree.
-    const pdfScheduler = await ImageCache.getPdfScheduler();
+    const pdfScheduler = await this.getPdfScheduler();
     const { pageCount, pages } = await pdfScheduler.loadPdfInAllWorkers(pdfBytes);
 
-    ImageCache.pageCount = pageCount;
+    this.pageCount = pageCount;
 
-    ImageCache.pdfDims300.length = 0;
+    this.pdfDims300.length = 0;
     for (const page of pages) {
       const widthPts = Math.abs(page.mediaBox[2] - page.mediaBox[0]);
       const heightPts = Math.abs(page.mediaBox[3] - page.mediaBox[1]);
@@ -384,10 +406,10 @@ export class ImageCache {
       const visualHeightPts = rotated ? widthPts : heightPts;
       const width = Math.round(visualWidthPts * 300 / 72);
       const height = Math.round(visualHeightPts * 300 / 72);
-      ImageCache.pdfDims300.push({ width, height });
+      this.pdfDims300.push({ width, height });
     }
 
-    ImageCache.inputModes.pdf = true;
+    this.inputModes.pdf = true;
 
     // Set page metrics based on PDF dimensions.
     // This is always run, even though it is overwritten almost immediately by OCR data when it is uploaded.
@@ -397,24 +419,25 @@ export class ImageCache {
 
     // For reasons that are unclear, a small number of pages have been rendered into massive files
     // so a hard-cap on resolution must be imposed.
-    const pageDPI = ImageCache.pdfDims300.map((x) => 300 * Math.min(x.width, 3500) / x.width);
+    const pageDPI = this.pdfDims300.map((x) => 300 * Math.min(x.width, 3500) / x.width);
 
-    ImageCache.pdfDims300.forEach((x, i) => {
+    this.pdfDims300.forEach((x, i) => {
       const pageDims = { width: Math.round(x.width * pageDPI[i] / 300), height: Math.round(x.height * pageDPI[i] / 300) };
-      pageMetricsAll[i] = new PageMetrics(pageDims);
+      this.#pageMetrics[i] = new PageMetrics(pageDims);
     });
 
     // WIP: Extract fonts embedded in PDFs.
     // This feature is disabled by default as the results are often bad.
     // In addition to only working for certain font formats, fonts embedded in PDFs are often subsetted and/or corrupted.
     // Therefore, before this is enabled by default, more sophisticated rules regarding when fonts should be used are needed.
-    if (opt.extractPDFFonts) {
+    if (opt.extractPDFFonts && this.#fonts) {
+      const docFonts = this.#fonts;
       extractType0Fonts(pdfBytes).then(async (fonts) => {
         for (const objNum of Object.keys(fonts)) {
           const fontFile = fonts[Number(objNum)].fontFile;
-          FontCont.addFontFromFile(fontFile.buffer.slice(fontFile.byteOffset, fontFile.byteOffset + fontFile.byteLength));
+          docFonts.addFontFromFile(fontFile.buffer.slice(fontFile.byteOffset, fontFile.byteOffset + fontFile.byteLength));
         }
-        await updateFontContWorkerMain();
+        await syncToWorkers(docFonts);
       });
     }
   };

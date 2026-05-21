@@ -33,7 +33,7 @@ async function recognizeArea(n, box, wordMode = false) {
   // Return early if the rectangle is too small to be a word.
   if (box.width < 4 || box.height < 4) return;
 
-  if (!scribe.data.ocr.active[n]) {
+  if (!ScribeViewer.doc.ocr.active[n]) {
     console.error('Base text layer must exist prior to recognizing area.');
     return;
   }
@@ -48,7 +48,7 @@ async function recognizeArea(n, box, wordMode = false) {
   // SINGLE_WORD: '8',
   const psm = wordMode ? '8' : '6';
 
-  const upscale = scribe.inputData.imageMode && scribe.opt.enableUpscale;
+  const upscale = ScribeViewer.doc.inputData.imageMode && scribe.opt.enableUpscale;
 
   if (upscale) {
     imageCoords.left *= 2;
@@ -58,7 +58,7 @@ async function recognizeArea(n, box, wordMode = false) {
   }
 
   // Restrict the rectangle to the page dimensions.
-  const pageDims = scribe.data.pageMetrics[n].dims;
+  const pageDims = ScribeViewer.doc.pageMetrics[n].dims;
   const leftClip = Math.max(0, imageCoords.left);
   const topClip = Math.max(0, imageCoords.top);
   // Tesseract has a bug that subtracting 1 from the width and height (when setting the rectangle to the full image) fixes.
@@ -71,7 +71,7 @@ async function recognizeArea(n, box, wordMode = false) {
   imageCoords.height = bottomClip - topClip;
   if (imageCoords.width < 4 || imageCoords.height < 4) return;
 
-  const res0 = await scribe.recognizePageImp(n, legacy, lstm, true, { rectangle: imageCoords, tessedit_pageseg_mode: psm, upscale });
+  const res0 = await ScribeViewer.doc.recognizePageImp(n, legacy, lstm, true, { rectangle: imageCoords, tessedit_pageseg_mode: psm, upscale });
 
   let pageNew;
   if (legacy && lstm) {
@@ -83,14 +83,14 @@ async function recognizeArea(n, box, wordMode = false) {
 
     const debugLabel = 'recognizeArea';
 
-    if (debugLabel && !scribe.data.debug.debugImg[debugLabel]) {
-      scribe.data.debug.debugImg[debugLabel] = new Array(scribe.data.image.pageCount);
-      for (let i = 0; i < scribe.data.image.pageCount; i++) {
-        scribe.data.debug.debugImg[debugLabel][i] = [];
+    if (debugLabel && !ScribeViewer.doc.debug.debugImg[debugLabel]) {
+      ScribeViewer.doc.debug.debugImg[debugLabel] = new Array(ScribeViewer.doc.images.pageCount);
+      for (let i = 0; i < ScribeViewer.doc.images.pageCount; i++) {
+        ScribeViewer.doc.debug.debugImg[debugLabel][i] = [];
       }
     }
 
-    /** @type {Parameters<typeof scribe.compareOCR>[2]} */
+    /** @type {Parameters<typeof ScribeViewer.doc.compareOCR>[2]} */
     const compOptions = {
       mode: 'comb',
       debugLabel,
@@ -101,9 +101,9 @@ async function recognizeArea(n, box, wordMode = false) {
       legacyLSTMComb: true,
     };
 
-    const res = await scribe.compareOCR([pageObjLegacy], [pageObjLSTM], compOptions);
+    const res = await ScribeViewer.doc.compareOCR([pageObjLegacy], [pageObjLSTM], compOptions);
 
-    if (scribe.data.debug.debugImg[debugLabel]) scribe.data.debug.debugImg[debugLabel] = res.debug;
+    if (ScribeViewer.doc.debug.debugImg[debugLabel]) ScribeViewer.doc.debug.debugImg[debugLabel] = res.debug;
 
     pageNew = res.ocr[0];
   } else if (legacy) {
@@ -114,7 +114,7 @@ async function recognizeArea(n, box, wordMode = false) {
     pageNew = resLSTM.convert.lstm.pageObj;
   }
 
-  scribe.combineOCRPage(pageNew, scribe.data.ocr.active[n], scribe.data.pageMetrics[n]);
+  scribe.combineOCRPage(pageNew, ScribeViewer.doc.ocr.active[n], ScribeViewer.doc.pageMetrics[n]);
 
   if (ScribeViewer.textGroupsRenderIndices.includes(n)) ScribeViewer.displayPage(ScribeViewer.state.cp.n);
 }
@@ -137,10 +137,10 @@ async function addWordManual(n, box) {
   let sinAngle = 0;
   let shiftX = 0;
   let shiftY = 0;
-  if (scribe.opt.autoRotate && Math.abs(scribe.data.pageMetrics[n].angle ?? 0) > 0.05) {
-    const rotateAngle = scribe.data.pageMetrics[n].angle || 0;
+  if (scribe.opt.autoRotate && Math.abs(ScribeViewer.doc.pageMetrics[n].angle ?? 0) > 0.05) {
+    const rotateAngle = ScribeViewer.doc.pageMetrics[n].angle || 0;
 
-    const pageDims = scribe.data.pageMetrics[n].dims;
+    const pageDims = ScribeViewer.doc.pageMetrics[n].dims;
 
     sinAngle = Math.sin(rotateAngle * (Math.PI / 180));
     const cosAngle = Math.cos(rotateAngle * (Math.PI / 180));
@@ -168,7 +168,7 @@ async function addWordManual(n, box) {
     left: rectLeftHOCR, top: rectTopHOCR, right: rectRightHOCR, bottom: rectBottomHOCR,
   };
 
-  const pageObj = new scribe.utils.ocr.OcrPage(n, scribe.data.ocr.active[n].dims);
+  const pageObj = new scribe.utils.ocr.OcrPage(n, ScribeViewer.doc.ocr.active[n].dims);
   // Create a temporary line to hold the word until it gets combined.
   // This should not be used after `combineData` is run as it is not the final line.
   const lineObjTemp = new scribe.utils.ocr.OcrLine(pageObj, wordBox, [0, 0], 10, null);
@@ -179,15 +179,15 @@ async function addWordManual(n, box) {
   wordObj.conf = 100;
   lineObjTemp.words = [wordObj];
 
-  scribe.combineOCRPage(pageObj, scribe.data.ocr.active[n], scribe.data.pageMetrics[n], true, false);
+  scribe.combineOCRPage(pageObj, ScribeViewer.doc.ocr.active[n], ScribeViewer.doc.pageMetrics[n], true, false);
 
   // Get line word was added to in main data.
   // This will have different metrics from `lineObj` when the line was combined into an existing line.
-  const wordObjNew = scribe.utils.ocr.getPageWord(scribe.data.ocr.active[n], wordIDNew);
+  const wordObjNew = scribe.utils.ocr.getPageWord(ScribeViewer.doc.ocr.active[n], wordIDNew);
 
   if (!wordObjNew) throw new Error('Failed to add word to page.');
 
-  const angle = scribe.data.pageMetrics[n].angle || 0;
+  const angle = ScribeViewer.doc.pageMetrics[n].angle || 0;
   const imageRotated = Math.abs(angle ?? 0) > 0.05;
 
   const angleAdjLine = imageRotated ? scribe.utils.ocr.calcLineStartAngleAdj(wordObjNew.line) : { x: 0, y: 0 };
@@ -314,7 +314,7 @@ const splitWordClick = () => {
   if (!konvaWord) return;
 
   const splitIndex = KonvaOcrWord.getCursorIndex(konvaWord);
-  const { wordA, wordB } = scribe.utils.splitOcrWord(konvaWord.word, splitIndex);
+  const { wordA, wordB } = scribe.utils.splitOcrWord(konvaWord.word, splitIndex, ScribeViewer.doc.fonts);
 
   const wordIndex = konvaWord.word.line.words.findIndex((x) => x.id === konvaWord.word.id);
 
@@ -412,14 +412,14 @@ const deleteHighlightClick = () => {
 
   const n = konvaWord.word.line.page.n;
   const wb = konvaWord.word.bbox;
-  const pageAnnotations = scribe.data.annotations.pages[n];
+  const pageAnnotations = ScribeViewer.doc.annotations.pages[n];
 
   // Find the annotation matching this word
   const matchingAnnot = pageAnnotations.find((annot) => annotMatchesWord(annot, wb));
   if (!matchingAnnot) return;
 
   // Remove the entire annotation (all entries sharing the same groupId)
-  scribe.data.annotations.pages[n] = pageAnnotations.filter((annot) => annot.groupId !== matchingAnnot.groupId);
+  ScribeViewer.doc.annotations.pages[n] = pageAnnotations.filter((annot) => annot.groupId !== matchingAnnot.groupId);
   for (const kw of ScribeViewer.getKonvaWords()) {
     if (kw.highlightGroupId === matchingAnnot.groupId) {
       kw.highlightColor = null;
@@ -725,8 +725,8 @@ export const mouseupFunc2 = (event) => {
         top: box.top,
         right: box.left + box.width,
         bottom: box.top + box.height,
-        topInv: scribe.data.pageMetrics[n].dims.height - box.top,
-        bottomInv: scribe.data.pageMetrics[n].dims.height - (box.top + box.height),
+        topInv: ScribeViewer.doc.pageMetrics[n].dims.height - box.top,
+        bottomInv: ScribeViewer.doc.pageMetrics[n].dims.height - (box.top + box.height),
       };
       console.log(debugCoords);
     } else if (ScribeViewer.mode === 'addLayoutBoxOrder') {

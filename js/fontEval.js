@@ -1,12 +1,14 @@
-import { pageMetricsAll } from './containers/dataContainer.js';
-import { FontCont } from './containers/fontContainer.js';
-import { ImageCache } from './containers/imageContainer.js';
+import { GlobalFonts } from './containers/fontContainer.js';
 import {
   loadBuiltInFontsRaw,
-  optimizeFontContainerAll, setDefaultFontAuto,
-  updateFontContWorkerMain,
+  optimizeFontContainerAll,
+  setDefaultAuto,
+  syncToWorkers,
 } from './fontContainerMain.js';
 import { gs } from './generalWorkerMain.js';
+
+/** @typedef {import('./containers/fontContainer.js').DocFonts} DocFonts */
+/** @typedef {import('./containers/scribeDoc.js').ScribeDoc} ScribeDoc */
 
 /**
  * Compute the RMSD between OCR character widths and a font's glyph advance widths.
@@ -114,7 +116,7 @@ function getSerifCandidateFonts(charMetricsObj, ocrArr) {
   const rmsdScores = [];
 
   for (const fontName of serifFonts) {
-    const fontObj = FontCont.raw?.[fontName]?.normal;
+    const fontObj = GlobalFonts.raw?.[fontName]?.normal;
     if (!fontObj?.opentype) continue;
     rmsdScores.push({ fontName, rmsd: calcFontWidthRMSD(fontObj.opentype, serifMetrics) });
   }
@@ -130,26 +132,30 @@ function getSerifCandidateFonts(charMetricsObj, ocrArr) {
 
 /**
  * Evaluate how well a font matches the provided array of pages.
+ * @param {DocFonts} docFonts - Per-document font state (provides the worker `docId`).
+ * @param {import('./containers/imageContainer.js').ImageStore} images - This document's image cache.
+ * @param {Array<PageMetrics>} pageMetrics - This document's page metrics.
  * @param {string} font - Name of font family.
  * @param {Array<OcrPage>} pageArr
  * @param {boolean} opt - Whether to use optimized fonts.
  * @param {number} n - Number of words to compare
  */
-export async function evalPagesFont(font, pageArr, opt, n = 500) {
+export async function evalPagesFont(docFonts, images, pageMetrics, font, pageArr, opt, n = 500) {
   let metricTotal = 0;
   let wordsTotal = 0;
 
   for (let i = 0; i < pageArr.length; i++) {
     if (wordsTotal > n) break;
 
-    const imageI = await ImageCache.getBinary(i);
+    const imageI = await images.getBinary(i);
 
     const res = await gs.evalPageFont({
       font,
       page: pageArr[i],
       binaryImage: imageI,
-      pageMetricsObj: pageMetricsAll[i],
+      pageMetricsObj: pageMetrics[i],
       opt,
+      docId: docFonts.id,
     });
 
     metricTotal += res.metricTotal;
@@ -160,30 +166,33 @@ export async function evalPagesFont(font, pageArr, opt, n = 500) {
 }
 
 /**
+ * @param {DocFonts} docFonts - Per-document font state.
+ * @param {import('./containers/imageContainer.js').ImageStore} images - This document's image cache.
+ * @param {Array<PageMetrics>} pageMetrics - This document's page metrics.
  * @param {Array<OcrPage>} pageArr
  * @param {boolean} opt - Whether to use optimized fonts.
  * @param {Set<string>|null} [serifCandidates] - Serif font names to evaluate (from pre-filtering).
  *    If omitted or null, all serif fonts will be evaluated.
  */
-export async function evaluateFonts(pageArr, opt, serifCandidates = null) {
-  const evalCarlito = !!(opt ? FontCont.opt?.Carlito : FontCont.raw?.Carlito);
-  const evalNimbusSans = !!(opt ? FontCont.opt?.NimbusSans : FontCont.raw?.NimbusSans);
-  const evalCentury = (!serifCandidates || serifCandidates.has('Century')) && !!(opt ? FontCont.opt?.Century : FontCont.raw?.Century);
-  const evalPalatino = (!serifCandidates || serifCandidates.has('Palatino')) && !!(opt ? FontCont.opt?.Palatino : FontCont.raw?.Palatino);
-  const evalGaramond = (!serifCandidates || serifCandidates.has('Garamond')) && !!(opt ? FontCont.opt?.Garamond : FontCont.raw?.Garamond);
-  const evalGothic = !!(opt ? FontCont.opt?.Gothic : FontCont.raw?.Gothic);
-  const evalNimbusRoman = (!serifCandidates || serifCandidates.has('NimbusRoman')) && !!(opt ? FontCont.opt?.NimbusRoman : FontCont.raw?.NimbusRoman);
-  const evalNimbusMono = (!serifCandidates || serifCandidates.has('NimbusMono')) && !!(opt ? FontCont.opt?.NimbusMono : FontCont.raw?.NimbusMono);
+export async function evaluateFonts(docFonts, images, pageMetrics, pageArr, opt, serifCandidates = null) {
+  const evalCarlito = !!(opt ? docFonts.opt?.Carlito : GlobalFonts.raw?.Carlito);
+  const evalNimbusSans = !!(opt ? docFonts.opt?.NimbusSans : GlobalFonts.raw?.NimbusSans);
+  const evalCentury = (!serifCandidates || serifCandidates.has('Century')) && !!(opt ? docFonts.opt?.Century : GlobalFonts.raw?.Century);
+  const evalPalatino = (!serifCandidates || serifCandidates.has('Palatino')) && !!(opt ? docFonts.opt?.Palatino : GlobalFonts.raw?.Palatino);
+  const evalGaramond = (!serifCandidates || serifCandidates.has('Garamond')) && !!(opt ? docFonts.opt?.Garamond : GlobalFonts.raw?.Garamond);
+  const evalGothic = !!(opt ? docFonts.opt?.Gothic : GlobalFonts.raw?.Gothic);
+  const evalNimbusRoman = (!serifCandidates || serifCandidates.has('NimbusRoman')) && !!(opt ? docFonts.opt?.NimbusRoman : GlobalFonts.raw?.NimbusRoman);
+  const evalNimbusMono = (!serifCandidates || serifCandidates.has('NimbusMono')) && !!(opt ? docFonts.opt?.NimbusMono : GlobalFonts.raw?.NimbusMono);
 
   const fontMetricsPromises = {
-    carlito: evalCarlito ? evalPagesFont('Carlito', pageArr, opt) : null,
-    nimbusSans: evalNimbusSans ? evalPagesFont('NimbusSans', pageArr, opt) : null,
-    century: evalCentury ? evalPagesFont('Century', pageArr, opt) : null,
-    palatino: evalPalatino ? evalPagesFont('Palatino', pageArr, opt) : null,
-    garamond: evalGaramond ? evalPagesFont('Garamond', pageArr, opt) : null,
-    gothic: evalGothic ? evalPagesFont('Gothic', pageArr, opt) : null,
-    nimbusRoman: evalNimbusRoman ? evalPagesFont('NimbusRoman', pageArr, opt) : null,
-    nimbusMono: evalNimbusMono ? evalPagesFont('NimbusMono', pageArr, opt) : null,
+    carlito: evalCarlito ? evalPagesFont(docFonts, images, pageMetrics, 'Carlito', pageArr, opt) : null,
+    nimbusSans: evalNimbusSans ? evalPagesFont(docFonts, images, pageMetrics, 'NimbusSans', pageArr, opt) : null,
+    century: evalCentury ? evalPagesFont(docFonts, images, pageMetrics, 'Century', pageArr, opt) : null,
+    palatino: evalPalatino ? evalPagesFont(docFonts, images, pageMetrics, 'Palatino', pageArr, opt) : null,
+    garamond: evalGaramond ? evalPagesFont(docFonts, images, pageMetrics, 'Garamond', pageArr, opt) : null,
+    gothic: evalGothic ? evalPagesFont(docFonts, images, pageMetrics, 'Gothic', pageArr, opt) : null,
+    nimbusRoman: evalNimbusRoman ? evalPagesFont(docFonts, images, pageMetrics, 'NimbusRoman', pageArr, opt) : null,
+    nimbusMono: evalNimbusMono ? evalPagesFont(docFonts, images, pageMetrics, 'NimbusMono', pageArr, opt) : null,
   };
 
   const fontMetricsTmp = {
@@ -245,78 +254,83 @@ const calcBestFonts = (fontMetrics) => {
 };
 
 /**
- * Runs font optimization and validation. Sets `fontAll` defaults to best fonts,
- * and returns `true` if sans or serif could be improved through optimization.
+ * Run font optimization and validation for this document. Sets this document's default fonts to the
+ * best-matching fonts, and returns `true` if sans or serif could be improved through optimization.
  *
+ * This should still be run even when no character-level OCR data is present, as it is responsible for
+ * picking the correct default sans/serif font. The only case where it does nothing is when there is
+ * neither character-level OCR data nor images to compare against.
+ * @param {ScribeDoc} doc
  * @param {Array<OcrPage>} ocrArr - Array of OCR pages to use for font optimization.
- *
- * This function should still be run, even if no character-level OCR data is present,
- * as it is responsible for picking the correct default sans/serif font.
- * The only case where this function does nothing is when (1) there is no character-level OCR data
- * and (2) no images are provided to compare against.
  */
-export async function runFontOptimization(ocrArr) {
+export async function runOptimization(doc, ocrArr) {
+  const docFonts = doc.fonts;
+  const { images, pageMetrics } = doc;
   await loadBuiltInFontsRaw();
 
-  const calculateOpt = FontCont.state.charMetrics && Object.keys(FontCont.state.charMetrics).length > 0;
+  const calculateOpt = docFonts.state.charMetrics && Object.keys(docFonts.state.charMetrics).length > 0;
 
   let enableOptSerif = false;
   let enableOptSans = false;
 
   let optimizeFontContainerAllPromise;
   if (calculateOpt) {
-    setDefaultFontAuto(FontCont.state.charMetrics);
+    setDefaultAuto(docFonts, docFonts.state.charMetrics);
 
-    optimizeFontContainerAllPromise = optimizeFontContainerAll(FontCont.raw, FontCont.state.charMetrics)
+    optimizeFontContainerAllPromise = optimizeFontContainerAll(GlobalFonts.raw, docFonts.state.charMetrics, docFonts.id)
       .then((res) => {
-        FontCont.opt = res;
+        docFonts.opt = res;
       });
   }
 
   // If image data exists, select the correct font by comparing to the image.
-  if (ImageCache.inputModes.image || ImageCache.inputModes.pdf) {
+  if (images.inputModes.image || images.inputModes.pdf) {
     // Evaluate default fonts using up to 5 pages.
-    const pageNum = Math.min(ImageCache.pageCount, 5);
+    const pageNum = Math.min(images.pageCount, 5);
 
-    const serifCandidates = getSerifCandidateFonts(FontCont.state.charMetrics, ocrArr);
+    const serifCandidates = getSerifCandidateFonts(docFonts.state.charMetrics, ocrArr);
 
-    FontCont.rawMetrics = await evaluateFonts(ocrArr.slice(0, pageNum), false, serifCandidates);
-    const bestMetricsRaw = calcBestFonts(FontCont.rawMetrics);
+    docFonts.rawMetrics = await evaluateFonts(docFonts, images, pageMetrics, ocrArr.slice(0, pageNum), false, serifCandidates);
+    const bestMetricsRaw = calcBestFonts(docFonts.rawMetrics);
 
     await optimizeFontContainerAllPromise;
-    if (FontCont.opt && Object.keys(FontCont.opt).length > 0) {
-      await updateFontContWorkerMain();
+    if (docFonts.opt && Object.keys(docFonts.opt).length > 0) {
+      await syncToWorkers(docFonts);
 
-      FontCont.optMetrics = await evaluateFonts(ocrArr.slice(0, pageNum), true, serifCandidates);
+      docFonts.optMetrics = await evaluateFonts(docFonts, images, pageMetrics, ocrArr.slice(0, pageNum), true, serifCandidates);
 
-      const bestMetricsOpt = calcBestFonts(FontCont.optMetrics);
+      const bestMetricsOpt = calcBestFonts(docFonts.optMetrics);
 
       // The default font for both the optimized and unoptimized versions are set to the same font.
       // This ensures that switching on/off "font optimization" does not change the font, which would be confusing.
-      if (FontCont.optMetrics[bestMetricsOpt.minKeySans] < FontCont.rawMetrics[bestMetricsRaw.minKeySans]) {
+      if (docFonts.optMetrics[bestMetricsOpt.minKeySans] < docFonts.rawMetrics[bestMetricsRaw.minKeySans]) {
         enableOptSans = true;
-        FontCont.state.sansDefaultName = bestMetricsOpt.minKeySans;
+        docFonts.state.sansDefaultName = bestMetricsOpt.minKeySans;
       } else {
-        FontCont.state.sansDefaultName = bestMetricsRaw.minKeySans;
+        docFonts.state.sansDefaultName = bestMetricsRaw.minKeySans;
       }
 
       // Repeat for serif fonts
-      if (FontCont.optMetrics[bestMetricsOpt.minKeySerif] < FontCont.rawMetrics[bestMetricsRaw.minKeySerif]) {
+      if (docFonts.optMetrics[bestMetricsOpt.minKeySerif] < docFonts.rawMetrics[bestMetricsRaw.minKeySerif]) {
         enableOptSerif = true;
-        FontCont.state.serifDefaultName = bestMetricsOpt.minKeySerif;
+        docFonts.state.serifDefaultName = bestMetricsOpt.minKeySerif;
       } else {
-        FontCont.state.serifDefaultName = bestMetricsRaw.minKeySerif;
+        docFonts.state.serifDefaultName = bestMetricsRaw.minKeySerif;
       }
     } else {
-      FontCont.state.sansDefaultName = bestMetricsRaw.minKeySans;
-      FontCont.state.serifDefaultName = bestMetricsRaw.minKeySerif;
+      docFonts.state.sansDefaultName = bestMetricsRaw.minKeySans;
+      docFonts.state.serifDefaultName = bestMetricsRaw.minKeySerif;
     }
 
-    FontCont.state.enableOpt = enableOptSerif || enableOptSans;
+    docFonts.state.enableOpt = enableOptSerif || enableOptSans;
 
     // Send updated state to all workers.
-    await updateFontContWorkerMain();
+    await syncToWorkers(docFonts);
   }
 
-  return FontCont.state.enableOpt;
+  // Await optimization on the no-image path too (the image branch above already did). Otherwise this
+  // returns before the optimized fonts finish registering, and a prompt terminate() orphans them.
+  if (optimizeFontContainerAllPromise) await optimizeFontContainerAllPromise;
+
+  return docFonts.state.enableOpt;
 }

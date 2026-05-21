@@ -5,6 +5,9 @@ import scribe from '../../scribe.js';
 import { parseParagraphs } from '../../js/import/convertDocDocx.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 
+/** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+let doc;
+
 scribe.opt.workerN = 1;
 scribe.opt.langPath = LANG_PATH;
 
@@ -16,25 +19,25 @@ scribe.opt.langPath = LANG_PATH;
 
 describe('Check docx import function.', () => {
   test('Should import docx file', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/testocr.abbyy.xml`]);
-    const docxData = await scribe.exportData('docx');
+    doc = await scribe.openDocument([`${ASSETS_PATH}/testocr.abbyy.xml`]);
+    const docxData = await doc.exportData('docx');
 
     await scribe.terminate();
 
     const docxFile = new File([docxData], 'test.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
 
-    await scribe.importFiles([docxFile]);
+    doc = await scribe.openDocument([docxFile]);
   });
 
   test('Should correctly import text content from docx', async () => {
-    const text1 = scribe.data.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
+    const text1 = doc.ocr.active[0].lines[0].words.map((x) => x.text).join(' ');
 
     expect(text1).toContain('This is a lot of 12 point text');
   });
 
   test('Should correctly import paragraphs from docx', async () => {
-    expect(scribe.data.ocr.active[0].lines.length > 0).toBe(true);
-    expect(scribe.data.ocr.active[0].pars.length > 0).toBe(true);
+    expect(doc.ocr.active[0].lines.length > 0).toBe(true);
+    expect(doc.ocr.active[0].pars.length > 0).toBe(true);
   });
 
   afterAll(async () => {
@@ -44,17 +47,17 @@ describe('Check docx import function.', () => {
 
 describe('Check export -> import round-trip for docx files.', () => {
   test('Exporting and importing docx should preserve text content', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/testocr.abbyy.xml`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/testocr.abbyy.xml`]);
 
-    const originalText = scribe.data.ocr.active.map((page) => page.lines.map((line) => line.words.map((word) => word.text).join(' ')).join('\n')).join('\n\n');
+    const originalText = doc.ocr.active.map((page) => page.lines.map((line) => line.words.map((word) => word.text).join(' ')).join('\n')).join('\n\n');
 
-    const docxData = await scribe.exportData('docx');
+    const docxData = await doc.exportData('docx');
     const docxFile = new File([docxData], 'test.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
 
     await scribe.terminate();
-    await scribe.importFiles([docxFile]);
+    doc = await scribe.openDocument([docxFile]);
 
-    const importedText = scribe.data.ocr.active.map((page) => page.lines.map((line) => line.words.map((word) => word.text).join(' ')).join('\n')).join('\n\n');
+    const importedText = doc.ocr.active.map((page) => page.lines.map((line) => line.words.map((word) => word.text).join(' ')).join('\n')).join('\n\n');
 
     expect(importedText).toContain('This is a lot of 12 point text');
     expect(importedText).toContain('The quick brown dog jumped');
@@ -67,19 +70,19 @@ describe('Check export -> import round-trip for docx files.', () => {
 
 describe('Check that font styles are preserved in docx round-trip.', () => {
   test('Bold style is preserved in round-trip', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/complaint_1.abbyy.xml`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/complaint_1.abbyy.xml`]);
 
-    const originalBoldWord = scribe.data.ocr.active[1].lines[3].words[0];
+    const originalBoldWord = doc.ocr.active[1].lines[3].words[0];
     expect(originalBoldWord.style.bold).toBe(true);
 
-    const docxData = await scribe.exportData('docx');
+    const docxData = await doc.exportData('docx');
     const docxFile = new File([docxData], 'test.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
 
     await scribe.terminate();
-    await scribe.importFiles([docxFile]);
+    doc = await scribe.openDocument([docxFile]);
 
     let foundBoldWord = false;
-    for (const page of scribe.data.ocr.active) {
+    for (const page of doc.ocr.active) {
       for (const line of page.lines) {
         for (const word of line.words) {
           if (word.style.bold) {
@@ -96,19 +99,19 @@ describe('Check that font styles are preserved in docx round-trip.', () => {
   });
 
   test('Italic style is preserved in round-trip', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.xml`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.xml`]);
 
-    const originalItalicWord = scribe.data.ocr.active[0].lines[30].words[0];
+    const originalItalicWord = doc.ocr.active[0].lines[30].words[0];
     expect(originalItalicWord.style.italic).toBe(true);
 
-    const docxData = await scribe.exportData('docx');
+    const docxData = await doc.exportData('docx');
     const docxFile = new File([docxData], 'test.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
 
     await scribe.terminate();
-    await scribe.importFiles([docxFile]);
+    doc = await scribe.openDocument([docxFile]);
 
     let foundItalicWord = false;
-    for (const page of scribe.data.ocr.active) {
+    for (const page of doc.ocr.active) {
       for (const line of page.lines) {
         for (const word of line.words) {
           if (word.style.italic) {
@@ -131,20 +134,20 @@ describe('Check that font styles are preserved in docx round-trip.', () => {
 
 describe('Check that combined bold + italic is preserved in docx round-trip.', () => {
   test('Word with both bold and italic survives round-trip with both flags set', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/testocr.abbyy.xml`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/testocr.abbyy.xml`]);
 
-    const targetWord = scribe.data.ocr.active[0].lines[0].words[0];
+    const targetWord = doc.ocr.active[0].lines[0].words[0];
     targetWord.style.bold = true;
     targetWord.style.italic = true;
 
-    const docxData = await scribe.exportData('docx');
+    const docxData = await doc.exportData('docx');
     const docxFile = new File([docxData], 'test.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
 
     await scribe.terminate();
-    await scribe.importFiles([docxFile]);
+    doc = await scribe.openDocument([docxFile]);
 
     let foundBoldItalic = false;
-    for (const page of scribe.data.ocr.active) {
+    for (const page of doc.ocr.active) {
       for (const line of page.lines) {
         for (const word of line.words) {
           if (word.style.bold && word.style.italic) {
@@ -167,19 +170,19 @@ describe('Check that combined bold + italic is preserved in docx round-trip.', (
 
 describe('Check that small caps are preserved in docx round-trip.', () => {
   test('Small caps style is preserved in round-trip', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/econometrica_example.abbyy.xml`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/econometrica_example.abbyy.xml`]);
 
-    const originalSmallCapsWord = scribe.data.ocr.active[0].lines[4].words[0];
+    const originalSmallCapsWord = doc.ocr.active[0].lines[4].words[0];
     const originalText = originalSmallCapsWord.text;
 
-    const docxData = await scribe.exportData('docx');
+    const docxData = await doc.exportData('docx');
     const docxFile = new File([docxData], 'test.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
 
     await scribe.terminate();
-    await scribe.importFiles([docxFile]);
+    doc = await scribe.openDocument([docxFile]);
 
     let foundSmallCapsWord = false;
-    for (const page of scribe.data.ocr.active) {
+    for (const page of doc.ocr.active) {
       for (const line of page.lines) {
         for (const word of line.words) {
           if (word.style.smallCaps) {
@@ -202,20 +205,20 @@ describe('Check that small caps are preserved in docx round-trip.', () => {
 
 describe('Check multi-page docx import.', () => {
   test('Should correctly handle multi-page documents', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/CSF_Proposed_Budget_Book_June_2024_r8_30_all_orientations.abbyy.xml`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/CSF_Proposed_Budget_Book_June_2024_r8_30_all_orientations.abbyy.xml`]);
 
-    const originalPageCount = scribe.data.ocr.active.length;
+    const originalPageCount = doc.ocr.active.length;
 
-    const docxData = await scribe.exportData('docx');
+    const docxData = await doc.exportData('docx');
     const docxFile = new File([docxData], 'test.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
 
     await scribe.terminate();
-    await scribe.importFiles([docxFile]);
+    doc = await scribe.openDocument([docxFile]);
 
-    expect(scribe.data.ocr.active.length > 0).toBe(true);
+    expect(doc.ocr.active.length > 0).toBe(true);
 
-    for (const page of scribe.data.ocr.active) {
-      expect(page.lines.length > 0 || scribe.data.ocr.active.indexOf(page) > 0).toBe(true);
+    for (const page of doc.ocr.active) {
+      expect(page.lines.length > 0 || doc.ocr.active.indexOf(page) > 0).toBe(true);
     }
   });
 
@@ -226,21 +229,21 @@ describe('Check multi-page docx import.', () => {
 
 describe('Check that font families are preserved in docx round-trip.', () => {
   test('Font family is preserved in round-trip', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/testocr.abbyy.xml`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/testocr.abbyy.xml`]);
 
-    const originalFontWord = scribe.data.ocr.active[0].lines[0].words[0];
+    const originalFontWord = doc.ocr.active[0].lines[0].words[0];
     const originalFont = originalFontWord.style.font;
     expect(originalFont).not.toBeNull();
     expect(typeof originalFont).toBe('string');
 
-    const docxData = await scribe.exportData('docx');
+    const docxData = await doc.exportData('docx');
     const docxFile = new File([docxData], 'test.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
 
     await scribe.terminate();
-    await scribe.importFiles([docxFile]);
+    doc = await scribe.openDocument([docxFile]);
 
     let foundFontWord = false;
-    for (const page of scribe.data.ocr.active) {
+    for (const page of doc.ocr.active) {
       for (const line of page.lines) {
         for (const word of line.words) {
           if (word.style.font) {
@@ -264,10 +267,10 @@ describe('Check that font families are preserved in docx round-trip.', () => {
 
 describe('Check iris.docx import extracts footnotes and paragraph types.', () => {
   test('Should extract correct number of footnotes from iris.docx', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/iris.docx`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/iris.docx`]);
 
     let footnoteCount = 0;
-    for (const page of scribe.data.ocr.active) {
+    for (const page of doc.ocr.active) {
       for (const par of page.pars) {
         if (par.type === 'footnote') {
           footnoteCount++;
@@ -279,7 +282,7 @@ describe('Check iris.docx import extracts footnotes and paragraph types.', () =>
   });
 
   test('Should identify first paragraph as title with correct ID and text', async () => {
-    const firstPar = scribe.data.ocr.active[0].pars[0];
+    const firstPar = doc.ocr.active[0].pars[0];
 
     expect(firstPar.type).toBe('title');
     // Verify paragraph ID matches Word's w14:paraId
@@ -290,7 +293,7 @@ describe('Check iris.docx import extracts footnotes and paragraph types.', () =>
   });
 
   test('Should parse title text as 28pt in iris.docx', async () => {
-    const firstPar = scribe.data.ocr.active[0].pars[0];
+    const firstPar = doc.ocr.active[0].pars[0];
     const firstWord = firstPar.lines[0].words[0];
 
     expect(firstWord.text).toBe('Iris');
@@ -298,7 +301,7 @@ describe('Check iris.docx import extracts footnotes and paragraph types.', () =>
   });
 
   test('Should parse title font as Gill Sans in iris.docx', async () => {
-    const firstPar = scribe.data.ocr.active[0].pars[0];
+    const firstPar = doc.ocr.active[0].pars[0];
     const firstWord = firstPar.lines[0].words[0];
 
     expect(firstWord.text).toBe('Iris');
@@ -306,7 +309,7 @@ describe('Check iris.docx import extracts footnotes and paragraph types.', () =>
   });
 
   test('Should parse level 2 heading font as Arial in iris.docx', async () => {
-    const overviewPar = scribe.data.ocr.active[0].pars.find((par) => par.id === '63BCB147');
+    const overviewPar = doc.ocr.active[0].pars.find((par) => par.id === '63BCB147');
     expect(overviewPar).not.toBeNull();
 
     const firstWord = overviewPar.lines[0].words[0];
@@ -315,7 +318,7 @@ describe('Check iris.docx import extracts footnotes and paragraph types.', () =>
   });
 
   test('Should parse body text as 10pt in iris.docx', async () => {
-    const bodyPar = scribe.data.ocr.active[0].pars.find((par) => par.id === '38168435');
+    const bodyPar = doc.ocr.active[0].pars.find((par) => par.id === '38168435');
 
     expect(bodyPar).not.toBeNull();
     expect(bodyPar.type).toBe('body');
@@ -325,18 +328,18 @@ describe('Check iris.docx import extracts footnotes and paragraph types.', () =>
   });
 
   test('Should save Word style name in debug.sourceStyle', async () => {
-    const titlePar = scribe.data.ocr.active[0].pars[0];
+    const titlePar = doc.ocr.active[0].pars[0];
     expect(titlePar.debug.sourceStyle).toBe('Heading1Legal1');
 
-    const bodyPar = scribe.data.ocr.active[0].pars.find((par) => par.id === '38168435');
+    const bodyPar = doc.ocr.active[0].pars.find((par) => par.id === '38168435');
     expect(bodyPar.debug.sourceStyle).toBe('ParaLegal1');
 
-    const footnotePar = scribe.data.ocr.active[0].pars.find((par) => par.id === '11821BFA');
+    const footnotePar = doc.ocr.active[0].pars.find((par) => par.id === '11821BFA');
     expect(footnotePar.debug.sourceStyle).toBe('FootnoteText');
   });
 
   test('Should parse first footnote with correct ID and text', async () => {
-    const footnotePar = scribe.data.ocr.active[0].pars.find((par) => par.id === '11821BFA');
+    const footnotePar = doc.ocr.active[0].pars.find((par) => par.id === '11821BFA');
 
     expect(footnotePar).not.toBeNull();
     expect(footnotePar.type).toBe('footnote');
@@ -349,7 +352,7 @@ describe('Check iris.docx import extracts footnotes and paragraph types.', () =>
   });
 
   test('Should link first footnote reference to first footnote paragraph', async () => {
-    const footnotePar = scribe.data.ocr.active[0].pars.find((par) => par.id === '11821BFA');
+    const footnotePar = doc.ocr.active[0].pars.find((par) => par.id === '11821BFA');
     expect(footnotePar).not.toBeNull();
 
     expect(footnotePar.footnoteRefId).not.toBeNull();
@@ -364,7 +367,7 @@ describe('Check iris.docx import extracts footnotes and paragraph types.', () =>
 
   test('Should identify all 13 footnote reference words', async () => {
     const footnoteRefWords = [];
-    for (const page of scribe.data.ocr.active) {
+    for (const page of doc.ocr.active) {
       for (const line of page.lines) {
         for (const word of line.words) {
           if (word.footnoteParId !== null) {
@@ -385,7 +388,7 @@ describe('Check iris.docx import extracts footnotes and paragraph types.', () =>
 
   test('Should set parNum on footnote paragraphs', async () => {
     const footnotePars = [];
-    for (const page of scribe.data.ocr.active) {
+    for (const page of doc.ocr.active) {
       for (const par of page.pars) {
         if (par.type === 'footnote') {
           footnotePars.push(par);
@@ -400,12 +403,12 @@ describe('Check iris.docx import extracts footnotes and paragraph types.', () =>
       expect(par.parNum).toMatch(/^\d+$/);
     }
 
-    const firstFootnote = scribe.data.ocr.active[0].pars.find((par) => par.id === '11821BFA');
+    const firstFootnote = doc.ocr.active[0].pars.find((par) => par.id === '11821BFA');
     expect(firstFootnote.parNum).toBe('1');
   });
 
   test('Should set parNum on numbered body paragraphs', async () => {
-    const bodyPar = scribe.data.ocr.active[0].pars.find((par) => par.id === '38168435');
+    const bodyPar = doc.ocr.active[0].pars.find((par) => par.id === '38168435');
     expect(bodyPar).not.toBeNull();
     expect(bodyPar.parNum).toBe('1.1');
 
@@ -421,14 +424,14 @@ describe('Check iris.docx import extracts footnotes and paragraph types.', () =>
 
 describe('Check iris.docx footnote data survives .scribe export/import round-trip.', () => {
   test('Should preserve footnote count after .scribe round-trip', async () => {
-    await scribe.importFiles([`${ASSETS_PATH}/iris.docx`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/iris.docx`]);
 
-    const scribeData = await scribe.exportData('scribe');
+    const scribeData = await doc.exportData('scribe');
     await scribe.terminate();
-    await scribe.importFiles({ scribeFiles: [scribeData] });
+    doc = await scribe.openDocument({ scribeFiles: [scribeData] });
 
     let footnoteCountAfter = 0;
-    for (const page of scribe.data.ocr.active) {
+    for (const page of doc.ocr.active) {
       for (const par of page.pars) {
         if (par.type === 'footnote') footnoteCountAfter++;
       }
@@ -437,21 +440,21 @@ describe('Check iris.docx footnote data survives .scribe export/import round-tri
   });
 
   test('Should preserve paragraph IDs after .scribe round-trip', async () => {
-    const titlePar = scribe.data.ocr.active[0].pars.find((par) => par.id === '30416D11');
+    const titlePar = doc.ocr.active[0].pars.find((par) => par.id === '30416D11');
     expect(titlePar).not.toBeNull();
     expect(titlePar.type).toBe('title');
 
-    const bodyPar = scribe.data.ocr.active[0].pars.find((par) => par.id === '38168435');
+    const bodyPar = doc.ocr.active[0].pars.find((par) => par.id === '38168435');
     expect(bodyPar).not.toBeNull();
     expect(bodyPar.type).toBe('body');
 
-    const footnotePar = scribe.data.ocr.active[0].pars.find((par) => par.id === '11821BFA');
+    const footnotePar = doc.ocr.active[0].pars.find((par) => par.id === '11821BFA');
     expect(footnotePar).not.toBeNull();
     expect(footnotePar.type).toBe('footnote');
   });
 
   test('Should preserve footnote bidirectional links after .scribe round-trip', async () => {
-    const footnotePar = scribe.data.ocr.active[0].pars.find((par) => par.id === '11821BFA');
+    const footnotePar = doc.ocr.active[0].pars.find((par) => par.id === '11821BFA');
     expect(footnotePar).not.toBeNull();
     expect(footnotePar.footnoteRefId).not.toBeNull();
 

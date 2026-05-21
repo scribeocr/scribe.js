@@ -1,6 +1,6 @@
 import ocr from '../objects/ocrObjects.js';
 
-import { inputData, opt } from '../containers/app.js';
+import { opt } from '../containers/app.js';
 import { extractTableContent } from '../extractTables.js';
 
 /**
@@ -177,12 +177,13 @@ async function buildXlsxZip(sheetXml, xlsxStrings) {
  * @param {Object} params
  * @param {Array<OcrPage>} params.ocrPageArr
  * @param {Array<LayoutDataTablePage>} params.layoutPageArr
+ * @param {import('../containers/app.js').InputData} params.inputData - The document's input metadata, used for the optional filename column.
  * @param {?Array<number>} [params.pageArr=null] - Array of 0-based page indices to include. Overrides minpage/maxpage when provided.
  * @param {number} [params.minpage=0]
  * @param {number} [params.maxpage=-1]
  */
 export async function writeXlsx({
-  ocrPageArr, layoutPageArr, pageArr = null, minpage = 0, maxpage = -1,
+  ocrPageArr, layoutPageArr, inputData, pageArr = null, minpage = 0, maxpage = -1,
 }) {
   const { xlsxStrings, sheetPreamble, sheetClose } = await import('./resources/xlsxFiles.js');
 

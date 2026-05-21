@@ -1,8 +1,6 @@
-import { FontCont } from '../containers/fontContainer.js';
 import { opt } from '../containers/app.js';
 import { calcWordMetrics } from '../utils/fontUtils.js';
 import { assignParagraphs } from '../utils/reflowPars.js';
-import { pageMetricsAll } from '../containers/dataContainer.js';
 import ocr from '../objects/ocrObjects.js';
 
 const formatNum = (num) => (num.toFixed(5).replace(/\.?0+$/, ''));
@@ -60,15 +58,20 @@ const makeSmallCapsDivs = (text, fontSizeHTMLSmallCaps) => {
  * @param {boolean} [params.removeMargins=false] - Remove the margins from the text.
  * @param {?Array<string>} [params.wordIds] - An array of word IDs to include in the document.
  *    If omitted, all words are included.
+ * @param {import('../containers/fontContainer.js').DocFonts} [params.docFonts] - Per-document fonts.
+ *    Required; no active-document fallback.
+ * @param {Array<PageMetrics>} [params.pageMetrics] - This document's page metrics. Required.
  */
 export function writeHtml({
   ocrPages, images, pageArr = null, minpage = 0, maxpage = -1,
-  reflowText = false, removeMargins = false, wordIds = null,
+  reflowText = false, removeMargins = false, wordIds = null, docFonts, pageMetrics,
 }) {
   const fontsUsed = new Set();
+  const fonts = docFonts;
+  const pageMetricsArr = pageMetrics;
 
-  const enableOptSaved = FontCont.state.enableOpt;
-  FontCont.state.enableOpt = false;
+  const enableOptSaved = fonts.state.enableOpt;
+  fonts.state.enableOpt = false;
 
   if (images && images.length === 0) images = undefined;
 
@@ -137,14 +140,14 @@ export function writeHtml({
     }
 
     if (removeMargins) {
-      top += Math.min((maxBottom - minTop) + 200, pageMetricsAll[g].dims.height + 10);
+      top += Math.min((maxBottom - minTop) + 200, pageMetricsArr[g].dims.height + 10);
     } else {
-      top += pageMetricsAll[g].dims.height + 10;
+      top += pageMetricsArr[g].dims.height + 10;
     }
 
     // Do not overwrite paragraphs from Abbyy or Textract.
     if (reflowText && (!pageObj.textSource || !['textract', 'abbyy'].includes(pageObj.textSource))) {
-      const angle = pageMetricsAll[g].angle || 0;
+      const angle = pageMetricsArr[g].angle || 0;
       assignParagraphs(pageObj, angle);
     }
 
@@ -181,7 +184,7 @@ export function writeHtml({
 
           const {
             charSpacing, leftSideBearing, rightSideBearing, fontSize, charArr, advanceArr, kerningArr, font,
-          } = calcWordMetrics(wordObj);
+          } = calcWordMetrics(wordObj, docFonts);
 
           activeLine.y1 = wordObj.line.bbox.bottom + wordObj.line.baseline[1] - minTop;
 
@@ -196,7 +199,7 @@ export function writeHtml({
 
         const {
           charSpacing, leftSideBearing, rightSideBearing, fontSize, charArr, advanceArr, kerningArr, font,
-        } = calcWordMetrics(wordObj);
+        } = calcWordMetrics(wordObj, docFonts);
 
         fontsUsed.add(font);
 
@@ -398,7 +401,7 @@ export function writeHtml({
 
   const htmlStr = `<!doctype html>\n<html>\n<head>\n${metaStr}${styleStr}</head>\n${bodyStr}</html>`;
 
-  FontCont.state.enableOpt = enableOptSaved;
+  fonts.state.enableOpt = enableOptSaved;
 
   return htmlStr;
 }
