@@ -7,11 +7,13 @@
 /**
  * Decode JPEG 2000 (JPX) image data to raw pixels.
  * @param {Uint8Array} data - Raw JP2/JPX codestream bytes
+ * @param {number} [reduceLevels] - Discard this many of the finest resolution levels (single-tile images only).
+ *   Each level halves the decoded dimensions and skips that level's inverse-wavelet and entropy-decode work.
  */
-export function decodeJPX(data) {
+export function decodeJPX(data, reduceLevels = 0) {
   const jpx = new JpxImage();
   try {
-    jpx.parse(data);
+    jpx.parse(data, reduceLevels);
   } catch (_e) {
     console.warn('[decodeJPX] Failed to parse JPEG 2000 image data — skipping corrupt image.');
     return null;
@@ -329,11 +331,11 @@ class JpxImage {
     this.failOnCorruptedImage = false;
   }
 
-  parse(data) {
+  parse(data, reduceLevels = 0) {
     const head = readUint16(data, 0);
     // No box header, immediate start of codestream (SOC)
     if (head === 0xff4f) {
-      this.parseCodestream(data, 0, data.length);
+      this.parseCodestream(data, 0, data.length, reduceLevels);
       return;
     }
 
@@ -383,7 +385,7 @@ class JpxImage {
           break;
         }
         case 0x6a703263: // 'jp2c'
-          this.parseCodestream(data, position, position + dataLength);
+          this.parseCodestream(data, position, position + dataLength, reduceLevels);
           break;
         case 0x6a502020: // 'jP\024\024'
           if (readUint32(data, position) !== 0x0d0a870a) {
@@ -440,7 +442,7 @@ class JpxImage {
     throw new JpxError('No size marker found in JPX stream');
   }
 
-  parseCodestream(data, start, end) {
+  parseCodestream(data, start, end, reduceLevels = 0) {
     const context = {};
     let doNotRecover = false;
     try {
@@ -708,9 +710,16 @@ class JpxImage {
         warn(`JPX: Trying to recover from: "${e.message}".`);
       }
     }
-    this.tiles = transformComponents(context);
+    // Resolution reduction is only coordinate-correct for single-tile images.
+    // A multi-tile image keeps full-resolution tile origins and dimensions.
+    const effectiveReduce = (reduceLevels > 0 && context.tiles.length === 1) ? reduceLevels : 0;
+    this.tiles = transformComponents(context, effectiveReduce);
     this.width = context.SIZ.Xsiz - context.SIZ.XOsiz;
     this.height = context.SIZ.Ysiz - context.SIZ.YOsiz;
+    if (effectiveReduce > 0) {
+      this.width = this.tiles[0].left + this.tiles[0].width;
+      this.height = this.tiles[0].top + this.tiles[0].height;
+    }
     this.componentsCount = context.SIZ.Csiz;
   }
 }
@@ -1700,7 +1709,7 @@ function copyCoefficients(
   }
 }
 
-function transformTile(context, tile, c) {
+function transformTile(context, tile, c, reduceLevels = 0) {
   const component = tile.components[c];
   const codingStyleParameters = component.codingStyleParameters;
   const quantizationParameters = component.quantizationParameters;
@@ -1718,7 +1727,10 @@ function transformTile(context, tile, c) {
 
   const subbandCoefficients = [];
   let b = 0;
-  for (let i = 0; i <= decompositionLevelsCount; i++) {
+  // Skip the finest resolution levels a downscaled draw discards,
+  // so their coefficients are never entropy-decoded.
+  const keptLevels = decompositionLevelsCount - Math.min(reduceLevels, decompositionLevelsCount);
+  for (let i = 0; i <= keptLevels; i++) {
     const resolution = component.resolutions[i];
 
     const width = resolution.trx1 - resolution.trx0;
@@ -1781,7 +1793,7 @@ function transformTile(context, tile, c) {
   };
 }
 
-function transformComponents(context) {
+function transformComponents(context, reduceLevels = 0) {
   const siz = context.SIZ;
   const components = context.components;
   const componentsCount = siz.Csiz;
@@ -1790,7 +1802,7 @@ function transformComponents(context) {
     const tile = context.tiles[i];
     const transformedTiles = [];
     for (let c = 0; c < componentsCount; c++) {
-      transformedTiles[c] = transformTile(context, tile, c);
+      transformedTiles[c] = transformTile(context, tile, c, reduceLevels);
     }
     const tile0 = transformedTiles[0];
     const out = new Uint8ClampedArray(tile0.items.length * componentsCount);

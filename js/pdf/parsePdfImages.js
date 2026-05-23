@@ -3,7 +3,7 @@ import {
   resolveIntValue, resolveArrayValue,
 } from './parsePdfUtils.js';
 import {
-  parseTintColorSpace, buildTintLookupTable, tintComponentsToRGB,
+  parseTintColorSpace, buildTintLookupTable, tintComponentsToRGB, tintSamplesToRgb,
 } from './pdfColorFunctions.js';
 
 /**
@@ -384,21 +384,8 @@ export function parseImageObject(objText, objNum, objCache) {
       if (deviceNNeedsLateDecode) {
         deviceNTintCS = parsedTintCS;
       } else if (imageData) {
-        const nComp = parsedTintCS.nInputs;
-        const nPixels = width * height;
-        const rgbData = new Uint8Array(nPixels * 3);
-        let ok = true;
-        const inputs = new Array(nComp);
-        const srcData = imageData;
-        for (let pi = 0; pi < nPixels; pi++) {
-          for (let c = 0; c < nComp; c++) inputs[c] = srcData[pi * nComp + c] / 255;
-          const rgb = tintComponentsToRGB(parsedTintCS, inputs);
-          if (!rgb) { ok = false; break; }
-          rgbData[pi * 3] = rgb[0];
-          rgbData[pi * 3 + 1] = rgb[1];
-          rgbData[pi * 3 + 2] = rgb[2];
-        }
-        if (ok) {
+        const rgbData = tintSamplesToRgb(parsedTintCS, imageData, parsedTintCS.nInputs, width * height);
+        if (rgbData) {
           imageData = rgbData;
           colorSpace = 'DeviceRGB';
         }

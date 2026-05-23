@@ -502,18 +502,41 @@ export function parseAltColorSpace(csText, objCache) {
     out.type = 'CalGray';
     out.nComp = 1;
   } else if (/\/ICCBased/.test(csText)) {
-    // ICCBased: collapse to a Device* equivalent based on /N component count.
-    let nMatch = /\/N\s+(\d+)/.exec(csText);
-    if (!nMatch) {
-      const refMatch = /\/ICCBased\s+(\d+)\s+\d+\s+R/.exec(csText);
-      if (refMatch) {
-        const iccObjText = objCache.getObjectText(Number(refMatch[1]));
-        if (iccObjText) nMatch = /\/N\s+(\d+)/.exec(iccObjText);
+    let iccObjText = csText;
+    let iccObjNum = null;
+    const refMatch = /\/ICCBased\s+(\d+)\s+\d+\s+R/.exec(csText);
+    if (refMatch && objCache) {
+      iccObjNum = Number(refMatch[1]);
+      const t = objCache.getObjectText(iccObjNum);
+      if (t) iccObjText = t;
+    }
+
+    // The ICC header's data-colour-space signature (bytes 16-19) is the only reliable Lab-vs-RGB indicator for an N=3 profile.
+    // Collapsing a Lab profile to DeviceRGB renders Lab tint values as raw RGB.
+    let dataCS = null;
+    if (iccObjNum != null && objCache) {
+      const profile = objCache.getStreamBytes(iccObjNum);
+      if (profile && profile.length >= 20) {
+        dataCS = String.fromCharCode(profile[16], profile[17], profile[18], profile[19]).trim();
       }
     }
-    const n = nMatch ? Number(nMatch[1]) : 3;
-    out.type = n === 4 ? 'DeviceCMYK' : n === 1 ? 'DeviceGray' : 'DeviceRGB';
-    out.nComp = n;
+
+    if (dataCS === 'Lab') {
+      out.type = 'Lab';
+      let altText = iccObjText;
+      const altMatch = /\/Alternate\s+(\d+)\s+\d+\s+R/.exec(iccObjText);
+      if (altMatch && objCache) {
+        const t = objCache.getObjectText(Number(altMatch[1]));
+        if (t) altText = t;
+      }
+      const wp = resolveNumArray(altText, 'WhitePoint', objCache, null);
+      if (wp) out.labWhitePoint = wp;
+    } else {
+      const nMatch = /\/N\s+(\d+)/.exec(iccObjText);
+      const n = nMatch ? Number(nMatch[1]) : (dataCS === 'CMYK' ? 4 : dataCS === 'GRAY' ? 1 : 3);
+      out.type = n === 4 ? 'DeviceCMYK' : n === 1 ? 'DeviceGray' : 'DeviceRGB';
+      out.nComp = n;
+    }
   }
   return out;
 }
@@ -768,6 +791,43 @@ export function tintComponentsToRGB(parsed, components) {
   const out = evaluateFunction(parsed.tintFn, components);
   if (!out) return null;
   return altCSToRGB(parsed.altCS, out);
+}
+
+/**
+ * Convert an interleaved Separation/DeviceN sample buffer to packed RGB bytes.
+ *
+ * @param {ParsedTintCS} parsed
+ * @param {Uint8Array|Uint8ClampedArray} src - interleaved, `nComp` bytes per pixel
+ * @param {number} nComp - colorant count (function inputs)
+ * @param {number} nPixels
+ * @returns {Uint8Array|null} `nPixels*3` RGB bytes, or null if a sample failed
+ */
+export function tintSamplesToRgb(parsed, src, nComp, nPixels) {
+  if (!parsed || !parsed.tintFn) return null;
+  const out = new Uint8Array(nPixels * 3);
+  const inputs = new Array(nComp);
+  // Spot-color images repeat few distinct colorant tuples, so cache RGB by packed input bytes.
+  // Cap at 6 components so the packed key stays within a safe integer.
+  const cache = new Map();
+  const cacheable = nComp <= 6;
+  for (let pi = 0; pi < nPixels; pi++) {
+    let key = -1;
+    if (cacheable) {
+      key = 0;
+      for (let c = 0; c < nComp; c++) key = key * 256 + src[pi * nComp + c];
+    }
+    let rgb = key >= 0 ? cache.get(key) : undefined;
+    if (rgb === undefined) {
+      for (let c = 0; c < nComp; c++) inputs[c] = src[pi * nComp + c] / 255;
+      rgb = tintComponentsToRGB(parsed, inputs);
+      if (key >= 0 && cache.size < 65536) cache.set(key, rgb);
+    }
+    if (!rgb) return null;
+    out[pi * 3] = rgb[0];
+    out[pi * 3 + 1] = rgb[1];
+    out[pi * 3 + 2] = rgb[2];
+  }
+  return out;
 }
 
 /**

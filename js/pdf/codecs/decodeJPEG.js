@@ -14,6 +14,10 @@ for (let x = 0; x < 8; x++) {
   }
 }
 
+// Reused across idct2d calls.
+// The row pass writes all 64 entries before the column pass reads them, so it never needs re-zeroing.
+const idctScratch = new Float64Array(64);
+
 /**
  * Apply 2D IDCT to an 8×8 block in-place using direct computation.
  * Input: dequantized DCT coefficients in natural (row-major) order.
@@ -21,8 +25,6 @@ for (let x = 0; x < 8; x++) {
  * @param {Int32Array} block - 64-element array
  */
 function idct2d(block) {
-  const tmp = new Float64Array(64);
-
   // Row pass: 1D IDCT on each row
   for (let x = 0; x < 8; x++) {
     for (let row = 0; row < 8; row++) {
@@ -31,7 +33,7 @@ function idct2d(block) {
       for (let u = 0; u < 8; u++) {
         sum += block[ri + u] * idctCos[x * 8 + u];
       }
-      tmp[row * 8 + x] = sum;
+      idctScratch[row * 8 + x] = sum;
     }
   }
 
@@ -40,7 +42,7 @@ function idct2d(block) {
     for (let col = 0; col < 8; col++) {
       let sum = 0;
       for (let v = 0; v < 8; v++) {
-        sum += tmp[v * 8 + col] * idctCos[y * 8 + v];
+        sum += idctScratch[v * 8 + col] * idctCos[y * 8 + v];
       }
       block[y * 8 + col] = Math.round(sum) + 128;
     }
@@ -171,14 +173,15 @@ class BitReader {
  */
 
 /**
- * Decode a CMYK/YCCK JPEG and return raw component data.
+ * Decode a baseline CMYK/YCCK JPEG to per-component sample buffers (MCU-padded),
+ * before chroma upsampling or interleaving.
  *
  * @param {Uint8Array} jpegData - Raw JPEG file bytes
- * @returns {{ width: number, height: number, components: number, data: Uint8Array, adobeTransform: number }|null}
- *   data is interleaved: for 4 components, [C0,C1,C2,C3, C0,C1,C2,C3, ...]
- *   Returns null if not a 4-component JPEG or on decode failure.
+ * @returns {{ width: number, height: number, numComponents: number, compBuffers: Uint8Array[], compWidths: number[], compHeights: number[],
+ * compSampling: {hSamp: number, vSamp: number}[], maxHSamp: number, maxVSamp: number, adobeTransform: number }|null}
+ *   Returns null for non-3/4-component or non-baseline JPEGs and on decode failure.
  */
-export function decodeJPEGRaw(jpegData) {
+function decodeJPEGComponents(jpegData) {
   let pos = 0;
   const len = jpegData.length;
 
@@ -394,6 +397,7 @@ export function decodeJPEGRaw(jpegData) {
 
   let mcuCount = 0;
 
+  const block = new Int32Array(64);
   for (let mcuY = 0; mcuY < mcuCountY; mcuY++) {
     for (let mcuX = 0; mcuX < mcuCountX; mcuX++) {
       if (restartInterval > 0 && mcuCount > 0 && mcuCount % restartInterval === 0) {
@@ -423,7 +427,7 @@ export function decodeJPEGRaw(jpegData) {
 
         for (let bv = 0; bv < blocksV; bv++) {
           for (let bh = 0; bh < blocksH; bh++) {
-            const block = new Int32Array(64);
+            block.fill(0);
 
             const dcCategory = reader.decodeHuffman(dcTable);
             if (dcCategory < 0) {
@@ -485,46 +489,18 @@ export function decodeJPEGRaw(jpegData) {
     }
   }
 
-  // Bilinear chroma upsampling for subsampled components. Nearest-neighbor
-  // reuse produces visible 2×2 (or 2×1) chroma blocks at MCU boundaries.
-  // libjpeg-turbo (Chrome, mupdf) applies fancy upsampling by default for
-  // the same reason; bilinear is a close approximation.
-  const output = new Uint8Array(width * height * numComponents);
-  for (let y = 0; y < height; y++) {
-    for (let x = 0; x < width; x++) {
-      const outIdx = (y * width + x) * numComponents;
-      for (let ci = 0; ci < numComponents; ci++) {
-        const comp = components[ci];
-        if (comp.hSamp === maxHSamp && comp.vSamp === maxVSamp) {
-          // No subsampling — direct copy
-          output[outIdx + ci] = compBuffers[ci][y * compWidths[ci] + x];
-        } else {
-          // Bilinear interpolation for subsampled components
-          const cw = compWidths[ci];
-          const ch = mcuCountY * comp.vSamp * 8;
-          // Map output pixel to fractional component coordinate
-          const fx = x * comp.hSamp / maxHSamp;
-          const fy = y * comp.vSamp / maxVSamp;
-          const x0 = Math.floor(fx);
-          const y0 = Math.floor(fy);
-          const x1 = Math.min(x0 + 1, cw - 1);
-          const y1 = Math.min(y0 + 1, ch - 1);
-          const dx = fx - x0;
-          const dy = fy - y0;
-          const buf = compBuffers[ci];
-          const v00 = buf[y0 * cw + x0];
-          const v10 = buf[y0 * cw + x1];
-          const v01 = buf[y1 * cw + x0];
-          const v11 = buf[y1 * cw + x1];
-          output[outIdx + ci] = ((v00 * (1 - dx) + v10 * dx) * (1 - dy)
-            + (v01 * (1 - dx) + v11 * dx) * dy + 0.5) | 0;
-        }
-      }
-    }
-  }
-
+  const compHeights = components.map((comp) => mcuCountY * comp.vSamp * 8);
   return {
-    width, height, components: numComponents, data: output, adobeTransform,
+    width,
+    height,
+    numComponents,
+    compBuffers,
+    compWidths,
+    compHeights,
+    compSampling: components.map((c) => ({ hSamp: c.hSamp, vSamp: c.vSamp })),
+    maxHSamp,
+    maxVSamp,
+    adobeTransform,
   };
 }
 
@@ -536,70 +512,123 @@ export function decodeJPEGRaw(jpegData) {
  * @returns {{ width: number, height: number, rgbData: Uint8Array }|null}
  */
 export function decodeCMYKJpegToRGB(jpegData, decodeInvert = false) {
-  const raw = decodeJPEGRaw(jpegData);
-  if (!raw) return null;
-
+  const dec = decodeJPEGComponents(jpegData);
+  if (!dec) return null;
   const {
-    width, height, data, adobeTransform,
-  } = raw;
+    width, height, numComponents, compBuffers, compWidths, compHeights, compSampling, maxHSamp, maxVSamp, adobeTransform,
+  } = dec;
   const rgbData = new Uint8Array(width * height * 4); // RGBA for ImageData
 
-  for (let i = 0; i < width * height; i++) {
-    const si = i * 4;
-    let c = data[si];
-    let m = data[si + 1];
-    let y = data[si + 2];
-    let k = data[si + 3];
+  // 4:4:4 (no subsampling) is the common case for print CMYK JPEGs.
+  // Subsampled components instead go through bilinear upsampling.
+  const noSubsampling = numComponents === 4
+    && compSampling.every((cs) => cs.hSamp === maxHSamp && cs.vSamp === maxVSamp);
+  const b0 = compBuffers[0];
+  const b1 = compBuffers[1];
+  const b2 = compBuffers[2];
+  const b3 = compBuffers[3];
+  const w0 = compWidths[0];
+  const w1 = compWidths[1];
+  const w2 = compWidths[2];
+  const w3 = compWidths[3];
+  const comp = new Uint8Array(numComponents);
+  let di = 0;
+  for (let py = 0; py < height; py++) {
+    const r0 = py * w0;
+    const r1 = py * w1;
+    const r2 = py * w2;
+    const r3 = py * w3;
+    for (let px = 0; px < width; px++) {
+      let c;
+      let m;
+      let y;
+      let k;
+      if (noSubsampling) {
+        c = b0[r0 + px];
+        m = b1[r1 + px];
+        y = b2[r2 + px];
+        k = b3[r3 + px];
+      } else {
+        for (let ci = 0; ci < numComponents; ci++) {
+          const cs = compSampling[ci];
+          if (cs.hSamp === maxHSamp && cs.vSamp === maxVSamp) {
+            comp[ci] = compBuffers[ci][py * compWidths[ci] + px];
+          } else {
+            const cw = compWidths[ci];
+            const ch = compHeights[ci];
+            const fx = px * cs.hSamp / maxHSamp;
+            const fy = py * cs.vSamp / maxVSamp;
+            const x0 = Math.floor(fx);
+            const y0 = Math.floor(fy);
+            const x1 = Math.min(x0 + 1, cw - 1);
+            const y1 = Math.min(y0 + 1, ch - 1);
+            const dx = fx - x0;
+            const dy = fy - y0;
+            const buf = compBuffers[ci];
+            const v00 = buf[y0 * cw + x0];
+            const v10 = buf[y0 * cw + x1];
+            const v01 = buf[y1 * cw + x0];
+            const v11 = buf[y1 * cw + x1];
+            comp[ci] = ((v00 * (1 - dx) + v10 * dx) * (1 - dy)
+              + (v01 * (1 - dx) + v11 * dx) * dy + 0.5) | 0;
+          }
+        }
+        c = comp[0];
+        m = comp[1];
+        y = comp[2];
+        k = comp[3];
+      }
 
-    if (adobeTransform === 2) {
-      const Y = c;
-      const Cb = m;
-      const Cr = y;
-      let R = Y + 1.402 * (Cr - 128);
-      let G = Y - 0.344136 * (Cb - 128) - 0.714136 * (Cr - 128);
-      let B = Y + 1.772 * (Cb - 128);
-      if (R < 0) R = 0; if (R > 255) R = 255;
-      if (G < 0) G = 0; if (G > 255) G = 255;
-      if (B < 0) B = 0; if (B > 255) B = 255;
-      c = 255 - R;
-      m = 255 - G;
-      y = 255 - B;
+      if (adobeTransform === 2) {
+        const Y = c;
+        const Cb = m;
+        const Cr = y;
+        let R = Y + 1.402 * (Cr - 128);
+        let G = Y - 0.344136 * (Cb - 128) - 0.714136 * (Cr - 128);
+        let B = Y + 1.772 * (Cb - 128);
+        if (R < 0) R = 0; if (R > 255) R = 255;
+        if (G < 0) G = 0; if (G > 255) G = 255;
+        if (B < 0) B = 0; if (B > 255) B = 255;
+        c = 255 - R;
+        m = 255 - G;
+        y = 255 - B;
+      }
+
+      if (decodeInvert) {
+        c = 255 - c;
+        m = 255 - m;
+        y = 255 - y;
+        k = 255 - k;
+      }
+
+      // CMYK -> RGB using polynomial approximation of US Web Coated (SWOP) v2 ICC profile.
+      // Matches pdf.js. c,m,y,k here are 0-255; normalize to 0-1.
+      const cn = c / 255;
+      const mn = m / 255;
+      const yn = y / 255;
+      const kn = k / 255;
+      const ri = 255
+        + cn * (-4.387332384609988 * cn + 54.48615194189176 * mn + 18.82290502165302 * yn + 212.25662451639585 * kn - 285.2331026137004)
+        + mn * (1.7149763477362134 * mn - 5.6096736904047315 * yn - 17.873870861415444 * kn - 5.497006427196366)
+        + yn * (-2.5217340131683033 * yn - 21.248923337353073 * kn + 17.5119270841813)
+        + kn * (-21.86122147463605 * kn - 189.48180835922747);
+      const gi = 255
+        + cn * (8.841041422036149 * cn + 60.118027045597366 * mn + 6.871425592049007 * yn + 31.159100130055922 * kn - 79.2970844816548)
+        + mn * (-15.310361306967817 * mn + 17.575251261109482 * yn + 131.35250912493976 * kn - 190.9453302588951)
+        + yn * (4.444339102852739 * yn + 9.8632861493405 * kn - 24.86741582555878)
+        + kn * (-20.737325471181034 * kn - 187.80453709719578);
+      const bi = 255
+        + cn * (0.8842522430003296 * cn + 8.078677503112928 * mn + 30.89978309703729 * yn - 0.23883238689178934 * kn - 14.183576799673286)
+        + mn * (10.49593273432072 * mn + 63.02378494754052 * yn + 50.606957656360734 * kn - 112.23884253719248)
+        + yn * (0.03296041114873217 * yn + 115.60384449646641 * kn - 193.58209356861505)
+        + kn * (-22.33816807309886 * kn - 180.12613974708367);
+
+      rgbData[di] = ri > 255 ? 255 : (ri < 0 ? 0 : Math.round(ri));
+      rgbData[di + 1] = gi > 255 ? 255 : (gi < 0 ? 0 : Math.round(gi));
+      rgbData[di + 2] = bi > 255 ? 255 : (bi < 0 ? 0 : Math.round(bi));
+      rgbData[di + 3] = 255;
+      di += 4;
     }
-
-    if (decodeInvert) {
-      c = 255 - c;
-      m = 255 - m;
-      y = 255 - y;
-      k = 255 - k;
-    }
-
-    // CMYK → RGB using polynomial approximation of US Web Coated (SWOP) v2 ICC profile.
-    // Matches pdf.js. c,m,y,k here are 0-255; normalize to 0-1.
-    const cn = c / 255;
-    const mn = m / 255;
-    const yn = y / 255;
-    const kn = k / 255;
-    const ri = 255
-      + cn * (-4.387332384609988 * cn + 54.48615194189176 * mn + 18.82290502165302 * yn + 212.25662451639585 * kn - 285.2331026137004)
-      + mn * (1.7149763477362134 * mn - 5.6096736904047315 * yn - 17.873870861415444 * kn - 5.497006427196366)
-      + yn * (-2.5217340131683033 * yn - 21.248923337353073 * kn + 17.5119270841813)
-      + kn * (-21.86122147463605 * kn - 189.48180835922747);
-    const gi = 255
-      + cn * (8.841041422036149 * cn + 60.118027045597366 * mn + 6.871425592049007 * yn + 31.159100130055922 * kn - 79.2970844816548)
-      + mn * (-15.310361306967817 * mn + 17.575251261109482 * yn + 131.35250912493976 * kn - 190.9453302588951)
-      + yn * (4.444339102852739 * yn + 9.8632861493405 * kn - 24.86741582555878)
-      + kn * (-20.737325471181034 * kn - 187.80453709719578);
-    const bi = 255
-      + cn * (0.8842522430003296 * cn + 8.078677503112928 * mn + 30.89978309703729 * yn - 0.23883238689178934 * kn - 14.183576799673286)
-      + mn * (10.49593273432072 * mn + 63.02378494754052 * yn + 50.606957656360734 * kn - 112.23884253719248)
-      + yn * (0.03296041114873217 * yn + 115.60384449646641 * kn - 193.58209356861505)
-      + kn * (-22.33816807309886 * kn - 180.12613974708367);
-
-    const di = i * 4;
-    rgbData[di] = ri > 255 ? 255 : (ri < 0 ? 0 : Math.round(ri));
-    rgbData[di + 1] = gi > 255 ? 255 : (gi < 0 ? 0 : Math.round(gi));
-    rgbData[di + 2] = bi > 255 ? 255 : (bi < 0 ? 0 : Math.round(bi));
-    rgbData[di + 3] = 255; // Alpha
   }
 
   return { width, height, rgbData };

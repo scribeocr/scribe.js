@@ -1,7 +1,7 @@
 import { parsePageImages, parseImageObject, parseIndexedColorSpace } from './parsePdfImages.js';
 import {
   parseSeparationTint, parseTintColorSpace,
-  tintComponentsToRGB, cmykToRgb, evaluateFunction, parseFunction,
+  tintComponentsToRGB, cmykToRgb, evaluateFunction, parseFunction, tintSamplesToRgb,
 } from './pdfColorFunctions.js';
 import {
   getPageContentStreams, bytesToLatin1,
@@ -465,11 +465,15 @@ async function decodeSmaskJpeg(rawData) {
 
 /**
  * Convert decoded image bytes to an ImageBitmap suitable for canvas drawing.
+ * `maxW`/`maxH` are the device px the image will be drawn within (0 = unbounded)
+ * and cap JPEG2000 decode resolution.
  *
  * @param {import('./parsePdfImages.js').ImageInfo} imageInfo
  * @param {ObjectCache} [objCache]
+ * @param {number} [maxW]
+ * @param {number} [maxH]
  */
-async function imageInfoToBitmap(imageInfo, objCache) {
+async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
   if (imageInfo.imageData == null && objCache && imageInfo.objNum != null) {
     imageInfo.imageData = objCache.getStreamBytes(imageInfo.objNum);
   }
@@ -737,7 +741,21 @@ async function imageInfoToBitmap(imageInfo, objCache) {
   // JPXDecode (JPEG 2000) — decode via pure JS decoder
   if (filter === 'JPXDecode') {
     const { decodeJPX } = await import('./codecs/decodeJPX.js');
-    const decoded = decodeJPX(imageData);
+    // Each reduce level halves the decoded dimensions and skips the finest,
+    // most expensive inverse-wavelet pass.
+    // Keep halving until one more step would fall below 90% of the drawn size,
+    // capping upscale of the decoded image at ~11%.
+    let reduceLevels = 0;
+    if (maxW && maxH) {
+      let rw = imageInfo.width;
+      let rh = imageInfo.height;
+      while (reduceLevels < 5 && rw / 2 >= maxW * 0.9 && rh / 2 >= maxH * 0.9) {
+        rw = Math.floor(rw / 2);
+        rh = Math.floor(rh / 2);
+        reduceLevels++;
+      }
+    }
+    const decoded = decodeJPX(imageData, reduceLevels);
     if (!decoded) return null;
     const w = decoded.width;
     const h = decoded.height;
@@ -755,29 +773,14 @@ async function imageInfoToBitmap(imageInfo, objCache) {
     const rgbaData = new Uint8ClampedArray(w * h * 4);
     if (colorSpace === 'DeviceN' && imageInfo.deviceNTintCS
         && components === imageInfo.deviceNTintCS.nInputs) {
-      const tintCS = imageInfo.deviceNTintCS;
-      const nIn = components;
-      const inputs = new Array(nIn);
-      const altIsCMYK = tintCS.altCS && tintCS.altCS.type === 'DeviceCMYK';
-      for (let i = 0; i < w * h; i++) {
-        for (let c = 0; c < nIn; c++) inputs[c] = pixels[i * nIn + c] / 255;
-        if (altIsCMYK) {
-          const out = evaluateFunction(tintCS.tintFn, inputs);
-          if (out) {
-            const [r, g, b] = cmykToRgb(out[0] || 0, out[1] || 0, out[2] || 0, out[3] || 0);
-            rgbaData[i * 4] = r;
-            rgbaData[i * 4 + 1] = g;
-            rgbaData[i * 4 + 2] = b;
-          }
-        } else {
-          const rgb = tintComponentsToRGB(tintCS, inputs);
-          if (rgb) {
-            rgbaData[i * 4] = rgb[0];
-            rgbaData[i * 4 + 1] = rgb[1];
-            rgbaData[i * 4 + 2] = rgb[2];
-          }
+      const rgb = tintSamplesToRgb(imageInfo.deviceNTintCS, pixels, components, w * h);
+      if (rgb) {
+        for (let i = 0; i < w * h; i++) {
+          rgbaData[i * 4] = rgb[i * 3];
+          rgbaData[i * 4 + 1] = rgb[i * 3 + 1];
+          rgbaData[i * 4 + 2] = rgb[i * 3 + 2];
+          rgbaData[i * 4 + 3] = 255;
         }
-        rgbaData[i * 4 + 3] = 255;
       }
     } else if (components === 1 && colorSpace === 'Indexed' && imageInfo.palette) {
       // Indexed color space: each pixel value is an index into the PDF palette.
@@ -1702,7 +1705,16 @@ async function flattenDrawOps(
       && (op.fillAlpha == null || op.fillAlpha >= 1)
       && (op.strokeAlpha == null || op.strokeAlpha >= 1)
       && !op.smask;
-    if (groupContext && formInfo.transparencyGroup && !compositeIsTrivial) {
+    // A group whose only non-triviality is its group alpha needs no isolation buffer.
+    // The alpha folds directly into its single op.
+    const singleOpAlphaGroup = !compositeIsTrivial
+      && (!op.blendMode || op.blendMode === 'Normal')
+      && !op.smask
+      && formInfo.transparencyGroup && !formInfo.transparencyGroup.knockout
+      && cached.rawFormDrawOps.length === 1
+      && cached.rawFormDrawOps[0].type !== 'image'
+      && !(cached.rawFormDrawOps[0].fill && cached.rawFormDrawOps[0].stroke);
+    if (groupContext && formInfo.transparencyGroup && !compositeIsTrivial && !singleOpAlphaGroup) {
       formGroupId = groupContext.nextId++;
       groupContext.registry.set(formGroupId, {
         isolated: !!formInfo.transparencyGroup.isolated,
@@ -1772,8 +1784,17 @@ async function flattenDrawOps(
             transformed.smask = op.smask;
           }
         }
-        if (op.fillAlpha < 1 && fillAlphaInherited) transformed.fillAlpha = op.fillAlpha;
-        if (op.strokeAlpha < 1 && strokeAlphaInherited) transformed.strokeAlpha = op.strokeAlpha;
+        if (singleOpAlphaGroup) {
+          // No isolation buffer: fold the group alpha into the single op so it
+          // composites as content x groupAlpha, matching the isolated result.
+          const ownFill = fillAlphaInherited ? 1 : (transformed.fillAlpha != null ? transformed.fillAlpha : 1);
+          const ownStroke = strokeAlphaInherited ? 1 : (transformed.strokeAlpha != null ? transformed.strokeAlpha : 1);
+          if (op.fillAlpha != null) transformed.fillAlpha = ownFill * op.fillAlpha;
+          if (op.strokeAlpha != null) transformed.strokeAlpha = ownStroke * op.strokeAlpha;
+        } else {
+          if (op.fillAlpha < 1 && fillAlphaInherited) transformed.fillAlpha = op.fillAlpha;
+          if (op.strokeAlpha < 1 && strokeAlphaInherited) transformed.strokeAlpha = op.strokeAlpha;
+        }
         if (op.blendMode && !transformed.blendMode) transformed.blendMode = op.blendMode;
       }
       if (op.overprint && !transformed.overprint) transformed.overprint = true;
@@ -4888,28 +4909,29 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
   }
 
   const trFn = smaskInfo.tr || null;
+  // Precompute the transfer function across its 256 possible byte inputs.
+  let trLut = null;
+  if (trFn) {
+    trLut = new Float64Array(256);
+    for (let k = 0; k < 256; k++) {
+      const out = evaluateFunction(trFn, [k / 255]);
+      trLut[k] = out && out.length > 0 ? out[0] : k / 255;
+    }
+  }
   const maskData = maskCtx.getImageData(0, 0, maskW, maskH);
   const px = maskData.data;
   for (let i = 0; i < px.length; i += 4) {
     const alpha = px[i + 3] / 255;
     let outAlpha;
     if (isAlphaMask) {
-      outAlpha = alpha;
-      if (trFn) {
-        const out = evaluateFunction(trFn, [alpha]);
-        if (out && out.length > 0) outAlpha = out[0];
-      }
+      outAlpha = trLut ? trLut[px[i + 3]] : alpha;
       px[i] = 255;
       px[i + 1] = 255;
       px[i + 2] = 255;
       px[i + 3] = Math.round(Math.max(0, Math.min(1, outAlpha)) * 255);
     } else {
       const luminosity = (0.299 * px[i] + 0.587 * px[i + 1] + 0.114 * px[i + 2]) / 255;
-      outAlpha = luminosity;
-      if (trFn) {
-        const out = evaluateFunction(trFn, [luminosity]);
-        if (out && out.length > 0) outAlpha = out[0];
-      }
+      outAlpha = trLut ? trLut[Math.round(luminosity * 255)] : luminosity;
       px[i] = 255;
       px[i + 1] = 255;
       px[i + 2] = 255;
@@ -5008,7 +5030,12 @@ function parseHiddenOCMCNames(resourceOwnerText, objCache, offOCGs) {
  * @param {number} pageIndex - Page index (for ImageWrapper)
  * @param {'color'|'gray'} [colorMode='color'] - Output color mode
  * @param {number} [rotate=0] - Page rotation in degrees
- * @returns {Promise<{dataUrl: string, colorMode: string}>} PNG data URL and effective color mode
+ * @param {number} [dpi=300] - Render resolution in dots per inch
+ * @returns {Promise<{dataUrl: string, colorMode: string, ok: boolean, failReason?: string, failDetail?: string}>}
+ *   PNG data URL and effective color mode. `ok` is false when the page is a failure
+ *   placeholder (blank fallback) rather than a real render. `failReason` is then one of
+ *   `exception`, `memory_abort`, or `corrupt_encrypted`, with `failDetail` carrying the
+ *   error text. A genuinely empty page (no draw ops) returns `ok: true`.
  */
 export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, pageIndex, colorMode = 'color', rotate = 0, dpi = 300) {
   // Optional Content visibility is a property of the document — fetch the
@@ -5054,7 +5081,9 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     cCtx.fillStyle = 'white';
     cCtx.fillRect(0, 0, w, h);
     const _imgData = cCtx.getImageData(0, 0, w, h);
-    const out = { dataUrl: await buildPngDataUrl(_imgData, 'gray'), colorMode: 'gray' };
+    const out = {
+      dataUrl: await buildPngDataUrl(_imgData, 'gray'), colorMode: 'gray', ok: false, failReason: 'corrupt_encrypted',
+    };
     ca.closeDrawable(c);
     return out;
   }
@@ -5754,7 +5783,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     ctx.fillStyle = 'white';
     ctx.fillRect(0, 0, canvasWidth, canvasHeight);
     const emptyImageData = ctx.getImageData(0, 0, canvasWidth, canvasHeight);
-    const out = { dataUrl: await buildPngDataUrl(emptyImageData, 'gray'), colorMode: 'gray' };
+    const out = { dataUrl: await buildPngDataUrl(emptyImageData, 'gray'), colorMode: 'gray', ok: true };
     ca.closeDrawable(canvas);
     return out;
   }
@@ -5769,6 +5798,10 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   // Node; tracked here and disposed in the page-end `finally` block.
   /** @type {CanvasPattern[]} */
   const transientPatterns = [];
+  let textMeasureCanvas = null;
+  let renderFailed = false;
+  let failReason = '';
+  let failDetail = '';
 
   try {
   // Apply page rotation to all draw ops by composing rotation CTM with each op's CTM.
@@ -5840,7 +5873,14 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
      */
     function applyClips(renderCtx, op) {
       if (!op.clips || op.clips.length === 0) return;
-      for (const clip of op.clips) {
+      // Clip intersection is commutative, so apply the cheapest (fewest-point) clips first.
+      // A simple rectangle clip applied before a complex many-bezier
+      // clip bounds the region Skia must rasterize and avoids re-rasterizing the
+      // complex clip mask when a simpler clip follows it.
+      const clips = op.clips.length > 1
+        ? [...op.clips].sort((a, b) => (a.path ? a.path.length : 0) - (b.path ? b.path.length : 0))
+        : op.clips;
+      for (const clip of clips) {
         if (clip.textClip) continue; // handled separately via compositing
         if (!clip.path) continue;
         renderCtx.setTransform(
@@ -5989,6 +6029,193 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         mCtx.fillText(ch.text, 0, 0);
         mCtx.restore();
       }
+    }
+
+    /**
+     * Translate every position component of a draw op (its ctm/transform/text
+     * origin, clip ctms, and smask parentCtm) by (dxPdf, dyPdf) in PDF user
+     * space, returning a shallow copy. Lets an op render into a tight bbox-sized
+     * canvas placed at the bbox origin.
+     * @param {any} op
+     * @param {number} dxPdf
+     * @param {number} dyPdf
+     */
+    function shiftOpBy(op, dxPdf, dyPdf) {
+      /** @type {any} */
+      const out = { ...op };
+      if (op.clips) {
+        out.clips = op.clips.map((/** @type {any} */ c) => {
+          /** @type {any} */
+          const nc = {
+            ...c,
+            ctm: c.ctm ? [c.ctm[0], c.ctm[1], c.ctm[2], c.ctm[3], c.ctm[4] + dxPdf, c.ctm[5] + dyPdf] : c.ctm,
+          };
+          if (c.textClip) nc.textClip = c.textClip.map((/** @type {any} */ ch) => ({ ...ch, x: ch.x + dxPdf, y: ch.y + dyPdf }));
+          return nc;
+        });
+      }
+      if (op.smask && op.smask.parentCtm) {
+        const pc = op.smask.parentCtm;
+        out.smask = { ...op.smask, parentCtm: [pc[0], pc[1], pc[2], pc[3], pc[4] + dxPdf, pc[5] + dyPdf] };
+      }
+      if (Array.isArray(op.ctm) && op.ctm.length === 6) {
+        out.ctm = [op.ctm[0], op.ctm[1], op.ctm[2], op.ctm[3], op.ctm[4] + dxPdf, op.ctm[5] + dyPdf];
+      } else if (Array.isArray(op.transform) && op.transform.length === 6) {
+        out.transform = [op.transform[0], op.transform[1], op.transform[2], op.transform[3], op.transform[4] + dxPdf, op.transform[5] + dyPdf];
+      } else if (op.type === 'type0text') {
+        out.x = op.x + dxPdf;
+        out.y = op.y + dyPdf;
+      }
+      return out;
+    }
+
+    /**
+     * Device-pixel bounding box of a single path, image, type0text, or clipped shading op.
+     * Returns null for ops whose extent cannot be bounded (unclipped shadings, other text).
+     * Used to size a transparency group's isolation buffer.
+     * @param {any} op
+     * @returns {{minX:number,minY:number,maxX:number,maxY:number}|null}
+     */
+    function opDeviceBBox(op) {
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      const acc = (ux, uy, m) => {
+        const px = (m[0] * ux + m[2] * uy + m[4] - boxOriginX) * scale;
+        const py = (pageHeightPts + boxOriginY - (m[1] * ux + m[3] * uy + m[5])) * scale;
+        if (px < minX) minX = px;
+        if (px > maxX) maxX = px;
+        if (py < minY) minY = py;
+        if (py > maxY) maxY = py;
+      };
+      if (op.type === 'path' && op.commands && op.ctm) {
+        for (const cmd of op.commands) {
+          if (cmd.x != null) acc(cmd.x, cmd.y, op.ctm);
+          if (cmd.x1 != null) acc(cmd.x1, cmd.y1, op.ctm);
+          if (cmd.x2 != null) acc(cmd.x2, cmd.y2, op.ctm);
+        }
+        if (!Number.isFinite(minX)) return null;
+        if (op.stroke) {
+          const ctmScale = Math.sqrt(Math.abs(op.ctm[0] * op.ctm[3] - op.ctm[1] * op.ctm[2])) || 1;
+          const pad = ((op.lineWidth || 1) * ctmScale * scale) / 2 + 2;
+          minX -= pad; minY -= pad; maxX += pad; maxY += pad;
+        }
+      } else if (op.type === 'image' && (op.ctm || op.transform)) {
+        const m = op.ctm || op.transform;
+        acc(0, 0, m); acc(1, 0, m); acc(0, 1, m); acc(1, 1, m);
+      } else if (op.type === 'type0text' && op.text && op.fontFamily) {
+        if (!textMeasureCanvas) textMeasureCanvas = ca.makeCanvas(8, 8);
+        const mctx = /** @type {OffscreenCanvasRenderingContext2D} */ (textMeasureCanvas.getContext('2d'));
+        mctx.font = /[",]/.test(op.fontFamily) ? `1px ${op.fontFamily}` : `1px "${op.fontFamily}"`;
+        const mw = mctx.measureText(op.text).width || 0;
+        let hScale = 1;
+        if (op.pdfGlyphWidth !== undefined && mw > 0) {
+          hScale = op.pdfGlyphWidth / (1000 * mw);
+          if (!/^"?_pdf_/.test(op.fontFamily) && hScale > 2.0) hScale = 1;
+        }
+        // Matches the type0text glyph transform: (a*hScale, -b*hScale, -c, d).
+        const a = op.a * scale * hScale;
+        const b = -op.b * scale * hScale;
+        const c = -op.c * scale;
+        const d = op.d * scale;
+        const e = (op.x - boxOriginX) * scale;
+        const f = (pageHeightPts + boxOriginY - op.y) * scale;
+        for (const corner of [[-0.2, -1.3], [mw + 0.2, -1.3], [-0.2, 0.5], [mw + 0.2, 0.5]]) {
+          const px = a * corner[0] + c * corner[1] + e;
+          const py = b * corner[0] + d * corner[1] + f;
+          if (px < minX) minX = px;
+          if (px > maxX) maxX = px;
+          if (py < minY) minY = py;
+          if (py > maxY) maxY = py;
+        }
+      } else if (op.type === 'shading' && op.clips && op.clips.length) {
+        // A standalone shading paints fillRect(-1e9..) clipped to op.clips, so its extent is the intersection of the clip paths.
+        // Curve control points over-bound the curve, which is safe.
+        // Unclipped shadings fill the page -> null.
+        let ix0 = -Infinity;
+        let iy0 = -Infinity;
+        let ix1 = Infinity;
+        let iy1 = Infinity;
+        for (const clip of op.clips) {
+          if (!clip.path || !clip.ctm) return null;
+          let c0x = Infinity;
+          let c0y = Infinity;
+          let c1x = -Infinity;
+          let c1y = -Infinity;
+          for (const cmd of clip.path) {
+            const pts = cmd.x1 != null
+              ? [[cmd.x1, cmd.y1], [cmd.x2, cmd.y2], [cmd.x, cmd.y]]
+              : (cmd.x != null ? [[cmd.x, cmd.y]] : []);
+            for (const [ux, uy] of pts) {
+              const px = (clip.ctm[0] * ux + clip.ctm[2] * uy + clip.ctm[4] - boxOriginX) * scale;
+              const py = (pageHeightPts + boxOriginY - (clip.ctm[1] * ux + clip.ctm[3] * uy + clip.ctm[5])) * scale;
+              if (px < c0x) c0x = px;
+              if (px > c1x) c1x = px;
+              if (py < c0y) c0y = py;
+              if (py > c1y) c1y = py;
+            }
+          }
+          if (!Number.isFinite(c0x)) return null;
+          if (c0x > ix0) ix0 = c0x;
+          if (c0y > iy0) iy0 = c0y;
+          if (c1x < ix1) ix1 = c1x;
+          if (c1y < iy1) iy1 = c1y;
+        }
+        if (ix1 <= ix0 || iy1 <= iy0) return null;
+        minX = ix0; minY = iy0; maxX = ix1; maxY = iy1;
+      } else {
+        return null;
+      }
+      if (!Number.isFinite(minX)) return null;
+      return {
+        minX, minY, maxX, maxY,
+      };
+    }
+
+    /**
+     * Device-pixel bounding box enclosing a text-clip's glyphs, padded and
+     * clamped to the page. Returns null if it cannot be measured. Uses the same
+     * transform convention as `drawTextClipMask`.
+     * @param {Array<{text:string,fontFamily:string,a:number,b:number,c:number,d:number,x:number,y:number}>} chars
+     * @returns {{x:number,y:number,w:number,h:number}|null}
+     */
+    function textClipDeviceBBox(chars) {
+      if (!chars || chars.length === 0) return null;
+      if (!textMeasureCanvas) textMeasureCanvas = ca.makeCanvas(8, 8);
+      const mctx = /** @type {OffscreenCanvasRenderingContext2D} */ (textMeasureCanvas.getContext('2d'));
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const ch of chars) {
+        mctx.font = /[",]/.test(ch.fontFamily) ? `1px ${ch.fontFamily}` : `1px "${ch.fontFamily}"`;
+        const w = mctx.measureText(ch.text).width || 0;
+        // 1px font. Glyphs can reach past the advance width and ~1.3 em above /
+        // ~0.5 em below the baseline. Over-enclose so no glyph is ever clipped.
+        const corners = [[-0.2, -1.3], [w + 0.2, -1.3], [-0.2, 0.5], [w + 0.2, 0.5]];
+        for (let ci = 0; ci < 4; ci++) {
+          const lx = corners[ci][0];
+          const ly = corners[ci][1];
+          const dx = ch.a * scale * lx - ch.c * scale * ly + (ch.x - boxOriginX) * scale;
+          const dy = -ch.b * scale * lx + ch.d * scale * ly + (pageHeightPts + boxOriginY - ch.y) * scale;
+          if (dx < minX) minX = dx;
+          if (dx > maxX) maxX = dx;
+          if (dy < minY) minY = dy;
+          if (dy > maxY) maxY = dy;
+        }
+      }
+      if (!Number.isFinite(minX) || !Number.isFinite(minY)) return null;
+      const x = Math.max(0, Math.floor(minX) - 3);
+      const y = Math.max(0, Math.floor(minY) - 3);
+      const right = Math.min(canvasWidth, Math.ceil(maxX) + 3);
+      const bottom = Math.min(canvasHeight, Math.ceil(maxY) + 3);
+      return {
+        x,
+        y,
+        w: right - x,
+        h: bottom - y,
+      };
     }
 
     // Pre-render tiling patterns (PatternType 1) to CanvasPattern objects.
@@ -6327,31 +6554,9 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       }
     }
 
-    // Pre-create ImageBitmaps in parallel for all non-mask images referenced by draw ops.
-    // This converts O(N) sequential `await createImageBitmap()` calls in the render loop
-    // into a single parallel `await Promise.all()`, which is critical for pages with
-    // thousands of tiny images (e.g., map tiles with 3000+ images).
-    // Only activate for pages with many images to avoid any side effects on simpler pages.
-    {
-      const imageNames = new Set();
-      for (const op of drawOps) {
-        if (op.type === 'image') imageNames.add(op.name);
-      }
-      if (imageNames.size > 100) {
-        const entries = [];
-        for (const name of imageNames) {
-          const info = images.get(name);
-          if (info && !info.imageMask) {
-            entries.push({ name, info });
-          }
-        }
-        if (entries.length > 0) {
-          const results = await Promise.all(entries.map((e) => imageInfoToBitmap(e.info, objCache).catch(() => null)));
-          for (let i = 0; i < entries.length; i++) {
-            if (results[i]) bitmapCache.set(entries[i].name, results[i]);
-          }
-        }
-      }
+    const imageDrawCounts = new Map();
+    for (const op of drawOps) {
+      if (op.type === 'image') imageDrawCounts.set(op.name, (imageDrawCounts.get(op.name) || 0) + 1);
     }
 
     // Cache parsed Type3 glyph paths to avoid re-parsing the same CharProc
@@ -6571,7 +6776,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         const cachedBitmap = bitmapCache.get(op.name);
         const bitmap = cachedBitmap || (imageInfo.imageMask
           ? await imageMaskToBitmap(imageInfo, maskFillColor, objCache)
-          : await imageInfoToBitmap(imageInfo, objCache));
+          : await imageInfoToBitmap(imageInfo, objCache, canvasWidth, canvasHeight));
         if (!bitmap) return;
         rCtx.save();
         if (op.fillAlpha < 1) rCtx.globalAlpha = op.fillAlpha;
@@ -6594,8 +6799,11 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         rCtx.drawImage(bitmap, 0, 0, 1, 1);
         rCtx.restore();
 
-        // Only close bitmaps that were created on-demand (not from the pre-creation cache)
-        if (!cachedBitmap) ca.closeDrawable(bitmap);
+        if (!cachedBitmap) {
+          // Image masks bake the per-draw fill color into the bitmap, so they cannot be shared across draws.
+          if (!imageInfo.imageMask && imageDrawCounts.get(op.name) > 1) bitmapCache.set(op.name, bitmap);
+          else ca.closeDrawable(bitmap);
+        }
       } else if (op.type === 'type3glyph') {
         let pathData = glyphPathCache.get(op.charProcObjNum);
         if (!pathData) {
@@ -6616,7 +6824,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
                 if (imageInfo) {
                   const bitmap = imageInfo.imageMask
                     ? await imageMaskToBitmap(imageInfo, op.fillColor || 'rgb(0,0,0)', objCache)
-                    : await imageInfoToBitmap(imageInfo, objCache);
+                    : await imageInfoToBitmap(imageInfo, objCache, canvasWidth, canvasHeight);
                   rCtx.save();
                   if (op.fillAlpha < 1) rCtx.globalAlpha = op.fillAlpha;
                   applyClips(rCtx, op);
@@ -7343,7 +7551,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           if (maskCanvas) {
             subCtx.globalCompositeOperation = 'destination-in';
             subCtx.drawImage(maskCanvas, 0, 0);
-            ca.closeDrawable(maskCanvas);
+            // Cached in smaskCanvasCache, disposed once at end of page.
+            // Disposing here leaves a freed 1x1 canvas that SIGSEGVs the next composite.
             subCtx.globalCompositeOperation = 'source-over';
           }
           // Preserve the blend mode from the sub-group's ops so the masked content
@@ -7367,8 +7576,21 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     // entry above is a transparency group's private buffer. When the next
     // opGroup belongs to a different group chain, we pop and composite up to
     // the common ancestor, then push fresh canvases down to the target depth.
-    /** @type {Array<{ctx: OffscreenCanvasRenderingContext2D, canvas: any, groupId: number|null}>} */
-    const ctxStack = [{ ctx, canvas: null, groupId: null }];
+    // `offX`/`offY` are the device-pixel origin of a tight group buffer and
+    // `w`/`h` its size (full-page values for non-tight buffers).
+    /** @type {Array<{ctx: OffscreenCanvasRenderingContext2D, canvas: any, groupId: number|null, offX: number, offY: number, w: number, h: number}>} */
+    const ctxStack = [{
+      ctx, canvas: null, groupId: null, offX: 0, offY: 0, w: canvasWidth, h: canvasHeight,
+    }];
+
+    // The Node.js canvas package defers drawImage(canvas) compositing and retains each
+    // source surface until the destination is read back.
+    // Read back one pixel from every live stack canvas periodically so retained sources are released.
+    let compositeFlushCounter = 0;
+    const flushComposites = () => {
+      if ((++compositeFlushCounter % 12) !== 0) return;
+      for (let i = 0; i < ctxStack.length; i++) ctxStack[i].ctx.getImageData(0, 0, 1, 1);
+    };
 
     const popAndComposite = async () => {
       const top = ctxStack.pop();
@@ -7380,17 +7602,28 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         return;
       }
       if (attrs.smask) {
-        const cacheKey = attrs.smask.formObjNum;
-        let maskCanvas = smaskCanvasCache.get(cacheKey);
-        if (!maskCanvas) {
-          maskCanvas = await renderSMaskToCanvas(attrs.smask, objCache, canvasWidth, canvasHeight, pageHeightPts, boxOriginX, boxOriginY, scale);
-          if (maskCanvas) smaskCanvasCache.set(cacheKey, maskCanvas);
+        const isTight = top.w < canvasWidth || top.h < canvasHeight;
+        let maskCanvas;
+        if (isTight) {
+          maskCanvas = await renderSMaskToCanvas(attrs.smask, objCache, canvasWidth, canvasHeight, pageHeightPts, boxOriginX, boxOriginY, scale, {
+            x: top.offX, y: top.offY, width: top.w, height: top.h,
+          });
+        } else {
+          const cacheKey = attrs.smask.formObjNum;
+          maskCanvas = smaskCanvasCache.get(cacheKey);
+          if (!maskCanvas) {
+            maskCanvas = await renderSMaskToCanvas(attrs.smask, objCache, canvasWidth, canvasHeight, pageHeightPts, boxOriginX, boxOriginY, scale);
+            if (maskCanvas) smaskCanvasCache.set(cacheKey, maskCanvas);
+          }
         }
         if (maskCanvas) {
           top.ctx.globalCompositeOperation = 'destination-in';
           top.ctx.drawImage(maskCanvas, 0, 0);
-          ca.closeDrawable(maskCanvas);
           top.ctx.globalCompositeOperation = 'source-over';
+          // Full-page masks live in smaskCanvasCache and are disposed at end of page.
+          // Disposing a cached canvas here SIGSEGVs the next composite that reads it.
+          // Tight masks are unique per offset and uncached, so dispose now.
+          if (isTight) ca.closeDrawable(maskCanvas);
         }
       }
       parent.ctx.save();
@@ -7398,9 +7631,10 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       if (attrs.blendMode && attrs.blendMode !== 'Normal') {
         parent.ctx.globalCompositeOperation = pdfBlendToCanvas[attrs.blendMode] || attrs.blendMode.toLowerCase();
       }
-      parent.ctx.drawImage(top.canvas, 0, 0);
+      parent.ctx.drawImage(top.canvas, top.offX - parent.offX, top.offY - parent.offY);
       parent.ctx.restore();
       ca.closeDrawable(top.canvas);
+      flushComposites();
     };
 
     /** @param {number|null} groupId @returns {number[]} root-to-leaf chain of registered ancestors */
@@ -7415,6 +7649,104 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       return chain;
     };
 
+    /**
+     * Render a soft-masked op group into a buffer sized to a device-pixel bbox and
+     * composite it into the current stack buffer at that offset.
+     * Each op is shifted into the bbox's local space, the smask is built at the same bbox,
+     * and `destination-in` applies it. Returns false if the mask could not be built.
+     * @param {Array<any>} ops
+     * @param {any} smask
+     * @param {number} bx
+     * @param {number} by
+     * @param {number} bw
+     * @param {number} bh
+     * @returns {Promise<boolean>}
+     */
+    async function compositeTightSmaskGroup(ops, smask, bx, by, bw, bh) {
+      const mask = await renderSMaskToCanvas(
+        smask, objCache, canvasWidth, canvasHeight,
+        pageHeightPts, boxOriginX, boxOriginY, scale,
+        {
+          x: bx, y: by, width: bw, height: bh,
+        },
+      );
+      if (!mask) return false;
+      const tightCanvas = ca.makeCanvas(bw, bh);
+      const tightCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (tightCanvas.getContext('2d', { willReadFrequently: true }));
+      const dx = -bx / scale;
+      const dy = by / scale;
+      for (const op of ops) {
+        const shiftedOp = shiftOpBy(op, dx, dy);
+        if (!renderPathOpSync(tightCtx, shiftedOp)) await renderSingleOp(tightCtx, shiftedOp);
+      }
+      tightCtx.globalCompositeOperation = 'destination-in';
+      tightCtx.drawImage(mask, 0, 0);
+      ca.closeDrawable(mask);
+      tightCtx.globalCompositeOperation = 'source-over';
+      const entry = ctxStack[ctxStack.length - 1];
+      const blend = ops.length > 0 && ops[0].blendMode;
+      if (blend && blend !== 'Normal') entry.ctx.globalCompositeOperation = pdfBlendToCanvas[blend] || blend.toLowerCase();
+      entry.ctx.drawImage(tightCanvas, bx - entry.offX, by - entry.offY);
+      ca.closeDrawable(tightCanvas);
+      if (blend && blend !== 'Normal') entry.ctx.globalCompositeOperation = 'source-over';
+      return true;
+    }
+
+    // Size each isolatable group's buffer to its content bbox.
+    // Soft-mask groups qualify too: the result is content*mask,
+    // which is zero where the content is transparent,
+    // so clamping the buffer (and its mask) to the content bbox is lossless.
+    /** @type {Map<number, {x:number,y:number,w:number,h:number}>} */
+    const groupTightBBox = new Map();
+    {
+      const acc = new Map();
+      for (const og of opGroups) {
+        if (og.groupId == null) continue;
+        const chain = getGroupChain(og.groupId);
+        for (const dop of og.ops) {
+          const bb = opDeviceBBox(dop);
+          // Pattern/shading fills are positioned by a page- or device-space matrix
+          // that shiftOpBy does not move, so they cannot render into a shifted tight
+          // buffer. Keep groups that contain them full-page.
+          const dpAny = /** @type {any} */ (dop);
+          const untightable = !!(dop.outerSmask || dop.patternShading || dop.tilingPattern
+            || dpAny.strokePatternShading || dpAny.strokeTilingPattern);
+          for (const g of chain) {
+            let e = acc.get(g);
+            if (!e) {
+              e = {
+                minX: Infinity, minY: Infinity, maxX: -Infinity, maxY: -Infinity, ok: true,
+              };
+              acc.set(g, e);
+            }
+            if (!bb || untightable) { e.ok = false; continue; }
+            if (bb.minX < e.minX) e.minX = bb.minX;
+            if (bb.minY < e.minY) e.minY = bb.minY;
+            if (bb.maxX > e.maxX) e.maxX = bb.maxX;
+            if (bb.maxY > e.maxY) e.maxY = bb.maxY;
+          }
+        }
+      }
+      for (const [g, e] of acc) {
+        const attrs = groupContext.registry.get(g);
+        if (!e.ok || !attrs || !Number.isFinite(e.minX)) continue;
+        const x = Math.max(0, Math.floor(e.minX) - 2);
+        const y = Math.max(0, Math.floor(e.minY) - 2);
+        const right = Math.min(canvasWidth, Math.ceil(e.maxX) + 2);
+        const bottom = Math.min(canvasHeight, Math.ceil(e.maxY) + 2);
+        // Content entirely outside the page clamps to a degenerate rect.
+        // A 1x1 buffer composited at its off-page origin contributes nothing
+        // and needs no full-page allocation.
+        const w = Math.max(1, right - x);
+        const h = Math.max(1, bottom - y);
+        if (w * h < canvasWidth * canvasHeight) {
+          groupTightBBox.set(g, {
+            x, y, w, h,
+          });
+        }
+      }
+    }
+
     for (let groupIdx = 0; groupIdx < opGroups.length; groupIdx++) {
       const group = opGroups[groupIdx];
       const targetChain = group.groupId != null ? getGroupChain(group.groupId) : [];
@@ -7428,12 +7760,20 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         await popAndComposite();
       }
       for (let i = common; i < targetChain.length; i++) {
-        const newCanvas = ca.makeCanvas(canvasWidth, canvasHeight);
+        const tb = groupTightBBox.get(targetChain[i]);
+        const newCanvas = tb ? ca.makeCanvas(tb.w, tb.h) : ca.makeCanvas(canvasWidth, canvasHeight);
         const newCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (newCanvas.getContext('2d', { willReadFrequently: true }));
-        ctxStack.push({ ctx: newCtx, canvas: newCanvas, groupId: targetChain[i] });
+        ctxStack.push({
+          ctx: newCtx, canvas: newCanvas, groupId: targetChain[i], offX: tb ? tb.x : 0, offY: tb ? tb.y : 0, w: tb ? tb.w : canvasWidth, h: tb ? tb.h : canvasHeight,
+        });
       }
 
-      const currentCtx = ctxStack[ctxStack.length - 1].ctx;
+      const currentEntry = ctxStack[ctxStack.length - 1];
+      const currentCtx = currentEntry.ctx;
+      // Device-pixel origin of the current buffer. When it is a tight group buffer,
+      // smask groups composited below must land at coordinates relative to it.
+      const curOffX = currentEntry.offX;
+      const curOffY = currentEntry.offY;
 
       if (group.outerSmask) {
       // Two-level masking: render all ops (with inner SMask handling) to a group canvas,
@@ -7453,10 +7793,11 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         if (maskCanvas) {
           groupCtx.globalCompositeOperation = 'destination-in';
           groupCtx.drawImage(maskCanvas, 0, 0);
-          ca.closeDrawable(maskCanvas);
+          // Cached in smaskCanvasCache, disposed once at end of page.
+          // Disposing here leaves a freed 1x1 canvas that SIGSEGVs the next composite.
           groupCtx.globalCompositeOperation = 'source-over';
         }
-        currentCtx.drawImage(groupCanvas, 0, 0);
+        currentCtx.drawImage(groupCanvas, -curOffX, -curOffY);
         ca.closeDrawable(groupCanvas);
       } else if (group.smask) {
       // Fast path: when a smask group contains a single image op whose destination
@@ -7537,12 +7878,11 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
               tightCtx.drawImage(fastMaskCanvas, 0, 0);
               ca.closeDrawable(fastMaskCanvas);
               tightCtx.globalCompositeOperation = 'source-over';
-              // Blit tight result into main canvas at bbox position, with blend mode.
               const fastBlend = fastOp.blendMode;
               if (fastBlend && fastBlend !== 'Normal') {
                 currentCtx.globalCompositeOperation = pdfBlendToCanvas[fastBlend] || fastBlend.toLowerCase();
               }
-              currentCtx.drawImage(tightCanvas, bboxX, bboxY);
+              currentCtx.drawImage(tightCanvas, bboxX - curOffX, bboxY - curOffY);
               ca.closeDrawable(tightCanvas);
               if (fastBlend && fastBlend !== 'Normal') {
                 currentCtx.globalCompositeOperation = 'source-over';
@@ -7613,69 +7953,45 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             const fbBboxH = fbBboxBottom - fbBboxY;
 
             if (fbBboxW > 0 && fbBboxH > 0 && fbBboxW * fbBboxH < canvasWidth * canvasHeight / 4) {
-              const dx = -fbBboxX / scale;
-              const dy = fbBboxY / scale;
-              const shiftClips = (/** @type {any[]|undefined} */ clips) => (clips ? clips.map((/** @type {any} */ c) => ({
-                ...c,
-                ctm: c.ctm ? [c.ctm[0], c.ctm[1], c.ctm[2], c.ctm[3], c.ctm[4] + dx, c.ctm[5] + dy] : c.ctm,
-              })) : clips);
-              const shiftOp = (/** @type {any} */ op) => {
-                /** @type {any} */
-                const out = { ...op };
-                if (op.clips) out.clips = shiftClips(op.clips);
-                if (op.smask && op.smask.parentCtm) {
-                  out.smask = {
-                    ...op.smask,
-                    parentCtm: [op.smask.parentCtm[0], op.smask.parentCtm[1], op.smask.parentCtm[2], op.smask.parentCtm[3],
-                      op.smask.parentCtm[4] + dx, op.smask.parentCtm[5] + dy],
-                  };
-                }
-                if (Array.isArray(op.ctm) && op.ctm.length === 6) {
-                  out.ctm = [op.ctm[0], op.ctm[1], op.ctm[2], op.ctm[3], op.ctm[4] + dx, op.ctm[5] + dy];
-                } else if (Array.isArray(op.transform) && op.transform.length === 6) {
-                  out.transform = [op.transform[0], op.transform[1], op.transform[2], op.transform[3], op.transform[4] + dx, op.transform[5] + dy];
-                } else if (op.type === 'type0text') {
-                  out.x = op.x + dx;
-                  out.y = op.y + dy;
-                }
-                return out;
-              };
-
-              const fbBbox = {
-                x: fbBboxX, y: fbBboxY, width: fbBboxW, height: fbBboxH,
-              };
-              const fbMaskCanvas = await renderSMaskToCanvas(
-                group.smask, objCache, canvasWidth, canvasHeight,
-                pageHeightPts, boxOriginX, boxOriginY, scale,
-                fbBbox,
-              );
-              if (fbMaskCanvas) {
-                const tightCanvas = ca.makeCanvas(fbBboxW, fbBboxH);
-                const tightCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (tightCanvas.getContext('2d', { willReadFrequently: true }));
-                for (const op of group.ops) {
-                  const shiftedOp = shiftOp(op);
-                  if (!renderPathOpSync(tightCtx, shiftedOp)) await renderSingleOp(tightCtx, shiftedOp);
-                }
-                tightCtx.globalCompositeOperation = 'destination-in';
-                tightCtx.drawImage(fbMaskCanvas, 0, 0);
-                ca.closeDrawable(fbMaskCanvas);
-                tightCtx.globalCompositeOperation = 'source-over';
-
-                const groupBlend = group.ops.length > 0 && group.ops[0].blendMode;
-                if (groupBlend && groupBlend !== 'Normal') {
-                  currentCtx.globalCompositeOperation = pdfBlendToCanvas[groupBlend] || groupBlend.toLowerCase();
-                }
-                currentCtx.drawImage(tightCanvas, fbBboxX, fbBboxY);
-                ca.closeDrawable(tightCanvas);
-                if (groupBlend && groupBlend !== 'Normal') {
-                  currentCtx.globalCompositeOperation = 'source-over';
-                }
-                formBBoxFastHandled = true;
-              }
+              formBBoxFastHandled = await compositeTightSmaskGroup(group.ops, group.smask, fbBboxX, fbBboxY, fbBboxW, fbBboxH);
             }
           }
         }
         if (formBBoxFastHandled) continue;
+
+        // General tight path: when the fast paths above did not match but every op is
+        // bounded and shiftable (no pattern/stroke-pattern fill, inner mask, or text clip),
+        // size the buffer to the union of op device bboxes.
+        // Catches masked content like a single clipped shading that is neither
+        // a single image nor a shared-form-clip group.
+        let generalTightHandled = false;
+        if (!group.ops.some((o) => getTextClip(o))) {
+          let uMinX = Infinity;
+          let uMinY = Infinity;
+          let uMaxX = -Infinity;
+          let uMaxY = -Infinity;
+          let tightable = true;
+          for (const op of group.ops) {
+            const oa = /** @type {any} */ (op);
+            if (op.outerSmask || oa.patternShading || oa.tilingPattern || oa.strokePatternShading || oa.strokeTilingPattern) { tightable = false; break; }
+            const obb = opDeviceBBox(op);
+            if (!obb) { tightable = false; break; }
+            if (obb.minX < uMinX) uMinX = obb.minX;
+            if (obb.minY < uMinY) uMinY = obb.minY;
+            if (obb.maxX > uMaxX) uMaxX = obb.maxX;
+            if (obb.maxY > uMaxY) uMaxY = obb.maxY;
+          }
+          if (tightable && Number.isFinite(uMinX)) {
+            const ux = Math.max(0, Math.floor(uMinX) - 1);
+            const uy = Math.max(0, Math.floor(uMinY) - 1);
+            const uw = Math.min(canvasWidth, Math.ceil(uMaxX) + 1) - ux;
+            const uh = Math.min(canvasHeight, Math.ceil(uMaxY) + 1) - uy;
+            if (uw > 0 && uh > 0 && uw * uh < canvasWidth * canvasHeight) {
+              generalTightHandled = await compositeTightSmaskGroup(group.ops, group.smask, ux, uy, uw, uh);
+            }
+          }
+        }
+        if (generalTightHandled) continue;
 
         // Single-level masking (existing behavior): render ops to group canvas, apply mask
         const groupCanvas = ca.makeCanvas(canvasWidth, canvasHeight);
@@ -7713,26 +8029,56 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         if (maskCanvas) {
           renderCtx.globalCompositeOperation = 'destination-in';
           renderCtx.drawImage(maskCanvas, 0, 0);
-          ca.closeDrawable(maskCanvas);
           renderCtx.globalCompositeOperation = 'source-over';
         }
         const groupBlend = group.ops.length > 0 && group.ops[0].blendMode;
         if (groupBlend && groupBlend !== 'Normal') {
           currentCtx.globalCompositeOperation = pdfBlendToCanvas[groupBlend] || groupBlend.toLowerCase();
         }
-        currentCtx.drawImage(groupCanvas, 0, 0);
+        currentCtx.drawImage(groupCanvas, -curOffX, -curOffY);
         ca.closeDrawable(groupCanvas);
         if (groupBlend && groupBlend !== 'Normal') {
           currentCtx.globalCompositeOperation = 'source-over';
         }
       } else {
-        // No masking: render directly onto the current target canvas
+        // When the target is a tight group buffer, shift each op into the buffer's
+        // local space (it is composited back at its offset in popAndComposite).
+        const tgtEntry = ctxStack[ctxStack.length - 1];
+        const grpShift = tgtEntry.offX !== 0 || tgtEntry.offY !== 0;
+        const grpDx = -tgtEntry.offX / scale;
+        const grpDy = tgtEntry.offY / scale;
         for (let opIdx = 0; opIdx < group.ops.length; opIdx++) {
-          const op = group.ops[opIdx];
+          const op = grpShift ? shiftOpBy(group.ops[opIdx], grpDx, grpDy) : group.ops[opIdx];
 
           // Gouraud ops render normally through renderPathOpSync (no skip).
 
           const textClipCharsForOp = getTextClip(op);
+
+          // Text clips usually cover a tiny label-sized region.
+          // Render the op and its glyph mask into a canvas sized to the glyph bbox.
+          if (textClipCharsForOp) {
+            const tb = textClipDeviceBBox(textClipCharsForOp);
+            if (tb && tb.w > 0 && tb.h > 0 && tb.w * tb.h < canvasWidth * canvasHeight / 4) {
+              const dxPdf = -tb.x / scale;
+              const dyPdf = tb.y / scale;
+              const tightCanvas = ca.makeCanvas(tb.w, tb.h);
+              const tightCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (tightCanvas.getContext('2d', { willReadFrequently: true }));
+              const shiftedOp = shiftOpBy(op, dxPdf, dyPdf);
+              if (!renderPathOpSync(tightCtx, shiftedOp)) await renderSingleOp(tightCtx, shiftedOp);
+              const shiftedChars = textClipCharsForOp.map((/** @type {any} */ ch) => ({ ...ch, x: ch.x + dxPdf, y: ch.y + dyPdf }));
+              const mCanvas = ca.makeCanvas(tb.w, tb.h);
+              drawTextClipMask(mCanvas, shiftedChars);
+              tightCtx.globalCompositeOperation = 'destination-in';
+              tightCtx.drawImage(mCanvas, 0, 0);
+              ca.closeDrawable(mCanvas);
+              tightCtx.globalCompositeOperation = 'source-over';
+              currentCtx.drawImage(tightCanvas, tb.x, tb.y);
+              ca.closeDrawable(tightCanvas);
+              flushComposites();
+              continue;
+            }
+          }
+
           let opCtx = currentCtx;
           let textClipCanvas = null;
           if (textClipCharsForOp) {
@@ -7751,23 +8097,48 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             opCtx.globalCompositeOperation = 'source-over';
             currentCtx.drawImage(textClipCanvas, 0, 0);
             ca.closeDrawable(textClipCanvas);
+            flushComposites();
           }
         }
       }
+      flushComposites();
     }
     while (ctxStack.length > 1) {
       await popAndComposite();
     }
+  } catch (err) {
+    // Return a blank page instead so the process never crashes and the page is still present.
+    // The result carries `ok: false` and `failReason` so callers can flag a failure
+    // placeholder explicitly rather than inferring it from a blank-vs-baseline diff.
+    renderFailed = true;
+    failDetail = err instanceof Error ? err.message : String(err);
+    failReason = /** @type {any} */ (err)?.renderAbort || 'exception';
+    console.warn(`[renderPdfPage] page ${pageIndex} returned blank: ${failDetail}`);
   } finally {
     // Dispose every cached Skia surface regardless of whether rendering threw.
     for (const bmp of bitmapCache.values()) ca.closeDrawable(bmp);
     for (const bmp of tilingPatternCache.values()) ca.closeDrawable(bmp);
     for (const cvs of smaskCanvasCache.values()) ca.closeDrawable(cvs);
     for (const p of transientPatterns) ca.closeDrawable(p);
+    if (textMeasureCanvas) ca.closeDrawable(textMeasureCanvas);
     bitmapCache.clear();
     tilingPatternCache.clear();
     smaskCanvasCache.clear();
     transientPatterns.length = 0;
+  }
+
+  if (renderFailed) {
+    ca.closeDrawable(canvas);
+    const blankCanvas = ca.makeCanvas(canvasWidth, canvasHeight);
+    const blankCtx = /** @type {OffscreenCanvasRenderingContext2D} */ (blankCanvas.getContext('2d', { willReadFrequently: true }));
+    blankCtx.fillStyle = 'white';
+    blankCtx.fillRect(0, 0, canvasWidth, canvasHeight);
+    const blankData = blankCtx.getImageData(0, 0, canvasWidth, canvasHeight);
+    const blankResult = {
+      dataUrl: await buildPngDataUrl(blankData, 'gray'), colorMode: 'gray', ok: false, failReason, failDetail,
+    };
+    ca.closeDrawable(blankCanvas);
+    return blankResult;
   }
 
   ctx.globalCompositeOperation = 'destination-over';
@@ -7779,7 +8150,9 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   // smaller output (RGB-only, 1-channel gray) and avoids SkPngEncoder's
   // buffer retention.
   const imageData = ctx.getImageData(0, 0, canvasWidth, canvasHeight);
-  const result = { dataUrl: await buildPngDataUrl(imageData, effectiveColorMode), colorMode: effectiveColorMode };
+  const result = {
+    dataUrl: await buildPngDataUrl(imageData, effectiveColorMode), colorMode: effectiveColorMode, ok: true,
+  };
   ca.closeDrawable(canvas);
   return result;
 }
@@ -7906,11 +8279,16 @@ function filterUpStripAlpha(data, width, height, isGray) {
   return raw;
 }
 
+// Level 4 compression is significantly faster than the default level 6,
+// in exchange for a small increase in size (~60% runtime reduction, 6% larger).
+const PNG_DEFLATE_LEVEL = 4;
+
 /**
  * Deflate for the compressed PNG path.
- * Node: zlib.deflateSync (sync, default level 6) — ~10% faster than piping
+ * Node: zlib.deflateSync (sync, level `PNG_DEFLATE_LEVEL`), ~10% faster than piping
  * through CompressionStream because we avoid microtask overhead.
- * Browser: CompressionStream('deflate') (async).
+ * Browser: CompressionStream('deflate') (async). It exposes no level control,
+ * so the browser path is unaffected by `PNG_DEFLATE_LEVEL`.
  *
  * We deliberately did NOT extract pako deflate for the browser sync path.
  * A sync pako.deflate at default level runs ~4× slower than CompressionStream
@@ -7920,7 +8298,7 @@ function filterUpStripAlpha(data, width, height, isGray) {
  * @returns {Promise<Uint8Array>|Uint8Array}
  */
 function deflateCompressed(raw) {
-  if (zlibDeflateSync) return zlibDeflateSync(raw);
+  if (zlibDeflateSync) return zlibDeflateSync(raw, { level: PNG_DEFLATE_LEVEL });
   return deflateViaCompressionStream(raw);
 }
 
