@@ -1001,19 +1001,23 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
           rgbaData[pi] = tintSamples[si];
           rgbaData[pi + 1] = tintSamples[si + 1];
           rgbaData[pi + 2] = tintSamples[si + 2];
+          rgbaData[pi + 3] = 255;
         } else if (isSeparation) {
           // Separation without tint samples: 0=no ink (white), 1=full ink (black)
           const val = (1 - bit) * 255;
           rgbaData[pi] = val;
           rgbaData[pi + 1] = val;
           rgbaData[pi + 2] = val;
+          rgbaData[pi + 3] = 255;
         } else {
           const val = bit * 255;
           rgbaData[pi] = val;
           rgbaData[pi + 1] = val;
           rgbaData[pi + 2] = val;
+          // Inline images inside a tiling pattern paint white as transparent
+          // so the pattern shows through. transparentWhite carries that intent from the caller.
+          rgbaData[pi + 3] = (imageInfo.transparentWhite && val === 255) ? 0 : 255;
         }
-        rgbaData[pi + 3] = 255;
       }
     }
   } else if (colorSpace === 'DeviceGray' || colorSpace === 'CalGray') {
@@ -1810,14 +1814,16 @@ async function flattenDrawOps(
 }
 
 /**
- * Parse ExtGState entries from page resources for alpha transparency support.
- * Returns a map of GState names to their alpha values.
- *
  * @typedef {{ fillAlpha?: number, strokeAlpha?: number, overprint?: boolean,
  *   blendMode?: string, smask?: SmaskRef|null }} ExtGStateEntry
+ */
+
+/**
+ * Parse the /BM blend mode from an ExtGState dict.
+ * Returns null when /BM is absent.
  *
- * @param {string} pageObjText - Raw text of the Page object
- * @param {ObjectCache} objCache - PDF object cache
+ * @param {string} gsObjText - Raw text of the ExtGState dict
+ * @returns {string|null}
  */
 function parseBlendMode(gsObjText) {
   const arrMatch = /\/BM\s*\[([^\]]+)\]/.exec(gsObjText);
@@ -2263,77 +2269,80 @@ function parsePageColorSpaces(pageObjText, objCache) {
 }
 
 /**
- * Evaluate a FunctionType 0 (sampled) function at a given input value.
- * Returns an array of output component values in the range specified by /Decode.
- *
- * @param {Uint8Array} samples - Raw sample data
- * @param {number} size - Number of samples
- * @param {number} nOutputs - Number of output components
- * @param {number[]} decode - Decode array [min0, max0, min1, max1, ...]
- * @param {number} t - Input value in domain [0, 1]
- * @param {number} [bitsPerSample]
+ * @typedef {{
+ *   deviceNTintCS: import('./pdfColorFunctions.js').ParsedTintCS|null,
+ *   sepTintSamples: Uint8Array|null,
+ *   isCMYK: boolean,
+ *   isGray: boolean,
+ * }} ShadingColorCtx
  */
-function evaluateSampledFunction(samples, size, nOutputs, decode, t, bitsPerSample = 8) {
-  const idx = Math.min(Math.max(t * (size - 1), 0), size - 1);
-  const i0 = Math.floor(idx);
-  const i1 = Math.min(i0 + 1, size - 1);
-  const frac = idx - i0;
-  const bytesPerValue = bitsPerSample / 8;
-  const maxVal = (2 ** bitsPerSample) - 1;
-  const result = new Array(nOutputs);
-  for (let c = 0; c < nOutputs; c++) {
-    let s0 = 0;
-    let s1 = 0;
-    if (bytesPerValue === 1) {
-      s0 = samples[i0 * nOutputs + c];
-      s1 = samples[i1 * nOutputs + c];
-    } else {
-      const off0 = (i0 * nOutputs + c) * bytesPerValue;
-      const off1 = (i1 * nOutputs + c) * bytesPerValue;
-      // Use multiplication instead of bit shift so 32-bit samples don't overflow
-      // JavaScript's 32-bit signed int (which would produce negative values for
-      // samples with the top bit set and render the gradient as black).
-      for (let j = 0; j < bytesPerValue; j++) {
-        s0 = s0 * 256 + (samples[off0 + j] || 0);
-        s1 = s1 * 256 + (samples[off1 + j] || 0);
-      }
-    }
-    const sInterp = s0 + frac * (s1 - s0);
-    // Map from sample range [0, maxVal] to decode range
-    const dMin = decode[c * 2];
-    const dMax = decode[c * 2 + 1];
-    result[c] = dMin + (sInterp / maxVal) * (dMax - dMin);
+
+/**
+ * Convert a parsed function's output components to an `rgb(r,g,b)` string for a gradient stop.
+ * The component meaning depends on the shading's color space:
+ * DeviceN/Separation tints route through the tint transform, CMYK through `cmykToRgb`,
+ * otherwise the first one (gray) or three (RGB) outputs are used.
+ *
+ * @param {number[]} values
+ * @param {ShadingColorCtx} ctx
+ * @returns {string}
+ */
+function shadingValuesToColor(values, ctx) {
+  let r; let g; let b;
+  if (ctx.deviceNTintCS) {
+    const rgb = tintComponentsToRGB(ctx.deviceNTintCS, values);
+    if (rgb) { [r, g, b] = rgb; } else { r = 128; g = 128; b = 128; }
+  } else if (ctx.sepTintSamples) {
+    const sepMax = ctx.sepTintSamples.length / 3 - 1;
+    const idx = Math.round(Math.max(0, Math.min(1, values[0])) * sepMax) * 3;
+    r = ctx.sepTintSamples[idx]; g = ctx.sepTintSamples[idx + 1]; b = ctx.sepTintSamples[idx + 2];
+  } else if (ctx.isCMYK && values.length >= 4) {
+    [r, g, b] = cmykToRgb(
+      Math.max(0, Math.min(1, values[0])),
+      Math.max(0, Math.min(1, values[1])),
+      Math.max(0, Math.min(1, values[2])),
+      Math.max(0, Math.min(1, values[3])),
+    );
+  } else {
+    r = Math.round(Math.max(0, Math.min(1, values[0] ?? 0)) * 255);
+    g = ctx.isGray ? r : Math.round(Math.max(0, Math.min(1, values[1] ?? 0)) * 255);
+    b = ctx.isGray ? r : Math.round(Math.max(0, Math.min(1, values[2] ?? 0)) * 255);
   }
-  return result;
+  return `rgb(${r},${g},${b})`;
 }
 
 /**
- * Evaluate a stitching function (FunctionType 3) for a single-output sub-function
- * used inside a multi-function /Function array. Returns a single numeric value.
+ * Sample a parsed PDF function into axial/radial gradient color stops.
+ * Accepts either a single function whose outputs are the color components,
+ * or an array of functions (the shading's `/Function [F0 F1 ...]` form)
+ * where each function supplies one component from its first output.
+ *
+ * @param {import('./pdfColorFunctions.js').ParsedFunction
+ *   | Array<import('./pdfColorFunctions.js').ParsedFunction|null>} fn
+ * @param {ShadingColorCtx} ctx
+ * @returns {Array<{offset: number, color: string}>}
  */
-function evaluateStitchingFunc(sf, t) {
-  const { bounds, encode, subFuncs } = sf;
-  const domainBounds = [0, ...bounds, 1];
-  let si = 0;
-  for (let bi = 0; bi < bounds.length; bi++) {
-    if (t >= bounds[bi]) si = bi + 1;
+function functionToShadingStops(fn, ctx) {
+  const stops = [];
+  if (Array.isArray(fn)) {
+    const nStops = fn.some((f) => f && f.type === 0) ? 64 : 16;
+    for (let i = 0; i < nStops; i++) {
+      const t = i / (nStops - 1);
+      const values = fn.map((f) => (f ? (evaluateFunction(f, [t])?.[0] ?? 0) : 0));
+      stops.push({ offset: t, color: shadingValuesToColor(values, ctx) });
+    }
+    return stops;
   }
-  if (si >= subFuncs.length) si = subFuncs.length - 1;
-  const sub = subFuncs[si];
-  if (!sub) return 0;
-  const dLo = domainBounds[si];
-  const dHi = domainBounds[si + 1];
-  const eLo = encode.length > si * 2 ? encode[si * 2] : 0;
-  const eHi = encode.length > si * 2 + 1 ? encode[si * 2 + 1] : 1;
-  const tLocal = dHi > dLo ? (t - dLo) / (dHi - dLo) : 0;
-  const tEncoded = eLo + tLocal * (eHi - eLo);
-  const tClamped = Math.max(0, Math.min(1, tEncoded));
-  if (sub.funcType === 0) {
-    const v = evaluateSampledFunction(sub.samples, sub.size, sub.nOutputs, sub.decode, tClamped, sub.bitsPerSample || 8);
-    return v[0] ?? 0;
+  let nStops;
+  if (fn.type === 0) nStops = Math.min(fn.size[0], 64);
+  else if (fn.type === 2) nStops = fn.N === 1 ? 2 : 16;
+  else nStops = (fn.type === 3 && fn.functions.some((f) => f && f.type === 0)) ? 64 : 16;
+  for (let i = 0; i < nStops; i++) {
+    const t = i / (nStops - 1);
+    const values = evaluateFunction(fn, [t]) || [];
+    stops.push({ offset: t, color: shadingValuesToColor(values, ctx) });
   }
-  // Type 2 (exponential)
-  return sub.c0[0] + (tClamped ** sub.n) * (sub.c1[0] - sub.c0[0]);
+  return stops;
 }
 
 /**
@@ -3307,122 +3316,10 @@ function parseShadings(pageObjText, objCache) {
       : null;
 
     if (funcArrRefs && funcArrRefs.length > 1) {
-      const nComponents = funcArrRefs.length;
-      // Prepare each sub-function
-      const subFuncs = [];
-      for (const ref of funcArrRefs) {
-        const subText = objCache.getObjectText(ref);
-        if (!subText) { subFuncs.push(null); continue; }
-        const subFuncType = resolveIntValue(subText, 'FunctionType', objCache, -1);
-        if (subFuncType === 0) {
-          const sizeStr = resolveArrayValue(subText, 'Size', objCache);
-          const decodeStr = resolveArrayValue(subText, 'Decode', objCache);
-          const rangeStr = resolveArrayValue(subText, 'Range', objCache);
-          const size = sizeStr ? Number(sizeStr.trim().split(/\s+/)[0]) : 256;
-          const range = rangeStr ? rangeStr.split(/\s+/).map(Number) : (decodeStr ? decodeStr.split(/\s+/).map(Number) : [0, 1]);
-          const decode = decodeStr ? decodeStr.split(/\s+/).map(Number) : range;
-          const nOutputs = range.length / 2;
-          const bps = resolveIntValue(subText, 'BitsPerSample', objCache, 8);
-          const funcBytes = objCache.getStreamBytes(ref);
-          subFuncs.push({
-            funcType: 0, samples: funcBytes, size, nOutputs, decode, bitsPerSample: bps,
-          });
-        } else if (subFuncType === 2) {
-          const sc0Str = resolveArrayValue(subText, 'C0', objCache);
-          const sc1Str = resolveArrayValue(subText, 'C1', objCache);
-          subFuncs.push({
-            funcType: 2,
-            c0: sc0Str ? sc0Str.split(/\s+/).map(Number) : [0],
-            c1: sc1Str ? sc1Str.split(/\s+/).map(Number) : [1],
-            n: resolveNumValue(subText, 'N', objCache, 1),
-          });
-        } else if (subFuncType === 3) {
-          // Stitching sub-function — parse it inline
-          const boundsStr = resolveArrayValue(subText, 'Bounds', objCache);
-          const encodeStr = resolveArrayValue(subText, 'Encode', objCache);
-          const funcsStr = resolveArrayValue(subText, 'Functions', objCache);
-          if (!funcsStr) { subFuncs.push(null); continue; }
-          const bounds = boundsStr && boundsStr.trim() ? boundsStr.split(/\s+/).map(Number) : [];
-          const encode = encodeStr ? encodeStr.split(/\s+/).map(Number) : [];
-          const sfRefs = [...funcsStr.matchAll(/(\d+)\s+\d+\s+R/g)].map((m) => Number(m[1]));
-          const innerFuncs = [];
-          for (const sfRef of sfRefs) {
-            const sfText = objCache.getObjectText(sfRef);
-            if (!sfText) { innerFuncs.push(null); continue; }
-            const sfType = resolveIntValue(sfText, 'FunctionType', objCache, 2);
-            if (sfType === 0) {
-              const sz = resolveArrayValue(sfText, 'Size', objCache);
-              const dc = resolveArrayValue(sfText, 'Decode', objCache);
-              const rn = resolveArrayValue(sfText, 'Range', objCache);
-              const size = sz ? Number(sz.trim().split(/\s+/)[0]) : 256;
-              const range = rn ? rn.split(/\s+/).map(Number) : (dc ? dc.split(/\s+/).map(Number) : [0, 1]);
-              const decode = dc ? dc.split(/\s+/).map(Number) : range;
-              innerFuncs.push({
-                funcType: 0,
-                samples: objCache.getStreamBytes(sfRef),
-                size,
-                nOutputs: range.length / 2,
-                decode,
-                bitsPerSample: resolveIntValue(sfText, 'BitsPerSample', objCache, 8),
-              });
-            } else {
-              const c0s = resolveArrayValue(sfText, 'C0', objCache);
-              const c1s = resolveArrayValue(sfText, 'C1', objCache);
-              innerFuncs.push({
-                funcType: 2,
-                c0: c0s ? c0s.split(/\s+/).map(Number) : [0],
-                c1: c1s ? c1s.split(/\s+/).map(Number) : [1],
-                n: resolveNumValue(sfText, 'N', objCache, 1),
-              });
-            }
-          }
-          subFuncs.push({
-            funcType: 3, bounds, encode, subFuncs: innerFuncs,
-          });
-        } else {
-          subFuncs.push(null);
-        }
-      }
-
-      const hasSampled = subFuncs.some((sf) => sf && sf.funcType === 0);
-      const nStops = hasSampled ? 64 : 16;
-      const stops = [];
-      for (let i = 0; i < nStops; i++) {
-        const t = i / (nStops - 1);
-        const values = new Array(nComponents);
-        for (let ci = 0; ci < nComponents; ci++) {
-          const sf = subFuncs[ci];
-          if (!sf) { values[ci] = 0; continue; }
-          if (sf.funcType === 0) {
-            const v = evaluateSampledFunction(sf.samples, sf.size, sf.nOutputs, sf.decode, t, sf.bitsPerSample);
-            values[ci] = v[0] ?? 0;
-          } else if (sf.funcType === 2) {
-            values[ci] = sf.c0[0] + (t ** sf.n) * (sf.c1[0] - sf.c0[0]);
-          } else if (sf.funcType === 3) {
-            values[ci] = evaluateStitchingFunc(sf, t);
-          }
-        }
-        let r; let g; let b;
-        if (deviceNTintCS) {
-          const rgb = tintComponentsToRGB(deviceNTintCS, values);
-          if (rgb) { [r, g, b] = rgb; } else { r = 128; g = 128; b = 128; }
-        } else if (sepTintSamples) {
-          const sepMax = sepTintSamples.length / 3 - 1;
-          const idx = Math.round(Math.max(0, Math.min(1, values[0])) * sepMax) * 3;
-          r = sepTintSamples[idx]; g = sepTintSamples[idx + 1]; b = sepTintSamples[idx + 2];
-        } else if (shadingCS === 'DeviceCMYK' && nComponents >= 4) {
-          const cc = Math.max(0, Math.min(1, values[0]));
-          const mm = Math.max(0, Math.min(1, values[1]));
-          const yy = Math.max(0, Math.min(1, values[2]));
-          const kk = Math.max(0, Math.min(1, values[3]));
-          [r, g, b] = cmykToRgb(cc, mm, yy, kk);
-        } else {
-          r = Math.round(Math.max(0, Math.min(1, values[0])) * 255);
-          g = isGray ? r : Math.round(Math.max(0, Math.min(1, values[1] ?? 0)) * 255);
-          b = isGray ? r : Math.round(Math.max(0, Math.min(1, values[2] ?? 0)) * 255);
-        }
-        stops.push({ offset: t, color: `rgb(${r},${g},${b})` });
-      }
+      const fns = funcArrRefs.map((ref) => parseFunction(ref, objCache));
+      const stops = functionToShadingStops(fns, {
+        deviceNTintCS, sepTintSamples, isCMYK: shadingCS === 'DeviceCMYK', isGray,
+      });
       shadings.set(shName, {
         type: shadingType, coords, stops, extend, bbox, multiply: isSeparationShading,
       });
@@ -3439,231 +3336,14 @@ function parseShadings(pageObjText, objCache) {
     }
     if (funcObjNum == null) continue;
 
-    const funcObjText = objCache.getObjectText(funcObjNum);
-    if (!funcObjText) continue;
-
-    const funcType = resolveIntValue(funcObjText, 'FunctionType', objCache, -1);
-
-    if (funcType === 0) {
-      // Sampled function
-      const sizeStr = resolveArrayValue(funcObjText, 'Size', objCache);
-      const decodeStr = resolveArrayValue(funcObjText, 'Decode', objCache);
-      const rangeStr = resolveArrayValue(funcObjText, 'Range', objCache);
-
-      const size = sizeStr ? Number(sizeStr.trim().split(/\s+/)[0]) : 256;
-      // Per PDF spec Table 3.36, /Decode defaults to /Range when absent (not vice versa).
-      // The reverse default would mis-size decode for any function whose /Range has a
-      // different output count than the hardcoded fallback (e.g. 4-output CMYK functions
-      // produce nOutputs=4 but a 6-element decode, leaving decode[6]/[7] undefined and
-      // poisoning every sample with NaN).
-      const range = rangeStr ? rangeStr.split(/\s+/).map(Number) : (decodeStr ? decodeStr.split(/\s+/).map(Number) : [0, 1, 0, 1, 0, 1]);
-      const decode = decodeStr ? decodeStr.split(/\s+/).map(Number) : range;
-      const nOutputs = range.length / 2;
-      const bitsPerSample = resolveIntValue(funcObjText, 'BitsPerSample', objCache, 8);
-
-      const funcBytes = objCache.getStreamBytes(funcObjNum);
-      if (!funcBytes) continue;
-
-      // Generate gradient color stops by sampling the function
-      const nStops = Math.min(size, 64); // Use up to 64 stops for smooth gradients
-      const stops = [];
-      for (let i = 0; i < nStops; i++) {
-        const t = i / (nStops - 1);
-        const values = evaluateSampledFunction(funcBytes, size, nOutputs, decode, t, bitsPerSample);
-        let r; let g; let b;
-        if (deviceNTintCS) {
-          // Multi-input DeviceN: pass the function's N outputs through the DeviceN
-          // tint transform to get the alt-CS color, then convert to RGB.
-          const rgb = tintComponentsToRGB(deviceNTintCS, values);
-          if (rgb) { [r, g, b] = rgb; } else { r = 128; g = 128; b = 128; }
-        } else if (sepTintSamples) {
-          const sepMax = sepTintSamples.length / 3 - 1;
-          const idx = Math.round(Math.max(0, Math.min(1, values[0])) * sepMax) * 3;
-          r = sepTintSamples[idx]; g = sepTintSamples[idx + 1]; b = sepTintSamples[idx + 2];
-        } else if (shadingCS === 'DeviceCMYK' && nOutputs >= 4) {
-          const cc = Math.max(0, Math.min(1, values[0]));
-          const mm = Math.max(0, Math.min(1, values[1]));
-          const yy = Math.max(0, Math.min(1, values[2]));
-          const kk = Math.max(0, Math.min(1, values[3]));
-          [r, g, b] = cmykToRgb(cc, mm, yy, kk);
-        } else {
-          r = Math.round(Math.max(0, Math.min(1, values[0])) * 255);
-          g = isGray ? r : Math.round(Math.max(0, Math.min(1, values[1])) * 255);
-          b = isGray ? r : Math.round(Math.max(0, Math.min(1, values[2])) * 255);
-        }
-        stops.push({ offset: t, color: `rgb(${r},${g},${b})` });
-      }
-
-      shadings.set(shName, {
-        type: shadingType, coords, stops, extend, bbox, multiply: isSeparationShading,
-      });
-    } else if (funcType === 2) {
-      // Exponential interpolation function
-      const c0Str = resolveArrayValue(funcObjText, 'C0', objCache);
-      const c1Str = resolveArrayValue(funcObjText, 'C1', objCache);
-
-      const c0 = c0Str ? c0Str.split(/\s+/).map(Number) : [0];
-      const c1 = c1Str ? c1Str.split(/\s+/).map(Number) : [1];
-      const n = resolveNumValue(funcObjText, 'N', objCache, 1);
-
-      const stops = [];
-      const nStops = n === 1 ? 2 : 16; // Linear needs only 2 stops
-      for (let i = 0; i < nStops; i++) {
-        const t = i / (nStops - 1);
-        const tN = t ** n;
-        let r; let g; let b;
-        if (deviceNTintCS) {
-          // Multi-input DeviceN: evaluate the exponential function for ALL components
-          // (not just RGB-ish first 3), then pass the multi-component value through
-          // the DeviceN tint transform to get RGB.
-          const vals = c0.map((c0v, idx) => c0v + tN * (((c1[idx] != null) ? c1[idx] : 0) - c0v));
-          const rgb = tintComponentsToRGB(deviceNTintCS, vals);
-          if (rgb) { [r, g, b] = rgb; } else { r = 128; g = 128; b = 128; }
-        } else if (sepTintSamples) {
-          const val = Math.max(0, Math.min(1, c0[0] + tN * (c1[0] - c0[0])));
-          const idx = Math.round(val * (sepTintSamples.length / 3 - 1)) * 3;
-          r = sepTintSamples[idx]; g = sepTintSamples[idx + 1]; b = sepTintSamples[idx + 2];
-        } else if (shadingCS === 'DeviceCMYK' && c0.length >= 4) {
-          const cc = Math.max(0, Math.min(1, c0[0] + tN * (c1[0] - c0[0])));
-          const mm = Math.max(0, Math.min(1, (c0[1] ?? 0) + tN * ((c1[1] ?? 0) - (c0[1] ?? 0))));
-          const yy = Math.max(0, Math.min(1, (c0[2] ?? 0) + tN * ((c1[2] ?? 0) - (c0[2] ?? 0))));
-          const kk = Math.max(0, Math.min(1, (c0[3] ?? 0) + tN * ((c1[3] ?? 0) - (c0[3] ?? 0))));
-          [r, g, b] = cmykToRgb(cc, mm, yy, kk);
-        } else {
-          r = Math.round(Math.max(0, Math.min(1, c0[0] + tN * (c1[0] - c0[0]))) * 255);
-          g = isGray ? r : Math.round(Math.max(0, Math.min(1, (c0[1] ?? 0) + tN * ((c1[1] ?? 1) - (c0[1] ?? 0)))) * 255);
-          b = isGray ? r : Math.round(Math.max(0, Math.min(1, (c0[2] ?? 0) + tN * ((c1[2] ?? 1) - (c0[2] ?? 0)))) * 255);
-        }
-        stops.push({ offset: t, color: `rgb(${r},${g},${b})` });
-      }
-
-      shadings.set(shName, {
-        type: shadingType, coords, stops, extend, bbox, multiply: isSeparationShading,
-      });
-    } else if (funcType === 3) {
-      // Stitching function — evaluate sub-functions across their domains
-      const boundsStr = resolveArrayValue(funcObjText, 'Bounds', objCache);
-      const encodeStr = resolveArrayValue(funcObjText, 'Encode', objCache);
-      const funcsStr = resolveArrayValue(funcObjText, 'Functions', objCache);
-      if (!funcsStr) continue;
-
-      const bounds = boundsStr && boundsStr.trim()
-        ? boundsStr.split(/\s+/).map(Number) : [];
-      const encode = encodeStr ? encodeStr.split(/\s+/).map(Number) : [];
-      const subFuncRefs = [...funcsStr.matchAll(/(\d+)\s+\d+\s+R/g)].map((m) => Number(m[1]));
-
-      const subFuncs = [];
-      let hasSampledSub = false;
-      for (let si = 0; si < subFuncRefs.length; si++) {
-        const subText = objCache.getObjectText(subFuncRefs[si]);
-        if (!subText) continue;
-        const subFuncType = resolveIntValue(subText, 'FunctionType', objCache, 2);
-
-        if (subFuncType === 0) {
-          // Sampled sub-function
-          hasSampledSub = true;
-          const sizeStr = resolveArrayValue(subText, 'Size', objCache);
-          const decodeStr = resolveArrayValue(subText, 'Decode', objCache);
-          const rangeStr = resolveArrayValue(subText, 'Range', objCache);
-          const size = sizeStr ? Number(sizeStr.trim().split(/\s+/)[0]) : 256;
-          // Per PDF spec Table 3.36, /Decode defaults to /Range when absent
-          const range = rangeStr ? rangeStr.split(/\s+/).map(Number) : (decodeStr ? decodeStr.split(/\s+/).map(Number) : [0, 1, 0, 1, 0, 1]);
-          const decode = decodeStr ? decodeStr.split(/\s+/).map(Number) : range;
-          const nOutputs = range.length / 2;
-          const subBps = resolveIntValue(subText, 'BitsPerSample', objCache, 8);
-          const funcBytes = objCache.getStreamBytes(subFuncRefs[si]);
-          subFuncs.push({
-            funcType: 0, samples: funcBytes, size, nOutputs, decode, bitsPerSample: subBps,
-          });
-        } else {
-          // Type 2 (exponential)
-          const sc0Str = resolveArrayValue(subText, 'C0', objCache);
-          const sc1Str = resolveArrayValue(subText, 'C1', objCache);
-          subFuncs.push({
-            funcType: 2,
-            c0: sc0Str ? sc0Str.split(/\s+/).map(Number) : [0],
-            c1: sc1Str ? sc1Str.split(/\s+/).map(Number) : [1],
-            n: resolveNumValue(subText, 'N', objCache, 1),
-          });
-        }
-      }
-
-      const domainBounds = [0, ...bounds, 1];
-      const stops = [];
-      const nStops = hasSampledSub ? 64 : 16;
-      for (let i = 0; i < nStops; i++) {
-        const t = i / (nStops - 1);
-        let si = 0;
-        for (let bi = 0; bi < bounds.length; bi++) {
-          if (t >= bounds[bi]) si = bi + 1;
-        }
-        if (si >= subFuncs.length) si = subFuncs.length - 1;
-        const sub = subFuncs[si];
-        if (!sub) continue;
-
-        // Map t from [domainBounds[si], domainBounds[si+1]] to [encode[2*si], encode[2*si+1]]
-        const dLo = domainBounds[si];
-        const dHi = domainBounds[si + 1];
-        const eLo = encode.length > si * 2 ? encode[si * 2] : 0;
-        const eHi = encode.length > si * 2 + 1 ? encode[si * 2 + 1] : 1;
-        const tLocal = dHi > dLo ? (t - dLo) / (dHi - dLo) : 0;
-        const tEncoded = eLo + tLocal * (eHi - eLo);
-        const tClamped = Math.max(0, Math.min(1, tEncoded));
-
-        let r; let g; let b;
-        if (sub.funcType === 0) {
-          const values = evaluateSampledFunction(sub.samples, sub.size, sub.nOutputs, sub.decode, tClamped, sub.bitsPerSample || 8);
-          if (deviceNTintCS) {
-            // Multi-input DeviceN: pass the function's N outputs through the DeviceN
-            // tint transform to get the alt-CS color, then convert to RGB.
-            const rgb = tintComponentsToRGB(deviceNTintCS, values);
-            if (rgb) { [r, g, b] = rgb; } else { r = 128; g = 128; b = 128; }
-          } else if (sepTintSamples) {
-            const sepMax = sepTintSamples.length / 3 - 1;
-            const idx = Math.round(Math.max(0, Math.min(1, values[0])) * sepMax) * 3;
-            r = sepTintSamples[idx]; g = sepTintSamples[idx + 1]; b = sepTintSamples[idx + 2];
-          } else if (shadingCS === 'DeviceCMYK' && sub.nOutputs >= 4) {
-            const cc = Math.max(0, Math.min(1, values[0]));
-            const mm = Math.max(0, Math.min(1, values[1]));
-            const yy = Math.max(0, Math.min(1, values[2]));
-            const kk = Math.max(0, Math.min(1, values[3]));
-            [r, g, b] = cmykToRgb(cc, mm, yy, kk);
-          } else {
-            r = Math.round(Math.max(0, Math.min(1, values[0])) * 255);
-            g = isGray ? r : Math.round(Math.max(0, Math.min(1, values[1])) * 255);
-            b = isGray ? r : Math.round(Math.max(0, Math.min(1, values[2])) * 255);
-          }
-        } else {
-          const tN = tClamped ** sub.n;
-          if (deviceNTintCS) {
-            // Multi-input DeviceN: interpolate ALL components, then run them through
-            // the DeviceN tint transform to get RGB.
-            const vals = sub.c0.map((c0v, idx) => c0v + tN * (((sub.c1[idx] != null) ? sub.c1[idx] : 0) - c0v));
-            const rgb = tintComponentsToRGB(deviceNTintCS, vals);
-            if (rgb) { [r, g, b] = rgb; } else { r = 128; g = 128; b = 128; }
-          } else if (sepTintSamples) {
-            const val = Math.max(0, Math.min(1, sub.c0[0] + tN * (sub.c1[0] - sub.c0[0])));
-            const idx = Math.round(val * (sepTintSamples.length / 3 - 1)) * 3;
-            r = sepTintSamples[idx]; g = sepTintSamples[idx + 1]; b = sepTintSamples[idx + 2];
-          } else if (shadingCS === 'DeviceCMYK' && sub.c0.length >= 4) {
-            const cc = Math.max(0, Math.min(1, sub.c0[0] + tN * (sub.c1[0] - sub.c0[0])));
-            const mm = Math.max(0, Math.min(1, (sub.c0[1] ?? 0) + tN * ((sub.c1[1] ?? 0) - (sub.c0[1] ?? 0))));
-            const yy = Math.max(0, Math.min(1, (sub.c0[2] ?? 0) + tN * ((sub.c1[2] ?? 0) - (sub.c0[2] ?? 0))));
-            const kk = Math.max(0, Math.min(1, (sub.c0[3] ?? 0) + tN * ((sub.c1[3] ?? 0) - (sub.c0[3] ?? 0))));
-            [r, g, b] = cmykToRgb(cc, mm, yy, kk);
-          } else {
-            r = Math.round(Math.max(0, Math.min(1, sub.c0[0] + tN * (sub.c1[0] - sub.c0[0]))) * 255);
-            g = isGray ? r : Math.round(Math.max(0, Math.min(1, (sub.c0[1] ?? 0) + tN * ((sub.c1[1] ?? 1) - (sub.c0[1] ?? 0)))) * 255);
-            b = isGray ? r : Math.round(Math.max(0, Math.min(1, (sub.c0[2] ?? 0) + tN * ((sub.c1[2] ?? 1) - (sub.c0[2] ?? 0)))) * 255);
-          }
-        }
-        stops.push({ offset: t, color: `rgb(${r},${g},${b})` });
-      }
-
-      shadings.set(shName, {
-        type: shadingType, coords, stops, extend, bbox, multiply: isSeparationShading,
-      });
-    }
+    const fn = parseFunction(funcObjNum, objCache);
+    if (!fn) continue;
+    const stops = functionToShadingStops(fn, {
+      deviceNTintCS, sepTintSamples, isCMYK: shadingCS === 'DeviceCMYK', isGray,
+    });
+    shadings.set(shName, {
+      type: shadingType, coords, stops, extend, bbox, multiply: isSeparationShading,
+    });
   }
 
   return shadings;
@@ -3774,12 +3454,10 @@ function parsePatterns(pageObjText, objCache) {
         const csObjText = objCache.getObjectText(Number(csRefMatch[1]));
         if (csObjText) {
           if (/\/Separation|\/DeviceN/.test(csObjText)) {
-            // For multi-colorant DeviceN (e.g. 5-channel PANTONE+CMYK), the 1D
-            // diagonal tint LUT is wrong — each function output must go through
-            // the multi-input tint transform as a full N-tuple. Parse the tint
-            // CS directly and feed it to parseShadingFunction so Type 2/3
-            // functions can evaluate all C0→C1 components jointly. Single-
-            // colorant DeviceN still uses the faster 1D LUT.
+            // For multi-colorant DeviceN (e.g. 5-channel PANTONE+CMYK), the 1D diagonal tint LUT is wrong.
+            // Each function output must go through the multi-input tint transform as a full N-tuple,
+            // so parse the tint CS directly and route every Type 2/3 stop through it
+            // with all C0->C1 components jointly. Single-colorant DeviceN uses the 1D LUT.
             const dnNamesMatch = /\/DeviceN\s*\[\s*((?:\/[^/[\]<>(){}\s]+\s*)+)\]/.exec(csObjText);
             const dnNumColorants = dnNamesMatch
               ? (dnNamesMatch[1].match(/\/[^/[\]<>(){}\s]+/g) || []).length
@@ -3880,256 +3558,22 @@ function parsePatterns(pageObjText, objCache) {
         if (funcDictOpen !== -1) funcDictText = extractDict(shadingDict, funcDictOpen);
       }
     }
-    const shading = funcDictText
-      ? parseShadingFunction(funcDictText, shadingType, coords, objCache, patSepTintSamples, patIsGray, funcObjNum, patIsCMYK, patDeviceNTintCS)
+    const fn = funcDictText
+      ? parseFunction(funcObjNum != null ? funcObjNum : funcDictText, objCache)
       : null;
-    if (shading) {
-      shading.extend = extend;
-      if (bbox) shading.bbox = bbox;
-      if (matrix) shading.matrix = matrix;
-      // Use midpoint color as fallback for solid color, but include full shading data
-      const midIdx = Math.floor(shading.stops.length / 2);
-      const color = shading.stops[midIdx]?.color || 'rgb(128,128,128)';
+    if (fn) {
+      const stops = functionToShadingStops(fn, {
+        deviceNTintCS: patDeviceNTintCS, sepTintSamples: patSepTintSamples, isCMYK: patIsCMYK, isGray: patIsGray,
+      });
+      const shading = {
+        type: shadingType, coords, stops, extend, ...(bbox && { bbox }), ...(matrix && { matrix }),
+      };
+      const color = stops[Math.floor(stops.length / 2)]?.color || 'rgb(128,128,128)';
       patterns.set(patName, { color, shading });
     }
   }
 
   return patterns;
-}
-
-/**
- * Parse a shading function dict and return gradient info with color stops.
- * Uses getObjectText/getStreamBytes for indirect refs.
- * @param {string} funcDictText - Already-resolved function dict text
- * @param {number} shadingType
- * @param {number[]} coords
- * @param {ObjectCache} objCache
- * @param {Uint8Array|null} sepTintSamples
- * @param {boolean} isGray
- * @param {number} [funcObjNum] - Object number (needed for FunctionType 0 stream data)
- * @param {boolean} [isCMYK]
- * @param {object} [deviceNTintCS]
- */
-function parseShadingFunction(funcDictText, shadingType, coords, objCache, sepTintSamples, isGray, funcObjNum, isCMYK, deviceNTintCS) {
-  const funcObjText = funcDictText;
-  if (!funcObjText) return null;
-
-  const funcTypeMatch = /\/FunctionType\s+(\d+)/.exec(funcObjText);
-  const funcType = funcTypeMatch ? Number(funcTypeMatch[1]) : -1;
-
-  if (funcType === 0) {
-    const sizeStr = resolveArrayValue(funcObjText, 'Size', objCache);
-    const decodeStr = resolveArrayValue(funcObjText, 'Decode', objCache);
-    const rangeStr = resolveArrayValue(funcObjText, 'Range', objCache);
-    const size = sizeStr ? Number(sizeStr.trim().split(/\s+/)[0]) : 256;
-    // Per PDF spec Table 3.36, /Decode defaults to /Range when absent (see also the
-    // matching fix in the standalone shading parser above).
-    const range = rangeStr ? rangeStr.split(/\s+/).map(Number) : (decodeStr ? decodeStr.split(/\s+/).map(Number) : [0, 1, 0, 1, 0, 1]);
-    const decode = decodeStr ? decodeStr.split(/\s+/).map(Number) : range;
-    const nOutputs = range.length / 2;
-    const bitsPerSample = resolveIntValue(funcObjText, 'BitsPerSample', objCache, 8);
-
-    if (funcObjNum == null) return null;
-    const funcBytes = objCache.getStreamBytes(funcObjNum);
-    if (!funcBytes) return null;
-
-    const nStops = Math.min(size, 64);
-    const stops = [];
-    for (let i = 0; i < nStops; i++) {
-      const t = i / (nStops - 1);
-      const values = evaluateSampledFunction(funcBytes, size, nOutputs, decode, t, bitsPerSample);
-      let r; let g; let b;
-      if (deviceNTintCS) {
-        const rgb = tintComponentsToRGB(deviceNTintCS, values);
-        if (rgb) { [r, g, b] = rgb; } else { r = 128; g = 128; b = 128; }
-      } else if (sepTintSamples) {
-        const sepMax = sepTintSamples.length / 3 - 1;
-        const idx = Math.round(Math.max(0, Math.min(1, values[0])) * sepMax) * 3;
-        r = sepTintSamples[idx]; g = sepTintSamples[idx + 1]; b = sepTintSamples[idx + 2];
-      } else if (isCMYK && nOutputs >= 4) {
-        const cc = Math.max(0, Math.min(1, values[0]));
-        const mm = Math.max(0, Math.min(1, values[1]));
-        const yy = Math.max(0, Math.min(1, values[2]));
-        const kk = Math.max(0, Math.min(1, values[3]));
-        [r, g, b] = cmykToRgb(cc, mm, yy, kk);
-      } else {
-        r = Math.round(Math.max(0, Math.min(1, values[0])) * 255);
-        g = isGray ? r : Math.round(Math.max(0, Math.min(1, values[1])) * 255);
-        b = isGray ? r : Math.round(Math.max(0, Math.min(1, values[2])) * 255);
-      }
-      stops.push({ offset: t, color: `rgb(${r},${g},${b})` });
-    }
-    return { type: shadingType, coords, stops };
-  }
-
-  if (funcType === 2) {
-    const c0Str = resolveArrayValue(funcObjText, 'C0', objCache);
-    const c1Str = resolveArrayValue(funcObjText, 'C1', objCache);
-    const c0 = c0Str ? c0Str.split(/\s+/).map(Number) : [0];
-    const c1 = c1Str ? c1Str.split(/\s+/).map(Number) : [1];
-    const n = resolveNumValue(funcObjText, 'N', objCache, 1);
-    const nStops = n === 1 ? 2 : 16;
-    const stops = [];
-    for (let i = 0; i < nStops; i++) {
-      const t = i / (nStops - 1);
-      const tN = t ** n;
-      let r; let g; let b;
-      if (deviceNTintCS) {
-        // Multi-input DeviceN: interpolate ALL N components C0→C1, then run
-        // them through the DeviceN tint transform to get RGB.
-        const vals = c0.map((c0v, idx) => c0v + tN * (((c1[idx] != null) ? c1[idx] : 0) - c0v));
-        const rgb = tintComponentsToRGB(deviceNTintCS, vals);
-        if (rgb) { [r, g, b] = rgb; } else { r = 128; g = 128; b = 128; }
-      } else if (sepTintSamples) {
-        const val = Math.max(0, Math.min(1, c0[0] + tN * (c1[0] - c0[0])));
-        const idx = Math.round(val * (sepTintSamples.length / 3 - 1)) * 3;
-        r = sepTintSamples[idx]; g = sepTintSamples[idx + 1]; b = sepTintSamples[idx + 2];
-      } else if (isCMYK && c0.length >= 4) {
-        const cc = Math.max(0, Math.min(1, c0[0] + tN * (c1[0] - c0[0])));
-        const mm = Math.max(0, Math.min(1, (c0[1] ?? 0) + tN * ((c1[1] ?? 0) - (c0[1] ?? 0))));
-        const yy = Math.max(0, Math.min(1, (c0[2] ?? 0) + tN * ((c1[2] ?? 0) - (c0[2] ?? 0))));
-        const kk = Math.max(0, Math.min(1, (c0[3] ?? 0) + tN * ((c1[3] ?? 0) - (c0[3] ?? 0))));
-        [r, g, b] = cmykToRgb(cc, mm, yy, kk);
-      } else {
-        r = Math.round(Math.max(0, Math.min(1, c0[0] + tN * (c1[0] - c0[0]))) * 255);
-        g = isGray ? r : Math.round(Math.max(0, Math.min(1, (c0[1] ?? 0) + tN * ((c1[1] ?? 1) - (c0[1] ?? 0)))) * 255);
-        b = isGray ? r : Math.round(Math.max(0, Math.min(1, (c0[2] ?? 0) + tN * ((c1[2] ?? 1) - (c0[2] ?? 0)))) * 255);
-      }
-      stops.push({ offset: t, color: `rgb(${r},${g},${b})` });
-    }
-    return { type: shadingType, coords, stops };
-  }
-
-  if (funcType === 3) {
-    const boundsStr = resolveArrayValue(funcObjText, 'Bounds', objCache);
-    const encodeStr = resolveArrayValue(funcObjText, 'Encode', objCache);
-    const funcsStr = resolveArrayValue(funcObjText, 'Functions', objCache);
-    if (!funcsStr) return null;
-    const bounds = boundsStr && boundsStr.trim()
-      ? boundsStr.split(/\s+/).map(Number) : [];
-    const encode = encodeStr ? encodeStr.split(/\s+/).map(Number) : [];
-    // Sub-functions may be indirect refs (N 0 R) or inline dicts (<<...>>)
-    const subFuncRefs = [...funcsStr.matchAll(/(\d+)\s+\d+\s+R/g)].map((m) => Number(m[1]));
-    const subFuncs = [];
-    let hasSampledSub = false;
-    if (subFuncRefs.length > 0) {
-      for (let si = 0; si < subFuncRefs.length; si++) {
-        const subText = objCache.getObjectText(subFuncRefs[si]);
-        if (!subText) continue;
-        const subFuncType = resolveIntValue(subText, 'FunctionType', objCache, 2);
-        if (subFuncType === 0) {
-          hasSampledSub = true;
-          const sizeStr = resolveArrayValue(subText, 'Size', objCache);
-          const decodeStr = resolveArrayValue(subText, 'Decode', objCache);
-          const rangeStr = resolveArrayValue(subText, 'Range', objCache);
-          const size = sizeStr ? Number(sizeStr.trim().split(/\s+/)[0]) : 256;
-          const range = rangeStr ? rangeStr.split(/\s+/).map(Number) : (decodeStr ? decodeStr.split(/\s+/).map(Number) : [0, 1, 0, 1, 0, 1]);
-          const decode = decodeStr ? decodeStr.split(/\s+/).map(Number) : range;
-          const nOutputs = range.length / 2;
-          const subBps = resolveIntValue(subText, 'BitsPerSample', objCache, 8);
-          const funcBytes = objCache.getStreamBytes(subFuncRefs[si]);
-          subFuncs.push({
-            funcType: 0, samples: funcBytes, size, nOutputs, decode, bitsPerSample: subBps,
-          });
-        } else {
-          const sc0Str = resolveArrayValue(subText, 'C0', objCache);
-          const sc1Str = resolveArrayValue(subText, 'C1', objCache);
-          subFuncs.push({
-            funcType: 2,
-            c0: sc0Str ? sc0Str.split(/\s+/).map(Number) : [0],
-            c1: sc1Str ? sc1Str.split(/\s+/).map(Number) : [1],
-            n: resolveNumValue(subText, 'N', objCache, 1),
-          });
-        }
-      }
-    } else {
-      // Inline sub-function dicts: /Functions [ <<...>> <<...>> ... ]
-      for (const m of funcsStr.matchAll(/<<([\s\S]*?)>>/g)) {
-        const subText = m[1];
-        const stMatch = /\/FunctionType\s+(\d+)/.exec(subText);
-        if (stMatch && Number(stMatch[1]) !== 2) continue;
-        const sc0Match = /\/C0\s*\[\s*([\d.\s-]+)\]/.exec(subText);
-        const sc1Match = /\/C1\s*\[\s*([\d.\s-]+)\]/.exec(subText);
-        const snMatch = /\/N\s+([\d.]+)/.exec(subText);
-        subFuncs.push({
-          funcType: 2,
-          c0: sc0Match ? sc0Match[1].trim().split(/\s+/).map(Number) : [0],
-          c1: sc1Match ? sc1Match[1].trim().split(/\s+/).map(Number) : [1],
-          n: snMatch ? Number(snMatch[1]) : 1,
-        });
-      }
-    }
-    const domainBounds = [0, ...bounds, 1];
-    const stops = [];
-    const nStops = hasSampledSub ? 64 : 16;
-    for (let i = 0; i < nStops; i++) {
-      const t = i / (nStops - 1);
-      let si = 0;
-      for (let bi = 0; bi < bounds.length; bi++) {
-        if (t >= bounds[bi]) si = bi + 1;
-      }
-      if (si >= subFuncs.length) si = subFuncs.length - 1;
-      const sub = subFuncs[si];
-      if (!sub) continue;
-      const dLo = domainBounds[si];
-      const dHi = domainBounds[si + 1];
-      const eLo = encode.length > si * 2 ? encode[si * 2] : 0;
-      const eHi = encode.length > si * 2 + 1 ? encode[si * 2 + 1] : 1;
-      const tLocal = dHi > dLo ? (t - dLo) / (dHi - dLo) : 0;
-      const tEncoded = eLo + tLocal * (eHi - eLo);
-      const tClamped = Math.max(0, Math.min(1, tEncoded));
-      let r; let g; let b;
-      if (sub.funcType === 0) {
-        const values = evaluateSampledFunction(sub.samples, sub.size, sub.nOutputs, sub.decode, tClamped, sub.bitsPerSample || 8);
-        if (deviceNTintCS) {
-          const rgb = tintComponentsToRGB(deviceNTintCS, values);
-          if (rgb) { [r, g, b] = rgb; } else { r = 128; g = 128; b = 128; }
-        } else if (sepTintSamples) {
-          const sepMax = sepTintSamples.length / 3 - 1;
-          const idx = Math.round(Math.max(0, Math.min(1, values[0])) * sepMax) * 3;
-          r = sepTintSamples[idx]; g = sepTintSamples[idx + 1]; b = sepTintSamples[idx + 2];
-        } else if (isCMYK && sub.nOutputs >= 4) {
-          const cc = Math.max(0, Math.min(1, values[0]));
-          const mm = Math.max(0, Math.min(1, values[1]));
-          const yy = Math.max(0, Math.min(1, values[2]));
-          const kk = Math.max(0, Math.min(1, values[3]));
-          [r, g, b] = cmykToRgb(cc, mm, yy, kk);
-        } else {
-          r = Math.round(Math.max(0, Math.min(1, values[0])) * 255);
-          g = isGray ? r : Math.round(Math.max(0, Math.min(1, values[1])) * 255);
-          b = isGray ? r : Math.round(Math.max(0, Math.min(1, values[2])) * 255);
-        }
-      } else {
-        const tN = tClamped ** sub.n;
-        if (deviceNTintCS) {
-          // Multi-input DeviceN: interpolate ALL N components C0→C1, then run
-          // them through the DeviceN tint transform to get RGB.
-          const vals = sub.c0.map((c0v, idx) => c0v + tN * (((sub.c1[idx] != null) ? sub.c1[idx] : 0) - c0v));
-          const rgb = tintComponentsToRGB(deviceNTintCS, vals);
-          if (rgb) { [r, g, b] = rgb; } else { r = 128; g = 128; b = 128; }
-        } else if (sepTintSamples) {
-          const val = Math.max(0, Math.min(1, sub.c0[0] + tN * (sub.c1[0] - sub.c0[0])));
-          const sepMax = sepTintSamples.length / 3 - 1;
-          const idx = Math.round(val * sepMax) * 3;
-          r = sepTintSamples[idx]; g = sepTintSamples[idx + 1]; b = sepTintSamples[idx + 2];
-        } else if (isCMYK && sub.c0.length >= 4) {
-          const cc = Math.max(0, Math.min(1, sub.c0[0] + tN * (sub.c1[0] - sub.c0[0])));
-          const mm = Math.max(0, Math.min(1, (sub.c0[1] ?? 0) + tN * ((sub.c1[1] ?? 0) - (sub.c0[1] ?? 0))));
-          const yy = Math.max(0, Math.min(1, (sub.c0[2] ?? 0) + tN * ((sub.c1[2] ?? 0) - (sub.c0[2] ?? 0))));
-          const kk = Math.max(0, Math.min(1, (sub.c0[3] ?? 0) + tN * ((sub.c1[3] ?? 0) - (sub.c0[3] ?? 0))));
-          [r, g, b] = cmykToRgb(cc, mm, yy, kk);
-        } else {
-          r = Math.round(Math.max(0, Math.min(1, sub.c0[0] + tN * (sub.c1[0] - sub.c0[0]))) * 255);
-          g = isGray ? r : Math.round(Math.max(0, Math.min(1, (sub.c0[1] ?? 0) + tN * ((sub.c1[1] ?? 1) - (sub.c0[1] ?? 0)))) * 255);
-          b = isGray ? r : Math.round(Math.max(0, Math.min(1, (sub.c0[2] ?? 0) + tN * ((sub.c1[2] ?? 1) - (sub.c0[2] ?? 0)))) * 255);
-        }
-      }
-      stops.push({ offset: t, color: `rgb(${r},${g},${b})` });
-    }
-    return { type: shadingType, coords, stops };
-  }
-
-  return null;
 }
 
 /**
@@ -4364,7 +3808,12 @@ async function decodeInlineImageBitmap(op, objCache, fallbackColorSpaces = new M
   let data = new Uint8Array(imageData.length);
   for (let j = 0; j < imageData.length; j++) data[j] = imageData.charCodeAt(j);
 
+  // Decode the filter chain to raw sample bytes.
+  // DCTDecode/JPXDecode are image codecs handled downstream by imageInfoToBitmap,
+  // so stop at the first one and pass its compressed bytes through unchanged.
+  let imageCodec = null;
   for (const filter of filters) {
+    if (filter === 'DCTDecode' || filter === 'JPXDecode') { imageCodec = filter; break; }
     if (filter === 'ASCII85Decode') {
       const ascii = new TextDecoder('latin1').decode(data);
       const clean = ascii.replace(/\s/g, '');
@@ -4410,15 +3859,6 @@ async function decodeInlineImageBitmap(op, objCache, fallbackColorSpaces = new M
       params.EndOfBlock = false;
       const decoded = decodeCCITTFax(data, params);
       data = new Uint8Array(decoded.buffer);
-    } else if (filter === 'DCTDecode') {
-      if (data.length >= 2 && !(data[data.length - 2] === 0xFF && data[data.length - 1] === 0xD9)) {
-        const fixed = new Uint8Array(data.length + 2);
-        fixed.set(data);
-        fixed[data.length] = 0xFF;
-        fixed[data.length + 1] = 0xD9;
-        data = fixed;
-      }
-      return ca.createImageBitmapFromData(data);
     } else if (filter === 'FlateDecode') {
       let inflated = pakoInflate(data);
       if (!(inflated instanceof Uint8Array)) inflated = pakoInflatePartial(data);
@@ -4432,118 +3872,78 @@ async function decodeInlineImageBitmap(op, objCache, fallbackColorSpaces = new M
     } else if (filter === 'LZWDecode') {
       const { decodeLZW } = await import('./codecs/decodeLZW.js');
       data = decodeLZW(data, dictText);
+    } else if (filter === 'RunLengthDecode') {
+      const output = [];
+      let pos = 0;
+      while (pos < data.length) {
+        const len = data[pos++];
+        if (len < 128) {
+          for (let k = 0; k < len + 1 && pos < data.length; k++) output.push(data[pos++]);
+        } else if (len > 128) {
+          const val = pos < data.length ? data[pos++] : 0;
+          for (let k = 0; k < 257 - len; k++) output.push(val);
+        } else break;
+      }
+      data = new Uint8Array(output);
     }
   }
 
-  const invert = decode && decode[0] === 1;
-  const isIndexedWithPalette = colorSpace === 'Indexed' && resolvedCS && resolvedCS.indexedInfo;
-  if (bpc === 1 && !isIndexedWithPalette) {
-    const rgba = new Uint8ClampedArray(width * height * 4);
-    const rowBytes = Math.ceil(width / 8);
-    if (isImageMask) {
-      if (!op.fillColor || op.fillColor.includes('NaN')) return null;
-      const cm = op.fillColor.match(/\d+/g) || ['0', '0', '0'];
-      const fr = Number(cm[0]);
-      const fg = Number(cm[1] || 0);
-      const fb = Number(cm[2] || 0);
-      for (let row = 0; row < height; row++) {
-        for (let col = 0; col < width; col++) {
-          const byteIdx = row * rowBytes + (col >> 3);
-          const bit = (data[byteIdx] >> (7 - (col & 7))) & 1;
-          const painted = invert ? bit === 1 : bit === 0;
-          const px = (row * width + col) * 4;
-          if (painted) {
-            rgba[px] = fr; rgba[px + 1] = fg; rgba[px + 2] = fb; rgba[px + 3] = 255;
-          }
-        }
-      }
-    } else {
-      const opaqueWhite = !op.tilingPattern;
-      for (let row = 0; row < height; row++) {
-        for (let col = 0; col < width; col++) {
-          const byteIdx = row * rowBytes + (col >> 3);
-          const bit = (data[byteIdx] >> (7 - (col & 7))) & 1;
-          const isBlack = invert ? bit === 1 : bit === 0;
-          const px = (row * width + col) * 4;
-          if (isBlack) {
-            rgba[px] = 0; rgba[px + 1] = 0; rgba[px + 2] = 0; rgba[px + 3] = 255;
-          } else if (opaqueWhite) {
-            rgba[px] = 255; rgba[px + 1] = 255; rgba[px + 2] = 255; rgba[px + 3] = 255;
-          }
-        }
-      }
-    }
-    const imgData = new ImageData(rgba, width, height);
-    return ca.createImageBitmapFromImageData(imgData);
+  const invert = !!(decode && decode[0] === 1);
+
+  // Hand the decoded samples to the shared XObject decoders
+  // so inline images go through the same colour-space conversion
+  // (sub-byte depths, /Decode, Lab, ICC, CMYK JPEG, ...) instead of a parallel subset.
+  /** @type {import('./parsePdfImages.js').ImageInfo} */
+  const imageInfo = {
+    width,
+    height,
+    bitsPerComponent: bpc,
+    colorSpace,
+    filter: imageCodec,
+    imageData: data,
+    objNum: -1,
+    sMask: null,
+    sMaskWidth: null,
+    sMaskHeight: null,
+    palette: null,
+    paletteBase: null,
+    imageMask: isImageMask,
+    decodeInvert: invert,
+    separationTintSamples: null,
+    deviceNTintCS: null,
+    iccProfileObjNum: null,
+    iccTransform: null,
+    labWhitePoint: null,
+    labRange: null,
+    paletteHival: null,
+    colorKeyMask: null,
+    transparentWhite: !!op.tilingPattern,
+  };
+
+  if (isImageMask) {
+    if (!op.fillColor || op.fillColor.includes('NaN')) return null;
+    return imageMaskToBitmap(imageInfo, op.fillColor, objCache);
   }
 
-  const rgba = new Uint8ClampedArray(width * height * 4);
-  if (colorSpace === 'Indexed' && resolvedCS && resolvedCS.indexedInfo) {
-    const { palette, hival, base } = resolvedCS.indexedInfo;
-    const nComp = base === 'DeviceCMYK' ? 4 : (base === 'DeviceGray' || base === 'CalGray' ? 1 : 3);
-    const maxIdx = Math.min(hival, Math.floor(palette.length / nComp) - 1);
-    const rowBytes = Math.ceil(width * bpc / 8);
-    const ccittImplicitInvert = bpc === 1 && filters.includes('CCITTFaxDecode')
-      && !decode && hival === 1;
-    for (let row = 0; row < height; row++) {
-      for (let col = 0; col < width; col++) {
-        let idx;
-        if (bpc === 8) {
-          idx = data[row * rowBytes + col];
-        } else if (bpc === 4) {
-          const bytePos = row * rowBytes + (col >> 1);
-          idx = (col & 1) === 0 ? (data[bytePos] >> 4) & 0xF : data[bytePos] & 0xF;
-        } else if (bpc === 2) {
-          const bytePos = row * rowBytes + (col >> 2);
-          idx = (data[bytePos] >> (6 - (col & 3) * 2)) & 0x3;
-        } else if (bpc === 1) {
-          const bytePos = row * rowBytes + (col >> 3);
-          idx = (data[bytePos] >> (7 - (col & 7))) & 1;
-          if (ccittImplicitInvert) idx ^= 1;
-        } else {
-          idx = data[row * rowBytes + col];
-        }
-        if (idx === undefined) continue;
-        if (idx > maxIdx) idx = maxIdx;
-        const po = idx * nComp;
-        const j = row * width + col;
-        let r; let g; let b;
-        if (nComp === 3) {
-          r = palette[po]; g = palette[po + 1]; b = palette[po + 2];
-        } else if (nComp === 1) {
-          r = palette[po]; g = r; b = r;
-        } else {
-          const [cr, cg, cb] = cmykToRgb(palette[po] / 255, palette[po + 1] / 255, palette[po + 2] / 255, palette[po + 3] / 255);
-          r = cr; g = cg; b = cb;
-        }
-        rgba[j * 4] = r; rgba[j * 4 + 1] = g; rgba[j * 4 + 2] = b; rgba[j * 4 + 3] = 255;
+  if (resolvedCS) {
+    if (resolvedCS.indexedInfo) {
+      imageInfo.palette = resolvedCS.indexedInfo.palette;
+      imageInfo.paletteBase = resolvedCS.indexedInfo.base;
+      imageInfo.paletteHival = resolvedCS.indexedInfo.hival;
+      // CCITT 1-bit indexed images with hival 1 carry implicit bit polarity.
+      // imageInfoToBitmap's `idx = hival - idx` under decodeInvert reproduces it.
+      if (bpc === 1 && imageCodec == null && filters.includes('CCITTFaxDecode')
+          && !decode && resolvedCS.indexedInfo.hival === 1) {
+        imageInfo.decodeInvert = true;
       }
     }
-  } else if ((colorSpace === 'Separation' || colorSpace === 'DeviceN') && resolvedCS && resolvedCS.tintSamples) {
-    const tint = resolvedCS.tintSamples;
-    const tintMax = Math.floor(tint.length / 3) - 1;
-    for (let j = 0; j < width * height; j++) {
-      const idx = Math.min(data[j] || 0, tintMax) * 3;
-      rgba[j * 4] = tint[idx]; rgba[j * 4 + 1] = tint[idx + 1]; rgba[j * 4 + 2] = tint[idx + 2]; rgba[j * 4 + 3] = 255;
-    }
-  } else {
-    const nComponents = colorSpace === 'DeviceRGB' ? 3 : colorSpace === 'DeviceCMYK' ? 4 : 1;
-    for (let j = 0; j < width * height; j++) {
-      if (nComponents === 1) {
-        const g = data[j] || 0;
-        rgba[j * 4] = g; rgba[j * 4 + 1] = g; rgba[j * 4 + 2] = g; rgba[j * 4 + 3] = 255;
-      } else if (nComponents === 3) {
-        rgba[j * 4] = data[j * 3]; rgba[j * 4 + 1] = data[j * 3 + 1]; rgba[j * 4 + 2] = data[j * 3 + 2]; rgba[j * 4 + 3] = 255;
-      } else if (nComponents === 4) {
-        const c0 = data[j * 4]; const m0 = data[j * 4 + 1]; const y0 = data[j * 4 + 2]; const
-          k0 = data[j * 4 + 3];
-        const [cr, cg, cb] = cmykToRgb(c0 / 255, m0 / 255, y0 / 255, k0 / 255);
-        rgba[j * 4] = cr; rgba[j * 4 + 1] = cg; rgba[j * 4 + 2] = cb; rgba[j * 4 + 3] = 255;
-      }
+    // Single-input DeviceN reduces to a 1-D tint LUT, same as Separation.
+    if (resolvedCS.tintSamples) {
+      imageInfo.separationTintSamples = resolvedCS.tintSamples;
+      imageInfo.colorSpace = 'Separation';
     }
   }
-  const imgData = new ImageData(rgba, width, height);
-  return ca.createImageBitmapFromImageData(imgData);
+  return imageInfoToBitmap(imageInfo, objCache);
 }
 
 /**
@@ -6284,7 +5684,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         patColorSpaces.size > 0 ? patColorSpaces : undefined, patSymbolTags, patCidPUATags,
         patRawCharCodeTags, patShadings, patPatterns, cidCollisionMap);
 
-      // Expand Form XObjects in pattern draw ops (same as page-level expansion at lines 6591-6606)
+      // Expand Form XObjects in pattern draw ops.
       let patDrawOps;
       if (patForms.size > 0) {
         patDrawOps = [];
@@ -7024,9 +6424,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             const sx = bboxW / tileW * scale;
             const sy = bboxH / tileH * scale;
             // Device-space pattern matrix: maps pattern source pixels to device pixels.
-            // This is identical to the matrix used in the path-fill branch (line ~7870),
-            // which works because that branch switches the canvas CTM to identity before
-            // calling fillRect — so canvas CTM × pattern matrix = identity × dm = dm.
             const dm = new DOMMatrix([
               tp.matrix[0] * sx, -tp.matrix[1] * sx,
               -tp.matrix[2] * sy, tp.matrix[3] * sy,
@@ -7418,7 +6815,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
               rCtx.transform(1, 0, 0, -1, 0, 1);
               rCtx.drawImage(bitmap, 0, 0, 1, 1);
               rCtx.restore();
-              // Debug: read back what we just drew
               ca.closeDrawable(bitmap);
             }
           }
@@ -7911,7 +7307,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             return null;
           })();
           let allShare = !!firstFormClip;
-          if (allShare) {
+          if (firstFormClip) {
             for (let gi = 1; gi < group.ops.length && allShare; gi++) {
               const clipsI = group.ops[gi].clips;
               let foundI = null;
@@ -8372,9 +7768,7 @@ function assemblePngDataUrl(width, height, isGray, compressedData) {
 }
 
 /**
- * Build a compressed PNG data URL from RGBA canvas ImageData. Uses filter
- * Up + default-level deflate, byte-compatible with the previous encoder's
- * output when invoked in Node (both use zlib's default level 6).
+ * Build a compressed PNG data URL from RGBA canvas ImageData.
  *
  * @param {ImageData} imageData - RGBA pixel data from canvas getImageData()
  * @param {'gray'|'color'} colorMode - 'gray' → colorType 0, else colorType 2

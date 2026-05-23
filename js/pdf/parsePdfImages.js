@@ -83,6 +83,7 @@ function parsePdfLiteralString(pdfBytes, openParenPos) {
  *   labRange: number[]|null,
  *   paletteHival: number|null,
  *   colorKeyMask: number[]|null,
+ *   transparentWhite?: boolean,
  * }} ImageInfo
  */
 

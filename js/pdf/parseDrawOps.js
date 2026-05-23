@@ -55,7 +55,7 @@ export function matMul(m1, m2) {
  *   patternShading?: PatternShading, tilingPattern?: TilingPatternRef,
  *   overprint?: boolean, fillColorInherited?: boolean, strokeColorInherited?: boolean,
  *   fillAlphaInherited?: boolean, strokeAlphaInherited?: boolean,
- *   smask?: SmaskRef|null, outerSmask?: SmaskRef|null,
+ *   smask?: SmaskRef|null, outerSmask?: SmaskRef|null, groupId?: number,
  *   blendMode?: string, clips?: ClipEntry[] }} ImageDrawOp
  * @typedef {{ type: 'type3glyph', charProcObjNum: number, transform: number[], ctm?: number[],
  *   fillColor: string, fillAlpha: number, strokeAlpha?: number,
@@ -63,7 +63,7 @@ export function matMul(m1, m2) {
  *   patternShading?: PatternShading, tilingPattern?: TilingPatternRef,
  *   overprint?: boolean, fillColorInherited?: boolean, strokeColorInherited?: boolean,
  *   fillAlphaInherited?: boolean, strokeAlphaInherited?: boolean,
- *   smask?: SmaskRef|null, outerSmask?: SmaskRef|null,
+ *   smask?: SmaskRef|null, outerSmask?: SmaskRef|null, groupId?: number,
  *   blendMode?: string, clips?: ClipEntry[] }} Type3GlyphOp
  * @typedef {{
  *   type: 'type0text', text: string, fontSize: number, fontFamily: string,
@@ -73,7 +73,7 @@ export function matMul(m1, m2) {
  *   ctm?: number[], patternShading?: PatternShading, tilingPattern?: TilingPatternRef,
  *   overprint?: boolean, fillColorInherited?: boolean, strokeColorInherited?: boolean,
  *   fillAlphaInherited?: boolean, strokeAlphaInherited?: boolean,
- *   smask?: SmaskRef|null, outerSmask?: SmaskRef|null,
+ *   smask?: SmaskRef|null, outerSmask?: SmaskRef|null, groupId?: number,
  *   blendMode?: string, clips?: ClipEntry[],
  *   pdfGlyphWidth?: number,
  * }} Type0TextOp
@@ -88,7 +88,7 @@ export function matMul(m1, m2) {
  *   tilingPattern?: TilingPatternRef, strokeTilingPattern?: TilingPatternRef,
  *   overprint?: boolean, fillColorInherited?: boolean, strokeColorInherited?: boolean,
  *   fillAlphaInherited?: boolean, strokeAlphaInherited?: boolean,
- *   smask?: SmaskRef|null, outerSmask?: SmaskRef|null,
+ *   smask?: SmaskRef|null, outerSmask?: SmaskRef|null, groupId?: number,
  *   blendMode?: string, clips?: ClipEntry[],
  * }} PathDrawOp
  * @typedef {{ type: 'shading', shading: object, ctm: number[], fillAlpha: number,
@@ -96,14 +96,14 @@ export function matMul(m1, m2) {
  *   patternShading?: PatternShading, tilingPattern?: TilingPatternRef,
  *   overprint?: boolean, fillColorInherited?: boolean, strokeColorInherited?: boolean,
  *   fillAlphaInherited?: boolean, strokeAlphaInherited?: boolean,
- *   smask?: SmaskRef|null, outerSmask?: SmaskRef|null,
+ *   smask?: SmaskRef|null, outerSmask?: SmaskRef|null, groupId?: number,
  *   blendMode?: string, clips?: ClipEntry[] }} ShadingDrawOp
  * @typedef {{ type: 'inlineImage', dictText: string, imageData: string, ctm: number[],
  *   fillColor: string, fillAlpha: number, strokeColor?: string, strokeAlpha?: number,
  *   patternShading?: PatternShading, tilingPattern?: TilingPatternRef,
  *   overprint?: boolean, fillColorInherited?: boolean, strokeColorInherited?: boolean,
  *   fillAlphaInherited?: boolean, strokeAlphaInherited?: boolean,
- *   smask?: SmaskRef|null, outerSmask?: SmaskRef|null,
+ *   smask?: SmaskRef|null, outerSmask?: SmaskRef|null, groupId?: number,
  *   blendMode?: string, clips?: ClipEntry[],
  *   colorSpaces?: Map<string, {type: string, tintSamples: Uint8Array|null, nComponents: number, deviceNGrid?: object|null, indexedInfo?: object|null, labWhitePoint?: number[]|null}>,
  * }} InlineImageOp

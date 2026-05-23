@@ -216,37 +216,48 @@ export function parseFunction(funcDef, objCache) {
 }
 
 /**
- * Parse a `/Functions` array from a stitching function dict body. Handles
- * both indirect refs (`N 0 R`) and inline dicts (`<<...>>`).
+ * Parse a `/Functions` array from a stitching function dict body.
  * @param {string} funcText - The Type 3 function dict text
  * @param {import('./parsePdfUtils.js').ObjectCache} objCache
  */
 function parseFunctionsArray(funcText, objCache) {
   const fnsStart = funcText.indexOf('/Functions');
   if (fnsStart === -1) return null;
-  const arrStart = funcText.indexOf('[', fnsStart);
+
+  let arrText = funcText;
+  let arrStart;
+  const afterKey = funcText.slice(fnsStart + '/Functions'.length).trimStart();
+  const fnsRef = /^(\d+)\s+\d+\s+R/.exec(afterKey);
+  if (fnsRef) {
+    const refText = objCache.getObjectText(Number(fnsRef[1]));
+    if (!refText) return null;
+    arrText = refText;
+    arrStart = arrText.indexOf('[');
+  } else {
+    arrStart = funcText.indexOf('[', fnsStart);
+  }
   if (arrStart === -1) return null;
   // Find matching ']' allowing nested <<...>> dicts
   let depth = 0;
   let dictDepth = 0;
   let arrEnd = -1;
-  for (let i = arrStart; i < funcText.length; i++) {
-    const ch = funcText[i];
+  for (let i = arrStart; i < arrText.length; i++) {
+    const ch = arrText[i];
     if (dictDepth === 0 && ch === '[') {
       depth++;
     } else if (dictDepth === 0 && ch === ']') {
       depth--;
       if (depth === 0) { arrEnd = i; break; }
-    } else if (ch === '<' && funcText[i + 1] === '<') {
+    } else if (ch === '<' && arrText[i + 1] === '<') {
       dictDepth++;
       i++;
-    } else if (ch === '>' && funcText[i + 1] === '>') {
+    } else if (ch === '>' && arrText[i + 1] === '>') {
       dictDepth--;
       i++;
     }
   }
   if (arrEnd === -1) return null;
-  const arrBody = funcText.substring(arrStart + 1, arrEnd);
+  const arrBody = arrText.substring(arrStart + 1, arrEnd);
 
   const result = [];
   // Split into tokens of either `N 0 R` or `<<...>>` dicts
@@ -292,9 +303,6 @@ function parseFunctionsArray(funcText, objCache) {
  */
 function readSample(samples, index, bps) {
   if (bps === 8) return samples[index];
-  if (bps === 16) {
-    return (samples[index * 2] << 8) | samples[index * 2 + 1];
-  }
   if (bps < 8) {
     const bitOffset = index * bps;
     const byteIdx = bitOffset >> 3;
@@ -305,8 +313,15 @@ function readSample(samples, index, bps) {
     v &= (1 << bps) - 1;
     return v;
   }
-  // 32-bit etc. — uncommon for tint transforms
-  return samples[index];
+  // bps is a multiple of 8 (16, 24, 32). Accumulate big-endian by multiplication
+  // so a 32-bit sample with the top bit set does not overflow JS's signed int.
+  const bytesPerValue = bps / 8;
+  const off = index * bytesPerValue;
+  let v = 0;
+  for (let j = 0; j < bytesPerValue; j++) {
+    v = v * 256 + (samples[off + j] || 0);
+  }
+  return v;
 }
 
 /**
@@ -363,7 +378,7 @@ function evaluateSampled(fn, inputs) {
   const {
     domain, encode, decode, size, samples, bps, nOutputs,
   } = fn;
-  const maxSample = (1 << bps) - 1;
+  const maxSample = 2 ** bps - 1;
   const N = fn.nInputs;
 
   // Encode each input -> sample-space coordinate
@@ -865,7 +880,7 @@ export function parseSeparationTint(csText, objCache) {
     const fn = parsed.tintFn;
     const totalSamples = fn.size.reduce((a, b) => a * b, 1);
     const out = new Uint8Array(totalSamples * 3);
-    const maxSample = (1 << fn.bps) - 1;
+    const maxSample = 2 ** fn.bps - 1;
     const decode = fn.decode || fn.range || [];
     for (let s = 0; s < totalSamples; s++) {
       const comp = new Array(fn.nOutputs);
