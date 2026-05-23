@@ -373,6 +373,8 @@ export function evaluateFunction(fn, inputs) {
 /**
  * Evaluate a FunctionType 0 (sampled) function.
  * Implements multilinear interpolation across N input dimensions.
+ * @param {ParsedFunction} fn
+ * @param {number[]} inputs
  */
 function evaluateSampled(fn, inputs) {
   const {
@@ -396,6 +398,7 @@ function evaluateSampled(fn, inputs) {
 
   // Multilinear interpolation: for each of 2^N corners, weight by product of
   // (1-f) or f along each dimension, then sum and decode.
+  /** @type {number[]} */
   const out = new Array(nOutputs).fill(0);
   const corners = 1 << N;
   // Pre-compute lo/hi indices and fractional parts
@@ -444,6 +447,8 @@ function evaluateSampled(fn, inputs) {
  * Evaluate a FunctionType 3 (stitching) function. Picks the correct
  * sub-function for the input value, encodes the input into the sub-function's
  * domain, and evaluates.
+ * @param {ParsedFunction} fn
+ * @param {number} x
  */
 function evaluateStitching(fn, x) {
   const {

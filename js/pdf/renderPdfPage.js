@@ -1885,6 +1885,12 @@ function parseSmaskBC(smaskDict, objCache) {
   return arr.length > 0 && !arr.some(Number.isNaN) ? arr : null;
 }
 
+/**
+ * Parse extended graphics states from a page's Resources dictionary.
+ * @param {string} pageObjText Page object text.
+ * @param {ObjectCache} objCache Object cache for resolving references.
+ * @returns {Map<string, object>} Map of graphics state names to state properties (fillAlpha, strokeAlpha, blendMode, smask, overprint).
+ */
 function parseExtGStates(pageObjText, objCache) {
   const states = new Map();
 
@@ -2920,6 +2926,9 @@ function buildMeshColorEvaluator(shObjText, objCache) {
 
 /**
  * Parse a ShadingType 4 (free-form Gouraud-shaded triangle mesh) shading.
+ * @param {string} shObjText Shading dictionary content.
+ * @param {number} shObjNum Object number for stream bytes.
+ * @param {ObjectCache} objCache Object cache for resolving references.
  * @returns {{ type: 'gouraud', triangles: Array<{vertices: number[][], colors: number[][]}> } | null}
  */
 function parseType4Shading(shObjText, shObjNum, objCache) {
