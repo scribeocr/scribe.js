@@ -3,19 +3,8 @@ import { base14ToBundledFont, cssFamilyToBundledFont } from '../../js/pdf/fonts/
 import { normalizeBase14Name } from '../../js/pdf/fonts/standardFontMetrics.js';
 import { ca } from '../../js/canvasAdapter.js';
 import { renderPdfPage } from '../_renderPdfPage.js';
-import { ASSETS_PATH } from './_paths.js';
 
 const isNode = typeof process !== 'undefined' && process.versions && process.versions.node;
-
-/** @param {string} pdfPath */
-async function readPdfBytes(pdfPath) {
-  if (isNode) {
-    const { readFile } = await import('node:fs/promises');
-    return new Uint8Array(await readFile(pdfPath));
-  }
-  const response = await fetch(pdfPath);
-  return new Uint8Array(await response.arrayBuffer());
-}
 
 /**
  * Build a minimal one-page PDF that draws "Hello World" with a single non-embedded
@@ -159,24 +148,21 @@ describe('cssFamilyToBundledFont', () => {
 
 describe.runIf(isNode)('Non-embedded Base14 fonts register bundled substitutes when rendered', () => {
   test('Courier (non-embedded) → NimbusMono-Regular', async () => {
-    const bytes = await readPdfBytes(`${ASSETS_PATH}/hello_world_courier_unembedded.pdf`);
-    await renderPdfPage(bytes, 0);
+    await renderPdfPage(buildHelloWorldPdf('Courier'), 0);
     const registered = new Set();
     for (const v of (ca._registeredFonts || new Map()).values()) registered.add(v.fontFaceName);
     expect(registered.has('_scribe_nimbusmono_regular')).toBe(true);
   });
 
   test('Helvetica (non-embedded) → NimbusSans-Regular', async () => {
-    const bytes = await readPdfBytes(`${ASSETS_PATH}/hello_world_helvetica_unembedded.pdf`);
-    await renderPdfPage(bytes, 0);
+    await renderPdfPage(buildHelloWorldPdf('Helvetica'), 0);
     const registered = new Set();
     for (const v of (ca._registeredFonts || new Map()).values()) registered.add(v.fontFaceName);
     expect(registered.has('_scribe_nimbussans_regular')).toBe(true);
   });
 
   test('Times-Roman (non-embedded) → NimbusRoman-Regular', async () => {
-    const bytes = await readPdfBytes(`${ASSETS_PATH}/hello_world_times_unembedded.pdf`);
-    await renderPdfPage(bytes, 0);
+    await renderPdfPage(buildHelloWorldPdf('Times-Roman'), 0);
     const registered = new Set();
     for (const v of (ca._registeredFonts || new Map()).values()) registered.add(v.fontFaceName);
     expect(registered.has('_scribe_nimbusroman_regular')).toBe(true);
