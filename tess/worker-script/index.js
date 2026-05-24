@@ -122,15 +122,15 @@ const getCore = async (oem, vanillaEngine, res) => {
     if (vanillaEngine) {
       if (relaxedSimdSupport) {
         if ([OEM.DEFAULT, OEM.LSTM_ONLY].includes(oem)) {
-          TesseractCore = (await import('../core_vanilla/tesseract-core-relaxedsimd-lstm.js')).default;
+          TesseractCore = (await import('../core-vanilla/tesseract-core-relaxedsimd-lstm.js')).default;
         } else {
-          TesseractCore = (await import('../core_vanilla/tesseract-core-relaxedsimd.js')).default;
+          TesseractCore = (await import('../core-vanilla/tesseract-core-relaxedsimd.js')).default;
         }
       } else if (simdSupport) {
         if ([OEM.DEFAULT, OEM.LSTM_ONLY].includes(oem)) {
-          TesseractCore = (await import('../core_vanilla/tesseract-core-simd-lstm.js')).default;
+          TesseractCore = (await import('../core-vanilla/tesseract-core-simd-lstm.js')).default;
         } else {
-          TesseractCore = (await import('../core_vanilla/tesseract-core-simd.js')).default;
+          TesseractCore = (await import('../core-vanilla/tesseract-core-simd.js')).default;
         }
       } else {
         throw Error('This runtime is not supported (WASM SIMD required).');
