@@ -5,7 +5,7 @@ import { clearObjectProperties } from '../utils/miscUtils.js';
 import { addHighlights as addHighlightsImpl, clearHighlights as clearHighlightsImpl } from '../addHighlights.js';
 import { renderPageStatic as renderPageStaticImpl } from '../debug.js';
 import { exportData as exportDataImpl, download as downloadImpl } from '../export/export.js';
-import { dropFromWorkers } from '../fontContainerMain.js';
+import { dropFromWorkers, enableOpt as enableFontOptImpl } from '../fontContainerMain.js';
 import {
   recognize as recognizeImpl,
   compareOCR as compareOCRImpl,
@@ -251,5 +251,16 @@ export class ScribeDoc {
    */
   runOptimization(ocrArr) {
     return runOptimizationImpl(this, ocrArr);
+  }
+
+  /**
+   * Enable or disable use of optimized fonts for this document, syncing the change to worker threads.
+   * Optimized fonts must already exist (via `runOptimization`) for this to have an effect.
+   * @param {Parameters<typeof enableFontOptImpl>[1]} enable
+   * @param {Parameters<typeof enableFontOptImpl>[2]} [force]
+   * @returns {ReturnType<typeof enableFontOptImpl>}
+   */
+  enableFontOpt(enable, force) {
+    return enableFontOptImpl(this.fonts, enable, force);
   }
 }

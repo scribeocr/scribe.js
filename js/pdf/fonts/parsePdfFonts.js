@@ -1066,6 +1066,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         let gHexWin1252Count = 0;
         let gHexExtendedCount = 0;
         let gHexNonDecimalCount = 0;
+        let gDec3Count = 0;
         for (const tok of tokens) {
           if (tok[1]) {
             prescanCharCode = Number(tok[1]);
@@ -1085,6 +1086,10 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
               if (hexCode >= 0x80) gHexExtendedCount++;
               if (/[a-fA-F]/.test(gHexMatch[1])) gHexNonDecimalCount++;
             }
+            // 3-digit G-names (G100-G255) cannot be 2-hex-digit identity names,
+            // so their presence proves this font uses the decimal-Win1252 convention.
+            const gDec3Match = /^G(\d{3,})$/.exec(gn);
+            if (gDec3Match && Number(gDec3Match[1]) <= 0xFF) gDec3Count++;
             prescanCharCode++;
           }
         }
@@ -1096,7 +1101,8 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         // and there is evidence that decimal parsing is wrong.
         const useGHexAsIdentity = gHexCount > 0
           && gHexWin1252Count === gHexCount
-          && (gHexNonDecimalCount > 0 || gHexExtendedCount > 0);
+          && (gHexNonDecimalCount > 0 || gHexExtendedCount > 0)
+          && gDec3Count === 0;
         let charCode = 0;
         for (const tok of tokens) {
           if (tok[1]) {
