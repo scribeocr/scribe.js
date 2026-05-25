@@ -45,10 +45,10 @@ Contributions are appreciated--if you are using Scribe.js within a framework not
 Considering whether Scribe.js or Tesseract.js is better for your project?  Read [this article](./docs/scribe_vs_tesseract.md).
 
 # Documentation
-- [Basic Browser Examples](./examples/browser/)
-- [Basic Node.js Examples](./examples/node/)
+- [Guide](./docs/guide.md)
+- [API Reference](./docs/API.md)
+- [Examples](./examples/)
 - [Scribe.js vs. Tesseract.js Comparison](./docs/scribe_vs_tesseract.md)
-- [API](./docs/API.md)
 
 ## Projects and Examples
 The following are examples and projects built using Scribe.js.  Additional examples can be found in the [examples](https://github.com/scribeocr/scribe.js/tree/master/examples) directory. 

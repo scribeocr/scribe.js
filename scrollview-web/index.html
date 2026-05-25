@@ -1,0 +1,247 @@
+<!doctype html>
+<html lang="en">
+
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="description" content="">
+    <title>Debug Tesseract</title>
+
+    <!-- Bootstrap core CSS -->
+    <link href="./app/css/bootstrap.min.css" rel="stylesheet">
+    <script src="./app/tess/tesseract-core-simd.wasm.js"></script>
+    <script type="module" src="./app/main.js"></script>
+
+
+    <style>
+        body {
+            margin: 0;
+            padding: 0;
+        }
+
+        .area {
+            background-color: lightgrey;
+            width: 100vw;
+            height: 100vh;
+        }
+
+        svg {
+            max-width: 100%
+        }
+
+
+        #uploader {
+            padding-top: 55px;
+        }
+
+
+        /* Styles for viewports 768px and wider */
+        @media (min-width: 768px) {
+            .sv-content-col {
+                height: 100vh;
+                top: 0;
+            }
+
+            #sidebarScrollArea {
+                height: 100%;
+            }
+
+            #sidebarArea {
+                width: 380px;
+            }
+
+            #uploader {
+                padding-top: 0;
+            }
+        }
+
+        .bd-placeholder-img {
+            font-size: 1.125rem;
+            text-anchor: middle;
+            -webkit-user-select: none;
+            -moz-user-select: none;
+            user-select: none;
+        }
+
+        @media (min-width: 768px) {
+            .bd-placeholder-img-lg {
+                font-size: 3.5rem;
+            }
+        }
+
+        .slimScrollbar::-webkit-scrollbar-track {
+            -webkit-box-shadow: inset 0 0 6px rgba(0, 0, 0, 0.3);
+            border-radius: 10px;
+            background-color: #F5F5F5;
+        }
+
+        .slimScrollbar::-webkit-scrollbar {
+            width: 6px;
+            background-color: #F5F5F5;
+        }
+
+        .slimScrollbar::-webkit-scrollbar-thumb {
+            border-radius: 10px;
+            -webkit-box-shadow: inset 0 0 6px rgba(0, 0, 0, .3);
+            background-color: #555;
+        }
+
+        /* Turn off shadow that bootstrap adds by default to buttons after being clicked. */
+        .btn:focus:not(:focus-visible) {
+            outline: none !important;
+            box-shadow: none !important;
+        }
+    </style>
+
+
+    <!-- Custom styles for this template -->
+    <link href="./app/css/sidebars.css" rel="stylesheet">
+</head>
+
+<body>
+
+
+    <div class="container" style="max-width:none">
+        <div class="row">
+
+
+            <div class="d-flex d-md-none align-items-center flex-shrink-0 p-3 link-dark text-decoration-none border-bottom"
+                style="z-index:10;background-color:#fff;">
+                <div class="col-7">
+                    <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="50px"
+                        height="40px" viewBox="0 0 10 10 " version="1.1">
+                        <g id="surface1">
+                            <path style=" stroke:none;fill-rule:nonzero;fill:rgb(0%,0%,0%);fill-opacity:1;"
+                                d="M 4.84375 0.195312 L 0.800781 2.558594 L 0.761719 2.597656 L 0.761719 7.402344 L 0.800781 7.441406 C 2.171875 8.292969 3.574219 9.101562 5 9.863281 C 6.414062 9.085938 7.8125 8.285156 9.199219 7.460938 C 9.238281 7.421875 9.238281 7.285156 9.238281 5 C 9.238281 2.714844 9.238281 2.578125 9.199219 2.539062 C 9.140625 2.480469 5.078125 0.15625 5.019531 0.136719 Z M 4.785156 1.660156 L 4.785156 2.558594 L 3.886719 3.085938 L 2.988281 3.59375 L 2.207031 3.144531 L 1.445312 2.675781 L 4.765625 0.742188 Z M 6.914062 1.699219 L 8.574219 2.675781 L 7.8125 3.144531 L 7.011719 3.59375 L 6.152344 3.085938 L 5.234375 2.558594 L 5.214844 1.640625 L 5.234375 0.742188 Z M 5.820312 3.398438 C 6.386719 3.730469 6.582031 3.847656 6.5625 3.867188 L 5 4.746094 L 3.4375 3.847656 C 3.457031 3.808594 5 2.929688 5.019531 2.949219 Z M 1.992188 3.515625 L 2.773438 3.964844 L 2.773438 6.054688 L 1.210938 6.953125 C 1.164062 5.65625 1.164062 4.363281 1.210938 3.066406 Z M 8.828125 5 L 8.808594 6.933594 L 8.007812 6.484375 L 7.246094 6.035156 L 7.226562 5 L 7.226562 3.964844 L 8.007812 3.515625 L 8.808594 3.066406 Z M 6.816406 5.117188 L 6.816406 6.035156 L 6.035156 6.484375 L 5.234375 6.933594 L 5.214844 6.035156 L 5.214844 5.136719 L 5.253906 5.117188 L 6.796875 4.21875 Z M 4.003906 4.6875 L 4.785156 5.136719 L 4.785156 6.035156 L 4.765625 6.953125 L 3.984375 6.484375 L 3.203125 6.054688 L 3.203125 5.136719 L 3.222656 4.238281 Z M 3.90625 6.953125 L 4.785156 7.460938 L 4.785156 8.359375 C 4.785156 9.238281 4.785156 9.277344 4.746094 9.257812 L 1.425781 7.324219 L 2.988281 6.425781 Z M 7.8125 6.875 C 8.242188 7.109375 8.59375 7.324219 8.59375 7.34375 C 8.59375 7.363281 5.253906 9.277344 5.234375 9.257812 L 5.214844 8.359375 L 5.214844 7.460938 L 6.113281 6.953125 L 7.03125 6.425781 Z M 7.8125 6.875 " />
+                        </g>
+                    </svg>
+
+
+                    <span class="d-inline d-sm-none fs-5 fw-semibold">Tesseract</span>
+                    <span class="d-none d-sm-inline fs-5 fw-semibold">Debug Tesseract</span>
+                </div>
+                <div class="col" style="display:flex;flex-direction:row-reverse;">
+
+
+
+                    <div class="col-4">
+                        <button type="button" id="optionsBtnMobile" class="btn btn-light" style="border-color:#dee2e6"
+                            disabled>
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor"
+                                class="bi bi-gear-fill" viewBox="0 0 16 16">
+                                <path
+                                    d="M9.405 1.05c-.413-1.4-2.397-1.4-2.81 0l-.1.34a1.464 1.464 0 0 1-2.105.872l-.31-.17c-1.283-.698-2.686.705-1.987 1.987l.169.311c.446.82.023 1.841-.872 2.105l-.34.1c-1.4.413-1.4 2.397 0 2.81l.34.1a1.464 1.464 0 0 1 .872 2.105l-.17.31c-.698 1.283.705 2.686 1.987 1.987l.311-.169a1.464 1.464 0 0 1 2.105.872l.1.34c.413 1.4 2.397 1.4 2.81 0l.1-.34a1.464 1.464 0 0 1 2.105-.872l.31.17c1.283.698 2.686-.705 1.987-1.987l-.169-.311a1.464 1.464 0 0 1 .872-2.105l.34-.1c1.4-.413 1.4-2.397 0-2.81l-.34-.1a1.464 1.464 0 0 1-.872-2.105l.17-.31c.698-1.283-.705-2.686-1.987-1.987l-.311.169a1.464 1.464 0 0 1-2.105-.872zM8 10.93a2.929 2.929 0 1 1 0-5.86 2.929 2.929 0 0 1 0 5.858z" />
+                            </svg>
+                        </button>
+
+                    </div>
+
+                    <div class="col-4">
+                        <button type="button" id="viewBtnMobile" class="btn btn-light" style="border-color:#dee2e6">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor"
+                                class="bi bi-gear-fill" viewBox="0 0 16 16">
+                                <path d="M10.5 8a2.5 2.5 0 1 1-5 0 2.5 2.5 0 0 1 5 0" />
+                                <path
+                                    d="M0 8s3-5.5 8-5.5S16 8 16 8s-3 5.5-8 5.5S0 8 0 8m8 3.5a3.5 3.5 0 1 0 0-7 3.5 3.5 0 0 0 0 7" />
+                            </svg>
+                        </button>
+
+                    </div>
+                    <div class="col-4">
+
+                        <button type="button" id="infoBtnMobile" class="btn btn-light" style="border-color:#dee2e6">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor"
+                                class="bi bi-info-lg" viewBox="0 0 16 16">
+                                <path
+                                    d="m9.708 6.075-3.024.379-.108.502.595.108c.387.093.464.232.38.619l-.975 4.577c-.255 1.183.14 1.74 1.067 1.74.72 0 1.554-.332 1.933-.789l.116-.549c-.263.232-.65.325-.905.325-.363 0-.494-.255-.402-.704zm.091-2.755a1.32 1.32 0 1 1-2.64 0 1.32 1.32 0 0 1 2.64 0" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+
+
+            </div>
+
+            <div class="d-md-flex d-none flex-column align-items-stretch flex-shrink-0 bg-white sv-content-col"
+                id="sidebarArea" style="height:100vh;position:relative">
+                <div
+                    class="d-md-flex d-none align-items-center flex-shrink-0 p-3 link-dark text-decoration-none border-bottom">
+                    <svg xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink" width="50px"
+                        height="40px" viewBox="0 0 10 10 " version="1.1">
+                        <g id="surface1">
+                            <path style=" stroke:none;fill-rule:nonzero;fill:rgb(0%,0%,0%);fill-opacity:1;"
+                                d="M 4.84375 0.195312 L 0.800781 2.558594 L 0.761719 2.597656 L 0.761719 7.402344 L 0.800781 7.441406 C 2.171875 8.292969 3.574219 9.101562 5 9.863281 C 6.414062 9.085938 7.8125 8.285156 9.199219 7.460938 C 9.238281 7.421875 9.238281 7.285156 9.238281 5 C 9.238281 2.714844 9.238281 2.578125 9.199219 2.539062 C 9.140625 2.480469 5.078125 0.15625 5.019531 0.136719 Z M 4.785156 1.660156 L 4.785156 2.558594 L 3.886719 3.085938 L 2.988281 3.59375 L 2.207031 3.144531 L 1.445312 2.675781 L 4.765625 0.742188 Z M 6.914062 1.699219 L 8.574219 2.675781 L 7.8125 3.144531 L 7.011719 3.59375 L 6.152344 3.085938 L 5.234375 2.558594 L 5.214844 1.640625 L 5.234375 0.742188 Z M 5.820312 3.398438 C 6.386719 3.730469 6.582031 3.847656 6.5625 3.867188 L 5 4.746094 L 3.4375 3.847656 C 3.457031 3.808594 5 2.929688 5.019531 2.949219 Z M 1.992188 3.515625 L 2.773438 3.964844 L 2.773438 6.054688 L 1.210938 6.953125 C 1.164062 5.65625 1.164062 4.363281 1.210938 3.066406 Z M 8.828125 5 L 8.808594 6.933594 L 8.007812 6.484375 L 7.246094 6.035156 L 7.226562 5 L 7.226562 3.964844 L 8.007812 3.515625 L 8.808594 3.066406 Z M 6.816406 5.117188 L 6.816406 6.035156 L 6.035156 6.484375 L 5.234375 6.933594 L 5.214844 6.035156 L 5.214844 5.136719 L 5.253906 5.117188 L 6.796875 4.21875 Z M 4.003906 4.6875 L 4.785156 5.136719 L 4.785156 6.035156 L 4.765625 6.953125 L 3.984375 6.484375 L 3.203125 6.054688 L 3.203125 5.136719 L 3.222656 4.238281 Z M 3.90625 6.953125 L 4.785156 7.460938 L 4.785156 8.359375 C 4.785156 9.238281 4.785156 9.277344 4.746094 9.257812 L 1.425781 7.324219 L 2.988281 6.425781 Z M 7.8125 6.875 C 8.242188 7.109375 8.59375 7.324219 8.59375 7.34375 C 8.59375 7.363281 5.253906 9.277344 5.234375 9.257812 L 5.214844 8.359375 L 5.214844 7.460938 L 6.113281 6.953125 L 7.03125 6.425781 Z M 7.8125 6.875 " />
+                        </g>
+                    </svg>
+
+
+                    <span class="fs-5 fw-semibold">Debug Tesseract</span>
+                </div>
+                <div class="list-group list-group-flush border-bottom scrollarea slimScrollbar" id="sidebarScrollArea">
+                </div>
+                <div
+                    class="d-md-flex d-none align-items-center flex-shrink-0 p-3 link-dark text-decoration-none border-top">
+                    <div class="col-2">
+                        <button type="button" id="optionsBtn" class="btn btn-light" style="border-color:#dee2e6"
+                            disabled>
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor"
+                                class="bi bi-gear-fill" viewBox="0 0 16 16">
+                                <path
+                                    d="M9.405 1.05c-.413-1.4-2.397-1.4-2.81 0l-.1.34a1.464 1.464 0 0 1-2.105.872l-.31-.17c-1.283-.698-2.686.705-1.987 1.987l.169.311c.446.82.023 1.841-.872 2.105l-.34.1c-1.4.413-1.4 2.397 0 2.81l.34.1a1.464 1.464 0 0 1 .872 2.105l-.17.31c-.698 1.283.705 2.686 1.987 1.987l.311-.169a1.464 1.464 0 0 1 2.105.872l.1.34c.413 1.4 2.397 1.4 2.81 0l.1-.34a1.464 1.464 0 0 1 2.105-.872l.31.17c1.283.698 2.686-.705 1.987-1.987l-.169-.311a1.464 1.464 0 0 1 .872-2.105l.34-.1c1.4-.413 1.4-2.397 0-2.81l-.34-.1a1.464 1.464 0 0 1-.872-2.105l.17-.31c.698-1.283-.705-2.686-1.987-1.987l-.311.169a1.464 1.464 0 0 1-2.105-.872zM8 10.93a2.929 2.929 0 1 1 0-5.86 2.929 2.929 0 0 1 0 5.858z" />
+                            </svg>
+                        </button>
+
+                    </div>
+                    <div class="col-2">
+
+                        <button type="button" id="infoBtn" class="btn btn-light" style="border-color:#dee2e6">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" fill="currentColor"
+                                class="bi bi-info-lg" viewBox="0 0 16 16">
+                                <path
+                                    d="m9.708 6.075-3.024.379-.108.502.595.108c.387.093.464.232.38.619l-.975 4.577c-.255 1.183.14 1.74 1.067 1.74.72 0 1.554-.332 1.933-.789l.116-.549c-.263.232-.65.325-.905.325-.363 0-.494-.255-.402-.704zm.091-2.755a1.32 1.32 0 1 1-2.64 0 1.32 1.32 0 0 1 2.64 0" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+            </div>
+
+            <div class="b-example-divider d-none d-md-block"></div>
+
+            <div class="col align-items-stretch flex-shrink-0 bg-white p-4 sv-content-col"
+                style="overflow-y:scroll;position:relative" id="mainCol">
+
+                <div>
+                    <input type="file" class="position-absolute invisible" id="uploadImageInput" multiple="">
+                    <label class="btn btn-secondary mb-3" for="uploadImageInput" id="uploadImageInputLabel"
+                        style="min-width:8rem">Upload Image</label>
+                    <label><input class="form-check-input" type="checkbox" id="runRecognizeCheckbox"> Run
+                        Recognition</label>
+                </div>
+                <div>
+                    <input type="file" class="position-absolute invisible" id="uploadInstructionsInput" multiple="">
+                    <label class="btn btn-secondary mb-3" for="uploadInstructionsInput"
+                        id="uploadInstructionsInputLabel" style="min-width:8rem">Upload Visualization
+                        Instructions</label>
+                </div>
+
+                <div>
+                    <textarea id="message" style="resize:auto"></textarea>
+                </div>
+
+            </div>
+
+            <div class="col d-none align-items-stretch flex-shrink-0 bg-white p-4 sv-content-col"
+                style="overflow-y:scroll;height:100vh" id="infoCol">
+
+            </div>
+
+        </div>
+
+    </div>
+
+
+    <script src="./app/lib/bootstrap.bundle.min.js"></script>
+
+</body>
+
+</html>
