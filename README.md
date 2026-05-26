@@ -18,15 +18,28 @@ npm i scribe.js-ocr
 ```
 
 Scribe.js is written in JavaScript using ESM, so can be imported directly from browser or Node.js JavaScript code without a build step.
-```js
-// Import statement in browser:
-import scribe from 'node_modules/scribe.js-ocr/scribe.js';
-// Import statement for Node.js:
-import scribe from 'scribe.js-ocr';
 
-// Basic usage
-scribe.extractText(['https://tesseract.projectnaptha.com/img/eng_bw.png'])
-	.then((res) => console.log(res))
+```js
+// Node.js, or in the browser with a bundler
+import scribe from 'scribe.js-ocr';
+// In the browser without a bundler (import map or relative path):
+import scribe from 'node_modules/scribe.js-ocr/scribe.js';
+```
+
+The `scribe.extractText` function is a simple function that extracts text from images and PDFs with reasonable default settings. This function makes it easy for new users to test Scribe.js, but is generally not ideal for production use.
+
+```js
+const text = await scribe.extractText(['https://tesseract.projectnaptha.com/img/eng_bw.png']);
+console.log(text);
+```
+
+For full control, create a new document object using `openDocument` and use the object's methods to extract text and transform the document. The example below imports an image, recognizes text, and exports a searchable PDF with an invisible text layer.
+
+```js
+const doc = await scribe.openDocument(['receipt.png']); // image, PDF, or existing OCR file(s)
+await doc.recognize({ langs: ['eng'] });                // run OCR
+await doc.download('pdf', 'receipt.pdf');               // write a searchable PDF
+await doc.terminate();
 ```
 
 When using Scribe.js in the browser, all files must be served from the same origin as the file importing Scribe.js.  This means that importing Scribe.js from a CDN will not work.  There is no UMD version.
