@@ -35,16 +35,10 @@ export function checkCharWarn(warnArr) {
         See: https://docs.scribeocr.com/faq.html#is-character-level-ocr-data-required--why`;
       opt.errorHandler(errorText);
     }
-  } if (charGoodCt === 0 && charWarnCt > 0) {
-    if (typeof process === 'undefined') {
-      const warningHTML = `No character-level OCR data detected. Font optimization features will be disabled.
-        <a href="https://docs.scribeocr.com/faq.html#is-character-level-ocr-data-required--why" target="_blank" class="alert-link">Learn more.</a>`;
-      opt.warningHandler(warningHTML);
-    } else {
-      const errorText = `No character-level OCR data detected. Font optimization features will be disabled.
-        See: https://docs.scribeocr.com/faq.html#is-character-level-ocr-data-required--why`;
-      opt.warningHandler(errorText);
-    }
+  } if (charGoodCt === 0 && charWarnCt > 0 && typeof process === 'undefined') {
+    const warningHTML = `No character-level OCR data detected. Font optimization features will be disabled.
+      <a href="https://docs.scribeocr.com/faq.html#is-character-level-ocr-data-required--why" target="_blank" class="alert-link">Learn more.</a>`;
+    opt.warningHandler(warningHTML);
   }
 }
 

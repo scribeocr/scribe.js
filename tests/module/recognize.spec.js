@@ -214,10 +214,8 @@ describe('Check comparison between OCR versions.', () => {
 });
 
 describe('Check monospace font detection and optimization (M.D.Fla.).', () => {
-  // This test needs more time on slow CI runners.
-  // It should be optimized to run faster in the future.
   beforeAll(async () => {
-    doc = await scribe.openDocument([`${ASSETS_PATH}/M.D.Fla._8_25-cv-03557-MSS-AEP_1_4_p5-8.pdf`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/M.D.Fla._8_25-cv-03557-MSS-AEP_1_4_p6.pdf`]);
     await doc.recognize({ modeAdv: 'combined' });
   });
 
