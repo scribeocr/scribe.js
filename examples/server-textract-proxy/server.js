@@ -40,8 +40,6 @@ import http from 'node:http';
 import crypto from 'node:crypto';
 import scribe from '../../scribe.js';
 import { RecognitionModelTextract } from '../../cloud-adapters/aws-textract/RecognitionModelAwsTextract.js';
-import { removeCircularRefsOcr } from '../../js/objects/ocrObjects.js';
-import { removeCircularRefsDataTables } from '../../js/objects/layoutObjects.js';
 
 // Crash visibility: surface unhandled errors instead of silently dying.
 /** @param {any} err */
@@ -174,8 +172,8 @@ const handleOCR = async (req, res) => {
             const page = doc?.ocr[ENGINE_NAME]?.[n];
             if (page) {
               emitted.add(n);
-              const strippedPage = removeCircularRefsOcr([page])[0];
-              const strippedTables = removeCircularRefsDataTables([doc.layoutDataTables.pages[n]])[0];
+              const strippedPage = scribe.utils.ocr.removeCircularRefsOcr([page])[0];
+              const strippedTables = scribe.layout.removeCircularRefsDataTables([doc.layoutDataTables.pages[n]])[0];
               const warn = doc.convertPageWarn[n] || {};
               log(`page ${n} converted, streaming`);
               writeNDJSON({

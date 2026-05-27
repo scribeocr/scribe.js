@@ -104,6 +104,97 @@ const extractText = async (files, langs = ['eng'], outputFormat = 'txt', options
   return output;
 };
 
+/** @type {ScribeDoc | null} */
+let legacyDoc = null;
+/** @type {Set<string>} */
+const legacyWarned = new Set();
+
+/** @param {string} name */
+const warnLegacy = (name) => {
+  if (legacyWarned.has(name)) return;
+  legacyWarned.add(name);
+  opt.warningHandler(
+    `scribe.${name}() is deprecated and will be removed in a future release. `
+    + 'Use `scribe.openDocument(files)` and the returned `ScribeDoc` methods instead. '
+    + 'See https://github.com/scribeocr/scribe.js/blob/master/docs/guide.md',
+  );
+};
+
+/**
+ * @deprecated Use `scribe.openDocument(files)` and operate on the returned `ScribeDoc`.
+ * Compatibility wrapper that imports `files` into a single implicit document held at module
+ * scope. Any previously imported implicit document is terminated first. Only one such document
+ * exists at a time. New code should use `openDocument` to support multiple documents.
+ * @param {Parameters<ScribeDoc['importFiles']>[0]} files
+ * @param {Parameters<ScribeDoc['importFiles']>[1]} [options]
+ */
+const importFiles = async (files, options) => {
+  warnLegacy('importFiles');
+  if (legacyDoc) await legacyDoc.terminate();
+  await init({ font: true });
+  legacyDoc = new ScribeDoc();
+  return legacyDoc.importFiles(files, options);
+};
+
+/**
+ * @deprecated Use `doc.importFilesSupp(files, ocrName)` on a `ScribeDoc` from `scribe.openDocument(...)`.
+ * @param {Parameters<ScribeDoc['importFilesSupp']>[0]} files
+ * @param {Parameters<ScribeDoc['importFilesSupp']>[1]} ocrName
+ */
+const importFilesSupp = async (files, ocrName) => {
+  warnLegacy('importFilesSupp');
+  if (!legacyDoc) {
+    await init({ font: true });
+    legacyDoc = new ScribeDoc();
+  }
+  return legacyDoc.importFilesSupp(files, ocrName);
+};
+
+/**
+ * @deprecated Use `doc.recognize(options)` on a `ScribeDoc` from `scribe.openDocument(...)`.
+ * @param {Parameters<ScribeDoc['recognize']>[0]} [options]
+ */
+const recognize = async (options) => {
+  warnLegacy('recognize');
+  if (!legacyDoc) throw new Error('scribe.recognize() requires scribe.importFiles() first.');
+  return legacyDoc.recognize(options);
+};
+
+/**
+ * @deprecated Use `doc.download(format, fileName, options)` on a `ScribeDoc` from `scribe.openDocument(...)`.
+ * @param {Parameters<ScribeDoc['download']>[0]} format
+ * @param {Parameters<ScribeDoc['download']>[1]} fileName
+ * @param {Parameters<ScribeDoc['download']>[2]} [options]
+ */
+const download = async (format, fileName, options) => {
+  warnLegacy('download');
+  if (!legacyDoc) throw new Error('scribe.download() requires scribe.importFiles() first.');
+  return legacyDoc.download(format, fileName, options);
+};
+
+/**
+ * @deprecated Use `doc.exportData(format, options)` on a `ScribeDoc` from `scribe.openDocument(...)`.
+ * @param {Parameters<ScribeDoc['exportData']>[0]} [format]
+ * @param {Parameters<ScribeDoc['exportData']>[1]} [options]
+ */
+const exportData = async (format, options) => {
+  warnLegacy('exportData');
+  if (!legacyDoc) throw new Error('scribe.exportData() requires scribe.importFiles() first.');
+  return legacyDoc.exportData(format ?? 'txt', options);
+};
+
+/**
+ * @deprecated Call `doc.terminate()` on a `ScribeDoc` from `scribe.openDocument(...)` instead.
+ * Terminates the implicit document held by the legacy `scribe.importFiles` flow, if any.
+ */
+const clear = async () => {
+  warnLegacy('clear');
+  if (legacyDoc) {
+    await legacyDoc.terminate();
+    legacyDoc = null;
+  }
+};
+
 /**
  *
  * @param {Array<Array<CompDebugNode>>} compDebugArrArr
@@ -267,4 +358,10 @@ export default {
   extractTextFromTables,
   terminate,
   utils,
+  importFiles,
+  importFilesSupp,
+  recognize,
+  download,
+  exportData,
+  clear,
 };

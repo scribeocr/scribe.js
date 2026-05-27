@@ -146,6 +146,8 @@ const layout = {
   LayoutDataColumn,
   LayoutDataTable,
   LayoutRegion,
+  removeCircularRefsDataTables,
+  addCircularRefsDataTables,
 };
 
 export default layout;

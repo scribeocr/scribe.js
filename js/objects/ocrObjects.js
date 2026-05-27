@@ -1089,6 +1089,8 @@ const ocr = {
   scaleLine,
   scalePage,
   escapeXml,
+  removeCircularRefsOcr,
+  addCircularRefsOcr,
 };
 
 export default ocr;
