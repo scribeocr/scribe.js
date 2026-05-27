@@ -48,46 +48,51 @@ If you're hitting the server from a different host on the LAN, change `localhost
 
 ## 3. Wire it into your own app
 
-```js
-import scribe from 'scribe.js';
-import { RecognitionModelServerProxy } from './RecognitionModelServerProxy.js';
+The browser-side flow is small enough to live in a single file. The reference is
+[`client/demo.js`](client/demo.js); copy its `streamServerOcr` async generator and the
+recognize-button loop straight into your own frontend, then point `serverUrl` at your
+deployed proxy:
 
-await scribe.init();
-await scribe.importFiles([pdfFileFromInput]);
+```js
+import scribe from 'scribe.js-ocr';
+import { OcrPage } from 'scribe.js-ocr/js/objects/ocrObjects.js';
+
+// streamServerOcr: copy from client/demo.js
+// (POSTs the PDF, reads the NDJSON stream, yields one entry per page)
+
+const pdfArrayBuffer = await pdfFileFromInput.arrayBuffer();
+const doc = await scribe.openDocument({ pdfFiles: [pdfArrayBuffer] });
 
 const ac = new AbortController();
 cancelButton.addEventListener('click', () => ac.abort());
 
 try {
-  await scribe.recognize({
-    model: RecognitionModelServerProxy,
-    modelOptions: { serverUrl: 'https://your-server.example/ocr' },
-    signal: ac.signal,
-  });
-  // scribe.data.ocr.active is populated; scribe.exportData('pdf') returns a searchable PDF
+  for await (const entry of streamServerOcr('https://your-server.example/ocr', pdfArrayBuffer, { signal: ac.signal })) {
+    if (entry.error) {
+      const dims = doc.pageMetrics[entry.pageNum].dims;
+      doc.insertParsedPage(entry.pageNum, new OcrPage(entry.pageNum, dims), { engineName: 'Server Textract' });
+      continue;
+    }
+    doc.insertParsedPage(entry.pageNum, entry.page, {
+      engineName: 'Server Textract',
+      dataTables: entry.dataTables,
+      warn: entry.warn,
+    });
+  }
+  // doc.ocr.active is populated; doc.exportData('pdf') returns a searchable PDF.
 } catch (err) {
   if (err.name !== 'AbortError') throw err;
-  // Partial results in scribe.data.ocr.active for pages that arrived before abort.
+  // Partial results in doc.ocr.active for pages that arrived before abort.
 }
 ```
 
-Copy [`client/RecognitionModelServerProxy.js`](client/RecognitionModelServerProxy.js) into your frontend bundle. No changes to the stock scribeocr GUI are required.
+No changes to the stock scribeocr GUI are required. The server runs scribe.js's Textract conversion in-process and streams the parsed `OcrPage` per page, so the browser does not need to re-parse Textract JSON.
 
 ## API
 
 `POST /ocr` — body: raw PDF bytes, `Content-Type: application/pdf`. Response: `application/x-ndjson`, one line per page:
 
-- Success: `{"pageNum": 0, "rawData": "<stringified Textract JSON>"}`
+- Success: `{"pageNum": 0, "page": <OcrPage>, "dataTables": <LayoutDataTablePage>, "warn": <warning>}` — `page` is the parsed `OcrPage` with circular refs stripped (line.page, line.par, par.page, word.line, par.lines -> par.lineIds); `dataTables` is the per-page layout-table data (empty when `TEXTRACT_TABLES=false`); `warn` is the per-page conversion-warning object. Feed each line into `doc.insertParsedPage(pageNum, page, { engineName, dataTables, warn })` to install it into a browser-side `ScribeDoc`.
 - Failure: `{"pageNum": 0, "error": {"message": "..."}}`
 
 Lines are flushed as each page completes, so the browser merges progressively.
-
-## Troubleshooting
-
-| Symptom | Fix |
-|---|---|
-| Browser console: `405 Method Not Allowed` posting to `:8081` | You posted to the static file server. Change the port in the demo's Proxy URL field to `3000`. |
-| Browser: `Failed to fetch` for `*.woff` during `importFiles` | The static file server isn't rooted at `scribe.js/`. Run `npx http-server` from the scribe.js checkout root, not from this folder. |
-| Server log shows `client disconnected, aborting` immediately on every request | You're running an old build of `server.js`. Pull latest, kill, restart. |
-| `EADDRINUSE :::3000` on startup | Another proxy instance is still running. `ss -ltnp \| grep :3000` to find it, kill, retry. |
-| Per-region throttling errors in logs | Add more regions to `TEXTRACT_REGIONS` to scale TPS. |

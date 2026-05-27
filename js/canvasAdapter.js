@@ -168,9 +168,23 @@ export class ca {
   };
 
   /**
+   * Unregister every font scoped to the given owning document id.
+   * Matches the two docId-namespaced naming schemes the project uses: optimized fonts named
+   * `<family> Opt d${docId}` and embedded PDF fonts prefixed `_pdf_d${docId}_`.
+   * Process-global `_scribe_*` substitute aliases and other docs' fonts are left untouched.
+   * @param {number} docId
+   */
+  static unregisterFontsForDoc = (docId) => {
+    const optSuffix = ` Opt d${docId}`;
+    const pdfPrefix = `_pdf_d${docId}_`;
+    ca.unregisterFontsMatching((name) => name.endsWith(optSuffix) || name.startsWith(pdfPrefix));
+  };
+
+  /**
    * Bulk-unregister every font whose family name matches `predicate`.
    * `_scribe_*` substitute aliases are process-global; callers should
    * scope their predicate so those are not removed.
+   * Prefer `unregisterFontsForDoc` for the common "release a doc's fonts" case.
    *
    * @param {(name: string) => boolean} predicate - receives the font family
    *   name, i.e. the `fontFaceName` portion of the composite dedup key.

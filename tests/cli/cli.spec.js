@@ -84,9 +84,9 @@ describe('Check Node.js commands.', () => {
       }
       const outputBytes = fs.readFileSync(outputPath);
       const outputArrayBuffer = outputBytes.buffer.slice(outputBytes.byteOffset, outputBytes.byteOffset + outputBytes.byteLength);
-      scribe.opt.usePDFText.native.main = true;
-      scribe.opt.usePDFText.ocr.main = true;
-      scribe.opt.keepPDFTextAlways = true;
+      scribe.ScribeDoc.defaults.usePDFText.native.main = true;
+      scribe.ScribeDoc.defaults.usePDFText.ocr.main = true;
+      scribe.ScribeDoc.defaults.keepPDFTextAlways = true;
       const doc = await scribe.openDocument({ pdfFiles: [outputArrayBuffer] });
       doc.ocr.active = doc.ocr.pdf;
       extractedText = /** @type {string} */ (await doc.exportData('text'));

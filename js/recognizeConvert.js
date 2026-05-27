@@ -1,10 +1,11 @@
 import { opt } from './containers/app.js';
+import { scribeDocDefaults } from './containers/scribeDocDefaults.js';
 import { loadBuiltInFontsRaw, loadChiSimFont } from './fontContainerMain.js';
 import { calcCharMetricsFromPages } from './fontStatistics.js';
 import { gs } from './generalWorkerMain.js';
 import { ImageWrapper } from './objects/imageObjects.js';
-import { LayoutDataTablePage, LayoutPage } from './objects/layoutObjects.js';
-import { OcrPage } from './objects/ocrObjects.js';
+import { LayoutDataTablePage, LayoutPage, addCircularRefsDataTables } from './objects/layoutObjects.js';
+import { addCircularRefsOcr, OcrPage } from './objects/ocrObjects.js';
 import { PageMetrics } from './objects/pageMetricsObjects.js';
 import { clearObjectProperties } from './utils/miscUtils.js';
 
@@ -13,9 +14,10 @@ import { clearObjectProperties } from './utils/miscUtils.js';
 /**
  * Display warning/error message to user if missing character-level data.
  *
+ * @param {ScribeDoc} doc
  * @param {Array<Object.<string, string>>} warnArr - Array of objects containing warning/error messages from convertPage
  */
-export function checkCharWarn(warnArr) {
+export function checkCharWarn(doc, warnArr) {
   // TODO: Figure out what happens if there is one blank page with no identified characters (as that would presumably trigger an error and/or warning on the page level).
   // Make sure the program still works in that case for both Tesseract and Abbyy.
 
@@ -29,16 +31,16 @@ export function checkCharWarn(warnArr) {
     if (typeof process === 'undefined') {
       const errorHTML = `No character-level OCR data detected. Abbyy XML is only supported with character-level data.
         <a href="https://docs.scribeocr.com/faq.html#is-character-level-ocr-data-required--why" target="_blank" class="alert-link">Learn more.</a>`;
-      opt.errorHandler(errorHTML);
+      doc.errorHandler({ message: errorHTML });
     } else {
       const errorText = `No character-level OCR data detected. Abbyy XML is only supported with character-level data.
         See: https://docs.scribeocr.com/faq.html#is-character-level-ocr-data-required--why`;
-      opt.errorHandler(errorText);
+      doc.errorHandler({ message: errorText });
     }
   } if (charGoodCt === 0 && charWarnCt > 0 && typeof process === 'undefined') {
     const warningHTML = `No character-level OCR data detected. Font optimization features will be disabled.
       <a href="https://docs.scribeocr.com/faq.html#is-character-level-ocr-data-required--why" target="_blank" class="alert-link">Learn more.</a>`;
-    opt.warningHandler(warningHTML);
+    doc.warningHandler({ message: warningHTML });
   }
 }
 
@@ -131,10 +133,10 @@ export async function evalOCRPage(doc, params) {
 export async function compareOCR(doc, ocrA, ocrB, options, progressCallback = null) {
   /** @type {Parameters<import('./worker/compareOCRModule.js').compareOCRPageImp>[0]['options']} */
   const compOptions = {
-    ignorePunct: opt.ignorePunct,
-    ignoreCap: opt.ignoreCap,
-    confThreshHigh: opt.confThreshHigh,
-    confThreshMed: opt.confThreshMed,
+    ignorePunct: scribeDocDefaults.ignorePunct,
+    ignoreCap: scribeDocDefaults.ignoreCap,
+    confThreshHigh: scribeDocDefaults.confThreshHigh,
+    confThreshMed: scribeDocDefaults.confThreshMed,
   };
 
   if (options) Object.assign(compOptions, options);
@@ -290,8 +292,9 @@ export async function recognizePageImp(doc, n, legacy, lstm, areaMode, tessOptio
 
   const res0 = await resArr[0];
 
-  if (opt.printRecognitionTime) {
-    console.log(`Page ${n} recognition time: ${(res0.recognitionTime / 1000).toFixed(2)}s`);
+  const elapsedSec = res0.recognitionTime / 1000;
+  if (scribeDocDefaults.printRecognitionTime === true || (typeof scribeDocDefaults.printRecognitionTime === 'number' && elapsedSec > scribeDocDefaults.printRecognitionTime)) {
+    console.log(`Page ${n} recognition time: ${elapsedSec.toFixed(2)}s`);
   }
 
   if (!angleKnown) doc.pageMetrics[n].angle = (res0.recognize.rotateRadians || 0) * (180 / Math.PI) * -1;
@@ -310,7 +313,7 @@ export async function recognizePageImp(doc, n, legacy, lstm, areaMode, tessOptio
   }
 
   if (saveNativeImage && res0.recognize.imageColor && significantRotation) {
-    doc.images.nativeProps[n] = { rotated: isRotated, upscaled: upscale, colorMode: opt.colorMode };
+    doc.images.nativeProps[n] = { rotated: isRotated, upscaled: upscale, colorMode: scribeDocDefaults.colorMode };
     doc.images.native[n] = new ImageWrapper(n, res0.recognize.imageColor, 'native', isRotated, upscale);
   }
 
@@ -359,6 +362,46 @@ async function convertOCRPage(ocrRaw, n, format, scribeMode = false) {
 }
 
 /**
+ * Install a parsed `OcrPage` into the doc at index `n`.
+ *
+ * @param {ScribeDoc} doc
+ * @param {number} n
+ * @param {OcrPage} page
+ * @param {object} options
+ * @param {string} options.engineName - Name of the OCR engine this page came from.
+ * @param {LayoutDataTablePage} [options.dataTables] - Per-page layout tables.
+ * @param {Object<string,string>} [options.warn] - Per-page conversion warning.
+ * @param {boolean} [options.mainData] - When true, this page's data drives pageMetrics and convertPageWarn for index `n`. Default true.
+ *   Set false when inserting a secondary engine's results into a doc that already has a primary OCR pass.
+ * @param {boolean} [options.setActive] - When true, point `doc.ocr.active` at this engine's array. Default true.
+ *   Set false to leave `doc.ocr.active` unchanged (used by recognition's per-page callback, which assigns active itself at the end of the run).
+ */
+export function insertParsedPage(doc, n, page, {
+  engineName, dataTables, warn = {}, mainData = true, setActive = true,
+}) {
+  addCircularRefsOcr([page]);
+
+  if (!doc.ocr[engineName]) doc.ocr[engineName] = Array(doc.inputData.pageCount);
+  doc.ocr[engineName][n] = page;
+  if (setActive) doc.ocr.active = doc.ocr[engineName];
+
+  if (mainData) {
+    doc.convertPageWarn[n] = warn;
+    if (page.dims && page.dims.height && page.dims.width) doc.pageMetrics[n] = new PageMetrics(page.dims);
+    doc.pageMetrics[n].angle = page.angle;
+  }
+
+  doc.inputData.xmlMode[n] = true;
+
+  if (dataTables && Object.keys(doc.layoutDataTables.pages[n].tables).length === 0) {
+    addCircularRefsDataTables([dataTables]);
+    doc.layoutDataTables.pages[n] = dataTables;
+  }
+
+  doc.progressHandler({ n, type: 'convert', info: { engineName } });
+}
+
+/**
  * This function is called after running a `convertPage` (or `recognizeAndConvert`) function, updating this document with the results.
  * This needs to be a separate function from `convertOCRPage`, given that sometimes recognition and conversion are combined by using `recognizeAndConvert`.
  *
@@ -369,7 +412,7 @@ async function convertOCRPage(ocrRaw, n, format, scribeMode = false) {
  * @param {string} engineName - Name of OCR engine.
  */
 async function convertPageCallback(doc, {
-  pageObj, dataTables, warn, langSet, fontSet,
+  pageObj, dataTables, warn, langSet,
 }, n, mainData, engineName) {
   const fontPromiseArr = [];
   if (langSet && langSet.has('chi_sim')) fontPromiseArr.push(loadChiSimFont());
@@ -378,30 +421,13 @@ async function convertPageCallback(doc, {
   } else {
     fontPromiseArr.push(loadBuiltInFontsRaw());
   }
-  // if (fontSet && fontSet.has('Dingbats')) fontPromiseArr.push(loadDingbatsFont());
   await Promise.all(fontPromiseArr);
 
   if (['Tesseract Legacy', 'Tesseract LSTM'].includes(engineName)) doc.ocr['Tesseract Latest'][n] = pageObj;
 
-  if (engineName) doc.ocr[engineName][n] = pageObj;
-
-  // If this is flagged as the "main" data, then save the stats.
-  if (mainData) {
-    doc.convertPageWarn[n] = warn;
-
-    // The main OCR data is always preferred for setting page metrics.
-    // This matters when the user uploads their own data, as the images are expected to be rendered at the same resolution as the OCR data.
-    if (pageObj.dims.height && pageObj.dims.width) doc.pageMetrics[n] = new PageMetrics(pageObj.dims);
-
-    doc.pageMetrics[n].angle = pageObj.angle;
-  }
-
-  doc.inputData.xmlMode[n] = true;
-
-  // Layout boxes are only overwritten if none exist yet for the page
-  if (Object.keys(doc.layoutDataTables.pages[n].tables).length === 0) doc.layoutDataTables.pages[n] = dataTables;
-
-  opt.progressHandler({ n, type: 'convert', info: { engineName } });
+  insertParsedPage(doc, n, pageObj, {
+    engineName, dataTables, warn, mainData, setActive: false,
+  });
 }
 
 /**
@@ -417,8 +443,12 @@ async function convertPageCallback(doc, {
  * @param {string} engineName - Name of OCR engine.
  * @param {boolean} [scribeMode=false] - Whether this is HOCR data from this program.
  * @param {?PageMetrics[]} [pageMetrics=null] - Page metrics to use for the pages (Textract only).
+ * @param {Object} [options]
+ * @param {'width' | 'sentence'} [options.docxLineSplitMode] - DOCX line-split mode.
+ *    Defaults to `scribeDocDefaults.docxLineSplitMode`. Ignored for non-docx formats.
  */
-export async function convertOCR(doc, ocrRawArr, mainData, format, engineName, scribeMode, pageMetrics = null) {
+export async function convertOCR(doc, ocrRawArr, mainData, format, engineName, scribeMode, pageMetrics = null, options = {}) {
+  const docxLineSplitMode = options.docxLineSplitMode ?? scribeDocDefaults.docxLineSplitMode;
   const promiseArr = [];
   if (format === 'textract') {
     if (!pageMetrics || !pageMetrics[0]?.dims) throw new Error('Page metrics must be provided for Textract data.');
@@ -491,7 +521,7 @@ export async function convertOCR(doc, ocrRawArr, mainData, format, engineName, s
   }
 
   if (format === 'docx') {
-    const res = await gs.convertDocDocx({ docxData: ocrRawArr[0], lineSplitMode: opt.docxLineSplitMode, docId: doc.id });
+    const res = await gs.convertDocDocx({ docxData: ocrRawArr[0], lineSplitMode: docxLineSplitMode, docId: doc.id });
 
     if (res.length > doc.inputData.pageCount) doc.inputData.pageCount = res.length;
 
@@ -577,12 +607,12 @@ async function recognizeAllPages(doc, legacy = true, lstm = true, mainData = fal
 
   // Upscaling is enabled only for image data, and only if the user has explicitly enabled it.
   // For PDF data, if upscaling is desired, that should be handled by rendering the PDF at a higher resolution.
-  const upscale = doc.inputData.imageMode && opt.enableUpscale;
+  const upscale = doc.inputData.imageMode && scribeDocDefaults.enableUpscale;
 
   const configPage = { upscale };
 
   for (const x of inputPages) {
-    recognizePageImp(doc, x, legacy, lstm, false, configPage, opt.debugVis, langs, vanillaMode).then(async (resArr) => {
+    recognizePageImp(doc, x, legacy, lstm, false, configPage, scribeDocDefaults.debugVis, langs, vanillaMode).then(async (resArr) => {
       const res0 = await resArr[0];
 
       if (res0.recognize.debugVis) {
@@ -615,7 +645,7 @@ async function recognizeAllPages(doc, legacy = true, lstm = true, mainData = fal
   await Promise.all(promisesA);
 
   if (mainData) {
-    await checkCharWarn(doc.convertPageWarn);
+    await checkCharWarn(doc, doc.convertPageWarn);
   }
 
   if (legacy && lstm) await Promise.all(promisesB);
@@ -692,7 +722,7 @@ async function recognizeCustomModelDocumentMode(doc, options) {
   const modelOptionsWithSignal = { ...modelOptions, signal };
 
   if (!doc.ocr[engineName]) doc.ocr[engineName] = Array(doc.inputData.pageCount);
-  if (opt.keepRawData && !doc.ocrRaw[engineName]) doc.ocrRaw[engineName] = Array(doc.inputData.pageCount);
+  if (scribeDocDefaults.keepRawData && !doc.ocrRaw[engineName]) doc.ocrRaw[engineName] = Array(doc.inputData.pageCount);
 
   throwIfAborted(signal);
 
@@ -715,13 +745,13 @@ async function recognizeCustomModelDocumentMode(doc, options) {
         const errMsg = entry.error.message || String(entry.error);
         failedPagesDoc.push(entry.pageNum);
         lastErrMsg = errMsg;
-        opt.warningHandler(`Recognition failed for page ${entry.pageNum}: ${errMsg}`);
+        doc.warningHandler({ message: `Recognition failed for page ${entry.pageNum}: ${errMsg}`, page: entry.pageNum });
         doc.ocr[engineName][entry.pageNum] = new OcrPage(entry.pageNum, doc.pageMetrics[entry.pageNum].dims);
         continue;
       }
       const { pageNum, rawData } = entry;
-      if (opt.keepRawData) doc.ocrRaw[engineName][pageNum] = rawData;
-      opt.progressHandler({
+      if (scribeDocDefaults.keepRawData) doc.ocrRaw[engineName][pageNum] = rawData;
+      doc.progressHandler({
         n: pageNum, type: 'recognize', info: { status: 'received', engineName, timestamp: Date.now() },
       });
       await convertModelRawPage(doc, rawData, pageNum, model);
@@ -737,7 +767,7 @@ async function recognizeCustomModelDocumentMode(doc, options) {
 
   // Preserve partial results on abort — caller (and any resume layer) may want them.
   doc.ocr.active = doc.ocr[engineName];
-  if (opt.keepRawData) doc.ocrRaw.active = doc.ocrRaw[engineName];
+  if (scribeDocDefaults.keepRawData) doc.ocrRaw.active = doc.ocrRaw[engineName];
 
   // Always throw if the signal is aborted, regardless of whether the library or the
   // model's own early-return terminated the for-await loop first.
@@ -748,9 +778,7 @@ async function recognizeCustomModelDocumentMode(doc, options) {
   }
   if (failedPagesDoc.length > 0) {
     failedPagesDoc.sort((a, b) => a - b);
-    opt.warningHandler(
-      `Recognition failed for ${failedPagesDoc.length} page(s) (${failedPagesDoc.join(', ')}). These pages will have no OCR data.`,
-    );
+    doc.warningHandler({ message: `Recognition failed for ${failedPagesDoc.length} page(s) (${failedPagesDoc.join(', ')}). These pages will have no OCR data.` });
   }
 
   return doc.ocr.active;
@@ -794,7 +822,7 @@ async function recognizeCustomModel(doc, options) {
 
   // Initialize array for custom model results
   if (!doc.ocr[engineName]) doc.ocr[engineName] = Array(doc.inputData.pageCount);
-  if (opt.keepRawData && !doc.ocrRaw[engineName]) doc.ocrRaw[engineName] = Array(doc.inputData.pageCount);
+  if (scribeDocDefaults.keepRawData && !doc.ocrRaw[engineName]) doc.ocrRaw[engineName] = Array(doc.inputData.pageCount);
 
   // Different cloud providers implement usage quotas in different ways.
   // AWS Textract (Sync) uses transactions per second (TPS).
@@ -833,6 +861,7 @@ async function recognizeCustomModel(doc, options) {
   let consecutiveFailures = 0;
   let lastErrorMessage = '';
   let quitEarly = false;
+  /** @type {number[]} */
   const failedPages = [];
 
   for (const n of pages) {
@@ -845,7 +874,7 @@ async function recognizeCustomModel(doc, options) {
 
       const nativeN = await doc.images.getNative(n);
       if (!nativeN) {
-        opt.warningHandler(`No image found for page ${n}, skipping.`);
+        doc.warningHandler({ message: `No image found for page ${n}, skipping.`, page: n });
         doc.ocr[engineName][n] = new OcrPage(n, doc.pageMetrics[n].dims);
         return;
       }
@@ -880,13 +909,14 @@ async function recognizeCustomModel(doc, options) {
           }
         }
 
-        opt.progressHandler({ n, type: 'recognize', info: { status: 'sending', engineName, timestamp: Date.now() } });
+        doc.progressHandler({ n, type: 'recognize', info: { status: 'sending', engineName, timestamp: Date.now() } });
         const recognizeStart = Date.now();
         result = await model.recognizeImage(imageData, modelOptionsWithSignal);
 
         if (result.success) {
-          if (opt.printRecognitionTime) {
-            console.log(`Page ${n} recognition time: ${((Date.now() - recognizeStart) / 1000).toFixed(2)}s`);
+          const elapsedSec = (Date.now() - recognizeStart) / 1000;
+          if (scribeDocDefaults.printRecognitionTime === true || (typeof scribeDocDefaults.printRecognitionTime === 'number' && elapsedSec > scribeDocDefaults.printRecognitionTime)) {
+            console.log(`Page ${n} recognition time: ${elapsedSec.toFixed(2)}s`);
           }
           break;
         }
@@ -896,11 +926,11 @@ async function recognizeCustomModel(doc, options) {
         if (!isThrottle) break;
 
         if (attempt === maxThrottleRetries) {
-          opt.warningHandler(`Page ${n}: throttled ${maxThrottleRetries + 1} times, giving up.`);
+          doc.warningHandler({ message: `Page ${n}: throttled ${maxThrottleRetries + 1} times, giving up.`, page: n });
           break;
         }
         const backoffMs = Math.min(1000 * (2 ** attempt), 16000);
-        opt.warningHandler(`Page ${n}: throttled by API, retrying in ${backoffMs}ms (attempt ${attempt + 1}/${maxThrottleRetries})`);
+        doc.warningHandler({ message: `Page ${n}: throttled by API, retrying in ${backoffMs}ms (attempt ${attempt + 1}/${maxThrottleRetries})`, page: n });
         if (adaptiveTps != null && adaptiveTps > 0.5) {
           adaptiveTps *= 0.9;
         }
@@ -912,7 +942,7 @@ async function recognizeCustomModel(doc, options) {
       if (!result.success || !result.rawData) {
         const errMsg = result.error ? result.error.message : 'Unknown error';
         failedPages.push(n);
-        opt.warningHandler(`Recognition failed for page ${n}: ${errMsg}`);
+        doc.warningHandler({ message: `Recognition failed for page ${n}: ${errMsg}`, page: n });
         doc.ocr[engineName][n] = new OcrPage(n, doc.pageMetrics[n].dims);
         consecutiveFailures++;
         lastErrorMessage = errMsg;
@@ -925,7 +955,7 @@ async function recognizeCustomModel(doc, options) {
       consecutiveFailures = 0;
 
       const rawData = result.rawData;
-      if (opt.keepRawData) doc.ocrRaw[engineName][n] = rawData;
+      if (scribeDocDefaults.keepRawData) doc.ocrRaw[engineName][n] = rawData;
 
       await convertModelRawPage(doc, rawData, n, model);
     })().then(() => executing.delete(p));
@@ -940,7 +970,7 @@ async function recognizeCustomModel(doc, options) {
   // A caller (e.g. the server proxy's resume-cache layer) may want the partial results.
   if (signal && signal.aborted) {
     doc.ocr.active = doc.ocr[engineName];
-    if (opt.keepRawData) doc.ocrRaw.active = doc.ocrRaw[engineName];
+    if (scribeDocDefaults.keepRawData) doc.ocrRaw.active = doc.ocrRaw[engineName];
     throwIfAborted(signal);
   }
 
@@ -958,14 +988,12 @@ async function recognizeCustomModel(doc, options) {
 
   if (failedPages.length > 0) {
     failedPages.sort((a, b) => a - b);
-    opt.warningHandler(
-      `Recognition failed for ${failedPages.length} page(s) (${failedPages.join(', ')}). These pages will have no OCR data.`,
-    );
+    doc.warningHandler({ message: `Recognition failed for ${failedPages.length} page(s) (${failedPages.join(', ')}). These pages will have no OCR data.` });
   }
 
   // Set active OCR to custom model results
   doc.ocr.active = doc.ocr[engineName];
-  if (opt.keepRawData) {
+  if (scribeDocDefaults.keepRawData) {
     doc.ocrRaw.active = doc.ocrRaw[engineName];
   }
   return doc.ocr.active;
@@ -1023,7 +1051,7 @@ export async function recognize(doc, options = {}) {
   let existingOCR;
   if (doc.ocr['User Upload']) {
     existingOCR = doc.ocr['User Upload'];
-  } else if (doc.ocr.pdf && (doc.inputData.pdfType === 'text' && opt.usePDFText.native.supp || doc.inputData.pdfType === 'ocr' && opt.usePDFText.ocr.supp)) {
+  } else if (doc.ocr.pdf && (doc.inputData.pdfType === 'text' && scribeDocDefaults.usePDFText.native.supp || doc.inputData.pdfType === 'ocr' && scribeDocDefaults.usePDFText.ocr.supp)) {
     existingOCR = doc.ocr.pdf;
     // If the PDF text is not the active data, it is assumed to be for supplemental purposes only.
     forceMainData = doc.ocr.pdf !== doc.ocr.active;
@@ -1047,9 +1075,9 @@ export async function recognize(doc, options = {}) {
   } else if (oemMode === 'combined') {
     await recognizeAllPages(doc, true, true, !existingOCR, langs, vanillaMode, config);
 
-    const progressCb = () => opt.progressHandler({ type: 'recognize' });
+    const progressCb = () => doc.progressHandler({ type: 'recognize' });
 
-    if (opt.saveDebugImages) {
+    if (scribeDocDefaults.saveDebugImages) {
       doc.debug.debugImg.Combined = new Array(doc.images.pageCount);
       for (let i = 0; i < doc.images.pageCount; i++) {
         doc.debug.debugImg.Combined[i] = [];
@@ -1061,7 +1089,7 @@ export async function recognize(doc, options = {}) {
       if (!doc.ocr[oemText]) doc.ocr[oemText] = Array(doc.inputData.pageCount);
       doc.ocr.active = doc.ocr[oemText];
 
-      if (opt.saveDebugImages) {
+      if (scribeDocDefaults.saveDebugImages) {
         doc.debug.debugImg['Tesseract Combined'] = new Array(doc.images.pageCount);
         for (let i = 0; i < doc.images.pageCount; i++) {
           doc.debug.debugImg['Tesseract Combined'][i] = [];
@@ -1112,11 +1140,11 @@ export async function recognize(doc, options = {}) {
       /** @type {Parameters<import('./worker/compareOCRModule.js').compareOCRPageImp>[0]['options']} */
       const compOptions = {
         mode: 'comb',
-        debugLabel: opt.saveDebugImages ? tessCombinedLabel : undefined,
-        ignoreCap: opt.ignoreCap,
-        ignorePunct: opt.ignorePunct,
-        confThreshHigh: opt.confThreshHigh,
-        confThreshMed: opt.confThreshMed,
+        debugLabel: scribeDocDefaults.saveDebugImages ? tessCombinedLabel : undefined,
+        ignoreCap: scribeDocDefaults.ignoreCap,
+        ignorePunct: scribeDocDefaults.ignorePunct,
+        confThreshHigh: scribeDocDefaults.confThreshHigh,
+        confThreshMed: scribeDocDefaults.confThreshMed,
         legacyLSTMComb: true,
       };
 
@@ -1132,12 +1160,12 @@ export async function recognize(doc, options = {}) {
       if (combineMode === 'conf') {
         /** @type {Parameters<import('./worker/compareOCRModule.js').compareOCRPageImp>[0]['options']} */
         const compOptions = {
-          debugLabel: opt.saveDebugImages ? 'Combined' : undefined,
+          debugLabel: scribeDocDefaults.saveDebugImages ? 'Combined' : undefined,
           supplementComp: true,
-          ignoreCap: opt.ignoreCap,
-          ignorePunct: opt.ignorePunct,
-          confThreshHigh: opt.confThreshHigh,
-          confThreshMed: opt.confThreshMed,
+          ignoreCap: scribeDocDefaults.ignoreCap,
+          ignorePunct: scribeDocDefaults.ignorePunct,
+          confThreshHigh: scribeDocDefaults.confThreshHigh,
+          confThreshMed: scribeDocDefaults.confThreshMed,
           editConf: true,
         };
 
@@ -1152,10 +1180,10 @@ export async function recognize(doc, options = {}) {
         const compOptions = {
           mode: 'comb',
           debugLabel: 'Combined',
-          ignoreCap: opt.ignoreCap,
-          ignorePunct: opt.ignorePunct,
-          confThreshHigh: opt.confThreshHigh,
-          confThreshMed: opt.confThreshMed,
+          ignoreCap: scribeDocDefaults.ignoreCap,
+          ignorePunct: scribeDocDefaults.ignorePunct,
+          confThreshHigh: scribeDocDefaults.confThreshHigh,
+          confThreshMed: scribeDocDefaults.confThreshMed,
           // If the existing data was invisible OCR text extracted from a PDF, it is assumed to not have accurate bounding boxes.
           useBboxB: !forceMainData && existingOCR === doc.ocr.pdf && doc.inputData.pdfMode && !!doc.inputData.pdfType && ['image', 'ocr'].includes(doc.inputData.pdfType),
         };

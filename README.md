@@ -60,6 +60,7 @@ Considering whether Scribe.js or Tesseract.js is better for your project?  Read 
 # Documentation
 - [Guide](./docs/guide.md)
 - [API Reference](./docs/API.md)
+- [CLI Reference](./docs/cli.md)
 - [Examples](./examples/)
 - [Scribe.js vs. Tesseract.js Comparison](./docs/scribe_vs_tesseract.md)
 

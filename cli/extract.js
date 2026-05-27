@@ -23,9 +23,9 @@ export const extract = async (inputFile, output, options) => {
   const outputFile = outputDir === output ? `${path.basename(inputFile).replace(/\.\w{1,6}$/i, `.${format}`)}` : path.basename(output);
   const outputPath = `${outputDir}/${outputFile}`;
 
-  scribe.opt.reflow = true;
-  scribe.opt.extractText = true;
-  scribe.opt.displayMode = 'ebook';
+  scribe.ScribeDoc.defaults.reflow = true;
+  scribe.ScribeDoc.defaults.extractText = true;
+  scribe.ScribeDoc.defaults.displayMode = 'ebook';
 
   // TODO: Fonts do not need to be loaded for .txt output, but are needed for .pdf output.
   // so a more robust implementation would consider the arguments and only load fonts if necessary.
@@ -33,7 +33,7 @@ export const extract = async (inputFile, output, options) => {
 
   if (outputDir) fs.mkdirSync(outputDir, { recursive: true });
 
-  if (options?.lineNumbers) scribe.opt.lineNumbers = true;
+  if (options?.lineNumbers) scribe.ScribeDoc.defaults.lineNumbers = true;
 
   await doc.download(format, outputPath);
 

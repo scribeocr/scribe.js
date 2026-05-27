@@ -29,10 +29,10 @@ describe('Check PDF merge preserves page count.', () => {
     const pdfBuffers = [];
 
     for (let d = 0; d < docCount; d++) {
-      scribe.opt.usePDFText.ocr.main = true;
+      scribe.ScribeDoc.defaults.usePDFText.ocr.main = true;
       const doc = await scribe.openDocument([`${ASSETS_PATH}/scribe_test_pdf1.pdf`]);
 
-      scribe.opt.displayMode = 'proof';
+      scribe.ScribeDoc.defaults.displayMode = 'proof';
       pdfBuffers.push(await doc.exportData('pdf'));
       await doc.terminate();
     }
@@ -45,11 +45,11 @@ describe('Check PDF merge preserves page count.', () => {
 
     expect(totalPages).toBe(expectedPages);
 
-    scribe.opt.usePDFText.ocr.main = false;
+    scribe.ScribeDoc.defaults.usePDFText.ocr.main = false;
   });
 
   test('Merged PDF preserves highlight annotations from each source', async () => {
-    scribe.opt.usePDFText.ocr.main = true;
+    scribe.ScribeDoc.defaults.usePDFText.ocr.main = true;
     const docA = await scribe.openDocument([`${ASSETS_PATH}/scribe_test_pdf1.pdf`]);
     docA.addHighlights([{ page: 0, startLine: 0, endLine: 1 }]);
     const pdfA = await docA.exportData('pdf');
@@ -72,7 +72,7 @@ describe('Check PDF merge preserves page count.', () => {
     expect(highlightsFirstSource.length).toBe(1);
     expect(highlightsSecondSource.length).toBe(1);
 
-    scribe.opt.usePDFText.ocr.main = false;
+    scribe.ScribeDoc.defaults.usePDFText.ocr.main = false;
     await docMerged.terminate();
   });
 

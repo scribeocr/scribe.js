@@ -1,4 +1,3 @@
-import { opt } from '../containers/app.js';
 import ocr from '../objects/ocrObjects.js';
 import { round6 } from '../utils/miscUtils.js';
 
@@ -13,10 +12,11 @@ import { round6 } from '../utils/miscUtils.js';
  * @param {{ pages: Array<LayoutPage> }} [params.layoutRegions] - This document's layout regions. Required.
  * @param {Array<PageMetrics>} [params.pageMetrics] - This document's page metrics. Required.
  * @param {string} [params.dataTablesSerialized] - This document's serialized layout data tables. Required.
- */
+ * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for progress reporting.
+\ */
 export function writeHocr({
   ocrData, pageArr = null, minValue, maxValue,
-  docFonts, layoutRegions: layoutRegionsArg, pageMetrics, dataTablesSerialized,
+  docFonts, layoutRegions: layoutRegionsArg, pageMetrics, dataTablesSerialized, doc = null,
 }) {
   const fonts = docFonts;
   const layoutRegionsPages = layoutRegionsArg.pages;
@@ -34,7 +34,7 @@ export function writeHocr({
     'default-font': fonts.state.defaultFontName,
     'sans-font': fonts.state.sansDefaultName,
     'serif-font': fonts.state.serifDefaultName,
-    'enable-opt': opt.enableOpt,
+    'enable-opt': fonts.state.enableOpt,
     layout: layoutRegionsPages,
     'layout-data-table': dataTablesSerialized,
   };
@@ -143,7 +143,7 @@ export function writeHocr({
     }
     hocrOut += '\n\t</div>';
 
-    opt.progressHandler({ n: i, type: 'export', info: { } });
+    doc?.progressHandler({ n: i, type: 'export', info: { } });
   }
 
   hocrOut += '\n</body>\n</html>';

@@ -84,7 +84,7 @@ describe('Check paragraph detection with document with significant line sepacing
 
 describe('Check paragraph detection with numbered list.', () => {
   beforeAll(async () => {
-    scribe.opt.extractText = true;
+    scribe.ScribeDoc.defaults.extractText = true;
     doc = await scribe.openDocument([`${ASSETS_PATH}/October2020CBX_Questions.pdf`]);
     // Page 13 (0-indexed as 12) contains 8 numbered items
     const page = doc.ocr.active[12];
@@ -118,7 +118,7 @@ describe('Check paragraph detection with numbered list.', () => {
 
 describe('Check paragraph detection with footnotes.', () => {
   beforeAll(async () => {
-    scribe.opt.extractText = true;
+    scribe.ScribeDoc.defaults.extractText = true;
     doc = await scribe.openDocument([`${ASSETS_PATH}/070823vanliere.pdf`]);
     // Page 9 (0-indexed as 8) contains 3 footnotes starting with superscript numbers
     const page = doc.ocr.active[8];
@@ -152,7 +152,7 @@ describe('Check paragraph detection with footnotes.', () => {
 
 describe('Check paragraph detection with hanging-indent CV entries.', () => {
   beforeAll(async () => {
-    scribe.opt.extractText = true;
+    scribe.ScribeDoc.defaults.extractText = true;
     doc = await scribe.openDocument([`${ASSETS_PATH}/070823vanliere.pdf`]);
     const page = doc.ocr.active[31];
     const angle = doc.pageMetrics[31].angle || 0;

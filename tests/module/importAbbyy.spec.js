@@ -145,7 +145,7 @@ describe('Check that empty pages are handled correctly in Abbyy imports.', () =>
 
 describe('Check that font style is detected for Abbyy xml imports.', () => {
   test('Bold style is detected', async () => {
-    scribe.opt.usePDFText.native.main = true;
+    scribe.ScribeDoc.defaults.usePDFText.native.main = true;
     doc = await scribe.openDocument([`${ASSETS_PATH}/complaint_1.abbyy.xml`]);
     expect(doc.ocr.active[1].lines[3].words[0].style.bold).toBe(true);
     expect(doc.ocr.active[1].lines[3].words[0].style.italic).toBe(false);

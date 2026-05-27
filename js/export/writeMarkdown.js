@@ -1,4 +1,3 @@
-import { opt } from '../containers/app.js';
 import { assignParagraphs } from '../utils/reflowPars.js';
 import { extractTableContent } from '../extractTables.js';
 import { calcTableBbox } from '../objects/layoutObjects.js';
@@ -109,10 +108,11 @@ function renderMarkdownTable(tableResult, applyFormatting) {
  * @param {boolean} [params.applyFormatting=true] - Whether to apply markdown formatting (bold, italic, etc.)
  * @param {?Array<PageMetrics>} [params.pageMetrics=null] - Page metrics for the document being exported.
  *   Required when reflow or preserveSpacing is enabled.
+ * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for progress reporting.
  */
 export function writeMarkdown({
   ocrCurrent, layoutPageArr, pageArr = null, minpage = 0, maxpage = -1,
-  reflowText = false, applyFormatting = true, pageMetrics = null,
+  reflowText = false, applyFormatting = true, pageMetrics = null, doc = null,
 }) {
   let mdStr = '';
 
@@ -243,7 +243,7 @@ export function writeMarkdown({
       // Flush remaining words at end of line
       flushStyledWords();
     }
-    opt.progressHandler({ n: g, type: 'export', info: { } });
+    doc?.progressHandler({ n: g, type: 'export', info: { } });
   }
 
   return mdStr;

@@ -28,14 +28,15 @@ Credentials stay on the server. Use the default export.
 import scribe from 'scribe.js-ocr';
 import { RecognitionModelTextract } from '@scribe.js/aws-textract';
 
-await scribe.importFiles(['document.pdf']);
+const doc = await scribe.openDocument(['document.pdf']);
 
-await scribe.recognize({
+await doc.recognize({
   model: RecognitionModelTextract,
   modelOptions: { analyzeLayout: true },
 });
 
-console.log(await scribe.exportData('text'));
+console.log(await doc.exportData('text'));
+await doc.terminate();
 await scribe.terminate();
 ```
 
@@ -68,9 +69,9 @@ The `/browser` export calls AWS straight from the browser with credentials you p
 import scribe from 'scribe.js-ocr';
 import { RecognitionModelTextractBrowser } from '@scribe.js/aws-textract/browser';
 
-await scribe.importFiles(fileList);
+const doc = await scribe.openDocument(fileList);
 
-await scribe.recognize({
+await doc.recognize({
   model: RecognitionModelTextractBrowser,
   modelOptions: {
     region: 'us-east-1',
@@ -79,7 +80,7 @@ await scribe.recognize({
   },
 });
 
-console.log(await scribe.exportData('text'));
+console.log(await doc.exportData('text'));
 ```
 
 ## Options

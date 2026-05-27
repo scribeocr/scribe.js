@@ -34,7 +34,7 @@ if (!filePath) {
     }
   };
 
-  await scribe.importFiles([filePath]);
+  const doc = await scribe.openDocument([filePath]);
 
   // Single-region (default):
   //   modelOptions: { analyzeLayout: true }
@@ -43,13 +43,14 @@ if (!filePath) {
   //   Textract rate limits are per-region, so using multiple regions
   //   multiplies effective throughput. For example, 3 regions ≈ 3× TPS.
   //   modelOptions: { analyzeLayout: true, region: ['us-east-1', 'us-west-2', 'eu-west-1'] }
-  await scribe.recognize({
+  await doc.recognize({
     model: RecognitionModelTextract,
     modelOptions: { analyzeLayout: true },
   });
 
-  const text = await scribe.exportData('text');
+  const text = await doc.exportData('text');
   console.log(text);
 
+  await doc.terminate();
   await scribe.terminate();
 })();

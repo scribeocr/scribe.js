@@ -32,14 +32,15 @@ if (!filePath) {
     }
   };
 
-  await scribe.importFiles([filePath]);
+  const doc = await scribe.openDocument([filePath]);
 
-  await scribe.recognize({
+  await doc.recognize({
     model: RecognitionModelGoogleVision,
   });
 
-  const text = await scribe.exportData('text');
+  const text = await doc.exportData('text');
   console.log(text);
 
+  await doc.terminate();
   await scribe.terminate();
 })();

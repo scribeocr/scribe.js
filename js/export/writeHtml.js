@@ -1,4 +1,4 @@
-import { opt } from '../containers/app.js';
+import { scribeDocDefaults } from '../containers/scribeDocDefaults.js';
 import { calcWordMetrics } from '../utils/fontUtils.js';
 import { assignParagraphs } from '../utils/reflowPars.js';
 import ocr from '../objects/ocrObjects.js';
@@ -61,10 +61,23 @@ const makeSmallCapsDivs = (text, fontSizeHTMLSmallCaps) => {
  * @param {import('../containers/fontContainer.js').DocFonts} [params.docFonts] - Per-document fonts.
  *    Required; no active-document fallback.
  * @param {Array<PageMetrics>} [params.pageMetrics] - This document's page metrics. Required.
+ * @param {('invis'|'ebook'|'eval'|'proof'|'annot')} [params.displayMode] - Defaults to `scribeDocDefaults.displayMode`.
+ * @param {number} [params.confThreshHigh] - Defaults to `scribeDocDefaults.confThreshHigh`.
+ * @param {number} [params.confThreshMed] - Defaults to `scribeDocDefaults.confThreshMed`.
+ * @param {number} [params.overlayOpacity] - Defaults to `scribeDocDefaults.overlayOpacity`.
+ * @param {boolean} [params.kerning] - Defaults to `scribeDocDefaults.kerning`.
+ * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for
+ *    progress reporting.
  */
 export function writeHtml({
   ocrPages, images, pageArr = null, minpage = 0, maxpage = -1,
   reflowText = false, removeMargins = false, wordIds = null, docFonts, pageMetrics,
+  displayMode = scribeDocDefaults.displayMode,
+  confThreshHigh = scribeDocDefaults.confThreshHigh,
+  confThreshMed = scribeDocDefaults.confThreshMed,
+  overlayOpacity = scribeDocDefaults.overlayOpacity,
+  kerning = scribeDocDefaults.kerning,
+  doc = null,
 }) {
   const fontsUsed = new Set();
   const fonts = docFonts;
@@ -232,8 +245,8 @@ export function writeHtml({
           styleStr += `transform:rotate(${angle}deg);`;
         }
 
-        const { fill, opacity } = ocr.getWordFillOpacity(wordObj, opt.displayMode,
-          opt.confThreshMed, opt.confThreshHigh, opt.overlayOpacity);
+        const { fill, opacity } = ocr.getWordFillOpacity(wordObj, displayMode,
+          confThreshMed, confThreshHigh, overlayOpacity);
 
         // Text with opacity 0 is not selectable, so we make it transparent instead.
         if (opacity === 0) {
@@ -341,14 +354,14 @@ export function writeHtml({
     addLine();
     bodyStr += '  </div>\n';
 
-    opt.progressHandler({ n: g, type: 'export', info: { } });
+    doc?.progressHandler({ n: g, type: 'export', info: { } });
   }
 
   let styleStr = '<style>\n  .scribe-word {\n';
 
   styleStr += '    z-index:1;\n';
   styleStr += '    white-space:nowrap;\n';
-  if (opt.kerning) {
+  if (kerning) {
     styleStr += '    font-kerning:normal;\n';
   } else {
     styleStr += '    font-kerning:none;\n';

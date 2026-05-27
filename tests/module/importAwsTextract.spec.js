@@ -106,10 +106,10 @@ describe('Check AWS Textract JSON import correctly handles angle brackets.', () 
 
 describe('Check scribe JSON import handles null OCR pages (blank pages).', () => {
   test('Should import scribe JSON that has null entries in the OCR array without crashing', async () => {
-    // Import a known-good scribe file, export it, then inject null pages to simulate blank pages.
+    // Import a known-good scribe file, export it, then insert null pages to simulate blank pages.
     doc = await scribe.openDocument([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
 
-    scribe.opt.compressScribe = false;
+    scribe.ScribeDoc.defaults.compressScribe = false;
     const scribeStr = await doc.exportData('scribe');
     const scribeObj = JSON.parse(scribeStr);
 
@@ -134,7 +134,7 @@ describe('Check scribe JSON import handles null OCR pages (blank pages).', () =>
   });
 
   afterAll(async () => {
-    scribe.opt.compressScribe = true;
+    scribe.ScribeDoc.defaults.compressScribe = true;
     await doc.clear();
     await scribe.terminate();
   });

@@ -1,13 +1,80 @@
 // Browser-side harness for the scribe.js server-Textract proxy.
 //
 // Loads scribe.js directly as ES modules (no bundler), lets the user pick a PDF,
-// calls scribe.recognize() with RecognitionModelServerProxy, and streams per-page
-// results back from the reference server. Includes a Cancel button that exercises
-// the end-to-end abort path (scribe.recognize signal → fetch abort → TCP close →
-// server req.on('close') → scribe.recognize signal on the server).
+// streams per-page parsed OcrPage results from the reference server,
+// and installs each one into the local ScribeDoc via doc.insertParsedPage().
+// Includes a Cancel button that exercises the end-to-end abort path
+// (fetch abort -> TCP close -> server req.on('close') -> doc.recognize signal on the server).
 
 import scribe from '../../../scribe.js';
-import { RecognitionModelServerProxy } from './RecognitionModelServerProxy.js';
+import { OcrPage } from '../../../js/objects/ocrObjects.js';
+
+const SERVER_ENGINE_NAME = 'Server Textract';
+
+// Streams parsed OCR results from the server-textract-proxy backend.
+//
+// On success each yielded entry is `{ pageNum, page, dataTables, warn }`:
+//   - `page` is the parsed OcrPage scribe.js produced from Textract on the server.
+//   - `dataTables` is the per-page LayoutDataTablePage
+//     (empty if the server wasn't asked to extract tables).
+//   - `warn` is the per-page conversion-warning object.
+//
+// On per-page failure the shape is `{ pageNum, error: { message } }` instead.
+//
+// Feed each entry into `doc.insertParsedPage(...)` on the browser side.
+// The server already ran conversion, so no further scribe.js work is needed.
+//
+// The PDF is uploaded once and the response body is the NDJSON stream.
+// AbortSignal is forwarded straight to fetch(),
+// so cancelling on the browser tears down the connection,
+// which the server picks up via req.on('close').
+/**
+ * Stream parsed OCR pages from a server-textract-proxy backend.
+ *
+ * @param {string} serverUrl
+ * @param {ArrayBuffer} pdfBytes
+ * @param {{ signal?: AbortSignal, headers?: Record<string,string> }} [options]
+ * @returns {AsyncGenerator<
+ *   { pageNum: number, page: object, dataTables: object, warn: object }
+ *   | { pageNum: number, error: { message: string } }
+ * >}
+ */
+async function* streamServerOcr(serverUrl, pdfBytes, { signal, headers } = {}) {
+  const res = await fetch(serverUrl, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/pdf', ...(headers || {}) },
+    body: pdfBytes,
+    signal,
+  });
+  if (!res.ok) {
+    const errBody = await res.text().catch(() => '');
+    throw new Error(`Proxy returned ${res.status} ${res.statusText}${errBody ? `: ${errBody}` : ''}`);
+  }
+  if (!res.body) throw new Error('Proxy response has no body.');
+
+  const reader = res.body.getReader();
+  const decoder = new TextDecoder();
+  let buf = '';
+  try {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (value) buf += decoder.decode(value, { stream: true });
+      let nl = buf.indexOf('\n');
+      while (nl >= 0) {
+        const line = buf.slice(0, nl).trim();
+        buf = buf.slice(nl + 1);
+        if (line) yield JSON.parse(line);
+        nl = buf.indexOf('\n');
+      }
+      if (done) break;
+    }
+    buf += decoder.decode();
+    const tail = buf.trim();
+    if (tail) yield JSON.parse(tail);
+  } finally {
+    reader.cancel().catch(() => { /* noop */ });
+  }
+}
 
 // We're sending the PDF to Textract; scribe.js's own PDF-native text extraction would
 // run during importFiles by default (driven by opt.usePDFText.*), which pulls in the
@@ -15,11 +82,11 @@ import { RecognitionModelServerProxy } from './RecognitionModelServerProxy.js';
 // scribe.js to hold the PDF bytes and merge per-page Textract JSON results on the way
 // out. Disabling every usePDFText flag makes importFiles short-circuit the
 // extractInternalPDFText() path entirely.
-scribe.opt.usePDFText.native.main = false;
-scribe.opt.usePDFText.native.supp = false;
-scribe.opt.usePDFText.ocr.main = false;
-scribe.opt.usePDFText.ocr.supp = false;
-scribe.opt.keepPDFTextAlways = false;
+scribe.ScribeDoc.defaults.usePDFText.native.main = false;
+scribe.ScribeDoc.defaults.usePDFText.native.supp = false;
+scribe.ScribeDoc.defaults.usePDFText.ocr.main = false;
+scribe.ScribeDoc.defaults.usePDFText.ocr.supp = false;
+scribe.ScribeDoc.defaults.keepPDFTextAlways = false;
 
 const uploaderEl = document.getElementById('uploader');
 const serverUrlEl = document.getElementById('serverUrl');
@@ -34,6 +101,7 @@ serverUrlDisplay.textContent = serverUrlEl.value;
 serverUrlEl.addEventListener('input', () => { serverUrlDisplay.textContent = serverUrlEl.value; });
 
 let currentController = null;
+let currentDoc = null;
 let haveResults = false;
 
 const log = (msg) => {
@@ -97,41 +165,53 @@ runBtn.addEventListener('click', async () => {
   setStatus('Initializing scribe.js…');
 
   const started = performance.now();
-  const prevProgress = scribe.opt.progressHandler;
   let pagesReceived = 0;
+  let pagesFailed = 0;
 
   try {
     await scribe.init();
 
     setStatus('Importing PDF…');
-    await scribe.importFiles({ pdfFiles: [uploaderEl.files[0]] });
-    log(`PDF imported: ${scribe.inputData.pageCount} page(s)`);
+    const pdfArrayBuffer = await uploaderEl.files[0].arrayBuffer();
+    currentDoc = await scribe.openDocument({ pdfFiles: [pdfArrayBuffer] });
+    log(`PDF imported: ${currentDoc.inputData.pageCount} page(s)`);
 
-    // Watch the same `convert` progress events the server uses, so the UI shows each
-    // page as it lands off the NDJSON stream.
-    scribe.opt.progressHandler = (msg) => {
-      if (msg && msg.type === 'convert' && msg.info && msg.info.engineName === 'Server Textract') {
-        pagesReceived++;
-        const elapsed = ((performance.now() - started) / 1000).toFixed(2);
-        log(`  +${elapsed}s  page ${msg.n} received  (${pagesReceived}/${scribe.inputData.pageCount})`);
-      }
-      if (prevProgress) prevProgress(msg);
-    };
+    // The server fires its own progress events through its ScribeDoc.
+    // On the browser side the only progress signal is each NDJSON line as it arrives.
+    // doc.insertParsedPage re-emits a `convert` event per page,
+    // but we already know which page just landed from the for-await,
+    // so we log directly from the loop instead of routing through the global handler.
 
     const ac = new AbortController();
     currentController = ac;
 
     setStatus('Streaming OCR from server…');
-    log('POST → ' + serverUrlEl.value.trim());
+    log(`POST → ${serverUrlEl.value.trim()}`);
 
-    await scribe.recognize({
-      model: RecognitionModelServerProxy,
-      modelOptions: { serverUrl: serverUrlEl.value.trim() },
-      signal: ac.signal,
-    });
+    for await (const entry of streamServerOcr(serverUrlEl.value.trim(), pdfArrayBuffer, { signal: ac.signal })) {
+      if (entry.error) {
+        pagesFailed++;
+        const dims = currentDoc.pageMetrics[entry.pageNum].dims;
+        currentDoc.insertParsedPage(entry.pageNum, new OcrPage(entry.pageNum, dims), { engineName: SERVER_ENGINE_NAME });
+        log(`  page ${entry.pageNum} failed: ${entry.error.message}`);
+        continue;
+      }
+      currentDoc.insertParsedPage(entry.pageNum, entry.page, {
+        engineName: SERVER_ENGINE_NAME,
+        dataTables: entry.dataTables,
+        warn: entry.warn,
+      });
+      pagesReceived++;
+      const elapsed = ((performance.now() - started) / 1000).toFixed(2);
+      log(`  +${elapsed}s  page ${entry.pageNum} received  (${pagesReceived}/${currentDoc.inputData.pageCount})`);
+    }
 
     const elapsed = ((performance.now() - started) / 1000).toFixed(2);
-    setStatus(`Done in ${elapsed}s — ${pagesReceived} page(s) recognized.`);
+    if (pagesFailed > 0) {
+      setStatus(`Done in ${elapsed}s — ${pagesReceived} page(s) recognized, ${pagesFailed} failed.`);
+    } else {
+      setStatus(`Done in ${elapsed}s — ${pagesReceived} page(s) recognized.`);
+    }
     haveResults = pagesReceived > 0;
   } catch (err) {
     if (err && err.name === 'AbortError') {
@@ -144,7 +224,6 @@ runBtn.addEventListener('click', async () => {
       setStatus(`Error: ${err.message || err}`);
     }
   } finally {
-    scribe.opt.progressHandler = prevProgress;
     currentController = null;
     runBtn.disabled = !uploaderEl.files || uploaderEl.files.length === 0;
     cancelBtn.disabled = true;
@@ -163,7 +242,7 @@ exportBtn.addEventListener('click', async () => {
   exportBtn.disabled = true;
   setStatus('Building searchable PDF…');
   try {
-    const pdfBytes = await scribe.exportData('pdf');
+    const pdfBytes = await currentDoc.exportData('pdf');
     const blob = new Blob([pdfBytes], { type: 'application/pdf' });
     const url = URL.createObjectURL(blob);
     const a = document.createElement('a');

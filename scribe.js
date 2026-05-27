@@ -65,19 +65,20 @@ const init = async (params) => {
  * `doc.ocr`, …). Multiple documents can be open at once; each operates on its own state.
  * @public
  * @param {Parameters<ScribeDoc['importFiles']>[0]} files
+ * @param {Parameters<ScribeDoc['importFiles']>[1]} [options]
  * @returns {Promise<ScribeDoc>}
  */
-const openDocument = async (files) => {
+const openDocument = async (files, options) => {
   await init({ font: true });
   const doc = new ScribeDoc();
-  await doc.importFiles(files);
+  await doc.importFiles(files, options);
   return doc;
 };
 
 /**
  * Function for extracting text from image and PDF files with a single function call.
  * By default, existing text content is extracted for text-native PDF files; otherwise text is extracted using OCR.
- * To control how text from PDF files is handled, set the options in the `opt.usePDFText` object.
+ * To control how text from PDF files is handled, set `ScribeDoc.defaults.usePDFText` (process default) or pass `options.usePDFText` to `extractText` / `importFiles`.
  * For more control, use `openDocument` and the document's own `recognize`/`exportData` methods.
  * @public
  * @param {Parameters<ScribeDoc['importFiles']>[0]} files

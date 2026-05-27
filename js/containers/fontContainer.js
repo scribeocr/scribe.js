@@ -142,6 +142,21 @@ export function unregisterFontFacesMatching(predicate) {
 }
 
 /**
+ * Unregister every `FontFace` scoped to the given owning document id. Matches the two
+ * docId-namespaced naming schemes the project uses: optimized fonts named
+ * `<family> Opt d${docId}` and embedded PDF fonts prefixed `_pdf_d${docId}_`.
+ * Process-global `_scribe_*` substitute aliases and other docs' fonts are left untouched.
+ * Browser counterpart to `ca.unregisterFontsForDoc`. No-op in Node.
+ *
+ * @param {number} docId
+ */
+export function unregisterFontFacesForDoc(docId) {
+  const optSuffix = ` Opt d${docId}`;
+  const pdfPrefix = `_pdf_d${docId}_`;
+  return unregisterFontFacesMatching((family) => family.endsWith(optSuffix) || family.startsWith(pdfPrefix));
+}
+
+/**
  * Load font from source and return a FontContainerFont object.
  * This function is used to load the Chinese font.
  * @param {string} family
@@ -561,8 +576,8 @@ export class DocFonts {
 
     clearObjectProperties(this.state.charMetrics);
 
-    ca.unregisterFontsMatching((name) => name.endsWith(` Opt d${this.id}`));
-    unregisterFontFacesMatching((family) => family.endsWith(` Opt d${this.id}`));
+    ca.unregisterFontsForDoc(this.id);
+    unregisterFontFacesForDoc(this.id);
   }
 }
 

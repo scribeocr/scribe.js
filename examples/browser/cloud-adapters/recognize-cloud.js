@@ -59,10 +59,11 @@ elm.addEventListener('change', async () => {
   const output = /** @type {HTMLPreElement} */ (document.getElementById('output'));
   output.textContent = 'Recognizing...';
 
-  await scribe.importFiles(elm.files);
-  await scribe.recognize({ model: CloudOCR });
+  const doc = await scribe.openDocument(elm.files);
+  await doc.recognize({ model: CloudOCR });
 
-  const text = await scribe.exportData('text');
+  const text = await doc.exportData('text');
   output.textContent = text;
+  await doc.terminate();
   await scribe.terminate();
 });

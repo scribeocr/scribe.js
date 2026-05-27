@@ -57,9 +57,6 @@ function isSentenceEnding(word) {
   return true;
 }
 
-/** @type {?opentypeFont} */
-let fontOpentype = null;
-
 /**
  * Calculates the advance of a string in pixels.
  * @param {string} text
@@ -679,9 +676,7 @@ export async function convertDocDocx({ docxData, pageDims = null, lineSplitMode 
 const convertDocumentXML = async ({
   documentXml, footnotesXml = null, stylesXml = null, numberingXml = null, pageDims = null, lineSplitMode = 'width',
 }) => {
-  if (!fontOpentype) {
-    fontOpentype = (await FontCont.getFont({ font: FONT_FAMILY })).opentype;
-  }
+  const fontOpentype = (await FontCont.getFont({ font: FONT_FAMILY })).opentype;
 
   const ASCENDER_HEIGHT = fontOpentype.ascender * (FONT_SIZE / fontOpentype.unitsPerEm);
   const DESCENDER_HEIGHT = fontOpentype.descender * (FONT_SIZE / fontOpentype.unitsPerEm);

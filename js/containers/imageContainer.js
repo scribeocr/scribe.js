@@ -8,8 +8,9 @@ import { range } from '../utils/miscUtils.js';
 import { opt } from './app.js';
 
 import { initPdfScheduler } from '../pdfWorkerMain.js';
-import { extractType0Fonts } from '../pdf/fonts/parsePdfFonts.js';
-import { syncToWorkers } from '../fontContainerMain.js';
+import { scribeDocDefaults } from './scribeDocDefaults.js';
+
+/** @typedef {import('./scribeDoc.js').ScribeDoc} ScribeDoc */
 
 /** @type {?boolean} */
 let _sabCapability = null;
@@ -81,27 +82,20 @@ export class ImageStore {
   pdfData = null;
 
   /**
-   * The owning document's page metrics. Held by reference (the document mutates this array in place
-   * and never reassigns it) so this cache reads its own document's metrics, not the active document's.
-   * @type {Array<PageMetrics>}
+   * The owning document.
+   * @type {ScribeDoc}
    */
-  #pageMetrics;
+  #doc;
 
   /**
-   * The owning document's fonts, used only by the optional embedded-PDF-font extraction path
-   * (`opt.extractPDFFonts`). Held by reference so extracted fonts land on this document's `DocFonts`.
-   * @type {?import('./fontContainer.js').DocFonts}
+   * @param {ScribeDoc} doc - The owning document.
    */
-  #fonts;
-
-  /**
-   * @param {Array<PageMetrics>} [pageMetrics] - The owning document's page-metrics array.
-   * @param {?import('./fontContainer.js').DocFonts} [fonts] - The owning document's fonts.
-   */
-  constructor(pageMetrics = [], fonts = null) {
-    this.#pageMetrics = pageMetrics;
-    this.#fonts = fonts;
+  constructor(doc) {
+    this.#doc = doc;
   }
+
+  /** Owning document's page metrics array (held by reference, mutated in place by the doc). */
+  get #pageMetrics() { return this.#doc.pageMetrics; }
 
   /**
    * @param {ImagePropertiesRequest} props
@@ -114,7 +108,7 @@ export class ImageStore {
     /** @type {"binary" | "color" | "gray"} */
     let colorMode = 'binary';
     if (!binary) {
-      const color = props?.colorMode === 'color' || !props?.colorMode && opt.colorMode === 'color';
+      const color = props?.colorMode === 'color' || !props?.colorMode && scribeDocDefaults.colorMode === 'color';
       colorMode = color ? 'color' : 'gray';
     }
 
@@ -258,7 +252,7 @@ export class ImageStore {
     if (newNative || newBinary) {
       const renderRaw = !this.native[n] || imageUtils.requiresUndo(this.nativeProps[n], props);
       const propsRaw = {
-        colorMode: opt.colorMode, rotated: false, upscaled: false, n,
+        colorMode: scribeDocDefaults.colorMode, rotated: false, upscaled: false, n,
       };
       const renderTransform = newBinary || !imageUtils.compatible(propsRaw, props, significantRotation);
 
@@ -276,7 +270,7 @@ export class ImageStore {
         /** @type {?ImageWrapper} */
         let img1;
         if (renderRaw) {
-          const color = props?.colorMode === 'color' || !props?.colorMode && opt.colorMode === 'color';
+          const color = props?.colorMode === 'color' || !props?.colorMode && scribeDocDefaults.colorMode === 'color';
           img1 = await this.#renderImage(n, color, priorityJob);
         } else {
           img1 = await inputNative;
@@ -328,11 +322,11 @@ export class ImageStore {
     const pagesArr = pageArr || range(min, max);
     if (binary) {
       await Promise.all(pagesArr.map((n) => this.getBinary(n, props).then(() => {
-        opt.progressHandler({ n, type: 'render', info: { } });
+        this.#doc.progressHandler({ n, type: 'render', info: { } });
       })));
     } else {
       await Promise.all(pagesArr.map((n) => this.getNative(n, props).then(() => {
-        opt.progressHandler({ n, type: 'render', info: { } });
+        this.#doc.progressHandler({ n, type: 'render', info: { } });
       })));
     }
   };
@@ -360,10 +354,14 @@ export class ImageStore {
   };
 
   /**
-   *
    * @param {ArrayBuffer | Uint8Array | Blob} fileData
+   * @param {Object} [options]
+   * @param {boolean} [options.usePdfSharedBuffer] - Share the loaded PDF across PDF workers via
+   *    SharedArrayBuffer instead of cloning per worker. Defaults to `opt.usePdfSharedBuffer`.
    */
-  openMainPDF = async (fileData) => {
+  openMainPDF = async (fileData, options = {}) => {
+    const usePdfSharedBuffer = options.usePdfSharedBuffer ?? opt.usePdfSharedBuffer;
+
     /** @type {ArrayBuffer} */
     let arrayBuffer;
     if (fileData instanceof ArrayBuffer) {
@@ -377,7 +375,7 @@ export class ImageStore {
 
     /** @type {Uint8Array} */
     let pdfBytes;
-    if (opt.usePdfSharedBuffer && canUseSharedArrayBuffer()) {
+    if (usePdfSharedBuffer && canUseSharedArrayBuffer()) {
       // Allocate a SharedArrayBuffer once; all workers will receive a view
       // over this same buffer via postMessage (SAB is shared, not cloned).
       const sab = new SharedArrayBuffer(arrayBuffer.byteLength);
@@ -425,20 +423,5 @@ export class ImageStore {
       const pageDims = { width: Math.round(x.width * pageDPI[i] / 300), height: Math.round(x.height * pageDPI[i] / 300) };
       this.#pageMetrics[i] = new PageMetrics(pageDims);
     });
-
-    // WIP: Extract fonts embedded in PDFs.
-    // This feature is disabled by default as the results are often bad.
-    // In addition to only working for certain font formats, fonts embedded in PDFs are often subsetted and/or corrupted.
-    // Therefore, before this is enabled by default, more sophisticated rules regarding when fonts should be used are needed.
-    if (opt.extractPDFFonts && this.#fonts) {
-      const docFonts = this.#fonts;
-      extractType0Fonts(pdfBytes).then(async (fonts) => {
-        for (const objNum of Object.keys(fonts)) {
-          const fontFile = fonts[Number(objNum)].fontFile;
-          docFonts.addFontFromFile(fontFile.buffer.slice(fontFile.byteOffset, fontFile.byteOffset + fontFile.byteLength));
-        }
-        await syncToWorkers(docFonts);
-      });
-    }
   };
 }

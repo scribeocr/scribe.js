@@ -634,24 +634,24 @@ describe('Check that text orientation is handled correctly.', () => {
 
 describe('Check that PDF text types are detected and imported correctly.', () => {
   test('Native text is detected and set as main data `usePDFText.native.main` is true', async () => {
-    scribe.opt.usePDFText.native.main = true;
+    scribe.ScribeDoc.defaults.usePDFText.native.main = true;
     doc = await scribe.openDocument([`${ASSETS_PATH}/superscript_examples_rotated.pdf`]);
-    scribe.opt.usePDFText.native.main = false;
+    scribe.ScribeDoc.defaults.usePDFText.native.main = false;
     expect(doc.inputData.pdfType).toBe('text');
     expect(doc.ocr.active[0]?.lines?.length > 0).toBe(true);
   });
 
   test('Native text is detected and not set as main data `usePDFText.native.main` is false', async () => {
-    scribe.opt.usePDFText.native.main = false;
+    scribe.ScribeDoc.defaults.usePDFText.native.main = false;
     doc = await scribe.openDocument([`${ASSETS_PATH}/superscript_examples_rotated.pdf`]);
     expect(doc.inputData.pdfType).toBe('text');
     expect(!!doc.ocr.active[0]).toBe(false);
   });
 
   test('OCR text is detected and set as main data `usePDFText.ocr.main` is true', async () => {
-    scribe.opt.usePDFText.ocr.main = true;
+    scribe.ScribeDoc.defaults.usePDFText.ocr.main = true;
     doc = await scribe.openDocument([`${ASSETS_PATH}/scribe_test_pdf1.pdf`]);
-    scribe.opt.usePDFText.native.main = false;
+    scribe.ScribeDoc.defaults.usePDFText.native.main = false;
     expect(doc.inputData.pdfType).toBe('ocr');
     expect(doc.ocr.active[0]?.lines?.length > 0).toBe(true);
   });
@@ -672,11 +672,11 @@ describe('Check that PDF text types are detected and imported correctly.', () =>
   });
 
   test('OCR text is detected and extracted but not set to main data when `usePDFText.ocr.main` is false', async () => {
-    scribe.opt.usePDFText.ocr.main = false;
+    scribe.ScribeDoc.defaults.usePDFText.ocr.main = false;
     doc = await scribe.openDocument([`${ASSETS_PATH}/scribe_test_pdf1.pdf`]);
     // Reset to defaults
-    scribe.opt.usePDFText.native.main = true;
-    scribe.opt.usePDFText.ocr.main = false;
+    scribe.ScribeDoc.defaults.usePDFText.native.main = true;
+    scribe.ScribeDoc.defaults.usePDFText.ocr.main = false;
     expect(doc.inputData.pdfType).toBe('ocr');
     expect(doc.ocr.pdf[0]?.lines?.length > 0).toBe(true);
     expect(doc.ocr.active[0]).toBeUndefined();
@@ -695,7 +695,7 @@ describe('Check that PDF text types are detected and imported correctly.', () =>
 
 describe('Check that font style is detected for PDF imports.', () => {
   test('Bold style is detected', async () => {
-    scribe.opt.usePDFText.native.main = true;
+    scribe.ScribeDoc.defaults.usePDFText.native.main = true;
     doc = await scribe.openDocument([`${ASSETS_PATH}/superscript_examples.pdf`]);
     // lines[26] is the "TABLE 6" header — bold, non-italic, non-underlined.
     expect(doc.ocr.active[5].lines[26].words.map((w) => w.text).join(' ')).toBe('TABLE 6');
@@ -754,7 +754,7 @@ describe('Check that font style is detected for PDF imports.', () => {
 
 describe('Check that symbols are detected for PDF imports.', () => {
   test('Symbols are not combined with words', async () => {
-    scribe.opt.usePDFText.native.main = true;
+    scribe.ScribeDoc.defaults.usePDFText.native.main = true;
     // An earlier version combined the checkbox with the first word.
     doc = await scribe.openDocument([`${ASSETS_PATH}/high-risk_protection_order_application_for_and_declaration_in_support_of_mandatory_use.pdf`]);
     expect(doc.ocr.active[0].lines[9].words.length).toBe(4);
@@ -768,7 +768,7 @@ describe('Check that symbols are detected for PDF imports.', () => {
 
 describe('Check that `keepPDFTextAlways` option works.', () => {
   test('Text-native headers are imported for image-based PDF document.', async () => {
-    scribe.opt.keepPDFTextAlways = true;
+    scribe.ScribeDoc.defaults.keepPDFTextAlways = true;
     // This PDF is an image-based court document but has a text-native header added by the court system.
     doc = await scribe.openDocument([`${ASSETS_PATH}/gov.uscourts.cand.249697.1.0_2.pdf`]);
     expect(doc.inputData.pdfType).toBe('image');

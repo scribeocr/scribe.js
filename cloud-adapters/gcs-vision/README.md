@@ -21,13 +21,14 @@ npm install scribe.js-ocr @scribe.js/gcs-vision
 import scribe from 'scribe.js-ocr';
 import { RecognitionModelGoogleVision } from '@scribe.js/gcs-vision';
 
-await scribe.importFiles(['image.png']);
+const doc = await scribe.openDocument(['image.png']);
 
-await scribe.recognize({
+await doc.recognize({
   model: RecognitionModelGoogleVision,
 });
 
-console.log(await scribe.exportData('text'));
+console.log(await doc.exportData('text'));
+await doc.terminate();
 await scribe.terminate();
 ```
 

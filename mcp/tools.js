@@ -445,8 +445,7 @@ async function createHighlightedPdf({
 
   const result = doc.addHighlights(highlights);
 
-  scribe.opt.displayMode = 'annot';
-  await doc.download('pdf', outPath, { pageArr: pages || null });
+  await doc.download('pdf', outPath, { pageArr: pages || null, displayMode: 'annot' });
 
   doc.clearHighlights();
 
@@ -646,28 +645,21 @@ async function convertDocxToJson({ file, outputPath, lineSplitMode }) {
     ? resolve(outputPath)
     : filePath.replace(/\.docx$/i, '.scribe.json');
 
-  const prevLineSplitMode = scribe.opt.docxLineSplitMode;
-  const prevCompressScribe = scribe.opt.compressScribe;
-  if (lineSplitMode) {
-    scribe.opt.docxLineSplitMode = lineSplitMode;
-  }
-  scribe.opt.compressScribe = false;
+  // Open a fresh doc so the lineSplitMode override applies during import.
+  if (currentDoc) await currentDoc.terminate();
+  currentDoc = await scribe.openDocument([filePath], lineSplitMode ? { docxLineSplitMode: lineSplitMode } : undefined);
+  currentFile = filePath;
+  currentDataFile = null;
+  const doc = currentDoc;
 
-  try {
-    const doc = await ensureFileLoaded(filePath, undefined);
+  const scribeJson = await doc.exportData('scribe', { compressScribe: false });
+  fs.writeFileSync(outPath, scribeJson);
 
-    const scribeJson = await doc.exportData('scribe');
-    fs.writeFileSync(outPath, scribeJson);
-
-    return {
-      outputPath: outPath,
-      pageCount: doc.inputData.pageCount,
-      lineSplitMode: scribe.opt.docxLineSplitMode,
-    };
-  } finally {
-    scribe.opt.docxLineSplitMode = prevLineSplitMode;
-    scribe.opt.compressScribe = prevCompressScribe;
-  }
+  return {
+    outputPath: outPath,
+    pageCount: doc.inputData.pageCount,
+    lineSplitMode: lineSplitMode || scribe.ScribeDoc.defaults.docxLineSplitMode,
+  };
 }
 
 // async function createXlsxHandler({ outputPath, rows }) {

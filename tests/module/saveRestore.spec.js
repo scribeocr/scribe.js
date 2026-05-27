@@ -48,7 +48,7 @@ describe('Check .scribe export function.', () => {
 
     const ocrAllComp1 = standardizeOCRPages(doc.ocr.active);
 
-    scribe.opt.compressScribe = true;
+    scribe.ScribeDoc.defaults.compressScribe = true;
     const scribeData = await doc.exportData('scribe');
 
     // Verify data is gzipped by checking magic bytes
@@ -71,7 +71,7 @@ describe('Check .scribe export function.', () => {
 
     const ocrAllComp1 = standardizeOCRPages(doc.ocr.active);
 
-    scribe.opt.compressScribe = false;
+    scribe.ScribeDoc.defaults.compressScribe = false;
     const scribeData = await doc.exportData('scribe');
 
     // Verify data is not gzipped
@@ -88,7 +88,7 @@ describe('Check .scribe export function.', () => {
 
     expect(ocrAllComp1).toEqual(ocrAllComp2);
 
-    scribe.opt.compressScribe = true;
+    scribe.ScribeDoc.defaults.compressScribe = true;
     await doc.clear();
     await scribe.terminate();
   });
@@ -99,7 +99,7 @@ describe('Check .scribe export function.', () => {
 
     doc.ocr.active[0].angle = 2.5;
 
-    scribe.opt.compressScribe = false;
+    scribe.ScribeDoc.defaults.compressScribe = false;
     const scribeData = await doc.exportData('scribe');
     const encoder = new TextEncoder();
     const scribeDataBuffer = encoder.encode(scribeData).buffer;
@@ -118,8 +118,8 @@ describe('Check .scribe export function.', () => {
 
     const ocrAllComp1 = standardizeOCRPages(doc.ocr.active);
 
-    scribe.opt.compressScribe = false;
-    scribe.opt.includeExtraTextScribe = true;
+    scribe.ScribeDoc.defaults.compressScribe = false;
+    scribe.ScribeDoc.defaults.includeExtraTextScribe = true;
     const scribeData = await doc.exportData('scribe');
 
     // Verify data contains correct text properties
@@ -152,8 +152,8 @@ describe('Check .scribe export function.', () => {
     const ocrAllComp2 = standardizeOCRPages(doc.ocr.active);
     expect(ocrAllComp1).toEqual(ocrAllComp2);
 
-    scribe.opt.compressScribe = true;
-    scribe.opt.includeExtraTextScribe = false;
+    scribe.ScribeDoc.defaults.compressScribe = true;
+    scribe.ScribeDoc.defaults.includeExtraTextScribe = false;
     await doc.clear();
     await scribe.terminate();
   });
@@ -161,13 +161,13 @@ describe('Check .scribe export function.', () => {
   test('Importing .scribe after terminate() and exporting to PDF should succeed without font errors', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
 
-    scribe.opt.compressScribe = true;
+    scribe.ScribeDoc.defaults.compressScribe = true;
     const scribeData = await doc.exportData('scribe');
 
     await scribe.terminate();
     doc = await scribe.openDocument({ scribeFiles: [scribeData] });
 
-    scribe.opt.displayMode = 'ebook';
+    scribe.ScribeDoc.defaults.displayMode = 'ebook';
     const pdfData = await doc.exportData('pdf');
 
     expect(pdfData.byteLength || pdfData.length).toBeGreaterThan(0);

@@ -1,14 +1,14 @@
-import { opt } from '../containers/app.js';
+import { scribeDocDefaults } from '../containers/scribeDocDefaults.js';
 import ocr from '../objects/ocrObjects.js';
 import { calcWordMetrics } from './fontUtils.js';
 import { calcBboxUnion, getRandomAlphanum } from './miscUtils.js';
 
 /**
- *
+ * Count words above the high-confidence threshold across `pages`.
  * @param {Array<OcrPage>} pages
- * @returns
+ * @param {number} [confThreshHigh]
  */
-export const calcConf = (pages) => {
+export const calcConf = (pages, confThreshHigh = scribeDocDefaults.confThreshHigh) => {
   let wordsTotal = 0;
   let wordsHighConf = 0;
   for (let i = 0; i < pages.length; i++) {
@@ -16,7 +16,7 @@ export const calcConf = (pages) => {
     for (let j = 0; j < words.length; j++) {
       const word = words[j];
       wordsTotal += 1;
-      if (word.conf > opt.confThreshHigh) wordsHighConf += 1;
+      if (word.conf > confThreshHigh) wordsHighConf += 1;
     }
   }
   return { total: wordsTotal, highConf: wordsHighConf };

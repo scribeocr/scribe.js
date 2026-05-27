@@ -1,7 +1,7 @@
-import { opt } from './containers/app.js';
 import { gs } from './generalWorkerMain.js';
 import { loadImageElem } from './utils/imageUtils.js';
 import { ca } from './canvasAdapter.js';
+import { scribeDocDefaults } from './containers/scribeDocDefaults.js';
 
 /** @typedef {import('./containers/scribeDoc.js').ScribeDoc} ScribeDoc */
 
@@ -119,9 +119,12 @@ export async function drawDebugImages(args) {
  * Render a page to a canvas, including the OCR text drawn over the page image.
  * @param {ScribeDoc} doc
  * @param {OcrPage} page
+ * @param {Object} [options]
+ * @param {boolean} [options.autoRotate] - Defaults to `scribeDocDefaults.autoRotate`.
  */
-export async function renderPageStatic(doc, page) {
-  const image = await doc.images.getNative(page.n, { rotated: opt.autoRotate, upscaled: false });
+export async function renderPageStatic(doc, page, options = {}) {
+  const autoRotate = options.autoRotate ?? scribeDocDefaults.autoRotate;
+  const image = await doc.images.getNative(page.n, { rotated: autoRotate, upscaled: false });
 
   return gs.renderPageStaticImp({
     page,

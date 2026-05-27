@@ -5,7 +5,7 @@ import { getPrevLine } from '../objects/ocrObjects.js';
 import { quantile } from './miscUtils.js';
 
 import opentype from '../font-parser/src/index.js';
-import { opt } from '../containers/app.js';
+import { scribeDocDefaults } from '../containers/scribeDocDefaults.js';
 
 /** @typedef {import('../containers/fontContainer.js').DocFonts} DocFonts */
 
@@ -132,11 +132,14 @@ function calcWordFontSizePrecise(wordArr, fontOpentype, nonLatin = false) {
 /**
  * Adds ligatures to text of `OcrWord` object. Returns an array of letters.
  * @param {OcrWord} word
- * @param {DocFonts} docFonts - Per-document fonts. Required; no active-document fallback.
+ * @param {DocFonts} docFonts - Per-document fonts.
+ * @param {Object} [settings]
+ * @param {boolean} [settings.ligatures]
  * @returns {Array<string>}
  */
-export function addLigatures(word, docFonts) {
-  if (word.style.smallCaps || !opt.ligatures) return word.text.split('');
+export function addLigatures(word, docFonts, settings) {
+  const ligatures = settings?.ligatures ?? scribeDocDefaults.ligatures;
+  if (word.style.smallCaps || !ligatures) return word.text.split('');
   const fontI = docFonts.getWordFont(word);
   const fontOpentype = fontI.opentype;
   return addLigaturesText(word.text, fontOpentype);
@@ -192,8 +195,11 @@ export const missingGlyphs = {};
  *
  * @param {Array<string>|string} wordText
  * @param {opentype.Font} fontOpentype
+ * @param {Object} [settings]
+ * @param {boolean} [settings.kerning]
  */
-export function calcWordCharMetrics(wordText, fontOpentype) {
+export function calcWordCharMetrics(wordText, fontOpentype, settings) {
+  const kerning = settings?.kerning ?? scribeDocDefaults.kerning;
   const wordTextArr = typeof wordText === 'string' ? wordText.split('') : wordText;
 
   /** @type {Array<number>} */
@@ -215,10 +221,10 @@ export function calcWordCharMetrics(wordText, fontOpentype) {
     advanceArr.push(glyphI.advanceWidth);
 
     if (charJ) {
-      if (opt.kerning) {
+      if (kerning) {
         const glyphJ = fontOpentype.charToGlyph(charJ);
-        const kerning = fontOpentype.getKerningValue(glyphI, glyphJ);
-        kerningArr.push(kerning);
+        const kerningVal = fontOpentype.getKerningValue(glyphI, glyphJ);
+        kerningArr.push(kerningVal);
       } else {
         kerningArr.push(0);
       }
@@ -247,20 +253,23 @@ export function calcWordCharMetrics(wordText, fontOpentype) {
  * @param {number} [angle=0] - Angle of page rotation in degrees, used to calculate character spacing.
  *    This is only used during the PDF export, when the rotation is applied by a matrix transformation,
  *    so the text always needs to be printed as if it were horizontal.
+ * @param {Object} [settings]
+ * @param {boolean} [settings.ligatures]
+ * @param {boolean} [settings.kerning]
  * @async
  * @return {WordMetrics}
  */
-export function calcWordMetrics(word, docFonts, angle = 0) {
+export function calcWordMetrics(word, docFonts, angle = 0, settings) {
   const fontI = docFonts.getWordFont(word);
   const fontOpentype = fontI.opentype;
 
   const fontSize = calcWordFontSize(word, docFonts);
 
-  const charArr = addLigatures(word, docFonts);
+  const charArr = addLigatures(word, docFonts, settings);
 
   const charArr2 = word.style.smallCaps ? charArr.map((x) => (x.toUpperCase())) : charArr;
 
-  const { advanceArr, kerningArr } = calcWordCharMetrics(charArr2, fontOpentype);
+  const { advanceArr, kerningArr } = calcWordCharMetrics(charArr2, fontOpentype, settings);
 
   if (word.style.smallCaps) {
     for (let i = 0; i < charArr2.length; i++) {

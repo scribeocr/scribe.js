@@ -23,14 +23,15 @@ Credentials stay on the server. Azure accepts images and PDFs through the same c
 import scribe from 'scribe.js-ocr';
 import { RecognitionModelAzureDocIntel } from '@scribe.js/azure-doc-intel';
 
-await scribe.importFiles(['document.pdf']);
+const doc = await scribe.openDocument(['document.pdf']);
 
-await scribe.recognize({
+await doc.recognize({
   model: RecognitionModelAzureDocIntel,
   modelOptions: { analyzeLayout: true },
 });
 
-console.log(await scribe.exportData('text'));
+console.log(await doc.exportData('text'));
+await doc.terminate();
 await scribe.terminate();
 ```
 

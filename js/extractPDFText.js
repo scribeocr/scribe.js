@@ -1,4 +1,4 @@
-import { opt } from './containers/app.js';
+import { scribeDocDefaults } from './containers/scribeDocDefaults.js';
 import { loadBuiltInFontsRaw, loadChiSimFont } from './fontContainerMain.js';
 import { addCircularRefsDataTables } from './objects/layoutObjects.js';
 import { determinePdfType } from './pdf/parsePdfDoc.js';
@@ -8,9 +8,18 @@ import { determinePdfType } from './pdf/parsePdfDoc.js';
 /**
  * Extract and parse text from this document's loaded PDF.
  * @param {ScribeDoc} doc
+ * @param {Object} [options]
+ * @param {typeof scribeDocDefaults.usePDFText} [options.usePDFText]
+ *    How to use the extracted native/OCR text. Defaults to `scribeDocDefaults.usePDFText`.
+ * @param {boolean} [options.keepPDFTextAlways]
+ *    Always convert and retain the PDF text even if it would otherwise be discarded.
+ *    Defaults to `scribeDocDefaults.keepPDFTextAlways`.
  */
-export async function extractInternalPDFText(doc) {
+export async function extractInternalPDFText(doc, options = {}) {
   if (!doc.images.pdfData) throw new Error('No PDF data loaded');
+
+  const usePDFText = options.usePDFText ?? scribeDocDefaults.usePDFText;
+  const keepPDFTextAlways = options.keepPDFTextAlways ?? scribeDocDefaults.keepPDFTextAlways;
 
   const pdfScheduler = await doc.images.getPdfScheduler();
   const pageCount = doc.images.pageCount;
@@ -27,13 +36,13 @@ export async function extractInternalPDFText(doc) {
     doc.annotations.pages[i] = pageResults[i].annotations || [];
   }
 
-  const extractPDFTextNative = opt.usePDFText.native.main || opt.usePDFText.native.supp;
-  const extractPDFTextOCR = opt.usePDFText.ocr.main || opt.usePDFText.ocr.supp;
+  const extractPDFTextNative = usePDFText.native.main || usePDFText.native.supp;
+  const extractPDFTextOCR = usePDFText.ocr.main || usePDFText.ocr.supp;
 
   /** @type {{ content: ?Array<OcrPage>, type: string }} */
   const res = { content: null, type };
 
-  if (!opt.keepPDFTextAlways) {
+  if (!keepPDFTextAlways) {
     if (!extractPDFTextOCR && type === 'ocr') return res;
     if (!extractPDFTextNative && type === 'text') return res;
   }
@@ -52,8 +61,8 @@ export async function extractInternalPDFText(doc) {
   }
   await Promise.all(fontPromiseArr);
 
-  const isMainData = (type === 'text' && opt.usePDFText.native.main)
-    || (type === 'ocr' && opt.usePDFText.ocr.main);
+  const isMainData = (type === 'text' && usePDFText.native.main)
+    || (type === 'ocr' && usePDFText.ocr.main);
 
   for (let n = 0; n < doc.ocr.pdf.length; n++) {
     if (isMainData && doc.ocr.pdf[n] && doc.pageMetrics[n]) {

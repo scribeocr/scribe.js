@@ -1,7 +1,5 @@
 import { documentEnd, documentStart, docxStrings } from './resources/docxFiles.js';
 
-import { opt } from '../containers/app.js';
-
 import { assignParagraphs } from '../utils/reflowPars.js';
 
 import ocr from '../objects/ocrObjects.js';
@@ -19,10 +17,11 @@ import ocr from '../objects/ocrObjects.js';
  *    If omitted, all words are included.
  * @param {?Array<PageMetrics>} [params.pageMetrics=null] - Page metrics for the document being
  *    exported. Required when reflow or preserveSpacing is enabled.
+ * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for progress reporting.
  */
 export function writeDocxContent({
   ocrCurrent, pageArr = null, minpage = 0, maxpage = -1, reflowText = false, wordIds = null,
-  pageMetrics = null,
+  pageMetrics = null, doc = null,
 }) {
   let textStr = '';
 
@@ -115,7 +114,7 @@ export function writeDocxContent({
         textStr += ocr.escapeXml(wordObj.text);
       }
     }
-    opt.progressHandler({ n: g, type: 'export', info: { } });
+    doc?.progressHandler({ n: g, type: 'export', info: { } });
   }
 
   // Add final closing tags
@@ -134,9 +133,11 @@ export function writeDocxContent({
  * @param {number} [params.maxpage=-1] - The last page to include in the document.
  * @param {?Array<PageMetrics>} [params.pageMetrics=null] - Page metrics for the document being
  *    exported. Required when reflow or preserveSpacing is enabled.
+ * @param {boolean} [params.reflowText=false] - Remove line breaks within what appears to be the same paragraph.
+ * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for progress reporting.
  */
 export async function writeDocx({
-  hocrCurrent, pageArr = null, minpage = 0, maxpage = -1, pageMetrics = null,
+  hocrCurrent, pageArr = null, minpage = 0, maxpage = -1, pageMetrics = null, reflowText = false, doc = null,
 }) {
   const { Uint8ArrayWriter, TextReader, ZipWriter } = await import('../../lib/zip.js/index.js');
 
@@ -152,8 +153,9 @@ export async function writeDocx({
   const textReader = new TextReader(documentStart + writeDocxContent({
     ocrCurrent: hocrCurrent,
     pageArr,
-    reflowText: opt.reflow,
+    reflowText,
     pageMetrics,
+    doc,
   }) + documentEnd);
   await zipWriter.add('word/document.xml', textReader);
 

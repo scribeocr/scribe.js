@@ -16,5 +16,6 @@
     },
     "exclude": [
         "**/*.wasm.js",
+        "user-docs",
     ],
 }

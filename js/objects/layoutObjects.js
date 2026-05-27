@@ -121,6 +121,7 @@ export const removeCircularRefsDataTables = (pages) => {
       });
     });
   });
+  return pagesClone;
 };
 
 /**

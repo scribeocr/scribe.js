@@ -1,6 +1,7 @@
-import { InputData } from './app.js';
+import { InputData, opt } from './app.js';
 import { DocFonts } from './fontContainer.js';
 import { ImageStore } from './imageContainer.js';
+import { scribeDocDefaults } from './scribeDocDefaults.js';
 import { clearObjectProperties } from '../utils/miscUtils.js';
 import { addHighlights as addHighlightsImpl, clearHighlights as clearHighlightsImpl } from '../addHighlights.js';
 import { renderPageStatic as renderPageStaticImpl } from '../debug.js';
@@ -11,6 +12,7 @@ import {
   compareOCR as compareOCRImpl,
   recognizePageImp as recognizePageImpImpl,
   evalOCRPage as evalOCRPageImpl,
+  insertParsedPage as insertParsedPageImpl,
 } from '../recognizeConvert.js';
 import { importFiles as importFilesImpl, importFilesSupp as importFilesSuppImpl } from '../import/import.js';
 import { runOptimization as runOptimizationImpl } from '../fontEval.js';
@@ -21,6 +23,8 @@ let docIdCounter = 0;
  * A single document being processed, holding its imported pages, OCR text, layout, and fonts.
  */
 export class ScribeDoc {
+  static defaults = scribeDocDefaults;
+
   constructor() {
     /** Process-unique id, used to namespace this document's fonts in shared registries. */
     this.id = ++docIdCounter;
@@ -58,7 +62,24 @@ export class ScribeDoc {
     this.fonts = new DocFonts();
     this.fonts.id = this.id;
 
-    this.images = new ImageStore(this.pageMetrics, this.fonts);
+    this.images = new ImageStore(this);
+
+    /**
+     * Per-document handlers consulted by emit sites during `recognize()` etc.
+     * These should be set if documents require separate per-document reporting,
+     * such as a client/server setup with multiple users.
+     * Uses without the need for document-level reporting should use
+     * `opt.progressHandler`/`opt.warningHandler`/`opt.errorHandler`,
+     * which are used for all documents by default.
+     * @type {(msg: any) => void}
+     */
+    this.progressHandler = (msg) => opt.progressHandler?.(msg);
+
+    /** @type {(w: { message: string, page?: number }) => void} */
+    this.warningHandler = ({ message }) => opt.warningHandler?.(message);
+
+    /** @type {(e: { message: string, page?: number }) => void} */
+    this.errorHandler = ({ message }) => opt.errorHandler?.(message);
   }
 
   /**
@@ -152,10 +173,11 @@ export class ScribeDoc {
   /**
    * Render a page to a canvas, including the OCR text drawn over the page image.
    * @param {Parameters<typeof renderPageStaticImpl>[1]} page
+   * @param {Parameters<typeof renderPageStaticImpl>[2]} [options]
    * @returns {ReturnType<typeof renderPageStaticImpl>}
    */
-  renderPageStatic(page) {
-    return renderPageStaticImpl(this, page);
+  renderPageStatic(page, options) {
+    return renderPageStaticImpl(this, page, options);
   }
 
   /**
@@ -186,6 +208,16 @@ export class ScribeDoc {
    */
   recognize(options) {
     return recognizeImpl(this, options);
+  }
+
+  /**
+   * Install a parsed `OcrPage` into this doc.
+   * @param {Parameters<typeof insertParsedPageImpl>[1]} n
+   * @param {Parameters<typeof insertParsedPageImpl>[2]} page
+   * @param {Parameters<typeof insertParsedPageImpl>[3]} options
+   */
+  insertParsedPage(n, page, options) {
+    return insertParsedPageImpl(this, n, page, options);
   }
 
   /**
@@ -228,10 +260,11 @@ export class ScribeDoc {
   /**
    * Import files for processing into this document.
    * @param {Parameters<typeof importFilesImpl>[1]} files
+   * @param {Parameters<typeof importFilesImpl>[2]} [options]
    * @returns {ReturnType<typeof importFilesImpl>}
    */
-  importFiles(files) {
-    return importFilesImpl(this, files);
+  importFiles(files, options) {
+    return importFilesImpl(this, files, options);
   }
 
   /**

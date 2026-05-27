@@ -1,4 +1,4 @@
-import { opt } from '../containers/app.js';
+import { scribeDocDefaults } from '../containers/scribeDocDefaults.js';
 import { reorderOcrPage } from '../modifyOCR.js';
 import { saveAs } from '../utils/miscUtils.js';
 import { writePdf } from './pdf/writePdf.js';
@@ -15,17 +15,68 @@ import { removeCircularRefsDataTables } from '../objects/layoutObjects.js';
 /** @typedef {import('../containers/scribeDoc.js').ScribeDoc} ScribeDoc */
 
 /**
+ * @typedef {Object} ExportOptions
+ * @property {number} [minPage=0] - First page to export.
+ * @property {number} [maxPage=-1] - Last page to export (inclusive). -1 exports through the last page.
+ * @property {?Array<number>} [pageArr=null] - Array of 0-based page indices to include.
+ *    Overrides minPage/maxPage when provided.
+ * @property {('invis'|'ebook'|'eval'|'proof'|'annot')} [displayMode]
+ * @property {('color'|'gray'|'binary')} [colorMode]
+ * @property {number} [overlayOpacity]
+ * @property {boolean} [addOverlay]
+ * @property {boolean} [autoRotate]
+ * @property {number} [confThreshHigh]
+ * @property {number} [confThreshMed]
+ * @property {boolean} [standardizePageSize]
+ * @property {boolean} [humanReadablePDF]
+ * @property {boolean} [intermediatePDF]
+ * @property {boolean} [reflow]
+ * @property {boolean} [lineNumbers]
+ * @property {boolean} [removeMargins]
+ * @property {boolean} [includeImages]
+ * @property {boolean} [enableLayout]
+ * @property {boolean} [xlsxFilenameColumn]
+ * @property {boolean} [xlsxPageNumberColumn]
+ * @property {boolean} [compressScribe]
+ * @property {boolean} [includeExtraTextScribe]
+ * @property {'width' | 'sentence'} [docxLineSplitMode]
+ */
+
+/**
  * Export this document's OCR data to the specified format.
+ *
+ * Every setting resolves as `options.X ?? scribeDocDefaults.X`.
+ *
  * @param {ScribeDoc} doc
  * @param {'pdf'|'hocr'|'alto'|'docx'|'html'|'xlsx'|'txt'|'text'|'md'|'scribe'} [format='txt']
- * @param {Object} [options]
- * @param {number} [options.minPage=0] - First page to export.
- * @param {number} [options.maxPage=-1] - Last page to export (inclusive). -1 exports through the last page.
- * @param {?Array<number>} [options.pageArr=null] - Array of 0-based page indices to include. Overrides minPage/maxPage when provided.
+ * @param {ExportOptions} [options]
  * @returns {Promise<string|ArrayBuffer>}
  */
-export async function exportData(doc, format = 'txt', { minPage = 0, maxPage = -1, pageArr = null } = {}) {
+export async function exportData(doc, format = 'txt', options = {}) {
   if (format === 'text') format = 'txt';
+
+  const minPage = options.minPage ?? 0;
+  let maxPage = options.maxPage ?? -1;
+  let pageArr = options.pageArr ?? null;
+
+  // Every setting resolves as `options.X ?? scribeDocDefaults.X`. There is no per-doc
+  // instance state for settings.
+  const displayMode = options.displayMode ?? scribeDocDefaults.displayMode;
+  const colorMode = options.colorMode ?? scribeDocDefaults.colorMode;
+  const overlayOpacity = options.overlayOpacity ?? scribeDocDefaults.overlayOpacity;
+  const addOverlay = options.addOverlay ?? scribeDocDefaults.addOverlay;
+  const autoRotate = options.autoRotate ?? scribeDocDefaults.autoRotate;
+  const confThreshHigh = options.confThreshHigh ?? scribeDocDefaults.confThreshHigh;
+  const confThreshMed = options.confThreshMed ?? scribeDocDefaults.confThreshMed;
+  const standardizePageSize = options.standardizePageSize ?? scribeDocDefaults.standardizePageSize;
+  const humanReadablePDF = options.humanReadablePDF ?? scribeDocDefaults.humanReadablePDF;
+  const reflow = options.reflow ?? scribeDocDefaults.reflow;
+  const lineNumbers = options.lineNumbers ?? scribeDocDefaults.lineNumbers;
+  const removeMargins = options.removeMargins ?? scribeDocDefaults.removeMargins;
+  const includeImagesOpt = options.includeImages ?? scribeDocDefaults.includeImages;
+  const enableLayout = options.enableLayout ?? scribeDocDefaults.enableLayout;
+  const compressScribe = options.compressScribe ?? scribeDocDefaults.compressScribe;
+  const includeExtraTextScribe = options.includeExtraTextScribe ?? scribeDocDefaults.includeExtraTextScribe;
 
   if (!pageArr) {
     if (maxPage === -1) maxPage = doc.inputData.pageCount - 1;
@@ -36,7 +87,7 @@ export async function exportData(doc, format = 'txt', { minPage = 0, maxPage = -
   /** @type {Array<OcrPage>} */
   let ocrDownload = [];
 
-  if (format !== 'hocr' && opt.enableLayout) {
+  if (format !== 'hocr' && enableLayout) {
     // Reorder HOCR elements according to layout boxes
     for (let i = 0; i < doc.ocr.active.length; i++) {
       ocrDownload.push(reorderOcrPage(doc.ocr.active[i], doc.layoutRegions.pages[i]));
@@ -50,7 +101,7 @@ export async function exportData(doc, format = 'txt', { minPage = 0, maxPage = -
 
   if (format === 'pdf') {
     const dimsLimit = { width: -1, height: -1 };
-    if (opt.standardizePageSize) {
+    if (standardizePageSize) {
       for (const i of pageArr) {
         dimsLimit.height = Math.max(dimsLimit.height, doc.pageMetrics[i].dims.height);
         dimsLimit.width = Math.max(dimsLimit.width, doc.pageMetrics[i].dims.width);
@@ -58,10 +109,10 @@ export async function exportData(doc, format = 'txt', { minPage = 0, maxPage = -
     }
 
     // For proof or ocr mode the text layer needs to be combined with a background layer
-    if (opt.displayMode !== 'ebook') {
-      const insertInputPDF = doc.inputData.pdfMode && opt.addOverlay;
+    if (displayMode !== 'ebook') {
+      const insertInputPDF = doc.inputData.pdfMode && addOverlay;
 
-      const rotateBackground = !insertInputPDF && opt.autoRotate;
+      const rotateBackground = !insertInputPDF && autoRotate;
 
       const rotateText = !rotateBackground;
 
@@ -83,13 +134,13 @@ export async function exportData(doc, format = 'txt', { minPage = 0, maxPage = -
             basePdfData,
             ocrArr: overlayOcrArr,
             pageMetricsArr: overlayPageMetricsArr,
-            textMode: opt.displayMode,
+            textMode: displayMode,
             rotateText,
             rotateBackground,
-            confThreshHigh: opt.confThreshHigh,
-            confThreshMed: opt.confThreshMed,
-            proofOpacity: opt.overlayOpacity / 100,
-            humanReadable: opt.humanReadablePDF,
+            confThreshHigh,
+            confThreshMed,
+            proofOpacity: overlayOpacity / 100,
+            humanReadable: humanReadablePDF,
             annotationsPages: overlayAnnotationsPages,
             docFonts: doc.fonts,
           });
@@ -102,8 +153,8 @@ export async function exportData(doc, format = 'txt', { minPage = 0, maxPage = -
 
       // Build a fresh PDF (writePdf handles images natively; no mupdf convertImage* needed).
       if (!insertInputPDF || insertInputFailed) {
-        const props = { rotated: rotateBackground, upscaled: false, colorMode: opt.colorMode };
-        const binary = opt.colorMode === 'binary';
+        const props = { rotated: rotateBackground, upscaled: false, colorMode };
+        const binary = colorMode === 'binary';
 
         // An image could be rendered if either (1) binary is selected or (2) the input data is a PDF.
         // Otherwise, the images uploaded by the user are used.
@@ -126,7 +177,7 @@ export async function exportData(doc, format = 'txt', { minPage = 0, maxPage = -
               image = await doc.images.nativeSrc[i];
             }
             images.push(image);
-            opt.progressHandler({ n: i, type: 'export', info: {} });
+            doc.progressHandler({ n: i, type: 'export', info: {} });
           }
         }
 
@@ -134,18 +185,19 @@ export async function exportData(doc, format = 'txt', { minPage = 0, maxPage = -
           ocrArr: ocrDownload,
           pageMetricsArr: doc.pageMetrics,
           pageArr,
-          textMode: opt.displayMode,
+          textMode: displayMode,
           rotateText,
           rotateBackground,
           dimsLimit: { width: -1, height: -1 },
-          confThreshHigh: opt.confThreshHigh,
-          confThreshMed: opt.confThreshMed,
-          proofOpacity: opt.overlayOpacity / 100,
+          confThreshHigh,
+          confThreshMed,
+          proofOpacity: overlayOpacity / 100,
           images,
           includeImages,
           annotationsPages: doc.annotations.pages,
-          humanReadable: opt.humanReadablePDF,
+          humanReadable: humanReadablePDF,
           docFonts: doc.fonts,
+          doc,
         });
       }
     } else {
@@ -153,16 +205,17 @@ export async function exportData(doc, format = 'txt', { minPage = 0, maxPage = -
         ocrArr: ocrDownload,
         pageMetricsArr: doc.pageMetrics,
         pageArr,
-        textMode: opt.displayMode,
+        textMode: displayMode,
         rotateText: false,
         rotateBackground: true,
         dimsLimit,
-        confThreshHigh: opt.confThreshHigh,
-        confThreshMed: opt.confThreshMed,
-        proofOpacity: opt.overlayOpacity / 100,
+        confThreshHigh,
+        confThreshMed,
+        proofOpacity: overlayOpacity / 100,
         annotationsPages: doc.annotations.pages,
-        humanReadable: opt.humanReadablePDF,
+        humanReadable: humanReadablePDF,
         docFonts: doc.fonts,
+        doc,
       });
     }
   } else if (format === 'hocr') {
@@ -173,14 +226,17 @@ export async function exportData(doc, format = 'txt', { minPage = 0, maxPage = -
       layoutRegions: doc.layoutRegions,
       pageMetrics: doc.pageMetrics,
       dataTablesSerialized: doc.serializeLayoutDataTables(),
+      doc,
     });
   } else if (format === 'alto') {
-    content = writeAlto({ ocrData: ocrDownload, pageArr, pageMetrics: doc.pageMetrics });
+    content = writeAlto({
+      ocrData: ocrDownload, pageArr, pageMetrics: doc.pageMetrics, doc,
+    });
   } else if (format === 'html') {
     const images = /** @type {Array<ImageWrapper>} */ ([]);
-    if (opt.includeImages) {
-      const props = { rotated: opt.autoRotate, upscaled: false, colorMode: opt.colorMode };
-      const binary = opt.colorMode === 'binary';
+    if (includeImagesOpt) {
+      const props = { rotated: autoRotate, upscaled: false, colorMode };
+      const binary = colorMode === 'binary';
 
       // An image could be rendered if either (1) binary is selected or (2) the input data is a PDF.
       // Otherwise, the images uploaded by the user are used.
@@ -207,33 +263,42 @@ export async function exportData(doc, format = 'txt', { minPage = 0, maxPage = -
       ocrPages: ocrDownload,
       images,
       pageArr,
-      reflowText: opt.reflow,
-      removeMargins: opt.removeMargins,
+      reflowText: reflow,
+      removeMargins,
       docFonts: doc.fonts,
       pageMetrics: doc.pageMetrics,
+      displayMode,
+      confThreshHigh,
+      confThreshMed,
+      overlayOpacity,
+      doc,
     });
   } else if (format === 'txt') {
     content = writeText({
       ocrCurrent: ocrDownload,
       pageArr,
-      reflowText: opt.reflow,
-      lineNumbers: opt.lineNumbers,
+      reflowText: reflow,
+      lineNumbers,
       pageMetrics: doc.pageMetrics,
+      doc,
     });
   } else if (format === 'md') {
     content = writeMarkdown({
       ocrCurrent: ocrDownload,
       layoutPageArr: doc.layoutDataTables.pages,
       pageArr,
-      reflowText: opt.reflow,
+      reflowText: reflow,
       pageMetrics: doc.pageMetrics,
+      doc,
     });
   // Defining `DISABLE_DOCX_XLSX` disables docx/xlsx exports when using build tools.
   // @ts-ignore
   } else if (typeof DISABLE_DOCX_XLSX === 'undefined' && format === 'docx') {
     // Less common export formats are loaded dynamically to reduce initial load time.
     const writeDocx = (await import('./writeDocx.js')).writeDocx;
-    content = await writeDocx({ hocrCurrent: ocrDownload, pageArr, pageMetrics: doc.pageMetrics });
+    content = await writeDocx({
+      hocrCurrent: ocrDownload, pageArr, pageMetrics: doc.pageMetrics, reflowText: reflow, doc,
+    });
   // @ts-ignore
   } else if (typeof DISABLE_DOCX_XLSX === 'undefined' && format === 'xlsx') {
     // Less common export formats are loaded dynamically to reduce initial load time.
@@ -243,16 +308,19 @@ export async function exportData(doc, format = 'txt', { minPage = 0, maxPage = -
       layoutPageArr: doc.layoutDataTables.pages,
       inputData: doc.inputData,
       pageArr,
+      xlsxFilenameColumn: options.xlsxFilenameColumn ?? scribeDocDefaults.xlsxFilenameColumn,
+      xlsxPageNumberColumn: options.xlsxPageNumberColumn ?? scribeDocDefaults.xlsxPageNumberColumn,
+      doc,
     });
   } else if (format === 'scribe') {
     const data = {
-      ocr: removeCircularRefsOcr(ocrDownload, { includeText: opt.includeExtraTextScribe }),
+      ocr: removeCircularRefsOcr(ocrDownload, { includeText: includeExtraTextScribe }),
       fontState: doc.fonts.state,
       layoutRegions: doc.layoutRegions.pages,
       layoutDataTables: removeCircularRefsDataTables(doc.layoutDataTables.pages),
       annotations: doc.annotations.pages,
     };
-    if (opt.compressScribe) {
+    if (compressScribe) {
       const contentStr = JSON.stringify(data);
       const cs = new CompressionStream('gzip');
       const compressedStream = new Blob([new TextEncoder().encode(contentStr)]).stream().pipeThrough(cs);
@@ -270,22 +338,20 @@ export async function exportData(doc, format = 'txt', { minPage = 0, maxPage = -
  * @param {ScribeDoc} doc
  * @param {'pdf'|'hocr'|'alto'|'docx'|'xlsx'|'txt'|'text'|'md'|'html'|'scribe'} format
  * @param {string} fileName
- * @param {Object} [options]
- * @param {number} [options.minPage=0] - First page to export.
- * @param {number} [options.maxPage=-1] - Last page to export (inclusive). -1 exports through the last page.
- * @param {?Array<number>} [options.pageArr=null] - Array of 0-based page indices to include. Overrides minPage/maxPage when provided.
+ * @param {ExportOptions} [options]
  */
-export async function download(doc, format, fileName, { minPage = 0, maxPage = -1, pageArr = null } = {}) {
+export async function download(doc, format, fileName, options = {}) {
   if (format === 'text') format = 'txt';
+  const compressScribe = options.compressScribe ?? scribeDocDefaults.compressScribe;
   let ext;
   if (format === 'alto') {
     ext = 'xml';
-  } else if (format === 'scribe' && !opt.compressScribe) {
+  } else if (format === 'scribe' && !compressScribe) {
     ext = 'scribe.json';
   } else {
     ext = format;
   }
   fileName = fileName.replace(/\.\w{1,6}$/, `.${ext}`);
-  const content = await exportData(doc, format, { minPage, maxPage, pageArr });
+  const content = await exportData(doc, format, options);
   await saveAs(content, fileName);
 }

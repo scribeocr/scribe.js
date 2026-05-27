@@ -1,4 +1,3 @@
-import { opt } from '../containers/app.js';
 import ocr from '../objects/ocrObjects.js';
 
 /**
@@ -54,10 +53,12 @@ function tesseractToISO6392(tesseractLang) {
  * @param {number} [params.maxValue] - Last page to export (inclusive)
  * @param {?Array<PageMetrics>} [params.pageMetrics=null] - Page metrics for the document being
  *   exported; supplies dimensions for pages missing from the OCR data.
+ * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for
+ *    progress reporting.
  * @returns {string} ALTO XML formatted string
  */
 export function writeAlto({
-  ocrData, pageArr = null, minValue, maxValue, pageMetrics = null,
+  ocrData, pageArr = null, minValue, maxValue, pageMetrics = null, doc = null,
 }) {
   if (!pageArr) {
     if (minValue === null || minValue === undefined) minValue = 0;
@@ -311,7 +312,7 @@ export function writeAlto({
     altoOut += '</PrintSpace>\n';
     altoOut += '</Page>\n';
 
-    opt.progressHandler({ n: pageIndex, type: 'export', info: {} });
+    doc?.progressHandler({ n: pageIndex, type: 'export', info: {} });
   }
 
   altoOut += '</Layout>\n';

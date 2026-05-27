@@ -5,7 +5,6 @@ import {
   createDeviceNRGBA, createEmbeddedImages, createImageResourceDict, drawImageCommands,
 } from './writePdfImages.js';
 
-import { opt } from '../../containers/app.js';
 import { ocrPageToPDFStream } from './writePdfText.js';
 import { buildHighlightAnnotObjects, consolidateAnnotations } from './writePdfAnnots.js';
 import { encodeStreamObject } from './writePdfStreams.js';
@@ -34,6 +33,7 @@ import { encodeStreamObject } from './writePdfStreams.js';
  * @param {boolean} [params.humanReadable=false] - If true, emit uncompressed
  *   streams + hex-wrapped fonts for diffing. Default emits FlateDecode.
  * @param {import('../../containers/fontContainer.js').DocFonts} [params.docFonts] - Per-document fonts.
+ * @param {?import('../../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for progress reporting.
  *
  * A valid PDF will be created if an empty array is provided for `ocrArr`, as long as `pageArr` is non-empty.
  */
@@ -56,6 +56,7 @@ export async function writePdf({
   annotationsPages = null,
   humanReadable = false,
   docFonts,
+  doc = null,
 }) {
   if (!GlobalFonts.raw) throw new Error('No fonts loaded.');
 
@@ -151,7 +152,7 @@ export async function writePdf({
 
     objectI += pdfObj.length;
 
-    opt.progressHandler({ n: i, type: 'export', info: { } });
+    doc?.progressHandler({ n: i, type: 'export', info: { } });
   }
 
   // Create font objects for fonts that are used

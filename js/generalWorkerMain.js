@@ -143,11 +143,6 @@ export class gs {
   /** Whether built-in fonts have been loaded in workers. */
   static loadedBuiltInFontsRawWorker = false;
 
-  /** Whether optimized fonts have been loaded in workers. */
-  static loadedBuiltInFontsOptWorker = false;
-
-  static loadedBuiltInFontsDocWorker = false;
-
   /** @type {?GeneralScheduler} */
   // static scheduler = null;
 
@@ -401,12 +396,7 @@ export class gs {
     return gs.schedulerReady;
   };
 
-  static clear = () => {
-    gs.loadedBuiltInFontsOptWorker = false;
-  };
-
   static terminate = async () => {
-    gs.clear();
     // This function can be run while the scheduler is still initializing.
     // This happens when we pre-load the scheduler, but then terminate before it finishes loading,
     // and it is never actually used.

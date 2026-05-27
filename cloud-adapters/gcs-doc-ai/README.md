@@ -21,16 +21,17 @@ npm install scribe.js-ocr @scribe.js/gcs-doc-ai
 import scribe from 'scribe.js-ocr';
 import { RecognitionModelGoogleDocAI } from '@scribe.js/gcs-doc-ai';
 
-await scribe.importFiles(['document.pdf']);
+const doc = await scribe.openDocument(['document.pdf']);
 
-await scribe.recognize({
+await doc.recognize({
   model: RecognitionModelGoogleDocAI,
   modelOptions: {
     processorName: 'projects/my-project/locations/us/processors/abc123',
   },
 });
 
-console.log(await scribe.exportData('text'));
+console.log(await doc.exportData('text'));
+await doc.terminate();
 await scribe.terminate();
 ```
 

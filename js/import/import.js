@@ -1,4 +1,5 @@
 import { opt } from '../containers/app.js';
+import { scribeDocDefaults } from '../containers/scribeDocDefaults.js';
 import { GlobalFonts } from '../containers/fontContainer.js';
 import {
   enableOpt,
@@ -127,7 +128,7 @@ export async function sortInputFiles(files) {
 
   if (unsupportedFilesAll.length > 0) {
     const errorText = `Import includes unsupported file types: ${Object.keys(unsupportedExt).join(', ')}`;
-    opt.warningHandler(errorText);
+    opt.warningHandler?.(errorText);
   }
 
   imageFilesAll.sort((a, b) => ((a.name > b.name) ? 1 : ((b.name > a.name) ? -1 : 0)));
@@ -272,8 +273,19 @@ async function _restoreSessionFromLegacyHocr(doc, ocrData) {
  * Alternatively, for `File` objects (browser) and file paths (Node.js), a single array can be provided, which is sorted based on extension.
  * @param {ScribeDoc} doc
  * @param {Array<File>|FileList|Array<string>|SortedInputFiles} files
+ * @param {Object} [options]
+ * @param {typeof import('../containers/scribeDoc.js').ScribeDoc.defaults.usePDFText} [options.usePDFText]
+ * @param {boolean} [options.keepPDFTextAlways]
+ * @param {boolean} [options.skipFontOpt]
+ * @param {boolean} [options.usePdfSharedBuffer]
+ * @param {'width' | 'sentence'} [options.docxLineSplitMode]
  */
-export async function importFiles(doc, files) {
+export async function importFiles(doc, files, options = {}) {
+  const usePDFText = options.usePDFText ?? scribeDocDefaults.usePDFText;
+  const keepPDFTextAlways = options.keepPDFTextAlways ?? scribeDocDefaults.keepPDFTextAlways;
+  const skipFontOpt = options.skipFontOpt ?? scribeDocDefaults.skipFontOpt;
+  const usePdfSharedBuffer = options.usePdfSharedBuffer ?? opt.usePdfSharedBuffer;
+  const docxLineSplitMode = options.docxLineSplitMode ?? scribeDocDefaults.docxLineSplitMode;
   if (!files) throw new Error('No files provided.');
 
   doc.clear();
@@ -329,16 +341,16 @@ export async function importFiles(doc, files) {
 
   if (pdfFiles.length === 0 && imageFiles.length === 0 && ocrFiles.length === 0 && scribeFiles.length === 0) {
     const errorText = 'No supported files found.';
-    opt.errorHandler(errorText);
+    doc.errorHandler({ message: errorText });
     return;
   } if (pdfFiles.length > 0 && imageFiles.length > 0) {
     const errorText = 'PDF and image files cannot be imported together. Only first PDF file will be imported.';
-    opt.warningHandler(errorText);
+    doc.warningHandler({ message: errorText });
     pdfFiles.length = 1;
     imageFiles.length = 0;
   } else if (pdfFiles.length > 1) {
     const errorText = 'Multiple PDF files are not supported. Only first PDF file will be imported.';
-    opt.warningHandler(errorText);
+    doc.warningHandler({ message: errorText });
     pdfFiles.length = 1;
     imageFiles.length = 0;
   }
@@ -379,7 +391,7 @@ export async function importFiles(doc, files) {
 
   if (doc.inputData.pdfMode) {
     // If no XML data is provided, page sizes are calculated using muPDF alone
-    await doc.images.openMainPDF(pdfFiles[0]);
+    await doc.images.openMainPDF(pdfFiles[0], { usePdfSharedBuffer });
 
     pageCountImage = doc.images.pageCount;
     doc.images.loadCount = doc.images.pageCount;
@@ -439,7 +451,7 @@ export async function importFiles(doc, files) {
   if (xmlModeImport && (doc.inputData.imageMode || doc.inputData.pdfMode)) {
     if (pageCountImage !== pageCountOcr) {
       const warningHTML = `Page mismatch detected. Image data has ${pageCountImage} pages while OCR data has ${pageCountOcr} pages.`;
-      opt.warningHandler(warningHTML);
+      doc.warningHandler({ message: warningHTML });
     }
   }
 
@@ -467,7 +479,7 @@ export async function importFiles(doc, files) {
 
   // Render first page for PDF only
   if (doc.inputData.pdfMode && !xmlModeImport) {
-    opt.progressHandler({ n: 0, type: 'importPDF', info: { } });
+    doc.progressHandler({ n: 0, type: 'importPDF', info: { } });
   }
 
   if (doc.inputData.imageMode) {
@@ -480,7 +492,7 @@ export async function importFiles(doc, files) {
         return imgWrapper;
       });
       doc.images.loadCount++;
-      opt.progressHandler({ n: i, type: 'importImage', info: { } });
+      doc.progressHandler({ n: i, type: 'importImage', info: { } });
     }
   }
 
@@ -496,11 +508,11 @@ export async function importFiles(doc, files) {
 
   if (xmlModeImport) {
     // Process OCR using web worker, reading from file first if that has not been done already
-    await convertOCR(doc, doc.ocrRaw.active, true, format, oemName, reimportHocrMode, doc.pageMetrics).then(async () => {
+    await convertOCR(doc, doc.ocrRaw.active, true, format, oemName, reimportHocrMode, doc.pageMetrics, { docxLineSplitMode }).then(async () => {
       // Skip this step if optimization info was already restored from a previous session,
       // or if using stext/textract (which are character-level but not visually accurate).
-      if (!existingOpt && !opt.skipFontOpt && !['stext', 'textract', 'google_vision', 'google_doc_ai', 'azure_doc_intel'].includes(format)) {
-        await checkCharWarn(doc.convertPageWarn);
+      if (!existingOpt && !skipFontOpt && !['stext', 'textract', 'google_vision', 'google_doc_ai', 'azure_doc_intel'].includes(format)) {
+        await checkCharWarn(doc, doc.convertPageWarn);
         const charMetrics = calcCharMetricsFromPages(doc.ocr.active);
 
         if (Object.keys(charMetrics).length > 0) {
@@ -510,9 +522,9 @@ export async function importFiles(doc, files) {
         await doc.runOptimization(doc.ocr.active);
       }
     });
-  } else if (!scribeFiles[0] && doc.inputData.pdfMode && (opt.usePDFText.native.main || opt.usePDFText.native.supp || opt.usePDFText.ocr.main || opt.usePDFText.ocr.supp || opt.keepPDFTextAlways)) {
-    await extractInternalPDFText(doc);
-    if (doc.inputData.pdfType === 'text' && opt.usePDFText.native.main || doc.inputData.pdfType === 'ocr' && opt.usePDFText.ocr.main) {
+  } else if (!scribeFiles[0] && doc.inputData.pdfMode && (usePDFText.native.main || usePDFText.native.supp || usePDFText.ocr.main || usePDFText.ocr.supp || keepPDFTextAlways)) {
+    await extractInternalPDFText(doc, { usePDFText, keepPDFTextAlways });
+    if (doc.inputData.pdfType === 'text' && usePDFText.native.main || doc.inputData.pdfType === 'ocr' && usePDFText.ocr.main) {
       if (doc.inputData.pdfType === 'text') doc.fonts.state.enableCleanToNimbusMono = true;
     }
   }
@@ -545,7 +557,7 @@ export async function importFilesSupp(doc, files, ocrName) {
   // If both OCR data and image data are present, confirm they have the same number of pages
   if (doc.images.pageCount > 0 && doc.images.pageCount !== pageCountHOCR) {
     const warningHTML = `Page mismatch detected. Image data has ${doc.images.pageCount} pages while OCR data has ${pageCountHOCR} pages.`;
-    opt.warningHandler(warningHTML);
+    doc.warningHandler({ message: warningHTML });
   }
 
   const format = /** @type {("hocr" | "abbyy" | "stext" | "textract" | "text")} */ (ocrData.format);

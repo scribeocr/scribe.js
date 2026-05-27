@@ -35,15 +35,16 @@ const output = outputPath || filePath.replace(/\.[^.]+$/, '_ocr.pdf');
     }
   };
 
-  await scribe.importFiles([filePath]);
+  const doc = await scribe.openDocument([filePath]);
 
-  await scribe.recognize({
+  await doc.recognize({
     model: RecognitionModelTextract,
     modelOptions: { analyzeLayout: true },
   });
 
-  await scribe.download('pdf', output);
+  await doc.download('pdf', output);
   console.log(`Searchable PDF written to ${output}`);
 
+  await doc.terminate();
   await scribe.terminate();
 })();

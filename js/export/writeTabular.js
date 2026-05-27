@@ -1,6 +1,6 @@
 import ocr from '../objects/ocrObjects.js';
 
-import { opt } from '../containers/app.js';
+import { scribeDocDefaults } from '../containers/scribeDocDefaults.js';
 import { extractTableContent } from '../extractTables.js';
 
 /**
@@ -181,9 +181,15 @@ async function buildXlsxZip(sheetXml, xlsxStrings) {
  * @param {?Array<number>} [params.pageArr=null] - Array of 0-based page indices to include. Overrides minpage/maxpage when provided.
  * @param {number} [params.minpage=0]
  * @param {number} [params.maxpage=-1]
+ * @param {boolean} [params.xlsxFilenameColumn] - Defaults to `scribeDocDefaults.xlsxFilenameColumn`.
+ * @param {boolean} [params.xlsxPageNumberColumn] - Defaults to `scribeDocDefaults.xlsxPageNumberColumn`.
+ * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for progress reporting.
  */
 export async function writeXlsx({
   ocrPageArr, layoutPageArr, inputData, pageArr = null, minpage = 0, maxpage = -1,
+  xlsxFilenameColumn = scribeDocDefaults.xlsxFilenameColumn,
+  xlsxPageNumberColumn = scribeDocDefaults.xlsxPageNumberColumn,
+  doc = null,
 }) {
   const { xlsxStrings, sheetPreamble, sheetClose } = await import('./resources/xlsxFiles.js');
 
@@ -198,20 +204,20 @@ export async function writeXlsx({
   for (const i of pageArr) {
     /** @type {Array<string>} */
     const extraCols = [];
-    if (opt.xlsxFilenameColumn) {
+    if (xlsxFilenameColumn) {
       if (inputData.pdfMode) {
         extraCols.push(inputData.inputFileNames[0]);
       } else {
         extraCols.push(inputData.inputFileNames[i]);
       }
     }
-    if (opt.xlsxPageNumberColumn) extraCols.push(String(i + 1));
+    if (xlsxPageNumberColumn) extraCols.push(String(i + 1));
 
     const tableWordObj = extractTableContent(ocrPageArr[i], layoutPageArr[i]);
     const cellsObj = createCells({ tableWordObj, extraCols, startRow: rowCount });
     rowCount += cellsObj.rows;
     cellContent += cellsObj.content;
-    opt.progressHandler({ n: i, type: 'export', info: { } });
+    doc?.progressHandler({ n: i, type: 'export', info: { } });
   }
 
   const sheetXml = `${sheetPreamble}<sheetData>${cellContent}</sheetData>${sheetClose}`;

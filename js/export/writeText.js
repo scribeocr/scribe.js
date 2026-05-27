@@ -1,4 +1,3 @@
-import { opt } from '../containers/app.js';
 import { assignParagraphs } from '../utils/reflowPars.js';
 
 /**
@@ -17,10 +16,12 @@ import { assignParagraphs } from '../utils/reflowPars.js';
  *    When enabled, reflowText is ignored.
  * @param {boolean} [params.preserveSpacing=false] - Pad words with spaces based on their horizontal
  *    position in the document, preserving column alignment. Useful for table extraction.
+ * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document.
+ *    Required when `params.doc.progressHandler` should receive per-page export events.
  */
 export function writeText({
   ocrCurrent, pageArr = null, minpage = 0, maxpage = -1, reflowText = false,
-  wordIds = null, lineNumbers = false, preserveSpacing = false, pageMetrics = null,
+  wordIds = null, lineNumbers = false, preserveSpacing = false, pageMetrics = null, doc = null,
 }) {
   let textStr = '';
 
@@ -95,7 +96,7 @@ export function writeText({
         textStr += wordObj.text;
       }
     }
-    opt.progressHandler({ n: g, type: 'export', info: { } });
+    doc?.progressHandler({ n: g, type: 'export', info: { } });
   }
 
   return textStr;

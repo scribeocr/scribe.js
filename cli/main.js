@@ -8,7 +8,7 @@ import scribe from '../scribe.js';
 
 const debugMode = false;
 
-scribe.opt.saveDebugImages = debugMode;
+scribe.ScribeDoc.defaults.saveDebugImages = debugMode;
 
 /**
  * @param {string} func
@@ -24,7 +24,7 @@ scribe.opt.saveDebugImages = debugMode;
  */
 async function main(func, params) {
   scribe.opt.workerN = params.workerN || null;
-  scribe.opt.skipFontOpt = func === 'conf';
+  scribe.ScribeDoc.defaults.skipFontOpt = func === 'conf';
 
   if (!params.files || params.files.length === 0) {
     throw new Error('No input files provided.');
@@ -41,7 +41,7 @@ async function main(func, params) {
 
   const robustConfMode = func === 'check' || params.robustConfMode || false;
 
-  scribe.opt.displayMode = params.overlayMode || 'invis';
+  scribe.ScribeDoc.defaults.displayMode = params.overlayMode || 'invis';
   const combineMode = robustConfMode ? 'conf' : 'data';
 
   const output = {};
@@ -79,9 +79,9 @@ async function main(func, params) {
 
   if (['overlay', 'recognize'].includes(func) && (doc.inputData.pdfMode || doc.inputData.imageMode)) {
     let outputSuffix = '';
-    if (scribe.opt.displayMode === 'proof') {
+    if (scribe.ScribeDoc.defaults.displayMode === 'proof') {
       outputSuffix = '_vis';
-    } else if (scribe.opt.displayMode === 'invis') {
+    } else if (scribe.ScribeDoc.defaults.displayMode === 'invis') {
       // Check if output file would overwrite any input file, and if so, add a suffix to avoid overwriting.
       // This software is still in development--nobody should be ovewriting input files.
       const resolvedOutputFileTmp = path.resolve(`${outputDir}/${outputStem}.pdf`);
