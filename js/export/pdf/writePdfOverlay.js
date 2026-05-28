@@ -1,5 +1,5 @@
 import {
-  findXrefOffset, parseXref, ObjectCache, sourceXrefIsWellFormed,
+  findXrefOffset, parseXref, ObjectCache, sourceXrefIsWellFormed, byteIndexOf,
 } from '../../pdf/parsePdfUtils.js';
 import { getPageObjects } from '../../pdf/parsePdfDoc.js';
 import { createPdfFontRefs, createEmbeddedFontType0 } from './writePdfFonts.js';
@@ -102,12 +102,18 @@ export async function overlayPdfText({
   // Only rebuild can give the output a clean xref.
   const sourceXrefMalformed = !sourceXrefIsWellFormed(pdfBytes);
 
+  // Linearization declares the original file's exact length in /L.
+  // Appending an incremental update breaks that invariant
+  // and Acrobat shows "this document is being repaired" on every open.
+  // Rebuild instead so the output has no stale linearization dictionary.
+  const sourceLinearized = byteIndexOf(pdfBytes.subarray(0, Math.min(1024, pdfBytes.length)), '/Linearized') !== -1;
+
   // If exporting a proper subset of pages (fewer pages than the source, or
   // a reordering), rebuild the PDF instead of incremental update.
   // Incremental can only extend existing pages in place — it can't drop or reorder them.
   const isSubset = effectivePageArr.length !== pages.length
     || effectivePageArr.some((v, idx) => v !== idx);
-  if (isSubset || sourceEncrypted || sourceXrefMalformed) {
+  if (isSubset || sourceEncrypted || sourceXrefMalformed || sourceLinearized) {
     return rebuildPdfSubset({
       pdfBytes,
       text,
@@ -308,7 +314,10 @@ export async function overlayPdfText({
   }
 
   const newXrefOffset = pdfBytes.length + appendByteLen;
-  const totalSize = Math.max(nextObjNum, ...allNewObjects.map((o) => o.objNum + 1));
+  let totalSize = nextObjNum;
+  for (const o of allNewObjects) {
+    if (o.objNum + 1 > totalSize) totalSize = o.objNum + 1;
+  }
 
   const trailerStr = buildIncrementalXrefAndTrailer(newXrefEntries, totalSize, xrefOffset, rootRef, newXrefOffset);
   appendParts.push(trailerStr);
