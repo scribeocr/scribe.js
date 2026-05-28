@@ -255,7 +255,7 @@ export class ScribeViewer {
     this.CanvasSelection = new CanvasSelection(this);
     this.imageCache = new ViewerImageCache(this);
     /** @type {import('../js/containers/scribeDoc.js').ScribeDoc} */
-    this.doc = new scribe.ScribeDoc();
+    this._doc = new scribe.ScribeDoc();
 
     /** @type {HTMLElement} */
     this.elem = /** @type {any} */ (null);
@@ -381,6 +381,59 @@ export class ScribeViewer {
 
     _allViewers.add(this);
     if (!_defaultViewer) _defaultViewer = this;
+  }
+
+  /** @returns {import('../js/containers/scribeDoc.js').ScribeDoc} */
+  get doc() { return this._doc; }
+
+  set doc(value) {
+    const prev = this._doc;
+    this._doc = value;
+    if (prev && prev !== value && this.stage) this._resetDocState();
+  }
+
+  _resetDocState() {
+    this.deleteHTMLOverlay();
+    this.destroyControls();
+
+    for (const groupMap of this._textGroups) {
+      if (!groupMap) continue;
+      for (const group of Object.values(groupMap)) group.destroy();
+    }
+    this._textGroups.length = 0;
+    this.textGroupsRenderIndices.length = 0;
+
+    for (const group of this._overlayGroups) {
+      if (group) group.destroy();
+    }
+    this._overlayGroups.length = 0;
+    this.overlayGroupsRenderIndices.length = 0;
+
+    for (const rect of this.placeholderRectArr) {
+      if (rect) rect.destroy();
+    }
+    this.placeholderRectArr.length = 0;
+
+    this._highlightOutlineRects.length = 0;
+
+    this._pageStopsStart.length = 0;
+    this._pageStopsEnd.length = 0;
+
+    this.imageCache.clear();
+
+    this.evalStats.length = 0;
+    this._evalStatsConfig = {
+      ocrActive: undefined,
+      ignorePunct: scribe.ScribeDoc.defaults.ignorePunct,
+      ignoreCap: scribe.ScribeDoc.defaults.ignoreCap,
+    };
+
+    this._searchState = {
+      text: [], search: '', matches: [], init: false, total: 0,
+    };
+
+    this.state.cp.n = 0;
+    this.state.searchMode = false;
   }
 
   /**

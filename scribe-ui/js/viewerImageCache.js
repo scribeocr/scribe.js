@@ -234,6 +234,16 @@ export class ViewerImageCache {
     });
   }
 
+  clear() {
+    for (let i = 0; i < this.konvaImages.length; i++) {
+      this.deleteKonvaImage(i);
+    }
+    this.konvaImages.length = 0;
+    this.konvaImagesProps.length = 0;
+    this._nativeBitmapPromises.length = 0;
+    this._binaryBitmapPromises.length = 0;
+  }
+
   /**
    * Render the current page and a few pages ahead and behind. Bitmaps for distant pages are freed.
    * @param {number} curr
