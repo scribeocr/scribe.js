@@ -1,9 +1,12 @@
 import scribe from '../../scribe.js';
 // eslint-disable-next-line import/no-cycle
 import { ScribeViewer } from '../viewer.js';
+import { KonvaIText, KonvaOcrWord } from './viewerWordObjects.js';
 
-export function deleteSelectedWord() {
-  const selectedObjects = ScribeViewer.CanvasSelection.getKonvaWords();
+/** @param {import('../viewer.js').ScribeViewer} viewer */
+export function deleteSelectedWord(viewer) {
+  const _viewer = viewer || ScribeViewer.getDefault();
+  const selectedObjects = _viewer.CanvasSelection.getKonvaWords();
   const selectedN = selectedObjects.length;
 
   /** @type {Object<string, Array<string>>} */
@@ -17,36 +20,34 @@ export function deleteSelectedWord() {
   }
 
   for (const [n, ids] of Object.entries(selectedIds)) {
-    scribe.utils.ocr.deletePageWords(ScribeViewer.doc.ocr.active[n], ids);
+    scribe.utils.ocr.deletePageWords(_viewer.doc.ocr.active[n], ids);
   }
 
-  ScribeViewer.destroyControls();
+  _viewer.destroyControls();
 
-  ScribeViewer.layerText.batchDraw();
+  _viewer.layerText.batchDraw();
 
-  // Re-render the page if the user has selected the option to outline lines/pars to update the boxes.
-  if (ScribeViewer.opt.outlineLines || ScribeViewer.opt.outlinePars) ScribeViewer.displayPage(ScribeViewer.state.cp.n);
+  if (_viewer.opt.outlineLines || _viewer.opt.outlinePars) _viewer.displayPage(_viewer.state.cp.n);
 }
 
 /**
- *
+ * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {'left'|'right'} side
  * @param {number} amount
- * @returns
  */
-export function modifySelectedWordBbox(side, amount) {
-  // const words = ScribeCanvas.getKonvaWords();
-  const selectedWords = ScribeViewer.CanvasSelection.getKonvaWords();
+export function modifySelectedWordBbox(viewer, side, amount) {
+  const _viewer = viewer || ScribeViewer.getDefault();
+  const selectedWords = _viewer.CanvasSelection.getKonvaWords();
   if (selectedWords.length !== 1) return;
   const selectedWord = selectedWords[0];
 
   selectedWord.word.bbox[side] += amount;
   if (side === 'left') selectedWord.x(selectedWord.x() + amount);
-  ScribeViewer.KonvaIText.updateWordCanvas(selectedWord);
+  KonvaIText.updateWordCanvas(selectedWord);
 }
 
 /**
- *
+ * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {Object} style
  * @param {string} [style.font]
  * @param {number} [style.size]
@@ -56,11 +57,12 @@ export function modifySelectedWordBbox(side, amount) {
  * @param {boolean} [style.smallCaps]
  * @param {boolean} [style.sup]
  */
-export async function modifySelectedWordStyle(style) {
-  const selectedObjects = ScribeViewer.CanvasSelection.getKonvaWords();
+export async function modifySelectedWordStyle(viewer, style) {
+  const _viewer = viewer || ScribeViewer.getDefault();
+  const selectedObjects = _viewer.CanvasSelection.getKonvaWords();
   if (!selectedObjects || selectedObjects.length === 0) return;
 
-  if (ScribeViewer.KonvaIText.inputRemove) ScribeViewer.KonvaIText.inputRemove();
+  if (KonvaIText.inputRemove) KonvaIText.inputRemove();
 
   const selectedN = selectedObjects.length;
   for (let i = 0; i < selectedN; i++) {
@@ -74,7 +76,7 @@ export async function modifySelectedWordStyle(style) {
     if (style.smallCaps !== undefined) wordI.word.style.smallCaps = style.smallCaps;
     if (style.sup !== undefined) wordI.word.style.sup = style.sup;
 
-    const fontI = ScribeViewer.doc.fonts.getFont(wordI.word.style, wordI.word.lang);
+    const fontI = _viewer.doc.fonts.getFont(wordI.word.style, wordI.word.lang);
 
     wordI.fontFaceName = fontI.fontFaceName;
     wordI.fontFaceStyle = fontI.fontFaceStyle;
@@ -83,9 +85,9 @@ export async function modifySelectedWordStyle(style) {
 
     wordI.fontFamilyLookup = fontI.family;
 
-    await ScribeViewer.KonvaIText.updateWordCanvas(wordI);
+    await KonvaIText.updateWordCanvas(wordI);
   }
 
-  ScribeViewer.layerText.batchDraw();
-  ScribeViewer.KonvaOcrWord.updateUI();
+  _viewer.layerText.batchDraw();
+  KonvaOcrWord.updateUI();
 }

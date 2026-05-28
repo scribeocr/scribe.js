@@ -33,95 +33,87 @@ export class BitmapScheduler {
   }
 }
 
+/** @type {?Promise<BitmapScheduler>} */
+let _bitmapScheduler = null;
+
+const _initBitmapScheduler = async (numWorkers = 3) => {
+  const { TessScheduler } = await import('../../tess/TessScheduler.js');
+  const scheduler = new TessScheduler();
+  const workersPromiseArr = range(1, numWorkers).map(async () => {
+    const w = await initBitmapWorker();
+    w.id = `png-${Math.random().toString(16).slice(3, 8)}`;
+    scheduler.addWorker(w);
+    return w;
+  });
+
+  const workers = await Promise.all(workersPromiseArr);
+
+  return new BitmapScheduler(scheduler, workers);
+};
+
+/**
+ * Per-viewer image cache. Owns its own konvaImages array; the bitmap-worker scheduler is shared
+ * globally (workers are expensive) but per-page bitmap promises are per-viewer.
+ */
 export class ViewerImageCache {
-  /**
-   * Number of pages ahead and behind the current page to pre-render.
-   */
+  /** Number of pages ahead and behind the current page to pre-render. */
   static cacheRenderPages = 3;
 
-  /**
-   * Number of pages ahead and behind the current page to retain in memory before deleting.
-   */
+  /** Number of pages ahead and behind the current page to retain in memory before deleting. */
   static cacheDeletePages = 5;
 
   /**
-   * @type {Array<?Promise<InstanceType<typeof Konva.Image>>>}
+   * @param {import('../viewer.js').ScribeViewer} [viewer]
    */
-  static konvaImages = [];
+  constructor(viewer) {
+    /** @type {?import('../viewer.js').ScribeViewer} */
+    this.viewer = viewer || null;
+    /** @type {Array<?Promise<InstanceType<typeof Konva.Image>>>} */
+    this.konvaImages = [];
+    /** @type {Array<?ImageProperties>} */
+    this.konvaImagesProps = [];
+    /** @type {Array<?Promise<boolean>>} */
+    this._nativeBitmapPromises = [];
+    /** @type {Array<?Promise<boolean>>} */
+    this._binaryBitmapPromises = [];
+  }
 
-  /** @type {Array<?ImageProperties>} */
-  static konvaImagesProps = [];
-
-  // The bitmap images are only created as needed, due to the enormous amount of memory they use.
-  // Additionally, they cannot be stored as promises, as the ImageWrapper object needs to be able to be sent between threads.
-  // Therefore, to avoid a race condition where the bitmap is created multiple times, a promise is stored in this array.
-  // These promises will be pending while the bitmap is being created, and will resolve to true once the bitmap is created.
-
-  /** @type {Array<?Promise<boolean>>} */
-  static #nativeBitmapPromises = [];
-
-  /** @type {Array<?Promise<boolean>>} */
-  static #binaryBitmapPromises = [];
-
-  /** @type {?Promise<BitmapScheduler>} */
-  static bitmapScheduler = null;
+  _viewer() {
+    return this.viewer || ScribeViewer.getDefault();
+  }
 
   /**
-   * Initializes the bitmap scheduler.
-   * This is used to load image bitmaps in the background, since this can be slow and memory-intensive for large images.
-   * @param {number} numWorkers
-   * @returns
+   * Get the global bitmap scheduler, initializing it on first call.
+   * @param {number} [numWorkers=3]
    */
-  static #initBitmapScheduler = async (numWorkers = 3) => {
-    const { TessScheduler } = await import('../../tess/TessScheduler.js');
-    const scheduler = new TessScheduler();
-    const workersPromiseArr = range(1, numWorkers).map(async () => {
-      const w = await initBitmapWorker();
-      w.id = `png-${Math.random().toString(16).slice(3, 8)}`;
-      scheduler.addWorker(w);
-      return w;
-    });
+  // eslint-disable-next-line class-methods-use-this
+  async getBitmapScheduler(numWorkers = 3) {
+    if (_bitmapScheduler) return _bitmapScheduler;
+    _bitmapScheduler = _initBitmapScheduler(numWorkers);
+    return _bitmapScheduler;
+  }
 
-    const workers = await Promise.all(workersPromiseArr);
+  async imageStrToBitmap(imageStr) {
+    const bitmapScheduler = await this.getBitmapScheduler();
+    return bitmapScheduler.scheduler.addJob('getImageBitmap', [imageStr]);
+  }
 
-    return new BitmapScheduler(scheduler, workers);
-  };
+  /** @param {number} n */
+  async getKonvaImage(n) {
+    const viewer = this._viewer();
+    const pageDims = viewer.doc.pageMetrics[n].dims;
 
-  /**
-   * Gets the bitmap scheduler if it exists, otherwise creates a new one.
-   * @param {number} [numWorkers=3] - Number of workers to create.
-   * @returns
-   */
-  static getBitmapScheduler = async (numWorkers = 3) => {
-    if (ViewerImageCache.bitmapScheduler) return ViewerImageCache.bitmapScheduler;
-    ViewerImageCache.bitmapScheduler = ViewerImageCache.#initBitmapScheduler(numWorkers);
-    return ViewerImageCache.bitmapScheduler;
-  };
-
-  static imageStrToBitmap = async (imageStr) => {
-    const bitmapScheduler = await ViewerImageCache.getBitmapScheduler();
-    const res = bitmapScheduler.scheduler.addJob('getImageBitmap', [imageStr]);
-    return res;
-  };
-
-  /**
-   *
-   * @param {number} n
-   */
-  static getKonvaImage = async (n) => {
-    const pageDims = ScribeViewer.doc.pageMetrics[n].dims;
-
-    const backgroundImage = scribe.opt.colorMode === 'binary' ? await ScribeViewer.doc.images.getBinary(n, undefined, true) : await ScribeViewer.doc.images.getNative(n, undefined, true);
-    const image = scribe.opt.colorMode === 'binary' ? await ViewerImageCache.getBinaryBitmap(n) : await ViewerImageCache.getNativeBitmap(n);
+    const backgroundImage = scribe.ScribeDoc.defaults.colorMode === 'binary' ? await viewer.doc.images.getBinary(n, undefined, true) : await viewer.doc.images.getNative(n, undefined, true);
+    const image = scribe.ScribeDoc.defaults.colorMode === 'binary' ? await this.getBinaryBitmap(n) : await this.getNativeBitmap(n);
 
     let rotation = 0;
-    if (scribe.opt.autoRotate && !backgroundImage.rotated) {
-      rotation = (ScribeViewer.doc.pageMetrics[n].angle || 0) * -1;
-    } else if (!scribe.opt.autoRotate && backgroundImage.rotated) {
-      rotation = (ScribeViewer.doc.pageMetrics[n].angle || 0);
+    if (scribe.ScribeDoc.defaults.autoRotate && !backgroundImage.rotated) {
+      rotation = (viewer.doc.pageMetrics[n].angle || 0) * -1;
+    } else if (!scribe.ScribeDoc.defaults.autoRotate && backgroundImage.rotated) {
+      rotation = (viewer.doc.pageMetrics[n].angle || 0);
     }
 
-    const pageOffsetY = ScribeViewer.getPageStop(n) ?? 30;
+    const pageOffsetY = viewer.getPageStop(n) ?? 30;
 
     const y = pageOffsetY + pageDims.height * 0.5;
 
@@ -134,7 +126,6 @@ export class ViewerImageCache {
       scaleX,
       scaleY,
       x: pageDims.width * 0.5,
-      // y: pageDims.height * 0.5,
       y,
       offsetX: image.width * 0.5,
       offsetY: image.height * 0.5,
@@ -149,166 +140,153 @@ export class ViewerImageCache {
       n,
     };
 
-    return {
-      konvaImage,
-      props,
-    };
-  };
+    return { konvaImage, props };
+  }
 
   /**
-   *
    * @param {number} n - Page number
-   * @param {ImagePropertiesRequest} [props] - Image properties needed.
-   *  Image properties should only be defined if needed, as they can require the image to be re-rendered.
+   * @param {ImagePropertiesRequest} [props]
    */
-  static getNativeBitmap = async (n, props) => {
-    const nativeN = await ScribeViewer.doc.images.getNative(n, props, true);
-    if (ViewerImageCache.#nativeBitmapPromises[n]) await ViewerImageCache.#nativeBitmapPromises[n];
+  async getNativeBitmap(n, props) {
+    const viewer = this._viewer();
+    const nativeN = await viewer.doc.images.getNative(n, props, true);
+    if (this._nativeBitmapPromises[n]) await this._nativeBitmapPromises[n];
     if (!nativeN.imageBitmap) {
-      const bitmapPromise = ViewerImageCache.imageStrToBitmap(nativeN.src);
+      const bitmapPromise = this.imageStrToBitmap(nativeN.src);
 
-      ViewerImageCache.#nativeBitmapPromises[n] = bitmapPromise.then(() => (true));
+      this._nativeBitmapPromises[n] = bitmapPromise.then(() => (true));
       nativeN.imageBitmap = await bitmapPromise;
     }
     return nativeN.imageBitmap;
-  };
+  }
 
   /**
-   *
    * @param {number} n - Page number
-   * @param {ImagePropertiesRequest} [props] - Image properties needed.
-   *  Image properties should only be defined if needed, as they can require the image to be re-rendered.
+   * @param {ImagePropertiesRequest} [props]
    */
-  static getBinaryBitmap = async (n, props) => {
-    const binaryN = await ScribeViewer.doc.images.getBinary(n, props, true);
-    if (ViewerImageCache.#binaryBitmapPromises[n]) await ViewerImageCache.#binaryBitmapPromises[n];
+  async getBinaryBitmap(n, props) {
+    const viewer = this._viewer();
+    const binaryN = await viewer.doc.images.getBinary(n, props, true);
+    if (this._binaryBitmapPromises[n]) await this._binaryBitmapPromises[n];
     if (!binaryN.imageBitmap) {
-      const bitmapPromise = ViewerImageCache.imageStrToBitmap(binaryN.src);
+      const bitmapPromise = this.imageStrToBitmap(binaryN.src);
 
-      ViewerImageCache.#binaryBitmapPromises[n] = bitmapPromise.then(() => (true));
+      this._binaryBitmapPromises[n] = bitmapPromise.then(() => (true));
       binaryN.imageBitmap = await bitmapPromise;
     }
     return binaryN.imageBitmap;
-  };
+  }
 
-  /**
-   *
-   * @param {number} n - Page number
-   */
-  static addKonvaImage = async (n) => {
-    if (ViewerImageCache.konvaImages[n]) {
+  /** @param {number} n - Page number */
+  async addKonvaImage(n) {
+    const viewer = this._viewer();
+    if (this.konvaImages[n]) {
       let rerender = false;
-      if (ViewerImageCache.konvaImagesProps[n]) {
-        if (ViewerImageCache.konvaImagesProps[n].colorMode !== scribe.opt.colorMode) {
+      if (this.konvaImagesProps[n]) {
+        if (this.konvaImagesProps[n].colorMode !== scribe.ScribeDoc.defaults.colorMode) {
           rerender = true;
         } else {
-          const konvaImage = await ViewerImageCache.konvaImages[n];
+          const konvaImage = await this.konvaImages[n];
           let rotation = 0;
-          if (scribe.opt.autoRotate && !ViewerImageCache.konvaImagesProps[n].rotated) {
-            rotation = (ScribeViewer.doc.pageMetrics[n].angle || 0) * -1;
-          } else if (!scribe.opt.autoRotate && ViewerImageCache.konvaImagesProps[n].rotated) {
-            rotation = (ScribeViewer.doc.pageMetrics[n].angle || 0);
+          if (scribe.ScribeDoc.defaults.autoRotate && !this.konvaImagesProps[n].rotated) {
+            rotation = (viewer.doc.pageMetrics[n].angle || 0) * -1;
+          } else if (!scribe.ScribeDoc.defaults.autoRotate && this.konvaImagesProps[n].rotated) {
+            rotation = (viewer.doc.pageMetrics[n].angle || 0);
           }
 
           if (Math.abs(konvaImage.rotation() - rotation) > 0.01) {
             konvaImage.rotation(rotation);
-            if (Math.abs(ScribeViewer.state.cp.n - n) < 2) ScribeViewer.layerBackground.batchDraw();
+            if (Math.abs(viewer.state.cp.n - n) < 2) viewer.layerBackground.batchDraw();
           }
         }
       }
       if (!rerender) return;
     }
 
-    if (ScribeViewer.getPageStop(n) === null) return;
+    if (viewer.getPageStop(n) === null) return;
 
-    if (ViewerImageCache.konvaImages[n]) {
-      ViewerImageCache.konvaImages[n].then((konvaImage) => {
+    if (this.konvaImages[n]) {
+      this.konvaImages[n].then((konvaImage) => {
         konvaImage.destroy();
       });
     }
 
-    ViewerImageCache.konvaImagesProps[n] = null;
-    ViewerImageCache.konvaImages[n] = ViewerImageCache.getKonvaImage(n).then((res) => {
-      ViewerImageCache.konvaImagesProps[n] = res.props;
+    this.konvaImagesProps[n] = null;
+    this.konvaImages[n] = this.getKonvaImage(n).then((res) => {
+      this.konvaImagesProps[n] = res.props;
       return res.konvaImage;
     });
 
-    ViewerImageCache.konvaImages[n].then((konvaImage) => {
-      ScribeViewer.layerBackground.add(konvaImage);
-      if (ScribeViewer.placeholderRectArr[n]) ScribeViewer.placeholderRectArr[n].hide();
-      if (Math.abs(ScribeViewer.state.cp.n - n) < 2) ScribeViewer.layerBackground.batchDraw();
+    this.konvaImages[n].then((konvaImage) => {
+      viewer.layerBackground.add(konvaImage);
+      if (viewer.placeholderRectArr[n]) viewer.placeholderRectArr[n].hide();
+      if (Math.abs(viewer.state.cp.n - n) < 2) viewer.layerBackground.batchDraw();
     });
-  };
+  }
 
-  /**
-   *
-   * @param {number} n - Page number
-   */
-  static deleteKonvaImage = (n) => {
-    if (!ViewerImageCache.konvaImages[n]) return;
-    const konvaImagePromise = ViewerImageCache.konvaImages[n];
-    ViewerImageCache.konvaImages[n] = null;
+  /** @param {number} n - Page number */
+  deleteKonvaImage(n) {
+    if (!this.konvaImages[n]) return;
+    const konvaImagePromise = this.konvaImages[n];
+    this.konvaImages[n] = null;
     konvaImagePromise.then((konvaImage) => {
       konvaImage.destroy();
     });
-  };
+  }
 
   /**
-   * Render the current page, and a few pages ahead and behind.
-   * This is similar to `preRenderRange`, however has several differences:
-   * (1) Starts rendering at the current page, and goes outward from there.
-   * (2) Also renders image bitmaps (not just the image strings), and deletes them when they are sufficiently far away.
+   * Render the current page and a few pages ahead and behind. Bitmaps for distant pages are freed.
    * @param {number} curr
    */
-  static renderAheadBehindBrowser = async (curr) => {
+  async renderAheadBehindBrowser(curr) {
+    const viewer = this._viewer();
     const resArr = [];
-    resArr.push(ViewerImageCache.addKonvaImage(curr));
+    resArr.push(this.addKonvaImage(curr));
 
-    // Delete images that are sufficiently far away from the current page to save memory.
-    ViewerImageCache.#cleanBitmapCache(curr);
-    ViewerImageCache.#cleanBitmapCache2(curr);
+    this._cleanBitmapCache(curr);
+    this._cleanBitmapCache2(curr);
 
-    // Do not render the following pages when a PDF is being uploaded alongside OCR data, and the OCR dimensions are not yet available.
-    // There is currently no mechanism for re-rendering at the correct dimensions.
-    if (curr === 0 && ScribeViewer.doc.ocr?.active?.[curr] && !ScribeViewer.doc.ocr?.active?.[curr + 1] && ScribeViewer.doc.pageMetrics.length > curr + 1) return;
+    // Skip ahead-render when a PDF is being uploaded alongside OCR data and OCR dimensions are not yet available.
+    // No re-render mechanism currently exists for that case.
+    if (curr === 0 && viewer.doc.ocr?.active?.[curr] && !viewer.doc.ocr?.active?.[curr + 1] && viewer.doc.pageMetrics.length > curr + 1) return;
 
     for (let i = 0; i <= ViewerImageCache.cacheRenderPages; i++) {
       if (curr - i >= 0) {
-        resArr.push(ViewerImageCache.addKonvaImage(curr - i));
+        resArr.push(this.addKonvaImage(curr - i));
       }
-      if (curr + i < ScribeViewer.doc.images.loadCount) {
-        resArr.push(ViewerImageCache.addKonvaImage(curr + i));
+      if (curr + i < viewer.doc.images.loadCount) {
+        resArr.push(this.addKonvaImage(curr + i));
       }
     }
 
     await Promise.all(resArr);
-  };
+  }
 
-  static #cleanBitmapCache = (curr) => {
-    // Delete images that are sufficiently far away from the current page to save memory.
-    for (let i = 0; i < ScribeViewer.doc.images.pageCount; i++) {
+  _cleanBitmapCache(curr) {
+    const viewer = this._viewer();
+    for (let i = 0; i < viewer.doc.images.pageCount; i++) {
       if (Math.abs(curr - i) > ViewerImageCache.cacheDeletePages) {
-        if (ScribeViewer.doc.images.native[i]) {
-          Promise.resolve(ScribeViewer.doc.images.native[i]).then((img) => {
+        if (viewer.doc.images.native[i]) {
+          Promise.resolve(viewer.doc.images.native[i]).then((img) => {
             img.imageBitmap = null;
           });
         }
-        if (ScribeViewer.doc.images.binary[i]) {
-          Promise.resolve(ScribeViewer.doc.images.binary[i]).then((img) => {
+        if (viewer.doc.images.binary[i]) {
+          Promise.resolve(viewer.doc.images.binary[i]).then((img) => {
             img.imageBitmap = null;
           });
         }
       }
     }
-  };
+  }
 
-  static #cleanBitmapCache2 = (curr) => {
-    // Delete images that are sufficiently far away from the current page to save memory.
-    for (let i = 0; i < ScribeViewer.doc.images.pageCount; i++) {
+  _cleanBitmapCache2(curr) {
+    const viewer = this._viewer();
+    for (let i = 0; i < viewer.doc.images.pageCount; i++) {
       if (Math.abs(curr - i) > ViewerImageCache.cacheDeletePages) {
-        if (ScribeViewer.placeholderRectArr[i]) ScribeViewer.placeholderRectArr[i].show();
-        ViewerImageCache.deleteKonvaImage(i);
+        if (viewer.placeholderRectArr[i]) viewer.placeholderRectArr[i].show();
+        this.deleteKonvaImage(i);
       }
     }
-  };
+  }
 }

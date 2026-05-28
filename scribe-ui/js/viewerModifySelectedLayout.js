@@ -1,25 +1,29 @@
 // eslint-disable-next-line import/no-cycle
 import { ScribeViewer } from '../viewer.js';
 
-export const deleteSelectedLayoutDataTable = () => {
-  const selectedColumns = ScribeViewer.CanvasSelection.getKonvaDataColumns();
+/** @param {import('../viewer.js').ScribeViewer} viewer */
+export const deleteSelectedLayoutDataTable = (viewer) => {
+  const _viewer = viewer || ScribeViewer.getDefault();
+  const selectedColumns = _viewer.CanvasSelection.getKonvaDataColumns();
   if (selectedColumns.length === 0) return;
 
-  ScribeViewer.doc.deleteLayoutDataTable(selectedColumns[0].konvaTable.layoutDataTable, ScribeViewer.state.cp.n);
+  _viewer.doc.deleteLayoutDataTable(selectedColumns[0].konvaTable.layoutDataTable, _viewer.state.cp.n);
 
   selectedColumns[0].konvaTable.destroy();
-  ScribeViewer.destroyControls();
-  ScribeViewer.layerOverlay.batchDraw();
+  _viewer.destroyControls();
+  _viewer.layerOverlay.batchDraw();
 };
 
-export const deleteSelectedLayoutRegion = () => {
-  const selectedRegions = ScribeViewer.CanvasSelection.getKonvaRegions();
+/** @param {import('../viewer.js').ScribeViewer} viewer */
+export const deleteSelectedLayoutRegion = (viewer) => {
+  const _viewer = viewer || ScribeViewer.getDefault();
+  const selectedRegions = _viewer.CanvasSelection.getKonvaRegions();
   if (selectedRegions.length === 0) return;
 
   selectedRegions.forEach((region) => {
-    ScribeViewer.doc.deleteLayoutRegion(region.layoutBox, ScribeViewer.state.cp.n);
+    _viewer.doc.deleteLayoutRegion(region.layoutBox, _viewer.state.cp.n);
     region.destroy();
   });
-  ScribeViewer.destroyControls();
-  ScribeViewer.layerOverlay.batchDraw();
+  _viewer.destroyControls();
+  _viewer.layerOverlay.batchDraw();
 };

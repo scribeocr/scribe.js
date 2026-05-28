@@ -1,0 +1,85 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+  <meta name="viewport" content="width=device-width">
+  <meta charset="utf-8" />
+  <title>Scribe — Multi-Viewer Dev Example</title>
+  <style type="text/css">
+    html, body {
+      margin: 0;
+      padding: 0;
+      height: 100%;
+      overflow: hidden;
+      font-family: system-ui, sans-serif;
+    }
+    #toolbar {
+      height: 32px;
+      display: flex;
+      align-items: center;
+      gap: 12px;
+      padding: 0 12px;
+      background: #f3f3f3;
+      border-bottom: 1px solid #ccc;
+      box-sizing: border-box;
+    }
+    #toolbar strong {
+      font-size: 13px;
+    }
+    #toolbar span {
+      font-size: 12px;
+      color: #555;
+    }
+    #viewers {
+      display: flex;
+      flex-direction: row;
+      width: 100vw;
+      height: calc(100vh - 32px);
+    }
+    .pane {
+      flex: 1 1 0;
+      display: flex;
+      flex-direction: column;
+      border-right: 1px solid #ccc;
+      min-width: 0;
+    }
+    .pane:last-child {
+      border-right: none;
+    }
+    .pane-label {
+      height: 24px;
+      background: #fafafa;
+      border-bottom: 1px solid #eee;
+      padding: 0 8px;
+      display: flex;
+      align-items: center;
+      font-size: 12px;
+      color: #444;
+      box-sizing: border-box;
+    }
+    .pane-viewer {
+      flex: 1 1 auto;
+      min-height: 0;
+    }
+  </style>
+</head>
+
+<body>
+  <div id="toolbar">
+    <strong>Multi-viewer dev example</strong>
+    <span>Drop a different PDF into each pane to verify independent state.</span>
+  </div>
+  <div id="viewers">
+    <div class="pane">
+      <div class="pane-label">Viewer A</div>
+      <div id="viewerA" class="pane-viewer"></div>
+    </div>
+    <div class="pane">
+      <div class="pane-label">Viewer B</div>
+      <div id="viewerB" class="pane-viewer"></div>
+    </div>
+  </div>
+  <script type="module" src="./multi-viewer.js"></script>
+</body>
+
+</html>

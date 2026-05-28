@@ -1,7 +1,5 @@
 // eslint-disable-next-line import/no-cycle
-import {
-  ScribeViewer,
-} from '../viewer.js';
+import { ScribeViewer } from '../viewer.js';
 import scribe from '../../scribe.js';
 import { KonvaIText, KonvaOcrWord } from './viewerWordObjects.js';
 import {
@@ -9,16 +7,16 @@ import {
 } from './viewerModifySelectedWords.js';
 
 /**
- *
+ * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {KonvaIText} KonvaObject
  */
-const scrollIntoView = (KonvaObject) => {
+const scrollIntoView = (viewer, KonvaObject) => {
   const delta = { deltaX: 0, deltaY: 0 };
   const wordClientRect = KonvaObject.getClientRect();
   const wordBottomCanvas = wordClientRect.y + wordClientRect.height;
   const wordRightCanvas = wordClientRect.x + wordClientRect.width;
-  const visibleBottomCanvas = ScribeViewer.stage.height();
-  const visibleRightCanvas = ScribeViewer.stage.width();
+  const visibleBottomCanvas = viewer.stage.height();
+  const visibleRightCanvas = viewer.stage.width();
 
   const margin = 30;
 
@@ -36,17 +34,19 @@ const scrollIntoView = (KonvaObject) => {
   }
 
   if (delta.deltaX !== 0 || delta.deltaY !== 0) {
-    ScribeViewer.panStage(delta);
+    viewer.panStage(delta);
   }
 };
 
 /**
  * Moves the selection to the next word in the text, using the internal logical ordering of the words.
  * This is different from `selectRightWord`, which selects the word to the visual right of the current selection.
+ * @param {import('../viewer.js').ScribeViewer} viewer
  */
-export function selectNextWord() {
-  const words = ScribeViewer.getKonvaWords();
-  const selectedWords = ScribeViewer.CanvasSelection.getKonvaWords();
+export function selectNextWord(viewer) {
+  const _viewer = viewer || ScribeViewer.getDefault();
+  const words = _viewer.getKonvaWords();
+  const selectedWords = _viewer.CanvasSelection.getKonvaWords();
   if (selectedWords.length !== 1) return;
   let nextWord;
   const selectedWord = selectedWords[0];
@@ -61,10 +61,10 @@ export function selectNextWord() {
   }
 
   if (nextWord) {
-    ScribeViewer.destroyControls(true);
+    _viewer.destroyControls(true);
     const nextKonvaWord = words.filter((x) => x.word.id === nextWord.id)[0];
-    scrollIntoView(nextKonvaWord);
-    ScribeViewer.CanvasSelection.addWords(nextKonvaWord);
+    scrollIntoView(_viewer, nextKonvaWord);
+    _viewer.CanvasSelection.addWords(nextKonvaWord);
     KonvaOcrWord.addControls(nextKonvaWord);
     KonvaOcrWord.updateUI();
   }
@@ -72,11 +72,12 @@ export function selectNextWord() {
 
 /**
  * Moves the selection to the previous word in the text, using the internal logical ordering of the words.
- * This is different from `selectLeftWord`, which selects the word to the visual left of the current selection.
+ * @param {import('../viewer.js').ScribeViewer} viewer
  */
-export function selectPrevWord() {
-  const words = ScribeViewer.getKonvaWords();
-  const selectedWords = ScribeViewer.CanvasSelection.getKonvaWords();
+export function selectPrevWord(viewer) {
+  const _viewer = viewer || ScribeViewer.getDefault();
+  const words = _viewer.getKonvaWords();
+  const selectedWords = _viewer.CanvasSelection.getKonvaWords();
   if (selectedWords.length !== 1) return;
   let prevWord;
   const selectedWord = selectedWords[0];
@@ -91,10 +92,10 @@ export function selectPrevWord() {
   }
 
   if (prevWord) {
-    ScribeViewer.destroyControls(true);
+    _viewer.destroyControls(true);
     const prevKonvaWord = words.filter((x) => x.word.id === prevWord.id)[0];
-    scrollIntoView(prevKonvaWord);
-    ScribeViewer.CanvasSelection.addWords(prevKonvaWord);
+    scrollIntoView(_viewer, prevKonvaWord);
+    _viewer.CanvasSelection.addWords(prevKonvaWord);
     KonvaOcrWord.addControls(prevKonvaWord);
     KonvaOcrWord.updateUI();
   }
@@ -102,19 +103,21 @@ export function selectPrevWord() {
 
 /**
  * Selects the word to the visual right of the current selection.
+ * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {boolean} selectMultiple
  */
-export function selectRightWord(selectMultiple = false) {
-  const words = ScribeViewer.getKonvaWords();
+export function selectRightWord(viewer, selectMultiple = false) {
+  const _viewer = viewer || ScribeViewer.getDefault();
+  const words = _viewer.getKonvaWords();
   let selectedWord;
   if (selectMultiple) {
-    const selectedWords = ScribeViewer.CanvasSelection.getKonvaWords();
+    const selectedWords = _viewer.CanvasSelection.getKonvaWords();
     if (selectedWords.length === 0) return;
     selectedWords.sort((a, b) => a.x() - b.x());
     selectedWord = selectedWords[selectedWords.length - 1];
   } else {
-    if (!ScribeViewer.CanvasSelection.selectedWordFirst) return;
-    selectedWord = ScribeViewer.CanvasSelection.selectedWordFirst;
+    if (!_viewer.CanvasSelection.selectedWordFirst) return;
+    selectedWord = _viewer.CanvasSelection.selectedWordFirst;
   }
 
   let rightWord;
@@ -137,13 +140,13 @@ export function selectRightWord(selectMultiple = false) {
   }
 
   if (rightWord) {
-    ScribeViewer.destroyControls(!selectMultiple);
+    _viewer.destroyControls(!selectMultiple);
     const nextKonvaWord = words.filter((x) => x.word.id === rightWord.id)[0];
-    scrollIntoView(nextKonvaWord);
+    scrollIntoView(_viewer, nextKonvaWord);
     nextKonvaWord.select();
-    ScribeViewer.CanvasSelection.addWords(nextKonvaWord);
+    _viewer.CanvasSelection.addWords(nextKonvaWord);
     if (selectMultiple) {
-      ScribeViewer.layerText.batchDraw();
+      _viewer.layerText.batchDraw();
     } else {
       KonvaOcrWord.addControls(nextKonvaWord);
     }
@@ -153,20 +156,22 @@ export function selectRightWord(selectMultiple = false) {
 
 /**
  * Selects the word to the visual left of the current selection.
+ * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {boolean} selectMultiple
  */
-export function selectLeftWord(selectMultiple = false) {
-  const words = ScribeViewer.getKonvaWords();
+export function selectLeftWord(viewer, selectMultiple = false) {
+  const _viewer = viewer || ScribeViewer.getDefault();
+  const words = _viewer.getKonvaWords();
 
   let selectedWord;
   if (selectMultiple) {
-    const selectedWords = ScribeViewer.CanvasSelection.getKonvaWords();
+    const selectedWords = _viewer.CanvasSelection.getKonvaWords();
     if (selectedWords.length === 0) return;
     selectedWords.sort((a, b) => a.x() - b.x());
     selectedWord = selectedWords[0];
   } else {
-    if (!ScribeViewer.CanvasSelection.selectedWordFirst) return;
-    selectedWord = ScribeViewer.CanvasSelection.selectedWordFirst;
+    if (!_viewer.CanvasSelection.selectedWordFirst) return;
+    selectedWord = _viewer.CanvasSelection.selectedWordFirst;
   }
 
   let leftWord;
@@ -189,13 +194,13 @@ export function selectLeftWord(selectMultiple = false) {
   }
 
   if (leftWord) {
-    ScribeViewer.destroyControls(!selectMultiple);
+    _viewer.destroyControls(!selectMultiple);
     const nextKonvaWord = words.filter((x) => x.word.id === leftWord.id)[0];
-    scrollIntoView(nextKonvaWord);
+    scrollIntoView(_viewer, nextKonvaWord);
     nextKonvaWord.select();
-    ScribeViewer.CanvasSelection.addWords(nextKonvaWord);
+    _viewer.CanvasSelection.addWords(nextKonvaWord);
     if (selectMultiple) {
-      ScribeViewer.layerText.batchDraw();
+      _viewer.layerText.batchDraw();
     } else {
       KonvaOcrWord.addControls(nextKonvaWord);
     }
@@ -205,10 +210,12 @@ export function selectLeftWord(selectMultiple = false) {
 
 /**
  * Selects the word visually above the current selection.
+ * @param {import('../viewer.js').ScribeViewer} viewer
  */
-export function selectAboveWord() {
-  const words = ScribeViewer.getKonvaWords();
-  const selectedWords = ScribeViewer.CanvasSelection.getKonvaWords();
+export function selectAboveWord(viewer) {
+  const _viewer = viewer || ScribeViewer.getDefault();
+  const words = _viewer.getKonvaWords();
+  const selectedWords = _viewer.CanvasSelection.getKonvaWords();
   if (selectedWords.length === 0) return;
   const selectedWord = selectedWords[0];
   const line = selectedWord.word.line;
@@ -233,11 +240,11 @@ export function selectAboveWord() {
   }
 
   if (aboveWord) {
-    ScribeViewer.destroyControls(true);
+    _viewer.destroyControls(true);
     const aboveKonvaWord = words.filter((x) => x.word.id === aboveWord.id)[0];
-    scrollIntoView(aboveKonvaWord);
+    scrollIntoView(_viewer, aboveKonvaWord);
     aboveKonvaWord.select();
-    ScribeViewer.CanvasSelection.addWords(aboveKonvaWord);
+    _viewer.CanvasSelection.addWords(aboveKonvaWord);
     KonvaOcrWord.addControls(aboveKonvaWord);
     KonvaOcrWord.updateUI();
   }
@@ -245,10 +252,12 @@ export function selectAboveWord() {
 
 /**
  * Selects the word visually below the current selection.
+ * @param {import('../viewer.js').ScribeViewer} viewer
  */
-export function selectBelowWord() {
-  const words = ScribeViewer.getKonvaWords();
-  const selectedWords = ScribeViewer.CanvasSelection.getKonvaWords();
+export function selectBelowWord(viewer) {
+  const _viewer = viewer || ScribeViewer.getDefault();
+  const words = _viewer.getKonvaWords();
+  const selectedWords = _viewer.CanvasSelection.getKonvaWords();
   if (selectedWords.length === 0) return;
   const selectedWord = selectedWords[0];
   const line = selectedWord.word.line;
@@ -273,11 +282,11 @@ export function selectBelowWord() {
   }
 
   if (belowWord) {
-    ScribeViewer.destroyControls(true);
+    _viewer.destroyControls(true);
     const belowKonvaWord = words.filter((x) => x.word.id === belowWord.id)[0];
-    scrollIntoView(belowKonvaWord);
+    scrollIntoView(_viewer, belowKonvaWord);
     belowKonvaWord.select();
-    ScribeViewer.CanvasSelection.addWords(belowKonvaWord);
+    _viewer.CanvasSelection.addWords(belowKonvaWord);
     KonvaOcrWord.addControls(belowKonvaWord);
     KonvaOcrWord.updateUI();
   }
@@ -285,104 +294,103 @@ export function selectBelowWord() {
 
 /**
  * Maps from generic `KeyboardEvent` when user presses a key to the appropriate action.
- * This function is responsible for all keyboard shortcuts.
- * @param {KeyboardEvent} event - The key down event.
+ * Routes to the currently-active viewer (last interacted with). For the static-API entry point,
+ * call `handleKeyboardEvent(undefined, event)` and the default viewer is used.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {KeyboardEvent} event
  */
-export function handleKeyboardEvent(event) {
-  // If the user is typing in an input field, we assume they are trying to interact with that field and not the viewer.
+export function handleKeyboardEvent(viewer, event) {
+  const _viewer = viewer || ScribeViewer.getActiveViewer() || ScribeViewer.getDefault();
+  if (!_viewer) return;
   const activeElem = document.activeElement instanceof HTMLElement ? document.activeElement : null;
   if (activeElem && activeElem instanceof HTMLInputElement) return;
   if (activeElem && activeElem instanceof HTMLSelectElement
     && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Enter'].includes(event.key)) return;
 
-  const selectedWords = ScribeViewer.CanvasSelection.getKonvaWords();
+  const selectedWords = _viewer.CanvasSelection.getKonvaWords();
 
-  // Zoom in shortcut
   // The modifier keys change what `event.key` is for the same button.
   // `+` becomes `=` when shift is pressed, and `×` when control and alt are pressed.
   if (event.ctrlKey && !event.altKey && ['+', '=', '×'].includes(event.key)) {
-    ScribeViewer.zoom(1.1);
-    ScribeViewer.layerText.batchDraw();
-    event.preventDefault(); // Prevent the default action to avoid browser zoom
+    _viewer.zoom(1.1);
+    _viewer.layerText.batchDraw();
+    event.preventDefault();
     event.stopPropagation();
-    ScribeViewer.interactionCallback(event);
+    _viewer.interactionCallback(event);
     return;
   }
 
-  // Zoom out shortcut
   if (event.ctrlKey && !event.altKey && ['-', '_', '–'].includes(event.key)) {
-    ScribeViewer.zoom(0.9);
-    ScribeViewer.layerText.batchDraw();
-    event.preventDefault(); // Prevent the default action to avoid browser zoom
+    _viewer.zoom(0.9);
+    _viewer.layerText.batchDraw();
+    event.preventDefault();
     event.stopPropagation();
-    ScribeViewer.interactionCallback(event);
+    _viewer.interactionCallback(event);
     return;
   }
 
-  // Prev page shortcut
   if (event.key === 'PageUp') {
-    ScribeViewer.displayPage(ScribeViewer.state.cp.n - 1, true, false);
+    _viewer.displayPage(_viewer.state.cp.n - 1, true, false);
     event.preventDefault();
     return;
   }
 
-  // Next page shortcut
   if (event.key === 'PageDown') {
-    ScribeViewer.displayPage(ScribeViewer.state.cp.n + 1, true, false);
+    _viewer.displayPage(_viewer.state.cp.n + 1, true, false);
     event.preventDefault();
     return;
   }
 
   if (event.key === 'Tab') {
     if (event.shiftKey) {
-      selectPrevWord();
+      selectPrevWord(_viewer);
     } else {
-      selectNextWord();
+      selectNextWord(_viewer);
     }
     event.preventDefault();
     event.stopPropagation();
-    ScribeViewer.interactionCallback(event);
+    _viewer.interactionCallback(event);
     return;
   }
 
-  if (event.key === 'ArrowRight' && !ScribeViewer.KonvaIText.input && selectedWords.length > 0) {
+  if (event.key === 'ArrowRight' && !KonvaIText.input && selectedWords.length > 0) {
     if (event.ctrlKey) {
       if (event.altKey) {
-        modifySelectedWordBbox('right', 1);
+        modifySelectedWordBbox(_viewer, 'right', 1);
       } else {
-        modifySelectedWordBbox('left', 1);
+        modifySelectedWordBbox(_viewer, 'left', 1);
       }
     } else {
-      selectRightWord(event.shiftKey);
+      selectRightWord(_viewer, event.shiftKey);
     }
 
     event.preventDefault();
     event.stopPropagation();
-    ScribeViewer.interactionCallback(event);
+    _viewer.interactionCallback(event);
     return;
   }
 
-  if (event.ctrlKey && event.key === ' ' && !ScribeViewer.textOverlayHidden) {
-    ScribeViewer.textOverlayHidden = true;
-    ScribeViewer.layerOverlay.hide();
-    ScribeViewer.layerText.hide();
-    ScribeViewer.layerOverlay.batchDraw();
-    ScribeViewer.layerText.batchDraw();
-    const opacityOrig = ScribeViewer.KonvaIText.input ? ScribeViewer.KonvaIText.input.style.opacity : '0.8';
-    if (ScribeViewer.KonvaIText.input) ScribeViewer.KonvaIText.input.style.opacity = '0';
+  if (event.ctrlKey && event.key === ' ' && !_viewer.textOverlayHidden) {
+    _viewer.textOverlayHidden = true;
+    _viewer.layerOverlay.hide();
+    _viewer.layerText.hide();
+    _viewer.layerOverlay.batchDraw();
+    _viewer.layerText.batchDraw();
+    const opacityOrig = KonvaIText.input ? KonvaIText.input.style.opacity : '0.8';
+    if (KonvaIText.input) KonvaIText.input.style.opacity = '0';
     event.preventDefault();
     event.stopPropagation();
-    ScribeViewer.interactionCallback(event);
+    _viewer.interactionCallback(event);
 
     const handleKeyUp = (keyupEvent) => {
       if (keyupEvent.key === 'Control' || keyupEvent.key === ' ') {
-        ScribeViewer.layerOverlay.show();
-        ScribeViewer.layerText.show();
-        ScribeViewer.layerOverlay.batchDraw();
-        ScribeViewer.layerText.batchDraw();
-        if (ScribeViewer.KonvaIText.input) ScribeViewer.KonvaIText.input.style.opacity = opacityOrig;
+        _viewer.layerOverlay.show();
+        _viewer.layerText.show();
+        _viewer.layerOverlay.batchDraw();
+        _viewer.layerText.batchDraw();
+        if (KonvaIText.input) KonvaIText.input.style.opacity = opacityOrig;
         document.removeEventListener('keyup', handleKeyUp);
-        ScribeViewer.textOverlayHidden = false;
+        _viewer.textOverlayHidden = false;
       }
     };
 
@@ -390,123 +398,105 @@ export function handleKeyboardEvent(event) {
     return;
   }
 
-  if (event.key === 'ArrowLeft' && !ScribeViewer.KonvaIText.input && selectedWords.length > 0) {
+  if (event.key === 'ArrowLeft' && !KonvaIText.input && selectedWords.length > 0) {
     if (event.ctrlKey) {
       if (event.altKey) {
-        modifySelectedWordBbox('right', -1);
+        modifySelectedWordBbox(_viewer, 'right', -1);
       } else {
-        modifySelectedWordBbox('left', -1);
+        modifySelectedWordBbox(_viewer, 'left', -1);
       }
     } else {
-      selectLeftWord(event.shiftKey);
+      selectLeftWord(_viewer, event.shiftKey);
     }
     event.preventDefault();
     event.stopPropagation();
-    ScribeViewer.interactionCallback(event);
+    _viewer.interactionCallback(event);
     return;
   }
 
   if (event.key === 'ArrowUp' && selectedWords.length > 0) {
-    selectAboveWord();
+    selectAboveWord(_viewer);
     event.preventDefault();
     event.stopPropagation();
-    ScribeViewer.interactionCallback(event);
+    _viewer.interactionCallback(event);
     return;
   }
 
   if (event.key === 'ArrowDown' && selectedWords.length > 0) {
-    selectBelowWord();
+    selectBelowWord(_viewer);
     event.preventDefault();
     event.stopPropagation();
-    ScribeViewer.interactionCallback(event);
+    _viewer.interactionCallback(event);
     return;
   }
 
-  if (event.key === 'Enter' && !ScribeViewer.KonvaIText.input) {
+  if (event.key === 'Enter' && !KonvaIText.input) {
     if (selectedWords.length !== 1) return;
     const selectedWord = selectedWords[0];
     const pos = event.altKey ? -1 : 0;
     KonvaIText.addTextInput(selectedWord, pos);
     event.preventDefault();
     event.stopPropagation();
-    ScribeViewer.interactionCallback(event);
+    _viewer.interactionCallback(event);
     return;
   }
 
   if (event.key === 'i' && event.ctrlKey) {
-    modifySelectedWordStyle({
+    modifySelectedWordStyle(_viewer, {
       italic: !selectedWords[0].word.style.italic,
     });
     event.preventDefault();
     event.stopPropagation();
-    ScribeViewer.interactionCallback(event);
+    _viewer.interactionCallback(event);
     return;
   }
 
   if (event.key === 'b' && event.ctrlKey) {
-    modifySelectedWordStyle({
+    modifySelectedWordStyle(_viewer, {
       bold: !selectedWords[0].word.style.bold,
     });
     event.preventDefault();
     event.stopPropagation();
-    ScribeViewer.interactionCallback(event);
+    _viewer.interactionCallback(event);
     return;
   }
 
   if (event.key === 'u' && event.ctrlKey) {
-    modifySelectedWordStyle({
+    modifySelectedWordStyle(_viewer, {
       underline: !selectedWords[0].word.style.underline,
     });
     event.preventDefault();
     event.stopPropagation();
-    ScribeViewer.interactionCallback(event);
+    _viewer.interactionCallback(event);
     return;
   }
 
   if (event.key === 'Delete' && event.ctrlKey) {
-    deleteSelectedWord();
+    deleteSelectedWord(_viewer);
     event.preventDefault();
     event.stopPropagation();
-    ScribeViewer.interactionCallback(event);
+    _viewer.interactionCallback(event);
     return;
   }
 
-  if (event.altKey && ['+', '=', '×'].includes(event.key) && !ScribeViewer.KonvaIText.input) {
+  if (event.altKey && ['+', '=', '×'].includes(event.key) && !KonvaIText.input) {
     const fontSize = selectedWords[0].fontSize + 1;
-    modifySelectedWordStyle({
+    modifySelectedWordStyle(_viewer, {
       size: fontSize,
     });
     event.preventDefault();
     event.stopPropagation();
-    ScribeViewer.interactionCallback(event);
+    _viewer.interactionCallback(event);
     return;
   }
 
-  if (event.altKey && ['-', '_', '–'].includes(event.key) && !ScribeViewer.KonvaIText.input) {
+  if (event.altKey && ['-', '_', '–'].includes(event.key) && !KonvaIText.input) {
     const fontSize = selectedWords[0].fontSize - 1;
-    modifySelectedWordStyle({
+    modifySelectedWordStyle(_viewer, {
       size: fontSize,
     });
     event.preventDefault();
     event.stopPropagation();
-    ScribeViewer.interactionCallback(event);
-    return;
+    _viewer.interactionCallback(event);
   }
-
-  // This code makes `Ctrl+A` select all words on the canvas, but nothing off the canvas.
-  // It is currently disabled because it is overly aggressive and can impact other parts of the page unrelated to the PDF viewer.
-  // if (event.ctrlKey && event.key === 'a') {
-  //   const scribeWords = document.querySelectorAll('.scribe-word');
-  //   if (scribeWords.length > 0) {
-  //     event.preventDefault(); // Prevent the default "select all" behavior
-  //     const range = document.createRange();
-  //     range.setStartBefore(scribeWords[0]);
-  //     range.setEndAfter(scribeWords[scribeWords.length - 1]);
-
-  //     const selection = window.getSelection();
-  //     if (!selection) return;
-  //     selection.removeAllRanges();
-  //     selection.addRange(range);
-  //   }
-  // }
 }

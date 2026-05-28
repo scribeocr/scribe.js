@@ -3,6 +3,15 @@ import scribe from '../../scribe.js';
 // eslint-disable-next-line import/no-cycle
 import { ScribeViewer } from '../viewer.js';
 
+/**
+ * Resolve the viewer associated with a KonvaIText/KonvaOcrWord.
+ * Falls back to the default viewer when none was explicitly attached (backward-compat for single-viewer apps).
+ * @param {KonvaIText} itext
+ */
+function getViewer(itext) {
+  return itext.viewer || ScribeViewer.getDefault();
+}
+
 export class KonvaIText extends Konva.Shape {
   /** @type {?HTMLSpanElement} */
   static input = null;
@@ -47,15 +56,19 @@ export class KonvaIText extends Konva.Shape {
    * @param {number} [options.highlightOpacity=1] - Opacity for the highlight background (0-1).
    * @param {?string} [options.highlightGroupId=null] - Group ID linking annotations in the same highlight group.
    * @param {string} [options.highlightComment=''] - Comment text attached to this highlight group.
+   * @param {import('../viewer.js').ScribeViewer} [options.viewer] - The viewer instance this word belongs to.
+   *    When omitted, falls back to the default viewer (single-viewer compatibility).
    */
   constructor({
     x, yActual, word, rotation = 0,
     outline = false, selected = false, fillBox = false, opacity = 1, fill = 'black', dynamicWidth = false, changeTextCallback, inputTextCallback,
     highlightColor = null, highlightOpacity = 1, highlightGroupId = null, highlightComment = '',
+    viewer,
   }) {
+    const _viewer = viewer || ScribeViewer.getDefault();
     const {
       charSpacing, leftSideBearing, rightSideBearing, fontSize, charArr, advanceArr, kerningArr, font,
-    } = scribe.utils.calcWordMetrics(word, ScribeViewer.doc.fonts);
+    } = scribe.utils.calcWordMetrics(word, _viewer.doc.fonts);
 
     const charSpacingFinal = !dynamicWidth ? charSpacing : 0;
 
@@ -119,7 +132,7 @@ export class KonvaIText extends Konva.Shape {
         context.lineWidth = 1;
 
         if (!shape.word.visualCoords && (shape.word.style.sup || shape.word.style.dropcap)) {
-          const fontI = ScribeViewer.doc.fonts.getWordFont(shape.word);
+          const fontI = getViewer(shape).doc.fonts.getWordFont(shape.word);
           const fontDesc = fontI.opentype.descender / fontI.opentype.unitsPerEm * shape.fontSize;
           shape.setAttr('y', shape.yActual - shape.fontSize * 0.6 + fontDesc);
         } else {
@@ -189,6 +202,8 @@ export class KonvaIText extends Konva.Shape {
       },
     });
 
+    /** @type {import('../viewer.js').ScribeViewer} */
+    this.viewer = _viewer;
     this.word = word;
     this.charArr = charArr;
     this.charSpacing = charSpacingFinal;
@@ -286,7 +301,7 @@ export class KonvaIText extends Konva.Shape {
     // Re-calculate left position given potentially new left bearing
     const {
       advanceArr, fontSize, kerningArr, charSpacing, charArr, leftSideBearing, rightSideBearing,
-    } = scribe.utils.calcWordMetrics(wordI.word, ScribeViewer.doc.fonts);
+    } = scribe.utils.calcWordMetrics(wordI.word, getViewer(wordI).doc.fonts);
 
     wordI.charArr = charArr;
 
@@ -328,7 +343,7 @@ export class KonvaIText extends Konva.Shape {
 
     let y = wordI.yActual - fontSize * 0.6;
     if (!wordI.word.visualCoords && (wordI.word.style.sup || wordI.word.style.dropcap)) {
-      const fontI = ScribeViewer.doc.fonts.getWordFont(wordI.word);
+      const fontI = getViewer(wordI).doc.fonts.getWordFont(wordI.word);
       const fontDesc = fontI.opentype.descender / fontI.opentype.unitsPerEm * fontSize;
       y = wordI.yActual - fontSize * 0.6 + fontDesc;
     }
@@ -365,7 +380,7 @@ export class KonvaIText extends Konva.Shape {
     const canvas = /** @type {HTMLCanvasElement} */ (document.createElement('canvas'));
     const ctx = /** @type {CanvasRenderingContext2D} */ (canvas.getContext('2d'));
 
-    const fontI = ScribeViewer.doc.fonts.getWordFont(itext.word);
+    const fontI = getViewer(itext).doc.fonts.getWordFont(itext.word);
 
     ctx.font = `${itext.fontFaceStyle} ${itext.fontFaceWeight} ${fontSizeHTML}px ${fontI.fontFaceName}`;
 
@@ -392,7 +407,7 @@ export class KonvaIText extends Konva.Shape {
     inputElem.style.fontSize = `${fontSizeHTML}px`;
     inputElem.style.fontFamily = itext.fontFaceName;
     inputElem.style.zIndex = '1';
-    inputElem.style.fontKerning = scribe.opt.kerning ? 'normal' : 'none';
+    inputElem.style.fontKerning = scribe.ScribeDoc.defaults.kerning ? 'normal' : 'none';
 
     if (Math.abs(angle ?? 0) > 0.05) {
       inputElem.style.transformOrigin = `left ${y1 - topHTML}px`;
@@ -430,7 +445,7 @@ export class KonvaIText extends Konva.Shape {
       inputElem.style.textUnderlineOffset = `${underlineOffset}px`;
     }
 
-    if (itext.highlightColor && scribe.opt.displayMode !== 'invis' && scribe.opt.displayMode !== 'annot') {
+    if (itext.highlightColor && scribe.ScribeDoc.defaults.displayMode !== 'invis' && scribe.ScribeDoc.defaults.displayMode !== 'annot') {
       const r = parseInt(itext.highlightColor.slice(1, 3), 16);
       const g = parseInt(itext.highlightColor.slice(3, 5), 16);
       const b = parseInt(itext.highlightColor.slice(5, 7), 16);
@@ -518,7 +533,7 @@ export class KonvaIText extends Konva.Shape {
 
     const scale = layer.getAbsoluteScale().y;
 
-    const fontI = ScribeViewer.doc.fonts.getWordFont(itext.word);
+    const fontI = getViewer(itext).doc.fonts.getWordFont(itext.word);
 
     const fontSizeHTMLSmallCaps = itext.fontSize * scale * fontI.smallCapsMult;
 
@@ -627,9 +642,6 @@ export class KonvaIText extends Konva.Shape {
 }
 
 export class KonvaOcrWord extends KonvaIText {
-  /** @type {Array<InstanceType<typeof Konva.Rect> | InstanceType<typeof Konva.Transformer>>} */
-  static _controlArr = [];
-
   /**
    *
    * @param {Object} options
@@ -645,15 +657,16 @@ export class KonvaOcrWord extends KonvaIText {
    * @param {number} [options.highlightOpacity=1]
    * @param {?string} [options.highlightGroupId=null]
    * @param {string} [options.highlightComment='']
+   * @param {import('../viewer.js').ScribeViewer} [options.viewer]
    */
   constructor({
     visualLeft, yActual, topBaseline, word, rotation,
     outline, fillBox, listening, highlightColor = null, highlightOpacity = 1,
     highlightGroupId = null, highlightComment = '',
+    viewer,
   }) {
-    // const { fill, opacity } = getWordFillOpacityGUI(word);
-    const { fill, opacity } = scribe.utils.ocr.getWordFillOpacity(word, scribe.opt.displayMode,
-      scribe.opt.confThreshMed, scribe.opt.confThreshHigh, scribe.opt.overlayOpacity);
+    const { fill, opacity } = scribe.utils.ocr.getWordFillOpacity(word, scribe.ScribeDoc.defaults.displayMode,
+      scribe.ScribeDoc.defaults.confThreshMed, scribe.ScribeDoc.defaults.confThreshHigh, scribe.ScribeDoc.defaults.overlayOpacity);
 
     super({
       x: visualLeft,
@@ -670,6 +683,7 @@ export class KonvaOcrWord extends KonvaIText {
       highlightGroupId,
       highlightComment,
       changeTextCallback: () => {},
+      viewer,
     });
 
     this.listening(listening);
@@ -720,11 +734,10 @@ export class KonvaOcrWord extends KonvaIText {
     const trans = new Konva.Transformer({
       enabledAnchors: ['middle-left', 'middle-right'],
       rotateEnabled: false,
-      // This width is automatically scaled by Konva based on the zoom level.
       borderStrokeWidth: 2,
     });
 
-    KonvaOcrWord._controlArr.push(trans);
+    getViewer(itext)._controlArr.push(trans);
     parent.add(trans);
 
     trans.nodes([itext]);

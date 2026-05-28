@@ -1,10 +1,6 @@
 /* eslint-disable import/no-cycle */
-import { ScribeViewer } from '../viewer.js';
 import { KonvaOcrWord } from './viewerWordObjects.js';
 import Konva from './konva/index.js';
-
-/** @type {Array<InstanceType<typeof Konva.Rect>>} */
-const highlightOutlineRects = [];
 
 /**
  * Checks if a word bbox is highlighted by an annotation.
@@ -25,33 +21,32 @@ export function annotMatchesWord(annot, wb) {
 /**
  * Draws outline rectangles around all words in the same highlight group as the selected word.
  * Clears any previous outlines first.
+ * @param {import('../viewer.js').ScribeViewer} viewer
  */
-export function updateHighlightGroupOutline() {
-  // Remove existing outlines
-  for (const rect of highlightOutlineRects) rect.destroy();
-  highlightOutlineRects.length = 0;
+export function updateHighlightGroupOutline(viewer) {
+  for (const rect of viewer._highlightOutlineRects) rect.destroy();
+  viewer._highlightOutlineRects.length = 0;
 
-  const selectedWords = ScribeViewer.CanvasSelection.getKonvaWords();
+  const selectedWords = viewer.CanvasSelection.getKonvaWords();
   if (!selectedWords || selectedWords.length === 0) {
-    ScribeViewer.layerText.batchDraw();
+    viewer.layerText.batchDraw();
     return;
   }
 
   const firstWord = selectedWords[0];
   if (!firstWord.highlightGroupId) {
-    ScribeViewer.layerText.batchDraw();
+    viewer.layerText.batchDraw();
     return;
   }
 
   const groupId = firstWord.highlightGroupId;
-  const allWords = ScribeViewer.getKonvaWords();
+  const allWords = viewer.getKonvaWords();
   const groupWords = allWords.filter((kw) => kw.highlightGroupId === groupId);
   if (groupWords.length === 0) {
-    ScribeViewer.layerText.batchDraw();
+    viewer.layerText.batchDraw();
     return;
   }
 
-  // Group words by page, then by line within each page
   const pageMap = new Map();
   for (const kw of groupWords) {
     const pageN = kw.word.line.page.n;
@@ -59,7 +54,7 @@ export function updateHighlightGroupOutline() {
     pageMap.get(pageN).push(kw);
   }
 
-  const scale = ScribeViewer.layerText.getAbsoluteScale()?.x || 1;
+  const scale = viewer.layerText.getAbsoluteScale()?.x || 1;
 
   for (const [pageN, pageWords] of pageMap) {
     const lineMap = new Map();
@@ -69,7 +64,7 @@ export function updateHighlightGroupOutline() {
       lineMap.get(lineId).push(kw);
     }
 
-    const group = ScribeViewer.getTextGroup(pageN);
+    const group = viewer.getTextGroup(pageN);
     const pad = pageWords[0].height() * 0.2;
 
     for (const lineWords of lineMap.values()) {
@@ -93,19 +88,20 @@ export function updateHighlightGroupOutline() {
         listening: false,
       });
       group.add(rect);
-      highlightOutlineRects.push(rect);
+      viewer._highlightOutlineRects.push(rect);
     }
   }
 
-  ScribeViewer.layerText.batchDraw();
+  viewer.layerText.batchDraw();
 }
 
 /**
  * Recalculates highlight gap extensions for words on the same lines as the given words.
+ * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {Array<InstanceType<typeof KonvaOcrWord>>} changedWords
  */
-function updateHighlightGaps(changedWords) {
-  const allWords = ScribeViewer.getKonvaWords();
+function updateHighlightGaps(viewer, changedWords) {
+  const allWords = viewer.getKonvaWords();
   const affectedLineIds = new Set(changedWords.map((kw) => kw.word.line.id));
   const lineWords = new Map();
   for (const kw of allWords) {
@@ -132,10 +128,11 @@ function updateHighlightGaps(changedWords) {
 
 /**
  * Removes highlight from the given words and their annotation data.
+ * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {Array<InstanceType<typeof KonvaOcrWord>>} selectedWords
  * @param {number} pageIndex
  */
-export function removeHighlight(selectedWords, pageIndex) {
+export function removeHighlight(viewer, selectedWords, pageIndex) {
   if (!selectedWords || selectedWords.length === 0) return;
 
   for (const kw of selectedWords) {
@@ -144,30 +141,30 @@ export function removeHighlight(selectedWords, pageIndex) {
   }
   for (const kw of selectedWords) {
     const wb = kw.word.bbox;
-    ScribeViewer.doc.annotations.pages[pageIndex] = ScribeViewer.doc.annotations.pages[pageIndex].filter(
+    viewer.doc.annotations.pages[pageIndex] = viewer.doc.annotations.pages[pageIndex].filter(
       (annot) => !annotMatchesWord(annot, wb),
     );
   }
-  updateHighlightGaps(selectedWords);
-  updateHighlightGroupOutline();
-  ScribeViewer.layerText.batchDraw();
+  updateHighlightGaps(viewer, selectedWords);
+  updateHighlightGroupOutline(viewer);
+  viewer.layerText.batchDraw();
   KonvaOcrWord.updateUI();
 }
 
 /**
  * Applies highlight color to the given words and creates/updates annotation data.
+ * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {Array<InstanceType<typeof KonvaOcrWord>>} selectedWords
  * @param {number} pageIndex
  * @param {string} color
  * @param {number} opacity
  */
-export function applyHighlight(selectedWords, pageIndex, color, opacity) {
+export function applyHighlight(viewer, selectedWords, pageIndex, color, opacity) {
   if (!selectedWords || selectedWords.length === 0) return;
 
-  // Update existing annotations (preserve groupId and comment)
   for (const kw of selectedWords) {
     const wb = kw.word.bbox;
-    const existingAnnot = ScribeViewer.doc.annotations.pages[pageIndex].find(
+    const existingAnnot = viewer.doc.annotations.pages[pageIndex].find(
       (annot) => annotMatchesWord(annot, wb),
     );
     if (existingAnnot) {
@@ -182,17 +179,15 @@ export function applyHighlight(selectedWords, pageIndex, color, opacity) {
     kw.highlightOpacity = opacity;
   }
 
-  // Add annotation data for words that don't already have one
   const wordsWithoutAnnot = selectedWords.filter((kw) => {
     const wb = kw.word.bbox;
-    return !ScribeViewer.doc.annotations.pages[pageIndex].some(
+    return !viewer.doc.annotations.pages[pageIndex].some(
       (annot) => annotMatchesWord(annot, wb),
     );
   });
 
   if (wordsWithoutAnnot.length > 0) {
-    // Split new words into contiguous runs and assign groupIds
-    const allWords = ScribeViewer.getKonvaWords();
+    const allWords = viewer.getKonvaWords();
     const selectedSet = new Set(wordsWithoutAnnot.map((kw) => kw.word.id));
 
     const lineMap = new Map();
@@ -206,7 +201,6 @@ export function applyHighlight(selectedWords, pageIndex, color, opacity) {
       words.sort((a, b) => a.x() - b.x());
     }
 
-    // For each line, split into contiguous runs (no unselected word between selected words)
     const lineRuns = [];
     for (const [lineId, words] of lineMap) {
       const lineAllWords = allWords.filter((kw) => kw.word.line.id === lineId);
@@ -216,7 +210,6 @@ export function applyHighlight(selectedWords, pageIndex, color, opacity) {
       for (let i = 1; i < words.length; i++) {
         const prev = words[i - 1];
         const curr = words[i];
-        // Check if there's an unselected word between prev and curr
         const hasGap = lineAllWords.some((kw) => !selectedSet.has(kw.word.id)
           && kw.x() > prev.x() && kw.x() < curr.x());
         if (hasGap) {
@@ -231,7 +224,6 @@ export function applyHighlight(selectedWords, pageIndex, color, opacity) {
 
     lineRuns.sort((a, b) => a.words[0].word.line.bbox.top - b.words[0].word.line.bbox.top);
 
-    // Assign groupIds: merge vertically adjacent line runs into the same group
     const groups = [[lineRuns[0]]];
     for (let i = 1; i < lineRuns.length; i++) {
       const prevGroup = groups[groups.length - 1];
@@ -252,7 +244,7 @@ export function applyHighlight(selectedWords, pageIndex, color, opacity) {
       for (const run of group) {
         for (const kw of run.words) {
           const wb = kw.word.bbox;
-          ScribeViewer.doc.annotations.pages[pageIndex].push({
+          viewer.doc.annotations.pages[pageIndex].push({
             bbox: {
               left: wb.left, top: wb.top, right: wb.right, bottom: wb.bottom,
             },
@@ -268,34 +260,35 @@ export function applyHighlight(selectedWords, pageIndex, color, opacity) {
     }
   }
 
-  updateHighlightGaps(selectedWords);
-  updateHighlightGroupOutline();
-  ScribeViewer.layerText.batchDraw();
+  updateHighlightGaps(viewer, selectedWords);
+  updateHighlightGroupOutline(viewer);
+  viewer.layerText.batchDraw();
   KonvaOcrWord.updateUI();
 }
 
 /**
  * Updates the comment on the highlight group of the first selected word.
+ * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {Array<InstanceType<typeof KonvaOcrWord>>} selectedWords
  * @param {number} pageIndex
  * @param {string} comment
  */
-export function modifyHighlightComment(selectedWords, pageIndex, comment) {
+export function modifyHighlightComment(viewer, selectedWords, pageIndex, comment) {
   if (!selectedWords || selectedWords.length === 0) return;
   const wb = selectedWords[0].word.bbox;
-  const matchingAnnot = ScribeViewer.doc.annotations.pages[pageIndex].find(
+  const matchingAnnot = viewer.doc.annotations.pages[pageIndex].find(
     (annot) => annotMatchesWord(annot, wb),
   );
   if (!matchingAnnot || !matchingAnnot.groupId) return;
-  for (const annot of ScribeViewer.doc.annotations.pages[pageIndex]) {
+  for (const annot of viewer.doc.annotations.pages[pageIndex]) {
     if (annot.groupId === matchingAnnot.groupId) {
       annot.comment = comment;
     }
   }
-  for (const kw of ScribeViewer.getKonvaWords()) {
+  for (const kw of viewer.getKonvaWords()) {
     if (kw.highlightGroupId === matchingAnnot.groupId) {
       kw.highlightComment = comment;
     }
   }
-  ScribeViewer.layerText.batchDraw();
+  viewer.layerText.batchDraw();
 }

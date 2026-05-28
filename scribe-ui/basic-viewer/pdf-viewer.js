@@ -2,32 +2,73 @@ import scribe from '../../scribe.js';
 import { ScribeViewer } from '../viewer.js';
 import { applyHighlight } from '../js/viewerHighlights.js';
 
-ScribeViewer.enableHTMLOverlay = true;
+/**
+ * @typedef {object} FitResult
+ * @property {number} zoom
+ * @property {number} [x]
+ * @property {number} [y]
+ */
 
-scribe.opt.displayMode = 'invis';
+/**
+ * @typedef {'width' | 'height' | 'page' | ((imgDims: {width: number, height: number}, viewerDims: {width: number, height: number}) => FitResult)} FitMode
+ */
 
 class ScribePDFViewer {
   /**
-   * @param {HTMLElement} container
+   * @param {HTMLElement} container - Element the viewer mounts into. The viewer fills it.
    * @param {object} [options]
-   * @param {number} [options.width=800]
-   * @param {number} [options.height=1000]
+   * @param {number | 'auto'} [options.width='auto'] - Initial viewer width in px, or 'auto' to
+   *   fill the container's current clientWidth.
+   * @param {number | 'auto'} [options.height='auto'] - Initial viewer height in px, or 'auto' to
+   *   fill the container's current clientHeight.
    * @param {boolean | { colors: string[], defaultColor?: string }} [options.highlight=true]
-   *   Controls the highlight toolbar.
-   *   `true` (default) renders the toggle and all built-in colors.
-   *   `false` removes the toggle and color picker from the toolbar entirely.
-   *   An object restricts the picker to the given hex colors; if `colors` has length 1
-   *   the picker is hidden and only the toggle is shown.
-   *   Disabling the toolbar does not block programmatic calls to `applyHighlight`.
+   *   Controls the highlight toolbar. `true` renders the toggle and all built-in colors. `false`
+   *   removes the toggle and color picker from the toolbar entirely. An object restricts the picker
+   *   to the given hex colors. Disabling the toolbar does not block programmatic `applyHighlight` calls.
+   * @param {boolean} [options.showToolbar=true] - Render the chrome toolbar (page nav, zoom,
+   *   highlight controls). When false the viewer fills the container with the canvas only.
+   * @param {boolean} [options.showDropZone=true] - Render the drag-and-drop file upload zone.
+   *   When false, consumers must load documents via `importFile` or `attachDocument`.
+   * @param {FitMode} [options.fit='height'] - How to size the first page when a document opens.
+   *   `'width'` fits page width to the viewer. `'height'` (default) fits page height. `'page'` fits
+   *   the whole page. A function receives the page dims and viewer dims and returns `{zoom, x?, y?}`.
+   * @param {boolean} [options.autoResize=true] - Install a ResizeObserver on `container` and
+   *   resize the viewer to match its dimensions whenever they change.
+   * @param {ScribeViewer} [options.scribe] - Attach to an existing `ScribeViewer` instance instead
+   *   of creating a new one. Use to share state with an already-instantiated viewer.
    */
   constructor(container, options = {}) {
     const {
-      width = 800,
-      height = 1000,
+      width = 'auto',
+      height = 'auto',
       highlight = true,
+      showToolbar = true,
+      showDropZone = true,
+      fit = 'height',
+      autoResize = true,
     } = options;
 
-    let highlightColors;
+    this.container = container;
+    this.showToolbar = showToolbar;
+    this.showDropZone = showDropZone;
+    /** @type {?import('../../js/containers/scribeDoc.js').ScribeDoc} */
+    this.doc = null;
+
+    /**
+     * The `ScribeViewer` instance backing this viewer. Each `ScribePDFViewer` owns its own
+     * `ScribeViewer`, so multiple `ScribePDFViewer` instances can coexist on the page without
+     * sharing state. Pass `options.scribe` to attach to an existing instance.
+     * @type {ScribeViewer}
+     */
+    this.scribe = options.scribe || new ScribeViewer();
+
+    const initWidth = width === 'auto' ? (container.clientWidth || 800) : width;
+    const initHeight = height === 'auto' ? (container.clientHeight || 1000) : height;
+
+    this.scribe.enableHTMLOverlay = true;
+    scribe.ScribeDoc.defaults.displayMode = 'invis';
+
+    let highlightColors = null;
     let defaultHighlightColor;
     if (highlight === false) {
       highlightColors = null;
@@ -49,238 +90,252 @@ class ScribePDFViewer {
 
     ScribePDFViewer.addIconButtonStyles();
 
-    // Create the root div
     this.pdfViewerElem = document.createElement('div');
-    this.pdfViewerElem.style.width = `${width}px`;
-    this.pdfViewerElem.style.height = `${height}px`;
+    this.pdfViewerElem.className = 'scribe-pdf-viewer';
+    this.pdfViewerElem.style.width = `${initWidth}px`;
+    this.pdfViewerElem.style.height = `${initHeight}px`;
     this.pdfViewerElem.style.backgroundColor = 'rgb(82, 86, 89)';
     this.pdfViewerElem.style.fontFamily = '\'Segoe UI\', Tahoma, sans-serif';
 
-    // Create toolbar div
-    this.toolbarHeight = 56;
-    this.toolbarElem = document.createElement('div');
-    this.toolbarElem.style.width = '100%';
-    this.toolbarElem.style.height = `${this.toolbarHeight}px`;
+    this.toolbarHeight = showToolbar ? 56 : 0;
 
-    this.toolbarElem.style.alignItems = 'center';
-    this.toolbarElem.style.color = '#fff';
-    this.toolbarElem.style.display = 'flex';
-    this.toolbarElem.style.position = 'relative';
-    this.toolbarElem.style.zIndex = '10';
-    this.toolbarElem.style.lineHeight = '32px';
-    this.toolbarElem.style.backgroundColor = '#323639';
-    // Start, Center, and End containers
-    this.toolbarElemStart = document.createElement('div');
-    this.toolbarElemStart.style.flex = '1';
+    if (showToolbar) {
+      const toolbarElem = document.createElement('div');
+      toolbarElem.className = 'scribe-pdf-viewer-toolbar';
+      toolbarElem.style.width = '100%';
+      toolbarElem.style.height = `${this.toolbarHeight}px`;
+      toolbarElem.style.alignItems = 'center';
+      toolbarElem.style.color = '#fff';
+      toolbarElem.style.display = 'flex';
+      toolbarElem.style.position = 'relative';
+      toolbarElem.style.zIndex = '10';
+      toolbarElem.style.lineHeight = '32px';
+      toolbarElem.style.backgroundColor = '#323639';
 
-    const center = document.createElement('div');
+      const toolbarElemStart = document.createElement('div');
+      toolbarElemStart.style.flex = '1';
 
-    this.toolbarElemEnd = document.createElement('div');
-    this.toolbarElemEnd.style.flex = '1';
-    this.toolbarElemEnd.style.display = 'flex';
-    this.toolbarElemEnd.style.justifyContent = 'flex-end';
-    this.toolbarElemEnd.style.alignItems = 'center';
+      const center = document.createElement('div');
 
-    // Toolbar buttons container
-    const toolbarButtons = document.createElement('div');
-    toolbarButtons.className = 'col-md order-2 my-auto';
+      const toolbarElemEnd = document.createElement('div');
+      toolbarElemEnd.style.flex = '1';
+      toolbarElemEnd.style.display = 'flex';
+      toolbarElemEnd.style.justifyContent = 'flex-end';
+      toolbarElemEnd.style.alignItems = 'center';
 
-    // Previous button
-    this.prevElem = document.createElement('span');
-    this.prevElem.className = 'cr-icon-button';
-    this.prevElem.setAttribute('iron-icon', 'pdf:add');
-    this.prevElem.title = 'Zoom in';
-    this.prevElem.role = 'button';
-    this.prevElem.tabIndex = 0;
-    this.prevElem.ariaDisabled = 'false';
-    this.prevElem.ariaLabel = 'Zoom in';
+      const toolbarButtons = document.createElement('div');
+      toolbarButtons.className = 'col-md order-2 my-auto';
 
-    const prevIcon = document.createElement('span');
-    prevIcon.className = 'cr-icon';
-    prevIcon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px">
-    <path d="m313-440 224 224-57 56-320-320 320-320 57 56-224 224h487v80H313Z" /></svg>`;
+      const prevElem = document.createElement('span');
+      prevElem.className = 'cr-icon-button';
+      prevElem.setAttribute('iron-icon', 'pdf:add');
+      prevElem.title = 'Previous page';
+      prevElem.role = 'button';
+      prevElem.tabIndex = 0;
+      prevElem.ariaDisabled = 'false';
+      prevElem.ariaLabel = 'Previous page';
 
-    this.prevElem.appendChild(prevIcon);
+      const prevIcon = document.createElement('span');
+      prevIcon.className = 'cr-icon';
+      prevIcon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px">
+      <path d="m313-440 224 224-57 56-320-320 320-320 57 56-224 224h487v80H313Z" /></svg>`;
+      prevElem.appendChild(prevIcon);
 
-    // Next button
-    this.nextElem = document.createElement('span');
-    this.nextElem.className = 'cr-icon-button';
-    this.nextElem.setAttribute('iron-icon', 'pdf:add');
-    this.nextElem.title = 'Zoom in';
-    this.nextElem.role = 'button';
-    this.nextElem.tabIndex = 0;
-    this.nextElem.ariaDisabled = 'false';
-    this.nextElem.ariaLabel = 'Zoom in';
+      const nextElem = document.createElement('span');
+      nextElem.className = 'cr-icon-button';
+      nextElem.setAttribute('iron-icon', 'pdf:add');
+      nextElem.title = 'Next page';
+      nextElem.role = 'button';
+      nextElem.tabIndex = 0;
+      nextElem.ariaDisabled = 'false';
+      nextElem.ariaLabel = 'Next page';
 
-    const nextIcon = document.createElement('span');
-    nextIcon.className = 'cr-icon';
-    nextIcon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px">
-    <path d="M647-440H160v-80h487L423-744l57-56 320 320-320 320-57-56 224-224Z"/></svg>`;
+      const nextIcon = document.createElement('span');
+      nextIcon.className = 'cr-icon';
+      nextIcon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px">
+      <path d="M647-440H160v-80h487L423-744l57-56 320 320-320 320-57-56 224-224Z"/></svg>`;
+      nextElem.appendChild(nextIcon);
 
-    this.nextElem.appendChild(nextIcon);
+      const pageInputGroup = document.createElement('div');
+      pageInputGroup.className = 'btn-group';
+      pageInputGroup.style.display = 'inline-flex';
 
-    // Page input group
-    const pageInputGroup = document.createElement('div');
-    pageInputGroup.className = 'btn-group';
-    pageInputGroup.style.display = 'inline-flex';
+      const pageNumElem = document.createElement('input');
+      pageNumElem.type = 'text';
+      pageNumElem.className = 'form-control btn-sm';
+      pageNumElem.name = 'pageNum';
+      pageNumElem.autocomplete = 'off';
+      pageNumElem.style.width = '3em';
+      pageNumElem.style.display = 'inline-block';
 
-    this.pageNumElem = document.createElement('input');
-    this.pageNumElem.type = 'text';
-    this.pageNumElem.className = 'form-control btn-sm';
-    this.pageNumElem.name = 'pageNum';
-    this.pageNumElem.autocomplete = 'off';
-    this.pageNumElem.style.width = '3em';
-    this.pageNumElem.style.display = 'inline-block';
+      const pageCountElem = document.createElement('span');
+      pageCountElem.style.display = 'inline-block';
+      pageCountElem.style.minWidth = '0.5rem';
+      pageCountElem.style.fontSize = '14px';
+      pageCountElem.style.paddingLeft = '0.5rem';
 
-    this.pageCountElem = document.createElement('span');
-    this.pageCountElem.style.display = 'inline-block';
-    this.pageCountElem.style.minWidth = '0.5rem';
-    this.pageCountElem.style.fontSize = '14px';
-    this.pageCountElem.style.paddingLeft = '0.5rem';
+      pageInputGroup.appendChild(pageNumElem);
+      pageInputGroup.appendChild(document.createTextNode(' / '));
+      pageInputGroup.appendChild(pageCountElem);
 
-    pageInputGroup.appendChild(this.pageNumElem);
-    pageInputGroup.appendChild(document.createTextNode(' / '));
-    pageInputGroup.appendChild(this.pageCountElem);
+      const verticalSeparator1 = document.createElement('span');
+      verticalSeparator1.className = 'vertical-separator';
 
-    // Vertical separator
-    const verticalSeparator1 = document.createElement('span');
-    verticalSeparator1.className = 'vertical-separator';
+      const zoomControls = document.createElement('span');
 
-    // Zoom controls
-    const zoomControls = document.createElement('span');
+      const zoomOutElem = document.createElement('span');
+      zoomOutElem.className = 'cr-icon-button';
+      zoomOutElem.setAttribute('iron-icon', 'pdf:remove');
+      zoomOutElem.title = 'Zoom out';
+      zoomOutElem.role = 'button';
+      zoomOutElem.tabIndex = 0;
+      zoomOutElem.ariaDisabled = 'false';
 
-    this.zoomOutElem = document.createElement('span');
-    this.zoomOutElem.className = 'cr-icon-button';
-    this.zoomOutElem.setAttribute('iron-icon', 'pdf:remove');
-    this.zoomOutElem.title = 'Zoom out';
-    this.zoomOutElem.role = 'button';
-    this.zoomOutElem.tabIndex = 0;
-    this.zoomOutElem.ariaDisabled = 'false';
+      const zoomOutIcon = document.createElement('span');
+      zoomOutIcon.className = 'cr-icon';
+      zoomOutIcon.innerHTML = `<svg viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet" focusable="false" role="none" style="pointer-events: none; display: block; width: 100%; height: 100%;">
+      <g><path d="M19 13H5v-2h14v2z"></path></g></svg>`;
+      zoomOutElem.appendChild(zoomOutIcon);
 
-    const zoomOutIcon = document.createElement('span');
-    zoomOutIcon.className = 'cr-icon';
-    zoomOutIcon.innerHTML = `<svg viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet" focusable="false" role="none" style="pointer-events: none; display: block; width: 100%; height: 100%;">
-    <g><path d="M19 13H5v-2h14v2z"></path></g></svg>`;
+      const zoomInElem = document.createElement('span');
+      zoomInElem.className = 'cr-icon-button';
+      zoomInElem.setAttribute('iron-icon', 'pdf:add');
+      zoomInElem.title = 'Zoom in';
+      zoomInElem.role = 'button';
+      zoomInElem.tabIndex = 0;
+      zoomInElem.ariaDisabled = 'false';
 
-    this.zoomOutElem.appendChild(zoomOutIcon);
+      const zoomInIcon = document.createElement('span');
+      zoomInIcon.className = 'cr-icon';
+      zoomInIcon.innerHTML = `<svg viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet" focusable="false" role="none" style="pointer-events: none; display: block; width: 100%; height: 100%;">
+      <g><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"></path></g></svg>`;
+      zoomInElem.appendChild(zoomInIcon);
 
-    // A zoom level input element is currently not included, as we do not have any mechanism to update it for all of the ways zoom can be changed.
-    // Most notably, the zoom level can be changed by the user scrolling the mouse wheel over the canvas, which is handled by the viewer code rather than here.
-    // this.zoomLevelElem = document.createElement('input');
-    // this.zoomLevelElem.type = 'text';
-    // this.zoomLevelElem.value = '100%';
-    // this.zoomLevelElem.ariaLabel = 'Zoom level';
+      zoomControls.appendChild(zoomOutElem);
+      zoomControls.appendChild(zoomInElem);
 
-    this.zoomInElem = document.createElement('span');
-    this.zoomInElem.className = 'cr-icon-button';
-    this.zoomInElem.setAttribute('iron-icon', 'pdf:add');
-    this.zoomInElem.title = 'Zoom in';
-    this.zoomInElem.role = 'button';
-    this.zoomInElem.tabIndex = 0;
-    this.zoomInElem.ariaDisabled = 'false';
+      const verticalSeparator2 = document.createElement('span');
+      verticalSeparator2.className = 'vertical-separator';
 
-    const zoomInIcon = document.createElement('span');
-    zoomInIcon.className = 'cr-icon';
-    zoomInIcon.innerHTML = `<svg viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet" focusable="false" role="none" style="pointer-events: none; display: block; width: 100%; height: 100%;">
-    <g><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"></path></g></svg>`;
+      let colorContainer = null;
+      let highlightElem = null;
+      if (highlightColors) {
+        this.highlightMode = false;
+        this.highlightColor = defaultHighlightColor;
+        // eslint-disable-next-line max-len
+        this.highlightCursor = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' height=\'24\' width=\'24\' viewBox=\'0 -960 960 960\'%3E%3Cpath fill=\'white\' stroke=\'black\' stroke-width=\'30\' d=\'m268-212-56-56q-12-12-12-28.5t12-28.5l423-423q12-12 28.5-12t28.5 12l56 56q12 12 12 28.5T748-635L324-212q-11 11-28 11t-28-11Z\'/%3E%3C/svg%3E") 12 12, auto';
 
-    this.zoomInElem.appendChild(zoomInIcon);
+        highlightElem = document.createElement('span');
+        highlightElem.className = 'cr-icon-button';
+        highlightElem.title = 'Highlight';
+        highlightElem.role = 'button';
+        highlightElem.tabIndex = 0;
 
-    zoomControls.appendChild(this.zoomOutElem);
-    // zoomControls.appendChild(this.zoomLevelElem);
-    zoomControls.appendChild(this.zoomInElem);
+        const highlightIcon = document.createElement('span');
+        highlightIcon.className = 'cr-icon';
+        highlightIcon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 -960 960 960" fill="currentColor">
+        <path d="M280-320v-440q0-33 23.5-56.5T360-840q9 0 18 2t17 6l240 119q20 10 32.5 29.5T680-641v321H280Zm80-80h240v-241L360-760v360ZM160-120l22-65q8-25 29-40t47-15h444q26 0 47 15t29 40l22 65H160Zm200-280h240-240Z"/>
+        </svg>`;
+        highlightElem.appendChild(highlightIcon);
 
-    // Vertical separator 2
-    const verticalSeparator2 = document.createElement('span');
-    verticalSeparator2.className = 'vertical-separator';
+        const localHighlightElem = highlightElem;
+        localHighlightElem.addEventListener('mousedown', (e) => e.preventDefault());
+        localHighlightElem.addEventListener('click', () => {
+          this.highlightMode = !this.highlightMode;
+          localHighlightElem.classList.toggle('active', this.highlightMode);
+          this.updateHighlightCursorStyle();
+        });
 
-    let colorContainer = null;
-    if (highlightColors) {
-      this.highlightMode = false;
-      this.highlightColor = defaultHighlightColor;
-      // Custom highlighter cursor (SVG data URI). Hotspot at center of icon (12, 12).
-      // eslint-disable-next-line max-len
-      this.highlightCursor = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' height=\'24\' width=\'24\' viewBox=\'0 -960 960 960\'%3E%3Cpath fill=\'white\' stroke=\'black\' stroke-width=\'30\' d=\'m268-212-56-56q-12-12-12-28.5t12-28.5l423-423q12-12 28.5-12t28.5 12l56 56q12 12 12 28.5T748-635L324-212q-11 11-28 11t-28-11Z\'/%3E%3C/svg%3E") 12 12, auto';
+        if (highlightColors.length > 1) {
+          colorContainer = document.createElement('span');
+          colorContainer.style.display = 'inline-flex';
+          colorContainer.style.alignItems = 'center';
+          colorContainer.style.gap = '4px';
+          colorContainer.style.marginLeft = '4px';
 
-      this.highlightElem = document.createElement('span');
-      this.highlightElem.className = 'cr-icon-button';
-      this.highlightElem.title = 'Highlight';
-      this.highlightElem.role = 'button';
-      this.highlightElem.tabIndex = 0;
+          this.colorBtnElems = [];
+          for (const color of highlightColors) {
+            const btn = document.createElement('span');
+            btn.className = 'highlight-color-btn';
+            btn.style.backgroundColor = color;
+            if (color === this.highlightColor) btn.classList.add('active');
+            btn.addEventListener('mousedown', (e) => e.preventDefault());
+            btn.addEventListener('click', () => {
+              this.highlightColor = color;
+              this.colorBtnElems.forEach((b) => b.classList.remove('active'));
+              btn.classList.add('active');
 
-      const highlightIcon = document.createElement('span');
-      highlightIcon.className = 'cr-icon';
-      highlightIcon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 -960 960 960" fill="currentColor">
-      <path d="M280-320v-440q0-33 23.5-56.5T360-840q9 0 18 2t17 6l240 119q20 10 32.5 29.5T680-641v321H280Zm80-80h240v-241L360-760v360ZM160-120l22-65q8-25 29-40t47-15h444q26 0 47 15t29 40l22 65H160Zm200-280h240-240Z"/>
-      </svg>`;
-
-      this.highlightElem.appendChild(highlightIcon);
-
-      this.highlightElem.addEventListener('mousedown', (e) => e.preventDefault());
-      this.highlightElem.addEventListener('click', () => {
-        this.highlightMode = !this.highlightMode;
-        this.highlightElem.classList.toggle('active', this.highlightMode);
-        this.updateHighlightCursorStyle();
-      });
-
-      if (highlightColors.length > 1) {
-        colorContainer = document.createElement('span');
-        colorContainer.style.display = 'inline-flex';
-        colorContainer.style.alignItems = 'center';
-        colorContainer.style.gap = '4px';
-        colorContainer.style.marginLeft = '4px';
-
-        this.colorBtnElems = [];
-        for (const color of highlightColors) {
-          const btn = document.createElement('span');
-          btn.className = 'highlight-color-btn';
-          btn.style.backgroundColor = color;
-          if (color === this.highlightColor) btn.classList.add('active');
-          btn.addEventListener('mousedown', (e) => e.preventDefault());
-          btn.addEventListener('click', () => {
-            this.highlightColor = color;
-            this.colorBtnElems.forEach((b) => b.classList.remove('active'));
-            btn.classList.add('active');
-
-            const matchedWords = this.getSelectedOverlayWords();
-            if (matchedWords.length > 0) {
-              const n = ScribeViewer.state.cp.n;
-              applyHighlight(matchedWords, n, this.highlightColor, 0.5);
-              window.getSelection()?.removeAllRanges();
-              ScribeViewer.deleteHTMLOverlay();
-              ScribeViewer.renderHTMLOverlay();
-            } else if (!this.highlightMode) {
-              this.highlightMode = true;
-              this.highlightElem.classList.add('active');
-              this.updateHighlightCursorStyle();
-            }
-          });
-          this.colorBtnElems.push(btn);
-          colorContainer.appendChild(btn);
+              const matchedWords = this.getSelectedOverlayWords();
+              if (matchedWords.length > 0) {
+                const n = this.scribe.state.cp.n;
+                applyHighlight(this.scribe, matchedWords, n, this.highlightColor, 0.5);
+                window.getSelection()?.removeAllRanges();
+                this.scribe.deleteHTMLOverlay();
+                this.scribe.renderHTMLOverlay();
+              } else if (!this.highlightMode) {
+                this.highlightMode = true;
+                localHighlightElem.classList.add('active');
+                this.updateHighlightCursorStyle();
+              }
+            });
+            this.colorBtnElems.push(btn);
+            colorContainer.appendChild(btn);
+          }
         }
       }
+
+      toolbarButtons.appendChild(prevElem);
+      toolbarButtons.appendChild(nextElem);
+      toolbarButtons.appendChild(pageInputGroup);
+      toolbarButtons.appendChild(verticalSeparator1);
+      toolbarButtons.appendChild(zoomControls);
+      if (highlightElem) {
+        toolbarButtons.appendChild(verticalSeparator2);
+        toolbarButtons.appendChild(highlightElem);
+        if (colorContainer) toolbarButtons.appendChild(colorContainer);
+      }
+
+      center.appendChild(toolbarButtons);
+
+      toolbarElem.appendChild(toolbarElemStart);
+      toolbarElem.appendChild(center);
+      toolbarElem.appendChild(toolbarElemEnd);
+
+      this.pdfViewerElem.appendChild(toolbarElem);
+
+      nextElem.addEventListener('mousedown', (e) => e.preventDefault());
+      nextElem.addEventListener('click', () => this.scribe.displayPage(this.scribe.state.cp.n + 1, true, false));
+      prevElem.addEventListener('mousedown', (e) => e.preventDefault());
+      prevElem.addEventListener('click', () => this.scribe.displayPage(this.scribe.state.cp.n - 1, true, false));
+
+      pageNumElem.addEventListener('keyup', (event) => {
+        if (event.key === 'Enter') {
+          this.scribe.displayPage(parseInt(pageNumElem.value) - 1, true, false);
+        }
+      });
+
+      zoomInElem.addEventListener('mousedown', (e) => e.preventDefault());
+      zoomInElem.addEventListener('click', () => {
+        this.scribe.zoom(1.1, this.scribe.getStageCenter());
+      });
+
+      zoomOutElem.addEventListener('mousedown', (e) => e.preventDefault());
+      zoomOutElem.addEventListener('click', () => {
+        this.scribe.zoom(0.9, this.scribe.getStageCenter());
+      });
+
+      this.toolbarElem = toolbarElem;
+      this.toolbarElemStart = toolbarElemStart;
+      this.toolbarElemEnd = toolbarElemEnd;
+      this.prevElem = prevElem;
+      this.nextElem = nextElem;
+      this.pageNumElem = pageNumElem;
+      this.pageCountElem = pageCountElem;
+      this.zoomInElem = zoomInElem;
+      this.zoomOutElem = zoomOutElem;
+      if (highlightElem) this.highlightElem = highlightElem;
     }
 
-    // Append buttons to toolbarButtons
-    toolbarButtons.appendChild(this.prevElem);
-    toolbarButtons.appendChild(this.nextElem);
-    toolbarButtons.appendChild(pageInputGroup);
-    toolbarButtons.appendChild(verticalSeparator1);
-    toolbarButtons.appendChild(zoomControls);
-    if (highlightColors) {
-      toolbarButtons.appendChild(verticalSeparator2);
-      toolbarButtons.appendChild(this.highlightElem);
-      if (colorContainer) toolbarButtons.appendChild(colorContainer);
-    }
-
-    center.appendChild(toolbarButtons);
-
-    // Add start, center, and end to toolbar
-    this.toolbarElem.appendChild(this.toolbarElemStart);
-    this.toolbarElem.appendChild(center);
-    this.toolbarElem.appendChild(this.toolbarElemEnd);
-
-    // Viewer container
     this.viewerContainer = document.createElement('div');
     this.viewerContainer.style.position = 'relative';
     this.viewerContainer.style.overflow = 'hidden';
@@ -290,164 +345,103 @@ class ScribePDFViewer {
     viewer.style.overflow = 'hidden';
 
     this.viewerContainer.appendChild(viewer);
-
-    // Append toolbar and viewer container to root
-    this.pdfViewerElem.appendChild(this.toolbarElem);
     this.pdfViewerElem.appendChild(this.viewerContainer);
 
-    this.dropZone = document.createElement('div');
-    this.dropZone.className = 'upload_dropZone text-center p-4';
-    this.dropZone.style.zIndex = '8';
-    this.dropZone.style.top = `${this.toolbarHeight}px`;
-    this.dropZone.style.position = 'absolute';
-    this.dropZone.style.height = `${height - this.toolbarHeight}px`;
-    this.dropZone.style.width = `${width - 6}px`;
+    if (showDropZone) {
+      const dropZone = document.createElement('div');
+      dropZone.className = 'upload_dropZone text-center p-4';
+      dropZone.style.zIndex = '8';
+      dropZone.style.top = `${this.toolbarHeight}px`;
+      dropZone.style.position = 'absolute';
+      dropZone.style.height = `${initHeight - this.toolbarHeight}px`;
+      dropZone.style.width = `${initWidth - 6}px`;
 
-    // Create the root div
-    const uploadDiv = document.createElement('div');
-    uploadDiv.style.position = 'relative';
-    uploadDiv.style.top = '35%';
-    uploadDiv.style.color = '#dddddd';
+      const uploadDiv = document.createElement('div');
+      uploadDiv.style.position = 'relative';
+      uploadDiv.style.top = '35%';
+      uploadDiv.style.color = '#dddddd';
 
-    // Create the paragraph element with instructions
-    const instructions = document.createElement('p');
-    instructions.className = 'small';
-    instructions.innerHTML = 'Drag &amp; drop files inside dashed region<br><i>or</i>';
+      const instructions = document.createElement('p');
+      instructions.className = 'small';
+      instructions.innerHTML = 'Drag &amp; drop files inside dashed region<br><i>or</i>';
 
-    // Create the hidden file input
-    this.openFileInputElem = document.createElement('input');
-    this.openFileInputElem.type = 'file';
-    this.openFileInputElem.multiple = true;
-    this.openFileInputElem.style.visibility = 'hidden';
-    this.openFileInputElem.style.position = 'absolute';
+      const openFileInputElem = document.createElement('input');
+      openFileInputElem.type = 'file';
+      openFileInputElem.multiple = true;
+      openFileInputElem.style.visibility = 'hidden';
+      openFileInputElem.style.position = 'absolute';
 
-    // Create the label for the file input
-    const fileInputLabel = document.createElement('label');
-    fileInputLabel.className = 'btn btn-info mb-3';
-    // fileInputLabel.htmlFor = 'openFileInput';
-    fileInputLabel.style.minWidth = '8rem';
-    fileInputLabel.style.border = '1px solid';
-    fileInputLabel.style.padding = '0.4rem';
-    fileInputLabel.textContent = 'Select Files';
-    fileInputLabel.appendChild(this.openFileInputElem);
+      const fileInputLabel = document.createElement('label');
+      fileInputLabel.className = 'btn btn-info mb-3';
+      fileInputLabel.style.minWidth = '8rem';
+      fileInputLabel.style.border = '1px solid';
+      fileInputLabel.style.padding = '0.4rem';
+      fileInputLabel.textContent = 'Select Files';
+      fileInputLabel.appendChild(openFileInputElem);
 
-    // Create the first upload gallery div
-    const uploadGallery1 = document.createElement('div');
-    uploadGallery1.className = 'upload_gallery d-flex flex-wrap justify-content-center gap-3 mb-0';
-    uploadGallery1.style.display = 'inline!important';
+      const uploadGallery1 = document.createElement('div');
+      uploadGallery1.className = 'upload_gallery d-flex flex-wrap justify-content-center gap-3 mb-0';
+      uploadGallery1.style.display = 'inline!important';
 
-    // Create the second upload gallery div
-    const uploadGallery2 = document.createElement('div');
-    uploadGallery2.className = 'upload_gallery d-flex flex-wrap justify-content-center gap-3 mb-0';
+      const uploadGallery2 = document.createElement('div');
+      uploadGallery2.className = 'upload_gallery d-flex flex-wrap justify-content-center gap-3 mb-0';
 
-    // Append all elements to the root div
-    uploadDiv.appendChild(instructions);
-    // uploadDiv.appendChild(this.openFileInputElem);
-    uploadDiv.appendChild(fileInputLabel);
-    uploadDiv.appendChild(uploadGallery1);
-    uploadDiv.appendChild(uploadGallery2);
+      uploadDiv.appendChild(instructions);
+      uploadDiv.appendChild(fileInputLabel);
+      uploadDiv.appendChild(uploadGallery1);
+      uploadDiv.appendChild(uploadGallery2);
 
-    this.dropZone.appendChild(uploadDiv);
-    this.pdfViewerElem.appendChild(this.dropZone);
+      dropZone.appendChild(uploadDiv);
+      this.pdfViewerElem.appendChild(dropZone);
 
-    this.importFile = async (file, initialPage = 0) => {
-      await ScribeViewer.doc.terminate();
-      ScribeViewer.doc = await scribe.openDocument([file]);
+      openFileInputElem.addEventListener('change', () => {
+        if (!openFileInputElem.files || openFileInputElem.files.length === 0) return;
+        this.importFile(openFileInputElem.files[0]);
+      });
 
-      // Initialize annotation pages array for each page
-      for (let i = 0; i < ScribeViewer.doc.inputData.pageCount; i++) {
-        if (!ScribeViewer.doc.annotations.pages[i]) ScribeViewer.doc.annotations.pages[i] = [];
-      }
+      this.highlightActiveCt = 0;
+      dropZone.addEventListener('dragover', (event) => {
+        event.preventDefault();
+        dropZone.classList.add('highlight');
+        this.highlightActiveCt++;
+      });
 
-      this.pageCountElem.textContent = ScribeViewer.doc.inputData.pageCount.toString();
-      this.pageNumElem.value = (initialPage + 1).toString();
+      dropZone.addEventListener('dragleave', (event) => {
+        event.preventDefault();
+        const highlightActiveCtNow = this.highlightActiveCt;
+        setTimeout(() => {
+          if (highlightActiveCtNow === this.highlightActiveCt) {
+            dropZone.classList.remove('highlight');
+          }
+        }, 100);
+      });
 
-      await ScribeViewer.displayPage(initialPage, initialPage > 0);
+      dropZone.addEventListener('drop', async (event) => {
+        event.preventDefault();
+        if (!event.dataTransfer) return;
+        const items = await ScribeViewer.getAllFileEntries(event.dataTransfer.items);
+        const filesPromises = await Promise.allSettled(items.map((x) => new Promise((resolve, reject) => {
+          if (x instanceof File) {
+            resolve(x);
+          } else {
+            x.file(resolve, reject);
+          }
+        })));
+        const files = filesPromises
+          .filter(/** @returns {x is PromiseFulfilledResult<File>} */(x) => x.status === 'fulfilled')
+          .map((x) => x.value);
+        if (files.length === 0) return;
+        dropZone.classList.remove('highlight');
+        this.importFile(files[0]);
+      });
 
-      // This should run after importFiles so if that function fails the dropzone is not removed
-      pdfViewer.dropZone.style.display = 'none';
-    };
+      this.dropZone = dropZone;
+      this.openFileInputElem = openFileInputElem;
+    }
 
-    this.openFileInputElem.addEventListener('change', async () => {
-      if (!this.openFileInputElem.files || this.openFileInputElem.files.length === 0) return;
+    this._installFit(fit);
 
-      this.importFile(this.openFileInputElem.files[0]);
-    });
-
-    this.highlightActiveCt = 0;
-    this.dropZone.addEventListener('dragover', (event) => {
-      event.preventDefault();
-      pdfViewer.dropZone.classList.add('highlight');
-      this.highlightActiveCt++;
-    });
-
-    this.dropZone.addEventListener('dragleave', (event) => {
-      event.preventDefault();
-      // Only remove the highlight after 0.1 seconds, and only if it has not since been re-activated.
-      // This avoids flickering.
-      const highlightActiveCtNow = this.highlightActiveCt;
-      setTimeout(() => {
-        if (highlightActiveCtNow === this.highlightActiveCt) {
-          pdfViewer.dropZone.classList.remove('highlight');
-        }
-      }, 100);
-    });
-
-    // Add various event listners to HTML elements
-    this.nextElem.addEventListener('mousedown', (e) => e.preventDefault());
-    this.nextElem.addEventListener('click', () => ScribeViewer.displayPage(ScribeViewer.state.cp.n + 1, true, false));
-    this.prevElem.addEventListener('mousedown', (e) => e.preventDefault());
-    this.prevElem.addEventListener('click', () => ScribeViewer.displayPage(ScribeViewer.state.cp.n - 1, true, false));
-
-    this.pageNumElem.addEventListener('keyup', (event) => {
-      if (event.keyCode === 13) {
-        ScribeViewer.displayPage(parseInt(this.pageNumElem.value) - 1, true, false);
-      }
-    });
-
-    this.zoomInElem.addEventListener('mousedown', (e) => e.preventDefault());
-    this.zoomInElem.addEventListener('click', () => {
-      ScribeViewer.zoom(1.1, ScribeViewer.getStageCenter());
-      // this.zoomLevelElem.value = `${Math.round(ScribeCanvas.layerText.scaleX() * 100)}%`;
-    });
-
-    this.zoomOutElem.addEventListener('mousedown', (e) => e.preventDefault());
-    this.zoomOutElem.addEventListener('click', () => {
-      ScribeViewer.zoom(0.9, ScribeViewer.getStageCenter());
-      // this.zoomLevelElem.value = `${Math.round(ScribeCanvas.layerText.scaleX() * 100)}%`;
-    });
-
-    this.openFileInputElem.addEventListener('change', () => {
-      if (!pdfViewer.openFileInputElem.files || pdfViewer.openFileInputElem.files.length === 0) return;
-
-      this.importFile(pdfViewer.openFileInputElem.files[0]);
-    });
-
-    // This is where the drop is handled.
-    this.dropZone.addEventListener('drop', async (event) => {
-      // Prevent navigation.
-      event.preventDefault();
-
-      if (!event.dataTransfer) return;
-      const items = await ScribeViewer.getAllFileEntries(event.dataTransfer.items);
-
-      const filesPromises = await Promise.allSettled(items.map((x) => new Promise((resolve, reject) => {
-        if (x instanceof File) {
-          resolve(x);
-        } else {
-          x.file(resolve, reject);
-        }
-      })));
-      const files = filesPromises.map((x) => x.value);
-
-      if (files.length === 0) return;
-
-      pdfViewer.dropZone.classList.remove('highlight');
-
-      this.importFile(files[0]);
-    });
-
-    ScribeViewer.init(this.viewerContainer, width, height - this.toolbarHeight);
+    this.scribe.init(this.viewerContainer, initWidth, initHeight - this.toolbarHeight);
 
     if (highlightColors) {
       document.addEventListener('mouseup', (event) => {
@@ -456,42 +450,39 @@ class ScribePDFViewer {
 
         const matchedWords = this.getSelectedOverlayWords();
         if (matchedWords.length === 0) return;
+        if (!this.highlightColor) return;
 
-        const n = ScribeViewer.state.cp.n;
-        applyHighlight(matchedWords, n, this.highlightColor, 0.5);
+        const n = this.scribe.state.cp.n;
+        applyHighlight(this.scribe, matchedWords, n, this.highlightColor, 0.5);
 
         window.getSelection()?.removeAllRanges();
-        ScribeViewer.deleteHTMLOverlay();
-        ScribeViewer.renderHTMLOverlay();
+        this.scribe.deleteHTMLOverlay();
+        this.scribe.renderHTMLOverlay();
       });
     }
 
     // Backup mouseup listener on the document to clear selection state
     // if mouseup happens outside of the Konva stage (e.g. on an HTML overlay element).
     document.addEventListener('mouseup', () => {
-      if (ScribeViewer.selecting) {
-        ScribeViewer.selecting = false;
-        ScribeViewer.selectingRectangle?.visible(false);
-        ScribeViewer.layerText?.batchDraw();
+      if (this.scribe.selecting) {
+        this.scribe.selecting = false;
+        this.scribe.selectingRectangle?.visible(false);
+        this.scribe.layerText?.batchDraw();
       }
     });
 
-    // Comment icon tooltip (shared, shown on icon hover)
     this.commentTooltip = document.createElement('div');
     this.commentTooltip.className = 'highlight-comment-tooltip';
     this.commentTooltip.style.display = 'none';
-    ScribeViewer.elem.appendChild(this.commentTooltip);
+    this.scribe.elem.appendChild(this.commentTooltip);
 
-    // Watch for overlay re-renders to update comment icons.
-    // When .scribe-word elements are removed (scroll/zoom), hide icons immediately.
-    // When .scribe-word elements are added (re-render), recreate icons after debounce.
     let commentIconTimer = null;
     const isWordOrLine = (n) => n instanceof HTMLElement
       && (n.classList.contains('scribe-word') || n.classList.contains('scribe-line'));
     const observer = new MutationObserver((mutations) => {
       const hasRemoved = mutations.some((m) => [...m.removedNodes].some(isWordOrLine));
       if (hasRemoved) {
-        ScribeViewer.elem?.querySelectorAll('.highlight-comment-icon').forEach((el) => el.remove());
+        this.scribe.elem?.querySelectorAll('.highlight-comment-icon').forEach((el) => el.remove());
         this.commentTooltip.style.display = 'none';
       }
       const hasAdded = mutations.some((m) => [...m.addedNodes].some(isWordOrLine));
@@ -499,31 +490,191 @@ class ScribePDFViewer {
       if (commentIconTimer) clearTimeout(commentIconTimer);
       commentIconTimer = setTimeout(() => this.updateCommentIcons(), 100);
     });
-    observer.observe(ScribeViewer.elem, { childList: true });
+    observer.observe(this.scribe.elem, { childList: true });
 
-    // Also update on page change
-    const origCallback = ScribeViewer.displayPageCallback;
-    ScribeViewer.displayPageCallback = () => {
+    const origCallback = this.scribe.displayPageCallback;
+    this.scribe.displayPageCallback = () => {
       if (origCallback) origCallback();
-      this.pageNumElem.value = (ScribeViewer.state.cp.n + 1).toString();
+      if (this.pageNumElem) this.pageNumElem.value = (this.scribe.state.cp.n + 1).toString();
       setTimeout(() => this.updateCommentIcons(), 250);
     };
 
     container.appendChild(this.pdfViewerElem);
+
+    if (autoResize && typeof ResizeObserver !== 'undefined') {
+      this.resizeObserver = new ResizeObserver(() => {
+        const w = container.clientWidth;
+        const h = container.clientHeight;
+        if (w > 0 && h > 0) this.resize(w, h);
+      });
+      this.resizeObserver.observe(container);
+    }
+  }
+
+  /** Currently displayed page index (0-based). */
+  get currentPage() {
+    return this.scribe.state.cp.n;
+  }
+
+  /** Number of pages in the currently loaded document, or 0 if none is loaded. */
+  get pageCount() {
+    return this.doc?.inputData?.pageCount ?? 0;
+  }
+
+  /**
+   * Navigate to a page by 0-based index.
+   * @param {number} n
+   */
+  async goToPage(n) {
+    await this.scribe.displayPage(n, true, false);
+  }
+
+  /**
+   * Set the canvas to an absolute zoom level. A scale of `1` means 1 PDF point = 1 CSS pixel.
+   * @param {number} scale
+   */
+  zoomTo(scale) {
+    if (!this.scribe.stage) return;
+    const current = this.scribe.stage.scaleX() || 1;
+    this.scribe.zoom(scale / current, this.scribe.getStageCenter());
+  }
+
+  /**
+   * Attach an existing `ScribeDoc` to the viewer instead of importing fresh bytes.
+   * Use when the parent application already has a parsed document (e.g. from a prior text-extraction
+   * step) so the viewer can skip re-parsing, re-rendering fonts, and re-running OCR.
+   * Terminates the previously attached document if it differs from `doc`.
+   * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
+   * @param {number} [initialPage=0]
+   */
+  async attachDocument(doc, initialPage = 0) {
+    if (this.doc && this.doc !== doc) await this.doc.terminate();
+    this.doc = doc;
+    this.scribe.doc = doc;
+
+    for (let i = 0; i < doc.inputData.pageCount; i++) {
+      if (!doc.annotations.pages[i]) doc.annotations.pages[i] = [];
+    }
+
+    if (this.pageCountElem) this.pageCountElem.textContent = doc.inputData.pageCount.toString();
+    if (this.pageNumElem) this.pageNumElem.value = (initialPage + 1).toString();
+
+    this.scribe.runSetInitial = true;
+    await this.scribe.displayPage(initialPage, initialPage > 0);
+
+    if (this.dropZone) this.dropZone.style.display = 'none';
+  }
+
+  /**
+   * Import a document into the viewer.
+   * Accepts a `File`, `Blob`, `ArrayBuffer`, `Uint8Array`, or a filesystem path string (Node only).
+   * Raw byte inputs (`ArrayBuffer`, `Uint8Array`, non-File `Blob`) are treated as PDFs.
+   * @param {File | Blob | ArrayBuffer | Uint8Array | string} file
+   * @param {number} [initialPage=0]
+   */
+  async importFile(file, initialPage = 0) {
+    let doc;
+    if (this.doc) await this.doc.terminate();
+
+    if (file instanceof ArrayBuffer) {
+      doc = await scribe.openDocument({ pdfFiles: [file] });
+    } else if (typeof Uint8Array !== 'undefined' && file instanceof Uint8Array) {
+      const ab = /** @type {ArrayBuffer} */ (file.buffer.slice(file.byteOffset, file.byteOffset + file.byteLength));
+      doc = await scribe.openDocument({ pdfFiles: [ab] });
+    } else if (typeof File !== 'undefined' && file instanceof File) {
+      doc = await scribe.openDocument([file]);
+    } else if (typeof Blob !== 'undefined' && file instanceof Blob) {
+      doc = await scribe.openDocument({ pdfFiles: [await file.arrayBuffer()] });
+    } else if (typeof file === 'string') {
+      doc = await scribe.openDocument([file]);
+    } else {
+      throw new Error('importFile: input must be File, Blob, ArrayBuffer, Uint8Array, or a filesystem path string.');
+    }
+
+    this.doc = doc;
+    this.scribe.doc = doc;
+
+    for (let i = 0; i < doc.inputData.pageCount; i++) {
+      if (!doc.annotations.pages[i]) doc.annotations.pages[i] = [];
+    }
+
+    if (this.pageCountElem) this.pageCountElem.textContent = doc.inputData.pageCount.toString();
+    if (this.pageNumElem) this.pageNumElem.value = (initialPage + 1).toString();
+
+    this.scribe.runSetInitial = true;
+    await this.scribe.displayPage(initialPage, initialPage > 0);
+
+    if (this.dropZone) this.dropZone.style.display = 'none';
   }
 
   /**
    * Resize the viewer to new pixel dimensions.
-   *
    * @param {number} width
    * @param {number} height
    */
   resize(width, height) {
     this.pdfViewerElem.style.width = `${width}px`;
     this.pdfViewerElem.style.height = `${height}px`;
-    this.dropZone.style.width = `${width - 6}px`;
-    this.dropZone.style.height = `${height - this.toolbarHeight}px`;
-    ScribeViewer.resize(width, height - this.toolbarHeight);
+    if (this.dropZone) {
+      this.dropZone.style.width = `${width - 6}px`;
+      this.dropZone.style.height = `${height - this.toolbarHeight}px`;
+    }
+    this.scribe.resize(width, height - this.toolbarHeight);
+  }
+
+  /**
+   * Tear down the viewer, disconnect observers, terminate the document, and remove the DOM.
+   */
+  async destroy() {
+    if (this.resizeObserver) this.resizeObserver.disconnect();
+    if (this.doc) {
+      try { await this.doc.terminate(); } catch { /* ignore */ }
+      this.doc = null;
+    }
+    if (this.pdfViewerElem.parentNode) this.pdfViewerElem.parentNode.removeChild(this.pdfViewerElem);
+  }
+
+  /**
+   * Install a `setInitialPositionZoom` implementation on `ScribeViewer` based on the requested fit mode.
+   * @param {FitMode} fitMode
+   */
+  _installFit(fitMode) {
+    this.scribe.setInitialPositionZoom = (imgDims) => {
+      this.scribe.runSetInitial = false;
+      const stageW = this.scribe.stage.width();
+      const stageH = this.scribe.stage.height();
+
+      if (typeof fitMode === 'function') {
+        const r = fitMode(imgDims, { width: stageW, height: stageH });
+        this.scribe.stage.scaleX(r.zoom);
+        this.scribe.stage.scaleY(r.zoom);
+        this.scribe.stage.x(r.x ?? (stageW - imgDims.width * r.zoom) / 2);
+        this.scribe.stage.y(r.y ?? 30);
+        return;
+      }
+
+      let zoom;
+      let y;
+      if (fitMode === 'width') {
+        zoom = stageW / imgDims.width;
+        y = 30;
+      } else if (fitMode === 'page') {
+        const wZoom = stageW / imgDims.width;
+        const hZoom = (stageH - 60) / imgDims.height;
+        zoom = Math.min(wZoom, hZoom);
+        y = Math.max(30, (stageH - imgDims.height * zoom) / 2);
+      } else {
+        const interfaceHeight = 100;
+        const bottomMarginHeight = 50;
+        zoom = (stageH - interfaceHeight - bottomMarginHeight) / imgDims.height;
+        y = interfaceHeight;
+      }
+
+      this.scribe.stage.scaleX(zoom);
+      this.scribe.stage.scaleY(zoom);
+      this.scribe.stage.x((stageW - imgDims.width * zoom) / 2);
+      this.scribe.stage.y(y);
+    };
   }
 
   /**
@@ -544,7 +695,7 @@ class ScribePDFViewer {
     }
     if (selectedIds.length === 0) return [];
 
-    const allKonvaWords = ScribeViewer.getKonvaWords();
+    const allKonvaWords = this.scribe.getKonvaWords();
     const idSet = new Set(selectedIds);
     return allKonvaWords.filter((kw) => idSet.has(kw.word.id));
   }
@@ -570,13 +721,11 @@ class ScribePDFViewer {
    * Hovering the icon shows a tooltip with the comment text.
    */
   updateCommentIcons() {
-    // Remove existing icons
-    ScribeViewer.elem?.querySelectorAll('.highlight-comment-icon').forEach((el) => el.remove());
+    this.scribe.elem?.querySelectorAll('.highlight-comment-icon').forEach((el) => el.remove());
 
-    const allWords = ScribeViewer.getKonvaWords();
+    const allWords = this.scribe.getKonvaWords();
     if (!allWords || allWords.length === 0) return;
 
-    // Collect unique groups with non-empty comments
     const groupFirstWord = new Map();
     for (const kw of allWords) {
       if (!kw.highlightGroupId || !kw.highlightComment) continue;
@@ -592,21 +741,18 @@ class ScribePDFViewer {
       }
     }
 
-    // Append icons to the same container as .scribe-word elements (ScribeViewer.elem)
-    // using the same coordinate system (absolute position matching overlay elements).
-    const viewerElem = ScribeViewer.elem;
+    const viewerElem = this.scribe.elem;
 
     for (const [, kw] of groupFirstWord) {
       const wordElem = viewerElem.querySelector(`.scribe-word[id="${kw.word.id}"]`);
       if (!wordElem) continue;
 
-      // Use the overlay element's own position (same coordinate system as other overlays)
       const wordLeft = parseFloat(/** @type {HTMLElement} */ (wordElem).style.left) || 0;
       const wordTop = parseFloat(/** @type {HTMLElement} */ (wordElem).style.top) || 0;
 
       const icon = document.createElement('span');
       icon.className = 'highlight-comment-icon';
-      icon.textContent = '\uD83D\uDCAC';
+      icon.textContent = '💬';
       icon.style.left = `${wordLeft - 16}px`;
       icon.style.top = `${wordTop - 14}px`;
 
@@ -631,9 +777,7 @@ class ScribePDFViewer {
 
   static styleAdded = false;
 
-  /**
-   * Adds the required CSS styles to the document.
-   */
+  /** Adds the required CSS styles to the document. */
   static addIconButtonStyles = () => {
     if (ScribePDFViewer.styleAdded) return;
     ScribePDFViewer.styleAdded = true;
@@ -641,7 +785,7 @@ class ScribePDFViewer {
     style.type = 'text/css';
 
     const css = `
-    .cr-icon {
+    .scribe-pdf-viewer .cr-icon {
       align-items: center;
       display: inline-flex;
       justify-content: center;
@@ -653,7 +797,7 @@ class ScribePDFViewer {
       height: 32px;
     }
 
-    .cr-icon-button {
+    .scribe-pdf-viewer .cr-icon-button {
       -webkit-tap-highlight-color: transparent;
       border-radius: 50%;
       cursor: pointer;
@@ -668,16 +812,16 @@ class ScribePDFViewer {
       width: 32px;
     }
 
-    .cr-icon-button:hover {
+    .scribe-pdf-viewer .cr-icon-button:hover {
       background: rgba(255, 255, 255, .08);
       border-radius: 50%;
     }
 
-    .cr-icon-button.active {
+    .scribe-pdf-viewer .cr-icon-button.active {
       background: rgba(255, 255, 255, .2);
     }
 
-    .highlight-color-btn {
+    .scribe-pdf-viewer .highlight-color-btn {
       width: 18px;
       height: 18px;
       border-radius: 50%;
@@ -689,15 +833,15 @@ class ScribePDFViewer {
       top: 3px;
     }
 
-    .highlight-color-btn:hover {
+    .scribe-pdf-viewer .highlight-color-btn:hover {
       border-color: rgba(255, 255, 255, .5);
     }
 
-    .highlight-color-btn.active {
+    .scribe-pdf-viewer .highlight-color-btn.active {
       border-color: #fff;
     }
 
-    .highlight-comment-icon {
+    .scribe-pdf-viewer .highlight-comment-icon {
       position: absolute;
       font-size: 14px;
       cursor: default;
@@ -706,7 +850,7 @@ class ScribePDFViewer {
       pointer-events: auto;
     }
 
-    .highlight-comment-tooltip {
+    .scribe-pdf-viewer .highlight-comment-tooltip {
       position: absolute;
       background: #333;
       color: #fff;
@@ -719,7 +863,7 @@ class ScribePDFViewer {
       z-index: 20;
     }
 
-    .vertical-separator {
+    .scribe-pdf-viewer .vertical-separator {
       background: rgba(255, 255, 255, .3);
       height: 15px;
       width: 1px;
@@ -728,7 +872,7 @@ class ScribePDFViewer {
       display: inline-block;
     }
 
-    .upload_dropZone {
+    .scribe-pdf-viewer .upload_dropZone {
       border: solid;
       border-width: 3px;
       outline: 2px dashed #323639;
@@ -740,13 +884,13 @@ class ScribePDFViewer {
         background-color 0.2s ease-out;
     }
 
-    .upload_dropZone.highlight {
+    .scribe-pdf-viewer .upload_dropZone.highlight {
       outline-offset: -4px;
       outline-color: #191b1d;
       background-color: rgb(106, 111, 114);
     }
 
-    input {
+    .scribe-pdf-viewer-toolbar input {
       background: rgba(0, 0, 0, .5);
       border: none;
       caret-color: currentColor;
@@ -759,7 +903,6 @@ class ScribePDFViewer {
       text-align: center;
       width: 5ch;
     }
-
   `;
 
     style.appendChild(document.createTextNode(css));
@@ -767,35 +910,38 @@ class ScribePDFViewer {
   };
 }
 
-const pdfViewerContElem = /** @type {HTMLDivElement} */(document.getElementById('pdfViewerCont'));
+// Auto-instantiate the basic-viewer demo when the page provides `#pdfViewerCont`.
+// This is the entry point used by `index.html`, `tauri-entry.js`, and `electron-entry.js`.
+// When importing this module from a page without that element (e.g. when embedding `ScribePDFViewer` in your own container),
+// no side effects fire and you can construct an instance yourself.
+const pdfViewerContElem = /** @type {HTMLDivElement|null} */(document.getElementById('pdfViewerCont'));
 
-const pdfViewer = new ScribePDFViewer(pdfViewerContElem, { width: window.innerWidth, height: window.innerHeight });
-
-let resizeTimer = null;
-window.addEventListener('resize', () => {
-  if (resizeTimer) clearTimeout(resizeTimer);
-  resizeTimer = setTimeout(() => {
-    resizeTimer = null;
-    pdfViewer.resize(window.innerWidth, window.innerHeight);
-  }, 150);
-});
-
-// Exposing important modules for debugging and testing purposes.
-// These should not be relied upon in code--import/export should be used instead.
-globalThis.df = {
-  scribe,
-  ScribeCanvas: ScribeViewer,
-  applyHighlight,
-  pdfViewer,
+const buildBootstrapViewer = () => {
+  if (!pdfViewerContElem) return null;
+  if (!pdfViewerContElem.style.width) pdfViewerContElem.style.width = '100vw';
+  if (!pdfViewerContElem.style.height) pdfViewerContElem.style.height = '100vh';
+  const v = new ScribePDFViewer(pdfViewerContElem);
+  // Exposing important modules for debugging and testing purposes.
+  // These should not be relied upon in code--import/export should be used instead.
+  globalThis.df = {
+    scribe,
+    ScribeCanvas: ScribeViewer,
+    applyHighlight,
+    pdfViewer: v,
+  };
+  return v;
 };
+
+/** @type {ScribePDFViewer|null} */
+const pdfViewer = buildBootstrapViewer();
 
 let currentFile = null;
 async function handleLoadFile(file, page, readFileFn) {
-  // Hide the upload prompt immediately when loading a file via MCP/desktop.
-  pdfViewer.dropZone.style.display = 'none';
+  if (!pdfViewer) throw new Error('handleLoadFile requires the auto-instantiated viewer. Use ScribePDFViewer + importFile directly when embedding.');
+  if (pdfViewer.dropZone) pdfViewer.dropZone.style.display = 'none';
 
   if (currentFile === file) {
-    await ScribeViewer.displayPage(page, true, false);
+    await pdfViewer.scribe.displayPage(page, true, false);
     return;
   }
   const { buffer, name } = await readFileFn(file);
@@ -805,21 +951,21 @@ async function handleLoadFile(file, page, readFileFn) {
 }
 
 async function handleHighlights(highlights) {
+  if (!pdfViewer) throw new Error('handleHighlights requires the auto-instantiated viewer.');
+  const sv = pdfViewer.scribe;
   for (const highlight of highlights) {
     const pageNum = highlight.page;
-    const page = ScribeViewer.doc.ocr.active[pageNum];
+    const page = sv.doc.ocr.active[pageNum];
     if (!page) continue;
 
     const lines = highlight.lines;
     if (!lines || lines.length === 0) continue;
 
-    // Only switch pages if not already on the correct page.
-    // Always await to ensure words are fully rendered before querying.
-    if (ScribeViewer.state.cp.n !== pageNum) {
-      await ScribeViewer.displayPage(pageNum, true, false);
+    if (sv.state.cp.n !== pageNum) {
+      await sv.displayPage(pageNum, true, false);
     }
 
-    const allWords = ScribeViewer.getKonvaWords();
+    const allWords = sv.getKonvaWords();
     const matchedWords = [];
 
     for (let i = 0; i < lines.length; i++) {
@@ -843,7 +989,7 @@ async function handleHighlights(highlights) {
     }
 
     if (matchedWords.length > 0) {
-      applyHighlight(matchedWords, pageNum, highlight.color || '#ffff00', highlight.opacity || 0.4);
+      applyHighlight(sv, matchedWords, pageNum, highlight.color || '#ffff00', highlight.opacity || 0.4);
     }
   }
 }

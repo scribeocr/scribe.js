@@ -16,6 +16,7 @@ import { annotMatchesWord, updateHighlightGroupOutline } from './viewerHighlight
 
 /**
  * Recognize area selected by user in Tesseract.
+ * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {number} n - Page number.
  * @param {Object} box
  * @param {number} box.width
@@ -23,17 +24,11 @@ import { annotMatchesWord, updateHighlightGroupOutline } from './viewerHighlight
  * @param {number} box.left
  * @param {number} box.top
  * @param {boolean} [wordMode=false] - Assume selection is single word.
- *
- * Note: This function assumes OCR data already exists, which this function is adding to.
- * Users should not be allowed to recognize a word/area before OCR data is provided by (1) upload or (2) running "recognize all".
- * Even if recognizing an page for the first time using "recognize area" did not produce an error,
- * it would still be problematic, as running "recognize all" afterwards would overwrite everything.
  */
-async function recognizeArea(n, box, wordMode = false) {
-  // Return early if the rectangle is too small to be a word.
+async function recognizeArea(viewer, n, box, wordMode = false) {
   if (box.width < 4 || box.height < 4) return;
 
-  if (!ScribeViewer.doc.ocr.active[n]) {
+  if (!viewer.doc.ocr.active[n]) {
     console.error('Base text layer must exist prior to recognizing area.');
     return;
   }
@@ -43,12 +38,9 @@ async function recognizeArea(n, box, wordMode = false) {
   const legacy = true;
   const lstm = true;
 
-  // When a user is manually selecting words to recognize, they are assumed to be in the same block.
-  // SINGLE_BLOCK: '6',
-  // SINGLE_WORD: '8',
   const psm = wordMode ? '8' : '6';
 
-  const upscale = ScribeViewer.doc.inputData.imageMode && scribe.opt.enableUpscale;
+  const upscale = viewer.doc.inputData.imageMode && scribe.ScribeDoc.defaults.enableUpscale;
 
   if (upscale) {
     imageCoords.left *= 2;
@@ -57,8 +49,7 @@ async function recognizeArea(n, box, wordMode = false) {
     imageCoords.height *= 2;
   }
 
-  // Restrict the rectangle to the page dimensions.
-  const pageDims = ScribeViewer.doc.pageMetrics[n].dims;
+  const pageDims = viewer.doc.pageMetrics[n].dims;
   const leftClip = Math.max(0, imageCoords.left);
   const topClip = Math.max(0, imageCoords.top);
   // Tesseract has a bug that subtracting 1 from the width and height (when setting the rectangle to the full image) fixes.
@@ -71,7 +62,7 @@ async function recognizeArea(n, box, wordMode = false) {
   imageCoords.height = bottomClip - topClip;
   if (imageCoords.width < 4 || imageCoords.height < 4) return;
 
-  const res0 = await ScribeViewer.doc.recognizePageImp(n, legacy, lstm, true, { rectangle: imageCoords, tessedit_pageseg_mode: psm, upscale });
+  const res0 = await viewer.doc.recognizePageImp(n, legacy, lstm, true, { rectangle: imageCoords, tessedit_pageseg_mode: psm, upscale });
 
   let pageNew;
   if (legacy && lstm) {
@@ -83,27 +74,27 @@ async function recognizeArea(n, box, wordMode = false) {
 
     const debugLabel = 'recognizeArea';
 
-    if (debugLabel && !ScribeViewer.doc.debug.debugImg[debugLabel]) {
-      ScribeViewer.doc.debug.debugImg[debugLabel] = new Array(ScribeViewer.doc.images.pageCount);
-      for (let i = 0; i < ScribeViewer.doc.images.pageCount; i++) {
-        ScribeViewer.doc.debug.debugImg[debugLabel][i] = [];
+    if (debugLabel && !viewer.doc.debug.debugImg[debugLabel]) {
+      viewer.doc.debug.debugImg[debugLabel] = new Array(viewer.doc.images.pageCount);
+      for (let i = 0; i < viewer.doc.images.pageCount; i++) {
+        viewer.doc.debug.debugImg[debugLabel][i] = [];
       }
     }
 
-    /** @type {Parameters<typeof ScribeViewer.doc.compareOCR>[2]} */
+    /** @type {Parameters<typeof viewer.doc.compareOCR>[2]} */
     const compOptions = {
       mode: 'comb',
       debugLabel,
-      ignoreCap: scribe.opt.ignoreCap,
-      ignorePunct: scribe.opt.ignorePunct,
-      confThreshHigh: scribe.opt.confThreshHigh,
-      confThreshMed: scribe.opt.confThreshMed,
+      ignoreCap: scribe.ScribeDoc.defaults.ignoreCap,
+      ignorePunct: scribe.ScribeDoc.defaults.ignorePunct,
+      confThreshHigh: scribe.ScribeDoc.defaults.confThreshHigh,
+      confThreshMed: scribe.ScribeDoc.defaults.confThreshMed,
       legacyLSTMComb: true,
     };
 
-    const res = await ScribeViewer.doc.compareOCR([pageObjLegacy], [pageObjLSTM], compOptions);
+    const res = await viewer.doc.compareOCR([pageObjLegacy], [pageObjLSTM], compOptions);
 
-    if (ScribeViewer.doc.debug.debugImg[debugLabel]) ScribeViewer.doc.debug.debugImg[debugLabel] = res.debug;
+    if (viewer.doc.debug.debugImg[debugLabel]) viewer.doc.debug.debugImg[debugLabel] = res.debug;
 
     pageNew = res.ocr[0];
   } else if (legacy) {
@@ -114,33 +105,31 @@ async function recognizeArea(n, box, wordMode = false) {
     pageNew = resLSTM.convert.lstm.pageObj;
   }
 
-  scribe.combineOCRPage(pageNew, ScribeViewer.doc.ocr.active[n], ScribeViewer.doc.pageMetrics[n]);
+  scribe.combineOCRPage(pageNew, viewer.doc.ocr.active[n], viewer.doc.pageMetrics[n]);
 
-  if (ScribeViewer.textGroupsRenderIndices.includes(n)) ScribeViewer.displayPage(ScribeViewer.state.cp.n);
+  if (viewer.textGroupsRenderIndices.includes(n)) viewer.displayPage(viewer.state.cp.n);
 }
 
 /**
- *
+ * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {number} n - Page number.
  * @param {Object} box
  * @param {number} box.width
  * @param {number} box.height
  * @param {number} box.left
  * @param {number} box.top
- *
  */
-async function addWordManual(n, box) {
+async function addWordManual(viewer, n, box) {
   const wordText = 'A';
-  // Calculate offset between HOCR coordinates and canvas coordinates (due to e.g. roatation)
   let angleAdjXRect = 0;
   let angleAdjYRect = 0;
   let sinAngle = 0;
   let shiftX = 0;
   let shiftY = 0;
-  if (scribe.opt.autoRotate && Math.abs(ScribeViewer.doc.pageMetrics[n].angle ?? 0) > 0.05) {
-    const rotateAngle = ScribeViewer.doc.pageMetrics[n].angle || 0;
+  if (scribe.ScribeDoc.defaults.autoRotate && Math.abs(viewer.doc.pageMetrics[n].angle ?? 0) > 0.05) {
+    const rotateAngle = viewer.doc.pageMetrics[n].angle || 0;
 
-    const pageDims = ScribeViewer.doc.pageMetrics[n].dims;
+    const pageDims = viewer.doc.pageMetrics[n].dims;
 
     sinAngle = Math.sin(rotateAngle * (Math.PI / 180));
     const cosAngle = Math.cos(rotateAngle * (Math.PI / 180));
@@ -157,7 +146,6 @@ async function addWordManual(n, box) {
     angleAdjYRect = angleAdjYInt + shiftY;
   }
 
-  // Calculate coordinates as they would appear in the HOCR file (subtracting out all transformations)
   const rectTopHOCR = box.top - angleAdjYRect;
   const rectBottomHOCR = box.top + box.height - angleAdjYRect;
 
@@ -168,26 +156,21 @@ async function addWordManual(n, box) {
     left: rectLeftHOCR, top: rectTopHOCR, right: rectRightHOCR, bottom: rectBottomHOCR,
   };
 
-  const pageObj = new scribe.utils.ocr.OcrPage(n, ScribeViewer.doc.ocr.active[n].dims);
-  // Create a temporary line to hold the word until it gets combined.
-  // This should not be used after `combineData` is run as it is not the final line.
+  const pageObj = new scribe.utils.ocr.OcrPage(n, viewer.doc.ocr.active[n].dims);
   const lineObjTemp = new scribe.utils.ocr.OcrLine(pageObj, wordBox, [0, 0], 10, null);
   pageObj.lines = [lineObjTemp];
   const wordIDNew = scribe.utils.getRandomAlphanum(10);
   const wordObj = new scribe.utils.ocr.OcrWord(lineObjTemp, wordIDNew, wordText, wordBox);
-  // Words added by user are assumed to be correct.
   wordObj.conf = 100;
   lineObjTemp.words = [wordObj];
 
-  scribe.combineOCRPage(pageObj, ScribeViewer.doc.ocr.active[n], ScribeViewer.doc.pageMetrics[n], true, false);
+  scribe.combineOCRPage(pageObj, viewer.doc.ocr.active[n], viewer.doc.pageMetrics[n], true, false);
 
-  // Get line word was added to in main data.
-  // This will have different metrics from `lineObj` when the line was combined into an existing line.
-  const wordObjNew = scribe.utils.ocr.getPageWord(ScribeViewer.doc.ocr.active[n], wordIDNew);
+  const wordObjNew = scribe.utils.ocr.getPageWord(viewer.doc.ocr.active[n], wordIDNew);
 
   if (!wordObjNew) throw new Error('Failed to add word to page.');
 
-  const angle = ScribeViewer.doc.pageMetrics[n].angle || 0;
+  const angle = viewer.doc.pageMetrics[n].angle || 0;
   const imageRotated = Math.abs(angle ?? 0) > 0.05;
 
   const angleAdjLine = imageRotated ? scribe.utils.ocr.calcLineStartAngleAdj(wordObjNew.line) : { x: 0, y: 0 };
@@ -198,7 +181,7 @@ async function addWordManual(n, box) {
 
   const visualBaseline = linebox.bottom + baseline[1] + angleAdjLine.y + angleAdjWord.y;
 
-  const outlineWord = ScribeViewer.opt.outlineWords || scribe.opt.displayMode === 'eval' && wordObj.conf > scribe.opt.confThreshHigh && !wordObj.matchTruth;
+  const outlineWord = viewer.opt.outlineWords || scribe.ScribeDoc.defaults.displayMode === 'eval' && wordObj.conf > scribe.ScribeDoc.defaults.confThreshHigh && !wordObj.matchTruth;
 
   const wordCanvas = new KonvaOcrWord({
     visualLeft: box.left,
@@ -208,13 +191,14 @@ async function addWordManual(n, box) {
     word: wordObj,
     outline: outlineWord,
     fillBox: false,
-    listening: !ScribeViewer.state.layoutMode,
+    listening: !viewer.state.layoutMode,
+    viewer,
   });
 
-  const group = ScribeViewer.getTextGroup(n);
+  const group = viewer.getTextGroup(n);
   group.add(wordCanvas);
 
-  ScribeViewer.layerText.batchDraw();
+  viewer.layerText.batchDraw();
 }
 
 const createContextMenuHTML = () => {
@@ -306,27 +290,34 @@ const createContextMenuHTML = () => {
   return menuDiv;
 };
 
+// The context menu is a singleton DOM element shared across viewers (only one can be visible at a
+// time). When opened we store the owning viewer on `_menuViewer` and click handlers act on it.
+/** @type {?import('../viewer.js').ScribeViewer} */
+let _menuViewer = null;
+function mv() { return _menuViewer || ScribeViewer.getDefault(); }
+
 const splitWordClick = () => {
   hideContextMenu();
-
-  const konvaWord = ScribeViewer.contextMenuWord;
+  const viewer = mv();
+  const konvaWord = viewer.contextMenuWord;
 
   if (!konvaWord) return;
 
   const splitIndex = KonvaOcrWord.getCursorIndex(konvaWord);
-  const { wordA, wordB } = scribe.utils.splitOcrWord(konvaWord.word, splitIndex, ScribeViewer.doc.fonts);
+  const { wordA, wordB } = scribe.utils.splitOcrWord(konvaWord.word, splitIndex, viewer.doc.fonts);
 
   const wordIndex = konvaWord.word.line.words.findIndex((x) => x.id === konvaWord.word.id);
 
   konvaWord.word.line.words.splice(wordIndex, 1, wordA, wordB);
 
-  ScribeViewer.displayPage(ScribeViewer.state.cp.n);
+  viewer.displayPage(viewer.state.cp.n);
 };
 
 const mergeWordsClick = () => {
   hideContextMenu();
+  const viewer = mv();
 
-  const selectedKonvaWords = ScribeViewer.CanvasSelection.getKonvaWords();
+  const selectedKonvaWords = viewer.CanvasSelection.getKonvaWords();
   const selectedWords = selectedKonvaWords.map((x) => x.word);
   if (selectedKonvaWords.length < 2 || !scribe.utils.checkOcrWordsAdjacent(selectedWords)) return;
   const newWord = scribe.utils.mergeOcrWords(selectedKonvaWords.map((x) => x.word));
@@ -336,22 +327,23 @@ const mergeWordsClick = () => {
   const firstIndex = lineWords.findIndex((x) => x.id === selectedKonvaWords[0].word.id);
   lineWords.splice(firstIndex, selectedKonvaWords.length, newWord);
 
-  ScribeViewer.displayPage(ScribeViewer.state.cp.n);
+  viewer.displayPage(viewer.state.cp.n);
 };
 
 const deleteLayoutDataTableClick = () => {
   hideContextMenu();
-  deleteSelectedLayoutDataTable();
+  deleteSelectedLayoutDataTable(mv());
 };
 
 const deleteLayoutRegionClick = () => {
   hideContextMenu();
-  deleteSelectedLayoutRegion();
+  deleteSelectedLayoutRegion(mv());
 };
 
 const copyTableContentsClick = () => {
   hideContextMenu();
-  const selectedColumns = ScribeViewer.CanvasSelection.getKonvaDataColumns();
+  const viewer = mv();
+  const selectedColumns = viewer.CanvasSelection.getKonvaDataColumns();
   if (selectedColumns.length === 0 || !navigator.clipboard) return;
 
   const table = document.createElement('table');
@@ -378,49 +370,50 @@ const copyTableContentsClick = () => {
 
 const mergeDataColumnsClick = () => {
   hideContextMenu();
-  mergeDataColumns(ScribeViewer.CanvasSelection.getKonvaDataColumns());
-  ScribeViewer.destroyControls();
+  const viewer = mv();
+  mergeDataColumns(viewer.CanvasSelection.getKonvaDataColumns());
+  viewer.destroyControls();
 };
 
 const mergeDataTablesClick = () => {
   hideContextMenu();
-  const dataTableArr = ScribeViewer.CanvasSelection.getDataTables();
+  const viewer = mv();
+  const dataTableArr = viewer.CanvasSelection.getDataTables();
   mergeDataTables(dataTableArr);
-  ScribeViewer.destroyControls();
+  viewer.destroyControls();
 };
 
 const splitDataColumnClick = () => {
   hideContextMenu();
-  // const ptr = ScribeCanvas.layerOverlay.getRelativePointerPosition();
-  // if (!ptr) return;
-  const selectedColumns = ScribeViewer.CanvasSelection.getKonvaDataColumns();
-  splitDataColumn(selectedColumns[0], ScribeViewer.contextMenuPointer.x);
-  ScribeViewer.destroyControls();
+  const viewer = mv();
+  const selectedColumns = viewer.CanvasSelection.getKonvaDataColumns();
+  splitDataColumn(selectedColumns[0], viewer.contextMenuPointer.x);
+  viewer.destroyControls();
 };
 
 const splitDataTableClick = () => {
   hideContextMenu();
-  splitDataTable(ScribeViewer.CanvasSelection.getKonvaDataColumns());
-  ScribeViewer.destroyControls();
+  const viewer = mv();
+  splitDataTable(viewer.CanvasSelection.getKonvaDataColumns());
+  viewer.destroyControls();
 };
 
 const deleteHighlightClick = () => {
   hideContextMenu();
+  const viewer = mv();
 
-  const konvaWord = ScribeViewer.contextMenuWord;
+  const konvaWord = viewer.contextMenuWord;
   if (!konvaWord || !konvaWord.highlightColor) return;
 
   const n = konvaWord.word.line.page.n;
   const wb = konvaWord.word.bbox;
-  const pageAnnotations = ScribeViewer.doc.annotations.pages[n];
+  const pageAnnotations = viewer.doc.annotations.pages[n];
 
-  // Find the annotation matching this word
   const matchingAnnot = pageAnnotations.find((annot) => annotMatchesWord(annot, wb));
   if (!matchingAnnot) return;
 
-  // Remove the entire annotation (all entries sharing the same groupId)
-  ScribeViewer.doc.annotations.pages[n] = pageAnnotations.filter((annot) => annot.groupId !== matchingAnnot.groupId);
-  for (const kw of ScribeViewer.getKonvaWords()) {
+  viewer.doc.annotations.pages[n] = pageAnnotations.filter((annot) => annot.groupId !== matchingAnnot.groupId);
+  for (const kw of viewer.getKonvaWords()) {
     if (kw.highlightGroupId === matchingAnnot.groupId) {
       kw.highlightColor = null;
       kw.highlightOpacity = 1;
@@ -431,15 +424,16 @@ const deleteHighlightClick = () => {
     }
   }
 
-  updateHighlightGroupOutline();
-  if (ScribeViewer.KonvaOcrWord.updateUI) ScribeViewer.KonvaOcrWord.updateUI();
-  ScribeViewer.layerText.batchDraw();
+  updateHighlightGroupOutline(viewer);
+  if (KonvaOcrWord.updateUI) KonvaOcrWord.updateUI();
+  viewer.layerText.batchDraw();
 };
 
 const deleteWordsClick = () => {
   hideContextMenu();
-  deleteSelectedWord();
-  ScribeViewer.destroyControls();
+  const viewer = mv();
+  deleteSelectedWord(viewer);
+  viewer.destroyControls();
 };
 
 const menuNode = createContextMenuHTML();
@@ -470,11 +464,11 @@ export const hideContextMenu = () => {
   contextMenuSplitTableButtonElem.style.display = 'none';
   contextMenuDeleteHighlightButtonElem.style.display = 'none';
   menuNode.style.display = 'none';
+  _menuViewer = null;
 };
 
 const style = document.createElement('style');
 
-// Add CSS rules to the style element
 style.textContent = `
     #menu {
       display: none;
@@ -499,128 +493,108 @@ style.textContent = `
 
 document.head.appendChild(style);
 
-export const contextMenuFunc = (event) => {
-  const pointer = ScribeViewer.stage.getPointerPosition();
-  const pointerRelative = ScribeViewer.layerOverlay.getRelativePointerPosition();
+export const contextMenuFunc = (viewer, event) => {
+  _menuViewer = viewer;
+  try {
+    const pointer = viewer.stage.getPointerPosition();
+    const pointerRelative = viewer.layerOverlay.getRelativePointerPosition();
 
-  if (!pointer || !pointerRelative) return;
+    if (!pointer || !pointerRelative) return;
 
-  const selectedKonvaWords = ScribeViewer.CanvasSelection.getKonvaWords();
-  const selectedWords = selectedKonvaWords.map((x) => x.word);
-  const selectedColumns = ScribeViewer.CanvasSelection.getKonvaDataColumns();
-  const selectedRegions = ScribeViewer.CanvasSelection.getKonvaRegions();
+    const selectedKonvaWords = viewer.CanvasSelection.getKonvaWords();
+    const selectedWords = selectedKonvaWords.map((x) => x.word);
+    const selectedColumns = viewer.CanvasSelection.getKonvaDataColumns();
+    const selectedRegions = viewer.CanvasSelection.getKonvaRegions();
 
-  ScribeViewer.contextMenuPointer = pointerRelative;
+    viewer.contextMenuPointer = pointerRelative;
 
-  let enableSplitWord = false;
-  let enableMergeWords = false;
-  let enableDeleteWords = false;
-  let enableDeleteHighlight = false;
-  if (!ScribeViewer.state.layoutMode && selectedKonvaWords.length > 0) enableDeleteWords = true;
-  if (!ScribeViewer.state.layoutMode && event.target instanceof KonvaOcrWord) {
-    ScribeViewer.contextMenuWord = event.target;
-    if (event.target.highlightColor) enableDeleteHighlight = true;
-    if (selectedKonvaWords.length < 2) {
-      const cursorIndex = KonvaOcrWord.getCursorIndex(event.target);
-      if (cursorIndex > 0 && cursorIndex < event.target.word.text.length) {
-        enableSplitWord = true;
+    let enableSplitWord = false;
+    let enableMergeWords = false;
+    let enableDeleteWords = false;
+    let enableDeleteHighlight = false;
+    if (!viewer.state.layoutMode && selectedKonvaWords.length > 0) enableDeleteWords = true;
+    if (!viewer.state.layoutMode && event.target instanceof KonvaOcrWord) {
+      viewer.contextMenuWord = event.target;
+      if (event.target.highlightColor) enableDeleteHighlight = true;
+      if (selectedKonvaWords.length < 2) {
+        const cursorIndex = KonvaOcrWord.getCursorIndex(event.target);
+        if (cursorIndex > 0 && cursorIndex < event.target.word.text.length) {
+          enableSplitWord = true;
+        }
+      } else {
+        const adjacentWords = scribe.utils.checkOcrWordsAdjacent(selectedWords);
+        if (adjacentWords) enableMergeWords = true;
       }
-    } else {
-      const adjacentWords = scribe.utils.checkOcrWordsAdjacent(selectedWords);
-      if (adjacentWords) enableMergeWords = true;
     }
-  }
 
-  const selectedTables = ScribeViewer.CanvasSelection.getDataTables();
+    const selectedTables = viewer.CanvasSelection.getDataTables();
 
-  let enableMergeTables = false;
-  let enableMergeColumns = false;
-  let enableSplit = false;
-  let enableDeleteRegion = false;
-  let enableDeleteTable = false;
-  let enableCopyTableContents = false;
-  let enableSplitTable = false;
+    let enableMergeTables = false;
+    let enableMergeColumns = false;
+    let enableSplit = false;
+    let enableDeleteRegion = false;
+    let enableDeleteTable = false;
+    let enableCopyTableContents = false;
+    let enableSplitTable = false;
 
-  if (selectedTables.length === 1) {
-    // The "Merge Columns" button will be enabled if multiple adjacent columns are selected.
-    const adjacentColumns = checkDataColumnsAdjacent(selectedColumns);
-    if (selectedColumns.length > 1 && adjacentColumns) enableMergeColumns = true;
-    if (selectedColumns.length === 1) enableSplit = true;
-    if (selectedRegions.length > 0) enableDeleteRegion = true;
-    if (selectedColumns.length > 0 && adjacentColumns && selectedColumns.length < selectedTables[0].boxes.length) enableSplitTable = true;
-    if (selectedColumns.length > 0 && selectedColumns.length === selectedColumns[0].konvaTable.columns.length) {
-      enableDeleteTable = true;
-      enableCopyTableContents = true;
+    if (selectedTables.length === 1) {
+      const adjacentColumns = checkDataColumnsAdjacent(selectedColumns);
+      if (selectedColumns.length > 1 && adjacentColumns) enableMergeColumns = true;
+      if (selectedColumns.length === 1) enableSplit = true;
+      if (selectedRegions.length > 0) enableDeleteRegion = true;
+      if (selectedColumns.length > 0 && adjacentColumns && selectedColumns.length < selectedTables[0].boxes.length) enableSplitTable = true;
+      if (selectedColumns.length > 0 && selectedColumns.length === selectedColumns[0].konvaTable.columns.length) {
+        enableDeleteTable = true;
+        enableCopyTableContents = true;
+      }
+    } else if (selectedTables.length > 1 && checkDataTablesAdjacent(selectedTables)) {
+      enableMergeTables = true;
+    } else if (selectedRegions.length > 0) {
+      enableDeleteRegion = true;
     }
-  } else if (selectedTables.length > 1 && checkDataTablesAdjacent(selectedTables)) {
-    enableMergeTables = true;
-  } else if (selectedRegions.length > 0) {
-    enableDeleteRegion = true;
-  }
 
-  if (!(enableMergeColumns || enableSplit || enableDeleteRegion || enableDeleteTable || enableCopyTableContents || enableMergeTables || enableSplitTable
-    || enableSplitWord || enableMergeWords || enableDeleteWords || enableDeleteHighlight)) return;
+    if (!(enableMergeColumns || enableSplit || enableDeleteRegion || enableDeleteTable || enableCopyTableContents || enableMergeTables || enableSplitTable
+      || enableSplitWord || enableMergeWords || enableDeleteWords || enableDeleteHighlight)) return;
 
-  if (enableMergeWords) {
-    contextMenuMergeWordsButtonElem.style.display = 'initial';
-  }
-  if (enableSplitWord) {
-    contextMenuSplitWordButtonElem.style.display = 'initial';
-  }
-  if (enableDeleteWords) {
-    contextMenuDeleteWordsButtonElem.style.display = 'initial';
-  }
-  if (enableMergeColumns) {
-    contextMenuMergeColumnsButtonElem.style.display = 'initial';
-  }
-  if (enableSplit) {
-    contextMenuSplitColumnButtonElem.style.display = 'initial';
-  }
-  if (enableDeleteRegion) {
-    contextMenuDeleteLayoutRegionButtonElem.style.display = 'initial';
-  }
-  if (enableDeleteTable) {
-    contextMenuDeleteLayoutTableButtonElem.style.display = 'initial';
-  }
-  if (enableCopyTableContents) {
-    contextMenuCopyLayoutTableContentsButtonElem.style.display = 'initial';
-  }
-  if (enableMergeTables) {
-    contextMenuMergeTablesButtonElem.style.display = 'initial';
-  }
-  if (enableMergeTables) {
-    contextMenuMergeTablesButtonElem.style.display = 'initial';
-  }
-  if (enableSplitTable) {
-    contextMenuSplitTableButtonElem.style.display = 'initial';
-  }
-  if (enableDeleteHighlight) {
-    contextMenuDeleteHighlightButtonElem.style.display = 'initial';
-  }
+    if (enableMergeWords) contextMenuMergeWordsButtonElem.style.display = 'initial';
+    if (enableSplitWord) contextMenuSplitWordButtonElem.style.display = 'initial';
+    if (enableDeleteWords) contextMenuDeleteWordsButtonElem.style.display = 'initial';
+    if (enableMergeColumns) contextMenuMergeColumnsButtonElem.style.display = 'initial';
+    if (enableSplit) contextMenuSplitColumnButtonElem.style.display = 'initial';
+    if (enableDeleteRegion) contextMenuDeleteLayoutRegionButtonElem.style.display = 'initial';
+    if (enableDeleteTable) contextMenuDeleteLayoutTableButtonElem.style.display = 'initial';
+    if (enableCopyTableContents) contextMenuCopyLayoutTableContentsButtonElem.style.display = 'initial';
+    if (enableMergeTables) contextMenuMergeTablesButtonElem.style.display = 'initial';
+    if (enableSplitTable) contextMenuSplitTableButtonElem.style.display = 'initial';
+    if (enableDeleteHighlight) contextMenuDeleteHighlightButtonElem.style.display = 'initial';
 
-  event.evt.preventDefault();
+    event.evt.preventDefault();
 
-  menuNode.style.display = 'initial';
-  const containerRect = ScribeViewer.stage.container().getBoundingClientRect();
-  menuNode.style.top = `${containerRect.top + pointer.y + 4}px`;
-  menuNode.style.left = `${containerRect.left + pointer.x + 4}px`;
+    menuNode.style.display = 'initial';
+    const containerRect = viewer.stage.container().getBoundingClientRect();
+    menuNode.style.top = `${containerRect.top + pointer.y + 4}px`;
+    menuNode.style.left = `${containerRect.left + pointer.x + 4}px`;
+  } catch (e) {
+    _menuViewer = null;
+    throw e;
+  }
 };
 
 /**
- *
+ * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {Object} box
  * @param {number} box.width
  * @param {number} box.height
  * @param {number} box.x
  * @param {number} box.y
  */
-function selectWords(box) {
-  const shapes = ScribeViewer.getKonvaWords();
+function selectWords(viewer, box) {
+  const shapes = viewer.getKonvaWords();
 
   const newSelectedWords = shapes.filter((shape) => Konva.Util.haveIntersection(box, shape.getClientRect()));
-  ScribeViewer.CanvasSelection.addWords(newSelectedWords);
+  viewer.CanvasSelection.addWords(newSelectedWords);
 
-  const selectedWords = ScribeViewer.CanvasSelection.getKonvaWords();
+  const selectedWords = viewer.CanvasSelection.getKonvaWords();
 
   if (selectedWords.length > 1) {
     selectedWords.forEach((shape) => (shape.select()));
@@ -632,109 +606,96 @@ function selectWords(box) {
 }
 
 /**
- *
+ * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {Object} box
  * @param {number} box.width
  * @param {number} box.height
  * @param {number} box.x
  * @param {number} box.y
  */
-export function selectLayoutBoxesArea(box) {
-  // const shapes = ScribeCanvas.getKonvaLayoutBoxes();
-  const shapes = [...ScribeViewer.getKonvaDataColumns(), ...ScribeViewer.getKonvaRegions()];
+export function selectLayoutBoxesArea(viewer, box) {
+  const shapes = [...viewer.getKonvaDataColumns(), ...viewer.getKonvaRegions()];
   const layoutBoxes = shapes.filter((shape) => Konva.Util.haveIntersection(box, shape.getClientRect()));
 
-  ScribeViewer.CanvasSelection.selectLayoutBoxes(layoutBoxes);
+  viewer.CanvasSelection.selectLayoutBoxes(layoutBoxes);
 }
 
-export const mouseupFunc2 = (event) => {
+export const mouseupFunc2 = (viewer, event) => {
   hideContextMenu();
 
-  ScribeViewer.interactionCallback(event);
+  viewer.interactionCallback(event);
 
-  ScribeViewer.stopDragPinch(event);
+  viewer.stopDragPinch(event);
 
-  // Exit early if the right mouse button was clicked to bring up a context menu.
   if (event.evt.button === 2) {
-    const selectedColumnIds = ScribeViewer.CanvasSelection.getKonvaDataColumns().map((x) => x.layoutBox.id);
-    const selectedWordIds = ScribeViewer.CanvasSelection.getKonvaWords().map((x) => x.word.id);
+    const selectedColumnIds = viewer.CanvasSelection.getKonvaDataColumns().map((x) => x.layoutBox.id);
+    const selectedWordIds = viewer.CanvasSelection.getKonvaWords().map((x) => x.word.id);
 
-    // Right clicking on empty space should not clear the selection.
     if (!(event.target instanceof KonvaDataColumn || event.target instanceof KonvaOcrWord)) return;
 
-    // Right clicking on a selected object should not clear the selection.
     if (event.target instanceof KonvaDataColumn && selectedColumnIds.includes(event.target.layoutBox.id)) return;
     if (event.target instanceof KonvaOcrWord && selectedWordIds.includes(event.target.word.id)) return;
   }
 
-  // Hide the baseline adjustment range if the user clicks somewhere outside of the currently selected word and outside of the range adjustment box.
-  // if (activeElem && elem.edit.collapseRangeBaseline.contains(activeElem)) {
-  //   const open = elem.edit.collapseRangeBaselineBS._element.classList.contains('show');
-  //   if (open) elem.edit.collapseRangeBaselineBS.toggle();
-  // }
-
-  // Handle the case where no rectangle is drawn (i.e. a click event), or the rectangle is is extremely small.
-  // Clicks are handled in the same function as rectangle selections as using separate events lead to issues when multiple events were triggered.
-  if (!ScribeViewer.selectingRectangle.visible() || (ScribeViewer.selectingRectangle.width() < 5 && ScribeViewer.selectingRectangle.height() < 5)) {
-    const ptr = ScribeViewer.stage.getPointerPosition();
+  if (!viewer.selectingRectangle.visible() || (viewer.selectingRectangle.width() < 5 && viewer.selectingRectangle.height() < 5)) {
+    const ptr = viewer.stage.getPointerPosition();
     if (!ptr) return;
     const box = {
       x: ptr.x, y: ptr.y, width: 1, height: 1,
     };
-    if (ScribeViewer.mode === 'select' && !ScribeViewer.state.layoutMode) {
-      ScribeViewer.destroyControls(!event.evt.ctrlKey);
-      selectWords(box);
+    if (viewer.mode === 'select' && !viewer.state.layoutMode) {
+      viewer.destroyControls(!event.evt.ctrlKey);
+      selectWords(viewer, box);
       KonvaOcrWord.updateUI();
-      updateHighlightGroupOutline();
-      ScribeViewer.layerText.batchDraw();
-    } else if (ScribeViewer.mode === 'select' && ScribeViewer.state.layoutMode) {
-      ScribeViewer.destroyControls(!event.evt.ctrlKey);
-      selectLayoutBoxesArea(box);
+      updateHighlightGroupOutline(viewer);
+      viewer.layerText.batchDraw();
+    } else if (viewer.mode === 'select' && viewer.state.layoutMode) {
+      viewer.destroyControls(!event.evt.ctrlKey);
+      selectLayoutBoxesArea(viewer, box);
       KonvaLayout.updateUI();
-      ScribeViewer.layerOverlay.batchDraw();
+      viewer.layerOverlay.batchDraw();
     }
     return;
   }
 
-  // update visibility in timeout, so we can check it in click event
-  ScribeViewer.selectingRectangle.visible(false);
+  viewer.selectingRectangle.visible(false);
 
-  if (ScribeViewer.mode === 'select' && !ScribeViewer.state.layoutMode) {
-    ScribeViewer.destroyControls(!event.evt.ctrlKey);
-    const box = ScribeViewer.selectingRectangle.getClientRect();
-    selectWords(box);
+  if (viewer.mode === 'select' && !viewer.state.layoutMode) {
+    viewer.destroyControls(!event.evt.ctrlKey);
+    const box = viewer.selectingRectangle.getClientRect();
+    selectWords(viewer, box);
     KonvaOcrWord.updateUI();
-    updateHighlightGroupOutline();
-  } else if (ScribeViewer.mode === 'select' && ScribeViewer.state.layoutMode) {
-    ScribeViewer.destroyControls(!event.evt.ctrlKey);
-    const box = ScribeViewer.selectingRectangle.getClientRect();
-    selectLayoutBoxesArea(box);
+    updateHighlightGroupOutline(viewer);
+  } else if (viewer.mode === 'select' && viewer.state.layoutMode) {
+    viewer.destroyControls(!event.evt.ctrlKey);
+    const box = viewer.selectingRectangle.getClientRect();
+    selectLayoutBoxesArea(viewer, box);
     KonvaLayout.updateUI();
-  } else if (['addWord', 'recognizeWord', 'recognizeArea', 'printCoords', 'addLayoutBoxOrder', 'addLayoutBoxExclude', 'addLayoutBoxDataTable'].includes(ScribeViewer.mode)) {
-    const { n, box } = ScribeViewer.calcSelectionImageCoords();
+  } else if (['addWord', 'recognizeWord', 'recognizeArea', 'printCoords', 'addLayoutBoxOrder', 'addLayoutBoxExclude', 'addLayoutBoxDataTable'].includes(viewer.mode)) {
+    const { n, box } = viewer.calcSelectionImageCoords();
 
-    if (ScribeViewer.mode === 'addWord') {
-      addWordManual(n, box);
-    } else if (ScribeViewer.mode === 'recognizeWord') {
-      recognizeArea(n, box, true);
-    } else if (ScribeViewer.mode === 'recognizeArea') {
-      recognizeArea(n, box, false);
-    } else if (ScribeViewer.mode === 'printCoords') {
+    if (viewer.mode === 'addWord') {
+      addWordManual(viewer, n, box);
+    } else if (viewer.mode === 'recognizeWord') {
+      recognizeArea(viewer, n, box, true);
+    } else if (viewer.mode === 'recognizeArea') {
+      recognizeArea(viewer, n, box, false);
+    } else if (viewer.mode === 'printCoords') {
       const debugCoords = {
         left: box.left,
         top: box.top,
         right: box.left + box.width,
         bottom: box.top + box.height,
-        topInv: ScribeViewer.doc.pageMetrics[n].dims.height - box.top,
-        bottomInv: ScribeViewer.doc.pageMetrics[n].dims.height - (box.top + box.height),
+        topInv: viewer.doc.pageMetrics[n].dims.height - box.top,
+        bottomInv: viewer.doc.pageMetrics[n].dims.height - (box.top + box.height),
       };
       console.log(debugCoords);
-    } else if (ScribeViewer.mode === 'addLayoutBoxOrder') {
-      addLayoutBox(n, box, 'order');
-    } else if (ScribeViewer.mode === 'addLayoutBoxExclude') {
-      addLayoutBox(n, box, 'exclude');
-    } else if (ScribeViewer.mode === 'addLayoutBoxDataTable') {
-      addLayoutDataTable(n, box);
+    } else if (viewer.mode === 'addLayoutBoxOrder') {
+      addLayoutBox(viewer, n, box, 'order');
+    } else if (viewer.mode === 'addLayoutBoxExclude') {
+      addLayoutBox(viewer, n, box, 'exclude');
+    } else if (viewer.mode === 'addLayoutBoxDataTable') {
+      addLayoutDataTable(viewer, n, box);
     }
   }
 };
