@@ -58,9 +58,18 @@ export async function subsetFont(font, charArr = []) {
   // even if no literal space characters are in the data.
   if (!charArr.includes(' ')) glyphs.push(font.charToGlyph(' '));
 
+  // Skip charToGlyph's gid-0 fallback to avoid pushing `.notdef` a second time.
+  // A duplicated glyph object emits its `glyph.unicodes` twice in the output cmap,
+  // which Acrobat rejects as malformed.
+  const seen = new Set(glyphs);
   charArr.forEach((x) => {
-    const glyph = font.charToGlyph(x);
-    if (glyph) glyphs.push(glyph);
+    const glyphIndex = font.charToGlyphIndex(x);
+    if (glyphIndex === null || glyphIndex === 0) return;
+    const glyph = font.glyphs.get(glyphIndex);
+    if (glyph && !seen.has(glyph)) {
+      seen.add(glyph);
+      glyphs.push(glyph);
+    }
   });
 
   // The relevant table is sometimes but not always in a property named `windows`.
