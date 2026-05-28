@@ -2726,6 +2726,8 @@ function serializeContentToken(t) {
       return t.value;
     case 'array':
       return `[${t.value.map(serializeContentToken).join(' ')}]`;
+    case 'dict':
+      return t.value;
     case 'string': {
       // Tokenizer decoded escape sequences and `\nnn` octals into raw bytes
       // (latin1 charcodes 0..255). Re-escape: backslash, parens, and any
