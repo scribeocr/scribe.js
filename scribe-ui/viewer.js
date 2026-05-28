@@ -761,6 +761,12 @@ export class ScribeViewer {
 
     this.layerText.add(this.selectingRectangle);
 
+    this.stage.on('xChange yChange scaleXChange scaleYChange', () => {
+      if (!this.enableHTMLOverlay) return;
+      this.deleteHTMLOverlay();
+      if (!this.drag.isDragging && !this.drag.isPinching) this.renderHTMLOverlayAfterDelay();
+    });
+
     this.stage.on('mousemove', (event) => this.executeDrag(event));
 
     this.stage.on('touchstart', (event) => {
