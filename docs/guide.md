@@ -143,6 +143,36 @@ await scribe.terminate(); // release shared resources (e.g. before process exit)
 You do not have to call `init` — resources load on demand. You should call `doc.terminate()` and
 `scribe.terminate()` when finished, especially in Node.js, so the process can exit.
 
+### Reusing a document for several PDFs
+
+A `ScribeDoc` is created empty and the file(s) are attached by `importFiles`, so the same
+document can hold one PDF, be reset with `clear()`, and be re-used for the next PDF. `clear()`
+wipes the document's OCR text, layout, and image caches but keeps its PDF worker pool alive, so
+the second `importFiles` reuses the workers that were already spun up for the first. This makes
+it cheap to process many PDFs in series without paying worker-startup cost each time.
+
+If you know a PDF is on the way but don't have it yet (for example, a long-running server
+processing uploads), call `doc.preloadPdfWorkers()` on an empty document to spawn the worker
+pool ahead of time. The workers idle until the first `importFiles` lands.
+
+```js
+const doc = new scribe.ScribeDoc();
+await doc.preloadPdfWorkers();  // optional: spawn workers up front
+
+for (const path of pdfPaths) {
+  await doc.importFiles([path]);
+  await doc.recognize();
+  await doc.download('pdf', path.replace(/\.pdf$/, '.searchable.pdf'));
+  doc.clear();                  // reset state; workers are kept alive
+}
+
+await doc.terminate();          // finally release the workers
+await scribe.terminate();
+```
+
+For workflows with several documents open at the same time, create separate `ScribeDoc`
+instances instead — each gets its own worker pool.
+
 ### The OCR data model
 
 After import or recognition, a document's text lives under `doc.ocr`. This is a map of named OCR
@@ -351,11 +381,11 @@ await doc.download('pdf', 'output.pdf');         // writes output.pdf
 | `'pdf'` | ArrayBuffer | PDF with a text layer (see display modes below). |
 | `'hocr'` | string | hOCR XML. |
 | `'alto'` | string | ALTO XML (saved with a `.xml` extension by `download`). |
-| `'html'` | string | HTML, optionally with page images (`opt.includeImages`). |
+| `'html'` | string | HTML, optionally with page images (`ScribeDoc.defaults.includeImages`). |
 | `'md'` | string | Markdown, with tables. |
 | `'docx'` | ArrayBuffer | Word document. |
 | `'xlsx'` | ArrayBuffer | Excel spreadsheet, from detected tables. |
-| `'scribe'` | ArrayBuffer or string | Session file (gzip by default; see `opt.compressScribe`). |
+| `'scribe'` | ArrayBuffer or string | Session file (gzip by default; see `ScribeDoc.defaults.compressScribe`). |
 
 ### Page subsetting
 
@@ -366,7 +396,8 @@ await doc.exportData('text', { pageArr: [0, 2, 5] });      // specific pages; ov
 
 ### PDFs and the text layer
 
-How the text layer is drawn is controlled by `scribe.opt.displayMode`:
+How the text layer is drawn is controlled by `ScribeDoc.defaults.displayMode`, or by passing
+`displayMode` per call to `exportData` / `download`:
 
 - `'invis'` — invisible text over the page image. The standard "searchable PDF."
 - `'proof'` — visible text, color-coded by confidence. Useful for reviewing OCR quality.
@@ -375,51 +406,41 @@ How the text layer is drawn is controlled by `scribe.opt.displayMode`:
 Two common PDF workflows:
 
 ```js
-// 1. Image (or image PDF) -> searchable PDF
-scribe.opt.displayMode = 'invis';
+// 1. Image (or image PDF) -> searchable PDF ('invis' is the default).
 const doc = await scribe.openDocument(['scan.png']);
 await doc.recognize();
 await doc.download('pdf', 'searchable.pdf');
 
-// 2. Add a text layer to an existing PDF (keeps the original pages)
+// 2. Add a text layer to an existing PDF (keeps the original pages).
 const doc2 = await scribe.openDocument(['image-only.pdf']);
 await doc2.recognize();
-await doc2.download('pdf', 'image-only.searchable.pdf');
+await doc2.download('pdf', 'image-only.searchable.pdf', { displayMode: 'proof' });
 ```
 
-When the input is a PDF that already contains text, `scribe.opt.usePDFText` controls whether that
-text is used as the primary or supplemental source, separately for native (visible) text and OCR
-(invisible) text layers. See [Configuration](#configuration).
+When the input is a PDF that already contains text, `ScribeDoc.defaults.usePDFText` (or
+`usePDFText` passed to `importFiles`) controls whether that text is used as the primary or
+supplemental source, separately for native (visible) text and OCR (invisible) text layers. See
+[Configuration](#configuration).
 
 ## Configuration
 
-Global options live on `scribe.opt` (the `opt` class). Set them before the relevant operation;
-`workerN` must be set before workers initialize. The most useful options:
+Scribe.js has two layers of settings:
+
+- **Process-wide options** on `scribe.opt` — worker count, asset paths, and handler callbacks.
+  These are shared across every document. Set them before the relevant operation; `workerN` must
+  be set before workers initialize.
+- **Per-document defaults** on `scribe.ScribeDoc.defaults` — recognition, rendering, and export
+  behavior. Every export, recognition, and import function resolves a setting as
+  `options.X ?? ScribeDoc.defaults.X`. Mutating `ScribeDoc.defaults` changes the default for every
+  subsequent call; passing `options.X` to `exportData`, `download`, `importFiles`, or `recognize`
+  overrides it for that one call.
+
+### Process-wide (`scribe.opt`)
 
 ```js
 // Languages and workers
 scribe.opt.langPath = null;   // dir of <lang>.traineddata.gz; null = CDN
 scribe.opt.workerN = null;    // worker count; null = up to 6 (browser) / 8 (Node)
-
-// Text output
-scribe.opt.reflow = true;        // combine lines into paragraphs
-scribe.opt.lineNumbers = false;  // prefix lines with page:line (txt only)
-scribe.opt.removeMargins = false;
-
-// PDF / image output
-scribe.opt.displayMode = 'invis';   // 'invis' | 'proof' | 'ebook'
-scribe.opt.colorMode = 'color';     // 'color' | 'gray' | 'binary'
-scribe.opt.autoRotate = true;
-scribe.opt.includeImages = false;   // include page images in HTML export
-
-// PDF text handling and confidence thresholds
-scribe.opt.usePDFText = { native: { supp: true, main: true }, ocr: { supp: true, main: false } };
-scribe.opt.confThreshHigh = 85;
-scribe.opt.confThreshMed = 75;
-
-// Sessions
-scribe.opt.compressScribe = true;        // gzip .scribe output
-scribe.opt.includeExtraTextScribe = false;
 
 // Handlers
 scribe.opt.progressHandler = (msg) => {};
@@ -427,7 +448,42 @@ scribe.opt.warningHandler = (msg) => console.warn(msg);
 scribe.opt.errorHandler = (msg) => console.error(msg);
 ```
 
-See the [`opt` class](../js/containers/app.js) for the complete list.
+See [`js/containers/app.js`](../js/containers/app.js) for the full `opt` class.
+
+### Per-document defaults (`scribe.ScribeDoc.defaults`)
+
+```js
+// Text output
+scribe.ScribeDoc.defaults.reflow = true;        // combine lines into paragraphs
+scribe.ScribeDoc.defaults.lineNumbers = false;  // prefix lines with page:line (txt only)
+scribe.ScribeDoc.defaults.removeMargins = false;
+
+// PDF / image output
+scribe.ScribeDoc.defaults.displayMode = 'invis';   // 'invis' | 'proof' | 'ebook'
+scribe.ScribeDoc.defaults.colorMode = 'color';     // 'color' | 'gray' | 'binary'
+scribe.ScribeDoc.defaults.autoRotate = true;
+scribe.ScribeDoc.defaults.includeImages = false;   // include page images in HTML export
+
+// PDF text handling and confidence thresholds
+scribe.ScribeDoc.defaults.usePDFText = { native: { supp: true, main: true }, ocr: { supp: true, main: false } };
+scribe.ScribeDoc.defaults.keepPDFTextAlways = false;
+scribe.ScribeDoc.defaults.confThreshHigh = 85;
+scribe.ScribeDoc.defaults.confThreshMed = 75;
+
+// Sessions
+scribe.ScribeDoc.defaults.compressScribe = true;        // gzip .scribe output
+scribe.ScribeDoc.defaults.includeExtraTextScribe = false;
+```
+
+The same names work as per-call options:
+
+```js
+await doc.download('pdf', 'out.pdf', { displayMode: 'proof', colorMode: 'binary' });
+await doc.exportData('scribe', { compressScribe: false });
+```
+
+See [`js/containers/scribeDocDefaults.js`](../js/containers/scribeDocDefaults.js) for the
+complete list of per-document defaults.
 
 ## Browser usage notes
 

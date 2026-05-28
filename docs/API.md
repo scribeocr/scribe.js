@@ -18,6 +18,7 @@ object, and a [`utils`](#scribeutils) namespace.
   - [`scribe.extractText`](#scribeextracttextfiles-langs-outputformat-options)
   - [`scribe.terminate`](#scribeterminate)
 - [`scribe.opt`](#scribeopt)
+- [`scribe.ScribeDoc.defaults`](#scribescribedocdefaults)
 - [`scribe.utils`](#scribeutils)
 - [Other top-level exports](#other-top-level-exports)
 - [ScribeDoc](#scribedoc)
@@ -90,14 +91,33 @@ resources are released with [`doc.terminate()`](#docterminate). Returns `Promise
 
 ## `scribe.opt`
 
-A class of static configuration properties affecting recognition, rendering, and export. Set
-properties before the relevant operation. See the [Configuration section of the
-Guide](./guide.md#configuration) for the commonly used options, and
-[`js/containers/app.js`](../js/containers/app.js) for the complete, authoritative list.
+Process-wide configuration: worker count, asset paths, and handler callbacks shared across every
+document. Set properties before the relevant operation; `workerN` must be set before workers
+initialize. See [`js/containers/app.js`](../js/containers/app.js) for the complete, authoritative
+list.
 
-Frequently used: `langPath`, `workerN`, `displayMode`, `colorMode`, `reflow`, `lineNumbers`,
-`includeImages`, `autoRotate`, `usePDFText`, `confThreshHigh`, `confThreshMed`, `compressScribe`,
-`keepRawData`, `skipFontOpt`, `progressHandler`, `warningHandler`, `errorHandler`.
+| Property | Type | Default | Description |
+| --- | --- | --- | --- |
+| `workerN` | `?number` | `null` | Worker count. `null` means up to 6 (browser) / 8 (Node). |
+| `langPath` | `?string` | `null` | Directory containing `<lang>.traineddata.gz`. `null` means fetch from the jsdelivr CDN. |
+| `usePdfSharedBuffer` | `boolean` | `false` | Share the loaded PDF across PDF workers via `SharedArrayBuffer` instead of cloning per worker. Requires a supported environment (Chrome with COOP/COEP, Node with shared memory enabled). |
+| `progressHandler` | `(msg) => void` | no-op | Called with progress messages during recognition and export. |
+| `warningHandler` | `(msg) => void` | `console.warn` | Called when Scribe.js emits a warning. |
+| `errorHandler` | `(msg) => void` | `console.error` | Called when Scribe.js emits an error. |
+
+## `scribe.ScribeDoc.defaults`
+
+Per-document settings — recognition, rendering, and export behavior. Every export, recognition,
+and import function resolves a setting as `options.X ?? ScribeDoc.defaults.X`, so mutating
+`ScribeDoc.defaults` changes the default for every subsequent call, and passing `options.X` to
+`exportData`, `download`, `importFiles`, or `recognize` overrides it for that one call. See
+[`js/containers/scribeDocDefaults.js`](../js/containers/scribeDocDefaults.js) for the complete,
+authoritative list.
+
+Frequently used: `displayMode`, `colorMode`, `autoRotate`, `reflow`, `lineNumbers`,
+`removeMargins`, `includeImages`, `usePDFText`, `keepPDFTextAlways`, `confThreshHigh`,
+`confThreshMed`, `overlayOpacity`, `addOverlay`, `compressScribe`, `includeExtraTextScribe`,
+`keepRawData`, `skipFontOpt`, `saveDebugImages`, `docxLineSplitMode`.
 
 ## `scribe.utils`
 
@@ -137,7 +157,7 @@ scribe.ScribeDoc()` followed by [`doc.importFiles`](#docimportfilesfiles).
 | `id` | `number` | Process-unique id, used to namespace this document's fonts. |
 | `inputData` | `InputData` | Input modes and file metadata (see [Data model](#inputdata)). |
 | `ocr` | `Object<string, Array<OcrPage>>` | OCR versions by name; `ocr.active` is used for export. |
-| `ocrRaw` | `Object<string, Array<string>>` | Raw OCR source data (kept when `opt.keepRawData`). |
+| `ocrRaw` | `Object<string, Array<string>>` | Raw OCR source data (kept when `ScribeDoc.defaults.keepRawData`). |
 | `pageMetrics` | `Array<PageMetrics>` | Per-page dimensions and rotation. |
 | `layoutRegions` | `{ pages: Array<LayoutPage> }` | Layout regions used for reflow/reorder. |
 | `layoutDataTables` | `{ pages: Array<LayoutDataTablePage> }` | Detected data tables. |
@@ -283,9 +303,20 @@ Optimized fonts must already exist (via `runOptimization`). Returns `Promise<voi
 
 ### Lifecycle methods
 
+#### `doc.preloadPdfWorkers()`
+
+Spawn this document's PDF worker pool ahead of any [`importFiles`](#docimportfilesfiles) call so
+the workers are already running by the time a PDF arrives. The pool is created lazily on first
+PDF access otherwise; pre-loading only reduces first-use latency. No-op if the pool already
+exists. Workers survive [`clear`](#docclear), so the same document can pre-load once and then
+import multiple PDFs in sequence. Returns `Promise<void>`. (Async)
+
 #### `doc.clear()`
 
-Reset all of this document's data. The document's PDF pool is cleared but not terminated.
+Reset all of this document's OCR text, layout, image caches, and font registrations. Keeps the
+PDF worker pool alive so the document can be re-used for another file via
+[`importFiles`](#docimportfilesfiles). Use [`terminate`](#docterminate) instead to also release
+the workers.
 
 #### `doc.terminate()`
 

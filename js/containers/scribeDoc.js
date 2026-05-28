@@ -137,6 +137,14 @@ export class ScribeDoc {
   }
 
   /**
+   * Preload the PDF code and workers.
+   * This is done automatically by `importFiles`, but pre-loading resources reduces the delay between upload and rendering the first page.
+   */
+  async preloadPdfWorkers() {
+    await this.images.getPdfScheduler();
+  }
+
+  /**
    * Serialize the layout data tables as JSON, stripping circular references.
    */
   serializeLayoutDataTables() {

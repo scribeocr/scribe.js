@@ -34,7 +34,6 @@ async function main(func, params) {
   const needsPdf = func === 'overlay' || func === 'recognize' || func === 'check' || func === 'eval' || func === 'debug';
   const needsFont = needsPdf || needsOcr;
   await scribe.init({
-    pdf: needsPdf,
     ocr: needsOcr,
     font: needsFont,
   });
