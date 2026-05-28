@@ -407,7 +407,7 @@ scribe.opt.lineNumbers = false;  // prefix lines with page:line (txt only)
 scribe.opt.removeMargins = false;
 
 // PDF / image output
-scribe.opt.displayMode = 'proof';   // 'invis' | 'proof' | 'ebook'
+scribe.opt.displayMode = 'invis';   // 'invis' | 'proof' | 'ebook'
 scribe.opt.colorMode = 'color';     // 'color' | 'gray' | 'binary'
 scribe.opt.autoRotate = true;
 scribe.opt.includeImages = false;   // include page images in HTML export

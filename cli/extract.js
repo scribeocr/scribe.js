@@ -24,7 +24,7 @@ export const extract = async (inputFile, output, options) => {
   const outputPath = `${outputDir}/${outputFile}`;
 
   scribe.ScribeDoc.defaults.reflow = true;
-  scribe.ScribeDoc.defaults.extractText = true;
+  scribe.ScribeDoc.defaults.usePDFText.ocr.main = true;
   scribe.ScribeDoc.defaults.displayMode = 'ebook';
 
   // TODO: Fonts do not need to be loaded for .txt output, but are needed for .pdf output.

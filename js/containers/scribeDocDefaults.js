@@ -66,7 +66,7 @@ export const scribeDocDefaults = {
   skipFontOpt: false,
 
   /** @type {('invis'|'ebook'|'eval'|'proof'|'annot')} */
-  displayMode: 'proof',
+  displayMode: 'invis',
 
   overlayOpacity: 80,
 

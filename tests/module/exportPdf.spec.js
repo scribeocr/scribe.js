@@ -130,7 +130,7 @@ describe('Check export for .pdf files.', () => {
         expect([...opacities]).toEqual([0.8]);
       }
 
-      scribe.ScribeDoc.defaults.displayMode = 'proof';
+      scribe.ScribeDoc.defaults.displayMode = 'invis';
       scribe.ScribeDoc.defaults.usePDFText.ocr.main = false;
       scribe.ScribeDoc.defaults.keepPDFTextAlways = false;
       await doc.clear();
@@ -160,7 +160,7 @@ describe('Check export for .pdf files.', () => {
     const text = doc.ocr.active[0].lines[3].words.map((x) => x.text).join(' ');
     expect(text).toBe('Shubhdeep Deb');
 
-    scribe.ScribeDoc.defaults.displayMode = 'proof';
+    scribe.ScribeDoc.defaults.displayMode = 'invis';
     await doc.clear();
   });
 
@@ -341,7 +341,7 @@ describe('Check export for .pdf files.', () => {
     const exportedPage0Text = /** @type {string} */ (await doc.exportData('text', { minPage: 0, maxPage: 0 }));
     expect(exportedPage0Text).not.toContain('Iris (plant)');
 
-    scribe.ScribeDoc.defaults.displayMode = 'proof';
+    scribe.ScribeDoc.defaults.displayMode = 'invis';
     await doc.clear();
   });
 
@@ -443,7 +443,7 @@ describe('Check export for .pdf files.', () => {
     const highlights = doc.annotations.pages.flatMap((p) => p || []);
     expect(highlights.length, 'the highlight annotation round-trips through annot-mode export').toBe(1);
 
-    scribe.ScribeDoc.defaults.displayMode = 'proof';
+    scribe.ScribeDoc.defaults.displayMode = 'invis';
     await doc.clear();
   });
 
@@ -481,7 +481,7 @@ describe('Check export for .pdf files.', () => {
     const reExportedText = await doc.exportData('text');
     expect(reExportedText).toBe('Tesseract.js');
 
-    scribe.ScribeDoc.defaults.displayMode = 'proof';
+    scribe.ScribeDoc.defaults.displayMode = 'invis';
     await doc.clear();
   });
 
@@ -568,7 +568,7 @@ describe('Check export for .pdf files.', () => {
     const page7Words = doc.ocr.pdf[7].lines.flatMap((l) => l.words.map((w) => w.text));
     expect(page7Words.slice(0, 5)).toEqual(['12', 'Intel', 'Corporation', '1996', 'www.intel.com']);
 
-    scribe.ScribeDoc.defaults.displayMode = 'proof';
+    scribe.ScribeDoc.defaults.displayMode = 'invis';
     scribe.ScribeDoc.defaults.usePDFText.native.main = false;
     scribe.ScribeDoc.defaults.keepPDFTextAlways = false;
     await doc.clear();
@@ -616,7 +616,7 @@ describe('Check export for .pdf files.', () => {
       left: 1014, top: 83, right: 1234, bottom: 146,
     });
 
-    scribe.ScribeDoc.defaults.displayMode = 'proof';
+    scribe.ScribeDoc.defaults.displayMode = 'invis';
     scribe.ScribeDoc.defaults.usePDFText.native.main = false;
     scribe.ScribeDoc.defaults.keepPDFTextAlways = false;
     await doc.clear();

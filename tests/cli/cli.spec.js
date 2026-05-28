@@ -187,6 +187,25 @@ describe('Extract CLI command.', () => {
     expect(fs.readFileSync(outputPath, 'utf8')).toContain('WHISTLEBLOWERS');
   }, 15000);
 
+  // Regression gate: cli/extract.js must enable `usePDFText.ocr.main` so OCR-layer PDFs
+  // (image pages with an invisible text layer) actually surface their text.
+  it('Should extract text from a PDF whose pages are images with an invisible OCR layer.', async () => {
+    // Reset to defaults so the CLI is forced to enable extraction itself rather than
+    // inheriting `usePDFText.ocr.main = true` from a prior test.
+    scribe.ScribeDoc.defaults.usePDFText.ocr.main = false;
+
+    const tmpDir = tmpUnique.get();
+    const outputPath = `${tmpDir}/scribe_test_pdf1.txt`;
+
+    await extractCLI(`${ASSETS_PATH}/scribe_test_pdf1.pdf`, outputPath, { format: 'txt' });
+
+    expect(fs.existsSync(outputPath)).toBe(true);
+    const lines = fs.readFileSync(outputPath, 'utf8').split('\n');
+    expect(lines.length).toBe(25);
+    expect(lines[0]).toBe('henry’s grave.');
+    expect(lines[2]).toBe('HENRY’S GRAVE. Standing beside the consecrated mound,');
+  }, 15000);
+
   afterAll(() => {
     tmpUnique.delete();
   });
