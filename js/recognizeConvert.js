@@ -817,9 +817,6 @@ async function recognizeCustomModel(doc, options) {
 
   if (model.config.documentMode) return recognizeCustomModelDocumentMode(doc, options);
 
-  // Pre-render PDF pages to images if needed
-  if (doc.inputData.pdfMode) await doc.images.preRenderRange({ min: 0, max: doc.images.pageCount - 1, binary: false });
-
   // Initialize array for custom model results
   if (!doc.ocr[engineName]) doc.ocr[engineName] = Array(doc.inputData.pageCount);
   if (scribeDocDefaults.keepRawData && !doc.ocrRaw[engineName]) doc.ocrRaw[engineName] = Array(doc.inputData.pageCount);
@@ -886,6 +883,15 @@ async function recognizeCustomModel(doc, options) {
       for (let i = 0; i < binaryStr.length; i++) {
         imageData[i] = binaryStr.charCodeAt(i);
       }
+
+      // Drop the cached render once its bytes are copied.
+      // Without this every page's rendered image stays cached for the whole run,
+      // and a large document exhausts the heap before recognition finishes.
+      // TODO: This will delete images at the user's current position in the viewer.
+      // Additionally, rendering 1k pages in the viewer will still cause a crash.
+      // We should switch to a more robust system for clearing cache.
+      // Gated to large documents for now since small docs are not a memory risk.
+      if (doc.inputData.pdfMode && doc.inputData.pageCount > 100) delete doc.images.native[n];
 
       const maxThrottleRetries = 3;
       /** @type {RecognitionResult} */
