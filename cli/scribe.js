@@ -9,6 +9,7 @@ import {
   detectPDFTypeCLI,
   evalInternalCLI, extractCLI, overlayCLI, recognizeCLI,
 } from './cli.js';
+import { parseModelOption, recognitionModels } from './recognitionModels.js';
 
 const program = new Command();
 
@@ -60,8 +61,11 @@ program
   .option('-v, --vis', 'Print OCR text visibly over provided PDF file with colors coded by confidence.')
   .option('-h, --hocr', 'Output .hocr intermediate data in addition to .pdf.')
   .option('-w, --workers <number>', 'Number of workers to use. Default is up to 8.')
+  .option('--model <name>', `Cloud recognition model. One of: ${Object.keys(recognitionModels).join(', ')}. Requires the matching @scribe.js/* adapter package. Default: built-in model.`)
+  .option('-O, --model-option <key=value>', 'Option forwarded to the cloud model (e.g. --model-option region=us-east-1). Repeatable.', parseModelOption, {})
+  .option('--local-adapters', 'Resolve --model from this repo\'s cloud-adapters/ tree instead of npm. For running from a scribe.js checkout. Also enabled by SCRIBE_LOCAL_ADAPTERS=1.')
   .argument('<files...>', 'Input PDF file and OCR file(s).  Accepts .hocr and Abbyy .xml (with character-level data enabled).')
-  .description('Recognize text in PDF file using internal OCR engine.')
+  .description('Recognize text in PDF file using internal OCR engine or a cloud model.')
   .action(recognizeCLI);
 
 program

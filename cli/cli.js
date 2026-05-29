@@ -9,6 +9,7 @@ import {
   debug,
   evalInternal, overlay, recognize,
 } from './main.js';
+import { loadRecognitionModel } from './recognitionModels.js';
 
 /**
  * Print confidence of Abbyy .xml file.
@@ -123,6 +124,15 @@ export const overlayCLI = async (files, options) => {
  */
 export const recognizeCLI = async (files, options) => {
   options.overlayMode = options.vis ? 'proof' : 'invis';
+  if (options.model) {
+    try {
+      options.model = await loadRecognitionModel(options.model, { localAdapters: options.localAdapters });
+    } catch (err) {
+      console.error(err.message);
+      process.exitCode = 1;
+      return;
+    }
+  }
   await recognize(files, options);
   process.exitCode = 0;
 };

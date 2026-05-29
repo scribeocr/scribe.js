@@ -21,6 +21,8 @@ scribe.ScribeDoc.defaults.saveDebugImages = debugMode;
  * @param {boolean} [params.hocr]
  * @param {"eval" | "ebook" | "proof" | "invis"} [params.overlayMode]
  * @param {number} [params.workerN]
+ * @param {*} [params.model]
+ * @param {Object} [params.modelOptions] - Options forwarded to the model.
  */
 async function main(func, params) {
   scribe.opt.workerN = params.workerN || null;
@@ -30,7 +32,8 @@ async function main(func, params) {
     throw new Error('No input files provided.');
   }
 
-  const needsOcr = func === 'check' || func === 'eval' || func === 'recognize' || params.robustConfMode;
+  const usingCloudModel = func === 'recognize' && !!params.model;
+  const needsOcr = (func === 'check' || func === 'eval' || func === 'recognize' || params.robustConfMode) && !usingCloudModel;
   const needsPdf = func === 'overlay' || func === 'recognize' || func === 'check' || func === 'eval' || func === 'debug';
   const needsFont = needsPdf || needsOcr;
   await scribe.init({
@@ -57,10 +60,14 @@ async function main(func, params) {
   // TODO: (1) Find out why font data is not being imported correctly from .hocr files.
   // (2) Use Tesseract Legacy font data when (1) recognition is being run anyway and (2) no font metrics data exists already.
   if (robustConfMode || func === 'eval' || func === 'recognize') {
-    await doc.recognize({
-      modeAdv: 'combined',
-      combineMode,
-    });
+    if (usingCloudModel) {
+      await doc.recognize({ model: params.model, modelOptions: params.modelOptions || {} });
+    } else {
+      await doc.recognize({
+        modeAdv: 'combined',
+        combineMode,
+      });
+    }
     if (func === 'recognize') {
       output.text = doc.ocr.active.map((x) => scribe.utils.ocr.getPageText(x)).join('\n');
     }
@@ -174,9 +181,17 @@ export const overlay = async (files, outputDir, options) => (main('overlay', {
  * @param {"eval" | "ebook" | "proof" | "invis"} [options.overlayMode]
  * @param {boolean} [options.hocr]
  * @param {number} [options.workers]
+ * @param {*} [options.model]
+ * @param {Object} [options.modelOption] - Options collected from --model-option flags.
  */
 export const recognize = async (files, options) => (main('recognize', {
-  files, overlayMode: options?.overlayMode || 'invis', workerN: options?.workers, hocr: options?.hocr, outputDir: options?.output || '.',
+  files,
+  overlayMode: options?.overlayMode || 'invis',
+  workerN: options?.workers,
+  hocr: options?.hocr,
+  outputDir: options?.output || '.',
+  model: options?.model,
+  modelOptions: options?.modelOption,
 }));
 
 /**
