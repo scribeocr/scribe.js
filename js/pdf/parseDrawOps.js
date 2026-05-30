@@ -342,7 +342,7 @@ export function parseDrawOps(
       const charProcObjNum = glyphName ? charProcObjNums[glyphName] : undefined;
       const glyphWidth = (currentFont.widths.get(charCode) ?? currentFont.defaultWidth) / 1000 * fontSize;
 
-      if (charProcObjNum !== undefined) {
+      if (charProcObjNum !== undefined && textRenderMode !== 3) {
         // Compute text rendering matrix: Trm = [fontSize, 0, 0, fontSize, 0, 0] * Tm * CTM
         const trm = matMul([fontSize * tz / 100, 0, 0, fontSize, 0, trise], matMul(tm, ctm));
         const transform = matMul(fontMatrix, trm);
@@ -363,22 +363,20 @@ export function parseDrawOps(
   }
 
   /**
-   * Emit Type3 glyph ops for a hex string (2-byte CID encoding).
+   * Emit Type3 glyph ops for a hex string.
    * @param {string} hex
    */
   function showType3Hex(hex) {
     if (!currentFont || !currentFont.type3) return;
     const { encoding, charProcObjNums, fontMatrix } = currentFont.type3;
-    // Determine byte width from hex string length: 2 hex chars = 1-byte code,
-    // 4+ hex chars = 2-byte CID (matching the existing behavior for multi-byte strings).
-    const step = hex.length <= 2 ? 2 : 4;
-    for (let i = 0; i + step - 1 <= hex.length; i += step) {
-      const charCode = parseInt(hex.substring(i, i + step), 16);
+    // Type3 fonts are always simple fonts, so each byte is one character code.
+    for (let i = 0; i + 2 <= hex.length; i += 2) {
+      const charCode = parseInt(hex.substring(i, i + 2), 16);
       const glyphName = encoding[charCode];
       const charProcObjNum = glyphName ? charProcObjNums[glyphName] : undefined;
       const glyphWidth = (currentFont.widths.get(charCode) ?? currentFont.defaultWidth) / 1000 * fontSize;
 
-      if (charProcObjNum !== undefined) {
+      if (charProcObjNum !== undefined && textRenderMode !== 3) {
         const trm = matMul([fontSize * tz / 100, 0, 0, fontSize, 0, trise], matMul(tm, ctm));
         const transform = matMul(fontMatrix, trm);
         const type3XObjects = currentFont.type3?.xobjectResources;
@@ -391,8 +389,7 @@ export function parseDrawOps(
         ops.push(type3Op);
       }
 
-      const isWordSpace = step === 2 && charCode === 0x20;
-      const advance = (glyphWidth + tc + (isWordSpace ? tw : 0)) * tz / 100;
+      const advance = (glyphWidth + tc + (charCode === 0x20 ? tw : 0)) * tz / 100;
       tm[4] += advance * tm[0];
       tm[5] += advance * tm[1];
     }
