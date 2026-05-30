@@ -56,6 +56,46 @@ Every command accepts a PDF and, where relevant, one or more OCR files (`.hocr` 
 | `-c, --conf` | `overlay` | Print the average confidence metric. |
 | `--robust` | `overlay` | Confidence by re-running OCR rather than trusting provided data. |
 | `-w, --workers <n>` | `check`, `eval`, `overlay`, `recognize` | Worker count (default up to 8). |
+| `--model <name>` | `recognize` | Use a cloud recognition model instead of the built-in Tesseract engine. See [Cloud models](#cloud-models). |
+| `-O, --model-option <key=value>` | `recognize` | Option forwarded to the cloud model. Repeatable. Coerces `true`/`false`/numbers, and comma-separated values to arrays. |
+| `--local-adapters` | `recognize` | Resolve `--model` from this repo's `cloud-adapters/` tree instead of npm. For running from a scribe.js checkout. Also enabled by `SCRIBE_LOCAL_ADAPTERS=1`. |
+
+## Cloud models
+
+`recognize --model <name>` swaps the built-in Tesseract engine for a hosted OCR service. Each cloud model lives in its own `@scribe.js/*` adapter package so that users who only want Tesseract pay for none of the cloud SDK dependencies. Install just the adapter you plan to use.
+
+| Name | Adapter package | Install |
+| --- | --- | --- |
+| `textract` | `@scribe.js/aws-textract` | `npm install @scribe.js/aws-textract` |
+| `azure-doc-intel` | `@scribe.js/azure-doc-intel` | `npm install @scribe.js/azure-doc-intel` |
+| `google-doc-ai` | `@scribe.js/gcs-doc-ai` | `npm install @scribe.js/gcs-doc-ai` |
+| `google-vision` | `@scribe.js/gcs-vision` | `npm install @scribe.js/gcs-vision` |
+
+Credentials are resolved through each provider's standard mechanisms (AWS SDK chain, Google ADC, Azure env vars, etc.). See the matching adapter README for the full list of credential and option fields.
+
+Pass model-specific options with `-O key=value` (repeatable):
+
+```sh
+npx scribe recognize input.pdf \
+  --model textract \
+  -O analyzeLayout=true \
+  -O region=us-east-1,us-west-2
+```
+
+If the adapter package is not installed, the CLI prints the exact `npm install` command and exits non-zero.
+
+### Running from a scribe.js checkout
+
+Contributors who clone the repo can skip `npm install @scribe.js/<adapter>` and use the in-repo adapter sources under `cloud-adapters/`. Pass `--local-adapters` (or export `SCRIBE_LOCAL_ADAPTERS=1`) and the loader resolves the model from `cloud-adapters/<adapter>/` instead of `node_modules`:
+
+```sh
+# one-time: install the adapter's runtime SDK deps
+( cd cloud-adapters/aws-textract && npm install )
+
+node cli/scribe.js recognize input.pdf --model textract --local-adapters
+```
+
+The cloud SDK (`@aws-sdk/client-textract`, …) is still required and not bundled with scribe.js; install it inside the adapter directory or at the repo root. If `--local-adapters` is passed but `cloud-adapters/` is not present (e.g. you installed scribe.js from npm, which does not ship that tree), the CLI errors with a checkout-required message.
 
 ## More examples
 

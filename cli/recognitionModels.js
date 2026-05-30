@@ -17,12 +17,6 @@ export const recognitionModels = {
     export: 'RecognitionModelTextract',
     description: 'AWS Textract',
   },
-  'anthropic-vision': {
-    package: '@scribe.js/anthropic-vision',
-    localPath: '../cloud-adapters/anthropic-vision/RecognitionModelAnthropicVision.js',
-    export: 'RecognitionModelAnthropicVision',
-    description: 'Anthropic Claude vision',
-  },
   'azure-doc-intel': {
     package: '@scribe.js/azure-doc-intel',
     localPath: '../cloud-adapters/azure-doc-intel/RecognitionModelAzureDocIntel.js',
