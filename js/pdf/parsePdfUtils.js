@@ -1999,6 +1999,22 @@ export function findRootObjNum(pdfBytes) {
 }
 
 /**
+ * Resolve the catalog's top-level `/Pages` page-tree-root reference.
+ * @param {string} catalogText
+ * @returns {RegExpExecArray|null}
+ */
+function matchPagesRootRef(catalogText) {
+  const dictStart = catalogText.indexOf('<<');
+  if (dictStart < 0) return null;
+  // A Catalog's /Names dict can hold its own /Pages name tree distinct from the page-tree root,
+  // so resolve /Pages at the catalog's top level only.
+  const body = extractDict(catalogText, dictStart).slice(2, -2);
+  const idx = findTopLevelKeyIndex(body, '/Pages');
+  if (idx < 0) return null;
+  return /^\/Pages\s+(\d+)\s+\d+\s+R/.exec(body.slice(idx));
+}
+
+/**
  * Find the Catalog object and extract the /Pages reference.
  * @param {ObjectCache} objCache
  */
@@ -2009,7 +2025,7 @@ function findCatalogAndPages(objCache) {
   const catalogText = objCache.getObjectText(catalogObjNum);
   if (!catalogText) throw new Error('Could not read Catalog object');
 
-  const pagesRefMatch = /\/Pages\s+(\d+)\s+\d+\s+R/.exec(catalogText);
+  const pagesRefMatch = matchPagesRootRef(catalogText);
   if (pagesRefMatch) return { catalogObjNum, pagesRefMatch };
 
   for (const objNumStr of Object.keys(objCache.xrefEntries)) {
@@ -2017,7 +2033,7 @@ function findCatalogAndPages(objCache) {
     if (objNum === catalogObjNum) continue;
     const t = objCache.getObjectText(objNum);
     if (t && /\/Type\s*\/Catalog/.test(t)) {
-      const m = /\/Pages\s+(\d+)\s+\d+\s+R/.exec(t);
+      const m = matchPagesRootRef(t);
       if (m) return { catalogObjNum: objNum, pagesRefMatch: m };
     }
   }
@@ -2757,6 +2773,12 @@ function serializeContentToken(t) {
  * @param {{ mode?: 'invisible' | 'all' }} [options]
  */
 export function stripText(streamText, { mode = 'invisible' } = {}) {
+  // Invisible-mode early exit: if the stream contains no Tr operator,
+  // no glyph can have render mode 3, so nothing would ever be dropped.
+  // Skipping the tokenize+serialize pass here is decisive on PDFs with multi-MB pages.
+  if (mode === 'invisible' && !/\bTr\b/.test(streamText)) {
+    return { text: streamText, dropped: false };
+  }
   const tokens = tokenizeContentStream(streamText);
 
   /** @type {Array<PDFToken>} */
