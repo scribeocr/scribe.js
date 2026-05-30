@@ -1,5 +1,9 @@
 import { calcColumnBounds } from '../utils/detectTables.js';
 
+// Graphics-heavy pages (figures, maps, charts) can carry hundreds of thousands of vector paths.
+// Skip these pages to avoid severe performance issues.
+const MAX_TABLE_DETECTION_PATHS = 20000;
+
 const isNumToken = (t) => /^[\d,$%.()+-]+$/.test(t);
 const isNumWord = (t) => isNumToken(t) && (/\d/.test(t) || t === '-');
 
@@ -62,6 +66,8 @@ function isRightClusteredNumeric(words) {
 export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOriginX = 0, boxOriginY = 0) {
   const lines = pageObj.lines;
   if (lines.length < 3) return [];
+
+  if (paths.length > MAX_TABLE_DETECTION_PATHS) paths = [];
 
   // === Phase 0: Quick bail-out ===
   // Dot-leader rows ("Gold Star ......... 68,300 63,700 58,800") emit each

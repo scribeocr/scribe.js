@@ -18,6 +18,11 @@ import { assignParagraphs } from '../utils/reflowPars.js';
 /** @typedef {import('../objects/ocrObjects.js').OcrPage} OcrPage */
 import { LayoutDataTable, LayoutDataColumn, LayoutDataTablePage } from '../objects/layoutObjects.js';
 
+// Paths are normally parsed synchronously on import and used for (1) table detection and (2) underline detection.
+// This is disabled for vector-graphics-heavy pages for performance reasons.
+// This does not impact path rendering--it just disables table detection/underline detection.
+const GRAPHICS_HEAVY_STREAM_BYTES = 2_000_000;
+
 /**
  * Normalize a PDF color to [r,g,b] in 0-1 for cross-color-space comparison.
  * @param {number[]} c
@@ -491,7 +496,9 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
 
   // Extract underline candidate rectangles from vector paths. Pass the already-computed
   // tokens so parsePagePaths doesn't re-fetch and re-tokenize the page content stream.
-  const paths = parsePagePaths(objText, objCache, tokens);
+  const paths = contentStreamText.length > GRAPHICS_HEAVY_STREAM_BYTES
+    ? []
+    : parsePagePaths(objText, objCache, tokens);
   const underlineRects = [];
   for (const path of paths) {
     if (!path.fill && !path.stroke) continue;
