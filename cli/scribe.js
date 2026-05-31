@@ -7,7 +7,7 @@ import {
   confCLI,
   debugCLI,
   detectPDFTypeCLI,
-  evalInternalCLI, extractCLI, overlayCLI, recognizeCLI,
+  evalInternalCLI, extractCLI, overlayCLI, recognizeCLI, renderCLI,
 } from './cli.js';
 import { parseModelOption, recognitionModels } from './recognitionModels.js';
 
@@ -67,6 +67,16 @@ program
   .argument('<files...>', 'Input PDF file and OCR file(s).  Accepts .hocr and Abbyy .xml (with character-level data enabled).')
   .description('Recognize text in PDF file using internal OCR engine or a cloud model.')
   .action(recognizeCLI);
+
+program
+  .command('render')
+  .argument('<input_file>', 'Input PDF file.')
+  .argument('[output]', 'Output directory for page images.', '.')
+  .option('--dpi <number>', 'Render resolution in dots per inch.', '150')
+  .option('--pages <range>', 'Comma/range list of 0-based pages to render (e.g. 0-4,7). Default: all.')
+  .option('--gray', 'Render in grayscale instead of color.')
+  .description('Render each page of a PDF to a PNG image.')
+  .action(renderCLI);
 
 program
   .command('type')

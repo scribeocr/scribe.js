@@ -31,6 +31,7 @@ The rest of this page lists every command and flag.
 | Command | Purpose |
 | --- | --- |
 | `extract <input> [output]` | Extract text from a PDF and save in a chosen format. |
+| `render <input> [out_dir]` | Render each PDF page to a PNG image. |
 | `recognize <files...>` | Run the built-in OCR engine and write a searchable PDF. |
 | `overlay <files...>` | Add provided OCR data to a PDF as a text layer. |
 | `type <pdf> [output]` | Detect PDF type: text-native, image + OCR text, or image-native. |
@@ -50,6 +51,9 @@ Every command accepts a PDF and, where relevant, one or more OCR files (`.hocr` 
 | `-r, --reflow` | `extract` | Combine lines into paragraphs. |
 | `-d, --dir` | `extract` | Process all supported files in the input directory. |
 | `-l, --line-numbers` | `extract` | Prefix each line with `page:line` (txt only). |
+| `--dpi <number>` | `render` | Render resolution in dots per inch. Default `150`. |
+| `--pages <range>` | `render` | Comma/range list of 0-based pages to render (e.g. `0-4,7`). Default: all. |
+| `--gray` | `render` | Render in grayscale instead of color. |
 | `-o, --output <dir>` | `recognize`, `overlay`, `debug` | Output directory. |
 | `-v, --vis` | `recognize`, `overlay` | Print OCR text visibly, colored by confidence. |
 | `-h, --hocr` | `recognize` | Also write intermediate `.hocr`. |
@@ -108,6 +112,14 @@ npx scribe overlay input.pdf input.hocr --output ./out
 
 # Detect whether a PDF needs OCR
 npx scribe type input.pdf
+
+# Render every page of a PDF to PNG images in ./out (one file per page)
+npx scribe render input.pdf ./out --dpi 300
+
+# Render only the first three pages, in grayscale
+npx scribe render input.pdf ./out --pages 0-2 --gray
 ```
+
+Output images are named `<input-stem>-<page>.png` (0-based), e.g. `input-0.png`.
 
 Run `npx scribe --help` or `npx scribe <command> --help` for the full list.

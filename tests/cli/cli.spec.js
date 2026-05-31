@@ -5,9 +5,10 @@ import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import scribe from '../../scribe.js';
 import {
-  checkCLI, confCLI, extractCLI, overlayCLI,
+  checkCLI, confCLI, extractCLI, overlayCLI, renderCLI,
 } from '../../cli/cli.js';
 import { getRandomAlphanum } from '../../js/utils/miscUtils.js';
+import { getPngDimensions } from '../../js/utils/imageUtils.js';
 import { ASSETS_PATH } from '../module/_paths.js';
 
 scribe.opt.workerN = 1;
@@ -205,6 +206,45 @@ describe('Extract CLI command.', () => {
     expect(lines[0]).toBe('henry’s grave.');
     expect(lines[2]).toBe('HENRY’S GRAVE. Standing beside the consecrated mound,');
   }, 15000);
+
+  afterAll(() => {
+    tmpUnique.delete();
+  });
+});
+
+describe('Render CLI command.', () => {
+  let tmpUniqueDir;
+  const tmpUnique = {
+    get: () => {
+      if (!tmpUniqueDir) {
+        tmpUniqueDir = `${tmpdir()}/${getRandomAlphanum(8)}`;
+        fs.mkdirSync(tmpUniqueDir);
+      }
+      return tmpUniqueDir;
+    },
+    delete: () => {
+      if (tmpUniqueDir) fs.rmSync(tmpUniqueDir, { recursive: true, force: true });
+    },
+  };
+
+  it('Should render a single PDF page to a PNG at the requested DPI.', async () => {
+    const tmpDir = tmpUnique.get();
+
+    await renderCLI(`${ASSETS_PATH}/academic_article_1.pdf`, tmpDir, { dpi: '150', pages: '0' });
+
+    const outputPath = `${tmpDir}/academic_article_1-0.png`;
+    expect(fs.existsSync(outputPath)).toBe(true);
+
+    const bytes = fs.readFileSync(outputPath);
+    expect(bytes[0]).toBe(0x89);
+    expect(bytes[1]).toBe(0x50);
+    expect(bytes[2]).toBe(0x4E);
+    expect(bytes[3]).toBe(0x47);
+
+    const { width, height } = getPngDimensions(`data:image/png;base64,${bytes.toString('base64')}`);
+    expect(width).toBe(1013);
+    expect(height).toBe(1500);
+  }, 20000);
 
   afterAll(() => {
     tmpUnique.delete();

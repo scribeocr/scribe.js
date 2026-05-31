@@ -3,6 +3,7 @@ import path from 'node:path';
 
 import { detectPDFType } from './detectPDFType.js';
 import { extract } from './extract.js';
+import { render } from './render.js';
 import {
   check,
   conf,
@@ -89,6 +90,25 @@ export const extractCLI = async (inputFile, outputDir, options) => {
     await extract(inputFile, outputDir, options);
   }
   process.exitCode = 0;
+};
+
+/**
+ *
+ * @param {string} inputFile - Path to input PDF file.
+ * @param {?string} [outputDir='.'] - Output directory for page images.
+ * @param {Object} [options]
+ * @param {string} [options.dpi]
+ * @param {string} [options.pages]
+ * @param {boolean} [options.gray]
+ */
+export const renderCLI = async (inputFile, outputDir, options) => {
+  try {
+    await render(inputFile, outputDir, options);
+    process.exitCode = 0;
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exitCode = 1;
+  }
 };
 
 /**
