@@ -985,19 +985,14 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
       if (cmap.glyphIndexMap) {
         if (cmap.platformID === 3 && cmap.encodingID === 0) {
           // Symbol-encoded cmap (platform 3, encoding 0).
-          // All platform-3/encoding-0 fonts are symbol fonts — the renderer must use
-          // PUA codepoints (0xF000 + charCode) so that characters like space (charCode 32)
-          // are not skipped by the whitespace trim() check.
-          // Traditional symbol fonts (Wingdings, Symbol) already have keys in 0xF000+ PUA range.
-          // Bare-ASCII symbol fonts (e.g. barcode fonts) need remapping to PUA.
+          // The renderer draws each code as the PUA codepoint 0xF000 + charCode (see parseDrawOps.js),
+          // so the rebuilt cmap keys must land in the 0xF000+ range to match.
+          // Map each key on its own: a key already >= 0xF000 is kept, a lower key is OR'd into 0xF000+.
           cmapType = 'symbol';
-          const keys = Object.keys(cmap.glyphIndexMap).map(Number);
-          const hasPUAKeys = keys.some((k) => k >= 0xF000);
           for (const [unicodeStr, gi] of Object.entries(cmap.glyphIndexMap)) {
             const unicode = Number(unicodeStr);
             if (gi > 0 && !glyphToUnicode.has(gi)) {
-              // Bare-ASCII keys need PUA remapping; PUA keys are already in the right range.
-              glyphToUnicode.set(gi, hasPUAKeys ? unicode : (0xF000 | unicode));
+              glyphToUnicode.set(gi, unicode >= 0xF000 ? unicode : (0xF000 | unicode));
             }
           }
         } else if (fontObj.toUnicode && cmap.platformID === 1) {
@@ -1007,9 +1002,14 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
           // or when it starts with a combining mark (which fillText would otherwise render
           // as a dotted-circle placeholder).
           cmapType = 'rawCharCode';
-          for (const [charCodeStr, gi] of Object.entries(cmap.glyphIndexMap)) {
+          // parseCmapTableFormat0 re-keys glyphIndexMap's high half (0x80..0xFF) by Mac-Roman Unicode,
+          // which can overwrite a raw code -> GID entry.
+          // Read the unmodified byte array so a (1,0) cmap used as a direct glyph-index table survives.
+          const codeGidPairs = cmap.byteToGlyphIndex
+            ? cmap.byteToGlyphIndex.flatMap((gi, charCode) => (gi > 0 ? [[charCode, gi]] : []))
+            : Object.entries(cmap.glyphIndexMap).map(([c, gi]) => [Number(c), gi]);
+          for (const [charCode, gi] of codeGidPairs) {
             if (gi <= 0) continue;
-            const charCode = Number(charCodeStr);
             const uniStr = fontObj.toUnicode.get(charCode);
             let unicode;
             if (uniStr) {
@@ -1027,10 +1027,15 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
             }
           }
         } else {
-          // Unicode-platform cmap (or no toUnicode): keys are unicode codepoints
+          // cmap keys are Unicode codepoints, and several can map to one glyph (e.g. a curly quote at both U+0093 and U+201C).
+          // Keep the printable codepoint over a control-range one (below 0x20, or 0x7F-0x9F), which the renderer would skip or misrender.
           for (const [unicodeStr, gi] of Object.entries(cmap.glyphIndexMap)) {
             const unicode = Number(unicodeStr);
-            if (gi > 0 && !glyphToUnicode.has(gi)) {
+            if (gi <= 0) continue;
+            const existing = glyphToUnicode.get(gi);
+            const existingIsControl = existing !== undefined && (existing < 0x20 || (existing >= 0x7F && existing <= 0x9F));
+            const newIsControl = unicode < 0x20 || (unicode >= 0x7F && unicode <= 0x9F);
+            if (existing === undefined || (existingIsControl && !newIsControl)) {
               glyphToUnicode.set(gi, unicode);
             }
           }

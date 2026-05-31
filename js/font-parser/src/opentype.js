@@ -26,6 +26,10 @@ function parseCmapTableFormat0(cmap, p, platformID, encodingID) {
 
   const indexMap = p.parseByteList(cmap.length);
   const glyphIndexMap = { ...indexMap };
+  // Raw single-byte code -> GID array (codes 0..255) from the format-0 subtable.
+  // The loop below re-keys glyphIndexMap's high half (0x80..0xFF) by Mac-Roman Unicode,
+  // so callers needing the unremapped byte -> GID map read this array instead.
+  cmap.byteToGlyphIndex = indexMap.slice(0, 256);
   const encoding = getEncoding(platformID, encodingID, cmap.language);
   const decodingTable = eightBitMacEncodings[encoding];
   for (let i = 0; i < decodingTable.length; i++) {

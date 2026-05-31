@@ -1384,20 +1384,24 @@ function transformSmaskCtm(smask, composedBase) {
  */
 function applyFormTransform(op, composedBase) {
   /**
-   * Compose smask parentCtm into the result if either smask is present.
+   * Apply the form transform `composedBase` to the op's secondary coordinate references.
+   * These are its smask parent CTMs and its fill/stroke tiling-pattern matrices.
+   * They are defined in form-local space, so each is composed with `composedBase` to bring it into the surrounding coordinate space.
    * Mutates `result` in place.
    * @param {DrawOp} result
    */
-  const composeSmaskCtms = (result) => {
+  const composeFormRefs = (result) => {
     if (op.smask) result.smask = transformSmaskCtm(op.smask, composedBase);
     if (op.outerSmask) result.outerSmask = transformSmaskCtm(op.outerSmask, composedBase);
+    if (op.tilingPattern) result.tilingPattern = { ...op.tilingPattern, matrix: matMul(op.tilingPattern.matrix, composedBase) };
+    if (op.strokeTilingPattern) result.strokeTilingPattern = { ...op.strokeTilingPattern, matrix: matMul(op.strokeTilingPattern.matrix, composedBase) };
   };
   switch (op.type) {
     case 'image': {
       const finalCtm = matMul(op.ctm, composedBase);
       const result = { ...op, ctm: finalCtm };
       if (op.clips) result.clips = op.clips.map((c) => ({ ...c, ctm: matMul(c.ctm, composedBase) }));
-      composeSmaskCtms(result);
+      composeFormRefs(result);
       return result;
     }
     case 'type0text': {
@@ -1406,35 +1410,35 @@ function applyFormTransform(op, composedBase) {
         ...op, a: trm[0], b: trm[1], c: trm[2], d: trm[3], x: trm[4], y: trm[5],
       };
       if (op.clips) result.clips = op.clips.map((c) => ({ ...c, ctm: matMul(c.ctm, composedBase) }));
-      composeSmaskCtms(result);
+      composeFormRefs(result);
       return result;
     }
     case 'type3glyph': {
       const newTransform = matMul(op.transform, composedBase);
       const result = { ...op, transform: newTransform };
       if (op.clips) result.clips = op.clips.map((c) => ({ ...c, ctm: matMul(c.ctm, composedBase) }));
-      composeSmaskCtms(result);
+      composeFormRefs(result);
       return result;
     }
     case 'path': {
       const newCtm = matMul(op.ctm, composedBase);
       const result = { ...op, ctm: newCtm };
       if (op.clips) result.clips = op.clips.map((c) => ({ ...c, ctm: matMul(c.ctm, composedBase) }));
-      composeSmaskCtms(result);
+      composeFormRefs(result);
       return result;
     }
     case 'shading': {
       const newCtm = matMul(op.ctm, composedBase);
       const result = { ...op, ctm: newCtm };
       if (op.clips) result.clips = op.clips.map((c) => ({ ...c, ctm: matMul(c.ctm, composedBase) }));
-      composeSmaskCtms(result);
+      composeFormRefs(result);
       return result;
     }
     case 'inlineImage': {
       const newCtm = matMul(op.ctm, composedBase);
       const result = { ...op, ctm: newCtm };
       if (op.clips) result.clips = op.clips.map((c) => ({ ...c, ctm: matMul(c.ctm, composedBase) }));
-      composeSmaskCtms(result);
+      composeFormRefs(result);
       return result;
     }
     default:
@@ -4749,7 +4753,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         // Compute transform: map effective (post-Matrix) BBox to annotation Rect
         const sx = effW > 0 ? rectW / effW : 1;
         const sy = effH > 0 ? rectH / effH : 1;
-        const annotTransform = [sx, 0, 0, sy, rect[0] - effBBox[0] * sx, rect[1] - effBBox[1] * sy];
+        const annotTransform = [sx, 0, 0, sy, rectX0 - effBBox[0] * sx, rectY0 - effBBox[1] * sy];
 
         // Create a synthetic form entry and image op so flattenDrawOps can process it
         // Include bbox so flattenDrawOps applies BBox clipping to the annotation form.
@@ -5790,7 +5794,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           const imgInfo = patImages.get(pop.name);
           if (!imgInfo) continue;
           const bitmap = imgInfo.imageMask
-            ? await imageMaskToBitmap(imgInfo, pop.fillColor || 'black', objCache)
+            ? await imageMaskToBitmap(imgInfo, tp.paintColor || pop.fillColor || 'black', objCache)
             : await imageInfoToBitmap(imgInfo, objCache);
           tileCtx.save();
           tileCtx.setTransform(
@@ -5852,10 +5856,11 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             if (pop.tilingPattern) {
             // Nested tiling pattern fill: recursively render inner pattern, then tile it
               const innerPatName = pop.tilingPattern.patName;
-              if (pop.tilingPattern.objNum && !tilingPatternCache.has(innerPatName)) {
+              const innerKey = tileKeyOf(pop.tilingPattern);
+              if (pop.tilingPattern.objNum && !tilingPatternCache.has(innerKey)) {
                 try { await renderTilingPatternTile(innerPatName, pop.tilingPattern); } catch { /* skip */ }
               }
-              const innerBitmap = tilingPatternCache.get(innerPatName);
+              const innerBitmap = tilingPatternCache.get(innerKey);
               if (innerBitmap) {
                 drawCtx.clip(pop.evenOdd ? 'evenodd' : 'nonzero');
                 const itp = pop.tilingPattern;
@@ -6062,7 +6067,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       if (op.fill) {
         rCtx.globalAlpha = op.fillAlpha;
         if (op.tilingPattern) {
-          const tileCvs = tilingPatternCache.get(op.tilingPattern.patName);
+          const tileCvs = tilingPatternCache.get(tileKeyOf(op.tilingPattern));
           if (tileCvs) {
             // Use ctx.createPattern + setTransform + fillRect rather than per-tile
             // drawImage calls. Patterns with small tile bbox can require hundreds of
