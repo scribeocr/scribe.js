@@ -1577,9 +1577,18 @@ async function flattenDrawOps(
       }
       let effectiveFonts2 = fonts;
       let effectiveRegistered2 = registeredFontNames;
+      // Scope the symbol/PUA/rawCharCode tag-sets per form.
+      // These classifications are keyed by the local font tag, whose meaning is scope-dependent.
+      // Without this, a symbol-encoded page /TT0 could mark a same-tagged non-symbol form /TT0 as symbol.
+      let effectiveSymbol2 = symbolFontTags;
+      let effectiveCidPUA2 = cidPUATags;
+      let effectiveRaw2 = rawCharCodeTags;
       if (formFonts.size > 0) {
         effectiveFonts2 = new Map([...fonts, ...formFonts]);
         effectiveRegistered2 = new Map(registeredFontNames);
+        effectiveSymbol2 = new Set(symbolFontTags);
+        effectiveCidPUA2 = new Set(cidPUATags);
+        effectiveRaw2 = new Set(rawCharCodeTags);
         for (const [fontTag, fontObj] of formFonts) {
           // A Form XObject's local /Resources must shadow the parent scope.
           // Even if the tag already exists (e.g. /C0_0 on the page and inside
@@ -1587,9 +1596,14 @@ async function flattenDrawOps(
           // resolves to the form-local family alias.
           const formId = fullName.replace(/\//g, '_');
           const familyName = pdfFontFamilyName(objCache, fontObj.fontObjNum, `${formId}_${fontTag}`);
+          // Clear the parent scope's classification for this tag.
+          // convertAndRegisterFont only adds, so without this a non-symbol form font keeps a parent symbol tag.
+          effectiveSymbol2.delete(fontTag);
+          effectiveCidPUA2.delete(fontTag);
+          effectiveRaw2.delete(fontTag);
           await convertAndRegisterFont(
-            fontTag, fontObj, effectiveRegistered2, symbolFontTags, cidPUATags,
-            rawCharCodeTags, cidCollisionMap, objCache, familyName,
+            fontTag, fontObj, effectiveRegistered2, effectiveSymbol2, effectiveCidPUA2,
+            effectiveRaw2, cidCollisionMap, objCache, familyName,
           );
         }
         appendGenericFallbacks(effectiveRegistered2, effectiveFonts2);
@@ -1642,7 +1656,7 @@ async function flattenDrawOps(
         const formStream = bytesToLatin1(streamBytes);
         rawFormDrawOps = parseDrawOps(
           formStream, effectiveFonts2, effectiveExtGStates2, effectiveRegistered2,
-          formColorSpaces.size > 0 ? formColorSpaces : undefined, symbolFontTags, cidPUATags, rawCharCodeTags,
+          formColorSpaces.size > 0 ? formColorSpaces : undefined, effectiveSymbol2, effectiveCidPUA2, effectiveRaw2,
           formShadings, formPatterns, cidCollisionMap, ts,
           parseHiddenOCMCNames(formObjText, objCache, offOCGs),
         );
@@ -1654,6 +1668,9 @@ async function flattenDrawOps(
         effectiveFonts: effectiveFonts2,
         effectiveRegistered: effectiveRegistered2,
         effectiveExtGStates: effectiveExtGStates2,
+        effectiveSymbol: effectiveSymbol2,
+        effectiveCidPUA: effectiveCidPUA2,
+        effectiveRaw: effectiveRaw2,
       };
       formResourceCache.set(cacheKey, cached);
     }
@@ -1701,6 +1718,9 @@ async function flattenDrawOps(
     const effectiveFonts = cached.effectiveFonts;
     const effectiveRegistered = cached.effectiveRegistered;
     const effectiveExtGStates = cached.effectiveExtGStates;
+    const effectiveSymbol = cached.effectiveSymbol || symbolFontTags;
+    const effectiveCidPUA = cached.effectiveCidPUA || cidPUATags;
+    const effectiveRaw = cached.effectiveRaw || rawCharCodeTags;
     const innerPrefix = `${fullName}/`;
     // If this Form is a transparency group AND we have a group context,
     // allocate a groupId and capture the outer GS attributes that apply at composite time.
@@ -1744,7 +1764,7 @@ async function flattenDrawOps(
       if (innerOp.type === 'image') {
         const nestedFlattened = await flattenDrawOps(
           [innerOp], images, forms, objCache, effectiveFonts, effectiveRegistered,
-          innerPrefix, pageIndex, symbolFontTags, cidPUATags, effectiveExtGStates, rawCharCodeTags,
+          innerPrefix, pageIndex, effectiveSymbol, effectiveCidPUA, effectiveExtGStates, effectiveRaw,
           formResourceCache, depth + 1, offOCGs, cidCollisionMap,
           formInheritedFill, formInheritedStroke,
           groupContext, innerGroupId,
@@ -6189,8 +6209,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       return true;
     }
 
-    const decodeInlineImage = (op) => decodeInlineImageBitmap(op, objCache, colorSpaces);
-
     async function renderSingleOp(rCtx, op) {
       if (op.type === 'image') {
         const imageInfo = images.get(op.name);
@@ -6198,7 +6216,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
 
         // For image masks with tiling pattern fill, composite the pattern through the mask
         if (imageInfo.imageMask && op.tilingPattern) {
-          const tileCvs = tilingPatternCache.get(op.tilingPattern.patName);
+          const tileCvs = tilingPatternCache.get(tileKeyOf(op.tilingPattern));
           const canvasPat = tileCvs ? rCtx.createPattern(tileCvs, 'repeat') : null; if (canvasPat) transientPatterns.push(canvasPat);
           if (canvasPat) {
             const tileMaskKey = `${op.name}|rgb(255,255,255)`;
@@ -6435,7 +6453,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         const isEmbedded = /^"?_pdf_/.test(op.fontFamily);
         const weight = (!isEmbedded && op.bold) ? 'bold' : 'normal';
         const style = (!isEmbedded && op.italic) ? 'italic' : 'normal';
-
         rCtx.font = /[",]/.test(op.fontFamily)
           ? `${style} ${weight} 1px ${op.fontFamily}`
           : `${style} ${weight} 1px "${op.fontFamily}"`;
@@ -6486,7 +6503,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
 
         // Apply pattern fills (tiling or shading) to text, same as for paths.
         if (op.tilingPattern) {
-          const tileCvs = tilingPatternCache.get(op.tilingPattern.patName);
+          const tileCvs = tilingPatternCache.get(tileKeyOf(op.tilingPattern));
           const canvasPat = tileCvs ? rCtx.createPattern(tileCvs, 'repeat') : null; if (canvasPat) transientPatterns.push(canvasPat);
           if (canvasPat) {
             const tp = op.tilingPattern;
@@ -6719,7 +6736,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
               strokeStyleVal = grad;
             }
           } else if (op.strokeTilingPattern) {
-            const tileCvs = tilingPatternCache.get(op.strokeTilingPattern.patName);
+            const tileCvs = tilingPatternCache.get(tileKeyOf(op.strokeTilingPattern));
             if (tileCvs) {
               const tp = op.strokeTilingPattern;
               const bboxW = tp.bbox[2] - tp.bbox[0];
@@ -6824,7 +6841,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           } else if (op.tilingPattern) {
           // Image mask with tiling pattern fill: render mask as white bitmap,
           // composite cached tiling pattern through it via source-in, then draw result.
-            const tileCvs = tilingPatternCache.get(op.tilingPattern.patName);
+            const tileCvs = tilingPatternCache.get(tileKeyOf(op.tilingPattern));
             const canvasPat = tileCvs ? rCtx.createPattern(tileCvs, 'repeat') : null; if (canvasPat) transientPatterns.push(canvasPat);
             const maskOp = { ...op, fillColor: 'rgb(255,255,255)' };
             const maskBitmap = canvasPat ? await decodeInlineImage(maskOp) : null;
