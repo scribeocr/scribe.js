@@ -7,19 +7,23 @@
  */
 export function decodePNGPredictor(data, columns, bpp = 1) {
   const rowSize = columns + 1; // filter byte + data bytes
-  const numRows = Math.floor(data.length / rowSize);
+  // Decode a final partial row (filter byte + fewer than `columns` data bytes)
+  // rather than dropping it, so a stream that ends mid-row keeps its last bytes.
+  const numRows = Math.ceil(data.length / rowSize);
   const result = new Uint8Array(numRows * columns);
   const prevRow = new Uint8Array(columns);
+  let outLen = 0;
 
   for (let row = 0; row < numRows; row++) {
-    const filterByte = data[row * rowSize];
     const srcOffset = row * rowSize + 1;
+    const avail = Math.min(columns, data.length - srcOffset);
+    if (avail <= 0) break;
+    const filterByte = data[row * rowSize];
     const dstOffset = row * columns;
 
-    for (let col = 0; col < columns; col++) {
+    for (let col = 0; col < avail; col++) {
       const raw = data[srcOffset + col];
-      // PNG spec: "left" refers to the same component of the previous pixel,
-      // which is bpp bytes back (not just 1 byte back for multi-component images).
+      // "Left" refers to the same component of the previous pixel, which is bpp bytes back.
       const left = col >= bpp ? result[dstOffset + col - bpp] : 0;
       const up = prevRow[col];
 
@@ -47,11 +51,12 @@ export function decodePNGPredictor(data, columns, bpp = 1) {
       }
     }
 
+    outLen = dstOffset + avail;
     // Copy current row to prevRow for next iteration
     prevRow.set(result.subarray(dstOffset, dstOffset + columns));
   }
 
-  return result;
+  return result.subarray(0, outLen);
 }
 
 /**

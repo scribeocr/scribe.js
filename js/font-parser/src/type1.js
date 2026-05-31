@@ -330,7 +330,7 @@ export function parseType1Font(pfaBytes) {
         const dataStart = sPos + dupMatch.index + dupMatch[0].length;
         const csBytes = decrypted.subarray(4 + dataStart, 4 + dataStart + subrLen);
         const csDecrypted = decryptCharstring(csBytes, lenIV);
-        if (subrIdx < 1000) subrs[subrIdx] = csDecrypted;
+        if (subrIdx >= 0 && subrIdx < nSubrs) subrs[subrIdx] = csDecrypted;
         sPos = dataStart + subrLen;
       }
     }

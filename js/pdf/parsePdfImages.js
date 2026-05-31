@@ -766,6 +766,15 @@ export function parseIndexedColorSpace(rawCsText, objCache, objNum = null) {
           const hex = hexAfterArr[2].replace(/\s+/g, '');
           palette = new Uint8Array(hex.length / 2);
           for (let i = 0; i < palette.length; i++) palette[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+        } else {
+          const litAfterArr = /^(\d+)\s*\(/.exec(afterArr);
+          const litMatch = litAfterArr ? /\/Indexed[\s\S]*?\d+\s*\(/.exec(rawCsText) : null;
+          if (litMatch) {
+            paletteBase = baseNameMatch[1];
+            baseObjText = baseArr;
+            paletteHival = Number(litAfterArr[1]);
+            palette = parseLiteralPalette(rawCsText, litMatch, objCache, objNum);
+          }
         }
       }
     }

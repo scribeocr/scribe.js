@@ -3450,47 +3450,67 @@ function parsePatterns(pageObjText, objCache) {
     }
     if (!shadingDict) continue;
 
-    const csMatch = /\/ColorSpace\s*(?:\[\s*)?\/(\w+)/.exec(shadingDict);
-    let patShadingCS = csMatch ? csMatch[1] : 'DeviceRGB';
+    // /ColorSpace may be a scalar name `/DeviceRGB`,
+    // an inline array `[/ICCBased N 0 R]` or `[/Separation ...]`, or an indirect reference `N 0 R`.
+    // Extract the defining text once so the family tests below treat all forms alike.
+    let patCsText = null;
+    const patCsArrStart = /\/ColorSpace\s*\[/.exec(shadingDict);
+    if (patCsArrStart) {
+      const bracketIdx = patCsArrStart.index + patCsArrStart[0].length - 1;
+      let depth = 1;
+      let endIdx = bracketIdx + 1;
+      while (endIdx < shadingDict.length && depth > 0) {
+        const ch = shadingDict[endIdx];
+        if (ch === '[') depth++;
+        else if (ch === ']') depth--;
+        if (depth > 0) endIdx++;
+      }
+      patCsText = shadingDict.substring(bracketIdx, endIdx + 1);
+    } else {
+      const csRefMatch = /\/ColorSpace\s+(\d+)\s+\d+\s+R/.exec(shadingDict);
+      if (csRefMatch) {
+        patCsText = objCache.getObjectText(Number(csRefMatch[1]));
+      } else {
+        const csNameMatch = /\/ColorSpace\s*\/(\w+)/.exec(shadingDict);
+        if (csNameMatch) patCsText = `/${csNameMatch[1]}`;
+      }
+    }
+
+    let patShadingCS = 'DeviceRGB';
     let patSepTintSamples = null;
     /** @type {import('./pdfColorFunctions.js').ParsedTintCS|null} */
     let patDeviceNTintCS = null;
 
-    // Handle indirect ColorSpace reference (e.g. Separation, ICCBased)
-    if (!csMatch) {
-      const csRefMatch = /\/ColorSpace\s+(\d+)\s+\d+\s+R/.exec(shadingDict);
-      if (csRefMatch) {
-        const csObjText = objCache.getObjectText(Number(csRefMatch[1]));
-        if (csObjText) {
-          if (/\/Separation|\/DeviceN/.test(csObjText)) {
-            // For multi-colorant DeviceN (e.g. 5-channel PANTONE+CMYK), the 1D diagonal tint LUT is wrong.
-            // Each function output must go through the multi-input tint transform as a full N-tuple,
-            // so parse the tint CS directly and route every Type 2/3 stop through it
-            // with all C0->C1 components jointly. Single-colorant DeviceN uses the 1D LUT.
-            const dnNamesMatch = /\/DeviceN\s*\[\s*((?:\/[^/[\]<>(){}\s]+\s*)+)\]/.exec(csObjText);
-            const dnNumColorants = dnNamesMatch
-              ? (dnNamesMatch[1].match(/\/[^/[\]<>(){}\s]+/g) || []).length
-              : 0;
-            if (dnNumColorants >= 2) {
-              patDeviceNTintCS = parseTintColorSpace(csObjText, objCache);
-            } else {
-              const tintInfo = parseSeparationTint(csObjText, objCache);
-              if (tintInfo.tintSamples) patSepTintSamples = tintInfo.tintSamples;
-            }
-            patShadingCS = 'Separation';
-          } else if (/\/DeviceCMYK/.test(csObjText)) {
-            patShadingCS = 'DeviceCMYK';
-          } else if (/\/DeviceGray/.test(csObjText)) {
-            patShadingCS = 'DeviceGray';
-          } else if (/\/ICCBased/.test(csObjText)) {
-            const iccRefMatch = /(\d+)\s+\d+\s+R/.exec(csObjText);
-            if (iccRefMatch) {
-              const iccObjText = objCache.getObjectText(Number(iccRefMatch[1]));
-              const nMatch = iccObjText && /\/N\s+(\d+)/.exec(iccObjText);
-              const nComp = nMatch ? Number(nMatch[1]) : 3;
-              patShadingCS = nComp === 1 ? 'DeviceGray' : nComp === 4 ? 'DeviceCMYK' : 'DeviceRGB';
-            }
-          }
+    if (patCsText) {
+      if (/\/Separation|\/DeviceN/.test(patCsText)) {
+        // For multi-colorant DeviceN (e.g. 5-channel PANTONE+CMYK), the 1D diagonal tint LUT is wrong.
+        // Each function output must go through the multi-input tint transform as a full N-tuple,
+        // so parse the tint CS directly and route every Type 2/3 stop through it
+        // with all C0->C1 components jointly. Single-colorant DeviceN uses the 1D LUT.
+        const dnNamesMatch = /\/DeviceN\s*\[\s*((?:\/[^/[\]<>(){}\s]+\s*)+)\]/.exec(patCsText);
+        const dnNumColorants = dnNamesMatch
+          ? (dnNamesMatch[1].match(/\/[^/[\]<>(){}\s]+/g) || []).length
+          : 0;
+        if (dnNumColorants >= 2) {
+          patDeviceNTintCS = parseTintColorSpace(patCsText, objCache);
+        } else {
+          const tintInfo = parseSeparationTint(patCsText, objCache);
+          if (tintInfo.tintSamples) patSepTintSamples = tintInfo.tintSamples;
+        }
+        patShadingCS = 'Separation';
+      } else if (/\/DeviceCMYK/.test(patCsText)) {
+        patShadingCS = 'DeviceCMYK';
+      } else if (/\/DeviceGray|\/CalGray/.test(patCsText)) {
+        patShadingCS = 'DeviceGray';
+      } else if (/\/DeviceRGB|\/CalRGB/.test(patCsText)) {
+        patShadingCS = 'DeviceRGB';
+      } else if (/\/ICCBased/.test(patCsText)) {
+        const iccRefMatch = /(\d+)\s+\d+\s+R/.exec(patCsText);
+        if (iccRefMatch) {
+          const iccObjText = objCache.getObjectText(Number(iccRefMatch[1]));
+          const nMatch = iccObjText && /\/N\s+(\d+)/.exec(iccObjText);
+          const nComp = nMatch ? Number(nMatch[1]) : 3;
+          patShadingCS = nComp === 1 ? 'DeviceGray' : nComp === 4 ? 'DeviceCMYK' : 'DeviceRGB';
         }
       }
     }
@@ -4179,6 +4199,23 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
       // Render filled paths on the mask canvas (some masks use path fills)
       maskCtx.save();
       if (op.fillAlpha < 1) maskCtx.globalAlpha = op.fillAlpha;
+      if (op.clips) {
+        for (const clip of op.clips) {
+          if (!clip.path) continue;
+          maskCtx.setTransform(
+            clip.ctm[0] * scale, -clip.ctm[1] * scale, clip.ctm[2] * scale, -clip.ctm[3] * scale,
+            (clip.ctm[4] - boxOriginX) * scale - shiftX, (pageHeightPts + boxOriginY - clip.ctm[5]) * scale - shiftY,
+          );
+          maskCtx.beginPath();
+          for (const cmd of clip.path) {
+            if (cmd.type === 'M') maskCtx.moveTo(cmd.x, cmd.y);
+            else if (cmd.type === 'L') maskCtx.lineTo(cmd.x, cmd.y);
+            else if (cmd.type === 'C') maskCtx.bezierCurveTo(cmd.x1, cmd.y1, cmd.x2, cmd.y2, cmd.x, cmd.y);
+            else if (cmd.type === 'Z') maskCtx.closePath();
+          }
+          maskCtx.clip(clip.evenOdd ? 'evenodd' : 'nonzero');
+        }
+      }
       maskCtx.setTransform(
         op.ctm[0] * scale,
         -op.ctm[1] * scale,
@@ -4573,7 +4610,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   const rawDrawOps = contentStreams && contentStreams.length > 0
     ? parseDrawOps(contentStreams, fonts, extGStates, registeredFontNames, colorSpaces, symbolFontTags,
       cidPUATags, rawCharCodeTags, pageShadings, pagePatterns, cidCollisionMap, null,
-      parseHiddenOCMCNames(pageObjText, objCache, offOCGs))
+      parseHiddenOCMCNames(pageObjText, objCache, offOCGs), objCache.lastContentStreamsRecovered)
     : [];
 
   // Yield to the event loop after heavy synchronous parsing (parseDrawOps tokenizes
@@ -4592,12 +4629,13 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   /** @type {{nextId: number, registry: Map<number, TransparencyGroupAttrs>}} */
   const groupContext = { nextId: 1, registry: new Map() };
   if (forms.size > 0) {
+    const sharedFormResourceCache = new Map();
     for (const op of rawDrawOps) {
       if (op.type === 'image') {
         const flattened = await flattenDrawOps(
           [op], images, forms, objCache, fonts, registeredFontNames,
           '', pageIndex, symbolFontTags, cidPUATags, extGStates, rawCharCodeTags,
-          new Map(), 0, offOCGs, cidCollisionMap,
+          sharedFormResourceCache, 0, offOCGs, cidCollisionMap,
           'black', 'rgb(0,0,0)',
           groupContext, null,
         );
@@ -5673,9 +5711,16 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       }
       appendGenericFallbacks(patRegistered, patFonts);
 
-      // Compute pattern tile size in pixels
-      const bboxW = tp.bbox[2] - tp.bbox[0];
-      const bboxH = tp.bbox[3] - tp.bbox[1];
+      // The repeat cell is XStep/YStep, not the BBox.
+      // `createPattern('repeat')` tiles at the canvas size, so when the BBox
+      // exceeds the step the canvas is mostly empty and tiles with gaps.
+      // Shrink the cell to the step, clamping downward only.
+      // A step at or above the BBox keeps the old sizing (gapped or oversized tiles).
+      // Cell content stays positioned relative to the BBox origin (tp.bbox[0/1]).
+      const fullBboxW = tp.bbox[2] - tp.bbox[0];
+      const fullBboxH = tp.bbox[3] - tp.bbox[1];
+      const bboxW = tp.xStep ? Math.min(fullBboxW, Math.abs(tp.xStep)) : fullBboxW;
+      const bboxH = tp.yStep ? Math.min(fullBboxH, Math.abs(tp.yStep)) : fullBboxH;
       const matScaleX = Math.sqrt(tp.matrix[0] * tp.matrix[0] + tp.matrix[1] * tp.matrix[1]);
       const matScaleY = Math.sqrt(tp.matrix[2] * tp.matrix[2] + tp.matrix[3] * tp.matrix[3]);
       const { tileW, tileH } = tilingTilePixelDims(bboxW, bboxH, matScaleX, matScaleY, scale);

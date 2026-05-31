@@ -5,7 +5,7 @@ import {
 import {
   findXrefOffset, parseXref, ObjectCache,
   bytesToLatin1, getPageObjects, getPageContentStream, tokenizeContentStream,
-  findFormXObjects, extractDict,
+  findFormXObjects, extractDict, decodePdfName,
 } from './parsePdfUtils.js';
 import { parsePageFonts } from './fonts/parsePdfFonts.js';
 import { parsePagePaths } from './parsePdfPaths.js';
@@ -736,7 +736,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
         const size = operandStack.length >= 2 ? operandStack[operandStack.length - 1] : null;
         const name = operandStack.length >= 2 ? operandStack[operandStack.length - 2] : null;
         if (name && name.type === 'name' && size && size.type === 'number') {
-          currentFont = fonts.get(name.value) || null;
+          currentFont = fonts.get(decodePdfName(name.value)) || null;
           // Preserve sign: PDFlib emits negative font size with Y-flip CTM and
           // negative Tz to compose a positive overall scale. The advance
           // calculation needs the signed size to land subsequent glyphs to the

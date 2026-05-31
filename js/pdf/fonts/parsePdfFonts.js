@@ -2,7 +2,7 @@ import ocr from '../../objects/ocrObjects.js';
 import opentype from '../../font-parser/src/index.js';
 import {
   extractDict, ObjectCache, findXrefOffset, parseXref,
-  resolveIntValue, resolveNumValue, resolveArrayValue,
+  resolveIntValue, resolveNumValue, resolveArrayValue, decodePdfName,
 } from '../parsePdfUtils.js';
 import {
   win1252Chars, macRomanChars, aglLookup, unicodeToAGL, wingdingsToUnicode, symbolToUnicode, dingbatsGlyphMap, dingbatsEncoding,
@@ -10,6 +10,7 @@ import {
 import { applyStandardFontWidths, getDingbatsGlyphWidth } from './standardFontMetrics.js';
 import { parseCFFCharset } from './convertFontToOTF.js';
 import { getCIDToUnicodeMap } from './cidToUnicode.js';
+import { standardNames } from '../../font-parser/src/encoding.js';
 import { determineSansSerif } from '../../utils/miscUtils.js';
 
 /**
@@ -375,6 +376,13 @@ export function parseType3Font(objText, objCache) {
       commands: pathData.commands,
       pathHash: pathData.commands && pathData.commands.length
         ? hashGlyphCommands(pathData.commands) : null,
+      paintMode: pathData.paintMode,
+      evenOdd: pathData.evenOdd,
+      lineWidth: pathData.lineWidth,
+      dashArray: pathData.dashArray,
+      dashPhase: pathData.dashPhase,
+      isD0: pathData.isD0,
+      isD1: pathData.isD1,
     };
   }
 
@@ -434,6 +442,11 @@ function parseGlyphStream(streamText) {
     // Callers that need visual extents must use the path-derived bbox.
     placeholderD1 = Math.abs(llx + 10) < 1e-6 && Math.abs(lly + 10) < 1e-6
       && Math.abs(urx - 10) < 1e-6 && Math.abs(ury - 10) < 1e-6;
+  } else {
+    // With no d1, the glyph proc used d0 (wx wy d0) instead.
+    // Like d1, it leads with the advance wx.
+    const d0Match = /([\d.-]+)\s+([\d.-]+)\s+d0(?![\dA-Za-z])/.exec(streamText);
+    if (d0Match) advanceWidth = Number(d0Match[1]);
   }
 
   // Parse cm translation: q 1 0 0 1 tx ty cm
@@ -594,7 +607,10 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
   for (const match of fontDictText.matchAll(fontEntryRegex)) {
     const fontObjNum = Number(match[2]);
     const fontObjText = objCache.getObjectText(fontObjNum);
-    if (fontObjText) fontEntryPairs.push([match[1], fontObjText, fontObjNum]);
+    // PDF names can hex-escape chars as #XX (NewFont#3A0 means NewFont:0).
+    // Decode here and at the Tf lookup so both sides match in one canonical form.
+    const fontTag = decodePdfName(match[1]);
+    if (fontObjText) fontEntryPairs.push([fontTag, fontObjText, fontObjNum]);
   }
   // Inline font dicts: scan fontDictText at top level (depth 1) for /name << ... >>
   {
@@ -609,7 +625,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       } else if (depth === 1 && fontDictText[i] === '/') {
         const nameMatch = /^\/([^\s/<>[\]]+)/.exec(fontDictText.substring(i));
         if (nameMatch) {
-          const tag = nameMatch[1];
+          const tag = decodePdfName(nameMatch[1]);
           const afterIdx = i + nameMatch[0].length;
           const afterName = fontDictText.substring(afterIdx).trimStart();
           if (afterName.startsWith('<<') && !fontEntryPairs.some(([t]) => t === tag)) {
@@ -622,6 +638,39 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
           }
         }
       }
+    }
+  }
+  // Type3 glyph CharProcs delegate to inner fonts declared in the Type3 font's
+  // own /Resources /Font (each CharProc runs `BT /Inner Tf (c) Tj ET`),
+  // not in the page /Font dict. Pull those inner fonts into the page font set so they
+  // are parsed and CSS-registered for the nested-text render path to resolve.
+  const type3FontObjTexts = fontEntryPairs
+    .filter(([, obj]) => /\/Subtype\s*\/Type3/.test(obj))
+    .map(([, obj]) => obj);
+  for (const t3Obj of type3FontObjTexts) {
+    let t3ResText = t3Obj;
+    const t3ResRef = /\/Resources\s+(\d+)\s+\d+\s+R/.exec(t3Obj);
+    if (t3ResRef) {
+      const resObj = objCache.getObjectText(Number(t3ResRef[1]));
+      if (resObj) t3ResText = resObj;
+    }
+    // Match `/Font` only when followed by `<<` or an indirect ref, so `/FontMatrix`
+    // and `/FontBBox` in an inline-Resources Type3 font are not mistaken for it.
+    const t3FontMatch = /\/Font\s*(<<|\d+\s+\d+\s+R)/.exec(t3ResText);
+    if (!t3FontMatch) continue;
+    let t3FontDict;
+    if (t3FontMatch[1].startsWith('<<')) {
+      t3FontDict = extractDict(t3ResText, t3FontMatch.index + t3ResText.substring(t3FontMatch.index).indexOf('<<'));
+    } else {
+      t3FontDict = objCache.getObjectText(Number(/(\d+)\s+\d+\s+R/.exec(t3FontMatch[1])[1]));
+    }
+    if (!t3FontDict) continue;
+    for (const m of t3FontDict.matchAll(/\/([^\s/]+)\s+(\d+)\s+\d+\s+R/g)) {
+      const innerTag = m[1];
+      if (fontEntryPairs.some(([t]) => t === innerTag)) continue;
+      const innerObjNum = Number(m[2]);
+      const innerObjText = objCache.getObjectText(innerObjNum);
+      if (innerObjText) fontEntryPairs.push([innerTag, innerObjText, innerObjNum]);
     }
   }
   for (const [fontTag, fontObj, fontObjNum] of fontEntryPairs) {
@@ -1738,6 +1787,17 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
             if (!isOverridable(cid)) continue;
             if (cid > 0 && cid <= 0xFFFF) toUnicode.set(cid, String.fromCodePoint(cid));
           }
+        } else if (isCIDType2 && !(type0Info && type0Info.fontFile)) {
+          // No glyph outlines are available (non-embedded, no same-BaseFont sibling).
+          // Here CID equals GID, and most TrueType fonts place their low glyphs
+          // in the Macintosh standard glyph order, so map CID -> standardNames[CID] -> Unicode.
+          for (const cid of widths.keys()) {
+            if (!isOverridable(cid)) continue;
+            const glyphName = standardNames[cid];
+            if (!glyphName || glyphName[0] === '.') continue;
+            const u = aglLookup(glyphName);
+            if (u) toUnicode.set(cid, u);
+          }
         }
 
         // Override positive-advance CIDs whose ToUnicode is a non-text control
@@ -2713,13 +2773,18 @@ function extractType0FontFile(fontObjText, objCache) {
  * @param {string} streamText
  * @returns {{ commands: PathCommand[], advanceWidth: number, inlineImage?: any,
  * doXObject?: { name: string, cm: number[] }, paintMode?: string, evenOdd?: boolean,
- * lineWidth?: number, dashArray?: number[], dashPhase?: number }}
+ * lineWidth?: number, dashArray?: number[], dashPhase?: number,
+ * isD0?: boolean, isD1?: boolean }}
  */
 export function parseGlyphStreamPaths(streamText) {
-  // Parse d0/d1 for advance width
+  // d0 and d1 differ in colour semantics so record which one this CharProc used.
+  // d1 glyphs are monochromatic, painted with the graphics-state colour.
+  // d0 glyphs supply their own colours.
   let advanceWidth = 0;
   const d1Match = /([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+d1/.exec(streamText);
   const d0Match = /([\d.+-]+)\s+([\d.+-]+)\s+d0/.exec(streamText);
+  const isD1 = !!d1Match;
+  const isD0 = !!d0Match && !d1Match;
   if (d1Match) advanceWidth = Number(d1Match[1]);
   else if (d0Match) advanceWidth = Number(d0Match[1]);
 
@@ -2737,22 +2802,40 @@ export function parseGlyphStreamPaths(streamText) {
     dashPhase = Number(dashOpMatch[2]);
   }
 
-  // Parse cm transformation: a b c d tx ty cm
-  // May be preceded by q (save graphics state) or appear directly after d0/d1.
+  // Compose every cm transformation in order.
+  // A Type3 glyph may concatenate several (a unit scale then an image-placement matrix).
+  // Taking only the first leaves the glyph bitmap scaled to a sub-pixel speck.
+  // Inline-image binary data can contain bytes resembling ` cm`, so only scan the region before BI.
   let cmA = 1;
   let cmB = 0;
   let cmC = 0;
   let cmD = 1;
   let cmTx = 0;
   let cmTy = 0;
-  const cmMatch = /(?:q|d[01])\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+cm/.exec(streamText);
-  if (cmMatch) {
-    cmA = Number(cmMatch[1]);
-    cmB = Number(cmMatch[2]);
-    cmC = Number(cmMatch[3]);
-    cmD = Number(cmMatch[4]);
-    cmTx = Number(cmMatch[5]);
-    cmTy = Number(cmMatch[6]);
+  const biCmCut = /BI[\s]/.exec(streamText);
+  const cmRegion = biCmCut ? streamText.substring(0, biCmCut.index) : streamText;
+  const cmRegex = /([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+cm(?:\s|$)/g;
+  let lastCmEnd = 0;
+  for (const m of cmRegion.matchAll(cmRegex)) {
+    const a = Number(m[1]);
+    const b = Number(m[2]);
+    const c = Number(m[3]);
+    const d = Number(m[4]);
+    const tx = Number(m[5]);
+    const ty = Number(m[6]);
+    const nA = a * cmA + b * cmC;
+    const nB = a * cmB + b * cmD;
+    const nC = c * cmA + d * cmC;
+    const nD = c * cmB + d * cmD;
+    const nTx = tx * cmA + ty * cmC + cmTx;
+    const nTy = tx * cmB + ty * cmD + cmTy;
+    cmA = nA;
+    cmB = nB;
+    cmC = nC;
+    cmD = nD;
+    cmTx = nTx;
+    cmTy = nTy;
+    lastCmEnd = m.index + m[0].length;
   }
 
   /**
@@ -2831,7 +2914,7 @@ export function parseGlyphStreamPaths(streamText) {
       .replace(/\\\)/g, ')')
       .replace(/\\\\/g, '\\');
     nestedText = {
-      fontName: ntMatch[1],
+      fontName: decodePdfName(ntMatch[1]),
       fontSize: Number(ntMatch[2]),
       tm: ntMatch[3] !== undefined
         ? [Number(ntMatch[3]), Number(ntMatch[4]), Number(ntMatch[5]), Number(ntMatch[6]), Number(ntMatch[7]), Number(ntMatch[8])]
@@ -2848,7 +2931,7 @@ export function parseGlyphStreamPaths(streamText) {
 
   /** @type {PathCommand[]} */
   const commands = [];
-  const drawingStart = cmMatch ? streamText.indexOf('cm', cmMatch.index) + 2 : 0;
+  const drawingStart = lastCmEnd;
   const drawingPart = streamText.substring(drawingStart);
 
   // Strip PDF comments (% to end of line) before tokenizing
@@ -3031,6 +3114,8 @@ export function parseGlyphStreamPaths(streamText) {
     nestedText: nestedText || undefined,
     paintMode,
     evenOdd,
+    isD0,
+    isD1,
     lineWidth: glyphLineWidth,
     dashArray,
     dashPhase,

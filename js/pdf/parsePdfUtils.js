@@ -678,9 +678,10 @@ export function parseDictEntries(dictBody) {
  * Throws on any error — callers are expected to catch and handle
  * (e.g. retry without trailing byte, or return null for encrypted streams).
  * @param {Uint8Array} data - zlib-wrapped deflate data
+ * @param {{recovered?: boolean}} [meta] - set `recovered=true` if output was salvaged from a stream that errored mid-way
  */
-export function inflate(data) {
-  const result = pakoInflate(data);
+export function inflate(data, meta) {
+  const result = pakoInflate(data, meta);
   // Pako returns undefined (without throwing) for truncated streams where it
   // processes valid blocks but never reaches end-of-stream. Treat as failure.
   if (!(result instanceof Uint8Array)) throw new Error('inflate: no output');
@@ -1026,17 +1027,20 @@ export function extractStream(pdfBytes, objOffset, objCache = null, objNum = -1)
     if (objCache) objCache.filtersUsed.add(filter);
 
     if (filter === 'FlateDecode') {
+      /** @type {{recovered?: boolean}} */
+      const inflateMeta = {};
       try {
-        data = inflate(data);
+        data = inflate(data, inflateMeta);
       } catch (e1) {
         try {
-          data = inflate(data.slice(0, -1));
+          data = inflate(data.slice(0, -1), inflateMeta);
         } catch (e2) {
           // Both attempts failed — try partial recovery for corrupted streams
-          data = pakoInflatePartial(data);
+          data = pakoInflatePartial(data, inflateMeta);
           if (data.length === 0) return null;
         }
       }
+      if (inflateMeta.recovered && objCache && objNum >= 0) objCache.recoveredStreamObjs.add(objNum);
       data = applyPredictor(data, dpText, objCache);
     } else if (filter === 'ASCIIHexDecode') {
       const hexStr = new TextDecoder('latin1').decode(data).replace(/\s/g, '');
@@ -1245,6 +1249,10 @@ export class ObjectCache {
     this.filtersUsed = new Set();
     /** @type {Set<string>} Filter names that were not decoded (passed through raw) */
     this.unsupportedFilters = new Set();
+    /** @type {Set<number>} Object numbers whose stream only decoded via partial-recovery inflate (known-corrupt) */
+    this.recoveredStreamObjs = new Set();
+    /** @type {boolean[]} Per-stream recovery flags from the most recent `getPageContentStreams` call, index-aligned with its return. */
+    this.lastContentStreamsRecovered = [];
     /** @type {boolean} True if xref had entries with offsets beyond file size (severe corruption) */
     this.xrefSeverelyCorrupt = false;
     /** @type {Set<number>|null} Lazily-computed set of OCGs hidden in View mode */
@@ -2307,12 +2315,15 @@ export function getPageContentStream(pageObjText, objCache) {
 
 /**
  * Get the content streams for a page as an array (one entry per stream in /Contents).
+ * Also records per-stream partial-recovery flags in `objCache.lastContentStreamsRecovered`,
+ * index-aligned with the returned array.
  * @param {string} pageObjText
  * @param {ObjectCache} objCache
  */
 export function getPageContentStreams(pageObjText, objCache) {
   const contentsArrayMatch = /\/Contents\s*\[([\s\S]*?)\]/.exec(pageObjText);
   const contentsSingleMatch = /\/Contents\s+(\d+)\s+\d+\s+R/.exec(pageObjText);
+  objCache.lastContentStreamsRecovered = [];
 
   if (contentsArrayMatch) {
     const refs = [...contentsArrayMatch[1].matchAll(/(\d+)\s+\d+\s+R/g)].map((m) => Number(m[1]));
@@ -2325,8 +2336,10 @@ export function getPageContentStreams(pageObjText, objCache) {
         console.warn(`getPageContentStreams: skipping corrupt content stream obj ${ref}: ${e.message}`);
         continue;
       }
-      if (bytes) parts.push(bytesToLatin1(bytes));
-      else console.warn(`getPageContentStreams: content stream obj ${ref} decoded to no bytes; page content may be incomplete`);
+      if (bytes) {
+        parts.push(bytesToLatin1(bytes));
+        objCache.lastContentStreamsRecovered.push(objCache.recoveredStreamObjs.has(ref));
+      } else console.warn(`getPageContentStreams: content stream obj ${ref} decoded to no bytes; page content may be incomplete`);
     }
     return parts.length > 0 ? parts : null;
   } if (contentsSingleMatch) {
@@ -2339,13 +2352,18 @@ export function getPageContentStreams(pageObjText, objCache) {
         const parts = [];
         for (const ref of refs) {
           const bytes = objCache.getStreamBytes(ref);
-          if (bytes) parts.push(bytesToLatin1(bytes));
+          if (bytes) {
+            parts.push(bytesToLatin1(bytes));
+            objCache.lastContentStreamsRecovered.push(objCache.recoveredStreamObjs.has(ref));
+          }
         }
         return parts.length > 0 ? parts : null;
       }
     }
     const bytes = objCache.getStreamBytes(objNum);
-    return bytes ? [bytesToLatin1(bytes)] : null;
+    if (!bytes) return null;
+    objCache.lastContentStreamsRecovered = [objCache.recoveredStreamObjs.has(objNum)];
+    return [bytesToLatin1(bytes)];
   }
 
   return null;
@@ -2402,6 +2420,14 @@ TOK_NUM_START[0x2E] = 1; TOK_NUM_START[0x2B] = 1; TOK_NUM_START[0x2D] = 1;
 for (let c = 0x41; c <= 0x5A; c++) TOK_OP_CHAR[c] = 1;
 for (let c = 0x61; c <= 0x7A; c++) TOK_OP_CHAR[c] = 1;
 TOK_OP_CHAR[0x27] = 1; TOK_OP_CHAR[0x22] = 1; TOK_OP_CHAR[0x2A] = 1;
+
+/**
+ * Decode `#XX` hex escapes in a PDF name (e.g. `Foo#3A1` -> `Foo:1`).
+ * @param {string} name - Name with the leading slash already stripped.
+ */
+export function decodePdfName(name) {
+  return name.replace(/#([0-9A-Fa-f]{2})/g, (_, hex) => String.fromCharCode(parseInt(hex, 16)));
+}
 
 /**
  * Tokenize a PDF content stream into tokens.

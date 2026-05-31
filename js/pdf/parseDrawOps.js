@@ -1,4 +1,5 @@
 import { tokenizeContentStream } from './parsePdfDoc.js';
+import { decodePdfName } from './parsePdfUtils.js';
 import { cmykToRgb, tintComponentsToRGB, xyzToSRGB } from './pdfColorFunctions.js';
 import { cidCodepoint, isCombiningOrIndicMark } from './fonts/convertFontToOTF.js';
 
@@ -127,13 +128,15 @@ export function matMul(m1, m2) {
  * @param {Map<string, Set<number>>} [cidCollisionMap]
  * @param {object|null} [inheritedTextState] - Text state carried in from an enclosing form XObject
  * @param {Set<string>} [hiddenOCMCNames] - Names in /Resources/Properties whose OCG is OFF; content inside `/OC /<name> BDC ... EMC` for these is not painted
+ * @param {boolean[]} [recoveredStreamFlags] - Per-stream flags (index-aligned with `contentStream`).
+ *    A stream that only decoded via partial-recovery inflate suppresses painting from its first syntactic anomaly onward.
  * @returns {Array<DrawOp>}
  */
 export function parseDrawOps(
   contentStream, fonts, extGStates, registeredFontNames, colorSpaces = new Map(),
   symbolFontTags = new Set(), cidPUATags = new Set(), rawCharCodeTags = new Set(),
   shadings = new Map(), patterns = new Map(), cidCollisionMap = new Map(),
-  inheritedTextState = null, hiddenOCMCNames = new Set(),
+  inheritedTextState = null, hiddenOCMCNames = new Set(), recoveredStreamFlags = [],
 ) {
   /** @type {Array<DrawOp>} */
   const ops = [];
@@ -198,6 +201,8 @@ export function parseDrawOps(
   /** @type {any} */
   let currentFont = null;
   let currentFontTag = '';
+  /** @type {Set<string>} Tf tags already warned about, to avoid repeat logs in one stream. */
+  const warnedMissingFontTags = new Set();
   let fontSize = 12;
   let tc = inheritedTextState ? inheritedTextState.tc : 0;
   let tw = inheritedTextState ? inheritedTextState.tw : 0;
@@ -294,40 +299,15 @@ export function parseDrawOps(
   let pathAnomalyCount = 0;
   let streamCorrupted = false;
 
+  // A stream recovered via partial-recovery inflate is known-corrupt.
+  // Its valid prefix is anomaly-free, so the first syntactic anomaly marks the garbled tail.
+  // A clean stream uses a higher threshold so ordinary content is never suppressed.
+  // Updated at each stream boundary from the current stream's recovery flag.
+  let corruptionThreshold = recoveredStreamFlags[0] ? 1 : 5;
+
   /** @type {boolean[]} Nesting of BDC/BMC marked-content blocks; entry = whether hidden by OC */
   const mcStack = [];
   let ocHidden = false;
-
-  // Path-construction ops already reject coords above 1e7, but a corrupt
-  // FlateDecode tail can produce paths whose individual coords are merely
-  // 1e5-1e6. That is still hundreds of times the largest sensible PDF page
-  // (14400 pt) and large enough that a slim sliver of the path intersects
-  // the canvas as a visible triangle covering legible content.
-  // Only paint operators consult this gate. Clip paths (W ... n) bypass it
-  // so that "infinity clip" patterns continue to clip correctly.
-  const PAINT_BBOX_LIMIT = 100000;
-
-  /**
-   * @param {Array<{type: string, x?: number, y?: number, x1?: number, y1?: number, x2?: number, y2?: number}>} path
-   * @param {number[]} transform
-   * @returns {boolean}
-   */
-  function pathHasExtremePaintCoord(path, transform) {
-    /** @param {number|undefined} x @param {number|undefined} y */
-    const checkPoint = (x, y) => {
-      if (x === undefined || y === undefined) return false;
-      const px = transform[0] * x + transform[2] * y + transform[4];
-      const py = transform[1] * x + transform[3] * y + transform[5];
-      return Math.abs(px) > PAINT_BBOX_LIMIT || Math.abs(py) > PAINT_BBOX_LIMIT;
-    };
-    for (let i = 0; i < path.length; i++) {
-      const cmd = path[i];
-      if (checkPoint(cmd.x, cmd.y)) return true;
-      if (checkPoint(cmd.x1, cmd.y1)) return true;
-      if (checkPoint(cmd.x2, cmd.y2)) return true;
-    }
-    return false;
-  }
 
   /**
    * Emit Type3 glyph ops for a literal string.
@@ -1149,15 +1129,16 @@ export function parseDrawOps(
       pathAnomalyCount = 0;
       streamCorrupted = false;
       skipCorruptedPath = false;
+      corruptionThreshold = recoveredStreamFlags[nextStreamBoundaryIdx] ? 1 : 5;
     }
 
-    // If enough path anomalies accumulated (excess operands, out-of-bounds
-    // coordinates, leftover operands before paint ops), the content stream is
-    // likely corrupted (e.g. damaged deflate data). Stop emitting draw ops to
-    // prevent garbled fills from covering valid content.
-    if (pathAnomalyCount >= 5 && !streamCorrupted) {
+    // If enough path anomalies accumulated (excess operands, leftover operands before paint ops),
+    // the content stream is corrupted (e.g. damaged deflate data).
+    // Stop emitting draw ops to prevent garbled fills from covering valid content.
+    // A partially-recovered stream trips on the first anomaly.
+    if (pathAnomalyCount >= corruptionThreshold && !streamCorrupted) {
       streamCorrupted = true;
-      console.warn('[renderPdfPage] Content stream appears corrupted (5+ path/color operand anomalies detected). Suppressing remaining draw operations to preserve valid content.');
+      console.warn(`[renderPdfPage] Content stream appears corrupted (${pathAnomalyCount} path/color operand anomalies). Suppressing remaining draw operations to preserve valid content.`);
     }
     if (streamCorrupted) {
       operandStack.length = 0;
@@ -1410,9 +1391,16 @@ export function parseDrawOps(
         const size = operandStack.length >= 2 ? operandStack[operandStack.length - 1] : null;
         const name = operandStack.length >= 2 ? operandStack[operandStack.length - 2] : null;
         if (name && name.type === 'name' && size && size.type === 'number') {
-          currentFont = fonts.get(name.value) || null;
-          currentFontTag = name.value;
+          const fontTag = decodePdfName(name.value);
+          currentFont = fonts.get(fontTag) || null;
+          currentFontTag = fontTag;
           fontSize = size.value;
+          if (!currentFont && !warnedMissingFontTags.has(fontTag)) {
+            warnedMissingFontTags.add(fontTag);
+            // No font object resolved -> the run's text is dropped (no encoding, widths, or family to render it).
+            // Surface it so this failure mode is diagnosable instead of silently invisible.
+            console.warn(`[parseDrawOps] Tf references font "${fontTag}" not found in resources; its text will not render`);
+          }
         }
         operandStack.length = 0;
         break;
@@ -1977,20 +1965,12 @@ export function parseDrawOps(
         if (operandStack.length !== 2) pathAnomalyCount++;
         if (operandStack.length >= 2) {
           if (operandStack.length > 2) { currentPath = []; operandStack.length = 0; break; }
-          const mx = operandStack[operandStack.length - 2].value;
-          const my = operandStack[operandStack.length - 1].value;
-          const mpx = ctm[0] * mx + ctm[2] * my + ctm[4];
-          const mpy = ctm[1] * mx + ctm[3] * my + ctm[5];
-          if (Math.abs(mpx) < 10000000 && Math.abs(mpy) < 10000000) {
-            pathAnomalyCount = Math.max(0, pathAnomalyCount - 1);
-            curX = mx;
-            curY = my;
-            pathStartX = curX;
-            pathStartY = curY;
-            currentPath.push({ type: 'M', x: curX, y: curY });
-          } else {
-            pathAnomalyCount++;
-          }
+          pathAnomalyCount = Math.max(0, pathAnomalyCount - 1);
+          curX = operandStack[operandStack.length - 2].value;
+          curY = operandStack[operandStack.length - 1].value;
+          pathStartX = curX;
+          pathStartY = curY;
+          currentPath.push({ type: 'M', x: curX, y: curY });
         }
         operandStack.length = 0;
         break;
@@ -2000,18 +1980,10 @@ export function parseDrawOps(
         if (operandStack.length !== 2) pathAnomalyCount++;
         if (operandStack.length >= 2) {
           if (operandStack.length > 2) { pathAnomalyCount++; currentPath = []; operandStack.length = 0; break; }
-          const lx = operandStack[operandStack.length - 2].value;
-          const ly = operandStack[operandStack.length - 1].value;
-          const pageX = ctm[0] * lx + ctm[2] * ly + ctm[4];
-          const pageY = ctm[1] * lx + ctm[3] * ly + ctm[5];
-          if (Math.abs(pageX) < 10000000 && Math.abs(pageY) < 10000000) {
-            pathAnomalyCount = Math.max(0, pathAnomalyCount - 1);
-            curX = lx;
-            curY = ly;
-            currentPath.push({ type: 'L', x: curX, y: curY });
-          } else {
-            pathAnomalyCount++;
-          }
+          pathAnomalyCount = Math.max(0, pathAnomalyCount - 1);
+          curX = operandStack[operandStack.length - 2].value;
+          curY = operandStack[operandStack.length - 1].value;
+          currentPath.push({ type: 'L', x: curX, y: curY });
         }
         operandStack.length = 0;
         break;
@@ -2027,24 +1999,12 @@ export function parseDrawOps(
           const y2 = operandStack[operandStack.length - 3].value;
           const x3 = operandStack[operandStack.length - 2].value;
           const y3 = operandStack[operandStack.length - 1].value;
-          const cp1x = ctm[0] * x1 + ctm[2] * y1 + ctm[4];
-          const cp1y = ctm[1] * x1 + ctm[3] * y1 + ctm[5];
-          const cp2x = ctm[0] * x2 + ctm[2] * y2 + ctm[4];
-          const cp2y = ctm[1] * x2 + ctm[3] * y2 + ctm[5];
-          const cp3x = ctm[0] * x3 + ctm[2] * y3 + ctm[4];
-          const cp3y = ctm[1] * x3 + ctm[3] * y3 + ctm[5];
-          if (Math.abs(cp1x) < 10000000 && Math.abs(cp1y) < 10000000
-              && Math.abs(cp2x) < 10000000 && Math.abs(cp2y) < 10000000
-              && Math.abs(cp3x) < 10000000 && Math.abs(cp3y) < 10000000) {
-            pathAnomalyCount = Math.max(0, pathAnomalyCount - 1);
-            curX = x3;
-            curY = y3;
-            currentPath.push({
-              type: 'C', x1, y1, x2, y2, x: curX, y: curY,
-            });
-          } else {
-            pathAnomalyCount++;
-          }
+          pathAnomalyCount = Math.max(0, pathAnomalyCount - 1);
+          curX = x3;
+          curY = y3;
+          currentPath.push({
+            type: 'C', x1, y1, x2, y2, x: curX, y: curY,
+          });
         }
         operandStack.length = 0;
         break;
@@ -2058,20 +2018,11 @@ export function parseDrawOps(
           const y2 = operandStack[operandStack.length - 3].value;
           const x3 = operandStack[operandStack.length - 2].value;
           const y3 = operandStack[operandStack.length - 1].value;
-          const vp2x = ctm[0] * x2 + ctm[2] * y2 + ctm[4];
-          const vp2y = ctm[1] * x2 + ctm[3] * y2 + ctm[5];
-          const vp3x = ctm[0] * x3 + ctm[2] * y3 + ctm[4];
-          const vp3y = ctm[1] * x3 + ctm[3] * y3 + ctm[5];
-          if (Math.abs(vp2x) < 10000000 && Math.abs(vp2y) < 10000000
-              && Math.abs(vp3x) < 10000000 && Math.abs(vp3y) < 10000000) {
-            pathAnomalyCount = Math.max(0, pathAnomalyCount - 1);
-            currentPath.push({
-              type: 'C', x1: curX, y1: curY, x2, y2, x: x3, y: y3,
-            });
-            curX = x3; curY = y3;
-          } else {
-            pathAnomalyCount++;
-          }
+          pathAnomalyCount = Math.max(0, pathAnomalyCount - 1);
+          currentPath.push({
+            type: 'C', x1: curX, y1: curY, x2, y2, x: x3, y: y3,
+          });
+          curX = x3; curY = y3;
         }
         operandStack.length = 0;
         break;
@@ -2085,21 +2036,12 @@ export function parseDrawOps(
           const y1 = operandStack[operandStack.length - 3].value;
           const yx = operandStack[operandStack.length - 2].value;
           const yy = operandStack[operandStack.length - 1].value;
-          const yp1x = ctm[0] * x1 + ctm[2] * y1 + ctm[4];
-          const yp1y = ctm[1] * x1 + ctm[3] * y1 + ctm[5];
-          const yp2x = ctm[0] * yx + ctm[2] * yy + ctm[4];
-          const yp2y = ctm[1] * yx + ctm[3] * yy + ctm[5];
-          if (Math.abs(yp1x) < 10000000 && Math.abs(yp1y) < 10000000
-              && Math.abs(yp2x) < 10000000 && Math.abs(yp2y) < 10000000) {
-            pathAnomalyCount = Math.max(0, pathAnomalyCount - 1);
-            curX = yx;
-            curY = yy;
-            currentPath.push({
-              type: 'C', x1, y1, x2: curX, y2: curY, x: curX, y: curY,
-            });
-          } else {
-            pathAnomalyCount++;
-          }
+          pathAnomalyCount = Math.max(0, pathAnomalyCount - 1);
+          curX = yx;
+          curY = yy;
+          currentPath.push({
+            type: 'C', x1, y1, x2: curX, y2: curY, x: curX, y: curY,
+          });
         }
         operandStack.length = 0;
         break;
@@ -2120,23 +2062,14 @@ export function parseDrawOps(
           const ry = operandStack[operandStack.length - 3].value;
           const rw = operandStack[operandStack.length - 2].value;
           const rh = operandStack[operandStack.length - 1].value;
-          const rpx = ctm[0] * rx + ctm[2] * ry + ctm[4];
-          const rpy = ctm[1] * rx + ctm[3] * ry + ctm[5];
-          const rpx2 = ctm[0] * (rx + rw) + ctm[2] * (ry + rh) + ctm[4];
-          const rpy2 = ctm[1] * (rx + rw) + ctm[3] * (ry + rh) + ctm[5];
-          if (Math.abs(rpx) < 10000000 && Math.abs(rpy) < 10000000
-              && Math.abs(rpx2) < 10000000 && Math.abs(rpy2) < 10000000) {
-            pathAnomalyCount = Math.max(0, pathAnomalyCount - 1);
-            currentPath.push({ type: 'M', x: rx, y: ry });
-            currentPath.push({ type: 'L', x: rx + rw, y: ry });
-            currentPath.push({ type: 'L', x: rx + rw, y: ry + rh });
-            currentPath.push({ type: 'L', x: rx, y: ry + rh });
-            currentPath.push({ type: 'Z' });
-            curX = rx; curY = ry;
-            pathStartX = rx; pathStartY = ry;
-          } else {
-            pathAnomalyCount++;
-          }
+          pathAnomalyCount = Math.max(0, pathAnomalyCount - 1);
+          currentPath.push({ type: 'M', x: rx, y: ry });
+          currentPath.push({ type: 'L', x: rx + rw, y: ry });
+          currentPath.push({ type: 'L', x: rx + rw, y: ry + rh });
+          currentPath.push({ type: 'L', x: rx, y: ry + rh });
+          currentPath.push({ type: 'Z' });
+          curX = rx; curY = ry;
+          pathStartX = rx; pathStartY = ry;
         }
         operandStack.length = 0;
         break;
@@ -2150,10 +2083,6 @@ export function parseDrawOps(
         }
         pendingClip = false;
         pendingClipEvenOdd = false;
-        if (currentPath.length > 0 && pathHasExtremePaintCoord(currentPath, ctm)) {
-          pathAnomalyCount++;
-          currentPath = [];
-        }
         if (currentPath.length > 0) {
           /** @type {PathDrawOp} */
           const pathOpS = {
@@ -2193,10 +2122,6 @@ export function parseDrawOps(
         }
         pendingClip = false;
         pendingClipEvenOdd = false;
-        if (currentPath.length > 0 && pathHasExtremePaintCoord(currentPath, ctm)) {
-          pathAnomalyCount++;
-          currentPath = [];
-        }
         if (currentPath.length > 0) {
           /** @type {PathDrawOp} */
           const pathOps2 = {
@@ -2230,17 +2155,13 @@ export function parseDrawOps(
         break;
       case 'f': case 'F': // fill (non-zero winding)
         if (operandStack.length > 0) pathAnomalyCount++;
-        if (pathAnomalyCount >= 5) { streamCorrupted = true; currentPath = []; operandStack.length = 0; break; }
+        if (pathAnomalyCount >= corruptionThreshold) { streamCorrupted = true; currentPath = []; operandStack.length = 0; break; }
         // Per PDF spec §4.4.3, W/W* before a paint operator establishes the clip
         if (pendingClip && currentPath.length > 0) {
           clipStack.push({ path: currentPath.slice(), ctm: ctm.slice(), evenOdd: pendingClipEvenOdd });
         }
         pendingClip = false;
         pendingClipEvenOdd = false;
-        if (currentPath.length > 0 && pathHasExtremePaintCoord(currentPath, ctm)) {
-          pathAnomalyCount++;
-          currentPath = [];
-        }
         if (currentPath.length > 0) {
           /** @type {PathDrawOp} */
           const pathOpF = {
@@ -2279,10 +2200,6 @@ export function parseDrawOps(
         }
         pendingClip = false;
         pendingClipEvenOdd = false;
-        if (currentPath.length > 0 && pathHasExtremePaintCoord(currentPath, ctm)) {
-          pathAnomalyCount++;
-          currentPath = [];
-        }
         if (currentPath.length > 0) {
           /** @type {PathDrawOp} */
           const pathOpFS = {
@@ -2321,10 +2238,6 @@ export function parseDrawOps(
         }
         pendingClip = false;
         pendingClipEvenOdd = false;
-        if (currentPath.length > 0 && pathHasExtremePaintCoord(currentPath, ctm)) {
-          pathAnomalyCount++;
-          currentPath = [];
-        }
         if (currentPath.length > 0) {
           /** @type {PathDrawOp} */
           const pathOpB = {
@@ -2367,10 +2280,6 @@ export function parseDrawOps(
         }
         pendingClip = false;
         pendingClipEvenOdd = false;
-        if (currentPath.length > 0 && pathHasExtremePaintCoord(currentPath, ctm)) {
-          pathAnomalyCount++;
-          currentPath = [];
-        }
         if (currentPath.length > 0) {
           /** @type {PathDrawOp} */
           const pathOpBS = {
@@ -2414,10 +2323,6 @@ export function parseDrawOps(
         }
         pendingClip = false;
         pendingClipEvenOdd = false;
-        if (currentPath.length > 0 && pathHasExtremePaintCoord(currentPath, ctm)) {
-          pathAnomalyCount++;
-          currentPath = [];
-        }
         if (currentPath.length > 0) {
           /** @type {PathDrawOp} */
           const pathOpb = {
@@ -2461,10 +2366,6 @@ export function parseDrawOps(
         }
         pendingClip = false;
         pendingClipEvenOdd = false;
-        if (currentPath.length > 0 && pathHasExtremePaintCoord(currentPath, ctm)) {
-          pathAnomalyCount++;
-          currentPath = [];
-        }
         if (currentPath.length > 0) {
           /** @type {PathDrawOp} */
           const pathOpbS = {
