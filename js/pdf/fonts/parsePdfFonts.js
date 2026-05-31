@@ -1394,10 +1394,17 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     const firstChar = resolveIntValue(fontObj, 'FirstChar', objCache);
     // /Widths can be inline array or indirect reference (e.g. /Widths 217 0 R)
     const widthsArrayText = resolveArrayValue(fontObj, 'Widths', objCache);
-    if (/\/FirstChar\s/.test(fontObj) && widthsArrayText) {
+    if (widthsArrayText) {
       const widthValues = widthsArrayText.trim().split(/\s+/).map(Number);
+      // /FirstChar is required by the spec, but some generators omit it while still supplying /Widths and /LastChar.
+      // Derive the first code from /LastChar and the array length so the widths still index correctly.
+      let baseCode = firstChar;
+      if (!/\/FirstChar\s/.test(fontObj)) {
+        const lastChar = resolveIntValue(fontObj, 'LastChar', objCache);
+        baseCode = Number.isFinite(lastChar) ? Math.max(0, lastChar - widthValues.length + 1) : 0;
+      }
       for (let j = 0; j < widthValues.length; j++) {
-        widths.set(firstChar + j, widthValues[j]);
+        widths.set(baseCode + j, widthValues[j]);
       }
       if (widthValues.length > 0) {
         defaultWidth = widthValues.reduce((a, b) => a + b, 0) / widthValues.length;
@@ -2466,13 +2473,19 @@ function parseToUnicodeCMap(cmapText, map) {
       const cidStart = parseInt(entry[1], 16);
       const cidEnd = parseInt(entry[2], 16);
       if (entry[4] !== undefined) {
-        // Single start value: <start> <end> <unicodeStart>
-        let unicodeStart = parseInt(entry[4], 16);
-        for (let cid = cidStart; cid <= cidEnd; cid++) {
-          if (unicodeStart <= 0x10FFFF && unicodeStart !== 0xFFFD) {
-            map.set(cid, String.fromCodePoint(unicodeStart));
+        // Single start value: <start> <end> <dst>.
+        // A range destination may be an astral code point encoded as a UTF-16BE surrogate pair (e.g. <D835DC34> = U+1D434).
+        const dstStr = hexToUnicode(entry[4]);
+        if (dstStr.length > 0 && !isOnlyReplacementChars(dstStr)) {
+          const dstCps = [...dstStr];
+          const prefix = dstCps.slice(0, -1).join('');
+          let lastCp = dstCps[dstCps.length - 1].codePointAt(0) ?? 0;
+          for (let cid = cidStart; cid <= cidEnd; cid++) {
+            if (lastCp <= 0x10FFFF && lastCp !== 0xFFFD) {
+              map.set(cid, prefix + String.fromCodePoint(lastCp));
+            }
+            lastCp++;
           }
-          unicodeStart++;
         }
       } else if (entry[3] !== undefined) {
         // Array form: <start> <end> [<u1> <u2> ...]

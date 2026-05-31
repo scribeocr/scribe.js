@@ -1476,8 +1476,10 @@ async function flattenDrawOps(
 ) {
   /** @type {Array<DrawOp>} */
   const flattened = [];
-  if (depth > 20) return flattened;
-  formResourceCache.set('_callCount', (formResourceCache.get('_callCount') || 0) + 1);
+  if (depth > 200) return flattened;
+  const callCount = (formResourceCache.get('_callCount') || 0) + 1;
+  formResourceCache.set('_callCount', callCount);
+  if (callCount > 10000) return flattened;
 
   for (const op of imageOps) {
     const fullName = prefix + op.name;
@@ -4492,9 +4494,10 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   const offOCGs = objCache.getOffOCGs();
   const contentWidthPts = Math.abs(mediaBox[2] - mediaBox[0]);
   const contentHeightPts = Math.abs(mediaBox[3] - mediaBox[1]);
-  // CropBox or other non-zero-origin boxes require coordinate offset
-  const boxOriginX = mediaBox[0];
-  const boxOriginY = mediaBox[1];
+  // CropBox or other non-zero-origin boxes require coordinate offset.
+  // Box corners may be stored in either order, so the origin is the lower-left corner.
+  const boxOriginX = Math.min(mediaBox[0], mediaBox[2]);
+  const boxOriginY = Math.min(mediaBox[1], mediaBox[3]);
 
   // Compute visual (post-rotation) dimensions and rotation CTM.
   // /Rotate specifies clockwise rotation for display (PDF spec).
@@ -4668,8 +4671,11 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       const rectMatch = /\/Rect\s*\[\s*([\d.\-+e]+)\s+([\d.\-+e]+)\s+([\d.\-+e]+)\s+([\d.\-+e]+)\s*\]/.exec(annotText);
       if (!rectMatch) continue;
       const rect = [Number(rectMatch[1]), Number(rectMatch[2]), Number(rectMatch[3]), Number(rectMatch[4])];
-      const rectW = rect[2] - rect[0];
-      const rectH = rect[3] - rect[1];
+      // /Rect corners may be stored in either order, so normalize to lower-left + size.
+      const rectX0 = Math.min(rect[0], rect[2]);
+      const rectY0 = Math.min(rect[1], rect[3]);
+      const rectW = Math.abs(rect[2] - rect[0]);
+      const rectH = Math.abs(rect[3] - rect[1]);
       // Line annotations may have an empty Rect with endpoints defined by /L
       // Ink annotations may have inverted Rects (coords are in InkList, not Rect)
       const isLineAnnot = /\/Subtype\s*\/Line\b/.test(annotText);
