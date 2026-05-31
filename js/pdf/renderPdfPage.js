@@ -1817,7 +1817,7 @@ async function flattenDrawOps(
 
 /**
  * @typedef {{ fillAlpha?: number, strokeAlpha?: number, overprint?: boolean,
- *   blendMode?: string, smask?: SmaskRef|null }} ExtGStateEntry
+ *   blendMode?: string, smask?: SmaskRef|null, lineWidth?: number }} ExtGStateEntry
  */
 
 /**
@@ -1986,7 +1986,12 @@ function parseExtGStates(pageObjText, objCache) {
     const bm = parseBlendMode(gsObj);
     if (bm) entry.blendMode = bm;
 
-    if (entry.fillAlpha !== undefined || entry.strokeAlpha !== undefined || entry.smask !== undefined || entry.overprint !== undefined || entry.blendMode !== undefined) {
+    // /LW = line width
+    const lwMatch = /\/LW\s+([0-9.]+)/.exec(gsObj);
+    if (lwMatch) entry.lineWidth = parseFloat(lwMatch[1]);
+
+    if (entry.fillAlpha !== undefined || entry.strokeAlpha !== undefined || entry.smask !== undefined
+      || entry.overprint !== undefined || entry.blendMode !== undefined || entry.lineWidth !== undefined) {
       states.set(gsName, entry);
     }
   }
@@ -2050,7 +2055,12 @@ function parseExtGStates(pageObjText, objCache) {
     const bm2 = parseBlendMode(dictText);
     if (bm2) entry.blendMode = bm2;
 
-    if (entry.fillAlpha !== undefined || entry.strokeAlpha !== undefined || entry.smask !== undefined || entry.overprint !== undefined || entry.blendMode !== undefined) {
+    // /LW = line width
+    const lwMatch2 = /\/LW\s+([0-9.]+)/.exec(dictText);
+    if (lwMatch2) entry.lineWidth = parseFloat(lwMatch2[1]);
+
+    if (entry.fillAlpha !== undefined || entry.strokeAlpha !== undefined || entry.smask !== undefined
+       || entry.overprint !== undefined || entry.blendMode !== undefined || entry.lineWidth !== undefined) {
       states.set(gsName, entry);
     }
   }
@@ -5245,6 +5255,13 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   // Declare caches before try so they're accessible in the finally cleanup block.
   /** @type {Map<string, CanvasPattern>} */
   const tilingPatternCache = new Map();
+  // An uncolored (PaintType 2) pattern is one object reused with different paint colors,
+  // so its rendered tile is cached per (pattern, color), not per pattern name alone.
+  const tileKeyOf = (ref) => (ref.paintColor ? `${ref.patName}|${ref.paintColor}` : ref.patName);
+  // Keep this above the page-level tiling-pattern pre-pass below.
+  // `renderTilingPatternTile` calls it for inline-image pattern cells, and that pre-pass runs first.
+  // Declaring it lower would make the pre-pass hit a temporal-dead-zone ReferenceError.
+  const decodeInlineImage = (op) => decodeInlineImageBitmap(op, objCache, colorSpaces);
   /** @type {Map<string, ImageBitmap>} */
   const bitmapCache = new Map();
   const smaskCanvasCache = new Map();
@@ -5678,10 +5695,11 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     /**
      * Render a single tiling pattern tile and cache the resulting CanvasPattern.
      * @param {string} patName - Pattern name for cache key
-     * @param {{ objNum: number, bbox: number[], xStep: number, yStep: number, matrix: number[], paintType: number }} tp - Tiling pattern metadata
+     * @param {{ objNum: number, bbox: number[], xStep: number, yStep: number, matrix: number[], paintType: number, paintColor?: string }} tp - Tiling pattern metadata
      */
     async function renderTilingPatternTile(patName, tp) {
-      if (tilingPatternCache.has(patName)) return;
+      const cacheKey = tp.paintColor ? `${patName}|${tp.paintColor}` : patName;
+      if (tilingPatternCache.has(cacheKey)) return;
       const patStreamBytes = objCache.getStreamBytes(tp.objNum);
       if (!patStreamBytes) return;
       const patStream = bytesToLatin1(patStreamBytes);
@@ -5989,7 +6007,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       }
 
       const tileBitmap = await ca.createImageBitmapFromCanvas(tileCanvas);
-      tilingPatternCache.set(patName, tileBitmap);
+      tilingPatternCache.set(cacheKey, tileBitmap);
     }
 
     // Render page-level tiling patterns
@@ -6000,18 +6018,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
 
     // Render any tiling patterns discovered in Form XObjects (referenced from draw ops)
     for (const op of drawOps) {
-      if (op.tilingPattern && !tilingPatternCache.has(op.tilingPattern.patName)) {
-      // Find the pattern's tiling metadata — search all pattern maps from the draw ops
-      // The pattern info was stored on the op by parseDrawOps via the patterns map
-        const patName = op.tilingPattern.patName;
-        // Look up the pattern object from all parsed pattern sets
-        for (const [, patInfo] of pagePatterns) {
-          if (patInfo.tiling && tilingPatternCache.has(patName)) break;
-        }
-        // If still not cached, it came from a Form XObject — find it in the op's tiling data
-        if (!tilingPatternCache.has(patName) && op.tilingPattern.objNum) {
-          try { await renderTilingPatternTile(patName, op.tilingPattern); } catch { /* skip */ }
-        }
+      if (op.tilingPattern && op.tilingPattern.objNum && !tilingPatternCache.has(tileKeyOf(op.tilingPattern))) {
+        try { await renderTilingPatternTile(op.tilingPattern.patName, op.tilingPattern); } catch { /* skip */ }
       }
     }
 

@@ -41,7 +41,7 @@ export function matMul(m1, m2) {
  *   fillAlpha: number, strokeAlpha: number, smask?: SmaskRef|null,
  *   parentGroupId: number|null }} TransparencyGroupAttrs
  *
- * @typedef {{ patName: string, objNum: number, bbox: number[], xStep: number, yStep: number, matrix: number[], paintType: number }} TilingPatternRef
+ * @typedef {{ patName: string, objNum: number, bbox: number[], xStep: number, yStep: number, matrix: number[], paintType: number, paintColor?: string }} TilingPatternRef
  * @typedef {{ type: number, coords: number[], stops: Array<{offset: number, color: string}>,
  *   extend?: boolean[], bbox?: number[], matrix?: number[], multiply?: boolean }
  *   | { type: 'gouraud', triangles: Array<{vertices: number[][], colors: number[][]}>, matrix?: number[], stops?: undefined }
@@ -833,6 +833,9 @@ export function parseDrawOps(
       const rawWidth = currentFont.widths.get(charCode) ?? currentFont.defaultWidth;
       const glyphWidth = rawWidth / 1000 * fontSize;
       const unicode = currentFont.toUnicode.get(charCode) || str[i];
+      // A glyph's ToUnicode can be whitespace even when the glyph is visible (e.g. a leader-dot period whose ToUnicode is a space).
+      // Gate rendering on drawDefault, which prefers the encoding glyph, so it is not skipped.
+      const drawDefault = currentFont.encodingUnicode?.get(charCode) || unicode;
       // For PUA-mapped chars without AGL encoding, the charCode may be a control
       // or whitespace char (e.g. charCode 32 mapped to custom glyph G31). Use PUA
       // codepoint which is always non-whitespace, bypassing the trim() skip below.
@@ -866,7 +869,7 @@ export function parseDrawOps(
       // Symbol fonts (e.g. Wingdings) use charCodes in 0x01-0x1F range for visible glyphs
       // (circled numbers, arrows, etc.). These charCodes map to JS control characters
       // (\f, \r, etc.) that would be filtered out by trim(). Always render Symbol chars.
-      if (textRenderMode !== 3 && (isSymbol || usesPUA || (unicode && unicode.trim().length > 0))) {
+      if (textRenderMode !== 3 && (isSymbol || usesPUA || (drawDefault && drawDefault.trim().length > 0))) {
         let trm = matMul([fontSize * tz / 100, 0, 0, fontSize, 0, trise], matMul(tm, ctm));
         // Apply non-standard FontMatrix (shear/flip) from embedded Type1 font program
         const fm = currentFont.type1.fontMatrix;
@@ -899,7 +902,7 @@ export function parseDrawOps(
             }
           }
         } else {
-          drawText = currentFont.encodingUnicode?.get(charCode) || unicode;
+          drawText = drawDefault;
         }
         const sc = applySmallCaps(drawText, trm, isNonEmbedded && !!currentFont.smallCaps);
         const opObj = {
@@ -953,6 +956,9 @@ export function parseDrawOps(
       const rawWidth = currentFont.widths.get(charCode) ?? currentFont.defaultWidth;
       const glyphWidth = rawWidth / 1000 * fontSize;
       const unicode = currentFont.toUnicode.get(charCode) || String.fromCharCode(charCode);
+      // A glyph's ToUnicode can be whitespace even when the glyph is visible (e.g. a leader-dot period whose ToUnicode is a space).
+      // Gate rendering on drawDefault, which prefers the encoding glyph, so it is not skipped.
+      const drawDefault = currentFont.encodingUnicode?.get(charCode) || unicode;
       const inDifferences = !!(currentFont.differences && currentFont.differences[charCode] !== undefined);
       const encWhitespace = charCode >= 0x20 && (currentFont.encodingUnicode?.get(charCode) ?? 'x').trim() === '';
       const usesPUA = hasPUA && charCode > 0 && (
@@ -968,7 +974,7 @@ export function parseDrawOps(
       );
       // Skip zero-width characters — the PDF Widths array says these occupy no space,
       // so they should not render visually (common in TeX fonts for unused charCodes).
-      if (textRenderMode !== 3 && glyphWidth !== 0 && (isSymbol || usesPUA || (unicode && unicode.trim().length > 0))) {
+      if (textRenderMode !== 3 && glyphWidth !== 0 && (isSymbol || usesPUA || (drawDefault && drawDefault.trim().length > 0))) {
         let trm = matMul([fontSize * tz / 100, 0, 0, fontSize, 0, trise], matMul(tm, ctm));
         const fm = currentFont.type1.fontMatrix;
         if (fm) trm = matMul(fm, trm);
@@ -989,7 +995,7 @@ export function parseDrawOps(
             }
           }
         } else {
-          drawText = currentFont.encodingUnicode?.get(charCode) || unicode;
+          drawText = drawDefault;
         }
         const sc = applySmallCaps(drawText, trm, isNonEmbedded && !!currentFont.smallCaps);
         const opObj2 = {
@@ -1297,6 +1303,7 @@ export function parseDrawOps(
             if (gs.strokeAlpha !== undefined) { strokeAlpha = gs.strokeAlpha; strokeAlphaExplicit = true; }
             if (gs.overprint !== undefined) overprint = gs.overprint;
             if (gs.blendMode !== undefined) blendMode = gs.blendMode;
+            if (gs.lineWidth !== undefined) lineWidth = gs.lineWidth;
             if (gs.smask !== undefined) {
               // PDF spec §11.6.5.1: SMask transparency group is positioned by the
               // parent CTM at the time the soft mask was set, NOT the form's local
@@ -1686,6 +1693,18 @@ export function parseDrawOps(
               fillTilingPattern = patInfo.tiling
                 ? { patName, ...patInfo.tiling }
                 : null;
+              if (fillTilingPattern && patInfo.tiling.paintType === 2) {
+                const comps = operandStack.slice(0, -1).map((t) => t.value).filter((v) => typeof v === 'number');
+                if (comps.length === 1) {
+                  const g = Math.round(comps[0] * 255);
+                  fillTilingPattern.paintColor = `rgb(${g},${g},${g})`;
+                } else if (comps.length === 3) {
+                  fillTilingPattern.paintColor = `rgb(${Math.round(comps[0] * 255)},${Math.round(comps[1] * 255)},${Math.round(comps[2] * 255)})`;
+                } else if (comps.length === 4) {
+                  const [c, m, y, k] = comps;
+                  fillTilingPattern.paintColor = `rgb(${Math.round(255 * (1 - c) * (1 - k))},${Math.round(255 * (1 - m) * (1 - k))},${Math.round(255 * (1 - y) * (1 - k))})`;
+                }
+              }
             }
             operandStack.length = 0;
             break;
