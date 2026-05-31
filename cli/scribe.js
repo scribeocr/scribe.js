@@ -7,7 +7,7 @@ import {
   confCLI,
   debugCLI,
   detectPDFTypeCLI,
-  evalInternalCLI, extractCLI, overlayCLI, recognizeCLI, renderCLI,
+  evalInternalCLI, extractCLI, overlayCLI, recognizeCLI, renderCLI, subsetCLI,
 } from './cli.js';
 import { parseModelOption, recognitionModels } from './recognitionModels.js';
 
@@ -77,6 +77,14 @@ program
   .option('--gray', 'Render in grayscale instead of color.')
   .description('Render each page of a PDF to a PNG image.')
   .action(renderCLI);
+
+program
+  .command('subset')
+  .argument('<input_file>', 'Input PDF file.')
+  .argument('[output]', 'Output PDF file, or directory to write <stem>-p<pages>.pdf into.', '.')
+  .option('--pages <range>', 'Comma/range list of 0-based pages to keep (e.g. 0-4,7).')
+  .description('Write a new PDF containing only the selected pages of the input PDF.')
+  .action(subsetCLI);
 
 program
   .command('type')

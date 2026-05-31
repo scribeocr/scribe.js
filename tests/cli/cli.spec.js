@@ -5,7 +5,7 @@ import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import scribe from '../../scribe.js';
 import {
-  checkCLI, confCLI, extractCLI, overlayCLI, renderCLI,
+  checkCLI, confCLI, extractCLI, overlayCLI, renderCLI, subsetCLI,
 } from '../../cli/cli.js';
 import { getRandomAlphanum } from '../../js/utils/miscUtils.js';
 import { getPngDimensions } from '../../js/utils/imageUtils.js';
@@ -245,6 +245,85 @@ describe('Render CLI command.', () => {
     expect(width).toBe(1013);
     expect(height).toBe(1500);
   }, 20000);
+
+  afterAll(() => {
+    tmpUnique.delete();
+  });
+});
+
+describe('Subset CLI command.', () => {
+  let tmpUniqueDir;
+  const tmpUnique = {
+    get: () => {
+      if (!tmpUniqueDir) {
+        tmpUniqueDir = `${tmpdir()}/${getRandomAlphanum(8)}`;
+        fs.mkdirSync(tmpUniqueDir);
+      }
+      return tmpUniqueDir;
+    },
+    delete: () => {
+      if (tmpUniqueDir) fs.rmSync(tmpUniqueDir, { recursive: true, force: true });
+    },
+  };
+
+  /** @type {boolean} */
+  let outputExists;
+  /** @type {boolean} */
+  let validPdfHeader;
+  /** @type {number} */
+  let pageCount;
+  /** @type {string} */
+  let page0Text;
+  /** @type {string} */
+  let page1Text;
+
+  beforeAll(async () => {
+    const tmpDir = tmpUnique.get();
+    const outputPath = `${tmpDir}/iris-subset.pdf`;
+    await subsetCLI(`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`, outputPath, { pages: '0,2' });
+
+    outputExists = fs.existsSync(outputPath);
+    const outputBytes = fs.readFileSync(outputPath);
+    validPdfHeader = outputBytes.subarray(0, 5).toString('latin1') === '%PDF-';
+
+    const ab = outputBytes.buffer.slice(outputBytes.byteOffset, outputBytes.byteOffset + outputBytes.byteLength);
+    scribe.ScribeDoc.defaults.usePDFText.native.main = true;
+    scribe.ScribeDoc.defaults.usePDFText.ocr.main = true;
+    scribe.ScribeDoc.defaults.keepPDFTextAlways = true;
+    const doc = await scribe.openDocument({ pdfFiles: [ab] });
+    doc.ocr.active = doc.ocr.pdf;
+    pageCount = doc.inputData.pageCount;
+    page0Text = /** @type {string} */ (await doc.exportData('text', { minPage: 0, maxPage: 0 }));
+    page1Text = /** @type {string} */ (await doc.exportData('text', { minPage: 1, maxPage: 1 }));
+    await doc.terminate();
+  }, 20000);
+
+  it('writes the subset PDF to the requested path', () => {
+    expect(outputExists).toBe(true);
+  });
+
+  it('writes a valid PDF (header starts with %PDF-)', () => {
+    expect(validPdfHeader).toBe(true);
+  });
+
+  it('keeps exactly the 2 requested pages out of the 3-page input', () => {
+    expect(pageCount).toBe(2);
+  });
+
+  it('keeps input page 0 as subset page 0 (retains the "Iris (plant)" title)', () => {
+    expect(page0Text).toContain('Iris (plant)');
+  });
+
+  it('keeps input page 2 as subset page 1, dropping page 1', () => {
+    // This phrase is unique to input page 2. It is absent from the dropped page 1.
+    expect(page1Text).toContain('non-receptive lower face of the stigma');
+  });
+
+  it('derives a page-range filename when the output is a directory', async () => {
+    const tmpDir = tmpUnique.get();
+    await subsetCLI(`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`, tmpDir, { pages: '0,2' });
+    expect(fs.existsSync(`${tmpDir}/Iris (plant) - Wikipedia_123-p0_2.pdf`)).toBe(true);
+  });
 
   afterAll(() => {
     tmpUnique.delete();
