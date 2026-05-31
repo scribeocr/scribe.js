@@ -666,7 +666,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     }
     if (!t3FontDict) continue;
     for (const m of t3FontDict.matchAll(/\/([^\s/]+)\s+(\d+)\s+\d+\s+R/g)) {
-      const innerTag = m[1];
+      const innerTag = decodePdfName(m[1]);
       if (fontEntryPairs.some(([t]) => t === innerTag)) continue;
       const innerObjNum = Number(m[2]);
       const innerObjText = objCache.getObjectText(innerObjNum);
@@ -2812,7 +2812,7 @@ export function parseGlyphStreamPaths(streamText) {
   let cmD = 1;
   let cmTx = 0;
   let cmTy = 0;
-  const biCmCut = /BI[\s]/.exec(streamText);
+  const biCmCut = /BI[\s/]/.exec(streamText);
   const cmRegion = biCmCut ? streamText.substring(0, biCmCut.index) : streamText;
   const cmRegex = /([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+cm(?:\s|$)/g;
   let lastCmEnd = 0;
@@ -2848,10 +2848,10 @@ export function parseGlyphStreamPaths(streamText) {
   }
 
   // Check for inline image (BI/ID/EI) — Type3 glyphs can use bitmap images.
-  // BI can be followed by any whitespace (space, \n, \r), and ID/EI can be
-  // preceded by any whitespace or delimiter character.
+  // BI may be followed by whitespace or directly by a name delimiter `/`,
+  // so `BI/W` with no space is valid.
   let inlineImage = null;
-  const biMatch = /BI[\s]/.exec(streamText);
+  const biMatch = /BI[\s/]/.exec(streamText);
   if (biMatch) {
     const biIdx2 = biMatch.index;
     const idMatch = /[\s\]>)]ID[\s]/.exec(streamText.substring(biIdx2));

@@ -3774,7 +3774,8 @@ async function decodeInlineImageBitmap(op, objCache, fallbackColorSpaces = new M
   let filters;
   const filterArrMatch = /\/(?:F|Filter)\s*\[\s*([^\]]+)\]/.exec(dictText);
   if (filterArrMatch) {
-    filters = filterArrMatch[1].trim().split(/\s+/).map((f) => {
+    // Names self-delimit on `/`, so the array may have no whitespace (e.g. `[/A85/Fl]`).
+    filters = (filterArrMatch[1].match(/\/[^\s/\]]+/g) || []).map((f) => {
       const name = f.replace(/^\//, '');
       return filterMap[name] || name;
     });
