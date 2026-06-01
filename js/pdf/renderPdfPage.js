@@ -1385,7 +1385,7 @@ function transformSmaskCtm(smask, composedBase) {
 function applyFormTransform(op, composedBase) {
   /**
    * Apply the form transform `composedBase` to the op's secondary coordinate references.
-   * These are its smask parent CTMs and its fill/stroke tiling-pattern matrices.
+   * These are its smask parent CTMs and its fill/stroke tiling- and shading-pattern matrices.
    * They are defined in form-local space, so each is composed with `composedBase` to bring it into the surrounding coordinate space.
    * Mutates `result` in place.
    * @param {DrawOp} result
@@ -1394,7 +1394,12 @@ function applyFormTransform(op, composedBase) {
     if (op.smask) result.smask = transformSmaskCtm(op.smask, composedBase);
     if (op.outerSmask) result.outerSmask = transformSmaskCtm(op.outerSmask, composedBase);
     if (op.tilingPattern) result.tilingPattern = { ...op.tilingPattern, matrix: matMul(op.tilingPattern.matrix, composedBase) };
-    if (op.strokeTilingPattern) result.strokeTilingPattern = { ...op.strokeTilingPattern, matrix: matMul(op.strokeTilingPattern.matrix, composedBase) };
+    if (op.patternShading?.matrix) result.patternShading = { ...op.patternShading, matrix: matMul(op.patternShading.matrix, composedBase) };
+    // strokeTilingPattern and strokePatternShading are declared only on path ops.
+    if (op.type === 'path' && result.type === 'path') {
+      if (op.strokeTilingPattern) result.strokeTilingPattern = { ...op.strokeTilingPattern, matrix: matMul(op.strokeTilingPattern.matrix, composedBase) };
+      if (op.strokePatternShading?.matrix) result.strokePatternShading = { ...op.strokePatternShading, matrix: matMul(op.strokePatternShading.matrix, composedBase) };
+    }
   };
   switch (op.type) {
     case 'image': {
@@ -1583,12 +1588,16 @@ async function flattenDrawOps(
       let effectiveSymbol2 = symbolFontTags;
       let effectiveCidPUA2 = cidPUATags;
       let effectiveRaw2 = rawCharCodeTags;
+      // Clone per form like the tag-sets: convertAndRegisterFont records collisions keyed by font tag,
+      // so a form-local tag would otherwise overwrite the parent's entry for the same tag.
+      let effectiveCidCollisionMap2 = cidCollisionMap;
       if (formFonts.size > 0) {
         effectiveFonts2 = new Map([...fonts, ...formFonts]);
         effectiveRegistered2 = new Map(registeredFontNames);
         effectiveSymbol2 = new Set(symbolFontTags);
         effectiveCidPUA2 = new Set(cidPUATags);
         effectiveRaw2 = new Set(rawCharCodeTags);
+        effectiveCidCollisionMap2 = new Map(cidCollisionMap);
         for (const [fontTag, fontObj] of formFonts) {
           // A Form XObject's local /Resources must shadow the parent scope.
           // Even if the tag already exists (e.g. /C0_0 on the page and inside
@@ -1603,7 +1612,7 @@ async function flattenDrawOps(
           effectiveRaw2.delete(fontTag);
           await convertAndRegisterFont(
             fontTag, fontObj, effectiveRegistered2, effectiveSymbol2, effectiveCidPUA2,
-            effectiveRaw2, cidCollisionMap, objCache, familyName,
+            effectiveRaw2, effectiveCidCollisionMap2, objCache, familyName,
           );
         }
         appendGenericFallbacks(effectiveRegistered2, effectiveFonts2);
@@ -1657,7 +1666,7 @@ async function flattenDrawOps(
         rawFormDrawOps = parseDrawOps(
           formStream, effectiveFonts2, effectiveExtGStates2, effectiveRegistered2,
           formColorSpaces.size > 0 ? formColorSpaces : undefined, effectiveSymbol2, effectiveCidPUA2, effectiveRaw2,
-          formShadings, formPatterns, cidCollisionMap, ts,
+          formShadings, formPatterns, effectiveCidCollisionMap2, ts,
           parseHiddenOCMCNames(formObjText, objCache, offOCGs),
         );
       }
@@ -1671,6 +1680,7 @@ async function flattenDrawOps(
         effectiveSymbol: effectiveSymbol2,
         effectiveCidPUA: effectiveCidPUA2,
         effectiveRaw: effectiveRaw2,
+        effectiveCidCollisionMap: effectiveCidCollisionMap2,
       };
       formResourceCache.set(cacheKey, cached);
     }
@@ -1721,6 +1731,7 @@ async function flattenDrawOps(
     const effectiveSymbol = cached.effectiveSymbol || symbolFontTags;
     const effectiveCidPUA = cached.effectiveCidPUA || cidPUATags;
     const effectiveRaw = cached.effectiveRaw || rawCharCodeTags;
+    const effectiveCidCollisionMap = cached.effectiveCidCollisionMap || cidCollisionMap;
     const innerPrefix = `${fullName}/`;
     // If this Form is a transparency group AND we have a group context,
     // allocate a groupId and capture the outer GS attributes that apply at composite time.
@@ -1765,7 +1776,7 @@ async function flattenDrawOps(
         const nestedFlattened = await flattenDrawOps(
           [innerOp], images, forms, objCache, effectiveFonts, effectiveRegistered,
           innerPrefix, pageIndex, effectiveSymbol, effectiveCidPUA, effectiveExtGStates, effectiveRaw,
-          formResourceCache, depth + 1, offOCGs, cidCollisionMap,
+          formResourceCache, depth + 1, offOCGs, effectiveCidCollisionMap,
           formInheritedFill, formInheritedStroke,
           groupContext, innerGroupId,
         );
@@ -1841,7 +1852,9 @@ async function flattenDrawOps(
 
 /**
  * @typedef {{ fillAlpha?: number, strokeAlpha?: number, overprint?: boolean,
- *   blendMode?: string, smask?: SmaskRef|null, lineWidth?: number }} ExtGStateEntry
+ *   blendMode?: string, smask?: SmaskRef|null, lineWidth?: number,
+ *   lineCap?: number, lineJoin?: number, miterLimit?: number,
+ *   dashArray?: number[], dashPhase?: number }} ExtGStateEntry
  */
 
 /**
@@ -1957,6 +1970,7 @@ function parseExtGStates(pageObjText, objCache) {
     const gsObj = objCache.getObjectText(gsObjNum);
     if (!gsObj) continue;
 
+    /** @type {ExtGStateEntry} */
     const entry = {};
     // /ca = fill alpha (non-stroking), /CA = stroke alpha (stroking)
     const caMatch = /\/ca\s+([0-9.]+)/.exec(gsObj);
@@ -2014,8 +2028,23 @@ function parseExtGStates(pageObjText, objCache) {
     const lwMatch = /\/LW\s+([0-9.]+)/.exec(gsObj);
     if (lwMatch) entry.lineWidth = parseFloat(lwMatch[1]);
 
+    // /LC line cap, /LJ line join, /ML miter limit, /D [dashArray dashPhase]
+    const lcMatch = /\/LC\s+(\d+)/.exec(gsObj);
+    if (lcMatch) entry.lineCap = parseInt(lcMatch[1], 10);
+    const ljMatch = /\/LJ\s+(\d+)/.exec(gsObj);
+    if (ljMatch) entry.lineJoin = parseInt(ljMatch[1], 10);
+    const mlMatch = /\/ML\s+([0-9.]+)/.exec(gsObj);
+    if (mlMatch) entry.miterLimit = parseFloat(mlMatch[1]);
+    const dMatch = /\/D\s*\[\s*\[([^\]]*)\]\s*([0-9.]+)\s*\]/.exec(gsObj);
+    if (dMatch) {
+      entry.dashArray = dMatch[1].trim() ? dMatch[1].trim().split(/\s+/).map(Number).filter((x) => Number.isFinite(x)) : [];
+      entry.dashPhase = parseFloat(dMatch[2]);
+    }
+
     if (entry.fillAlpha !== undefined || entry.strokeAlpha !== undefined || entry.smask !== undefined
-      || entry.overprint !== undefined || entry.blendMode !== undefined || entry.lineWidth !== undefined) {
+      || entry.overprint !== undefined || entry.blendMode !== undefined || entry.lineWidth !== undefined
+      || entry.lineCap !== undefined || entry.lineJoin !== undefined || entry.miterLimit !== undefined
+      || entry.dashArray !== undefined) {
       states.set(gsName, entry);
     }
   }
@@ -2029,6 +2058,7 @@ function parseExtGStates(pageObjText, objCache) {
     const dictText = extractDict(gsDictText, inlineMatch.index + inlineMatch[0].length - 2);
     if (!dictText) continue;
 
+    /** @type {ExtGStateEntry} */
     const entry = {};
     const caMatch = /\/ca\s+([0-9.]+)/.exec(dictText);
     const CAMatch = /\/CA\s+([0-9.]+)/.exec(dictText);
@@ -2083,8 +2113,23 @@ function parseExtGStates(pageObjText, objCache) {
     const lwMatch2 = /\/LW\s+([0-9.]+)/.exec(dictText);
     if (lwMatch2) entry.lineWidth = parseFloat(lwMatch2[1]);
 
+    // /LC line cap, /LJ line join, /ML miter limit, /D [dashArray dashPhase]
+    const lcMatch2 = /\/LC\s+(\d+)/.exec(dictText);
+    if (lcMatch2) entry.lineCap = parseInt(lcMatch2[1], 10);
+    const ljMatch2 = /\/LJ\s+(\d+)/.exec(dictText);
+    if (ljMatch2) entry.lineJoin = parseInt(ljMatch2[1], 10);
+    const mlMatch2 = /\/ML\s+([0-9.]+)/.exec(dictText);
+    if (mlMatch2) entry.miterLimit = parseFloat(mlMatch2[1]);
+    const dMatch2 = /\/D\s*\[\s*\[([^\]]*)\]\s*([0-9.]+)\s*\]/.exec(dictText);
+    if (dMatch2) {
+      entry.dashArray = dMatch2[1].trim() ? dMatch2[1].trim().split(/\s+/).map(Number).filter((x) => Number.isFinite(x)) : [];
+      entry.dashPhase = parseFloat(dMatch2[2]);
+    }
+
     if (entry.fillAlpha !== undefined || entry.strokeAlpha !== undefined || entry.smask !== undefined
-       || entry.overprint !== undefined || entry.blendMode !== undefined || entry.lineWidth !== undefined) {
+       || entry.overprint !== undefined || entry.blendMode !== undefined || entry.lineWidth !== undefined
+       || entry.lineCap !== undefined || entry.lineJoin !== undefined || entry.miterLimit !== undefined
+       || entry.dashArray !== undefined) {
       states.set(gsName, entry);
     }
   }
@@ -5120,6 +5165,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     const m = /rgb\((\d+),(\d+),(\d+)\)/.exec(color);
     return m && m[1] === m[2] && m[2] === m[3];
   };
+  const t3xChecked = new Set();
   if (!pageHasColor) {
     for (const op of drawOps) {
       if (op.type === 'image') {
@@ -5162,9 +5208,29 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           }
           if (pageHasColor) break;
         }
-      } else if ((op.type === 'type0text' || op.type === 'type3glyph') && op.fillColor && !isGrayColor(op.fillColor)) {
+      } else if (op.type === 'type0text' && op.fillColor && !isGrayColor(op.fillColor)) {
         pageHasColor = true;
         break;
+      } else if (op.type === 'type3glyph') {
+        if (op.fillColor && !isGrayColor(op.fillColor)) { pageHasColor = true; break; }
+        // A Type3 CharProc can paint a color image XObject (e.g. color emoji glyphs).
+        if (op.type3XObjects) {
+          for (const xObjNum of Object.values(op.type3XObjects)) {
+            if (t3xChecked.has(xObjNum)) continue;
+            t3xChecked.add(xObjNum);
+            const xObjText = objCache.getObjectText(xObjNum);
+            if (!xObjText || !/\/Subtype\s*\/Image/.test(xObjText)) continue;
+            const ii = parseImageObject(xObjText, xObjNum, objCache);
+            if (!ii || ii.imageMask || ii.bitsPerComponent === 1) continue;
+            const cs = ii.colorSpace;
+            if (cs !== 'DeviceGray' && cs !== 'CalGray'
+              && (cs !== 'Indexed' || (ii.paletteBase !== 'DeviceGray' && ii.paletteBase !== 'CalGray'))) {
+              pageHasColor = true;
+              break;
+            }
+          }
+          if (pageHasColor) break;
+        }
       } else if (op.type === 'shading' && op.shading) {
         const sh = op.shading;
         if (sh.type === 'mesh') {
@@ -6446,7 +6512,11 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           }
           if (mode === 'stroke' || mode === 'fillStroke') {
             rCtx.strokeStyle = pathData.strokeColor || op.fillColor || 'black';
-            rCtx.lineWidth = pathData.lineWidth || 1;
+            // Stroke-based Type3 glyphs (e.g. Korean outline fonts) set a sub-pixel line width in glyph space (a hairline).
+            // Skia renders that as nearly nothing, dropping whole glyphs.
+            // Clamp to a 1-device-pixel minimum, the thinnest visible line, matching how mupdf paints these strokes.
+            const glyphToDevice = Math.sqrt(Math.abs(op.transform[0] * op.transform[3] - op.transform[1] * op.transform[2])) * scale || 1;
+            rCtx.lineWidth = Math.max(pathData.lineWidth || 1, 1 / glyphToDevice);
             if (pathData.dashArray && pathData.dashArray.length > 0) {
               rCtx.setLineDash(pathData.dashArray);
               rCtx.lineDashOffset = pathData.dashPhase || 0;

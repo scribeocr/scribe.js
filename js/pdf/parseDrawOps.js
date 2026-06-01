@@ -1304,6 +1304,10 @@ export function parseDrawOps(
             if (gs.overprint !== undefined) overprint = gs.overprint;
             if (gs.blendMode !== undefined) blendMode = gs.blendMode;
             if (gs.lineWidth !== undefined) lineWidth = gs.lineWidth;
+            if (gs.lineCap !== undefined) lineCap = gs.lineCap;
+            if (gs.lineJoin !== undefined) lineJoin = gs.lineJoin;
+            if (gs.miterLimit !== undefined) miterLimit = gs.miterLimit;
+            if (gs.dashArray !== undefined) { dashArray = gs.dashArray; dashPhase = gs.dashPhase ?? 0; }
             if (gs.smask !== undefined) {
               // PDF spec §11.6.5.1: SMask transparency group is positioned by the
               // parent CTM at the time the soft mask was set, NOT the form's local

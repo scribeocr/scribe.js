@@ -376,16 +376,17 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
   // Use CropBox when available — it defines the visible region.
   // Content outside the CropBox (e.g. printer slug metadata) should not be extracted.
   const effectiveBox = cropBox || mediaBox;
-  const contentWidthPts = effectiveBox[2] - effectiveBox[0];
-  const contentHeightPts = effectiveBox[3] - effectiveBox[1];
+  // Box corners may be stored in either order, so use absolute size and a lower-left origin.
+  const contentWidthPts = Math.abs(effectiveBox[2] - effectiveBox[0]);
+  const contentHeightPts = Math.abs(effectiveBox[3] - effectiveBox[1]);
 
   // Compute initial CTM and visual page dimensions based on /Rotate.
   // /Rotate specifies clockwise rotation for display.
   // When the effective box origin is non-zero (e.g. CropBox [36 36 648 828]),
   // bake a translation into the initial CTM so that coordinates are relative
   // to the box origin. This matches how the renderer handles CropBox offsets.
-  const boxOriginX = effectiveBox[0];
-  const boxOriginY = effectiveBox[1];
+  const boxOriginX = Math.min(effectiveBox[0], effectiveBox[2]);
+  const boxOriginY = Math.min(effectiveBox[1], effectiveBox[3]);
   let initialCtm = [1, 0, 0, 1, -boxOriginX, -boxOriginY];
   let visualWidthPts = contentWidthPts;
   let visualHeightPts = contentHeightPts;
@@ -601,7 +602,7 @@ export function detectPdfType(pdfBytes) {
     const contentStreamText = getPageContentStream(objText, objCache);
     if (!contentStreamText) continue;
 
-    const pageHeightPts = mediaBox[3] - mediaBox[1];
+    const pageHeightPts = Math.abs(mediaBox[3] - mediaBox[1]);
     const tokens = tokenizeContentStream(contentStreamText);
     const chars = executeTextOperators(tokens, fonts, 1, pageHeightPts);
     pageStats.push(scorePageChars(chars));

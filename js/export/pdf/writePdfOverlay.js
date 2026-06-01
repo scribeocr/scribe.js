@@ -168,12 +168,13 @@ export async function overlayPdfText({
     // pixelDims is the rasterised CropBox region; scale and translate the overlay relative
     // to CropBox so it lands inside the visible area on pages where MediaBox is larger.
     const overlayBox = pageInfo.cropBox || pageInfo.mediaBox;
-    const baseWidth = overlayBox[2] - overlayBox[0];
-    const baseHeight = overlayBox[3] - overlayBox[1];
+    // Box corners may be stored in either order, so use absolute size and a lower-left origin.
+    const baseWidth = Math.abs(overlayBox[2] - overlayBox[0]);
+    const baseHeight = Math.abs(overlayBox[3] - overlayBox[1]);
     const scaleX = pixelDims ? baseWidth / pixelDims.width : 1;
     const scaleY = pixelDims ? baseHeight / pixelDims.height : 1;
-    const tx = overlayBox[0];
-    const ty = overlayBox[1];
+    const tx = Math.min(overlayBox[0], overlayBox[2]);
+    const ty = Math.min(overlayBox[1], overlayBox[3]);
 
     let textContentObjStr = '';
     /** @type {Set<PdfFontInfo>} */

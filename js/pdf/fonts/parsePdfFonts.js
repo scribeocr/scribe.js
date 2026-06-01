@@ -2828,7 +2828,6 @@ export function parseGlyphStreamPaths(streamText) {
   const biCmCut = /BI[\s/]/.exec(streamText);
   const cmRegion = biCmCut ? streamText.substring(0, biCmCut.index) : streamText;
   const cmRegex = /([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+cm(?:\s|$)/g;
-  let lastCmEnd = 0;
   for (const m of cmRegion.matchAll(cmRegex)) {
     const a = Number(m[1]);
     const b = Number(m[2]);
@@ -2848,16 +2847,28 @@ export function parseGlyphStreamPaths(streamText) {
     cmD = nD;
     cmTx = nTx;
     cmTy = nTy;
-    lastCmEnd = m.index + m[0].length;
   }
 
+  // Live CTM for path drawing, tracked with a q/Q stack and cm concatenation.
+  // The composed cm above is for Do/inline-image placement, which always follows all cm operators.
+  // Glyph outlines, by contrast, can interleave cm with drawing (each subpath positioned by its own cm),
+  // so every point must be transformed by the CTM in effect when the point is emitted,
+  // not by the final composed matrix.
+  let lcA = 1;
+  let lcB = 0;
+  let lcC = 0;
+  let lcD = 1;
+  let lcTx = 0;
+  let lcTy = 0;
+  /** @type {number[][]} */
+  const ctmStack = [];
   /**
-   * Apply the cm affine transformation to a point.
+   * Apply the live CTM to a point.
    * @param {number} x
    * @param {number} y
    */
   function transform(x, y) {
-    return { x: cmA * x + cmC * y + cmTx, y: cmB * x + cmD * y + cmTy };
+    return { x: lcA * x + lcC * y + lcTx, y: lcB * x + lcD * y + lcTy };
   }
 
   // Check for inline image (BI/ID/EI) — Type3 glyphs can use bitmap images.
@@ -2944,7 +2955,10 @@ export function parseGlyphStreamPaths(streamText) {
 
   /** @type {PathCommand[]} */
   const commands = [];
-  const drawingStart = lastCmEnd;
+  // Begin tokenizing right after the d0/d1 width declaration so the loop sees the
+  // cm/q/Q operators and tracks the live CTM. Glyphs without d0/d1 tokenize whole.
+  const drawingStart = d1Match ? d1Match.index + d1Match[0].length
+    : (d0Match ? d0Match.index + d0Match[0].length : 0);
   const drawingPart = streamText.substring(drawingStart);
 
   // Strip PDF comments (% to end of line) before tokenizing
@@ -3109,6 +3123,40 @@ export function parseGlyphStreamPaths(streamText) {
           if (numStack.length >= 1) {
             const v = Math.round(numStack[numStack.length - 1] * 255);
             glyphFillColor = `rgb(${v},${v},${v})`;
+          }
+          numStack.length = 0;
+          break;
+        case 'q':
+          ctmStack.push([lcA, lcB, lcC, lcD, lcTx, lcTy]);
+          numStack.length = 0;
+          break;
+        case 'Q': {
+          const s = ctmStack.pop();
+          if (s) [lcA, lcB, lcC, lcD, lcTx, lcTy] = s;
+          numStack.length = 0;
+          break;
+        }
+        case 'cm':
+          if (numStack.length >= 6) {
+            const n = numStack.length;
+            const a = numStack[n - 6];
+            const b = numStack[n - 5];
+            const c = numStack[n - 4];
+            const d = numStack[n - 3];
+            const tx = numStack[n - 2];
+            const ty = numStack[n - 1];
+            const nA = a * lcA + b * lcC;
+            const nB = a * lcB + b * lcD;
+            const nC = c * lcA + d * lcC;
+            const nD = c * lcB + d * lcD;
+            const nTx = tx * lcA + ty * lcC + lcTx;
+            const nTy = tx * lcB + ty * lcD + lcTy;
+            lcA = nA;
+            lcB = nB;
+            lcC = nC;
+            lcD = nD;
+            lcTx = nTx;
+            lcTy = nTy;
           }
           numStack.length = 0;
           break;
