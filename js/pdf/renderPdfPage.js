@@ -4792,7 +4792,17 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           '', pageIndex, symbolFontTags, cidPUATags, extGStates, rawCharCodeTags,
           new Map(), 0, new Set(), cidCollisionMap,
         );
-        for (const aOp of annotFlattened) drawOps.push(aOp);
+        // /CA is the annotation's constant opacity, parsed from the annotation dict
+        // (not the appearance stream), and applies to every visible element of the annotation.
+        const annotCaMatch = /\/CA\s+([0-9.]+)/.exec(annotText);
+        const annotCA = annotCaMatch ? parseFloat(annotCaMatch[1]) : 1;
+        for (const aOp of annotFlattened) {
+          if (annotCA < 1) {
+            aOp.fillAlpha = (aOp.fillAlpha ?? 1) * annotCA;
+            aOp.strokeAlpha = (aOp.strokeAlpha ?? 1) * annotCA;
+          }
+          drawOps.push(aOp);
+        }
       } else {
         // Synthesize appearance for Highlight annotations without /AP.
         // Pre-parsed in extractPdfAnnotations — look up by annotRef to skip the
