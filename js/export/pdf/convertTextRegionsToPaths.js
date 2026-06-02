@@ -143,8 +143,14 @@ function loadGlyphsForOutlines(fontFile) {
           nameToGid = null;
         }
       }
+      const ttUpem = head.unitsPerEm > 0 ? head.unitsPerEm : 1000;
       return {
-        glyphs: shell.glyphs, unitsPerEm: head.unitsPerEm, fontType: 'truetype', cmap, nameToGid,
+        glyphs: shell.glyphs,
+        unitsPerEm: ttUpem,
+        fontMatrix: [1 / ttUpem, 0, 0, 1 / ttUpem, 0, 0],
+        fontType: 'truetype',
+        cmap,
+        nameToGid,
       };
     } catch {
       return null;
@@ -166,6 +172,10 @@ function loadGlyphsForOutlines(fontFile) {
       const effFm = (fdFm && fdFm[0] > 0 && fdFm[0] < 1) ? fdFm : fm;
       const upem = effFm && effFm[0] > 0 && effFm[0] < 1 ? Math.round(1 / effFm[0]) : 1000;
       shell.unitsPerEm = upem;
+      // Preserve the full FontMatrix, including any shear (italic CFF fonts encode the slant as fm[2]).
+      // Using a uniform-diagonal `[1/upem 0 0 1/upem 0 0]` would re-emit italic glyphs as upright.
+      const fontMatrix = (Array.isArray(effFm) && effFm.length === 6)
+        ? effFm.slice() : [1 / upem, 0, 0, 1 / upem, 0, 0];
       let nameToGid = null;
       const charset = shell.tables.cff?.charset;
       if (Array.isArray(charset)) {
@@ -202,6 +212,7 @@ function loadGlyphsForOutlines(fontFile) {
       return {
         glyphs: shell.glyphs,
         unitsPerEm: upem,
+        fontMatrix,
         fontType: 'cff',
         cmap: null,
         nameToGid,
@@ -216,15 +227,13 @@ function loadGlyphsForOutlines(fontFile) {
     try {
       const parsed = opentype.parseType1Font(fontFile);
       if (!parsed || !parsed.glyphs || parsed.glyphs.size === 0) return null;
-      // Italic Type1 fonts carry a shearing FontMatrix.
-      // Re-emitting as uniform-diagonal [1/upem 0 0 1/upem] would drop the italicization.
       const fm = parsed.fontMatrix;
-      const isUniformDiag = fm && fm.length >= 4
-        && fm[1] === 0 && fm[2] === 0
-        && fm[0] > 0 && fm[3] > 0
-        && Math.abs(fm[0] - fm[3]) < 1e-9;
-      if (!isUniformDiag) return null;
+      if (!fm || fm.length !== 6 || !(fm[0] > 0) || !(fm[3] > 0)) return null;
       const upem = Math.round(1 / fm[0]);
+      // Italic Type1 fonts encode the slant in `fm[2]` (the c element of the affine matrix).
+      // Carry the full FontMatrix through so the emitted Form XObject's /Matrix preserves the shear.
+      // Re-emitting as `[1/upem 0 0 1/upem 0 0]` would render italic glyphs upright.
+      const fontMatrix = fm.slice();
       /** @type {Array<any>} */
       const glyphsArr = [];
       const nameToGid = new Map();
@@ -239,6 +248,7 @@ function loadGlyphsForOutlines(fontFile) {
       return {
         glyphs: { get: (i) => glyphsArr[i], length: glyphsArr.length },
         unitsPerEm: upem,
+        fontMatrix,
         fontType: 'type1',
         cmap: null,
         nameToGid,
@@ -263,24 +273,40 @@ function pathCommandsToOps(commands) {
   let cy = 0;
   let startX = 0;
   let startY = 0;
+  // Default to integer coords (compact, and TrueType/CFF glyphs are in integer font units).
+  // Type3 coords can be fractional (< 1), where integer rounding would wipe the path, so use decimals there.
+  let needsFraction = false;
+  for (let i = 0; i < commands.length && !needsFraction; i++) {
+    const c = commands[i];
+    if (c.type === 'M' || c.type === 'L') {
+      if ((c.x !== 0 && Math.abs(c.x) < 1) || (c.y !== 0 && Math.abs(c.y) < 1)) needsFraction = true;
+    } else if (c.type === 'C') {
+      const vs = [c.x1, c.y1, c.x2, c.y2, c.x, c.y];
+      for (const v of vs) if (v !== 0 && Math.abs(v) < 1) { needsFraction = true; break; }
+    } else if (c.type === 'Q') {
+      const vs = [c.x1, c.y1, c.x, c.y];
+      for (const v of vs) if (v !== 0 && Math.abs(v) < 1) { needsFraction = true; break; }
+    }
+  }
+  const f = needsFraction ? fmt : fmtInt;
   for (let i = 0; i < commands.length; i++) {
     const c = commands[i];
     if (c.type === 'M') {
-      out += `${fmtInt(c.x)} ${fmtInt(c.y)} m\n`;
+      out += `${f(c.x)} ${f(c.y)} m\n`;
       cx = c.x; cy = c.y;
       startX = c.x; startY = c.y;
     } else if (c.type === 'L') {
-      out += `${fmtInt(c.x)} ${fmtInt(c.y)} l\n`;
+      out += `${f(c.x)} ${f(c.y)} l\n`;
       cx = c.x; cy = c.y;
     } else if (c.type === 'C') {
-      out += `${fmtInt(c.x1)} ${fmtInt(c.y1)} ${fmtInt(c.x2)} ${fmtInt(c.y2)} ${fmtInt(c.x)} ${fmtInt(c.y)} c\n`;
+      out += `${f(c.x1)} ${f(c.y1)} ${f(c.x2)} ${f(c.y2)} ${f(c.x)} ${f(c.y)} c\n`;
       cx = c.x; cy = c.y;
     } else if (c.type === 'Q') {
       const c1x = cx + (2 / 3) * (c.x1 - cx);
       const c1y = cy + (2 / 3) * (c.y1 - cy);
       const c2x = c.x + (2 / 3) * (c.x1 - c.x);
       const c2y = c.y + (2 / 3) * (c.y1 - c.y);
-      out += `${fmtInt(c1x)} ${fmtInt(c1y)} ${fmtInt(c2x)} ${fmtInt(c2y)} ${fmtInt(c.x)} ${fmtInt(c.y)} c\n`;
+      out += `${f(c1x)} ${f(c1y)} ${f(c2x)} ${f(c2y)} ${f(c.x)} ${f(c.y)} c\n`;
       cx = c.x; cy = c.y;
     } else if (c.type === 'Z') {
       out += 'h\n';
@@ -292,28 +318,48 @@ function pathCommandsToOps(commands) {
 
 /**
  * Build a Form XObject for a single (font, glyphIndex) pair.
- * The XObject body is the glyph's outline path commands followed by a fill (`f`).
- * The /Matrix scales font-unit coordinates to unit em, so the caller's `cm` is `Tm × [fontSize ...]`.
+ * The /Matrix maps the glyph commands' coordinate space to text-space ems,
+ * so the caller's `cm` is `Tm x [fontSize 0 0 fontSize 0 0]`.
  *
  * @param {number} xobjObjNum
  * @param {Array<any>} pathCommands
- * @param {number} unitsPerEm
+ * @param {number[]} formMatrix - six-number affine matrix
  * @param {{xMin: number, yMin: number, xMax: number, yMax: number}} bbox
  * @param {boolean} humanReadable
+ * @param {{paintMode?: string, evenOdd?: boolean, lineWidth?: number, dashArray?: number[], dashPhase?: number}} [paintOpts]
  */
-async function buildGlyphFormXObject(xobjObjNum, pathCommands, unitsPerEm, bbox, humanReadable) {
-  const body = `${pathCommandsToOps(pathCommands)}f\n`;
-  const upem = (typeof unitsPerEm === 'number' && unitsPerEm > 0 && Number.isFinite(unitsPerEm))
-    ? unitsPerEm : 1000;
-  // At upem=2048, 1/upem ≈ 0.000488 rounds to "0" with the default 3-decimal fmt.
-  const invStr = (1 / upem).toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
+async function buildGlyphFormXObject(xobjObjNum, pathCommands, formMatrix, bbox, humanReadable, paintOpts) {
+  const paintMode = paintOpts?.paintMode || 'fill';
+  const evenOdd = !!paintOpts?.evenOdd;
+  const lineWidth = typeof paintOpts?.lineWidth === 'number' ? paintOpts.lineWidth : 1;
+  const dashArray = Array.isArray(paintOpts?.dashArray) ? paintOpts.dashArray : [];
+  const dashPhase = typeof paintOpts?.dashPhase === 'number' ? paintOpts.dashPhase : 0;
+  let paintOp;
+  if (paintMode === 'stroke') paintOp = 'S';
+  else if (paintMode === 'fillStroke') paintOp = evenOdd ? 'B*' : 'B';
+  else paintOp = evenOdd ? 'f*' : 'f';
+  const needsStrokeState = paintMode === 'stroke' || paintMode === 'fillStroke';
+  let prelude = '';
+  if (needsStrokeState) {
+    prelude += `${fmt(lineWidth)} w\n`;
+    if (dashArray.length > 0) {
+      prelude += `[${dashArray.map((n) => fmt(n)).join(' ')}] ${fmt(dashPhase)} d\n`;
+    }
+  }
+  const body = `${prelude}${pathCommandsToOps(pathCommands)}${paintOp}\n`;
+  const fmHigh = (n) => {
+    if (!Number.isFinite(n)) return '0';
+    if (Number.isInteger(n)) return String(n);
+    return n.toFixed(8).replace(/0+$/, '').replace(/\.$/, '');
+  };
+  const m = formMatrix && formMatrix.length === 6 ? formMatrix : [0.001, 0, 0, 0.001, 0, 0];
   // Without explicit /Resources, forms inherit from the parent per PDF spec §7.8.3.
   // Our renderer materializes that inheritance on every Do call.
   // With thousands of glyph-form invocations that costs O(callers × parent-xobjects).
   // These forms reference nothing, so emit empty /Resources.
   const dictExtras = '/Subtype/Form'
     + `/BBox[${fmt(bbox.xMin)} ${fmt(bbox.yMin)} ${fmt(bbox.xMax)} ${fmt(bbox.yMax)}]`
-    + `/Matrix[${invStr} 0 0 ${invStr} 0 0]`
+    + `/Matrix[${fmHigh(m[0])} ${fmHigh(m[1])} ${fmHigh(m[2])} ${fmHigh(m[3])} ${fmHigh(m[4])} ${fmHigh(m[5])}]`
     + '/Resources<<>>';
   return encodeStreamObject(xobjObjNum, body, { humanReadable, dictExtras });
 }
@@ -424,7 +470,8 @@ function codeToHex(code, numBytes) {
  * @returns {{ ok: true, text: string, changed: boolean,
  *   usedXobj: Map<string, {fontObjNum: number, glyphIndex: number,
  *     bbox: {xMin: number, yMin: number, xMax: number, yMax: number},
- *     unitsPerEm: number, pathCommands: Array<any>}>,
+ *     formMatrix: number[], pathCommands: Array<any>,
+ *     paintMode: string, evenOdd: boolean, lineWidth: number, dashArray: number[], dashPhase: number}>,
  *   skipped: Array<{fontObjNum: number, charCode: number, reason: string}>,
  *   formInvocations: Array<{name: string, formObjNum: number, ctm: number[]}> }
  *   | { ok: false, reason: string }}
@@ -433,12 +480,24 @@ function codeToHex(code, numBytes) {
  *   verticalMode: boolean, codespaceRanges: ReadonlyArray<{bytes: number, low: number, high: number}> | null,
  *   charCodeToCID: Map<number, number> | null, isType0: boolean }} FontBinding
  *
- * @typedef {(arg: { fontObjNum: number, charCode: number }) => { glyphIndex: number, unitsPerEm: number,
+ * @typedef {(arg: { fontObjNum: number, charCode: number }) => { glyphIndex: number, formMatrix: number[],
  *   pathCommands: Array<any>, bbox: {xMin: number, yMin: number, xMax: number, yMax: number} } | { error: string }} GlyphResolver
  */
 export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, resolver, opts = {}) {
   const initialCtm = opts.initialCtm || [1, 0, 0, 1, 0, 0];
   const parentXobjects = opts.parentXobjects || null;
+  // Fast path: a stream with no text-show ops AND no Do ops cannot contribute to the output.
+  // Skip tokenizing multi-MB image-heavy pages.
+  if (!/\bT[jJ]\b|\bDo\b/.test(streamText)) {
+    return {
+      ok: true,
+      text: streamText,
+      changed: false,
+      usedXobj: new Map(),
+      skipped: [],
+      formInvocations: [],
+    };
+  }
   const tokens = tokenizeContentStream(streamText);
   /** @type {Array<{type: string, value: any}>} */
   const operandBuf = [];
@@ -470,7 +529,12 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
    */
   let pendingConverts = [];
 
-  /** @type {Map<string, {fontObjNum: number, glyphIndex: number, bbox: {xMin: number, yMin: number, xMax: number, yMax: number}, unitsPerEm: number, pathCommands: Array<any>}>} */
+  /**
+   * @type {Map<string, {fontObjNum: number, glyphIndex: number,
+   *   bbox: {xMin: number, yMin: number, xMax: number, yMax: number}, formMatrix: number[],
+   *   pathCommands: Array<any>, paintMode: string, evenOdd: boolean, lineWidth: number,
+   *   dashArray: number[], dashPhase: number}>}
+   */
   const usedXobj = new Map();
   /** @type {Array<{fontObjNum: number, charCode: number, reason: string}>} */
   const skipped = [];
@@ -809,6 +873,12 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
     /** @type {Array<{kind: 'glyph', code: number, numBytes: number} | {kind: 'spacer', value: number}>} */
     const outputElems = [];
     let anyConvert = false;
+    // Snapshot tm before iterating glyphs.
+    // The ET/BT bounce we may emit below restores tlm with `Tm tlm`,
+    // but BT clears the position tm carried from earlier text-show ops in the same BT block
+    // (e.g. a literal-text Tj before a converted CID Tj).
+    // Recover that by prepending a TJ spacer for the tlm -> tmStart user-space delta.
+    const tmStart = tm.slice();
 
     for (const elem of flattened) {
       if (elem.type === 'spacer') {
@@ -851,8 +921,13 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
               fontObjNum: binding.fontObjNum,
               glyphIndex: res.glyphIndex,
               bbox: res.bbox,
-              unitsPerEm: res.unitsPerEm,
+              formMatrix: res.formMatrix,
               pathCommands: res.pathCommands,
+              paintMode: res.paintMode || 'fill',
+              evenOdd: !!res.evenOdd,
+              lineWidth: typeof res.lineWidth === 'number' ? res.lineWidth : 1,
+              dashArray: Array.isArray(res.dashArray) ? res.dashArray : [],
+              dashPhase: typeof res.dashPhase === 'number' ? res.dashPhase : 0,
             });
           }
           const M = matMul(trmPrefix, tm);
@@ -888,6 +963,23 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       out.push(`${fmt(ac)} Tc\n`);
     }
     out.push(`${fmt(tlm[0])} ${fmt(tlm[1])} ${fmt(tlm[2])} ${fmt(tlm[3])} ${fmt(tlm[4])} ${fmt(tlm[5])} Tm\n`);
+
+    const deltaUx = tmStart[4] - tlm[4];
+    const deltaUy = tmStart[5] - tlm[5];
+    if (Math.abs(deltaUx) > 1e-6 || Math.abs(deltaUy) > 1e-6) {
+      const det = tlm[0] * tlm[3] - tlm[1] * tlm[2];
+      const fontScale = currentFontSize * tz / 100;
+      if (Math.abs(det) > 1e-9 && fontScale > 0) {
+        const textDx = (deltaUx * tlm[3] - deltaUy * tlm[2]) / det;
+        const textDy = (-deltaUx * tlm[1] + deltaUy * tlm[0]) / det;
+        const leadAxis = binding.verticalMode ? textDy : textDx;
+        const offAxis = binding.verticalMode ? textDx : textDy;
+        if (Math.abs(offAxis) < 1e-6 && Math.abs(leadAxis) > 1e-6) {
+          const spacer = -leadAxis * 1000 / fontScale;
+          outputElems.unshift({ kind: 'spacer', value: spacer });
+        }
+      }
+    }
 
     const parts = [];
     let hex = '';
@@ -1019,6 +1111,9 @@ function charCodeToGlyphIndex(fontInfo, charCode, loaded) {
  * @property {Map<string, number>} formCloneByKey
  *   Cloned Form XObject dedup, keyed by `${origObjNum}|${contentHash}|${redirectsHash}`.
  *   Lets pages sharing the same form with identical CTM reuse one clone object.
+ * @property {Map<string, number>} type3GlyphIndexByKey
+ *   Stable ordinal per Type3 (fontObjNum, glyphName)
+ *   so the existing `TGP{font}g{gid}` Form-XObject dedup keys the same Type3 glyph the same way across pages.
  */
 
 /**
@@ -1031,6 +1126,7 @@ export function createConversionState() {
     fontGlyphsCache: new Map(),
     inProgress: new Set(),
     formCloneByKey: new Map(),
+    type3GlyphIndexByKey: new Map(),
   };
 }
 
@@ -1046,6 +1142,51 @@ function buildResolver(fontInfoByObjNum, state) {
   return ({ fontObjNum, charCode }) => {
     const fi = fontInfoByObjNum.get(fontObjNum);
     if (!fi) return { error: 'font-not-found' };
+
+    if (fi.type3) {
+      const glyphName = fi.type3.encoding[charCode];
+      if (!glyphName) return { error: 'type3-no-encoding' };
+      const glyph = fi.type3.glyphs[glyphName];
+      if (!glyph) return { error: 'type3-no-glyph' };
+      const commands = glyph.commands;
+      if (!commands || commands.length === 0) {
+        return { error: 'type3-no-commands' };
+      }
+      // A CharProc that paints via inline image or Do (bitmapped Type3 glyphs) produces no real path data.
+      // `parseGlyphStreamPaths` can still surface stray `h`/`Z` tokens from misinterpreting binary inline-image bytes,
+      // so guard against converting an empty-looking path: require at least one moveto.
+      if (!commands.some((c) => c.type === 'M')) {
+        return { error: 'type3-no-moveto' };
+      }
+      // PDF 32000-2 §9.6.4: a d1 CharProc is monochromatic and takes its colour from the graphics
+      // state (the fill colour at Tr=0), so a fill (`f`) inside the form picks up the caller's fill colour and round-trips.
+      // Skip the cases a Form XObject Do can't reproduce: d0 (supplies its own colours, which parseGlyphStreamPaths drops)
+      // and d1 + stroke/fillStroke (the form's S/B would source the caller's separate stroke colour, not d1's fill-as-stroke).
+      if (!glyph.isD1) return { error: 'type3-d0-colour-not-preserved' };
+      const pm = glyph.paintMode;
+      if (pm === 'stroke' || pm === 'fillStroke') {
+        return { error: `type3-d1-${pm}-colour-mismatch` };
+      }
+      const key = `${fontObjNum}|${glyphName}`;
+      let glyphIndex = state.type3GlyphIndexByKey.get(key);
+      if (glyphIndex == null) {
+        glyphIndex = state.type3GlyphIndexByKey.size;
+        state.type3GlyphIndexByKey.set(key, glyphIndex);
+      }
+      // Derive the bbox from the path commands, not `glyph.bbox`: the two come from different walks
+      // of the CharProc (`parseGlyphStream` vs `parseGlyphStreamPaths` in `parsePdfFonts.js`) and land
+      // in different coordinate spaces when the CharProc contains scaling cm ops, so they are not mixable.
+      const bbox = bboxFromCommands(commands);
+      return {
+        glyphIndex,
+        formMatrix: fi.type3.fontMatrix,
+        pathCommands: commands,
+        bbox,
+        paintMode: 'fill',
+        evenOdd: !!glyph.evenOdd,
+      };
+    }
+
     let loaded;
     if (state.fontGlyphsCache.has(fontObjNum)) {
       loaded = state.fontGlyphsCache.get(fontObjNum);
@@ -1074,9 +1215,14 @@ function buildResolver(fontInfoByObjNum, state) {
     if (commands.length === 0) {
       return { error: 'empty-path' };
     }
+    const upem = (typeof loaded.unitsPerEm === 'number' && loaded.unitsPerEm > 0
+      && Number.isFinite(loaded.unitsPerEm)) ? loaded.unitsPerEm : 1000;
+    const inv = 1 / upem;
+    const formMatrix = (Array.isArray(loaded.fontMatrix) && loaded.fontMatrix.length === 6)
+      ? loaded.fontMatrix : [inv, 0, 0, inv, 0, 0];
     return {
       glyphIndex,
-      unitsPerEm: loaded.unitsPerEm,
+      formMatrix,
       pathCommands: commands,
       bbox: bboxFromCommands(commands),
     };
@@ -1348,7 +1494,14 @@ async function rewriteFormContentForRegions({
       if (on == null) {
         on = allocObjNum();
         const content = await buildGlyphFormXObject(
-          on, info.pathCommands, info.unitsPerEm, info.bbox, humanReadable,
+          on, info.pathCommands, info.formMatrix, info.bbox, humanReadable,
+          {
+            paintMode: info.paintMode,
+            evenOdd: info.evenOdd,
+            lineWidth: info.lineWidth,
+            dashArray: info.dashArray,
+            dashPhase: info.dashPhase,
+          },
         );
         pushObj({ objNum: on, content });
         state.formXobjByKey.set(xobjTag, on);
@@ -1470,7 +1623,14 @@ export async function convertSinglePageForRegions({
     if (objNum == null) {
       objNum = allocObjNum();
       const content = await buildGlyphFormXObject(
-        objNum, info.pathCommands, info.unitsPerEm, info.bbox, humanReadable,
+        objNum, info.pathCommands, info.formMatrix, info.bbox, humanReadable,
+        {
+          paintMode: info.paintMode,
+          evenOdd: info.evenOdd,
+          lineWidth: info.lineWidth,
+          dashArray: info.dashArray,
+          dashPhase: info.dashPhase,
+        },
       );
       pushObj({ objNum, content });
       state.formXobjByKey.set(xobjTag, objNum);

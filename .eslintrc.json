@@ -87,6 +87,12 @@
         // E.g. `const [key, value] of Object.entries(x)` is fine, even if `key` or `value` is not used.
         "no-unused-vars":  ["error", { "argsIgnorePattern": "(^resolve$)|(^reject$)|(^event$)|(^e$)", "varsIgnorePattern": "(^key\\d?$)|(^value\\d?$)" }],
 
+        // Guards against `for…in` iterating enumerable properties on Object.prototype.
+        // No code in this project (or its dependencies) mutates Object.prototype, so the
+        // guard would be dead weight on every iteration. The real prototype-pollution
+        // attack surface is deep-merging untrusted JSON, which this rule doesn't address.
+        "guard-for-in": "off",
+
         // This rule makes sense in theory, however the *vast majority* of code it flags in this project is correct as written.
         // Either (1) all iterations of the loop are waiting on the same promise(s), so there would be no benefit to rewriting in a more complicated way, or
         // (2) the functions need to be run in a particular order due to triggering some side effect (such as drawing to a canvas). 
