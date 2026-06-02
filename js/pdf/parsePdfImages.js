@@ -764,6 +764,7 @@ export function parseIndexedColorSpace(rawCsText, objCache, objNum = null) {
           const hex = hexAfterArr[2].replace(/\s+/g, '');
           palette = new Uint8Array(hex.length / 2);
           for (let i = 0; i < palette.length; i++) palette[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+          palette = objCache.decryptObjectStringBytes(palette, objNum);
         } else {
           const litAfterArr = /^(\d+)\s*\(/.exec(afterArr);
           const litMatch = litAfterArr ? /\/Indexed[\s\S]*?\d+\s*\(/.exec(rawCsText) : null;
@@ -816,6 +817,7 @@ export function parseIndexedColorSpace(rawCsText, objCache, objNum = null) {
       const hex = hexDirectMatch[3].replace(/\s+/g, '');
       palette = new Uint8Array(hex.length / 2);
       for (let i = 0; i < palette.length; i++) palette[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+      palette = objCache.decryptObjectStringBytes(palette, objNum);
     }
   }
 
@@ -828,6 +830,7 @@ export function parseIndexedColorSpace(rawCsText, objCache, objNum = null) {
       const hex = hexRefMatch[3].replace(/\s+/g, '');
       palette = new Uint8Array(hex.length / 2);
       for (let i = 0; i < palette.length; i++) palette[i] = parseInt(hex.substring(i * 2, i * 2 + 2), 16);
+      palette = objCache.decryptObjectStringBytes(palette, objNum);
       baseObjText = objCache.getObjectText(baseObjNum);
       if (baseObjText) {
         const m = /\/(\w+)/.exec(baseObjText);
@@ -923,9 +926,7 @@ function readIndirectLiteralPalette(objCache, objNum) {
     const endSearch = Math.min(entry.offset + 5000, pdfBytes.length);
     for (let i = entry.offset; i < endSearch; i++) {
       if (pdfBytes[i] === 0x28) { // '('
-        const bytes = parsePdfLiteralString(pdfBytes, i);
-        if (objCache.encryptionKey) return objCache.decryptStringBytes(bytes, objNum);
-        return bytes;
+        return objCache.decryptObjectStringBytes(parsePdfLiteralString(pdfBytes, i), objNum);
       }
       if (pdfBytes[i] === 0x3C || pdfBytes[i] === 0x2F) return null;
     }
@@ -977,20 +978,6 @@ function readIndirectLiteralPalette(objCache, objNum) {
  * @param {number|null} objNum
  */
 function parseLiteralPalette(csText, regexMatch, objCache, objNum) {
-  // PDF literal strings inside an encrypted object's dict are themselves encrypted
-  // with the object's per-object key (spec Algorithm 3.1). Decrypt if applicable.
-  // Strings inside an object stream are an exception: the stream is decrypted as a
-  // unit, so the contained strings are already plaintext and must not be decrypted
-  // again (that double-decrypt corrupts the palette). Only type-1 (directly stored)
-  // objects carry per-object-encrypted strings.
-  const maybeDecrypt = (/** @type {Uint8Array|null} */ bytes) => {
-    const entry = objNum != null ? objCache.xrefEntries[objNum] : null;
-    if (bytes && objCache && objCache.encryptionKey && entry && entry.type === 1) {
-      return objCache.decryptStringBytes(bytes, objNum);
-    }
-    return bytes;
-  };
-
   // Try raw-byte parsing from pdfBytes to avoid TextDecoder corruption of 0x80-0x9F
   if (objNum != null) {
     const entry = objCache.xrefEntries[objNum];
@@ -1012,7 +999,7 @@ function parseLiteralPalette(csText, regexMatch, objCache, objNum) {
           }
         }
       }
-      if (parenPos >= 0) return maybeDecrypt(parsePdfLiteralString(pdfBytes, parenPos));
+      if (parenPos >= 0) return objCache.decryptObjectStringBytes(parsePdfLiteralString(pdfBytes, parenPos), objNum);
     }
   }
   // Fallback: parse from text via charCodeAt (works for compressed objects)
@@ -1051,7 +1038,7 @@ function parseLiteralPalette(csText, regexMatch, objCache, objNum) {
       bytes.push(c);
     }
   }
-  return maybeDecrypt(new Uint8Array(bytes));
+  return objCache.decryptObjectStringBytes(new Uint8Array(bytes), objNum);
 }
 
 /**
@@ -1081,9 +1068,18 @@ function classifyDeviceN(csText) {
  * @param {string} objText
  */
 function parseFilter(objText) {
+  const filterAlias = {
+    AHx: 'ASCIIHexDecode',
+    A85: 'ASCII85Decode',
+    LZW: 'LZWDecode',
+    Fl: 'FlateDecode',
+    RL: 'RunLengthDecode',
+    CCF: 'CCITTFaxDecode',
+    DCT: 'DCTDecode',
+  };
   const arrayMatch = /\/Filter\s*\[([\s\S]*?)\]/.exec(objText);
   if (arrayMatch) {
-    const filters = [...arrayMatch[1].matchAll(/\/([^\s/<>[\]]+)/g)].map((m) => m[1]);
+    const filters = [...arrayMatch[1].matchAll(/\/([^\s/<>[\]]+)/g)].map((m) => filterAlias[m[1]] || m[1]);
     for (const f of filters) {
       if (f === 'DCTDecode' || f === 'JPXDecode') return f;
     }
@@ -1092,7 +1088,7 @@ function parseFilter(objText) {
 
   // Single name
   const nameMatch = /\/Filter\s*\/(\w+)/.exec(objText);
-  if (nameMatch) return nameMatch[1];
+  if (nameMatch) return filterAlias[nameMatch[1]] || nameMatch[1];
 
   return null;
 }

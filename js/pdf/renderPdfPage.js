@@ -784,11 +784,17 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
       }
     } else if (components === 1 && colorSpace === 'Indexed' && imageInfo.palette) {
       // Indexed color space: each pixel value is an index into the PDF palette.
+      // decodeJPX MSB-aligns each decoded sample to 8 bits (sample << (8 - precision)) as a display convenience,
+      // but the palette index is the raw reconstructed sample at the component bit depth
+      // (T.800 G.1.2 inverse DC level shift yields 0..2^precision-1).
+      // For sub-8-bit JPX, recover the index by reversing that alignment.
       const palette = imageInfo.palette;
       const base = imageInfo.paletteBase || 'DeviceRGB';
       const nComp = base === 'DeviceCMYK' ? 4 : (base === 'DeviceGray' || base === 'CalGray' ? 1 : 3);
+      const jpxPrecision = decoded.precision ? decoded.precision[0] : 8;
+      const idxShift = jpxPrecision < 8 ? (8 - jpxPrecision) : 0;
       for (let i = 0; i < w * h; i++) {
-        const idx = pixels[i];
+        const idx = pixels[i] >> idxShift;
         const po = idx * nComp;
         const pi = i * 4;
         if (nComp === 4) {
@@ -4095,11 +4101,24 @@ async function decodeInlineImageBitmap(op, objCache, fallbackColorSpaces = new M
       imageInfo.palette = resolvedCS.indexedInfo.palette;
       imageInfo.paletteBase = resolvedCS.indexedInfo.base;
       imageInfo.paletteHival = resolvedCS.indexedInfo.hival;
-      // CCITT 1-bit indexed images with hival 1 carry implicit bit polarity.
-      // imageInfoToBitmap's `idx = hival - idx` under decodeInvert reproduces it.
+      // CCITTFaxDecode emits 0=black, 1=white, used directly as the index into the 2-entry fax palette.
+      // Invert (idx = hival - idx) only when entry 0 is the lighter color, so the fax's black runs land on the darker entry.
+      // A black-at-index-0 palette (e.g. <00ff>) already maps correctly.
+      // Inverting it would paint the ink in the background color, rendering the image invisible.
       if (bpc === 1 && imageCodec == null && filters.includes('CCITTFaxDecode')
           && !decode && resolvedCS.indexedInfo.hival === 1) {
-        imageInfo.decodeInvert = true;
+        const pal = resolvedCS.indexedInfo.palette;
+        const nComp = resolvedCS.indexedInfo.base === 'DeviceCMYK' ? 4
+          : (resolvedCS.indexedInfo.base === 'DeviceGray' || resolvedCS.indexedInfo.base === 'CalGray' ? 1 : 3);
+        const brightness = (o) => {
+          if (nComp === 1) return pal[o];
+          if (nComp === 4) {
+            const [r, g, b] = cmykToRgb(pal[o] / 255, pal[o + 1] / 255, pal[o + 2] / 255, pal[o + 3] / 255);
+            return 0.299 * r + 0.587 * g + 0.114 * b;
+          }
+          return 0.299 * pal[o] + 0.587 * pal[o + 1] + 0.114 * pal[o + 2];
+        };
+        if (pal && brightness(0) > brightness(nComp)) imageInfo.decodeInvert = true;
       }
     }
     // Single-input DeviceN reduces to a 1-D tint LUT, same as Separation.
@@ -4797,9 +4816,30 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       const annotText = objCache.getObjectText(annotRef);
       if (!annotText) continue;
 
-      const rectMatch = /\/Rect\s*\[\s*([\d.\-+e]+)\s+([\d.\-+e]+)\s+([\d.\-+e]+)\s+([\d.\-+e]+)\s*\]/.exec(annotText);
-      if (!rectMatch) continue;
-      const rect = [Number(rectMatch[1]), Number(rectMatch[2]), Number(rectMatch[3]), Number(rectMatch[4])];
+      let rectArrText = null;
+      const rectInlineMatch = /\/Rect\s*(\[[^\]]*\])/.exec(annotText);
+      if (rectInlineMatch) {
+        rectArrText = rectInlineMatch[1];
+      } else {
+        const rectRefMatch = /\/Rect\s+(\d+)\s+\d+\s+R/.exec(annotText);
+        const rectObjText = rectRefMatch ? objCache.getObjectText(Number(rectRefMatch[1])) : null;
+        const rectObjArr = rectObjText ? /(\[[^\]]*\])/.exec(rectObjText) : null;
+        if (rectObjArr) rectArrText = rectObjArr[1];
+      }
+      if (!rectArrText) continue;
+      const rect = [];
+      const rectTokRe = /(\d+)\s+\d+\s+R|(-?[\d.]+(?:[eE][-+]?\d+)?)/g;
+      let rectTok;
+      while ((rectTok = rectTokRe.exec(rectArrText)) && rect.length < 4) {
+        if (rectTok[1] !== undefined) {
+          const numText = objCache.getObjectText(Number(rectTok[1]));
+          const numMatch = numText ? /(-?[\d.]+(?:[eE][-+]?\d+)?)/.exec(numText) : null;
+          rect.push(numMatch ? Number(numMatch[1]) : NaN);
+        } else {
+          rect.push(Number(rectTok[2]));
+        }
+      }
+      if (rect.length < 4 || rect.some(Number.isNaN)) continue;
       // /Rect corners may be stored in either order, so normalize to lower-left + size.
       const rectX0 = Math.min(rect[0], rect[2]);
       const rectY0 = Math.min(rect[1], rect[3]);
@@ -4830,8 +4870,17 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         || /^<<[\s\S]*?\/N\s+(\d+)\s+\d+\s+R/.exec(apDictText);
       if (apDirectMatch) {
         apObjNum = Number(apDirectMatch[1]);
+        // /N may be an indirect ref to a sub-state dict (checkbox/radio) rather than the appearance stream.
+        // That dict has no /BBox, so follow /AS to the state's stream. A real appearance stream keeps apObjNum unchanged.
+        const nObjText = objCache.getObjectText(apObjNum);
+        if (nObjText && !/\/BBox/.test(nObjText)) {
+          const asMatch = /\/AS\s*\/(\w+)/.exec(annotText);
+          const currentState = asMatch ? asMatch[1] : 'Off';
+          const stateRefMatch = new RegExp(`\\/${currentState}\\s+(\\d+)\\s+\\d+\\s+R`).exec(nObjText);
+          if (stateRefMatch) apObjNum = Number(stateRefMatch[1]);
+        }
       } else {
-        // Sub-state dict: /AP << /N << /Yes 31 0 R /Off 32 0 R >> >>
+        // Inline sub-state dict: /AP << /N << /Yes 31 0 R /Off 32 0 R >> >>
         const apDictMatch = /\/AP\s*<<[\s\S]*?\/N\s*<<([\s\S]*?)>>/.exec(apDictText)
           || /^<<[\s\S]*?\/N\s*<<([\s\S]*?)>>/.exec(apDictText);
         if (apDictMatch) {

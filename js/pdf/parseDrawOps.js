@@ -452,7 +452,7 @@ export function parseDrawOps(
           textRenderMode,
           strokeColor,
           strokeAlpha,
-          lineWidth,
+          lineWidth: lineWidth * Math.sqrt(Math.abs(ctm[0] * ctm[3] - ctm[1] * ctm[2])),
         };
         if (!fillColorExplicit) textOp.fillColorInherited = true;
         if (!fillAlphaExplicit) textOp.fillAlphaInherited = true;
@@ -573,7 +573,7 @@ export function parseDrawOps(
             textRenderMode,
             strokeColor,
             strokeAlpha,
-            lineWidth,
+            lineWidth: lineWidth * Math.sqrt(Math.abs(ctm[0] * ctm[3] - ctm[1] * ctm[2])),
           };
           if (!fillColorExplicit) textOp.fillColorInherited = true;
           if (!fillAlphaExplicit) textOp.fillAlphaInherited = true;
@@ -689,7 +689,7 @@ export function parseDrawOps(
             textRenderMode,
             strokeColor,
             strokeAlpha,
-            lineWidth,
+            lineWidth: lineWidth * Math.sqrt(Math.abs(ctm[0] * ctm[3] - ctm[1] * ctm[2])),
           };
           if (isNonEmbedded && !sc.applied) {
             opObj.pdfGlyphWidth = rawWidth;
@@ -809,7 +809,7 @@ export function parseDrawOps(
             textRenderMode,
             strokeColor,
             strokeAlpha,
-            lineWidth,
+            lineWidth: lineWidth * Math.sqrt(Math.abs(ctm[0] * ctm[3] - ctm[1] * ctm[2])),
           };
           if (isNonEmbedded && !sc.applied) {
             opObj.pdfGlyphWidth = rawWidth;
@@ -943,7 +943,7 @@ export function parseDrawOps(
           textRenderMode,
           strokeColor,
           strokeAlpha,
-          lineWidth,
+          lineWidth: lineWidth * Math.sqrt(Math.abs(ctm[0] * ctm[3] - ctm[1] * ctm[2])),
         };
         if (isNonEmbedded && !sc.applied) opObj.pdfGlyphWidth = rawWidth;
         if (!fillColorExplicit) opObj.fillColorInherited = true;
@@ -1036,7 +1036,7 @@ export function parseDrawOps(
           textRenderMode,
           strokeColor,
           strokeAlpha,
-          lineWidth,
+          lineWidth: lineWidth * Math.sqrt(Math.abs(ctm[0] * ctm[3] - ctm[1] * ctm[2])),
         };
         if (isNonEmbedded && !sc.applied) opObj2.pdfGlyphWidth = rawWidth;
         if (!fillColorExplicit) opObj2.fillColorInherited = true;

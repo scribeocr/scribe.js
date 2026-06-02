@@ -47,7 +47,7 @@ export function decodeJPX(data, reduceLevels = 0) {
   }
 
   return {
-    width, height, components, pixelData,
+    width, height, components, pixelData, precision: jpx.componentsPrecision,
   };
 }
 
@@ -707,6 +707,9 @@ class JpxImage {
       this.height = this.tiles[0].top + this.tiles[0].height;
     }
     this.componentsCount = context.SIZ.Csiz;
+    // Per-component bit depth (SIZ Ssiz). Decoded samples are MSB-aligned to 8 bits,
+    // so a consumer needing raw values (e.g. an Indexed palette index) must reverse that alignment.
+    this.componentsPrecision = context.components ? context.components.map((c) => c.precision) : [];
   }
 }
 

@@ -1161,6 +1161,42 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
       glyphs.push(newGlyph);
     }
 
+    // Pull in any component glyphs a composite references that are not otherwise in the subset
+    // (e.g. an arrow whose gid references an unmapped base glyph plus a transform).
+    // Otherwise the remap step below flattens the glyph to a simple outline and mishandles the component transform,
+    // rendering it vertically flipped. Keeping it composite lets the canvas font rasterizer apply the transform itself.
+    for (let i = glyphs.length - 1; i >= 1; i--) {
+      const g = glyphs[i];
+      if (!g.isComposite || !g.components) continue;
+      for (const comp of g.components) {
+        const cgid = comp.glyphIndex;
+        if (origGidToNewIdx.has(cgid)) continue;
+        const cg = fontShell.glyphs.get(cgid);
+        if (!cg || !cg.path) continue;
+        origGidToNewIdx.set(cgid, glyphs.length);
+        const compGlyph = new opentype.Glyph({
+          name: `glyph_${cgid}`,
+          advanceWidth: cg.advanceWidth || head.unitsPerEm,
+          path: cg.path,
+        });
+        if (cg.points) {
+          compGlyph.points = cg.points;
+          if (cg._xMin !== undefined) {
+            compGlyph._xMin = cg._xMin;
+            compGlyph._yMin = cg._yMin;
+            compGlyph._xMax = cg._xMax;
+            compGlyph._yMax = cg._yMax;
+            compGlyph.leftSideBearing = cg._xMin;
+          }
+        }
+        if (cg.isComposite && cg.components) {
+          compGlyph.isComposite = true;
+          compGlyph.components = cg.components;
+        }
+        glyphs.push(compGlyph);
+      }
+    }
+
     // Remap composite component GIDs from original to new font indices.
     // If any component is missing from the new font, fall back to simple glyph.
     for (let i = 1; i < glyphs.length; i++) {
@@ -1181,6 +1217,12 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
       } else {
         delete g.isComposite;
         delete g.components;
+        // Drop the composite's stale bbox so the glyf writer recomputes it from the
+        // flattened contour points (the inherited bbox may not enclose them).
+        g._xMin = undefined;
+        g._yMin = undefined;
+        g._xMax = undefined;
+        g._yMax = undefined;
       }
     }
 

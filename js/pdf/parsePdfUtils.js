@@ -1673,6 +1673,21 @@ export class ObjectCache {
   }
 
   /**
+   * Decrypt the bytes of a string value read from an object's body.
+   * @param {Uint8Array|null} bytes - Raw string bytes extracted from the object body
+   * @param {number|null} objNum - Object number the string was read from
+   * @returns {Uint8Array|null} the decrypted bytes, or `bytes` unchanged when decryption does not apply
+   */
+  decryptObjectStringBytes(bytes, objNum) {
+    if (!bytes || !this.encryptionKey || objNum == null) return bytes;
+    const entry = this.xrefEntries[objNum];
+    // Only a directly-stored (type-1) object's strings carry a per-object key (spec Algorithm 3.1).
+    // A type-2 object-stream string is already plaintext from the stream decrypt, so re-decrypting corrupts it.
+    if (entry && entry.type === 1) return this.decryptStringBytes(bytes, objNum);
+    return bytes;
+  }
+
+  /**
    * Find a PDF string value for a given dict key in an object's raw bytes,
    * decrypt it, and return the result. Works directly with raw bytes to avoid
    * TextDecoder('latin1') Windows-1252 corruption of encrypted byte values.
