@@ -542,7 +542,10 @@ export async function rebuildPdfSubset({
   }
 
   const newXrefOffset = byteLen;
-  const totalSize = Math.max(nextObjNum, ...allOutputObjects.map((o) => o.objNum + 1));
+  let totalSize = nextObjNum;
+  for (const o of allOutputObjects) {
+    if (o.objNum + 1 > totalSize) totalSize = o.objNum + 1;
+  }
   const xrefStr = buildFullXrefAndTrailer(xrefEntryList, totalSize, `${catalogObjNum} 0 R`, newXrefOffset);
   parts.push(xrefStr);
   byteLen += xrefStr.length;
@@ -586,7 +589,12 @@ export async function subsetPdf(basePdfData, pageIndices) {
     }
   }
 
-  const startingNextObjNum = Math.max(...Object.keys(xrefEntries).map(Number)) + 1;
+  let startingNextObjNum = 0;
+  for (const k in xrefEntries) {
+    const n = Number(k);
+    if (n > startingNextObjNum) startingNextObjNum = n;
+  }
+  startingNextObjNum += 1;
 
   return rebuildPdfSubset({
     pdfBytes,

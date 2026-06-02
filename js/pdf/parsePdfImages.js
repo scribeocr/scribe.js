@@ -312,12 +312,10 @@ export function parseImageObject(objText, objNum, objCache) {
     if (indirectFilterMatch) {
       const filterObjText = objCache.getObjectText(Number(indirectFilterMatch[1]));
       if (filterObjText) {
-        filter = parseFilter(filterObjText);
-        // The referenced object may just contain the filter name as text
-        if (!filter) {
-          const nameMatch = /\/(\w+Decode)\b/.exec(filterObjText);
-          if (nameMatch) filter = nameMatch[1];
-        }
+        // getObjectText returns the bare /Filter value (a name or array) with no /Filter key.
+        // Re-prefix one so parseFilter picks the image codec (DCTDecode/JPXDecode) from a chain,
+        // not its leading transport filter.
+        filter = parseFilter(`/Filter ${filterObjText}`);
       }
     }
   }
@@ -981,8 +979,13 @@ function readIndirectLiteralPalette(objCache, objNum) {
 function parseLiteralPalette(csText, regexMatch, objCache, objNum) {
   // PDF literal strings inside an encrypted object's dict are themselves encrypted
   // with the object's per-object key (spec Algorithm 3.1). Decrypt if applicable.
+  // Strings inside an object stream are an exception: the stream is decrypted as a
+  // unit, so the contained strings are already plaintext and must not be decrypted
+  // again (that double-decrypt corrupts the palette). Only type-1 (directly stored)
+  // objects carry per-object-encrypted strings.
   const maybeDecrypt = (/** @type {Uint8Array|null} */ bytes) => {
-    if (bytes && objCache && objCache.encryptionKey && objNum != null) {
+    const entry = objNum != null ? objCache.xrefEntries[objNum] : null;
+    if (bytes && objCache && objCache.encryptionKey && entry && entry.type === 1) {
       return objCache.decryptStringBytes(bytes, objNum);
     }
     return bytes;

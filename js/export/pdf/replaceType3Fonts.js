@@ -335,7 +335,12 @@ export async function replaceType3FontsWithCorrected({
     pathHashByName.set(objNum, m);
   }
 
-  let nextObjNum = Math.max(...Object.keys(xrefEntries).map(Number)) + 1;
+  let nextObjNum = 0;
+  for (const k in xrefEntries) {
+    const n = Number(k);
+    if (n > nextObjNum) nextObjNum = n;
+  }
+  nextObjNum += 1;
 
   /** @type {Map<number, { fontDictObjNum: number, fontTag: string }>} */
   const replacementByFontObjNum = new Map();
@@ -521,8 +526,13 @@ export async function replaceType3FontsWithCorrected({
   }
 
   const newXrefOffset = pdfBytes.length + appendByteLen;
-  const allLiveObjNums = newObjects.map((o) => o.objNum);
-  const totalSize = Math.max(nextObjNum, ...allLiveObjNums.map((n) => n + 1), ...[...freedObjNums].map((n) => n + 1));
+  let totalSize = nextObjNum;
+  for (const o of newObjects) {
+    if (o.objNum + 1 > totalSize) totalSize = o.objNum + 1;
+  }
+  for (const n of freedObjNums) {
+    if (n + 1 > totalSize) totalSize = n + 1;
+  }
 
   const trailerStr = buildIncrementalXrefAndTrailer(
     newXrefEntries, totalSize, xrefOffset, rootRef, newXrefOffset, [...freedObjNums],

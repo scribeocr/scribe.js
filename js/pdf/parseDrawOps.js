@@ -1,7 +1,7 @@
 import { tokenizeContentStream } from './parsePdfDoc.js';
 import { decodePdfName } from './parsePdfUtils.js';
 import { cmykToRgb, tintComponentsToRGB, xyzToSRGB } from './pdfColorFunctions.js';
-import { cidCodepoint, isCombiningOrIndicMark } from './fonts/convertFontToOTF.js';
+import { cidCodepoint, isCombiningOrIndicMark, isDefaultIgnorable } from './fonts/convertFontToOTF.js';
 
 /**
  * Multiply two 3x3 affine matrices represented as 6-element arrays [a,b,c,d,e,f].
@@ -502,7 +502,7 @@ export function parseDrawOps(
     const isDup = hex === lastDrawnHex && lastDrawnFontTag !== currentFontTag && lastDrawnHex.length > 0;
     let i = 0;
     while (i < hex.length) {
-      let charCode;
+      let charCode = 0;
       let hexDigits = 4;
       if (csRanges && i + 1 < hex.length) {
         const byte0 = parseInt(hex.substring(i, i + 2), 16);
@@ -542,11 +542,15 @@ export function parseDrawOps(
       }
       const glyphWidth = (currentFont.widths.get(charCode) ?? currentFont.defaultWidth) / 1000 * fontSize;
       if (!isDup) {
-        const unicode = currentFont.toUnicode.get(charCode) || String.fromCharCode(charCode);
+        const tuStr = currentFont.toUnicode.get(charCode);
+        const encStr = currentFont.encodingUnicode?.get(charCode);
+        // Draw nothing rather than fabricating String.fromCharCode(charCode) for a glyph we cannot render.
+        // usePUA false with an embedded CID fontFile and no ToUnicode means the rebuild failed, so the code is a glyph index, not Unicode.
+        const embeddedGlyphUnavailable = !usePUA && !tuStr && !encStr && !!currentFont.type0?.fontFile && !(currentFont.toUnicode?.size);
         const collided = cidCollisionMap.get(currentFontTag)?.has(charCode);
         const drawText = usePUA
-          ? String.fromCodePoint(cidCodepoint(collided ? undefined : currentFont.toUnicode?.get(charCode), charCode).codepoint)
-          : (currentFont.encodingUnicode?.get(charCode) || unicode);
+          ? String.fromCodePoint(cidCodepoint(collided ? undefined : tuStr, charCode).codepoint)
+          : (embeddedGlyphUnavailable ? '' : (encStr || tuStr || String.fromCharCode(charCode)));
         if (registeredName && textRenderMode !== 3 && drawText && drawText.trim().length > 0) {
           const trm = matMul([fontSize * tz / 100, 0, 0, fontSize, 0, trise], matMul(tm, ctm));
           const sc = applySmallCaps(drawText, trm, !!currentFont.smallCaps);
@@ -652,9 +656,17 @@ export function parseDrawOps(
         // Use cidCodepoint() to select real Unicode or PUA — must match the font builder.
         // ToUnicode CMap maps charCodes (not CIDs) to Unicode, so use charCode for lookup.
         const collided = cidCollisionMap.get(currentFontTag)?.has(cid);
+        const tuStr = currentFont.toUnicode?.get(charCode);
+        // For a glyph from an embedded CID font we could not rebuild, draw nothing (advance only),
+        // rather than fabricating String.fromCharCode(charCode), as the empty embedded glyph would.
+        // A successful no-ToUnicode embedded rebuild keys its glyphs in the PUA and sets usePUA,
+        // so reaching here with usePUA false (an embedded fontFile, no ToUnicode)
+        // means the code is a glyph index into a font we cannot render, not Unicode.
+        const embeddedGlyphUnavailable = !usePUA && !tuStr
+          && !!currentFont.type0?.fontFile && !(currentFont.toUnicode?.size);
         const unicode = usePUA
-          ? String.fromCodePoint(cidCodepoint(collided ? undefined : currentFont.toUnicode?.get(charCode), cid).codepoint)
-          : (currentFont.toUnicode?.get(charCode) || String.fromCharCode(charCode));
+          ? String.fromCodePoint(cidCodepoint(collided ? undefined : tuStr, cid).codepoint)
+          : (embeddedGlyphUnavailable ? '' : (tuStr || String.fromCharCode(charCode)));
         if (unicode && unicode.trim().length > 0) {
           const isNonEmbedded = !!(currentFont.type0 && !currentFont.type0.fontFile);
           const sc = applySmallCaps(unicode, trm, isNonEmbedded && !!currentFont.smallCaps);
@@ -764,9 +776,17 @@ export function parseDrawOps(
         // Use cidCodepoint() to select real Unicode or PUA — must match the font builder.
         // ToUnicode CMap maps charCodes (not CIDs) to Unicode, so use charCode for lookup.
         const collided = cidCollisionMap.get(currentFontTag)?.has(cid);
+        const tuStr = currentFont.toUnicode?.get(charCode);
+        // For a glyph from an embedded CID font we could not rebuild, draw nothing (advance only),
+        // rather than fabricating String.fromCharCode(charCode), as the empty embedded glyph would.
+        // A successful no-ToUnicode embedded rebuild keys its glyphs in the PUA and sets usePUA,
+        // so reaching here with usePUA false (an embedded fontFile, no ToUnicode)
+        // means the code is a glyph index into a font we cannot render, not Unicode.
+        const embeddedGlyphUnavailable = !usePUA && !tuStr
+          && !!currentFont.type0?.fontFile && !(currentFont.toUnicode?.size);
         const unicode = usePUA
-          ? String.fromCodePoint(cidCodepoint(collided ? undefined : currentFont.toUnicode?.get(charCode), cid).codepoint)
-          : (currentFont.toUnicode?.get(charCode) || String.fromCharCode(charCode));
+          ? String.fromCodePoint(cidCodepoint(collided ? undefined : tuStr, cid).codepoint)
+          : (embeddedGlyphUnavailable ? '' : (tuStr || String.fromCharCode(charCode)));
         if (unicode && unicode.trim().length > 0) {
           const isNonEmbedded = !!(currentFont.type0 && !currentFont.type0.fontFile);
           const sc = applySmallCaps(unicode, trm, isNonEmbedded && !!currentFont.smallCaps);
@@ -894,7 +914,7 @@ export function parseDrawOps(
           {
             const uniStr = currentFont.toUnicode.get(charCode);
             const firstCp = uniStr ? uniStr.codePointAt(0) : 0;
-            const needsPUA = uniStr && ([...uniStr].length > 1 || isCombiningOrIndicMark(firstCp));
+            const needsPUA = uniStr && ([...uniStr].length > 1 || isCombiningOrIndicMark(firstCp) || isDefaultIgnorable(firstCp));
             if (needsPUA) {
               drawText = String.fromCharCode(0xE000 + charCode);
             } else {
@@ -987,7 +1007,7 @@ export function parseDrawOps(
           {
             const uniStr = currentFont.toUnicode.get(charCode);
             const firstCp = uniStr ? uniStr.codePointAt(0) : 0;
-            const needsPUA = uniStr && ([...uniStr].length > 1 || isCombiningOrIndicMark(firstCp));
+            const needsPUA = uniStr && ([...uniStr].length > 1 || isCombiningOrIndicMark(firstCp) || isDefaultIgnorable(firstCp));
             if (needsPUA) {
               drawText = String.fromCharCode(0xE000 + charCode);
             } else {

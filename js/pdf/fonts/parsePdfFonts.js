@@ -7,7 +7,7 @@ import {
 import {
   win1252Chars, macRomanChars, aglLookup, unicodeToAGL, wingdingsToUnicode, symbolToUnicode, dingbatsGlyphMap, dingbatsEncoding,
 } from './standardEncodings.js';
-import { applyStandardFontWidths, getDingbatsGlyphWidth } from './standardFontMetrics.js';
+import { applyStandardFontWidths, getDingbatsGlyphWidth, getStandardLigatureWidth } from './standardFontMetrics.js';
 import { parseCFFCharset } from './convertFontToOTF.js';
 import { getCIDToUnicodeMap } from './cidToUnicode.js';
 import { standardNames } from '../../font-parser/src/encoding.js';
@@ -888,6 +888,15 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         } catch (_e) {
           // TextDecoder('big5') not available — text will fall back to raw charCodes
         }
+        // Map the single-byte codes to their Adobe-CNS1 half-width Latin CIDs.
+        // ETen-B5-H sends 0x20-0x7E to that block (space=13648, so CID = 13616 + code), not the CID 1-95 block the UTF-16 branch uses.
+        // Without it the renderer uses the byte as the CID,
+        // whose codepoint never matches the one the font builder keyed the real glyph under, so the glyph is not found.
+        if (!charCodeToCID) charCodeToCID = new Map();
+        for (let code = 0x20; code <= 0x7E; code++) {
+          if (!charCodeToCID.has(code)) charCodeToCID.set(code, 13616 + code);
+          if (code > 0x20 && !toUnicode.has(code)) toUnicode.set(code, String.fromCharCode(code));
+        }
       }
     }
 
@@ -1488,6 +1497,16 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
             const w = unicodeToWidth.get(unicodeStr.charAt(0));
             if (w !== undefined) widths.set(code, w);
           }
+        }
+      }
+
+      // Override each fi/fl ligature code's width with its AFM ligature width.
+      // applyStandardFontWidths can only key the WinAnsi glyph set, which omits the fi/fl ligatures,
+      // so a code resolving to one kept the width of the WinAnsi glyph that shares its code.
+      if (avgWidth !== null) {
+        for (const [code, glyphName] of charCodeToGlyphName) {
+          const w = getStandardLigatureWidth(baseName, glyphName);
+          if (w !== undefined) widths.set(code, w);
         }
       }
     }

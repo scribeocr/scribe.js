@@ -417,6 +417,42 @@ export function getDingbatsGlyphWidth(glyphName) {
   return dingbatsGlyphWidths[glyphName];
 }
 
+// TODO: This is a workaround due to issues with using WinAnsiEncoding for the advance lookups.
+// A more systematic solution should be implemented in the future.
+// fi/fl ligature advance widths for the Base14 fonts, in 1000-em units.
+// The fi/fl ligatures are absent from WinAnsiEncoding, so the charCode-indexed width tables above cannot carry them.
+// A base-14 font reaches them through its own encoding (StandardEncoding puts fi/fl at 174/175, where WinAnsi has registered/macron),
+// so their advance must be looked up by glyph name instead.
+/** @type {Map<string, Record<string, number>>} */
+const standardLigatureWidths = new Map([
+  ['Times-Roman', { fi: 556, fl: 556 }],
+  ['Times-Bold', { fi: 556, fl: 556 }],
+  ['Times-Italic', { fi: 500, fl: 500 }],
+  ['Times-BoldItalic', { fi: 556, fl: 556 }],
+  ['Helvetica', { fi: 500, fl: 500 }],
+  ['Helvetica-Bold', { fi: 556, fl: 556 }],
+  ['Helvetica-Oblique', { fi: 500, fl: 500 }],
+  ['Helvetica-BoldOblique', { fi: 556, fl: 556 }],
+  ['Courier', { fi: 600, fl: 600 }],
+  ['Courier-Bold', { fi: 600, fl: 600 }],
+  ['Courier-Oblique', { fi: 600, fl: 600 }],
+  ['Courier-BoldOblique', { fi: 600, fl: 600 }],
+]);
+
+/**
+ * Get the AFM advance width of a ligature glyph for a Base14 font.
+ *
+ * @param {string} baseName - PDF font base name
+ * @param {string} glyphName - ligature glyph name (`fi` or `fl`)
+ * @returns {number | undefined} the width in 1000-em units, or undefined if not a Base14 ligature
+ */
+export function getStandardLigatureWidth(baseName, glyphName) {
+  const stdName = normalizeBase14Name(baseName);
+  if (!stdName) return undefined;
+  const table = standardLigatureWidths.get(stdName);
+  return table ? table[glyphName] : undefined;
+}
+
 /**
  * The 14 canonical Base14 PDF font names.
  */

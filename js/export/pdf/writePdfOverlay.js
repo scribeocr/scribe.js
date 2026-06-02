@@ -79,8 +79,13 @@ export async function overlayPdfText({
     ? pageArr.filter((i) => i >= 0 && i < pages.length)
     : Array.from({ length: pages.length }, (_, i) => i);
 
-  // Step 2: Determine next available object number
-  let nextObjNum = Math.max(...Object.keys(xrefEntries).map(Number)) + 1;
+  // Step 2: Determine next available object number.
+  let nextObjNum = 0;
+  for (const k in xrefEntries) {
+    const n = Number(k);
+    if (n > nextObjNum) nextObjNum = n;
+  }
+  nextObjNum += 1;
 
   // Step 3: Create font references starting at nextObjNum when writing text overlay.
   const needsOcrFonts = !!ocrArr?.some((p) => p?.lines?.length > 0) && textMode !== 'annot';
