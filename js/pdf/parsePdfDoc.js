@@ -5,7 +5,7 @@ import {
 import {
   findXrefOffset, parseXref, ObjectCache,
   bytesToLatin1, getPageObjects, getPageContentStream, tokenizeContentStream,
-  findFormXObjects, extractDict, decodePdfName,
+  findFormXObjects, extractDict, decodePdfName, parseFormMatrix,
 } from './parsePdfUtils.js';
 import { parsePageFonts } from './fonts/parsePdfFonts.js';
 import { parsePagePaths } from './parsePdfPaths.js';
@@ -267,10 +267,7 @@ function extractFormXObjectText(containerObjText, containerTokens, parentFonts, 
     const mergedExtGStates = formExtGStates.size > 0
       ? new Map([...(parentExtGStates || []), ...formExtGStates])
       : parentExtGStates;
-    const matrixMatch = /\/Matrix\s*\[\s*([\d.\-\s]+)\]/.exec(formObjText);
-    const formMatrix = matrixMatch
-      ? matrixMatch[1].trim().split(/\s+/).map(Number)
-      : [1, 0, 0, 1, 0, 0];
+    const formMatrix = parseFormMatrix(formObjText) || [1, 0, 0, 1, 0, 0];
     const formCtm = multiplyMatrices(formMatrix, doOp.ctm);
     const formTokens = tokenizeContentStream(formContentStream);
     const formChars = executeTextOperators(

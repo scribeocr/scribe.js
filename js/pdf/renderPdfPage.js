@@ -1296,19 +1296,31 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
 
   // Apply color key mask: pixels whose component values all fall within the
   // specified [min, max] ranges become fully transparent (PDF spec §8.9.6.4).
+  // The compared values are the source samples before palette lookup (the index for Indexed), read at the image's bit depth.
+  // Sub-byte depths pack samples MSB-first with each row padded to a byte.
   if (colorKeyMask && rgbaData) {
-    const nPairs = colorKeyMask.length / 2;
-    const components = Math.floor(imageData.length / (width * height));
-    for (let i = 0; i < width * height; i++) {
-      let masked = true;
-      for (let c = 0; c < nPairs; c++) {
-        const val = imageData[i * components + c];
-        if (val < colorKeyMask[c * 2] || val > colorKeyMask[c * 2 + 1]) {
-          masked = false;
-          break;
+    const nComp = colorKeyMask.length / 2;
+    const rowBytes = Math.ceil(width * nComp * bitsPerComponent / 8);
+    const sampleMax = (1 << bitsPerComponent) - 1;
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        let masked = true;
+        for (let c = 0; c < nComp; c++) {
+          let val;
+          if (bitsPerComponent === 8) {
+            val = imageData[y * rowBytes + x * nComp + c];
+          } else {
+            const bitOff = (x * nComp + c) * bitsPerComponent;
+            const byteIdx = y * rowBytes + (bitOff >> 3);
+            val = (imageData[byteIdx] >> (8 - (bitOff & 7) - bitsPerComponent)) & sampleMax;
+          }
+          if (val < colorKeyMask[c * 2] || val > colorKeyMask[c * 2 + 1]) {
+            masked = false;
+            break;
+          }
         }
+        if (masked) rgbaData[(y * width + x) * 4 + 3] = 0;
       }
-      if (masked) rgbaData[i * 4 + 3] = 0;
     }
   }
 
@@ -1360,6 +1372,28 @@ async function imageMaskToBitmap(imageInfo, fillColor, objCache) {
   }
 
   return ca.createImageBitmapFromImageData(new ImageData(rgbaData, width, height));
+}
+
+/**
+ * Read a Form XObject's own /Matrix (defaults to identity).
+ * Matches only the dict's top-level /Matrix. A /Matrix nested in the form's
+ * /Resources (e.g. a shading pattern's matrix) must not be mistaken for it.
+ * @param {string} objText - the form or appearance dict text
+ * @returns {number[]} a 6-element matrix
+ */
+function parseFormMatrix(objText) {
+  for (let i = 0, depth = 0; i < objText.length - 1; i++) {
+    const c2 = objText[i] + objText[i + 1];
+    if (c2 === '<<') { depth += 1; i += 1; } else if (c2 === '>>') { depth -= 1; i += 1; } else if (depth === 1 && objText.startsWith('/Matrix', i)) {
+      const m = /\/Matrix\s*\[\s*([\d.\seE+-]+)\]/.exec(objText.slice(i));
+      if (m) {
+        const parsed = m[1].trim().split(/\s+/).map(Number);
+        if (parsed.length === 6 && parsed.every((n) => Number.isFinite(n))) return parsed;
+      }
+      break;
+    }
+  }
+  return [1, 0, 0, 1, 0, 0];
 }
 
 /**
@@ -1473,6 +1507,10 @@ function applyFormTransform(op, composedBase) {
  * @param {Map<string, Set<number>>} [cidCollisionMap]
  * @param {string} [inheritedFillColor='black']
  * @param {string} [inheritedStrokeColor='rgb(0,0,0)']
+ * @param {number} [inheritedFillAlpha=1]
+ * @param {number} [inheritedStrokeAlpha=1]
+ * @param {{nextId: number, registry: Map<number, TransparencyGroupAttrs>}|null} [groupContext]
+ * @param {number|null} [currentGroupId]
  * @returns {Promise<Array<DrawOp>>}
  */
 async function flattenDrawOps(
@@ -1481,6 +1519,7 @@ async function flattenDrawOps(
   formResourceCache = new Map(), depth = 0, offOCGs = new Set(),
   cidCollisionMap = new Map(),
   inheritedFillColor = 'black', inheritedStrokeColor = 'rgb(0,0,0)',
+  inheritedFillAlpha = 1, inheritedStrokeAlpha = 1,
   groupContext = null, currentGroupId = null,
 ) {
   /** @type {Array<DrawOp>} */
@@ -1507,6 +1546,10 @@ async function flattenDrawOps(
       if (op.overprint) imgOp.overprint = true;
       if (op.blendMode) imgOp.blendMode = op.blendMode;
       if (op.tilingPattern) imgOp.tilingPattern = op.tilingPattern;
+      if (op.fillColorInherited) imgOp.fillColorInherited = true;
+      if (op.fillAlphaInherited) imgOp.fillAlphaInherited = true;
+      if (op.strokeColorInherited) imgOp.strokeColorInherited = true;
+      if (op.strokeAlphaInherited) imgOp.strokeAlphaInherited = true;
       flattened.push(imgOp);
       continue;
     }
@@ -1521,11 +1564,8 @@ async function flattenDrawOps(
     // Skip forms hidden by Optional Content
     if (offOCGs.size > 0 && isFormOCHidden(formObjText, offOCGs, objCache)) continue;
 
-    // Get the Form's /Matrix (defaults to identity)
-    const matrixMatch = /\/Matrix\s*\[\s*([\d.\-\s]+)\]/.exec(formObjText);
-    const formMatrix = matrixMatch
-      ? matrixMatch[1].trim().split(/\s+/).map(Number)
-      : [1, 0, 0, 1, 0, 0];
+    // Get the Form's own /Matrix (defaults to identity).
+    const formMatrix = parseFormMatrix(formObjText);
 
     // Compose: outerCTM * formMatrix
     const composedBase = matMul(formMatrix, op.ctm);
@@ -1693,6 +1733,8 @@ async function flattenDrawOps(
     // chain propagates through nested forms.
     const formInheritedFill = op.fillColorInherited ? inheritedFillColor : op.fillColor;
     const formInheritedStroke = op.strokeColorInherited ? inheritedStrokeColor : (op.strokeColor || inheritedStrokeColor);
+    const formInheritedFillAlpha = op.fillAlphaInherited ? inheritedFillAlpha : (op.fillAlpha != null ? op.fillAlpha : 1);
+    const formInheritedStrokeAlpha = op.strokeAlphaInherited ? inheritedStrokeAlpha : (op.strokeAlpha != null ? op.strokeAlpha : 1);
 
     // Per-call expansion (no expandedOps cache): the cached `rawFormDrawOps` carry
     // inheritance markers so the same parsed form can be reused across callers,
@@ -1773,13 +1815,24 @@ async function flattenDrawOps(
     const expandedFormOps = [];
     for (const innerOp of cached.rawFormDrawOps) {
       if (innerOp.type === 'image') {
+        const nestedGroupIdStart = groupContext ? groupContext.nextId : 0;
         const nestedFlattened = await flattenDrawOps(
           [innerOp], images, forms, objCache, effectiveFonts, effectiveRegistered,
           innerPrefix, pageIndex, effectiveSymbol, effectiveCidPUA, effectiveExtGStates, effectiveRaw,
           formResourceCache, depth + 1, offOCGs, effectiveCidCollisionMap,
           formInheritedFill, formInheritedStroke,
+          formInheritedFillAlpha, formInheritedStrokeAlpha,
           groupContext, innerGroupId,
         );
+        // Compose this form's transform onto the SMask of every transparency group registered while flattening this child op.
+        // applyFormTransform below re-composes each returned content op with composedBase,
+        // but a group's SMask lives in the registry rather than on an op, so applyFormTransform never reaches it.
+        if (groupContext) {
+          for (let gid = nestedGroupIdStart; gid < groupContext.nextId; gid++) {
+            const ga = groupContext.registry.get(gid);
+            if (ga && ga.smask) ga.smask = transformSmaskCtm(ga.smask, composedBase);
+          }
+        }
         for (const nestedOp of nestedFlattened) expandedFormOps.push(nestedOp);
       } else {
         expandedFormOps.push(innerOp);
@@ -1833,8 +1886,8 @@ async function flattenDrawOps(
           if (op.fillAlpha != null) transformed.fillAlpha = ownFill * op.fillAlpha;
           if (op.strokeAlpha != null) transformed.strokeAlpha = ownStroke * op.strokeAlpha;
         } else {
-          if (op.fillAlpha < 1 && fillAlphaInherited) transformed.fillAlpha = op.fillAlpha;
-          if (op.strokeAlpha < 1 && strokeAlphaInherited) transformed.strokeAlpha = op.strokeAlpha;
+          if (fillAlphaInherited && formInheritedFillAlpha < 1) transformed.fillAlpha = formInheritedFillAlpha;
+          if (strokeAlphaInherited && formInheritedStrokeAlpha < 1) transformed.strokeAlpha = formInheritedStrokeAlpha;
         }
         if (op.blendMode && !transformed.blendMode) transformed.blendMode = op.blendMode;
       }
@@ -3748,6 +3801,7 @@ async function renderTilingPatternTileForSmask(tp, objCache, scale) {
           '', 0, new Set(), new Set(), patExtGStates, new Set(),
           new Map(), 0, new Set(), new Map(),
           'black', 'rgb(0,0,0)',
+          1, 1,
           null, null,
         );
         for (const sop of sub) patDrawOps.push(sop);
@@ -4112,6 +4166,7 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
           '', 0, maskSymbolTags, maskCidPUATags, maskExtGStates, maskRawCharCodeTags,
           new Map(), 0, new Set(), maskCidCollisionMap,
           'black', 'rgb(0,0,0)',
+          1, 1,
           null, null,
         );
         for (const sop of sub) formDrawOps.push(sop);
@@ -4123,15 +4178,10 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
     formDrawOps = rawFormDrawOps;
   }
 
-  // Apply the form's /Matrix to each op's CTM (maps form space → user space)
-  const matrixMatch = /\/Matrix\s*\[\s*([\d.\s-]+)\]/.exec(formObjText);
-  if (matrixMatch) {
-    const formMatrix = matrixMatch[1].trim().split(/\s+/).map(Number);
-    if (formMatrix.length === 6) {
-      for (const op of formDrawOps) {
-        if (op.ctm) op.ctm = matMul(op.ctm, formMatrix);
-      }
-    }
+  // Apply the form's own /Matrix to each op's CTM (maps form space -> user space).
+  const formMatrix = parseFormMatrix(formObjText);
+  for (const op of formDrawOps) {
+    if (op.ctm) op.ctm = matMul(op.ctm, formMatrix);
   }
 
   // PDF spec §11.6.5.1: SMask is positioned by the parent CTM at the time
@@ -4467,7 +4517,6 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
     }
   }
   maskCtx.putImageData(maskData, 0, 0);
-
   return maskCanvas;
 }
 
@@ -4720,6 +4769,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           '', pageIndex, symbolFontTags, cidPUATags, extGStates, rawCharCodeTags,
           sharedFormResourceCache, 0, offOCGs, cidCollisionMap,
           'black', 'rgb(0,0,0)',
+          1, 1,
           groupContext, null,
         );
         for (let fi = 0; fi < flattened.length; fi++) drawOps.push(flattened[fi]);
@@ -4761,8 +4811,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       const isInkAnnot = /\/Subtype\s*\/Ink\b/.test(annotText);
       if ((rectW <= 0 || rectH <= 0) && !isLineAnnot && !isInkAnnot) continue;
 
-      // Check annotation flags — skip if hidden (bit 2), invisible (bit 1), or NoView (bit 6)
-      const flagsMatch = /\/F\s+(\d+)/.exec(annotText);
+      // Check annotation flags. Skip if hidden (bit 2), invisible (bit 1), or NoView (bit 6).
+      const flagsMatch = /\/F\s+(\d+)(?=\s*[/>])/.exec(annotText);
       const flags = flagsMatch ? Number(flagsMatch[1]) : 0;
       if (flags & 1 || flags & 2 || flags & 32) continue; // Invisible, Hidden, or NoView
 
@@ -4804,10 +4854,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         // Parse the appearance form's Matrix (defaults to identity).
         // flattenDrawOps will apply this Matrix to content coordinates, so we must
         // compute annotTransform relative to the post-Matrix BBox, not the original.
-        const apMatrixMatch = /\/Matrix\s*\[\s*([\d.\-\s+e]+)\]/.exec(apObjText);
-        const apMatrix = apMatrixMatch
-          ? apMatrixMatch[1].trim().split(/\s+/).map(Number)
-          : [1, 0, 0, 1, 0, 0];
+        const apMatrix = parseFormMatrix(apObjText);
         const corners = [[bbox[0], bbox[1]], [bbox[2], bbox[1]], [bbox[0], bbox[3]], [bbox[2], bbox[3]]];
         const txArr = corners.map(([x, y]) => x * apMatrix[0] + y * apMatrix[2] + apMatrix[4]);
         const tyArr = corners.map(([x, y]) => x * apMatrix[1] + y * apMatrix[3] + apMatrix[5]);
@@ -5171,6 +5218,13 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       if (op.type === 'image') {
         const imgInfo = images.get(op.name);
         if (!imgInfo) continue;
+        // An image mask painted with a shading pattern carries its color in the pattern stops,
+        // not in the (1-bit) image, so it must be checked before the skip.
+        if (op.patternShading && op.patternShading.stops
+          && op.patternShading.stops.some((stop) => !isGrayColor(stop.color))) {
+          pageHasColor = true;
+          break;
+        }
         if (imgInfo.bitsPerComponent === 1) continue;
         const cs = imgInfo.colorSpace;
         if (cs !== 'DeviceGray' && cs !== 'CalGray') {
@@ -6104,6 +6158,50 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           if (pop.fillAlpha < 1) tileCtx.globalAlpha = pop.fillAlpha;
           tileCtx.fillText(pop.text, 0, 0);
           tileCtx.restore();
+        } else if (pop.type === 'shading' && pop.shading) {
+          // Cells can paint standalone `sh` shadings (e.g. a logo built from quadrant Gouraud meshes).
+          // Map cell space to the tile canvas and apply the cell's clip so a shading clipped to a sub-region stays there.
+          const sh = pop.shading;
+          tileCtx.save();
+          if (pop.fillAlpha < 1) tileCtx.globalAlpha = pop.fillAlpha;
+          if (pop.clips) {
+            for (const clip of pop.clips) {
+              if (clip.textClip || !clip.path) continue;
+              tileCtx.setTransform(
+                clip.ctm[0] * tileScaleX, -clip.ctm[1] * tileScaleY,
+                clip.ctm[2] * tileScaleX, -clip.ctm[3] * tileScaleY,
+                (clip.ctm[4] - tp.bbox[0]) * tileScaleX,
+                (bboxH + tp.bbox[1] - clip.ctm[5]) * tileScaleY,
+              );
+              tileCtx.beginPath();
+              for (const cmd of clip.path) {
+                if (cmd.type === 'M') tileCtx.moveTo(cmd.x, cmd.y);
+                else if (cmd.type === 'L') tileCtx.lineTo(cmd.x, cmd.y);
+                else if (cmd.type === 'C') tileCtx.bezierCurveTo(cmd.x1, cmd.y1, cmd.x2, cmd.y2, cmd.x, cmd.y);
+                else if (cmd.type === 'Z') tileCtx.closePath();
+              }
+              tileCtx.clip(clip.evenOdd ? 'evenodd' : 'nonzero');
+            }
+          }
+          tileCtx.setTransform(
+            pop.ctm[0] * tileScaleX, -pop.ctm[1] * tileScaleY,
+            pop.ctm[2] * tileScaleX, -pop.ctm[3] * tileScaleY,
+            (pop.ctm[4] - tp.bbox[0]) * tileScaleX,
+            (bboxH + tp.bbox[1] - pop.ctm[5]) * tileScaleY,
+          );
+          if (sh.type === 'mesh') {
+            renderMeshPatches(tileCtx, sh.patches);
+          } else if (sh.type === 'gouraud') {
+            renderGouraudTriangles(tileCtx, sh.triangles, null, [tileW, tileH]);
+          } else if (sh.type === 2 || sh.type === 3) {
+            const grad = sh.type === 2
+              ? tileCtx.createLinearGradient(sh.coords[0], sh.coords[1], sh.coords[2], sh.coords[3])
+              : tileCtx.createRadialGradient(sh.coords[0], sh.coords[1], sh.coords[2], sh.coords[3], sh.coords[4], sh.coords[5]);
+            for (const stop of sh.stops) grad.addColorStop(stop.offset, stop.color);
+            tileCtx.fillStyle = grad;
+            tileCtx.fillRect(-1e9, -1e9, 2e9, 2e9);
+          }
+          tileCtx.restore();
         }
       }
 
@@ -6336,6 +6434,45 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
               rCtx.restore();
             }
             if (!cachedTileMask) ca.closeDrawable(maskBitmap);
+            return;
+          }
+        }
+
+        // For image masks filled with a shading pattern (axial ShadingType 2 or radial type 3), composite the shading through the mask alpha.
+        // The mask is drawn at the image transform to set the alpha, then the gradient is painted in pattern->page->device space
+        // (the same mapping the path shading-pattern fill uses) under source-in.
+        if (imageInfo.imageMask && op.patternShading
+          && (op.patternShading.type === 2 || op.patternShading.type === 3)
+          && op.patternShading.stops) {
+          const sh = op.patternShading;
+          const maskBitmap = await imageMaskToBitmap(imageInfo, 'rgb(0,0,0)', objCache);
+          if (maskBitmap) {
+            const tmpCanvas = ca.makeCanvas(canvasWidth, canvasHeight);
+            const tmpCtx = tmpCanvas.getContext('2d', { willReadFrequently: true });
+            tmpCtx.setTransform(
+              op.ctm[0] * scale, -op.ctm[1] * scale, op.ctm[2] * scale, -op.ctm[3] * scale,
+              (op.ctm[4] - boxOriginX) * scale, (pageHeightPts + boxOriginY - op.ctm[5]) * scale,
+            );
+            tmpCtx.transform(1, 0, 0, -1, 0, 1);
+            tmpCtx.drawImage(maskBitmap, 0, 0, 1, 1);
+            tmpCtx.setTransform(scale, 0, 0, -scale, -boxOriginX * scale, (pageHeightPts + boxOriginY) * scale);
+            if (op.patternBaseCTM) tmpCtx.transform(...op.patternBaseCTM);
+            if (sh.matrix) tmpCtx.transform(...sh.matrix);
+            tmpCtx.globalCompositeOperation = 'source-in';
+            const grad = sh.type === 2
+              ? tmpCtx.createLinearGradient(sh.coords[0], sh.coords[1], sh.coords[2], sh.coords[3])
+              : tmpCtx.createRadialGradient(sh.coords[0], sh.coords[1], sh.coords[2], sh.coords[3], sh.coords[4], sh.coords[5]);
+            for (const stop of sh.stops) grad.addColorStop(stop.offset, stop.color);
+            tmpCtx.fillStyle = grad;
+            tmpCtx.fillRect(-1e9, -1e9, 2e9, 2e9);
+            rCtx.save();
+            if (op.fillAlpha < 1) rCtx.globalAlpha = op.fillAlpha;
+            applyClips(rCtx, op);
+            rCtx.setTransform(1, 0, 0, 1, 0, 0);
+            rCtx.drawImage(tmpCanvas, 0, 0);
+            rCtx.restore();
+            ca.closeDrawable(tmpCanvas);
+            ca.closeDrawable(maskBitmap);
             return;
           }
         }
@@ -7109,7 +7246,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         }
 
         if (sub.smask && subCanvas) {
-          const cacheKey = sub.smask.formObjNum;
+          const cacheKey = `${sub.smask.formObjNum}:${sub.smask.parentCtm ? sub.smask.parentCtm.join(',') : ''}`;
           let maskCanvas = smaskCanvasCache.get(cacheKey);
           if (!maskCanvas) {
             maskCanvas = await renderSMaskToCanvas(sub.smask, objCache, canvasWidth, canvasHeight, pageHeightPts, boxOriginX, boxOriginY, scale);
@@ -7176,7 +7313,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             x: top.offX, y: top.offY, width: top.w, height: top.h,
           });
         } else {
-          const cacheKey = attrs.smask.formObjNum;
+          const cacheKey = `${attrs.smask.formObjNum}:${attrs.smask.parentCtm ? attrs.smask.parentCtm.join(',') : ''}`;
           maskCanvas = smaskCanvasCache.get(cacheKey);
           if (!maskCanvas) {
             maskCanvas = await renderSMaskToCanvas(attrs.smask, objCache, canvasWidth, canvasHeight, pageHeightPts, boxOriginX, boxOriginY, scale);
@@ -7351,7 +7488,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         await renderOpsWithInnerSmask(groupCtx, group.ops);
 
         // Apply the outer (form-level) SMask to the combined group result
-        const cacheKey = group.outerSmask.formObjNum;
+        const cacheKey = `${group.outerSmask.formObjNum}:${group.outerSmask.parentCtm ? group.outerSmask.parentCtm.join(',') : ''}`;
         let maskCanvas = smaskCanvasCache.get(cacheKey);
         if (!maskCanvas) {
           maskCanvas = await renderSMaskToCanvas(group.outerSmask, objCache, canvasWidth, canvasHeight, pageHeightPts, boxOriginX, boxOriginY, scale);
@@ -7587,7 +7724,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           }
         }
 
-        const cacheKey = group.smask.formObjNum;
+        const cacheKey = `${group.smask.formObjNum}:${group.smask.parentCtm ? group.smask.parentCtm.join(',') : ''}`;
         let maskCanvas = smaskCanvasCache.get(cacheKey);
         if (!maskCanvas) {
           maskCanvas = await renderSMaskToCanvas(group.smask, objCache, canvasWidth, canvasHeight, pageHeightPts, boxOriginX, boxOriginY, scale);

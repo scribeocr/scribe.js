@@ -1891,6 +1891,32 @@ export function bytesToLatin1(bytes, start = 0, end) {
 }
 
 /**
+ * Read a Form XObject's own /Matrix.
+ * Matches only the dict's top-level /Matrix, not one nested in the form's /Resources (e.g. a shading pattern's matrix).
+ * @param {string} objText - the form or appearance dict text
+ */
+export function parseFormMatrix(objText) {
+  for (let i = 0, depth = 0; i < objText.length - 1; i++) {
+    const c2 = objText[i] + objText[i + 1];
+    if (c2 === '<<') {
+      depth += 1;
+      i += 1;
+    } else if (c2 === '>>') {
+      depth -= 1;
+      i += 1;
+    } else if (depth === 1 && objText.startsWith('/Matrix', i)) {
+      const m = /\/Matrix\s*\[\s*([\d.\seE+-]+)\]/.exec(objText.slice(i));
+      if (m) {
+        const parsed = m[1].trim().split(/\s+/).map(Number);
+        if (parsed.length === 6 && parsed.every((n) => Number.isFinite(n))) return parsed;
+      }
+      break;
+    }
+  }
+  return null;
+}
+
+/**
  * Find Form XObjects in a container's Resources dictionary.
  * Shared by parsePdfDoc and parsePdfPaths.
  * @param {string} containerObjText

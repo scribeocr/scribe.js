@@ -1331,6 +1331,7 @@ export function parseDrawOps(
             type: 'image', name, ctm: ctm.slice(), fillAlpha, strokeAlpha, fillColor, strokeColor,
           };
           if (fillTilingPattern) doOp.tilingPattern = fillTilingPattern;
+          if (fillPatternShading) doOp.patternShading = fillPatternShading;
           if (overprint) doOp.overprint = true;
           if (blendMode !== 'Normal') doOp.blendMode = blendMode;
           if (clipStack.length > 0) {

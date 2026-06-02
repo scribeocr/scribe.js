@@ -49,7 +49,7 @@ export class Glyph {
     /** @type {number|undefined} */
     this.unicode = options.unicode || undefined;
     /** @type {number[]} */
-    this.unicodes = options.unicodes || options.unicode !== undefined ? [options.unicode] : [];
+    this.unicodes = options.unicodes || (options.unicode !== undefined ? [options.unicode] : []);
     /** @type {number|undefined} */
     this.xMin = undefined;
     /** @type {number|undefined} */

@@ -43,6 +43,28 @@ function hashGlyphCommands(commands) {
 }
 
 /**
+ * Resolve a CIDFontType2's embedded TrueType program bytes from its FontDescriptor.
+ * Prefers /FontFile2, falling back to /FontFile when it holds a TrueType sfnt (some generators store the program there).
+ * @param {string} fdText - FontDescriptor object text
+ * @param {ObjectCache} objCache
+ * @returns {Uint8Array | null} the font program bytes, or null when none is embedded
+ */
+function resolveCidTrueTypeProgram(fdText, objCache) {
+  let ffRefMatch = /\/FontFile2\s+(\d+)\s+\d+\s+R/.exec(fdText);
+  if (!ffRefMatch) {
+    const ff1RefMatch = /\/FontFile\s+(\d+)\s+\d+\s+R/.exec(fdText);
+    if (ff1RefMatch) {
+      const probe = objCache.getStreamBytes(Number(ff1RefMatch[1]));
+      const magic = probe && probe.length >= 4
+        ? ((probe[0] << 24) | (probe[1] << 16) | (probe[2] << 8) | probe[3]) >>> 0 : 0;
+      if (magic === 0x00010000 || magic === 0x74727565) ffRefMatch = ff1RefMatch;
+    }
+  }
+  if (!ffRefMatch) return null;
+  return objCache.getStreamBytes(Number(ffRefMatch[1]));
+}
+
+/**
  * Parse a TrueType font file's cmap table and build a reverse GID→Unicode map.
  * Used for CIDFontType2 + Identity-H where CIDs are GIDs and we need GID→Unicode.
  * @param {Uint8Array} fontFile
@@ -1606,9 +1628,20 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         // Extract FontFile2 for CIDFontType2 fonts (TrueType-based composite fonts)
         const isCIDFontType2 = /\/Subtype\s*\/CIDFontType2/.test(cidFontText);
         if (isCIDFontType2) {
-          const ff2RefMatch = /\/FontFile2\s+(\d+)\s+\d+\s+R/.exec(fdText);
-          if (ff2RefMatch) {
-            const fontFile = objCache.getStreamBytes(Number(ff2RefMatch[1]));
+          let ffRefMatch = /\/FontFile2\s+(\d+)\s+\d+\s+R/.exec(fdText);
+          // Some generators store a CIDFontType2's TrueType program under the Type1 /FontFile key instead of /FontFile2.
+          // Accept it when its bytes are an sfnt, so the embedded glyphs are used instead of falling back to the ToUnicode.
+          if (!ffRefMatch) {
+            const ff1RefMatch = /\/FontFile\s+(\d+)\s+\d+\s+R/.exec(fdText);
+            if (ff1RefMatch) {
+              const probe = objCache.getStreamBytes(Number(ff1RefMatch[1]));
+              const magic = probe && probe.length >= 4
+                ? ((probe[0] << 24) | (probe[1] << 16) | (probe[2] << 8) | probe[3]) >>> 0 : 0;
+              if (magic === 0x00010000 || magic === 0x74727565) ffRefMatch = ff1RefMatch;
+            }
+          }
+          if (ffRefMatch) {
+            const fontFile = objCache.getStreamBytes(Number(ffRefMatch[1]));
             if (fontFile) {
               if (isPlaceholderFontName(baseName)) {
                 const dv = new DataView(fontFile.buffer, fontFile.byteOffset, fontFile.byteLength);
@@ -1760,14 +1793,12 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
               if (!sibBaseMatch) continue;
               const sibBase = sibBaseMatch[1].replace(/^[A-Z]{6}\+/, '');
               if (sibBase !== strippedBase) continue;
-              // Found a sibling with the same BaseFont — look for its FontDescriptor + FontFile2
+              // Found a sibling with the same BaseFont. Read its embedded TrueType program.
               const sibFdRef = /\/FontDescriptor\s+(\d+)\s+\d+\s+R/.exec(sibObj);
               if (!sibFdRef) continue;
               const sibFdText = objCache.getObjectText(Number(sibFdRef[1]));
               if (!sibFdText) continue;
-              const sibFf2Ref = /\/FontFile2\s+(\d+)\s+\d+\s+R/.exec(sibFdText);
-              if (!sibFf2Ref) continue;
-              const sibFontFile = objCache.getStreamBytes(Number(sibFf2Ref[1]));
+              const sibFontFile = resolveCidTrueTypeProgram(sibFdText, objCache);
               if (!sibFontFile) continue;
               gidMap = buildGidToUnicodeFromTrueType(sibFontFile);
               if (gidMap) break;
@@ -2758,11 +2789,7 @@ function extractType0FontFile(fontObjText, objCache) {
   const fdText = objCache.getObjectText(Number(fdRefMatch[1]));
   if (!fdText) return null;
 
-  // Follow FontFile2 reference to get the raw TrueType data
-  const ff2RefMatch = /\/FontFile2\s+(\d+)\s+\d+\s+R/.exec(fdText);
-  if (!ff2RefMatch) return null;
-
-  const fontFile = objCache.getStreamBytes(Number(ff2RefMatch[1]));
+  const fontFile = resolveCidTrueTypeProgram(fdText, objCache);
   if (!fontFile) return null;
 
   return { fontName, fontFile };

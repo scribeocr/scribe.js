@@ -615,7 +615,7 @@ class JpxImage {
             cod.selectiveArithmeticCodingBypass = !!(blockStyle & 1);
             cod.resetContextProbabilities = !!(blockStyle & 2);
             cod.terminationOnEachCodingPass = !!(blockStyle & 4);
-            cod.verticallyStripe = !!(blockStyle & 8);
+            cod.verticallyCausalContext = !!(blockStyle & 8);
             cod.predictableTermination = !!(blockStyle & 16);
             cod.segmentationSymbolUsed = !!(blockStyle & 32);
             cod.reversibleTransformation = data[j++];
@@ -630,25 +630,11 @@ class JpxImage {
               }
               cod.precinctsSizes = precinctsSizes;
             }
-            const unsupported = [];
             if (cod.selectiveArithmeticCodingBypass) {
-              unsupported.push('selectiveArithmeticCodingBypass');
-            }
-            if (cod.resetContextProbabilities) {
-              unsupported.push('resetContextProbabilities');
-            }
-            if (cod.terminationOnEachCodingPass) {
-              unsupported.push('terminationOnEachCodingPass');
-            }
-            if (cod.verticallyStripe) {
-              unsupported.push('verticallyStripe');
-            }
-            if (cod.predictableTermination) {
-              unsupported.push('predictableTermination');
-            }
-            if (unsupported.length > 0) {
+              // D.6: from the fifth bit-plane on, the significance and refinement
+              // passes skip the arithmetic coder (raw bits). Not implemented.
               doNotRecover = true;
-              warn(`JPX: Unsupported COD options (${unsupported.join(', ')}).`);
+              warn('JPX: Unsupported COD option (selectiveArithmeticCodingBypass).');
             }
             if (context.mainHeader) {
               context.COD = cod;
@@ -1483,6 +1469,7 @@ function parseTilePackets(context, data, offset, dataLength) {
   const tile = context.tiles[tileIndex];
   const sopMarkerUsed = context.COD.sopMarkerUsed;
   const ephMarkerUsed = context.COD.ephMarkerUsed;
+  const terminationOnEachCodingPass = context.COD.terminationOnEachCodingPass;
   const packetsIterator = tile.packetsIterator;
   while (position < dataLength) {
     alignToByte();
@@ -1562,16 +1549,33 @@ function parseTilePackets(context, data, offset, dataLength) {
       while (readBits(1)) {
         codeblock.Lblock++;
       }
-      const codingpassesLog2 = log2(codingpasses);
-      // rounding down log2
-      const bits = (codingpasses < 1 << codingpassesLog2
-        ? codingpassesLog2 - 1
-        : codingpassesLog2) + codeblock.Lblock;
-      const codedDataLength = readBits(bits);
+      let codedDataLength;
+      let segmentLengths = null;
+      if (terminationOnEachCodingPass) {
+        // B.10.7.2: a termination between included passes splits the contribution into one codeword segment per terminated pass.
+        // Termination on every pass (and no bypass) makes each included pass its own one-pass segment,
+        // whose length uses Lblock + floor(log2(1)) = Lblock bits. Lblock is incremented only once, before the segment lengths.
+        // Lblock is incremented only once, before the segment lengths.
+        segmentLengths = new Array(codingpasses);
+        codedDataLength = 0;
+        for (let s = 0; s < codingpasses; s++) {
+          const segmentLength = readBits(codeblock.Lblock);
+          segmentLengths[s] = segmentLength;
+          codedDataLength += segmentLength;
+        }
+      } else {
+        const codingpassesLog2 = log2(codingpasses);
+        // rounding down log2
+        const bits = (codingpasses < 1 << codingpassesLog2
+          ? codingpassesLog2 - 1
+          : codingpassesLog2) + codeblock.Lblock;
+        codedDataLength = readBits(bits);
+      }
       queue.push({
         codeblock,
         codingpasses,
         dataLength: codedDataLength,
+        segmentLengths,
       });
     }
     alignToByte();
@@ -1589,6 +1593,7 @@ function parseTilePackets(context, data, offset, dataLength) {
         start: offset + position,
         end: offset + position + packetItem.dataLength,
         codingpasses: packetItem.codingpasses,
+        segmentLengths: packetItem.segmentLengths,
       });
       position += packetItem.dataLength;
     }
@@ -1605,6 +1610,9 @@ function copyCoefficients(
   mb,
   reversible,
   segmentationSymbolUsed,
+  terminationOnEachCodingPass,
+  resetContextProbabilities,
+  verticallyCausalContext,
   xParity,
   yParity,
 ) {
@@ -1633,6 +1641,7 @@ function copyCoefficients(
       codeblock.subbandType,
       codeblock.zeroBitPlanes,
       mb,
+      verticallyCausalContext,
     );
     let currentCodingpassType = 2; // first bit plane starts from cleanup
 
@@ -1653,11 +1662,40 @@ function copyCoefficients(
       encodedData.set(chunk, position);
       position += chunk.length;
     }
-    // decoding the item
-    const decoder = new ArithmeticDecoder(encodedData, 0, totalLength);
-    bitModel.setDecoder(decoder);
 
-    for (let j = 0; j < codingpasses; j++) {
+    // Without per-pass termination the whole contribution is one continuous MQ codeword.
+    // With it (D.4.1, Table D.8) each pass is its own terminated segment,
+    // so the decoder restarts per segment over its own byte range
+    // and the ArithmeticDecoder synthesizes the trailing 0xFF.
+    // Independently, when resetContextProbabilities is set the context states
+    // return to their Table D.7 initial values at every coding-pass boundary.
+    const segments = [];
+    if (terminationOnEachCodingPass) {
+      let segStart = 0;
+      for (let j = 0, jj = data.length; j < jj; j++) {
+        const lengths = data[j].segmentLengths;
+        for (let s = 0; s < lengths.length; s++) {
+          segments.push({ start: segStart, end: segStart + lengths[s] });
+          segStart += lengths[s];
+        }
+      }
+    } else if (codingpasses > 0) {
+      segments.push({ start: 0, end: totalLength });
+      for (let p = 1; p < codingpasses; p++) {
+        segments.push(null);
+      }
+    }
+
+    let pass = 0;
+    for (let s = 0; s < segments.length; s++) {
+      if (segments[s]) {
+        bitModel.setDecoder(
+          new ArithmeticDecoder(encodedData, segments[s].start, segments[s].end),
+        );
+      }
+      if (resetContextProbabilities && pass > 0) {
+        bitModel.reset();
+      }
       switch (currentCodingpassType) {
         case 0:
           bitModel.runSignificancePropagationPass();
@@ -1673,6 +1711,7 @@ function copyCoefficients(
           break;
       }
       currentCodingpassType = (currentCodingpassType + 1) % 3;
+      pass++;
     }
 
     let offset = codeblock.tbx0_ - x0 + (codeblock.tby0_ - y0) * width;
@@ -1718,6 +1757,9 @@ function transformTile(context, tile, c, reduceLevels = 0) {
   const scalarExpounded = quantizationParameters.scalarExpounded;
   const guardBits = quantizationParameters.guardBits;
   const segmentationSymbolUsed = codingStyleParameters.segmentationSymbolUsed;
+  const terminationOnEachCodingPass = codingStyleParameters.terminationOnEachCodingPass;
+  const resetContextProbabilities = codingStyleParameters.resetContextProbabilities;
+  const verticallyCausalContext = codingStyleParameters.verticallyCausalContext;
   const precision = context.components[c].precision;
 
   const reversible = codingStyleParameters.reversibleTransformation;
@@ -1770,6 +1812,9 @@ function transformTile(context, tile, c, reduceLevels = 0) {
         mb,
         reversible,
         segmentationSymbolUsed,
+        terminationOnEachCodingPass,
+        resetContextProbabilities,
+        verticallyCausalContext,
         xParity,
         yParity,
       );
@@ -2103,9 +2148,10 @@ const HHContextLabel = new Uint8Array([
 ]);
 
 class BitModel {
-  constructor(width, height, subband, zeroBitPlanes, mb) {
+  constructor(width, height, subband, zeroBitPlanes, mb, verticallyCausalContext) {
     this.width = width;
     this.height = height;
+    this.verticallyCausalContext = verticallyCausalContext;
 
     let contextLabelTable;
     if (subband === 'HH') {
@@ -2165,7 +2211,10 @@ class BitModel {
     const right = column + 1 < width;
     let i;
 
-    if (row > 0) {
+    // D.7: in vertically-causal mode a coefficient at the top of a stripe does
+    // not propagate its significance up into the previous (already-scanned)
+    // stripe, so coefficients there see the next stripe as insignificant.
+    if (row > 0 && !(this.verticallyCausalContext && (row & 3) === 0)) {
       i = index - width;
       if (left) {
         neighborsSignificance[i - 1] += 0x10;
@@ -2276,8 +2325,12 @@ class BitModel {
     const horizontalContribution = 3 * contribution;
 
     // calculate vertical contribution and combine with the horizontal
+    // D.7: in vertically-causal mode the neighbor below a stripe's bottom row
+    // lies in the next stripe and is treated as insignificant.
+    const belowInScope = row + 1 < height
+      && !(this.verticallyCausalContext && (row & 3) === 3);
     significance1 = row > 0 && coefficentsMagnitude[index - width] !== 0;
-    if (row + 1 < height && coefficentsMagnitude[index + width] !== 0) {
+    if (belowInScope && coefficentsMagnitude[index + width] !== 0) {
       sign1 = coefficentsSign[index + width];
       if (significance1) {
         sign0 = coefficentsSign[index - width];

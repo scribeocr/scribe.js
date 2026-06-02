@@ -1,5 +1,3 @@
-/* eslint-disable no-bitwise */
-
 /**
  * Loads an image from a given URL and sets it to a specified HTML element.
  *
@@ -58,7 +56,12 @@ export const importImageFileToBase64 = async (file) => new Promise((resolve, rej
   if (file instanceof ArrayBuffer) {
     const imageUint8 = new Uint8Array(file);
     const format = detectImageFormat(imageUint8);
-    const binary = String.fromCharCode(...imageUint8);
+    // `String.fromCharCode(...arr)` throws RangeError above ~125k bytes.
+    const chunkSize = 8192;
+    let binary = '';
+    for (let i = 0; i < imageUint8.length; i += chunkSize) {
+      binary += String.fromCharCode.apply(null, imageUint8.subarray(i, i + chunkSize));
+    }
     resolve(`data:image/${format};base64,${btoa(binary)}`);
     return;
   }

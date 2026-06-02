@@ -80,7 +80,7 @@ export function extractPdfAnnotations(objCache, pageObjText) {
     if (!annotText) continue;
 
     // Skip Invisible (bit 1), Hidden (bit 2), or NoView (bit 6) annotations.
-    const flagsMatch = /\/F\s+(\d+)/.exec(annotText);
+    const flagsMatch = /\/F\s+(\d+)(?=\s*[/>])/.exec(annotText);
     const flags = flagsMatch ? Number(flagsMatch[1]) : 0;
     if (flags & 1 || flags & 2 || flags & 32) continue;
 

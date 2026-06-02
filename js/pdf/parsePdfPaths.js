@@ -1,6 +1,6 @@
 import {
   findXrefOffset, parseXref, ObjectCache, bytesToLatin1,
-  getPageObjects, getPageContentStream, tokenizeContentStream, findFormXObjects,
+  getPageObjects, getPageContentStream, tokenizeContentStream, findFormXObjects, parseFormMatrix,
 } from './parsePdfUtils.js';
 
 /**
@@ -99,10 +99,7 @@ function inlineFormXObjects(tokens, containerObjText, objCache, visited) {
         const formBytes = formObjText ? objCache.getStreamBytes(form.objNum) : null;
         if (formObjText && formBytes) {
           const formContentStream = bytesToLatin1(formBytes);
-          const matrixMatch = /\/Matrix\s*\[\s*([\d.\-\s]+)\]/.exec(formObjText);
-          const formMatrix = matrixMatch
-            ? matrixMatch[1].trim().split(/\s+/).map(Number)
-            : null;
+          const formMatrix = parseFormMatrix(formObjText);
 
           const formTokens = tokenizeContentStream(formContentStream);
           // Recurse into nested Form XObjects
