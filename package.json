@@ -9,8 +9,8 @@
   "type": "module",
   "devDependencies": {
     "@types/node": "^20.0.0",
-    "@vitest/browser": "^4.1.5",
-    "@vitest/browser-webdriverio": "^4.1.5",
+    "@vitest/browser": "^4.1.7",
+    "@vitest/browser-webdriverio": "^4.1.7",
     "@eslint/eslintrc": "^3.2.0",
     "@eslint/js": "^9.17.0",
     "eslint": "^9.17.0",
@@ -18,7 +18,7 @@
     "eslint-plugin-import": "^2.29.1",
     "eslint-plugin-jsdoc": "^50.6.2",
     "express": "^4.21.2",
-    "vitest": "^4.1.5",
+    "vitest": "^4.1.7",
     "webdriverio": "^9.27.0"
   },
   "scripts": {
