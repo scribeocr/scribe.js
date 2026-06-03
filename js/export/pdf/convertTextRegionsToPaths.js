@@ -40,14 +40,20 @@ function serializeOperand(t) {
 }
 
 const PDF_PATH_DECIMALS = 3;
+// Transformation-matrix components need more decimals than path coordinates.
+// A glyph `cm` inside a 0.001-milliscaled form has scale ~0.0154, and 3-decimal rounding (0.015)
+// is a 2.5% error that the renderer's accumulated relative-`cm` chain drifts across a converted line.
+const PDF_MATRIX_DECIMALS = 8;
 
 /**
+ * Format a number for PDF output, stripping trailing zeros.
  * @param {number} n
+ * @param {number} [decimals] Fixed decimal places (default `PDF_PATH_DECIMALS`).
  */
-function fmt(n) {
+function fmt(n, decimals = PDF_PATH_DECIMALS) {
   if (!Number.isFinite(n)) return '0';
   if (Number.isInteger(n)) return String(n);
-  const r = n.toFixed(PDF_PATH_DECIMALS);
+  const r = n.toFixed(decimals);
   return r.replace(/\.?0+$/, '');
 }
 
@@ -87,7 +93,7 @@ function detectFontFileType(fontFile) {
  *
  * @param {Uint8Array} fontFile
  * @returns {{ glyphs: any, unitsPerEm: number, fontType: string,
- *            cmap?: { glyphIndexMap: Record<number, number>, platformID?: number, encodingID?: number } | null,
+ *            cmap?: { glyphIndexMap: Record<number, number>, byteToGlyphIndex?: number[], platformID?: number, encodingID?: number } | null,
  *            nameToGid?: Map<string, number> | null,
  *            cffCharCodeToGid?: Map<number, number> | null,
  *            cffCidToGid?: Map<number, number> | null } | null}
@@ -561,13 +567,13 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   /** @param {number[]} M */
   function emitConvertCm(M) {
     if (!lastConvertM) {
-      out.push(`${fmt(M[0])} ${fmt(M[1])} ${fmt(M[2])} ${fmt(M[3])} ${fmt(M[4])} ${fmt(M[5])} cm `);
+      out.push(`${fmt(M[0], PDF_MATRIX_DECIMALS)} ${fmt(M[1], PDF_MATRIX_DECIMALS)} ${fmt(M[2], PDF_MATRIX_DECIMALS)} ${fmt(M[3], PDF_MATRIX_DECIMALS)} ${fmt(M[4], PDF_MATRIX_DECIMALS)} ${fmt(M[5], PDF_MATRIX_DECIMALS)} cm `);
       return;
     }
     const [a, b, c, d, e, f] = lastConvertM;
     const det = a * d - b * c;
     if (!det || !Number.isFinite(det)) {
-      out.push(`${fmt(M[0])} ${fmt(M[1])} ${fmt(M[2])} ${fmt(M[3])} ${fmt(M[4])} ${fmt(M[5])} cm `);
+      out.push(`${fmt(M[0], PDF_MATRIX_DECIMALS)} ${fmt(M[1], PDF_MATRIX_DECIMALS)} ${fmt(M[2], PDF_MATRIX_DECIMALS)} ${fmt(M[3], PDF_MATRIX_DECIMALS)} ${fmt(M[4], PDF_MATRIX_DECIMALS)} ${fmt(M[5], PDF_MATRIX_DECIMALS)} cm `);
       return;
     }
     const ia = d / det;
@@ -589,7 +595,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
     const m3 = snap(M[2] * ib + M[3] * id);
     const m4 = M[4] * ia + M[5] * ic + ie;
     const m5 = M[4] * ib + M[5] * id + jf;
-    out.push(`${fmt(m0)} ${fmt(m1)} ${fmt(m2)} ${fmt(m3)} ${fmt(m4)} ${fmt(m5)} cm `);
+    out.push(`${fmt(m0, PDF_MATRIX_DECIMALS)} ${fmt(m1, PDF_MATRIX_DECIMALS)} ${fmt(m2, PDF_MATRIX_DECIMALS)} ${fmt(m3, PDF_MATRIX_DECIMALS)} ${fmt(m4, PDF_MATRIX_DECIMALS)} ${fmt(m5, PDF_MATRIX_DECIMALS)} cm `);
   }
 
   /**
@@ -1041,7 +1047,7 @@ function bboxFromCommands(commands) {
  *
  * @param {any} fontInfo - FontInfo from parsePageFonts
  * @param {number} charCode - the decoded code from the content stream
- * @param {{ cmap?: { glyphIndexMap: Record<number, number>, platformID?: number, encodingID?: number } | null,
+ * @param {{ cmap?: { glyphIndexMap: Record<number, number>, byteToGlyphIndex?: number[], platformID?: number, encodingID?: number } | null,
  *           nameToGid?: Map<string, number> | null,
  *           cffCharCodeToGid?: Map<number, number> | null,
  *           cffCidToGid?: Map<number, number> | null } | null} loaded
@@ -1082,6 +1088,12 @@ function charCodeToGlyphIndex(fontInfo, charCode, loaded) {
     }
   }
   const cmap = loaded && loaded.cmap;
+  // For a format-0 (single-byte) cmap, prefer the raw byteToGlyphIndex array over glyphIndexMap,
+  // which re-keys its 0x80..0xFF half by Mac-Roman Unicode and maps those byte codes to the wrong glyph.
+  if (cmap && Array.isArray(cmap.byteToGlyphIndex) && charCode >= 0 && charCode < 256) {
+    const g = cmap.byteToGlyphIndex[charCode];
+    if (g != null && g > 0) return g;
+  }
   const gim = cmap && cmap.glyphIndexMap;
   if (gim) {
     if (gim[charCode] != null && gim[charCode] > 0) return gim[charCode];
@@ -1326,6 +1338,32 @@ function mergeXObjectIntoResources(resourcesDictText, entriesStr, objCache) {
 }
 
 /**
+ * Resolve an object's /Resources to its literal `<<...>>` dict text, following an indirect reference if present.
+ * Returns null when the object has no /Resources of its own
+ * (a Form XObject may omit it and inherit its parent's per PDF spec 7.8.3).
+ *
+ * @param {string} objText
+ * @param {import('../../pdf/parsePdfUtils.js').ObjectCache} objCache
+ * @returns {string | null}
+ */
+function resolveResourcesText(objText, objCache) {
+  const idx = objText.indexOf('/Resources');
+  if (idx === -1) return null;
+  let p = idx + '/Resources'.length;
+  while (p < objText.length && /\s/.test(objText[p])) p++;
+  if (objText.startsWith('<<', p)) return extractDict(objText, p);
+  const ref = /^(\d+)\s+\d+\s+R/.exec(objText.slice(p));
+  if (ref) {
+    const resolved = objCache.getObjectText(Number(ref[1]));
+    if (resolved) {
+      const t = resolved.trim();
+      return t.startsWith('<<') ? t : `<<${t}>>`;
+    }
+  }
+  return null;
+}
+
+/**
  * Build the dict-extras string (everything between `<<` and `/Length`) for a cloned Form XObject.
  * Preserves the original dict's keys verbatim except
  * /Length and /Filter (re-emitted by `encodeStreamObject`) and /Resources
@@ -1335,9 +1373,11 @@ function mergeXObjectIntoResources(resourcesDictText, entriesStr, objCache) {
  * @param {import('../../pdf/parsePdfUtils.js').ObjectCache} objCache
  * @param {Map<string, number>} perGlyphXobjEntries - tag → objNum for per-glyph forms used inside.
  * @param {Map<string, number>} nestedFormRedirects - name → cloneObjNum for nested forms invoked inside.
+ * @param {string | null} inheritedResourcesText - The parent scope's /Resources dict text,
+ *   used as the clone's /Resources base when the original form has none of its own.
  * @returns {string}
  */
-function buildClonedFormDictExtras(originalFormObjText, objCache, perGlyphXobjEntries, nestedFormRedirects) {
+function buildClonedFormDictExtras(originalFormObjText, objCache, perGlyphXobjEntries, nestedFormRedirects, inheritedResourcesText) {
   const dictStart = originalFormObjText.indexOf('<<');
   if (dictStart === -1) return '';
   const dictText = extractDict(originalFormObjText, dictStart);
@@ -1357,7 +1397,10 @@ function buildClonedFormDictExtras(originalFormObjText, objCache, perGlyphXobjEn
 
   // Locate /Resources entry; replace it (or append if missing).
   const resIdx = body.indexOf('/Resources');
-  let resourcesDictText = '';
+  // A form that omits /Resources inherits its parent's (PDF spec 7.8.3).
+  // The clone gets its own explicit /Resources, which severs that inheritance, so seed it from the inherited dict.
+  // Otherwise images and fonts the form drew via inheritance drop out of the clone.
+  let resourcesDictText = resIdx === -1 ? (inheritedResourcesText || '') : '';
   let beforeRes = body;
   let afterRes = '';
   if (resIdx !== -1) {
@@ -1406,12 +1449,14 @@ function buildClonedFormDictExtras(originalFormObjText, objCache, perGlyphXobjEn
  * @param {() => number} params.allocObjNum
  * @param {(obj: {objNum: number, content: any}) => void} params.pushObj
  * @param {boolean} params.humanReadable
+ * @param {string | null} [params.parentResourcesText] - The enclosing scope's /Resources dict text,
+ *   which this form inherits when it has none of its own.
  * @returns {Promise<{ changed: boolean, cloneObjNum: number,
  *   skipped: Array<{fontObjNum: number, charCode: number, reason: string}> }>}
  */
 async function rewriteFormContentForRegions({
   formObjNum, ctm, parentFontsByTag, fontInfoByObjNum, resolver,
-  bboxes, state, objCache, allocObjNum, pushObj, humanReadable,
+  bboxes, state, objCache, allocObjNum, pushObj, humanReadable, parentResourcesText = null,
 }) {
   if (state.inProgress.has(formObjNum)) {
     return { changed: false, cloneObjNum: formObjNum, skipped: [] };
@@ -1422,6 +1467,10 @@ async function rewriteFormContentForRegions({
     if (!formObjText || !/\/Subtype\s*\/Form\b/.test(formObjText)) {
       return { changed: false, cloneObjNum: formObjNum, skipped: [] };
     }
+
+    // Resources this form's content can see: its own when present, else what it inherits from the enclosing scope.
+    // Nested forms inherit this same effective dict.
+    const effectiveResources = resolveResourcesText(formObjText, objCache) || parentResourcesText;
 
     let formMatrix = [1, 0, 0, 1, 0, 0];
     const nums = resolveNumArray(formObjText, 'Matrix', objCache);
@@ -1476,6 +1525,7 @@ async function rewriteFormContentForRegions({
         allocObjNum,
         pushObj,
         humanReadable,
+        parentResourcesText: effectiveResources,
       });
       if (r.skipped && r.skipped.length > 0) skipped.push(...r.skipped);
       if (r.changed && r.cloneObjNum !== inv.formObjNum) {
@@ -1515,7 +1565,7 @@ async function rewriteFormContentForRegions({
       return { changed: true, cloneObjNum: cached, skipped };
     }
     const cloneObjNum = allocObjNum();
-    const dictExtras = buildClonedFormDictExtras(formObjText, objCache, perGlyphEntries, nestedFormClones);
+    const dictExtras = buildClonedFormDictExtras(formObjText, objCache, perGlyphEntries, nestedFormClones, parentResourcesText);
     const cloneContent = await encodeStreamObject(cloneObjNum, smResult.text, { humanReadable, dictExtras });
     pushObj({ objNum: cloneObjNum, content: cloneContent });
     state.formCloneByKey.set(dedupKey, cloneObjNum);
@@ -1577,6 +1627,9 @@ export async function convertSinglePageForRegions({
     pageXobjectsByName.set(name, info.objNum);
   }
 
+  // Page-level forms that omit their own /Resources inherit the page's, so pass it down.
+  const pageResourcesText = resolveResourcesText(pageObjText, objCache);
+
   // Page is convertible only if it has either fonts (for direct text-show
   // conversion) or Form XObjects (for recursion into form-borne text).
   if (fontsByTag.size === 0 && pageXobjectsByName.size === 0) return { changed: false };
@@ -1605,6 +1658,7 @@ export async function convertSinglePageForRegions({
       allocObjNum,
       pushObj,
       humanReadable,
+      parentResourcesText: pageResourcesText,
     });
     if (r.skipped && r.skipped.length > 0) skipped.push(...r.skipped);
     if (r.changed && r.cloneObjNum !== inv.formObjNum) {
