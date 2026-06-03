@@ -5,59 +5,7 @@ import {
 import {
   parseTintColorSpace, buildTintLookupTable, tintComponentsToRGB, tintSamplesToRgb,
 } from './pdfColorFunctions.js';
-
-/**
- * Parse a PDF literal string starting at the '(' byte, returning raw bytes.
- * @param {Uint8Array} pdfBytes
- * @param {number} openParenPos - offset of the '(' byte
- */
-function parsePdfLiteralString(pdfBytes, openParenPos) {
-  const result = [];
-  let depth = 1;
-  let i = openParenPos + 1;
-  while (i < pdfBytes.length && depth > 0) {
-    const b = pdfBytes[i];
-    if (b === 0x5C) { // backslash
-      i++;
-      const next = pdfBytes[i];
-      if (next === 0x6E) result.push(0x0A); // \n
-      else if (next === 0x72) result.push(0x0D); // \r
-      else if (next === 0x74) result.push(0x09); // \t
-      else if (next === 0x62) result.push(0x08); // \b
-      else if (next === 0x66) result.push(0x0C); // \f
-      else if (next === 0x28) result.push(0x28); // \(
-      else if (next === 0x29) result.push(0x29); // \)
-      else if (next === 0x5C) result.push(0x5C); // \\
-      else if (next >= 0x30 && next <= 0x37) { // octal
-        let octal = next - 0x30;
-        if (pdfBytes[i + 1] >= 0x30 && pdfBytes[i + 1] <= 0x37) {
-          octal = octal * 8 + (pdfBytes[i + 1] - 0x30);
-          i++;
-          if (pdfBytes[i + 1] >= 0x30 && pdfBytes[i + 1] <= 0x37) {
-            octal = octal * 8 + (pdfBytes[i + 1] - 0x30);
-            i++;
-          }
-        }
-        result.push(octal & 0xFF);
-      } else if (next === 0x0A || next === 0x0D) {
-        // Line continuation — skip (and skip \r\n pair)
-        if (next === 0x0D && pdfBytes[i + 1] === 0x0A) i++;
-      } else {
-        result.push(next);
-      }
-    } else if (b === 0x28) { // (
-      depth++;
-      result.push(b);
-    } else if (b === 0x29) { // )
-      depth--;
-      if (depth > 0) result.push(b);
-    } else {
-      result.push(b);
-    }
-    i++;
-  }
-  return new Uint8Array(result);
-}
+import { parsePdfLiteralString } from './pdfCrypto.js';
 
 /**
  * @typedef {{
@@ -934,7 +882,7 @@ function readIndirectLiteralPalette(objCache, objNum) {
     const endSearch = Math.min(entry.offset + 5000, pdfBytes.length);
     for (let i = entry.offset; i < endSearch; i++) {
       if (pdfBytes[i] === 0x28) { // '('
-        return objCache.decryptObjectStringBytes(parsePdfLiteralString(pdfBytes, i), objNum);
+        return objCache.decryptObjectStringBytes(parsePdfLiteralString(pdfBytes, i).value, objNum);
       }
       if (pdfBytes[i] === 0x3C || pdfBytes[i] === 0x2F) return null;
     }
@@ -1007,7 +955,7 @@ function parseLiteralPalette(csText, regexMatch, objCache, objNum) {
           }
         }
       }
-      if (parenPos >= 0) return objCache.decryptObjectStringBytes(parsePdfLiteralString(pdfBytes, parenPos), objNum);
+      if (parenPos >= 0) return objCache.decryptObjectStringBytes(parsePdfLiteralString(pdfBytes, parenPos).value, objNum);
     }
   }
   // Fallback: parse from text via charCodeAt (works for compressed objects)

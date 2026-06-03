@@ -6,6 +6,7 @@ import { inflate as pakoInflate, inflatePartial as pakoInflatePartial } from '..
 import {
   setupEncryption, aesDecrypt, computeObjectKey, rc4,
   parsePdfLiteralString, parsePdfHexString,
+  isPdfWhitespace, isAsciiDigit,
 } from './pdfCrypto.js';
 
 /**
@@ -76,22 +77,6 @@ export function bytesEqualAt(bytes, off, needle) {
     if (bytes[off + j] !== needle.charCodeAt(j)) return false;
   }
   return true;
-}
-
-/**
- * PDF whitespace bytes per spec §3.1.1: NUL, HT, LF, FF, CR, SP.
- * @param {number} b
- */
-function isPdfWhitespace(b) {
-  return b === 0x20 || b === 0x09 || b === 0x0A || b === 0x0D || b === 0x0C || b === 0x00;
-}
-
-/**
- * ASCII digit byte (0-9).
- * @param {number} b
- */
-function isAsciiDigit(b) {
-  return b >= 0x30 && b <= 0x39;
 }
 
 /**

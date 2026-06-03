@@ -27,7 +27,7 @@ function byteIndexOf(bytes, needle, from = 0) {
  * PDF whitespace bytes per spec §3.1.1: NUL, HT, LF, FF, CR, SP.
  * @param {number} b
  */
-function isPdfWhitespace(b) {
+export function isPdfWhitespace(b) {
   return b === 0x20 || b === 0x09 || b === 0x0A || b === 0x0D || b === 0x0C || b === 0x00;
 }
 
@@ -35,7 +35,7 @@ function isPdfWhitespace(b) {
  * ASCII digit byte (0-9).
  * @param {number} b
  */
-function isAsciiDigit(b) {
+export function isAsciiDigit(b) {
   return b >= 0x30 && b <= 0x39;
 }
 
