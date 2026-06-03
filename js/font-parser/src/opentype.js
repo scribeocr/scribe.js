@@ -1,4 +1,4 @@
-import { inflateRaw } from './pako-inflate.js';
+import { inflateRaw } from '../../../lib/pako-inflate.js';
 import { parseCFFTable, makeCFFTable } from './cff.js';
 import { parseType1Font } from './type1.js';
 import {
