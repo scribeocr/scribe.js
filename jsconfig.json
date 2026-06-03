@@ -17,5 +17,6 @@
     "exclude": [
         "**/*.wasm.js",
         "user-docs",
+        "scribe-ui/basic-viewer/tauri/target",
     ],
 }

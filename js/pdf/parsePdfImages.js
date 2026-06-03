@@ -1,6 +1,6 @@
 import {
   extractDict, ObjectCache, findXrefOffset, parseXref,
-  resolveIntValue, resolveArrayValue,
+  resolveArrayValue, findTopLevelKeyIndex,
 } from './parsePdfUtils.js';
 import {
   parseTintColorSpace, buildTintLookupTable, tintComponentsToRGB, tintSamplesToRgb,
@@ -269,6 +269,30 @@ export function extractImages(pdfBytes) {
 }
 
 /**
+ * Read an integer value from the top level of an image dict, resolving a direct integer or an `N M R` indirect reference.
+ * @param {string} objText - The image object text (the first << >> is taken as the dict).
+ * @param {string} key - PDF name with leading slash, e.g. '/BitsPerComponent'.
+ * @param {number} dflt - Returned when the key is absent at the top level.
+ * @param {ObjectCache} objCache
+ * @returns {number}
+ */
+function readTopLevelInt(objText, key, dflt, objCache) {
+  const dictStart = objText.indexOf('<<');
+  const dictBody = dictStart >= 0 ? extractDict(objText, dictStart).slice(2, -2) : objText;
+  const idx = findTopLevelKeyIndex(dictBody, key);
+  if (idx < 0) return dflt;
+  const after = dictBody.slice(idx + key.length);
+  const refMatch = /^\s+(\d+)\s+\d+\s+R/.exec(after);
+  if (refMatch) {
+    const refObjText = objCache.getObjectText(Number(refMatch[1]));
+    const val = refObjText && /(\d+)/.exec(refObjText);
+    return val ? Number(val[1]) : dflt;
+  }
+  const direct = /^\s+(\d+)/.exec(after);
+  return direct ? Number(direct[1]) : dflt;
+}
+
+/**
  * Parse a single image XObject and return its metadata + raw bytes.
  *
  * @param {string} objText     – text of the image object dictionary
@@ -277,29 +301,11 @@ export function extractImages(pdfBytes) {
  * @returns {ImageInfo|null}
  */
 export function parseImageObject(objText, objNum, objCache) {
-  let width = 0;
-  let height = 0;
-  const widthRefMatch = /\/Width\s+(\d+)\s+\d+\s+R/.exec(objText);
-  if (widthRefMatch) {
-    const wObjText = objCache.getObjectText(Number(widthRefMatch[1]));
-    const val = wObjText && /(\d+)/.exec(wObjText);
-    width = val ? Number(val[1]) : 0;
-  } else {
-    const widthMatch = /\/Width\s+(\d+)/.exec(objText);
-    width = widthMatch ? Number(widthMatch[1]) : 0;
-  }
-  const heightRefMatch = /\/Height\s+(\d+)\s+\d+\s+R/.exec(objText);
-  if (heightRefMatch) {
-    const hObjText = objCache.getObjectText(Number(heightRefMatch[1]));
-    const val = hObjText && /(\d+)/.exec(hObjText);
-    height = val ? Number(val[1]) : 0;
-  } else {
-    const heightMatch = /\/Height\s+(\d+)/.exec(objText);
-    height = heightMatch ? Number(heightMatch[1]) : 0;
-  }
+  const width = readTopLevelInt(objText, '/Width', 0, objCache);
+  const height = readTopLevelInt(objText, '/Height', 0, objCache);
   if (width === 0 || height === 0) return null;
 
-  const bitsPerComponent = resolveIntValue(objText, 'BitsPerComponent', objCache, 8);
+  const bitsPerComponent = readTopLevelInt(objText, '/BitsPerComponent', 8, objCache);
 
   const imageMask = /\/ImageMask\s+true/.test(objText);
   let colorSpace = imageMask ? 'DeviceGray' : parseColorSpace(objText, objCache);
@@ -429,12 +435,14 @@ export function parseImageObject(objText, objNum, objCache) {
     const sMaskObjNum = Number(maskRefMatch[1]);
     const sMaskObjText = objCache.getObjectText(sMaskObjNum);
     if (sMaskObjText) {
-      sMaskWidth = resolveIntValue(sMaskObjText, 'Width', objCache);
-      sMaskHeight = resolveIntValue(sMaskObjText, 'Height', objCache);
+      // An SMask is itself an image dict that can carry a /DecodeParms, so read its dimensions
+      // from the top level too (same reason as the main image above).
+      sMaskWidth = readTopLevelInt(sMaskObjText, '/Width', 0, objCache);
+      sMaskHeight = readTopLevelInt(sMaskObjText, '/Height', 0, objCache);
       sMask = objCache.getStreamBytes(sMaskObjNum);
       if (sMask && sMaskWidth && sMaskHeight) {
         const isImageMask = /\/ImageMask\s+true/.test(sMaskObjText);
-        const smBpc = resolveIntValue(sMaskObjText, 'BitsPerComponent', objCache, isImageMask ? 1 : 8);
+        const smBpc = readTopLevelInt(sMaskObjText, '/BitsPerComponent', isImageMask ? 1 : 8, objCache);
         if (smBpc === 1) {
           const unpacked = new Uint8Array(sMaskWidth * sMaskHeight);
           const rowBytes = Math.ceil(sMaskWidth / 8);

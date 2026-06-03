@@ -9,8 +9,10 @@
  * @param {Uint8Array} data - Raw JP2/JPX codestream bytes
  * @param {number} [reduceLevels] - Discard this many of the finest resolution levels (single-tile images only).
  *   Each level halves the decoded dimensions and skips that level's inverse-wavelet and entropy-decode work.
+ * @param {boolean} [applyInternalPalette] - Expand an internal JP2 Palette box (pclr) into its output channels.
+ *   Pass false when a PDF /Indexed colour space overrides the JP2 palette (raw indices are wanted).
  */
-export function decodeJPX(data, reduceLevels = 0) {
+export function decodeJPX(data, reduceLevels = 0, applyInternalPalette = true) {
   const jpx = new JpxImage();
   try {
     jpx.parse(data, reduceLevels);
@@ -44,6 +46,36 @@ export function decodeJPX(data, reduceLevels = 0) {
         pixelData[destRow + (tileLeft * components) + x] = tileItems[srcRow + x];
       }
     }
+  }
+
+  if (jpx.palette && applyInternalPalette) {
+    // JP2 paletted image (I.5.3.4/I.5.3.5): the codestream holds index samples
+    // that the Palette box expands into one channel per Component Mapping entry (NPC channels when no cmap box is present).
+    // Callers pass applyInternalPalette=false when the PDF image supplies its own /Indexed colour space,
+    // which overrides the JP2 palette and needs the raw index samples instead.
+    const { columns, lut } = jpx.palette;
+    const mapping = jpx.componentMapping
+      || Array.from({ length: columns }, (_, c) => ({ cmp: 0, mtyp: 1, pcol: c }));
+    const outChannels = mapping.length;
+    const idxPrecision = jpx.componentsPrecision ? jpx.componentsPrecision[0] : 8;
+    const idxShift = idxPrecision < 8 ? (8 - idxPrecision) : 0;
+    const pixelCount = width * height;
+    const out = new Uint8ClampedArray(pixelCount * outChannels);
+    for (let i = 0; i < pixelCount; i++) {
+      for (let c = 0; c < outChannels; c++) {
+        const m = mapping[c];
+        const sample = pixelData[i * components + m.cmp];
+        if (m.mtyp === 1) {
+          const index = idxShift ? (sample >> idxShift) : sample;
+          out[i * outChannels + c] = lut[index * columns + m.pcol];
+        } else {
+          out[i * outChannels + c] = sample;
+        }
+      }
+    }
+    return {
+      width, height, components: outChannels, pixelData: out, precision: new Array(outChannels).fill(8),
+    };
   }
 
   return {
@@ -382,6 +414,41 @@ class JpxImage {
           } else if (method === 2) {
             info('ICC profile not supported');
           }
+          break;
+        }
+        case 0x70636c72: { // 'pclr' Palette box (I.5.3.4)
+          // Maps a single index component into NPC output columns. NE entries,
+          // each with NPC column samples stored entry-major (entry 0's columns, then entry 1's, ...).
+          // Each Bi gives a column's bit depth (low 7 bits, value+1).
+          // The sample is padded to a whole number of bytes.
+          const NE = readUint16(data, position);
+          const NPC = data[position + 2];
+          const bitDepths = [];
+          let pp = position + 3;
+          for (let i = 0; i < NPC; i++) bitDepths.push((data[pp++] & 0x7f) + 1);
+          const lut = new Uint8Array(NE * NPC);
+          for (let j = 0; j < NE; j++) {
+            for (let i = 0; i < NPC; i++) {
+              const depth = bitDepths[i];
+              const byteLen = Math.ceil(depth / 8);
+              let v = 0;
+              for (let b = 0; b < byteLen; b++) v = (v << 8) | data[pp++];
+              // Normalize the column sample to 8 bits so the rest of the pipeline stays 8-bit.
+              lut[j * NPC + i] = depth >= 8 ? (v >> (depth - 8)) : (v << (8 - depth));
+            }
+          }
+          this.palette = { columns: NPC, lut };
+          break;
+        }
+        case 0x636d6170: { // 'cmap' Component Mapping box (I.5.3.5)
+          // One (CMP, MTYP, PCOL) triple per output channel.
+          // MTYP 1 maps the codestream component CMP through palette column PCOL.
+          // MTYP 0 uses CMP directly.
+          const mapping = [];
+          for (let p = position; p + 4 <= position + dataLength; p += 4) {
+            mapping.push({ cmp: readUint16(data, p), mtyp: data[p + 2], pcol: data[p + 3] });
+          }
+          this.componentMapping = mapping;
           break;
         }
         case 0x6a703263: // 'jp2c'
@@ -1558,7 +1625,6 @@ function parseTilePackets(context, data, offset, dataLength) {
         // B.10.7.2: a termination between included passes splits the contribution into one codeword segment per terminated pass.
         // Termination on every pass (and no bypass) makes each included pass its own one-pass segment,
         // whose length uses Lblock + floor(log2(1)) = Lblock bits. Lblock is incremented only once, before the segment lengths.
-        // Lblock is incremented only once, before the segment lengths.
         segmentLengths = new Array(codingpasses);
         codedDataLength = 0;
         for (let s = 0; s < codingpasses; s++) {
@@ -2497,13 +2563,14 @@ class BitModel {
   checkSegmentationSymbol() {
     const decoder = this.decoder;
     const contexts = this.contexts;
-    const symbol = (decoder.readBit(contexts, UNIFORM_CONTEXT) << 3)
-      | (decoder.readBit(contexts, UNIFORM_CONTEXT) << 2)
-      | (decoder.readBit(contexts, UNIFORM_CONTEXT) << 1)
-      | decoder.readBit(contexts, UNIFORM_CONTEXT);
-    if (symbol !== 0xa) {
-      throw new JpxError('Invalid segmentation symbol');
-    }
+    // Segmentation symbol (spec D.5): with segmentation enabled,
+    // each cleanup pass ends with a 4-bit 0xA symbol coded under the UNIFORM context.
+    // It carries no coefficient data, so consume its bits to keep the decoder aligned for the next bit-plane.
+    // It is only an error-detection aid, so the value is read but not validated.
+    decoder.readBit(contexts, UNIFORM_CONTEXT);
+    decoder.readBit(contexts, UNIFORM_CONTEXT);
+    decoder.readBit(contexts, UNIFORM_CONTEXT);
+    decoder.readBit(contexts, UNIFORM_CONTEXT);
   }
 }
 

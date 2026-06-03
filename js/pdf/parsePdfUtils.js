@@ -106,7 +106,22 @@ function extractDictFromBytes(bytes, start) {
   let i = start;
   const len = bytes.length;
   while (i < len) {
-    if (bytes[i] === 0x3C && i + 1 < len && bytes[i + 1] === 0x3C) {
+    if (bytes[i] === 0x28) {
+      // Literal string '(...)': skip to its matching ')'
+      // so that '<<'/'>>' bytes inside it count as string data, not dict delimiters.
+      // A binary string value (e.g. an XRef stream dict's /ID[(...>>...)]) can hold a raw '>>'
+      // which would otherwise decrement the dict depth to zero and return a dict truncated at that stray '>>',
+      // before its real closing '>>'. Parentheses nest and may be backslash-escaped.
+      i++;
+      let strDepth = 1;
+      while (i < len && strDepth > 0) {
+        const c = bytes[i];
+        if (c === 0x5C) { i += 2; continue; }
+        if (c === 0x28) strDepth++;
+        else if (c === 0x29) strDepth--;
+        i++;
+      }
+    } else if (bytes[i] === 0x3C && i + 1 < len && bytes[i + 1] === 0x3C) {
       depth++;
       i += 2;
     } else if (bytes[i] === 0x3E && i + 1 < len && bytes[i + 1] === 0x3E) {
@@ -533,7 +548,20 @@ export function extractDict(text, start) {
   let depth = 0;
   let i = start;
   while (i < text.length) {
-    if (text[i] === '<' && text[i + 1] === '<') {
+    if (text[i] === '(') {
+      // Literal string '(...)': skip to its matching ')' so '<<'/'>>' bytes inside it count as string data,
+      // not dict delimiters (e.g. a binary /ID holding a raw '>>' would otherwise close the dict early).
+      // Parentheses nest and may be backslash-escaped.
+      i++;
+      let strDepth = 1;
+      while (i < text.length && strDepth > 0) {
+        const c = text[i];
+        if (c === '\\') { i += 2; continue; }
+        if (c === '(') strDepth++;
+        else if (c === ')') strDepth--;
+        i++;
+      }
+    } else if (text[i] === '<' && text[i + 1] === '<') {
       depth++;
       i += 2;
     } else if (text[i] === '>' && text[i + 1] === '>') {
@@ -1198,6 +1226,13 @@ export class ObjectCache {
     /** @type {number} Total characters across all entries in `textCache` */
     this.textCacheChars = 0;
     /**
+     * Synthetic objects injected at runtime (e.g. appearance streams generated for form fields that have a value but no /AP).
+     * Keyed by a synthetic objNum, each holds the object's dict text and its uncompressed stream bytes.
+     * Checked before the real xref in `getObjectText`/`getStreamBytes` and never evicted.
+     * @type {Map<number, { text: string, bytes: Uint8Array }>}
+     */
+    this.syntheticObjects = new Map();
+    /**
      * LRU cache of decompressed object streams. Each value is a map from
      * contained-objNum to its raw text.
      * @type {Map<number, Map<number, string>>}
@@ -1388,6 +1423,8 @@ export class ObjectCache {
    * @returns {string|null}
    */
   getObjectText(objNum) {
+    const synthetic = this.syntheticObjects.get(objNum);
+    if (synthetic !== undefined) return synthetic.text;
     const cached = this.textCache.get(objNum);
     if (cached !== undefined) return cached;
 
@@ -1543,6 +1580,8 @@ export class ObjectCache {
    * @returns {Uint8Array|null}
    */
   getStreamBytes(objNum) {
+    const synthetic = this.syntheticObjects.get(objNum);
+    if (synthetic !== undefined) return synthetic.bytes;
     const cached = this.streamBytesCache.get(objNum);
     if (cached !== undefined) return cached;
 
@@ -1570,6 +1609,16 @@ export class ObjectCache {
 
     if (result !== null) this._putStreamBytes(objNum, result);
     return result;
+  }
+
+  /**
+   * Add object lacking an /AP in the input (certain form fields).
+   * @param {number} objNum
+   * @param {string} text - The object's dict text (e.g. a Form XObject dictionary).
+   * @param {Uint8Array} bytes - The object's uncompressed content stream.
+   */
+  addSyntheticObject(objNum, text, bytes) {
+    this.syntheticObjects.set(objNum, { text, bytes });
   }
 
   /**

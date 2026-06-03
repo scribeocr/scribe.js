@@ -8,7 +8,7 @@ import {
 } from './parsePdfDoc.js';
 import { extractPdfAnnotations } from './parsePdfAnnots.js';
 import {
-  extractDict,
+  extractDict, findRootObjNum,
   resolveIntValue, resolveNumValue, resolveArrayValue, applyPredictor,
 } from './parsePdfUtils.js';
 import { matMul, parseDrawOps } from './parseDrawOps.js';
@@ -449,10 +449,12 @@ async function decodeSmaskJpeg(rawData) {
     ca.closeDrawable(canvas);
     return pixels;
   }
-  // Check for JPEG 2000 (JP2 signature: 0x0000000C 6A502020)
-  if (rawData.length >= 8 && rawData[0] === 0x00 && rawData[1] === 0x00
-    && rawData[2] === 0x00 && rawData[3] === 0x0C
-    && rawData[4] === 0x6A && rawData[5] === 0x50) {
+  // JPEG 2000: a JP2 box signature (00 00 00 0C 6A 50 ...) or a bare codestream (SOC marker FF 4F).
+  // A JPXDecode SMask may be stored either way, so decode both.
+  const isJP2Box = rawData.length >= 6 && rawData[0] === 0x00 && rawData[1] === 0x00
+    && rawData[2] === 0x00 && rawData[3] === 0x0C && rawData[4] === 0x6A && rawData[5] === 0x50;
+  const isJ2kCodestream = rawData.length >= 2 && rawData[0] === 0xFF && rawData[1] === 0x4F;
+  if (isJP2Box || isJ2kCodestream) {
     const { decodeJPX } = await import('./codecs/decodeJPX.js');
     const decoded = decodeJPX(rawData);
     if (decoded && decoded.pixelData) {
@@ -629,6 +631,57 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
       return ca.createImageBitmapFromCanvas(canvas);
     }
 
+    // Indexed color space JPEG: a single-component DCTDecode whose decoded samples are palette indices.
+    // The base is /DeviceCMYK, /DeviceRGB, or /DeviceGray.
+    // The browser decodes the grayscale JPEG to raw index values (R=G=B=index),
+    // so map each index through the palette, like the uncompressed Indexed path
+    // later in this function (the one reached when there is no image codec).
+    if (colorSpace === 'Indexed' && imageInfo.palette) {
+      const w = jpegBitmap.width;
+      const h = jpegBitmap.height;
+      const canvas = ca.makeCanvas(w, h);
+      const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d', { willReadFrequently: true }));
+      ctx.drawImage(jpegBitmap, 0, 0);
+      ca.closeDrawable(jpegBitmap);
+
+      const palette = imageInfo.palette;
+      const base = imageInfo.paletteBase || 'DeviceRGB';
+      const nComp = base === 'DeviceCMYK' ? 4 : (base === 'DeviceGray' || base === 'CalGray' ? 1 : 3);
+      const imgData = ctx.getImageData(0, 0, w, h);
+      const px = imgData.data;
+      for (let i = 0; i < px.length; i += 4) {
+        const po = px[i] * nComp;
+        if (nComp === 4) {
+          const [r, g, b] = cmykToRgb(palette[po] / 255, palette[po + 1] / 255, palette[po + 2] / 255, palette[po + 3] / 255);
+          px[i] = r;
+          px[i + 1] = g;
+          px[i + 2] = b;
+        } else if (nComp === 1) {
+          px[i] = palette[po];
+          px[i + 1] = palette[po];
+          px[i + 2] = palette[po];
+        } else {
+          px[i] = palette[po];
+          px[i + 1] = palette[po + 1];
+          px[i + 2] = palette[po + 2];
+        }
+      }
+      ctx.putImageData(imgData, 0, 0);
+
+      // Apply soft mask if present
+      if (sMask && sMaskWidth && sMaskHeight) {
+        const imgData2 = ctx.getImageData(0, 0, w, h);
+        const px2 = imgData2.data;
+        for (let j = 0; j < w * h; j++) {
+          const sx = Math.min(Math.floor((j % w) * sMaskWidth / w), sMaskWidth - 1);
+          const sy = Math.min(Math.floor(Math.floor(j / w) * sMaskHeight / h), sMaskHeight - 1);
+          px2[j * 4 + 3] = sMask[sy * sMaskWidth + sx];
+        }
+        ctx.putImageData(imgData2, 0, 0);
+      }
+      return ca.createImageBitmapFromCanvas(canvas);
+    }
+
     // /Decode [1 0 ...] inversion for JPEG: invert decoded pixel values via compositing
     if (decodeInvert) {
       const w = jpegBitmap.width;
@@ -755,7 +808,9 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
         reduceLevels++;
       }
     }
-    const decoded = decodeJPX(imageData, reduceLevels);
+    // A PDF /Indexed colour space (imageInfo.palette) overrides any internal JP2 palette
+    // and needs the raw index samples, so skip the internal palette expansion in that case.
+    const decoded = decodeJPX(imageData, reduceLevels, !imageInfo.palette);
     if (!decoded) return null;
     const w = decoded.width;
     const h = decoded.height;
@@ -1531,9 +1586,14 @@ async function flattenDrawOps(
   /** @type {Array<DrawOp>} */
   const flattened = [];
   if (depth > 200) return flattened;
+  // Backstop against pathological/malicious form nesting.
+  // depth > 200 guard above bounds recursion depth.
+  // callCount guard bounds total breadth.
+  // Legitimate documents with ~11k objects at this path have been encountered,
+  // so this is currently set to a high number.
   const callCount = (formResourceCache.get('_callCount') || 0) + 1;
   formResourceCache.set('_callCount', callCount);
-  if (callCount > 10000) return flattened;
+  if (callCount > 100000) return flattened;
 
   for (const op of imageOps) {
     const fullName = prefix + op.name;
@@ -1803,7 +1863,15 @@ async function flattenDrawOps(
       && cached.rawFormDrawOps.length === 1
       && cached.rawFormDrawOps[0].type !== 'image'
       && !(cached.rawFormDrawOps[0].fill && cached.rawFormDrawOps[0].stroke);
-    if (groupContext && formInfo.transparencyGroup && !compositeIsTrivial && !singleOpAlphaGroup) {
+    // An isolated group composites against a fully transparent backdrop.
+    // A child blend that depends on the backdrop (Screen, Multiply, Darken...) needs that:
+    // when the group's own composite is trivial, the isolation above is skipped,
+    // the child blends against the parent (e.g. the white page), and Screen-over-white erases it.
+    // So force a buffer when an isolated group has a direct op with a non-Normal blend
+    // (a blend nested deeper inside a child form is not inspected here).
+    const isolatedNeedsBuffer = formInfo.transparencyGroup && formInfo.transparencyGroup.isolated
+      && cached.rawFormDrawOps.some((fop) => fop.blendMode && fop.blendMode !== 'Normal');
+    if (groupContext && formInfo.transparencyGroup && (!compositeIsTrivial || isolatedNeedsBuffer) && !singleOpAlphaGroup) {
       formGroupId = groupContext.nextId++;
       groupContext.registry.set(formGroupId, {
         isolated: !!formInfo.transparencyGroup.isolated,
@@ -4805,11 +4873,30 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   // (shared with the importer at js/pdf/parsePdfAnnots.js); we fetch each
   // annotText here for flag-filtering, /AP resolution, and non-highlight synth.
   const annotsParsed = extractPdfAnnotations(objCache, pageObjText);
+  // AcroForm /NeedAppearances: when true, field appearances are out of date and must be regenerated
+  // from the field value (text) or /MK caption (buttons) rather than trusting a possibly-stale embedded /AP.
+  let needAppearances = false;
+  {
+    const rootObjNum = findRootObjNum(objCache.pdfBytes);
+    const catalogText = rootObjNum ? objCache.getObjectText(rootObjNum) : null;
+    const acroFormMatch = catalogText ? /\/AcroForm\s+(\d+)\s+\d+\s+R/.exec(catalogText) : null;
+    const acroFormText = acroFormMatch ? objCache.getObjectText(Number(acroFormMatch[1])) : null;
+    if (acroFormText && /\/NeedAppearances\s+true\b/.test(acroFormText)) needAppearances = true;
+  }
   /** @type {Map<number, import('./parsePdfAnnots.js').PdfHighlightRaw>} */
   const highlightByRef = new Map(annotsParsed.highlights.map((h) => [h.objNum, h]));
-  const annotRefs = [
+  const annotRefsRaw = [
     ...annotsParsed.highlights.map((h) => h.objNum),
     ...annotsParsed.passthroughRefs,
+  ];
+  // Render form-field Widget annotations after (on top of) non-Widget markup annotations.
+  const annotIsWidget = (ref) => {
+    const t = objCache.getObjectText(ref);
+    return t ? /\/Subtype\s*\/Widget\b/.test(t) : false;
+  };
+  const annotRefs = [
+    ...annotRefsRaw.filter((r) => !annotIsWidget(r)),
+    ...annotRefsRaw.filter((r) => annotIsWidget(r)),
   ];
   if (annotRefs.length > 0) {
     for (const annotRef of annotRefs) {
@@ -4888,6 +4975,142 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           const currentState = asMatch ? asMatch[1] : 'Off';
           const stateRefMatch = new RegExp(`\\/${currentState}\\s+(\\d+)\\s+\\d+\\s+R`).exec(apDictMatch[1]);
           if (stateRefMatch) apObjNum = Number(stateRefMatch[1]);
+        }
+      }
+
+      // Resolve the field type from this widget or its /Parent (radio kids put /FT on /Parent).
+      let resolvedFieldType = '';
+      const ftSelfMatch = /\/FT\s*\/(\w+)/.exec(annotText);
+      if (ftSelfMatch) {
+        resolvedFieldType = ftSelfMatch[1];
+      } else {
+        const parentRefMatch = /\/Parent\s+(\d+)\s+\d+\s+R/.exec(annotText);
+        const parentText = parentRefMatch ? objCache.getObjectText(Number(parentRefMatch[1])) : null;
+        const ftParentMatch = parentText ? /\/FT\s*\/(\w+)/.exec(parentText) : null;
+        if (ftParentMatch) resolvedFieldType = ftParentMatch[1];
+      }
+      // Under /NeedAppearances, regenerate radio/checkbox appearances rather than trust the embedded /AP
+      // (often a stale composite). Pushbuttons (Ff bit 17) keep their /AP.
+      if (needAppearances && resolvedFieldType === 'Btn' && apObjNum !== null) {
+        const ffBtnMatch = /\/Ff\s+(\d+)/.exec(annotText);
+        if (!((ffBtnMatch ? Number(ffBtnMatch[1]) : 0) & 0x10000)) apObjNum = null;
+      }
+
+      // No usable /AP: synthesize the field appearance and route it through the /AP path below,
+      // which handles font parsing and the BBox->Rect transform. Text/choice fields draw their /V.
+      // Selected radio/checkbox buttons draw a filled dot.
+      if (apObjNum === null) {
+        if (resolvedFieldType === 'Tx' || resolvedFieldType === 'Ch') {
+          // Extract the field value (/V): literal string, hex string, or UTF-16BE with BOM.
+          let fieldValue = null;
+          const vLitMatch = /\/V\s*\(((?:[^()\\]|\\.)*)\)/.exec(annotText);
+          const vHexMatch = /\/V\s*<([0-9A-Fa-f\s]*)>/.exec(annotText);
+          if (vLitMatch) {
+            fieldValue = vLitMatch[1].replace(/\\([nrtbf()\\]|[0-7]{1,3})/g, (m, c) => {
+              const simple = {
+                n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', '(': '(', ')': ')', '\\': '\\',
+              };
+              return simple[c] !== undefined ? simple[c] : String.fromCharCode(parseInt(c, 8));
+            });
+          } else if (vHexMatch) {
+            const hex = vHexMatch[1].replace(/\s+/g, '');
+            const bytes = [];
+            for (let k = 0; k + 1 < hex.length; k += 2) bytes.push(parseInt(hex.substr(k, 2), 16));
+            if (bytes[0] === 0xfe && bytes[1] === 0xff) {
+              let s = '';
+              for (let k = 2; k + 1 < bytes.length; k += 2) s += String.fromCharCode((bytes[k] << 8) | bytes[k + 1]);
+              fieldValue = s;
+            } else {
+              fieldValue = String.fromCharCode(...bytes);
+            }
+          }
+          // Strip a UTF-16BE BOM from a literal value too, and drop non-printing controls.
+          if (fieldValue && fieldValue.charCodeAt(0) === 0xfeff) fieldValue = fieldValue.slice(1);
+
+          if (fieldValue && fieldValue.length > 0) {
+            const daMatch = /\/DA\s*\(((?:[^()\\]|\\.)*)\)/.exec(annotText);
+            const da = daMatch ? daMatch[1] : '/Helvetica 10 Tf 0 g';
+            const tfMatch = /\/[\w+-]+\s+([\d.]+)\s+Tf/.exec(da);
+            let fontSize = tfMatch ? Number(tfMatch[1]) : 10;
+            // /DA font size 0 means auto-size: pick a size that fits the field height.
+            if (!fontSize) fontSize = Math.min(12, Math.max(6, rectH - 4));
+            const tfEnd = da.lastIndexOf('Tf');
+            const colorOps = tfEnd >= 0 ? da.slice(tfEnd + 2).trim() : '0 g';
+            const qMatch = /\/Q\s+(\d+)/.exec(annotText);
+            const quadding = qMatch ? Number(qMatch[1]) : 0;
+            const multiline = (() => {
+              const ffMatch = /\/Ff\s+(\d+)/.exec(annotText);
+              return ffMatch ? (Number(ffMatch[1]) & 0x1000) !== 0 : false;
+            })();
+            const pad = 2;
+            // Escape the value for re-emission inside a content-stream literal string.
+            const esc = (s) => s.replace(/[\\()]/g, (ch) => `\\${ch}`);
+            // Helvetica's average advance is ~0.5em, enough to place/justify single lines
+            // and to wrap a multiline note approximately (no per-glyph metrics needed here).
+            const avgCharW = fontSize * 0.5;
+            let textCommands = '';
+            if (multiline) {
+              const maxChars = Math.max(1, Math.floor((rectW - 2 * pad) / avgCharW));
+              const words = fieldValue.replace(/[\r\n]+/g, ' ').split(/\s+/).filter((w) => w.length > 0);
+              const lines = [];
+              let line = '';
+              for (const w of words) {
+                if (line.length === 0) line = w;
+                else if ((line.length + 1 + w.length) <= maxChars) line += ` ${w}`;
+                else { lines.push(line); line = w; }
+              }
+              if (line.length > 0) lines.push(line);
+              const leading = fontSize * 1.15;
+              let ty = rectH - pad - fontSize;
+              textCommands = `${pad} ${ty} Td`;
+              for (let li = 0; li < lines.length; li++) {
+                if (li > 0) textCommands += ` 0 ${-leading} Td`;
+                textCommands += ` (${esc(lines[li])}) Tj`;
+                ty -= leading;
+              }
+            } else {
+              const textW = fieldValue.length * avgCharW;
+              let tx = pad;
+              if (quadding === 1) tx = Math.max(pad, (rectW - textW) / 2);
+              else if (quadding === 2) tx = Math.max(pad, rectW - textW - pad);
+              const ty = Math.max(pad, (rectH - fontSize) / 2 + fontSize * 0.2);
+              textCommands = `${tx} ${ty} Td (${esc(fieldValue)}) Tj`;
+            }
+            const synthDict = `<</Type/XObject/Subtype/Form/FormType 1/BBox[0 0 ${rectW} ${rectH}]`
+              + '/Resources<</Font<</HsynthF<</Type/Font/Subtype/Type1/BaseFont/Helvetica/Encoding/WinAnsiEncoding>>>>/ProcSet[/PDF/Text]>>>>';
+            const clip = `0 0 ${rectW} ${rectH} re W n`;
+            const synthStream = `/Tx BMC q ${clip} BT /HsynthF ${fontSize} Tf ${colorOps} ${textCommands} ET Q EMC`;
+            const synthObjNum = 900000000 + annotRef;
+            objCache.addSyntheticObject(synthObjNum, synthDict, new TextEncoder().encode(synthStream));
+            apObjNum = synthObjNum;
+          }
+        } else if (resolvedFieldType === 'Btn') {
+          // Selected radio/checkbox (/AS other than /Off): draw a filled dot centered in the field,
+          // matching the conventional "on" indicator. The /MK /CA caption names a ZapfDingbats glyph,
+          // but its substitute rendering is unreliable, so a circle path reproduces the baseline dot
+          // exactly without a font. /AS /Off draws nothing.
+          const asMatch = /\/AS\s*\/(\w+)/.exec(annotText);
+          if (asMatch && asMatch[1] !== 'Off') {
+            const daMatch = /\/DA\s*\(((?:[^()\\]|\\.)*)\)/.exec(annotText);
+            const da = daMatch ? daMatch[1] : '0 g';
+            const tfEnd = da.lastIndexOf('Tf');
+            const dotColor = tfEnd >= 0 ? da.slice(tfEnd + 2).trim() : '0 g';
+            const cx = rectW / 2;
+            const cy = rectH / 2;
+            const r = Math.min(rectW, rectH) * 0.25;
+            const k = 0.5522847498 * r;
+            const f = (n) => n.toFixed(3);
+            const dotPath = `${f(cx + r)} ${f(cy)} m `
+              + `${f(cx + r)} ${f(cy + k)} ${f(cx + k)} ${f(cy + r)} ${f(cx)} ${f(cy + r)} c `
+              + `${f(cx - k)} ${f(cy + r)} ${f(cx - r)} ${f(cy + k)} ${f(cx - r)} ${f(cy)} c `
+              + `${f(cx - r)} ${f(cy - k)} ${f(cx - k)} ${f(cy - r)} ${f(cx)} ${f(cy - r)} c `
+              + `${f(cx + k)} ${f(cy - r)} ${f(cx + r)} ${f(cy - k)} ${f(cx + r)} ${f(cy)} c h f`;
+            const dotDict = `<</Type/XObject/Subtype/Form/FormType 1/BBox[0 0 ${rectW} ${rectH}]/Resources<</ProcSet[/PDF]>>>>`;
+            const dotStream = `q ${dotColor} ${dotPath} Q`;
+            const dotObjNum = 900000000 + annotRef;
+            objCache.addSyntheticObject(dotObjNum, dotDict, new TextEncoder().encode(dotStream));
+            apObjNum = dotObjNum;
+          }
         }
       }
 
@@ -5458,9 +5681,13 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   // Declare caches before try so they're accessible in the finally cleanup block.
   /** @type {Map<string, CanvasPattern>} */
   const tilingPatternCache = new Map();
-  // An uncolored (PaintType 2) pattern is one object reused with different paint colors,
-  // so its rendered tile is cached per (pattern, color), not per pattern name alone.
-  const tileKeyOf = (ref) => (ref.paintColor ? `${ref.patName}|${ref.paintColor}` : ref.patName);
+  // Cache key for a built pattern tile. Pattern names are scoped to their Resources dict,
+  // so a page and a nested Form XObject can legally reuse a name (P0, P1) for different pattern objects.
+  // The object number is included to disambiguate those scopes.
+  const tileKeyOf = (ref) => {
+    const base = ref.objNum != null ? `${ref.patName}#${ref.objNum}` : ref.patName;
+    return ref.paintColor ? `${base}|${ref.paintColor}` : base;
+  };
   // Keep this above the page-level tiling-pattern pre-pass below.
   // `renderTilingPatternTile` calls it for inline-image pattern cells, and that pre-pass runs first.
   // Declaring it lower would make the pre-pass hit a temporal-dead-zone ReferenceError.
@@ -5901,7 +6128,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
      * @param {{ objNum: number, bbox: number[], xStep: number, yStep: number, matrix: number[], paintType: number, paintColor?: string }} tp - Tiling pattern metadata
      */
     async function renderTilingPatternTile(patName, tp) {
-      const cacheKey = tp.paintColor ? `${patName}|${tp.paintColor}` : patName;
+      const cacheKey = tileKeyOf({ ...tp, patName });
       if (tilingPatternCache.has(cacheKey)) return;
       const patStreamBytes = objCache.getStreamBytes(tp.objNum);
       if (!patStreamBytes) return;
