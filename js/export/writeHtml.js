@@ -66,6 +66,8 @@ const makeSmallCapsDivs = (text, fontSizeHTMLSmallCaps) => {
  * @param {number} [params.confThreshMed] - Defaults to `scribeDocDefaults.confThreshMed`.
  * @param {number} [params.overlayOpacity] - Defaults to `scribeDocDefaults.overlayOpacity`.
  * @param {boolean} [params.kerning] - Defaults to `scribeDocDefaults.kerning`.
+ * @param {boolean} [params.embedFonts] - Embed fonts inline as base64 `data:` URIs instead of referencing the CDN.
+ *    Defaults to `scribeDocDefaults.embedFonts`.
  * @param {?import('../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for
  *    progress reporting.
  */
@@ -77,6 +79,7 @@ export function writeHtml({
   confThreshMed = scribeDocDefaults.confThreshMed,
   overlayOpacity = scribeDocDefaults.overlayOpacity,
   kerning = scribeDocDefaults.kerning,
+  embedFonts = scribeDocDefaults.embedFonts,
   doc = null,
 }) {
   const fontsUsed = new Set();
@@ -385,24 +388,45 @@ export function writeHtml({
   styleStr += '  }\n';
 
   for (const fontI of fontsUsed) {
-    const cdnPath = 'https://cdn.jsdelivr.net/npm/scribe.js-ocr@0.8.0/fonts/all/';
-    let styleTitleCase = 'Regular';
-    if (fontI.style === 'italic') {
-      styleTitleCase = 'Italic';
-    } else if (fontI.style === 'bold') {
-      styleTitleCase = 'Bold';
-    } else if (fontI.style === 'boldItalic') {
-      styleTitleCase = 'BoldItalic';
-    }
+    let fontSrc;
+    if (embedFonts) {
+      // Embed the font inline as a base64 data URI so the file is self-contained and opens offline / from `file://` without the CDN.
+      const fontBytes = new Uint8Array(fontI.src);
+      const isWoff = fontBytes[0] === 0x77 && fontBytes[1] === 0x4F
+        && fontBytes[2] === 0x46 && fontBytes[3] === 0x46; // 'wOFF'
+      const fontMime = isWoff ? 'font/woff' : 'font/ttf';
 
-    const fontName = `${fontI.family}-${styleTitleCase}.woff`;
-    const fontPath = cdnPath + fontName;
+      let fontBase64;
+      if (typeof Buffer !== 'undefined') {
+        fontBase64 = Buffer.from(fontBytes.buffer, fontBytes.byteOffset, fontBytes.byteLength).toString('base64');
+      } else {
+        let binary = '';
+        const chunkSize = 8192;
+        for (let i = 0; i < fontBytes.length; i += chunkSize) {
+          binary += String.fromCharCode.apply(null, fontBytes.subarray(i, i + chunkSize));
+        }
+        fontBase64 = btoa(binary);
+      }
+
+      fontSrc = `url('data:${fontMime};base64,${fontBase64}')`;
+    } else {
+      const cdnPath = 'https://cdn.jsdelivr.net/npm/scribe.js-ocr@0.8.0/fonts/all/';
+      let styleTitleCase = 'Regular';
+      if (fontI.style === 'italic') {
+        styleTitleCase = 'Italic';
+      } else if (fontI.style === 'bold') {
+        styleTitleCase = 'Bold';
+      } else if (fontI.style === 'boldItalic') {
+        styleTitleCase = 'BoldItalic';
+      }
+      fontSrc = `url('${cdnPath}${fontI.family}-${styleTitleCase}.woff')`;
+    }
 
     styleStr += `  @font-face {
     font-family: '${fontI.fontFaceName}';
     font-style: ${fontI.fontFaceStyle};
     font-weight: ${fontI.fontFaceWeight};
-    src: url('${fontPath}');
+    src: ${fontSrc};
   }\n`;
   }
 

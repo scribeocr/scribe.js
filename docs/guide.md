@@ -463,6 +463,7 @@ scribe.ScribeDoc.defaults.displayMode = 'invis';   // 'invis' | 'proof' | 'ebook
 scribe.ScribeDoc.defaults.colorMode = 'color';     // 'color' | 'gray' | 'binary'
 scribe.ScribeDoc.defaults.autoRotate = true;
 scribe.ScribeDoc.defaults.includeImages = false;   // include page images in HTML export
+scribe.ScribeDoc.defaults.embedFonts = false;      // embed fonts in HTML export (vs. CDN); enable for offline files
 
 // PDF text handling and confidence thresholds
 scribe.ScribeDoc.defaults.usePDFText = { native: { supp: true, main: true }, ocr: { supp: true, main: false } };

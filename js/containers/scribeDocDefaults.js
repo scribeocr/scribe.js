@@ -86,6 +86,11 @@ export const scribeDocDefaults = {
 
   includeImages: false,
 
+  /**
+   * Embed fonts inline (base64 `data:` URIs) in HTML exports instead of referencing the jsDelivr CDN.
+   */
+  embedFonts: false,
+
   enableLayout: false,
 
   xlsxFilenameColumn: true,

@@ -34,6 +34,7 @@ import { removeCircularRefsDataTables } from '../objects/layoutObjects.js';
  * @property {boolean} [lineNumbers]
  * @property {boolean} [removeMargins]
  * @property {boolean} [includeImages]
+ * @property {boolean} [embedFonts]
  * @property {boolean} [enableLayout]
  * @property {boolean} [xlsxFilenameColumn]
  * @property {boolean} [xlsxPageNumberColumn]
@@ -74,6 +75,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
   const lineNumbers = options.lineNumbers ?? scribeDocDefaults.lineNumbers;
   const removeMargins = options.removeMargins ?? scribeDocDefaults.removeMargins;
   const includeImagesOpt = options.includeImages ?? scribeDocDefaults.includeImages;
+  const embedFonts = options.embedFonts ?? scribeDocDefaults.embedFonts;
   const enableLayout = options.enableLayout ?? scribeDocDefaults.enableLayout;
   const compressScribe = options.compressScribe ?? scribeDocDefaults.compressScribe;
   const includeExtraTextScribe = options.includeExtraTextScribe ?? scribeDocDefaults.includeExtraTextScribe;
@@ -271,6 +273,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
       confThreshHigh,
       confThreshMed,
       overlayOpacity,
+      embedFonts,
       doc,
     });
   } else if (format === 'txt') {
