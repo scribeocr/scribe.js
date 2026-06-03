@@ -3,6 +3,7 @@ ignore
 .env
 .vscode
 .claude
+.tmp/
 node_modules/
 dev/debug
 cypress/downloads
@@ -31,3 +32,6 @@ user-docs
 scribe-ui/basic-viewer/tauri/target/
 scribe-ui/basic-viewer/tauri/dist/
 scribe-ui/basic-viewer/tauri/gen/
+
+# devtools
+/devtools/

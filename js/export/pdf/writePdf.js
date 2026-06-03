@@ -87,7 +87,7 @@ export async function writePdf({
   /** @type {Set<PdfFontInfo>} */
   const pdfFontsUsed = new Set();
 
-  /** @type {Array<string>} */
+  /** @type {Array<string | import('./writePdfStreams.js').PdfBinaryObject>} */
   const pdfImageObjStrArr = [];
   const imageObjIndices = [];
 
@@ -99,7 +99,7 @@ export async function writePdf({
       objectI++;
     }
 
-    const imageObjects = createEmbeddedImages(images, objectI, objectIDeviceN);
+    const imageObjects = createEmbeddedImages(images, objectI, objectIDeviceN, humanReadable);
     for (let i = 0; i < imageObjects.length; i++) {
       pdfImageObjStrArr.push(imageObjects[i]);
       imageObjIndices.push(objectI + i);

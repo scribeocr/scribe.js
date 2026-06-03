@@ -1,4 +1,3 @@
-/* eslint-disable no-bitwise */
 import { imageUtils } from '../../objects/imageObjects.js';
 import { base64ToBytes, getPngIHDRInfo } from '../../utils/imageUtils.js';
 import { hex } from './writePdfFonts.js';
@@ -66,32 +65,34 @@ function extractPngIdatData(pngBytes) {
 }
 
 /**
- * Creates PDF XObject for an .jpeg image
+ * Creates PDF XObject for a .jpeg image. Binary (raw DCTDecode) by default.
+ * Binary (raw DCTDecode) by default `humanReadable` wraps the stream in ASCIIHexDecode for diffable ASCII output.
  * @param {number} objIndex - PDF object index
  * @param {ArrayBufferLike} imageData - Raw image data
  * @param {number} width - Image width
  * @param {number} height - Image height
- * @returns {string} PDF XObject string
+ * @param {boolean} humanReadable
+ * @returns {string | import('./writePdfStreams.js').PdfBinaryObject} PDF XObject
  */
-const createImageXObjectJpeg = (objIndex, imageData, width, height) => {
+const createImageXObjectJpeg = (objIndex, imageData, width, height, humanReadable) => {
   const imageBytes = new Uint8Array(imageData);
-  let objStr = `${String(objIndex)} 0 obj\n`;
-  objStr += '<</Type /XObject\n';
-  objStr += '/Subtype /Image\n';
+  let dict = `${String(objIndex)} 0 obj\n`;
+  dict += '<</Type /XObject\n';
+  dict += '/Subtype /Image\n';
+  dict += `/Width ${String(width)}\n`;
+  dict += `/Height ${String(height)}\n`;
+  dict += '/ColorSpace /DeviceRGB\n';
+  dict += '/BitsPerComponent 8\n';
 
-  // For JPEG, we can use the raw JPEG data directly
-  const imageHexStr = hex(imageBytes.buffer);
-
-  objStr += `/Width ${String(width)}\n`;
-  objStr += `/Height ${String(height)}\n`;
-  objStr += '/ColorSpace /DeviceRGB\n';
-  objStr += '/BitsPerComponent 8\n';
-  objStr += '/Filter [ /ASCIIHexDecode /DCTDecode ]\n';
-  objStr += `/Length ${String(imageHexStr.length)}\n`;
-  objStr += '>>\nstream\n';
-  objStr += `${imageHexStr}\n`;
-  objStr += 'endstream\nendobj\n\n';
-  return objStr;
+  if (humanReadable) {
+    const imageHexStr = hex(imageBytes.buffer);
+    return `${dict}/Filter [ /ASCIIHexDecode /DCTDecode ]\n/Length ${String(imageHexStr.length)}\n>>\nstream\n${imageHexStr}\nendstream\nendobj\n\n`;
+  }
+  return {
+    header: `${dict}/Filter /DCTDecode\n/Length ${String(imageBytes.length)}\n>>\nstream\n`,
+    streamData: imageBytes,
+    trailer: '\nendstream\nendobj\n\n',
+  };
 };
 
 /**
@@ -132,22 +133,18 @@ endobj
 }
 
 /**
- * Creates PDF XObject for an .png image
+ * Creates PDF XObject for a .png image. Binary (raw FlateDecode IDAT) by default.
+ * `humanReadable` adds an ASCIIHexDecode wrapper for diffable output.
  * @param {number} objIndex - PDF object index
  * @param {ArrayBufferLike} imageData - Raw image data
- * @param {number} [objDevN] - Object index of associated DeviceN color space for supporting RGBA.
+ * @param {number|undefined} objDevN - Object index of associated DeviceN color space for supporting RGBA.
  *    This is necessary to handle PNGs with alpha channels without re-encoding.
- * @returns {string} PDF XObject string
+ * @param {boolean} humanReadable
+ * @returns {string | import('./writePdfStreams.js').PdfBinaryObject} PDF XObject
  */
-const createImageXObjectPng = (objIndex, imageData, objDevN) => {
+const createImageXObjectPng = (objIndex, imageData, objDevN, humanReadable) => {
   const imageBytes = new Uint8Array(imageData);
-  let objStr = `${String(objIndex)} 0 obj\n`;
-  objStr += '<</Type /XObject\n';
-  objStr += '/Subtype /Image\n';
-
-  // For PNG, extract IDAT data and get header info
   const imageDataOutput = extractPngIdatData(imageBytes);
-  const imageHexStr = hex(imageDataOutput.buffer);
   const idhr = getPngIHDRInfo(imageBytes);
 
   const predictor = 15;
@@ -176,22 +173,31 @@ const createImageXObjectPng = (objIndex, imageData, objDevN) => {
     console.warn(`Unsupported PNG color type: ${idhr.colorType}, defaulting to RGB`);
   }
 
-  objStr += '/DecodeParms [ null <<';
-  objStr += `/Predictor ${predictor} `;
-  objStr += `/Colors ${colors} `;
-  objStr += `/Columns ${String(idhr.width)} `;
-  objStr += ' >> ]\n';
-  objStr += `/Width ${String(idhr.width)}\n`;
-  objStr += `/Height ${String(idhr.height)}\n`;
-  objStr += `/ColorSpace ${colorSpace}\n`;
-  objStr += `/BitsPerComponent ${idhr.bitDepth}\n`;
-  objStr += '/Filter [ /ASCIIHexDecode /FlateDecode ]\n';
-  objStr += `/Length ${String(imageHexStr.length)}\n`;
-  objStr += '>>\nstream\n';
-  objStr += `${imageHexStr}\n`;
-  objStr += 'endstream\nendobj\n\n';
+  const parms = `<</Predictor ${predictor} /Colors ${colors} /Columns ${String(idhr.width)} >>`;
+  let dict = `${String(objIndex)} 0 obj\n`;
+  dict += '<</Type /XObject\n';
+  dict += '/Subtype /Image\n';
+  dict += `/Width ${String(idhr.width)}\n`;
+  dict += `/Height ${String(idhr.height)}\n`;
+  dict += `/ColorSpace ${colorSpace}\n`;
+  dict += `/BitsPerComponent ${idhr.bitDepth}\n`;
 
-  return objStr;
+  if (humanReadable) {
+    // Two filters: the ASCIIHex wrapper (no params) then FlateDecode (predictor).
+    const imageHexStr = hex(imageDataOutput.buffer);
+    let objStr = dict;
+    objStr += `/DecodeParms [ null ${parms} ]\n`;
+    objStr += '/Filter [ /ASCIIHexDecode /FlateDecode ]\n';
+    objStr += `/Length ${String(imageHexStr.length)}\n`;
+    objStr += '>>\nstream\n';
+    objStr += `${imageHexStr}\nendstream\nendobj\n\n`;
+    return objStr;
+  }
+  return {
+    header: `${dict}/DecodeParms ${parms}\n/Filter /FlateDecode\n/Length ${String(imageDataOutput.length)}\n>>\nstream\n`,
+    streamData: imageDataOutput,
+    trailer: '\nendstream\nendobj\n\n',
+  };
 };
 
 /**
@@ -200,9 +206,12 @@ const createImageXObjectPng = (objIndex, imageData, objDevN) => {
  * @param {number} firstObjIndex - Starting object index
  * @param {number} [objDevN] - Object index of associated DeviceN color space for supporting RGBA.
  *    This is necessary to handle PNGs with alpha channels without re-encoding.
+ * @param {boolean} [humanReadable=false] - If true, wrap image streams in ASCIIHexDecode for diffable ASCII output.
+ *    Default emits raw binary streams.
+ * @returns {Array<string | import('./writePdfStreams.js').PdfBinaryObject>}
  */
-export function createEmbeddedImages(images, firstObjIndex, objDevN) {
-  /** @type {string[]} */
+export function createEmbeddedImages(images, firstObjIndex, objDevN, humanReadable = false) {
+  /** @type {Array<string | import('./writePdfStreams.js').PdfBinaryObject>} */
   const imageObjArr = [];
 
   images.forEach((image, index) => {
@@ -211,9 +220,9 @@ export function createEmbeddedImages(images, firstObjIndex, objDevN) {
     const imageBytes = base64ToBytes(image.src);
     let objParts;
     if (image.format === 'jpeg') {
-      objParts = createImageXObjectJpeg(objIndex, imageBytes.buffer, dims.width, dims.height);
+      objParts = createImageXObjectJpeg(objIndex, imageBytes.buffer, dims.width, dims.height, humanReadable);
     } else {
-      objParts = createImageXObjectPng(objIndex, imageBytes.buffer, objDevN);
+      objParts = createImageXObjectPng(objIndex, imageBytes.buffer, objDevN, humanReadable);
     }
     imageObjArr.push(objParts);
   });

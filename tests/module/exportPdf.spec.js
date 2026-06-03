@@ -4,6 +4,8 @@ import {
 import scribe from '../../scribe.js';
 import { subsetPdf } from '../../js/export/pdf/subsetPdf.js';
 import { mergePdfs } from '../../js/export/pdf/mergePdfs.js';
+import { ca } from '../../js/canvasAdapter.js';
+import { renderPdfPage } from '../_renderPdfPage.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 
 /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
@@ -19,6 +21,20 @@ async function readPdfBytes(pdfPath) {
   }
   const response = await fetch(pdfPath);
   return new Uint8Array(await response.arrayBuffer());
+}
+
+/**
+ * Decode a `data:image/png;base64,...` URL into raw PNG bytes (Node + browser).
+ * @param {string} dataUrl
+ * @returns {Uint8Array}
+ */
+function dataUrlToPngBytes(dataUrl) {
+  const base64 = dataUrl.slice('data:image/png;base64,'.length);
+  if (typeof Buffer !== 'undefined') return new Uint8Array(Buffer.from(base64, 'base64'));
+  const bin = atob(base64);
+  const u8 = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) u8[i] = bin.charCodeAt(i);
+  return u8;
 }
 
 scribe.opt.workerN = 1;
@@ -647,6 +663,37 @@ describe('Check export for .pdf files.', () => {
       if (pdfBytes[i] > 127) { allAsciiBody = false; break; }
     }
     expect(allAsciiBody).toBe(true);
+
+    await doc.clear();
+  });
+
+  test('Default (compressed) PDF with images embeds image streams as binary FlateDecode, not ASCIIHexDecode', async () => {
+    // ASCIIHexDecode doubles every embedded image stream. It must be used only  under humanReadablePDF.
+    // The default export embeds the raw binary image bytes under a single FlateDecode (PNG) / DCTDecode (JPEG) filter.
+    scribe.ScribeDoc.defaults.displayMode = 'proof';
+    scribe.ScribeDoc.defaults.humanReadablePDF = false;
+
+    doc = await scribe.openDocument([`${ASSETS_PATH}/testocr.png`, `${ASSETS_PATH}/testocr.abbyy.xml`]);
+    const exportedPdf = /** @type {ArrayBuffer} */ (await doc.exportData('pdf'));
+
+    const pdfText = new TextDecoder('latin1').decode(new Uint8Array(exportedPdf));
+    // The image is the only ASCIIHexDecode user in default mode, so none should remain.
+    expect(pdfText).not.toContain('/ASCIIHexDecode');
+    // The PNG image XObject carries a single binary FlateDecode filter.
+    expect(pdfText).toMatch(/\/Subtype\s*\/Image[\s\S]{0,300}?\/Filter\s*\/FlateDecode\b/);
+
+    await doc.clear();
+
+    // The binary image stream must still decode to a non-blank page.
+    const { dataUrl } = await renderPdfPage(new Uint8Array(exportedPdf), 0, 'color');
+    const img = await ca.createImageBitmapFromData(dataUrlToPngBytes(dataUrl));
+    const canvas = ca.makeCanvas(img.width, img.height);
+    const ctx = canvas.getContext('2d');
+    ctx.drawImage(img, 0, 0);
+    const data = ctx.getImageData(0, 0, img.width, img.height).data;
+    const seen = new Set();
+    for (let i = 0; i < data.length; i += 1600) seen.add((data[i] + data[i + 1] + data[i + 2]) >> 2);
+    expect(seen.size).toBeGreaterThanOrEqual(10);
 
     await doc.clear();
   });
