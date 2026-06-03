@@ -22,7 +22,7 @@ import {
 Konva.autoDrawEnabled = false;
 Konva.dragButtons = [0];
 
-/** Per-viewer transient UI state (page index, mode flags, color mode). */
+/** Per-viewer transient UI state (page index, options). */
 class ScribeViewerState {
   constructor() {
     this.recognizeAllPromise = Promise.resolve();
@@ -30,6 +30,10 @@ class ScribeViewerState {
     this.searchMode = false;
     /** @type {'color'|'gray'|'binary'} */
     this.colorMode = 'color';
+    /**
+     * @type {'invis'|'ebook'|'eval'|'proof'|'annot'}
+     */
+    this.displayMode = 'invis';
     this.cp = { n: 0 };
   }
 }
@@ -56,6 +60,17 @@ class ScribeViewerOpts {
     this.outlineWords = false;
     this.outlineLines = false;
     this.outlinePars = false;
+    /**
+     * Scope of this viewer's document-level keyboard shortcuts.
+     * - `'focused'` (default): handle a keystroke only when the event originates inside this viewer,
+     *   or when this viewer is the active one and focus is on the bare document body.
+     *   Safe for embedding beside host UI and for several independent viewers on one page.
+     * - `'global'`: handle keystrokes anywhere on the page whenever this viewer is the active (or only) viewer.
+     *   This is the full-screen single-viewer app behavior, for when the viewer owns the page.
+     * - `'off'`: never handle document-level keystrokes.
+     * @type {'focused'|'global'|'off'}
+     */
+    this.keyboardScope = 'focused';
   }
 }
 
@@ -259,6 +274,14 @@ export class ScribeViewer {
 
     /** @type {HTMLElement} */
     this.elem = /** @type {any} */ (null);
+    /**
+     * The outer element of the UI component that owns this viewer
+     * (e.g. a wrapper that also contains a toolbar), if any.
+     * Used to decide whether a click landed on the viewer's own chrome when managing keyboard focus.
+     * Defaults to `elem` when unset.
+     * @type {?HTMLElement}
+     */
+    this.outerElem = null;
     /** @type {HTMLDivElement} */
     this.HTMLOverlayBackstopElem = /** @type {any} */ (null);
 
@@ -1002,7 +1025,7 @@ export class ScribeViewer {
       search.updateFindStats(this);
     }
 
-    if (scribe.ScribeDoc.defaults.displayMode === 'ebook') {
+    if (this.state.displayMode === 'ebook') {
       this.layerBackground.hide();
       this.layerBackground.batchDraw();
     } else {
@@ -1273,7 +1296,7 @@ export class ScribeViewer {
    */
   setWordColorOpacity() {
     this.getKonvaWords().forEach((obj) => {
-      const { fill, opacity } = scribe.utils.ocr.getWordFillOpacity(obj.word, scribe.ScribeDoc.defaults.displayMode,
+      const { fill, opacity } = scribe.utils.ocr.getWordFillOpacity(obj.word, this.state.displayMode,
         scribe.ScribeDoc.defaults.confThreshMed, scribe.ScribeDoc.defaults.confThreshHigh, scribe.ScribeDoc.defaults.overlayOpacity);
       obj.fill(fill);
       obj.opacity(opacity);
@@ -1380,7 +1403,7 @@ export class ScribeViewer {
       for (const wordObj of lineObj.words) {
         if (!wordObj.text) continue;
 
-        const outlineWord = this.opt.outlineWords || scribe.ScribeDoc.defaults.displayMode === 'eval' && wordObj.conf > scribe.ScribeDoc.defaults.confThreshHigh && !wordObj.matchTruth;
+        const outlineWord = this.opt.outlineWords || this.state.displayMode === 'eval' && wordObj.conf > scribe.ScribeDoc.defaults.confThreshHigh && !wordObj.matchTruth;
 
         const angleAdjWord = imageRotated ? scribe.utils.ocr.calcWordAngleAdj(wordObj) : { x: 0, y: 0 };
 
@@ -1868,12 +1891,38 @@ document.addEventListener('wheel', (event) => {
 document.addEventListener('mousedown', (event) => {
   if (!(event.target instanceof Node)) return;
   const v = findViewerForTarget(event.target);
-  if (v && v.doc.pageMetrics.length > 0 && event.button === 1) {
-    v.startDrag(event);
+  if (v) {
+    // Interacting with a viewer makes it the active one (the target of body-level keystrokes).
+    _activeViewer = v;
+    if (v.doc.pageMetrics.length > 0 && event.button === 1) v.startDrag(event);
+    return;
+  }
+  // The click landed outside every viewer canvas.
+  // A `'focused'`-scope viewer stops claiming body-level keystrokes unless the click landed on its own chrome (toolbar, etc.).
+  // A `'global'`-scope viewer keeps the page, matching a full-screen app.
+  if (_activeViewer && _activeViewer.opt.keyboardScope === 'focused') {
+    const outer = _activeViewer.outerElem;
+    if (!(outer instanceof HTMLElement && outer.contains(event.target))) _activeViewer = null;
   }
 });
 
 document.addEventListener('keydown', (event) => {
+  if (!(event.target instanceof Node)) return;
+  const targetViewer = findViewerForTarget(event.target);
+  if (targetViewer) {
+    // The keystroke originates inside a viewer: that viewer owns it (unless shortcuts are off).
+    if (targetViewer.opt.keyboardScope !== 'off') handleKeyboardEvent(targetViewer, event);
+    return;
+  }
+  // The keystroke originates outside every viewer. A focused host control such as an input or button must never be hijacked,
+  // so only the bare document body (meaning nothing in particular is focused) may route to a viewer.
+  if (event.target !== document.body && event.target !== document.documentElement) return;
   const v = _activeViewer || _defaultViewer;
-  if (v) handleKeyboardEvent(v, event);
+  if (!v) return;
+  // `'global'`: claim body-level keystrokes whenever this is the active or only viewer (full-screen app).
+  // `'focused'`: only the actively-interacted viewer claims them, e.g. arrow-key word navigation right after clicking the canvas.
+  // `_activeViewer` is cleared on mousedown elsewhere.
+  if (v.opt.keyboardScope === 'global' || (v.opt.keyboardScope === 'focused' && v === _activeViewer)) {
+    handleKeyboardEvent(v, event);
+  }
 });

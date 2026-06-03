@@ -303,7 +303,11 @@ export function handleKeyboardEvent(viewer, event) {
   const _viewer = viewer || ScribeViewer.getActiveViewer() || ScribeViewer.getDefault();
   if (!_viewer) return;
   const activeElem = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-  if (activeElem && activeElem instanceof HTMLInputElement) return;
+  // Never steal keystrokes destined for a text-editing control: a host `<input>`/`<textarea>`,
+  // a `contenteditable` host, or the viewer's own word-edit box, so typing there is unaffected.
+  if (activeElem && (activeElem instanceof HTMLInputElement
+    || activeElem instanceof HTMLTextAreaElement
+    || activeElem.isContentEditable)) return;
   if (activeElem && activeElem instanceof HTMLSelectElement
     && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Enter'].includes(event.key)) return;
 
@@ -441,7 +445,7 @@ export function handleKeyboardEvent(viewer, event) {
     return;
   }
 
-  if (event.key === 'i' && event.ctrlKey) {
+  if (event.key === 'i' && event.ctrlKey && selectedWords.length > 0) {
     modifySelectedWordStyle(_viewer, {
       italic: !selectedWords[0].word.style.italic,
     });
@@ -451,7 +455,7 @@ export function handleKeyboardEvent(viewer, event) {
     return;
   }
 
-  if (event.key === 'b' && event.ctrlKey) {
+  if (event.key === 'b' && event.ctrlKey && selectedWords.length > 0) {
     modifySelectedWordStyle(_viewer, {
       bold: !selectedWords[0].word.style.bold,
     });
@@ -461,7 +465,7 @@ export function handleKeyboardEvent(viewer, event) {
     return;
   }
 
-  if (event.key === 'u' && event.ctrlKey) {
+  if (event.key === 'u' && event.ctrlKey && selectedWords.length > 0) {
     modifySelectedWordStyle(_viewer, {
       underline: !selectedWords[0].word.style.underline,
     });
@@ -479,7 +483,7 @@ export function handleKeyboardEvent(viewer, event) {
     return;
   }
 
-  if (event.altKey && ['+', '=', '×'].includes(event.key) && !KonvaIText.input) {
+  if (event.altKey && ['+', '=', '×'].includes(event.key) && !KonvaIText.input && selectedWords.length > 0) {
     const fontSize = selectedWords[0].fontSize + 1;
     modifySelectedWordStyle(_viewer, {
       size: fontSize,
@@ -490,7 +494,7 @@ export function handleKeyboardEvent(viewer, event) {
     return;
   }
 
-  if (event.altKey && ['-', '_', '–'].includes(event.key) && !KonvaIText.input) {
+  if (event.altKey && ['-', '_', '–'].includes(event.key) && !KonvaIText.input && selectedWords.length > 0) {
     const fontSize = selectedWords[0].fontSize - 1;
     modifySelectedWordStyle(_viewer, {
       size: fontSize,

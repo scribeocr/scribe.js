@@ -1,6 +1,7 @@
 import scribe from '../../scribe.js';
 import { ScribeViewer } from '../viewer.js';
 import { applyHighlight } from '../js/viewerHighlights.js';
+import { destroyContextMenu } from '../js/viewerCanvasInteraction.js';
 
 /**
  * @typedef {object} FitResult
@@ -34,6 +35,11 @@ class ScribePDFViewer {
    *   the whole page. A function receives the page dims and viewer dims and returns `{zoom, x?, y?}`.
    * @param {boolean} [options.autoResize=true] - Install a ResizeObserver on `container` and
    *   resize the viewer to match its dimensions whenever they change.
+   * @param {'focused'|'global'|'off'} [options.keyboardScope='focused'] - How far this viewer's keyboard
+   *   `'focused'` (default) handles keystrokes only when interaction is inside this viewer shortcuts reach.
+   *   (safe beside host UI and for multiple viewers on one page).
+   *   `'global'` handles them anywhere on the page when this is the active viewer, for a full-screen single-viewer app.
+   *   `'off'` disables the viewer's keyboard shortcuts entirely.
    * @param {ScribeViewer} [options.scribe] - Attach to an existing `ScribeViewer` instance instead
    *   of creating a new one. Use to share state with an already-instantiated viewer.
    */
@@ -46,6 +52,7 @@ class ScribePDFViewer {
       showDropZone = true,
       fit = 'height',
       autoResize = true,
+      keyboardScope = 'focused',
     } = options;
 
     this.container = container;
@@ -61,12 +68,13 @@ class ScribePDFViewer {
      * @type {ScribeViewer}
      */
     this.scribe = options.scribe || new ScribeViewer();
+    this.scribe.opt.keyboardScope = keyboardScope;
 
     const initWidth = width === 'auto' ? (container.clientWidth || 800) : width;
     const initHeight = height === 'auto' ? (container.clientHeight || 1000) : height;
 
     this.scribe.enableHTMLOverlay = true;
-    scribe.ScribeDoc.defaults.displayMode = 'invis';
+    this.scribe.state.displayMode = 'invis';
 
     let highlightColors = null;
     let defaultHighlightColor;
@@ -92,6 +100,9 @@ class ScribePDFViewer {
 
     this.pdfViewerElem = document.createElement('div');
     this.pdfViewerElem.className = 'scribe-pdf-viewer';
+    // The component's outer element (toolbar + canvas).
+    // Lets the viewer treat a click on its own chrome as "still inside the viewer" when deciding whether to relinquish keyboard focus.
+    this.scribe.outerElem = this.pdfViewerElem;
     this.pdfViewerElem.style.width = `${initWidth}px`;
     this.pdfViewerElem.style.height = `${initHeight}px`;
     this.pdfViewerElem.style.backgroundColor = 'rgb(82, 86, 89)';
@@ -443,8 +454,12 @@ class ScribePDFViewer {
 
     this.scribe.init(this.viewerContainer, initWidth, initHeight - this.toolbarHeight);
 
+    // Document-level mouseup listeners, retained so `destroy()` can remove them.
+    /** @type {Array<() => void>} */
+    this._teardownCallbacks = [];
+
     if (highlightColors) {
-      document.addEventListener('mouseup', (event) => {
+      const highlightMouseupHandler = (event) => {
         if (!this.highlightMode) return;
         if (!(event.target instanceof Node) || !this.pdfViewerElem.contains(event.target)) return;
 
@@ -458,18 +473,22 @@ class ScribePDFViewer {
         window.getSelection()?.removeAllRanges();
         this.scribe.deleteHTMLOverlay();
         this.scribe.renderHTMLOverlay();
-      });
+      };
+      document.addEventListener('mouseup', highlightMouseupHandler);
+      this._teardownCallbacks.push(() => document.removeEventListener('mouseup', highlightMouseupHandler));
     }
 
     // Backup mouseup listener on the document to clear selection state
     // if mouseup happens outside of the Konva stage (e.g. on an HTML overlay element).
-    document.addEventListener('mouseup', () => {
+    const selectionResetMouseupHandler = () => {
       if (this.scribe.selecting) {
         this.scribe.selecting = false;
         this.scribe.selectingRectangle?.visible(false);
         this.scribe.layerText?.batchDraw();
       }
-    });
+    };
+    document.addEventListener('mouseup', selectionResetMouseupHandler);
+    this._teardownCallbacks.push(() => document.removeEventListener('mouseup', selectionResetMouseupHandler));
 
     this.commentTooltip = document.createElement('div');
     this.commentTooltip.className = 'highlight-comment-tooltip';
@@ -479,7 +498,7 @@ class ScribePDFViewer {
     let commentIconTimer = null;
     const isWordOrLine = (n) => n instanceof HTMLElement
       && (n.classList.contains('scribe-word') || n.classList.contains('scribe-line'));
-    const observer = new MutationObserver((mutations) => {
+    this.commentObserver = new MutationObserver((mutations) => {
       const hasRemoved = mutations.some((m) => [...m.removedNodes].some(isWordOrLine));
       if (hasRemoved) {
         this.scribe.elem?.querySelectorAll('.highlight-comment-icon').forEach((el) => el.remove());
@@ -490,7 +509,7 @@ class ScribePDFViewer {
       if (commentIconTimer) clearTimeout(commentIconTimer);
       commentIconTimer = setTimeout(() => this.updateCommentIcons(), 100);
     });
-    observer.observe(this.scribe.elem, { childList: true });
+    this.commentObserver.observe(this.scribe.elem, { childList: true });
 
     const origCallback = this.scribe.displayPageCallback;
     this.scribe.displayPageCallback = () => {
@@ -627,10 +646,21 @@ class ScribePDFViewer {
    */
   async destroy() {
     if (this.resizeObserver) this.resizeObserver.disconnect();
+    if (this.commentObserver) this.commentObserver.disconnect();
+    for (const cb of this._teardownCallbacks) cb();
+    this._teardownCallbacks = [];
+    if (this.highlightCursorStyleElem) {
+      this.highlightCursorStyleElem.remove();
+      this.highlightCursorStyleElem = null;
+    }
     if (this.doc) {
       try { await this.doc.terminate(); } catch { /* ignore */ }
       this.doc = null;
     }
+    // Remove the underlying viewer from the global registry and destroy its Konva stage.
+    // Once the last viewer is gone, drop the shared context menu so nothing of ours remains in the host.
+    this.scribe.destroy();
+    if (ScribeViewer.getAllViewers().size === 0) destroyContextMenu();
     if (this.pdfViewerElem.parentNode) this.pdfViewerElem.parentNode.removeChild(this.pdfViewerElem);
   }
 
@@ -710,7 +740,7 @@ class ScribePDFViewer {
       document.head.appendChild(this.highlightCursorStyleElem);
     }
     if (this.highlightMode) {
-      this.highlightCursorStyleElem.textContent = `.scribe-word { cursor: ${this.highlightCursor} !important; }`;
+      this.highlightCursorStyleElem.textContent = `.scribe-pdf-viewer .scribe-word { cursor: ${this.highlightCursor} !important; }`;
     } else {
       this.highlightCursorStyleElem.textContent = '';
     }
@@ -910,90 +940,6 @@ class ScribePDFViewer {
   };
 }
 
-// Auto-instantiate the basic-viewer demo when the page provides `#pdfViewerCont`.
-// This is the entry point used by `index.html`, `tauri-entry.js`, and `electron-entry.js`.
-// When importing this module from a page without that element (e.g. when embedding `ScribePDFViewer` in your own container),
-// no side effects fire and you can construct an instance yourself.
-const pdfViewerContElem = /** @type {HTMLDivElement|null} */(document.getElementById('pdfViewerCont'));
-
-const buildBootstrapViewer = () => {
-  if (!pdfViewerContElem) return null;
-  if (!pdfViewerContElem.style.width) pdfViewerContElem.style.width = '100vw';
-  if (!pdfViewerContElem.style.height) pdfViewerContElem.style.height = '100vh';
-  const v = new ScribePDFViewer(pdfViewerContElem);
-  // Exposing important modules for debugging and testing purposes.
-  // These should not be relied upon in code--import/export should be used instead.
-  globalThis.df = {
-    scribe,
-    ScribeCanvas: ScribeViewer,
-    applyHighlight,
-    pdfViewer: v,
-  };
-  return v;
-};
-
-/** @type {ScribePDFViewer|null} */
-const pdfViewer = buildBootstrapViewer();
-
-let currentFile = null;
-async function handleLoadFile(file, page, readFileFn) {
-  if (!pdfViewer) throw new Error('handleLoadFile requires the auto-instantiated viewer. Use ScribePDFViewer + importFile directly when embedding.');
-  if (pdfViewer.dropZone) pdfViewer.dropZone.style.display = 'none';
-
-  if (currentFile === file) {
-    await pdfViewer.scribe.displayPage(page, true, false);
-    return;
-  }
-  const { buffer, name } = await readFileFn(file);
-  const fileObj = new File([buffer], name, { type: 'application/pdf' });
-  await pdfViewer.importFile(fileObj, page || 0);
-  currentFile = file;
-}
-
-async function handleHighlights(highlights) {
-  if (!pdfViewer) throw new Error('handleHighlights requires the auto-instantiated viewer.');
-  const sv = pdfViewer.scribe;
-  for (const highlight of highlights) {
-    const pageNum = highlight.page;
-    const page = sv.doc.ocr.active[pageNum];
-    if (!page) continue;
-
-    const lines = highlight.lines;
-    if (!lines || lines.length === 0) continue;
-
-    if (sv.state.cp.n !== pageNum) {
-      await sv.displayPage(pageNum, true, false);
-    }
-
-    const allWords = sv.getKonvaWords();
-    const matchedWords = [];
-
-    for (let i = 0; i < lines.length; i++) {
-      const lineNum = lines[i];
-      const line = page.lines[lineNum];
-      if (!line) continue;
-
-      let lineKonvaWords = allWords.filter((kw) => line.words.includes(kw.word));
-
-      if (i === 0 && highlight.startText) {
-        const startIdx = lineKonvaWords.findIndex((kw) => kw.word.text.includes(highlight.startText));
-        if (startIdx >= 0) lineKonvaWords = lineKonvaWords.slice(startIdx);
-      }
-
-      if (i === lines.length - 1 && highlight.endText) {
-        const endIdx = lineKonvaWords.findIndex((kw) => kw.word.text.includes(highlight.endText));
-        if (endIdx >= 0) lineKonvaWords = lineKonvaWords.slice(0, endIdx + 1);
-      }
-
-      matchedWords.push(...lineKonvaWords);
-    }
-
-    if (matchedWords.length > 0) {
-      applyHighlight(sv, matchedWords, pageNum, highlight.color || '#ffff00', highlight.opacity || 0.4);
-    }
-  }
-}
-
 export {
-  scribe, ScribeViewer, applyHighlight, pdfViewer, ScribePDFViewer, handleLoadFile, handleHighlights,
+  scribe, ScribeViewer, applyHighlight, ScribePDFViewer,
 };

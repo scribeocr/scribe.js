@@ -445,7 +445,8 @@ export class KonvaIText extends Konva.Shape {
       inputElem.style.textUnderlineOffset = `${underlineOffset}px`;
     }
 
-    if (itext.highlightColor && scribe.ScribeDoc.defaults.displayMode !== 'invis' && scribe.ScribeDoc.defaults.displayMode !== 'annot') {
+    const itextDisplayMode = itext.viewer?.state.displayMode ?? 'invis';
+    if (itext.highlightColor && itextDisplayMode !== 'invis' && itextDisplayMode !== 'annot') {
       const r = parseInt(itext.highlightColor.slice(1, 3), 16);
       const g = parseInt(itext.highlightColor.slice(3, 5), 16);
       const b = parseInt(itext.highlightColor.slice(5, 7), 16);
@@ -665,7 +666,7 @@ export class KonvaOcrWord extends KonvaIText {
     highlightGroupId = null, highlightComment = '',
     viewer,
   }) {
-    const { fill, opacity } = scribe.utils.ocr.getWordFillOpacity(word, scribe.ScribeDoc.defaults.displayMode,
+    const { fill, opacity } = scribe.utils.ocr.getWordFillOpacity(word, viewer?.state.displayMode ?? 'invis',
       scribe.ScribeDoc.defaults.confThreshMed, scribe.ScribeDoc.defaults.confThreshHigh, scribe.ScribeDoc.defaults.overlayOpacity);
 
     super({

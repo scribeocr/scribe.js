@@ -637,7 +637,7 @@ export class KonvaDataTable {
       const wordIdArr = this.tableContent?.rowWordArr.flat().flat().map((x) => x.id) || [];
       const canvasDeselectWords = this.viewer.getKonvaWords().filter((x) => wordIdArr.includes(x.word.id));
       canvasDeselectWords.forEach((x) => {
-        const { fill, opacity } = scribe.utils.ocr.getWordFillOpacity(x.word, scribe.ScribeDoc.defaults.displayMode,
+        const { fill, opacity } = scribe.utils.ocr.getWordFillOpacity(x.word, this.viewer.state.displayMode,
           scribe.ScribeDoc.defaults.confThreshMed, scribe.ScribeDoc.defaults.confThreshHigh, scribe.ScribeDoc.defaults.overlayOpacity);
 
         x.fill(fill);
@@ -785,7 +785,7 @@ export function renderLayoutDataTable(viewer, layoutDataTable) {
     const wordIdDeselectArr = wordIdOldArr.filter((x) => !wordIdNewArr.includes(x));
     const canvasDeselectWords = viewer.getKonvaWords().filter((x) => wordIdDeselectArr.includes(x.word.id));
     canvasDeselectWords.forEach((x) => {
-      const { fill, opacity } = scribe.utils.ocr.getWordFillOpacity(x.word, scribe.ScribeDoc.defaults.displayMode,
+      const { fill, opacity } = scribe.utils.ocr.getWordFillOpacity(x.word, viewer.state.displayMode,
         scribe.ScribeDoc.defaults.confThreshMed, scribe.ScribeDoc.defaults.confThreshHigh, scribe.ScribeDoc.defaults.overlayOpacity);
 
       x.fill(fill);

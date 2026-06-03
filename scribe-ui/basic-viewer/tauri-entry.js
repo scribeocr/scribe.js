@@ -1,4 +1,6 @@
-import { ScribeViewer, pdfViewer, handleHighlights, handleLoadFile } from './pdf-viewer.js';
+import {
+  ScribeViewer, pdfViewer, handleHighlights, handleLoadFile,
+} from './example-app.js';
 
 // Set up frameless window drag regions
 pdfViewer.toolbarElem.style.webkitAppRegion = 'drag';

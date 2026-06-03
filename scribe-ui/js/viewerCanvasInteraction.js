@@ -181,7 +181,7 @@ async function addWordManual(viewer, n, box) {
 
   const visualBaseline = linebox.bottom + baseline[1] + angleAdjLine.y + angleAdjWord.y;
 
-  const outlineWord = viewer.opt.outlineWords || scribe.ScribeDoc.defaults.displayMode === 'eval' && wordObj.conf > scribe.ScribeDoc.defaults.confThreshHigh && !wordObj.matchTruth;
+  const outlineWord = viewer.opt.outlineWords || viewer.state.displayMode === 'eval' && wordObj.conf > scribe.ScribeDoc.defaults.confThreshHigh && !wordObj.matchTruth;
 
   const wordCanvas = new KonvaOcrWord({
     visualLeft: box.left,
@@ -203,7 +203,7 @@ async function addWordManual(viewer, n, box) {
 
 const createContextMenuHTML = () => {
   const menuDiv = document.createElement('div');
-  menuDiv.id = 'menu';
+  menuDiv.id = 'scribe-context-menu';
 
   const innerDiv = document.createElement('div');
 
@@ -436,22 +436,78 @@ const deleteWordsClick = () => {
   viewer.destroyControls();
 };
 
-const menuNode = createContextMenuHTML();
-document.body.appendChild(menuNode);
+// The context menu is built and its CSS injected on first use, so merely importing the viewer adds nothing to the host document.
+// It uses a `scribe-`-prefixed id with id-scoped CSS and is a body-level popup positioned in document coordinates,
+// so it cannot collide with host markup or styles.
+/** @type {?HTMLElement} */
+let menuNode = null;
+/** @type {?HTMLStyleElement} */
+let contextMenuStyleElem = null;
+/** @type {HTMLButtonElement} */ let contextMenuSplitWordButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuDeleteWordsButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuMergeWordsButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuMergeColumnsButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuSplitColumnButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuDeleteLayoutRegionButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuDeleteLayoutTableButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuCopyLayoutTableContentsButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuMergeTablesButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuSplitTableButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuDeleteHighlightButtonElem;
 
-const contextMenuSplitWordButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuSplitWordButton'));
-const contextMenuDeleteWordsButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteWordsButton'));
-const contextMenuMergeWordsButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuMergeWordsButton'));
-const contextMenuMergeColumnsButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuMergeColumnsButton'));
-const contextMenuSplitColumnButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuSplitColumnButton'));
-const contextMenuDeleteLayoutRegionButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteLayoutRegionButton'));
-const contextMenuDeleteLayoutTableButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteLayoutTableButton'));
-const contextMenuCopyLayoutTableContentsButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCopyLayoutTableContentsButton'));
-const contextMenuMergeTablesButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuMergeTablesButton'));
-const contextMenuSplitTableButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuSplitTableButton'));
-const contextMenuDeleteHighlightButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteHighlightButton'));
+function ensureContextMenu() {
+  if (menuNode) return;
+  menuNode = createContextMenuHTML();
+  document.body.appendChild(menuNode);
+
+  contextMenuSplitWordButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuSplitWordButton'));
+  contextMenuDeleteWordsButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteWordsButton'));
+  contextMenuMergeWordsButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuMergeWordsButton'));
+  contextMenuMergeColumnsButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuMergeColumnsButton'));
+  contextMenuSplitColumnButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuSplitColumnButton'));
+  contextMenuDeleteLayoutRegionButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteLayoutRegionButton'));
+  contextMenuDeleteLayoutTableButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteLayoutTableButton'));
+  contextMenuCopyLayoutTableContentsButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCopyLayoutTableContentsButton'));
+  contextMenuMergeTablesButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuMergeTablesButton'));
+  contextMenuSplitTableButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuSplitTableButton'));
+  contextMenuDeleteHighlightButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteHighlightButton'));
+
+  contextMenuStyleElem = document.createElement('style');
+  contextMenuStyleElem.textContent = `
+    #scribe-context-menu {
+      display: none;
+      position: absolute;
+      width: min-content;
+      background-color: white;
+      box-shadow: 0 0 5px grey;
+      border-radius: 3px;
+    }
+    #scribe-context-menu button {
+      width: 100%;
+      background-color: white;
+      border: none;
+      margin: 0;
+      padding: 10px;
+      text-wrap: nowrap;
+      text-align: left;
+    }
+    #scribe-context-menu button:hover {
+      background-color: lightgray;
+    }`;
+  document.head.appendChild(contextMenuStyleElem);
+}
+
+/** Remove the shared context menu and its styles from the document. */
+export const destroyContextMenu = () => {
+  menuNode?.remove();
+  contextMenuStyleElem?.remove();
+  menuNode = null;
+  contextMenuStyleElem = null;
+  _menuViewer = null;
+};
 
 export const hideContextMenu = () => {
+  if (!menuNode) return;
   contextMenuMergeWordsButtonElem.style.display = 'none';
   contextMenuSplitWordButtonElem.style.display = 'none';
   contextMenuDeleteWordsButtonElem.style.display = 'none';
@@ -467,33 +523,8 @@ export const hideContextMenu = () => {
   _menuViewer = null;
 };
 
-const style = document.createElement('style');
-
-style.textContent = `
-    #menu {
-      display: none;
-      position: absolute;
-      width: min-content;
-      background-color: white;
-      box-shadow: 0 0 5px grey;
-      border-radius: 3px;
-    }
-    #menu button {
-      width: 100%;
-      background-color: white;
-      border: none;
-      margin: 0;
-      padding: 10px;
-      text-wrap: nowrap;
-      text-align: left;
-    }
-    #menu button:hover {
-      background-color: lightgray;
-    }`;
-
-document.head.appendChild(style);
-
 export const contextMenuFunc = (viewer, event) => {
+  ensureContextMenu();
   _menuViewer = viewer;
   try {
     const pointer = viewer.stage.getPointerPosition();

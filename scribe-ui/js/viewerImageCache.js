@@ -103,8 +103,8 @@ export class ViewerImageCache {
     const viewer = this._viewer();
     const pageDims = viewer.doc.pageMetrics[n].dims;
 
-    const backgroundImage = scribe.ScribeDoc.defaults.colorMode === 'binary' ? await viewer.doc.images.getBinary(n, undefined, true) : await viewer.doc.images.getNative(n, undefined, true);
-    const image = scribe.ScribeDoc.defaults.colorMode === 'binary' ? await this.getBinaryBitmap(n) : await this.getNativeBitmap(n);
+    const backgroundImage = viewer.state.colorMode === 'binary' ? await viewer.doc.images.getBinary(n, undefined, true) : await viewer.doc.images.getNative(n, undefined, true);
+    const image = viewer.state.colorMode === 'binary' ? await this.getBinaryBitmap(n) : await this.getNativeBitmap(n);
 
     let rotation = 0;
     if (scribe.ScribeDoc.defaults.autoRotate && !backgroundImage.rotated) {
@@ -183,7 +183,7 @@ export class ViewerImageCache {
     if (this.konvaImages[n]) {
       let rerender = false;
       if (this.konvaImagesProps[n]) {
-        if (this.konvaImagesProps[n].colorMode !== scribe.ScribeDoc.defaults.colorMode) {
+        if (this.konvaImagesProps[n].colorMode !== viewer.state.colorMode) {
           rerender = true;
         } else {
           const konvaImage = await this.konvaImages[n];
