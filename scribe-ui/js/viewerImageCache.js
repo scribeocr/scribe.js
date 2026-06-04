@@ -4,6 +4,7 @@ import { ScribeViewer } from '../viewer.js';
 import Konva from './konva/index.js';
 import { initBitmapWorker } from './bitmapWorkerMain.js';
 import { range } from '../../js/utils/miscUtils.js';
+import { SKIPPED } from '../../tess/TessScheduler.js';
 
 /**
  * @typedef {Object} ImageProperties
@@ -76,6 +77,13 @@ export class ViewerImageCache {
     this._nativeBitmapPromises = [];
     /** @type {Array<?Promise<boolean>>} */
     this._binaryBitmapPromises = [];
+    /**
+     * Per-page render sequence. Bumped on each (re-)render and on delete.
+     * The resolving render only applies its result if its captured value still matches,
+     * so a stale render completing out of order (LIFO can run a newer request first) never overwrites a newer one.
+     * @type {Array<number>}
+     */
+    this._renderSeq = [];
   }
 
   _viewer() {
@@ -104,7 +112,9 @@ export class ViewerImageCache {
     const pageDims = viewer.doc.pageMetrics[n].dims;
 
     const backgroundImage = viewer.state.colorMode === 'binary' ? await viewer.doc.images.getBinary(n, undefined, true) : await viewer.doc.images.getNative(n, undefined, true);
+    if (backgroundImage === SKIPPED) return SKIPPED;
     const image = viewer.state.colorMode === 'binary' ? await this.getBinaryBitmap(n) : await this.getNativeBitmap(n);
+    if (image === SKIPPED) return SKIPPED;
 
     let rotation = 0;
     if (scribe.ScribeDoc.defaults.autoRotate && !backgroundImage.rotated) {
@@ -150,6 +160,7 @@ export class ViewerImageCache {
   async getNativeBitmap(n, props) {
     const viewer = this._viewer();
     const nativeN = await viewer.doc.images.getNative(n, props, true);
+    if (nativeN === SKIPPED) return SKIPPED;
     if (this._nativeBitmapPromises[n]) await this._nativeBitmapPromises[n];
     if (!nativeN.imageBitmap) {
       const bitmapPromise = this.imageStrToBitmap(nativeN.src);
@@ -167,6 +178,7 @@ export class ViewerImageCache {
   async getBinaryBitmap(n, props) {
     const viewer = this._viewer();
     const binaryN = await viewer.doc.images.getBinary(n, props, true);
+    if (binaryN === SKIPPED) return SKIPPED;
     if (this._binaryBitmapPromises[n]) await this._binaryBitmapPromises[n];
     if (!binaryN.imageBitmap) {
       const bitmapPromise = this.imageStrToBitmap(binaryN.src);
@@ -187,16 +199,18 @@ export class ViewerImageCache {
           rerender = true;
         } else {
           const konvaImage = await this.konvaImages[n];
-          let rotation = 0;
-          if (scribe.ScribeDoc.defaults.autoRotate && !this.konvaImagesProps[n].rotated) {
-            rotation = (viewer.doc.pageMetrics[n].angle || 0) * -1;
-          } else if (!scribe.ScribeDoc.defaults.autoRotate && this.konvaImagesProps[n].rotated) {
-            rotation = (viewer.doc.pageMetrics[n].angle || 0);
-          }
+          if (konvaImage && konvaImage !== SKIPPED) {
+            let rotation = 0;
+            if (scribe.ScribeDoc.defaults.autoRotate && !this.konvaImagesProps[n].rotated) {
+              rotation = (viewer.doc.pageMetrics[n].angle || 0) * -1;
+            } else if (!scribe.ScribeDoc.defaults.autoRotate && this.konvaImagesProps[n].rotated) {
+              rotation = (viewer.doc.pageMetrics[n].angle || 0);
+            }
 
-          if (Math.abs(konvaImage.rotation() - rotation) > 0.01) {
-            konvaImage.rotation(rotation);
-            if (Math.abs(viewer.state.cp.n - n) < 2) viewer.layerBackground.batchDraw();
+            if (Math.abs(konvaImage.rotation() - rotation) > 0.01) {
+              konvaImage.rotation(rotation);
+              if (Math.abs(viewer.state.cp.n - n) < 2) viewer.layerBackground.batchDraw();
+            }
           }
         }
       }
@@ -207,31 +221,47 @@ export class ViewerImageCache {
 
     if (this.konvaImages[n]) {
       this.konvaImages[n].then((konvaImage) => {
-        konvaImage.destroy();
-      });
+        if (konvaImage && konvaImage !== SKIPPED) konvaImage.destroy();
+      }).catch(() => {});
     }
 
+    // Each render is stamped. Only the latest render for this page is applied.
+    // A slower earlier render completing out of order (LIFO can run a newer request first) cannot overwrite a newer one.
+    // The superseding call (or a delete) destroys the discarded image.
+    const seq = (this._renderSeq[n] || 0) + 1;
+    this._renderSeq[n] = seq;
+
     this.konvaImagesProps[n] = null;
-    this.konvaImages[n] = this.getKonvaImage(n).then((res) => {
+    const konvaImagePromise = this.getKonvaImage(n).then((res) => {
+      if (res === SKIPPED) return SKIPPED;
       this.konvaImagesProps[n] = res.props;
       return res.konvaImage;
     });
+    this.konvaImages[n] = konvaImagePromise;
 
-    this.konvaImages[n].then((konvaImage) => {
+    konvaImagePromise.then((konvaImage) => {
+      if (konvaImage === SKIPPED) {
+        // Render dropped to keep the lane bounded; leave the placeholder, allow a later re-render.
+        if (this.konvaImages[n] === konvaImagePromise) this.konvaImages[n] = null;
+        return;
+      }
+      if (this._renderSeq[n] !== seq) return;
       viewer.layerBackground.add(konvaImage);
       if (viewer.placeholderRectArr[n]) viewer.placeholderRectArr[n].hide();
       if (Math.abs(viewer.state.cp.n - n) < 2) viewer.layerBackground.batchDraw();
-    });
+    }).catch(() => {});
   }
 
   /** @param {number} n - Page number */
   deleteKonvaImage(n) {
     if (!this.konvaImages[n]) return;
+    // Supersede any in-flight render so its result is discarded rather than added after deletion.
+    this._renderSeq[n] = (this._renderSeq[n] || 0) + 1;
     const konvaImagePromise = this.konvaImages[n];
     this.konvaImages[n] = null;
     konvaImagePromise.then((konvaImage) => {
-      konvaImage.destroy();
-    });
+      if (konvaImage && konvaImage !== SKIPPED) konvaImage.destroy();
+    }).catch(() => {});
   }
 
   clear() {
@@ -242,6 +272,7 @@ export class ViewerImageCache {
     this.konvaImagesProps.length = 0;
     this._nativeBitmapPromises.length = 0;
     this._binaryBitmapPromises.length = 0;
+    this._renderSeq.length = 0;
   }
 
   /**
@@ -250,24 +281,29 @@ export class ViewerImageCache {
    */
   async renderAheadBehindBrowser(curr) {
     const viewer = this._viewer();
-    const resArr = [];
-    resArr.push(this.addKonvaImage(curr));
 
     this._cleanBitmapCache(curr);
     this._cleanBitmapCache2(curr);
 
     // Skip ahead-render when a PDF is being uploaded alongside OCR data and OCR dimensions are not yet available.
     // No re-render mechanism currently exists for that case.
-    if (curr === 0 && viewer.doc.ocr?.active?.[curr] && !viewer.doc.ocr?.active?.[curr + 1] && viewer.doc.pageMetrics.length > curr + 1) return;
+    if (curr === 0 && viewer.doc.ocr?.active?.[curr] && !viewer.doc.ocr?.active?.[curr + 1] && viewer.doc.pageMetrics.length > curr + 1) {
+      await this.addKonvaImage(curr);
+      return;
+    }
 
-    for (let i = 0; i <= ViewerImageCache.cacheRenderPages; i++) {
-      if (curr - i >= 0) {
-        resArr.push(this.addKonvaImage(curr - i));
-      }
+    const resArr = [];
+    // Enqueue outermost pages first and the current page last, so that under the scheduler's LIFO
+    // viewer lane the current page renders first, then its neighbors outward.
+    for (let i = ViewerImageCache.cacheRenderPages; i >= 1; i--) {
       if (curr + i < viewer.doc.images.loadCount) {
         resArr.push(this.addKonvaImage(curr + i));
       }
+      if (curr - i >= 0) {
+        resArr.push(this.addKonvaImage(curr - i));
+      }
     }
+    resArr.push(this.addKonvaImage(curr));
 
     await Promise.all(resArr);
   }
@@ -278,13 +314,14 @@ export class ViewerImageCache {
       if (Math.abs(curr - i) > ViewerImageCache.cacheDeletePages) {
         if (viewer.doc.images.native[i]) {
           Promise.resolve(viewer.doc.images.native[i]).then((img) => {
-            img.imageBitmap = null;
-          });
+            // A dropped render resolves to the SKIPPED symbol (no bitmap to free). Skip it.
+            if (img && img !== SKIPPED) img.imageBitmap = null;
+          }).catch(() => {});
         }
         if (viewer.doc.images.binary[i]) {
           Promise.resolve(viewer.doc.images.binary[i]).then((img) => {
-            img.imageBitmap = null;
-          });
+            if (img && img !== SKIPPED) img.imageBitmap = null;
+          }).catch(() => {});
         }
       }
     }

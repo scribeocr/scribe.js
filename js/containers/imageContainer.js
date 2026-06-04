@@ -9,8 +9,14 @@ import { opt } from './app.js';
 
 import { initPdfScheduler } from '../pdfWorkerMain.js';
 import { scribeDocDefaults } from './scribeDocDefaults.js';
+import { SKIPPED } from '../../tess/TessScheduler.js';
 
 /** @typedef {import('./scribeDoc.js').ScribeDoc} ScribeDoc */
+
+// Background renders can fail when they reuse a viewer render that is then dropped (skipped).
+// The background render retries when this happens.
+// This cap is an arbitrarily high number, and hitting indicates a logic error.
+const MAX_SKIPPED_RETRY = 32;
 
 /** @type {?boolean} */
 let _sabCapability = null;
@@ -172,7 +178,7 @@ export class ImageStore {
    * @param {number} n - Page number
    * @param {boolean} [color=false]
    */
-  #renderImage = async (n, color = false) => {
+  #renderImage = async (n, color = false, forViewer = false) => {
     if (this.inputModes.image) {
       return this.nativeSrc[n];
     } if (this.inputModes.pdf) {
@@ -180,7 +186,9 @@ export class ImageStore {
       const pdfScheduler = await this.getPdfScheduler();
       const targetWidth = this.#pageMetrics[n].dims.width;
       const dpi = 300 * (targetWidth / this.pdfDims300[n].width);
-      const result = await pdfScheduler.renderPdfPage({ pageIndex: n, colorMode, dpi }, true);
+      const result = await pdfScheduler.renderPdfPage({ pageIndex: n, colorMode, dpi }, forViewer);
+      // The render was dropped from the queue (e.g. evicted to keep the viewer lane bounded).
+      if (result === SKIPPED) return SKIPPED;
       return new ImageWrapper(n, result.dataUrl, result.colorMode);
     }
     throw new Error('Attempted to render image without image input provided.');
@@ -236,10 +244,10 @@ export class ImageStore {
    * @param {ImagePropertiesRequest} [props] - Image properties needed.
    *  Image properties should only be defined if needed, as they can require the image to be re-rendered.
    * @param {boolean} [nativeOnly=true]
-   * @param {boolean} [priorityJob=false] - Whether to make this a priority job, cutting ahead of non-priority jobs.
-   *    This is used to keep the UI responsive when many jobs are queued.
+   * @param {boolean} [forViewer=false] - Whether this render serves the on-screen viewer.
+   *    Viewer renders are served ahead of background work, newest-first, and may be dropped (resolving to SKIPPED) when superseded.
    */
-  getImages = (n, props, nativeOnly = true, priorityJob = false) => {
+  getImages = (n, props, nativeOnly = true, forViewer = false) => {
     if (!this.inputModes.image && !this.inputModes.pdf) {
       return { native: undefined, binary: undefined };
     }
@@ -271,18 +279,39 @@ export class ImageStore {
         let img1;
         if (renderRaw) {
           const color = props?.colorMode === 'color' || !props?.colorMode && scribeDocDefaults.colorMode === 'color';
-          img1 = await this.#renderImage(n, color, priorityJob);
+          img1 = await this.#renderImage(n, color, forViewer);
         } else {
           img1 = await inputNative;
         }
+        // Render dropped from the queue: propagate the sentinel so callers leave a placeholder.
+        // The cache slot is cleared below so a later request for this page re-renders.
+        if (img1 === SKIPPED) return { native: SKIPPED, binary: SKIPPED };
         if (renderTransform) {
           return this.transformImage(img1, n, props, true);
         }
         return { native: img1, binary: null };
       })();
 
-      if (newNative) this.native[n] = res.then((r) => r.native);
-      if (newBinary) this.binary[n] = res.then((r) => r.binary);
+      if (newNative) {
+        const nativeP = res.then((r) => r.native);
+        this.native[n] = nativeP;
+        nativeP.then((img) => {
+          if (img === SKIPPED && this.native[n] === nativeP) {
+            this.native[n] = undefined;
+            this.nativeProps[n] = undefined;
+          }
+        }).catch(() => {});
+      }
+      if (newBinary) {
+        const binaryP = res.then((r) => r.binary);
+        this.binary[n] = binaryP;
+        binaryP.then((img) => {
+          if (img === SKIPPED && this.binary[n] === binaryP) {
+            this.binary[n] = undefined;
+            this.binaryProps[n] = undefined;
+          }
+        }).catch(() => {});
+      }
     }
 
     return { native: this.native[n], binary: this.binary[n] };
@@ -291,18 +320,36 @@ export class ImageStore {
   /**
    * @param {number} n
    * @param {ImagePropertiesRequest} [props]
-   * @param {boolean} [priorityJob=false] - Whether to make this a priority job, cutting ahead of non-priority jobs.
-   *    This is used to keep the UI responsive when many jobs are queued.
+   * @param {boolean} [forViewer=false] - Whether this render serves the on-screen viewer.
+   *    Viewer renders are served ahead of background work, newest-first, and may be dropped (resolving to SKIPPED) when superseded.
    */
-  getNative = async (n, props, priorityJob) => this.getImages(n, props, true, priorityJob || false).native;
+  getNative = async (n, props, forViewer) => {
+    // Viewer callers want SKIPPED so they can leave a placeholder; pass it through.
+    if (forViewer) return this.getImages(n, props, true, true).native;
+    // Background (non-viewer) callers (OCR, export, coordinates, ...) cannot handle SKIPPED.
+    // A reused, then dropped, viewer render clears its own cache slot before we observe SKIPPED,
+    // so re-requesting renders fresh on the undroppable FIFO.
+    for (let i = 0; i < MAX_SKIPPED_RETRY; i++) {
+      const native = await this.getImages(n, props, true, false).native;
+      if (native !== SKIPPED) return native;
+    }
+    throw new Error(`getNative: render for page ${n} repeatedly dropped (SKIPPED).`);
+  };
 
   /**
    * @param {number} n
    * @param {ImagePropertiesRequest} [props]
-   * @param {boolean} [priorityJob=false] - Whether to make this a priority job, cutting ahead of non-priority jobs.
-   *    This is used to keep the UI responsive when many jobs are queued.
+   * @param {boolean} [forViewer=false] - Whether this render serves the on-screen viewer.
+   *    Viewer renders are served ahead of background work, newest-first, and may be dropped (resolving to SKIPPED) when superseded.
    */
-  getBinary = async (n, props, priorityJob) => this.getImages(n, props, false, priorityJob || false).binary;
+  getBinary = async (n, props, forViewer) => {
+    if (forViewer) return this.getImages(n, props, false, true).binary;
+    for (let i = 0; i < MAX_SKIPPED_RETRY; i++) {
+      const binary = await this.getImages(n, props, false, false).binary;
+      if (binary !== SKIPPED) return binary;
+    }
+    throw new Error(`getBinary: render for page ${n} repeatedly dropped (SKIPPED).`);
+  };
 
   /**
    * Pre-render pages.

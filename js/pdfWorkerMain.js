@@ -94,9 +94,10 @@ export class PdfScheduler {
   /**
    * Dispatch a single page for rendering via the scheduler.
    * @param {{ pageIndex: number, colorMode: string, dpi?: number }} args
-   * @param {boolean} [priorityJob=false]
+   * @param {boolean} [forViewer=false] - Whether this render serves the on-screen viewer.
+   *   Viewer renders are served ahead of background work, newest-first, and may be dropped (resolving to SKIPPED) when superseded.
    */
-  renderPdfPage = (args, priorityJob = false) => this.scheduler.addJob('renderPdfPage', args, priorityJob);
+  renderPdfPage = (args, forViewer = false) => this.scheduler.addJob('renderPdfPage', args, forViewer);
 
   /**
    * Load PDF bytes into all workers in the pool.
