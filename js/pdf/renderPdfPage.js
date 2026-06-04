@@ -3978,7 +3978,13 @@ async function decodeInlineImageBitmap(op, objCache, fallbackColorSpaces = new M
   const isImageMask = getVal('IM', 'ImageMask') === 'true';
   const decode = getArr('D', 'Decode');
   const filterMap = {
-    CCF: 'CCITTFaxDecode', DCT: 'DCTDecode', Fl: 'FlateDecode', LZW: 'LZWDecode', RL: 'RunLengthDecode', AHx: 'ASCIIHexDecode', A85: 'ASCII85Decode',
+    CCF: 'CCITTFaxDecode',
+    DCT: 'DCTDecode',
+    Fl: 'FlateDecode',
+    LZW: 'LZWDecode',
+    RL: 'RunLengthDecode',
+    AHx: 'ASCIIHexDecode',
+    A85: 'ASCII85Decode',
   };
   let filters;
   const filterArrMatch = /\/(?:F|Filter)\s*\[\s*([^\]]+)\]/.exec(dictText);
@@ -4989,11 +4995,19 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         const ftParentMatch = parentText ? /\/FT\s*\/(\w+)/.exec(parentText) : null;
         if (ftParentMatch) resolvedFieldType = ftParentMatch[1];
       }
-      // Under /NeedAppearances, regenerate radio/checkbox appearances rather than trust the embedded /AP
-      // (often a stale composite). Pushbuttons (Ff bit 17) keep their /AP.
-      if (needAppearances && resolvedFieldType === 'Btn' && apObjNum !== null) {
-        const ffBtnMatch = /\/Ff\s+(\d+)/.exec(annotText);
-        if (!((ffBtnMatch ? Number(ffBtnMatch[1]) : 0) & 0x10000)) apObjNum = null;
+      // Under /NeedAppearances, the producer has marked its embedded /AP appearance streams stale,
+      // so regenerate field appearances rather than trust them.
+      // Text fields regenerate from /V. Radio and checkbox buttons regenerate from /AS.
+      // Pushbuttons (Ff bit 17) keep their /AP, since there is no value to regenerate a caption from.
+      // Choice (/Ch) fields are left on their embedded /AP, because their /V is often a placeholder
+      // (e.g. a run of dashes) that the value-only synth would paint as a solid bar.
+      if (needAppearances && apObjNum !== null) {
+        if (resolvedFieldType === 'Tx') {
+          apObjNum = null;
+        } else if (resolvedFieldType === 'Btn') {
+          const ffBtnMatch = /\/Ff\s+(\d+)/.exec(annotText);
+          if (!((ffBtnMatch ? Number(ffBtnMatch[1]) : 0) & 0x10000)) apObjNum = null;
+        }
       }
 
       // No usable /AP: synthesize the field appearance and route it through the /AP path below,

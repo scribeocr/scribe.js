@@ -1,7 +1,9 @@
 import { tokenizeContentStream } from './parsePdfDoc.js';
 import { decodePdfName } from './parsePdfUtils.js';
 import { cmykToRgb, tintComponentsToRGB, xyzToSRGB } from './pdfColorFunctions.js';
-import { cidCodepoint, isCombiningOrIndicMark, isDefaultIgnorable } from './fonts/convertFontToOTF.js';
+import {
+  cidCodepoint, isCombiningOrIndicMark, isDefaultIgnorable, isComplexShapingScript,
+} from './fonts/convertFontToOTF.js';
 
 /**
  * Multiply two 3x3 affine matrices represented as 6-element arrays [a,b,c,d,e,f].
@@ -20,6 +22,18 @@ export function matMul(m1, m2) {
     m1[4] * m2[0] + m1[5] * m2[2] + m2[4],
     m1[4] * m2[1] + m1[5] * m2[3] + m2[5],
   ];
+}
+
+/**
+ * Decode a PDF hex-string token (raw hex digits, no delimiters) to a latin1 byte string.
+ * @param {string} hex
+ */
+function hexToLatin1(hex) {
+  let str = '';
+  for (let i = 0; i + 2 <= hex.length; i += 2) {
+    str += String.fromCharCode(parseInt(hex.substring(i, i + 2), 16));
+  }
+  return str;
 }
 
 /**
@@ -343,39 +357,6 @@ export function parseDrawOps(
   }
 
   /**
-   * Emit Type3 glyph ops for a hex string.
-   * @param {string} hex
-   */
-  function showType3Hex(hex) {
-    if (!currentFont || !currentFont.type3) return;
-    const { encoding, charProcObjNums, fontMatrix } = currentFont.type3;
-    // Type3 fonts are always simple fonts, so each byte is one character code.
-    for (let i = 0; i + 2 <= hex.length; i += 2) {
-      const charCode = parseInt(hex.substring(i, i + 2), 16);
-      const glyphName = encoding[charCode];
-      const charProcObjNum = glyphName ? charProcObjNums[glyphName] : undefined;
-      const glyphWidth = (currentFont.widths.get(charCode) ?? currentFont.defaultWidth) / 1000 * fontSize;
-
-      if (charProcObjNum !== undefined && textRenderMode !== 3) {
-        const trm = matMul([fontSize * tz / 100, 0, 0, fontSize, 0, trise], matMul(tm, ctm));
-        const transform = matMul(fontMatrix, trm);
-        const type3XObjects = currentFont.type3?.xobjectResources;
-        /** @type {Type3GlyphOp} */
-        const type3Op = {
-          type: 'type3glyph', charProcObjNum, transform, fillColor, fillAlpha, type3XObjects,
-        };
-        if (!fillColorExplicit) type3Op.fillColorInherited = true;
-        if (!fillAlphaExplicit) type3Op.fillAlphaInherited = true;
-        ops.push(type3Op);
-      }
-
-      const advance = (glyphWidth + tc + (charCode === 0x20 ? tw : 0)) * tz / 100;
-      tm[4] += advance * tm[0];
-      tm[5] += advance * tm[1];
-    }
-  }
-
-  /**
    * Advance text position for standard fonts (with optional CSS text rendering).
    * @param {string} str
    */
@@ -599,119 +580,14 @@ export function parseDrawOps(
   }
 
   /**
-   * Emit Type0 text ops for a hex string (2-byte CID encoding).
+   * Emit Type0 text ops for a hex string by decoding it to bytes and running the shared literal path.
    * @param {string} hex
    */
   function showType0Hex(hex) {
     if (!currentFont || !currentFont.type0) return;
     const registeredName = registeredFontNames && registeredFontNames.get(currentFontTag);
     if (!registeredName) return;
-    const usePUA = cidPUATags.has(currentFontTag);
-    const cmapLookup = currentFont.charCodeToCID;
-    const csRanges = currentFont.codespaceRanges;
-    let i = 0;
-    while (i < hex.length) {
-      let charCode;
-      let hexDigits = 4; // default 2-byte = 4 hex digits
-      if (csRanges && i + 1 < hex.length) {
-        const byte0 = parseInt(hex.substring(i, i + 2), 16);
-        let matched = false;
-        for (let r = 0; r < csRanges.length; r++) {
-          const range = csRanges[r];
-          if (range.bytes === 1) {
-            if (byte0 >= range.low && byte0 <= range.high) {
-              charCode = byte0;
-              hexDigits = 2;
-              matched = true;
-              break;
-            }
-          } else if (range.bytes === 2 && i + 3 < hex.length) {
-            const code2 = parseInt(hex.substring(i, i + 4), 16);
-            if (code2 >= range.low && code2 <= range.high) {
-              charCode = code2;
-              hexDigits = 4;
-              matched = true;
-              break;
-            }
-          }
-        }
-        if (!matched) {
-          if (i + 3 < hex.length) {
-            charCode = parseInt(hex.substring(i, i + 4), 16);
-          } else {
-            charCode = parseInt(hex.substring(i, i + 2), 16);
-            hexDigits = 2;
-          }
-        }
-      } else {
-        if (i + 3 >= hex.length) break;
-        charCode = parseInt(hex.substring(i, i + 4), 16);
-      }
-      i += hexDigits;
-      const cid = cmapLookup ? (cmapLookup.get(charCode) ?? charCode) : charCode;
-      const rawWidth = currentFont.widths.get(cid) ?? currentFont.defaultWidth;
-      const glyphWidth = rawWidth / 1000 * fontSize;
-      if (textRenderMode !== 3) {
-        const trm = matMul([fontSize * tz / 100, 0, 0, fontSize, 0, trise], matMul(tm, ctm));
-        // Use cidCodepoint() to select real Unicode or PUA — must match the font builder.
-        // ToUnicode CMap maps charCodes (not CIDs) to Unicode, so use charCode for lookup.
-        const collided = cidCollisionMap.get(currentFontTag)?.has(cid);
-        const tuStr = currentFont.toUnicode?.get(charCode);
-        // For a glyph from an embedded CID font we could not rebuild, draw nothing (advance only),
-        // rather than fabricating String.fromCharCode(charCode), as the empty embedded glyph would.
-        // A successful no-ToUnicode embedded rebuild keys its glyphs in the PUA and sets usePUA,
-        // so reaching here with usePUA false (an embedded fontFile, no ToUnicode)
-        // means the code is a glyph index into a font we cannot render, not Unicode.
-        const embeddedGlyphUnavailable = !usePUA && !tuStr
-          && !!currentFont.type0?.fontFile && !(currentFont.toUnicode?.size);
-        const unicode = usePUA
-          ? String.fromCodePoint(cidCodepoint(collided ? undefined : tuStr, cid).codepoint)
-          : (embeddedGlyphUnavailable ? '' : (tuStr || String.fromCharCode(charCode)));
-        if (unicode && unicode.trim().length > 0) {
-          const isNonEmbedded = !!(currentFont.type0 && !currentFont.type0.fontFile);
-          const sc = applySmallCaps(unicode, trm, isNonEmbedded && !!currentFont.smallCaps);
-          /** @type {Type0TextOp} */
-          const opObj = {
-            type: 'type0text',
-            text: sc.text,
-            fontSize,
-            fontFamily: registeredName,
-            bold: currentFont.bold,
-            italic: currentFont.italic,
-            x: trm[4],
-            y: trm[5],
-            a: trm[0],
-            b: trm[1],
-            c: trm[2],
-            d: trm[3],
-            fillColor,
-            fillAlpha,
-            textRenderMode,
-            strokeColor,
-            strokeAlpha,
-            lineWidth: lineWidth * Math.sqrt(Math.abs(ctm[0] * ctm[3] - ctm[1] * ctm[2])),
-          };
-          if (isNonEmbedded && !sc.applied) {
-            opObj.pdfGlyphWidth = rawWidth;
-          }
-          if (!fillColorExplicit) opObj.fillColorInherited = true;
-          if (!fillAlphaExplicit) opObj.fillAlphaInherited = true;
-          if (!strokeColorExplicit) opObj.strokeColorInherited = true;
-          if (!strokeAlphaExplicit) opObj.strokeAlphaInherited = true;
-          ops.push(opObj);
-        }
-      }
-      const isWordSpace = hexDigits === 2 && charCode === 0x20;
-      if (currentFont.verticalMode) {
-        const vAdvance = (-fontSize + tc + (isWordSpace ? tw : 0)) * tz / 100;
-        tm[4] += vAdvance * tm[2];
-        tm[5] += vAdvance * tm[3];
-      } else {
-        const advance = (glyphWidth + tc + (isWordSpace ? tw : 0)) * tz / 100;
-        tm[4] += advance * tm[0];
-        tm[5] += advance * tm[1];
-      }
-    }
+    showType0Literal(hexToLatin1(hex));
     lastDrawnHex = hex;
     lastDrawnFontTag = currentFontTag;
   }
@@ -872,7 +748,7 @@ export function parseDrawOps(
       // whitespace (e.g. a letter named "space"). fillText() silently skips whitespace,
       // so route such codes through their PUA codepoint instead.
       const encWhitespace = charCode >= 0x20 && (currentFont.encodingUnicode?.get(charCode) ?? 'x').trim() === '';
-      const usesPUA = hasPUA && (
+      const usesPUA = hasPUA && charCode > 0 && (
         (hasDifferences && inDifferences)
         || (!hasDifferences && (charCode < 0x20 || !currentFont.encodingUnicode?.has(charCode)))
         || encWhitespace
@@ -881,15 +757,16 @@ export function parseDrawOps(
         // Without this, control bytes trim to empty and codes >= 0x20 fall back to the
         // literal byte char, which is the wrong glyph when the CFF encoding diverges from
         // byte-as-Unicode (e.g., a sparse /Differences font where byte 0x20 maps to 'c').
-        || (charCode > 0
-          && currentFont.widths.has(charCode)
+        || (currentFont.widths.has(charCode)
           && !currentFont.toUnicode.has(charCode)
           && !currentFont.encodingUnicode?.has(charCode))
       );
       // Symbol fonts (e.g. Wingdings) use charCodes in 0x01-0x1F range for visible glyphs
       // (circled numbers, arrows, etc.). These charCodes map to JS control characters
       // (\f, \r, etc.) that would be filtered out by trim(). Always render Symbol chars.
-      if (textRenderMode !== 3 && (isSymbol || usesPUA || (drawDefault && drawDefault.trim().length > 0))) {
+      // Skip zero-width characters — the PDF Widths array says these occupy no space,
+      // so they should not render visually (common in TeX fonts for unused charCodes).
+      if (textRenderMode !== 3 && glyphWidth !== 0 && (isSymbol || usesPUA || (drawDefault && drawDefault.trim().length > 0))) {
         let trm = matMul([fontSize * tz / 100, 0, 0, fontSize, 0, trise], matMul(tm, ctm));
         // Apply non-standard FontMatrix (shear/flip) from embedded Type1 font program
         const fm = currentFont.type1.fontMatrix;
@@ -914,7 +791,7 @@ export function parseDrawOps(
           {
             const uniStr = currentFont.toUnicode.get(charCode);
             const firstCp = uniStr ? uniStr.codePointAt(0) : 0;
-            const needsPUA = uniStr && ([...uniStr].length > 1 || isCombiningOrIndicMark(firstCp) || isDefaultIgnorable(firstCp));
+            const needsPUA = uniStr && ([...uniStr].length > 1 || isCombiningOrIndicMark(firstCp) || isDefaultIgnorable(firstCp) || isComplexShapingScript(firstCp));
             if (needsPUA) {
               drawText = String.fromCharCode(0xE000 + charCode);
             } else {
@@ -959,99 +836,6 @@ export function parseDrawOps(
   }
 
   /**
-   * Emit text ops for a Type1/TrueType hex string (single-byte, 2-hex-digit encoding).
-   * @param {string} hex
-   */
-  function showType1Hex(hex) {
-    if (!currentFont || !currentFont.type1) return;
-    const registeredName = registeredFontNames && registeredFontNames.get(currentFontTag);
-    if (!registeredName) return;
-    const isSymbol = symbolFontTags.has(currentFontTag);
-    const isRawCharCode = rawCharCodeTags.has(currentFontTag);
-    const hasPUA = cidPUATags.has(currentFontTag);
-    const isNonEmbedded = !currentFont.type1.fontFile;
-    const hasDifferences = !!(currentFont.differences && Object.keys(currentFont.differences).length > 0);
-    for (let i = 0; i + 1 <= hex.length; i += 2) {
-      const charCode = parseInt(hex.substring(i, i + 2), 16);
-      const rawWidth = currentFont.widths.get(charCode) ?? currentFont.defaultWidth;
-      const glyphWidth = rawWidth / 1000 * fontSize;
-      const unicode = currentFont.toUnicode.get(charCode) || String.fromCharCode(charCode);
-      // A glyph's ToUnicode can be whitespace even when the glyph is visible (e.g. a leader-dot period whose ToUnicode is a space).
-      // Gate rendering on drawDefault, which prefers the encoding glyph, so it is not skipped.
-      const drawDefault = currentFont.encodingUnicode?.get(charCode) || unicode;
-      const inDifferences = !!(currentFont.differences && currentFont.differences[charCode] !== undefined);
-      const encWhitespace = charCode >= 0x20 && (currentFont.encodingUnicode?.get(charCode) ?? 'x').trim() === '';
-      const usesPUA = hasPUA && charCode > 0 && (
-        (hasDifferences && inDifferences)
-        || (!hasDifferences && (charCode < 0x20 || !currentFont.encodingUnicode?.has(charCode)))
-        || encWhitespace
-        // See showLiteralString: charcodes with widths but no /Differences and no encoding
-        // mapping route through PUA so buildFontFromCFF can resolve them via the embedded
-        // font's intrinsic CFF Encoding.
-        || (currentFont.widths.has(charCode)
-          && !currentFont.toUnicode.has(charCode)
-          && !currentFont.encodingUnicode?.has(charCode))
-      );
-      // Skip zero-width characters — the PDF Widths array says these occupy no space,
-      // so they should not render visually (common in TeX fonts for unused charCodes).
-      if (textRenderMode !== 3 && glyphWidth !== 0 && (isSymbol || usesPUA || (drawDefault && drawDefault.trim().length > 0))) {
-        let trm = matMul([fontSize * tz / 100, 0, 0, fontSize, 0, trise], matMul(tm, ctm));
-        const fm = currentFont.type1.fontMatrix;
-        if (fm) trm = matMul(fm, trm);
-        let drawText;
-        if (isSymbol) {
-          drawText = String.fromCharCode(0xF000 + charCode);
-        } else if (usesPUA) {
-          drawText = String.fromCharCode(0xE000 + charCode);
-        } else if (isRawCharCode) {
-          {
-            const uniStr = currentFont.toUnicode.get(charCode);
-            const firstCp = uniStr ? uniStr.codePointAt(0) : 0;
-            const needsPUA = uniStr && ([...uniStr].length > 1 || isCombiningOrIndicMark(firstCp) || isDefaultIgnorable(firstCp));
-            if (needsPUA) {
-              drawText = String.fromCharCode(0xE000 + charCode);
-            } else {
-              drawText = uniStr ? String.fromCodePoint(firstCp) : String.fromCharCode(charCode);
-            }
-          }
-        } else {
-          drawText = drawDefault;
-        }
-        const sc = applySmallCaps(drawText, trm, isNonEmbedded && !!currentFont.smallCaps);
-        const opObj2 = {
-          type: 'type0text',
-          text: sc.text,
-          fontSize,
-          fontFamily: registeredName,
-          bold: currentFont.bold,
-          italic: currentFont.italic,
-          x: trm[4],
-          y: trm[5],
-          a: trm[0],
-          b: trm[1],
-          c: trm[2],
-          d: trm[3],
-          fillColor,
-          fillAlpha,
-          textRenderMode,
-          strokeColor,
-          strokeAlpha,
-          lineWidth: lineWidth * Math.sqrt(Math.abs(ctm[0] * ctm[3] - ctm[1] * ctm[2])),
-        };
-        if (isNonEmbedded && !sc.applied) opObj2.pdfGlyphWidth = rawWidth;
-        if (!fillColorExplicit) opObj2.fillColorInherited = true;
-        if (!fillAlphaExplicit) opObj2.fillAlphaInherited = true;
-        if (!strokeColorExplicit) opObj2.strokeColorInherited = true;
-        if (!strokeAlphaExplicit) opObj2.strokeAlphaInherited = true;
-        ops.push(opObj2);
-      }
-      const advance = (glyphWidth + tc + (charCode === 0x20 ? tw : 0)) * tz / 100;
-      tm[4] += advance * tm[0];
-      tm[5] += advance * tm[1];
-    }
-  }
-
-  /**
    * Show a string token — dispatches to Type3, Type0, Type1, or advance-only.
    * @param {{ type: string, value: string }} strTok
    */
@@ -1061,9 +845,9 @@ export function parseDrawOps(
     const isType0 = !!currentFont.type0;
     const isType1 = !!currentFont.type1;
     if (strTok.type === 'hexstring') {
-      if (isType3) showType3Hex(strTok.value);
+      if (isType3) showType3Literal(hexToLatin1(strTok.value));
       else if (isType0) showType0Hex(strTok.value);
-      else if (isType1) showType1Hex(strTok.value);
+      else if (isType1) showType1Literal(hexToLatin1(strTok.value));
       else advanceHex(strTok.value);
     } else if (strTok.type === 'string') {
       if (isType3) showType3Literal(strTok.value);

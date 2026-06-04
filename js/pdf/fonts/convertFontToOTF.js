@@ -540,21 +540,22 @@ export function buildFontFromCFF(cffData, fontObj, encoding) {
     })];
     const usedUnicodes = new Set([0]);
 
-    // If the CFF fontMatrix has a non-zero shear component (fm[2]), the font is oblique/italic.
-    // CFF glyph outlines are stored in glyph space and must be transformed by the fontMatrix
-    // to produce the actual shape. The scaling (fm[0]/fm[3]) is handled by unitsPerEm, but the
-    // shear must be applied explicitly to the path coordinates: x' = x + shear * y.
+    // CFF outlines are in glyph space and must be transformed by the fontMatrix.
+    // unitsPerEm is 1/fm[0], so it encodes only the X scale.
+    // Bake the residual Y factor fm[3]/fm[0] into the coordinates
+    // so a non-uniform matrix does not leave glyphs at the right width but wrong height.
+    // That factor also flips Y when fm[3] is negative (Y-down outlines, OTF expects Y-up).
+    // A non-zero shear fm[2] slants oblique faces via x' = x + (fm[2]/fm[0])*y on the original y.
+    const haveScale = fm && fm[0] > 0 && fm[0] < 1;
     const shear = fm && Math.abs(fm[2]) > 1e-9 ? fm[2] / fm[0] : 0;
-    // If the CFF fontMatrix has a negative Y scale (fm[3] < 0), the glyph outlines are designed
-    // in a Y-down coordinate system. OTF expects Y-up, so negate all Y coordinates.
-    const yFlip = fm && fm[3] < 0;
+    const yScale = haveScale ? fm[3] / fm[0] : (fm && fm[3] < 0 ? -1 : 1);
 
     for (const [unicode, gid] of unicodeToGID) {
       if (gid <= 0 || gid >= fontShell.nGlyphs || usedUnicodes.has(unicode)) continue;
       usedUnicodes.add(unicode);
       const g = fontShell.glyphs.get(gid);
       let { path } = g;
-      if (shear || yFlip) {
+      if (shear || yScale !== 1) {
         path = new opentype.Path();
         for (const cmd of g.path.commands) {
           const c = { ...cmd };
@@ -563,10 +564,10 @@ export function buildFontFromCFF(cffData, fontObj, encoding) {
             if (c.x1 !== undefined) c.x1 = Math.round(c.x1 + shear * c.y1);
             if (c.x2 !== undefined) c.x2 = Math.round(c.x2 + shear * c.y2);
           }
-          if (yFlip) {
-            if (c.y !== undefined) c.y = -c.y;
-            if (c.y1 !== undefined) c.y1 = -c.y1;
-            if (c.y2 !== undefined) c.y2 = -c.y2;
+          if (yScale !== 1) {
+            if (c.y !== undefined) c.y = Math.round(c.y * yScale);
+            if (c.y1 !== undefined) c.y1 = Math.round(c.y1 * yScale);
+            if (c.y2 !== undefined) c.y2 = Math.round(c.y2 * yScale);
           }
           path.commands.push(c);
         }
@@ -681,6 +682,30 @@ export function isCombiningOrIndicMark(cp) {
 }
 
 /**
+ * Whether cp belongs to a script the canvas text engine complex-shapes, so a glyph drawn standalone
+ * via fillText is mis-shaped and the caller must route it to the PUA instead.
+ * @param {number} cp
+ * @returns {boolean}
+ */
+export function isComplexShapingScript(cp) {
+  // The canvas shaper reorders, joins, or stacks these blocks, so a glyph keyed here draws wrong standalone
+  // even when its cmap is correct. Callers route it to the PUA to bypass shaping,
+  // which also catches obfuscated ToUnicode that scatters Latin glyphs into these blocks.
+  // Precomposed Hangul (U+AC00-D7A3) and CJK ideographs are not shaped and stay on real Unicode.
+  return (cp >= 0x0590 && cp <= 0x08FF) // Hebrew, Arabic, Syriac, Thaana, NKo, Samaritan, Mandaic, Arabic Ext
+    || (cp >= 0x0900 && cp <= 0x109F) // Brahmic (Devanagari..Sinhala), Thai, Lao, Tibetan, Myanmar
+    || (cp >= 0x1100 && cp <= 0x11FF) // Hangul Jamo (conjoining)
+    || (cp >= 0x1700 && cp <= 0x18FF) // Philippine, Khmer, Mongolian, UCAS Extended
+    || (cp >= 0x1900 && cp <= 0x1C7F) // Limbu..Lepcha, Ol Chiki, Tai Tham, Balinese, Sundanese, Batak
+    || (cp >= 0x1CD0 && cp <= 0x1DFF) // Vedic + combining-diacritical extensions/supplement (e.g. U+1DFA)
+    || (cp >= 0xA800 && cp <= 0xAAFF) // Syloti Nagri, Phags-pa, Saurashtra, Javanese, Cham, Myanmar/Tai Viet Ext
+    || (cp >= 0xABC0 && cp <= 0xABFF) // Meetei Mayek
+    || (cp >= 0xD7B0 && cp <= 0xD7FF) // Hangul Jamo Extended-B
+    || (cp >= 0xFB1D && cp <= 0xFDFF) // Hebrew + Arabic presentation forms A
+    || (cp >= 0xFE70 && cp <= 0xFEFF); // Arabic presentation forms B
+}
+
+/**
  * Decide the codepoint to use in the font's cmap AND the renderer's fillText()
  * for a CID glyph. Uses real Unicode from ToUnicode when available and safe;
  * falls back to PUA for combining marks, whitespace, multi-codepoint sequences,
@@ -708,11 +733,12 @@ export function cidCodepoint(toUniStr, cid) {
       //   claiming it in the cmap routes every CID with FFFD in ToUnicode (and every
       //   missing-CID fallback) to a single real glyph, so unrelated CIDs render as
       //   whichever glyph got there first.
-      if (cp > 0x20 && cp !== 0xFFFD && !isCombiningOrIndicMark(cp) && !isDefaultIgnorable(cp)) {
+      if (cp > 0x20 && cp !== 0xFFFD && !isCombiningOrIndicMark(cp)
+        && !isDefaultIgnorable(cp) && !isComplexShapingScript(cp)) {
         return { codepoint: cp, isPUA: false };
       }
     }
-    // Multi-codepoint, combining mark, or whitespace/control → PUA
+    // Multi-codepoint, combining mark, whitespace/control, or complex-shaping script -> PUA
   }
   // No Unicode info or needs PUA
   const pua = 0xE000 + cid <= 0xF8FF ? 0xE000 + cid : 0xF0000 + cid;
@@ -958,6 +984,12 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
         const gid = (cidToGidMap[i] << 8) | cidToGidMap[i + 1];
         const cid = i / 2;
         if (cid === 0 && gid === 0) continue;
+        // Skip GIDs with neither an outline nor a ToUnicode entry.
+        // An Identity CIDToGIDMap spans every GID, including empty padding.
+        // Assigning each the synthetic PUA codepoint below would let a padding glyph evict a real glyph
+        // whose ToUnicode legitimately maps it into the PUA.
+        const hasOutline = gid + 1 < loca.length && loca[gid + 1] > loca[gid];
+        if (!hasOutline && !cidToUnicode?.has(cid)) continue;
         const decision = cidCodepoint(cidToUnicode?.get(cid), cid);
         let { codepoint } = decision;
         let { isPUA } = decision;
@@ -1031,7 +1063,7 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
             let unicode;
             if (uniStr) {
               const firstCp = uniStr.codePointAt(0) || 0;
-              if ([...uniStr].length > 1 || isCombiningOrIndicMark(firstCp) || isDefaultIgnorable(firstCp)) {
+              if ([...uniStr].length > 1 || isCombiningOrIndicMark(firstCp) || isDefaultIgnorable(firstCp) || isComplexShapingScript(firstCp)) {
                 unicode = 0xE000 + charCode;
               } else {
                 unicode = firstCp;

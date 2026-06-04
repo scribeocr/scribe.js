@@ -863,6 +863,15 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
     // Tr=1 (stroke), Tr=2 (fill+stroke), Tr=3 (invisible), Tr>=4 (clipping)
     // would render incorrectly if replaced with a filled path. Leave verbatim.
     if (!binding || !operand || tr !== 0) {
+      // Verbatim text still advances the text matrix. Replay its advance onto tm
+      // so a later converted run in the same BT lands after the kept text instead of overlapping it.
+      if (binding && operand) {
+        const vcs = binding.codespaceRanges || (binding.isType0 ? [{ bytes: 2, low: 0, high: 0xFFFF }] : null);
+        for (const elem of flattenTextOperandTyped(operand, op === '"' ? 'Tj' : op, vcs)) {
+          if (elem.type === 'spacer') applySpacerToMatrix(tm, binding, elem.value);
+          else advanceMatrixForGlyph(tm, binding, elem.value, elem.numBytes);
+        }
+      }
       emitVerbatim(op);
       continue;
     }
