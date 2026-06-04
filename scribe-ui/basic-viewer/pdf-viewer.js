@@ -3,6 +3,11 @@ import { ScribeViewer } from '../viewer.js';
 import { applyHighlight } from '../js/viewerHighlights.js';
 import { destroyContextMenu } from '../js/viewerCanvasInteraction.js';
 
+// Toolbar height bounds (px).
+const TOOLBAR_HEIGHT_DEFAULT = 32;
+const TOOLBAR_HEIGHT_MIN = 24;
+const TOOLBAR_HEIGHT_MAX = 80;
+
 /**
  * @typedef {object} FitResult
  * @property {number} zoom
@@ -28,8 +33,10 @@ class ScribePDFViewer {
    *   to the given hex colors. Disabling the toolbar does not block programmatic `applyHighlight` calls.
    * @param {boolean} [options.showToolbar=true] - Render the chrome toolbar (page nav, zoom,
    *   highlight controls). When false the viewer fills the container with the canvas only.
+   * @param {number} [options.toolbarHeight=32] - Height of the chrome toolbar in px. Clamped to [24, 80].
    * @param {boolean} [options.showDropZone=true] - Render the drag-and-drop file upload zone.
    *   When false, consumers must load documents via `importFile` or `attachDocument`.
+   * @param {boolean} [options.showScrollbars=true] - Render scrollbars.
    * @param {FitMode} [options.fit='height'] - How to size the first page when a document opens.
    *   `'width'` fits page width to the viewer. `'height'` (default) fits page height. `'page'` fits
    *   the whole page. A function receives the page dims and viewer dims and returns `{zoom, x?, y?}`.
@@ -49,7 +56,9 @@ class ScribePDFViewer {
       height = 'auto',
       highlight = true,
       showToolbar = true,
+      toolbarHeight = TOOLBAR_HEIGHT_DEFAULT,
       showDropZone = true,
+      showScrollbars = true,
       fit = 'height',
       autoResize = true,
       keyboardScope = 'focused',
@@ -58,6 +67,7 @@ class ScribePDFViewer {
     this.container = container;
     this.showToolbar = showToolbar;
     this.showDropZone = showDropZone;
+    this.showScrollbars = showScrollbars;
     /** @type {?import('../../js/containers/scribeDoc.js').ScribeDoc} */
     this.doc = null;
 
@@ -108,9 +118,17 @@ class ScribePDFViewer {
     this.pdfViewerElem.style.backgroundColor = 'rgb(82, 86, 89)';
     this.pdfViewerElem.style.fontFamily = '\'Segoe UI\', Tahoma, sans-serif';
 
-    this.toolbarHeight = showToolbar ? 56 : 0;
+    const toolbarHeightNum = Number(toolbarHeight);
+    const toolbarHeightResolved = Number.isFinite(toolbarHeightNum)
+      ? Math.min(TOOLBAR_HEIGHT_MAX, Math.max(TOOLBAR_HEIGHT_MIN, toolbarHeightNum))
+      : TOOLBAR_HEIGHT_DEFAULT;
+    this.toolbarHeight = showToolbar ? toolbarHeightResolved : 0;
+    // Icons/page-input/text are sized to the bar.
+    const toolbarIconSize = Math.max(16, Math.min(32, this.toolbarHeight - 4));
 
     if (showToolbar) {
+      // The shared CSS sizes `.cr-icon`/`.cr-icon-button` from this var, scoped to this instance's root.
+      this.pdfViewerElem.style.setProperty('--scribe-icon-size', `${toolbarIconSize}px`);
       const toolbarElem = document.createElement('div');
       toolbarElem.className = 'scribe-pdf-viewer-toolbar';
       toolbarElem.style.width = '100%';
@@ -120,7 +138,7 @@ class ScribePDFViewer {
       toolbarElem.style.display = 'flex';
       toolbarElem.style.position = 'relative';
       toolbarElem.style.zIndex = '10';
-      toolbarElem.style.lineHeight = '32px';
+      toolbarElem.style.lineHeight = `${toolbarIconSize}px`;
       toolbarElem.style.backgroundColor = '#323639';
 
       const toolbarElemStart = document.createElement('div');
@@ -454,6 +472,8 @@ class ScribePDFViewer {
 
     this.scribe.init(this.viewerContainer, initWidth, initHeight - this.toolbarHeight);
 
+    if (this.showScrollbars) this._buildScrollbars();
+
     // Document-level mouseup listeners, retained so `destroy()` can remove them.
     /** @type {Array<() => void>} */
     this._teardownCallbacks = [];
@@ -515,6 +535,7 @@ class ScribePDFViewer {
     this.scribe.displayPageCallback = () => {
       if (origCallback) origCallback();
       if (this.pageNumElem) this.pageNumElem.value = (this.scribe.state.cp.n + 1).toString();
+      if (this.showScrollbars) this.updateScrollbars();
       setTimeout(() => this.updateCommentIcons(), 250);
     };
 
@@ -639,6 +660,7 @@ class ScribePDFViewer {
       this.dropZone.style.height = `${height - this.toolbarHeight}px`;
     }
     this.scribe.resize(width, height - this.toolbarHeight);
+    if (this.showScrollbars) this.updateScrollbars();
   }
 
   /**
@@ -805,6 +827,185 @@ class ScribePDFViewer {
     }
   }
 
+  /**
+   * Build the scrollbars.
+   */
+  _buildScrollbars() {
+    const vTrack = document.createElement('div');
+    vTrack.className = 'scribe-scrollbar scribe-scrollbar-v';
+    vTrack.style.display = 'none';
+    const vThumb = document.createElement('div');
+    vThumb.className = 'scribe-scrollbar-thumb';
+    vTrack.appendChild(vThumb);
+
+    const hTrack = document.createElement('div');
+    hTrack.className = 'scribe-scrollbar scribe-scrollbar-h';
+    hTrack.style.display = 'none';
+    const hThumb = document.createElement('div');
+    hThumb.className = 'scribe-scrollbar-thumb';
+    hTrack.appendChild(hThumb);
+
+    this.viewerContainer.appendChild(vTrack);
+    this.viewerContainer.appendChild(hTrack);
+
+    this._vScrollTrack = vTrack;
+    this._vScrollThumb = vThumb;
+    this._hScrollTrack = hTrack;
+    this._hScrollThumb = hThumb;
+
+    this._installScrollbarDrag('y', vTrack, vThumb);
+    this._installScrollbarDrag('x', hTrack, hThumb);
+
+    this.scribe.stage.on('xChange yChange scaleXChange scaleYChange', () => this.updateScrollbars());
+    this.updateScrollbars();
+  }
+
+  /**
+   * Wire thumb-drag and track-click scrolling for one axis.
+   * Both route through `panStage`, so the existing clamping, current-page tracking, and overlay redraw apply unchanged.
+   * @param {'x'|'y'} axis
+   * @param {HTMLDivElement} track
+   * @param {HTMLDivElement} thumb
+   */
+  _installScrollbarDrag(axis, track, thumb) {
+    /** @type {?{trackStart: number, grab: number}} */
+    let dragState = null;
+
+    const onMove = (event) => {
+      if (!dragState) return;
+      const otherVisible = (axis === 'y' ? this._hScrollTrack : this._vScrollTrack).style.display !== 'none';
+      const geom = this._scrollGeometry(axis, otherVisible);
+      if (!geom) return;
+      const client = axis === 'y' ? event.clientY : event.clientX;
+      const denom = geom.trackPx - geom.thumbPx;
+      const startPx = Math.min(denom, Math.max(0, client - dragState.trackStart - dragState.grab));
+      const posFrac = denom > 0 ? startPx / denom : 0;
+      const metric = geom.lo + posFrac * geom.range;
+      const viewportPx = axis === 'y' ? this.scribe.stage.height() : this.scribe.stage.width();
+      const stagePos = axis === 'y' ? this.scribe.stage.y() : this.scribe.stage.x();
+      const delta = (viewportPx / 2 - metric * geom.scale) - stagePos;
+      this.scribe.panStage(axis === 'y' ? { deltaY: delta } : { deltaX: delta });
+      event.preventDefault();
+    };
+
+    const onUp = () => {
+      dragState = null;
+      thumb.classList.remove('dragging');
+      document.removeEventListener('pointermove', onMove);
+      document.removeEventListener('pointerup', onUp);
+    };
+
+    thumb.addEventListener('pointerdown', (event) => {
+      const rect = track.getBoundingClientRect();
+      const trackStart = axis === 'y' ? rect.top : rect.left;
+      const thumbStart = axis === 'y' ? thumb.offsetTop : thumb.offsetLeft;
+      const client = axis === 'y' ? event.clientY : event.clientX;
+      dragState = { trackStart, grab: client - (trackStart + thumbStart) };
+      thumb.classList.add('dragging');
+      document.addEventListener('pointermove', onMove);
+      document.addEventListener('pointerup', onUp);
+      event.preventDefault();
+      event.stopPropagation();
+    });
+
+    track.addEventListener('pointerdown', (event) => {
+      // Clicks on the thumb itself are handled by the thumb's own listener.
+      if (event.target !== track) return;
+      const rect = track.getBoundingClientRect();
+      const trackStart = axis === 'y' ? rect.top : rect.left;
+      const thumbStart = axis === 'y' ? thumb.offsetTop : thumb.offsetLeft;
+      const client = axis === 'y' ? event.clientY : event.clientX;
+      const viewportPx = axis === 'y' ? this.scribe.stage.height() : this.scribe.stage.width();
+      // Clicking before the thumb pages toward the document start (content moves down -> +delta).
+      const delta = client < trackStart + thumbStart ? viewportPx * 0.9 : viewportPx * -0.9;
+      this.scribe.panStage(axis === 'y' ? { deltaY: delta } : { deltaX: delta });
+      event.preventDefault();
+    });
+  }
+
+  /**
+   * Compute scrollbar geometry for one axis from the current stage transform and document extent.
+   * The scroll position is the content coordinate at the viewport center (the same metric the engine
+   * uses to pick the current page), which maps cleanly across the whole document independent of zoom.
+   * @param {'x'|'y'} axis
+   * @param {boolean} otherVisible - Whether the perpendicular scrollbar is showing (shortens this track).
+   * @returns {?{visible: boolean, trackPx: number, thumbPx: number, startPx: number, lo: number, hi: number, range: number, scale: number}}
+   */
+  _scrollGeometry(axis, otherVisible) {
+    const stage = this.scribe.stage;
+    const pageMetrics = this.scribe.doc && this.scribe.doc.pageMetrics;
+    if (!stage || !pageMetrics || pageMetrics.length === 0) return null;
+
+    const scale = stage.getAbsoluteScale().y || 1;
+    const barSize = 12;
+    const minThumb = 24;
+
+    let viewportPx;
+    let stagePos;
+    let lo;
+    let hi;
+    if (axis === 'y') {
+      viewportPx = stage.height();
+      stagePos = stage.y();
+      // Matches the vertical pan clamps in `panStage`: page 0 top (minus overscroll) to last page end.
+      lo = this.scribe.getPageStop(0) - 100;
+      hi = this.scribe.getPageStop(pageMetrics.length - 1, false);
+    } else {
+      viewportPx = stage.width();
+      stagePos = stage.x();
+      const dims = pageMetrics[this.scribe.state.cp.n] && pageMetrics[this.scribe.state.cp.n].dims;
+      if (!dims) return null;
+      lo = 0;
+      hi = dims.width;
+    }
+
+    const visible = hi * scale > viewportPx + 0.5;
+    const trackPx = Math.max(0, viewportPx - (otherVisible ? barSize : 0));
+    const range = hi - lo;
+    const metric = (stagePos - viewportPx / 2) / scale * -1;
+    const viewLen = viewportPx / scale;
+    const thumbPx = Math.min(trackPx, Math.max(minThumb, (viewLen / (range + viewLen)) * trackPx));
+    const posFrac = range > 0 ? Math.min(1, Math.max(0, (metric - lo) / range)) : 0;
+    const startPx = posFrac * (trackPx - thumbPx);
+
+    return {
+      visible, trackPx, thumbPx, startPx, lo, hi, range, scale,
+    };
+  }
+
+  /**
+   * Reposition and show/hide both overlay scrollbars to match the current stage transform.
+   * Cheap enough to call on every pan/zoom frame; only writes DOM styles.
+   */
+  updateScrollbars() {
+    if (!this.scribe.stage || !this._vScrollTrack) return;
+
+    // Resolve vertical visibility first (a visible horizontal bar shortens the vertical track and vice versa),
+    // then recompute the vertical geometry against the final horizontal state.
+    const vVisible = !!(this._scrollGeometry('y', false)?.visible);
+    const hGeom = this._scrollGeometry('x', vVisible);
+    const hVisible = !!(hGeom?.visible);
+    const vGeom = this._scrollGeometry('y', hVisible);
+
+    if (vGeom && vGeom.visible) {
+      this._vScrollTrack.style.display = 'block';
+      this._vScrollTrack.style.height = `${Math.round(vGeom.trackPx)}px`;
+      this._vScrollThumb.style.height = `${Math.round(vGeom.thumbPx)}px`;
+      this._vScrollThumb.style.top = `${Math.round(vGeom.startPx)}px`;
+    } else {
+      this._vScrollTrack.style.display = 'none';
+    }
+
+    if (hGeom && hGeom.visible) {
+      this._hScrollTrack.style.display = 'block';
+      this._hScrollTrack.style.width = `${Math.round(hGeom.trackPx)}px`;
+      this._hScrollThumb.style.width = `${Math.round(hGeom.thumbPx)}px`;
+      this._hScrollThumb.style.left = `${Math.round(hGeom.startPx)}px`;
+    } else {
+      this._hScrollTrack.style.display = 'none';
+    }
+  }
+
   static styleAdded = false;
 
   /** Adds the required CSS styles to the document. */
@@ -823,8 +1024,14 @@ class ScribePDFViewer {
       vertical-align: middle;
       fill: currentcolor;
       stroke: none;
-      width: 32px;
-      height: 32px;
+      width: var(--scribe-icon-size, 32px);
+      height: var(--scribe-icon-size, 32px);
+    }
+
+    /* Glyphs keep their authored size when it fits, but shrink to the icon box on a short toolbar. */
+    .scribe-pdf-viewer .cr-icon svg {
+      max-width: 100%;
+      max-height: 100%;
     }
 
     .scribe-pdf-viewer .cr-icon-button {
@@ -833,13 +1040,13 @@ class ScribePDFViewer {
       cursor: pointer;
       display: inline-flex;
       flex-shrink: 0;
-      height: 32px;
+      height: var(--scribe-icon-size, 32px);
       outline: 0px;
       overflow: hidden;
       position: relative;
       user-select: none;
       vertical-align: middle;
-      width: 32px;
+      width: var(--scribe-icon-size, 32px);
     }
 
     .scribe-pdf-viewer .cr-icon-button:hover {
@@ -932,6 +1139,47 @@ class ScribePDFViewer {
       padding: 0 4px;
       text-align: center;
       width: 5ch;
+    }
+
+    .scribe-pdf-viewer .scribe-scrollbar {
+      position: absolute;
+      z-index: 9;
+      touch-action: none;
+      user-select: none;
+    }
+
+    .scribe-pdf-viewer .scribe-scrollbar-v {
+      top: 0;
+      right: 0;
+      width: 12px;
+    }
+
+    .scribe-pdf-viewer .scribe-scrollbar-h {
+      left: 0;
+      bottom: 0;
+      height: 12px;
+    }
+
+    .scribe-pdf-viewer .scribe-scrollbar-thumb {
+      position: absolute;
+      background: rgba(255, 255, 255, .35);
+      border-radius: 6px;
+      transition: background 0.15s ease-in-out;
+    }
+
+    .scribe-pdf-viewer .scribe-scrollbar-thumb:hover,
+    .scribe-pdf-viewer .scribe-scrollbar-thumb.dragging {
+      background: rgba(255, 255, 255, .6);
+    }
+
+    .scribe-pdf-viewer .scribe-scrollbar-v .scribe-scrollbar-thumb {
+      left: 2px;
+      width: 8px;
+    }
+
+    .scribe-pdf-viewer .scribe-scrollbar-h .scribe-scrollbar-thumb {
+      top: 2px;
+      height: 8px;
     }
   `;
 
