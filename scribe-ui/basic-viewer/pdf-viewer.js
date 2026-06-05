@@ -70,6 +70,11 @@ class ScribePDFViewer {
     this.showScrollbars = showScrollbars;
     /** @type {?import('../../js/containers/scribeDoc.js').ScribeDoc} */
     this.doc = null;
+    /**
+     * Whether the doc should be terminated with the viewer.
+     * @type {boolean}
+     */
+    this._ownsDoc = false;
 
     /**
      * The `ScribeViewer` instance backing this viewer. Each `ScribePDFViewer` owns its own
@@ -580,42 +585,34 @@ class ScribePDFViewer {
   }
 
   /**
-   * Attach an existing `ScribeDoc` to the viewer instead of importing fresh bytes.
-   * Use when the parent application already has a parsed document (e.g. from a prior text-extraction
-   * step) so the viewer can skip re-parsing, re-rendering fonts, and re-running OCR.
-   * Terminates the previously attached document if it differs from `doc`.
+   * Attach an existing `ScribeDoc` to the viewer for display.
+   * The viewer does **not** take ownership. The document remains the caller's to terminate.
    * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
    * @param {number} [initialPage=0]
+   * @param {object} [options]
+   * @param {boolean} [options.terminatePrevious] - Force-terminate (`true`) or force-retain (`false`) the outgoing document,
+   *   overriding the default (terminate only a document the viewer created).
+   * @returns {Promise<?import('../../js/containers/scribeDoc.js').ScribeDoc>} The displaced document, or `null` if there was none.
    */
-  async attachDocument(doc, initialPage = 0) {
-    if (this.doc && this.doc !== doc) await this.doc.terminate();
-    this.doc = doc;
-    this.scribe.doc = doc;
-
-    for (let i = 0; i < doc.inputData.pageCount; i++) {
-      if (!doc.annotations.pages[i]) doc.annotations.pages[i] = [];
-    }
-
-    if (this.pageCountElem) this.pageCountElem.textContent = doc.inputData.pageCount.toString();
-    if (this.pageNumElem) this.pageNumElem.value = (initialPage + 1).toString();
-
-    this.scribe.runSetInitial = true;
-    await this.scribe.displayPage(initialPage, initialPage > 0);
-
-    if (this.dropZone) this.dropZone.style.display = 'none';
+  async attachDocument(doc, initialPage = 0, { terminatePrevious } = {}) {
+    return this._setDoc(doc, initialPage, false, terminatePrevious);
   }
 
   /**
    * Import a document into the viewer.
+   * The viewer creates and **owns** the resulting document,
+   * so it is terminated automatically on the next import, on `detachDoc`, or on `destroy`.
    * Accepts a `File`, `Blob`, `ArrayBuffer`, `Uint8Array`, or a filesystem path string (Node only).
    * Raw byte inputs (`ArrayBuffer`, `Uint8Array`, non-File `Blob`) are treated as PDFs.
    * @param {File | Blob | ArrayBuffer | Uint8Array | string} file
    * @param {number} [initialPage=0]
+   * @param {object} [options]
+   * @param {boolean} [options.terminatePrevious] - Force-terminate (`true`) or force-retain (`false`) the outgoing document,
+   *   overriding the default (terminate only a document the viewer created).
+   * @returns {Promise<?import('../../js/containers/scribeDoc.js').ScribeDoc>} The displaced document, or `null` if there was none.
    */
-  async importFile(file, initialPage = 0) {
+  async importFile(file, initialPage = 0, { terminatePrevious } = {}) {
     let doc;
-    if (this.doc) await this.doc.terminate();
-
     if (file instanceof ArrayBuffer) {
       doc = await scribe.openDocument({ pdfFiles: [file] });
     } else if (typeof Uint8Array !== 'undefined' && file instanceof Uint8Array) {
@@ -631,8 +628,30 @@ class ScribePDFViewer {
       throw new Error('importFile: input must be File, Blob, ArrayBuffer, Uint8Array, or a filesystem path string.');
     }
 
+    return this._setDoc(doc, initialPage, true, terminatePrevious);
+  }
+
+  /**
+   * Wire `doc` into the viewer and display `initialPage`, deciding the outgoing document's fate.
+   * Shared by `attachDocument` (`owns=false`) and `importFile` (`owns=true`).
+   *
+   * The outgoing document's view is reset by the `scribe.doc` setter (`_resetDocState`) regardless.
+   * Its resources are terminated only when `terminatePrevious` says so, defaulting to "terminate iff
+   * the viewer owned it". Termination is always non-blocking, so the new page never waits on teardown.
+   * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
+   * @param {number} initialPage
+   * @param {boolean} owns - Whether the viewer created `doc`.
+   * @param {boolean | undefined} terminatePrevious - Explicit override of the outgoing-doc terminate.
+   * @returns {Promise<?import('../../js/containers/scribeDoc.js').ScribeDoc>} The displaced document.
+   */
+  async _setDoc(doc, initialPage, owns, terminatePrevious) {
+    const prev = this.doc;
+    const displaced = prev && prev !== doc ? prev : null;
+    const terminatePrev = terminatePrevious ?? this._ownsDoc;
+
     this.doc = doc;
-    this.scribe.doc = doc;
+    this._ownsDoc = owns;
+    this.scribe.doc = doc; // fires _resetDocState(): resets the outgoing document's view only
 
     for (let i = 0; i < doc.inputData.pageCount; i++) {
       if (!doc.annotations.pages[i]) doc.annotations.pages[i] = [];
@@ -641,10 +660,44 @@ class ScribePDFViewer {
     if (this.pageCountElem) this.pageCountElem.textContent = doc.inputData.pageCount.toString();
     if (this.pageNumElem) this.pageNumElem.value = (initialPage + 1).toString();
 
+    // Off the critical path: the displaced document's workers die asynchronously while the new page renders.
+    // Safe because each document's workers and fonts are namespaced by a unique docId.
+    if (terminatePrev && displaced) displaced.terminate().catch(() => {});
+
     this.scribe.runSetInitial = true;
     await this.scribe.displayPage(initialPage, initialPage > 0);
 
     if (this.dropZone) this.dropZone.style.display = 'none';
+
+    return displaced;
+  }
+
+  /**
+   * Stop displaying the current document and return the viewer to its empty state (drop zone shown), without destroying the viewer.
+   * Terminates the detached document only if the viewer owns it (created it via `importFile`) or `terminate` forces the choice.
+   * @param {object} [options]
+   * @param {boolean} [options.terminate] - Force-terminate (`true`) or force-retain (`false`) the detached document,
+   *   overriding the default (terminate only a document the viewer created).
+   * @returns {?import('../../js/containers/scribeDoc.js').ScribeDoc} The detached document (for the caller to cache or terminate),
+   *   or `null` if no document was attached.
+   */
+  detachDoc({ terminate } = {}) {
+    const prev = this.doc;
+    if (!prev) return null;
+    const terminatePrev = terminate ?? this._ownsDoc;
+
+    this.scribe.doc = new scribe.ScribeDoc(); // empty doc -> setter fires _resetDocState(): view cleared
+    this.doc = null;
+    this._ownsDoc = false;
+    if (this.scribe.stage) this.scribe.stage.batchDraw(); // flush the now-empty layers
+
+    if (this.pageCountElem) this.pageCountElem.textContent = '0';
+    if (this.pageNumElem) this.pageNumElem.value = '1';
+    if (this.dropZone) this.dropZone.style.display = '';
+
+    if (terminatePrev) prev.terminate().catch(() => {});
+
+    return prev;
   }
 
   /**
@@ -664,9 +717,12 @@ class ScribePDFViewer {
   }
 
   /**
-   * Tear down the viewer, disconnect observers, terminate the document, and remove the DOM.
+   * Tear down the viewer, disconnect observers, terminate the document if the viewer owns it, and remove the DOM.
+   * @param {object} [options]
+   * @param {boolean} [options.terminateDoc] - Force-terminate (`true`) or force-retain (`false`) the attached document,
+   *   overriding the default (terminate only a document the viewer created).
    */
-  async destroy() {
+  async destroy({ terminateDoc } = {}) {
     if (this.resizeObserver) this.resizeObserver.disconnect();
     if (this.commentObserver) this.commentObserver.disconnect();
     for (const cb of this._teardownCallbacks) cb();
@@ -676,7 +732,9 @@ class ScribePDFViewer {
       this.highlightCursorStyleElem = null;
     }
     if (this.doc) {
-      try { await this.doc.terminate(); } catch { /* ignore */ }
+      if (terminateDoc ?? this._ownsDoc) {
+        try { await this.doc.terminate(); } catch { /* ignore */ }
+      }
       this.doc = null;
     }
     // Remove the underlying viewer from the global registry and destroy its Konva stage.
