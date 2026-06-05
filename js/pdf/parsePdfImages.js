@@ -19,6 +19,7 @@ import { parsePdfLiteralString } from './pdfCrypto.js';
  *   sMask: Uint8Array|null,
  *   sMaskWidth: number|null,
  *   sMaskHeight: number|null,
+ *   sMaskDecodeInvert: boolean,
  *   palette: Uint8Array|null,
  *   paletteBase: string|null,
  *   imageMask: boolean,
@@ -353,6 +354,7 @@ export function parseImageObject(objText, objNum, objCache) {
   let sMask = null;
   let sMaskWidth = null;
   let sMaskHeight = null;
+  let sMaskDecodeInvert = false;
   let colorKeyMask = null;
 
   const colorKeyMatch = /\/Mask\s*\[([\d\s]+)\]/.exec(objText);
@@ -395,7 +397,13 @@ export function parseImageObject(objText, objNum, objCache) {
         const decodeMatch = /\/Decode\s*\[\s*([\d.]+)\s+([\d.]+)\s*\]/.exec(sMaskObjText);
         const decodeInverted = !!decodeMatch && parseFloat(decodeMatch[1]) > parseFloat(decodeMatch[2]);
         // Invert if: explicit stencil mask with default Decode, OR soft mask with /Decode [1 0]
-        if ((isExplicitMask && isImageMask && !decodeInverted) || (!isExplicitMask && decodeInverted)) {
+        const shouldInvert = (isExplicitMask && isImageMask && !decodeInverted) || (!isExplicitMask && decodeInverted);
+        // A DCTDecode/JPXDecode mask is still a compressed codestream here.
+        // Inverting these bytes would corrupt it, so defer the inversion until imageInfoToBitmap decodes it.
+        const sMaskFilter = parseFilter(sMaskObjText);
+        if (shouldInvert && (sMaskFilter === 'DCTDecode' || sMaskFilter === 'JPXDecode')) {
+          sMaskDecodeInvert = true;
+        } else if (shouldInvert) {
           for (let j = 0; j < sMask.length; j++) {
             sMask[j] = 255 - sMask[j];
           }
@@ -414,6 +422,7 @@ export function parseImageObject(objText, objNum, objCache) {
     sMask,
     sMaskWidth,
     sMaskHeight,
+    sMaskDecodeInvert,
     palette,
     paletteBase,
     paletteHival,

@@ -489,6 +489,11 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
 
   if (sMask && sMaskWidth && sMaskHeight) {
     sMask = await decodeSmaskJpeg(sMask);
+    // A /Decode [1 0] on a DCTDecode/JPXDecode SMask is applied here, after decode,
+    // because inverting the compressed codestream at parse time would corrupt it.
+    if (imageInfo.sMaskDecodeInvert) {
+      for (let i = 0; i < sMask.length; i++) sMask[i] = 255 - sMask[i];
+    }
   }
 
   // DCTDecode (JPEG) — imageData is the raw JPEG file, create bitmap directly
@@ -4150,6 +4155,7 @@ async function decodeInlineImageBitmap(op, objCache, fallbackColorSpaces = new M
     sMask: null,
     sMaskWidth: null,
     sMaskHeight: null,
+    sMaskDecodeInvert: false,
     palette: null,
     paletteBase: null,
     imageMask: isImageMask,
