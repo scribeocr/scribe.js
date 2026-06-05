@@ -3299,25 +3299,19 @@ function metricsForChar(font, chars, notFoundMetrics) {
   return notFoundMetrics;
 }
 
-function average(vs) {
-  let sum = 0;
-  for (let i = 0; i < vs.length; i += 1) {
-    sum += vs[i];
-  }
-
-  return sum / vs.length;
-}
-
 // Convert the font object to a SFNT data structure.
 // This structure contains all the necessary tables and metadata to create a binary OTF file.
 function fontToSfntTable(font) {
-  const xMins = [];
-  const yMins = [];
-  const xMaxs = [];
-  const yMaxs = [];
-  const advanceWidths = [];
-  const leftSideBearings = [];
-  const rightSideBearings = [];
+  let xMin = Infinity;
+  let yMin = Infinity;
+  let xMax = -Infinity;
+  let yMax = -Infinity;
+  let advanceWidthMax = -Infinity;
+  let advanceWidthSum = 0;
+  let metricCount = 0;
+  let minLeftSideBearing = Infinity;
+  let maxLeftSideBearing = -Infinity;
+  let minRightSideBearing = Infinity;
   let firstCharIndex;
   let lastCharIndex = 0;
   let ulUnicodeRange1 = 0;
@@ -3359,25 +3353,34 @@ function fontToSfntTable(font) {
     // Skip non-important characters.
     if (glyph.name === '.notdef') continue;
     const metrics = glyph.getMetrics();
-    xMins.push(glyph._xMin !== undefined ? glyph._xMin : metrics.xMin);
-    yMins.push(glyph._yMin !== undefined ? glyph._yMin : metrics.yMin);
-    xMaxs.push(glyph._xMax !== undefined ? glyph._xMax : metrics.xMax);
-    yMaxs.push(glyph._yMax !== undefined ? glyph._yMax : metrics.yMax);
-    leftSideBearings.push(metrics.leftSideBearing);
-    rightSideBearings.push(metrics.rightSideBearing);
-    advanceWidths.push(glyph.advanceWidth);
+    const glyphXMin = glyph._xMin !== undefined ? glyph._xMin : metrics.xMin;
+    const glyphYMin = glyph._yMin !== undefined ? glyph._yMin : metrics.yMin;
+    const glyphXMax = glyph._xMax !== undefined ? glyph._xMax : metrics.xMax;
+    const glyphYMax = glyph._yMax !== undefined ? glyph._yMax : metrics.yMax;
+    const { leftSideBearing, rightSideBearing } = metrics;
+    const { advanceWidth } = glyph;
+    if (glyphXMin < xMin) xMin = glyphXMin;
+    if (glyphYMin < yMin) yMin = glyphYMin;
+    if (glyphXMax > xMax) xMax = glyphXMax;
+    if (glyphYMax > yMax) yMax = glyphYMax;
+    if (leftSideBearing < minLeftSideBearing) minLeftSideBearing = leftSideBearing;
+    if (leftSideBearing > maxLeftSideBearing) maxLeftSideBearing = leftSideBearing;
+    if (rightSideBearing < minRightSideBearing) minRightSideBearing = rightSideBearing;
+    if (advanceWidth > advanceWidthMax) advanceWidthMax = advanceWidth;
+    advanceWidthSum += advanceWidth;
+    metricCount += 1;
   }
 
   const globals = {
-    xMin: Math.min.apply(null, xMins),
-    yMin: Math.min.apply(null, yMins),
-    xMax: Math.max.apply(null, xMaxs),
-    yMax: Math.max.apply(null, yMaxs),
-    advanceWidthMax: Math.max.apply(null, advanceWidths),
-    advanceWidthAvg: average(advanceWidths),
-    minLeftSideBearing: Math.min.apply(null, leftSideBearings),
-    maxLeftSideBearing: Math.max.apply(null, leftSideBearings),
-    minRightSideBearing: Math.min.apply(null, rightSideBearings),
+    xMin,
+    yMin,
+    xMax,
+    yMax,
+    advanceWidthMax,
+    advanceWidthAvg: advanceWidthSum / metricCount,
+    minLeftSideBearing,
+    maxLeftSideBearing,
+    minRightSideBearing,
   };
   globals.ascender = font.ascender;
   globals.descender = font.descender;

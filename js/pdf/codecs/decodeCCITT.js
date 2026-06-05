@@ -969,20 +969,32 @@ export function decodeCCITTFax(data, params = {}) {
     BlackIs1: params.BlackIs1 || false,
   });
 
-  const result = [];
-  let byte;
-  while ((byte = decoder.readNextChar()) !== -1) {
-    result.push(byte);
-  }
-  // Pad to declared image size when the encoder emitted fewer bytes than Rows demands.
-  // Per the CCITT convention, missing pixels are white.
+  // Known dimensions: fill a right-sized typed array directly.
   if (params.Rows && params.Columns) {
     const rowBytes = Math.ceil(params.Columns / 8);
     const expected = rowBytes * params.Rows;
-    if (result.length < expected) {
-      const padByte = params.BlackIs1 ? 0x00 : 0xFF;
-      while (result.length < expected) result.push(padByte);
+    const out = new Uint8Array(expected);
+    let p = 0;
+    let byte;
+    while (p < expected && (byte = decoder.readNextChar()) !== -1) out[p++] = byte;
+    if (p < expected) {
+      // Fewer bytes than Rows demands: pad the remainder white (CCITT convention).
+      out.fill(params.BlackIs1 ? 0x00 : 0xFF, p);
+      return out;
     }
+    // An EndOfBlock stream isn't bound by /Rows, so keep any rows beyond the declared height.
+    byte = decoder.readNextChar();
+    if (byte === -1) return out;
+    const overflow = [byte];
+    while ((byte = decoder.readNextChar()) !== -1) overflow.push(byte);
+    const full = new Uint8Array(expected + overflow.length);
+    full.set(out);
+    full.set(overflow, expected);
+    return full;
   }
+  // Dimensions unknown: accumulate, then size to fit.
+  const result = [];
+  let byte;
+  while ((byte = decoder.readNextChar()) !== -1) result.push(byte);
   return new Uint8Array(result);
 }
