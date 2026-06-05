@@ -1905,6 +1905,7 @@ export function resolveNumValue(dictText, key, objCache, defaultValue = 0) {
 export function resolveArrayValue(dictText, key, objCache) {
   // Use depth-aware bracket matching instead of [^\]]+ so that nested arrays
   // inside inline dicts (e.g. /Functions [ << /Domain [0 1] >> ]) are handled.
+  let content = null;
   const keyIdx = dictText.indexOf(`/${key}`);
   if (keyIdx !== -1) {
     const after = dictText.substring(keyIdx + key.length + 1).trimStart();
@@ -1912,20 +1913,36 @@ export function resolveArrayValue(dictText, key, objCache) {
       let depth = 0;
       for (let k = 0; k < after.length; k++) {
         if (after[k] === '[') depth++;
-        else if (after[k] === ']') { depth--; if (depth === 0) return after.substring(1, k).trim(); }
+        else if (after[k] === ']') {
+          depth--;
+          if (depth === 0) {
+            content = after.substring(1, k).trim();
+            break;
+          }
+        }
       }
     }
   }
-  if (!objCache) return null;
-  const refMatch = new RegExp(`/${key}\\s+(\\d+)\\s+\\d+\\s+R`).exec(dictText);
-  if (refMatch) {
-    const objText = objCache.getObjectText(Number(refMatch[1]));
-    if (objText) {
-      const arr = /\[\s*([\s\S]*?)\s*\]/.exec(stripObjWrapper(objText));
-      if (arr) return arr[1].trim();
+  if (content === null && objCache) {
+    const refMatch = new RegExp(`/${key}\\s+(\\d+)\\s+\\d+\\s+R`).exec(dictText);
+    if (refMatch) {
+      const objText = objCache.getObjectText(Number(refMatch[1]));
+      if (objText) {
+        const arr = /\[\s*([\s\S]*?)\s*\]/.exec(stripObjWrapper(objText));
+        if (arr) content = arr[1].trim();
+      }
     }
   }
-  return null;
+  if (content === null) return null;
+  // Resolve element-level indirect references.
+  if (objCache && /\d+\s+\d+\s+R/.test(content)) {
+    content = content.replace(/(\d+)\s+\d+\s+R/g, (whole, num) => {
+      const refText = objCache.getObjectText(Number(num));
+      const v = refText != null ? /(-?[\d.]+)/.exec(stripObjWrapper(refText)) : null;
+      return v ? v[1] : whole;
+    });
+  }
+  return content;
 }
 
 /**

@@ -2493,7 +2493,7 @@ function parsePageColorSpaces(pageObjText, objCache) {
  *   sepTintSamples: Uint8Array|null,
  *   isCMYK: boolean,
  *   isGray: boolean,
- * }} ShadingColorCtx
+ * }} ShadingColorInfo
  */
 
 /**
@@ -2503,19 +2503,19 @@ function parsePageColorSpaces(pageObjText, objCache) {
  * otherwise the first one (gray) or three (RGB) outputs are used.
  *
  * @param {number[]} values
- * @param {ShadingColorCtx} ctx
+ * @param {ShadingColorInfo} colorInfo
  * @returns {string}
  */
-function shadingValuesToColor(values, ctx) {
+function shadingValuesToColor(values, colorInfo) {
   let r; let g; let b;
-  if (ctx.deviceNTintCS) {
-    const rgb = tintComponentsToRGB(ctx.deviceNTintCS, values);
+  if (colorInfo.deviceNTintCS) {
+    const rgb = tintComponentsToRGB(colorInfo.deviceNTintCS, values);
     if (rgb) { [r, g, b] = rgb; } else { r = 128; g = 128; b = 128; }
-  } else if (ctx.sepTintSamples) {
-    const sepMax = ctx.sepTintSamples.length / 3 - 1;
+  } else if (colorInfo.sepTintSamples) {
+    const sepMax = colorInfo.sepTintSamples.length / 3 - 1;
     const idx = Math.round(Math.max(0, Math.min(1, values[0])) * sepMax) * 3;
-    r = ctx.sepTintSamples[idx]; g = ctx.sepTintSamples[idx + 1]; b = ctx.sepTintSamples[idx + 2];
-  } else if (ctx.isCMYK && values.length >= 4) {
+    r = colorInfo.sepTintSamples[idx]; g = colorInfo.sepTintSamples[idx + 1]; b = colorInfo.sepTintSamples[idx + 2];
+  } else if (colorInfo.isCMYK && values.length >= 4) {
     [r, g, b] = cmykToRgb(
       Math.max(0, Math.min(1, values[0])),
       Math.max(0, Math.min(1, values[1])),
@@ -2524,8 +2524,8 @@ function shadingValuesToColor(values, ctx) {
     );
   } else {
     r = Math.round(Math.max(0, Math.min(1, values[0] ?? 0)) * 255);
-    g = ctx.isGray ? r : Math.round(Math.max(0, Math.min(1, values[1] ?? 0)) * 255);
-    b = ctx.isGray ? r : Math.round(Math.max(0, Math.min(1, values[2] ?? 0)) * 255);
+    g = colorInfo.isGray ? r : Math.round(Math.max(0, Math.min(1, values[1] ?? 0)) * 255);
+    b = colorInfo.isGray ? r : Math.round(Math.max(0, Math.min(1, values[2] ?? 0)) * 255);
   }
   return `rgb(${r},${g},${b})`;
 }
@@ -2538,17 +2538,17 @@ function shadingValuesToColor(values, ctx) {
  *
  * @param {import('./pdfColorFunctions.js').ParsedFunction
  *   | Array<import('./pdfColorFunctions.js').ParsedFunction|null>} fn
- * @param {ShadingColorCtx} ctx
+ * @param {ShadingColorInfo} colorInfo
  * @returns {Array<{offset: number, color: string}>}
  */
-function functionToShadingStops(fn, ctx) {
+function functionToShadingStops(fn, colorInfo) {
   const stops = [];
   if (Array.isArray(fn)) {
     const nStops = fn.some((f) => f && f.type === 0) ? 64 : 16;
     for (let i = 0; i < nStops; i++) {
       const t = i / (nStops - 1);
       const values = fn.map((f) => (f ? (evaluateFunction(f, [t])?.[0] ?? 0) : 0));
-      stops.push({ offset: t, color: shadingValuesToColor(values, ctx) });
+      stops.push({ offset: t, color: shadingValuesToColor(values, colorInfo) });
     }
     return stops;
   }
@@ -2559,9 +2559,71 @@ function functionToShadingStops(fn, ctx) {
   for (let i = 0; i < nStops; i++) {
     const t = i / (nStops - 1);
     const values = evaluateFunction(fn, [t]) || [];
-    stops.push({ offset: t, color: shadingValuesToColor(values, ctx) });
+    stops.push({ offset: t, color: shadingValuesToColor(values, colorInfo) });
   }
   return stops;
+}
+
+/**
+ * Approximate ShadingType 1 shading, where color is defined by function, with an axial gradient.
+ * Returns null when the shading's function cannot be parsed.
+ *
+ * @param {string} shadingDict - the Shading dictionary text
+ * @param {ObjectCache} objCache
+ * @param {ShadingColorInfo} colorInfo - how to turn the function's outputs into CSS colors
+ * @returns {{ type: 2, coords: number[], stops: Array<{offset:number,color:string}>, extend: boolean[], bbox?: number[], multiply?: boolean, matrix?: number[] } | null}
+ */
+function type1ShadingToAxial(shadingDict, objCache, colorInfo) {
+  const domStr = resolveArrayValue(shadingDict, 'Domain', objCache);
+  const dom = domStr ? domStr.split(/\s+/).map(Number) : [0, 1, 0, 1];
+  const [x0, x1, y0, y1] = dom;
+
+  // The shading's own /Matrix (default identity) maps domain coords into the shading's target space.
+  // The pattern /Matrix (applied later by the renderer) then maps that to user space.
+  const mStr = resolveArrayValue(shadingDict, 'Matrix', objCache);
+  const m = mStr ? mStr.split(/\s+/).map(Number) : [1, 0, 0, 1, 0, 0];
+  const mapPt = (x, y) => [m[0] * x + m[2] * y + m[4], m[1] * x + m[3] * y + m[5]];
+
+  let funcDictText;
+  let funcObjNum;
+  const funcRefMatch = /\/Function\s+(\d+)\s+\d+\s+R/.exec(shadingDict);
+  if (funcRefMatch) {
+    funcObjNum = Number(funcRefMatch[1]);
+    funcDictText = objCache.getObjectText(funcObjNum);
+  } else {
+    const fStart = shadingDict.indexOf('/Function');
+    if (fStart !== -1) {
+      const fOpen = shadingDict.indexOf('<<', fStart + 9);
+      if (fOpen !== -1) funcDictText = extractDict(shadingDict, fOpen);
+    }
+  }
+  const fn = funcDictText ? parseFunction(funcObjNum != null ? funcObjNum : funcDictText, objCache) : null;
+  if (!fn) return null;
+
+  const xm = (x0 + x1) / 2;
+  const ym = (y0 + y1) / 2;
+  const colorVar = (a, b) => {
+    if (!a || !b) return 0;
+    let mx = 0;
+    for (let i = 0; i < Math.max(a.length, b.length); i++) mx = Math.max(mx, Math.abs((a[i] ?? 0) - (b[i] ?? 0)));
+    return mx;
+  };
+  const alongX = colorVar(evaluateFunction(fn, [x0, ym]), evaluateFunction(fn, [x1, ym]))
+    >= colorVar(evaluateFunction(fn, [xm, y0]), evaluateFunction(fn, [xm, y1]));
+
+  const nStops = 16;
+  const stops = [];
+  for (let i = 0; i < nStops; i++) {
+    const t = i / (nStops - 1);
+    const px = alongX ? x0 + (x1 - x0) * t : xm;
+    const py = alongX ? ym : y0 + (y1 - y0) * t;
+    stops.push({ offset: t, color: shadingValuesToColor(evaluateFunction(fn, [px, py]) || [], colorInfo) });
+  }
+  const [cx0, cy0] = mapPt(alongX ? x0 : xm, alongX ? ym : y0);
+  const [cx1, cy1] = mapPt(alongX ? x1 : xm, alongX ? ym : y1);
+  return {
+    type: 2, coords: [cx0, cy0, cx1, cy1], stops, extend: [true, true],
+  };
 }
 
 /**
@@ -3439,11 +3501,14 @@ function parseShadings(pageObjText, objCache) {
       continue;
     }
 
-    if (shadingType !== 2 && shadingType !== 3) continue;
+    if (shadingType !== 1 && shadingType !== 2 && shadingType !== 3) continue;
 
-    const coordsStr = resolveArrayValue(shObjText, 'Coords', objCache);
-    if (!coordsStr) continue;
-    const coords = coordsStr.split(/\s+/).map(Number);
+    let coords = null;
+    if (shadingType !== 1) {
+      const coordsStr = resolveArrayValue(shObjText, 'Coords', objCache);
+      if (!coordsStr) continue;
+      coords = coordsStr.split(/\s+/).map(Number);
+    }
 
     // Parse /Extend array (defaults to [false, false] per spec)
     const extendStr = resolveArrayValue(shObjText, 'Extend', objCache);
@@ -3527,6 +3592,18 @@ function parseShadings(pageObjText, objCache) {
           else shadingCS = 'DeviceRGB';
         }
       }
+    }
+
+    if (shadingType === 1) {
+      const axial = type1ShadingToAxial(shObjText, objCache, {
+        deviceNTintCS, sepTintSamples, isCMYK: shadingCS === 'DeviceCMYK', isGray,
+      });
+      if (axial) {
+        if (bbox) axial.bbox = bbox;
+        if (isSeparationShading) axial.multiply = true;
+        shadings.set(shName, axial);
+      }
+      continue;
     }
 
     // Parse function reference — handle both indirect ref and inline array of refs.
@@ -3740,8 +3817,8 @@ function parsePatterns(pageObjText, objCache) {
       if (shObjNum) {
         const gouraudResult = parseType4Shading(shadingDict, shObjNum, objCache);
         if (gouraudResult) {
-          const matrixMatch = /\/Matrix\s*\[\s*([\d.\seE+-]+)\]/.exec(patObjText);
-          const matrix = matrixMatch ? matrixMatch[1].trim().split(/\s+/).map(Number) : null;
+          const matrixStr = resolveArrayValue(patObjText, 'Matrix', objCache);
+          const matrix = matrixStr ? matrixStr.split(/\s+/).map(Number) : null;
           if (matrix) gouraudResult.matrix = matrix;
           patterns.set(patName, { color: 'rgb(128,128,128)', shading: gouraudResult });
         }
@@ -3759,10 +3836,24 @@ function parsePatterns(pageObjText, objCache) {
         meshResult = parseMeshShading(shadingDict, shObjNum, shadingType, objCache);
       }
       if (meshResult) {
-        const matrixMatch = /\/Matrix\s*\[\s*([\d.\seE+-]+)\]/.exec(patObjText);
-        const matrix = matrixMatch ? matrixMatch[1].trim().split(/\s+/).map(Number) : null;
+        const matrixStr = resolveArrayValue(patObjText, 'Matrix', objCache);
+        const matrix = matrixStr ? matrixStr.split(/\s+/).map(Number) : null;
         if (matrix) meshResult.matrix = matrix;
         patterns.set(patName, { color: 'rgb(128,128,128)', shading: meshResult });
+      }
+      continue;
+    }
+
+    if (shadingType === 1) {
+      const axial = type1ShadingToAxial(shadingDict, objCache, {
+        deviceNTintCS: patDeviceNTintCS, sepTintSamples: patSepTintSamples, isCMYK: patIsCMYK, isGray: patIsGray,
+      });
+      if (axial) {
+        const matrixStr = resolveArrayValue(patObjText, 'Matrix', objCache);
+        const matrix = matrixStr ? matrixStr.split(/\s+/).map(Number) : null;
+        if (matrix) axial.matrix = matrix;
+        const color = axial.stops[Math.floor(axial.stops.length / 2)]?.color || 'rgb(128,128,128)';
+        patterns.set(patName, { color, shading: axial });
       }
       continue;
     }
@@ -3783,8 +3874,8 @@ function parsePatterns(pageObjText, objCache) {
     const bbox = bboxStr ? bboxStr.split(/\s+/).map(Number) : null;
 
     // Parse /Matrix (pattern space to user space transform, default identity)
-    const matrixMatch = /\/Matrix\s*\[\s*([\d.\seE+-]+)\]/.exec(patObjText);
-    const matrix = matrixMatch ? matrixMatch[1].trim().split(/\s+/).map(Number) : null;
+    const matrixStr = resolveArrayValue(patObjText, 'Matrix', objCache);
+    const matrix = matrixStr ? matrixStr.split(/\s+/).map(Number) : null;
 
     let funcDictText;
     let funcObjNum;
