@@ -3,7 +3,7 @@ import {
   resolveArrayValue, findTopLevelKeyIndex,
 } from './parsePdfUtils.js';
 import {
-  parseTintColorSpace, buildTintLookupTable, tintComponentsToRGB, tintSamplesToRgb,
+  parseTintColorSpace, buildTintLookupTable, tintComponentsToRGB,
 } from './pdfColorFunctions.js';
 import { parsePdfLiteralString } from './pdfCrypto.js';
 
@@ -256,7 +256,7 @@ export function parseImageObject(objText, objNum, objCache) {
   const bitsPerComponent = readTopLevelInt(objText, '/BitsPerComponent', 8, objCache);
 
   const imageMask = /\/ImageMask\s+true/.test(objText);
-  let colorSpace = imageMask ? 'DeviceGray' : parseColorSpace(objText, objCache);
+  const colorSpace = imageMask ? 'DeviceGray' : parseColorSpace(objText, objCache);
   const iccProfileObjNum = imageMask ? null : findICCProfileObjNum(objText, objCache);
   const iccTransform = iccProfileObjNum ? parseICCProfile(iccProfileObjNum, objCache) : null;
   let filter = parseFilter(objText);
@@ -278,16 +278,8 @@ export function parseImageObject(objText, objNum, objCache) {
   const imgDecodeMatch = /\/Decode\s*\[\s*([\d.]+)\s+([\d.]+)/.exec(objText);
   const decodeInvert = imgDecodeMatch ? (Number(imgDecodeMatch[1]) > Number(imgDecodeMatch[2])) : false;
 
-  // Defer imageData loading unless we need to process it eagerly. Loading +
-  // decoding a stream is expensive (e.g. 17MB ASCIIHexDecode), and pages often
-  // reference a shared Resources dict that lists many images only a few of which
-  // are actually drawn. Only the DeviceN branch below mutates imageData in place
-  // at parse time, so it requires the eager load — and only when the bytes are
-  // raw samples (encoded image filters' bytes can't be tint-transformed in place).
-  const deviceNNeedsLateDecode = colorSpace === 'DeviceN' && (filter === 'JPXDecode' || filter === 'DCTDecode');
-  const needsEagerLoad = colorSpace === 'DeviceN' && !deviceNNeedsLateDecode;
-  let imageData = needsEagerLoad ? objCache.getStreamBytes(objNum) : null;
-  if (needsEagerLoad && !imageData) return null;
+  // Image stream bytes are loaded lazily at render time.
+  const imageData = null;
 
   // Handle Indexed color space: extract palette data
   let palette = null;
@@ -333,17 +325,9 @@ export function parseImageObject(objText, objNum, objCache) {
       if (csObj) csText = csObj;
     }
     const parsedTintCS = parseTintColorSpace(csText, objCache);
-    if (parsedTintCS.tintFn && parsedTintCS.nInputs >= 1) {
-      if (deviceNNeedsLateDecode) {
-        deviceNTintCS = parsedTintCS;
-      } else if (imageData) {
-        const rgbData = tintSamplesToRgb(parsedTintCS, imageData, parsedTintCS.nInputs, width * height);
-        if (rgbData) {
-          imageData = rgbData;
-          colorSpace = 'DeviceRGB';
-        }
-      }
-    }
+    // The tint transform is applied lazily, when the renderer decodes a drawn image (imageInfoToBitmap),
+    // so an unused DeviceN image in a shared Resources dict costs nothing here.
+    if (parsedTintCS.tintFn && parsedTintCS.nInputs >= 1) deviceNTintCS = parsedTintCS;
   }
 
   let labWhitePoint = null;

@@ -115,7 +115,9 @@ export async function writePdf({
     const angle = pageMetricsArr[i].angle || 0;
     const { dims } = pageMetricsArr[i];
 
-    const imageName = includeImages && images && images.length > 0 ? `Im${String(i % images.length)}` : null;
+    const hasImage = includeImages && images && images.length > 0;
+    const imageName = hasImage ? 'Im0' : null;
+    const pageImageObjIndices = hasImage ? [imageObjIndices[i % images.length]] : [];
 
     const { pdfObj, pdfFontsUsed: pdfFontsUsedI } = (await ocrPageToPDF({
       pageObj: ocrArr?.[i],
@@ -132,7 +134,7 @@ export async function writePdf({
       rotateBackground,
       confThreshHigh,
       confThreshMed,
-      imageObjIndices,
+      imageObjIndices: pageImageObjIndices,
       imageName,
       pageAnnotations: consolidateAnnotations(annotationsPages?.[i] || [], ocrArr?.[i]),
       humanReadable,

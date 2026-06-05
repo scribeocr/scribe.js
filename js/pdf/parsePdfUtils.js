@@ -40,6 +40,21 @@ export function byteIndexOf(bytes, needle, from = 0) {
 }
 
 /**
+ * Calculates the byte offset at which to stop converting an object to text.
+ * For a stream object this is the end of the `stream` keyword, otherwise `endObj`.
+ * @param {Uint8Array} bytes
+ * @param {number} objStart - byte offset at or before the object's dictionary
+ * @param {number} endObj - byte offset of the trailing `endobj`
+ * @returns {number}
+ */
+function objTextEnd(bytes, objStart, endObj) {
+  const dictEnd = byteIndexOf(bytes, '>>', objStart);
+  if (dictEnd === -1 || dictEnd >= endObj) return endObj;
+  const streamKw = byteIndexOf(bytes, 'stream', dictEnd, endObj);
+  return (streamKw !== -1 && streamKw < endObj) ? streamKw + 'stream'.length : endObj;
+}
+
+/**
  * Find the byte offset of the last occurrence of `needle` in `bytes` at or
  * before `fromEnd`. Returns -1 if not found.
  * @param {Uint8Array} bytes
@@ -725,12 +740,11 @@ export async function deflate(data) {
  * @returns {{ data: Uint8Array, dictText: string } | null}
  */
 export function extractRawStreamBytes(pdfBytes, objOffset, encryptionKey, encryptObjNum, cipherMode, objNum) {
-  // Bound the per-object scan: locate endobj first, then materialize the small
-  // object slice as a string for the existing dict-text parsing logic.
+  // Bound the per-object scan: locate endobj first, then materialize only the dictionary as a string for the existing dict-text parsing logic.
   const len = pdfBytes.length;
   let objEnd = byteIndexOf(pdfBytes, 'endobj', objOffset);
   if (objEnd === -1) objEnd = Math.min(objOffset + 100000, len);
-  const objText = bytesToLatin1(pdfBytes, objOffset, objEnd);
+  const objText = bytesToLatin1(pdfBytes, objOffset, objTextEnd(pdfBytes, objOffset, objEnd));
 
   const dictEnd = objText.indexOf('>>');
   const streamKeyword = objText.indexOf('stream', dictEnd !== -1 ? dictEnd : 0);
@@ -1413,54 +1427,59 @@ export class ObjectCache {
     const cached = this.textCache.get(objNum);
     if (cached !== undefined) return cached;
 
+    let content = this._readObjectTextDirect(objNum);
+    if (content === null && !this._xrefRepaired) {
+      // The xref as parsed had no usable entry for this object.
+      // Repair it once by scanning the whole file, then retry.
+      // A broken xref pays that scan a single time instead of once per missing object,
+      // and a valid xref never reaches here.
+      this.ensureXrefRepaired();
+      content = this._readObjectTextDirect(objNum);
+    }
+    if (content !== null) this._putText(objNum, content);
+    return content;
+  }
+
+  /**
+   * Ensure the full-file xref repair scan has run.
+   */
+  ensureXrefRepaired() {
+    if (this._xrefRepaired) return;
+    this._xrefRepaired = true;
+    this._repairXref();
+  }
+
+  /**
+   * Reads an object's dictionary text directly from its xref entry.
+   * Unlike `getObjectText`, it does not cache the result and does not trigger a lazy xref repair.
+   * Returns null when the entry is missing or free, when a type-1 offset does not point at the object's
+   * "N G obj" header, or when a compressed object is absent from its object stream.
+   * @param {number} objNum
+   * @returns {string|null}
+   */
+  _readObjectTextDirect(objNum) {
     const bytes = this.pdfBytes;
     const entry = this.xrefEntries[objNum];
-    if (entry) {
-      if (entry.type === 1) {
-        const offset = entry.offset;
-        const endObj = byteIndexOf(bytes, 'endobj', offset);
-        if (endObj !== -1) {
-          const objStart = byteIndexOf(bytes, 'obj', offset);
-          if (objStart !== -1 && objStart < endObj) {
-            const content = bytesToLatin1(bytes, objStart + 3, endObj).trim();
-            this._putText(objNum, content);
-            return content;
-          }
-        }
-      } else if (entry.type === 2) {
-        // Object in ObjStm
-        this.decompressObjStm(entry.objStmNum);
-        const cachedStm = this.objStmCache.get(entry.objStmNum);
-        if (cachedStm && cachedStm.has(objNum)) {
-          const content = cachedStm.get(objNum);
-          this._putText(objNum, content);
-          return content;
-        }
-      }
+    if (!entry) return null;
+    if (entry.type === 1) {
+      const offset = entry.offset;
+      // Validate the offset points at this object's header.
+      // A stale offset (e.g. an xref not updated after an incremental save)
+      // would otherwise read a different object verbatim.
+      if (!matchesObjMarker(bytes, offset, objNum)) return null;
+      const endObj = byteIndexOf(bytes, 'endobj', offset);
+      if (endObj === -1) return null;
+      const objStart = byteIndexOf(bytes, 'obj', offset);
+      if (objStart === -1 || objStart >= endObj) return null;
+      return bytesToLatin1(bytes, objStart + 3, objTextEnd(bytes, objStart, endObj)).trim();
     }
-
-    // An xref entry with type=0 (free) explicitly says this obj is deleted.
-    if (entry && entry.type === 0) return null;
-
-    // Fallback for broken xref: scan raw bytes for "N 0 obj" marker at line boundary.
-    // This handles PDFs where the xref table has wrong offsets or missing entries.
-    const marker = `${objNum} 0 obj`;
-    let scanIdx = 0;
-    while ((scanIdx = byteIndexOf(bytes, marker, scanIdx)) !== -1) {
-      if (scanIdx === 0 || isPdfWhitespace(bytes[scanIdx - 1])) {
-        const endObj = byteIndexOf(bytes, 'endobj', scanIdx);
-        if (endObj !== -1) {
-          const objStart = byteIndexOf(bytes, 'obj', scanIdx);
-          if (objStart !== -1 && objStart < endObj) {
-            const content = bytesToLatin1(bytes, objStart + 3, endObj).trim();
-            this._putText(objNum, content);
-            return content;
-          }
-        }
-      }
-      scanIdx += marker.length;
+    if (entry.type === 2) {
+      this.decompressObjStm(entry.objStmNum);
+      const cachedStm = this.objStmCache.get(entry.objStmNum);
+      const stmText = cachedStm ? cachedStm.get(objNum) : undefined;
+      if (stmText !== undefined) return stmText;
     }
-
+    // type 0 (free) or unrecognized: a miss, so the caller can fall back to a lazy repair.
     return null;
   }
 
@@ -1643,7 +1662,8 @@ export class ObjectCache {
     const offset = entry.offset;
     let endObj = byteIndexOf(bytes, 'endobj', offset);
     if (endObj === -1) endObj = Math.min(offset + 100000, bytes.length);
-    const objText = bytesToLatin1(bytes, offset, endObj);
+    // Only /N and /First are read here, so the conversion is bounded to the dictionary.
+    const objText = bytesToLatin1(bytes, offset, objTextEnd(bytes, offset, endObj));
 
     const nMatch = /\/N\s+(\d+)/.exec(objText);
     const firstMatch = /\/First\s+(\d+)/.exec(objText);
