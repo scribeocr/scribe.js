@@ -48,10 +48,56 @@ export function byteIndexOf(bytes, needle, from = 0) {
  * @returns {number}
  */
 function objTextEnd(bytes, objStart, endObj) {
-  const dictEnd = byteIndexOf(bytes, '>>', objStart);
-  if (dictEnd === -1 || dictEnd >= endObj) return endObj;
-  const streamKw = byteIndexOf(bytes, 'stream', dictEnd, endObj);
-  return (streamKw !== -1 && streamKw < endObj) ? streamKw + 'stream'.length : endObj;
+  // Find the object's dictionary opening '<<'.
+  // A non-dict object (array, number, string) has none before endobj, so its text runs to endObj.
+  const dictStart = byteIndexOf(bytes, '<<', objStart);
+  if (dictStart === -1 || dictStart >= endObj) return endObj;
+
+  // Balance-scan to the dictionary's own closing '>>'.
+  // A naive "first >>" stops at the inner '>>' of a nested dict (e.g. /MK<<>> in a Widget annotation),
+  // truncating the object early.
+  // Literal strings '(...)' and hex strings '<...>' are skipped so a '<<'/'>>' inside a value (e.g. /V(...)) counts as data.
+  let depth = 0;
+  let i = dictStart;
+  let dictEnd = -1;
+  const limit = Math.min(endObj, bytes.length);
+  while (i < limit) {
+    const c = bytes[i];
+    if (c === 0x28) {
+      // Literal string: skip to its matching ')', honoring escapes and nesting.
+      i++;
+      let strDepth = 1;
+      while (i < limit && strDepth > 0) {
+        const sc = bytes[i];
+        if (sc === 0x5C) { i += 2; continue; }
+        if (sc === 0x28) strDepth++;
+        else if (sc === 0x29) strDepth--;
+        i++;
+      }
+    } else if (c === 0x3C && bytes[i + 1] === 0x3C) {
+      depth++;
+      i += 2;
+    } else if (c === 0x3C) {
+      // Hex string '<...>': skip to its closing '>' so its bytes are not misread as dict delimiters.
+      i++;
+      while (i < limit && bytes[i] !== 0x3E) i++;
+      i++;
+    } else if (c === 0x3E && bytes[i + 1] === 0x3E) {
+      depth--;
+      i += 2;
+      if (depth === 0) { dictEnd = i; break; }
+    } else {
+      i++;
+    }
+  }
+  if (dictEnd === -1) return endObj;
+
+  // A stream object's `stream` keyword immediately follows the dict (whitespace only).
+  // Checking the next token avoids matching the substring 'stream' inside a string value (e.g. the word "upstream").
+  let p = dictEnd;
+  while (p < limit && isPdfWhitespace(bytes[p])) p++;
+  if (bytesEqualAt(bytes, p, 'stream')) return p + 'stream'.length;
+  return endObj;
 }
 
 /**
