@@ -10,24 +10,25 @@ import {
 } from './pdfCrypto.js';
 
 /**
- * Find the byte offset of `needle` (an ASCII string) inside `bytes`, scanning
- * forward from `from`. Returns -1 if not found.
- *
- * Uses `Uint8Array.prototype.indexOf` (native, fast) to skip to the first
- * candidate byte, then verifies the remaining needle bytes in interpreted JS.
- * Much faster than a plain JS loop, especially for sparse needles.
- *
+ * Find the byte offset of `needle` (an ASCII string) inside `bytes`, scanning forward from `from`.
+ * Returns -1 if not found.
  * @param {Uint8Array} bytes
  * @param {string} needle - ASCII only
  * @param {number} [from=0]
+ * @param {number} [end=bytes.length] - a match must start at or before `end - needle.length`
  */
-export function byteIndexOf(bytes, needle, from = 0) {
+export function byteIndexOf(bytes, needle, from = 0, end = bytes.length) {
   const nLen = needle.length;
   if (nLen === 0) return from;
   const c0 = needle.charCodeAt(0);
-  if (nLen === 1) return bytes.indexOf(c0, from);
-  const last = bytes.length - nLen;
+  const last = Math.min(bytes.length, end) - nLen;
+  if (nLen === 1) {
+    const idx = bytes.indexOf(c0, from);
+    return (idx === -1 || idx > last) ? -1 : idx;
+  }
   let i = from;
+  // Jump to each occurrence of the first byte via native `indexOf`, then verify the rest in JS.
+  // Faster than a plain byte-by-byte loop, especially for sparse needles.
   while (i <= last) {
     i = bytes.indexOf(c0, i);
     if (i === -1 || i > last) return -1;

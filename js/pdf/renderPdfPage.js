@@ -5134,7 +5134,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
               for (let k = 2; k + 1 < bytes.length; k += 2) s += String.fromCharCode((bytes[k] << 8) | bytes[k + 1]);
               fieldValue = s;
             } else {
-              fieldValue = String.fromCharCode(...bytes);
+              fieldValue = bytesToLatin1(Uint8Array.from(bytes));
             }
           }
           // Strip a UTF-16BE BOM from a literal value too, and drop non-printing controls.

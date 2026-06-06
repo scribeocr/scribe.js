@@ -1775,10 +1775,16 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         const sysObj = objCache.getObjectText(Number(cidSysRef[1]));
         if (sysObj) cidSysText = sysObj;
       }
-      const registryMatch = /\/Registry\s*\(([^)]+)\)/.exec(cidSysText);
-      const orderingMatch = /\/Ordering\s*\(([^)]+)\)/.exec(cidSysText);
-      let registry = registryMatch ? registryMatch[1] : '';
-      let ordering = orderingMatch ? orderingMatch[1] : '';
+      // /Registry and /Ordering are string objects that producers sometimes emit as indirect references.
+      // Resolve both the inline (literal) and "N 0 R" forms so the Adobe-Identity ROS check below is not silently defeated.
+      const readCidString = (/** @type {string} */ key) => {
+        const refM = new RegExp(`/${key}\\s+(\\d+)\\s+\\d+\\s+R`).exec(cidSysText);
+        const src = refM ? (objCache.getObjectText(Number(refM[1])) || '') : cidSysText;
+        const m = refM ? /\(([^)]*)\)/.exec(src) : new RegExp(`/${key}\\s*\\(([^)]*)\\)`).exec(src);
+        return m ? m[1] : '';
+      };
+      let registry = readCidString('Registry');
+      let ordering = readCidString('Ordering');
 
       // In encrypted PDFs, string values are encrypted per-object. getObjectText()
       // returns raw (encrypted) text, so Registry/Ordering may be garbled.
