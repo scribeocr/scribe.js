@@ -1338,8 +1338,17 @@ export class ObjectCache {
     this.xrefSeverelyCorrupt = false;
     /** @type {Set<number>|null} Lazily-computed set of OCGs hidden in View mode */
     this._offOCGs = null;
-    // Repair broken xref entries by scanning the file for "N 0 obj" markers.
-    this._repairXref();
+    /**
+     * Whether the lazy full-file xref repair scan has run.
+     * @type {boolean}
+     */
+    this._xrefRepaired = false;
+    // Eagerly flag offsets past EOF (severe corruption). Cheap O(objects), kept eager
+    // because the one reader of the flag (encrypted-doc rendering) can run before any lookup misses.
+    const fileLen = this.pdfBytes.length;
+    for (const entry of Object.values(this.xrefEntries)) {
+      if (entry.type === 1 && entry.offset >= fileLen) { this.xrefSeverelyCorrupt = true; break; }
+    }
     // Detect and set up encryption (synchronous — reads from raw bytes)
     setupEncryption(this);
   }
@@ -1367,13 +1376,6 @@ export class ObjectCache {
   _repairXref() {
     const bytes = this.pdfBytes;
     const len = bytes.length;
-    // Detect xref entries with offsets beyond file size before repair
-    for (const entry of Object.values(this.xrefEntries)) {
-      if (entry.type === 1 && entry.offset >= len) {
-        this.xrefSeverelyCorrupt = true;
-        break;
-      }
-    }
 
     // Byte-state-machine port of `/(?:^|[^\d])(\d+)\s+(\d+)\s+obj\b/g`.
     // Keeps the latest digit-position seen for each objNum.
@@ -2195,6 +2197,9 @@ function findCatalogAndPages(objCache) {
   const pagesRefMatch = matchPagesRootRef(catalogText);
   if (pagesRefMatch) return { catalogObjNum, pagesRefMatch };
 
+  // The named Catalog had no /Pages reference.
+  // Force any deferred xref repair so the search for an alternate Catalog below iterates the complete object set.
+  objCache.ensureXrefRepaired();
   for (const objNumStr of Object.keys(objCache.xrefEntries)) {
     const objNum = Number(objNumStr);
     if (objNum === catalogObjNum) continue;
@@ -2411,6 +2416,9 @@ export function getPageObjects(objCache) {
   const countMatch = /\/Count\s+(\d+)/.exec(pagesRootText);
   const declaredCount = countMatch ? Number(countMatch[1]) : null;
   if (declaredCount !== null && pages.length >= declaredCount) return pages;
+  // The /Kids walk under-delivered. Force any deferred xref repair so the orphan scan below sees the complete object set.
+  // A missing page can be an object absent from the xref as parsed.
+  objCache.ensureXrefRepaired();
   const collectedObjNums = new Set(pages.map((p) => p.objNum).filter((n) => n > 0));
   for (const objNumStr of Object.keys(objCache.xrefEntries)) {
     const objNum = Number(objNumStr);

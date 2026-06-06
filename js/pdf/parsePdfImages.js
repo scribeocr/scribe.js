@@ -197,6 +197,8 @@ export function extractImages(pdfBytes) {
   const xrefOffset = findXrefOffset(pdfBytes);
   const xrefEntries = parseXref(pdfBytes, xrefOffset);
   const objCache = new ObjectCache(pdfBytes, xrefEntries);
+  // Doc-wide object enumeration below needs the complete xref, so finish the deferred repair.
+  objCache.ensureXrefRepaired();
 
   /** @type {{ [objNum: number]: ImageInfo }} */
   const result = {};

@@ -71,6 +71,8 @@ export async function overlayPdfText({
   const xrefOffset = findXrefOffset(pdfBytes);
   const xrefEntries = parseXref(pdfBytes, xrefOffset);
   const objCache = new ObjectCache(pdfBytes, xrefEntries);
+  // The object-number scan below needs the complete xref, so finish the deferred repair.
+  objCache.ensureXrefRepaired();
   const pages = getPageObjects(objCache);
   const { rootRef } = parseTrailerInfo(text, xrefOffset);
 

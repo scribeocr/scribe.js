@@ -296,6 +296,8 @@ export async function replaceType3FontsWithCorrected({
   const xrefOffset = findXrefOffset(pdfBytes);
   const xrefEntries = parseXref(pdfBytes, xrefOffset);
   const objCache = new ObjectCache(pdfBytes, xrefEntries);
+  // Doc-wide object enumeration below needs the complete xref, so finish the deferred repair.
+  objCache.ensureXrefRepaired();
   const { rootRef } = parseTrailerInfo(text, xrefOffset);
 
   const otFontsByObjNum = extractType3Fonts(pdfBytes);

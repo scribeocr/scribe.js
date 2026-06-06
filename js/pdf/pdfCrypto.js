@@ -1082,7 +1082,13 @@ export function setupEncryption(objCache) {
   const { objNum: encObjNum, pos: encryptRefPos } = encryptMatch;
 
   // Read the /Encrypt dict object from raw bytes (it is never encrypted itself)
-  const encEntry = xrefEntries[encObjNum];
+  let encEntry = xrefEntries[encObjNum];
+  if (!encEntry || encEntry.type !== 1) {
+    // The /Encrypt object may be absent from the xref as parsed.
+    // Force the (otherwise lazy) repair so an encrypted doc with a broken xref still finds its encryption dictionary.
+    objCache.ensureXrefRepaired();
+    encEntry = xrefEntries[encObjNum];
+  }
   if (!encEntry || encEntry.type !== 1) return;
   const encOffset = encEntry.offset;
 

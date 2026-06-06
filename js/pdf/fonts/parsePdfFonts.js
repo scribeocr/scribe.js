@@ -243,6 +243,8 @@ export function extractType3GlyphBBoxes(pdfBytes) {
   const xrefOffset = findXrefOffset(pdfBytes);
   const xrefEntries = parseXref(pdfBytes, xrefOffset);
   const objCache = new ObjectCache(pdfBytes, xrefEntries);
+  // Doc-wide object enumeration below needs the complete xref, so finish the deferred repair.
+  objCache.ensureXrefRepaired();
 
   const result = {};
   for (const [objNum, entry] of Object.entries(xrefEntries)) {
@@ -282,6 +284,8 @@ export function extractType3DistinctGlyphs(pdfBytes) {
   const xrefOffset = findXrefOffset(pdfBytes);
   const xrefEntries = parseXref(pdfBytes, xrefOffset);
   const objCache = new ObjectCache(pdfBytes, xrefEntries);
+  // Doc-wide object enumeration below needs the complete xref, so finish the deferred repair.
+  objCache.ensureXrefRepaired();
 
   const seen = new Map();
   for (const [objNum] of Object.entries(xrefEntries)) {
@@ -2714,6 +2718,8 @@ export function extractType0Fonts(pdfBytes) {
   const xrefOffset = findXrefOffset(pdfBytes);
   const xrefEntries = parseXref(pdfBytes, xrefOffset);
   const objCache = new ObjectCache(pdfBytes, xrefEntries);
+  // Doc-wide object enumeration below needs the complete xref, so finish the deferred repair.
+  objCache.ensureXrefRepaired();
 
   const result = {};
   for (const objNum of Object.keys(xrefEntries)) {
@@ -3222,6 +3228,8 @@ export function extractType3Fonts(pdfBytes) {
   const xrefOffset = findXrefOffset(pdfBytes);
   const xrefEntries = parseXref(pdfBytes, xrefOffset);
   const objCache = new ObjectCache(pdfBytes, xrefEntries);
+  // Doc-wide object enumeration below needs the complete xref, so finish the deferred repair.
+  objCache.ensureXrefRepaired();
 
   const result = {};
   for (const objNum of Object.keys(xrefEntries)) {
