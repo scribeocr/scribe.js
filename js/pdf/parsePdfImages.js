@@ -404,9 +404,11 @@ export function parseImageObject(objText, objNum, objCache) {
         if (shouldInvert && (sMaskFilter === 'DCTDecode' || sMaskFilter === 'JPXDecode')) {
           sMaskDecodeInvert = true;
         } else if (shouldInvert) {
-          for (let j = 0; j < sMask.length; j++) {
-            sMask[j] = 255 - sMask[j];
-          }
+          // sMask may alias the document-lifetime cached stream bytes (getStreamBytes returns the cached buffer directly), so invert a copy.
+          // Mutating in place would corrupt the cache, and re-parsing the image on a later render would double-invert the mask back to wrong.
+          const inverted = new Uint8Array(sMask.length);
+          for (let j = 0; j < sMask.length; j++) inverted[j] = 255 - sMask[j];
+          sMask = inverted;
         }
       }
     }
