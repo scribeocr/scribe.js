@@ -1442,22 +1442,15 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
     }
 
-    // If no /Widths array was found, fall back to built-in standard font metrics.
-    // Skip this for Type0 (composite) fonts — their widths live on the CIDFont /W
-    // array, indexed by CID. applyStandardFontWidths writes WinAnsiEncoding widths
-    // at character-code positions 32-255, which collide with CID values that are
-    // not in /W (e.g. CID 68 for lowercase 'a' in a subsetted Arial-BoldMT would
-    // inherit Helvetica-Bold's 'D' width of 722 instead of falling through to the
-    // CIDFont /DW, producing visibly wrong advances for any CID that /W omits).
+    // If no /Widths array was found, fall back to built-in standard-font metrics.
+    // Skip Type0 fonts: their advances are keyed by CID via the /W array and /DW fallback, not by character code,
+    // so applyStandardFontWidths filling codes 32-255 would be read as CIDs and override the correct /W and /DW values.
     const isType0Font = /\/Subtype\s*\/Type0/.test(fontObj);
     if (widths.size === 0 && !isType0Font) {
       const avgWidth = applyStandardFontWidths(baseName, widths);
       if (avgWidth !== null) defaultWidth = avgWidth;
 
-      // applyStandardFontWidths fills widths indexed by WinAnsiEncoding charCodes.
-      // For fonts using MacRomanEncoding, charCodes 128-255 map to different glyphs
-      // (e.g., 0xD1 = emdash in MacRoman vs Ntilde in WinAnsi). Remap the widths
-      // so each MacRoman charCode gets the width of the correct glyph.
+      // Apply MacRomanEncoding to remap each charCode's width to that of its MacRoman glyph.
       const isMacRoman = /\/Encoding\s*\/MacRomanEncoding/.test(fontObj);
       if (isMacRoman && widths.size > 0) {
         const unicodeToWidth = new Map();
@@ -1478,9 +1471,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         }
       }
 
-      // For standard fonts with /Differences encoding, charCodes are remapped to
-      // different glyphs (e.g., charCode 8 → "A" instead of WinAnsi charCode 65 → "A").
-      // Remap widths so each custom charCode gets the width of its mapped glyph.
+      // Apply /Differences to remap each charCode's width to that of its mapped glyph.
       if (differences && widths.size > 0) {
         const unicodeToWidth = new Map();
         for (let code = 32; code <= 255; code++) {
@@ -1717,13 +1708,9 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
     }
 
-    // For fonts using Adobe predefined CJK CMaps (GB-EUC-H, 90pv-RKSJ-H, etc.), assign the
-    // standard Adobe ROS half-width Latin width (500) for the ASCII charCode range. The
-    // CIDFont's /W array typically doesn't enumerate the half-width Latin glyphs (since
-    // their widths are standardized in the corresponding Adobe ROS), so without this they
-    // would fall through to /DW (typically 1000) and the leading-space indentation in
-    // mixed CJK/Latin text would be roughly 2x too wide. Keys are charCodes (the renderer
-    // treats charCode as CID for width lookup when no charCodeToCID map is built).
+    // For Adobe predefined CJK CMaps (GB-EUC-H, 90pv-RKSJ-H, etc.), set the standard ROS half-width Latin width (500) over the ASCII range.
+    // The CIDFont's /W omits these glyphs (standardized in the ROS), so otherwise they hit /DW (~1000) and mixed CJK/Latin indentation comes out ~2x too wide.
+    // Keys are charCodes because the renderer treats charCode as CID for width lookup when no charCodeToCID map exists.
     if (predefinedCJKCMap) {
       for (let cc = 0x20; cc <= 0x7E; cc++) {
         if (!widths.has(cc)) widths.set(cc, 500);
@@ -1757,16 +1744,9 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
     }
 
-    // For Identity-H CID fonts with no ToUnicode CMap, build toUnicode from CIDSystemInfo.
-    // For Adobe-Identity ordering, CIDs are Unicode code points directly.
-    // For standard Adobe orderings (Japan1, GB1, CNS1, Korea1), use the published
-    // CID→Unicode mapping tables from Adobe's cmap-resources.
-    //
-    // Also runs when a ToUnicode CMap is present but doesn't cover every CID the
-    // font defines — some authoring tools emit a partial CMap that maps unknown
-    // CIDs to U+FFFD (which parseToUnicodeCMap drops as noise), leaving gaps.
-    // For an Adobe ROS font those gaps can be filled from the published ROS map;
-    // valid existing entries are preserved.
+    // Identity-H CID font with no ToUnicode CMap (or only a partial one): build toUnicode from CIDSystemInfo.
+    // Adobe-Identity CIDs are codepoints directly. Other standard Adobe orderings (Japan1, GB1, CNS1, Korea1)
+    // use the published CID->Unicode tables, which also backfill gaps that a partial CMap left behind.
     if (cidFontText && /\/Encoding\s*\/Identity-H/.test(fontObj)) {
       // Parse CIDSystemInfo — may be inline or indirect reference
       let cidSysText = cidFontText;
@@ -1898,11 +1878,9 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
             const cp = existing.codePointAt(0);
             return cp < 0x20 && cp !== 0x09 && cp !== 0x0A && cp !== 0x0D;
           };
-          // Apply NFKC only to Kangxi radicals and CJK Compatibility Ideographs —
-          // those decompose to the standard CJK Unified equivalents that substitute
-          // fonts actually have glyphs for. Broader NFKC also flattens Halfwidth/
-          // Fullwidth Forms (U+FF00-U+FFEF) into ASCII, which is wrong in CJK text
-          // where the fullwidth form is the intended visual.
+          // Apply NFKC only to Kangxi radicals and CJK Compatibility Ideographs, which decompose to the CJK Unified equivalents
+          // that substitute fonts actually have glyphs for. Broader NFKC would also flatten Halfwidth and Fullwidth Forms
+          // (U+FF00-U+FFEF) to ASCII, which is wrong where the fullwidth form is the intended glyph.
           /** @param {number} cp */
           const isCJKVariant = (cp) => (cp >= 0x2F00 && cp <= 0x2FD5) || (cp >= 0xF900 && cp <= 0xFAD9);
           if (cidSet) {
@@ -2051,10 +2029,8 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         }
       }
 
-      // Type1/TrueType fonts without embedded font files are still renderable via CSS
-      // font-family fallback (standard fonts like Helvetica → sans-serif, or non-standard
-      // fonts like Computer Modern cmr12 → serif). Without type1Info set, showType1Literal
-      // in the renderer skips text for these fonts entirely.
+      // Type1/TrueType fonts with no embedded program still render via CSS font-family fallback.
+      // Set a null-fontFile type1Info anyway, or showType1Literal skips their text entirely.
       if (!type1Info && !isType3 && (/\/Subtype\s*\/Type1/.test(fontObj) || /\/Subtype\s*\/TrueType/.test(fontObj))) {
         type1Info = { fontFile: null };
       }
