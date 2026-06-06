@@ -530,7 +530,7 @@ export function parseDrawOps(
         const embeddedGlyphUnavailable = !usePUA && !tuStr && !encStr && !!currentFont.type0?.fontFile && !(currentFont.toUnicode?.size);
         const collided = cidCollisionMap.get(currentFontTag)?.has(charCode);
         const drawText = usePUA
-          ? String.fromCodePoint(cidCodepoint(collided ? undefined : tuStr, charCode).codepoint)
+          ? String.fromCodePoint(cidCodepoint(collided ? undefined : tuStr, charCode, currentFont.widths.get(charCode)).codepoint)
           : (embeddedGlyphUnavailable ? '' : (encStr || tuStr || String.fromCharCode(charCode)));
         if (registeredName && textRenderMode !== 3 && drawText && drawText.trim().length > 0) {
           const trm = matMul([fontSize * tz / 100, 0, 0, fontSize, 0, trise], matMul(tm, ctm));
@@ -656,12 +656,14 @@ export function parseDrawOps(
         // For a glyph from an embedded CID font we could not rebuild, draw nothing (advance only),
         // rather than fabricating String.fromCharCode(charCode), as the empty embedded glyph would.
         // A successful no-ToUnicode embedded rebuild keys its glyphs in the PUA and sets usePUA,
-        // so reaching here with usePUA false (an embedded fontFile, no ToUnicode)
-        // means the code is a glyph index into a font we cannot render, not Unicode.
+        // so reaching here with usePUA false (an embedded fontFile, no ToUnicode) means the code is a glyph index into a font we cannot render, not Unicode.
+        // Exception: a predefined Unicode CMap (UCS2/UTF16) makes the charCode the Unicode codepoint itself,
+        // so String.fromCharCode is correct even for such an embedded font (whose glyphs we can't rebuild without the bundled charCode->CID table).
         const embeddedGlyphUnavailable = !usePUA && !tuStr
-          && !!currentFont.type0?.fontFile && !(currentFont.toUnicode?.size);
+          && !!currentFont.type0?.fontFile && !(currentFont.toUnicode?.size)
+          && !currentFont.type0?.unicodeCMap;
         const unicode = usePUA
-          ? String.fromCodePoint(cidCodepoint(collided ? undefined : tuStr, cid).codepoint)
+          ? String.fromCodePoint(cidCodepoint(collided ? undefined : tuStr, cid, currentFont.widths.get(cid)).codepoint)
           : (embeddedGlyphUnavailable ? '' : (tuStr || String.fromCharCode(charCode)));
         if (unicode && unicode.trim().length > 0) {
           const isNonEmbedded = !!(currentFont.type0 && !currentFont.type0.fontFile);
@@ -724,6 +726,14 @@ export function parseDrawOps(
     const hasPUA = cidPUATags.has(currentFontTag);
     const isNonEmbedded = !currentFont.type1.fontFile;
     const hasDifferences = !!(currentFont.differences && Object.keys(currentFont.differences).length > 0);
+    // For rawCharCode fonts: the set of codepoints that some byte's ToUnicode resolves to.
+    let rawCharToUniTargets = null;
+    if (isRawCharCode) {
+      rawCharToUniTargets = new Set();
+      for (const [, u] of currentFont.toUnicode) {
+        if (u && [...u].length === 1) rawCharToUniTargets.add(u.codePointAt(0));
+      }
+    }
     for (let i = 0; i < str.length; i++) {
       const charCode = str.charCodeAt(i);
       const rawWidth = currentFont.widths.get(charCode) ?? currentFont.defaultWidth;
@@ -794,8 +804,10 @@ export function parseDrawOps(
             const needsPUA = uniStr && ([...uniStr].length > 1 || isCombiningOrIndicMark(firstCp) || isDefaultIgnorable(firstCp) || isComplexShapingScript(firstCp));
             if (needsPUA) {
               drawText = String.fromCharCode(0xE000 + charCode);
+            } else if (uniStr) {
+              drawText = String.fromCodePoint(firstCp);
             } else {
-              drawText = uniStr ? String.fromCodePoint(firstCp) : str[i];
+              drawText = String.fromCharCode(rawCharToUniTargets.has(charCode) ? 0xE000 + charCode : charCode);
             }
           }
         } else {

@@ -909,7 +909,11 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     // superset; TextDecoder('euc-kr') in WHATWG covers both.
     if (toUnicode.size === 0 && /\/DescendantFonts/.test(String(fontObj))) {
       const kscMatch = /\/Encoding\s*\/(KSC[\w-]*|UniKS[\w-]*)/.exec(String(fontObj));
-      if (kscMatch) {
+      // UniKS-UCS2-* and UniKS-UTF16-* are Unicode-based CMaps whose charCodes are the
+      // Unicode codepoints directly; only the EUC-KR/UHC encodings (KSC-EUC, KSCms-UHC,
+      // KSCpc-EUC) use the euc-kr codespace and decoder.
+      // The Unicode variants are handled by the predefined-Unicode-CMap block below.
+      if (kscMatch && !/UCS2|UTF16/.test(kscMatch[1])) {
         predefinedCJKCMap = true;
         codespaceRanges = [
           { bytes: 1, low: 0x00, high: 0x80 },
@@ -1522,6 +1526,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
     }
 
+    /** @type {{ fontFile: Uint8Array|null, cidToGidMap: Uint8Array|string|null, unicodeCMap?: boolean }|null} */
     let type0Info = null;
     // /DescendantFonts can be:
     //   1. Array with indirect ref:  /DescendantFonts [ 15 0 R ]
@@ -1970,6 +1975,48 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
           if (ffMatch) {
             const fontFile = objCache.getStreamBytes(Number(ffMatch[1]));
             if (fontFile) type1Info = { fontFile };
+
+            // Backfill zero/missing /Widths from the embedded CFF: the renderer skips zero-width glyphs
+            // (parseDrawOps gates drawing on a nonzero width), so a subsetter's degenerate /Widths drops real glyphs.
+            const widthsSparse = [...widths.values()].some((w) => !w)
+              || (differences && Object.keys(differences).some((k) => widths.get(Number(k)) === undefined));
+            if (fontFile && fontFile[0] === 1 && fontFile[1] === 0 && widthsSparse) {
+              try {
+                const dv = new DataView(fontFile.buffer, fontFile.byteOffset, fontFile.byteLength);
+                const shell = {
+                  tables: {}, encoding: null, isCIDFont: false, unitsPerEm: 1000,
+                };
+                opentype.parseCFFTable(dv, 0, shell);
+                const charset = shell.tables.cff?.charset;
+                if (!shell.isCIDFont && charset) {
+                  const fmScale = shell.tables.cff.topDict.fontMatrix?.[0];
+                  const upm = fmScale > 0 && fmScale < 1 ? Math.round(1 / fmScale) : 1000;
+                  const builtinEnc = (shell.cffEncoding || shell.encoding)?.encoding;
+                  const codes = new Set(widths.keys());
+                  if (differences) for (const k of Object.keys(differences)) codes.add(Number(k));
+                  if (builtinEnc) for (const k of Object.keys(builtinEnc)) codes.add(Number(k));
+                  for (const code of codes) {
+                    if (widths.get(code)) continue;
+                    let gid;
+                    const diffName = differences && differences[code];
+                    if (diffName) {
+                      const i = charset.indexOf(diffName);
+                      if (i > 0) gid = i;
+                    } else if (builtinEnc && builtinEnc[code] !== undefined) {
+                      gid = builtinEnc[code] + 1;
+                    }
+                    if (!gid || gid <= 0 || gid >= shell.nGlyphs) continue;
+                    const glyph = shell.glyphs.get(gid);
+                    // Reading the lazy `path` getter parses the charstring, which populates advanceWidth.
+                    const { commands } = glyph.path;
+                    if (!commands.length) continue;
+                    let adv = Math.round((glyph.advanceWidth || 0) / upm * 1000);
+                    if (adv <= 0) adv = Math.round((glyph.getBoundingBox().x2 || 0) / upm * 1000);
+                    if (adv > 0) widths.set(code, adv);
+                  }
+                }
+              } catch { /* on any parse or glyph error, leave widths as-is */ }
+            }
           }
 
           // TrueType fonts with no /Encoding and empty ToUnicode.
@@ -2179,6 +2226,12 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       if (utf16Match) {
         codespaceRanges = codespaceRanges || [{ bytes: 2, low: 0, high: 0xFFFF }];
         if (!type0Info) type0Info = { fontFile: null, cidToGidMap: 'identity' };
+        // The 2-byte charCode IS the Unicode codepoint, so the renderer can draw it via String.fromCharCode
+        // even when the descendant is an embedded CID font whose glyphs we cannot rebuild
+        // (no ToUnicode + a predefined CMap whose charCode->CID table we don't bundle).
+        // Mark the font so the renderer's embedded-glyph-unavailable guard does not drop the text
+        // (which would otherwise leave the Korean text blank).
+        type0Info.unicodeCMap = true;
         // Build charCodeToCID mapping for the ASCII range of predefined UTF-16 CMaps.
         // All Adobe CJK collections (GB1, Japan1, Korea1, CNS1) map ASCII printable
         // chars (U+0020-U+007E) to CIDs 1-95: CID = Unicode - 0x1F.

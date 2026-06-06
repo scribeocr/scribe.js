@@ -399,7 +399,7 @@ export function buildFontFromCFF(cffData, fontObj, encoding) {
         })();
       const claimedUnicodes = new Set();
       for (const [cid, gid] of cidToGID) {
-        const decision = cidCodepoint(cidToUnicode?.get(cid), cid);
+        const decision = cidCodepoint(cidToUnicode?.get(cid), cid, fontObj.widths?.get(cid));
         let { codepoint } = decision;
         let { isPUA } = decision;
         if (!isPUA && claimedUnicodes.has(codepoint)) {
@@ -531,6 +531,22 @@ export function buildFontFromCFF(cffData, fontObj, encoding) {
           if (!glyphName || aglLookup(glyphName)) continue;
           unicodeToGID.set(code, gid);
         }
+
+        // Round-trip guard: also key each glyph under the codepoint the renderer draws for the char code that reaches it,
+        // not just the glyph's own AGL name.
+        // A caps-only CFF face reached by a lowercase code, or a base-encoding code whose Unicode differs from its glyph name,
+        // otherwise leaves the drawn codepoint with no glyph.
+        // /Differences codes render through their PUA entry above, so skip them.
+        const codeToGid = new Map(cffBaseEncoding);
+        if (encoding) {
+          for (const [codeStr, glyphName] of Object.entries(encoding)) {
+            const gid = nameToGID.get(glyphName);
+            if (gid !== undefined) codeToGid.set(Number(codeStr), gid);
+          }
+        }
+        addRoundTripCodepoints(fontObj, codeToGid, (cp, gid) => {
+          if (!unicodeToGID.has(cp)) unicodeToGID.set(cp, gid);
+        }, diffCodeSet);
       }
     }
 
@@ -716,8 +732,10 @@ export function isComplexShapingScript(cp) {
  *
  * @param {string|undefined} toUniStr - ToUnicode string for this CID (undefined if not mapped)
  * @param {number} cid - The CID value
+ * @param {number} [width] - The CID's advance width from /W (undefined if unspecified).
+ *   Distinguishes a base glyph mislabeled with a Latin combining-mark codepoint (positive width) from a real zero-width mark.
  */
-export function cidCodepoint(toUniStr, cid) {
+export function cidCodepoint(toUniStr, cid, width) {
   if (toUniStr) {
     const chars = [...toUniStr];
     if (chars.length === 1) {
@@ -733,8 +751,15 @@ export function cidCodepoint(toUniStr, cid) {
       //   claiming it in the cmap routes every CID with FFFD in ToUnicode (and every
       //   missing-CID fallback) to a single real glyph, so unrelated CIDs render as
       //   whichever glyph got there first.
+      // A Latin combining diacritical mark (U+0300-U+036F) is normally kept as the real codepoint,
+      // since some Latin academic fonts map precomposed glyphs through this block.
+      // But a CID with a positive advance width is a base glyph mislabeled with a combining codepoint, not a real zero-width mark.
+      // Drawn as the bare mark, the canvas shaper gives it zero advance and stacks it on the preceding glyph, shifting it one position.
+      // Route those to PUA so the glyph draws standalone at its own spot.
+      const latinCombiningBaseGlyph = cp >= 0x300 && cp <= 0x36F && typeof width === 'number' && width > 0;
       if (cp > 0x20 && cp !== 0xFFFD && !isCombiningOrIndicMark(cp)
-        && !isDefaultIgnorable(cp) && !isComplexShapingScript(cp)) {
+        && !isDefaultIgnorable(cp) && !isComplexShapingScript(cp)
+        && !latinCombiningBaseGlyph) {
         return { codepoint: cp, isPUA: false };
       }
     }
@@ -743,6 +768,48 @@ export function cidCodepoint(toUniStr, cid) {
   // No Unicode info or needs PUA
   const pua = 0xE000 + cid <= 0xF8FF ? 0xE000 + cid : 0xF0000 + cid;
   return { codepoint: pua, isPUA: true };
+}
+
+/**
+ * The codepoint the simple-font (non-CID) rebuild keys a glyph under for a char code.
+ * It matches what the renderer draws in its normal (non-PUA) branch:
+ * the single-codepoint `encodingUnicode`, else the single-codepoint ToUnicode,
+ * else null (the renderer then routes the code through PUA, keyed separately).
+ * Called by the CFF rebuild so the glyph a code reaches resolves under the same codepoint the renderer computes inline as `drawDefault`,
+ * fixing the byte -> codepoint -> glyph round trip for that single-codepoint case.
+ * Unlike `cidCodepoint`, which the renderer imports and shares, this is parallel logic, not a shared call.
+ * @param {PdfFontObj} fontObj
+ * @param {number} charCode
+ * @returns {number|null}
+ */
+export function simpleFontCodepoint(fontObj, charCode) {
+  const enc = fontObj.encodingUnicode && fontObj.encodingUnicode.get(charCode);
+  if (enc && [...enc].length === 1) return enc.codePointAt(0) ?? null;
+  const tu = fontObj.toUnicode && fontObj.toUnicode.get(charCode);
+  if (tu && [...tu].length === 1) return tu.codePointAt(0) ?? null;
+  return null;
+}
+
+/**
+ * Additive round-trip guard. For each PDF char code that reaches a glyph, also key that glyph under `simpleFontCodepoint(code)`,
+ * the codepoint the renderer draws for that code.
+ * A simple-font rebuild that keys glyphs only by their own identity (a CFF charset name, or an embedded TrueType cmap codepoint)
+ * otherwise leaves the renderer's drawn codepoint with no glyph when the PDF /Encoding draws a code at a different codepoint (divergence)
+ * or aims several codes at one glyph (collapse).
+ * The path supplies a code -> GID map and an `addEntry` that keys a codepoint to a GID only if the slot is free,
+ * so this never overrides an existing entry and is a no-op for fonts whose rebuilt cmap already covers the drawn codepoints.
+ * It does not handle collisions (two codes needing one codepoint). Those are rerouted to PUA per path.
+ * @param {PdfFontObj} fontObj
+ * @param {Iterable<[number, number]>} codeToGid - PDF char code -> GID for codes the renderer can draw
+ * @param {(codepoint: number, gid: number) => void} addEntry - keys codepoint -> gid if the slot is free
+ * @param {Set<number>|null} [skipCodes] - codes handled elsewhere (e.g. /Differences routed to PUA)
+ */
+export function addRoundTripCodepoints(fontObj, codeToGid, addEntry, skipCodes) {
+  for (const [code, gid] of codeToGid) {
+    if (gid <= 0 || (skipCodes && skipCodes.has(code))) continue;
+    const cp = simpleFontCodepoint(fontObj, code);
+    if (cp !== null && cp > 0x20 && cp !== 0xFFFD) addEntry(cp, gid);
+  }
 }
 
 /**
@@ -961,6 +1028,8 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
     opentype.parseHmtxTable(data, tableDir.hmtx.offset, hhea.numberOfHMetrics, maxp.numGlyphs, fontShell.glyphs);
 
     const glyphToUnicode = new Map();
+    /** @type {Map<number, Set<number>>} Every codepoint a Unicode cmap maps to a glyph, not just the primary one. */
+    const gidExtraUnicodes = new Map();
     let usesPUA = false;
     /** @type {Set<number>|null} CIDs forced to PUA due to Unicode collision */
     let cidCollisions = null;
@@ -990,7 +1059,7 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
         // whose ToUnicode legitimately maps it into the PUA.
         const hasOutline = gid + 1 < loca.length && loca[gid + 1] > loca[gid];
         if (!hasOutline && !cidToUnicode?.has(cid)) continue;
-        const decision = cidCodepoint(cidToUnicode?.get(cid), cid);
+        const decision = cidCodepoint(cidToUnicode?.get(cid), cid, fontObj.widths?.get(cid));
         let { codepoint } = decision;
         let { isPUA } = decision;
         // Collision: real Unicode already claimed by a different GID → force PUA
@@ -1057,6 +1126,11 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
           const codeGidPairs = cmap.byteToGlyphIndex
             ? cmap.byteToGlyphIndex.flatMap((gi, charCode) => (gi > 0 ? [[charCode, gi]] : []))
             : Object.entries(cmap.glyphIndexMap).map(([c, gi]) => [Number(c), gi]);
+
+          const toUnicodeTargets = new Set();
+          for (const [, uStr] of fontObj.toUnicode) {
+            if (uStr && [...uStr].length === 1) toUnicodeTargets.add(uStr.codePointAt(0));
+          }
           for (const [charCode, gi] of codeGidPairs) {
             if (gi <= 0) continue;
             const uniStr = fontObj.toUnicode.get(charCode);
@@ -1069,7 +1143,7 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
                 unicode = firstCp;
               }
             } else {
-              unicode = charCode;
+              unicode = toUnicodeTargets.has(charCode) ? 0xE000 + charCode : charCode;
             }
             if (unicode && !glyphToUnicode.has(gi)) {
               glyphToUnicode.set(gi, unicode);
@@ -1087,8 +1161,52 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
             if (existing === undefined || (existingIsControl && !newIsControl)) {
               glyphToUnicode.set(gi, unicode);
             }
+            // Record every codepoint, not just the primary,
+            // so a caps-only font whose cmap aims both 'A' and 'a' at one glyph still resolves a lowercase code.
+            let extras = gidExtraUnicodes.get(gi);
+            if (!extras) { extras = new Set(); gidExtraUnicodes.set(gi, extras); }
+            extras.add(unicode);
           }
         }
+      }
+    }
+
+    // Round-trip guard for the general (Unicode-cmap) branch: that branch keys glyphs only by the embedded cmap,
+    // so a code whose drawn codepoint (encodingUnicode/ToUnicode) is absent from the embedded cmap would miss its glyph (divergence).
+    // Resolve code -> glyph name (charCodeToGlyphName) -> GID (post table) and additively key that GID under the drawn codepoint.
+    // Skipped for symbol/rawCharCode cmaps (cmapType set), CID fonts, and fonts with no post names.
+    // Additive, so a no-op when the embedded cmap already covers the drawn codepoints.
+    if (!cidToGidMap && cmapType === null && fontObj.charCodeToGlyphName && tableDir.post) {
+      const post = opentype.parsePostTable(data, tableDir.post.offset);
+      const nameToGid = new Map();
+      if (post.glyphNameIndex) {
+        const customNames = post.names || [];
+        for (let gid = 1; gid < (post.numberOfGlyphs || 0); gid++) {
+          const nameIdx = post.glyphNameIndex[gid];
+          const name = nameIdx < 258 ? standardNames[nameIdx] : customNames[nameIdx - 258];
+          if (name && name !== '.notdef' && !nameToGid.has(name)) nameToGid.set(name, gid);
+        }
+      } else if (post.names) {
+        for (let gid = 1; gid < post.names.length; gid++) {
+          const name = post.names[gid];
+          if (name && name !== '.notdef' && !nameToGid.has(name)) nameToGid.set(name, gid);
+        }
+      }
+      if (nameToGid.size > 0) {
+        const codeToGid = new Map();
+        for (const [code, name] of fontObj.charCodeToGlyphName) {
+          const gid = nameToGid.get(name);
+          if (gid !== undefined && gid > 0) codeToGid.set(code, gid);
+        }
+        addRoundTripCodepoints(fontObj, codeToGid, (cp, gid) => {
+          if (!glyphToUnicode.has(gid)) {
+            glyphToUnicode.set(gid, cp);
+          } else {
+            let extras = gidExtraUnicodes.get(gid);
+            if (!extras) { extras = new Set(); gidExtraUnicodes.set(gid, extras); }
+            extras.add(cp);
+          }
+        });
       }
     }
 
@@ -1154,6 +1272,15 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
       const path = g.path; // triggers lazy parse → g.points is now set
       if (!path) continue;
       usedUnicodes.add(unicode);
+      // Give the glyph every codepoint the cmap aimed at it (deduped against codepoints already taken),
+      // so a caps-only font reached by a lowercase code still resolves.
+      const unicodes = [unicode];
+      const extras = gidExtraUnicodes.get(gi);
+      if (extras) {
+        for (const u of extras) {
+          if (u !== unicode && !usedUnicodes.has(u)) { unicodes.push(u); usedUnicodes.add(u); }
+        }
+      }
       origGidToNewIdx.set(gi, glyphs.length);
       let advanceWidth = g.advanceWidth || head.unitsPerEm;
       const maxSafeAdvanceWidth = Math.min(32767, head.unitsPerEm * 4);
@@ -1164,6 +1291,7 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
       const newGlyph = new opentype.Glyph({
         name: `glyph_${gi}`,
         unicode,
+        unicodes,
         advanceWidth,
         path,
       });
