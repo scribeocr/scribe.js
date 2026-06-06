@@ -536,6 +536,10 @@ export function standardFontToCSS(baseName) {
   if (lower.includes('nimbusromno9l') || lower.includes('nimbusroman')) return '"Times New Roman", Times, "Liberation Serif", serif';
   if (lower.includes('nimbusmonl') || lower.includes('nimbusmono')) return '"Courier New", Courier, "Liberation Mono", monospace';
   if (lower.includes('nimbussanl') || lower.includes('nimbussans')) return 'Arial, Helvetica, "Liberation Sans", sans-serif';
+  // Liberation family: metric-compatible clones of Times/Arial/Courier.
+  if (lower.includes('liberationserif') || lower.includes('liberation serif')) return '"Times New Roman", Times, "Liberation Serif", serif';
+  if (lower.includes('liberationmono') || lower.includes('liberation mono')) return '"Courier New", Courier, "Liberation Mono", monospace';
+  if (lower.includes('liberationsans') || lower.includes('liberation sans')) return 'Arial, Helvetica, "Liberation Sans", sans-serif';
   if (lower.includes('garamond') || lower.includes('palatino') || lower.includes('georgia')
     || lower.includes('bookman') || lower.includes('cambria') || lower.includes('book antiqua') || lower.includes('bookantiqua')
     || lower.includes('schoolbook') || lower.includes('newcenturyschlbk')) return 'serif';

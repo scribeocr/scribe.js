@@ -93,8 +93,10 @@ function cssGenericForFontObj(fontObj) {
   const name = (fontObj.baseName || fontObj.familyName || '').replace(/^[A-Z]{6}\+/, '');
   if (/mono|courier|consola|typewriter|fixedsys|andale|inconsolata|menlo|lucidacons|sourcecode|firacode/i.test(name)) return 'monospace';
   if (/script|cursive|brush|chancery|handwrit|calligraph/i.test(name)) return 'cursive';
-  if (/(^|[^a-z])sans([^a-z]|$)|gothic/i.test(name)) return 'sans-serif';
-  if (/(^|[^a-z])serif([^a-z]|$)/i.test(name)) return 'serif';
+  // Match "sans"/"serif" used in camelCase. "sans" is tested first so "sans-serif" forms stay sans.
+  const lowerName = name.toLowerCase();
+  if (lowerName.includes('sans') || /gothic/i.test(name)) return 'sans-serif';
+  if (lowerName.includes('serif')) return 'serif';
   if (fontObj.serifFlag) return 'serif';
   return 'sans-serif';
 }
