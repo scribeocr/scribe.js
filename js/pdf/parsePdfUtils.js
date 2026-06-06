@@ -1145,59 +1145,76 @@ export function extractStream(pdfBytes, objOffset, objCache = null, objNum = -1)
       const endMarker = clean.indexOf('~>');
       const encoded = endMarker >= 0 ? clean.substring(0, endMarker) : clean;
 
-      const output = [];
+      // Decode straight into a typed array. Sized for the common case (4 bytes per 5-char group).
+      // A 'z' shorthand expands 1 char to 4 bytes, so grow on the rare overflow.
+      let output = new Uint8Array(Math.ceil(encoded.length / 5) * 4);
+      let outLen = 0;
       let ai = 0;
       while (ai < encoded.length) {
+        if (outLen + 4 > output.length) {
+          const grown = new Uint8Array(output.length * 2);
+          grown.set(output.subarray(0, outLen));
+          output = grown;
+        }
         if (encoded[ai] === 'z') {
-          output.push(0, 0, 0, 0);
+          output[outLen++] = 0;
+          output[outLen++] = 0;
+          output[outLen++] = 0;
+          output[outLen++] = 0;
           ai++;
         } else {
           const groupLen = Math.min(5, encoded.length - ai);
-          const group = [];
-          for (let j = 0; j < groupLen; j++) {
-            group.push(encoded.charCodeAt(ai + j) - 33);
-          }
-          while (group.length < 5) group.push(84);
           let val = 0;
           for (let j = 0; j < 5; j++) {
-            val = val * 85 + group[j];
+            val = val * 85 + (j < groupLen ? encoded.charCodeAt(ai + j) - 33 : 84);
           }
           // Extract bytes big-endian. Use division instead of bitwise
           // to handle partial groups where val may exceed 2^32.
           const numBytes = groupLen === 5 ? 4 : groupLen - 1;
-          const divisors = [16777216, 65536, 256, 1];
-          for (let j = 0; j < numBytes; j++) {
-            output.push(Math.floor(val / divisors[j]) % 256);
-          }
+          if (numBytes > 0) output[outLen++] = Math.floor(val / 16777216) % 256;
+          if (numBytes > 1) output[outLen++] = Math.floor(val / 65536) % 256;
+          if (numBytes > 2) output[outLen++] = Math.floor(val / 256) % 256;
+          if (numBytes > 3) output[outLen++] = val % 256;
           ai += groupLen;
         }
       }
-      data = new Uint8Array(output);
+      data = outLen === output.length ? output : output.slice(0, outLen);
     } else if (filter === 'LZWDecode' || filter === 'LZW') {
       data = decodeLZW(data, dpText);
       data = applyPredictor(data, dpText, objCache);
     } else if (filter === 'RunLengthDecode' || filter === 'RL') {
-      const output = [];
+      // Decode into a growable typed array (output size is unknown a priori).
+      // Each packet emits at most 128 bytes. Literal runs are bulk-copied and repeats bulk-filled.
+      let output = new Uint8Array(Math.max(128, data.length * 2));
+      let outLen = 0;
       let pos = 0;
       while (pos < data.length) {
         const len = data[pos++];
+        if (len === 128) break; // EOD
+        let count;
+        let runVal = -1;
         if (len < 128) {
-          // Copy the next len+1 bytes literally
-          for (let j = 0; j < len + 1 && pos < data.length; j++) {
-            output.push(data[pos++]);
-          }
-        } else if (len > 128) {
-          // Repeat the next byte 257-len times
-          const val = pos < data.length ? data[pos++] : 0;
-          for (let j = 0; j < 257 - len; j++) {
-            output.push(val);
-          }
+          count = Math.min(len + 1, data.length - pos); // copy len+1 literal bytes
         } else {
-          // len === 128: EOD
-          break;
+          runVal = pos < data.length ? data[pos++] : 0; // repeat the next byte 257-len times
+          count = 257 - len;
         }
+        if (outLen + count > output.length) {
+          let cap = output.length;
+          while (cap < outLen + count) cap *= 2;
+          const grown = new Uint8Array(cap);
+          grown.set(output.subarray(0, outLen));
+          output = grown;
+        }
+        if (runVal < 0) {
+          output.set(data.subarray(pos, pos + count), outLen);
+          pos += count;
+        } else {
+          output.fill(runVal, outLen, outLen + count);
+        }
+        outLen += count;
       }
-      data = new Uint8Array(output);
+      data = outLen === output.length ? output : output.slice(0, outLen);
     } else if (filter === 'JBIG2Decode') {
       let globals = null;
       if (objCache) {
