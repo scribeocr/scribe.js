@@ -698,6 +698,7 @@ export function altCSToRGB(altCS, comp) {
  *   tintFn: ParsedFunction|null,
  *   altCS: ParsedAltCS,
  *   nInputs: number,
+ *   rgbPassthrough?: boolean,
  * }} ParsedTintCS
  */
 
@@ -772,7 +773,33 @@ export function parseTintColorSpace(csText, objCache) {
     nInputs = (dnNamesMatch[1].match(/\/[^/[\]<>(){}\s]+/g) || []).length;
   }
 
-  return { tintFn, altCS, nInputs };
+  // Detect the common "RGBA-as-DeviceN" pattern (e.g. [/DeviceN [/Red /Green /Blue /Alpha] /DeviceRGB { pop }]):
+  // the tint transform passes the first three inputs straight through to a DeviceRGB alternate, dropping any trailing channels.
+  // Such a colorspace converts byte-for-byte to RGB, so the renderer can copy channels instead of evaluating the function per pixel
+  // (3M+ PostScript-interpreter calls on a page-sized image).
+  // Verified numerically over diverse probes rather than by inspecting the program,
+  // so identity functions (`{ }`) and stack-shuffle no-ops are all caught. A non-identity tint never matches.
+  let rgbPassthrough = false;
+  if (tintFn && altCS.type === 'DeviceRGB' && nInputs >= 3 && tintFn.nOutputs === 3) {
+    const probes = [
+      [0.13, 0.47, 0.81, 0.29, 0.6, 0.05, 0.37, 0.92],
+      [0.92, 0.04, 0.55, 0.71, 0.2, 0.88, 0.66, 0.11],
+      [0.34, 0.66, 0.22, 0.5, 0.9, 0.41, 0.08, 0.73],
+      [0, 1, 0.5, 1, 0, 0.5, 1, 0],
+    ];
+    rgbPassthrough = probes.every((probe) => {
+      const inputs = probe.slice(0, nInputs);
+      const out = tintComponentsToRGB({ tintFn, altCS, nInputs }, inputs);
+      if (!out) return false;
+      return out[0] === Math.round(255 * inputs[0])
+        && out[1] === Math.round(255 * inputs[1])
+        && out[2] === Math.round(255 * inputs[2]);
+    });
+  }
+
+  return {
+    tintFn, altCS, nInputs, rgbPassthrough,
+  };
 }
 
 /**
@@ -825,6 +852,18 @@ export function tintComponentsToRGB(parsed, components) {
 export function tintSamplesToRgb(parsed, src, nComp, nPixels) {
   if (!parsed || !parsed.tintFn) return null;
   const out = new Uint8Array(nPixels * 3);
+
+  // Passthrough tint (RGBA-as-DeviceN and the like): the first three channels are the RGB output byte-for-byte,
+  // so copy them directly and skip the per-pixel function evaluation entirely.
+  if (parsed.rgbPassthrough) {
+    for (let pi = 0; pi < nPixels; pi++) {
+      out[pi * 3] = src[pi * nComp];
+      out[pi * 3 + 1] = src[pi * nComp + 1];
+      out[pi * 3 + 2] = src[pi * nComp + 2];
+    }
+    return out;
+  }
+
   const inputs = new Array(nComp);
   // Spot-color images repeat few distinct colorant tuples, so cache RGB by packed input bytes.
   // Cap at 6 components so the packed key stays within a safe integer.

@@ -1255,6 +1255,21 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
     const range = imageInfo.labRange || [-100, 100, -100, 100];
     const { labBytesToRGBA } = await import('./codecs/decodeJPEG.js');
     rgbaData = new Uint8ClampedArray(labBytesToRGBA(imageData, width, height, wp, range).buffer);
+  } else if (colorSpace === 'DeviceN' && imageInfo.deviceNTintCS) {
+    // Multi-colorant DeviceN raster: map each pixel's colorant tuple to RGB through the tint transform.
+    // Done here rather than at parse time so a shared Resources dict listing many DeviceN images
+    // only pays the conversion for the ones a page actually draws.
+    const nComp = imageInfo.deviceNTintCS.nInputs;
+    rgbaData = new Uint8ClampedArray(width * height * 4);
+    const rgb = tintSamplesToRgb(imageInfo.deviceNTintCS, imageData, nComp, width * height);
+    if (rgb) {
+      for (let i = 0; i < width * height; i++) {
+        rgbaData[i * 4] = rgb[i * 3];
+        rgbaData[i * 4 + 1] = rgb[i * 3 + 1];
+        rgbaData[i * 4 + 2] = rgb[i * 3 + 2];
+        rgbaData[i * 4 + 3] = 255;
+      }
+    }
   } else {
     // Default: DeviceRGB / ICCBased / DeviceN
     // Use known component counts for named color spaces. Data-length inference is a
