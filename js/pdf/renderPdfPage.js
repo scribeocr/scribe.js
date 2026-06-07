@@ -9,9 +9,9 @@ import {
 import { extractPdfAnnotations } from './parsePdfAnnots.js';
 import {
   extractDict, findRootObjNum,
-  resolveIntValue, resolveNumValue, resolveArrayValue, applyPredictor,
+  resolveIntValue, resolveNumValue, resolveArrayValue, applyPredictor, matMul,
 } from './parsePdfUtils.js';
-import { matMul, parseDrawOps } from './parseDrawOps.js';
+import { parseDrawOps } from './parseDrawOps.js';
 
 /** @typedef {import('./parsePdfUtils.js').ObjectCache} ObjectCache */
 /** @typedef {import('./parseDrawOps.js').DrawOp} DrawOp */

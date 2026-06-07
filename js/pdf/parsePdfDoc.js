@@ -5,7 +5,7 @@ import {
 import {
   findXrefOffset, parseXref, ObjectCache,
   bytesToLatin1, getPageObjects, getPageContentStream, tokenizeContentStream,
-  findFormXObjects, extractDict, decodePdfName, parseFormMatrix,
+  findFormXObjects, extractDict, decodePdfName, parseFormMatrix, matMul, decodeTextCodes,
 } from './parsePdfUtils.js';
 import { parsePageFonts } from './fonts/parsePdfFonts.js';
 import { parsePagePaths } from './parsePdfPaths.js';
@@ -177,7 +177,7 @@ function findDoOperators(tokens, formXObjects, initialCtm, initialTextState) {
       case 'cm':
         if (operandStack.length >= 6) {
           const m = operandStack.slice(operandStack.length - 6).map((t) => t.value);
-          ctm = multiplyMatrices(m, ctm);
+          ctm = matMul(m, ctm);
         }
         break;
       case 'Tc':
@@ -260,7 +260,7 @@ function extractFormXObjectText(containerObjText, containerTokens, parentFonts, 
       ? new Map([...(parentExtGStates || []), ...formExtGStates])
       : parentExtGStates;
     const formMatrix = parseFormMatrix(formObjText) || [1, 0, 0, 1, 0, 0];
-    const formCtm = multiplyMatrices(formMatrix, doOp.ctm);
+    const formCtm = matMul(formMatrix, doOp.ctm);
     const formTokens = tokenizeContentStream(formContentStream);
     const formChars = executeTextOperators(
       formTokens, mergedFonts, scale, pageHeightPts, formCtm, mergedExtGStates, doOp.textState,
@@ -613,19 +613,6 @@ export function detectPdfType(pdfBytes) {
  */
 
 /**
- * Multiply two 6-element PDF matrices [a, b, c, d, e, f].
- * @param {number[]} a
- * @param {number[]} b
- */
-function multiplyMatrices(a, b) {
-  return [
-    a[0] * b[0] + a[1] * b[2], a[0] * b[1] + a[1] * b[3],
-    a[2] * b[0] + a[3] * b[2], a[2] * b[1] + a[3] * b[3],
-    a[4] * b[0] + a[5] * b[2] + b[4], a[4] * b[1] + a[5] * b[3] + b[5],
-  ];
-}
-
-/**
  * Execute text operators from tokenized content stream and extract positioned characters.
  * @param {Array<PDFToken>} tokens
  * @param {Map<string, object>} fonts
@@ -702,7 +689,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
       case 'cm': {
         if (operandStack.length >= 6) {
           const m = operandStack.slice(operandStack.length - 6).map((t) => t.value);
-          ctm = multiplyMatrices(m, ctm);
+          ctm = matMul(m, ctm);
         }
         operandStack.length = 0;
         break;
@@ -987,50 +974,7 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
   // 1-byte or mixed-width codespace ranges (e.g. OneByteIdentityH).
   const isCID = font.type0 || font.isCIDFont;
   const csRanges = font.codespaceRanges;
-  let i = 0;
-  while (i < str.length) {
-    let charCode;
-    let numBytes;
-    if (!isCID) {
-      charCode = str.charCodeAt(i);
-      numBytes = 1;
-    } else if (csRanges) {
-      const byte0 = str.charCodeAt(i);
-      numBytes = 2; // default for CID
-      let matched = false;
-      for (let r = 0; r < csRanges.length; r++) {
-        const range = csRanges[r];
-        if (range.bytes === 1 && byte0 >= range.low && byte0 <= range.high) {
-          charCode = byte0;
-          numBytes = 1;
-          matched = true;
-          break;
-        }
-        if (range.bytes === 2 && i + 1 < str.length) {
-          const code2 = (byte0 << 8) | str.charCodeAt(i + 1);
-          if (code2 >= range.low && code2 <= range.high) {
-            charCode = code2;
-            numBytes = 2;
-            matched = true;
-            break;
-          }
-        }
-      }
-      if (!matched) {
-        if (i + 1 < str.length) {
-          charCode = (byte0 << 8) | str.charCodeAt(i + 1);
-          numBytes = 2;
-        } else {
-          charCode = byte0;
-          numBytes = 1;
-        }
-      }
-    } else {
-      if (i + 1 >= str.length) break;
-      charCode = (str.charCodeAt(i) << 8) | str.charCodeAt(i + 1);
-      numBytes = 2;
-    }
-    i += numBytes;
+  for (const { charCode, numBytes } of decodeTextCodes(str, isCID ? csRanges : null, isCID ? 2 : 1)) {
     const toUnicodeValue = font.toUnicode.get(charCode);
     const encodingValue = font.encodingUnicode?.get(charCode);
     let unicode = toUnicodeValue || encodingValue;
@@ -1053,7 +997,7 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
     if (!unicode) {
       // CFF charset says this CID has no glyph — skip emission and advance.
       if (isCID && font.validCIDs && !font.validCIDs.has(charCode)) continue;
-      unicode = isCID ? String.fromCharCode(charCode) : str[i - numBytes];
+      unicode = String.fromCharCode(charCode);
       fallbackUsed = true;
     }
     // Collapse any all-whitespace mapping to a single U+0020.

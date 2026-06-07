@@ -1,28 +1,9 @@
 import { tokenizeContentStream } from './parsePdfDoc.js';
-import { decodePdfName } from './parsePdfUtils.js';
+import { decodePdfName, matMul, decodeTextCodes } from './parsePdfUtils.js';
 import { cmykToRgb, tintComponentsToRGB, xyzToSRGB } from './pdfColorFunctions.js';
 import {
   cidCodepoint, isCombiningOrIndicMark, isDefaultIgnorable, isComplexShapingScript,
 } from './fonts/convertFontToOTF.js';
-
-/**
- * Multiply two 3x3 affine matrices represented as 6-element arrays [a,b,c,d,e,f].
- * Matrix layout: | a b 0 |   Concatenation: result = m1 * m2
- *                | c d 0 |
- *                | e f 1 |
- * @param {number[]} m1
- * @param {number[]} m2
- */
-export function matMul(m1, m2) {
-  return [
-    m1[0] * m2[0] + m1[1] * m2[2],
-    m1[0] * m2[1] + m1[1] * m2[3],
-    m1[2] * m2[0] + m1[3] * m2[2],
-    m1[2] * m2[1] + m1[3] * m2[3],
-    m1[4] * m2[0] + m1[5] * m2[2] + m2[4],
-    m1[4] * m2[1] + m1[5] * m2[3] + m2[5],
-  ];
-}
 
 /**
  * Decode a PDF hex-string token (raw hex digits, no delimiters) to a latin1 byte string.
@@ -367,48 +348,10 @@ export function parseDrawOps(
     // a non-embedded Type0 CID font with a mixed 1-byte/2-byte predefined CMap
     // (e.g. /83pv-RKSJ-H) must decode 1-byte ASCII codes as 1 byte, not 2.
     const csRanges = currentFont.codespaceRanges;
-    let i = 0;
-    while (i < str.length) {
-      let charCode;
-      let numBytes = 1;
-      if (csRanges) {
-        const byte0 = str.charCodeAt(i);
-        let matched = false;
-        for (let r = 0; r < csRanges.length; r++) {
-          const range = csRanges[r];
-          if (range.bytes === 1) {
-            if (byte0 >= range.low && byte0 <= range.high) {
-              charCode = byte0;
-              numBytes = 1;
-              matched = true;
-              break;
-            }
-          } else if (range.bytes === 2 && i + 1 < str.length) {
-            const code2 = (byte0 << 8) | str.charCodeAt(i + 1);
-            if (code2 >= range.low && code2 <= range.high) {
-              charCode = code2;
-              numBytes = 2;
-              matched = true;
-              break;
-            }
-          }
-        }
-        if (!matched) {
-          if (i + 1 < str.length) {
-            charCode = (byte0 << 8) | str.charCodeAt(i + 1);
-            numBytes = 2;
-          } else {
-            charCode = byte0;
-            numBytes = 1;
-          }
-        }
-      } else {
-        charCode = str.charCodeAt(i);
-        numBytes = 1;
-      }
+    for (const { charCode, numBytes } of decodeTextCodes(str, csRanges, 1)) {
       const glyphWidth = (currentFont.widths.get(charCode) ?? currentFont.defaultWidth) / 1000 * fontSize;
       const unicode = currentFont.toUnicode.get(charCode)
-        || (numBytes === 1 ? str[i] : String.fromCharCode(charCode));
+        || String.fromCharCode(charCode);
       const drawText = currentFont.encodingUnicode?.get(charCode) || unicode;
       // Skip zero-width characters
       if (registeredName && textRenderMode !== 3 && glyphWidth !== 0 && drawText && drawText.trim().length > 0) {
@@ -441,7 +384,6 @@ export function parseDrawOps(
         if (!strokeAlphaExplicit) textOp.strokeAlphaInherited = true;
         ops.push(textOp);
       }
-      i += numBytes;
       const isWordSpace = numBytes === 1 && charCode === 0x20;
       if (currentFont.verticalMode) {
         const vAdvance = (-fontSize + tc + (isWordSpace ? tw : 0)) * tz / 100;
@@ -481,46 +423,7 @@ export function parseDrawOps(
     // Dedup: if the exact same hex string was just drawn by a different font (sibling),
     // skip drawing entirely — just advance the text position.
     const isDup = hex === lastDrawnHex && lastDrawnFontTag !== currentFontTag && lastDrawnHex.length > 0;
-    let i = 0;
-    while (i < hex.length) {
-      let charCode = 0;
-      let hexDigits = 4;
-      if (csRanges && i + 1 < hex.length) {
-        const byte0 = parseInt(hex.substring(i, i + 2), 16);
-        let matched = false;
-        for (let r = 0; r < csRanges.length; r++) {
-          const range = csRanges[r];
-          if (range.bytes === 1) {
-            if (byte0 >= range.low && byte0 <= range.high) {
-              charCode = byte0;
-              hexDigits = 2;
-              matched = true;
-              break;
-            }
-          } else if (range.bytes === 2 && i + 3 < hex.length) {
-            const code2 = parseInt(hex.substring(i, i + 4), 16);
-            if (code2 >= range.low && code2 <= range.high) {
-              charCode = code2;
-              hexDigits = 4;
-              matched = true;
-              break;
-            }
-          }
-        }
-        if (!matched) {
-          if (i + 3 < hex.length) {
-            charCode = parseInt(hex.substring(i, i + 4), 16);
-            hexDigits = 4;
-          } else {
-            charCode = parseInt(hex.substring(i, i + 2), 16);
-            hexDigits = 2;
-          }
-        }
-      } else {
-        if (i + 3 >= hex.length) break;
-        charCode = parseInt(hex.substring(i, i + 4), 16);
-        hexDigits = 4;
-      }
+    for (const { charCode, numBytes } of decodeTextCodes(hexToLatin1(hex), csRanges, 2)) {
       const glyphWidth = (currentFont.widths.get(charCode) ?? currentFont.defaultWidth) / 1000 * fontSize;
       if (!isDup) {
         const tuStr = currentFont.toUnicode.get(charCode);
@@ -563,8 +466,7 @@ export function parseDrawOps(
           ops.push(textOp);
         }
       }
-      i += hexDigits;
-      const isWordSpace = hexDigits === 2 && charCode === 0x20;
+      const isWordSpace = numBytes === 1 && charCode === 0x20;
       if (currentFont.verticalMode) {
         const vAdv = (-fontSize + tc + (isWordSpace ? tw : 0)) * tz / 100;
         tm[4] += vAdv * tm[2];
@@ -605,45 +507,7 @@ export function parseDrawOps(
     const csRanges = currentFont.codespaceRanges;
     // Type0/CID fonts typically use 2-byte encoding, but some CMaps define
     // mixed-width codespace ranges (e.g. 1-byte for space, 2-byte for CIDs).
-    let i = 0;
-    while (i < str.length) {
-      let charCode;
-      let numBytes = 2;
-      if (csRanges) {
-        const byte0 = str.charCodeAt(i);
-        let matched = false;
-        for (let r = 0; r < csRanges.length; r++) {
-          const range = csRanges[r];
-          if (range.bytes === 1) {
-            if (byte0 >= range.low && byte0 <= range.high) {
-              charCode = byte0;
-              numBytes = 1;
-              matched = true;
-              break;
-            }
-          } else if (range.bytes === 2 && i + 1 < str.length) {
-            const code2 = (byte0 << 8) | str.charCodeAt(i + 1);
-            if (code2 >= range.low && code2 <= range.high) {
-              charCode = code2;
-              numBytes = 2;
-              matched = true;
-              break;
-            }
-          }
-        }
-        if (!matched) {
-          if (i + 1 < str.length) {
-            charCode = (byte0 << 8) | str.charCodeAt(i + 1);
-          } else {
-            charCode = byte0;
-            numBytes = 1;
-          }
-        }
-      } else {
-        if (i + 1 >= str.length) break;
-        charCode = (str.charCodeAt(i) << 8) | str.charCodeAt(i + 1);
-      }
-      i += numBytes;
+    for (const { charCode, numBytes } of decodeTextCodes(str, csRanges, 2)) {
       const cid = cmapLookup ? (cmapLookup.get(charCode) ?? charCode) : charCode;
       const rawWidth = currentFont.widths.get(cid) ?? currentFont.defaultWidth;
       const glyphWidth = rawWidth / 1000 * fontSize;

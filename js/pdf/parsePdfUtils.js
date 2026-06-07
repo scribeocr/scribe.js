@@ -10,6 +10,94 @@ import {
 } from './pdfCrypto.js';
 
 /**
+ * Multiply two 6-element PDF affine matrices `[a, b, c, d, e, f]`, returning `m1 · m2`.
+ * @param {number[]} m1
+ * @param {number[]} m2
+ * @returns {number[]}
+ */
+export function matMul(m1, m2) {
+  return [
+    m1[0] * m2[0] + m1[1] * m2[2],
+    m1[0] * m2[1] + m1[1] * m2[3],
+    m1[2] * m2[0] + m1[3] * m2[2],
+    m1[2] * m2[1] + m1[3] * m2[3],
+    m1[4] * m2[0] + m1[5] * m2[2] + m2[4],
+    m1[4] * m2[1] + m1[5] * m2[3] + m2[5],
+  ];
+}
+
+/**
+ * Decode a show-text operand into character codes using a font's codespace ranges.
+ *
+ * PDF show-text strings are byte sequences whose grouping into character codes is
+ * governed by the font's CMap codespace ranges. Simple fonts are 1 byte/code;
+ * Type0/CID fonts are usually 2 bytes/code; predefined mixed-width CMaps (e.g.
+ * `83pv-RKSJ-H`) mix 1-byte ASCII with 2-byte codes, so the ranges must be honored
+ * or ASCII gets mis-decoded as CJK.
+ *
+ * Yields `{ charCode, numBytes }` per code, in order. Operates on a Latin-1 byte
+ * string (`charCodeAt(i)` ∈ [0, 255]); hex operands must be converted to bytes first.
+ *
+ * @param {string} bytes - the operand as a Latin-1 byte string
+ * @param {ReadonlyArray<{bytes: number, low: number, high: number}> | null | undefined} csRanges
+ *   the font's codespace ranges, or null/undefined to use `defaultBytes` for every code
+ * @param {number} [defaultBytes] - byte width when `csRanges` is absent: 1 emits one code
+ *   per byte (simple fonts); 2 reads code pairs and drops a trailing odd byte (CID fonts)
+ * @returns {Generator<{charCode: number, numBytes: number}>}
+ */
+export function* decodeTextCodes(bytes, csRanges, defaultBytes = 1) {
+  const len = bytes.length;
+  let i = 0;
+  while (i < len) {
+    const b0 = bytes.charCodeAt(i);
+    let charCode = b0;
+    let numBytes = 1;
+    if (csRanges) {
+      let matched = false;
+      for (let r = 0; r < csRanges.length; r++) {
+        const range = csRanges[r];
+        if (range.bytes === 1) {
+          if (b0 >= range.low && b0 <= range.high) {
+            charCode = b0;
+            numBytes = 1;
+            matched = true;
+            break;
+          }
+        } else if (range.bytes === 2 && i + 1 < len) {
+          const code2 = (b0 << 8) | bytes.charCodeAt(i + 1);
+          if (code2 >= range.low && code2 <= range.high) {
+            charCode = code2;
+            numBytes = 2;
+            matched = true;
+            break;
+          }
+        }
+      }
+      if (!matched) {
+        // Unmatched within a codespace: assume 2 bytes when a second byte exists, else 1.
+        if (i + 1 < len) {
+          charCode = (b0 << 8) | bytes.charCodeAt(i + 1);
+          numBytes = 2;
+        } else {
+          charCode = b0;
+          numBytes = 1;
+        }
+      }
+    } else if (defaultBytes === 2) {
+      // No ranges, 2-byte font: read pairs, drop a trailing single byte.
+      if (i + 1 >= len) break;
+      charCode = (b0 << 8) | bytes.charCodeAt(i + 1);
+      numBytes = 2;
+    } else {
+      charCode = b0;
+      numBytes = 1;
+    }
+    i += numBytes;
+    yield { charCode, numBytes };
+  }
+}
+
+/**
  * Find the byte offset of `needle` (an ASCII string) inside `bytes`, scanning forward from `from`.
  * Returns -1 if not found.
  * @param {Uint8Array} bytes

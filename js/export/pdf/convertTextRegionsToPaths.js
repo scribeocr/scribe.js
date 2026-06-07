@@ -1,9 +1,8 @@
 import {
   tokenizeContentStream, getPageContentStreams, findFormXObjects, bytesToLatin1, extractDict,
-  resolveNumArray, parseDictEntries, formatPdfNumber,
+  resolveNumArray, parseDictEntries, formatPdfNumber, matMul, decodeTextCodes,
 } from '../../pdf/parsePdfUtils.js';
 import { parsePageFonts } from '../../pdf/fonts/parsePdfFonts.js';
-import { matMul } from '../../pdf/parseDrawOps.js';
 import { encodeStreamObject } from './writePdfStreams.js';
 import opentype from '../../font-parser/src/index.js';
 import { standardNames } from '../../font-parser/src/encoding.js';
@@ -384,41 +383,8 @@ function flattenTextOperandTyped(operand, op, codespaceRanges) {
   /** @type {Array<{type: 'code', value: number, numBytes: number} | {type: 'spacer', value: number}>} */
   const out = [];
   const consumeBytes = (bytes) => {
-    let i = 0;
-    while (i < bytes.length) {
-      const b0 = bytes.charCodeAt(i);
-      if (codespaceRanges) {
-        let matched = false;
-        for (const range of codespaceRanges) {
-          if (range.bytes === 1 && b0 >= range.low && b0 <= range.high) {
-            out.push({ type: 'code', value: b0, numBytes: 1 });
-            i += 1;
-            matched = true;
-            break;
-          }
-          if (range.bytes === 2 && i + 1 < bytes.length) {
-            const code = (b0 << 8) | bytes.charCodeAt(i + 1);
-            if (code >= range.low && code <= range.high) {
-              out.push({ type: 'code', value: code, numBytes: 2 });
-              i += 2;
-              matched = true;
-              break;
-            }
-          }
-        }
-        if (!matched) {
-          if (i + 1 < bytes.length) {
-            out.push({ type: 'code', value: (b0 << 8) | bytes.charCodeAt(i + 1), numBytes: 2 });
-            i += 2;
-          } else {
-            out.push({ type: 'code', value: b0, numBytes: 1 });
-            i += 1;
-          }
-        }
-      } else {
-        out.push({ type: 'code', value: b0, numBytes: 1 });
-        i += 1;
-      }
+    for (const { charCode, numBytes } of decodeTextCodes(bytes, codespaceRanges, 1)) {
+      out.push({ type: 'code', value: charCode, numBytes });
     }
   };
   if (op === 'TJ') {

@@ -1,6 +1,6 @@
 import {
   findXrefOffset, parseXref, ObjectCache, bytesToLatin1,
-  getPageObjects, getPageContentStream, tokenizeContentStream, findFormXObjects, parseFormMatrix,
+  getPageObjects, getPageContentStream, tokenizeContentStream, findFormXObjects, parseFormMatrix, matMul,
 } from './parsePdfUtils.js';
 
 /**
@@ -144,19 +144,6 @@ export function extractAllPaths(pdfBytes) {
   }
 
   return result;
-}
-
-/**
- * Multiply two 6-element PDF matrices [a, b, c, d, e, f].
- * @param {number[]} a
- * @param {number[]} b
- */
-function multiplyMatrices(a, b) {
-  return [
-    a[0] * b[0] + a[1] * b[2], a[0] * b[1] + a[1] * b[3],
-    a[2] * b[0] + a[3] * b[2], a[2] * b[1] + a[3] * b[3],
-    a[4] * b[0] + a[5] * b[2] + b[4], a[4] * b[1] + a[5] * b[3] + b[5],
-  ];
 }
 
 /**
@@ -318,7 +305,7 @@ function executePathOperators(tokens) {
       case 'cm':
         if (operandStack.length >= 6) {
           const m = popNums(6);
-          ctm = multiplyMatrices(m, ctm);
+          ctm = matMul(m, ctm);
         } else {
           operandStack.length = 0;
         }
