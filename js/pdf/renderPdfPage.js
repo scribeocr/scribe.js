@@ -5946,10 +5946,26 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       // Perpendicular vector (rotated 90 degrees)
       const px = -dy;
       const py = dx;
-      // Some canvas backends drop clip regions with device-pixel coordinates exceeding ~1e9.
-      // Scale BIG relative to page size and the perpendicular magnitude to stay in range.
+      // The clip strip is built in the current user space, so its half-extent must be sized in that space, not in page points.
+      // When the shading's /Coords live in a space the CTM scales far from page space (coords in the millions under a ~1e-4 cm),
+      // a page-point extent collapses the strip to a sliver and the gradient fill vanishes.
+      // Map the canvas corners back into user space and size the extent to span them.
       const perpMag = Math.sqrt(px * px + py * py) || 1;
-      const BIG = Math.max(1e4, pageWidthPts * 10, pageHeightPts * 10) / perpMag;
+      let extentUser = Math.max(1e4, pageWidthPts * 10, pageHeightPts * 10);
+      const inv = renderCtx.getTransform().inverse();
+      if (Number.isFinite(inv.a) && Number.isFinite(inv.e)) {
+        let maxDist = 0;
+        for (const [cx, cy] of [[0, 0], [canvasWidth, 0], [0, canvasHeight], [canvasWidth, canvasHeight]]) {
+          const ux = inv.a * cx + inv.c * cy + inv.e;
+          const uy = inv.b * cx + inv.d * cy + inv.f;
+          const d = Math.hypot(ux - x0, uy - y0);
+          if (d > maxDist) maxDist = d;
+        }
+        if (maxDist > 0) extentUser = maxDist * 2;
+      }
+      // perpMag normalizes (px, py) to a unit vector, so BIG * (px, py) spans extentUser in user space.
+      // That keeps the clip polygon's device coordinates near canvas scale, well under the ~1e9 some backends reject.
+      const BIG = extentUser / perpMag;
 
       // When extend[0] is false, clip out the half-plane beyond the start point.
       // When extend[1] is false, clip out the half-plane beyond the end point.
