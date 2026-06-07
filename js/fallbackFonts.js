@@ -6,10 +6,12 @@
  */
 
 const FILES = [
-  { path: '../fonts/NotoSansSC-Regular.ttf', alias: '_scribe_fallback_sc' },
-  { path: '../fonts/fallback/NotoSansKR-Regular.otf', alias: '_scribe_fallback_kr' },
+  // Symbol fonts precede the CJK fonts. Latin documents should not be allowed to fall back to CJK fonts for symbols.
+  // Among other issues, the ellipsis is vertically centered in CJK fonts.
   { path: '../fonts/fallback/NotoSansSymbols-Regular.ttf', alias: '_scribe_fallback_symbols' },
   { path: '../fonts/fallback/NotoSansSymbols2-Regular.ttf', alias: '_scribe_fallback_symbols2' },
+  { path: '../fonts/NotoSansSC-Regular.ttf', alias: '_scribe_fallback_sc' },
+  { path: '../fonts/fallback/NotoSansKR-Regular.otf', alias: '_scribe_fallback_kr' },
   { path: '../fonts/fallback/NotoSansArabic-Regular.ttf', alias: '_scribe_fallback_arabic' },
   { path: '../fonts/fallback/NotoSansHebrew-Regular.ttf', alias: '_scribe_fallback_hebrew' },
   { path: '../fonts/fallback/NotoSansDevanagari-Regular.ttf', alias: '_scribe_fallback_devanagari' },
