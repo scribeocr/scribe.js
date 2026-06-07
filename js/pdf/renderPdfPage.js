@@ -1813,20 +1813,18 @@ async function flattenDrawOps(
       formResourceCache.set(cacheKey, cached);
     }
 
-    // Resolve the form's effective inherited fill/stroke color. Per PDF spec §8.10.1,
-    // a form inherits its caller's graphics state at the time of `Do`. The Do op was
-    // emitted by the caller's parser with the caller's then-current colors; if the
-    // caller never explicitly set a color before invoking the form (so the Do op was
-    // tagged as inherited), fall back to this function's inherited param so the
-    // chain propagates through nested forms.
+    // Resolve the form's effective inherited fill/stroke color.
+    // Per PDF spec section 8.10.1, a form inherits its caller's graphics state at the time of `Do`.
+    // The Do op was emitted by the caller's parser with the caller's then-current colors.
+    // If the caller never explicitly set a color before invoking the form (so the Do op was tagged as inherited),
+    // fall back to this function's inherited param so the chain propagates through nested forms.
     const formInheritedFill = op.fillColorInherited ? inheritedFillColor : op.fillColor;
     const formInheritedStroke = op.strokeColorInherited ? inheritedStrokeColor : (op.strokeColor || inheritedStrokeColor);
     const formInheritedFillAlpha = op.fillAlphaInherited ? inheritedFillAlpha : (op.fillAlpha != null ? op.fillAlpha : 1);
     const formInheritedStrokeAlpha = op.strokeAlphaInherited ? inheritedStrokeAlpha : (op.strokeAlpha != null ? op.strokeAlpha : 1);
 
-    // Per-call expansion (no expandedOps cache): the cached `rawFormDrawOps` carry
-    // inheritance markers so the same parsed form can be reused across callers,
-    // but each invocation resolves the markers against its own parent context.
+    // Per-call expansion (no expandedOps cache): the cached `rawFormDrawOps` carry inheritance markers
+    // so the same parsed form can be reused across callers, but each invocation resolves the markers against its own parent context.
     // Register images/forms with current prefix for the recursive flattening
     for (const [name, info] of cached.formImagesResult.images) {
       images.set(`${fullName}/${name}`, info);
@@ -1835,9 +1833,6 @@ async function flattenDrawOps(
       forms.set(`${fullName}/${name}`, info);
     }
 
-    // Per PDF spec §4.9.1, Form XObjects without a /Resources dictionary
-    // inherit resources from the parent scope.  Fonts and ExtGStates are
-    // already inherited above; do the same for images and nested forms.
     if (cached.formImagesResult.images.size === 0
       && cached.formImagesResult.forms.size === 0
       && !/\/Resources[\s<]/.test(formObjText)) {

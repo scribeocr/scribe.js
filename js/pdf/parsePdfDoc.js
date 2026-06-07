@@ -124,20 +124,12 @@ function isSymbolFont(fontInfo) {
   return SYMBOL_FONT_RE.test(fontInfo.familyName || '');
 }
 
-// Box Drawing, Block Elements, Geometric Shapes, Misc Symbols, Dingbats; plus
-// stray bullet chars from General Punctuation / Math Operators. CJK fonts often
-// supply a U+25A0 bullet glyph adjacent to Latin text — the family name alone
-// won't flag it as a symbol, but the codepoint will.
 const SYMBOL_CHAR_RE = /[•‣⁃∙─-➿]/;
 
 function isSymbolChar(text = '') {
   return text.length > 0 && SYMBOL_CHAR_RE.test(text);
 }
 
-// List-marker codepoints used as standalone bullets ahead of a word. Same-font
-// bullets (e.g. Times New Roman U+00B7 before "Investment") share family/size
-// with the following text, so the family-change rule can't catch them; this
-// set drives a dedicated split when the bullet sits alone in the current word.
 const BULLET_CHAR_RE = /[·•‣⁃∙■-◿・]/;
 
 function isBulletChar(text = '') {
@@ -527,9 +519,6 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
     pageObj, langSet, fontSet, dataTablePage,
   } = groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects, paths, scale, visualHeightPts, boxOriginX, boxOriginY);
 
-  // Extract highlight annotations + non-highlight passthrough refs. Converted
-  // to pixel-space AnnotationHighlight here so every coord-space fact about
-  // the page (scale, rotation CTM, Y-flip) stays local to parseSinglePage.
   const { highlights: highlightsRaw, passthroughRefs } = extractPdfAnnotations(objCache, objText);
   const annotations = highlightsRaw.map((raw, i) => pdfHighlightToAnnotation(raw, {
     scale,
@@ -1046,9 +1035,8 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
     const encodingValue = font.encodingUnicode?.get(charCode);
     let unicode = toUnicodeValue || encodingValue;
 
-    // Broken ToUnicode maps can flip ASCII letter case while still mapping to
-    // the same underlying letter (e.g. E->e). For fonts flagged by parsePageFonts,
-    // prefer encodingUnicode's case for those one-letter conflicts.
+    // Broken ToUnicode maps can flip ASCII letter case while still mapping to the same underlying letter (e.g. E->e).
+    // For fonts flagged by parsePageFonts, prefer encodingUnicode's case for those one-letter conflicts.
     if (font.preferEncodingCase
       && toUnicodeValue
       && encodingValue
@@ -1589,8 +1577,7 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
           continue;
         }
         // List bullet sitting alone in front of a letter/digit.
-        // Same-family bullets share size/gap with the following glyph,
-        // so the family-change rule can't catch them.
+        // Same-family bullets share size/gap with the following glyph, so the family-change rule can't catch them.
         if (currentWord.length === 1
           && isBulletChar(prevCh.text)
           && /[A-Za-z0-9]/.test(ch.text)) {
@@ -1911,10 +1898,8 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
       }
     }
 
-    // Recalculate normalBaselineY after word-level superscript detection, which may have
-    // reclassified words that were initially non-sup (e.g., footnote marker "1" that is first
-    // detected as superscript only by comparing with the next word "Cruz").
-    // Skip drop cap words — their baseline extends below the visual line.
+    // Recalculate normalBaselineY after word-level superscript detection.
+    // This prevents baseline from being set based on a line-leading superscript.
     normalBaselineY = null;
     for (const w of words) {
       if (!w.sup && !w.dropcap && w.chars.length > 0) {
