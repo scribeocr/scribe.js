@@ -1,4 +1,5 @@
 import opentype from '../../font-parser/src/index.js';
+import { parseCFFSummary } from '../../font-parser/src/cff.js';
 import { standardNames, cffStandardEncoding } from '../../font-parser/src/encoding.js';
 import { aglLookup, unicodeToAGL } from './standardEncodings.js';
 
@@ -22,331 +23,19 @@ import { aglLookup, unicodeToAGL } from './standardEncodings.js';
  */
 
 /**
- * Read a CFF offset of 1-4 bytes.
- * @param {Uint8Array} data
- * @param {number} pos
- * @param {number} offSize
- * @returns {number}
+ * Map a CFF charset (GID->glyph-name, as returned by font-parser's parseCFFSummary) to GID->Unicode via the Adobe Glyph List.
+ * Kept in the PDF layer so font-parser need not depend on the app's AGL tables.
+ * @param {(string[]|null)} charsetNames
+ * @returns {Map<number, string>}
  */
-export function readCFFOffset(data, pos, offSize) {
-  let val = 0;
-  for (let i = 0; i < offSize; i++) val = (val << 8) | data[pos + i];
-  return val;
-}
-
-/**
- * Parse a CFF DICT data block into key-value pairs.
- * Returns a map from operator -> last operand value (simplified for our needs).
- */
-export function parseCFFDict(data) {
-  const entries = {};
-  const operands = [];
-  let i = 0;
-  while (i < data.length) {
-    const b0 = data[i];
-    if (b0 >= 32 && b0 <= 246) {
-      operands.push(b0 - 139);
-      i++;
-    } else if (b0 >= 247 && b0 <= 250) {
-      operands.push((b0 - 247) * 256 + data[i + 1] + 108);
-      i += 2;
-    } else if (b0 >= 251 && b0 <= 254) {
-      operands.push(-(b0 - 251) * 256 - data[i + 1] - 108);
-      i += 2;
-    } else if (b0 === 28) {
-      operands.push((data[i + 1] << 8) | data[i + 2]);
-      i += 3;
-    } else if (b0 === 29) {
-      operands.push((data[i + 1] << 24) | (data[i + 2] << 16) | (data[i + 3] << 8) | data[i + 4]);
-      i += 5;
-    } else if (b0 === 30) {
-      // Real number — skip for our purposes
-      i++;
-      while (i < data.length) {
-        const nib = data[i++];
-        if ((nib & 0x0F) === 0x0F || (nib >> 4) === 0x0F) break;
-      }
-      operands.push(0);
-    } else if (b0 <= 21) {
-      // Operator
-      let op = b0;
-      if (b0 === 12 && i + 1 < data.length) {
-        op = 1200 + data[i + 1];
-        i += 2;
-      } else {
-        i++;
-      }
-      if (operands.length > 0) entries[op] = operands[operands.length - 1];
-      operands.length = 0;
-    } else {
-      i++;
-    }
+export function cffCharsetNamesToUnicode(charsetNames) {
+  const glyphToUnicode = new Map();
+  if (!charsetNames) return glyphToUnicode;
+  for (let gid = 1; gid < charsetNames.length; gid++) {
+    const uniStr = aglLookup(charsetNames[gid]);
+    if (uniStr) glyphToUnicode.set(gid, uniStr);
   }
-  return entries;
-}
-
-const CFF_STANDARD_STRINGS = [
-  // SID 0-7
-  '.notdef', 'space', 'exclam', 'quotedbl', 'numbersign', 'dollar', 'percent', 'ampersand',
-  // SID 8-15
-  'quoteright', 'parenleft', 'parenright', 'asterisk', 'plus', 'comma', 'hyphen', 'period',
-  // SID 16-26
-  'slash', 'zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine',
-  // SID 27-33
-  'colon', 'semicolon', 'less', 'equal', 'greater', 'question', 'at',
-  // SID 34-59 (A-Z)
-  'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q',
-  'R', 'S', 'T', 'U', 'V', 'W', 'X', 'Y', 'Z',
-  // SID 60-65
-  'bracketleft', 'backslash', 'bracketright', 'asciicircum', 'underscore', 'quoteleft',
-  // SID 66-91 (a-z)
-  'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q',
-  'r', 's', 't', 'u', 'v', 'w', 'x', 'y', 'z',
-  // SID 92-95
-  'braceleft', 'bar', 'braceright', 'asciitilde',
-  // SID 96-137
-  'exclamdown', 'cent', 'sterling', 'fraction', 'yen', 'florin', 'section', 'currency',
-  'quotesingle', 'quotedblleft', 'guillemotleft', 'guilsinglleft', 'guilsinglright', 'fi', 'fl',
-  'endash', 'dagger', 'daggerdbl', 'periodcentered', 'paragraph', 'bullet',
-  'quotesinglbase', 'quotedblbase', 'quotedblright', 'guillemotright', 'ellipsis', 'perthousand',
-  'questiondown', 'grave', 'acute', 'circumflex', 'tilde', 'macron', 'breve',
-  'dotaccent', 'dieresis', 'ring', 'cedilla', 'hungarumlaut', 'ogonek', 'caron',
-  'emdash',
-  // SID 138-149
-  'AE', 'ordfeminine', 'Lslash', 'Oslash', 'OE', 'ordmasculine',
-  'ae', 'dotlessi', 'lslash', 'oslash', 'oe', 'germandbls',
-  // SID 150-170
-  'onesuperior', 'logicalnot', 'mu', 'trademark', 'Eth', 'onehalf', 'plusminus', 'Thorn',
-  'onequarter', 'divide', 'brokenbar', 'degree', 'thorn', 'threequarters', 'twosuperior',
-  'registered', 'minus', 'eth', 'multiply', 'threesuperior', 'copyright',
-  // SID 171-228
-  'Aacute', 'Acircumflex', 'Adieresis', 'Agrave', 'Aring', 'Atilde', 'Ccedilla', 'Eacute',
-  'Ecircumflex', 'Edieresis', 'Egrave', 'Iacute', 'Icircumflex', 'Idieresis', 'Igrave',
-  'Ntilde', 'Oacute', 'Ocircumflex', 'Odieresis', 'Ograve', 'Otilde', 'Scaron', 'Uacute',
-  'Ucircumflex', 'Udieresis', 'Ugrave', 'Yacute', 'Ydieresis', 'Zcaron',
-  'aacute', 'acircumflex', 'adieresis', 'agrave', 'aring', 'atilde', 'ccedilla', 'eacute',
-  'ecircumflex', 'edieresis', 'egrave', 'iacute', 'icircumflex', 'idieresis', 'igrave',
-  'ntilde', 'oacute', 'ocircumflex', 'odieresis', 'ograve', 'otilde', 'scaron', 'uacute',
-  'ucircumflex', 'udieresis', 'ugrave', 'yacute', 'ydieresis', 'zcaron',
-  // SID 229-268
-  'exclamsmall', 'Hungarumlautsmall', 'dollaroldstyle', 'dollarsuperior', 'ampersandsmall',
-  'Acutesmall', 'parenleftsuperior', 'parenrightsuperior', 'twodotenleader', 'onedotenleader',
-  'zerooldstyle', 'oneoldstyle', 'twooldstyle', 'threeoldstyle', 'fouroldstyle', 'fiveoldstyle',
-  'sixoldstyle', 'sevenoldstyle', 'eightoldstyle', 'nineoldstyle',
-  'commasuperior', 'threequartersemdash', 'periodsuperior', 'questionsmall', 'asuperior',
-  'bsuperior', 'centsuperior', 'dsuperior', 'esuperior', 'isuperior', 'lsuperior', 'msuperior',
-  'nsuperior', 'osuperior', 'rsuperior', 'ssuperior', 'tsuperior', 'ff', 'ffi', 'ffl',
-  // SID 269-318
-  'parenleftinferior', 'parenrightinferior', 'Circumflexsmall', 'hyphensuperior', 'Gravesmall',
-  'Asmall', 'Bsmall', 'Csmall', 'Dsmall', 'Esmall', 'Fsmall', 'Gsmall', 'Hsmall', 'Ismall',
-  'Jsmall', 'Ksmall', 'Lsmall', 'Msmall', 'Nsmall', 'Osmall', 'Psmall', 'Qsmall', 'Rsmall',
-  'Ssmall', 'Tsmall', 'Usmall', 'Vsmall', 'Wsmall', 'Xsmall', 'Ysmall', 'Zsmall',
-  'colonmonetary', 'onefitted', 'rupiah', 'Tildesmall', 'exclamdownsmall', 'centoldstyle',
-  'Lslashsmall', 'Scaronsmall', 'Zcaronsmall', 'Dieresissmall', 'Brevesmall', 'Caronsmall',
-  'Dotaccentsmall', 'Macronsmall', 'figuredash', 'hypheninferior', 'Ogoneksmall', 'Ringsmall',
-  'Cedillasmall',
-  // SID 319-390
-  'questiondownsmall', 'oneeighth', 'threeeighths', 'fiveeighths', 'seveneighths', 'onethird',
-  'twothirds', 'zerosuperior', 'foursuperior', 'fivesuperior', 'sixsuperior', 'sevensuperior',
-  'eightsuperior', 'ninesuperior', 'zeroinferior', 'oneinferior', 'twoinferior', 'threeinferior',
-  'fourinferior', 'fiveinferior', 'sixinferior', 'seveninferior', 'eightinferior', 'nineinferior',
-  'centinferior', 'dollarinferior', 'periodinferior', 'commainferior',
-  'Agravesmall', 'Aacutesmall', 'Acircumflexsmall', 'Atildesmall', 'Adieresissmall', 'Aringsmall',
-  'AEsmall', 'Ccedillasmall', 'Egravesmall', 'Eacutesmall', 'Ecircumflexsmall', 'Edieresissmall',
-  'Igravesmall', 'Iacutesmall', 'Icircumflexsmall', 'Idieresissmall', 'Ethsmall', 'Ntildesmall',
-  'Ogravesmall', 'Oacutesmall', 'Ocircumflexsmall', 'Otildesmall', 'Odieresissmall', 'OEsmall',
-  'Oslashsmall', 'Ugravesmall', 'Uacutesmall', 'Ucircumflexsmall', 'Udieresissmall', 'Yacutesmall',
-  'Thornsmall', 'Ydieresissmall',
-  '001.000', '001.001', '001.002', '001.003',
-  'Black', 'Bold', 'Book', 'Light', 'Medium', 'Regular', 'Roman', 'Semibold',
-];
-
-/**
- * Get a CFF string by SID. SIDs 0-390 are standard strings; higher SIDs
- * are looked up in the font's local String INDEX.
- */
-export function getCFFString(sid, cffData, hdrSize) {
-  if (sid < CFF_STANDARD_STRINGS.length) return CFF_STANDARD_STRINGS[sid] || `sid${sid}`;
-
-  const localIdx = sid - CFF_STANDARD_STRINGS.length;
-  let pos = hdrSize;
-  const dv = new DataView(cffData.buffer, cffData.byteOffset, cffData.byteLength);
-
-  // Skip Name INDEX
-  const nameCount = dv.getUint16(pos);
-  if (nameCount === 0) { pos += 2; } else {
-    const os = cffData[pos + 2];
-    const lastOff = readCFFOffset(cffData, pos + 3 + nameCount * os, os);
-    pos = pos + 3 + (nameCount + 1) * os + lastOff - 1;
-  }
-  // Skip Top DICT INDEX
-  const tdCount = dv.getUint16(pos);
-  if (tdCount === 0) { pos += 2; } else {
-    const os = cffData[pos + 2];
-    const lastOff = readCFFOffset(cffData, pos + 3 + tdCount * os, os);
-    pos = pos + 3 + (tdCount + 1) * os + lastOff - 1;
-  }
-  // Now at String INDEX
-  const strCount = dv.getUint16(pos);
-  if (localIdx >= strCount) return `sid${sid}`;
-  const os = cffData[pos + 2];
-  const off1 = readCFFOffset(cffData, pos + 3 + localIdx * os, os);
-  const off2 = readCFFOffset(cffData, pos + 3 + (localIdx + 1) * os, os);
-  const dataStart = pos + 3 + (strCount + 1) * os;
-  let s = '';
-  for (let i = dataStart + off1 - 1; i < dataStart + off2 - 1 && i < cffData.length; i++) {
-    s += String.fromCharCode(cffData[i]);
-  }
-  return s;
-}
-
-/**
- * Parse CFF font data to extract charset info for text extraction.
- * For non-CID CFF: returns glyph names mapped to Unicode via AGL.
- * For CID CFF: returns the set of valid CIDs that have glyphs.
- * @param {Uint8Array} cffData
- */
-export function parseCFFCharset(cffData) {
-  try {
-    if (cffData.length < 4 || cffData[0] !== 1) return null;
-
-    const cffDV = new DataView(cffData.buffer, cffData.byteOffset, cffData.byteLength);
-    const hdrSize = cffData[2];
-
-    let pos = hdrSize;
-    const nameCount = cffDV.getUint16(pos);
-    if (nameCount === 0) { pos += 2; } else {
-      const os = cffData[pos + 2];
-      const lastOff = readCFFOffset(cffData, pos + 3 + nameCount * os, os);
-      pos = pos + 3 + (nameCount + 1) * os + lastOff - 1;
-    }
-
-    const tdCount = cffDV.getUint16(pos);
-    let charsetOffset = 0;
-    let charStringsOffset = 0;
-    let isCID = false;
-    if (tdCount > 0) {
-      const tdOffSize = cffData[pos + 2];
-      const tdDataStart = pos + 3 + (tdCount + 1) * tdOffSize;
-      const tdOff1 = readCFFOffset(cffData, pos + 3, tdOffSize);
-      const tdOff2 = readCFFOffset(cffData, pos + 3 + tdOffSize, tdOffSize);
-      const tdBytes = cffData.subarray(tdDataStart + tdOff1 - 1, tdDataStart + tdOff2 - 1);
-      const tdEntries = parseCFFDict(tdBytes);
-      charsetOffset = tdEntries[15] || 0;
-      charStringsOffset = tdEntries[17] || 0;
-      isCID = tdEntries[1230] !== undefined;
-    }
-
-    let numGlyphs = 1;
-    if (charStringsOffset > 0) {
-      numGlyphs = cffDV.getUint16(charStringsOffset);
-    }
-
-    if (charsetOffset < 2 || charsetOffset >= cffData.length) return null;
-
-    const fmt = cffData[charsetOffset];
-    let cp = charsetOffset + 1;
-
-    if (isCID) {
-      const validCIDs = new Set([0]);
-      if (fmt === 0) {
-        for (let gi = 1; gi < numGlyphs && cp + 1 < cffData.length; gi++) {
-          validCIDs.add(cffDV.getUint16(cp));
-          cp += 2;
-        }
-      } else if (fmt === 1 || fmt === 2) {
-        let gi = 1;
-        while (gi < numGlyphs && cp + (fmt === 1 ? 2 : 3) < cffData.length) {
-          const firstCID = cffDV.getUint16(cp);
-          const nLeft = fmt === 1 ? cffData[cp + 2] : cffDV.getUint16(cp + 2);
-          cp += fmt === 1 ? 3 : 4;
-          for (let j = 0; j <= nLeft && gi < numGlyphs; j++, gi++) {
-            validCIDs.add(firstCID + j);
-          }
-        }
-      }
-      return { isCID: true, validCIDs };
-    }
-
-    const glyphToUnicode = new Map();
-    if (fmt === 0) {
-      for (let gi = 1; gi < numGlyphs && cp + 1 < cffData.length; gi++) {
-        const name = getCFFString(cffDV.getUint16(cp), cffData, hdrSize);
-        const uniStr = aglLookup(name);
-        if (uniStr) glyphToUnicode.set(gi, uniStr);
-        cp += 2;
-      }
-    } else if (fmt === 1 || fmt === 2) {
-      let gi = 1;
-      while (gi < numGlyphs && cp + (fmt === 1 ? 2 : 3) < cffData.length) {
-        const sid = cffDV.getUint16(cp);
-        const nLeft = fmt === 1 ? cffData[cp + 2] : cffDV.getUint16(cp + 2);
-        cp += fmt === 1 ? 3 : 4;
-        for (let j = 0; j <= nLeft && gi < numGlyphs; j++, gi++) {
-          const name = getCFFString(sid + j, cffData, hdrSize);
-          const uniStr = aglLookup(name);
-          if (uniStr) glyphToUnicode.set(gi, uniStr);
-        }
-      }
-    }
-    return { isCID: false, glyphToUnicode };
-  } catch {
-    return null;
-  }
-}
-
-/**
- * Extract CID→GID mapping from raw CFF charset bytes.
- * In CID CFF fonts, charset entries are CID values (stored as 2-byte SIDs).
- * @param {Uint8Array} cffData
- */
-export function extractCIDToGIDFromCFF(cffData) {
-  const cidToGID = new Map();
-  if (cffData.length < 4 || cffData[0] !== 1) return cidToGID;
-
-  const dv = new DataView(cffData.buffer, cffData.byteOffset, cffData.byteLength);
-  const hdrSize = cffData[2];
-
-  let pos = hdrSize;
-  const nameCount = dv.getUint16(pos);
-  if (nameCount === 0) { pos += 2; } else {
-    const os = cffData[pos + 2];
-    const lastOff = readCFFOffset(cffData, pos + 3 + nameCount * os, os);
-    pos = pos + 3 + (nameCount + 1) * os + lastOff - 1;
-  }
-  const tdCount = dv.getUint16(pos);
-  if (tdCount === 0) return cidToGID;
-  const tdOffSize = cffData[pos + 2];
-  const tdDataStart = pos + 3 + (tdCount + 1) * tdOffSize;
-  const tdOff1 = readCFFOffset(cffData, pos + 3, tdOffSize);
-  const tdOff2 = readCFFOffset(cffData, pos + 3 + tdOffSize, tdOffSize);
-  const tdBytes = cffData.subarray(tdDataStart + tdOff1 - 1, tdDataStart + tdOff2 - 1);
-  const tdEntries = parseCFFDict(tdBytes);
-
-  const charsetOffset = tdEntries[15] || 0;
-  const charStringsOffset = tdEntries[17] || 0;
-  if (charsetOffset < 2 || charStringsOffset === 0) return cidToGID;
-
-  const numGlyphs = dv.getUint16(charStringsOffset);
-  const fmt = cffData[charsetOffset];
-  let cp = charsetOffset + 1;
-  if (fmt === 0) {
-    for (let gi = 1; gi < numGlyphs && cp + 1 < cffData.length; gi++) {
-      cidToGID.set(dv.getUint16(cp), gi);
-      cp += 2;
-    }
-  } else if (fmt === 1 || fmt === 2) {
-    let gi = 1;
-    while (gi < numGlyphs && cp + (fmt === 1 ? 2 : 3) < cffData.length) {
-      const firstCID = dv.getUint16(cp);
-      const nLeft = fmt === 1 ? cffData[cp + 2] : dv.getUint16(cp + 2);
-      cp += fmt === 1 ? 3 : 4;
-      for (let j = 0; j <= nLeft && gi < numGlyphs; j++, gi++) {
-        cidToGID.set(firstCID + j, gi);
-      }
-    }
-  }
-  return cidToGID;
+  return glyphToUnicode;
 }
 
 /**
@@ -386,7 +75,7 @@ export function buildFontFromCFF(cffData, fontObj, encoding) {
     let cidCollisions = null;
 
     if (fontShell.isCIDFont) {
-      const cidToGID = extractCIDToGIDFromCFF(cffData);
+      const cidToGID = parseCFFSummary(cffData).cidToGID || new Map();
       // Build CID→Unicode lookup (same logic as rebuildFontFromGlyphs)
       const cidToUnicode = (!fontObj.charCodeToCID || fontObj.charCodeToCID.size === 0)
         ? fontObj.toUnicode
@@ -1003,19 +692,8 @@ export function convertType1ToOTFNew(pfaBytes, fontObj) {
 export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
   try {
     const data = new DataView(arrayBuffer);
-    const bytes = new Uint8Array(arrayBuffer);
 
-    const sfVersion = data.getUint32(0);
-    if (sfVersion !== 0x00010000 && sfVersion !== 0x74727565) return null;
-
-    const numTables = data.getUint16(4);
-    const tableDir = {};
-    for (let i = 0; i < numTables; i++) {
-      const off = 12 + i * 16;
-      const tag = String.fromCharCode(bytes[off], bytes[off + 1], bytes[off + 2], bytes[off + 3]);
-      tableDir[tag.trim()] = { offset: data.getUint32(off + 8), length: data.getUint32(off + 12) };
-    }
-
+    const tableDir = opentype.readSfntTableDirectory(data);
     if (!tableDir.head || !tableDir.maxp || !tableDir.loca || !tableDir.glyf || !tableDir.hhea || !tableDir.hmtx) return null;
 
     const head = opentype.parseHeadTable(data, tableDir.head.offset);

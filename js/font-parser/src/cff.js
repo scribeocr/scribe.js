@@ -1110,6 +1110,109 @@ export function parseCFFTable(data, start, font) {
   }
 }
 
+// Parse a CID-keyed CFF charset, whose entries are CIDs (not SIDs), into a CID->GID map.
+// The private parseCFFCharset() above resolves entries through the String INDEX as glyph names,
+// which is meaningless for CID fonts. Hence this separate walk.
+// GID 0 (.notdef) is implicit and intentionally omitted, so the returned key set matches the glyphs actually present in the charset.
+function parseCidCharset(data, start, nGlyphs) {
+  const cidToGID = new Map();
+  const parser = new parse.Parser(data, start);
+  const format = parser.parseCard8();
+  let gid = 1;
+  if (format === 0) {
+    for (; gid < nGlyphs; gid += 1) cidToGID.set(parser.parseSID(), gid);
+  } else if (format === 1 || format === 2) {
+    while (gid < nGlyphs) {
+      const firstCID = parser.parseSID();
+      const nLeft = format === 1 ? parser.parseCard8() : parser.parseCard16();
+      for (let i = 0; i <= nLeft && gid < nGlyphs; i += 1, gid += 1) {
+        cidToGID.set(firstCID + i, gid);
+      }
+    }
+  }
+  return cidToGID;
+}
+
+/**
+ * Lightweight, tolerant CFF reader for the PDF layer's text-extraction and font-build glue.
+ * Parses only the header, INDEXes, charset, and built-in encoding.
+ * It does NOT decode charstrings into glyph outlines the way parseCFFTable does, so it is cheap enough for the parse-time text path.
+ * Returns `{ ok: false }` instead of throwing on malformed input.
+ * Glyph names are returned as-is. Unicode (AGL) resolution stays in the PDF layer so this module need not depend on the app's Adobe Glyph List.
+ *
+ * @param {Uint8Array} cffData - raw CFF font program bytes (FontFile3)
+ * @returns {{
+ *   ok: boolean,
+ *   isCID: boolean,
+ *   nGlyphs: number,
+ *   predefinedCharset: boolean,
+ *   charsetNames: (string[]|null),
+ *   cidToGID: (Map<number, number>|null),
+ *   cffEncoding: (CffEncoding|null),
+ * }}
+ */
+export function parseCFFSummary(cffData) {
+  const empty = {
+    ok: false, isCID: false, nGlyphs: 0, predefinedCharset: false, charsetNames: null, cidToGID: null, cffEncoding: null,
+  };
+  try {
+    if (!cffData || cffData.length < 4 || cffData[0] !== 1) return empty;
+    const data = new DataView(cffData.buffer, cffData.byteOffset, cffData.byteLength);
+    const start = 0;
+
+    const header = parseCFFHeader(data, start);
+    const nameIndex = parseCFFIndex(data, header.endOffset, parse.bytesToString);
+    const topDictIndex = parseCFFIndex(data, nameIndex.endOffset);
+    const stringIndex = parseCFFIndex(data, topDictIndex.endOffset, parse.bytesToString);
+    const topDicts = gatherCFFTopDicts(data, start, topDictIndex.objects, stringIndex.objects);
+    if (topDicts.length === 0) return empty;
+    const topDict = topDicts[0];
+
+    const isCID = topDict.ros[0] !== undefined && topDict.ros[1] !== undefined;
+    const charStringsIndex = parseCFFIndex(data, start + topDict.charStrings);
+    const nGlyphs = charStringsIndex.objects.length;
+
+    if (isCID) {
+      return {
+        ok: true,
+        isCID: true,
+        nGlyphs,
+        predefinedCharset: topDict.charset <= 2,
+        charsetNames: null,
+        cidToGID: parseCidCharset(data, start + topDict.charset, nGlyphs),
+        cffEncoding: null,
+      };
+    }
+
+    // Simple (non-CID): GID->glyph-name charset + the built-in encoding,
+    // both resolved exactly as parseCFFTable does so callers can consume cffEncoding identically.
+    // predefinedCharset distinguishes the ISOAdobe/Expert default charsets (charset operand 0/1/2) from an explicit per-font charset.
+    const predefinedCharset = topDict.charset <= 2;
+    let charsetNames;
+    if (predefinedCharset) {
+      charsetNames = ['.notdef'];
+      for (let gi = 1; gi < nGlyphs; gi += 1) charsetNames.push(cffStandardStrings[gi] || `sid${gi}`);
+    } else {
+      charsetNames = parseCFFCharset(data, start + topDict.charset, nGlyphs, stringIndex.objects);
+    }
+
+    let cffEncoding;
+    if (topDict.encoding === 0) {
+      cffEncoding = new CffEncoding(cffStandardEncoding, charsetNames);
+    } else if (topDict.encoding === 1) {
+      cffEncoding = new CffEncoding(cffExpertEncoding, charsetNames);
+    } else {
+      cffEncoding = parseCFFEncoding(data, start + topDict.encoding, charsetNames, stringIndex.objects);
+    }
+
+    return {
+      ok: true, isCID: false, nGlyphs, predefinedCharset, charsetNames, cidToGID: null, cffEncoding,
+    };
+  } catch {
+    return empty;
+  }
+}
+
 // Convert a string to a String ID (SID).
 // The list of strings is modified in place.
 function encodeString(s, strings) {

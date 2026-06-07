@@ -1,4 +1,5 @@
 import { Path } from './path.js';
+import { cffStandardEncoding } from './encoding.js';
 
 /**
  * Decrypt a Type1 charstring (key=4330, discard first lenIV random bytes).
@@ -357,35 +358,16 @@ export function parseType1Font(pfaBytes) {
 
     if (glyphs.size === 0) return null;
 
-    // Resolve seac (Standard Encoding Accented Character) composites
-    // seac builds accented glyphs by composing a base glyph + accent glyph.
-    // bchar/achar are StandardEncoding charCodes that must be mapped to glyph names.
-    const stdEncNames = [
-      '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',
-      '', '', '', '', 'space', 'exclam', 'quotedbl', 'numbersign', 'dollar', 'percent', 'ampersand', 'quoteright',
-      'parenleft', 'parenright', 'asterisk', 'plus', 'comma', 'hyphen', 'period', 'slash', 'zero', 'one', 'two',
-      'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'colon', 'semicolon', 'less', 'equal', 'greater',
-      'question', 'at', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S',
-      'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'bracketleft', 'backslash', 'bracketright', 'asciicircum', 'underscore',
-      'quoteleft', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't',
-      'u', 'v', 'w', 'x', 'y', 'z', 'braceleft', 'bar', 'braceright', 'asciitilde', '', '', '', '', '', '', '', '',
-      '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',
-      'exclamdown', 'cent', 'sterling', 'fraction', 'yen', 'florin', 'section', 'currency', 'quotesingle',
-      'quotedblleft', 'guillemotleft', 'guilsinglleft', 'guilsinglright', 'fi', 'fl', '', 'endash', 'dagger',
-      'daggerdbl', 'periodcentered', '', 'paragraph', 'bullet', 'quotesinglbase', 'quotedblbase', 'quotedblright',
-      'guillemotright', 'ellipsis', 'perthousand', '', 'questiondown', '', 'grave', 'acute', 'circumflex', 'tilde',
-      'macron', 'breve', 'dotaccent', 'dieresis', '', 'ring', 'cedilla', '', 'hungarumlaut', 'ogonek', 'caron',
-      'emdash', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', 'AE', '', 'ordfeminine', '', '', '',
-      '', 'Lslash', 'Oslash', 'OE', 'ordmasculine', '', '', '', '', '', 'ae', '', '', '', 'dotlessi', '', '',
-      'lslash', 'oslash', 'oe', 'germandbls',
-    ];
+    // Resolve seac (Standard Encoding Accented Character) composites.
+    // bchar/achar are StandardEncoding charCodes,
+    // mapped to glyph names via the shared cffStandardEncoding table from font-parser's encoding.js.
     for (const [, result] of glyphs) {
       if (!result.seac) continue;
       const {
         adx, ady, bchar, achar,
       } = result.seac;
-      const baseName = stdEncNames[bchar] || '';
-      const accentName = stdEncNames[achar] || '';
+      const baseName = cffStandardEncoding[bchar] || '';
+      const accentName = cffStandardEncoding[achar] || '';
       const baseGlyph = baseName ? glyphs.get(baseName) : null;
       const accentGlyph = accentName ? glyphs.get(accentName) : null;
       if (!baseGlyph || !accentGlyph) continue;

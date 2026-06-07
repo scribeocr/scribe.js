@@ -3672,7 +3672,7 @@ function computeCheckSumFromUint8Array(bytes) {
  * Parses OpenType table entries.
  * @param  {DataView} data
  * @param  {number} numTables
- * @return {Object[]}
+ * @return {{tag: string, checksum: number, offset: number, length: number, compression: boolean}[]}
  */
 function parseOpenTypeTableEntries(data, numTables) {
   const tableEntries = [];
@@ -3689,6 +3689,30 @@ function parseOpenTypeTableEntries(data, numTables) {
   }
 
   return tableEntries;
+}
+
+/**
+ * Read an sfnt (TrueType/OpenType) table directory into a tag->location map.
+ * Tolerant by design: returns an empty Map for a missing/unrecognized sfnt version or a truncated directory instead of throwing,
+ * so callers probing for a single table (cmap, glyf, ...) degrade gracefully on malformed embedded fonts.
+ * Keyed by the raw 4-char tag (short tags keep their trailing space, e.g. 'cvt ').
+ * @param {DataView} data
+ * @returns {Record<string, {offset: number, length: number}>}
+ */
+export function readSfntTableDirectory(data) {
+  /** @type {Record<string, {offset: number, length: number}>} */
+  const dir = {};
+  if (!data || data.byteLength < 12) return dir;
+  const sfntVersion = data.getUint32(0);
+  // 0x00010000 = TrueType outlines, 0x74727565 'true' = legacy Apple TrueType,
+  // 0x4F54544F 'OTTO' = CFF outlines.
+  if (sfntVersion !== 0x00010000 && sfntVersion !== 0x74727565 && sfntVersion !== 0x4F54544F) return dir;
+  const numTables = data.getUint16(4);
+  if (numTables === 0 || 12 + numTables * 16 > data.byteLength) return dir;
+  for (const entry of parseOpenTypeTableEntries(data, numTables)) {
+    dir[entry.tag] = { offset: entry.offset, length: entry.length };
+  }
+  return dir;
 }
 
 /**

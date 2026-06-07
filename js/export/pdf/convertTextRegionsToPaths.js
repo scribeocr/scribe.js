@@ -7,7 +7,7 @@ import { matMul } from '../../pdf/parseDrawOps.js';
 import { encodeStreamObject } from './writePdfStreams.js';
 import opentype from '../../font-parser/src/index.js';
 import { standardNames } from '../../font-parser/src/encoding.js';
-import { extractCIDToGIDFromCFF } from '../../pdf/fonts/convertFontToOTF.js';
+import { parseCFFSummary } from '../../font-parser/src/cff.js';
 
 /**
  * Re-serialize a PDF content-stream operand token back to its source form.
@@ -212,7 +212,7 @@ function loadGlyphsForOutlines(fontFile) {
       // Its SIDs are actually CIDs, not standard-string indices, so the names it produced are wrong.
       let cffCidToGid = null;
       if (shell.isCIDFont) {
-        const m = extractCIDToGIDFromCFF(fontFile);
+        const m = parseCFFSummary(fontFile).cidToGID;
         if (m && m.size > 0) cffCidToGid = m;
       }
       return {

@@ -8,9 +8,10 @@ import {
   win1252Chars, macRomanChars, aglLookup, unicodeToAGL, wingdingsToUnicode, symbolToUnicode, dingbatsGlyphMap, dingbatsEncoding,
 } from './standardEncodings.js';
 import { applyStandardFontWidths, getDingbatsGlyphWidth, getStandardLigatureWidth } from './standardFontMetrics.js';
-import { parseCFFCharset } from './convertFontToOTF.js';
+import { cffCharsetNamesToUnicode } from './convertFontToOTF.js';
+import { parseCFFSummary } from '../../font-parser/src/cff.js';
 import { getCIDToUnicodeMap } from './cidToUnicode.js';
-import { standardNames } from '../../font-parser/src/encoding.js';
+import { cffStandardEncoding, standardNames } from '../../font-parser/src/encoding.js';
 import { determineSansSerif } from '../../utils/miscUtils.js';
 
 /**
@@ -72,20 +73,9 @@ function resolveCidTrueTypeProgram(fdText, objCache) {
 function buildGidToUnicodeFromTrueType(fontFile) {
   try {
     const data = new DataView(fontFile.buffer, fontFile.byteOffset, fontFile.byteLength);
-    const sfVersion = data.getUint32(0);
-    if (sfVersion !== 0x00010000 && sfVersion !== 0x74727565) return null;
-    const numTables = data.getUint16(4);
-    let cmapOffset = -1;
-    for (let i = 0; i < numTables; i++) {
-      const off = 12 + i * 16;
-      const tag = String.fromCharCode(fontFile[off], fontFile[off + 1], fontFile[off + 2], fontFile[off + 3]);
-      if (tag === 'cmap') {
-        cmapOffset = data.getUint32(off + 8);
-        break;
-      }
-    }
-    if (cmapOffset === -1) return null;
-    const cmap = opentype.parseCmapTable(data, cmapOffset);
+    const cmapEntry = opentype.readSfntTableDirectory(data).cmap;
+    if (!cmapEntry) return null;
+    const cmap = opentype.parseCmapTable(data, cmapEntry.offset);
     if (!cmap || !cmap.glyphIndexMap) return null;
     const gidToUnicode = new Map();
     for (const [unicodeStr, gid] of Object.entries(cmap.glyphIndexMap)) {
@@ -133,22 +123,11 @@ function parseType1PFAEncoding(fontFile) {
 function buildEmptyGlyphSetFromTrueType(fontFile) {
   try {
     const data = new DataView(fontFile.buffer, fontFile.byteOffset, fontFile.byteLength);
-    const sfVersion = data.getUint32(0);
-    if (sfVersion !== 0x00010000 && sfVersion !== 0x74727565) return null;
-    const numTables = data.getUint16(4);
-    let glyfOff = -1; let locaOff = -1; let headOff = -1; let maxpOff = -1;
-    for (let i = 0; i < numTables; i++) {
-      const off = 12 + i * 16;
-      const tag = String.fromCharCode(fontFile[off], fontFile[off + 1], fontFile[off + 2], fontFile[off + 3]);
-      const tableOff = data.getUint32(off + 8);
-      if (tag === 'glyf') glyfOff = tableOff;
-      else if (tag === 'loca') locaOff = tableOff;
-      else if (tag === 'head') headOff = tableOff;
-      else if (tag === 'maxp') maxpOff = tableOff;
-    }
-    if (glyfOff < 0 || locaOff < 0 || headOff < 0 || maxpOff < 0) return null;
-    const idxFmt = data.getUint16(headOff + 50);
-    const numGlyphs = data.getUint16(maxpOff + 4);
+    const dir = opentype.readSfntTableDirectory(data);
+    if (!dir.glyf || !dir.loca || !dir.head || !dir.maxp) return null;
+    const locaOff = dir.loca.offset;
+    const idxFmt = data.getUint16(dir.head.offset + 50);
+    const numGlyphs = data.getUint16(dir.maxp.offset + 4);
     const empty = new Set();
     for (let gid = 0; gid < numGlyphs; gid++) {
       const start = idxFmt === 0
@@ -1063,28 +1042,9 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
           }
         }
         if (!baseEnc) {
-          const stdEnc = [
-            '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',
-            '', '', '', '', 'space', 'exclam', 'quotedbl', 'numbersign', 'dollar', 'percent', 'ampersand', 'quoteright',
-            'parenleft', 'parenright', 'asterisk', 'plus', 'comma', 'hyphen', 'period', 'slash', 'zero', 'one', 'two',
-            'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'colon', 'semicolon', 'less', 'equal', 'greater',
-            'question', 'at', 'A', 'B', 'C', 'D', 'E', 'F', 'G', 'H', 'I', 'J', 'K', 'L', 'M', 'N', 'O', 'P', 'Q', 'R', 'S',
-            'T', 'U', 'V', 'W', 'X', 'Y', 'Z', 'bracketleft', 'backslash', 'bracketright', 'asciicircum', 'underscore',
-            'quoteleft', 'a', 'b', 'c', 'd', 'e', 'f', 'g', 'h', 'i', 'j', 'k', 'l', 'm', 'n', 'o', 'p', 'q', 'r', 's', 't',
-            'u', 'v', 'w', 'x', 'y', 'z', 'braceleft', 'bar', 'braceright', 'asciitilde', '', '', '', '', '', '', '', '',
-            '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '',
-            'exclamdown', 'cent', 'sterling', 'fraction', 'yen', 'florin', 'section', 'currency', 'quotesingle',
-            'quotedblleft', 'guillemotleft', 'guilsinglleft', 'guilsinglright', 'fi', 'fl', '', 'endash', 'dagger',
-            'daggerdbl', 'periodcentered', '', 'paragraph', 'bullet', 'quotesinglbase', 'quotedblbase', 'quotedblright',
-            'guillemotright', 'ellipsis', 'perthousand', '', 'questiondown', '', 'grave', 'acute', 'circumflex', 'tilde',
-            'macron', 'breve', 'dotaccent', 'dieresis', '', 'ring', 'cedilla', '', 'hungarumlaut', 'ogonek', 'caron',
-            'emdash', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', '', 'AE', '', 'ordfeminine', '', '', '',
-            '', 'Lslash', 'Oslash', 'OE', 'ordmasculine', '', '', '', '', '', 'ae', '', '', '', 'dotlessi', '', '',
-            'lslash', 'oslash', 'oe', 'germandbls',
-          ];
           baseEnc = new Map();
-          for (let code = 32; code < stdEnc.length; code++) {
-            if (stdEnc[code]) baseEnc.set(code, stdEnc[code]);
+          for (let code = 32; code < cffStandardEncoding.length; code++) {
+            if (cffStandardEncoding[code]) baseEnc.set(code, cffStandardEncoding[code]);
           }
         }
         if (baseEnc) {
@@ -1664,31 +1624,22 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
             if (fontFile) {
               if (isPlaceholderFontName(baseName)) {
                 const dv = new DataView(fontFile.buffer, fontFile.byteOffset, fontFile.byteLength);
-                const sfVersion = dv.byteLength >= 12 ? dv.getUint32(0) : 0;
-                if (sfVersion === 0x00010000 || sfVersion === 0x74727565) {
-                  const numTables = dv.getUint16(4);
-                  let nameOffset = -1;
-                  for (let i = 0; i < numTables; i++) {
-                    const off = 12 + i * 16;
-                    const tag = String.fromCharCode(fontFile[off], fontFile[off + 1], fontFile[off + 2], fontFile[off + 3]);
-                    if (tag === 'name') { nameOffset = dv.getUint32(off + 8); break; }
+                const nameEntry = opentype.readSfntTableDirectory(dv).name;
+                if (nameEntry) {
+                  const names = /** @type {Object<string, Object<string, string>>} */ (
+                    opentype.parseNameTable(dv, nameEntry.offset, undefined));
+                  const psRaw = ((names.postScriptName && names.postScriptName.en)
+                    || (names.fullName && names.fullName.en) || '').replace(/^[A-Z]{6}\+/, '');
+                  if (psRaw) {
+                    baseName = psRaw;
+                    familyName = ((names.preferredFamily && names.preferredFamily.en)
+                      || (names.fontFamily && names.fontFamily.en)
+                      || baseName.replace(/-.+/, '').replace(/,.*/, ''));
                   }
-                  if (nameOffset >= 0) {
-                    const names = /** @type {Object<string, Object<string, string>>} */ (
-                      opentype.parseNameTable(dv, nameOffset, undefined));
-                    const psRaw = ((names.postScriptName && names.postScriptName.en)
-                      || (names.fullName && names.fullName.en) || '').replace(/^[A-Z]{6}\+/, '');
-                    if (psRaw) {
-                      baseName = psRaw;
-                      familyName = ((names.preferredFamily && names.preferredFamily.en)
-                        || (names.fontFamily && names.fontFamily.en)
-                        || baseName.replace(/-.+/, '').replace(/,.*/, ''));
-                    }
-                    const subfamily = ((names.preferredSubfamily && names.preferredSubfamily.en)
-                      || (names.fontSubfamily && names.fontSubfamily.en) || '').toLowerCase();
-                    if (/italic|oblique/.test(subfamily) || /italic|oblique/i.test(baseName)) italic = true;
-                    if (/bold|black/.test(subfamily) || /bold|black/i.test(baseName)) bold = true;
-                  }
+                  const subfamily = ((names.preferredSubfamily && names.preferredSubfamily.en)
+                    || (names.fontSubfamily && names.fontSubfamily.en) || '').toLowerCase();
+                  if (/italic|oblique/.test(subfamily) || /italic|oblique/i.test(baseName)) italic = true;
+                  if (/bold|black/.test(subfamily) || /bold|black/i.test(baseName)) bold = true;
                 }
               }
               let cidToGidMap = 'identity';
@@ -1729,16 +1680,19 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     // For Type0 CFF fonts, use CFF charset to enrich toUnicode or build validCIDs
     let validCIDs = null;
     if (type0Info && type0Info.fontFile) {
-      const charsetInfo = parseCFFCharset(type0Info.fontFile);
-      if (charsetInfo) {
-        if (!charsetInfo.isCID && charsetInfo.glyphToUnicode) {
-          // Non-CID CFF: populate toUnicode from glyph names + AGL
-          for (const [gid, unicode] of charsetInfo.glyphToUnicode) {
+      const summary = parseCFFSummary(type0Info.fontFile);
+      if (summary.ok) {
+        if (summary.isCID) {
+          // CID CFF: store valid CIDs for filtering in showHexString.
+          // CID 0 (.notdef) is implicit and omitted from the charset, so add it back.
+          validCIDs = new Set([0, ...(summary.cidToGID?.keys() ?? [])]);
+        } else if (!summary.predefinedCharset) {
+          // Non-CID CFF with an explicit charset: populate toUnicode from glyph names + AGL.
+          // Predefined ISOAdobe/Expert charsets are skipped,
+          // as the prior parseCFFCharset returned null for them.
+          for (const [gid, unicode] of cffCharsetNamesToUnicode(summary.charsetNames)) {
             if (!toUnicode.has(gid)) toUnicode.set(gid, unicode);
           }
-        } else if (charsetInfo.isCID && charsetInfo.validCIDs) {
-          // CID CFF: store valid CIDs for filtering in showHexString
-          validCIDs = charsetInfo.validCIDs;
         }
       }
     }
@@ -2111,17 +2065,10 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       // encoding for the remaining charCodes.
       if (type1Info?.fontFile) {
         try {
-          const charsetInfo = parseCFFCharset(type1Info.fontFile);
-          if (charsetInfo && !charsetInfo.isCID) {
-            const fontShell = {
-              tables: {}, encoding: null, isCIDFont: false, unitsPerEm: 1000,
-            };
-            const dv = new DataView(
-              type1Info.fontFile.buffer, type1Info.fontFile.byteOffset, type1Info.fontFile.byteLength,
-            );
-            opentype.parseCFFTable(dv, 0, fontShell);
-            const cffEncObj = fontShell.cffEncoding || fontShell.encoding;
-            const cffEnc = cffEncObj?.encoding;
+          // One lightweight CFF parse yields both the charset (-> glyph names) and the built-in encoding.
+          const summary = parseCFFSummary(type1Info.fontFile);
+          if (summary.ok && !summary.isCID && !summary.predefinedCharset) {
+            const cffEnc = summary.cffEncoding?.encoding;
             if (Array.isArray(cffEnc)) {
               for (let code = 0; code < cffEnc.length; code++) {
                 const glyphName = cffEnc[code];
@@ -2133,7 +2080,8 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
                   encodingUnicode.set(code, uni);
                 }
               }
-            } else if (cffEnc && typeof cffEnc === 'object' && charsetInfo.glyphToUnicode) {
+            } else if (cffEnc && typeof cffEnc === 'object') {
+              const glyphToUnicode = cffCharsetNamesToUnicode(summary.charsetNames);
               const isSymbolCffByName = determineSansSerif(baseName) === 'SymbolDefault'
                 || determineSansSerif(familyName) === 'SymbolDefault'
                 || /sym|ding|wing/i.test(baseName)
@@ -2149,7 +2097,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
                 if (toUnicode.has(code) || encodingUnicode.has(code)) continue;
                 if (typeof encVal !== 'number') continue;
                 const gid = encVal + 1;
-                const uni = charsetInfo.glyphToUnicode.get(gid);
+                const uni = glyphToUnicode.get(gid);
                 if (!uni) continue;
                 if (uni.length === 1) {
                   const cp = uni.codePointAt(0);
