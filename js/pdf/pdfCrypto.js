@@ -1,43 +1,6 @@
-/**
- * Find the byte offset of `needle` (an ASCII string) inside `bytes`, scanning
- * forward from `from`. Returns -1 if not found.
- * @param {Uint8Array} bytes
- * @param {string} needle - ASCII only
- * @param {number} [from=0]
- */
-function byteIndexOf(bytes, needle, from = 0) {
-  const nLen = needle.length;
-  if (nLen === 0) return from;
-  const c0 = needle.charCodeAt(0);
-  if (nLen === 1) return bytes.indexOf(c0, from);
-  const last = bytes.length - nLen;
-  let i = from;
-  while (i <= last) {
-    i = bytes.indexOf(c0, i);
-    if (i === -1 || i > last) return -1;
-    let j = 1;
-    while (j < nLen && bytes[i + j] === needle.charCodeAt(j)) j++;
-    if (j === nLen) return i;
-    i++;
-  }
-  return -1;
-}
-
-/**
- * PDF whitespace bytes per spec §3.1.1: NUL, HT, LF, FF, CR, SP.
- * @param {number} b
- */
-export function isPdfWhitespace(b) {
-  return b === 0x20 || b === 0x09 || b === 0x0A || b === 0x0D || b === 0x0C || b === 0x00;
-}
-
-/**
- * ASCII digit byte (0-9).
- * @param {number} b
- */
-export function isAsciiDigit(b) {
-  return b >= 0x30 && b <= 0x39;
-}
+import {
+  matchesObjMarker, isPdfWhitespace, isAsciiDigit, byteIndexOf, parsePdfLiteralString, parsePdfHexString,
+} from './pdfPrimitives.js';
 
 /** @type {Uint32Array} Pre-computed T values: floor(2^32 * abs(sin(i+1))) */
 const MD5_K = new Uint32Array([
@@ -871,83 +834,6 @@ export function computeObjectKey(baseKey, objNum, genNum, useAES = false) {
 }
 
 /**
- * Parse a PDF literal string from raw bytes, handling escape sequences.
- * @param {Uint8Array} bytes - PDF file bytes
- * @param {number} start - Offset of the opening '(' character
- * @returns {{ value: Uint8Array, end: number }} Decoded bytes and offset past closing ')'
- */
-export function parsePdfLiteralString(bytes, start) {
-  const result = [];
-  let depth = 1;
-  let i = start + 1; // skip opening '('
-  while (i < bytes.length && depth > 0) {
-    const b = bytes[i];
-    if (b === 0x5C) { // backslash
-      i++;
-      const next = bytes[i];
-      const escapes = {
-        0x6E: 0x0A, 0x72: 0x0D, 0x74: 0x09, 0x62: 0x08, 0x66: 0x0C, 0x28: 0x28, 0x29: 0x29, 0x5C: 0x5C,
-      };
-      if (escapes[next] !== undefined) {
-        result.push(escapes[next]);
-        i++;
-      } else if (next >= 0x30 && next <= 0x37) { // octal \ddd
-        let octal = next - 0x30;
-        if (i + 1 < bytes.length && bytes[i + 1] >= 0x30 && bytes[i + 1] <= 0x37) {
-          octal = octal * 8 + (bytes[++i] - 0x30);
-          if (i + 1 < bytes.length && bytes[i + 1] >= 0x30 && bytes[i + 1] <= 0x37) {
-            octal = octal * 8 + (bytes[++i] - 0x30);
-          }
-        }
-        result.push(octal & 0xFF);
-        i++;
-      } else if (next === 0x0D || next === 0x0A) { // line continuation
-        i++;
-        if (next === 0x0D && i < bytes.length && bytes[i] === 0x0A) i++;
-      } else {
-        result.push(next);
-        i++;
-      }
-    } else if (b === 0x28) { // (
-      depth++;
-      result.push(b);
-      i++;
-    } else if (b === 0x29) { // )
-      depth--;
-      if (depth > 0) result.push(b);
-      i++;
-    } else {
-      result.push(b);
-      i++;
-    }
-  }
-  return { value: new Uint8Array(result), end: i };
-}
-
-/**
- * Parse a PDF hex string from raw bytes.
- * @param {Uint8Array} bytes - PDF file bytes
- * @param {number} start - Offset of the opening '<' character
- */
-export function parsePdfHexString(bytes, start) {
-  let hex = '';
-  let i = start + 1; // skip opening '<'
-  while (i < bytes.length && bytes[i] !== 0x3E) { // '>'
-    const ch = bytes[i];
-    if ((ch >= 0x30 && ch <= 0x39) || (ch >= 0x41 && ch <= 0x46) || (ch >= 0x61 && ch <= 0x66)) {
-      hex += String.fromCharCode(ch);
-    }
-    i++;
-  }
-  if (hex.length % 2 !== 0) hex += '0'; // pad odd-length hex strings
-  const result = new Uint8Array(hex.length / 2);
-  for (let j = 0; j < result.length; j++) {
-    result[j] = parseInt(hex.substring(j * 2, j * 2 + 2), 16);
-  }
-  return { value: result, end: i + 1 };
-}
-
-/**
  * Scan PDF bytes for "/Encrypt N M R" and return the encrypted-dict object
  * number from the last matching reference, or null if no encryption marker
  * is present.
@@ -1068,7 +954,7 @@ function findEnclosingDictBounds(bytes, pos, maxLookback = 32_768) {
  * Detect and set up PDF document encryption. Called during ObjectCache construction.
  * Supports V=1/R=2 (RC4 40-bit), V=2/R=3 (RC4 variable-length), V=4/R=4 (AES-128 or RC4).
  * Assumes empty user password (most common for permissions-only encrypted PDFs).
- * @param {import('./parsePdfUtils.js').ObjectCache} objCache
+ * @param {import('./objectCache.js').ObjectCache} objCache
  */
 export function setupEncryption(objCache) {
   const { pdfBytes, xrefEntries } = objCache;
@@ -1081,11 +967,9 @@ export function setupEncryption(objCache) {
   if (!encryptMatch) return;
   const { objNum: encObjNum, pos: encryptRefPos } = encryptMatch;
 
-  // Read the /Encrypt dict object from raw bytes (it is never encrypted itself)
+  // Force otherwise lazy xref repair to run for missing encryption dictionary.
   let encEntry = xrefEntries[encObjNum];
-  if (!encEntry || encEntry.type !== 1) {
-    // The /Encrypt object may be absent from the xref as parsed.
-    // Force the (otherwise lazy) repair so an encrypted doc with a broken xref still finds its encryption dictionary.
+  if (!encEntry || encEntry.type !== 1 || !matchesObjMarker(pdfBytes, encEntry.offset, encObjNum)) {
     objCache.ensureXrefRepaired();
     encEntry = xrefEntries[encObjNum];
   }

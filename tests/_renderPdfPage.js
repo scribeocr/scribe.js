@@ -1,5 +1,7 @@
-import { findXrefOffset, parseXref, ObjectCache } from '../js/pdf/parsePdfUtils.js';
-import { getPageObjects } from '../js/pdf/parsePdfDoc.js';
+import {
+  findXrefOffset, parseXref, getPageObjects,
+} from '../js/pdf/parsePdfUtils.js';
+import { ObjectCache } from '../js/pdf/objectCache.js';
 import { renderPdfPageAsImage } from '../js/pdf/renderPdfPage.js';
 import { ca } from '../js/canvasAdapter.js';
 

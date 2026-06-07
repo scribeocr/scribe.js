@@ -1,9 +1,12 @@
 import ocr from '../../objects/ocrObjects.js';
 import opentype from '../../font-parser/src/index.js';
 import {
-  extractDict, ObjectCache, findXrefOffset, parseXref,
-  resolveIntValue, resolveNumValue, resolveArrayValue, decodePdfName,
+  findXrefOffset, parseXref,
 } from '../parsePdfUtils.js';
+import {
+  extractDict, resolveIntValue, resolveNumValue, resolveArrayValue, decodePdfName,
+} from '../pdfPrimitives.js';
+import { ObjectCache } from '../objectCache.js';
 import {
   win1252Chars, macRomanChars, aglLookup, unicodeToAGL, wingdingsToUnicode, symbolToUnicode, dingbatsGlyphMap, dingbatsEncoding,
 } from './standardEncodings.js';

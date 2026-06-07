@@ -1,7 +1,10 @@
 import { ca } from '../canvasAdapter.js';
 import { unregisterFontFacesMatching } from '../containers/fontContainer.js';
-import { findXrefOffset, parseXref, ObjectCache } from '../pdf/parsePdfUtils.js';
-import { getPageObjects, parseSinglePage } from '../pdf/parsePdfDoc.js';
+import {
+  findXrefOffset, parseXref, getPageObjects,
+} from '../pdf/parsePdfUtils.js';
+import { ObjectCache } from '../pdf/objectCache.js';
+import { parseSinglePage } from '../pdf/parsePdfDoc.js';
 import { renderPdfPageAsImage } from '../pdf/renderPdfPage.js';
 
 const parentPort = typeof process === 'undefined' ? globalThis : (await import('node:worker_threads')).parentPort;

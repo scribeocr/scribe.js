@@ -1,7 +1,13 @@
 import {
-  tokenizeContentStream, getPageContentStreams, findFormXObjects, bytesToLatin1, extractDict,
-  resolveNumArray, parseDictEntries, formatPdfNumber, matMul, decodeTextCodes,
+  getPageContentStreams, findFormXObjects,
 } from '../../pdf/parsePdfUtils.js';
+import {
+  bytesToLatin1, extractDict,
+  resolveNumArray, parseDictEntries, matMul, decodeTextCodes,
+} from '../../pdf/pdfPrimitives.js';
+import {
+  tokenizeContentStream, formatPdfNumber,
+} from '../../pdf/contentStream.js';
 import { parsePageFonts } from '../../pdf/fonts/parsePdfFonts.js';
 import { encodeStreamObject } from './writePdfStreams.js';
 import opentype from '../../font-parser/src/index.js';
@@ -1276,7 +1282,7 @@ function makeCloneDedupKey(origObjNum, text, xobjEntries, formClonesByName) {
  *   Empty string or null is treated as missing — a fresh /Resources is built.
  * @param {string} entriesStr - Newline-separated `/Name N 0 R` entries to add
  *   to /XObject.
- * @param {import('../../pdf/parsePdfUtils.js').ObjectCache} objCache - Used to
+ * @param {import('../../pdf/objectCache.js').ObjectCache} objCache - Used to
  *   resolve an indirect /XObject sub-dict if the form's Resources references one.
  */
 function mergeXObjectIntoResources(resourcesDictText, entriesStr, objCache) {
@@ -1318,7 +1324,7 @@ function mergeXObjectIntoResources(resourcesDictText, entriesStr, objCache) {
  * (a Form XObject may omit it and inherit its parent's per PDF spec 7.8.3).
  *
  * @param {string} objText
- * @param {import('../../pdf/parsePdfUtils.js').ObjectCache} objCache
+ * @param {import('../../pdf/objectCache.js').ObjectCache} objCache
  * @returns {string | null}
  */
 function resolveResourcesText(objText, objCache) {
@@ -1345,7 +1351,7 @@ function resolveResourcesText(objText, objCache) {
  * (rebuilt to splice in per-glyph entries and nested-form redirects).
  *
  * @param {string} originalFormObjText - `N 0 obj\n<<...>>\nstream\n...\nendobj`
- * @param {import('../../pdf/parsePdfUtils.js').ObjectCache} objCache
+ * @param {import('../../pdf/objectCache.js').ObjectCache} objCache
  * @param {Map<string, number>} perGlyphXobjEntries - tag → objNum for per-glyph forms used inside.
  * @param {Map<string, number>} nestedFormRedirects - name → cloneObjNum for nested forms invoked inside.
  * @param {string | null} inheritedResourcesText - The parent scope's /Resources dict text,
@@ -1420,7 +1426,7 @@ function buildClonedFormDictExtras(originalFormObjText, objCache, perGlyphXobjEn
  * @param {GlyphResolver} params.resolver
  * @param {ReadonlyArray<ReadonlyArray<number>>} params.bboxes
  * @param {ReturnType<typeof createConversionState>} params.state
- * @param {import('../../pdf/parsePdfUtils.js').ObjectCache} params.objCache
+ * @param {import('../../pdf/objectCache.js').ObjectCache} params.objCache
  * @param {() => number} params.allocObjNum
  * @param {(obj: {objNum: number, content: any}) => void} params.pushObj
  * @param {boolean} params.humanReadable
@@ -1562,7 +1568,7 @@ async function rewriteFormContentForRegions({
  * @param {string} params.pageObjText - The original page object text (used for parsePageFonts).
  * @param {ReadonlyArray<ReadonlyArray<number>>} params.bboxes - Page-relative user-space bboxes.
  * @param {ReturnType<typeof createConversionState>} params.state
- * @param {import('../../pdf/parsePdfUtils.js').ObjectCache} params.objCache
+ * @param {import('../../pdf/objectCache.js').ObjectCache} params.objCache
  * @param {() => number} params.allocObjNum
  * @param {(obj: {objNum: number, content: any}) => void} params.pushObj
  * @param {boolean} params.humanReadable
@@ -1683,7 +1689,7 @@ export async function convertSinglePageForRegions({
  * @param {Array<{ objNum: number, objText: string }>} params.pages
  * @param {ReadonlyArray<number>} params.pageIndices
  * @param {Map<number, ReadonlyArray<ReadonlyArray<number>>>} params.regionsByPage
- * @param {import('../../pdf/parsePdfUtils.js').ObjectCache} params.objCache
+ * @param {import('../../pdf/objectCache.js').ObjectCache} params.objCache
  * @param {() => number} params.allocObjNum
  * @param {(obj: {objNum: number, content: any}) => void} params.pushObj
  * @param {boolean} params.humanReadable

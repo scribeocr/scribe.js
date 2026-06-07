@@ -1,11 +1,14 @@
 import {
-  extractDict, ObjectCache, findXrefOffset, parseXref,
-  resolveArrayValue, findTopLevelKeyIndex,
+  findXrefOffset, parseXref,
 } from './parsePdfUtils.js';
+import {
+  extractDict, resolveArrayValue, findTopLevelKeyIndex,
+  parsePdfLiteralString,
+} from './pdfPrimitives.js';
+import { ObjectCache } from './objectCache.js';
 import {
   parseTintColorSpace, buildTintLookupTable, tintComponentsToRGB,
 } from './pdfColorFunctions.js';
-import { parsePdfLiteralString } from './pdfCrypto.js';
 
 /**
  * @typedef {{

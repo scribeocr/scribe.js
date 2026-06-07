@@ -411,6 +411,30 @@ export function isComplexShapingScript(cp) {
 }
 
 /**
+ * Whether this glyph needs to be mapped through a PUA codepoint (0xE000+code).
+ * The builder and the renderer both call this so their codepoint choices always agree.
+ * Mapping to a PUA codepoint is necessary when the codepoint a glyph is mapped both
+ * (1) is incorrect and (2) is considered a special case by the renderer (e.g. a combining mark, a default ignorable, etc.).
+ * @param {number} cp - the codepoint the renderer would otherwise draw for the glyph
+ * @param {number|undefined} width - the glyph's advance width from the PDF /Widths
+ * @returns {boolean}
+ */
+export function drawnGlyphNeedsPUA(cp, width) {
+  // A zero-width glyph is a genuine mark — leave it on its real codepoint. Only a positive-width
+  // glyph is a real base glyph that an obfuscated /Encoding mislabeled with a codepoint that
+  // misbehaves when drawn bare.
+  if (typeof width !== 'number' || width <= 0) return false;
+  // Codepoints canvas fillText will not render standalone at their own position:
+  //  - combining/Indic marks and Latin combining diacritics (U+0300-U+036F): the shaper gives them
+  //    zero advance and stacks them on the preceding glyph (U+0300-U+036F is excluded from
+  //    isCombiningOrIndicMark, so it is listed explicitly here);
+  //  - default-ignorables (soft hyphen, ZWJ, variation selectors, BOM): render as nothing;
+  //  - complex-shaping scripts: reordered/joined, so a standalone glyph is mis-shaped.
+  return isCombiningOrIndicMark(cp) || isDefaultIgnorable(cp) || isComplexShapingScript(cp)
+    || (cp >= 0x300 && cp <= 0x36F);
+}
+
+/**
  * Decide the codepoint to use in the font's cmap AND the renderer's fillText()
  * for a CID glyph. Uses real Unicode from ToUnicode when available and safe;
  * falls back to PUA for combining marks, whitespace, multi-codepoint sequences,
@@ -460,23 +484,26 @@ export function cidCodepoint(toUniStr, cid, width) {
 }
 
 /**
- * The codepoint the simple-font (non-CID) rebuild keys a glyph under for a char code.
- * It matches what the renderer draws in its normal (non-PUA) branch:
- * the single-codepoint `encodingUnicode`, else the single-codepoint ToUnicode,
- * else null (the renderer then routes the code through PUA, keyed separately).
- * Called by the CFF rebuild so the glyph a code reaches resolves under the same codepoint the renderer computes inline as `drawDefault`,
- * fixing the byte -> codepoint -> glyph round trip for that single-codepoint case.
- * Unlike `cidCodepoint`, which the renderer imports and shares, this is parallel logic, not a shared call.
+ * Decide the codepoint a simple-font (non-CID) rebuild keys a glyph under for a char code, and whether that codepoint is PUA.
+ * Resolves the codepoint the renderer would draw in its normal branch (single-codepoint `encodingUnicode`, else single-codepoint ToUnicode),
+ * then routes it to PUA via drawnGlyphNeedsPUA when that codepoint would not render correctly drawn bare.
+ * Returns null when the code has no single-codepoint Unicode (the renderer then routes it through PUA, keyed separately).
+ * Mirrors `cidCodepoint`.
  * @param {PdfFontObj} fontObj
  * @param {number} charCode
- * @returns {number|null}
+ * @returns {{ codepoint: number, isPUA: boolean }|null}
  */
 export function simpleFontCodepoint(fontObj, charCode) {
   const enc = fontObj.encodingUnicode && fontObj.encodingUnicode.get(charCode);
-  if (enc && [...enc].length === 1) return enc.codePointAt(0) ?? null;
   const tu = fontObj.toUnicode && fontObj.toUnicode.get(charCode);
-  if (tu && [...tu].length === 1) return tu.codePointAt(0) ?? null;
-  return null;
+  let cp = null;
+  if (enc && [...enc].length === 1) cp = enc.codePointAt(0) ?? null;
+  else if (tu && [...tu].length === 1) cp = tu.codePointAt(0) ?? null;
+  if (cp === null) return null;
+  if (drawnGlyphNeedsPUA(cp, fontObj.widths && fontObj.widths.get(charCode))) {
+    return { codepoint: 0xE000 + charCode, isPUA: true };
+  }
+  return { codepoint: cp, isPUA: false };
 }
 
 /**
@@ -485,8 +512,8 @@ export function simpleFontCodepoint(fontObj, charCode) {
  * A simple-font rebuild that keys glyphs only by their own identity (a CFF charset name, or an embedded TrueType cmap codepoint)
  * otherwise leaves the renderer's drawn codepoint with no glyph when the PDF /Encoding draws a code at a different codepoint (divergence)
  * or aims several codes at one glyph (collapse).
- * The path supplies a code -> GID map and an `addEntry` that keys a codepoint to a GID only if the slot is free,
- * so this never overrides an existing entry and is a no-op for fonts whose rebuilt cmap already covers the drawn codepoints.
+ * Because `addEntry` fills a slot only when it is free, this never overrides an existing entry
+ * and is a no-op for fonts whose rebuilt cmap already covers the drawn codepoints.
  * It does not handle collisions (two codes needing one codepoint). Those are rerouted to PUA per path.
  * @param {PdfFontObj} fontObj
  * @param {Iterable<[number, number]>} codeToGid - PDF char code -> GID for codes the renderer can draw
@@ -496,8 +523,8 @@ export function simpleFontCodepoint(fontObj, charCode) {
 export function addRoundTripCodepoints(fontObj, codeToGid, addEntry, skipCodes) {
   for (const [code, gid] of codeToGid) {
     if (gid <= 0 || (skipCodes && skipCodes.has(code))) continue;
-    const cp = simpleFontCodepoint(fontObj, code);
-    if (cp !== null && cp > 0x20 && cp !== 0xFFFD) addEntry(cp, gid);
+    const decision = simpleFontCodepoint(fontObj, code);
+    if (decision && decision.codepoint > 0x20 && decision.codepoint !== 0xFFFD) addEntry(decision.codepoint, gid);
   }
 }
 
@@ -603,16 +630,26 @@ export function convertType1ToOTFNew(pfaBytes, fontObj) {
           if (fontObj.encodingUnicode && !fontObj.encodingUnicode.has(charCode)) fontObj.encodingUnicode.set(charCode, aglStr);
         }
       }
+      // A positive-width glyph whose drawn codepoint would not render correctly drawn bare
+      // (a combining mark, default-ignorable, or complex-shaping script) must be rerouted through a PUA codepoint.
+      const rerouteToPUA = unicode !== undefined
+        && drawnGlyphNeedsPUA(unicode, fontObj.widths && fontObj.widths.get(charCode));
       let unicodes;
       if (usedPUA) {
         if (charCode < 0 || charCode > 0xFF) continue;
         const puaCode = 0xE000 + charCode;
         unicodes = [puaCode];
         usedUnicodes.add(puaCode);
-        if (unicode !== undefined && unicode !== puaCode && !usedUnicodes.has(unicode)) {
+        if (!rerouteToPUA && unicode !== undefined && unicode !== puaCode && !usedUnicodes.has(unicode)) {
           unicodes.push(unicode);
           usedUnicodes.add(unicode);
         }
+      } else if (rerouteToPUA) {
+        if (charCode < 0 || charCode > 0xFF) continue;
+        const puaCode = 0xE000 + charCode;
+        if (usedUnicodes.has(puaCode)) continue;
+        usedUnicodes.add(puaCode);
+        unicodes = [puaCode];
       } else {
         if (!unicode || usedUnicodes.has(unicode)) continue;
         usedUnicodes.add(unicode);

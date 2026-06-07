@@ -1,7 +1,10 @@
 import {
-  ObjectCache, findXrefOffset, formatPdfNumber,
-  getPageContentStreams, getPageObjects, parseXref, tokenizeContentStream,
+  findXrefOffset, getPageContentStreams, getPageObjects, parseXref,
 } from '../../pdf/parsePdfUtils.js';
+import {
+  formatPdfNumber, tokenizeContentStream,
+} from '../../pdf/contentStream.js';
+import { ObjectCache } from '../../pdf/objectCache.js';
 import {
   extractType3Fonts, extractType3DistinctGlyphs, parsePageFonts, parseType3Font,
 } from '../../pdf/fonts/parsePdfFonts.js';

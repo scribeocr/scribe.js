@@ -3,17 +3,16 @@ import {
   parseSeparationTint, parseTintColorSpace,
   tintComponentsToRGB, cmykToRgb, evaluateFunction, parseFunction, tintSamplesToRgb,
 } from './pdfColorFunctions.js';
-import {
-  getPageContentStreams, bytesToLatin1,
-} from './parsePdfDoc.js';
 import { extractPdfAnnotations } from './parsePdfAnnots.js';
 import {
-  extractDict, findRootObjNum,
-  resolveIntValue, resolveNumValue, resolveArrayValue, applyPredictor, matMul,
+  findRootObjNum, applyPredictor, getPageContentStreams,
 } from './parsePdfUtils.js';
+import {
+  extractDict, resolveIntValue, resolveNumValue, resolveArrayValue, matMul, bytesToLatin1,
+} from './pdfPrimitives.js';
 import { parseDrawOps } from './parseDrawOps.js';
 
-/** @typedef {import('./parsePdfUtils.js').ObjectCache} ObjectCache */
+/** @typedef {import('./objectCache.js').ObjectCache} ObjectCache */
 /** @typedef {import('./parseDrawOps.js').DrawOp} DrawOp */
 /** @typedef {import('./parseDrawOps.js').ImageDrawOp} ImageDrawOp */
 /** @typedef {import('./parseDrawOps.js').PathCommand} PathCommand */
@@ -1480,11 +1479,13 @@ function parseFormMatrix(objText) {
 }
 
 /**
- * SMask info objects carry a `parentCtm` snapshotted at the time `/gs` set the
- * soft mask, in the coordinate space active at that point.  When the op is
- * later composed with parent form transforms, that parentCtm must be composed
- * the same way so the SMask form ends up in the correct page-space location.
- * Returns a new wrapper (without mutating the shared smask object).
+ * Compose `smask`'s snapshotted `parentCtm` with `composedBase`, returning a new wrapper without mutating the shared smask object.
+ * The parentCtm was snapshotted when `/gs` set the soft mask, in the coordinate space active then.
+ * When the op is later composed with parent form transforms,
+ * parentCtm must be composed the same way so the SMask form ends up in the correct page-space location.
+ * @param {SmaskRef} smask
+ * @param {number[]} composedBase
+ * @returns {SmaskRef}
  */
 function transformSmaskCtm(smask, composedBase) {
   if (!smask) return smask;
@@ -8506,3 +8507,6 @@ async function buildPngDataUrl(imageData, colorMode) {
 }
 
 export { buildFontFromCFF as _buildFontFromCFF };
+export { type1ShadingToAxial as _type1ShadingToAxial };
+export { parseShadings as _parseShadings };
+export { cssGenericForFontObj as _cssGenericForFontObj };

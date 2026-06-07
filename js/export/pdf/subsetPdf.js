@@ -1,8 +1,12 @@
 import {
-  findXrefOffset, parseXref, ObjectCache, extractDict, parseDictEntries,
-  getPageContentStreams, tokenizeContentStream, bytesToLatin1,
+  findXrefOffset, parseXref, getPageContentStreams,
+  getPageObjects, collectPageTreeObjNums,
 } from '../../pdf/parsePdfUtils.js';
-import { getPageObjects, collectPageTreeObjNums } from '../../pdf/parsePdfDoc.js';
+import {
+  extractDict, parseDictEntries, bytesToLatin1,
+} from '../../pdf/pdfPrimitives.js';
+import { tokenizeContentStream } from '../../pdf/contentStream.js';
+import { ObjectCache } from '../../pdf/objectCache.js';
 import { createEmbeddedFontType0 } from './writePdfFonts.js';
 import { ocrPageToPDFStream } from './writePdfText.js';
 import { buildHighlightAnnotObjects, consolidateAnnotations } from './writePdfAnnots.js';
@@ -32,7 +36,7 @@ import { createConversionState } from './convertTextRegionsToPaths.js';
  * No-op when /Annots is absent or all link targets are kept.
  *
  * @param {string} pageText
- * @param {import('../../pdf/parsePdfUtils.js').ObjectCache} objCache
+ * @param {import('../../pdf/objectCache.js').ObjectCache} objCache
  * @param {Set<number>} keptPageObjNums
  */
 function dropOrphanLinkAnnots(pageText, objCache, keptPageObjNums) {

@@ -1,7 +1,8 @@
 import {
-  findXrefOffset, parseXref, ObjectCache, sourceXrefIsWellFormed, byteIndexOf,
+  findXrefOffset, parseXref, sourceXrefIsWellFormed, getPageObjects,
 } from '../../pdf/parsePdfUtils.js';
-import { getPageObjects } from '../../pdf/parsePdfDoc.js';
+import { byteIndexOf } from '../../pdf/pdfPrimitives.js';
+import { ObjectCache } from '../../pdf/objectCache.js';
 import { createPdfFontRefs, createEmbeddedFontType0 } from './writePdfFonts.js';
 import { ocrPageToPDFStream } from './writePdfText.js';
 import { buildHighlightAnnotObjects, consolidateAnnotations } from './writePdfAnnots.js';

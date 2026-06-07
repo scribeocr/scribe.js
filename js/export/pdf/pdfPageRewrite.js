@@ -1,7 +1,8 @@
 import {
-  extractDict, bytesToLatin1, stripText, findTopLevelKeyIndex,
+  extractDict, bytesToLatin1, findTopLevelKeyIndex,
   resolveIntValue, resolveNumValue, resolveNumArray,
-} from '../../pdf/parsePdfUtils.js';
+} from '../../pdf/pdfPrimitives.js';
+import { stripText } from '../../pdf/contentStream.js';
 import { encodeStreamObject } from './writePdfStreams.js';
 import { convertSinglePageForRegions } from './convertTextRegionsToPaths.js';
 
@@ -9,7 +10,7 @@ import { convertSinglePageForRegions } from './convertTextRegionsToPaths.js';
  * Parse /Contents from a page dict, returning an array of indirect references to
  * content stream objects.
  * @param {string} pageObjText
- * @param {import('../../pdf/parsePdfUtils.js').ObjectCache} [objCache]
+ * @param {import('../../pdf/objectCache.js').ObjectCache} [objCache]
  */
 export function parseExistingContents(pageObjText, objCache) {
   const arrayMatch = /\/Contents\s*\[([\s\S]*?)\]/.exec(pageObjText);
@@ -37,7 +38,7 @@ export function parseExistingContents(pageObjText, objCache) {
 /**
  *
  * @param {string[]} existingContentsRefs
- * @param {import('../../pdf/parsePdfUtils.js').ObjectCache} objCache
+ * @param {import('../../pdf/objectCache.js').ObjectCache} objCache
  * @param {() => number} allocObjNum
  * @param {(obj: { objNum: number, content: string | Uint8Array | import('./writePdfStreams.js').PdfBinaryObject }) => void} pushObj
  * @param {boolean} humanReadable
@@ -82,7 +83,7 @@ export async function rewriteContentsStrippingInvisibleText(existingContentsRefs
  * @param {string} params.pageObjText
  * @param {ReadonlyArray<ReadonlyArray<number>> | null} params.bboxes
  * @param {ReturnType<typeof import('./convertTextRegionsToPaths.js').createConversionState> | null} params.conversionState
- * @param {import('../../pdf/parsePdfUtils.js').ObjectCache} params.objCache
+ * @param {import('../../pdf/objectCache.js').ObjectCache} params.objCache
  * @param {() => number} params.allocObjNum
  * @param {(obj: { objNum: number, content: string | Uint8Array | import('./writePdfStreams.js').PdfBinaryObject }) => void} params.pushObj
  * @param {boolean} params.humanReadable
@@ -179,7 +180,7 @@ export async function rewriteContentsStripAndConvert({
  * Resolve the effective /Resources dictionary for a page.
  * Handles inline dicts, indirect references, and inherited resources.
  * @param {string} pageObjText
- * @param {import('../../pdf/parsePdfUtils.js').ObjectCache} objCache
+ * @param {import('../../pdf/objectCache.js').ObjectCache} objCache
  */
 export function resolvePageResources(pageObjText, objCache) {
   const resIdx = pageObjText.indexOf('/Resources');
@@ -215,7 +216,7 @@ export function resolvePageResources(pageObjText, objCache) {
  * @param {string} inner
  * @param {string} key  e.g. '/Font' or '/ExtGState'
  * @param {string} newEntries
- * @param {?import('../../pdf/parsePdfUtils.js').ObjectCache} objCache
+ * @param {?import('../../pdf/objectCache.js').ObjectCache} objCache
  */
 function mergeResourceKey(inner, key, newEntries, objCache) {
   if (!newEntries) return inner;
@@ -255,7 +256,7 @@ function mergeResourceKey(inner, key, newEntries, objCache) {
  * @param {string} existingDict
  * @param {string} overlayFontsStr
  * @param {string} overlayExtGStateStr
- * @param {?import('../../pdf/parsePdfUtils.js').ObjectCache} [objCache=null]
+ * @param {?import('../../pdf/objectCache.js').ObjectCache} [objCache=null]
  * @param {string} [overlayXObjectsStr='']
  */
 export function mergeResources(existingDict, overlayFontsStr, overlayExtGStateStr, objCache = null, overlayXObjectsStr = '') {
@@ -272,7 +273,7 @@ export function mergeResources(existingDict, overlayFontsStr, overlayExtGStateSt
  * destination resolves to a page object that is being dropped.
  *
  * @param {number} annotObjNum
- * @param {import('../../pdf/parsePdfUtils.js').ObjectCache} objCache
+ * @param {import('../../pdf/objectCache.js').ObjectCache} objCache
  * @param {Set<number>} keptPageObjNums
  */
 export function annotLinkTargetsDroppedPage(annotObjNum, objCache, keptPageObjNums) {
@@ -335,7 +336,7 @@ export function annotLinkTargetsDroppedPage(annotObjNum, objCache, keptPageObjNu
  * @param {number|null} [parentObjNum=null]
  * @param {string[]} [extraAnnotRefs=[]] - Additional `N 0 R` refs to
  *   append to the merged /Annots array.
- * @param {import('../../pdf/parsePdfUtils.js').ObjectCache|null} [objCache=null]
+ * @param {import('../../pdf/objectCache.js').ObjectCache|null} [objCache=null]
  *   Used to resolve an indirect /Annots array so source refs can be
  *   inlined alongside new user-added refs.
  * @param {?Set<number>} [keptPageObjNums=null] - When non-null (subset rebuild),

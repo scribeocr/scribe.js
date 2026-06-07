@@ -1,8 +1,9 @@
 import {
-  findXrefOffset, parseXref, ObjectCache, extractRawStreamBytes, bytesToLatin1,
-  findRootObjNum,
+  findXrefOffset, parseXref, extractRawStreamBytes, findRootObjNum,
+  getPageObjects, collectPageTreeObjNums,
 } from '../../pdf/parsePdfUtils.js';
-import { getPageObjects, collectPageTreeObjNums } from '../../pdf/parsePdfDoc.js';
+import { bytesToLatin1 } from '../../pdf/pdfPrimitives.js';
+import { ObjectCache } from '../../pdf/objectCache.js';
 import {
   traceReferencedObjects,
   buildFullXrefAndTrailer,

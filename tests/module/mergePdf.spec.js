@@ -5,8 +5,10 @@ import scribe from '../../scribe.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 
 import { mergePdfs } from '../../js/export/pdf/mergePdfs.js';
-import { findXrefOffset, parseXref, ObjectCache } from '../../js/pdf/parsePdfUtils.js';
-import { getPageObjects } from '../../js/pdf/parsePdfDoc.js';
+import {
+  findXrefOffset, parseXref, getPageObjects,
+} from '../../js/pdf/parsePdfUtils.js';
+import { ObjectCache } from '../../js/pdf/objectCache.js';
 
 scribe.opt.workerN = 1;
 scribe.opt.langPath = LANG_PATH;

@@ -1,8 +1,8 @@
-import { tokenizeContentStream } from './parsePdfDoc.js';
-import { decodePdfName, matMul, decodeTextCodes } from './parsePdfUtils.js';
+import { tokenizeContentStream } from './contentStream.js';
+import { decodePdfName, matMul, decodeTextCodes } from './pdfPrimitives.js';
 import { cmykToRgb, tintComponentsToRGB, xyzToSRGB } from './pdfColorFunctions.js';
 import {
-  cidCodepoint, isCombiningOrIndicMark, isDefaultIgnorable, isComplexShapingScript,
+  cidCodepoint, isCombiningOrIndicMark, isDefaultIgnorable, isComplexShapingScript, drawnGlyphNeedsPUA,
 } from './fonts/convertFontToOTF.js';
 
 /**
@@ -675,7 +675,12 @@ export function parseDrawOps(
             }
           }
         } else {
-          drawText = drawDefault;
+          // A positive-width glyph whose drawn codepoint would not render correctly drawn bare
+          // (a combining mark, default-ignorable, or complex-shaping script) must be rerouted through a PUA codepoint.
+          const ddCp = drawDefault && [...drawDefault].length === 1 ? drawDefault.codePointAt(0) : undefined;
+          drawText = (ddCp !== undefined && drawnGlyphNeedsPUA(ddCp, rawWidth))
+            ? String.fromCharCode(0xE000 + charCode)
+            : drawDefault;
         }
         const sc = applySmallCaps(drawText, trm, isNonEmbedded && !!currentFont.smallCaps);
         const opObj = {

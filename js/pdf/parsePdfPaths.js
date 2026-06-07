@@ -1,7 +1,11 @@
 import {
-  findXrefOffset, parseXref, ObjectCache, bytesToLatin1,
-  getPageObjects, getPageContentStream, tokenizeContentStream, findFormXObjects, parseFormMatrix, matMul,
+  findXrefOffset, parseXref, getPageObjects, getPageContentStream, findFormXObjects, parseFormMatrix,
 } from './parsePdfUtils.js';
+import {
+  bytesToLatin1, matMul,
+} from './pdfPrimitives.js';
+import { tokenizeContentStream } from './contentStream.js';
+import { ObjectCache } from './objectCache.js';
 
 /**
  * @typedef {{

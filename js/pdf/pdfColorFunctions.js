@@ -1,4 +1,4 @@
-import { resolveNumArray } from './parsePdfUtils.js';
+import { resolveNumArray } from './pdfPrimitives.js';
 
 /** @typedef {NonNullable<ReturnType<typeof parseFunction>>} ParsedFunction */
 
@@ -129,7 +129,7 @@ export function evaluatePS(tokens, inputs) {
  *   - A dict text (e.g. an inline `<<...>>` function dict).
  *
  * @param {string|number} funcDef
- * @param {import('./parsePdfUtils.js').ObjectCache} objCache
+ * @param {import('./objectCache.js').ObjectCache} objCache
  */
 export function parseFunction(funcDef, objCache) {
   /** @type {string|null} */
@@ -218,7 +218,7 @@ export function parseFunction(funcDef, objCache) {
 /**
  * Parse a `/Functions` array from a stitching function dict body.
  * @param {string} funcText - The Type 3 function dict text
- * @param {import('./parsePdfUtils.js').ObjectCache} objCache
+ * @param {import('./objectCache.js').ObjectCache} objCache
  */
 function parseFunctionsArray(funcText, objCache) {
   const fnsStart = funcText.indexOf('/Functions');
@@ -485,7 +485,7 @@ function evaluateStitching(fn, x) {
  *
  * @param {string} csText - Color space text. May be a single name, an array, or any
  *   chunk of text containing the alt CS marker.
- * @param {import('./parsePdfUtils.js').ObjectCache} objCache
+ * @param {import('./objectCache.js').ObjectCache} objCache
  * @returns {ParsedAltCS}
  */
 export function parseAltColorSpace(csText, objCache) {
@@ -710,7 +710,7 @@ export function altCSToRGB(altCS, comp) {
  *
  * @param {string} csText - The text of the color space array (typically the
  *   contents inside `[/Separation ...]` or `[/DeviceN ...]`).
- * @param {import('./parsePdfUtils.js').ObjectCache} objCache
+ * @param {import('./objectCache.js').ObjectCache} objCache
  * @returns {ParsedTintCS}
  */
 export function parseTintColorSpace(csText, objCache) {
@@ -906,7 +906,7 @@ export function tintSamplesToRgb(parsed, src, nComp, nPixels) {
  *     multi-channel "tint" case has colors lying along a 1D path.
  *
  * @param {string} csText
- * @param {import('./parsePdfUtils.js').ObjectCache} objCache
+ * @param {import('./objectCache.js').ObjectCache} objCache
  * @returns {{tintSamples: Uint8Array|null, nComponents: number}}
  */
 export function parseSeparationTint(csText, objCache) {

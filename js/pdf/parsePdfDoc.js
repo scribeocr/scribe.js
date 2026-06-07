@@ -3,10 +3,13 @@ import {
   calcLang, cleanFamilyName, mean50, round3, round6,
 } from '../utils/miscUtils.js';
 import {
-  findXrefOffset, parseXref, ObjectCache,
-  bytesToLatin1, getPageObjects, getPageContentStream, tokenizeContentStream,
-  findFormXObjects, extractDict, decodePdfName, parseFormMatrix, matMul, decodeTextCodes,
+  findXrefOffset, parseXref, getPageObjects, getPageContentStream, findFormXObjects, parseFormMatrix,
 } from './parsePdfUtils.js';
+import {
+  bytesToLatin1, extractDict, decodePdfName, matMul, decodeTextCodes,
+} from './pdfPrimitives.js';
+import { tokenizeContentStream } from './contentStream.js';
+import { ObjectCache } from './objectCache.js';
 import { parsePageFonts } from './fonts/parsePdfFonts.js';
 import { parsePagePaths } from './parsePdfPaths.js';
 import { detectTableRegions } from './detectPdfTables.js';
@@ -109,10 +112,6 @@ function parseFillAlphaExtGStates(containerObjText, objCache) {
   }
   return states;
 }
-
-export {
-  bytesToLatin1, getPageObjects, getPageContentStream, getPageContentStreams, tokenizeContentStream, collectPageTreeObjNums,
-} from './parsePdfUtils.js';
 
 const SYMBOL_FONT_RE = /^(?:Webdings|Wingdings|ZapfDingbats|Dingbats|Symbol|SymbolMT|Quivira)(?:[-\s].*)?$/i;
 

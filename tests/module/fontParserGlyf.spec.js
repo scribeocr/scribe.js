@@ -2,9 +2,9 @@ import {
   describe, test, expect, beforeAll,
 } from 'vitest';
 import {
-  findXrefOffset, parseXref, ObjectCache,
+  findXrefOffset, parseXref, getPageObjects,
 } from '../../js/pdf/parsePdfUtils.js';
-import { getPageObjects } from '../../js/pdf/parsePdfDoc.js';
+import { ObjectCache } from '../../js/pdf/objectCache.js';
 import { parsePageFonts } from '../../js/pdf/fonts/parsePdfFonts.js';
 import opentype from '../../js/font-parser/src/index.js';
 import {

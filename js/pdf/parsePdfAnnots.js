@@ -1,4 +1,4 @@
-import { resolveArrayValue } from './parsePdfUtils.js';
+import { resolveArrayValue } from './pdfPrimitives.js';
 
 /**
  * @typedef {Object} PdfHighlightRaw
@@ -50,7 +50,7 @@ function parseAnnotContents(annotText) {
 }
 
 /**
- * @param {import('./parsePdfUtils.js').ObjectCache} objCache
+ * @param {import('./objectCache.js').ObjectCache} objCache
  * @param {string} pageObjText
  * @returns {{ highlights: PdfHighlightRaw[], passthroughRefs: number[] }}
  */

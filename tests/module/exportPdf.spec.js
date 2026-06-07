@@ -536,7 +536,8 @@ describe('Check export for .pdf files.', () => {
     // Use Node's inflateSync (strict) since scribe's own inflate path is tolerant of truncated streams and would mask the bug.
     // Node-only: the bug under test is in the writer (platform-independent), so checking in Node is sufficient.
     if (isNode) {
-      const { findXrefOffset, parseXref, ObjectCache } = await import('../../js/pdf/parsePdfUtils.js');
+      const { findXrefOffset, parseXref } = await import('../../js/pdf/parsePdfUtils.js');
+      const { ObjectCache } = await import('../../js/pdf/objectCache.js');
       const { inflateSync } = await import('node:zlib');
       const exportBytes = new Uint8Array(exportedPdf);
       const xrefOffset = findXrefOffset(exportBytes);

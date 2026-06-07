@@ -7,8 +7,9 @@ import { fileURLToPath } from 'node:url';
 import scribe from '../../scribe.js';
 import { toolHandlers, resetState } from '../../mcp/tools.js';
 import {
-  findXrefOffset, parseXref, ObjectCache, getPageObjects,
+  findXrefOffset, parseXref, getPageObjects,
 } from '../../js/pdf/parsePdfUtils.js';
+import { ObjectCache } from '../../js/pdf/objectCache.js';
 
 scribe.opt.workerN = 1;
 

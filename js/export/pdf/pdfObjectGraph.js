@@ -1,5 +1,5 @@
-import { extractDict, extractRawStreamBytes } from '../../pdf/parsePdfUtils.js';
-import { parsePdfLiteralString, parsePdfHexString } from '../../pdf/pdfCrypto.js';
+import { extractRawStreamBytes } from '../../pdf/parsePdfUtils.js';
+import { extractDict, parsePdfLiteralString, parsePdfHexString } from '../../pdf/pdfPrimitives.js';
 
 /**
  * Walk a byte range and decrypt every PDF literal `(...)` and hex `<...>` string,
@@ -7,7 +7,7 @@ import { parsePdfLiteralString, parsePdfHexString } from '../../pdf/pdfCrypto.js
  *
  * @param {Uint8Array} bytes
  * @param {number} objNum
- * @param {import('../../pdf/parsePdfUtils.js').ObjectCache} objCache
+ * @param {import('../../pdf/objectCache.js').ObjectCache} objCache
  */
 export function decryptObjectStrings(bytes, objNum, objCache) {
   if (!objCache.encryptionKey || objNum === objCache.encryptObjNum) return bytes;
@@ -156,7 +156,7 @@ export function buildIncrementalXrefAndTrailer(entries, totalSize, prevXrefOffse
  * Follows all indirect references (N M R) except those in the exclusion set.
  * Skips /Parent references from page dicts to avoid pulling in the page tree.
  * @param {string[]} startingTexts - Text contents to start tracing from
- * @param {import('../../pdf/parsePdfUtils.js').ObjectCache} objCache
+ * @param {import('../../pdf/objectCache.js').ObjectCache} objCache
  * @param {Set<number>} excludeObjNums - Object numbers to skip (page tree objects)
  */
 export function traceReferencedObjects(startingTexts, objCache, excludeObjNums) {
@@ -246,7 +246,7 @@ export function buildFullXrefAndTrailer(entries, totalSize, rootRef, xrefOffset)
  * Locate a type-1 object's exact byte range in the source PDF.
  * @param {Uint8Array} pdfBytes
  * @param {string} text
- * @param {import('../../pdf/parsePdfUtils.js').ObjectCache} objCache
+ * @param {import('../../pdf/objectCache.js').ObjectCache} objCache
  * @param {{type: number, offset: number}} entry
  */
 export function locateObjectByteRange(pdfBytes, text, objCache, entry) {
@@ -299,7 +299,7 @@ export function locateObjectByteRange(pdfBytes, text, objCache, entry) {
  *
  * @param {Uint8Array} pdfBytes
  * @param {string} text
- * @param {import('../../pdf/parsePdfUtils.js').ObjectCache} objCache
+ * @param {import('../../pdf/objectCache.js').ObjectCache} objCache
  * @param {{type: number, offset: number}} entry
  * @param {number} [objNum=-1] - Required when copying from an encrypted source.
  */
