@@ -949,7 +949,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       out.push(`${fmt(aw)} Tw\n`);
       out.push(`${fmt(ac)} Tc\n`);
     }
-    out.push(`${fmt(tlm[0])} ${fmt(tlm[1])} ${fmt(tlm[2])} ${fmt(tlm[3])} ${fmt(tlm[4])} ${fmt(tlm[5])} Tm\n`);
+    out.push(`${fmt(tlm[0], PDF_MATRIX_DECIMALS)} ${fmt(tlm[1], PDF_MATRIX_DECIMALS)} ${fmt(tlm[2], PDF_MATRIX_DECIMALS)} ${fmt(tlm[3], PDF_MATRIX_DECIMALS)} ${fmt(tlm[4], PDF_MATRIX_DECIMALS)} ${fmt(tlm[5], PDF_MATRIX_DECIMALS)} Tm\n`);
 
     const deltaUx = tmStart[4] - tlm[4];
     const deltaUy = tmStart[5] - tlm[5];
