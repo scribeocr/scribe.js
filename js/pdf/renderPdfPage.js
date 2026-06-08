@@ -6768,13 +6768,11 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             renderMeshPatches(rCtx, sh.patches);
             rCtx.restore();
           } else if (sh.type === 'gouraud') {
-          // Render Gouraud triangle with per-pixel barycentric interpolation.
-          // Transform: page_to_device × composedBase × patternMatrix.
-            const clipCtm = op.clips?.[op.clips.length - 1]?.ctm;
+            // Render the Gouraud triangle mesh with per-pixel barycentric color interpolation.
             rCtx.save();
             rCtx.clip(op.evenOdd ? 'evenodd' : 'nonzero');
             rCtx.setTransform(scale, 0, 0, -scale, -boxOriginX * scale, (pageHeightPts + boxOriginY) * scale);
-            if (clipCtm) rCtx.transform(clipCtm[0], clipCtm[1], clipCtm[2], clipCtm[3], clipCtm[4], clipCtm[5]);
+            if (bctm) rCtx.transform(bctm[0], bctm[1], bctm[2], bctm[3], bctm[4], bctm[5]);
             if (sh.matrix) rCtx.transform(...sh.matrix);
             renderGouraudTriangles(rCtx, sh.triangles, gouraudClipBounds);
             rCtx.restore();
@@ -7319,11 +7317,10 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
               renderMeshPatches(rCtx, sh.patches);
               rCtx.restore();
             } else if (sh.type === 'gouraud') {
-              const clipCtm2 = op.clips?.[op.clips.length - 1]?.ctm;
               rCtx.save();
               rCtx.clip(op.evenOdd ? 'evenodd' : 'nonzero');
               rCtx.setTransform(scale, 0, 0, -scale, -boxOriginX * scale, (pageHeightPts + boxOriginY) * scale);
-              if (clipCtm2) rCtx.transform(clipCtm2[0], clipCtm2[1], clipCtm2[2], clipCtm2[3], clipCtm2[4], clipCtm2[5]);
+              if (bctm) rCtx.transform(bctm[0], bctm[1], bctm[2], bctm[3], bctm[4], bctm[5]);
               if (sh.matrix) rCtx.transform(...sh.matrix);
               renderGouraudTriangles(rCtx, sh.triangles, gouraudClipBounds);
               rCtx.restore();
