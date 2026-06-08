@@ -511,7 +511,8 @@ export function parseDrawOps(
       const cid = cmapLookup ? (cmapLookup.get(charCode) ?? charCode) : charCode;
       const rawWidth = currentFont.widths.get(cid) ?? currentFont.defaultWidth;
       const glyphWidth = rawWidth / 1000 * fontSize;
-      if (textRenderMode !== 3) {
+      // allGlyphsEmpty: a metrics-only embedded CID subset advances but paints nothing.
+      if (textRenderMode !== 3 && !currentFont.allGlyphsEmpty) {
         const trm = matMul([fontSize * tz / 100, 0, 0, fontSize, 0, trise], matMul(tm, ctm));
         // Use cidCodepoint() to select real Unicode or PUA — must match the font builder.
         // ToUnicode CMap maps charCodes (not CIDs) to Unicode, so use charCode for lookup.
@@ -606,17 +607,10 @@ export function parseDrawOps(
       // A glyph's ToUnicode can be whitespace even when the glyph is visible (e.g. a leader-dot period whose ToUnicode is a space).
       // Gate rendering on drawDefault, which prefers the encoding glyph, so it is not skipped.
       const drawDefault = currentFont.encodingUnicode?.get(charCode) || unicode;
-      // For PUA-mapped chars without AGL encoding, the charCode may be a control
-      // or whitespace char (e.g. charCode 32 mapped to custom glyph G31). Use PUA
-      // codepoint which is always non-whitespace, bypassing the trim() skip below.
-      // Use PUA when: (a) charCode is in /Differences, (b) font has no /Differences
-      // (relying on CFF built-in encoding, e.g., TeX CMSY10), or (c) charCode is NOT
-      // in /Differences but also has no AGL/encoding mapping (custom CFF glyph names
-      // like C0083 that only work through the built-in encoding's PUA entries).
-      // Use PUA when: the font has PUA cmap entries AND the charCode either (a) is a
-      // control char, (b) has no AGL/encoding mapping, or (c) is overridden by /Differences
-      // (which may map it to a non-AGL glyph name like "boxcheckbld" that only exists in
-      // the CFF font's PUA cmap, not in the encoding's Unicode mapping).
+      // When the font has PUA cmap entries, reroute a charCode through its PUA codepoint
+      // (0xE000 + charCode, always non-whitespace) so it bypasses the trim() skip below.
+      // Applies when the charCode is overridden by /Differences (which may name a non-AGL glyph like "boxcheckbld" that exists only in the CFF font's PUA cmap),
+      // or, in a font with no /Differences (relying on the CFF built-in encoding, e.g. TeX CMSY10), when the charCode is a control char or has no AGL/encoding mapping.
       const inDifferences = !!(currentFont.differences && currentFont.differences[charCode] !== undefined);
       // Some subsetters store a visible outline under a glyph name that resolves to
       // whitespace (e.g. a letter named "space"). fillText() silently skips whitespace,
@@ -626,42 +620,35 @@ export function parseDrawOps(
         (hasDifferences && inDifferences)
         || (!hasDifferences && (charCode < 0x20 || !currentFont.encodingUnicode?.has(charCode)))
         || encWhitespace
-        // Charcode with width but no /Differences and no encoding mapping: route through
-        // PUA so buildFontFromCFF can resolve it via the embedded font's intrinsic CFF Encoding.
-        // Without this, control bytes trim to empty and codes >= 0x20 fall back to the
-        // literal byte char, which is the wrong glyph when the CFF encoding diverges from
-        // byte-as-Unicode (e.g., a sparse /Differences font where byte 0x20 maps to 'c').
+        // charCode has a /Widths entry but no ToUnicode and no encoding mapping: route through PUA so buildFontFromCFF resolves it via the embedded font's built-in CFF Encoding.
+        // Otherwise control bytes trim to empty and bytes >= 0x20 fall back to the literal byte as Unicode, which is the wrong glyph when the CFF encoding diverges from byte-as-Unicode.
         || (currentFont.widths.has(charCode)
           && !currentFont.toUnicode.has(charCode)
           && !currentFont.encodingUnicode?.has(charCode))
       );
-      // Symbol fonts (e.g. Wingdings) use charCodes in 0x01-0x1F range for visible glyphs
-      // (circled numbers, arrows, etc.). These charCodes map to JS control characters
-      // (\f, \r, etc.) that would be filtered out by trim(). Always render Symbol chars.
-      // Skip zero-width characters — the PDF Widths array says these occupy no space,
-      // so they should not render visually (common in TeX fonts for unused charCodes).
-      if (textRenderMode !== 3 && glyphWidth !== 0 && (isSymbol || usesPUA || (drawDefault && drawDefault.trim().length > 0))) {
+      // Skip drawing for a metrics-only subset (allGlyphsEmpty), for invisible text (render mode 3), and for zero-width glyphs.
+      // A zero-width glyph has no advance in the Widths array, common in TeX fonts for unused charCodes.
+      // Otherwise draw when the charCode is a symbol or a PUA reroute (either can trim to empty, which the whitespace test alone would reject), or when its default text is non-whitespace.
+      if (!currentFont.allGlyphsEmpty && textRenderMode !== 3 && glyphWidth !== 0 && (isSymbol || usesPUA || (drawDefault && drawDefault.trim().length > 0))) {
         let trm = matMul([fontSize * tz / 100, 0, 0, fontSize, 0, trise], matMul(tm, ctm));
         // Apply non-standard FontMatrix (shear/flip) from embedded Type1 font program
         const fm = currentFont.type1.fontMatrix;
         if (fm) trm = matMul(fm, trm);
-        // For Symbol-encoded fonts, use PUA codepoints (0xF000 + charCode).
-        // For fonts with PUA cmap entries, use PUA when the charCode has no AGL mapping.
-        // For Mac-only cmap fonts, use raw charCode for drawing — but for Mac-Roman
-        // cmaps, use the Mac-Roman Unicode mapping so Chrome resolves the correct glyph.
-        // E.g., charCode 0xA5 → U+2022 (•) not U+00A5 (¥).
+        // Pick the codepoint to draw, by branch:
+        // a Symbol-encoded font draws from the 0xF000 PUA block, a PUA-reroute font (usesPUA) from the 0xE000 PUA block,
+        // a Mac-cmap font (isRawCharCode) through its toUnicode/PUA logic below, and any other font from drawDefault (rerouted to PUA when the glyph would not render bare).
         let drawText;
         if (isSymbol) {
           drawText = String.fromCharCode(0xF000 + charCode);
         } else if (usesPUA) {
           drawText = String.fromCharCode(0xE000 + charCode);
         } else if (isRawCharCode) {
-          // For Mac-only cmap fonts: charCodes >= 0x20 map directly through the font's
-          // Mac cmap (the byte position IS the glyph lookup key). Multi-codepoint bfchar
-          // entries (conjunct glyphs in Indic fonts, ligatures) AND Indic combining marks
-          // use PUA (0xE000 + charCode) to avoid collisions and to bypass Chrome's
-          // dotted-circle placeholder for orphan combining marks. Must match
-          // convertFontToOTF's rawCharCode path.
+          // isRawCharCode (Mac-cmap) fonts draw a string that the font's cmap resolves to glyphs by byte value.
+          // Route the charCode through PUA (0xE000 + charCode) when its toUnicode is multi-codepoint or its first codepoint is a combining/Indic mark, default-ignorable, or complex-shaping script,
+          // since drawn bare these collide or hit Chrome's dotted-circle placeholder.
+          // Otherwise draw the toUnicode codepoint directly, falling back to the raw charCode when there is no toUnicode,
+          // or to PUA when that raw value is another byte's toUnicode target and would otherwise collide.
+          // Must match convertFontToOTF's rawCharCode path.
           {
             const uniStr = currentFont.toUnicode.get(charCode);
             const firstCp = uniStr ? uniStr.codePointAt(0) : 0;

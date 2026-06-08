@@ -829,12 +829,43 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
             }
           }
         } else if (fontObj.toUnicode && cmap.platformID === 1) {
-          // platformID=1 cmap keys are charCodes, not codepoints, so bridge via toUnicode.
-          // Use PUA (0xE000+charCode) when the ToUnicode mapping has multiple codepoints
-          // (Indic conjuncts, ligatures) to avoid collisions on the shared first codepoint,
-          // or when it starts with a combining mark (which fillText would otherwise render
-          // as a dotted-circle placeholder).
+          // platformID=1 cmap keys are charCodes, not codepoints, so map each code to its drawn codepoint via toUnicode.
+          // Use a per-code private-use codepoint (0xE000+charCode) instead wherever the toUnicode value would not render this glyph under fillText:
+          // a multi-codepoint mapping (codes would collide on a shared first codepoint), or a first codepoint that is a combining/Indic mark, default-ignorable, or in a complex-shaping script.
+          // A code with no toUnicode entry also takes a PUA codepoint when its charCode matches another code's toUnicode target.
           cmapType = 'rawCharCode';
+
+          // Prefer the post table when available rather than the (1,0) Mac cmap, because post appears to be more reliable.
+          if (tableDir.post) {
+            const post = opentype.parsePostTable(data, tableDir.post.offset);
+            const customNames = post.names || [];
+            const limit = post.glyphNameIndex ? (post.numberOfGlyphs || 0) : customNames.length;
+            const postUnicodeToGid = new Map();
+            for (let gid = 1; gid < limit; gid++) {
+              let name;
+              if (post.glyphNameIndex) {
+                const idx = post.glyphNameIndex[gid];
+                name = idx < 258 ? standardNames[idx] : customNames[idx - 258];
+              } else {
+                name = customNames[gid];
+              }
+              if (!name || name === '.notdef') continue;
+              const uniStr = aglLookup(name);
+              if (!uniStr || [...uniStr].length !== 1) continue;
+              const cp = uniStr.codePointAt(0);
+              // First GID wins a given codepoint (post tables are ~1:1 name -> glyph).
+              if (cp && !postUnicodeToGid.has(cp)) postUnicodeToGid.set(cp, gid);
+            }
+            for (const [, uStr] of fontObj.toUnicode) {
+              if (!uStr || [...uStr].length !== 1) continue;
+              const cp = uStr.codePointAt(0);
+              const gid = postUnicodeToGid.get(cp);
+              if (gid !== undefined && gid > 0 && gid < maxp.numGlyphs && !glyphToUnicode.has(gid)) {
+                glyphToUnicode.set(gid, cp);
+              }
+            }
+          }
+
           // parseCmapTableFormat0 re-keys glyphIndexMap's high half (0x80..0xFF) by Mac-Roman Unicode,
           // which can overwrite a raw code -> GID entry.
           // Read the unmodified byte array so a (1,0) cmap used as a direct glyph-index table survives.
@@ -1103,9 +1134,7 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
 
     if (glyphs.length <= 1) return null;
 
-    // Metrics-only subset: if no glyph has outline data, the glyf table would
-    // be zero bytes and Chrome OTS rejects it ("glyf: zero-length table").
-    // Return null so the caller falls back to a system/bundled substitute.
+    // Flag + skip fonts with no drawable outlines.
     let hasOutline = false;
     for (let i = 1; i < glyphs.length; i++) {
       if ((glyphs[i].path && glyphs[i].path.commands.length > 0) || glyphs[i].isComposite) {
@@ -1114,6 +1143,7 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
       }
     }
     if (!hasOutline) {
+      fontObj.allGlyphsEmpty = true;
       console.warn(`[rebuildFontFromGlyphs] Metrics-only subset for "${fontObj.baseName}" — all ${glyphs.length - 1} glyphs have empty outlines, skipping rebuild`);
       return null;
     }

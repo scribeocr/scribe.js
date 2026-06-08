@@ -201,6 +201,8 @@ async function convertAndRegisterFont(
       if (cached.cmapType === 'symbol') symbolFontTags.add(fontTag);
       else if (cached.cmapType === 'rawCharCode') rawCharCodeTags.add(fontTag);
       if (cached.fontMatrix && fontObj.type1) fontObj.type1.fontMatrix = cached.fontMatrix;
+      // All glyph outlines are empty (a metrics-only subset), so flag the fresh fontObj to make the draw path suppress its glyphs.
+      if (cached.allGlyphsEmpty) fontObj.allGlyphsEmpty = true;
       return;
     }
   }
@@ -370,6 +372,7 @@ async function convertAndRegisterFont(
       cmapType,
       cidCollisions,
       fontMatrix,
+      allGlyphsEmpty: fontObj.allGlyphsEmpty,
     });
   }
 }
@@ -5016,8 +5019,24 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   ];
   if (annotRefs.length > 0) {
     for (const annotRef of annotRefs) {
-      const annotText = objCache.getObjectText(annotRef);
+      let annotText = objCache.getObjectText(annotRef);
       if (!annotText) continue;
+
+      // Apple Preview / iOS stamp+ink annotations stash a stale private copy of the whole annotation (its own /AP, /Rect, /Subtype from before the user moved/resized it) inside /AAPL:AKExtras.
+      // Standard viewers ignore that private key and use the live top-level keys.
+      // Our key regexes below take the first match, which would otherwise land inside that copy and render the stamp at its pre-edit position.
+      // Drop the /AAPL:AKExtras value (a balanced << >>, skipping () strings) so only the live keys remain.
+      const akIdx = annotText.indexOf('/AAPL:AKExtras');
+      if (akIdx !== -1) {
+        const open = annotText.indexOf('<<', akIdx);
+        if (open !== -1) {
+          // extractDict runs to the end of the string when the value never closes, leaving `end` at
+          // annotText.length; the guard then leaves a malformed annotation untouched.
+          const akDict = extractDict(annotText, open);
+          const end = open + akDict.length;
+          if (end < annotText.length) annotText = annotText.slice(0, akIdx) + annotText.slice(end);
+        }
+      }
 
       let rectArrText = null;
       const rectInlineMatch = /\/Rect\s*(\[[^\]]*\])/.exec(annotText);
@@ -5105,15 +5124,55 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         const ftParentMatch = parentText ? /\/FT\s*\/(\w+)/.exec(parentText) : null;
         if (ftParentMatch) resolvedFieldType = ftParentMatch[1];
       }
-      // Under /NeedAppearances, the producer has marked its embedded /AP appearance streams stale,
-      // so regenerate field appearances rather than trust them.
-      // Text fields regenerate from /V. Radio and checkbox buttons regenerate from /AS.
-      // Pushbuttons (Ff bit 17) keep their /AP, since there is no value to regenerate a caption from.
-      // Choice (/Ch) fields are left on their embedded /AP, because their /V is often a placeholder
-      // (e.g. a run of dashes) that the value-only synth would paint as a solid bar.
+      // Decode the text/choice field value (/V) once, up front: a literal /V may itself be UTF-16BE
+      // (its first two decoded bytes are 0xFE 0xFF), and the decoded value drives both the regenerate
+      // decision below and the synthesis further down, so parse it before either.
+      let fieldValue = null;
+      if (resolvedFieldType === 'Tx' || resolvedFieldType === 'Ch') {
+        const vLitMatch = /\/V\s*\(((?:[^()\\]|\\.)*)\)/.exec(annotText);
+        const vHexMatch = /\/V\s*<([0-9A-Fa-f\s]*)>/.exec(annotText);
+        if (vLitMatch) {
+          const lit = vLitMatch[1].replace(/\\([nrtbf()\\]|[0-7]{1,3})/g, (m, c) => {
+            const simple = {
+              n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', '(': '(', ')': ')', '\\': '\\',
+            };
+            return simple[c] !== undefined ? simple[c] : String.fromCharCode(parseInt(c, 8));
+          });
+          // A literal /V may itself hold UTF-16BE bytes: its first two chars are 0xFE 0xFF (the BOM).
+          if (lit.charCodeAt(0) === 0xfe && lit.charCodeAt(1) === 0xff) {
+            let s = '';
+            for (let k = 2; k + 1 < lit.length; k += 2) s += String.fromCharCode((lit.charCodeAt(k) << 8) | lit.charCodeAt(k + 1));
+            fieldValue = s;
+          } else {
+            fieldValue = lit;
+          }
+        } else if (vHexMatch) {
+          const hex = vHexMatch[1].replace(/\s+/g, '');
+          const bytes = [];
+          for (let k = 0; k + 1 < hex.length; k += 2) bytes.push(parseInt(hex.substr(k, 2), 16));
+          if (bytes[0] === 0xfe && bytes[1] === 0xff) {
+            let s = '';
+            for (let k = 2; k + 1 < bytes.length; k += 2) s += String.fromCharCode((bytes[k] << 8) | bytes[k + 1]);
+            fieldValue = s;
+          } else {
+            fieldValue = bytesToLatin1(Uint8Array.from(bytes));
+          }
+        }
+        if (fieldValue && fieldValue.charCodeAt(0) === 0xfeff) fieldValue = fieldValue.slice(1);
+      }
+
+      // Under /NeedAppearances the embedded /AP is stale, so drop it (apObjNum = null) to force the field to be synthesized instead,
+      // but only where the synth can faithfully reproduce the value.
+      // /Tx fields drop their /AP only for single-line, Latin-1-representable values.
+      // Multiline or non-Latin-1 values stay on their embedded /AP, which the synth cannot reproduce.
+      // Radio and checkbox buttons drop their /AP.
+      // Pushbuttons (Ff bit 17) keep theirs, having no value to regenerate.
       if (needAppearances && apObjNum !== null) {
         if (resolvedFieldType === 'Tx') {
-          apObjNum = null;
+          const ffTxMatch = /\/Ff\s+(\d+)/.exec(annotText);
+          const txMultiline = ((ffTxMatch ? Number(ffTxMatch[1]) : 0) & 0x1000) !== 0;
+          const synthCanRender = fieldValue === null || !/[^\x00-\xff]/.test(fieldValue);
+          if (!txMultiline && synthCanRender) apObjNum = null;
         } else if (resolvedFieldType === 'Btn') {
           const ffBtnMatch = /\/Ff\s+(\d+)/.exec(annotText);
           if (!((ffBtnMatch ? Number(ffBtnMatch[1]) : 0) & 0x10000)) apObjNum = null;
@@ -5121,36 +5180,12 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       }
 
       // No usable /AP: synthesize the field appearance and route it through the /AP path below,
-      // which handles font parsing and the BBox->Rect transform. Text/choice fields draw their /V.
+      // which handles font parsing and the BBox->Rect transform.
+      // Text/choice fields draw their /V.
       // Selected radio/checkbox buttons draw a filled dot.
       if (apObjNum === null) {
         if (resolvedFieldType === 'Tx' || resolvedFieldType === 'Ch') {
-          // Extract the field value (/V): literal string, hex string, or UTF-16BE with BOM.
-          let fieldValue = null;
-          const vLitMatch = /\/V\s*\(((?:[^()\\]|\\.)*)\)/.exec(annotText);
-          const vHexMatch = /\/V\s*<([0-9A-Fa-f\s]*)>/.exec(annotText);
-          if (vLitMatch) {
-            fieldValue = vLitMatch[1].replace(/\\([nrtbf()\\]|[0-7]{1,3})/g, (m, c) => {
-              const simple = {
-                n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', '(': '(', ')': ')', '\\': '\\',
-              };
-              return simple[c] !== undefined ? simple[c] : String.fromCharCode(parseInt(c, 8));
-            });
-          } else if (vHexMatch) {
-            const hex = vHexMatch[1].replace(/\s+/g, '');
-            const bytes = [];
-            for (let k = 0; k + 1 < hex.length; k += 2) bytes.push(parseInt(hex.substr(k, 2), 16));
-            if (bytes[0] === 0xfe && bytes[1] === 0xff) {
-              let s = '';
-              for (let k = 2; k + 1 < bytes.length; k += 2) s += String.fromCharCode((bytes[k] << 8) | bytes[k + 1]);
-              fieldValue = s;
-            } else {
-              fieldValue = bytesToLatin1(Uint8Array.from(bytes));
-            }
-          }
-          // Strip a UTF-16BE BOM from a literal value too, and drop non-printing controls.
-          if (fieldValue && fieldValue.charCodeAt(0) === 0xfeff) fieldValue = fieldValue.slice(1);
-
+          // The value was decoded once above (handles both literal and hex UTF-16BE); reuse it.
           if (fieldValue && fieldValue.length > 0) {
             const daMatch = /\/DA\s*\(((?:[^()\\]|\\.)*)\)/.exec(annotText);
             const da = daMatch ? daMatch[1] : '/Helvetica 10 Tf 0 g';
@@ -5175,15 +5210,19 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             let textCommands = '';
             if (multiline) {
               const maxChars = Math.max(1, Math.floor((rectW - 2 * pad) / avgCharW));
-              const words = fieldValue.replace(/[\r\n]+/g, ' ').split(/\s+/).filter((w) => w.length > 0);
+              // Honor the value's own line breaks, then width-wrap each paragraph independently.
               const lines = [];
-              let line = '';
-              for (const w of words) {
-                if (line.length === 0) line = w;
-                else if ((line.length + 1 + w.length) <= maxChars) line += ` ${w}`;
-                else { lines.push(line); line = w; }
+              for (const para of fieldValue.split(/\r\n|\r|\n/)) {
+                const words = para.split(/\s+/).filter((w) => w.length > 0);
+                if (words.length === 0) { lines.push(''); continue; }
+                let line = '';
+                for (const w of words) {
+                  if (line.length === 0) line = w;
+                  else if ((line.length + 1 + w.length) <= maxChars) line += ` ${w}`;
+                  else { lines.push(line); line = w; }
+                }
+                if (line.length > 0) lines.push(line);
               }
-              if (line.length > 0) lines.push(line);
               const leading = fontSize * 1.15;
               let ty = rectH - pad - fontSize;
               textCommands = `${pad} ${ty} Td`;
