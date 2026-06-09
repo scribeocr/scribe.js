@@ -767,12 +767,19 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
       for (let i = 0; i < cidToGidMap.length - 1; i += 2) {
         const gid = (cidToGidMap[i] << 8) | cidToGidMap[i + 1];
         const cid = i / 2;
-        if (cid === 0 && gid === 0) continue;
-        // Skip GIDs with neither an outline nor a ToUnicode entry.
-        // An Identity CIDToGIDMap spans every GID, including empty padding.
-        // Assigning each the synthetic PUA codepoint below would let a padding glyph evict a real glyph
-        // whose ToUnicode legitimately maps it into the PUA.
         const hasOutline = gid + 1 < loca.length && loca[gid + 1] > loca[gid];
+        // CID 0 is the .notdef glyph, whose ToUnicode (if any) is meaningless: a producer may map code 0 to a real letter purely as extraction filler,
+        // so it must never claim a real Unicode and paint a fabricated character.
+        // When it has an outline, key it at its PUA codepoint so the renderer draws the embedded notdef outline instead.
+        if (cid === 0) {
+          if (hasOutline) {
+            glyphToUnicode.set(gid, cidCodepoint(undefined, cid, fontObj.widths?.get(cid)).codepoint);
+            usesPUA = true;
+          }
+          continue;
+        }
+        // Skip GIDs with neither an outline nor a ToUnicode entry: an Identity CIDToGIDMap spans every GID including empty padding,
+        // and assigning each the synthetic PUA codepoint below would let a padding glyph evict a real glyph whose ToUnicode legitimately maps it into the PUA.
         if (!hasOutline && !cidToUnicode?.has(cid)) continue;
         const decision = cidCodepoint(cidToUnicode?.get(cid), cid, fontObj.widths?.get(cid));
         let { codepoint } = decision;

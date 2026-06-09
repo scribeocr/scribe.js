@@ -527,9 +527,14 @@ export function parseDrawOps(
         const embeddedGlyphUnavailable = !usePUA && !tuStr
           && !!currentFont.type0?.fontFile && !(currentFont.toUnicode?.size)
           && !currentFont.type0?.unicodeCMap;
-        const unicode = usePUA
-          ? String.fromCodePoint(cidCodepoint(collided ? undefined : tuStr, cid, currentFont.widths.get(cid)).codepoint)
-          : (embeddedGlyphUnavailable ? '' : (tuStr || String.fromCharCode(charCode)));
+        // CID 0 is the .notdef glyph, whose ToUnicode (if any) is meaningless filler: a producer may map code 0 to a real letter,
+        // so it must never pick the drawn glyph. Address the embedded notdef by its PUA codepoint, where the rebuild keyed its outline,
+        // so the font's own notdef is drawn rather than a fabricated character.
+        const unicode = cid === 0
+          ? String.fromCodePoint(cidCodepoint(undefined, cid, currentFont.widths.get(cid)).codepoint)
+          : (usePUA
+            ? String.fromCodePoint(cidCodepoint(collided ? undefined : tuStr, cid, currentFont.widths.get(cid)).codepoint)
+            : (embeddedGlyphUnavailable ? '' : (tuStr || String.fromCharCode(charCode))));
         if (unicode && unicode.trim().length > 0) {
           const isNonEmbedded = !!(currentFont.type0 && !currentFont.type0.fontFile);
           const sc = applySmallCaps(unicode, trm, isNonEmbedded && !!currentFont.smallCaps);
