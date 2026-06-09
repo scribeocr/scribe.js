@@ -383,13 +383,28 @@ export function parseImageObject(objText, objNum, objCache) {
         const isImageMask = /\/ImageMask\s+true/.test(sMaskObjText);
         const smBpc = readTopLevelInt(sMaskObjText, '/BitsPerComponent', isImageMask ? 1 : 8, objCache);
         if (smBpc === 1) {
+          // Unpack 1 bit/sample to 1 byte/sample (0 or 255), a whole packed byte at a time with bit ops
+          // to stay fast on large bilevel masks.
           const unpacked = new Uint8Array(sMaskWidth * sMaskHeight);
           const rowBytes = Math.ceil(sMaskWidth / 8);
           for (let y = 0; y < sMaskHeight; y++) {
-            for (let x = 0; x < sMaskWidth; x++) {
-              const byteIdx = y * rowBytes + Math.floor(x / 8);
-              const bitIdx = 7 - (x % 8);
-              unpacked[y * sMaskWidth + x] = (Math.floor(sMask[byteIdx] / (2 ** bitIdx)) % 2) * 255;
+            let o = y * sMaskWidth;
+            let r = y * rowBytes;
+            let x = 0;
+            for (; x + 8 <= sMaskWidth; x += 8) {
+              const b = sMask[r++];
+              unpacked[o++] = ((b >> 7) & 1) * 255;
+              unpacked[o++] = ((b >> 6) & 1) * 255;
+              unpacked[o++] = ((b >> 5) & 1) * 255;
+              unpacked[o++] = ((b >> 4) & 1) * 255;
+              unpacked[o++] = ((b >> 3) & 1) * 255;
+              unpacked[o++] = ((b >> 2) & 1) * 255;
+              unpacked[o++] = ((b >> 1) & 1) * 255;
+              unpacked[o++] = (b & 1) * 255;
+            }
+            if (x < sMaskWidth) {
+              const b = sMask[r];
+              for (; x < sMaskWidth; x++) unpacked[o++] = ((b >> (7 - (x & 7))) & 1) * 255;
             }
           }
           sMask = unpacked;

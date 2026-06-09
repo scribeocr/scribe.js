@@ -470,6 +470,83 @@ async function decodeSmaskJpeg(rawData) {
 }
 
 /**
+ * Box-average a binary (0/255) soft mask down to outW x outH.
+ * Used when the mask is higher-resolution than the device area the image occupies: averaging preserves the edge anti-aliasing a full-resolution draw would produce,
+ * without building a composite at the mask's full resolution.
+ * @param {Uint8Array} sMask
+ * @param {number} sMaskWidth
+ * @param {number} sMaskHeight
+ * @param {number} outW
+ * @param {number} outH
+ * @returns {Uint8Array} length outW*outH
+ */
+function boxDownsampleMask(sMask, sMaskWidth, sMaskHeight, outW, outH) {
+  const out = new Uint8Array(outW * outH);
+  for (let oy = 0; oy < outH; oy++) {
+    const sy0 = Math.floor((oy * sMaskHeight) / outH);
+    const sy1 = Math.max(sy0 + 1, Math.floor(((oy + 1) * sMaskHeight) / outH));
+    for (let ox = 0; ox < outW; ox++) {
+      const sx0 = Math.floor((ox * sMaskWidth) / outW);
+      const sx1 = Math.max(sx0 + 1, Math.floor(((ox + 1) * sMaskWidth) / outW));
+      let sum = 0;
+      let cnt = 0;
+      for (let sy = sy0; sy < sy1; sy++) {
+        const row = sy * sMaskWidth;
+        for (let sx = sx0; sx < sx1; sx++) { sum += sMask[row + sx]; cnt++; }
+      }
+      out[oy * outW + ox] = ((sum / cnt) + 0.5) | 0;
+    }
+  }
+  return out;
+}
+
+/**
+ * Box-average an RGBA buffer down to outW x outH (straight alpha).
+ * Used to shrink a very large decoded image to the device draw size before creating its ImageBitmap.
+ * This optimization is critical for avoiding 10s render times on certain pages, both in browser and Node.js.
+ *
+ * @param {Uint8ClampedArray} rgba
+ * @param {number} width
+ * @param {number} height
+ * @param {number} outW
+ * @param {number} outH
+ * @returns {Uint8ClampedArray} length outW*outH*4
+ */
+function boxDownsampleRgba(rgba, width, height, outW, outH) {
+  const out = new Uint8ClampedArray(outW * outH * 4);
+  for (let oy = 0; oy < outH; oy++) {
+    const sy0 = Math.floor((oy * height) / outH);
+    const sy1 = Math.max(sy0 + 1, Math.floor(((oy + 1) * height) / outH));
+    for (let ox = 0; ox < outW; ox++) {
+      const sx0 = Math.floor((ox * width) / outW);
+      const sx1 = Math.max(sx0 + 1, Math.floor(((ox + 1) * width) / outW));
+      let r = 0;
+      let g = 0;
+      let b = 0;
+      let a = 0;
+      let cnt = 0;
+      for (let sy = sy0; sy < sy1; sy++) {
+        const row = sy * width;
+        for (let sx = sx0; sx < sx1; sx++) {
+          const si = (row + sx) * 4;
+          r += rgba[si];
+          g += rgba[si + 1];
+          b += rgba[si + 2];
+          a += rgba[si + 3];
+          cnt++;
+        }
+      }
+      const di = (oy * outW + ox) * 4;
+      out[di] = ((r / cnt) + 0.5) | 0;
+      out[di + 1] = ((g / cnt) + 0.5) | 0;
+      out[di + 2] = ((b / cnt) + 0.5) | 0;
+      out[di + 3] = ((a / cnt) + 0.5) | 0;
+    }
+  }
+  return out;
+}
+
+/**
  * Convert decoded image bytes to an ImageBitmap suitable for canvas drawing.
  * `maxW`/`maxH` are the device px the image will be drawn within (0 = unbounded)
  * and cap JPEG2000 decode resolution.
@@ -742,15 +819,21 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
         return ca.createImageBitmapFromCanvas(canvas);
       }
       if (sMaskWidth > w || sMaskHeight > h) {
-        // Mask is higher resolution — upsample image to mask dimensions
-        const outW = sMaskWidth;
-        const outH = sMaskHeight;
+        // Mask is higher resolution: upsample the image to the mask dimensions, but never beyond the device area this image occupies (maxW/maxH).
+        let outW = sMaskWidth;
+        let outH = sMaskHeight;
+        if (maxW && maxH && (outW > maxW || outH > maxH)) {
+          const k = Math.min(maxW / outW, maxH / outH);
+          outW = Math.max(w, Math.round(sMaskWidth * k));
+          outH = Math.max(h, Math.round(sMaskHeight * k));
+        }
         const canvas = ca.makeCanvas(w, h);
         const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d', { willReadFrequently: true }));
         ctx.drawImage(jpegBitmap, 0, 0);
         ca.closeDrawable(jpegBitmap);
         const imgData = ctx.getImageData(0, 0, w, h);
         const px = imgData.data;
+        const maskA = boxDownsampleMask(sMask, sMaskWidth, sMaskHeight, outW, outH);
         const upsampled = new Uint8ClampedArray(outW * outH * 4);
         for (let y = 0; y < outH; y++) {
           const srcY = Math.min(Math.floor(y * h / outH), h - 1);
@@ -761,7 +844,7 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
             upsampled[dstIdx] = px[srcIdx];
             upsampled[dstIdx + 1] = px[srcIdx + 1];
             upsampled[dstIdx + 2] = px[srcIdx + 2];
-            upsampled[dstIdx + 3] = sMask[y * outW + x];
+            upsampled[dstIdx + 3] = maskA[y * outW + x];
           }
         }
         return ca.createImageBitmapFromImageData(new ImageData(upsampled, outW, outH));
@@ -803,15 +886,14 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
   // JPXDecode (JPEG 2000) — decode via pure JS decoder
   if (filter === 'JPXDecode') {
     const { decodeJPX } = await import('./codecs/decodeJPX.js');
-    // Each reduce level halves the decoded dimensions and skips the finest,
-    // most expensive inverse-wavelet pass.
-    // Keep halving until one more step would fall below 90% of the drawn size,
-    // capping upscale of the decoded image at ~11%.
+    // Each reduce level halves the decoded dimensions and skips entropy-decoding the finest resolution sub-bands (~4x less work per level),
+    // so we want the level closest to the device size the image is actually drawn at.
+    // Halve while the reduced dimensions stay >= ~0.71x (1/sqrt2) of the draw size: pick the geometrically nearest level, accepting up to ~1.41x upscale.
     let reduceLevels = 0;
     if (maxW && maxH) {
       let rw = imageInfo.width;
       let rh = imageInfo.height;
-      while (reduceLevels < 5 && rw / 2 >= maxW * 0.9 && rh / 2 >= maxH * 0.9) {
+      while (reduceLevels < 5 && rw / 2 >= maxW * 0.71 && rh / 2 >= maxH * 0.71) {
         rw = Math.floor(rw / 2);
         rh = Math.floor(rh / 2);
         reduceLevels++;
@@ -948,10 +1030,17 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
           rgbaData[i * 4 + 3] = sMask[i];
         }
       } else if (sMaskWidth > w || sMaskHeight > h) {
-        // Mask is higher resolution than image — upsample image to mask dimensions
-        // to preserve fine mask detail (e.g., text stencil edges).
-        const outW = sMaskWidth;
-        const outH = sMaskHeight;
+        // Mask is higher resolution than image: upsample the image to the mask dimensions to preserve fine mask detail (e.g. text stencil edges).
+        // But never build the composite larger than the device area this image occupies (maxW/maxH):
+        // an /SMask can be many times the image's pixel count, so producing a mask-resolution bitmap only to down-scale it at draw time is wasted work.
+        let outW = sMaskWidth;
+        let outH = sMaskHeight;
+        if (maxW && maxH && (outW > maxW || outH > maxH)) {
+          const k = Math.min(maxW / outW, maxH / outH);
+          outW = Math.max(w, Math.round(sMaskWidth * k));
+          outH = Math.max(h, Math.round(sMaskHeight * k));
+        }
+        const maskA = boxDownsampleMask(sMask, sMaskWidth, sMaskHeight, outW, outH);
         const upsampled = new Uint8ClampedArray(outW * outH * 4);
         for (let y = 0; y < outH; y++) {
           const srcY = Math.min(Math.floor(y * h / outH), h - 1);
@@ -962,7 +1051,7 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
             upsampled[dstIdx] = rgbaData[srcIdx];
             upsampled[dstIdx + 1] = rgbaData[srcIdx + 1];
             upsampled[dstIdx + 2] = rgbaData[srcIdx + 2];
-            upsampled[dstIdx + 3] = sMask[y * outW + x];
+            upsampled[dstIdx + 3] = maskA[y * outW + x];
           }
         }
         return ca.createImageBitmapFromImageData(new ImageData(upsampled, outW, outH));
@@ -995,6 +1084,55 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
     }
     imageData = data8;
     bitsPerComponent = 8;
+  }
+
+  // Fast path for very large 1-bit grayscale scans (JBIG2/CCITTFax): box-average the packed bits straight to the device draw size.
+  // The general path's cost is dominated not by the final draw but by building a full-resolution RGBA buffer and then creating an ImageBitmap from it.
+  // Averaging the 1-bit source directly into a draw-size RGBA is one pass over 8x less memory and skips both the giant allocation and the large-bitmap upload.
+  // A 1-bit soft mask at the same resolution (the MRC foreground/background pairing) is area-averaged into alpha in the same pass.
+  // Restricted to plain DeviceGray/CalGray with no transparent-white key, colour-key mask, or ICC transform, so no downstream per-pixel post-processing is bypassed.
+  const mask11 = sMask && sMaskWidth === width && sMaskHeight === height;
+  if (bitsPerComponent === 1 && (colorSpace === 'DeviceGray' || colorSpace === 'CalGray')
+    && !imageInfo.transparentWhite && (!(sMask && sMaskWidth && sMaskHeight) || mask11)
+    && !colorKeyMask && !imageInfo.iccTransform
+    && maxW && maxH && (width > maxW || height > maxH) && width * height >= 40e6) {
+    const k = Math.min(maxW / width, maxH / height);
+    const outW = Math.max(1, Math.round(width * k));
+    const outH = Math.max(1, Math.round(height * k));
+    if (width * height >= outW * outH * 2) {
+      const rowBytes = Math.ceil(width / 8);
+      const ma = mask11 ? sMask : null;
+      const out = new Uint8ClampedArray(outW * outH * 4);
+      for (let oy = 0; oy < outH; oy++) {
+        const sy0 = Math.floor((oy * height) / outH);
+        const sy1 = Math.max(sy0 + 1, Math.floor(((oy + 1) * height) / outH));
+        for (let ox = 0; ox < outW; ox++) {
+          const sx0 = Math.floor((ox * width) / outW);
+          const sx1 = Math.max(sx0 + 1, Math.floor(((ox + 1) * width) / outW));
+          let sum = 0;
+          let asum = 0;
+          let cnt = 0;
+          for (let sy = sy0; sy < sy1; sy++) {
+            const rb = sy * rowBytes;
+            const mrow = sy * width;
+            for (let sx = sx0; sx < sx1; sx++) {
+              sum += (imageData[rb + (sx >> 3)] >> (7 - (sx & 7))) & 1;
+              if (ma) asum += ma[mrow + sx];
+              cnt++;
+            }
+          }
+          // 1-bit DeviceGray: bit 1 = white (255), bit 0 = black; /Decode [1 0] inverts.
+          let v = (((sum / cnt) * 255) + 0.5) | 0;
+          if (decodeInvert) v = 255 - v;
+          const di = (oy * outW + ox) * 4;
+          out[di] = v;
+          out[di + 1] = v;
+          out[di + 2] = v;
+          out[di + 3] = ma ? (((asum / cnt) + 0.5) | 0) : 255;
+        }
+      }
+      return ca.createImageBitmapFromImageData(new ImageData(out, outW, outH));
+    }
   }
 
   if (colorSpace === 'Indexed' && imageInfo.palette) {
@@ -1406,6 +1544,21 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
         }
         if (masked) rgbaData[(y * width + x) * 4 + 3] = 0;
       }
+    }
+  }
+
+  // General net for any other >=40 MP raster (RGB/CMYK/Indexed, or a non-1:1-masked bilevel) that missed the fast path above:
+  // when the decoded image dwarfs the device draw box, box-average it down to draw size before creating the ImageBitmap.
+  // This still has to build the full-resolution RGBA, but it removes the expensive createImageBitmap of a huge bitmap and the large-source drawImage downscale.
+  // The extra box pass is paid back by those, a net win in both Node and Chrome.
+  // Gated only on absolute source size (>=40 MP) to reduce overhead + complexity on images that would not benefit.
+  if (maxW && maxH && (width > maxW || height > maxH) && width * height >= 40e6) {
+    const k = Math.min(maxW / width, maxH / height);
+    const outW = Math.max(1, Math.round(width * k));
+    const outH = Math.max(1, Math.round(height * k));
+    if (width * height >= outW * outH * 2) {
+      const small = boxDownsampleRgba(rgbaData, width, height, outW, outH);
+      return ca.createImageBitmapFromImageData(new ImageData(small, outW, outH));
     }
   }
 
