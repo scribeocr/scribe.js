@@ -866,6 +866,11 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
             for (const [, uStr] of fontObj.toUnicode) {
               if (!uStr || [...uStr].length !== 1) continue;
               const cp = uStr.codePointAt(0);
+              if (cp === undefined) continue;
+              // Skip codepoints the renderer routes through PUA: combining/Indic marks, default-ignorables, and complex-shaping scripts (Thai, Lao, Brahmic, etc.).
+              // Drawn bare, the canvas text shaper mis-renders these in both render backends, so the rawCharCode draw path draws them as 0xE000+charCode instead.
+              // Keying a glyph here under its real codepoint would leave it unreachable and blank. The (1,0)-cmap step below keys it under the matching PUA codepoint.
+              if (isCombiningOrIndicMark(cp) || isDefaultIgnorable(cp) || isComplexShapingScript(cp)) continue;
               const gid = postUnicodeToGid.get(cp);
               if (gid !== undefined && gid > 0 && gid < maxp.numGlyphs && !glyphToUnicode.has(gid)) {
                 glyphToUnicode.set(gid, cp);

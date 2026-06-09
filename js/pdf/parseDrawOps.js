@@ -650,7 +650,7 @@ export function parseDrawOps(
         } else if (isRawCharCode) {
           // isRawCharCode (Mac-cmap) fonts draw a string that the font's cmap resolves to glyphs by byte value.
           // Route the charCode through PUA (0xE000 + charCode) when its toUnicode is multi-codepoint or its first codepoint is a combining/Indic mark, default-ignorable, or complex-shaping script,
-          // since drawn bare these collide or hit Chrome's dotted-circle placeholder.
+          // since drawn bare these collide or mis-render in the canvas text shaper of both backends.
           // Otherwise draw the toUnicode codepoint directly, falling back to the raw charCode when there is no toUnicode,
           // or to PUA when that raw value is another byte's toUnicode target and would otherwise collide.
           // Must match convertFontToOTF's rawCharCode path.
