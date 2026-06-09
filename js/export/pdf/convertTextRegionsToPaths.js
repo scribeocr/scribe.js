@@ -9,6 +9,7 @@ import {
   tokenizeContentStream, formatPdfNumber,
 } from '../../pdf/contentStream.js';
 import { parsePageFonts } from '../../pdf/fonts/parsePdfFonts.js';
+import { aglLookup } from '../../pdf/fonts/standardEncodings.js';
 import { encodeStreamObject } from './writePdfStreams.js';
 import opentype from '../../font-parser/src/index.js';
 import { standardNames } from '../../font-parser/src/encoding.js';
@@ -98,8 +99,10 @@ function detectFontFileType(fontFile) {
  *
  * @param {Uint8Array} fontFile
  * @returns {{ glyphs: any, unitsPerEm: number, fontType: string,
+ *            fontMatrix?: number[],
  *            cmap?: { glyphIndexMap: Record<number, number>, byteToGlyphIndex?: number[], platformID?: number, encodingID?: number } | null,
  *            nameToGid?: Map<string, number> | null,
+ *            unicodeToGid?: Map<number, number> | null,
  *            cffCharCodeToGid?: Map<number, number> | null,
  *            cffCidToGid?: Map<number, number> | null } | null}
  */
@@ -154,6 +157,21 @@ function loadGlyphsForOutlines(fontFile) {
           nameToGid = null;
         }
       }
+      // Build a Unicode -> GID map from the /post glyph names: look up each name's codepoint in the Adobe Glyph List and key its GID by that codepoint.
+      // This lets a code resolve to a glyph by its /ToUnicode value when the PDF gives no /Differences glyph name,
+      // instead of falling back to a (1,0) Mac cmap that would map the raw byte to an unrelated Mac-Roman glyph.
+      // If several names share a codepoint, the first (lowest) GID wins.
+      let unicodeToGid = null;
+      if (nameToGid) {
+        unicodeToGid = new Map();
+        for (const [name, gid] of nameToGid) {
+          const uni = aglLookup(name);
+          if (uni && uni.length > 0) {
+            const cp = uni.codePointAt(0);
+            if (cp != null && !unicodeToGid.has(cp)) unicodeToGid.set(cp, gid);
+          }
+        }
+      }
       const ttUpem = head.unitsPerEm > 0 ? head.unitsPerEm : 1000;
       return {
         glyphs: shell.glyphs,
@@ -162,6 +180,7 @@ function loadGlyphsForOutlines(fontFile) {
         fontType: 'truetype',
         cmap,
         nameToGid,
+        unicodeToGid,
       };
     } catch {
       return null;
@@ -1074,6 +1093,17 @@ function charCodeToGlyphIndex(fontInfo, charCode, loaded) {
   if (cmap && Array.isArray(cmap.byteToGlyphIndex) && charCode >= 0 && charCode < 256) {
     const g = cmap.byteToGlyphIndex[charCode];
     if (g != null && g > 0) return g;
+  }
+  // Resolve by Unicode through the font's /post names when a unicodeToGid map exists, the code has a /ToUnicode entry, and /Differences does not name it.
+  // Then the code's identity comes only from /ToUnicode, and the raw (1,0) Mac cmap below would map the byte to an unrelated Mac-Roman glyph.
+  // Resolving by Unicode takes priority over that cmap[code] fallback below.
+  if (loaded?.unicodeToGid && fontInfo.toUnicode && !fontInfo.charCodeToGlyphName?.get(charCode)) {
+    const uniStr = fontInfo.toUnicode.get(charCode);
+    if (uniStr && uniStr.length > 0) {
+      const cp = uniStr.codePointAt(0);
+      const gid = cp != null ? loaded.unicodeToGid.get(cp) : undefined;
+      if (gid != null && gid > 0) return gid;
+    }
   }
   const gim = cmap && cmap.glyphIndexMap;
   if (gim) {

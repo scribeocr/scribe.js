@@ -124,6 +124,10 @@ function parseCmapTableFormat6(cmap, p, platformID, encodingID) {
   }
   // Apply Mac encoding conversion for 0x80+ chars (same approach as format 0)
   if (platformID === 1) {
+    // Snapshot the raw byte -> GID array (codes 0..255) before the Mac-Roman re-key below.
+    // That re-key rewrites high-byte entries to their Unicode targets and can clobber other raw byte entries, so glyphIndexMap stops being a faithful byte -> GID table.
+    // Callers that use a (1,0) cmap directly as a glyph-index table read this instead.
+    cmap.byteToGlyphIndex = Array.from({ length: 256 }, (_, c) => glyphIndexMap[c] || 0);
     const encoding = getEncoding(platformID, encodingID, cmap.language);
     const decodingTable = eightBitMacEncodings[encoding];
     if (decodingTable) {
@@ -738,6 +742,8 @@ function buildPath(glyphs, glyph) {
     for (let j = 0; j < glyph.components.length; j += 1) {
       const component = glyph.components[j];
       const componentGlyph = glyphs.get(component.glyphIndex);
+      // Skip a component whose GID is past the end of the glyph table (a malformed or over-subset font).
+      if (!componentGlyph) continue;
       // Force the ttfGlyphLoader to parse the glyph.
       componentGlyph.getPath();
       if (componentGlyph.points) {
