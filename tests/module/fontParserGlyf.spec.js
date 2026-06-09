@@ -228,6 +228,61 @@ describe('TrueType glyf roundtrip (parse → serialize → reparse)', () => {
   });
 });
 
+describe('parseGlyfTable keeps the GlyphSet sparse for subset fonts (memory)', () => {
+  // chi_eng_mixed_sample.pdf F2 is an iText subset: it keeps the original glyph count (22134 slots) but only 703 glyphs actually have outlines, leaving 21431 empty.
+  // parseGlyfTable must not pre-build a Glyph object graph for every empty slot, which exhausts memory on large documents that use many such fonts.
+  let dv;
+  let glyfOffset;
+  let loca;
+  let unitsPerEm;
+  let numGlyphs;
+  beforeAll(async () => {
+    const fontBytes = await extractTrueTypeFontBytes(
+      `${ASSETS_PATH}/chi_eng_mixed_sample.pdf`, 0, 'F2',
+    );
+    const { dv: d, tableDir } = parseFontTables(fontBytes);
+    dv = d;
+    const head = parseHeadTable(dv, tableDir.head.offset);
+    const maxp = parseMaxpTable(dv, tableDir.maxp.offset);
+    numGlyphs = maxp.numGlyphs;
+    unitsPerEm = head.unitsPerEm;
+    glyfOffset = tableDir.glyf.offset;
+    loca = parseLocaTable(dv, tableDir.loca.offset, numGlyphs, head.indexToLocFormat === 0);
+  });
+  // Fresh GlyphSet per test so backing-store counts are not perturbed by other tests.
+  const fresh = () => parseGlyfTable(dv, glyfOffset, loca, { unitsPerEm, numGlyphs, tables: {} });
+
+  test('length reports the full glyph count', () => {
+    expect(fresh().length).toBe(22134);
+  });
+
+  test('backing store holds only the 703 outlined glyphs, not all 22134 slots', () => {
+    const glyphs = fresh();
+    expect(Object.keys(glyphs.glyphs).length).toBe(703);
+  });
+
+  test('get() returns the correct outline for a used glyph (GID 34)', () => {
+    expect(fresh().get(34).path.commands.length).toBe(28);
+  });
+
+  test('get() materializes a valid empty glyph on demand for an unused slot (GID 1)', () => {
+    const glyphs = fresh();
+    expect(glyphs.get(1).index).toBe(1);
+    expect(glyphs.get(1).path.commands.length).toBe(0);
+  });
+
+  test('accessing empty slots grows the backing by exactly those slots', () => {
+    const glyphs = fresh();
+    const before = Object.keys(glyphs.glyphs).length;
+    glyphs.get(1); glyphs.get(2); glyphs.get(3);
+    expect(Object.keys(glyphs.glyphs).length).toBe(before + 3);
+  });
+
+  test('out-of-range index returns undefined', () => {
+    expect(fresh().get(99999)).toBe(undefined);
+  });
+});
+
 describe('Full TrueType font roundtrip (parse → toArrayBuffer → reparse)', () => {
   describe('chi_eng_mixed_sample.pdf F2 — hinting tables and maxp', () => {
     let roundtrippedBuffer;

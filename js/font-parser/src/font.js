@@ -595,11 +595,16 @@ class GlyphSet {
   }
 
   get(index) {
-    if (typeof this.glyphs[index] === 'function') {
-      this.glyphs[index] = this.glyphs[index]();
+    let glyph = this.glyphs[index];
+    if (typeof glyph === 'function') {
+      glyph = this.glyphs[index] = glyph();
+    } else if (glyph === undefined && index >= 0 && index < this.length) {
+      // Unstored in-range glyph: an empty glyph that parseGlyfTable deliberately did not pre-create (subsets keep the full glyph count with most glyphs empty).
+      // Materialize a placeholder on first access and cache it, so per-index identity and any caller mutation (advanceWidth, etc.) persist across calls.
+      glyph = this.glyphs[index] = new Glyph({ index, font: this.font });
     }
 
-    return this.glyphs[index];
+    return glyph;
   }
 
   push(index, loader) {

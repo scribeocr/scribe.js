@@ -784,16 +784,20 @@ function buildPath(glyphs, glyph) {
 export function parseGlyfTable(data, start, loca, font) {
   const glyphs = new GlyphSet(font);
 
-  // The last element of the loca table is invalid.
-  for (let i = 0; i < loca.length - 1; i += 1) {
+  // The last element of the loca table is the end sentinel, so numGlyphs = loca.length - 1.
+  const numGlyphs = loca.length - 1;
+  for (let i = 0; i < numGlyphs; i += 1) {
     const offset = loca[i];
     const nextOffset = loca[i + 1];
     if (offset !== nextOffset) {
       glyphs.push(i, ttfGlyphLoader(font, i, parseGlyph, data, start + offset, buildPath));
-    } else {
-      glyphs.push(i, new Glyph({ index: i, font }));
     }
+    // Empty glyphs (offset === nextOffset) are intentionally not stored: a subset font keeps the original glyph count with most glyphs empty,
+    // so eagerly building a Glyph + Path + accessor graph for every empty slot would cost O(numGlyphs) memory for the handful actually used.
+    // GlyphSet.get() materializes a placeholder empty Glyph on demand for any in-range unstored index, so every index 0..numGlyphs-1 still resolves to a valid (empty) glyph.
   }
+  // push() only counted the stored (outlined) glyphs; restore the true glyph count.
+  glyphs.length = numGlyphs;
 
   return glyphs;
 }
