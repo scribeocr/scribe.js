@@ -417,6 +417,53 @@ export function stripText(streamText, { mode = 'invisible' } = {}) {
   }
   const tokens = tokenizeContentStream(streamText);
 
+  // Invisible mode strips redundant invisible (Tr=3) text, but must NOT drop an invisible op whose advance positions VISIBLE text.
+  // This is rare, but spacing characters are sometimes drawn using invisible text.
+  // A self-contained invisible run that positions only itself and ends at a reposition, reaching no visible show, still drops wholesale,
+  // so genuine redundant OCR layers are removed in full.
+  /** @type {Set<number>} */
+  const keepInvisible = new Set();
+  if (mode === 'invisible') {
+    let scanTr = 0;
+    /** @type {Array<number>} */
+    const scanTrStack = [];
+    // Token indices of invisible Tj/TJ seen since the last reposition or visible show.
+    /** @type {Array<number>} */
+    let pendingInvisible = [];
+    for (let ti = 0; ti < tokens.length; ti++) {
+      const tok = tokens[ti];
+      if (tok.type !== 'operator') continue;
+      const op = tok.value;
+      if (op === 'q') {
+        scanTrStack.push(scanTr);
+      } else if (op === 'Q') {
+        if (scanTrStack.length > 0) scanTr = /** @type {number} */ (scanTrStack.pop());
+      } else if (op === 'Tr') {
+        // Tr's operand is the number token immediately before it.
+        const prev = tokens[ti - 1];
+        if (prev && prev.type === 'number') scanTr = prev.value;
+      }
+
+      if (op === 'Td' || op === 'TD' || op === 'Tm' || op === 'T*' || op === 'BT' || op === 'ET') {
+        // Reposition: pending advances no longer position any following text.
+        pendingInvisible = [];
+      } else if (op === "'" || op === '"') {
+        // These do a T* (next line) first, resetting x for anything pending.
+        pendingInvisible = [];
+        // Keep an invisible '/" verbatim — its T* line move can shift content below it.
+        if (scanTr === 3) keepInvisible.add(ti);
+      } else if (op === 'Tj' || op === 'TJ') {
+        if (scanTr === 3) {
+          pendingInvisible.push(ti); // candidate; kept only if a visible show follows
+        } else {
+          // A retained (visible) show consumes the pending advances — keep them.
+          for (const idx of pendingInvisible) keepInvisible.add(idx);
+          pendingInvisible = [];
+        }
+      }
+    }
+  }
+
   /** @type {Array<PDFToken>} */
   const operandBuf = [];
   let tr = 0;
@@ -442,7 +489,8 @@ export function stripText(streamText, { mode = 'invisible' } = {}) {
   };
 
   let dropped = false;
-  for (const tok of tokens) {
+  for (let ti = 0; ti < tokens.length; ti++) {
+    const tok = tokens[ti];
     if (tok.type !== 'operator') {
       operandBuf.push(tok);
       continue;
@@ -460,7 +508,9 @@ export function stripText(streamText, { mode = 'invisible' } = {}) {
     }
 
     const isTextShow = op === 'Tj' || op === 'TJ' || op === "'" || op === '"';
-    const shouldDrop = isTextShow && (mode === 'all' || tr === 3);
+    // Drop a text-show op: in 'all' mode every show,
+    // in 'invisible' mode only a Tr=3 show not flagged load-bearing in keepInvisible.
+    const shouldDrop = isTextShow && (mode === 'all' || (tr === 3 && !keepInvisible.has(ti)));
     if (shouldDrop) {
       operandBuf.length = 0;
       dropped = true;
