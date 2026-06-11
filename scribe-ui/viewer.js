@@ -359,6 +359,19 @@ export class ScribeViewer {
       lastDist: null,
     };
 
+    // Browser-style middle-button autoscroll (hold and move) for OCR viewing (`invis`) mode.
+    this.autoScroll = {
+      active: false,
+      originX: 0,
+      originY: 0,
+      pointerX: 0,
+      pointerY: 0,
+      /** @type {?number} */
+      rafId: null,
+      /** @type {?HTMLDivElement} */
+      indicator: null,
+    };
+
     this.runSetInitial = true;
 
     /** Per-instance controls array (transformers/handles for the currently selected word). */
@@ -718,6 +731,97 @@ export class ScribeViewer {
     }
   }
 
+  /**
+   * Begin browser-style hold-and-move autoscroll: while the middle button is held the document scrolls vertically.
+   * Used in OCR viewing (`invis`) mode in place of the 1:1 drag-pan.
+   * @param {MouseEvent} event
+   */
+  startAutoScroll(event) {
+    this.deleteHTMLOverlay();
+    event.preventDefault(); // suppress the browser's own middle-click autoscroll
+    const a = this.autoScroll;
+    a.active = true;
+    a.originX = event.clientX;
+    a.originY = event.clientY;
+    a.pointerX = event.clientX;
+    a.pointerY = event.clientY;
+
+    if (this.stage) this.stage.container().style.cursor = 'all-scroll';
+
+    // Anchor indicator: a circle with a center dot at the press point (the familiar autoscroll affordance).
+    const ind = document.createElement('div');
+    Object.assign(ind.style, {
+      position: 'fixed',
+      left: `${a.originX}px`,
+      top: `${a.originY}px`,
+      width: '40px',
+      height: '40px',
+      marginLeft: '-20px',
+      marginTop: '-20px',
+      borderRadius: '50%',
+      border: '1px solid rgba(0,0,0,0.35)',
+      background: 'rgba(255,255,255,0.55)',
+      boxShadow: '0 0 3px rgba(0,0,0,0.3)',
+      zIndex: '2147483647',
+      pointerEvents: 'none',
+    });
+    const dot = document.createElement('div');
+    Object.assign(dot.style, {
+      position: 'absolute',
+      left: '50%',
+      top: '50%',
+      width: '4px',
+      height: '4px',
+      marginLeft: '-2px',
+      marginTop: '-2px',
+      borderRadius: '50%',
+      background: 'rgba(0,0,0,0.6)',
+    });
+    ind.appendChild(dot);
+    document.body.appendChild(ind);
+    a.indicator = ind;
+
+    const DEAD = 12; // px of slack before any scrolling starts
+    const RANGE = 400; // px past the dead zone at which the max speed is reached
+    const MIN = 10 / 60; // px-per-frame floor (~10 px/s) the instant past the dead zone, avoiding a sub-useful crawl
+    const MAX = 200; // px-per-frame at full deflection (~12000 px/s at 60fps)
+    const EXP = 3; // >1 -> gentle near the dead zone (fine, few-lines control), steep at the extremes
+    const velocity = (d) => {
+      const past = Math.min(Math.abs(d) - DEAD, RANGE);
+      if (past <= 0) return 0;
+      return Math.sign(d) * (MIN + (MAX - MIN) * (past / RANGE) ** EXP);
+    };
+    const tick = () => {
+      if (!a.active) return;
+      // Vertical-only, like a standard PDF viewer: the horizontal cursor offset is ignored so the page never drifts left/right.
+      // (Horizontal scrolling stays on Shift+wheel and the scrollbar.)
+      // Cursor below origin (vY > 0) -> scroll down -> content moves up -> negate (matches the wheel handler's sign).
+      const vY = velocity(a.pointerY - a.originY);
+      if (vY !== 0) this.panStage({ deltaY: -vY });
+      a.rafId = requestAnimationFrame(tick);
+    };
+    a.rafId = requestAnimationFrame(tick);
+  }
+
+  /** Stop middle-button autoscroll and clean up its indicator and cursor. */
+  stopAutoScroll() {
+    const a = this.autoScroll;
+    if (!a.active) return;
+    a.active = false;
+    if (a.rafId !== null) {
+      cancelAnimationFrame(a.rafId);
+      a.rafId = null;
+    }
+    if (this.stage) this.stage.container().style.cursor = '';
+    if (a.indicator) {
+      a.indicator.remove();
+      a.indicator = null;
+    }
+    if (this.enableHTMLOverlay && this._wordHTMLArr.length === 0) {
+      this.renderHTMLOverlay();
+    }
+  }
+
   /** @param {KonvaTouchEvent} event */
   executePinchTouch(event) {
     this.deleteHTMLOverlay();
@@ -886,6 +990,7 @@ export class ScribeViewer {
 
       // Return early if this was a drag or pinch rather than a selection.
       if (event.evt.button === 1 || (this.drag.isDragging && this.drag.dragDeltaTotal > 10) || this.drag.isPinching || this.drag.isResizingColumns) {
+        this.stopAutoScroll();
         this.stopDragPinch(event);
         return;
       }
@@ -1741,10 +1846,26 @@ ScribeViewer.renderCanvasWords = (page) => getDefault()._renderCanvasWords(page)
 
 document.addEventListener('mouseup', () => {
   for (const v of _allViewers) {
+    v.stopAutoScroll();
     if (v.enableHTMLOverlay && v.HTMLOverlayBackstopElem) {
       v.HTMLOverlayBackstopElem.style.display = 'none';
     }
   }
+});
+
+// Track the cursor at the document level while autoscrolling.
+document.addEventListener('mousemove', (event) => {
+  for (const v of _allViewers) {
+    if (v.autoScroll.active) {
+      v.autoScroll.pointerX = event.clientX;
+      v.autoScroll.pointerY = event.clientY;
+    }
+  }
+});
+
+// If the window loses focus while the middle button is held, the mouseup never arrives.
+window.addEventListener('blur', () => {
+  for (const v of _allViewers) v.stopAutoScroll();
 });
 
 document.addEventListener('touchend', () => {
@@ -1894,7 +2015,10 @@ document.addEventListener('mousedown', (event) => {
   if (v) {
     // Interacting with a viewer makes it the active one (the target of body-level keystrokes).
     _activeViewer = v;
-    if (v.doc.pageMetrics.length > 0 && event.button === 1) v.startDrag(event);
+    if (v.doc.pageMetrics.length > 0 && event.button === 1) {
+      if (v.state.displayMode === 'invis') v.startAutoScroll(event);
+      else v.startDrag(event);
+    }
     return;
   }
   // The click landed outside every viewer canvas.
