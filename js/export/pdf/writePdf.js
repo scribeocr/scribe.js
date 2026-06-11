@@ -6,7 +6,7 @@ import {
 } from './writePdfImages.js';
 
 import { ocrPageToPDFStream } from './writePdfText.js';
-import { buildHighlightAnnotObjects, consolidateAnnotations } from './writePdfAnnots.js';
+import { buildHighlightAnnotObjects, buildFreeTextAnnotObjects, consolidateAnnotations } from './writePdfAnnots.js';
 import { encodeStreamObject } from './writePdfStreams.js';
 
 /**
@@ -136,7 +136,10 @@ export async function writePdf({
       confThreshMed,
       imageObjIndices: pageImageObjIndices,
       imageName,
-      pageAnnotations: consolidateAnnotations(annotationsPages?.[i] || [], ocrArr?.[i]),
+      pageAnnotations: [
+        ...consolidateAnnotations((annotationsPages?.[i] || []).filter((a) => a.type !== 'freetext'), ocrArr?.[i]),
+        ...(annotationsPages?.[i] || []).filter((a) => a.type === 'freetext'),
+      ],
       humanReadable,
       docFonts,
     }));
@@ -399,9 +402,12 @@ async function ocrPageToPDF({
   // start at firstObjIndex + pdfObj.length + 1.
   if (pageAnnotations.length > 0) {
     const annotObjStart = firstObjIndex + pdfObj.length + 1;
-    const { objectTexts, annotRefs } = buildHighlightAnnotObjects(pageAnnotations, annotObjStart, outputDims);
+    const highlightAnns = pageAnnotations.filter((a) => a.type !== 'freetext');
+    const { objectTexts, annotRefs } = buildHighlightAnnotObjects(highlightAnns, annotObjStart, outputDims);
     for (const text of objectTexts) pdfObj.push(text);
-    pageObjStr += `/Annots [${annotRefs.join(' ')}]`;
+    const ft = buildFreeTextAnnotObjects(pageAnnotations.filter((a) => a.type === 'freetext'), annotObjStart + objectTexts.length, outputDims);
+    for (const text of ft.objectTexts) pdfObj.push(text);
+    pageObjStr += `/Annots [${[...annotRefs, ...ft.annotRefs].join(' ')}]`;
   }
 
   pageObjStr += '>>\nendobj\n\n';

@@ -561,7 +561,17 @@ export function resolveArrayValue(dictText, key, objCache) {
   // Use depth-aware bracket matching instead of [^\]]+ so that nested arrays
   // inside inline dicts (e.g. /Functions [ << /Domain [0 1] >> ]) are handled.
   let content = null;
-  const keyIdx = dictText.indexOf(`/${key}`);
+  // PDF names end at whitespace or a delimiter: a bare indexOf would let the key match a longer name's prefix
+  // (e.g. /C matching inside /Contents).
+  const needle = `/${key}`;
+  let keyIdx = -1;
+  for (let idx = dictText.indexOf(needle); idx !== -1; idx = dictText.indexOf(needle, idx + 1)) {
+    const nextCh = dictText[idx + needle.length];
+    if (nextCh === undefined || /[\s()<>[\]{}/%]/.test(nextCh)) {
+      keyIdx = idx;
+      break;
+    }
+  }
   if (keyIdx !== -1) {
     const after = dictText.substring(keyIdx + key.length + 1).trimStart();
     if (after[0] === '[') {

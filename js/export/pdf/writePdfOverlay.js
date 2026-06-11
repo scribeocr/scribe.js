@@ -5,7 +5,7 @@ import { byteIndexOf } from '../../pdf/pdfPrimitives.js';
 import { ObjectCache } from '../../pdf/objectCache.js';
 import { createPdfFontRefs, createEmbeddedFontType0 } from './writePdfFonts.js';
 import { ocrPageToPDFStream } from './writePdfText.js';
-import { buildHighlightAnnotObjects, consolidateAnnotations } from './writePdfAnnots.js';
+import { buildHighlightAnnotObjects, buildFreeTextAnnotObjects, consolidateAnnotations } from './writePdfAnnots.js';
 import { encodeStreamObject } from './writePdfStreams.js';
 import {
   parseTrailerInfo,
@@ -269,13 +269,18 @@ export async function overlayPdfText({
     /** @type {string[]} */
     let extraAnnotRefs = [];
     if (hasAnnots) {
-      const consolidated = consolidateAnnotations(pageAnnotations, pageObj);
-      const pageForEmit = consolidated.length > 0 ? consolidated : pageAnnotations;
-      const transformed = pageForEmit.map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty));
       const outputDims = { width: baseWidth, height: baseHeight };
+      const highlightAnns = pageAnnotations.filter((a) => a.type !== 'freetext');
+      const consolidated = consolidateAnnotations(highlightAnns, pageObj);
+      const pageForEmit = consolidated.length > 0 ? consolidated : highlightAnns;
+      const transformed = pageForEmit.map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty));
       const { objectTexts, annotRefs } = buildHighlightAnnotObjects(transformed, nextObjNum, outputDims);
       for (const t of objectTexts) newObjects.push({ objNum: nextObjNum++, content: t });
-      extraAnnotRefs = annotRefs;
+      const freeTextAnns = pageAnnotations.filter((a) => a.type === 'freetext')
+        .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty));
+      const ft = buildFreeTextAnnotObjects(freeTextAnns, nextObjNum, outputDims);
+      for (const t of ft.objectTexts) newObjects.push({ objNum: nextObjNum++, content: t });
+      extraAnnotRefs = [...annotRefs, ...ft.annotRefs];
     }
 
     const newPageObj = buildReplacementPageDict(pageInfo.objNum, pageInfo.objText, newContentsArray, resourcesObjNum, null, extraAnnotRefs, objCache);

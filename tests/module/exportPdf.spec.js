@@ -11,6 +11,19 @@ import { ASSETS_PATH, LANG_PATH } from './_paths.js';
 /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
 let doc;
 
+const FREETEXT_LABEL = 'Page label — review ✓';
+const FREETEXT_SPEC = {
+  page: 0,
+  bbox: {
+    left: 100, top: 50, right: 400, bottom: 80,
+  },
+  contents: FREETEXT_LABEL,
+  fontSize: 9,
+  textColor: '#cc0000',
+  fillColor: '#ffffcc',
+  opacity: 1,
+};
+
 const isNode = typeof process !== 'undefined' && process.versions && process.versions.node;
 
 /** @param {string} pdfPath */
@@ -215,23 +228,43 @@ describe('Check export for .pdf files.', () => {
     await doc.clear();
   });
 
-  test('Highlight annotations are preserved through PDF export and re-import', async () => {
+  test('Highlight and FreeText annotations are preserved through PDF export and re-import', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/complaint_1.pdf`, `${ASSETS_PATH}/complaint_1.abbyy.xml`]);
     doc.addHighlights([{ page: 0, startLine: 0, endLine: 2 }]);
     // addHighlights emits one entry per word; lines 0-2 of complaint_1.abbyy.xml have 41 words.
     expect(doc.annotations.pages[0].length).toBe(41);
 
+    doc.addFreeText([FREETEXT_SPEC]);
+    expect(doc.annotations.pages[0].length).toBe(42);
+
     const pdfBytes = await doc.exportData('pdf');
     await doc.clear();
 
     doc = await scribe.openDocument({ pdfFiles: [new Uint8Array(pdfBytes).buffer] });
-    const highlights = doc.annotations.pages.flatMap((p) => p || []);
-    // Export consolidates the 29 per-word highlights into a single multi-quad
+    const all = doc.annotations.pages.flatMap((p) => p || []);
+    const highlights = all.filter((a) => a.type === 'highlight');
+    const freeTexts = all.filter((a) => a.type === 'freetext');
+
+    // Export consolidates the per-word highlights into a single multi-quad
     // annotation spanning lines 0-2.
     expect(highlights.length).toBe(1);
     expect(highlights[0].quads.length).toBe(3);
     expect(highlights[0].color).toBe('#ffe93b');
     expect(highlights[0].opacity).toBe(0.4);
+
+    expect(freeTexts.length).toBe(1);
+    const ft = freeTexts[0];
+    expect(ft.type).toBe('freetext');
+    expect(ft.contents).toBe(FREETEXT_LABEL);
+    expect(ft.fontSize).toBeCloseTo(9, 10);
+    expect(ft.textColor).toBe('#cc0000');
+    expect(ft.fillColor).toBe('#ffffcc');
+    expect(ft.opacity).toBe(1);
+    expect(ft.bbox.left).toBe(100);
+    expect(ft.bbox.top).toBe(50);
+    expect(ft.bbox.right).toBe(400);
+    // The /Rect Y-flip round-trip (H - (H - 80)) leaves ~1e-13 float noise.
+    expect(ft.bbox.bottom).toBeCloseTo(80, 10);
     await doc.clear();
   });
 

@@ -3,7 +3,7 @@ import { DocFonts } from './fontContainer.js';
 import { ImageStore } from './imageContainer.js';
 import { scribeDocDefaults } from './scribeDocDefaults.js';
 import { clearObjectProperties } from '../utils/miscUtils.js';
-import { addHighlights as addHighlightsImpl, clearHighlights as clearHighlightsImpl } from '../addHighlights.js';
+import { addHighlights as addHighlightsImpl, addFreeText as addFreeTextImpl, clearHighlights as clearHighlightsImpl } from '../addHighlights.js';
 import { renderPageStatic as renderPageStaticImpl } from '../debug.js';
 import { exportData as exportDataImpl, download as downloadImpl } from '../export/export.js';
 import { dropFromWorkers, enableOpt as enableFontOptImpl } from '../fontContainerMain.js';
@@ -169,6 +169,15 @@ export class ScribeDoc {
    */
   addHighlights(highlights) {
     return addHighlightsImpl(this, highlights);
+  }
+
+  /**
+   * Add FreeText (text label) annotations at fixed page positions.
+   * @param {Parameters<typeof addFreeTextImpl>[1]} annotations
+   * @returns {ReturnType<typeof addFreeTextImpl>}
+   */
+  addFreeText(annotations) {
+    return addFreeTextImpl(this, annotations);
   }
 
   /**

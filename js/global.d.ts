@@ -33,7 +33,7 @@ declare global {
         fontState: FontState;
         layoutRegions: LayoutPage[];
         layoutDataTables: LayoutDataTablePage[];
-        annotations: AnnotationHighlight[][];
+        annotations: Annotation[][];
     }
 
     type StyleLookup = ('normal' | 'bold' | 'italic' | 'boldItalic');
@@ -209,6 +209,7 @@ declare global {
     type FileNode = import("./import/nodeAdapter.js").FileNode;
 
     type AnnotationHighlight = {
+        type?: 'highlight';
         bbox: bbox;
         color: string;
         opacity: number;
@@ -216,6 +217,22 @@ declare global {
         comment?: string;
         quads?: bbox[];
     };
+
+    type AnnotationFreeText = {
+        type: 'freetext';
+        /** Annotation rectangle in page coordinates (top-left origin, same frame as OCR words). */
+        bbox: bbox;
+        contents: string;
+        /** Text size in the same coordinate frame as bbox (converted to PDF points at write time). */
+        fontSize: number;
+        /** Text color, '#rrggbb'. */
+        textColor: string;
+        /** Background color, '#rrggbb'; omitted = transparent. */
+        fillColor?: string;
+        opacity: number;
+    };
+
+    type Annotation = AnnotationHighlight | AnnotationFreeText;
 
     // Layout objects
     type LayoutPage = import("./objects/layoutObjects.js").LayoutPage;

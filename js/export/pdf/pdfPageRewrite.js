@@ -432,14 +432,14 @@ export function buildReplacementPageDict(objNum, originalObjText, newContentsArr
 }
 
 /**
- * Transform a pixel-space AnnotationHighlight bbox into the coordinate frame the overlay's page uses.
+ * Transform a pixel-space annotation's geometry into the coordinate frame the overlay's page uses.
  *
- * @param {AnnotationHighlight} annot
+ * @param {Annotation} annot
  * @param {number} scaleX
  * @param {number} scaleY
  * @param {number} tx
  * @param {number} ty
- * @returns {AnnotationHighlight}
+ * @returns {Annotation}
  */
 export function overlayAnnotationBbox(annot, scaleX, scaleY, tx, ty) {
   const transformBbox = (b) => ({
@@ -453,5 +453,8 @@ export function overlayAnnotationBbox(annot, scaleX, scaleY, tx, ty) {
     bbox: transformBbox(annot.bbox),
   };
   if (annot.quads) out.quads = annot.quads.map(transformBbox);
+  // FreeText font size lives in the same pixel frame as the bbox,
+  // so convert it to page points alongside the rect for the text to fit its box at any scale.
+  if (annot.type === 'freetext' && typeof annot.fontSize === 'number') out.fontSize = annot.fontSize * scaleY;
   return out;
 }

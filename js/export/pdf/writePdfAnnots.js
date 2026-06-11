@@ -1,3 +1,12 @@
+/** UTF-16BE hex string with BOM, for /Contents values (Unicode-safe in all viewers). */
+function toUtf16BeHex(str) {
+  let hexStr = 'FEFF';
+  for (let ci = 0; ci < str.length; ci++) {
+    hexStr += str.charCodeAt(ci).toString(16).toUpperCase().padStart(4, '0');
+  }
+  return hexStr;
+}
+
 /**
  * @param {AnnotationHighlight[]} annotations
  * @param {number} startObjNum
@@ -39,13 +48,55 @@ export function buildHighlightAnnotObjects(annotations, startObjNum, outputDims)
     str += ` /CA ${annot.opacity}`;
     str += ' /F 4';
     if (annot.comment) {
-      // UTF-16BE hex string with BOM for Unicode compatibility.
-      let hexStr = 'FEFF';
-      for (let ci = 0; ci < annot.comment.length; ci++) {
-        hexStr += annot.comment.charCodeAt(ci).toString(16).toUpperCase().padStart(4, '0');
-      }
-      str += ` /Contents <${hexStr}>`;
+      str += ` /Contents <${toUtf16BeHex(annot.comment)}>`;
     }
+    str += '>>\nendobj\n\n';
+
+    objectTexts.push(str);
+  }
+
+  return { objectTexts, annotRefs };
+}
+
+/**
+ * @param {AnnotationFreeText[]} annotations
+ * @param {number} startObjNum
+ * @param {{ width: number, height: number }} outputDims
+ */
+export function buildFreeTextAnnotObjects(annotations, startObjNum, outputDims) {
+  const objectTexts = [];
+  const annotRefs = [];
+
+  for (let a = 0; a < annotations.length; a++) {
+    const annot = annotations[a];
+    const objNum = startObjNum + a;
+    annotRefs.push(`${objNum} 0 R`);
+
+    const hex = annot.textColor.replace('#', '');
+    const r = parseInt(hex.substring(0, 2), 16) / 255;
+    const g = parseInt(hex.substring(2, 4), 16) / 255;
+    const b = parseInt(hex.substring(4, 6), 16) / 255;
+
+    const pdfRectTop = outputDims.height - annot.bbox.top;
+    const pdfRectBottom = outputDims.height - annot.bbox.bottom;
+
+    let str = `${objNum} 0 obj\n`;
+    str += '<</Type /Annot /Subtype /FreeText';
+    str += ` /Rect [${annot.bbox.left} ${pdfRectBottom} ${annot.bbox.right} ${pdfRectTop}]`;
+    str += ` /Contents <${toUtf16BeHex(annot.contents)}>`;
+    // /DA is required for FreeText (ISO 32000-2 12.5.6.6).
+    // With no /AP, viewers synthesize the appearance from it.
+    // /Helv resolves without an /AcroForm /DR in all major viewers.
+    str += ` /DA (/Helv ${annot.fontSize} Tf ${r} ${g} ${b} rg)`;
+    str += ' /Q 0 /BS <</W 0>> /F 4';
+    if (annot.fillColor) {
+      const fhex = annot.fillColor.replace('#', '');
+      const fr = parseInt(fhex.substring(0, 2), 16) / 255;
+      const fg = parseInt(fhex.substring(2, 4), 16) / 255;
+      const fb = parseInt(fhex.substring(4, 6), 16) / 255;
+      str += ` /C [${fr} ${fg} ${fb}]`;
+    }
+    str += ` /CA ${annot.opacity}`;
     str += '>>\nendobj\n\n';
 
     objectTexts.push(str);

@@ -121,6 +121,48 @@ export function addHighlights(doc, highlights) {
 }
 
 /**
+ * @typedef {Object} FreeTextSpec
+ * @property {number} page - Page index (0-based).
+ * @property {bbox} bbox - Annotation rectangle in page coordinates
+ *   (top-left origin, same frame as OCR words).
+ * @property {string} contents - Text shown in the annotation.
+ * @property {number} [fontSize=10] - Text size, in the same coordinate frame as bbox.
+ * @property {string} [textColor='#000000'] - Hex text color.
+ * @property {string} [fillColor] - Hex background color; omitted = transparent.
+ * @property {number} [opacity=1] - Opacity (0 to 1).
+ */
+
+/**
+ * Add FreeText (text label) annotations at fixed page positions.
+ *
+ * @param {ScribeDoc} doc
+ * @param {Array<FreeTextSpec>} annotations
+ * @returns {{ annotationsAdded: number }}
+ */
+export function addFreeText(doc, annotations) {
+  let annotationsAdded = 0;
+  for (const annot of annotations) {
+    if (!annot.bbox || typeof annot.contents !== 'string') {
+      throw new Error('Each FreeText annotation must specify bbox and contents.');
+    }
+    if (!doc.annotations.pages[annot.page]) continue;
+    doc.annotations.pages[annot.page].push({
+      type: 'freetext',
+      bbox: {
+        left: annot.bbox.left, top: annot.bbox.top, right: annot.bbox.right, bottom: annot.bbox.bottom,
+      },
+      contents: annot.contents,
+      fontSize: annot.fontSize ?? 10,
+      textColor: annot.textColor || '#000000',
+      fillColor: annot.fillColor,
+      opacity: annot.opacity ?? 1,
+    });
+    annotationsAdded++;
+  }
+  return { annotationsAdded };
+}
+
+/**
  * Remove all highlights previously added by `addHighlights`.
  * @param {ScribeDoc} doc
  */
