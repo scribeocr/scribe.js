@@ -86,6 +86,27 @@ export function tokenizeContentStream(streamText) {
           } else if (dc === 0x3E && i + 1 < len && streamText.charCodeAt(i + 1) === 0x3E) {
             depth--;
             i += 2;
+          } else if (dc === 0x3C) {
+            // A lone '<' opens a hex string.
+            // Skip to its closing '>' so an abutting '>>>' run (hex close then dict close '>>') is not read as '>>' + '>',
+            // which would close the dict one '>' early.
+            i++;
+            while (i < len && streamText.charCodeAt(i) !== 0x3E) i++;
+            i++;
+          } else if (dc === 0x28) { // ( literal string: may contain < > ( )
+            i++;
+            let strDepth = 1;
+            while (i < len && strDepth > 0) {
+              const sc = streamText.charCodeAt(i);
+              if (sc === 0x5C) i += 2;
+              else {
+                if (sc === 0x28) strDepth++;
+                else if (sc === 0x29) strDepth--;
+                i++;
+              }
+            }
+          } else if (dc === 0x25) { // % comment to end of line
+            while (i < len && streamText.charCodeAt(i) !== 0x0A && streamText.charCodeAt(i) !== 0x0D) i++;
           } else {
             i++;
           }
