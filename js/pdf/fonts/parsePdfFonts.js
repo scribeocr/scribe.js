@@ -3015,6 +3015,12 @@ export function parseGlyphStreamPaths(streamText) {
   // them being filled along with subsequent painted sub-paths. Any path-paint
   // operator (f/S/B/etc.) advances this to the post-paint index.
   let unpaintedStart = commands.length;
+  // Current point and subpath start, in output (transformed) space: `v` needs the current point as its first control point,
+  // and h/close restores it to the subpath start.
+  let curX = 0;
+  let curY = 0;
+  let startX = 0;
+  let startY = 0;
   for (const tok of tokens) {
     // Skip text block contents (BT...ET) to avoid misinterpreting
     // font names/arguments as drawing operators (e.g. 'B' in '/FType3B').
@@ -3032,6 +3038,10 @@ export function parseGlyphStreamPaths(streamText) {
             const n = numStack.length;
             const p = transform(numStack[n - 2], numStack[n - 1]);
             commands.push({ type: 'M', x: p.x, y: p.y });
+            curX = p.x;
+            curY = p.y;
+            startX = p.x;
+            startY = p.y;
           }
           numStack.length = 0;
           break;
@@ -3041,6 +3051,8 @@ export function parseGlyphStreamPaths(streamText) {
             const n = numStack.length;
             const p = transform(numStack[n - 2], numStack[n - 1]);
             commands.push({ type: 'L', x: p.x, y: p.y });
+            curX = p.x;
+            curY = p.y;
           }
           numStack.length = 0;
           break;
@@ -3054,6 +3066,35 @@ export function parseGlyphStreamPaths(streamText) {
             commands.push({
               type: 'C', x1: p1.x, y1: p1.y, x2: p2.x, y2: p2.y, x: p3.x, y: p3.y,
             });
+            curX = p3.x; curY = p3.y;
+          }
+          numStack.length = 0;
+          break;
+        }
+        case 'v': {
+          // x2 y2 x3 y3 v. Bezier whose first control point is the current point.
+          if (numStack.length >= 4) {
+            const n = numStack.length;
+            const p2 = transform(numStack[n - 4], numStack[n - 3]);
+            const p3 = transform(numStack[n - 2], numStack[n - 1]);
+            commands.push({
+              type: 'C', x1: curX, y1: curY, x2: p2.x, y2: p2.y, x: p3.x, y: p3.y,
+            });
+            curX = p3.x; curY = p3.y;
+          }
+          numStack.length = 0;
+          break;
+        }
+        case 'y': {
+          // x1 y1 x3 y3 y. Bezier whose second control point coincides with the endpoint.
+          if (numStack.length >= 4) {
+            const n = numStack.length;
+            const p1 = transform(numStack[n - 4], numStack[n - 3]);
+            const p3 = transform(numStack[n - 2], numStack[n - 1]);
+            commands.push({
+              type: 'C', x1: p1.x, y1: p1.y, x2: p3.x, y2: p3.y, x: p3.x, y: p3.y,
+            });
+            curX = p3.x; curY = p3.y;
           }
           numStack.length = 0;
           break;
@@ -3074,12 +3115,19 @@ export function parseGlyphStreamPaths(streamText) {
             commands.push({ type: 'L', x: p3.x, y: p3.y });
             commands.push({ type: 'L', x: p4.x, y: p4.y });
             commands.push({ type: 'Z' });
+            // After re the current point is the rectangle origin (PDF spec 8.5.2.1).
+            curX = p1.x;
+            curY = p1.y;
+            startX = p1.x;
+            startY = p1.y;
           }
           numStack.length = 0;
           break;
         }
         case 'h':
           commands.push({ type: 'Z' });
+          curX = startX;
+          curY = startY;
           numStack.length = 0;
           break;
         case 'n':
