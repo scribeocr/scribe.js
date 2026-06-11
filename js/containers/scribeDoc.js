@@ -56,7 +56,7 @@ export class ScribeDoc {
     /** @type {{ pages: Array<LayoutDataTablePage> }} */
     this.layoutDataTables = { pages: [] };
 
-    /** @type {{ pages: Array<Array<AnnotationHighlight>> }} */
+    /** @type {{ pages: Array<Array<Annotation>> }} */
     this.annotations = { pages: [] };
 
     this.fonts = new DocFonts();

@@ -219,6 +219,7 @@ export function pdfHighlightToAnnotation(raw, transform) {
 
   /** @type {AnnotationHighlight} */
   const annot = {
+    type: 'highlight',
     bbox,
     color: hex,
     opacity: raw.opacity,

@@ -283,7 +283,7 @@ function replacePageResources(pageObjText, newResourcesDictText) {
  * @param {number} [params.confThreshMed]
  * @param {number} [params.proofOpacity]
  * @param {boolean} [params.humanReadable=false]
- * @param {Array<Array<AnnotationHighlight>>} [params.annotationsPages=[]]
+ * @param {Array<Array<Annotation>>} [params.annotationsPages=[]]
  * @param {?Array<{ page: number, bbox: [number, number, number, number] }>} [params.convertRegionsToPaths=null]
  * @param {DocFonts} [params.docFonts] - Per-document fonts for the OCR overlay text layer.
  */

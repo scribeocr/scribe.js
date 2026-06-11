@@ -29,7 +29,7 @@ import { encodeStreamObject } from './writePdfStreams.js';
  * @param {number} [params.proofOpacity=0.8] -
  * @param {?Array<ImageWrapper>} [params.images=null] - Array of images to include in PDF
  * @param {boolean} [params.includeImages=false] - Whether to include images in the PDF
- * @param {?Array<Array<AnnotationHighlight>>} [params.annotationsPages=null] - Per-page annotation arrays
+ * @param {?Array<Array<Annotation>>} [params.annotationsPages=null] - Per-page annotation arrays
  * @param {boolean} [params.humanReadable=false] - If true, emit uncompressed
  *   streams + hex-wrapped fonts for diffing. Default emits FlateDecode.
  * @param {import('../../containers/fontContainer.js').DocFonts} [params.docFonts] - Per-document fonts.
@@ -288,7 +288,7 @@ ${xrefOffset}
  * @param {?import('../../font-parser/src/font.js').Font} [params.fontChiSim=null]
  * @param {Array<number>} [params.imageObjIndices=[]] - Array of image object indices
  * @param {?string} [params.imageName=null]
- * @param {Array<AnnotationHighlight>} [params.pageAnnotations=[]] - Highlight annotations for this page
+ * @param {Array<Annotation>} [params.pageAnnotations=[]] - Annotations (highlights + FreeText) for this page
  * @param {boolean} [params.humanReadable=false]
  * @param {import('../../containers/fontContainer.js').DocFonts} [params.docFonts] - Per-document fonts.
  */

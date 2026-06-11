@@ -94,7 +94,7 @@ export function addHighlights(doc, highlights) {
 
         for (const word of wordsToHighlight) {
           doc.annotations.pages[highlight.page].push({
-            bbox: word.bbox, color, opacity, groupId, comment,
+            type: 'highlight', bbox: word.bbox, color, opacity, groupId, comment,
           });
         }
         totalLinesHighlighted++;
@@ -103,13 +103,13 @@ export function addHighlights(doc, highlights) {
       const matchWords = ocr.getMatchingWords(highlight.text, pageObj);
       for (const word of matchWords) {
         doc.annotations.pages[highlight.page].push({
-          bbox: word.bbox, color, opacity, groupId, comment,
+          type: 'highlight', bbox: word.bbox, color, opacity, groupId, comment,
         });
       }
       if (matchWords.length > 0) totalLinesHighlighted++;
     }
 
-    const added = doc.annotations.pages[highlight.page].filter((a) => a.groupId === groupId);
+    const added = doc.annotations.pages[highlight.page].filter((a) => a.type !== 'freetext' && a.groupId === groupId);
     if (added.length > 0) {
       groups.push({ page: highlight.page, groupId, bbox: calcBboxUnion(added.map((a) => a.bbox)) });
     }
@@ -169,6 +169,6 @@ export function addFreeText(doc, annotations) {
 export function clearHighlights(doc) {
   for (let p = 0; p < doc.annotations.pages.length; p++) {
     doc.annotations.pages[p] = doc.annotations.pages[p]
-      .filter((a) => !a.groupId?.startsWith(GROUP_PREFIX));
+      .filter((a) => a.type === 'freetext' || !a.groupId?.startsWith(GROUP_PREFIX));
   }
 }

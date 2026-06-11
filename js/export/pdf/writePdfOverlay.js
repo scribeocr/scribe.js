@@ -40,7 +40,7 @@ import { rebuildPdfSubset } from './subsetPdf.js';
  * @param {number} [params.confThreshMed=75]
  * @param {number} [params.proofOpacity=0.8]
  * @param {boolean} [params.humanReadable=false]
- * @param {Array<Array<AnnotationHighlight>>} [params.annotationsPages=[]] - Per-page annotation arrays
+ * @param {Array<Array<Annotation>>} [params.annotationsPages=[]] - Per-page annotation arrays
  * @param {?Array<{ page: number, bbox: [number, number, number, number] }>} [params.convertRegionsToPaths=null]
  *   When provided, source-PDF text whose origin (Trm[4], Trm[5]) falls inside any
  *   of the supplied user-space bboxes is replaced with vector Form XObject calls.
