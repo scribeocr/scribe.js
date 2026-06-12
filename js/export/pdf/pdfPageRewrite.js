@@ -326,6 +326,47 @@ export function annotLinkTargetsDroppedPage(annotObjNum, objCache, keptPageObjNu
 }
 
 /**
+ * Resolve an inheritable numeric-array page attribute (/MediaBox, /CropBox)
+ * by walking the /Parent chain when the page dict itself lacks it.
+ * @param {string} pageObjText
+ * @param {string} key
+ * @param {import('../../pdf/objectCache.js').ObjectCache|null} objCache
+ * @returns {number[]|null}
+ */
+function resolveInheritedNumArray(pageObjText, key, objCache) {
+  let text = pageObjText;
+  for (let depth = 0; depth < 32 && text; depth++) {
+    const own = resolveNumArray(text, key, objCache, null);
+    if (own) return own;
+    if (!objCache) return null;
+    const parentMatch = /\/Parent\s+(\d+)\s+\d+\s+R/.exec(text);
+    if (!parentMatch) return null;
+    text = objCache.getObjectText(Number(parentMatch[1]));
+  }
+  return null;
+}
+
+/**
+ * Resolve an inheritable integer page attribute (/Rotate) up the /Parent chain.
+ * @param {string} pageObjText
+ * @param {string} key
+ * @param {import('../../pdf/objectCache.js').ObjectCache|null} objCache
+ * @returns {number|null}
+ */
+function resolveInheritedInt(pageObjText, key, objCache) {
+  let text = pageObjText;
+  for (let depth = 0; depth < 32 && text; depth++) {
+    const own = resolveIntValue(text, key, objCache, NaN);
+    if (!Number.isNaN(own)) return own;
+    if (!objCache) return null;
+    const parentMatch = /\/Parent\s+(\d+)\s+\d+\s+R/.exec(text);
+    if (!parentMatch) return null;
+    text = objCache.getObjectText(Number(parentMatch[1]));
+  }
+  return null;
+}
+
+/**
  * Rebuild a /Page dict with overlay additions.
  *
  * @param {number} objNum
@@ -356,14 +397,14 @@ export function buildReplacementPageDict(objNum, originalObjText, newContentsArr
     if (parentMatch) dictStr += `/Parent ${parentMatch[1]}`;
   }
 
-  const mediaBox = resolveNumArray(originalObjText, 'MediaBox', objCache);
+  const mediaBox = resolveInheritedNumArray(originalObjText, 'MediaBox', objCache);
   if (mediaBox) dictStr += `/MediaBox[${mediaBox.join(' ')}]`;
 
-  const cropBox = resolveNumArray(originalObjText, 'CropBox', objCache);
+  const cropBox = resolveInheritedNumArray(originalObjText, 'CropBox', objCache);
   if (cropBox) dictStr += `/CropBox[${cropBox.join(' ')}]`;
 
-  const rot = resolveIntValue(originalObjText, 'Rotate', objCache, NaN);
-  if (!Number.isNaN(rot)) dictStr += `/Rotate ${rot}`;
+  const rot = resolveInheritedInt(originalObjText, 'Rotate', objCache);
+  if (rot !== null) dictStr += `/Rotate ${rot}`;
 
   // Merge source /Annots with extraAnnotRefs (new user-added highlights).
   // When no extras are supplied we emit the source array verbatim so
