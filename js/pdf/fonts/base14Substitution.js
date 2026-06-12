@@ -1,4 +1,32 @@
-import { normalizeBase14Name } from './standardFontMetrics.js';
+import { normalizeBase14Name, standardFontToCSS } from './standardFontMetrics.js';
+
+/**
+ * Classify a parsed PDF font into a CSS generic family keyword ('sans-serif'|'serif'|'monospace'|'cursive').
+ * Used as the third tier of the substitution cascade (after the embedded face and standardFontToCSS),
+ * so a non-embedded font whose name resembles no standard family still renders in the correct style instead of the platform default serif.
+ *
+ * @param {{ baseName?: string, familyName?: string, serifFlag?: boolean }} fontObj
+ * @returns {'sans-serif'|'serif'|'monospace'|'cursive'}
+ */
+export function cssGenericForFontObj(fontObj) {
+  const css = standardFontToCSS(fontObj.baseName || '');
+  if (css) {
+    if (/monospace/i.test(css)) return 'monospace';
+    if (/cursive/i.test(css)) return 'cursive';
+    if (/sans-serif/i.test(css)) return 'sans-serif';
+    if (/serif/i.test(css)) return 'serif';
+  }
+  // Strip subset prefix "ABCDEF+" before name-based checks.
+  const name = (fontObj.baseName || fontObj.familyName || '').replace(/^[A-Z]{6}\+/, '');
+  if (/mono|courier|consola|typewriter|fixedsys|andale|inconsolata|menlo|lucidacons|sourcecode|firacode/i.test(name)) return 'monospace';
+  if (/script|cursive|brush|chancery|handwrit|calligraph/i.test(name)) return 'cursive';
+  // Match "sans"/"serif" used in camelCase. "sans" is tested first so "sans-serif" forms stay sans.
+  const lowerName = name.toLowerCase();
+  if (lowerName.includes('sans') || /gothic/i.test(name)) return 'sans-serif';
+  if (lowerName.includes('serif')) return 'serif';
+  if (fontObj.serifFlag) return 'serif';
+  return 'sans-serif';
+}
 
 /**
  * Resolve a Base14 PDF font name to its bundled substitute.

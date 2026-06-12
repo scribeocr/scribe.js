@@ -76,8 +76,6 @@ export const scribeDocDefaults = {
 
   humanReadablePDF: false,
 
-  intermediatePDF: false,
-
   reflow: true,
 
   lineNumbers: false,
@@ -85,6 +83,12 @@ export const scribeDocDefaults = {
   removeMargins: false,
 
   includeImages: false,
+
+  /**
+   * When adding an invisible text overlay to a page with existing text contents,
+   * convert the existing text contents to paths to prevent a duplicative text layer.
+   */
+  convertDupSourceTextToPaths: false,
 
   /**
    * Embed fonts inline (base64 `data:` URIs) in HTML exports instead of referencing the jsDelivr CDN.

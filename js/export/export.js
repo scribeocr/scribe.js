@@ -9,7 +9,7 @@ import { writeText } from './writeText.js';
 import { writeHtml } from './writeHtml.js';
 import { writeAlto } from './writeAlto.js';
 import { writeMarkdown } from './writeMarkdown.js';
-import { removeCircularRefsOcr } from '../objects/ocrObjects.js';
+import { OcrPage, removeCircularRefsOcr } from '../objects/ocrObjects.js';
 import { removeCircularRefsDataTables } from '../objects/layoutObjects.js';
 
 /** @typedef {import('../containers/scribeDoc.js').ScribeDoc} ScribeDoc */
@@ -29,11 +29,16 @@ import { removeCircularRefsDataTables } from '../objects/layoutObjects.js';
  * @property {number} [confThreshMed]
  * @property {boolean} [standardizePageSize]
  * @property {boolean} [humanReadablePDF]
- * @property {boolean} [intermediatePDF]
  * @property {boolean} [reflow]
  * @property {boolean} [lineNumbers]
  * @property {boolean} [removeMargins]
  * @property {boolean} [includeImages]
+ * @property {boolean} [convertDupSourceTextToPaths] - When overlaying onto a PDF input,
+ *    convert the input PDF's vector text to glyph outlines before adding the invisible OCR text layer.
+ *    Ignored unless the export uses the overlay path (PDF input, addOverlay, displayMode !== 'ebook').
+ * @property {boolean} [routePageCategories] - Apply the per-page flatten/passthrough routing regardless of display mode.
+ *    Defaults to true for 'invis' and false otherwise.
+ *    Review tooling sets it with displayMode 'proof' to render the searchable flow's routing with a visible confidence-coloured overlay.
  * @property {boolean} [embedFonts]
  * @property {boolean} [enableLayout]
  * @property {boolean} [xlsxFilenameColumn]
@@ -75,6 +80,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
   const lineNumbers = options.lineNumbers ?? scribeDocDefaults.lineNumbers;
   const removeMargins = options.removeMargins ?? scribeDocDefaults.removeMargins;
   const includeImagesOpt = options.includeImages ?? scribeDocDefaults.includeImages;
+  const convertDupSourceTextToPaths = options.convertDupSourceTextToPaths ?? scribeDocDefaults.convertDupSourceTextToPaths;
   const embedFonts = options.embedFonts ?? scribeDocDefaults.embedFonts;
   const enableLayout = options.enableLayout ?? scribeDocDefaults.enableLayout;
   const compressScribe = options.compressScribe ?? scribeDocDefaults.compressScribe;
@@ -102,6 +108,11 @@ export async function exportData(doc, format = 'txt', options = {}) {
   let content;
 
   if (format === 'pdf') {
+    if (convertDupSourceTextToPaths && !(displayMode !== 'ebook' && doc.inputData.pdfMode && addOverlay)) {
+      console.warn('convertDupSourceTextToPaths is only applied when overlaying OCR text onto a PDF input '
+        + "(requires a PDF input, addOverlay enabled, and displayMode other than 'ebook'); ignoring.");
+    }
+
     const dimsLimit = { width: -1, height: -1 };
     if (standardizePageSize) {
       for (const i of pageArr) {
@@ -126,12 +137,48 @@ export async function exportData(doc, format = 'txt', options = {}) {
           let overlayOcrArr = ocrDownload;
           let overlayPageMetricsArr = doc.pageMetrics;
           let overlayAnnotationsPages = doc.annotations.pages;
+          let pageCats = doc.inputData.pageCategories;
           if (pageArr.length < doc.inputData.pageCount) {
+            const fullCats = pageCats;
             basePdfData = await subsetPdf(basePdfData, pageArr);
             overlayOcrArr = pageArr.map((i) => ocrDownload[i]);
             overlayPageMetricsArr = pageArr.map((i) => doc.pageMetrics[i]);
             overlayAnnotationsPages = pageArr.map((i) => doc.annotations.pages[i] || []);
+            pageCats = fullCats ? pageArr.map((i) => fullCats[i]) : null;
           }
+
+          // convertFullPages and convertBrokenType3 control per-page flatten vs. passthrough.
+          // They default to the legacy path: a full overlay on every page plus broken-Type3 conversion.
+          // The block below overrides that by routing on import-time page categories,
+          // engaged for the searchable ('invis') flow by default and for a visible mode only when routePageCategories is set.
+          // With routing off or categories absent (old .scribe.json sessions), the legacy defaults stand.
+          /** @type {?number[]} */
+          let convertFullPages = null;
+          let convertBrokenType3 = true;
+          // convertDupSourceTextToPaths converts ALL text to paths by explicit request,
+          // so it skips the category routing below entirely.
+          const routeCategories = options.routePageCategories ?? (displayMode === 'invis');
+          if (routeCategories && !convertDupSourceTextToPaths && pageCats && pageCats.length > 0
+            && (overlayOcrArr.length === 0 || overlayOcrArr.length === pageCats.length)) {
+            const flagged = pageCats.map((c) => !!(c && (c.hasLargeImage || c.hasPathText || c.hasBrokenFontRun || c.hasImageText)));
+            // Flatten exists ONLY to support an invisible text layer:
+            // a flagged page is flattened exactly when it has overlay text to add (from any source), and that text is kept.
+            // A flagged page with no text, and any clean page, gets an empty overlay and is left unflattened,
+            // so its native text stays the only text layer.
+            const ocrIn = overlayOcrArr;
+            convertFullPages = [];
+            overlayOcrArr = pageCats.map((c, i) => {
+              const p = ocrIn[i];
+              const hasWords = !!(p && p.lines && p.lines.length > 0);
+              if (flagged[i] && hasWords) {
+                convertFullPages.push(i);
+                return p;
+              }
+              return new OcrPage(i, p?.dims || overlayPageMetricsArr[i].dims);
+            });
+            convertBrokenType3 = false;
+          }
+
           content = await overlayPdfText({
             basePdfData,
             ocrArr: overlayOcrArr,
@@ -144,6 +191,9 @@ export async function exportData(doc, format = 'txt', options = {}) {
             proofOpacity: overlayOpacity / 100,
             humanReadable: humanReadablePDF,
             annotationsPages: overlayAnnotationsPages,
+            convertTextToPaths: convertDupSourceTextToPaths,
+            convertFullPages,
+            convertBrokenType3ToPaths: convertBrokenType3,
             docFonts: doc.fonts,
           });
         } catch (error) {

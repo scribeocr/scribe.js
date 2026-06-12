@@ -299,6 +299,19 @@ export function extractType3DistinctGlyphs(pdfBytes) {
   return [...seen.values()];
 }
 
+// Type3 CharProc operators that provably leave no marks on the page:
+// glyph metrics (d0/d1, plus a bare `d` because the token scan reduces them to `d`),
+// graphics/colour/line state, clipping-path consumption, marked content, and compatibility sections.
+// Path-construction operators are deliberately excluded, since a CharProc that uses them is judged on its path commands.
+const NON_MARKING_CHARPROC_OPS = new Set([
+  'd0', 'd1', 'd',
+  'q', 'Q', 'cm', 'gs',
+  'w', 'J', 'j', 'M', 'ri', 'i',
+  'g', 'G', 'rg', 'RG', 'k', 'K', 'cs', 'CS', 'sc', 'SC', 'scn', 'SCN',
+  'W', 'W*', 'n',
+  'BMC', 'BDC', 'EMC', 'MP', 'DP', 'BX', 'EX',
+]);
+
 /**
  * Parse a Type3 font object and extract glyph bounding boxes.
  * @param {string} objText
@@ -372,13 +385,21 @@ export function parseType3Font(objText, objCache) {
 
     const streamBytes = objCache.getStreamBytes(streamObjNum);
     if (!streamBytes) {
-      glyphs[glyphName] = { bbox: null, advanceWidth: 0 };
+      // Unreadable CharProc: no evidence the glyph draws nothing, so it is not provably empty.
+      // Consumers must skip it, never drop it.
+      glyphs[glyphName] = { bbox: null, advanceWidth: 0, provablyEmpty: false };
       continue;
     }
 
     const streamText = new TextDecoder('latin1').decode(streamBytes);
     const parsed = parseGlyphStream(streamText);
     const pathData = parseGlyphStreamPaths(streamText);
+    // Zero path commands does not prove emptiness: bitmaps, Do, nested text, and shadings paint with none,
+    // so require every token to be a known non-marking operator.
+    let provablyEmpty = true;
+    for (const op of streamText.replace(/%[^\r\n]*/g, '').match(/[a-zA-Z*]+/g) || []) {
+      if (!NON_MARKING_CHARPROC_OPS.has(op)) { provablyEmpty = false; break; }
+    }
     glyphs[glyphName] = {
       ...parsed,
       commands: pathData.commands,
@@ -391,6 +412,7 @@ export function parseType3Font(objText, objCache) {
       dashPhase: pathData.dashPhase,
       isD0: pathData.isD0,
       isD1: pathData.isD1,
+      provablyEmpty,
     };
   }
 

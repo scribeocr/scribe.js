@@ -1,6 +1,6 @@
 import {
   findXrefOffset, parseXref, getPageContentStreams,
-  getPageObjects, collectPageTreeObjNums,
+  getPageObjects, collectPageTreeObjNums, findRootObjNum,
 } from '../../pdf/parsePdfUtils.js';
 import {
   extractDict, parseDictEntries, bytesToLatin1,
@@ -285,6 +285,8 @@ function replacePageResources(pageObjText, newResourcesDictText) {
  * @param {boolean} [params.humanReadable=false]
  * @param {Array<Array<Annotation>>} [params.annotationsPages=[]]
  * @param {?Array<{ page: number, bbox: [number, number, number, number] }>} [params.convertRegionsToPaths=null]
+ * @param {?number[]} [params.convertFullPages=null] - Page indices to flatten (whole-page conversion that also runs without overlay text).
+ * @param {boolean} [params.convertBrokenType3ToPaths=false] - Convert glyphs drawn by broken-ToUnicode Type3 fonts to paths on every page.
  * @param {DocFonts} [params.docFonts] - Per-document fonts for the OCR overlay text layer.
  */
 export async function rebuildPdfSubset({
@@ -296,6 +298,8 @@ export async function rebuildPdfSubset({
   humanReadable = false,
   annotationsPages = [],
   convertRegionsToPaths = null,
+  convertFullPages = null,
+  convertBrokenType3ToPaths = false,
   docFonts,
 }) {
   const overlayEnabled = !!(ocrArr && pageMetricsArr && pdfFonts);
@@ -308,7 +312,10 @@ export async function rebuildPdfSubset({
       regionsByPage.get(r.page).push(r.bbox);
     }
   }
-  const conversionState = regionsByPage.size > 0 ? createConversionState() : null;
+  // Pages listed in `convertFullPages` are flattened (whole-page text-to-paths).
+  const fullPageSet = new Set(convertFullPages || []);
+  const conversionState = (regionsByPage.size > 0 || convertBrokenType3ToPaths)
+    ? createConversionState() : null;
 
   const { pageTreeObjNums } = collectPageTreeObjNums(objCache);
 
@@ -370,23 +377,18 @@ export async function rebuildPdfSubset({
 
       const hasText = textContentObjStr && textContentObjStr.length > 0;
       const hasAnnots = pageAnnotations.length > 0;
-      if (!hasText && !hasAnnots) continue;
+      // Region conversion (`convertRegionsToPaths`), full-page flatten, and broken-Type3 all convert text to paths without an overlay text layer,
+      // so this gate must stay independent of `hasText`.
+      const hasConvert = convertBrokenType3ToPaths || fullPageSet.has(i) || regionsByPage.has(i);
+      if (!hasText && !hasAnnots && !hasConvert) continue;
 
       /** @type {string[]|null} */
       let newContentsArray = null;
       /** @type {number|null} */
       let resourcesObjNum = null;
 
-      if (hasText) {
+      if (hasText || hasConvert) {
         for (const font of pageFontsUsed) pdfFontsUsed.add(font);
-
-        const qSaveStr = 'q\n';
-        const qSaveObjNum = nextObjNum++;
-        allOutputObjects.push({ objNum: qSaveObjNum, content: `${qSaveObjNum} 0 obj\n<</Length ${qSaveStr.length}>>\nstream\n${qSaveStr}endstream\nendobj\n\n` });
-
-        const qOverlayStr = `Q\nq ${scaleX} 0 0 ${scaleY} ${tx} ${ty} cm\n${textContentObjStr}Q\n`;
-        const qOverlayObjNum = nextObjNum++;
-        allOutputObjects.push({ objNum: qOverlayObjNum, content: await encodeStreamObject(qOverlayObjNum, qOverlayStr, { humanReadable }) });
 
         const existingContentsRefs = parseExistingContents(pageInfo.objText, objCache);
         const stripConvertResult = await rewriteContentsStripAndConvert({
@@ -398,12 +400,32 @@ export async function rebuildPdfSubset({
           allocObjNum,
           pushObj: pushOutputObj,
           humanReadable,
+          convertBrokenType3ToPaths,
         });
-        newContentsArray = [
-          `${qSaveObjNum} 0 R`,
-          ...stripConvertResult.refs,
-          `${qOverlayObjNum} 0 R`,
-        ];
+
+        // When broken-Type3 conversion is the only reason this page is here and nothing changed,
+        // leave it for the copy-through loop rather than rewrite it.
+        const convertChanged = stripConvertResult.refs !== existingContentsRefs
+          || stripConvertResult.xobjEntries.size > 0;
+        if (!hasText && !hasAnnots && !convertChanged) continue;
+
+        if (hasText) {
+          const qSaveStr = 'q\n';
+          const qSaveObjNum = nextObjNum++;
+          allOutputObjects.push({ objNum: qSaveObjNum, content: `${qSaveObjNum} 0 obj\n<</Length ${qSaveStr.length}>>\nstream\n${qSaveStr}endstream\nendobj\n\n` });
+
+          const qOverlayStr = `Q\nq ${scaleX} 0 0 ${scaleY} ${tx} ${ty} cm\n${textContentObjStr}Q\n`;
+          const qOverlayObjNum = nextObjNum++;
+          allOutputObjects.push({ objNum: qOverlayObjNum, content: await encodeStreamObject(qOverlayObjNum, qOverlayStr, { humanReadable }) });
+
+          newContentsArray = [
+            `${qSaveObjNum} 0 R`,
+            ...stripConvertResult.refs,
+            `${qOverlayObjNum} 0 R`,
+          ];
+        } else {
+          newContentsArray = [...stripConvertResult.refs];
+        }
 
         const existingResourcesStr = resolvePageResources(pageInfo.objText, objCache);
         let overlayFontsStr = '';
@@ -419,7 +441,7 @@ export async function rebuildPdfSubset({
             overlayXObjectsStr += `/${name} ${objN} 0 R\n`;
           }
         }
-        const overlayExtGStateStr = `/GSO0 <</ca 0.0>>/GSO1 <</ca ${proofOpacity}>>`;
+        const overlayExtGStateStr = hasText ? `/GSO0 <</ca 0.0>>/GSO1 <</ca ${proofOpacity}>>` : '';
         const mergedResourcesStr = mergeResources(existingResourcesStr, overlayFontsStr, overlayExtGStateStr, objCache, overlayXObjectsStr);
 
         resourcesObjNum = nextObjNum++;
@@ -497,6 +519,26 @@ export async function rebuildPdfSubset({
     const rewritten = rewrittenPageTexts.get(pages[i].objNum);
     tracingTexts.push(rewritten || pages[i].objText);
   }
+
+  // Preserve the catalog's /OCProperties (optional-content configuration) on the rebuilt catalog.
+  // Without this, ObjectCache.getOffOCGs() finds no OFF groups and every OFF layer (e.g. alternate values or registration/crop marks) paints.
+  let ocPropertiesEntry = '';
+  const rootObjNum = findRootObjNum(pdfBytes);
+  const catText = rootObjNum != null ? objCache.getObjectText(rootObjNum) : null;
+  if (catText) {
+    const ocIdx = catText.indexOf('/OCProperties');
+    if (ocIdx >= 0) {
+      const after = catText.slice(ocIdx + '/OCProperties'.length).replace(/^\s+/, '');
+      if (after.startsWith('<<')) {
+        const dict = extractDict(catText, catText.indexOf('<<', ocIdx));
+        if (dict) { ocPropertiesEntry = `/OCProperties ${dict}`; tracingTexts.push(dict); }
+      } else {
+        const refM = /^(\d+)\s+(\d+)\s+R/.exec(after);
+        if (refM) { ocPropertiesEntry = `/OCProperties ${refM[1]} ${refM[2]} R`; tracingTexts.push(`${refM[1]} ${refM[2]} R`); }
+      }
+    }
+  }
+
   const referencedObjNums = traceReferencedObjects(tracingTexts, objCache, pageTreeObjNums);
 
   for (const i of pageIndices) {
@@ -529,7 +571,7 @@ export async function rebuildPdfSubset({
     keptPageRefs.push(`${pages[i].objNum} 0 R`);
   }
 
-  allOutputObjects.push({ objNum: catalogObjNum, content: `${catalogObjNum} 0 obj\n<</Type/Catalog/Pages ${pagesRootObjNum} 0 R>>\nendobj\n\n` });
+  allOutputObjects.push({ objNum: catalogObjNum, content: `${catalogObjNum} 0 obj\n<</Type/Catalog/Pages ${pagesRootObjNum} 0 R${ocPropertiesEntry ? ` ${ocPropertiesEntry}` : ''}>>\nendobj\n\n` });
   allOutputObjects.push({ objNum: pagesRootObjNum, content: `${pagesRootObjNum} 0 obj\n<</Type/Pages/Kids[${keptPageRefs.join(' ')}]/Count ${keptPageRefs.length}>>\nendobj\n\n` });
 
   // Build the new PDF

@@ -87,6 +87,7 @@ export async function rewriteContentsStrippingInvisibleText(existingContentsRefs
  * @param {() => number} params.allocObjNum
  * @param {(obj: { objNum: number, content: string | Uint8Array | import('./writePdfStreams.js').PdfBinaryObject }) => void} params.pushObj
  * @param {boolean} params.humanReadable
+ * @param {boolean} [params.convertBrokenType3ToPaths] - When true, convert all glyphs drawn by broken-ToUnicode Type3 fonts to paths.
  * @returns {Promise<{
  *   refs: string[],
  *   xobjEntries: Map<string, number>,
@@ -96,7 +97,7 @@ export async function rewriteContentsStrippingInvisibleText(existingContentsRefs
  */
 export async function rewriteContentsStripAndConvert({
   existingContentsRefs, pageObjText, bboxes, conversionState,
-  objCache, allocObjNum, pushObj, humanReadable,
+  objCache, allocObjNum, pushObj, humanReadable, convertBrokenType3ToPaths = false,
 }) {
   /** @type {Map<string, number>} */
   const emptyXobj = new Map();
@@ -132,7 +133,7 @@ export async function rewriteContentsStripAndConvert({
   const merged = parts.join('\n');
   const { text: strippedText, dropped } = stripText(merged, { mode: 'invisible' });
 
-  const wantConvert = !!bboxes && bboxes.length > 0 && !!conversionState;
+  const wantConvert = ((!!bboxes && bboxes.length > 0) || convertBrokenType3ToPaths) && !!conversionState;
   let workingText = strippedText;
   /** @type {Map<string, number>} */
   let xobjEntries = emptyXobj;
@@ -152,6 +153,7 @@ export async function rewriteContentsStripAndConvert({
       allocObjNum,
       pushObj,
       humanReadable,
+      convertBrokenType3ToPaths,
     });
     if (result.skipped) skipped = result.skipped;
     if (result.changed) {

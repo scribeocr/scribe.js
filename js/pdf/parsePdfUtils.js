@@ -1353,3 +1353,86 @@ export function getPageContentStreams(pageObjText, objCache) {
  *   { type: 'inlineImage', value: { dictText: string, imageData: string } }
  * )} PDFToken
  */
+
+/**
+ * Whether an /OCG or /OCMD object is hidden, given the set of OFF OCG object numbers.
+ * Resolves /OCMD membership policy (AnyOn/AllOn/AnyOff/AllOff).
+ *
+ * @param {number} ocObjNum - Object number of an /OCG or /OCMD dict
+ * @param {Set<number>} offOCGs - Set of OCG object numbers that are OFF
+ * @param {ObjectCache} objCache - PDF object cache
+ * @returns {boolean}
+ */
+export function isOCObjHidden(ocObjNum, offOCGs, objCache) {
+  if (offOCGs.size === 0) return false;
+  const ocText = objCache.getObjectText(ocObjNum);
+  if (!ocText) return false;
+  if (/\/Type\s*\/OCG/.test(ocText)) return offOCGs.has(ocObjNum);
+  if (/\/Type\s*\/OCMD/.test(ocText)) {
+    const singleRef = /\/OCGs\s+(\d+)\s+\d+\s+R/.exec(ocText);
+    if (singleRef) return offOCGs.has(Number(singleRef[1]));
+    const arrayMatch = /\/OCGs\s*\[([^\]]*)\]/.exec(ocText);
+    if (arrayMatch) {
+      const refs = [...arrayMatch[1].matchAll(/(\d+)\s+\d+\s+R/g)].map((m) => Number(m[1]));
+      const policyMatch = /\/P\s*\/(\w+)/.exec(ocText);
+      const policy = policyMatch ? policyMatch[1] : 'AnyOn';
+      if (policy === 'AnyOn') return refs.every((r) => offOCGs.has(r));
+      if (policy === 'AllOn') return refs.some((r) => offOCGs.has(r));
+      if (policy === 'AnyOff') return !refs.some((r) => offOCGs.has(r));
+      if (policy === 'AllOff') return !refs.every((r) => offOCGs.has(r));
+    }
+  }
+  return false;
+}
+
+/**
+ * Whether a Form XObject is hidden by an /OC entry directly on its dict.
+ *
+ * @param {string} formObjText - The form XObject dictionary text
+ * @param {Set<number>} offOCGs - Set of OCG object numbers that are OFF
+ * @param {ObjectCache} objCache - PDF object cache
+ * @returns {boolean}
+ */
+export function isFormOCHidden(formObjText, offOCGs, objCache) {
+  if (offOCGs.size === 0) return false;
+  const ocMatch = /\/OC\s+(\d+)\s+\d+\s+R/.exec(formObjText);
+  if (!ocMatch) return false;
+  return isOCObjHidden(Number(ocMatch[1]), offOCGs, objCache);
+}
+
+/**
+ * Build the set of /Resources/Properties names whose OCG/OCMD is currently OFF.
+ * Content wrapped in `/OC /<name> BDC ... EMC` for such a name must not be painted.
+ *
+ * @param {string} resourceOwnerText - Page or Form XObject dict text
+ * @param {ObjectCache} objCache - PDF object cache
+ * @param {Set<number>} offOCGs - Set of OCG object numbers that are OFF
+ * @returns {Set<string>}
+ */
+export function parseHiddenOCMCNames(resourceOwnerText, objCache, offOCGs) {
+  /** @type {Set<string>} */
+  const hidden = new Set();
+  if (offOCGs.size === 0) return hidden;
+
+  let resourcesText = resourceOwnerText;
+  const resRefMatch = /\/Resources\s+(\d+)\s+\d+\s+R/.exec(resourceOwnerText);
+  if (resRefMatch) {
+    const resObj = objCache.getObjectText(Number(resRefMatch[1]));
+    if (resObj) resourcesText = resObj;
+  }
+  const propStart = resourcesText.indexOf('/Properties');
+  if (propStart === -1) return hidden;
+  let propDictText;
+  const afterProp = resourcesText.substring(propStart + 11).trim();
+  if (afterProp.startsWith('<<')) {
+    propDictText = extractDict(resourcesText, propStart + 11 + resourcesText.substring(propStart + 11).indexOf('<<'));
+  } else {
+    const refMatch = /^(\d+)\s+\d+\s+R/.exec(afterProp);
+    if (refMatch) propDictText = objCache.getObjectText(Number(refMatch[1]));
+  }
+  if (!propDictText) return hidden;
+  for (const m of propDictText.matchAll(/\/([^\s/<>[\]]+)\s+(\d+)\s+\d+\s+R/g)) {
+    if (isOCObjHidden(Number(m[2]), offOCGs, objCache)) hidden.add(m[1]);
+  }
+  return hidden;
+}

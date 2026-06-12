@@ -45,6 +45,16 @@ import { rebuildPdfSubset } from './subsetPdf.js';
  *   When provided, source-PDF text whose origin (Trm[4], Trm[5]) falls inside any
  *   of the supplied user-space bboxes is replaced with vector Form XObject calls.
  *   Glyphs from non-embedded or unsupported fonts are left as text.
+ * @param {boolean} [params.convertTextToPaths=false] - Convenience flag: when true and `convertRegionsToPaths` is not supplied,
+ *   every page is converted in full (one whole-page region per page from its CropBox/MediaBox).
+ *   An explicit `convertRegionsToPaths` wins.
+ * @param {?number[]} [params.convertFullPages=null] - Page indices to flatten:
+ *   each listed page gets a synthesized whole-page region (CropBox/MediaBox), converting ALL its text to paths,
+ *   including (on the rebuild path) pages with no overlay text.
+ *   Used by the page-category flatten/passthrough export.
+ * @param {boolean} [params.convertBrokenType3ToPaths=false] - When true, glyphs drawn by broken-ToUnicode Type3 fonts are converted to paths on every page (font-scoped, no region needed),
+ *   so the gibberish PUA text they carry stops being selectable and the invisible OCR overlay becomes the only copy source.
+ *   Other fonts' text is left selectable.
  * @param {import('../../containers/fontContainer.js').DocFonts} [params.docFonts] - Per-document fonts.
  * @returns {Promise<ArrayBuffer>}
  */
@@ -62,6 +72,9 @@ export async function overlayPdfText({
   humanReadable = false,
   annotationsPages = [],
   convertRegionsToPaths = null,
+  convertTextToPaths = false,
+  convertFullPages = null,
+  convertBrokenType3ToPaths = false,
   docFonts,
 }) {
   const pdfBytes = new Uint8Array(basePdfData);
@@ -81,6 +94,29 @@ export async function overlayPdfText({
   const effectivePageArr = pageArr
     ? pageArr.filter((i) => i >= 0 && i < pages.length)
     : Array.from({ length: pages.length }, (_, i) => i);
+
+  // Whole-page text-to-paths convenience: synthesize one full-page region per page from its CropBox/MediaBox.
+  // An explicitly supplied convertRegionsToPaths wins.
+  let regionsForPaths = convertRegionsToPaths;
+  if (convertTextToPaths && !regionsForPaths) {
+    regionsForPaths = effectivePageArr.map((i) => {
+      const box = pages[i].cropBox || pages[i].mediaBox || [0, 0, 612, 792];
+      return { page: i, bbox: [box[0], box[1], box[2], box[3]] };
+    });
+  }
+
+  // Per-page flatten: synthesize a whole-page region for each listed page,
+  // same construction as the convertTextToPaths block above but scoped to convertFullPages.
+  const fullPageSet = new Set(convertFullPages || []);
+  if (fullPageSet.size > 0) {
+    const fullRegions = [];
+    for (const i of effectivePageArr) {
+      if (!fullPageSet.has(i)) continue;
+      const box = pages[i].cropBox || pages[i].mediaBox || [0, 0, 612, 792];
+      fullRegions.push({ page: i, bbox: /** @type {[number, number, number, number]} */ ([box[0], box[1], box[2], box[3]]) });
+    }
+    regionsForPaths = regionsForPaths ? regionsForPaths.concat(fullRegions) : fullRegions;
+  }
 
   // Step 2: Determine next available object number.
   let nextObjNum = 0;
@@ -142,18 +178,21 @@ export async function overlayPdfText({
       humanReadable,
       annotationsPages,
       docFonts,
-      convertRegionsToPaths,
+      convertRegionsToPaths: regionsForPaths,
+      convertFullPages,
+      convertBrokenType3ToPaths,
     });
   }
 
   const regionsByPage = new Map();
-  if (convertRegionsToPaths) {
-    for (const r of convertRegionsToPaths) {
+  if (regionsForPaths) {
+    for (const r of regionsForPaths) {
       if (!regionsByPage.has(r.page)) regionsByPage.set(r.page, []);
       regionsByPage.get(r.page).push(r.bbox);
     }
   }
-  const conversionState = regionsByPage.size > 0 ? createConversionState() : null;
+  const conversionState = (regionsByPage.size > 0 || convertBrokenType3ToPaths)
+    ? createConversionState() : null;
 
   /** @type {Set<PdfFontInfo>} */
   const pdfFontsUsed = new Set();
@@ -199,7 +238,7 @@ export async function overlayPdfText({
 
     const hasText = textContentObjStr && textContentObjStr.length > 0;
     const hasAnnots = pageAnnotations.length > 0;
-    const hasConvert = regionsByPage.has(i);
+    const hasConvert = regionsByPage.has(i) || convertBrokenType3ToPaths;
     if (!hasText && !hasAnnots && !hasConvert) continue;
 
     /** @type {string[]|null} */
@@ -220,7 +259,17 @@ export async function overlayPdfText({
         allocObjNum,
         pushObj: pushNewObj,
         humanReadable,
+        convertBrokenType3ToPaths,
       });
+
+      // When broken-Type3 conversion is the *only* reason this page is here
+      // (no overlay text, no annotations, no explicit region) and nothing actually changed,
+      // leave the page untouched rather than re-emitting it verbatim.
+      const convertChanged = stripConvertResult.refs !== existingContentsRefs
+        || stripConvertResult.xobjEntries.size > 0;
+      // A flatten page (fullPageSet) that came out unchanged is left untouched.
+      // An explicitly supplied region is re-emitted rather than skipped.
+      if (!hasText && !hasAnnots && !convertChanged && (!regionsByPage.has(i) || fullPageSet.has(i))) continue;
 
       /** @type {string[]} */
       const contentsArray = [];

@@ -312,6 +312,8 @@ export class GlobalFonts {
     chi_sim: null,
     /** @type {?FontContainerFont} */
     dingbats: null,
+    /** @type {?FontContainerFont} */
+    symbol: null,
   };
 
   /**

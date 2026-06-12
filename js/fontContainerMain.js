@@ -303,6 +303,35 @@ export async function loadDingbatsFont() {
   return dingbatsReady;
 }
 
+let symbolReadyRes;
+let symbolReady;
+
+/**
+ * Loads the StandardSymbolsPS font (substitute for the non-embedded Base14 Symbol font).
+ * Returns early if already loaded. Mirrors `loadDingbatsFont`.
+ */
+export async function loadSymbolFont() {
+  if (symbolReady) return symbolReady;
+
+  symbolReady = new Promise((resolve) => {
+    symbolReadyRes = resolve;
+  });
+
+  let /** @type {Promise<ArrayBuffer>} */ symbolSrc;
+  if (typeof process === 'undefined') {
+    symbolSrc = fetch(new URL('../fonts/StandardSymbolsPS.woff', import.meta.url)).then((res) => res.arrayBuffer());
+  } else {
+    const { readFile } = await import('node:fs/promises');
+    symbolSrc = readFile(new URL('../fonts/StandardSymbolsPS.woff', import.meta.url)).then((res) => res.buffer);
+  }
+
+  GlobalFonts.supp.symbol = await loadFont('StandardSymbolsPS', 'normal', 'symbol', await symbolSrc, false);
+
+  symbolReadyRes();
+
+  return symbolReady;
+}
+
 /**
  * Enable or disable font optimization settings for this document.
  * These settings exist on the font container in both the main thread and the worker threads,

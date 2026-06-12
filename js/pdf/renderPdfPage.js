@@ -5,7 +5,7 @@ import {
 } from './pdfColorFunctions.js';
 import { extractPdfAnnotations } from './parsePdfAnnots.js';
 import {
-  findRootObjNum, applyPredictor, getPageContentStreams,
+  findRootObjNum, applyPredictor, getPageContentStreams, isFormOCHidden, parseHiddenOCMCNames,
 } from './parsePdfUtils.js';
 import {
   extractDict, resolveIntValue, resolveNumValue, resolveArrayValue, matMul, bytesToLatin1,
@@ -24,7 +24,9 @@ import { parseDrawOps } from './parseDrawOps.js';
 import { inflate as pakoInflate, inflatePartial as pakoInflatePartial } from '../../lib/pako-inflate.js';
 import { parsePageFonts, parseGlyphStreamPaths } from './fonts/parsePdfFonts.js';
 import { standardFontToCSS } from './fonts/standardFontMetrics.js';
-import { base14ToBundledFont, cssFamilyToBundledFont, genericToBundledFont } from './fonts/base14Substitution.js';
+import {
+  base14ToBundledFont, cssFamilyToBundledFont, genericToBundledFont, cssGenericForFontObj,
+} from './fonts/base14Substitution.js';
 import { FALLBACK_CHAIN } from '../fallbackFonts.js';
 import { loadFontFace } from '../containers/fontContainer.js';
 import { decodeCMYKJpegToRGB } from './codecs/decodeJPEG.js';
@@ -69,35 +71,6 @@ function interpolateTint(tintSamples, nSamples, tint) {
 function pdfFontFamilyName(objCache, fontObjNum, fallbackTag) {
   if (fontObjNum != null) return `_pdf_d${objCache.docId}_f${fontObjNum}`;
   return `_pdf_d${objCache.docId}_t${fallbackTag}`;
-}
-
-/**
- * Classify a parsed PDF font into a CSS generic family keyword
- * ('sans-serif'|'serif'|'monospace'|'cursive'), used as a fallback chain item
- * after the embedded `_pdf_*` family so that glyphs missing from the embedded
- * font render in the correct style instead of Chrome's default serif.
- *
- * @param {{ baseName?: string, familyName?: string, serifFlag?: boolean }} fontObj
- * @returns {'sans-serif'|'serif'|'monospace'|'cursive'}
- */
-function cssGenericForFontObj(fontObj) {
-  const css = standardFontToCSS(fontObj.baseName || '');
-  if (css) {
-    if (/monospace/i.test(css)) return 'monospace';
-    if (/cursive/i.test(css)) return 'cursive';
-    if (/sans-serif/i.test(css)) return 'sans-serif';
-    if (/serif/i.test(css)) return 'serif';
-  }
-  // Strip subset prefix "ABCDEF+" before name-based checks.
-  const name = (fontObj.baseName || fontObj.familyName || '').replace(/^[A-Z]{6}\+/, '');
-  if (/mono|courier|consola|typewriter|fixedsys|andale|inconsolata|menlo|lucidacons|sourcecode|firacode/i.test(name)) return 'monospace';
-  if (/script|cursive|brush|chancery|handwrit|calligraph/i.test(name)) return 'cursive';
-  // Match "sans"/"serif" used in camelCase. "sans" is tested first so "sans-serif" forms stay sans.
-  const lowerName = name.toLowerCase();
-  if (lowerName.includes('sans') || /gothic/i.test(name)) return 'sans-serif';
-  if (lowerName.includes('serif')) return 'serif';
-  if (fontObj.serifFlag) return 'serif';
-  return 'sans-serif';
 }
 
 /**
@@ -4877,84 +4850,6 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
   }
   maskCtx.putImageData(maskData, 0, 0);
   return maskCanvas;
-}
-
-/**
- * Resolve an /OCG or /OCMD object to whether it is currently hidden.
- * @param {number} ocObjNum - Object number of an /OCG or /OCMD dict
- * @param {Set<number>} offOCGs - Set of OCG object numbers that are OFF
- * @param {ObjectCache} objCache - PDF object cache
- */
-function isOCObjHidden(ocObjNum, offOCGs, objCache) {
-  if (offOCGs.size === 0) return false;
-  const ocText = objCache.getObjectText(ocObjNum);
-  if (!ocText) return false;
-  if (/\/Type\s*\/OCG/.test(ocText)) return offOCGs.has(ocObjNum);
-  if (/\/Type\s*\/OCMD/.test(ocText)) {
-    const singleRef = /\/OCGs\s+(\d+)\s+\d+\s+R/.exec(ocText);
-    if (singleRef) return offOCGs.has(Number(singleRef[1]));
-    const arrayMatch = /\/OCGs\s*\[([^\]]*)\]/.exec(ocText);
-    if (arrayMatch) {
-      const refs = [...arrayMatch[1].matchAll(/(\d+)\s+\d+\s+R/g)].map((m) => Number(m[1]));
-      const policyMatch = /\/P\s*\/(\w+)/.exec(ocText);
-      const policy = policyMatch ? policyMatch[1] : 'AnyOn';
-      if (policy === 'AnyOn') return refs.every((r) => offOCGs.has(r));
-      if (policy === 'AllOn') return refs.some((r) => offOCGs.has(r));
-      if (policy === 'AnyOff') return !refs.some((r) => offOCGs.has(r));
-      if (policy === 'AllOff') return !refs.every((r) => offOCGs.has(r));
-    }
-  }
-  return false;
-}
-
-/**
- * Check if a Form XObject is hidden by Optional Content (OC).
- * @param {string} formObjText - The form XObject dictionary text
- * @param {Set<number>} offOCGs - Set of OCG object numbers that are OFF
- * @param {ObjectCache} objCache - PDF object cache
- */
-function isFormOCHidden(formObjText, offOCGs, objCache) {
-  if (offOCGs.size === 0) return false;
-  const ocMatch = /\/OC\s+(\d+)\s+\d+\s+R/.exec(formObjText);
-  if (!ocMatch) return false;
-  return isOCObjHidden(Number(ocMatch[1]), offOCGs, objCache);
-}
-
-/**
- * Build the set of /Resources/Properties names whose OCG/OCMD is currently OFF.
- * Content wrapped in `/OC /<name> BDC ... EMC` for such a name must not be painted.
- *
- * @param {string} resourceOwnerText - Page or Form XObject dict text
- * @param {ObjectCache} objCache - PDF object cache
- * @param {Set<number>} offOCGs - Set of OCG object numbers that are OFF
- * @returns {Set<string>}
- */
-function parseHiddenOCMCNames(resourceOwnerText, objCache, offOCGs) {
-  /** @type {Set<string>} */
-  const hidden = new Set();
-  if (offOCGs.size === 0) return hidden;
-
-  let resourcesText = resourceOwnerText;
-  const resRefMatch = /\/Resources\s+(\d+)\s+\d+\s+R/.exec(resourceOwnerText);
-  if (resRefMatch) {
-    const resObj = objCache.getObjectText(Number(resRefMatch[1]));
-    if (resObj) resourcesText = resObj;
-  }
-  const propStart = resourcesText.indexOf('/Properties');
-  if (propStart === -1) return hidden;
-  let propDictText;
-  const afterProp = resourcesText.substring(propStart + 11).trim();
-  if (afterProp.startsWith('<<')) {
-    propDictText = extractDict(resourcesText, propStart + 11 + resourcesText.substring(propStart + 11).indexOf('<<'));
-  } else {
-    const refMatch = /^(\d+)\s+\d+\s+R/.exec(afterProp);
-    if (refMatch) propDictText = objCache.getObjectText(Number(refMatch[1]));
-  }
-  if (!propDictText) return hidden;
-  for (const m of propDictText.matchAll(/\/([^\s/<>[\]]+)\s+(\d+)\s+\d+\s+R/g)) {
-    if (isOCObjHidden(Number(m[2]), offOCGs, objCache)) hidden.add(m[1]);
-  }
-  return hidden;
 }
 
 /**
