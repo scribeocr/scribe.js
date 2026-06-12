@@ -26,6 +26,19 @@ import { LayoutDataTable, LayoutDataColumn, LayoutDataTablePage } from '../objec
 // This does not impact path rendering--it just disables table detection/underline detection.
 const GRAPHICS_HEAVY_STREAM_BYTES = 2_000_000;
 
+// Thresholds for the criteria that categorize a page for OCR-with-flatten export (computed below).
+// IMAGE_AREA_MIN: min fraction of the page area a single image placement must cover (Criterion 1).
+// PATH_TEXT_MIN: min count of filled non-rectangular glyph-height vector paths (Criterion 2).
+// PATH_TEXT_H_MIN/PATH_TEXT_H_MAX: the height band that counts as glyph-like, shared by Criteria 1b and 2.
+// IMAGE_TEXT_MIN: min count of line-shaped image strips not covered by native text (Criterion 1b).
+// BROKEN_RUN_MIN: min run of consecutive glyphs from a font whose ToUnicode is broken.
+const IMAGE_AREA_MIN = 0.02;
+const PATH_TEXT_MIN = 8;
+const PATH_TEXT_H_MIN = 3;
+const PATH_TEXT_H_MAX = 80;
+const IMAGE_TEXT_MIN = 8;
+const BROKEN_RUN_MIN = 3;
+
 /**
  * Normalize a PDF color to [r,g,b] in 0-1 for cross-color-space comparison.
  * @param {number[]} c
@@ -405,6 +418,46 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
   const pageHeight = Math.round(visualHeightPts * scale);
 
   const fonts = parsePageFonts(objText, objCache, type3GlyphMappings);
+
+  // Classify a font's ToUnicode as broken as a font (criterion 3 input):
+  // at least 3 mappings to PUA placeholders (U+E000-U+F8FF) or U+FFFD and at least half of all mappings broken.
+  // Type3 `.notdef` filler glyphs (one outline stamped across >=3 charCodes by subset producers)
+  // are excluded from both counts so producer padding is not mistaken for brokenness.
+  const brokenFontCache = new WeakMap();
+  const brokenToUnicodeFont = (f) => {
+    if (!f || !f.toUnicode || f.toUnicode.size === 0) return false;
+    const cached = brokenFontCache.get(f);
+    if (cached !== undefined) return cached;
+    const fillerHashes = new Set();
+    if (f.type3) {
+      const enc = f.type3.encoding || {};
+      const glyphs = f.type3.glyphs || {};
+      const hashCount = new Map();
+      for (const [cc] of f.toUnicode) {
+        const g = glyphs[enc[cc]];
+        if (g && g.pathHash) hashCount.set(g.pathHash, (hashCount.get(g.pathHash) || 0) + 1);
+      }
+      for (const [hash, count] of hashCount) {
+        if (count >= 3) fillerHashes.add(hash);
+      }
+    }
+    let mapped = 0;
+    let broken = 0;
+    for (const [cc, str] of f.toUnicode) {
+      if (fillerHashes.size > 0) {
+        const g = f.type3.glyphs?.[f.type3.encoding?.[cc]];
+        if (g && g.pathHash && fillerHashes.has(g.pathHash)) continue;
+      }
+      mapped++;
+      if (!str) continue;
+      const cp = str.codePointAt(0);
+      if ((cp >= 0xE000 && cp <= 0xF8FF) || cp === 0xFFFD) broken++;
+    }
+    const isBroken = broken >= 3 && broken >= mapped * 0.5;
+    brokenFontCache.set(f, isBroken);
+    return isBroken;
+  };
+
   const fontSummary = [...fonts].map(([tag, f]) => ({
     tag,
     baseName: f.baseName,
@@ -421,6 +474,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
     isType3: !!f.type3,
     embedded: !!(f.type0?.fontFile || f.type1?.fontFile),
     hasDifferences: !!f.differences,
+    brokenToUnicode: brokenToUnicodeFont(f),
   }));
 
   const contentStreamText = getPageContentStream(objText, objCache);
@@ -429,8 +483,19 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
     const charStats = {
       printable: 0, printableVis: 0, pua: 0, control: 0, controlVis: 0,
     };
+    const pageCategory = {
+      hasLargeImage: false,
+      hasPathText: false,
+      hasBrokenFontRun: false,
+      hasNativeText: false,
+      hasImageText: false,
+      largestImageFrac: 0,
+      pathTextCandidates: 0,
+      longestBrokenRun: 0,
+      imageTextCandidates: 0,
+    };
     return {
-      pageObj, langSet: new Set(), fontSet: new Set(), dataTablePage: new LayoutDataTablePage(n), charStats, fontSummary,
+      pageObj, langSet: new Set(), fontSet: new Set(), dataTablePage: new LayoutDataTablePage(n), charStats, fontSummary, pageCategory,
     };
   }
 
@@ -483,11 +548,205 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
 
   const charStats = scorePageChars(chars);
 
-  // Extract underline candidate rectangles from vector paths. Pass the already-computed
-  // tokens so parsePagePaths doesn't re-fetch and re-tokenize the page content stream.
+  // Criterion 3 + 4 pass, over the deduped char sequence in content-stream order.
+  // Double-strike copies were already removed, so they don't inflate runs or the native-text floor.
+  // The run counter increments for every glyph drawn with a broken-classified font and resets on a glyph from any other font.
+  // TJ kerns and positioning ops never produce chars, so they cannot reset it.
+  let longestBrokenRun = 0;
+  let brokenRun = 0;
+  let printableVisNonBroken = 0;
+  let controlVisNonBroken = 0;
+  for (const ch of chars) {
+    if (brokenToUnicodeFont(ch._font)) {
+      brokenRun++;
+      if (brokenRun > longestBrokenRun) longestBrokenRun = brokenRun;
+      continue;
+    }
+    brokenRun = 0;
+    if (ch.invisible) continue;
+    const cp = ch.text.codePointAt(0);
+    if (cp === undefined) continue;
+    // Same buckets as scorePageChars, restricted to visible non-broken-font chars.
+    if (cp >= 33 && cp <= 127) printableVisNonBroken++;
+    else if (cp >= 0xE000 && cp <= 0xF8FF) { /* stray PUA from a valid font: neither */ } else if (cp >= 161) printableVisNonBroken++;
+    else if (cp < 32 || cp === 65533) controlVisNonBroken++;
+  }
+
+  // Parse the page's vector paths, reusing the already-computed tokens so parsePagePaths
+  // doesn't re-fetch and re-tokenize the page content stream.
+  // Image placements (Criterion 1) are collected in the same walk.
+  /** @type {Array<{left: number, bottom: number, right: number, top: number}>} */
+  const imagePlacements = [];
   const paths = contentStreamText.length > GRAPHICS_HEAVY_STREAM_BYTES
     ? []
-    : parsePagePaths(objText, objCache, tokens);
+    : parsePagePaths(objText, objCache, tokens, { imagePlacements });
+  if (contentStreamText.length > GRAPHICS_HEAVY_STREAM_BYTES) {
+    // Heavy streams skip path extraction (cost), but image placements must still be collected:
+    // a scanned page must not lose its hasLargeImage flag.
+    let ctmH = initialCtm.slice();
+    const ctmStackH = [];
+    const numsH = [];
+    for (const t of tokens) {
+      if (t.type === 'number') { numsH.push(t.value); continue; }
+      if (t.type === 'inlineImage' || (t.type === 'operator' && t.value === 'Do')) {
+        const corners = [
+          [ctmH[4], ctmH[5]],
+          [ctmH[0] + ctmH[4], ctmH[1] + ctmH[5]],
+          [ctmH[2] + ctmH[4], ctmH[3] + ctmH[5]],
+          [ctmH[0] + ctmH[2] + ctmH[4], ctmH[1] + ctmH[3] + ctmH[5]],
+        ];
+        let minX = Infinity; let maxX = -Infinity;
+        let minY = Infinity; let maxY = -Infinity;
+        for (const [px, py] of corners) {
+          if (px < minX) minX = px;
+          if (px > maxX) maxX = px;
+          if (py < minY) minY = py;
+          if (py > maxY) maxY = py;
+        }
+        imagePlacements.push({
+          left: minX, bottom: minY, right: maxX, top: maxY,
+        });
+        numsH.length = 0;
+        continue;
+      }
+      if (t.type !== 'operator') { numsH.length = 0; continue; }
+      if (t.value === 'q') ctmStackH.push(ctmH.slice());
+      else if (t.value === 'Q') { if (ctmStackH.length > 0) ctmH = ctmStackH.pop(); } else if (t.value === 'cm' && numsH.length >= 6) {
+        const nh = numsH.length;
+        const a = numsH[nh - 6]; const b = numsH[nh - 5];
+        const c = numsH[nh - 4]; const d = numsH[nh - 3];
+        const e = numsH[nh - 2]; const fv = numsH[nh - 1];
+        ctmH = [
+          a * ctmH[0] + b * ctmH[2], a * ctmH[1] + b * ctmH[3],
+          c * ctmH[0] + d * ctmH[2], c * ctmH[1] + d * ctmH[3],
+          e * ctmH[0] + fv * ctmH[2] + ctmH[4], e * ctmH[1] + fv * ctmH[3] + ctmH[5],
+        ];
+      }
+      numsH.length = 0;
+    }
+  }
+
+  // Reassemble band-sliced images before classifying: producers often draw one picture as dozens of contiguous horizontal strips.
+  /** @type {Array<{left: number, bottom: number, right: number, top: number}>} */
+  const mergedPlacements = [];
+  const placementCols = new Map();
+  for (const p of imagePlacements) {
+    const key = `${Math.round(p.left * 2)}_${Math.round((p.right - p.left) * 2)}`;
+    if (!placementCols.has(key)) placementCols.set(key, []);
+    placementCols.get(key).push({ ...p });
+  }
+  for (const group of placementCols.values()) {
+    group.sort((a, b) => b.top - a.top);
+    let cur = group[0];
+    for (let gi = 1; gi < group.length; gi++) {
+      const nxt = group[gi];
+      if (cur.bottom - nxt.top <= 1.5) {
+        if (nxt.bottom < cur.bottom) cur.bottom = nxt.bottom;
+      } else {
+        mergedPlacements.push(cur);
+        cur = nxt;
+      }
+    }
+    mergedPlacements.push(cur);
+  }
+
+  // Criterion 1: largest image placement as a fraction of the page area.
+  const pageAreaPts = visualWidthPts * visualHeightPts;
+  let largestImageFrac = 0;
+  for (const p of mergedPlacements) {
+    const frac = Math.abs((p.right - p.left) * (p.top - p.bottom)) / pageAreaPts;
+    if (frac > largestImageFrac) largestImageFrac = frac;
+  }
+  largestImageFrac = Math.round(largestImageFrac * 10000) / 10000;
+
+  // Criterion 1b: line-shaped image placements. These are text rendered as raster images interleaved with content
+  // (e.g. full paragraph lines as images, each ~14pt tall and hundreds of points wide).
+  // No single such image clears IMAGE_AREA_MIN, so count placements whose height sits in the glyph band and whose aspect is wide like a text line.
+  // Icons and photos fail the aspect test, full-page scans fail the height band.
+  let imageTextCandidates = 0;
+  for (const p of mergedPlacements) {
+    const w = Math.abs(p.right - p.left);
+    const h = Math.abs(p.top - p.bottom);
+    if (!(h >= PATH_TEXT_H_MIN && h <= PATH_TEXT_H_MAX)) continue;
+    if (w < h * 4) continue;
+    // A line-shaped image only represents MISSING text when the native layer does not already cover it
+    // (diagram labels drawn as image-over-native-text are extractable without OCR).
+    const pxLeft = p.left * scale;
+    const pxRight = p.right * scale;
+    const pxTop = (visualHeightPts - p.top) * scale;
+    const pxBottom = (visualHeightPts - p.bottom) * scale;
+    let coveredWidth = 0;
+    for (const ch of chars) {
+      const cx = ch.x + ch.width / 2;
+      if (cx < pxLeft || cx > pxRight) continue;
+      // Approximate glyph box from the baseline: ascent above, ~20% below.
+      const chTop = ch.y - ch.fontSize * 0.8;
+      const chBottom = ch.y + ch.fontSize * 0.2;
+      const overlap = Math.min(chBottom, pxBottom) - Math.max(chTop, pxTop);
+      if (overlap < (chBottom - chTop) * 0.5) continue;
+      coveredWidth += ch.width;
+    }
+    if (coveredWidth >= (pxRight - pxLeft) * 0.3) continue;
+    imageTextCandidates++;
+  }
+
+  // Criterion 2: filled, non-rectangular, glyph-height vector paths.
+  // Perfect rectangles (layout rules, table borders, fill boxes) are excluded.
+  let pathTextCandidates = 0;
+  for (const path of paths) {
+    if (!path.fill) continue;
+    let minX = Infinity; let maxX = -Infinity;
+    let minY = Infinity; let maxY = -Infinity;
+    let hasCurve = false;
+    for (const cmd of path.commands) {
+      if (cmd.type === 'C') {
+        hasCurve = true;
+        if (cmd.x1 < minX) minX = cmd.x1; if (cmd.x1 > maxX) maxX = cmd.x1;
+        if (cmd.y1 < minY) minY = cmd.y1; if (cmd.y1 > maxY) maxY = cmd.y1;
+        if (cmd.x2 < minX) minX = cmd.x2; if (cmd.x2 > maxX) maxX = cmd.x2;
+        if (cmd.y2 < minY) minY = cmd.y2; if (cmd.y2 > maxY) maxY = cmd.y2;
+      }
+      if (cmd.type === 'M' || cmd.type === 'L' || cmd.type === 'C') {
+        if (cmd.x < minX) minX = cmd.x; if (cmd.x > maxX) maxX = cmd.x;
+        if (cmd.y < minY) minY = cmd.y; if (cmd.y > maxY) maxY = cmd.y;
+      }
+    }
+    const h = maxY - minY;
+    if (!(h >= PATH_TEXT_H_MIN && h <= PATH_TEXT_H_MAX)) continue;
+    let allRect = !hasCurve;
+    if (allRect) {
+      // Split into subpaths at M, then check each is a 4 or 5-point polygon with all sides axis-parallel.
+      let sub = [];
+      const subpaths = [];
+      for (const cmd of path.commands) {
+        if (cmd.type === 'M') { if (sub.length > 0) subpaths.push(sub); sub = [[cmd.x, cmd.y]]; } else if (cmd.type === 'L') sub.push([cmd.x, cmd.y]);
+      }
+      if (sub.length > 0) subpaths.push(sub);
+      for (const pts of subpaths) {
+        if (pts.length < 4 || pts.length > 5) { allRect = false; break; }
+        for (let si = 0; si < pts.length; si++) {
+          const [x1, y1] = pts[si];
+          const [x2, y2] = pts[(si + 1) % pts.length];
+          if (Math.abs(x2 - x1) > 0.01 && Math.abs(y2 - y1) > 0.01) { allRect = false; break; }
+        }
+        if (!allRect) break;
+      }
+    }
+    if (allRect) continue;
+    pathTextCandidates++;
+  }
+
+  const pageCategory = {
+    hasLargeImage: largestImageFrac >= IMAGE_AREA_MIN,
+    hasPathText: pathTextCandidates >= PATH_TEXT_MIN,
+    hasBrokenFontRun: longestBrokenRun >= BROKEN_RUN_MIN,
+    hasNativeText: printableVisNonBroken - 5 * controlVisNonBroken >= 100,
+    hasImageText: imageTextCandidates >= IMAGE_TEXT_MIN,
+    largestImageFrac,
+    pathTextCandidates,
+    longestBrokenRun,
+    imageTextCandidates,
+  };
   const underlineRects = [];
   for (const path of paths) {
     if (!path.fill && !path.stroke) continue;
@@ -531,7 +790,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
   }
 
   return {
-    pageObj, langSet, fontSet, dataTablePage, charStats, fontSummary, annotations, annotationPassthroughRefs: passthroughRefs,
+    pageObj, langSet, fontSet, dataTablePage, charStats, fontSummary, pageCategory, annotations, annotationPassthroughRefs: passthroughRefs,
   };
 }
 

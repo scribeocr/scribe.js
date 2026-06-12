@@ -29,6 +29,12 @@ export async function extractInternalPDFText(doc, options = {}) {
     Array.from({ length: pageCount }, (_, i) => pdfScheduler.parsePdfPage({ pageIndex: i, dpi: pageDPI[i] })),
   );
 
+  doc.inputData.pageCategories = pageResults.map((r) => r.pageCategory || null);
+
+  doc.inputData.requiresOCR = doc.inputData.pageCategories.some(
+    (c) => c && (c.hasLargeImage || c.hasPathText || c.hasBrokenFontRun || c.hasImageText),
+  );
+
   const { type } = determinePdfType(pageResults.map((r) => r.charStats), pageCount);
   doc.inputData.pdfType = type;
 

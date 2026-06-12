@@ -47,9 +47,13 @@ import { ObjectCache } from './objectCache.js';
  *   `tokenizeContentStream(getPageContentStream(...))`. Pass when the caller
  *   has already tokenized the page content stream to avoid duplicating that
  *   work; omit otherwise.
+ * @param {{ imagePlacements?: Array<{left: number, bottom: number, right: number, top: number}> }} [collect]
+ *   Optional out-collector. When `imagePlacements` is present, every image
+ *   placement (a `Do` surviving form inlining, or an inline image) is appended
+ *   as its unit square through the live CTM, in PDF points (y-up).
  * @returns {PaintedPath[]}
  */
-export function parsePagePaths(pageObjText, objCache, prefetchedTokens) {
+export function parsePagePaths(pageObjText, objCache, prefetchedTokens, collect) {
   let tokens = prefetchedTokens;
   if (!tokens) {
     const contentStreamText = getPageContentStream(pageObjText, objCache);
@@ -61,7 +65,7 @@ export function parsePagePaths(pageObjText, objCache, prefetchedTokens) {
   // inside Form XObjects are extracted with the correct CTM.
   const expanded = inlineFormXObjects(tokens, pageObjText, objCache, new Set());
 
-  return executePathOperators(expanded);
+  return executePathOperators(expanded, collect);
 }
 
 /**
@@ -175,9 +179,10 @@ function ctmScale(ctm) {
  * Process tokenized content-stream operators and collect painted paths.
  *
  * @param {Array<import('./parsePdfDoc.js').PDFToken>} tokens
+ * @param {{ imagePlacements?: Array<{left: number, bottom: number, right: number, top: number}> }} [collect]
  * @returns {PaintedPath[]}
  */
-function executePathOperators(tokens) {
+function executePathOperators(tokens, collect) {
   /** @type {PaintedPath[]} */
   const paths = [];
 
@@ -210,6 +215,29 @@ function executePathOperators(tokens) {
     const vals = operandStack.slice(start).map((t) => t.value);
     operandStack.length = 0;
     return vals;
+  }
+
+  /**
+   * Record the placed footprint of an image by transforming the unit square through the live CTM.
+   * An image always paints the unit square (PDF 32000-2 section 8.9.4), so its pixel dimensions do not affect the footprint.
+   */
+  function recordImagePlacement() {
+    if (!collect || !collect.imagePlacements) return;
+    const corners = [
+      transformPoint(0, 0, ctm), transformPoint(1, 0, ctm),
+      transformPoint(0, 1, ctm), transformPoint(1, 1, ctm),
+    ];
+    let minX = Infinity; let maxX = -Infinity;
+    let minY = Infinity; let maxY = -Infinity;
+    for (const p of corners) {
+      if (p.x < minX) minX = p.x;
+      if (p.x > maxX) maxX = p.x;
+      if (p.y < minY) minY = p.y;
+      if (p.y > maxY) maxY = p.y;
+    }
+    collect.imagePlacements.push({
+      left: minX, bottom: minY, right: maxX, top: maxY,
+    });
   }
 
   function emitPath(fill, stroke, evenOdd) {
@@ -262,6 +290,12 @@ function executePathOperators(tokens) {
   for (let i = 0; i < tokens.length; i++) {
     const tok = tokens[i];
 
+    if (tok.type === 'inlineImage') {
+      recordImagePlacement();
+      operandStack.length = 0;
+      continue;
+    }
+
     if (tok.type !== 'operator') {
       operandStack.push(tok);
       continue;
@@ -270,6 +304,14 @@ function executePathOperators(tokens) {
     const op = tok.value;
 
     switch (op) {
+      // ── XObjects ─────────────────────────────────────────────────
+      case 'Do':
+        // Form XObjects were inlined before this walk (parsePagePaths), so a surviving Do is an image
+        // (or an unresolvable form, whose unit-square footprint at a typical identity CTM is negligible).
+        recordImagePlacement();
+        operandStack.length = 0;
+        break;
+
       // ── Graphics state ────────────────────────────────────────────
       case 'q':
         gstateStack.push({
