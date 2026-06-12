@@ -291,9 +291,20 @@ export async function overlayPdfText({
   /** @type {Array<{objNum: number, content: string | import('./writePdfStreams.js').PdfBinaryObject}>} */
   const fontObjects = [];
   for (const pdfFont of pdfFontsUsed) {
-    const objStrArr = await createEmbeddedFontType0({ font: pdfFont.opentype, firstObjIndex: pdfFont.objN, humanReadable });
+    const objStrArr = await createEmbeddedFontType0({
+      font: pdfFont.opentype,
+      firstObjIndex: pdfFont.objN,
+      humanReadable,
+      toUnicodeOverride: pdfFont.toUnicodeOverride,
+      widthScale: pdfFont.widthScale || 1,
+      baseDescriptorObjN: pdfFont.baseDescriptorObjN,
+      baseToUnicodeObjN: pdfFont.baseToUnicodeObjN,
+    });
+    // A variant block has null slots (the base's shared FontDescriptor/FontFile/ToUnicode).
+    // Skip them so only real objects are written, leaving their object numbers free in the incremental xref.
     for (let j = 0; j < objStrArr.length; j++) {
-      fontObjects.push({ objNum: pdfFont.objN + j, content: objStrArr[j] });
+      const obj = objStrArr[j];
+      if (obj) fontObjects.push({ objNum: pdfFont.objN + j, content: obj });
     }
   }
 

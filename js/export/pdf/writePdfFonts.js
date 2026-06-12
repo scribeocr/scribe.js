@@ -7,6 +7,15 @@ import { GlobalFonts } from '../../containers/fontContainer.js';
 import { getDistinctCharsFont, subsetFont } from '../../utils/fontUtils.js';
 import { encodeStreamObject, encodeBinaryStreamObject } from './writePdfStreams.js';
 
+/**
+ * Advance-width scale factors for the width-scaled font variants.
+ * For example, the 1.1 variant is identical to the standard font,
+ * except has a *declared width* (`/Width` array) 1.1x the standard variant.
+ * The *visual width* is identical.
+ * @type {Number[]}
+ */
+export const FONT_WIDTH_VARIANT_SCALES = [1.1, 1.2, 1.3, 1.4, 1.5];
+
 /** @typedef {import('../../containers/fontContainer.js').DocFonts} DocFonts */
 
 /** @type {Array<string>} */
@@ -276,11 +285,24 @@ export async function createEmbeddedFontType1(font, firstObjIndex, italic = fals
  * @param {Map<number, string>} [options.toUnicodeOverride] - Optional per-GID
  *   ToUnicode override. Values may be multi-codepoint strings (e.g. "fi" for a
  *   ligature). GIDs absent from the map fall back to `glyph.unicode`.
- * @returns {Promise<Array<string | import('./writePdfStreams.js').PdfBinaryObject>>}
+ * @param {number} [options.widthScale=1] - Advance-width multiplier for a width-scaled variant.
+ *   Scales the emitted `/W` array; 1 (default) for a base font.
+ * @param {number} [options.baseDescriptorObjN] - For a width-scaled variant, the object number of the base font's shared FontDescriptor.
+ *   This argument should be left empty by default.
+ * @param {number} [options.baseToUnicodeObjN] - For a width-scaled variant, the object number of the base font's shared ToUnicode CMap.
+ * @returns {Promise<Array<string | import('./writePdfStreams.js').PdfBinaryObject | null>>}
  */
 export async function createEmbeddedFontType0({
   font, firstObjIndex, italic = false, humanReadable = false, toUnicodeOverride,
+  widthScale = 1, baseDescriptorObjN, baseToUnicodeObjN,
 }) {
+  // A width-scaled variant shares the base font's FontDescriptor (+1), FontFile (+3), and ToUnicode (+5) instead of re-embedding them.
+  // It emits only the Type0 dict (+0), the scaled `/W` (+2), and the CIDFont dict (+4),
+  // returning null for the three shared slots (callers write a free xref entry for each).
+  const variantMode = !!baseDescriptorObjN;
+  const descriptorObjN = variantMode ? baseDescriptorObjN : firstObjIndex + 1;
+  const toUnicodeObjN = variantMode ? baseToUnicodeObjN : firstObjIndex + 5;
+
   // Start 1st object: Font Dictionary
   let fontDictObjStr = `${String(firstObjIndex)} 0 obj\n<</Type/Font/Subtype/Type0`;
 
@@ -292,18 +314,20 @@ export async function createEmbeddedFontType0({
 
   fontDictObjStr += '/Encoding/Identity-H';
 
-  fontDictObjStr += `/ToUnicode ${String(firstObjIndex + 5)} 0 R`;
+  fontDictObjStr += `/ToUnicode ${String(toUnicodeObjN)} 0 R`;
 
   fontDictObjStr += `/DescendantFonts[${String(firstObjIndex + 4)} 0 R]`;
 
   fontDictObjStr += '>>\nendobj\n\n';
 
-  // Start 2nd object: ToUnicode CMap
-  const toUnicodeStr0 = createToUnicode(font, toUnicodeOverride);
-  const toUnicodeObj = await encodeStreamObject(firstObjIndex + 5, toUnicodeStr0, { humanReadable });
-
-  // Start 3rd object: FontDescriptor
-  const fontDescObjStr = createFontDescriptor(font, firstObjIndex + 1, italic, firstObjIndex + 3);
+  // 2nd object: ToUnicode CMap. 3rd: FontDescriptor.
+  // In variant mode both are shared from the base font (referenced by object number) and not re-emitted, so their slots come back null.
+  const toUnicodeObj = variantMode
+    ? null
+    : await encodeStreamObject(firstObjIndex + 5, createToUnicode(font, toUnicodeOverride), { humanReadable });
+  const fontDescObjStr = variantMode
+    ? null
+    : createFontDescriptor(font, firstObjIndex + 1, italic, firstObjIndex + 3);
 
   // Start 4th object: widths
   let widthsObjStr = `${String(firstObjIndex + 2)} 0 obj\n`;
@@ -316,33 +340,40 @@ export async function createEmbeddedFontType0({
   // However, only the first method is used here, as mupdf rewrites the widths object.
   // The widths object needs to be present and accurate, as otherwise the glyphs will not be displayed correctly,
   // however it is not important that the widths be efficiently represented at this point.
+  // A width-scaled variant folds its inter-character stretch into these declared advances via `widthScale`.
   widthsObjStr += '[ 0 [';
   for (let i = 0; i < font.glyphs.length; i++) {
-    const advanceNorm = Math.round(font.glyphs.glyphs[String(i)].advanceWidth * (1000 / font.unitsPerEm));
+    const advanceNorm = Math.round(font.glyphs.glyphs[String(i)].advanceWidth * widthScale * (1000 / font.unitsPerEm));
     widthsObjStr += `${String(advanceNorm)} `;
   }
   widthsObjStr += '] ]';
 
   widthsObjStr += '\nendobj\n\n';
 
-  // Start 5th object: Font File
-  const fontBuffer = new Uint8Array(font.toArrayBuffer());
-  const fontFileObj = await encodeBinaryStreamObject(firstObjIndex + 3, fontBuffer, {
-    humanReadable,
-    dictExtras: `/Length1 ${String(fontBuffer.byteLength)}/Subtype/OpenType`,
-  });
+  // Start 5th object: Font File. In variant mode the base font's copy is shared, so none is embedded.
+  /** @type {string | import('./writePdfStreams.js').PdfBinaryObject | null} */
+  let fontFileObj = null;
+  if (!variantMode) {
+    const fontBuffer = new Uint8Array(font.toArrayBuffer());
+    fontFileObj = await encodeBinaryStreamObject(firstObjIndex + 3, fontBuffer, {
+      humanReadable,
+      dictExtras: `/Length1 ${String(fontBuffer.byteLength)}/Subtype/OpenType`,
+    });
+  }
 
   // Start 6th object: Font
   let fontObjStr = `${String(firstObjIndex + 4)} 0 obj\n`;
 
   fontObjStr += '<</Type/Font/Subtype/CIDFontType0/CIDSystemInfo<</Registry(Adobe)/Ordering(Identity)/Supplement 0>>';
 
-  fontObjStr += `/BaseFont/${namesTable.postScriptName.en}/FontDescriptor ${String(firstObjIndex + 1)} 0 R`;
+  fontObjStr += `/BaseFont/${namesTable.postScriptName.en}/FontDescriptor ${String(descriptorObjN)} 0 R`;
 
   fontObjStr += `/W ${String(firstObjIndex + 2)} 0 R`;
 
   fontObjStr += '>>\nendobj\n\n';
 
+  // Object-number order: [+0 Type0 dict, +1 FontDescriptor, +2 /W, +3 FontFile, +4 CIDFont, +5 ToUnicode].
+  // Variant mode returns null at +1/+3/+5. Callers write a free xref entry for each.
   return [fontDictObjStr, fontDescObjStr, widthsObjStr, fontFileObj, fontObjStr, toUnicodeObj];
 }
 
@@ -386,8 +417,11 @@ export const createPdfFontRefs = async (objectIStart, ocrArr, docFonts) => {
       const isStandardFont = false;
 
       let opentype = value.opentype;
+      // Whether the document sets any characters in this font.
+      let fontUsed = true;
       if (ocrArr) {
         const charArr = getDistinctCharsFont(ocrArr, docFonts, familyKey, key);
+        fontUsed = charArr.length > 0;
         opentype = await subsetFont(value.opentype, charArr);
       }
 
@@ -399,12 +433,41 @@ export const createPdfFontRefs = async (objectIStart, ocrArr, docFonts) => {
         pdfFontObjStrArr.push(null);
         objectI += 3;
       } else {
-        pdfFonts[familyKey][key] = {
+        /** @type {PdfFontInfo} */
+        const baseInfo = {
           type: 0, index: fontI, name: `/FO${String(fontI)}`, objN: objectI, opentype,
         };
+        pdfFonts[familyKey][key] = baseInfo;
         pdfFontRefs.push({ familyKey, key });
         pdfFontObjStrArr.push(null);
         objectI += 6;
+
+        // Width-scaled variants share the base `opentype` by reference and carry only a `widthScale` (the `/W` array is scaled at embed time)
+        // plus the object numbers of the base's shared FontDescriptor (+1) and ToUnicode (+5).
+        // Each is registered as an ordinary 6-object font ref (3 real objects + 3 free slots for the shared base objects) so the existing embedding/xref machinery handles it unchanged,
+        // and is embedded only when a word selects it in `writePdfText`.
+        baseInfo.widthVariants = [];
+        if (fontUsed) {
+          for (const scale of FONT_WIDTH_VARIANT_SCALES) {
+            fontI++;
+            baseInfo.widthVariants.push({
+              scale,
+              info: {
+                type: 0,
+                index: fontI,
+                name: `/FO${String(fontI)}`,
+                objN: objectI,
+                opentype,
+                widthScale: scale,
+                baseDescriptorObjN: baseInfo.objN + 1,
+                baseToUnicodeObjN: baseInfo.objN + 5,
+              },
+            });
+            pdfFontRefs.push({ familyKey, key });
+            pdfFontObjStrArr.push(null);
+            objectI += 6;
+          }
+        }
       }
       fontI++;
     }

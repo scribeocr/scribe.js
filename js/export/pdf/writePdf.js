@@ -168,7 +168,13 @@ export async function writePdf({
       pdfFontObjStrArr[pdfFont.index] = await createEmbeddedFontType1(pdfFont.opentype, pdfFont.objN, false, false, humanReadable);
     } else {
       pdfFontObjStrArr[pdfFont.index] = await createEmbeddedFontType0({
-        font: pdfFont.opentype, firstObjIndex: pdfFont.objN, humanReadable,
+        font: pdfFont.opentype,
+        firstObjIndex: pdfFont.objN,
+        humanReadable,
+        toUnicodeOverride: pdfFont.toUnicodeOverride,
+        widthScale: pdfFont.widthScale || 1,
+        baseDescriptorObjN: pdfFont.baseDescriptorObjN,
+        baseToUnicodeObjN: pdfFont.baseToUnicodeObjN,
       });
     }
   }
@@ -211,11 +217,15 @@ export async function writePdf({
   pushObj('1 0 obj\n<</Type /Catalog\n/Pages 2 0 R>>\nendobj\n\n');
   pushObj(pagesObjStr);
 
-  // Font objects (6 per used font; free xref entries for unused font slots).
+  // Font objects, 6 object slots per font ref.
+  // Free xref entries fill an unused font's six slots and the three slots a width-scaled variant shares from its base font.
   for (let i = 0; i < pdfFontRefs.length; i++) {
     const fontObjs = pdfFontObjStrArr[i];
     if (fontObjs) {
-      for (const obj of fontObjs) pushObj(obj);
+      for (const obj of fontObjs) {
+        if (obj) pushObj(obj);
+        else xrefArr.push({ type: 'free', offset: 0 });
+      }
     } else {
       for (let j = 0; j < 6; j++) xrefArr.push({ type: 'free', offset: 0 });
     }

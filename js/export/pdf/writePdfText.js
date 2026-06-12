@@ -9,6 +9,10 @@ import { getStyleLookup } from '../../utils/miscUtils.js';
  */
 const formatNum = (x) => String(Math.round(x * 1e6) / 1e6);
 
+// Largest character spacing (Tc), as a fraction of font size, any word may keep before switching to a wider font variant.
+// This value is lower than it theoretically needs to be because we only estimate the true value, not taking kerning into account.
+const MAX_WORD_TC_RATIO = 0.05;
+
 /**
  *
  * @param {OcrPage} pageObj
@@ -90,6 +94,9 @@ export async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode
     // The subset font will have a different glyph index mapping than the un-subset opentype font,
     // so we need to keep track of both.
     let pdfFontOpentypeCurrent = pdfFontCurrent.opentype;
+    // A width-scaled variant declares wider advances than its shared base outlines,
+    // so the export-font advance reads below multiply by the active variant's scale (1 for a base font).
+    let pdfFontScaleCurrent = pdfFontCurrent.widthScale || 1;
     pdfFontsUsed.add(pdfFontCurrent);
 
     textContentObjStr += `${pdfFontNameCurrent} ${String(wordFontSize)} Tf\n`;
@@ -136,7 +143,6 @@ export async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode
     let wordLast = wordJ;
     let underlineLeft = /** @type {?number} */ null;
     let underlineRight = /** @type {?number} */ null;
-    let wordFontOpentypeLast = wordFont.opentype;
     let fontSizeLast = wordFontSize;
     let tsCurrent = 0;
     let tzCurrent = 100;
@@ -190,7 +196,37 @@ export async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode
         tz = (wordWidthActual / wordMetrics.visualWidth) * 100;
       }
 
-      const pdfFont = wordJ.lang === 'chi_sim' ? pdfFonts.NotoSansSC.normal : pdfFonts[wordFont.family][getStyleLookup(wordJ.style)];
+      let pdfFont = wordJ.lang === 'chi_sim' ? pdfFonts.NotoSansSC.normal : pdfFonts[wordFont.family][getStyleLookup(wordJ.style)];
+
+      // When the per-character spacing needed to fit this word in its box is large enough that a viewer would break the word while extracting its text,
+      // switch to the smallest width-scaled font variant that folds the stretch into the glyphs' declared widths, leaving only a sub-threshold residual Tc.
+      // The word still renders at the same overall width, with the stretch carried by wider advances instead of Tc.
+      // Latin only: chi_sim uses full-width glyphs and a separate inter-word kern path.
+      // (visualCoords words are negligible here, so the residual is computed from the advance sum directly rather than re-deriving bearings.)
+      let emitCharSpacing = charSpacing;
+      if (pdfFont.type === 0 && wordJ.lang !== 'chi_sim' && charArr.length > 1 && pdfFont.widthVariants) {
+        const thresholdPx = MAX_WORD_TC_RATIO * wordFontSize;
+        if (charSpacing > thresholdPx) {
+          const gaps = charArr.length - 1;
+          const advanceTotalPx = wordMetrics.advanceArr.reduce((a, b) => a + b, 0);
+          if (advanceTotalPx > 0) {
+            // The (scale - 1) that brings the residual per-gap Tc down to the threshold exactly.
+            // Pick the smallest variant that reaches it (widest as a fallback for extreme stretches).
+            const reqDelta = ((charSpacing - thresholdPx) * gaps) / advanceTotalPx;
+            let chosen = pdfFont.widthVariants[0];
+            for (const v of pdfFont.widthVariants) {
+              chosen = v;
+              if (v.scale - 1 >= reqDelta) break;
+            }
+            // The variant references the base font's shared FontDescriptor/FontFile/ToUnicode,
+            // so the base must be embedded even when no word renders at base width. Add it to the used set.
+            pdfFontsUsed.add(pdfFont);
+            pdfFont = chosen.info;
+            emitCharSpacing = charSpacing - ((chosen.scale - 1) * advanceTotalPx) / gaps;
+          }
+        }
+      }
+
       const pdfFontName = pdfFont.name;
       const pdfFontType = pdfFont.type;
       pdfFontsUsed.add(pdfFont);
@@ -203,8 +239,11 @@ export async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode
         // The space between words determined by:
         // (1) The right bearing of the last word, (2) the left bearing of the current word, (3) the width of the space character between words,
         // (4) the current character spacing value (applied twice--both before and after the space character).
-        const spaceAdvance = wordFontOpentypeLast.charToGlyph(' ').advanceWidth || wordFontOpentypeLast.unitsPerEm / 2;
-        const spaceWidthGlyph = spaceAdvance * (fontSizeLast / wordFontOpentypeLast.unitsPerEm);
+        // Size the inter-word space from the glyph actually emitted below:
+        // the currently-active export font's space advance scaled by its width factor (`pdfFontScaleCurrent`),
+        // so a word that switched to a width-scaled variant gets the variant's wider space rather than the base's.
+        const spaceAdvance = (pdfFontOpentypeCurrent.charToGlyph(' ').advanceWidth || pdfFontOpentypeCurrent.unitsPerEm / 2) * pdfFontScaleCurrent;
+        const spaceWidthGlyph = spaceAdvance * (fontSizeLast / pdfFontOpentypeCurrent.unitsPerEm);
 
         const wordSpaceExpectedPx = (spaceWidthGlyph + charSpacingLast * 2 + wordRightBearingLast) + wordLeftBearing;
 
@@ -249,6 +288,7 @@ export async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode
         pdfFontNameCurrent = pdfFontName;
         pdfFontTypeCurrent = pdfFontType;
         pdfFontOpentypeCurrent = pdfFont.opentype;
+        pdfFontScaleCurrent = pdfFont.widthScale || 1;
         fontSizeLast = fontSize;
       }
       if (fillColor !== fillColorCurrent) {
@@ -264,7 +304,7 @@ export async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode
         tzCurrent = tz;
       }
 
-      textContentObjStr += `${String(Math.round(charSpacing * 1e6) / 1e6)} Tc\n`;
+      textContentObjStr += `${String(Math.round(emitCharSpacing * 1e6) / 1e6)} Tc\n`;
 
       textContentObjStr += '[ ';
 
@@ -275,7 +315,8 @@ export async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode
         const fontSizeLetter = wordJ.style.smallCaps && letterSrc !== letter ? wordFontSize * wordFont.smallCapsMult : wordFontSize;
 
         // Encoding needs to come from `pdfFont`, not `wordFont`, as the `pdfFont` will have a different index when subset.
-        const letterEnc = pdfFontTypeCurrent === 0 ? pdfFont.opentype.charToGlyphIndex(letter)?.toString(16).padStart(4, '0') : winEncodingLookup[letter];
+        const baseGid = pdfFontTypeCurrent === 0 ? pdfFont.opentype.charToGlyphIndex(letter) : null;
+        const letterEnc = pdfFontTypeCurrent === 0 ? baseGid?.toString(16).padStart(4, '0') : winEncodingLookup[letter];
         if (letterEnc) {
           let kern = (kerningArr[k] || 0) * (-1000 / fontSizeLetter);
 
@@ -298,29 +339,22 @@ export async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode
             kern = Math.round((wordSpaceNextAdj - wordSpaceExpected + spacingAdj + angleAdjWordX) * (-1000 / wordFontSize));
           }
 
-          // PDFs render text based on a "widths" PDF object, rather than the advance width in the embedded font file.
-          // The widths are in 1/1000 of a unit, and this PDF object is created by mupdf.
-          // The widths output in this object are converted to integers, which creates a rounding error when the font em size is not 1000.
-          // All built-in fonts are already 1000 to avoid this, however custom fonts may not be.
-          // This results in a small rounding error for the advance of each character, which adds up, as PDF positioning is cumulative.
-          // To correct for this, the error is calculated and added to the kerning value.
-          const charAdvance = wordFont.opentype.charToGlyph(letter).advanceWidth;
-          const charWidthPdfPrecise = charAdvance * (1000 / wordFont.opentype.unitsPerEm);
-          const charWidthPdfRound = Math.floor(charWidthPdfPrecise);
-          const charWidthError = charWidthPdfRound - charWidthPdfPrecise;
-
-          const charAdj = kern + charWidthError;
-
           if (pdfFontName !== pdfFontNameCurrent || fontSizeLetter !== fontSizeLast) {
             textContentObjStr += ' ] TJ\n';
             textContentObjStr += `${pdfFontName} ${String(fontSizeLetter)} Tf\n`;
             fontSizeLast = fontSizeLetter;
-            textContentObjStr += `${String(Math.round(charSpacing * 1e6) / 1e6)} Tc\n`;
+            textContentObjStr += `${String(Math.round(emitCharSpacing * 1e6) / 1e6)} Tc\n`;
             textContentObjStr += '[ ';
           }
 
           if (pdfFontTypeCurrent === 0) {
-            textContentObjStr += `<${letterEnc}> ${String(Math.round(charAdj * 1e6) / 1e6)} `;
+            // PDF text positioning uses the integer /W widths, not the embedded font's own advances,
+            // so rounding each declared width to an integer leaves a small per-glyph error that accumulates (positioning is cumulative).
+            // Correct it through the TJ number, computing the advance from the same scaled value that produced the emitted `/W`:
+            // `pdfFont.widthScale` (1 for a base font) times the shared base outline's advance.
+            const advancePdfPrecise = pdfFont.opentype.charToGlyph(letter).advanceWidth * (pdfFont.widthScale || 1) * (1000 / pdfFont.opentype.unitsPerEm);
+            const tjAdj = kern + (Math.floor(advancePdfPrecise) - advancePdfPrecise);
+            textContentObjStr += `<${letterEnc}> ${String(Math.round(tjAdj * 1e6) / 1e6)} `;
           } else {
             textContentObjStr += `(${letterEnc}) ${String(Math.round(kern * 1e6) / 1e6)} `;
           }
@@ -366,8 +400,9 @@ export async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode
 
       wordLast = wordJ;
       wordRightBearingLast = wordLast.visualCoords ? wordMetrics.rightSideBearing : 0;
-      wordFontOpentypeLast = wordFont.opentype;
-      charSpacingLast = charSpacing;
+      // The residual Tc actually emitted (not the raw stretch) is what the next word's space calculation must account for,
+      // so a variant word reports its reduced spacing.
+      charSpacingLast = emitCharSpacing;
     }
 
     textContentObjStr += ' ] TJ\n';

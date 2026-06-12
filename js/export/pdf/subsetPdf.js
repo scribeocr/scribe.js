@@ -450,9 +450,20 @@ export async function rebuildPdfSubset({
     }
 
     for (const pdfFont of pdfFontsUsed) {
-      const objStrArr = await createEmbeddedFontType0({ font: pdfFont.opentype, firstObjIndex: pdfFont.objN, humanReadable });
+      const objStrArr = await createEmbeddedFontType0({
+        font: pdfFont.opentype,
+        firstObjIndex: pdfFont.objN,
+        humanReadable,
+        toUnicodeOverride: pdfFont.toUnicodeOverride,
+        widthScale: pdfFont.widthScale || 1,
+        baseDescriptorObjN: pdfFont.baseDescriptorObjN,
+        baseToUnicodeObjN: pdfFont.baseToUnicodeObjN,
+      });
+      // A variant block has null slots (the base's shared FontDescriptor/FontFile/ToUnicode).
+      // Skip them so only real objects are written, leaving the gaps to be free-filled by the rebuilt xref.
       for (let j = 0; j < objStrArr.length; j++) {
-        allOutputObjects.push({ objNum: pdfFont.objN + j, content: objStrArr[j] });
+        const obj = objStrArr[j];
+        if (obj) allOutputObjects.push({ objNum: pdfFont.objN + j, content: obj });
       }
     }
   }

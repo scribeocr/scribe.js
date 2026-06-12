@@ -271,6 +271,28 @@ declare global {
         name: string;
         objN: number;
         opentype: opentypeFont;
+        /**
+         * Width-scaled variants of this font for words that would otherwise split when a viewer extracts text.
+         * These differ only in declared advance widths, sharing the base `opentype` object by reference and carrying a `widthScale` (see below).
+         */
+        widthVariants?: Array<{ scale: number; info: PdfFontInfo }>;
+        /**
+         * Advance-width multiplier for a width-scaled variant. Absent (treated as 1) on base fonts.
+         * Applied when generating the variant's `/W` array and at the export-font advance reads in `writePdfText`.
+         */
+        widthScale?: number;
+        /**
+         * For a width-scaled variant, the object numbers of the base font's shared FontDescriptor and ToUnicode CMap.
+         * The variant references these instead of re-embedding the font program.
+         * Their presence marks "variant mode" in `createEmbeddedFontType0`.
+         */
+        baseDescriptorObjN?: number;
+        baseToUnicodeObjN?: number;
+        /**
+         * Per-GID unicode override for the embedded font's ToUnicode CMap.
+         * For example, ligature or Type3-replacement glyphs whose code does not map to a single source character.
+         */
+        toUnicodeOverride?: Map<number, string>;
     };
 
     type PdfFontFamily = {
