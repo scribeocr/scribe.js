@@ -656,14 +656,20 @@ function parseGlyph(glyph, data, start) {
   }
 }
 
-// Transform an array of points and return a new array.
+/**
+ * Transform an array of points by a composite glyph's 2x2 matrix, returning a new array.
+ *
+ * @param {Array<{x: number, y: number, onCurve: boolean, lastPointOfContour: boolean}>} points
+ * @param {{xScale: number, scale01: number, scale10: number, yScale: number, dx: number, dy: number}} transform
+ * @returns {Array<{x: number, y: number, onCurve: boolean, lastPointOfContour: boolean}>}
+ */
 function transformPoints(points, transform) {
   const newPoints = [];
   for (let i = 0; i < points.length; i += 1) {
     const pt = points[i];
     const newPt = {
-      x: transform.xScale * pt.x + transform.scale01 * pt.y + transform.dx,
-      y: transform.scale10 * pt.x + transform.yScale * pt.y + transform.dy,
+      x: transform.xScale * pt.x + transform.scale10 * pt.y + transform.dx,
+      y: transform.scale01 * pt.x + transform.yScale * pt.y + transform.dy,
       onCurve: pt.onCurve,
       lastPointOfContour: pt.lastPointOfContour,
     };
