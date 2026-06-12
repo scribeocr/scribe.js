@@ -122,6 +122,16 @@ describe('Check export for .pdf files.', () => {
       doc = await scribe.openDocument([`${ASSETS_PATH}/scribe_test_pdf1.pdf`]);
       expect(doc.inputData.pdfType).toBe('ocr');
 
+      const sourceOcr = doc.ocr.active.length ? doc.ocr.active : doc.ocr.pdf;
+      let sourceLines = 0;
+      let sourceWords = 0;
+      for (const page of sourceOcr) {
+        sourceLines += page.lines.length;
+        for (const line of page.lines) sourceWords += line.words.length;
+      }
+      expect(sourceLines).toBe(58);
+      expect(sourceWords).toBe(407);
+
       scribe.ScribeDoc.defaults.displayMode = mode;
       const exportedPdf = await doc.exportData('pdf');
 
@@ -146,7 +156,9 @@ describe('Check export for .pdf files.', () => {
         }
       }
       expect(lines).toBe(58);
-      expect(words).toBe(421);
+      expect(words).toBe(407);
+      expect(lines).toBe(sourceLines);
+      expect(words).toBe(sourceWords);
       expect(colors.size).toBe(1);
       expect(opacities.size).toBe(1);
       if (mode === 'invis') {
