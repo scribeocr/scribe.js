@@ -332,14 +332,8 @@ export async function createEmbeddedFontType0({
   // Start 4th object: widths
   let widthsObjStr = `${String(firstObjIndex + 2)} 0 obj\n`;
 
-  // There are 2 ways to represent the widths of the glyphs in a CIDFontType2.
-  // (1) [first glyph index] [array of widths]
-  // (2) [first glyph index] [last glyph index] [single width for all glyphs in range]
-  // The smallest way to represent widths is to use both methods,
-  // with the second method used for ranges of glyphs with the same width.
-  // However, only the first method is used here, as mupdf rewrites the widths object.
-  // The widths object needs to be present and accurate, as otherwise the glyphs will not be displayed correctly,
-  // however it is not important that the widths be efficiently represented at this point.
+  // Emit CIDFontType2 glyph widths as [firstGlyphIndex [w0 w1 ...]].
+  // The widths must be present and accurate or glyphs render wrong, but need not be packed efficiently (no run grouping).
   // A width-scaled variant folds its inter-character stretch into these declared advances via `widthScale`.
   widthsObjStr += '[ 0 [';
   for (let i = 0; i < font.glyphs.length; i++) {

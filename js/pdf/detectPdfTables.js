@@ -382,37 +382,17 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
     }
   }
 
-  // Multi-region candidates: split into one candidate per region.
-  //
-  // Two paths trigger a split:
-  //   (a) 3+ regions and every region carries 5+ bands — typical multi-year
-  //       financial summary where each fiscal year is its own banded block
-  //       and section breaks between them are too subtle (just a section
-  //       label) to detect as narrative.
-  //   (b) Adjacent regions are separated by a wide single-segment narrative
-  //       line (paragraph, footnote, or intro prose) — a clear authorial
-  //       section break that confirms the regions belong to different
-  //       tables. Applies for any region count ≥2 (with ≥2 bands each), so
-  //       sibling tables stacked vertically with brief paragraphs between
-  //       them split correctly even when each side has few banded rows.
-  //
-  // Single tables whose internal sub-sections happen to span multiple
-  // banded regions (multi-year reconciliations, segment breakdowns) typically
-  // have narrow section labels between regions, not wide narrative lines —
-  // they remain merged.
+  // Split a multi-region candidate into one table per region when either:
+  //   (a) 3+ regions each with 5+ bands, or
+  //   (b) adjacent regions are separated by a wide single-segment narrative line (>=2 regions, >=2 bands each).
+  // Regions separated only by a narrow section label are one table and stay merged.
   for (const [cand, regions] of candToRegions) {
     if (regions.length < 2) continue;
     const allHaveFiveBands = regions.every((r) => r.rowYs.length >= 5);
     const allHaveTwoBands = regions.every((r) => r.rowYs.length >= 2);
-    // Sibling tables stacked vertically have their own column layouts;
-    // sub-sections of one table share columns. Compare adjacent regions'
-    // colXs (column anchors inferred from band rectangles) — distinct
-    // anchors signal distinct tables (e.g. p39's stock-option transaction
-    // table with 4 numeric cols vs the weighted-averages table with 3
-    // cols below it), while matching anchors signal one logical table
-    // split by a tall row or warning text (e.g. 560863 p30's
-    // troubleshooting list whose two banded sections share identical
-    // column structure).
+    // Sibling tables stacked vertically have their own column layouts, while sub-sections of one table share columns.
+    // Compare adjacent regions' colXs (column anchors inferred from band rectangles):
+    // distinct anchors signal distinct tables, matching anchors signal one logical table split by a tall row or warning text.
     const sortedByTop = [...regions].sort((a, b) => a.top - b.top);
     let shouldSplit = false;
     if (regions.length >= 3 && allHaveFiveBands) {
@@ -2036,21 +2016,10 @@ function validateCandidate(candidate, lines) {
   }
   if (proseRowCount > rows.length * 0.4) return false;
 
-  // Check 6: Narrative-layout content — reject candidates whose multi-segment
-  // rows are dominated by cells that are all multi-word textual fragments of
-  // similar width.
-  //
-  // Real data tables anchor each row with at least one ATOMIC cell — a short
-  // label or numeric/unit value that's narrow relative to surrounding text.
-  // Narrative layouts (side-by-side address blocks, stacked contact-info
-  // pairs) have NO atomic cell: every cell is a full multi-word textual
-  // fragment of comparable width to its neighbours.
-  //
-  // A cell is "narrative" if it has 2+ words including at least one
-  // alphabetic word. A row is rejected if every cell is narrative AND no
-  // cell has a width less than half the widest cell in the row — the
-  // half-width floor lets a narrow value cell break the pattern even when
-  // its neighbour is a long name or sentence cell.
+  // Check 6: reject a candidate whose multi-segment rows are all narrative cells.
+  // A cell is narrative if it has 2+ words including an alphabetic one.
+  // A row is narrative if every cell is narrative and none is narrow (< half the widest cell).
+  // Real tables anchor each row with at least one narrow atomic cell (a short label or value), which narrative layouts (address blocks, contact-info pairs) lack.
   const cellIsTextFragment = (lineIdx) => {
     const words = lines[lineIdx].words;
     if (words.length < 2) return false;
@@ -2601,22 +2570,9 @@ function detectHeaders(table, lines) {
     }
   }
 
-  // Compute bandTop as the topmost y of ADJACENT header-like rows above the
-  // first data row. The walk descends from near firstRowY and accepts rows
-  // that look like column headers or compact section titles; it rejects
-  // narrative sentence rows like "The provision for income taxes consisted
-  // of the following:" that happen to sit above the table.
-  //
-  // A row is header-like when it is all-text AND one of:
-  //   - 2+ cells (a real multi-column header like "2000 1999 1998"), OR
-  //   - 1 cell carrying ≤4 alphabetic words (a compact section title or
-  //     unit marker like "(Rs. in Crores)", "Long Term", "FIXED ASSETS").
-  // A row with a single cell carrying 5+ alphabetic words is paragraph text
-  // and breaks the chain.
-  //
-  // Adjacent = each successive accepted row within 2×avgRowHeight of the
-  // previous one. A page title floating far above (e.g., a letter-spaced
-  // "F i n a n c i a l" title 300pt up) doesn't become bbox.top.
+  // Set bandTop by walking up from the first data row through adjacent header-like rows.
+  // A row is header-like when it is all-text and either has 2+ cells or a single cell of <=4 alphabetic words (a compact section title or unit marker).
+  // A single cell of 5+ words is a paragraph and stops the walk, as does a gap over 2x the average row height.
   const countAlpha = (cell) => {
     let n = 0;
     for (const w of cell.words) if (/[a-zA-Z]/.test(w.text)) n++;
@@ -2812,21 +2768,11 @@ function extractStructure(table, lines) {
   }
 
   // Word-level column detection with two row-level preprocessors:
-  //
-  // 1. Phrase merge — within a row, consecutive non-currency words whose inter-word
-  //    gap is small (relative to line height) are merged into a single bbox. This
-  //    prevents a narrow label like "Income taxes (net of refunds)" from producing
-  //    five spurious columns while still keeping tight number columns (e.g.
-  //    "$58,736   $48,221   $38,046") separated at their large inter-column gaps.
-  //
-  // 2. Chain-currency merge — a currency symbol (or run of coincident duplicate
-  //    currency glyphs) is always merged with the following non-currency word in
-  //    the same row. Handles "$ $ 1,223" (duplicated $ glyphs at the same x) and
-  //    broken rows where the $ is emitted as a separate line object upstream of
-  //    its number.
-  //
-  // Rows are processed at row level (not line level) because broken rows can
-  // split a single logical cell across several line objects.
+  //   1. Phrase merge: consecutive non-currency words with a small inter-word gap (relative to line height) merge into one bbox,
+  //      so a multi-word label doesn't form spurious columns while wide number-column gaps stay split.
+  //   2. Chain-currency merge: a currency symbol (or a run of coincident duplicate currency glyphs) merges with the following non-currency word,
+  //      handling duplicated glyphs and a symbol emitted as a separate line object upstream of its number.
+  // Run at row level, not line level, because broken rows split one logical cell across line objects.
   const isCurrencySymbol = (text) => /^[$€£¥¢]+$/.test(text);
   const allWordBboxes = [];
   // Reject paragraph-like rows that sneak into the candidate (e.g., a footnote
@@ -3082,22 +3028,11 @@ function extractStructure(table, lines) {
     table.colSeparators = seps;
   }
 
-  // Header-anchor override. Two cases where header-derived separators
-  // should replace word-clustering results:
-  //
-  // Case 1 (sparse under-count): word-clustering produced fewer than 4
-  // columns AND header has more. Tables where each row populates only a
-  // subset of columns leave data-word clustering with collapsed columns
-  // that the header row still names.
-  //
-  // Case 2 (over-split correction): word-clustering produced MANY MORE
-  // columns than the header AND the excess is at least 2×. This means
-  // long sentences in a label column (or other wide text) created spurious
-  // column boundaries; the header's column count, derived from structured
-  // cell positions in the header band, is the better answer. The 2×
-  // threshold avoids overriding tables where header and data disagree by
-  // only one column (which could be a legitimate sub-column the header
-  // didn't name rather than a data over-split).
+  // Replace word-clustering separators with header-derived ones in two cases:
+  //   1. Under-count: clustering found <4 columns and the header found more
+  //      (rows that populate only some columns leave clustering with collapsed columns the header still names).
+  //   2. Over-split: clustering found >=2x the header's column count (long label-column sentences split into spurious columns).
+  //      The 2x guard spares an off-by-one, which may be a real sub-column the header didn't name.
   if (headerSeps) {
     const sparseUnderCount = headerSeps.length > table.colSeparators.length
       && table.colSeparators.length < 3;
@@ -3112,25 +3047,8 @@ function extractStructure(table, lines) {
     }
   }
 
-  // Reconcile with structural row-band evidence when both are available.
-  //
-  // Text-based inference and fill-based structural evidence are independent
-  // signals. When they agree, the answer is clear. When they disagree, one of
-  // them is wrong, and the disagreement itself reveals which:
-  //
-  //   * Text over-splits when a single logical cell emits multiple phrases
-  //     with enough x-gap to cross the phrase-merge threshold (e.g., "22.0 %"
-  //     in a non-GAAP reconciliation table). The resulting spurious columns
-  //     are narrow outliers relative to the legitimate columns in the table.
-  //
-  //   * Fills under-split when adjacent cells share a continuous fill strip
-  //     with no intervening gap (e.g., the 3m p25 Issuer Purchases table
-  //     where visual styling places cells flush against each other).
-  //
-  // The reconciliation: use the text-inferred column positions unless they
-  // contain a narrow-outlier column (width less than ~30% of the median
-  // column width), which is a direct structural indicator of over-splitting.
-  // In that case, prefer the fill-inferred positions.
+  // Prefer text-inferred column positions over fill-inferred ones, unless the text columns include a narrow outlier (< ~30% of the median column width).
+  // A narrow outlier means text over-split one cell into multiple phrases, so trust the fill positions there instead.
   if (table.rowBandRegion && table.rowBandRegion.colXs.length > 0 && table.colSeparators.length > 0) {
     const fillSeps = table.rowBandRegion.colXs.slice().sort((a, b) => a - b);
     const textSeps = table.colSeparators;
@@ -3882,37 +3800,12 @@ function detectTableTitle(table, lines) {
 }
 
 /**
- * Extend a table's bbox to include structurally adjacent content not captured
- * by the original detection.
- *
- * Grid detection derives bbox.left from the cluster of drawn stroked lines,
- * which may not reach a table's leftmost label column — labels rarely carry
- * stroked cell borders. Summary rows drawn just below the last stroked grid
- * line get similarly excluded. This pass rescues both patterns using text
- * geometry:
- *   - If a majority of detected rows have a text line whose left edge sits
- *     before bbox.left, treat that as a label column: widen bbox.left and
- *     insert a separator at the prior bbox.left. Lines that straddle the old
- *     boundary (label text merged with the first numeric value in a single
- *     stream object) are added to the row's lineIndices via their left edge,
- *     not by being entirely left of the boundary.
- *   - If the row immediately below bbox.bottom places its line segments
- *     within the existing column structure, treat it as a continuation row
- *     (Total / Previous Year) and widen bbox.bottom.
- *   - If the left extension fires, scan for a heading line inside the new
- *     label-column strip above bbox.top and raise bbox.top to include it
- *     (e.g. the "6. FIXED ASSETS" schedule heading that sits above the
- *     header band in the label column).
- *
- * Unconditional for all detected tables; a text-based candidate whose bbox
- * already spans the label column will find nothing before bbox.left and the
- * extension is a no-op.
- *
+ * Widen a table's bbox to capture content the stroked-line grid detection missed:
+ * an unstroked left label column, a summary/continuation row below the last grid line, and a heading above the header band within that label column.
+ * A no-op when the bbox already spans this content. The per-pass gates are documented inline.
  * @param {DetectedTable} table
  * @param {import('../objects/ocrObjects.js').OcrLine[]} lines
- * @param {DetectedTable[]} [siblings] - Other detected tables on the page;
- *   used to clamp the bottom extension so it can't swallow rows belonging
- *   to a stacked sibling below.
+ * @param {DetectedTable[]} [siblings] - Other tables on the page; clamps the bottom extension so it can't swallow a stacked sibling's rows.
  */
 function extendTableToAdjacentContent(table, lines, siblings) {
   if (table.rows.length < 2) return;
@@ -3928,26 +3821,13 @@ function extendTableToAdjacentContent(table, lines, siblings) {
 
   const existingLineSet = new Set(table.rows.flatMap((r) => r.lineIndices));
 
-  // === Left extension ===
-  // Qualifying line for a LABEL column:
-  //   (a) Right edge sits clearly before bbox.left — this keeps the line
-  //       from being a data row whose content merely extends past the
-  //       existing bbox.left (e.g. a long name under a short "Name" header).
-  //   (b) Width is smaller than half the current bbox width — a label column
-  //       is, by construction, a smaller column than the table body; wide
-  //       text (a paragraph, a caption) at the same y as a table row isn't
-  //       a label, it's unrelated page content that happens to overlap.
-  //   (c) Left edge matches the candidate label-column left (within 10 pt of
-  //       the minimum left across qualifying lines) — a real label column
-  //       has a consistent left alignment.
-  //
-  // We also track "row-overlap lines" separately: these start before
-  // bbox.left but extend into the bbox (parsePdfDoc sometimes emits a label
-  // and its first numeric value as one stream line, e.g. "Trademarks &
-  // Goodwill 10.82"). These don't CONFIRM a label column (their right edge
-  // doesn't stay in the label strip), but once a label column has been
-  // confirmed by condition-a lines, they should be added to their row so
-  // getTableLines finds the label text.
+  // Left extension:
+  // A line is label-column evidence when
+  //   (a) its right edge sits clearly left of bbox.left (not a data row spilling past it),
+  //   (b) it is narrower than half the bbox width (labels are narrow columns), and
+  //   (c) its left edge aligns (within 10 pt) with the other qualifying lines.
+  // "Row-overlap lines" start left of bbox.left but extend into the bbox (a label merged with its first value in one stream line).
+  // They don't confirm a label column, but once one is confirmed they attach to their row so its label text is found.
   const bboxWidth = table.bbox.right - table.bbox.left;
   const leftAdjByRow = new Map();
   const overlapByRow = new Map();

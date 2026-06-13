@@ -3661,18 +3661,8 @@ function parseShadings(pageObjText, objCache) {
     const bboxStr = resolveArrayValue(shObjText, 'BBox', objCache);
     const bbox = bboxStr ? bboxStr.split(/\s+/).map(Number) : null;
 
-    // Parse /ColorSpace. The shading's color space determines how the function
-    // output is interpreted:
-    //   - For Separation/DeviceN, the function emits tint amounts that must be
-    //     passed through the space's tint transform (and then its alternate CS)
-    //     to get RGB.
-    //   - For DeviceGray/DeviceRGB/DeviceCMYK, the function emits colorant
-    //     values directly.
-    //
-    // /ColorSpace may be (a) a scalar name `/DeviceGray`, (b) an inline array
-    // `[/Separation /Black /DeviceCMYK 118 0 R]`, or (c) an indirect reference
-    // `N 0 R`. Extract the defining text once so downstream detection can treat
-    // all three forms the same way.
+    // Extract the shading's /ColorSpace defining text once so downstream detection can treat its three encodings uniformly:
+    // a scalar name (`/DeviceGray`), an inline array (`[/Separation /Black /DeviceCMYK 118 0 R]`), or an indirect reference (`N 0 R`).
     let csText = null;
     const csArrStart = /\/ColorSpace\s*\[/.exec(shObjText);
     if (csArrStart) {

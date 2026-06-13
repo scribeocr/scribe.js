@@ -288,11 +288,13 @@ export function annotLinkTargetsDroppedPage(annotObjNum, objCache, keptPageObjNu
     return m ? Number(m[1]) : null;
   };
 
-  // Resolve a /Dest or /D value to its target page object number,
-  // following indirect refs to a destination array
-  // (e.g. `/Dest 600 0 R` where obj 600 is `[596 0 R /XYZ ...]`).
-  // Named destinations are not resolved here; they live in the catalog's /Dests or /Names tree
-  // and our current scope is to drop annots whose target is *known* to be a dropped page.
+  /**
+   * Resolve a /Dest or /D value, given inline or as an indirect ref to a destination array, to its target page object number.
+   * Returns null for named destinations, which need a catalog name-tree lookup this skips.
+   * @param {string} annotBody
+   * @param {string} key
+   * @returns {number|null}
+   */
   const resolveTargetPage = (annotBody, key) => {
     const inlineArr = new RegExp(`/${key}\\s*(\\[[\\s\\S]*?\\])`).exec(annotBody);
     if (inlineArr) return destArrayPage(inlineArr[1]);

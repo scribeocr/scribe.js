@@ -2979,16 +2979,12 @@ export function parseGlyphStreamPaths(streamText) {
     };
   }
 
-  // Check for nested text pattern — a Type3 CharProc that delegates drawing to
-  // another embedded font (typically a single-glyph Type1/CFF subset). This is
-  // a common "glyph indirection" optimization used by some PDF producers
-  // (seen e.g. in 3M's archived data sheets): each Type3 glyph wraps a Tj call
-  // against a single-glyph Type1 font. Structure:
+  // Detect a Type3 CharProc that draws its glyph by delegating to another embedded font
+  // (a `(char)Tj` against a single-glyph Type1/CFF subset inside BT/ET):
   //   {width} 0 {bbox} d1
   //   q {cm} cm BT /FontName {size} Tf {tm} Tm (char)Tj ET Q
-  // Without nested-text support the vector-path parser below skips everything
-  // inside BT/ET (to avoid misinterpreting font args as path ops), leaving the
-  // glyph as "nothing to draw" — entire body text disappears from the page.
+  // The vector-path parser below skips everything inside BT/ET,
+  // so without this the glyph draws nothing and the page's body text disappears.
   let nestedText = null;
   const ntRegex = /BT\s*\/(\S+)\s+([\d.+-]+)\s+Tf\s*(?:([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+Tm\s*)?\(((?:[^()\\]|\\.)*)\)\s*Tj\s*ET/;
   const ntMatch = ntRegex.exec(streamText);

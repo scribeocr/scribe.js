@@ -1342,16 +1342,10 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
     if (/^\s$/.test(ch.text)) ch.text = ' ';
   }
 
-  // Dedupe stroke+fill double-rendering. Two passes catch different shapes:
-  //   1. Exact-Tm duplicate: same Tj re-emitted at identical Tm (e.g. stroke
-  //      pass with Tr 1 + outlined-color, then fill pass with Tr 0). The
-  //      two copies are emitted back-to-back in practice. The cap below
-  //      bounds the worst-case reorder window: matches further apart than
-  //      this are treated as independent and not deduped.
-  //   2. Slightly-offset overlap (fake-bold stroke+fill effect): the same
-  //      glyph drawn twice at offsets of 1–5 pt to create a thicker outline,
-  //      surfacing as e.g. "DDiesel" or "NNotes". The two copies are always
-  //      adjacent in the char stream, so a small local lookback suffices.
+  // Dedupe glyphs double-rendered as a stroke pass plus a fill pass. Two shapes:
+  //   1. Identical Tm: the same Tj re-emitted at the same position (Tr 1 stroke, then Tr 0 fill).
+  //   2. Slightly-offset overlap: the same glyph drawn again 1-5 pt away for a fake-bold outline.
+  // Both copies are emitted adjacently, so a bounded lookback catches them.
   const SAME_TM_LOOKBACK = 500;
 
   chars = (() => {

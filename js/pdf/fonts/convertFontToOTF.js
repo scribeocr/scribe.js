@@ -453,22 +453,12 @@ export function cidCodepoint(toUniStr, cid, width) {
     const chars = [...toUniStr];
     if (chars.length === 1) {
       const cp = toUniStr.codePointAt(0) || 0;
-      // Use real Unicode unless it would cause rendering problems:
-      // - combining marks → Chrome adds dotted-circle placeholders
-      // - whitespace/control chars → trim() guard skips them, hiding visible glyphs
-      // - default-ignorable/format chars (soft hyphen, zero-width and bidi controls,
-      //   BOM, variation selectors) render nothing in fillText, so a glyph
-      //   claimed under one silently vanishes (an obfuscated ToUnicode can map a real
-      //   letter to U+00AD). Route them to PUA so the glyph still draws.
-      // - U+FFFD replacement character → PDF producer's "couldn't decode" placeholder;
-      //   claiming it in the cmap routes every CID with FFFD in ToUnicode (and every
-      //   missing-CID fallback) to a single real glyph, so unrelated CIDs render as
-      //   whichever glyph got there first.
-      // A Latin combining diacritical mark (U+0300-U+036F) is normally kept as the real codepoint,
-      // since some Latin academic fonts map precomposed glyphs through this block.
-      // But a CID with a positive advance width is a base glyph mislabeled with a combining codepoint, not a real zero-width mark.
-      // Drawn as the bare mark, the canvas shaper gives it zero advance and stacks it on the preceding glyph, shifting it one position.
-      // Route those to PUA so the glyph draws standalone at its own spot.
+      // Keep the real Unicode only when canvas draws that codepoint correctly as a standalone glyph.
+      // Otherwise route it to PUA, in these cases:
+      // - control/whitespace (cp <= 0x20), combining/Indic marks, default-ignorable and format chars: canvas draws nothing, a dotted circle, or skips them
+      // - complex-shaping-script codepoints: need shaping a lone codepoint won't get, so they misrender
+      // - U+FFFD: a decode-failure placeholder; mapping it collapses every undecoded CID onto one glyph
+      // - a U+0300-036F codepoint with positive advance width: a base glyph mislabeled as a combining mark, which would otherwise stack onto the preceding glyph
       const latinCombiningBaseGlyph = cp >= 0x300 && cp <= 0x36F && typeof width === 'number' && width > 0;
       if (cp > 0x20 && cp !== 0xFFFD && !isCombiningOrIndicMark(cp)
         && !isDefaultIgnorable(cp) && !isComplexShapingScript(cp)
