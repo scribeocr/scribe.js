@@ -38,10 +38,6 @@ class ScribeViewerState {
   }
 }
 
-/**
- * Per-viewer GUI options.
- * GUI-specific options and options that are implemented through arguments rather than the `opts` object.
- */
 class ScribeViewerOpts {
   constructor() {
     this.enableRecognition = true;
@@ -228,17 +224,6 @@ class CanvasSelection {
       }
     }
   }
-}
-
-function getCenter(p1, p2) {
-  return {
-    x: (p1.x + p2.x) / 2,
-    y: (p1.y + p2.y) / 2,
-  };
-}
-
-function getDistance(p1, p2) {
-  return Math.sqrt((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2);
 }
 
 /**
@@ -786,17 +771,14 @@ export class ScribeViewer {
     const MIN = 10 / 60; // px-per-frame floor (~10 px/s) the instant past the dead zone, avoiding a sub-useful crawl
     const MAX = 200; // px-per-frame at full deflection (~12000 px/s at 60fps)
     const EXP = 3; // >1 -> gentle near the dead zone (fine, few-lines control), steep at the extremes
-    const velocity = (d) => {
-      const past = Math.min(Math.abs(d) - DEAD, RANGE);
-      if (past <= 0) return 0;
-      return Math.sign(d) * (MIN + (MAX - MIN) * (past / RANGE) ** EXP);
-    };
     const tick = () => {
       if (!a.active) return;
       // Vertical-only, like a standard PDF viewer: the horizontal cursor offset is ignored so the page never drifts left/right.
       // (Horizontal scrolling stays on Shift+wheel and the scrollbar.)
       // Cursor below origin (vY > 0) -> scroll down -> content moves up -> negate (matches the wheel handler's sign).
-      const vY = velocity(a.pointerY - a.originY);
+      const d = a.pointerY - a.originY;
+      const past = Math.min(Math.abs(d) - DEAD, RANGE);
+      const vY = past <= 0 ? 0 : Math.sign(d) * (MIN + (MAX - MIN) * (past / RANGE) ** EXP);
       if (vY !== 0) this.panStage({ deltaY: -vY });
       a.rafId = requestAnimationFrame(tick);
     };
@@ -832,8 +814,11 @@ export class ScribeViewer {
     const p1 = { x: touch1.clientX, y: touch1.clientY };
     const p2 = { x: touch2.clientX, y: touch2.clientY };
 
-    const center = getCenter(p1, p2);
-    const dist = getDistance(p1, p2);
+    const center = {
+      x: (p1.x + p2.x) / 2,
+      y: (p1.y + p2.y) / 2,
+    };
+    const dist = Math.sqrt((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2);
 
     if (!this.drag.lastDist || !this.drag.lastCenter) {
       this.drag.lastCenter = center;
@@ -1070,6 +1055,10 @@ export class ScribeViewer {
     this.stage.y(interfaceHeight);
   }
 
+  /**
+   * Render the OCR word overlay for page `n`, clearing any existing words first.
+   * @param {number} n
+   */
   async renderWords(n) {
     let ocrData = this.doc.ocr.active?.[n];
 
