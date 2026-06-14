@@ -417,7 +417,11 @@ export function detectTableRegions(pageObj, paths, scale, visualHeightPts, boxOr
           if (line.bbox.right < cand.bbox.left || line.bbox.left > cand.bbox.right) continue;
           let matched = false;
           for (const g of yGroups) {
-            if (Math.abs(g.y - line.bbox.top) < 5) { g.count++; matched = true; break; }
+            if (Math.abs(g.y - line.bbox.top) < 5) {
+              g.count++;
+              matched = true;
+              break;
+            }
           }
           if (!matched) yGroups.push({ y: line.bbox.top, count: 1 });
         }
@@ -1186,7 +1190,10 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
     if (!path.stroke) continue;
     const cmds = path.commands;
     if (cmds.length !== 5 || cmds[0].type !== 'M' || cmds[4].type !== 'Z') continue;
-    let rMinX = Infinity; let rMaxX = -Infinity; let rMinY = Infinity; let rMaxY = -Infinity;
+    let rMinX = Infinity;
+    let rMaxX = -Infinity;
+    let rMinY = Infinity;
+    let rMaxY = -Infinity;
     for (const c of cmds) {
       if (c.type === 'Z') continue;
       if (c.x < rMinX) rMinX = c.x; if (c.x > rMaxX) rMaxX = c.x;
@@ -1226,8 +1233,10 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
     const path = paths[pathIdx];
     if (!path.fill && !path.stroke) continue;
 
-    let minX = Infinity; let maxX = -Infinity;
-    let minY = Infinity; let maxY = -Infinity;
+    let minX = Infinity;
+    let maxX = -Infinity;
+    let minY = Infinity;
+    let maxY = -Infinity;
     for (const cmd of path.commands) {
       if (cmd.type === 'Z') continue;
       if (cmd.x < minX) minX = cmd.x;
@@ -1290,8 +1299,10 @@ function classifyPaths(paths, scale, visualHeightPts, pageObj, boxOriginX = 0, b
         if (cmds[k].type !== 'M') continue;
         if (cmds[k + 1].type !== 'L' || cmds[k + 2].type !== 'L'
             || cmds[k + 3].type !== 'L' || cmds[k + 4].type !== 'Z') continue;
-        const p0 = cmds[k]; const p1 = cmds[k + 1];
-        const p2 = cmds[k + 2]; const p3 = cmds[k + 3];
+        const p0 = cmds[k];
+        const p1 = cmds[k + 1];
+        const p2 = cmds[k + 2];
+        const p3 = cmds[k + 3];
         const tol = 0.01;
         const horizFirst = Math.abs(p0.y - p1.y) < tol && Math.abs(p2.y - p3.y) < tol
                         && Math.abs(p0.x - p3.x) < tol && Math.abs(p1.x - p2.x) < tol;
@@ -2119,8 +2130,10 @@ function extractGridSegments(paths, scale, visualHeightPts, boxOriginX, boxOrigi
     }
     if (path.fill) {
       // Filled thin rectangle: treat as a single h-seg or v-seg.
-      let minX = Infinity; let maxX = -Infinity;
-      let minY = Infinity; let maxY = -Infinity;
+      let minX = Infinity;
+      let maxX = -Infinity;
+      let minY = Infinity;
+      let maxY = -Infinity;
       for (const c of cmds) {
         if (c.type === 'Z') continue;
         if (c.x < minX) minX = c.x; if (c.x > maxX) maxX = c.x;
@@ -3661,7 +3674,11 @@ function detectSegmentedHLineTables(cluster, headerFills, pageObj) {
       for (let j = 0; j < ref.length; j++) {
         if (Math.abs(ref[j] - rb.breaks[j]) > 5) { consistent = false; break; }
       }
-      if (consistent) { group.push(rb); matched = true; break; }
+      if (consistent) {
+        group.push(rb);
+        matched = true;
+        break;
+      }
     }
     if (!matched) breakGroups.push([rb]);
   }
@@ -4040,8 +4057,10 @@ function validateStreamOrder(table, lines) {
  * @param {import('../objects/ocrObjects.js').OcrLine[]} lines
  */
 function computeBboxFromLineIndices(indices, lines) {
-  let left = Infinity; let top = Infinity;
-  let right = -Infinity; let bottom = -Infinity;
+  let left = Infinity;
+  let top = Infinity;
+  let right = -Infinity;
+  let bottom = -Infinity;
   for (const i of indices) {
     const b = lines[i].bbox;
     if (b.left < left) left = b.left;

@@ -21,6 +21,8 @@ import {
 } from '../../pdf/fonts/base14Substitution.js';
 import { standardFontToCSS } from '../../pdf/fonts/standardFontMetrics.js';
 
+/** @typedef {import('../../font-parser/src/path.js').PathCommand} PathCommand */
+
 /**
  * Return the loaded supplemental opentype font backing a Base14 symbol family, or null.
  * The renderer substitutes ZapfDingbats with the bundled Dingbats face and Symbol with StandardSymbolsPS.
@@ -137,18 +139,28 @@ function detectFontFileType(fontFile) {
 }
 
 /**
+ * Glyph outlines + metrics for one embedded or substitute font.
+ *
+ * @typedef {{
+ *   glyphs: any,
+ *   unitsPerEm: number,
+ *   fontType: string,
+ *   fontMatrix?: number[],
+ *   cmap?: { glyphIndexMap?: Record<number, number>, byteToGlyphIndex?: number[], platformID?: number, encodingID?: number } | null,
+ *   nameToGid?: Map<string, number> | null,
+ *   unicodeToGid?: Map<number, number> | null,
+ *   cffCharCodeToGid?: Map<number, number> | null,
+ *   cffCidToGid?: Map<number, number> | null,
+ *   substituteFont?: any,
+ * }} LoadedFontOutlines
+ */
+
+/**
  * Load a glyph set + units-per-em + cmap glyph-index-map for an embedded font.
  * Returns null when the font cannot be loaded.
  *
  * @param {Uint8Array} fontFile
- * @returns {{ glyphs: any, unitsPerEm: number, fontType: string,
- *            fontMatrix?: number[],
- *            cmap?: { glyphIndexMap: Record<number, number>, byteToGlyphIndex?: number[], platformID?: number, encodingID?: number } | null,
- *            nameToGid?: Map<string, number> | null,
- *            unicodeToGid?: Map<number, number> | null,
- *            cffCharCodeToGid?: Map<number, number> | null,
- *            cffCidToGid?: Map<number, number> | null,
- *            substituteFont?: any } | null}
+ * @returns {LoadedFontOutlines | null}
  */
 export function loadGlyphsForOutlines(fontFile) {
   const fontType = detectFontFileType(fontFile);
@@ -158,6 +170,7 @@ export function loadGlyphsForOutlines(fontFile) {
       const data = new DataView(buf);
       const bytes = new Uint8Array(buf);
       const numTables = data.getUint16(4);
+      /** @type {Record<string, { offset: number, length: number }>} */
       const dir = {};
       for (let i = 0; i < numTables; i++) {
         const off = 12 + i * 16;
@@ -168,6 +181,7 @@ export function loadGlyphsForOutlines(fontFile) {
       const head = opentype.parseHeadTable(data, dir.head.offset);
       const maxp = opentype.parseMaxpTable(data, dir.maxp.offset);
       const loca = opentype.parseLocaTable(data, dir.loca.offset, maxp.numGlyphs, head.indexToLocFormat === 0);
+      /** @type {{ unitsPerEm: number, numGlyphs: number, tables: any, glyphs?: any }} */
       const shell = { unitsPerEm: head.unitsPerEm, numGlyphs: maxp.numGlyphs, tables: {} };
       shell.glyphs = opentype.parseGlyfTable(data, dir.glyf.offset, loca, shell);
       let cmap = null;
@@ -183,7 +197,7 @@ export function loadGlyphsForOutlines(fontFile) {
       // back to cmap (which would interpret the charCode as a Unicode codepoint
       // and pick a glyph from a totally different position in the font).
       let nameToGid = null;
-      const postEntry = /** @type {{offset: number}|undefined} */ (/** @type {any} */ (dir).post);
+      const postEntry = dir.post;
       if (postEntry) {
         try {
           const post = opentype.parsePostTable(data, postEntry.offset);
@@ -320,7 +334,7 @@ export function loadGlyphsForOutlines(fontFile) {
         glyphsArr.push(glyph);
       }
       return {
-        glyphs: { get: (i) => glyphsArr[i], length: glyphsArr.length },
+        glyphs: { get: (/** @type {number} */ i) => glyphsArr[i], length: glyphsArr.length },
         unitsPerEm: upem,
         fontMatrix,
         fontType: 'type1',
@@ -339,7 +353,7 @@ export function loadGlyphsForOutlines(fontFile) {
  * Quadratic Bézier commands are expanded to cubic via midpoint conversion
  * (PDF has no native quadratic operator).
  *
- * @param {Array<{type: string, x?: number, y?: number, x1?: number, y1?: number, x2?: number, y2?: number}>} commands
+ * @param {ReadonlyArray<PathCommand>} commands
  */
 function pathCommandsToOps(commands) {
   let out = '';
@@ -671,7 +685,11 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
     const buckets = new Map();
     for (const c of pendingConverts) {
       let bucket = buckets.get(c.xobjTag);
-      if (!bucket) { bucket = []; buckets.set(c.xobjTag, bucket); order.push(c.xobjTag); }
+      if (!bucket) {
+        bucket = [];
+        buckets.set(c.xobjTag, bucket);
+        order.push(c.xobjTag);
+      }
       bucket.push(c);
     }
     for (const tag of order) {
@@ -824,10 +842,17 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       flushPendingConverts();
       const s = gsStack.pop();
       if (s) {
-        tc = s.tc; tw = s.tw; tz = s.tz; tl = s.tl; tr = s.tr; ts = s.ts;
+        tc = s.tc;
+        tw = s.tw;
+        tz = s.tz;
+        tl = s.tl;
+        tr = s.tr;
+        ts = s.ts;
         currentFontTag = s.fontTag; currentFontSize = s.fontSize;
         ctm = s.ctm;
-        lw = s.lw; dashActive = s.dashActive; ml = s.ml;
+        lw = s.lw;
+        dashActive = s.dashActive;
+        ml = s.ml;
       }
       emitPersistVerbatim(op);
       continue;
@@ -1340,14 +1365,14 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
 
 /**
  * Compute glyph bounding box (font-unit space) by walking path commands.
- * @param {Array<{type: string, x?: number, y?: number, x1?: number, y1?: number, x2?: number, y2?: number}>} commands
+ * @param {ReadonlyArray<PathCommand>} commands
  */
 function bboxFromCommands(commands) {
   let xMin = Infinity;
   let yMin = Infinity;
   let xMax = -Infinity;
   let yMax = -Infinity;
-  const accept = (x, y) => {
+  const accept = (/** @type {number} */ x, /** @type {number} */ y) => {
     if (typeof x !== 'number' || typeof y !== 'number') return;
     if (x < xMin) xMin = x;
     if (x > xMax) xMax = x;
@@ -1356,7 +1381,14 @@ function bboxFromCommands(commands) {
   };
   for (const c of commands) {
     if (c.type === 'M' || c.type === 'L') accept(c.x, c.y);
-    else if (c.type === 'C') { accept(c.x1, c.y1); accept(c.x2, c.y2); accept(c.x, c.y); } else if (c.type === 'Q') { accept(c.x1, c.y1); accept(c.x, c.y); }
+    else if (c.type === 'C') {
+      accept(c.x1, c.y1);
+      accept(c.x2, c.y2);
+      accept(c.x, c.y);
+    } else if (c.type === 'Q') {
+      accept(c.x1, c.y1);
+      accept(c.x, c.y);
+    }
   }
   if (!Number.isFinite(xMin)) {
     return {
@@ -1373,10 +1405,7 @@ function bboxFromCommands(commands) {
  *
  * @param {any} fontInfo - FontInfo from parsePageFonts
  * @param {number} charCode - the decoded code from the content stream
- * @param {{ cmap?: { glyphIndexMap: Record<number, number>, byteToGlyphIndex?: number[], platformID?: number, encodingID?: number } | null,
- *           nameToGid?: Map<string, number> | null,
- *           cffCharCodeToGid?: Map<number, number> | null,
- *           cffCidToGid?: Map<number, number> | null } | null} loaded
+ * @param {LoadedFontOutlines | null} loaded
  * @returns {number | null}
  */
 export function charCodeToGlyphIndex(fontInfo, charCode, loaded) {
@@ -1477,9 +1506,33 @@ export function createConversionState() {
 }
 
 /**
+ * One Type3 CharProc, parsed to drawable path data (see `parseGlyphStreamPaths`).
+ *
+ * @typedef {{ commands: PathCommand[], provablyEmpty?: boolean, isD1?: boolean,
+ *   paintMode?: string, evenOdd?: boolean }} Type3Glyph
+ */
+
+/**
+ * Parsed PDF font descriptor from `parsePageFonts` (the subset consumed during conversion).
+ *
+ * @typedef {{
+ *   baseName: string,
+ *   bold?: boolean,
+ *   italic?: boolean,
+ *   charCodeToGlyphName?: Map<number, string> | null,
+ *   encodingUnicode?: Map<number, string> | null,
+ *   toUnicode?: Map<number, string> | null,
+ *   type0?: { fontFile?: Uint8Array | null } | null,
+ *   type1?: { fontFile?: Uint8Array | null } | null,
+ *   type3?: { encoding: { [charCode: number]: string }, fontMatrix: number[],
+ *     glyphs: { [glyphName: string]: Type3Glyph } } | null,
+ * }} FontInfo
+ */
+
+/**
  * Build a glyph resolver closure for the conversion state.
  *
- * @param {Map<number, any>} fontInfoByObjNum - Shared map: fontObjNum -> FontInfo.
+ * @param {Map<number, FontInfo>} fontInfoByObjNum - Shared map: fontObjNum -> FontInfo.
  *   Mutated as fonts from forms are encountered.
  * @param {ReturnType<typeof createConversionState>} state
  * @returns {GlyphResolver}
