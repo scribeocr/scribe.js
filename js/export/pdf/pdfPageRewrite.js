@@ -493,11 +493,13 @@ export function overlayAnnotationBbox(annot, scaleX, scaleY, tx, ty) {
     top: b.top * scaleY - ty,
     bottom: b.bottom * scaleY - ty,
   });
-  const out = {
-    ...annot,
-    bbox: transformBbox(annot.bbox),
-  };
+  const transformFlat = (arr) => arr.map((v, i) => (i % 2 === 0 ? v * scaleX + tx : v * scaleY - ty));
+  const out = { ...annot };
+  // Line/Polygon shapes carry geometry instead of a bbox.
+  if (annot.bbox) out.bbox = transformBbox(annot.bbox);
   if (annot.quads) out.quads = annot.quads.map(transformBbox);
+  if (annot.points) out.points = transformFlat(annot.points);
+  if (annot.vertices) out.vertices = transformFlat(annot.vertices);
   // FreeText font size lives in the same pixel frame as the bbox,
   // so convert it to page points alongside the rect for the text to fit its box at any scale.
   if (annot.type === 'freetext' && typeof annot.fontSize === 'number') out.fontSize = annot.fontSize * scaleY;

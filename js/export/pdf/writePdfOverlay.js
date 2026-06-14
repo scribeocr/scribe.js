@@ -5,7 +5,10 @@ import { byteIndexOf } from '../../pdf/pdfPrimitives.js';
 import { ObjectCache } from '../../pdf/objectCache.js';
 import { createPdfFontRefs, createEmbeddedFontType0 } from './writePdfFonts.js';
 import { ocrPageToPDFStream } from './writePdfText.js';
-import { buildHighlightAnnotObjects, buildFreeTextAnnotObjects, consolidateAnnotations } from './writePdfAnnots.js';
+import {
+  buildHighlightAnnotObjects, buildFreeTextAnnotObjects, buildShapeAnnotObjects, consolidateAnnotations,
+} from './writePdfAnnots.js';
+import { SHAPE_ANNOT_TYPES } from '../../addHighlights.js';
 import { encodeStreamObject } from './writePdfStreams.js';
 import {
   parseTrailerInfo,
@@ -319,17 +322,21 @@ export async function overlayPdfText({
     let extraAnnotRefs = [];
     if (hasAnnots) {
       const outputDims = { width: baseWidth, height: baseHeight };
-      const highlightAnns = pageAnnotations.filter((a) => a.type !== 'freetext');
+      const highlightAnns = pageAnnotations.filter((a) => a.type == null || a.type === 'highlight');
       const consolidated = consolidateAnnotations(highlightAnns, pageObj);
       const pageForEmit = consolidated.length > 0 ? consolidated : highlightAnns;
       const transformed = pageForEmit.map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty));
       const { objectTexts, annotRefs } = buildHighlightAnnotObjects(transformed, nextObjNum, outputDims);
       for (const t of objectTexts) newObjects.push({ objNum: nextObjNum++, content: t });
+      const shapeAnns = pageAnnotations.filter((a) => SHAPE_ANNOT_TYPES.has(a.type))
+        .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty));
+      const shapes = buildShapeAnnotObjects(shapeAnns, nextObjNum, outputDims);
+      for (const t of shapes.objectTexts) newObjects.push({ objNum: nextObjNum++, content: t });
       const freeTextAnns = pageAnnotations.filter((a) => a.type === 'freetext')
         .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty));
       const ft = buildFreeTextAnnotObjects(freeTextAnns, nextObjNum, outputDims);
       for (const t of ft.objectTexts) newObjects.push({ objNum: nextObjNum++, content: t });
-      extraAnnotRefs = [...annotRefs, ...ft.annotRefs];
+      extraAnnotRefs = [...annotRefs, ...shapes.annotRefs, ...ft.annotRefs];
     }
 
     const newPageObj = buildReplacementPageDict(pageInfo.objNum, pageInfo.objText, newContentsArray, resourcesObjNum, null, extraAnnotRefs, objCache);

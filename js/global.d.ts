@@ -232,7 +232,26 @@ declare global {
         opacity: number;
     };
 
-    type Annotation = AnnotationHighlight | AnnotationFreeText;
+    type AnnotationShapeStyle = {
+        /** Stroke/border color, '#rrggbb'. Default '#ff0000'. */
+        borderColor?: string;
+        /** Interior fill, '#rrggbb'; omitted = outline only. */
+        fillColor?: string;
+        /** Opacity 0..1 applied to stroke and fill. Default 1. */
+        opacity?: number;
+        /** Border width in page units. Default 1. */
+        borderWidth?: number;
+        comment?: string;
+    };
+
+    /** Geometry below is in page coordinates (top-left origin, same frame as OCR words). */
+    type AnnotationSquare = AnnotationShapeStyle & { type: 'square'; bbox: bbox; };
+    type AnnotationCircle = AnnotationShapeStyle & { type: 'circle'; bbox: bbox; };
+    type AnnotationLine = AnnotationShapeStyle & { type: 'line'; points: [number, number, number, number]; };
+    type AnnotationPolygon = AnnotationShapeStyle & { type: 'polygon' | 'polyline'; vertices: number[]; };
+    type AnnotationShape = AnnotationSquare | AnnotationCircle | AnnotationLine | AnnotationPolygon;
+
+    type Annotation = AnnotationHighlight | AnnotationFreeText | AnnotationShape;
 
     // Layout objects
     type LayoutPage = import("./objects/layoutObjects.js").LayoutPage;

@@ -240,7 +240,7 @@ describe('Check export for .pdf files.', () => {
     await doc.clear();
   });
 
-  test('Highlight and FreeText annotations are preserved through PDF export and re-import', async () => {
+  test('Highlight, FreeText, and shape annotations are preserved through PDF export and re-import', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/complaint_1.pdf`, `${ASSETS_PATH}/complaint_1.abbyy.xml`]);
     doc.addHighlights([{ page: 0, startLine: 0, endLine: 2 }]);
     // addHighlights emits one entry per word; lines 0-2 of complaint_1.abbyy.xml have 41 words.
@@ -249,7 +249,52 @@ describe('Check export for .pdf files.', () => {
     doc.addFreeText([FREETEXT_SPEC]);
     expect(doc.annotations.pages[0].length).toBe(42);
 
+    const shapeResult = doc.addShapes([
+      {
+        page: 0,
+        type: 'square',
+        bbox: {
+          left: 200, top: 250, right: 1200, bottom: 650,
+        },
+        borderColor: '#ff0000',
+        borderWidth: 6,
+      },
+      {
+        page: 0,
+        type: 'circle',
+        bbox: {
+          left: 1400, top: 250, right: 2100, bottom: 950,
+        },
+        borderColor: '#0000ff',
+        fillColor: '#00ff00',
+        opacity: 0.4,
+        borderWidth: 6,
+      },
+      {
+        page: 0, type: 'line', points: [200, 1100, 2300, 1100], borderColor: '#000000', borderWidth: 10,
+      },
+      {
+        page: 0, type: 'polygon', vertices: [450, 1400, 1350, 1400, 900, 2150], borderColor: '#ff00ff', borderWidth: 6,
+      },
+    ]);
+    expect(shapeResult.shapesAdded).toBe(4);
+    expect(doc.annotations.pages[0].length).toBe(46);
+
     const pdfBytes = await doc.exportData('pdf');
+
+    // Shapes are written into the exported PDF (they are not re-parsed back into the model on import).
+    // complaint_1's base MediaBox is 612x792 over 2550x3300 OCR space, so page coords scale by 0.24 and flip in y.
+    const shapeText = new TextDecoder('latin1').decode(new Uint8Array(pdfBytes));
+    expect(shapeText).toContain('/Subtype /Square /Rect [42 630 294 738] /C [1 0 0]');
+    expect(shapeText).toContain('/Subtype /Circle /Rect [330 558 510 738] /C [0 0 1] /IC [0 1 0] /CA 0.4');
+    expect(shapeText).toContain('/Subtype /Line /Rect [38 518 562 538] /C [0 0 0]');
+    expect(shapeText).toContain('/L [48 528 552 528]');
+    expect(shapeText).toContain('/Subtype /Polygon /Rect [102 270 330 462] /C [1 0 1]');
+    expect(shapeText).toContain('/Vertices [108 456 324 456 216 276]');
+    // One /AP appearance Form XObject per shape; only the circle is filled (/IC).
+    expect(shapeText.split('/Subtype /Form').length - 1).toBe(4);
+    expect(shapeText.split('/IC ').length - 1).toBe(1);
+
     await doc.clear();
 
     doc = await scribe.openDocument({ pdfFiles: [new Uint8Array(pdfBytes).buffer] });

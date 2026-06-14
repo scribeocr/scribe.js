@@ -105,6 +105,113 @@ export function buildFreeTextAnnotObjects(annotations, startObjNum, outputDims) 
   return { objectTexts, annotRefs };
 }
 
+const SHAPE_SUBTYPE = {
+  square: 'Square', circle: 'Circle', line: 'Line', polygon: 'Polygon', polyline: 'PolyLine',
+};
+
+/**
+ * Build the PDF objects for shape annotations: an annotation dict plus an /AP appearance stream per shape.
+ * @param {AnnotationShape[]} annotations
+ * @param {number} startObjNum
+ * @param {{ width: number, height: number }} outputDims
+ */
+export function buildShapeAnnotObjects(annotations, startObjNum, outputDims) {
+  const objectTexts = [];
+  const annotRefs = [];
+  const H = outputDims.height;
+  let objNum = startObjNum;
+
+  for (const annot of annotations) {
+    const bhex = (annot.borderColor || '#ff0000').replace('#', '');
+    const br = parseInt(bhex.substring(0, 2), 16) / 255;
+    const bg = parseInt(bhex.substring(2, 4), 16) / 255;
+    const bb = parseInt(bhex.substring(4, 6), 16) / 255;
+    const width = annot.borderWidth ?? 1;
+    const hasFill = annot.type !== 'line' && annot.type !== 'polyline' && !!annot.fillColor;
+
+    let fr; let fg; let fb;
+    if (hasFill) {
+      const fhex = annot.fillColor.replace('#', '');
+      fr = parseInt(fhex.substring(0, 2), 16) / 255;
+      fg = parseInt(fhex.substring(2, 4), 16) / 255;
+      fb = parseInt(fhex.substring(4, 6), 16) / 255;
+    }
+
+    // Geometry field and path ops, in PDF user space (y flipped).
+    /** @type {Array<[number, number]>} */
+    let pts;
+    let geomStr = '';
+    let pathOps = '';
+    if (annot.type === 'line') {
+      const [x1, y1, x2, y2] = annot.points;
+      pts = [[x1, H - y1], [x2, H - y2]];
+      geomStr = ` /L [${pts[0][0]} ${pts[0][1]} ${pts[1][0]} ${pts[1][1]}]`;
+      pathOps = `${pts[0][0]} ${pts[0][1]} m\n${pts[1][0]} ${pts[1][1]} l\n`;
+    } else if (annot.type === 'polygon' || annot.type === 'polyline') {
+      pts = [];
+      for (let i = 0; i < annot.vertices.length; i += 2) pts.push([annot.vertices[i], H - annot.vertices[i + 1]]);
+      geomStr = ` /Vertices [${pts.map((p) => `${p[0]} ${p[1]}`).join(' ')}]`;
+      pathOps = `${pts[0][0]} ${pts[0][1]} m\n${pts.slice(1).map((p) => `${p[0]} ${p[1]} l`).join('\n')}\n`;
+      if (annot.type === 'polygon') pathOps += 'h\n';
+    } else {
+      const {
+        left, top, right, bottom,
+      } = annot.bbox;
+      pts = [[left, H - bottom], [right, H - top]];
+      if (annot.type === 'square') {
+        pathOps = `${left} ${H - bottom} ${right - left} ${bottom - top} re\n`;
+      } else {
+        const cx = (left + right) / 2;
+        const cy = H - (top + bottom) / 2;
+        const rx = (right - left) / 2;
+        const ry = (bottom - top) / 2;
+        const kx = rx * 0.5522847498;
+        const ky = ry * 0.5522847498;
+        pathOps = `${cx + rx} ${cy} m\n`
+          + `${cx + rx} ${cy + ky} ${cx + kx} ${cy + ry} ${cx} ${cy + ry} c\n`
+          + `${cx - kx} ${cy + ry} ${cx - rx} ${cy + ky} ${cx - rx} ${cy} c\n`
+          + `${cx - rx} ${cy - ky} ${cx - kx} ${cy - ry} ${cx} ${cy - ry} c\n`
+          + `${cx + kx} ${cy - ry} ${cx + rx} ${cy - ky} ${cx + rx} ${cy} c\n`
+          + 'h\n';
+      }
+    }
+
+    // /Rect and appearance /BBox: geometry bounds padded by border width so the stroke isn't clipped.
+    let gx0 = pts[0][0]; let gy0 = pts[0][1]; let gx1 = pts[0][0]; let gy1 = pts[0][1];
+    for (const [x, y] of pts) {
+      gx0 = Math.min(gx0, x); gy0 = Math.min(gy0, y); gx1 = Math.max(gx1, x); gy1 = Math.max(gy1, y);
+    }
+    const rect = `${gx0 - width} ${gy0 - width} ${gx1 + width} ${gy1 + width}`;
+
+    const apObjNum = objNum + 1;
+    annotRefs.push(`${objNum} 0 R`);
+
+    let dict = `${objNum} 0 obj\n`;
+    dict += `<</Type /Annot /Subtype /${SHAPE_SUBTYPE[annot.type]}`;
+    dict += ` /Rect [${rect}]`;
+    dict += ` /C [${br} ${bg} ${bb}]`;
+    if (hasFill) dict += ` /IC [${fr} ${fg} ${fb}]`;
+    dict += ` /CA ${annot.opacity ?? 1}`;
+    dict += ` /BS <</W ${width}>>`;
+    dict += ' /F 4';
+    dict += geomStr;
+    dict += ` /AP <</N ${apObjNum} 0 R>>`;
+    if (annot.comment) dict += ` /Contents <${toUtf16BeHex(annot.comment)}>`;
+    dict += '>>\nendobj\n\n';
+
+    let ap = `q\n${br} ${bg} ${bb} RG\n`;
+    if (hasFill) ap += `${fr} ${fg} ${fb} rg\n`;
+    ap += `${width} w\n${pathOps}${hasFill ? 'B' : 'S'}\nQ`;
+    const apObj = `${apObjNum} 0 obj\n<</Type /XObject /Subtype /Form /FormType 1 /BBox [${rect}] /Resources <<>> /Length ${ap.length}>>\nstream\n${ap}\nendstream\nendobj\n\n`;
+
+    objectTexts.push(dict);
+    objectTexts.push(apObj);
+    objNum += 2;
+  }
+
+  return { objectTexts, annotRefs };
+}
+
 /**
  * Consolidates highlight annotations by using the OCR line/word structure.
  *

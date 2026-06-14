@@ -172,3 +172,79 @@ export function clearHighlights(doc) {
       .filter((a) => a.type === 'freetext' || !a.groupId?.startsWith(GROUP_PREFIX));
   }
 }
+
+/** Annotation type tags emitted as vector shapes. */
+export const SHAPE_ANNOT_TYPES = new Set(['square', 'circle', 'line', 'polygon', 'polyline']);
+
+/**
+ * @typedef {Object} ShapeSpec
+ * @property {number} page - Page index (0-based).
+ * @property {'square'|'circle'|'line'|'polygon'|'polyline'} type
+ * @property {bbox} [bbox] - 'square'/'circle': rect/ellipse bounds in page coords (top-left origin).
+ * @property {[number, number, number, number]} [points] - 'line': [x1, y1, x2, y2] in page coords.
+ * @property {number[]} [vertices] - 'polygon'/'polyline': flat [x1, y1, ...] in page coords.
+ * @property {string} [borderColor='#ff0000']
+ * @property {string} [fillColor] - Omitted = outline only.
+ * @property {number} [opacity=1]
+ * @property {number} [borderWidth=1]
+ * @property {string} [comment]
+ */
+
+/**
+ * Add vector shape annotations at fixed page positions.
+ * @param {ScribeDoc} doc
+ * @param {Array<ShapeSpec>} shapes
+ * @returns {{ shapesAdded: number }}
+ */
+export function addShapes(doc, shapes) {
+  let shapesAdded = 0;
+  for (const shape of shapes) {
+    if (!SHAPE_ANNOT_TYPES.has(shape.type)) {
+      throw new Error(`Unknown shape annotation type: ${shape.type}`);
+    }
+    if ((shape.type === 'square' || shape.type === 'circle') && !shape.bbox) {
+      throw new Error(`A '${shape.type}' annotation must specify bbox.`);
+    }
+    if (shape.type === 'line' && (!shape.points || shape.points.length !== 4)) {
+      throw new Error("A 'line' annotation must specify points [x1, y1, x2, y2].");
+    }
+    if ((shape.type === 'polygon' || shape.type === 'polyline')
+      && (!shape.vertices || shape.vertices.length < 4 || shape.vertices.length % 2 !== 0)) {
+      throw new Error(`A '${shape.type}' annotation must specify an even-length vertices array.`);
+    }
+    if (!doc.annotations.pages[shape.page]) continue;
+
+    const style = {
+      borderColor: shape.borderColor || '#ff0000',
+      fillColor: shape.fillColor,
+      opacity: shape.opacity ?? 1,
+      borderWidth: shape.borderWidth ?? 1,
+      comment: shape.comment,
+    };
+    if (shape.type === 'line') {
+      doc.annotations.pages[shape.page].push({ type: 'line', points: [...shape.points], ...style });
+    } else if (shape.type === 'polygon' || shape.type === 'polyline') {
+      doc.annotations.pages[shape.page].push({ type: shape.type, vertices: [...shape.vertices], ...style });
+    } else {
+      doc.annotations.pages[shape.page].push({
+        type: shape.type,
+        bbox: {
+          left: shape.bbox.left, top: shape.bbox.top, right: shape.bbox.right, bottom: shape.bbox.bottom,
+        },
+        ...style,
+      });
+    }
+    shapesAdded++;
+  }
+  return { shapesAdded };
+}
+
+/**
+ * Remove all shape annotations added by `addShapes`.
+ * @param {ScribeDoc} doc
+ */
+export function clearShapes(doc) {
+  for (let p = 0; p < doc.annotations.pages.length; p++) {
+    doc.annotations.pages[p] = doc.annotations.pages[p].filter((a) => !SHAPE_ANNOT_TYPES.has(a.type));
+  }
+}

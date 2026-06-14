@@ -3,7 +3,10 @@ import { DocFonts } from './fontContainer.js';
 import { ImageStore } from './imageContainer.js';
 import { scribeDocDefaults } from './scribeDocDefaults.js';
 import { clearObjectProperties } from '../utils/miscUtils.js';
-import { addHighlights as addHighlightsImpl, addFreeText as addFreeTextImpl, clearHighlights as clearHighlightsImpl } from '../addHighlights.js';
+import {
+  addHighlights as addHighlightsImpl, addFreeText as addFreeTextImpl, clearHighlights as clearHighlightsImpl,
+  addShapes as addShapesImpl, clearShapes as clearShapesImpl,
+} from '../addHighlights.js';
 import { renderPageStatic as renderPageStaticImpl } from '../debug.js';
 import { exportData as exportDataImpl, download as downloadImpl } from '../export/export.js';
 import { dropFromWorkers, enableOpt as enableFontOptImpl } from '../fontContainerMain.js';
@@ -185,6 +188,22 @@ export class ScribeDoc {
    */
   clearHighlights() {
     clearHighlightsImpl(this);
+  }
+
+  /**
+   * Add vector shape annotations at fixed page positions.
+   * @param {Parameters<typeof addShapesImpl>[1]} shapes
+   * @returns {ReturnType<typeof addShapesImpl>}
+   */
+  addShapes(shapes) {
+    return addShapesImpl(this, shapes);
+  }
+
+  /**
+   * Remove all shape annotations previously added by `addShapes`.
+   */
+  clearShapes() {
+    clearShapesImpl(this);
   }
 
   /**
