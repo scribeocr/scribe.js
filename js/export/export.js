@@ -113,6 +113,9 @@ export async function exportData(doc, format = 'txt', options = {}) {
         + "(requires a PDF input, addOverlay enabled, and displayMode other than 'ebook'); ignoring.");
     }
 
+    // Surfaces per-annotation skips (a bad annotation no longer aborts the whole export).
+    const warningHandler = (message) => doc.warningHandler({ message });
+
     const dimsLimit = { width: -1, height: -1 };
     if (standardizePageSize) {
       for (const i of pageArr) {
@@ -195,6 +198,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
             convertFullPages,
             convertBrokenType3ToPaths: convertBrokenType3,
             docFonts: doc.fonts,
+            warningHandler,
           });
         } catch (error) {
           console.error('Failed to overlay text onto input PDF, creating new PDF from rendered images instead.');
@@ -250,6 +254,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
           humanReadable: humanReadablePDF,
           docFonts: doc.fonts,
           doc,
+          warningHandler,
         });
       }
     } else {
@@ -268,6 +273,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
         humanReadable: humanReadablePDF,
         docFonts: doc.fonts,
         doc,
+        warningHandler,
       });
     }
   } else if (format === 'hocr') {

@@ -404,8 +404,6 @@ const serifFontsRegex = new RegExp(serifFonts.reduce((x, y) => `${x}|${y}`), 'i'
 const sansFontsRegex = new RegExp(sansFonts.reduce((x, y) => `${x}|${y}`), 'i');
 const symbolFontsRegex = new RegExp(symbolFonts.reduce((x, y) => `${x}|${y}`), 'i');
 
-const unidentifiedFonts = new Set();
-
 /**
  * Given a font name, determine which built-in font category it should be represented by:
  * sans-serif, serif, or symbol.
@@ -436,9 +434,6 @@ export function determineSansSerif(fontName) {
         fontFamily = 'SerifDefault';
       } else if (/san/i.test(fontName)) {
         fontFamily = 'SansDefault';
-      } else if (!unidentifiedFonts.has(fontName)) {
-        unidentifiedFonts.add(fontName);
-        console.log(`Unidentified font: ${fontName}`);
       }
     }
   }

@@ -280,7 +280,15 @@ describe('Check export for .pdf files.', () => {
     expect(shapeResult.shapesAdded).toBe(4);
     expect(doc.annotations.pages[0].length).toBe(46);
 
+    // Inject a malformed shape past addShapes validation to exercise the export skip path.
+    // @ts-expect-error - intentionally missing bbox.
+    doc.annotations.pages[0].push({ type: 'square', borderColor: '#ff0000', borderWidth: 4 });
+    const warnings = /** @type {string[]} */ ([]);
+    const prevWarn = scribe.opt.warningHandler;
+    scribe.opt.warningHandler = (msg) => warnings.push(msg);
+
     const pdfBytes = await doc.exportData('pdf');
+    scribe.opt.warningHandler = prevWarn;
 
     // Shapes are written into the exported PDF (they are not re-parsed back into the model on import).
     // complaint_1's base MediaBox is 612x792 over 2550x3300 OCR space, so page coords scale by 0.24 and flip in y.
@@ -294,6 +302,9 @@ describe('Check export for .pdf files.', () => {
     // One /AP appearance Form XObject per shape; only the circle is filled (/IC).
     expect(shapeText.split('/Subtype /Form').length - 1).toBe(4);
     expect(shapeText.split('/IC ').length - 1).toBe(1);
+    // The malformed square emitted nothing (only the one valid square is present) and was reported once.
+    expect(shapeText.split('/Subtype /Square').length - 1).toBe(1);
+    expect(warnings.filter((w) => w.includes('Skipped') && w.includes('square')).length).toBe(1);
 
     await doc.clear();
 

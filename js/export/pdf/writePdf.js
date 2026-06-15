@@ -37,6 +37,7 @@ import { encodeStreamObject } from './writePdfStreams.js';
  *   streams + hex-wrapped fonts for diffing. Default emits FlateDecode.
  * @param {import('../../containers/fontContainer.js').DocFonts} [params.docFonts] - Per-document fonts.
  * @param {?import('../../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for progress reporting.
+ * @param {(message: string) => void} [params.warningHandler] - Reports each annotation skipped on error.
  *
  * A valid PDF will be created if an empty array is provided for `ocrArr`, as long as `pageArr` is non-empty.
  */
@@ -60,6 +61,7 @@ export async function writePdf({
   humanReadable = false,
   docFonts,
   doc = null,
+  warningHandler,
 }) {
   if (!GlobalFonts.raw) throw new Error('No fonts loaded.');
 
@@ -146,6 +148,7 @@ export async function writePdf({
       ],
       humanReadable,
       docFonts,
+      warningHandler,
     }));
 
     for (const font of pdfFontsUsedI) {
@@ -305,6 +308,7 @@ ${xrefOffset}
  * @param {Array<Annotation>} [params.pageAnnotations=[]] - Annotations (highlights + FreeText) for this page
  * @param {boolean} [params.humanReadable=false]
  * @param {import('../../containers/fontContainer.js').DocFonts} [params.docFonts] - Per-document fonts.
+ * @param {(message: string) => void} [params.warningHandler] - Reports each annotation skipped on error.
  */
 async function ocrPageToPDF({
   pageObj,
@@ -326,6 +330,7 @@ async function ocrPageToPDF({
   pageAnnotations = [],
   humanReadable = false,
   docFonts,
+  warningHandler,
 }) {
   if (outputDims.width < 1) {
     outputDims = inputDims;
@@ -417,11 +422,11 @@ async function ocrPageToPDF({
   if (pageAnnotations.length > 0) {
     const annotObjStart = firstObjIndex + pdfObj.length + 1;
     const highlightAnns = pageAnnotations.filter((a) => a.type == null || a.type === 'highlight');
-    const { objectTexts, annotRefs } = buildHighlightAnnotObjects(highlightAnns, annotObjStart, outputDims);
+    const { objectTexts, annotRefs } = buildHighlightAnnotObjects(highlightAnns, annotObjStart, outputDims, warningHandler);
     for (const text of objectTexts) pdfObj.push(text);
-    const shapes = buildShapeAnnotObjects(pageAnnotations.filter((a) => SHAPE_ANNOT_TYPES.has(a.type)), annotObjStart + objectTexts.length, outputDims);
+    const shapes = buildShapeAnnotObjects(pageAnnotations.filter((a) => SHAPE_ANNOT_TYPES.has(a.type)), annotObjStart + objectTexts.length, outputDims, warningHandler);
     for (const text of shapes.objectTexts) pdfObj.push(text);
-    const ft = buildFreeTextAnnotObjects(pageAnnotations.filter((a) => a.type === 'freetext'), annotObjStart + objectTexts.length + shapes.objectTexts.length, outputDims);
+    const ft = buildFreeTextAnnotObjects(pageAnnotations.filter((a) => a.type === 'freetext'), annotObjStart + objectTexts.length + shapes.objectTexts.length, outputDims, warningHandler);
     for (const text of ft.objectTexts) pdfObj.push(text);
     pageObjStr += `/Annots [${[...annotRefs, ...shapes.annotRefs, ...ft.annotRefs].join(' ')}]`;
   }

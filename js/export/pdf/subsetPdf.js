@@ -9,7 +9,10 @@ import { tokenizeContentStream } from '../../pdf/contentStream.js';
 import { ObjectCache } from '../../pdf/objectCache.js';
 import { createEmbeddedFontType0 } from './writePdfFonts.js';
 import { ocrPageToPDFStream } from './writePdfText.js';
-import { buildHighlightAnnotObjects, buildFreeTextAnnotObjects, consolidateAnnotations } from './writePdfAnnots.js';
+import {
+  buildHighlightAnnotObjects, buildFreeTextAnnotObjects, buildShapeAnnotObjects, consolidateAnnotations,
+} from './writePdfAnnots.js';
+import { SHAPE_ANNOT_TYPES } from '../../addHighlights.js';
 import { encodeStreamObject } from './writePdfStreams.js';
 import {
   traceReferencedObjects,
@@ -288,6 +291,7 @@ function replacePageResources(pageObjText, newResourcesDictText) {
  * @param {?number[]} [params.convertFullPages=null] - Page indices to flatten (whole-page conversion that also runs without overlay text).
  * @param {boolean} [params.convertBrokenType3ToPaths=false] - Convert glyphs drawn by broken-ToUnicode Type3 fonts to paths on every page.
  * @param {DocFonts} [params.docFonts] - Per-document fonts for the OCR overlay text layer.
+ * @param {(message: string) => void} [params.warningHandler] - Reports each annotation skipped on error.
  */
 export async function rebuildPdfSubset({
   pdfBytes, text, objCache, xrefEntries, pages,
@@ -301,6 +305,7 @@ export async function rebuildPdfSubset({
   convertFullPages = null,
   convertBrokenType3ToPaths = false,
   docFonts,
+  warningHandler,
 }) {
   const overlayEnabled = !!(ocrArr && pageMetricsArr && pdfFonts);
   let nextObjNum = startingNextObjNum;
@@ -452,17 +457,21 @@ export async function rebuildPdfSubset({
       let extraAnnotRefs = [];
       if (hasAnnots) {
         const outputDims = { width: baseWidth, height: baseHeight };
-        const highlightAnns = pageAnnotations.filter((a) => a.type !== 'freetext');
+        const highlightAnns = pageAnnotations.filter((a) => a.type == null || a.type === 'highlight');
         const consolidated = consolidateAnnotations(highlightAnns, pageObj);
         const pageForEmit = consolidated.length > 0 ? consolidated : highlightAnns;
         const transformed = pageForEmit.map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty));
-        const { objectTexts, annotRefs } = buildHighlightAnnotObjects(transformed, nextObjNum, outputDims);
+        const { objectTexts, annotRefs } = buildHighlightAnnotObjects(transformed, nextObjNum, outputDims, warningHandler);
         for (const t of objectTexts) allOutputObjects.push({ objNum: nextObjNum++, content: t });
+        const shapeAnns = pageAnnotations.filter((a) => SHAPE_ANNOT_TYPES.has(a.type))
+          .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty));
+        const shapes = buildShapeAnnotObjects(shapeAnns, nextObjNum, outputDims, warningHandler);
+        for (const t of shapes.objectTexts) allOutputObjects.push({ objNum: nextObjNum++, content: t });
         const freeTextAnns = pageAnnotations.filter((a) => a.type === 'freetext')
           .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty));
-        const ft = buildFreeTextAnnotObjects(freeTextAnns, nextObjNum, outputDims);
+        const ft = buildFreeTextAnnotObjects(freeTextAnns, nextObjNum, outputDims, warningHandler);
         for (const t of ft.objectTexts) allOutputObjects.push({ objNum: nextObjNum++, content: t });
-        extraAnnotRefs = [...annotRefs, ...ft.annotRefs];
+        extraAnnotRefs = [...annotRefs, ...shapes.annotRefs, ...ft.annotRefs];
       }
 
       const newPageObj = buildReplacementPageDict(pageInfo.objNum, pageInfo.objText, newContentsArray, resourcesObjNum, pagesRootObjNum,

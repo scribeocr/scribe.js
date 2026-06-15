@@ -59,6 +59,7 @@ import { rebuildPdfSubset } from './subsetPdf.js';
  *   so the gibberish PUA text they carry stops being selectable and the invisible OCR overlay becomes the only copy source.
  *   Other fonts' text is left selectable.
  * @param {import('../../containers/fontContainer.js').DocFonts} [params.docFonts] - Per-document fonts.
+ * @param {(message: string) => void} [params.warningHandler] - Reports each annotation skipped on error.
  * @returns {Promise<ArrayBuffer>}
  */
 export async function overlayPdfText({
@@ -79,6 +80,7 @@ export async function overlayPdfText({
   convertFullPages = null,
   convertBrokenType3ToPaths = false,
   docFonts,
+  warningHandler,
 }) {
   const pdfBytes = new Uint8Array(basePdfData);
   // Local latin1 view used by overlayPdfText's downstream helpers.
@@ -184,6 +186,7 @@ export async function overlayPdfText({
       convertRegionsToPaths: regionsForPaths,
       convertFullPages,
       convertBrokenType3ToPaths,
+      warningHandler,
     });
   }
 
@@ -326,15 +329,15 @@ export async function overlayPdfText({
       const consolidated = consolidateAnnotations(highlightAnns, pageObj);
       const pageForEmit = consolidated.length > 0 ? consolidated : highlightAnns;
       const transformed = pageForEmit.map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty));
-      const { objectTexts, annotRefs } = buildHighlightAnnotObjects(transformed, nextObjNum, outputDims);
+      const { objectTexts, annotRefs } = buildHighlightAnnotObjects(transformed, nextObjNum, outputDims, warningHandler);
       for (const t of objectTexts) newObjects.push({ objNum: nextObjNum++, content: t });
       const shapeAnns = pageAnnotations.filter((a) => SHAPE_ANNOT_TYPES.has(a.type))
         .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty));
-      const shapes = buildShapeAnnotObjects(shapeAnns, nextObjNum, outputDims);
+      const shapes = buildShapeAnnotObjects(shapeAnns, nextObjNum, outputDims, warningHandler);
       for (const t of shapes.objectTexts) newObjects.push({ objNum: nextObjNum++, content: t });
       const freeTextAnns = pageAnnotations.filter((a) => a.type === 'freetext')
         .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty));
-      const ft = buildFreeTextAnnotObjects(freeTextAnns, nextObjNum, outputDims);
+      const ft = buildFreeTextAnnotObjects(freeTextAnns, nextObjNum, outputDims, warningHandler);
       for (const t of ft.objectTexts) newObjects.push({ objNum: nextObjNum++, content: t });
       extraAnnotRefs = [...annotRefs, ...shapes.annotRefs, ...ft.annotRefs];
     }
