@@ -524,9 +524,6 @@ export async function importFiles(doc, files, options = {}) {
     });
   } else if (!scribeFiles[0] && doc.inputData.pdfMode && (usePDFText.native.main || usePDFText.native.supp || usePDFText.ocr.main || usePDFText.ocr.supp || keepPDFTextAlways)) {
     await extractInternalPDFText(doc, { usePDFText, keepPDFTextAlways });
-    if (doc.inputData.pdfType === 'text' && usePDFText.native.main || doc.inputData.pdfType === 'ocr' && usePDFText.ocr.main) {
-      if (doc.inputData.pdfType === 'text') doc.fonts.state.enableCleanToNimbusMono = true;
-    }
   }
 }
 

@@ -20,7 +20,6 @@ declare global {
     type FontState = {
         enableOpt: boolean;
         forceOpt: boolean;
-        enableCleanToNimbusMono: boolean;
         defaultFontName: string;
         serifDefaultName: string;
         sansDefaultName: string;

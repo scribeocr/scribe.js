@@ -400,9 +400,7 @@ export class GlobalFonts {
         family = 'Carlito';
       } else if (/Calibri/i.test(family)) {
         family = 'Carlito';
-      } else if (/Courier/i.test(family) && docFonts.state.enableCleanToNimbusMono) {
-        family = 'NimbusMono';
-      } else if (/NimbusMono/i.test(family) && docFonts.state.enableCleanToNimbusMono) {
+      } else if (/Courier|NimbusMono/i.test(family)) {
         family = 'NimbusMono';
       }
     }
@@ -471,13 +469,6 @@ export class DocFonts {
 
     /** Optimized fonts will always be used when they exist, even if believed to reduce quality. */
     forceOpt: false,
-
-    /**
-     * If `false`, 'Courier' will not be cleaned to Nimbus Mono.
-     * This setting is useful because Tesseract sometimes misidentifies fonts as Courier, and when not the document default, Nimbus Mono is almost always incorrect.
-     * Even with this setting `false`, Nimbus Mono will still be used when the font is exactly 'NimbusMono' and Nimbus Mono can still be the document default font.
-     */
-    enableCleanToNimbusMono: false,
 
     defaultFontName: 'SerifDefault',
 
@@ -569,8 +560,6 @@ export class DocFonts {
     this.opt = null;
     this.rawMetrics = null;
     this.optMetrics = null;
-
-    this.state.enableCleanToNimbusMono = false;
 
     this.state.defaultFontName = 'SerifDefault';
     this.state.serifDefaultName = 'NimbusRoman';
