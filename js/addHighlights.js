@@ -6,6 +6,33 @@ import { calcBboxUnion } from './utils/miscUtils.js';
 const GROUP_PREFIX = 'hl-';
 
 /**
+ * Map a word/line bbox from scribe's internal "virtual horizontal" frame (how rotated lines are stored) back to page space.
+ * @param {bbox} bbox - bbox in the line's orientation frame.
+ * @param {number} orientation - line orientation (0-3).
+ * @param {dims} dims - page dimensions.
+ * @returns {bbox} bbox in page space.
+ */
+function bboxToPageSpace(bbox, orientation, dims) {
+  const { width: w, height: h } = dims;
+  if (orientation === 1) {
+    return {
+      left: w - bbox.bottom, top: bbox.left, right: w - bbox.top, bottom: bbox.right,
+    };
+  }
+  if (orientation === 2) {
+    return {
+      left: w - bbox.right, top: h - bbox.bottom, right: w - bbox.left, bottom: h - bbox.top,
+    };
+  }
+  if (orientation === 3) {
+    return {
+      left: bbox.top, top: h - bbox.right, right: bbox.bottom, bottom: h - bbox.left,
+    };
+  }
+  return { ...bbox };
+}
+
+/**
  * @typedef {Object} HighlightSpec
  * @property {number} page - Page index (0-based).
  * @property {number} [startLine] - First line index to highlight (0-based). If omitted, uses quote-only mode.
@@ -94,7 +121,7 @@ export function addHighlights(doc, highlights) {
 
         for (const word of wordsToHighlight) {
           doc.annotations.pages[highlight.page].push({
-            type: 'highlight', bbox: word.bbox, color, opacity, groupId, comment,
+            type: 'highlight', bbox: bboxToPageSpace(word.bbox, line.orientation, pageObj.dims), color, opacity, groupId, comment,
           });
         }
         totalLinesHighlighted++;
@@ -103,7 +130,7 @@ export function addHighlights(doc, highlights) {
       const matchWords = ocr.getMatchingWords(highlight.text, pageObj);
       for (const word of matchWords) {
         doc.annotations.pages[highlight.page].push({
-          type: 'highlight', bbox: word.bbox, color, opacity, groupId, comment,
+          type: 'highlight', bbox: bboxToPageSpace(word.bbox, word.line.orientation, pageObj.dims), color, opacity, groupId, comment,
         });
       }
       if (matchWords.length > 0) totalLinesHighlighted++;

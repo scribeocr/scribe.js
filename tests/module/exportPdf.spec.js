@@ -807,7 +807,8 @@ describe('Check export for .pdf files.', () => {
 
 describe('Check addHighlights and clearHighlights.', () => {
   test('Should import document for highlight tests', async () => {
-    doc = await scribe.openDocument([`${ASSETS_PATH}/testocr.abbyy.xml`]);
+    doc = await scribe.openDocument([`${ASSETS_PATH}/testocr_all_orientations.abbyy.xml`]);
+    expect(doc.ocr.active.length).toBe(12);
     expect(doc.ocr.active[0].lines.length).toBe(8);
   });
 
@@ -858,6 +859,44 @@ describe('Check addHighlights and clearHighlights.', () => {
     expect(result.groups[0].bbox).toEqual({
       left: 36, top: 126, right: 160, bottom: 150,
     });
+  });
+
+  // Rotated lines store word bboxes in scribe's internal "virtual horizontal" frame (see the page->virtual transform in parsePdfDoc.js).
+  // A highlight annotation has no orientation, so its bbox must be the page-space inverse, or the highlight lands on empty space.
+  // Pages 3/6/9 carry page 0's line 0 rotated to orientations 3/2/1.
+  // Each expected bbox is the page-space inverse of page 0's line-mode group bbox {36, 92, 580, 122}.
+  test('addHighlights emits rotated-line highlights in page space, not the virtual-horizontal frame', () => {
+    const cases = [
+      {
+        page: 3,
+        orientation: 3,
+        expected: {
+          left: 92, top: 60, right: 122, bottom: 604,
+        },
+      },
+      {
+        page: 6,
+        orientation: 2,
+        expected: {
+          left: 60, top: 358, right: 604, bottom: 388,
+        },
+      },
+      {
+        page: 9,
+        orientation: 1,
+        expected: {
+          left: 358, top: 36, right: 388, bottom: 580,
+        },
+      },
+    ];
+    for (const c of cases) {
+      doc.clearHighlights();
+      expect(doc.ocr.active[c.page].lines[0].orientation, `page ${c.page} orientation`).toBe(c.orientation);
+      const result = doc.addHighlights([{ page: c.page, startLine: 0, endLine: 0 }]);
+      expect(result.groups.length, `page ${c.page} group count`).toBe(1);
+      expect(result.groups[0].bbox, `page ${c.page} bbox`).toEqual(c.expected);
+    }
+    doc.clearHighlights();
   });
 
   afterAll(async () => {
