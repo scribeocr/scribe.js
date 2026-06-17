@@ -157,7 +157,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
           // With routing off or categories absent (old .scribe.json sessions), the legacy defaults stand.
           /** @type {?number[]} */
           let convertFullPages = null;
-          let convertBrokenType3 = true;
+          let convertBrokenType3 = displayMode !== 'annot';
           // convertDupSourceTextToPaths converts ALL text to paths by explicit request,
           // so it skips the category routing below entirely.
           const routeCategories = options.routePageCategories ?? (displayMode === 'invis');
