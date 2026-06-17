@@ -357,18 +357,6 @@ export function inflate(data, meta) {
 }
 
 /**
- * Compress data using zlib/deflate via the native CompressionStream API.
- * @param {Uint8Array} data
- * @returns {Promise<Uint8Array>}
- */
-export async function deflate(data) {
-  const cs = new CompressionStream('deflate');
-  const compressedStream = new Blob([data]).stream().pipeThrough(cs);
-  const arrayBuffer = await new Response(compressedStream).arrayBuffer();
-  return new Uint8Array(arrayBuffer);
-}
-
-/**
  * Extract raw stream bytes from a PDF object: find "stream" keyword, parse /Length,
  * slice the byte range, decrypt if needed. Used by extractStream.
  * @param {Uint8Array} pdfBytes

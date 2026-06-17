@@ -1,10 +1,8 @@
-import { deflate } from '../../pdf/parsePdfUtils.js';
-
 /**
  * @typedef {{ header: string, streamData: Uint8Array, trailer: string }} PdfBinaryObject
  */
 
-// Browsers resolve to null and use CompressionStream (via `deflate`) instead.
+// Browsers resolve to null and use the CompressionStream path in `deflateBytes` instead.
 const zlibDeflateSync = (typeof process !== 'undefined' && typeof process.versions?.node === 'string')
   ? (await import('node:zlib')).deflateSync
   : null;
@@ -16,7 +14,11 @@ const zlibDeflateSync = (typeof process !== 'undefined' && typeof process.versio
  */
 export async function deflateBytes(bytes) {
   if (zlibDeflateSync) return zlibDeflateSync(bytes);
-  return deflate(bytes);
+  // Browser: native CompressionStream (async, zlib-wrapped deflate).
+  const cs = new CompressionStream('deflate');
+  const compressedStream = new Blob([bytes]).stream().pipeThrough(cs);
+  const arrayBuffer = await new Response(compressedStream).arrayBuffer();
+  return new Uint8Array(arrayBuffer);
 }
 
 /**
