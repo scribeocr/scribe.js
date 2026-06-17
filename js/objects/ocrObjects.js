@@ -502,33 +502,40 @@ function calcWordAngleAdj(word) {
   return { x: 0, y: 0 };
 }
 
+const LIGATURE_ANY_RE = /[ĲĳŉǱǲǳǄǅǆǇǈǉǊǋǌﬀﬁﬂﬃﬄﬅﬆ]/;
+const LIGATURE_ALL_RE = /[ĲĳŉǱǲǳǄǅǆǇǈǉǊǋǌﬀﬁﬂﬃﬄﬅﬆ]/g;
+const LIGATURE_MAP = {
+  Ĳ: 'IJ',
+  ĳ: 'ij',
+  ŉ: 'ʼn',
+  Ǳ: 'DZ',
+  ǲ: 'Dz',
+  ǳ: 'dz',
+  Ǆ: 'DŽ',
+  ǅ: 'Dž',
+  ǆ: 'dž',
+  Ǉ: 'LJ',
+  ǈ: 'Lj',
+  ǉ: 'lj',
+  Ǌ: 'NJ',
+  ǋ: 'Nj',
+  ǌ: 'nj',
+  ﬀ: 'ff',
+  ﬁ: 'fi',
+  ﬂ: 'fl',
+  ﬃ: 'ffi',
+  ﬄ: 'ffl',
+  ﬅ: 'ſt',
+  ﬆ: 'st',
+};
+
 /**
  * Replace ligatures with individual ascii characters.
  * @param {string} text
  */
 function replaceLigatures(text) {
-  return text.replace(/Ĳ/g, 'IJ')
-    .replace(/ĳ/g, 'ij')
-    .replace(/ŉ/g, 'ʼn')
-    .replace(/Ǳ/g, 'DZ')
-    .replace(/ǲ/g, 'Dz')
-    .replace(/ǳ/g, 'dz')
-    .replace(/Ǆ/g, 'DŽ')
-    .replace(/ǅ/g, 'Dž')
-    .replace(/ǆ/g, 'dž')
-    .replace(/Ǉ/g, 'LJ')
-    .replace(/ǈ/g, 'Lj')
-    .replace(/ǉ/g, 'lj')
-    .replace(/Ǌ/g, 'NJ')
-    .replace(/ǋ/g, 'Nj')
-    .replace(/ǌ/g, 'nj')
-    .replace(/ﬀ/g, 'ff')
-    .replace(/ﬁ/g, 'fi')
-    .replace(/ﬂ/g, 'fl')
-    .replace(/ﬃ/g, 'ffi')
-    .replace(/ﬄ/g, 'ffl')
-    .replace(/ﬅ/g, 'ſt')
-    .replace(/ﬆ/g, 'st');
+  if (!LIGATURE_ANY_RE.test(text)) return text;
+  return text.replace(LIGATURE_ALL_RE, (m) => LIGATURE_MAP[m]);
 }
 
 /**
