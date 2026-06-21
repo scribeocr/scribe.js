@@ -26,18 +26,10 @@ import { LayoutDataTable, LayoutDataColumn, LayoutDataTablePage } from '../objec
 // This does not impact path rendering--it just disables table detection/underline detection.
 const GRAPHICS_HEAVY_STREAM_BYTES = 2_000_000;
 
-// Thresholds for the criteria that categorize a page for OCR-with-flatten export (computed below).
-// IMAGE_AREA_MIN: min fraction of the page area a single image placement must cover (Criterion 1).
-// PATH_TEXT_MIN: min count of filled non-rectangular glyph-height vector paths (Criterion 2).
-// PATH_TEXT_H_MIN/PATH_TEXT_H_MAX: the height band that counts as glyph-like, shared by Criteria 1b and 2.
-// IMAGE_TEXT_MIN: min count of line-shaped image strips not covered by native text (Criterion 1b).
-// BROKEN_RUN_MIN: min run of consecutive glyphs from a font whose ToUnicode is broken.
-const IMAGE_AREA_MIN = 0.02;
-const PATH_TEXT_MIN = 8;
+/** Min height, in pt, for a vector path or image strip to count as glyph-like. */
 const PATH_TEXT_H_MIN = 3;
+/** Max height, in pt, for a vector path or image strip to count as glyph-like. */
 const PATH_TEXT_H_MAX = 80;
-const IMAGE_TEXT_MIN = 8;
-const BROKEN_RUN_MIN = 3;
 
 /**
  * Normalize a PDF color to [r,g,b] in 0-1 for cross-color-space comparison.
@@ -290,7 +282,7 @@ function extractFormXObjectText(containerObjText, containerTokens, parentFonts, 
 }
 
 /**
- * @typedef {{ printable: number, printableVis: number, pua: number, control: number, controlVis: number }} CharStats
+ * @typedef {{ printable: number, printableVis: number, pua: number, control: number, controlVis: number, visibleAll: number }} CharStats
  */
 
 /**
@@ -304,30 +296,32 @@ function scorePageChars(chars) {
   let pua = 0;
   let control = 0;
   let controlVis = 0;
+  let visibleAll = 0;
   for (const ch of chars) {
     const codePoint = ch.text.codePointAt(0);
     if (codePoint === undefined) continue;
     if (codePoint >= 33 && codePoint <= 127) {
       printable++;
-      if (!ch.invisible) printableVis++;
+      if (!ch.invisible) { printableVis++; visibleAll++; }
     } else if (codePoint >= 0xE000 && codePoint <= 0xF8FF) {
       pua++;
+      if (!ch.invisible) visibleAll++;
     } else if (codePoint >= 161) {
       printable++;
-      if (!ch.invisible) printableVis++;
+      if (!ch.invisible) { printableVis++; visibleAll++; }
     } else if (codePoint < 32 || codePoint === 65533) {
       control++;
-      if (!ch.invisible) controlVis++;
+      if (!ch.invisible) { controlVis++; visibleAll++; }
     }
   }
   return {
-    printable, printableVis, pua, control, controlVis,
+    printable, printableVis, pua, control, controlVis, visibleAll,
   };
 }
 
 /**
  * Determine PDF type from per-page character statistics.
- * @param {CharStats[]} pageStats
+ * @param {Array<{ invisibleTextChars: number, printableVis: number, control: number, controlVis: number }>} pageStats
  * @param {number} pageCount
  */
 export function determinePdfType(pageStats, pageCount) {
@@ -335,17 +329,14 @@ export function determinePdfType(pageStats, pageCount) {
   let letterCountVis = 0;
   let pageCountTotalText = 0;
   let pageCountVisText = 0;
-  let brokenCharCount = 0;
-  let scoredCharCount = 0;
   for (const s of pageStats) {
-    const pageScoreTotal = s.printable - 5 * s.control;
+    const printable = s.invisibleTextChars + s.printableVis;
+    const pageScoreTotal = printable - 5 * s.control;
     const pageScoreVis = s.printableVis - 5 * s.controlVis;
     letterCountTotal += pageScoreTotal;
     letterCountVis += pageScoreVis;
     if (pageScoreTotal >= 100) pageCountTotalText++;
     if (pageScoreVis >= 100) pageCountVisText++;
-    brokenCharCount += s.pua + s.control;
-    scoredCharCount += s.printable + s.pua + s.control;
   }
 
   /** @type {"image" | "text" | "ocr"} */
@@ -359,7 +350,7 @@ export function determinePdfType(pageStats, pageCount) {
     type = 'ocr';
   }
 
-  return { type, brokenCharCount, scoredCharCount };
+  return { type };
 }
 
 /**
@@ -458,44 +449,24 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
     return isBroken;
   };
 
-  const fontSummary = [...fonts].map(([tag, f]) => ({
-    tag,
-    baseName: f.baseName,
-    familyName: f.familyName,
-    bold: f.bold,
-    italic: f.italic,
-    smallCaps: f.smallCaps,
-    isCID: f.isCIDFont,
-    hasToUnicode: f.hasOwnToUnicode,
-    toUnicodeCount: f.toUnicode.size,
-    widthCount: f.widths.size,
-    isType0: !!f.type0,
-    isType1: !!f.type1,
-    isType3: !!f.type3,
-    embedded: !!(f.type0?.fontFile || f.type1?.fontFile),
-    hasDifferences: !!f.differences,
-    brokenToUnicode: brokenToUnicodeFont(f),
-  }));
-
   const contentStreamText = getPageContentStream(objText, objCache);
   if (!contentStreamText) {
     const pageObj = new ocr.OcrPage(n, { width: pageWidth, height: pageHeight });
-    const charStats = {
-      printable: 0, printableVis: 0, pua: 0, control: 0, controlVis: 0,
-    };
-    const pageCategory = {
-      hasLargeImage: false,
-      hasPathText: false,
-      hasBrokenFontRun: false,
-      hasNativeText: false,
-      hasImageText: false,
+    const pageStats = {
       largestImageFrac: 0,
+      invisibleTextChars: 0,
+      visibleChars: 0,
+      visibleReadableChars: 0,
+      printableVis: 0,
+      control: 0,
+      controlVis: 0,
       pathTextCandidates: 0,
-      longestBrokenRun: 0,
       imageTextCandidates: 0,
+      longestBrokenRun: 0,
+      pageSize: [Math.round(visualWidthPts), Math.round(visualHeightPts)],
     };
     return {
-      pageObj, langSet: new Set(), fontSet: new Set(), dataTablePage: new LayoutDataTablePage(n), charStats, fontSummary, pageCategory,
+      pageObj, langSet: new Set(), fontSet: new Set(), dataTablePage: new LayoutDataTablePage(n), pageStats,
     };
   }
 
@@ -548,14 +519,11 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
 
   const charStats = scorePageChars(chars);
 
-  // Criterion 3 + 4 pass, over the deduped char sequence in content-stream order.
-  // Double-strike copies were already removed, so they don't inflate runs or the native-text floor.
-  // The run counter increments for every glyph drawn with a broken-classified font and resets on a glyph from any other font.
-  // TJ kerns and positioning ops never produce chars, so they cannot reset it.
+  // Longest run of consecutive broken-ToUnicode-font glyphs,
+  // plus the count of visible, readable chars from non-broken fonts (excluding PUA placeholders).
   let longestBrokenRun = 0;
   let brokenRun = 0;
   let printableVisNonBroken = 0;
-  let controlVisNonBroken = 0;
   for (const ch of chars) {
     if (brokenToUnicodeFont(ch._font)) {
       brokenRun++;
@@ -566,10 +534,8 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
     if (ch.invisible) continue;
     const cp = ch.text.codePointAt(0);
     if (cp === undefined) continue;
-    // Same buckets as scorePageChars, restricted to visible non-broken-font chars.
     if (cp >= 33 && cp <= 127) printableVisNonBroken++;
-    else if (cp >= 0xE000 && cp <= 0xF8FF) { /* stray PUA from a valid font: neither */ } else if (cp >= 161) printableVisNonBroken++;
-    else if (cp < 32 || cp === 65533) controlVisNonBroken++;
+    else if (cp >= 0xE000 && cp <= 0xF8FF) { /* stray PUA from a valid font: not readable */ } else if (cp >= 161) printableVisNonBroken++;
   }
 
   // Parse the page's vector paths, reusing the already-computed tokens so parsePagePaths
@@ -582,7 +548,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
     : parsePagePaths(objText, objCache, tokens, { imagePlacements });
   if (contentStreamText.length > GRAPHICS_HEAVY_STREAM_BYTES) {
     // Heavy streams skip path extraction (cost), but image placements must still be collected:
-    // a scanned page must not lose its hasLargeImage flag.
+    // a scanned page must not lose its full-page-image classification (largestImageFrac).
     let ctmH = initialCtm.slice();
     const ctmStackH = [];
     const numsH = [];
@@ -661,7 +627,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
 
   // Criterion 1b: line-shaped image placements. These are text rendered as raster images interleaved with content
   // (e.g. full paragraph lines as images, each ~14pt tall and hundreds of points wide).
-  // No single such image clears IMAGE_AREA_MIN, so count placements whose height sits in the glyph band and whose aspect is wide like a text line.
+  // No single such strip covers a meaningful page fraction, so count placements whose height sits in the glyph band and whose aspect is wide like a text line.
   // Icons and photos fail the aspect test, full-page scans fail the height band.
   let imageTextCandidates = 0;
   for (const p of mergedPlacements) {
@@ -736,16 +702,18 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
     pathTextCandidates++;
   }
 
-  const pageCategory = {
-    hasLargeImage: largestImageFrac >= IMAGE_AREA_MIN,
-    hasPathText: pathTextCandidates >= PATH_TEXT_MIN,
-    hasBrokenFontRun: longestBrokenRun >= BROKEN_RUN_MIN,
-    hasNativeText: printableVisNonBroken - 5 * controlVisNonBroken >= 100,
-    hasImageText: imageTextCandidates >= IMAGE_TEXT_MIN,
+  const pageStats = {
     largestImageFrac,
+    invisibleTextChars: charStats.printable - charStats.printableVis,
+    visibleChars: charStats.visibleAll,
+    visibleReadableChars: printableVisNonBroken,
+    printableVis: charStats.printableVis,
+    control: charStats.control,
+    controlVis: charStats.controlVis,
     pathTextCandidates,
-    longestBrokenRun,
     imageTextCandidates,
+    longestBrokenRun,
+    pageSize: [Math.round(visualWidthPts), Math.round(visualHeightPts)],
   };
   const underlineRects = [];
   for (const path of paths) {
@@ -790,7 +758,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
   }
 
   return {
-    pageObj, langSet, fontSet, dataTablePage, charStats, fontSummary, pageCategory, annotations, annotationPassthroughRefs: passthroughRefs,
+    pageObj, langSet, fontSet, dataTablePage, pageStats, annotations, annotationPassthroughRefs: passthroughRefs,
   };
 }
 
@@ -853,7 +821,13 @@ export function detectPdfType(pdfBytes) {
     const pageHeightPts = Math.abs(mediaBox[3] - mediaBox[1]);
     const tokens = tokenizeContentStream(contentStreamText);
     const chars = executeTextOperators(tokens, fonts, 1, pageHeightPts);
-    pageStats.push(scorePageChars(chars));
+    const cs = scorePageChars(chars);
+    pageStats.push({
+      invisibleTextChars: cs.printable - cs.printableVis,
+      printableVis: cs.printableVis,
+      control: cs.control,
+      controlVis: cs.controlVis,
+    });
   }
 
   return determinePdfType(pageStats, pages.length);

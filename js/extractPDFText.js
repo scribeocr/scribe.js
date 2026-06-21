@@ -2,6 +2,7 @@ import { scribeDocDefaults } from './containers/scribeDocDefaults.js';
 import { loadBuiltInFontsRaw, loadChiSimFont } from './fontContainerMain.js';
 import { addCircularRefsDataTables } from './objects/layoutObjects.js';
 import { determinePdfType } from './pdf/parsePdfDoc.js';
+import { computeRequiresOCR } from './pdf/ocrPageSelection.js';
 
 /** @typedef {import('./containers/scribeDoc.js').ScribeDoc} ScribeDoc */
 
@@ -29,13 +30,11 @@ export async function extractInternalPDFText(doc, options = {}) {
     Array.from({ length: pageCount }, (_, i) => pdfScheduler.parsePdfPage({ pageIndex: i, dpi: pageDPI[i] })),
   );
 
-  doc.inputData.pageCategories = pageResults.map((r) => r.pageCategory || null);
+  doc.inputData.pageStats = pageResults.map((r) => r.pageStats || null);
 
-  doc.inputData.requiresOCR = doc.inputData.pageCategories.some(
-    (c) => c && (c.hasLargeImage || c.hasPathText || c.hasBrokenFontRun || c.hasImageText),
-  );
+  doc.inputData.requiresOCR = computeRequiresOCR(doc.inputData.pageStats);
 
-  const { type } = determinePdfType(pageResults.map((r) => r.charStats), pageCount);
+  const { type } = determinePdfType(pageResults.map((r) => r.pageStats), pageCount);
   doc.inputData.pdfType = type;
 
   for (let i = 0; i < pageCount; i++) {

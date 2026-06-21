@@ -181,6 +181,21 @@ async function restoreSessionFromFile(doc, scribeFile) {
     doc.annotations.pages = scribeRestoreObj.annotations;
   }
 
+  // `.inputData` added to .scribe in June 2026, do not assume this field exists for re-imports.
+  // This line also skips when `inputData` has already been calculated for the active session, which is presumed more accurate.
+  if (scribeRestoreObj.inputData) {
+    if (doc.inputData.pdfType == null && scribeRestoreObj.inputData.pdfType) {
+      doc.inputData.pdfType = scribeRestoreObj.inputData.pdfType;
+    }
+    if (doc.inputData.pageStats == null && scribeRestoreObj.inputData.pageStats) {
+      doc.inputData.pageStats = scribeRestoreObj.inputData.pageStats;
+      doc.inputData.requiresOCR = !!scribeRestoreObj.inputData.requiresOCR;
+    }
+    if (doc.inputData.ocrApplied == null && scribeRestoreObj.inputData.ocrApplied) {
+      doc.inputData.ocrApplied = scribeRestoreObj.inputData.ocrApplied;
+    }
+  }
+
   const oemName = 'User Upload';
   if (!doc.ocr[oemName]) doc.ocr[oemName] = Array(doc.inputData.pageCount);
   updateOcrFormat(scribeRestoreObj.ocr);
@@ -195,6 +210,12 @@ async function restoreSessionFromFile(doc, scribeFile) {
     doc.inputData.xmlMode[i] = true;
     doc.pageMetrics[i] = new PageMetrics(doc.ocr[oemName][i].dims);
     doc.pageMetrics[i].angle = doc.ocr[oemName][i].angle;
+  }
+
+  // The active text layer is now the imported OCR for every page, so mark every page OCR-applied.
+  // Skip if a newer .scribe.json already restored an explicit `ocrApplied` array above.
+  if (doc.inputData.ocrApplied == null) {
+    doc.inputData.ocrApplied = Array(doc.ocr[oemName].length).fill(true);
   }
 }
 
@@ -456,6 +477,13 @@ export async function importFiles(doc, files, options = {}) {
   }
 
   doc.inputData.pageCount = pageCountImage ?? pageCountOcr;
+
+  // OCR imported from external files (.hocr/.xml/Textract/etc.) becomes the active layer for every page,
+  // so mark each page OCR-applied for the export flatten gate (a category-flagged page flattens iff OCR was applied to it).
+  // Skip if a .scribe restore already set an explicit array.
+  if (xmlModeImport && doc.inputData.ocrApplied == null) {
+    doc.inputData.ocrApplied = Array(doc.inputData.pageCount).fill(true);
+  }
 
   doc.ocrRaw.active = doc.ocrRaw.active || Array(pageCount);
 

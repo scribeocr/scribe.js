@@ -11,6 +11,7 @@ import { writeAlto } from './writeAlto.js';
 import { writeMarkdown } from './writeMarkdown.js';
 import { OcrPage, removeCircularRefsOcr } from '../objects/ocrObjects.js';
 import { removeCircularRefsDataTables } from '../objects/layoutObjects.js';
+import { mayHaveBakedText, hasBrokenFontRun, isScanPage } from '../pdf/ocrPageSelection.js';
 
 /** @typedef {import('../containers/scribeDoc.js').ScribeDoc} ScribeDoc */
 
@@ -140,14 +141,17 @@ export async function exportData(doc, format = 'txt', options = {}) {
           let overlayOcrArr = ocrDownload;
           let overlayPageMetricsArr = doc.pageMetrics;
           let overlayAnnotationsPages = doc.annotations.pages;
-          let pageCats = doc.inputData.pageCategories;
+          let pageStats = doc.inputData.pageStats;
+          let ocrAppliedArr = doc.inputData.ocrApplied;
           if (pageArr.length < doc.inputData.pageCount) {
-            const fullCats = pageCats;
+            const fullStats = pageStats;
+            const fullOcrApplied = ocrAppliedArr;
             basePdfData = await subsetPdf(basePdfData, pageArr);
             overlayOcrArr = pageArr.map((i) => ocrDownload[i]);
             overlayPageMetricsArr = pageArr.map((i) => doc.pageMetrics[i]);
             overlayAnnotationsPages = pageArr.map((i) => doc.annotations.pages[i] || []);
-            pageCats = fullCats ? pageArr.map((i) => fullCats[i]) : null;
+            pageStats = fullStats ? pageArr.map((i) => fullStats[i]) : null;
+            ocrAppliedArr = fullOcrApplied ? pageArr.map((i) => fullOcrApplied[i]) : null;
           }
 
           // convertFullPages and convertBrokenType3 control per-page flatten vs. passthrough.
@@ -161,16 +165,21 @@ export async function exportData(doc, format = 'txt', options = {}) {
           // convertDupSourceTextToPaths converts ALL text to paths by explicit request,
           // so it skips the category routing below entirely.
           const routeCategories = options.routePageCategories ?? (displayMode === 'invis');
-          if (routeCategories && !convertDupSourceTextToPaths && pageCats && pageCats.length > 0
-            && (overlayOcrArr.length === 0 || overlayOcrArr.length === pageCats.length)) {
-            const flagged = pageCats.map((c) => !!(c && (c.hasLargeImage || c.hasPathText || c.hasBrokenFontRun || c.hasImageText)));
+          if (routeCategories && !convertDupSourceTextToPaths && pageStats && pageStats.length > 0
+            && (overlayOcrArr.length === 0 || overlayOcrArr.length === pageStats.length)) {
+            // `flagged` marks each page that is a flattening candidate: it holds content the native text layer cannot surface
+            // (`mayHaveBakedText`, `hasBrokenFontRun`, or `isScanPage`) and was OCR'd (`ocrApplied[i]`).
+            // Gating on `ocrApplied` leaves a skipped or never-OCR'd page unflattened so its native text stays extractable.
+            // With no `ocrApplied` array, nothing is flattened.
+            const flagged = pageStats.map((s, i) => !!(s && (mayHaveBakedText(s) || hasBrokenFontRun(s) || isScanPage(s)))
+              && !!(ocrAppliedArr && ocrAppliedArr[i]));
             // Flatten exists ONLY to support an invisible text layer:
             // a flagged page is flattened exactly when it has overlay text to add (from any source), and that text is kept.
             // A flagged page with no text, and any clean page, gets an empty overlay and is left unflattened,
             // so its native text stays the only text layer.
             const ocrIn = overlayOcrArr;
             convertFullPages = [];
-            overlayOcrArr = pageCats.map((c, i) => {
+            overlayOcrArr = pageStats.map((c, i) => {
               const p = ocrIn[i];
               const hasWords = !!(p && p.lines && p.lines.length > 0);
               if (flagged[i] && hasWords) {
@@ -378,6 +387,12 @@ export async function exportData(doc, format = 'txt', options = {}) {
       layoutRegions: doc.layoutRegions.pages,
       layoutDataTables: removeCircularRefsDataTables(doc.layoutDataTables.pages),
       annotations: doc.annotations.pages,
+      inputData: {
+        pdfType: doc.inputData.pdfType,
+        pageStats: doc.inputData.pageStats,
+        requiresOCR: doc.inputData.requiresOCR,
+        ocrApplied: doc.inputData.ocrApplied,
+      },
     };
     if (compressScribe) {
       const contentStr = JSON.stringify(data);

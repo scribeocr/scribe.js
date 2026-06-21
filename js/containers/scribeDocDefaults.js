@@ -65,6 +65,24 @@ export const scribeDocDefaults = {
    */
   skipFontOpt: false,
 
+  /**
+   * Which pages to run OCR on, from the import-time per-page category analysis.
+   * `'all'` (default) OCRs every page. `'none'` skips OCR entirely.
+   * `'fast'` leaves text-native pages alone and OCRs only image-based content
+   * (scanned sections, broken-encoding pages, and possibly existing-OCR pages depending on `existingOcrPolicy`).
+   * `'deep'` additionally OCRs any page that may hold baked-in text (a sizeable image, image-borne text, or path-rendered text).
+   * Image inputs always OCR every page.
+   * @type {('all'|'fast'|'deep'|'none')}
+   */
+  ocrMode: 'all',
+
+  /**
+   * How to handle pages that already carry an OCR text layer (e.g. an Acrobat scan).
+   * `'rerun'` (default) re-runs OCR on them. `'reuse'` keeps the existing layer and skips them.
+   * @type {('rerun'|'reuse')}
+   */
+  existingOcrPolicy: 'rerun',
+
   /** @type {('invis'|'ebook'|'eval'|'proof'|'annot')} */
   displayMode: 'invis',
 

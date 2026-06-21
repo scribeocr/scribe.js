@@ -52,16 +52,21 @@ export class InputData {
   pdfType = null;
 
   /**
-   * Per-page category flags from import-time content analysis (PDF inputs only).
-   * Drives the per-page flatten/passthrough decision on PDF export.
-   * @type {?Array<{hasLargeImage: boolean, hasPathText: boolean, hasBrokenFontRun: boolean, hasNativeText: boolean, hasImageText: boolean,
-   * largestImageFrac: number, pathTextCandidates: number, longestBrokenRun: number, imageTextCandidates: number}>}
+   * Per-page raw content measurements (PDF inputs only), one per page.
+   * @type {?Array<import('../pdf/ocrPageSelection.js').PageStats|null>}
    */
-  pageCategories = null;
+  pageStats = null;
 
   /**
-   * `true` when any page has content that needs OCR: a large image, text drawn as paths, a broken-font run, or image-borne text.
-   * It is a recommendation only and does not change which text layer is used.
+   * Per-page boolean: whether OCR was applied to that page in the last recognition run,
+   * so its active text layer is OCR rather than native. `null` before any run.
+   * @type {?boolean[]}
+   */
+  ocrApplied = null;
+
+  /**
+   * `true` when any page has content that needs OCR: a sizeable image, path-drawn text, image-borne text,
+   * a broken-font run, or a full-page scan. It is a recommendation only.
    */
   requiresOCR = false;
 
@@ -83,7 +88,8 @@ export class InputData {
   clear() {
     this.xmlMode.length = 0;
     this.pdfMode = false;
-    this.pageCategories = null;
+    this.pageStats = null;
+    this.ocrApplied = null;
     this.requiresOCR = false;
     this.imageMode = false;
     this.resumeMode = false;

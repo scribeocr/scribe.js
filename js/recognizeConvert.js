@@ -5,8 +5,9 @@ import { calcCharMetricsFromPages } from './fontStatistics.js';
 import { gs } from './generalWorkerMain.js';
 import { ImageWrapper } from './objects/imageObjects.js';
 import { LayoutDataTablePage, LayoutPage, addCircularRefsDataTables } from './objects/layoutObjects.js';
-import { addCircularRefsOcr, OcrPage } from './objects/ocrObjects.js';
+import ocr, { addCircularRefsOcr, OcrPage } from './objects/ocrObjects.js';
 import { PageMetrics } from './objects/pageMetricsObjects.js';
+import { selectOcrPages } from './pdf/ocrPageSelection.js';
 import { clearObjectProperties } from './utils/miscUtils.js';
 
 /** @typedef {import('./containers/scribeDoc.js').ScribeDoc} ScribeDoc */
@@ -150,6 +151,12 @@ export async function compareOCR(doc, ocrA, ocrB, options, progressCallback = nu
 
   const comparePageI = async (i) => {
     const pageA = ocrA[i];
+    const pageB = ocrB[i];
+    // A per-page OCR subset leaves skipped pages empty, so skip any page missing from either input.
+    if (!pageA || !pageB) {
+      if (progressCallback) progressCallback();
+      return;
+    }
     // Some option combinations need the page image and some do not.
     // Skip it when unneeded for performance, and so accuracy benchmarks can run without an image.
     const mode = compOptions.mode || 'stats';
@@ -159,7 +166,7 @@ export async function compareOCR(doc, ocrA, ocrB, options, progressCallback = nu
     const binaryImage = skipImage ? null : await doc.images.getBinary(pageA.n);
     const res = await gs.compareOCRPageImp({
       pageA,
-      pageB: ocrB[i],
+      pageB,
       binaryImage,
       pageMetricsObj: doc.pageMetrics[pageA.n],
       options: compOptions,
@@ -554,8 +561,9 @@ export async function convertOCR(doc, ocrRawArr, mainData, format, engineName, s
  * @param {Array<string>} [langs=['eng']]
  * @param {boolean} [vanillaMode=false]
  * @param {Object<string, string>} [config={}]
+ * @param {?boolean[]} [ocrPageMask=null] - Per-page mask. When set, only `true` pages are recognized.
  */
-async function recognizeAllPages(doc, legacy = true, lstm = true, mainData = false, langs = ['eng'], vanillaMode = false, config = {}) {
+async function recognizeAllPages(doc, legacy = true, lstm = true, mainData = false, langs = ['eng'], vanillaMode = false, config = {}, ocrPageMask = null) {
   // Render all PDF pages to PNG if needed
   // This step should not create binarized images as they will be created by Tesseract during recognition.
   if (doc.inputData.pdfMode) await doc.images.preRenderRange({ min: 0, max: doc.images.pageCount - 1, binary: false });
@@ -590,18 +598,21 @@ async function recognizeAllPages(doc, legacy = true, lstm = true, mainData = fal
   // however this function only returns after all recognition is completed.
   // This provides no performance benefit in absolute terms, however halves the amount of time the user has to wait
   // before seeing the initial recognition results.
-  const inputPages = [...Array(doc.images.pageCount).keys()];
+  // When a per-page selection mask is supplied, recognize only the selected pages.
+  // `resolvesA`/`resolvesB` are keyed by page index (sparse) so each result lands in its correct slot,
+  // while `promisesA`/`promisesB` stay dense for `Promise.all`.
+  const inputPages = ocrPageMask ? [...Array(doc.images.pageCount).keys()].filter((i) => ocrPageMask[i]) : [...Array(doc.images.pageCount).keys()];
   const promisesA = [];
   const resolvesA = [];
   const promisesB = [];
   const resolvesB = [];
 
-  for (let i = 0; i < inputPages.length; i++) {
+  for (const x of inputPages) {
     promisesA.push(new Promise((resolve, reject) => {
-      resolvesA[i] = { resolve, reject };
+      resolvesA[x] = { resolve, reject };
     }));
     promisesB.push(new Promise((resolve, reject) => {
-      resolvesB[i] = { resolve, reject };
+      resolvesB[x] = { resolve, reject };
     }));
   }
 
@@ -710,8 +721,11 @@ async function convertModelRawPage(doc, rawData, n, model) {
  * @param {RecognitionModel} options.model
  * @param {Object} [options.modelOptions]
  * @param {AbortSignal} [options.signal]
+ * @param {?boolean[]} [ocrPageMask=null] - Per-page mask from `recognize`.
+ *   The whole-PDF API cannot select individual pages, so the mask is applied at document granularity.
+ *   No page selected skips OCR entirely. Any other selection OCRs the whole PDF, with a warning when the selection was partial.
  */
-async function recognizeCustomModelDocumentMode(doc, options) {
+async function recognizeCustomModelDocumentMode(doc, options, ocrPageMask = null) {
   const model = options.model;
   const modelOptions = options.modelOptions || {};
   const signal = options.signal;
@@ -723,6 +737,20 @@ async function recognizeCustomModelDocumentMode(doc, options) {
 
   if (!doc.ocr[engineName]) doc.ocr[engineName] = Array(doc.inputData.pageCount);
   if (scribeDocDefaults.keepRawData && !doc.ocrRaw[engineName]) doc.ocrRaw[engineName] = Array(doc.inputData.pageCount);
+
+  if (ocrPageMask && !ocrPageMask.some(Boolean)) {
+    for (let n = 0; n < doc.inputData.pageCount; n++) {
+      doc.ocr[engineName][n] = (doc.ocr.pdf && doc.ocr.pdf[n]) || new OcrPage(n, doc.pageMetrics[n].dims);
+    }
+    doc.ocr.active = doc.ocr[engineName];
+    return doc.ocr.active;
+  }
+  if (ocrPageMask && !ocrPageMask.every(Boolean)) {
+    const ocrCount = ocrPageMask.filter(Boolean).length;
+    doc.warningHandler({ message: `Document-mode recognition OCRs the whole PDF; per-page OCR selection (${ocrCount}/${doc.inputData.pageCount} selected) cannot be applied and all pages will be sent.` });
+  }
+  // The whole PDF is OCR'd in document mode, so every page's active layer becomes OCR.
+  doc.inputData.ocrApplied = Array(doc.inputData.pageCount).fill(true);
 
   throwIfAborted(signal);
 
@@ -796,8 +824,10 @@ async function recognizeCustomModelDocumentMode(doc, options) {
  * @param {AbortSignal} [options.signal] - Optional abort signal.
  *   When aborted, recognition stops scheduling new pages, drains in-flight work,
  *   preserves whatever pages completed, and throws an AbortError.
+ * @param {?boolean[]} [ocrPageMask=null] - Per-page mask from `recognize`.
+ *   When set, only `true` pages are sent to the model and skipped pages keep their native (PDF) text.
  */
-async function recognizeCustomModel(doc, options) {
+async function recognizeCustomModel(doc, options, ocrPageMask = null) {
   const model = options.model;
   const modelOptions = options.modelOptions || {};
   const signal = options.signal;
@@ -815,11 +845,21 @@ async function recognizeCustomModel(doc, options) {
 
   await gs.getGeneralScheduler();
 
-  if (model.config.documentMode) return recognizeCustomModelDocumentMode(doc, options);
+  // Document-mode models OCR the whole PDF in a single call, so route them to their own path.
+  if (model.config.documentMode) return recognizeCustomModelDocumentMode(doc, options, ocrPageMask);
 
   // Initialize array for custom model results
   if (!doc.ocr[engineName]) doc.ocr[engineName] = Array(doc.inputData.pageCount);
   if (scribeDocDefaults.keepRawData && !doc.ocrRaw[engineName]) doc.ocrRaw[engineName] = Array(doc.inputData.pageCount);
+
+  // No page selected: skip the model entirely, filling each page from its native (PDF) text.
+  if (ocrPageMask && !ocrPageMask.some(Boolean)) {
+    for (let n = 0; n < doc.inputData.pageCount; n++) {
+      doc.ocr[engineName][n] = (doc.ocr.pdf && doc.ocr.pdf[n]) || new OcrPage(n, doc.pageMetrics[n].dims);
+    }
+    doc.ocr.active = doc.ocr[engineName];
+    return doc.ocr.active;
+  }
 
   // Different cloud providers implement usage quotas in different ways.
   // AWS Textract (Sync) uses transactions per second (TPS).
@@ -850,8 +890,14 @@ async function recognizeCustomModel(doc, options) {
     concurrency = Math.max(Math.min(cpuN - 1, 8), 1);
   }
 
-  // Process all pages with limited concurrency
-  const pages = [...Array(doc.images.pageCount).keys()];
+  // Process all selected pages with limited concurrency.
+  // Skipped pages keep their native (PDF) text so `doc.ocr[engineName]` (the active layer below) has no holes.
+  const pages = [...Array(doc.images.pageCount).keys()].filter((n) => !ocrPageMask || ocrPageMask[n]);
+  if (ocrPageMask) {
+    for (let n = 0; n < doc.images.pageCount; n++) {
+      if (!ocrPageMask[n]) doc.ocr[engineName][n] = (doc.ocr.pdf && doc.ocr.pdf[n]) || new OcrPage(n, doc.pageMetrics[n].dims);
+    }
+  }
   const executing = new Set();
 
   const maxConsecutiveFailures = 3;
@@ -1015,6 +1061,14 @@ async function recognizeCustomModel(doc, options) {
  * @param {Array<string>} [options.langs=['eng']] - Language(s) in document.
  * @param {'lstm'|'legacy'|'combined'} [options.modeAdv='combined'] - Alternative method of setting recognition mode.
  * @param {'conf'|'data'|'none'} [options.combineMode='data'] - Method of combining OCR results. Used if OCR data already exists.
+ * @param {('all'|'fast'|'deep'|'none')} [options.ocrMode] - OCR selection policy. Defaults to `scribeDocDefaults.ocrMode` (`'fast'`).
+ *    `'fast'` decides per document: it skips a text-native document and OCRs an image-based one in full,
+ *    re-OCRing one that already carries an OCR layer only when `existingOcrPolicy` is `'rerun'`.
+ *     `'deep'` is a strict superset of `'fast'` that also OCRs the pages of an otherwise-skipped document that may hold baked-in text.
+ *    `'all'`/`'none'` force every/no page. Image inputs always OCR every page.
+ * @param {('rerun'|'reuse')} [options.existingOcrPolicy] - How to treat pages that already carry an OCR layer.
+ *    Defaults to `scribeDocDefaults.existingOcrPolicy` (`'rerun'`).
+ *    `'reuse'` keeps the existing layer and skips re-OCRing those pages.
  * @param {boolean} [options.vanillaMode=false] - Whether to use the vanilla Tesseract.js model.
  * @param {Object<string, string>} [options.config={}] - Config params to pass to to Tesseract.js.
  * @param {RecognitionModel} [options.model] - Custom recognition model. See docs.
@@ -1027,9 +1081,26 @@ async function recognizeCustomModel(doc, options) {
 export async function recognize(doc, options = {}) {
   if (!doc.inputData.pdfMode && !doc.inputData.imageMode) throw new Error('No PDF or image data found to recognize.');
 
+  // Decide which pages require OCR based on document contents and options specified.
+  const ocrMode = options.ocrMode ?? scribeDocDefaults.ocrMode;
+  const existingOcrPolicy = options.existingOcrPolicy ?? scribeDocDefaults.existingOcrPolicy;
+  const pageCount = doc.inputData.pageCount;
+  const stats = doc.inputData.pageStats;
+  const selectAll = !!doc.ocr['User Upload'] || !stats || stats.length !== pageCount;
+  const ocrPageMask = selectAll ? Array(pageCount).fill(ocrMode !== 'none')
+    : selectOcrPages(stats, ocrMode, existingOcrPolicy, doc.inputData.pdfType);
+  doc.inputData.ocrApplied = ocrPageMask.slice();
+  const fullOcr = ocrPageMask.every(Boolean);
+
   // Custom recognition model path
   if (options.model) {
-    return recognizeCustomModel(doc, /** @type {{ model: RecognitionModel }} */ (options));
+    return recognizeCustomModel(doc, /** @type {{ model: RecognitionModel }} */ (options), ocrPageMask);
+  }
+
+  if (!ocrPageMask.some(Boolean)) {
+    // No page needs OCR: keep the parsed native/existing text layer as the active layer and skip recognition.
+    if (doc.ocr.pdf) doc.ocr.active = doc.ocr.pdf;
+    return doc.ocr.active;
   }
 
   await gs.getGeneralScheduler();
@@ -1067,7 +1138,7 @@ export async function recognize(doc, options = {}) {
   if (oemMode === 'legacy' || oemMode === 'lstm') {
     // Tesseract is used as the "main" data unless user-uploaded data exists and only the LSTM model is being run.
     // This is because Tesseract Legacy provides very strong metrics, and Abbyy often does not.
-    await recognizeAllPages(doc, oemMode === 'legacy', oemMode === 'lstm', !existingOCR, langs, vanillaMode, config);
+    await recognizeAllPages(doc, oemMode === 'legacy', oemMode === 'lstm', !existingOCR, langs, vanillaMode, config, ocrPageMask);
 
     // Metrics from the LSTM model are so inaccurate they are not worth using.
     if (oemMode === 'legacy') {
@@ -1079,7 +1150,7 @@ export async function recognize(doc, options = {}) {
       await doc.runOptimization(doc.ocr['Tesseract Legacy']);
     }
   } else if (oemMode === 'combined') {
-    await recognizeAllPages(doc, true, true, !existingOCR, langs, vanillaMode, config);
+    await recognizeAllPages(doc, true, true, !existingOCR, langs, vanillaMode, config, ocrPageMask);
 
     const progressCb = () => doc.progressHandler({ type: 'recognize' });
 
@@ -1162,7 +1233,9 @@ export async function recognize(doc, options = {}) {
       Object.assign(doc.ocr[tessCombinedLabel], res.ocr);
     }
 
-    if (existingOCR) {
+    // Compare the existing text layer against a secondary text layer word-by-word.
+    // Runs for a whole-document OCR pass or for User-Upload data.
+    if (existingOCR && (doc.ocr['User Upload'] || fullOcr)) {
       if (combineMode === 'conf') {
         /** @type {Parameters<import('./worker/compareOCRModule.js').compareOCRPageImp>[0]['options']} */
         const compOptions = {
@@ -1207,6 +1280,30 @@ export async function recognize(doc, options = {}) {
         Object.assign(doc.ocr.Combined, res.ocr);
       }
     }
+  }
+
+  // For a partial per-page selection, assemble the built-in engine's active layer per page:
+  // selected pages take the pure OCR result, skipped pages keep their native (PDF) text.
+  if (!doc.ocr['User Upload'] && !fullOcr) {
+    // The pure engine result lives in 'Tesseract Combined' when existing PDF text was present,
+    // otherwise in the active layer ('Combined' for combined mode, or the single engine).
+    const pure = (existingOCR && doc.ocr['Tesseract Combined']) ? doc.ocr['Tesseract Combined'] : doc.ocr.active;
+    const nativeLayer = doc.ocr.pdf;
+    const assembled = Array(pageCount);
+    for (let i = 0; i < pageCount; i++) {
+      if (ocrPageMask[i] && pure && pure[i]) {
+        // Clone so later edits to the active layer do not corrupt the stored engine result.
+        assembled[i] = ocr.clonePage(pure[i]);
+        assembled[i].angle = pure[i].angle;
+      } else if (nativeLayer && nativeLayer[i]) {
+        assembled[i] = nativeLayer[i];
+      } else if (pure && pure[i]) {
+        assembled[i] = pure[i];
+      } else {
+        assembled[i] = new OcrPage(i, doc.pageMetrics[i].dims);
+      }
+    }
+    doc.ocr.active = assembled;
   }
 
   return (doc.ocr.active);

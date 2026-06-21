@@ -73,6 +73,7 @@ export function checkMonoCourierPct(ocrArr) {
   let courierWords = 0;
   let totalWords = 0;
   for (const page of ocrArr) {
+    if (!page) continue;
     for (const line of page.lines) {
       for (const word of line.words) {
         totalWords++;
@@ -146,6 +147,7 @@ export async function evalPagesFont(docFonts, images, pageMetrics, font, pageArr
 
   for (let i = 0; i < pageArr.length; i++) {
     if (wordsTotal > n) break;
+    if (!pageArr[i]) continue;
 
     const imageI = await images.getBinary(i);
 
