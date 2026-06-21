@@ -367,13 +367,17 @@ export class ScribeViewer {
     this._highlightOutlineRects = [];
 
     this._searchState = {
-      /** @type {string[]} */
-      text: [],
       search: '',
-      /** @type {number[]} */
-      matches: [],
-      init: false,
-      total: 0,
+      /**
+       * Ordered list of matches across the whole doc, one entry per occurrence.
+       * @type {Array<{pageN: number, wordIds: Array<string>}>}
+       * */
+      matchList: [],
+      /**
+       * Index into `matchList` of the currently-focused match, or -1 when none.
+       * @type {number}
+       * */
+      activeMatch: -1,
     };
 
     this.evalStats = [];
@@ -450,7 +454,7 @@ export class ScribeViewer {
     };
 
     this._searchState = {
-      text: [], search: '', matches: [], init: false, total: 0,
+      search: '', matchList: [], activeMatch: -1,
     };
 
     this.state.cp.n = 0;
@@ -1115,10 +1119,6 @@ export class ScribeViewer {
 
     this.deleteHTMLOverlay();
 
-    if (this.doc.inputData.xmlMode[this.state.cp.n]) {
-      search.updateFindStats(this);
-    }
-
     if (this.state.displayMode === 'ebook') {
       this.layerBackground.hide();
       this.layerBackground.batchDraw();
@@ -1450,6 +1450,10 @@ export class ScribeViewer {
 
     const matchIdArr = this.state.searchMode ? scribe.utils.ocr.getMatchingWordIds(search.search, this.doc.ocr.active[page.n]) : [];
 
+    // Word IDs of the currently-focused match, computed only when that match is on this page, so it renders distinctly from the others.
+    const activeMatchEntry = this.state.searchMode ? this._searchState.matchList[this._searchState.activeMatch] : null;
+    const activeIds = activeMatchEntry && activeMatchEntry.pageN === page.n ? new Set(activeMatchEntry.wordIds) : new Set();
+
     const imageRotated = Math.abs(angle ?? 0) > 0.05;
 
     const pageAnnotations = this.doc.annotations.pages[page.n] || [];
@@ -1536,7 +1540,8 @@ export class ScribeViewer {
           rotation: 0,
           word: wordObj,
           outline: outlineWord,
-          fillBox: matchIdArr.includes(wordObj.id),
+          fillBox: matchIdArr.includes(wordObj.id) && !activeIds.has(wordObj.id),
+          activeMatch: activeIds.has(wordObj.id),
           highlightColor,
           highlightOpacity,
           highlightGroupId,

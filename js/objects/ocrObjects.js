@@ -824,6 +824,46 @@ function getMatchingWordIds(text, ocrPage) {
 }
 
 /**
+ * Gets every match of `text` across all pages, in reading order, as one entry per non-overlapping occurrence.
+ * Each entry's `wordIds[0]` is the occurrence's first (anchor) word.
+ * @param {string} text
+ * @param {Array<OcrPage>} ocrPages
+ * @returns {Array<{pageN: number, wordIds: Array<string>}>}
+ */
+function getDocMatches(text, ocrPages) {
+  text = text.trim().toLowerCase();
+
+  if (!text) return [];
+  const textArr = text.split(' ');
+
+  const matches = [];
+
+  for (let p = 0; p < ocrPages.length; p++) {
+    const page = ocrPages[p];
+    if (!page) continue;
+
+    const wordArr = ocr.getPageWords(page);
+
+    for (let i = 0; i <= wordArr.length - textArr.length; i++) {
+      const word = wordArr[i];
+
+      if (!word.text.toLowerCase().includes(textArr[0])) continue;
+
+      const candArr = wordArr.slice(i, i + textArr.length);
+      const candText = candArr.map((x) => x.text).join(' ').toLowerCase();
+
+      if (candText.includes(text)) {
+        matches.push({ pageN: page.n, wordIds: candArr.map((x) => x.id) });
+        // Advance past the matched span so overlapping windows don't double-count one occurrence.
+        i += textArr.length - 1;
+      }
+    }
+  }
+
+  return matches;
+}
+
+/**
  *
  * @param {OcrWord} word
  * @param {'invis' | 'ebook' | 'eval' | 'proof' | 'annot'} displayMode
@@ -1079,6 +1119,7 @@ const ocr = {
   getMatchingWords,
   getMatchingWordsInLine,
   getMatchingWordIds,
+  getDocMatches,
   getPageText,
   getParText,
   getLineText,

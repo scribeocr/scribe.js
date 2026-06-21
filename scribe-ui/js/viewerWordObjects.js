@@ -46,6 +46,7 @@ export class KonvaIText extends Konva.Shape {
    * @param {boolean} [options.outline=false]
    * @param {boolean} [options.selected=false]
    * @param {boolean} [options.fillBox=false]
+   * @param {boolean} [options.activeMatch=false]
    * @param {number} [options.opacity=1]
    * @param {string} [options.fill='black']
    * @param {boolean} [options.dynamicWidth=false] - If `true`, the width of the text box will be calculated dynamically based on the text content, rather than using the bounding box.
@@ -61,7 +62,7 @@ export class KonvaIText extends Konva.Shape {
    */
   constructor({
     x, yActual, word, rotation = 0,
-    outline = false, selected = false, fillBox = false, opacity = 1, fill = 'black', dynamicWidth = false, changeTextCallback, inputTextCallback,
+    outline = false, selected = false, fillBox = false, activeMatch = false, opacity = 1, fill = 'black', dynamicWidth = false, changeTextCallback, inputTextCallback,
     highlightColor = null, highlightOpacity = 1, highlightGroupId = null, highlightComment = '',
     viewer,
   }) {
@@ -184,9 +185,12 @@ export class KonvaIText extends Konva.Shape {
           context.stroke();
         }
 
-        if (shape.fillBox) {
-          context.fillStyle = '#4278f550';
+        if (shape.fillBox || shape.activeMatch) {
+          context.save();
+          context.globalAlpha = 1;
+          context.fillStyle = shape.activeMatch ? '#ff990088' : '#4278f550';
           context.fillRect(0, 0, shape.width(), shape.height());
+          context.restore();
         }
       },
       /**
@@ -221,6 +225,7 @@ export class KonvaIText extends Konva.Shape {
     this.outline = outline;
     this.selected = selected;
     this.fillBox = fillBox;
+    this.activeMatch = activeMatch;
     this.highlightColor = highlightColor;
     this.highlightOpacity = highlightOpacity;
     this.highlightGroupId = highlightGroupId;
@@ -653,6 +658,7 @@ export class KonvaOcrWord extends KonvaIText {
    * @param {number} options.rotation
    * @param {boolean} options.outline - Draw black outline around text.
    * @param {boolean} options.fillBox
+   * @param {boolean} [options.activeMatch=false]
    * @param {boolean} options.listening
    * @param {?string} [options.highlightColor=null]
    * @param {number} [options.highlightOpacity=1]
@@ -662,7 +668,7 @@ export class KonvaOcrWord extends KonvaIText {
    */
   constructor({
     visualLeft, yActual, topBaseline, word, rotation,
-    outline, fillBox, listening, highlightColor = null, highlightOpacity = 1,
+    outline, fillBox, activeMatch = false, listening, highlightColor = null, highlightOpacity = 1,
     highlightGroupId = null, highlightComment = '',
     viewer,
   }) {
@@ -677,6 +683,7 @@ export class KonvaOcrWord extends KonvaIText {
       rotation,
       outline,
       fillBox,
+      activeMatch,
       opacity,
       fill,
       highlightColor,

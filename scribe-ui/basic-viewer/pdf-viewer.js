@@ -1,6 +1,9 @@
 import scribe from '../../scribe.js';
 import { ScribeViewer } from '../viewer.js';
 import { applyHighlight } from '../js/viewerHighlights.js';
+import {
+  findText, goToMatch, nextMatch, prevMatch,
+} from '../js/viewerSearch.js';
 import { destroyContextMenu } from '../js/viewerCanvasInteraction.js';
 
 // Toolbar height bounds (px).
@@ -329,6 +332,110 @@ class ScribePDFViewer {
         if (colorContainer) toolbarButtons.appendChild(colorContainer);
       }
 
+      // Find / search controls (right-aligned).
+      const searchElem = document.createElement('span');
+      searchElem.className = 'cr-icon-button';
+      searchElem.title = 'Find';
+      searchElem.role = 'button';
+      searchElem.tabIndex = 0;
+      const searchIcon = document.createElement('span');
+      searchIcon.className = 'cr-icon';
+      searchIcon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 -960 960 960" fill="currentColor">
+      <path d="M784-120 532-372q-30 24-69 38t-83 14q-109 0-184.5-75.5T120-580q0-109 75.5-184.5T380-840q109 0 184.5 75.5T640-580q0 44-14 83t-38 69l252 252-56 56ZM380-400q75 0 127.5-52.5T560-580q0-75-52.5-127.5T380-760q-75 0-127.5 52.5T200-580q0 75 52.5 127.5T380-400Z"/>
+      </svg>`;
+      searchElem.appendChild(searchIcon);
+
+      const findGroup = document.createElement('span');
+      findGroup.className = 'scribe-search-group';
+      findGroup.style.display = 'none';
+
+      const searchInput = document.createElement('input');
+      searchInput.type = 'text';
+      searchInput.className = 'scribe-search-input';
+      searchInput.placeholder = 'Find';
+      searchInput.autocomplete = 'off';
+      searchInput.spellcheck = false;
+
+      const searchCount = document.createElement('span');
+      searchCount.className = 'scribe-search-count';
+
+      const searchPrevElem = document.createElement('span');
+      searchPrevElem.className = 'cr-icon-button';
+      searchPrevElem.title = 'Previous match';
+      searchPrevElem.role = 'button';
+      searchPrevElem.tabIndex = 0;
+      const searchPrevIcon = document.createElement('span');
+      searchPrevIcon.className = 'cr-icon';
+      searchPrevIcon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 -960 960 960" fill="currentColor">
+      <path d="M480-528 296-344l-56-56 240-240 240 240-56 56-184-184Z"/></svg>`;
+      searchPrevElem.appendChild(searchPrevIcon);
+
+      const searchNextElem = document.createElement('span');
+      searchNextElem.className = 'cr-icon-button';
+      searchNextElem.title = 'Next match';
+      searchNextElem.role = 'button';
+      searchNextElem.tabIndex = 0;
+      const searchNextIcon = document.createElement('span');
+      searchNextIcon.className = 'cr-icon';
+      searchNextIcon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 -960 960 960" fill="currentColor">
+      <path d="M480-344 240-584l56-56 184 184 184-184 56 56-240 240Z"/></svg>`;
+      searchNextElem.appendChild(searchNextIcon);
+
+      const searchCloseElem = document.createElement('span');
+      searchCloseElem.className = 'cr-icon-button';
+      searchCloseElem.title = 'Close';
+      searchCloseElem.role = 'button';
+      searchCloseElem.tabIndex = 0;
+      const searchCloseIcon = document.createElement('span');
+      searchCloseIcon.className = 'cr-icon';
+      searchCloseIcon.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 -960 960 960" fill="currentColor">
+      <path d="m256-200-56-56 224-224-224-224 56-56 224 224 224-224 56 56-224 224 224 224-56 56-224-224-224 224Z"/></svg>`;
+      searchCloseElem.appendChild(searchCloseIcon);
+
+      findGroup.appendChild(searchInput);
+      findGroup.appendChild(searchCount);
+      findGroup.appendChild(searchPrevElem);
+      findGroup.appendChild(searchNextElem);
+      findGroup.appendChild(searchCloseElem);
+
+      toolbarElemEnd.appendChild(findGroup);
+      toolbarElemEnd.appendChild(searchElem);
+
+      this.searchElem = searchElem;
+      this.findGroupElem = findGroup;
+      this.searchInputElem = searchInput;
+      this.searchCounterElem = searchCount;
+
+      searchElem.addEventListener('mousedown', (e) => e.preventDefault());
+      searchElem.addEventListener('click', () => {
+        if (findGroup.style.display === 'none') this.openSearch();
+        else this.closeSearch();
+      });
+
+      let searchDebounce = null;
+      searchInput.addEventListener('input', () => {
+        if (searchDebounce) clearTimeout(searchDebounce);
+        const { value } = searchInput;
+        searchDebounce = setTimeout(() => this.runSearch(value), 150);
+      });
+      searchInput.addEventListener('keydown', (event) => {
+        if (event.key === 'Enter') {
+          event.preventDefault();
+          if (event.shiftKey) prevMatch(this.scribe).then(() => this.updateSearchCounter());
+          else nextMatch(this.scribe).then(() => this.updateSearchCounter());
+        } else if (event.key === 'Escape') {
+          event.preventDefault();
+          this.closeSearch();
+        }
+      });
+
+      searchPrevElem.addEventListener('mousedown', (e) => e.preventDefault());
+      searchPrevElem.addEventListener('click', () => prevMatch(this.scribe).then(() => this.updateSearchCounter()));
+      searchNextElem.addEventListener('mousedown', (e) => e.preventDefault());
+      searchNextElem.addEventListener('click', () => nextMatch(this.scribe).then(() => this.updateSearchCounter()));
+      searchCloseElem.addEventListener('mousedown', (e) => e.preventDefault());
+      searchCloseElem.addEventListener('click', () => this.closeSearch());
+
       center.appendChild(toolbarButtons);
 
       toolbarElem.appendChild(toolbarElemStart);
@@ -515,6 +622,24 @@ class ScribePDFViewer {
     document.addEventListener('mouseup', selectionResetMouseupHandler);
     this._teardownCallbacks.push(() => document.removeEventListener('mouseup', selectionResetMouseupHandler));
 
+    // Ctrl/Cmd+F opens the find bar.
+    // Gated by `keyboardScope` so an embedded viewer never hijacks the browser's native find unless the interaction is inside it (or it is the active viewer).
+    if (this.findGroupElem) {
+      const searchKeydownHandler = (event) => {
+        if (!((event.key === 'f' || event.key === 'F') && (event.ctrlKey || event.metaKey) && !event.altKey)) return;
+        if (this.scribe.opt.keyboardScope === 'off') return;
+        const target = event.target instanceof Node ? event.target : null;
+        const insideThis = !!(target && this.pdfViewerElem.contains(target));
+        const isActive = ScribeViewer.getActiveViewer() === this.scribe;
+        const inScope = this.scribe.opt.keyboardScope === 'global' ? isActive : (insideThis || isActive);
+        if (!inScope) return;
+        event.preventDefault();
+        this.openSearch();
+      };
+      document.addEventListener('keydown', searchKeydownHandler);
+      this._teardownCallbacks.push(() => document.removeEventListener('keydown', searchKeydownHandler));
+    }
+
     this.commentTooltip = document.createElement('div');
     this.commentTooltip.className = 'highlight-comment-tooltip';
     this.commentTooltip.style.display = 'none';
@@ -652,6 +777,7 @@ class ScribePDFViewer {
     this.doc = doc;
     this._ownsDoc = owns;
     this.scribe.doc = doc; // fires _resetDocState(): resets the outgoing document's view only
+    this.resetSearch();
 
     for (let i = 0; i < doc.inputData.pageCount; i++) {
       if (!doc.annotations.pages[i]) doc.annotations.pages[i] = [];
@@ -689,6 +815,7 @@ class ScribePDFViewer {
     this.scribe.doc = new scribe.ScribeDoc(); // empty doc -> setter fires _resetDocState(): view cleared
     this.doc = null;
     this._ownsDoc = false;
+    this.resetSearch();
     if (this.scribe.stage) this.scribe.stage.batchDraw(); // flush the now-empty layers
 
     if (this.pageCountElem) this.pageCountElem.textContent = '0';
@@ -698,6 +825,61 @@ class ScribePDFViewer {
     if (terminatePrev) prev.terminate().catch(() => {});
 
     return prev;
+  }
+
+  /** Open the find bar, enable search highlighting, and focus the input (re-running any pending query). */
+  openSearch() {
+    if (!this.findGroupElem) return;
+    this.findGroupElem.style.display = 'inline-flex';
+    this.searchElem.classList.add('active');
+    this.scribe.state.searchMode = true;
+    this.searchInputElem.focus();
+    this.searchInputElem.select();
+    if (this.searchInputElem.value.trim()) this.runSearch(this.searchInputElem.value);
+  }
+
+  /** Close the find bar and clear the query (which drops all match highlights). */
+  closeSearch() {
+    if (!this.findGroupElem) return;
+    this.findGroupElem.style.display = 'none';
+    this.searchElem.classList.remove('active');
+    this.scribe.state.searchMode = false;
+    findText(this.scribe, ''); // clears the highlights on the rendered pages
+    this.updateSearchCounter();
+  }
+
+  /**
+   * Run a query: highlight all matches across the document and jump to the first one.
+   * @param {string} query
+   * @returns {Promise<void>}
+   */
+  runSearch(query) {
+    if (!this.findGroupElem || !this.doc) return Promise.resolve();
+    const sv = this.scribe;
+    sv.state.searchMode = true;
+    findText(sv, query); // paints (or, with no matches, clears) the highlights on the rendered pages
+    this.updateSearchCounter();
+    if (sv._searchState.matchList.length) return goToMatch(sv, 0);
+    return Promise.resolve();
+  }
+
+  /** Refresh the "current/total" match counter from the viewer's search state. */
+  updateSearchCounter() {
+    if (!this.searchCounterElem) return;
+    const s = this.scribe._searchState;
+    if (!s.search) this.searchCounterElem.textContent = '';
+    else if (!s.matchList.length) this.searchCounterElem.textContent = 'No results';
+    else this.searchCounterElem.textContent = `${s.activeMatch + 1}/${s.matchList.length}`;
+  }
+
+  /** Reset the find bar UI: hide it, clear the input, and exit search mode. */
+  resetSearch() {
+    if (!this.findGroupElem) return;
+    this.findGroupElem.style.display = 'none';
+    this.searchElem.classList.remove('active');
+    this.searchInputElem.value = '';
+    this.scribe.state.searchMode = false;
+    this.updateSearchCounter();
   }
 
   /**
@@ -1197,6 +1379,23 @@ class ScribePDFViewer {
       padding: 0 4px;
       text-align: center;
       width: 5ch;
+    }
+
+    .scribe-pdf-viewer .scribe-search-group {
+      align-items: center;
+    }
+
+    .scribe-pdf-viewer-toolbar input.scribe-search-input {
+      width: 14ch;
+      text-align: left;
+    }
+
+    .scribe-pdf-viewer .scribe-search-count {
+      font-size: 13px;
+      min-width: 6ch;
+      padding: 0 6px;
+      text-align: center;
+      white-space: nowrap;
     }
 
     .scribe-pdf-viewer .scribe-scrollbar {
