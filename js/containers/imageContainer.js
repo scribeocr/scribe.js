@@ -136,15 +136,15 @@ export class ImageStore {
     };
   };
 
-  /** @type {?import('../pdfWorkerMain.js').PdfScheduler} */
+  /** @type {?(import('../pdfWorkerMain.js').PdfScheduler | import('../pdfWorkerMain.js').PdfSchedulerInProcess)} */
   pdfScheduler = null;
 
-  /** @type {?Promise<import('../pdfWorkerMain.js').PdfScheduler>} */
+  /** @type {?Promise<import('../pdfWorkerMain.js').PdfScheduler | import('../pdfWorkerMain.js').PdfSchedulerInProcess>} */
   #pdfSchedulerReady = null;
 
   /**
-   * Get or lazily initialize the dedicated PDF worker pool.
-   * @returns {Promise<import('../pdfWorkerMain.js').PdfScheduler>}
+   * Get or lazily initialize the dedicated PDF worker pool (or the in-process equivalent when `opt.inProcess` is set).
+   * @returns {Promise<import('../pdfWorkerMain.js').PdfScheduler | import('../pdfWorkerMain.js').PdfSchedulerInProcess>}
    */
   getPdfScheduler = async () => {
     if (this.pdfScheduler) return this.pdfScheduler;

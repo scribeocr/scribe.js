@@ -310,7 +310,8 @@ export async function importFiles(doc, files, options = {}) {
   if (!files) throw new Error('No files provided.');
 
   doc.clear();
-  gs.getGeneralScheduler();
+  // Pre-warm the general worker pool, except with `opt.inProcess`.
+  if (!opt.inProcess) gs.getGeneralScheduler();
 
   /** @type {Array<File|FileNode|ArrayBuffer>} */
   let pdfFiles = [];

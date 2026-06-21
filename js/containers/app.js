@@ -13,6 +13,16 @@ export class opt {
   static workerN = null;
 
   /**
+   * Run document work (PDF parsing and rendering) on the calling thread instead of in a worker pool, and skip eagerly pre-warming that pool.
+   * When running inexpensive operations (no OCR) in the CLI (1 document, no re-used workers),
+   * loading workers often slows things down in absolute terms.
+   * In all cases, users are better off running the CLI in parallel at the document level (e.g. using GNU Parallel).
+   * Worker-only features (OCR recognition, OCR file conversion, font optimization) currently still spawn workers on first use.
+   * Must be set prior to initialization.
+   */
+  static inProcess = false;
+
+  /**
    * Custom URL or path to load Tesseract `.traineddata` files from.
    * If `null` (default), files are fetched from the jsdelivr CDN.
    * Set this to a directory containing `<lang>.traineddata.gz` to use a local

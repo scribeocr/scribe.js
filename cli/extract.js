@@ -27,6 +27,12 @@ export const extract = async (inputFile, output, options) => {
   scribe.ScribeDoc.defaults.usePDFText.ocr.main = true;
   scribe.ScribeDoc.defaults.displayMode = 'ebook';
 
+  // Run everything on the main thread.
+  // When running inexpensive operations (no OCR) in the CLI (1 document, no re-used workers),
+  // loading workers often slows things down in absolute terms.
+  // In all cases, users are better off running the CLI in parallel at the document level (e.g. using GNU Parallel).
+  scribe.opt.inProcess = true;
+
   // TODO: Fonts do not need to be loaded for .txt output, but are needed for .pdf output.
   // so a more robust implementation would consider the arguments and only load fonts if necessary.
   const doc = await scribe.openDocument([inputFile]);

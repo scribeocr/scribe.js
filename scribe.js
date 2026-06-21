@@ -45,7 +45,9 @@ const init = async (params) => {
 
   const promiseArr = [];
 
-  promiseArr.push(gs.getGeneralScheduler());
+  // With `opt.inProcess`, the general worker pool is not pre-warmed.
+  // It is still created on first use by features that require it (e.g. OCR).
+  if (!opt.inProcess) promiseArr.push(gs.getGeneralScheduler());
 
   if (initOcr) {
     const ocrParams = params && params.ocrParams ? params.ocrParams : {};

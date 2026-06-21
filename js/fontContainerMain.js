@@ -6,6 +6,7 @@ import {
   loadFontsFromSource,
   loadOpentype,
 } from './containers/fontContainer.js';
+import { opt } from './containers/app.js';
 import { gs } from './generalWorkerMain.js';
 
 /** @typedef {import('./containers/fontContainer.js').DocFonts} DocFonts */
@@ -218,7 +219,7 @@ async function loadBuiltInFontsRawInner(glyphSet) {
   GlobalFonts.raw = await /** @type {FontContainer} */(/** @type {any} */(loadFontsFromSource(srcObj)));
 
   // This assumes that the scheduler `init` method has at least started.
-  if (gs.schedulerReady === null) console.warn('Failed to load fonts to workers as workers have not been initialized yet.');
+  if (gs.schedulerReady === null && !opt.inProcess) console.warn('Failed to load fonts to workers as workers have not been initialized yet.');
   await gs.schedulerReady;
   // A new glyphset was loaded, so push the (process-wide) raw fonts to every worker.
   await syncBuiltInFontsToWorkers();

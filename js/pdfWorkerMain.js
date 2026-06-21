@@ -1,5 +1,6 @@
 import { TessScheduler } from '../tess/TessScheduler.js';
 import { opt } from './containers/app.js';
+import { PdfCore } from './pdf/pdfCore.js';
 
 /**
  * Creates a single PDF worker and returns an object with wrapped methods.
@@ -121,11 +122,50 @@ export class PdfScheduler {
 }
 
 /**
+ * In-process replacement for `PdfScheduler` (same method surface), selected when `opt.inProcess` is set:
+ * each operation runs on the calling thread, not a worker pool.
+ */
+export class PdfSchedulerInProcess {
+  #core = new PdfCore();
+
+  /**
+   * Parse a single page for text extraction + type-detection scoring.
+   * @param {{ pageIndex: number, dpi: number }} args
+   */
+  parsePdfPage = (args) => this.#core.parsePage(args);
+
+  /**
+   * Render a single page to a PNG data URL.
+   * The viewer lane (`forViewer`) only exists to keep the worker queue bounded;
+   * in-process renders always run, so it is accepted and ignored.
+   * @param {{ pageIndex: number, colorMode: string, dpi?: number }} args
+   * @param {boolean} [forViewer=false]
+   */
+  // eslint-disable-next-line no-unused-vars
+  renderPdfPage = (args, forViewer = false) => this.#core.renderPage(args);
+
+  /**
+   * Load PDF bytes and parse the document structure.
+   * @param {Uint8Array} pdfBytes
+   */
+  loadPdfInAllWorkers = (pdfBytes) => this.#core.load(pdfBytes);
+
+  unloadPdfInAllWorkers = () => this.#core.unload();
+
+  async terminate() {
+    await this.#core.unload();
+  }
+}
+
+/**
  * Initialize the dedicated PDF worker pool.
  * Creates 1-3 workers depending on hardware concurrency, capped by `opt.workerN` when set.
+ * When `opt.inProcess` is set (and no explicit `numWorkers` is requested),
+ * no workers are created and PDF operations run on the calling thread instead.
  * @param {number} [numWorkers]
  */
 export async function initPdfScheduler(numWorkers) {
+  if (!numWorkers && opt.inProcess) return new PdfSchedulerInProcess();
   if (!numWorkers) {
     if (opt.workerN) {
       numWorkers = Math.min(opt.workerN, 3);
