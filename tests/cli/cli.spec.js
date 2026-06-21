@@ -13,6 +13,13 @@ import { ASSETS_PATH } from '../module/_paths.js';
 
 scribe.opt.workerN = 1;
 
+// Warm the worker/OCR/font engine once before any test runs.
+// This is necessary for tests to pass consistently on GitHub.
+beforeAll(async () => {
+  await scribe.init({ font: true, ocr: true });
+  await scribe.terminate();
+}, 120000);
+
 describe('Check Node.js commands.', () => {
   let originalConsoleLog;
   let consoleOutput;
