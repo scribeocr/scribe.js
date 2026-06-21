@@ -1,3 +1,5 @@
+import { scribeDocDefaults } from '../containers/scribeDocDefaults.js';
+
 /** Min page-area fraction for an image to count as non-trivial. Used only to recognize a blank page. */
 const IMAGE_AREA_MIN = 0.02;
 /** Min count of filled glyph-height vector paths for a page to plausibly hold path-rendered text. */
@@ -55,41 +57,44 @@ export const isEmpty = (s) => s.visibleChars === 0 && s.invisibleTextChars === 0
 /**
  * Decide which pages to OCR.
  * @param {Array<PageStats|null>} pageStats Per-page raw measurements.
- * @param {'all'|'none'|'fast'|'deep'} [ocrMode] Scope. `fast` decides per document from `pdfType`: it
- *   OCRs an image-based document in full and leaves a text-native one alone. `deep` is a strict superset
- *   of `fast` that also OCRs the individual pages of an otherwise-skipped document that may hold baked-in text.
- * @param {'rerun'|'reuse'} [existingOcrPolicy] For a document/page that already carries an OCR layer:
- *   `rerun` re-OCRs it, `reuse` keeps it.
- * @param {'text'|'ocr'|'image'|null} [pdfType] Per-document verdict from `determinePdfType`: text-native,
- *   image with an OCR layer, or image. A null/unknown verdict OCRs the whole document.
+ * @param {'text'|'ocr'|'image'|null} [pdfType] Per-document verdict from `determinePdfType`: text-native, image with an OCR layer, or image.
+ *   A null/unknown verdict OCRs the whole document.
+ * @param {'all'|'none'|'auto'|'autoShallow'|'autoDeep'} [ocrPages] Scope.
+ *   `autoShallow` decides per document from `pdfType`: it OCRs an image-based document in full and leaves a text-native one alone.
+ *   `autoDeep` (alias `auto`) is a strict superset of `autoShallow` that also OCRs the individual pages of an otherwise-skipped document that may hold baked-in text.
+ * @param {typeof scribeDocDefaults.usePDFText} [usePDFText] Governs an existing OCR layer: when `ocr.main` is true the layer is
+ *   trusted as the primary text and its pages are not re-OCR'd; otherwise they are (and `recognize` decides separately, from `ocr.supp`, whether to merge it back in).
  * @returns {boolean[]} One flag per page: whether to OCR it.
  */
-export function selectOcrPages(pageStats, ocrMode = 'fast', existingOcrPolicy = 'rerun', pdfType = 'image') {
+export function selectOcrPages(pageStats, pdfType = 'image', ocrPages = 'autoShallow', usePDFText = scribeDocDefaults.usePDFText) {
   const len = pageStats.length;
-  if (ocrMode === 'all') return new Array(len).fill(true);
-  if (ocrMode === 'none') return new Array(len).fill(false);
+  if (ocrPages === 'all') return new Array(len).fill(true);
+  if (ocrPages === 'none') return new Array(len).fill(false);
+  // `auto` is an alias for the deep variant.
+  const deep = ocrPages === 'autoDeep' || ocrPages === 'auto';
 
-  // `fast` decides for the whole document from its parse-time verdict: skip a text-native document,
-  // OCR an image one, and re-OCR an image+OCR-layer document only when `existingOcrPolicy` is `rerun`.
+  // `autoShallow` decides the whole document from its parse-time verdict: skip a text-native one,
+  // re-OCR an image+OCR-layer one unless `usePDFText.ocr.main` trusts the existing layer, and OCR any other document in full.
   let ocrWholeDoc;
   if (pdfType === 'text') ocrWholeDoc = false;
-  else if (pdfType === 'ocr') ocrWholeDoc = existingOcrPolicy === 'rerun';
+  else if (pdfType === 'ocr') ocrWholeDoc = !usePDFText.ocr.main;
   else ocrWholeDoc = true;
 
   return pageStats.map((s) => {
     if (ocrWholeDoc) return true;
-    // `deep` superset: for a document `fast` leaves alone, still OCR the pages that may hold baked-in text,
-    // plus any embedded scan or broken-font page.
-    if (ocrMode !== 'deep' || !s) return false;
+    // `autoDeep` superset: for a document `autoShallow` leaves alone, additionally OCR a broken-font page,
+    // an embedded scan (re-OCR one that already has an OCR layer unless `usePDFText.ocr.main` trusts it),
+    // or a page whose image, path run, or strip may hold baked-in text.
+    if (!deep || !s) return false;
     if (hasBrokenFontRun(s)) return true;
-    if (isScanPage(s)) return hasExistingOcrLayer(s) ? existingOcrPolicy === 'rerun' : true;
+    if (isScanPage(s)) return hasExistingOcrLayer(s) ? !usePDFText.ocr.main : true;
     return mayHaveBakedText(s);
   });
 }
 
 /**
- * Whether any page has content that needs OCR (a recommendation flag; does not change selection).
- * @param {Array<PageStats|null>} pageStats
+ * Whether any page has content that needs OCR (a recommendation flag that does not change selection).
+ * @param {Array<PageStats|null>} pageStats Per-page raw measurements.
  * @returns {boolean}
  */
 export function computeRequiresOCR(pageStats) {

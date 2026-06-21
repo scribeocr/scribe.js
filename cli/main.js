@@ -23,6 +23,7 @@ scribe.ScribeDoc.defaults.saveDebugImages = debugMode;
  * @param {number} [params.workerN]
  * @param {*} [params.model]
  * @param {Object} [params.modelOptions] - Options forwarded to the model.
+ * @param {('all'|'auto'|'autoShallow'|'autoDeep'|'none')} [params.ocrPages] - Which pages to OCR (`recognize` only).
  */
 async function main(func, params) {
   scribe.opt.workerN = params.workerN || null;
@@ -60,12 +61,16 @@ async function main(func, params) {
   // TODO: (1) Find out why font data is not being imported correctly from .hocr files.
   // (2) Use Tesseract Legacy font data when (1) recognition is being run anyway and (2) no font metrics data exists already.
   if (robustConfMode || func === 'eval' || func === 'recognize') {
+    // Only the `recognize` command exposes the per-page OCR policy. `eval`/`check`/`overlay --robust`
+    // measure or compare OCR over the whole document, so they OCR every page.
+    const ocrPages = func === 'recognize' ? params.ocrPages : 'all';
     if (usingCloudModel) {
-      await doc.recognize({ model: params.model, modelOptions: params.modelOptions || {} });
+      await doc.recognize({ model: params.model, modelOptions: params.modelOptions || {}, ocrPages });
     } else {
       await doc.recognize({
         modeAdv: 'combined',
         combineMode,
+        ocrPages,
       });
     }
     if (func === 'recognize') {
@@ -183,6 +188,7 @@ export const overlay = async (files, outputDir, options) => (main('overlay', {
  * @param {number} [options.workers]
  * @param {*} [options.model]
  * @param {Object} [options.modelOption] - Options collected from --model-option flags.
+ * @param {('all'|'auto'|'autoShallow'|'autoDeep'|'none')} [options.ocrPages] - Which pages to OCR.
  */
 export const recognize = async (files, options) => (main('recognize', {
   files,
@@ -192,6 +198,7 @@ export const recognize = async (files, options) => (main('recognize', {
   outputDir: options?.output || '.',
   model: options?.model,
   modelOptions: options?.modelOption,
+  ocrPages: options?.ocrPages,
 }));
 
 /**

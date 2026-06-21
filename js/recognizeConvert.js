@@ -1061,14 +1061,15 @@ async function recognizeCustomModel(doc, options, ocrPageMask = null) {
  * @param {Array<string>} [options.langs=['eng']] - Language(s) in document.
  * @param {'lstm'|'legacy'|'combined'} [options.modeAdv='combined'] - Alternative method of setting recognition mode.
  * @param {'conf'|'data'|'none'} [options.combineMode='data'] - Method of combining OCR results. Used if OCR data already exists.
- * @param {('all'|'fast'|'deep'|'none')} [options.ocrMode] - OCR selection policy. Defaults to `scribeDocDefaults.ocrMode` (`'fast'`).
- *    `'fast'` decides per document: it skips a text-native document and OCRs an image-based one in full,
- *    re-OCRing one that already carries an OCR layer only when `existingOcrPolicy` is `'rerun'`.
- *     `'deep'` is a strict superset of `'fast'` that also OCRs the pages of an otherwise-skipped document that may hold baked-in text.
- *    `'all'`/`'none'` force every/no page. Image inputs always OCR every page.
- * @param {('rerun'|'reuse')} [options.existingOcrPolicy] - How to treat pages that already carry an OCR layer.
- *    Defaults to `scribeDocDefaults.existingOcrPolicy` (`'rerun'`).
- *    `'reuse'` keeps the existing layer and skips re-OCRing those pages.
+ * @param {('all'|'auto'|'autoShallow'|'autoDeep'|'none'|boolean[])} [options.ocrPages] - Which pages to OCR. Defaults to `scribeDocDefaults.ocrPages` (`'all'`).
+ *    `'autoShallow'` decides per document: it skips a text-native document and OCRs an image-based one in full,
+ *    re-OCRing one that already carries an OCR layer unless `usePDFText.ocr.main` trusts that layer.
+ *     `'autoDeep'` (alias `'auto'`) is a strict superset of `'autoShallow'` that also OCRs the pages of an otherwise-skipped document that may hold baked-in text.
+ *    `'all'`/`'none'` force every/no page; a boolean array (length === page count) selects pages explicitly.
+ *    Image inputs, and any document with uploaded OCR, always OCR every page.
+ * @param {typeof scribeDocDefaults.usePDFText} [options.usePDFText] - How to use a PDF's own extracted text, for this call.
+ *    Defaults to `scribeDocDefaults.usePDFText`. For a document with an existing OCR layer, `ocr.main: true` trusts that
+ *    layer as primary and skips OCR; `ocr.supp: true` merges it into a fresh OCR run; both false re-OCRs and discards it.
  * @param {boolean} [options.vanillaMode=false] - Whether to use the vanilla Tesseract.js model.
  * @param {Object<string, string>} [options.config={}] - Config params to pass to to Tesseract.js.
  * @param {RecognitionModel} [options.model] - Custom recognition model. See docs.
@@ -1082,13 +1083,26 @@ export async function recognize(doc, options = {}) {
   if (!doc.inputData.pdfMode && !doc.inputData.imageMode) throw new Error('No PDF or image data found to recognize.');
 
   // Decide which pages require OCR based on document contents and options specified.
-  const ocrMode = options.ocrMode ?? scribeDocDefaults.ocrMode;
-  const existingOcrPolicy = options.existingOcrPolicy ?? scribeDocDefaults.existingOcrPolicy;
+  const ocrPages = options.ocrPages ?? scribeDocDefaults.ocrPages;
+  const usePDFText = options.usePDFText ?? scribeDocDefaults.usePDFText;
   const pageCount = doc.inputData.pageCount;
   const stats = doc.inputData.pageStats;
-  const selectAll = !!doc.ocr['User Upload'] || !stats || stats.length !== pageCount;
-  const ocrPageMask = selectAll ? Array(pageCount).fill(ocrMode !== 'none')
-    : selectOcrPages(stats, ocrMode, existingOcrPolicy, doc.inputData.pdfType);
+
+  /** @type {boolean[]} */
+  let ocrPageMask;
+  if (Array.isArray(ocrPages) && !doc.ocr['User Upload']) {
+    // An explicit per-page mask is used directly, independent of parse-time stats.
+    if (ocrPages.length !== pageCount) {
+      throw new Error(`ocrPages array length (${ocrPages.length}) must equal the page count (${pageCount}).`);
+    }
+    ocrPageMask = ocrPages.map(Boolean);
+  } else if (doc.ocr['User Upload'] || !stats || stats.length !== pageCount) {
+    // Uploaded OCR keeps the existing whole-document combine path (back-compat): OCR every page unless explicitly told `'none'`.
+    // The same whole-document fallback applies when per-page stats are unavailable.
+    ocrPageMask = Array(pageCount).fill(ocrPages !== 'none');
+  } else {
+    ocrPageMask = selectOcrPages(stats, doc.inputData.pdfType, /** @type {'all'|'none'|'auto'|'autoShallow'|'autoDeep'} */ (ocrPages), usePDFText);
+  }
   doc.inputData.ocrApplied = ocrPageMask.slice();
   const fullOcr = ocrPageMask.every(Boolean);
 
@@ -1128,7 +1142,11 @@ export async function recognize(doc, options = {}) {
   let existingOCR;
   if (doc.ocr['User Upload']) {
     existingOCR = doc.ocr['User Upload'];
-  } else if (doc.ocr.pdf && (doc.inputData.pdfType === 'text' && scribeDocDefaults.usePDFText.native.supp || doc.inputData.pdfType === 'ocr' && scribeDocDefaults.usePDFText.ocr.supp)) {
+  } else if (
+    doc.ocr.pdf
+    && ((doc.inputData.pdfType === 'text' && usePDFText.native.supp)
+      || (doc.inputData.pdfType === 'ocr' && usePDFText.ocr.supp))
+  ) {
     existingOCR = doc.ocr.pdf;
     // If the PDF text is not the active data, it is assumed to be for supplemental purposes only.
     forceMainData = doc.ocr.pdf !== doc.ocr.active;

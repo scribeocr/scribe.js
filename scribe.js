@@ -87,10 +87,24 @@ const openDocument = async (files, options) => {
  * @param {Array<string>} [langs=['eng']]
  * @param {Parameters<ScribeDoc['exportData']>[0]} [outputFormat='txt']
  * @param {Object} [options]
- * @param {boolean} [options.skipRecPDFTextNative=true] - Skip recognition if input is text-native PDF.
- * @param {boolean} [options.skipRecPDFTextOCR=false] - Skip recognition if input is image-based PDF with existing invisible text layer.
+ * @param {('all'|'auto'|'autoShallow'|'autoDeep'|'none'|boolean[])} [options.ocrPages='autoShallow'] - Which pages to OCR.
+ *    `'autoShallow'` (default) leaves text-native documents alone (OCRing only detected scanned sections, broken-encoding pages, and existing-OCR pages).
+ *    `'autoDeep'` (alias `'auto'`) also OCRs lone image pages and image-borne text on native pages.
+ *    `'all'`/`'none'` force every/no page
+ *    A boolean array selects pages explicitly.
+ * @param {(typeof import('./js/containers/scribeDocDefaults.js').scribeDocDefaults)['usePDFText']} [options.usePDFText] - How to use a PDF's own extracted text.
+ *    For a document with an existing OCR layer, `ocr.main: true` trusts and keeps it (skips OCR); `ocr.supp: true` merges it into a fresh run; both false re-OCRs and discards it.
+ * @param {boolean} [options.skipRecPDFTextNative] - Deprecated, prefer `ocrPages`. When explicitly set,
+ *    forces a whole-document skip for text-native PDFs.
+ * @param {boolean} [options.skipRecPDFTextOCR] - Deprecated, prefer `ocrPages`. When explicitly set,
+ *    forces a whole-document skip for image-based PDFs with an existing invisible text layer.
  */
 const extractText = async (files, langs = ['eng'], outputFormat = 'txt', options = {}) => {
+  const ocrPages = options?.ocrPages ?? 'autoShallow';
+  const usePDFText = options?.usePDFText;
+  // Whether either deprecated skip flag was explicitly passed.
+  // Only then do the flags force a whole-document skip (below); otherwise `ocrPages` governs recognition.
+  const depSkipSet = options?.skipRecPDFTextNative !== undefined || options?.skipRecPDFTextOCR !== undefined;
   const skipRecPDFTextNative = options?.skipRecPDFTextNative ?? true;
   const skipRecPDFTextOCR = options?.skipRecPDFTextOCR ?? false;
   const doc = await openDocument(files);
@@ -98,9 +112,10 @@ const extractText = async (files, langs = ['eng'], outputFormat = 'txt', options
     await doc.terminate();
     throw new Error('No relevant files to process.');
   }
-  const skipRecPDF = doc.inputData.pdfMode && (doc.inputData.pdfType === 'text' && skipRecPDFTextNative || doc.inputData.pdfType === 'ocr' && skipRecPDFTextOCR);
+  const skipRecPDF = depSkipSet && doc.inputData.pdfMode
+  && (doc.inputData.pdfType === 'text' && skipRecPDFTextNative || doc.inputData.pdfType === 'ocr' && skipRecPDFTextOCR);
   const skipRecOCR = doc.inputData.xmlMode[0] && !doc.inputData.imageMode && !doc.inputData.pdfMode;
-  if (!skipRecPDF && !skipRecOCR) await doc.recognize({ langs });
+  if (!skipRecPDF && !skipRecOCR) await doc.recognize({ langs, ocrPages, usePDFText });
   const output = await doc.exportData(outputFormat);
   await doc.terminate();
   return output;

@@ -688,6 +688,15 @@ describe('Check that PDF text types are detected and imported correctly.', () =>
     expect(doc.pageMetrics[0].angle).toBe(null);
   });
 
+  test('usePDFText.ocr.main keeps the imported OCR layer as active and runs no OCR', async () => {
+    expect(doc.inputData.pdfType, 'scribe_test_pdf1 must be detected as an image+OCR-layer document ("ocr")').toBe('ocr');
+    await doc.recognize({ ocrPages: 'autoShallow', usePDFText: { native: { main: true, supp: true }, ocr: { main: true, supp: true } } });
+    expect(
+      doc.ocr.active,
+      'trusting the existing OCR layer (usePDFText.ocr.main) must keep it active and run no engine; a failure means recognize re-OCRed a page whose layer it was told to trust',
+    ).toBe(doc.ocr.pdf);
+  });
+
   afterAll(async () => {
     await scribe.terminate();
   });

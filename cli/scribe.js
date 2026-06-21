@@ -41,7 +41,7 @@ program
   .option('-r, --reflow', 'Reflow text by combining lines into paragraphs.')
   .option('-d, --dir', 'Process all supported files in the input directory.')
   .option('-l, --line-numbers', 'Prepend page:line numbers to each line (e.g. 0:5  text). Only applies to txt format.')
-  .description('Extract text from PDF file and save in requested format.')
+  .description('Extract existing text from a PDF file and save in requested format (does not run OCR; use `recognize` for that).')
   .action(extractCLI);
 
 program
@@ -64,6 +64,11 @@ program
   .option('--model <name>', `Cloud recognition model. One of: ${Object.keys(recognitionModels).join(', ')}. Requires the matching @scribe.js/* adapter package. Default: built-in model.`)
   .option('-O, --model-option <key=value>', 'Option forwarded to the cloud model (e.g. --model-option region=us-east-1). Repeatable.', parseModelOption, {})
   .option('--local-adapters', 'Resolve --model from this repo\'s cloud-adapters/ tree instead of npm. For running from a scribe.js checkout. Also enabled by SCRIBE_LOCAL_ADAPTERS=1.')
+  .addOption(new Option(
+    '--ocr-pages <pages>',
+    'Which pages to OCR. autoShallow: leave text-native docs alone, OCR only detected scanned sections; '
+    + 'autoDeep (alias auto): also OCR lone image pages and image-borne text; all/none: every/no page.',
+  ).choices(['all', 'auto', 'autoShallow', 'autoDeep', 'none']).default('autoShallow'))
   .argument('<files...>', 'Input PDF file and OCR file(s).  Accepts .hocr and Abbyy .xml (with character-level data enabled).')
   .description('Recognize text in PDF file using internal OCR engine or a cloud model.')
   .action(recognizeCLI);
