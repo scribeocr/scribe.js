@@ -13,7 +13,7 @@ import { clearObjectProperties } from './utils/miscUtils.js';
 /** @typedef {import('./containers/scribeDoc.js').ScribeDoc} ScribeDoc */
 
 // Data-derived thresholds for the post-OCR keep/discard gate (ocrAddsNewText, below).
-const OCR_NEW_CONF_MIN = 85; // min Tesseract word confidence to count an OCR word as legitimate
+const OCR_NEW_CONF_MIN = 85; // min word confidence (0-100) to count an OCR word as legitimate
 const OCR_NEW_LINE_WORDS = 3; // new word-like words in one OCR line => a coherent new-text line
 const OCR_NEW_LINES_MIN = 2; // coherent new-text lines that keep the OCR
 const OCR_NEW_NUMS_MIN = 10; // new multi-digit numbers that keep the OCR (a baked data table)
@@ -54,6 +54,44 @@ export function ocrAddsNewText(nativePage, ocrPage) {
     if (lineNewWords >= OCR_NEW_LINE_WORDS) newTextLines += 1;
   }
   return newTextLines >= OCR_NEW_LINES_MIN || newNums >= OCR_NEW_NUMS_MIN || newChars >= OCR_NEW_CHARS_MIN;
+}
+
+/**
+ * Build the canonical 'Combined' layer for a partial page selection and point `active` at it.
+ * Per page it keeps the engine's OCR, or falls back to native (PDF) text when the keep/discard gate finds the OCR adds nothing the native layer lacks.
+ * Every page is cloned, so editing 'Combined' cannot corrupt the source layers it draws from.
+ * A no-op when OCR ran on every page, when the document carries user-uploaded OCR, or when no page was OCR'd.
+ * @param {ScribeDoc} doc
+ * @param {OcrPage[]} source - The engine's full-document OCR layer ('Tesseract Combined' or a custom model's).
+ * @param {boolean[]} ocrPageMask - Which pages were sent to OCR.
+ * @param {boolean} gateApplies - Whether the keep/discard gate runs (the `auto*` ocrPages modes only).
+ * @param {boolean} fullOcr - True when every page was OCR'd, in which case `active` already names the engine layer.
+ */
+function buildCombinedLayer(doc, source, ocrPageMask, gateApplies, fullOcr) {
+  if (fullOcr || doc.ocr['User Upload'] || !ocrPageMask.some(Boolean)) return;
+  const native = doc.ocr.pdf;
+  // Relocate the pure Legacy+LSTM combine from 'Combined' to 'Tesseract Combined' (unless an existing-OCR
+  // run already put it there) so 'Combined' can hold the canonical result.
+  if (source === doc.ocr.Combined && !doc.ocr['Tesseract Combined']) doc.ocr['Tesseract Combined'] = source;
+  const combined = Array(doc.inputData.pageCount);
+  for (let i = 0; i < combined.length; i++) {
+    const nat = native && native[i];
+    const ocrPage = source[i];
+    let chosen;
+    if (ocrPageMask[i] && ocrPage) {
+      chosen = (gateApplies && nat && !ocrAddsNewText(nat, ocrPage)) ? nat : ocrPage;
+    } else {
+      chosen = nat || ocrPage;
+    }
+    if (chosen) {
+      combined[i] = ocr.clonePage(chosen);
+      combined[i].angle = chosen.angle;
+    } else {
+      combined[i] = new OcrPage(i, doc.pageMetrics[i].dims);
+    }
+  }
+  doc.ocr.Combined = combined;
+  doc.ocr.active = doc.ocr.Combined;
 }
 
 /**
@@ -1149,10 +1187,14 @@ export async function recognize(doc, options = {}) {
   }
   doc.inputData.ocrApplied = ocrPageMask.slice();
   const fullOcr = ocrPageMask.every(Boolean);
+  // The keep/discard gate runs only for the `auto*` ocrPages modes (not `all`, `none`, or an explicit mask).
+  const gateApplies = ocrPages === 'autoDeep' || ocrPages === 'auto' || ocrPages === 'autoShallow';
 
   // Custom recognition model path
   if (options.model) {
-    return recognizeCustomModel(doc, /** @type {{ model: RecognitionModel }} */ (options), ocrPageMask);
+    await recognizeCustomModel(doc, /** @type {{ model: RecognitionModel }} */ (options), ocrPageMask);
+    buildCombinedLayer(doc, doc.ocr.active, ocrPageMask, gateApplies, fullOcr);
+    return doc.ocr.active;
   }
 
   if (!ocrPageMask.some(Boolean)) {
@@ -1344,31 +1386,8 @@ export async function recognize(doc, options = {}) {
     }
   }
 
-  // For a partial per-page selection, assemble the built-in engine's active layer per page.
-  // A selected page takes the pure OCR result only when OCR recovered text its native (PDF) layer lacks.
-  // Skipped pages, and selected pages whose OCR added nothing new, keep the native text.
-  if (!doc.ocr['User Upload'] && !fullOcr) {
-    // The pure engine result lives in 'Tesseract Combined' when existing PDF text was present,
-    // otherwise in the active layer ('Combined' for combined mode, or the single engine).
-    const pure = (existingOCR && doc.ocr['Tesseract Combined']) ? doc.ocr['Tesseract Combined'] : doc.ocr.active;
-    const nativeLayer = doc.ocr.pdf;
-    const assembled = Array(pageCount);
-    for (let i = 0; i < pageCount; i++) {
-      const native = nativeLayer && nativeLayer[i];
-      if (ocrPageMask[i] && pure && pure[i] && ocrAddsNewText(native, pure[i])) {
-        // Clone so later edits to the active layer do not corrupt the stored engine result.
-        assembled[i] = ocr.clonePage(pure[i]);
-        assembled[i].angle = pure[i].angle;
-      } else if (native) {
-        assembled[i] = native;
-      } else if (pure && pure[i]) {
-        assembled[i] = pure[i];
-      } else {
-        assembled[i] = new OcrPage(i, doc.pageMetrics[i].dims);
-      }
-    }
-    doc.ocr.active = assembled;
-  }
-
+  // The engine's OCR layer to route: 'Tesseract Combined' for an existing-OCR run (where `active` points elsewhere), otherwise `active` itself.
+  const tessSource = (existingOCR && doc.ocr['Tesseract Combined']) ? doc.ocr['Tesseract Combined'] : doc.ocr.active;
+  buildCombinedLayer(doc, tessSource, ocrPageMask, gateApplies, fullOcr);
   return (doc.ocr.active);
 }

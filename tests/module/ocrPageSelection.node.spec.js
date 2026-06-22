@@ -7,7 +7,11 @@ import {
   hasRealText, isScanOrUnreadable, hasBrokenFontRun,
 } from '../../js/pdf/ocrPageSelection.js';
 import { ocrAddsNewText } from '../../js/recognizeConvert.js';
-import { ASSETS_PATH } from './_paths.js';
+import { ASSETS_PATH, LANG_PATH } from './_paths.js';
+
+// Set scribe's worker count and data path for the gate-wiring tests below, which run recognize() with a stub model.
+scribe.opt.workerN = 1;
+scribe.opt.langPath = LANG_PATH;
 
 // OCR selection on a real document (TSLA-Q4-2020-Update.pdf, a publicly distributed Tesla investor deck).
 // This is a single, born-digital, TEXT-NATIVE slide deck: `pdfType` is `text` and the page geometry is uniform throughout.
@@ -240,4 +244,76 @@ describe('autoDeep OCR keep/discard gate', () => {
     await ocr8.terminate();
     await ocr12.terminate();
   });
+});
+
+// A stand-in for a per-page custom OCR model (AWS Textract, Google Vision, etc.),
+// proving the autoDeep keep/discard gate is wired into recognize() for any such model, not just the built-in engine.
+// It returns the same .hocr for every page, so each test below asserts only its target page.
+class StubOcrModel {
+  /** @type {RecognitionModelConfig} */
+  static config = { name: 'Mock Cloud OCR', outputFormat: 'hocr' };
+
+  static hocr = '';
+
+  static async recognizeImage() {
+    return { success: true, rawData: StubOcrModel.hocr, format: 'hocr' };
+  }
+}
+
+/**
+ * Read a file's text, in Node or the browser.
+ * @param {string} filePath
+ * @returns {Promise<string>}
+ */
+async function readFileContent(filePath) {
+  if (typeof process !== 'undefined' && process.versions && process.versions.node) {
+    const fs = await import('node:fs/promises');
+    return fs.readFile(filePath, 'utf-8');
+  }
+  const response = await fetch(filePath);
+  return response.text();
+}
+
+describe('autoDeep gate wiring through a custom OCR model', () => {
+  test('discards a custom model\'s OCR on a text-native page that adds no new text, keeping native', async () => {
+    // intel page 6 is a text-native page carrying a photo. autoDeep selects it, but the photo's OCR adds
+    // nothing the native layer lacks. The stub stands in for a cloud model (Textract/Vision/etc.).
+    StubOcrModel.hocr = await readFileContent(`${ASSETS_PATH}/intel-history-1996-annual-report.p6.tesseract.hocr`);
+    const intelDoc = await scribe.openDocument([`${ASSETS_PATH}/intel-history-1996-annual-report.pdf`]);
+    const stats = /** @type {import('../../js/pdf/ocrPageSelection.js').PageStats[]} */ (intelDoc.inputData.pageStats);
+    const mask = selectOcrPages(stats, intelDoc.inputData.pdfType, 'autoDeep');
+    expect(mask[6]).toBe(true);
+    expect(mask.every(Boolean)).toBe(false); // partial selection, so the gate runs
+
+    await intelDoc.recognize({ model: StubOcrModel, ocrPages: 'autoDeep' });
+
+    // `active` is reference-identical to the named 'Combined' layer, which is how GUI version-switching identifies the active version.
+    expect(intelDoc.ocr.active).toBe(intelDoc.ocr.Combined);
+    // Page 6 reverted to native: a clone of the 90-line native text, not the model's 104-line OCR.
+    expect(intelDoc.ocr.active[6].lines.length).toBe(90);
+    expect(intelDoc.ocr.active[6]).not.toBe(intelDoc.ocr.pdf[6]); // a clone, so GUI edits cannot corrupt native
+    // Non-destructive: the model's own layer still holds its parsed OCR for page 6, available to export.
+    expect(intelDoc.ocr['Mock Cloud OCR'][6].lines.length).toBe(104);
+    await intelDoc.terminate();
+  }, 60000);
+
+  test('keeps a custom model\'s OCR on a scan page whose native layer is useless', async () => {
+    // Fixture page 8 is a full-page scan with header-only native text.
+    // The stub's OCR recovers real body text, so the gate keeps it.
+    const fix = 'gov.uscourts.cand.431002.77.1_p76-83+86-89+148-151';
+    StubOcrModel.hocr = await readFileContent(`${ASSETS_PATH}/${fix}.p8.tesseract.hocr`);
+    const candDoc = await scribe.openDocument([`${ASSETS_PATH}/${fix}.pdf`]);
+    const stats = /** @type {import('../../js/pdf/ocrPageSelection.js').PageStats[]} */ (candDoc.inputData.pageStats);
+    expect(selectOcrPages(stats, candDoc.inputData.pdfType, 'autoDeep')[8]).toBe(true);
+
+    await candDoc.recognize({ model: StubOcrModel, ocrPages: 'autoDeep' });
+
+    // `active` is the canonical 'Combined' layer. Page 8 kept the OCR as a clone of the model's 37-line scan result,
+    // not the 1-line native header.
+    expect(candDoc.ocr.active).toBe(candDoc.ocr.Combined);
+    expect(candDoc.ocr.active[8].lines.length).toBe(37);
+    expect(candDoc.ocr.active[8]).not.toBe(candDoc.ocr['Mock Cloud OCR'][8]); // a clone, edit-isolated
+    expect(candDoc.ocr.pdf[8].lines.length).toBe(1); // native untouched
+    await candDoc.terminate();
+  }, 60000);
 });
