@@ -519,11 +519,13 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
 
   const charStats = scorePageChars(chars);
 
-  // Longest run of consecutive broken-ToUnicode-font glyphs,
-  // plus the count of visible, readable chars from non-broken fonts (excluding PUA placeholders).
+  // bodyReadableChars excludes the top/bottom 10% header/footer band to avoid counting header/footer text added in processing.
   let longestBrokenRun = 0;
   let brokenRun = 0;
   let printableVisNonBroken = 0;
+  let bodyReadableChars = 0;
+  const bodyTop = pageHeight * 0.1;
+  const bodyBottom = pageHeight * 0.9;
   for (const ch of chars) {
     if (brokenToUnicodeFont(ch._font)) {
       brokenRun++;
@@ -534,8 +536,9 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
     if (ch.invisible) continue;
     const cp = ch.text.codePointAt(0);
     if (cp === undefined) continue;
-    if (cp >= 33 && cp <= 127) printableVisNonBroken++;
-    else if (cp >= 0xE000 && cp <= 0xF8FF) { /* stray PUA from a valid font: not readable */ } else if (cp >= 161) printableVisNonBroken++;
+    if (!((cp >= 33 && cp <= 127) || (cp >= 161 && !(cp >= 0xE000 && cp <= 0xF8FF)))) continue;
+    printableVisNonBroken++;
+    if (ch.y >= bodyTop && ch.y <= bodyBottom) bodyReadableChars++;
   }
 
   // Parse the page's vector paths, reusing the already-computed tokens so parsePagePaths
@@ -707,6 +710,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
     invisibleTextChars: charStats.printable - charStats.printableVis,
     visibleChars: charStats.visibleAll,
     visibleReadableChars: printableVisNonBroken,
+    bodyReadableChars,
     printableVis: charStats.printableVis,
     control: charStats.control,
     controlVis: charStats.controlVis,

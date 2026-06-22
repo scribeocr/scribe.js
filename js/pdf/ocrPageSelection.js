@@ -8,6 +8,8 @@ export const PATH_TEXT_MIN = 8;
 export const IMAGE_TEXT_MIN = 8;
 /** Min run of consecutive glyphs from a broken-ToUnicode font to count as a broken-font run. */
 export const BROKEN_RUN_MIN = 3;
+/** Min broken-ToUnicode run for a page to count as substantially unreadable, far higher than the mere-presence `BROKEN_RUN_MIN`. */
+export const BROKEN_TEXT_MIN = 100;
 /** Min page-area fraction for a single image to plausibly hold baked-in text (figure, table, photo). */
 export const TEXT_CANDIDATE_IMAGE_MIN = 0.1;
 /**
@@ -17,8 +19,10 @@ export const TEXT_CANDIDATE_IMAGE_MIN = 0.1;
 export const FULL_PAGE_IMAGE_MIN = 0.95;
 /** Min invisible printable chars for a full-page image to count as carrying an existing OCR layer. */
 export const INVIS_OCR_MIN = 100;
-/** Min readable visible chars for a page to count as having real text. Stamp-immune: a Bates stamp is well under 100. */
+/** Min readable visible chars for a page to count as having real text. */
 export const READABLE_TEXT_MIN = 100;
+/** Min body-band readable chars (outside a header/footer band) for a page to have real body text of its own. */
+export const BODY_TEXT_MIN = 100;
 
 /**
  * Raw per-page measurements produced by the parser. No thresholds applied.
@@ -27,6 +31,7 @@ export const READABLE_TEXT_MIN = 100;
  * @property {number} invisibleTextChars Count of invisible printable chars (an OCR text layer).
  * @property {number} visibleChars Count of all visible glyphs (readable + PUA/broken + control).
  * @property {number} visibleReadableChars Count of visible glyphs excluding control/PUA/broken-font.
+ * @property {number} bodyReadableChars Count of `visibleReadableChars` in the page body (10-90% of height), excluding a header/footer band.
  * @property {number} printableVis Count of visible printable chars, including broken-font glyphs that map to printable codepoints (feeds `determinePdfType`).
  * @property {number} control Count of control chars, visible and invisible (feeds `determinePdfType`).
  * @property {number} controlVis Count of visible control chars (feeds `determinePdfType`).
@@ -53,6 +58,11 @@ export const mayHaveBakedText = (s) => s.largestImageFrac >= TEXT_CANDIDATE_IMAG
 /** The page has no glyphs and no non-trivial image (a blank page). @param {PageStats} s */
 export const isEmpty = (s) => s.visibleChars === 0 && s.invisibleTextChars === 0
   && s.largestImageFrac < IMAGE_AREA_MIN;
+/** The page carries real readable body text, not just a header/footer. @param {PageStats} s */
+export const hasRealText = (s) => s.bodyReadableChars >= BODY_TEXT_MIN;
+/** The page is itself unreadable: a full-page scan or substantially broken text, with no body text of its own. @param {PageStats} s */
+export const isScanOrUnreadable = (s) => !hasRealText(s)
+  && (isFullPageImage(s) || s.longestBrokenRun >= BROKEN_TEXT_MIN);
 
 /**
  * Decide which pages to OCR.
@@ -60,8 +70,10 @@ export const isEmpty = (s) => s.visibleChars === 0 && s.invisibleTextChars === 0
  * @param {'text'|'ocr'|'image'|null} [pdfType] Per-document verdict from `determinePdfType`: text-native, image with an OCR layer, or image.
  *   A null/unknown verdict OCRs the whole document.
  * @param {'all'|'none'|'auto'|'autoShallow'|'autoDeep'} [ocrPages] Scope.
- *   `autoShallow` decides per document from `pdfType`: it OCRs an image-based document in full and leaves a text-native one alone.
- *   `autoDeep` (alias `auto`) is a strict superset of `autoShallow` that also OCRs the individual pages of an otherwise-skipped document that may hold baked-in text.
+ *   `autoShallow` runs OCR on pages containing document scans or full-page screenshots, plus pages where the font encoding is broken.
+ *   `autoDeep` (alias `auto`) is a superset of `autoShallow`, also running `ocr` when the page contains images or paths that *might* represent text.
+ *   Consider an academic article created in Word, where the body text can be copy/pasted, but data tables are represented by inline .png images.
+ *   `auto` (`autoDeep`) will run OCR on pages containing the data tables; `autoShallow` will not.
  * @param {typeof scribeDocDefaults.usePDFText} [usePDFText] Governs an existing OCR layer: when `ocr.main` is true the layer is
  *   trusted as the primary text and its pages are not re-OCR'd; otherwise they are (and `recognize` decides separately, from `ocr.supp`, whether to merge it back in).
  * @returns {boolean[]} One flag per page: whether to OCR it.
@@ -73,8 +85,6 @@ export function selectOcrPages(pageStats, pdfType = 'image', ocrPages = 'autoSha
   // `auto` is an alias for the deep variant.
   const deep = ocrPages === 'autoDeep' || ocrPages === 'auto';
 
-  // `autoShallow` decides the whole document from its parse-time verdict: skip a text-native one,
-  // re-OCR an image+OCR-layer one unless `usePDFText.ocr.main` trusts the existing layer, and OCR any other document in full.
   let ocrWholeDoc;
   if (pdfType === 'text') ocrWholeDoc = false;
   else if (pdfType === 'ocr') ocrWholeDoc = !usePDFText.ocr.main;
@@ -82,13 +92,14 @@ export function selectOcrPages(pageStats, pdfType = 'image', ocrPages = 'autoSha
 
   return pageStats.map((s) => {
     if (ocrWholeDoc) return true;
-    // `autoDeep` superset: for a document `autoShallow` leaves alone, additionally OCR a broken-font page,
-    // an embedded scan (re-OCR one that already has an OCR layer unless `usePDFText.ocr.main` trusts it),
-    // or a page whose image, path run, or strip may hold baked-in text.
-    if (!deep || !s) return false;
-    if (hasBrokenFontRun(s)) return true;
-    if (isScanPage(s)) return hasExistingOcrLayer(s) ? !usePDFText.ocr.main : true;
-    return mayHaveBakedText(s);
+    if (!s) return false;
+    if (deep) {
+      if (hasBrokenFontRun(s)) return true;
+      if (isScanPage(s)) return hasExistingOcrLayer(s) ? !usePDFText.ocr.main : true;
+      return mayHaveBakedText(s);
+    }
+    if (!isScanOrUnreadable(s)) return false;
+    return hasExistingOcrLayer(s) ? !usePDFText.ocr.main : true;
   });
 }
 
