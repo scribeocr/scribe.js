@@ -4,7 +4,9 @@
 // wrapFilesNode uses fs.readFileSync against absolute filesystem paths.
 const isNode = typeof process !== 'undefined' && process.versions && process.versions.node;
 
+/** @type {string} */
 let ASSETS_PATH;
+/** @type {string} */
 let LANG_PATH;
 
 if (isNode) {

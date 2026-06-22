@@ -12,6 +12,50 @@ import { clearObjectProperties } from './utils/miscUtils.js';
 
 /** @typedef {import('./containers/scribeDoc.js').ScribeDoc} ScribeDoc */
 
+// Data-derived thresholds for the post-OCR keep/discard gate (ocrAddsNewText, below).
+const OCR_NEW_CONF_MIN = 85; // min Tesseract word confidence to count an OCR word as legitimate
+const OCR_NEW_LINE_WORDS = 3; // new word-like words in one OCR line => a coherent new-text line
+const OCR_NEW_LINES_MIN = 2; // coherent new-text lines that keep the OCR
+const OCR_NEW_NUMS_MIN = 10; // new multi-digit numbers that keep the OCR (a baked data table)
+const OCR_NEW_CHARS_MIN = 100; // new word-like characters that keep the OCR
+
+/**
+ * Decide whether a page's pure OCR adds legitimate text its native layer lacks (the keep/discard gate).
+ * An OCR word counts as "new" when its normalized token is not a substring of the native token stream.
+ * The check is substring membership, not equality, because native and OCR segment words differently.
+ * @param {OcrPage|null|undefined} nativePage - The native (PDF) text layer.
+ *   A null layer (a scan or broken-encoding page) makes all OCR new, so the OCR is kept.
+ * @param {OcrPage} ocrPage - The page's pure OCR result.
+ * @returns {boolean} True to keep the OCR, false to discard it in favor of the native text.
+ */
+export function ocrAddsNewText(nativePage, ocrPage) {
+  if (!nativePage) return true;
+  const normTok = (/** @type {string} */ text) => ocr.replaceLigatures(text)
+    .toLowerCase()
+    .normalize('NFKD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/[^a-z0-9]/g, '');
+  const nativeStream = nativePage.lines.flatMap((l) => l.words).map((w) => normTok(w.text)).filter(Boolean).join(' ');
+  let newChars = 0;
+  let newNums = 0;
+  let newTextLines = 0;
+  for (const line of ocrPage.lines) {
+    let lineNewWords = 0;
+    for (const word of line.words) {
+      const tok = normTok(word.text);
+      if (tok.length < 2 || word.conf < OCR_NEW_CONF_MIN || nativeStream.includes(tok)) continue;
+      if (/^[a-z]{3,}$/.test(tok) && /[aeiouy]/.test(tok)) {
+        newChars += tok.length;
+        lineNewWords += 1;
+      } else if (/^[0-9]{2,}$/.test(tok)) {
+        newNums += 1;
+      }
+    }
+    if (lineNewWords >= OCR_NEW_LINE_WORDS) newTextLines += 1;
+  }
+  return newTextLines >= OCR_NEW_LINES_MIN || newNums >= OCR_NEW_NUMS_MIN || newChars >= OCR_NEW_CHARS_MIN;
+}
+
 /**
  * Display warning/error message to user if missing character-level data.
  *
@@ -1300,8 +1344,9 @@ export async function recognize(doc, options = {}) {
     }
   }
 
-  // For a partial per-page selection, assemble the built-in engine's active layer per page:
-  // selected pages take the pure OCR result, skipped pages keep their native (PDF) text.
+  // For a partial per-page selection, assemble the built-in engine's active layer per page.
+  // A selected page takes the pure OCR result only when OCR recovered text its native (PDF) layer lacks.
+  // Skipped pages, and selected pages whose OCR added nothing new, keep the native text.
   if (!doc.ocr['User Upload'] && !fullOcr) {
     // The pure engine result lives in 'Tesseract Combined' when existing PDF text was present,
     // otherwise in the active layer ('Combined' for combined mode, or the single engine).
@@ -1309,12 +1354,13 @@ export async function recognize(doc, options = {}) {
     const nativeLayer = doc.ocr.pdf;
     const assembled = Array(pageCount);
     for (let i = 0; i < pageCount; i++) {
-      if (ocrPageMask[i] && pure && pure[i]) {
+      const native = nativeLayer && nativeLayer[i];
+      if (ocrPageMask[i] && pure && pure[i] && ocrAddsNewText(native, pure[i])) {
         // Clone so later edits to the active layer do not corrupt the stored engine result.
         assembled[i] = ocr.clonePage(pure[i]);
         assembled[i].angle = pure[i].angle;
-      } else if (nativeLayer && nativeLayer[i]) {
-        assembled[i] = nativeLayer[i];
+      } else if (native) {
+        assembled[i] = native;
       } else if (pure && pure[i]) {
         assembled[i] = pure[i];
       } else {

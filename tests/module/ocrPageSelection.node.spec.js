@@ -6,6 +6,7 @@ import {
   selectOcrPages, isFullPageImage, isScanPage, mayHaveBakedText, isEmpty,
   hasRealText, isScanOrUnreadable, hasBrokenFontRun,
 } from '../../js/pdf/ocrPageSelection.js';
+import { ocrAddsNewText } from '../../js/recognizeConvert.js';
 import { ASSETS_PATH } from './_paths.js';
 
 // OCR selection on a real document (TSLA-Q4-2020-Update.pdf, a publicly distributed Tesla investor deck).
@@ -201,4 +202,42 @@ describe('page-category signals on a mixed text / scan / broken-encoding documen
       if (v) expect(deep[i]).toBe(true);
     });
   }, 30000);
+});
+
+// The post-OCR keep/discard gate (ocrAddsNewText): a selected text-native page keeps its OCR only
+// when OCR recovered text the native layer lacks. The pure OCR is pre-generated as committed .hocr,
+// so these exercise the gate decision without running recognition.
+describe('autoDeep OCR keep/discard gate', () => {
+  test('discards OCR on a text-native page whose image holds no text, keeping native', async () => {
+    // intel-history-1996-annual-report.pdf page 6 is a text-native page carrying a large photo.
+    // autoDeep selects it as a baked-text candidate, but the photo has no text the native layer lacks.
+    const pdfDoc = await scribe.openDocument([`${ASSETS_PATH}/intel-history-1996-annual-report.pdf`]);
+    const stats = /** @type {import('../../js/pdf/ocrPageSelection.js').PageStats[]} */ (pdfDoc.inputData.pageStats);
+    expect(selectOcrPages(stats, pdfDoc.inputData.pdfType, 'autoDeep')[6]).toBe(true);
+    const ocrDoc = await scribe.openDocument([`${ASSETS_PATH}/intel-history-1996-annual-report.p6.tesseract.hocr`]);
+    expect(ocrAddsNewText(pdfDoc.ocr.pdf[6], ocrDoc.ocr.active[0])).toBe(false);
+    await pdfDoc.terminate();
+    await ocrDoc.terminate();
+  });
+
+  test('keeps OCR on scan and broken-encoding pages, whose native layer is useless', async () => {
+    // Fixture page 8 is a full-page scan (header-only native), and page 12 a broken-ToUnicode page (garbage native).
+    // OCR recovers real text absent from both, so the gate keeps the OCR.
+    const fix = 'gov.uscourts.cand.431002.77.1_p76-83+86-89+148-151';
+    const pdfDoc = await scribe.openDocument([`${ASSETS_PATH}/${fix}.pdf`]);
+    const stats = /** @type {import('../../js/pdf/ocrPageSelection.js').PageStats[]} */ (pdfDoc.inputData.pageStats);
+    const mask = selectOcrPages(stats, pdfDoc.inputData.pdfType, 'autoDeep');
+    expect(mask[8]).toBe(true);
+    expect(mask[12]).toBe(true);
+    const ocr8 = await scribe.openDocument([`${ASSETS_PATH}/${fix}.p8.tesseract.hocr`]);
+    const ocr12 = await scribe.openDocument([`${ASSETS_PATH}/${fix}.p12.tesseract.hocr`]);
+    // Compare against clone of input text as a control
+    expect(ocrAddsNewText(pdfDoc.ocr.pdf[8], scribe.utils.ocr.clonePage(pdfDoc.ocr.pdf[8]))).toBe(false);
+    expect(ocrAddsNewText(pdfDoc.ocr.pdf[12], scribe.utils.ocr.clonePage(pdfDoc.ocr.pdf[12]))).toBe(false);
+    expect(ocrAddsNewText(pdfDoc.ocr.pdf[8], ocr8.ocr.active[0])).toBe(true);
+    expect(ocrAddsNewText(pdfDoc.ocr.pdf[12], ocr12.ocr.active[0])).toBe(true);
+    await pdfDoc.terminate();
+    await ocr8.terminate();
+    await ocr12.terminate();
+  });
 });
