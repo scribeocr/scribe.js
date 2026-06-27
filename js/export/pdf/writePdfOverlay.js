@@ -162,7 +162,8 @@ export async function overlayPdfText({
   // Incremental can only extend existing pages in place — it can't drop or reorder them.
   const isSubset = effectivePageArr.length !== pages.length
     || effectivePageArr.some((v, idx) => v !== idx);
-  if (isSubset || sourceEncrypted || sourceXrefMalformed || sourceLinearized) {
+  const hasUserRotation = !!(pageMetricsArr && pageMetricsArr.some((pm) => pm && pm.rotation));
+  if (isSubset || sourceEncrypted || sourceXrefMalformed || sourceLinearized || hasUserRotation) {
     return rebuildPdfSubset({
       pdfBytes,
       text,

@@ -134,6 +134,7 @@ export async function writePdf({
       pdfFonts,
       textMode,
       angle,
+      pageRotation: pageMetricsArr[i].rotation || 0,
       rotateOrientation,
       rotateText,
       rotateBackground,
@@ -305,6 +306,7 @@ ${xrefOffset}
  * @param {?import('../../font-parser/src/font.js').Font} [params.fontChiSim=null]
  * @param {Array<number>} [params.imageObjIndices=[]] - Array of image object indices
  * @param {?string} [params.imageName=null]
+ * @param {number} [params.pageRotation=0] - User rotation (multiple of 90) written as the page's /Rotate.
  * @param {Array<Annotation>} [params.pageAnnotations=[]] - Annotations (highlights + FreeText) for this page
  * @param {boolean} [params.humanReadable=false]
  * @param {import('../../containers/fontContainer.js').DocFonts} [params.docFonts] - Per-document fonts.
@@ -320,6 +322,7 @@ async function ocrPageToPDF({
   pdfFonts,
   textMode,
   angle,
+  pageRotation = 0,
   rotateOrientation = false,
   rotateText = false,
   rotateBackground = false,
@@ -347,6 +350,7 @@ async function ocrPageToPDF({
   }
 
   pageObjStr += `/Parent ${parentIndex} 0 R`;
+  if (pageRotation) pageObjStr += `/Rotate ${((pageRotation % 360) + 360) % 360}`;
 
   /** @type {Array<string | import('./writePdfStreams.js').PdfBinaryObject>} */
   const pdfObj = [];

@@ -387,6 +387,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
       layoutRegions: doc.layoutRegions.pages,
       layoutDataTables: removeCircularRefsDataTables(doc.layoutDataTables.pages),
       annotations: doc.annotations.pages,
+      pageRotations: (doc.pageMetrics || []).map((pm) => pm?.rotation || 0),
       inputData: {
         pdfType: doc.inputData.pdfType,
         pageStats: doc.inputData.pageStats,

@@ -161,6 +161,7 @@ export const importImageFilesP = async (files) => {
  * Read a .scribe file and restore session data into this document.
  * @param {ScribeDoc} doc
  * @param {string | File | FileNode | ArrayBuffer} scribeFile
+ * @returns {Promise<number[]|null>} Per-page user rotations from the .scribe (or null if absent).
  */
 async function restoreSessionFromFile(doc, scribeFile) {
   const scribeRestoreStr = await readOcrFile(scribeFile);
@@ -210,6 +211,7 @@ async function restoreSessionFromFile(doc, scribeFile) {
     doc.inputData.xmlMode[i] = true;
     doc.pageMetrics[i] = new PageMetrics(doc.ocr[oemName][i].dims);
     doc.pageMetrics[i].angle = doc.ocr[oemName][i].angle;
+    doc.pageMetrics[i].rotation = scribeRestoreObj.pageRotations?.[i] || 0;
   }
 
   // The active text layer is now the imported OCR for every page, so mark every page OCR-applied.
@@ -217,6 +219,8 @@ async function restoreSessionFromFile(doc, scribeFile) {
   if (doc.inputData.ocrApplied == null) {
     doc.inputData.ocrApplied = Array(doc.ocr[oemName].length).fill(true);
   }
+
+  return scribeRestoreObj.pageRotations || null;
 }
 
 /**
@@ -399,8 +403,10 @@ export async function importFiles(doc, files, options = {}) {
   doc.inputData.imageMode = !!(imageFiles.length > 0 && !doc.inputData.pdfMode);
   doc.images.inputModes.image = !!(imageFiles.length > 0 && !doc.inputData.pdfMode);
 
+  /** @type {number[]|null} */
+  let restoredRotations = null;
   if (scribeFiles[0]) {
-    await restoreSessionFromFile(doc, scribeFiles[0]);
+    restoredRotations = await restoreSessionFromFile(doc, scribeFiles[0]);
   }
 
   const xmlModeImport = ocrFiles.length > 0;
@@ -531,6 +537,9 @@ export async function importFiles(doc, files, options = {}) {
     for (let i = 0; i < doc.ocr.active.length; i++) {
       if (doc.ocr.active[i]?.angle != null && doc.pageMetrics[i]) {
         doc.pageMetrics[i].angle = doc.ocr.active[i].angle;
+      }
+      if (restoredRotations?.[i] && doc.pageMetrics[i]) {
+        doc.pageMetrics[i].rotation = restoredRotations[i];
       }
     }
   }

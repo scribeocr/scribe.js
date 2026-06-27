@@ -25,6 +25,7 @@ import {
   resolvePageResources,
   mergeResources,
   buildReplacementPageDict,
+  composePageRotation,
   overlayAnnotationBbox,
   annotLinkTargetsDroppedPage,
 } from './pdfPageRewrite.js';
@@ -475,7 +476,7 @@ export async function rebuildPdfSubset({
       }
 
       const newPageObj = buildReplacementPageDict(pageInfo.objNum, pageInfo.objText, newContentsArray, resourcesObjNum, pagesRootObjNum,
-        extraAnnotRefs, objCache, keptPageObjNums);
+        extraAnnotRefs, objCache, keptPageObjNums, pageMetricsArr[i].rotation || 0);
       allOutputObjects.push({ objNum: pageInfo.objNum, content: newPageObj });
       modifiedPageObjNums.add(pageInfo.objNum);
     }
@@ -517,6 +518,7 @@ export async function rebuildPdfSubset({
     const prunedRes = pruneResourcesDict(resolvedRes, used, objCache);
     pageText = replacePageResources(pageText, prunedRes);
     pageText = dropOrphanLinkAnnots(pageText, objCache, keptPageObjNums);
+    if (pageMetricsArr?.[i]?.rotation) pageText = composePageRotation(pageText, pageMetricsArr[i].rotation, objCache);
 
     rewrittenPageTexts.set(pageInfo.objNum, pageText);
     allOutputObjects.push({ objNum: pageInfo.objNum, content: `${pageInfo.objNum} 0 obj\n${pageText}\nendobj\n\n` });

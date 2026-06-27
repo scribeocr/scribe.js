@@ -10,6 +10,8 @@
  * @property {dims} dims
  * @property {?number} left -
  * @property {number} manAdj
+ * @property {number} rotation - User-applied page rotation in degrees (0, 90, 180, or 270), composed with the input PDF's `/Rotate` only at export.
+ *   Distinct from `angle` (deskew) and from the input `/Rotate`, which is already baked into the rendered raster and the stored `dims`.
  * @description The `pageMetrics` object contains the "official" metrics for each page of the source document, and exists independent from the OCR data.
  * For general tasks (not specifically analyzing OCR data), `pageMetrics` metrics should be used for information about a page.
  * For example, both `ocrPage` and `pageMetrics` have an `angle` property.  However, the `angle` property of `ocrPage`
@@ -25,4 +27,6 @@ export function PageMetrics(dims) {
   this.left = null;
   /** @type {number} */
   this.manAdj = 0;
+  /** @type {number} */
+  this.rotation = 0;
 }

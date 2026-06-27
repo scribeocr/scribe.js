@@ -369,6 +369,25 @@ function resolveInheritedInt(pageObjText, key, objCache) {
 }
 
 /**
+ * Compose a user rotation onto a page dict's /Rotate, resolving any inherited value.
+ * Used for kept pages rewritten in place (not rebuilt via `buildReplacementPageDict`).
+ * @param {string} pageObjText - The page dict body (`<<...>>`).
+ * @param {number} userRotation - Degrees to add (multiple of 90).
+ * @param {import('../../pdf/objectCache.js').ObjectCache|null} objCache
+ * @returns {string} `pageObjText` with /Rotate set to the composed value.
+ */
+export function composePageRotation(pageObjText, userRotation, objCache) {
+  if (!userRotation) return pageObjText;
+  const base = resolveInheritedInt(pageObjText, 'Rotate', objCache) || 0;
+  const composed = (((base + userRotation) % 360) + 360) % 360;
+  if (/\/Rotate\s+-?\d+/.test(pageObjText)) {
+    return pageObjText.replace(/\/Rotate\s+-?\d+/, composed === 0 ? '' : `/Rotate ${composed}`);
+  }
+  if (composed === 0) return pageObjText;
+  return pageObjText.replace('<<', `<</Rotate ${composed} `);
+}
+
+/**
  * Rebuild a /Page dict with overlay additions.
  *
  * @param {number} objNum
@@ -386,8 +405,12 @@ function resolveInheritedInt(pageObjText, key, objCache) {
  *   inlined alongside new user-added refs.
  * @param {?Set<number>} [keptPageObjNums=null] - When non-null (subset rebuild),
  *   filter out source link annotations whose destination page is not in this set.
+ * @param {number} [userRotation=0] - User-applied rotation (multiple of 90) composed onto the page's /Rotate.
  */
-export function buildReplacementPageDict(objNum, originalObjText, newContentsArray, resourcesObjNum, parentObjNum = null, extraAnnotRefs = [], objCache = null, keptPageObjNums = null) {
+export function buildReplacementPageDict(
+  objNum, originalObjText, newContentsArray, resourcesObjNum, parentObjNum = null,
+  extraAnnotRefs = [], objCache = null, keptPageObjNums = null, userRotation = 0,
+) {
   let dictStr = `${objNum} 0 obj\n<<`;
   dictStr += '/Type/Page';
 
@@ -406,7 +429,12 @@ export function buildReplacementPageDict(objNum, originalObjText, newContentsArr
   if (cropBox) dictStr += `/CropBox[${cropBox.join(' ')}]`;
 
   const rot = resolveInheritedInt(originalObjText, 'Rotate', objCache);
-  if (rot !== null) dictStr += `/Rotate ${rot}`;
+  if (userRotation) {
+    const composed = (((rot || 0) + userRotation) % 360 + 360) % 360;
+    if (composed !== 0) dictStr += `/Rotate ${composed}`;
+  } else if (rot !== null) {
+    dictStr += `/Rotate ${rot}`;
+  }
 
   // Merge source /Annots with extraAnnotRefs (new user-added highlights).
   // When no extras are supplied we emit the source array verbatim so

@@ -33,6 +33,7 @@ declare global {
         layoutRegions: LayoutPage[];
         layoutDataTables: LayoutDataTablePage[];
         annotations: Annotation[][];
+        pageRotations?: number[];
     }
 
     type StyleLookup = ('normal' | 'bold' | 'italic' | 'boldItalic');
