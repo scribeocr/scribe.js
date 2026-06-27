@@ -11,6 +11,8 @@ const THUMB_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20
 <rect x="4" y="17" width="7" height="4" rx="1"/>
 <rect x="14" y="3" width="6" height="18" rx="1" opacity="0.55"/>
 </svg>`;
+const ROTATE_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="display:block;pointer-events:none;">
+<path d="M15.55 5.55L11 1v3.07C7.06 4.56 4 7.92 4 12s3.05 7.44 7 7.93v-2.02c-2.84-.48-5-2.94-5-5.91s2.16-5.43 5-5.91V10l4.55-4.45zM19.93 11c-.17-1.39-.72-2.73-1.62-3.89l-1.42 1.42c.54.75.88 1.6 1.02 2.47h2.02zM13 17.9v2.02c1.39-.17 2.74-.71 3.9-1.61l-1.44-1.44c-.75.54-1.59.89-2.46 1.03zm3.89-2.42l1.42 1.41c.9-1.16 1.45-2.5 1.62-3.89h-2.02c-.14.87-.48 1.72-1.02 2.47z"/></svg>`;
 
 // Default-Letter aspect (height/width) for rows whose page metrics are unavailable.
 const DEFAULT_ASPECT = 11 / 8.5;
@@ -22,6 +24,13 @@ const PAD = 8;
 const BUFFER = 600;
 // Wait this long after the last scroll before fetching thumbnails, so a fling skips the rows it passes.
 const RENDER_DEBOUNCE_MS = 120;
+// Panel width beyond the thumbnail image: horizontal padding plus room for the panel's own scrollbar.
+const PANEL_EXTRA_W = 30;
+// Bounds for the user-draggable thumbnail image width (panel width is this plus PANEL_EXTRA_W).
+const MIN_IMG_W = 90;
+const MAX_IMG_W = 300;
+// Slide duration in ms. Must match the `transition` on `.scribe-thumb-panel` so the post-hide unmount waits for it.
+const SLIDE_MS = 180;
 
 /**
  * Build the page-thumbnails panel and its toolbar toggle.
@@ -36,16 +45,26 @@ const RENDER_DEBOUNCE_MS = 120;
  * }}
  */
 export function createThumbnailPanel(scribe, { width = 150, onSelect }) {
-  const THUMB_W = width;
+  let THUMB_W = Math.max(MIN_IMG_W, Math.min(MAX_IMG_W, width));
 
   const panelElem = document.createElement('div');
   panelElem.className = 'scribe-thumb-panel';
+  panelElem.style.width = `${THUMB_W + PANEL_EXTRA_W}px`;
 
-  // Full-height filler that gives the panel its scrollable height. Rows are layered over it.
+  const scrollElem = document.createElement('div');
+  scrollElem.className = 'scribe-thumb-scroll';
+  panelElem.appendChild(scrollElem);
+
+  // Full-height filler that gives the scroll area its scrollable height. Rows are layered over it.
   const spacer = document.createElement('div');
   spacer.style.width = '1px';
   spacer.style.height = '0px';
-  panelElem.appendChild(spacer);
+  scrollElem.appendChild(spacer);
+
+  // Drag handle on the panel's right edge for resizing the thumbnail width (see resize wiring below).
+  const resizeHandle = document.createElement('div');
+  resizeHandle.className = 'scribe-thumb-resize';
+  panelElem.appendChild(resizeHandle);
 
   const toggleElem = makeIconButton('Page thumbnails', THUMB_SVG);
   toggleElem.classList.add('active');
@@ -69,6 +88,9 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect }) {
   let rafPending = false;
   /** @type {?ReturnType<typeof setTimeout>} */
   let renderTimer = null;
+  // Deferred unmount after a slide-out, so rows stay visible for the duration of the hide animation.
+  /** @type {?ReturnType<typeof setTimeout>} */
+  let hideTimer = null;
 
   /**
    * Largest row index whose top is at or above content-y `y`.
@@ -125,17 +147,39 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect }) {
     const imgElem = document.createElement('img');
     imgElem.alt = '';
     imgElem.draggable = false;
+    // The thumbnail is cached at the page's original orientation, so the user rotation is applied as a CSS transform.
+    // For a 90/270 rotation the box's width and height are swapped, so the image is sized to those transposed dimensions
+    // and rotated to fill the box (object-fit: contain keeps the page aspect exact).
+    const rot = (scribe.doc && scribe.doc.pageMetrics[n] && scribe.doc.pageMetrics[n].rotation) || 0;
+    if (rot % 180 === 90) {
+      imgElem.style.position = 'absolute';
+      imgElem.style.top = '50%';
+      imgElem.style.left = '50%';
+      imgElem.style.width = `${boxHeights[n]}px`;
+      imgElem.style.height = `${THUMB_W}px`;
+      imgElem.style.transform = `translate(-50%, -50%) rotate(${rot}deg)`;
+    } else if (rot === 180) {
+      imgElem.style.transform = 'rotate(180deg)';
+    }
     boxElem.appendChild(imgElem);
 
     const labelElem = document.createElement('div');
     labelElem.className = 'scribe-thumb-label';
     labelElem.textContent = String(n + 1);
 
+    const rotateBtn = document.createElement('span');
+    rotateBtn.className = 'scribe-thumb-rotate';
+    rotateBtn.title = 'Rotate right';
+    rotateBtn.innerHTML = ROTATE_SVG;
+    rotateBtn.addEventListener('click', (e) => { e.stopPropagation(); onRotate(n); });
+
+    boxElem.appendChild(rotateBtn);
+    boxElem.addEventListener('click', () => { if (onSelect) onSelect(n); });
+
     thumbElem.appendChild(boxElem);
     thumbElem.appendChild(labelElem);
-    thumbElem.addEventListener('click', () => { if (onSelect) onSelect(n); });
 
-    panelElem.appendChild(thumbElem);
+    scrollElem.appendChild(thumbElem);
     mounted.set(n, {
       thumbElem, imgElem, url: null, pending: false,
     });
@@ -152,7 +196,8 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect }) {
     if (!doc || !doc.images) return;
     entry.pending = true;
     const gen = generation;
-    doc.images.renderThumbnail(n, THUMB_W).then((blob) => {
+    // Render at the maximum rail width and let CSS downscale into the THUMB_W box, so thumbnails stay crisp at any width.
+    doc.images.renderThumbnail(n, MAX_IMG_W).then((blob) => {
       if (destroyed || gen !== generation) return;
       if (mounted.get(n) !== entry) return;
       if (!blob) { entry.pending = false; return; }
@@ -178,9 +223,9 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect }) {
   /** Mount the rows in the current scroll window (+buffer), unmount the rest, then queue renders. */
   function updateWindow() {
     if (destroyed || !visible || pageCount === 0) return;
-    const viewH = panelElem.clientHeight;
-    const first = rowAt(Math.max(0, panelElem.scrollTop - PAD - BUFFER));
-    const last = rowAt(Math.max(0, panelElem.scrollTop - PAD + viewH + BUFFER));
+    const viewH = scrollElem.clientHeight;
+    const first = rowAt(Math.max(0, scrollElem.scrollTop - PAD - BUFFER));
+    const last = rowAt(Math.max(0, scrollElem.scrollTop - PAD + viewH + BUFFER));
     for (const [n, entry] of mounted) {
       if (n < first || n > last) unmountRow(n, entry);
     }
@@ -195,22 +240,23 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect }) {
     rafPending = true;
     requestAnimationFrame(() => { rafPending = false; updateWindow(); });
   }
-  panelElem.addEventListener('scroll', onScroll);
+  scrollElem.addEventListener('scroll', onScroll);
 
-  /** Rebuild the panel for the current document: recompute row geometry and mount the top window. */
-  function rebuild() {
-    generation += 1;
-    if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
-    clearMounted();
-    activePage = -1;
-
+  /**
+   * Recompute every row's box height, full height, and top offset from the current page metrics and THUMB_W,
+   * and size the spacer to the total. Shared by the document rebuild and the width resize.
+   */
+  function computeGeometry() {
     const doc = scribe.doc;
     pageCount = doc?.inputData?.pageCount ?? 0;
     if (!doc || pageCount === 0) {
+      offsets = [];
+      heights = [];
+      boxHeights = [];
+      total = 0;
       spacer.style.height = '0px';
       return;
     }
-
     const metrics = doc.pageMetrics || [];
     offsets = [];
     heights = [];
@@ -218,7 +264,9 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect }) {
     let acc = 0;
     for (let n = 0; n < pageCount; n++) {
       const dims = metrics[n] && metrics[n].dims;
-      const aspect = dims && dims.width ? dims.height / dims.width : DEFAULT_ASPECT;
+      const rotated = (((metrics[n] && metrics[n].rotation) || 0) % 180) === 90;
+      let aspect = dims && dims.width ? dims.height / dims.width : DEFAULT_ASPECT;
+      if (rotated && dims && dims.height) aspect = dims.width / dims.height;
       const boxH = Math.max(1, Math.round(THUMB_W * aspect));
       boxHeights[n] = boxH;
       heights[n] = boxH + ROW_OVERHEAD;
@@ -227,7 +275,70 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect }) {
     }
     total = acc;
     spacer.style.height = `${total}px`;
-    panelElem.scrollTop = 0;
+  }
+
+  /** Rebuild the panel for the current document: recompute row geometry and mount the top window. */
+  function rebuild() {
+    generation += 1;
+    if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
+    clearMounted();
+    activePage = -1;
+    computeGeometry();
+    scrollElem.scrollTop = 0;
+    updateWindow();
+  }
+
+  /**
+   * Resize the thumbnail width to `imgW` (clamped to the allowed range),
+   * reflowing every row and re-rendering at the new resolution while keeping the current scroll position.
+   * @param {number} imgW
+   */
+  function setWidth(imgW) {
+    THUMB_W = Math.max(MIN_IMG_W, Math.min(MAX_IMG_W, Math.round(imgW)));
+    panelElem.style.width = `${THUMB_W + PANEL_EXTRA_W}px`;
+    generation += 1;
+    if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
+    clearMounted();
+    computeGeometry();
+    scrollElem.scrollTop = Math.min(scrollElem.scrollTop, Math.max(0, total - scrollElem.clientHeight));
+    updateWindow();
+  }
+
+  // Drag the right-edge handle to resize the thumbnail width.
+  // The panel widens live for feedback, and the thumbnails reflow and re-render once at the new resolution when the drag ends.
+  let dragStartX = 0;
+  let dragStartW = 0;
+  let dragW = 0;
+  /** @param {PointerEvent} event */
+  function onResizeMove(event) {
+    dragW = Math.max(MIN_IMG_W, Math.min(MAX_IMG_W, dragStartW + (event.clientX - dragStartX)));
+    panelElem.style.width = `${dragW + PANEL_EXTRA_W}px`;
+  }
+
+  function onResizeEnd() {
+    window.removeEventListener('pointermove', onResizeMove);
+    window.removeEventListener('pointerup', onResizeEnd);
+    setWidth(dragW);
+  }
+
+  resizeHandle.addEventListener('pointerdown', (event) => {
+    event.preventDefault();
+    dragStartX = event.clientX;
+    dragStartW = THUMB_W;
+    dragW = THUMB_W;
+    window.addEventListener('pointermove', onResizeMove);
+    window.addEventListener('pointerup', onResizeEnd);
+  });
+
+  /**
+   * Rotate page `n` 90 degrees clockwise from its thumbnail, then rebuild the panel geometry, preserving the scroll position.
+   * @param {number} n
+   */
+  function onRotate(n) {
+    scribe.rotatePage(n, 90);
+    const keepScroll = scrollElem.scrollTop;
+    rebuild();
+    scrollElem.scrollTop = keepScroll;
     updateWindow();
   }
 
@@ -247,27 +358,30 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect }) {
     // Set scrollTop directly rather than scrollIntoView, which could also scroll an ancestor or the document.
     const top = offsets[n];
     const bottom = top + heights[n];
-    const viewTop = panelElem.scrollTop - PAD;
-    const viewBottom = viewTop + panelElem.clientHeight;
-    if (top < viewTop) panelElem.scrollTop = Math.max(0, top + PAD - 8);
-    else if (bottom > viewBottom) panelElem.scrollTop = bottom + PAD - panelElem.clientHeight + 8;
+    const viewTop = scrollElem.scrollTop - PAD;
+    const viewBottom = viewTop + scrollElem.clientHeight;
+    if (top < viewTop) scrollElem.scrollTop = Math.max(0, top + PAD - 8);
+    else if (bottom > viewBottom) scrollElem.scrollTop = bottom + PAD - scrollElem.clientHeight + 8;
     updateWindow();
   }
 
   /**
-   * Show or hide the panel. While hidden every row is unmounted so it holds no decoded images.
+   * Slide the panel in or out. On the way out the rows stay mounted for the duration of the slide,
+   * then unmount so the panel holds no decoded images while hidden.
    * @param {boolean} v
    */
   function setVisible(v) {
     visible = v;
-    panelElem.style.display = v ? '' : 'none';
     toggleElem.classList.toggle('active', v);
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
     if (v) {
+      panelElem.style.transform = 'translateX(0)';
       updateWindow();
     } else {
+      panelElem.style.transform = 'translateX(-100%)';
       generation += 1;
       if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
-      clearMounted();
+      hideTimer = setTimeout(() => { hideTimer = null; clearMounted(); }, SLIDE_MS);
     }
   }
 
@@ -276,6 +390,7 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect }) {
     destroyed = true;
     generation += 1;
     if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
+    if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
     clearMounted();
     panelElem.replaceChildren();
   }

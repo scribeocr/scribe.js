@@ -149,6 +149,30 @@ export function createZoomControls(scribe) {
   return { zoomControls, zoomInElem, zoomOutElem };
 }
 
+const ROTATE_LEFT_SVG = `<svg viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet" focusable="false" role="none" style="pointer-events: none; display: block; width: 100%; height: 100%;">
+<path d="M7.11 8.53L5.7 7.11C4.8 8.27 4.24 9.61 4.07 11h2.02c.14-.87.49-1.72 1.02-2.47zM6.09 13H4.07c.17 1.39.72 2.73 1.62 3.89l1.41-1.42c-.52-.75-.87-1.59-1.01-2.47zm1.01 5.32c1.16.9 2.51 1.44 3.9 1.61V17.9c-.87-.15-1.71-.49-2.46-1.03L7.1 18.32zM13 4.07V1L8.45 5.55 13 10V6.09c2.84.48 5 2.94 5 5.91s-2.16 5.43-5 5.91v2.02c3.95-.49 7-3.85 7-7.93s-3.05-7.44-7-7.93z"></path></svg>`;
+const ROTATE_RIGHT_SVG = `<svg viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet" focusable="false" role="none" style="pointer-events: none; display: block; width: 100%; height: 100%;">
+<path d="M15.55 5.55L11 1v3.07C7.06 4.56 4 7.92 4 12s3.05 7.44 7 7.93v-2.02c-2.84-.48-5-2.94-5-5.91s2.16-5.43 5-5.91V10l4.55-4.45zM19.93 11c-.17-1.39-.72-2.73-1.62-3.89l-1.42 1.42c.54.75.88 1.6 1.02 2.47h2.02zM13 17.9v2.02c1.39-.17 2.74-.71 3.9-1.61l-1.44-1.44c-.75.54-1.59.89-2.46 1.03zm3.89-2.42l1.42 1.41c.9-1.16 1.45-2.5 1.62-3.89h-2.02c-.14.87-.48 1.72-1.02 2.47z"></path></svg>`;
+
+/**
+ * Build the rotate-left/rotate-right control group, wired to `scribe.rotatePage` on the current page.
+ * @param {import('../../viewer.js').ScribeViewer} scribe
+ * @returns {{ rotateControls: HTMLSpanElement, rotateLeftElem: HTMLSpanElement, rotateRightElem: HTMLSpanElement }}
+ */
+export function createRotateControls(scribe) {
+  const rotateControls = document.createElement('span');
+  const rotateLeftElem = makeIconButton('Rotate left', ROTATE_LEFT_SVG);
+  const rotateRightElem = makeIconButton('Rotate right', ROTATE_RIGHT_SVG);
+
+  rotateControls.appendChild(rotateLeftElem);
+  rotateControls.appendChild(rotateRightElem);
+
+  rotateLeftElem.addEventListener('click', () => scribe.rotatePage(scribe.state.cp.n, -90));
+  rotateRightElem.addEventListener('click', () => scribe.rotatePage(scribe.state.cp.n, 90));
+
+  return { rotateControls, rotateLeftElem, rotateRightElem };
+}
+
 const SEARCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 -960 960 960" fill="currentColor">
 <path d="M784-120 532-372q-30 24-69 38t-83 14q-109 0-184.5-75.5T120-580q0-109 75.5-184.5T380-840q109 0 184.5 75.5T640-580q0 44-14 83t-38 69l252 252-56 56ZM380-400q75 0 127.5-52.5T560-580q0-75-52.5-127.5T380-760q-75 0-127.5 52.5T200-580q0 75 52.5 127.5T380-400Z"/>
 </svg>`;
@@ -502,22 +526,53 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-thumb-panel {
       position: absolute;
       left: 0;
-      overflow-y: auto;
-      overflow-x: hidden;
+      overflow: hidden;
       box-sizing: border-box;
       background: #2b2f31;
       border-right: 1px solid rgba(0, 0, 0, .4);
-      padding: 8px 0;
       z-index: 7;
+      transition: transform 180ms ease;
+      will-change: transform;
+      /* On the panel root so it cascades to every thumbnail image and caption, preventing a click-drag across the rail from selecting them. */
+      -webkit-user-select: none;
+      user-select: none;
     }
 
-    .${r} .scribe-thumb-panel::-webkit-scrollbar {
+    /* Inner scroll container; the resize handle is its sibling so it stays at the edge while this scrolls. */
+    .${r} .scribe-thumb-scroll {
+      position: absolute;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      right: 6px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 8px 0;
+      box-sizing: border-box;
+    }
+
+    .${r} .scribe-thumb-scroll::-webkit-scrollbar {
       width: 10px;
     }
 
-    .${r} .scribe-thumb-panel::-webkit-scrollbar-thumb {
+    .${r} .scribe-thumb-scroll::-webkit-scrollbar-thumb {
       background: rgba(255, 255, 255, .25);
       border-radius: 5px;
+    }
+
+    .${r} .scribe-thumb-resize {
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: 6px;
+      cursor: ew-resize;
+      z-index: 8;
+      touch-action: none;
+    }
+
+    .${r} .scribe-thumb-resize:hover {
+      background: rgba(255, 255, 255, .15);
     }
 
     .${r} .scribe-thumb {
@@ -526,15 +581,16 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       align-items: center;
       gap: 3px;
       padding: 6px 4px;
-      cursor: pointer;
     }
 
     .${r} .scribe-thumb-box {
+      position: relative;
       background: #fff;
       box-shadow: 0 1px 3px rgba(0, 0, 0, .5);
       overflow: hidden;
       box-sizing: border-box;
       border: 2px solid transparent;
+      cursor: pointer;
     }
 
     .${r} .scribe-thumb-box img {
@@ -549,10 +605,9 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       font-size: 11px;
       line-height: 1;
       text-align: center;
-      user-select: none;
     }
 
-    .${r} .scribe-thumb:hover .scribe-thumb-box {
+    .${r} .scribe-thumb-box:hover {
       border-color: rgba(255, 255, 255, .4);
     }
 
@@ -562,6 +617,25 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
 
     .${r} .scribe-thumb.active .scribe-thumb-label {
       color: #fff;
+    }
+
+    .${r} .scribe-thumb-rotate {
+      position: absolute;
+      top: 8px;
+      right: 8px;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 22px;
+      border-radius: 4px;
+      color: #fff;
+      background: rgba(0, 0, 0, .55);
+      cursor: pointer;
+    }
+
+    .${r} .scribe-thumb-box:hover .scribe-thumb-rotate {
+      display: flex;
     }
   `;
 

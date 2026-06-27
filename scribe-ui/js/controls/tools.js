@@ -328,21 +328,33 @@ export function createDropZone({
  * @returns {Promise<import('../../../js/containers/scribeDoc.js').ScribeDoc>}
  */
 export async function openDocumentFromFile(file) {
+  /** @type {Parameters<typeof scribeLib.openDocument>[0]} */
+  let input;
   if (file instanceof ArrayBuffer) {
-    return scribeLib.openDocument({ pdfFiles: [file] });
-  }
-  if (typeof Uint8Array !== 'undefined' && file instanceof Uint8Array) {
+    input = { pdfFiles: [file] };
+  } else if (typeof Uint8Array !== 'undefined' && file instanceof Uint8Array) {
     const ab = /** @type {ArrayBuffer} */ (file.buffer.slice(file.byteOffset, file.byteOffset + file.byteLength));
-    return scribeLib.openDocument({ pdfFiles: [ab] });
+    input = { pdfFiles: [ab] };
+  } else if (typeof File !== 'undefined' && file instanceof File) {
+    input = [file];
+  } else if (typeof Blob !== 'undefined' && file instanceof Blob) {
+    input = { pdfFiles: [await file.arrayBuffer()] };
+  } else if (typeof file === 'string') {
+    input = [file];
+  } else {
+    throw new Error('openDocumentFromFile: input must be File, Blob, ArrayBuffer, Uint8Array, or a filesystem path string.');
   }
-  if (typeof File !== 'undefined' && file instanceof File) {
-    return scribeLib.openDocument([file]);
+
+  const doc = await scribeLib.openDocument(input);
+
+  // A pure viewer never runs recognize(), the step that would otherwise populate an image-based PDF's active (selectable) text layer.
+  // So when nothing else has filled that layer, fall back to the PDF's own parsed text,
+  // carrying over each page's deskew angle so the overlay aligns.
+  if (doc.ocr.pdf && !doc.ocr.active.some(Boolean)) {
+    doc.ocr.active = doc.ocr.pdf;
+    for (let i = 0; i < doc.ocr.pdf.length; i++) {
+      if (doc.ocr.pdf[i] && doc.pageMetrics[i]) doc.pageMetrics[i].angle = doc.ocr.pdf[i].angle;
+    }
   }
-  if (typeof Blob !== 'undefined' && file instanceof Blob) {
-    return scribeLib.openDocument({ pdfFiles: [await file.arrayBuffer()] });
-  }
-  if (typeof file === 'string') {
-    return scribeLib.openDocument([file]);
-  }
-  throw new Error('openDocumentFromFile: input must be File, Blob, ArrayBuffer, Uint8Array, or a filesystem path string.');
+  return doc;
 }

@@ -361,10 +361,13 @@ export class KonvaIText extends Konva.Shape {
   };
 
   /**
-   * Position and show the input for editing.
+   * Build the absolutely-positioned `<span>` for a word, used both as the editable input and as the read-only selection-overlay element.
    * @param {KonvaIText} itext
+   * @param {object} [opts]
+   * @param {boolean} [opts.pad=true] - Add horizontal padding so an edit cursor is visible before the first / after the last letter.
+   *   Pass false for the read-only overlay, where the padding only makes adjacent word boxes overlap and corrupt selection.
    */
-  static itextToElem = (itext) => {
+  static itextToElem = (itext, { pad = true } = {}) => {
     const inputElem = document.createElement('span');
 
     const wordStr = itext.charArr.join('');
@@ -398,14 +401,15 @@ export class KonvaIText extends Konva.Shape {
 
     const angle = itext.getAbsoluteRotation();
 
-    // Some padding needs to be present for the cursor to be visible when before the first letter or after the last letter.
-    const pad = 5;
-    inputElem.style.paddingLeft = `${pad}px`;
-    inputElem.style.paddingRight = `${pad}px`;
+    // Padding makes the edit cursor visible before the first / after the last letter; `left`/`top` are
+    // shifted back by it so the text still lands at the word's coordinates. Omitted for the overlay.
+    const padPx = pad ? 5 : 0;
+    inputElem.style.paddingLeft = `${padPx}px`;
+    inputElem.style.paddingRight = `${padPx}px`;
     inputElem.style.position = 'absolute';
 
-    const topPadOffset = 5 * Math.sin(angle * (Math.PI / 180));
-    const leftPadOffset = 5 * Math.cos(angle * (Math.PI / 180));
+    const topPadOffset = padPx * Math.sin(angle * (Math.PI / 180));
+    const leftPadOffset = padPx * Math.cos(angle * (Math.PI / 180));
 
     inputElem.style.left = `${x1 - leftPadOffset}px`;
     inputElem.style.top = `${topHTML - topPadOffset}px`;

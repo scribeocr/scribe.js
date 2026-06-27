@@ -486,7 +486,7 @@ export class ScribeViewer {
     let y = margin;
     for (let i = 0; i < this.doc.pageMetrics.length; i++) {
       this._pageStopsStart[i] = y;
-      const dims = this.doc.pageMetrics[i]?.dims;
+      const dims = this.getDisplayDims(i);
       if (!dims) return;
 
       const rotation = (this.doc.pageMetrics[i].angle || 0) * -1;
@@ -508,6 +508,49 @@ export class ScribeViewer {
         this.layerBackground.add(this.placeholderRectArr[i]);
       }
     }
+  }
+
+  /**
+   * Page dimensions as displayed, accounting for a 90/270 user rotation (which swaps width/height).
+   * The stored `pageMetrics[n].dims` is left unrotated; export uses it with the composed /Rotate.
+   * @param {number} n
+   * @returns {dims}
+   */
+  getDisplayDims(n) {
+    const dims = this.doc.pageMetrics[n]?.dims;
+    if (!dims) return dims;
+    const rotation = this.doc.pageMetrics[n].rotation || 0;
+    return (rotation % 180 === 90) ? { width: dims.height, height: dims.width } : dims;
+  }
+
+  /**
+   * Rotate page `n` by `deltaDeg` (a multiple of 90), updating its user rotation.
+   * A 90/270 step swaps the displayed dimensions and shifts every following page's stop, so the cached layout is rebuilt and the current view re-rendered.
+   * The rotation is a display transform. Export persists it as the page's /Rotate.
+   * @param {number} n
+   * @param {number} deltaDeg
+   */
+  rotatePage(n, deltaDeg) {
+    const pm = this.doc.pageMetrics[n];
+    if (!pm) return;
+    pm.rotation = ((((pm.rotation || 0) + deltaDeg) % 360) + 360) % 360;
+
+    for (const groupMap of this._textGroups) {
+      if (!groupMap) continue;
+      for (const group of Object.values(groupMap)) group.destroy();
+    }
+    this._textGroups.length = 0;
+    this.textGroupsRenderIndices.length = 0;
+    for (const rect of this.placeholderRectArr) {
+      if (rect) rect.destroy();
+    }
+    this.placeholderRectArr.length = 0;
+    this._pageStopsStart.length = 0;
+    this._pageStopsEnd.length = 0;
+    this.imageCache.clear();
+
+    this.calcPageStops();
+    this.displayPage(this.state.cp.n, false, true);
   }
 
   /** @returns {{x: number, y: number}} */
@@ -852,6 +895,22 @@ export class ScribeViewer {
 
     this.stage.on('contextmenu', (event) => contextMenuFunc(this, event));
 
+    // Triple-click selects the whole line.
+    // Override browser default by selecting the clicked word's `.scribe-line` wrapper.
+    this.elem.addEventListener('mousedown', (event) => {
+      if (event.detail < 3 || event.button !== 0) return;
+      const target = /** @type {HTMLElement} */ (event.target);
+      const lineElem = target?.closest?.('.scribe-word')?.closest('.scribe-line');
+      if (!lineElem) return;
+      event.preventDefault();
+      const sel = document.getSelection();
+      if (!sel) return;
+      const range = document.createRange();
+      range.selectNodeContents(lineElem);
+      sel.removeAllRanges();
+      sel.addRange(range);
+    });
+
     this.HTMLOverlayBackstopElem = document.createElement('div');
     this.HTMLOverlayBackstopElem.className = 'endOfContent';
     this.HTMLOverlayBackstopElem.style.position = 'absolute';
@@ -998,7 +1057,7 @@ export class ScribeViewer {
     // Without a block ancestor per line, triple-click selects the whole page.
     const lineToElem = new Map();
     words.forEach((word) => {
-      const elem = KonvaIText.itextToElem(word);
+      const elem = KonvaIText.itextToElem(word, { pad: false });
       this._wordHTMLArr.push(elem);
 
       const line = word.word.line;
@@ -1181,17 +1240,20 @@ export class ScribeViewer {
   createGroup(n, orientation = 0) {
     const group = new Konva.Group();
     const dims = this.doc.pageMetrics[n].dims;
+    const disp = this.getDisplayDims(n);
+    const userRotation = this.doc.pageMetrics[n].rotation || 0;
     const angle = this.doc.pageMetrics[n].angle || 0;
     const textRotation = scribe.ScribeDoc.defaults.autoRotate ? 0 : angle;
     const pageOffsetY = this.getPageStop(n) ?? 30;
-    group.rotation(textRotation + orientation * 90);
+    group.rotation(textRotation + orientation * 90 + userRotation);
+    // Offset is the rotation pivot in the group's own (unrotated) coordinate space: the page centre, sized by the per-line orientation.
+    // Position places that pivot at the displayed page centre.
     if (orientation % 2 === 1) {
       group.offset({ x: dims.height * 0.5, y: dims.width * 0.5 });
-      group.position({ x: dims.width * 0.5, y: pageOffsetY + dims.height * 0.5 });
     } else {
       group.offset({ x: dims.width * 0.5, y: dims.height * 0.5 });
-      group.position({ x: dims.width * 0.5, y: pageOffsetY + dims.height * 0.5 });
     }
+    group.position({ x: disp.width * 0.5, y: pageOffsetY + disp.height * 0.5 });
     return group;
   }
 
@@ -1214,8 +1276,9 @@ export class ScribeViewer {
    */
   setTextGroupRotation(n, rotation = 0) {
     this.getTextGroup(n);
+    const userRotation = this.doc.pageMetrics[n]?.rotation || 0;
     for (const [key, group] of Object.entries(this._textGroups[n])) {
-      group.rotation(Number(key) * 90 + rotation);
+      group.rotation(Number(key) * 90 + rotation + userRotation);
     }
   }
 
@@ -1798,7 +1861,7 @@ ScribeViewer.findViewerForTarget = findViewerForTarget;
 ScribeViewer.getActiveViewer = () => _activeViewer || _defaultViewer;
 
 const _delegatedMethods = [
-  'init', 'displayPage', 'renderWords', 'renderHTMLOverlay', 'renderHTMLOverlayAfterDelay',
+  'init', 'displayPage', 'rotatePage', 'renderWords', 'renderHTMLOverlay', 'renderHTMLOverlayAfterDelay',
   'deleteHTMLOverlay', 'setInitialPositionZoom', 'getPageStop', 'calcPageStops', 'getStageCenter',
   'panStage', 'zoom', 'resize', 'startDrag', 'startDragTouch', 'executeDrag', 'executeDragTouch',
   'stopDragPinch', 'executePinchTouch', 'createGroup', 'getTextGroup', 'setTextGroupRotation',
@@ -1886,17 +1949,25 @@ document.addEventListener('mousedown', _routeSelectionEvent);
 
 function getElementIdsInRange(range) {
   const elementIds = [];
+  // Non-word elements return FILTER_SKIP, not FILTER_REJECT, so the walker descends into the per-line `.scribe-line` wrappers to reach the word spans.
+  // A multi-line selection's common ancestor is the overlay root, whose direct children are those line divs.
+  const selRects = [...range.getClientRects()];
+  // A word is selected when its centre lies inside a selection rect, which keeps the copied set aligned with the highlight:
+  // it excludes a horizontally adjacent word touched only at the boundary, and the next line whose rect overlaps by a few pixels.
+  const selected = (r) => {
+    const cx = (r.left + r.right) / 2;
+    const cy = (r.top + r.bottom) / 2;
+    return selRects.some((s) => cx >= s.left && cx <= s.right && cy >= s.top && cy <= s.bottom);
+  };
   const treeWalker = document.createTreeWalker(
     range.commonAncestorContainer,
     NodeFilter.SHOW_ELEMENT,
     {
       acceptNode(node) {
         if (node instanceof HTMLElement && node.classList && node.classList.contains('scribe-word')) {
-          const nodeRange = document.createRange();
-          nodeRange.selectNode(node);
-          return range.intersectsNode(node) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_REJECT;
+          return selected(node.getBoundingClientRect()) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
         }
-        return NodeFilter.FILTER_REJECT;
+        return NodeFilter.FILTER_SKIP;
       },
     },
   );
@@ -1933,16 +2004,20 @@ document.addEventListener('copy', (e) => {
 
   v.textGroupsRenderIndices.sort((a, b) => a - b);
 
-  let text = '';
-  for (let i = 0; i < v.textGroupsRenderIndices.length; i++) {
-    if (i > 0) text += '\n\n';
-    const n = v.textGroupsRenderIndices[i];
-    text += scribe.utils.writeText({
+  // writeText prefixes every line with '\n'. Trim each page's output and drop pages with no selected words,
+  // so the clipboard text has no stray leading or trailing blank lines.
+  const pageTexts = [];
+  for (const n of v.textGroupsRenderIndices) {
+    const pageText = scribe.utils.writeText({
       ocrCurrent: v.doc.ocr.active,
       pageArr: [n],
       wordIds: ids,
-    });
+    }).trim();
+    if (pageText) pageTexts.push(pageText);
   }
+  const text = pageTexts.join('\n\n');
+
+  if (!text) return;
 
   clipboardData.setData('text/plain', text);
   e.preventDefault();

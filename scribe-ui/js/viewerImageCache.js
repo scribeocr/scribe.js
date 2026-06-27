@@ -123,9 +123,16 @@ export class ViewerImageCache {
       rotation = (viewer.doc.pageMetrics[n].angle || 0);
     }
 
+    // User rotation (multiple of 90) is an extra display transform on top of the deskew angle;
+    // for 90/270 it swaps the displayed page dimensions.
+    const userRotation = viewer.doc.pageMetrics[n].rotation || 0;
+    rotation += userRotation;
+    const dispW = userRotation % 180 === 90 ? pageDims.height : pageDims.width;
+    const dispH = userRotation % 180 === 90 ? pageDims.width : pageDims.height;
+
     const pageOffsetY = viewer.getPageStop(n) ?? 30;
 
-    const y = pageOffsetY + pageDims.height * 0.5;
+    const y = pageOffsetY + dispH * 0.5;
 
     const scaleX = backgroundImage.upscaled ? 0.5 : 1;
     const scaleY = backgroundImage.upscaled ? 0.5 : 1;
@@ -135,7 +142,7 @@ export class ViewerImageCache {
       rotation,
       scaleX,
       scaleY,
-      x: pageDims.width * 0.5,
+      x: dispW * 0.5,
       y,
       offsetX: image.width * 0.5,
       offsetY: image.height * 0.5,
@@ -206,6 +213,7 @@ export class ViewerImageCache {
             } else if (!scribe.ScribeDoc.defaults.autoRotate && this.konvaImagesProps[n].rotated) {
               rotation = (viewer.doc.pageMetrics[n].angle || 0);
             }
+            rotation += viewer.doc.pageMetrics[n].rotation || 0;
 
             if (Math.abs(konvaImage.rotation() - rotation) > 0.01) {
               konvaImage.rotation(rotation);

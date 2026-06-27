@@ -3,7 +3,7 @@ import { ScribeViewer } from '../viewer.js';
 import { applyHighlight } from '../js/viewerHighlights.js';
 import { destroyContextMenu } from '../js/viewerCanvasInteraction.js';
 import {
-  addControlStyles, makeToolbarShell, makeSeparator, createPageNav, createZoomControls, createSearchBar,
+  addControlStyles, makeToolbarShell, makeSeparator, createPageNav, createZoomControls, createRotateControls, createSearchBar,
 } from '../js/controls/toolbar.js';
 import { createThumbnailPanel, createScrollbars } from '../js/controls/panels.js';
 import { createHighlightTool, createDropZone, openDocumentFromFile } from '../js/controls/tools.js';
@@ -171,9 +171,6 @@ class ScribePDFViewer {
       })
       : null;
     this._thumbnailsVisible = showThumbnails;
-    // Expanded panel width = thumbnail image width + room for padding and the panel's own scrollbar.
-    this._thumbPanelWidth = thumbnailWidth + 30;
-    this.thumbnailPanelWidth = this._thumbnailPanel ? this._thumbPanelWidth : 0;
 
     if (showToolbar) {
       // The shared CSS sizes `.cr-icon`/`.cr-icon-button` from this var, scoped to this instance's root.
@@ -193,10 +190,13 @@ class ScribePDFViewer {
 
       const pageNav = createPageNav(this.scribe);
       const zoom = createZoomControls(this.scribe);
+      const rotate = createRotateControls(this.scribe);
 
       toolbarButtons.appendChild(pageNav.prevElem);
       toolbarButtons.appendChild(pageNav.nextElem);
       toolbarButtons.appendChild(pageNav.pageInputGroup);
+      toolbarButtons.appendChild(makeSeparator());
+      toolbarButtons.appendChild(rotate.rotateControls);
       toolbarButtons.appendChild(makeSeparator());
       toolbarButtons.appendChild(zoom.zoomControls);
       if (this._highlightTool) {
@@ -223,9 +223,6 @@ class ScribePDFViewer {
     this.viewerContainer = document.createElement('div');
     this.viewerContainer.style.position = 'relative';
     this.viewerContainer.style.overflow = 'hidden';
-    // Offset the canvas area to the right of the thumbnails panel.
-    // As a normal-flow block with `width:auto` it then fills exactly the remaining width.
-    this.viewerContainer.style.marginLeft = `${this.thumbnailPanelWidth}px`;
 
     const viewer = document.createElement('div');
     viewer.style.position = 'relative';
@@ -236,12 +233,11 @@ class ScribePDFViewer {
 
     if (showDropZone) {
       const { dropZone, openFileInputElem } = createDropZone({
-        width: initWidth - this.thumbnailPanelWidth - 6,
+        width: initWidth - 6,
         height: initHeight - this.toolbarHeight,
         top: this.toolbarHeight,
         onFile: (file) => this.importFile(file),
       });
-      dropZone.style.left = `${this.thumbnailPanelWidth}px`;
       this.pdfViewerElem.appendChild(dropZone);
       this.dropZone = dropZone;
       this.openFileInputElem = openFileInputElem;
@@ -250,14 +246,13 @@ class ScribePDFViewer {
     if (this._thumbnailPanel) {
       const panel = this._thumbnailPanel.panelElem;
       panel.style.top = `${this.toolbarHeight}px`;
-      panel.style.width = `${this.thumbnailPanelWidth}px`;
       panel.style.height = `${initHeight - this.toolbarHeight}px`;
       this.pdfViewerElem.appendChild(panel);
     }
 
     this._installFit(fit);
 
-    this.scribe.init(this.viewerContainer, initWidth - this.thumbnailPanelWidth, initHeight - this.toolbarHeight);
+    this.scribe.init(this.viewerContainer, initWidth, initHeight - this.toolbarHeight);
 
     /** @type {?(() => void)} */
     this._updateScrollbars = null;
@@ -305,17 +300,12 @@ class ScribePDFViewer {
 
     container.appendChild(this.pdfViewerElem);
 
-    // Toolbar toggle: collapse/expand the thumbnails panel and reflow the canvas to fill the gap.
+    // Toolbar toggle: slide the thumbnails panel in or out. It overlays the canvas, so no canvas reflow.
     if (this._thumbnailPanel && this.toolbarElem) {
       const panel = this._thumbnailPanel;
       panel.toggleElem.addEventListener('click', () => {
         this._thumbnailsVisible = !this._thumbnailsVisible;
-        this.thumbnailPanelWidth = this._thumbnailsVisible ? this._thumbPanelWidth : 0;
         panel.setVisible(this._thumbnailsVisible);
-        this.resize(
-          parseFloat(this.pdfViewerElem.style.width) || this.container.clientWidth,
-          parseFloat(this.pdfViewerElem.style.height) || this.container.clientHeight,
-        );
       });
     }
 
@@ -497,20 +487,17 @@ class ScribePDFViewer {
    * @param {number} height
    */
   resize(width, height) {
-    const panelW = this.thumbnailPanelWidth;
     this.pdfViewerElem.style.width = `${width}px`;
     this.pdfViewerElem.style.height = `${height}px`;
+    // The panel overlays the canvas, so only its height tracks the viewport. Its width is user-owned.
     if (this._thumbnailPanel) {
-      this._thumbnailPanel.panelElem.style.width = `${panelW}px`;
       this._thumbnailPanel.panelElem.style.height = `${height - this.toolbarHeight}px`;
     }
-    if (this.viewerContainer) this.viewerContainer.style.marginLeft = `${panelW}px`;
     if (this.dropZone) {
-      this.dropZone.style.left = `${panelW}px`;
-      this.dropZone.style.width = `${width - panelW - 6}px`;
+      this.dropZone.style.width = `${width - 6}px`;
       this.dropZone.style.height = `${height - this.toolbarHeight}px`;
     }
-    this.scribe.resize(width - panelW, height - this.toolbarHeight);
+    this.scribe.resize(width, height - this.toolbarHeight);
     if (this._updateScrollbars) this._updateScrollbars();
   }
 
