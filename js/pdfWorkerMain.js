@@ -94,7 +94,7 @@ export class PdfScheduler {
 
   /**
    * Dispatch a single page for rendering via the scheduler.
-   * @param {{ pageIndex: number, colorMode: string, dpi?: number }} args
+   * @param {{ pageIndex: number, colorMode: string, dpi?: number, outputFormat?: 'png'|'jpeg', quality?: number }} args
    * @param {boolean} [forViewer=false] - Whether this render serves the on-screen viewer.
    *   Viewer renders are served ahead of background work, newest-first, and may be dropped (resolving to SKIPPED) when superseded.
    */
@@ -135,10 +135,10 @@ export class PdfSchedulerInProcess {
   parsePdfPage = (args) => this.#core.parsePage(args);
 
   /**
-   * Render a single page to a PNG data URL.
-   * The viewer lane (`forViewer`) only exists to keep the worker queue bounded;
-   * in-process renders always run, so it is accepted and ignored.
-   * @param {{ pageIndex: number, colorMode: string, dpi?: number }} args
+   * Render a single page to image data URL.
+   * The viewer lane (`forViewer`) only exists to keep the worker queue bounded.
+   * In-process renders always run, so it is accepted and ignored.
+   * @param {{ pageIndex: number, colorMode: string, dpi?: number, outputFormat?: 'png'|'jpeg', quality?: number }} args
    * @param {boolean} [forViewer=false]
    */
   // eslint-disable-next-line no-unused-vars

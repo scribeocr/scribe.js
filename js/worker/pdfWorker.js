@@ -22,8 +22,8 @@ export async function parsePdfPage(args) {
 }
 
 /**
- * Render a single page to a PNG data URL.
- * @param {{ pageIndex: number, colorMode: string, dpi?: number }} args
+ * Render a single page to a image data URL.
+ * @param {{ pageIndex: number, colorMode: string, dpi?: number, outputFormat?: 'png'|'jpeg', quality?: number }} args
  */
 export async function renderPdfPage(args) {
   return core.renderPage(args);

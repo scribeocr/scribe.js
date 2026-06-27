@@ -4843,7 +4843,7 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
 }
 
 /**
- * Render a single PDF page to a PNG data URL, including raster images and Type3 font glyphs.
+ * Render a single PDF page to a image data URL.
  *
  * @param {string} pageObjText - Raw text of the Page object
  * @param {ObjectCache} objCache - PDF object cache
@@ -4852,13 +4852,16 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
  * @param {'color'|'gray'} [colorMode='color'] - Output color mode
  * @param {number} [rotate=0] - Page rotation in degrees
  * @param {number} [dpi=300] - Render resolution in dots per inch
- * @returns {Promise<{dataUrl: string, colorMode: string, ok: boolean, failReason?: string, failDetail?: string}>}
- *   PNG data URL and effective color mode. `ok` is false when the page is a failure
- *   placeholder (blank fallback) rather than a real render. `failReason` is then one of
- *   `exception`, `memory_abort`, or `corrupt_encrypted`, with `failDetail` carrying the
- *   error text. A genuinely empty page (no draw ops) returns `ok: true`.
+ * @param {'png'|'jpeg'} [outputFormat='png'] - Output encoding: 'png' returns a base64 data URL and 'jpeg' returns a Blob (browser only).
+ * @param {number} [quality=0.6] - JPEG quality 0-1 (ignored for png).
+ * @returns {Promise<{dataUrl?: string, blob?: Blob, colorMode: string, ok: boolean, failReason?: string, failDetail?: string}>}
+ *   A PNG data URL (`dataUrl`, default) or a JPEG `blob` (when `outputFormat` is 'jpeg'), plus the effective color mode.
+ *   `ok` is false when the page is a failure placeholder (blank fallback) rather than a real render.
+ *   Failure placeholders are always a PNG `dataUrl` regardless of `outputFormat`.
+ *   `failReason` is then one of `exception`, `memory_abort`, or `corrupt_encrypted`, with `failDetail` carrying the error text.
+ *   A genuinely empty page (no draw ops) returns `ok: true`.
  */
-export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, pageIndex, colorMode = 'color', rotate = 0, dpi = 300) {
+export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, pageIndex, colorMode = 'color', rotate = 0, dpi = 300, outputFormat = 'png', quality = 0.6) {
   // Optional Content visibility is a property of the document — fetch the
   // (cached) set of OCGs hidden in View mode from the ObjectCache so that
   // every caller of this function (worker, batch entry, tests) automatically
@@ -8339,6 +8342,15 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   ctx.fillStyle = 'white';
   ctx.fillRect(0, 0, canvasWidth, canvasHeight);
   ctx.globalCompositeOperation = 'source-over';
+
+  // JPEG output (thumbnails): encode the canvas directly to a JPEG Blob, skipping getImageData and the PNG build.
+  // Pass both `type` (the W3C OffscreenCanvas option browsers read) and `mime` (the option the Node @scribe.js/canvas fork reads).
+  // Given only `type`, the fork ignores the format and falls back to PNG.
+  if (outputFormat === 'jpeg') {
+    const blob = await canvas.convertToBlob({ type: 'image/jpeg', mime: 'image/jpeg', quality });
+    ca.closeDrawable(canvas);
+    return { blob, colorMode: effectiveColorMode, ok: true };
+  }
 
   // Encode via `buildPngDataUrl` (not `canvas.toBuffer('image/png')`):
   // smaller output (RGB-only, 1-channel gray) and avoids SkPngEncoder's

@@ -10,6 +10,7 @@ import { opt } from './app.js';
 import { initPdfScheduler } from '../pdfWorkerMain.js';
 import { scribeDocDefaults } from './scribeDocDefaults.js';
 import { SKIPPED } from '../../tess/TessScheduler.js';
+import { ca } from '../canvasAdapter.js';
 
 /** @typedef {import('./scribeDoc.js').ScribeDoc} ScribeDoc */
 
@@ -83,6 +84,13 @@ export class ImageStore {
 
   /** @type {Array<ImageProperties>} */
   binaryProps = [];
+
+  /**
+   * Small low-resolution JPEG page previews (one Blob promise per page), rendered on demand by `renderThumbnail`.
+   * Fresh per document (a new doc gets a new `ImageStore`), so it never needs manual clearing.
+   * @type {Array<Promise<?Blob> | undefined>}
+   */
+  thumbnails = [];
 
   /** @type {?ArrayBuffer} */
   pdfData = null;
@@ -334,6 +342,53 @@ export class ImageStore {
       if (native !== SKIPPED) return native;
     }
     throw new Error(`getNative: render for page ${n} repeatedly dropped (SKIPPED).`);
+  };
+
+  /**
+   * Render (or return from cache) a small low-resolution JPEG preview of page `n`.
+   *
+   * For PDF input the page is drawn directly at thumbnail resolution and JPEG-encoded in one pass by the renderer,
+   * so it never populates the full-resolution `native[]` cache and the few-KB Blob stays cheap to keep resident across a large document.
+   * The render uses the background lane (`forViewer = false`) so it can never delay an on-screen viewer render.
+   * For image input the full-resolution page image is already in memory, so it is drawn onto a small canvas and JPEG-encoded the same way.
+   * @param {number} n - Page index.
+   * @param {number} [widthPx=150] - Target preview width in CSS px.
+   * @param {number} [quality=0.6] - JPEG quality (0-1).
+   * @returns {Promise<?Blob>} A JPEG Blob, or `null` if the page cannot be rendered.
+   */
+  renderThumbnail = (n, widthPx = 150, quality = 0.6) => {
+    if (this.thumbnails[n]) return this.thumbnails[n];
+    if (!this.inputModes.image && !this.inputModes.pdf) return Promise.resolve(null);
+
+    const p = (async () => {
+      if (this.inputModes.pdf) {
+        const dims300 = this.pdfDims300[n];
+        if (!dims300) return null;
+        const pdfScheduler = await this.getPdfScheduler();
+        const dpi = 300 * (widthPx / dims300.width);
+        const result = await pdfScheduler.renderPdfPage({
+          pageIndex: n, colorMode: 'color', dpi, outputFormat: 'jpeg', quality,
+        }, false);
+        return result && result !== SKIPPED ? result.blob ?? null : null;
+      }
+      const native = await this.getNative(n);
+      if (!native) return null;
+      const bitmap = await ca.getImageBitmap(native.src);
+      const canvas = ca.makeCanvas(widthPx, Math.max(1, Math.round(widthPx * (bitmap.height / bitmap.width))));
+      const ctx = canvas.getContext('2d');
+      ctx.drawImage(bitmap, 0, 0, canvas.width, canvas.height);
+      ca.closeDrawable(bitmap);
+      // `type` for browsers, `mime` for the Node canvas fork: both are needed to get a JPEG (not PNG) Blob.
+      const blob = await canvas.convertToBlob({ type: 'image/jpeg', mime: 'image/jpeg', quality });
+      ca.closeDrawable(canvas);
+      return blob;
+    })();
+
+    this.thumbnails[n] = p;
+    // Clear the cache slot if the render failed, so a later call can retry.
+    p.then((r) => { if (r === null && this.thumbnails[n] === p) this.thumbnails[n] = undefined; })
+      .catch(() => { if (this.thumbnails[n] === p) this.thumbnails[n] = undefined; });
+    return p;
   };
 
   /**

@@ -1,0 +1,348 @@
+// Document interaction tools shared by the viewer and editor apps: text highlighting
+// (toggle, color picker, comment icons), the upload drop zone, and the file-to-ScribeDoc loader.
+import scribeLib from '../../../scribe.js';
+import { makeIconButton } from './toolbar.js';
+import { applyHighlight } from '../viewerHighlights.js';
+import { getAllFileEntries } from '../dragAndDrop.js';
+
+const HIGHLIGHT_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 -960 960 960" fill="currentColor">
+<path d="M280-320v-440q0-33 23.5-56.5T360-840q9 0 18 2t17 6l240 119q20 10 32.5 29.5T680-641v321H280Zm80-80h240v-241L360-760v360ZM160-120l22-65q8-25 29-40t47-15h444q26 0 47 15t29 40l22 65H160Zm200-280h240-240Z"/>
+</svg>`;
+// eslint-disable-next-line max-len
+const HIGHLIGHT_CURSOR = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' height=\'24\' width=\'24\' viewBox=\'0 -960 960 960\'%3E%3Cpath fill=\'white\' stroke=\'black\' stroke-width=\'30\' d=\'m268-212-56-56q-12-12-12-28.5t12-28.5l423-423q12-12 28.5-12t28.5 12l56 56q12 12 12 28.5T748-635L324-212q-11 11-28 11t-28-11Z\'/%3E%3C/svg%3E") 12 12, auto';
+
+/**
+ * Build the highlight tool: toggle button, optional color picker, overlay-word highlighting, highlighter cursor, and comment icons.
+ * The toolbar DOM is built immediately; the selection/comment behaviors are wired by `installBehaviors()` after `scribe.init`.
+ * @param {import('../../viewer.js').ScribeViewer} scribe
+ * @param {HTMLElement} rootElem - The app's root element (for selection scope and cursor CSS).
+ * @param {object} cfg
+ * @param {string[]} cfg.colors - One or more hex colors.
+ * @param {string} cfg.defaultColor - Initial color (must be in `colors`).
+ * @param {string} cfg.rootClass - The app's root class (for scoping the cursor rule).
+ * @returns {{
+ *   highlightElem: HTMLSpanElement, colorContainer: ?HTMLSpanElement,
+ *   getSelectedOverlayWords: () => Array<any>, updateCommentIcons: () => void,
+ *   installBehaviors: () => (() => void)
+ * }}
+ */
+export function createHighlightTool(scribe, rootElem, { colors, defaultColor, rootClass }) {
+  let highlightMode = false;
+  let highlightColor = defaultColor;
+  /** @type {?HTMLStyleElement} */
+  let cursorStyleElem = null;
+  /** @type {?HTMLDivElement} */
+  let commentTooltip = null;
+
+  const highlightElem = makeIconButton('Highlight', HIGHLIGHT_SVG);
+
+  /** Toggle the highlighter cursor on the overlay words when highlight mode is active. */
+  function updateHighlightCursorStyle() {
+    if (!cursorStyleElem) {
+      cursorStyleElem = document.createElement('style');
+      document.head.appendChild(cursorStyleElem);
+    }
+    cursorStyleElem.textContent = highlightMode
+      ? `.${rootClass} .scribe-word { cursor: ${HIGHLIGHT_CURSOR} !important; }`
+      : '';
+  }
+
+  /** KonvaOcrWord objects under the current browser text selection (via the HTML overlay). */
+  function getSelectedOverlayWords() {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed) return [];
+    const range = sel.getRangeAt(0);
+    const wordElems = rootElem.querySelectorAll('.scribe-word');
+    const selectedIds = [];
+    for (const elem of wordElems) {
+      if (range.intersectsNode(elem)) selectedIds.push(elem.id);
+    }
+    if (selectedIds.length === 0) return [];
+    const idSet = new Set(selectedIds);
+    return scribe.getKonvaWords().filter((kw) => idSet.has(kw.word.id));
+  }
+
+  function applyToSelection() {
+    const matchedWords = getSelectedOverlayWords();
+    if (matchedWords.length === 0 || !highlightColor) return false;
+    applyHighlight(scribe, matchedWords, scribe.state.cp.n, highlightColor, 0.5);
+    window.getSelection()?.removeAllRanges();
+    scribe.deleteHTMLOverlay();
+    scribe.renderHTMLOverlay();
+    return true;
+  }
+
+  highlightElem.addEventListener('click', () => {
+    highlightMode = !highlightMode;
+    highlightElem.classList.toggle('active', highlightMode);
+    updateHighlightCursorStyle();
+  });
+
+  // Color picker. `makeColorBtn` is defined once (not in the loop) so its click closure
+  // captures only `color` (a per-call param) plus stable module-scoped state.
+  const colorBtnElems = [];
+  /** @param {string} color @returns {HTMLSpanElement} */
+  const makeColorBtn = (color) => {
+    const btn = document.createElement('span');
+    btn.className = 'highlight-color-btn';
+    btn.style.backgroundColor = color;
+    if (color === highlightColor) btn.classList.add('active');
+    btn.addEventListener('mousedown', (e) => e.preventDefault());
+    btn.addEventListener('click', () => {
+      highlightColor = color;
+      colorBtnElems.forEach((b) => b.classList.remove('active'));
+      btn.classList.add('active');
+      if (!applyToSelection() && !highlightMode) {
+        highlightMode = true;
+        highlightElem.classList.add('active');
+        updateHighlightCursorStyle();
+      }
+    });
+    return btn;
+  };
+
+  /** @type {?HTMLSpanElement} */
+  let colorContainer = null;
+  if (colors.length > 1) {
+    colorContainer = document.createElement('span');
+    colorContainer.style.display = 'inline-flex';
+    colorContainer.style.alignItems = 'center';
+    colorContainer.style.gap = '4px';
+    colorContainer.style.marginLeft = '4px';
+    for (const color of colors) {
+      const btn = makeColorBtn(color);
+      colorBtnElems.push(btn);
+      colorContainer.appendChild(btn);
+    }
+  }
+
+  /** Place one comment icon for a highlight group, anchored at its first word's overlay element. */
+  const addCommentIcon = (kw, viewerElem) => {
+    const wordElem = viewerElem.querySelector(`.scribe-word[id="${kw.word.id}"]`);
+    if (!wordElem) return;
+    const wordLeft = parseFloat(/** @type {HTMLElement} */ (wordElem).style.left) || 0;
+    const wordTop = parseFloat(/** @type {HTMLElement} */ (wordElem).style.top) || 0;
+
+    const icon = document.createElement('span');
+    icon.className = 'highlight-comment-icon';
+    icon.textContent = '💬';
+    icon.style.left = `${wordLeft - 16}px`;
+    icon.style.top = `${wordTop - 14}px`;
+
+    icon.addEventListener('mouseover', () => {
+      if (!commentTooltip) return;
+      commentTooltip.textContent = kw.highlightComment;
+      commentTooltip.style.visibility = 'hidden';
+      commentTooltip.style.display = '';
+      const iconLeft = parseFloat(icon.style.left) || 0;
+      const iconTop = parseFloat(icon.style.top) || 0;
+      commentTooltip.style.left = `${iconLeft}px`;
+      commentTooltip.style.top = `${iconTop - commentTooltip.offsetHeight - 4}px`;
+      commentTooltip.style.visibility = '';
+    });
+    icon.addEventListener('mouseout', () => {
+      if (commentTooltip) commentTooltip.style.display = 'none';
+    });
+
+    viewerElem.appendChild(icon);
+  };
+
+  /** Rebuild the comment icons: one per highlight group that carries a comment. */
+  function updateCommentIcons() {
+    const viewerElem = scribe.elem;
+    if (!viewerElem) return;
+    viewerElem.querySelectorAll('.highlight-comment-icon').forEach((el) => el.remove());
+
+    const allWords = scribe.getKonvaWords();
+    if (!allWords || allWords.length === 0) return;
+
+    const groupFirstWord = new Map();
+    for (const kw of allWords) {
+      if (!kw.highlightGroupId || !kw.highlightComment) continue;
+      const existing = groupFirstWord.get(kw.highlightGroupId);
+      if (!existing
+        || kw.word.bbox.top < existing.word.bbox.top
+        || (kw.word.bbox.top === existing.word.bbox.top && kw.word.bbox.left < existing.word.bbox.left)) {
+        groupFirstWord.set(kw.highlightGroupId, kw);
+      }
+    }
+
+    for (const [, kw] of groupFirstWord) addCommentIcon(kw, viewerElem);
+  }
+
+  /**
+   * Wire the selection-driven highlighting, comment tooltip, and overlay observer.
+   * Call after `scribe.init` (needs `scribe.elem`).
+   * @returns {() => void} teardown
+   */
+  function installBehaviors() {
+    const mouseupHandler = (event) => {
+      if (!highlightMode) return;
+      if (!(event.target instanceof Node) || !rootElem.contains(event.target)) return;
+      applyToSelection();
+    };
+    document.addEventListener('mouseup', mouseupHandler);
+
+    commentTooltip = document.createElement('div');
+    commentTooltip.className = 'highlight-comment-tooltip';
+    commentTooltip.style.display = 'none';
+    scribe.elem.appendChild(commentTooltip);
+
+    let commentIconTimer = null;
+    const isWordOrLine = (n) => n instanceof HTMLElement
+      && (n.classList.contains('scribe-word') || n.classList.contains('scribe-line'));
+    const commentObserver = new MutationObserver((mutations) => {
+      const hasRemoved = mutations.some((m) => [...m.removedNodes].some(isWordOrLine));
+      if (hasRemoved) {
+        scribe.elem?.querySelectorAll('.highlight-comment-icon').forEach((el) => el.remove());
+        commentTooltip.style.display = 'none';
+      }
+      const hasAdded = mutations.some((m) => [...m.addedNodes].some(isWordOrLine));
+      if (!hasAdded) return;
+      if (commentIconTimer) clearTimeout(commentIconTimer);
+      commentIconTimer = setTimeout(() => updateCommentIcons(), 100);
+    });
+    commentObserver.observe(scribe.elem, { childList: true });
+
+    return () => {
+      document.removeEventListener('mouseup', mouseupHandler);
+      commentObserver.disconnect();
+      if (commentTooltip && commentTooltip.parentNode) commentTooltip.parentNode.removeChild(commentTooltip);
+      commentTooltip = null;
+      if (cursorStyleElem) {
+        cursorStyleElem.remove();
+        cursorStyleElem = null;
+      }
+    };
+  }
+
+  return {
+    highlightElem,
+    colorContainer,
+    getSelectedOverlayWords,
+    updateCommentIcons,
+    installBehaviors,
+  };
+}
+
+/**
+ * Build the upload drop zone overlay.
+ * @param {object} cfg
+ * @param {number} cfg.width - Zone width in px.
+ * @param {number} cfg.height - Zone height in px.
+ * @param {number} cfg.top - Zone top offset in px (below the toolbar).
+ * @param {(file: File) => void} cfg.onFile - Called with the first chosen/dropped file.
+ * @returns {{ dropZone: HTMLDivElement, openFileInputElem: HTMLInputElement }}
+ */
+export function createDropZone({
+  width, height, top, onFile,
+}) {
+  const dropZone = document.createElement('div');
+  dropZone.className = 'upload_dropZone text-center p-4';
+  dropZone.style.zIndex = '8';
+  dropZone.style.top = `${top}px`;
+  dropZone.style.position = 'absolute';
+  dropZone.style.height = `${height}px`;
+  dropZone.style.width = `${width}px`;
+
+  const uploadDiv = document.createElement('div');
+  uploadDiv.style.position = 'relative';
+  uploadDiv.style.top = '35%';
+  uploadDiv.style.color = '#dddddd';
+
+  const instructions = document.createElement('p');
+  instructions.className = 'small';
+  instructions.innerHTML = 'Drag &amp; drop files inside dashed region<br><i>or</i>';
+
+  const openFileInputElem = document.createElement('input');
+  openFileInputElem.type = 'file';
+  openFileInputElem.multiple = true;
+  openFileInputElem.style.visibility = 'hidden';
+  openFileInputElem.style.position = 'absolute';
+
+  const fileInputLabel = document.createElement('label');
+  fileInputLabel.className = 'btn btn-info mb-3';
+  fileInputLabel.style.minWidth = '8rem';
+  fileInputLabel.style.border = '1px solid';
+  fileInputLabel.style.padding = '0.4rem';
+  fileInputLabel.textContent = 'Select Files';
+  fileInputLabel.appendChild(openFileInputElem);
+
+  const uploadGallery1 = document.createElement('div');
+  uploadGallery1.className = 'upload_gallery d-flex flex-wrap justify-content-center gap-3 mb-0';
+  uploadGallery1.style.display = 'inline!important';
+
+  const uploadGallery2 = document.createElement('div');
+  uploadGallery2.className = 'upload_gallery d-flex flex-wrap justify-content-center gap-3 mb-0';
+
+  uploadDiv.appendChild(instructions);
+  uploadDiv.appendChild(fileInputLabel);
+  uploadDiv.appendChild(uploadGallery1);
+  uploadDiv.appendChild(uploadGallery2);
+  dropZone.appendChild(uploadDiv);
+
+  openFileInputElem.addEventListener('change', () => {
+    if (!openFileInputElem.files || openFileInputElem.files.length === 0) return;
+    onFile(openFileInputElem.files[0]);
+  });
+
+  // Drag-enter/leave can fire repeatedly over child nodes; a counter keeps the highlight stable.
+  let highlightActiveCt = 0;
+  dropZone.addEventListener('dragover', (event) => {
+    event.preventDefault();
+    dropZone.classList.add('highlight');
+    highlightActiveCt++;
+  });
+
+  dropZone.addEventListener('dragleave', (event) => {
+    event.preventDefault();
+    const highlightActiveCtNow = highlightActiveCt;
+    setTimeout(() => {
+      if (highlightActiveCtNow === highlightActiveCt) dropZone.classList.remove('highlight');
+    }, 100);
+  });
+
+  dropZone.addEventListener('drop', async (event) => {
+    event.preventDefault();
+    if (!event.dataTransfer) return;
+    const items = await getAllFileEntries(event.dataTransfer.items);
+    const filesPromises = await Promise.allSettled(items.map((x) => new Promise((resolve, reject) => {
+      if (x instanceof File) resolve(x);
+      else x.file(resolve, reject);
+    })));
+    const files = filesPromises
+      .filter(/** @returns {x is PromiseFulfilledResult<File>} */ (x) => x.status === 'fulfilled')
+      .map((x) => x.value);
+    if (files.length === 0) return;
+    dropZone.classList.remove('highlight');
+    onFile(files[0]);
+  });
+
+  return { dropZone, openFileInputElem };
+}
+
+/**
+ * Open a `ScribeDoc` from any supported input. Raw byte inputs (`ArrayBuffer`, `Uint8Array`,
+ * non-`File` `Blob`) are treated as PDFs; `File` and path strings are sorted by extension.
+ * @param {File | Blob | ArrayBuffer | Uint8Array | string} file
+ * @returns {Promise<import('../../../js/containers/scribeDoc.js').ScribeDoc>}
+ */
+export async function openDocumentFromFile(file) {
+  if (file instanceof ArrayBuffer) {
+    return scribeLib.openDocument({ pdfFiles: [file] });
+  }
+  if (typeof Uint8Array !== 'undefined' && file instanceof Uint8Array) {
+    const ab = /** @type {ArrayBuffer} */ (file.buffer.slice(file.byteOffset, file.byteOffset + file.byteLength));
+    return scribeLib.openDocument({ pdfFiles: [ab] });
+  }
+  if (typeof File !== 'undefined' && file instanceof File) {
+    return scribeLib.openDocument([file]);
+  }
+  if (typeof Blob !== 'undefined' && file instanceof Blob) {
+    return scribeLib.openDocument({ pdfFiles: [await file.arrayBuffer()] });
+  }
+  if (typeof file === 'string') {
+    return scribeLib.openDocument([file]);
+  }
+  throw new Error('openDocumentFromFile: input must be File, Blob, ArrayBuffer, Uint8Array, or a filesystem path string.');
+}

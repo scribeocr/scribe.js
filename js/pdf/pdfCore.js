@@ -43,16 +43,18 @@ export class PdfCore {
   }
 
   /**
-   * Render a single page to a PNG data URL.
-   * @param {{ pageIndex: number, colorMode: string, dpi?: number }} args
+   * Render a single page to a image data URL.
+   * @param {{ pageIndex: number, colorMode: string, dpi?: number, outputFormat?: 'png'|'jpeg', quality?: number }} args
    */
-  async renderPage({ pageIndex, colorMode, dpi }) {
+  async renderPage({
+    pageIndex, colorMode, dpi, outputFormat = 'png', quality = 0.6,
+  }) {
     if (!this.#objCache || !this.#pages) throw new Error('PDF not loaded');
     // Lazy import so the renderer stays out of main-thread bundles that never render in-process.
     const { renderPdfPageAsImage } = await import('./renderPdfPage.js');
     if (typeof process !== 'undefined') await ca.getCanvasNode();
     const page = this.#pages[pageIndex];
-    return renderPdfPageAsImage(page.objText, this.#objCache, page.cropBox || page.mediaBox, pageIndex, colorMode, page.rotate, dpi);
+    return renderPdfPageAsImage(page.objText, this.#objCache, page.cropBox || page.mediaBox, pageIndex, colorMode, page.rotate, dpi, outputFormat, quality);
   }
 
   /**

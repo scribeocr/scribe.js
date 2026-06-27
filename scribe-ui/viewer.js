@@ -262,7 +262,7 @@ export class ScribeViewer {
     /**
      * The outer element of the UI component that owns this viewer
      * (e.g. a wrapper that also contains a toolbar), if any.
-     * Used to decide whether a click landed on the viewer's own chrome when managing keyboard focus.
+     * Used to decide whether a click landed on the viewer's own controls when managing keyboard focus.
      * Defaults to `elem` when unset.
      * @type {?HTMLElement}
      */
@@ -2016,7 +2016,7 @@ document.addEventListener('mousedown', (event) => {
     return;
   }
   // The click landed outside every viewer canvas.
-  // A `'focused'`-scope viewer stops claiming body-level keystrokes unless the click landed on its own chrome (toolbar, etc.).
+  // A `'focused'`-scope viewer stops claiming body-level keystrokes unless the click landed on its own controls (toolbar, etc.).
   // A `'global'`-scope viewer keeps the page, matching a full-screen app.
   if (_activeViewer && _activeViewer.opt.keyboardScope === 'focused') {
     const outer = _activeViewer.outerElem;
