@@ -725,39 +725,85 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       display: inline-block;
     }
 
-    .${r} .upload_dropZone {
-      border: solid;
-      border-width: 3px;
-      outline: 2px dashed #323639;
-      outline-offset: -12px;
+    /* Empty-state (no document) drop zone: a dashed region with centered "Choose file" content, styled to match
+       the monochrome chrome. The dashed border lights up to the accent only on drag-over (the active-drag color). */
+    .${r} .scribe-drop-region {
+      position: absolute;
+      inset: 30px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 1.5px dashed rgba(255, 255, 255, .16);
+      border-radius: 14px;
+      transition: border-color .05s ease-out, background-color .05s ease-out;
+    }
+
+    .${r} .scribe-drop-zone.highlight .scribe-drop-region {
+      border-color: #6aa0ff;
+      background-color: rgba(91, 148, 255, .1);
+    }
+
+    .${r} .scribe-drop-content {
+      display: flex;
+      flex-direction: column;
+      align-items: center;
       text-align: center;
-      transition:
-        outline-offset 0.2s ease-out,
-        outline-color 0.3s ease-in-out,
-        background-color 0.2s ease-out;
     }
 
-    .${r} .upload_dropZone.highlight {
-      outline-offset: -4px;
-      outline-color: #191b1d;
-      background-color: rgb(106, 111, 114);
+    .${r} .scribe-drop-icon { color: #9ea2a6; margin-bottom: 20px; }
+
+    .${r} .scribe-drop-icon svg { width: 42px; height: 42px; }
+
+    .${r} .scribe-drop-title {
+      font-size: 17px;
+      font-weight: 500;
+      color: #dadce0;
+      letter-spacing: .2px;
     }
 
+    .${r} .scribe-drop-btn {
+      margin-top: 22px;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 18px;
+      border-radius: 8px;
+      background: rgba(255, 255, 255, .08);
+      border: 1px solid rgba(255, 255, 255, .08);
+      color: #e4e6e8;
+      font-size: 13.5px;
+      font-weight: 500;
+      cursor: pointer;
+      transition: background-color .15s ease-out;
+    }
+
+    .${r} .scribe-drop-btn:hover { background: rgba(255, 255, 255, .13); }
+
+    .${r} .scribe-drop-btn svg { width: 16px; height: 16px; }
+
+    .${r} .scribe-drop-hint {
+      font-size: 12.5px;
+      color: #83878b;
+      margin-top: 14px;
+    }
+
+    /* Shown/hidden by toggling opacity (not display) so it can fade in and out; pointer-events:none keeps it click-through. */
     .${r} .scribe-drag-overlay {
       position: absolute;
       left: 0;
       right: 0;
       bottom: 0;
-      display: none;
+      opacity: 0;
       pointer-events: none;
       z-index: 9;
       background: rgba(91, 148, 255, .1);
+      transition: opacity .06s ease-out;
     }
 
     .${r} .scribe-drag-frame {
       position: absolute;
       inset: 14px;
-      border: 2.5px dashed #6aa0ff;
+      border: 2px dashed #6aa0ff;
       border-radius: 14px;
     }
 
@@ -768,21 +814,21 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       transform: translateX(-50%);
       display: flex;
       align-items: center;
-      gap: 10px;
-      padding: 11px 19px 11px 15px;
-      border-radius: 999px;
+      gap: 9px;
+      padding: 9px 16px 9px 13px;
+      border-radius: 8px;
       background: #2f6fed;
       color: #fff;
-      font-size: 14px;
-      font-weight: 600;
+      font-size: 13.5px;
+      font-weight: 500;
       letter-spacing: .2px;
       white-space: nowrap;
-      box-shadow: 0 10px 28px rgba(47, 111, 237, .5);
+      box-shadow: 0 2px 6px rgba(0, 0, 0, .2);
     }
 
     .${r} .scribe-drag-pill svg {
-      width: 18px;
-      height: 18px;
+      width: 17px;
+      height: 17px;
     }
 
     .${r}-toolbar input {

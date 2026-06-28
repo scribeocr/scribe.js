@@ -238,48 +238,46 @@ export function createDropZone({
   width, height, top, onFiles,
 }) {
   const dropZone = document.createElement('div');
-  dropZone.className = 'upload_dropZone text-center p-4';
+  dropZone.className = 'scribe-drop-zone';
   dropZone.style.zIndex = '8';
   dropZone.style.top = `${top}px`;
   dropZone.style.position = 'absolute';
   dropZone.style.height = `${height}px`;
   dropZone.style.width = `${width}px`;
 
-  const uploadDiv = document.createElement('div');
-  uploadDiv.style.position = 'relative';
-  uploadDiv.style.top = '35%';
-  uploadDiv.style.color = '#dddddd';
+  const icon = document.createElement('div');
+  icon.className = 'scribe-drop-icon';
+  icon.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
+    + '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>';
 
-  const instructions = document.createElement('p');
-  instructions.className = 'small';
-  instructions.innerHTML = 'Drag &amp; drop files inside dashed region<br><i>or</i>';
+  const title = document.createElement('div');
+  title.className = 'scribe-drop-title';
+  title.textContent = 'Drop a PDF to get started';
 
+  // Hidden native input wrapped by the styled label, so clicking "Choose file" opens the picker.
   const openFileInputElem = document.createElement('input');
   openFileInputElem.type = 'file';
   openFileInputElem.multiple = true;
-  openFileInputElem.style.visibility = 'hidden';
-  openFileInputElem.style.position = 'absolute';
+  openFileInputElem.style.display = 'none';
 
-  const fileInputLabel = document.createElement('label');
-  fileInputLabel.className = 'btn btn-info mb-3';
-  fileInputLabel.style.minWidth = '8rem';
-  fileInputLabel.style.border = '1px solid';
-  fileInputLabel.style.padding = '0.4rem';
-  fileInputLabel.textContent = 'Select Files';
-  fileInputLabel.appendChild(openFileInputElem);
+  const button = document.createElement('label');
+  button.className = 'scribe-drop-btn';
+  button.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.1" stroke-linecap="round" stroke-linejoin="round">'
+    + '<path d="M3 7h6l2 2h10v9a2 2 0 0 1-2 2H3z"/></svg><span>Choose file</span>';
+  button.appendChild(openFileInputElem);
 
-  const uploadGallery1 = document.createElement('div');
-  uploadGallery1.className = 'upload_gallery d-flex flex-wrap justify-content-center gap-3 mb-0';
-  uploadGallery1.style.display = 'inline!important';
+  const hint = document.createElement('div');
+  hint.className = 'scribe-drop-hint';
+  hint.textContent = 'or drag a file anywhere';
 
-  const uploadGallery2 = document.createElement('div');
-  uploadGallery2.className = 'upload_gallery d-flex flex-wrap justify-content-center gap-3 mb-0';
+  const content = document.createElement('div');
+  content.className = 'scribe-drop-content';
+  content.append(icon, title, button, hint);
 
-  uploadDiv.appendChild(instructions);
-  uploadDiv.appendChild(fileInputLabel);
-  uploadDiv.appendChild(uploadGallery1);
-  uploadDiv.appendChild(uploadGallery2);
-  dropZone.appendChild(uploadDiv);
+  const region = document.createElement('div');
+  region.className = 'scribe-drop-region';
+  region.appendChild(content);
+  dropZone.appendChild(region);
 
   openFileInputElem.addEventListener('change', () => {
     if (!openFileInputElem.files || openFileInputElem.files.length === 0) return;

@@ -358,14 +358,14 @@ class ScribePDFViewer {
       // (`dataTransfer.files` is empty until `drop`, so we must check `types` instead.)
       /** @param {DragEvent} event */
       const isFileDrag = (event) => !!(event.dataTransfer && Array.from(event.dataTransfer.types).includes('Files'));
-      const hideDragOverlay = () => { this._fileDragDepth = 0; dragOverlay.style.display = 'none'; };
+      const hideDragOverlay = () => { this._fileDragDepth = 0; dragOverlay.style.opacity = '0'; };
       /** @param {DragEvent} event */
       const onDragEnter = (event) => {
         if (!this.doc || !isFileDrag(event)) return;
         this._fileDragDepth++;
         if (this._fileDragDepth !== 1) return;
         dragOverlay.style.top = `${this._chromeTop()}px`; // sit below the toolbar and tab strip, leaving them visible
-        dragOverlay.style.display = 'block';
+        dragOverlay.style.opacity = '1';
       };
       /** @param {DragEvent} event */
       const onDragOver = (event) => {
@@ -376,7 +376,7 @@ class ScribePDFViewer {
       const onDragLeave = (event) => {
         if (!this.doc || !isFileDrag(event)) return;
         this._fileDragDepth = Math.max(0, this._fileDragDepth - 1);
-        if (this._fileDragDepth === 0) dragOverlay.style.display = 'none';
+        if (this._fileDragDepth === 0) dragOverlay.style.opacity = '0';
       };
       // A drop fires no matching `dragleave`, so hide here. The overlay is `pointer-events:none`, so the drop
       // lands on the canvas and bubbles to this root listener, which opens the dropped PDFs as new tabs.
