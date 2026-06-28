@@ -212,6 +212,7 @@ async function restoreSessionFromFile(doc, scribeFile) {
     doc.pageMetrics[i] = new PageMetrics(doc.ocr[oemName][i].dims);
     doc.pageMetrics[i].angle = doc.ocr[oemName][i].angle;
     doc.pageMetrics[i].rotation = scribeRestoreObj.pageRotations?.[i] || 0;
+    doc.pageMetrics[i].sourcePageN = scribeRestoreObj.pageSourceIndices?.[i] ?? null;
   }
 
   // The active text layer is now the imported OCR for every page, so mark every page OCR-applied.

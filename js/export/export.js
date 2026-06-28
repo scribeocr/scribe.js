@@ -143,10 +143,15 @@ export async function exportData(doc, format = 'txt', options = {}) {
           let overlayAnnotationsPages = doc.annotations.pages;
           let pageStats = doc.inputData.pageStats;
           let ocrAppliedArr = doc.inputData.ocrApplied;
-          if (pageArr.length < doc.inputData.pageCount) {
+          // Page edits (delete/reorder) make each slot's source page (`sourcePageN`) diverge from its display position,
+          // so subset the input PDF to the source order while the overlay arrays stay in display order.
+          // An identity composition (no reordering, full page set) skips the subset.
+          const sourceArr = pageArr.map((p) => doc.pageMetrics[p]?.sourcePageN ?? p);
+          const composed = sourceArr.some((s, k) => s !== pageArr[k]) || pageArr.length < doc.inputData.pageCount;
+          if (composed) {
             const fullStats = pageStats;
             const fullOcrApplied = ocrAppliedArr;
-            basePdfData = await subsetPdf(basePdfData, pageArr);
+            basePdfData = await subsetPdf(basePdfData, sourceArr);
             overlayOcrArr = pageArr.map((i) => ocrDownload[i]);
             overlayPageMetricsArr = pageArr.map((i) => doc.pageMetrics[i]);
             overlayAnnotationsPages = pageArr.map((i) => doc.annotations.pages[i] || []);
@@ -388,6 +393,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
       layoutDataTables: removeCircularRefsDataTables(doc.layoutDataTables.pages),
       annotations: doc.annotations.pages,
       pageRotations: (doc.pageMetrics || []).map((pm) => pm?.rotation || 0),
+      pageSourceIndices: (doc.pageMetrics || []).map((pm) => pm?.sourcePageN ?? null),
       inputData: {
         pdfType: doc.inputData.pdfType,
         pageStats: doc.inputData.pageStats,

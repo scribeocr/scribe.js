@@ -194,7 +194,9 @@ export class ImageStore {
       const pdfScheduler = await this.getPdfScheduler();
       const targetWidth = this.#pageMetrics[n].dims.width;
       const dpi = 300 * (targetWidth / this.pdfDims300[n].width);
-      const result = await pdfScheduler.renderPdfPage({ pageIndex: n, colorMode, dpi }, forViewer);
+      // Display slot `n` may have been reordered; raster its source page, not its position.
+      const sourcePageN = this.#pageMetrics[n].sourcePageN ?? n;
+      const result = await pdfScheduler.renderPdfPage({ pageIndex: sourcePageN, colorMode, dpi }, forViewer);
       // The render was dropped from the queue (e.g. evicted to keep the viewer lane bounded).
       if (result === SKIPPED) return SKIPPED;
       return new ImageWrapper(n, result.dataUrl, result.colorMode);
@@ -366,8 +368,10 @@ export class ImageStore {
         if (!dims300) return null;
         const pdfScheduler = await this.getPdfScheduler();
         const dpi = 300 * (widthPx / dims300.width);
+        // Display slot `n` may have been reordered; raster its source page, not its position.
+        const sourcePageN = this.#pageMetrics[n]?.sourcePageN ?? n;
         const result = await pdfScheduler.renderPdfPage({
-          pageIndex: n, colorMode: 'color', dpi, outputFormat: 'jpeg', quality,
+          pageIndex: sourcePageN, colorMode: 'color', dpi, outputFormat: 'jpeg', quality,
         }, false);
         return result && result !== SKIPPED ? result.blob ?? null : null;
       }
