@@ -20,6 +20,76 @@ import {
 import { importFiles as importFilesImpl, importFilesSupp as importFilesSuppImpl } from '../import/import.js';
 import { runOptimization as runOptimizationImpl } from '../fontEval.js';
 
+/**
+ * The distinct OCR/raw-OCR layer arrays.
+ * Deduped by identity because callers alias layers (e.g. the viewer sets `doc.ocr.active = doc.ocr.pdf`), so a shared array is spliced only once.
+ * @param {Object<string, Array<any>>} layers
+ * @returns {Array<Array<any>>}
+ */
+function uniqueLayers(layers) {
+  return [...new Set(Object.values(layers).filter(Array.isArray))];
+}
+
+/**
+ * Every dense per-page array that must stay index-aligned with `pageMetrics`.
+ * Delete/move apply the same splice to each. (Derived image caches are handled separately by `clearImageCaches`.)
+ * @param {ScribeDoc} doc
+ * @returns {Array<Array<any>>}
+ */
+function densePageArrays(doc) {
+  const arrs = [...uniqueLayers(doc.ocr), ...uniqueLayers(doc.ocrRaw)];
+  arrs.push(doc.pageMetrics, doc.layoutRegions.pages, doc.layoutDataTables.pages, doc.annotations.pages);
+  if (Array.isArray(doc.vis)) arrs.push(doc.vis);
+  if (Array.isArray(doc.convertPageWarn)) arrs.push(doc.convertPageWarn);
+  // Source image (image-input docs) and per-page 300-DPI dims are full-length; rendered caches are not (see clearImageCaches).
+  arrs.push(doc.images.nativeSrc, doc.images.pdfDims300);
+  if (Array.isArray(doc.inputData.xmlMode)) arrs.push(doc.inputData.xmlMode);
+  if (Array.isArray(doc.inputData.pageStats)) arrs.push(doc.inputData.pageStats);
+  if (Array.isArray(doc.inputData.ocrApplied)) arrs.push(doc.inputData.ocrApplied);
+  // Dedupe so any aliased array (e.g. ocr.active === ocr.pdf) is spliced exactly once.
+  return [...new Set(arrs)];
+}
+
+/**
+ * Drop the derived image caches so they re-render against the edited order (via `sourcePageN`).
+ * @param {ScribeDoc} doc
+ */
+function clearImageCaches(doc) {
+  const { images } = doc;
+  images.native.length = 0;
+  images.binary.length = 0;
+  images.nativeProps.length = 0;
+  images.binaryProps.length = 0;
+  images.thumbnails.length = 0;
+}
+
+/**
+ * Renumber the `.n` field on every per-page object whose identity carries its index.
+ * @param {ScribeDoc} doc
+ */
+function renumberPages(doc) {
+  for (const layer of uniqueLayers(doc.ocr)) {
+    for (let i = 0; i < layer.length; i++) if (layer[i]) layer[i].n = i;
+  }
+  const tag = (arr) => { for (let i = 0; i < arr.length; i++) if (arr[i]) arr[i].n = i; };
+  tag(doc.layoutRegions.pages);
+  tag(doc.layoutDataTables.pages);
+  tag(doc.images.nativeProps);
+  tag(doc.images.binaryProps);
+}
+
+/**
+ * Give every page a concrete `sourcePageN`, so a later reorder/delete can carry the real source index
+ * (the default `null` means "identity = my current index", valid only before any edit).
+ * @param {ScribeDoc} doc
+ */
+function materializeSourcePages(doc) {
+  for (let i = 0; i < doc.pageMetrics.length; i++) {
+    const pm = doc.pageMetrics[i];
+    if (pm && pm.sourcePageN == null) pm.sourcePageN = i;
+  }
+}
+
 let docIdCounter = 0;
 
 /**
@@ -107,6 +177,38 @@ export class ScribeDoc {
     if (idx >= 0) {
       this.layoutDataTables.pages[n].tables.splice(idx, 1);
     }
+  }
+
+  /**
+   * Delete page `i` from this document's live page model.
+   * @param {number} i - 0-based page index.
+   */
+  deletePage(i) {
+    if (i < 0 || i >= this.pageMetrics.length) return;
+    materializeSourcePages(this);
+    for (const arr of densePageArrays(this)) if (i < arr.length) arr.splice(i, 1);
+    clearImageCaches(this);
+    renumberPages(this);
+    this.inputData.pageCount = this.pageMetrics.length;
+    this.images.pageCount = this.pageMetrics.length;
+  }
+
+  /**
+   * Move page `from` to index `to` (its final position in the new order) in this document's live page model.
+   * @param {number} from
+   * @param {number} to
+   */
+  movePage(from, to) {
+    const len = this.pageMetrics.length;
+    if (from < 0 || from >= len || to < 0 || to >= len || from === to) return;
+    materializeSourcePages(this);
+    for (const arr of densePageArrays(this)) {
+      if (from >= arr.length) continue;
+      const [item] = arr.splice(from, 1);
+      arr.splice(to, 0, item);
+    }
+    clearImageCaches(this);
+    renumberPages(this);
   }
 
   /**
