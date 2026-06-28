@@ -7,6 +7,7 @@ import {
 } from '../js/controls/toolbar.js';
 import { createThumbnailPanel, createScrollbars } from '../js/controls/panels.js';
 import { createHighlightTool, createDropZone, openDocumentFromFile } from '../js/controls/tools.js';
+import { filesFromDropEvent } from '../js/dragAndDrop.js';
 
 /** Root class used to scope this app's control styles. */
 const ROOT_CLASS = 'scribe-pdf-viewer';
@@ -338,6 +339,66 @@ class ScribePDFViewer {
     // Ctrl/Cmd+O opens the file picker (scoped by keyboardScope), replacing the browser's open default.
     if (this._open) {
       this._teardownCallbacks.push(this._open.installOpenShortcut());
+    }
+
+    // A loaded document hides the empty-state drop zone, so it can't catch a dropped PDF.
+    // Show a dedicated drag-over overlay during a file drag instead, and open the dropped PDF in a new tab.
+    if (showDropZone) {
+      const dragOverlay = document.createElement('div');
+      dragOverlay.className = 'scribe-drag-overlay';
+      dragOverlay.innerHTML = '<div class="scribe-drag-frame"></div><div class="scribe-drag-pill">'
+        + '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 5v14M5 12h14"/></svg>'
+        + '<span>Drop to open in a new tab</span></div>';
+      this.pdfViewerElem.appendChild(dragOverlay);
+
+      // `dragenter`/`dragleave` bubble per descendant, so a bare `dragleave` fires mid-drag.
+      // The depth counter instead reaches 0 only when the cursor truly leaves the component.
+      this._fileDragDepth = 0;
+      // `types` includes 'Files' only for external file drags, so this ignores internal text-selection drags.
+      // (`dataTransfer.files` is empty until `drop`, so we must check `types` instead.)
+      /** @param {DragEvent} event */
+      const isFileDrag = (event) => !!(event.dataTransfer && Array.from(event.dataTransfer.types).includes('Files'));
+      const hideDragOverlay = () => { this._fileDragDepth = 0; dragOverlay.style.display = 'none'; };
+      /** @param {DragEvent} event */
+      const onDragEnter = (event) => {
+        if (!this.doc || !isFileDrag(event)) return;
+        this._fileDragDepth++;
+        if (this._fileDragDepth !== 1) return;
+        dragOverlay.style.top = `${this._chromeTop()}px`; // sit below the toolbar and tab strip, leaving them visible
+        dragOverlay.style.display = 'block';
+      };
+      /** @param {DragEvent} event */
+      const onDragOver = (event) => {
+        if (!this.doc || !isFileDrag(event)) return;
+        event.preventDefault(); // allow the drop (otherwise the browser navigates to the dropped file)
+      };
+      /** @param {DragEvent} event */
+      const onDragLeave = (event) => {
+        if (!this.doc || !isFileDrag(event)) return;
+        this._fileDragDepth = Math.max(0, this._fileDragDepth - 1);
+        if (this._fileDragDepth === 0) dragOverlay.style.display = 'none';
+      };
+      // A drop fires no matching `dragleave`, so hide here. The overlay is `pointer-events:none`, so the drop
+      // lands on the canvas and bubbles to this root listener, which opens the dropped PDFs as new tabs.
+      /** @param {DragEvent} event */
+      const onDrop = async (event) => {
+        if (!this.doc || !isFileDrag(event)) return;
+        event.preventDefault();
+        hideDragOverlay();
+        const files = await filesFromDropEvent(event);
+        if (files.length > 0) this.openFiles(files);
+      };
+      // Listen on the viewer's own root, never `window`/`document`, so the embedded component adds no global side effects.
+      this.pdfViewerElem.addEventListener('dragenter', onDragEnter);
+      this.pdfViewerElem.addEventListener('dragover', onDragOver);
+      this.pdfViewerElem.addEventListener('dragleave', onDragLeave);
+      this.pdfViewerElem.addEventListener('drop', onDrop);
+      this._teardownCallbacks.push(() => {
+        this.pdfViewerElem.removeEventListener('dragenter', onDragEnter);
+        this.pdfViewerElem.removeEventListener('dragover', onDragOver);
+        this.pdfViewerElem.removeEventListener('dragleave', onDragLeave);
+        this.pdfViewerElem.removeEventListener('drop', onDrop);
+      });
     }
 
     const origCallback = this.scribe.displayPageCallback;

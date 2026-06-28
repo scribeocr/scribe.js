@@ -743,6 +743,48 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       background-color: rgb(106, 111, 114);
     }
 
+    .${r} .scribe-drag-overlay {
+      position: absolute;
+      left: 0;
+      right: 0;
+      bottom: 0;
+      display: none;
+      pointer-events: none;
+      z-index: 9;
+      background: rgba(91, 148, 255, .1);
+    }
+
+    .${r} .scribe-drag-frame {
+      position: absolute;
+      inset: 14px;
+      border: 2.5px dashed #6aa0ff;
+      border-radius: 14px;
+    }
+
+    .${r} .scribe-drag-pill {
+      position: absolute;
+      top: 26px;
+      left: 50%;
+      transform: translateX(-50%);
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding: 11px 19px 11px 15px;
+      border-radius: 999px;
+      background: #2f6fed;
+      color: #fff;
+      font-size: 14px;
+      font-weight: 600;
+      letter-spacing: .2px;
+      white-space: nowrap;
+      box-shadow: 0 10px 28px rgba(47, 111, 237, .5);
+    }
+
+    .${r} .scribe-drag-pill svg {
+      width: 18px;
+      height: 18px;
+    }
+
     .${r}-toolbar input {
       background: rgba(0, 0, 0, .5);
       border: none;

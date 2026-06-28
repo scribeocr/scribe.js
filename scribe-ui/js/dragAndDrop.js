@@ -48,6 +48,23 @@ export async function getAllFileEntries(dataTransferItemList) {
   return fileEntries;
 }
 
+/**
+ * Resolve every file from a drop event's `dataTransfer`, expanding any dropped directories into their files.
+ * @param {DragEvent} event
+ * @returns {Promise<File[]>}
+ */
+export async function filesFromDropEvent(event) {
+  if (!event.dataTransfer) return [];
+  const entries = await getAllFileEntries(event.dataTransfer.items);
+  const settled = await Promise.allSettled(entries.map((entry) => new Promise((resolve, reject) => {
+    if (entry instanceof File) resolve(entry);
+    else entry.file(resolve, reject);
+  })));
+  return settled
+    .filter(/** @returns {x is PromiseFulfilledResult<File>} */ (x) => x.status === 'fulfilled')
+    .map((x) => x.value);
+}
+
 // Get all the entries (files or sub-directories) in a directory
 // by calling readEntries until it returns empty array
 async function readAllDirectoryEntries(directoryReader) {

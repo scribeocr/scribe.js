@@ -3,7 +3,7 @@
 import scribeLib from '../../../scribe.js';
 import { makeIconButton } from './toolbar.js';
 import { applyHighlight } from '../viewerHighlights.js';
-import { getAllFileEntries } from '../dragAndDrop.js';
+import { filesFromDropEvent } from '../dragAndDrop.js';
 
 const HIGHLIGHT_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 -960 960 960" fill="currentColor">
 <path d="M280-320v-440q0-33 23.5-56.5T360-840q9 0 18 2t17 6l240 119q20 10 32.5 29.5T680-641v321H280Zm80-80h240v-241L360-760v360ZM160-120l22-65q8-25 29-40t47-15h444q26 0 47 15t29 40l22 65H160Zm200-280h240-240Z"/>
@@ -304,15 +304,7 @@ export function createDropZone({
 
   dropZone.addEventListener('drop', async (event) => {
     event.preventDefault();
-    if (!event.dataTransfer) return;
-    const items = await getAllFileEntries(event.dataTransfer.items);
-    const filesPromises = await Promise.allSettled(items.map((x) => new Promise((resolve, reject) => {
-      if (x instanceof File) resolve(x);
-      else x.file(resolve, reject);
-    })));
-    const files = filesPromises
-      .filter(/** @returns {x is PromiseFulfilledResult<File>} */ (x) => x.status === 'fulfilled')
-      .map((x) => x.value);
+    const files = await filesFromDropEvent(event);
     if (files.length === 0) return;
     dropZone.classList.remove('highlight');
     onFiles(files);
