@@ -127,62 +127,60 @@ export class KonvaIText extends Konva.Shape {
           context.restore();
         }
 
-        context.font = `${shape.fontFaceStyle} ${shape.fontFaceWeight} ${shape.fontSize}px ${shape.fontFaceName}`;
-        context.textBaseline = 'alphabetic';
-        context.fillStyle = shape.fill();
-        context.lineWidth = 1;
+        // At zero opacity (e.g. `invis` mode, where the rasterized page shows the text) the glyphs and decorations paint
+        // with the word's own fill/stroke and produce nothing, but Konva does not skip an opacity-0 node.
+        // So gating the per-character fillText loop here removes what is otherwise the dominant cost of redrawing the text layer while scrolling.
+        // The highlight and match boxes above and below set their own globalAlpha, so they stay outside this gate and still draw over invisible text.
+        if (shape.getAbsoluteOpacity() !== 0) {
+          context.font = `${shape.fontFaceStyle} ${shape.fontFaceWeight} ${shape.fontSize}px ${shape.fontFaceName}`;
+          context.textBaseline = 'alphabetic';
+          context.fillStyle = shape.fill();
+          context.lineWidth = 1;
 
-        if (!shape.word.visualCoords && (shape.word.style.sup || shape.word.style.dropcap)) {
-          const fontI = getViewer(shape).doc.fonts.getWordFont(shape.word);
-          const fontDesc = fontI.opentype.descender / fontI.opentype.unitsPerEm * shape.fontSize;
-          shape.setAttr('y', shape.yActual - shape.fontSize * 0.6 + fontDesc);
-        } else {
-          shape.setAttr('y', shape.yActual - shape.fontSize * 0.6);
-        }
+          let leftI = shape.word.visualCoords ? 0 - this.leftSideBearing : 0;
+          for (let i = 0; i < shape.charArr.length; i++) {
+            let charI = shape.charArr[i];
 
-        let leftI = shape.word.visualCoords ? 0 - this.leftSideBearing : 0;
-        for (let i = 0; i < shape.charArr.length; i++) {
-          let charI = shape.charArr[i];
-
-          if (shape.word.style.smallCaps) {
-            if (charI === charI.toUpperCase()) {
-              context.font = `${shape.fontFaceStyle} ${shape.fontFaceWeight} ${shape.fontSize}px ${shape.fontFaceName}`;
-            } else {
-              charI = charI.toUpperCase();
-              context.font = `${shape.fontFaceStyle} ${shape.fontFaceWeight} ${shape.fontSize * shape.smallCapsMult}px ${shape.fontFaceName}`;
+            if (shape.word.style.smallCaps) {
+              if (charI === charI.toUpperCase()) {
+                context.font = `${shape.fontFaceStyle} ${shape.fontFaceWeight} ${shape.fontSize}px ${shape.fontFaceName}`;
+              } else {
+                charI = charI.toUpperCase();
+                context.font = `${shape.fontFaceStyle} ${shape.fontFaceWeight} ${shape.fontSize * shape.smallCapsMult}px ${shape.fontFaceName}`;
+              }
             }
+
+            context.fillText(charI, leftI, shape.fontSize * 0.6);
+
+            leftI += shape.advanceArrTotal[i];
           }
 
-          context.fillText(charI, leftI, shape.fontSize * 0.6);
+          if (shape.word.style.underline) {
+            const underlineThickness = shape.fontFaceWeight === 'bold' ? Math.ceil(shape.fontSize / 12) : Math.ceil(shape.fontSize / 24);
+            const underlineOffset = Math.ceil(shape.fontSize / 12) + underlineThickness / 2;
+            context.strokeStyle = shape.fill();
+            context.lineWidth = underlineThickness;
+            context.beginPath();
+            context.moveTo(0, shape.fontSize * 0.6 + underlineOffset);
+            context.lineTo(shape.width(), shape.fontSize * 0.6 + underlineOffset);
+            context.stroke();
+          }
 
-          leftI += shape.advanceArrTotal[i];
-        }
+          if (shape.outline) {
+            context.strokeStyle = 'black';
+            context.lineWidth = 2 / shape.getAbsoluteScale().x;
+            context.beginPath();
+            context.rect(0, 0, shape.width(), shape.height());
+            context.stroke();
+          }
 
-        if (shape.word.style.underline) {
-          const underlineThickness = shape.fontFaceWeight === 'bold' ? Math.ceil(shape.fontSize / 12) : Math.ceil(shape.fontSize / 24);
-          const underlineOffset = Math.ceil(shape.fontSize / 12) + underlineThickness / 2;
-          context.strokeStyle = shape.fill();
-          context.lineWidth = underlineThickness;
-          context.beginPath();
-          context.moveTo(0, shape.fontSize * 0.6 + underlineOffset);
-          context.lineTo(shape.width(), shape.fontSize * 0.6 + underlineOffset);
-          context.stroke();
-        }
-
-        if (shape.outline) {
-          context.strokeStyle = 'black';
-          context.lineWidth = 2 / shape.getAbsoluteScale().x;
-          context.beginPath();
-          context.rect(0, 0, shape.width(), shape.height());
-          context.stroke();
-        }
-
-        if (shape.selected) {
-          context.strokeStyle = 'rgba(40,123,181,1)';
-          context.lineWidth = 2 / shape.getAbsoluteScale().x;
-          context.beginPath();
-          context.rect(0, 0, shape.width(), shape.height());
-          context.stroke();
+          if (shape.selected) {
+            context.strokeStyle = 'rgba(40,123,181,1)';
+            context.lineWidth = 2 / shape.getAbsoluteScale().x;
+            context.beginPath();
+            context.rect(0, 0, shape.width(), shape.height());
+            context.stroke();
+          }
         }
 
         if (shape.fillBox || shape.activeMatch) {
