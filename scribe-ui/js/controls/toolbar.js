@@ -173,6 +173,237 @@ export function createRotateControls(scribe) {
   return { rotateControls, rotateLeftElem, rotateRightElem };
 }
 
+let printing = false;
+
+/**
+ * Export `scribe.doc` to PDF and hand it to the browser's print dialog.
+ * @param {import('../../viewer.js').ScribeViewer} scribe
+ * @param {object} [opts]
+ * @param {?Array<number>} [opts.pageArr=null] - 0-based page indices to print; null prints the whole document.
+ * @returns {Promise<boolean>} Whether the print dialog was opened.
+ */
+async function printDocument(scribe, { pageArr = null } = {}) {
+  const doc = scribe?.doc;
+  if (!doc || printing) return false;
+  printing = true;
+  try {
+    // Match the editor's Export defaults: keep the original page content and append edits as an invisible layer,
+    // so print fidelity equals what a saved PDF would show.
+    const options = { displayMode: 'invis', addOverlay: true };
+    if (pageArr) options.pageArr = pageArr;
+    const bytes = await doc.exportData('pdf', options);
+
+    const url = URL.createObjectURL(new Blob([bytes], { type: 'application/pdf' }));
+
+    // Safari does not reliably print a PDF loaded in an iframe via contentWindow.print().
+    // Open the PDF in a new tab instead (the originating click is a user gesture, so this is not pop-up-blocked)
+    // and let the user print from there.
+    const isSafari = typeof navigator !== 'undefined'
+      && /^((?!chrome|android|crios|fxios).)*safari/i.test(navigator.userAgent);
+    if (isSafari) {
+      window.open(url, '_blank');
+      setTimeout(() => URL.revokeObjectURL(url), 60000);
+      return true;
+    }
+
+    const iframe = document.createElement('iframe');
+    iframe.setAttribute('aria-hidden', 'true');
+    iframe.style.position = 'fixed';
+    iframe.style.left = '-10000px';
+    iframe.style.top = '0';
+    iframe.style.width = '1px';
+    iframe.style.height = '1px';
+    iframe.style.border = '0';
+
+    // `afterprint` is unreliable across browsers, so a timeout backstops the cleanup.
+    let cleaned = false;
+    const cleanup = () => {
+      if (cleaned) return;
+      cleaned = true;
+      URL.revokeObjectURL(url);
+      iframe.remove();
+    };
+
+    iframe.addEventListener('load', () => {
+      const win = iframe.contentWindow;
+      if (!win) { cleanup(); return; }
+      win.addEventListener('afterprint', cleanup);
+      try {
+        win.focus();
+        win.print();
+      } catch (err) {
+        console.error('print() failed:', err);
+        cleanup();
+      }
+    }, { once: true });
+
+    // Set src before attaching. A srcless iframe, once connected, fires a load for its initial about:blank document,
+    // which would consume this one-shot listener and print a blank page.
+    iframe.src = url;
+    document.body.appendChild(iframe);
+    setTimeout(cleanup, 60000);
+    return true;
+  } catch (err) {
+    console.error('Print failed:', err);
+    return false;
+  } finally {
+    printing = false;
+  }
+}
+
+const PRINT_SVG = `<svg viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet" focusable="false" role="none" style="pointer-events: none; display: block; width: 100%; height: 100%;">
+<path d="M19 8H5c-1.66 0-3 1.34-3 3v6h4v4h12v-4h4v-6c0-1.66-1.34-3-3-3zm-3 11H8v-5h8v5zm3-7c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm-1-9H6v4h12V3z"></path></svg>`;
+
+/**
+ * Build the print control and its Ctrl/Cmd+P shortcut, wired to export the current document and open the browser print dialog.
+ * @param {import('../../viewer.js').ScribeViewer} scribe
+ * @param {HTMLElement} rootElem - The app's root element (used to scope the Ctrl/Cmd+P shortcut).
+ * @returns {{ printControls: HTMLSpanElement, printElem: HTMLSpanElement, installPrintShortcut: () => (() => void) }}
+ */
+export function createPrintControls(scribe, rootElem) {
+  const printControls = document.createElement('span');
+  const printElem = makeIconButton('Print', PRINT_SVG);
+  printControls.appendChild(printElem);
+
+  // Show a busy state while the export runs (a large document takes a moment to assemble).
+  const print = async () => {
+    if (printElem.classList.contains('busy')) return;
+    printElem.classList.add('busy');
+    try {
+      await printDocument(scribe);
+    } finally {
+      printElem.classList.remove('busy');
+    }
+  };
+
+  printElem.addEventListener('click', print);
+
+  /**
+   * Install the document-level Ctrl/Cmd+P shortcut that prints (scoped by keyboardScope),
+   * in place of the browser's default print-the-whole-page behavior.
+   * @returns {() => void} A cleanup function that removes the listener.
+   */
+  function installPrintShortcut() {
+    const handler = (event) => {
+      if (!((event.key === 'p' || event.key === 'P') && (event.ctrlKey || event.metaKey) && !event.altKey)) return;
+      if (scribe.opt.keyboardScope === 'off') return;
+      const target = event.target instanceof Node ? event.target : null;
+      const insideThis = !!(target && rootElem.contains(target));
+      const isActive = ScribeViewer.getActiveViewer() === scribe;
+      const inScope = scribe.opt.keyboardScope === 'global' ? isActive : (insideThis || isActive);
+      if (!inScope) return;
+      event.preventDefault();
+      print();
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }
+
+  return { printControls, printElem, installPrintShortcut };
+}
+
+const OPEN_SVG = `<svg viewBox="0 -960 960 960" preserveAspectRatio="xMidYMid meet" focusable="false" role="none" style="pointer-events: none; display: block; width: 100%; height: 100%;">
+<path d="M160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h240l80 80h320q33 0 56.5 23.5T880-640H447l-80-80H160v480l96-320h684L837-217q-8 27-30 42t-49 15H160Zm84-80h516l72-240H316l-72 240Zm0 0 72-240-72 240Z"></path></svg>`;
+
+/**
+ * Build the "Open" control: a button (and a hidden multi-file input) that hands the chosen files to `onFiles`,
+ * plus a scoped Ctrl/Cmd+O shortcut that opens the same picker.
+ * @param {import('../../viewer.js').ScribeViewer} scribe
+ * @param {HTMLElement} rootElem - The app's root element (used to scope the Ctrl/Cmd+O shortcut).
+ * @param {(files: File[]) => void} onFiles - Called with the chosen files.
+ * @returns {{ openControls: HTMLSpanElement, openElem: HTMLSpanElement, installOpenShortcut: () => (() => void) }}
+ */
+export function createOpenControls(scribe, rootElem, onFiles) {
+  const openControls = document.createElement('span');
+  const openElem = makeIconButton('Open', OPEN_SVG);
+  openControls.appendChild(openElem);
+
+  const inputElem = document.createElement('input');
+  inputElem.type = 'file';
+  inputElem.multiple = true;
+  inputElem.style.display = 'none';
+  openControls.appendChild(inputElem);
+
+  openElem.addEventListener('click', () => inputElem.click());
+  inputElem.addEventListener('change', () => {
+    if (inputElem.files && inputElem.files.length > 0) onFiles([...inputElem.files]);
+    // Clear so picking the same file again still fires `change`.
+    inputElem.value = '';
+  });
+
+  /**
+   * Install the document-level Ctrl/Cmd+O shortcut that opens the file picker (scoped by keyboardScope),
+   * in place of the browser's default open behavior.
+   * @returns {() => void} A cleanup function that removes the listener.
+   */
+  function installOpenShortcut() {
+    const handler = (event) => {
+      if (!((event.key === 'o' || event.key === 'O') && (event.ctrlKey || event.metaKey) && !event.altKey)) return;
+      if (scribe.opt.keyboardScope === 'off') return;
+      const target = event.target instanceof Node ? event.target : null;
+      const insideThis = !!(target && rootElem.contains(target));
+      const isActive = ScribeViewer.getActiveViewer() === scribe;
+      const inScope = scribe.opt.keyboardScope === 'global' ? isActive : (insideThis || isActive);
+      if (!inScope) return;
+      event.preventDefault();
+      inputElem.click();
+    };
+    document.addEventListener('keydown', handler);
+    return () => document.removeEventListener('keydown', handler);
+  }
+
+  return { openControls, openElem, installOpenShortcut };
+}
+
+/**
+ * Build the document tab strip: one chip per open document, each with a close button, for switching between them.
+ * @param {object} cfg
+ * @param {(index: number) => void} cfg.onSelect - Called when a tab is clicked.
+ * @param {(index: number) => void} cfg.onClose - Called when a tab's close button is clicked.
+ * @returns {{ tabStripElem: HTMLDivElement, render: (tabs: Array<{ name: string }>, activeIndex: number) => void }}
+ */
+export function createTabStrip({ onSelect, onClose }) {
+  const tabStripElem = document.createElement('div');
+  tabStripElem.className = 'scribe-tab-strip';
+
+  /**
+   * Rebuild the chips from the current tab list.
+   * @param {Array<{ name: string }>} tabs
+   * @param {number} activeIndex
+   */
+  function render(tabs, activeIndex) {
+    tabStripElem.textContent = '';
+    tabs.forEach((tab, i) => {
+      const chip = document.createElement('div');
+      chip.className = i === activeIndex ? 'scribe-tab active' : 'scribe-tab';
+      chip.title = tab.name;
+
+      const name = document.createElement('span');
+      name.className = 'scribe-tab-name';
+      name.textContent = tab.name;
+      chip.appendChild(name);
+
+      const close = document.createElement('span');
+      close.className = 'scribe-tab-close';
+      close.textContent = '×';
+      close.role = 'button';
+      close.ariaLabel = `Close ${tab.name}`;
+      chip.appendChild(close);
+
+      chip.addEventListener('click', () => onSelect(i));
+      // Stop the click reaching the chip, so closing a tab never also selects it.
+      close.addEventListener('click', (event) => {
+        event.stopPropagation();
+        onClose(i);
+      });
+
+      tabStripElem.appendChild(chip);
+    });
+  }
+
+  return { tabStripElem, render };
+}
+
 const SEARCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 -960 960 960" fill="currentColor">
 <path d="M784-120 532-372q-30 24-69 38t-83 14q-109 0-184.5-75.5T120-580q0-109 75.5-184.5T380-840q109 0 184.5 75.5T640-580q0 44-14 83t-38 69l252 252-56 56ZM380-400q75 0 127.5-52.5T560-580q0-75-52.5-127.5T380-760q-75 0-127.5 52.5T200-580q0 75 52.5 127.5T380-400Z"/>
 </svg>`;
@@ -380,6 +611,67 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
 
     .${r} .cr-icon-button.active {
       background: rgba(255, 255, 255, .2);
+    }
+
+    .${r} .cr-icon-button.busy {
+      opacity: .5;
+      pointer-events: none;
+    }
+
+    .${r} .scribe-tab-strip {
+      display: flex;
+      align-items: stretch;
+      width: 100%;
+      background: #3c4043;
+      border-top: 1px solid rgba(255, 255, 255, .08);
+      overflow-x: auto;
+      overflow-y: hidden;
+      white-space: nowrap;
+    }
+
+    .${r} .scribe-tab {
+      display: inline-flex;
+      align-items: center;
+      gap: 6px;
+      max-width: 200px;
+      padding: 0 8px;
+      color: #cfcfcf;
+      font-size: 13px;
+      cursor: pointer;
+      border-right: 1px solid rgba(255, 255, 255, .08);
+      user-select: none;
+    }
+
+    .${r} .scribe-tab:hover {
+      background: rgba(255, 255, 255, .06);
+    }
+
+    .${r} .scribe-tab.active {
+      background: rgb(82, 86, 89);
+      color: #fff;
+    }
+
+    .${r} .scribe-tab-name {
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+
+    .${r} .scribe-tab-close {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+      border-radius: 50%;
+      font-size: 14px;
+      line-height: 1;
+      color: #aaa;
+    }
+
+    .${r} .scribe-tab-close:hover {
+      background: rgba(255, 255, 255, .15);
+      color: #fff;
     }
 
     .${r} .highlight-color-btn {

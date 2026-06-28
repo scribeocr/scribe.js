@@ -3,7 +3,7 @@ import { ScribeViewer } from '../viewer.js';
 import { applyHighlight } from '../js/viewerHighlights.js';
 import { destroyContextMenu } from '../js/viewerCanvasInteraction.js';
 import {
-  addControlStyles, makeToolbarShell, makeSeparator, createPageNav, createZoomControls, createRotateControls, createSearchBar,
+  addControlStyles, makeToolbarShell, makeSeparator, createPageNav, createZoomControls, createRotateControls, createPrintControls, createOpenControls, createTabStrip, createSearchBar,
 } from '../js/controls/toolbar.js';
 import { createThumbnailPanel, createScrollbars } from '../js/controls/panels.js';
 import { createHighlightTool, createDropZone, openDocumentFromFile } from '../js/controls/tools.js';
@@ -15,6 +15,9 @@ const ROOT_CLASS = 'scribe-pdf-viewer';
 const TOOLBAR_HEIGHT_DEFAULT = 32;
 const TOOLBAR_HEIGHT_MIN = 24;
 const TOOLBAR_HEIGHT_MAX = 80;
+
+/** Height of the document tab strip (shown only with 2+ open tabs), in px. */
+const TAB_STRIP_HEIGHT = 30;
 
 /**
  * @typedef {object} FitResult
@@ -91,6 +94,16 @@ class ScribePDFViewer {
     this._ownsDoc = false;
 
     /**
+     * Open documents, one per tab. The app owns these docs and terminates them on close / `destroy`.
+     * @type {Array<{ doc: import('../../js/containers/scribeDoc.js').ScribeDoc, name: string, lastPage: number }>}
+     */
+    this._tabs = [];
+    /** Index of the active tab in `_tabs`, or -1 when none is open. */
+    this._activeTab = -1;
+    /** Whether the tab strip currently occupies layout space (shown only with 2+ tabs). */
+    this._tabStripVisible = false;
+
+    /**
      * The `ScribeViewer` instance backing this viewer. Each `ScribePDFViewer` owns its own
      * `ScribeViewer`, so multiple `ScribePDFViewer` instances can coexist on the page without
      * sharing state. Pass `options.scribe` to attach to an existing instance.
@@ -101,6 +114,9 @@ class ScribePDFViewer {
 
     const initWidth = width === 'auto' ? (container.clientWidth || 800) : width;
     const initHeight = height === 'auto' ? (container.clientHeight || 1000) : height;
+    // Current viewer pixel size, kept in sync by `resize` so `_relayout` can recompute canvas height when the tab strip shows/hides.
+    this._width = initWidth;
+    this._height = initHeight;
 
     this.scribe.enableHTMLOverlay = true;
     this.scribe.state.displayMode = 'invis';
@@ -162,6 +178,14 @@ class ScribePDFViewer {
 
     /** @type {?ReturnType<typeof createSearchBar>} */
     this._searchBar = null;
+    /** @type {?ReturnType<typeof createPrintControls>} */
+    this._print = null;
+    /** @type {?ReturnType<typeof createOpenControls>} */
+    this._open = null;
+    /** @type {?ReturnType<typeof createTabStrip>} */
+    this._tabStrip = null;
+    /** @type {?HTMLDivElement} */
+    this._tabStripElem = null;
 
     /** @type {?ReturnType<typeof createThumbnailPanel>} */
     this._thumbnailPanel = showThumbnails
@@ -191,7 +215,13 @@ class ScribePDFViewer {
       const pageNav = createPageNav(this.scribe);
       const zoom = createZoomControls(this.scribe);
       const rotate = createRotateControls(this.scribe);
+      const print = createPrintControls(this.scribe, this.pdfViewerElem);
+      this._print = print;
+      const open = createOpenControls(this.scribe, this.pdfViewerElem, (files) => this.openFiles(files));
+      this._open = open;
 
+      toolbarButtons.appendChild(open.openControls);
+      toolbarButtons.appendChild(makeSeparator());
       toolbarButtons.appendChild(pageNav.prevElem);
       toolbarButtons.appendChild(pageNav.nextElem);
       toolbarButtons.appendChild(pageNav.pageInputGroup);
@@ -199,6 +229,8 @@ class ScribePDFViewer {
       toolbarButtons.appendChild(rotate.rotateControls);
       toolbarButtons.appendChild(makeSeparator());
       toolbarButtons.appendChild(zoom.zoomControls);
+      toolbarButtons.appendChild(makeSeparator());
+      toolbarButtons.appendChild(print.printControls);
       if (this._highlightTool) {
         toolbarButtons.appendChild(makeSeparator());
         toolbarButtons.appendChild(this._highlightTool.highlightElem);
@@ -212,6 +244,18 @@ class ScribePDFViewer {
 
       center.appendChild(toolbarButtons);
       this.pdfViewerElem.appendChild(toolbarElem);
+
+      // Tab strip sits in normal flow directly below the toolbar (so the canvas flows beneath it).
+      // It starts hidden and only takes layout space once a second document is opened.
+      const tabStrip = createTabStrip({
+        onSelect: (i) => this._activateTab(i),
+        onClose: (i) => this._closeTab(i),
+      });
+      this._tabStrip = tabStrip;
+      this._tabStripElem = tabStrip.tabStripElem;
+      this._tabStripElem.style.height = `${TAB_STRIP_HEIGHT}px`;
+      this._tabStripElem.style.display = 'none';
+      this.pdfViewerElem.appendChild(this._tabStripElem);
 
       this.toolbarElem = toolbarElem;
       this.toolbarElemStart = toolbarElemStart;
@@ -236,7 +280,7 @@ class ScribePDFViewer {
         width: initWidth - 6,
         height: initHeight - this.toolbarHeight,
         top: this.toolbarHeight,
-        onFile: (file) => this.importFile(file),
+        onFiles: (files) => this.openFiles(files),
       });
       this.pdfViewerElem.appendChild(dropZone);
       this.dropZone = dropZone;
@@ -284,6 +328,16 @@ class ScribePDFViewer {
     // Ctrl/Cmd+F opens the find bar (scoped by keyboardScope).
     if (this._searchBar) {
       this._teardownCallbacks.push(this._searchBar.installFindShortcut());
+    }
+
+    // Ctrl/Cmd+P prints (scoped by keyboardScope), replacing the browser's print-the-page default.
+    if (this._print) {
+      this._teardownCallbacks.push(this._print.installPrintShortcut());
+    }
+
+    // Ctrl/Cmd+O opens the file picker (scoped by keyboardScope), replacing the browser's open default.
+    if (this._open) {
+      this._teardownCallbacks.push(this._open.installOpenShortcut());
     }
 
     const origCallback = this.scribe.displayPageCallback;
@@ -452,6 +506,124 @@ class ScribePDFViewer {
     return prev;
   }
 
+  /**
+   * Open one or more files as tabs. Each PDF becomes its own document/tab.
+   * All non-PDF files (images, OCR, `.scribe`) are opened together into a single document/tab, the way the core import combines them.
+   * The last opened tab becomes active.
+   * @param {File[] | FileList} files
+   * @returns {Promise<void>}
+   */
+  async openFiles(files) {
+    const list = Array.from(files || []);
+    if (list.length === 0) return;
+
+    /** @param {File} f */
+    const isPdf = (f) => /\.pdf$/i.test(f.name || '') || f.type === 'application/pdf';
+    const pdfs = list.filter(isPdf);
+    const others = list.filter((f) => !isPdf(f));
+
+    /** @type {Array<{ doc: import('../../js/containers/scribeDoc.js').ScribeDoc, name: string }>} */
+    const opened = [];
+    for (const pdf of pdfs) {
+      try {
+        const doc = await openDocumentFromFile(pdf);
+        opened.push({ doc, name: pdf.name || 'Document' });
+      } catch (err) {
+        console.error(`Failed to open ${pdf.name}:`, err);
+      }
+    }
+    if (others.length > 0) {
+      try {
+        const doc = await scribe.openDocument(others);
+        const name = others.length === 1 ? others[0].name : `${others[0].name} +${others.length - 1}`;
+        opened.push({ doc, name });
+      } catch (err) {
+        console.error('Failed to open files:', err);
+      }
+    }
+    if (opened.length === 0) return;
+
+    for (const t of opened) this._tabs.push({ doc: t.doc, name: t.name, lastPage: 0 });
+    await this._activateTab(this._tabs.length - 1);
+  }
+
+  /**
+   * Make tab `i` the active document, first saving the outgoing tab's current page so returning to it restores position.
+   * Retains the outgoing document (tabs stay loaded until closed).
+   * @param {number} i
+   * @returns {Promise<void>}
+   */
+  async _activateTab(i) {
+    if (i < 0 || i >= this._tabs.length) return;
+    if (this._activeTab >= 0 && this._activeTab < this._tabs.length) {
+      this._tabs[this._activeTab].lastPage = this.scribe.state.cp.n;
+    }
+    const tab = this._tabs[i];
+    this._activeTab = i;
+    this._renderTabs();
+    await this.attachDocument(tab.doc, tab.lastPage, { terminatePrevious: false });
+  }
+
+  /**
+   * Close tab `i`: terminate its document and, if it was active, activate the next tab
+   * (or return to the empty drop-zone state when none remain).
+   * @param {number} i
+   */
+  _closeTab(i) {
+    if (i < 0 || i >= this._tabs.length) return;
+    const wasActive = i === this._activeTab;
+    const [removed] = this._tabs.splice(i, 1);
+    removed.doc.terminate().catch(() => {});
+
+    if (this._tabs.length === 0) {
+      this._activeTab = -1;
+      this._renderTabs();
+      this.detachDoc({ terminate: false });
+      return;
+    }
+    if (wasActive) {
+      // The removed tab is gone. Clear the active marker so `_activateTab` doesn't save a page into it.
+      this._activeTab = -1;
+      this._activateTab(Math.min(i, this._tabs.length - 1));
+    } else {
+      if (i < this._activeTab) this._activeTab -= 1;
+      this._renderTabs();
+    }
+  }
+
+  /** Re-render the tab strip and toggle its visibility (shown only with 2+ tabs). */
+  _renderTabs() {
+    this._setTabStripVisible(this._tabs.length >= 2);
+    if (this._tabStrip) this._tabStrip.render(this._tabs, this._activeTab);
+  }
+
+  /**
+   * Show or hide the tab strip, relaying out the canvas so the strip never overlaps page content.
+   * @param {boolean} visible
+   */
+  _setTabStripVisible(visible) {
+    if (this._tabStripVisible === visible || !this._tabStripElem) return;
+    this._tabStripVisible = visible;
+    this._tabStripElem.style.display = visible ? '' : 'none';
+    this._relayout();
+  }
+
+  /** Height of the fixed top chrome (toolbar plus the tab strip when visible), in px. */
+  _chromeTop() {
+    return this.toolbarHeight + (this._tabStripVisible ? TAB_STRIP_HEIGHT : 0);
+  }
+
+  /** Re-apply canvas and thumbnail-panel sizing from the current dimensions and chrome height. */
+  _relayout() {
+    const top = this._chromeTop();
+    if (this._thumbnailPanel) {
+      this._thumbnailPanel.panelElem.style.top = `${top}px`;
+      this._thumbnailPanel.panelElem.style.height = `${this._height - top}px`;
+    }
+    this.scribe.resize(this._width, this._height - top);
+    if (this._updateScrollbars) this._updateScrollbars();
+  }
+
   /** Open the find bar, enable search highlighting, and focus the input. */
   openSearch() {
     this._searchBar?.openSearch();
@@ -487,17 +659,22 @@ class ScribePDFViewer {
    * @param {number} height
    */
   resize(width, height) {
+    this._width = width;
+    this._height = height;
     this.pdfViewerElem.style.width = `${width}px`;
     this.pdfViewerElem.style.height = `${height}px`;
-    // The panel overlays the canvas, so only its height tracks the viewport. Its width is user-owned.
+    const top = this._chromeTop();
+    // The panel overlays the canvas, so only its top/height track the viewport. Its width is user-owned.
     if (this._thumbnailPanel) {
-      this._thumbnailPanel.panelElem.style.height = `${height - this.toolbarHeight}px`;
+      this._thumbnailPanel.panelElem.style.top = `${top}px`;
+      this._thumbnailPanel.panelElem.style.height = `${height - top}px`;
     }
+    // The drop zone is only shown in the empty state, where the tab strip is hidden, so it tracks the toolbar.
     if (this.dropZone) {
       this.dropZone.style.width = `${width - 6}px`;
       this.dropZone.style.height = `${height - this.toolbarHeight}px`;
     }
-    this.scribe.resize(width, height - this.toolbarHeight);
+    this.scribe.resize(width, height - top);
     if (this._updateScrollbars) this._updateScrollbars();
   }
 
@@ -513,6 +690,12 @@ class ScribePDFViewer {
     // Teardown callbacks remove the document-level listeners and the highlight tool's observer/tooltip/cursor style.
     for (const cb of this._teardownCallbacks) cb();
     this._teardownCallbacks = [];
+    // The app owns every tab's document (opened via attachDocument with owns=false), so terminate them all here.
+    for (const tab of this._tabs) {
+      try { await tab.doc.terminate(); } catch { /* ignore */ }
+    }
+    this._tabs = [];
+    this._activeTab = -1;
     if (this.doc) {
       if (terminateDoc ?? this._ownsDoc) {
         try { await this.doc.terminate(); } catch { /* ignore */ }

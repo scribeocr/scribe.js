@@ -231,11 +231,11 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
  * @param {number} cfg.width - Zone width in px.
  * @param {number} cfg.height - Zone height in px.
  * @param {number} cfg.top - Zone top offset in px (below the toolbar).
- * @param {(file: File) => void} cfg.onFile - Called with the first chosen/dropped file.
+ * @param {(files: File[]) => void} cfg.onFiles - Called with all chosen/dropped files.
  * @returns {{ dropZone: HTMLDivElement, openFileInputElem: HTMLInputElement }}
  */
 export function createDropZone({
-  width, height, top, onFile,
+  width, height, top, onFiles,
 }) {
   const dropZone = document.createElement('div');
   dropZone.className = 'upload_dropZone text-center p-4';
@@ -283,7 +283,7 @@ export function createDropZone({
 
   openFileInputElem.addEventListener('change', () => {
     if (!openFileInputElem.files || openFileInputElem.files.length === 0) return;
-    onFile(openFileInputElem.files[0]);
+    onFiles([...openFileInputElem.files]);
   });
 
   // Drag-enter/leave can fire repeatedly over child nodes; a counter keeps the highlight stable.
@@ -315,7 +315,7 @@ export function createDropZone({
       .map((x) => x.value);
     if (files.length === 0) return;
     dropZone.classList.remove('highlight');
-    onFile(files[0]);
+    onFiles(files);
   });
 
   return { dropZone, openFileInputElem };
