@@ -769,6 +769,7 @@ export class ScribeViewer {
    * @param {MouseEvent} event
    */
   startAutoScroll(event) {
+    this.stopAutoScroll();
     this.deleteHTMLOverlay();
     event.preventDefault(); // suppress the browser's own middle-click autoscroll
     const a = this.autoScroll;
@@ -1923,6 +1924,15 @@ document.addEventListener('mousemove', (event) => {
 // If the window loses focus while the middle button is held, the mouseup never arrives.
 window.addEventListener('blur', () => {
   for (const v of _allViewers) v.stopAutoScroll();
+});
+
+// The pointer can also leave the window without the window losing focus, e.g. the middle button is released outside it.
+// Then neither a mouseup nor a blur fires, so the session would otherwise linger: a stuck indicator, plus the rAF tick scrolling on at its last speed.
+// relatedTarget is null only when the pointer leaves the document entirely.
+document.addEventListener('mouseout', (event) => {
+  if (event.relatedTarget === null) {
+    for (const v of _allViewers) v.stopAutoScroll();
+  }
 });
 
 document.addEventListener('touchend', () => {
