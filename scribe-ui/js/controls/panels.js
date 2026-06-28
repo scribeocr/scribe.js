@@ -13,6 +13,8 @@ const THUMB_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20
 </svg>`;
 const ROTATE_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="display:block;pointer-events:none;">
 <path d="M15.55 5.55L11 1v3.07C7.06 4.56 4 7.92 4 12s3.05 7.44 7 7.93v-2.02c-2.84-.48-5-2.94-5-5.91s2.16-5.43 5-5.91V10l4.55-4.45zM19.93 11c-.17-1.39-.72-2.73-1.62-3.89l-1.42 1.42c.54.75.88 1.6 1.02 2.47h2.02zM13 17.9v2.02c1.39-.17 2.74-.71 3.9-1.61l-1.44-1.44c-.75.54-1.59.89-2.46 1.03zm3.89-2.42l1.42 1.41c.9-1.16 1.45-2.5 1.62-3.89h-2.02c-.14.87-.48 1.72-1.02 2.47z"/></svg>`;
+const DELETE_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9 3v1H4v2h16V4h-5V3H9zM6 7l1 13h10l1-13H6z"/></svg>';
+const GRIP_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M8 5h2v2H8zM14 5h2v2h-2zM8 11h2v2H8zM14 11h2v2h-2zM8 17h2v2H8zM14 17h2v2h-2z"/></svg>';
 
 // Default-Letter aspect (height/width) for rows whose page metrics are unavailable.
 const DEFAULT_ASPECT = 11 / 8.5;
@@ -175,6 +177,24 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect }) {
 
     boxElem.appendChild(rotateBtn);
     boxElem.addEventListener('click', () => { if (onSelect) onSelect(n); });
+
+    // Editor-only per-page controls: delete this page, and a grip to drag-reorder.
+    if (scribe.opt && scribe.opt.enablePageEditing) {
+      const deleteBtn = document.createElement('span');
+      deleteBtn.className = 'scribe-thumb-delete';
+      deleteBtn.title = 'Delete page';
+      deleteBtn.innerHTML = DELETE_SVG;
+      deleteBtn.addEventListener('click', (e) => { e.stopPropagation(); onDelete(n); });
+      boxElem.appendChild(deleteBtn);
+
+      const gripBtn = document.createElement('span');
+      gripBtn.className = 'scribe-thumb-grip';
+      gripBtn.title = 'Drag to reorder';
+      gripBtn.innerHTML = GRIP_SVG;
+      gripBtn.addEventListener('click', (e) => e.stopPropagation());
+      gripBtn.addEventListener('pointerdown', (e) => { e.preventDefault(); e.stopPropagation(); onReorderStart(n); });
+      boxElem.appendChild(gripBtn);
+    }
 
     thumbElem.appendChild(boxElem);
     thumbElem.appendChild(labelElem);
@@ -340,6 +360,56 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect }) {
     rebuild();
     scrollElem.scrollTop = keepScroll;
     updateWindow();
+  }
+
+  /**
+   * Delete page `n` from its thumbnail, then rebuild the panel (keeping scroll). The last page is kept.
+   * @param {number} n
+   */
+  function onDelete(n) {
+    if (!scribe.doc || scribe.doc.pageMetrics.length <= 1) return;
+    const keepScroll = scrollElem.scrollTop;
+    scribe.deletePage(n);
+    rebuild();
+    scrollElem.scrollTop = keepScroll;
+    updateWindow();
+  }
+
+  // Drag a row's grip to reorder: the dragged page moves to the row under the pointer when released.
+  let reorderFrom = -1;
+  /** @param {number} clientY @returns {number} The content-region row index under the pointer. */
+  function reorderTargetAt(clientY) {
+    const rect = scrollElem.getBoundingClientRect();
+    return rowAt(clientY - rect.top + scrollElem.scrollTop - PAD);
+  }
+
+  /** @param {PointerEvent} event */
+  function onReorderMove(event) {
+    const to = reorderTargetAt(event.clientY);
+    for (const [n, entry] of mounted) entry.thumbElem.classList.toggle('drop-target', n === to && to !== reorderFrom);
+  }
+
+  /** @param {PointerEvent} event */
+  function onReorderEnd(event) {
+    window.removeEventListener('pointermove', onReorderMove);
+    window.removeEventListener('pointerup', onReorderEnd);
+    for (const [, entry] of mounted) entry.thumbElem.classList.remove('drop-target');
+    const from = reorderFrom;
+    reorderFrom = -1;
+    const to = reorderTargetAt(event.clientY);
+    if (from < 0 || to === from) return;
+    const keepScroll = scrollElem.scrollTop;
+    scribe.movePage(from, to);
+    rebuild();
+    scrollElem.scrollTop = keepScroll;
+    updateWindow();
+  }
+
+  /** @param {number} n */
+  function onReorderStart(n) {
+    reorderFrom = n;
+    window.addEventListener('pointermove', onReorderMove);
+    window.addEventListener('pointerup', onReorderEnd);
   }
 
   /**

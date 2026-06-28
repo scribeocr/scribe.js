@@ -971,6 +971,46 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-thumb-box:hover .scribe-thumb-rotate {
       display: flex;
     }
+
+    .${r} .scribe-thumb-delete {
+      position: absolute;
+      top: 8px;
+      left: 8px;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 22px;
+      border-radius: 4px;
+      color: #fff;
+      background: rgba(180, 30, 30, .75);
+      cursor: pointer;
+    }
+
+    .${r} .scribe-thumb-grip {
+      position: absolute;
+      bottom: 8px;
+      right: 8px;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      width: 22px;
+      height: 22px;
+      border-radius: 4px;
+      color: #fff;
+      background: rgba(0, 0, 0, .55);
+      cursor: grab;
+      touch-action: none;
+    }
+
+    .${r} .scribe-thumb-box:hover .scribe-thumb-delete,
+    .${r} .scribe-thumb-box:hover .scribe-thumb-grip {
+      display: flex;
+    }
+
+    .${r} .scribe-thumb.drop-target .scribe-thumb-box {
+      border-color: #ffb74d;
+    }
   `;
 
   style.appendChild(document.createTextNode(css));

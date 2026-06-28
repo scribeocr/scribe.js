@@ -41,6 +41,8 @@ class ScribeViewerState {
 class ScribeViewerOpts {
   constructor() {
     this.enableRecognition = true;
+    /** Whether the page-thumbnails panel shows per-page edit controls (delete / drag-reorder). Editor-only. */
+    this.enablePageEditing = false;
     this.enableXlsxExport = false;
     this.downloadFormat = 'pdf';
     this.vanillaMode = false;
@@ -551,6 +553,67 @@ export class ScribeViewer {
 
     this.calcPageStops();
     this.displayPage(this.state.cp.n, false, true);
+  }
+
+  /**
+   * Rebuild all per-page Konva state after a structural page edit (delete/move), then re-render at `cp`.
+   * Unlike `rotatePage`, this also drops the overlay groups: a structural edit renumbers every page,
+   * so overlay groups cached by page index would otherwise land on the wrong page.
+   * @param {number} cp - Page to display after the rebuild.
+   */
+  _rebuildPages(cp) {
+    for (const groupMap of this._textGroups) {
+      if (!groupMap) continue;
+      for (const group of Object.values(groupMap)) group.destroy();
+    }
+    this._textGroups.length = 0;
+    this.textGroupsRenderIndices.length = 0;
+    for (const group of this._overlayGroups) {
+      if (group) group.destroy();
+    }
+    this._overlayGroups.length = 0;
+    this.overlayGroupsRenderIndices.length = 0;
+    for (const rect of this.placeholderRectArr) {
+      if (rect) rect.destroy();
+    }
+    this.placeholderRectArr.length = 0;
+    this._pageStopsStart.length = 0;
+    this._pageStopsEnd.length = 0;
+    this.imageCache.clear();
+
+    this.calcPageStops();
+    this.displayPage(cp, false, true);
+  }
+
+  /**
+   * Delete page `n` from the document and rebuild the view. The last remaining page cannot be deleted.
+   * @param {number} n
+   */
+  deletePage(n) {
+    if (!this.doc || n < 0 || n >= this.doc.pageMetrics.length) return;
+    if (this.doc.pageMetrics.length <= 1) return;
+    this.doc.deletePage(n);
+    let cp = this.state.cp.n;
+    if (n < cp) cp -= 1;
+    cp = Math.max(0, Math.min(cp, this.doc.pageMetrics.length - 1));
+    this._rebuildPages(cp);
+  }
+
+  /**
+   * Move page `from` to index `to` and rebuild the view, keeping the current page in view.
+   * @param {number} from
+   * @param {number} to
+   */
+  movePage(from, to) {
+    if (!this.doc) return;
+    const len = this.doc.pageMetrics.length;
+    if (from < 0 || from >= len || to < 0 || to >= len || from === to) return;
+    this.doc.movePage(from, to);
+    let cp = this.state.cp.n;
+    if (cp === from) cp = to;
+    else if (from < to && cp > from && cp <= to) cp -= 1;
+    else if (from > to && cp >= to && cp < from) cp += 1;
+    this._rebuildPages(cp);
   }
 
   /** @returns {{x: number, y: number}} */
