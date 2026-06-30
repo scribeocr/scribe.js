@@ -11,6 +11,7 @@ import { SKIPPED } from '../../tess/TessScheduler.js';
  * @property {boolean} [upscaled]
  * @property {('color'|'gray'|'binary')} [colorMode]
  * @property {number} [rotation]
+ * @property {number} [rasterScale] - On-screen device-pixel density the backing store was rastered at (see `_targetRasterScale`).
  * @property {number} n
  */
 
@@ -124,9 +125,20 @@ export class ViewerImageCache {
   }
 
   /**
-   * Render page `n`'s raster into a `<canvas>` (native bitmap resolution, CSS-fit to the displayed page size,
-   * rotation baked in). Returns `SKIPPED` when the bitmap render was dropped to keep the lane bounded.
-   * @param {number} n
+   * On-screen device-pixel density to rasterize a page canvas at: the zoom level times the display's `devicePixelRatio`,
+   * clamped to the source raster's oversample factor (`over`) since there is no detail to draw beyond 1:1.
+   * @param {number} over - Source raster oversample factor (2 for upscaled/binary, else 1).
+   * @returns {number}
+   */
+  _targetRasterScale(over) {
+    const dpr = window.devicePixelRatio || 1;
+    return Math.min(over, Math.max(0.01, (this._viewer().zoomLevel || 1) * dpr));
+  }
+
+  /**
+   * Render page `n`'s raster into a `<canvas>` sized to the displayed device pixels, CSS-fit to the page's content box, with rotation baked in.
+   * Returns `SKIPPED` when the bitmap render was dropped to keep the lane bounded.
+   * @param {number} n - Page number
    * @returns {Promise<{canvas: HTMLCanvasElement, props: ImageProperties} | typeof SKIPPED>}
    */
   async getPageCanvas(n) {
@@ -146,14 +158,16 @@ export class ViewerImageCache {
     const dispW = userRotation % 180 === 90 ? pageDims.height : pageDims.width;
     const dispH = userRotation % 180 === 90 ? pageDims.width : pageDims.height;
 
-    // A "binary"/upscaled raster is rendered at 2x the display size; oversample the backing store to match so no detail is lost.
-    const scale = backgroundImage.upscaled ? 0.5 : 1;
+    // Native oversample factor of the source raster: a "binary"/upscaled raster is rendered at 2x the display size.
     const over = backgroundImage.upscaled ? 2 : 1;
+    // Size the backing store to the on-screen pixel density, not the page's content size, so the shrink-to-fit
+    // is a high-quality `drawImage` here instead of a bilinear compositor downscale of the zoom layer.
+    const rasterScale = this._targetRasterScale(over);
 
     const canvas = /** @type {HTMLCanvasElement} */ (document.createElement('canvas'));
     canvas.className = 'scribe-layer-image';
-    canvas.width = Math.max(1, Math.round(dispW * over));
-    canvas.height = Math.max(1, Math.round(dispH * over));
+    canvas.width = Math.max(1, Math.round(dispW * rasterScale));
+    canvas.height = Math.max(1, Math.round(dispH * rasterScale));
     Object.assign(canvas.style, {
       position: 'absolute', left: '0', top: '0', width: `${dispW}px`, height: `${dispH}px`, pointerEvents: 'none',
     });
@@ -162,7 +176,8 @@ export class ViewerImageCache {
     ctx.save();
     ctx.translate(canvas.width / 2, canvas.height / 2);
     ctx.rotate(rotation * (Math.PI / 180));
-    ctx.scale(scale * over, scale * over);
+    // The source raster is `dispW * over` px wide; scale it to fill the `dispW * rasterScale` px backing store.
+    ctx.scale(rasterScale / over, rasterScale / over);
     ctx.drawImage(image, -image.width / 2, -image.height / 2);
     ctx.restore();
 
@@ -171,6 +186,7 @@ export class ViewerImageCache {
       upscaled: backgroundImage.upscaled,
       colorMode: /** @type {'color'|'gray'|'binary'} */ (backgroundImage.colorMode),
       rotation,
+      rasterScale,
       n,
     };
 
@@ -218,13 +234,18 @@ export class ViewerImageCache {
     const viewer = this._viewer();
     if (this.pageCanvases[n]) {
       let rerender = false;
-      if (this.pageCanvasProps[n]) {
-        if (this.pageCanvasProps[n].colorMode !== viewer.state.colorMode) {
+      const props = this.pageCanvasProps[n];
+      if (props) {
+        if (props.colorMode !== viewer.state.colorMode) {
           rerender = true;
         } else {
           // The rotation is baked into the raster, so a changed display rotation needs a fresh draw.
-          const rotation = this._displayRotation(n, this.pageCanvasProps[n].rotated);
-          if (Math.abs((this.pageCanvasProps[n].rotation ?? 0) - rotation) > 0.01) rerender = true;
+          const rotation = this._displayRotation(n, props.rotated);
+          if (Math.abs((props.rotation ?? 0) - rotation) > 0.01) rerender = true;
+          // The backing store is sized to the on-screen pixel density, so re-raster when that density moves more than 1%
+          // (a redraw at the same zoom reuses the existing canvas).
+          const targetScale = this._targetRasterScale(props.upscaled ? 2 : 1);
+          if (props.rasterScale && Math.abs(targetScale / props.rasterScale - 1) > 0.01) rerender = true;
         }
       }
       if (!rerender) return;
