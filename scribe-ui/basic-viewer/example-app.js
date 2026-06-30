@@ -64,7 +64,7 @@ async function handleHighlights(highlights) {
       await sv.displayPage(pageNum, true, false);
     }
 
-    const allWords = sv.getKonvaWords();
+    const allWords = sv.getUiWords();
     const matchedWords = [];
 
     for (let i = 0; i < lines.length; i++) {
@@ -72,19 +72,19 @@ async function handleHighlights(highlights) {
       const line = page.lines[lineNum];
       if (!line) continue;
 
-      let lineKonvaWords = allWords.filter((kw) => line.words.includes(kw.word));
+      let lineUiWords = allWords.filter((kw) => line.words.includes(kw.word));
 
       if (i === 0 && highlight.startText) {
-        const startIdx = lineKonvaWords.findIndex((kw) => kw.word.text.includes(highlight.startText));
-        if (startIdx >= 0) lineKonvaWords = lineKonvaWords.slice(startIdx);
+        const startIdx = lineUiWords.findIndex((kw) => kw.word.text.includes(highlight.startText));
+        if (startIdx >= 0) lineUiWords = lineUiWords.slice(startIdx);
       }
 
       if (i === lines.length - 1 && highlight.endText) {
-        const endIdx = lineKonvaWords.findIndex((kw) => kw.word.text.includes(highlight.endText));
-        if (endIdx >= 0) lineKonvaWords = lineKonvaWords.slice(0, endIdx + 1);
+        const endIdx = lineUiWords.findIndex((kw) => kw.word.text.includes(highlight.endText));
+        if (endIdx >= 0) lineUiWords = lineUiWords.slice(0, endIdx + 1);
       }
 
-      matchedWords.push(...lineKonvaWords);
+      matchedWords.push(...lineUiWords);
     }
 
     if (matchedWords.length > 0) {

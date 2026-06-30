@@ -3,16 +3,48 @@ import scribe from '../../scribe.js';
 import {
   ScribeViewer,
 } from '../viewer.js';
-import { Konva } from './konva/_FullInternals.js';
 import {
   addLayoutBox,
   addLayoutDataTable,
-  checkDataColumnsAdjacent, checkDataTablesAdjacent, KonvaDataColumn, KonvaLayout, mergeDataColumns, mergeDataTables, splitDataColumn, splitDataTable,
+  checkDataColumnsAdjacent, checkDataTablesAdjacent, UiDataColumn, UiLayout, mergeDataColumns, mergeDataTables, splitDataColumn, splitDataTable,
 } from './viewerLayout.js';
-import { KonvaOcrWord } from './viewerWordObjects.js';
+import { UiText, UiOcrWord } from './viewerWordObjects.js';
 import { deleteSelectedWord } from './viewerModifySelectedWords.js';
 import { deleteSelectedLayoutDataTable, deleteSelectedLayoutRegion } from './viewerModifySelectedLayout.js';
 import { annotMatchesWord, updateHighlightGroupOutline } from './viewerHighlights.js';
+
+/**
+ * Resolve a DOM event's target to its UI object (the `UiOcrWord`/`UiRegion`/`UiDataColumn` attached as `el._scribeObj`),
+ * walking up to the nearest word span or marked layout element.
+ * @param {Event} event
+ * @returns {?any}
+ */
+function eventTargetObj(event) {
+  const el = /** @type {any} */ (event.target)?.closest?.('.scribe-word, [data-scribe-kind]');
+  return el ? el._scribeObj || null : null;
+}
+
+/**
+ * Whether two content-space axis-aligned boxes overlap.
+ * @param {{x: number, y: number, width: number, height: number}} a
+ * @param {{x: number, y: number, width: number, height: number}} b
+ */
+function rectsOverlap(a, b) {
+  return a.x < b.x + b.width && a.x + a.width > b.x && a.y < b.y + b.height && a.y + a.height > b.y;
+}
+
+/**
+ * The drag-select marquee as a content-space box, derived from the viewer's current selection bbox.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ */
+function marqueeBox(viewer) {
+  return {
+    x: Math.min(viewer.bbox.left, viewer.bbox.right),
+    y: Math.min(viewer.bbox.top, viewer.bbox.bottom),
+    width: Math.abs(viewer.bbox.right - viewer.bbox.left),
+    height: Math.abs(viewer.bbox.bottom - viewer.bbox.top),
+  };
+}
 
 /**
  * Recognize area selected by user in Tesseract.
@@ -183,7 +215,7 @@ async function addWordManual(viewer, n, box) {
 
   const outlineWord = viewer.opt.outlineWords || viewer.state.displayMode === 'eval' && wordObj.conf > scribe.ScribeDoc.defaults.confThreshHigh && !wordObj.matchTruth;
 
-  const wordCanvas = new KonvaOcrWord({
+  const wordCanvas = new UiOcrWord({
     visualLeft: box.left,
     yActual: visualBaseline,
     topBaseline: visualBaseline,
@@ -196,9 +228,12 @@ async function addWordManual(viewer, n, box) {
   });
 
   const group = viewer.getTextGroup(n);
-  group.add(wordCanvas);
-
-  viewer.layerText.batchDraw();
+  const lineDiv = document.createElement('div');
+  lineDiv.className = 'scribe-line';
+  group.appendChild(lineDiv);
+  lineDiv.appendChild(wordCanvas.el);
+  if (!viewer._wordObjs[n]) viewer._wordObjs[n] = [];
+  viewer._wordObjs[n].push(wordCanvas);
 }
 
 const createContextMenuHTML = () => {
@@ -299,16 +334,16 @@ function mv() { return _menuViewer || ScribeViewer.getDefault(); }
 const splitWordClick = () => {
   hideContextMenu();
   const viewer = mv();
-  const konvaWord = viewer.contextMenuWord;
+  const uiWord = viewer.contextMenuWord;
 
-  if (!konvaWord) return;
+  if (!uiWord) return;
 
-  const splitIndex = KonvaOcrWord.getCursorIndex(konvaWord);
-  const { wordA, wordB } = scribe.utils.splitOcrWord(konvaWord.word, splitIndex, viewer.doc.fonts);
+  const splitIndex = UiOcrWord.getCursorIndex(uiWord);
+  const { wordA, wordB } = scribe.utils.splitOcrWord(uiWord.word, splitIndex, viewer.doc.fonts);
 
-  const wordIndex = konvaWord.word.line.words.findIndex((x) => x.id === konvaWord.word.id);
+  const wordIndex = uiWord.word.line.words.findIndex((x) => x.id === uiWord.word.id);
 
-  konvaWord.word.line.words.splice(wordIndex, 1, wordA, wordB);
+  uiWord.word.line.words.splice(wordIndex, 1, wordA, wordB);
 
   viewer.displayPage(viewer.state.cp.n);
 };
@@ -317,15 +352,15 @@ const mergeWordsClick = () => {
   hideContextMenu();
   const viewer = mv();
 
-  const selectedKonvaWords = viewer.CanvasSelection.getKonvaWords();
-  const selectedWords = selectedKonvaWords.map((x) => x.word);
-  if (selectedKonvaWords.length < 2 || !scribe.utils.checkOcrWordsAdjacent(selectedWords)) return;
-  const newWord = scribe.utils.mergeOcrWords(selectedKonvaWords.map((x) => x.word));
-  const lineWords = selectedKonvaWords[0].word.line.words;
-  selectedKonvaWords.sort((a, b) => a.word.bbox.left - b.word.bbox.left);
+  const selectedUiWords = viewer.CanvasSelection.getUiWords();
+  const selectedWords = selectedUiWords.map((x) => x.word);
+  if (selectedUiWords.length < 2 || !scribe.utils.checkOcrWordsAdjacent(selectedWords)) return;
+  const newWord = scribe.utils.mergeOcrWords(selectedUiWords.map((x) => x.word));
+  const lineWords = selectedUiWords[0].word.line.words;
+  selectedUiWords.sort((a, b) => a.word.bbox.left - b.word.bbox.left);
   lineWords.sort((a, b) => a.bbox.left - b.bbox.left);
-  const firstIndex = lineWords.findIndex((x) => x.id === selectedKonvaWords[0].word.id);
-  lineWords.splice(firstIndex, selectedKonvaWords.length, newWord);
+  const firstIndex = lineWords.findIndex((x) => x.id === selectedUiWords[0].word.id);
+  lineWords.splice(firstIndex, selectedUiWords.length, newWord);
 
   viewer.displayPage(viewer.state.cp.n);
 };
@@ -343,14 +378,14 @@ const deleteLayoutRegionClick = () => {
 const copyTableContentsClick = () => {
   hideContextMenu();
   const viewer = mv();
-  const selectedColumns = viewer.CanvasSelection.getKonvaDataColumns();
+  const selectedColumns = viewer.CanvasSelection.getUiDataColumns();
   if (selectedColumns.length === 0 || !navigator.clipboard) return;
 
   const table = document.createElement('table');
 
-  if (!selectedColumns[0].konvaTable.tableContent) return;
+  if (!selectedColumns[0].uiTable.tableContent) return;
 
-  selectedColumns[0].konvaTable.tableContent.rowWordArr.forEach((row) => {
+  selectedColumns[0].uiTable.tableContent.rowWordArr.forEach((row) => {
     const tr = document.createElement('tr');
     row.forEach((cell) => {
       const td = document.createElement('td');
@@ -371,7 +406,7 @@ const copyTableContentsClick = () => {
 const mergeDataColumnsClick = () => {
   hideContextMenu();
   const viewer = mv();
-  mergeDataColumns(viewer.CanvasSelection.getKonvaDataColumns());
+  mergeDataColumns(viewer.CanvasSelection.getUiDataColumns());
   viewer.destroyControls();
 };
 
@@ -386,7 +421,7 @@ const mergeDataTablesClick = () => {
 const splitDataColumnClick = () => {
   hideContextMenu();
   const viewer = mv();
-  const selectedColumns = viewer.CanvasSelection.getKonvaDataColumns();
+  const selectedColumns = viewer.CanvasSelection.getUiDataColumns();
   splitDataColumn(selectedColumns[0], viewer.contextMenuPointer.x);
   viewer.destroyControls();
 };
@@ -394,7 +429,7 @@ const splitDataColumnClick = () => {
 const splitDataTableClick = () => {
   hideContextMenu();
   const viewer = mv();
-  splitDataTable(viewer.CanvasSelection.getKonvaDataColumns());
+  splitDataTable(viewer.CanvasSelection.getUiDataColumns());
   viewer.destroyControls();
 };
 
@@ -402,18 +437,18 @@ const deleteHighlightClick = () => {
   hideContextMenu();
   const viewer = mv();
 
-  const konvaWord = viewer.contextMenuWord;
-  if (!konvaWord || !konvaWord.highlightColor) return;
+  const uiWord = viewer.contextMenuWord;
+  if (!uiWord || !uiWord.highlightColor) return;
 
-  const n = konvaWord.word.line.page.n;
-  const wb = konvaWord.word.bbox;
+  const n = uiWord.word.line.page.n;
+  const wb = uiWord.word.bbox;
   const pageAnnotations = viewer.doc.annotations.pages[n];
 
   const matchingAnnot = pageAnnotations.find((annot) => annotMatchesWord(annot, wb));
   if (!matchingAnnot) return;
 
   viewer.doc.annotations.pages[n] = pageAnnotations.filter((annot) => annot.groupId !== matchingAnnot.groupId);
-  for (const kw of viewer.getKonvaWords()) {
+  for (const kw of viewer.getUiWords()) {
     if (kw.highlightGroupId === matchingAnnot.groupId) {
       kw.highlightColor = null;
       kw.highlightOpacity = 1;
@@ -425,8 +460,7 @@ const deleteHighlightClick = () => {
   }
 
   updateHighlightGroupOutline(viewer);
-  if (KonvaOcrWord.updateUI) KonvaOcrWord.updateUI();
-  viewer.layerText.batchDraw();
+  if (UiOcrWord.updateUI) UiOcrWord.updateUI();
 };
 
 const deleteWordsClick = () => {
@@ -527,15 +561,13 @@ export const contextMenuFunc = (viewer, event) => {
   ensureContextMenu();
   _menuViewer = viewer;
   try {
-    const pointer = viewer.stage.getPointerPosition();
-    const pointerRelative = viewer.layerOverlay.getRelativePointerPosition();
+    const pointerRelative = viewer.clientToContent(event.clientX, event.clientY);
+    const targetObj = eventTargetObj(event);
 
-    if (!pointer || !pointerRelative) return;
-
-    const selectedKonvaWords = viewer.CanvasSelection.getKonvaWords();
-    const selectedWords = selectedKonvaWords.map((x) => x.word);
-    const selectedColumns = viewer.CanvasSelection.getKonvaDataColumns();
-    const selectedRegions = viewer.CanvasSelection.getKonvaRegions();
+    const selectedUiWords = viewer.CanvasSelection.getUiWords();
+    const selectedWords = selectedUiWords.map((x) => x.word);
+    const selectedColumns = viewer.CanvasSelection.getUiDataColumns();
+    const selectedRegions = viewer.CanvasSelection.getUiRegions();
 
     viewer.contextMenuPointer = pointerRelative;
 
@@ -543,13 +575,14 @@ export const contextMenuFunc = (viewer, event) => {
     let enableMergeWords = false;
     let enableDeleteWords = false;
     let enableDeleteHighlight = false;
-    if (!viewer.state.layoutMode && selectedKonvaWords.length > 0) enableDeleteWords = true;
-    if (!viewer.state.layoutMode && event.target instanceof KonvaOcrWord) {
-      viewer.contextMenuWord = event.target;
-      if (event.target.highlightColor) enableDeleteHighlight = true;
-      if (selectedKonvaWords.length < 2) {
-        const cursorIndex = KonvaOcrWord.getCursorIndex(event.target);
-        if (cursorIndex > 0 && cursorIndex < event.target.word.text.length) {
+    if (!viewer.state.layoutMode && selectedUiWords.length > 0) enableDeleteWords = true;
+    if (!viewer.state.layoutMode && targetObj instanceof UiOcrWord) {
+      viewer.contextMenuWord = targetObj;
+      if (targetObj.highlightColor) enableDeleteHighlight = true;
+      if (selectedUiWords.length < 2) {
+        UiText._lastPointerClient = { x: event.clientX, y: event.clientY };
+        const cursorIndex = UiOcrWord.getCursorIndex(targetObj);
+        if (cursorIndex > 0 && cursorIndex < targetObj.word.text.length) {
           enableSplitWord = true;
         }
       } else {
@@ -574,7 +607,7 @@ export const contextMenuFunc = (viewer, event) => {
       if (selectedColumns.length === 1) enableSplit = true;
       if (selectedRegions.length > 0) enableDeleteRegion = true;
       if (selectedColumns.length > 0 && adjacentColumns && selectedColumns.length < selectedTables[0].boxes.length) enableSplitTable = true;
-      if (selectedColumns.length > 0 && selectedColumns.length === selectedColumns[0].konvaTable.columns.length) {
+      if (selectedColumns.length > 0 && selectedColumns.length === selectedColumns[0].uiTable.columns.length) {
         enableDeleteTable = true;
         enableCopyTableContents = true;
       }
@@ -599,12 +632,11 @@ export const contextMenuFunc = (viewer, event) => {
     if (enableSplitTable) contextMenuSplitTableButtonElem.style.display = 'initial';
     if (enableDeleteHighlight) contextMenuDeleteHighlightButtonElem.style.display = 'initial';
 
-    event.evt.preventDefault();
+    event.preventDefault();
 
     menuNode.style.display = 'initial';
-    const containerRect = viewer.stage.container().getBoundingClientRect();
-    menuNode.style.top = `${containerRect.top + pointer.y + 4}px`;
-    menuNode.style.left = `${containerRect.left + pointer.x + 4}px`;
+    menuNode.style.top = `${event.clientY + 4}px`;
+    menuNode.style.left = `${event.clientX + 4}px`;
   } catch (e) {
     _menuViewer = null;
     throw e;
@@ -620,19 +652,19 @@ export const contextMenuFunc = (viewer, event) => {
  * @param {number} box.y
  */
 function selectWords(viewer, box) {
-  const shapes = viewer.getKonvaWords();
+  const shapes = viewer.getUiWords();
 
-  const newSelectedWords = shapes.filter((shape) => Konva.Util.haveIntersection(box, shape.getClientRect()));
+  const newSelectedWords = shapes.filter((shape) => rectsOverlap(box, shape.getClientRect()));
   viewer.CanvasSelection.addWords(newSelectedWords);
 
-  const selectedWords = viewer.CanvasSelection.getKonvaWords();
+  const selectedWords = viewer.CanvasSelection.getUiWords();
 
   if (selectedWords.length > 1) {
     selectedWords.forEach((shape) => (shape.select()));
   } else if (selectedWords.length === 1) {
-    KonvaOcrWord.addControls(selectedWords[0]);
+    UiOcrWord.addControls(selectedWords[0]);
     selectedWords[0].select();
-    KonvaOcrWord.updateUI();
+    UiOcrWord.updateUI();
   }
 }
 
@@ -645,8 +677,8 @@ function selectWords(viewer, box) {
  * @param {number} box.y
  */
 export function selectLayoutBoxesArea(viewer, box) {
-  const shapes = [...viewer.getKonvaDataColumns(), ...viewer.getKonvaRegions()];
-  const layoutBoxes = shapes.filter((shape) => Konva.Util.haveIntersection(box, shape.getClientRect()));
+  const shapes = [...viewer.getUiDataColumns(), ...viewer.getUiRegions()];
+  const layoutBoxes = shapes.filter((shape) => rectsOverlap(box, shape.getClientRect()));
 
   viewer.CanvasSelection.selectLayoutBoxes(layoutBoxes);
 }
@@ -658,50 +690,50 @@ export const mouseupFunc2 = (viewer, event) => {
 
   viewer.stopDragPinch(event);
 
-  if (event.evt.button === 2) {
-    const selectedColumnIds = viewer.CanvasSelection.getKonvaDataColumns().map((x) => x.layoutBox.id);
-    const selectedWordIds = viewer.CanvasSelection.getKonvaWords().map((x) => x.word.id);
+  const targetObj = eventTargetObj(event);
 
-    if (!(event.target instanceof KonvaDataColumn || event.target instanceof KonvaOcrWord)) return;
+  if (event.button === 2) {
+    const selectedColumnIds = viewer.CanvasSelection.getUiDataColumns().map((x) => x.layoutBox.id);
+    const selectedWordIds = viewer.CanvasSelection.getUiWords().map((x) => x.word.id);
 
-    if (event.target instanceof KonvaDataColumn && selectedColumnIds.includes(event.target.layoutBox.id)) return;
-    if (event.target instanceof KonvaOcrWord && selectedWordIds.includes(event.target.word.id)) return;
+    if (!(targetObj instanceof UiDataColumn || targetObj instanceof UiOcrWord)) return;
+
+    if (targetObj instanceof UiDataColumn && selectedColumnIds.includes(targetObj.layoutBox.id)) return;
+    if (targetObj instanceof UiOcrWord && selectedWordIds.includes(targetObj.word.id)) return;
   }
 
-  if (!viewer.selectingRectangle.visible() || (viewer.selectingRectangle.width() < 5 && viewer.selectingRectangle.height() < 5)) {
-    const ptr = viewer.stage.getPointerPosition();
-    if (!ptr) return;
+  const marqueeShown = viewer.selectingRectangle.style.display !== 'none';
+  const marquee = marqueeBox(viewer);
+  // Read whether a marquee was drawn, then hide it here. The `pointerup` caller leaves it visible for this read,
+  // so hiding it any earlier would force the single-word click path below for every selection.
+  viewer.selectingRectangle.style.display = 'none';
+  if (!marqueeShown || (marquee.width < 5 && marquee.height < 5)) {
+    const ptr = viewer.clientToContent(event.clientX, event.clientY);
     const box = {
       x: ptr.x, y: ptr.y, width: 1, height: 1,
     };
     if (viewer.mode === 'select' && !viewer.state.layoutMode) {
-      viewer.destroyControls(!event.evt.ctrlKey);
+      viewer.destroyControls(!event.ctrlKey);
       selectWords(viewer, box);
-      KonvaOcrWord.updateUI();
+      UiOcrWord.updateUI();
       updateHighlightGroupOutline(viewer);
-      viewer.layerText.batchDraw();
     } else if (viewer.mode === 'select' && viewer.state.layoutMode) {
-      viewer.destroyControls(!event.evt.ctrlKey);
+      viewer.destroyControls(!event.ctrlKey);
       selectLayoutBoxesArea(viewer, box);
-      KonvaLayout.updateUI();
-      viewer.layerOverlay.batchDraw();
+      UiLayout.updateUI();
     }
     return;
   }
 
-  viewer.selectingRectangle.visible(false);
-
   if (viewer.mode === 'select' && !viewer.state.layoutMode) {
-    viewer.destroyControls(!event.evt.ctrlKey);
-    const box = viewer.selectingRectangle.getClientRect();
-    selectWords(viewer, box);
-    KonvaOcrWord.updateUI();
+    viewer.destroyControls(!event.ctrlKey);
+    selectWords(viewer, marquee);
+    UiOcrWord.updateUI();
     updateHighlightGroupOutline(viewer);
   } else if (viewer.mode === 'select' && viewer.state.layoutMode) {
-    viewer.destroyControls(!event.evt.ctrlKey);
-    const box = viewer.selectingRectangle.getClientRect();
-    selectLayoutBoxesArea(viewer, box);
-    KonvaLayout.updateUI();
+    viewer.destroyControls(!event.ctrlKey);
+    selectLayoutBoxesArea(viewer, marquee);
+    UiLayout.updateUI();
   } else if (['addWord', 'recognizeWord', 'recognizeArea', 'printCoords', 'addLayoutBoxOrder', 'addLayoutBoxExclude', 'addLayoutBoxDataTable'].includes(viewer.mode)) {
     const { n, box } = viewer.calcSelectionImageCoords();
 

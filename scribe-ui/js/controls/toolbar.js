@@ -68,6 +68,7 @@ export function makeToolbarShell(rootClass, toolbarHeight, iconSize) {
   toolbarElemEnd.style.display = 'flex';
   toolbarElemEnd.style.justifyContent = 'flex-end';
   toolbarElemEnd.style.alignItems = 'center';
+  toolbarElemEnd.style.paddingRight = '8px';
 
   toolbarElem.appendChild(toolbarElemStart);
   toolbarElem.appendChild(center);
@@ -101,13 +102,16 @@ export function createPageNav(scribe) {
   pageNumElem.className = 'form-control btn-sm';
   pageNumElem.name = 'pageNum';
   pageNumElem.autocomplete = 'off';
-  pageNumElem.style.width = '3em';
+  pageNumElem.style.width = '3.4em';
   pageNumElem.style.display = 'inline-block';
+  pageNumElem.style.fontVariantNumeric = 'tabular-nums';
 
   const pageCountElem = document.createElement('span');
   pageCountElem.style.display = 'inline-block';
-  pageCountElem.style.minWidth = '0.5rem';
+  pageCountElem.style.minWidth = '2.6em';
+  pageCountElem.style.textAlign = 'left';
   pageCountElem.style.fontSize = '14px';
+  pageCountElem.style.fontVariantNumeric = 'tabular-nums';
   pageCountElem.style.paddingLeft = '0.5rem';
 
   pageInputGroup.appendChild(pageNumElem);
@@ -143,8 +147,8 @@ export function createZoomControls(scribe) {
   zoomControls.appendChild(zoomOutElem);
   zoomControls.appendChild(zoomInElem);
 
-  zoomInElem.addEventListener('click', () => scribe.zoom(1.1, scribe.getStageCenter()));
-  zoomOutElem.addEventListener('click', () => scribe.zoom(0.9, scribe.getStageCenter()));
+  zoomInElem.addEventListener('click', () => scribe.zoom(1.1, scribe.getViewportCenter()));
+  zoomOutElem.addEventListener('click', () => scribe.zoom(0.9, scribe.getViewportCenter()));
 
   return { zoomControls, zoomInElem, zoomOutElem };
 }
@@ -787,6 +791,30 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       margin-top: 14px;
     }
 
+    .${r} .scribe-drop-loading { display: none; flex-direction: column; align-items: center; }
+
+    .${r} .scribe-drop-zone.loading .scribe-drop-content { display: none; }
+
+    .${r} .scribe-drop-zone.loading .scribe-drop-loading { display: flex; }
+
+    .${r} .scribe-drop-spinner {
+      width: 34px;
+      height: 34px;
+      border: 3px solid rgba(255, 255, 255, .12);
+      border-top-color: #6aa0ff;
+      border-radius: 50%;
+      animation: scribe-drop-spin .7s linear infinite;
+    }
+
+    @keyframes scribe-drop-spin { to { transform: rotate(360deg); } }
+
+    .${r} .scribe-drop-loading-text {
+      margin-top: 18px;
+      font-size: 14px;
+      color: #9ea2a6;
+      letter-spacing: .2px;
+    }
+
     /* Shown/hidden by toggling opacity (not display) so it can fade in and out; pointer-events:none keeps it click-through. */
     .${r} .scribe-drag-overlay {
       position: absolute;
@@ -845,13 +873,26 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       width: 5ch;
     }
 
+    /* Floating find widget: opening it overlays content instead of reflowing the right-zone controls. */
     .${r} .scribe-search-group {
+      position: absolute;
+      top: calc(100% + 6px);
+      right: 10px;
+      z-index: 20;
       align-items: center;
+      gap: 2px;
+      padding: 5px 6px;
+      background: #3c4043;
+      border: 1px solid rgba(255, 255, 255, .12);
+      border-radius: 8px;
+      box-shadow: 0 6px 20px rgba(0, 0, 0, .45);
     }
 
     .${r}-toolbar input.scribe-search-input {
-      width: 14ch;
+      width: 16ch;
       text-align: left;
+      height: 26px;
+      border-radius: 4px;
     }
 
     .${r} .scribe-search-count {
@@ -913,6 +954,9 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       z-index: 7;
       transition: transform 180ms ease;
       will-change: transform;
+      /* The panel is focusable so it can be the active pane.
+         Its focus is shown by the active page's accent, not a default outline on the whole panel. */
+      outline: none;
       /* On the panel root so it cascades to every thumbnail image and caption, preventing a click-drag across the rail from selecting them. */
       -webkit-user-select: none;
       user-select: none;
@@ -969,7 +1013,6 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       box-shadow: 0 1px 3px rgba(0, 0, 0, .5);
       overflow: hidden;
       box-sizing: border-box;
-      border: 2px solid transparent;
       cursor: pointer;
     }
 
@@ -982,17 +1025,26 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
 
     .${r} .scribe-thumb-label {
       color: #bbb;
-      font-size: 11px;
+      font-size: 13px;
       line-height: 1;
       text-align: center;
     }
 
     .${r} .scribe-thumb-box:hover {
-      border-color: rgba(255, 255, 255, .4);
+      outline: 2px solid rgba(255, 255, 255, .4);
     }
 
+    /* Current page while the rail is not the active pane: a clearly visible gray ring (inactive-selection convention). */
     .${r} .scribe-thumb.active .scribe-thumb-box {
-      border-color: #4dd0e1;
+      outline: 3px solid #9ea2a6;
+    }
+
+    /* While the rail has keyboard focus it is the active pane,
+       so the current page's ring switches to accent blue with an outer glow, cueing that keystrokes land here.
+       The box-shadow repeats the drop shadow so the glow does not replace it. */
+    .${r} .scribe-thumb-panel:focus-within .scribe-thumb.active .scribe-thumb-box {
+      outline-color: rgba(40, 123, 181, 1);
+      box-shadow: 0 0 0 5px rgba(40, 123, 181, .25), 0 1px 3px rgba(0, 0, 0, .5);
     }
 
     .${r} .scribe-thumb.active .scribe-thumb-label {
@@ -1003,6 +1055,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       position: absolute;
       top: 8px;
       right: 8px;
+      z-index: 2;
       display: none;
       align-items: center;
       justify-content: center;
@@ -1018,44 +1071,135 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       display: flex;
     }
 
-    .${r} .scribe-thumb-delete {
-      position: absolute;
-      top: 8px;
-      left: 8px;
-      display: none;
-      align-items: center;
-      justify-content: center;
-      width: 22px;
-      height: 22px;
-      border-radius: 4px;
-      color: #fff;
-      background: rgba(180, 30, 30, .75);
-      cursor: pointer;
-    }
-
-    .${r} .scribe-thumb-grip {
-      position: absolute;
-      bottom: 8px;
-      right: 8px;
-      display: none;
-      align-items: center;
-      justify-content: center;
-      width: 22px;
-      height: 22px;
-      border-radius: 4px;
-      color: #fff;
-      background: rgba(0, 0, 0, .55);
+    .${r} .scribe-thumb-box.editable {
       cursor: grab;
-      touch-action: none;
     }
 
-    .${r} .scribe-thumb-box:hover .scribe-thumb-delete,
-    .${r} .scribe-thumb-box:hover .scribe-thumb-grip {
+    .${r} .scribe-thumb.dragging .scribe-thumb-box {
+      opacity: .3;
+    }
+
+    /* A page held for a pending cut: dimmed until the cut is pasted or canceled (Escape). */
+    .${r} .scribe-thumb.cut .scribe-thumb-box {
+      opacity: .45;
+    }
+
+    .${r} .scribe-thumb-insert {
+      position: absolute;
+      left: 6px;
+      right: 6px;
+      height: 3px;
+      margin-top: -2px;
+      background: rgba(40, 123, 181, 1);
+      border-radius: 2px;
+      box-shadow: 0 0 6px rgba(40, 123, 181, .8);
+      pointer-events: none;
+      z-index: 50;
+    }
+
+    /* A batch-selected page gets the steel-blue ring the viewer uses for selected words and regions.
+       Placed after the active rules so a selected current page stays blue, not gray. */
+    .${r} .scribe-thumb.selected .scribe-thumb-box {
+      outline: 3px solid rgba(40, 123, 181, 1);
+    }
+
+    /* Floating vertical action strip that pops up beside the rail, next to the selection; JS sets its left/top. */
+    .${r} .scribe-thumb-batch {
+      position: absolute;
       display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 4px;
+      padding: 6px 5px;
+      box-sizing: border-box;
+      background: rgba(40, 43, 46, .97);
+      border: 1px solid rgba(255, 255, 255, .1);
+      border-radius: 10px;
+      box-shadow: 0 6px 18px rgba(0, 0, 0, .5);
+      z-index: 20;
     }
 
-    .${r} .scribe-thumb.drop-target .scribe-thumb-box {
-      border-color: #ffb74d;
+    .${r} .scribe-thumb-batch-count {
+      color: #cfcfcf;
+      font-size: 12px;
+      font-weight: 600;
+      padding: 2px 0;
+      min-width: 14px;
+      text-align: center;
+    }
+
+    .${r} .scribe-thumb-batch-btn {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 32px;
+      height: 32px;
+      border: none;
+      border-radius: 50%;
+      background: transparent;
+      color: #e4e6e8;
+      cursor: pointer;
+      transition: background-color .12s ease-out;
+    }
+
+    .${r} .scribe-thumb-batch-btn svg {
+      width: 20px;
+      height: 20px;
+    }
+
+    .${r} .scribe-thumb-batch-btn:hover {
+      background: rgba(255, 255, 255, .1);
+    }
+
+    .${r} .scribe-thumb-batch-delete:hover {
+      background: rgba(217, 48, 37, .85);
+      color: #fff;
+    }
+
+    /* Right-click page context menu, mounted on the viewer root and placed at the cursor by JS. */
+    .${r} .scribe-thumb-menu {
+      position: absolute;
+      min-width: 150px;
+      padding: 4px;
+      background: rgba(31, 36, 38, .98);
+      border: 1px solid rgba(255, 255, 255, .14);
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .55);
+      z-index: 60;
+      font-size: 13px;
+      color: #fff;
+      user-select: none;
+    }
+
+    .${r} .scribe-thumb-menu-item {
+      padding: 7px 12px;
+      border-radius: 5px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+
+    .${r} .scribe-thumb-menu-item:hover {
+      background: rgba(255, 255, 255, .14);
+    }
+
+    .${r} .scribe-thumb-menu-item.danger:hover {
+      background: rgba(217, 48, 37, .85);
+    }
+
+    .${r} .scribe-thumb-menu-header {
+      padding: 5px 12px 6px;
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .04em;
+      text-transform: uppercase;
+      color: #9ea2a6;
+    }
+
+    .${r} .scribe-thumb-menu-divider {
+      height: 0;
+      margin: 4px 6px;
+      border: none;
+      border-top: 1px solid rgba(255, 255, 255, .1);
     }
   `;
 

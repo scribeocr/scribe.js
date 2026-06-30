@@ -19,6 +19,7 @@ import {
 } from '../recognizeConvert.js';
 import { importFiles as importFilesImpl, importFilesSupp as importFilesSuppImpl } from '../import/import.js';
 import { runOptimization as runOptimizationImpl } from '../fontEval.js';
+import { clonePageFull } from '../objects/ocrObjects.js';
 
 /**
  * The distinct OCR/raw-OCR layer arrays.
@@ -88,6 +89,45 @@ function materializeSourcePages(doc) {
     const pm = doc.pageMetrics[i];
     if (pm && pm.sourcePageN == null) pm.sourcePageN = i;
   }
+}
+
+/**
+ * Build an independent snapshot of every per-page array entry at index `i`, for later insertion via `insertPages`.
+ * Call `materializeSourcePages(doc)` first so the cloned `pageMetrics.sourcePageN` is concrete.
+ * @param {ScribeDoc} doc
+ * @param {number} i - Source page index.
+ * @returns {object} An independent clone bundle for page `i`.
+ */
+function clonePageBundle(doc, i) {
+  // One clone per unique OCR array so aliased layers (e.g. `ocr.active === ocr.pdf`) share a single cloned page.
+  const ocrCache = new Map();
+  const ocr = {};
+  for (const [engine, arr] of Object.entries(doc.ocr)) {
+    if (!Array.isArray(arr) || i >= arr.length || !arr[i]) { ocr[engine] = null; continue; }
+    if (!ocrCache.has(arr)) ocrCache.set(arr, clonePageFull(arr[i]));
+    ocr[engine] = ocrCache.get(arr);
+  }
+  const ocrRaw = {};
+  for (const [engine, arr] of Object.entries(doc.ocrRaw)) {
+    ocrRaw[engine] = Array.isArray(arr) && i < arr.length ? arr[i] : '';
+  }
+  const cloneAt = (arr) => (Array.isArray(arr) ? structuredClone(arr[i]) : undefined);
+  const refAt = (arr) => (Array.isArray(arr) ? arr[i] : undefined);
+  return {
+    ocr,
+    ocrRaw,
+    pageMetrics: structuredClone(doc.pageMetrics[i]),
+    layoutRegions: cloneAt(doc.layoutRegions.pages),
+    layoutDataTables: cloneAt(doc.layoutDataTables.pages),
+    annotations: cloneAt(doc.annotations.pages),
+    vis: cloneAt(doc.vis),
+    convertPageWarn: cloneAt(doc.convertPageWarn),
+    pageStats: cloneAt(doc.inputData.pageStats),
+    xmlMode: refAt(doc.inputData.xmlMode),
+    ocrApplied: refAt(doc.inputData.ocrApplied),
+    nativeSrc: refAt(doc.images.nativeSrc),
+    pdfDims300: refAt(doc.images.pdfDims300),
+  };
 }
 
 let docIdCounter = 0;
@@ -209,6 +249,116 @@ export class ScribeDoc {
     }
     clearImageCaches(this);
     renumberPages(this);
+  }
+
+  /**
+   * Delete several pages at once from this document's live page model.
+   * @param {Array<number>} indices - 0-based page indices to remove.
+   */
+  deletePages(indices) {
+    // Splice high-to-low so each removal leaves the lower indices valid.
+    const sorted = [...new Set(indices)].filter((i) => i >= 0 && i < this.pageMetrics.length).sort((a, b) => b - a);
+    if (sorted.length === 0) return;
+    materializeSourcePages(this);
+    for (const arr of densePageArrays(this)) {
+      for (const i of sorted) if (i < arr.length) arr.splice(i, 1);
+    }
+    clearImageCaches(this);
+    renumberPages(this);
+    this.inputData.pageCount = this.pageMetrics.length;
+    this.images.pageCount = this.pageMetrics.length;
+  }
+
+  /**
+   * Move several pages to a single contiguous block in this document's live page model, keeping their relative order.
+   * The pages are pulled out, then re-inserted starting at `to` (an index into the array after removal).
+   * @param {Array<number>} indices - 0-based page indices to move.
+   * @param {number} to - Block start position in the post-removal order.
+   */
+  movePages(indices, to) {
+    const sorted = [...new Set(indices)].filter((i) => i >= 0 && i < this.pageMetrics.length).sort((a, b) => a - b);
+    if (sorted.length === 0) return;
+    materializeSourcePages(this);
+    for (const arr of densePageArrays(this)) {
+      const pulled = [];
+      for (let k = sorted.length - 1; k >= 0; k--) {
+        if (sorted[k] < arr.length) pulled.unshift(arr.splice(sorted[k], 1)[0]);
+      }
+      arr.splice(Math.max(0, Math.min(to, arr.length)), 0, ...pulled);
+    }
+    clearImageCaches(this);
+    renumberPages(this);
+  }
+
+  /**
+   * Snapshot pages `indices` into independent clone bundles for a later `insertPages` (the clipboard payload of a page copy/cut).
+   * Pure: the document is not mutated apart from materializing `sourcePageN`.
+   * Returned bundles are fully detached, so the source pages may be edited or deleted before the bundles are pasted.
+   * @param {Array<number>} indices - 0-based page indices to clone, in any order.
+   * @returns {Array<object>} One clone bundle per valid index, in ascending page order.
+   */
+  copyPages(indices) {
+    const sorted = [...new Set(indices)].filter((i) => i >= 0 && i < this.pageMetrics.length).sort((a, b) => a - b);
+    if (sorted.length === 0) return [];
+    materializeSourcePages(this);
+    return sorted.map((i) => clonePageBundle(this, i));
+  }
+
+  /**
+   * Insert clone bundles (from `copyPages`) as a contiguous block starting at index `to`, in this document's live page model.
+   * Each full-length per-page array is spliced in lockstep.
+   * Arrays that are not full-length for this document (e.g. `images.nativeSrc` for a PDF, whose rasters come from the worker via `sourcePageN`) are left untouched,
+   * mirroring how delete/move guard on per-array length.
+   * @param {Array<object>} bundles - Clone bundles from `copyPages`.
+   * @param {number} to - Insertion index (0..pageMetrics.length).
+   */
+  insertPages(bundles, to) {
+    if (!Array.isArray(bundles) || bundles.length === 0) return;
+    const prevLen = this.pageMetrics.length;
+    const at = Math.max(0, Math.min(to, prevLen));
+    materializeSourcePages(this);
+    // Splice only arrays that span every existing page; a sparse/empty array would misalign if inserted into.
+    const spliceFull = (arr, values) => {
+      if (Array.isArray(arr) && arr.length === prevLen) arr.splice(at, 0, ...values);
+    };
+
+    const ocrSeen = new Set();
+    for (const [engine, arr] of Object.entries(this.ocr)) {
+      if (!Array.isArray(arr) || ocrSeen.has(arr)) continue;
+      ocrSeen.add(arr);
+      spliceFull(arr, bundles.map((b) => b.ocr[engine] ?? null));
+    }
+    const rawSeen = new Set();
+    for (const [engine, arr] of Object.entries(this.ocrRaw)) {
+      if (!Array.isArray(arr) || rawSeen.has(arr)) continue;
+      rawSeen.add(arr);
+      spliceFull(arr, bundles.map((b) => b.ocrRaw[engine] ?? ''));
+    }
+    spliceFull(this.pageMetrics, bundles.map((b) => b.pageMetrics));
+    spliceFull(this.layoutRegions.pages, bundles.map((b) => b.layoutRegions));
+    spliceFull(this.layoutDataTables.pages, bundles.map((b) => b.layoutDataTables));
+    spliceFull(this.annotations.pages, bundles.map((b) => b.annotations));
+    spliceFull(this.vis, bundles.map((b) => b.vis));
+    spliceFull(this.convertPageWarn, bundles.map((b) => b.convertPageWarn));
+    spliceFull(this.images.nativeSrc, bundles.map((b) => b.nativeSrc));
+    spliceFull(this.images.pdfDims300, bundles.map((b) => b.pdfDims300));
+    spliceFull(this.inputData.xmlMode, bundles.map((b) => b.xmlMode));
+    spliceFull(this.inputData.pageStats, bundles.map((b) => b.pageStats));
+    spliceFull(this.inputData.ocrApplied, bundles.map((b) => b.ocrApplied));
+
+    clearImageCaches(this);
+    renumberPages(this);
+    this.inputData.pageCount = this.pageMetrics.length;
+    this.images.pageCount = this.pageMetrics.length;
+  }
+
+  /**
+   * Duplicate pages `indices`, inserting the copies as a contiguous block starting at `to`.
+   * @param {Array<number>} indices - 0-based page indices to duplicate.
+   * @param {number} to - Insertion index (0..pageMetrics.length).
+   */
+  duplicatePages(indices, to) {
+    this.insertPages(this.copyPages(indices), to);
   }
 
   /**

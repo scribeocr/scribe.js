@@ -1,6 +1,5 @@
 /* eslint-disable import/no-cycle */
-import { KonvaOcrWord } from './viewerWordObjects.js';
-import Konva from './konva/index.js';
+import { UiOcrWord } from './viewerWordObjects.js';
 
 /**
  * Checks if a word bbox is highlighted by an annotation.
@@ -24,28 +23,19 @@ export function annotMatchesWord(annot, wb) {
  * @param {import('../viewer.js').ScribeViewer} viewer
  */
 export function updateHighlightGroupOutline(viewer) {
-  for (const rect of viewer._highlightOutlineRects) rect.destroy();
+  for (const rect of viewer._highlightOutlineRects) rect.remove();
   viewer._highlightOutlineRects.length = 0;
 
-  const selectedWords = viewer.CanvasSelection.getKonvaWords();
-  if (!selectedWords || selectedWords.length === 0) {
-    viewer.layerText.batchDraw();
-    return;
-  }
+  const selectedWords = viewer.CanvasSelection.getUiWords();
+  if (!selectedWords || selectedWords.length === 0) return;
 
   const firstWord = selectedWords[0];
-  if (!firstWord.highlightGroupId) {
-    viewer.layerText.batchDraw();
-    return;
-  }
+  if (!firstWord.highlightGroupId) return;
 
   const groupId = firstWord.highlightGroupId;
-  const allWords = viewer.getKonvaWords();
+  const allWords = viewer.getUiWords();
   const groupWords = allWords.filter((kw) => kw.highlightGroupId === groupId);
-  if (groupWords.length === 0) {
-    viewer.layerText.batchDraw();
-    return;
-  }
+  if (groupWords.length === 0) return;
 
   const pageMap = new Map();
   for (const kw of groupWords) {
@@ -53,8 +43,6 @@ export function updateHighlightGroupOutline(viewer) {
     if (!pageMap.has(pageN)) pageMap.set(pageN, []);
     pageMap.get(pageN).push(kw);
   }
-
-  const scale = viewer.layerText.getAbsoluteScale()?.x || 1;
 
   for (const [pageN, pageWords] of pageMap) {
     const lineMap = new Map();
@@ -76,32 +64,31 @@ export function updateHighlightGroupOutline(viewer) {
       const top = first.y() - pad;
       const height = first.height() + pad * 2;
 
-      const rect = new Konva.Rect({
-        x: left,
-        y: top,
-        width: right - left,
-        height,
-        stroke: 'rgba(40,123,181,0.8)',
-        strokeWidth: 2 / scale,
-        dash: [8 / scale, 5 / scale],
-        draggable: false,
-        listening: false,
+      const rect = document.createElement('div');
+      Object.assign(rect.style, {
+        position: 'absolute',
+        left: `${left}px`,
+        top: `${top}px`,
+        width: `${right - left}px`,
+        height: `${height}px`,
+        border: 'calc(2px / var(--scribe-zoom, 1)) dashed rgba(40,123,181,0.8)',
+        boxSizing: 'border-box',
+        pointerEvents: 'none',
+        zIndex: '2',
       });
-      group.add(rect);
+      group.appendChild(rect);
       viewer._highlightOutlineRects.push(rect);
     }
   }
-
-  viewer.layerText.batchDraw();
 }
 
 /**
  * Recalculates highlight gap extensions for words on the same lines as the given words.
  * @param {import('../viewer.js').ScribeViewer} viewer
- * @param {Array<InstanceType<typeof KonvaOcrWord>>} changedWords
+ * @param {Array<InstanceType<typeof UiOcrWord>>} changedWords
  */
 function updateHighlightGaps(viewer, changedWords) {
-  const allWords = viewer.getKonvaWords();
+  const allWords = viewer.getUiWords();
   const affectedLineIds = new Set(changedWords.map((kw) => kw.word.line.id));
   const lineWords = new Map();
   for (const kw of allWords) {
@@ -129,7 +116,7 @@ function updateHighlightGaps(viewer, changedWords) {
 /**
  * Removes highlight from the given words and their annotation data.
  * @param {import('../viewer.js').ScribeViewer} viewer
- * @param {Array<InstanceType<typeof KonvaOcrWord>>} selectedWords
+ * @param {Array<InstanceType<typeof UiOcrWord>>} selectedWords
  * @param {number} pageIndex
  */
 export function removeHighlight(viewer, selectedWords, pageIndex) {
@@ -147,14 +134,13 @@ export function removeHighlight(viewer, selectedWords, pageIndex) {
   }
   updateHighlightGaps(viewer, selectedWords);
   updateHighlightGroupOutline(viewer);
-  viewer.layerText.batchDraw();
-  KonvaOcrWord.updateUI();
+  UiOcrWord.updateUI();
 }
 
 /**
  * Applies highlight color to the given words and creates/updates annotation data.
  * @param {import('../viewer.js').ScribeViewer} viewer
- * @param {Array<InstanceType<typeof KonvaOcrWord>>} selectedWords
+ * @param {Array<InstanceType<typeof UiOcrWord>>} selectedWords
  * @param {number} pageIndex
  * @param {string} color
  * @param {number} opacity
@@ -187,7 +173,7 @@ export function applyHighlight(viewer, selectedWords, pageIndex, color, opacity)
   });
 
   if (wordsWithoutAnnot.length > 0) {
-    const allWords = viewer.getKonvaWords();
+    const allWords = viewer.getUiWords();
     const selectedSet = new Set(wordsWithoutAnnot.map((kw) => kw.word.id));
 
     const lineMap = new Map();
@@ -262,14 +248,13 @@ export function applyHighlight(viewer, selectedWords, pageIndex, color, opacity)
 
   updateHighlightGaps(viewer, selectedWords);
   updateHighlightGroupOutline(viewer);
-  viewer.layerText.batchDraw();
-  KonvaOcrWord.updateUI();
+  UiOcrWord.updateUI();
 }
 
 /**
  * Updates the comment on the highlight group of the first selected word.
  * @param {import('../viewer.js').ScribeViewer} viewer
- * @param {Array<InstanceType<typeof KonvaOcrWord>>} selectedWords
+ * @param {Array<InstanceType<typeof UiOcrWord>>} selectedWords
  * @param {number} pageIndex
  * @param {string} comment
  */
@@ -285,10 +270,9 @@ export function modifyHighlightComment(viewer, selectedWords, pageIndex, comment
       annot.comment = comment;
     }
   }
-  for (const kw of viewer.getKonvaWords()) {
+  for (const kw of viewer.getUiWords()) {
     if (kw.highlightGroupId === matchingAnnot.groupId) {
       kw.highlightComment = comment;
     }
   }
-  viewer.layerText.batchDraw();
 }

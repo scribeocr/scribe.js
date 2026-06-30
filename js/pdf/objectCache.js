@@ -105,6 +105,17 @@ export class ObjectCache {
     /** @type {number} Total bytes across all entries in `streamBytesCache`. */
     this.streamBytesCacheBytes = 0;
     /**
+     * Doc-wide cache of decoded image bitmaps, keyed by the string from `decodedImageKey`
+     * (`objNum` for plain images, `objNum|fillColor` for masks that bake in the fill colour).
+     * Stores the JPX/CMYK-JPEG/CCITT/... -> ImageBitmap decode result,
+     * so an image drawn on many pages (logos, letterheads, repeated figures) is decoded once instead of once per page render.
+     * The bitmap lifecycle and value/byte-aware eviction are owned by renderPdfPage.js.
+     * @type {Map<string, { bitmap: *, maxW: number, maxH: number, bytes: number, decodeMs: number }>}
+     */
+    this.decodedImageCache = new Map();
+    /** @type {number} Total bytes across all entries in `decodedImageCache`. */
+    this.decodedImageCacheBytes = 0;
+    /**
      * Parsed ICC profile transforms keyed by the profile stream's objNum.
      * @type {Map<number, {gamma: number[], matrix: number[]}|null>}
      */

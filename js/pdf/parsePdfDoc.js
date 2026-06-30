@@ -2039,7 +2039,9 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
               if (normalBaselineY === null) normalBaselineY = prevBaseline;
               continue;
             }
-            if (sizeDelta < -0.3) {
+            // A much smaller word still needs a raised baseline to count as a superscript.
+            // Without that guard, a glyph merely smaller than its neighbor but sitting on the baseline (or below it, like a subscript) would be wrongly flagged.
+            if (sizeDelta < -0.3 && baselineDelta < -0.05) {
               words[i].sup = true;
               supChanged = true;
               if (normalBaselineY === null) normalBaselineY = prevBaseline;
@@ -2065,7 +2067,8 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
               if (normalBaselineY === null) normalBaselineY = nextBaseline;
               continue;
             }
-            if (sizeDelta < -0.3) {
+            // See the prev-word branch above: a large size drop alone is not a superscript unless the baseline is also raised.
+            if (sizeDelta < -0.3 && baselineDelta < -0.05) {
               words[i].sup = true;
               supChanged = true;
               if (normalBaselineY === null) normalBaselineY = nextBaseline;

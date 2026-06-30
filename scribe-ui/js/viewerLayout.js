@@ -1,17 +1,52 @@
-// import Konva from '../lib/konva/index.js';
-import Konva from './konva/index.js';
 import scribe from '../../scribe.js';
 // eslint-disable-next-line import/no-cycle
 import {
   ScribeViewer,
 } from '../viewer.js';
-import { KonvaIText } from './viewerWordObjects.js';
+import { UiText } from './viewerWordObjects.js';
 
 const colColorsHex = ['#287bb5', '#19aa9a', '#099b57'];
 
-/** Resolve the viewer for a Konva layout object. Falls back to the default for backward compat. */
+/**
+ * Make a DOM element draggable, invoking the handlers on pointerdown/move/up with the pointer mapped to page-local coordinates (image px).
+ * @param {HTMLElement} el
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {number} n - Page number the element belongs to (its page-local origin).
+ * @param {object} handlers
+ * @param {(p: {x: number, y: number}) => void} [handlers.onStart]
+ * @param {(p: {x: number, y: number}) => void} [handlers.onMove]
+ * @param {() => void} [handlers.onEnd]
+ */
+function makeDraggable(el, viewer, n, { onStart, onMove, onEnd } = {}) {
+  let active = false;
+  const toLocal = (e) => {
+    const c = viewer.clientToContent(e.clientX, e.clientY);
+    return { x: c.x - viewer._pageLeft(n), y: c.y - viewer.getPageStop(n) };
+  };
+  const onMovePointer = (e) => { if (active && onMove) onMove(toLocal(e)); };
+  const onUpPointer = (e) => {
+    if (!active) return;
+    active = false;
+    try { el.releasePointerCapture(e.pointerId); } catch { /* ignore */ }
+    el.removeEventListener('pointermove', onMovePointer);
+    el.removeEventListener('pointerup', onUpPointer);
+    if (onEnd) onEnd();
+  };
+  el.addEventListener('pointerdown', (e) => {
+    if (e.button !== 0) return;
+    e.preventDefault();
+    e.stopPropagation();
+    active = true;
+    try { el.setPointerCapture(e.pointerId); } catch { /* ignore */ }
+    if (onStart) onStart(toLocal(e));
+    el.addEventListener('pointermove', onMovePointer);
+    el.addEventListener('pointerup', onUpPointer);
+  });
+}
+
+/** Resolve the viewer for a layout object. Falls back to the default for backward compat. */
 function getLayoutViewer(obj) {
-  return obj?.viewer || obj?.konvaRegion?.viewer || obj?.konvaTable?.viewer || ScribeViewer.getDefault();
+  return obj?.viewer || obj?.uiRegion?.viewer || obj?.uiTable?.viewer || ScribeViewer.getDefault();
 }
 
 /**
@@ -30,12 +65,10 @@ const hexToRgba = (hex, alpha) => {
 const setAlpha = (color, alpha) => color.replace(/,\s*[\d.]+\)/, `,${alpha})`);
 
 /**
- * Subclass of Konva.Rect that represents a layout box, which is a rectangle that represents a region of the page, along with an optional editable textbox.
- * The textbox is implemented by manually adding a second Konva object, that moves when the rectangle moves, and is deleted when the rectangle is deleted.
- * This was chosen rather than the built-in Konva "group" object, which appears to offer a cleaner way to group objects,
- * as preliminary testing showed the latter method was less performant and less flexible.
+ * A layout box rendered as an absolutely-positioned `<div>` in page (content) space, with an optional editable label (a `UiText`).
+ * Exposes the geometry/style accessor surface the layout drag/merge/render code relies on (`x()/y()/width()/height()`, `fill()/stroke()`, `draggable()`, `getClientRect()`, `destroy()`).
  */
-export class KonvaLayout extends Konva.Rect {
+export class UiLayout {
   /**
    * @param {LayoutDataColumn|LayoutRegion} layoutBox
    * @param {import('../viewer.js').ScribeViewer} [viewer] - The viewer this layout belongs to.
@@ -53,8 +86,8 @@ export class KonvaLayout extends Konva.Rect {
     const n = layoutBox.type === 'dataColumn' ? layoutBox.table.page.n : layoutBox.page.n;
 
     // "Order" boxes are blue, "exclude" boxes are red, data columns are uncolored, as the color is added by the table.
-    let fill;
-    let stroke;
+    let fill = '';
+    let stroke = '';
     if (layoutBox.type === 'order') {
       fill = 'rgba(0,137,114,0.25)';
       stroke = 'rgba(0,137,114,0.4)';
@@ -67,17 +100,36 @@ export class KonvaLayout extends Konva.Rect {
       fill = hexToRgba(colorBase, 0.3);
     }
 
-    super({
-      x: origX,
-      y: origY,
-      width,
-      height,
-      fill,
-      stroke,
-      strokeWidth: 2,
-      strokeScaleEnabled: false,
-      draggable: true,
+    /** @type {import('../viewer.js').ScribeViewer} */
+    this.viewer = _viewer;
+    this._n = n;
+    this.layoutBox = layoutBox;
+    this._x = origX;
+    this._y = origY;
+    this._width = width;
+    this._height = height;
+    this._fill = fill;
+    this._stroke = stroke;
+    this._fillEnabled = true;
+    this._strokeEnabled = true;
+    this._draggable = true;
+    this._listening = true;
+    /** @type {Object<string, Array<Function>>} Drag/transform handlers keyed by event name. */
+    this._handlers = {};
+    /** Subclass hook: reposition linked controls while the box is being dragged. */
+    this._reposition = () => {};
+    /** @type {UiText|undefined} */
+    this.label = undefined;
+
+    this.el = document.createElement('div');
+    this.el.className = 'scribe-layout';
+    this.el.dataset.scribeKind = 'layout';
+    /** @type {any} */ (this.el)._scribeObj = this;
+    Object.assign(this.el.style, {
+      position: 'absolute', boxSizing: 'border-box', cursor: 'move', zIndex: '1',
     });
+    this._applyStyle();
+    this._position();
 
     this.select = () => {
       this.stroke('rgba(40,123,181,1)');
@@ -89,10 +141,10 @@ export class KonvaLayout extends Konva.Rect {
       this.fill(setAlpha(this.fill(), 0.25));
     };
 
-    /** @type {import('../viewer.js').ScribeViewer} */
-    this.viewer = _viewer;
-
-    this.destroyRect = this.destroy;
+    this.destroyRect = () => {
+      if (this.el && this.el.parentNode) this.el.parentNode.removeChild(this.el);
+      this.el = /** @type {any} */ (null);
+    };
     this.destroy = () => {
       if (this.label) this.label.destroy();
       this.label = undefined;
@@ -116,7 +168,7 @@ export class KonvaLayout extends Konva.Rect {
       const wordObj = new scribe.utils.ocr.OcrWord(lineObjTemp, wordIDNew, String(layoutBox.order), box);
       wordObj.visualCoords = false;
       wordObj.style.size = 50;
-      const label = new KonvaIText({
+      const label = new UiText({
         x: origX + width * 0.5,
         yActual: origY + height * 0.5,
         word: wordObj,
@@ -127,15 +179,15 @@ export class KonvaLayout extends Konva.Rect {
         },
         // eslint-disable-next-line no-unused-vars
         inputTextCallback: async (obj) => {
-          if (!KonvaIText.input) return;
+          if (!UiText.input) return;
           // Empty is the only allowed non-numeric value.
-          if (KonvaIText.input.textContent === '') return;
-          if (!KonvaIText.input.textContent
-            || /[^\d]/.test(KonvaIText.input.textContent)
-            || parseInt(KonvaIText.input.textContent) < 0
-            || parseInt(KonvaIText.input.textContent) > 99) {
-            KonvaIText.input.innerHTML = KonvaIText.inputInnerHTMLLast;
-            KonvaIText.setCursor(KonvaIText.inputCursorLast);
+          if (UiText.input.textContent === '') return;
+          if (!UiText.input.textContent
+            || /[^\d]/.test(UiText.input.textContent)
+            || parseInt(UiText.input.textContent) < 0
+            || parseInt(UiText.input.textContent) > 99) {
+            UiText.input.innerHTML = UiText.inputInnerHTMLLast;
+            UiText.setCursor(UiText.inputCursorLast);
             return;
           }
         },
@@ -143,40 +195,158 @@ export class KonvaLayout extends Konva.Rect {
       this.label = label;
     }
 
-    this.layoutBox = layoutBox;
-
-    this.addEventListener('transformend', () => {
-      KonvaLayout.updateLayoutBoxes(this);
-    });
-
     this.addEventListener('dragmove', () => {
-      if (KonvaIText.input && KonvaIText.input.parentElement && KonvaIText.inputRemove) KonvaIText.inputRemove();
+      if (UiText.input && UiText.input.parentElement && UiText.inputRemove) UiText.inputRemove();
       if (this.label) {
         this.label.x(this.x() + this.width() * 0.5);
         this.label.yActual = this.y() + this.height() * 0.5;
-        KonvaIText.updateWordCanvas(this.label);
+        UiText.updateWordCanvas(this.label);
       }
     });
 
     this.addEventListener('dragend', () => {
-      KonvaLayout.updateLayoutBoxes(this);
+      UiLayout.updateLayoutBoxes(this);
+    });
+
+    this._wireDrag();
+  }
+
+  /** @param {number} [v] @returns {number} */
+  x(v) { if (v === undefined) return this._x; this._x = v; this._position(); return this._x; }
+
+  /** @param {number} [v] @returns {number} */
+  y(v) { if (v === undefined) return this._y; this._y = v; this._position(); return this._y; }
+
+  /** @param {number} [v] @returns {number} */
+  width(v) { if (v === undefined) return this._width; this._width = v; this._position(); return this._width; }
+
+  /** @param {number} [v] @returns {number} */
+  height(v) { if (v === undefined) return this._height; this._height = v; this._position(); return this._height; }
+
+  // Layout boxes are sized directly (via controls), never via a scale transform.
+  /** @param {number} [v] @returns {number} */
+  // eslint-disable-next-line class-methods-use-this, no-unused-vars
+  scaleX(v) { return 1; }
+
+  /** @param {number} [v] @returns {number} */
+  // eslint-disable-next-line class-methods-use-this, no-unused-vars
+  scaleY(v) { return 1; }
+
+  /** @param {string} [v] @returns {string} */
+  fill(v) { if (v === undefined) return this._fill; this._fill = v; this._applyStyle(); return this._fill; }
+
+  /** @param {string} [v] @returns {string} */
+  stroke(v) { if (v === undefined) return this._stroke; this._stroke = v; this._applyStyle(); return this._stroke; }
+
+  /** @param {boolean} [v] @returns {boolean} */
+  fillEnabled(v) { if (v === undefined) return this._fillEnabled; this._fillEnabled = v; this._applyStyle(); return this._fillEnabled; }
+
+  /** @param {boolean} [v] @returns {boolean} */
+  strokeEnabled(v) { if (v === undefined) return this._strokeEnabled; this._strokeEnabled = v; this._applyStyle(); return this._strokeEnabled; }
+
+  /** @param {boolean} [v] @returns {boolean} */
+  draggable(v) {
+    if (v === undefined) return this._draggable;
+    this._draggable = v;
+    if (this.el) this.el.style.cursor = v ? 'move' : 'default';
+    return this._draggable;
+  }
+
+  /** @param {boolean} [v] @returns {boolean} */
+  listening(v) {
+    if (v === undefined) return this._listening;
+    this._listening = v;
+    if (this.el) this.el.style.pointerEvents = v ? 'auto' : 'none';
+    return this._listening;
+  }
+
+  /** Move the element to the top of its parent's stacking order. */
+  moveToTop() { if (this.el && this.el.parentNode) this.el.parentNode.appendChild(this.el); }
+
+  /**
+   * Content-space axis-aligned bounding box of the box element.
+   * @returns {{x: number, y: number, width: number, height: number}}
+   */
+  getClientRect() {
+    const r = this.el.getBoundingClientRect();
+    const tl = this.viewer.clientToContent(r.left, r.top);
+    const br = this.viewer.clientToContent(r.right, r.bottom);
+    return {
+      x: tl.x, y: tl.y, width: br.x - tl.x, height: br.y - tl.y,
+    };
+  }
+
+  _position() {
+    if (!this.el) return;
+    Object.assign(this.el.style, {
+      left: `${this._x}px`, top: `${this._y}px`, width: `${this._width}px`, height: `${this._height}px`,
+    });
+  }
+
+  _applyStyle() {
+    if (!this.el) return;
+    this.el.style.background = this._fillEnabled && this._fill ? this._fill : 'transparent';
+    const bw = 'calc(2px / var(--scribe-zoom, 1))';
+    this.el.style.border = this._strokeEnabled && this._stroke ? `${bw} solid ${this._stroke}` : `${bw} solid transparent`;
+  }
+
+  /**
+   * Register a drag/transform handler.
+   * @param {string} type
+   * @param {Function} fn
+   */
+  addEventListener(type, fn) {
+    if (!this._handlers[type]) this._handlers[type] = [];
+    this._handlers[type].push(fn);
+  }
+
+  /**
+   * @param {string} type
+   * @param {Function} fn
+   */
+  on(type, fn) { this.addEventListener(type, fn); }
+
+  /** @param {string} type */
+  _fire(type) {
+    (this._handlers[type] || []).forEach((fn) => fn());
+  }
+
+  /** Wire whole-box dragging (moves by the pointer delta, then writes the model on release). */
+  _wireDrag() {
+    makeDraggable(this.el, this.viewer, this._n, {
+      onStart: (p) => {
+        if (!this._draggable) return;
+        this._grab = { x: p.x - this._x, y: p.y - this._y };
+        this._fire('dragstart');
+      },
+      onMove: (p) => {
+        if (!this._draggable || !this._grab) return;
+        this.x(p.x - this._grab.x);
+        this.y(p.y - this._grab.y);
+        this._reposition();
+        this._fire('dragmove');
+      },
+      onEnd: () => {
+        if (!this._draggable) return;
+        this._fire('dragend');
+      },
     });
   }
 
   /**
-   * Add controls for editing.
-   * @param {KonvaLayout|KonvaDataColumn} konvaLayout
+   * Write the box's geometry back to its layout-box coordinates and mark the page's layout non-default.
+   * @param {UiLayout|UiDataColumn} uiLayout
    */
-  static updateLayoutBoxes(konvaLayout) {
-    const n = konvaLayout.layoutBox.type === 'dataColumn' ? konvaLayout.layoutBox.table.page.n : konvaLayout.layoutBox.page.n;
-    const width = konvaLayout.width() * konvaLayout.scaleX();
-    const height = konvaLayout.height() * konvaLayout.scaleY();
-    const right = konvaLayout.x() + width;
-    const bottom = konvaLayout.y() + height;
-    konvaLayout.layoutBox.coords = {
-      left: konvaLayout.x(), top: konvaLayout.y(), right, bottom,
+  static updateLayoutBoxes(uiLayout) {
+    const n = uiLayout.layoutBox.type === 'dataColumn' ? uiLayout.layoutBox.table.page.n : uiLayout.layoutBox.page.n;
+    const width = uiLayout.width() * uiLayout.scaleX();
+    const height = uiLayout.height() * uiLayout.scaleY();
+    const right = uiLayout.x() + width;
+    const bottom = uiLayout.y() + height;
+    uiLayout.layoutBox.coords = {
+      left: uiLayout.x(), top: uiLayout.y(), right, bottom,
     };
-    const viewer = getLayoutViewer(konvaLayout);
+    const viewer = getLayoutViewer(uiLayout);
     viewer.doc.layoutRegions.pages[n].default = false;
     viewer.doc.layoutDataTables.pages[n].default = false;
   }
@@ -188,389 +358,330 @@ export class KonvaLayout extends Konva.Rect {
   static updateUI = () => { };
 }
 
-class KonvaRegionControlHorizontal extends Konva.Line {
+/**
+ * Build a thin draggable control bar `<div>`: a 2px line centred in a 6px-thick hit area.
+ * @param {'h'|'v'} orientation - 'h' for a horizontal bar (drags vertically), 'v' for a vertical bar.
+ * @param {number} length - Bar length in page px.
+ * @returns {HTMLDivElement}
+ */
+function makeControlElem(orientation, length) {
+  const el = document.createElement('div');
+  el.className = 'scribe-layout-control';
+  el.dataset.scribeKind = 'layout-control';
+  const common = { position: 'absolute', zIndex: '3', touchAction: 'none' };
+  if (orientation === 'h') {
+    Object.assign(el.style, common, {
+      height: '6px',
+      marginTop: '-3px',
+      width: `${length}px`,
+      cursor: 'row-resize',
+      background: 'linear-gradient(black, black) center/100% 2px no-repeat',
+    });
+  } else {
+    Object.assign(el.style, common, {
+      width: '6px',
+      marginLeft: '-3px',
+      height: `${length}px`,
+      cursor: 'col-resize',
+      background: 'linear-gradient(black, black) center/2px 100% no-repeat',
+    });
+  }
+  return el;
+}
+
+/**
+ * Shared DOM base for the layout control bars (region/table edges and column separators).
+ * Exposes the `x()/y()/points()/destroy()/moveToTop()` surface the drag handlers use; the line's length comes from `points()`.
+ */
+class UiControlLine {
+  /**
+   * @param {import('../viewer.js').ScribeViewer} viewer
+   * @param {number} n - Page number.
+   * @param {'h'|'v'} orientation
+   * @param {number} x
+   * @param {number} y
+   * @param {number} length
+   */
+  constructor(viewer, n, orientation, x, y, length) {
+    this.viewer = viewer;
+    this._n = n;
+    this._orientation = orientation;
+    this._x = x;
+    this._y = y;
+    this._length = length;
+    this.el = makeControlElem(orientation, length);
+    /** @type {any} */ (this.el)._scribeObj = this;
+    this._position();
+  }
+
+  /** @param {number} [v] @returns {number} */
+  x(v) { if (v === undefined) return this._x; this._x = v; this._position(); return this._x; }
+
+  /** @param {number} [v] @returns {number} */
+  y(v) { if (v === undefined) return this._y; this._y = v; this._position(); return this._y; }
+
+  /**
+   * Set the bar length from a points array (`[x0,y0,x1,y1]`, relative to the bar origin).
+   * @param {Array<number>} arr
+   */
+  points(arr) {
+    this._length = this._orientation === 'h' ? Math.abs(arr[2] - arr[0]) : Math.abs(arr[3] - arr[1]);
+    this._position();
+  }
+
+  _position() {
+    if (!this.el) return;
+    this.el.style.left = `${this._x}px`;
+    this.el.style.top = `${this._y}px`;
+    if (this._orientation === 'h') this.el.style.width = `${this._length}px`;
+    else this.el.style.height = `${this._length}px`;
+  }
+
+  destroy() {
+    if (this.el && this.el.parentNode) this.el.parentNode.removeChild(this.el);
+    this.el = /** @type {any} */ (null);
+    return this;
+  }
+
+  moveToTop() { if (this.el && this.el.parentNode) this.el.parentNode.appendChild(this.el); }
+}
+
+class UiRegionControlHorizontal extends UiControlLine {
   /**
    *
-   * @param {KonvaRegion} konvaRegion
+   * @param {UiRegion} uiRegion
    */
-  constructor(konvaRegion, top = true) {
-    super({
-      x: konvaRegion.layoutBox.coords.left,
-      y: top ? konvaRegion.layoutBox.coords.top : konvaRegion.layoutBox.coords.bottom,
-      points: [0, 0, konvaRegion.layoutBox.coords.right - konvaRegion.layoutBox.coords.left, 0],
-      stroke: 'black',
-      strokeWidth: 2,
-      strokeScaleEnabled: false,
-      draggable: true,
-      dragBoundFunc(pos) {
-        const newY = Math.max(this.boundTop, Math.min(this.boundBottom, pos.y));
+  constructor(uiRegion, top = true) {
+    const c = uiRegion.layoutBox.coords;
+    const n = uiRegion.layoutBox.page.n;
+    super(uiRegion.viewer, n, 'h', c.left, top ? c.top : c.bottom, c.right - c.left);
 
-        return {
-          x: this.absolutePosition().x,
-          y: newY,
-        };
-      },
-      hitFunc(context, shape) {
-        context.beginPath();
-        context.rect(0, -3, shape.width(), 6);
-        context.closePath();
-        context.fillStrokeShape(shape);
-      },
-
-    });
-
-    const n = konvaRegion.layoutBox.page.n;
-
-    this.konvaRegion = konvaRegion;
-
+    this.uiRegion = uiRegion;
     this.boundTop = 0;
     this.boundBottom = 10000;
 
-    this.on('dragstart', () => {
-      const viewer = getLayoutViewer(this);
-      viewer.drag.isResizingColumns = true;
+    makeDraggable(this.el, this.viewer, n, {
+      onStart: () => {
+        this.viewer.drag.isResizingColumns = true;
+        if (top) {
+          this.boundTop = 0;
+          this.boundBottom = this.uiRegion.bottomControl.y() - 20;
+        } else {
+          this.boundTop = this.uiRegion.topControl.y() + 20;
+          this.boundBottom = this.viewer.doc.pageMetrics[n].dims.height;
+        }
+      },
+      onMove: (p) => {
+        const newY = Math.max(this.boundTop, Math.min(this.boundBottom, p.y));
+        this.y(newY);
+        const box = this.uiRegion.layoutBox.coords;
+        if (top) {
+          box.top = newY;
+          this.uiRegion.y(box.top);
+          this.uiRegion.height(box.bottom - box.top);
+          this.uiRegion.leftControl.y(box.top);
+          this.uiRegion.rightControl.y(box.top);
+          this.uiRegion.leftControl.points([0, 0, 0, box.bottom - box.top]);
+          this.uiRegion.rightControl.points([0, 0, 0, box.bottom - box.top]);
+        } else {
+          box.bottom = newY;
+          this.uiRegion.height(box.bottom - box.top);
+          this.uiRegion.leftControl.points([0, 0, 0, box.bottom - box.top]);
+          this.uiRegion.rightControl.points([0, 0, 0, box.bottom - box.top]);
+        }
 
-      const group = viewer.getOverlayGroup(n);
-
-      if (top) {
-        this.boundTop = group.getAbsoluteTransform().m[5];
-        this.boundBottom = this.konvaRegion.bottomControl.getAbsolutePosition().y - 20;
-      } else {
-        this.boundTop = this.konvaRegion.topControl.getAbsolutePosition().y + 20;
-        this.boundBottom = group.getAbsoluteTransform().m[5] + viewer.doc.pageMetrics[n].dims.height * group.getAbsoluteScale().y;
-      }
-    });
-    this.addEventListener('dragmove', () => {
-      if (top) {
-        this.konvaRegion.layoutBox.coords.top = this.y();
-
-        this.konvaRegion.y(this.konvaRegion.layoutBox.coords.top);
-        this.konvaRegion.height(this.konvaRegion.layoutBox.coords.bottom - this.konvaRegion.layoutBox.coords.top);
-
-        this.konvaRegion.leftControl.y(this.konvaRegion.layoutBox.coords.top);
-        this.konvaRegion.rightControl.y(this.konvaRegion.layoutBox.coords.top);
-        this.konvaRegion.leftControl.points([0, 0, 0, konvaRegion.layoutBox.coords.bottom - this.konvaRegion.layoutBox.coords.top]);
-        this.konvaRegion.rightControl.points([0, 0, 0, konvaRegion.layoutBox.coords.bottom - this.konvaRegion.layoutBox.coords.top]);
-      } else {
-        this.konvaRegion.layoutBox.coords.bottom = this.y();
-
-        this.konvaRegion.height(this.konvaRegion.layoutBox.coords.bottom - this.konvaRegion.layoutBox.coords.top);
-
-        this.konvaRegion.leftControl.points([0, 0, 0, konvaRegion.layoutBox.coords.bottom - this.konvaRegion.layoutBox.coords.top]);
-        this.konvaRegion.rightControl.points([0, 0, 0, konvaRegion.layoutBox.coords.bottom - this.konvaRegion.layoutBox.coords.top]);
-      }
-
-      if (this.konvaRegion.label) {
-        this.konvaRegion.label.x(this.konvaRegion.x() + this.konvaRegion.width() * 0.5);
-        this.konvaRegion.label.yActual = this.konvaRegion.y() + this.konvaRegion.height() * 0.5;
-        KonvaIText.updateWordCanvas(this.konvaRegion.label);
-      }
-    });
-    this.addEventListener('dragend', () => {
-      getLayoutViewer(this).drag.isResizingColumns = false;
-    });
-
-    this.on('mouseover', () => {
-      document.body.style.cursor = 'row-resize';
-    });
-    this.on('mouseout', () => {
-      document.body.style.cursor = 'default';
+        if (this.uiRegion.label) {
+          this.uiRegion.label.x(this.uiRegion.x() + this.uiRegion.width() * 0.5);
+          this.uiRegion.label.yActual = this.uiRegion.y() + this.uiRegion.height() * 0.5;
+          UiText.updateWordCanvas(this.uiRegion.label);
+        }
+      },
+      onEnd: () => { this.viewer.drag.isResizingColumns = false; },
     });
   }
 }
 
-class KonvaRegionControlVertical extends Konva.Line {
+class UiRegionControlVertical extends UiControlLine {
   /**
    *
-   * @param {KonvaRegion} konvaRegion
+   * @param {UiRegion} uiRegion
    */
-  constructor(konvaRegion, left = true) {
-    super({
-      x: left ? konvaRegion.layoutBox.coords.left : konvaRegion.layoutBox.coords.right,
-      y: konvaRegion.layoutBox.coords.top,
-      points: [0, 0, 0, konvaRegion.layoutBox.coords.bottom - konvaRegion.layoutBox.coords.top],
-      stroke: 'black',
-      strokeWidth: 2,
-      strokeScaleEnabled: false,
-      draggable: true,
-      dragBoundFunc(pos) {
-        const newX = Math.max(this.boundLeft, Math.min(this.boundRight, pos.x));
+  constructor(uiRegion, left = true) {
+    const c = uiRegion.layoutBox.coords;
+    const n = uiRegion.layoutBox.page.n;
+    super(uiRegion.viewer, n, 'v', left ? c.left : c.right, c.top, c.bottom - c.top);
 
-        // Restrict vertical movement by setting the y position to the initial y position.
-        return {
-          x: newX,
-          y: this.absolutePosition().y,
-        };
-      },
-      hitFunc(context, shape) {
-        context.beginPath();
-        context.rect(-3, 0, 6, shape.height());
-        context.closePath();
-        context.fillStrokeShape(shape);
-      },
-    });
-
-    const n = konvaRegion.layoutBox.page.n;
-
-    this.konvaRegion = konvaRegion;
-
+    this.uiRegion = uiRegion;
     this.boundLeft = 0;
     this.boundRight = 10000;
 
-    this.on('dragstart', () => {
-      const viewer = getLayoutViewer(this);
-      viewer.drag.isResizingColumns = true;
+    makeDraggable(this.el, this.viewer, n, {
+      onStart: () => {
+        this.viewer.drag.isResizingColumns = true;
+        if (left) {
+          this.boundLeft = 0;
+          this.boundRight = this.uiRegion.rightControl.x() - 20;
+        } else {
+          this.boundLeft = this.uiRegion.leftControl.x() + 20;
+          this.boundRight = this.viewer.doc.pageMetrics[n].dims.width;
+        }
+      },
+      onMove: (p) => {
+        const newX = Math.max(this.boundLeft, Math.min(this.boundRight, p.x));
+        this.x(newX);
+        const box = this.uiRegion.layoutBox.coords;
+        if (left) {
+          box.left = newX;
+          this.uiRegion.x(box.left);
+          this.uiRegion.width(box.right - box.left);
+          this.uiRegion.topControl.x(box.left);
+          this.uiRegion.bottomControl.x(box.left);
+          this.uiRegion.topControl.points([0, 0, box.right - box.left, 0]);
+          this.uiRegion.bottomControl.points([0, 0, box.right - box.left, 0]);
+        } else {
+          box.right = newX;
+          this.uiRegion.width(box.right - box.left);
+          this.uiRegion.topControl.points([0, 0, box.right - box.left, 0]);
+          this.uiRegion.bottomControl.points([0, 0, box.right - box.left, 0]);
+        }
 
-      const group = viewer.getOverlayGroup(n);
-
-      if (left) {
-        this.boundLeft = group.getAbsoluteTransform().m[4];
-        this.boundRight = this.konvaRegion.rightControl.getAbsolutePosition().x - 20;
-      } else {
-        this.boundLeft = this.konvaRegion.leftControl.getAbsolutePosition().x + 20;
-        this.boundRight = group.getAbsoluteTransform().m[4] + viewer.doc.pageMetrics[n].dims.width * group.getAbsoluteScale().x;
-      }
-    });
-    this.addEventListener('dragmove', () => {
-      if (left) {
-        this.konvaRegion.layoutBox.coords.left = this.x();
-        this.konvaRegion.x(this.konvaRegion.layoutBox.coords.left);
-        this.konvaRegion.width(this.konvaRegion.layoutBox.coords.right - this.konvaRegion.layoutBox.coords.left);
-
-        this.konvaRegion.topControl.x(this.konvaRegion.layoutBox.coords.left);
-        this.konvaRegion.bottomControl.x(this.konvaRegion.layoutBox.coords.left);
-        this.konvaRegion.topControl.points([0, 0, konvaRegion.layoutBox.coords.right - this.konvaRegion.layoutBox.coords.left, 0]);
-        this.konvaRegion.bottomControl.points([0, 0, konvaRegion.layoutBox.coords.right - this.konvaRegion.layoutBox.coords.left, 0]);
-      } else {
-        this.konvaRegion.layoutBox.coords.right = this.x();
-        this.konvaRegion.width(this.konvaRegion.layoutBox.coords.right - this.konvaRegion.layoutBox.coords.left);
-
-        this.konvaRegion.topControl.points([0, 0, konvaRegion.layoutBox.coords.right - konvaRegion.layoutBox.coords.left, 0]);
-        this.konvaRegion.bottomControl.points([0, 0, konvaRegion.layoutBox.coords.right - konvaRegion.layoutBox.coords.left, 0]);
-      }
-
-      if (this.konvaRegion.label) {
-        this.konvaRegion.label.x(this.konvaRegion.x() + this.konvaRegion.width() * 0.5);
-        this.konvaRegion.label.yActual = this.konvaRegion.y() + this.konvaRegion.height() * 0.5;
-        KonvaIText.updateWordCanvas(this.konvaRegion.label);
-      }
-    });
-    this.addEventListener('dragend', () => {
-      getLayoutViewer(this).drag.isResizingColumns = false;
-    });
-
-    this.on('mouseover', () => {
-      document.body.style.cursor = 'col-resize';
-    });
-    this.on('mouseout', () => {
-      document.body.style.cursor = 'default';
+        if (this.uiRegion.label) {
+          this.uiRegion.label.x(this.uiRegion.x() + this.uiRegion.width() * 0.5);
+          this.uiRegion.label.yActual = this.uiRegion.y() + this.uiRegion.height() * 0.5;
+          UiText.updateWordCanvas(this.uiRegion.label);
+        }
+      },
+      onEnd: () => { this.viewer.drag.isResizingColumns = false; },
     });
   }
 }
 
-export class KonvaDataTableControl extends Konva.Line {
+export class UiDataTableControl extends UiControlLine {
   /**
    *
-   * @param {KonvaDataTable} konvaTable
+   * @param {UiDataTable} uiTable
    */
-  constructor(konvaTable, top = true) {
-    super({
-      x: konvaTable.coords.left,
-      y: top ? konvaTable.coords.top : konvaTable.coords.bottom,
-      points: [0, 0, konvaTable.coords.right - konvaTable.coords.left, 0],
-      stroke: 'black',
-      strokeWidth: 2,
-      strokeScaleEnabled: false,
-      draggable: true,
-      dragBoundFunc(pos) {
-        const newY = Math.max(this.boundTop, Math.min(this.boundBottom, pos.y));
+  constructor(uiTable, top = true) {
+    const tc = uiTable.coords;
+    const n = uiTable.layoutDataTable.page.n;
+    super(uiTable.viewer, n, 'h', tc.left, top ? tc.top : tc.bottom, tc.right - tc.left);
 
-        return {
-          x: this.absolutePosition().x,
-          y: newY,
-        };
-      },
-      hitFunc(context, shape) {
-        context.beginPath();
-        context.rect(0, -3, shape.width(), 6);
-        context.closePath();
-        context.fillStrokeShape(shape);
-      },
-
-    });
-
-    const n = konvaTable.layoutDataTable.page.n;
-
-    this.konvaTable = konvaTable;
-
+    this.uiTable = uiTable;
     this.boundTop = 0;
     this.boundBottom = 10000;
 
-    this.on('dragstart', () => {
-      const viewer = getLayoutViewer(this);
-      viewer.drag.isResizingColumns = true;
-
-      const group = viewer.getOverlayGroup(n);
-
-      if (top) {
-        this.boundTop = group.getAbsoluteTransform().m[5];
-        this.boundBottom = this.konvaTable.bottomControl.getAbsolutePosition().y - 20;
-      } else {
-        this.boundTop = this.konvaTable.topControl.getAbsolutePosition().y + 20;
-        this.boundBottom = group.getAbsoluteTransform().m[5] + viewer.doc.pageMetrics[n].dims.height * group.getAbsoluteScale().y;
-      }
-    });
-    this.addEventListener('dragmove', () => {
-      if (top) {
-        this.konvaTable.coords.top = this.y();
-        konvaTable.columns.forEach((column) => {
-          column.layoutBox.coords.top = this.y();
-          column.y(this.y());
-          column.height(column.layoutBox.coords.bottom - this.y());
-        });
-        konvaTable.colLines.forEach((colLine) => {
-          colLine.y(this.y());
-          colLine.points([0, 0, 0, konvaTable.coords.bottom - konvaTable.coords.top]);
-        });
-      } else {
-        this.konvaTable.coords.bottom = this.y();
-        konvaTable.columns.forEach((column) => {
-          column.layoutBox.coords.bottom = this.y();
-          column.height(this.y() - column.layoutBox.coords.top);
-        });
-        konvaTable.colLines.forEach((colLine) => {
-          colLine.points([0, 0, 0, konvaTable.coords.bottom - konvaTable.coords.top]);
-        });
-      }
-    });
-    this.addEventListener('dragend', () => {
-      const viewer = getLayoutViewer(this);
-      viewer.drag.isResizingColumns = false;
-      renderLayoutDataTable(viewer, this.konvaTable.layoutDataTable);
-    });
-
-    this.on('mouseover', () => {
-      document.body.style.cursor = 'row-resize';
-    });
-    this.on('mouseout', () => {
-      document.body.style.cursor = 'default';
+    makeDraggable(this.el, this.viewer, n, {
+      onStart: () => {
+        this.viewer.drag.isResizingColumns = true;
+        if (top) {
+          this.boundTop = 0;
+          this.boundBottom = this.uiTable.bottomControl.y() - 20;
+        } else {
+          this.boundTop = this.uiTable.topControl.y() + 20;
+          this.boundBottom = this.viewer.doc.pageMetrics[n].dims.height;
+        }
+      },
+      onMove: (p) => {
+        const newY = Math.max(this.boundTop, Math.min(this.boundBottom, p.y));
+        this.y(newY);
+        if (top) {
+          uiTable.coords.top = newY;
+          uiTable.columns.forEach((column) => {
+            column.layoutBox.coords.top = newY;
+            column.y(newY);
+            column.height(column.layoutBox.coords.bottom - newY);
+          });
+          uiTable.colLines.forEach((colLine) => {
+            colLine.y(newY);
+            colLine.points([0, 0, 0, uiTable.coords.bottom - uiTable.coords.top]);
+          });
+        } else {
+          uiTable.coords.bottom = newY;
+          uiTable.columns.forEach((column) => {
+            column.layoutBox.coords.bottom = newY;
+            column.height(newY - column.layoutBox.coords.top);
+          });
+          uiTable.colLines.forEach((colLine) => {
+            colLine.points([0, 0, 0, uiTable.coords.bottom - uiTable.coords.top]);
+          });
+        }
+      },
+      onEnd: () => {
+        this.viewer.drag.isResizingColumns = false;
+        renderLayoutDataTable(this.viewer, this.uiTable.layoutDataTable);
+      },
     });
   }
 }
 
-export class KonvaDataColSep extends Konva.Line {
+export class UiDataColSep extends UiControlLine {
   /**
    *
-   * @param {KonvaDataColumn} columnLeft
-   * @param {KonvaDataColumn} columnRight
-   * @param {KonvaDataTable} konvaTable
+   * @param {UiDataColumn} columnLeft
+   * @param {UiDataColumn} columnRight
+   * @param {UiDataTable} uiTable
    */
-  constructor(columnLeft, columnRight, konvaTable) {
+  constructor(columnLeft, columnRight, uiTable) {
     const x = columnRight ? columnRight.layoutBox.coords.left : columnLeft.layoutBox.coords.right;
     const y = columnRight ? columnRight.layoutBox.coords.top : columnLeft.layoutBox.coords.top;
-    super({
-      x,
-      y,
-      points: [0, 0, 0, konvaTable.coords.bottom - konvaTable.coords.top],
-      stroke: 'black',
-      strokeWidth: 2,
-      strokeScaleEnabled: false,
-      draggable: true,
-      dragBoundFunc(pos) {
-        const newX = Math.max(this.boundLeft, Math.min(this.boundRight, pos.x));
+    const n = uiTable.layoutDataTable.page.n;
+    super(uiTable.viewer, n, 'v', x, y, uiTable.coords.bottom - uiTable.coords.top);
 
-        // Restrict vertical movement by setting the y position to the initial y position.
-        return {
-          x: newX,
-          y: this.absolutePosition().y,
-        };
-      },
-      hitFunc(context, shape) {
-        context.beginPath();
-        context.rect(-3, 0, 6, shape.height());
-        context.closePath();
-        context.fillStrokeShape(shape);
-      },
-
-    });
-
-    const n = konvaTable.layoutDataTable.page.n;
-
-    this.next = () => {
-      const next = this.konvaTable.colLines.find((obj) => obj.x() > this.x());
-      return next;
-    };
-
-    this.prev = () => {
-      const prev = this.konvaTable.colLines.slice().reverse().find((obj) => obj.x() < this.x());
-      return prev;
-    };
+    this.next = () => this.uiTable.colLines.find((obj) => obj.x() > this.x());
+    this.prev = () => this.uiTable.colLines.slice().reverse().find((obj) => obj.x() < this.x());
 
     this.boundLeft = 0;
     this.boundRight = 10000;
 
-    this.konvaTable = konvaTable;
+    this.uiTable = uiTable;
     this.columnLeft = columnLeft;
     this.columnRight = columnRight;
 
-    this.on('dragstart', () => {
-      const viewer = getLayoutViewer(this);
-      viewer.drag.isResizingColumns = true;
-
-      const group = viewer.getOverlayGroup(n);
-
-      const boundLeftNeighbor = this.prev()?.absolutePosition()?.x;
-      const boundRightNeighbor = this.next()?.absolutePosition()?.x;
-
-      const boundLeftRaw = boundLeftNeighbor ?? group.getAbsoluteTransform().m[4];
-      const boundRightRaw = boundRightNeighbor ?? group.getAbsoluteTransform().m[4] + viewer.doc.pageMetrics[n].dims.width * viewer.layerOverlay.getAbsoluteScale().x;
-
-      // Add minimum width between columns to prevent lines from overlapping.
-      const minColWidthAbs = Math.min((boundRightRaw - boundLeftRaw) / 3, 10);
-
-      this.boundLeft = boundLeftRaw + minColWidthAbs;
-      this.boundRight = boundRightRaw - minColWidthAbs;
-    });
-    this.addEventListener('dragmove', () => {
-      if (this.columnLeft) {
-        this.columnLeft.layoutBox.coords.right = this.x();
-        this.columnLeft.width(this.columnLeft.layoutBox.coords.right - this.columnLeft.layoutBox.coords.left);
-      } else {
-        this.konvaTable.topControl.x(this.x());
-        this.konvaTable.bottomControl.x(this.x());
-        this.konvaTable.topControl.points([0, 0, konvaTable.coords.right - this.x(), 0]);
-        this.konvaTable.bottomControl.points([0, 0, konvaTable.coords.right - this.x(), 0]);
-      }
-
-      if (this.columnRight) {
-        this.columnRight.layoutBox.coords.left = this.x();
-        this.columnRight.x(this.columnRight.layoutBox.coords.left);
-        this.columnRight.width(this.columnRight.layoutBox.coords.right - this.columnRight.layoutBox.coords.left);
-      } else {
-        this.konvaTable.topControl.points([0, 0, this.x() - konvaTable.coords.left, 0]);
-        this.konvaTable.bottomControl.points([0, 0, this.x() - konvaTable.coords.left, 0]);
-      }
-    });
-    this.addEventListener('dragend', () => {
-      const viewer = getLayoutViewer(this);
-      viewer.drag.isResizingColumns = false;
-
-      if (!this.columnLeft || !this.columnRight) {
-        renderLayoutDataTable(viewer, this.konvaTable.layoutDataTable);
-      } else {
-        if (this.konvaTable.pageObj) {
-          this.konvaTable.tableContent = scribe.utils.extractSingleTableContent(this.konvaTable.pageObj, this.konvaTable.layoutBoxesArr);
+    makeDraggable(this.el, this.viewer, n, {
+      onStart: () => {
+        this.viewer.drag.isResizingColumns = true;
+        // Bounds are the neighbouring separators (or the page edges), in page space.
+        const boundLeftRaw = this.prev()?.x() ?? 0;
+        const boundRightRaw = this.next()?.x() ?? this.viewer.doc.pageMetrics[n].dims.width;
+        // Add minimum width between columns to prevent lines from overlapping.
+        const minColWidthAbs = Math.min((boundRightRaw - boundLeftRaw) / 3, 10);
+        this.boundLeft = boundLeftRaw + minColWidthAbs;
+        this.boundRight = boundRightRaw - minColWidthAbs;
+      },
+      onMove: (p) => {
+        const newX = Math.max(this.boundLeft, Math.min(this.boundRight, p.x));
+        this.x(newX);
+        if (this.columnLeft) {
+          this.columnLeft.layoutBox.coords.right = newX;
+          this.columnLeft.width(this.columnLeft.layoutBox.coords.right - this.columnLeft.layoutBox.coords.left);
+        } else {
+          this.uiTable.topControl.x(newX);
+          this.uiTable.bottomControl.x(newX);
+          this.uiTable.topControl.points([0, 0, uiTable.coords.right - newX, 0]);
+          this.uiTable.bottomControl.points([0, 0, uiTable.coords.right - newX, 0]);
         }
-        // eslint-disable-next-line no-use-before-define
-        KonvaDataTable.colorTableWords(this.konvaTable);
-      }
-    });
 
-    this.on('mouseover', () => {
-      document.body.style.cursor = 'col-resize';
-    });
-    this.on('mouseout', () => {
-      document.body.style.cursor = 'default';
+        if (this.columnRight) {
+          this.columnRight.layoutBox.coords.left = newX;
+          this.columnRight.x(this.columnRight.layoutBox.coords.left);
+          this.columnRight.width(this.columnRight.layoutBox.coords.right - this.columnRight.layoutBox.coords.left);
+        } else {
+          this.uiTable.topControl.points([0, 0, newX - uiTable.coords.left, 0]);
+          this.uiTable.bottomControl.points([0, 0, newX - uiTable.coords.left, 0]);
+        }
+      },
+      onEnd: () => {
+        this.viewer.drag.isResizingColumns = false;
+        if (!this.columnLeft || !this.columnRight) {
+          renderLayoutDataTable(this.viewer, this.uiTable.layoutDataTable);
+        } else {
+          if (this.uiTable.pageObj) {
+            this.uiTable.tableContent = scribe.utils.extractSingleTableContent(this.uiTable.pageObj, this.uiTable.layoutBoxesArr);
+          }
+          // eslint-disable-next-line no-use-before-define
+          UiDataTable.colorTableWords(this.uiTable);
+        }
+      },
     });
   }
 }
@@ -584,11 +695,9 @@ export function renderLayoutDataTables(viewer, n) {
   Object.values(viewer.doc.layoutDataTables.pages[n].tables).forEach((table) => {
     renderLayoutDataTable(viewer, table);
   });
-
-  viewer.layerOverlay.batchDraw();
 }
 
-export class KonvaDataTable {
+export class UiDataTable {
   /**
    * @param {OcrPage|undefined} pageObj - The page object that the table is on.
    *    This can be undefined in the fringe case where the user makes layout boxes without any OCR data.
@@ -618,7 +727,7 @@ export class KonvaDataTable {
     this.lockColumns = lockColumns;
 
     // eslint-disable-next-line no-use-before-define
-    this.columns = this.layoutBoxesArr.map((layoutBox) => new KonvaDataColumn(layoutBox, this, this.viewer));
+    this.columns = this.layoutBoxesArr.map((layoutBox) => new UiDataColumn(layoutBox, this, this.viewer));
 
     /**
      * Removes the table from the canvas.
@@ -627,15 +736,15 @@ export class KonvaDataTable {
     this.destroy = () => {
       this.columns.forEach((column) => column.destroy());
       this.colLines.forEach((colLine) => colLine.destroy());
-      this.rowLines.forEach((rowLine) => rowLine.destroy());
-      this.rowSpans.forEach((rowSpan) => rowSpan.destroy());
+      this.rowLines.forEach((rowLine) => rowLine.remove());
+      this.rowSpans.forEach((rowSpan) => rowSpan.remove());
 
       this.topControl.destroy();
       this.bottomControl.destroy();
 
       // Restore colors of words that were colored by this table.
       const wordIdArr = this.tableContent?.rowWordArr.flat().flat().map((x) => x.id) || [];
-      const canvasDeselectWords = this.viewer.getKonvaWords().filter((x) => wordIdArr.includes(x.word.id));
+      const canvasDeselectWords = this.viewer.getUiWords().filter((x) => wordIdArr.includes(x.word.id));
       canvasDeselectWords.forEach((x) => {
         const { fill, opacity } = scribe.utils.ocr.getWordFillOpacity(x.word, this.viewer.state.displayMode,
           scribe.ScribeDoc.defaults.confThreshMed, scribe.ScribeDoc.defaults.confThreshHigh, scribe.ScribeDoc.defaults.overlayOpacity);
@@ -660,23 +769,24 @@ export class KonvaDataTable {
 
     const group = this.viewer.getOverlayGroup(layoutDataTable.page.n);
 
-    /** @type {Array<KonvaDataColSep>} */
+    /** @type {Array<UiDataColSep>} */
     this.colLines = [];
     for (let i = 0; i <= this.columns.length; i++) {
-      const colLine = new KonvaDataColSep(this.columns[i - 1], this.columns[i], this);
+      const colLine = new UiDataColSep(this.columns[i - 1], this.columns[i], this);
       this.colLines.push(colLine);
-      group.add(colLine);
+      group.appendChild(colLine.el);
     }
 
-    this.topControl = new KonvaDataTableControl(this, true);
-    this.bottomControl = new KonvaDataTableControl(this, false);
+    this.topControl = new UiDataTableControl(this, true);
+    this.bottomControl = new UiDataTableControl(this, false);
 
-    group.add(this.topControl);
-    group.add(this.bottomControl);
+    group.appendChild(this.topControl.el);
+    group.appendChild(this.bottomControl.el);
 
-    /** @type {Array<InstanceType<typeof Konva.Line>>} */
+    /** @type {Array<HTMLDivElement>} */
     this.rowLines = [];
 
+    /** @type {Array<HTMLDivElement>} */
     this.rowSpans = [];
 
     /** @type {?ReturnType<typeof scribe.utils.extractSingleTableContent>} */
@@ -685,43 +795,48 @@ export class KonvaDataTable {
     if (pageObj) {
       this.tableContent = scribe.utils.extractSingleTableContent(pageObj, this.layoutBoxesArr);
 
-      this.rowLines = this.tableContent.rowBottomArr.map((rowBottom) => new Konva.Line({
-        points: [tableLeft, rowBottom, tableRight, rowBottom],
-        stroke: 'rgba(0,0,0,0.25)',
-        strokeWidth: 2,
-        strokeScaleEnabled: false,
-      }));
+      this.rowLines = this.tableContent.rowBottomArr.map((rowBottom) => {
+        const line = document.createElement('div');
+        Object.assign(line.style, {
+          position: 'absolute',
+          left: `${tableLeft}px`,
+          top: `${rowBottom}px`,
+          width: `${tableRight - tableLeft}px`,
+          height: '0',
+          borderTop: 'calc(2px / var(--scribe-zoom, 1)) solid rgba(0,0,0,0.25)',
+          pointerEvents: 'none',
+        });
+        return line;
+      });
 
-      KonvaDataTable.colorTableWords(this);
+      UiDataTable.colorTableWords(this);
 
       this.rowLines.forEach((rowLine) => {
-        group.add(rowLine);
+        group.appendChild(rowLine);
       });
     }
-
-    this.viewer.layerOverlay.batchDraw();
   }
 
   /**
    * Calculate what words are in each column and color them accordingly.
-   * @param {KonvaDataTable} konvaDataTable
+   * @param {UiDataTable} uiDataTable
    */
-  static colorTableWords(konvaDataTable) {
-    if (!konvaDataTable.tableContent) return;
-    const viewer = konvaDataTable.viewer;
+  static colorTableWords(uiDataTable) {
+    if (!uiDataTable.tableContent) return;
+    const viewer = uiDataTable.viewer;
 
-    const group = viewer.getOverlayGroup(konvaDataTable.layoutDataTable.page.n);
+    const group = viewer.getOverlayGroup(uiDataTable.layoutDataTable.page.n);
 
-    konvaDataTable.rowSpans.forEach((rowSpan) => rowSpan.destroy());
+    uiDataTable.rowSpans.forEach((rowSpan) => rowSpan.remove());
 
     /** @type {Array<Array<string>>} */
     const colWordIdArr = [];
-    for (let i = 0; i < konvaDataTable.columns.length; i++) {
+    for (let i = 0; i < uiDataTable.columns.length; i++) {
       colWordIdArr.push([]);
     }
 
-    for (let i = 0; i < konvaDataTable.tableContent.rowWordArr.length; i++) {
-      const row = konvaDataTable.tableContent.rowWordArr[i];
+    for (let i = 0; i < uiDataTable.tableContent.rowWordArr.length; i++) {
+      const row = uiDataTable.tableContent.rowWordArr[i];
       for (let j = 0; j < row.length; j++) {
         const wordArr = row[j];
         if (wordArr.length === 0) continue;
@@ -730,24 +845,25 @@ export class KonvaDataTable {
         const spanBox = scribe.utils.ocr.calcBboxUnion(wordBoxArr);
         const colorBase = colColorsHex[j % colColorsHex.length];
         const fillCol = hexToRgba(colorBase, 0.3);
-        const stroke = fillCol;
 
-        const rowSpan = new Konva.Rect({
-          x: spanBox.left,
-          y: spanBox.top,
-          width: spanBox.right - spanBox.left,
-          height: spanBox.bottom - spanBox.top,
-          fill: fillCol,
-          stroke,
-          strokeWidth: 1,
-          listening: false,
+        const rowSpan = document.createElement('div');
+        Object.assign(rowSpan.style, {
+          position: 'absolute',
+          left: `${spanBox.left}px`,
+          top: `${spanBox.top}px`,
+          width: `${spanBox.right - spanBox.left}px`,
+          height: `${spanBox.bottom - spanBox.top}px`,
+          background: fillCol,
+          border: `1px solid ${fillCol}`,
+          boxSizing: 'border-box',
+          pointerEvents: 'none',
         });
-        konvaDataTable.rowSpans.push(rowSpan);
-        group.add(rowSpan);
+        uiDataTable.rowSpans.push(rowSpan);
+        group.appendChild(rowSpan);
       }
     }
 
-    const canvasWords = viewer.getKonvaWords();
+    const canvasWords = viewer.getUiWords();
     for (let i = 0; i < colWordIdArr.length; i++) {
       const colWordIndex = colWordIdArr[i];
       const colorBase = colColorsHex[i % colColorsHex.length];
@@ -772,18 +888,18 @@ export function renderLayoutDataTable(viewer, layoutDataTable) {
     return;
   }
 
-  const konvaLayoutExisting = viewer.getKonvaDataTables().find((x) => x.layoutDataTable.id === layoutDataTable.id);
+  const uiLayoutExisting = viewer.getUiDataTables().find((x) => x.layoutDataTable.id === layoutDataTable.id);
 
-  const wordIdOldArr = konvaLayoutExisting?.tableContent?.rowWordArr.flat().flat().map((x) => x.id);
+  const wordIdOldArr = uiLayoutExisting?.tableContent?.rowWordArr.flat().flat().map((x) => x.id);
 
-  if (konvaLayoutExisting) konvaLayoutExisting.destroy();
+  if (uiLayoutExisting) uiLayoutExisting.destroy();
 
-  const konvaLayout = new KonvaDataTable(viewer.doc.ocr.active[layoutDataTable.page.n], layoutDataTable, true, viewer);
+  const uiLayout = new UiDataTable(viewer.doc.ocr.active[layoutDataTable.page.n], layoutDataTable, true, viewer);
 
   if (wordIdOldArr) {
-    const wordIdNewArr = konvaLayout.tableContent?.rowWordArr.flat().flat().map((x) => x.id) || [];
+    const wordIdNewArr = uiLayout.tableContent?.rowWordArr.flat().flat().map((x) => x.id) || [];
     const wordIdDeselectArr = wordIdOldArr.filter((x) => !wordIdNewArr.includes(x));
-    const canvasDeselectWords = viewer.getKonvaWords().filter((x) => wordIdDeselectArr.includes(x.word.id));
+    const canvasDeselectWords = viewer.getUiWords().filter((x) => wordIdDeselectArr.includes(x.word.id));
     canvasDeselectWords.forEach((x) => {
       const { fill, opacity } = scribe.utils.ocr.getWordFillOpacity(x.word, viewer.state.displayMode,
         scribe.ScribeDoc.defaults.confThreshMed, scribe.ScribeDoc.defaults.confThreshHigh, scribe.ScribeDoc.defaults.overlayOpacity);
@@ -793,16 +909,16 @@ export function renderLayoutDataTable(viewer, layoutDataTable) {
     });
   }
 
-  konvaLayout.columns.forEach((column) => {
-    const group = viewer.getOverlayGroup(column.konvaTable.layoutDataTable.page.n);
-    group.add(column);
+  uiLayout.columns.forEach((column) => {
+    const group = viewer.getOverlayGroup(column.uiTable.layoutDataTable.page.n);
+    group.appendChild(column.el);
   });
-  konvaLayout.colLines.forEach((colLine) => colLine.moveToTop());
-  konvaLayout.topControl.moveToTop();
-  konvaLayout.bottomControl.moveToTop();
+  uiLayout.colLines.forEach((colLine) => colLine.moveToTop());
+  uiLayout.topControl.moveToTop();
+  uiLayout.bottomControl.moveToTop();
 }
 
-export class KonvaRegion extends KonvaLayout {
+export class UiRegion extends UiLayout {
   /**
    * @param {LayoutRegion} layoutBox
    * @param {import('../viewer.js').ScribeViewer} [viewer]
@@ -812,20 +928,21 @@ export class KonvaRegion extends KonvaLayout {
 
     this.layoutBox = layoutBox;
 
-    this.topControl = new KonvaRegionControlHorizontal(this, true);
-    this.bottomControl = new KonvaRegionControlHorizontal(this, false);
+    this.topControl = new UiRegionControlHorizontal(this, true);
+    this.bottomControl = new UiRegionControlHorizontal(this, false);
 
-    this.leftControl = new KonvaRegionControlVertical(this, true);
-    this.rightControl = new KonvaRegionControlVertical(this, false);
+    this.leftControl = new UiRegionControlVertical(this, true);
+    this.rightControl = new UiRegionControlVertical(this, false);
 
     const group = this.viewer.getOverlayGroup(layoutBox.page.n);
 
-    group.add(this.topControl);
-    group.add(this.bottomControl);
-    group.add(this.leftControl);
-    group.add(this.rightControl);
+    group.appendChild(this.topControl.el);
+    group.appendChild(this.bottomControl.el);
+    group.appendChild(this.leftControl.el);
+    group.appendChild(this.rightControl.el);
 
-    this.addEventListener('dragmove', () => {
+    // When the whole region box is dragged, keep its four edge controls aligned to the new bounds.
+    this._reposition = () => {
       this.topControl.x(this.x());
       this.topControl.y(this.y());
       this.bottomControl.x(this.x());
@@ -834,7 +951,7 @@ export class KonvaRegion extends KonvaLayout {
       this.leftControl.y(this.y());
       this.rightControl.x(this.x() + this.width());
       this.rightControl.y(this.y());
-    });
+    };
 
     this.destroyLayout = this.destroy;
 
@@ -855,17 +972,17 @@ export class KonvaRegion extends KonvaLayout {
   }
 }
 
-export class KonvaDataColumn extends KonvaLayout {
+export class UiDataColumn extends UiLayout {
   /**
    * @param {LayoutDataColumn} layoutBox
-   * @param {KonvaDataTable} konvaTable
+   * @param {UiDataTable} uiTable
    * @param {import('../viewer.js').ScribeViewer} [viewer]
    */
-  constructor(layoutBox, konvaTable, viewer) {
-    super(layoutBox, viewer || konvaTable?.viewer);
+  constructor(layoutBox, uiTable, viewer) {
+    super(layoutBox, viewer || uiTable?.viewer);
     // Overwrite layoutBox so type inference works correctly, and `layoutBox` gets type `LayoutDataColumn` instead of `LayoutBox`.
     this.layoutBox = layoutBox;
-    this.konvaTable = konvaTable;
+    this.uiTable = uiTable;
     this.draggable(false);
     this.select = () => {
       this.fill(setAlpha(this.fill(), 0.5));
@@ -888,17 +1005,17 @@ export class KonvaDataColumn extends KonvaLayout {
       if (this.layoutBox.table.boxes.length === 0) {
         const tableIndex = this.viewer.doc.layoutDataTables.pages[layoutBox.table.page.n].tables.findIndex((x) => x.id === this.layoutBox.table.id);
         this.viewer.doc.layoutDataTables.pages[layoutBox.table.page.n].tables.splice(tableIndex, 1);
-        this.konvaTable.destroy();
+        this.uiTable.destroy();
       }
     };
 
     this.next = () => {
-      const next = this.konvaTable.columns.find((x) => x.x() > this.x());
+      const next = this.uiTable.columns.find((x) => x.x() > this.x());
       return next;
     };
 
     this.prev = () => {
-      const prev = this.konvaTable.columns.slice().reverse().find((x) => x.x() < this.x());
+      const prev = this.uiTable.columns.slice().reverse().find((x) => x.x() < this.x());
       return prev;
     };
   }
@@ -906,7 +1023,7 @@ export class KonvaDataColumn extends KonvaLayout {
 
 /**
  *
- * @param {Array<KonvaDataColumn>} selectedDataColumns
+ * @param {Array<UiDataColumn>} selectedDataColumns
  * @returns
  */
 export const checkDataColumnsAdjacent = (selectedDataColumns) => {
@@ -971,14 +1088,14 @@ export const checkDataTablesAdjacent = (dataTables, viewer) => {
 
 /**
  *
- * @param {Array<KonvaDataColumn>} columns
+ * @param {Array<UiDataColumn>} columns
  */
 export const mergeDataColumns = (columns) => {
   if (!columns || columns.length < 2 || !checkDataColumnsAdjacent(columns)) return;
 
   columns = columns.slice();
 
-  const table = columns[0].konvaTable.layoutDataTable;
+  const table = columns[0].uiTable.layoutDataTable;
   const viewer = getLayoutViewer(columns[0]);
 
   columns.sort((a, b) => a.x() - b.x());
@@ -988,7 +1105,7 @@ export const mergeDataColumns = (columns) => {
     columns[i].delete();
   }
 
-  columns[0].konvaTable.destroy();
+  columns[0].uiTable.destroy();
 
   renderLayoutDataTable(viewer, table);
 };
@@ -1067,27 +1184,21 @@ const cleanLayoutDataColumns = (table) => {
  */
 export function renderLayoutBoxes(viewer, n) {
   const group = viewer.getOverlayGroup(n);
-  group.destroyChildren();
-
-  const angle = viewer.doc.pageMetrics[n].angle || 0;
-  const textRotation = scribe.ScribeDoc.defaults.autoRotate ? 0 : angle;
-
-  group.rotation(textRotation);
+  // The group's rotation is set by `createGroup` from the page's deskew + user rotation; clear only its contents.
+  group.replaceChildren();
 
   if (!viewer.overlayGroupsRenderIndices.includes(n)) viewer.overlayGroupsRenderIndices.push(n);
 
   Object.values(viewer.doc.layoutRegions.pages[n].boxes).forEach((box) => {
-    const konvaLayout = new KonvaRegion(box, viewer);
-    group.add(konvaLayout);
-    if (konvaLayout.label) group.add(konvaLayout.label);
-    konvaLayout.topControl.moveToTop();
-    konvaLayout.bottomControl.moveToTop();
-    konvaLayout.leftControl.moveToTop();
-    konvaLayout.rightControl.moveToTop();
+    const uiLayout = new UiRegion(box, viewer);
+    group.appendChild(uiLayout.el);
+    if (uiLayout.label) group.appendChild(uiLayout.label.el);
+    uiLayout.topControl.moveToTop();
+    uiLayout.bottomControl.moveToTop();
+    uiLayout.leftControl.moveToTop();
+    uiLayout.rightControl.moveToTop();
   });
   renderLayoutDataTables(viewer, n);
-
-  viewer.layerOverlay.batchDraw();
 }
 
 /**
@@ -1095,8 +1206,8 @@ export function renderLayoutBoxes(viewer, n) {
  * @param {number} level
  */
 export function setLayoutBoxInclusionLevelClick(viewer, level) {
-  const selectedRegions = viewer.CanvasSelection.getKonvaRegions();
-  const selectedDataColumns = viewer.CanvasSelection.getKonvaDataColumns();
+  const selectedRegions = viewer.CanvasSelection.getUiRegions();
+  const selectedDataColumns = viewer.CanvasSelection.getUiDataColumns();
 
   const changedPages = {};
 
@@ -1124,8 +1235,8 @@ export function setLayoutBoxInclusionLevelClick(viewer, level) {
  * @param {string} rule
  */
 export function setLayoutBoxInclusionRuleClick(viewer, rule) {
-  const selectedRegions = viewer.CanvasSelection.getKonvaRegions();
-  const selectedDataColumns = viewer.CanvasSelection.getKonvaDataColumns();
+  const selectedRegions = viewer.CanvasSelection.getUiRegions();
+  const selectedDataColumns = viewer.CanvasSelection.getUiDataColumns();
 
   const changedPages = {};
 
@@ -1178,7 +1289,7 @@ export const mergeDataTables = (tables) => {
 
 /**
  *
- * @param {KonvaDataColumn} column
+ * @param {UiDataColumn} column
  * @param {number} x - Point to split the column at
  */
 export const splitDataColumn = (column, x) => {
@@ -1203,13 +1314,13 @@ export const splitDataColumn = (column, x) => {
 
   const layoutBoxLeft = new scribe.layout.LayoutDataColumn(bboxRight, column.layoutBox.table);
 
-  column.konvaTable.layoutDataTable.boxes.push(layoutBoxLeft);
+  column.uiTable.layoutDataTable.boxes.push(layoutBoxLeft);
 
-  column.konvaTable.layoutDataTable.boxes.sort((a, b) => a.coords.left - b.coords.left);
+  column.uiTable.layoutDataTable.boxes.sort((a, b) => a.coords.left - b.coords.left);
 
   const viewer = getLayoutViewer(column);
-  column.konvaTable.destroy();
-  renderLayoutDataTable(viewer, column.konvaTable.layoutDataTable);
+  column.uiTable.destroy();
+  renderLayoutDataTable(viewer, column.uiTable.layoutDataTable);
 };
 
 /**
@@ -1217,7 +1328,7 @@ export const splitDataColumn = (column, x) => {
  * All columns in `columns` are inserted into a new table, all columns to the left of `columns` are inserted into a new table,
  * and all columns to the right of `columns` are inserted into a new table.
  * The old table is removed.
- * @param {Array<KonvaDataColumn>} columns
+ * @param {Array<UiDataColumn>} columns
  */
 export const splitDataTable = (columns) => {
   if (!columns || columns.length === 0 || columns.length === columns[0].layoutBox.table.boxes.length || !checkDataColumnsAdjacent(columns)) return;

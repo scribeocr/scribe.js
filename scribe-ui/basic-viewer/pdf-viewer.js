@@ -13,7 +13,7 @@ import { filesFromDropEvent } from '../js/dragAndDrop.js';
 const ROOT_CLASS = 'scribe-pdf-viewer';
 
 // Toolbar height bounds (px).
-const TOOLBAR_HEIGHT_DEFAULT = 32;
+const TOOLBAR_HEIGHT_DEFAULT = 40;
 const TOOLBAR_HEIGHT_MIN = 24;
 const TOOLBAR_HEIGHT_MAX = 80;
 
@@ -45,7 +45,7 @@ class ScribePDFViewer {
    *   to the given hex colors. Disabling the toolbar does not block programmatic `applyHighlight` calls.
    * @param {boolean} [options.showToolbar=true] - Render the toolbar (page nav, zoom, highlight controls).
    *   When false the viewer fills the container with the canvas only.
-   * @param {number} [options.toolbarHeight=32] - Height of the toolbar in px. Clamped to [24, 80].
+   * @param {number} [options.toolbarHeight=40] - Height of the toolbar in px. Clamped to [24, 80].
    * @param {boolean} [options.showDropZone=true] - Render the drag-and-drop file upload zone.
    *   When false, consumers must load documents via `importFile` or `attachDocument`.
    * @param {boolean} [options.showScrollbars=true] - Render scrollbars.
@@ -165,8 +165,8 @@ class ScribePDFViewer {
       ? Math.min(TOOLBAR_HEIGHT_MAX, Math.max(TOOLBAR_HEIGHT_MIN, toolbarHeightNum))
       : TOOLBAR_HEIGHT_DEFAULT;
     this.toolbarHeight = showToolbar ? toolbarHeightResolved : 0;
-    // Icons/page-input/text are sized to the bar.
-    const toolbarIconSize = Math.max(16, Math.min(32, this.toolbarHeight - 4));
+    // Icons/page-input/text are sized 12px shorter than the bar (~6px of vertical air above and below), clamped to [16, 32].
+    const toolbarIconSize = Math.max(16, Math.min(32, this.toolbarHeight - 12));
 
     // The highlight subsystem is created whenever highlighting is enabled, independent of the toolbar,
     // so selection-driven highlighting still works with `showToolbar: false`.
@@ -193,6 +193,7 @@ class ScribePDFViewer {
       ? createThumbnailPanel(this.scribe, {
         width: thumbnailWidth,
         onSelect: (n) => this.scribe.displayPage(n, true, false),
+        onExtract: (pageIndices) => this.newDocumentFromPages(pageIndices),
       })
       : null;
     this._thumbnailsVisible = showThumbnails;
@@ -240,7 +241,9 @@ class ScribePDFViewer {
 
       // Find / search controls (right-aligned).
       this._searchBar = createSearchBar(this.scribe, this.pdfViewerElem);
-      toolbarElemEnd.appendChild(this._searchBar.findGroupElem);
+      // The find bar floats (absolute) under the toolbar, so it must hang off `toolbarElem` (the positioned ancestor) rather than the right-zone flex row.
+      // Otherwise showing it would reflow the other controls.
+      toolbarElem.appendChild(this._searchBar.findGroupElem);
       toolbarElemEnd.appendChild(this._searchBar.searchElem);
 
       center.appendChild(toolbarButtons);
@@ -263,6 +266,8 @@ class ScribePDFViewer {
       this.toolbarElemEnd = toolbarElemEnd;
       this.pageNumElem = pageNav.pageNumElem;
       this.pageCountElem = pageNav.pageCountElem;
+      this.prevElem = pageNav.prevElem;
+      this.nextElem = pageNav.nextElem;
     }
 
     this.viewerContainer = document.createElement('div');
@@ -302,7 +307,12 @@ class ScribePDFViewer {
     /** @type {?(() => void)} */
     this._updateScrollbars = null;
     if (this.showScrollbars) {
-      this._updateScrollbars = createScrollbars(this.scribe, this.viewerContainer).updateScrollbars;
+      const bars = createScrollbars(this.scribe, this.viewerContainer);
+      this._updateScrollbars = bars.updateScrollbars;
+      this._vScrollTrack = bars.vTrack;
+      this._vScrollThumb = bars.vThumb;
+      this._hScrollTrack = bars.hTrack;
+      this._hScrollThumb = bars.hThumb;
     }
 
     // Document-level listeners, retained so `destroy()` can remove them.
@@ -314,13 +324,11 @@ class ScribePDFViewer {
       this._teardownCallbacks.push(this._highlightTool.installBehaviors());
     }
 
-    // Backup mouseup listener on the document to clear selection state
-    // if mouseup happens outside of the Konva stage (e.g. on an HTML overlay element).
+    // Backup mouseup listener on the document to clear selection state if mouseup happens outside the scroll container.
     const selectionResetMouseupHandler = () => {
       if (this.scribe.selecting) {
         this.scribe.selecting = false;
-        this.scribe.selectingRectangle?.visible(false);
-        this.scribe.layerText?.batchDraw();
+        if (this.scribe.selectingRectangle) this.scribe.selectingRectangle.style.display = 'none';
       }
     };
     document.addEventListener('mouseup', selectionResetMouseupHandler);
@@ -444,6 +452,26 @@ class ScribePDFViewer {
     return this.doc?.inputData?.pageCount ?? 0;
   }
 
+  /** The find-bar container element (hidden until search is opened), or undefined when there is no toolbar. */
+  get findGroupElem() {
+    return this._searchBar?.findGroupElem;
+  }
+
+  /** The find-bar text input element, or undefined when there is no toolbar. */
+  get searchInputElem() {
+    return this._searchBar?.searchInputElem;
+  }
+
+  /** The find-bar "current/total" counter element, or undefined when there is no toolbar. */
+  get searchCounterElem() {
+    return this._searchBar?.searchCounterElem;
+  }
+
+  /** Reposition and show/hide the overlay scrollbars for the current scroll position (no-op if disabled). */
+  updateScrollbars() {
+    if (this._updateScrollbars) this._updateScrollbars();
+  }
+
   /**
    * Navigate to a page by 0-based index.
    * @param {number} n
@@ -457,9 +485,9 @@ class ScribePDFViewer {
    * @param {number} scale
    */
   zoomTo(scale) {
-    if (!this.scribe.stage) return;
-    const current = this.scribe.stage.scaleX() || 1;
-    this.scribe.zoom(scale / current, this.scribe.getStageCenter());
+    if (!this.scribe.scrollContainer) return;
+    const current = this.scribe.zoomLevel || 1;
+    this.scribe.zoom(scale / current, this.scribe.getViewportCenter());
   }
 
   /**
@@ -498,7 +526,7 @@ class ScribePDFViewer {
    * Wire `doc` into the viewer and display `initialPage`, deciding the outgoing document's fate.
    * Shared by `attachDocument` (`owns=false`) and `importFile` (`owns=true`).
    *
-   * The outgoing document's view is reset by the `scribe.doc` setter (`_resetDocState`) regardless.
+   * The outgoing document's view is reset by the `scribe.doc` setter (which calls `clear()`) regardless.
    * Its resources are terminated only when `terminatePrevious` says so, defaulting to "terminate iff
    * the viewer owned it". Termination is always non-blocking, so the new page never waits on teardown.
    * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
@@ -514,7 +542,7 @@ class ScribePDFViewer {
 
     this.doc = doc;
     this._ownsDoc = owns;
-    this.scribe.doc = doc; // fires _resetDocState(): resets the outgoing document's view only
+    this.scribe.doc = doc;
     this.resetSearch();
 
     for (let i = 0; i < doc.inputData.pageCount; i++) {
@@ -523,7 +551,9 @@ class ScribePDFViewer {
 
     if (this.pageCountElem) this.pageCountElem.textContent = doc.inputData.pageCount.toString();
     if (this.pageNumElem) this.pageNumElem.value = (initialPage + 1).toString();
-    if (this._thumbnailPanel) this._thumbnailPanel.rebuild();
+    // Pass the initial page so the rail mounts and renders the window around it from the first paint, rather than mounting the top,
+    // then jumping (and re-rendering) once the main view's `displayPage` lands on the active page.
+    if (this._thumbnailPanel) this._thumbnailPanel.rebuild(initialPage);
 
     // Off the critical path: the displaced document's workers die asynchronously while the new page renders.
     // Safe because each document's workers and fonts are namespaced by a unique docId.
@@ -551,11 +581,10 @@ class ScribePDFViewer {
     if (!prev) return null;
     const terminatePrev = terminate ?? this._ownsDoc;
 
-    this.scribe.doc = new scribe.ScribeDoc(); // empty doc -> setter fires _resetDocState(): view cleared
+    this.scribe.doc = new scribe.ScribeDoc(); // empty doc -> setter fires clear(): view cleared
     this.doc = null;
     this._ownsDoc = false;
     this.resetSearch();
-    if (this.scribe.stage) this.scribe.stage.batchDraw(); // flush the now-empty layers
 
     if (this.pageCountElem) this.pageCountElem.textContent = '0';
     if (this.pageNumElem) this.pageNumElem.value = '1';
@@ -606,6 +635,30 @@ class ScribePDFViewer {
 
     for (const t of opened) this._tabs.push({ doc: t.doc, name: t.name, lastPage: 0 });
     await this._activateTab(this._tabs.length - 1);
+  }
+
+  /**
+   * Open a new document (tab) built from `pageIndices` of the active document.
+   * The pages are exported to PDF (original page content plus the edited text as an invisible layer), then re-imported.
+   * The round-trip yields a self-contained document that shares none of the source's fonts or image scheduler.
+   * @param {Array<number>} pageIndices - 0-based page indices to extract.
+   * @returns {Promise<void>}
+   */
+  async newDocumentFromPages(pageIndices) {
+    const srcDoc = this.scribe.doc;
+    if (!srcDoc) return;
+    const pageArr = [...new Set(pageIndices)].filter((n) => n >= 0 && n < srcDoc.pageMetrics.length).sort((a, b) => a - b);
+    if (pageArr.length === 0) return;
+    try {
+      const bytes = await srcDoc.exportData('pdf', { displayMode: 'invis', addOverlay: true, pageArr });
+      const doc = await openDocumentFromFile(new Blob([bytes], { type: 'application/pdf' }));
+      const baseName = (this._activeTab >= 0 && this._tabs[this._activeTab]?.name) || 'Document';
+      const name = `${baseName.replace(/\.pdf$/i, '')} (extract)`;
+      this._tabs.push({ doc, name, lastPage: 0 });
+      await this._activateTab(this._tabs.length - 1);
+    } catch (err) {
+      console.error('Failed to create a document from the selected pages:', err);
+    }
   }
 
   /**
@@ -763,7 +816,7 @@ class ScribePDFViewer {
       }
       this.doc = null;
     }
-    // Remove the underlying viewer from the global registry and destroy its Konva stage.
+    // Remove the underlying viewer from the global registry and tear it down.
     // Once the last viewer is gone, drop the shared context menu so nothing of ours remains in the host.
     this.scribe.destroy();
     if (ScribeViewer.getAllViewers().size === 0) destroyContextMenu();
@@ -777,21 +830,18 @@ class ScribePDFViewer {
   _installFit(fitMode) {
     this.scribe.setInitialPositionZoom = (imgDims) => {
       this.scribe.runSetInitial = false;
-      const stageW = this.scribe.stage.width();
-      const stageH = this.scribe.stage.height();
-
-      if (typeof fitMode === 'function') {
-        const r = fitMode(imgDims, { width: stageW, height: stageH });
-        this.scribe.stage.scaleX(r.zoom);
-        this.scribe.stage.scaleY(r.zoom);
-        this.scribe.stage.x(r.x ?? (stageW - imgDims.width * r.zoom) / 2);
-        this.scribe.stage.y(r.y ?? 30);
-        return;
-      }
+      const sc = this.scribe.scrollContainer;
+      const stageW = sc.clientWidth;
+      const stageH = sc.clientHeight;
 
       let zoom;
+      // `y` is the desired gap, in screen px, from the top of the viewport to the top of the first page.
       let y;
-      if (fitMode === 'width') {
+      if (typeof fitMode === 'function') {
+        const r = fitMode(imgDims, { width: stageW, height: stageH });
+        zoom = r.zoom;
+        y = r.y ?? 30;
+      } else if (fitMode === 'width') {
         zoom = stageW / imgDims.width;
         y = 30;
       } else if (fitMode === 'page') {
@@ -806,10 +856,12 @@ class ScribePDFViewer {
         y = interfaceHeight;
       }
 
-      this.scribe.stage.scaleX(zoom);
-      this.scribe.stage.scaleY(zoom);
-      this.scribe.stage.x((stageW - imgDims.width * zoom) / 2);
-      this.scribe.stage.y(y);
+      this.scribe.zoomLevel = zoom;
+      this.scribe._applyZoomTransform(zoom);
+      this.scribe._updateContentSize();
+      const page0 = this.scribe.getPageStop(0) ?? 0;
+      sc.scrollTop = Math.max(0, page0 * zoom - y);
+      sc.scrollLeft = Math.max(0, (this.scribe._contentWidth * zoom - stageW) / 2);
     };
   }
 

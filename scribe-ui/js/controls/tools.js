@@ -47,7 +47,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       : '';
   }
 
-  /** KonvaOcrWord objects under the current browser text selection (via the HTML overlay). */
+  /** UiOcrWord objects under the current browser text selection (via the HTML overlay). */
   function getSelectedOverlayWords() {
     const sel = window.getSelection();
     if (!sel || sel.isCollapsed) return [];
@@ -59,7 +59,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     }
     if (selectedIds.length === 0) return [];
     const idSet = new Set(selectedIds);
-    return scribe.getKonvaWords().filter((kw) => idSet.has(kw.word.id));
+    return scribe.getUiWords().filter((kw) => idSet.has(kw.word.id));
   }
 
   function applyToSelection() {
@@ -67,8 +67,6 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     if (matchedWords.length === 0 || !highlightColor) return false;
     applyHighlight(scribe, matchedWords, scribe.state.cp.n, highlightColor, 0.5);
     window.getSelection()?.removeAllRanges();
-    scribe.deleteHTMLOverlay();
-    scribe.renderHTMLOverlay();
     return true;
   }
 
@@ -153,7 +151,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     if (!viewerElem) return;
     viewerElem.querySelectorAll('.highlight-comment-icon').forEach((el) => el.remove());
 
-    const allWords = scribe.getKonvaWords();
+    const allWords = scribe.getUiWords();
     if (!allWords || allWords.length === 0) return;
 
     const groupFirstWord = new Map();
@@ -231,7 +229,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
  * @param {number} cfg.width - Zone width in px.
  * @param {number} cfg.height - Zone height in px.
  * @param {number} cfg.top - Zone top offset in px (below the toolbar).
- * @param {(files: File[]) => void} cfg.onFiles - Called with all chosen/dropped files.
+ * @param {(files: File[]) => (void | Promise<void>)} cfg.onFiles - Called with all chosen/dropped files.
  * @returns {{ dropZone: HTMLDivElement, openFileInputElem: HTMLInputElement }}
  */
 export function createDropZone({
@@ -274,14 +272,24 @@ export function createDropZone({
   content.className = 'scribe-drop-content';
   content.append(icon, title, button, hint);
 
+  // Swapped in for `content` (via the `loading` class) while the dropped file opens, so the wait reads as progress.
+  const loading = document.createElement('div');
+  loading.className = 'scribe-drop-loading';
+  loading.innerHTML = '<div class="scribe-drop-spinner"></div><div class="scribe-drop-loading-text">Opening…</div>';
+
   const region = document.createElement('div');
   region.className = 'scribe-drop-region';
-  region.appendChild(content);
+  region.append(content, loading);
   dropZone.appendChild(region);
 
-  openFileInputElem.addEventListener('change', () => {
+  openFileInputElem.addEventListener('change', async () => {
     if (!openFileInputElem.files || openFileInputElem.files.length === 0) return;
-    onFiles([...openFileInputElem.files]);
+    dropZone.classList.add('loading');
+    try {
+      await onFiles([...openFileInputElem.files]);
+    } finally {
+      dropZone.classList.remove('loading');
+    }
   });
 
   // Drag-enter/leave can fire repeatedly over child nodes; a counter keeps the highlight stable.
@@ -304,8 +312,14 @@ export function createDropZone({
     event.preventDefault();
     const files = await filesFromDropEvent(event);
     if (files.length === 0) return;
+    // Switch to the loading state as soon as the drop is accepted, since the page does not render for ~1s.
     dropZone.classList.remove('highlight');
-    onFiles(files);
+    dropZone.classList.add('loading');
+    try {
+      await onFiles(files);
+    } finally {
+      dropZone.classList.remove('loading');
+    }
   });
 
   return { dropZone, openFileInputElem };

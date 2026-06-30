@@ -448,6 +448,7 @@ function decodeJPEGComponents(jpegData) {
 
             // Decode AC coefficients
             let k = 1;
+            let hasAC = false;
             while (k < 64) {
               const acSymbol = reader.decodeHuffman(acTable);
               if (acSymbol < 0) break;
@@ -463,11 +464,20 @@ function decodeJPEGComponents(jpegData) {
                   acVal -= (1 << acCategory) - 1;
                 }
                 block[zigzag[k]] = acVal * qt[k];
+                hasAC = true;
               }
               k++;
             }
 
-            idct2d(block);
+            // A block with no nonzero AC coefficient inverse-transforms to a single constant, so skip the full 1024-multiply IDCT.
+            // The constant is computed with the same two-step float multiply idct2d uses (idctCos[0] for both the row and column pass),
+            // making it byte-identical to the full transform.
+            // DC-only blocks are very common (flat image regions).
+            if (hasAC) {
+              idct2d(block);
+            } else {
+              block.fill(Math.round(block[0] * idctCos[0] * idctCos[0]) + 128);
+            }
 
             const cx = (mcuX * blocksH + bh) * 8;
             const cy = (mcuY * blocksV + bv) * 8;
@@ -533,6 +543,10 @@ export function decodeCMYKJpegToRGB(jpegData, decodeInvert = false) {
   const w3 = compWidths[3];
   const comp = new Uint8Array(numComponents);
   let di = 0;
+  // Memoize the CMYK->RGB conversion: it is an expensive per-pixel polynomial and adjacent pixels are often identical (flat regions),
+  // so reuse the previous result when the CMYK input is unchanged.
+  let prevC = -1; let prevM = -1; let prevY = -1; let prevK = -1;
+  let prevR = 0; let prevG = 0; let prevB = 0;
   for (let py = 0; py < height; py++) {
     const r0 = py * w0;
     const r1 = py * w1;
@@ -601,6 +615,16 @@ export function decodeCMYKJpegToRGB(jpegData, decodeInvert = false) {
         k = 255 - k;
       }
 
+      // Reuse the previous pixel's RGB when the CMYK input is identical (flat regions).
+      if (c === prevC && m === prevM && y === prevY && k === prevK) {
+        rgbData[di] = prevR;
+        rgbData[di + 1] = prevG;
+        rgbData[di + 2] = prevB;
+        rgbData[di + 3] = 255;
+        di += 4;
+        continue;
+      }
+
       // CMYK -> RGB using polynomial approximation of US Web Coated (SWOP) v2 ICC profile.
       // Matches pdf.js. c,m,y,k here are 0-255; normalize to 0-1.
       const cn = c / 255;
@@ -623,10 +647,11 @@ export function decodeCMYKJpegToRGB(jpegData, decodeInvert = false) {
         + yn * (0.03296041114873217 * yn + 115.60384449646641 * kn - 193.58209356861505)
         + kn * (-22.33816807309886 * kn - 180.12613974708367);
 
-      rgbData[di] = ri > 255 ? 255 : (ri < 0 ? 0 : Math.round(ri));
-      rgbData[di + 1] = gi > 255 ? 255 : (gi < 0 ? 0 : Math.round(gi));
-      rgbData[di + 2] = bi > 255 ? 255 : (bi < 0 ? 0 : Math.round(bi));
-      rgbData[di + 3] = 255;
+      const R = ri > 255 ? 255 : (ri < 0 ? 0 : Math.round(ri));
+      const G = gi > 255 ? 255 : (gi < 0 ? 0 : Math.round(gi));
+      const B = bi > 255 ? 255 : (bi < 0 ? 0 : Math.round(bi));
+      rgbData[di] = R; rgbData[di + 1] = G; rgbData[di + 2] = B; rgbData[di + 3] = 255;
+      prevC = c; prevM = m; prevY = y; prevK = k; prevR = R; prevG = G; prevB = B;
       di += 4;
     }
   }

@@ -1,7 +1,6 @@
 import scribe from '../../scribe.js';
 /* eslint-disable import/no-cycle */
 import { ScribeViewer } from '../viewer.js';
-import Konva from './konva/index.js';
 import { initBitmapWorker } from './bitmapWorkerMain.js';
 import { range } from '../../js/utils/miscUtils.js';
 import { SKIPPED } from '../../tess/TessScheduler.js';
@@ -11,6 +10,7 @@ import { SKIPPED } from '../../tess/TessScheduler.js';
  * @property {boolean} [rotated]
  * @property {boolean} [upscaled]
  * @property {('color'|'gray'|'binary')} [colorMode]
+ * @property {number} [rotation]
  * @property {number} n
  */
 
@@ -53,8 +53,8 @@ const _initBitmapScheduler = async (numWorkers = 3) => {
 };
 
 /**
- * Per-viewer image cache. Owns its own konvaImages array; the bitmap-worker scheduler is shared
- * globally (workers are expensive) but per-page bitmap promises are per-viewer.
+ * Per-viewer image cache. Owns its own page-canvas array and per-page bitmap promises.
+ * Only the bitmap-worker scheduler is shared globally, because workers are expensive.
  */
 export class ViewerImageCache {
   /** Number of pages ahead and behind the current page to pre-render. */
@@ -69,10 +69,10 @@ export class ViewerImageCache {
   constructor(viewer) {
     /** @type {?import('../viewer.js').ScribeViewer} */
     this.viewer = viewer || null;
-    /** @type {Array<?Promise<InstanceType<typeof Konva.Image>>>} */
-    this.konvaImages = [];
+    /** @type {Array<?Promise<HTMLCanvasElement|symbol>>} */
+    this.pageCanvases = [];
     /** @type {Array<?ImageProperties>} */
-    this.konvaImagesProps = [];
+    this.pageCanvasProps = [];
     /** @type {Array<?Promise<boolean>>} */
     this._nativeBitmapPromises = [];
     /** @type {Array<?Promise<boolean>>} */
@@ -106,8 +106,30 @@ export class ViewerImageCache {
     return bitmapScheduler.scheduler.addJob('getImageBitmap', [imageStr]);
   }
 
-  /** @param {number} n */
-  async getKonvaImage(n) {
+  /**
+   * Compute the display rotation (deskew correction + user rotation) for page `n`, given whether the source raster is already rotated.
+   * @param {number} n
+   * @param {boolean} [rotated]
+   */
+  _displayRotation(n, rotated) {
+    const viewer = this._viewer();
+    let rotation = 0;
+    if (scribe.ScribeDoc.defaults.autoRotate && !rotated) {
+      rotation = (viewer.doc.pageMetrics[n].angle || 0) * -1;
+    } else if (!scribe.ScribeDoc.defaults.autoRotate && rotated) {
+      rotation = (viewer.doc.pageMetrics[n].angle || 0);
+    }
+    rotation += viewer.doc.pageMetrics[n].rotation || 0;
+    return rotation;
+  }
+
+  /**
+   * Render page `n`'s raster into a `<canvas>` (native bitmap resolution, CSS-fit to the displayed page size,
+   * rotation baked in). Returns `SKIPPED` when the bitmap render was dropped to keep the lane bounded.
+   * @param {number} n
+   * @returns {Promise<{canvas: HTMLCanvasElement, props: ImageProperties} | typeof SKIPPED>}
+   */
+  async getPageCanvas(n) {
     const viewer = this._viewer();
     const pageDims = viewer.doc.pageMetrics[n].dims;
 
@@ -116,48 +138,43 @@ export class ViewerImageCache {
     const image = viewer.state.colorMode === 'binary' ? await this.getBinaryBitmap(n) : await this.getNativeBitmap(n);
     if (image === SKIPPED) return SKIPPED;
 
-    let rotation = 0;
-    if (scribe.ScribeDoc.defaults.autoRotate && !backgroundImage.rotated) {
-      rotation = (viewer.doc.pageMetrics[n].angle || 0) * -1;
-    } else if (!scribe.ScribeDoc.defaults.autoRotate && backgroundImage.rotated) {
-      rotation = (viewer.doc.pageMetrics[n].angle || 0);
-    }
+    const rotation = this._displayRotation(n, backgroundImage.rotated);
 
     // User rotation (multiple of 90) is an extra display transform on top of the deskew angle;
     // for 90/270 it swaps the displayed page dimensions.
     const userRotation = viewer.doc.pageMetrics[n].rotation || 0;
-    rotation += userRotation;
     const dispW = userRotation % 180 === 90 ? pageDims.height : pageDims.width;
     const dispH = userRotation % 180 === 90 ? pageDims.width : pageDims.height;
 
-    const pageOffsetY = viewer.getPageStop(n) ?? 30;
+    // A "binary"/upscaled raster is rendered at 2x the display size; oversample the backing store to match so no detail is lost.
+    const scale = backgroundImage.upscaled ? 0.5 : 1;
+    const over = backgroundImage.upscaled ? 2 : 1;
 
-    const y = pageOffsetY + dispH * 0.5;
-
-    const scaleX = backgroundImage.upscaled ? 0.5 : 1;
-    const scaleY = backgroundImage.upscaled ? 0.5 : 1;
-
-    const konvaImage = new Konva.Image({
-      image,
-      rotation,
-      scaleX,
-      scaleY,
-      x: dispW * 0.5,
-      y,
-      offsetX: image.width * 0.5,
-      offsetY: image.height * 0.5,
-      strokeWidth: 4,
-      stroke: 'black',
+    const canvas = /** @type {HTMLCanvasElement} */ (document.createElement('canvas'));
+    canvas.className = 'scribe-layer-image';
+    canvas.width = Math.max(1, Math.round(dispW * over));
+    canvas.height = Math.max(1, Math.round(dispH * over));
+    Object.assign(canvas.style, {
+      position: 'absolute', left: '0', top: '0', width: `${dispW}px`, height: `${dispH}px`, pointerEvents: 'none',
     });
+    const ctx = /** @type {CanvasRenderingContext2D} */ (canvas.getContext('2d'));
+    ctx.imageSmoothingQuality = 'high';
+    ctx.save();
+    ctx.translate(canvas.width / 2, canvas.height / 2);
+    ctx.rotate(rotation * (Math.PI / 180));
+    ctx.scale(scale * over, scale * over);
+    ctx.drawImage(image, -image.width / 2, -image.height / 2);
+    ctx.restore();
 
     const props = {
       rotated: backgroundImage.rotated,
       upscaled: backgroundImage.upscaled,
       colorMode: /** @type {'color'|'gray'|'binary'} */ (backgroundImage.colorMode),
+      rotation,
       n,
     };
 
-    return { konvaImage, props };
+    return { canvas, props };
   }
 
   /**
@@ -197,29 +214,17 @@ export class ViewerImageCache {
   }
 
   /** @param {number} n - Page number */
-  async addKonvaImage(n) {
+  async addPageCanvas(n) {
     const viewer = this._viewer();
-    if (this.konvaImages[n]) {
+    if (this.pageCanvases[n]) {
       let rerender = false;
-      if (this.konvaImagesProps[n]) {
-        if (this.konvaImagesProps[n].colorMode !== viewer.state.colorMode) {
+      if (this.pageCanvasProps[n]) {
+        if (this.pageCanvasProps[n].colorMode !== viewer.state.colorMode) {
           rerender = true;
         } else {
-          const konvaImage = await this.konvaImages[n];
-          if (konvaImage && konvaImage !== SKIPPED) {
-            let rotation = 0;
-            if (scribe.ScribeDoc.defaults.autoRotate && !this.konvaImagesProps[n].rotated) {
-              rotation = (viewer.doc.pageMetrics[n].angle || 0) * -1;
-            } else if (!scribe.ScribeDoc.defaults.autoRotate && this.konvaImagesProps[n].rotated) {
-              rotation = (viewer.doc.pageMetrics[n].angle || 0);
-            }
-            rotation += viewer.doc.pageMetrics[n].rotation || 0;
-
-            if (Math.abs(konvaImage.rotation() - rotation) > 0.01) {
-              konvaImage.rotation(rotation);
-              if (Math.abs(viewer.state.cp.n - n) < 2) viewer.layerBackground.batchDraw();
-            }
-          }
+          // The rotation is baked into the raster, so a changed display rotation needs a fresh draw.
+          const rotation = this._displayRotation(n, this.pageCanvasProps[n].rotated);
+          if (Math.abs((this.pageCanvasProps[n].rotation ?? 0) - rotation) > 0.01) rerender = true;
         }
       }
       if (!rerender) return;
@@ -227,57 +232,66 @@ export class ViewerImageCache {
 
     if (viewer.getPageStop(n) === null) return;
 
-    if (this.konvaImages[n]) {
-      this.konvaImages[n].then((konvaImage) => {
-        if (konvaImage && konvaImage !== SKIPPED) konvaImage.destroy();
+    if (this.pageCanvases[n]) {
+      this.pageCanvases[n].then((canvas) => {
+        if (canvas && canvas !== SKIPPED && /** @type {HTMLCanvasElement} */ (canvas).parentNode) /** @type {HTMLCanvasElement} */ (canvas).remove();
       }).catch(() => {});
     }
 
     // Each render is stamped. Only the latest render for this page is applied.
     // A slower earlier render completing out of order (LIFO can run a newer request first) cannot overwrite a newer one.
-    // The superseding call (or a delete) destroys the discarded image.
+    // The superseding call (or a delete) removes the discarded canvas.
     const seq = (this._renderSeq[n] || 0) + 1;
     this._renderSeq[n] = seq;
 
-    this.konvaImagesProps[n] = null;
-    const konvaImagePromise = this.getKonvaImage(n).then((res) => {
+    this.pageCanvasProps[n] = null;
+    const canvasPromise = this.getPageCanvas(n).then((res) => {
       if (res === SKIPPED) return SKIPPED;
-      this.konvaImagesProps[n] = res.props;
-      return res.konvaImage;
+      this.pageCanvasProps[n] = res.props;
+      return res.canvas;
     });
-    this.konvaImages[n] = konvaImagePromise;
+    this.pageCanvases[n] = canvasPromise;
 
-    konvaImagePromise.then((konvaImage) => {
-      if (konvaImage === SKIPPED) {
+    canvasPromise.then((canvas) => {
+      if (canvas === SKIPPED) {
         // Render dropped to keep the lane bounded; leave the placeholder, allow a later re-render.
-        if (this.konvaImages[n] === konvaImagePromise) this.konvaImages[n] = null;
+        if (this.pageCanvases[n] === canvasPromise) this.pageCanvases[n] = null;
         return;
       }
       if (this._renderSeq[n] !== seq) return;
-      viewer.layerBackground.add(konvaImage);
-      if (viewer.placeholderRectArr[n]) viewer.placeholderRectArr[n].hide();
-      if (Math.abs(viewer.state.cp.n - n) < 2) viewer.layerBackground.batchDraw();
+      const pc = viewer._ensurePageContainer(n);
+      if (!pc) return;
+      const prev = /** @type {any} */ (pc)._canvas;
+      if (prev && prev !== canvas && prev.parentNode) prev.remove();
+      /** @type {any} */ (pc)._canvas = canvas;
+      /** @type {HTMLCanvasElement} */ (canvas).style.display = viewer.state.displayMode === 'ebook' ? 'none' : '';
+      // Insert behind the text/overlay groups (which carry z-index >= 1).
+      pc.insertBefore(/** @type {HTMLCanvasElement} */ (canvas), pc.firstChild);
     }).catch(() => {});
   }
 
   /** @param {number} n - Page number */
-  deleteKonvaImage(n) {
-    if (!this.konvaImages[n]) return;
+  deletePageCanvas(n) {
+    if (!this.pageCanvases[n]) return;
     // Supersede any in-flight render so its result is discarded rather than added after deletion.
     this._renderSeq[n] = (this._renderSeq[n] || 0) + 1;
-    const konvaImagePromise = this.konvaImages[n];
-    this.konvaImages[n] = null;
-    konvaImagePromise.then((konvaImage) => {
-      if (konvaImage && konvaImage !== SKIPPED) konvaImage.destroy();
+    const canvasPromise = this.pageCanvases[n];
+    this.pageCanvases[n] = null;
+    const pc = this._viewer().pageContainerArr[n];
+    canvasPromise.then((canvas) => {
+      if (canvas && canvas !== SKIPPED) {
+        /** @type {HTMLCanvasElement} */ (canvas).remove();
+        if (pc && /** @type {any} */ (pc)._canvas === canvas) /** @type {any} */ (pc)._canvas = null;
+      }
     }).catch(() => {});
   }
 
   clear() {
-    for (let i = 0; i < this.konvaImages.length; i++) {
-      this.deleteKonvaImage(i);
+    for (let i = 0; i < this.pageCanvases.length; i++) {
+      this.deletePageCanvas(i);
     }
-    this.konvaImages.length = 0;
-    this.konvaImagesProps.length = 0;
+    this.pageCanvases.length = 0;
+    this.pageCanvasProps.length = 0;
     this._nativeBitmapPromises.length = 0;
     this._binaryBitmapPromises.length = 0;
     this._renderSeq.length = 0;
@@ -296,7 +310,7 @@ export class ViewerImageCache {
     // Skip ahead-render when a PDF is being uploaded alongside OCR data and OCR dimensions are not yet available.
     // No re-render mechanism currently exists for that case.
     if (curr === 0 && viewer.doc.ocr?.active?.[curr] && !viewer.doc.ocr?.active?.[curr + 1] && viewer.doc.pageMetrics.length > curr + 1) {
-      await this.addKonvaImage(curr);
+      await this.addPageCanvas(curr);
       return;
     }
 
@@ -305,17 +319,18 @@ export class ViewerImageCache {
     // viewer lane the current page renders first, then its neighbors outward.
     for (let i = ViewerImageCache.cacheRenderPages; i >= 1; i--) {
       if (curr + i < viewer.doc.images.loadCount) {
-        resArr.push(this.addKonvaImage(curr + i));
+        resArr.push(this.addPageCanvas(curr + i));
       }
       if (curr - i >= 0) {
-        resArr.push(this.addKonvaImage(curr - i));
+        resArr.push(this.addPageCanvas(curr - i));
       }
     }
-    resArr.push(this.addKonvaImage(curr));
+    resArr.push(this.addPageCanvas(curr));
 
     await Promise.all(resArr);
   }
 
+  /** @param {number} curr */
   _cleanBitmapCache(curr) {
     const viewer = this._viewer();
     for (let i = 0; i < viewer.doc.images.pageCount; i++) {
@@ -335,12 +350,12 @@ export class ViewerImageCache {
     }
   }
 
+  /** @param {number} curr */
   _cleanBitmapCache2(curr) {
     const viewer = this._viewer();
     for (let i = 0; i < viewer.doc.images.pageCount; i++) {
       if (Math.abs(curr - i) > ViewerImageCache.cacheDeletePages) {
-        if (viewer.placeholderRectArr[i]) viewer.placeholderRectArr[i].show();
-        this.deleteKonvaImage(i);
+        this.deletePageCanvas(i);
       }
     }
   }

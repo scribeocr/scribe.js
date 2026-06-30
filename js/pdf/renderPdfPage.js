@@ -446,28 +446,84 @@ async function decodeSmaskJpeg(rawData) {
  * Box-average a binary (0/255) soft mask down to outW x outH.
  * Used when the mask is higher-resolution than the device area the image occupies: averaging preserves the edge anti-aliasing a full-resolution draw would produce,
  * without building a composite at the mask's full resolution.
+ *
+ * The input `sMask` is be returned directly (not copied) when the output would be identical, so the output is read-only.
+ *
  * @param {Uint8Array} sMask
  * @param {number} sMaskWidth
  * @param {number} sMaskHeight
  * @param {number} outW
  * @param {number} outH
- * @returns {Uint8Array} length outW*outH
+ * @returns {Uint8Array} length outW*outH (may alias `sMask`)
  */
 function boxDownsampleMask(sMask, sMaskWidth, sMaskHeight, outW, outH) {
+  // Output already at mask size, so return the mask unchanged (nothing to average).
+  if (outW === sMaskWidth && outH === sMaskHeight) return sMask;
+
   const out = new Uint8Array(outW * outH);
+  // Column spans don't depend on the row, so compute them once instead of per output pixel.
+  const colStart = new Int32Array(outW);
+  const colW = new Int32Array(outW);
+  for (let ox = 0; ox < outW; ox++) {
+    const sx0 = Math.floor((ox * sMaskWidth) / outW);
+    const sx1 = Math.max(sx0 + 1, Math.floor(((ox + 1) * sMaskWidth) / outW));
+    colStart[ox] = sx0;
+    colW[ox] = sx1 - sx0;
+  }
+  let di = 0;
   for (let oy = 0; oy < outH; oy++) {
     const sy0 = Math.floor((oy * sMaskHeight) / outH);
     const sy1 = Math.max(sy0 + 1, Math.floor(((oy + 1) * sMaskHeight) / outH));
+    const rowH = sy1 - sy0;
     for (let ox = 0; ox < outW; ox++) {
-      const sx0 = Math.floor((ox * sMaskWidth) / outW);
-      const sx1 = Math.max(sx0 + 1, Math.floor(((ox + 1) * sMaskWidth) / outW));
+      const sx0 = colStart[ox];
+      const w = colW[ox];
       let sum = 0;
-      let cnt = 0;
       for (let sy = sy0; sy < sy1; sy++) {
-        const row = sy * sMaskWidth;
-        for (let sx = sx0; sx < sx1; sx++) { sum += sMask[row + sx]; cnt++; }
+        const row = sy * sMaskWidth + sx0;
+        for (let k = 0; k < w; k++) sum += sMask[row + k];
       }
-      out[oy * outW + ox] = ((sum / cnt) + 0.5) | 0;
+      out[di++] = ((sum / (rowH * w)) + 0.5) | 0;
+    }
+  }
+  return out;
+}
+
+/**
+ * Nearest-neighbor upsample a w x h RGBA image to outW x outH, taking the alpha channel from `maskA` (already at outW x outH).
+ * Used to composite a low-resolution colour image with a higher-resolution SMask.
+ *
+ * Each output pixel is one packed little-endian RGBA store, valid because every supported target (browser, Node, WASM) is little-endian.
+ *
+ * @param {Uint8ClampedArray} src - source RGBA, length w*h*4
+ * @param {number} w
+ * @param {number} h
+ * @param {Uint8Array} maskA - alpha values, length outW*outH
+ * @param {number} outW
+ * @param {number} outH
+ * @returns {Uint8ClampedArray} length outW*outH*4
+ */
+function upsampleImageWithMask(src, w, h, maskA, outW, outH) {
+  const out = new Uint8ClampedArray(outW * outH * 4);
+  const out32 = new Uint32Array(out.buffer);
+  if (w === 1 && h === 1) {
+    // Solid colour: every output pixel shares the one source RGB; only alpha varies.
+    const rgb = src[0] | (src[1] << 8) | (src[2] << 16);
+    for (let i = 0, n = outW * outH; i < n; i++) out32[i] = rgb | (maskA[i] << 24);
+    return out;
+  }
+  // Source column indices depend only on x, so precompute them once rather than
+  // recomputing inside the row loop for every output pixel.
+  const colSrc = new Int32Array(outW);
+  for (let x = 0; x < outW; x++) colSrc[x] = Math.min(Math.floor(x * w / outW), w - 1);
+  let di = 0;
+  for (let y = 0; y < outH; y++) {
+    const srcRow = Math.min(Math.floor(y * h / outH), h - 1) * w;
+    const mRow = y * outW;
+    for (let x = 0; x < outW; x++) {
+      const s = (srcRow + colSrc[x]) * 4;
+      out32[di] = (src[s] | (src[s + 1] << 8) | (src[s + 2] << 16)) | (maskA[mRow + x] << 24);
+      di++;
     }
   }
   return out;
@@ -487,36 +543,102 @@ function boxDownsampleMask(sMask, sMaskWidth, sMaskHeight, outW, outH) {
  */
 function boxDownsampleRgba(rgba, width, height, outW, outH) {
   const out = new Uint8ClampedArray(outW * outH * 4);
+  // Column spans don't depend on the row, so compute them once instead of per output pixel.
+  const colStart = new Int32Array(outW);
+  const colW = new Int32Array(outW);
+  for (let ox = 0; ox < outW; ox++) {
+    const sx0 = Math.floor((ox * width) / outW);
+    colStart[ox] = sx0;
+    colW[ox] = Math.max(sx0 + 1, Math.floor(((ox + 1) * width) / outW)) - sx0;
+  }
+
+  let di = 0;
   for (let oy = 0; oy < outH; oy++) {
     const sy0 = Math.floor((oy * height) / outH);
     const sy1 = Math.max(sy0 + 1, Math.floor(((oy + 1) * height) / outH));
+    const rowH = sy1 - sy0;
     for (let ox = 0; ox < outW; ox++) {
-      const sx0 = Math.floor((ox * width) / outW);
-      const sx1 = Math.max(sx0 + 1, Math.floor(((ox + 1) * width) / outW));
+      const sx0 = colStart[ox];
+      const wpx = colW[ox];
       let r = 0;
       let g = 0;
       let b = 0;
       let a = 0;
-      let cnt = 0;
       for (let sy = sy0; sy < sy1; sy++) {
-        const row = sy * width;
-        for (let sx = sx0; sx < sx1; sx++) {
-          const si = (row + sx) * 4;
-          r += rgba[si];
-          g += rgba[si + 1];
-          b += rgba[si + 2];
-          a += rgba[si + 3];
-          cnt++;
-        }
+        let si = (sy * width + sx0) * 4;
+        for (let k = 0; k < wpx; k++) { r += rgba[si]; g += rgba[si + 1]; b += rgba[si + 2]; a += rgba[si + 3]; si += 4; }
       }
-      const di = (oy * outW + ox) * 4;
+      const cnt = rowH * wpx;
       out[di] = ((r / cnt) + 0.5) | 0;
       out[di + 1] = ((g / cnt) + 0.5) | 0;
       out[di + 2] = ((b / cnt) + 0.5) | 0;
       out[di + 3] = ((a / cnt) + 0.5) | 0;
+      di += 4;
     }
   }
   return out;
+}
+
+/**
+ * Memory budget for the doc-wide decoded-image cache (`objCache.decodedImageCache`).
+ * Decoded images dominate re-render cost and are otherwise never retained across page renders.
+ * Bounded so image-heavy docs don't grow memory without limit.
+ */
+const DECODED_IMAGE_CACHE_BUDGET = 64 * 1024 * 1024;
+
+/**
+ * Admission threshold for the decoded-image cache: only retain images whose decode took at least this long.
+ * Cheap decodes (CCITT/Flate masks, small images) are faster to redo than the cost of holding their bitmaps.
+ */
+const DECODED_IMAGE_MIN_DECODE_MS = 15;
+
+/**
+ * Cache key for a decoded image. Plain images are shareable by objNum.
+ * Image masks bake the per-draw fill colour into the bitmap, so they key on both.
+ * @param {number} objNum
+ * @param {boolean} isMask
+ * @param {string} [fillColor]
+ * @returns {string}
+ */
+function decodedImageKey(objNum, isMask, fillColor) {
+  return isMask ? `${objNum}|${fillColor}` : `${objNum}`;
+}
+
+/**
+ * Insert a decoded ImageBitmap into the doc-wide cache, evicting by lowest recompute-value-per-byte (decodeMs / bytes) first.
+ * This means the images cheapest to regenerate per unit memory are evicted before the expensive ones.
+ * Closes any prior bitmap held under the same key (e.g. on a render-resolution change).
+ * @param {ObjectCache} objCache
+ * @param {string} key
+ * @param {*} bitmap
+ * @param {number} maxW @param {number} maxH @param {number} bytes @param {number} decodeMs
+ */
+function putDecodedImage(objCache, key, bitmap, maxW, maxH, bytes, decodeMs) {
+  const cache = objCache.decodedImageCache;
+  const prev = cache.get(key);
+  if (prev) {
+    ca.closeDrawable(prev.bitmap);
+    objCache.decodedImageCacheBytes -= prev.bytes;
+  }
+  cache.set(key, {
+    bitmap, maxW, maxH, bytes, decodeMs,
+  });
+  objCache.decodedImageCacheBytes += bytes;
+  while (objCache.decodedImageCacheBytes > DECODED_IMAGE_CACHE_BUDGET && cache.size > 1) {
+    let evictKey = null;
+    let worstDensity = Infinity;
+    for (const [k, e] of cache) {
+      if (k === key) continue; // never evict the entry we just inserted
+      const density = e.decodeMs / e.bytes;
+      if (density < worstDensity) { worstDensity = density; evictKey = k; }
+    }
+    if (evictKey == null) break;
+    const evicted = cache.get(evictKey);
+    if (!evicted) break;
+    ca.closeDrawable(evicted.bitmap);
+    objCache.decodedImageCacheBytes -= evicted.bytes;
+    cache.delete(evictKey);
+  }
 }
 
 /**
@@ -807,19 +929,7 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
         const imgData = ctx.getImageData(0, 0, w, h);
         const px = imgData.data;
         const maskA = boxDownsampleMask(sMask, sMaskWidth, sMaskHeight, outW, outH);
-        const upsampled = new Uint8ClampedArray(outW * outH * 4);
-        for (let y = 0; y < outH; y++) {
-          const srcY = Math.min(Math.floor(y * h / outH), h - 1);
-          for (let x = 0; x < outW; x++) {
-            const srcX = Math.min(Math.floor(x * w / outW), w - 1);
-            const dstIdx = (y * outW + x) * 4;
-            const srcIdx = (srcY * w + srcX) * 4;
-            upsampled[dstIdx] = px[srcIdx];
-            upsampled[dstIdx + 1] = px[srcIdx + 1];
-            upsampled[dstIdx + 2] = px[srcIdx + 2];
-            upsampled[dstIdx + 3] = maskA[y * outW + x];
-          }
-        }
+        const upsampled = upsampleImageWithMask(px, w, h, maskA, outW, outH);
         return ca.createImageBitmapFromImageData(new ImageData(upsampled, outW, outH));
       }
       // Mask is lower resolution — resample mask to image dimensions
@@ -1014,19 +1124,7 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
           outH = Math.max(h, Math.round(sMaskHeight * k));
         }
         const maskA = boxDownsampleMask(sMask, sMaskWidth, sMaskHeight, outW, outH);
-        const upsampled = new Uint8ClampedArray(outW * outH * 4);
-        for (let y = 0; y < outH; y++) {
-          const srcY = Math.min(Math.floor(y * h / outH), h - 1);
-          for (let x = 0; x < outW; x++) {
-            const srcX = Math.min(Math.floor(x * w / outW), w - 1);
-            const dstIdx = (y * outW + x) * 4;
-            const srcIdx = (srcY * w + srcX) * 4;
-            upsampled[dstIdx] = rgbaData[srcIdx];
-            upsampled[dstIdx + 1] = rgbaData[srcIdx + 1];
-            upsampled[dstIdx + 2] = rgbaData[srcIdx + 2];
-            upsampled[dstIdx + 3] = maskA[y * outW + x];
-          }
-        }
+        const upsampled = upsampleImageWithMask(rgbaData, w, h, maskA, outW, outH);
         return ca.createImageBitmapFromImageData(new ImageData(upsampled, outW, outH));
       } else {
         // Mask is lower resolution than image — resample mask to image dimensions
@@ -1461,22 +1559,11 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
         rgbaData[i * 4 + 3] = sMask[i];
       }
     } else if (sMaskWidth > width || sMaskHeight > height) {
-      // Mask is higher resolution than image — upsample image to mask dimensions
+      // Mask is higher resolution than the image, so upsample the image to the mask's dimensions.
+      // sMask is already at the output resolution, so it is the alpha source directly.
       const outW = sMaskWidth;
       const outH = sMaskHeight;
-      const upsampled = new Uint8ClampedArray(outW * outH * 4);
-      for (let y = 0; y < outH; y++) {
-        const srcY = Math.min(Math.floor(y * height / outH), height - 1);
-        for (let x = 0; x < outW; x++) {
-          const srcX = Math.min(Math.floor(x * width / outW), width - 1);
-          const dstIdx = (y * outW + x) * 4;
-          const srcIdx = (srcY * width + srcX) * 4;
-          upsampled[dstIdx] = rgbaData[srcIdx];
-          upsampled[dstIdx + 1] = rgbaData[srcIdx + 1];
-          upsampled[dstIdx + 2] = rgbaData[srcIdx + 2];
-          upsampled[dstIdx + 3] = sMask[y * outW + x];
-        }
-      }
+      const upsampled = upsampleImageWithMask(rgbaData, width, height, sMask, outW, outH);
       return ca.createImageBitmapFromImageData(new ImageData(upsampled, outW, outH));
     } else {
       // Mask is lower resolution than image — resample mask to image dimensions
@@ -6972,10 +7059,26 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         }
 
         const maskFillColor = op.fillColor;
-        const cachedBitmap = bitmapCache.get(op.name);
-        const bitmap = cachedBitmap || (imageInfo.imageMask
-          ? await imageMaskToBitmap(imageInfo, maskFillColor, objCache)
-          : await imageInfoToBitmap(imageInfo, objCache, canvasWidth, canvasHeight));
+        // Fall back to the doc-wide decoded-image cache when the per-page bitmapCache misses.
+        // Its key is the objNum (stable across pages, unlike the per-page `op.name`), so a bitmap decoded for this image on another page can be reused.
+        // Masks additionally key on the fill colour (see decodedImageKey).
+        const docImgCache = objCache && objCache.decodedImageCache;
+        const canDocCache = !!docImgCache && imageInfo.objNum != null;
+        const docKey = canDocCache ? decodedImageKey(imageInfo.objNum, imageInfo.imageMask, maskFillColor) : '';
+        let cachedBitmap = bitmapCache.get(op.name);
+        if (!cachedBitmap && canDocCache) {
+          const dc = docImgCache.get(docKey);
+          if (dc && dc.maxW === canvasWidth && dc.maxH === canvasHeight) cachedBitmap = dc.bitmap;
+        }
+        let decodeMs = 0;
+        let bitmap = cachedBitmap;
+        if (!bitmap) {
+          const t0 = performance.now();
+          bitmap = imageInfo.imageMask
+            ? await imageMaskToBitmap(imageInfo, maskFillColor, objCache)
+            : await imageInfoToBitmap(imageInfo, objCache, canvasWidth, canvasHeight);
+          decodeMs = performance.now() - t0;
+        }
         if (!bitmap) return;
         rCtx.save();
         if (op.fillAlpha < 1) rCtx.globalAlpha = op.fillAlpha;
@@ -6999,9 +7102,15 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         rCtx.restore();
 
         if (!cachedBitmap) {
-          // Image masks bake the per-draw fill color into the bitmap, so they cannot be shared across draws.
-          if (!imageInfo.imageMask && imageDrawCounts.get(op.name) > 1) bitmapCache.set(op.name, bitmap);
-          else ca.closeDrawable(bitmap);
+          if (canDocCache && decodeMs >= DECODED_IMAGE_MIN_DECODE_MS) {
+            // Retain doc-wide; the cache owns this bitmap's lifecycle (not closed at page end).
+            const bytes = (bitmap.width || canvasWidth) * (bitmap.height || canvasHeight) * 4;
+            putDecodedImage(objCache, docKey, bitmap, canvasWidth, canvasHeight, bytes, decodeMs);
+          } else if (!imageInfo.imageMask && imageDrawCounts.get(op.name) > 1) {
+            bitmapCache.set(op.name, bitmap);
+          } else {
+            ca.closeDrawable(bitmap);
+          }
         }
       } else if (op.type === 'type3glyph') {
         let pathData = glyphPathCache.get(op.charProcObjNum);

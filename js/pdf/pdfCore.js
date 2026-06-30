@@ -66,6 +66,13 @@ export class PdfCore {
     const prefix = `_pdf_d${docId}_`;
     ca.unregisterFontsMatching((name) => name.startsWith(prefix));
     unregisterFontFacesMatching((family) => family.startsWith(prefix));
+    // Free decoded-image bitmaps retained for the document's lifetime.
+    const imgCache = this.#objCache.decodedImageCache;
+    if (imgCache) {
+      for (const entry of imgCache.values()) ca.closeDrawable(entry.bitmap);
+      imgCache.clear();
+      this.#objCache.decodedImageCacheBytes = 0;
+    }
     this.#objCache = null;
     this.#pages = null;
   }

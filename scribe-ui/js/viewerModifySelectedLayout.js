@@ -4,20 +4,19 @@ import { ScribeViewer } from '../viewer.js';
 /** @param {import('../viewer.js').ScribeViewer} viewer */
 export const deleteSelectedLayoutDataTable = (viewer) => {
   const _viewer = viewer || ScribeViewer.getDefault();
-  const selectedColumns = _viewer.CanvasSelection.getKonvaDataColumns();
+  const selectedColumns = _viewer.CanvasSelection.getUiDataColumns();
   if (selectedColumns.length === 0) return;
 
-  _viewer.doc.deleteLayoutDataTable(selectedColumns[0].konvaTable.layoutDataTable, _viewer.state.cp.n);
+  _viewer.doc.deleteLayoutDataTable(selectedColumns[0].uiTable.layoutDataTable, _viewer.state.cp.n);
 
-  selectedColumns[0].konvaTable.destroy();
+  selectedColumns[0].uiTable.destroy();
   _viewer.destroyControls();
-  _viewer.layerOverlay.batchDraw();
 };
 
 /** @param {import('../viewer.js').ScribeViewer} viewer */
 export const deleteSelectedLayoutRegion = (viewer) => {
   const _viewer = viewer || ScribeViewer.getDefault();
-  const selectedRegions = _viewer.CanvasSelection.getKonvaRegions();
+  const selectedRegions = _viewer.CanvasSelection.getUiRegions();
   if (selectedRegions.length === 0) return;
 
   selectedRegions.forEach((region) => {
@@ -25,5 +24,4 @@ export const deleteSelectedLayoutRegion = (viewer) => {
     region.destroy();
   });
   _viewer.destroyControls();
-  _viewer.layerOverlay.batchDraw();
 };

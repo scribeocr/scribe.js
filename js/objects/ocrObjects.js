@@ -678,6 +678,16 @@ function clonePage(page) {
 }
 
 /**
+ * Deep-clones a page including its paragraphs, lines, words, and chars, with every back-reference rebuilt.
+ * Unlike `clonePage`, which drops `pars` and `line.par`, this is a complete, faithful duplicate.
+ * @param {OcrPage} page
+ * @returns {OcrPage}
+ */
+export function clonePageFull(page) {
+  return addCircularRefsOcr(removeCircularRefsOcr([page]))[0];
+}
+
+/**
  * Clones line and included words.  Does not clone page.
  * Should be used rather than `structuredClone` for performance reasons.
  * @param {OcrLine} line
@@ -1128,6 +1138,7 @@ const ocr = {
   getNextLine,
   getWordFillOpacity,
   clonePage,
+  clonePageFull,
   cloneLine,
   cloneWord,
   cloneChar,

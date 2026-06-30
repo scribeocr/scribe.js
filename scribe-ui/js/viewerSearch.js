@@ -12,7 +12,7 @@ function applyHighlights(viewer) {
   const activeIds = activeEntry ? new Set(activeEntry.wordIds) : new Set();
   /** @type {Object<number, Set<string>>} */
   const matchIdsByPage = {};
-  for (const kw of viewer.getKonvaWords()) {
+  for (const kw of viewer.getUiWords()) {
     const pageN = kw.word.line.page.n;
     if (!matchIdsByPage[pageN]) {
       matchIdsByPage[pageN] = s.search && viewer.doc.ocr.active[pageN]
@@ -23,7 +23,6 @@ function applyHighlights(viewer) {
     kw.activeMatch = isActive;
     kw.fillBox = !isActive && matchIdsByPage[pageN].has(kw.word.id);
   }
-  viewer.layerText.batchDraw();
 }
 
 /**
@@ -70,9 +69,9 @@ export async function goToMatch(viewer, index) {
   // Move the active (orange) highlight without re-rendering.
   // The blue match highlights on already-rendered pages are unchanged,
   // so only the new active words and the previous active words need their flags flipped.
-  const konvaWords = _viewer.getKonvaWords();
+  const uiWords = _viewer.getUiWords();
   const activeIds = new Set(match.wordIds);
-  for (const kw of konvaWords) {
+  for (const kw of uiWords) {
     if (activeIds.has(kw.word.id)) {
       kw.activeMatch = true;
       kw.fillBox = false;
@@ -81,19 +80,22 @@ export async function goToMatch(viewer, index) {
       kw.fillBox = true;
     }
   }
-  _viewer.layerText.batchDraw();
 
-  const konvaWord = konvaWords.find((kw) => kw.word.id === match.wordIds[0]);
-  if (!konvaWord) return;
+  const uiWord = uiWords.find((kw) => kw.word.id === match.wordIds[0]);
+  if (!uiWord) return;
 
   // Center the match vertically in the viewport. Nudge horizontally only if it would sit off an edge.
-  const rect = konvaWord.getClientRect();
+  // `getClientRect` is in content space; multiply by zoom to get the on-screen offset from the scroll origin.
+  const rect = uiWord.getClientRect();
   const margin = 30;
-  const delta = { deltaX: 0, deltaY: _viewer.stage.height() / 2 - (rect.y + rect.height / 2) };
-  const rectRight = rect.x + rect.width;
-  if (rectRight > _viewer.stage.width() - margin) delta.deltaX = _viewer.stage.width() - margin - rectRight;
-  else if (rect.x < margin) delta.deltaX = margin - rect.x;
-  _viewer.panStage(delta);
+  const sc = _viewer.scrollContainer;
+  const zoom = _viewer.zoomLevel || 1;
+  sc.scrollTop = (rect.y + rect.height / 2) * zoom - sc.clientHeight / 2;
+  const leftPx = rect.x * zoom - sc.scrollLeft;
+  const rightPx = (rect.x + rect.width) * zoom - sc.scrollLeft;
+  if (rightPx > sc.clientWidth - margin) sc.scrollLeft += rightPx - (sc.clientWidth - margin);
+  else if (leftPx < margin) sc.scrollLeft -= margin - leftPx;
+  _viewer.updateCurrentPage();
 }
 
 /**

@@ -1,12 +1,12 @@
 import scribe from '../../scribe.js';
 // eslint-disable-next-line import/no-cycle
 import { ScribeViewer } from '../viewer.js';
-import { KonvaIText, KonvaOcrWord } from './viewerWordObjects.js';
+import { UiText, UiOcrWord } from './viewerWordObjects.js';
 
 /** @param {import('../viewer.js').ScribeViewer} viewer */
 export function deleteSelectedWord(viewer) {
   const _viewer = viewer || ScribeViewer.getDefault();
-  const selectedObjects = _viewer.CanvasSelection.getKonvaWords();
+  const selectedObjects = _viewer.CanvasSelection.getUiWords();
   const selectedN = selectedObjects.length;
 
   /** @type {Object<string, Array<string>>} */
@@ -25,8 +25,6 @@ export function deleteSelectedWord(viewer) {
 
   _viewer.destroyControls();
 
-  _viewer.layerText.batchDraw();
-
   if (_viewer.opt.outlineLines || _viewer.opt.outlinePars) _viewer.displayPage(_viewer.state.cp.n);
 }
 
@@ -37,13 +35,13 @@ export function deleteSelectedWord(viewer) {
  */
 export function modifySelectedWordBbox(viewer, side, amount) {
   const _viewer = viewer || ScribeViewer.getDefault();
-  const selectedWords = _viewer.CanvasSelection.getKonvaWords();
+  const selectedWords = _viewer.CanvasSelection.getUiWords();
   if (selectedWords.length !== 1) return;
   const selectedWord = selectedWords[0];
 
   selectedWord.word.bbox[side] += amount;
   if (side === 'left') selectedWord.x(selectedWord.x() + amount);
-  KonvaIText.updateWordCanvas(selectedWord);
+  UiText.updateWordCanvas(selectedWord);
 }
 
 /**
@@ -59,10 +57,10 @@ export function modifySelectedWordBbox(viewer, side, amount) {
  */
 export async function modifySelectedWordStyle(viewer, style) {
   const _viewer = viewer || ScribeViewer.getDefault();
-  const selectedObjects = _viewer.CanvasSelection.getKonvaWords();
+  const selectedObjects = _viewer.CanvasSelection.getUiWords();
   if (!selectedObjects || selectedObjects.length === 0) return;
 
-  if (KonvaIText.inputRemove) KonvaIText.inputRemove();
+  if (UiText.inputRemove) UiText.inputRemove();
 
   const selectedN = selectedObjects.length;
   for (let i = 0; i < selectedN; i++) {
@@ -85,9 +83,8 @@ export async function modifySelectedWordStyle(viewer, style) {
 
     wordI.fontFamilyLookup = fontI.family;
 
-    await KonvaIText.updateWordCanvas(wordI);
+    await UiText.updateWordCanvas(wordI);
   }
 
-  _viewer.layerText.batchDraw();
-  KonvaOcrWord.updateUI();
+  UiOcrWord.updateUI();
 }

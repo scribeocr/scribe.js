@@ -1,41 +1,41 @@
 // eslint-disable-next-line import/no-cycle
 import { ScribeViewer } from '../viewer.js';
 import scribe from '../../scribe.js';
-import { KonvaIText, KonvaOcrWord } from './viewerWordObjects.js';
+import { UiText, UiOcrWord } from './viewerWordObjects.js';
 import {
   deleteSelectedWord, modifySelectedWordBbox, modifySelectedWordStyle,
 } from './viewerModifySelectedWords.js';
 
 /**
  * @param {import('../viewer.js').ScribeViewer} viewer
- * @param {KonvaIText} KonvaObject
+ * @param {UiText} uiObject
  */
-const scrollIntoView = (viewer, KonvaObject) => {
-  const delta = { deltaX: 0, deltaY: 0 };
-  const wordClientRect = KonvaObject.getClientRect();
-  const wordBottomCanvas = wordClientRect.y + wordClientRect.height;
-  const wordRightCanvas = wordClientRect.x + wordClientRect.width;
-  const visibleBottomCanvas = viewer.stage.height();
-  const visibleRightCanvas = viewer.stage.width();
+const scrollIntoView = (viewer, uiObject) => {
+  const sc = viewer.scrollContainer;
+  const zoom = viewer.zoomLevel || 1;
+  // `getClientRect` is content space; multiply by zoom to get the on-screen position relative to the scroll origin.
+  const r = uiObject.getClientRect();
+  const topPx = r.y * zoom - sc.scrollTop;
+  const bottomPx = (r.y + r.height) * zoom - sc.scrollTop;
+  const leftPx = r.x * zoom - sc.scrollLeft;
+  const rightPx = (r.x + r.width) * zoom - sc.scrollLeft;
 
   const margin = 30;
 
-  if (wordBottomCanvas > visibleBottomCanvas - margin) {
-    delta.deltaY = (wordBottomCanvas - visibleBottomCanvas + margin) * -1;
-  } else if (wordClientRect.y < 150) {
-    // Top gets more padding to account for the toolbar
-    delta.deltaY = (wordClientRect.y - 200) * -1;
+  if (bottomPx > sc.clientHeight - margin) {
+    sc.scrollTop += bottomPx - (sc.clientHeight - margin);
+  } else if (topPx < 150) {
+    // Top gets more padding to account for the toolbar.
+    sc.scrollTop -= (200 - topPx);
   }
 
-  if (wordRightCanvas > visibleRightCanvas - margin) {
-    delta.deltaX = (wordRightCanvas - visibleRightCanvas + margin) * -1;
-  } else if (wordClientRect.x < margin) {
-    delta.deltaX = (wordClientRect.x - margin) * -1;
+  if (rightPx > sc.clientWidth - margin) {
+    sc.scrollLeft += rightPx - (sc.clientWidth - margin);
+  } else if (leftPx < margin) {
+    sc.scrollLeft -= (margin - leftPx);
   }
 
-  if (delta.deltaX !== 0 || delta.deltaY !== 0) {
-    viewer.panStage(delta);
-  }
+  viewer.updateCurrentPage();
 };
 
 /**
@@ -45,8 +45,8 @@ const scrollIntoView = (viewer, KonvaObject) => {
  */
 export function selectNextWord(viewer) {
   const _viewer = viewer || ScribeViewer.getDefault();
-  const words = _viewer.getKonvaWords();
-  const selectedWords = _viewer.CanvasSelection.getKonvaWords();
+  const words = _viewer.getUiWords();
+  const selectedWords = _viewer.CanvasSelection.getUiWords();
   if (selectedWords.length !== 1) return;
   let nextWord;
   const selectedWord = selectedWords[0];
@@ -62,11 +62,11 @@ export function selectNextWord(viewer) {
 
   if (nextWord) {
     _viewer.destroyControls(true);
-    const nextKonvaWord = words.filter((x) => x.word.id === nextWord.id)[0];
-    scrollIntoView(_viewer, nextKonvaWord);
-    _viewer.CanvasSelection.addWords(nextKonvaWord);
-    KonvaOcrWord.addControls(nextKonvaWord);
-    KonvaOcrWord.updateUI();
+    const nextUiWord = words.filter((x) => x.word.id === nextWord.id)[0];
+    scrollIntoView(_viewer, nextUiWord);
+    _viewer.CanvasSelection.addWords(nextUiWord);
+    UiOcrWord.addControls(nextUiWord);
+    UiOcrWord.updateUI();
   }
 }
 
@@ -76,8 +76,8 @@ export function selectNextWord(viewer) {
  */
 export function selectPrevWord(viewer) {
   const _viewer = viewer || ScribeViewer.getDefault();
-  const words = _viewer.getKonvaWords();
-  const selectedWords = _viewer.CanvasSelection.getKonvaWords();
+  const words = _viewer.getUiWords();
+  const selectedWords = _viewer.CanvasSelection.getUiWords();
   if (selectedWords.length !== 1) return;
   let prevWord;
   const selectedWord = selectedWords[0];
@@ -93,11 +93,11 @@ export function selectPrevWord(viewer) {
 
   if (prevWord) {
     _viewer.destroyControls(true);
-    const prevKonvaWord = words.filter((x) => x.word.id === prevWord.id)[0];
-    scrollIntoView(_viewer, prevKonvaWord);
-    _viewer.CanvasSelection.addWords(prevKonvaWord);
-    KonvaOcrWord.addControls(prevKonvaWord);
-    KonvaOcrWord.updateUI();
+    const prevUiWord = words.filter((x) => x.word.id === prevWord.id)[0];
+    scrollIntoView(_viewer, prevUiWord);
+    _viewer.CanvasSelection.addWords(prevUiWord);
+    UiOcrWord.addControls(prevUiWord);
+    UiOcrWord.updateUI();
   }
 }
 
@@ -108,10 +108,10 @@ export function selectPrevWord(viewer) {
  */
 export function selectRightWord(viewer, selectMultiple = false) {
   const _viewer = viewer || ScribeViewer.getDefault();
-  const words = _viewer.getKonvaWords();
+  const words = _viewer.getUiWords();
   let selectedWord;
   if (selectMultiple) {
-    const selectedWords = _viewer.CanvasSelection.getKonvaWords();
+    const selectedWords = _viewer.CanvasSelection.getUiWords();
     if (selectedWords.length === 0) return;
     selectedWords.sort((a, b) => a.x() - b.x());
     selectedWord = selectedWords[selectedWords.length - 1];
@@ -141,16 +141,14 @@ export function selectRightWord(viewer, selectMultiple = false) {
 
   if (rightWord) {
     _viewer.destroyControls(!selectMultiple);
-    const nextKonvaWord = words.filter((x) => x.word.id === rightWord.id)[0];
-    scrollIntoView(_viewer, nextKonvaWord);
-    nextKonvaWord.select();
-    _viewer.CanvasSelection.addWords(nextKonvaWord);
-    if (selectMultiple) {
-      _viewer.layerText.batchDraw();
-    } else {
-      KonvaOcrWord.addControls(nextKonvaWord);
+    const nextUiWord = words.filter((x) => x.word.id === rightWord.id)[0];
+    scrollIntoView(_viewer, nextUiWord);
+    nextUiWord.select();
+    _viewer.CanvasSelection.addWords(nextUiWord);
+    if (!selectMultiple) {
+      UiOcrWord.addControls(nextUiWord);
     }
-    KonvaOcrWord.updateUI();
+    UiOcrWord.updateUI();
   }
 }
 
@@ -161,11 +159,11 @@ export function selectRightWord(viewer, selectMultiple = false) {
  */
 export function selectLeftWord(viewer, selectMultiple = false) {
   const _viewer = viewer || ScribeViewer.getDefault();
-  const words = _viewer.getKonvaWords();
+  const words = _viewer.getUiWords();
 
   let selectedWord;
   if (selectMultiple) {
-    const selectedWords = _viewer.CanvasSelection.getKonvaWords();
+    const selectedWords = _viewer.CanvasSelection.getUiWords();
     if (selectedWords.length === 0) return;
     selectedWords.sort((a, b) => a.x() - b.x());
     selectedWord = selectedWords[0];
@@ -195,16 +193,14 @@ export function selectLeftWord(viewer, selectMultiple = false) {
 
   if (leftWord) {
     _viewer.destroyControls(!selectMultiple);
-    const nextKonvaWord = words.filter((x) => x.word.id === leftWord.id)[0];
-    scrollIntoView(_viewer, nextKonvaWord);
-    nextKonvaWord.select();
-    _viewer.CanvasSelection.addWords(nextKonvaWord);
-    if (selectMultiple) {
-      _viewer.layerText.batchDraw();
-    } else {
-      KonvaOcrWord.addControls(nextKonvaWord);
+    const nextUiWord = words.filter((x) => x.word.id === leftWord.id)[0];
+    scrollIntoView(_viewer, nextUiWord);
+    nextUiWord.select();
+    _viewer.CanvasSelection.addWords(nextUiWord);
+    if (!selectMultiple) {
+      UiOcrWord.addControls(nextUiWord);
     }
-    KonvaOcrWord.updateUI();
+    UiOcrWord.updateUI();
   }
 }
 
@@ -214,8 +210,8 @@ export function selectLeftWord(viewer, selectMultiple = false) {
  */
 export function selectAboveWord(viewer) {
   const _viewer = viewer || ScribeViewer.getDefault();
-  const words = _viewer.getKonvaWords();
-  const selectedWords = _viewer.CanvasSelection.getKonvaWords();
+  const words = _viewer.getUiWords();
+  const selectedWords = _viewer.CanvasSelection.getUiWords();
   if (selectedWords.length === 0) return;
   const selectedWord = selectedWords[0];
   const line = selectedWord.word.line;
@@ -241,12 +237,12 @@ export function selectAboveWord(viewer) {
 
   if (aboveWord) {
     _viewer.destroyControls(true);
-    const aboveKonvaWord = words.filter((x) => x.word.id === aboveWord.id)[0];
-    scrollIntoView(_viewer, aboveKonvaWord);
-    aboveKonvaWord.select();
-    _viewer.CanvasSelection.addWords(aboveKonvaWord);
-    KonvaOcrWord.addControls(aboveKonvaWord);
-    KonvaOcrWord.updateUI();
+    const aboveUiWord = words.filter((x) => x.word.id === aboveWord.id)[0];
+    scrollIntoView(_viewer, aboveUiWord);
+    aboveUiWord.select();
+    _viewer.CanvasSelection.addWords(aboveUiWord);
+    UiOcrWord.addControls(aboveUiWord);
+    UiOcrWord.updateUI();
   }
 }
 
@@ -256,8 +252,8 @@ export function selectAboveWord(viewer) {
  */
 export function selectBelowWord(viewer) {
   const _viewer = viewer || ScribeViewer.getDefault();
-  const words = _viewer.getKonvaWords();
-  const selectedWords = _viewer.CanvasSelection.getKonvaWords();
+  const words = _viewer.getUiWords();
+  const selectedWords = _viewer.CanvasSelection.getUiWords();
   if (selectedWords.length === 0) return;
   const selectedWord = selectedWords[0];
   const line = selectedWord.word.line;
@@ -283,12 +279,12 @@ export function selectBelowWord(viewer) {
 
   if (belowWord) {
     _viewer.destroyControls(true);
-    const belowKonvaWord = words.filter((x) => x.word.id === belowWord.id)[0];
-    scrollIntoView(_viewer, belowKonvaWord);
-    belowKonvaWord.select();
-    _viewer.CanvasSelection.addWords(belowKonvaWord);
-    KonvaOcrWord.addControls(belowKonvaWord);
-    KonvaOcrWord.updateUI();
+    const belowUiWord = words.filter((x) => x.word.id === belowWord.id)[0];
+    scrollIntoView(_viewer, belowUiWord);
+    belowUiWord.select();
+    _viewer.CanvasSelection.addWords(belowUiWord);
+    UiOcrWord.addControls(belowUiWord);
+    UiOcrWord.updateUI();
   }
 }
 
@@ -311,13 +307,12 @@ export function handleKeyboardEvent(viewer, event) {
   if (activeElem && activeElem instanceof HTMLSelectElement
     && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown', 'Enter'].includes(event.key)) return;
 
-  const selectedWords = _viewer.CanvasSelection.getKonvaWords();
+  const selectedWords = _viewer.CanvasSelection.getUiWords();
 
   // The modifier keys change what `event.key` is for the same button.
   // `+` becomes `=` when shift is pressed, and `×` when control and alt are pressed.
   if (event.ctrlKey && !event.altKey && ['+', '=', '×'].includes(event.key)) {
     _viewer.zoom(1.1);
-    _viewer.layerText.batchDraw();
     event.preventDefault();
     event.stopPropagation();
     _viewer.interactionCallback(event);
@@ -326,7 +321,6 @@ export function handleKeyboardEvent(viewer, event) {
 
   if (event.ctrlKey && !event.altKey && ['-', '_', '–'].includes(event.key)) {
     _viewer.zoom(0.9);
-    _viewer.layerText.batchDraw();
     event.preventDefault();
     event.stopPropagation();
     _viewer.interactionCallback(event);
@@ -357,7 +351,7 @@ export function handleKeyboardEvent(viewer, event) {
     return;
   }
 
-  if (event.key === 'ArrowRight' && !KonvaIText.input && selectedWords.length > 0) {
+  if (event.key === 'ArrowRight' && !UiText.input && selectedWords.length > 0) {
     if (event.ctrlKey) {
       if (event.altKey) {
         modifySelectedWordBbox(_viewer, 'right', 1);
@@ -376,23 +370,18 @@ export function handleKeyboardEvent(viewer, event) {
 
   if (event.ctrlKey && event.key === ' ' && !_viewer.textOverlayHidden) {
     _viewer.textOverlayHidden = true;
-    _viewer.layerOverlay.hide();
-    _viewer.layerText.hide();
-    _viewer.layerOverlay.batchDraw();
-    _viewer.layerText.batchDraw();
-    const opacityOrig = KonvaIText.input ? KonvaIText.input.style.opacity : '0.8';
-    if (KonvaIText.input) KonvaIText.input.style.opacity = '0';
+    // Hide every text/overlay group (both use the `scribe-group` class) to reveal the raster underneath.
+    _viewer.zoomLayer.querySelectorAll('.scribe-group').forEach((g) => { /** @type {HTMLElement} */ (g).style.display = 'none'; });
+    const opacityOrig = UiText.input ? UiText.input.style.opacity : '0.8';
+    if (UiText.input) UiText.input.style.opacity = '0';
     event.preventDefault();
     event.stopPropagation();
     _viewer.interactionCallback(event);
 
     const handleKeyUp = (keyupEvent) => {
       if (keyupEvent.key === 'Control' || keyupEvent.key === ' ') {
-        _viewer.layerOverlay.show();
-        _viewer.layerText.show();
-        _viewer.layerOverlay.batchDraw();
-        _viewer.layerText.batchDraw();
-        if (KonvaIText.input) KonvaIText.input.style.opacity = opacityOrig;
+        _viewer.zoomLayer.querySelectorAll('.scribe-group').forEach((g) => { /** @type {HTMLElement} */ (g).style.display = ''; });
+        if (UiText.input) UiText.input.style.opacity = opacityOrig;
         document.removeEventListener('keyup', handleKeyUp);
         _viewer.textOverlayHidden = false;
       }
@@ -402,7 +391,7 @@ export function handleKeyboardEvent(viewer, event) {
     return;
   }
 
-  if (event.key === 'ArrowLeft' && !KonvaIText.input && selectedWords.length > 0) {
+  if (event.key === 'ArrowLeft' && !UiText.input && selectedWords.length > 0) {
     if (event.ctrlKey) {
       if (event.altKey) {
         modifySelectedWordBbox(_viewer, 'right', -1);
@@ -434,11 +423,11 @@ export function handleKeyboardEvent(viewer, event) {
     return;
   }
 
-  if (event.key === 'Enter' && !KonvaIText.input) {
+  if (event.key === 'Enter' && !UiText.input) {
     if (selectedWords.length !== 1) return;
     const selectedWord = selectedWords[0];
     const pos = event.altKey ? -1 : 0;
-    KonvaIText.addTextInput(selectedWord, pos);
+    UiText.addTextInput(selectedWord, pos);
     event.preventDefault();
     event.stopPropagation();
     _viewer.interactionCallback(event);
@@ -483,7 +472,7 @@ export function handleKeyboardEvent(viewer, event) {
     return;
   }
 
-  if (event.altKey && ['+', '=', '×'].includes(event.key) && !KonvaIText.input && selectedWords.length > 0) {
+  if (event.altKey && ['+', '=', '×'].includes(event.key) && !UiText.input && selectedWords.length > 0) {
     const fontSize = selectedWords[0].fontSize + 1;
     modifySelectedWordStyle(_viewer, {
       size: fontSize,
@@ -494,7 +483,7 @@ export function handleKeyboardEvent(viewer, event) {
     return;
   }
 
-  if (event.altKey && ['-', '_', '–'].includes(event.key) && !KonvaIText.input && selectedWords.length > 0) {
+  if (event.altKey && ['-', '_', '–'].includes(event.key) && !UiText.input && selectedWords.length > 0) {
     const fontSize = selectedWords[0].fontSize - 1;
     modifySelectedWordStyle(_viewer, {
       size: fontSize,
