@@ -575,19 +575,23 @@ export const contextMenuFunc = (viewer, event) => {
     let enableMergeWords = false;
     let enableDeleteWords = false;
     let enableDeleteHighlight = false;
-    if (!viewer.state.layoutMode && selectedUiWords.length > 0) enableDeleteWords = true;
+    // Word editing (split / merge / delete) is gated on `enableCanvasSelection`, the editor-only flag.
+    // Deleting a highlight is not, so the read-only viewer still offers it.
+    if (viewer.enableCanvasSelection && !viewer.state.layoutMode && selectedUiWords.length > 0) enableDeleteWords = true;
     if (!viewer.state.layoutMode && targetObj instanceof UiOcrWord) {
       viewer.contextMenuWord = targetObj;
       if (targetObj.highlightColor) enableDeleteHighlight = true;
-      if (selectedUiWords.length < 2) {
-        UiText._lastPointerClient = { x: event.clientX, y: event.clientY };
-        const cursorIndex = UiOcrWord.getCursorIndex(targetObj);
-        if (cursorIndex > 0 && cursorIndex < targetObj.word.text.length) {
-          enableSplitWord = true;
+      if (viewer.enableCanvasSelection) {
+        if (selectedUiWords.length < 2) {
+          UiText._lastPointerClient = { x: event.clientX, y: event.clientY };
+          const cursorIndex = UiOcrWord.getCursorIndex(targetObj);
+          if (cursorIndex > 0 && cursorIndex < targetObj.word.text.length) {
+            enableSplitWord = true;
+          }
+        } else {
+          const adjacentWords = scribe.utils.checkOcrWordsAdjacent(selectedWords);
+          if (adjacentWords) enableMergeWords = true;
         }
-      } else {
-        const adjacentWords = scribe.utils.checkOcrWordsAdjacent(selectedWords);
-        if (adjacentWords) enableMergeWords = true;
       }
     }
 
