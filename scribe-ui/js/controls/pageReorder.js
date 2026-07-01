@@ -25,7 +25,7 @@ const AUTOSCROLL_SPEED = 14;
  * @property {number} gap - Current insertion gap (0..pageCount).
  * @property {number} autoDir - Edge auto-scroll direction (-1, 0, 1).
  * @property {number} rafId - Auto-scroll animation-frame handle.
- * @property {number} lastY - Last pointer Y, so auto-scroll can re-place the line while the pointer is held still.
+ * @property {number} lastX @property {number} lastY - Last pointer position, so auto-scroll can re-place the indicator while the pointer is held still.
  * @property {number} grabDX @property {number} grabDY - Offset of the grab point within the thumbnail.
  */
 
@@ -43,7 +43,10 @@ const AUTOSCROLL_SPEED = 14;
  * @property {number[]} offsets - Cumulative row tops (live).
  * @property {number[]} heights - Full row heights (live).
  * @property {number} pageCount - Page count of the current document (live).
- * @property {number} THUMB_W - Current thumbnail image width in px (live).
+ * @property {number} THUMB_W - Thumbnail image (cell) width in px.
+ * @property {number} gridCols - Columns in the current layout (live); 1 is the rail, more is the grid.
+ * @property {number} rowStride - Uniform grid row height in px (live); 0 in the rail.
+ * @property {number} GRID_GAP - Gap in px between grid cells.
  * @property {number} activePage - The single page shown in the main viewer; reorder re-keys it on a move.
  * @property {?ThumbDrag} drag - The in-flight drag, or null. Owned here; read by the core's `updateWindow`.
  * @property {boolean} suppressClick - Set so the click ending a drag does not also select.
@@ -93,7 +96,8 @@ function slideRows(snapshot, movedOld) {
   const sliding = [];
   for (const [oi, entry] of snapshot) {
     if (movedOld.has(oi)) continue;
-    entry.thumbElem.style.transition = `top ${REORDER_SLIDE_MS}ms ease`;
+    // Cells move in both axes when the grid reflows around a drop, so slide top and left (left is a no-op in the rail).
+    entry.thumbElem.style.transition = `top ${REORDER_SLIDE_MS}ms ease, left ${REORDER_SLIDE_MS}ms ease`;
     sliding.push(entry);
   }
   setTimeout(() => {
@@ -161,24 +165,54 @@ function dealRows(ghost, targetEntries) {
  */
 export function installPageReorder(ctx) {
   /**
-   * Insertion gap (0..pageCount) under `clientY`: the count of rows whose vertical midpoint sits above it.
-   * @param {number} clientY @returns {number}
+   * Insertion gap (0..pageCount) under the cursor.
+   * @param {number} clientX @param {number} clientY @returns {number}
    */
-  function insertionGapAt(clientY) {
+  function insertionGapAt(clientX, clientY) {
     const rect = ctx.scrollElem.getBoundingClientRect();
     const contentY = clientY - rect.top + ctx.scrollElem.scrollTop - ctx.PAD;
-    let g = 0;
-    while (g < ctx.pageCount && contentY > ctx.offsets[g] + ctx.heights[g] / 2) g += 1;
-    return g;
+    if (ctx.gridCols <= 1) {
+      let g = 0;
+      while (g < ctx.pageCount && contentY > ctx.offsets[g] + ctx.heights[g] / 2) g += 1;
+      return g;
+    }
+    const cols = ctx.gridCols;
+    const rows = Math.ceil(ctx.pageCount / cols);
+    const row = Math.max(0, Math.min(rows - 1, ctx.rowStride > 0 ? Math.floor(contentY / ctx.rowStride) : 0));
+    const contentX = clientX - rect.left;
+    let col = 0;
+    while (col < cols && contentX > ctx.PAD + col * (ctx.THUMB_W + ctx.GRID_GAP) + ctx.THUMB_W / 2) col += 1;
+    return Math.max(0, Math.min(ctx.pageCount, row * cols + col));
   }
 
   /**
-   * Content-space top of insertion gap `g`, aligned with where a row at that index begins.
-   * @param {number} g @returns {number}
+   * Position the insertion indicator for gap `g`.
+   * @param {number} g
    */
-  function gapTop(g) {
-    const y = g < ctx.pageCount ? ctx.offsets[g] : ctx.offsets[ctx.pageCount - 1] + ctx.heights[ctx.pageCount - 1];
-    return ctx.PAD + y;
+  function placeInsertLine(g) {
+    const d = ctx.drag;
+    if (!d || !d.line) return;
+    const line = d.line;
+    if (ctx.gridCols <= 1) {
+      // Rail: a horizontal line over the single column, aligned to the thumbnail (which the panel can now be wider than).
+      const y = g < ctx.pageCount ? ctx.offsets[g] : ctx.offsets[ctx.pageCount - 1] + ctx.heights[ctx.pageCount - 1];
+      line.classList.remove('vertical');
+      line.style.left = `${ctx.PAD}px`;
+      line.style.right = 'auto';
+      line.style.width = `${ctx.THUMB_W}px`;
+      line.style.height = '';
+      line.style.top = `${ctx.PAD + y}px`;
+      return;
+    }
+    const cols = ctx.gridCols;
+    const atEnd = g >= ctx.pageCount;
+    const idx = atEnd ? ctx.pageCount - 1 : g;
+    const cellLeft = ctx.PAD + (idx % cols) * (ctx.THUMB_W + ctx.GRID_GAP);
+    line.classList.add('vertical');
+    line.style.left = `${atEnd ? cellLeft + ctx.THUMB_W + ctx.GRID_GAP / 2 : cellLeft - ctx.GRID_GAP / 2}px`;
+    line.style.top = `${ctx.PAD + Math.floor(idx / cols) * ctx.rowStride}px`;
+    line.style.height = `${ctx.rowStride - ctx.GRID_GAP}px`;
+    line.style.width = '';
   }
 
   /**
@@ -358,11 +392,12 @@ export function installPageReorder(ctx) {
   function moveDrag(clientX, clientY) {
     const d = ctx.drag;
     if (!d || !d.ghost || !d.line) return;
+    d.lastX = clientX;
     d.lastY = clientY;
     d.ghost.style.left = `${clientX - d.grabDX}px`;
     d.ghost.style.top = `${clientY - d.grabDY}px`;
-    d.gap = insertionGapAt(clientY);
-    d.line.style.top = `${gapTop(d.gap)}px`;
+    d.gap = insertionGapAt(clientX, clientY);
+    placeInsertLine(d.gap);
     const rect = ctx.scrollElem.getBoundingClientRect();
     const max = ctx.scrollElem.scrollHeight - ctx.scrollElem.clientHeight;
     if (clientY < rect.top + AUTOSCROLL_EDGE && ctx.scrollElem.scrollTop > 0) d.autoDir = -1;
@@ -380,8 +415,8 @@ export function installPageReorder(ctx) {
       if (next !== ctx.scrollElem.scrollTop) {
         ctx.scrollElem.scrollTop = next;
         ctx.updateWindow();
-        d.gap = insertionGapAt(d.lastY);
-        if (d.line) d.line.style.top = `${gapTop(d.gap)}px`;
+        d.gap = insertionGapAt(d.lastX, d.lastY);
+        placeInsertLine(d.gap);
       }
     }
     d.rafId = requestAnimationFrame(autoScrollTick);
@@ -415,7 +450,21 @@ export function installPageReorder(ctx) {
     // A touch elsewhere scrolls the rail and a tap selects, while a mouse can drag the whole thumbnail.
     if (e.pointerType === 'touch' && !target.closest('.scribe-thumb-grip')) return;
     ctx.drag = {
-      from: n, group: false, pages: new Set([n]), startX: e.clientX, startY: e.clientY, started: false, ghost: null, line: null, gap: -1, autoDir: 0, rafId: 0, lastY: e.clientY, grabDX: 0, grabDY: 0,
+      from: n,
+      group: false,
+      pages: new Set([n]),
+      startX: e.clientX,
+      startY: e.clientY,
+      started: false,
+      ghost: null,
+      line: null,
+      gap: -1,
+      autoDir: 0,
+      rafId: 0,
+      lastX: e.clientX,
+      lastY: e.clientY,
+      grabDX: 0,
+      grabDY: 0,
     };
     window.addEventListener('pointermove', onDragMove);
     window.addEventListener('pointerup', onDragUp);
@@ -442,15 +491,19 @@ export function installPageReorder(ctx) {
     // Keep the ghost (it lives on document.body, so the panel does not clip it) and fly it into the drop slot, with the placed row hidden until it lands.
     // Animating the ghost rather than the in-rail row keeps the part of the page dragged out over the viewer from being clipped at the panel edge mid-animation.
     endDragVisuals(d, true);
-    const gap = insertionGapAt(e.clientY);
+    const gap = insertionGapAt(e.clientX, e.clientY);
     let moved;
-    if (d.group) {
+    if (gap === d.from || gap === d.from + 1) {
+      // Released over the grabbed page's own slot, so the drag is a no-op.
+      // Without this guard a group drop would still compact a non-contiguous selection into a block, reordering pages the user never dragged.
+      moved = undefined;
+    } else if (d.group) {
       // The selected pages move together to the drop gap; `moveSelection` returns undefined if already a block there.
       moved = moveSelection(gap);
     } else {
       // `movePage`'s target is the index after the page is removed, so a gap below the source shifts down by one.
       const to = gap <= d.from ? gap : gap - 1;
-      moved = (to === d.from || to < 0 || to >= ctx.pageCount) ? undefined : reorderPages(d.from, to);
+      moved = (to < 0 || to >= ctx.pageCount) ? undefined : reorderPages(d.from, to);
     }
     if (!moved) {
       // Nothing reordered: settle the ghost back onto the dragged page's existing slot.

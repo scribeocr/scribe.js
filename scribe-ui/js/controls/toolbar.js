@@ -975,13 +975,22 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       box-sizing: border-box;
     }
 
+    /* Match the viewer's custom overlay scrollbar (8px thumb, same fill/radius/hover) rather than a thicker native bar. */
     .${r} .scribe-thumb-scroll::-webkit-scrollbar {
-      width: 10px;
+      width: 8px;
+    }
+
+    .${r} .scribe-thumb-scroll::-webkit-scrollbar-track {
+      background: transparent;
     }
 
     .${r} .scribe-thumb-scroll::-webkit-scrollbar-thumb {
-      background: rgba(255, 255, 255, .25);
-      border-radius: 5px;
+      background: rgba(255, 255, 255, .35);
+      border-radius: 6px;
+    }
+
+    .${r} .scribe-thumb-scroll::-webkit-scrollbar-thumb:hover {
+      background: rgba(255, 255, 255, .6);
     }
 
     .${r} .scribe-thumb-resize {
@@ -1097,10 +1106,34 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       z-index: 50;
     }
 
-    /* A batch-selected page gets the steel-blue ring the viewer uses for selected words and regions.
-       Placed after the active rules so a selected current page stays blue, not gray. */
+    /* Grid reorder: the same accent runs vertically in the gap between cells (left/top/height are set inline). */
+    .${r} .scribe-thumb-insert.vertical {
+      right: auto;
+      width: 3px;
+      margin-top: 0;
+      margin-left: -1.5px;
+    }
+
+    /* Drag-select rubber band: a translucent accent-blue box over the rail, sized inline as the pointer drags. */
+    .${r} .scribe-thumb-marquee {
+      position: absolute;
+      z-index: 40;
+      background: rgba(40, 123, 181, .2);
+      border: 1px solid rgba(40, 123, 181, .9);
+      pointer-events: none;
+    }
+
+    /* Placed after the active-page rules so a page that is both selected and active stays blue, not gray. */
     .${r} .scribe-thumb.selected .scribe-thumb-box {
       outline: 3px solid rgba(40, 123, 181, 1);
+    }
+
+    .${r} .scribe-thumb.selected .scribe-thumb-box::after {
+      content: '';
+      position: absolute;
+      inset: 0;
+      background: rgba(40, 123, 181, .3);
+      pointer-events: none;
     }
 
     /* Floating vertical action strip that pops up beside the rail, next to the selection; JS sets its left/top. */

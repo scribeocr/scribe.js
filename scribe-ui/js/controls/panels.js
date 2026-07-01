@@ -37,13 +37,28 @@ const FLING_VIEWPORT_FRACTION = 0.5;
 const ACTIVE_SCROLL_DEBOUNCE_MS = 80;
 // Panel width beyond the thumbnail image: horizontal padding plus room for the panel's own scrollbar.
 const PANEL_EXTRA_W = 30;
-// Bounds for the user-draggable thumbnail image width (panel width is this plus PANEL_EXTRA_W).
-const MIN_IMG_W = 90;
-const MAX_IMG_W = 300;
+// Fixed thumbnail image width in px (panel width is this plus PANEL_EXTRA_W for one column). Not user-adjustable for now.
+const THUMB_W = 200;
+// Resolution thumbnails are rasterized at; kept above THUMB_W so they stay crisp on high-DPI screens (CSS downscales).
+const RENDER_W = 300;
 // Slide duration in ms. Must match the `transition` on `.scribe-thumb-panel` so the post-hide unmount waits for it.
 const SLIDE_MS = 180;
 // Fallback height in px for centering the floating batch pill before it has been laid out and measured.
 const BATCH_BAR_H = 40;
+// Gap in px between cells (and from the panel edge) in the multi-column grid layout.
+const GRID_GAP = 14;
+// Most columns the panel can be widened to. The resize handle caps the panel width here; there is no full-screen mode.
+const MAX_COLS = 3;
+// Pointer travel in px before a press in the panel's empty space becomes a drag-select rather than a plain click.
+const MARQUEE_THRESHOLD = 4;
+// Distance in px from the scroll viewport's top/bottom edge that auto-scrolls the rail during a drag-select, and its speed.
+const MARQUEE_EDGE = 36;
+const MARQUEE_SPEED = 14;
+
+/** Columns of THUMB_W cells that fit in inner width `w`. @param {number} w */
+const colsFor = (w) => Math.max(1, Math.floor((w - 2 * PAD + GRID_GAP) / (THUMB_W + GRID_GAP)));
+/** Panel width in px that fits exactly `cols` columns. @param {number} cols */
+const panelWidthForCols = (cols) => cols * THUMB_W + (cols - 1) * GRID_GAP + PANEL_EXTRA_W;
 
 /**
  * Module-scoped page clipboard shared by every thumbnail panel, for cut/copy/paste of whole pages within one document.
@@ -72,18 +87,16 @@ function clearPageClipboard() {
  * Build the page-thumbnails panel and its toolbar toggle.
  * @param {import('../../viewer.js').ScribeViewer} scribe
  * @param {object} cfg
- * @param {number} [cfg.width=150] - Thumbnail image width in px.
  * @param {(n: number) => void} cfg.onSelect - Called with the page index when a thumbnail is clicked.
  * @param {(pageIndices: Array<number>) => void} [cfg.onExtract] - Called with the page indices to open as a new document.
+ * @param {(width: number) => void} [cfg.onResize] - Called with the panel's current visible width in px (0 when hidden), so the host can inset the document to the remaining area.
  * @returns {{
  *   panelElem: HTMLDivElement, toggleElem: HTMLSpanElement,
  *   rebuild: (activeN?: number) => void, setActive: (n: number) => void,
  *   setVisible: (v: boolean) => void, destroy: () => void
  * }}
  */
-export function createThumbnailPanel(scribe, { width = 150, onSelect, onExtract }) {
-  let THUMB_W = Math.max(MIN_IMG_W, Math.min(MAX_IMG_W, width));
-
+export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) {
   const panelElem = document.createElement('div');
   panelElem.className = 'scribe-thumb-panel';
   panelElem.style.width = `${THUMB_W + PANEL_EXTRA_W}px`;
@@ -101,7 +114,7 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect, onExtract 
   spacer.style.height = '0px';
   scrollElem.appendChild(spacer);
 
-  // Drag handle on the panel's right edge for resizing the thumbnail width (see resize wiring below).
+  // Drag handle on the panel's right edge for resizing the panel between one and MAX_COLS columns (see resize wiring below).
   const resizeHandle = document.createElement('div');
   resizeHandle.className = 'scribe-thumb-resize';
   panelElem.appendChild(resizeHandle);
@@ -145,8 +158,19 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect, onExtract 
   let heights = [];
   /** @type {number[]} Image-box height of each row. */
   let boxHeights = [];
+  /** @type {number[]} Left offset of each cell. 0 in rail mode (full-width rows). Per-column in grid mode. */
+  let lefts = [];
   let total = 0;
   let pageCount = 0;
+  // 'rail' is the docked single-column strip; 'grid' is the multi-column (up to MAX_COLS) page organizer.
+  /** @type {'rail'|'grid'} */
+  let layoutMode = 'rail';
+  // Grid layout, valid only in 'grid' mode: number of columns and the uniform per-row vertical stride.
+  let gridCols = 1;
+  let rowStride = 0;
+  // Cached because reading clientHeight/clientWidth forces a synchronous layout, and the scroll/resize paths read the viewport size every frame.
+  let viewportH = 0;
+  let viewportW = 0;
 
   /** @type {Map<number, ThumbRow>} */
   const mounted = new Map();
@@ -172,6 +196,10 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect, onExtract 
   // Settle timer that defers scrolling the active thumb into view off the scroll path (see setActive).
   /** @type {?ReturnType<typeof setTimeout>} */
   let activeScrollTimer = null;
+  // The in-flight column-reflow slide (see playColumnFlip): the cells mid-transition and the leaving cells kept mounted only to animate out,
+  // plus the timer that clears the transforms and unmounts the leaving cells once it settles.
+  /** @type {?{timer: ReturnType<typeof setTimeout>, animated: Array<HTMLElement>, leaving: Set<number>}} */
+  let columnFlip = null;
   // The in-flight drag-to-reorder gesture, or null. Owned by the reorder subsystem (installPageReorder); read here
   // by `updateWindow` to keep dragged rows mounted, and through `suppressClick` so the click ending a drag does not select.
   /** @type {?import('./pageReorder.js').ThumbDrag} */
@@ -194,6 +222,9 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect, onExtract 
     get heights() { return heights; },
     get pageCount() { return pageCount; },
     get THUMB_W() { return THUMB_W; },
+    get gridCols() { return gridCols; },
+    get rowStride() { return rowStride; },
+    GRID_GAP,
     get activePage() { return activePage; },
     set activePage(v) { activePage = v; },
     get drag() { return drag; },
@@ -226,6 +257,12 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect, onExtract 
     return ans;
   }
 
+  /** Re-read the scroll element's viewport size into the cache. Called only when it can have changed (resize), not on scroll. */
+  function measureViewport() {
+    viewportH = scrollElem.clientHeight;
+    viewportW = scrollElem.clientWidth;
+  }
+
   /**
    * Revoke a mounted row's object URL, drop its DOM, and forget it.
    * @param {number} n
@@ -249,6 +286,10 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect, onExtract 
    */
   function restyleRow(entry, n) {
     const { thumbElem, imgElem } = entry;
+    // Left-anchor the cell rather than center it, so the lone rail thumbnail does not jump when a second column appears.
+    thumbElem.style.left = `${lefts[n]}px`;
+    thumbElem.style.right = 'auto';
+    thumbElem.style.width = `${THUMB_W}px`;
     thumbElem.style.top = `${PAD + offsets[n]}px`;
     thumbElem.style.height = `${heights[n]}px`;
     thumbElem.dataset.page = String(n);
@@ -257,7 +298,10 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect, onExtract 
     thumbElem.classList.toggle('cut', cutMarks.has(n));
 
     const box = imgElem.parentElement;
-    if (box) box.style.height = `${boxHeights[n]}px`;
+    if (box) {
+      box.style.width = `${THUMB_W}px`;
+      box.style.height = `${boxHeights[n]}px`;
+    }
 
     imgElem.style.cssText = '';
     const rot = (scribe.doc && scribe.doc.pageMetrics[n] && scribe.doc.pageMetrics[n].rotation) || 0;
@@ -310,6 +354,7 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect, onExtract 
 
     boxElem.appendChild(rotateBtn);
     boxElem.addEventListener('click', (e) => { if (!suppressClick) handleThumbClick(e, idx()); });
+    // A press that never crosses the reorder drag threshold stays a plain click, because suppressClick is set only once a drag begins.
     boxElem.addEventListener('pointerdown', (e) => reorder.onThumbPointerDown(e, idx()));
     boxElem.addEventListener('contextmenu', (e) => {
       if (!(scribe.opt && scribe.opt.enablePageEditing)) return;
@@ -342,8 +387,8 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect, onExtract 
     if (!doc || !doc.images) return;
     entry.pending = true;
     const gen = generation;
-    // Render at the maximum rail width and let CSS downscale into the THUMB_W box, so thumbnails stay crisp at any width.
-    doc.images.renderThumbnail(n, MAX_IMG_W).then((blob) => {
+    // Render above the display size and let CSS downscale into the THUMB_W box, so thumbnails stay crisp on high-DPI screens.
+    doc.images.renderThumbnail(n, RENDER_W).then((blob) => {
       if (destroyed || gen !== generation) return;
       if (mounted.get(n) !== entry) return;
       if (!blob) { entry.pending = false; return; }
@@ -379,19 +424,33 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect, onExtract 
     renderTimer = setTimeout(() => { renderTimer = null; flushRenders(); }, RENDER_DEBOUNCE_MS);
   }
 
+  /** First and last page index in the current scroll window (+buffer). @returns {[number, number]} */
+  function windowRange() {
+    const viewH = viewportH;
+    if (layoutMode === 'grid' && rowStride > 0) {
+      // Every cell in a grid row shares the same top, so map the visible band to whole rows and mount their cells.
+      const firstRow = Math.max(0, Math.floor((scrollElem.scrollTop - PAD - BUFFER) / rowStride));
+      const lastRow = Math.max(0, Math.floor((scrollElem.scrollTop - PAD + viewH + BUFFER) / rowStride));
+      return [firstRow * gridCols, Math.min(pageCount - 1, (lastRow + 1) * gridCols - 1)];
+    }
+    return [
+      rowAt(Math.max(0, scrollElem.scrollTop - PAD - BUFFER)),
+      rowAt(Math.max(0, scrollElem.scrollTop - PAD + viewH + BUFFER)),
+    ];
+  }
+
   /**
    * Mount the rows in the current scroll window (+buffer), unmount the rest, then queue renders.
    * @param {boolean} [immediate=false] - Render the newly mounted rows now rather than behind the scroll debounce.
    */
   function updateWindow(immediate = false) {
     if (destroyed || !visible || pageCount === 0) return;
-    const viewH = scrollElem.clientHeight;
-    const first = rowAt(Math.max(0, scrollElem.scrollTop - PAD - BUFFER));
-    const last = rowAt(Math.max(0, scrollElem.scrollTop - PAD + viewH + BUFFER));
+    const [first, last] = windowRange();
     for (const [n, entry] of mounted) {
-      // Keep the row being dragged mounted even when it scrolls out of the window, so the ghost's image URL
-      // (owned by this row) is not revoked mid-drag.
-      if ((n < first || n > last) && !(drag && drag.started && drag.pages.has(n))) unmountRow(n, entry);
+      // Keep a dragged page mounted past the scroll window, since unmounting revokes the object URL the drag ghost still shows.
+      // Keep a column-flip leaving cell mounted too; finishColumnFlip unmounts it once the slide settles.
+      const keep = (drag && drag.started && drag.pages.has(n)) || (columnFlip && columnFlip.leaving.has(n));
+      if ((n < first || n > last) && !keep) unmountRow(n, entry);
     }
     for (let n = first; n <= last; n++) {
       if (!mounted.has(n)) mountRow(n);
@@ -412,11 +471,24 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect, onExtract 
       lastScrollTop = st;
       // Render revealed rows immediately on a slow scroll.
       // A fast fling defers them (the trailing debounce in `scheduleRenders`), rastering only the landing window instead of every row flown past.
-      const fling = speed > scrollElem.clientHeight * FLING_VIEWPORT_FRACTION;
+      const fling = speed > viewportH * FLING_VIEWPORT_FRACTION;
       updateWindow(!fling);
     });
   }
   scrollElem.addEventListener('scroll', onScroll);
+
+  // Covers host-driven height changes (window/devtools); the drag already refreshes the cache on width.
+  // The scroll element's box is sized by the panel, not its content, so mounting rows cannot re-trigger this.
+  const viewportObserver = new ResizeObserver(() => {
+    measureViewport();
+    updateWindow(true);
+  });
+  viewportObserver.observe(scrollElem);
+
+  /** Column count for the current width: as many fixed-width cells as fit the inner width, capped at MAX_COLS. @returns {number} */
+  function gridColsFor() {
+    return Math.min(colsFor(viewportW || THUMB_W), MAX_COLS);
+  }
 
   /**
    * Recompute every row's box height, full height, and top offset from the current page metrics and THUMB_W,
@@ -425,31 +497,58 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect, onExtract 
   function computeGeometry() {
     const doc = scribe.doc;
     pageCount = doc?.inputData?.pageCount ?? 0;
+    offsets = [];
+    heights = [];
+    boxHeights = [];
+    lefts = [];
+    gridCols = 1;
+    rowStride = 0;
     if (!doc || pageCount === 0) {
-      offsets = [];
-      heights = [];
-      boxHeights = [];
       total = 0;
       spacer.style.height = '0px';
       return;
     }
     const metrics = doc.pageMetrics || [];
-    offsets = [];
-    heights = [];
-    boxHeights = [];
-    let acc = 0;
-    for (let n = 0; n < pageCount; n++) {
+    // Image-box height of page `n` at the current cell width, preserving its aspect (90/270 rotation transposes it).
+    /** @param {number} n */
+    const boxHeightOf = (n) => {
       const dims = metrics[n] && metrics[n].dims;
       const rotated = (((metrics[n] && metrics[n].rotation) || 0) % 180) === 90;
       let aspect = dims && dims.width ? dims.height / dims.width : DEFAULT_ASPECT;
       if (rotated && dims && dims.height) aspect = dims.width / dims.height;
-      const boxH = Math.max(1, Math.round(THUMB_W * aspect));
-      boxHeights[n] = boxH;
-      heights[n] = boxH + ROW_OVERHEAD;
-      offsets[n] = acc;
-      acc += heights[n];
+      return Math.max(1, Math.round(THUMB_W * aspect));
+    };
+
+    // Panel width changes only how many fixed-width cells fit, never their size.
+    gridCols = gridColsFor();
+    layoutMode = gridCols > 1 ? 'grid' : 'rail';
+
+    if (layoutMode === 'grid') {
+      // Row stride is uniform (the tallest cell), so a scroll position maps to a row by division.
+      // Each page keeps its own height and top-aligns in its slot, so a shorter page leaves a gap below.
+      let maxBox = 1;
+      for (let n = 0; n < pageCount; n++) {
+        boxHeights[n] = boxHeightOf(n);
+        if (boxHeights[n] > maxBox) maxBox = boxHeights[n];
+      }
+      rowStride = maxBox + ROW_OVERHEAD + GRID_GAP;
+      for (let n = 0; n < pageCount; n++) {
+        lefts[n] = PAD + (n % gridCols) * (THUMB_W + GRID_GAP);
+        offsets[n] = Math.floor(n / gridCols) * rowStride;
+        heights[n] = boxHeights[n] + ROW_OVERHEAD;
+      }
+      total = Math.ceil(pageCount / gridCols) * rowStride;
+    } else {
+      let acc = 0;
+      for (let n = 0; n < pageCount; n++) {
+        boxHeights[n] = boxHeightOf(n);
+        heights[n] = boxHeights[n] + ROW_OVERHEAD;
+        lefts[n] = PAD;
+        offsets[n] = acc;
+        acc += heights[n];
+      }
+      total = acc;
     }
-    total = acc;
     spacer.style.height = `${total}px`;
   }
 
@@ -458,6 +557,7 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect, onExtract 
    * @param {number} [activeN=-1] - Page to mark active and scroll to (e.g. a tab's last page), or -1 to start at the top.
    */
   function rebuild(activeN = -1) {
+    // The panel keeps its current width across documents. ComputeGeometry re-derives the columns for that width below.
     generation += 1;
     if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
     clearMounted();
@@ -466,6 +566,7 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect, onExtract 
     selAnchor = -1;
     cutMarks.clear();
     updateBatchToolbar();
+    measureViewport();
     computeGeometry();
     activePage = activeN >= 0 && activeN < pageCount ? activeN : -1;
     // Start scrolled to the active page so its thumbnail is in the first mounted window.
@@ -473,7 +574,7 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect, onExtract 
     // Same bottom-align as setActive.
     if (activePage > 0 && heights[activePage]) {
       const bottom = offsets[activePage] + heights[activePage];
-      scrollElem.scrollTop = Math.max(0, bottom + PAD - scrollElem.clientHeight + 8);
+      scrollElem.scrollTop = Math.max(0, bottom + PAD - viewportH + 8);
     } else {
       scrollElem.scrollTop = 0;
     }
@@ -481,46 +582,263 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect, onExtract 
   }
 
   /**
-   * Resize the thumbnail width to `imgW` (clamped to the allowed range),
-   * reflowing every row and re-rendering at the new resolution while keeping the current scroll position.
-   * @param {number} imgW
+   * Re-lay the rows for a new column count.
    */
-  function setWidth(imgW) {
-    THUMB_W = Math.max(MIN_IMG_W, Math.min(MAX_IMG_W, Math.round(imgW)));
-    panelElem.style.width = `${THUMB_W + PANEL_EXTRA_W}px`;
-    generation += 1;
-    if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
-    clearMounted();
+  function reflow() {
+    if (pageCount === 0 || gridColsFor() === gridCols) return;
+    // Settle any slide still in flight (a fast drag can re-cross a boundary mid-animation) before measuring.
+    finishColumnFlip();
+
+    // The slide derives each cell's start from the pre-relayout geometry and scroll, so snapshot them.
+    // computeGeometry reassigns the arrays, so holding the references keeps the old ones intact.
+    const before = {
+      offsets, lefts, scrollTop: scrollElem.scrollTop, mounted: new Set(mounted.keys()),
+    };
+
     computeGeometry();
-    scrollElem.scrollTop = Math.min(scrollElem.scrollTop, Math.max(0, total - scrollElem.clientHeight));
-    updateWindow(true);
+    // Restore the anchor page captured at the drag start, by index, every reflow. A grid row groups several pages under one offset,
+    // so re-deriving the page from the scroll position each time (rowAt returns the row's last page) would drift
+    // when crossing boundaries back and forth (1->3->1). Restoring the same page+fraction is exact.
+    if (resizeAnchorPage >= 0 && resizeAnchorPage < pageCount) {
+      const newCenterY = PAD + offsets[resizeAnchorPage] + resizeAnchorFrac * heights[resizeAnchorPage];
+      scrollElem.scrollTop = Math.min(Math.max(0, newCenterY - viewportH / 2), Math.max(0, total - viewportH));
+    } else {
+      scrollElem.scrollTop = Math.min(scrollElem.scrollTop, Math.max(0, total - viewportH));
+    }
+
+    // Mount the new window's cells, position everything at its new slot, and play the slide.
+    const [first, last] = windowRange();
+    for (let n = first; n <= last; n++) if (!mounted.has(n)) mountRow(n);
+    for (const [n, entry] of mounted) restyleRow(entry, n);
+    scheduleRenders(true);
+
+    playColumnFlip(before, first, last);
   }
 
-  // Drag the right-edge handle to resize the thumbnail width.
-  // The panel widens live for feedback, and the thumbnails reflow and re-render once at the new resolution when the drag ends.
-  let dragStartX = 0;
-  let dragStartW = 0;
-  let dragW = 0;
+  /**
+   * Slide the mounted cells from their old column positions into their new slots.
+   * An entering cell had no old position and could sit far off-screen,
+   * so its start is pinned just beyond the nearest edge to slide in rather than streak across the viewport.
+   * @param {{offsets: Array<number>, lefts: Array<number>, scrollTop: number, mounted: Set<number>}} before
+   * @param {number} first @param {number} last
+   */
+  function playColumnFlip(before, first, last) {
+    const newScrollTop = scrollElem.scrollTop;
+    /** @type {Array<HTMLElement>} */
+    const animated = [];
+    for (const [n, entry] of mounted) {
+      const newTop = PAD + offsets[n] - newScrollTop;
+      let oldTop = PAD + before.offsets[n] - before.scrollTop;
+      if (!before.mounted.has(n)) oldTop = Math.max(-0.5 * viewportH, Math.min(1.5 * viewportH, oldTop));
+      const dx = before.lefts[n] - lefts[n];
+      const dy = oldTop - newTop;
+      if (Math.round(dx) === 0 && Math.round(dy) === 0) continue;
+      entry.thumbElem.style.transition = 'none';
+      entry.thumbElem.style.transform = `translate(${dx}px, ${dy}px)`;
+      animated.push(entry.thumbElem);
+    }
+    /** @type {Set<number>} */
+    const leaving = new Set();
+    for (const n of before.mounted) if ((n < first || n > last) && mounted.has(n)) leaving.add(n);
+
+    if (animated.length === 0) {
+      for (const n of leaving) { const e = mounted.get(n); if (e) unmountRow(n, e); }
+      return;
+    }
+    // Commit the inverted start, then play to the resting position on the next frame.
+    scrollElem.getBoundingClientRect();
+    for (const el of animated) {
+      el.style.transition = `transform ${SLIDE_MS}ms ease`;
+      el.style.transform = '';
+    }
+    columnFlip = { timer: setTimeout(finishColumnFlip, SLIDE_MS + 20), animated, leaving };
+  }
+
+  /** End the in-flight column slide: clear the transition transforms and unmount the cells that slid out of view. */
+  function finishColumnFlip() {
+    if (!columnFlip) return;
+    clearTimeout(columnFlip.timer);
+    for (const el of columnFlip.animated) { el.style.transition = ''; el.style.transform = ''; }
+    for (const n of columnFlip.leaving) { const e = mounted.get(n); if (e) unmountRow(n, e); }
+    columnFlip = null;
+  }
+
+  /** Report the panel's current visible width (0 when hidden) so the host can inset the document to the remaining area. */
+  function notifyResize() {
+    if (onResize) onResize(visible ? (parseFloat(panelElem.style.width) || 0) : 0);
+  }
+
+  // Drag the right-edge handle to resize the panel between one column (the docked rail) and MAX_COLS columns.
+  // Thumbnail size is fixed, so the width only changes how many columns fit.
+  let resizeStartX = 0;
+  let resizeStartPanelW = 0;
+  let resizeContainerW = 0;
+  let resizeLivePanelW = 0;
+  // The page centered when the drag began, plus its fractional position, so every reflow re-centers the same page.
+  let resizeAnchorPage = -1;
+  let resizeAnchorFrac = 0;
+  // The panel's extra width (scrollbar gutter + padding + border) measured at drag start.
+  let resizeExtraW = 0;
+
   /** @param {PointerEvent} event */
   function onResizeMove(event) {
-    dragW = Math.max(MIN_IMG_W, Math.min(MAX_IMG_W, dragStartW + (event.clientX - dragStartX)));
-    panelElem.style.width = `${dragW + PANEL_EXTRA_W}px`;
+    // The upper bound uses the measured extra width (resizeExtraW), not the PANEL_EXTRA_W estimate,
+    // so the real scrollbar gutter decides whether the last column fits.
+    const minPanelW = panelWidthForCols(1);
+    const maxColsInnerW = MAX_COLS * THUMB_W + (MAX_COLS - 1) * GRID_GAP + 2 * PAD;
+    const maxPanelW = Math.min(maxColsInnerW + resizeExtraW, resizeContainerW);
+    resizeLivePanelW = Math.max(minPanelW, Math.min(maxPanelW, resizeStartPanelW + (event.clientX - resizeStartX)));
+    panelElem.style.width = `${resizeLivePanelW}px`;
+    // The width just changed. Refresh the cache once here so reflow/gridColsFor/windowRange read it without each forcing a layout.
+    measureViewport();
+    reflow();
+    notifyResize();
   }
 
   function onResizeEnd() {
     window.removeEventListener('pointermove', onResizeMove);
     window.removeEventListener('pointerup', onResizeEnd);
-    setWidth(dragW);
+    updateWindow(true);
+    notifyResize();
   }
 
   resizeHandle.addEventListener('pointerdown', (event) => {
     event.preventDefault();
-    dragStartX = event.clientX;
-    dragStartW = THUMB_W;
-    dragW = THUMB_W;
+    resizeStartX = event.clientX;
+    resizeStartPanelW = panelElem.getBoundingClientRect().width;
+    resizeLivePanelW = resizeStartPanelW;
+    resizeContainerW = (panelElem.parentElement && panelElem.parentElement.clientWidth) || resizeStartPanelW;
+    // Pin the active page (the one shown in the viewer) for the whole drag so it stays in the pane across column changes,
+    // or fall back to the page at the viewport center when nothing is active.
+    measureViewport();
+    resizeExtraW = resizeStartPanelW - viewportW;
+    const centerY = scrollElem.scrollTop + viewportH / 2;
+    resizeAnchorPage = activePage >= 0 && activePage < pageCount
+      ? activePage
+      : (pageCount > 0 ? rowAt(Math.max(0, centerY - PAD)) : -1);
+    resizeAnchorFrac = resizeAnchorPage >= 0 && heights[resizeAnchorPage]
+      ? Math.max(0, Math.min(1, (centerY - (PAD + offsets[resizeAnchorPage])) / heights[resizeAnchorPage])) : 0;
     window.addEventListener('pointermove', onResizeMove);
     window.addEventListener('pointerup', onResizeEnd);
   });
+
+  // Drag-to-select: a press in the panel's empty space rubber-bands a rectangle that selects every page it covers.
+  // A press that never crosses the threshold is a plain click, which clears the selection.
+  // Holding Shift/Ctrl/Cmd unions the covered pages with the existing selection instead of replacing it.
+  // Touch is left to scroll.
+  const marqueeElem = document.createElement('div');
+  marqueeElem.className = 'scribe-thumb-marquee';
+  marqueeElem.style.display = 'none';
+  scrollElem.appendChild(marqueeElem);
+  /** @type {?{originX: number, originY: number, base: Set<number>, started: boolean, lastX: number, lastY: number, autoDir: number, rafId: number}} */
+  let marquee = null;
+
+  /**
+   * Size the marquee rect to (curX, curY) and select every page it covers, unioned with the drag's captured base.
+   * curX/curY are in content space, so the rect and its selection track the thumbnails as the panel auto-scrolls under a held pointer.
+   * @param {number} curX @param {number} curY
+   */
+  function updateMarquee(curX, curY) {
+    if (!marquee) return;
+    const l = Math.min(marquee.originX, curX);
+    const right = Math.max(marquee.originX, curX);
+    const t = Math.min(marquee.originY, curY);
+    const b = Math.max(marquee.originY, curY);
+    marqueeElem.style.left = `${l}px`;
+    marqueeElem.style.top = `${t}px`;
+    marqueeElem.style.width = `${right - l}px`;
+    marqueeElem.style.height = `${b - t}px`;
+    selected.clear();
+    for (const n of marquee.base) selected.add(n);
+    // The geometry arrays cover every page, not just the mounted window, so the rect also selects pages scrolled out of view.
+    for (let n = 0; n < pageCount; n++) {
+      if (lefts[n] < right && lefts[n] + THUMB_W > l && PAD + offsets[n] < b && PAD + offsets[n] + heights[n] > t) selected.add(n);
+    }
+    syncSelectionUI();
+  }
+
+  /** While the pointer is held near a vertical edge, scroll the rail and grow the selection over the newly revealed rows. */
+  function marqueeAutoScroll() {
+    if (!marquee || !marquee.started || marquee.autoDir === 0) { if (marquee) marquee.rafId = 0; return; }
+    const max = scrollElem.scrollHeight - scrollElem.clientHeight;
+    const next = Math.max(0, Math.min(max, scrollElem.scrollTop + marquee.autoDir * MARQUEE_SPEED));
+    if (next !== scrollElem.scrollTop) {
+      scrollElem.scrollTop = next;
+      updateWindow();
+      const rect = scrollElem.getBoundingClientRect();
+      updateMarquee(
+        Math.max(0, Math.min(scrollElem.clientWidth, marquee.lastX - rect.left)),
+        marquee.lastY - rect.top + scrollElem.scrollTop,
+      );
+      if (next === 0 || next === max) marquee.autoDir = 0;
+    }
+    marquee.rafId = marquee.autoDir !== 0 ? requestAnimationFrame(marqueeAutoScroll) : 0;
+  }
+
+  /** @param {PointerEvent} e */
+  function onMarqueeMove(e) {
+    if (!marquee) return;
+    marquee.lastX = e.clientX;
+    marquee.lastY = e.clientY;
+    const rect = scrollElem.getBoundingClientRect();
+    const curX = Math.max(0, Math.min(scrollElem.clientWidth, e.clientX - rect.left));
+    const curY = e.clientY - rect.top + scrollElem.scrollTop;
+    if (!marquee.started) {
+      // Below the threshold the press is still a candidate click.
+      if (Math.abs(curX - marquee.originX) + Math.abs(curY - marquee.originY) < MARQUEE_THRESHOLD) return;
+      marquee.started = true;
+      marqueeElem.style.display = '';
+    }
+    e.preventDefault();
+    updateMarquee(curX, curY);
+    const nearTop = e.clientY < rect.top + MARQUEE_EDGE && scrollElem.scrollTop > 0;
+    const nearBottom = e.clientY > rect.bottom - MARQUEE_EDGE && scrollElem.scrollTop < scrollElem.scrollHeight - scrollElem.clientHeight;
+    marquee.autoDir = nearTop ? -1 : (nearBottom ? 1 : 0);
+    if (marquee.autoDir !== 0 && !marquee.rafId) marquee.rafId = requestAnimationFrame(marqueeAutoScroll);
+  }
+
+  function onMarqueeUp() {
+    window.removeEventListener('pointermove', onMarqueeMove);
+    window.removeEventListener('pointerup', onMarqueeUp);
+    const m = marquee;
+    marquee = null;
+    if (!m) return;
+    if (m.rafId) cancelAnimationFrame(m.rafId);
+    if (m.started) {
+      marqueeElem.style.display = 'none';
+      // Anchor a later Shift+click at the lowest page the rect selected.
+      let lo = -1;
+      for (const n of selected) if (lo < 0 || n < lo) lo = n;
+      selAnchor = lo;
+    } else if (m.base.size === 0) {
+      // A plain press in empty space (no modifier) clears the selection, matching a press outside the panel.
+      clearSelection();
+    }
+  }
+
+  /** @param {PointerEvent} e */
+  function onMarqueePointerDown(e) {
+    if (e.pointerType === 'touch') return;
+    if (e.pointerType === 'mouse' && e.button !== 0) return;
+    const target = e.target;
+    // A press on a thumbnail is its own click/reorder gesture; the marquee only starts in the panel's empty space.
+    if (target instanceof Element && target.closest('.scribe-thumb-box')) return;
+    const rect = scrollElem.getBoundingClientRect();
+    const additive = e.shiftKey || e.ctrlKey || e.metaKey;
+    marquee = {
+      originX: Math.max(0, Math.min(scrollElem.clientWidth, e.clientX - rect.left)),
+      originY: e.clientY - rect.top + scrollElem.scrollTop,
+      base: additive ? new Set(selected) : new Set(),
+      started: false,
+      lastX: e.clientX,
+      lastY: e.clientY,
+      autoDir: 0,
+      rafId: 0,
+    };
+    window.addEventListener('pointermove', onMarqueeMove);
+    window.addEventListener('pointerup', onMarqueeUp);
+  }
+  scrollElem.addEventListener('pointerdown', onMarqueePointerDown);
 
   /**
    * Rotate page `n` clockwise by `deg` (a multiple of 90) in place, as a CSS transform on the cached thumbnail rather than a re-render.
@@ -592,6 +910,15 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect, onExtract 
     const hostRect = batchHost.getBoundingClientRect();
     const panelRect = panelElem.getBoundingClientRect();
     const scrollRect = scrollElem.getBoundingClientRect();
+    // In the multi-column grid the rail's "just to the right of the thumbnail" anchor would sit between columns,
+    // so pin the pill inside the panel's right edge, vertically centered in the viewport.
+    if (layoutMode === 'grid') {
+      const barH = batchBar.offsetHeight || BATCH_BAR_H;
+      const barW = batchBar.offsetWidth || BATCH_BAR_H;
+      batchBar.style.left = `${scrollRect.right - hostRect.left - barW - 14}px`;
+      batchBar.style.top = `${(scrollRect.top + scrollRect.bottom) / 2 - hostRect.top - barH / 2}px`;
+      return;
+    }
     const sel = [...selected].sort((a, b) => a - b);
     const last = sel[sel.length - 1];
     const selTop = scrollRect.top + PAD + offsets[sel[0]] - scrollElem.scrollTop;
@@ -685,6 +1012,7 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect, onExtract 
    * @param {number} n
    */
   function handleThumbClick(e, n) {
+    // The rail and grid both sit beside the visible document, so a plain click navigates to the page (and clears the batch).
     if (e.shiftKey && selAnchor >= 0) {
       const lo = Math.min(selAnchor, n);
       const hi = Math.max(selAnchor, n);
@@ -847,9 +1175,9 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect, onExtract 
     const top = offsets[n];
     const bottom = top + heights[n];
     const viewTop = scrollElem.scrollTop - PAD;
-    const viewBottom = viewTop + scrollElem.clientHeight;
+    const viewBottom = viewTop + viewportH;
     if (top < viewTop) scrollElem.scrollTop = Math.max(0, top + PAD - 8);
-    else if (bottom > viewBottom) scrollElem.scrollTop = bottom + PAD - scrollElem.clientHeight + 8;
+    else if (bottom > viewBottom) scrollElem.scrollTop = bottom + PAD - viewportH + 8;
     updateWindow(true);
   }
 
@@ -877,6 +1205,8 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect, onExtract 
     }
     // The batch strip lives outside the panel, so it does not slide with it; show/hide it with the rail.
     updateBatchToolbar();
+    // The document insets to the panel when shown, and reclaims the space when hidden.
+    notifyResize();
   }
 
   /**
@@ -947,15 +1277,14 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect, onExtract 
   panelElem.addEventListener('keydown', onPanelKeyDown);
 
   /**
-   * A press anywhere in the component clears the page selection,
-   * unless it lands on a thumbnail, the selection's own floating UI (batch strip, context menu), or the resize handle.
-   * Thumbnails are left to `handleThumbClick`, and the resize handle is excluded so a width drag keeps the selection.
+   * Clear the page selection on a pointerdown outside the panel and its selection UI.
+   * The batch strip and context menu are exempted too because they belong to the selection but float outside the panel.
    * @param {PointerEvent} e
    */
   function onOutsidePointerDown(e) {
     if (selected.size === 0) return;
     const t = e.target;
-    if (t instanceof Element && t.closest('.scribe-thumb-box, .scribe-thumb-batch, .scribe-thumb-menu, .scribe-thumb-resize')) return;
+    if (t instanceof Element && t.closest('.scribe-thumb-scroll, .scribe-thumb-batch, .scribe-thumb-menu, .scribe-thumb-resize')) return;
     clearSelection();
   }
   batchHost.addEventListener('pointerdown', onOutsidePointerDown);
@@ -986,6 +1315,14 @@ export function createThumbnailPanel(scribe, { width = 150, onSelect, onExtract 
     if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
     if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
     if (activeScrollTimer) { clearTimeout(activeScrollTimer); activeScrollTimer = null; }
+    if (columnFlip) { clearTimeout(columnFlip.timer); columnFlip = null; }
+    if (marquee) {
+      window.removeEventListener('pointermove', onMarqueeMove);
+      window.removeEventListener('pointerup', onMarqueeUp);
+      if (marquee.rafId) cancelAnimationFrame(marquee.rafId);
+      marquee = null;
+    }
+    viewportObserver.disconnect();
     reorder.cancelDrag();
     closeContextMenu();
     panelElem.removeEventListener('keydown', onPanelKeyDown);

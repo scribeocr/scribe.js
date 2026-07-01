@@ -51,7 +51,6 @@ class ScribePDFViewer {
    * @param {boolean} [options.showScrollbars=true] - Render scrollbars.
    * @param {boolean} [options.showThumbnails=true] - Render the collapsible page-thumbnails side panel, with a toolbar toggle.
    *   Thumbnails render lazily: only on-screen rows, at low DPI.
-   * @param {number} [options.thumbnailWidth=150] - Thumbnail image width in px.
    * @param {FitMode} [options.fit='height'] - How to size the first page when a document opens.
    *   `'width'` fits page width to the viewer. `'height'` (default) fits page height. `'page'` fits
    *   the whole page. A function receives the page dims and viewer dims and returns `{zoom, x?, y?}`.
@@ -75,7 +74,6 @@ class ScribePDFViewer {
       showDropZone = true,
       showScrollbars = true,
       showThumbnails = true,
-      thumbnailWidth = 150,
       fit = 'height',
       autoResize = true,
       keyboardScope = 'focused',
@@ -151,9 +149,12 @@ class ScribePDFViewer {
     this.scribe.outerElem = this.pdfViewerElem;
     this.pdfViewerElem.style.width = `${initWidth}px`;
     this.pdfViewerElem.style.height = `${initHeight}px`;
-    // Clip oversized children (a wide toolbar, a stale-sized overlay) to the component box,
-    // so a spill-out can't add document scrollbars that change the size the component re-reads each ResizeObserver tick,
-    // re-firing it in a jitter feedback loop.
+    // The px size above can momentarily exceed the container, so cap it to the content box.
+    // Otherwise overflow toggles the scrollbars, which shrink the measured size and oscillate into a layout-shift loop.
+    this.pdfViewerElem.style.maxWidth = '100%';
+    this.pdfViewerElem.style.maxHeight = '100%';
+    this.pdfViewerElem.style.boxSizing = 'border-box';
+    // Clip oversized children to the component box.
     // `relative` extends the clip over absolute children and anchors them to the component (correct when embedded).
     this.pdfViewerElem.style.position = 'relative';
     this.pdfViewerElem.style.overflow = 'hidden';
@@ -191,9 +192,10 @@ class ScribePDFViewer {
     /** @type {?ReturnType<typeof createThumbnailPanel>} */
     this._thumbnailPanel = showThumbnails
       ? createThumbnailPanel(this.scribe, {
-        width: thumbnailWidth,
         onSelect: (n) => this.scribe.displayPage(n, true, false),
         onExtract: (pageIndices) => this.newDocumentFromPages(pageIndices),
+        // The panel's width (or hiding it) changed, so re-inset the document into the area beside it.
+        onResize: () => { if (this.scribe.scrollContainer) this._relayout(); },
       })
       : null;
     this._thumbnailsVisible = showThumbnails;
@@ -423,12 +425,13 @@ class ScribePDFViewer {
 
     container.appendChild(this.pdfViewerElem);
 
-    // Toolbar toggle: slide the thumbnails panel in or out. It overlays the canvas, so no canvas reflow.
+    // The toolbar's thumbnails-toggle button: slide the panel in or out.
     if (this._thumbnailPanel && this.toolbarElem) {
       const panel = this._thumbnailPanel;
       panel.toggleElem.addEventListener('click', () => {
         this._thumbnailsVisible = !this._thumbnailsVisible;
         panel.setVisible(this._thumbnailsVisible);
+        this._animatePanelInset();
       });
     }
 
@@ -440,6 +443,9 @@ class ScribePDFViewer {
       });
       this.resizeObserver.observe(container);
     }
+
+    // Apply the initial document inset for the visible panel.
+    if (this._thumbnailPanel) this._relayout();
   }
 
   /** Currently displayed page index (0-based). */
@@ -729,13 +735,51 @@ class ScribePDFViewer {
 
   /** Re-apply canvas and thumbnail-panel sizing from the current dimensions and chrome height. */
   _relayout() {
+    if (!this.scribe.scrollContainer) return;
     const top = this._chromeTop();
     if (this._thumbnailPanel) {
       this._thumbnailPanel.panelElem.style.top = `${top}px`;
       this._thumbnailPanel.panelElem.style.height = `${this._height - top}px`;
     }
-    this.scribe.resize(this._width, this._height - top);
+    // Inset the document by the visible panel's width so it centers in the area beside it rather than under it.
+    // Keep at least a sliver of document if the panel is wider than the viewport (e.g. a very narrow window).
+    const panelW = this._thumbnailPanel && this._thumbnailsVisible
+      ? (parseFloat(this._thumbnailPanel.panelElem.style.width) || 0) : 0;
+    const inset = Math.min(panelW, Math.max(0, this._width - 80));
+    this.scribe.scrollContainer.style.marginLeft = `${inset}px`;
+    this.scribe.resize(this._width - inset, this._height - top);
     if (this._updateScrollbars) this._updateScrollbars();
+  }
+
+  /**
+   * Animate the document inset to follow the panel's slide on a toolbar toggle, so the viewer re-centers smoothly instead of snapping.
+   * Each frame samples the panel's live `translateX` rather than running a timed animation,
+   * so the inset tracks the CSS slide without knowing its duration or easing.
+   */
+  _animatePanelInset() {
+    if (!this._thumbnailPanel || !this.scribe.scrollContainer) return;
+    if (this._insetAnim) cancelAnimationFrame(this._insetAnim);
+    const panel = this._thumbnailPanel.panelElem;
+    const panelW = parseFloat(panel.style.width) || 0;
+    const top = this._chromeTop();
+    const target = this._thumbnailsVisible ? panelW : 0;
+    const setInset = (raw) => {
+      const inset = Math.min(Math.max(0, raw), Math.max(0, this._width - 80));
+      this.scribe.scrollContainer.style.marginLeft = `${inset}px`;
+      this.scribe.resize(this._width - inset, this._height - top);
+      if (this._updateScrollbars) this._updateScrollbars();
+    };
+    // `setVisible` already snapped the inset to its target.
+    // Restart from the pre-toggle value so the first frame sits at the panel's current edge rather than jumping there.
+    setInset(this._thumbnailsVisible ? 0 : panelW);
+    const step = () => {
+      const tf = getComputedStyle(panel).transform;
+      const tx = tf && tf !== 'none' ? new DOMMatrix(tf).m41 : 0; // -panelW when hidden, 0 when shown
+      const inset = panelW + tx;
+      setInset(inset);
+      if (Math.abs(inset - target) <= 0.5) { this._insetAnim = null; this._relayout(); } else this._insetAnim = requestAnimationFrame(step);
+    };
+    this._insetAnim = requestAnimationFrame(step);
   }
 
   /** Open the find bar, enable search highlighting, and focus the input. */
@@ -777,19 +821,13 @@ class ScribePDFViewer {
     this._height = height;
     this.pdfViewerElem.style.width = `${width}px`;
     this.pdfViewerElem.style.height = `${height}px`;
-    const top = this._chromeTop();
-    // The panel overlays the canvas, so only its top/height track the viewport. Its width is user-owned.
-    if (this._thumbnailPanel) {
-      this._thumbnailPanel.panelElem.style.top = `${top}px`;
-      this._thumbnailPanel.panelElem.style.height = `${height - top}px`;
-    }
     // The drop zone is only shown in the empty state, where the tab strip is hidden, so it tracks the toolbar.
     if (this.dropZone) {
       this.dropZone.style.width = `${width - 6}px`;
       this.dropZone.style.height = `${height - this.toolbarHeight}px`;
     }
-    this.scribe.resize(width, height - top);
-    if (this._updateScrollbars) this._updateScrollbars();
+    // _relayout sizes the canvas and panel (its width is user-owned) and insets the document by the panel's width.
+    this._relayout();
   }
 
   /**
