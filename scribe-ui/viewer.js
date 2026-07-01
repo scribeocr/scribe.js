@@ -375,20 +375,43 @@ export class ScribeViewer {
     this._updateContentSize();
   }
 
+  /**
+   * Snap a content-space coordinate so the page lands on a whole device pixel after the zoom transform.
+   * A fractional device-pixel offset would otherwise blur the whole page.
+   * @param {number} coord - Content-space position.
+   * @returns {number} The position adjusted so `coord * zoom * devicePixelRatio` is a whole number.
+   */
+  _snapToDevice(coord) {
+    const s = this.zoomLevel * (window.devicePixelRatio || 1);
+    return s > 0 ? Math.round(coord * s) / s : coord;
+  }
+
   /** Size the content sizer to the scaled document extent so the native scrollbars get the right range. */
   _updateContentSize() {
     if (!this.contentSizer) return;
     this._scrollMetricsCache = null; // content extent changing -> cached scrollHeight/Width are stale
-    this.contentSizer.style.width = `${this._effectiveContentWidth() * this.zoomLevel}px`;
-    this.contentSizer.style.height = `${this._contentHeight * this.zoomLevel}px`;
-    // Re-center any existing page containers: `_contentWidth` may have grown since they were created
-    // (a page container can be built before `calcPageStops` finishes computing the max width).
-    // Read the cached stop directly rather than `getPageStop`, which could re-enter `calcPageStops`.
+    // Resolve the centering width once.
+    // `_pageLeft` reads `clientWidth` (a forced layout), so using it per container below would force a reflow for each.
+    const eff = this._effectiveContentWidth();
+    this._lastEffectiveWidth = eff;
+    const z = this.zoomLevel;
+    const sizerW = `${eff * z}px`;
+    const sizerH = `${this._contentHeight * z}px`;
+    if (this.contentSizer.style.width !== sizerW) this.contentSizer.style.width = sizerW;
+    if (this.contentSizer.style.height !== sizerH) this.contentSizer.style.height = sizerH;
+    // Containers built before `calcPageStops` finalized `_contentWidth` can keep a stale centering, so re-center all to `eff`.
+    // The write guards read inline style (no forced layout), so skipping unmoved pages costs nothing.
+    // Read `_pageStopsStart` directly, since `getPageStop` could re-enter `calcPageStops`.
     for (let n = 0; n < this.pageContainerArr.length; n++) {
       const pc = this.pageContainerArr[n];
       if (!pc) continue;
-      pc.style.left = `${this._pageLeft(n)}px`;
-      if (this._pageStopsStart[n] !== undefined) pc.style.top = `${this._pageStopsStart[n]}px`;
+      const dims = this.getDisplayDims(n);
+      const left = `${dims ? this._snapToDevice((eff - dims.width) / 2) : 0}px`;
+      if (pc.style.left !== left) pc.style.left = left;
+      if (this._pageStopsStart[n] !== undefined) {
+        const top = `${this._snapToDevice(this._pageStopsStart[n])}px`;
+        if (pc.style.top !== top) pc.style.top = top;
+      }
     }
   }
 
@@ -1316,8 +1339,8 @@ export class ScribeViewer {
     const disp = this.getDisplayDims(n);
     if (!disp) return null;
     // Resolve the page stop first: it runs `calcPageStops`, which sets `_contentWidth` that `_pageLeft` reads to center the page.
-    const top = this.getPageStop(n);
-    const left = this._pageLeft(n);
+    const top = this._snapToDevice(this.getPageStop(n));
+    const left = this._snapToDevice(this._pageLeft(n));
     pc = document.createElement('div');
     pc.className = 'scribe-page';
     pc.dataset.page = String(n);

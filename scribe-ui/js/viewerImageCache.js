@@ -125,8 +125,9 @@ export class ViewerImageCache {
   }
 
   /**
-   * On-screen device-pixel density to rasterize a page canvas at: the zoom level times the display's `devicePixelRatio`,
-   * clamped to the source raster's oversample factor (`over`) since there is no detail to draw beyond 1:1.
+   * Backing-store density for a page canvas: the on-screen device-pixel density (zoom x `devicePixelRatio`),
+   * capped at the source raster's oversample factor (`over`)
+   * since there is no detail to draw beyond the source's 1:1.
    * @param {number} over - Source raster oversample factor (2 for upscaled/binary, else 1).
    * @returns {number}
    */
@@ -158,25 +159,29 @@ export class ViewerImageCache {
     const dispW = userRotation % 180 === 90 ? pageDims.height : pageDims.width;
     const dispH = userRotation % 180 === 90 ? pageDims.width : pageDims.height;
 
-    // Native oversample factor of the source raster: a "binary"/upscaled raster is rendered at 2x the display size.
+    // The source raster is rendered at `over`x the display size (2x for an upscaled/binary source, else 1x).
     const over = backgroundImage.upscaled ? 2 : 1;
-    // Size the backing store to the on-screen pixel density, not the page's content size, so the shrink-to-fit
-    // is a high-quality `drawImage` here instead of a bilinear compositor downscale of the zoom layer.
+
+    // Round the CSS box to whole device pixels so the raster lands on the device-pixel grid.
+    // A fractional edge lets the GPU compositor bilinear-blur the whole bitmap.
+    const displayScale = (viewer.zoomLevel || 1) * (window.devicePixelRatio || 1);
     const rasterScale = this._targetRasterScale(over);
+    const cssW = Math.max(1, Math.round(dispW * displayScale)) / displayScale;
+    const cssH = Math.max(1, Math.round(dispH * displayScale)) / displayScale;
 
     const canvas = /** @type {HTMLCanvasElement} */ (document.createElement('canvas'));
     canvas.className = 'scribe-layer-image';
     canvas.width = Math.max(1, Math.round(dispW * rasterScale));
     canvas.height = Math.max(1, Math.round(dispH * rasterScale));
     Object.assign(canvas.style, {
-      position: 'absolute', left: '0', top: '0', width: `${dispW}px`, height: `${dispH}px`, pointerEvents: 'none',
+      position: 'absolute', left: '0', top: '0', width: `${cssW}px`, height: `${cssH}px`, pointerEvents: 'none',
     });
     const ctx = /** @type {CanvasRenderingContext2D} */ (canvas.getContext('2d'));
     ctx.imageSmoothingQuality = 'high';
     ctx.save();
     ctx.translate(canvas.width / 2, canvas.height / 2);
     ctx.rotate(rotation * (Math.PI / 180));
-    // The source raster is `dispW * over` px wide; scale it to fill the `dispW * rasterScale` px backing store.
+    // Scale the source raster (`over`x display) down to the backing store (`rasterScale`x display).
     ctx.scale(rasterScale / over, rasterScale / over);
     ctx.drawImage(image, -image.width / 2, -image.height / 2);
     ctx.restore();
