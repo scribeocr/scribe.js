@@ -526,7 +526,7 @@ export class ScribeViewer {
    * so overlay groups cached by page index would otherwise land on the wrong page.
    * @param {number} cp - Page to display after the rebuild.
    */
-  _rebuildPages(cp) {
+  _rebuildPages(cp, follow = false) {
     this._clearPageDom();
     this._pageStopsStart.length = 0;
     this._pageStopsEnd.length = 0;
@@ -534,20 +534,19 @@ export class ScribeViewer {
 
     this.calcPageStops();
 
-    // The scroll survives the rebuild, but the edit may move `cp` (the page whose content the viewer was showing) far from the viewport.
-    // Rendering follows the viewport centre, so scroll to `cp` only when it is no longer visible, which avoids rendering blank space without yanking the view on an unrelated reorder.
+    // The scroll position survives the rebuild, so leave it unless `follow` is set (`cp` was the moved page, chase it)
+    // or `cp` has scrolled out of the viewport.
     const zoom = this.zoomLevel;
     const { clientHeight } = this._scrollMetrics();
     const dims = this.getDisplayDims(cp);
     const top = this.getPageStop(cp) * zoom;
     const bottom = top + (dims ? dims.height * zoom : 0);
     const viewTop = this.scrollContainer.scrollTop;
-    if (top >= viewTop + clientHeight || bottom <= viewTop) {
+    if (follow || top >= viewTop + clientHeight || bottom <= viewTop) {
       this.scrollContainer.scrollTop = Math.max(0, top - 100 * zoom);
     }
-    // Render whatever page is now under the viewport centre (`cp` may sit at the very edge, so the centred page can differ), so the rebuilt +/-1 window always covers the visible area.
-    const centerPage = this.calcPage((this.scrollContainer.scrollTop + clientHeight / 2) / zoom);
-    this.displayPage(centerPage >= 0 ? centerPage : cp, false, true);
+    // Render `cp`'s window; the surrounding read-ahead extends it to cover the rest of the viewport.
+    this.displayPage(cp, false, true);
   }
 
   /**
@@ -574,11 +573,13 @@ export class ScribeViewer {
     const len = this.doc.pageMetrics.length;
     if (from < 0 || from >= len || to < 0 || to >= len || from === to) return;
     this.doc.movePage(from, to);
+    // Follow the shown page when it is the one being moved, so the view chases it to its new slot.
+    const followed = this.state.cp.n === from;
     let cp = this.state.cp.n;
     if (cp === from) cp = to;
     else if (from < to && cp > from && cp <= to) cp -= 1;
     else if (from > to && cp >= to && cp < from) cp += 1;
-    this._rebuildPages(cp);
+    this._rebuildPages(cp, followed);
   }
 
   /**
@@ -619,7 +620,7 @@ export class ScribeViewer {
       cp = this.state.cp.n - removedBelow + (this.state.cp.n - removedBelow >= to ? valid.length : 0);
     }
     cp = Math.max(0, Math.min(cp, this.doc.pageMetrics.length - 1));
-    this._rebuildPages(cp);
+    this._rebuildPages(cp, cpIndexInBlock >= 0);
   }
 
   /**
@@ -1306,7 +1307,15 @@ export class ScribeViewer {
     }
 
     if (scroll) {
-      this.scrollContainer.scrollTop = (this.getPageStop(n) - 100) * this.zoomLevel;
+      // Land page `n` as the current page.
+      // The scroll fires `updateCurrentPage`, which picks the page at the viewport centre.
+      // Top-aligning a short page with the usual 100px gap would put that centre in the next page,
+      // so top-align only tall pages and centre short ones to keep `n` current.
+      const dims = this.getDisplayDims(n);
+      const pageTop = this.getPageStop(n);
+      const halfView = this._scrollMetrics().clientHeight / (2 * this.zoomLevel);
+      const top = dims && halfView > dims.height + 100 ? pageTop + dims.height / 2 - halfView : pageTop - 100;
+      this.scrollContainer.scrollTop = Math.max(0, top * this.zoomLevel);
     }
 
     this.state.cp.n = n;
