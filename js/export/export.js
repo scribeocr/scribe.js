@@ -432,7 +432,9 @@ export async function download(doc, format, fileName, options = {}) {
   } else {
     ext = format;
   }
-  fileName = fileName.replace(/\.\w{1,6}$/, `.${ext}`);
+  // Replace an existing extension, or append one when the name has none.
+  // Otherwise the file saves extensionless and won't open.
+  fileName = /\.\w{1,6}$/.test(fileName) ? fileName.replace(/\.\w{1,6}$/, `.${ext}`) : `${fileName}.${ext}`;
   const content = await exportData(doc, format, options);
   await saveAs(content, fileName);
 }

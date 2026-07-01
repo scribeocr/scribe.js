@@ -178,9 +178,13 @@ class ScribePDFEditor extends ScribePDFViewer {
     return detached;
   }
 
-  /** Base download name (extension is replaced by the exporter as needed). */
+  /**
+   * The active tab's display name, for use as the download filename (the exporter adds the extension).
+   */
   _baseName() {
-    return this.doc?.inputData?.defaultDownloadFileName || 'document';
+    return this._tabs[this._activeTab]?.name
+      || this.doc?.inputData?.defaultDownloadFileName
+      || 'document';
   }
 
   /**
