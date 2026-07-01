@@ -136,6 +136,11 @@ export class ScribeViewer {
     /** Document extent in content space (unscaled): max page display width, and the last page stop. */
     this._contentWidth = 0;
     this._contentHeight = 0;
+    /**
+     * Effective content width (`_effectiveContentWidth`) at the last content re-layout.
+     * `resize` compares against it to skip a resize that moves no page.
+     */
+    this._lastEffectiveWidth = -1;
 
     /**
      * Per-page text-layer containers, indexed by page then line orientation (0/1/2/3 = 0/90/180/270deg).
@@ -826,7 +831,10 @@ export class ScribeViewer {
     this.scrollContainer.style.width = `${width}px`;
     this.scrollContainer.style.height = `${height}px`;
     this._scrollMetricsCache = null;
-    this._updateContentSize();
+    // Page layout depends only on the effective content width, not the viewport height, so a resize that leaves it unchanged moves no page.
+    // Skip the re-center walk over every container and let the browser reflow just the viewport box.
+    const eff = Math.max(this._contentWidth, width / (this.zoomLevel || 1));
+    if (eff !== this._lastEffectiveWidth) this._updateContentSize();
   }
 
   /**
