@@ -824,6 +824,9 @@ export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) 
     // A press on a thumbnail is its own click/reorder gesture; the marquee only starts in the panel's empty space.
     if (target instanceof Element && target.closest('.scribe-thumb-box')) return;
     const rect = scrollElem.getBoundingClientRect();
+    // clientWidth excludes the scrollbar, so a press at or beyond it is on the scrollbar.
+    // Skip the marquee there, or scrolling the bar would clear the selection.
+    if (e.clientX - rect.left - scrollElem.clientLeft >= scrollElem.clientWidth) return;
     const additive = e.shiftKey || e.ctrlKey || e.metaKey;
     marquee = {
       originX: Math.max(0, Math.min(scrollElem.clientWidth, e.clientX - rect.left)),
