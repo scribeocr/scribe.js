@@ -158,8 +158,10 @@ export function buildIncrementalXrefAndTrailer(entries, totalSize, prevXrefOffse
  * @param {string[]} startingTexts - Text contents to start tracing from
  * @param {import('../../pdf/objectCache.js').ObjectCache} objCache
  * @param {Set<number>} excludeObjNums - Object numbers to skip (page tree objects)
+ * @param {((objText: string) => string) | null} [refTextTransform] - Optional filter applied to each object's text before its references are extracted.
+ *   The metadata scrub uses it to drop refs under keys it removes, so objects reachable only through those keys are not copied into the output.
  */
-export function traceReferencedObjects(startingTexts, objCache, excludeObjNums) {
+export function traceReferencedObjects(startingTexts, objCache, excludeObjNums, refTextTransform = null) {
   const visited = new Set();
   const queue = [];
 
@@ -168,7 +170,8 @@ export function traceReferencedObjects(startingTexts, objCache, excludeObjNums) 
     const parentMatch = /\/Parent\s+(\d+)\s+\d+\s+R/.exec(startText);
     const parentObjNum = parentMatch ? Number(parentMatch[1]) : -1;
 
-    const refs = [...startText.matchAll(/(\d+)\s+\d+\s+R/g)];
+    const scanStart = refTextTransform ? refTextTransform(startText) : startText;
+    const refs = [...scanStart.matchAll(/(\d+)\s+\d+\s+R/g)];
     for (const ref of refs) {
       const objNum = Number(ref[1]);
       if (objNum === parentObjNum) continue;
@@ -182,8 +185,9 @@ export function traceReferencedObjects(startingTexts, objCache, excludeObjNums) 
 
   while (queue.length > 0) {
     const objNum = /** @type {number} */ (queue.shift());
-    const objText = objCache.getObjectText(objNum);
+    let objText = objCache.getObjectText(objNum);
     if (!objText) continue;
+    if (refTextTransform) objText = refTextTransform(objText);
 
     const refs = [...objText.matchAll(/(\d+)\s+\d+\s+R/g)];
     for (const ref of refs) {
