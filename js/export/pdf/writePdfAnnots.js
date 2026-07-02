@@ -1,11 +1,4 @@
-/** UTF-16BE hex string with BOM, for /Contents values (Unicode-safe in all viewers). */
-function toUtf16BeHex(str) {
-  let hexStr = 'FEFF';
-  for (let ci = 0; ci < str.length; ci++) {
-    hexStr += str.charCodeAt(ci).toString(16).toUpperCase().padStart(4, '0');
-  }
-  return hexStr;
-}
+import { toUtf16BeHex } from '../../pdf/pdfPrimitives.js';
 
 /**
  * Message for an annotation skipped because emitting it threw.

@@ -520,7 +520,7 @@ describe('Check export for .pdf files.', () => {
     await doc.clear();
   });
 
-  test("PDF overlay with full page range and displayMode='annot' retains all pages, preserves text without duplication, and round-trips highlight annotations", async () => {
+  test('PDF overlay (annot mode): all pages retained, text not duplicated, and a multi-line highlight round-trips as one consolidated annotation, un-duplicated on re-export', async () => {
     scribe.ScribeDoc.defaults.usePDFText.native.main = true;
     scribe.ScribeDoc.defaults.keepPDFTextAlways = true;
     doc = await scribe.openDocument([`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`]);
@@ -534,8 +534,9 @@ describe('Check export for .pdf files.', () => {
     };
     expect(countWords(doc.ocr.active), 'source PDF native word count baseline').toBe(1064);
 
-    doc.addHighlights([{ page: 0, startLine: 0, endLine: 0 }]);
-    expect(doc.annotations.pages[0].length, 'addHighlights emits one annotation for the one-word line').toBe(1);
+    // A single-word highlight consolidates to one annotation regardless, so the span must cover multiple words to catch the regression.
+    doc.addHighlights([{ page: 0, startLine: 0, endLine: 2 }]);
+    expect(doc.annotations.pages[0].length, 'addHighlights should emit one entry per native word for lines 0-2 (5 words)').toBe(5);
 
     scribe.ScribeDoc.defaults.displayMode = 'annot';
     scribe.ScribeDoc.defaults.addOverlay = true;
@@ -557,8 +558,20 @@ describe('Check export for .pdf files.', () => {
     const page0Text = /** @type {string} */ (await doc.exportData('text', { minPage: 0, maxPage: 0 }));
     expect(page0Text, 'source page-0 text is preserved through the overlay round-trip').toContain('Iris');
 
-    const highlights = doc.annotations.pages.flatMap((p) => p || []);
-    expect(highlights.length, 'the highlight annotation round-trips through annot-mode export').toBe(1);
+    const highlights = doc.annotations.pages.flatMap((p) => p || []).filter((a) => a.type === 'highlight');
+    expect(highlights.length, 'multi-line highlight did not consolidate to one annotation (word-level leak from the empty overlay page)').toBe(1);
+    expect(highlights[0].quads.length, 'consolidated highlight lost its per-line quads (expected one per line, lines 0-2)').toBe(3);
+
+    // The highlight now lives in both the source /Annots and the model, so export must drop the source copy or each round-trip doubles the count.
+    // That only happens after a round-trip, so only this second export can catch the duplication.
+    const reExportedPdf = /** @type {ArrayBuffer} */ (await doc.exportData('pdf'));
+    await doc.clear();
+    scribe.ScribeDoc.defaults.usePDFText.native.main = true;
+    scribe.ScribeDoc.defaults.keepPDFTextAlways = true;
+    doc = await scribe.openDocument({ pdfFiles: [reExportedPdf] });
+    const reHighlights = doc.annotations.pages.flatMap((p) => p || []).filter((a) => a.type === 'highlight');
+    expect(reHighlights.length, 'highlight duplicated on re-export: it survives in both the source /Annots and the model').toBe(1);
+    expect(reHighlights[0].quads.length, 'consolidated highlight lost its per-line quads on the second round-trip').toBe(3);
 
     scribe.ScribeDoc.defaults.displayMode = 'invis';
     await doc.clear();

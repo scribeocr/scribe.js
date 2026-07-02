@@ -1,4 +1,4 @@
-import { resolveArrayValue } from './pdfPrimitives.js';
+import { resolveArrayValue, decodePdfString } from './pdfPrimitives.js';
 
 /**
  * @typedef {Object} PdfHighlightRaw
@@ -15,37 +15,10 @@ import { resolveArrayValue } from './pdfPrimitives.js';
  * @returns {string}
  */
 function parseAnnotContents(annotText) {
-  // /Contents (literal string) or /Contents <hex string>
-  const hexMatch = /\/Contents\s*<([0-9A-Fa-f\s]*)>/.exec(annotText);
-  if (hexMatch) {
-    const hex = hexMatch[1].replace(/\s+/g, '');
-    if (hex.length === 0) return '';
-    // UTF-16BE if starts with BOM FE FF; otherwise treat bytes as PDFDocEncoding/latin1.
-    if (hex.length >= 4 && hex.slice(0, 4).toUpperCase() === 'FEFF') {
-      let out = '';
-      for (let i = 4; i + 3 < hex.length; i += 4) {
-        out += String.fromCharCode(parseInt(hex.slice(i, i + 4), 16));
-      }
-      return out;
-    }
-    let out = '';
-    for (let i = 0; i + 1 < hex.length; i += 2) {
-      out += String.fromCharCode(parseInt(hex.slice(i, i + 2), 16));
-    }
-    return out;
-  }
-  const litMatch = /\/Contents\s*\(((?:\\.|[^\\()])*)\)/.exec(annotText);
-  if (litMatch) {
-    // Minimal unescape — \n, \r, \t, \\, \(, \). Full PDF literal-string
-    // escaping (octal etc.) is not required for round-trip fidelity here.
-    return litMatch[1]
-      .replace(/\\n/g, '\n')
-      .replace(/\\r/g, '\r')
-      .replace(/\\t/g, '\t')
-      .replace(/\\\(/g, '(')
-      .replace(/\\\)/g, ')')
-      .replace(/\\\\/g, '\\');
-  }
+  const hexMatch = /\/Contents\s*(<[0-9A-Fa-f\s]*>)/.exec(annotText);
+  if (hexMatch) return decodePdfString(hexMatch[1]);
+  const litMatch = /\/Contents\s*(\((?:\\.|[^\\()])*\))/.exec(annotText);
+  if (litMatch) return decodePdfString(litMatch[1]);
   return '';
 }
 
@@ -59,6 +32,20 @@ function parseAnnotContents(annotText) {
  * @property {[number, number, number]|null} fillColor - /C normalized 0..1, or null if absent.
  * @property {number} opacity - /CA, defaults to 1 when absent.
  */
+
+/**
+ * True when the annotation is one the importer lifts into the editable model: a visible Highlight or FreeText.
+ * The model re-emits these on export, so `buildReplacementPageDict` must drop the source copy or the annotation duplicates each round-trip.
+ * @param {string} annotText - The raw annotation object text.
+ * @returns {boolean}
+ */
+export function annotIsModelManaged(annotText) {
+  // Invisible (bit 1), Hidden (bit 2), or NoView (bit 6).
+  const flagsMatch = /\/F\s+(\d+)(?=\s*[/>])/.exec(annotText);
+  const flags = flagsMatch ? Number(flagsMatch[1]) : 0;
+  if (flags & 1 || flags & 2 || flags & 32) return false;
+  return /\/Subtype\s*\/Highlight\b/.test(annotText) || /\/Subtype\s*\/FreeText\b/.test(annotText);
+}
 
 /**
  * @param {import('./objectCache.js').ObjectCache} objCache
@@ -92,17 +79,16 @@ export function extractPdfAnnotations(objCache, pageObjText) {
     const annotText = objCache.getObjectText(annotRef);
     if (!annotText) continue;
 
-    // Skip Invisible (bit 1), Hidden (bit 2), or NoView (bit 6) annotations.
-    const flagsMatch = /\/F\s+(\d+)(?=\s*[/>])/.exec(annotText);
-    const flags = flagsMatch ? Number(flagsMatch[1]) : 0;
-    if (flags & 1 || flags & 2 || flags & 32) continue;
-
-    const isHighlight = /\/Subtype\s*\/Highlight\b/.test(annotText);
-    const isFreeText = /\/Subtype\s*\/FreeText\b/.test(annotText);
-    if (!isHighlight && !isFreeText) {
-      passthroughRefs.push(annotRef);
+    if (!annotIsModelManaged(annotText)) {
+      // Of these not-lifted annotations, Invisible/Hidden/NoView are dropped entirely.
+      // Every other (visible, non-Highlight/FreeText) annotation passes through on export unchanged.
+      const flagsMatch = /\/F\s+(\d+)(?=\s*[/>])/.exec(annotText);
+      const flags = flagsMatch ? Number(flagsMatch[1]) : 0;
+      if (!(flags & 1 || flags & 2 || flags & 32)) passthroughRefs.push(annotRef);
       continue;
     }
+
+    const isFreeText = /\/Subtype\s*\/FreeText\b/.test(annotText);
 
     const rectStr = resolveArrayValue(annotText, 'Rect', objCache);
     if (!rectStr) continue;
