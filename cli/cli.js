@@ -1,7 +1,8 @@
 import fs from 'node:fs';
 import path from 'node:path';
 
-import { subsetPdf } from '../js/export/pdf/subsetPdf.js';
+import { subsetPdf, stripMetadataPdf } from '../js/export/pdf/subsetPdf.js';
+import { getMetadata } from '../js/pdf/metadata/metadataInspect.js';
 import scribe from '../scribe.js';
 import { detectPDFType } from './detectPDFType.js';
 import { extract } from './extract.js';
@@ -203,6 +204,145 @@ export const subsetCLI = async (inputFile, output, options) => {
     fs.writeFileSync(outputPath, new Uint8Array(subsetBytes));
 
     console.log(`Wrote ${pageIndices.length} page(s) to ${outputPath}`);
+    process.exitCode = 0;
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exitCode = 1;
+  }
+};
+
+/**
+ * Print (or write as JSON) every category of identifying metadata embedded in a PDF.
+ *
+ * @param {string} pdfFile - Path to PDF file.
+ * @param {Object} [options]
+ * @param {boolean} [options.json] - Emit the raw metadata report as JSON instead of a summary.
+ * @param {string} [options.output] - With --json, write the report to this file instead of stdout.
+ */
+export const metadataCLI = async (pdfFile, options) => {
+  try {
+    const pdfBytes = new Uint8Array(fs.readFileSync(pdfFile));
+    const report = getMetadata(pdfBytes);
+
+    if (options?.json) {
+      const out = JSON.stringify(report, null, 2);
+      if (options.output) {
+        fs.writeFileSync(options.output, out);
+        console.log(`Wrote metadata report to ${options.output}`);
+      } else {
+        console.log(out);
+      }
+      process.exitCode = 0;
+      return;
+    }
+
+    const lines = [`Metadata in ${path.basename(pdfFile)}:`];
+    if (report.info && Object.keys(report.info).length) {
+      lines.push('\n  Document info (/Info):');
+      for (const [k, v] of Object.entries(report.info)) lines.push(`    ${k}: ${v}`);
+    }
+    if (report.docId) lines.push(`\n  Document ID: ${report.docId}`);
+    if (report.xmp.catalog) lines.push(`\n  XMP packet (document): ${report.xmp.catalog.length} bytes (use --json to see it in full)`);
+    if (report.xmp.perObject.length) lines.push(`  XMP packets (per-object): ${report.xmp.perObject.length}`);
+    if (report.customInfo && report.customInfo.length) {
+      const fields = [...new Set(report.customInfo.flatMap((c) => c.keys))];
+      lines.push(`\n  Custom document-info dictionaries: ${report.customInfo.length} (fields: ${fields.join(', ')})`);
+    }
+    if (report.pieceInfo.length) lines.push(`\n  Private application data (/PieceInfo): ${report.pieceInfo.length} object(s)`);
+    if (report.ocgs.length) lines.push(`\n  Optional-content layers: ${report.ocgs.map((o) => o.name).join(', ')}`);
+    if (report.embeddedFiles.length) lines.push(`\n  Embedded files: ${report.embeddedFiles.map((f) => f.name || '(unnamed)').join(', ')}`);
+    const acts = [];
+    if (report.actions.openAction) acts.push('OpenAction');
+    if (report.actions.aa) acts.push('additional-actions (/AA)');
+    if (report.actions.javascript) acts.push('JavaScript');
+    if (acts.length) lines.push(`\n  Document actions: ${acts.join(', ')}`);
+    if (report.images.length) {
+      lines.push(`\n  Images carrying embedded metadata: ${report.images.length}`);
+      for (const im of report.images.slice(0, 20)) {
+        const bits = [`obj ${im.objNum}`, im.filter];
+        if (im.hasExif) bits.push('EXIF');
+        if (im.gpsPresent) bits.push('GPS');
+        if (im.hasXmp) bits.push('XMP');
+        if (im.hasIptc) bits.push('IPTC');
+        if (im.hasXml) bits.push('XML');
+        if (im.hasUuid) bits.push('UUID');
+        lines.push(`    ${bits.join(' / ')}`);
+      }
+      if (report.images.length > 20) lines.push(`    …and ${report.images.length - 20} more`);
+    }
+    if (report.signatures.length) lines.push(`\n  Digital signatures: ${report.signatures.length}`);
+    if (report.priorRevisions > 1) lines.push(`\n  Prior saved revisions retained: ${report.priorRevisions - 1}`);
+    if (report.encrypted) lines.push('\n  Encrypted: yes');
+    const kept = [];
+    if (report.structTree) kept.push('accessibility tags');
+    if (report.lang) kept.push(`language (${report.lang})`);
+    if (report.pageLabels) kept.push('page labels');
+    if (report.viewerPreferences) kept.push('viewer preferences');
+    lines.push(`\n  Kept by default (removable via strip-metadata flags): ${kept.length ? kept.join(', ') : 'none'}`);
+    console.log(lines.join('\n'));
+    process.exitCode = 0;
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exitCode = 1;
+  }
+};
+
+/**
+ * Write a copy of a PDF with identifying metadata removed.
+ * The visible pages are unchanged.
+ * The balanced default strips info/XMP/PieceInfo/embedded files/image EXIF/actions/prior revisions/signatures and rewrites filename-leaking layer names,
+ * but keeps accessibility tags, page labels, language, and viewer preferences.
+ *
+ * @param {string} inputFile - Path to the input PDF.
+ * @param {string} [output] - Output PDF file, or a directory to write <stem>-clean.pdf into.
+ * @param {Object} [options]
+ * @param {boolean} [options.stripTags] - Also remove accessibility structure tags (/StructTreeRoot).
+ * @param {boolean} [options.stripPageLabels] - Also remove page labels (/PageLabels).
+ * @param {boolean} [options.stripViewerPrefs] - Also remove viewer preferences.
+ * @param {boolean} [options.dropLayers] - Also drop optional-content (layer) configuration.
+ */
+export const stripMetadataCLI = async (inputFile, output, options) => {
+  try {
+    const pdfBytes = new Uint8Array(fs.readFileSync(inputFile));
+    const before = getMetadata(pdfBytes);
+
+    const scrubOpts = {
+      stripStructTree: !!options?.stripTags,
+      stripPageLabels: !!options?.stripPageLabels,
+      stripViewerPrefs: !!options?.stripViewerPrefs,
+      dropOCProperties: !!options?.dropLayers,
+    };
+    const warnings = [];
+    const cleaned = await stripMetadataPdf(pdfBytes, scrubOpts, (m) => warnings.push(m));
+
+    output = output || '.';
+    const intoDir = fs.existsSync(output) && fs.statSync(output).isDirectory();
+    const stem = path.basename(inputFile).replace(/\.\w{1,6}$/i, '');
+    const outputPath = intoDir ? path.join(output, `${stem}-clean.pdf`) : output;
+    const outputDir = path.dirname(outputPath);
+    if (outputDir) fs.mkdirSync(outputDir, { recursive: true });
+    fs.writeFileSync(outputPath, cleaned);
+
+    const after = getMetadata(cleaned);
+    const removed = [];
+    if (before.info && !after.info) removed.push('document info');
+    if (before.docId && !after.docId) removed.push('document ID');
+    if ((before.customInfo?.length || 0) > (after.customInfo?.length || 0)) removed.push(`${before.customInfo.length} custom document-info dict(s)`);
+    if (before.xmp.catalog && !after.xmp.catalog) removed.push('document XMP');
+    if (before.xmp.perObject.length > after.xmp.perObject.length) removed.push(`${before.xmp.perObject.length - after.xmp.perObject.length} per-object XMP packet(s)`);
+    if (before.pieceInfo.length > after.pieceInfo.length) removed.push(`${before.pieceInfo.length} private-data object(s)`);
+    if (before.embeddedFiles.length > after.embeddedFiles.length) removed.push(`${before.embeddedFiles.length} embedded file(s)`);
+    if (before.images.length > after.images.length) removed.push(`image metadata from ${before.images.length - after.images.length} image(s)`);
+    const hadActions = before.actions.openAction || before.actions.aa || before.actions.javascript;
+    const hasActions = after.actions.openAction || after.actions.aa || after.actions.javascript;
+    if (hadActions && !hasActions) removed.push('document actions/JavaScript');
+    if (before.priorRevisions > after.priorRevisions) removed.push(`${before.priorRevisions - after.priorRevisions} prior revision(s)`);
+    if (before.signatures.length > after.signatures.length) removed.push(`${before.signatures.length - after.signatures.length} digital signature(s)`);
+
+    for (const w of warnings) console.warn(`Warning: ${w}`);
+    console.log(`Removed: ${removed.length ? removed.join('; ') : 'nothing (no identifying metadata found)'}`);
+    console.log(`Wrote cleaned PDF to ${outputPath} `
+      + `(${(pdfBytes.length / 1048576).toFixed(2)} MB → ${(cleaned.length / 1048576).toFixed(2)} MB)`);
     process.exitCode = 0;
   } catch (err) {
     console.error(err instanceof Error ? err.message : String(err));

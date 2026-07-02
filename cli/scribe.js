@@ -7,7 +7,7 @@ import {
   confCLI,
   debugCLI,
   detectPDFTypeCLI,
-  evalInternalCLI, extractCLI, overlayCLI, recognizeCLI, renderCLI, subsetCLI,
+  evalInternalCLI, extractCLI, metadataCLI, overlayCLI, recognizeCLI, renderCLI, stripMetadataCLI, subsetCLI,
 } from './cli.js';
 import { parseModelOption, recognitionModels } from './recognitionModels.js';
 
@@ -90,6 +90,25 @@ program
   .option('--pages <range>', 'Comma/range list of 0-based pages to keep (e.g. 0-4,7).')
   .description('Write a new PDF containing only the selected pages of the input PDF.')
   .action(subsetCLI);
+
+program
+  .command('metadata')
+  .argument('<pdf_file>', 'Input PDF file.')
+  .option('--json', 'Emit the full metadata report as JSON.')
+  .option('-o, --output <file>', 'With --json, write the report to this file instead of stdout.')
+  .description('List every category of identifying metadata embedded in a PDF (does not modify the file).')
+  .action(metadataCLI);
+
+program
+  .command('strip-metadata')
+  .argument('<input_file>', 'Input PDF file.')
+  .argument('[output]', 'Output PDF file, or directory to write <stem>-clean.pdf into.', '.')
+  .option('--strip-tags', 'Also remove accessibility structure tags (kept by default).')
+  .option('--strip-page-labels', 'Also remove page labels (kept by default).')
+  .option('--strip-viewer-prefs', 'Also remove viewer preferences (kept by default).')
+  .option('--drop-layers', 'Also drop optional-content (layer) configuration (kept by default).')
+  .description('Write a privacy-cleaned copy of a PDF with identifying metadata removed; visible pages unchanged.')
+  .action(stripMetadataCLI);
 
 program
   .command('type')
