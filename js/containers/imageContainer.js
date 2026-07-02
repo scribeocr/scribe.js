@@ -1,6 +1,7 @@
 import {
   PageMetrics,
 } from '../objects/pageMetricsObjects.js';
+import { reassignOutlineIds } from '../objects/outlineObjects.js';
 
 import { gs } from '../generalWorkerMain.js';
 import { imageUtils, ImageWrapper } from '../objects/imageObjects.js';
@@ -60,9 +61,73 @@ function canUseSharedArrayBuffer() {
  * @property {?('color'|'gray'|'binary')} [colorMode]
  */
 
+let renderSourceIdCounter = 0;
+
 /**
- * Per-document image cache and PDF worker pool. Holds the document's rendered images, the loaded
- * PDF bytes, and a dedicated `PdfScheduler`.
+ * One render origin: a PDF's worker pool and its bytes.
+ * Its `id` space is separate from `ScribeDoc.id`.
+ * Sources are shared by reference and refcounted,
+ * so a page copied between documents keeps rendering from its origin without reloading bytes or spawning workers.
+ */
+export class RenderSource {
+  /** @type {number} Process-unique source id. */
+  id;
+
+  /** @type {'pdf'} Kind of origin. Image-input pages are self-contained (their blob rides in `nativeSrc`) and never use a source. */
+  kind = 'pdf';
+
+  /** @type {?ArrayBuffer} Original PDF bytes; used to (re)load the pool and, on export, to subset this source's pages. */
+  pdfData = null;
+
+  /** @type {?(import('../pdfWorkerMain.js').PdfScheduler | import('../pdfWorkerMain.js').PdfSchedulerInProcess)} */
+  scheduler = null;
+
+  /** @type {?Promise<import('../pdfWorkerMain.js').PdfScheduler | import('../pdfWorkerMain.js').PdfSchedulerInProcess>} */
+  #schedulerReady = null;
+
+  /** @type {number} Live documents referencing this source; the pool is terminated only when this returns to 0. */
+  refCount = 0;
+
+  /**
+   * The source document's optimized substitute fonts, carried for overlay fidelity of pages copied out of it.
+   * Placeholder in v1 (the basic editor is invisible-text-only), populated when font fidelity lands.
+   * @type {?Object}
+   */
+  optFonts = null;
+
+  /** @type {?Object} The source document's user-uploaded fonts, carried the same way. Placeholder in v1. */
+  uploadedFonts = null;
+
+  /** @param {number} id */
+  constructor(id) { this.id = id; }
+
+  /**
+   * Get or lazily initialize this source's dedicated PDF worker pool (or the in-process equivalent when `opt.inProcess` is set).
+   * @returns {Promise<import('../pdfWorkerMain.js').PdfScheduler | import('../pdfWorkerMain.js').PdfSchedulerInProcess>}
+   */
+  getScheduler = async () => {
+    if (this.scheduler) return this.scheduler;
+    if (!this.#schedulerReady) {
+      this.#schedulerReady = initPdfScheduler().then((s) => {
+        this.scheduler = s;
+        return s;
+      });
+    }
+    return this.#schedulerReady;
+  };
+
+  terminate = async () => {
+    if (this.scheduler) {
+      await this.scheduler.terminate();
+      this.scheduler = null;
+      this.#schedulerReady = null;
+    }
+  };
+}
+
+/**
+ * Per-document image cache and registry of `RenderSource`s.
+ * Each page resolves its raster through `pageMetrics[n].sourceId`, so a page copied from another document renders from its origin.
  */
 export class ImageStore {
   /** @type {Array<ImageWrapper|Promise<ImageWrapper>>} */
@@ -92,8 +157,15 @@ export class ImageStore {
    */
   thumbnails = [];
 
-  /** @type {?ArrayBuffer} */
-  pdfData = null;
+  /**
+   * This document's render sources, keyed by source id: its own primary source plus any copied in from other documents.
+   * Image-input pages are self-contained (their raster is in `nativeSrc`) and are not in this map.
+   * @type {Map<number, RenderSource>}
+   */
+  sources = new Map();
+
+  /** @type {?number} Id of this document's own source in `sources` (the one `openMainPDF` loads into). */
+  primarySourceId = null;
 
   /**
    * The owning document.
@@ -144,26 +216,54 @@ export class ImageStore {
     };
   };
 
-  /** @type {?(import('../pdfWorkerMain.js').PdfScheduler | import('../pdfWorkerMain.js').PdfSchedulerInProcess)} */
-  pdfScheduler = null;
+  /** This document's own (primary) render source, or `null` before one is created. @returns {?RenderSource} */
+  get #primarySource() {
+    return this.primarySourceId != null ? this.sources.get(this.primarySourceId) ?? null : null;
+  }
 
-  /** @type {?Promise<import('../pdfWorkerMain.js').PdfScheduler | import('../pdfWorkerMain.js').PdfSchedulerInProcess>} */
-  #pdfSchedulerReady = null;
+  /** Get (creating if needed) this document's own render source. @returns {RenderSource} */
+  #ensurePrimarySource = () => {
+    let src = this.#primarySource;
+    if (!src) {
+      src = new RenderSource(++renderSourceIdCounter);
+      src.refCount = 1;
+      this.sources.set(src.id, src);
+      this.primarySourceId = src.id;
+    }
+    return src;
+  };
 
   /**
-   * Get or lazily initialize the dedicated PDF worker pool (or the in-process equivalent when `opt.inProcess` is set).
+   * Resolve the render source for a page.
+   * `sourceId` is `null` for this document's own pages (the primary source) and a concrete id for pages copied in from another document.
+   * @param {import('../objects/pageMetricsObjects.js').PageMetrics} [pm]
+   * @returns {RenderSource}
+   */
+  resolveSource = (pm) => {
+    const id = pm?.sourceId ?? this.primarySourceId;
+    return (id != null && this.sources.get(id)) || this.#ensurePrimarySource();
+  };
+
+  /**
+   * Loaded PDF bytes for this document's own source.
+   * @type {?ArrayBuffer}
+   */
+  get pdfData() { return this.#primarySource?.pdfData ?? null; }
+
+  set pdfData(v) { this.#ensurePrimarySource().pdfData = v; }
+
+  /**
+   * The primary source's worker pool once initialized (else `null`). Accessor over the primary `RenderSource`.
+   * @type {?(import('../pdfWorkerMain.js').PdfScheduler | import('../pdfWorkerMain.js').PdfSchedulerInProcess)}
+   */
+  get pdfScheduler() { return this.#primarySource?.scheduler ?? null; }
+
+  /**
+   * Get or lazily initialize this document's own PDF worker pool (or the in-process equivalent when `opt.inProcess` is set).
+   * Delegates to the primary `RenderSource`.
    * @returns {Promise<import('../pdfWorkerMain.js').PdfScheduler | import('../pdfWorkerMain.js').PdfSchedulerInProcess>}
    */
-  getPdfScheduler = async () => {
-    if (this.pdfScheduler) return this.pdfScheduler;
-    if (!this.#pdfSchedulerReady) {
-      this.#pdfSchedulerReady = initPdfScheduler().then((s) => {
-        this.pdfScheduler = s;
-        return s;
-      });
-    }
-    return this.#pdfSchedulerReady;
-  };
+  getPdfScheduler = async () => this.#ensurePrimarySource().getScheduler();
 
   loadCount = 0;
 
@@ -191,11 +291,13 @@ export class ImageStore {
       return this.nativeSrc[n];
     } if (this.inputModes.pdf) {
       const colorMode = color ? 'color' : 'gray';
-      const pdfScheduler = await this.getPdfScheduler();
-      const targetWidth = this.#pageMetrics[n].dims.width;
+      const pm = this.#pageMetrics[n];
+      // Display slot `n` may hold a page copied from another document. Render it from its own source, not this doc's.
+      const pdfScheduler = await this.resolveSource(pm).getScheduler();
+      const targetWidth = pm.dims.width;
       const dpi = 300 * (targetWidth / this.pdfDims300[n].width);
-      // Display slot `n` may have been reordered; raster its source page, not its position.
-      const sourcePageN = this.#pageMetrics[n].sourcePageN ?? n;
+      // Display slot `n` may have been reordered. Raster its source page, not its position.
+      const sourcePageN = pm.sourcePageN ?? n;
       const result = await pdfScheduler.renderPdfPage({ pageIndex: sourcePageN, colorMode, dpi }, forViewer);
       // The render was dropped from the queue (e.g. evicted to keep the viewer lane bounded).
       if (result === SKIPPED) return SKIPPED;
@@ -366,10 +468,12 @@ export class ImageStore {
       if (this.inputModes.pdf) {
         const dims300 = this.pdfDims300[n];
         if (!dims300) return null;
-        const pdfScheduler = await this.getPdfScheduler();
+        const pm = this.#pageMetrics[n];
+        // Display slot `n` may hold a page copied from another document, so render it from its own source, not this doc's.
+        const pdfScheduler = await this.resolveSource(pm).getScheduler();
         const dpi = 300 * (widthPx / dims300.width);
-        // Display slot `n` may have been reordered; raster its source page, not its position.
-        const sourcePageN = this.#pageMetrics[n]?.sourcePageN ?? n;
+        // Display slot `n` may have been reordered, so raster its source page, not its position.
+        const sourcePageN = pm?.sourcePageN ?? n;
         const result = await pdfScheduler.renderPdfPage({
           pageIndex: sourcePageN, colorMode: 'color', dpi, outputFormat: 'jpeg', quality,
         }, false);
@@ -452,11 +556,15 @@ export class ImageStore {
 
   terminate = async () => {
     this.clear();
-    if (this.pdfScheduler) {
-      await this.pdfScheduler.terminate();
-      this.pdfScheduler = null;
-      this.#pdfSchedulerReady = null;
+    // Release this document's refcount on each source, terminating only sources no other document still holds.
+    const orphaned = [];
+    for (const src of this.sources.values()) {
+      src.refCount -= 1;
+      if (src.refCount <= 0) orphaned.push(src);
     }
+    this.sources.clear();
+    this.primarySourceId = null;
+    await Promise.all(orphaned.map((s) => s.terminate()));
   };
 
   /**
@@ -494,9 +602,11 @@ export class ImageStore {
     // Initialize dedicated PDF workers and load the PDF into all of them.
     // Each worker creates its own ObjectCache and page tree.
     const pdfScheduler = await this.getPdfScheduler();
-    const { pageCount, pages } = await pdfScheduler.loadPdfInAllWorkers(pdfBytes);
+    const { pageCount, pages, outline } = await pdfScheduler.loadPdfInAllWorkers(pdfBytes);
 
     this.pageCount = pageCount;
+    // The outline was parsed in the worker, so renumber its ids from the main-thread counter to keep subsequent edits from colliding.
+    this.#doc.outline = reassignOutlineIds(outline || []);
 
     this.pdfDims300.length = 0;
     for (const page of pages) {

@@ -45,7 +45,8 @@ const AUTOSCROLL_SPEED = 14;
  * @property {number} pageCount - Page count of the current document (live).
  * @property {number} THUMB_W - Thumbnail image (cell) width in px.
  * @property {number} gridCols - Columns in the current layout (live); 1 is the rail, more is the grid.
- * @property {number} rowStride - Uniform grid row height in px (live); 0 in the rail.
+ * @property {number[]} rowStrides - Per-row vertical stride in px (live, grid mode), indexed by row; empty in the rail.
+ * @property {(y: number) => number} rowAt - Largest page index whose row top is at or above content-y `y` (live geometry).
  * @property {number} GRID_GAP - Gap in px between grid cells.
  * @property {number} activePage - The single page shown in the main viewer; reorder re-keys it on a move.
  * @property {?ThumbDrag} drag - The in-flight drag, or null. Owned here; read by the core's `updateWindow`.
@@ -178,7 +179,7 @@ export function installPageReorder(ctx) {
     }
     const cols = ctx.gridCols;
     const rows = Math.ceil(ctx.pageCount / cols);
-    const row = Math.max(0, Math.min(rows - 1, ctx.rowStride > 0 ? Math.floor(contentY / ctx.rowStride) : 0));
+    const row = Math.max(0, Math.min(rows - 1, Math.floor(ctx.rowAt(contentY) / cols)));
     const contentX = clientX - rect.left;
     let col = 0;
     while (col < cols && contentX > ctx.PAD + col * (ctx.THUMB_W + ctx.GRID_GAP) + ctx.THUMB_W / 2) col += 1;
@@ -210,8 +211,8 @@ export function installPageReorder(ctx) {
     const cellLeft = ctx.PAD + (idx % cols) * (ctx.THUMB_W + ctx.GRID_GAP);
     line.classList.add('vertical');
     line.style.left = `${atEnd ? cellLeft + ctx.THUMB_W + ctx.GRID_GAP / 2 : cellLeft - ctx.GRID_GAP / 2}px`;
-    line.style.top = `${ctx.PAD + Math.floor(idx / cols) * ctx.rowStride}px`;
-    line.style.height = `${ctx.rowStride - ctx.GRID_GAP}px`;
+    line.style.top = `${ctx.PAD + ctx.offsets[idx]}px`;
+    line.style.height = `${ctx.rowStrides[Math.floor(idx / cols)] - ctx.GRID_GAP}px`;
     line.style.width = '';
   }
 

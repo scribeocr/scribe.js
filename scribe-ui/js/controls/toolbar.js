@@ -1234,6 +1234,124 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       border: none;
       border-top: 1px solid rgba(255, 255, 255, .1);
     }
+
+    /* Mirrors the thumbnail panel's dock geometry, chrome, and slide: the two form one sidebar. */
+    .${r} .scribe-bookmarks-panel {
+      position: absolute;
+      left: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      background: #2b2f31;
+      border-right: 1px solid rgba(0, 0, 0, .4);
+      z-index: 7;
+      color: #e6e8ea;
+      font-size: 13px;
+      transition: transform 180ms ease;
+      will-change: transform;
+      outline: none;
+    }
+
+    /* Fills the panel but for a 6px right gutter, so the tree's scrollbar clears the resize handle (as the rail's does). */
+    .${r} .scribe-bm-tree {
+      position: absolute;
+      top: 0;
+      left: 0;
+      bottom: 0;
+      right: 6px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 8px 0;
+      box-sizing: border-box;
+    }
+
+    /* Right-edge resize handle, matching the thumbnail rail's. */
+    .${r} .scribe-bm-resize {
+      position: absolute;
+      top: 0;
+      right: 0;
+      bottom: 0;
+      width: 6px;
+      cursor: ew-resize;
+      z-index: 8;
+      touch-action: none;
+    }
+
+    .${r} .scribe-bm-resize:hover {
+      background: rgba(255, 255, 255, .15);
+    }
+
+    .${r} .scribe-bm-tree::-webkit-scrollbar { width: 8px; }
+    .${r} .scribe-bm-tree::-webkit-scrollbar-track { background: transparent; }
+    .${r} .scribe-bm-tree::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, .35); border-radius: 6px; }
+
+    .${r} .scribe-bm-row {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 4px 8px 4px 0;
+      cursor: pointer;
+      white-space: nowrap;
+      border-radius: 4px;
+    }
+
+    .${r} .scribe-bm-row:hover { background: rgba(255, 255, 255, .08); }
+    .${r} .scribe-bm-row.active { background: rgba(90, 150, 245, .28); }
+
+    .${r} .scribe-bm-twisty {
+      display: inline-block;
+      width: 12px;
+      flex: 0 0 12px;
+      text-align: center;
+      color: #9ea2a6;
+      font-size: 10px;
+    }
+
+    .${r} .scribe-bm-label { overflow: hidden; text-overflow: ellipsis; }
+    .${r} .scribe-bm-label.structural { color: #b7bbbf; font-style: italic; }
+
+    .${r} .scribe-bm-rename {
+      flex: 1 1 auto;
+      font: inherit;
+      color: #fff;
+      background: #1f2426;
+      border: 1px solid rgba(90, 150, 245, .8);
+      border-radius: 3px;
+      padding: 1px 4px;
+    }
+
+    .${r} .scribe-bm-empty { padding: 12px; color: #9ea2a6; font-size: 12px; }
+    .${r} .scribe-bm-empty-add {
+      display: block;
+      margin-top: 8px;
+      padding: 5px 10px;
+      font: inherit;
+      font-size: 12px;
+      color: #e6e8ea;
+      background: rgba(255, 255, 255, .08);
+      border: none;
+      border-radius: 5px;
+      cursor: pointer;
+    }
+    .${r} .scribe-bm-empty-add:hover { background: rgba(255, 255, 255, .16); }
+
+    .${r} .scribe-bm-menu {
+      position: absolute;
+      min-width: 170px;
+      padding: 4px;
+      background: rgba(31, 36, 38, .98);
+      border: 1px solid rgba(255, 255, 255, .14);
+      border-radius: 8px;
+      box-shadow: 0 8px 24px rgba(0, 0, 0, .55);
+      z-index: 60;
+      font-size: 13px;
+      color: #fff;
+      user-select: none;
+    }
+
+    .${r} .scribe-bm-menu-item { padding: 7px 12px; border-radius: 5px; cursor: pointer; white-space: nowrap; }
+    .${r} .scribe-bm-menu-item:hover { background: rgba(255, 255, 255, .14); }
+    .${r} .scribe-bm-menu-item.disabled { color: #6b6f72; cursor: default; }
+    .${r} .scribe-bm-menu-item.disabled:hover { background: none; }
   `;
 
   style.appendChild(document.createTextNode(css));

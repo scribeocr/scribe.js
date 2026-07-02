@@ -787,3 +787,66 @@ export function parsePdfHexString(bytes, start) {
   }
   return { value: result, end: i + 1 };
 }
+
+/**
+ * Encode a JS string as a BOM-prefixed UTF-16BE hex string (no `<...>` wrapper), so any Unicode renders in every PDF viewer.
+ * @param {string} str
+ * @returns {string}
+ */
+export function toUtf16BeHex(str) {
+  let hexStr = 'FEFF';
+  for (let ci = 0; ci < str.length; ci++) {
+    hexStr += str.charCodeAt(ci).toString(16).toUpperCase().padStart(4, '0');
+  }
+  return hexStr;
+}
+
+/**
+ * Unescape a PDF literal string body (the text inside the outer parentheses): standard backslash escapes, 1-3 digit octal codes, and backslash line-continuation.
+ * @param {string} body
+ * @returns {string}
+ */
+function unescapePdfLiteral(body) {
+  return body.replace(/\\(\r\n|\n|\r|[0-7]{1,3}|.)/g, (_m, e) => {
+    switch (e) {
+      case 'n': return '\n';
+      case 'r': return '\r';
+      case 't': return '\t';
+      case 'b': return '\b';
+      case 'f': return '\f';
+      case '(': return '(';
+      case ')': return ')';
+      case '\\': return '\\';
+      default:
+        if (/^[0-7]{1,3}$/.test(e)) return String.fromCharCode(parseInt(e, 8) & 0xFF);
+        if (e === '\n' || e === '\r' || e === '\r\n') return ''; // escaped newline = line continuation
+        return e; // unknown escape: drop the backslash, keep the character
+    }
+  });
+}
+
+/**
+ * Decode a PDF string token (delimiters included) to a JS string: hex `<...>` (UTF-16BE if it opens with a FEFF BOM, else latin1) or literal `(...)`.
+ * A token that is neither is returned trimmed.
+ * @param {string} token
+ * @returns {string}
+ */
+export function decodePdfString(token) {
+  if (typeof token !== 'string' || token.length === 0) return '';
+  const t = token.trim();
+  if (t[0] === '<') {
+    let hex = t.replace(/^</, '').replace(/>$/, '').replace(/\s+/g, '');
+    if (hex.length % 2 === 1) hex += '0'; // PDF pads a final odd nibble with 0
+    if (hex.length === 0) return '';
+    if (hex.length >= 4 && hex.slice(0, 4).toUpperCase() === 'FEFF') {
+      let out = '';
+      for (let i = 4; i + 3 < hex.length; i += 4) out += String.fromCharCode(parseInt(hex.slice(i, i + 4), 16));
+      return out;
+    }
+    let out = '';
+    for (let i = 0; i + 1 < hex.length; i += 2) out += String.fromCharCode(parseInt(hex.slice(i, i + 2), 16));
+    return out;
+  }
+  if (t[0] === '(') return unescapePdfLiteral(t.slice(1, -1));
+  return t;
+}

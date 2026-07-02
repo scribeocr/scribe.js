@@ -6,6 +6,7 @@ import {
   addControlStyles, makeToolbarShell, makeSeparator, createPageNav, createZoomControls, createRotateControls, createPrintControls, createOpenControls, createTabStrip, createSearchBar,
 } from '../js/controls/toolbar.js';
 import { createThumbnailPanel, createScrollbars } from '../js/controls/panels.js';
+import { createBookmarksPanel } from '../js/controls/bookmarksPanel.js';
 import { createHighlightTool, createDropZone, openDocumentFromFile } from '../js/controls/tools.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
 
@@ -19,6 +20,12 @@ const TOOLBAR_HEIGHT_MAX = 80;
 
 /** Height of the document tab strip (shown only with 2+ open tabs), in px. */
 const TAB_STRIP_HEIGHT = 30;
+
+/**
+ * Duration (ms) of the left-sidebar open/close/switch animation.
+ * Matches the thumbnail panel's own slide (`SLIDE_MS` in panels.js) so both views animate identically.
+ */
+const SIDEBAR_ANIM_MS = 180;
 
 /**
  * @typedef {object} FitResult
@@ -198,7 +205,24 @@ class ScribePDFViewer {
         onResize: () => { if (this.scribe.scrollContainer) this._relayout(); },
       })
       : null;
-    this._thumbnailsVisible = showThumbnails;
+    /**
+     * Which of the left sidebar's two mutually-exclusive views is open, or null when it is closed.
+     * @type {'thumbnails'|'bookmarks'|null}
+     */
+    this._activeSidebar = showThumbnails ? 'thumbnails' : null;
+    /** @type {?{raf: number}} In-flight sidebar open/close/switch transition (its live rAF handle), or null. */
+    this._sidebarAnim = null;
+    /** @type {?{min: number, max: number}} Rail width bounds cached for the duration of a bookmarks-view resize drag. */
+    this._sidebarResizeBounds = null;
+
+    /** @type {?ReturnType<typeof createBookmarksPanel>} */
+    this._bookmarksPanel = showThumbnails
+      ? createBookmarksPanel(this.scribe, {
+        onNavigate: (n) => this.scribe.displayPage(n, true, false),
+        // Resizing from the bookmarks view drives the shared sidebar width (see `_resizeSidebar`).
+        onResize: (w, phase) => this._resizeSidebar(w, phase),
+      })
+      : null;
 
     if (showToolbar) {
       // The shared CSS sizes `.cr-icon`/`.cr-icon-button` from this var, scoped to this instance's root.
@@ -213,6 +237,7 @@ class ScribePDFViewer {
 
       if (this._thumbnailPanel) {
         toolbarButtons.appendChild(this._thumbnailPanel.toggleElem);
+        if (this._bookmarksPanel) toolbarButtons.appendChild(this._bookmarksPanel.toggleElem);
         toolbarButtons.appendChild(makeSeparator());
       }
 
@@ -300,6 +325,13 @@ class ScribePDFViewer {
       panel.style.top = `${this.toolbarHeight}px`;
       panel.style.height = `${initHeight - this.toolbarHeight}px`;
       this.pdfViewerElem.appendChild(panel);
+    }
+
+    if (this._bookmarksPanel) {
+      const bpanel = this._bookmarksPanel.panelElem;
+      bpanel.style.top = `${this.toolbarHeight}px`;
+      bpanel.style.height = `${initHeight - this.toolbarHeight}px`;
+      this.pdfViewerElem.appendChild(bpanel);
     }
 
     this._installFit(fit);
@@ -417,22 +449,26 @@ class ScribePDFViewer {
       if (this.pageNumElem) this.pageNumElem.value = (this.scribe.state.cp.n + 1).toString();
       if (this._updateScrollbars) this._updateScrollbars();
       if (this._thumbnailPanel) this._thumbnailPanel.setActive(this.scribe.state.cp.n);
+      if (this._bookmarksPanel) this._bookmarksPanel.setActive(this.scribe.state.cp.n);
       if (this._highlightTool) {
         const ht = this._highlightTool;
         setTimeout(() => ht.updateCommentIcons(), 250);
       }
     };
 
+    // An undo/redo can change page order or the outline, so rebuild the bookmarks tree to match.
+    const origEditCallback = this.scribe.onEditCallback;
+    this.scribe.onEditCallback = () => {
+      if (origEditCallback) origEditCallback();
+      if (this._bookmarksPanel) this._bookmarksPanel.rebuild();
+    };
+
     container.appendChild(this.pdfViewerElem);
 
-    // The toolbar's thumbnails-toggle button: slide the panel in or out.
-    if (this._thumbnailPanel && this.toolbarElem) {
-      const panel = this._thumbnailPanel;
-      panel.toggleElem.addEventListener('click', () => {
-        this._thumbnailsVisible = !this._thumbnailsVisible;
-        panel.setVisible(this._thumbnailsVisible);
-        this._animatePanelInset();
-      });
+    // The thumbnails and bookmarks icons are radio-with-deselect toggles for one shared left sidebar.
+    if (this.toolbarElem) {
+      if (this._thumbnailPanel) this._thumbnailPanel.toggleElem.addEventListener('click', () => this._requestSidebar('thumbnails'));
+      if (this._bookmarksPanel) this._bookmarksPanel.toggleElem.addEventListener('click', () => this._requestSidebar('bookmarks'));
     }
 
     if (autoResize && typeof ResizeObserver !== 'undefined') {
@@ -560,6 +596,24 @@ class ScribePDFViewer {
     // Pass the initial page so the rail mounts and renders the window around it from the first paint, rather than mounting the top,
     // then jumping (and re-rendering) once the main view's `displayPage` lands on the active page.
     if (this._thumbnailPanel) this._thumbnailPanel.rebuild(initialPage);
+    if (this._bookmarksPanel && this._thumbnailPanel) {
+      this._bookmarksPanel.rebuild();
+      // Hide the toggle for a document with no bookmarks unless editing (where the user can add them).
+      const hasOutline = !!(doc.outline && doc.outline.length);
+      this._bookmarksPanel.toggleElem.style.display = (hasOutline || this.scribe.opt.enablePageEditing) ? '' : 'none';
+      // A load is not a user toggle: if the new document hides the bookmarks toggle while bookmarks is the open view,
+      // fall back to thumbnails immediately (no slide) so the sidebar never shows a view whose toggle is gone.
+      if (this._activeSidebar === 'bookmarks' && this._bookmarksPanel.toggleElem.style.display === 'none') {
+        this._activeSidebar = 'thumbnails';
+        const tEl = this._thumbnailPanel.panelElem;
+        tEl.style.transition = 'none';
+        this._thumbnailPanel.setVisible(true);
+        this._thumbnailPanel.toggleElem.classList.add('active');
+        this._bookmarksPanel.setVisible(false);
+        this._bookmarksPanel.toggleElem.classList.remove('active');
+        requestAnimationFrame(() => { tEl.style.transition = ''; });
+      }
+    }
 
     // Off the critical path: the displaced document's workers die asynchronously while the new page renders.
     // Safe because each document's workers and fonts are namespaced by a unique docId.
@@ -596,6 +650,7 @@ class ScribePDFViewer {
     if (this.pageNumElem) this.pageNumElem.value = '1';
     if (this.dropZone) this.dropZone.style.display = '';
     if (this._thumbnailPanel) this._thumbnailPanel.rebuild();
+    if (this._bookmarksPanel) this._bookmarksPanel.rebuild();
 
     if (terminatePrev) prev.terminate().catch(() => {});
 
@@ -741,10 +796,18 @@ class ScribePDFViewer {
       this._thumbnailPanel.panelElem.style.top = `${top}px`;
       this._thumbnailPanel.panelElem.style.height = `${this._height - top}px`;
     }
-    // Inset the document by the visible panel's width so it centers in the area beside it rather than under it.
-    // Keep at least a sliver of document if the panel is wider than the viewport (e.g. a very narrow window).
-    const panelW = this._thumbnailPanel && this._thumbnailsVisible
-      ? (parseFloat(this._thumbnailPanel.panelElem.style.width) || 0) : 0;
+    if (this._bookmarksPanel) {
+      this._bookmarksPanel.panelElem.style.top = `${top}px`;
+      this._bookmarksPanel.panelElem.style.height = `${this._height - top}px`;
+    }
+    // A sidebar animation owns the document inset and canvas size on its own clock, so don't fight it here.
+    // The panel top/height set above are still safe to keep in sync every frame.
+    if (this._sidebarAnim) return;
+    // Inset the document by the open view's width so it centers in the area beside the sidebar, not under it.
+    // Keep at least a sliver of document even if the panel is wider than the viewport.
+    const activePanel = this._activeSidebar === 'thumbnails' ? this._thumbnailPanel
+      : (this._activeSidebar === 'bookmarks' ? this._bookmarksPanel : null);
+    const panelW = activePanel ? (parseFloat(activePanel.panelElem.style.width) || 0) : 0;
     const inset = Math.min(panelW, Math.max(0, this._width - 80));
     this.scribe.scrollContainer.style.marginLeft = `${inset}px`;
     this.scribe.resize(this._width - inset, this._height - top);
@@ -752,34 +815,151 @@ class ScribePDFViewer {
   }
 
   /**
-   * Animate the document inset to follow the panel's slide on a toolbar toggle, so the viewer re-centers smoothly instead of snapping.
-   * Each frame samples the panel's live `translateX` rather than running a timed animation,
-   * so the inset tracks the CSS slide without knowing its duration or easing.
+   * The panel handle backing a sidebar view, or null.
+   * @param {'thumbnails'|'bookmarks'|null} key
+   * @returns {?ReturnType<typeof createThumbnailPanel> | ?ReturnType<typeof createBookmarksPanel>}
    */
-  _animatePanelInset() {
-    if (!this._thumbnailPanel || !this.scribe.scrollContainer) return;
-    if (this._insetAnim) cancelAnimationFrame(this._insetAnim);
-    const panel = this._thumbnailPanel.panelElem;
-    const panelW = parseFloat(panel.style.width) || 0;
+  _panelFor(key) {
+    if (key === 'thumbnails') return this._thumbnailPanel;
+    if (key === 'bookmarks') return this._bookmarksPanel;
+    return null;
+  }
+
+  /**
+   * Handle a click on a sidebar view's toolbar icon (the radio group with deselect): open the sidebar to `key`,
+   * switch to it in place when the other view is open, or close the sidebar when `key` is already the open view.
+   * @param {'thumbnails'|'bookmarks'} key
+   */
+  _requestSidebar(key) {
+    if (!this._panelFor(key)) return;
+    const prev = this._activeSidebar;
+    const next = prev === key ? null : key; // clicking the open view closes the sidebar
+    if (next === prev) return;
+    this._activeSidebar = next;
+    if (this._thumbnailPanel) this._thumbnailPanel.toggleElem.classList.toggle('active', next === 'thumbnails');
+    if (this._bookmarksPanel) this._bookmarksPanel.toggleElem.classList.toggle('active', next === 'bookmarks');
+    this._transitionSidebar(prev, next);
+  }
+
+  /**
+   * Apply a sidebar resize dragged from the bookmarks view, keeping the two views one shared width. The phases keep
+   * each frame cheap — the jank otherwise comes from doing the rail's `computeGeometry` (O(pages)) and forced layout
+   * reads on every pointermove:
+   * - `start`: cache the rail's width bounds once (one layout read), so each move clamps with pure arithmetic.
+   * - `move`: clamp with the cached bounds, resize ONLY the visible bookmarks panel, and re-inset the document. The
+   *   hidden rail is left untouched — no per-frame re-column.
+   * - `end`: commit through the rail's `setWidth`, which clamps, applies, and re-columns the rail ONCE so it's
+   *   correct when next shown; mirror the applied width onto the bookmarks panel.
+   * @param {number} desiredWidth
+   * @param {'start'|'move'|'end'} phase
+   */
+  _resizeSidebar(desiredWidth, phase) {
+    if (!this._thumbnailPanel || !this._bookmarksPanel) return;
+    if (phase === 'start') {
+      this._sidebarResizeBounds = this._thumbnailPanel.getResizeBounds();
+      return;
+    }
+    if (phase === 'end') {
+      const applied = this._thumbnailPanel.setWidth(desiredWidth);
+      this._bookmarksPanel.panelElem.style.width = `${applied}px`;
+      this._sidebarResizeBounds = null;
+      this._relayout();
+      return;
+    }
+    const b = this._sidebarResizeBounds;
+    const applied = b ? Math.max(b.min, Math.min(b.max, desiredWidth)) : desiredWidth;
+    this._bookmarksPanel.panelElem.style.width = `${applied}px`;
+    this._relayout();
+  }
+
+  /**
+   * Animate the left sidebar between its states as one coherent motion: open and close slide the view in/out from the dock edge,
+   * and a switch crossfades the two views in place.
+   * The document inset is tweened from the outgoing width to the incoming width on the same clock, so the page never snaps.
+   * @param {'thumbnails'|'bookmarks'|null} prevKey - The view that was open (null if the sidebar was closed).
+   * @param {'thumbnails'|'bookmarks'|null} nextKey - The view to show (null to close the sidebar).
+   */
+  _transitionSidebar(prevKey, nextKey) {
+    if (!this.scribe.scrollContainer) return;
+    // Interrupt any in-flight transition by stopping its clock.
+    // The new setup overwrites the inline styles it was driving, and its transition settles the panels' shown/hidden state.
+    if (this._sidebarAnim) { cancelAnimationFrame(this._sidebarAnim.raf); this._sidebarAnim = null; }
+
+    // The bookmarks view adopts the thumbnail view's current width before measuring, so the two share one edge.
+    if (nextKey === 'bookmarks' && this._thumbnailPanel && this._bookmarksPanel) {
+      this._bookmarksPanel.panelElem.style.width = this._thumbnailPanel.panelElem.style.width;
+    }
+    const fromPanel = this._panelFor(prevKey);
+    const toPanel = this._panelFor(nextKey);
+    const fromEl = fromPanel ? fromPanel.panelElem : null;
+    const toEl = toPanel ? toPanel.panelElem : null;
+    const fromW = fromEl ? (parseFloat(fromEl.style.width) || 0) : 0;
+    const toW = toEl ? (parseFloat(toEl.style.width) || 0) : 0;
     const top = this._chromeTop();
-    const target = this._thumbnailsVisible ? panelW : 0;
-    const setInset = (raw) => {
+    const isSwitch = !!fromPanel && !!toPanel;
+
+    const setInset = (/** @type {number} */ raw) => {
       const inset = Math.min(Math.max(0, raw), Math.max(0, this._width - 80));
       this.scribe.scrollContainer.style.marginLeft = `${inset}px`;
       this.scribe.resize(this._width - inset, this._height - top);
       if (this._updateScrollbars) this._updateScrollbars();
     };
-    // `setVisible` already snapped the inset to its target.
-    // Restart from the pre-toggle value so the first frame sits at the panel's current edge rather than jumping there.
-    setInset(this._thumbnailsVisible ? 0 : panelW);
-    const step = () => {
-      const tf = getComputedStyle(panel).transform;
-      const tx = tf && tf !== 'none' ? new DOMMatrix(tf).m41 : 0; // -panelW when hidden, 0 when shown
-      const inset = panelW + tx;
-      setInset(inset);
-      if (Math.abs(inset - target) <= 0.5) { this._insetAnim = null; this._relayout(); } else this._insetAnim = requestAnimationFrame(step);
+
+    const cleanup = () => {
+      this._sidebarAnim = null;
+      // Settle the incoming view at rest (shown, no inline transform/opacity), then hide and tear down the outgoing view.
+      // Both snaps run under transition:none so no stray CSS transition fires.
+      // Restore transitions next frame, once the resting styles have committed.
+      if (toEl) { toEl.style.transition = 'none'; toEl.style.transform = ''; toEl.style.opacity = ''; }
+      if (fromPanel && fromEl) {
+        fromEl.style.transition = 'none';
+        fromPanel.setVisible(false); // releases focus, unmounts thumbnails after its own slide window, snaps off-screen
+        fromEl.style.opacity = '';
+      }
+      requestAnimationFrame(() => {
+        if (toEl) toEl.style.transition = '';
+        if (fromEl) fromEl.style.transition = '';
+      });
+      this._relayout();
     };
-    this._insetAnim = requestAnimationFrame(step);
+    // Mark the transition in flight before mounting the incoming view: its `setVisible` fires an onResize -> _relayout
+    // that must yield the inset to this tween rather than snapping it.
+    const anim = { raf: 0 };
+    this._sidebarAnim = anim;
+
+    if (toPanel) toPanel.setVisible(true); // mount + render the incoming view before it fades/slides in
+    // Own transform + opacity for the duration; CSS transitions off so the JS clock is the sole driver.
+    if (toEl) {
+      toEl.style.transition = 'none';
+      toEl.style.opacity = isSwitch ? '0' : '1';
+      toEl.style.transform = isSwitch ? 'translateX(0)' : `translateX(-${toW}px)`;
+    }
+    if (fromEl) {
+      fromEl.style.transition = 'none';
+      fromEl.style.opacity = '1';
+      fromEl.style.transform = 'translateX(0)';
+    }
+    setInset(fromW); // start at the outgoing width (0 when opening from closed)
+
+    /** @type {?number} */
+    let startTs = null;
+    const frame = (/** @type {number} */ ts) => {
+      if (startTs === null) startTs = ts;
+      const p = Math.min(1, (ts - startTs) / SIDEBAR_ANIM_MS);
+      const e = 1 - (1 - p) ** 3; // ease-out, ~matching the panel's CSS `ease`
+      if (isSwitch) {
+        if (toEl) toEl.style.opacity = String(e);
+        if (fromEl) fromEl.style.opacity = String(1 - e);
+      } else if (toEl) {
+        toEl.style.transform = `translateX(-${toW * (1 - e)}px)`; // slide the incoming view in
+      } else if (fromEl) {
+        fromEl.style.transform = `translateX(-${fromW * e}px)`; // slide the outgoing view out
+      }
+      setInset(fromW + (toW - fromW) * e);
+      // Keep looping only while this transition is still the current one; an interrupt/destroy replaces or nulls it.
+      if (p < 1) { if (this._sidebarAnim === anim) anim.raf = requestAnimationFrame(frame); } else cleanup();
+    };
+    anim.raf = requestAnimationFrame(frame);
   }
 
   /** Open the find bar, enable search highlighting, and focus the input. */
@@ -838,7 +1018,9 @@ class ScribePDFViewer {
    */
   async destroy({ terminateDoc } = {}) {
     if (this.resizeObserver) this.resizeObserver.disconnect();
+    if (this._sidebarAnim) { cancelAnimationFrame(this._sidebarAnim.raf); this._sidebarAnim = null; }
     if (this._thumbnailPanel) this._thumbnailPanel.destroy();
+    if (this._bookmarksPanel) this._bookmarksPanel.destroy();
     // Teardown callbacks remove the document-level listeners and the highlight tool's observer/tooltip/cursor style.
     for (const cb of this._teardownCallbacks) cb();
     this._teardownCallbacks = [];

@@ -88,6 +88,9 @@ export class ScribeViewer {
     /** @type {?Function} */
     this.displayPageCallback = null;
 
+    /** @type {?Function} Fired after an undo/redo, so host UI (e.g. the bookmarks panel) can refresh non-page state. */
+    this.onEditCallback = null;
+
     /**
      * Per-page container `<div>`s, indexed by page number. Each holds the page `<canvas>` raster,
      * the per-page text layer, and (in the editor) the overlay layer. Positioned in content space.
@@ -660,20 +663,35 @@ export class ScribeViewer {
    */
   rotatePages(indices, deltaDeg) {
     if (!this.doc) return;
-    let changed = false;
-    for (const n of new Set(indices)) {
-      const pm = this.doc.pageMetrics[n];
-      if (!pm) continue;
-      pm.rotation = ((((pm.rotation || 0) + deltaDeg) % 360) + 360) % 360;
-      changed = true;
-    }
-    if (!changed) return;
+    if (!this.doc.rotatePages(indices, deltaDeg)) return;
     this._clearPageDom();
     this._pageStopsStart.length = 0;
     this._pageStopsEnd.length = 0;
     this.imageCache.clear();
     this.calcPageStops();
     this.displayPage(this.state.cp.n, false, true);
+  }
+
+  /**
+   * Undo the last page operation (delete/move/reorder/insert/paste/duplicate/rotate) and rebuild the view.
+   * @returns {boolean} Whether anything was undone.
+   */
+  undo() {
+    if (!this.doc || !this.opt.enablePageEditing || !this.doc.undo()) return false;
+    this._rebuildPages(Math.max(0, Math.min(this.state.cp.n, this.doc.pageMetrics.length - 1)));
+    if (this.onEditCallback) this.onEditCallback();
+    return true;
+  }
+
+  /**
+   * Redo the last undone page operation and rebuild the view.
+   * @returns {boolean} Whether anything was redone.
+   */
+  redo() {
+    if (!this.doc || !this.opt.enablePageEditing || !this.doc.redo()) return false;
+    this._rebuildPages(Math.max(0, Math.min(this.state.cp.n, this.doc.pageMetrics.length - 1)));
+    if (this.onEditCallback) this.onEditCallback();
+    return true;
   }
 
   /** Center of the scrolling viewport, in client (viewport) coordinates. Used as a default zoom anchor. */
@@ -2071,7 +2089,7 @@ for (const m of _delegatedMethods) {
 
 const _delegatedFields = [
   'elem', 'HTMLOverlayBackstopElem', 'textOverlayHidden', 'doc',
-  'displayPageCallback', 'scrollContainer',
+  'displayPageCallback', 'onEditCallback', 'scrollContainer',
   'textGroupsRenderIndices', 'overlayGroupsRenderIndices', 'selectingRectangle', 'contextMenuWord',
   'contextMenuPointer', 'selecting', 'enableCanvasSelection', 'enableHTMLOverlay', 'bbox',
   'mode', 'drag', 'runSetInitial', 'state', 'opt', 'CanvasSelection', 'evalStats',

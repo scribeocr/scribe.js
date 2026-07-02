@@ -10,6 +10,7 @@ import {
   locateObjectByteRange,
   decryptObjectStrings,
 } from './pdfObjectGraph.js';
+import { buildOutlineObjects } from './writeOutline.js';
 
 /**
  * Extract the value of a top-level dict key from a PDF dict text. Returns the
@@ -119,8 +120,11 @@ function parseMergeSource(input) {
  * are rewritten to match.
  *
  * @param {Array<ArrayBuffer | Uint8Array>} pdfInputs - PDFs in merge order
+ * @param {{ outline?: Array<import('../../objects/outlineObjects.js').OutlineNode> }} [options]
+ *   `outline`: a bookmark tree written as the output's `/Outlines`.
+ *   Its destinations are indices into the merged page sequence (0-based over all input pages in order).
  */
-export async function mergePdfs(pdfInputs) {
+export async function mergePdfs(pdfInputs, options = {}) {
   if (!Array.isArray(pdfInputs) || pdfInputs.length === 0) {
     throw new Error('mergePdfs: pdfInputs must be a non-empty array');
   }
@@ -160,6 +164,8 @@ export async function mergePdfs(pdfInputs) {
   const allOutputObjects = [];
   /** @type {string[]} */
   const keptPageRefs = [];
+  /** @type {number[]} Merged page index → output page object number, for the /Outlines writer. */
+  const pageObjNumByIndex = [];
 
   for (let s = 0; s < sources.length; s++) {
     const src = sources[s];
@@ -195,6 +201,7 @@ export async function mergePdfs(pdfInputs) {
         content: `${newObjNum} 0 obj\n${pageText}\nendobj\n\n`,
       });
       keptPageRefs.push(`${newObjNum} 0 R`);
+      pageObjNumByIndex.push(newObjNum);
     }
 
     // Emit every other referenced object.
@@ -305,6 +312,16 @@ export async function mergePdfs(pdfInputs) {
       if (ocpValue) extraCatalogKeys += `/OCProperties ${rewriteIndirectRefs(ocpValue, firstMap)}`;
     }
   }
+  // Bookmarks: the caller supplies `outline` with destinations indexed into the merged page order.
+  if (options.outline && options.outline.length) {
+    const built = buildOutlineObjects(options.outline, pageObjNumByIndex, nextObjNum);
+    if (built) {
+      for (const o of built.objects) allOutputObjects.push(o);
+      nextObjNum = built.nextObjNum;
+      extraCatalogKeys += `/Outlines ${built.rootObjNum} 0 R`;
+    }
+  }
+
   allOutputObjects.push({
     objNum: catalogObjNum,
     content: `${catalogObjNum} 0 obj\n<</Type/Catalog/Pages ${pagesRootObjNum} 0 R${extraCatalogKeys}>>\nendobj\n\n`,

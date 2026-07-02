@@ -9,6 +9,9 @@ import {
 } from '../addHighlights.js';
 import { renderPageStatic as renderPageStaticImpl } from '../debug.js';
 import { exportData as exportDataImpl, download as downloadImpl } from '../export/export.js';
+import { subsetPdf, stripMetadataPdf } from '../export/pdf/subsetPdf.js';
+import { defaultScrubOpts } from '../pdf/metadata/scrubMetadata.js';
+import { getMetadataImpl } from '../pdf/metadata/metadataInspect.js';
 import { dropFromWorkers, enableOpt as enableFontOptImpl } from '../fontContainerMain.js';
 import {
   recognize as recognizeImpl,
@@ -18,6 +21,9 @@ import {
   insertParsedPage as insertParsedPageImpl,
 } from '../recognizeConvert.js';
 import { importFiles as importFilesImpl, importFilesSupp as importFilesSuppImpl } from '../import/import.js';
+import {
+  remapOutline, cloneOutline, makeOutlineNode, findOutlineEntry, isOutlineDescendant,
+} from '../objects/outlineObjects.js';
 import { runOptimization as runOptimizationImpl } from '../fontEval.js';
 import { clonePageFull } from '../objects/ocrObjects.js';
 
@@ -92,8 +98,23 @@ function materializeSourcePages(doc) {
 }
 
 /**
+ * Give every page a concrete `sourceId`, so a cross-document copy carries the real origin
+ * (the default `null` means "this document's primary source", valid only within the source document).
+ * Image-only documents have no PDF source, so nothing is materialized.
+ * @param {ScribeDoc} doc
+ */
+function materializeSourceIds(doc) {
+  const primaryId = doc.images.primarySourceId;
+  if (primaryId == null) return;
+  for (let i = 0; i < doc.pageMetrics.length; i++) {
+    const pm = doc.pageMetrics[i];
+    if (pm && pm.sourceId == null) pm.sourceId = primaryId;
+  }
+}
+
+/**
  * Build an independent snapshot of every per-page array entry at index `i`, for later insertion via `insertPages`.
- * Call `materializeSourcePages(doc)` first so the cloned `pageMetrics.sourcePageN` is concrete.
+ * Call `materializeSourcePages(doc)` and `materializeSourceIds(doc)` first so the cloned `pageMetrics.sourcePageN`/`sourceId` are concrete.
  * @param {ScribeDoc} doc
  * @param {number} i - Source page index.
  * @returns {object} An independent clone bundle for page `i`.
@@ -127,7 +148,127 @@ function clonePageBundle(doc, i) {
     ocrApplied: refAt(doc.inputData.ocrApplied),
     nativeSrc: refAt(doc.images.nativeSrc),
     pdfDims300: refAt(doc.images.pdfDims300),
+    // The origin's render pool (shared by reference), so a page pasted into another document rasters from its true source.
+    // `null` for image-source pages, whose raster rides in `nativeSrc`.
+    renderSource: doc.images.sources.get(doc.pageMetrics[i].sourceId) ?? null,
   };
+}
+
+/**
+ * Replace `doc.outline`'s contents in place, keeping the array reference stable
+ * so UI bindings and history snapshots hold a live handle across page/outline edits.
+ * @param {ScribeDoc} doc
+ * @param {Array<import('../objects/outlineObjects.js').OutlineNode>} nodes
+ */
+function setDocOutline(doc, nodes) {
+  doc.outline.length = 0;
+  for (const n of nodes) doc.outline.push(n);
+}
+
+/**
+ * Remap the document outline after a page-order edit.
+ * Bookmarks whose page was removed are dropped, and their surviving descendants promoted.
+ * @param {ScribeDoc} doc
+ * @param {Array<?number>} tags - `tags[newPos]` is the pre-edit index of the page now at `newPos`, or null for a freshly inserted page.
+ */
+function remapOutlineByTags(doc, tags) {
+  if (!doc.outline.length) return;
+  const newByOld = new Map();
+  tags.forEach((old, newPos) => { if (old != null && !newByOld.has(old)) newByOld.set(old, newPos); });
+  setDocOutline(doc, remapOutline(doc.outline, (old) => (newByOld.has(old) ? newByOld.get(old) : null)));
+}
+
+/**
+ * A before/after snapshot of every per-page array plus the outline, for undo/redo of a page operation.
+ * @param {ScribeDoc} doc
+ */
+function capturePageState(doc) {
+  return {
+    arrays: densePageArrays(doc).map((arr) => [arr, arr === doc.pageMetrics ? arr.map((pm) => structuredClone(pm)) : [...arr]]),
+    pageCount: doc.pageMetrics.length,
+    outline: cloneOutline(doc.outline),
+  };
+}
+
+/**
+ * Restore a `capturePageState` snapshot, mutating each array in place so references held elsewhere stay valid.
+ * @param {ScribeDoc} doc
+ * @param {ReturnType<typeof capturePageState>} snap
+ */
+function restorePageState(doc, snap) {
+  for (const [arr, values] of snap.arrays) {
+    arr.length = 0;
+    for (const v of values) arr.push(v);
+  }
+  setDocOutline(doc, cloneOutline(snap.outline));
+  renumberPages(doc);
+  clearImageCaches(doc);
+  doc.inputData.pageCount = snap.pageCount;
+  doc.images.pageCount = snap.pageCount;
+}
+
+/**
+ * Bounded undo/redo history for a document's PAGE operations (delete/move/reorder/insert/paste/duplicate/rotate).
+ * Each recorded op captures a full before/after page-state snapshot that `undo`/`redo` restore.
+ * Non-page edits (word text, style, annotations) are out of scope, since the snapshot does not capture the state they mutate.
+ */
+class PageHistory {
+  static LIMIT = 100;
+
+  /** @param {ScribeDoc} doc */
+  constructor(doc) {
+    this.doc = doc;
+    /** @type {Array<{ before: object, after: object }>} */
+    this.undoStack = [];
+    /** @type {Array<{ before: object, after: object }>} */
+    this.redoStack = [];
+    // While a mutation is running (or an undo/redo is restoring), nested page ops are folded into the outer step.
+    this.suspended = false;
+  }
+
+  get canUndo() { return this.undoStack.length > 0; }
+
+  get canRedo() { return this.redoStack.length > 0; }
+
+  /**
+   * Run a page mutation `fn` and record it as one undoable step (snapshotting before and after).
+   * Re-entrant: a page op invoked from within another recorded op is folded into the outer step rather than recorded separately,
+   * so a composite edit (e.g. a cut = insert + delete) becomes a single undo.
+   * @param {() => void} fn
+   */
+  record(fn) {
+    if (this.suspended) { fn(); return; }
+    const before = capturePageState(this.doc);
+    this.suspended = true;
+    try { fn(); } finally { this.suspended = false; }
+    const after = capturePageState(this.doc);
+    this.undoStack.push({ before, after });
+    if (this.undoStack.length > PageHistory.LIMIT) this.undoStack.shift();
+    this.redoStack.length = 0;
+  }
+
+  /** Undo the last recorded page operation. @returns {boolean} whether anything was undone. */
+  undo() {
+    const step = this.undoStack.pop();
+    if (!step) return false;
+    restorePageState(this.doc, step.before);
+    this.redoStack.push(step);
+    return true;
+  }
+
+  /** Redo the last undone page operation. @returns {boolean} whether anything was redone. */
+  redo() {
+    const step = this.redoStack.pop();
+    if (!step) return false;
+    restorePageState(this.doc, step.after);
+    this.undoStack.push(step);
+    return true;
+  }
+
+  clear() {
+    this.undoStack.length = 0;
+    this.redoStack.length = 0;
+  }
 }
 
 let docIdCounter = 0;
@@ -172,10 +313,20 @@ export class ScribeDoc {
     /** @type {{ pages: Array<Array<Annotation>> }} */
     this.annotations = { pages: [] };
 
+    /**
+     * Document outline (bookmarks) as an editable tree; destinations are zero-based page indices.
+     * Empty when the document has no bookmarks. Populated from the PDF on open (`ImageStore.openMainPDF`).
+     * @type {Array<import('../objects/outlineObjects.js').OutlineNode>}
+     */
+    this.outline = [];
+
     this.fonts = new DocFonts();
     this.fonts.id = this.id;
 
     this.images = new ImageStore(this);
+
+    /** Bounded undo/redo history for this document's page operations. */
+    this.history = new PageHistory(this);
 
     /**
      * Per-document handlers consulted by emit sites during `recognize()` etc.
@@ -225,12 +376,16 @@ export class ScribeDoc {
    */
   deletePage(i) {
     if (i < 0 || i >= this.pageMetrics.length) return;
-    materializeSourcePages(this);
-    for (const arr of densePageArrays(this)) if (i < arr.length) arr.splice(i, 1);
-    clearImageCaches(this);
-    renumberPages(this);
-    this.inputData.pageCount = this.pageMetrics.length;
-    this.images.pageCount = this.pageMetrics.length;
+    this.history.record(() => {
+      materializeSourcePages(this);
+      const tags = this.pageMetrics.map((_, k) => k);
+      for (const arr of [...densePageArrays(this), tags]) if (i < arr.length) arr.splice(i, 1);
+      remapOutlineByTags(this, tags);
+      clearImageCaches(this);
+      renumberPages(this);
+      this.inputData.pageCount = this.pageMetrics.length;
+      this.images.pageCount = this.pageMetrics.length;
+    });
   }
 
   /**
@@ -241,14 +396,18 @@ export class ScribeDoc {
   movePage(from, to) {
     const len = this.pageMetrics.length;
     if (from < 0 || from >= len || to < 0 || to >= len || from === to) return;
-    materializeSourcePages(this);
-    for (const arr of densePageArrays(this)) {
-      if (from >= arr.length) continue;
-      const [item] = arr.splice(from, 1);
-      arr.splice(to, 0, item);
-    }
-    clearImageCaches(this);
-    renumberPages(this);
+    this.history.record(() => {
+      materializeSourcePages(this);
+      const tags = this.pageMetrics.map((_, k) => k);
+      for (const arr of [...densePageArrays(this), tags]) {
+        if (from >= arr.length) continue;
+        const [item] = arr.splice(from, 1);
+        arr.splice(to, 0, item);
+      }
+      remapOutlineByTags(this, tags);
+      clearImageCaches(this);
+      renumberPages(this);
+    });
   }
 
   /**
@@ -259,14 +418,18 @@ export class ScribeDoc {
     // Splice high-to-low so each removal leaves the lower indices valid.
     const sorted = [...new Set(indices)].filter((i) => i >= 0 && i < this.pageMetrics.length).sort((a, b) => b - a);
     if (sorted.length === 0) return;
-    materializeSourcePages(this);
-    for (const arr of densePageArrays(this)) {
-      for (const i of sorted) if (i < arr.length) arr.splice(i, 1);
-    }
-    clearImageCaches(this);
-    renumberPages(this);
-    this.inputData.pageCount = this.pageMetrics.length;
-    this.images.pageCount = this.pageMetrics.length;
+    this.history.record(() => {
+      materializeSourcePages(this);
+      const tags = this.pageMetrics.map((_, k) => k);
+      for (const arr of [...densePageArrays(this), tags]) {
+        for (const i of sorted) if (i < arr.length) arr.splice(i, 1);
+      }
+      remapOutlineByTags(this, tags);
+      clearImageCaches(this);
+      renumberPages(this);
+      this.inputData.pageCount = this.pageMetrics.length;
+      this.images.pageCount = this.pageMetrics.length;
+    });
   }
 
   /**
@@ -278,21 +441,25 @@ export class ScribeDoc {
   movePages(indices, to) {
     const sorted = [...new Set(indices)].filter((i) => i >= 0 && i < this.pageMetrics.length).sort((a, b) => a - b);
     if (sorted.length === 0) return;
-    materializeSourcePages(this);
-    for (const arr of densePageArrays(this)) {
-      const pulled = [];
-      for (let k = sorted.length - 1; k >= 0; k--) {
-        if (sorted[k] < arr.length) pulled.unshift(arr.splice(sorted[k], 1)[0]);
+    this.history.record(() => {
+      materializeSourcePages(this);
+      const tags = this.pageMetrics.map((_, k) => k);
+      for (const arr of [...densePageArrays(this), tags]) {
+        const pulled = [];
+        for (let k = sorted.length - 1; k >= 0; k--) {
+          if (sorted[k] < arr.length) pulled.unshift(arr.splice(sorted[k], 1)[0]);
+        }
+        arr.splice(Math.max(0, Math.min(to, arr.length)), 0, ...pulled);
       }
-      arr.splice(Math.max(0, Math.min(to, arr.length)), 0, ...pulled);
-    }
-    clearImageCaches(this);
-    renumberPages(this);
+      remapOutlineByTags(this, tags);
+      clearImageCaches(this);
+      renumberPages(this);
+    });
   }
 
   /**
    * Snapshot pages `indices` into independent clone bundles for a later `insertPages` (the clipboard payload of a page copy/cut).
-   * Pure: the document is not mutated apart from materializing `sourcePageN`.
+   * Pure: the document is not mutated apart from materializing `sourcePageN`/`sourceId`.
    * Returned bundles are fully detached, so the source pages may be edited or deleted before the bundles are pasted.
    * @param {Array<number>} indices - 0-based page indices to clone, in any order.
    * @returns {Array<object>} One clone bundle per valid index, in ascending page order.
@@ -301,6 +468,7 @@ export class ScribeDoc {
     const sorted = [...new Set(indices)].filter((i) => i >= 0 && i < this.pageMetrics.length).sort((a, b) => a - b);
     if (sorted.length === 0) return [];
     materializeSourcePages(this);
+    materializeSourceIds(this);
     return sorted.map((i) => clonePageBundle(this, i));
   }
 
@@ -314,42 +482,57 @@ export class ScribeDoc {
    */
   insertPages(bundles, to) {
     if (!Array.isArray(bundles) || bundles.length === 0) return;
-    const prevLen = this.pageMetrics.length;
-    const at = Math.max(0, Math.min(to, prevLen));
-    materializeSourcePages(this);
-    // Splice only arrays that span every existing page; a sparse/empty array would misalign if inserted into.
-    const spliceFull = (arr, values) => {
-      if (Array.isArray(arr) && arr.length === prevLen) arr.splice(at, 0, ...values);
-    };
+    this.history.record(() => {
+      const prevLen = this.pageMetrics.length;
+      const at = Math.max(0, Math.min(to, prevLen));
+      materializeSourcePages(this);
+      // Page-identity tags: existing pages carry their old index.
+      const tags = this.pageMetrics.map((_, k) => k);
+      // Splice only arrays that span every existing page. A sparse/empty array would misalign if inserted into.
+      const spliceFull = (arr, values) => {
+        if (Array.isArray(arr) && arr.length === prevLen) arr.splice(at, 0, ...values);
+      };
 
-    const ocrSeen = new Set();
-    for (const [engine, arr] of Object.entries(this.ocr)) {
-      if (!Array.isArray(arr) || ocrSeen.has(arr)) continue;
-      ocrSeen.add(arr);
-      spliceFull(arr, bundles.map((b) => b.ocr[engine] ?? null));
-    }
-    const rawSeen = new Set();
-    for (const [engine, arr] of Object.entries(this.ocrRaw)) {
-      if (!Array.isArray(arr) || rawSeen.has(arr)) continue;
-      rawSeen.add(arr);
-      spliceFull(arr, bundles.map((b) => b.ocrRaw[engine] ?? ''));
-    }
-    spliceFull(this.pageMetrics, bundles.map((b) => b.pageMetrics));
-    spliceFull(this.layoutRegions.pages, bundles.map((b) => b.layoutRegions));
-    spliceFull(this.layoutDataTables.pages, bundles.map((b) => b.layoutDataTables));
-    spliceFull(this.annotations.pages, bundles.map((b) => b.annotations));
-    spliceFull(this.vis, bundles.map((b) => b.vis));
-    spliceFull(this.convertPageWarn, bundles.map((b) => b.convertPageWarn));
-    spliceFull(this.images.nativeSrc, bundles.map((b) => b.nativeSrc));
-    spliceFull(this.images.pdfDims300, bundles.map((b) => b.pdfDims300));
-    spliceFull(this.inputData.xmlMode, bundles.map((b) => b.xmlMode));
-    spliceFull(this.inputData.pageStats, bundles.map((b) => b.pageStats));
-    spliceFull(this.inputData.ocrApplied, bundles.map((b) => b.ocrApplied));
+      const ocrSeen = new Set();
+      for (const [engine, arr] of Object.entries(this.ocr)) {
+        if (!Array.isArray(arr) || ocrSeen.has(arr)) continue;
+        ocrSeen.add(arr);
+        spliceFull(arr, bundles.map((b) => b.ocr[engine] ?? null));
+      }
+      const rawSeen = new Set();
+      for (const [engine, arr] of Object.entries(this.ocrRaw)) {
+        if (!Array.isArray(arr) || rawSeen.has(arr)) continue;
+        rawSeen.add(arr);
+        spliceFull(arr, bundles.map((b) => b.ocrRaw[engine] ?? ''));
+      }
+      spliceFull(this.pageMetrics, bundles.map((b) => b.pageMetrics));
+      spliceFull(this.layoutRegions.pages, bundles.map((b) => b.layoutRegions));
+      spliceFull(this.layoutDataTables.pages, bundles.map((b) => b.layoutDataTables));
+      spliceFull(this.annotations.pages, bundles.map((b) => b.annotations));
+      spliceFull(this.vis, bundles.map((b) => b.vis));
+      spliceFull(this.convertPageWarn, bundles.map((b) => b.convertPageWarn));
+      spliceFull(this.images.nativeSrc, bundles.map((b) => b.nativeSrc));
+      spliceFull(this.images.pdfDims300, bundles.map((b) => b.pdfDims300));
+      spliceFull(this.inputData.xmlMode, bundles.map((b) => b.xmlMode));
+      spliceFull(this.inputData.pageStats, bundles.map((b) => b.pageStats));
+      spliceFull(this.inputData.ocrApplied, bundles.map((b) => b.ocrApplied));
+      spliceFull(tags, bundles.map(() => null));
+      remapOutlineByTags(this, tags);
 
-    clearImageCaches(this);
-    renumberPages(this);
-    this.inputData.pageCount = this.pageMetrics.length;
-    this.images.pageCount = this.pageMetrics.length;
+      // Register a copied page's foreign render source so it keeps rendering and subsetting from its origin.
+      for (const b of bundles) {
+        const src = b.renderSource;
+        if (src && !this.images.sources.has(src.id)) {
+          this.images.sources.set(src.id, src);
+          src.refCount += 1;
+        }
+      }
+
+      clearImageCaches(this);
+      renumberPages(this);
+      this.inputData.pageCount = this.pageMetrics.length;
+      this.images.pageCount = this.pageMetrics.length;
+    });
   }
 
   /**
@@ -360,6 +543,119 @@ export class ScribeDoc {
   duplicatePages(indices, to) {
     this.insertPages(this.copyPages(indices), to);
   }
+
+  /**
+   * Rotate pages `indices` by `deltaDeg` (a multiple of 90), composed onto each page's existing rotation.
+   * Recorded as one undoable step. Rebuilding the display is the caller's responsibility.
+   * @param {Array<number>} indices - 0-based page indices.
+   * @param {number} deltaDeg - Clockwise degrees to add (e.g. 90, -90, 180).
+   * @returns {boolean} Whether any page was rotated (so a caller can skip a redundant rebuild).
+   */
+  rotatePages(indices, deltaDeg) {
+    const targets = [...new Set(indices)].filter((n) => this.pageMetrics[n]);
+    if (targets.length === 0) return false;
+    this.history.record(() => {
+      for (const n of targets) {
+        const pm = this.pageMetrics[n];
+        pm.rotation = ((((pm.rotation || 0) + deltaDeg) % 360) + 360) % 360;
+      }
+    });
+    return true;
+  }
+
+  /**
+   * Add a bookmark to the document outline, recorded as one undoable step.
+   * @param {{ title?: string, pageIndex?: ?number, parentId?: ?number, atIndex?: ?number }} [spec]
+   *   `pageIndex` null makes a title-only (structural) node; `parentId` null adds at the top level;
+   *   `atIndex` null appends.
+   * @returns {number} The new node's id.
+   */
+  addBookmark({
+    title = '', pageIndex = null, parentId = null, atIndex = null,
+  } = {}) {
+    const node = makeOutlineNode({ title, dest: pageIndex == null ? null : { pageIndex, view: ['Fit'] } });
+    this.history.record(() => {
+      const siblings = parentId == null ? this.outline : (findOutlineEntry(this.outline, parentId)?.node.children ?? this.outline);
+      const at = atIndex == null ? siblings.length : Math.max(0, Math.min(atIndex, siblings.length));
+      siblings.splice(at, 0, node);
+    });
+    return node.id;
+  }
+
+  /**
+   * Rename a bookmark. Recorded as one undoable step. No-op if `id` is unknown.
+   * @param {number} id
+   * @param {string} title
+   */
+  renameBookmark(id, title) {
+    if (!findOutlineEntry(this.outline, id)) return;
+    this.history.record(() => { findOutlineEntry(this.outline, id).node.title = title; });
+  }
+
+  /**
+   * Point a bookmark at a different page (or make it title-only with `null`). Recorded. No-op if `id` is unknown.
+   * @param {number} id
+   * @param {?number} pageIndex
+   */
+  setBookmarkDest(id, pageIndex) {
+    if (!findOutlineEntry(this.outline, id)) return;
+    this.history.record(() => {
+      findOutlineEntry(this.outline, id).node.dest = pageIndex == null ? null : { pageIndex, view: ['Fit'] };
+    });
+  }
+
+  /**
+   * Reparent/reorder a bookmark: detach it and insert under `parentId` (null = top level) at `atIndex` (null = append).
+   * Recorded as one undoable step.
+   * No-op if `id` is unknown or the move would nest the node inside its own subtree.
+   * @param {number} id
+   * @param {?number} parentId
+   * @param {?number} atIndex
+   */
+  moveBookmark(id, parentId = null, atIndex = null) {
+    const entry = findOutlineEntry(this.outline, id);
+    if (!entry) return;
+    if (parentId != null && isOutlineDescendant(entry.node, parentId)) return;
+    this.history.record(() => {
+      const e = findOutlineEntry(this.outline, id);
+      e.siblings.splice(e.index, 1);
+      const siblings = parentId == null ? this.outline : (findOutlineEntry(this.outline, parentId)?.node.children ?? this.outline);
+      const at = atIndex == null ? siblings.length : Math.max(0, Math.min(atIndex, siblings.length));
+      siblings.splice(at, 0, e.node);
+    });
+  }
+
+  /**
+   * Remove bookmarks by id (each with its whole subtree). Recorded as one undoable step.
+   * @param {Array<number>} ids
+   */
+  removeBookmarks(ids) {
+    if (!ids.some((id) => findOutlineEntry(this.outline, id))) return;
+    this.history.record(() => {
+      for (const id of ids) {
+        const e = findOutlineEntry(this.outline, id);
+        if (e) e.siblings.splice(e.index, 1);
+      }
+    });
+  }
+
+  /**
+   * Undo the last page/outline operation (delete/move/reorder/insert/paste/duplicate/rotate/bookmark edit).
+   * @returns {boolean} Whether anything was undone (so a caller can skip a redundant rebuild).
+   */
+  undo() { return this.history.undo(); }
+
+  /**
+   * Redo the last undone page operation.
+   * @returns {boolean} Whether anything was redone.
+   */
+  redo() { return this.history.redo(); }
+
+  /** Whether there is a page operation available to undo. */
+  get canUndo() { return this.history.canUndo; }
+
+  /** Whether there is an undone page operation available to redo. */
+  get canRedo() { return this.history.canRedo; }
 
   /**
    * Reset all of this document's data.
@@ -375,9 +671,11 @@ export class ScribeDoc {
     this.layoutRegions.pages.length = 0;
     this.layoutDataTables.pages.length = 0;
     this.pageMetrics.length = 0;
+    this.outline.length = 0;
     this.convertPageWarn.length = 0;
     this.images.clear();
     this.fonts.clear();
+    this.history.clear();
   }
 
   /**
@@ -583,5 +881,56 @@ export class ScribeDoc {
    */
   enableFontOpt(enable, force) {
     return enableFontOptImpl(this.fonts, enable, force);
+  }
+
+  /**
+   * List the identifying-metadata categories present in this document's PDF source(s).
+   * Returns null for an image-only document (no PDF source).
+   * @returns {ReturnType<typeof getMetadataImpl>}
+   */
+  getMetadata() {
+    return getMetadataImpl(this);
+  }
+
+  /**
+   * Produce a privacy-cleaned copy of this document's PDF with identifying metadata removed.
+   * The visible pages stay byte-faithful to the source, honoring page reorder/delete.
+   * Removed: `/Info`, XMP, `/PieceInfo`, embedded files, image EXIF/GPS, actions/JavaScript, prior revisions, signatures, and filename-leaking layer names.
+   * Accessibility tags, page labels, language, and viewer preferences are kept by default.
+   * Emits `warningHandler` if a digital signature had to be dropped.
+   * @param {object} [options] - Overrides the Balanced scrub defaults (`stripStructTree`, `stripPageLabels`, `stripViewerPrefs`, `dropOCProperties`); see `defaultScrubOpts`.
+   * @returns {Promise<Uint8Array>}
+   */
+  async stripMetadata(options = {}) {
+    const { images } = this;
+    if (!images || !images.pdfData) {
+      throw new Error('stripMetadata requires a document with a PDF source (image-only imports carry no PDF metadata).');
+    }
+    const warningHandler = (/** @type {string} */ message) => this.warningHandler({ message });
+
+    const primaryId = images.primarySourceId;
+    const pageCount = this.inputData?.pageCount ?? 0;
+    const sourceArr = [];
+    let multiSource = false;
+    let edited = false;
+    for (let p = 0; p < pageCount; p++) {
+      const pm = this.pageMetrics?.[p];
+      const src = pm?.sourcePageN ?? p;
+      if (src !== p) edited = true;
+      if ((pm?.sourceId ?? primaryId) !== primaryId) multiSource = true;
+      sourceArr.push(src);
+    }
+    if (multiSource) {
+      throw new Error('stripMetadata does not yet support documents assembled from multiple PDF sources '
+        + '(cross-document page copy); export the document to a single PDF first, then strip its metadata.');
+    }
+
+    // stripMetadataPdf enumerates every source page, so an unedited document cleans in full even when its in-memory page metrics are incomplete.
+    if (!edited) return stripMetadataPdf(images.pdfData, options, warningHandler);
+
+    // Page reorder/delete: subset the source to the current display order, scrubbing as it rebuilds.
+    const scrub = { opts: { ...defaultScrubOpts(), ...options } };
+    const out = await subsetPdf(images.pdfData, sourceArr, { scrub, warningHandler });
+    return out instanceof Uint8Array ? out : new Uint8Array(out);
   }
 }

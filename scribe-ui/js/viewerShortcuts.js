@@ -327,6 +327,21 @@ export function handleKeyboardEvent(viewer, event) {
     return;
   }
 
+  // Undo / redo of page operations: Ctrl/Cmd+Z (undo), Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y (redo).
+  // Only claimed when the host enabled page editing, so a viewer-only app leaves the browser default alone.
+  {
+    const key = typeof event.key === 'string' ? event.key.toLowerCase() : '';
+    if ((event.ctrlKey || event.metaKey) && !event.altKey && (key === 'z' || key === 'y')) {
+      if (_viewer.opt.enablePageEditing) {
+        if (key === 'y' || event.shiftKey) _viewer.redo(); else _viewer.undo();
+        event.preventDefault();
+        event.stopPropagation();
+        _viewer.interactionCallback(event);
+      }
+      return;
+    }
+  }
+
   if (event.key === 'PageUp') {
     _viewer.displayPage(_viewer.state.cp.n - 1, true, false);
     event.preventDefault();

@@ -24,6 +24,7 @@ import {
 } from './pdfPageRewrite.js';
 import { createConversionState } from './convertTextRegionsToPaths.js';
 import { rebuildPdfSubset } from './subsetPdf.js';
+import { buildOutlineObjects } from './writeOutline.js';
 
 /**
  * Insert OCR text layers into an existing PDF via incremental update, or
@@ -34,6 +35,9 @@ import { rebuildPdfSubset } from './subsetPdf.js';
  * @param {Object} params
  * @param {ArrayBuffer} params.basePdfData - The original PDF bytes
  * @param {Array<OcrPage>} params.ocrArr - OCR data for each page (indexed to match `basePdfData`)
+ * @param {?Array<OcrPage>} [params.annotationOcrArr=null] - Real per-page OCR geometry for highlight consolidation.
+ *   `ocrArr` is emptied for clean text-native pages, so it lacks the word/line geometry consolidation needs.
+ *   Falls back to `ocrArr` when null.
  * @param {Array<PageMetrics>} params.pageMetricsArr - Page metrics (dims in pixels)
  * @param {?Array<number>} [params.pageArr=null] - 0-based page indices into `basePdfData` to include. Defaults to all pages.
  * @param {("ebook"|"eval"|"proof"|"invis"|"annot")} [params.textMode="invis"]
@@ -60,11 +64,16 @@ import { rebuildPdfSubset } from './subsetPdf.js';
  *   Other fonts' text is left selectable.
  * @param {import('../../containers/fontContainer.js').DocFonts} [params.docFonts] - Per-document fonts.
  * @param {(message: string) => void} [params.warningHandler] - Reports each annotation skipped on error.
+ * @param {?Array<import('../../objects/outlineObjects.js').OutlineNode>} [params.outline=null] - Bookmark tree with destinations indexed into the output page order.
+ *   Null leaves the source's bookmarks unchanged; an empty array strips them.
+ * @param {?{ opts?: ReturnType<typeof import('../../pdf/metadata/scrubMetadata.js').defaultScrubOpts> }} [params.scrub=null]
+ *   When set, forces the rebuild path and scrubs identifying metadata using these scrub options.
  * @returns {Promise<ArrayBuffer>}
  */
 export async function overlayPdfText({
   basePdfData,
   ocrArr,
+  annotationOcrArr = null,
   pageMetricsArr,
   pageArr = null,
   textMode = 'invis',
@@ -81,6 +90,8 @@ export async function overlayPdfText({
   convertBrokenType3ToPaths = false,
   docFonts,
   warningHandler,
+  outline = null,
+  scrub = null,
 }) {
   const pdfBytes = new Uint8Array(basePdfData);
   // Local latin1 view used by overlayPdfText's downstream helpers.
@@ -163,7 +174,9 @@ export async function overlayPdfText({
   const isSubset = effectivePageArr.length !== pages.length
     || effectivePageArr.some((v, idx) => v !== idx);
   const hasUserRotation = !!(pageMetricsArr && pageMetricsArr.some((pm) => pm && pm.rotation));
-  if (isSubset || sourceEncrypted || sourceXrefMalformed || sourceLinearized || hasUserRotation) {
+  // A metadata scrub must rebuild: incremental append would leave the source's trailer chain and every prior /Prev revision's metadata in place.
+  // Rebuilding drops all of it and scrubs the copied objects.
+  if (isSubset || sourceEncrypted || sourceXrefMalformed || sourceLinearized || hasUserRotation || scrub) {
     return rebuildPdfSubset({
       pdfBytes,
       text,
@@ -171,7 +184,9 @@ export async function overlayPdfText({
       xrefEntries,
       pages,
       pageIndices: effectivePageArr,
+      outline,
       ocrArr,
+      annotationOcrArr,
       pageMetricsArr,
       textMode,
       rotateText,
@@ -188,6 +203,7 @@ export async function overlayPdfText({
       convertFullPages,
       convertBrokenType3ToPaths,
       warningHandler,
+      scrub,
     });
   }
 
@@ -327,7 +343,7 @@ export async function overlayPdfText({
     if (hasAnnots) {
       const outputDims = { width: baseWidth, height: baseHeight };
       const highlightAnns = pageAnnotations.filter((a) => a.type == null || a.type === 'highlight');
-      const consolidated = consolidateAnnotations(highlightAnns, pageObj);
+      const consolidated = consolidateAnnotations(highlightAnns, annotationOcrArr?.[i] || pageObj);
       const pageForEmit = consolidated.length > 0 ? consolidated : highlightAnns;
       const transformed = pageForEmit.map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty));
       const { objectTexts, annotRefs } = buildHighlightAnnotObjects(transformed, nextObjNum, outputDims, warningHandler);
@@ -370,6 +386,28 @@ export async function overlayPdfText({
 
   // Step 6: Build incremental update
   const allNewObjects = [...fontObjects, ...newObjects];
+
+  // Override the catalog's /Outlines so doc.outline wins over the source's own bookmarks on this incremental path.
+  // An empty doc.outline still strips the source's /Outlines.
+  if (outline) {
+    const catalogObjNum = Number((/^(\d+)/.exec(rootRef) || [])[1]);
+    const catalogText = catalogObjNum ? objCache.getObjectText(catalogObjNum) : null;
+    if (catalogText && (outline.length || /\/Outlines\b/.test(catalogText))) {
+      let outlineRef = '';
+      if (outline.length) {
+        const built = buildOutlineObjects(outline, effectivePageArr.map((i) => pages[i].objNum), nextObjNum);
+        if (built) {
+          for (const o of built.objects) allNewObjects.push(o);
+          nextObjNum = built.nextObjNum;
+          outlineRef = ` /Outlines ${built.rootObjNum} 0 R`;
+        }
+      }
+      const stripped = catalogText.replace(/\s*\/Outlines\s+\d+\s+\d+\s+R/, '');
+      const closeIdx = stripped.lastIndexOf('>>');
+      const newCatalog = `${stripped.slice(0, closeIdx)}${outlineRef}${stripped.slice(closeIdx)}`;
+      allNewObjects.push({ objNum: catalogObjNum, content: `${catalogObjNum} 0 obj\n${newCatalog}\nendobj\n\n` });
+    }
+  }
 
   if (allNewObjects.length === 0) return basePdfData;
 

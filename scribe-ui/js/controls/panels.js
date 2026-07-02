@@ -61,8 +61,8 @@ const colsFor = (w) => Math.max(1, Math.floor((w - 2 * PAD + GRID_GAP) / (THUMB_
 const panelWidthForCols = (cols) => cols * THUMB_W + (cols - 1) * GRID_GAP + PANEL_EXTRA_W;
 
 /**
- * Module-scoped page clipboard shared by every thumbnail panel, for cut/copy/paste of whole pages within one document.
- * `sourceDocId` holds the originating `doc.id`, so a paste is refused when it does not match the target document's (fresh) id.
+ * Module-scoped page clipboard for cut/copy/paste of whole pages.
+ * A copy pastes into any open document. A cut only pastes into its source, since pasting it removes the originals.
  */
 const pageClipboard = {
   /** @type {'cut'|'copy'|null} What the held pages should do when pasted. */
@@ -93,7 +93,8 @@ function clearPageClipboard() {
  * @returns {{
  *   panelElem: HTMLDivElement, toggleElem: HTMLSpanElement,
  *   rebuild: (activeN?: number) => void, setActive: (n: number) => void,
- *   setVisible: (v: boolean) => void, destroy: () => void
+ *   setVisible: (v: boolean) => void, setWidth: (px: number) => number,
+ *   getResizeBounds: () => { min: number, max: number }, destroy: () => void
  * }}
  */
 export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) {
@@ -165,9 +166,10 @@ export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) 
   // 'rail' is the docked single-column strip; 'grid' is the multi-column (up to MAX_COLS) page organizer.
   /** @type {'rail'|'grid'} */
   let layoutMode = 'rail';
-  // Grid layout, valid only in 'grid' mode: number of columns and the uniform per-row vertical stride.
+  // Number of grid columns: 1 in the rail, up to MAX_COLS in grid mode.
   let gridCols = 1;
-  let rowStride = 0;
+  /** @type {number[]} Per-row vertical stride in px (grid mode), indexed by row. Empty in the rail. */
+  let rowStrides = [];
   // Cached because reading clientHeight/clientWidth forces a synchronous layout, and the scroll/resize paths read the viewport size every frame.
   let viewportH = 0;
   let viewportW = 0;
@@ -223,7 +225,8 @@ export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) 
     get pageCount() { return pageCount; },
     get THUMB_W() { return THUMB_W; },
     get gridCols() { return gridCols; },
-    get rowStride() { return rowStride; },
+    get rowStrides() { return rowStrides; },
+    rowAt,
     GRID_GAP,
     get activePage() { return activePage; },
     set activePage(v) { activePage = v; },
@@ -242,7 +245,8 @@ export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) 
   const reorder = installPageReorder(ctx);
 
   /**
-   * Largest row index whose top is at or above content-y `y`.
+   * Largest page index whose row top is at or above content-y `y`.
+   * In the rail this is the page at `y`. In the grid it is a page in that row, so divide by `gridCols` for the row index.
    * @param {number} y
    * @returns {number}
    */
@@ -427,16 +431,11 @@ export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) 
   /** First and last page index in the current scroll window (+buffer). @returns {[number, number]} */
   function windowRange() {
     const viewH = viewportH;
-    if (layoutMode === 'grid' && rowStride > 0) {
-      // Every cell in a grid row shares the same top, so map the visible band to whole rows and mount their cells.
-      const firstRow = Math.max(0, Math.floor((scrollElem.scrollTop - PAD - BUFFER) / rowStride));
-      const lastRow = Math.max(0, Math.floor((scrollElem.scrollTop - PAD + viewH + BUFFER) / rowStride));
-      return [firstRow * gridCols, Math.min(pageCount - 1, (lastRow + 1) * gridCols - 1)];
-    }
-    return [
-      rowAt(Math.max(0, scrollElem.scrollTop - PAD - BUFFER)),
-      rowAt(Math.max(0, scrollElem.scrollTop - PAD + viewH + BUFFER)),
-    ];
+    // Snap the scroll band to whole rows, so every cell of a partially-visible edge row mounts.
+    // In the rail (gridCols 1) row and page coincide.
+    const firstRow = Math.floor(rowAt(Math.max(0, scrollElem.scrollTop - PAD - BUFFER)) / gridCols);
+    const lastRow = Math.floor(rowAt(Math.max(0, scrollElem.scrollTop - PAD + viewH + BUFFER)) / gridCols);
+    return [firstRow * gridCols, Math.min(pageCount - 1, (lastRow + 1) * gridCols - 1)];
   }
 
   /**
@@ -501,8 +500,8 @@ export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) 
     heights = [];
     boxHeights = [];
     lefts = [];
+    rowStrides = [];
     gridCols = 1;
-    rowStride = 0;
     if (!doc || pageCount === 0) {
       total = 0;
       spacer.style.height = '0px';
@@ -524,20 +523,25 @@ export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) 
     layoutMode = gridCols > 1 ? 'grid' : 'rail';
 
     if (layoutMode === 'grid') {
-      // Row stride is uniform (the tallest cell), so a scroll position maps to a row by division.
-      // Each page keeps its own height and top-aligns in its slot, so a shorter page leaves a gap below.
-      let maxBox = 1;
-      for (let n = 0; n < pageCount; n++) {
-        boxHeights[n] = boxHeightOf(n);
-        if (boxHeights[n] > maxBox) maxBox = boxHeights[n];
+      // Rows differ in height, so each row's stride is recorded here for `rowAt` to search instead of dividing by one stride.
+      let rowTop = 0;
+      for (let start = 0; start < pageCount; start += gridCols) {
+        const end = Math.min(pageCount, start + gridCols);
+        let rowBox = 1;
+        for (let n = start; n < end; n++) {
+          boxHeights[n] = boxHeightOf(n);
+          if (boxHeights[n] > rowBox) rowBox = boxHeights[n];
+        }
+        for (let n = start; n < end; n++) {
+          lefts[n] = PAD + (n - start) * (THUMB_W + GRID_GAP);
+          offsets[n] = rowTop;
+          heights[n] = boxHeights[n] + ROW_OVERHEAD;
+        }
+        const stride = rowBox + ROW_OVERHEAD + GRID_GAP;
+        rowStrides.push(stride);
+        rowTop += stride;
       }
-      rowStride = maxBox + ROW_OVERHEAD + GRID_GAP;
-      for (let n = 0; n < pageCount; n++) {
-        lefts[n] = PAD + (n % gridCols) * (THUMB_W + GRID_GAP);
-        offsets[n] = Math.floor(n / gridCols) * rowStride;
-        heights[n] = boxHeights[n] + ROW_OVERHEAD;
-      }
-      total = Math.ceil(pageCount / gridCols) * rowStride;
+      total = rowTop;
     } else {
       let acc = 0;
       for (let n = 0; n < pageCount; n++) {
@@ -666,6 +670,37 @@ export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) 
   /** Report the panel's current visible width (0 when hidden) so the host can inset the document to the remaining area. */
   function notifyResize() {
     if (onResize) onResize(visible ? (parseFloat(panelElem.style.width) || 0) : 0);
+  }
+
+  /**
+   * The sidebar's min/max width bounds in px (1 to MAX_COLS columns).
+   * Reads layout, so read once at a resize start and clamp each move against the cached result instead of re-reading per frame.
+   * @returns {{ min: number, max: number }}
+   */
+  function getResizeBounds() {
+    measureViewport();
+    const min = panelWidthForCols(1);
+    const extraW = Math.max(0, (parseFloat(panelElem.style.width) || min) - viewportW);
+    const containerW = (panelElem.parentElement && panelElem.parentElement.clientWidth) || min;
+    const max = Math.min(MAX_COLS * THUMB_W + (MAX_COLS - 1) * GRID_GAP + 2 * PAD + extraW, containerW);
+    return { min, max };
+  }
+
+  /**
+   * Set the panel width to `px`, clamped to `getResizeBounds` and re-columned to match.
+   * The re-column is O(pages), so call it once to commit a width, not on every drag-move.
+   * @param {number} px
+   * @returns {number} The applied (clamped) width.
+   */
+  function setWidth(px) {
+    const { min, max } = getResizeBounds();
+    const applied = Math.max(min, Math.min(max, px));
+    panelElem.style.width = `${applied}px`;
+    measureViewport();
+    // Visible: reflow animates the column change.
+    // Hidden: recompute geometry so the next reveal lands at the right columns, skipping the wasted off-screen mount and animation.
+    if (visible) reflow(); else computeGeometry();
+    return applied;
   }
 
   // Drag the right-edge handle to resize the panel between one column (the docked rail) and MAX_COLS columns.
@@ -1096,9 +1131,8 @@ export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) 
 
   /**
    * Snapshot pages `indices` to the page clipboard for a later paste.
-   * `mode` 'cut' marks the originals for removal on paste (and dims them).
-   * 'copy' leaves them in place.
-   * Editor-only, with same-document scope stamped by `doc.id`.
+   * A cut marks the originals for removal on paste and dims them.
+   * A copy leaves them in place.
    * @param {Array<number>} indices
    * @param {'cut'|'copy'} mode
    */
@@ -1115,9 +1149,15 @@ export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) 
     syncCutUI();
   }
 
-  /** Whether the clipboard holds pages from THIS document, so a paste here is valid. */
+  /**
+   * Whether the clipboard's pages can be pasted into the current document.
+   * A copy can paste into any open document, but a cut only into its source document, since its paste removes the originals.
+   * @returns {boolean}
+   */
   function canPaste() {
-    return !!scribe.doc && pageClipboard.payloads.length > 0 && pageClipboard.sourceDocId === scribe.doc.id;
+    if (!scribe.doc || pageClipboard.payloads.length === 0) return false;
+    if (pageClipboard.mode === 'cut') return pageClipboard.sourceDocId === scribe.doc.id;
+    return true;
   }
 
   /**
@@ -1338,7 +1378,7 @@ export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) 
   }
 
   return {
-    panelElem, toggleElem, rebuild, setActive, setVisible, destroy,
+    panelElem, toggleElem, rebuild, setActive, setVisible, setWidth, getResizeBounds, destroy,
   };
 }
 

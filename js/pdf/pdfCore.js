@@ -1,6 +1,7 @@
 import { ca } from '../canvasAdapter.js';
 import { unregisterFontFacesMatching } from '../containers/fontContainer.js';
 import { ObjectCache } from './objectCache.js';
+import { parseOutline } from './parseOutline.js';
 import { parseSinglePage } from './parsePdfDoc.js';
 import { findXrefOffset, getPageObjects, parseXref } from './parsePdfUtils.js';
 
@@ -30,6 +31,8 @@ export class PdfCore {
     return {
       pageCount: this.#pages.length,
       pages: this.#pages.map((p) => ({ mediaBox: p.cropBox || p.mediaBox, rotate: p.rotate })),
+      // Document outline (bookmarks), page-index-normalized; serializable across the worker boundary.
+      outline: parseOutline(this.#objCache, this.#pages),
     };
   }
 

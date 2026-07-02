@@ -8,12 +8,17 @@ import {
 import { tokenizeContentStream } from '../../pdf/contentStream.js';
 import { ObjectCache } from '../../pdf/objectCache.js';
 import { createEmbeddedFontType0 } from './writePdfFonts.js';
+import { buildOutlineObjects } from './writeOutline.js';
 import { ocrPageToPDFStream } from './writePdfText.js';
 import {
   buildHighlightAnnotObjects, buildFreeTextAnnotObjects, buildShapeAnnotObjects, consolidateAnnotations,
 } from './writePdfAnnots.js';
 import { SHAPE_ANNOT_TYPES } from '../../addHighlights.js';
 import { encodeStreamObject } from './writePdfStreams.js';
+import {
+  scrubPageDictText, scrubReferencedObject, catalogKeepEntries, defaultScrubOpts,
+} from '../../pdf/metadata/scrubMetadata.js';
+import { extractImages } from '../../pdf/parsePdfImages.js';
 import {
   traceReferencedObjects,
   buildFullXrefAndTrailer,
@@ -266,6 +271,11 @@ function replacePageResources(pageObjText, newResourcesDictText) {
 }
 
 /**
+ * Metadata-scrub configuration; `opts` overrides the Balanced defaults (`defaultScrubOpts`).
+ * @typedef {{ opts?: ReturnType<typeof import('../../pdf/metadata/scrubMetadata.js').defaultScrubOpts> }} ScrubConfig
+ */
+
+/**
  * Rebuild a PDF containing only the selected pages, optionally with OCR
  * overlay text. Used instead of incremental update when exporting a proper
  * subset of pages. Unreferenced objects are excluded to reduce file size.
@@ -278,6 +288,7 @@ function replacePageResources(pageObjText, newResourcesDictText) {
  * @param {number[]} params.pageIndices
  * @param {number} params.startingNextObjNum
  * @param {any[]} [params.ocrArr]
+ * @param {?any[]} [params.annotationOcrArr=null] - Real per-page OCR geometry for highlight consolidation (see `overlayPdfText`). Falls back to `ocrArr`.
  * @param {any[]} [params.pageMetricsArr]
  * @param {*} [params.pdfFonts]
  * @param {string} [params.textMode]
@@ -293,11 +304,13 @@ function replacePageResources(pageObjText, newResourcesDictText) {
  * @param {boolean} [params.convertBrokenType3ToPaths=false] - Convert glyphs drawn by broken-ToUnicode Type3 fonts to paths on every page.
  * @param {DocFonts} [params.docFonts] - Per-document fonts for the OCR overlay text layer.
  * @param {(message: string) => void} [params.warningHandler] - Reports each annotation skipped on error.
+ * @param {?Array<import('../../objects/outlineObjects.js').OutlineNode>} [params.outline=null] - Bookmark tree with destinations indexed into the output page order.
+ * @param {?ScrubConfig} [params.scrub=null] - When set, scrubs identifying metadata using these scrub options.
  */
 export async function rebuildPdfSubset({
   pdfBytes, text, objCache, xrefEntries, pages,
   pageIndices, startingNextObjNum,
-  ocrArr, pageMetricsArr, pdfFonts,
+  ocrArr, annotationOcrArr = null, pageMetricsArr, pdfFonts,
   textMode, rotateText, rotateBackground,
   confThreshHigh, confThreshMed, proofOpacity,
   humanReadable = false,
@@ -307,9 +320,41 @@ export async function rebuildPdfSubset({
   convertBrokenType3ToPaths = false,
   docFonts,
   warningHandler,
+  outline = null,
+  scrub = null,
 }) {
   const overlayEnabled = !!(ocrArr && pageMetricsArr && pdfFonts);
   let nextObjNum = startingNextObjNum;
+
+  // Metadata-scrub state (only when sanitizing): map image objNum -> /Filter, an OCG-relabel counter,
+  // and the "keep-by-default" catalog structure keys (accessibility, page labels, viewer prefs).
+  let scrubCtx = null;
+  /** @type {Array<{ name: string, valueText: string, tracing: string }>} */
+  let catalogKeep = [];
+  let droppedSigCount = 0;
+  if (scrub) {
+    const opts = scrub.opts || {};
+    let imageMap = new Map();
+    try { for (const [n, meta] of Object.entries(extractImages(pdfBytes) || {})) imageMap.set(Number(n), meta.filter || null); } catch { imageMap = new Map(); }
+    scrubCtx = { imageFilter: (n) => imageMap.get(n) || null, ocgCounter: { n: 0 } };
+    const rootNum0 = findRootObjNum(pdfBytes);
+    const catText0 = rootNum0 != null ? objCache.getObjectText(rootNum0) : null;
+    const catStart0 = catText0 ? catText0.indexOf('<<') : -1;
+    const catBody0 = catStart0 !== -1 ? extractDict(catText0, catStart0).slice(2, -2) : '';
+    if (catBody0) {
+      catalogKeep = catalogKeepEntries(catBody0, opts);
+      // On a full identity subset with no supplied outline, the source /Outlines' /Dest refs still resolve (kept pages keep their object numbers), so carry it forward verbatim.
+      // A subset or reorder rebuilds bookmarks from the remapped `outline` instead (buildOutlineObjects below).
+      const identityPages = pageIndices.length === pages.length && pageIndices.every((v, i) => v === i);
+      if (identityPages && !outline) {
+        const outlinesEntry = parseDictEntries(catBody0).find((e) => e.name === 'Outlines');
+        const outlineRef = outlinesEntry && outlinesEntry.valueText.trim();
+        if (outlineRef && /^\d+\s+\d+\s+R$/.test(outlineRef)) {
+          catalogKeep.push({ name: 'Outlines', valueText: outlineRef, tracing: outlineRef });
+        }
+      }
+    }
+  }
 
   const regionsByPage = new Map();
   if (convertRegionsToPaths) {
@@ -459,7 +504,7 @@ export async function rebuildPdfSubset({
       if (hasAnnots) {
         const outputDims = { width: baseWidth, height: baseHeight };
         const highlightAnns = pageAnnotations.filter((a) => a.type == null || a.type === 'highlight');
-        const consolidated = consolidateAnnotations(highlightAnns, pageObj);
+        const consolidated = consolidateAnnotations(highlightAnns, annotationOcrArr?.[i] || pageObj);
         const pageForEmit = consolidated.length > 0 ? consolidated : highlightAnns;
         const transformed = pageForEmit.map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty));
         const { objectTexts, annotRefs } = buildHighlightAnnotObjects(transformed, nextObjNum, outputDims, warningHandler);
@@ -520,6 +565,7 @@ export async function rebuildPdfSubset({
     pageText = dropOrphanLinkAnnots(pageText, objCache, keptPageObjNums);
     if (pageMetricsArr?.[i]?.rotation) pageText = composePageRotation(pageText, pageMetricsArr[i].rotation, objCache);
 
+    if (scrub) pageText = scrubPageDictText(pageText);
     rewrittenPageTexts.set(pageInfo.objNum, pageText);
     allOutputObjects.push({ objNum: pageInfo.objNum, content: `${pageInfo.objNum} 0 obj\n${pageText}\nendobj\n\n` });
   }
@@ -536,7 +582,9 @@ export async function rebuildPdfSubset({
   let ocPropertiesEntry = '';
   const rootObjNum = findRootObjNum(pdfBytes);
   const catText = rootObjNum != null ? objCache.getObjectText(rootObjNum) : null;
-  if (catText) {
+  // Trace the keep-by-default catalog structure (accessibility, page labels, viewer prefs) so the scrub does not orphan and silently strip it.
+  for (const k of catalogKeep) if (k.tracing) tracingTexts.push(k.tracing);
+  if (catText && !(scrub && scrub.opts && scrub.opts.dropOCProperties)) {
     const ocIdx = catText.indexOf('/OCProperties');
     if (ocIdx >= 0) {
       const after = catText.slice(ocIdx + '/OCProperties'.length).replace(/^\s+/, '');
@@ -550,7 +598,12 @@ export async function rebuildPdfSubset({
     }
   }
 
-  const referencedObjNums = traceReferencedObjects(tracingTexts, objCache, pageTreeObjNums);
+  // When scrubbing, scrubPageDictText strips the scrub's drop-keys from the text the BFS scans,
+  // so the trace skips refs under those keys (e.g. a StructElem's /Info to a document-properties dict)
+  // and their targets orphan instead of being copied verbatim.
+  const referencedObjNums = traceReferencedObjects(
+    tracingTexts, objCache, pageTreeObjNums, scrub ? scrubPageDictText : null,
+  );
 
   for (const i of pageIndices) {
     if (i >= pages.length) continue;
@@ -564,6 +617,16 @@ export async function rebuildPdfSubset({
     const entry = xrefEntries[objNum];
     if (!entry) continue;
 
+    if (scrub) {
+      // Drop whole metadata-bearing objects outright (their host refs are scrubbed, so they orphan):
+      // XMP streams, embedded-file attachments, and digital signatures (a strip invalidates a signature).
+      const objTextForScrub = objCache.getObjectText(objNum);
+      if (objTextForScrub && /\/Type\s*\/(Metadata|Filespec|EmbeddedFile)\b/.test(objTextForScrub)) continue;
+      if (objTextForScrub && /\/Type\s*\/Sig\b/.test(objTextForScrub)) { droppedSigCount += 1; continue; }
+      const replacement = scrubReferencedObject(pdfBytes, objCache, entry, objNum, scrubCtx);
+      if (replacement != null) { allOutputObjects.push({ objNum, content: replacement }); continue; }
+    }
+
     if (entry.type === 1) {
       const rawCopy = copyRawObjectBytes(pdfBytes, text, objCache, entry, objNum);
       if (!rawCopy) continue;
@@ -576,13 +639,31 @@ export async function rebuildPdfSubset({
     }
   }
 
+  if (scrub && droppedSigCount > 0 && typeof warningHandler === 'function') {
+    warningHandler(`Removing metadata invalidated and dropped ${droppedSigCount} digital signature(s).`);
+  }
+
   const keptPageRefs = [];
+  const pageObjNumByIndex = [];
   for (const i of pageIndices) {
     if (i >= pages.length) continue;
     keptPageRefs.push(`${pages[i].objNum} 0 R`);
+    pageObjNumByIndex.push(pages[i].objNum);
   }
 
-  allOutputObjects.push({ objNum: catalogObjNum, content: `${catalogObjNum} 0 obj\n<</Type/Catalog/Pages ${pagesRootObjNum} 0 R${ocPropertiesEntry ? ` ${ocPropertiesEntry}` : ''}>>\nendobj\n\n` });
+  // The caller supplies `outline` with destinations already indexed into the output page order, so each /Dest maps to the kept page's preserved object number.
+  let outlineEntry = '';
+  if (outline && outline.length) {
+    const built = buildOutlineObjects(outline, pageObjNumByIndex, nextObjNum);
+    if (built) {
+      for (const o of built.objects) allOutputObjects.push(o);
+      nextObjNum = built.nextObjNum;
+      outlineEntry = ` /Outlines ${built.rootObjNum} 0 R`;
+    }
+  }
+
+  const catalogKeepEntry = catalogKeep.map((k) => `/${k.name} ${k.valueText}`).join(' ');
+  allOutputObjects.push({ objNum: catalogObjNum, content: `${catalogObjNum} 0 obj\n<</Type/Catalog/Pages ${pagesRootObjNum} 0 R${ocPropertiesEntry ? ` ${ocPropertiesEntry}` : ''}${catalogKeepEntry ? ` ${catalogKeepEntry}` : ''}${outlineEntry}>>\nendobj\n\n` });
   allOutputObjects.push({ objNum: pagesRootObjNum, content: `${pagesRootObjNum} 0 obj\n<</Type/Pages/Kids[${keptPageRefs.join(' ')}]/Count ${keptPageRefs.length}>>\nendobj\n\n` });
 
   // Build the new PDF
@@ -645,8 +726,12 @@ export async function rebuildPdfSubset({
  *
  * @param {ArrayBuffer | Uint8Array} basePdfData
  * @param {number[]} pageIndices
+ * @param {{ outline?: Array<import('../../objects/outlineObjects.js').OutlineNode>, scrub?: ScrubConfig, warningHandler?: (message: string) => void }} [options]
+ *   `outline`: a bookmark tree written as the output's `/Outlines`.
+ *   Its destinations must be indices into the output page sequence (`pageIndices`), so callers remap page-index dests to output order first.
+ *   `scrub`: when set, sanitizes identifying metadata (see `stripMetadataPdf`). `warningHandler`: reports dropped signatures.
  */
-export async function subsetPdf(basePdfData, pageIndices) {
+export async function subsetPdf(basePdfData, pageIndices, options = {}) {
   const pdfBytes = basePdfData instanceof Uint8Array ? basePdfData : new Uint8Array(basePdfData);
   const text = new TextDecoder('latin1').decode(pdfBytes);
 
@@ -679,5 +764,29 @@ export async function subsetPdf(basePdfData, pageIndices) {
     pages,
     pageIndices,
     startingNextObjNum,
+    outline: options.outline || null,
+    scrub: options.scrub || null,
+    warningHandler: options.warningHandler,
   });
+}
+
+/**
+ * Produce a metadata-sanitized copy of a PDF: a full object-level rewrite (dropping prior revisions, orphans, /Info, catalog XMP, /Encrypt)
+ * with per-object metadata scrubbed and embedded-image EXIF stripped.
+ * Keeps every page unchanged.
+ * `opts` overrides the Balanced defaults (see `defaultScrubOpts`).
+ * @param {Uint8Array|ArrayBuffer} basePdfData
+ * @param {object} [opts]
+ * @param {(message: string) => void} [warningHandler] - Called once with a summary if signatures were dropped.
+ * @returns {Promise<Uint8Array>}
+ */
+export async function stripMetadataPdf(basePdfData, opts = {}, warningHandler = undefined) {
+  const pdfBytes = basePdfData instanceof Uint8Array ? basePdfData : new Uint8Array(basePdfData);
+  const xrefEntries = parseXref(pdfBytes, findXrefOffset(pdfBytes));
+  const objCache = new ObjectCache(pdfBytes, xrefEntries);
+  objCache.ensureXrefRepaired();
+  const pageCount = getPageObjects(objCache).length;
+  const allPages = Array.from({ length: pageCount }, (_, i) => i);
+  const out = await subsetPdf(pdfBytes, allPages, { scrub: { opts: { ...defaultScrubOpts(), ...opts } }, warningHandler });
+  return out instanceof Uint8Array ? out : new Uint8Array(out);
 }

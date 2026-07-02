@@ -630,3 +630,17 @@ export const cleanFamilyName = (family) => {
 
   return familyClean;
 };
+
+/**
+ * Concatenate an array of `Uint8Array` chunks into one contiguous `Uint8Array`.
+ * @param {Uint8Array[]} chunks
+ * @returns {Uint8Array}
+ */
+export function concatBytes(chunks) {
+  let total = 0;
+  for (const c of chunks) total += c.length;
+  const res = new Uint8Array(total);
+  let off = 0;
+  for (const c of chunks) { res.set(c, off); off += c.length; }
+  return res;
+}

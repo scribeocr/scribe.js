@@ -13,6 +13,7 @@ import { imageUtils, ImageWrapper } from '../objects/imageObjects.js';
 import { addCircularRefsDataTables, LayoutDataTablePage, LayoutPage } from '../objects/layoutObjects.js';
 import { OcrPage, addCircularRefsOcr, updateOcrFormat } from '../objects/ocrObjects.js';
 import { PageMetrics } from '../objects/pageMetricsObjects.js';
+import { reassignOutlineIds } from '../objects/outlineObjects.js';
 import { checkCharWarn, convertOCR } from '../recognizeConvert.js';
 import { importImageFileToBase64 } from '../utils/imageUtils.js';
 import {
@@ -221,7 +222,12 @@ async function restoreSessionFromFile(doc, scribeFile) {
     doc.inputData.ocrApplied = Array(doc.ocr[oemName].length).fill(true);
   }
 
-  return scribeRestoreObj.pageRotations || null;
+  // The caller applies `outline` after the PDF loads, since openMainPDF's parse of the source /Outlines would otherwise clobber it.
+  // A returned `null` (key absent) means a pre-outline .scribe, so the PDF's own bookmarks win; `[]` means the session deliberately had none.
+  return {
+    rotations: scribeRestoreObj.pageRotations || null,
+    outline: 'outline' in scribeRestoreObj ? (scribeRestoreObj.outline || []) : null,
+  };
 }
 
 /**
@@ -406,8 +412,12 @@ export async function importFiles(doc, files, options = {}) {
 
   /** @type {number[]|null} */
   let restoredRotations = null;
+  /** @type {Array<import('../objects/outlineObjects.js').OutlineNode>|null} */
+  let restoredOutline = null;
   if (scribeFiles[0]) {
-    restoredRotations = await restoreSessionFromFile(doc, scribeFiles[0]);
+    const restoreRes = await restoreSessionFromFile(doc, scribeFiles[0]);
+    restoredRotations = restoreRes.rotations;
+    restoredOutline = restoreRes.outline;
   }
 
   const xmlModeImport = ocrFiles.length > 0;
@@ -542,6 +552,11 @@ export async function importFiles(doc, files, options = {}) {
       if (restoredRotations?.[i] && doc.pageMetrics[i]) {
         doc.pageMetrics[i].rotation = restoredRotations[i];
       }
+    }
+    // Re-apply the session's saved bookmarks, overriding those the PDF load parsed from the source's own /Outlines.
+    if (restoredOutline != null) {
+      doc.outline.length = 0;
+      for (const n of reassignOutlineIds(restoredOutline)) doc.outline.push(n);
     }
   }
 

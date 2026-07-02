@@ -4,6 +4,9 @@ import { saveAs } from '../utils/miscUtils.js';
 import { writePdf } from './pdf/writePdf.js';
 import { overlayPdfText } from './pdf/writePdfOverlay.js';
 import { subsetPdf } from './pdf/subsetPdf.js';
+import { mergePdfs } from './pdf/mergePdfs.js';
+import { defaultScrubOpts } from '../pdf/metadata/scrubMetadata.js';
+import { remapOutline, pageArrIndexMap } from '../objects/outlineObjects.js';
 import { writeHocr } from './writeHocr.js';
 import { writeText } from './writeText.js';
 import { writeHtml } from './writeHtml.js';
@@ -47,6 +50,11 @@ import { mayHaveBakedText, hasBrokenFontRun, isScanPage } from '../pdf/ocrPageSe
  * @property {boolean} [compressScribe]
  * @property {boolean} [includeExtraTextScribe]
  * @property {'width' | 'sentence'} [docxLineSplitMode]
+ * @property {boolean} [sanitize] - Strip identifying metadata (Info/XMP/PieceInfo/embedded files/image
+ *    EXIF/actions/prior revisions/signatures) from the exported PDF, keeping the visible pages unchanged.
+ *    Only applies to the PDF-overlay export path (PDF input with addOverlay).
+ * @property {object} [scrubOpts] - Overrides the Balanced scrub defaults when `sanitize` is set
+ *    (`stripStructTree`, `stripPageLabels`, `stripViewerPrefs`, `dropOCProperties`).
  */
 
 /**
@@ -117,6 +125,9 @@ export async function exportData(doc, format = 'txt', options = {}) {
     // Surfaces per-annotation skips (a bad annotation no longer aborts the whole export).
     const warningHandler = (message) => doc.warningHandler({ message });
 
+    // A non-null scrub forces the overlay writer onto its rebuild path.
+    const scrub = options.sanitize ? { opts: { ...defaultScrubOpts(), ...(options.scrubOpts || {}) } } : null;
+
     const dimsLimit = { width: -1, height: -1 };
     if (standardizePageSize) {
       for (const i of pageArr) {
@@ -133,8 +144,6 @@ export async function exportData(doc, format = 'txt', options = {}) {
 
       const rotateText = !rotateBackground;
 
-      let insertInputFailed = false;
-
       if (insertInputPDF) {
         try {
           let basePdfData = doc.images.pdfData;
@@ -147,17 +156,43 @@ export async function exportData(doc, format = 'txt', options = {}) {
           // so subset the input PDF to the source order while the overlay arrays stay in display order.
           // An identity composition (no reordering, full page set) skips the subset.
           const sourceArr = pageArr.map((p) => doc.pageMetrics[p]?.sourcePageN ?? p);
-          const composed = sourceArr.some((s, k) => s !== pageArr[k]) || pageArr.length < doc.inputData.pageCount;
+          // A page copied from another document carries a foreign `sourceId`, so multiSource flags an export that spans more than one source PDF.
+          const sourceIdArr = pageArr.map((p) => doc.pageMetrics[p]?.sourceId ?? doc.images.primarySourceId);
+          const multiSource = sourceIdArr.some((id) => id !== doc.images.primarySourceId);
+          const composed = multiSource || sourceArr.some((s, k) => s !== pageArr[k]) || pageArr.length < doc.inputData.pageCount;
+          // [] (not null) makes the writers strip a source's existing /Outlines, but null would preserve them.
+          const outlineForOutput = remapOutline(doc.outline || [], pageArrIndexMap(pageArr));
           if (composed) {
             const fullStats = pageStats;
             const fullOcrApplied = ocrAppliedArr;
-            basePdfData = await subsetPdf(basePdfData, sourceArr);
+            if (multiSource) {
+              // mergePdfs duplicates shared fonts/images per source and keeps only the first source's OCG layers.
+              const runs = [];
+              for (let k = 0; k < pageArr.length; k++) {
+                const last = runs[runs.length - 1];
+                if (last && last.sourceId === sourceIdArr[k]) last.pages.push(sourceArr[k]);
+                else runs.push({ sourceId: sourceIdArr[k], pages: [sourceArr[k]] });
+              }
+              const runBuffers = [];
+              for (const run of runs) {
+                const bytes = doc.images.sources.get(run.sourceId)?.pdfData;
+                if (!bytes) throw new Error(`Cannot export: missing PDF bytes for render source ${run.sourceId}.`);
+                runBuffers.push(await subsetPdf(bytes, run.pages));
+              }
+              basePdfData = runBuffers.length === 1 ? runBuffers[0] : await mergePdfs(runBuffers, { outline: outlineForOutput });
+            } else {
+              basePdfData = await subsetPdf(basePdfData, sourceArr, { outline: outlineForOutput });
+            }
             overlayOcrArr = pageArr.map((i) => ocrDownload[i]);
             overlayPageMetricsArr = pageArr.map((i) => doc.pageMetrics[i]);
             overlayAnnotationsPages = pageArr.map((i) => doc.annotations.pages[i] || []);
             pageStats = fullStats ? pageArr.map((i) => fullStats[i]) : null;
             ocrAppliedArr = fullOcrApplied ? pageArr.map((i) => fullOcrApplied[i]) : null;
           }
+
+          // Snapshot the real OCR before the routing below empties overlayOcrArr for clean text-native pages,
+          // since highlight consolidation still needs the real word/line geometry to coalesce per-word highlights into per-line quads.
+          const annotationOcrArr = overlayOcrArr;
 
           // convertFullPages and convertBrokenType3 control per-page flatten vs. passthrough.
           // They default to the legacy path: a full overlay on every page plus broken-Type3 conversion.
@@ -199,6 +234,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
           content = await overlayPdfText({
             basePdfData,
             ocrArr: overlayOcrArr,
+            annotationOcrArr,
             pageMetricsArr: overlayPageMetricsArr,
             textMode: displayMode,
             rotateText,
@@ -213,16 +249,18 @@ export async function exportData(doc, format = 'txt', options = {}) {
             convertBrokenType3ToPaths: convertBrokenType3,
             docFonts: doc.fonts,
             warningHandler,
+            outline: outlineForOutput,
+            scrub,
           });
         } catch (error) {
-          console.error('Failed to overlay text onto input PDF, creating new PDF from rendered images instead.');
-          console.error(error);
-          insertInputFailed = true;
+          // Never fall back to rasterizing PDF input: it bakes vector/text pages into images and destroys searchable text.
+          // Rendering image *inputs* to raster + an invisible-text layer below is a separate, legitimate path.
+          throw new Error(`Failed to overlay text onto the input PDF: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
         }
       }
 
-      // Build a fresh PDF (writePdf handles images natively; no mupdf convertImage* needed).
-      if (!insertInputPDF || insertInputFailed) {
+      // Build a fresh PDF from rendered images: reached for image inputs, or a PDF exported with the overlay disabled.
+      if (!insertInputPDF) {
         const props = { rotated: rotateBackground, upscaled: false, colorMode };
         const binary = colorMode === 'binary';
 
@@ -394,6 +432,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
       annotations: doc.annotations.pages,
       pageRotations: (doc.pageMetrics || []).map((pm) => pm?.rotation || 0),
       pageSourceIndices: (doc.pageMetrics || []).map((pm) => pm?.sourcePageN ?? null),
+      outline: doc.outline,
       inputData: {
         pdfType: doc.inputData.pdfType,
         pageStats: doc.inputData.pageStats,
