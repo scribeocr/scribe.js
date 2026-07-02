@@ -8,7 +8,7 @@ import {
   findRootObjNum, applyPredictor, getPageContentStreams, isFormOCHidden, parseHiddenOCMCNames,
 } from './parsePdfUtils.js';
 import {
-  extractDict, resolveIntValue, resolveNumValue, resolveArrayValue, matMul, bytesToLatin1,
+  extractDict, resolveIntValue, resolveNumValue, resolveArrayValue, matMul, bytesToLatin1, decodePdfString,
 } from './pdfPrimitives.js';
 import { parseDrawOps } from './parseDrawOps.js';
 
@@ -5252,40 +5252,13 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         const ftParentMatch = parentText ? /\/FT\s*\/(\w+)/.exec(parentText) : null;
         if (ftParentMatch) resolvedFieldType = ftParentMatch[1];
       }
-      // Decode the text/choice field value (/V) once, up front: a literal /V may itself be UTF-16BE
-      // (its first two decoded bytes are 0xFE 0xFF), and the decoded value drives both the regenerate
-      // decision below and the synthesis further down, so parse it before either.
+      // Decode /V up front: both the regenerate decision and the synthesis below consume it.
       let fieldValue = null;
       if (resolvedFieldType === 'Tx' || resolvedFieldType === 'Ch') {
-        const vLitMatch = /\/V\s*\(((?:[^()\\]|\\.)*)\)/.exec(annotText);
-        const vHexMatch = /\/V\s*<([0-9A-Fa-f\s]*)>/.exec(annotText);
-        if (vLitMatch) {
-          const lit = vLitMatch[1].replace(/\\([nrtbf()\\]|[0-7]{1,3})/g, (m, c) => {
-            const simple = {
-              n: '\n', r: '\r', t: '\t', b: '\b', f: '\f', '(': '(', ')': ')', '\\': '\\',
-            };
-            return simple[c] !== undefined ? simple[c] : String.fromCharCode(parseInt(c, 8));
-          });
-          // A literal /V may itself hold UTF-16BE bytes: its first two chars are 0xFE 0xFF (the BOM).
-          if (lit.charCodeAt(0) === 0xfe && lit.charCodeAt(1) === 0xff) {
-            let s = '';
-            for (let k = 2; k + 1 < lit.length; k += 2) s += String.fromCharCode((lit.charCodeAt(k) << 8) | lit.charCodeAt(k + 1));
-            fieldValue = s;
-          } else {
-            fieldValue = lit;
-          }
-        } else if (vHexMatch) {
-          const hex = vHexMatch[1].replace(/\s+/g, '');
-          const bytes = [];
-          for (let k = 0; k + 1 < hex.length; k += 2) bytes.push(parseInt(hex.substr(k, 2), 16));
-          if (bytes[0] === 0xfe && bytes[1] === 0xff) {
-            let s = '';
-            for (let k = 2; k + 1 < bytes.length; k += 2) s += String.fromCharCode((bytes[k] << 8) | bytes[k + 1]);
-            fieldValue = s;
-          } else {
-            fieldValue = bytesToLatin1(Uint8Array.from(bytes));
-          }
-        }
+        const vLitMatch = /\/V\s*(\((?:[^()\\]|\\.)*\))/.exec(annotText);
+        const vHexMatch = /\/V\s*(<[0-9A-Fa-f\s]*>)/.exec(annotText);
+        const vTok = vLitMatch ? vLitMatch[1] : (vHexMatch ? vHexMatch[1] : null);
+        if (vTok) fieldValue = decodePdfString(vTok);
         if (fieldValue && fieldValue.charCodeAt(0) === 0xfeff) fieldValue = fieldValue.slice(1);
       }
 

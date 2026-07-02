@@ -825,9 +825,46 @@ function unescapePdfLiteral(body) {
   });
 }
 
+// PDFDocEncoding -> Unicode for the bytes that differ from Latin-1 (PDF 32000 Annex D.2).
+// A byte absent from this map decodes as itself.
+const PDF_DOC_ENCODING_DELTA = new Map([
+  [0x18, 0x02D8], [0x19, 0x02C7], [0x1A, 0x02C6], [0x1B, 0x02D9], [0x1C, 0x02DD], [0x1D, 0x02DB], [0x1E, 0x02DA], [0x1F, 0x02DC],
+  [0x80, 0x2022], [0x81, 0x2020], [0x82, 0x2021], [0x83, 0x2026], [0x84, 0x2014], [0x85, 0x2013], [0x86, 0x0192], [0x87, 0x2044],
+  [0x88, 0x2039], [0x89, 0x203A], [0x8A, 0x2212], [0x8B, 0x2030], [0x8C, 0x201E], [0x8D, 0x201C], [0x8E, 0x201D], [0x8F, 0x2018],
+  [0x90, 0x2019], [0x91, 0x201A], [0x92, 0x2122], [0x93, 0xFB01], [0x94, 0xFB02], [0x95, 0x0141], [0x96, 0x0152], [0x97, 0x0160],
+  [0x98, 0x0178], [0x99, 0x017D], [0x9A, 0x0131], [0x9B, 0x0142], [0x9C, 0x0153], [0x9D, 0x0161], [0x9E, 0x017E], [0xA0, 0x20AC],
+]);
+
 /**
- * Decode a PDF string token (delimiters included) to a JS string: hex `<...>` (UTF-16BE if it opens with a FEFF BOM, else latin1) or literal `(...)`.
- * A token that is neither is returned trimmed.
+ * Decode the raw bytes of a PDF text string.
+ * Input is a Latin-1 byte string: each char code is one byte.
+ * @param {string} bytes
+ * @returns {string}
+ */
+function decodeTextStringBytes(bytes) {
+  let out;
+  if (bytes.length >= 2 && bytes.charCodeAt(0) === 0xFE && bytes.charCodeAt(1) === 0xFF) {
+    out = '';
+    for (let i = 2; i + 1 < bytes.length; i += 2) out += String.fromCharCode((bytes.charCodeAt(i) << 8) | bytes.charCodeAt(i + 1));
+  } else if (bytes.length >= 3 && bytes.charCodeAt(0) === 0xEF && bytes.charCodeAt(1) === 0xBB && bytes.charCodeAt(2) === 0xBF) {
+    const arr = new Uint8Array(bytes.length - 3);
+    for (let i = 3; i < bytes.length; i++) arr[i - 3] = bytes.charCodeAt(i);
+    out = new TextDecoder().decode(arr);
+  } else {
+    out = '';
+    for (let i = 0; i < bytes.length; i++) {
+      const u = PDF_DOC_ENCODING_DELTA.get(bytes.charCodeAt(i));
+      out += u === undefined ? bytes[i] : String.fromCharCode(u);
+    }
+  }
+  // Some producers NUL-terminate the string. A trailing U+0000 is never displayable text.
+  let end = out.length;
+  while (end > 0 && out.charCodeAt(end - 1) === 0) end -= 1;
+  return out.slice(0, end);
+}
+
+/**
+ * Decode a PDF string token, delimiters included, to a JS string: hex `<...>` or literal `(...)`.
  * @param {string} token
  * @returns {string}
  */
@@ -837,16 +874,10 @@ export function decodePdfString(token) {
   if (t[0] === '<') {
     let hex = t.replace(/^</, '').replace(/>$/, '').replace(/\s+/g, '');
     if (hex.length % 2 === 1) hex += '0'; // PDF pads a final odd nibble with 0
-    if (hex.length === 0) return '';
-    if (hex.length >= 4 && hex.slice(0, 4).toUpperCase() === 'FEFF') {
-      let out = '';
-      for (let i = 4; i + 3 < hex.length; i += 4) out += String.fromCharCode(parseInt(hex.slice(i, i + 4), 16));
-      return out;
-    }
-    let out = '';
-    for (let i = 0; i + 1 < hex.length; i += 2) out += String.fromCharCode(parseInt(hex.slice(i, i + 2), 16));
-    return out;
+    let bytes = '';
+    for (let i = 0; i + 1 < hex.length; i += 2) bytes += String.fromCharCode(parseInt(hex.slice(i, i + 2), 16));
+    return decodeTextStringBytes(bytes);
   }
-  if (t[0] === '(') return unescapePdfLiteral(t.slice(1, -1));
+  if (t[0] === '(') return decodeTextStringBytes(unescapePdfLiteral(t.slice(1, -1)));
   return t;
 }
