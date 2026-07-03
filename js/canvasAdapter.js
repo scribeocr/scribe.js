@@ -90,13 +90,11 @@ export class ca {
    * @param {ImageData} imgData
    */
   static createImageBitmapFromImageData = async (imgData) => {
-    if (typeof process !== 'undefined') {
-      const tmpCanvas = ca.makeCanvas(imgData.width, imgData.height);
-      const tmpCtx = tmpCanvas.getContext('2d');
-      tmpCtx.putImageData(imgData, 0, 0);
-      return tmpCanvas;
-    }
-    return createImageBitmap(imgData);
+    // Chrome's createImageBitmap(imgData) is slower than wrapping the ImageData through a canvas first,
+    // so never call it on the ImageData directly.
+    const canvas = ca.makeCanvas(imgData.width, imgData.height);
+    canvas.getContext('2d').putImageData(imgData, 0, 0);
+    return typeof process !== 'undefined' ? canvas : createImageBitmap(canvas);
   };
 
   /**

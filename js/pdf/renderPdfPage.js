@@ -59,6 +59,43 @@ function interpolateTint(tintSamples, nSamples, tint) {
 }
 
 /**
+ * Precompute the 256-entry RGB table for a Separation / single-input-DeviceN tint transform.
+ * `interpolateTint` is a pure function of the 0-255 tint byte, so the whole per-pixel interpolation collapses to one table build plus a lookup.
+ * @param {Uint8Array} tintSamples
+ * @param {number} nSamples
+ * @returns {Uint8Array} 256 packed RGB triplets (768 bytes)
+ */
+function buildTintLut(tintSamples, nSamples) {
+  const lut = new Uint8Array(256 * 3);
+  for (let t = 0; t < 256; t++) {
+    const [r, g, b] = interpolateTint(tintSamples, nSamples, t);
+    lut[t * 3] = r;
+    lut[t * 3 + 1] = g;
+    lut[t * 3 + 2] = b;
+  }
+  return lut;
+}
+
+/**
+ * Expand a DeviceCMYK Indexed palette to RGB once, running `cmykToRgb` per palette entry instead of per pixel.
+ * The index is a byte, so there are at most 256 distinct colours no matter how large the image.
+ * @param {Uint8Array} palette - CMYK bytes, 4 per entry
+ * @returns {Uint8Array} one packed RGB triplet per entry
+ */
+function cmykPaletteToRgb(palette) {
+  const entries = Math.floor(palette.length / 4);
+  const rgb = new Uint8Array(entries * 3);
+  for (let e = 0; e < entries; e++) {
+    const o = e * 4;
+    const [r, g, b] = cmykToRgb(palette[o] / 255, palette[o + 1] / 255, palette[o + 2] / 255, palette[o + 3] / 255);
+    rgb[e * 3] = r;
+    rgb[e * 3 + 1] = g;
+    rgb[e * 3 + 2] = b;
+  }
+  return rgb;
+}
+
+/**
  * Stable family-name alias for an embedded PDF font, keyed on
  * `(docId, fontObjNum)`. Reused across every page of the document so
  * `GlobalFonts.register` dedups to one registration per typeface.
@@ -443,11 +480,56 @@ async function decodeSmaskJpeg(rawData) {
 }
 
 /**
+ * Write a grayscale soft mask into the alpha channel of an RGBA buffer, nearest-neighbor scaling the mask to the image's `w`x`h`.
+ * Mutates `px` in place.
+ *
+ * @param {Uint8ClampedArray} px  RGBA buffer, length w*h*4
+ * @param {number} w
+ * @param {number} h
+ * @param {Uint8Array} sMask  grayscale mask, length sMaskWidth*sMaskHeight
+ * @param {number} sMaskWidth
+ * @param {number} sMaskHeight
+ */
+function applySoftMaskAlpha(px, w, h, sMask, sMaskWidth, sMaskHeight) {
+  const n = w * h;
+  // Mask already matches the image size: copy each byte straight into its alpha slot.
+  if (sMaskWidth === w && sMaskHeight === h) {
+    const n8 = n - (n % 8);
+    let i = 0;
+    let a = 3;
+    for (; i < n8; i += 8, a += 32) {
+      px[a] = sMask[i]; px[a + 4] = sMask[i + 1]; px[a + 8] = sMask[i + 2]; px[a + 12] = sMask[i + 3];
+      px[a + 16] = sMask[i + 4]; px[a + 20] = sMask[i + 5]; px[a + 24] = sMask[i + 6]; px[a + 28] = sMask[i + 7];
+    }
+    for (; i < n; i++, a += 4) px[a] = sMask[i];
+    return;
+  }
+  // Scaling path: precompute each column's source index once so the pixel loop does no per-pixel divide, floor, or clamp.
+  const sxLUT = new Int32Array(w);
+  // Math.min never triggers for x <= w-1, but it's a cheap defensive bound in this one-time O(w) setup.
+  for (let x = 0; x < w; x++) sxLUT[x] = Math.min(Math.floor(x * sMaskWidth / w), sMaskWidth - 1);
+  const w4 = w - (w % 4);
+  let a = 3;
+  for (let y = 0; y < h; y++) {
+    const row = Math.min(Math.floor(y * sMaskHeight / h), sMaskHeight - 1) * sMaskWidth;
+    let x = 0;
+    for (; x < w4; x += 4, a += 16) {
+      px[a] = sMask[row + sxLUT[x]];
+      px[a + 4] = sMask[row + sxLUT[x + 1]];
+      px[a + 8] = sMask[row + sxLUT[x + 2]];
+      px[a + 12] = sMask[row + sxLUT[x + 3]];
+    }
+    for (; x < w; x++, a += 4) px[a] = sMask[row + sxLUT[x]];
+  }
+}
+
+/**
  * Box-average a binary (0/255) soft mask down to outW x outH.
- * Used when the mask is higher-resolution than the device area the image occupies: averaging preserves the edge anti-aliasing a full-resolution draw would produce,
+ * Used when the mask is higher-resolution than the device area the image occupies:
+ * averaging preserves the edge anti-aliasing a full-resolution draw would produce,
  * without building a composite at the mask's full resolution.
  *
- * The input `sMask` is be returned directly (not copied) when the output would be identical, so the output is read-only.
+ * The input `sMask` is returned directly (not copied) when the output would be identical, so the output is read-only.
  *
  * @param {Uint8Array} sMask
  * @param {number} sMaskWidth
@@ -643,15 +725,17 @@ function putDecodedImage(objCache, key, bitmap, maxW, maxH, bytes, decodeMs) {
 
 /**
  * Convert decoded image bytes to an ImageBitmap suitable for canvas drawing.
- * `maxW`/`maxH` are the device px the image will be drawn within (0 = unbounded)
- * and cap JPEG2000 decode resolution.
+ * `maxW`/`maxH` are the device px the image will be drawn within (0 = unbounded) and cap JPEG2000 decode resolution.
  *
  * @param {import('./parsePdfImages.js').ImageInfo} imageInfo
  * @param {ObjectCache} [objCache]
  * @param {number} [maxW]
  * @param {number} [maxH]
+ * @param {{x0:number,y0:number,x1:number,y1:number}|null} [roi] - visible region in image pixels.
+ *    The DeviceCMYK JPEG path decodes only this rect (the rest is clipped away when drawn).
+ * @returns {Promise<ImageBitmap|null>} null when the image data is missing or cannot be decoded.
  */
-async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
+async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = null) {
   if (imageInfo.imageData == null && objCache && imageInfo.objNum != null) {
     imageInfo.imageData = objCache.getStreamBytes(imageInfo.objNum);
   }
@@ -678,19 +762,16 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
     // Use our JS decoder to get correct RGB output.
     if (colorSpace === 'DeviceCMYK') {
       const jpegBytes = imageData instanceof Uint8Array ? imageData : new Uint8Array(imageData);
-      const cmykResult = decodeCMYKJpegToRGB(jpegBytes, decodeInvert);
+      // A soft mask rewrites alpha across the whole image below, which would reveal undecoded pixels, so only honour the region of interest when there is no soft mask.
+      const cmykRoi = (sMask && sMaskWidth && sMaskHeight) ? null : roi;
+      const cmykResult = decodeCMYKJpegToRGB(jpegBytes, decodeInvert, cmykRoi);
       if (cmykResult) {
         const { width: w, height: h, rgbData } = cmykResult;
         const canvas = ca.makeCanvas(w, h);
         const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d', { willReadFrequently: true }));
         const imgData = new ImageData(new Uint8ClampedArray(rgbData.buffer, rgbData.byteOffset, rgbData.byteLength), w, h);
         if (sMask && sMaskWidth && sMaskHeight) {
-          const px = imgData.data;
-          for (let j = 0; j < w * h; j++) {
-            const sx = Math.min(Math.floor((j % w) * sMaskWidth / w), sMaskWidth - 1);
-            const sy = Math.min(Math.floor(Math.floor(j / w) * sMaskHeight / h), sMaskHeight - 1);
-            px[j * 4 + 3] = sMask[sy * sMaskWidth + sx];
-          }
+          applySoftMaskAlpha(imgData.data, w, h, sMask, sMaskWidth, sMaskHeight);
         }
         ctx.putImageData(imgData, 0, 0);
         return ca.createImageBitmapFromCanvas(canvas);
@@ -778,16 +859,16 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
       const tintSamples = imageInfo.separationTintSamples;
       if (tintSamples && tintSamples.length >= 3) {
         const nSamples = Math.floor(tintSamples.length / 3);
+        const lut = buildTintLut(tintSamples, nSamples);
         const imgData = ctx.getImageData(0, 0, w, h);
         const px = imgData.data;
         for (let i = 0; i < px.length; i += 4) {
           // Raw tint value: 0=no ink, 255=full ink.
           // /Decode [1 0] inverts the mapping (byte 0 = full ink), so invert before lookup.
-          const tint = decodeInvert ? (255 - px[i]) : px[i];
-          const [r, g, b] = interpolateTint(tintSamples, nSamples, tint);
-          px[i] = r;
-          px[i + 1] = g;
-          px[i + 2] = b;
+          const o = (decodeInvert ? (255 - px[i]) : px[i]) * 3;
+          px[i] = lut[o];
+          px[i + 1] = lut[o + 1];
+          px[i + 2] = lut[o + 2];
         }
         ctx.putImageData(imgData, 0, 0);
 
@@ -801,12 +882,7 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
       // Apply soft mask if present
       if (sMask && sMaskWidth && sMaskHeight) {
         const imgData2 = ctx.getImageData(0, 0, w, h);
-        const px2 = imgData2.data;
-        for (let j = 0; j < w * h; j++) {
-          const sx = Math.min(Math.floor((j % w) * sMaskWidth / w), sMaskWidth - 1);
-          const sy = Math.min(Math.floor(Math.floor(j / w) * sMaskHeight / h), sMaskHeight - 1);
-          px2[j * 4 + 3] = sMask[sy * sMaskWidth + sx];
-        }
+        applySoftMaskAlpha(imgData2.data, w, h, sMask, sMaskWidth, sMaskHeight);
         ctx.putImageData(imgData2, 0, 0);
       }
       return ca.createImageBitmapFromCanvas(canvas);
@@ -828,20 +904,23 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
       const palette = imageInfo.palette;
       const base = imageInfo.paletteBase || 'DeviceRGB';
       const nComp = base === 'DeviceCMYK' ? 4 : (base === 'DeviceGray' || base === 'CalGray' ? 1 : 3);
+      // Only the CMYK branch reads rgbPal, so it stays empty for the non-CMYK bases that index `palette` directly.
+      const rgbPal = nComp === 4 ? cmykPaletteToRgb(palette) : new Uint8Array(0);
       const imgData = ctx.getImageData(0, 0, w, h);
       const px = imgData.data;
       for (let i = 0; i < px.length; i += 4) {
-        const po = px[i] * nComp;
+        const idx = px[i];
         if (nComp === 4) {
-          const [r, g, b] = cmykToRgb(palette[po] / 255, palette[po + 1] / 255, palette[po + 2] / 255, palette[po + 3] / 255);
-          px[i] = r;
-          px[i + 1] = g;
-          px[i + 2] = b;
+          const o = idx * 3;
+          px[i] = rgbPal[o];
+          px[i + 1] = rgbPal[o + 1];
+          px[i + 2] = rgbPal[o + 2];
         } else if (nComp === 1) {
-          px[i] = palette[po];
-          px[i + 1] = palette[po];
-          px[i + 2] = palette[po];
+          px[i] = palette[idx];
+          px[i + 1] = palette[idx];
+          px[i + 2] = palette[idx];
         } else {
+          const po = idx * nComp;
           px[i] = palette[po];
           px[i + 1] = palette[po + 1];
           px[i + 2] = palette[po + 2];
@@ -852,12 +931,7 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
       // Apply soft mask if present
       if (sMask && sMaskWidth && sMaskHeight) {
         const imgData2 = ctx.getImageData(0, 0, w, h);
-        const px2 = imgData2.data;
-        for (let j = 0; j < w * h; j++) {
-          const sx = Math.min(Math.floor((j % w) * sMaskWidth / w), sMaskWidth - 1);
-          const sy = Math.min(Math.floor(Math.floor(j / w) * sMaskHeight / h), sMaskHeight - 1);
-          px2[j * 4 + 3] = sMask[sy * sMaskWidth + sx];
-        }
+        applySoftMaskAlpha(imgData2.data, w, h, sMask, sMaskWidth, sMaskHeight);
         ctx.putImageData(imgData2, 0, 0);
       }
       return ca.createImageBitmapFromCanvas(canvas);
@@ -883,12 +957,7 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
         ctx2.drawImage(invertedBitmap, 0, 0);
         ca.closeDrawable(invertedBitmap);
         const imgData = ctx2.getImageData(0, 0, w, h);
-        const px = imgData.data;
-        for (let i = 0; i < w * h; i++) {
-          const sx = Math.min(Math.floor((i % w) * sMaskWidth / w), sMaskWidth - 1);
-          const sy = Math.min(Math.floor(Math.floor(i / w) * sMaskHeight / h), sMaskHeight - 1);
-          px[i * 4 + 3] = sMask[sy * sMaskWidth + sx];
-        }
+        applySoftMaskAlpha(imgData.data, w, h, sMask, sMaskWidth, sMaskHeight);
         ctx2.putImageData(imgData, 0, 0);
         return ca.createImageBitmapFromCanvas(canvas2);
       }
@@ -899,20 +968,6 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
     if (sMask && sMaskWidth && sMaskHeight) {
       const w = jpegBitmap.width;
       const h = jpegBitmap.height;
-      if (sMaskWidth === w && sMaskHeight === h) {
-        // Mask matches image dimensions — apply directly
-        const canvas = ca.makeCanvas(w, h);
-        const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d', { willReadFrequently: true }));
-        ctx.drawImage(jpegBitmap, 0, 0);
-        ca.closeDrawable(jpegBitmap);
-        const imgData = ctx.getImageData(0, 0, w, h);
-        const px = imgData.data;
-        for (let i = 0; i < w * h; i++) {
-          px[i * 4 + 3] = sMask[i];
-        }
-        ctx.putImageData(imgData, 0, 0);
-        return ca.createImageBitmapFromCanvas(canvas);
-      }
       if (sMaskWidth > w || sMaskHeight > h) {
         // Mask is higher resolution: upsample the image to the mask dimensions, but never beyond the device area this image occupies (maxW/maxH).
         let outW = sMaskWidth;
@@ -932,20 +987,13 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
         const upsampled = upsampleImageWithMask(px, w, h, maskA, outW, outH);
         return ca.createImageBitmapFromImageData(new ImageData(upsampled, outW, outH));
       }
-      // Mask is lower resolution — resample mask to image dimensions
+      // Mask matches or is lower resolution, so write the (nearest-neighbor) mask into the JPEG's alpha channel.
       const canvas = ca.makeCanvas(w, h);
       const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d', { willReadFrequently: true }));
       ctx.drawImage(jpegBitmap, 0, 0);
       ca.closeDrawable(jpegBitmap);
       const imgData = ctx.getImageData(0, 0, w, h);
-      const px = imgData.data;
-      for (let y = 0; y < h; y++) {
-        const srcY = Math.min(Math.floor(y * sMaskHeight / h), sMaskHeight - 1);
-        for (let x = 0; x < w; x++) {
-          const srcX = Math.min(Math.floor(x * sMaskWidth / w), sMaskWidth - 1);
-          px[(y * w + x) * 4 + 3] = sMask[srcY * sMaskWidth + srcX];
-        }
-      }
+      applySoftMaskAlpha(imgData.data, w, h, sMask, sMaskWidth, sMaskHeight);
       ctx.putImageData(imgData, 0, 0);
       return ca.createImageBitmapFromCanvas(canvas);
     }
@@ -1022,18 +1070,23 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
       const nComp = base === 'DeviceCMYK' ? 4 : (base === 'DeviceGray' || base === 'CalGray' ? 1 : 3);
       const jpxPrecision = decoded.precision ? decoded.precision[0] : 8;
       const idxShift = jpxPrecision < 8 ? (8 - jpxPrecision) : 0;
+      // Only the CMYK branch reads rgbPal, so it stays empty for the non-CMYK bases that index `palette` directly.
+      const rgbPal = nComp === 4 ? cmykPaletteToRgb(palette) : new Uint8Array(0);
       for (let i = 0; i < w * h; i++) {
         const idx = pixels[i] >> idxShift;
-        const po = idx * nComp;
         const pi = i * 4;
         if (nComp === 4) {
-          const [r, g, b] = cmykToRgb(palette[po] / 255, palette[po + 1] / 255, palette[po + 2] / 255, palette[po + 3] / 255);
-          rgbaData[pi] = r;
-          rgbaData[pi + 1] = g;
-          rgbaData[pi + 2] = b;
+          const o = idx * 3;
+          rgbaData[pi] = rgbPal[o];
+          rgbaData[pi + 1] = rgbPal[o + 1];
+          rgbaData[pi + 2] = rgbPal[o + 2];
         } else if (nComp === 1) {
-          rgbaData[pi] = rgbaData[pi + 1] = rgbaData[pi + 2] = palette[po];
+          const gray = palette[idx];
+          rgbaData[pi] = gray;
+          rgbaData[pi + 1] = gray;
+          rgbaData[pi + 2] = gray;
         } else {
+          const po = idx * nComp;
           rgbaData[pi] = palette[po];
           rgbaData[pi + 1] = palette[po + 1];
           rgbaData[pi + 2] = palette[po + 2];
@@ -1046,12 +1099,12 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
       const tintSamples = imageInfo.separationTintSamples;
       if (tintSamples && tintSamples.length >= 3) {
         const nSamples = Math.floor(tintSamples.length / 3);
+        const lut = buildTintLut(tintSamples, nSamples);
         for (let i = 0; i < w * h; i++) {
-          const tint = decodeInvert ? (255 - pixels[i]) : pixels[i];
-          const [r, g, b] = interpolateTint(tintSamples, nSamples, tint);
-          rgbaData[i * 4] = r;
-          rgbaData[i * 4 + 1] = g;
-          rgbaData[i * 4 + 2] = b;
+          const o = (decodeInvert ? (255 - pixels[i]) : pixels[i]) * 3;
+          rgbaData[i * 4] = lut[o];
+          rgbaData[i * 4 + 1] = lut[o + 1];
+          rgbaData[i * 4 + 2] = lut[o + 2];
           rgbaData[i * 4 + 3] = 255;
         }
       } else {
@@ -1084,16 +1137,23 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
       }
     } else if (components === 4) {
       if (colorSpace === 'DeviceCMYK') {
-        // CMYK pixel data: convert to RGB using SWOP polynomial approximation
+        // Memoize the previous pixel's CMYK->RGB (flat regions repeat the same colour).
+        let pc = -1; let pm = -1; let py = -1; let pk = -1;
+        let pr = 0; let pg = 0; let pb = 0;
         for (let i = 0; i < w * h; i++) {
-          const c = decodeInvert ? (1 - pixels[i * 4] / 255) : (pixels[i * 4] / 255);
-          const m = decodeInvert ? (1 - pixels[i * 4 + 1] / 255) : (pixels[i * 4 + 1] / 255);
-          const y = decodeInvert ? (1 - pixels[i * 4 + 2] / 255) : (pixels[i * 4 + 2] / 255);
-          const k = decodeInvert ? (1 - pixels[i * 4 + 3] / 255) : (pixels[i * 4 + 3] / 255);
-          const [cr, cg, cb] = cmykToRgb(c, m, y, k);
-          rgbaData[i * 4] = cr;
-          rgbaData[i * 4 + 1] = cg;
-          rgbaData[i * 4 + 2] = cb;
+          const b0 = pixels[i * 4]; const b1 = pixels[i * 4 + 1]; const b2 = pixels[i * 4 + 2]; const b3 = pixels[i * 4 + 3];
+          if (b0 !== pc || b1 !== pm || b2 !== py || b3 !== pk) {
+            const c = decodeInvert ? (1 - b0 / 255) : (b0 / 255);
+            const m = decodeInvert ? (1 - b1 / 255) : (b1 / 255);
+            const y = decodeInvert ? (1 - b2 / 255) : (b2 / 255);
+            const k = decodeInvert ? (1 - b3 / 255) : (b3 / 255);
+            const rgb = cmykToRgb(c, m, y, k);
+            pr = rgb[0]; pg = rgb[1]; pb = rgb[2];
+            pc = b0; pm = b1; py = b2; pk = b3;
+          }
+          rgbaData[i * 4] = pr;
+          rgbaData[i * 4 + 1] = pg;
+          rgbaData[i * 4 + 2] = pb;
           rgbaData[i * 4 + 3] = 255;
         }
       } else {
@@ -1108,11 +1168,7 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
     }
 
     if (sMask && sMaskWidth && sMaskHeight) {
-      if (sMaskWidth === w && sMaskHeight === h) {
-        for (let i = 0; i < w * h; i++) {
-          rgbaData[i * 4 + 3] = sMask[i];
-        }
-      } else if (sMaskWidth > w || sMaskHeight > h) {
+      if (sMaskWidth > w || sMaskHeight > h) {
         // Mask is higher resolution than image: upsample the image to the mask dimensions to preserve fine mask detail (e.g. text stencil edges).
         // But never build the composite larger than the device area this image occupies (maxW/maxH):
         // an /SMask can be many times the image's pixel count, so producing a mask-resolution bitmap only to down-scale it at draw time is wasted work.
@@ -1126,16 +1182,8 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
         const maskA = boxDownsampleMask(sMask, sMaskWidth, sMaskHeight, outW, outH);
         const upsampled = upsampleImageWithMask(rgbaData, w, h, maskA, outW, outH);
         return ca.createImageBitmapFromImageData(new ImageData(upsampled, outW, outH));
-      } else {
-        // Mask is lower resolution than image — resample mask to image dimensions
-        for (let y = 0; y < h; y++) {
-          const srcY = Math.min(Math.floor(y * sMaskHeight / h), sMaskHeight - 1);
-          for (let x = 0; x < w; x++) {
-            const srcX = Math.min(Math.floor(x * sMaskWidth / w), sMaskWidth - 1);
-            rgbaData[(y * w + x) * 4 + 3] = sMask[srcY * sMaskWidth + srcX];
-          }
-        }
       }
+      applySoftMaskAlpha(rgbaData, w, h, sMask, sMaskWidth, sMaskHeight);
     }
 
     return ca.createImageBitmapFromImageData(new ImageData(rgbaData, w, h));
@@ -1218,6 +1266,8 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
     // those pixels solid black, so cap iteration to leave the tail transparent.
     const maxBytes = imageData ? imageData.length : 0;
     const validRows = rowBytes > 0 ? Math.min(height, Math.floor(maxBytes / rowBytes)) : height;
+    // Only the CMYK branch reads rgbPal, so it stays empty for the non-CMYK bases that index `palette` directly.
+    const rgbPal = nComp === 4 ? cmykPaletteToRgb(palette) : new Uint8Array(0);
 
     for (let y = 0; y < validRows; y++) {
       for (let x = 0; x < width; x++) {
@@ -1238,22 +1288,23 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
         if (decodeInvert) idx = hival - idx;
 
         const pi = (y * width + x) * 4;
-        const po = idx * nComp;
-        if (nComp === 3) {
+        if (nComp === 4) {
+          const o = idx * 3;
+          rgbaData[pi] = rgbPal[o];
+          rgbaData[pi + 1] = rgbPal[o + 1];
+          rgbaData[pi + 2] = rgbPal[o + 2];
+        } else if (nComp === 1) {
+          const gray = palette[idx];
+          rgbaData[pi] = gray;
+          rgbaData[pi + 1] = gray;
+          rgbaData[pi + 2] = gray;
+        } else {
+          const po = idx * nComp;
           rgbaData[pi] = palette[po];
           rgbaData[pi + 1] = palette[po + 1];
           rgbaData[pi + 2] = palette[po + 2];
-          rgbaData[pi + 3] = 255;
-        } else if (nComp === 1) {
-          rgbaData[pi] = rgbaData[pi + 1] = rgbaData[pi + 2] = palette[po];
-          rgbaData[pi + 3] = 255;
-        } else if (nComp === 4) {
-          const [r, g, b] = cmykToRgb(palette[po] / 255, palette[po + 1] / 255, palette[po + 2] / 255, palette[po + 3] / 255);
-          rgbaData[pi] = r;
-          rgbaData[pi + 1] = g;
-          rgbaData[pi + 2] = b;
-          rgbaData[pi + 3] = 255;
         }
+        rgbaData[pi + 3] = 255;
       }
     }
   } else if (bitsPerComponent === 1) {
@@ -1344,20 +1395,31 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
   } else if (colorSpace === 'DeviceCMYK') {
     rgbaData = new Uint8ClampedArray(width * height * 4);
     if (bitsPerComponent === 8) {
+      // Memoize the previous pixel's CMYK->RGB (flat regions repeat the same colour).
+      let pc = -1; let pm = -1; let py = -1; let pk = -1;
+      let pr = 0; let pg = 0; let pb = 0;
       for (let i = 0; i < width * height; i++) {
-        const c = decodeInvert ? (1 - imageData[i * 4] / 255) : (imageData[i * 4] / 255);
-        const m = decodeInvert ? (1 - imageData[i * 4 + 1] / 255) : (imageData[i * 4 + 1] / 255);
-        const y = decodeInvert ? (1 - imageData[i * 4 + 2] / 255) : (imageData[i * 4 + 2] / 255);
-        const k = decodeInvert ? (1 - imageData[i * 4 + 3] / 255) : (imageData[i * 4 + 3] / 255);
-        const [r, g, b] = cmykToRgb(c, m, y, k);
-        rgbaData[i * 4] = r;
-        rgbaData[i * 4 + 1] = g;
-        rgbaData[i * 4 + 2] = b;
+        const b0 = imageData[i * 4]; const b1 = imageData[i * 4 + 1]; const b2 = imageData[i * 4 + 2]; const b3 = imageData[i * 4 + 3];
+        if (b0 !== pc || b1 !== pm || b2 !== py || b3 !== pk) {
+          const c = decodeInvert ? (1 - b0 / 255) : (b0 / 255);
+          const m = decodeInvert ? (1 - b1 / 255) : (b1 / 255);
+          const y = decodeInvert ? (1 - b2 / 255) : (b2 / 255);
+          const k = decodeInvert ? (1 - b3 / 255) : (b3 / 255);
+          const rgb = cmykToRgb(c, m, y, k);
+          pr = rgb[0]; pg = rgb[1]; pb = rgb[2];
+          pc = b0; pm = b1; py = b2; pk = b3;
+        }
+        rgbaData[i * 4] = pr;
+        rgbaData[i * 4 + 1] = pg;
+        rgbaData[i * 4 + 2] = pb;
         rgbaData[i * 4 + 3] = 255;
       }
     } else {
       const rowBytes = Math.ceil(width * 4 * bitsPerComponent / 8);
       const compMax = (1 << bitsPerComponent) - 1;
+      // Memoize the previous pixel's CMYK->RGB (flat regions repeat the same colour).
+      let pc = -1; let pm = -1; let py = -1; let pk = -1;
+      let pr = 0; let pg = 0; let pb = 0;
       for (let y = 0; y < height; y++) {
         for (let x = 0; x < width; x++) {
           const comps = [0, 0, 0, 0];
@@ -1367,15 +1429,19 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
             const shift = 8 - (bitOff & 7) - bitsPerComponent;
             comps[cc] = (imageData[byteIdx] >> shift) & compMax;
           }
-          const cN = decodeInvert ? (1 - comps[0] / compMax) : (comps[0] / compMax);
-          const mN = decodeInvert ? (1 - comps[1] / compMax) : (comps[1] / compMax);
-          const yN = decodeInvert ? (1 - comps[2] / compMax) : (comps[2] / compMax);
-          const kN = decodeInvert ? (1 - comps[3] / compMax) : (comps[3] / compMax);
-          const [r, g, b] = cmykToRgb(cN, mN, yN, kN);
+          if (comps[0] !== pc || comps[1] !== pm || comps[2] !== py || comps[3] !== pk) {
+            const cN = decodeInvert ? (1 - comps[0] / compMax) : (comps[0] / compMax);
+            const mN = decodeInvert ? (1 - comps[1] / compMax) : (comps[1] / compMax);
+            const yN = decodeInvert ? (1 - comps[2] / compMax) : (comps[2] / compMax);
+            const kN = decodeInvert ? (1 - comps[3] / compMax) : (comps[3] / compMax);
+            const rgb = cmykToRgb(cN, mN, yN, kN);
+            pr = rgb[0]; pg = rgb[1]; pb = rgb[2];
+            pc = comps[0]; pm = comps[1]; py = comps[2]; pk = comps[3];
+          }
           const pi = (y * width + x) * 4;
-          rgbaData[pi] = r;
-          rgbaData[pi + 1] = g;
-          rgbaData[pi + 2] = b;
+          rgbaData[pi] = pr;
+          rgbaData[pi + 1] = pg;
+          rgbaData[pi + 2] = pb;
           rgbaData[pi + 3] = 255;
         }
       }
@@ -1414,13 +1480,13 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
     };
     if (tintSamples && tintSamples.length >= 3) {
       const nSamples = Math.floor(tintSamples.length / 3);
+      const lut = buildTintLut(tintSamples, nSamples);
       for (let i = 0; i < width * height; i++) {
         const raw = readTint(i);
-        const tint = decodeInvert ? (255 - raw) : raw;
-        const [r, g, b] = interpolateTint(tintSamples, nSamples, tint);
-        rgbaData[i * 4] = r;
-        rgbaData[i * 4 + 1] = g;
-        rgbaData[i * 4 + 2] = b;
+        const o = (decodeInvert ? (255 - raw) : raw) * 3;
+        rgbaData[i * 4] = lut[o];
+        rgbaData[i * 4 + 1] = lut[o + 1];
+        rgbaData[i * 4 + 2] = lut[o + 2];
         rgbaData[i * 4 + 3] = 255;
       }
     } else {
@@ -1554,27 +1620,15 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0) {
   }
 
   if (sMask && sMaskWidth && sMaskHeight) {
-    if (sMaskWidth === width && sMaskHeight === height) {
-      for (let i = 0; i < width * height; i++) {
-        rgbaData[i * 4 + 3] = sMask[i];
-      }
-    } else if (sMaskWidth > width || sMaskHeight > height) {
+    if (sMaskWidth > width || sMaskHeight > height) {
       // Mask is higher resolution than the image, so upsample the image to the mask's dimensions.
       // sMask is already at the output resolution, so it is the alpha source directly.
       const outW = sMaskWidth;
       const outH = sMaskHeight;
       const upsampled = upsampleImageWithMask(rgbaData, width, height, sMask, outW, outH);
       return ca.createImageBitmapFromImageData(new ImageData(upsampled, outW, outH));
-    } else {
-      // Mask is lower resolution than image — resample mask to image dimensions
-      for (let y = 0; y < height; y++) {
-        const srcY = Math.min(Math.floor(y * sMaskHeight / height), sMaskHeight - 1);
-        for (let x = 0; x < width; x++) {
-          const srcX = Math.min(Math.floor(x * sMaskWidth / width), sMaskWidth - 1);
-          rgbaData[(y * width + x) * 4 + 3] = sMask[srcY * sMaskWidth + srcX];
-        }
-      }
     }
+    applySoftMaskAlpha(rgbaData, width, height, sMask, sMaskWidth, sMaskHeight);
   }
 
   // Apply color key mask: pixels whose component values all fall within the
@@ -7043,13 +7097,52 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           const dc = docImgCache.get(docKey);
           if (dc && dc.maxW === canvasWidth && dc.maxH === canvasHeight) cachedBitmap = dc.bitmap;
         }
+        // The image's visible region in image-pixel coordinates, so the expensive pure-JS CMYK JPEG decode can skip pixels clipped off the page canvas.
+        let imageRoi = null;
+        if (!cachedBitmap && !imageInfo.imageMask && imageInfo.filter === 'DCTDecode'
+          && imageInfo.colorSpace === 'DeviceCMYK' && imageInfo.width > 0 && imageInfo.height > 0) {
+          const s0 = op.ctm[0] * scale; const s1 = -op.ctm[1] * scale; const s2 = op.ctm[2] * scale; const
+            s3 = -op.ctm[3] * scale;
+          const s4 = (op.ctm[4] - boxOriginX) * scale; const
+            s5 = (pageHeightPts + boxOriginY - op.ctm[5]) * scale;
+          const W = imageInfo.width; const
+            H = imageInfo.height;
+          // image pixel (ix,iy) -> device: dx = a*ix + c*iy + e, dy = b*ix + d*iy + f
+          const a = s0 / W; const c = -s2 / H; const
+            e = s2 + s4;
+          const b = s1 / W; const d = -s3 / H; const
+            f = s3 + s5;
+          const det = a * d - b * c;
+          if (Math.abs(det) > 1e-9) {
+            let minX = Infinity; let minY = Infinity; let maxX = -Infinity; let
+              maxY = -Infinity;
+            for (let corner = 0; corner < 4; corner++) {
+              const gx = (corner & 1) ? canvasWidth : 0;
+              const gy = (corner & 2) ? canvasHeight : 0;
+              const ix = (d * (gx - e) - c * (gy - f)) / det;
+              const iy = (a * (gy - f) - b * (gx - e)) / det;
+              if (ix < minX) minX = ix; if (ix > maxX) maxX = ix;
+              if (iy < minY) minY = iy; if (iy > maxY) maxY = iy;
+            }
+            const x0 = Math.max(0, Math.floor(minX) - 8); const
+              y0 = Math.max(0, Math.floor(minY) - 8);
+            const x1 = Math.min(W, Math.ceil(maxX) + 8); const
+              y1 = Math.min(H, Math.ceil(maxY) + 8);
+            // Only worth it when a real fraction is clipped away and the visible region is non-empty.
+            if (x1 > x0 && y1 > y0 && (x1 - x0) * (y1 - y0) < 0.85 * W * H) {
+              imageRoi = {
+                x0, y0, x1, y1,
+              };
+            }
+          }
+        }
         let decodeMs = 0;
         let bitmap = cachedBitmap;
         if (!bitmap) {
           const t0 = performance.now();
           bitmap = imageInfo.imageMask
             ? await imageMaskToBitmap(imageInfo, maskFillColor, objCache)
-            : await imageInfoToBitmap(imageInfo, objCache, canvasWidth, canvasHeight);
+            : await imageInfoToBitmap(imageInfo, objCache, canvasWidth, canvasHeight, imageRoi);
           decodeMs = performance.now() - t0;
         }
         if (!bitmap) return;
@@ -7075,8 +7168,9 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         rCtx.restore();
 
         if (!cachedBitmap) {
-          if (canDocCache && decodeMs >= DECODED_IMAGE_MIN_DECODE_MS) {
-            // Retain doc-wide; the cache owns this bitmap's lifecycle (not closed at page end).
+          if (canDocCache && !imageRoi && decodeMs >= DECODED_IMAGE_MIN_DECODE_MS) {
+            // Never cache a region-of-interest decode: it only covers part of the image,
+            // but the cache is keyed by objNum and would be reused for other placements of the same image.
             const bytes = (bitmap.width || canvasWidth) * (bitmap.height || canvasHeight) * 4;
             putDecodedImage(objCache, docKey, bitmap, canvasWidth, canvasHeight, bytes, decodeMs);
           } else if (!imageInfo.imageMask && imageDrawCounts.get(op.name) > 1) {

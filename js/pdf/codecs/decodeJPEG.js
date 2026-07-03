@@ -14,38 +14,102 @@ for (let x = 0; x < 8; x++) {
   }
 }
 
-// Reused across idct2d calls.
-// The row pass writes all 64 entries before the column pass reads them, so it never needs re-zeroing.
+// Scratch for the IDCT row pass, reused across the idct8x8/4x4/2x2 calls below.
+// The row pass writes every scratch entry a later column pass reads, so it never needs re-zeroing.
 const idctScratch = new Float64Array(64);
 
 /**
- * Apply 2D IDCT to an 8×8 block in-place using direct computation.
- * Input: dequantized DCT coefficients in natural (row-major) order.
- * Output: pixel values biased by +128 (clamp to 0-255 after).
+ * Full 8x8 inverse DCT, in place, via the even/odd butterfly:
+ * each 1D pass forms an even-index sum E and an odd-index sum O,
+ * then writes E+O and E-O to the symmetric output positions n and 7-n.
+ * Input is dequantized DCT coefficients in natural (row-major) order.
+ * Output is pixel values biased by +128, which the caller clamps to 0-255.
  * @param {Int32Array} block - 64-element array
  */
-function idct2d(block) {
-  // Row pass: 1D IDCT on each row
-  for (let x = 0; x < 8; x++) {
-    for (let row = 0; row < 8; row++) {
-      let sum = 0;
-      const ri = row * 8;
-      for (let u = 0; u < 8; u++) {
-        sum += block[ri + u] * idctCos[x * 8 + u];
-      }
-      idctScratch[row * 8 + x] = sum;
+function idct8x8(block) {
+  for (let row = 0; row < 8; row++) {
+    const b = row * 8;
+    const f0 = block[b];
+    const f1 = block[b + 1];
+    const f2 = block[b + 2];
+    const f3 = block[b + 3];
+    const f4 = block[b + 4];
+    const f5 = block[b + 5];
+    const f6 = block[b + 6];
+    const f7 = block[b + 7];
+    for (let n = 0; n < 4; n++) {
+      const r = n * 8;
+      const E = f0 * idctCos[r] + f2 * idctCos[r + 2] + f4 * idctCos[r + 4] + f6 * idctCos[r + 6];
+      const O = f1 * idctCos[r + 1] + f3 * idctCos[r + 3] + f5 * idctCos[r + 5] + f7 * idctCos[r + 7];
+      idctScratch[b + n] = E + O;
+      idctScratch[b + 7 - n] = E - O;
     }
   }
-
-  // Column pass: 1D IDCT on each column, store back to block with +128 bias
-  for (let y = 0; y < 8; y++) {
-    for (let col = 0; col < 8; col++) {
-      let sum = 0;
-      for (let v = 0; v < 8; v++) {
-        sum += idctScratch[v * 8 + col] * idctCos[y * 8 + v];
-      }
-      block[y * 8 + col] = Math.round(sum) + 128;
+  for (let col = 0; col < 8; col++) {
+    const f0 = idctScratch[col];
+    const f1 = idctScratch[8 + col];
+    const f2 = idctScratch[16 + col];
+    const f3 = idctScratch[24 + col];
+    const f4 = idctScratch[32 + col];
+    const f5 = idctScratch[40 + col];
+    const f6 = idctScratch[48 + col];
+    const f7 = idctScratch[56 + col];
+    for (let n = 0; n < 4; n++) {
+      const r = n * 8;
+      const E = f0 * idctCos[r] + f2 * idctCos[r + 2] + f4 * idctCos[r + 4] + f6 * idctCos[r + 6];
+      const O = f1 * idctCos[r + 1] + f3 * idctCos[r + 3] + f5 * idctCos[r + 5] + f7 * idctCos[r + 7];
+      block[n * 8 + col] = Math.round(E + O) + 128;
+      block[(7 - n) * 8 + col] = Math.round(E - O) + 128;
     }
+  }
+}
+
+/**
+ * Reduced 4x4 IDCT (in place): exact when every nonzero coefficient lies in the top-left 4x4, so the row/column passes only sum the four low-frequency taps.
+ * Most baseline JPEG blocks quantize to this shape.
+ * @param {Int32Array} block
+ */
+function idct4x4(block) {
+  for (let x = 0; x < 8; x++) {
+    const c0 = idctCos[x * 8];
+    const c1 = idctCos[x * 8 + 1];
+    const c2 = idctCos[x * 8 + 2];
+    const c3 = idctCos[x * 8 + 3];
+    idctScratch[x] = block[0] * c0 + block[1] * c1 + block[2] * c2 + block[3] * c3;
+    idctScratch[8 + x] = block[8] * c0 + block[9] * c1 + block[10] * c2 + block[11] * c3;
+    idctScratch[16 + x] = block[16] * c0 + block[17] * c1 + block[18] * c2 + block[19] * c3;
+    idctScratch[24 + x] = block[24] * c0 + block[25] * c1 + block[26] * c2 + block[27] * c3;
+  }
+  for (let y = 0; y < 8; y++) {
+    const c0 = idctCos[y * 8];
+    const c1 = idctCos[y * 8 + 1];
+    const c2 = idctCos[y * 8 + 2];
+    const c3 = idctCos[y * 8 + 3];
+    const b = y * 8;
+    for (let x = 0; x < 8; x++) {
+      block[b + x] = Math.round(idctScratch[x] * c0 + idctScratch[8 + x] * c1 + idctScratch[16 + x] * c2 + idctScratch[24 + x] * c3) + 128;
+    }
+  }
+}
+
+/**
+ * Reduced 2x2 IDCT (in place): exact when every nonzero coefficient lies in the top-left 2x2 (DC plus the three lowest AC terms).
+ * @param {Int32Array} block
+ */
+function idct2x2(block) {
+  const F0 = block[0];
+  const F1 = block[1];
+  const F8 = block[8];
+  const F9 = block[9];
+  for (let x = 0; x < 8; x++) {
+    idctScratch[x] = F0 * idctCos[x * 8] + F1 * idctCos[x * 8 + 1];
+    idctScratch[8 + x] = F8 * idctCos[x * 8] + F9 * idctCos[x * 8 + 1];
+  }
+  for (let y = 0; y < 8; y++) {
+    const cy0 = idctCos[y * 8];
+    const cy1 = idctCos[y * 8 + 1];
+    const b = y * 8;
+    for (let x = 0; x < 8; x++) block[b + x] = Math.round(idctScratch[x] * cy0 + idctScratch[8 + x] * cy1) + 128;
   }
 }
 
@@ -173,15 +237,20 @@ class BitReader {
  */
 
 /**
- * Decode a baseline CMYK/YCCK JPEG to per-component sample buffers (MCU-padded),
- * before chroma upsampling or interleaving.
+ * Decode a baseline CMYK/YCCK JPEG to per-component sample buffers (MCU-padded), before chroma upsampling or interleaving.
  *
  * @param {Uint8Array} jpegData - Raw JPEG file bytes
- * @returns {{ width: number, height: number, numComponents: number, compBuffers: Uint8Array[], compWidths: number[], compHeights: number[],
- * compSampling: {hSamp: number, vSamp: number}[], maxHSamp: number, maxVSamp: number, adobeTransform: number }|null}
+ * @param {{x0:number,y0:number,x1:number,y1:number}|null} [roi] - Region of interest in image pixels.
+ *   When set, MCUs outside it are still entropy-decoded (to keep the bitstream and DC prediction in sync)
+ *   but skip the IDCT and the pixel store, and MCU rows entirely below it are not decoded at all.
+ *   Component samples outside the region are left zero. The caller must not read them.
+ *   Used to avoid decoding parts of an image the page clips away.
+ * @returns {{ width: number, height: number, numComponents: number, compBuffers: Uint8Array[],
+ * compWidths: number[], compHeights: number[], compSampling: {hSamp: number, vSamp: number}[],
+ * maxHSamp: number, maxVSamp: number, adobeTransform: number }|null}
  *   Returns null for non-3/4-component or non-baseline JPEGs and on decode failure.
  */
-function decodeJPEGComponents(jpegData) {
+function decodeJPEGComponents(jpegData, roi = null) {
   let pos = 0;
   const len = jpegData.length;
 
@@ -397,9 +466,19 @@ function decodeJPEGComponents(jpegData) {
 
   let mcuCount = 0;
 
+  // Region of interest in image pixels, expanded by one MCU so chroma upsampling at the region's edge still reads decoded neighbours.
+  const dX0 = roi ? roi.x0 - mcuW : 0;
+  const dY0 = roi ? roi.y0 - mcuH : 0;
+  const dX1 = roi ? roi.x1 + mcuW : width;
+  const dY1 = roi ? roi.y1 + mcuH : height;
+
   const block = new Int32Array(64);
   for (let mcuY = 0; mcuY < mcuCountY; mcuY++) {
+    // Every remaining MCU row is below the region, so nothing is left to make visible. Stop.
+    if (roi && mcuY * mcuH >= dY1) break;
+    const rowVisible = !roi || (mcuY * mcuH < dY1 && (mcuY + 1) * mcuH > dY0);
     for (let mcuX = 0; mcuX < mcuCountX; mcuX++) {
+      const mcuVisible = rowVisible && (!roi || (mcuX * mcuW < dX1 && (mcuX + 1) * mcuW > dX0));
       if (restartInterval > 0 && mcuCount > 0 && mcuCount % restartInterval === 0) {
         reader.bitsLeft = 0;
         let rPos = reader.pos;
@@ -446,9 +525,10 @@ function decodeJPEGComponents(jpegData) {
             prevDC[ci] += dcVal;
             block[0] = prevDC[ci] * qt[0];
 
-            // Decode AC coefficients
+            // Decode AC coefficients, tracking the bounding box of nonzero coeffs so the IDCT below can dispatch to the cheapest exact routine for this block's shape.
             let k = 1;
-            let hasAC = false;
+            let maxRow = 0;
+            let maxCol = 0;
             while (k < 64) {
               const acSymbol = reader.decodeHuffman(acTable);
               if (acSymbol < 0) break;
@@ -463,20 +543,32 @@ function decodeJPEGComponents(jpegData) {
                 if (acVal < (1 << (acCategory - 1))) {
                   acVal -= (1 << acCategory) - 1;
                 }
-                block[zigzag[k]] = acVal * qt[k];
-                hasAC = true;
+                const nat = zigzag[k];
+                block[nat] = acVal * qt[k];
+                const nr = nat >> 3;
+                const nc = nat & 7;
+                if (nr > maxRow) maxRow = nr;
+                if (nc > maxCol) maxCol = nc;
               }
               k++;
             }
 
-            // A block with no nonzero AC coefficient inverse-transforms to a single constant, so skip the full 1024-multiply IDCT.
-            // The constant is computed with the same two-step float multiply idct2d uses (idctCos[0] for both the row and column pass),
-            // making it byte-identical to the full transform.
-            // DC-only blocks are very common (flat image regions).
-            if (hasAC) {
-              idct2d(block);
-            } else {
+            // This block is outside the region of interest, so drop it before the expensive inverse transform and pixel store.
+            // The Huffman decode above still had to run to keep the sequential bitstream position and the differential DC predictor advanced for the following blocks.
+            if (!mcuVisible) continue;
+
+            // Inverse-transform with the cheapest routine that is exact for this block's nonzero-coefficient bounding box.
+            // Most real blocks are low-frequency, so the 2x2 and 4x4 paths handle the bulk of them.
+            // The DC-only case (a flat block) is filled with a constant computed by the same two-step float multiply the full transform uses (idctCos[0] for both passes),
+            // so it stays byte-identical to running the full IDCT.
+            if (maxRow === 0 && maxCol === 0) {
               block.fill(Math.round(block[0] * idctCos[0] * idctCos[0]) + 128);
+            } else if (maxRow <= 1 && maxCol <= 1) {
+              idct2x2(block);
+            } else if (maxRow <= 3 && maxCol <= 3) {
+              idct4x4(block);
+            } else {
+              idct8x8(block);
             }
 
             const cx = (mcuX * blocksH + bh) * 8;
@@ -519,15 +611,23 @@ function decodeJPEGComponents(jpegData) {
  *
  * @param {Uint8Array} jpegData - Raw JPEG bytes
  * @param {boolean} [decodeInvert=false]
+ * @param {{x0:number,y0:number,x1:number,y1:number}|null} [roi] - Region of interest in image pixels.
+ *    When set, only pixels inside it are converted and the rest of the returned buffer stays transparent-black.
+ *    The returned image is still full size, not cropped to the region.
  * @returns {{ width: number, height: number, rgbData: Uint8Array }|null}
  */
-export function decodeCMYKJpegToRGB(jpegData, decodeInvert = false) {
-  const dec = decodeJPEGComponents(jpegData);
+export function decodeCMYKJpegToRGB(jpegData, decodeInvert = false, roi = null) {
+  const dec = decodeJPEGComponents(jpegData, roi);
   if (!dec) return null;
   const {
     width, height, numComponents, compBuffers, compWidths, compHeights, compSampling, maxHSamp, maxVSamp, adobeTransform,
   } = dec;
   const rgbData = new Uint8Array(width * height * 4); // RGBA for ImageData
+
+  const rx0 = roi ? Math.max(0, roi.x0) : 0;
+  const ry0 = roi ? Math.max(0, roi.y0) : 0;
+  const rx1 = roi ? Math.min(width, roi.x1) : width;
+  const ry1 = roi ? Math.min(height, roi.y1) : height;
 
   // 4:4:4 (no subsampling) is the common case for print CMYK JPEGs.
   // Subsampled components instead go through bilinear upsampling.
@@ -542,17 +642,17 @@ export function decodeCMYKJpegToRGB(jpegData, decodeInvert = false) {
   const w2 = compWidths[2];
   const w3 = compWidths[3];
   const comp = new Uint8Array(numComponents);
-  let di = 0;
   // Memoize the CMYK->RGB conversion: it is an expensive per-pixel polynomial and adjacent pixels are often identical (flat regions),
   // so reuse the previous result when the CMYK input is unchanged.
   let prevC = -1; let prevM = -1; let prevY = -1; let prevK = -1;
   let prevR = 0; let prevG = 0; let prevB = 0;
-  for (let py = 0; py < height; py++) {
+  for (let py = ry0; py < ry1; py++) {
     const r0 = py * w0;
     const r1 = py * w1;
     const r2 = py * w2;
     const r3 = py * w3;
-    for (let px = 0; px < width; px++) {
+    for (let px = rx0; px < rx1; px++) {
+      const di = (py * width + px) * 4;
       let c;
       let m;
       let y;
@@ -621,7 +721,6 @@ export function decodeCMYKJpegToRGB(jpegData, decodeInvert = false) {
         rgbData[di + 1] = prevG;
         rgbData[di + 2] = prevB;
         rgbData[di + 3] = 255;
-        di += 4;
         continue;
       }
 
@@ -652,7 +751,6 @@ export function decodeCMYKJpegToRGB(jpegData, decodeInvert = false) {
       const B = bi > 255 ? 255 : (bi < 0 ? 0 : Math.round(bi));
       rgbData[di] = R; rgbData[di + 1] = G; rgbData[di + 2] = B; rgbData[di + 3] = 255;
       prevC = c; prevM = m; prevY = y; prevK = k; prevR = R; prevG = G; prevB = B;
-      di += 4;
     }
   }
 
