@@ -825,6 +825,14 @@ export function detectPdfType(pdfBytes) {
     const pageHeightPts = Math.abs(mediaBox[3] - mediaBox[1]);
     const tokens = tokenizeContentStream(contentStreamText);
     const chars = executeTextOperators(tokens, fonts, 1, pageHeightPts);
+
+    // Also count text inside Form XObjects: a document whose entire text layer lives there would otherwise misclassify as image-based.
+    // Only character counts feed determinePdfType, not positions, so the geometry args here are trivial (identity CTM, scale 1).
+    const formChars = extractFormXObjectText(
+      objText, tokens, fonts, 1, pageHeightPts, [1, 0, 0, 1, 0, 0], objCache, new Set(),
+    );
+    for (let ci = 0; ci < formChars.length; ci++) chars.push(formChars[ci]);
+
     const cs = scorePageChars(chars);
     pageStats.push({
       invisibleTextChars: cs.printable - cs.printableVis,

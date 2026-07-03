@@ -5,13 +5,45 @@ import fs from 'node:fs';
 import { tmpdir } from 'node:os';
 import scribe from '../../scribe.js';
 import {
-  checkCLI, confCLI, extractCLI, overlayCLI, renderCLI, subsetCLI,
+  checkCLI, confCLI, detectPDFTypeCLI, extractCLI, overlayCLI, renderCLI, subsetCLI,
 } from '../../cli/cli.js';
 import { getRandomAlphanum } from '../../js/utils/miscUtils.js';
 import { getPngDimensions } from '../../js/utils/imageUtils.js';
 import { ASSETS_PATH } from '../module/_paths.js';
 
 scribe.opt.workerN = 1;
+
+/**
+ * Build a 1-page PDF whose page content stream only invokes a Form XObject (`/Fm0 Do`),
+ * so 100% of the visible text (~490 letters, well above any native-text threshold) lives inside it.
+ * @returns {Uint8Array}
+ */
+function makeFormXObjectTextPdf() {
+  const sentence = 'The entire visible text layer of this page is drawn inside a Form XObject.';
+  let form = 'BT /F1 12 Tf 72 720 Td 14 TL\n';
+  for (let i = 0; i < 8; i++) form += `(${sentence}) Tj T*\n`;
+  form += 'ET';
+  const pageContent = 'q 1 0 0 1 0 0 cm /Fm0 Do Q';
+  const objects = [
+    '<< /Type /Catalog /Pages 2 0 R >>',
+    '<< /Type /Pages /Kids [3 0 R] /Count 1 >>',
+    '<< /Type /Page /Parent 2 0 R /MediaBox [0 0 612 792] /Resources << /XObject << /Fm0 5 0 R >> >> /Contents 4 0 R >>',
+    `<< /Length ${Buffer.byteLength(pageContent)} >>\nstream\n${pageContent}\nendstream`,
+    `<< /Type /XObject /Subtype /Form /BBox [0 0 612 792] /Resources << /Font << /F1 6 0 R >> >> /Length ${Buffer.byteLength(form)} >>\nstream\n${form}\nendstream`,
+    '<< /Type /Font /Subtype /Type1 /BaseFont /Helvetica >>',
+  ];
+  let pdf = '%PDF-1.4\n';
+  const offsets = [];
+  for (let i = 0; i < objects.length; i++) {
+    offsets.push(Buffer.byteLength(pdf));
+    pdf += `${i + 1} 0 obj\n${objects[i]}\nendobj\n`;
+  }
+  const xrefOffset = Buffer.byteLength(pdf);
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f \n`;
+  for (const off of offsets) pdf += `${String(off).padStart(10, '0')} 00000 n \n`;
+  pdf += `trailer\n<< /Size ${objects.length + 1} /Root 1 0 R >>\nstartxref\n${xrefOffset}\n%%EOF`;
+  return new Uint8Array(Buffer.from(pdf, 'latin1'));
+}
 
 // Warm the worker/OCR/font engine once before any test runs.
 // This is necessary for tests to pass consistently on GitHub.
@@ -43,8 +75,8 @@ describe('Check Node.js commands.', () => {
   beforeEach(() => {
     originalConsoleLog = console.log;
     consoleOutput = '';
-    console.log = (output) => {
-      consoleOutput += output;
+    console.log = (...args) => {
+      consoleOutput += args.join(' ');
     };
   });
 
@@ -63,6 +95,25 @@ describe('Check Node.js commands.', () => {
     await checkCLI([`${ASSETS_PATH}/henreys_grave.pdf`, `${ASSETS_PATH}/henreys_grave.abbyy.xml`], { workers: 1 });
     expect(consoleOutput).toMatch(/18[12] of 185/);
   }, 30000);
+
+  // Regression: this PDF draws its entire text layer inside a Form XObject, with the page content stream doing only `/Fm0 Do`.
+  // The no-output `type` branch's lean detectPdfType did not descend into it, so it counted zero characters and misreported the file as "Image native".
+  it('Should classify a PDF whose text is entirely inside a Form XObject as Text native (`type`, no output path).', async () => {
+    const pdfPath = `${tmpUnique.get()}/formxobj_text.pdf`;
+    fs.writeFileSync(pdfPath, makeFormXObjectTextPdf());
+    await detectPDFTypeCLI(pdfPath);
+    expect(consoleOutput, '`type` (no output) must count Form-XObject-borne text and report Text native, not Image native').toContain('Text native');
+  }, 30000);
+
+  it('Should classify as Text native and write the surviving Form-XObject text (`type`, with output path).', async () => {
+    const pdfPath = `${tmpUnique.get()}/formxobj_text_out.pdf`;
+    fs.writeFileSync(pdfPath, makeFormXObjectTextPdf());
+    const outputPath = `${tmpUnique.get()}/formxobj_type.txt`;
+    await detectPDFTypeCLI(pdfPath, outputPath);
+    expect(consoleOutput, '`type` (with output) must report Form-XObject-borne text as Text native').toContain('Text native');
+    const extractedText = fs.readFileSync(outputPath, 'utf8');
+    expect(extractedText, 'Form-XObject text must survive extraction via `type --output`').toContain('drawn inside a Form XObject');
+  }, 60000);
 
   describe('overlayCLI on henreys_grave (vis mode) — output PDF contract', () => {
     /** @type {string} */
