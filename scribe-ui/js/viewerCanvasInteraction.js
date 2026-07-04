@@ -11,7 +11,7 @@ import {
 import { UiText, UiOcrWord } from './viewerWordObjects.js';
 import { deleteSelectedWord } from './viewerModifySelectedWords.js';
 import { deleteSelectedLayoutDataTable, deleteSelectedLayoutRegion } from './viewerModifySelectedLayout.js';
-import { annotMatchesWord, updateHighlightGroupOutline } from './viewerHighlights.js';
+import { annotMatchesWord, applyHighlight, updateHighlightGroupOutline } from './viewerHighlights.js';
 
 /**
  * Resolve a DOM event's target to its UI object (the `UiOcrWord`/`UiRegion`/`UiDataColumn` attached as `el._scribeObj`),
@@ -242,6 +242,18 @@ const createContextMenuHTML = () => {
 
   const innerDiv = document.createElement('div');
 
+  const copySelectionButton = document.createElement('button');
+  copySelectionButton.id = 'contextMenuCopyButton';
+  copySelectionButton.textContent = 'Copy';
+  copySelectionButton.style.display = 'none';
+  copySelectionButton.addEventListener('click', copySelectionClick);
+
+  const highlightSelectionButton = document.createElement('button');
+  highlightSelectionButton.id = 'contextMenuHighlightButton';
+  highlightSelectionButton.textContent = 'Highlight';
+  highlightSelectionButton.style.display = 'none';
+  highlightSelectionButton.addEventListener('click', highlightSelectionClick);
+
   const deleteWordsButton = document.createElement('button');
   deleteWordsButton.id = 'contextMenuDeleteWordsButton';
   deleteWordsButton.textContent = 'Delete Words';
@@ -308,6 +320,8 @@ const createContextMenuHTML = () => {
   deleteHighlightButton.style.display = 'none';
   deleteHighlightButton.addEventListener('click', deleteHighlightClick);
 
+  innerDiv.appendChild(copySelectionButton);
+  innerDiv.appendChild(highlightSelectionButton);
   innerDiv.appendChild(deleteWordsButton);
   innerDiv.appendChild(splitWordButton);
   innerDiv.appendChild(mergeWordsButton);
@@ -434,33 +448,65 @@ const splitDataTableClick = () => {
 };
 
 const deleteHighlightClick = () => {
-  hideContextMenu();
   const viewer = mv();
+  hideContextMenu();
 
   const uiWord = viewer.contextMenuWord;
+  // The Delete Highlight item is only offered on a highlighted word, so this guard is defensive and normally does not fire.
   if (!uiWord || !uiWord.highlightColor) return;
 
   const n = uiWord.word.line.page.n;
+  const groupId = uiWord.highlightGroupId || null;
   const wb = uiWord.word.bbox;
-  const pageAnnotations = viewer.doc.annotations.pages[n];
+  const pageAnnotations = viewer.doc.annotations.pages[n] || [];
 
-  const matchingAnnot = pageAnnotations.find((annot) => annotMatchesWord(annot, wb));
-  if (!matchingAnnot) return;
+  // The annotations to drop: the word's whole group, or (for a group-less highlight, e.g. imported from a PDF) the annotation(s) covering this word.
+  const removed = groupId
+    ? pageAnnotations.filter((annot) => annot.groupId === groupId)
+    : pageAnnotations.filter((annot) => annotMatchesWord(annot, wb));
+  viewer.doc.annotations.pages[n] = pageAnnotations.filter((annot) => !removed.includes(annot));
 
-  viewer.doc.annotations.pages[n] = pageAnnotations.filter((annot) => annot.groupId !== matchingAnnot.groupId);
+  // Clear the visual highlight on every word those annotations covered (and the clicked word itself).
+  // `highlightColor` is a setter, so assigning null repaints the word immediately.
   for (const kw of viewer.getUiWords()) {
-    if (kw.highlightGroupId === matchingAnnot.groupId) {
-      kw.highlightColor = null;
-      kw.highlightOpacity = 1;
-      kw.highlightGroupId = null;
-      kw.highlightComment = '';
-      kw.highlightGapLeft = 0;
-      kw.highlightGapRight = 0;
-    }
+    // Only clear words on the page whose annotations we removed.
+    // A pasted copy of this page has identical word geometry, so without this scope the bbox match below would also clear the copy's (independent) highlight.
+    if (kw.word.line.page.n !== n) continue;
+    const covered = kw === uiWord
+      || (groupId && kw.highlightGroupId === groupId)
+      || removed.some((annot) => annotMatchesWord(annot, kw.word.bbox));
+    if (!covered) continue;
+    kw.highlightColor = null;
+    kw.highlightOpacity = 1;
+    kw.highlightGroupId = null;
+    kw.highlightComment = '';
+    kw.highlightGapLeft = 0;
+    kw.highlightGapRight = 0;
   }
 
   updateHighlightGroupOutline(viewer);
   if (UiOcrWord.updateUI) UiOcrWord.updateUI();
+};
+
+/**
+ * Copy the current text selection.
+ * execCommand('copy') fires a trusted copy event that the app's own document 'copy' listener fills with OCR-accurate, multi-page text, so right-click Copy and Ctrl+C produce identical clipboard text.
+ * A synthetic ClipboardEvent is not usable here: Firefox nulls the clipboardData passed to its constructor, so the listener would have nothing to write into.
+ */
+const copySelectionClick = () => {
+  try { document.execCommand('copy'); } catch { /* clipboard unavailable, so nothing to copy */ }
+  hideContextMenu();
+};
+
+/** Highlight the words under the current browser text selection, using the color the toolbar's highlight tool last set (mirrored to viewer._highlightColor). */
+const highlightSelectionClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  const color = viewer._highlightColor;
+  const words = viewer.getWordsUnderTextSelection();
+  if (!color || words.length === 0) return;
+  applyHighlight(viewer, words, viewer.state.cp.n, color, 0.5);
+  window.getSelection()?.removeAllRanges();
 };
 
 const deleteWordsClick = () => {
@@ -488,6 +534,8 @@ let contextMenuStyleElem = null;
 /** @type {HTMLButtonElement} */ let contextMenuMergeTablesButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuSplitTableButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuDeleteHighlightButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuHighlightButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuCopyButtonElem;
 
 function ensureContextMenu() {
   if (menuNode) return;
@@ -505,6 +553,8 @@ function ensureContextMenu() {
   contextMenuMergeTablesButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuMergeTablesButton'));
   contextMenuSplitTableButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuSplitTableButton'));
   contextMenuDeleteHighlightButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteHighlightButton'));
+  contextMenuHighlightButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuHighlightButton'));
+  contextMenuCopyButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCopyButton'));
 
   contextMenuStyleElem = document.createElement('style');
   contextMenuStyleElem.textContent = `
@@ -533,11 +583,31 @@ function ensureContextMenu() {
 
 /** Remove the shared context menu and its styles from the document. */
 export const destroyContextMenu = () => {
+  hideContextMenu();
   menuNode?.remove();
   contextMenuStyleElem?.remove();
   menuNode = null;
   contextMenuStyleElem = null;
   _menuViewer = null;
+};
+
+// Shared event-listener options for the context menu's auto-dismiss handlers.
+// The capture option must match between a listener's addEventListener and removeEventListener calls, so the add and remove sites use these shared constants.
+const CAPTURE = { capture: true };
+const CAPTURE_PASSIVE = { capture: true, passive: true };
+
+let dismissListenersActive = false;
+
+const onMenuDismissPointerDown = (/** @type {Event} */ event) => {
+  // A press on the menu activates a button, so leave closing to that button's own click handler.
+  if (menuNode && menuNode.contains(/** @type {Node} */ (event.target))) return;
+  hideContextMenu();
+};
+
+const onMenuDismiss = () => hideContextMenu();
+
+const onMenuDismissKeyDown = (/** @type {KeyboardEvent} */ event) => {
+  if (event.key === 'Escape') hideContextMenu();
 };
 
 export const hideContextMenu = () => {
@@ -553,8 +623,21 @@ export const hideContextMenu = () => {
   contextMenuMergeTablesButtonElem.style.display = 'none';
   contextMenuSplitTableButtonElem.style.display = 'none';
   contextMenuDeleteHighlightButtonElem.style.display = 'none';
+  contextMenuHighlightButtonElem.style.display = 'none';
+  contextMenuCopyButtonElem.style.display = 'none';
   menuNode.style.display = 'none';
   _menuViewer = null;
+
+  // Stop listening for the dismiss interactions once hidden (attached in contextMenuFunc when shown).
+  if (dismissListenersActive) {
+    dismissListenersActive = false;
+    document.removeEventListener('pointerdown', onMenuDismissPointerDown, CAPTURE);
+    document.removeEventListener('scroll', onMenuDismiss, CAPTURE_PASSIVE);
+    document.removeEventListener('wheel', onMenuDismiss, CAPTURE_PASSIVE);
+    document.removeEventListener('keydown', onMenuDismissKeyDown, CAPTURE);
+    window.removeEventListener('resize', onMenuDismiss);
+    window.removeEventListener('blur', onMenuDismiss);
+  }
 };
 
 export const contextMenuFunc = (viewer, event) => {
@@ -570,6 +653,12 @@ export const contextMenuFunc = (viewer, event) => {
     const selectedRegions = viewer.CanvasSelection.getUiRegions();
 
     viewer.contextMenuPointer = pointerRelative;
+
+    // A text selection over this viewer's words (outside layout mode) enables Copy (always) and Highlight (when a highlight color is set).
+    // Both are read-only-safe, so neither is gated on the editor-only enableCanvasSelection flag.
+    const hasTextSelection = !viewer.state.layoutMode && viewer.getWordsUnderTextSelection().length > 0;
+    const enableCopy = hasTextSelection;
+    const enableHighlight = hasTextSelection && !!viewer._highlightColor;
 
     let enableSplitWord = false;
     let enableMergeWords = false;
@@ -622,8 +711,10 @@ export const contextMenuFunc = (viewer, event) => {
     }
 
     if (!(enableMergeColumns || enableSplit || enableDeleteRegion || enableDeleteTable || enableCopyTableContents || enableMergeTables || enableSplitTable
-      || enableSplitWord || enableMergeWords || enableDeleteWords || enableDeleteHighlight)) return;
+      || enableSplitWord || enableMergeWords || enableDeleteWords || enableDeleteHighlight || enableHighlight || enableCopy)) return;
 
+    if (enableCopy) contextMenuCopyButtonElem.style.display = 'initial';
+    if (enableHighlight) contextMenuHighlightButtonElem.style.display = 'initial';
     if (enableMergeWords) contextMenuMergeWordsButtonElem.style.display = 'initial';
     if (enableSplitWord) contextMenuSplitWordButtonElem.style.display = 'initial';
     if (enableDeleteWords) contextMenuDeleteWordsButtonElem.style.display = 'initial';
@@ -641,6 +732,16 @@ export const contextMenuFunc = (viewer, event) => {
     menuNode.style.display = 'initial';
     menuNode.style.top = `${event.clientY + 4}px`;
     menuNode.style.left = `${event.clientX + 4}px`;
+
+    // Close on the interactions a native context menu closes on (see the handler definitions).
+    // Capture phase is required for scroll because the viewer's inner scroll container's scroll event does not bubble to document.
+    dismissListenersActive = true;
+    document.addEventListener('pointerdown', onMenuDismissPointerDown, CAPTURE);
+    document.addEventListener('scroll', onMenuDismiss, CAPTURE_PASSIVE);
+    document.addEventListener('wheel', onMenuDismiss, CAPTURE_PASSIVE);
+    document.addEventListener('keydown', onMenuDismissKeyDown, CAPTURE);
+    window.addEventListener('resize', onMenuDismiss);
+    window.addEventListener('blur', onMenuDismiss);
   } catch (e) {
     _menuViewer = null;
     throw e;
@@ -744,9 +845,9 @@ export const mouseupFunc2 = (viewer, event) => {
     if (viewer.mode === 'addWord') {
       addWordManual(viewer, n, box);
     } else if (viewer.mode === 'recognizeWord') {
-      recognizeArea(viewer, n, box, true);
+      recognizeArea(viewer, n, box, true).catch((err) => console.error('recognizeArea failed:', err));
     } else if (viewer.mode === 'recognizeArea') {
-      recognizeArea(viewer, n, box, false);
+      recognizeArea(viewer, n, box, false).catch((err) => console.error('recognizeArea failed:', err));
     } else if (viewer.mode === 'printCoords') {
       const debugCoords = {
         left: box.left,

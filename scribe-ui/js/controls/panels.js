@@ -89,15 +89,21 @@ function clearPageClipboard() {
  * @param {object} cfg
  * @param {(n: number) => void} cfg.onSelect - Called with the page index when a thumbnail is clicked.
  * @param {(pageIndices: Array<number>) => void} [cfg.onExtract] - Called with the page indices to open as a new document.
+ * @param {(at: number) => void} [cfg.onInsertFromFile] - Called with the gap index at which to insert pages picked from a file.
  * @param {(width: number) => void} [cfg.onResize] - Called with the panel's current visible width in px (0 when hidden), so the host can inset the document to the remaining area.
  * @returns {{
  *   panelElem: HTMLDivElement, toggleElem: HTMLSpanElement,
- *   rebuild: (activeN?: number) => void, setActive: (n: number) => void,
+ *   rebuild: (activeN?: number) => void, cancelCut: () => void, setActive: (n: number) => void,
  *   setVisible: (v: boolean) => void, setWidth: (px: number) => number,
- *   getResizeBounds: () => { min: number, max: number }, destroy: () => void
+ *   getResizeBounds: () => { min: number, max: number },
+ *   dropIndicator: { gapAt: (clientX: number, clientY: number) => number, show: (clientX: number, clientY: number) => number, hide: () => void },
+ *   insertPagesAt: (at: number, count: number, activeN: number) => void,
+ *   destroy: () => void
  * }}
  */
-export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) {
+export function createThumbnailPanel(scribe, {
+  onSelect, onExtract, onInsertFromFile, onResize,
+}) {
   const panelElem = document.createElement('div');
   panelElem.className = 'scribe-thumb-panel';
   panelElem.style.width = `${THUMB_W + PANEL_EXTRA_W}px`;
@@ -243,6 +249,27 @@ export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) 
     cancelCut,
   };
   const reorder = installPageReorder(ctx);
+
+  // Preview for an external file dragged over the rail to insert its pages, driven by the host's file-drag handlers (see the viewer's root drop wiring).
+  // It reuses the reorder subsystem's gap geometry and the same accent `.scribe-thumb-insert` indicator, but owns its own line element since no internal reorder drag is in flight.
+  /** @type {?HTMLDivElement} */
+  let dropLine = null;
+  const dropIndicator = {
+    /** Gap (0..pageCount) a drop at the cursor would insert at. @param {number} clientX @param {number} clientY @returns {number} */
+    gapAt(clientX, clientY) { return reorder.insertionGapAt(clientX, clientY); },
+    /** Show/position the insertion line under the cursor. Returns the gap it marks. @param {number} clientX @param {number} clientY @returns {number} */
+    show(clientX, clientY) {
+      if (!dropLine) {
+        dropLine = document.createElement('div');
+        dropLine.className = 'scribe-thumb-insert';
+        scrollElem.appendChild(dropLine);
+      }
+      const gap = reorder.insertionGapAt(clientX, clientY);
+      reorder.placeInsertLineAt(dropLine, gap);
+      return gap;
+    },
+    hide() { if (dropLine) { dropLine.remove(); dropLine = null; } },
+  };
 
   /**
    * Largest page index whose row top is at or above content-y `y`.
@@ -877,6 +904,13 @@ export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) 
     window.addEventListener('pointerup', onMarqueeUp);
   }
   scrollElem.addEventListener('pointerdown', onMarqueePointerDown);
+  // Right-clicking a gap between thumbnails (or the empty space) offers to paste or insert a file at that position.
+  scrollElem.addEventListener('contextmenu', (e) => {
+    if (!(scribe.opt && scribe.opt.enablePageEditing) || !scribe.doc) return;
+    if (e.target instanceof Element && e.target.closest('.scribe-thumb-box')) return;
+    e.preventDefault();
+    openGapMenu(e.clientX, e.clientY);
+  });
 
   /**
    * Rotate page `n` clockwise by `deg` (a multiple of 90) in place, as a CSS transform on the cached thumbnail rather than a re-render.
@@ -917,11 +951,46 @@ export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) 
     updateBatchToolbar();
   }
 
-  /** Re-key the current selection through `fn`, dropping anything that falls out of range. @param {(n: number) => number} fn */
+  /**
+   * Reflect an in-place insertion of `count` pages at index `at`: the rows at or after `at` shift down by `count` (reusing their already-decoded thumbnails),
+   * the scroll position is kept, the new pages are mounted, and `activeN` stays highlighted.
+   * Called after the document has already grown (e.g. by `pastePages`), so the rail re-lays in place instead of tearing down and re-rendering every row like `rebuild`.
+   * The only visible change is the new pages.
+   * @param {number} at
+   * @param {number} count
+   * @param {number} activeN - Page to keep current (index in the grown document).
+   */
+  function insertPagesAt(at, count, activeN) {
+    if (count <= 0) return;
+    cancelCut();
+    const snapshot = [...mounted];
+    mounted.clear();
+    computeGeometry();
+    activePage = activeN >= 0 && activeN < pageCount ? activeN : -1;
+    remapSelection((s) => (s >= at ? s + count : s));
+    for (const [oi, entry] of snapshot) {
+      const ni = oi >= at ? oi + count : oi;
+      restyleRow(entry, ni);
+      mounted.set(ni, entry);
+    }
+    updateWindow();
+    updateBatchToolbar();
+  }
+
+  /**
+   * Re-key the current selection AND the shift-click anchor through `fn` (the same page-index remap an op applies to its rows), dropping anything that falls out of range.
+   * Carrying `selAnchor` too keeps a later Shift-click extending from the right page after a delete/insert/reorder shifts indices.
+   * Otherwise the anchor points at a stale page.
+   * @param {(n: number) => number} fn
+   */
   function remapSelection(fn) {
     const next = [...selected].map(fn).filter((n) => n >= 0 && n < pageCount);
     selected.clear();
     for (const n of next) selected.add(n);
+    if (selAnchor >= 0) {
+      const a = fn(selAnchor);
+      selAnchor = (a >= 0 && a < pageCount) ? a : -1;
+    }
   }
 
   /** Reflect the current selection on the mounted rows and refresh the batch bar. */
@@ -974,9 +1043,20 @@ export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) 
     syncSelectionUI();
   }
 
+  // The `.scribe-thumb` currently marked as the right-click target (highlighted while its context menu is open), or null.
+  /** @type {?HTMLElement} */
+  let contextTargetElem = null;
+
+  /** Clear both right-click affordances: the target page's highlight (page menu) and the gap insertion line (gap menu). */
+  function clearContextHighlight() {
+    if (contextTargetElem) { contextTargetElem.classList.remove('context'); contextTargetElem = null; }
+    dropIndicator.hide();
+  }
+
   /** Hide the page context menu if it is open. */
   function closeContextMenu() {
     menuElem.style.display = 'none';
+    clearContextHighlight();
     document.removeEventListener('pointerdown', onMenuOutsidePointer);
   }
 
@@ -990,6 +1070,10 @@ export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) 
    */
   function openContextMenu(clientX, clientY, n) {
     if (!(scribe.opt && scribe.opt.enablePageEditing)) return;
+    // Mark the right-clicked page so it is visibly the menu's target.
+    clearContextHighlight();
+    const targetEntry = mounted.get(n);
+    if (targetEntry) { targetEntry.thumbElem.classList.add('context'); contextTargetElem = targetEntry.thumbElem; }
     const multi = selected.has(n) && selected.size >= 2;
     const count = multi ? selected.size : 1;
     menuElem.replaceChildren();
@@ -1017,8 +1101,8 @@ export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) 
     menuElem.appendChild(document.createElement('hr')).className = 'scribe-thumb-menu-divider';
     addItem(multi ? 'Cut' : 'Cut page', false, () => copySelection(multi ? [...selected] : [n], 'cut'));
     addItem(multi ? 'Copy' : 'Copy page', false, () => copySelection(multi ? [...selected] : [n], 'copy'));
-    // Paste lands just after the right-clicked page; only offered when this document has pages on the clipboard.
-    if (canPaste()) addItem('Paste', false, () => pasteAt(n + 1));
+    if (canPaste()) addItem('Paste after this page', false, () => pasteAt(n + 1));
+    if (onInsertFromFile) addItem('Insert file after this page', false, () => onInsertFromFile(n + 1));
     menuElem.appendChild(document.createElement('hr')).className = 'scribe-thumb-menu-divider';
     if (onExtract) {
       addItem(multi ? 'New document from selection' : 'New document from page', false,
@@ -1034,6 +1118,39 @@ export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) 
     menuElem.style.left = `${Math.max(4, left)}px`;
     menuElem.style.top = `${Math.max(4, top)}px`;
     // Dismiss on the next interaction outside the menu (deferred so the opening right-click does not close it).
+    setTimeout(() => document.addEventListener('pointerdown', onMenuOutsidePointer), 0);
+  }
+
+  /**
+   * Context menu for the rail's gaps and empty space: paste or insert a file at the position under the cursor.
+   * A right-click between two pages therefore inserts there, not at the end.
+   * The insertion line marks that gap (the "here" the items refer to) for as long as the menu is open, which also tells the user they clicked a gap rather than a page.
+   * @param {number} clientX
+   * @param {number} clientY
+   */
+  function openGapMenu(clientX, clientY) {
+    if (!(scribe.opt && scribe.opt.enablePageEditing) || !scribe.doc) return;
+    clearContextHighlight();
+    const gap = dropIndicator.show(clientX, clientY);
+    menuElem.replaceChildren();
+    /** @param {string} label @param {() => void} fn */
+    const addItem = (label, fn) => {
+      const item = document.createElement('div');
+      item.className = 'scribe-thumb-menu-item';
+      item.textContent = label;
+      item.addEventListener('click', () => { closeContextMenu(); fn(); });
+      menuElem.appendChild(item);
+    };
+    if (canPaste()) addItem('Paste here', () => pasteAt(gap));
+    if (onInsertFromFile) addItem('Insert file here', () => onInsertFromFile(gap));
+    if (!menuElem.firstChild) { clearContextHighlight(); return; } // nothing to offer at this gap
+
+    menuElem.style.display = '';
+    const hostRect = batchHost.getBoundingClientRect();
+    const left = Math.min(clientX - hostRect.left, hostRect.width - menuElem.offsetWidth - 4);
+    const top = Math.min(clientY - hostRect.top, hostRect.height - menuElem.offsetHeight - 4);
+    menuElem.style.left = `${Math.max(4, left)}px`;
+    menuElem.style.top = `${Math.max(4, top)}px`;
     setTimeout(() => document.addEventListener('pointerdown', onMenuOutsidePointer), 0);
   }
 
@@ -1097,6 +1214,7 @@ export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) 
     const snapshot = [...mounted];
     mounted.clear();
     selected.clear();
+    selAnchor = -1; // The anchor page may be among those deleted, so a later Shift-click should re-anchor rather than extend from a stale index.
 
     scribe.deletePages(toDelete);
     computeGeometry();
@@ -1161,24 +1279,40 @@ export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) 
   }
 
   /**
-   * Paste the clipboard's pages as a contiguous block at `insertIndex`, rebuild the rail, and select the new pages.
-   * A cut removes the originals and is consumed (clipboard cleared).
-   * A copy can be pasted again.
+   * Paste the clipboard's pages as a contiguous block at `insertIndex`.
+   * A copy is a pure insertion, as calm as an insert-from-file drop: the reader keeps their page,
+   * the rail scroll stays put, and nothing is auto-selected, so the only visible change is the new pages appearing at `insertIndex`.
+   * A cut is a move: it also removes the source rows, re-lays the rail, and lands on and selects the relocated block.
+   * A cut is consumed (the clipboard is cleared), but a copy can be pasted again.
    * @param {number} insertIndex
    */
   function pasteAt(insertIndex) {
     if (!canPaste()) return;
-    const opts = pageClipboard.mode === 'cut' ? { removeSourceIndices: [...pageClipboard.sourceIndices] } : {};
-    const range = scribe.pastePages(pageClipboard.payloads, insertIndex, opts);
-    if (pageClipboard.mode === 'cut') clearPageClipboard();
+    const wasCut = pageClipboard.mode === 'cut';
+    const range = scribe.pastePages(
+      pageClipboard.payloads,
+      insertIndex,
+      wasCut ? { removeSourceIndices: [...pageClipboard.sourceIndices] } : { keepCurrentPage: true },
+    );
+    if (wasCut) clearPageClipboard();
     cutMarks.clear();
     if (!range) return;
-    // `scribe.pastePages` already rebuilt the viewer onto the first pasted page; `rebuild` re-lays the rail to match.
-    rebuild(range.start);
-    // The freshly inserted pages become the selection.
-    for (let i = range.start; i < range.start + range.count; i++) selected.add(i);
-    selAnchor = range.start;
-    syncSelectionUI();
+    if (wasCut) {
+      // A cut is a move: land on and select the relocated block, matching the intent of moving pages.
+      rebuild(range.start);
+      for (let i = range.start; i < range.start + range.count; i++) selected.add(i);
+      selAnchor = range.start;
+      syncSelectionUI();
+    } else {
+      // A copy is a pure insertion, so keep the reader on their page: insertPagesAt gets range.cp
+      // because the viewer's own state.cp.n is stale here while the rebuild's displayPage is still async.
+      // Clear the selection because insertPagesAt shifts the pre-paste selection up by the inserted block,
+      // so without this the accent ring would stay on the originals at their new indices, reading as if those pages had moved.
+      insertPagesAt(range.start, range.count, range.cp);
+      selected.clear();
+      selAnchor = -1;
+      syncSelectionUI();
+    }
   }
 
   /**
@@ -1254,8 +1388,9 @@ export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) 
 
   /**
    * Keyboard handler for the thumbnail rail, active only while focus is within the panel.
-   * Arrow keys move the current page by one and Home/End jump to the ends, each mirroring a plain thumbnail click.
-   * Shift extends the batch selection from the anchor, like Shift+click.
+   * Arrow keys navigate the grid visually: left/right step one page, and up/down move by a full row (`gridCols` pages).
+   * Home/End jump to the ends.
+   * Each move mirrors a plain thumbnail click, or with Shift extends the batch selection from the anchor.
    * Stops propagation on handled keys so the viewer's own arrow-key word navigation does not also fire.
    * @param {KeyboardEvent} e
    */
@@ -1291,9 +1426,12 @@ export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) 
     }
 
     const cur = activePage >= 0 ? activePage : 0;
+    const rowStep = gridCols;
     let target;
-    if (e.key === 'ArrowDown') target = Math.min(cur + 1, pageCount - 1);
-    else if (e.key === 'ArrowUp') target = Math.max(cur - 1, 0);
+    if (e.key === 'ArrowRight') target = Math.min(cur + 1, pageCount - 1);
+    else if (e.key === 'ArrowLeft') target = Math.max(cur - 1, 0);
+    else if (e.key === 'ArrowDown') target = Math.min(cur + rowStep, pageCount - 1);
+    else if (e.key === 'ArrowUp') target = Math.max(cur - rowStep, 0);
     else if (e.key === 'Home') target = 0;
     else if (e.key === 'End') target = pageCount - 1;
     else return;
@@ -1372,13 +1510,14 @@ export function createThumbnailPanel(scribe, { onSelect, onExtract, onResize }) 
     batchHost.removeEventListener('pointerdown', onOutsidePointerDown);
     document.removeEventListener('keydown', onKeyDown);
     clearMounted();
+    dropIndicator.hide();
     batchBar.remove();
     menuElem.remove();
     panelElem.replaceChildren();
   }
 
   return {
-    panelElem, toggleElem, rebuild, setActive, setVisible, setWidth, getResizeBounds, destroy,
+    panelElem, toggleElem, rebuild, cancelCut, setActive, setVisible, setWidth, getResizeBounds, dropIndicator, insertPagesAt, destroy,
   };
 }
 

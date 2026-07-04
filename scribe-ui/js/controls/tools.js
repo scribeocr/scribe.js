@@ -5,15 +5,20 @@ import { makeIconButton } from './toolbar.js';
 import { applyHighlight } from '../viewerHighlights.js';
 import { filesFromDropEvent } from '../dragAndDrop.js';
 
+// Filled highlighter-marker glyph (Material).
+// The head path (`.scribe-hl-tip`) is filled with the selected highlight color to preview the active swatch (see `setTipColor`), while the base bar underneath stays the default ink color.
 const HIGHLIGHT_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 -960 960 960" fill="currentColor">
-<path d="M280-320v-440q0-33 23.5-56.5T360-840q9 0 18 2t17 6l240 119q20 10 32.5 29.5T680-641v321H280Zm80-80h240v-241L360-760v360ZM160-120l22-65q8-25 29-40t47-15h444q26 0 47 15t29 40l22 65H160Zm200-280h240-240Z"/>
+<path class="scribe-hl-tip" d="M280-320v-440q0-33 23.5-56.5T360-840q9 0 18 2t17 6l240 119q20 10 32.5 29.5T680-641v321H280Z"/>
+<path d="M160-120l22-65q8-25 29-40t47-15h444q26 0 47 15t29 40l22 65H160Z"/>
 </svg>`;
 // eslint-disable-next-line max-len
 const HIGHLIGHT_CURSOR = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' height=\'24\' width=\'24\' viewBox=\'0 -960 960 960\'%3E%3Cpath fill=\'white\' stroke=\'black\' stroke-width=\'30\' d=\'m268-212-56-56q-12-12-12-28.5t12-28.5l423-423q12-12 28.5-12t28.5 12l56 56q12 12 12 28.5T748-635L324-212q-11 11-28 11t-28-11Z\'/%3E%3C/svg%3E") 12 12, auto';
+// Placed raw at 11px without a `.cr-icon` wrapper, so it needs its own inline size and a heavier 2.2 stroke to stay crisp that small.
+const HIGHLIGHT_CARET_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:block;width:11px;height:11px;pointer-events:none;" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
 
 /**
  * Build the highlight tool: toggle button, optional color picker, overlay-word highlighting, highlighter cursor, and comment icons.
- * The toolbar DOM is built immediately; the selection/comment behaviors are wired by `installBehaviors()` after `scribe.init`.
+ * The toolbar DOM is built immediately. The selection/comment behaviors are wired by `installBehaviors()` after `scribe.init`.
  * @param {import('../../viewer.js').ScribeViewer} scribe
  * @param {HTMLElement} rootElem - The app's root element (for selection scope and cursor CSS).
  * @param {object} cfg
@@ -21,20 +26,25 @@ const HIGHLIGHT_CURSOR = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.o
  * @param {string} cfg.defaultColor - Initial color (must be in `colors`).
  * @param {string} cfg.rootClass - The app's root class (for scoping the cursor rule).
  * @returns {{
- *   highlightElem: HTMLSpanElement, colorContainer: ?HTMLSpanElement,
- *   getSelectedOverlayWords: () => Array<any>, updateCommentIcons: () => void,
+ *   highlightElem: HTMLSpanElement, toolbarElem: HTMLSpanElement,
+ *   getSelectedOverlayWords: () => Array<import('../viewerWordObjects.js').UiOcrWord>, updateCommentIcons: () => void,
  *   installBehaviors: () => (() => void)
  * }}
  */
 export function createHighlightTool(scribe, rootElem, { colors, defaultColor, rootClass }) {
   let highlightMode = false;
   let highlightColor = defaultColor;
+  // Expose the active color to the core viewer so its right-click "Highlight" item can use it (see viewer._highlightColor).
+  scribe._highlightColor = highlightColor;
   /** @type {?HTMLStyleElement} */
   let cursorStyleElem = null;
   /** @type {?HTMLDivElement} */
   let commentTooltip = null;
 
   const highlightElem = makeIconButton('Highlight', HIGHLIGHT_SVG);
+  const tipPath = highlightElem.querySelector('.scribe-hl-tip');
+  const setTipColor = (c) => { if (tipPath && c) tipPath.style.fill = c; };
+  setTipColor(highlightColor);
 
   /** Toggle the highlighter cursor on the overlay words when highlight mode is active. */
   function updateHighlightCursorStyle() {
@@ -49,17 +59,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
 
   /** UiOcrWord objects under the current browser text selection (via the HTML overlay). */
   function getSelectedOverlayWords() {
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed) return [];
-    const range = sel.getRangeAt(0);
-    const wordElems = rootElem.querySelectorAll('.scribe-word');
-    const selectedIds = [];
-    for (const elem of wordElems) {
-      if (range.intersectsNode(elem)) selectedIds.push(elem.id);
-    }
-    if (selectedIds.length === 0) return [];
-    const idSet = new Set(selectedIds);
-    return scribe.getUiWords().filter((kw) => idSet.has(kw.word.id));
+    return scribe.getWordsUnderTextSelection();
   }
 
   function applyToSelection() {
@@ -71,14 +71,20 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
   }
 
   highlightElem.addEventListener('click', () => {
+    if (applyToSelection()) return;
     highlightMode = !highlightMode;
     highlightElem.classList.toggle('active', highlightMode);
     updateHighlightCursorStyle();
   });
 
-  // Color picker. `makeColorBtn` is defined once (not in the loop) so its click closure
-  // captures only `color` (a per-call param) plus stable module-scoped state.
+  // Color-picker swatches and the popover that holds them, plus the factory that builds each swatch button.
   const colorBtnElems = [];
+  /** @type {?HTMLSpanElement} */ let paletteElem = null;
+  /** @type {?HTMLSpanElement} */ let caretElem = null;
+  const closePalette = () => {
+    if (paletteElem) paletteElem.classList.remove('open');
+    if (caretElem) caretElem.classList.remove('active');
+  };
   /** @param {string} color @returns {HTMLSpanElement} */
   const makeColorBtn = (color) => {
     const btn = document.createElement('span');
@@ -86,32 +92,54 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     btn.style.backgroundColor = color;
     if (color === highlightColor) btn.classList.add('active');
     btn.addEventListener('mousedown', (e) => e.preventDefault());
-    btn.addEventListener('click', () => {
+    btn.addEventListener('click', (e) => {
+      e.stopPropagation();
       highlightColor = color;
+      scribe._highlightColor = color;
+      setTipColor(color);
       colorBtnElems.forEach((b) => b.classList.remove('active'));
       btn.classList.add('active');
-      if (!applyToSelection() && !highlightMode) {
-        highlightMode = true;
-        highlightElem.classList.add('active');
-        updateHighlightCursorStyle();
-      }
+      closePalette();
+      // Choosing a color highlights the current selection if there is one, but never arms paint mode on its own (only the marker does that).
+      applyToSelection();
     });
     return btn;
   };
 
-  /** @type {?HTMLSpanElement} */
-  let colorContainer = null;
+  // The element placed in the toolbar: the split control when there is a palette, otherwise the bare marker.
+  /** @type {HTMLSpanElement} */
+  let toolbarElem = highlightElem;
   if (colors.length > 1) {
-    colorContainer = document.createElement('span');
-    colorContainer.style.display = 'inline-flex';
-    colorContainer.style.alignItems = 'center';
-    colorContainer.style.gap = '4px';
-    colorContainer.style.marginLeft = '4px';
+    const split = document.createElement('span');
+    split.className = 'scribe-hl-split';
+    highlightElem.classList.add('scribe-hl-mark');
+
+    paletteElem = document.createElement('span');
+    paletteElem.className = 'scribe-hl-pop';
     for (const color of colors) {
       const btn = makeColorBtn(color);
       colorBtnElems.push(btn);
-      colorContainer.appendChild(btn);
+      paletteElem.appendChild(btn);
     }
+
+    // A slim caret (not a full icon button) so the dropdown half stays visually subordinate to the marker.
+    caretElem = document.createElement('span');
+    caretElem.className = 'cr-icon-button scribe-hl-caret';
+    caretElem.title = 'Highlight color';
+    caretElem.role = 'button';
+    caretElem.tabIndex = 0;
+    caretElem.ariaLabel = 'Choose highlight color';
+    caretElem.innerHTML = HIGHLIGHT_CARET_SVG;
+    caretElem.addEventListener('mousedown', (e) => e.preventDefault());
+    caretElem.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const willOpen = !paletteElem.classList.contains('open');
+      paletteElem.classList.toggle('open', willOpen);
+      caretElem.classList.toggle('active', willOpen);
+    });
+
+    split.append(highlightElem, caretElem, paletteElem);
+    toolbarElem = split;
   }
 
   /** Place one comment icon for a highlight group, anchored at its first word's overlay element. */
@@ -181,6 +209,19 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     };
     document.addEventListener('mouseup', mouseupHandler);
 
+    // Close the color palette on an outside click or Escape (only wired when the split button built a palette).
+    const paletteOutsideClick = (event) => {
+      if (!paletteElem || !paletteElem.classList.contains('open')) return;
+      const t = event.target;
+      if (t instanceof Node && (paletteElem.contains(t) || (caretElem && caretElem.contains(t)))) return;
+      closePalette();
+    };
+    const paletteKeydown = (event) => { if (event.key === 'Escape') closePalette(); };
+    if (paletteElem) {
+      document.addEventListener('click', paletteOutsideClick);
+      document.addEventListener('keydown', paletteKeydown);
+    }
+
     commentTooltip = document.createElement('div');
     commentTooltip.className = 'highlight-comment-tooltip';
     commentTooltip.style.display = 'none';
@@ -204,6 +245,10 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
 
     return () => {
       document.removeEventListener('mouseup', mouseupHandler);
+      if (paletteElem) {
+        document.removeEventListener('click', paletteOutsideClick);
+        document.removeEventListener('keydown', paletteKeydown);
+      }
       commentObserver.disconnect();
       if (commentTooltip && commentTooltip.parentNode) commentTooltip.parentNode.removeChild(commentTooltip);
       commentTooltip = null;
@@ -216,7 +261,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
 
   return {
     highlightElem,
-    colorContainer,
+    toolbarElem,
     getSelectedOverlayWords,
     updateCommentIcons,
     installBehaviors,

@@ -4,6 +4,15 @@ import { makeIconButton } from './toolbar.js';
 
 // A bookmark-ribbon glyph for the toolbar toggle.
 const BOOKMARK_SVG = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="currentColor"><path d="M4 2a1 1 0 0 0-1 1v11l5-3 5 3V3a1 1 0 0 0-1-1H4z"/></svg>';
+// Disclosure chevron for expandable rows, stroked to match the toolbar's icon language.
+// Points right when collapsed.
+// The `.open` class rotates it to point down.
+const TWISTY_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
+// Row ribbon: the same bookmark shape as the panel toggle, so a row reads unmistakably as "a bookmark" (not a bare title).
+// Sized by CSS.
+const RIBBON_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 2a1 1 0 0 0-1 1v11l5-3 5 3V3a1 1 0 0 0-1-1H4z"/></svg>';
+// Plus glyph for the header's persistent add button.
+const PLUS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg>';
 
 /**
  * Create the bookmarks (document outline) side panel.
@@ -20,7 +29,22 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize }) {
   panelElem.style.width = '240px';
   panelElem.tabIndex = -1;
 
-  // No header/title bar element: the tree melds straight to the panel top like the thumbnail rail.
+  // A header bar (uppercase title + persistent add button) sits above the tree in editor mode, giving "add a bookmark" a home that stays put whether the list is empty or full.
+  const headerElem = document.createElement('div');
+  headerElem.className = 'scribe-bm-hd';
+  const headerTitle = document.createElement('span');
+  headerTitle.className = 'scribe-bm-hd-title';
+  headerTitle.textContent = 'Bookmarks';
+  const addElem = document.createElement('button');
+  addElem.type = 'button';
+  addElem.className = 'scribe-bm-add';
+  addElem.title = 'Add bookmark at current page';
+  addElem.setAttribute('aria-label', 'Add bookmark at current page');
+  addElem.innerHTML = PLUS_SVG;
+  addElem.addEventListener('click', () => addBookmarkAtCurrentPage());
+  headerElem.append(headerTitle, addElem);
+  panelElem.appendChild(headerElem);
+
   const treeElem = document.createElement('div');
   treeElem.className = 'scribe-bm-tree';
   panelElem.appendChild(treeElem);
@@ -42,6 +66,12 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize }) {
   const editing = () => !!(scribe.opt && scribe.opt.enablePageEditing);
   const currentPage = () => (scribe.state && scribe.state.cp ? scribe.state.cp.n : 0);
   const outline = () => (scribe.doc && scribe.doc.outline) || [];
+  /**
+   * Whether a real document is loaded.
+   * `scribe.doc` is an empty ScribeDoc with 0 pages when nothing is open, so its presence alone is not enough.
+   * @returns {boolean}
+   */
+  const hasDoc = () => !!(scribe.doc && scribe.doc.pageMetrics && scribe.doc.pageMetrics.length);
 
   /**
    * Walk the outline for the node with `id`, returning its location among its siblings.
@@ -175,16 +205,33 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize }) {
     const twisty = document.createElement('span');
     twisty.className = 'scribe-bm-twisty';
     if (node.children.length) {
-      twisty.textContent = node.open ? '▾' : '▸';
+      twisty.innerHTML = TWISTY_SVG;
+      twisty.classList.toggle('open', node.open);
       twisty.addEventListener('click', (e) => { e.stopPropagation(); node.open = !node.open; rebuild(); });
     }
     row.appendChild(twisty);
+
+    // Ribbon glyph marks nodes with a dest (real bookmarks).
+    // Dest-less structural nodes get an empty span that keeps every row's title aligned.
+    const ribbon = document.createElement('span');
+    ribbon.className = 'scribe-bm-ribbon';
+    if (node.dest) ribbon.innerHTML = RIBBON_SVG;
+    row.appendChild(ribbon);
 
     const label = document.createElement('span');
     label.className = 'scribe-bm-label';
     label.textContent = node.title || '(untitled)';
     if (!node.dest) label.classList.add('structural');
     row.appendChild(label);
+
+    // Target page badge, so the row reads as "a bookmark to page N".
+    // The page number is 1-indexed to match the thumbnail rail.
+    if (node.dest) {
+      const pageBadge = document.createElement('span');
+      pageBadge.className = 'scribe-bm-page';
+      pageBadge.textContent = `p. ${node.dest.pageIndex + 1}`;
+      row.appendChild(pageBadge);
+    }
 
     row.addEventListener('click', () => {
       if (node.dest) onNavigate(node.dest.pageIndex);
@@ -206,21 +253,19 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize }) {
 
   function rebuild() {
     closeMenu();
+    // The header (with its persistent add button) shows only in editor mode with a document open.
+    // Without a header the tree melds to the panel top.
+    const showHeader = editing() && hasDoc();
+    headerElem.style.display = showHeader ? '' : 'none';
+    panelElem.classList.toggle('scribe-bm-has-header', showHeader);
     treeElem.textContent = '';
     const nodes = outline();
     if (nodes.length === 0) {
+      // No document loaded -> nothing to bookmark, so leave the panel blank (not even "No bookmarks yet"), matching the thumbnail rail, which is also empty before a document is open.
+      if (!hasDoc()) return;
       const empty = document.createElement('div');
       empty.className = 'scribe-bm-empty';
-      if (editing()) {
-        empty.textContent = 'No bookmarks yet.';
-        const addLink = document.createElement('button');
-        addLink.className = 'scribe-bm-empty-add';
-        addLink.textContent = '+ Add a bookmark';
-        addLink.addEventListener('click', addBookmarkAtCurrentPage);
-        empty.appendChild(addLink);
-      } else {
-        empty.textContent = 'No bookmarks.';
-      }
+      empty.textContent = editing() ? 'No bookmarks yet.' : 'No bookmarks.';
       treeElem.appendChild(empty);
       return;
     }
@@ -242,8 +287,7 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize }) {
     }
   }
 
-  // Right-click the tree's empty space to add a top-level bookmark, so there's no persistent add button cluttering the panel.
-  // Rows carry their own menu and the empty state has its own button, so this is the only way to add at the top level.
+  // Right-click the tree's empty space to add a top-level bookmark.
   treeElem.addEventListener('contextmenu', (e) => {
     if (!editing()) return;
     if (e.target instanceof Element && e.target.closest('.scribe-bm-row')) return;

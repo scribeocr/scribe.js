@@ -162,7 +162,12 @@ function dealRows(ghost, targetEntries) {
  * Wire drag-to-reorder onto the thumbnail rail.
  * Returns the per-row pointerdown handler (attached in each mounted row) and a teardown that aborts an in-flight drag.
  * @param {ReorderContext} ctx
- * @returns {{ onThumbPointerDown: (e: PointerEvent, n: number) => void, cancelDrag: () => void }}
+ * @returns {{
+ *   onThumbPointerDown: (e: PointerEvent, n: number) => void,
+ *   cancelDrag: () => void,
+ *   insertionGapAt: (clientX: number, clientY: number) => number,
+ *   placeInsertLineAt: (line: HTMLElement, g: number) => void,
+ * }}
  */
 export function installPageReorder(ctx) {
   /**
@@ -187,13 +192,12 @@ export function installPageReorder(ctx) {
   }
 
   /**
-   * Position the insertion indicator for gap `g`.
+   * Position an insertion-indicator line for gap `g`.
+   * Takes the `line` element because the reorder drag and the file-drop preview each own a separate `.scribe-thumb-insert`.
+   * @param {HTMLElement} line
    * @param {number} g
    */
-  function placeInsertLine(g) {
-    const d = ctx.drag;
-    if (!d || !d.line) return;
-    const line = d.line;
+  function placeInsertLineAt(line, g) {
     if (ctx.gridCols <= 1) {
       // Rail: a horizontal line over the single column, aligned to the thumbnail (which the panel can now be wider than).
       const y = g < ctx.pageCount ? ctx.offsets[g] : ctx.offsets[ctx.pageCount - 1] + ctx.heights[ctx.pageCount - 1];
@@ -398,7 +402,7 @@ export function installPageReorder(ctx) {
     d.ghost.style.left = `${clientX - d.grabDX}px`;
     d.ghost.style.top = `${clientY - d.grabDY}px`;
     d.gap = insertionGapAt(clientX, clientY);
-    placeInsertLine(d.gap);
+    placeInsertLineAt(d.line, d.gap);
     const rect = ctx.scrollElem.getBoundingClientRect();
     const max = ctx.scrollElem.scrollHeight - ctx.scrollElem.clientHeight;
     if (clientY < rect.top + AUTOSCROLL_EDGE && ctx.scrollElem.scrollTop > 0) d.autoDir = -1;
@@ -417,7 +421,7 @@ export function installPageReorder(ctx) {
         ctx.scrollElem.scrollTop = next;
         ctx.updateWindow();
         d.gap = insertionGapAt(d.lastX, d.lastY);
-        placeInsertLine(d.gap);
+        if (d.line) placeInsertLineAt(d.line, d.gap);
       }
     }
     d.rafId = requestAnimationFrame(autoScrollTick);
@@ -526,5 +530,8 @@ export function installPageReorder(ctx) {
     ctx.drag = null;
   }
 
-  return { onThumbPointerDown, cancelDrag };
+  // `insertionGapAt`/`placeInsertLineAt` are also driven by panels.js's external-file drop preview.
+  return {
+    onThumbPointerDown, cancelDrag, insertionGapAt, placeInsertLineAt,
+  };
 }

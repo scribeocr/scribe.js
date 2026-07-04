@@ -2,7 +2,7 @@ import { InputData, opt } from './app.js';
 import { DocFonts } from './fontContainer.js';
 import { ImageStore } from './imageContainer.js';
 import { scribeDocDefaults } from './scribeDocDefaults.js';
-import { clearObjectProperties } from '../utils/miscUtils.js';
+import { clearObjectProperties, getRandomAlphanum } from '../utils/miscUtils.js';
 import {
   addHighlights as addHighlightsImpl, addFreeText as addFreeTextImpl, clearHighlights as clearHighlightsImpl,
   addShapes as addShapesImpl, clearShapes as clearShapesImpl,
@@ -25,7 +25,7 @@ import {
   remapOutline, cloneOutline, makeOutlineNode, findOutlineEntry, isOutlineDescendant,
 } from '../objects/outlineObjects.js';
 import { runOptimization as runOptimizationImpl } from '../fontEval.js';
-import { clonePageFull } from '../objects/ocrObjects.js';
+import { clonePageFull, reIdPage } from '../objects/ocrObjects.js';
 
 /**
  * The distinct OCR/raw-OCR layer arrays.
@@ -128,19 +128,33 @@ function clonePageBundle(doc, i) {
     if (!ocrCache.has(arr)) ocrCache.set(arr, clonePageFull(arr[i]));
     ocr[engine] = ocrCache.get(arr);
   }
+  // Give each cloned page fresh word ids so the paste is a distinct instance, not an id-for-id twin of its source.
+  // Otherwise highlight and selection, which are keyed on word id across the render window, would act on the copy and its source together.
+  for (const p of new Set(Object.values(ocr))) if (p) reIdPage(p);
   const ocrRaw = {};
   for (const [engine, arr] of Object.entries(doc.ocrRaw)) {
     ocrRaw[engine] = Array.isArray(arr) && i < arr.length ? arr[i] : '';
   }
   const cloneAt = (arr) => (Array.isArray(arr) ? structuredClone(arr[i]) : undefined);
   const refAt = (arr) => (Array.isArray(arr) ? arr[i] : undefined);
+  // Re-group the cloned highlight annotations so the copy's highlights form their own group.
+  // Otherwise deleting the source's highlight (matched by group id) would also clear the copy's, and vice-versa.
+  const annotations = cloneAt(doc.annotations.pages);
+  if (Array.isArray(annotations)) {
+    const groupIdMap = new Map();
+    for (const annot of annotations) {
+      if (!annot || annot.groupId == null) continue;
+      if (!groupIdMap.has(annot.groupId)) groupIdMap.set(annot.groupId, getRandomAlphanum(10));
+      annot.groupId = groupIdMap.get(annot.groupId);
+    }
+  }
   return {
     ocr,
     ocrRaw,
     pageMetrics: structuredClone(doc.pageMetrics[i]),
     layoutRegions: cloneAt(doc.layoutRegions.pages),
     layoutDataTables: cloneAt(doc.layoutDataTables.pages),
-    annotations: cloneAt(doc.annotations.pages),
+    annotations,
     vis: cloneAt(doc.vis),
     convertPageWarn: cloneAt(doc.convertPageWarn),
     pageStats: cloneAt(doc.inputData.pageStats),
@@ -179,14 +193,41 @@ function remapOutlineByTags(doc, tags) {
 }
 
 /**
+ * Re-align the document's FOREIGN render sources (the pools of pages copied in from other documents) with a restored page state,
+ * so undo/redo of a cross-document paste tracks its source rather than leaking it.
+ * A source the target references but the doc dropped is re-registered (redo of the paste).
+ * A source the doc holds but the target does not is released (undo of the paste), terminating that source's worker pool once no live document still holds it.
+ * The document's own primary source is never touched, since it is not part of any page op.
+ * @param {ScribeDoc} doc
+ * @param {?Map<number, import('./imageContainer.js').RenderSource>} target - Foreign sources captured with the snapshot.
+ */
+function reconcileForeignSources(doc, target) {
+  if (!target) return;
+  const { images } = doc;
+  for (const [id, src] of target) {
+    if (!images.sources.has(id)) { images.sources.set(id, src); src.refCount += 1; }
+  }
+  for (const [id, src] of [...images.sources]) {
+    if (id === images.primarySourceId || target.has(id)) continue;
+    images.sources.delete(id);
+    src.refCount -= 1;
+    if (src.refCount <= 0) src.terminate();
+  }
+}
+
+/**
  * A before/after snapshot of every per-page array plus the outline, for undo/redo of a page operation.
  * @param {ScribeDoc} doc
  */
 function capturePageState(doc) {
+  const primaryId = doc.images.primarySourceId;
   return {
     arrays: densePageArrays(doc).map((arr) => [arr, arr === doc.pageMetrics ? arr.map((pm) => structuredClone(pm)) : [...arr]]),
     pageCount: doc.pageMetrics.length,
     outline: cloneOutline(doc.outline),
+    // Foreign (cross-document) render sources this state references, captured so undo/redo can re-register or release them.
+    // The primary source is excluded because page ops never add or remove it.
+    foreignSources: new Map([...doc.images.sources].filter(([id]) => id !== primaryId)),
   };
 }
 
@@ -205,6 +246,7 @@ function restorePageState(doc, snap) {
   clearImageCaches(doc);
   doc.inputData.pageCount = snap.pageCount;
   doc.images.pageCount = snap.pageCount;
+  reconcileForeignSources(doc, snap.foreignSources);
 }
 
 /**

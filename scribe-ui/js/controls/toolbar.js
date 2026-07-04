@@ -50,13 +50,15 @@ export function makeToolbarShell(rootClass, toolbarHeight, iconSize) {
   toolbarElem.className = `${rootClass}-toolbar`;
   toolbarElem.style.width = '100%';
   toolbarElem.style.height = `${toolbarHeight}px`;
+  toolbarElem.style.boxSizing = 'border-box';
   toolbarElem.style.alignItems = 'center';
-  toolbarElem.style.color = '#fff';
+  toolbarElem.style.color = 'var(--scribe-ink)';
   toolbarElem.style.display = 'flex';
   toolbarElem.style.position = 'relative';
   toolbarElem.style.zIndex = '10';
   toolbarElem.style.lineHeight = `${iconSize}px`;
-  toolbarElem.style.backgroundColor = '#323639';
+  toolbarElem.style.backgroundColor = 'var(--scribe-surface)';
+  toolbarElem.style.borderBottom = '1px solid var(--scribe-line)';
 
   const toolbarElemStart = document.createElement('div');
   toolbarElemStart.style.flex = '1';
@@ -79,10 +81,16 @@ export function makeToolbarShell(rootClass, toolbarHeight, iconSize) {
   };
 }
 
-const NAV_PREV_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px">
-<path d="m313-440 224 224-57 56-320-320 320-320 57 56-224 224h487v80H313Z" /></svg>`;
-const NAV_NEXT_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="24px" viewBox="0 -960 960 960" width="24px">
-<path d="M647-440H160v-80h487L423-744l57-56 320 320-320 320-57-56 224-224Z"/></svg>`;
+/**
+ * Wrap SVG shape markup in a 24x24 stroked line-icon (the toolbar's shared stroked-icon style) sized to fill its icon button.
+ * The sidebar-toggle glyphs stay filled by design.
+ * @param {string} inner - Path/shape markup.
+ * @returns {string} The SVG markup for the icon.
+ */
+const lineIcon = (inner) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
+
+const NAV_PREV_SVG = lineIcon('<path d="M15 6l-6 6 6 6"/>');
+const NAV_NEXT_SVG = lineIcon('<path d="M9 6l6 6-6 6"/>');
 
 /**
  * Build prev/next buttons and the page-number input group, wired to `scribe.displayPage`.
@@ -96,6 +104,9 @@ export function createPageNav(scribe) {
   const pageInputGroup = document.createElement('div');
   pageInputGroup.className = 'btn-group';
   pageInputGroup.style.display = 'inline-flex';
+  // Center the items on the cross axis so the "/" text node and page-count span align with the input's vertically centered value.
+  // Under the default stretch they top-align their glyphs and the "/ N" total rides visibly higher than the page number.
+  pageInputGroup.style.alignItems = 'center';
 
   const pageNumElem = document.createElement('input');
   pageNumElem.type = 'text';
@@ -118,8 +129,21 @@ export function createPageNav(scribe) {
   pageInputGroup.appendChild(document.createTextNode(' / '));
   pageInputGroup.appendChild(pageCountElem);
 
-  nextElem.addEventListener('click', () => scribe.displayPage(scribe.state.cp.n + 1, true, false));
-  prevElem.addEventListener('click', () => scribe.displayPage(scribe.state.cp.n - 1, true, false));
+  /**
+   * @param {HTMLElement} btn
+   * @param {number} dir - -1 for previous (slide left), 1 for next (slide right).
+   */
+  const slideIcon = (btn, dir) => {
+    const icon = btn.querySelector('.cr-icon');
+    if (!icon || !icon.animate) return;
+    icon.animate(
+      [{ transform: 'translateX(0)' }, { transform: `translateX(${dir * 2}px)`, offset: 0.5 }, { transform: 'translateX(0)' }],
+      { duration: 220, easing: 'cubic-bezier(.4, 0, .2, 1)' },
+    );
+  };
+
+  nextElem.addEventListener('click', () => { slideIcon(nextElem, 1); scribe.displayPage(scribe.state.cp.n + 1, true, false); });
+  prevElem.addEventListener('click', () => { slideIcon(prevElem, -1); scribe.displayPage(scribe.state.cp.n - 1, true, false); });
   pageNumElem.addEventListener('keyup', (event) => {
     if (event.key === 'Enter') scribe.displayPage(parseInt(pageNumElem.value, 10) - 1, true, false);
   });
@@ -129,10 +153,8 @@ export function createPageNav(scribe) {
   };
 }
 
-const ZOOM_OUT_SVG = `<svg viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet" focusable="false" role="none" style="pointer-events: none; display: block; width: 100%; height: 100%;">
-<g><path d="M19 13H5v-2h14v2z"></path></g></svg>`;
-const ZOOM_IN_SVG = `<svg viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet" focusable="false" role="none" style="pointer-events: none; display: block; width: 100%; height: 100%;">
-<g><path d="M19 13h-6v6h-2v-6H5v-2h6V5h2v6h6v2z"></path></g></svg>`;
+const ZOOM_OUT_SVG = lineIcon('<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5M8.5 11h5"/>');
+const ZOOM_IN_SVG = lineIcon('<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5M11 8.5v5M8.5 11h5"/>');
 
 /**
  * Build the zoom-out/zoom-in control group, wired to `scribe.zoom` about the stage center.
@@ -153,10 +175,8 @@ export function createZoomControls(scribe) {
   return { zoomControls, zoomInElem, zoomOutElem };
 }
 
-const ROTATE_LEFT_SVG = `<svg viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet" focusable="false" role="none" style="pointer-events: none; display: block; width: 100%; height: 100%;">
-<path d="M7.11 8.53L5.7 7.11C4.8 8.27 4.24 9.61 4.07 11h2.02c.14-.87.49-1.72 1.02-2.47zM6.09 13H4.07c.17 1.39.72 2.73 1.62 3.89l1.41-1.42c-.52-.75-.87-1.59-1.01-2.47zm1.01 5.32c1.16.9 2.51 1.44 3.9 1.61V17.9c-.87-.15-1.71-.49-2.46-1.03L7.1 18.32zM13 4.07V1L8.45 5.55 13 10V6.09c2.84.48 5 2.94 5 5.91s-2.16 5.43-5 5.91v2.02c3.95-.49 7-3.85 7-7.93s-3.05-7.44-7-7.93z"></path></svg>`;
-const ROTATE_RIGHT_SVG = `<svg viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet" focusable="false" role="none" style="pointer-events: none; display: block; width: 100%; height: 100%;">
-<path d="M15.55 5.55L11 1v3.07C7.06 4.56 4 7.92 4 12s3.05 7.44 7 7.93v-2.02c-2.84-.48-5-2.94-5-5.91s2.16-5.43 5-5.91V10l4.55-4.45zM19.93 11c-.17-1.39-.72-2.73-1.62-3.89l-1.42 1.42c.54.75.88 1.6 1.02 2.47h2.02zM13 17.9v2.02c1.39-.17 2.74-.71 3.9-1.61l-1.44-1.44c-.75.54-1.59.89-2.46 1.03zm3.89-2.42l1.42 1.41c.9-1.16 1.45-2.5 1.62-3.89h-2.02c-.14.87-.48 1.72-1.02 2.47z"></path></svg>`;
+const ROTATE_LEFT_SVG = lineIcon('<path d="M5.5 8.25A7.5 7.5 0 1 0 12 4.5"/><path d="M8.5 4.5 12 2.8 12 6.2Z" fill="currentColor" stroke="none"/>');
+const ROTATE_RIGHT_SVG = lineIcon('<path d="M18.5 8.25A7.5 7.5 0 1 1 12 4.5"/><path d="M15.5 4.5 12 2.8 12 6.2Z" fill="currentColor" stroke="none"/>');
 
 /**
  * Build the rotate-left/rotate-right control group, wired to `scribe.rotatePage` on the current page.
@@ -171,8 +191,22 @@ export function createRotateControls(scribe) {
   rotateControls.appendChild(rotateLeftElem);
   rotateControls.appendChild(rotateRightElem);
 
-  rotateLeftElem.addEventListener('click', () => scribe.rotatePage(scribe.state.cp.n, -90));
-  rotateRightElem.addEventListener('click', () => scribe.rotatePage(scribe.state.cp.n, 90));
+  /**
+   * Play a brief rotation animation on `btn`'s icon.
+   * @param {HTMLElement} btn
+   * @param {number} dir - -1 for rotate-left (counter-clockwise), 1 for rotate-right.
+   */
+  const nudgeIcon = (btn, dir) => {
+    const icon = btn.querySelector('.cr-icon');
+    if (!icon || !icon.animate) return;
+    icon.animate(
+      [{ transform: 'rotate(0deg)' }, { transform: `rotate(${dir * 22}deg)`, offset: 0.5 }, { transform: 'rotate(0deg)' }],
+      { duration: 240, easing: 'cubic-bezier(.4, 0, .2, 1)' },
+    );
+  };
+
+  rotateLeftElem.addEventListener('click', () => { nudgeIcon(rotateLeftElem, -1); scribe.rotatePage(scribe.state.cp.n, -90); });
+  rotateRightElem.addEventListener('click', () => { nudgeIcon(rotateRightElem, 1); scribe.rotatePage(scribe.state.cp.n, 90); });
 
   return { rotateControls, rotateLeftElem, rotateRightElem };
 }
@@ -255,8 +289,7 @@ async function printDocument(scribe, { pageArr = null } = {}) {
   }
 }
 
-const PRINT_SVG = `<svg viewBox="0 0 24 24" preserveAspectRatio="xMidYMid meet" focusable="false" role="none" style="pointer-events: none; display: block; width: 100%; height: 100%;">
-<path d="M19 8H5c-1.66 0-3 1.34-3 3v6h4v4h12v-4h4v-6c0-1.66-1.34-3-3-3zm-3 11H8v-5h8v5zm3-7c-.55 0-1-.45-1-1s.45-1 1-1 1 .45 1 1-.45 1-1 1zm-1-9H6v4h12V3z"></path></svg>`;
+export const PRINT_SVG = lineIcon('<path d="M6 9V4h12v5M6 18H5a2 2 0 0 1-2-2v-3a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2v3a2 2 0 0 1-2 2h-1M7 15h10v5H7z"/>');
 
 /**
  * Build the print control and its Ctrl/Cmd+P shortcut, wired to export the current document and open the browser print dialog.
@@ -306,8 +339,7 @@ export function createPrintControls(scribe, rootElem) {
   return { printControls, printElem, installPrintShortcut };
 }
 
-const OPEN_SVG = `<svg viewBox="0 -960 960 960" preserveAspectRatio="xMidYMid meet" focusable="false" role="none" style="pointer-events: none; display: block; width: 100%; height: 100%;">
-<path d="M160-160q-33 0-56.5-23.5T80-240v-480q0-33 23.5-56.5T160-800h240l80 80h320q33 0 56.5 23.5T880-640H447l-80-80H160v480l96-320h684L837-217q-8 27-30 42t-49 15H160Zm84-80h516l72-240H316l-72 240Zm0 0 72-240-72 240Z"></path></svg>`;
+export const OPEN_SVG = lineIcon('<path d="M3 7a2 2 0 0 1 2-2h3.5l2 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/>');
 
 /**
  * Build the "Open" control: a button (and a hidden multi-file input) that hands the chosen files to `onFiles`,
@@ -359,6 +391,99 @@ export function createOpenControls(scribe, rootElem, onFiles) {
   return { openControls, openElem, installOpenShortcut };
 }
 
+const MENU_SVG = lineIcon('<path d="M4 7h16M4 12h16M4 17h16"/>');
+
+/**
+ * Build the far-left app menu: a hamburger button whose dropdown collects document- and app-level actions.
+ * The viewer seeds it with its own actions (Open, Print), and the returned extension API lets the editor append more (Combine, Split, a dark-mode toggle) without knowing the menu internals.
+ * @param {string} rootClass - The owning app's root class, unused today but kept for symmetry with the other factories.
+ * @returns {{
+ *   menuWrap: HTMLSpanElement, triggerElem: HTMLSpanElement, menuElem: HTMLDivElement,
+ *   addAction: (label: string, iconSvg: string, onClick: () => void) => HTMLDivElement,
+ *   addToggle: (label: string, iconSvg: string, getState: () => boolean, onToggle: () => void) => { item: HTMLDivElement, sync: () => void },
+ *   addSeparator: () => HTMLDivElement, close: () => void, destroy: () => void,
+ * }}
+ */
+// eslint-disable-next-line no-unused-vars
+export function createAppMenu(rootClass) {
+  const menuWrap = document.createElement('span');
+  menuWrap.className = 'scribe-app-menu-wrap';
+
+  const triggerElem = makeIconButton('Menu', MENU_SVG);
+  const menuElem = document.createElement('div');
+  menuElem.className = 'scribe-app-menu';
+  menuElem.style.display = 'none';
+  menuWrap.append(triggerElem, menuElem);
+
+  /** @type {Array<() => void>} Toggle-item sync functions. */
+  const toggleSyncs = [];
+  const isOpen = () => menuElem.style.display !== 'none';
+  const open = () => {
+    for (const sync of toggleSyncs) sync();
+    menuElem.style.display = 'block';
+    triggerElem.classList.add('active');
+  };
+  const close = () => {
+    menuElem.style.display = 'none';
+    triggerElem.classList.remove('active');
+  };
+  triggerElem.addEventListener('click', (e) => { e.stopPropagation(); if (isOpen()) close(); else open(); });
+  const onDocClick = (e) => {
+    const target = /** @type {Node} */ (e.target);
+    if (!isOpen() || menuElem.contains(target) || triggerElem.contains(target)) return;
+    close();
+  };
+  document.addEventListener('click', onDocClick);
+
+  const makeRow = (label, iconSvg) => {
+    const item = document.createElement('div');
+    item.className = 'scribe-app-menu-item';
+    item.role = 'button';
+    item.tabIndex = 0;
+    const ic = document.createElement('span');
+    ic.className = 'scribe-app-menu-ic';
+    ic.innerHTML = iconSvg;
+    item.append(ic, document.createTextNode(label));
+    item.addEventListener('mousedown', (e) => e.preventDefault());
+    return item;
+  };
+
+  const addAction = (label, iconSvg, onClick) => {
+    const item = makeRow(label, iconSvg);
+    item.addEventListener('click', (e) => { e.stopPropagation(); close(); onClick(); });
+    menuElem.appendChild(item);
+    return item;
+  };
+
+  const addToggle = (label, iconSvg, getState, onToggle) => {
+    const item = makeRow(label, iconSvg);
+    item.classList.add('scribe-app-menu-toggle');
+    const sw = document.createElement('span');
+    sw.className = 'scribe-app-menu-switch';
+    item.appendChild(sw);
+    const sync = () => item.classList.toggle('on', !!getState());
+    // Toggling leaves the menu open so the switch is seen to flip.
+    item.addEventListener('click', (e) => { e.stopPropagation(); onToggle(); sync(); });
+    menuElem.appendChild(item);
+    toggleSyncs.push(sync);
+    sync();
+    return { item, sync };
+  };
+
+  const addSeparator = () => {
+    const sep = document.createElement('div');
+    sep.className = 'scribe-app-menu-sep';
+    menuElem.appendChild(sep);
+    return sep;
+  };
+
+  const destroy = () => document.removeEventListener('click', onDocClick);
+
+  return {
+    menuWrap, triggerElem, menuElem, addAction, addToggle, addSeparator, close, destroy,
+  };
+}
+
 /**
  * Build the document tab strip: one chip per open document, each with a close button, for switching between them.
  * @param {object} cfg
@@ -408,15 +533,10 @@ export function createTabStrip({ onSelect, onClose }) {
   return { tabStripElem, render };
 }
 
-const SEARCH_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 -960 960 960" fill="currentColor">
-<path d="M784-120 532-372q-30 24-69 38t-83 14q-109 0-184.5-75.5T120-580q0-109 75.5-184.5T380-840q109 0 184.5 75.5T640-580q0 44-14 83t-38 69l252 252-56 56ZM380-400q75 0 127.5-52.5T560-580q0-75-52.5-127.5T380-760q-75 0-127.5 52.5T200-580q0 75 52.5 127.5T380-400Z"/>
-</svg>`;
-const SEARCH_PREV_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 -960 960 960" fill="currentColor">
-<path d="M480-528 296-344l-56-56 240-240 240 240-56 56-184-184Z"/></svg>`;
-const SEARCH_NEXT_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 -960 960 960" fill="currentColor">
-<path d="M480-344 240-584l56-56 184 184 184-184 56 56-240 240Z"/></svg>`;
-const CLOSE_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 -960 960 960" fill="currentColor">
-<path d="m256-200-56-56 224-224-224-224 56-56 224 224 224-224 56 56-224 224 224 224-56 56-224-224-224 224Z"/></svg>`;
+const SEARCH_SVG = lineIcon('<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>');
+const SEARCH_PREV_SVG = lineIcon('<path d="M6 15l6-6 6 6"/>');
+const SEARCH_NEXT_SVG = lineIcon('<path d="M6 9l6 6 6-6"/>');
+const CLOSE_SVG = lineIcon('<path d="M6 6l12 12M18 6L6 18"/>');
 
 /**
  * Build the find/search bar and its behaviors.
@@ -575,6 +695,57 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
   style.type = 'text/css';
 
   const css = `
+    /* Design tokens. Light is the default, and [data-theme="dark"] swaps to the dark palette.
+       The document page itself is never themed, only the chrome. */
+    .${r} {
+      --scribe-surface: #ffffff;
+      --scribe-canvas: #f4f6fa;
+      --scribe-sunken: #eef1f6;
+      --scribe-line: #e4e8ef;
+      --scribe-line-strong: #d7dce4;
+      --scribe-hover: rgba(28, 42, 68, .06);
+      --scribe-active: rgba(28, 98, 212, .10);
+      --scribe-ink: #1f2530;
+      --scribe-ink-2: #586170;
+      --scribe-ink-3: #98a1b0;
+      --scribe-accent: #1c62d4;
+      --scribe-accent-hover: #1550ad;
+      --scribe-accent-ink: #ffffff;
+      --scribe-accent-soft: #e8f0fd;
+      --scribe-accent-ring: rgba(28, 98, 212, .30);
+      --scribe-danger: #d1493d;
+      --scribe-danger-soft: #fbe9e7;
+      --scribe-scrollbar: rgba(28, 42, 68, .26);
+      --scribe-shadow-pop: 0 8px 28px rgba(20, 30, 60, .17);
+      --scribe-menu-shadow: 0 8px 24px rgba(20, 30, 60, .18);
+      --scribe-page-shadow: 0 1px 3px rgba(30, 26, 16, .18);
+      --scribe-lift-shadow: 0 10px 24px rgba(20, 30, 60, .30);
+    }
+    .${r}[data-theme="dark"] {
+      --scribe-surface: #1c2028;
+      --scribe-canvas: #12151b;
+      --scribe-sunken: #262b34;
+      --scribe-line: #2b313c;
+      --scribe-line-strong: #3a4150;
+      --scribe-hover: rgba(255, 255, 255, .06);
+      --scribe-active: rgba(79, 139, 240, .16);
+      --scribe-ink: #e8ebf2;
+      --scribe-ink-2: #9aa4b3;
+      --scribe-ink-3: #6b7482;
+      --scribe-accent: #4f8bf0;
+      --scribe-accent-hover: #6a9df3;
+      --scribe-accent-ink: #ffffff;
+      --scribe-accent-soft: #1e2c44;
+      --scribe-accent-ring: rgba(79, 139, 240, .38);
+      --scribe-danger: #ef7a6c;
+      --scribe-danger-soft: #33201d;
+      --scribe-scrollbar: rgba(255, 255, 255, .26);
+      --scribe-shadow-pop: 0 10px 30px rgba(0, 0, 0, .55);
+      --scribe-menu-shadow: 0 8px 24px rgba(0, 0, 0, .5);
+      --scribe-page-shadow: 0 1px 3px rgba(0, 0, 0, .5);
+      --scribe-lift-shadow: 0 12px 28px rgba(0, 0, 0, .7);
+    }
+
     .${r} .cr-icon {
       align-items: center;
       display: inline-flex;
@@ -595,7 +766,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
 
     .${r} .cr-icon-button {
       -webkit-tap-highlight-color: transparent;
-      border-radius: 50%;
+      border-radius: 7px;
+      color: var(--scribe-ink-2);
       cursor: pointer;
       display: inline-flex;
       flex-shrink: 0;
@@ -609,12 +781,14 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
 
     .${r} .cr-icon-button:hover {
-      background: rgba(255, 255, 255, .08);
-      border-radius: 50%;
+      background: var(--scribe-hover);
+      color: var(--scribe-ink);
+      border-radius: 7px;
     }
 
     .${r} .cr-icon-button.active {
-      background: rgba(255, 255, 255, .2);
+      background: var(--scribe-active);
+      color: var(--scribe-accent);
     }
 
     .${r} .cr-icon-button.busy {
@@ -622,12 +796,76 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       pointer-events: none;
     }
 
+    /* Far-left app menu: document/app actions in a dropdown, shared by the viewer and editor. */
+    .${r} .scribe-app-menu-wrap {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      /* Match the sibling .cr-icon-buttons (vertical-align: middle), since the default baseline value would otherwise make this wrap ride ~9px high. */
+      vertical-align: middle;
+    }
+    .${r} .scribe-app-menu {
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      z-index: 30;
+      min-width: 214px;
+      padding: 5px;
+      background: var(--scribe-surface);
+      border: 1px solid var(--scribe-line);
+      border-radius: 10px;
+      box-shadow: var(--scribe-menu-shadow);
+    }
+    .${r} .scribe-app-menu-item {
+      display: flex;
+      align-items: center;
+      gap: 11px;
+      padding: 8px 11px;
+      border-radius: 6px;
+      font-size: 13px;
+      color: var(--scribe-ink);
+      cursor: pointer;
+      white-space: nowrap;
+      user-select: none;
+    }
+    .${r} .scribe-app-menu-item:hover { background: var(--scribe-hover); }
+    .${r} .scribe-app-menu-item.busy { opacity: .6; pointer-events: none; }
+    /* Size the container, not the svg: the Open/Print lineIcons carry inline width:100% that would override a width set on the svg. */
+    .${r} .scribe-app-menu-ic { display: inline-flex; flex: 0 0 auto; width: 16px; height: 16px; color: var(--scribe-ink-2); }
+    .${r} .scribe-app-menu-ic svg { width: 100%; height: 100%; display: block; }
+    .${r} .scribe-app-menu-sep { height: 1px; background: var(--scribe-line); margin: 5px 8px; }
+    /* Dark-mode toggle: a pill switch pushed to the row's right edge. */
+    .${r} .scribe-app-menu-switch {
+      margin-left: auto;
+      flex: 0 0 auto;
+      width: 30px;
+      height: 17px;
+      border-radius: 9px;
+      background: var(--scribe-line-strong);
+      position: relative;
+      transition: background .15s ease;
+    }
+    .${r} .scribe-app-menu-switch::after {
+      content: '';
+      position: absolute;
+      top: 2px;
+      left: 2px;
+      width: 13px;
+      height: 13px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, .3);
+      transition: transform .15s ease;
+    }
+    .${r} .scribe-app-menu-toggle.on .scribe-app-menu-switch { background: var(--scribe-accent); }
+    .${r} .scribe-app-menu-toggle.on .scribe-app-menu-switch::after { transform: translateX(13px); }
+
     .${r} .scribe-tab-strip {
       display: flex;
       align-items: stretch;
       width: 100%;
-      background: #3c4043;
-      border-top: 1px solid rgba(255, 255, 255, .08);
+      background: var(--scribe-canvas);
+      border-bottom: 1px solid var(--scribe-line);
       overflow-x: auto;
       overflow-y: hidden;
       white-space: nowrap;
@@ -638,21 +876,23 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       align-items: center;
       gap: 6px;
       max-width: 200px;
-      padding: 0 8px;
-      color: #cfcfcf;
+      padding: 0 10px;
+      color: var(--scribe-ink-2);
       font-size: 13px;
       cursor: pointer;
-      border-right: 1px solid rgba(255, 255, 255, .08);
+      border-bottom: 2px solid transparent;
       user-select: none;
     }
 
     .${r} .scribe-tab:hover {
-      background: rgba(255, 255, 255, .06);
+      color: var(--scribe-ink);
     }
 
     .${r} .scribe-tab.active {
-      background: rgb(82, 86, 89);
-      color: #fff;
+      background: var(--scribe-surface);
+      color: var(--scribe-ink);
+      border-bottom-color: var(--scribe-accent);
+      font-weight: 550;
     }
 
     .${r} .scribe-tab-name {
@@ -670,32 +910,89 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       border-radius: 50%;
       font-size: 14px;
       line-height: 1;
-      color: #aaa;
+      color: var(--scribe-ink-3);
     }
 
     .${r} .scribe-tab-close:hover {
-      background: rgba(255, 255, 255, .15);
-      color: #fff;
+      background: var(--scribe-hover);
+      color: var(--scribe-ink);
     }
 
     .${r} .highlight-color-btn {
-      width: 18px;
-      height: 18px;
+      width: 20px;
+      height: 20px;
       border-radius: 50%;
       cursor: pointer;
       border: 2px solid transparent;
       box-sizing: border-box;
-      display: inline-block;
-      position: relative;
-      top: 3px;
+      display: block;
+      flex: 0 0 auto;
     }
 
     .${r} .highlight-color-btn:hover {
-      border-color: rgba(255, 255, 255, .5);
+      border-color: var(--scribe-ink-3);
     }
 
     .${r} .highlight-color-btn.active {
-      border-color: #fff;
+      border-color: var(--scribe-ink);
+    }
+
+    /* Highlighter split button: the marker (the primary control, applying the current color and arming paint mode) sits flush against a slim caret that opens the color palette, so the two read as one control.
+       Corner radii are split so only the outer corners round, leaving the touching edges square so the marker and caret merge into a single pill. */
+    .${r} .scribe-hl-split {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      vertical-align: middle;
+    }
+
+    .${r} .scribe-hl-split .scribe-hl-mark,
+    .${r} .scribe-hl-split .scribe-hl-mark:hover {
+      border-radius: 7px 0 0 7px;
+    }
+
+    .${r} .scribe-hl-split .scribe-hl-caret,
+    .${r} .scribe-hl-split .scribe-hl-caret:hover {
+      border-radius: 0 7px 7px 0;
+    }
+
+    .${r} .scribe-hl-split .scribe-hl-caret {
+      width: 16px;
+      align-items: center;
+      justify-content: center;
+      color: var(--scribe-ink-3);
+    }
+
+    /* Seam divider hairline whose 14px height stays under the 15px group separators, so it reads as an intra-control line. */
+    .${r} .scribe-hl-split .scribe-hl-caret::before {
+      content: '';
+      position: absolute;
+      left: 0;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 1px;
+      height: 14px;
+      background: var(--scribe-line-strong);
+      pointer-events: none;
+    }
+
+    /* Palette popover under the split button, matching the app menu and find widget surface. */
+    .${r} .scribe-hl-pop {
+      position: absolute;
+      top: calc(100% + 6px);
+      left: 0;
+      z-index: 30;
+      display: none;
+      gap: 8px;
+      padding: 9px 10px;
+      background: var(--scribe-surface);
+      border: 1px solid var(--scribe-line);
+      border-radius: 10px;
+      box-shadow: var(--scribe-menu-shadow);
+    }
+
+    .${r} .scribe-hl-pop.open {
+      display: inline-flex;
     }
 
     .${r} .highlight-comment-icon {
@@ -709,8 +1006,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
 
     .${r} .highlight-comment-tooltip {
       position: absolute;
-      background: #333;
-      color: #fff;
+      background: var(--scribe-ink);
+      color: var(--scribe-surface);
       padding: 4px 8px;
       border-radius: 4px;
       font-size: 13px;
@@ -721,7 +1018,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
 
     .${r} .vertical-separator {
-      background: rgba(255, 255, 255, .3);
+      background: var(--scribe-line-strong);
       height: 15px;
       width: 1px;
       margin-left: 10px;
@@ -729,22 +1026,21 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       display: inline-block;
     }
 
-    /* Empty-state (no document) drop zone: a dashed region with centered "Choose file" content, styled to match
-       the monochrome chrome. The dashed border lights up to the accent only on drag-over (the active-drag color). */
+    /* Empty-state drop zone shown when no document is loaded. */
     .${r} .scribe-drop-region {
       position: absolute;
       inset: 30px;
       display: flex;
       align-items: center;
       justify-content: center;
-      border: 1.5px dashed rgba(255, 255, 255, .16);
+      border: 1.5px dashed var(--scribe-line-strong);
       border-radius: 14px;
       transition: border-color .05s ease-out, background-color .05s ease-out;
     }
 
     .${r} .scribe-drop-zone.highlight .scribe-drop-region {
-      border-color: #6aa0ff;
-      background-color: rgba(91, 148, 255, .1);
+      border-color: var(--scribe-accent);
+      background-color: var(--scribe-accent-soft);
     }
 
     .${r} .scribe-drop-content {
@@ -754,14 +1050,14 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       text-align: center;
     }
 
-    .${r} .scribe-drop-icon { color: #9ea2a6; margin-bottom: 20px; }
+    .${r} .scribe-drop-icon { color: var(--scribe-ink-3); margin-bottom: 20px; }
 
     .${r} .scribe-drop-icon svg { width: 42px; height: 42px; }
 
     .${r} .scribe-drop-title {
       font-size: 17px;
-      font-weight: 500;
-      color: #dadce0;
+      font-weight: 600;
+      color: var(--scribe-ink);
       letter-spacing: .2px;
     }
 
@@ -772,22 +1068,22 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       gap: 8px;
       padding: 9px 18px;
       border-radius: 8px;
-      background: rgba(255, 255, 255, .08);
-      border: 1px solid rgba(255, 255, 255, .08);
-      color: #e4e6e8;
+      background: var(--scribe-accent);
+      border: 1px solid var(--scribe-accent);
+      color: var(--scribe-accent-ink);
       font-size: 13.5px;
-      font-weight: 500;
+      font-weight: 550;
       cursor: pointer;
       transition: background-color .15s ease-out;
     }
 
-    .${r} .scribe-drop-btn:hover { background: rgba(255, 255, 255, .13); }
+    .${r} .scribe-drop-btn:hover { background: var(--scribe-accent-hover); border-color: var(--scribe-accent-hover); }
 
     .${r} .scribe-drop-btn svg { width: 16px; height: 16px; }
 
     .${r} .scribe-drop-hint {
       font-size: 12.5px;
-      color: #83878b;
+      color: var(--scribe-ink-3);
       margin-top: 14px;
     }
 
@@ -800,8 +1096,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-drop-spinner {
       width: 34px;
       height: 34px;
-      border: 3px solid rgba(255, 255, 255, .12);
-      border-top-color: #6aa0ff;
+      border: 3px solid var(--scribe-line);
+      border-top-color: var(--scribe-accent);
       border-radius: 50%;
       animation: scribe-drop-spin .7s linear infinite;
     }
@@ -811,11 +1107,12 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-drop-loading-text {
       margin-top: 18px;
       font-size: 14px;
-      color: #9ea2a6;
+      color: var(--scribe-ink-3);
       letter-spacing: .2px;
     }
 
-    /* Shown/hidden by toggling opacity (not display) so it can fade in and out; pointer-events:none keeps it click-through. */
+    /* Shown/hidden by toggling opacity (not display) so it can fade in and out.
+       pointer-events:none keeps it click-through. */
     .${r} .scribe-drag-overlay {
       position: absolute;
       left: 0;
@@ -824,14 +1121,14 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       opacity: 0;
       pointer-events: none;
       z-index: 9;
-      background: rgba(91, 148, 255, .1);
+      background: var(--scribe-accent-soft);
       transition: opacity .06s ease-out;
     }
 
     .${r} .scribe-drag-frame {
       position: absolute;
       inset: 14px;
-      border: 2px dashed #6aa0ff;
+      border: 2px dashed var(--scribe-accent);
       border-radius: 14px;
     }
 
@@ -845,13 +1142,13 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       gap: 9px;
       padding: 9px 16px 9px 13px;
       border-radius: 8px;
-      background: #2f6fed;
-      color: #fff;
+      background: var(--scribe-accent);
+      color: var(--scribe-accent-ink);
       font-size: 13.5px;
       font-weight: 500;
       letter-spacing: .2px;
       white-space: nowrap;
-      box-shadow: 0 2px 6px rgba(0, 0, 0, .2);
+      box-shadow: var(--scribe-shadow-pop);
     }
 
     .${r} .scribe-drag-pill svg {
@@ -860,15 +1157,16 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
 
     .${r}-toolbar input {
-      background: rgba(0, 0, 0, .5);
-      border: none;
-      caret-color: currentColor;
-      color: inherit;
+      background: var(--scribe-sunken);
+      border: 1px solid var(--scribe-line-strong);
+      border-radius: 5px;
+      caret-color: var(--scribe-accent);
+      color: var(--scribe-ink);
       font-family: inherit;
       line-height: inherit;
       margin: 0 4px;
       outline: 0;
-      padding: 0 4px;
+      padding: 2px 4px;
       text-align: center;
       width: 5ch;
     }
@@ -882,10 +1180,10 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       align-items: center;
       gap: 2px;
       padding: 5px 6px;
-      background: #3c4043;
-      border: 1px solid rgba(255, 255, 255, .12);
+      background: var(--scribe-surface);
+      border: 1px solid var(--scribe-line);
       border-radius: 8px;
-      box-shadow: 0 6px 20px rgba(0, 0, 0, .45);
+      box-shadow: var(--scribe-menu-shadow);
     }
 
     .${r}-toolbar input.scribe-search-input {
@@ -924,14 +1222,14 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
 
     .${r} .scribe-scrollbar-thumb {
       position: absolute;
-      background: rgba(255, 255, 255, .35);
+      background: var(--scribe-scrollbar);
       border-radius: 6px;
       transition: background 0.15s ease-in-out;
     }
 
     .${r} .scribe-scrollbar-thumb:hover,
     .${r} .scribe-scrollbar-thumb.dragging {
-      background: rgba(255, 255, 255, .6);
+      background: var(--scribe-scrollbar);
     }
 
     .${r} .scribe-scrollbar-v .scribe-scrollbar-thumb {
@@ -949,8 +1247,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       left: 0;
       overflow: hidden;
       box-sizing: border-box;
-      background: #2b2f31;
-      border-right: 1px solid rgba(0, 0, 0, .4);
+      background: var(--scribe-canvas);
+      border-right: 1px solid var(--scribe-line);
       z-index: 7;
       transition: transform 180ms ease;
       will-change: transform;
@@ -962,7 +1260,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       user-select: none;
     }
 
-    /* Inner scroll container; the resize handle is its sibling so it stays at the edge while this scrolls. */
+    /* The resize handle is a sibling of this inner scroll container so it stays at the edge while the container scrolls. */
     .${r} .scribe-thumb-scroll {
       position: absolute;
       top: 0;
@@ -985,12 +1283,12 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
 
     .${r} .scribe-thumb-scroll::-webkit-scrollbar-thumb {
-      background: rgba(255, 255, 255, .35);
+      background: var(--scribe-scrollbar);
       border-radius: 6px;
     }
 
     .${r} .scribe-thumb-scroll::-webkit-scrollbar-thumb:hover {
-      background: rgba(255, 255, 255, .6);
+      background: var(--scribe-scrollbar);
     }
 
     .${r} .scribe-thumb-resize {
@@ -1005,7 +1303,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
 
     .${r} .scribe-thumb-resize:hover {
-      background: rgba(255, 255, 255, .15);
+      background: var(--scribe-hover);
     }
 
     .${r} .scribe-thumb {
@@ -1019,10 +1317,11 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-thumb-box {
       position: relative;
       background: #fff;
-      box-shadow: 0 1px 3px rgba(0, 0, 0, .5);
+      box-shadow: var(--scribe-page-shadow);
       overflow: hidden;
       box-sizing: border-box;
       cursor: pointer;
+      transition: transform .13s ease, box-shadow .13s ease;
     }
 
     .${r} .scribe-thumb-box img {
@@ -1033,31 +1332,31 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
 
     .${r} .scribe-thumb-label {
-      color: #bbb;
+      color: var(--scribe-ink-3);
       font-size: 13px;
       line-height: 1;
       text-align: center;
     }
 
     .${r} .scribe-thumb-box:hover {
-      outline: 2px solid rgba(255, 255, 255, .4);
+      outline: 2px solid var(--scribe-line-strong);
     }
 
-    /* Current page while the rail is not the active pane: a clearly visible gray ring (inactive-selection convention). */
+    /* Current page while the rail is not the active pane: a subtle accent ring. */
     .${r} .scribe-thumb.active .scribe-thumb-box {
-      outline: 3px solid #9ea2a6;
+      outline: 3px solid var(--scribe-accent);
     }
 
-    /* While the rail has keyboard focus it is the active pane,
-       so the current page's ring switches to accent blue with an outer glow, cueing that keystrokes land here.
-       The box-shadow repeats the drop shadow so the glow does not replace it. */
+    /* While the rail has keyboard focus it is the active pane, so the current page's ring gains an outer accent glow cueing that keystrokes land here.
+       The box-shadow re-lists the drop shadow so the glow adds to it rather than replacing it. */
     .${r} .scribe-thumb-panel:focus-within .scribe-thumb.active .scribe-thumb-box {
-      outline-color: rgba(40, 123, 181, 1);
-      box-shadow: 0 0 0 5px rgba(40, 123, 181, .25), 0 1px 3px rgba(0, 0, 0, .5);
+      outline-color: var(--scribe-accent);
+      box-shadow: 0 0 0 5px var(--scribe-accent-ring), var(--scribe-page-shadow);
     }
 
     .${r} .scribe-thumb.active .scribe-thumb-label {
-      color: #fff;
+      color: var(--scribe-ink);
+      font-weight: 600;
     }
 
     .${r} .scribe-thumb-rotate {
@@ -1099,9 +1398,9 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       right: 6px;
       height: 3px;
       margin-top: -2px;
-      background: rgba(40, 123, 181, 1);
+      background: var(--scribe-accent);
       border-radius: 2px;
-      box-shadow: 0 0 6px rgba(40, 123, 181, .8);
+      box-shadow: 0 0 6px var(--scribe-accent-ring);
       pointer-events: none;
       z-index: 50;
     }
@@ -1118,25 +1417,30 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-thumb-marquee {
       position: absolute;
       z-index: 40;
-      background: rgba(40, 123, 181, .2);
-      border: 1px solid rgba(40, 123, 181, .9);
+      /* Translucent accent fill (not the opaque accent-soft) so the thumbnails under the drag rectangle stay visible. */
+      background: var(--scribe-accent-ring);
+      border: 1px solid var(--scribe-accent);
       pointer-events: none;
     }
 
-    /* Placed after the active-page rules so a page that is both selected and active stays blue, not gray. */
+    /* Placed after the active-page rules so a page that is both selected and active stays blue, not gray.
+       The selected page also lifts straight up via a purely visual transform (translateY, no scaling), so the rail layout never reflows. */
     .${r} .scribe-thumb.selected .scribe-thumb-box {
-      outline: 3px solid rgba(40, 123, 181, 1);
+      outline: 3px solid var(--scribe-accent);
+      transform: translateY(-6px);
+      box-shadow: var(--scribe-lift-shadow);
     }
 
     .${r} .scribe-thumb.selected .scribe-thumb-box::after {
       content: '';
       position: absolute;
       inset: 0;
-      background: rgba(40, 123, 181, .3);
+      background: var(--scribe-accent);
+      opacity: .18;
       pointer-events: none;
     }
 
-    /* Floating vertical action strip that pops up beside the rail, next to the selection; JS sets its left/top. */
+    /* Floating vertical action strip that pops up beside the rail, next to the selection (JS sets its left/top). */
     .${r} .scribe-thumb-batch {
       position: absolute;
       display: flex;
@@ -1145,15 +1449,15 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       gap: 4px;
       padding: 6px 5px;
       box-sizing: border-box;
-      background: rgba(40, 43, 46, .97);
-      border: 1px solid rgba(255, 255, 255, .1);
+      background: var(--scribe-surface);
+      border: 1px solid var(--scribe-line);
       border-radius: 10px;
-      box-shadow: 0 6px 18px rgba(0, 0, 0, .5);
+      box-shadow: var(--scribe-menu-shadow);
       z-index: 20;
     }
 
     .${r} .scribe-thumb-batch-count {
-      color: #cfcfcf;
+      color: var(--scribe-ink-2);
       font-size: 12px;
       font-weight: 600;
       padding: 2px 0;
@@ -1170,7 +1474,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       border: none;
       border-radius: 50%;
       background: transparent;
-      color: #e4e6e8;
+      color: var(--scribe-ink-2);
       cursor: pointer;
       transition: background-color .12s ease-out;
     }
@@ -1181,11 +1485,12 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
 
     .${r} .scribe-thumb-batch-btn:hover {
-      background: rgba(255, 255, 255, .1);
+      background: var(--scribe-hover);
+      color: var(--scribe-ink);
     }
 
     .${r} .scribe-thumb-batch-delete:hover {
-      background: rgba(217, 48, 37, .85);
+      background: var(--scribe-danger);
       color: #fff;
     }
 
@@ -1194,13 +1499,13 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       position: absolute;
       min-width: 150px;
       padding: 4px;
-      background: rgba(31, 36, 38, .98);
-      border: 1px solid rgba(255, 255, 255, .14);
+      background: var(--scribe-surface);
+      border: 1px solid var(--scribe-line);
       border-radius: 8px;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, .55);
+      box-shadow: var(--scribe-menu-shadow);
       z-index: 60;
       font-size: 13px;
-      color: #fff;
+      color: var(--scribe-ink);
       user-select: none;
     }
 
@@ -1212,11 +1517,13 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
 
     .${r} .scribe-thumb-menu-item:hover {
-      background: rgba(255, 255, 255, .14);
+      background: var(--scribe-hover);
     }
 
+    .${r} .scribe-thumb-menu-item.danger { color: var(--scribe-danger); }
+
     .${r} .scribe-thumb-menu-item.danger:hover {
-      background: rgba(217, 48, 37, .85);
+      background: var(--scribe-danger-soft);
     }
 
     .${r} .scribe-thumb-menu-header {
@@ -1225,14 +1532,14 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       font-weight: 600;
       letter-spacing: .04em;
       text-transform: uppercase;
-      color: #9ea2a6;
+      color: var(--scribe-ink-3);
     }
 
     .${r} .scribe-thumb-menu-divider {
       height: 0;
       margin: 4px 6px;
       border: none;
-      border-top: 1px solid rgba(255, 255, 255, .1);
+      border-top: 1px solid var(--scribe-line);
     }
 
     /* Mirrors the thumbnail panel's dock geometry, chrome, and slide: the two form one sidebar. */
@@ -1241,15 +1548,57 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       left: 0;
       overflow: hidden;
       box-sizing: border-box;
-      background: #2b2f31;
-      border-right: 1px solid rgba(0, 0, 0, .4);
+      background: var(--scribe-canvas);
+      border-right: 1px solid var(--scribe-line);
       z-index: 7;
-      color: #e6e8ea;
+      color: var(--scribe-ink);
       font-size: 13px;
       transition: transform 180ms ease;
       will-change: transform;
       outline: none;
     }
+
+    /* Persistent header (editor mode): an uppercase title and an always-present add button.
+       Full width so its bottom border spans the panel.
+       The add button is inset well clear of the resize handle at the right edge. */
+    .${r} .scribe-bm-hd {
+      position: absolute;
+      top: 0;
+      left: 0;
+      right: 0;
+      height: 36px;
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 8px 0 12px;
+      border-bottom: 1px solid var(--scribe-line);
+      background: var(--scribe-canvas);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--scribe-ink-2);
+      z-index: 2;
+    }
+    .${r} .scribe-bm-hd-title { flex: 1 1 auto; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+    .${r} .scribe-bm-add {
+      flex: 0 0 auto;
+      width: 26px;
+      height: 26px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      margin: 0;
+      color: var(--scribe-ink-2);
+      background: none;
+      border: none;
+      border-radius: 6px;
+      cursor: pointer;
+    }
+    .${r} .scribe-bm-add:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
+    .${r} .scribe-bm-add svg { width: 16px; height: 16px; display: block; }
 
     /* Fills the panel but for a 6px right gutter, so the tree's scrollbar clears the resize handle (as the rail's does). */
     .${r} .scribe-bm-tree {
@@ -1263,6 +1612,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       padding: 8px 0;
       box-sizing: border-box;
     }
+    /* When the header is present, drop the tree below it (36px header + 1px border). */
+    .${r} .scribe-bm-has-header .scribe-bm-tree { top: 37px; }
 
     /* Right-edge resize handle, matching the thumbnail rail's. */
     .${r} .scribe-bm-resize {
@@ -1277,12 +1628,12 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
 
     .${r} .scribe-bm-resize:hover {
-      background: rgba(255, 255, 255, .15);
+      background: var(--scribe-hover);
     }
 
     .${r} .scribe-bm-tree::-webkit-scrollbar { width: 8px; }
     .${r} .scribe-bm-tree::-webkit-scrollbar-track { background: transparent; }
-    .${r} .scribe-bm-tree::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, .35); border-radius: 6px; }
+    .${r} .scribe-bm-tree::-webkit-scrollbar-thumb { background: var(--scribe-scrollbar); border-radius: 6px; }
 
     .${r} .scribe-bm-row {
       display: flex;
@@ -1294,64 +1645,124 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       border-radius: 4px;
     }
 
-    .${r} .scribe-bm-row:hover { background: rgba(255, 255, 255, .08); }
-    .${r} .scribe-bm-row.active { background: rgba(90, 150, 245, .28); }
+    .${r} .scribe-bm-row:hover { background: var(--scribe-hover); }
+    .${r} .scribe-bm-row.active { background: var(--scribe-accent-soft); color: var(--scribe-accent); }
 
     .${r} .scribe-bm-twisty {
-      display: inline-block;
-      width: 12px;
-      flex: 0 0 12px;
-      text-align: center;
-      color: #9ea2a6;
-      font-size: 10px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 16px;
+      height: 16px;
+      flex: 0 0 16px;
+      color: var(--scribe-ink-2);
     }
+    .${r} .scribe-bm-twisty svg { width: 12px; height: 12px; display: block; }
+    .${r} .scribe-bm-twisty.open svg { transform: rotate(90deg); }
+    .${r} .scribe-bm-row:hover .scribe-bm-twisty { color: var(--scribe-ink); }
+    .${r} .scribe-bm-row.active .scribe-bm-twisty { color: var(--scribe-accent); }
 
-    .${r} .scribe-bm-label { overflow: hidden; text-overflow: ellipsis; }
-    .${r} .scribe-bm-label.structural { color: #b7bbbf; font-style: italic; }
+    /* Ribbon: the "this row is a bookmark" glyph.
+       Structural nodes leave the slot empty as a fixed-width spacer so every row's title lines up regardless of whether it has a ribbon. */
+    .${r} .scribe-bm-ribbon {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 14px;
+      width: 14px;
+      height: 14px;
+      color: var(--scribe-ink-3);
+    }
+    .${r} .scribe-bm-ribbon svg { width: 13px; height: 13px; display: block; }
+    .${r} .scribe-bm-row:hover .scribe-bm-ribbon { color: var(--scribe-ink-2); }
+    .${r} .scribe-bm-row.active .scribe-bm-ribbon { color: var(--scribe-accent); }
+
+    .${r} .scribe-bm-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+    .${r} .scribe-bm-label.structural { color: var(--scribe-ink-3); font-style: italic; }
+
+    /* Target page badge: a quiet chip lighter than the panel, so each row reads as "a bookmark to page N". */
+    .${r} .scribe-bm-page {
+      flex: 0 0 auto;
+      margin-left: 6px;
+      padding: 0 5px;
+      font-size: 10.5px;
+      line-height: 16px;
+      color: var(--scribe-ink-3);
+      font-variant-numeric: tabular-nums;
+      background: var(--scribe-surface);
+      border: 1px solid var(--scribe-line);
+      border-radius: 5px;
+    }
+    .${r} .scribe-bm-row.active .scribe-bm-page {
+      color: var(--scribe-accent);
+      border-color: var(--scribe-accent-ring);
+      background: transparent;
+    }
 
     .${r} .scribe-bm-rename {
       flex: 1 1 auto;
       font: inherit;
-      color: #fff;
-      background: #1f2426;
-      border: 1px solid rgba(90, 150, 245, .8);
+      color: var(--scribe-ink);
+      background: var(--scribe-sunken);
+      border: 1px solid var(--scribe-accent);
       border-radius: 3px;
       padding: 1px 4px;
     }
 
-    .${r} .scribe-bm-empty { padding: 12px; color: #9ea2a6; font-size: 12px; }
-    .${r} .scribe-bm-empty-add {
-      display: block;
-      margin-top: 8px;
-      padding: 5px 10px;
-      font: inherit;
-      font-size: 12px;
-      color: #e6e8ea;
-      background: rgba(255, 255, 255, .08);
-      border: none;
-      border-radius: 5px;
-      cursor: pointer;
-    }
-    .${r} .scribe-bm-empty-add:hover { background: rgba(255, 255, 255, .16); }
+    .${r} .scribe-bm-empty { padding: 12px; color: var(--scribe-ink-3); font-size: 12px; }
 
     .${r} .scribe-bm-menu {
       position: absolute;
       min-width: 170px;
       padding: 4px;
-      background: rgba(31, 36, 38, .98);
-      border: 1px solid rgba(255, 255, 255, .14);
+      background: var(--scribe-surface);
+      border: 1px solid var(--scribe-line);
       border-radius: 8px;
-      box-shadow: 0 8px 24px rgba(0, 0, 0, .55);
+      box-shadow: var(--scribe-menu-shadow);
       z-index: 60;
       font-size: 13px;
-      color: #fff;
+      color: var(--scribe-ink);
       user-select: none;
     }
 
     .${r} .scribe-bm-menu-item { padding: 7px 12px; border-radius: 5px; cursor: pointer; white-space: nowrap; }
-    .${r} .scribe-bm-menu-item:hover { background: rgba(255, 255, 255, .14); }
-    .${r} .scribe-bm-menu-item.disabled { color: #6b6f72; cursor: default; }
+    .${r} .scribe-bm-menu-item:hover { background: var(--scribe-hover); }
+    .${r} .scribe-bm-menu-item.disabled { color: var(--scribe-ink-3); cursor: default; }
     .${r} .scribe-bm-menu-item.disabled:hover { background: none; }
+
+    /* Message surface: transient toasts (self-evident failures) + a persistent banner (away/non-obvious) */
+    .${r} .scribe-toast-stack {
+      position: absolute; left: 50%; bottom: 20px; transform: translateX(-50%);
+      display: flex; flex-direction: column; align-items: center; gap: 8px;
+      z-index: 80; pointer-events: none; max-width: calc(100% - 40px);
+    }
+    .${r} .scribe-toast {
+      pointer-events: auto; cursor: pointer; max-width: 460px;
+      display: flex; align-items: center; gap: 9px;
+      padding: 11px 15px; border-radius: 9px;
+      background: var(--scribe-surface); color: var(--scribe-ink);
+      border: 1px solid var(--scribe-line); border-left: 3px solid var(--scribe-danger);
+      box-shadow: var(--scribe-shadow-pop); font-size: 13px; line-height: 1.35;
+      opacity: 0; transform: translateY(8px); transition: opacity .18s ease, transform .18s ease;
+    }
+    .${r} .scribe-toast.shown { opacity: 1; transform: translateY(0); }
+    .${r} .scribe-toast.leaving { opacity: 0; transform: translateY(8px); }
+
+    /* height must match MESSAGE_BANNER_HEIGHT in pdf-viewer.js (which reserves this strip from the document area) */
+    .${r} .scribe-banner {
+      position: absolute; left: 0; right: 0; height: 40px; z-index: 35;
+      display: flex; align-items: center; gap: 10px; padding: 0 14px;
+      background: var(--scribe-danger-soft); border-bottom: 1px solid var(--scribe-line);
+      color: var(--scribe-ink); font-size: 13px;
+    }
+    .${r} .scribe-banner-text { flex: 1 1 auto; }
+    .${r} .scribe-banner-close {
+      flex: none; display: inline-grid; place-items: center; width: 26px; height: 26px;
+      padding: 0; border: none; border-radius: 6px; background: transparent;
+      color: var(--scribe-ink-2); cursor: pointer;
+    }
+    .${r} .scribe-banner-close:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
+    .${r} .scribe-banner-close svg { width: 16px; height: 16px; display: block; }
   `;
 
   style.appendChild(document.createTextNode(css));

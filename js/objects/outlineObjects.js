@@ -172,3 +172,41 @@ export function concatOutlines(parts) {
   }
   return reassignOutlineIds(out);
 }
+
+/**
+ * Divide a document into contiguous page segments at each top-level bookmark, for "split at bookmarks".
+ * A top-level bookmark starts a new segment at the earliest destination page in its subtree, so a title-only parent inherits the first destination among its descendants.
+ * Two top-level bookmarks sharing a start page collapse to one segment (a split can't cut mid-page).
+ * @param {Array<OutlineNode>} nodes - The document outline (top-level nodes).
+ * @param {number} pageCount - Total pages in the document.
+ * @param {string} [leadTitle] - Title for the pages-before-the-first-bookmark segment.
+ * @returns {Array<{ title: string, pageArr: Array<number> }>} One entry per output document, in page order.
+ *   `pageArr` is that segment's contiguous 0-based page indices.
+ *   Fewer than 2 entries means there is nothing to split.
+ */
+export function outlineSplitSegments(nodes, pageCount, leadTitle = 'Front matter') {
+  const earliestDest = (node) => {
+    let min = node.dest ? node.dest.pageIndex : null;
+    for (const c of node.children) {
+      const cm = earliestDest(c);
+      if (cm != null && (min == null || cm < min)) min = cm;
+    }
+    return min;
+  };
+  const titleByCut = new Map(); // start page -> title; the first bookmark on a shared page wins
+  for (const n of nodes) {
+    const start = earliestDest(n);
+    if (start != null && start >= 0 && start < pageCount && !titleByCut.has(start)) titleByCut.set(start, n.title || '');
+  }
+  const cuts = [...titleByCut.keys()].sort((a, b) => a - b);
+  if (cuts.length === 0) return [];
+
+  const range = (s, e) => Array.from({ length: e - s }, (_, k) => s + k);
+  const segments = [];
+  if (cuts[0] > 0) segments.push({ title: leadTitle, pageArr: range(0, cuts[0]) });
+  for (let i = 0; i < cuts.length; i += 1) {
+    const end = i + 1 < cuts.length ? cuts[i + 1] : pageCount;
+    segments.push({ title: titleByCut.get(cuts[i]) || leadTitle, pageArr: range(cuts[i], end) });
+  }
+  return segments;
+}

@@ -139,11 +139,6 @@ export class ScribeViewer {
     /** Document extent in content space (unscaled): max page display width, and the last page stop. */
     this._contentWidth = 0;
     this._contentHeight = 0;
-    /**
-     * Effective content width (`_effectiveContentWidth`) at the last content re-layout.
-     * `resize` compares against it to skip a resize that moves no page.
-     */
-    this._lastEffectiveWidth = -1;
 
     /**
      * Per-page text-layer containers, indexed by page then line orientation (0/1/2/3 = 0/90/180/270deg).
@@ -231,6 +226,11 @@ export class ScribeViewer {
 
     /** @type {Array<HTMLElement>} */
     this._highlightOutlineRects = [];
+
+    // The highlight color the tool currently applies, mirrored here for the context menu.
+    // Null when highlighting is disabled.
+    /** @type {?string} */
+    this._highlightColor = null;
 
     this._searchState = {
       search: '',
@@ -394,14 +394,13 @@ export class ScribeViewer {
     return s > 0 ? Math.round(coord * s) / s : coord;
   }
 
-  /** Size the content sizer to the scaled document extent so the native scrollbars get the right range. */
+  /** Size the content sizer to the scaled document extent so the native scrollbars get the right range, and re-center the pages. */
   _updateContentSize() {
     if (!this.contentSizer) return;
     this._scrollMetricsCache = null; // content extent changing -> cached scrollHeight/Width are stale
-    // Resolve the centering width once.
-    // `_pageLeft` reads `clientWidth` (a forced layout), so using it per container below would force a reflow for each.
-    const eff = this._effectiveContentWidth();
-    this._lastEffectiveWidth = eff;
+    // Pages are centered within the document's own content width, independent of the viewport.
+    // A viewport-only change (window or sidebar resize) therefore moves no page, re-centering the whole block via `_updateHCentering` instead.
+    const eff = this._contentWidth;
     const z = this.zoomLevel;
     const sizerW = `${eff * z}px`;
     const sizerH = `${this._contentHeight * z}px`;
@@ -421,6 +420,7 @@ export class ScribeViewer {
         if (pc.style.top !== top) pc.style.top = top;
       }
     }
+    this._updateHCentering(this.scrollContainer ? this.scrollContainer.clientWidth : 0);
   }
 
   /**
@@ -435,22 +435,30 @@ export class ScribeViewer {
   }
 
   /**
-   * Content-space width the pages are centered within: the larger of the document's max page width and the viewport width (in content units).
-   * Using the viewport width when it is larger centers a narrow page instead of left-aligning it under the thumbnail panel.
-   * @returns {number}
-   */
-  _effectiveContentWidth() {
-    const vw = this.scrollContainer ? this.scrollContainer.clientWidth / (this.zoomLevel || 1) : 0;
-    return Math.max(this._contentWidth, vw);
-  }
-
-  /**
-   * Content-space left offset of page `n` (pages are centered horizontally).
+   * Left offset that centers page `n` within the content width rather than the viewport, keeping page positions viewport-independent so a resize never moves them.
    * @param {number} n
+   * @returns {number}
    */
   _pageLeft(n) {
     const dims = this.getDisplayDims(n);
-    return dims ? (this._effectiveContentWidth() - dims.width) / 2 : 0;
+    return dims ? (this._contentWidth - dims.width) / 2 : 0;
+  }
+
+  /**
+   * Re-center the fixed-width content block horizontally within the viewport.
+   * Because page positions are viewport-independent, centering is one margin on the content sizer,
+   * so a resize or sidebar drag reflows just this box instead of walking every page and dirtying its word layer.
+   * Snapped to a whole device pixel so the page raster stays crisp at rest.
+   * @param {number} viewportWidth - The scroll container's inner width in CSS px.
+   */
+  _updateHCentering(viewportWidth) {
+    if (!this.contentSizer) return;
+    const contentPx = this._contentWidth * this.zoomLevel;
+    const dpr = window.devicePixelRatio || 1;
+    // Center only when the viewport is wider than the content. Otherwise the content overflows and scrolls from the left edge.
+    const raw = Math.max(0, (viewportWidth - contentPx) / 2);
+    const offset = `${Math.round(raw * dpr) / dpr}px`;
+    if (this.contentSizer.style.marginLeft !== offset) this.contentSizer.style.marginLeft = offset;
   }
 
   /**
@@ -631,28 +639,44 @@ export class ScribeViewer {
    * When `removeSourceIndices` is given (a cut), the original source pages are deleted after the insert, with their indices shifted for the pages inserted ahead of them.
    * @param {Array<object>} bundles - Clone bundles from `doc.copyPages`.
    * @param {number} to - Insertion index.
-   * @param {{ removeSourceIndices?: Array<number> }} [options]
-   * @returns {?{ start: number, count: number }} The inserted range, or `null` if nothing was pasted.
+   * @param {{ removeSourceIndices?: Array<number>, keepCurrentPage?: boolean }} [options]
+   * @returns {?{ start: number, count: number, cp: number }} The inserted range and the page landed on (`cp`), or `null` if nothing was pasted.
+   *   Callers doing an in-place rail splice need `cp` because `state.cp.n` updates asynchronously (the rebuild's `displayPage` is not awaited), so it is stale right after this returns.
    */
-  pastePages(bundles, to, { removeSourceIndices } = {}) {
+  pastePages(bundles, to, { removeSourceIndices, keepCurrentPage } = {}) {
     if (!this.doc || !this.opt.enablePageEditing) return null;
     if (!Array.isArray(bundles) || bundles.length === 0) return null;
     const count = bundles.length;
     const insertAt = Math.max(0, Math.min(to, this.doc.pageMetrics.length));
-    this.doc.insertPages(bundles, insertAt);
+    // Remember the page in view before the insert shifts indices, so `keepCurrentPage` can stay on the same page.
+    const prevCp = this.state.cp.n;
+    // Sources at or after the insertion point shifted up by the inserted block. Delete them in the new index space.
+    const shifted = (removeSourceIndices && removeSourceIndices.length)
+      ? removeSourceIndices.filter((i) => i >= 0).map((i) => (i >= insertAt ? i + count : i))
+      : null;
+    // A cut is insert-then-delete-sources.
+    // Record both as ONE undoable step, so a single undo reverses the whole move rather than leaving the intermediate state
+    // where the pages exist in both their old and new places (which a later export would duplicate).
+    // The inner verbs fold into this outer record via PageHistory's re-entrancy guard.
+    // A plain copy has no `shifted`, so this records exactly the one insert.
+    this.doc.history.record(() => {
+      this.doc.insertPages(bundles, insertAt);
+      if (shifted) this.doc.deletePages(shifted);
+    });
 
     let start = insertAt;
-    if (removeSourceIndices && removeSourceIndices.length) {
-      // Sources at or after the insertion point shifted up by the inserted block; delete them in the new index space.
-      const shifted = removeSourceIndices.filter((i) => i >= 0).map((i) => (i >= insertAt ? i + count : i));
-      this.doc.deletePages(shifted);
+    if (shifted) {
       // Sources removed below the inserted block pull it up by that many slots.
       const removedBelow = shifted.filter((i) => i < start).length;
       start = Math.max(0, start - removedBelow);
     }
-    const cp = Math.max(0, Math.min(start, this.doc.pageMetrics.length - 1));
+    // Land on the freshly inserted block (a paste, which selects what it added), or, for an insert-from-file that should not disturb the reader,
+    // stay on the page they were viewing, which shifts down by `count` only when the block lands at or before it.
+    // Mirrors how `deletePage` keeps the current page rather than jumping.
+    const landing = keepCurrentPage ? (prevCp >= insertAt ? prevCp + count : prevCp) : start;
+    const cp = Math.max(0, Math.min(landing, this.doc.pageMetrics.length - 1));
     this._rebuildPages(cp);
-    return { start, count };
+    return { start, count, cp };
   }
 
   /**
@@ -850,10 +874,9 @@ export class ScribeViewer {
     this.scrollContainer.style.width = `${width}px`;
     this.scrollContainer.style.height = `${height}px`;
     this._scrollMetricsCache = null;
-    // Page layout depends only on the effective content width, not the viewport height, so a resize that leaves it unchanged moves no page.
-    // Skip the re-center walk over every container and let the browser reflow just the viewport box.
-    const eff = Math.max(this._contentWidth, width / (this.zoomLevel || 1));
-    if (eff !== this._lastEffectiveWidth) this._updateContentSize();
+    // Pages are centered within `_contentWidth` independent of the viewport, so a resize moves no page and needs no O(pages) re-center walk.
+    // Re-centering the whole block within the new viewport takes one snapped margin that the browser reflows as a single box, which keeps a sidebar drag or animation smooth.
+    this._updateHCentering(width);
   }
 
   /**
@@ -1561,6 +1584,23 @@ export class ScribeViewer {
     // A destroyed word can briefly remain in the registry; drop it so callers that measure the element
     // (rectangle selection, recolor) never dereference a null `el`.
     return words.filter((w) => w.el);
+  }
+
+  /**
+   * The overlay words under the current browser text selection, scoped to this viewer's own overlay.
+   * The native selection is window-global, so scoping to `this.elem` keeps concurrent viewers isolated: a selection made in one viewer yields no words when another is right-clicked.
+   * @returns {Array<UiOcrWord>}
+   */
+  getWordsUnderTextSelection() {
+    const sel = window.getSelection();
+    if (!sel || sel.isCollapsed || sel.rangeCount === 0 || !this.elem) return [];
+    const range = sel.getRangeAt(0);
+    const idSet = new Set();
+    for (const elem of this.elem.querySelectorAll('.scribe-word')) {
+      if (range.intersectsNode(elem)) idSet.add(elem.id);
+    }
+    if (idSet.size === 0) return [];
+    return this.getUiWords().filter((kw) => idSet.has(kw.word.id));
   }
 
   getUiRegions() {

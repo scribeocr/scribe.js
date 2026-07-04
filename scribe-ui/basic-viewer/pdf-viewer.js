@@ -4,11 +4,14 @@ import { applyHighlight } from '../js/viewerHighlights.js';
 import { destroyContextMenu } from '../js/viewerCanvasInteraction.js';
 import {
   addControlStyles, makeToolbarShell, makeSeparator, createPageNav, createZoomControls, createRotateControls, createPrintControls, createOpenControls, createTabStrip, createSearchBar,
+  createAppMenu, OPEN_SVG, PRINT_SVG,
 } from '../js/controls/toolbar.js';
 import { createThumbnailPanel, createScrollbars } from '../js/controls/panels.js';
 import { createBookmarksPanel } from '../js/controls/bookmarksPanel.js';
 import { createHighlightTool, createDropZone, openDocumentFromFile } from '../js/controls/tools.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
+import { mergePdfs } from '../../js/export/pdf/mergePdfs.js';
+import { concatOutlines, outlineSplitSegments } from '../../js/objects/outlineObjects.js';
 
 /** Root class used to scope this app's control styles. */
 const ROOT_CLASS = 'scribe-pdf-viewer';
@@ -20,6 +23,15 @@ const TOOLBAR_HEIGHT_MAX = 80;
 
 /** Height of the document tab strip (shown only with 2+ open tabs), in px. */
 const TAB_STRIP_HEIGHT = 30;
+
+/** Height of the dismissible message banner (shown below the chrome), in px. */
+const MESSAGE_BANNER_HEIGHT = 40;
+
+/** Close glyph for the message banner's dismiss button. */
+const BANNER_CLOSE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg>';
+
+/** File extensions the viewer can open (PDF, images, OCR sidecars, and .scribe projects). */
+const SUPPORTED_OPEN_EXT = new Set(['pdf', 'png', 'jpg', 'jpeg', 'gif', 'bmp', 'webp', 'tif', 'tiff', 'hocr', 'xml', 'html', 'htm', 'json', 'scribe']);
 
 /**
  * Duration (ms) of the left-sidebar open/close/switch animation.
@@ -165,7 +177,7 @@ class ScribePDFViewer {
     // `relative` extends the clip over absolute children and anchors them to the component (correct when embedded).
     this.pdfViewerElem.style.position = 'relative';
     this.pdfViewerElem.style.overflow = 'hidden';
-    this.pdfViewerElem.style.backgroundColor = 'rgb(82, 86, 89)';
+    this.pdfViewerElem.style.backgroundColor = 'var(--scribe-canvas)';
     this.pdfViewerElem.style.fontFamily = '\'Segoe UI\', Tahoma, sans-serif';
 
     const toolbarHeightNum = Number(toolbarHeight);
@@ -191,6 +203,8 @@ class ScribePDFViewer {
     this._print = null;
     /** @type {?ReturnType<typeof createOpenControls>} */
     this._open = null;
+    /** @type {?ReturnType<typeof createAppMenu>} */
+    this._appMenu = null;
     /** @type {?ReturnType<typeof createTabStrip>} */
     this._tabStrip = null;
     /** @type {?HTMLDivElement} */
@@ -201,6 +215,7 @@ class ScribePDFViewer {
       ? createThumbnailPanel(this.scribe, {
         onSelect: (n) => this.scribe.displayPage(n, true, false),
         onExtract: (pageIndices) => this.newDocumentFromPages(pageIndices),
+        onInsertFromFile: (index) => this._pickFilesToInsert(index),
         // The panel's width (or hiding it) changed, so re-inset the document into the area beside it.
         onResize: () => { if (this.scribe.scrollContainer) this._relayout(); },
       })
@@ -214,6 +229,9 @@ class ScribePDFViewer {
     this._sidebarAnim = null;
     /** @type {?{min: number, max: number}} Rail width bounds cached for the duration of a bookmarks-view resize drag. */
     this._sidebarResizeBounds = null;
+
+    /** Height the message banner currently claims from the document area (0 when hidden). */
+    this._messageBannerHeight = 0;
 
     /** @type {?ReturnType<typeof createBookmarksPanel>} */
     this._bookmarksPanel = showThumbnails
@@ -235,12 +253,6 @@ class ScribePDFViewer {
       const toolbarButtons = document.createElement('div');
       toolbarButtons.className = 'col-md order-2 my-auto';
 
-      if (this._thumbnailPanel) {
-        toolbarButtons.appendChild(this._thumbnailPanel.toggleElem);
-        if (this._bookmarksPanel) toolbarButtons.appendChild(this._bookmarksPanel.toggleElem);
-        toolbarButtons.appendChild(makeSeparator());
-      }
-
       const pageNav = createPageNav(this.scribe);
       const zoom = createZoomControls(this.scribe);
       const rotate = createRotateControls(this.scribe);
@@ -249,8 +261,26 @@ class ScribePDFViewer {
       const open = createOpenControls(this.scribe, this.pdfViewerElem, (files) => this.openFiles(files));
       this._open = open;
 
-      toolbarButtons.appendChild(open.openControls);
-      toolbarButtons.appendChild(makeSeparator());
+      // The hidden Open and Print controls stay in the DOM so their file input, Ctrl/Cmd+O and +P shortcuts, and busy state keep working.
+      const appMenu = createAppMenu(ROOT_CLASS);
+      this._appMenu = appMenu;
+      open.openControls.style.display = 'none';
+      print.printControls.style.display = 'none';
+      appMenu.menuWrap.append(open.openControls, print.printControls);
+      appMenu.addAction('Open file', OPEN_SVG, () => open.openElem.click());
+      appMenu.addAction('Print', PRINT_SVG, () => print.printElem.click());
+      // Style the otherwise-empty start zone as a left-aligned flex row, with an 8px inset mirroring the end zone's, so the menu button sits at the left edge.
+      toolbarElemStart.style.display = 'flex';
+      toolbarElemStart.style.alignItems = 'center';
+      toolbarElemStart.style.paddingLeft = '8px';
+      toolbarElemStart.appendChild(appMenu.menuWrap);
+
+      if (this._thumbnailPanel) {
+        toolbarButtons.appendChild(this._thumbnailPanel.toggleElem);
+        if (this._bookmarksPanel) toolbarButtons.appendChild(this._bookmarksPanel.toggleElem);
+        toolbarButtons.appendChild(makeSeparator());
+      }
+
       toolbarButtons.appendChild(pageNav.prevElem);
       toolbarButtons.appendChild(pageNav.nextElem);
       toolbarButtons.appendChild(pageNav.pageInputGroup);
@@ -258,12 +288,9 @@ class ScribePDFViewer {
       toolbarButtons.appendChild(rotate.rotateControls);
       toolbarButtons.appendChild(makeSeparator());
       toolbarButtons.appendChild(zoom.zoomControls);
-      toolbarButtons.appendChild(makeSeparator());
-      toolbarButtons.appendChild(print.printControls);
       if (this._highlightTool) {
         toolbarButtons.appendChild(makeSeparator());
-        toolbarButtons.appendChild(this._highlightTool.highlightElem);
-        if (this._highlightTool.colorContainer) toolbarButtons.appendChild(this._highlightTool.colorContainer);
+        toolbarButtons.appendChild(this._highlightTool.toolbarElem);
       }
 
       // Find / search controls (right-aligned).
@@ -353,6 +380,9 @@ class ScribePDFViewer {
     /** @type {Array<() => void>} */
     this._teardownCallbacks = [];
 
+    // The app menu's outside-click listener is document-level, so retire it on destroy.
+    if (this._appMenu) this._teardownCallbacks.push(() => this._appMenu.destroy());
+
     // Selection-driven highlighting + comment icons (needs `scribe.elem`, so wired after init).
     if (this._highlightTool) {
       this._teardownCallbacks.push(this._highlightTool.installBehaviors());
@@ -401,34 +431,63 @@ class ScribePDFViewer {
       /** @param {DragEvent} event */
       const isFileDrag = (event) => !!(event.dataTransfer && Array.from(event.dataTransfer.types).includes('Files'));
       const hideDragOverlay = () => { this._fileDragDepth = 0; dragOverlay.style.opacity = '0'; };
+      // A file dragged over the (visible, editable) thumbnail rail drops into the document at the hovered gap rather than opening a new tab.
+      /** @param {number} clientX @param {number} clientY @returns {boolean} */
+      const overThumbnailRail = (clientX, clientY) => {
+        if (this._activeSidebar !== 'thumbnails' || !this._thumbnailPanel || !this.scribe.opt.enablePageEditing) return false;
+        const r = this._thumbnailPanel.panelElem.getBoundingClientRect();
+        return r.width > 0 && clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom;
+      };
       /** @param {DragEvent} event */
       const onDragEnter = (event) => {
         if (!this.doc || !isFileDrag(event)) return;
         this._fileDragDepth++;
         if (this._fileDragDepth !== 1) return;
         dragOverlay.style.top = `${this._chromeTop()}px`; // sit below the toolbar and tab strip, leaving them visible
-        dragOverlay.style.opacity = '1';
+        // Keep the "open in a new tab" overlay clear of the thumbnail rail: dropping over the rail inserts pages there instead, so covering it would mislabel that region.
+        const railW = (this._activeSidebar === 'thumbnails' && this._thumbnailPanel)
+          ? (parseFloat(this._thumbnailPanel.panelElem.style.width) || 0) : 0;
+        dragOverlay.style.left = `${railW}px`;
+        // Show the new-tab overlay only when not entering directly over the rail, where the rail shows its insertion indicator instead.
+        if (!overThumbnailRail(event.clientX, event.clientY)) dragOverlay.style.opacity = '1';
       };
       /** @param {DragEvent} event */
       const onDragOver = (event) => {
         if (!this.doc || !isFileDrag(event)) return;
         event.preventDefault(); // allow the drop (otherwise the browser navigates to the dropped file)
+        // dragover fires continuously, so it is the source of truth for which indicator shows as the cursor crosses in/out of the rail.
+        if (overThumbnailRail(event.clientX, event.clientY)) {
+          dragOverlay.style.opacity = '0';
+          this._thumbnailPanel.dropIndicator.show(event.clientX, event.clientY);
+        } else {
+          if (this._thumbnailPanel) this._thumbnailPanel.dropIndicator.hide();
+          if (this._fileDragDepth > 0) dragOverlay.style.opacity = '1';
+        }
       };
       /** @param {DragEvent} event */
       const onDragLeave = (event) => {
         if (!this.doc || !isFileDrag(event)) return;
         this._fileDragDepth = Math.max(0, this._fileDragDepth - 1);
-        if (this._fileDragDepth === 0) dragOverlay.style.opacity = '0';
+        if (this._fileDragDepth === 0) {
+          dragOverlay.style.opacity = '0';
+          if (this._thumbnailPanel) this._thumbnailPanel.dropIndicator.hide();
+        }
       };
-      // A drop fires no matching `dragleave`, so hide here. The overlay is `pointer-events:none`, so the drop
-      // lands on the canvas and bubbles to this root listener, which opens the dropped PDFs as new tabs.
+      // A drop fires no matching `dragleave`, so clean up here.
+      // The overlay is `pointer-events:none`, so the drop lands on the canvas/rail and bubbles to this root listener.
       /** @param {DragEvent} event */
       const onDrop = async (event) => {
         if (!this.doc || !isFileDrag(event)) return;
         event.preventDefault();
+        // Resolve the target from the drop point before tearing down the drag visuals (the gap geometry is read synchronously).
+        const overRail = overThumbnailRail(event.clientX, event.clientY);
+        const gap = overRail ? this._thumbnailPanel.dropIndicator.gapAt(event.clientX, event.clientY) : -1;
         hideDragOverlay();
+        if (this._thumbnailPanel) this._thumbnailPanel.dropIndicator.hide();
         const files = await filesFromDropEvent(event);
-        if (files.length > 0) this.openFiles(files);
+        if (files.length === 0) return;
+        if (overRail) await this.insertPagesFromFiles(files, gap);
+        else await this.openFiles(files);
       };
       // Listen on the viewer's own root, never `window`/`document`, so the embedded component adds no global side effects.
       this.pdfViewerElem.addEventListener('dragenter', onDragEnter);
@@ -447,6 +506,8 @@ class ScribePDFViewer {
     this.scribe.displayPageCallback = () => {
       if (origCallback) origCallback();
       if (this.pageNumElem) this.pageNumElem.value = (this.scribe.state.cp.n + 1).toString();
+      // Keep the navbar total in sync with the live page count. Every op that changes the count (paste, insert, delete, move, undo/redo) ends in displayPage, so refreshing here covers them all.
+      if (this.pageCountElem && this.doc) this.pageCountElem.textContent = this.doc.inputData.pageCount.toString();
       if (this._updateScrollbars) this._updateScrollbars();
       if (this._thumbnailPanel) this._thumbnailPanel.setActive(this.scribe.state.cp.n);
       if (this._bookmarksPanel) this._bookmarksPanel.setActive(this.scribe.state.cp.n);
@@ -456,11 +517,17 @@ class ScribePDFViewer {
       }
     };
 
-    // An undo/redo can change page order or the outline, so rebuild the bookmarks tree to match.
+    // Both panels must fully rebuild after an edit, or stale rows send a later click or delete to the wrong page.
     const origEditCallback = this.scribe.onEditCallback;
     this.scribe.onEditCallback = () => {
       if (origEditCallback) origEditCallback();
       if (this._bookmarksPanel) this._bookmarksPanel.rebuild();
+      if (this._thumbnailPanel) {
+        const len = this.scribe.doc ? this.scribe.doc.pageMetrics.length : 1;
+        // The edit invalidated the page indices a pending cut captured, so cancel it.
+        this._thumbnailPanel.cancelCut();
+        this._thumbnailPanel.rebuild(Math.max(0, Math.min(this.scribe.state.cp.n, len - 1)));
+      }
     };
 
     container.appendChild(this.pdfViewerElem);
@@ -669,27 +736,54 @@ class ScribePDFViewer {
     if (list.length === 0) return;
 
     /** @param {File} f */
-    const isPdf = (f) => /\.pdf$/i.test(f.name || '') || f.type === 'application/pdf';
-    const pdfs = list.filter(isPdf);
-    const others = list.filter((f) => !isPdf(f));
+    const extOf = (f) => ((f.name || '').match(/\.([a-z0-9]+)$/i)?.[1] || '').toLowerCase();
+    /** @param {File} f */
+    const isPdf = (f) => extOf(f) === 'pdf' || f.type === 'application/pdf';
+    /**
+     * Return the lowercase file extension of a file, without the leading dot.
+     * @param {File} f
+     * @returns {string}
+     */
+    const isSupported = (f) => isPdf(f) || SUPPORTED_OPEN_EXT.has(extOf(f)) || (f.type || '').startsWith('image/');
+
+    // Reject unsupported types up front so a `.py`/`.docx`/... does not open as an empty tab.
+    for (const f of list.filter((x) => !isSupported(x))) {
+      this._showToast(`Can't open “${f.name || 'this file'}” — Scribe opens PDFs, images, and scanned-text files.`);
+    }
+    const supported = list.filter(isSupported);
+    const pdfs = supported.filter(isPdf);
+    const others = supported.filter((f) => !isPdf(f));
 
     /** @type {Array<{ doc: import('../../js/containers/scribeDoc.js').ScribeDoc, name: string }>} */
     const opened = [];
     for (const pdf of pdfs) {
+      let doc = null;
       try {
-        const doc = await openDocumentFromFile(pdf);
+        doc = await openDocumentFromFile(pdf);
+        // A readable PDF yields pages, so zero pages means the bytes were unusable and the open failed.
+        if (!doc || doc.inputData.pageCount === 0) throw new Error('no pages');
         opened.push({ doc, name: pdf.name || 'Document' });
       } catch (err) {
+        // The cause is unknown here (a read error like NotFound, unusable bytes, an internal format we don't handle, ...), so the message stays generic.
         console.error(`Failed to open ${pdf.name}:`, err);
+        if (doc) await doc.terminate().catch(() => {});
+        this._showToast(`Couldn't open “${pdf.name}” — the file couldn't be loaded.`);
       }
     }
+    // Images/OCR/.scribe are opened together into one document, the way the core import combines them.
     if (others.length > 0) {
+      let doc = null;
       try {
-        const doc = await scribe.openDocument(others);
+        doc = await scribe.openDocument(others);
+        if (!doc || doc.inputData.pageCount === 0) throw new Error('no pages');
         const name = others.length === 1 ? others[0].name : `${others[0].name} +${others.length - 1}`;
         opened.push({ doc, name });
       } catch (err) {
         console.error('Failed to open files:', err);
+        if (doc) await doc.terminate().catch(() => {});
+        const single = others.length === 1;
+        const label = single ? `“${others[0].name}”` : 'the selected files';
+        this._showToast(`Couldn't open ${label} — ${single ? 'the file' : 'they'} couldn't be loaded.`);
       }
     }
     if (opened.length === 0) return;
@@ -719,6 +813,135 @@ class ScribePDFViewer {
       await this._activateTab(this._tabs.length - 1);
     } catch (err) {
       console.error('Failed to create a document from the selected pages:', err);
+    }
+  }
+
+  /**
+   * Open a new document (tab) that concatenates every open document's pages, in tab order.
+   * Each source is exported to a self-contained PDF capturing its current edits
+   * (page order, rotation, bookmarks, highlights, OCR), the exports are merged object-level (never rasterized), and the result is re-imported as a new tab.
+   * The source tabs stay open and unchanged.
+   * Each source becomes a top-level bookmark named after its tab, with that source's own bookmarks nested beneath, so combining preserves the inputs' navigation.
+   * @returns {Promise<void>}
+   */
+  async combineOpenDocuments() {
+    if (this._tabs.length < 2) return;
+    try {
+      const buffers = [];
+      const outlineParts = [];
+      let pageOffset = 0;
+      for (const tab of this._tabs) {
+        const { doc } = tab;
+        buffers.push(await doc.exportData('pdf', { displayMode: 'invis', addOverlay: true }));
+        outlineParts.push({
+          nodes: doc.outline || [],
+          pageOffset,
+          wrapperTitle: tab.name.replace(/\.pdf$/i, ''),
+        });
+        pageOffset += doc.pageMetrics.length;
+      }
+      const merged = await mergePdfs(buffers, { outline: concatOutlines(outlineParts) });
+      const combinedDoc = await openDocumentFromFile(new Blob([merged], { type: 'application/pdf' }));
+      this._tabs.push({ doc: combinedDoc, name: 'Combined.pdf', lastPage: 0 });
+      await this._activateTab(this._tabs.length - 1);
+    } catch (err) {
+      console.error('Failed to combine open documents:', err);
+    }
+  }
+
+  /**
+   * Split the active document at its top-level bookmarks: each segment (see `outlineSplitSegments`) is exported to its own self-contained PDF,
+   * carrying that range's own nested bookmarks, and opened as a new tab named after its bookmark.
+   * The original document stays open.
+   * A no-op unless the split would yield 2+ documents.
+   * @returns {Promise<void>}
+   */
+  async splitAtBookmarks() {
+    const srcDoc = this.scribe.doc;
+    if (!srcDoc) return;
+    const leadTitle = `${(this._tabs[this._activeTab]?.name || 'Document').replace(/\.pdf$/i, '')} (front matter)`;
+    const segments = outlineSplitSegments(srcDoc.outline || [], srcDoc.pageMetrics.length, leadTitle);
+    if (segments.length < 2) return;
+    // Build every piece before touching the tab list, so a mid-split failure leaves no partial tabs behind.
+    /** @type {Array<{ doc: import('../../js/containers/scribeDoc.js').ScribeDoc, name: string }>} */
+    const pieces = [];
+    try {
+      for (const seg of segments) {
+        const bytes = await srcDoc.exportData('pdf', { displayMode: 'invis', addOverlay: true, pageArr: seg.pageArr });
+        const doc = await openDocumentFromFile(new Blob([bytes], { type: 'application/pdf' }));
+        pieces.push({ doc, name: `${seg.title}.pdf` });
+      }
+    } catch (err) {
+      console.error('Failed to split the document at its bookmarks:', err);
+      await Promise.all(pieces.map((p) => p.doc.terminate().catch(() => {})));
+      return;
+    }
+    const firstNewTab = this._tabs.length;
+    for (const p of pieces) this._tabs.push({ doc: p.doc, name: p.name, lastPage: 0 });
+    await this._activateTab(firstNewTab);
+  }
+
+  /**
+   * Open a file picker and insert the chosen PDF/image pages into the active document at `index`.
+   * @param {number} index - Insertion index in the active document (0..pageCount).
+   */
+  _pickFilesToInsert(index) {
+    const input = document.createElement('input');
+    input.type = 'file';
+    input.accept = '.pdf,image/*';
+    input.multiple = true;
+    input.style.display = 'none';
+    input.addEventListener('change', async () => {
+      const picked = input.files;
+      input.remove();
+      if (picked && picked.length) await this.insertPagesFromFiles(picked, index);
+    });
+    document.body.appendChild(input);
+    input.click();
+  }
+
+  /**
+   * Insert the pages of one or more files (PDFs and/or images) into the active document at `index`, in place.
+   * Each file is opened as a throwaway document and its pages are copied in object-level (undoable per file), then the throwaway is terminated.
+   * The inserted pages keep rendering and exporting from its retained (refcounted) render source.
+   * PDFs are inserted individually, then any images as one grouped block, mirroring the Open button.
+   * @param {FileList|Array<File>} files
+   * @param {number} index - Insertion index in the active document (0..pageCount).
+   * @returns {Promise<void>}
+   */
+  async insertPagesFromFiles(files, index) {
+    const targetDoc = this.scribe.doc;
+    const list = Array.from(files || []);
+    if (!targetDoc || list.length === 0) return;
+    const isPdf = (f) => /\.pdf$/i.test(f.name || '') || f.type === 'application/pdf';
+    const pdfs = list.filter(isPdf);
+    const images = list.filter((f) => !isPdf(f));
+    const at0 = Math.max(0, Math.min(index, targetDoc.pageMetrics.length));
+    let at = at0;
+    /** @type {Array<import('../../js/containers/scribeDoc.js').ScribeDoc>} */
+    const temps = [];
+    try {
+      for (const pdf of pdfs) temps.push(await openDocumentFromFile(pdf));
+      if (images.length > 0) temps.push(await scribe.openDocument(images));
+      let landingCp = this.scribe.state.cp.n;
+      for (const temp of temps) {
+        const bundles = temp.copyPages(temp.pageMetrics.map((_, i) => i));
+        if (bundles.length === 0) continue;
+        // Inserting must not yank the reader to the new pages: keep the page they were viewing (it shifts down if the block lands at or before it).
+        // Mirrors delete/reorder, which also keep the current page.
+        const range = this.scribe.pastePages(bundles, at, { keepCurrentPage: true });
+        if (range) landingCp = range.cp;
+        at += bundles.length;
+      }
+      // Update the rail in place (shift the rows below the insertion down and mount the new pages) rather than a full `rebuild`, which would blank and re-render every thumbnail and reset the scroll.
+      // Use pastePages' returned landing, not state.cp.n (stale here because the rebuild's displayPage is async),
+      // so the rail keeps the reader's page highlighted even when the block lands above it and shifts it down.
+      if (at > at0 && this._thumbnailPanel) this._thumbnailPanel.insertPagesAt(at0, at - at0, landingCp);
+    } catch (err) {
+      console.error('Failed to insert pages from file:', err);
+      this._showToast('Couldn’t insert the file — it couldn’t be loaded.');
+    } finally {
+      await Promise.all(temps.map((d) => d.terminate().catch(() => {})));
     }
   }
 
@@ -783,15 +1006,95 @@ class ScribePDFViewer {
     this._relayout();
   }
 
-  /** Height of the fixed top chrome (toolbar plus the tab strip when visible), in px. */
+  /**
+   * Height of the fixed top chrome (toolbar, the tab strip when visible, and the message banner when shown), in px.
+   * @returns {number}
+   */
   _chromeTop() {
-    return this.toolbarHeight + (this._tabStripVisible ? TAB_STRIP_HEIGHT : 0);
+    return this.toolbarHeight + (this._tabStripVisible ? TAB_STRIP_HEIGHT : 0) + this._messageBannerHeight;
+  }
+
+  /**
+   * Lazily build the message layer inside the viewer root: a bottom toast stack and a top banner strip.
+   */
+  _ensureMessageLayer() {
+    if (this._toastStack) return;
+    const stack = document.createElement('div');
+    stack.className = 'scribe-toast-stack';
+    this.pdfViewerElem.appendChild(stack);
+    this._toastStack = stack;
+
+    const banner = document.createElement('div');
+    banner.className = 'scribe-banner';
+    banner.style.display = 'none';
+    this.pdfViewerElem.appendChild(banner);
+    this._banner = banner;
+  }
+
+  /**
+   * Show a transient toast.
+   * Use when the user is looking and the failure is self-evident (a file didn't open, an export didn't download): the message only adds context, so it auto-dismisses and never blocks.
+   * Never a modal.
+   * @param {string} message
+   */
+  _showToast(message) {
+    this._ensureMessageLayer();
+    const toast = document.createElement('div');
+    toast.className = 'scribe-toast';
+    toast.setAttribute('role', 'status');
+    toast.textContent = message;
+    let gone = false;
+    const dismiss = () => {
+      if (gone) return;
+      gone = true;
+      toast.classList.add('leaving');
+      setTimeout(() => toast.remove(), 200);
+    };
+    toast.addEventListener('click', dismiss);
+    this._toastStack.appendChild(toast);
+    requestAnimationFrame(() => toast.classList.add('shown'));
+    setTimeout(dismiss, 6000);
+  }
+
+  /**
+   * Show a persistent, dismissible banner below the chrome.
+   * Use when the user may be away from the screen or the failure is not self-evident (e.g. recognition failed while they stepped away):
+   * it resizes the document area and waits to be acknowledged rather than auto-dismissing.
+   * Only one banner shows at a time, so a new message replaces the current one.
+   * @param {string} message
+   */
+  _showBanner(message) {
+    this._ensureMessageLayer();
+    this._banner.textContent = '';
+    const text = document.createElement('span');
+    text.className = 'scribe-banner-text';
+    text.textContent = message;
+    const close = document.createElement('button');
+    close.className = 'scribe-banner-close';
+    close.type = 'button';
+    close.setAttribute('aria-label', 'Dismiss');
+    close.innerHTML = BANNER_CLOSE_SVG;
+    close.addEventListener('click', () => this._hideBanner());
+    this._banner.append(text, close);
+    this._banner.style.display = 'flex';
+    this._messageBannerHeight = MESSAGE_BANNER_HEIGHT;
+    this._relayout();
+  }
+
+  /** Hide the message banner and give its height back to the document area. */
+  _hideBanner() {
+    if (!this._banner || this._messageBannerHeight === 0) return;
+    this._banner.style.display = 'none';
+    this._messageBannerHeight = 0;
+    this._relayout();
   }
 
   /** Re-apply canvas and thumbnail-panel sizing from the current dimensions and chrome height. */
   _relayout() {
     if (!this.scribe.scrollContainer) return;
     const top = this._chromeTop();
+    // The banner occupies the strip just above the document area (below toolbar + tab strip).
+    if (this._messageBannerHeight && this._banner) this._banner.style.top = `${top - this._messageBannerHeight}px`;
     if (this._thumbnailPanel) {
       this._thumbnailPanel.panelElem.style.top = `${top}px`;
       this._thumbnailPanel.panelElem.style.height = `${this._height - top}px`;
@@ -811,7 +1114,9 @@ class ScribePDFViewer {
     const inset = Math.min(panelW, Math.max(0, this._width - 80));
     this.scribe.scrollContainer.style.marginLeft = `${inset}px`;
     this.scribe.resize(this._width - inset, this._height - top);
-    if (this._updateScrollbars) this._updateScrollbars();
+    // Skip the overlay-scrollbar refresh during an active sidebar-resize drag: reading the scroll metrics forces a synchronous reflow every pointermove (resize just invalidated the metrics cache).
+    // The drag's `end` phase runs one final `_relayout` that refreshes them, and a horizontal drag changes neither track's thumb until release anyway.
+    if (this._updateScrollbars && !this._sidebarResizeBounds) this._updateScrollbars();
   }
 
   /**
@@ -902,7 +1207,6 @@ class ScribePDFViewer {
       const inset = Math.min(Math.max(0, raw), Math.max(0, this._width - 80));
       this.scribe.scrollContainer.style.marginLeft = `${inset}px`;
       this.scribe.resize(this._width - inset, this._height - top);
-      if (this._updateScrollbars) this._updateScrollbars();
     };
 
     const cleanup = () => {

@@ -688,6 +688,25 @@ export function clonePageFull(page) {
 }
 
 /**
+ * Assign fresh ids to a cloned page's paragraphs, lines, and words in place.
+ * Highlight and text-selection resolve the on-screen selection to words by id, so shared ids would make them act on every copy at once.
+ * Within-page links are object references, so renumbering does not break them.
+ * @param {OcrPage} page
+ */
+export function reIdPage(page) {
+  if (!page) return;
+  const lines = new Set(page.lines || []);
+  for (const par of page.pars || []) {
+    par.id = getRandomAlphanum(8);
+    for (const line of par.lines || []) lines.add(line);
+  }
+  for (const line of lines) {
+    line.id = getRandomAlphanum(8);
+    for (const word of line.words || []) word.id = getRandomAlphanum(8);
+  }
+}
+
+/**
  * Clones line and included words.  Does not clone page.
  * Should be used rather than `structuredClone` for performance reasons.
  * @param {OcrLine} line
@@ -1139,6 +1158,7 @@ const ocr = {
   getWordFillOpacity,
   clonePage,
   clonePageFull,
+  reIdPage,
   cloneLine,
   cloneWord,
   cloneChar,
