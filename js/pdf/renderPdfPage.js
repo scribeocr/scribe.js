@@ -3221,17 +3221,49 @@ function renderMeshPatches(ctx, patches) {
   const imgData = tmpCtx.createImageData(w, h);
   const pix = imgData.data;
 
-  const N = 32; // tessellation subdivisions per patch
-  // Pre-compute Bernstein basis
-  const basis = new Array(N + 1);
-  for (let k = 0; k <= N; k++) {
-    const t = k / N;
-    const t1 = 1 - t;
-    basis[k] = [t1 * t1 * t1, 3 * t * t1 * t1, 3 * t * t * t1, t * t * t];
-  }
+  // With thousands of patches only a few pixels wide, a fixed 32x32 grid per patch is far finer than the pixels show, so scaling subdivisions to patch size is much cheaper and looks the same.
+  // This is gated to small-scale (thumbnail) output, leaving full-resolution renders on the fixed grid, since at full resolution the gain did not justify altering the shared mesh render.
+  const MAX_N = 32;
+  const outScale = Math.sqrt(Math.abs(ta * td - tb * tc)) || 1;
+  const adaptTess = outScale < 1.5;
+  const basisCache = new Map();
+  const basisFor = (n) => {
+    let b = basisCache.get(n);
+    if (b) return b;
+    b = new Array(n + 1);
+    for (let k = 0; k <= n; k++) {
+      const t = k / n;
+      const t1 = 1 - t;
+      b[k] = [t1 * t1 * t1, 3 * t * t1 * t1, 3 * t * t * t1, t * t * t];
+    }
+    basisCache.set(n, b);
+    return b;
+  };
 
   for (const patch of patches) {
     const { points: pts, colors: [c00, c03, c33, c30] } = patch;
+
+    let N = MAX_N;
+    if (adaptTess) {
+      let pminx = Infinity;
+      let pminy = Infinity;
+      let pmaxx = -Infinity;
+      let pmaxy = -Infinity;
+      for (let i = 0; i < 4; i++) {
+        for (let j = 0; j < 4; j++) {
+          const sx = pts[i][j][0];
+          const sy = pts[i][j][1];
+          const px = ta * sx + tc * sy + te;
+          const py = tb * sx + td * sy + tf;
+          if (px < pminx) pminx = px;
+          if (py < pminy) pminy = py;
+          if (px > pmaxx) pmaxx = px;
+          if (py > pmaxy) pmaxy = py;
+        }
+      }
+      N = Math.min(MAX_N, Math.max(2, Math.ceil(2 * Math.max(pmaxx - pminx, pmaxy - pminy))));
+    }
+    const basis = basisFor(N);
 
     // Evaluate surface on (N+1)×(N+1) grid in canvas-pixel coords
     const gx = new Float64Array((N + 1) * (N + 1));
