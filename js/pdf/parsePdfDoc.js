@@ -2161,21 +2161,30 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
     }
 
     // Compute line bbox from all non-superscript chars (or all chars if none are non-sup)
-    const allLineChars = words.flatMap((w) => w.chars);
-    const nonSupChars = allLineChars.filter((_, idx) => {
-      let charCount = 0;
-      for (const w of words) {
-        charCount += w.chars.length;
-        if (idx < charCount) return !w.sup;
+    const allLineChars = [];
+    const nonSupChars = [];
+    for (const w of words) {
+      for (const c of w.chars) {
+        allLineChars.push(c);
+        if (!w.sup) nonSupChars.push(c);
       }
-      return true;
-    });
+    }
     const bboxChars = nonSupChars.length > 0 ? nonSupChars : allLineChars;
 
-    const lineLeft = bboxChars.reduce((m, c) => Math.min(m, Math.round(c.x)), Infinity);
-    const lineRight = bboxChars.reduce((m, c) => Math.max(m, Math.round(c.x + c.width)), -Infinity);
-    const lineTop = bboxChars.reduce((m, c) => Math.min(m, Math.round(c.y - (c.fontInfo.ascent / 1000) * c.fontSize)), Infinity);
-    const lineBottom = bboxChars.reduce((m, c) => Math.max(m, Math.round(c.y - (c.fontInfo.descent / 1000) * c.fontSize)), -Infinity);
+    let lineLeft = Infinity;
+    let lineRight = -Infinity;
+    let lineTop = Infinity;
+    let lineBottom = -Infinity;
+    for (const c of bboxChars) {
+      const l = Math.round(c.x);
+      const r = Math.round(c.x + c.width);
+      const t = Math.round(c.y - (c.fontInfo.ascent / 1000) * c.fontSize);
+      const b = Math.round(c.y - (c.fontInfo.descent / 1000) * c.fontSize);
+      if (l < lineLeft) lineLeft = l;
+      if (r > lineRight) lineRight = r;
+      if (t < lineTop) lineTop = t;
+      if (b > lineBottom) lineBottom = b;
+    }
 
     // Baseline: use the first non-superscript word's baseline, or fall back to first char.
     const baselineY = normalBaselineY ?? allLineChars[0].y;
