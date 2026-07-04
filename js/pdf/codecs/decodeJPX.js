@@ -9,8 +9,9 @@ import { ArithmeticDecoder } from './decodeMQ.js';
 /**
  * Decode JPEG 2000 (JPX) image data to raw pixels.
  * @param {Uint8Array} data - Raw JP2/JPX codestream bytes
- * @param {number} [reduceLevels] - Discard this many of the finest resolution levels (single-tile images only).
+ * @param {number} [reduceLevels] - Discard this many of the finest resolution levels.
  *   Each level halves the decoded dimensions and skips that level's inverse-wavelet and entropy-decode work.
+ *   Capped at the smallest decomposition-level count any tile-component declares.
  * @param {boolean} [applyInternalPalette] - Expand an internal JP2 Palette box (pclr) into its output channels.
  *   Pass false when a PDF /Indexed colour space overrides the JP2 palette (raw indices are wanted).
  */
@@ -520,15 +521,30 @@ class JpxImage {
         warn(`JPX: Trying to recover from: "${e.message}".`);
       }
     }
-    // Resolution reduction is only coordinate-correct for single-tile images.
-    // A multi-tile image keeps full-resolution tile origins and dimensions.
-    const effectiveReduce = (reduceLevels > 0 && context.tiles.length === 1) ? reduceLevels : 0;
+    // A tile-part COD may declare fewer decomposition levels than the main header, and reducing tiles by different factors would misalign the reduced tile grid.
+    let effectiveReduce = reduceLevels > 0 ? reduceLevels : 0;
+    if (effectiveReduce > 0) {
+      for (let t = 0; t < context.tiles.length; t++) {
+        const tileComponents = context.tiles[t].components;
+        for (let c = 0; c < tileComponents.length; c++) {
+          const levels = tileComponents[c].codingStyleParameters.decompositionLevelsCount;
+          if (levels < effectiveReduce) effectiveReduce = levels;
+        }
+      }
+    }
     this.tiles = transformComponents(context, effectiveReduce);
     this.width = context.SIZ.Xsiz - context.SIZ.XOsiz;
     this.height = context.SIZ.Ysiz - context.SIZ.YOsiz;
     if (effectiveReduce > 0) {
-      this.width = this.tiles[0].left + this.tiles[0].width;
-      this.height = this.tiles[0].top + this.tiles[0].height;
+      // Tiles are placed at absolute reduced-grid coordinates, so cover the furthest tile edge rather than ceil-dividing the SIZ extent.
+      let w = 0;
+      let h = 0;
+      for (let t = 0; t < this.tiles.length; t++) {
+        w = Math.max(w, this.tiles[t].left + this.tiles[t].width);
+        h = Math.max(h, this.tiles[t].top + this.tiles[t].height);
+      }
+      this.width = w;
+      this.height = h;
     }
     this.componentsCount = context.SIZ.Csiz;
     // Per-component bit depth (SIZ Ssiz). Decoded samples are MSB-aligned to 8 bits,
@@ -1655,9 +1671,11 @@ function transformTile(context, tile, c, reduceLevels = 0) {
   }
 
   const result = transform.calculate(subbandCoefficients);
+  // Place the tile at the kept top level's origin, ceil(tcx0 / 2^discarded) per B-14; with nothing discarded that is exactly tcx0.
+  const topResolution = component.resolutions[keptLevels];
   return {
-    left: component.tcx0,
-    top: component.tcy0,
+    left: topResolution.trx0,
+    top: topResolution.try0,
     width: result.width,
     height: result.height,
     items: result.items,
