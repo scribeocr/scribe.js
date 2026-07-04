@@ -821,7 +821,12 @@ export function extractStream(pdfBytes, objOffset, objCache = null, objNum = -1)
           }
         }
       }
-      data = decodeJBIG2(data, globals);
+      try {
+        data = decodeJBIG2(data, globals);
+      } catch (e) {
+        console.warn(`extractStream: JBIG2 decode failed: ${e && e.message}`);
+        data = null;
+      }
     } else if (filter !== 'DCTDecode' && filter !== 'JPXDecode') {
       // Unrecognized filter — pass through raw data but track it
       if (objCache) objCache.unsupportedFilters.add(filter);

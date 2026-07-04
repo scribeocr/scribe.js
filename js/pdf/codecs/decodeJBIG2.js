@@ -543,6 +543,10 @@ function decodeSymbolDictionary(huffman, refinement, symbols, numberOfNewSymbols
       }
       currentWidth += deltaWidth;
       totalWidth += currentWidth;
+      // The inner loop breaks only on an OOB delta-width, which a corrupt stream may never emit.
+      if ((huffman ? symbolWidths.length : newSymbols.length) >= numberOfNewSymbols) {
+        throw new Jbig2Error('symbol dictionary decoded more symbols than declared');
+      }
       let bitmap;
       if (refinement) {
         const numberOfInstances = decodeInteger(contextCache, 'IAAI', decoder);

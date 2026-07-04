@@ -1725,6 +1725,9 @@ async function imageMaskToBitmap(imageInfo, fillColor, objCache) {
   }
   const { width, height, imageData } = imageInfo;
 
+  // imageData is null when its stream could not be decoded.
+  if (imageData == null) return null;
+
   const colorMatch = /rgb\((\d+),(\d+),(\d+)\)/.exec(fillColor);
   const r = colorMatch ? Number(colorMatch[1]) : 0;
   const g = colorMatch ? Number(colorMatch[2]) : 0;
