@@ -114,6 +114,62 @@ function idct2x2(block) {
 }
 
 /**
+ * Downscaling matrices for scaled decode (see `decodeJPEGComponents` `scale`).
+ * Applied separably to an 8x8 coefficient block, `boxAvgMatrix[m]` produces the exact box-average of the block's full IDCT output.
+ * m=1 (1/8) is DC-only, handled inline.
+ * @type {Record<number, Float64Array>}
+ */
+const boxAvgMatrix = {};
+for (const bm of [2, 4]) {
+  const s = 8 / bm;
+  const mat = new Float64Array(bm * 8);
+  for (let j = 0; j < bm; j++) {
+    for (let u = 0; u < 8; u++) {
+      let acc = 0;
+      for (let n = j * s; n < (j + 1) * s; n++) acc += idctCos[n * 8 + u];
+      mat[j * 8 + u] = acc / s;
+    }
+  }
+  boxAvgMatrix[bm] = mat;
+}
+
+// Scratch for the box-average row pass, reused across idctBoxAvg calls (up to m=4 rows x 8 columns).
+const boxAvgScratch = new Float64Array(4 * 8);
+
+/**
+ * Box-average IDCT for scaled decode: writes the m x m box-average of the block's full IDCT into `out`, clamped 0-255.
+ * Sums only the nonzero coefficient bounding box [0..maxRow] x [0..maxCol]; the rest are zero, so the reduced sum stays exact.
+ * For m in {2,4}; m=1 (1/8) is DC-only, filled inline.
+ * @param {Int32Array} block
+ * @param {number} m
+ * @param {Float64Array} mat
+ * @param {Uint8Array} out
+ * @param {number} maxRow
+ * @param {number} maxCol
+ */
+function idctBoxAvg(block, m, mat, out, maxRow, maxCol) {
+  for (let u = 0; u <= maxRow; u++) {
+    const bu = u * 8;
+    for (let i = 0; i < m; i++) {
+      const mi = i * 8;
+      let acc = 0;
+      for (let c = 0; c <= maxCol; c++) acc += block[bu + c] * mat[mi + c];
+      boxAvgScratch[u * m + i] = acc;
+    }
+  }
+  for (let j = 0; j < m; j++) {
+    const mj = j * 8;
+    for (let i = 0; i < m; i++) {
+      let acc = 0;
+      for (let u = 0; u <= maxRow; u++) acc += boxAvgScratch[u * m + i] * mat[mj + u];
+      let v = Math.round(acc) + 128;
+      if (v < 0) v = 0; else if (v > 255) v = 255;
+      out[j * m + i] = v;
+    }
+  }
+}
+
+/**
  * Build a lookup table for fast Huffman decoding.
  * Returns an object with a `decode` method.
  * @param {Uint8Array} bits
@@ -240,17 +296,17 @@ class BitReader {
  * Decode a baseline CMYK/YCCK JPEG to per-component sample buffers (MCU-padded), before chroma upsampling or interleaving.
  *
  * @param {Uint8Array} jpegData - Raw JPEG file bytes
- * @param {{x0:number,y0:number,x1:number,y1:number}|null} [roi] - Region of interest in image pixels.
- *   When set, MCUs outside it are still entropy-decoded (to keep the bitstream and DC prediction in sync)
- *   but skip the IDCT and the pixel store, and MCU rows entirely below it are not decoded at all.
- *   Component samples outside the region are left zero. The caller must not read them.
- *   Used to avoid decoding parts of an image the page clips away.
- * @returns {{ width: number, height: number, numComponents: number, compBuffers: Uint8Array[],
+ * @param {{x0:number,y0:number,x1:number,y1:number}|null} [roi] - Region of interest in image pixels, to skip decoding regions the page clips away.
+ *   Samples outside it are left zero and must not be read.
+ * @param {number} [scale=1] - Downscale factor, one of 1/2/4/8.
+ *   The returned planes come back at 1/scale resolution.
+ * @returns {{ width: number, height: number, outW: number, outH: number, numComponents: number, compBuffers: Uint8Array[],
  * compWidths: number[], compHeights: number[], compSampling: {hSamp: number, vSamp: number}[],
  * maxHSamp: number, maxVSamp: number, adobeTransform: number }|null}
- *   Returns null for non-3/4-component or non-baseline JPEGs and on decode failure.
+ *   `width`/`height` are the native size; `outW`/`outH` the decoded size (native/scale).
+ *   Returns null for unsupported (non-baseline, non-3/4-component) JPEGs or on decode failure.
  */
-function decodeJPEGComponents(jpegData, roi = null) {
+function decodeJPEGComponents(jpegData, roi = null, scale = 1) {
   let pos = 0;
   const len = jpegData.length;
 
@@ -453,12 +509,16 @@ function decodeJPEGComponents(jpegData, roi = null) {
   const mcuCountX = Math.ceil(width / mcuW);
   const mcuCountY = Math.ceil(height / mcuH);
 
+  // Scaled decode: each block yields an m x m box-average patch (m = 8/scale), so the per-component planes are 1/scale the native size.
+  // bs is the per-block edge (8 at full scale).
+  const m = 8 / scale;
+  const bs = scale === 1 ? 8 : m;
   const compBuffers = components.map((comp) => {
-    const cw = mcuCountX * comp.hSamp * 8;
-    const ch = mcuCountY * comp.vSamp * 8;
+    const cw = mcuCountX * comp.hSamp * bs;
+    const ch = mcuCountY * comp.vSamp * bs;
     return new Uint8Array(cw * ch);
   });
-  const compWidths = components.map((comp) => mcuCountX * comp.hSamp * 8);
+  const compWidths = components.map((comp) => mcuCountX * comp.hSamp * bs);
 
   const prevDC = new Int32Array(numComponents);
 
@@ -473,6 +533,7 @@ function decodeJPEGComponents(jpegData, roi = null) {
   const dY1 = roi ? roi.y1 + mcuH : height;
 
   const block = new Int32Array(64);
+  const scaledOut = new Uint8Array(16); // reduced m x m block output when scale > 1 (m <= 4)
   for (let mcuY = 0; mcuY < mcuCountY; mcuY++) {
     // Every remaining MCU row is below the region, so nothing is left to make visible. Stop.
     if (roi && mcuY * mcuH >= dY1) break;
@@ -557,31 +618,45 @@ function decodeJPEGComponents(jpegData, roi = null) {
             // The Huffman decode above still had to run to keep the sequential bitstream position and the differential DC predictor advanced for the following blocks.
             if (!mcuVisible) continue;
 
-            // Inverse-transform with the cheapest routine that is exact for this block's nonzero-coefficient bounding box.
-            // Most real blocks are low-frequency, so the 2x2 and 4x4 paths handle the bulk of them.
-            // The DC-only case (a flat block) is filled with a constant computed by the same two-step float multiply the full transform uses (idctCos[0] for both passes),
-            // so it stays byte-identical to running the full IDCT.
-            if (maxRow === 0 && maxCol === 0) {
-              block.fill(Math.round(block[0] * idctCos[0] * idctCos[0]) + 128);
-            } else if (maxRow <= 1 && maxCol <= 1) {
-              idct2x2(block);
-            } else if (maxRow <= 3 && maxCol <= 3) {
-              idct4x4(block);
+            if (scale === 1) {
+              // Dispatch to the smallest IDCT still exact for this block's nonzero-coefficient bounding box.
+              // The flat (DC-only) case multiplies by idctCos[0] on both passes exactly like the full transform, so its fill is byte-identical to idct8x8.
+              if (maxRow === 0 && maxCol === 0) {
+                block.fill(Math.round(block[0] * idctCos[0] * idctCos[0]) + 128);
+              } else if (maxRow <= 1 && maxCol <= 1) {
+                idct2x2(block);
+              } else if (maxRow <= 3 && maxCol <= 3) {
+                idct4x4(block);
+              } else {
+                idct8x8(block);
+              }
+              const cx = (mcuX * blocksH + bh) * 8;
+              const cy = (mcuY * blocksV + bv) * 8;
+              const cw = compWidths[ci];
+              for (let row = 0; row < 8; row++) {
+                for (let col = 0; col < 8; col++) {
+                  let val = block[row * 8 + col];
+                  if (val < 0) val = 0;
+                  if (val > 255) val = 255;
+                  compBuffers[ci][(cy + row) * cw + (cx + col)] = val;
+                }
+              }
             } else {
-              idct8x8(block);
-            }
-
-            const cx = (mcuX * blocksH + bh) * 8;
-            const cy = (mcuY * blocksV + bv) * 8;
-            const cw = compWidths[ci];
-            for (let row = 0; row < 8; row++) {
-              for (let col = 0; col < 8; col++) {
-                const px = cx + col;
-                const py = cy + row;
-                let val = block[row * 8 + col];
-                if (val < 0) val = 0;
-                if (val > 255) val = 255;
-                compBuffers[ci][py * cw + px] = val;
+              // At m=1 (1/8 scale) the box-average patch is a single pixel holding the block's DC mean, the same value the flat fast path computes.
+              if (m === 1) {
+                let v = Math.round(block[0] * idctCos[0] * idctCos[0]) + 128;
+                if (v < 0) v = 0; else if (v > 255) v = 255;
+                scaledOut[0] = v;
+              } else {
+                idctBoxAvg(block, m, boxAvgMatrix[m], scaledOut, maxRow, maxCol);
+              }
+              const cx = (mcuX * blocksH + bh) * m;
+              const cy = (mcuY * blocksV + bv) * m;
+              const cw = compWidths[ci];
+              for (let row = 0; row < m; row++) {
+                for (let col = 0; col < m; col++) {
+                  compBuffers[ci][(cy + row) * cw + (cx + col)] = scaledOut[row * m + col];
+                }
               }
             }
           }
@@ -591,10 +666,12 @@ function decodeJPEGComponents(jpegData, roi = null) {
     }
   }
 
-  const compHeights = components.map((comp) => mcuCountY * comp.vSamp * 8);
+  const compHeights = components.map((comp) => mcuCountY * comp.vSamp * bs);
   return {
     width,
     height,
+    outW: scale === 1 ? width : Math.ceil(width / scale),
+    outH: scale === 1 ? height : Math.ceil(height / scale),
     numComponents,
     compBuffers,
     compWidths,
@@ -607,27 +684,32 @@ function decodeJPEGComponents(jpegData, roi = null) {
 }
 
 /**
- * Decode a CMYK JPEG and return RGB pixel data as Uint8Array (R,G,B,R,G,B,...).
+ * Decode a CMYK JPEG and return RGBA pixel data as Uint8Array (R,G,B,A,R,G,B,A,...).
  *
  * @param {Uint8Array} jpegData - Raw JPEG bytes
  * @param {boolean} [decodeInvert=false]
  * @param {{x0:number,y0:number,x1:number,y1:number}|null} [roi] - Region of interest in image pixels.
  *    When set, only pixels inside it are converted and the rest of the returned buffer stays transparent-black.
  *    The returned image is still full size, not cropped to the region.
- * @returns {{ width: number, height: number, rgbData: Uint8Array }|null}
+ * @param {number} [scale=1] - Downscale factor (1/2/4/8).
+ *    When >1 the image is decoded at 1/scale resolution (each 8x8 block box-averaged to (8/scale)x(8/scale)).
+ *    The returned width/height are the reduced size.
+ *    Any `roi` is given in native image pixels and mapped onto the reduced grid here.
+ * @returns {{ width: number, height: number, rgbData: Uint8Array }|null} width/height are the decoded (native/scale) size.
  */
-export function decodeCMYKJpegToRGB(jpegData, decodeInvert = false, roi = null) {
-  const dec = decodeJPEGComponents(jpegData, roi);
+export function decodeCMYKJpegToRGB(jpegData, decodeInvert = false, roi = null, scale = 1) {
+  const dec = decodeJPEGComponents(jpegData, roi, scale);
   if (!dec) return null;
   const {
-    width, height, numComponents, compBuffers, compWidths, compHeights, compSampling, maxHSamp, maxVSamp, adobeTransform,
+    outW, outH, numComponents, compBuffers, compWidths, compHeights, compSampling, maxHSamp, maxVSamp, adobeTransform,
   } = dec;
-  const rgbData = new Uint8Array(width * height * 4); // RGBA for ImageData
+  const rgbData = new Uint8Array(outW * outH * 4); // RGBA for ImageData
 
-  const rx0 = roi ? Math.max(0, roi.x0) : 0;
-  const ry0 = roi ? Math.max(0, roi.y0) : 0;
-  const rx1 = roi ? Math.min(width, roi.x1) : width;
-  const ry1 = roi ? Math.min(height, roi.y1) : height;
+  // roi is in native pixels, so map it to the reduced output grid (a no-op when scale === 1).
+  const rx0 = roi ? Math.max(0, Math.floor(roi.x0 / scale)) : 0;
+  const ry0 = roi ? Math.max(0, Math.floor(roi.y0 / scale)) : 0;
+  const rx1 = roi ? Math.min(outW, Math.ceil(roi.x1 / scale)) : outW;
+  const ry1 = roi ? Math.min(outH, Math.ceil(roi.y1 / scale)) : outH;
 
   // 4:4:4 (no subsampling) is the common case for print CMYK JPEGs.
   // Subsampled components instead go through bilinear upsampling.
@@ -652,7 +734,7 @@ export function decodeCMYKJpegToRGB(jpegData, decodeInvert = false, roi = null) 
     const r2 = py * w2;
     const r3 = py * w3;
     for (let px = rx0; px < rx1; px++) {
-      const di = (py * width + px) * 4;
+      const di = (py * outW + px) * 4;
       let c;
       let m;
       let y;
@@ -754,7 +836,7 @@ export function decodeCMYKJpegToRGB(jpegData, decodeInvert = false, roi = null) 
     }
   }
 
-  return { width, height, rgbData };
+  return { width: outW, height: outH, rgbData };
 }
 
 /**

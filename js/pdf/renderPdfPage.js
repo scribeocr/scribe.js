@@ -733,9 +733,11 @@ function putDecodedImage(objCache, key, bitmap, maxW, maxH, bytes, decodeMs) {
  * @param {number} [maxH]
  * @param {{x0:number,y0:number,x1:number,y1:number}|null} [roi] - visible region in image pixels.
  *    The DeviceCMYK JPEG path decodes only this rect (the rest is clipped away when drawn).
+ * @param {number} [decodeScale=1] - DeviceCMYK JPEG downscale factor (1/2/4/8) when the image is drawn much smaller than its native resolution.
+ *    Decodes at 1/decodeScale (see `decodeCMYKJpegToRGB`). 1 = full resolution.
  * @returns {Promise<ImageBitmap|null>} null when the image data is missing or cannot be decoded.
  */
-async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = null) {
+async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = null, decodeScale = 1) {
   if (imageInfo.imageData == null && objCache && imageInfo.objNum != null) {
     imageInfo.imageData = objCache.getStreamBytes(imageInfo.objNum);
   }
@@ -763,8 +765,9 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
     if (colorSpace === 'DeviceCMYK') {
       const jpegBytes = imageData instanceof Uint8Array ? imageData : new Uint8Array(imageData);
       // A soft mask rewrites alpha across the whole image below, which would reveal undecoded pixels, so only honour the region of interest when there is no soft mask.
+      // Scaled decode is soft-mask-safe (it decodes the whole image, just smaller — applySoftMaskAlpha resamples the mask to match), so it is always honoured.
       const cmykRoi = (sMask && sMaskWidth && sMaskHeight) ? null : roi;
-      const cmykResult = decodeCMYKJpegToRGB(jpegBytes, decodeInvert, cmykRoi);
+      const cmykResult = decodeCMYKJpegToRGB(jpegBytes, decodeInvert, cmykRoi, decodeScale);
       if (cmykResult) {
         const { width: w, height: h, rgbData } = cmykResult;
         const canvas = ca.makeCanvas(w, h);
@@ -7099,6 +7102,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         }
         // The image's visible region in image-pixel coordinates, so the expensive pure-JS CMYK JPEG decode can skip pixels clipped off the page canvas.
         let imageRoi = null;
+        // Downscale factor (1/2/4/8) for a heavily-oversampled image drawn much smaller than native (thumbnails, zoomed-out views): decode at 1/decodeScale.
+        let decodeScale = 1;
         if (!cachedBitmap && !imageInfo.imageMask && imageInfo.filter === 'DCTDecode'
           && imageInfo.colorSpace === 'DeviceCMYK' && imageInfo.width > 0 && imageInfo.height > 0) {
           const s0 = op.ctm[0] * scale; const s1 = -op.ctm[1] * scale; const s2 = op.ctm[2] * scale; const
@@ -7107,6 +7112,13 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             s5 = (pageHeightPts + boxOriginY - op.ctm[5]) * scale;
           const W = imageInfo.width; const
             H = imageInfo.height;
+          // Downscale decode when the image is oversampled >=2x in both axes.
+          // drawW/drawH are the image's on-canvas extent in device px = lengths of the placement transform's column vectors (its unit square's edges).
+          const drawW = Math.hypot(s0, s1); const drawH = Math.hypot(s2, s3);
+          if (drawW > 0 && drawH > 0) {
+            const over = Math.min(W / drawW, H / drawH);
+            decodeScale = over >= 8 ? 8 : over >= 4 ? 4 : over >= 2 ? 2 : 1;
+          }
           // image pixel (ix,iy) -> device: dx = a*ix + c*iy + e, dy = b*ix + d*iy + f
           const a = s0 / W; const c = -s2 / H; const
             e = s2 + s4;
@@ -7142,7 +7154,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           const t0 = performance.now();
           bitmap = imageInfo.imageMask
             ? await imageMaskToBitmap(imageInfo, maskFillColor, objCache)
-            : await imageInfoToBitmap(imageInfo, objCache, canvasWidth, canvasHeight, imageRoi);
+            : await imageInfoToBitmap(imageInfo, objCache, canvasWidth, canvasHeight, imageRoi, decodeScale);
           decodeMs = performance.now() - t0;
         }
         if (!bitmap) return;
@@ -7168,12 +7180,11 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         rCtx.restore();
 
         if (!cachedBitmap) {
-          if (canDocCache && !imageRoi && decodeMs >= DECODED_IMAGE_MIN_DECODE_MS) {
-            // Never cache a region-of-interest decode: it only covers part of the image,
-            // but the cache is keyed by objNum and would be reused for other placements of the same image.
+          if (canDocCache && !imageRoi && decodeScale === 1 && decodeMs >= DECODED_IMAGE_MIN_DECODE_MS) {
+            // Both image caches are keyed by objNum / op.name, not by size or region, so a roi or downscaled decode reused for a different placement would render clipped or blurry.
             const bytes = (bitmap.width || canvasWidth) * (bitmap.height || canvasHeight) * 4;
             putDecodedImage(objCache, docKey, bitmap, canvasWidth, canvasHeight, bytes, decodeMs);
-          } else if (!imageInfo.imageMask && imageDrawCounts.get(op.name) > 1) {
+          } else if (!imageInfo.imageMask && decodeScale === 1 && imageDrawCounts.get(op.name) > 1) {
             bitmapCache.set(op.name, bitmap);
           } else {
             ca.closeDrawable(bitmap);
