@@ -495,9 +495,9 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
 
   // The dedup bucket scales with font size because narrow adjacent chars can sit less than 1 unit apart.
   // A 3×3 neighborhood check catches positions that straddle a bucket boundary.
-  // Nested maps with a packed integer coordinate key avoid building a string key per char, which dominated extraction CPU and drove GC.
-  const DEDUP_COORD_OFF = 33554432; // 2^25, above any bucket index (page px / 0.25), so index + OFF stays non-negative
-  const DEDUP_COORD_MUL = 67108864; // 2^26 > index + OFF, keeping the pack injective and keys exact integers (< 2^53)
+  // The (x, y) bucket packs into one integer Map key rather than a per-char string, avoiding that allocation.
+  const DEDUP_COORD_OFF = 33554432; // 2^25, biases the bucket indices non-negative (above any index = page px / 0.25 min bucket)
+  const DEDUP_COORD_MUL = 67108864; // 2^26, spaces the x bucket above the y bucket so the two never overlap
   /** @type {Map<string, Map<string, Map<number, Set<number>>>>} */
   const seenByText = new Map();
   const dedupedChars = [];
@@ -1345,12 +1345,20 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
 
   chars = (() => {
     const result = [];
-    /** @type {Map<string, number>} */
-    const positionMap = new Map();
+    // posNum packs (x, y, orientation) into one integer Map key rather than a per-char string, avoiding that allocation.
+    const POS_OFF = 4194304; // 2^22, biases the rounded coordinates non-negative (above any |round(px*100)| on a real page)
+    const POS_MUL = 67108864; // 2^26, spaces the x field above the packed (y, orientation) so the fields never overlap
+    /** @type {Map<string, Map<string, Map<number, number>>>} */
+    const positionByText = new Map();
     for (let i = 0; i < chars.length; i++) {
       const ch = chars[i];
-      const posKey = `${ch.text}\x00${ch.fontInfo.baseName}\x00${ch.orientation}\x00${Math.round(ch.x * 100)}\x00${Math.round(ch.y * 100)}`;
-      const mapped = positionMap.get(posKey);
+      const posNum = (Math.round(ch.x * 100) + POS_OFF) * POS_MUL
+        + (Math.round(ch.y * 100) + POS_OFF) * 4 + ch.orientation;
+      let byBase = positionByText.get(ch.text);
+      if (!byBase) { byBase = new Map(); positionByText.set(ch.text, byBase); }
+      let posMap = byBase.get(ch.fontInfo.baseName);
+      if (!posMap) { posMap = new Map(); byBase.set(ch.fontInfo.baseName, posMap); }
+      const mapped = posMap.get(posNum);
       let dupeIdx = mapped === undefined || (result.length - mapped) > SAME_TM_LOOKBACK ? -1 : mapped;
       let dupeKind = dupeIdx >= 0 ? 'sameTm' : '';
       if (dupeIdx < 0) {
@@ -1387,7 +1395,7 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
         }
         continue;
       }
-      positionMap.set(posKey, result.length);
+      posMap.set(posNum, result.length);
       result.push(ch);
     }
     return result;
