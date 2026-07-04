@@ -1604,21 +1604,47 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
       -0.9787684, 1.9161415, 0.0334540,
       0.0719453, -0.2289914, 1.4052427,
     ];
+    // Fold each matrix coefficient into its channel's gamma LUT so the per-pixel loop does lookups and adds, not multiplies.
+    // The fold is exact: same f64 products and summation grouping as multiplying per pixel.
+    const term = [];
+    for (let j = 0; j < 9; j++) {
+      const t = new Float64Array(256);
+      const l = lut[j % 3];
+      for (let v = 0; v < 256; v++) t[v] = m[j] * l[v];
+      term.push(t);
+    }
+    // The gamma-encode pows dominate this loop, and these images have few distinct colors, so memoize the pure color map in a direct-mapped cache.
+    const cacheKeys = new Int32Array(1 << 16).fill(-1);
+    const cacheVals = new Int32Array(1 << 16);
     const n = width * height;
     for (let i = 0; i < n; i++) {
       const off = i * 4;
-      const lr = lut[0][rgbaData[off]];
-      const lg = lut[1][rgbaData[off + 1]];
-      const lb = lut[2][rgbaData[off + 2]];
-      const x = m[0] * lr + m[1] * lg + m[2] * lb;
-      const y = m[3] * lr + m[4] * lg + m[5] * lb;
-      const z = m[6] * lr + m[7] * lg + m[8] * lb;
+      const r = rgbaData[off];
+      const g = rgbaData[off + 1];
+      const b = rgbaData[off + 2];
+      const key = (r << 16) | (g << 8) | b;
+      const slot = (Math.imul(key, 2654435761) >>> 16) & 0xFFFF;
+      if (cacheKeys[slot] === key) {
+        const v = cacheVals[slot];
+        rgbaData[off] = (v >>> 16) & 255;
+        rgbaData[off + 1] = (v >>> 8) & 255;
+        rgbaData[off + 2] = v & 255;
+        continue;
+      }
+      const x = term[0][r] + term[1][g] + term[2][b];
+      const y = term[3][r] + term[4][g] + term[5][b];
+      const z = term[6][r] + term[7][g] + term[8][b];
       const sr = xyzToSrgb[0] * x + xyzToSrgb[1] * y + xyzToSrgb[2] * z;
       const sg = xyzToSrgb[3] * x + xyzToSrgb[4] * y + xyzToSrgb[5] * z;
       const sb = xyzToSrgb[6] * x + xyzToSrgb[7] * y + xyzToSrgb[8] * z;
-      rgbaData[off] = Math.max(0, Math.min(255, Math.round(255 * (Math.max(0, sr) ** (1 / 2.2)))));
-      rgbaData[off + 1] = Math.max(0, Math.min(255, Math.round(255 * (Math.max(0, sg) ** (1 / 2.2)))));
-      rgbaData[off + 2] = Math.max(0, Math.min(255, Math.round(255 * (Math.max(0, sb) ** (1 / 2.2)))));
+      const outR = Math.max(0, Math.min(255, Math.round(255 * (Math.max(0, sr) ** (1 / 2.2)))));
+      const outG = Math.max(0, Math.min(255, Math.round(255 * (Math.max(0, sg) ** (1 / 2.2)))));
+      const outB = Math.max(0, Math.min(255, Math.round(255 * (Math.max(0, sb) ** (1 / 2.2)))));
+      rgbaData[off] = outR;
+      rgbaData[off + 1] = outG;
+      rgbaData[off + 2] = outB;
+      cacheKeys[slot] = key;
+      cacheVals[slot] = (outR << 16) | (outG << 8) | outB;
     }
   }
 
