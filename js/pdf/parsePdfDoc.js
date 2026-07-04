@@ -493,25 +493,34 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
     }
   }
 
-  // Narrow adjacent characters (e.g. "ll" at small font sizes) can have spacing
-  // below 1 unit, so the dedup bucket scales with font size. The 3×3 neighborhood
-  // check handles positions that straddle a bucket boundary.
-  const seenCharKeys = new Set();
+  // The dedup bucket scales with font size because narrow adjacent chars can sit less than 1 unit apart.
+  // A 3×3 neighborhood check catches positions that straddle a bucket boundary.
+  // Nested maps with a packed integer coordinate key avoid building a string key per char, which dominated extraction CPU and drove GC.
+  const DEDUP_COORD_OFF = 33554432; // 2^25, above any bucket index (page px / 0.25), so index + OFF stays non-negative
+  const DEDUP_COORD_MUL = 67108864; // 2^26 > index + OFF, keeping the pack injective and keys exact integers (< 2^53)
+  /** @type {Map<string, Map<string, Map<number, Set<number>>>>} */
+  const seenByText = new Map();
   const dedupedChars = [];
   for (let i = 0; i < chars.length; i++) {
     const ch = chars[i];
-    const fontKey = `${ch.text}|${ch.fontInfo.familyName}|${ch.fontInfo.bold ? 1 : 0}|${ch.fontInfo.italic ? 1 : 0}|${Math.round(ch.fontSize * 10)}`;
+    const flagsSize = Math.round(ch.fontSize * 10) * 4 + (ch.fontInfo.bold ? 2 : 0) + (ch.fontInfo.italic ? 1 : 0);
     const bucketSize = Math.max(0.25, ch.fontSize * 0.05);
     const xb = Math.round(ch.x / bucketSize);
     const yb = Math.round(ch.y / bucketSize);
+    let byFamily = seenByText.get(ch.text);
+    if (!byFamily) { byFamily = new Map(); seenByText.set(ch.text, byFamily); }
+    let byFlags = byFamily.get(ch.fontInfo.familyName);
+    if (!byFlags) { byFlags = new Map(); byFamily.set(ch.fontInfo.familyName, byFlags); }
+    let coords = byFlags.get(flagsSize);
+    if (!coords) { coords = new Set(); byFlags.set(flagsSize, coords); }
     let isDup = false;
     for (let dx = -1; dx <= 1 && !isDup; dx++) {
       for (let dy = -1; dy <= 1 && !isDup; dy++) {
-        if (seenCharKeys.has(`${fontKey}|${xb + dx}|${yb + dy}`)) isDup = true;
+        if (coords.has((xb + dx + DEDUP_COORD_OFF) * DEDUP_COORD_MUL + (yb + dy + DEDUP_COORD_OFF))) isDup = true;
       }
     }
     if (isDup) continue;
-    seenCharKeys.add(`${fontKey}|${xb}|${yb}`);
+    coords.add((xb + DEDUP_COORD_OFF) * DEDUP_COORD_MUL + (yb + DEDUP_COORD_OFF));
     dedupedChars.push(ch);
   }
   chars.length = 0;
