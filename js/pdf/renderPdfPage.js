@@ -1020,14 +1020,13 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
   // JPXDecode (JPEG 2000) — decode via pure JS decoder
   if (filter === 'JPXDecode') {
     const { decodeJPX } = await import('./codecs/decodeJPX.js');
-    // Each reduce level halves the decoded dimensions and skips entropy-decoding the finest resolution sub-bands (~4x less work per level),
-    // so we want the level closest to the device size the image is actually drawn at.
-    // Halve while the reduced dimensions stay >= ~0.71x (1/sqrt2) of the draw size: pick the geometrically nearest level, accepting up to ~1.41x upscale.
+    // Each reduce level halves the decoded dimensions and skips that level's share of the decode work.
+    // Keep the decode >= sqrt2 x the draw size: wavelet reduction to at-or-below the draw size renders scanned text visibly softer than area-downscaling a larger decode.
     let reduceLevels = 0;
     if (maxW && maxH) {
       let rw = imageInfo.width;
       let rh = imageInfo.height;
-      while (reduceLevels < 5 && rw / 2 >= maxW * 0.71 && rh / 2 >= maxH * 0.71) {
+      while (reduceLevels < 5 && rw / 2 >= maxW * 1.41 && rh / 2 >= maxH * 1.41) {
         rw = Math.floor(rw / 2);
         rh = Math.floor(rh / 2);
         reduceLevels++;
