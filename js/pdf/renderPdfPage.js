@@ -8105,6 +8105,102 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       return true;
     }
 
+    /**
+     * Device-pixel bbox outside which the soft mask is guaranteed zero, or null.
+     * The masked result is content*mask, so this bounds the visible output even when the content's own extent is unknown (an unclipped standalone shading).
+     * Returns null unless the outside-content backdrop resolves to mask byte 0 (matching renderSMaskToCanvas's byte math) and every mask op is bounded by opDeviceBBox.
+     * The declared form /BBox cannot substitute, because our renderer does not clip mask content to it.
+     * @param {any} smaskInfo
+     * @returns {Promise<{x:number,y:number,w:number,h:number}|null>}
+     */
+    async function smaskOutsideZeroContentBBox(smaskInfo) {
+      const trFn = smaskInfo.tr || null;
+      const clamp01 = (v) => Math.max(0, Math.min(1, v));
+      let outsideByte;
+      if (smaskInfo.type === 'Alpha') {
+        let outAlpha = 0;
+        if (trFn) {
+          const out = evaluateFunction(trFn, [0]);
+          outAlpha = out && out.length > 0 ? out[0] : 0;
+        }
+        outsideByte = Math.round(clamp01(outAlpha) * 255);
+      } else {
+        const bc = smaskInfo.bc;
+        let r = 0;
+        let g = 0;
+        let b = 0;
+        if (bc && bc.length === 1) {
+          r = Math.round(clamp01(bc[0]) * 255); g = r; b = r;
+        } else if (bc && bc.length === 3) {
+          r = Math.round(bc[0] * 255); g = Math.round(bc[1] * 255); b = Math.round(bc[2] * 255);
+        } else if (bc && bc.length === 4) {
+          [r, g, b] = cmykToRgb(bc[0], bc[1], bc[2], bc[3]);
+        }
+        const luminosity = (0.299 * r + 0.587 * g + 0.114 * b) / 255;
+        let outAlpha = luminosity;
+        if (trFn) {
+          const out = evaluateFunction(trFn, [Math.round(luminosity * 255) / 255]);
+          outAlpha = out && out.length > 0 ? out[0] : luminosity;
+        }
+        outsideByte = Math.round(clamp01(outAlpha) * 255);
+      }
+      if (outsideByte !== 0) return null;
+
+      const formObjText = objCache.getObjectText(smaskInfo.formObjNum);
+      if (!formObjText) return null;
+      const streamBytes = objCache.getStreamBytes(smaskInfo.formObjNum);
+      if (!streamBytes) return null;
+      const { forms: maskForms } = parsePageImages(formObjText, objCache, { recurseForms: true });
+      if (maskForms.size > 0) return null;
+      const maskExtGStates = parseExtGStates(formObjText, objCache);
+      const maskShadings = parseShadings(formObjText, objCache);
+      const maskPatterns = parsePatterns(formObjText, objCache);
+      const maskColorSpaces = parsePageColorSpaces(formObjText, objCache);
+      // No fonts registered: text ops can't be bounded by opDeviceBBox, so the give-up below covers them.
+      const maskOps = parseDrawOps(bytesToLatin1(streamBytes), new Map(), maskExtGStates, new Map(), maskColorSpaces,
+        new Set(), new Set(), new Set(), maskShadings, maskPatterns, new Map());
+      const formMatrix = parseFormMatrix(formObjText);
+      let minX = Infinity;
+      let minY = Infinity;
+      let maxX = -Infinity;
+      let maxY = -Infinity;
+      for (const op of maskOps) {
+        const oa = /** @type {any} */ (op);
+        if (oa.patternShading || oa.tilingPattern || oa.strokePatternShading || oa.strokeTilingPattern || oa.smask) return null;
+        let composed = op;
+        if (oa.ctm || oa.clips) {
+          composed = { ...op };
+          if (oa.ctm) {
+            let ctm = matMul(oa.ctm, formMatrix);
+            if (smaskInfo.parentCtm && smaskInfo.parentCtm.length === 6) ctm = matMul(ctm, smaskInfo.parentCtm);
+            /** @type {any} */ (composed).ctm = ctm;
+          }
+          if (oa.clips) {
+            /** @type {any} */ (composed).clips = oa.clips.map((/** @type {any} */ c) => {
+              let cctm = c.ctm ? matMul(c.ctm, formMatrix) : c.ctm;
+              if (cctm && smaskInfo.parentCtm && smaskInfo.parentCtm.length === 6) cctm = matMul(cctm, smaskInfo.parentCtm);
+              return { ...c, ctm: cctm };
+            });
+          }
+        }
+        const bb = opDeviceBBox(composed);
+        if (!bb) return null;
+        if (bb.minX < minX) minX = bb.minX;
+        if (bb.minY < minY) minY = bb.minY;
+        if (bb.maxX > maxX) maxX = bb.maxX;
+        if (bb.maxY > maxY) maxY = bb.maxY;
+      }
+      if (!Number.isFinite(minX)) return null;
+      const x = Math.max(0, Math.floor(minX) - 2);
+      const y = Math.max(0, Math.floor(minY) - 2);
+      const w = Math.min(canvasWidth, Math.ceil(maxX) + 2) - x;
+      const h = Math.min(canvasHeight, Math.ceil(maxY) + 2) - y;
+      if (w <= 0 || h <= 0 || w * h >= canvasWidth * canvasHeight) return null;
+      return {
+        x, y, w, h,
+      };
+    }
+
     // Size each isolatable group's buffer to its content bbox.
     // Soft-mask groups qualify too: the result is content*mask,
     // which is zero where the content is transparent,
@@ -8384,23 +8480,35 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           let uMaxX = -Infinity;
           let uMaxY = -Infinity;
           let tightable = true;
+          let contentBounded = true;
           for (const op of group.ops) {
             const oa = /** @type {any} */ (op);
             if (op.outerSmask || oa.patternShading || oa.tilingPattern || oa.strokePatternShading || oa.strokeTilingPattern) { tightable = false; break; }
             const obb = opDeviceBBox(op);
-            if (!obb) { tightable = false; break; }
+            if (!obb) {
+              // A standalone shading has no content bbox, but still renders through op.ctm + clips that shiftOpBy moves, so the mask-bbox fallback below can bound and tighten it.
+              // Other unbounded ops have no such fallback and stay full-page.
+              if (op.type === 'shading') { contentBounded = false; continue; }
+              tightable = false; break;
+            }
             if (obb.minX < uMinX) uMinX = obb.minX;
             if (obb.minY < uMinY) uMinY = obb.minY;
             if (obb.maxX > uMaxX) uMaxX = obb.maxX;
             if (obb.maxY > uMaxY) uMaxY = obb.maxY;
           }
-          if (tightable && Number.isFinite(uMinX)) {
+          if (tightable && contentBounded && Number.isFinite(uMinX)) {
             const ux = Math.max(0, Math.floor(uMinX) - 1);
             const uy = Math.max(0, Math.floor(uMinY) - 1);
             const uw = Math.min(canvasWidth, Math.ceil(uMaxX) + 1) - ux;
             const uh = Math.min(canvasHeight, Math.ceil(uMaxY) + 1) - uy;
             if (uw > 0 && uh > 0 && uw * uh < canvasWidth * canvasHeight) {
               generalTightHandled = await compositeTightSmaskGroup(group.ops, group.smask, ux, uy, uw, uh);
+            }
+          } else if (tightable && !contentBounded) {
+            // Content extent unknown: bound the buffer by the mask instead of the content.
+            const mb = await smaskOutsideZeroContentBBox(group.smask);
+            if (mb) {
+              generalTightHandled = await compositeTightSmaskGroup(group.ops, group.smask, mb.x, mb.y, mb.w, mb.h);
             }
           }
         }
