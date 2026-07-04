@@ -102,7 +102,7 @@ export function scrubPageDictText(pageText) {
  *  - a `{header, streamData, trailer}` binary object (scrubbed stream object).
  *
  * @param {Uint8Array} pdfBytes
- * @param {object} objCache
+ * @param {import('../objectCache.js').ObjectCache} objCache
  * @param {{type:number, offset:number}} entry
  * @param {number} objNum
  * @param {{imageFilter:(n:number)=>string|null, ocgCounter:{n:number}}} ctx
@@ -139,7 +139,7 @@ export function scrubReferencedObject(pdfBytes, objCache, entry, objNum, ctx) {
   // Stream object: re-emit dict + (possibly stripped) encoded stream, /Length corrected.
   let raw;
   try {
-    raw = extractRawStreamBytes(pdfBytes, entry.offset, objCache.encryptionKey ?? null, objCache.encryptObjNum ?? -1, objCache.cipherMode ?? '', objNum);
+    raw = extractRawStreamBytes(pdfBytes, entry.offset, objCache.encryptionKey ?? null, objCache.encryptObjNum ?? -1, objCache.cipherMode ?? '', objNum, objCache);
   } catch { raw = null; }
   if (!raw || !raw.data) return null; // cannot re-emit safely → leave to raw copy
   let data = raw.data;

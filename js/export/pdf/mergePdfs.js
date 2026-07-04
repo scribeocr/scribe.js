@@ -238,6 +238,7 @@ export async function mergePdfs(pdfInputs, options = {}) {
             const raw = extractRawStreamBytes(
               src.pdfBytes, entry.offset,
               src.objCache.encryptionKey, src.objCache.encryptObjNum, src.objCache.cipherMode, oldObjNum,
+              src.objCache,
             );
             if (!raw) continue;
             const headerSlice = new Uint8Array(raw.dictText.length);

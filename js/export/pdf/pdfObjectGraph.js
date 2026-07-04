@@ -316,7 +316,7 @@ export function copyRawObjectBytes(pdfBytes, text, objCache, entry, objNum = -1)
 
   if (isEncrypted && hasStream) {
     const raw = extractRawStreamBytes(
-      pdfBytes, entry.offset, objCache.encryptionKey, objCache.encryptObjNum, objCache.cipherMode, objNum,
+      pdfBytes, entry.offset, objCache.encryptionKey, objCache.encryptObjNum, objCache.cipherMode, objNum, objCache,
     );
     if (raw) {
       const { data, dictText } = raw;

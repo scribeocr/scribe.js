@@ -365,9 +365,11 @@ export function inflate(data, meta) {
  * @param {number} encryptObjNum
  * @param {string} cipherMode
  * @param {number} objNum
+ * @param {import('./objectCache.js').ObjectCache|null} [objCache] - resolves indirect /Length
+ *   via the xref instead of a whole-file scan
  * @returns {{ data: Uint8Array, dictText: string } | null}
  */
-export function extractRawStreamBytes(pdfBytes, objOffset, encryptionKey, encryptObjNum, cipherMode, objNum) {
+export function extractRawStreamBytes(pdfBytes, objOffset, encryptionKey, encryptObjNum, cipherMode, objNum, objCache = null) {
   // Bound the per-object scan: locate endobj first, then materialize only the dictionary as a string for the existing dict-text parsing logic.
   const len = pdfBytes.length;
   let objEnd = byteIndexOf(pdfBytes, 'endobj', objOffset);
@@ -389,11 +391,23 @@ export function extractRawStreamBytes(pdfBytes, objOffset, encryptionKey, encryp
   const indirectLengthMatch = /\/Length\s+(\d+)\s+\d+\s+R/.exec(dictText);
   if (indirectLengthMatch) {
     const refObjNum = Number(indirectLengthMatch[1]);
-    // Forward whole-document scan for "<refObjNum> 0 obj <length>". Used only
-    // in the rare indirect-/Length case; cap at first match.
+    // Prefer the xref cache: some producers give every stream an indirect /Length,
+    // so the whole-file scan fallback below would be O(pages x file bytes).
+    let resolved = false;
+    if (objCache) {
+      const refText = objCache.getObjectText(refObjNum);
+      if (refText) {
+        const numMatch = /^\s*(?:\d+\s+\d+\s+obj\b\s*)?(\d+)/.exec(refText);
+        if (numMatch) {
+          streamLength = Number(numMatch[1]);
+          resolved = true;
+        }
+      }
+    }
+    // Fallback: read the length integer from object refObjNum's definition.
     const marker = `${refObjNum} `;
     let scanIdx = 0;
-    while ((scanIdx = byteIndexOf(pdfBytes, marker, scanIdx)) !== -1) {
+    while (!resolved && (scanIdx = byteIndexOf(pdfBytes, marker, scanIdx)) !== -1) {
       // Verify "N M obj <digits>" pattern starting at scanIdx
       let p = scanIdx + marker.length;
       while (p < len && isAsciiDigit(pdfBytes[p])) p++;
@@ -556,7 +570,7 @@ export function extractStream(pdfBytes, objOffset, objCache = null, objNum = -1)
   const raw = extractRawStreamBytes(
     pdfBytes, objOffset,
     objCache?.encryptionKey ?? null, objCache?.encryptObjNum ?? 0, objCache?.cipherMode ?? 'RC4',
-    objNum,
+    objNum, objCache,
   );
   if (!raw) return null;
   let { data } = raw;
