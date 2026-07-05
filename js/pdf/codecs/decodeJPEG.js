@@ -208,13 +208,32 @@ function buildHuffmanTable(bits, values) {
     }
   }
 
+  // 8-bit lookahead LUT simulating the per-length scan exactly, with each entry encoded as:
+  // - lut[idx] > 0 packs (codeLen << 8) | symbol.
+  // - lut[idx] < 0 means a length matched but the symbol index was out of range, where the scan yields undefined.
+  // - lut[idx] === 0 means no match within 8 bits.
+  const lut = new Int32Array(256);
+  for (let idx = 0; idx < 256; idx++) {
+    for (let len = 1; len <= 8; len++) {
+      const code = idx >> (8 - len);
+      if (maxCode[len] >= 0 && code <= maxCode[len]) {
+        const sIdx = valOffset[len] + (code - minCode[len]);
+        lut[idx] = sIdx >= 0 && sIdx < symbols.length ? (len << 8) | symbols[sIdx] : -(len << 8);
+        break;
+      }
+    }
+  }
+
   return {
-    maxCode, minCode, valOffset, symbols,
+    maxCode, minCode, valOffset, symbols, lut,
   };
 }
 
 class BitReader {
   /**
+   * Buffered bitstream reader: keeps up to ~24 bits in bitBuf, refilling a byte at a time with 0xFF00 unstuffing.
+   * A marker (0xFF followed by non-zero) stops refilling with pos left at the 0xFF, and reads return -1 once the buffered bits run out.
+   * Past end-of-data (no marker) reads keep producing 0 bits.
    * @param {Uint8Array} data
    * @param {number} offset - start position in data
    */
@@ -222,37 +241,62 @@ class BitReader {
     this.data = data;
     this.pos = offset;
     this.bitBuf = 0;
-    this.bitsLeft = 0;
+    this.bitCnt = 0;
+    this.markerSeen = false;
+  }
+
+  fill() {
+    const data = this.data;
+    const len = data.length;
+    while (this.bitCnt <= 16 && !this.markerSeen) {
+      let b;
+      if (this.pos >= len) {
+        b = 0; // virtual zero bytes past end-of-data
+        this.pos++;
+      } else {
+        b = data[this.pos];
+        if (b === 0xFF) {
+          const next = this.pos + 1 < len ? data[this.pos + 1] : -1;
+          if (next === 0) {
+            this.pos += 2; // stuffed 0xFF byte
+          } else {
+            this.markerSeen = true; // leave pos at the 0xFF
+            break;
+          }
+        } else {
+          this.pos++;
+        }
+      }
+      this.bitBuf = (this.bitBuf << 8) | b;
+      this.bitCnt += 8;
+    }
   }
 
   /**
-   * Read the next bit from the bitstream, handling byte stuffing (0xFF 0x00).
-   * @returns {number} 0 or 1
+   * Read the next bit from the bitstream.
+   * @returns {number} 0 or 1, or -1 at a marker
    */
   readBit() {
-    if (this.bitsLeft === 0) {
-      const b = this.data[this.pos++];
-      if (b === 0xFF) {
-        const next = this.data[this.pos++];
-        if (next !== 0) {
-          // Marker encountered — treat as end of scan
-          this.pos -= 2;
-          return -1;
-        }
-        // Byte-stuffed 0xFF → single 0xFF byte
-      }
-      this.bitBuf = b;
-      this.bitsLeft = 8;
+    if (this.bitCnt === 0) {
+      this.fill();
+      if (this.bitCnt === 0) return -1;
     }
-    this.bitsLeft--;
-    return (this.bitBuf >> this.bitsLeft) & 1;
+    this.bitCnt--;
+    return (this.bitBuf >>> this.bitCnt) & 1;
   }
 
   /**
-   * Read `n` bits as an unsigned integer.
+   * Read n bits as an unsigned integer (MSB first).
    * @param {number} n
+   * @returns {number} the n-bit value, or -1 at a marker
    */
   readBits(n) {
+    if (this.bitCnt < n) this.fill();
+    if (this.bitCnt >= n) {
+      this.bitCnt -= n;
+      return (this.bitBuf >>> this.bitCnt) & ((1 << n) - 1);
+    }
+    // Marker inside the field: consume remaining bits like the bit-by-bit reader, then fail.
     let val = 0;
     for (let i = 0; i < n; i++) {
       const bit = this.readBit();
@@ -263,22 +307,47 @@ class BitReader {
   }
 
   /**
-   * Decode one Huffman symbol using (maxCode, minCode, valOffset) tables.
-   * @param {{ maxCode: Int32Array, minCode: Int32Array, valOffset: Int32Array, symbols: Uint8Array }} table
-   * @returns {number} decoded symbol value, or -1 on error
+   * Decode one Huffman symbol: 8-bit LUT fast path, bit-by-bit fallback for longer codes.
+   * @param {{maxCode: Int32Array, minCode: Int32Array, valOffset: Int32Array, symbols: Uint8Array, lut: Int32Array}} table - Prebuilt Huffman decode table.
+   * @returns {number|undefined} decoded symbol value, -1 on error, or undefined for an out-of-range symbol.
    */
   decodeHuffman(table) {
+    if (this.bitCnt < 16) this.fill();
+    if (this.bitCnt >= 8) {
+      const idx = (this.bitBuf >>> (this.bitCnt - 8)) & 0xFF;
+      const hit = table.lut[idx];
+      if (hit > 0) {
+        this.bitCnt -= hit >> 8;
+        return hit & 0xFF;
+      }
+      if (hit < 0) {
+        this.bitCnt -= (-hit) >> 8;
+        return undefined; // matches the unbuffered reader's out-of-range symbol lookup
+      }
+      // code longer than 8 bits: keep the 8 peeked bits and finish decoding with the per-length tables
+      let code = idx;
+      this.bitCnt -= 8;
+      for (let len = 9; len <= 16; len++) {
+        const bit = this.readBit();
+        if (bit < 0) return -1;
+        code = (code << 1) | bit;
+        if (table.maxCode[len] >= 0 && code <= table.maxCode[len]) {
+          return table.symbols[table.valOffset[len] + (code - table.minCode[len])];
+        }
+      }
+      return -1;
+    }
+    // near a marker: bit-by-bit exactly like the unbuffered reader
     let code = 0;
     for (let len = 1; len <= 16; len++) {
       const bit = this.readBit();
       if (bit < 0) return -1;
       code = (code << 1) | bit;
       if (table.maxCode[len] >= 0 && code <= table.maxCode[len]) {
-        const idx = table.valOffset[len] + (code - table.minCode[len]);
-        return table.symbols[idx];
+        return table.symbols[table.valOffset[len] + (code - table.minCode[len])];
       }
     }
-    return -1; // Code too long
+    return -1;
   }
 }
 
@@ -541,7 +610,9 @@ function decodeJPEGComponents(jpegData, roi = null, scale = 1) {
     for (let mcuX = 0; mcuX < mcuCountX; mcuX++) {
       const mcuVisible = rowVisible && (!roi || (mcuX * mcuW < dX1 && (mcuX + 1) * mcuW > dX0));
       if (restartInterval > 0 && mcuCount > 0 && mcuCount % restartInterval === 0) {
-        reader.bitsLeft = 0;
+        reader.bitBuf = 0;
+        reader.bitCnt = 0;
+        reader.markerSeen = false;
         let rPos = reader.pos;
         while (rPos < len - 1) {
           if (jpegData[rPos] === 0xFF && jpegData[rPos + 1] >= 0xD0 && jpegData[rPos + 1] <= 0xD7) {
@@ -551,7 +622,9 @@ function decodeJPEGComponents(jpegData, roi = null, scale = 1) {
           rPos++;
         }
         reader.pos = rPos;
-        reader.bitsLeft = 0;
+        reader.bitBuf = 0;
+        reader.bitCnt = 0;
+        reader.markerSeen = false;
         prevDC.fill(0);
       }
 
@@ -633,13 +706,20 @@ function decodeJPEGComponents(jpegData, roi = null, scale = 1) {
               const cx = (mcuX * blocksH + bh) * 8;
               const cy = (mcuY * blocksV + bv) * 8;
               const cw = compWidths[ci];
+              const cbuf = compBuffers[ci];
               for (let row = 0; row < 8; row++) {
-                for (let col = 0; col < 8; col++) {
-                  let val = block[row * 8 + col];
-                  if (val < 0) val = 0;
-                  if (val > 255) val = 255;
-                  compBuffers[ci][(cy + row) * cw + (cx + col)] = val;
-                }
+                const dst = (cy + row) * cw + cx;
+                const src = row * 8;
+                let v0 = block[src]; if (v0 < 0) v0 = 0; else if (v0 > 255) v0 = 255;
+                let v1 = block[src + 1]; if (v1 < 0) v1 = 0; else if (v1 > 255) v1 = 255;
+                let v2 = block[src + 2]; if (v2 < 0) v2 = 0; else if (v2 > 255) v2 = 255;
+                let v3 = block[src + 3]; if (v3 < 0) v3 = 0; else if (v3 > 255) v3 = 255;
+                let v4 = block[src + 4]; if (v4 < 0) v4 = 0; else if (v4 > 255) v4 = 255;
+                let v5 = block[src + 5]; if (v5 < 0) v5 = 0; else if (v5 > 255) v5 = 255;
+                let v6 = block[src + 6]; if (v6 < 0) v6 = 0; else if (v6 > 255) v6 = 255;
+                let v7 = block[src + 7]; if (v7 < 0) v7 = 0; else if (v7 > 255) v7 = 255;
+                cbuf[dst] = v0; cbuf[dst + 1] = v1; cbuf[dst + 2] = v2; cbuf[dst + 3] = v3;
+                cbuf[dst + 4] = v4; cbuf[dst + 5] = v5; cbuf[dst + 6] = v6; cbuf[dst + 7] = v7;
               }
             } else {
               // At m=1 (1/8 scale) the box-average patch is a single pixel holding the block's DC mean, the same value the flat fast path computes.
@@ -704,6 +784,7 @@ export function decodeCMYKJpegToRGB(jpegData, decodeInvert = false, roi = null, 
     outW, outH, numComponents, compBuffers, compWidths, compHeights, compSampling, maxHSamp, maxVSamp, adobeTransform,
   } = dec;
   const rgbData = new Uint8Array(outW * outH * 4); // RGBA for ImageData
+  const rgb32 = new Uint32Array(rgbData.buffer); // little-endian packed RGBA stores
 
   // roi is in native pixels, so map it to the reduced output grid (a no-op when scale === 1).
   const rx0 = roi ? Math.max(0, Math.floor(roi.x0 / scale)) : 0;
@@ -724,10 +805,13 @@ export function decodeCMYKJpegToRGB(jpegData, decodeInvert = false, roi = null, 
   const w2 = compWidths[2];
   const w3 = compWidths[3];
   const comp = new Uint8Array(numComponents);
-  // Memoize the CMYK->RGB conversion: it is an expensive per-pixel polynomial and adjacent pixels are often identical (flat regions),
-  // so reuse the previous result when the CMYK input is unchanged.
+  // Memoize the CMYK->RGB conversion: it is an expensive per-pixel polynomial and adjacent pixels are often identical (flat regions), so reuse the previous result when the CMYK input is unchanged.
+  // Keyed on the raw integer component quadruple (before Adobe transform / decode-invert): the whole per-pixel transform chain is a pure function of it.
   let prevC = -1; let prevM = -1; let prevY = -1; let prevK = -1;
-  let prevR = 0; let prevG = 0; let prevB = 0;
+  let prevWord = 0;
+  const cacheKey = new Int32Array(4096);
+  const cacheVal = new Int32Array(4096);
+  const cacheSet = new Uint8Array(4096);
   for (let py = ry0; py < ry1; py++) {
     const r0 = py * w0;
     const r1 = py * w1;
@@ -775,6 +859,23 @@ export function decodeCMYKJpegToRGB(jpegData, decodeInvert = false, roi = null, 
         k = comp[3];
       }
 
+      const rawC = c;
+      const rawM = m;
+      const rawY = y;
+      const rawK = k;
+      if (rawC === prevC && rawM === prevM && rawY === prevY && rawK === prevK) {
+        rgb32[di >> 2] = prevWord;
+        continue;
+      }
+      const key = (rawC << 24) | (rawM << 16) | (rawY << 8) | rawK;
+      const slot = Math.imul(key, 2654435761) >>> 20;
+      if (cacheSet[slot] === 1 && cacheKey[slot] === key) {
+        const word = cacheVal[slot];
+        rgb32[di >> 2] = word;
+        prevC = rawC; prevM = rawM; prevY = rawY; prevK = rawK; prevWord = word;
+        continue;
+      }
+
       if (adobeTransform === 2) {
         const Y = c;
         const Cb = m;
@@ -795,15 +896,6 @@ export function decodeCMYKJpegToRGB(jpegData, decodeInvert = false, roi = null, 
         m = 255 - m;
         y = 255 - y;
         k = 255 - k;
-      }
-
-      // Reuse the previous pixel's RGB when the CMYK input is identical (flat regions).
-      if (c === prevC && m === prevM && y === prevY && k === prevK) {
-        rgbData[di] = prevR;
-        rgbData[di + 1] = prevG;
-        rgbData[di + 2] = prevB;
-        rgbData[di + 3] = 255;
-        continue;
       }
 
       // CMYK -> RGB using polynomial approximation of US Web Coated (SWOP) v2 ICC profile.
@@ -831,8 +923,10 @@ export function decodeCMYKJpegToRGB(jpegData, decodeInvert = false, roi = null, 
       const R = ri > 255 ? 255 : (ri < 0 ? 0 : Math.round(ri));
       const G = gi > 255 ? 255 : (gi < 0 ? 0 : Math.round(gi));
       const B = bi > 255 ? 255 : (bi < 0 ? 0 : Math.round(bi));
-      rgbData[di] = R; rgbData[di + 1] = G; rgbData[di + 2] = B; rgbData[di + 3] = 255;
-      prevC = c; prevM = m; prevY = y; prevK = k; prevR = R; prevG = G; prevB = B;
+      const word = (R | (G << 8) | (B << 16) | 0xFF000000) >>> 0;
+      rgb32[di >> 2] = word;
+      cacheKey[slot] = key; cacheVal[slot] = word; cacheSet[slot] = 1;
+      prevC = rawC; prevM = rawM; prevY = rawY; prevK = rawK; prevWord = word;
     }
   }
 
