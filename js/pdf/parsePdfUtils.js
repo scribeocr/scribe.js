@@ -12,11 +12,6 @@ import {
 
 /** @typedef {import('./objectCache.js').ObjectCache} ObjectCache */
 
-// Node's native inflate is several times faster than pako on large streams.
-const zlibInflateSync = (typeof process !== 'undefined' && typeof process.versions?.node === 'string')
-  ? (await import('node:zlib')).inflateSync
-  : null;
-
 /**
  * Find the xref offset from the end of the PDF (uses the last startxref for linearized PDFs).
  * @param {Uint8Array} pdfBytes
@@ -347,21 +342,13 @@ function parseXrefStream(pdfBytes, offset, entries) {
 }
 
 /**
- * Decompress zlib-wrapped deflate data.
- * May return partial output salvaged from a corrupt stream; throws only when nothing can be decoded.
+ * Decompress zlib-wrapped deflate data using pako.
+ * Throws on any error — callers are expected to catch and handle
+ * (e.g. retry without trailing byte, or return null for encrypted streams).
  * @param {Uint8Array} data - zlib-wrapped deflate data
  * @param {{recovered?: boolean}} [meta] - set `recovered=true` if output was salvaged from a stream that errored mid-way
  */
 export function inflate(data, meta) {
-  if (zlibInflateSync) {
-    try {
-      // out may be a slice of Node's shared Buffer pool, so out.buffer alone would include unrelated bytes.
-      const out = zlibInflateSync(data);
-      return new Uint8Array(out.buffer, out.byteOffset, out.byteLength);
-    } catch {
-      // The pako wrapper is more tolerant and still fully or partially decodes most streams native zlib rejects.
-    }
-  }
   const result = pakoInflate(data, meta);
   // Pako returns undefined (without throwing) for truncated streams where it
   // processes valid blocks but never reaches end-of-stream. Treat as failure.
