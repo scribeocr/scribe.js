@@ -1645,8 +1645,19 @@ export class ScribeViewer {
     if (!sel || sel.isCollapsed || sel.rangeCount === 0 || !this.elem) return [];
     const range = sel.getRangeAt(0);
     const idSet = new Set();
+    const wordContents = document.createRange();
     for (const elem of this.elem.querySelectorAll('.scribe-word')) {
-      if (range.intersectsNode(elem)) idSet.add(elem.id);
+      // `intersectsNode` counts an edge touch as a hit, so a full-line selection would otherwise include the next line's first word.
+      if (!range.intersectsNode(elem)) continue;
+      const clamped = range.cloneRange();
+      wordContents.selectNodeContents(elem);
+      if (clamped.compareBoundaryPoints(Range.START_TO_START, wordContents) < 0) {
+        clamped.setStart(wordContents.startContainer, wordContents.startOffset);
+      }
+      if (clamped.compareBoundaryPoints(Range.END_TO_END, wordContents) > 0) {
+        clamped.setEnd(wordContents.endContainer, wordContents.endOffset);
+      }
+      if (clamped.toString().length > 0) idSet.add(elem.id);
     }
     if (idSet.size === 0) return [];
     return this.getUiWords().filter((kw) => idSet.has(kw.word.id));
