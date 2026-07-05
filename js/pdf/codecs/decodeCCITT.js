@@ -439,9 +439,37 @@ const blackTable3 = [
   [2, 2], [2, 2], [2, 2], [2, 2],
 ];
 
+/**
+ * Flatten a table of [len, val] pairs into one contiguous Int16Array to avoid a pointer chase per code lookup.
+ * @param {[number, number][]} tbl Table of [len, val] pairs.
+ * @returns {Int16Array} Flattened pairs, with len at even indices and val at odd indices.
+ */
+function flattenTable(tbl) {
+  const a = new Int16Array(tbl.length * 2);
+  for (let i = 0; i < tbl.length; i++) {
+    a[2 * i] = tbl[i][0];
+    a[2 * i + 1] = tbl[i][1];
+  }
+  return a;
+}
+const twoDimFlat = flattenTable(twoDimTable);
+const whiteFlat1 = flattenTable(whiteTable1);
+const whiteFlat2 = flattenTable(whiteTable2);
+const blackFlat1 = flattenTable(blackTable1);
+const blackFlat2 = flattenTable(blackTable2);
+const blackFlat3 = flattenTable(blackTable3);
+
 export class CCITTFaxDecoder {
   constructor(source, options = {}) {
-    this.source = source;
+    // Accepts a Uint8Array directly (indexed inline) or a { next() } source object.
+    if (source && typeof source.next === 'function') {
+      this.data = null;
+      this.source = source;
+    } else {
+      this.data = source;
+      this.source = null;
+    }
+    this.dataPos = 0;
     this.eof = false;
 
     this.encoding = options.K || 0;
@@ -457,6 +485,9 @@ export class CCITTFaxDecoder {
 
     this.codingLine[0] = this.columns;
     this.codingPos = 0;
+    this._nextRowBuf = null;
+    this._nextRowPos = 0;
+    this._nextRowLen = 0;
 
     this.row = 0;
     this.nextLine2D = this.encoding < 0;
@@ -478,295 +509,300 @@ export class CCITTFaxDecoder {
     }
   }
 
+  /**
+   * Byte-at-a-time view over readRow for callers that stream bytes (JBIG2's MMR path): serves the buffered row, decoding the next row when it runs dry.
+   * @returns {number} the next byte, or -1 at end of data
+   */
   readNextChar() {
+    if (this._nextRowBuf && this._nextRowPos < this._nextRowLen) {
+      return this._nextRowBuf[this._nextRowPos++];
+    }
+    if (!this._nextRowBuf) this._nextRowBuf = new Uint8Array((this.columns + 7) >> 3);
+    const wrote = this.readRow(this._nextRowBuf, 0);
+    if (wrote <= 0) return -1;
+    this._nextRowLen = wrote;
+    this._nextRowPos = 1;
+    return this._nextRowBuf[0];
+  }
+
+  /**
+   * Decode one row and write its packed bytes at out[outPos..outPos+rowBytes).
+   * @param {Uint8Array} out buffer that receives the packed row bytes
+   * @param {number} outPos byte offset in out at which to start writing
+   * @returns {number} bytes written (0 at end of data)
+   */
+  readRow(out, outPos) {
+    if (this.rowsDone) {
+      this.eof = true;
+    }
     if (this.eof) {
-      return -1;
+      return 0;
     }
     const refLine = this.refLine;
     const codingLine = this.codingLine;
     const columns = this.columns;
-
     let refPos;
     let blackPixels;
-    let bits;
     let i;
 
-    if (this.outputBits === 0) {
-      if (this.rowsDone) {
-        this.eof = true;
+    this.err = false;
+
+    let code1;
+    let code2;
+    let code3;
+
+    if (this.nextLine2D) {
+      for (i = 0; codingLine[i] < columns; ++i) {
+        refLine[i] = codingLine[i];
       }
-      if (this.eof) {
-        return -1;
-      }
-      this.err = false;
+      refLine[i++] = columns;
+      refLine[i] = columns;
+      codingLine[0] = 0;
+      this.codingPos = 0;
+      refPos = 0;
+      blackPixels = 0;
 
-      let code1;
-      let code2;
-      let code3;
-
-      if (this.nextLine2D) {
-        for (i = 0; codingLine[i] < columns; ++i) {
-          refLine[i] = codingLine[i];
-        }
-        refLine[i++] = columns;
-        refLine[i] = columns;
-        codingLine[0] = 0;
-        this.codingPos = 0;
-        refPos = 0;
-        blackPixels = 0;
-
-        while (codingLine[this.codingPos] < columns) {
-          code1 = this._getTwoDimCode();
-          switch (code1) {
-            case twoDimPass:
-              this._addPixels(refLine[refPos + 1], blackPixels);
-              if (refLine[refPos + 1] < columns) {
-                refPos += 2;
-              }
-              break;
-            case twoDimHoriz:
-              code1 = code2 = 0;
-              if (blackPixels) {
-                do {
-                  code1 += code3 = this._getBlackCode();
-                } while (code3 >= 64);
-                do {
-                  code2 += code3 = this._getWhiteCode();
-                } while (code3 >= 64);
-              } else {
-                do {
-                  code1 += code3 = this._getWhiteCode();
-                } while (code3 >= 64);
-                do {
-                  code2 += code3 = this._getBlackCode();
-                } while (code3 >= 64);
-              }
-              this._addPixels(codingLine[this.codingPos] + code1, blackPixels);
-              if (codingLine[this.codingPos] < columns) {
-                this._addPixels(
-                  codingLine[this.codingPos] + code2,
-                  blackPixels ^ 1,
-                );
-              }
-              while (
-                refLine[refPos] <= codingLine[this.codingPos]
-                && refLine[refPos] < columns
-              ) {
-                refPos += 2;
-              }
-              break;
-            case twoDimVertR3:
-              this._addPixels(refLine[refPos] + 3, blackPixels);
-              blackPixels ^= 1;
-              if (codingLine[this.codingPos] < columns) {
-                ++refPos;
-                while (refLine[refPos] <= codingLine[this.codingPos] && refLine[refPos] < columns) { refPos += 2; }
-              }
-              break;
-            case twoDimVertR2:
-              this._addPixels(refLine[refPos] + 2, blackPixels);
-              blackPixels ^= 1;
-              if (codingLine[this.codingPos] < columns) {
-                ++refPos;
-                while (refLine[refPos] <= codingLine[this.codingPos] && refLine[refPos] < columns) { refPos += 2; }
-              }
-              break;
-            case twoDimVertR1:
-              this._addPixels(refLine[refPos] + 1, blackPixels);
-              blackPixels ^= 1;
-              if (codingLine[this.codingPos] < columns) {
-                ++refPos;
-                while (refLine[refPos] <= codingLine[this.codingPos] && refLine[refPos] < columns) { refPos += 2; }
-              }
-              break;
-            case twoDimVert0:
-              this._addPixels(refLine[refPos], blackPixels);
-              blackPixels ^= 1;
-              if (codingLine[this.codingPos] < columns) {
-                ++refPos;
-                while (refLine[refPos] <= codingLine[this.codingPos] && refLine[refPos] < columns) { refPos += 2; }
-              }
-              break;
-            case twoDimVertL3:
-              this._addPixelsNeg(refLine[refPos] - 3, blackPixels);
-              blackPixels ^= 1;
-              if (codingLine[this.codingPos] < columns) {
-                if (refPos > 0) { --refPos; } else { ++refPos; }
-                while (refLine[refPos] <= codingLine[this.codingPos] && refLine[refPos] < columns) { refPos += 2; }
-              }
-              break;
-            case twoDimVertL2:
-              this._addPixelsNeg(refLine[refPos] - 2, blackPixels);
-              blackPixels ^= 1;
-              if (codingLine[this.codingPos] < columns) {
-                if (refPos > 0) { --refPos; } else { ++refPos; }
-                while (refLine[refPos] <= codingLine[this.codingPos] && refLine[refPos] < columns) { refPos += 2; }
-              }
-              break;
-            case twoDimVertL1:
-              this._addPixelsNeg(refLine[refPos] - 1, blackPixels);
-              blackPixels ^= 1;
-              if (codingLine[this.codingPos] < columns) {
-                if (refPos > 0) { --refPos; } else { ++refPos; }
-                while (refLine[refPos] <= codingLine[this.codingPos] && refLine[refPos] < columns) { refPos += 2; }
-              }
-              break;
-            case ccittEOF:
-              this._addPixels(columns, 0);
-              this.eof = true;
-              break;
-            default:
-              console.warn('bad 2d code');
-              this._addPixels(columns, 0);
-              this.err = true;
-          }
-        }
-      } else {
-        codingLine[0] = 0;
-        this.codingPos = 0;
-        blackPixels = 0;
-        while (codingLine[this.codingPos] < columns) {
-          code1 = 0;
-          if (blackPixels) {
-            do {
-              code1 += code3 = this._getBlackCode();
-            } while (code3 >= 64);
-          } else {
-            do {
-              code1 += code3 = this._getWhiteCode();
-            } while (code3 >= 64);
-          }
-          this._addPixels(codingLine[this.codingPos] + code1, blackPixels);
-          blackPixels ^= 1;
-        }
-      }
-
-      let gotEOL = false;
-
-      if (this.byteAlign) {
-        this.inputBits &= ~7;
-      }
-
-      if (!this.eoblock && this.row === this.rows - 1) {
-        this.rowsDone = true;
-      } else {
-        code1 = this._lookBits(12);
-        if (this.eoline) {
-          while (code1 !== ccittEOF && code1 !== 1) {
-            this._eatBits(1);
-            code1 = this._lookBits(12);
-          }
-        } else {
-          while (code1 === 0) {
-            this._eatBits(1);
-            code1 = this._lookBits(12);
-          }
-        }
-        if (code1 === 1) {
-          this._eatBits(12);
-          gotEOL = true;
-        } else if (code1 === ccittEOF) {
-          this.eof = true;
-        }
-      }
-
-      if (!this.eof && this.encoding > 0 && !this.rowsDone) {
-        this.nextLine2D = !this._lookBits(1);
-        this._eatBits(1);
-      }
-
-      if (this.eoblock && gotEOL && this.byteAlign) {
-        code1 = this._lookBits(12);
-        if (code1 === 1) {
-          this._eatBits(12);
-          if (this.encoding > 0) {
-            this._lookBits(1);
-            this._eatBits(1);
-          }
-          if (this.encoding >= 0) {
-            for (i = 0; i < 4; ++i) {
-              code1 = this._lookBits(12);
-              if (code1 !== 1) {
-                console.warn(`bad rtc code: ${code1}`);
-              }
-              this._eatBits(12);
-              if (this.encoding > 0) {
-                this._lookBits(1);
-                this._eatBits(1);
-              }
+      while (codingLine[this.codingPos] < columns) {
+        code1 = this._getTwoDimCode();
+        switch (code1) {
+          case twoDimPass:
+            this._addPixels(refLine[refPos + 1], blackPixels);
+            if (refLine[refPos + 1] < columns) {
+              refPos += 2;
             }
-          }
-          this.eof = true;
-        }
-      } else if (this.err && this.eoline) {
-        while (true) {
-          code1 = this._lookBits(13);
-          if (code1 === ccittEOF) {
-            this.eof = true;
-            return -1;
-          }
-          if (code1 >> 1 === 1) {
             break;
-          }
-          this._eatBits(1);
+          case twoDimHoriz:
+            code1 = code2 = 0;
+            if (blackPixels) {
+              do {
+                code1 += code3 = this._getBlackCode();
+              } while (code3 >= 64);
+              do {
+                code2 += code3 = this._getWhiteCode();
+              } while (code3 >= 64);
+            } else {
+              do {
+                code1 += code3 = this._getWhiteCode();
+              } while (code3 >= 64);
+              do {
+                code2 += code3 = this._getBlackCode();
+              } while (code3 >= 64);
+            }
+            this._addPixels(codingLine[this.codingPos] + code1, blackPixels);
+            if (codingLine[this.codingPos] < columns) {
+              this._addPixels(
+                codingLine[this.codingPos] + code2,
+                blackPixels ^ 1,
+              );
+            }
+            while (
+              refLine[refPos] <= codingLine[this.codingPos]
+                && refLine[refPos] < columns
+            ) {
+              refPos += 2;
+            }
+            break;
+          case twoDimVertR3:
+            this._addPixels(refLine[refPos] + 3, blackPixels);
+            blackPixels ^= 1;
+            if (codingLine[this.codingPos] < columns) {
+              ++refPos;
+              while (refLine[refPos] <= codingLine[this.codingPos] && refLine[refPos] < columns) { refPos += 2; }
+            }
+            break;
+          case twoDimVertR2:
+            this._addPixels(refLine[refPos] + 2, blackPixels);
+            blackPixels ^= 1;
+            if (codingLine[this.codingPos] < columns) {
+              ++refPos;
+              while (refLine[refPos] <= codingLine[this.codingPos] && refLine[refPos] < columns) { refPos += 2; }
+            }
+            break;
+          case twoDimVertR1:
+            this._addPixels(refLine[refPos] + 1, blackPixels);
+            blackPixels ^= 1;
+            if (codingLine[this.codingPos] < columns) {
+              ++refPos;
+              while (refLine[refPos] <= codingLine[this.codingPos] && refLine[refPos] < columns) { refPos += 2; }
+            }
+            break;
+          case twoDimVert0:
+            this._addPixels(refLine[refPos], blackPixels);
+            blackPixels ^= 1;
+            if (codingLine[this.codingPos] < columns) {
+              ++refPos;
+              while (refLine[refPos] <= codingLine[this.codingPos] && refLine[refPos] < columns) { refPos += 2; }
+            }
+            break;
+          case twoDimVertL3:
+            this._addPixelsNeg(refLine[refPos] - 3, blackPixels);
+            blackPixels ^= 1;
+            if (codingLine[this.codingPos] < columns) {
+              if (refPos > 0) { --refPos; } else { ++refPos; }
+              while (refLine[refPos] <= codingLine[this.codingPos] && refLine[refPos] < columns) { refPos += 2; }
+            }
+            break;
+          case twoDimVertL2:
+            this._addPixelsNeg(refLine[refPos] - 2, blackPixels);
+            blackPixels ^= 1;
+            if (codingLine[this.codingPos] < columns) {
+              if (refPos > 0) { --refPos; } else { ++refPos; }
+              while (refLine[refPos] <= codingLine[this.codingPos] && refLine[refPos] < columns) { refPos += 2; }
+            }
+            break;
+          case twoDimVertL1:
+            this._addPixelsNeg(refLine[refPos] - 1, blackPixels);
+            blackPixels ^= 1;
+            if (codingLine[this.codingPos] < columns) {
+              if (refPos > 0) { --refPos; } else { ++refPos; }
+              while (refLine[refPos] <= codingLine[this.codingPos] && refLine[refPos] < columns) { refPos += 2; }
+            }
+            break;
+          case ccittEOF:
+            this._addPixels(columns, 0);
+            this.eof = true;
+            break;
+          default:
+            console.warn('bad 2d code');
+            this._addPixels(columns, 0);
+            this.err = true;
         }
-        this._eatBits(12);
-        if (this.encoding > 0) {
-          this._eatBits(1);
-          this.nextLine2D = !(code1 & 1);
-        }
-      }
-
-      this.outputBits = codingLine[0] > 0
-        ? codingLine[(this.codingPos = 0)]
-        : codingLine[(this.codingPos = 1)];
-      this.row++;
-    }
-
-    let c;
-    if (this.outputBits >= 8) {
-      c = this.codingPos & 1 ? 0 : 0xff;
-      this.outputBits -= 8;
-      if (this.outputBits === 0 && codingLine[this.codingPos] < columns) {
-        this.codingPos++;
-        this.outputBits = codingLine[this.codingPos] - codingLine[this.codingPos - 1];
       }
     } else {
-      bits = 8;
-      c = 0;
-      do {
-        if (typeof this.outputBits !== 'number') {
-          throw new Error('Invalid CCITTFaxDecode data: outputBits must be a number.');
-        }
-
-        if (this.outputBits > bits) {
-          c <<= bits;
-          if (!(this.codingPos & 1)) {
-            c |= 0xff >> (8 - bits);
-          }
-          this.outputBits -= bits;
-          bits = 0;
+      codingLine[0] = 0;
+      this.codingPos = 0;
+      blackPixels = 0;
+      while (codingLine[this.codingPos] < columns) {
+        code1 = 0;
+        if (blackPixels) {
+          do {
+            code1 += code3 = this._getBlackCode();
+          } while (code3 >= 64);
         } else {
-          c <<= this.outputBits;
-          if (!(this.codingPos & 1)) {
-            c |= 0xff >> (8 - this.outputBits);
-          }
-          bits -= this.outputBits;
-          this.outputBits = 0;
-          if (codingLine[this.codingPos] < columns) {
-            this.codingPos++;
-            this.outputBits = codingLine[this.codingPos] - codingLine[this.codingPos - 1];
-          } else if (bits > 0) {
-            c <<= bits;
-            bits = 0;
+          do {
+            code1 += code3 = this._getWhiteCode();
+          } while (code3 >= 64);
+        }
+        this._addPixels(codingLine[this.codingPos] + code1, blackPixels);
+        blackPixels ^= 1;
+      }
+    }
+
+    let gotEOL = false;
+
+    if (this.byteAlign) {
+      this.inputBits &= ~7;
+    }
+
+    if (!this.eoblock && this.row === this.rows - 1) {
+      this.rowsDone = true;
+    } else {
+      code1 = this._lookBits(12);
+      if (this.eoline) {
+        while (code1 !== ccittEOF && code1 !== 1) {
+          this._eatBits(1);
+          code1 = this._lookBits(12);
+        }
+      } else {
+        while (code1 === 0) {
+          this._eatBits(1);
+          code1 = this._lookBits(12);
+        }
+      }
+      if (code1 === 1) {
+        this._eatBits(12);
+        gotEOL = true;
+      } else if (code1 === ccittEOF) {
+        this.eof = true;
+      }
+    }
+
+    if (!this.eof && this.encoding > 0 && !this.rowsDone) {
+      this.nextLine2D = !this._lookBits(1);
+      this._eatBits(1);
+    }
+
+    if (this.eoblock && gotEOL && this.byteAlign) {
+      code1 = this._lookBits(12);
+      if (code1 === 1) {
+        this._eatBits(12);
+        if (this.encoding > 0) {
+          this._lookBits(1);
+          this._eatBits(1);
+        }
+        if (this.encoding >= 0) {
+          for (i = 0; i < 4; ++i) {
+            code1 = this._lookBits(12);
+            if (code1 !== 1) {
+              console.warn(`bad rtc code: ${code1}`);
+            }
+            this._eatBits(12);
+            if (this.encoding > 0) {
+              this._lookBits(1);
+              this._eatBits(1);
+            }
           }
         }
-      } while (bits);
+        this.eof = true;
+      }
+    } else if (this.err && this.eoline) {
+      while (true) {
+        code1 = this._lookBits(13);
+        if (code1 === ccittEOF) {
+          this.eof = true;
+          return -1;
+        }
+        if (code1 >> 1 === 1) {
+          break;
+        }
+        this._eatBits(1);
+      }
+      this._eatBits(12);
+      if (this.encoding > 0) {
+        this._eatBits(1);
+        this.nextLine2D = !(code1 & 1);
+      }
+    }
+
+    this.row++;
+
+    if (this.eof) {
+      // eof was discovered while decoding this row: the byte-at-a-time reader emits exactly one byte of it
+      // (its top-of-call eof check fires on the next call), so reproduce that single-byte tail.
+      if (!this._rowScratch) this._rowScratch = new Uint8Array((this.columns + 7) >> 3);
+      this._emitRow(this._rowScratch, 0);
+      out[outPos] = this._rowScratch[0];
+      return 1;
+    }
+    return this._emitRow(out, outPos);
+  }
+
+  _emitRow(out, outPos) {
+    const columns = this.columns;
+    const codingLine = this.codingLine;
+    const rowBytes = (columns + 7) >> 3;
+    out.fill(0, outPos, outPos + rowBytes);
+    let prev = 0;
+    for (let i = 0; prev < columns; i++) {
+      let end = codingLine[i];
+      if (end > columns) end = columns;
+      if ((i & 1) === 0 && end > prev) {
+        const firstByte = outPos + (prev >> 3);
+        const lastByte = outPos + ((end - 1) >> 3);
+        if (firstByte === lastByte) {
+          out[firstByte] |= (0xFF >> (prev & 7)) & (0xFF << (7 - ((end - 1) & 7)));
+        } else {
+          out[firstByte] |= 0xFF >> (prev & 7);
+          for (let bb = firstByte + 1; bb < lastByte; bb++) out[bb] = 0xFF;
+          out[lastByte] |= 0xFF << (7 - ((end - 1) & 7));
+        }
+      }
+      prev = end;
     }
     if (this.black) {
-      c ^= 0xff;
+      for (let bb = outPos; bb < outPos + rowBytes; bb++) out[bb] ^= 0xFF;
     }
-    return c;
+    return rowBytes;
   }
 
   _addPixels(a1, blackPixels) {
@@ -824,10 +860,10 @@ export class CCITTFaxDecoder {
         code <<= end - i;
       }
       if (!limitValue || code >= limitValue) {
-        const p = table[code - limitValue];
-        if (p[0] === i) {
+        const fi = (code - limitValue) * 2;
+        if (table[fi] === i) {
           this._eatBits(i);
-          return [true, p[1], true];
+          return [true, table[fi + 1], true];
         }
       }
     }
@@ -842,13 +878,13 @@ export class CCITTFaxDecoder {
       if (code === ccittEOF) {
         return ccittEOF;
       }
-      p = twoDimTable[code];
-      if (p?.[0] > 0) {
-        this._eatBits(p[0]);
-        return p[1];
+      const len = code < twoDimFlat.length / 2 ? twoDimFlat[code * 2] : -1;
+      if (len > 0) {
+        this._eatBits(len);
+        return twoDimFlat[code * 2 + 1];
       }
     } else {
-      const result = this._findTableCode(1, 7, twoDimTable);
+      const result = this._findTableCode(1, 7, twoDimFlat);
       if (result[0] && result[2]) {
         return result[1];
       }
@@ -864,17 +900,18 @@ export class CCITTFaxDecoder {
       if (code === ccittEOF) {
         return 1;
       }
-      p = code >> 5 === 0 ? whiteTable1[code] : whiteTable2[code >> 3];
-      if (p[0] > 0) {
-        this._eatBits(p[0]);
-        return p[1];
+      const wi = code >> 5 === 0 ? code * 2 : (code >> 3) * 2;
+      const wt = code >> 5 === 0 ? whiteFlat1 : whiteFlat2;
+      if (wt[wi] > 0) {
+        this._eatBits(wt[wi]);
+        return wt[wi + 1];
       }
     } else {
-      let result = this._findTableCode(1, 9, whiteTable2);
+      let result = this._findTableCode(1, 9, whiteFlat2);
       if (result[0]) {
         return result[1];
       }
-      result = this._findTableCode(11, 12, whiteTable1);
+      result = this._findTableCode(11, 12, whiteFlat1);
       if (result[0]) {
         return result[1];
       }
@@ -892,27 +929,32 @@ export class CCITTFaxDecoder {
       if (code === ccittEOF) {
         return 1;
       }
+      let bt;
+      let bi;
       if (code >> 7 === 0) {
-        p = blackTable1[code];
+        bt = blackFlat1;
+        bi = code * 2;
       } else if (code >> 9 === 0 && code >> 7 !== 0) {
-        p = blackTable2[(code >> 1) - 64];
+        bt = blackFlat2;
+        bi = ((code >> 1) - 64) * 2;
       } else {
-        p = blackTable3[code >> 7];
+        bt = blackFlat3;
+        bi = (code >> 7) * 2;
       }
-      if (p[0] > 0) {
-        this._eatBits(p[0]);
-        return p[1];
+      if (bt[bi] > 0) {
+        this._eatBits(bt[bi]);
+        return bt[bi + 1];
       }
     } else {
-      let result = this._findTableCode(2, 6, blackTable3);
+      let result = this._findTableCode(2, 6, blackFlat3);
       if (result[0]) {
         return result[1];
       }
-      result = this._findTableCode(7, 12, blackTable2, 64);
+      result = this._findTableCode(7, 12, blackFlat2, 64);
       if (result[0]) {
         return result[1];
       }
-      result = this._findTableCode(10, 13, blackTable1);
+      result = this._findTableCode(10, 13, blackFlat1);
       if (result[0]) {
         return result[1];
       }
@@ -923,6 +965,20 @@ export class CCITTFaxDecoder {
   }
 
   _lookBits(n) {
+    const data = this.data;
+    if (data !== null) {
+      while (this.inputBits < n) {
+        if (this.dataPos >= data.length) {
+          if (this.inputBits === 0) {
+            return ccittEOF;
+          }
+          return (this.inputBuf << (n - this.inputBits)) & (0xffff >> (16 - n));
+        }
+        this.inputBuf = (this.inputBuf << 8) | data[this.dataPos++];
+        this.inputBits += 8;
+      }
+      return (this.inputBuf >> (this.inputBits - n)) & (0xffff >> (16 - n));
+    }
     let c;
     while (this.inputBits < n) {
       if ((c = this.source.next()) === -1) {
@@ -951,15 +1007,7 @@ export class CCITTFaxDecoder {
  * @param {{K?: number, Columns?: number, Rows?: number, EndOfBlock?: boolean, BlackIs1?: boolean, EncodedByteAlign?: boolean, EndOfLine?: boolean}} params
  */
 export function decodeCCITTFax(data, params = {}) {
-  let pos = 0;
-  const source = {
-    next() {
-      if (pos >= data.length) return -1;
-      return data[pos++];
-    },
-  };
-
-  const decoder = new CCITTFaxDecoder(source, {
+  const decoder = new CCITTFaxDecoder(data, {
     K: params.K || 0,
     Columns: params.Columns || 1728,
     Rows: params.Rows || 0,
@@ -968,33 +1016,56 @@ export function decodeCCITTFax(data, params = {}) {
     EndOfLine: params.EndOfLine || false,
     BlackIs1: params.BlackIs1 || false,
   });
+  const rowBytes = ((params.Columns || 1728) + 7) >> 3;
 
-  // Known dimensions: fill a right-sized typed array directly.
   if (params.Rows && params.Columns) {
-    const rowBytes = Math.ceil(params.Columns / 8);
     const expected = rowBytes * params.Rows;
     const out = new Uint8Array(expected);
     let p = 0;
-    let byte;
-    while (p < expected && (byte = decoder.readNextChar()) !== -1) out[p++] = byte;
+    while (p < expected) {
+      const wrote = decoder.readRow(out, p);
+      if (wrote <= 0) break;
+      p += wrote;
+    }
     if (p < expected) {
       // Fewer bytes than Rows demands: pad the remainder white (CCITT convention).
       out.fill(params.BlackIs1 ? 0x00 : 0xFF, p);
       return out;
     }
     // An EndOfBlock stream isn't bound by /Rows, so keep any rows beyond the declared height.
-    byte = decoder.readNextChar();
-    if (byte === -1) return out;
-    const overflow = [byte];
-    while ((byte = decoder.readNextChar()) !== -1) overflow.push(byte);
-    const full = new Uint8Array(expected + overflow.length);
+    let extra = null;
+    let extraLen = 0;
+    const rowBuf = new Uint8Array(rowBytes);
+    let wroteExtra = decoder.readRow(rowBuf, 0);
+    while (wroteExtra > 0) {
+      if (!extra) extra = new Uint8Array(rowBytes * 16);
+      if (extraLen + wroteExtra > extra.length) {
+        const grown = new Uint8Array(extra.length * 2);
+        grown.set(extra.subarray(0, extraLen));
+        extra = grown;
+      }
+      extra.set(rowBuf.subarray(0, wroteExtra), extraLen);
+      extraLen += wroteExtra;
+      wroteExtra = decoder.readRow(rowBuf, 0);
+    }
+    if (extraLen === 0) return out;
+    const full = new Uint8Array(expected + extraLen);
     full.set(out);
-    full.set(overflow, expected);
+    full.set(extra.subarray(0, extraLen), expected);
     return full;
   }
-  // Dimensions unknown: accumulate, then size to fit.
-  const result = [];
-  let byte;
-  while ((byte = decoder.readNextChar()) !== -1) result.push(byte);
-  return new Uint8Array(result);
+  // Dimensions unknown: accumulate rows, then size to fit.
+  let buf = new Uint8Array(rowBytes * 64);
+  let len = 0;
+  let wrote = decoder.readRow(buf, len);
+  while (wrote > 0) {
+    len += wrote;
+    if (len + rowBytes > buf.length) {
+      const grown = new Uint8Array(buf.length * 2);
+      grown.set(buf.subarray(0, len));
+      buf = grown;
+    }
+    wrote = decoder.readRow(buf, len);
+  }
+  return buf.slice(0, len);
 }
