@@ -248,6 +248,10 @@ export const metadataCLI = async (pdfFile, options) => {
       const fields = [...new Set(report.customInfo.flatMap((c) => c.keys))];
       lines.push(`\n  Custom document-info dictionaries: ${report.customInfo.length} (fields: ${fields.join(', ')})`);
     }
+    if (report.annotationAuthors && report.annotationAuthors.length) {
+      const names = [...new Set(report.annotationAuthors.map((a) => a.author))];
+      lines.push(`\n  Comment/annotation authors: ${report.annotationAuthors.length} (${names.slice(0, 8).join(', ')})`);
+    }
     if (report.pieceInfo.length) lines.push(`\n  Private application data (/PieceInfo): ${report.pieceInfo.length} object(s)`);
     if (report.ocgs.length) lines.push(`\n  Optional-content layers: ${report.ocgs.map((o) => o.name).join(', ')}`);
     if (report.embeddedFiles.length) lines.push(`\n  Embedded files: ${report.embeddedFiles.map((f) => f.name || '(unnamed)').join(', ')}`);
@@ -328,6 +332,7 @@ export const stripMetadataCLI = async (inputFile, output, options) => {
     if (before.info && !after.info) removed.push('document info');
     if (before.docId && !after.docId) removed.push('document ID');
     if ((before.customInfo?.length || 0) > (after.customInfo?.length || 0)) removed.push(`${before.customInfo.length} custom document-info dict(s)`);
+    if ((before.annotationAuthors?.length || 0) > (after.annotationAuthors?.length || 0)) removed.push(`author names from ${before.annotationAuthors.length} comment(s)`);
     if (before.xmp.catalog && !after.xmp.catalog) removed.push('document XMP');
     if (before.xmp.perObject.length > after.xmp.perObject.length) removed.push(`${before.xmp.perObject.length - after.xmp.perObject.length} per-object XMP packet(s)`);
     if (before.pieceInfo.length > after.pieceInfo.length) removed.push(`${before.pieceInfo.length} private-data object(s)`);

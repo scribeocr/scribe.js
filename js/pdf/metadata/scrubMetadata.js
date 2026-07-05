@@ -12,10 +12,13 @@ import { stripJpegMetadata, stripJpxMetadata } from './imageMetadata.js';
 
 // Top-level dict keys dropped from every copied object.
 // `Info` is included because outside the trailer a `/Info` key is only ever a document-information dictionary.
-const DROP_ALWAYS = new Set(['Metadata', 'PieceInfo', 'AA', 'Info']);
+// `LastModified` is a modification-timestamp key that remains after /PieceInfo is dropped.
+const DROP_ALWAYS = new Set(['Metadata', 'PieceInfo', 'AA', 'Info', 'LastModified']);
 // Matches a string that looks like a source filename or path (a leak to scrub).
 // Requires a real file extension or an absolute path, not just a slash, so benign names like "Headers/Footers" don't match.
 const FILENAME_LIKE = /\.(pdf|ai|psd|indd|tiff?|jpe?g|png|docx?|xlsx?|pptx?|eps|svg)\b|[A-Za-z]:\\|\/(?:Users|home|Volumes)\//i;
+// A path-like /URI is blanked as a leaked local path unless it begins with one of these functional URI schemes.
+const WEB_URI_SCHEME = /^\(\s*(?:https?|mailto|ftp|ftps|tel|news|geo|sms):/i;
 
 /**
  * Dispatch to the right image-stream stripper for a PDF image /Filter.
@@ -44,6 +47,28 @@ function bodyIsInfoLike(body) {
   return false;
 }
 
+// Reviewer-identity metadata on a markup annotation (a comment, not a Widget): author (`/T`), dates (`/CreationDate`, `/M`),
+// annotation name (`/NM`), and rich-text contents (`/RC`).
+// Dropping these keeps the comment visible via `/Contents` and `/AP`.
+const ANNOT_IDENTITY = new Set(['T', 'CreationDate', 'M', 'NM', 'RC']);
+
+/**
+ * True if a dict body is a markup annotation carrying author/date identity (not a form-field Widget).
+ * @param {string} body
+ * @returns {boolean}
+ */
+function bodyIsMarkupAnnot(body) {
+  let isAnnot = false;
+  let isWidget = false;
+  let hasIdentity = false;
+  for (const e of parseDictEntries(body)) {
+    if (e.name === 'Type' && /\/Annot\b/.test(e.valueText)) isAnnot = true;
+    else if (e.name === 'Subtype' && /\/Widget\b/.test(e.valueText)) isWidget = true;
+    else if (e.name === 'T' || e.name === 'CreationDate') hasIdentity = true;
+  }
+  return isAnnot && !isWidget && hasIdentity;
+}
+
 /** Balanced default: strip identifying data, keep accessibility/page-labels/viewer-prefs. */
 export function defaultScrubOpts() {
   return {
@@ -65,16 +90,26 @@ function rebuildDict(body, { lengthOverride = null, ocgLabel = null } = {}) {
   const kept = [];
   let changed = false;
   const infoLike = bodyIsInfoLike(body);
+  const markupAnnot = bodyIsMarkupAnnot(body);
   for (const e of parseDictEntries(body)) {
     if (DROP_ALWAYS.has(e.name)) { changed = true; continue; }
     // A document-information dictionary hung off an arbitrary key: strip its identifying fields in place,
     // leaving the (now-empty) object so whatever references it does not dangle.
     if (infoLike && INFO_FIELDS.has(e.name)) { changed = true; continue; }
+    // A markup annotation: drop the reviewer's author/date identity, keeping the comment itself.
+    if (markupAnnot && ANNOT_IDENTITY.has(e.name)) { changed = true; continue; }
     if (e.name === 'Length' && lengthOverride != null) { kept.push(`/Length ${lengthOverride}`); changed = true; continue; }
     if (e.name === 'Name' && ocgLabel && FILENAME_LIKE.test(e.valueText)) { kept.push(`/Name (${ocgLabel})`); changed = true; continue; }
     // Accessibility alt-text and actual-text often carry the source image's local path or filename.
     // Drop only when the value looks like a path or filename, keeping real descriptions.
     if ((e.name === 'Alt' || e.name === 'ActualText') && FILENAME_LIKE.test(e.valueText)) { changed = true; continue; }
+    // A /URI action targeting a local file path (not a web hyperlink) leaks the author's filesystem/software.
+    // Blank it to keep the action well-formed while removing the path.
+    if (e.name === 'URI' && FILENAME_LIKE.test(e.valueText) && !WEB_URI_SCHEME.test(e.valueText.trim())) { kept.push('/URI ()'); changed = true; continue; }
+    // A string-valued /D or /Dest can embed a source filename.
+    // InDesign names its cross-reference destinations "<source-file>:anchor".
+    // The `(`-prefix check limits blanking to such strings, skipping array destinations `[...]` and the /OCProperties /D config dict `<<...>>` (a different use of /D).
+    if ((e.name === 'D' || e.name === 'Dest') && e.valueText.trim().startsWith('(') && FILENAME_LIKE.test(e.valueText)) { kept.push(`/${e.name} ()`); changed = true; continue; }
     kept.push(`/${e.name} ${e.valueText}`);
   }
   if (lengthOverride != null && !kept.some((k) => k.startsWith('/Length '))) kept.push(`/Length ${lengthOverride}`);
@@ -122,13 +157,19 @@ export function scrubReferencedObject(pdfBytes, objCache, entry, objNum, ctx) {
 
   const dropKey = bodyHasDropKey(body);
   const infoLike = bodyIsInfoLike(body);
+  const markupAnnot = bodyIsMarkupAnnot(body);
   const leakyOcg = isOCG && /\/Name\s*[(<]/.test(body) && parseDictEntries(body).some((e) => e.name === 'Name' && FILENAME_LIKE.test(e.valueText));
   const leakyAlt = /\/(?:Alt|ActualText)\s*[(<]/.test(body) && parseDictEntries(body).some((e) => (e.name === 'Alt' || e.name === 'ActualText') && FILENAME_LIKE.test(e.valueText));
+  // A link action carrying a filename/path: a local-file /URI, or a string-valued named destination /D or /Dest that embeds a source filename.
+  const leakyLink = /\/(?:URI|D|Dest)\s*\(/.test(body) && parseDictEntries(body).some((e) => (
+    (e.name === 'URI' && FILENAME_LIKE.test(e.valueText) && !WEB_URI_SCHEME.test(e.valueText.trim()))
+    || ((e.name === 'D' || e.name === 'Dest') && e.valueText.trim().startsWith('(') && FILENAME_LIKE.test(e.valueText))
+  ));
   const streamKw = objText.indexOf('stream', dictStart + dictText.length);
   const isStream = streamKw !== -1;
   const strippableImage = isImage && isStream && filter && (filter.includes('DCTDecode') || filter.includes('JPXDecode'));
 
-  if (!dropKey && !infoLike && !leakyOcg && !strippableImage && !leakyAlt) return null;
+  if (!dropKey && !infoLike && !markupAnnot && !leakyOcg && !strippableImage && !leakyAlt && !leakyLink) return null;
   if (isOCG && leakyOcg) ctx.ocgCounter.n += 1;
 
   if (!isStream) {

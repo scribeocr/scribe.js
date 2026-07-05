@@ -100,6 +100,7 @@ export function getMetadata(pdfBytes) {
     viewerPreferences: false,
     signatures: [],
     customInfo: [],
+    annotationAuthors: [],
     priorRevisions: 0,
     encrypted: false,
   };
@@ -176,6 +177,11 @@ export function getMetadata(pdfBytes) {
         if (infoKeys.some((k) => ['Author', 'Producer', 'Creator', 'Company', 'Manager'].includes(k))) {
           report.customInfo.push({ objNum, keys: infoKeys });
         }
+      }
+      // /T holds the reviewer's name on a markup annotation but the field name on a Widget.
+      if (/\/Type\s*\/Annot\b/.test(text) && !/\/Subtype\s*\/Widget\b/.test(text)) {
+        const authorV = topValue(body, '/T');
+        if (authorV) report.annotationAuthors.push({ objNum, author: decodePdfString(authorV) });
       }
     }
   }
