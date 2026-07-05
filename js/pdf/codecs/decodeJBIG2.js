@@ -318,15 +318,23 @@ function decodeBitmapTemplate0(width, height, decodingContext) {
   const decoder = decodingContext.decoder;
   const contexts = decodingContext.contextCache.getContexts('GB');
   const bitmap = [];
+  const backing = new Uint8Array(width * height);
   let contextLabel; let i; let j; let pixel; let row; let row1; let
     row2;
   const OLD_PIXEL_MASK = 0x7bf7;
   for (i = 0; i < height; i++) {
-    row = bitmap[i] = new Uint8Array(width);
+    row = bitmap[i] = backing.subarray(i * width, (i + 1) * width);
     row1 = i < 1 ? row : bitmap[i - 1];
     row2 = i < 2 ? row : bitmap[i - 2];
     contextLabel = row2[0] << 13 | row2[1] << 12 | row2[2] << 11 | row1[0] << 7 | row1[1] << 6 | row1[2] << 5 | row1[3] << 4;
-    for (j = 0; j < width; j++) {
+    // The main loop runs only while j+4 stays in range, so the neighbour reads need no bounds checks.
+    // The short tail keeps the bounds checks.
+    const jMain = width > 4 ? width - 4 : 0;
+    for (j = 0; j < jMain; j++) {
+      row[j] = pixel = decoder.readBit(contexts, contextLabel);
+      contextLabel = (contextLabel & OLD_PIXEL_MASK) << 1 | row2[j + 3] << 11 | row1[j + 4] << 4 | pixel;
+    }
+    for (; j < width; j++) {
       row[j] = pixel = decoder.readBit(contexts, contextLabel);
       contextLabel = (contextLabel & OLD_PIXEL_MASK) << 1 | (j + 3 < width ? row2[j + 3] << 11 : 0) | (j + 4 < width ? row1[j + 4] << 4 : 0) | pixel;
     }
@@ -382,6 +390,8 @@ function decodeBitmap(mmr, width, height, templateIndex, prediction, skip, at, d
   const sbb_top = -minY;
   const sbb_right = width - maxX;
   const pseudoPixelContext = ReusedContexts[templateIndex];
+  const backing = new Uint8Array(width * height);
+  let backingRow = 0;
   let row = new Uint8Array(width);
   const bitmap = [];
   const decoder = decodingContext.decoder;
@@ -402,7 +412,12 @@ function decodeBitmap(mmr, width, height, templateIndex, prediction, skip, at, d
         continue;
       }
     }
-    row = new Uint8Array(row);
+    {
+      const fresh = backing.subarray(backingRow * width, (backingRow + 1) * width);
+      backingRow++;
+      fresh.set(row);
+      row = fresh;
+    }
     bitmap.push(row);
     for (j = 0; j < width; j++) {
       if (useskip && skip[i][j]) {
@@ -1281,43 +1296,54 @@ class SimpleSegmentVisitor {
     let offset0 = regionInfo.y * rowSize + (regionInfo.x >> 3);
     let i; let j; let mask; let
       offset;
-    switch (combinationOperator) {
-      case 0:
-        for (i = 0; i < height; i++) {
-          mask = mask0;
-          offset = offset0;
-          for (j = 0; j < width; j++) {
-            if (bitmap[i][j]) {
-              buffer[offset] |= mask;
-            }
-            mask >>= 1;
-            if (!mask) {
-              mask = 128;
-              offset++;
-            }
-          }
-          offset0 += rowSize;
+    if (combinationOperator !== 0 && combinationOperator !== 2) {
+      throw new Jbig2Error(`operator ${combinationOperator} is not supported`);
+    }
+    // Pack 8 pixels per output byte across the aligned middle of each row.
+    // The unaligned lead and the tail fall back to the per-pixel mask walk.
+    const lead = Math.min((8 - (regionInfo.x & 7)) & 7, width);
+    const midBytes = (width - lead) >> 3;
+    for (i = 0; i < height; i++) {
+      const bitmapRow = bitmap[i];
+      mask = mask0;
+      offset = offset0;
+      for (j = 0; j < lead; j++) {
+        if (bitmapRow[j]) {
+          if (combinationOperator === 0) buffer[offset] |= mask; else buffer[offset] ^= mask;
         }
-        break;
-      case 2:
-        for (i = 0; i < height; i++) {
-          mask = mask0;
-          offset = offset0;
-          for (j = 0; j < width; j++) {
-            if (bitmap[i][j]) {
-              buffer[offset] ^= mask;
-            }
-            mask >>= 1;
-            if (!mask) {
-              mask = 128;
-              offset++;
-            }
-          }
-          offset0 += rowSize;
+        mask >>= 1;
+        if (!mask) {
+          mask = 128;
+          offset++;
         }
-        break;
-      default:
-        throw new Jbig2Error(`operator ${combinationOperator} is not supported`);
+      }
+      if (combinationOperator === 0) {
+        for (let b = 0; b < midBytes; b++, j += 8) {
+          const v = bitmapRow[j] << 7 | bitmapRow[j + 1] << 6 | bitmapRow[j + 2] << 5 | bitmapRow[j + 3] << 4
+            | bitmapRow[j + 4] << 3 | bitmapRow[j + 5] << 2 | bitmapRow[j + 6] << 1 | bitmapRow[j + 7];
+          if (v) buffer[offset] |= v;
+          offset++;
+        }
+      } else {
+        for (let b = 0; b < midBytes; b++, j += 8) {
+          const v = bitmapRow[j] << 7 | bitmapRow[j + 1] << 6 | bitmapRow[j + 2] << 5 | bitmapRow[j + 3] << 4
+            | bitmapRow[j + 4] << 3 | bitmapRow[j + 5] << 2 | bitmapRow[j + 6] << 1 | bitmapRow[j + 7];
+          if (v) buffer[offset] ^= v;
+          offset++;
+        }
+      }
+      mask = 128;
+      for (; j < width; j++) {
+        if (bitmapRow[j]) {
+          if (combinationOperator === 0) buffer[offset] |= mask; else buffer[offset] ^= mask;
+        }
+        mask >>= 1;
+        if (!mask) {
+          mask = 128;
+          offset++;
+        }
+      }
+      offset0 += rowSize;
     }
   }
 
