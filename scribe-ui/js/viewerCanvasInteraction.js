@@ -254,6 +254,12 @@ const createContextMenuHTML = () => {
   highlightSelectionButton.style.display = 'none';
   highlightSelectionButton.addEventListener('click', highlightSelectionClick);
 
+  const commentButton = document.createElement('button');
+  commentButton.id = 'contextMenuCommentButton';
+  commentButton.textContent = 'Comment';
+  commentButton.style.display = 'none';
+  commentButton.addEventListener('click', commentSelectionClick);
+
   const deleteWordsButton = document.createElement('button');
   deleteWordsButton.id = 'contextMenuDeleteWordsButton';
   deleteWordsButton.textContent = 'Delete Words';
@@ -322,6 +328,7 @@ const createContextMenuHTML = () => {
 
   innerDiv.appendChild(copySelectionButton);
   innerDiv.appendChild(highlightSelectionButton);
+  innerDiv.appendChild(commentButton);
   innerDiv.appendChild(deleteWordsButton);
   innerDiv.appendChild(splitWordButton);
   innerDiv.appendChild(mergeWordsButton);
@@ -509,6 +516,26 @@ const highlightSelectionClick = () => {
   window.getSelection()?.removeAllRanges();
 };
 
+/**
+ * Comment on the highlight under the cursor, or highlight the current text selection and comment on that.
+ * Both paths open `viewer._openCommentEditor`, a method the highlight tool installs on the viewer.
+ */
+const commentSelectionClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  if (!viewer._openCommentEditor) return;
+  if (commentTargetWord && commentTargetWord.highlightColor) {
+    viewer._openCommentEditor([commentTargetWord], commentTargetWord.word.line.page.n);
+    return;
+  }
+  const color = viewer._highlightColor;
+  const words = viewer.getWordsUnderTextSelection();
+  if (!color || words.length === 0) return;
+  applyHighlight(viewer, words, viewer.state.cp.n, color, 0.5);
+  window.getSelection()?.removeAllRanges();
+  viewer._openCommentEditor(words, viewer.state.cp.n);
+};
+
 const deleteWordsClick = () => {
   hideContextMenu();
   const viewer = mv();
@@ -535,7 +562,14 @@ let contextMenuStyleElem = null;
 /** @type {HTMLButtonElement} */ let contextMenuSplitTableButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuDeleteHighlightButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuHighlightButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuCommentButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuCopyButtonElem;
+/**
+ * The highlighted word the context menu's Comment item edits, or null to comment the current text selection instead.
+ * Reset on every `contextMenuFunc` so a handler never reads a stale target.
+ * @type {?import('./viewerWordObjects.js').UiOcrWord}
+ */
+let commentTargetWord = null;
 
 function ensureContextMenu() {
   if (menuNode) return;
@@ -554,6 +588,7 @@ function ensureContextMenu() {
   contextMenuSplitTableButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuSplitTableButton'));
   contextMenuDeleteHighlightButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteHighlightButton'));
   contextMenuHighlightButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuHighlightButton'));
+  contextMenuCommentButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCommentButton'));
   contextMenuCopyButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCopyButton'));
 
   contextMenuStyleElem = document.createElement('style');
@@ -684,6 +719,22 @@ export const contextMenuFunc = (viewer, event) => {
       }
     }
 
+    // Comment: edit the comment on a highlighted word, or add one to a highlightable text selection.
+    // Requires the highlight tool's editor (viewer._openCommentEditor); commentTargetWord tells the handler which mode.
+    const canComment = !!viewer._openCommentEditor;
+    let enableComment = false;
+    let commentLabel = 'Add comment';
+    commentTargetWord = null;
+    if (canComment && !viewer.state.layoutMode) {
+      if (targetObj instanceof UiOcrWord && targetObj.highlightColor) {
+        enableComment = true;
+        commentLabel = targetObj.highlightComment ? 'Edit comment' : 'Add comment';
+        commentTargetWord = targetObj;
+      } else if (enableHighlight) {
+        enableComment = true;
+      }
+    }
+
     const selectedTables = viewer.CanvasSelection.getDataTables();
 
     let enableMergeTables = false;
@@ -711,10 +762,14 @@ export const contextMenuFunc = (viewer, event) => {
     }
 
     if (!(enableMergeColumns || enableSplit || enableDeleteRegion || enableDeleteTable || enableCopyTableContents || enableMergeTables || enableSplitTable
-      || enableSplitWord || enableMergeWords || enableDeleteWords || enableDeleteHighlight || enableHighlight || enableCopy)) return;
+      || enableSplitWord || enableMergeWords || enableDeleteWords || enableDeleteHighlight || enableHighlight || enableComment || enableCopy)) return;
 
     if (enableCopy) contextMenuCopyButtonElem.style.display = 'initial';
     if (enableHighlight) contextMenuHighlightButtonElem.style.display = 'initial';
+    if (enableComment) {
+      contextMenuCommentButtonElem.textContent = commentLabel;
+      contextMenuCommentButtonElem.style.display = 'initial';
+    }
     if (enableMergeWords) contextMenuMergeWordsButtonElem.style.display = 'initial';
     if (enableSplitWord) contextMenuSplitWordButtonElem.style.display = 'initial';
     if (enableDeleteWords) contextMenuDeleteWordsButtonElem.style.display = 'initial';

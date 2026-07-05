@@ -70,6 +70,16 @@ export class ScribeViewerOpts {
      *   for the free canvas movement of an image editor. Editors embedding the viewer typically want this.
      */
     this.freePan = false;
+    /**
+     * Author name stamped onto comments and notes created in this viewer (PDF /T). Default `''` (unauthored).
+     * Never auto-derived from OS/browser identity; the embedder sets it if wanted.
+     */
+    this.commentAuthor = '';
+    /**
+     * Whether this viewer draws freestanding /Text (sticky-note) annotations.
+     * When off, notes still import into the model and round-trip on export.
+     */
+    this.enableComments = false;
   }
 }
 

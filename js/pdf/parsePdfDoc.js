@@ -13,7 +13,9 @@ import { ObjectCache } from './objectCache.js';
 import { parsePageFonts } from './fonts/parsePdfFonts.js';
 import { parsePagePaths } from './parsePdfPaths.js';
 import { detectTableRegions } from './detectPdfTables.js';
-import { extractPdfAnnotations, pdfHighlightToAnnotation, pdfFreeTextToAnnotation } from './parsePdfAnnots.js';
+import {
+  extractPdfAnnotations, pdfHighlightToAnnotation, pdfFreeTextToAnnotation, pdfTextAnnotToAnnotation,
+} from './parsePdfAnnots.js';
 import { cmykToRgb } from './pdfColorFunctions.js';
 import { assignParagraphs } from '../utils/reflowPars.js';
 
@@ -758,9 +760,11 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
     pageObj, langSet, fontSet, dataTablePage,
   } = groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects, paths, scale, visualHeightPts, boxOriginX, boxOriginY);
 
-  const { highlights: highlightsRaw, freeTexts: freeTextsRaw, passthroughRefs } = extractPdfAnnotations(objCache, objText);
+  const {
+    highlights: highlightsRaw, freeTexts: freeTextsRaw, textAnnots: textAnnotsRaw, passthroughRefs,
+  } = extractPdfAnnotations(objCache, objText);
   /** @type {Annotation[]} */
-  const annotations = highlightsRaw.map((raw, i) => pdfHighlightToAnnotation(raw, {
+  const annotations = highlightsRaw.map((raw) => pdfHighlightToAnnotation(raw, {
     scale,
     visualHeightPts,
     initialCtm,
@@ -768,6 +772,9 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
   }));
   for (const raw of freeTextsRaw) {
     annotations.push(pdfFreeTextToAnnotation(raw, { scale, visualHeightPts, initialCtm }));
+  }
+  for (const raw of textAnnotsRaw) {
+    annotations.push(pdfTextAnnotToAnnotation(raw, { scale, visualHeightPts, initialCtm }));
   }
 
   return {

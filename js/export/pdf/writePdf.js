@@ -7,7 +7,7 @@ import {
 
 import { ocrPageToPDFStream } from './writePdfText.js';
 import {
-  buildHighlightAnnotObjects, buildFreeTextAnnotObjects, buildShapeAnnotObjects, consolidateAnnotations,
+  buildHighlightAnnotObjects, buildFreeTextAnnotObjects, buildShapeAnnotObjects, buildTextAnnotObjects, consolidateAnnotations,
 } from './writePdfAnnots.js';
 import { SHAPE_ANNOT_TYPES } from '../../addHighlights.js';
 import { encodeStreamObject } from './writePdfStreams.js';
@@ -146,6 +146,7 @@ export async function writePdf({
         ...consolidateAnnotations((annotationsPages?.[i] || []).filter((a) => a.type == null || a.type === 'highlight'), ocrArr?.[i]),
         ...(annotationsPages?.[i] || []).filter((a) => SHAPE_ANNOT_TYPES.has(a.type)),
         ...(annotationsPages?.[i] || []).filter((a) => a.type === 'freetext'),
+        ...(annotationsPages?.[i] || []).filter((a) => a.type === 'text'),
       ],
       humanReadable,
       docFonts,
@@ -432,7 +433,10 @@ async function ocrPageToPDF({
     for (const text of shapes.objectTexts) pdfObj.push(text);
     const ft = buildFreeTextAnnotObjects(pageAnnotations.filter((a) => a.type === 'freetext'), annotObjStart + objectTexts.length + shapes.objectTexts.length, outputDims, warningHandler);
     for (const text of ft.objectTexts) pdfObj.push(text);
-    pageObjStr += `/Annots [${[...annotRefs, ...shapes.annotRefs, ...ft.annotRefs].join(' ')}]`;
+    const textAnnotStart = annotObjStart + objectTexts.length + shapes.objectTexts.length + ft.objectTexts.length;
+    const textAnnots = buildTextAnnotObjects(pageAnnotations.filter((a) => a.type === 'text'), textAnnotStart, outputDims, warningHandler);
+    for (const text of textAnnots.objectTexts) pdfObj.push(text);
+    pageObjStr += `/Annots [${[...annotRefs, ...shapes.annotRefs, ...ft.annotRefs, ...textAnnots.annotRefs].join(' ')}]`;
   }
 
   pageObjStr += '>>\nendobj\n\n';

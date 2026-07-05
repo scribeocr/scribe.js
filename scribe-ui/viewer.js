@@ -16,6 +16,7 @@ import { deleteSelectedLayoutDataTable, deleteSelectedLayoutRegion } from './js/
 import {
   applyHighlight, removeHighlight, modifyHighlightComment, updateHighlightGroupOutline,
 } from './js/viewerHighlights.js';
+import { renderPageNotes } from './js/viewerNotes.js';
 import {
   ensureLayerStyleSheet, ScribeViewerState, ScribeViewerOpts, CanvasSelection,
   registerViewer, unregisterViewer, getActiveViewer, setActiveViewer,
@@ -154,6 +155,8 @@ export class ScribeViewer {
     this._textGroups = [];
     /** @type {Array<?HTMLDivElement>} */
     this._overlayGroups = [];
+    /** @type {Array<?HTMLDivElement>} Per-page sticky-note layer (z above words/highlights, survives layout-mode teardown). */
+    this._notesGroups = [];
     /** @type {Array<number>} */
     this.textGroupsRenderIndices = [];
     /** @type {Array<number>} */
@@ -295,6 +298,7 @@ export class ScribeViewer {
     this._textGroups.length = 0;
     this.textGroupsRenderIndices.length = 0;
     this._overlayGroups.length = 0;
+    this._notesGroups.length = 0;
     this.overlayGroupsRenderIndices.length = 0;
   }
 
@@ -1359,6 +1363,11 @@ export class ScribeViewer {
       }
     }
 
+    // Sticky-note icons render for the same window as words.
+    this.renderNotes(n);
+    if (n - 1 >= 0) this.renderNotes(n - 1);
+    if (n + 1 < this.doc.ocr.active.length) this.renderNotes(n + 1);
+
     if (scroll) {
       // Land page `n` as the current page.
       // The scroll fires `updateCurrentPage`, which picks the page at the viewport centre.
@@ -1511,6 +1520,35 @@ export class ScribeViewer {
       if (pc) pc.appendChild(group);
     }
     return this._overlayGroups[n];
+  }
+
+  /**
+   * The per-page sticky-note layer.
+   * Kept out of the overlay layer so notes survive the layout-mode toggle that tears the overlay down.
+   * @param {number} n
+   * @returns {?HTMLDivElement}
+   */
+  getNotesGroup(n) {
+    if (!this._notesGroups[n]) {
+      const group = this.createGroup(n);
+      group.style.zIndex = '3';
+      // Transparent to the pointer so empty areas pass clicks through to the text; icons opt back in via CSS.
+      group.style.pointerEvents = 'none';
+      group.classList.add('scribe-layer-notes');
+      this._notesGroups[n] = group;
+      const pc = this._ensurePageContainer(n);
+      if (pc) pc.appendChild(group);
+    }
+    return this._notesGroups[n];
+  }
+
+  /**
+   * Render page n note icons into its notes layer.
+   * @param {number} n
+   */
+  renderNotes(n) {
+    if (!this.opt.enableComments) return;
+    renderPageNotes(this, n);
   }
 
   /**

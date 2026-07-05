@@ -215,6 +215,8 @@ declare global {
         opacity: number;
         groupId: string;
         comment?: string;
+        author?: string;
+        createdAt?: string;
         quads?: bbox[];
     };
 
@@ -242,6 +244,10 @@ declare global {
         /** Border width in page units. Default 1. */
         borderWidth?: number;
         comment?: string;
+        /** Comment author (PDF /T); omitted when unauthored. */
+        author?: string;
+        /** Comment creation time*/
+        createdAt?: string;
     };
 
     /** Geometry below is in page coordinates (top-left origin, same frame as OCR words). */
@@ -251,7 +257,23 @@ declare global {
     type AnnotationPolygon = AnnotationShapeStyle & { type: 'polygon' | 'polyline'; vertices: number[]; };
     type AnnotationShape = AnnotationSquare | AnnotationCircle | AnnotationLine | AnnotationPolygon;
 
-    type Annotation = AnnotationHighlight | AnnotationFreeText | AnnotationShape;
+    /** A PDF /Text annotation: a freestanding comment marker, not anchored to a text range. */
+    type AnnotationText = {
+        type: 'text';
+        /** Small icon rect at the drop point, pixel space (top-left origin, same frame as OCR words). */
+        bbox: bbox;
+        comment: string;
+        /** Icon color, '#rrggbb' (PDF /C); omitted = viewer default. */
+        color?: string;
+        /** Comment author (PDF /T). */
+        author?: string;
+        /** Comment creation time. */
+        createdAt?: string;
+        /** Whether the note popup opens by default. */
+        open?: boolean;
+    };
+
+    type Annotation = AnnotationHighlight | AnnotationFreeText | AnnotationShape | AnnotationText;
 
     // Layout objects
     type LayoutPage = import("./objects/layoutObjects.js").LayoutPage;

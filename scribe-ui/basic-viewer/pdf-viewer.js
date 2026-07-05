@@ -8,7 +8,10 @@ import {
 } from '../js/controls/toolbar.js';
 import { createThumbnailPanel, createScrollbars } from '../js/controls/panels.js';
 import { createBookmarksPanel } from '../js/controls/bookmarksPanel.js';
-import { createHighlightTool, createDropZone, openDocumentFromFile } from '../js/controls/tools.js';
+import { createCommentsPanel } from '../js/controls/commentsPanel.js';
+import {
+  createHighlightTool, createNoteTool, createDropZone, openDocumentFromFile,
+} from '../js/controls/tools.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
 import { mergePdfs } from '../../js/export/pdf/mergePdfs.js';
 import { concatOutlines, outlineSplitSegments } from '../../js/objects/outlineObjects.js';
@@ -80,6 +83,8 @@ class ScribePDFViewer {
    *   (safe beside host UI and for multiple viewers on one page).
    *   `'global'` handles them anywhere on the page when this is the active viewer,
    *   for a full-screen single-viewer app. `'off'` disables them.
+   * @param {boolean} [options.comments=false] - Enable the note tool, comments side panel, and rendering of imported /Text sticky-note annotations.
+   *   The note tool also needs `highlight` enabled.
    * @param {ScribeViewer} [options.scribe] - Attach to an existing `ScribeViewer` instance instead
    *   of creating a new one. Use to share state with an already-instantiated viewer.
    */
@@ -96,6 +101,7 @@ class ScribePDFViewer {
       fit = 'height',
       autoResize = true,
       keyboardScope = 'focused',
+      comments = false,
     } = options;
 
     this.container = container;
@@ -129,6 +135,7 @@ class ScribePDFViewer {
      */
     this.scribe = options.scribe || new ScribeViewer();
     this.scribe.opt.keyboardScope = keyboardScope;
+    this.scribe.opt.enableComments = comments;
 
     const initWidth = width === 'auto' ? (container.clientWidth || 800) : width;
     const initHeight = height === 'auto' ? (container.clientHeight || 1000) : height;
@@ -197,6 +204,12 @@ class ScribePDFViewer {
       })
       : null;
 
+    // Freestanding-note tool: opt-in via `comments`, and built on the highlight tool's comment editor.
+    /** @type {?ReturnType<typeof createNoteTool>} */
+    this._noteTool = (this._highlightTool && comments)
+      ? createNoteTool(this.scribe)
+      : null;
+
     /** @type {?ReturnType<typeof createSearchBar>} */
     this._searchBar = null;
     /** @type {?ReturnType<typeof createPrintControls>} */
@@ -221,8 +234,8 @@ class ScribePDFViewer {
       })
       : null;
     /**
-     * Which of the left sidebar's two mutually-exclusive views is open, or null when it is closed.
-     * @type {'thumbnails'|'bookmarks'|null}
+     * Which of the left sidebar's three mutually-exclusive views is open, or null when it is closed.
+     * @type {'thumbnails'|'bookmarks'|'comments'|null}
      */
     this._activeSidebar = showThumbnails ? 'thumbnails' : null;
     /** @type {?{raf: number}} In-flight sidebar open/close/switch transition (its live rAF handle), or null. */
@@ -238,6 +251,14 @@ class ScribePDFViewer {
       ? createBookmarksPanel(this.scribe, {
         onNavigate: (n) => this.scribe.displayPage(n, true, false),
         // Resizing from the bookmarks view drives the shared sidebar width (see `_resizeSidebar`).
+        onResize: (w, phase) => this._resizeSidebar(w, phase),
+      })
+      : null;
+
+    /** @type {?ReturnType<typeof createCommentsPanel>} */
+    this._commentsPanel = (showThumbnails && comments)
+      ? createCommentsPanel(this.scribe, {
+        onNavigate: (n) => this.scribe.displayPage(n, true, false),
         onResize: (w, phase) => this._resizeSidebar(w, phase),
       })
       : null;
@@ -278,6 +299,7 @@ class ScribePDFViewer {
       if (this._thumbnailPanel) {
         toolbarButtons.appendChild(this._thumbnailPanel.toggleElem);
         if (this._bookmarksPanel) toolbarButtons.appendChild(this._bookmarksPanel.toggleElem);
+        if (this._commentsPanel) toolbarButtons.appendChild(this._commentsPanel.toggleElem);
         toolbarButtons.appendChild(makeSeparator());
       }
 
@@ -292,6 +314,7 @@ class ScribePDFViewer {
         toolbarButtons.appendChild(makeSeparator());
         toolbarButtons.appendChild(this._highlightTool.toolbarElem);
       }
+      if (this._noteTool) toolbarButtons.appendChild(this._noteTool.toolbarElem);
 
       // Find / search controls (right-aligned).
       this._searchBar = createSearchBar(this.scribe, this.pdfViewerElem);
@@ -361,6 +384,13 @@ class ScribePDFViewer {
       this.pdfViewerElem.appendChild(bpanel);
     }
 
+    if (this._commentsPanel) {
+      const cpanel = this._commentsPanel.panelElem;
+      cpanel.style.top = `${this.toolbarHeight}px`;
+      cpanel.style.height = `${initHeight - this.toolbarHeight}px`;
+      this.pdfViewerElem.appendChild(cpanel);
+    }
+
     this._installFit(fit);
 
     this.scribe.init(this.viewerContainer, initWidth, initHeight - this.toolbarHeight);
@@ -386,6 +416,9 @@ class ScribePDFViewer {
     // Selection-driven highlighting + comment icons (needs `scribe.elem`, so wired after init).
     if (this._highlightTool) {
       this._teardownCallbacks.push(this._highlightTool.installBehaviors());
+    }
+    if (this._noteTool) {
+      this._teardownCallbacks.push(this._noteTool.installBehaviors());
     }
 
     // Backup mouseup listener on the document to clear selection state if mouseup happens outside the scroll container.
@@ -511,6 +544,7 @@ class ScribePDFViewer {
       if (this._updateScrollbars) this._updateScrollbars();
       if (this._thumbnailPanel) this._thumbnailPanel.setActive(this.scribe.state.cp.n);
       if (this._bookmarksPanel) this._bookmarksPanel.setActive(this.scribe.state.cp.n);
+      if (this._commentsPanel) this._commentsPanel.setActive(this.scribe.state.cp.n);
       if (this._highlightTool) {
         const ht = this._highlightTool;
         setTimeout(() => ht.updateCommentIcons(), 250);
@@ -522,6 +556,7 @@ class ScribePDFViewer {
     this.scribe.onEditCallback = () => {
       if (origEditCallback) origEditCallback();
       if (this._bookmarksPanel) this._bookmarksPanel.rebuild();
+      if (this._commentsPanel) this._commentsPanel.rebuild();
       if (this._thumbnailPanel) {
         const len = this.scribe.doc ? this.scribe.doc.pageMetrics.length : 1;
         // The edit invalidated the page indices a pending cut captured, so cancel it.
@@ -536,6 +571,7 @@ class ScribePDFViewer {
     if (this.toolbarElem) {
       if (this._thumbnailPanel) this._thumbnailPanel.toggleElem.addEventListener('click', () => this._requestSidebar('thumbnails'));
       if (this._bookmarksPanel) this._bookmarksPanel.toggleElem.addEventListener('click', () => this._requestSidebar('bookmarks'));
+      if (this._commentsPanel) this._commentsPanel.toggleElem.addEventListener('click', () => this._requestSidebar('comments'));
     }
 
     if (autoResize && typeof ResizeObserver !== 'undefined') {
@@ -682,6 +718,24 @@ class ScribePDFViewer {
       }
     }
 
+    if (this._commentsPanel && this._thumbnailPanel) {
+      this._commentsPanel.rebuild();
+      // Hide the toggle for a document with no comments unless editing (where the user can add them).
+      const hasComments = ((doc.annotations && doc.annotations.pages) || []).some((p) => (p || []).some((a) => a.comment || a.type === 'text'));
+      this._commentsPanel.toggleElem.style.display = (hasComments || this.scribe.opt.enablePageEditing) ? '' : 'none';
+      // As with bookmarks: if a load hides the comments toggle while comments is the open view, fall back to thumbnails.
+      if (this._activeSidebar === 'comments' && this._commentsPanel.toggleElem.style.display === 'none') {
+        this._activeSidebar = 'thumbnails';
+        const tEl = this._thumbnailPanel.panelElem;
+        tEl.style.transition = 'none';
+        this._thumbnailPanel.setVisible(true);
+        this._thumbnailPanel.toggleElem.classList.add('active');
+        this._commentsPanel.setVisible(false);
+        this._commentsPanel.toggleElem.classList.remove('active');
+        requestAnimationFrame(() => { tEl.style.transition = ''; });
+      }
+    }
+
     // Off the critical path: the displaced document's workers die asynchronously while the new page renders.
     // Safe because each document's workers and fonts are namespaced by a unique docId.
     if (terminatePrev && displaced) displaced.terminate().catch(() => {});
@@ -718,6 +772,7 @@ class ScribePDFViewer {
     if (this.dropZone) this.dropZone.style.display = '';
     if (this._thumbnailPanel) this._thumbnailPanel.rebuild();
     if (this._bookmarksPanel) this._bookmarksPanel.rebuild();
+    if (this._commentsPanel) this._commentsPanel.rebuild();
 
     if (terminatePrev) prev.terminate().catch(() => {});
 
@@ -1103,13 +1158,18 @@ class ScribePDFViewer {
       this._bookmarksPanel.panelElem.style.top = `${top}px`;
       this._bookmarksPanel.panelElem.style.height = `${this._height - top}px`;
     }
+    if (this._commentsPanel) {
+      this._commentsPanel.panelElem.style.top = `${top}px`;
+      this._commentsPanel.panelElem.style.height = `${this._height - top}px`;
+    }
     // A sidebar animation owns the document inset and canvas size on its own clock, so don't fight it here.
     // The panel top/height set above are still safe to keep in sync every frame.
     if (this._sidebarAnim) return;
     // Inset the document by the open view's width so it centers in the area beside the sidebar, not under it.
     // Keep at least a sliver of document even if the panel is wider than the viewport.
     const activePanel = this._activeSidebar === 'thumbnails' ? this._thumbnailPanel
-      : (this._activeSidebar === 'bookmarks' ? this._bookmarksPanel : null);
+      : (this._activeSidebar === 'bookmarks' ? this._bookmarksPanel
+        : (this._activeSidebar === 'comments' ? this._commentsPanel : null));
     const panelW = activePanel ? (parseFloat(activePanel.panelElem.style.width) || 0) : 0;
     const inset = Math.min(panelW, Math.max(0, this._width - 80));
     this.scribe.scrollContainer.style.marginLeft = `${inset}px`;
@@ -1121,19 +1181,20 @@ class ScribePDFViewer {
 
   /**
    * The panel handle backing a sidebar view, or null.
-   * @param {'thumbnails'|'bookmarks'|null} key
-   * @returns {?ReturnType<typeof createThumbnailPanel> | ?ReturnType<typeof createBookmarksPanel>}
+   * @param {'thumbnails'|'bookmarks'|'comments'|null} key
+   * @returns {?ReturnType<typeof createThumbnailPanel> | ?ReturnType<typeof createBookmarksPanel> | ?ReturnType<typeof createCommentsPanel>}
    */
   _panelFor(key) {
     if (key === 'thumbnails') return this._thumbnailPanel;
     if (key === 'bookmarks') return this._bookmarksPanel;
+    if (key === 'comments') return this._commentsPanel;
     return null;
   }
 
   /**
    * Handle a click on a sidebar view's toolbar icon (the radio group with deselect): open the sidebar to `key`,
    * switch to it in place when the other view is open, or close the sidebar when `key` is already the open view.
-   * @param {'thumbnails'|'bookmarks'} key
+   * @param {'thumbnails'|'bookmarks'|'comments'} key
    */
   _requestSidebar(key) {
     if (!this._panelFor(key)) return;
@@ -1143,6 +1204,7 @@ class ScribePDFViewer {
     this._activeSidebar = next;
     if (this._thumbnailPanel) this._thumbnailPanel.toggleElem.classList.toggle('active', next === 'thumbnails');
     if (this._bookmarksPanel) this._bookmarksPanel.toggleElem.classList.toggle('active', next === 'bookmarks');
+    if (this._commentsPanel) this._commentsPanel.toggleElem.classList.toggle('active', next === 'comments');
     this._transitionSidebar(prev, next);
   }
 
@@ -1167,6 +1229,7 @@ class ScribePDFViewer {
     if (phase === 'end') {
       const applied = this._thumbnailPanel.setWidth(desiredWidth);
       this._bookmarksPanel.panelElem.style.width = `${applied}px`;
+      if (this._commentsPanel) this._commentsPanel.panelElem.style.width = `${applied}px`;
       this._sidebarResizeBounds = null;
       this._relayout();
       return;
@@ -1174,6 +1237,7 @@ class ScribePDFViewer {
     const b = this._sidebarResizeBounds;
     const applied = b ? Math.max(b.min, Math.min(b.max, desiredWidth)) : desiredWidth;
     this._bookmarksPanel.panelElem.style.width = `${applied}px`;
+    if (this._commentsPanel) this._commentsPanel.panelElem.style.width = `${applied}px`;
     this._relayout();
   }
 
@@ -1181,8 +1245,8 @@ class ScribePDFViewer {
    * Animate the left sidebar between its states as one coherent motion: open and close slide the view in/out from the dock edge,
    * and a switch crossfades the two views in place.
    * The document inset is tweened from the outgoing width to the incoming width on the same clock, so the page never snaps.
-   * @param {'thumbnails'|'bookmarks'|null} prevKey - The view that was open (null if the sidebar was closed).
-   * @param {'thumbnails'|'bookmarks'|null} nextKey - The view to show (null to close the sidebar).
+   * @param {'thumbnails'|'bookmarks'|'comments'|null} prevKey - The view that was open (null if the sidebar was closed).
+   * @param {'thumbnails'|'bookmarks'|'comments'|null} nextKey - The view to show (null to close the sidebar).
    */
   _transitionSidebar(prevKey, nextKey) {
     if (!this.scribe.scrollContainer) return;
@@ -1190,9 +1254,12 @@ class ScribePDFViewer {
     // The new setup overwrites the inline styles it was driving, and its transition settles the panels' shown/hidden state.
     if (this._sidebarAnim) { cancelAnimationFrame(this._sidebarAnim.raf); this._sidebarAnim = null; }
 
-    // The bookmarks view adopts the thumbnail view's current width before measuring, so the two share one edge.
+    // A non-thumbnails view adopts the thumbnail view's current width before measuring, so all share one edge.
     if (nextKey === 'bookmarks' && this._thumbnailPanel && this._bookmarksPanel) {
       this._bookmarksPanel.panelElem.style.width = this._thumbnailPanel.panelElem.style.width;
+    }
+    if (nextKey === 'comments' && this._thumbnailPanel && this._commentsPanel) {
+      this._commentsPanel.panelElem.style.width = this._thumbnailPanel.panelElem.style.width;
     }
     const fromPanel = this._panelFor(prevKey);
     const toPanel = this._panelFor(nextKey);
@@ -1325,6 +1392,7 @@ class ScribePDFViewer {
     if (this._sidebarAnim) { cancelAnimationFrame(this._sidebarAnim.raf); this._sidebarAnim = null; }
     if (this._thumbnailPanel) this._thumbnailPanel.destroy();
     if (this._bookmarksPanel) this._bookmarksPanel.destroy();
+    if (this._commentsPanel) this._commentsPanel.destroy();
     // Teardown callbacks remove the document-level listeners and the highlight tool's observer/tooltip/cursor style.
     for (const cb of this._teardownCallbacks) cb();
     this._teardownCallbacks = [];

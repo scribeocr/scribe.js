@@ -713,6 +713,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       --scribe-accent-ink: #ffffff;
       --scribe-accent-soft: #e8f0fd;
       --scribe-accent-ring: rgba(28, 98, 212, .30);
+      --scribe-note: #f4d06a;
       --scribe-danger: #d1493d;
       --scribe-danger-soft: #fbe9e7;
       --scribe-scrollbar: rgba(28, 42, 68, .26);
@@ -737,6 +738,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       --scribe-accent-ink: #ffffff;
       --scribe-accent-soft: #1e2c44;
       --scribe-accent-ring: rgba(79, 139, 240, .38);
+      --scribe-note: #f0cd68;
       --scribe-danger: #ef7a6c;
       --scribe-danger-soft: #33201d;
       --scribe-scrollbar: rgba(255, 255, 255, .26);
@@ -998,7 +1000,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .highlight-comment-icon {
       position: absolute;
       font-size: 14px;
-      cursor: default;
+      cursor: pointer;
       z-index: 15;
       user-select: none;
       pointer-events: auto;
@@ -1015,6 +1017,170 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       white-space: pre-wrap;
       pointer-events: none;
       z-index: 20;
+    }
+
+    .${r} .scribe-comment-editor {
+      position: absolute;
+      z-index: 21;
+      width: 240px;
+      box-sizing: border-box;
+      background: var(--scribe-surface);
+      border: 1px solid var(--scribe-line);
+      border-radius: 8px;
+      box-shadow: var(--scribe-menu-shadow);
+      padding: 8px;
+      display: flex;
+      flex-direction: column;
+      gap: 6px;
+    }
+    .${r} .scribe-comment-editor-text {
+      width: 100%;
+      box-sizing: border-box;
+      resize: vertical;
+      min-height: 54px;
+      font: inherit;
+      font-size: 13px;
+      color: var(--scribe-ink);
+      background: var(--scribe-canvas);
+      border: 1px solid var(--scribe-line);
+      border-radius: 5px;
+      padding: 5px 6px;
+    }
+    .${r} .scribe-comment-editor-text:focus {
+      outline: none;
+      border-color: var(--scribe-accent);
+      box-shadow: 0 0 0 2px var(--scribe-accent-ring);
+    }
+    .${r} .scribe-comment-editor-meta {
+      font-size: 11px;
+      color: var(--scribe-ink-3);
+      padding: 0 2px;
+    }
+    .${r} .scribe-comment-editor-btns {
+      display: flex;
+      justify-content: flex-end;
+      gap: 6px;
+    }
+    .${r} .scribe-comment-editor-btns button {
+      font: inherit;
+      font-size: 12px;
+      padding: 4px 10px;
+      border-radius: 5px;
+      cursor: pointer;
+      border: 1px solid var(--scribe-line);
+      background: var(--scribe-surface);
+      color: var(--scribe-ink);
+    }
+    .${r} .scribe-comment-editor-btns button:hover { background: var(--scribe-hover); }
+    .${r} .scribe-comment-editor-save {
+      background: var(--scribe-accent);
+      border-color: var(--scribe-accent);
+      color: var(--scribe-accent-ink);
+    }
+    .${r} .scribe-comment-editor-save:hover { background: var(--scribe-accent-hover); border-color: var(--scribe-accent-hover); }
+    .${r} .scribe-comment-editor-delete { color: var(--scribe-danger); margin-right: auto; }
+
+    /* Freestanding note: a small sticky at the note's point (its true position + drag handle), and a large matching sticky in the page's right margin (the same note blown up).
+       Both are sized in the notes layer's page space but kept a constant on-screen size by dividing out the zoom.
+       Hovering either adds .linked to both.
+       Sticky yellow is fixed (a sticky note is yellow in both themes, like the page is white). */
+    .${r} .scribe-note-icon {
+      position: absolute;
+      width: calc(20px / var(--scribe-zoom, 1));
+      height: calc(20px / var(--scribe-zoom, 1));
+      color: var(--scribe-note);
+      pointer-events: auto;
+      cursor: grab;
+      user-select: none;
+      z-index: 3;
+      filter: drop-shadow(0 1px 2px rgba(30, 26, 16, .3));
+      transition: transform .12s ease, filter .12s ease;
+    }
+    .${r} .scribe-note-icon svg { width: 100%; height: 100%; display: block; }
+    .${r} .scribe-note-icon:active { cursor: grabbing; }
+    .${r} .scribe-note-icon.linked { transform: scale(1.4); filter: drop-shadow(0 2px 5px rgba(30, 26, 16, .4)); z-index: 8; }
+
+    .${r} .scribe-note-card {
+      position: absolute;
+      left: 100%;
+      margin-left: .9em;
+      width: 13em;
+      font-size: calc(11px / var(--scribe-zoom, 1));
+      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+      pointer-events: auto;
+      z-index: 4;
+      /* Shadow on the unclipped outer element so it hugs the dog-eared paper (a box-shadow on the clipped paper would be cut off with the corner).
+         It is a tight contact shadow at rest and lifts on hover (see .linked). */
+      filter: drop-shadow(0 .1em .22em rgba(30, 26, 16, .34));
+      transition: transform .12s ease, filter .12s ease;
+    }
+    .${r} .scribe-note-card-paper {
+      --curl: 1.5em;
+      position: relative;
+      padding: .58em .75em 1em;
+      line-height: 1.4;
+      background: var(--scribe-note);
+      color: rgba(38, 30, 0, .9);
+      /* Dog-ear: cut the bottom-right corner, the same folded corner the small mark has. */
+      clip-path: polygon(0 0, 100% 0, 100% calc(100% - var(--curl)), calc(100% - var(--curl)) 100%, 0 100%);
+    }
+    .${r} .scribe-note-card-paper::after {
+      content: "";
+      position: absolute;
+      right: 0;
+      bottom: 0;
+      width: var(--curl);
+      height: var(--curl);
+      /* The translucent fold flap along the cut. This is the same dark fold as the mark's dog-ear. */
+      background: linear-gradient(135deg, rgba(0, 0, 0, .18) 50%, transparent 50%);
+    }
+    /* The comment is edited in place: a seamless textarea that looks like the note's text. */
+    .${r} .scribe-note-card-text {
+      display: block;
+      box-sizing: border-box;
+      width: 100%;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      outline: none;
+      resize: none;
+      overflow: hidden;
+      background: transparent;
+      font: inherit;
+      line-height: inherit;
+      color: inherit;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .${r} .scribe-note-card-text::placeholder { color: rgba(38, 30, 0, .45); }
+    .${r} .scribe-note-card-meta { margin-top: .5em; font-size: .85em; color: rgba(38, 30, 0, .6); }
+    .${r} .scribe-note-card-del {
+      position: absolute;
+      top: .18em;
+      right: .3em;
+      width: 1.35em;
+      height: 1.35em;
+      padding: 0;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      border: 0;
+      border-radius: .3em;
+      background: transparent;
+      color: rgba(38, 30, 0, .55);
+      font-size: 1.15em;
+      line-height: 1;
+      cursor: pointer;
+      opacity: 0;
+      transition: opacity .1s ease, background .1s ease, color .1s ease;
+    }
+    .${r} .scribe-note-card:hover .scribe-note-card-del,
+    .${r} .scribe-note-card-text:focus ~ .scribe-note-card-del { opacity: 1; }
+    .${r} .scribe-note-card-del:hover { background: rgba(0, 0, 0, .12); color: rgba(38, 30, 0, .85); }
+    .${r} .scribe-note-card.linked {
+      transform: translateY(-.28em);
+      filter: drop-shadow(0 .5em 1.15em rgba(30, 26, 16, .34));
+      z-index: 9;
     }
 
     .${r} .vertical-separator {
@@ -1729,6 +1895,173 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-bm-menu-item:hover { background: var(--scribe-hover); }
     .${r} .scribe-bm-menu-item.disabled { color: var(--scribe-ink-3); cursor: default; }
     .${r} .scribe-bm-menu-item.disabled:hover { background: none; }
+
+    /* Comments panel: a flat list of every comment (highlight-anchored + freestanding notes), a sibling of the rails. */
+    .${r} .scribe-comments-panel {
+      position: absolute;
+      left: 0;
+      overflow: hidden;
+      box-sizing: border-box;
+      background: var(--scribe-canvas);
+      border-right: 1px solid var(--scribe-line);
+      z-index: 7;
+      color: var(--scribe-ink);
+      font-size: 13px;
+      transition: transform 180ms ease;
+      will-change: transform;
+      outline: none;
+    }
+    .${r} .scribe-cm-hd {
+      position: absolute;
+      top: 0; left: 0; right: 0;
+      height: 36px;
+      box-sizing: border-box;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      padding: 0 12px;
+      border-bottom: 1px solid var(--scribe-line);
+      background: var(--scribe-canvas);
+      font-size: 11px;
+      font-weight: 600;
+      letter-spacing: .06em;
+      text-transform: uppercase;
+      color: var(--scribe-ink-2);
+      z-index: 2;
+    }
+    .${r} .scribe-cm-hd-title { flex: 1 1 auto; }
+    .${r} .scribe-cm-hd-count {
+      flex: 0 0 auto;
+      min-width: 18px;
+      text-align: center;
+      padding: 0 6px;
+      font-size: 10.5px;
+      line-height: 17px;
+      font-variant-numeric: tabular-nums;
+      color: var(--scribe-ink-3);
+      background: var(--scribe-surface);
+      border: 1px solid var(--scribe-line);
+      border-radius: 9px;
+    }
+    /* "New note on this page" button in the header. */
+    .${r} .scribe-cm-new {
+      flex: 0 0 auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 24px;
+      height: 24px;
+      padding: 0;
+      border: 1px solid transparent;
+      border-radius: 6px;
+      background: transparent;
+      color: var(--scribe-ink-2);
+      cursor: pointer;
+    }
+    .${r} .scribe-cm-new:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
+    .${r} .scribe-cm-new svg { width: 15px; height: 15px; display: block; }
+    /* List fills below the header, with a 6px right gutter so its scrollbar clears the resize handle. */
+    .${r} .scribe-cm-list {
+      position: absolute;
+      top: 37px; left: 0; bottom: 0; right: 6px;
+      overflow-y: auto;
+      overflow-x: hidden;
+      padding: 6px;
+      box-sizing: border-box;
+    }
+    .${r} .scribe-cm-list::-webkit-scrollbar { width: 8px; }
+    .${r} .scribe-cm-list::-webkit-scrollbar-track { background: transparent; }
+    .${r} .scribe-cm-list::-webkit-scrollbar-thumb { background: var(--scribe-scrollbar); border-radius: 6px; }
+    .${r} .scribe-cm-resize {
+      position: absolute;
+      top: 0; right: 0; bottom: 0;
+      width: 6px;
+      cursor: ew-resize;
+      z-index: 8;
+      touch-action: none;
+    }
+    .${r} .scribe-cm-resize:hover { background: var(--scribe-hover); }
+
+    .${r} .scribe-cm-row {
+      display: flex;
+      gap: 8px;
+      padding: 8px;
+      margin-bottom: 4px;
+      cursor: pointer;
+      border-radius: 6px;
+      border: 1px solid transparent;
+    }
+    .${r} .scribe-cm-row:hover { background: var(--scribe-hover); }
+    .${r} .scribe-cm-row.active { background: var(--scribe-accent-soft); border-color: var(--scribe-accent-ring); }
+
+    .${r} .scribe-cm-marker {
+      flex: 0 0 auto;
+      margin-top: 2px;
+      font-size: 13px;
+      line-height: 1;
+      color: var(--scribe-note);
+      user-select: none;
+    }
+    .${r} .scribe-cm-swatch {
+      width: 12px;
+      height: 12px;
+      border-radius: 3px;
+      border: 1px solid var(--scribe-line-strong);
+      background: var(--scribe-sunken);
+    }
+    .${r} .scribe-cm-body { flex: 1 1 auto; min-width: 0; }
+    .${r} .scribe-cm-quote {
+      font-size: 11.5px;
+      color: var(--scribe-ink-3);
+      font-style: italic;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+      margin-bottom: 2px;
+    }
+    .${r} .scribe-cm-text {
+      color: var(--scribe-ink);
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .${r} .scribe-cm-meta {
+      display: flex;
+      justify-content: space-between;
+      gap: 6px;
+      margin-top: 4px;
+      font-size: 10.5px;
+      color: var(--scribe-ink-3);
+    }
+    .${r} .scribe-cm-page { flex: 0 0 auto; font-variant-numeric: tabular-nums; }
+    .${r} .scribe-cm-edit {
+      width: 100%;
+      box-sizing: border-box;
+      resize: vertical;
+      font: inherit;
+      font-size: 13px;
+      color: var(--scribe-ink);
+      background: var(--scribe-surface);
+      border: 1px solid var(--scribe-accent);
+      border-radius: 4px;
+      padding: 4px 5px;
+    }
+    .${r} .scribe-cm-empty { padding: 12px; color: var(--scribe-ink-3); font-size: 12px; }
+
+    .${r} .scribe-cm-menu {
+      position: absolute;
+      min-width: 150px;
+      padding: 4px;
+      background: var(--scribe-surface);
+      border: 1px solid var(--scribe-line);
+      border-radius: 8px;
+      box-shadow: var(--scribe-menu-shadow);
+      z-index: 60;
+      font-size: 13px;
+      color: var(--scribe-ink);
+      user-select: none;
+    }
+    .${r} .scribe-cm-menu-item { padding: 7px 12px; border-radius: 5px; cursor: pointer; white-space: nowrap; }
+    .${r} .scribe-cm-menu-item:hover { background: var(--scribe-hover); }
 
     /* Message surface: transient toasts (self-evident failures) + a persistent banner (away/non-obvious) */
     .${r} .scribe-toast-stack {

@@ -1,5 +1,6 @@
 import ocr from './objects/ocrObjects.js';
 import { calcBboxUnion } from './utils/miscUtils.js';
+import { TEXT_ANNOT_ICON_PX } from './pdf/parsePdfAnnots.js';
 
 /** @typedef {import('./containers/scribeDoc.js').ScribeDoc} ScribeDoc */
 
@@ -273,5 +274,55 @@ export function addShapes(doc, shapes) {
 export function clearShapes(doc) {
   for (let p = 0; p < doc.annotations.pages.length; p++) {
     doc.annotations.pages[p] = doc.annotations.pages[p].filter((a) => !SHAPE_ANNOT_TYPES.has(a.type));
+  }
+}
+
+/**
+ * @typedef {Object} TextAnnotSpec
+ * @property {number} page - Page index (0-based).
+ * @property {number} x - Icon left in page coords (top-left origin).
+ * @property {number} y - Icon top in page coords.
+ * @property {string} [comment] - Annotation body; '' when omitted.
+ * @property {string} [color] - Icon color '#rrggbb'.
+ * @property {string} [author]
+ * @property {string} [createdAt] - UTC ISO-8601.
+ * @property {boolean} [open] - Whether the popup opens by default; false when omitted.
+ */
+
+/**
+ * Add freestanding /Text annotations at fixed page positions.
+ * @param {ScribeDoc} doc
+ * @param {Array<TextAnnotSpec>} textAnnots
+ * @returns {{ added: number }}
+ */
+export function addTextAnnots(doc, textAnnots) {
+  let added = 0;
+  for (const spec of textAnnots) {
+    if (!doc.annotations.pages[spec.page]) continue;
+    /** @type {AnnotationText} */
+    const annot = {
+      type: 'text',
+      bbox: {
+        left: spec.x, top: spec.y, right: spec.x + TEXT_ANNOT_ICON_PX, bottom: spec.y + TEXT_ANNOT_ICON_PX,
+      },
+      comment: spec.comment || '',
+      open: spec.open ?? false,
+    };
+    if (spec.color) annot.color = spec.color;
+    if (spec.author) annot.author = spec.author;
+    if (spec.createdAt) annot.createdAt = spec.createdAt;
+    doc.annotations.pages[spec.page].push(annot);
+    added += 1;
+  }
+  return { added };
+}
+
+/**
+ * Remove all freestanding /Text annotations added by `addTextAnnots`.
+ * @param {ScribeDoc} doc
+ */
+export function clearTextAnnots(doc) {
+  for (let p = 0; p < doc.annotations.pages.length; p++) {
+    doc.annotations.pages[p] = doc.annotations.pages[p].filter((a) => a.type !== 'text');
   }
 }

@@ -1,4 +1,4 @@
-import { toUtf16BeHex } from '../../pdf/pdfPrimitives.js';
+import { toUtf16BeHex, formatPdfDate } from '../../pdf/pdfPrimitives.js';
 
 /**
  * Message for an annotation skipped because emitting it threw.
@@ -14,9 +14,10 @@ function skipMessage(type, err) {
  * @param {number} startObjNum
  * @param {{ width: number, height: number }} outputDims
  * @param {(message: string) => void} [warningHandler] - Reports each annotation skipped on error.
+ * @param {boolean} [omitIdentity] - When true (a sanitized/scrubbed export), suppress the author `/T` and `/CreationDate`.
  * @returns {{ objectTexts: string[], annotRefs: string[] }} Object strings (the i-th numbered startObjNum + i) and their `/Annots` references.
  */
-export function buildHighlightAnnotObjects(annotations, startObjNum, outputDims, warningHandler) {
+export function buildHighlightAnnotObjects(annotations, startObjNum, outputDims, warningHandler, omitIdentity = false) {
   const objectTexts = [];
   const annotRefs = [];
   let objNum = startObjNum;
@@ -52,6 +53,12 @@ export function buildHighlightAnnotObjects(annotations, startObjNum, outputDims,
       if (annot.comment) {
         str += ` /Contents <${toUtf16BeHex(annot.comment)}>`;
       }
+      // Author is emitted as UTF-16BE hex so any name round-trips without PDF literal-string escaping.
+      if (!omitIdentity && annot.author) str += ` /T <${toUtf16BeHex(annot.author)}>`;
+      if (!omitIdentity && annot.createdAt) {
+        const pdfDate = formatPdfDate(annot.createdAt);
+        if (pdfDate) str += ` /CreationDate (${pdfDate})`;
+      }
       str += '>>\nendobj\n\n';
 
       annotRefs.push(`${objNum} 0 R`);
@@ -59,6 +66,58 @@ export function buildHighlightAnnotObjects(annotations, startObjNum, outputDims,
       objNum++;
     } catch (err) {
       warningHandler?.(skipMessage('highlight', err));
+    }
+  }
+
+  return { objectTexts, annotRefs };
+}
+
+/**
+ * Build the PDF objects for freestanding /Text annotations.
+ * No /AP: viewers draw the /Name icon natively.
+ * @param {AnnotationText[]} annotations
+ * @param {number} startObjNum
+ * @param {{ width: number, height: number }} outputDims
+ * @param {(message: string) => void} [warningHandler] - Reports each annotation skipped on error.
+ * @param {boolean} [omitIdentity] - When true (a sanitized export), suppress the author `/T` and `/CreationDate`.
+ * @returns {{ objectTexts: string[], annotRefs: string[] }} Object strings (the i-th numbered startObjNum + i) and their `/Annots` references.
+ */
+export function buildTextAnnotObjects(annotations, startObjNum, outputDims, warningHandler, omitIdentity = false) {
+  const objectTexts = [];
+  const annotRefs = [];
+  let objNum = startObjNum;
+
+  for (const annot of annotations) {
+    try {
+      const pdfRectTop = outputDims.height - annot.bbox.top;
+      const pdfRectBottom = outputDims.height - annot.bbox.bottom;
+
+      let str = `${objNum} 0 obj\n`;
+      str += '<</Type /Annot /Subtype /Text';
+      str += ` /Rect [${annot.bbox.left} ${pdfRectBottom} ${annot.bbox.right} ${pdfRectTop}]`;
+      str += ` /Contents <${toUtf16BeHex(annot.comment || '')}>`;
+      str += ' /Name /Comment';
+      str += ` /Open ${annot.open ? 'true' : 'false'}`;
+      if (annot.color) {
+        const hex = annot.color.replace('#', '');
+        const r = parseInt(hex.substring(0, 2), 16) / 255;
+        const g = parseInt(hex.substring(2, 4), 16) / 255;
+        const b = parseInt(hex.substring(4, 6), 16) / 255;
+        str += ` /C [${r} ${g} ${b}]`;
+      }
+      str += ' /F 4';
+      if (!omitIdentity && annot.author) str += ` /T <${toUtf16BeHex(annot.author)}>`;
+      if (!omitIdentity && annot.createdAt) {
+        const pdfDate = formatPdfDate(annot.createdAt);
+        if (pdfDate) str += ` /CreationDate (${pdfDate})`;
+      }
+      str += '>>\nendobj\n\n';
+
+      annotRefs.push(`${objNum} 0 R`);
+      objectTexts.push(str);
+      objNum++;
+    } catch (err) {
+      warningHandler?.(skipMessage('text annotation', err));
     }
   }
 
@@ -247,7 +306,7 @@ export function consolidateAnnotations(pageAnnotations, pageObj) {
     const key = annot.groupId || `style_${annot.color}_${annot.opacity}`;
     if (!groups[key]) {
       groups[key] = {
-        color: annot.color, opacity: annot.opacity, comment: annot.comment || '', annotations: [],
+        color: annot.color, opacity: annot.opacity, comment: annot.comment || '', author: annot.author, createdAt: annot.createdAt, annotations: [],
       };
     }
     groups[key].annotations.push(annot);
@@ -346,7 +405,13 @@ export function consolidateAnnotations(pageAnnotations, pageObj) {
       prevLineIndex = lineQuads[i].lineIndex;
     }
     result.push({
-      bbox: currentBbox, quads: currentQuads, color: group.color, opacity: group.opacity, comment: group.comment,
+      bbox: currentBbox,
+      quads: currentQuads,
+      color: group.color,
+      opacity: group.opacity,
+      comment: group.comment,
+      author: group.author,
+      createdAt: group.createdAt,
     });
   }
 

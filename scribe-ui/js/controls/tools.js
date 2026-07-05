@@ -3,6 +3,7 @@
 import scribeLib from '../../../scribe.js';
 import { makeIconButton } from './toolbar.js';
 import { applyHighlight } from '../viewerHighlights.js';
+import { createNote, focusNoteEditor } from '../viewerNotes.js';
 import { filesFromDropEvent } from '../dragAndDrop.js';
 
 // Filled highlighter-marker glyph (Material).
@@ -14,6 +15,7 @@ const HIGHLIGHT_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width
 // eslint-disable-next-line max-len
 const HIGHLIGHT_CURSOR = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.org/2000/svg\' height=\'24\' width=\'24\' viewBox=\'0 -960 960 960\'%3E%3Cpath fill=\'white\' stroke=\'black\' stroke-width=\'30\' d=\'m268-212-56-56q-12-12-12-28.5t12-28.5l423-423q12-12 28.5-12t28.5 12l56 56q12 12 12 28.5T748-635L324-212q-11 11-28 11t-28-11Z\'/%3E%3C/svg%3E") 12 12, auto';
 // Placed raw at 11px without a `.cr-icon` wrapper, so it needs its own inline size and a heavier 2.2 stroke to stay crisp that small.
+// eslint-disable-next-line max-len
 const HIGHLIGHT_CARET_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:block;width:11px;height:11px;pointer-events:none;" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
 
 /**
@@ -40,6 +42,13 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
   let cursorStyleElem = null;
   /** @type {?HTMLDivElement} */
   let commentTooltip = null;
+  /**
+   * Opens the editable comment popover for a highlight group, anchored to `words[0]`.
+   * Assigned by `installBehaviors`.
+   * Called from the comment icon and (via `scribe._openCommentEditor`) the context menu.
+   * @type {?(words: Array<import('../viewerWordObjects.js').UiOcrWord>, pageIndex: number) => void}
+   */
+  let openCommentEditor = null;
 
   const highlightElem = makeIconButton('Highlight', HIGHLIGHT_SVG);
   const tipPath = highlightElem.querySelector('.scribe-hl-tip');
@@ -169,6 +178,10 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     icon.addEventListener('mouseout', () => {
       if (commentTooltip) commentTooltip.style.display = 'none';
     });
+    icon.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (openCommentEditor) openCommentEditor([kw], kw.word.line.page.n);
+    });
 
     viewerElem.appendChild(icon);
   };
@@ -227,6 +240,112 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     commentTooltip.style.display = 'none';
     scribe.elem.appendChild(commentTooltip);
 
+    // Editable comment popover, shared by highlight comments and freestanding notes.
+    // A generic `showEditor` drives it for either target, differing only in the save/delete callbacks.
+    // Mounted on the unzoomed outer element and positioned from the anchor's screen rect, so it lands correctly at any zoom.
+    const commentEditor = document.createElement('div');
+    commentEditor.className = 'scribe-comment-editor';
+    commentEditor.style.display = 'none';
+    const editorText = document.createElement('textarea');
+    editorText.className = 'scribe-comment-editor-text';
+    editorText.rows = 3;
+    editorText.placeholder = 'Add a comment…';
+    const editorMeta = document.createElement('div');
+    editorMeta.className = 'scribe-comment-editor-meta';
+    const editorBtns = document.createElement('div');
+    editorBtns.className = 'scribe-comment-editor-btns';
+    const editorDelete = document.createElement('button');
+    editorDelete.type = 'button';
+    editorDelete.className = 'scribe-comment-editor-delete';
+    editorDelete.textContent = 'Delete';
+    const editorSave = document.createElement('button');
+    editorSave.type = 'button';
+    editorSave.className = 'scribe-comment-editor-save';
+    editorSave.textContent = 'Save';
+    editorBtns.append(editorDelete, editorSave);
+    commentEditor.append(editorText, editorMeta, editorBtns);
+    // Keep interactions inside the editor from reaching the outside-click closer.
+    commentEditor.addEventListener('mousedown', (e) => e.stopPropagation());
+    const editorHost = scribe.outerElem || scribe.elem;
+    editorHost.appendChild(commentEditor);
+
+    /** @type {?(v: string) => void} */ let editorOnSave = null;
+    /** @type {?() => void} */ let editorOnDelete = null;
+    const closeCommentEditor = () => {
+      commentEditor.style.display = 'none';
+      editorOnSave = null;
+      editorOnDelete = null;
+    };
+    const metaLine = (annot) => {
+      const parts = [];
+      if (annot && annot.author) parts.push(annot.author);
+      if (annot && annot.createdAt) parts.push(new Date(annot.createdAt).toLocaleString());
+      return parts.join(' · ');
+    };
+
+    /**
+     * Open the popover anchored above `anchorEl`, prefilled with `text` + `meta`.
+     * @param {{ text: string, meta: string, anchorEl: ?Element, onSave: (v: string) => void, onDelete: () => void }} d
+     */
+    const showEditor = (d) => {
+      editorText.value = d.text || '';
+      editorMeta.textContent = d.meta || '';
+      editorMeta.style.display = d.meta ? '' : 'none';
+      editorOnSave = d.onSave;
+      editorOnDelete = d.onDelete;
+      if (commentTooltip) commentTooltip.style.display = 'none';
+      commentEditor.style.display = '';
+      if (d.anchorEl) {
+        const a = d.anchorEl.getBoundingClientRect();
+        const h = editorHost.getBoundingClientRect();
+        commentEditor.style.left = `${a.left - h.left}px`;
+        commentEditor.style.top = `${a.top - h.top - commentEditor.offsetHeight - 8}px`;
+      }
+      editorText.focus();
+      editorText.select();
+    };
+
+    openCommentEditor = (words, pageIndex) => {
+      if (!words || words.length === 0) return;
+      const first = words[0];
+      const annot = (scribe.doc.annotations.pages[pageIndex] || []).find(
+        (a) => a.groupId && a.groupId === first.highlightGroupId,
+      );
+      showEditor({
+        text: first.highlightComment || '',
+        meta: metaLine(annot),
+        anchorEl: scribe.elem.querySelector(`.scribe-word[id="${first.word.id}"]`),
+        onSave: (v) => scribe.modifyHighlightComment(words, pageIndex, v),
+        onDelete: () => scribe.modifyHighlightComment(words, pageIndex, ''),
+      });
+    };
+    scribe._openCommentEditor = openCommentEditor;
+    // Let other surfaces (the Comments panel) refresh the on-page comment icons after editing a comment.
+    scribe._updateCommentIcons = updateCommentIcons;
+    // A freestanding note is edited inline in its margin card, so opening its editor just places the cursor there.
+    scribe._openNoteEditor = (annot, pageIndex) => focusNoteEditor(scribe, pageIndex, annot);
+
+    editorSave.addEventListener('click', () => {
+      if (editorOnSave) editorOnSave(editorText.value.trim());
+      closeCommentEditor();
+      updateCommentIcons();
+    });
+    editorDelete.addEventListener('click', () => {
+      if (editorOnDelete) editorOnDelete();
+      closeCommentEditor();
+      updateCommentIcons();
+    });
+    editorText.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') { e.stopPropagation(); closeCommentEditor(); } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) { e.preventDefault(); editorSave.click(); }
+    });
+    const editorOutsideClick = (event) => {
+      if (commentEditor.style.display === 'none') return;
+      const t = event.target;
+      if (t instanceof Node && commentEditor.contains(t)) return;
+      closeCommentEditor();
+    };
+    document.addEventListener('mousedown', editorOutsideClick);
+
     let commentIconTimer = null;
     const isWordOrLine = (n) => n instanceof HTMLElement
       && (n.classList.contains('scribe-word') || n.classList.contains('scribe-line'));
@@ -250,6 +369,12 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
         document.removeEventListener('keydown', paletteKeydown);
       }
       commentObserver.disconnect();
+      document.removeEventListener('mousedown', editorOutsideClick);
+      if (commentEditor.parentNode) commentEditor.parentNode.removeChild(commentEditor);
+      scribe._openCommentEditor = null;
+      scribe._openNoteEditor = null;
+      scribe._updateCommentIcons = null;
+      openCommentEditor = null;
       if (commentTooltip && commentTooltip.parentNode) commentTooltip.parentNode.removeChild(commentTooltip);
       commentTooltip = null;
       if (cursorStyleElem) {
@@ -266,6 +391,36 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     updateCommentIcons,
     installBehaviors,
   };
+}
+
+// A speech-bubble-with-plus glyph for the note tool.
+// eslint-disable-next-line max-len
+const NOTE_TOOL_SVG = '<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 0 24 24" fill="currentColor"><path d="M4 3h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H9l-4 4v-4H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zm7 3v3H8v2h3v3h2v-3h3V9h-3V6h-2z"/></svg>';
+
+/**
+ * Build the freestanding-note tool: a toolbar button that drops a note at the top-right of the current page and puts the cursor in its inline editor.
+ * The user drags the note's mark to reposition it rather than clicking to place it.
+ * @param {import('../../viewer.js').ScribeViewer} scribe
+ * @returns {{ toolbarElem: HTMLSpanElement, installBehaviors: () => (() => void) }}
+ */
+export function createNoteTool(scribe) {
+  const toolbarElem = makeIconButton('Add note', NOTE_TOOL_SVG);
+
+  toolbarElem.addEventListener('click', () => {
+    const n = scribe.state?.cp?.n ?? 0;
+    const pm = scribe.doc.pageMetrics[n];
+    if (!pm) return;
+    // Place the mark at the top-right of the page, clear of the edge, so the card renders in the right margin.
+    const x = Math.max(0, pm.dims.width - 46);
+    const annot = createNote(scribe, n, x, 22);
+    scribe.renderNotes(n);
+    focusNoteEditor(scribe, n, annot);
+  });
+
+  // Placement is immediate, so there are no page-level behaviors to install.
+  function installBehaviors() { return () => {}; }
+
+  return { toolbarElem, installBehaviors };
 }
 
 /**

@@ -252,7 +252,8 @@ export function applyHighlight(viewer, selectedWords, pageIndex, color, opacity)
 }
 
 /**
- * Updates the comment on the highlight group of the first selected word.
+ * Set the comment on the highlight group containing the first selected word.
+ * Author and creation time are set on the first non-empty comment, kept through later edits, and removed when it is cleared.
  * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {Array<InstanceType<typeof UiOcrWord>>} selectedWords
  * @param {number} pageIndex
@@ -265,9 +266,17 @@ export function modifyHighlightComment(viewer, selectedWords, pageIndex, comment
     (annot) => annotMatchesWord(annot, wb),
   );
   if (!matchingAnnot || !matchingAnnot.groupId) return;
+  const author = viewer.opt.commentAuthor || '';
+  const now = new Date().toISOString();
   for (const annot of viewer.doc.annotations.pages[pageIndex]) {
-    if (annot.groupId === matchingAnnot.groupId) {
-      annot.comment = comment;
+    if (annot.groupId !== matchingAnnot.groupId) continue;
+    annot.comment = comment;
+    if (comment) {
+      if (author && !annot.author) annot.author = author;
+      if (!annot.createdAt) annot.createdAt = now;
+    } else {
+      delete annot.author;
+      delete annot.createdAt;
     }
   }
   for (const kw of viewer.getUiWords()) {

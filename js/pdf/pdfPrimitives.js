@@ -881,3 +881,34 @@ export function decodePdfString(token) {
   if (t[0] === '(') return decodeTextStringBytes(unescapePdfLiteral(t.slice(1, -1)));
   return t;
 }
+
+/**
+ * Parse a PDF date string to a UTC ISO-8601 string.
+ * Feed it the output of `decodePdfString`, not a raw PDF string token.
+ * @param {string} str
+ * @returns {?string}
+ */
+export function parsePdfDate(str) {
+  if (typeof str !== 'string') return null;
+  const m = /D:(\d{4})(\d{2})?(\d{2})?(\d{2})?(\d{2})?(\d{2})?(?:([+\-Z])(\d{2})?'?(\d{2})?'?)?/.exec(str);
+  if (!m) return null;
+  const [, y, mo = '01', d = '01', h = '00', mi = '00', s = '00', rel, oh = '00', om = '00'] = m;
+  const offsetMin = (rel === '+' || rel === '-') ? (rel === '-' ? -1 : 1) * (Number(oh) * 60 + Number(om)) : 0;
+  const utcMs = Date.UTC(Number(y), Number(mo) - 1, Number(d), Number(h), Number(mi), Number(s)) - offsetMin * 60000;
+  const date = new Date(utcMs);
+  if (Number.isNaN(date.getTime())) return null;
+  return date.toISOString();
+}
+
+/**
+ * Format an ISO-8601 string (or Date) as a PDF date string in UTC: `D:YYYYMMDDHHmmSS+00'00'`. Returns null on an invalid date.
+ * @param {string|Date} iso
+ * @returns {?string}
+ */
+export function formatPdfDate(iso) {
+  const date = iso instanceof Date ? iso : new Date(iso);
+  if (Number.isNaN(date.getTime())) return null;
+  const p = (/** @type {number} */ n) => String(n).padStart(2, '0');
+  return `D:${date.getUTCFullYear()}${p(date.getUTCMonth() + 1)}${p(date.getUTCDate())}`
+    + `${p(date.getUTCHours())}${p(date.getUTCMinutes())}${p(date.getUTCSeconds())}+00'00'`;
+}

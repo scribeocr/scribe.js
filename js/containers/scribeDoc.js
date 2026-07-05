@@ -5,7 +5,7 @@ import { scribeDocDefaults } from './scribeDocDefaults.js';
 import { clearObjectProperties, getRandomAlphanum } from '../utils/miscUtils.js';
 import {
   addHighlights as addHighlightsImpl, addFreeText as addFreeTextImpl, clearHighlights as clearHighlightsImpl,
-  addShapes as addShapesImpl, clearShapes as clearShapesImpl,
+  addShapes as addShapesImpl, clearShapes as clearShapesImpl, addTextAnnots as addTextAnnotsImpl, clearTextAnnots as clearTextAnnotsImpl,
 } from '../addHighlights.js';
 import { renderPageStatic as renderPageStaticImpl } from '../debug.js';
 import { exportData as exportDataImpl, download as downloadImpl } from '../export/export.js';
@@ -796,6 +796,22 @@ export class ScribeDoc {
    */
   clearShapes() {
     clearShapesImpl(this);
+  }
+
+  /**
+   * Add freestanding /Text annotations at fixed page positions.
+   * @param {Parameters<typeof addTextAnnotsImpl>[1]} textAnnots
+   * @returns {ReturnType<typeof addTextAnnotsImpl>}
+   */
+  addTextAnnots(textAnnots) {
+    return addTextAnnotsImpl(this, textAnnots);
+  }
+
+  /**
+   * Remove all freestanding /Text annotations previously added by `addTextAnnots`.
+   */
+  clearTextAnnots() {
+    clearTextAnnotsImpl(this);
   }
 
   /**
