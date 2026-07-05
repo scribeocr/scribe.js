@@ -1256,6 +1256,63 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
     }
   }
 
+  // Like the 1-bit fast path above, for very large 8-bit RGB/gray rasters:
+  // box-average the source straight to draw size instead of materializing the full-resolution RGBA buffer and its ImageBitmap.
+  // The gate mirrors the 1-bit path's so no per-pixel post-processing (masks, ICC, /Decode) is bypassed.
+  if (bitsPerComponent === 8
+    && (colorSpace === 'DeviceRGB' || colorSpace === 'CalRGB' || colorSpace === 'DeviceGray' || colorSpace === 'CalGray')
+    && !imageInfo.transparentWhite && !(sMask && sMaskWidth && sMaskHeight)
+    && !colorKeyMask && !imageInfo.iccTransform && !decodeInvert
+    && maxW && maxH && (width > maxW || height > maxH) && width * height >= 40e6) {
+    const nc = (colorSpace === 'DeviceRGB' || colorSpace === 'CalRGB') ? 3 : 1;
+    const k = Math.min(maxW / width, maxH / height);
+    const outW = Math.max(1, Math.round(width * k));
+    const outH = Math.max(1, Math.round(height * k));
+    if (width * height >= outW * outH * 2 && imageData.length >= width * height * nc) {
+      const out = new Uint8ClampedArray(outW * outH * 4);
+      const colStart = new Int32Array(outW);
+      const colW = new Int32Array(outW);
+      for (let ox = 0; ox < outW; ox++) {
+        const sx0 = Math.floor((ox * width) / outW);
+        colStart[ox] = sx0;
+        colW[ox] = Math.max(sx0 + 1, Math.floor(((ox + 1) * width) / outW)) - sx0;
+      }
+      let di = 0;
+      for (let oy = 0; oy < outH; oy++) {
+        const sy0 = Math.floor((oy * height) / outH);
+        const sy1 = Math.max(sy0 + 1, Math.floor(((oy + 1) * height) / outH));
+        for (let ox = 0; ox < outW; ox++) {
+          const sx0 = colStart[ox];
+          const wpx = colW[ox];
+          if (nc === 3) {
+            let r = 0; let g = 0; let b = 0;
+            for (let sy = sy0; sy < sy1; sy++) {
+              let si = (sy * width + sx0) * 3;
+              for (let px = 0; px < wpx; px++) { r += imageData[si]; g += imageData[si + 1]; b += imageData[si + 2]; si += 3; }
+            }
+            const cnt = (sy1 - sy0) * wpx;
+            out[di] = ((r / cnt) + 0.5) | 0;
+            out[di + 1] = ((g / cnt) + 0.5) | 0;
+            out[di + 2] = ((b / cnt) + 0.5) | 0;
+          } else {
+            let sum = 0;
+            for (let sy = sy0; sy < sy1; sy++) {
+              let si = sy * width + sx0;
+              for (let px = 0; px < wpx; px++) { sum += imageData[si]; si++; }
+            }
+            const v = ((sum / ((sy1 - sy0) * wpx)) + 0.5) | 0;
+            out[di] = v;
+            out[di + 1] = v;
+            out[di + 2] = v;
+          }
+          out[di + 3] = 255;
+          di += 4;
+        }
+      }
+      return ca.createImageBitmapFromImageData(new ImageData(out, outW, outH));
+    }
+  }
+
   if (colorSpace === 'Indexed' && imageInfo.palette) {
     const palette = imageInfo.palette;
     const base = imageInfo.paletteBase || 'DeviceRGB';
