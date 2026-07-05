@@ -38,8 +38,7 @@ function uniqueLayers(layers) {
 }
 
 /**
- * Every dense per-page array that must stay index-aligned with `pageMetrics`.
- * Delete/move apply the same splice to each. (Derived image caches are handled separately by `clearImageCaches`.)
+ * Every dense per-page array that must stay index-aligned with `pageMetrics` under page delete/move.
  * @param {ScribeDoc} doc
  * @returns {Array<Array<any>>}
  */
@@ -58,7 +57,8 @@ function densePageArrays(doc) {
 }
 
 /**
- * Drop the derived image caches so they re-render against the edited order (via `sourcePageN`).
+ * Drop the full-resolution render caches so they re-render against the edited page order.
+ * Thumbnails are deliberately not among these; page ops reorder that cache in place via `remapThumbnails` instead of re-rendering it.
  * @param {ScribeDoc} doc
  */
 function clearImageCaches(doc) {
@@ -67,7 +67,6 @@ function clearImageCaches(doc) {
   images.binary.length = 0;
   images.nativeProps.length = 0;
   images.binaryProps.length = 0;
-  images.thumbnails.length = 0;
 }
 
 /**
@@ -193,6 +192,19 @@ function remapOutlineByTags(doc, tags) {
 }
 
 /**
+ * Reorder the retained thumbnail cache to match a page-order edit instead of dropping it:
+ * a reorder leaves each thumbnail's pixels unchanged, so re-rendering would be waste.
+ * @param {ScribeDoc} doc
+ * @param {Array<?number>} tags - tags[newPos] is the pre-edit index of the page now at newPos, or null for a freshly inserted page.
+ */
+function remapThumbnails(doc, tags) {
+  const { thumbnails } = doc.images;
+  const remapped = tags.map((old) => (old == null ? undefined : thumbnails[old]));
+  thumbnails.length = 0;
+  for (const t of remapped) thumbnails.push(t);
+}
+
+/**
  * Re-align the document's FOREIGN render sources (the pools of pages copied in from other documents) with a restored page state,
  * so undo/redo of a cross-document paste tracks its source rather than leaking it.
  * A source the target references but the doc dropped is re-registered (redo of the paste).
@@ -228,6 +240,8 @@ function capturePageState(doc) {
     // Foreign (cross-document) render sources this state references, captured so undo/redo can re-register or release them.
     // The primary source is excluded because page ops never add or remove it.
     foreignSources: new Map([...doc.images.sources].filter(([id]) => id !== primaryId)),
+    // The retained thumbnail cache, so undo/redo restore its slot alignment too (no preview re-render on either).
+    thumbnails: [...doc.images.thumbnails],
   };
 }
 
@@ -244,6 +258,10 @@ function restorePageState(doc, snap) {
   setDocOutline(doc, cloneOutline(snap.outline));
   renumberPages(doc);
   clearImageCaches(doc);
+  // Restore the retained thumbnail cache in lockstep with the page order (clearImageCaches no longer drops it).
+  const { thumbnails } = doc.images;
+  thumbnails.length = 0;
+  for (const t of snap.thumbnails) thumbnails.push(t);
   doc.inputData.pageCount = snap.pageCount;
   doc.images.pageCount = snap.pageCount;
   reconcileForeignSources(doc, snap.foreignSources);
@@ -423,6 +441,7 @@ export class ScribeDoc {
       const tags = this.pageMetrics.map((_, k) => k);
       for (const arr of [...densePageArrays(this), tags]) if (i < arr.length) arr.splice(i, 1);
       remapOutlineByTags(this, tags);
+      remapThumbnails(this, tags);
       clearImageCaches(this);
       renumberPages(this);
       this.inputData.pageCount = this.pageMetrics.length;
@@ -447,6 +466,7 @@ export class ScribeDoc {
         arr.splice(to, 0, item);
       }
       remapOutlineByTags(this, tags);
+      remapThumbnails(this, tags);
       clearImageCaches(this);
       renumberPages(this);
     });
@@ -467,6 +487,7 @@ export class ScribeDoc {
         for (const i of sorted) if (i < arr.length) arr.splice(i, 1);
       }
       remapOutlineByTags(this, tags);
+      remapThumbnails(this, tags);
       clearImageCaches(this);
       renumberPages(this);
       this.inputData.pageCount = this.pageMetrics.length;
@@ -494,6 +515,7 @@ export class ScribeDoc {
         arr.splice(Math.max(0, Math.min(to, arr.length)), 0, ...pulled);
       }
       remapOutlineByTags(this, tags);
+      remapThumbnails(this, tags);
       clearImageCaches(this);
       renumberPages(this);
     });
@@ -560,6 +582,7 @@ export class ScribeDoc {
       spliceFull(this.inputData.ocrApplied, bundles.map((b) => b.ocrApplied));
       spliceFull(tags, bundles.map(() => null));
       remapOutlineByTags(this, tags);
+      remapThumbnails(this, tags);
 
       // Register a copied page's foreign render source so it keeps rendering and subsetting from its origin.
       for (const b of bundles) {
