@@ -10,6 +10,11 @@ export const SKIPPED = Symbol('scribe.skippedJob');
  */
 export const MAX_STAGED_VIEWER_JOBS = 16;
 
+/**
+ * Kept but off: with the paired gate in viewer.js, turn on to trace render-dispatch order when diagnosing regressions.
+ */
+const DEBUG_RENDER_SCHED = false;
+
 export class TessScheduler {
   static #schedulerCounter = 0;
 
@@ -23,9 +28,24 @@ export class TessScheduler {
 
   #jobQueue = [];
 
+  /**
+   * Index the viewer is currently focused on (the current page), or `null` when unset.
+   * When set, staged viewer jobs dispatch closest-to-focus first instead of newest-first, and lane eviction drops the farthest job instead of the oldest.
+   * @type {?number}
+   */
+  #focus = null;
+
   constructor() {
     this.#id = `Scheduler-${TessScheduler.#schedulerCounter}-${Math.random().toString(16).slice(3, 8)}`;
     TessScheduler.#schedulerCounter += 1;
+  }
+
+  /**
+   * Set the focus index used to rank staged viewer jobs (see `#focus`).
+   * @param {?number} n
+   */
+  setFocus(n) {
+    this.#focus = n;
   }
 
   get id() {
@@ -40,12 +60,33 @@ export class TessScheduler {
     return Object.keys(this.#workers).length;
   }
 
+  /**
+   * Selects the next staged job to dispatch.
+   * @returns {number} Queue index of the selected job: the viewer job closest to the focus when one is set, else the queue front (newest viewer job, or oldest background job).
+   */
+  #pickNextJobIndex() {
+    if (this.#focus === null) return 0;
+    let best = 0;
+    let bestDist = Infinity;
+    for (let i = 0; i < this.#jobQueue.length && this.#jobQueue[i].forViewer; i += 1) {
+      const p = this.#jobQueue[i].pageIndex;
+      if (typeof p !== 'number') continue;
+      const dist = Math.abs(p - this.#focus);
+      if (dist < bestDist) {
+        bestDist = dist;
+        best = i;
+      }
+    }
+    return best;
+  }
+
   #dequeue() {
     if (this.#jobQueue.length !== 0) {
       const wIds = Object.keys(this.#workers);
       for (let i = 0; i < wIds.length; i += 1) {
         if (typeof this.#runningWorkers[wIds[i]] === 'undefined') {
-          this.#jobQueue[0](this.#workers[wIds[i]]);
+          const jobFunction = this.#jobQueue.splice(this.#pickNextJobIndex(), 1)[0];
+          jobFunction(this.#workers[wIds[i]]);
           break;
         }
       }
@@ -58,9 +99,20 @@ export class TessScheduler {
       const job = {
         id, action, payload, forViewer,
       };
+      if (DEBUG_RENDER_SCHED && action === 'renderPdfPage') {
+        job.queuedAt = performance.now();
+        // Thumbnail renders (outputFormat 'jpeg') are logged only at dispatch, not at queue time.
+        if (payload?.outputFormat !== 'jpeg') {
+          console.log(`[render-sched] queued page ${payload?.pageIndex} (${forViewer ? 'viewer' : 'background'} lane, ${this.#jobQueue.length} already staged)`);
+        }
+      }
+      // `#dequeue` removes the job from the queue before invoking it.
       const jobFunction = async (w) => {
-        this.#jobQueue.shift();
         this.#runningWorkers[w.id] = job;
+        if (DEBUG_RENDER_SCHED && job.action === 'renderPdfPage') {
+          const kind = job.payload?.outputFormat === 'jpeg' ? 'thumbnail' : 'page';
+          console.log(`[render-sched] dispatch ${kind} ${job.payload?.pageIndex} -> worker ${w.id} (staged ${(performance.now() - job.queuedAt).toFixed(0)}ms)`);
+        }
         try {
           const res1 = await w[action](payload, job.id);
           resolve(res1);
@@ -76,8 +128,15 @@ export class TessScheduler {
       };
 
       jobFunction.forViewer = forViewer;
+      // Rank key for focus-based dispatch and eviction (undefined for jobs without a page).
+      jobFunction.pageIndex = payload?.pageIndex;
       // Lets the bounded-lane eviction below settle a dropped (never-run) job.
-      jobFunction.drop = () => resolve(SKIPPED);
+      jobFunction.drop = () => {
+        if (DEBUG_RENDER_SCHED && action === 'renderPdfPage') {
+          console.log(`[render-sched] dropped page ${payload?.pageIndex} (staged viewer lane over capacity; never dispatched)`);
+        }
+        resolve(SKIPPED);
+      };
 
       if (forViewer) {
         // Viewer jobs are served newest-first (LIFO) and always ahead of background (non-viewer) jobs.
@@ -91,7 +150,21 @@ export class TessScheduler {
           viewerCount += 1;
         }
         if (viewerCount > MAX_STAGED_VIEWER_JOBS) {
-          const [evicted] = this.#jobQueue.splice(viewerCount - 1, 1);
+          // With a focus set, evict the staged job farthest from it (ties -> oldest).
+          // Otherwise, evict the oldest staged viewer job (the last one in the prefix).
+          let evictIdx = viewerCount - 1;
+          if (this.#focus !== null) {
+            let worstDist = -1;
+            for (let i = 0; i < viewerCount; i += 1) {
+              const p = this.#jobQueue[i].pageIndex;
+              const dist = typeof p === 'number' ? Math.abs(p - this.#focus) : -1;
+              if (dist >= worstDist) {
+                worstDist = dist;
+                evictIdx = i;
+              }
+            }
+          }
+          const [evicted] = this.#jobQueue.splice(evictIdx, 1);
           evicted.drop();
         }
       } else {

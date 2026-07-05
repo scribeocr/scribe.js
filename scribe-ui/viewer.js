@@ -21,6 +21,12 @@ import {
   registerViewer, unregisterViewer, getActiveViewer, setActiveViewer,
   getDefaultViewer, getAllViewers, findViewerForTarget,
 } from './js/viewerRuntime.js';
+
+/**
+ * Kept but off: with the paired gate in TessScheduler.js, turn on to trace render-dispatch order when diagnosing regressions.
+ */
+const DEBUG_RENDER_SCHED = false;
+
 /**
  * Per-viewer canvas controller. Owns its own scroll container, document, selection, and event state.
  * Multiple instances can coexist on the same page. Each operates independently.
@@ -1325,6 +1331,12 @@ export class ScribeViewer {
       this.setInitialPositionZoom(this.doc.pageMetrics[n].dims);
     }
 
+    // Issue the raster request before the synchronous word-DOM build so render workers can start on the target page instead of waiting.
+    // Must run after setInitialPositionZoom so the canvases raster at the correct zoom.
+    if ((this.doc.inputData.pdfMode || this.doc.inputData.imageMode)) {
+      this.imageCache.renderAheadBehindBrowser(n);
+    }
+
     // In ebook mode the page raster is hidden so only the (reflowed) text shows.
     const hideBackground = this.state.displayMode === 'ebook';
     for (const pc of this.pageContainerArr) {
@@ -1359,6 +1371,9 @@ export class ScribeViewer {
       this.scrollContainer.scrollTop = Math.max(0, top * this.zoomLevel);
     }
 
+    if (DEBUG_RENDER_SCHED && this.state.cp.n !== n) {
+      console.log(`[render-sched] current page -> ${n} (was ${this.state.cp.n})`);
+    }
     this.state.cp.n = n;
 
     if (!deferText) {
@@ -1378,10 +1393,6 @@ export class ScribeViewer {
       if (n + 1 < this.doc.ocr.active.length && (refresh || !this.overlayGroupsRenderIndices.includes(n + 1))) {
         layout.renderLayoutBoxes(this, n + 1);
       }
-    }
-
-    if ((this.doc.inputData.pdfMode || this.doc.inputData.imageMode)) {
-      this.imageCache.renderAheadBehindBrowser(n);
     }
   }
 

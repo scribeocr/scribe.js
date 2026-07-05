@@ -330,6 +330,9 @@ export class ViewerImageCache {
   async renderAheadBehindBrowser(curr) {
     const viewer = this._viewer();
 
+    // Staged renders dispatch closest-to-focus first, so setting the focus makes the current page win a backlogged queue whatever its enqueue order.
+    viewer.doc.images.pdfScheduler?.scheduler?.setFocus(curr);
+
     this._cleanBitmapCache(curr);
     this._cleanBitmapCache2(curr);
 
@@ -340,10 +343,10 @@ export class ViewerImageCache {
       return;
     }
 
-    const resArr = [];
-    // Enqueue outermost pages first and the current page last, so that under the scheduler's LIFO
-    // viewer lane the current page renders first, then its neighbors outward.
-    for (let i = ViewerImageCache.cacheRenderPages; i >= 1; i--) {
+    // Send the current page first.
+    // Although jobs may be reordered in the scheduler, sending them in correct order of priority still avoids issues.
+    const resArr = [this.addPageCanvas(curr)];
+    for (let i = 1; i <= ViewerImageCache.cacheRenderPages; i++) {
       if (curr + i < viewer.doc.images.loadCount) {
         resArr.push(this.addPageCanvas(curr + i));
       }
@@ -351,7 +354,6 @@ export class ViewerImageCache {
         resArr.push(this.addPageCanvas(curr - i));
       }
     }
-    resArr.push(this.addPageCanvas(curr));
 
     await Promise.all(resArr);
   }
