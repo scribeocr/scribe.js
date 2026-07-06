@@ -1232,8 +1232,9 @@ export async function recognize(doc, options = {}) {
       || (doc.inputData.pdfType === 'ocr' && usePDFText.ocr.supp))
   ) {
     existingOCR = doc.ocr.pdf;
-    // If the PDF text is not the active data, it is assumed to be for supplemental purposes only.
-    forceMainData = doc.ocr.pdf !== doc.ocr.active;
+    // Not keyed on `doc.ocr.active`, which the editor aliases to `doc.ocr.pdf` for display.
+    forceMainData = !((doc.inputData.pdfType === 'text' && usePDFText.native.main)
+      || (doc.inputData.pdfType === 'ocr' && usePDFText.ocr.main));
   }
 
   // A single Tesseract engine can be used (Legacy or LSTM) or the results from both can be used and combined.
