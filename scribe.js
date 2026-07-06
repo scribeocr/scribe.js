@@ -11,7 +11,7 @@ import { createTablesFromText, extractSingleTableContent, extractTextFromTables 
 import { loadBuiltInFontsRaw } from './js/fontContainerMain.js';
 import { GlobalFonts } from './js/containers/fontContainer.js';
 import { gs } from './js/generalWorkerMain.js';
-import { combineOCRPage } from './js/modifyOCR.js';
+import { combineOCRPage, buildConsensusLayer } from './js/modifyOCR.js';
 import {
   calcBoxOverlap, countSubstringOccurrences, getRandomAlphanum, replaceSmartQuotes,
   saveAs,
@@ -365,6 +365,7 @@ const terminate = async () => {
 
 export default {
   combineOCRPage,
+  buildConsensusLayer,
   createTablesFromText,
   init,
   layout,

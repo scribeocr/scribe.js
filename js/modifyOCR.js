@@ -235,3 +235,125 @@ export function reorderOcrPage(page, layoutObj, applyExclude = true, editInPlace
 
   return pageInt;
 }
+
+/**
+ * @typedef {Object} ConsensusStats
+ * @property {number} total - Base words scored.
+ * @property {number} high - Words every comparator corroborated.
+ * @property {number} medium - Words some (but not all) comparators corroborated.
+ * @property {number} low - Words no comparator corroborated.
+ * @property {number} replaced - Words whose text a comparator plurality overwrote.
+ */
+
+/**
+ * Build a base-anchored consensus OCR layer by voting each base word against aligned comparator words.
+ *
+ * The base geometry and default text are authoritative; comparator agreement only raises a word's confidence,
+ * except that a word no comparator matches may be overwritten by the comparators' plurality (kept low-confidence so it still surfaces for review).
+ * Alignment is geometric, so all layers must share one coordinate space, as `doc.ocr[*]` layers do.
+ * Inputs are not mutated; returned pages are fresh clones of `base`.
+ *
+ * @param {Array<OcrPage>} base - The authoritative OCR layer (one page per document page).
+ * @param {Array<Array<OcrPage>>} comparators - One or more comparator OCR layers, same page order.
+ * @param {Object} [options]
+ * @param {number} [options.confHigh=100] - Confidence for full corroboration.
+ * @param {number} [options.confMed=80] - Confidence for partial corroboration.
+ * @param {number} [options.confLow=50] - Confidence for none.
+ * @param {number} [options.overlapThresh=0.5] - Min fraction of a comparator word's area inside a base word to align it.
+ * @param {number} [options.replaceMinAgree=2] - Min comparators agreeing on a word to override the base.
+ * @returns {{ ocr: Array<OcrPage>, stats: ConsensusStats }}
+ */
+export function buildConsensusLayer(base, comparators, options = {}) {
+  const confHigh = options.confHigh ?? 100;
+  const confMed = options.confMed ?? 80;
+  const confLow = options.confLow ?? 50;
+  const overlapThresh = options.overlapThresh ?? 0.5;
+  const replaceMinAgree = options.replaceMinAgree ?? 2;
+
+  const nComparators = comparators.length;
+  const stats = {
+    total: 0, high: 0, medium: 0, low: 0, replaced: 0,
+  };
+  /** @type {Array<OcrPage>} */
+  const outPages = [];
+
+  for (let i = 0; i < base.length; i++) {
+    const basePage = base[i];
+    // A missing base page leaves a hole, matching the sparse layers `doc.ocr[*]` already use.
+    if (!basePage) continue;
+
+    // Clone so the source base layer is never mutated. Voting runs on the clone's own words/ids.
+    const outPage = ocr.clonePageFull(basePage);
+    const baseWords = ocr.getPageWords(outPage);
+
+    // Assign each comparator's words to the base word each most sits inside.
+    // Per comparator, map base-word id -> the assigned comparator words, kept with their left edge so we can join in reading order.
+    // A base word absent from the map means that comparator abstains for it.
+    const assignments = comparators.map((layer) => {
+      /** @type {Map<string, Array<{ left: number, text: string }>>} */
+      const map = new Map();
+      const compPage = layer[i];
+      if (!compPage) return map;
+      for (const cWord of ocr.getPageWords(compPage)) {
+        let bestId = null;
+        let bestOverlap = -1;
+        for (const bWord of baseWords) {
+          const o = calcBoxOverlap(cWord.bbox, bWord.bbox);
+          if (o > bestOverlap && o >= overlapThresh) { bestOverlap = o; bestId = bWord.id; }
+        }
+        if (bestId !== null) {
+          const arr = map.get(bestId) || [];
+          arr.push({ left: cWord.bbox.left, text: cWord.text });
+          map.set(bestId, arr);
+        }
+      }
+      return map;
+    });
+
+    for (const bWord of baseWords) {
+      stats.total += 1;
+
+      // Each comparator's word-at-b: its assigned words joined left-to-right, or absent = abstain.
+      /** @type {Array<string>} */
+      const present = [];
+      let matches = 0;
+      for (let k = 0; k < nComparators; k++) {
+        const arr = assignments[k].get(bWord.id);
+        if (!arr || arr.length === 0) continue;
+        const text = arr.slice().sort((a, b) => a.left - b.left).map((x) => x.text).join('');
+        present.push(text);
+        if (text === bWord.text) matches += 1;
+      }
+
+      if (matches === nComparators) {
+        bWord.conf = confHigh;
+        stats.high += 1;
+      } else if (matches > 0) {
+        bWord.conf = confMed;
+        stats.medium += 1;
+      } else {
+        bWord.conf = confLow;
+        stats.low += 1;
+        // Replace the base text with the comparators' plurality word, but only if a strict maximum of at least `replaceMinAgree` comparators agree on it.
+        /** @type {Map<string, number>} */
+        const counts = new Map();
+        for (const t of present) counts.set(t, (counts.get(t) || 0) + 1);
+        let bestText = null;
+        let bestCount = 0;
+        let tie = false;
+        for (const [t, c] of counts) {
+          if (c > bestCount) { bestCount = c; bestText = t; tie = false; } else if (c === bestCount) { tie = true; }
+        }
+        if (bestText !== null && bestCount >= replaceMinAgree && !tie) {
+          bWord.text = bestText;
+          bWord.chars = null;
+          stats.replaced += 1;
+        }
+      }
+    }
+
+    outPages[i] = outPage;
+  }
+
+  return { ocr: outPages, stats };
+}
