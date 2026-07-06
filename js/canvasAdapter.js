@@ -1,4 +1,4 @@
-import { imageStrToBlob } from './utils/imageUtils.js';
+import { base64ToBytes, imageStrToBlob } from './utils/imageUtils.js';
 import { registerFallbackFonts } from './fallbackFonts.js';
 
 export class ca {
@@ -121,10 +121,7 @@ export class ca {
     if (typeof img === 'string') {
       if (typeof process !== 'undefined') {
         const CanvasNode = await ca.getCanvasNode();
-        const imgData = new Uint8Array(atob(img.split(',')[1])
-          .split('')
-          .map((c) => c.charCodeAt(0)));
-        return CanvasNode.loadImage(Buffer.from(imgData));
+        return CanvasNode.loadImage(Buffer.from(base64ToBytes(img)));
       }
       const imgBlob = imageStrToBlob(img);
       return createImageBitmap(imgBlob);

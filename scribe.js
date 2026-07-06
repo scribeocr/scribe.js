@@ -20,7 +20,7 @@ import layout, { calcTableBbox } from './js/objects/layoutObjects.js';
 import ocr from './js/objects/ocrObjects.js';
 import { calcEvalStatsDoc } from './js/recognizeConvert.js';
 import { calcWordMetrics } from './js/utils/fontUtils.js';
-import { imageStrToBlob } from './js/utils/imageUtils.js';
+import { base64ToBytes, imageStrToBlob } from './js/utils/imageUtils.js';
 import {
   calcConf, checkOcrWordsAdjacent, mergeOcrWords, splitOcrWord,
 } from './js/utils/ocrUtils.js';
@@ -225,9 +225,7 @@ async function writeDebugImages(compDebugArrArr, filePath) {
     const canvas = await drawDebugImages({ compDebugArrArr, context: 'node' });
 
     const imgURL = canvas.toDataURL();
-    const imgData = new Uint8Array(atob(imgURL.split(',')[1])
-      .split('')
-      .map((c) => c.charCodeAt(0)));
+    const imgData = base64ToBytes(imgURL);
     const fs = await import('node:fs');
     fs.writeFileSync(filePath, imgData);
   }

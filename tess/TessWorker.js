@@ -1,14 +1,9 @@
 import { OEM, PSM } from './constants.js';
+import { base64ToBytes } from '../js/utils/imageUtils.js';
 
 const loadImage = async (image) => {
-  let data = image;
-  if (typeof image === 'string') {
-    data = atob(image.split(',')[1])
-      .split('')
-      .map((c) => c.charCodeAt(0));
-  } else if (image instanceof Blob) {
-    data = await new Response(image).arrayBuffer();
-  }
+  if (typeof image === 'string') return base64ToBytes(image);
+  const data = image instanceof Blob ? await new Response(image).arrayBuffer() : image;
   return new Uint8Array(data);
 };
 

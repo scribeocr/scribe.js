@@ -24,9 +24,7 @@ export async function loadImageElem(src, elem) {
 }
 
 export function imageStrToBlob(imgStr) {
-  const imgData = new Uint8Array(atob(imgStr.split(',')[1])
-    .split('')
-    .map((c) => c.charCodeAt(0)));
+  const imgData = base64ToBytes(imgStr);
 
   const imgBlob = new Blob([imgData], { type: 'application/octet-stream' });
 
