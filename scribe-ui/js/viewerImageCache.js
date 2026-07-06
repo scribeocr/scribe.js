@@ -3,7 +3,9 @@ import scribe from '../../scribe.js';
 import { ScribeViewer } from '../viewer.js';
 import { initBitmapWorker } from './bitmapWorkerMain.js';
 import { range } from '../../js/utils/miscUtils.js';
-import { SKIPPED } from '../../tess/TessScheduler.js';
+import { SKIPPED, DEBUG_RENDER_SCHED } from '../../tess/TessScheduler.js';
+
+/** @typedef {import('../../js/objects/imageObjects.js').ImageWrapper} ImageWrapper */
 
 /**
  * @typedef {Object} ImageProperties
@@ -85,6 +87,18 @@ export class ViewerImageCache {
      * @type {Array<number>}
      */
     this._renderSeq = [];
+    /**
+     * Pages with an in-flight `getPageCanvas` draw (holding a live reference to the bitmap).
+     * Eviction never compresses a page in this set, so a transfer can't neuter a bitmap a draw is mid-read of.
+     * @type {Set<number>}
+     */
+    this._drawing = new Set();
+    /**
+     * Per-page identity of the compression promise installed into `native[n]`, so each page is compressed once on eviction rather than re-wrapped on every cleanup sweep.
+     * A re-render replaces the slot and re-enables it.
+     * @type {Array<?Promise<any>>}
+     */
+    this._compressPromises = [];
   }
 
   _viewer() {
@@ -146,9 +160,19 @@ export class ViewerImageCache {
     const viewer = this._viewer();
     const pageDims = viewer.doc.pageMetrics[n].dims;
 
-    const backgroundImage = viewer.state.colorMode === 'binary' ? await viewer.doc.images.getBinary(n, undefined, true) : await viewer.doc.images.getNative(n, undefined, true);
+    const binary = viewer.state.colorMode === 'binary';
+    // Snapshot whether the page's image wrapper is already cached,
+    // before the getNative/getBinary below populates the slot on a fresh render,
+    // so the cache-hit trace does not mistake a fresh render for a cache read.
+    const wasCached = (binary ? viewer.doc.images.binary : viewer.doc.images.native)[n] !== undefined;
+
+    const backgroundImage = binary ? await viewer.doc.images.getBinary(n, undefined, true) : await viewer.doc.images.getNative(n, undefined, true);
     if (backgroundImage === SKIPPED) return SKIPPED;
-    const image = viewer.state.colorMode === 'binary' ? await this.getBinaryBitmap(n) : await this.getNativeBitmap(n);
+    if (DEBUG_RENDER_SCHED && wasCached) {
+      // This cache-hit trace pairs with the scheduler's render-dispatch trace: serving a page from cache dispatches no renderPdfPage.
+      console.log(`[render-sched] cache hit page ${n} (${backgroundImage?.imageBitmap != null ? 'decoded bitmap reused' : 'decoded from cached PNG'})`);
+    }
+    const image = binary ? await this.getBinaryBitmap(n) : await this.getNativeBitmap(n);
     if (image === SKIPPED) return SKIPPED;
 
     const rotation = this._displayRotation(n, backgroundImage.rotated);
@@ -253,7 +277,10 @@ export class ViewerImageCache {
           if (props.rasterScale && Math.abs(targetScale / props.rasterScale - 1) > 0.01) rerender = true;
         }
       }
-      if (!rerender) return;
+      if (!rerender) {
+        if (DEBUG_RENDER_SCHED) console.log(`[render-sched] cache hit page ${n} (canvas reused; no render)`);
+        return;
+      }
     }
 
     if (viewer.getPageStop(n) === null) return;
@@ -270,6 +297,8 @@ export class ViewerImageCache {
     const seq = (this._renderSeq[n] || 0) + 1;
     this._renderSeq[n] = seq;
 
+    // Mark the page as drawing for the whole render so eviction never transfers a bitmap this draw is mid-read of.
+    this._drawing.add(n);
     this.pageCanvasProps[n] = null;
     const canvasPromise = this.getPageCanvas(n).then((res) => {
       if (res === SKIPPED) return SKIPPED;
@@ -277,6 +306,7 @@ export class ViewerImageCache {
       return res.canvas;
     });
     this.pageCanvases[n] = canvasPromise;
+    canvasPromise.then(() => this._drawing.delete(n), () => this._drawing.delete(n));
 
     canvasPromise.then((canvas) => {
       if (canvas === SKIPPED) {
@@ -321,6 +351,8 @@ export class ViewerImageCache {
     this._nativeBitmapPromises.length = 0;
     this._binaryBitmapPromises.length = 0;
     this._renderSeq.length = 0;
+    this._drawing.clear();
+    this._compressPromises.length = 0;
   }
 
   /**
@@ -358,13 +390,53 @@ export class ViewerImageCache {
     await Promise.all(resArr);
   }
 
+  /**
+   * Compress page `n`'s viewer bitmap (a `src==null` `native` wrapper) to a PNG `src` in a worker, then free the bitmap, so a revisit re-decodes the PNG instead of re-rendering from the PDF.
+   * No-op for any other wrapper.
+   * The bitmap is transferred into the worker (zero-copy).
+   * The slot is swapped to the compression promise so consumers await it rather than reading a neutered handle.
+   * On failure the bitmap is already gone, so the slot is dropped and the page re-renders on revisit.
+   * @param {number} n
+   */
+  _compressNative(n) {
+    // Broadly-typed view of the store array: it also holds SKIPPED-promises and `undefined` that the narrow field type omits.
+    /** @type {Array<ImageWrapper|Promise<ImageWrapper|typeof SKIPPED>|undefined>} */
+    const nativeArr = this._viewer().doc.images.native;
+    const entry = nativeArr[n];
+    if (!entry) return;
+    // Already compressed (or compressing) this exact slot.
+    // A re-render installs a new promise and re-enables this.
+    if (this._compressPromises[n] === entry) return;
+    // A draw holds a live reference to this bitmap, so leave it for a later eviction pass.
+    if (this._drawing.has(n)) return;
+    const compressP = Promise.resolve(entry).then(async (w) => {
+      if (!w || w === SKIPPED || w.src != null || !w.imageBitmap) return w;
+      const bitmap = w.imageBitmap;
+      w.imageBitmap = null;
+      const bitmapScheduler = await this.getBitmapScheduler();
+      const dataUrl = await bitmapScheduler.scheduler.addJob('compressBitmap', bitmap);
+      // Only write back if this slot is still ours (a re-render may have replaced it).
+      if (nativeArr[n] === compressP) w.src = dataUrl;
+      return w;
+    }).catch(() => {
+      // Compression failed after the bitmap was already transferred away.
+      // Drop the slot so a revisit re-renders.
+      if (nativeArr[n] === compressP) nativeArr[n] = undefined;
+      return SKIPPED;
+    });
+    // The catch widens the sentinel to `symbol`, but it is only ever `SKIPPED`, so narrow back for the store.
+    nativeArr[n] = /** @type {Promise<ImageWrapper|typeof SKIPPED>} */ (compressP);
+    this._compressPromises[n] = compressP;
+  }
+
   /** @param {number} curr */
   _cleanBitmapCache(curr) {
-    const viewer = this._viewer();
-    for (let i = 0; i < viewer.doc.images.pageCount; i++) {
+    const images = this._viewer().doc.images;
+    for (let i = 0; i < images.pageCount; i++) {
       if (Math.abs(curr - i) > ViewerImageCache.cacheDeletePages) {
-        // Free decoded bitmaps for pages outside the retention window.
-        viewer.doc.images.releaseBitmapCache(i);
+        // Compress the viewer bitmap to a re-decodable PNG `src`, then free the page's decoded bitmaps to bound viewer memory.
+        this._compressNative(i);
+        images.releaseBitmapCache(i);
       }
     }
   }

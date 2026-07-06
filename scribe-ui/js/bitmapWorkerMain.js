@@ -59,17 +59,20 @@ export async function initBitmapWorker() {
      * @param {string} func The function name to call.
      * @returns {Function} A function that returns a promise resolving to the worker's response.
      */
-    function wrap(func) {
+    function wrap(func, transferPayload = false) {
       return function (...args) {
         return new Promise((innerResolve, innerReject) => {
           const id = promiseId++;
           workerPromises[id] = { resolve: innerResolve, reject: innerReject, func };
-          worker.postMessage([func, args[0], id]);
+          // When requested, transfer the payload (an ImageBitmap) into the worker zero-copy instead of cloning it.
+          const transfer = transferPayload && args[0] ? [args[0]] : [];
+          worker.postMessage([func, args[0], id], transfer);
         });
       };
     }
 
     obj.getImageBitmap = wrap('getImageBitmap');
+    obj.compressBitmap = wrap('compressBitmap', true);
 
     obj.terminate = () => worker.terminate();
 

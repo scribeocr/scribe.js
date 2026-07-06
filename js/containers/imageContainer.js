@@ -323,32 +323,25 @@ export class ImageStore {
    * @param {number} n - Page number
    */
   releaseBitmapCache = (n) => {
-    this.#releaseBitmap(this.native, this.nativeProps, n);
-    this.#releaseBitmap(this.binary, this.binaryProps, n);
+    this.#releaseBitmap(this.native, n);
+    this.#releaseBitmap(this.binary, n);
   };
 
   /**
-   * Release the decoded bitmap for page `n` from one image store, dropping the whole entry for a bitmap-only wrapper or freeing just the bitmap for a string-backed one.
+   * Free the decoded bitmap for page `n` in one image store.
    * @param {Array<?Promise<ImageWrapper|typeof SKIPPED>|?ImageWrapper>} store
-   * @param {Array<?ImageProperties>} propsStore
    * @param {number} n - Page number
    */
   // eslint-disable-next-line class-methods-use-this
-  #releaseBitmap(store, propsStore, n) {
+  #releaseBitmap(store, n) {
     const entry = store[n];
     if (!entry) return;
     Promise.resolve(entry).then((img) => {
       if (!img || img === SKIPPED) return;
-      if (img.src == null) {
-        // With no `src`, nulling this wrapper's bitmap would strand an in-flight consumer still holding it, so drop the store entry instead and let a revisit re-render.
-        if (store[n] === entry) {
-          store[n] = undefined;
-          propsStore[n] = undefined;
-        }
-      } else if (img.imageBitmap) {
-        // String-backed wrapper: free only the decoded bitmap so the page can re-decode from `src` on revisit.
-        img.imageBitmap = null;
-      }
+      // A src==null wrapper has no `src` to re-decode from, so freeing its bitmap would lose the image; the viewer's eviction-compression owns it.
+      if (img.src == null) return;
+      // String-backed wrapper: free only the decoded bitmap so the page can re-decode from `src` on revisit.
+      if (img.imageBitmap) img.imageBitmap = null;
     }).catch(() => {});
   }
 

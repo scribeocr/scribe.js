@@ -22,7 +22,7 @@ export const MAX_STAGED_THUMB_JOBS = 32;
 /**
  * Kept but off: with the paired gate in viewer.js, turn on to trace render-dispatch order when diagnosing regressions.
  */
-const DEBUG_RENDER_SCHED = false;
+export const DEBUG_RENDER_SCHED = false;
 
 export class TessScheduler {
   static #schedulerCounter = 0;
