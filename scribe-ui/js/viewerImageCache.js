@@ -331,7 +331,7 @@ export class ViewerImageCache {
     const viewer = this._viewer();
 
     // Staged renders dispatch closest-to-focus first, so setting the focus makes the current page win a backlogged queue whatever its enqueue order.
-    viewer.doc.images.pdfScheduler?.scheduler?.setFocus(curr);
+    viewer.doc.images.pdfScheduler?.setViewerFocus(curr);
 
     this._cleanBitmapCache(curr);
     this._cleanBitmapCache2(curr);
@@ -363,17 +363,8 @@ export class ViewerImageCache {
     const viewer = this._viewer();
     for (let i = 0; i < viewer.doc.images.pageCount; i++) {
       if (Math.abs(curr - i) > ViewerImageCache.cacheDeletePages) {
-        if (viewer.doc.images.native[i]) {
-          Promise.resolve(viewer.doc.images.native[i]).then((img) => {
-            // A dropped render resolves to the SKIPPED symbol (no bitmap to free). Skip it.
-            if (img && img !== SKIPPED) img.imageBitmap = null;
-          }).catch(() => {});
-        }
-        if (viewer.doc.images.binary[i]) {
-          Promise.resolve(viewer.doc.images.binary[i]).then((img) => {
-            if (img && img !== SKIPPED) img.imageBitmap = null;
-          }).catch(() => {});
-        }
+        // Free decoded bitmaps for pages outside the retention window.
+        viewer.doc.images.releaseBitmapCache(i);
       }
     }
   }

@@ -152,7 +152,8 @@ export function writeHtml({
 
     const imageObj = images ? images[g] : null;
     if (imageObj) {
-      bodyStr += `  <img class="scribe-image" src="${imageObj.src}">\n`;
+      // Materialize `src` in case this is a viewer-rendered bitmap-backed wrapper (no-op otherwise).
+      bodyStr += `  <img class="scribe-image" src="${imageObj.ensureSrc()}">\n`;
     }
 
     if (removeMargins) {

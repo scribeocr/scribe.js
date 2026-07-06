@@ -8,6 +8,7 @@ import { LayoutDataTablePage, LayoutPage, addCircularRefsDataTables } from './ob
 import ocr, { addCircularRefsOcr, OcrPage } from './objects/ocrObjects.js';
 import { PageMetrics } from './objects/pageMetricsObjects.js';
 import { selectOcrPages } from './pdf/ocrPageSelection.js';
+import { base64ToBytes } from './utils/imageUtils.js';
 import { clearObjectProperties } from './utils/miscUtils.js';
 
 /** @typedef {import('./containers/scribeDoc.js').ScribeDoc} ScribeDoc */
@@ -358,7 +359,8 @@ export async function recognizePageImp(doc, n, legacy, lstm, areaMode, tessOptio
   const runRecognition = legacy || lstm;
 
   const resArr = await gs.recognizeAndConvert2({
-    image: nativeN.src,
+    // Materialize `src` in case this is a viewer-rendered bitmap-backed wrapper (no-op otherwise).
+    image: nativeN.ensureSrc(),
     options: config,
     output: {
       // text, blocks, hocr, and tsv must all be `false` to disable recognition
@@ -1004,13 +1006,9 @@ async function recognizeCustomModel(doc, options, ocrPageMask = null) {
         return;
       }
 
-      // Convert base64 data URL to Uint8Array for the model
-      const base64Data = nativeN.src.split(',')[1];
-      const binaryStr = atob(base64Data);
-      const imageData = new Uint8Array(binaryStr.length);
-      for (let i = 0; i < binaryStr.length; i++) {
-        imageData[i] = binaryStr.charCodeAt(i);
-      }
+      // Convert base64 data URL to Uint8Array for the model.
+      // Materialize `src` in case this is a viewer-rendered bitmap-backed wrapper (no-op otherwise).
+      const imageData = base64ToBytes(nativeN.ensureSrc());
 
       // Drop the cached render once its bytes are copied.
       // Without this every page's rendered image stays cached for the whole run,

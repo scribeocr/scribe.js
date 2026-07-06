@@ -283,10 +283,15 @@ export class ImageStore {
   colorModeDefault = 'gray';
 
   /**
+   * Render page `n` from its source and return it as an `ImageWrapper`.
    * @param {number} n - Page number
    * @param {boolean} [color=false]
+   * @param {boolean} [forViewer=false]
+   * @param {boolean} [wantBitmap=false] - Take the render as a transferable ImageBitmap (viewer display path) rather than a PNG data URL.
+   *   Ignored outside a browser.
+   * @returns {Promise<ImageWrapper | typeof SKIPPED>}
    */
-  #renderImage = async (n, color = false, forViewer = false) => {
+  #renderImage = async (n, color = false, forViewer = false, wantBitmap = false) => {
     if (this.inputModes.image) {
       return this.nativeSrc[n];
     } if (this.inputModes.pdf) {
@@ -298,13 +303,54 @@ export class ImageStore {
       const dpi = 300 * (targetWidth / this.pdfDims300[n].width);
       // Display slot `n` may have been reordered. Raster its source page, not its position.
       const sourcePageN = pm.sourcePageN ?? n;
-      const result = await pdfScheduler.renderPdfPage({ pageIndex: sourcePageN, colorMode, dpi }, forViewer);
+      // The viewer's display path takes the rendered pixels as a transferable ImageBitmap, skipping the PNG encode/decode round-trip.
+      // Bitmap output needs OffscreenCanvas, so it is browser-only and Node always renders to PNG.
+      const outputFormat = wantBitmap && typeof OffscreenCanvas !== 'undefined' ? 'bitmap' : 'png';
+      const result = await pdfScheduler.renderPdfPage({
+        pageIndex: sourcePageN, colorMode, dpi, outputFormat,
+      }, forViewer);
       // The render was dropped from the queue (e.g. evicted to keep the viewer lane bounded).
       if (result === SKIPPED) return SKIPPED;
+      // A failure/blank render always returns a `dataUrl`, even when a bitmap was requested.
+      if (result.bitmap) return ImageWrapper.fromBitmap(n, result.bitmap, result.colorMode);
       return new ImageWrapper(n, result.dataUrl, result.colorMode);
     }
     throw new Error('Attempted to render image without image input provided.');
   };
+
+  /**
+   * Free the decoded bitmap(s) for page `n` to bound viewer memory (called for pages outside the viewer's retention window).
+   * @param {number} n - Page number
+   */
+  releaseBitmapCache = (n) => {
+    this.#releaseBitmap(this.native, this.nativeProps, n);
+    this.#releaseBitmap(this.binary, this.binaryProps, n);
+  };
+
+  /**
+   * Release the decoded bitmap for page `n` from one image store, dropping the whole entry for a bitmap-only wrapper or freeing just the bitmap for a string-backed one.
+   * @param {Array<?Promise<ImageWrapper|typeof SKIPPED>|?ImageWrapper>} store
+   * @param {Array<?ImageProperties>} propsStore
+   * @param {number} n - Page number
+   */
+  // eslint-disable-next-line class-methods-use-this
+  #releaseBitmap(store, propsStore, n) {
+    const entry = store[n];
+    if (!entry) return;
+    Promise.resolve(entry).then((img) => {
+      if (!img || img === SKIPPED) return;
+      if (img.src == null) {
+        // With no `src`, nulling this wrapper's bitmap would strand an in-flight consumer still holding it, so drop the store entry instead and let a revisit re-render.
+        if (store[n] === entry) {
+          store[n] = undefined;
+          propsStore[n] = undefined;
+        }
+      } else if (img.imageBitmap) {
+        // String-backed wrapper: free only the decoded bitmap so the page can re-decode from `src` on revisit.
+        img.imageBitmap = null;
+      }
+    }).catch(() => {});
+  }
 
   /**
    * @param {ImageWrapper} inputImage
@@ -326,11 +372,14 @@ export class ImageStore {
 
     await gs.getGeneralScheduler();
 
+    // Materialize `src` in case the input is a viewer-rendered bitmap-backed wrapper (no-op otherwise).
+    const inputSrc = inputImage.ensureSrc();
+
     const resPromise = (async () => {
       // Wait for non-rotated version before replacing with promise
       await gs.initTesseract({ anyOk: true });
       return gs.recognize({
-        image: inputImage.src,
+        image: inputSrc,
         options: { rotateRadians: angleArg, upscale: upscaleArg },
         output: {
           imageBinary: true, imageColor: saveNativeImage, debug: true, text: false, hocr: false, tsv: false, blocks: false,
@@ -391,7 +440,8 @@ export class ImageStore {
         let img1;
         if (renderRaw) {
           const color = props?.colorMode === 'color' || !props?.colorMode && scribeDocDefaults.colorMode === 'color';
-          img1 = await this.#renderImage(n, color, forViewer);
+          // Take the fast ImageBitmap path only when this render feeds the viewer directly with no follow-on transform.
+          img1 = await this.#renderImage(n, color, forViewer, forViewer && !renderTransform);
         } else {
           img1 = await inputNative;
         }

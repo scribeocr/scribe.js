@@ -430,6 +430,15 @@ export function createThumbnailPanel(scribe, {
     });
   }
 
+  /**
+   * Report the rail's centre page (or `null` when the rail is idle) to the render scheduler, so a staged queue dispatches the thumbnails the user is looking at before ones scrolled past.
+   * Separate from the main viewer's focus because the rail can be scrolled to a different page.
+   * @param {?number} n
+   */
+  function reportThumbFocus(n) {
+    scribe.doc?.images?.pdfScheduler?.setThumbFocus(n);
+  }
+
   /** Request thumbnails for every mounted row that still lacks one. */
   function flushRenders() {
     if (destroyed || !visible) return;
@@ -471,6 +480,10 @@ export function createThumbnailPanel(scribe, {
    */
   function updateWindow(immediate = false) {
     if (destroyed || !visible || pageCount === 0) return;
+    // Tell the scheduler which page the rail is centred on, so a backlogged queue renders on-screen thumbnails first.
+    // rowAt already returns a page index (a cell in the centre row for a multi-column grid), so it is the focus page directly.
+    // Do NOT multiply by gridCols, which is how you recover a row from a page.
+    reportThumbFocus(rowAt(scrollElem.scrollTop + viewportH / 2));
     const [first, last] = windowRange();
     for (const [n, entry] of mounted) {
       // Keep a dragged page mounted past the scroll window, since unmounting revokes the object URL the drag ghost still shows.
@@ -1378,6 +1391,8 @@ export function createThumbnailPanel(scribe, {
       panelElem.style.transform = 'translateX(-100%)';
       generation += 1;
       if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
+      // The rail is idle, so drop its focus hint and stop skewing the scheduler's background order.
+      reportThumbFocus(null);
       hideTimer = setTimeout(() => { hideTimer = null; clearMounted(); }, SLIDE_MS);
     }
     // The batch strip lives outside the panel, so it does not slide with it; show/hide it with the rail.
@@ -1493,6 +1508,7 @@ export function createThumbnailPanel(scribe, {
   function destroy() {
     destroyed = true;
     generation += 1;
+    reportThumbFocus(null);
     if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
     if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
     if (activeScrollTimer) { clearTimeout(activeScrollTimer); activeScrollTimer = null; }

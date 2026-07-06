@@ -101,6 +101,18 @@ export class PdfScheduler {
   renderPdfPage = (args, forViewer = false) => this.scheduler.addJob('renderPdfPage', args, forViewer);
 
   /**
+   * Set the page the main viewer is on, so staged viewer renders dispatch closest-to-current first.
+   * @param {?number} n
+   */
+  setViewerFocus = (n) => this.scheduler.setViewerFocus(n);
+
+  /**
+   * Set the page at the centre of the thumbnail rail, so staged thumbnail renders dispatch closest-to-view first.
+   * @param {?number} n
+   */
+  setThumbFocus = (n) => this.scheduler.setThumbFocus(n);
+
+  /**
    * Load PDF bytes into all workers in the pool.
    * Each worker creates its own ObjectCache and page tree.
    * @param {Uint8Array} pdfBytes
@@ -143,6 +155,20 @@ export class PdfSchedulerInProcess {
    */
   // eslint-disable-next-line no-unused-vars
   renderPdfPage = (args, forViewer = false) => this.#core.renderPage(args);
+
+  /**
+   * No-op: in-process renders run immediately, so there is no staged queue to prioritize.
+   * @param {?number} n
+   */
+  // eslint-disable-next-line no-unused-vars, class-methods-use-this
+  setViewerFocus = (n) => {};
+
+  /**
+   * No-op counterpart to `PdfScheduler.setThumbFocus` (see `setViewerFocus`).
+   * @param {?number} n
+   */
+  // eslint-disable-next-line no-unused-vars, class-methods-use-this
+  setThumbFocus = (n) => {};
 
   /**
    * Load PDF bytes and parse the document structure.

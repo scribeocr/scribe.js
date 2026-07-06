@@ -5104,7 +5104,7 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
 }
 
 /**
- * Render a single PDF page to a image data URL.
+ * Render a single PDF page to an image data URL.
  *
  * @param {string} pageObjText - Raw text of the Page object
  * @param {ObjectCache} objCache - PDF object cache
@@ -5113,10 +5113,10 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
  * @param {'color'|'gray'} [colorMode='color'] - Output color mode
  * @param {number} [rotate=0] - Page rotation in degrees
  * @param {number} [dpi=300] - Render resolution in dots per inch
- * @param {'png'|'jpeg'} [outputFormat='png'] - Output encoding: 'png' returns a base64 data URL and 'jpeg' returns a Blob (browser only).
+ * @param {'png'|'jpeg'|'bitmap'} [outputFormat='png'] - Output encoding: 'png' returns a base64 data URL, 'jpeg' returns a Blob, and 'bitmap' returns a transferable ImageBitmap (both browser only).
  * @param {number} [quality=0.6] - JPEG quality 0-1 (ignored for png).
- * @returns {Promise<{dataUrl?: string, blob?: Blob, colorMode: string, ok: boolean, failReason?: string, failDetail?: string}>}
- *   A PNG data URL (`dataUrl`, default) or a JPEG `blob` (when `outputFormat` is 'jpeg'), plus the effective color mode.
+ * @returns {Promise<{dataUrl?: string, blob?: Blob, bitmap?: ImageBitmap, colorMode: string, ok: boolean, failReason?: string, failDetail?: string}>}
+ *   A PNG data URL (`dataUrl`, default), a JPEG `blob` ('jpeg'), or an ImageBitmap (`bitmap`, 'bitmap'), plus the effective color mode.
  *   `ok` is false when the page is a failure placeholder (blank fallback) rather than a real render.
  *   Failure placeholders are always a PNG `dataUrl` regardless of `outputFormat`.
  *   `failReason` is then one of `exception`, `memory_abort`, or `corrupt_encrypted`, with `failDetail` carrying the error text.
@@ -8754,6 +8754,14 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   ctx.fillStyle = 'white';
   ctx.fillRect(0, 0, canvasWidth, canvasHeight);
   ctx.globalCompositeOperation = 'source-over';
+
+  // 'bitmap' returns the rendered pixels as a transferable ImageBitmap, skipping the PNG encode/decode round-trip.
+  // Only a real OffscreenCanvas can transfer, so the Node canvas fork and other backends fall through to PNG below.
+  if (outputFormat === 'bitmap' && typeof OffscreenCanvas !== 'undefined' && canvas instanceof OffscreenCanvas) {
+    const bitmap = canvas.transferToImageBitmap();
+    ca.closeDrawable(canvas);
+    return { bitmap, colorMode: effectiveColorMode, ok: true };
+  }
 
   // JPEG output (thumbnails): encode the canvas directly to a JPEG Blob, skipping getImageData and the PNG build.
   // Pass both `type` (the W3C OffscreenCanvas option browsers read) and `mime` (the option the Node @scribe.js/canvas fork reads).

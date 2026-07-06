@@ -22,8 +22,8 @@ export async function parsePdfPage(args) {
 }
 
 /**
- * Render a single page to a image data URL.
- * @param {{ pageIndex: number, colorMode: string, dpi?: number, outputFormat?: 'png'|'jpeg', quality?: number }} args
+ * Render a single page to an image data URL, a JPEG blob, or a transferable ImageBitmap.
+ * @param {{ pageIndex: number, colorMode: string, dpi?: number, outputFormat?: 'png'|'jpeg'|'bitmap', quality?: number }} args
  */
 export async function renderPdfPage(args) {
   return core.renderPage(args);
@@ -53,7 +53,11 @@ if (parentPort) {
       renderPdfPage,
       unloadPdf,
     })[func](args)
-      .then((/** @type {any} */ x) => port.postMessage({ data: x, id, status: 'resolve' }))
+      .then((/** @type {any} */ x) => {
+        // A rendered ImageBitmap (outputFormat: 'bitmap') is transferred, not copied, to the main thread.
+        const transfer = (typeof ImageBitmap !== 'undefined' && x && x.bitmap instanceof ImageBitmap) ? [x.bitmap] : [];
+        port.postMessage({ data: x, id, status: 'resolve' }, transfer);
+      })
       .catch((/** @type {any} */ err) => port.postMessage({ data: err, id, status: 'reject' }));
   };
 

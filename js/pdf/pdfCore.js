@@ -46,8 +46,9 @@ export class PdfCore {
   }
 
   /**
-   * Render a single page to a image data URL.
-   * @param {{ pageIndex: number, colorMode: string, dpi?: number, outputFormat?: 'png'|'jpeg', quality?: number }} args
+   * Render a single page to an image data URL, a JPEG blob, or a transferable ImageBitmap.
+   * @param {{ pageIndex: number, colorMode: string, dpi?: number, outputFormat?: 'png'|'jpeg'|'bitmap', quality?: number }} args
+   * @returns {Promise<{ dataUrl?: string, blob?: Blob, bitmap?: ImageBitmap, colorMode: string, ok: boolean, failReason?: string, failDetail?: string }>}
    */
   async renderPage({
     pageIndex, colorMode, dpi, outputFormat = 'png', quality = 0.6,

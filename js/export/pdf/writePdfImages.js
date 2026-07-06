@@ -217,7 +217,8 @@ export function createEmbeddedImages(images, firstObjIndex, objDevN, humanReadab
   images.forEach((image, index) => {
     const objIndex = firstObjIndex + index;
     const dims = imageUtils.getDims(image);
-    const imageBytes = base64ToBytes(image.src);
+    // Materialize `src` in case this is a viewer-rendered bitmap-backed wrapper (no-op otherwise).
+    const imageBytes = base64ToBytes(image.ensureSrc());
     let objParts;
     if (image.format === 'jpeg') {
       objParts = createImageXObjectJpeg(objIndex, imageBytes.buffer, dims.width, dims.height, humanReadable);
