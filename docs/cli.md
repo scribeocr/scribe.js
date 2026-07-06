@@ -14,8 +14,8 @@ a searchable PDF to the output directory:
 npx scribe recognize input.pdf --output ./out
 ```
 
-**Extract the text from a PDF** to a file. Pulls existing text from text-native PDFs and runs
-OCR on image-based pages:
+**Extract the text from a PDF** to a file. Pulls the existing text out of a PDF; it does **not**
+run OCR (use `recognize` for that), so a page whose text is only in a scanned image produces no text:
 
 ```sh
 npx scribe extract input.pdf output.txt
@@ -50,7 +50,9 @@ Every command accepts a PDF and, where relevant, one or more OCR files (`.hocr` 
 | --- | --- | --- |
 | `-f, --format <ext>` | `extract` | `pdf`, `hocr`, `docx`, `xlsx`, `txt`, `text`, `html`, `md`. Default `txt`. |
 | `-r, --reflow` | `extract` | Combine lines into paragraphs. |
-| `-d, --dir` | `extract` | Process all supported files in the input directory. |
+| `-d, --dir` | `extract` | Process every supported file in the input directory (one output file per input). |
+| `-R, --recursive` | `extract` | With `--dir`, recurse into subdirectories; output mirrors the input tree. |
+| `-w, --workers <n>` | `extract` | With `--dir`, number of documents to extract in parallel. Default `4`. |
 | `-l, --line-numbers` | `extract` | Prefix each line with `page:line` (txt only). |
 | `--dpi <number>` | `render` | Render resolution in dots per inch. Default `150`. |
 | `--pages <range>` | `render` | Comma/range list of 0-based pages to render (e.g. `0-4,7`). Default: all. |
@@ -106,8 +108,11 @@ The cloud SDK (`@aws-sdk/client-textract`, …) is still required and not bundle
 ## More examples
 
 ```sh
-# Extract every PDF in a folder to searchable PDFs
-npx scribe extract ./scans ./out --format pdf --dir
+# Extract the text of every PDF in a folder to .txt files (one per input)
+npx scribe extract ./docs ./out --dir
+
+# Recurse into subfolders (output mirrors the input tree), 8 documents in parallel
+npx scribe extract ./docs ./out --dir --recursive --workers 8
 
 # Add an existing hOCR text layer to a PDF
 npx scribe overlay input.pdf input.hocr --output ./out

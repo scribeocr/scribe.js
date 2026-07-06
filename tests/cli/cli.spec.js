@@ -265,6 +265,49 @@ describe('Extract CLI command.', () => {
     expect(lines[2]).toBe('HENRY’S GRAVE. Standing beside the consecrated mound,');
   }, 15000);
 
+  it('Should extract a directory recursively, mirroring the tree and skipping unreadable files.', async () => {
+    const baseDir = tmpUnique.get();
+    const inputDir = `${baseDir}/dir-in`;
+    const outputDir = `${baseDir}/dir-out`;
+    fs.mkdirSync(`${inputDir}/nested`, { recursive: true });
+    fs.copyFileSync(`${ASSETS_PATH}/academic_article_1.pdf`, `${inputDir}/one.pdf`);
+    fs.copyFileSync(`${ASSETS_PATH}/academic_article_1.pdf`, `${inputDir}/nested/two.pdf`);
+    fs.writeFileSync(`${inputDir}/broken.pdf`, ''); // 0-byte: must be skipped, never fatal
+
+    const summary = await scribe.extractTextDir(inputDir, outputDir, { recursive: true, workers: 2 });
+
+    expect(summary.extracted, 'both readable PDFs (top-level + nested) must extract').toBe(2);
+    expect(summary.skipped, 'the 0-byte file must be skipped, not abort the batch').toBe(1);
+    expect(summary.failures.length, 'exactly one failure recorded').toBe(1);
+    expect(summary.failures[0].inputPath.endsWith('broken.pdf'), 'the skipped file is broken.pdf').toBe(true);
+    expect(summary.failures[0].error.message, 'skip reason is the parse failure surfaced verbatim').toBe('Could not find startxref');
+
+    // Output mirrors the input tree (nested/two.pdf -> nested/two.txt), never a flat dump.
+    expect(fs.existsSync(`${outputDir}/one.txt`), 'top-level output written').toBe(true);
+    expect(fs.existsSync(`${outputDir}/nested/two.txt`), 'nested output mirrors the input tree').toBe(true);
+    expect(fs.existsSync(`${outputDir}/broken.txt`), 'a skipped input produces no output file').toBe(false);
+    expect(fs.readFileSync(`${outputDir}/nested/two.txt`, 'utf8'), 'nested file text extracted correctly').toContain('WHISTLEBLOWERS');
+  }, 20000);
+
+  it('Should default the --dir output to a new <input>-<format> directory instead of the cwd.', async () => {
+    const baseDir = tmpUnique.get();
+    const inputDir = `${baseDir}/mydocs`;
+    fs.mkdirSync(inputDir, { recursive: true });
+    fs.copyFileSync(`${ASSETS_PATH}/academic_article_1.pdf`, `${inputDir}/one.pdf`);
+
+    const prevCwd = process.cwd();
+    process.chdir(baseDir);
+    try {
+      // No output argument: must create `mydocs-txt/` rather than dump `one.txt` loose into the cwd.
+      await extractCLI('mydocs', undefined, { dir: true, format: 'txt' });
+    } finally {
+      process.chdir(prevCwd);
+    }
+
+    expect(fs.existsSync(`${baseDir}/mydocs-txt/one.txt`), 'output goes into the derived <input>-<format> directory').toBe(true);
+    expect(fs.existsSync(`${baseDir}/one.txt`), 'must NOT dump loose output files into the cwd').toBe(false);
+  }, 20000);
+
   afterAll(() => {
     tmpUnique.delete();
   });

@@ -280,6 +280,34 @@ async function dumpHOCR(doc, dir) {
   }
 }
 
+/**
+ * Extract each document's existing text (no OCR) from a directory of PDFs/images, writing one output file per input. Node.js only.
+ * A file that fails to parse is skipped and reported in the returned summary, never aborting the batch.
+ * @public
+ * @param {string} inputDir - Directory to read input files from.
+ * @param {string} outputDir - Directory to write output files into (mirrors the input tree).
+ * @param {Parameters<typeof import('./js/extractTextDir.js').extractTextDir>[2]} [options]
+ * @returns {ReturnType<typeof import('./js/extractTextDir.js').extractTextDir>}
+ */
+async function extractTextDir(inputDir, outputDir, options = {}) {
+  if (typeof process === 'undefined') throw new Error('This function is only available in Node.js.');
+  const { extractTextDir: impl } = await import('./js/extractTextDir.js');
+  return impl(inputDir, outputDir, options);
+}
+
+/**
+ * Per-file generator behind `extractTextDir` that yields `{ inputPath, text | error }` without writing output. Node.js only.
+ * Results arrive in completion order, not directory order.
+ * @public
+ * @param {string} inputDir - Directory to read input files from.
+ * @param {Parameters<typeof import('./js/extractTextDir.js').extractTextDirIter>[1]} [options]
+ */
+async function* extractTextDirIter(inputDir, options = {}) {
+  if (typeof process === 'undefined') throw new Error('This function is only available in Node.js.');
+  const { extractTextDirIter: impl } = await import('./js/extractTextDir.js');
+  yield* impl(inputDir, options);
+}
+
 class utils {
   // OCR utils
   static assignParagraphs = assignParagraphs;
@@ -371,6 +399,8 @@ export default {
   openDocument,
   ScribeDoc,
   extractText,
+  extractTextDir,
+  extractTextDirIter,
   extractTextFromTables,
   terminate,
   utils,

@@ -77,8 +77,6 @@ export const evalInternalCLI = async (files, options) => {
   process.exitCode = 0;
 };
 
-const supportedExtensions = ['.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.tif'];
-
 /**
  *
  * @param {string} inputFile - Path to PDF file or directory.
@@ -86,32 +84,78 @@ const supportedExtensions = ['.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '
  * @param {Object} [options]
  * @param {"pdf" | "hocr" | "docx" | "xlsx" | "txt" | "text" | "html"} [options.format]
  * @param {boolean} [options.reflow]
+ * @param {boolean} [options.lineNumbers]
  * @param {boolean} [options.dir]
+ * @param {boolean} [options.recursive]
+ * @param {string} [options.workers]
  */
 export const extractCLI = async (inputFile, outputDir, options) => {
-  if (options?.dir) {
-    const files = fs.readdirSync(inputFile)
-      .filter((file) => supportedExtensions.includes(path.extname(file).toLowerCase()))
-      .map((file) => path.join(inputFile, file));
+  try {
+    if (options?.dir) {
+      const format = options.format || 'txt';
+      const ext = format === 'text' ? 'txt' : format;
+      // Default to a new `<input>-<ext>` directory so a batch never dumps loose files into the cwd.
+      const outDir = outputDir || `${path.basename(inputFile)}-${ext}`;
 
-    if (files.length === 0) {
-      console.error(`No supported files found in directory: ${inputFile}`);
-      process.exitCode = 1;
-      return;
+      const isTTY = !!process.stderr.isTTY;
+      const startTime = Date.now();
+      let windowTime = startTime;
+      let windowDone = 0;
+      /** @type {(ms: number, n: number) => string} */
+      const rate = (ms, n) => `${n > 0 ? (ms / n).toFixed(1) : '0.0'} ms/doc`;
+      /** @type {(ms: number) => string} */
+      const dur = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`);
+      /** @type {(p: { extracted: number, skipped: number }) => string} */
+      const counts = ({ extracted, skipped }) => (skipped
+        ? `${extracted.toLocaleString()} extracted, ${skipped.toLocaleString()} skipped`
+        : `${extracted.toLocaleString()} extracted`);
+
+      process.stderr.write(`Extracting text from ${inputFile} to ${outDir}/ …\n`);
+      /** @type {(p: { extracted: number, skipped: number }) => void} */
+      const onProgress = (p) => {
+        const done = p.extracted + p.skipped;
+        const now = Date.now();
+        if (done % 500 === 0) {
+          // Persistent checkpoint: wall time per document over the last 500 files.
+          const line = `  ${counts(p)} so far, ${rate(now - windowTime, done - windowDone)} over last ${done - windowDone}`;
+          process.stderr.write(isTTY ? `\r\x1b[K${line}\n` : `${line}\n`);
+          windowTime = now;
+          windowDone = done;
+        } else if (isTTY) {
+          // Ongoing: cumulative wall time per document, refreshed each file.
+          process.stderr.write(`\r\x1b[KExtracting… ${counts(p)} (${rate(now - startTime, done)})`);
+        }
+      };
+
+      const summary = await scribe.extractTextDir(inputFile, outDir, {
+        format,
+        reflow: options.reflow,
+        lineNumbers: options.lineNumbers,
+        recursive: options.recursive,
+        workers: options.workers ? Number(options.workers) : 4,
+        onProgress,
+      });
+
+      const totalDocs = summary.extracted + summary.skipped;
+      const totalMs = Date.now() - startTime;
+      if (isTTY) process.stderr.write('\r\x1b[K'); // clear the transient live line before the summary
+
+      let msg = `Extracted ${summary.extracted} file(s) to ${outDir}`;
+      if (summary.skipped > 0) msg += `, skipped ${summary.skipped} that could not be read`;
+      msg += totalDocs > 0 ? ` in ${dur(totalMs)} (${rate(totalMs, totalDocs)})` : ` in ${dur(totalMs)}`;
+      console.log(`${msg}.`);
+      for (const f of summary.failures.slice(0, 10)) {
+        console.error(`  skipped ${f.inputPath}: ${f.error?.message || 'could not be read'}`);
+      }
+      if (summary.failures.length > 10) console.error(`  …and ${summary.failures.length - 10} more`);
+    } else {
+      await extract(inputFile, outputDir, options);
     }
-
-    const format = options?.format || 'txt';
-    const outDir = outputDir || '.';
-
-    for (const file of files) {
-      const outputFileName = path.basename(file).replace(/\.\w{1,6}$/i, `.${format}`);
-      const outputPath = path.join(outDir, outputFileName);
-      await extract(file, outputPath, options);
-    }
-  } else {
-    await extract(inputFile, outputDir, options);
+    process.exitCode = 0;
+  } catch (err) {
+    console.error(err instanceof Error ? err.message : String(err));
+    process.exitCode = 1;
   }
-  process.exitCode = 0;
 };
 
 /**
