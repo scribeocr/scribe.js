@@ -941,9 +941,10 @@ export function getWordFillOpacity(word, displayMode, confThreshMed = 75, confTh
  * @param {Array<OcrPage>} pages - Layout data tables.
  * @param {Object} [options]
  * @param {boolean} [options.includeText=false] - Include text properties at page, par, and line level.
+ * @param {boolean} [options.includeCharBoxes=true] - Keep per-character bounding boxes (`word.chars`).
  */
 export const removeCircularRefsOcr = (pages, options = {}) => {
-  const { includeText = false } = options;
+  const { includeText = false, includeCharBoxes = true } = options;
   const pagesClone = structuredClone(pages);
   pagesClone.forEach((page) => {
     if (!page) return;
@@ -997,6 +998,10 @@ export const removeCircularRefsOcr = (pages, options = {}) => {
       line.words.forEach((word) => {
         // @ts-ignore
         delete word.line;
+        if (!includeCharBoxes) {
+          // @ts-ignore
+          delete word.chars;
+        }
         // Delete debug if all values are empty/null
         if (word.debug && !word.debug.raw) {
           // @ts-ignore

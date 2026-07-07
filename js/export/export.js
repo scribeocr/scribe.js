@@ -49,6 +49,9 @@ import { mayHaveBakedText, hasBrokenFontRun, isScanPage } from '../pdf/ocrPageSe
  * @property {boolean} [xlsxPageNumberColumn]
  * @property {boolean} [compressScribe]
  * @property {boolean} [includeExtraTextScribe]
+ * @property {boolean} [includeCharBoxesScribe] - Include per-character bounding boxes (`word.chars`) in `.scribe` exports; default true.
+ *    When false they are dropped (word text is unaffected) and readers of char geometry fall back to word-level boxes.
+ * @property {string} [ocrName] - Export this named OCR layer (a key of `doc.ocr`) instead of the active one.
  * @property {'width' | 'sentence'} [docxLineSplitMode]
  * @property {boolean} [sanitize] - Strip identifying metadata (Info/XMP/PieceInfo/embedded files/image
  *    EXIF/actions/prior revisions/signatures) from the exported PDF, keeping the visible pages unchanged.
@@ -94,6 +97,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
   const enableLayout = options.enableLayout ?? scribeDocDefaults.enableLayout;
   const compressScribe = options.compressScribe ?? scribeDocDefaults.compressScribe;
   const includeExtraTextScribe = options.includeExtraTextScribe ?? scribeDocDefaults.includeExtraTextScribe;
+  const includeCharBoxesScribe = options.includeCharBoxesScribe ?? scribeDocDefaults.includeCharBoxesScribe;
 
   if (!pageArr) {
     if (maxPage === -1) maxPage = doc.inputData.pageCount - 1;
@@ -425,7 +429,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
     });
   } else if (format === 'scribe') {
     const data = {
-      ocr: removeCircularRefsOcr(ocrDownload, { includeText: includeExtraTextScribe }),
+      ocr: removeCircularRefsOcr(ocrDownload, { includeText: includeExtraTextScribe, includeCharBoxes: includeCharBoxesScribe }),
       fontState: doc.fonts.state,
       layoutRegions: doc.layoutRegions.pages,
       layoutDataTables: removeCircularRefsDataTables(doc.layoutDataTables.pages),
@@ -440,13 +444,13 @@ export async function exportData(doc, format = 'txt', options = {}) {
         ocrApplied: doc.inputData.ocrApplied,
       },
     };
+    const contentStr = JSON.stringify(data);
     if (compressScribe) {
-      const contentStr = JSON.stringify(data);
       const cs = new CompressionStream('gzip');
       const compressedStream = new Blob([new TextEncoder().encode(contentStr)]).stream().pipeThrough(cs);
       content = await new Response(compressedStream).arrayBuffer();
     } else {
-      content = JSON.stringify(data, null, 2);
+      content = contentStr;
     }
   }
 

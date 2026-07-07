@@ -120,4 +120,9 @@ export const scribeDocDefaults = {
    * Adds `text` fields at the line/paragraph/page level.
    */
   includeExtraTextScribe: false,
+
+  /**
+   * Include per-character bounding boxes (`word.chars`) in `.scribe` exports..
+   */
+  includeCharBoxesScribe: true,
 };
