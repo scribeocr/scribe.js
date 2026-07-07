@@ -4,14 +4,17 @@ import { UiDataColumn, UiRegion } from './viewerLayout.js';
 import { handleKeyboardEvent } from './viewerShortcuts.js';
 
 let layerStyleSheetInjected = false;
-/** Inject the one-time stylesheet whose `.scribe-hide-*-layer` root classes hide a viewer's text, overlay, or image layer. */
+/** Inject the one-time viewer stylesheet whose band opacity lives in `--scribe-hl-o` so the hover/selected lift can scale it with one class. */
 export function ensureLayerStyleSheet() {
   if (layerStyleSheetInjected || typeof document === 'undefined') return;
   layerStyleSheetInjected = true;
   const styleEl = document.createElement('style');
   styleEl.textContent = '.scribe-hide-text-layer .scribe-layer-text{display:none}'
     + '.scribe-hide-overlay-layer .scribe-layer-overlay{display:none}'
-    + '.scribe-hide-image-layer .scribe-layer-image{display:none!important}';
+    + '.scribe-hide-image-layer .scribe-layer-image{display:none!important}'
+    + '.scribe-hl-band{opacity:var(--scribe-hl-o,1);transition:opacity .12s ease}'
+    // Hover and selected (mini toolbar open) share the same lift.
+    + '.scribe-hl-band.scribe-hl-hover,.scribe-hl-band.scribe-hl-sel{opacity:min(1,calc(var(--scribe-hl-o,1)*1.56))}';
   document.head.appendChild(styleEl);
 }
 

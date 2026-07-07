@@ -11,7 +11,8 @@ import {
 import { UiText, UiOcrWord } from './viewerWordObjects.js';
 import { deleteSelectedWord } from './viewerModifySelectedWords.js';
 import { deleteSelectedLayoutDataTable, deleteSelectedLayoutRegion } from './viewerModifySelectedLayout.js';
-import { annotMatchesWord, applyHighlight, updateHighlightGroupOutline } from './viewerHighlights.js';
+import { applyHighlight, removeHighlightGroup, updateHighlightGroupOutline } from './viewerHighlights.js';
+import { createNote } from './viewerNotes.js';
 
 /**
  * Resolve a DOM event's target to its UI object (the `UiOcrWord`/`UiRegion`/`UiDataColumn` attached as `el._scribeObj`),
@@ -260,6 +261,12 @@ const createContextMenuHTML = () => {
   commentButton.style.display = 'none';
   commentButton.addEventListener('click', commentSelectionClick);
 
+  const bookmarkButton = document.createElement('button');
+  bookmarkButton.id = 'contextMenuBookmarkButton';
+  bookmarkButton.textContent = 'Add bookmark';
+  bookmarkButton.style.display = 'none';
+  bookmarkButton.addEventListener('click', addBookmarkClick);
+
   const deleteWordsButton = document.createElement('button');
   deleteWordsButton.id = 'contextMenuDeleteWordsButton';
   deleteWordsButton.textContent = 'Delete Words';
@@ -329,6 +336,7 @@ const createContextMenuHTML = () => {
   innerDiv.appendChild(copySelectionButton);
   innerDiv.appendChild(highlightSelectionButton);
   innerDiv.appendChild(commentButton);
+  innerDiv.appendChild(bookmarkButton);
   innerDiv.appendChild(deleteWordsButton);
   innerDiv.appendChild(splitWordButton);
   innerDiv.appendChild(mergeWordsButton);
@@ -457,42 +465,8 @@ const splitDataTableClick = () => {
 const deleteHighlightClick = () => {
   const viewer = mv();
   hideContextMenu();
-
-  const uiWord = viewer.contextMenuWord;
-  // The Delete Highlight item is only offered on a highlighted word, so this guard is defensive and normally does not fire.
-  if (!uiWord || !uiWord.highlightColor) return;
-
-  const n = uiWord.word.line.page.n;
-  const groupId = uiWord.highlightGroupId || null;
-  const wb = uiWord.word.bbox;
-  const pageAnnotations = viewer.doc.annotations.pages[n] || [];
-
-  // The annotations to drop: the word's whole group, or (for a group-less highlight, e.g. imported from a PDF) the annotation(s) covering this word.
-  const removed = groupId
-    ? pageAnnotations.filter((annot) => annot.groupId === groupId)
-    : pageAnnotations.filter((annot) => annotMatchesWord(annot, wb));
-  viewer.doc.annotations.pages[n] = pageAnnotations.filter((annot) => !removed.includes(annot));
-
-  // Clear the visual highlight on every word those annotations covered (and the clicked word itself).
-  // `highlightColor` is a setter, so assigning null repaints the word immediately.
-  for (const kw of viewer.getUiWords()) {
-    // Only clear words on the page whose annotations we removed.
-    // A pasted copy of this page has identical word geometry, so without this scope the bbox match below would also clear the copy's (independent) highlight.
-    if (kw.word.line.page.n !== n) continue;
-    const covered = kw === uiWord
-      || (groupId && kw.highlightGroupId === groupId)
-      || removed.some((annot) => annotMatchesWord(annot, kw.word.bbox));
-    if (!covered) continue;
-    kw.highlightColor = null;
-    kw.highlightOpacity = 1;
-    kw.highlightGroupId = null;
-    kw.highlightComment = '';
-    kw.highlightGapLeft = 0;
-    kw.highlightGapRight = 0;
-  }
-
-  updateHighlightGroupOutline(viewer);
-  if (UiOcrWord.updateUI) UiOcrWord.updateUI();
+  // The Delete Highlight item is only offered on a highlighted word, so the guard inside `removeHighlightGroup` normally does not fire.
+  removeHighlightGroup(viewer, viewer.contextMenuWord);
 };
 
 /**
@@ -512,28 +486,50 @@ const highlightSelectionClick = () => {
   const color = viewer._highlightColor;
   const words = viewer.getWordsUnderTextSelection();
   if (!color || words.length === 0) return;
-  applyHighlight(viewer, words, viewer.state.cp.n, color, 0.5);
+  applyHighlight(viewer, words, color, 0.5);
   window.getSelection()?.removeAllRanges();
 };
 
 /**
- * Comment on the highlight under the cursor, or highlight the current text selection and comment on that.
- * Both paths open `viewer._openCommentEditor`, a method the highlight tool installs on the viewer.
+ * Comment on the highlight under the cursor, highlight the current text selection and comment on that, or (with no such target) drop a freestanding note at the click point.
+ * The first two open `viewer._openCommentEditor`.
+ * The note path uses `createNote` + `viewer._openNoteEditor`.
+ * Both editors are installed on the viewer by the highlight tool.
+ * @param {MouseEvent} event
  */
-const commentSelectionClick = () => {
+const commentSelectionClick = (event) => {
   const viewer = mv();
   hideContextMenu();
-  if (!viewer._openCommentEditor) return;
-  if (commentTargetWord && commentTargetWord.highlightColor) {
-    viewer._openCommentEditor([commentTargetWord], commentTargetWord.word.line.page.n);
+  // `_openCommentEditor` opens a highlight card that closes on any outside click at the document level.
+  // Stop propagation so this menu click does not reach that closer and dismiss the card `_openCommentEditor` opens.
+  event.stopPropagation();
+  if (commentTargetWord && commentTargetWord.highlightColor && viewer._openCommentEditor) {
+    viewer._openCommentEditor([commentTargetWord]);
     return;
   }
   const color = viewer._highlightColor;
   const words = viewer.getWordsUnderTextSelection();
-  if (!color || words.length === 0) return;
-  applyHighlight(viewer, words, viewer.state.cp.n, color, 0.5);
-  window.getSelection()?.removeAllRanges();
-  viewer._openCommentEditor(words, viewer.state.cp.n);
+  if (color && words.length > 0 && viewer._openCommentEditor) {
+    applyHighlight(viewer, words, color, 0.5);
+    window.getSelection()?.removeAllRanges();
+    viewer._openCommentEditor(words);
+    return;
+  }
+  if (commentNoteTarget && viewer._openNoteEditor) {
+    const { n, x, y } = commentNoteTarget;
+    const annot = createNote(viewer, n, x, y);
+    viewer.renderNotes(n);
+    // Refresh the Comments panel so the new note is listed, then focus its inline editor last so the rebuild does not steal focus.
+    if (viewer.onEditCallback) viewer.onEditCallback();
+    viewer._openNoteEditor(annot, n);
+  }
+};
+
+/** Add a bookmark to the page under the cursor via the host-installed `_addBookmark`. */
+const addBookmarkClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  if (viewer._addBookmark && bookmarkTargetPage >= 0) viewer._addBookmark(bookmarkTargetPage);
 };
 
 const deleteWordsClick = () => {
@@ -563,6 +559,7 @@ let contextMenuStyleElem = null;
 /** @type {HTMLButtonElement} */ let contextMenuDeleteHighlightButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuHighlightButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuCommentButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuBookmarkButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuCopyButtonElem;
 /**
  * The highlighted word the context menu's Comment item edits, or null to comment the current text selection instead.
@@ -570,6 +567,15 @@ let contextMenuStyleElem = null;
  * @type {?import('./viewerWordObjects.js').UiOcrWord}
  */
 let commentTargetWord = null;
+/**
+ * The page point (page-local pixels) where the Comment item drops a freestanding note, when neither a highlighted word nor a text selection is the target.
+ * Null otherwise. Reset on every `contextMenuFunc`.
+ * @type {?{n: number, x: number, y: number}}
+ */
+let commentNoteTarget = null;
+// The page the Add-bookmark item targets, or -1.
+// Reset on every `contextMenuFunc`.
+let bookmarkTargetPage = -1;
 
 function ensureContextMenu() {
   if (menuNode) return;
@@ -589,6 +595,7 @@ function ensureContextMenu() {
   contextMenuDeleteHighlightButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteHighlightButton'));
   contextMenuHighlightButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuHighlightButton'));
   contextMenuCommentButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCommentButton'));
+  contextMenuBookmarkButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuBookmarkButton'));
   contextMenuCopyButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCopyButton'));
 
   contextMenuStyleElem = document.createElement('style');
@@ -659,6 +666,8 @@ export const hideContextMenu = () => {
   contextMenuSplitTableButtonElem.style.display = 'none';
   contextMenuDeleteHighlightButtonElem.style.display = 'none';
   contextMenuHighlightButtonElem.style.display = 'none';
+  contextMenuCommentButtonElem.style.display = 'none';
+  contextMenuBookmarkButtonElem.style.display = 'none';
   contextMenuCopyButtonElem.style.display = 'none';
   menuNode.style.display = 'none';
   _menuViewer = null;
@@ -676,6 +685,9 @@ export const hideContextMenu = () => {
 };
 
 export const contextMenuFunc = (viewer, event) => {
+  // A right-click inside a text field (a note or comment editor, a rename box) keeps the browser's native edit menu rather than ours.
+  const editableTarget = /** @type {?HTMLElement} */ (event.target);
+  if (editableTarget && (editableTarget.tagName === 'INPUT' || editableTarget.tagName === 'TEXTAREA' || editableTarget.isContentEditable)) return;
   ensureContextMenu();
   _menuViewer = viewer;
   try {
@@ -719,21 +731,40 @@ export const contextMenuFunc = (viewer, event) => {
       }
     }
 
-    // Comment: edit the comment on a highlighted word, or add one to a highlightable text selection.
-    // Requires the highlight tool's editor (viewer._openCommentEditor); commentTargetWord tells the handler which mode.
+    // Add comment and Add bookmark are offered on a right-click anywhere over a loaded page in an editable viewer,
+    // so a click on blank space still gets a useful menu instead of the browser's default.
+    const hasDoc = !!(viewer.doc && viewer.doc.pageMetrics && viewer.doc.pageMetrics.length);
+    const editingEnabled = !!(viewer.opt && viewer.opt.enablePageEditing);
+    // The page point under the cursor, shared by the freestanding-note and add-bookmark actions.
+    // null past the last page (clientToPage returns n = -1 there), so the void below the pages offers neither.
+    const rawPoint = (hasDoc && !viewer.state.layoutMode) ? viewer.clientToPage(event.clientX, event.clientY) : null;
+    const pagePoint = rawPoint && rawPoint.n >= 0 ? rawPoint : null;
+
+    // Comment: edit a highlighted word's comment, comment on a highlightable text selection, or (with neither) drop a freestanding note at the click point.
+    // The first two need the highlight tool's editor.
+    // The note also needs editing on.
     const canComment = !!viewer._openCommentEditor;
     let enableComment = false;
     let commentLabel = 'Add comment';
     commentTargetWord = null;
-    if (canComment && !viewer.state.layoutMode) {
-      if (targetObj instanceof UiOcrWord && targetObj.highlightColor) {
+    commentNoteTarget = null;
+    if (!viewer.state.layoutMode) {
+      if (canComment && targetObj instanceof UiOcrWord && targetObj.highlightColor) {
         enableComment = true;
         commentLabel = targetObj.highlightComment ? 'Edit comment' : 'Add comment';
         commentTargetWord = targetObj;
-      } else if (enableHighlight) {
+      } else if (canComment && enableHighlight) {
         enableComment = true;
+      } else if (editingEnabled && pagePoint && viewer._openNoteEditor) {
+        enableComment = true;
+        commentNoteTarget = pagePoint;
       }
     }
+
+    // Add bookmark: point a new outline entry at the page under the cursor.
+    // Available only in the editor, where the host installs `_addBookmark`.
+    const enableBookmark = !!viewer._addBookmark && editingEnabled && !!pagePoint;
+    bookmarkTargetPage = enableBookmark ? pagePoint.n : -1;
 
     const selectedTables = viewer.CanvasSelection.getDataTables();
 
@@ -762,7 +793,7 @@ export const contextMenuFunc = (viewer, event) => {
     }
 
     if (!(enableMergeColumns || enableSplit || enableDeleteRegion || enableDeleteTable || enableCopyTableContents || enableMergeTables || enableSplitTable
-      || enableSplitWord || enableMergeWords || enableDeleteWords || enableDeleteHighlight || enableHighlight || enableComment || enableCopy)) return;
+      || enableSplitWord || enableMergeWords || enableDeleteWords || enableDeleteHighlight || enableHighlight || enableComment || enableBookmark || enableCopy)) return;
 
     if (enableCopy) contextMenuCopyButtonElem.style.display = 'initial';
     if (enableHighlight) contextMenuHighlightButtonElem.style.display = 'initial';
@@ -770,6 +801,7 @@ export const contextMenuFunc = (viewer, event) => {
       contextMenuCommentButtonElem.textContent = commentLabel;
       contextMenuCommentButtonElem.style.display = 'initial';
     }
+    if (enableBookmark) contextMenuBookmarkButtonElem.style.display = 'initial';
     if (enableMergeWords) contextMenuMergeWordsButtonElem.style.display = 'initial';
     if (enableSplitWord) contextMenuSplitWordButtonElem.style.display = 'initial';
     if (enableDeleteWords) contextMenuDeleteWordsButtonElem.style.display = 'initial';

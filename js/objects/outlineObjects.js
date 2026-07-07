@@ -9,6 +9,8 @@
  * @typedef {Object} OutlineDest
  * @property {number} pageIndex - Zero-based page index into the current page order.
  * @property {Array<string|number|null>} view - Raw PDF destination tail after the page ref (e.g. `['XYZ', -4, 796, 0]`), preserved verbatim.
+ * @property {number} [yFrac] - Vertical target as a fraction of the visual page height from the top, in [0, 1].
+ *   Absent when `view` carries no usable vertical position (e.g. `['Fit']`).
  *
  * @typedef {Object} OutlineNode
  * @property {number} id - Stable per-document node id for the editing UI and undo/redo.
@@ -61,7 +63,7 @@ export function cloneOutline(nodes) {
   return nodes.map((n) => ({
     id: n.id,
     title: n.title,
-    dest: n.dest ? { pageIndex: n.dest.pageIndex, view: [...n.dest.view] } : null,
+    dest: n.dest ? { pageIndex: n.dest.pageIndex, view: [...n.dest.view], yFrac: n.dest.yFrac } : null,
     action: n.action,
     open: n.open,
     children: cloneOutline(n.children),
@@ -92,7 +94,7 @@ export function remapOutline(nodes, map) {
       out.push(...children); // page gone: drop this node, promote its surviving descendants
     } else {
       out.push({
-        id: n.id, title: n.title, dest: { pageIndex: ni, view: [...n.dest.view] }, action: n.action, open: n.open, children,
+        id: n.id, title: n.title, dest: { pageIndex: ni, view: [...n.dest.view], yFrac: n.dest.yFrac }, action: n.action, open: n.open, children,
       });
     }
   }

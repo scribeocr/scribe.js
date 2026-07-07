@@ -73,6 +73,10 @@ import { mayHaveBakedText, hasBrokenFontRun, isScanPage } from '../pdf/ocrPageSe
 export async function exportData(doc, format = 'txt', options = {}) {
   if (format === 'text') format = 'txt';
 
+  // A deferred import's extraction may still be in flight; every format below reads its outputs
+  // (ocr layers, data tables, annotations). Resolved at no cost for non-deferred documents.
+  await doc.textReady;
+
   const minPage = options.minPage ?? 0;
   let maxPage = options.maxPage ?? -1;
   let pageArr = options.pageArr ?? null;
@@ -108,13 +112,19 @@ export async function exportData(doc, format = 'txt', options = {}) {
   /** @type {Array<OcrPage>} */
   let ocrDownload = [];
 
+  // Export a specific named OCR layer when requested (e.g. a single engine's output), else the active one.
+  if (options.ocrName && !doc.ocr[options.ocrName]) {
+    throw new Error(`No OCR layer named "${options.ocrName}" on this document.`);
+  }
+  const ocrSource = options.ocrName ? doc.ocr[options.ocrName] : doc.ocr.active;
+
   if (format !== 'hocr' && enableLayout) {
     // Reorder HOCR elements according to layout boxes
-    for (let i = 0; i < doc.ocr.active.length; i++) {
-      ocrDownload.push(reorderOcrPage(doc.ocr.active[i], doc.layoutRegions.pages[i]));
+    for (let i = 0; i < ocrSource.length; i++) {
+      ocrDownload.push(reorderOcrPage(ocrSource[i], doc.layoutRegions.pages[i]));
     }
   } else {
-    ocrDownload = doc.ocr.active;
+    ocrDownload = ocrSource;
   }
 
   /** @type {string|ArrayBuffer} */

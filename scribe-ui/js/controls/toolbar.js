@@ -585,13 +585,19 @@ export function createSearchBar(scribe, rootElem) {
   }
 
   /** @param {string} query */
-  function runSearch(query) {
-    if (!scribe.doc || scribe.doc.pageMetrics.length === 0) return Promise.resolve();
+  async function runSearch(query) {
+    const doc = scribe.doc;
+    if (!doc || doc.pageMetrics.length === 0) return;
+    // Deferred-import text may still be extracting, so searching now would falsely report "No results".
+    // The await can span a document switch, so bail if the active doc changed.
+    if (doc._textReadySettle) {
+      await doc.textReady;
+      if (scribe.doc !== doc) return;
+    }
     scribe.state.searchMode = true;
     findText(scribe, query);
     updateSearchCounter();
-    if (scribe._searchState.matchList.length) return goToMatch(scribe, 0);
-    return Promise.resolve();
+    if (scribe._searchState.matchList.length) await goToMatch(scribe, 0);
   }
 
   function openSearch() {
@@ -1019,24 +1025,180 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       z-index: 20;
     }
 
-    .${r} .scribe-comment-editor {
+    /* Mini highlight toolbar: a small card floated above a clicked highlight.
+       Its top row holds the verbs (recolor / comment / copy / delete).
+       Its lower half is the comment editor, which slides open in place (grid-rows 0fr <-> 1fr) so commenting never swaps to a separate surface. */
+    .${r} .scribe-hl-toolbar {
       position: absolute;
       z-index: 21;
-      width: 240px;
-      box-sizing: border-box;
       background: var(--scribe-surface);
-      border: 1px solid var(--scribe-line);
+      border: 1px solid var(--scribe-line-strong);
       border-radius: 8px;
       box-shadow: var(--scribe-menu-shadow);
-      padding: 8px;
+      /* Glides when it repositions beside the highlight, but a drag turns this off. */
+      transition: left .18s ease, top .18s ease;
+    }
+
+    .${r} .scribe-hl-toolbar.dragging {
+      transition: none;
+      user-select: none;
+    }
+
+    .${r} .scribe-hl-tb-row {
+      display: flex;
+      align-items: center;
+      gap: 3px;
+      padding: 4px 5px;
+    }
+
+    .${r} .scribe-hl-tb-grip {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 15px;
+      height: 28px;
+      margin-right: 1px;
+      color: var(--scribe-ink-3);
+      cursor: grab;
+      flex: 0 0 auto;
+    }
+
+    .${r} .scribe-hl-tb-grip svg {
+      width: 10px;
+      height: 17px;
+      display: block;
+    }
+
+    .${r} .scribe-hl-toolbar.dragging .scribe-hl-tb-grip { cursor: grabbing; }
+
+    /* Coin-stack color control: the current color rests on top with 2.5px slivers of the others showing behind a 0.5px hairline ring.
+       It reads as one chip-stack icon and a single click target.
+       Clicking fans the coins to 16px steps in an overlay floating above the card, using pure transforms so nothing else moves or resizes.
+       The fan reaches the comment verb, which is disabled while open (see expandCoins) so it cannot be mis-clicked. */
+    .${r} .scribe-hl-coins {
+      position: relative;
+      display: inline-flex;
+      align-items: center;
+      width: 27.5px; /* 20px coin + 3 x 2.5px resting slivers */
+      height: 20px;
+      flex: 0 0 auto;
+      cursor: pointer;
+    }
+
+    .${r} .scribe-hl-coins .highlight-color-btn {
+      position: absolute;
+      left: 0;
+      top: 0;
+      transform: translateX(calc(var(--coin-i, 0) * 2.5px));
+      transition: transform .16s ease, box-shadow .16s ease;
+      box-shadow: 0 0 0 0.5px var(--scribe-surface);
+    }
+
+    .${r} .scribe-hl-coins:not(.open):hover .highlight-color-btn {
+      box-shadow: 0 0 0 0.5px var(--scribe-surface), 0 2px 6px rgba(0, 0, 0, .28);
+    }
+
+    /* Fanned coins float over the separator and verbs, and return the moment the fan folds. */
+    .${r} .scribe-hl-coins.open { z-index: 2; }
+
+    .${r} .scribe-hl-coins.open .highlight-color-btn { transform: translateX(calc(var(--coin-i, 0) * 16px)); }
+
+    .${r} .scribe-hl-tb-btn:disabled {
+      background: none;
+      color: var(--scribe-ink-3);
+      cursor: default;
+    }
+
+    .${r} .scribe-hl-tb-comment {
+      display: grid;
+      grid-template-rows: 0fr;
+      transition: grid-template-rows .18s ease;
+    }
+
+    .${r} .scribe-hl-toolbar.comment-open .scribe-hl-tb-comment { grid-template-rows: 1fr; }
+
+    /* Vertical padding lives on the collapsing element and transitions with it, so the closed state is truly 0-height. */
+    .${r} .scribe-hl-tb-comment > div {
+      overflow: hidden;
+      min-height: 0;
       display: flex;
       flex-direction: column;
       gap: 6px;
+      padding: 0 8px;
+      transition: padding .18s ease;
     }
+
+    .${r} .scribe-hl-toolbar.comment-open .scribe-hl-tb-comment > div {
+      border-top: 1px solid var(--scribe-line);
+      padding: 6px 8px 8px;
+    }
+
+    .${r} .scribe-hl-tb-sep {
+      width: 1px;
+      height: 18px;
+      background: var(--scribe-line-strong);
+      margin: 0 3px;
+      flex: 0 0 auto;
+    }
+
+    .${r} .scribe-hl-tb-btn {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 28px;
+      height: 28px;
+      padding: 0;
+      border: 0;
+      border-radius: 6px;
+      background: none;
+      color: var(--scribe-ink-2);
+      cursor: pointer;
+      position: relative;
+      flex: 0 0 auto;
+    }
+
+    .${r} .scribe-hl-tb-btn:hover {
+      background: var(--scribe-hover);
+      color: var(--scribe-ink);
+    }
+
+    .${r} .scribe-hl-tb-btn.scribe-hl-tb-delete:hover {
+      color: var(--scribe-danger);
+    }
+
+    .${r} .scribe-hl-tb-btn svg {
+      width: 18px;
+      height: 18px;
+      display: block;
+    }
+
+    .${r} .scribe-hl-tb-copied {
+      position: absolute;
+      bottom: calc(100% + 6px);
+      left: 50%;
+      transform: translateX(-50%);
+      background: var(--scribe-ink);
+      color: var(--scribe-surface);
+      font-size: 10px;
+      padding: 2px 7px;
+      border-radius: 4px;
+      white-space: nowrap;
+      display: none;
+      pointer-events: none;
+    }
+
+    .${r} .scribe-hl-tb-copied.show {
+      display: block;
+    }
+
     .${r} .scribe-comment-editor-text {
       width: 100%;
       box-sizing: border-box;
-      resize: vertical;
+      /* Dragging the textarea wider grows the card with it.
+         The max-width caps it so the card stays a card. */
+      resize: both;
+      max-width: 420px;
+      min-width: 170px;
       min-height: 54px;
       font: inherit;
       font-size: 13px;
@@ -1072,13 +1234,14 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       color: var(--scribe-ink);
     }
     .${r} .scribe-comment-editor-btns button:hover { background: var(--scribe-hover); }
-    .${r} .scribe-comment-editor-save {
+    /* The button element in the selectors below keeps these above the generic -btns button rule. */
+    .${r} button.scribe-comment-editor-save {
       background: var(--scribe-accent);
       border-color: var(--scribe-accent);
       color: var(--scribe-accent-ink);
     }
-    .${r} .scribe-comment-editor-save:hover { background: var(--scribe-accent-hover); border-color: var(--scribe-accent-hover); }
-    .${r} .scribe-comment-editor-delete { color: var(--scribe-danger); margin-right: auto; }
+    .${r} button.scribe-comment-editor-save:hover { background: var(--scribe-accent-hover); border-color: var(--scribe-accent-hover); }
+    .${r} button.scribe-comment-editor-delete { color: var(--scribe-danger); margin-right: auto; }
 
     /* Freestanding note: a small sticky at the note's point (its true position + drag handle), and a large matching sticky in the page's right margin (the same note blown up).
        Both are sized in the notes layer's page space but kept a constant on-screen size by dividing out the zoom.
@@ -1178,8 +1341,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-note-card-text:focus ~ .scribe-note-card-del { opacity: 1; }
     .${r} .scribe-note-card-del:hover { background: rgba(0, 0, 0, .12); color: rgba(38, 30, 0, .85); }
     .${r} .scribe-note-card.linked {
-      transform: translateY(-.28em);
-      filter: drop-shadow(0 .5em 1.15em rgba(30, 26, 16, .34));
+      transform: translateY(-.1em);
+      filter: drop-shadow(0 .24em .5em rgba(30, 26, 16, .34));
       z-index: 9;
     }
 
@@ -1497,6 +1660,18 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       object-fit: contain;
     }
 
+    /* The page's highlight bands drawn over the thumbnail raster (which never includes the highlight layer).
+       Multiply blend keeps the tiny glyphs legible through the band, exactly like the main view's fill layer. */
+    .${r} .scribe-thumb-hl {
+      position: absolute;
+      pointer-events: none;
+      mix-blend-mode: multiply;
+    }
+
+    .${r} .scribe-thumb-hl span {
+      position: absolute;
+    }
+
     .${r} .scribe-thumb-label {
       color: var(--scribe-ink-3);
       font-size: 13px;
@@ -1523,26 +1698,6 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-thumb.active .scribe-thumb-label {
       color: var(--scribe-ink);
       font-weight: 600;
-    }
-
-    .${r} .scribe-thumb-rotate {
-      position: absolute;
-      top: 8px;
-      right: 8px;
-      z-index: 2;
-      display: none;
-      align-items: center;
-      justify-content: center;
-      width: 22px;
-      height: 22px;
-      border-radius: 4px;
-      color: #fff;
-      background: rgba(0, 0, 0, .55);
-      cursor: pointer;
-    }
-
-    .${r} .scribe-thumb-box:hover .scribe-thumb-rotate {
-      display: flex;
     }
 
     .${r} .scribe-thumb-box.editable {
@@ -1589,10 +1744,9 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       pointer-events: none;
     }
 
-    /* Placed after the active-page rules so a page that is both selected and active stays blue, not gray.
-       The selected page also lifts straight up via a purely visual transform (translateY, no scaling), so the rail layout never reflows. */
+    /* Selection is shown by a lift and a translucent tint, never an outline: the outline marks the current page alone.
+       The lift is a purely visual transform (translateY, no scaling), so the rail layout never reflows. */
     .${r} .scribe-thumb.selected .scribe-thumb-box {
-      outline: 3px solid var(--scribe-accent);
       transform: translateY(-6px);
       box-shadow: var(--scribe-lift-shadow);
     }
@@ -1805,7 +1959,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       display: flex;
       align-items: center;
       gap: 4px;
-      padding: 4px 8px 4px 0;
+      padding: 4.5px 8px 4.5px 0;
       cursor: pointer;
       white-space: nowrap;
       border-radius: 4px;
@@ -1813,6 +1967,10 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
 
     .${r} .scribe-bm-row:hover { background: var(--scribe-hover); }
     .${r} .scribe-bm-row.active { background: var(--scribe-accent-soft); color: var(--scribe-accent); }
+    /* Top-level entries carry more weight, so the hierarchy reads from type alone. */
+    .${r} .scribe-bm-row.top > .scribe-bm-label { font-weight: 600; }
+    /* A little air above each section label groups it with its children. */
+    .${r} .scribe-bm-row.structural { margin-top: 4px; }
 
     .${r} .scribe-bm-twisty {
       display: inline-flex;
@@ -1828,51 +1986,42 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-bm-row:hover .scribe-bm-twisty { color: var(--scribe-ink); }
     .${r} .scribe-bm-row.active .scribe-bm-twisty { color: var(--scribe-accent); }
 
-    /* Ribbon: the "this row is a bookmark" glyph.
-       Structural nodes leave the slot empty as a fixed-width spacer so every row's title lines up regardless of whether it has a ribbon. */
-    .${r} .scribe-bm-ribbon {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      flex: 0 0 14px;
-      width: 14px;
-      height: 14px;
-      color: var(--scribe-ink-3);
-    }
-    .${r} .scribe-bm-ribbon svg { width: 13px; height: 13px; display: block; }
-    .${r} .scribe-bm-row:hover .scribe-bm-ribbon { color: var(--scribe-ink-2); }
-    .${r} .scribe-bm-row.active .scribe-bm-ribbon { color: var(--scribe-accent); }
-
     .${r} .scribe-bm-label { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
-    .${r} .scribe-bm-label.structural { color: var(--scribe-ink-3); font-style: italic; }
+    /* Title-only (structural) parents read as confident section labels, not de-emphasized afterthoughts. */
+    .${r} .scribe-bm-label.structural {
+      font-size: 10.5px;
+      font-weight: 650;
+      letter-spacing: .07em;
+      text-transform: uppercase;
+      color: var(--scribe-ink-2);
+    }
 
-    /* Target page badge: a quiet chip lighter than the panel, so each row reads as "a bookmark to page N". */
+    /* Quiet right-aligned page number, TOC-style. */
     .${r} .scribe-bm-page {
       flex: 0 0 auto;
-      margin-left: 6px;
-      padding: 0 5px;
-      font-size: 10.5px;
-      line-height: 16px;
+      margin: 0 8px 0 6px;
+      font-size: 11px;
       color: var(--scribe-ink-3);
       font-variant-numeric: tabular-nums;
-      background: var(--scribe-surface);
-      border: 1px solid var(--scribe-line);
-      border-radius: 5px;
     }
-    .${r} .scribe-bm-row.active .scribe-bm-page {
-      color: var(--scribe-accent);
-      border-color: var(--scribe-accent-ring);
-      background: transparent;
-    }
+    .${r} .scribe-bm-row.active .scribe-bm-page { color: var(--scribe-accent); }
 
+    /* Inline rename occupies the label's exact box with no border or padding, so editing never changes the row height or nudges the text.
+       Focus shows via a paint-only outline that takes no layout space. */
     .${r} .scribe-bm-rename {
       flex: 1 1 auto;
+      min-width: 0;
       font: inherit;
+      line-height: inherit;
       color: var(--scribe-ink);
-      background: var(--scribe-sunken);
-      border: 1px solid var(--scribe-accent);
-      border-radius: 3px;
-      padding: 1px 4px;
+      background: transparent;
+      border: 0;
+      padding: 0;
+      margin: 0;
+    }
+    .${r} .scribe-bm-rename:focus {
+      outline: 1px solid var(--scribe-accent);
+      outline-offset: 1px;
     }
 
     .${r} .scribe-bm-empty { padding: 12px; color: var(--scribe-ink-3); font-size: 12px; }
@@ -1993,6 +2142,14 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
     .${r} .scribe-cm-row:hover { background: var(--scribe-hover); }
     .${r} .scribe-cm-row.active { background: var(--scribe-accent-soft); border-color: var(--scribe-accent-ring); }
+    /* Hover-sync: the row whose highlight the pointer is over in the viewer. */
+    .${r} .scribe-cm-row.lit { border-color: var(--scribe-accent); box-shadow: 0 0 0 1px var(--scribe-accent-ring); }
+
+    /* Bulk selection (Ctrl/Cmd+A) in the bookmarks and comments panels: an accent wash plus a left accent bar, distinct from the single active row. */
+    .${r} .scribe-bm-row.selected, .${r} .scribe-cm-row.selected {
+      background: var(--scribe-accent-soft);
+      box-shadow: inset 3px 0 0 var(--scribe-accent);
+    }
 
     .${r} .scribe-cm-marker {
       flex: 0 0 auto;

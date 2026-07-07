@@ -311,6 +311,8 @@ async function _restoreSessionFromLegacyHocr(doc, ocrData) {
  * @param {boolean} [options.skipFontOpt]
  * @param {boolean} [options.usePdfSharedBuffer]
  * @param {'width' | 'sentence'} [options.docxLineSplitMode]
+ * @param {boolean} [options.deferText] - Resolve once the PDF is renderable, running text extraction in the background behind `doc.textReady` instead of blocking on it.
+ *   PDF inputs only.
  */
 export async function importFiles(doc, files, options = {}) {
   const usePDFText = options.usePDFText ?? scribeDocDefaults.usePDFText;
@@ -318,7 +320,11 @@ export async function importFiles(doc, files, options = {}) {
   const skipFontOpt = options.skipFontOpt ?? scribeDocDefaults.skipFontOpt;
   const usePdfSharedBuffer = options.usePdfSharedBuffer ?? opt.usePdfSharedBuffer;
   const docxLineSplitMode = options.docxLineSplitMode ?? scribeDocDefaults.docxLineSplitMode;
+  const deferText = options.deferText ?? false;
   if (!files) throw new Error('No files provided.');
+
+  // Wait for any in-flight extraction before clearing, so its workers don't write stale pages into the new document.
+  await doc.textReady;
 
   doc.clear();
   // Pre-warm the general worker pool, except with `opt.inProcess`.
@@ -577,7 +583,26 @@ export async function importFiles(doc, files, options = {}) {
       }
     });
   } else if (!scribeFiles[0] && doc.inputData.pdfMode && (usePDFText.native.main || usePDFText.native.supp || usePDFText.ocr.main || usePDFText.ocr.supp || keepPDFTextAlways)) {
-    await extractInternalPDFText(doc, { usePDFText, keepPDFTextAlways });
+    if (deferText) {
+      // `terminate()` and `clear()` resolve this still-pending promise to null via `_textReadySettle`, so waiters never hang when the worker pool is torn down mid-extraction.
+      // Extraction errors also resolve to null rather than reject, so awaiting `textReady` never throws.
+      doc.textReady = new Promise((resolve) => {
+        doc._textReadySettle = () => resolve(null);
+        extractInternalPDFText(doc, { usePDFText, keepPDFTextAlways }).then(
+          (res) => {
+            doc._textReadySettle = null;
+            resolve(res);
+          },
+          (err) => {
+            doc._textReadySettle = null;
+            console.error('Deferred PDF text extraction failed:', err);
+            resolve(null);
+          },
+        );
+      });
+    } else {
+      await extractInternalPDFText(doc, { usePDFText, keepPDFTextAlways });
+    }
   }
 }
 

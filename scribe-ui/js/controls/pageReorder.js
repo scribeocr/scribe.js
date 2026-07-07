@@ -449,8 +449,6 @@ export function installPageReorder(ctx) {
     ctx.panelElem.focus({ preventScroll: true });
     if (e.pointerType === 'mouse' && e.button !== 0) return;
     const target = /** @type {Element} */ (e.target);
-    // The rotate and delete badges handle their own clicks.
-    if (target.closest('.scribe-thumb-rotate, .scribe-thumb-delete')) return;
     // On touch, only the grip (which opts out of native scrolling) starts a reorder.
     // A touch elsewhere scrolls the rail and a tap selects, while a mouse can drag the whole thumbnail.
     if (e.pointerType === 'touch' && !target.closest('.scribe-thumb-grip')) return;

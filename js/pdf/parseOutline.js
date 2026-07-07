@@ -32,7 +32,7 @@ export function parseOutline(objCache, pages) {
 
   const firstObjNum = refObjNum(rootText, 'First');
   if (!firstObjNum) return [];
-  return walkSiblings(firstObjNum, objCache, nameDests, objNumToIndex, new Set());
+  return walkSiblings(firstObjNum, objCache, nameDests, objNumToIndex, pages, new Set());
 }
 
 /**
@@ -43,10 +43,11 @@ export function parseOutline(objCache, pages) {
  * @param {import('./objectCache.js').ObjectCache} objCache
  * @param {Map<string, { pageIndex: number, view: any }>} nameDests - Named destinations resolved from the catalog.
  * @param {Map<number, number>} objNumToIndex - Page object number to zero-based page index.
+ * @param {Array<{ mediaBox: number[], cropBox: number[]|null, rotate: number }>} pages - Page objects in document order, for destination geometry.
  * @param {Set<number>} visited - Object numbers already walked, to break cycles.
  * @returns {Array<import('../objects/outlineObjects.js').OutlineNode>} Nodes in sibling order.
  */
-function walkSiblings(firstObjNum, objCache, nameDests, objNumToIndex, visited) {
+function walkSiblings(firstObjNum, objCache, nameDests, objNumToIndex, pages, visited) {
   const out = [];
   let cur = firstObjNum;
   while (cur && !visited.has(cur)) {
@@ -55,6 +56,7 @@ function walkSiblings(firstObjNum, objCache, nameDests, objNumToIndex, visited) 
     if (!text) break;
 
     const { dest, action } = resolveItemDest(text, nameDests, objNumToIndex, objCache);
+    if (dest) setDestYFrac(dest, pages[dest.pageIndex]);
     const countMatch = /\/Count\s+(-?\d+)/.exec(text);
     const node = makeOutlineNode({
       title: decodePdfString(rawValue(text, 'Title') || ''),
@@ -65,12 +67,48 @@ function walkSiblings(firstObjNum, objCache, nameDests, objNumToIndex, visited) 
     });
 
     const childFirst = refObjNum(text, 'First');
-    if (childFirst) node.children = walkSiblings(childFirst, objCache, nameDests, objNumToIndex, visited);
+    if (childFirst) node.children = walkSiblings(childFirst, objCache, nameDests, objNumToIndex, pages, visited);
 
     out.push(node);
     cur = refObjNum(text, 'Next');
   }
   return out;
+}
+
+/**
+ * Set `dest.yFrac` from the destination view and page geometry.
+ *
+ * View coordinates are absolute and y-up, so the code subtracts the box origin and measures downward from the top.
+ * Which PDF axis is the page's visual vertical depends on /Rotate, matching the renderer: the y axis at 0/180, the x axis at 90/270.
+ * @param {{ view: Array<string|number|null>, yFrac?: number }} dest - Resolved destination, mutated in place.
+ * @param {{ mediaBox: number[], cropBox: number[]|null, rotate: number }} [page] - The destination's page object.
+ */
+function setDestYFrac(dest, page) {
+  const box = page && (page.cropBox || page.mediaBox);
+  if (!box || box.length !== 4) return;
+
+  const kind = dest.view[0];
+  let x = null;
+  let y = null;
+  if (kind === 'XYZ') [, x, y] = dest.view;
+  else if (kind === 'FitH' || kind === 'FitBH') [, y] = dest.view;
+  else if (kind === 'FitV' || kind === 'FitBV') [, x] = dest.view;
+  else if (kind === 'FitR') [, x, , , y] = dest.view;
+
+  const ox = Math.min(box[0], box[2]);
+  const oy = Math.min(box[1], box[3]);
+  const w = Math.abs(box[2] - box[0]);
+  const h = Math.abs(box[3] - box[1]);
+  const rot = (((page.rotate || 0) % 360) + 360) % 360;
+
+  let yFromTop = null;
+  if (rot === 90 && typeof x === 'number') yFromTop = x - ox;
+  else if (rot === 180 && typeof y === 'number') yFromTop = y - oy;
+  else if (rot === 270 && typeof x === 'number') yFromTop = (ox + w) - x;
+  else if (rot === 0 && typeof y === 'number') yFromTop = (oy + h) - y;
+
+  const visualH = rot % 180 === 90 ? w : h;
+  if (yFromTop != null && visualH > 0) dest.yFrac = Math.min(1, Math.max(0, yFromTop / visualH));
 }
 
 /**

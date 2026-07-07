@@ -153,6 +153,29 @@ export class ScribeViewer {
      * @type {Array<Object<string, HTMLDivElement>>}
      */
     this._textGroups = [];
+    /**
+     * Per-page highlight-layer containers, indexed by page then line orientation, mirroring `_textGroups`.
+     * Drawn below the text layer and above the page raster, with `mix-blend-mode: multiply` so highlighted glyphs stay crisp.
+     * @type {Array<Object<string, HTMLDivElement>>}
+     */
+    this._highlightGroups = [];
+    /**
+     * Per-page maps from highlight group id to that group's fill rects, rebuilt with the fill layer, so hover feedback can lift every band of a group at once (including bands on other pages).
+     * @type {Array<Map<string, Array<HTMLDivElement>>>}
+     */
+    this._highlightRectsByGroup = [];
+    /**
+     * Called with the page index after that page's highlight fill layer is rebuilt.
+     * The thumbnail panel registers here to keep its per-page highlight overlay current.
+     * @type {?(n: number) => void}
+     */
+    this.onHighlightsRendered = null;
+    /**
+     * Called with a highlight group id when the pointer enters a highlight, and null when it leaves.
+     * The comments panel registers here to light the hovered highlight's row.
+     * @type {?(groupId: ?string) => void}
+     */
+    this.onHighlightHover = null;
     /** @type {Array<?HTMLDivElement>} */
     this._overlayGroups = [];
     /** @type {Array<?HTMLDivElement>} Per-page sticky-note layer (z above words/highlights, survives layout-mode teardown). */
@@ -296,6 +319,8 @@ export class ScribeViewer {
     }
     this.pageContainerArr.length = 0;
     this._textGroups.length = 0;
+    this._highlightGroups.length = 0;
+    this._highlightRectsByGroup.length = 0;
     this.textGroupsRenderIndices.length = 0;
     this._overlayGroups.length = 0;
     this._notesGroups.length = 0;
@@ -997,19 +1022,22 @@ export class ScribeViewer {
     document.body.appendChild(ind);
     a.indicator = ind;
 
-    const DEAD = 12; // px of slack before any scrolling starts
-    const RANGE = 600; // px past the dead zone at which the max speed is reached
-    const MIN = 10 / 60; // px-per-frame floor (~10 px/s) the instant past the dead zone, avoiding a sub-useful crawl
-    const MAX = 400; // px-per-frame at full deflection (~24000 px/s at 60fps)
-    const EXP = 3; // >1 -> gentle near the dead zone (fine, few-lines control), steep at the extremes
+    const DEAD = 12; // px of slack before any scrolling starts (rejects click jitter)
+    const TOE = 40; // px of the ramp's flat toe hidden behind the dead zone, so scrolling starts already climbing the curve instead of from its flat bottom
+    const RANGE = 600; // px of ramp travel from its zero to full speed
+    const SPAN = RANGE + TOE; // full ramp length, of which the TOE lives behind the dead zone
+    const MIN = 10 / 60; // px-per-frame floor of the ramp, which combined with TOE and MAX puts the dead-zone edge speed at ~22 px/s
+    const MAX = 800; // px-per-frame at full deflection (~48000 px/s at 60fps)
+    const EXP = 3; // >1 -> gentle near the start, steep at the extremes
     const tick = () => {
       if (!a.active) return;
       // Vertical-only, like a standard PDF viewer: the horizontal cursor offset is ignored so the page never drifts left/right.
       // (Horizontal scrolling stays on Shift+wheel and the scrollbar.)
       // Cursor below origin (vY > 0) -> scroll down -> content moves up -> negate (matches the wheel handler's sign).
       const d = a.pointerY - a.originY;
-      const past = Math.min(Math.abs(d) - DEAD, RANGE);
-      const vY = past <= 0 ? 0 : Math.sign(d) * (MIN + (MAX - MIN) * (past / RANGE) ** EXP);
+      const past = Math.abs(d) - DEAD;
+      const ramp = Math.min(past + TOE, SPAN); // start TOE px up the curve, so the dead zone hides the flat toe
+      const vY = past <= 0 ? 0 : Math.sign(d) * (MIN + (MAX - MIN) * (ramp / SPAN) ** EXP);
       if (vY !== 0) this.pan({ deltaY: -vY });
       a.rafId = requestAnimationFrame(tick);
     };
@@ -1153,6 +1181,44 @@ export class ScribeViewer {
     // Middle-button 1:1 drag-pan (non-`invis` modes; `invis` mode uses autoscroll instead).
     scrollContainer.addEventListener('mousemove', (event) => this.executeDrag(event));
 
+    // Hovering any word of a highlight lifts every band of its group and swaps in a pointer cursor,
+    // signalling the highlight is an engageable object (its actions live in the right-click menu).
+    // Delegated rather than per-word so it tracks highlights applied or removed after the words were built.
+    /** @type {?{wordEl: HTMLElement, rects: Array<HTMLDivElement>}} */
+    let hlLift = null;
+    const clearHlLift = () => {
+      if (!hlLift) return;
+      for (const rect of hlLift.rects) rect.classList.remove('scribe-hl-hover');
+      hlLift.wordEl.style.cursor = '';
+      hlLift = null;
+      if (this.onHighlightHover) this.onHighlightHover(null);
+    };
+    scrollContainer.addEventListener('mouseover', (event) => {
+      const wordEl = event.target instanceof Element ? /** @type {?HTMLElement} */ (event.target.closest('.scribe-word')) : null;
+      if (hlLift && hlLift.wordEl === wordEl) return;
+      clearHlLift();
+      if (!wordEl) return;
+      const kw = /** @type {any} */ (wordEl)._scribeObj;
+      if (!kw || !kw.highlightColor) return;
+      /** @type {Array<HTMLDivElement>} */
+      const rects = [];
+      if (kw.highlightGroupId) {
+        // A group can span pages (a selection highlighted across a page break), so gather bands from every page's map.
+        for (const map of this._highlightRectsByGroup) {
+          const arr = map && map.get(kw.highlightGroupId);
+          if (arr) rects.push(...arr);
+        }
+      } else if (kw.highlightRectElem) {
+        // A group-less highlight (imported without ids) lifts just its own band.
+        rects.push(kw.highlightRectElem);
+      }
+      for (const rect of rects) rect.classList.add('scribe-hl-hover');
+      wordEl.style.cursor = 'pointer';
+      hlLift = { wordEl, rects };
+      if (this.onHighlightHover) this.onHighlightHover(kw.highlightGroupId || null);
+    });
+    scrollContainer.addEventListener('mouseleave', clearHlLift);
+
     scrollContainer.addEventListener('touchstart', (event) => {
       if (this.mode !== 'select') return;
       if (event.touches[1]) this.executePinchTouch(event);
@@ -1290,6 +1356,12 @@ export class ScribeViewer {
         group.replaceChildren();
       }
     }
+    // Clear the highlight layer here too, so a page that loses its text (no-data early return below) does not strand stale bands.
+    if (this._highlightGroups[n]) {
+      for (const group of Object.values(this._highlightGroups[n])) {
+        group.replaceChildren();
+      }
+    }
     this._wordObjs[n] = [];
 
     if (UiText.inputWord && UiText.inputWord.word.line.page.n === n && UiText.inputRemove) {
@@ -1406,6 +1478,69 @@ export class ScribeViewer {
   }
 
   /**
+   * Navigate to an outline (bookmark) destination.
+   * A rotated page falls back to a plain page jump because its raster no longer shares the parse-time vertical axis that `yFrac` indexes.
+   * @param {{ pageIndex: number, yFrac?: number }} dest
+   */
+  goToOutlineDest(dest) {
+    const n = dest.pageIndex;
+    if (!Number.isInteger(n) || n < 0 || n > (this.doc.inputData.pageCount - 1)) return;
+    const dims = this.getDisplayDims(n);
+    const userRotation = (this.doc.pageMetrics[n]?.rotation || 0) % 360;
+    const yFrac = (typeof dest.yFrac === 'number' && userRotation === 0 && dims) ? dest.yFrac : null;
+    if (yFrac == null || yFrac < 0.02) {
+      this.displayPage(n, true, false);
+      return;
+    }
+
+    this.displayPage(n, false, false);
+    const yPx = yFrac * dims.height;
+    // The same 100px lead-in displayPage's own page jump uses, so the two scroll styles agree at the page top.
+    this.scrollContainer.scrollTop = Math.max(0, (this.getPageStop(n) + yPx - 100) * this.zoomLevel);
+    this._flashDestination(n, yPx);
+  }
+
+  /**
+   * One-shot flash marking the destination at page-space `yPx` on page `n`.
+   * Styled inline and animated via WAAPI so it needs no stylesheet, working even in bare embeds.
+   * @param {number} n
+   * @param {number} yPx
+   */
+  _flashDestination(n, yPx) {
+    const pc = this._ensurePageContainer(n);
+    const dims = this.getDisplayDims(n);
+    if (!pc || !dims) return;
+    for (const prev of pc.querySelectorAll('.scribe-dest-flash')) prev.remove();
+    const el = document.createElement('div');
+    el.className = 'scribe-dest-flash';
+    // Page space is ~300 DPI, so the 90px band is ~22pt.
+    // That is roughly a heading line.
+    const h = Math.min(90, dims.height);
+    Object.assign(el.style, {
+      position: 'absolute',
+      left: '8px',
+      right: '8px',
+      top: `${Math.max(0, Math.min(yPx - h / 2, dims.height - h))}px`,
+      height: `${h}px`,
+      borderRadius: '6px',
+      background: 'var(--scribe-accent-ring, rgba(28, 98, 212, .30))',
+      pointerEvents: 'none',
+      zIndex: '6',
+    });
+    pc.appendChild(el);
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      el.style.opacity = '0.6';
+      setTimeout(() => el.remove(), 900);
+    } else {
+      const anim = el.animate(
+        [{ opacity: 0 }, { opacity: 1, offset: 0.15 }, { opacity: 0 }],
+        { duration: 1400, easing: 'ease-out' },
+      );
+      anim.onfinish = () => el.remove();
+    }
+  }
+
+  /**
    * Ensure the per-page container `<div>` exists (positioned in content space, sized to the displayed page),
    * creating it and attaching it to the zoom layer if needed.
    * @param {number} n
@@ -1507,6 +1642,34 @@ export class ScribeViewer {
     for (const [key, group] of Object.entries(this._textGroups[n])) {
       group.style.transform = `rotate(${Number(key) * 90 + rotation + userRotation}deg)`;
     }
+    // Keep the highlight groups rotated in lock-step with their text groups, so the band tracks the words on a skewed/rotated page.
+    if (this._highlightGroups[n]) {
+      for (const [key, group] of Object.entries(this._highlightGroups[n])) {
+        group.style.transform = `rotate(${Number(key) * 90 + rotation + userRotation}deg)`;
+      }
+    }
+  }
+
+  /**
+   * The per-page highlight fill layer, one group per line orientation like the text layer.
+   * It blends with `mix-blend-mode: multiply` so a highlight tints the paper to its colour while the text layer above stays at full contrast.
+   * @param {number} n
+   * @param {number} [orientation=0]
+   * @returns {HTMLDivElement}
+   */
+  getHighlightGroup(n, orientation = 0) {
+    if (!this._highlightGroups[n]) this._highlightGroups[n] = {};
+    if (!this._highlightGroups[n][orientation]) {
+      const group = this.createGroup(n, orientation);
+      group.style.zIndex = '0';
+      group.style.pointerEvents = 'none';
+      group.style.mixBlendMode = 'multiply';
+      group.classList.add('scribe-layer-highlight');
+      this._highlightGroups[n][orientation] = group;
+      const pc = this._ensurePageContainer(n);
+      if (pc) pc.appendChild(group);
+    }
+    return this._highlightGroups[n][orientation];
   }
 
   /** @param {number} n */
@@ -1744,6 +1907,11 @@ export class ScribeViewer {
         for (const group of Object.values(this._textGroups[n])) {
           group.replaceChildren();
         }
+        if (this._highlightGroups[n]) {
+          for (const group of Object.values(this._highlightGroups[n])) {
+            group.replaceChildren();
+          }
+        }
         this._wordObjs[n] = [];
         this.textGroupsRenderIndices.splice(i, 1);
         i--;
@@ -1959,6 +2127,95 @@ export class ScribeViewer {
         this._wordObjs[page.n].push(wordCanvas);
       }
     }
+
+    this.renderHighlights(page.n);
+  }
+
+  /**
+   * Rebuild page `n`'s highlight fill layer from the per-word highlight state on `_wordObjs[n]`.
+   * Consecutive words on a line sharing the same highlight are merged into one rectangle,
+   * so a multi-word highlight is one seamless band rather than a row of per-word rectangles.
+   * @param {number} n
+   */
+  renderHighlights(n) {
+    if (this._highlightGroups[n]) {
+      for (const group of Object.values(this._highlightGroups[n])) group.replaceChildren();
+    }
+    this._highlightRectsByGroup[n] = new Map();
+    if (this.onHighlightsRendered) this.onHighlightsRendered(n);
+    const words = this._wordObjs[n];
+    if (!words || words.length === 0) return;
+
+    /** @type {Map<string, Array<UiOcrWord>>} */
+    const lineMap = new Map();
+    for (const kw of words) {
+      kw.highlightRectElem = null;
+      const lineId = kw.word.line.id;
+      let lineArr = lineMap.get(lineId);
+      if (!lineArr) { lineArr = []; lineMap.set(lineId, lineArr); }
+      lineArr.push(kw);
+    }
+
+    for (const lineWords of lineMap.values()) {
+      lineWords.sort((a, b) => a.x() - b.x());
+
+      /** @type {?{key: string, color: string, opacity: number, groupId: ?string, words: Array<UiOcrWord>, left: number, right: number, top: number, bottom: number, orientation: number}} */
+      let run = null;
+      const flush = () => {
+        if (!run) return;
+        const group = this.getHighlightGroup(n, run.orientation);
+        const rect = document.createElement('div');
+        const r = parseInt(run.color.slice(1, 3), 16);
+        const g = parseInt(run.color.slice(3, 5), 16);
+        const b = parseInt(run.color.slice(5, 7), 16);
+        // The band's alpha lives in `opacity` via `--scribe-hl-o` (not in an rgba background), so the hover lift is one class toggle that scales it up without re-deriving the colour.
+        rect.className = 'scribe-hl-band';
+        rect.style.setProperty('--scribe-hl-o', `${run.opacity}`);
+        Object.assign(rect.style, {
+          position: 'absolute',
+          left: `${run.left}px`,
+          top: `${run.top}px`,
+          width: `${run.right - run.left}px`,
+          height: `${run.bottom - run.top}px`,
+          background: `rgb(${r}, ${g}, ${b})`,
+          pointerEvents: 'none',
+        });
+        group.appendChild(rect);
+        for (const rkw of run.words) rkw.highlightRectElem = rect;
+        if (run.groupId) {
+          const arr = this._highlightRectsByGroup[n].get(run.groupId);
+          if (arr) arr.push(rect); else this._highlightRectsByGroup[n].set(run.groupId, [rect]);
+        }
+        run = null;
+      };
+
+      for (const kw of lineWords) {
+        if (!kw.highlightColor) { flush(); continue; }
+        const key = `${kw.highlightColor}_${kw.highlightOpacity}_${kw.highlightGroupId || ''}`;
+        const fs = kw.fontSize;
+        // kw.y() is baseline - 0.6fs, not the baseline itself.
+        const left = kw.x() - (kw.word.visualCoords ? kw.leftSideBearing : 0);
+        const wordBox = {
+          left,
+          right: left + kw.width(),
+          top: kw.y() - fs * 0.12,
+          bottom: kw.y() + fs * 0.72,
+        };
+        if (run && run.key === key) {
+          run.left = Math.min(run.left, wordBox.left);
+          run.right = Math.max(run.right, wordBox.right);
+          run.top = Math.min(run.top, wordBox.top);
+          run.bottom = Math.max(run.bottom, wordBox.bottom);
+          run.words.push(kw);
+        } else {
+          flush();
+          run = {
+            key, color: kw.highlightColor, opacity: kw.highlightOpacity, groupId: kw.highlightGroupId, words: [kw], orientation: kw.word.line.orientation, ...wordBox,
+          };
+        }
+      }
+      flush();
+    }
   }
 
   /**
@@ -2102,26 +2359,23 @@ export class ScribeViewer {
   /**
    * Apply a highlight color and opacity to the given words, creating or updating their annotation data.
    * @param {Array<InstanceType<typeof UiOcrWord>>} words
-   * @param {number} pageIndex
    * @param {string} color
    * @param {number} opacity
    */
-  applyHighlight(words, pageIndex, color, opacity) { return applyHighlight(this, words, pageIndex, color, opacity); }
+  applyHighlight(words, color, opacity) { return applyHighlight(this, words, color, opacity); }
 
   /**
    * Remove highlights from the given words and drop their annotation data.
    * @param {Array<InstanceType<typeof UiOcrWord>>} words
-   * @param {number} pageIndex
    */
-  removeHighlight(words, pageIndex) { return removeHighlight(this, words, pageIndex); }
+  removeHighlight(words) { return removeHighlight(this, words); }
 
   /**
    * Set the comment on the highlight group containing the first selected word.
    * @param {Array<InstanceType<typeof UiOcrWord>>} words
-   * @param {number} pageIndex
    * @param {string} comment
    */
-  modifyHighlightComment(words, pageIndex, comment) { return modifyHighlightComment(this, words, pageIndex, comment); }
+  modifyHighlightComment(words, comment) { return modifyHighlightComment(this, words, comment); }
 
   /** Redraw the dashed outline around the words in the currently selected highlight group. */
   updateHighlightGroupOutline() { return updateHighlightGroupOutline(this); }
@@ -2171,11 +2425,11 @@ ScribeViewer.findViewerForTarget = findViewerForTarget;
 ScribeViewer.getActiveViewer = () => getActiveViewer() || getDefaultViewer();
 
 const _delegatedMethods = [
-  'init', 'displayPage', 'rotatePage', 'renderWords',
+  'init', 'displayPage', 'goToOutlineDest', 'rotatePage', 'renderWords',
   'setInitialPositionZoom', 'getPageStop', 'calcPageStops', 'getViewportCenter',
   'pan', 'zoom', 'resize', 'startDrag', 'startDragTouch', 'executeDrag', 'executeDragTouch',
   'stopDragPinch', 'executePinchTouch', 'createGroup', 'getTextGroup', 'setTextGroupRotation',
-  'getOverlayGroup', 'calcPage', 'calcSelectionImageCoords', 'getUiWords', 'getUiRegions',
+  'getHighlightGroup', 'renderHighlights', 'getOverlayGroup', 'calcPage', 'calcSelectionImageCoords', 'getUiWords', 'getUiRegions',
   'getUiDataColumns', 'getDataTables', 'getUiDataTables', 'destroyControls', 'destroyOverlay',
   'destroyText', 'updateCurrentPage', 'setWordColorOpacity', 'deleteSelectedWord',
   'modifySelectedWordBbox', 'modifySelectedWordStyle', 'deleteSelectedLayoutDataTable',

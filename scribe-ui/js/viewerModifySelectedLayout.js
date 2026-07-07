@@ -7,7 +7,7 @@ export const deleteSelectedLayoutDataTable = (viewer) => {
   const selectedColumns = _viewer.CanvasSelection.getUiDataColumns();
   if (selectedColumns.length === 0) return;
 
-  _viewer.doc.deleteLayoutDataTable(selectedColumns[0].uiTable.layoutDataTable, _viewer.state.cp.n);
+  _viewer.doc.deleteLayoutDataTable(selectedColumns[0].uiTable.layoutDataTable);
 
   selectedColumns[0].uiTable.destroy();
   _viewer.destroyControls();
@@ -20,7 +20,7 @@ export const deleteSelectedLayoutRegion = (viewer) => {
   if (selectedRegions.length === 0) return;
 
   selectedRegions.forEach((region) => {
-    _viewer.doc.deleteLayoutRegion(region.layoutBox, _viewer.state.cp.n);
+    _viewer.doc.deleteLayoutRegion(region.layoutBox);
     region.destroy();
   });
   _viewer.destroyControls();

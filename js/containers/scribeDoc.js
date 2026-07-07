@@ -380,6 +380,21 @@ export class ScribeDoc {
      */
     this.outline = [];
 
+    /**
+     * Resolves once this document's text extraction has completed.
+     * Already resolved except during a `deferText` import, where extraction continues in the background after `importFiles` returns.
+     * Resolves rather than rejects on `terminate()`, so waiters cannot hang on a dead worker pool.
+     * @type {Promise<?Awaited<ReturnType<typeof import('../extractPDFText.js').extractInternalPDFText>>>}
+     */
+    this.textReady = Promise.resolve(null);
+
+    /**
+     * Settles a pending deferred `textReady`.
+     * Non-null exactly while a deferred extraction is in flight, so it doubles as the "text not ready yet" test.
+     * @type {?() => void}
+     */
+    this._textReadySettle = null;
+
     this.fonts = new DocFonts();
     this.fonts.id = this.id;
 
@@ -407,10 +422,11 @@ export class ScribeDoc {
   }
 
   /**
+   * Delete a layout region from the page it belongs to.
    * @param {LayoutRegion} region - Region to delete.
-   * @param {number} n - Page number.
    */
-  deleteLayoutRegion(region, n) {
+  deleteLayoutRegion(region) {
+    const n = region.page.n;
     for (const [key, value] of Object.entries(this.layoutRegions.pages[n].boxes)) {
       if (value.id === region.id) {
         delete this.layoutRegions.pages[n].boxes[key];
@@ -420,10 +436,11 @@ export class ScribeDoc {
   }
 
   /**
+   * Delete a layout data table from the page it belongs to.
    * @param {LayoutDataTable} table - Table to delete.
-   * @param {number} n - Page number.
    */
-  deleteLayoutDataTable(table, n) {
+  deleteLayoutDataTable(table) {
+    const n = table.page.n;
     const idx = this.layoutDataTables.pages[n].tables.findIndex((t) => t.id === table.id);
     if (idx >= 0) {
       this.layoutDataTables.pages[n].tables.splice(idx, 1);
@@ -435,6 +452,9 @@ export class ScribeDoc {
    * @param {number} i - 0-based page index.
    */
   deletePage(i) {
+    // Deferred text extraction (`importFiles` deferText) writes per-page results by import-time index,
+    // so editing the page model while it is in flight corrupts the document.
+    if (this._textReadySettle) { console.warn('Page edit ignored: text import is still in progress.'); return; }
     if (i < 0 || i >= this.pageMetrics.length) return;
     this.history.record(() => {
       materializeSourcePages(this);
@@ -455,6 +475,8 @@ export class ScribeDoc {
    * @param {number} to
    */
   movePage(from, to) {
+    // See `deletePage`: no page-model restructuring while a deferred extraction is in flight.
+    if (this._textReadySettle) { console.warn('Page edit ignored: text import is still in progress.'); return; }
     const len = this.pageMetrics.length;
     if (from < 0 || from >= len || to < 0 || to >= len || from === to) return;
     this.history.record(() => {
@@ -477,6 +499,8 @@ export class ScribeDoc {
    * @param {Array<number>} indices - 0-based page indices to remove.
    */
   deletePages(indices) {
+    // See `deletePage`: no page-model restructuring while a deferred extraction is in flight.
+    if (this._textReadySettle) { console.warn('Page edit ignored: text import is still in progress.'); return; }
     // Splice high-to-low so each removal leaves the lower indices valid.
     const sorted = [...new Set(indices)].filter((i) => i >= 0 && i < this.pageMetrics.length).sort((a, b) => b - a);
     if (sorted.length === 0) return;
@@ -502,6 +526,8 @@ export class ScribeDoc {
    * @param {number} to - Block start position in the post-removal order.
    */
   movePages(indices, to) {
+    // See `deletePage`: no page-model restructuring while a deferred extraction is in flight.
+    if (this._textReadySettle) { console.warn('Page edit ignored: text import is still in progress.'); return; }
     const sorted = [...new Set(indices)].filter((i) => i >= 0 && i < this.pageMetrics.length).sort((a, b) => a - b);
     if (sorted.length === 0) return;
     this.history.record(() => {
@@ -529,6 +555,9 @@ export class ScribeDoc {
    * @returns {Array<object>} One clone bundle per valid index, in ascending page order.
    */
   copyPages(indices) {
+    // Copying while a deferred extraction is in flight would snapshot pages without their text,
+    // silently degrading a later paste. Refused (empty clipboard), consistent with `deletePage`.
+    if (this._textReadySettle) { console.warn('Page copy ignored: text import is still in progress.'); return []; }
     const sorted = [...new Set(indices)].filter((i) => i >= 0 && i < this.pageMetrics.length).sort((a, b) => a - b);
     if (sorted.length === 0) return [];
     materializeSourcePages(this);
@@ -545,6 +574,8 @@ export class ScribeDoc {
    * @param {number} to - Insertion index (0..pageMetrics.length).
    */
   insertPages(bundles, to) {
+    // See `deletePage`: no page-model restructuring while a deferred extraction is in flight.
+    if (this._textReadySettle) { console.warn('Page edit ignored: text import is still in progress.'); return; }
     if (!Array.isArray(bundles) || bundles.length === 0) return;
     this.history.record(() => {
       const prevLen = this.pageMetrics.length;
@@ -727,6 +758,10 @@ export class ScribeDoc {
    * The document's own PDF pool is cleared but not terminated (see `terminate`).
    */
   clear() {
+    // Settle any pending deferred extraction so its waiters resolve rather than hang.
+    this._textReadySettle?.();
+    this._textReadySettle = null;
+    this.textReady = Promise.resolve(null);
     this.inputData.clear();
     clearObjectProperties(this.ocr);
     this.ocr.active = [];
@@ -749,6 +784,9 @@ export class ScribeDoc {
    * Does not touch the shared general/OCR pool or the process-wide built-in fonts.
    */
   async terminate() {
+    // In-flight extraction jobs die with the worker pool below and never settle `textReady`, so settle it now to let waiters proceed rather than hang.
+    this._textReadySettle?.();
+    this._textReadySettle = null;
     await this.images.terminate();
     this.fonts.clear();
     await dropFromWorkers(this.fonts);

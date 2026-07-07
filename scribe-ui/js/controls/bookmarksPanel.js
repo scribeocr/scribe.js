@@ -1,5 +1,6 @@
 // Bookmarks (document outline) side panel, a sibling of the page-thumbnails rail.
-// Renders scribe.doc.outline as a navigable tree: clicking a bookmark jumps to its page.
+// Renders scribe.doc.outline as a navigable tree: clicking a bookmark jumps to its destination.
+// Rows are text-first, like a book's table of contents: hierarchy comes from indentation and type (top-level entries semibold, title-only parents as section labels), not per-row icons.
 import { makeIconButton } from './toolbar.js';
 
 // A bookmark-ribbon glyph for the toolbar toggle.
@@ -8,20 +9,17 @@ const BOOKMARK_SVG = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="cu
 // Points right when collapsed.
 // The `.open` class rotates it to point down.
 const TWISTY_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M9 6l6 6-6 6"/></svg>';
-// Row ribbon: the same bookmark shape as the panel toggle, so a row reads unmistakably as "a bookmark" (not a bare title).
-// Sized by CSS.
-const RIBBON_SVG = '<svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M4 2a1 1 0 0 0-1 1v11l5-3 5 3V3a1 1 0 0 0-1-1H4z"/></svg>';
 // Plus glyph for the header's persistent add button.
 const PLUS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg>';
 
 /**
  * Create the bookmarks (document outline) side panel.
  * @param {*} scribe - The ScribeViewer instance.
- * @param {{ onNavigate: (pageIndex: number) => void,
- *   onResize?: (width: number, phase: 'start'|'move'|'end') => void }} handlers
+ * @param {{ onNavigate: (dest: { pageIndex: number, yFrac?: number }) => void, onResize?: (width: number, phase: 'start'|'move'|'end') => void }} handlers
+ *   `onNavigate` receives the clicked bookmark's whole destination, so the host can honor its within-page position (`yFrac`), not just the page.
  *   `onResize` fires as the right-edge handle is dragged, with the desired width and the drag phase: `start` (pointerdown), `move` (each pointermove), and `end` (release).
  * @returns {{ panelElem: HTMLDivElement, toggleElem: HTMLSpanElement, rebuild: () => void,
- *   setActive: (pageIndex: number) => void, setVisible: (v: boolean) => void, destroy: () => void }}
+ * setActive: (pageIndex: number) => void, setVisible: (v: boolean) => void, destroy: () => void, addAtPage: (pageIndex?: number) => void }}
  */
 export function createBookmarksPanel(scribe, { onNavigate, onResize }) {
   const panelElem = document.createElement('div');
@@ -41,7 +39,7 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize }) {
   addElem.title = 'Add bookmark at current page';
   addElem.setAttribute('aria-label', 'Add bookmark at current page');
   addElem.innerHTML = PLUS_SVG;
-  addElem.addEventListener('click', () => addBookmarkAtCurrentPage());
+  addElem.addEventListener('click', () => addBookmarkAtPage());
   headerElem.append(headerTitle, addElem);
   panelElem.appendChild(headerElem);
 
@@ -63,6 +61,9 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize }) {
   const toggleElem = makeIconButton('Bookmarks', BOOKMARK_SVG);
 
   let activePage = -1;
+  let visible = false;
+  // Bookmark node ids selected for a bulk action.
+  const selected = new Set();
   const editing = () => !!(scribe.opt && scribe.opt.enablePageEditing);
   const currentPage = () => (scribe.state && scribe.state.cp ? scribe.state.cp.n : 0);
   const outline = () => (scribe.doc && scribe.doc.outline) || [];
@@ -108,10 +109,13 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize }) {
     menuElem.style.top = `${y - host.top}px`;
   }
 
-  /** Add a top-level bookmark at the current page and drop the new row straight into rename. */
-  function addBookmarkAtCurrentPage() {
+  /**
+   * Add a top-level bookmark at `pageIndex` (default: the current page) and drop the new row straight into rename.
+   * @param {number} [pageIndex]
+   */
+  function addBookmarkAtPage(pageIndex = currentPage()) {
     if (!scribe.doc) return;
-    const id = scribe.doc.addBookmark({ title: 'New bookmark', pageIndex: currentPage() });
+    const id = scribe.doc.addBookmark({ title: 'New bookmark', pageIndex });
     afterEdit();
     focusRename(id);
   }
@@ -126,7 +130,7 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize }) {
     const item = document.createElement('div');
     item.className = 'scribe-bm-menu-item';
     item.textContent = 'Add bookmark at current page';
-    item.addEventListener('click', () => { closeMenu(); addBookmarkAtCurrentPage(); });
+    item.addEventListener('click', () => { closeMenu(); addBookmarkAtPage(); });
     menuElem.appendChild(item);
     showMenuAt(x, y);
   }
@@ -200,7 +204,12 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize }) {
     row.className = 'scribe-bm-row';
     row.style.paddingLeft = `${8 + depth * 14}px`;
     row.dataset.page = node.dest ? String(node.dest.pageIndex) : '';
+    row.dataset.id = node.id;
     if (node.dest && node.dest.pageIndex === activePage) row.classList.add('active');
+    if (selected.has(node.id)) row.classList.add('selected');
+    // Top-level entries (class 'top') render semibold, and title-only parents (class 'structural') render as section labels.
+    if (depth === 0 && node.dest) row.classList.add('top');
+    if (!node.dest) row.classList.add('structural');
 
     const twisty = document.createElement('span');
     twisty.className = 'scribe-bm-twisty';
@@ -211,30 +220,24 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize }) {
     }
     row.appendChild(twisty);
 
-    // Ribbon glyph marks nodes with a dest (real bookmarks).
-    // Dest-less structural nodes get an empty span that keeps every row's title aligned.
-    const ribbon = document.createElement('span');
-    ribbon.className = 'scribe-bm-ribbon';
-    if (node.dest) ribbon.innerHTML = RIBBON_SVG;
-    row.appendChild(ribbon);
-
     const label = document.createElement('span');
     label.className = 'scribe-bm-label';
     label.textContent = node.title || '(untitled)';
     if (!node.dest) label.classList.add('structural');
     row.appendChild(label);
 
-    // Target page badge, so the row reads as "a bookmark to page N".
-    // The page number is 1-indexed to match the thumbnail rail.
+    // Quiet right-aligned page number, 1-indexed to match the thumbnail rail and page-nav control.
     if (node.dest) {
       const pageBadge = document.createElement('span');
       pageBadge.className = 'scribe-bm-page';
-      pageBadge.textContent = `p. ${node.dest.pageIndex + 1}`;
+      pageBadge.textContent = String(node.dest.pageIndex + 1);
       row.appendChild(pageBadge);
     }
 
-    row.addEventListener('click', () => {
-      if (node.dest) onNavigate(node.dest.pageIndex);
+    row.addEventListener('click', (e) => {
+      if (e.ctrlKey || e.metaKey) { toggleSelect(node.id); return; }
+      clearSelection();
+      if (node.dest) onNavigate(node.dest);
       else if (node.children.length) { node.open = !node.open; rebuild(); }
     });
     if (editing()) {
@@ -318,6 +321,77 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize }) {
   });
 
   /**
+   * Every node id in the outline, flattened depth-first.
+   * @param {Array<Object>} [nodes]
+   * @returns {string[]}
+   */
+  function allIds(nodes = outline()) {
+    const ids = [];
+    for (const node of nodes) { ids.push(node.id); ids.push(...allIds(node.children)); }
+    return ids;
+  }
+
+  /** Reflect `selected` on the rendered rows. */
+  function applySelection() {
+    for (const row of treeElem.querySelectorAll('.scribe-bm-row')) {
+      row.classList.toggle('selected', selected.has(row.dataset.id));
+    }
+  }
+
+  /** Select every bookmark (Ctrl/Cmd+A). */
+  function selectAll() {
+    selected.clear();
+    for (const id of allIds()) selected.add(id);
+    applySelection();
+  }
+
+  /** Clear the bulk selection. */
+  function clearSelection() {
+    if (selected.size === 0) return;
+    selected.clear();
+    applySelection();
+  }
+
+  /**
+   * Add or remove one bookmark from the bulk selection (Ctrl/Cmd-click).
+   * @param {string} id
+   */
+  function toggleSelect(id) {
+    if (selected.has(id)) selected.delete(id); else selected.add(id);
+    applySelection();
+  }
+
+  /** Remove every selected bookmark (editor only). */
+  function deleteSelected() {
+    if (!editing() || selected.size === 0) return;
+    scribe.doc.removeBookmarks([...selected]);
+    selected.clear();
+    afterEdit();
+  }
+
+  /**
+   * Sidebar shortcuts while the bookmarks panel is the open sidebar:
+   * Ctrl/Cmd+A selects every bookmark, Delete/Backspace removes the selection (editor only), Escape clears it.
+   * @param {KeyboardEvent} e
+   */
+  function onKeyDown(e) {
+    if (!visible || (scribe.opt && scribe.opt.keyboardScope === 'off')) return;
+    const t = /** @type {?HTMLElement} */ (e.target);
+    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'a') {
+      e.preventDefault();
+      selectAll();
+      return;
+    }
+    if (e.key === 'Escape') { clearSelection(); return; }
+    if ((e.key === 'Delete' || e.key === 'Backspace') && selected.size > 0) {
+      e.preventDefault();
+      deleteSelected();
+    }
+  }
+  document.addEventListener('keydown', onKeyDown);
+
+  /**
    * Cheap re-highlight of the current page's bookmark(s), without a full rebuild (which fires on edit/undo instead).
    * @param {number} pageIndex
    */
@@ -328,11 +402,11 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize }) {
     }
   }
 
-  function setVisible(v) { panelElem.style.display = v ? '' : 'none'; if (v) rebuild(); }
-  function destroy() { closeMenu(); menuElem.remove(); panelElem.remove(); }
+  function setVisible(v) { visible = v; panelElem.style.display = v ? '' : 'none'; if (v) rebuild(); else clearSelection(); }
+  function destroy() { closeMenu(); menuElem.remove(); panelElem.remove(); document.removeEventListener('keydown', onKeyDown); }
 
   panelElem.style.display = 'none';
   return {
-    panelElem, toggleElem, rebuild, setActive, setVisible, destroy,
+    panelElem, toggleElem, rebuild, setActive, setVisible, destroy, addAtPage: addBookmarkAtPage,
   };
 }

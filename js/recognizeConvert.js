@@ -1162,6 +1162,9 @@ async function recognizeCustomModel(doc, options, ocrPageMask = null) {
 export async function recognize(doc, options = {}) {
   if (!doc.inputData.pdfMode && !doc.inputData.imageMode) throw new Error('No PDF or image data found to recognize.');
 
+  // The page selection below reads extraction outputs (pageStats, pdfType, ocr.pdf), which a deferred import may still be producing.
+  await doc.textReady;
+
   // Decide which pages require OCR based on document contents and options specified.
   const ocrPages = options.ocrPages ?? scribeDocDefaults.ocrPages;
   const usePDFText = options.usePDFText ?? scribeDocDefaults.usePDFText;

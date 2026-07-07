@@ -249,7 +249,8 @@ class ScribePDFViewer {
     /** @type {?ReturnType<typeof createBookmarksPanel>} */
     this._bookmarksPanel = showThumbnails
       ? createBookmarksPanel(this.scribe, {
-        onNavigate: (n) => this.scribe.displayPage(n, true, false),
+        // The whole destination, not just the page: goToOutlineDest honors a within-page position when one exists.
+        onNavigate: (dest) => this.scribe.goToOutlineDest(dest),
         // Resizing from the bookmarks view drives the shared sidebar width (see `_resizeSidebar`).
         onResize: (w, phase) => this._resizeSidebar(w, phase),
       })
@@ -565,6 +566,22 @@ class ScribePDFViewer {
       }
     };
 
+    // The viewer's right-click "Add bookmark" routes here.
+    if (this._bookmarksPanel) {
+      this.scribe._addBookmark = (pageIndex) => {
+        if (this._activeSidebar !== 'bookmarks') this._requestSidebar('bookmarks');
+        this._bookmarksPanel.addAtPage(pageIndex);
+      };
+    }
+
+    // The highlight card's "show in comments panel" verb routes here.
+    if (this._commentsPanel) {
+      this.scribe._revealCommentInPanel = (uiWord) => {
+        if (this._activeSidebar !== 'comments') this._requestSidebar('comments');
+        this._commentsPanel.reveal(uiWord);
+      };
+    }
+
     container.appendChild(this.pdfViewerElem);
 
     // The thumbnails and bookmarks icons are radio-with-deselect toggles for one shared left sidebar.
@@ -663,8 +680,13 @@ class ScribePDFViewer {
    * @returns {Promise<?import('../../js/containers/scribeDoc.js').ScribeDoc>} The displaced document, or `null` if there was none.
    */
   async importFile(file, initialPage = 0, { terminatePrevious } = {}) {
-    const doc = await openDocumentFromFile(file);
-    return this._setDoc(doc, initialPage, true, terminatePrevious);
+    // `deferText` paints the first page before text extraction finishes.
+    // The trailing `await doc.textReady` keeps this method's "resolved means fully loaded" contract for programmatic callers,
+    // even though the UI already painted and never waits on it.
+    const doc = await openDocumentFromFile(file, { deferText: true });
+    const displaced = await this._setDoc(doc, initialPage, true, terminatePrevious);
+    await doc.textReady;
+    return displaced;
   }
 
   /**
@@ -743,6 +765,21 @@ class ScribePDFViewer {
     this.scribe.runSetInitial = true;
     await this.scribe.displayPage(initialPage, initialPage > 0);
 
+    // Deferred import painted the page raster-only, so rebuild the text-dependent surfaces once extraction lands.
+    // Text that imported synchronously has no deferred phase and skips this.
+    if (doc._textReadySettle) {
+      doc.textReady.then(() => {
+        if (this.doc !== doc) return;
+        this.scribe.displayPage(this.scribe.state.cp.n, false, true);
+        if (this._commentsPanel && this._thumbnailPanel) {
+          this._commentsPanel.rebuild();
+          const hasCommentsNow = ((doc.annotations && doc.annotations.pages) || []).some((p) => (p || []).some((a) => a.comment || a.type === 'text'));
+          // Extraction can only reveal comments, never remove them, so no sidebar fallback is needed here.
+          this._commentsPanel.toggleElem.style.display = (hasCommentsNow || this.scribe.opt.enablePageEditing) ? '' : 'none';
+        }
+      });
+    }
+
     if (this.dropZone) this.dropZone.style.display = 'none';
 
     return displaced;
@@ -814,7 +851,8 @@ class ScribePDFViewer {
     for (const pdf of pdfs) {
       let doc = null;
       try {
-        doc = await openDocumentFromFile(pdf);
+        // deferText: the tab displays immediately. Extraction continues behind `doc.textReady`.
+        doc = await openDocumentFromFile(pdf, { deferText: true });
         // A readable PDF yields pages, so zero pages means the bytes were unusable and the open failed.
         if (!doc || doc.inputData.pageCount === 0) throw new Error('no pages');
         opened.push({ doc, name: pdf.name || 'Document' });
@@ -845,6 +883,8 @@ class ScribePDFViewer {
 
     for (const t of opened) this._tabs.push({ doc: t.doc, name: t.name, lastPage: 0 });
     await this._activateTab(this._tabs.length - 1);
+    // The active tab already painted. This await keeps the "openFiles resolved means all documents fully loaded" contract for callers.
+    await Promise.all(opened.map((t) => t.doc.textReady));
   }
 
   /**

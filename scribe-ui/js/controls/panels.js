@@ -191,6 +191,9 @@ export function createThumbnailPanel(scribe, {
   /** @type {Set<number>} */
   const selected = new Set();
   let selAnchor = -1;
+  // Frozen when the multi-selection forms so scrolling the rail or growing the selection never moves the batch pill.
+  /** @type {?number} */
+  let batchAnchorClientY = null;
   // Page indices marked for a pending cut, dimmed until the cut is pasted or canceled. Distinct from `selected`.
   /** @type {Set<number>} */
   const cutMarks = new Set();
@@ -347,6 +350,65 @@ export function createThumbnailPanel(scribe, {
       imgElem.style.transform = 'rotate(180deg)';
     }
 
+    // Highlights are a separate overlay because the cached thumbnail raster never includes them.
+    if (box) {
+      const annots = (scribe.doc && scribe.doc.annotations && scribe.doc.annotations.pages[n]) || [];
+      const dims = scribe.doc && scribe.doc.pageMetrics[n] && scribe.doc.pageMetrics[n].dims;
+      /** @type {Array<{color: string, opacity: number, left: number, right: number, top: number, bottom: number}>} */
+      const runs = [];
+      if (dims) {
+        const sorted = annots
+          .filter((a) => (a.type == null || a.type === 'highlight') && a.color && a.bbox)
+          .sort((a, b) => (a.bbox.top - b.bbox.top) || (a.bbox.left - b.bbox.left));
+        for (const a of sorted) {
+          const h = a.bbox.bottom - a.bbox.top;
+          const mid = (a.bbox.top + a.bbox.bottom) / 2;
+          // Merge adjacent same-colour highlights on one line so a phrase reads as a single band, not per-word specks.
+          const run = runs.find((r) => r.color === a.color
+            && Math.abs((r.top + r.bottom) / 2 - mid) < h * 0.6
+            && a.bbox.left - r.right < h * 2 && r.left - a.bbox.right < h * 2);
+          if (run) {
+            run.left = Math.min(run.left, a.bbox.left);
+            run.right = Math.max(run.right, a.bbox.right);
+            run.top = Math.min(run.top, a.bbox.top);
+            run.bottom = Math.max(run.bottom, a.bbox.bottom);
+          } else {
+            runs.push({
+              color: a.color, opacity: a.opacity ?? 0.5, left: a.bbox.left, right: a.bbox.right, top: a.bbox.top, bottom: a.bbox.bottom,
+            });
+          }
+        }
+      }
+      let hlElem = thumbElem.querySelector('.scribe-thumb-hl');
+      if (runs.length === 0) {
+        if (hlElem) hlElem.remove();
+      } else {
+        if (!hlElem) {
+          hlElem = document.createElement('div');
+          hlElem.className = 'scribe-thumb-hl';
+          box.appendChild(hlElem);
+        }
+        // Same box as the raster img above, so the bands align with the possibly-rotated page.
+        if (rot % 180 === 90) {
+          hlElem.style.cssText = `top:50%;left:50%;width:${boxHeights[n]}px;height:${THUMB_W}px;transform:translate(-50%, -50%) rotate(${rot}deg)`;
+        } else {
+          hlElem.style.cssText = rot === 180 ? 'inset:0;transform:rotate(180deg)' : 'inset:0';
+        }
+        hlElem.replaceChildren(...runs.map((run) => {
+          const band = document.createElement('span');
+          Object.assign(band.style, {
+            left: `${(run.left / dims.width) * 100}%`,
+            top: `${(run.top / dims.height) * 100}%`,
+            width: `${((run.right - run.left) / dims.width) * 100}%`,
+            height: `${((run.bottom - run.top) / dims.height) * 100}%`,
+            background: run.color,
+            opacity: `${run.opacity}`,
+          });
+          return band;
+        }));
+      }
+    }
+
     const label = thumbElem.querySelector('.scribe-thumb-label');
     if (label) label.textContent = String(n + 1);
   }
@@ -377,13 +439,6 @@ export function createThumbnailPanel(scribe, {
     const labelElem = document.createElement('div');
     labelElem.className = 'scribe-thumb-label';
 
-    const rotateBtn = document.createElement('span');
-    rotateBtn.className = 'scribe-thumb-rotate';
-    rotateBtn.title = 'Rotate right';
-    rotateBtn.innerHTML = ROTATE_SVG;
-    rotateBtn.addEventListener('click', (e) => { e.stopPropagation(); onRotate(idx()); });
-
-    boxElem.appendChild(rotateBtn);
     boxElem.addEventListener('click', (e) => { if (!suppressClick) handleThumbClick(e, idx()); });
     // A press that never crosses the reorder drag threshold stays a plain click, because suppressClick is set only once a drag begins.
     boxElem.addEventListener('pointerdown', (e) => reorder.onThumbPointerDown(e, idx()));
@@ -825,9 +880,9 @@ export function createThumbnailPanel(scribe, {
     marqueeElem.style.height = `${b - t}px`;
     selected.clear();
     for (const n of marquee.base) selected.add(n);
-    // The geometry arrays cover every page, not just the mounted window, so the rect also selects pages scrolled out of view.
+    // The geometry arrays span all pages, not just the mounted window, so the rect selects pages scrolled out of view.
     for (let n = 0; n < pageCount; n++) {
-      if (lefts[n] < right && lefts[n] + THUMB_W > l && PAD + offsets[n] < b && PAD + offsets[n] + heights[n] > t) selected.add(n);
+      if (lefts[n] < right && lefts[n] + THUMB_W > l && PAD + offsets[n] < b && PAD + offsets[n] + boxHeights[n] > t) selected.add(n);
     }
     syncSelectionUI();
   }
@@ -1017,35 +1072,40 @@ export function createThumbnailPanel(scribe, {
     const show = visible && selected.size >= 2;
     batchCount.textContent = String(selected.size);
     batchBar.style.display = show ? '' : 'none';
+    // Dropping below 2 selected clears the frozen anchor, so the next 2+ selection re-freezes at the row nearest center.
+    if (selected.size < 2) batchAnchorClientY = null;
     if (show) positionBatchBar();
   }
 
   /**
-   * Place the vertical strip just right of the rail, centered on the selection's visible span and clamped to stay within the scroll viewport.
-   * Coordinates resolve against the host via client rects, so panel slide/resize and scroll are accounted for.
-   * Called on selection changes and on scroll.
+   * Place the batch strip beside the rail, clamped into the scroll viewport.
+   * The vertical position is frozen once (`batchAnchorClientY`); only the horizontal edge tracks the panel afterward.
+   * Grid mode pins it inside the panel's right edge, since 'just right of the thumbnail' would fall between columns; the single-column rail puts it just right of the panel.
    */
   function positionBatchBar() {
     if (selected.size < 2) return;
     const hostRect = batchHost.getBoundingClientRect();
     const panelRect = panelElem.getBoundingClientRect();
     const scrollRect = scrollElem.getBoundingClientRect();
-    // In the multi-column grid the rail's "just to the right of the thumbnail" anchor would sit between columns,
-    // so pin the pill inside the panel's right edge, vertically centered in the viewport.
-    if (layoutMode === 'grid') {
-      const barH = batchBar.offsetHeight || BATCH_BAR_H;
-      const barW = batchBar.offsetWidth || BATCH_BAR_H;
-      batchBar.style.left = `${scrollRect.right - hostRect.left - barW - 14}px`;
-      batchBar.style.top = `${(scrollRect.top + scrollRect.bottom) / 2 - hostRect.top - barH / 2}px`;
-      return;
-    }
-    const sel = [...selected].sort((a, b) => a - b);
-    const last = sel[sel.length - 1];
-    const selTop = scrollRect.top + PAD + offsets[sel[0]] - scrollElem.scrollTop;
-    const selBottom = scrollRect.top + PAD + offsets[last] + heights[last] - scrollElem.scrollTop;
     const barH = batchBar.offsetHeight || BATCH_BAR_H;
-    const centerY = Math.max(scrollRect.top + barH / 2 + 6, Math.min((selTop + selBottom) / 2, scrollRect.bottom - barH / 2 - 6));
-    batchBar.style.left = `${panelRect.right - hostRect.left + 8}px`;
+    const barW = batchBar.offsetWidth || BATCH_BAR_H;
+    // Freeze the vertical position once, at the client-space row center of the selected page nearest the viewport center.
+    if (batchAnchorClientY === null) {
+      const viewMidY = (scrollRect.top + scrollRect.bottom) / 2;
+      let bestY = 0;
+      let bestDist = Infinity;
+      for (const n of selected) {
+        const rowCenterY = scrollRect.top + PAD + offsets[n] + heights[n] / 2 - scrollElem.scrollTop;
+        const dist = Math.abs(rowCenterY - viewMidY);
+        if (dist < bestDist) { bestDist = dist; bestY = rowCenterY; }
+      }
+      batchAnchorClientY = bestY;
+    }
+    const centerY = Math.max(scrollRect.top + barH / 2 + 6, Math.min(batchAnchorClientY, scrollRect.bottom - barH / 2 - 6));
+    const left = layoutMode === 'grid'
+      ? scrollRect.right - hostRect.left - barW - 14
+      : panelRect.right - hostRect.left + 8;
+    batchBar.style.left = `${left}px`;
     batchBar.style.top = `${centerY - hostRect.top - barH / 2}px`;
   }
 
@@ -1493,10 +1553,19 @@ export function createThumbnailPanel(scribe, {
    */
   function onKeyDown(e) {
     if (!visible) return;
-    if (e.key === 'Escape') { closeContextMenu(); clearSelection(); return; }
-    if (selected.size === 0) return;
     const t = /** @type {?HTMLElement} */ (e.target);
-    if (t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable)) return;
+    const inEditable = !!(t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable));
+    // Select every page (Ctrl/Cmd+A) while the rail is the open sidebar, overriding the browser's page-wide select-all.
+    if (!inEditable && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'a' && scribe.opt.keyboardScope !== 'off') {
+      e.preventDefault();
+      selected.clear();
+      for (let i = 0; i < pageCount; i += 1) selected.add(i);
+      selAnchor = pageCount - 1;
+      syncSelectionUI();
+      return;
+    }
+    if (e.key === 'Escape') { closeContextMenu(); clearSelection(); return; }
+    if (selected.size === 0 || inEditable) return;
     if (e.key === 'Delete' || e.key === 'Backspace') {
       e.preventDefault();
       deleteSelection();
@@ -1508,6 +1577,7 @@ export function createThumbnailPanel(scribe, {
   function destroy() {
     destroyed = true;
     generation += 1;
+    if (scribe.onHighlightsRendered === onHighlightsRendered) scribe.onHighlightsRendered = null;
     reportThumbFocus(null);
     if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
     if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
@@ -1531,6 +1601,13 @@ export function createThumbnailPanel(scribe, {
     menuElem.remove();
     panelElem.replaceChildren();
   }
+
+  // Repaint an already-mounted thumbnail when its page's highlights change; rows mounted later get them from `restyleRow`.
+  const onHighlightsRendered = (n) => {
+    const entry = mounted.get(n);
+    if (entry) restyleRow(entry, n);
+  };
+  scribe.onHighlightsRendered = onHighlightsRendered;
 
   return {
     panelElem, toggleElem, rebuild, cancelCut, setActive, setVisible, setWidth, getResizeBounds, dropIndicator, insertPagesAt, destroy,

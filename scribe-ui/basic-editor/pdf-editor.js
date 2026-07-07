@@ -231,6 +231,9 @@ class ScribePDFEditor extends ScribePDFViewer {
   _deepOcrPageCount() {
     const doc = this.doc;
     if (!doc) return 0;
+    // While a deferred import's stats are still extracting, return 0 so the Recognize button stays hidden rather than flashing on and then vanishing for text-native docs.
+    // `_setDoc` re-runs this once `textReady` lands.
+    if (doc._textReadySettle) return 0;
     const { pageStats, pageCount, pdfType } = doc.inputData;
     if (doc.ocr?.['User Upload'] || !pageStats || pageStats.length !== pageCount) return pageCount;
     return selectOcrPages(pageStats, pdfType, 'autoDeep').filter(Boolean).length;
@@ -281,6 +284,13 @@ class ScribePDFEditor extends ScribePDFViewer {
     const displaced = await super._setDoc(...args);
     this._updateRecognizeButton();
     this._updateSplitButton();
+    // The Recognize verdict depends on the page stats a deferred import produces, so re-evaluate it once they land.
+    const doc = args[0];
+    if (doc && doc._textReadySettle) {
+      doc.textReady.then(() => {
+        if (this.doc === doc) this._updateRecognizeButton();
+      });
+    }
     return displaced;
   }
 

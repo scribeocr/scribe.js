@@ -164,6 +164,12 @@ export class UiText {
     this.highlightComment = highlightComment;
     this.highlightGapLeft = 0;
     this.highlightGapRight = 0;
+    /**
+     * The fill rect this word's highlight run rendered into (set by `renderHighlights`, null when unhighlighted).
+     * Hover feedback lifts this band directly when the highlight has no group id.
+     * @type {?HTMLDivElement}
+     */
+    this.highlightRectElem = null;
 
     this.lastWidth = width;
 
@@ -240,11 +246,12 @@ export class UiText {
 
   get highlightColor() { return this._highlightColor; }
 
-  set highlightColor(v) { this._highlightColor = v; if (this.el) this._styleElem(this.el); }
+  // The fill is drawn by the viewer's highlight layer (`renderHighlights`), not the word span, so setting the colour only updates state.
+  set highlightColor(v) { this._highlightColor = v; }
 
   get highlightOpacity() { return this._highlightOpacity; }
 
-  set highlightOpacity(v) { this._highlightOpacity = v; if (this.el) this._styleElem(this.el); }
+  set highlightOpacity(v) { this._highlightOpacity = v; }
 
   /** Remove the element from the DOM and drop this word from the viewer's per-page registry. */
   destroy() {
@@ -411,23 +418,6 @@ export class UiText {
       elem.style.textDecoration = '';
     }
 
-    if (this._highlightColor) {
-      const r = parseInt(this._highlightColor.slice(1, 3), 16);
-      const g = parseInt(this._highlightColor.slice(3, 5), 16);
-      const b = parseInt(this._highlightColor.slice(5, 7), 16);
-      const color = `rgba(${r}, ${g}, ${b}, ${this._highlightOpacity})`;
-      // Match canvas highlight dimensions: height = fontSize*0.6 + 2*(fontSize*0.6*0.2) = fontSize*0.84
-      const highlightHeight = fontSizeHTML * 0.84;
-      const highlightTop = this.fontAscentPx * scale - fontSizeHTML * 0.72;
-      elem.style.backgroundImage = `linear-gradient(${color}, ${color})`;
-      elem.style.backgroundSize = `100% ${highlightHeight}px`;
-      elem.style.backgroundPosition = `0 ${highlightTop}px`;
-      elem.style.backgroundRepeat = 'no-repeat';
-      elem.style.backgroundOrigin = 'content-box';
-    } else if (restyle) {
-      elem.style.backgroundImage = '';
-    }
-
     elem.classList.add('scribe-word');
     elem.id = this.word.id;
 
@@ -561,6 +551,9 @@ export class UiText {
 
     // The word may have shifted or changed width. Keep its edit handles (if any) tracking its edges.
     getViewer(wordI).repositionControls();
+
+    // A highlighted word that moved or resized shifts its run's band, so rebuild the page's highlight layer.
+    if (wordI.highlightColor) getViewer(wordI).renderHighlights(wordI.word.line.page.n);
   };
 
   /**
@@ -812,6 +805,8 @@ export class UiOcrWord extends UiText {
     // The slider moves the word vertically without going through `updateWordCanvas`,
     // so reposition any edit handles here too, keeping them on the word's edges.
     getViewer(this).repositionControls();
+
+    if (this.highlightColor) getViewer(this).renderHighlights(this.word.line.page.n);
   }
 
   /**

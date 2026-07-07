@@ -19,7 +19,7 @@ const buildBootstrapViewer = () => {
   if (!pdfViewerContElem.style.height) pdfViewerContElem.style.height = '100vh';
   // This is a full-screen, single-viewer app, so it uses document-wide keyboard shortcuts that fire
   // regardless of where focus is on the page.
-  const v = new ScribePDFViewer(pdfViewerContElem, { keyboardScope: 'global' });
+  const v = new ScribePDFViewer(pdfViewerContElem, { keyboardScope: 'global', comments: true });
   // Expose key modules on `globalThis.df` for debugging and tests. Not part of the public API.
   // Use the module imports/exports instead.
   globalThis.df = {
@@ -52,6 +52,8 @@ async function handleLoadFile(file, page, readFileFn) {
 async function handleHighlights(highlights) {
   if (!pdfViewer) throw new Error('handleHighlights requires the auto-instantiated viewer.');
   const sv = pdfViewer.scribe;
+  // The lookups below need the extracted text, which a deferred import may still be producing.
+  if (sv.doc) await sv.doc.textReady;
   for (const highlight of highlights) {
     const pageNum = highlight.page;
     const page = sv.doc.ocr.active[pageNum];
@@ -88,7 +90,7 @@ async function handleHighlights(highlights) {
     }
 
     if (matchedWords.length > 0) {
-      applyHighlight(sv, matchedWords, pageNum, highlight.color || '#ffe93b', highlight.opacity || 0.4);
+      applyHighlight(sv, matchedWords, highlight.color || '#ffe93b', highlight.opacity || 0.4);
     }
   }
 }
