@@ -50,9 +50,13 @@ async function* walkFiles(fs, path, inputDir, recursive) {
  * @param {boolean} [options.reflow] - Combine lines into paragraphs (defaults on).
  * @param {boolean} [options.lineNumbers] - Prefix each line with `page:line` (txt only).
  * @param {boolean} [options.charBoxes] - Include per-character bounding boxes in scribe/scribe.json output (excluded by default).
- * @yields {{ inputPath: string, text?: (string|Uint8Array), error?: { name?: string, message: string, code?: string } }}
+ * @param {string} [options.outputDir] - When set, an input whose output already exists (unless `overwrite`) or would overwrite the input is skipped without being parsed.
+ * @param {boolean} [options.overwrite] - Overwrite existing output files.
+ * @param {boolean} [options.skipImageBased] - Skip image-based PDFs without text in input directory instead of writing an empty output file.
+ * @yields {{ inputPath: string, text?: (string|Uint8Array), error?: { name?: string, message: string, code?: string }, skipReason?: ('exists'|'sameAsInput'|'imageBased'), outputPath?: string }}
  *    On success, `text` holds the exported content (empty for a document with no text).
  *    On failure, `error` describes why the file was skipped.
+ *    `skipReason` marks a file skipped without extraction; `outputPath` is the resolved destination (present only when `outputDir` is given).
  *    A failing file is never fatal to the batch.
  */
 export async function* extractTextDirIter(inputDir, options = {}) {
@@ -66,7 +70,12 @@ export async function* extractTextDirIter(inputDir, options = {}) {
     reflow: options.reflow,
     lineNumbers: options.lineNumbers,
     charBoxes: options.charBoxes,
+    skipImageBased: options.skipImageBased,
   };
+
+  const { outputDir } = options;
+  const overwrite = !!options.overwrite;
+  const ext = workerData.format === 'text' ? 'txt' : workerData.format;
 
   const spawnWorker = () => new Promise((resolve) => {
     const worker = new Worker(new URL('./worker/extractTextDirWorker.js', import.meta.url), { workerData });
@@ -122,8 +131,25 @@ export async function* extractTextDirIter(inputDir, options = {}) {
     let next = await nextPath();
     while (!next.done && !state.dead) {
       const inputPath = next.value;
+      let outPath;
+      if (outputDir) {
+        const rel = path.relative(inputDir, inputPath);
+        const relOut = /\.\w{1,6}$/i.test(rel) ? rel.replace(/\.\w{1,6}$/i, `.${ext}`) : `${rel}.${ext}`;
+        outPath = path.join(outputDir, relOut);
+        // An output equal to its input would overwrite the source.
+        if (path.resolve(outPath) === path.resolve(inputPath)) {
+          push({ inputPath, outPath, skipReason: 'sameAsInput' });
+          next = await nextPath();
+          continue;
+        }
+        if (!overwrite && fs.existsSync(outPath)) {
+          push({ inputPath, outPath, skipReason: 'exists' });
+          next = await nextPath();
+          continue;
+        }
+      }
       const res = await state.run(inputPath);
-      push({ inputPath, ...res });
+      push({ inputPath, outPath, ...res });
       if (state.dead) break;
       next = await nextPath();
     }
@@ -140,10 +166,12 @@ export async function* extractTextDirIter(inputDir, options = {}) {
         continue;
       }
       const item = buffer.shift();
-      if (item.ok) {
-        yield { inputPath: item.inputPath, text: item.text };
+      if (item.error) {
+        yield { inputPath: item.inputPath, error: item.error, outputPath: item.outPath };
+      } else if (item.skipReason) {
+        yield { inputPath: item.inputPath, skipReason: item.skipReason, outputPath: item.outPath };
       } else {
-        yield { inputPath: item.inputPath, error: item.error };
+        yield { inputPath: item.inputPath, text: item.text, outputPath: item.outPath };
       }
     }
     if (walkError) throw walkError;
@@ -157,47 +185,55 @@ export async function* extractTextDirIter(inputDir, options = {}) {
  * Files that fail to parse are skipped (never fatal).
  * A document that parses to no text still produces a (possibly empty) output file.
  *
+ * A file is skipped when its output already exists (unless `overwrite`), when writing would overwrite the input (`sameAsInput`), or when it is an image-based PDF and `skipImageBased` is set.
+ *
  * @param {string} inputDir - Directory to read input files from.
  * @param {string} outputDir - Directory to write output files into (mirrors the input tree).
  * @param {Parameters<typeof extractTextDirIter>[1] & { onProgress?: (p: { inputPath: string, ok: boolean, extracted: number, skipped: number }) => void }} [options]
- *    `onProgress`, if given, is called after each file with the running counts (for progress reporting on large batches).
- * @returns {Promise<{ extracted: number, skipped: number, failures: Array<{ inputPath: string, error: { name?: string, message: string, code?: string } }> }>}
+ *    `onProgress`, if given, is called after each file with the running counts (its `skipped` is the total of every skip reason).
+ * @returns {Promise<{ extracted: number, skipped: number, skippedExisting: number, skippedImageBased: number, sameAsInput: number,
+ * failures: Array<{ inputPath: string, error: { name?: string, message: string, code?: string } }> }>}
+ *    `skipped` counts only parse failures, separate from the other skip counters.
  */
 export async function extractTextDir(inputDir, outputDir, options = {}) {
   const fs = (await import('node:fs')).default;
   const path = (await import('node:path')).default;
 
-  const format = options.format || 'txt';
-  const ext = format === 'text' ? 'txt' : format;
   const onProgress = options.onProgress;
 
-  const summary = { extracted: 0, skipped: 0, failures: [] };
+  const summary = {
+    extracted: 0, skipped: 0, skippedExisting: 0, skippedImageBased: 0, sameAsInput: 0, failures: [],
+  };
   const createdDirs = new Set();
 
-  for await (const result of extractTextDirIter(inputDir, options)) {
+  // The iterator resolves each output path and skips existing/colliding inputs before any worker parses them, so `outputDir` must be passed through.
+  for await (const result of extractTextDirIter(inputDir, { ...options, outputDir })) {
     if (result.error) {
       summary.skipped += 1;
       summary.failures.push({ inputPath: result.inputPath, error: result.error });
+    } else if (result.skipReason === 'sameAsInput') {
+      summary.sameAsInput += 1;
+      summary.failures.push({ inputPath: result.inputPath, error: { name: 'OutputCollision', message: 'output path is the same as the input; refusing to overwrite the source' } });
+    } else if (result.skipReason === 'exists') {
+      summary.skippedExisting += 1;
+    } else if (result.skipReason === 'imageBased') {
+      summary.skippedImageBased += 1;
     } else {
-      const rel = path.relative(inputDir, result.inputPath);
-      // Swap the input extension for the output one, appending it to names with no extension so the output never collides with the input.
-      const relOut = /\.\w{1,6}$/i.test(rel) ? rel.replace(/\.\w{1,6}$/i, `.${ext}`) : `${rel}.${ext}`;
-      const outPath = path.join(outputDir, relOut);
-      const outParent = path.dirname(outPath);
+      const outParent = path.dirname(result.outputPath);
       if (!createdDirs.has(outParent)) {
         fs.mkdirSync(outParent, { recursive: true });
         createdDirs.add(outParent);
       }
       // writeFileSync rejects a bare ArrayBuffer.
-      fs.writeFileSync(outPath, result.text instanceof ArrayBuffer ? new Uint8Array(result.text) : (result.text ?? ''));
+      fs.writeFileSync(result.outputPath, result.text instanceof ArrayBuffer ? new Uint8Array(result.text) : (result.text ?? ''));
       summary.extracted += 1;
     }
     if (onProgress) {
       onProgress({
         inputPath: result.inputPath,
-        ok: !result.error,
+        ok: !result.error && !result.skipReason,
         extracted: summary.extracted,
-        skipped: summary.skipped,
+        skipped: summary.skipped + summary.skippedExisting + summary.skippedImageBased + summary.sameAsInput,
       });
     }
   }

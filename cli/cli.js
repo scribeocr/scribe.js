@@ -89,6 +89,8 @@ export const evalInternalCLI = async (files, options) => {
  * @param {boolean} [options.recursive]
  * @param {string} [options.workers]
  * @param {boolean} [options.charBoxes]
+ * @param {boolean} [options.overwrite]
+ * @param {boolean} [options.skipImageBased]
  */
 export const extractCLI = async (inputFile, outputDir, options) => {
   try {
@@ -135,15 +137,22 @@ export const extractCLI = async (inputFile, outputDir, options) => {
         recursive: options.recursive,
         workers: options.workers ? Number(options.workers) : 4,
         charBoxes: options.charBoxes,
+        overwrite: options.overwrite,
+        skipImageBased: options.skipImageBased,
         onProgress,
       });
 
-      const totalDocs = summary.extracted + summary.skipped;
+      const totalDocs = summary.extracted + summary.skipped + summary.skippedExisting + summary.skippedImageBased + summary.sameAsInput;
       const totalMs = Date.now() - startTime;
       if (isTTY) process.stderr.write('\r\x1b[K'); // clear the transient live line before the summary
 
       let msg = `Extracted ${summary.extracted} file(s) to ${outDir}`;
-      if (summary.skipped > 0) msg += `, skipped ${summary.skipped} that could not be read`;
+      const skips = [];
+      if (summary.skipped > 0) skips.push(`${summary.skipped} unreadable`);
+      if (summary.skippedExisting > 0) skips.push(`${summary.skippedExisting} already had output`);
+      if (summary.skippedImageBased > 0) skips.push(`${summary.skippedImageBased} image-based (no text)`);
+      if (summary.sameAsInput > 0) skips.push(`${summary.sameAsInput} would overwrite the input`);
+      if (skips.length) msg += `; skipped ${skips.join(', ')}`;
       msg += totalDocs > 0 ? ` in ${dur(totalMs)} (${rate(totalMs, totalDocs)})` : ` in ${dur(totalMs)}`;
       console.log(`${msg}.`);
       for (const f of summary.failures.slice(0, 10)) {

@@ -7,6 +7,8 @@ import scribe from '../scribe.js';
 // however it now does other things, and this should likely be part of a larger `convert` utility.
 
 /**
+ * Extract a single document's existing text to one output file (no OCR).
+ * Single-file path only. The CLI `--dir` batch is handled by `extractTextDir`, never here.
  *
  * @param {string} inputFile - Path to input file.
  * @param {?string} [output='.'] - Output file or directory.
@@ -23,6 +25,11 @@ export const extract = async (inputFile, output, options) => {
   const outputDir = path.dirname(output);
   const outputFile = outputDir === output ? `${path.basename(inputFile).replace(/\.\w{1,6}$/i, `.${format}`)}` : path.basename(output);
   const outputPath = `${outputDir}/${outputFile}`;
+
+  // Single-file extraction always overwrites an existing output; skip-existing is scoped to --dir.
+  if (path.resolve(inputFile) === path.resolve(outputPath)) {
+    throw new Error(`Output path '${outputPath}' is the same as the input; refusing to overwrite the source. Choose a different output path or format.`);
+  }
 
   scribe.ScribeDoc.defaults.reflow = true;
   scribe.ScribeDoc.defaults.usePDFText.ocr.main = true;

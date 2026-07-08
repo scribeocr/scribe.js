@@ -44,6 +44,8 @@ program
   .option('-w, --workers <number>', 'With --dir, number of documents to process in parallel. Default 4.')
   .option('-l, --line-numbers', 'Prepend page:line numbers to each line (e.g. 0:5  text). Only applies to txt format.')
   .option('--char-boxes', 'Include per-character bounding boxes in scribe/scribe.json output (excluded by default; roughly halves file size). No effect on other formats.')
+  .option('--overwrite', 'With --dir, overwrite existing output files instead of skipping them (directory extraction skips existing outputs by default; single-file extraction always overwrites).')
+  .option('--skip-image-based', 'Skip image-based PDFs without text in input directory instead of writing an empty output file (--dir only).')
   .description('Extract existing text from a PDF file or directory and save in requested format (does not run OCR; use `recognize` for that).')
   .action(extractCLI);
 
