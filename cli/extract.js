@@ -11,9 +11,10 @@ import scribe from '../scribe.js';
  * @param {string} inputFile - Path to input file.
  * @param {?string} [output='.'] - Output file or directory.
  * @param {Object} [options]
- * @param {'pdf'|'hocr'|'alto'|'docx'|'xlsx'|'txt'|'text'|'md'|'html'|'scribe'} [options.format]
+ * @param {'pdf'|'hocr'|'alto'|'docx'|'xlsx'|'txt'|'text'|'md'|'html'|'scribe'|'scribe.json'} [options.format]
  * @param {boolean} [options.reflow]
  * @param {boolean} [options.lineNumbers]
+ * @param {boolean} [options.charBoxes]
  */
 export const extract = async (inputFile, output, options) => {
   const format = options?.format || 'txt';
@@ -41,7 +42,16 @@ export const extract = async (inputFile, output, options) => {
 
   if (options?.lineNumbers) scribe.ScribeDoc.defaults.lineNumbers = true;
 
-  await doc.download(format, outputPath);
+  // Char boxes (`word.chars`) are excluded from scribe output by default; --char-boxes re-includes them.
+  // Harmless for non-scribe formats, which never carry char boxes.
+  const includeCharBoxesScribe = !!options?.charBoxes;
+
+  if (format === 'scribe.json') {
+    // Uncompressed scribe export; with compression off exportData returns the JSON string to write directly.
+    fs.writeFileSync(outputPath, /** @type {string} */ (await doc.exportData('scribe', { compressScribe: false, includeCharBoxesScribe })));
+  } else {
+    await doc.download(format, outputPath, { includeCharBoxesScribe });
+  }
 
   await doc.terminate();
   await scribe.terminate();

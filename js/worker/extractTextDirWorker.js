@@ -15,6 +15,13 @@ scribe.ScribeDoc.defaults.displayMode = 'ebook';
 if (config.lineNumbers) scribe.ScribeDoc.defaults.lineNumbers = true;
 
 const format = config.format || 'txt';
+// `.scribe.json` is the uncompressed scribe export; both scribe forms map to the 'scribe' format.
+// Char boxes (`word.chars`) are excluded from scribe output by default; --char-boxes re-includes them.
+const isScribe = format === 'scribe' || format === 'scribe.json';
+const exportFormat = isScribe ? 'scribe' : format;
+const exportOptions = isScribe
+  ? { compressScribe: format === 'scribe', includeCharBoxesScribe: !!config.charBoxes }
+  : undefined;
 
 // Load built-in fonts once so every document this worker handles reuses them.
 await scribe.init({ font: true });
@@ -23,7 +30,7 @@ parentPort.postMessage({ type: 'ready' });
 parentPort.on('message', async ({ inputPath }) => {
   try {
     const doc = await scribe.openDocument([inputPath]);
-    const text = await doc.exportData(format);
+    const text = await doc.exportData(exportFormat, exportOptions);
     await doc.terminate();
     // A parse that yields no text still resolves here as a successful empty extraction.
     // A parse failure instead throws and is reported by the catch below.

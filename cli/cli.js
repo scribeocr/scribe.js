@@ -82,12 +82,13 @@ export const evalInternalCLI = async (files, options) => {
  * @param {string} inputFile - Path to PDF file or directory.
  * @param {?string} [outputDir='.'] - Output directory.
  * @param {Object} [options]
- * @param {"pdf" | "hocr" | "docx" | "xlsx" | "txt" | "text" | "html"} [options.format]
+ * @param {"pdf" | "hocr" | "docx" | "xlsx" | "txt" | "text" | "html" | "md" | "scribe" | "scribe.json"} [options.format]
  * @param {boolean} [options.reflow]
  * @param {boolean} [options.lineNumbers]
  * @param {boolean} [options.dir]
  * @param {boolean} [options.recursive]
  * @param {string} [options.workers]
+ * @param {boolean} [options.charBoxes]
  */
 export const extractCLI = async (inputFile, outputDir, options) => {
   try {
@@ -133,6 +134,7 @@ export const extractCLI = async (inputFile, outputDir, options) => {
         lineNumbers: options.lineNumbers,
         recursive: options.recursive,
         workers: options.workers ? Number(options.workers) : 4,
+        charBoxes: options.charBoxes,
         onProgress,
       });
 

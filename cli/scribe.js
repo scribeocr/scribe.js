@@ -37,12 +37,13 @@ program
   .command('extract')
   .argument('<input_file>', 'Input PDF file or directory (with --dir).')
   .argument('[output]', 'Output file, or output directory with --dir. Defaults to <input>-<format>/ for --dir, else the current directory.')
-  .addOption(new Option('-f, --format <ext>', 'Output format.').choices(['pdf', 'hocr', 'docx', 'xlsx', 'txt', 'text', 'html', 'md']).default('txt'))
+  .addOption(new Option('-f, --format <ext>', 'Output format.').choices(['pdf', 'hocr', 'docx', 'xlsx', 'txt', 'text', 'html', 'md', 'scribe', 'scribe.json']).default('txt'))
   .option('-r, --reflow', 'Reflow text by combining lines into paragraphs.')
   .option('-d, --dir', 'Process all supported files in the input directory.')
   .option('-R, --recursive', 'With --dir, recurse into subdirectories (output mirrors the input tree).')
   .option('-w, --workers <number>', 'With --dir, number of documents to process in parallel. Default 4.')
   .option('-l, --line-numbers', 'Prepend page:line numbers to each line (e.g. 0:5  text). Only applies to txt format.')
+  .option('--char-boxes', 'Include per-character bounding boxes in scribe/scribe.json output (excluded by default; roughly halves file size). No effect on other formats.')
   .description('Extract existing text from a PDF file or directory and save in requested format (does not run OCR; use `recognize` for that).')
   .action(extractCLI);
 

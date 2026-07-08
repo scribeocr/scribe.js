@@ -44,11 +44,12 @@ async function* walkFiles(fs, path, inputDir, recursive) {
  *
  * @param {string} inputDir - Directory to read input files from.
  * @param {Object} [options]
- * @param {'pdf'|'hocr'|'docx'|'xlsx'|'txt'|'text'|'html'|'md'} [options.format='txt'] - Export format.
+ * @param {'pdf'|'hocr'|'docx'|'xlsx'|'txt'|'text'|'html'|'md'|'scribe'|'scribe.json'} [options.format='txt'] - Export format.
  * @param {boolean} [options.recursive=false] - Recurse into subdirectories.
  * @param {number} [options.workers=4] - Number of documents to process in parallel.
  * @param {boolean} [options.reflow] - Combine lines into paragraphs (defaults on).
  * @param {boolean} [options.lineNumbers] - Prefix each line with `page:line` (txt only).
+ * @param {boolean} [options.charBoxes] - Include per-character bounding boxes in scribe/scribe.json output (excluded by default).
  * @yields {{ inputPath: string, text?: (string|Uint8Array), error?: { name?: string, message: string, code?: string } }}
  *    On success, `text` holds the exported content (empty for a document with no text).
  *    On failure, `error` describes why the file was skipped.
@@ -64,6 +65,7 @@ export async function* extractTextDirIter(inputDir, options = {}) {
     format: options.format || 'txt',
     reflow: options.reflow,
     lineNumbers: options.lineNumbers,
+    charBoxes: options.charBoxes,
   };
 
   const spawnWorker = () => new Promise((resolve) => {
@@ -186,7 +188,8 @@ export async function extractTextDir(inputDir, outputDir, options = {}) {
         fs.mkdirSync(outParent, { recursive: true });
         createdDirs.add(outParent);
       }
-      fs.writeFileSync(outPath, result.text ?? '');
+      // writeFileSync rejects a bare ArrayBuffer.
+      fs.writeFileSync(outPath, result.text instanceof ArrayBuffer ? new Uint8Array(result.text) : (result.text ?? ''));
       summary.extracted += 1;
     }
     if (onProgress) {

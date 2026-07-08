@@ -235,8 +235,15 @@ export async function readOcrFile(file) {
 
   if (typeof process !== 'undefined') {
     if (!file?.fileData?.toString) throw new Error('Invalid input. Must be a FileNode, ArrayBuffer, or string.');
+    const buf = file.fileData;
+    // Decompress gzipped data (e.g. a compressed `.scribe`), detected by magic bytes as in the branches above.
+    if (buf[0] === 0x1F && buf[1] === 0x8B) {
+      const ds = new DecompressionStream('gzip');
+      const decompressed = await new Response(new Blob([buf]).stream().pipeThrough(ds)).arrayBuffer();
+      return new TextDecoder('utf-8').decode(decompressed);
+    }
     // @ts-ignore
-    return file.fileData.toString();
+    return buf.toString();
   }
   throw new Error('Invalid input. Must be a File, ArrayBuffer, or string.');
 }
