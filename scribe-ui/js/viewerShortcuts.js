@@ -354,6 +354,22 @@ export function handleKeyboardEvent(viewer, event) {
     return;
   }
 
+  // With no words selected, arrows pan the view; with a selection they drive the word move/resize verbs below.
+  if (!event.ctrlKey && !event.metaKey && !event.altKey && !event.shiftKey
+    && !UiText.input && selectedWords.length === 0
+    && ['ArrowLeft', 'ArrowRight', 'ArrowUp', 'ArrowDown'].includes(event.key)) {
+    const step = 40;
+    let deltaX = 0;
+    let deltaY = 0;
+    if (event.key === 'ArrowLeft') deltaX = step;
+    else if (event.key === 'ArrowRight') deltaX = -step;
+    else if (event.key === 'ArrowUp') deltaY = step;
+    else deltaY = -step;
+    _viewer.pan({ deltaX, deltaY });
+    event.preventDefault();
+    return;
+  }
+
   if (event.key === 'Tab') {
     if (event.shiftKey) {
       selectPrevWord(_viewer);

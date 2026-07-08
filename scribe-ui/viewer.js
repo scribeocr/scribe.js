@@ -973,7 +973,7 @@ export class ScribeViewer {
   }
 
   /**
-   * Begin browser-style hold-and-move autoscroll: while the middle button is held the document scrolls vertically.
+   * Begin browser-style middle-button autoscroll: the document scrolls toward the cursor's offset from the press point.
    * Used in OCR viewing (`invis`) mode in place of the 1:1 drag-pan.
    * @param {MouseEvent} event
    */
@@ -1031,14 +1031,17 @@ export class ScribeViewer {
     const EXP = 3; // >1 -> gentle near the start, steep at the extremes
     const tick = () => {
       if (!a.active) return;
-      // Vertical-only, like a standard PDF viewer: the horizontal cursor offset is ignored so the page never drifts left/right.
-      // (Horizontal scrolling stays on Shift+wheel and the scrollbar.)
-      // Cursor below origin (vY > 0) -> scroll down -> content moves up -> negate (matches the wheel handler's sign).
-      const d = a.pointerY - a.originY;
-      const past = Math.abs(d) - DEAD;
-      const ramp = Math.min(past + TOE, SPAN); // start TOE px up the curve, so the dead zone hides the flat toe
-      const vY = past <= 0 ? 0 : Math.sign(d) * (MIN + (MAX - MIN) * (ramp / SPAN) ** EXP);
-      if (vY !== 0) this.pan({ deltaY: -vY });
+      // Ramp each axis through its own dead zone so a near-vertical hold does not creep sideways.
+      // Negate because pan's delta is grab-style: a positive ramp (cursor down/right) would otherwise scroll the view up/left, away from the cursor.
+      const ramp = (/** @type {number} */ d) => {
+        const past = Math.abs(d) - DEAD;
+        if (past <= 0) return 0;
+        const r = Math.min(past + TOE, SPAN); // start TOE px up the curve, so the dead zone hides the flat toe
+        return Math.sign(d) * (MIN + (MAX - MIN) * (r / SPAN) ** EXP);
+      };
+      const vX = ramp(a.pointerX - a.originX);
+      const vY = ramp(a.pointerY - a.originY);
+      if (vX !== 0 || vY !== 0) this.pan({ deltaX: -vX, deltaY: -vY });
       a.rafId = requestAnimationFrame(tick);
     };
     a.rafId = requestAnimationFrame(tick);
