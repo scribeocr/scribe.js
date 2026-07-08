@@ -160,7 +160,7 @@ export class TessScheduler {
     return new Promise((resolve, reject) => {
       const id = `Job-${TessScheduler.#jobCounter++}-${Math.random().toString(16).slice(3, 8)}`;
       const job = {
-        id, action, payload, forViewer,
+        id, action, payload, forViewer, queuedAt: 0, dispatchedAt: 0,
       };
       if (DEBUG_RENDER_SCHED && action === 'renderPdfPage') {
         job.queuedAt = performance.now();
@@ -171,8 +171,9 @@ export class TessScheduler {
       const jobFunction = async (w) => {
         this.#runningWorkers[w.id] = job;
         if (DEBUG_RENDER_SCHED && job.action === 'renderPdfPage') {
+          job.dispatchedAt = performance.now();
           const kind = job.payload?.outputFormat === 'jpeg' ? 'thumbnail' : 'page';
-          console.log(`[render-sched] dispatch ${kind} ${job.payload?.pageIndex} -> worker ${w.id} (staged ${(performance.now() - job.queuedAt).toFixed(0)}ms)`);
+          console.log(`[render-sched] dispatch ${kind} ${job.payload?.pageIndex} -> worker ${w.id} (staged ${(job.dispatchedAt - job.queuedAt).toFixed(0)}ms)`);
         }
         try {
           const res1 = await w[action](payload, job.id);
@@ -180,6 +181,10 @@ export class TessScheduler {
           // If an array of promises is returned, wait for all promises to resolve before dequeuing.
           // If this did not happen, then every job could be assigned to the same worker.
           if (Array.isArray(res1)) await Promise.allSettled(res1);
+          if (DEBUG_RENDER_SCHED && job.action === 'renderPdfPage') {
+            const kind = job.payload?.outputFormat === 'jpeg' ? 'thumbnail' : 'page';
+            console.log(`[render-sched] completed ${kind} ${job.payload?.pageIndex} on worker ${w.id} (ran ${(performance.now() - job.dispatchedAt).toFixed(0)}ms)`);
+          }
         } catch (err) {
           reject(err);
         } finally {

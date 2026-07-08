@@ -259,6 +259,8 @@ export function applyHighlight(viewer, selectedWords, color, opacity) {
   updateHighlightGroupOutline(viewer);
   for (const p of pageWordsMap.keys()) viewer.renderHighlights(p);
   UiOcrWord.updateUI();
+  // Surface the new highlight in an open comments panel (it lists highlights with or without a comment).
+  if (viewer._rebuildCommentsPanel) viewer._rebuildCommentsPanel();
 }
 
 /**
@@ -276,6 +278,40 @@ function groupAnnotations(viewer, uiWord) {
     ? pageAnnotations.filter((annot) => annot.groupId === groupId)
     : pageAnnotations.filter((annot) => annotMatchesWord(annot, uiWord.word.bbox));
   return { n, groupId, annots };
+}
+
+/**
+ * Build an inset-stroke overlay per fill band, marking a highlight as an open control's target.
+ * @param {HTMLDivElement[]} bands
+ * @returns {HTMLDivElement[]}
+ */
+export function createInkEdges(bands) {
+  const edges = [];
+  for (const band of bands) {
+    const [r, g, b] = (band.style.background.match(/\d+/g) || []).map(Number);
+    if (r === undefined) continue;
+    // 60% highlight colour + 40% page ink (#1f2530): a darkened "ink" shade of the band's own colour.
+    const ink = `rgb(${Math.round(r * 0.6 + 31 * 0.4)}, ${Math.round(g * 0.6 + 37 * 0.4)}, ${Math.round(b * 0.6 + 48 * 0.4)})`;
+    // The band sits in the zoomed (possibly rotated) page layer, so divide the measured scale out of the stroke width to hold the edge at a constant 1.5px on screen.
+    const rect = band.getBoundingClientRect();
+    const diag = Math.hypot(band.offsetWidth, band.offsetHeight);
+    const scale = diag > 0 ? Math.hypot(rect.width, rect.height) / diag : 1;
+    // A separate full-opacity element, not a box-shadow on the band, which the band's fill opacity would wash out.
+    const edge = document.createElement('div');
+    edge.className = 'scribe-hl-ink-edge';
+    Object.assign(edge.style, {
+      position: 'absolute',
+      left: band.style.left,
+      top: band.style.top,
+      width: band.style.width,
+      height: band.style.height,
+      boxShadow: `inset 0 0 0 ${(1.5 / scale).toFixed(3)}px ${ink}`,
+      pointerEvents: 'none',
+    });
+    if (band.parentElement) band.parentElement.appendChild(edge);
+    edges.push(edge);
+  }
+  return edges;
 }
 
 /**
@@ -307,6 +343,8 @@ export function removeHighlightGroup(viewer, uiWord) {
   updateHighlightGroupOutline(viewer);
   viewer.renderHighlights(n);
   UiOcrWord.updateUI();
+  // Drop the deleted highlight's row from an open comments panel.
+  if (viewer._rebuildCommentsPanel) viewer._rebuildCommentsPanel();
 }
 
 /**
@@ -331,6 +369,8 @@ export function recolorHighlightGroup(viewer, uiWord, color) {
 
   viewer.renderHighlights(n);
   UiOcrWord.updateUI();
+  // Refresh the row's color swatch in an open comments panel.
+  if (viewer._rebuildCommentsPanel) viewer._rebuildCommentsPanel();
 }
 
 /**

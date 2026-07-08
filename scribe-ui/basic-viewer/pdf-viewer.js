@@ -19,6 +19,12 @@ import { concatOutlines, outlineSplitSegments } from '../../js/objects/outlineOb
 /** Root class used to scope this app's control styles. */
 const ROOT_CLASS = 'scribe-pdf-viewer';
 
+/**
+ * Compile-time gate for the developer-only Debug menu; commit it as `false`.
+ * A literal `false` makes the guarded `import('.../debugMenu.js')` below dead code, so public builds tree-shake the debug module out.
+ */
+const DEBUG_MENU = false;
+
 // Toolbar height bounds (px).
 const TOOLBAR_HEIGHT_DEFAULT = 40;
 const TOOLBAR_HEIGHT_MIN = 24;
@@ -291,6 +297,11 @@ class ScribePDFViewer {
       appMenu.menuWrap.append(open.openControls, print.printControls);
       appMenu.addAction('Open file', OPEN_SVG, () => open.openElem.click());
       appMenu.addAction('Print', PRINT_SVG, () => print.printElem.click());
+      if (DEBUG_MENU) {
+        import('../js/controls/debugMenu.js')
+          .then(({ installDebugMenu }) => installDebugMenu(appMenu, this.scribe))
+          .catch((err) => console.error('Failed to load the debug menu:', err));
+      }
       // Style the otherwise-empty start zone as a left-aligned flex row, with an 8px inset mirroring the end zone's, so the menu button sits at the left edge.
       toolbarElemStart.style.display = 'flex';
       toolbarElemStart.style.alignItems = 'center';
@@ -580,6 +591,8 @@ class ScribePDFViewer {
         if (this._activeSidebar !== 'comments') this._requestSidebar('comments');
         this._commentsPanel.reveal(uiWord);
       };
+      // A quiet rebuild after a comment/note is edited elsewhere (mini toolbar, note card), so an open panel reflects it at once.
+      this.scribe._rebuildCommentsPanel = () => this._commentsPanel.rebuild();
     }
 
     container.appendChild(this.pdfViewerElem);

@@ -63,8 +63,18 @@ export class ViewerImageCache {
   /** Number of pages ahead and behind the current page to pre-render. */
   static cacheRenderPages = 3;
 
-  /** Number of pages ahead and behind the current page to retain in memory before deleting. */
+  /**
+   * Number of pages ahead and behind the current page to keep the full-resolution decoded bitmap for.
+   * Also the floor within which a display canvas is never evicted.
+   */
   static cacheDeletePages = 5;
+
+  /**
+   * Total-bytes cap on retained display canvases, kept far beyond the bitmap window so a revisit reuses the drawn pixels instead of re-decoding (see `_cleanBitmapCache2`).
+   * A byte cap self-adapts to zoom where a page count would not: canvas size scales with on-screen area x dpr^2, so this ceiling holds many pages zoomed out and few zoomed in.
+   * The one knob for the memory/coverage trade-off.
+   */
+  static canvasCacheBytes = 256 * 1024 * 1024;
 
   /**
    * @param {import('../viewer.js').ScribeViewer} [viewer]
@@ -99,6 +109,21 @@ export class ViewerImageCache {
      * @type {Array<?Promise<any>>}
      */
     this._compressPromises = [];
+    /**
+     * Byte size (`width * height * 4`) of each retained display canvas, keyed by page number, summed to enforce `canvasCacheBytes`.
+     * @type {Map<number, number>}
+     */
+    this._canvasBytes = new Map();
+    /**
+     * Retained-canvas access order, least-recently-viewed first, so eviction over the byte cap drops the oldest.
+     * @type {Set<number>}
+     */
+    this._canvasLru = new Set();
+    /**
+     * Pages the viewer has requested a bitmap for and not yet evicted; `_cleanBitmapCache` sweeps only these.
+     * @type {Set<number>}
+     */
+    this._bitmapPages = new Set();
   }
 
   _viewer() {
@@ -261,6 +286,8 @@ export class ViewerImageCache {
   /** @param {number} n - Page number */
   async addPageCanvas(n) {
     const viewer = this._viewer();
+    // Both paths below leave the viewer holding a bitmap, so mark the page for the eviction sweep before branching.
+    this._bitmapPages.add(n);
     if (this.pageCanvases[n]) {
       let rerender = false;
       const props = this.pageCanvasProps[n];
@@ -323,11 +350,19 @@ export class ViewerImageCache {
       /** @type {HTMLCanvasElement} */ (canvas).style.display = viewer.state.displayMode === 'ebook' ? 'none' : '';
       // Insert behind the text/overlay groups (which carry z-index >= 1).
       pc.insertBefore(/** @type {HTMLCanvasElement} */ (canvas), pc.firstChild);
+      // Track this canvas's memory and mark it most-recently-viewed for the byte-capped retention (_cleanBitmapCache2).
+      // A re-render for the same page overwrites the byte entry, so a resized canvas is never double-counted.
+      const c = /** @type {HTMLCanvasElement} */ (canvas);
+      this._canvasBytes.set(n, c.width * c.height * 4);
+      this._canvasLru.delete(n);
+      this._canvasLru.add(n);
     }).catch(() => {});
   }
 
   /** @param {number} n - Page number */
   deletePageCanvas(n) {
+    this._canvasBytes.delete(n);
+    this._canvasLru.delete(n);
     if (!this.pageCanvases[n]) return;
     // Supersede any in-flight render so its result is discarded rather than added after deletion.
     this._renderSeq[n] = (this._renderSeq[n] || 0) + 1;
@@ -353,6 +388,9 @@ export class ViewerImageCache {
     this._renderSeq.length = 0;
     this._drawing.clear();
     this._compressPromises.length = 0;
+    this._canvasBytes.clear();
+    this._canvasLru.clear();
+    this._bitmapPages.clear();
   }
 
   /**
@@ -432,22 +470,48 @@ export class ViewerImageCache {
   /** @param {number} curr */
   _cleanBitmapCache(curr) {
     const images = this._viewer().doc.images;
-    for (let i = 0; i < images.pageCount; i++) {
+    // Non-tracked pages would no-op here, so sweep only `_bitmapPages`.
+    // Deleting from a Set mid-iteration is safe.
+    for (const i of this._bitmapPages) {
       if (Math.abs(curr - i) > ViewerImageCache.cacheDeletePages) {
         // Compress the viewer bitmap to a re-decodable PNG `src`, then free the page's decoded bitmaps to bound viewer memory.
         this._compressNative(i);
         images.releaseBitmapCache(i);
+        this._bitmapPages.delete(i);
       }
     }
   }
 
-  /** @param {number} curr */
+  /**
+   * Bound retained display canvases by a total-bytes cap, evicting least-recently-viewed first.
+   * @param {number} curr
+   */
   _cleanBitmapCache2(curr) {
     const viewer = this._viewer();
-    for (let i = 0; i < viewer.doc.images.pageCount; i++) {
-      if (Math.abs(curr - i) > ViewerImageCache.cacheDeletePages) {
-        this.deletePageCanvas(i);
+    const pageCount = viewer.doc.images.pageCount;
+
+    // The on-screen + prefetch window is most-recently-viewed and is never evicted.
+    const lo = Math.max(0, curr - ViewerImageCache.cacheDeletePages);
+    const hi = Math.min(pageCount - 1, curr + ViewerImageCache.cacheDeletePages);
+    for (let i = lo; i <= hi; i++) {
+      if (this.pageCanvases[i]) {
+        this._canvasLru.delete(i);
+        this._canvasLru.add(i);
       }
     }
+
+    let total = 0;
+    for (const bytes of this._canvasBytes.values()) total += bytes;
+    if (total <= ViewerImageCache.canvasCacheBytes) return;
+
+    // Evict least-recently-viewed canvases (skipping the protected window) until back under the cap.
+    const toEvict = [];
+    for (const n of this._canvasLru) {
+      if (total <= ViewerImageCache.canvasCacheBytes) break;
+      if (Math.abs(curr - n) <= ViewerImageCache.cacheDeletePages) continue;
+      toEvict.push(n);
+      total -= (this._canvasBytes.get(n) || 0);
+    }
+    for (const n of toEvict) this.deletePageCanvas(n);
   }
 }

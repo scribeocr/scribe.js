@@ -1,19 +1,37 @@
-// Comments side panel: a flat, navigable list of every comment in the document.
-// Each row is either a highlight-anchored comment (shown with a quote of the highlighted text) or a freestanding sticky note.
+// Comments side panel: every comment in the document as a card, grouped under sticky per-page headers.
+// A card is either a highlight-anchored comment (quoting the highlighted text behind a bar of the highlight's color) or a freestanding note.
 // A sibling of the bookmarks and thumbnails rails.
-// Clicking a row jumps to that comment's page.
 import { makeIconButton } from './toolbar.js';
 import { annotMatchesWord } from '../viewerHighlights.js';
 import { createNote } from '../viewerNotes.js';
 
 // Speech-bubble glyph for the toolbar toggle.
 const COMMENT_SVG = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="currentColor"><path d="M3 2h10a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H6.5L4 13.5V11H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/></svg>';
-// Plus glyph for the header "new note on this page" button.
+// Plus glyph for the header "new note on this page" button (also the row's ghost "Add a comment" affordance).
 const NEW_NOTE_SVG = '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
-// Small dog-eared sticky glyph marking a freestanding-note row (matches the on-page note icon).
+// Small dog-eared note glyph marking a freestanding-note row (matches the on-page note icon).
 const NOTE_MARK_SVG = '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor"><path d="M4 4h16v10l-6 6H4z"/><path d="M20 14l-6 6v-5a1 1 0 0 1 1-1z" fill="rgba(0,0,0,.22)"/></svg>';
+// Row hover verbs, drawn on the same 24-grid / 1.6px / round-cap family as the on-page card's icons.
+const PENCIL_SVG = '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">'
+  + '<path d="M13.7 6.3l4 4M5 19l.9-3.9L15.9 5.1a1.9 1.9 0 0 1 2.7 0l.3.3a1.9 1.9 0 0 1 0 2.7L8.9 18.1 5 19z"/></svg>';
+const TRASH_SVG = '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">'
+  + '<path d="M4 6.5h16M9.5 6.5V5a1.5 1.5 0 0 1 1.5-1.5h2A1.5 1.5 0 0 1 14.5 5v1.5M6 6.5l.9 11.2a2 2 0 0 0 2 1.8h6.2a2 2 0 0 0 2-1.8L18 6.5"/></svg>';
+// Outline speech bubble for the empty state (the filled COMMENT_SVG stays the toolbar toggle).
+const EMPTY_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">'
+  + '<rect x="3" y="4" width="18" height="12.5" rx="2.5"/><path d="M8.5 16.5v3.2l4-3.2"/></svg>';
 
-const MAX_SNIPPET_WORDS = 16;
+// A quote up to MAX + SLACK tall shows in full; taller, it caps at MAX and scrolls inside.
+// The SLACK band keeps a quote only just over MAX from scrolling to reveal a mere sliver.
+const QUOTE_SCROLL_MAX_PX = 160;
+const QUOTE_SCROLL_SLACK_PX = 64;
+
+/**
+ * One panel row: a highlight group (quoting the text it covers) or a freestanding note.
+ * `top`/`left` are the anchor's page-space position, ordering rows within a page group.
+ * @typedef {{pageIndex: number, kind: 'highlight'|'note', comment: string, author: string, createdAt: string,
+ *   color: string, preview: string, groupId: ?string, annot: AnnotationHighlight | AnnotationText,
+ *   top: number, left: number}} CommentRow
+ */
 
 /**
  * Create the comments side panel.
@@ -89,7 +107,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
   let activePage = -1;
   let visible = false;
   // The comment rows from the last rebuild, their row elements, and the row indices selected for a bulk action.
-  /** @type {Array<Object>} */
+  /** @type {CommentRow[]} */
   let rows = [];
   /** @type {HTMLElement[]} */
   const rowEls = [];
@@ -112,12 +130,13 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
   }
 
   /**
-   * Returns a short quote of the words a group's highlight annotations cover on the given page, read from the page's OCR words.
+   * Returns the full text the group's highlight annotations cover on the given page, read from the page's OCR words.
+   * The row shows it clamped to two lines; double-clicking the quote expands it in place.
    * @param {number} pageIndex
    * @param {Array<Object>} groupAnns
    * @returns {string}
    */
-  function quoteSnippet(pageIndex, groupAnns) {
+  function quoteText(pageIndex, groupAnns) {
     const ocrPage = scribe.doc.ocr && scribe.doc.ocr.active && scribe.doc.ocr.active[pageIndex];
     if (!ocrPage || !ocrPage.lines) return '';
     const words = [];
@@ -125,7 +144,6 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
       for (const word of line.words) {
         if (!groupAnns.some((a) => annotMatchesWord(a, word.bbox))) continue;
         words.push(word.text);
-        if (words.length >= MAX_SNIPPET_WORDS) return `${words.join(' ')}…`;
       }
     }
     return words.join(' ');
@@ -133,9 +151,10 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
 
   /**
    * Collect one row per highlight group and per freestanding note, across all pages.
-   * @returns {Array<{pageIndex: number, kind: 'highlight'|'note', comment: string, author: string, createdAt: string, color: string, preview: string, groupId: ?string, annot: Object}>}
+   * @returns {CommentRow[]}
    */
   function collectRows() {
+    /** @type {CommentRow[]} */
     const out = [];
     const pages = annPages();
     for (let i = 0; i < pages.length; i += 1) {
@@ -144,7 +163,17 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
       for (const a of anns) {
         if (a.type === 'text') {
           out.push({
-            pageIndex: i, kind: 'note', comment: a.comment || '', author: a.author || '', createdAt: a.createdAt || '', color: a.color || '', preview: '', groupId: null, annot: a,
+            pageIndex: i,
+            kind: 'note',
+            comment: a.comment || '',
+            author: a.author || '',
+            createdAt: a.createdAt || '',
+            color: a.color || '',
+            preview: '',
+            groupId: null,
+            annot: a,
+            top: a.bbox ? a.bbox.top : 0,
+            left: a.bbox ? a.bbox.left : 0,
           });
           continue;
         }
@@ -156,6 +185,14 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
         if (seenGroups.has(key)) continue;
         seenGroups.add(key);
         const groupAnns = a.groupId ? anns.filter((x) => x.groupId === a.groupId) : [a];
+        // The group's topmost-leftmost box anchors the row's position, whatever order the words were swept in.
+        let top = Infinity;
+        let left = Infinity;
+        for (const g of groupAnns) {
+          if (!g.bbox) continue;
+          if (g.bbox.top < top) top = g.bbox.top;
+          if (g.bbox.left < left) left = g.bbox.left;
+        }
         out.push({
           pageIndex: i,
           kind: 'highlight',
@@ -163,9 +200,11 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
           author: a.author || '',
           createdAt: a.createdAt || '',
           color: a.color || '',
-          preview: quoteSnippet(i, groupAnns),
+          preview: quoteText(i, groupAnns),
           groupId: a.groupId || null,
           annot: a,
+          top: top === Infinity ? 0 : top,
+          left: left === Infinity ? 0 : left,
         });
       }
     }
@@ -185,7 +224,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
   /**
    * Write a comment onto a highlight group directly (no UiOcrWords needed, so it works for a page not on screen).
    * Stamps author/date on first authoring and clears them when emptied, matching the on-page editor.
-   * @param {Object} row
+   * @param {CommentRow} row
    * @param {string} comment
    */
   function setHighlightComment(row, comment) {
@@ -212,7 +251,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
 
   /**
    * Remove a highlight group (or a group-less highlight) entirely.
-   * @param {Object} row
+   * @param {CommentRow} row
    */
   function deleteHighlight(row) {
     const match = row.groupId ? ((a) => a.groupId === row.groupId) : ((a) => a === row.annot);
@@ -220,7 +259,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
     scribe.doc.annotations.pages[row.pageIndex] = page.filter((a) => !((a.type == null || a.type === 'highlight') && match(a)));
     for (const kw of scribe.getUiWords()) {
       const covered = (row.groupId && kw.highlightGroupId === row.groupId)
-        || (!row.groupId && annotMatchesWord(row.annot, kw.word.bbox));
+        || (!row.groupId && annotMatchesWord(/** @type {AnnotationHighlight} */ (row.annot), kw.word.bbox));
       if (!covered) continue;
       kw.highlightColor = null;
       kw.highlightOpacity = 1;
@@ -232,7 +271,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
 
   /**
    * Edit a note's comment directly.
-   * @param {Object} row
+   * @param {CommentRow} row
    * @param {string} comment
    */
   function setNoteComment(row, comment) {
@@ -247,7 +286,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
 
   /**
    * Remove a freestanding note entirely.
-   * @param {Object} row
+   * @param {CommentRow} row
    */
   function deleteNote(row) {
     const page = annPages()[row.pageIndex] || [];
@@ -255,44 +294,121 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
     refreshOnPage(row.pageIndex);
   }
 
+  // The single open in-place editor.
+  // No Save button: dismissing it commits, only Esc discards.
+  /** @type {?{row: CommentRow, rowEl: HTMLElement, ta: HTMLTextAreaElement, foldElem: HTMLDivElement, onDown: (e: PointerEvent) => void}} */
+  let editState = null;
+
+  /** Remove the document-level click-out listener of the open editor, if any. */
+  function detachEditorListener() {
+    if (editState) document.removeEventListener('pointerdown', editState.onDown, true);
+  }
+
   /**
-   * Inline-edit a row's comment: swap the text element for a textarea, committing on Enter/blur (Esc cancels).
-   * @param {Object} row
-   * @param {HTMLElement} textElem
+   * Close the in-place editor, committing the field's text when `save` is set.
+   * @param {boolean} save
    */
-  function startEdit(row, textElem) {
-    const ta = document.createElement('textarea');
-    ta.className = 'scribe-cm-edit';
-    ta.value = row.comment;
-    ta.rows = 2;
-    textElem.replaceWith(ta);
-    ta.focus();
-    ta.select();
-    let done = false;
-    const commit = (save) => {
-      if (done) return;
-      done = true;
-      const next = ta.value.trim();
-      if (save && next !== row.comment) {
-        if (row.kind === 'note') setNoteComment(row, next); else setHighlightComment(row, next);
-        rebuild();
+  function foldEditor(save) {
+    if (!editState) return;
+    const {
+      row, rowEl, ta, foldElem,
+    } = editState;
+    detachEditorListener();
+    const next = ta.value.trim();
+    editState = null;
+    ta.remove();
+    foldElem.remove();
+    rowEl.classList.remove('editing');
+    for (const sel of ['.scribe-cm-text', '.scribe-cm-ghost']) {
+      const hidden = /** @type {?HTMLElement} */ (rowEl.querySelector(sel));
+      if (hidden) hidden.style.display = '';
+    }
+    if (save && next !== row.comment) {
+      // Setters stamp/clear author + date on the annotation; re-read the row's cached fields to match.
+      if (row.kind === 'note') setNoteComment(row, next); else setHighlightComment(row, next);
+      row.comment = row.annot.comment || '';
+      row.author = row.annot.author || '';
+      row.createdAt = row.annot.createdAt || '';
+      // Swap only this row's element, never a full rebuild, so the click that triggered the fold keeps its target alive.
+      const i = rows.indexOf(row);
+      if (i >= 0 && rowEls[i]) {
+        const fresh = renderRow(row, i);
+        rowEls[i].replaceWith(fresh);
+        rowEls[i] = fresh;
       } else rebuild();
+    }
+  }
+
+  /**
+   * Morph a row into the comment editor.
+   * @param {CommentRow} row
+   * @param {HTMLElement} rowEl
+   */
+  function startEdit(row, rowEl) {
+    if (!editing()) return;
+    if (editState) {
+      if (editState.row === row) return;
+      // Opening a second editor commits the first, as any click outside it does.
+      foldEditor(true);
+    }
+    for (const sel of ['.scribe-cm-text', '.scribe-cm-ghost']) {
+      const shown = /** @type {?HTMLElement} */ (rowEl.querySelector(sel));
+      if (shown) shown.style.display = 'none';
+    }
+    const ta = document.createElement('textarea');
+    ta.className = 'scribe-cm-field';
+    ta.value = row.comment;
+    ta.placeholder = 'Comment…';
+    const autoGrow = () => {
+      ta.style.height = 'auto';
+      ta.style.height = `${Math.min(190, Math.max(40, ta.scrollHeight))}px`;
     };
+    ta.addEventListener('input', autoGrow);
     ta.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); commit(true); } else if (e.key === 'Escape') { e.preventDefault(); commit(false); }
+      if (e.key === 'Escape') { e.preventDefault(); foldEditor(false); } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); foldEditor(true); }
       e.stopPropagation();
     });
-    ta.addEventListener('blur', () => commit(true));
+    const foldElem = document.createElement('div');
+    foldElem.className = 'scribe-cm-fold';
+    const foldInner = document.createElement('div');
+    const foot = document.createElement('div');
+    foot.className = 'scribe-cm-foot';
+    const removeBtn = document.createElement('button');
+    removeBtn.type = 'button';
+    removeBtn.className = 'scribe-cm-remove';
+    removeBtn.textContent = 'Remove comment';
+    removeBtn.addEventListener('click', (e) => { e.stopPropagation(); ta.value = ''; foldEditor(true); });
+    foot.append(removeBtn);
+    foldInner.appendChild(foot);
+    foldElem.appendChild(foldInner);
+    // Clicks inside the editor must not bubble into the row's navigate handler.
+    ta.addEventListener('click', (e) => e.stopPropagation());
+    foldElem.addEventListener('click', (e) => e.stopPropagation());
+    rowEl.append(ta, foldElem);
+    // Click-out saves (capture phase, so it runs before whatever the click itself does).
+    /** @param {PointerEvent} e */
+    const onDown = (e) => {
+      if (!rowEl.contains(/** @type {Node} */ (e.target))) foldEditor(true);
+    };
+    document.addEventListener('pointerdown', onDown, true);
+    editState = {
+      row, rowEl, ta, foldElem, onDown,
+    };
+    rowEl.getBoundingClientRect(); // commit the collapsed footer so adding the class animates the 0fr -> 1fr slide
+    rowEl.classList.add('editing');
+    autoGrow();
+    ta.focus();
+    ta.select();
   }
 
   /**
    * Open the per-row edit menu at the pointer.
-   * @param {Object} row
+   * @param {CommentRow} row
    * @param {number} x
    * @param {number} y
-   * @param {HTMLElement} textElem
+   * @param {HTMLElement} rowEl
    */
-  function openRowMenu(row, x, y, textElem) {
+  function openRowMenu(row, x, y, rowEl) {
     menuElem.textContent = '';
     const add = (label, fn) => {
       const item = document.createElement('div');
@@ -301,7 +417,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
       item.addEventListener('click', () => { closeMenu(); fn(); });
       menuElem.appendChild(item);
     };
-    add('Edit', () => startEdit(row, textElem));
+    add('Edit', () => startEdit(row, rowEl));
     if (row.kind === 'note') {
       add('Delete note', () => { deleteNote(row); rebuild(); });
     } else {
@@ -313,7 +429,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
 
   /**
    * Render one comment row.
-   * @param {Object} row
+   * @param {CommentRow} row
    * @param {number} i - The row's index in the current list, keying its bulk selection.
    * @returns {HTMLDivElement}
    */
@@ -321,47 +437,113 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
     const el = document.createElement('div');
     el.className = 'scribe-cm-row';
     el.dataset.page = String(row.pageIndex);
-    if (row.pageIndex === activePage) el.classList.add('active');
 
-    // Kind marker: a color swatch for a highlight comment, the note glyph for a freestanding note.
-    const marker = document.createElement('span');
-    marker.className = 'scribe-cm-marker';
-    if (row.kind === 'note') {
-      marker.innerHTML = NOTE_MARK_SVG;
-    } else {
-      marker.classList.add('scribe-cm-swatch');
-      if (row.color) marker.style.background = row.color;
+    // Right slot of the lead line: the date and the editor-only hover verbs share one grid cell, so revealing the verbs never reflows the lead line.
+    const rightElem = document.createElement('div');
+    rightElem.className = 'scribe-cm-right';
+    if (editing()) {
+      const verbs = document.createElement('div');
+      verbs.className = 'scribe-cm-verbs';
+      const editBtn = document.createElement('button');
+      editBtn.type = 'button';
+      editBtn.className = 'scribe-cm-verb';
+      editBtn.title = row.comment ? 'Edit comment' : 'Add comment';
+      editBtn.innerHTML = PENCIL_SVG;
+      editBtn.addEventListener('click', (e) => { e.stopPropagation(); startEdit(row, el); });
+      // The trash verb deletes the whole anchor (highlight or note), not just the comment; comment-only removal is the editor's "Remove comment".
+      const delBtn = document.createElement('button');
+      delBtn.type = 'button';
+      delBtn.className = 'scribe-cm-verb scribe-cm-verb-del';
+      delBtn.title = row.kind === 'note' ? 'Delete note' : 'Delete highlight';
+      delBtn.innerHTML = TRASH_SVG;
+      delBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (row.kind === 'note') deleteNote(row); else deleteHighlight(row);
+        rebuild();
+      });
+      verbs.append(editBtn, delBtn);
+      rightElem.appendChild(verbs);
     }
-    el.appendChild(marker);
 
-    const body = document.createElement('div');
-    body.className = 'scribe-cm-body';
-
-    if (row.preview) {
-      const quote = document.createElement('div');
+    // The anchor line names what the comment hangs on: the quoted highlight behind a bar of its color, or the note mark.
+    const anchor = document.createElement('div');
+    anchor.className = 'scribe-cm-anchor';
+    const bar = document.createElement('span');
+    bar.className = 'scribe-cm-bar';
+    // Raw highlight color, not a tinted shade, matching the coin picker's swatches.
+    if (row.kind === 'note') bar.style.background = 'var(--scribe-note)';
+    else if (row.color) bar.style.background = row.color;
+    anchor.appendChild(bar);
+    if (row.kind === 'note') {
+      const kind = document.createElement('span');
+      kind.className = 'scribe-cm-kind';
+      kind.innerHTML = `${NOTE_MARK_SVG}<span>Note</span>`;
+      anchor.appendChild(kind);
+    } else {
+      const quote = document.createElement('span');
       quote.className = 'scribe-cm-quote';
       quote.textContent = row.preview;
-      body.appendChild(quote);
+      // stopPropagation so expanding the quote does not also fire the row's edit-on-dblclick shortcut.
+      quote.addEventListener('dblclick', (e) => {
+        e.stopPropagation();
+        const expanding = !quote.classList.contains('expanded');
+        quote.classList.toggle('expanded', expanding);
+        quote.classList.remove('scroll');
+        quote.style.maxHeight = '';
+        if (expanding && quote.scrollHeight > QUOTE_SCROLL_MAX_PX + QUOTE_SCROLL_SLACK_PX) {
+          quote.classList.add('scroll');
+          quote.style.maxHeight = `${QUOTE_SCROLL_MAX_PX}px`;
+        }
+      });
+      anchor.appendChild(quote);
     }
 
-    const text = document.createElement('div');
-    text.className = 'scribe-cm-text';
-    text.textContent = row.comment;
-    body.appendChild(text);
+    // Authored rows lead with an identity header; unauthored rows lead with the anchor line, which carries the verbs instead.
+    if (row.author) {
+      const top = document.createElement('div');
+      top.className = 'scribe-cm-top';
+      const meta = document.createElement('div');
+      meta.className = 'scribe-cm-meta';
+      const ava = document.createElement('span');
+      ava.className = 'scribe-cm-ava';
+      ava.textContent = row.author.split(/\s+/, 2).map((s) => s[0]).join('').toUpperCase();
+      const who = document.createElement('span');
+      who.className = 'scribe-cm-who';
+      who.textContent = row.author;
+      meta.append(ava, who);
+      if (row.createdAt) {
+        const d = new Date(row.createdAt);
+        /** @type {Intl.DateTimeFormatOptions} */
+        const dateOpts = { month: 'short', day: 'numeric' };
+        if (d.getFullYear() !== new Date().getFullYear()) dateOpts.year = 'numeric';
+        const when = document.createElement('span');
+        when.className = 'scribe-cm-when';
+        when.textContent = `· ${d.toLocaleDateString(undefined, dateOpts)}`;
+        rightElem.prepend(when);
+        if (rightElem.childElementCount > 1) rightElem.classList.add('scribe-cm-right-swap');
+      }
+      top.appendChild(meta);
+      if (rightElem.childElementCount) top.appendChild(rightElem);
+      el.append(top, anchor);
+    } else {
+      if (rightElem.childElementCount) anchor.appendChild(rightElem);
+      el.appendChild(anchor);
+    }
 
-    const meta = document.createElement('div');
-    meta.className = 'scribe-cm-meta';
-    const bits = document.createElement('span');
-    const parts = [];
-    if (row.author) parts.push(row.author);
-    if (row.createdAt) parts.push(new Date(row.createdAt).toLocaleDateString());
-    bits.textContent = parts.join(' · ');
-    const pageBadge = document.createElement('span');
-    pageBadge.className = 'scribe-cm-page';
-    pageBadge.textContent = `p. ${row.pageIndex + 1}`;
-    meta.append(bits, pageBadge);
-    body.appendChild(meta);
-    el.appendChild(body);
+    if (row.comment) {
+      const text = document.createElement('div');
+      text.className = 'scribe-cm-text';
+      text.textContent = row.comment;
+      el.appendChild(text);
+    } else if (editing()) {
+      // The visible way in for a comment-less row (the old blank row was double-click-only).
+      const ghost = document.createElement('button');
+      ghost.type = 'button';
+      ghost.className = 'scribe-cm-ghost';
+      ghost.innerHTML = `${NEW_NOTE_SVG}<span>Add a comment…</span>`;
+      ghost.addEventListener('click', (e) => { e.stopPropagation(); startEdit(row, el); });
+      el.appendChild(ghost);
+    }
 
     el.addEventListener('click', (e) => {
       if (e.ctrlKey || e.metaKey) { toggleSelect(i); return; }
@@ -370,8 +552,8 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
     });
 
     if (editing()) {
-      text.addEventListener('dblclick', (e) => { e.stopPropagation(); startEdit(row, text); });
-      el.addEventListener('contextmenu', (e) => { e.preventDefault(); openRowMenu(row, e.clientX, e.clientY, text); });
+      el.addEventListener('dblclick', (e) => { e.stopPropagation(); startEdit(row, el); });
+      el.addEventListener('contextmenu', (e) => { e.preventDefault(); openRowMenu(row, e.clientX, e.clientY, el); });
     }
 
     if (row.kind === 'highlight') {
@@ -388,7 +570,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
           }
         } else {
           const covered = scribe.getUiWords().find((kw) => kw.word.line.page.n === row.pageIndex
-            && kw.highlightRectElem && annotMatchesWord(row.annot, kw.word.bbox));
+            && kw.highlightRectElem && annotMatchesWord(/** @type {AnnotationHighlight} */ (row.annot), kw.word.bbox));
           if (covered && covered.highlightRectElem) litBands.push(covered.highlightRectElem);
         }
         for (const band of litBands) band.classList.add('scribe-hl-hover');
@@ -403,6 +585,8 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
 
   function rebuild() {
     closeMenu();
+    detachEditorListener();
+    editState = null; // any open editor's nodes go with the list
     // Only offer note creation in an editable viewer.
     newBtn.style.display = editing() ? '' : 'none';
     listElem.textContent = '';
@@ -411,16 +595,43 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
     rows = [];
     if (!hasDoc()) { countElem.textContent = ''; return; }
     rows = collectRows();
-    rows.sort((a, b) => a.pageIndex - b.pageIndex);
+    // Sort by page then position, never creation order, so a highlight added atop a page never lists below an older one lower down.
+    rows.sort((a, b) => a.pageIndex - b.pageIndex || a.top - b.top || a.left - b.left);
     countElem.textContent = rows.length ? String(rows.length) : '';
     if (rows.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'scribe-cm-empty';
-      empty.textContent = editing() ? 'No comments yet.' : 'No comments.';
+      empty.innerHTML = EMPTY_SVG;
+      const title = document.createElement('div');
+      title.className = 'scribe-cm-empty-t';
+      title.textContent = editing() ? 'No comments yet' : 'No comments';
+      empty.appendChild(title);
+      if (editing()) {
+        const how = document.createElement('div');
+        how.className = 'scribe-cm-empty-h';
+        how.textContent = 'Highlight text in the document, or add a note with +.';
+        empty.appendChild(how);
+      }
       listElem.appendChild(empty);
       return;
     }
-    rows.forEach((row, i) => { const el = renderRow(row, i); rowEls[i] = el; listElem.appendChild(el); });
+    let lastPage = -1;
+    rows.forEach((row, i) => {
+      if (row.pageIndex !== lastPage) {
+        lastPage = row.pageIndex;
+        const grp = document.createElement('div');
+        grp.className = 'scribe-cm-grp';
+        grp.dataset.page = String(row.pageIndex);
+        if (row.pageIndex === activePage) grp.classList.add('active');
+        const label = document.createElement('span');
+        label.textContent = `Page ${row.pageIndex + 1}`;
+        grp.appendChild(label);
+        listElem.appendChild(grp);
+      }
+      const el = renderRow(row, i);
+      rowEls[i] = el;
+      listElem.appendChild(el);
+    });
   }
 
   (scribe.outerElem || document).addEventListener('click', (e) => { if (!menuElem.contains(e.target)) closeMenu(); });
@@ -499,7 +710,12 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
       selectAll();
       return;
     }
-    if (e.key === 'Escape') { clearSelection(); return; }
+    if (e.key === 'Escape') {
+      // The field handles Esc while focused; this catches it after focus leaves the editor.
+      if (editState) { foldEditor(false); return; }
+      clearSelection();
+      return;
+    }
     if ((e.key === 'Delete' || e.key === 'Backspace') && selected.size > 0) {
       e.preventDefault();
       deleteSelected();
@@ -508,17 +724,22 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
   document.addEventListener('keydown', onKeyDown);
 
   /**
-   * Cheap re-highlight of the rows on the current page, without a full rebuild.
+   * Cheap re-accent of the current page's group header, without a full rebuild.
    * @param {number} pageIndex
    */
   function setActive(pageIndex) {
     activePage = pageIndex;
-    for (const el of listElem.querySelectorAll('.scribe-cm-row')) {
-      el.classList.toggle('active', Number(el.dataset.page) === activePage);
+    for (const grp of listElem.querySelectorAll('.scribe-cm-grp')) {
+      grp.classList.toggle('active', Number(/** @type {HTMLElement} */ (grp).dataset.page) === activePage);
     }
   }
 
-  function setVisible(v) { visible = v; panelElem.style.display = v ? '' : 'none'; if (v) rebuild(); else clearSelection(); }
+  function setVisible(v) {
+    visible = v;
+    panelElem.style.display = v ? '' : 'none';
+    if (v) rebuild();
+    else { foldEditor(false); clearSelection(); }
+  }
 
   /**
    * Highlight->row half of the two-way hover sync: the viewer reports the hovered group and its row lights up.
@@ -541,7 +762,8 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
     rebuild();
     const i = rows.findIndex((row) => row.kind === 'highlight'
       && (uiWord.highlightGroupId ? row.groupId === uiWord.highlightGroupId
-        : (row.pageIndex === uiWord.word.line.page.n && annotMatchesWord(row.annot, uiWord.word.bbox))));
+        : (row.pageIndex === uiWord.word.line.page.n
+          && annotMatchesWord(/** @type {AnnotationHighlight} */ (row.annot), uiWord.word.bbox))));
     const el = i >= 0 ? rowEls[i] : null;
     if (!el) return;
     el.scrollIntoView({ block: 'nearest' });
@@ -551,6 +773,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
 
   function destroy() {
     closeMenu();
+    foldEditor(false); // drops the editor's document-level click-out listener
     menuElem.remove();
     panelElem.remove();
     document.removeEventListener('keydown', onKeyDown);

@@ -2,7 +2,9 @@
 // (toggle, color picker, comment icons), the upload drop zone, and the file-to-ScribeDoc loader.
 import scribeLib from '../../../scribe.js';
 import { makeIconButton } from './toolbar.js';
-import { applyHighlight, recolorHighlightGroup, removeHighlightGroup } from '../viewerHighlights.js';
+import {
+  applyHighlight, createInkEdges, recolorHighlightGroup, removeHighlightGroup,
+} from '../viewerHighlights.js';
 import { createNote, focusNoteEditor } from '../viewerNotes.js';
 import { filesFromDropEvent } from '../dragAndDrop.js';
 
@@ -18,17 +20,16 @@ const HIGHLIGHT_CURSOR = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.o
 // eslint-disable-next-line max-len
 const HIGHLIGHT_CARET_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:block;width:11px;height:11px;pointer-events:none;" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
 
-// Mini-toolbar action glyphs (comment bubble / copy / trash), sized by the `.scribe-hl-tb-btn svg` rule.
+// Mini-toolbar action glyphs, sized by the `.scribe-hl-tb-btn svg` rule.
+// Drawn in the product's icon language (see `lineIcon` in toolbar.js): 24-grid, 1.6px stroke, round caps and joins.
 // eslint-disable-next-line max-len
-const TB_COMMENT_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M2.5 3.5h11v7h-6l-3 2.5v-2.5h-2z" stroke-linejoin="round"/></svg>';
+const TB_COMMENT_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12.5" rx="2.5"/><path d="M8.5 16.5v3.2l4-3.2"/></svg>';
 // eslint-disable-next-line max-len
-const TB_COPY_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="5.5" y="5.5" width="7" height="8" rx="1"/><path d="M3.5 10.5v-7a1 1 0 0 1 1-1h5"/></svg>';
+const TB_DELETE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5h16M9.5 6.5V5a1.5 1.5 0 0 1 1.5-1.5h2A1.5 1.5 0 0 1 14.5 5v1.5M6 6.5l.9 11.2a2 2 0 0 0 2 1.8h6.2a2 2 0 0 0 2-1.8L18 6.5"/></svg>';
 // eslint-disable-next-line max-len
-const TB_DELETE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><path d="M3 4.5h10M6.5 4.5v-1.5h3v1.5M4.5 4.5l.7 8h5.6l.7-8" stroke-linejoin="round"/></svg>';
+const TB_GRIP_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 14" width="12" height="14" fill="currentColor" aria-hidden="true"><circle cx="2" cy="2" r="1.2"/><circle cx="6" cy="2" r="1.2"/><circle cx="10" cy="2" r="1.2"/><circle cx="2" cy="7" r="1.2"/><circle cx="6" cy="7" r="1.2"/><circle cx="10" cy="7" r="1.2"/><circle cx="2" cy="12" r="1.2"/><circle cx="6" cy="12" r="1.2"/><circle cx="10" cy="12" r="1.2"/></svg>';
 // eslint-disable-next-line max-len
-const TB_GRIP_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 8 14" width="8" height="14" fill="currentColor" aria-hidden="true"><circle cx="2" cy="2" r="1.2"/><circle cx="6" cy="2" r="1.2"/><circle cx="2" cy="7" r="1.2"/><circle cx="6" cy="7" r="1.2"/><circle cx="2" cy="12" r="1.2"/><circle cx="6" cy="12" r="1.2"/></svg>';
-// eslint-disable-next-line max-len
-const TB_PANEL_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" aria-hidden="true"><rect x="2" y="2.5" width="12" height="11" rx="1.5"/><path d="M6 2.5v11"/></svg>';
+const TB_PANEL_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="15.5" rx="2.5"/><path d="M9.5 4v15.5"/></svg>';
 
 /**
  * Build the highlight tool: toggle button, optional color picker, overlay-word highlighting, highlighter cursor, and comment icons.
@@ -258,7 +259,14 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     const hlToolbar = document.createElement('div');
     hlToolbar.className = 'scribe-hl-toolbar';
     hlToolbar.style.display = 'none';
-    hlToolbar.addEventListener('mousedown', (e) => e.stopPropagation());
+    /** A press began inside the card: however far the pointer travels before release (field resize drag, text selection), the resulting click must not read as an outside click. */
+    let hlToolbarPressInside = false;
+    hlToolbar.addEventListener('mousedown', (e) => {
+      e.stopPropagation();
+      hlToolbarPressInside = true;
+      // The gesture's click (if any) fires before this timeout clears the flag.
+      document.addEventListener('mouseup', () => setTimeout(() => { hlToolbarPressInside = false; }, 0), { once: true });
+    });
     const hlToolbarRow = document.createElement('div');
     hlToolbarRow.className = 'scribe-hl-tb-row';
     hlToolbar.appendChild(hlToolbarRow);
@@ -271,14 +279,10 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     /** @type {?() => void} Ends an in-flight grip drag (teardown safety). */
     let hlToolbarDragEnd = null;
 
-    // Drag grip: the card is repositionable so it can be moved off anything it covers.
-    const tbGrip = document.createElement('span');
-    tbGrip.className = 'scribe-hl-tb-grip';
-    tbGrip.title = 'Move';
-    tbGrip.setAttribute('aria-label', 'Move card');
-    tbGrip.innerHTML = TB_GRIP_SVG;
-    hlToolbarRow.appendChild(tbGrip);
-    tbGrip.addEventListener('mousedown', (e) => {
+    // The card is repositionable so it can be moved off anything it covers.
+    // Two drag surfaces share this: the grip, and the blank run right of the controls (present when the comment field widens the card).
+    /** @param {MouseEvent} e */
+    const startCardDrag = (e) => {
       e.preventDefault();
       const h = editorHost.getBoundingClientRect();
       const r = hlToolbar.getBoundingClientRect();
@@ -307,11 +311,19 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       document.addEventListener('mousemove', move);
       document.addEventListener('mouseup', up);
       hlToolbarDragEnd = up;
-    });
+    };
+
+    const tbGrip = document.createElement('span');
+    tbGrip.className = 'scribe-hl-tb-grip';
+    tbGrip.title = 'Move';
+    tbGrip.setAttribute('aria-label', 'Move card');
+    tbGrip.innerHTML = TB_GRIP_SVG;
+    hlToolbarRow.appendChild(tbGrip);
+    tbGrip.addEventListener('mousedown', startCardDrag);
 
     /**
      * The fill bands of the toolbar's target highlight: its group's bands, or the clicked word's own band when it belongs to no group.
-     * @returns {Element[]}
+     * @returns {HTMLDivElement[]}
      */
     const hlToolbarBands = () => {
       const kw = hlToolbarWord;
@@ -324,12 +336,17 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       }
       return bands;
     };
+    /** @type {HTMLDivElement[]} Ink-edge overlays marking the open card's target highlight (same feedback as the context menu's). */
+    let hlToolbarEdges = [];
     /**
-     * Toggle the sustained selected lift (`scribe-hl-sel`) on the toolbar's target highlight bands.
+     * Toggle the selected feedback on the toolbar's target highlight bands: the sustained lift (`scribe-hl-sel`) plus the ink edge.
      * @param {boolean} on
      */
     const setHlToolbarSel = (on) => {
-      for (const band of hlToolbarBands()) band.classList.toggle('scribe-hl-sel', on);
+      const bands = hlToolbarBands();
+      for (const band of bands) band.classList.toggle('scribe-hl-sel', on);
+      for (const el of hlToolbarEdges) el.remove();
+      hlToolbarEdges = on ? createInkEdges(bands) : [];
     };
 
     /**
@@ -383,30 +400,43 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     tbCommentWrap.appendChild(tbCommentInner);
     const editorText = document.createElement('textarea');
     editorText.className = 'scribe-comment-editor-text';
-    editorText.rows = 3;
+    editorText.rows = 2;
     editorText.placeholder = 'Add a comment…';
     const editorMeta = document.createElement('div');
     editorMeta.className = 'scribe-comment-editor-meta';
+    const editorAva = document.createElement('span');
+    editorAva.className = 'scribe-comment-editor-ava';
+    const editorWho = document.createElement('span');
+    editorWho.className = 'scribe-comment-editor-who';
+    const editorWhen = document.createElement('span');
+    editorWhen.className = 'scribe-comment-editor-when';
+    editorMeta.append(editorAva, editorWho, editorWhen);
+    // No Save button: dismissal doubles as commit (see collapseComment), so the footer is just the quiet remove link.
     const editorBtns = document.createElement('div');
     editorBtns.className = 'scribe-comment-editor-btns';
     const editorDelete = document.createElement('button');
     editorDelete.type = 'button';
     editorDelete.className = 'scribe-comment-editor-delete';
-    editorDelete.textContent = 'Delete';
-    const editorSave = document.createElement('button');
-    editorSave.type = 'button';
-    editorSave.className = 'scribe-comment-editor-save';
-    editorSave.textContent = 'Save';
-    editorBtns.append(editorDelete, editorSave);
-    tbCommentInner.append(editorText, editorMeta, editorBtns);
+    editorDelete.textContent = 'Remove comment';
+    editorBtns.append(editorDelete);
+    tbCommentInner.append(editorMeta, editorText, editorBtns);
     hlToolbar.appendChild(tbCommentWrap);
 
-    const metaLine = (annot) => {
-      const parts = [];
-      if (annot && annot.author) parts.push(annot.author);
-      if (annot && annot.createdAt) parts.push(new Date(annot.createdAt).toLocaleString());
-      return parts.join(' · ');
+    // The card is the writing surface, so the field grows to fit its text instead of showing its own scrollbar.
+    // A manual corner-drag freezes that height and stops the auto-grow.
+    let commentHeightManual = false;
+    const autoGrowComment = () => {
+      if (commentHeightManual) return;
+      editorText.style.height = 'auto';
+      editorText.style.height = `${Math.min(editorText.scrollHeight, 220)}px`;
     };
+    editorText.addEventListener('input', autoGrowComment);
+    editorText.addEventListener('mousedown', () => {
+      const h0 = editorText.offsetHeight;
+      document.addEventListener('mouseup', () => {
+        if (editorText.offsetHeight !== h0) commentHeightManual = true;
+      }, { once: true });
+    });
 
     const commentOpen = () => hlToolbar.classList.contains('comment-open');
     /**
@@ -416,51 +446,74 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     const expandComment = (focus) => {
       const kw = hlToolbarWord;
       if (!kw) return;
-      const annot = (scribe.doc.annotations.pages[kw.word.line.page.n] || []).find(
-        (a) => a.groupId && a.groupId === kw.highlightGroupId,
-      );
+      /** @type {AnnotationHighlight | undefined} */
+      let annot;
+      if (kw.highlightGroupId) {
+        for (const a of scribe.doc.annotations.pages[kw.word.line.page.n] || []) {
+          if ((!a.type || a.type === 'highlight') && a.groupId === kw.highlightGroupId) {
+            annot = a;
+            break;
+          }
+        }
+      }
       editorText.value = kw.highlightComment || '';
-      const meta = metaLine(annot);
-      editorMeta.textContent = meta;
-      editorMeta.style.display = meta ? '' : 'none';
+      const author = (annot && annot.author) || '';
+      let when = '';
+      if (annot && annot.createdAt) {
+        const d = new Date(annot.createdAt);
+        /** @type {Intl.DateTimeFormatOptions} */
+        const dateOpts = { month: 'short', day: 'numeric' };
+        if (d.getFullYear() !== new Date().getFullYear()) dateOpts.year = 'numeric';
+        when = d.toLocaleDateString(undefined, dateOpts);
+      }
+      editorAva.textContent = author.split(/\s+/, 2).map((s) => s[0]).join('').toUpperCase();
+      editorAva.style.display = author ? '' : 'none';
+      editorWho.textContent = author;
+      editorWhen.textContent = when && author ? `· ${when}` : when;
+      editorMeta.style.display = author || when ? '' : 'none';
       if (commentTooltip) commentTooltip.style.display = 'none';
       hlToolbar.classList.add('comment-open');
+      autoGrowComment();
       if (focus) {
         editorText.focus();
         editorText.select();
       }
     };
-    const collapseComment = () => {
+    /**
+     * Fold the comment half, committing the field to the highlight on the way out.
+     * @param {boolean} [commit] False discards the edit instead (the Esc path).
+     */
+    const collapseComment = (commit = true) => {
+      const kw = hlToolbarWord;
+      if (commit && kw && commentOpen() && editorText.value.trim() !== (kw.highlightComment || '')) {
+        scribe.modifyHighlightComment([kw], editorText.value.trim());
+        updateCommentIcons();
+        if (scribe._rebuildCommentsPanel) scribe._rebuildCommentsPanel();
+      }
       hlToolbar.classList.remove('comment-open');
       editorText.blur();
     };
 
     const closeHlToolbar = () => {
       if (!hlToolbarWord) return;
+      collapseComment(); // commits any pending edit while the target highlight is still known
       setHlToolbarSel(false);
       hlToolbarWord = null;
       collapseCoins();
-      collapseComment();
       hlToolbar.style.display = 'none';
     };
 
-    editorSave.addEventListener('click', () => {
-      if (hlToolbarWord) scribe.modifyHighlightComment([hlToolbarWord], editorText.value.trim());
-      updateCommentIcons();
-      collapseComment();
-    });
     editorDelete.addEventListener('click', () => {
-      if (hlToolbarWord) scribe.modifyHighlightComment([hlToolbarWord], '');
-      updateCommentIcons();
+      editorText.value = '';
       collapseComment();
     });
     editorText.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         e.stopPropagation();
-        collapseComment();
+        collapseComment(false);
       } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
         e.preventDefault();
-        editorSave.click();
+        collapseComment();
       }
     });
 
@@ -590,36 +643,6 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       editorText.select();
     });
 
-    const tbCopy = makeTbButton('Copy text', TB_COPY_SVG);
-    const tbCopied = document.createElement('span');
-    tbCopied.className = 'scribe-hl-tb-copied';
-    tbCopied.textContent = 'Copied';
-    tbCopy.appendChild(tbCopied);
-    tbCopy.addEventListener('click', () => {
-      const kw = hlToolbarWord;
-      if (!kw) return;
-      // The highlight's words in reading order, one text line per OCR line.
-      // Snippet-level fidelity is enough here.
-      const words = scribe.getUiWords()
-        .filter((w) => w.highlightColor && (kw.highlightGroupId
-          ? w.highlightGroupId === kw.highlightGroupId
-          : w.highlightRectElem === kw.highlightRectElem))
-        .sort((a, b) => a.word.line.page.n - b.word.line.page.n
-          || a.word.line.bbox.top - b.word.line.bbox.top || a.x() - b.x());
-      /** @type {Array<Array<string>>} */
-      const lines = [];
-      let lastLineId = null;
-      for (const w of words) {
-        if (w.word.line.id !== lastLineId) { lines.push([]); lastLineId = w.word.line.id; }
-        lines[lines.length - 1].push(w.word.text);
-      }
-      const text = lines.map((ws) => ws.join(' ')).join('\n');
-      if (!text) return;
-      navigator.clipboard?.writeText(text).catch(() => {});
-      tbCopied.classList.add('show');
-      setTimeout(() => tbCopied.classList.remove('show'), 900);
-    });
-
     // Only shown when the host installed the panel hook (the editor with the comments sidebar enabled).
     const tbPanel = makeTbButton('Show in comments panel', TB_PANEL_SVG);
     tbPanel.addEventListener('click', () => {
@@ -643,6 +666,12 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       if (kw) removeHighlightGroup(scribe, kw);
       updateCommentIcons();
     });
+
+    // Flex filler over the blank right of the trash button, so dragging that empty run moves the card.
+    const tbDragSpace = document.createElement('span');
+    tbDragSpace.className = 'scribe-hl-tb-dragspace';
+    hlToolbarRow.appendChild(tbDragSpace);
+    tbDragSpace.addEventListener('mousedown', startCardDrag);
 
     editorHost.appendChild(hlToolbar);
 
@@ -671,6 +700,20 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
      * @param {boolean} [expandCommentNow] Open with the comment half expanded and focused (comment icon / context menu).
      */
     const openHlToolbar = (kw, wordEl, expandCommentNow = false) => {
+      // Already open on this same highlight: a tear-down and re-open would flash and jump, so handle in place.
+      if (hlToolbarWord && (hlToolbarWord === kw
+        || (kw.highlightGroupId ? hlToolbarWord.highlightGroupId === kw.highlightGroupId
+          : hlToolbarWord.highlightRectElem === kw.highlightRectElem))) {
+        if (expandCommentNow) {
+          if (!commentOpen()) {
+            expandComment(false);
+            if (!hlToolbarMoved) placeCardBesideHighlight(wordEl);
+          }
+          editorText.focus();
+          editorText.select();
+        }
+        return;
+      }
       closeHlToolbar();
       hlToolbarWord = kw;
       hlToolbarMoved = false;
@@ -701,6 +744,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     // A drag that leaves a text selection is a selection gesture, not a click on the highlight object.
     /** @param {MouseEvent} event */
     const hlToolbarClick = (event) => {
+      if (hlToolbarPressInside) return;
       if (hlToolbarJustDragged) {
         hlToolbarJustDragged = false;
         return;

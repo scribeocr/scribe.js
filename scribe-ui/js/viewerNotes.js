@@ -174,7 +174,11 @@ export function renderPageNotes(viewer, n) {
     // Escape ends editing.
     text.addEventListener('pointerdown', (e) => e.stopPropagation());
     text.addEventListener('keydown', (e) => { e.stopPropagation(); if (e.key === 'Escape') text.blur(); });
-    text.addEventListener('blur', () => { setNoteComment(viewer, annot, text.value.trim()); syncMeta(); });
+    text.addEventListener('blur', () => {
+      setNoteComment(viewer, annot, text.value.trim());
+      syncMeta();
+      if (viewer._rebuildCommentsPanel) viewer._rebuildCommentsPanel();
+    });
     paper.appendChild(text);
 
     syncMeta();
@@ -186,7 +190,12 @@ export function renderPageNotes(viewer, n) {
     del.title = 'Delete note';
     del.textContent = '×';
     del.addEventListener('pointerdown', (e) => e.stopPropagation());
-    del.addEventListener('click', (e) => { e.stopPropagation(); removeNote(viewer, annot, n); viewer.renderNotes(n); });
+    del.addEventListener('click', (e) => {
+      e.stopPropagation();
+      removeNote(viewer, annot, n);
+      viewer.renderNotes(n);
+      if (viewer._rebuildCommentsPanel) viewer._rebuildCommentsPanel();
+    });
     paper.appendChild(del);
 
     card.appendChild(paper);

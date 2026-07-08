@@ -345,6 +345,17 @@ document.addEventListener('touchend', () => {
   }
 });
 
+const _endSelectionGesture = () => {
+  for (const v of _allViewers) {
+    v._selDragPointerDown = false;
+    if (v.enableHTMLOverlay && v.HTMLOverlayBackstopElem) {
+      v.HTMLOverlayBackstopElem.style.display = 'none';
+    }
+  }
+};
+document.addEventListener('pointerup', _endSelectionGesture);
+document.addEventListener('pointercancel', _endSelectionGesture);
+
 const _routeSelectionEvent = (event) => {
   const selection = document.getSelection();
   if (!selection || selection.rangeCount === 0) return;
@@ -411,6 +422,8 @@ function getElementIdsInRange(range) {
 }
 
 document.addEventListener('copy', (e) => {
+  for (const v of _allViewers) v._endScrollTextHide();
+
   const sel = /** @type {Selection} */ (window.getSelection());
   const clipboardData = e.clipboardData;
 

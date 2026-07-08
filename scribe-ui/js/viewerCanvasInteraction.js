@@ -11,7 +11,9 @@ import {
 import { UiText, UiOcrWord } from './viewerWordObjects.js';
 import { deleteSelectedWord } from './viewerModifySelectedWords.js';
 import { deleteSelectedLayoutDataTable, deleteSelectedLayoutRegion } from './viewerModifySelectedLayout.js';
-import { applyHighlight, removeHighlightGroup, updateHighlightGroupOutline } from './viewerHighlights.js';
+import {
+  applyHighlight, createInkEdges, removeHighlightGroup, updateHighlightGroupOutline,
+} from './viewerHighlights.js';
 import { createNote } from './viewerNotes.js';
 
 /**
@@ -249,6 +251,12 @@ const createContextMenuHTML = () => {
   copySelectionButton.style.display = 'none';
   copySelectionButton.addEventListener('click', copySelectionClick);
 
+  const copyHighlightButton = document.createElement('button');
+  copyHighlightButton.id = 'contextMenuCopyHighlightButton';
+  copyHighlightButton.textContent = 'Copy Highlighted Text';
+  copyHighlightButton.style.display = 'none';
+  copyHighlightButton.addEventListener('click', copyHighlightClick);
+
   const highlightSelectionButton = document.createElement('button');
   highlightSelectionButton.id = 'contextMenuHighlightButton';
   highlightSelectionButton.textContent = 'Highlight';
@@ -334,6 +342,7 @@ const createContextMenuHTML = () => {
   deleteHighlightButton.addEventListener('click', deleteHighlightClick);
 
   innerDiv.appendChild(copySelectionButton);
+  innerDiv.appendChild(copyHighlightButton);
   innerDiv.appendChild(highlightSelectionButton);
   innerDiv.appendChild(commentButton);
   innerDiv.appendChild(bookmarkButton);
@@ -479,6 +488,31 @@ const copySelectionClick = () => {
   hideContextMenu();
 };
 
+/** Copy the right-clicked highlight's text: its group's words in reading order, one clipboard line per OCR line. */
+const copyHighlightClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  const kw = viewer.contextMenuWord;
+  if (!kw || !kw.highlightColor) return;
+  // Snippet-level fidelity is enough here.
+  const words = viewer.getUiWords()
+    .filter((w) => w.highlightColor && (kw.highlightGroupId
+      ? w.highlightGroupId === kw.highlightGroupId
+      : w.highlightRectElem === kw.highlightRectElem))
+    .sort((a, b) => a.word.line.page.n - b.word.line.page.n
+      || a.word.line.bbox.top - b.word.line.bbox.top || a.x() - b.x());
+  /** @type {Array<Array<string>>} */
+  const lines = [];
+  let lastLineId = null;
+  for (const w of words) {
+    if (w.word.line.id !== lastLineId) { lines.push([]); lastLineId = w.word.line.id; }
+    lines[lines.length - 1].push(w.word.text);
+  }
+  const text = lines.map((ws) => ws.join(' ')).join('\n');
+  if (!text) return;
+  navigator.clipboard?.writeText(text).catch(() => {});
+};
+
 /** Highlight the words under the current browser text selection, using the color the toolbar's highlight tool last set (mirrored to viewer._highlightColor). */
 const highlightSelectionClick = () => {
   const viewer = mv();
@@ -561,6 +595,7 @@ let contextMenuStyleElem = null;
 /** @type {HTMLButtonElement} */ let contextMenuCommentButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuBookmarkButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuCopyButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuCopyHighlightButtonElem;
 /**
  * The highlighted word the context menu's Comment item edits, or null to comment the current text selection instead.
  * Reset on every `contextMenuFunc` so a handler never reads a stale target.
@@ -597,6 +632,7 @@ function ensureContextMenu() {
   contextMenuCommentButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCommentButton'));
   contextMenuBookmarkButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuBookmarkButton'));
   contextMenuCopyButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCopyButton'));
+  contextMenuCopyHighlightButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCopyHighlightButton'));
 
   contextMenuStyleElem = document.createElement('style');
   contextMenuStyleElem.textContent = `
@@ -638,6 +674,19 @@ export const destroyContextMenu = () => {
 const CAPTURE = { capture: true };
 const CAPTURE_PASSIVE = { capture: true, passive: true };
 
+/**
+ * Ink-edge overlays marking the context menu's target highlight, one per fill band.
+ * Separate full-opacity elements over the bands; a shadow on a band itself would inherit its fill opacity and wash out.
+ * Appended to each band's layer group so page transforms apply and a highlight re-render sweeps them.
+ * @type {HTMLDivElement[]}
+ */
+let inkEdgeElems = [];
+
+const clearInkEdge = () => {
+  for (const el of inkEdgeElems) el.remove();
+  inkEdgeElems = [];
+};
+
 let dismissListenersActive = false;
 
 const onMenuDismissPointerDown = (/** @type {Event} */ event) => {
@@ -653,6 +702,7 @@ const onMenuDismissKeyDown = (/** @type {KeyboardEvent} */ event) => {
 };
 
 export const hideContextMenu = () => {
+  clearInkEdge();
   if (!menuNode) return;
   contextMenuMergeWordsButtonElem.style.display = 'none';
   contextMenuSplitWordButtonElem.style.display = 'none';
@@ -669,6 +719,7 @@ export const hideContextMenu = () => {
   contextMenuCommentButtonElem.style.display = 'none';
   contextMenuBookmarkButtonElem.style.display = 'none';
   contextMenuCopyButtonElem.style.display = 'none';
+  contextMenuCopyHighlightButtonElem.style.display = 'none';
   menuNode.style.display = 'none';
   _menuViewer = null;
 
@@ -685,6 +736,8 @@ export const hideContextMenu = () => {
 };
 
 export const contextMenuFunc = (viewer, event) => {
+  // Return before the later preventDefault so the browser's native context menu shows instead of ours.
+  if (viewer.contextMenuDisabledDebug) { hideContextMenu(); return; }
   // A right-click inside a text field (a note or comment editor, a rename box) keeps the browser's native edit menu rather than ours.
   const editableTarget = /** @type {?HTMLElement} */ (event.target);
   if (editableTarget && (editableTarget.tagName === 'INPUT' || editableTarget.tagName === 'TEXTAREA' || editableTarget.isContentEditable)) return;
@@ -692,7 +745,18 @@ export const contextMenuFunc = (viewer, event) => {
   _menuViewer = viewer;
   try {
     const pointerRelative = viewer.clientToContent(event.clientX, event.clientY);
-    const targetObj = eventTargetObj(event);
+    let targetObj = eventTargetObj(event);
+    // Fill bands are pointer-transparent, so a right-click on a highlight between words lands on no word element.
+    if (!viewer.state.layoutMode && !(targetObj instanceof UiOcrWord && targetObj.highlightColor)) {
+      for (const kw of viewer.getUiWords()) {
+        if (!kw.highlightRectElem) continue;
+        const r = kw.highlightRectElem.getBoundingClientRect();
+        if (event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom) {
+          targetObj = kw;
+          break;
+        }
+      }
+    }
 
     const selectedUiWords = viewer.CanvasSelection.getUiWords();
     const selectedWords = selectedUiWords.map((x) => x.word);
@@ -711,12 +775,16 @@ export const contextMenuFunc = (viewer, event) => {
     let enableMergeWords = false;
     let enableDeleteWords = false;
     let enableDeleteHighlight = false;
+    let enableCopyHighlight = false;
     // Word editing (split / merge / delete) is gated on `enableCanvasSelection`, the editor-only flag.
     // Deleting a highlight is not, so the read-only viewer still offers it.
     if (viewer.enableCanvasSelection && !viewer.state.layoutMode && selectedUiWords.length > 0) enableDeleteWords = true;
     if (!viewer.state.layoutMode && targetObj instanceof UiOcrWord) {
       viewer.contextMenuWord = targetObj;
-      if (targetObj.highlightColor) enableDeleteHighlight = true;
+      if (targetObj.highlightColor) {
+        enableDeleteHighlight = true;
+        enableCopyHighlight = true;
+      }
       if (viewer.enableCanvasSelection) {
         if (selectedUiWords.length < 2) {
           UiText._lastPointerClient = { x: event.clientX, y: event.clientY };
@@ -793,9 +861,10 @@ export const contextMenuFunc = (viewer, event) => {
     }
 
     if (!(enableMergeColumns || enableSplit || enableDeleteRegion || enableDeleteTable || enableCopyTableContents || enableMergeTables || enableSplitTable
-      || enableSplitWord || enableMergeWords || enableDeleteWords || enableDeleteHighlight || enableHighlight || enableComment || enableBookmark || enableCopy)) return;
+      || enableSplitWord || enableMergeWords || enableDeleteWords || enableDeleteHighlight || enableCopyHighlight || enableHighlight || enableComment || enableBookmark || enableCopy)) return;
 
     if (enableCopy) contextMenuCopyButtonElem.style.display = 'initial';
+    if (enableCopyHighlight) contextMenuCopyHighlightButtonElem.style.display = 'initial';
     if (enableHighlight) contextMenuHighlightButtonElem.style.display = 'initial';
     if (enableComment) {
       contextMenuCommentButtonElem.textContent = commentLabel;
@@ -815,6 +884,22 @@ export const contextMenuFunc = (viewer, event) => {
     if (enableDeleteHighlight) contextMenuDeleteHighlightButtonElem.style.display = 'initial';
 
     event.preventDefault();
+
+    // The menu is opening on a highlight: ink its edges while it is the menu's target.
+    clearInkEdge();
+    if (targetObj instanceof UiOcrWord && targetObj.highlightColor) {
+      /** @type {HTMLDivElement[]} */
+      let bands = [];
+      if (targetObj.highlightGroupId) {
+        for (const map of viewer._highlightRectsByGroup) {
+          const arr = map && map.get(targetObj.highlightGroupId);
+          if (arr) bands.push(...arr);
+        }
+      } else if (targetObj.highlightRectElem) {
+        bands = [targetObj.highlightRectElem];
+      }
+      inkEdgeElems = createInkEdges(bands);
+    }
 
     menuNode.style.display = 'initial';
     menuNode.style.top = `${event.clientY + 4}px`;

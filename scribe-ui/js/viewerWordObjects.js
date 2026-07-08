@@ -21,7 +21,13 @@ function ensureWordStyleSheet() {
   if (wordStyleSheetInjected || typeof document === 'undefined') return;
   wordStyleSheetInjected = true;
   const styleEl = document.createElement('style');
-  styleEl.textContent = '.scribe-word{position:absolute;z-index:1;white-space:nowrap;font-kerning:normal;pointer-events:auto;padding:0}';
+  // `.scribe-fill` = selection dead-space fillers built alongside the words (see `_renderCanvasWords`).
+  // z-index 0 sits them under the words (z-index 1) so a pointer over a glyph hit-tests the word, not the filler.
+  // color:transparent and the ::selection rule keep the filler unpainted, including the selection sliver the browser would otherwise paint over its character.
+  // No overflow:hidden by design: there is nothing to clip, and a clip node per filler across thousands of them taxes paint and compositing every frame.
+  styleEl.textContent = '.scribe-word{position:absolute;z-index:1;white-space:nowrap;font-kerning:normal;pointer-events:auto;padding:0}'
+    + '.scribe-fill{position:absolute;z-index:0;pointer-events:auto;width:0;white-space:pre;font-size:2px;color:transparent}'
+    + '.scribe-fill::selection{background:transparent;color:transparent}';
   document.head.appendChild(styleEl);
 }
 

@@ -55,6 +55,17 @@ export class ScribeViewer {
    */
   static deferTextVelocityFraction = 0.5;
 
+  /**
+   * Delay (ms) after the last scroll frame before restoring the invis-mode text layers hidden during a sustained scroll (see `_updateScrollTextHide`).
+   */
+  static scrollTextHideSettleMs = 200;
+
+  /**
+   * Cumulative scroll distance within one gesture (fraction of viewport height) that engages the mid-scroll text-layer hide.
+   * High enough that a few wheel ticks don't churn the layers (each hide/show is a compositor update), low enough that a page-to-page scroll engages early.
+   */
+  static scrollTextHideDistanceFraction = 0.5;
+
   /** Blank vertical space (content px) between stacked pages, applied above the first page and below each page. */
   static pageMargin = 30;
 
@@ -86,6 +97,16 @@ export class ScribeViewer {
     this.HTMLOverlayBackstopElem = /** @type {any} */ (null);
 
     this.textOverlayHidden = false;
+
+    /**
+     * [Debug] When `true` the text overlay is never built, unlike `textOverlayHidden` which only hides an already-built one.
+     */
+    this.textOverlayDisabledDebug = false;
+
+    /**
+     * [Debug] When `true` the viewer's custom right-click menu is suppressed, so the browser's native context menu shows instead.
+     */
+    this.contextMenuDisabledDebug = false;
 
     /** @type {Array<number>} */
     this._pageStopsStart = [];
@@ -129,6 +150,13 @@ export class ScribeViewer {
      * @type {?ReturnType<typeof setTimeout>}
      */
     this._deferredTextTimer = null;
+    /**
+     * Mid-scroll text-layer hide state, driven by `_updateScrollTextHide`.
+     * @type {?ReturnType<typeof setTimeout>}
+     */
+    this._scrollTextHideTimer = null;
+    this._scrollTextHideEngaged = false;
+    this._scrollGestureDist = 0;
     /**
      * Sized to the whole document (max display width x last page stop, times zoom) so the native scrollbar gets the right extent. Holds `zoomLayer`.
      * @type {HTMLDivElement}
@@ -176,6 +204,12 @@ export class ScribeViewer {
      * @type {?(groupId: ?string) => void}
      */
     this.onHighlightHover = null;
+    /**
+     * Rebuild the comments side panel so an open panel reflects a comment/note edited elsewhere (mini toolbar, note card).
+     * The host registers this when the comments panel is installed.
+     * @type {?() => void}
+     */
+    this._rebuildCommentsPanel = null;
     /** @type {Array<?HTMLDivElement>} */
     this._overlayGroups = [];
     /** @type {Array<?HTMLDivElement>} Per-page sticky-note layer (z above words/highlights, survives layout-mode teardown). */
@@ -290,6 +324,9 @@ export class ScribeViewer {
     this._prevRange = null;
     this._prevStart = null;
     this._prevEnd = null;
+
+    // True while a native selection drag may be in flight: primary-button press to pointerup/cancel.
+    this._selDragPointerDown = false;
 
     /** @type {?EventTarget} */
     this._mouseDownTarget = null;
@@ -863,7 +900,9 @@ export class ScribeViewer {
       // Visible modes defer only above the speed threshold, so a normal slow scroll builds immediately.
       const fast = scrollSpeed > this._scrollMetrics().clientHeight * ScribeViewer.deferTextVelocityFraction;
       const defer = this.state.displayMode === 'invis' || fast;
-      this.displayPage(pageNew, false, false, defer);
+      // Above the speed threshold pages scroll off unread, so `fast` also skips the raster window during transit, not just the word build.
+      // It is gated on `fast` and never plain `defer`, so a slow invis scroll still rasters every page.
+      this.displayPage(pageNew, false, false, defer, fast);
       if (defer) {
         if (this._deferredTextTimer) clearTimeout(this._deferredTextTimer);
         this._deferredTextTimer = setTimeout(() => {
@@ -874,6 +913,97 @@ export class ScribeViewer {
       return true;
     }
     return false;
+  }
+
+  /**
+   * Page indices spanned by the current selection, middle pages of a multi-page selection included.
+   * @returns {Set<number>}
+   */
+  _selectionPages() {
+    const pages = new Set();
+    const sel = document.getSelection();
+    if (!sel || sel.isCollapsed) return pages;
+    let lo = Infinity;
+    let hi = -Infinity;
+    for (let i = 0; i < sel.rangeCount; i++) {
+      const range = sel.getRangeAt(i);
+      for (const node of [range.startContainer, range.endContainer]) {
+        const el = /** @type {?HTMLElement} */ (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement);
+        const grp = /** @type {?HTMLDivElement} */ (el?.closest?.('.scribe-layer-text'));
+        if (!grp) continue;
+        for (const n of this.textGroupsRenderIndices) {
+          if (Object.values(this._textGroups[n] || {}).includes(grp)) {
+            lo = Math.min(lo, n);
+            hi = Math.max(hi, n);
+            break;
+          }
+        }
+      }
+    }
+    for (let n = lo; n <= hi; n++) pages.add(n);
+    return pages;
+  }
+
+  /**
+   * Hide the built text layers during a sustained scroll so the compositor stops re-compositing their thousands of word/filler elements on every mid-scroll frame.
+   * `_endScrollTextHide` restores them at settle.
+   *
+   * Skipped outside `invis` mode (hiding visible text blanks the page),
+   * during a selection drag (autoscroll reads the live layer each sample),
+   * and while an edit input is focused (`display: none` blurs it and commits the edit).
+   * Pages holding part of the selection stay visible while on-screen.
+   * @param {number} speed - Scroll distance (px) since the previous frame.
+   */
+  _updateScrollTextHide(speed) {
+    this._scrollGestureDist += speed;
+    if (this._scrollTextHideTimer) clearTimeout(this._scrollTextHideTimer);
+    this._scrollTextHideTimer = setTimeout(() => this._endScrollTextHide(), ScribeViewer.scrollTextHideSettleMs);
+
+    if (!this._scrollTextHideEngaged
+      && this._scrollGestureDist < this._scrollMetrics().clientHeight * ScribeViewer.scrollTextHideDistanceFraction) return;
+
+    const editing = document.activeElement && /** @type {HTMLElement} */ (document.activeElement).isContentEditable
+      && this.elem?.contains(document.activeElement);
+    if (this.state.displayMode !== 'invis' || this._selDragPointerDown || editing) {
+      this._endScrollTextHide();
+      return;
+    }
+
+    this._scrollTextHideEngaged = true;
+    const selPages = this._selectionPages();
+    const vTop = this._scrollTop / this.zoomLevel;
+    const vBottom = (this._scrollTop + this._scrollMetrics().clientHeight) / this.zoomLevel;
+    for (const n of this.textGroupsRenderIndices) {
+      const start = this.getPageStop(n);
+      const end = this.getPageStop(n, false);
+      const onScreen = start === null || end === null || (start < vBottom && end > vTop);
+      const want = onScreen && selPages.has(n) ? '' : 'none';
+      for (const grp of Object.values(this._textGroups[n] || {})) {
+        if (grp.style.display !== want) grp.style.display = want;
+      }
+    }
+  }
+
+  /**
+   * Restore every hidden text layer and reset the scroll gesture.
+   * Sweeps ALL cached groups, not just `textGroupsRenderIndices`:
+   * `destroyText` can evict a page from the render indices mid-hide while its hidden group stays cached,
+   * and a later rebuild into that group would come back invisible.
+   */
+  _endScrollTextHide() {
+    if (this._scrollTextHideTimer) {
+      clearTimeout(this._scrollTextHideTimer);
+      this._scrollTextHideTimer = null;
+    }
+    this._scrollGestureDist = 0;
+    if (!this._scrollTextHideEngaged) return;
+    this._scrollTextHideEngaged = false;
+    for (const groups of this._textGroups) {
+      if (!groups) continue;
+      for (const grp of Object.values(groups)) {
+        if (grp.style.display) grp.style.display = '';
+      }
+    }
   }
 
   /**
@@ -1145,21 +1275,26 @@ export class ScribeViewer {
     zoomLayer.appendChild(marquee);
     this.selectingRectangle = marquee;
 
-    // Invisible backstop behind the words that catches the selection focus in the empty gaps between them,
-    // so dragging a selection through a gap extends only to the last word reached instead of jumping to the top of the page.
-    // `_onSelection` keeps it just before the current focus word.
-    // It overscans one page margin above and below to cover the blank strips between pages.
-    const backstopOverscan = ScribeViewer.pageMargin;
+    // Invisible backstop catching selection points in the dead space between and beside pages,
+    // where a point would otherwise resolve to the start of the content layer and invert the selection into "everything above the anchor".
+    // z-index -1 keeps it below the per-page fillers (see `_renderCanvasWords`), so it catches only what they cannot: the page gaps and the viewer background, not within-page dead space.
     this.HTMLOverlayBackstopElem = document.createElement('div');
     this.HTMLOverlayBackstopElem.className = 'endOfContent';
     Object.assign(this.HTMLOverlayBackstopElem.style, {
       position: 'absolute',
-      left: '0',
-      top: `-${backstopOverscan}px`,
-      width: '100%',
-      height: `calc(100% + ${2 * backstopOverscan}px)`,
+      left: '-100%',
+      top: '-100%',
+      width: '300%',
+      height: '300%',
       display: 'none',
       pointerEvents: 'auto',
+      zIndex: '-1',
+    });
+
+    // This flag gates the backstop to an in-flight drag: `_onSelection` shows the backstop while it is set, and gesture-end listeners (viewerRuntime.js) hide it.
+    // Left visible afterward, its page-spanning hit target taxes the browser's per-frame hover hit-test, the dominant cost of scrolling after a selection.
+    scrollContainer.addEventListener('pointerdown', (event) => {
+      if (event.button === 0) this._selDragPointerDown = true;
     });
 
     // `contextMenuFunc` lazily builds the shared menu, then shows only the actions that apply
@@ -1178,6 +1313,7 @@ export class ScribeViewer {
         const speed = Math.abs(st - lastScrollTopForSpeed);
         lastScrollTopForSpeed = st;
         this.updateCurrentPage(speed);
+        this._updateScrollTextHide(speed);
       });
     });
 
@@ -1372,6 +1508,9 @@ export class ScribeViewer {
     }
     this.CanvasSelection.deselectAllWords(n);
 
+    // Guard sits after the clears, not at the function top, so disabling the overlay still sheds its stale groups and words.
+    if (this.textOverlayDisabledDebug) return;
+
     if (noInfo || noInput || xmlMissing || imageMissing || pdfMissing || pageStopsMissing) {
       return;
     }
@@ -1394,7 +1533,7 @@ export class ScribeViewer {
    * @param {boolean} [deferText=false] - Skip building/evicting the word DOM and overlays, doing only the cheap page change (raster, scrollbars, page number).
    *   Used while scrolling too fast to read the text (or any scroll in invis mode). `updateCurrentPage` schedules the real build for when the scroll settles.
    */
-  async displayPage(n, scroll = false, refresh = true, deferText = false) {
+  async displayPage(n, scroll = false, refresh = true, deferText = false, deferRaster = false) {
     if (Number.isNaN(n) || n < 0 || n > (this.doc.inputData.pageCount - 1)) {
       if (this.displayPageCallback) this.displayPageCallback();
       return;
@@ -1412,7 +1551,8 @@ export class ScribeViewer {
 
     // Issue the raster request before the synchronous word-DOM build so render workers can start on the target page instead of waiting.
     // Must run after setInitialPositionZoom so the canvases raster at the correct zoom.
-    if ((this.doc.inputData.pdfMode || this.doc.inputData.imageMode)) {
+    // `deferRaster` skips it during fast scroll, where the per-page raster starves the scroll's own rAF loop.
+    if (!deferRaster && (this.doc.inputData.pdfMode || this.doc.inputData.imageMode)) {
       this.imageCache.renderAheadBehindBrowser(n);
     }
 
@@ -1924,13 +2064,17 @@ export class ScribeViewer {
 
   /** @param {Event} event */
   _onSelection(event) {
+    // selectionchange also fires for keyboard and programmatic selection, which never need the drag-time backstop and would otherwise resurrect it outside a drag.
+    if (!this._selDragPointerDown) return;
     const selection = document.getSelection();
     if (!selection || selection.rangeCount === 0) return;
 
     const range = selection.getRangeAt(0);
 
     const focusNodeElem = selection.focusNode?.nodeType === Node.ELEMENT_NODE ? selection.focusNode : selection.focusNode?.parentNode;
-    const focusWordElem = /** @type {?HTMLElement} */ (/** @type {any} */ (focusNodeElem)?.closest?.('.scribe-word'));
+    // The drag focus lands on a filler, not just a word.
+    // Drop `.scribe-fill` and a drag past the page edge pins the selection at a stale spot.
+    const focusWordElem = /** @type {?HTMLElement} */ (/** @type {any} */ (focusNodeElem)?.closest?.('.scribe-word, .scribe-fill'));
 
     if (!focusWordElem) return;
 
@@ -2020,6 +2164,77 @@ export class ScribeViewer {
 
     if (!this._wordObjs[page.n]) this._wordObjs[page.n] = [];
 
+    // Native selection only maps a pointer to a caret where it lands on real text,
+    // so the render loop below fills every non-glyph gap of a line's territory ("band") with an invisible selectable span in reading order.
+    // The following passes compute each line's band so the bands tile the page with no dead space.
+    const pageDims = this.doc.pageMetrics[page.n].dims;
+    const renderedLines = page.lines.filter((l) => l.words.some((w) => w.text));
+
+    // A line's side territory extends from its COLUMN's edges, not its own; otherwise a short line
+    // (a paragraph's last line, a heading) fills only to its own edge and leaves a hole out to the neighboring column,
+    // breaking selection of a paragraph by releasing past its last word.
+    // A short line x-overlaps its paragraph's full-width lines, so unioning the x-overlapping lines recovers the full column width.
+    // The vertical window is bounded so a distant two-column title cannot weld the columns into one extent.
+    /** @type {Map<OcrLine, {left: number, right: number}>} */
+    const colExtents = new Map();
+    for (const l of renderedLines) {
+      const lb = l.bbox;
+      const dilate = (lb.bottom - lb.top) * 3;
+      const ext = { left: lb.left, right: lb.right };
+      for (const m of renderedLines) {
+        const mb = m.bbox;
+        if (mb.top >= lb.bottom + dilate || mb.bottom <= lb.top - dilate) continue;
+        if (mb.left < lb.right && mb.right > lb.left) {
+          ext.left = Math.min(ext.left, mb.left);
+          ext.right = Math.max(ext.right, mb.right);
+        }
+      }
+      colExtents.set(l, ext);
+    }
+
+    // Territories must TILE: an overlap resolves by DOM order, which is reading order not geometry,
+    // so a filler late in reading order that overhangs a column turns a small overshoot into a selection sweeping everything between.
+    // A hole is benign by comparison, only pinning the drag at its focus, which the backstop handles.
+    // Side midpoints come from the PAIR's column extents, so adjacent columns meet at one shared edge and neither overhangs.
+    // The vertical pass runs after the side pass so it clamps only against lines that x-overlap the narrowed side span,
+    // keeping an isolated line (nothing x-overlaps its own bbox) bounded by the columns its span reaches over instead of a page-tall slab across them.
+    /** @type {Map<OcrLine, {left: number, right: number, top: number, bottom: number}>} */
+    const fillLimits = new Map();
+    for (const l of renderedLines) {
+      const lb = l.bbox;
+      const col = colExtents.get(l);
+      if (!col) continue;
+      const dilate = (lb.bottom - lb.top) * 3;
+      const lim = {
+        left: 0, right: pageDims.width, top: 0, bottom: pageDims.height,
+      };
+      for (const m of renderedLines) {
+        if (m === l) continue;
+        const mb = m.bbox;
+        const mc = colExtents.get(m);
+        if (!mc) continue;
+        if (mb.top < lb.bottom + dilate && mb.bottom > lb.top - dilate) {
+          if (mc.left >= col.right) lim.right = Math.min(lim.right, (col.right + mc.left) / 2);
+          if (mc.right <= col.left) lim.left = Math.max(lim.left, (mc.right + col.left) / 2);
+        }
+      }
+      fillLimits.set(l, lim);
+    }
+    for (const l of renderedLines) {
+      const lb = l.bbox;
+      const lim = fillLimits.get(l);
+      if (!lim) continue;
+      for (const m of renderedLines) {
+        if (m === l) continue;
+        const mb = m.bbox;
+        if (mb.left < lim.right && mb.right > lim.left) {
+          if (mb.top >= lb.bottom) lim.bottom = Math.min(lim.bottom, (lb.bottom + mb.top) / 2);
+          if (mb.bottom <= lb.top) lim.top = Math.max(lim.top, (mb.bottom + lb.top) / 2);
+        }
+      }
+    }
+    const selectText = this.state.displayMode === 'invis';
+
     if (this.opt.outlinePars && page) {
       if (!page.textSource || !['textract', 'abbyy', 'google_vision', 'azure_doc_intel', 'docx'].includes(page.textSource)) {
         scribe.utils.assignParagraphs(page, angle);
@@ -2059,10 +2274,41 @@ export class ScribeViewer {
         group.appendChild(lineRect);
       }
 
-      // Words are wrapped in a per-line `<div>` so triple-click selects a single line, not the whole page.
+      // Words wrap in a per-line `<div>` so triple-click selects one line, not the whole page.
+      // Do not make it a positioned/sized stacking context to speed up hit-testing: the engine does not bounds-cull child stacking contexts under the zoom transform.
       const lineDiv = document.createElement('div');
       lineDiv.className = 'scribe-line';
       group.appendChild(lineDiv);
+
+      const lineWords = lineObj.words.filter((w) => w.text);
+      const lim = fillLimits.get(lineObj);
+      /**
+       * Append one invisible span covering the dead space [hitL, hitR] across the line band, so the gaps between words become selectable.
+       * Its single space paints nothing but carries the caret, and copying serializes it as the word break between neighbors.
+       * Selection highlighting still comes from the words' own boxes, so the filler is never visible.
+       * Invariant styles live in the shared `.scribe-fill` rule (see `ensureWordStyleSheet`); only per-filler geometry is set here.
+       * @param {number} hitL
+       * @param {number} hitR
+       */
+      const appendFiller = (hitL, hitR) => {
+        if (!lim) return;
+        const total = hitR - hitL;
+        if (total <= 0) return;
+        const fill = document.createElement('span');
+        fill.className = 'scribe-fill';
+        fill.textContent = ' ';
+        Object.assign(fill.style, {
+          left: `${hitL + angleAdjLine.x}px`,
+          top: `${lim.top + angleAdjLine.y}px`,
+          height: `${Math.max(lim.bottom - lim.top, 1)}px`,
+          lineHeight: `${Math.max(lim.bottom - lim.top, 1)}px`,
+          paddingLeft: `${total}px`,
+        });
+        fill.style.userSelect = selectText ? 'text' : 'none';
+        fill.style.setProperty('-webkit-user-select', selectText ? 'text' : 'none');
+        lineDiv.appendChild(fill);
+      };
+      let lineWordIdx = 0;
 
       /** @type {UiOcrWord|null} */
       let prevWordCanvas = null;
@@ -2125,9 +2371,27 @@ export class ScribeViewer {
           prevWordCanvas.highlightGapRight = gap;
         }
 
+        // The filler before this word: from the band's left edge (or the previous word's middle) to this word's middle.
+        // Splitting at word middles puts the band above and below each word-half under the filler whose caret is the nearer word boundary.
+        if (lim) {
+          const midW = (wordObj.bbox.left + wordObj.bbox.right) / 2;
+          if (lineWordIdx === 0) {
+            appendFiller(lim.left, midW);
+          } else {
+            appendFiller((lineWords[lineWordIdx - 1].bbox.left + lineWords[lineWordIdx - 1].bbox.right) / 2, midW);
+          }
+        }
+        lineWordIdx++;
+
         prevWordCanvas = wordCanvas;
         lineDiv.appendChild(wordCanvas.el);
         this._wordObjs[page.n].push(wordCanvas);
+      }
+
+      // The trailing filler: from the last word's middle out to the band's right edge.
+      if (lim && lineWordIdx > 0) {
+        const last = lineWords[lineWordIdx - 1];
+        appendFiller((last.bbox.left + last.bbox.right) / 2, lim.right);
       }
     }
 
@@ -2389,6 +2653,7 @@ export class ScribeViewer {
   destroy() {
     unregisterViewer(this);
     this.stopAutoScroll();
+    if (this._scrollTextHideTimer) clearTimeout(this._scrollTextHideTimer);
     this._clearPageDom();
     if (this.scrollContainer && this.scrollContainer.parentNode) this.scrollContainer.parentNode.removeChild(this.scrollContainer);
   }
