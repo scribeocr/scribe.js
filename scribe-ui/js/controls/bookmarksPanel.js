@@ -240,8 +240,12 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize }) {
       if (node.dest) onNavigate(node.dest);
       else if (node.children.length) { node.open = !node.open; rebuild(); }
     });
+    row.addEventListener('dblclick', () => {
+      if (node.dest) onNavigate(node.dest);
+      if (node.children.length && !node.open) { node.open = true; rebuild(); }
+    });
+    // The right-click menu is the only way to rename an existing bookmark.
     if (editing()) {
-      label.addEventListener('dblclick', (e) => { e.stopPropagation(); startRename(node, label); });
       row.addEventListener('contextmenu', (e) => { e.preventDefault(); openMenu(node, e.clientX, e.clientY, label); });
     }
 

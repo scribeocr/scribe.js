@@ -56,6 +56,17 @@ export class ScribeViewer {
   static deferTextVelocityFraction = 0.5;
 
   /**
+   * Scroll speed (fraction of viewport height per frame) above which full-res page rasters are deferred to low-res previews (see `updateCurrentPage`).
+   * Far below `deferTextVelocityFraction` because raster completions clump ~40-60ms of main-thread canvas insert each and starve the scroll loop.
+   */
+  static deferRasterVelocityFraction = 0.13;
+
+  /**
+   * Resume threshold for full rasters once deferred, below `deferRasterVelocityFraction` so the two form a hysteresis band against velocity noise flapping the strategy.
+   */
+  static resumeRasterVelocityFraction = 0.09;
+
+  /**
    * Delay (ms) after the last scroll frame before restoring the invis-mode text layers hidden during a sustained scroll (see `_updateScrollTextHide`).
    */
   static scrollTextHideSettleMs = 200;
@@ -150,6 +161,18 @@ export class ScribeViewer {
      * @type {?ReturnType<typeof setTimeout>}
      */
     this._deferredTextTimer = null;
+    /**
+     * Whether page rasters are currently deferred to previews.
+     * Set/cleared with hysteresis in `updateCurrentPage`; force-cleared by any settled full render in `displayPage`.
+     * @type {boolean}
+     */
+    this._rasterDeferred = false;
+    /**
+     * Whether the scroll is in the tail of a preview-mode glide, where page boundaries raster only the centered page.
+     * The settled full render clears it and fills the window.
+     * @type {boolean}
+     */
+    this._rasterTail = false;
     /**
      * Mid-scroll text-layer hide state, driven by `_updateScrollTextHide`.
      * @type {?ReturnType<typeof setTimeout>}
@@ -898,17 +921,37 @@ export class ScribeViewer {
       // Defer the word build when the page changes too fast to read: update the page now and (re)arm a settle timer, so a fast sweep builds only the landing page.
       // Invis mode always defers (its text is invisible).
       // Visible modes defer only above the speed threshold, so a normal slow scroll builds immediately.
-      const fast = scrollSpeed > this._scrollMetrics().clientHeight * ScribeViewer.deferTextVelocityFraction;
+      const clientH = this._scrollMetrics().clientHeight;
+      const fast = scrollSpeed > clientH * ScribeViewer.deferTextVelocityFraction;
       const defer = this.state.displayMode === 'invis' || fast;
-      // Above the speed threshold pages scroll off unread, so `fast` also skips the raster window during transit, not just the word build.
-      // It is gated on `fast` and never plain `defer`, so a slow invis scroll still rasters every page.
-      this.displayPage(pageNew, false, false, defer, fast);
+      // The raster strategy defers on its own, much lower cutoff than text (see the statics for why).
+      // A slow scroll that never entered a glide rasters every page immediately across the full window.
+      if (this._rasterDeferred) {
+        if (scrollSpeed < clientH * ScribeViewer.resumeRasterVelocityFraction) this._rasterDeferred = false;
+      } else if (scrollSpeed > clientH * ScribeViewer.deferRasterVelocityFraction) {
+        // The full raster window is cold when a glide decelerates below the cutoff, and firing it while still moving clumps completions into the decelerating frames.
+        // The tail flag limits boundary rasters to the centered page; the settled render (displayPage below) fills the full window once the scroll holds still.
+        this._rasterDeferred = true;
+        this._rasterTail = true;
+      }
+      const deferRaster = this._rasterDeferred ? true : (this._rasterTail ? 'current' : false);
+      this.displayPage(pageNew, false, false, defer, deferRaster);
       if (defer) {
         if (this._deferredTextTimer) clearTimeout(this._deferredTextTimer);
-        this._deferredTextTimer = setTimeout(() => {
+        // Fire only once the scroll position holds still.
+        // A fixed delay would fire mid-glide, because at low speeds page boundaries fall further apart than the delay.
+        let armTop = this._scrollTop;
+        const onSettle = () => {
           this._deferredTextTimer = null;
+          const top = this.scrollContainer ? this.scrollContainer.scrollTop : armTop;
+          if (Math.abs(top - armTop) > 2) {
+            armTop = top;
+            this._deferredTextTimer = setTimeout(onSettle, ScribeViewer.deferredTextSettleMs);
+            return;
+          }
           this.displayPage(this.state.cp.n, false, false);
-        }, ScribeViewer.deferredTextSettleMs);
+        };
+        this._deferredTextTimer = setTimeout(onSettle, ScribeViewer.deferredTextSettleMs);
       }
       return true;
     }
@@ -1108,7 +1151,7 @@ export class ScribeViewer {
    * @param {MouseEvent} event
    */
   startAutoScroll(event) {
-    this.stopAutoScroll();
+    this.stopAutoScroll(false);
     event.preventDefault(); // suppress the browser's own middle-click autoscroll
     const a = this.autoScroll;
     a.active = true;
@@ -1177,8 +1220,12 @@ export class ScribeViewer {
     a.rafId = requestAnimationFrame(tick);
   }
 
-  /** Stop middle-button autoscroll and clean up its indicator and cursor. */
-  stopAutoScroll() {
+  /**
+   * Stop middle-button autoscroll and clean up its indicator and cursor.
+   * @param {boolean} [settle=true] - Render the landing page at full resolution now.
+   *   Pass false when the stop is not the user finishing a scroll.
+   */
+  stopAutoScroll(settle = true) {
     const a = this.autoScroll;
     if (!a.active) return;
     a.active = false;
@@ -1191,6 +1238,12 @@ export class ScribeViewer {
       a.indicator.remove();
       a.indicator = null;
     }
+    if (!settle) return;
+
+    // Autoscroll stops instantly with no coast, so render the landing page at full resolution now instead of waiting for the deferred-text settle timer.
+    // `updateCurrentPage` pins `cp` to the centred page so a late scroll frame no-ops instead of re-deferring; `displayPage` clears the pending timer.
+    this.updateCurrentPage();
+    this.displayPage(this.state.cp.n, false, false);
   }
 
   /** @param {TouchEvent} event */
@@ -1532,6 +1585,10 @@ export class ScribeViewer {
    * @param {boolean} [refresh=true]
    * @param {boolean} [deferText=false] - Skip building/evicting the word DOM and overlays, doing only the cheap page change (raster, scrollbars, page number).
    *   Used while scrolling too fast to read the text (or any scroll in invis mode). `updateCurrentPage` schedules the real build for when the scroll settles.
+   * @param {boolean|'current'} [deferRaster=false] - Raster strategy for this page change (see `updateCurrentPage`):
+   *   true = skip full rasters and show low-res previews;
+   *   'current' = raster only page `n`, with no ahead/behind window;
+   *   false = full raster window, and clears any glide tail.
    */
   async displayPage(n, scroll = false, refresh = true, deferText = false, deferRaster = false) {
     if (Number.isNaN(n) || n < 0 || n > (this.doc.inputData.pageCount - 1)) {
@@ -1551,9 +1608,19 @@ export class ScribeViewer {
 
     // Issue the raster request before the synchronous word-DOM build so render workers can start on the target page instead of waiting.
     // Must run after setInitialPositionZoom so the canvases raster at the correct zoom.
-    // `deferRaster` skips it during fast scroll, where the per-page raster starves the scroll's own rAF loop.
-    if (!deferRaster && (this.doc.inputData.pdfMode || this.doc.inputData.imageMode)) {
-      this.imageCache.renderAheadBehindBrowser(n);
+    if (this.doc.inputData.pdfMode || this.doc.inputData.imageMode) {
+      if (deferRaster === true) {
+        // Full rasters are suppressed here, so the flown-past pages need a cheap preview to avoid blank.
+        // Point the look-ahead in the scroll direction, the sign of the jump to `n`.
+        this.imageCache.ensurePreviewWindow(n, Math.sign(n - this.state.cp.n) || 1);
+      } else {
+        this.imageCache.renderAheadBehindBrowser(n, deferRaster === 'current' ? 0 : undefined);
+        if (!deferRaster) {
+          // A full-window render ends any preview glide, so the next boundaries return to the normal slow-scroll path.
+          this._rasterDeferred = false;
+          this._rasterTail = false;
+        }
+      }
     }
 
     // In ebook mode the page raster is hidden so only the (reflowed) text shows.
@@ -2652,7 +2719,7 @@ export class ScribeViewer {
    */
   destroy() {
     unregisterViewer(this);
-    this.stopAutoScroll();
+    this.stopAutoScroll(false);
     if (this._scrollTextHideTimer) clearTimeout(this._scrollTextHideTimer);
     this._clearPageDom();
     if (this.scrollContainer && this.scrollContainer.parentNode) this.scrollContainer.parentNode.removeChild(this.scrollContainer);

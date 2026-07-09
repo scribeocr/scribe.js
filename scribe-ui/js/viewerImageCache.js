@@ -76,6 +76,18 @@ export class ViewerImageCache {
    */
   static canvasCacheBytes = 256 * 1024 * 1024;
 
+  /** Preview width in px; low enough to show shapes and colors, not readable text. */
+  static previewWidth = 300;
+
+  /**
+   * Pages ahead whose previews are pre-warmed on each fast-scroll page change.
+   * Bounded on purpose: a whole-document background pass competed with the scroll and never let the pipeline settle.
+   */
+  static previewAhead = 20;
+
+  /** Pages behind the current page kept previewed, so a brief reverse or a rebuilt container is covered. */
+  static previewBehind = 4;
+
   /**
    * @param {import('../viewer.js').ScribeViewer} [viewer]
    */
@@ -124,6 +136,12 @@ export class ViewerImageCache {
      * @type {Set<number>}
      */
     this._bitmapPages = new Set();
+    /**
+     * Per-page object URL of the low-res preview drawn as the page container's background, so a page with no full raster shows shapes instead of blank.
+     * Revoked in `clear()`.
+     * @type {Map<number, string>}
+     */
+    this._previewUrls = new Map();
   }
 
   _viewer() {
@@ -312,12 +330,6 @@ export class ViewerImageCache {
 
     if (viewer.getPageStop(n) === null) return;
 
-    if (this.pageCanvases[n]) {
-      this.pageCanvases[n].then((canvas) => {
-        if (canvas && canvas !== SKIPPED && /** @type {HTMLCanvasElement} */ (canvas).parentNode) /** @type {HTMLCanvasElement} */ (canvas).remove();
-      }).catch(() => {});
-    }
-
     // Each render is stamped. Only the latest render for this page is applied.
     // A slower earlier render completing out of order (LIFO can run a newer request first) cannot overwrite a newer one.
     // The superseding call (or a delete) removes the discarded canvas.
@@ -391,13 +403,59 @@ export class ViewerImageCache {
     this._canvasBytes.clear();
     this._canvasLru.clear();
     this._bitmapPages.clear();
+    for (const url of this._previewUrls.values()) URL.revokeObjectURL(url);
+    this._previewUrls.clear();
   }
 
   /**
-   * Render the current page and a few pages ahead and behind. Bitmaps for distant pages are freed.
-   * @param {number} curr
+   * Draw page `n`'s low-res preview as its container background, so a page with no full raster shows shapes instead of blank.
+   * @param {number} n
    */
-  async renderAheadBehindBrowser(curr) {
+  async showPreview(n) {
+    const viewer = this._viewer();
+    // Ebook mode shows no page raster, so no preview either.
+    if (viewer.state.displayMode === 'ebook') return;
+    if (n < 0 || n >= viewer.doc.images.pageCount) return;
+    let url = this._previewUrls.get(n);
+    if (!url) {
+      const blob = await viewer.doc.images.renderThumbnail(n, ViewerImageCache.previewWidth, 0.6);
+      if (!blob) return;
+      url = this._previewUrls.get(n) || URL.createObjectURL(blob); // a concurrent call may have won while awaiting
+      this._previewUrls.set(n, url);
+    }
+    const pc = viewer._ensurePageContainer(n);
+    const style = /** @type {?HTMLElement} */ (pc)?.style;
+    if (!style || style.backgroundImage.indexOf(url) !== -1) return; // already applied (skip redundant write)
+    // Safe to stretch to fill the page box: the preview shares the page aspect, so no distortion.
+    style.backgroundImage = `url("${url}")`;
+    style.backgroundSize = '100% 100%';
+    style.backgroundRepeat = 'no-repeat';
+  }
+
+  /**
+   * Show previews for the current page and a look-ahead in the scroll direction, rendering any not yet cached.
+   * @param {number} curr
+   * @param {number} [dir=1] - Scroll direction (+1 down, -1 up).
+   */
+  ensurePreviewWindow(curr, dir = 1) {
+    const ahead = ViewerImageCache.previewAhead;
+    const behind = ViewerImageCache.previewBehind;
+    const lo = dir >= 0 ? curr - behind : curr - ahead;
+    const hi = dir >= 0 ? curr + ahead : curr + behind;
+    for (let i = lo; i <= hi; i++) {
+      if (i >= 0) this.showPreview(i);
+    }
+  }
+
+  /**
+   * Render the current page and a few pages ahead and behind.
+   * Bitmaps for distant pages are freed.
+   * @param {number} curr
+   * @param {number} [radius=ViewerImageCache.cacheRenderPages] - Pages to render on each side of `curr`.
+   *   Pass 0 (render only `curr`) in the tail of a fast-scroll glide, so a window of full-page renders does not clump into the decelerating frames.
+   *   Cache sweeps run regardless.
+   */
+  async renderAheadBehindBrowser(curr, radius = ViewerImageCache.cacheRenderPages) {
     const viewer = this._viewer();
 
     // Staged renders dispatch closest-to-focus first, so setting the focus makes the current page win a backlogged queue whatever its enqueue order.
@@ -416,7 +474,7 @@ export class ViewerImageCache {
     // Send the current page first.
     // Although jobs may be reordered in the scheduler, sending them in correct order of priority still avoids issues.
     const resArr = [this.addPageCanvas(curr)];
-    for (let i = 1; i <= ViewerImageCache.cacheRenderPages; i++) {
+    for (let i = 1; i <= radius; i++) {
       if (curr + i < viewer.doc.images.loadCount) {
         resArr.push(this.addPageCanvas(curr + i));
       }

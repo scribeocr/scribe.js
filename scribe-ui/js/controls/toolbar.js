@@ -1972,6 +1972,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       cursor: pointer;
       white-space: nowrap;
       border-radius: 4px;
+      user-select: none;
     }
 
     .${r} .scribe-bm-row:hover { background: var(--scribe-hover); }
