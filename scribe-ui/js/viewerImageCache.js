@@ -14,6 +14,7 @@ import { SKIPPED, DEBUG_RENDER_SCHED } from '../../tess/TessScheduler.js';
  * @property {('color'|'gray'|'binary')} [colorMode]
  * @property {number} [rotation]
  * @property {number} [rasterScale] - On-screen device-pixel density the backing store was rastered at (see `_targetRasterScale`).
+ * @property {number} [srcScale] - Density of the source raster the canvas was drawn from, in device px per page-dims px.
  * @property {number} n
  */
 
@@ -142,6 +143,28 @@ export class ViewerImageCache {
      * @type {Map<number, string>}
      */
     this._previewUrls = new Map();
+    /**
+     * Viewer-owned source rasters for the PDF display path, rendered at on-screen resolution rather than full resolution.
+     * Kept out of `doc.images.native[]` so `getNative` consumers (OCR, export, coordinates) still get a full-resolution render.
+     * @type {Array<?Promise<ImageWrapper|typeof SKIPPED>>}
+     */
+    this._srcRasters = [];
+    /**
+     * Density of each `_srcRasters` entry, as a fraction of the full-resolution render `getNative` returns.
+     * 0 or undefined means no raster.
+     * @type {Array<number>}
+     */
+    this._srcScales = [];
+    /** Re-decode dedupe for compressed `_srcRasters` wrappers (mirrors `_nativeBitmapPromises`). @type {Array<?Promise<boolean>>} */
+    this._srcBitmapPromises = [];
+    /** Per-page identity of the compression promise installed into `_srcRasters` (mirrors `_compressPromises`). @type {Array<?Promise<any>>} */
+    this._srcCompressPromises = [];
+    /**
+     * One-shot full-resolution background upgrade per expensive page (see `_ensureCapUpgrade`).
+     * Held (not cleared) after completion or failure so an expensive page is upgraded at most once.
+     * @type {Array<?Promise<void>>}
+     */
+    this._capUpgrades = [];
   }
 
   _viewer() {
@@ -182,15 +205,102 @@ export class ViewerImageCache {
   }
 
   /**
-   * Backing-store density for a page canvas: the on-screen device-pixel density (zoom x `devicePixelRatio`),
-   * capped at the source raster's oversample factor (`over`)
-   * since there is no detail to draw beyond the source's 1:1.
-   * @param {number} over - Source raster oversample factor (2 for upscaled/binary, else 1).
+   * Backing-store density for a page canvas, capped at the source raster's density because rastering past the source's 1:1 adds no detail.
+   * @param {number} srcDensity - Source raster density in device px per page-dims px.
    * @returns {number}
    */
-  _targetRasterScale(over) {
+  _targetRasterScale(srcDensity) {
     const dpr = window.devicePixelRatio || 1;
-    return Math.min(over, Math.max(0.01, (this._viewer().zoomLevel || 1) * dpr));
+    return Math.min(srcDensity, Math.max(0.01, (this._viewer().zoomLevel || 1) * dpr));
+  }
+
+  /**
+   * Whether page display uses the viewer-owned display-resolution raster path.
+   * Binary rasters are derived from the full-resolution native image, and image input has no PDF to re-render, so neither uses this path.
+   */
+  _usesViewerRaster() {
+    const viewer = this._viewer();
+    return !!viewer.doc.images.inputModes?.pdf && viewer.state.colorMode !== 'binary';
+  }
+
+  /**
+   * Source-raster density the current zoom calls for, capped at 1 because a render cannot add detail beyond full resolution.
+   * @returns {number}
+   */
+  _wantDensity() {
+    const dpr = window.devicePixelRatio || 1;
+    return Math.min(1, Math.max(0.01, (this._viewer().zoomLevel || 1) * dpr));
+  }
+
+  /**
+   * Get page `n`'s viewer source raster, rendering from the PDF when there is none or the existing one is too coarse for the current zoom.
+   * A page measured expensive to render keeps its coarse raster, so the result can be below the density the zoom calls for.
+   * @param {number} n - Page number
+   * @returns {Promise<{image: ImageBitmap, wrapper: ImageWrapper} | typeof SKIPPED>}
+   */
+  async _getViewerSrc(n) {
+    const viewer = this._viewer();
+    const images = viewer.doc.images;
+    const wantDensity = this._wantDensity();
+    const haveScale = this._srcScales[n] ?? 0;
+    let slot = this._srcRasters[n];
+    // 2% slack so device-pixel-ratio rounding never triggers a same-density re-render.
+    const sufficient = !!slot && wantDensity <= haveScale * 1.02;
+    if (slot && !sufficient && images.isRenderExpensive(n)) {
+      // Re-rendering an expensive page would hitch the zoom, so reuse the coarse raster (the CSS transform upscales it, soft) and sharpen it in the background.
+      this._ensureCapUpgrade(n);
+    } else if (!slot || !sufficient) {
+      const renderP = images.renderViewerRaster(n, wantDensity, true);
+      slot = renderP;
+      this._srcRasters[n] = renderP;
+      this._srcScales[n] = wantDensity;
+      this._srcBitmapPromises[n] = null;
+      renderP.then((w) => {
+        // Dropped from the viewer lane: clear the slot so a later request re-renders.
+        if (w === SKIPPED && this._srcRasters[n] === renderP) {
+          this._srcRasters[n] = null;
+          this._srcScales[n] = 0;
+        }
+      }).catch(() => {});
+    } else if (DEBUG_RENDER_SCHED) {
+      console.log(`[render-sched] cache hit page ${n} (viewer raster reused at ${haveScale.toFixed(2)}x)`);
+    }
+    const wrapper = await slot;
+    if (!wrapper || wrapper === SKIPPED) return SKIPPED;
+    if (!wrapper.imageBitmap) {
+      // Evicted-and-compressed raster: re-decode its PNG (deduped across concurrent draws).
+      if (this._srcBitmapPromises[n]) await this._srcBitmapPromises[n];
+      if (!wrapper.imageBitmap && wrapper.src != null) {
+        const bitmapPromise = this.imageStrToBitmap(wrapper.src);
+        this._srcBitmapPromises[n] = bitmapPromise.then(() => true, () => true);
+        wrapper.imageBitmap = await bitmapPromise;
+      }
+    }
+    if (!wrapper.imageBitmap) return SKIPPED;
+    return { image: wrapper.imageBitmap, wrapper };
+  }
+
+  /**
+   * Schedule page `n`'s one-time full-resolution background render.
+   * @param {number} n - Page number
+   */
+  _ensureCapUpgrade(n) {
+    // A failed upgrade leaves its promise in place: a render this slow must not be retried on every further zoom.
+    if (this._capUpgrades[n]) return;
+    if ((this._srcScales[n] ?? 0) >= 1) return;
+    const images = this._viewer().doc.images;
+    this._capUpgrades[n] = (async () => {
+      const w = await images.renderViewerRaster(n, 1, false);
+      // A failure placeholder has no bitmap, and must not replace a working raster.
+      if (!w || w === SKIPPED || !(/** @type {ImageWrapper} */ (w)).imageBitmap) return;
+      // Rechecked after the await: the document may have been replaced, or the raster already re-rendered at full resolution.
+      if (this._viewer().doc.images !== images) return;
+      if ((this._srcScales[n] ?? 0) >= 1) return;
+      this._srcRasters[n] = Promise.resolve(w);
+      this._srcScales[n] = 1;
+      this._srcBitmapPromises[n] = null;
+      if (this.pageCanvases[n]) this.addPageCanvas(n);
+    })().catch(() => {});
   }
 
   /**
@@ -204,19 +314,31 @@ export class ViewerImageCache {
     const pageDims = viewer.doc.pageMetrics[n].dims;
 
     const binary = viewer.state.colorMode === 'binary';
-    // Snapshot whether the page's image wrapper is already cached,
-    // before the getNative/getBinary below populates the slot on a fresh render,
-    // so the cache-hit trace does not mistake a fresh render for a cache read.
-    const wasCached = (binary ? viewer.doc.images.binary : viewer.doc.images.native)[n] !== undefined;
 
-    const backgroundImage = binary ? await viewer.doc.images.getBinary(n, undefined, true) : await viewer.doc.images.getNative(n, undefined, true);
-    if (backgroundImage === SKIPPED) return SKIPPED;
-    if (DEBUG_RENDER_SCHED && wasCached) {
-      // This cache-hit trace pairs with the scheduler's render-dispatch trace: serving a page from cache dispatches no renderPdfPage.
-      console.log(`[render-sched] cache hit page ${n} (${backgroundImage?.imageBitmap != null ? 'decoded bitmap reused' : 'decoded from cached PNG'})`);
+    /** @type {ImageWrapper} */
+    let backgroundImage;
+    /** @type {ImageBitmap} */
+    let image;
+    if (this._usesViewerRaster()) {
+      const src = await this._getViewerSrc(n);
+      if (src === SKIPPED) return SKIPPED;
+      backgroundImage = src.wrapper;
+      image = src.image;
+    } else {
+      // Sampled before `getNative`/`getBinary` below, which populate the slot on a fresh render.
+      const wasCached = (binary ? viewer.doc.images.binary : viewer.doc.images.native)[n] !== undefined;
+
+      const bg = binary ? await viewer.doc.images.getBinary(n, undefined, true) : await viewer.doc.images.getNative(n, undefined, true);
+      if (bg === SKIPPED) return SKIPPED;
+      if (DEBUG_RENDER_SCHED && wasCached) {
+        // This cache-hit trace pairs with the scheduler's render-dispatch trace: serving a page from cache dispatches no renderPdfPage.
+        console.log(`[render-sched] cache hit page ${n} (${bg?.imageBitmap != null ? 'decoded bitmap reused' : 'decoded from cached PNG'})`);
+      }
+      const bmp = binary ? await this.getBinaryBitmap(n) : await this.getNativeBitmap(n);
+      if (bmp === SKIPPED) return SKIPPED;
+      backgroundImage = /** @type {ImageWrapper} */ (bg);
+      image = bmp;
     }
-    const image = binary ? await this.getBinaryBitmap(n) : await this.getNativeBitmap(n);
-    if (image === SKIPPED) return SKIPPED;
 
     const rotation = this._displayRotation(n, backgroundImage.rotated);
 
@@ -226,13 +348,13 @@ export class ViewerImageCache {
     const dispW = userRotation % 180 === 90 ? pageDims.height : pageDims.width;
     const dispH = userRotation % 180 === 90 ? pageDims.width : pageDims.height;
 
-    // The source raster is rendered at `over`x the display size (2x for an upscaled/binary source, else 1x).
-    const over = backgroundImage.upscaled ? 2 : 1;
+    // The source may be a viewer raster, a native image, or a 2x binary upscale, so read the density off the bitmap rather than assuming it.
+    const srcDensity = image.width / pageDims.width;
 
     // Round the CSS box to whole device pixels so the raster lands on the device-pixel grid.
     // A fractional edge lets the GPU compositor bilinear-blur the whole bitmap.
     const displayScale = (viewer.zoomLevel || 1) * (window.devicePixelRatio || 1);
-    const rasterScale = this._targetRasterScale(over);
+    const rasterScale = this._targetRasterScale(srcDensity);
     const cssW = Math.max(1, Math.round(dispW * displayScale)) / displayScale;
     const cssH = Math.max(1, Math.round(dispH * displayScale)) / displayScale;
 
@@ -248,8 +370,8 @@ export class ViewerImageCache {
     ctx.save();
     ctx.translate(canvas.width / 2, canvas.height / 2);
     ctx.rotate(rotation * (Math.PI / 180));
-    // Scale the source raster (`over`x display) down to the backing store (`rasterScale`x display).
-    ctx.scale(rasterScale / over, rasterScale / over);
+    // Scale the source raster (`srcDensity`x display) to the backing store (`rasterScale`x display).
+    ctx.scale(rasterScale / srcDensity, rasterScale / srcDensity);
     ctx.drawImage(image, -image.width / 2, -image.height / 2);
     ctx.restore();
 
@@ -259,6 +381,7 @@ export class ViewerImageCache {
       colorMode: /** @type {'color'|'gray'|'binary'} */ (backgroundImage.colorMode),
       rotation,
       rasterScale,
+      srcScale: srcDensity,
       n,
     };
 
@@ -316,10 +439,17 @@ export class ViewerImageCache {
           // The rotation is baked into the raster, so a changed display rotation needs a fresh draw.
           const rotation = this._displayRotation(n, props.rotated);
           if (Math.abs((props.rotation ?? 0) - rotation) > 0.01) rerender = true;
-          // The backing store is sized to the on-screen pixel density, so re-raster when that density moves more than 1%
-          // (a redraw at the same zoom reuses the existing canvas).
-          const targetScale = this._targetRasterScale(props.upscaled ? 2 : 1);
+          // Read the density from the current source slot rather than the canvas's own, so a landed background upgrade raises the target and forces a re-raster.
+          const srcNow = this._usesViewerRaster()
+            ? (this._srcScales[n] || props.srcScale || 1)
+            : (props.srcScale ?? (props.upscaled ? 2 : 1));
+          const targetScale = this._targetRasterScale(srcNow);
           if (props.rasterScale && Math.abs(targetScale / props.rasterScale - 1) > 0.01) rerender = true;
+          // Reusing the canvas returns before `_getViewerSrc` runs, so a too-coarse source has to be caught here as well.
+          if (!rerender && this._usesViewerRaster() && this._wantDensity() > srcNow * 1.02) {
+            if (viewer.doc.images.isRenderExpensive(n)) this._ensureCapUpgrade(n);
+            else rerender = true;
+          }
         }
       }
       if (!rerender) {
@@ -403,6 +533,11 @@ export class ViewerImageCache {
     this._canvasBytes.clear();
     this._canvasLru.clear();
     this._bitmapPages.clear();
+    this._srcRasters.length = 0;
+    this._srcScales.length = 0;
+    this._srcBitmapPromises.length = 0;
+    this._srcCompressPromises.length = 0;
+    this._capUpgrades.length = 0;
     for (const url of this._previewUrls.values()) URL.revokeObjectURL(url);
     this._previewUrls.clear();
   }
@@ -487,22 +622,18 @@ export class ViewerImageCache {
   }
 
   /**
-   * Compress page `n`'s viewer bitmap (a `src==null` `native` wrapper) to a PNG `src` in a worker, then free the bitmap, so a revisit re-decodes the PNG instead of re-rendering from the PDF.
-   * No-op for any other wrapper.
-   * The bitmap is transferred into the worker (zero-copy).
-   * The slot is swapped to the compression promise so consumers await it rather than reading a neutered handle.
-   * On failure the bitmap is already gone, so the slot is dropped and the page re-renders on revisit.
+   * Compress `arr[n]`'s bitmap to a PNG `src` and free the bitmap, so a revisit re-decodes the PNG instead of rendering the page again.
+   * Only a `src==null` wrapper holding a bitmap is touched.
+   * @param {Array<ImageWrapper|Promise<ImageWrapper|typeof SKIPPED>|null|undefined>} arr - Store array holding the slot (`doc.images.native` or `_srcRasters`).
    * @param {number} n
+   * @param {Array<?Promise<any>>} promises - Compression promises installed into `arr`, so each slot is compressed once rather than re-wrapped on every cleanup sweep.
    */
-  _compressNative(n) {
-    // Broadly-typed view of the store array: it also holds SKIPPED-promises and `undefined` that the narrow field type omits.
-    /** @type {Array<ImageWrapper|Promise<ImageWrapper|typeof SKIPPED>|undefined>} */
-    const nativeArr = this._viewer().doc.images.native;
-    const entry = nativeArr[n];
+  _compressSlot(arr, n, promises) {
+    const entry = arr[n];
     if (!entry) return;
     // Already compressed (or compressing) this exact slot.
     // A re-render installs a new promise and re-enables this.
-    if (this._compressPromises[n] === entry) return;
+    if (promises[n] === entry) return;
     // A draw holds a live reference to this bitmap, so leave it for a later eviction pass.
     if (this._drawing.has(n)) return;
     const compressP = Promise.resolve(entry).then(async (w) => {
@@ -512,17 +643,42 @@ export class ViewerImageCache {
       const bitmapScheduler = await this.getBitmapScheduler();
       const dataUrl = await bitmapScheduler.scheduler.addJob('compressBitmap', bitmap);
       // Only write back if this slot is still ours (a re-render may have replaced it).
-      if (nativeArr[n] === compressP) w.src = dataUrl;
+      if (arr[n] === compressP) w.src = dataUrl;
       return w;
     }).catch(() => {
       // Compression failed after the bitmap was already transferred away.
       // Drop the slot so a revisit re-renders.
-      if (nativeArr[n] === compressP) nativeArr[n] = undefined;
+      if (arr[n] === compressP) arr[n] = undefined;
       return SKIPPED;
     });
+    // Until this settles the wrapper has lost its bitmap and not yet gained a `src`, so hand consumers the promise instead.
     // The catch widens the sentinel to `symbol`, but it is only ever `SKIPPED`, so narrow back for the store.
-    nativeArr[n] = /** @type {Promise<ImageWrapper|typeof SKIPPED>} */ (compressP);
-    this._compressPromises[n] = compressP;
+    arr[n] = /** @type {Promise<ImageWrapper|typeof SKIPPED>} */ (compressP);
+    promises[n] = compressP;
+  }
+
+  /**
+   * Compress page `n`'s viewer bitmap in `native[n]` (binary-mode and image-input display paths).
+   * @param {number} n
+   */
+  _compressNative(n) {
+    // Broadly-typed view of the store array: it also holds SKIPPED-promises and `undefined` that the narrow field type omits.
+    this._compressSlot(/** @type {Array<ImageWrapper|Promise<ImageWrapper|typeof SKIPPED>|undefined>} */ (this._viewer().doc.images.native), n, this._compressPromises);
+  }
+
+  /**
+   * Free the decoded bitmap of page `n`'s viewer source raster.
+   * @param {number} n
+   */
+  _releaseViewerSrcBitmap(n) {
+    const entry = this._srcRasters[n];
+    if (!entry) return;
+    Promise.resolve(entry).then((w) => {
+      // A `src`-less wrapper's bitmap is the raster's only copy, so `_compressSlot` compresses it into a `src` before dropping it.
+      if (!w || w === SKIPPED || w.src == null) return;
+      if (this._drawing.has(n)) return;
+      if (w.imageBitmap) w.imageBitmap = null;
+    }).catch(() => {});
   }
 
   /** @param {number} curr */
@@ -532,9 +688,11 @@ export class ViewerImageCache {
     // Deleting from a Set mid-iteration is safe.
     for (const i of this._bitmapPages) {
       if (Math.abs(curr - i) > ViewerImageCache.cacheDeletePages) {
-        // Compress the viewer bitmap to a re-decodable PNG `src`, then free the page's decoded bitmaps to bound viewer memory.
+        // Compress the viewer bitmaps to a re-decodable PNG `src`, then free the page's decoded bitmaps to bound viewer memory.
         this._compressNative(i);
+        this._compressSlot(this._srcRasters, i, this._srcCompressPromises);
         images.releaseBitmapCache(i);
+        this._releaseViewerSrcBitmap(i);
         this._bitmapPages.delete(i);
       }
     }

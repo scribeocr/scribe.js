@@ -5115,18 +5115,21 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
  * @param {number} [dpi=300] - Render resolution in dots per inch
  * @param {'png'|'jpeg'|'bitmap'} [outputFormat='png'] - Output encoding: 'png' returns a base64 data URL, 'jpeg' returns a Blob, and 'bitmap' returns a transferable ImageBitmap (both browser only).
  * @param {number} [quality=0.6] - JPEG quality 0-1 (ignored for png).
- * @returns {Promise<{dataUrl?: string, blob?: Blob, bitmap?: ImageBitmap, colorMode: string, ok: boolean, failReason?: string, failDetail?: string}>}
+ * @returns {Promise<{dataUrl?: string, blob?: Blob, bitmap?: ImageBitmap, colorMode: string, ok: boolean, failReason?: string, failDetail?: string,
+ *   perf?: {prepMs: number, drawMs: number, decodeMs: number, flushMs: number}}>}
  *   A PNG data URL (`dataUrl`, default), a JPEG `blob` ('jpeg'), or an ImageBitmap (`bitmap`, 'bitmap'), plus the effective color mode.
  *   `ok` is false when the page is a failure placeholder (blank fallback) rather than a real render.
  *   Failure placeholders are always a PNG `dataUrl` regardless of `outputFormat`.
  *   `failReason` is then one of `exception`, `memory_abort`, or `corrupt_encrypted`, with `failDetail` carrying the error text.
  *   A genuinely empty page (no draw ops) returns `ok: true`.
+ *   Successful renders carry `perf`, whose `drawMs - decodeMs` estimates the recurring cost of re-rendering the page.
  */
 export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, pageIndex, colorMode = 'color', rotate = 0, dpi = 300, outputFormat = 'png', quality = 0.6) {
-  // Optional Content visibility is a property of the document — fetch the
-  // (cached) set of OCGs hidden in View mode from the ObjectCache so that
-  // every caller of this function (worker, batch entry, tests) automatically
-  // hides print-only watermark layers and other hidden OCGs.
+  const tRenderStart = performance.now();
+  // decodeMs is a subset of drawMs, not a sibling: it counts only the decodes inside the draw loop that were admitted to the doc-wide image cache.
+  const perf = {
+    prepMs: 0, drawMs: 0, decodeMs: 0, flushMs: 0,
+  };
   const offOCGs = objCache.getOffOCGs();
   const contentWidthPts = Math.abs(mediaBox[2] - mediaBox[0]);
   const contentHeightPts = Math.abs(mediaBox[3] - mediaBox[1]);
@@ -5135,11 +5138,9 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   const boxOriginX = Math.min(mediaBox[0], mediaBox[2]);
   const boxOriginY = Math.min(mediaBox[1], mediaBox[3]);
 
-  // Compute visual (post-rotation) dimensions and rotation CTM.
-  // /Rotate specifies clockwise rotation for display (PDF spec).
-  // The CTM translations must account for non-zero box origins (CropBox offset)
-  // so that the rendering formula canvas_y = (pageHeightPts + boxOriginY - f) * scale
-  // correctly maps CropBox edges to canvas edges after rotation.
+  // Per the PDF spec /Rotate is clockwise, which fixes the sign of each matrix below.
+  // Their translations carry boxOrigin to pair with the offsets the per-op canvas transform applies,
+  // so a box with a non-zero origin still lands on the canvas edges.
   let rotCtm = null; // null = identity (no rotation)
   let pageWidthPts = contentWidthPts;
   let pageHeightPts = contentHeightPts;
@@ -5155,9 +5156,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     pageHeightPts = contentWidthPts;
   }
 
-  // Encrypted PDFs with xref entries pointing beyond file size are severely corrupt.
-  // Content decrypted from repaired offsets cannot be trusted — render blank to match
-  // how other renderers (e.g. mupdf) handle this case.
+  // Content decrypted from a repaired xref offset cannot be trusted, so severe corruption is recoverable only when the document is unencrypted.
   if (objCache.xrefSeverelyCorrupt && objCache.encryptionKey) {
     const scale = 300 / 72;
     const w = Math.ceil(pageWidthPts * scale);
@@ -5210,11 +5209,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   for (const fontTag of deferredFontTags) {
     const fontObj = fonts.get(fontTag);
     if (!fontObj) continue;
-    // Non-embedded CID fonts without toUnicode: skip registration to avoid garbled text.
-    // CIDs are opaque glyph indices — rendering them through a substitution font
-    // produces garbled Latin characters.
-    // Exception: fonts with type0 info (e.g., UTF-16 encoded
-    // CID fonts) can render via showType0Literal which falls back to String.fromCharCode.
+    // Without a toUnicode map, a non-embedded CID font's char codes are opaque glyph indices, so a substitution font would draw them as garbled Latin.
+    // The type0 exception covers predefined Unicode CMaps, whose 2-byte codes are real codepoints.
     if (fontObj.isCIDFont && fontObj.toUnicode.size === 0 && !fontObj.type0) {
       console.warn(`[renderPdfPage] Skipping non-embedded CID font "${fontObj.baseName}" (no toUnicode map)`);
       continue;
@@ -5241,9 +5237,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     break;
   }
 
-  // Get the content streams as an array (one entry per /Contents stream). Passing the
-  // streams individually lets parseDrawOps reset corruption state at boundaries so a
-  // single bad stream doesn't poison the rest of the page.
+  // Keep the array rather than pre-joining it, because parseDrawOps needs the /Contents boundaries
+  // to stop one corrupt entry from suppressing the rest of the page.
   const contentStreams = getPageContentStreams(pageObjText, objCache);
 
   // Parse content stream for all draw operations (images, Type3 glyphs, Type0 text, paths)
@@ -5253,10 +5248,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       parseHiddenOCMCNames(pageObjText, objCache, offOCGs), objCache.lastContentStreamsRecovered)
     : [];
 
-  // Yield to the event loop after heavy synchronous parsing (parseDrawOps tokenizes
-  // the full content stream synchronously). For large streams (500KB+), this prevents
-  // the browser from being declared dead by test harnesses due to event-loop starvation.
-  // The 500KB threshold avoids unnecessary yields for typical pages.
+  // parseDrawOps tokenizes the whole page synchronously, so on a large page nothing else on the thread has run until this yield.
   const totalContentLen = contentStreams ? contentStreams.reduce((acc, s) => acc + s.length, 0) : 0;
   if (totalContentLen > 500000) {
     await new Promise((resolve) => { setTimeout(resolve, 0); });
@@ -5289,10 +5281,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     for (let ri = 0; ri < rawDrawOps.length; ri++) drawOps.push(rawDrawOps[ri]);
   }
 
-  // Render annotation appearance streams (e.g., signature widgets, form fields).
-  // `extractPdfAnnotations` owns the /Annots-array resolution + /Highlight parse
-  // (shared with the importer at js/pdf/parsePdfAnnots.js); we fetch each
-  // annotText here for flag-filtering, /AP resolution, and non-highlight synth.
   const annotsParsed = extractPdfAnnotations(objCache, pageObjText);
   // AcroForm /NeedAppearances: when true, field appearances are out of date and must be regenerated
   // from the field value (text) or /MK caption (buttons) rather than trusting a possibly-stale embedded /AP.
@@ -6110,8 +6098,11 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   if (drawOps.length === 0) {
     ctx.fillStyle = 'white';
     ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+    perf.prepMs = performance.now() - tRenderStart;
     const emptyImageData = ctx.getImageData(0, 0, canvasWidth, canvasHeight);
-    const out = { dataUrl: await buildPngDataUrl(emptyImageData, 'gray'), colorMode: 'gray', ok: true };
+    const out = {
+      dataUrl: await buildPngDataUrl(emptyImageData, 'gray'), colorMode: 'gray', ok: true, perf,
+    };
     ca.closeDrawable(canvas);
     return out;
   }
@@ -6141,6 +6132,9 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   let renderFailed = false;
   let failReason = '';
   let failDetail = '';
+
+  const tDrawStart = performance.now();
+  perf.prepMs = tDrawStart - tRenderStart;
 
   try {
   // Apply page rotation to all draw ops by composing rotation CTM with each op's CTM.
@@ -7301,6 +7295,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             // Both image caches are keyed by objNum / op.name, not by size or region, so a roi or downscaled decode reused for a different placement would render clipped or blurry.
             const bytes = (bitmap.width || canvasWidth) * (bitmap.height || canvasHeight) * 4;
             putDecodedImage(objCache, docKey, bitmap, canvasWidth, canvasHeight, bytes, decodeMs);
+            // Admitted to the doc cache, so this decode will be a cache hit on a re-render.
+            perf.decodeMs += decodeMs;
           } else if (!imageInfo.imageMask && decodeScale === 1 && imageDrawCounts.get(op.name) > 1) {
             bitmapCache.set(op.name, bitmap);
           } else {
@@ -8736,6 +8732,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     transientPatterns.length = 0;
   }
 
+  perf.drawMs = performance.now() - tDrawStart;
+
   if (renderFailed) {
     ca.closeDrawable(canvas);
     const blankCanvas = ca.makeCanvas(canvasWidth, canvasHeight);
@@ -8758,26 +8756,36 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   // 'bitmap' returns the rendered pixels as a transferable ImageBitmap, skipping the PNG encode/decode round-trip.
   // Only a real OffscreenCanvas can transfer, so the Node canvas fork and other backends fall through to PNG below.
   if (outputFormat === 'bitmap' && typeof OffscreenCanvas !== 'undefined' && canvas instanceof OffscreenCanvas) {
+    // The transfer is a handle swap, so this wall time is the deferred rasterization it forces rather than a copy.
+    const tFlushStart = performance.now();
     const bitmap = canvas.transferToImageBitmap();
+    perf.flushMs = performance.now() - tFlushStart;
     ca.closeDrawable(canvas);
-    return { bitmap, colorMode: effectiveColorMode, ok: true };
+    return {
+      bitmap, colorMode: effectiveColorMode, ok: true, perf,
+    };
   }
 
   // JPEG output (thumbnails): encode the canvas directly to a JPEG Blob, skipping getImageData and the PNG build.
   // Pass both `type` (the W3C OffscreenCanvas option browsers read) and `mime` (the option the Node @scribe.js/canvas fork reads).
   // Given only `type`, the fork ignores the format and falls back to PNG.
   if (outputFormat === 'jpeg') {
+    const tFlushStart = performance.now();
     const blob = await canvas.convertToBlob({ type: 'image/jpeg', mime: 'image/jpeg', quality });
+    perf.flushMs = performance.now() - tFlushStart;
     ca.closeDrawable(canvas);
-    return { blob, colorMode: effectiveColorMode, ok: true };
+    return {
+      blob, colorMode: effectiveColorMode, ok: true, perf,
+    };
   }
 
-  // Encode via `buildPngDataUrl` (not `canvas.toBuffer('image/png')`):
-  // smaller output (RGB-only, 1-channel gray) and avoids SkPngEncoder's
-  // buffer retention.
+  // Encode here rather than with the canvas PNG encoder, because this strips alpha and writes gray as a single channel for smaller output.
+  const tFlushStart = performance.now();
   const imageData = ctx.getImageData(0, 0, canvasWidth, canvasHeight);
+  const dataUrl = await buildPngDataUrl(imageData, effectiveColorMode);
+  perf.flushMs = performance.now() - tFlushStart;
   const result = {
-    dataUrl: await buildPngDataUrl(imageData, effectiveColorMode), colorMode: effectiveColorMode, ok: true,
+    dataUrl, colorMode: effectiveColorMode, ok: true, perf,
   };
   ca.closeDrawable(canvas);
   return result;
