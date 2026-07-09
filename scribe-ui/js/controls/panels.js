@@ -90,7 +90,8 @@ function clearPageClipboard() {
  * @param {(n: number) => void} cfg.onSelect - Called with the page index when a thumbnail is clicked.
  * @param {(pageIndices: Array<number>) => void} [cfg.onExtract] - Called with the page indices to open as a new document.
  * @param {(at: number) => void} [cfg.onInsertFromFile] - Called with the gap index at which to insert pages picked from a file.
- * @param {(width: number) => void} [cfg.onResize] - Called with the panel's current visible width in px (0 when hidden), so the host can inset the document to the remaining area.
+ * @param {(width: number, phase?: 'start'|'move'|'end') => void} [cfg.onResize] - Called with the panel's current visible width in px (0 when hidden).
+ *   `phase` is set on handle-drag reports and absent on non-drag reports (view shown or hidden).
  * @returns {{
  *   panelElem: HTMLDivElement, toggleElem: HTMLSpanElement,
  *   rebuild: (activeN?: number) => void, cancelCut: () => void, setActive: (n: number) => void,
@@ -804,7 +805,7 @@ export function createThumbnailPanel(scribe, {
   let resizeStartPanelW = 0;
   let resizeContainerW = 0;
   let resizeLivePanelW = 0;
-  // The page centered when the drag began, plus its fractional position, so every reflow re-centers the same page.
+  // The page pinned at drag start, plus its fractional position, so every reflow re-centers the same page.
   let resizeAnchorPage = -1;
   let resizeAnchorFrac = 0;
   // The panel's extra width (scrollbar gutter + padding + border) measured at drag start.
@@ -822,14 +823,15 @@ export function createThumbnailPanel(scribe, {
     // The width just changed. Refresh the cache once here so reflow/gridColsFor/windowRange read it without each forcing a layout.
     measureViewport();
     reflow();
-    notifyResize();
+    if (onResize) onResize(resizeLivePanelW, 'move');
   }
 
   function onResizeEnd() {
     window.removeEventListener('pointermove', onResizeMove);
     window.removeEventListener('pointerup', onResizeEnd);
+    window.removeEventListener('pointercancel', onResizeEnd);
     updateWindow(true);
-    notifyResize();
+    if (onResize) onResize(resizeLivePanelW, 'end');
   }
 
   resizeHandle.addEventListener('pointerdown', (event) => {
@@ -838,8 +840,6 @@ export function createThumbnailPanel(scribe, {
     resizeStartPanelW = panelElem.getBoundingClientRect().width;
     resizeLivePanelW = resizeStartPanelW;
     resizeContainerW = (panelElem.parentElement && panelElem.parentElement.clientWidth) || resizeStartPanelW;
-    // Pin the active page (the one shown in the viewer) for the whole drag so it stays in the pane across column changes,
-    // or fall back to the page at the viewport center when nothing is active.
     measureViewport();
     resizeExtraW = resizeStartPanelW - viewportW;
     const centerY = scrollElem.scrollTop + viewportH / 2;
@@ -848,8 +848,11 @@ export function createThumbnailPanel(scribe, {
       : (pageCount > 0 ? rowAt(Math.max(0, centerY - PAD)) : -1);
     resizeAnchorFrac = resizeAnchorPage >= 0 && heights[resizeAnchorPage]
       ? Math.max(0, Math.min(1, (centerY - (PAD + offsets[resizeAnchorPage])) / heights[resizeAnchorPage])) : 0;
+    if (onResize) onResize(resizeStartPanelW, 'start');
     window.addEventListener('pointermove', onResizeMove);
     window.addEventListener('pointerup', onResizeEnd);
+    // The host stays in its drag regime until an 'end' report, so a canceled drag must deliver one too.
+    window.addEventListener('pointercancel', onResizeEnd);
   });
 
   // Drag-to-select: a press in the panel's empty space rubber-bands a rectangle that selects every page it covers.

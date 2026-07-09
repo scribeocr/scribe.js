@@ -1050,6 +1050,34 @@ export class ScribeViewer {
   }
 
   /**
+   * Hide the built text layers until `endInteractionTextHide`, so a host interaction that moves or re-clips the content
+   * (a sidebar resize drag) does not repaint every built word per frame.
+   * No-ops when hiding is unsafe: visible-text modes, a focused edit input, or an active selection.
+   */
+  startInteractionTextHide() {
+    const editing = document.activeElement && /** @type {HTMLElement} */ (document.activeElement).isContentEditable
+      && this.elem?.contains(document.activeElement);
+    // Hiding visible text blanks the page, display:none blurs a focused edit (committing it), and a selection's layers must stay live.
+    if (this.state.displayMode !== 'invis' || editing || this._selectionPages().size) return;
+    // Take over a scroll-hide already in flight: its pending settle would otherwise restore the layers mid-interaction.
+    if (this._scrollTextHideTimer) {
+      clearTimeout(this._scrollTextHideTimer);
+      this._scrollTextHideTimer = null;
+    }
+    this._scrollTextHideEngaged = true;
+    for (const n of this.textGroupsRenderIndices) {
+      for (const grp of Object.values(this._textGroups[n] || {})) {
+        if (grp.style.display !== 'none') grp.style.display = 'none';
+      }
+    }
+  }
+
+  /** Restore the text layers hidden by `startInteractionTextHide`; sharing the scroll-hide restore keeps either hide source from leaving a group stuck hidden. */
+  endInteractionTextHide() {
+    this._endScrollTextHide();
+  }
+
+  /**
    * Scroll the viewport by a pixel delta. Positive `deltaY` follows a downward drag (revealing content above).
    * The old stage model moved `stage.y` (negative-of-scroll) by `+delta`, so native scroll uses the inverse sign.
    * Native `overflow:auto` clamps the range, so the old manual page-bound clamps are gone.

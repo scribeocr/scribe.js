@@ -643,6 +643,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
   function onResizeEnd(e) {
     window.removeEventListener('pointermove', onResizeMove);
     window.removeEventListener('pointerup', onResizeEnd);
+    window.removeEventListener('pointercancel', onResizeEnd);
     if (onResize) onResize(resizeStartW + (e.clientX - resizeStartX), 'end');
   }
   resizeHandle.addEventListener('pointerdown', (e) => {
@@ -652,6 +653,8 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
     if (onResize) onResize(resizeStartW, 'start');
     window.addEventListener('pointermove', onResizeMove);
     window.addEventListener('pointerup', onResizeEnd);
+    // The host stays in its drag regime until an 'end' report, so a canceled drag must deliver one too.
+    window.addEventListener('pointercancel', onResizeEnd);
   });
 
   /** Reflect `selected` on the rendered rows. */

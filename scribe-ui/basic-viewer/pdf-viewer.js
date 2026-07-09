@@ -236,7 +236,12 @@ class ScribePDFViewer {
         onExtract: (pageIndices) => this.newDocumentFromPages(pageIndices),
         onInsertFromFile: (index) => this._pickFilesToInsert(index),
         // The panel's width (or hiding it) changed, so re-inset the document into the area beside it.
-        onResize: () => { if (this.scribe.scrollContainer) this._relayout(); },
+        onResize: (_width, phase) => {
+          if (!this.scribe.scrollContainer) return;
+          if (phase === 'start') { this._beginSidebarResize(); return; }
+          if (phase === 'end') { this._endSidebarResize(); return; }
+          this._relayout();
+        },
       })
       : null;
     /**
@@ -246,8 +251,10 @@ class ScribePDFViewer {
     this._activeSidebar = showThumbnails ? 'thumbnails' : null;
     /** @type {?{raf: number}} In-flight sidebar open/close/switch transition (its live rAF handle), or null. */
     this._sidebarAnim = null;
-    /** @type {?{min: number, max: number}} Rail width bounds cached for the duration of a bookmarks-view resize drag. */
+    /** @type {?{min: number, max: number}} Rail width bounds cached for the duration of a bookmarks/comments-view resize drag. */
     this._sidebarResizeBounds = null;
+    /** True while a sidebar resize drag (any view) is in flight, so `_relayout` skips the scrollbar refresh per move. */
+    this._sidebarDragActive = false;
 
     /** Height the message banner currently claims from the document area (0 when hidden). */
     this._messageBannerHeight = 0;
@@ -1227,9 +1234,8 @@ class ScribePDFViewer {
     const inset = Math.min(panelW, Math.max(0, this._width - 80));
     this.scribe.scrollContainer.style.marginLeft = `${inset}px`;
     this.scribe.resize(this._width - inset, this._height - top);
-    // Skip the overlay-scrollbar refresh during an active sidebar-resize drag: reading the scroll metrics forces a synchronous reflow every pointermove (resize just invalidated the metrics cache).
-    // The drag's `end` phase runs one final `_relayout` that refreshes them, and a horizontal drag changes neither track's thumb until release anyway.
-    if (this._updateScrollbars && !this._sidebarResizeBounds) this._updateScrollbars();
+    // The scrollbar refresh rereads the scroll metrics the resize above just invalidated, forcing a synchronous reflow.
+    if (this._updateScrollbars && !this._sidebarDragActive) this._updateScrollbars();
   }
 
   /**
@@ -1262,21 +1268,16 @@ class ScribePDFViewer {
   }
 
   /**
-   * Apply a sidebar resize dragged from the bookmarks view, keeping the two views one shared width. The phases keep
-   * each frame cheap — the jank otherwise comes from doing the rail's `computeGeometry` (O(pages)) and forced layout
-   * reads on every pointermove:
-   * - `start`: cache the rail's width bounds once (one layout read), so each move clamps with pure arithmetic.
-   * - `move`: clamp with the cached bounds, resize ONLY the visible bookmarks panel, and re-inset the document. The
-   *   hidden rail is left untouched — no per-frame re-column.
-   * - `end`: commit through the rail's `setWidth`, which clamps, applies, and re-columns the rail ONCE so it's
-   *   correct when next shown; mirror the applied width onto the bookmarks panel.
+   * Apply a sidebar resize dragged from the bookmarks or comments view, keeping every view one shared width.
    * @param {number} desiredWidth
    * @param {'start'|'move'|'end'} phase
    */
   _resizeSidebar(desiredWidth, phase) {
     if (!this._thumbnailPanel || !this._bookmarksPanel) return;
     if (phase === 'start') {
+      // One layout read here lets every move clamp with pure arithmetic.
       this._sidebarResizeBounds = this._thumbnailPanel.getResizeBounds();
+      this._beginSidebarResize();
       return;
     }
     if (phase === 'end') {
@@ -1284,7 +1285,7 @@ class ScribePDFViewer {
       this._bookmarksPanel.panelElem.style.width = `${applied}px`;
       if (this._commentsPanel) this._commentsPanel.panelElem.style.width = `${applied}px`;
       this._sidebarResizeBounds = null;
-      this._relayout();
+      this._endSidebarResize();
       return;
     }
     const b = this._sidebarResizeBounds;
@@ -1292,6 +1293,20 @@ class ScribePDFViewer {
     this._bookmarksPanel.panelElem.style.width = `${applied}px`;
     if (this._commentsPanel) this._commentsPanel.panelElem.style.width = `${applied}px`;
     this._relayout();
+  }
+
+  /** Enter a sidebar resize drag; paired with `_endSidebarResize` at release. */
+  _beginSidebarResize() {
+    this._sidebarDragActive = true;
+    this.scribe.startInteractionTextHide();
+  }
+
+  /** End a sidebar resize drag: settle the document area, then restore the text layers. */
+  _endSidebarResize() {
+    this._sidebarDragActive = false;
+    // Settle while the layers are still hidden so the scrollbar refresh's forced reflow stays cheap.
+    this._relayout();
+    this.scribe.endInteractionTextHide();
   }
 
   /**
