@@ -1,11 +1,13 @@
 // Document interaction tools shared by the viewer and editor apps: text highlighting
-// (toggle, color picker, comment icons), the upload drop zone, and the file-to-ScribeDoc loader.
+// (toggle, color picker, comment marks), the upload drop zone, and the file-to-ScribeDoc loader.
 import scribeLib from '../../../scribe.js';
 import { makeIconButton } from './toolbar.js';
 import {
-  applyHighlight, createInkEdges, recolorHighlightGroup, removeHighlightGroup,
+  applyHighlight, createInkEdges, recolorHighlightGroup, removeHighlightGroup, setHighlightReplies,
 } from '../viewerHighlights.js';
-import { createNote, focusNoteEditor } from '../viewerNotes.js';
+import {
+  createNote, focusNoteEditor, removeNote, setNoteComment,
+} from '../viewerNotes.js';
 import { filesFromDropEvent } from '../dragAndDrop.js';
 
 // Filled highlighter-marker glyph (Material).
@@ -20,19 +22,15 @@ const HIGHLIGHT_CURSOR = 'url("data:image/svg+xml,%3Csvg xmlns=\'http://www.w3.o
 // eslint-disable-next-line max-len
 const HIGHLIGHT_CARET_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" style="display:block;width:11px;height:11px;pointer-events:none;" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
 
-// Mini-toolbar action glyphs, sized by the `.scribe-hl-tb-btn svg` rule.
+// Comment-card verb glyphs, sized by the `.scribe-cmt-vb svg` rule.
 // Drawn in the product's icon language (see `lineIcon` in toolbar.js): 24-grid, 1.6px stroke, round caps and joins.
 // eslint-disable-next-line max-len
-const TB_COMMENT_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="12.5" rx="2.5"/><path d="M8.5 16.5v3.2l4-3.2"/></svg>';
-// eslint-disable-next-line max-len
 const TB_DELETE_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6.5h16M9.5 6.5V5a1.5 1.5 0 0 1 1.5-1.5h2A1.5 1.5 0 0 1 14.5 5v1.5M6 6.5l.9 11.2a2 2 0 0 0 2 1.8h6.2a2 2 0 0 0 2-1.8L18 6.5"/></svg>';
-// eslint-disable-next-line max-len
-const TB_GRIP_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 12 14" width="12" height="14" fill="currentColor" aria-hidden="true"><circle cx="2" cy="2" r="1.2"/><circle cx="6" cy="2" r="1.2"/><circle cx="10" cy="2" r="1.2"/><circle cx="2" cy="7" r="1.2"/><circle cx="6" cy="7" r="1.2"/><circle cx="10" cy="7" r="1.2"/><circle cx="2" cy="12" r="1.2"/><circle cx="6" cy="12" r="1.2"/><circle cx="10" cy="12" r="1.2"/></svg>';
 // eslint-disable-next-line max-len
 const TB_PANEL_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3" y="4" width="18" height="15.5" rx="2.5"/><path d="M9.5 4v15.5"/></svg>';
 
 /**
- * Build the highlight tool: toggle button, optional color picker, overlay-word highlighting, highlighter cursor, and comment icons.
+ * Build the highlight tool: toggle button, optional color picker, overlay-word highlighting, highlighter cursor, and comment marks.
  * The toolbar DOM is built immediately. The selection/comment behaviors are wired by `installBehaviors()` after `scribe.init`.
  * @param {import('../../viewer.js').ScribeViewer} scribe
  * @param {HTMLElement} rootElem - The app's root element (for selection scope and cursor CSS).
@@ -53,12 +51,10 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
   scribe._highlightColor = highlightColor;
   /** @type {?HTMLStyleElement} */
   let cursorStyleElem = null;
-  /** @type {?HTMLDivElement} */
-  let commentTooltip = null;
   /**
    * Opens the highlight card (mini toolbar) with its comment editor expanded, anchored to `words[0]`.
    * Assigned by `installBehaviors`.
-   * Called from the comment icon and (via `scribe._openCommentEditor`) the context menu.
+   * Called from the comment mark and (via `scribe._openCommentEditor`) the context menu.
    * @type {?(words: Array<import('../viewerWordObjects.js').UiOcrWord>) => void}
    */
   let openCommentEditor = null;
@@ -164,62 +160,13 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     toolbarElem = split;
   }
 
-  /** Place one comment icon for a highlight group, anchored at its first word's overlay element. */
-  const addCommentIcon = (kw, viewerElem) => {
-    const wordElem = viewerElem.querySelector(`.scribe-word[id="${kw.word.id}"]`);
-    if (!wordElem) return;
-    const wordLeft = parseFloat(/** @type {HTMLElement} */ (wordElem).style.left) || 0;
-    const wordTop = parseFloat(/** @type {HTMLElement} */ (wordElem).style.top) || 0;
-
-    const icon = document.createElement('span');
-    icon.className = 'highlight-comment-icon';
-    icon.textContent = '💬';
-    icon.style.left = `${wordLeft - 16}px`;
-    icon.style.top = `${wordTop - 14}px`;
-
-    icon.addEventListener('mouseover', () => {
-      if (!commentTooltip) return;
-      commentTooltip.textContent = kw.highlightComment;
-      commentTooltip.style.visibility = 'hidden';
-      commentTooltip.style.display = '';
-      const iconLeft = parseFloat(icon.style.left) || 0;
-      const iconTop = parseFloat(icon.style.top) || 0;
-      commentTooltip.style.left = `${iconLeft}px`;
-      commentTooltip.style.top = `${iconTop - commentTooltip.offsetHeight - 4}px`;
-      commentTooltip.style.visibility = '';
-    });
-    icon.addEventListener('mouseout', () => {
-      if (commentTooltip) commentTooltip.style.display = 'none';
-    });
-    icon.addEventListener('click', (e) => {
-      e.stopPropagation();
-      if (openCommentEditor) openCommentEditor([kw]);
-    });
-
-    viewerElem.appendChild(icon);
-  };
-
-  /** Rebuild the comment icons: one per highlight group that carries a comment. */
+  /** Refresh the on-page comment marks after a comment edit. */
   function updateCommentIcons() {
-    const viewerElem = scribe.elem;
-    if (!viewerElem) return;
-    viewerElem.querySelectorAll('.highlight-comment-icon').forEach((el) => el.remove());
-
-    const allWords = scribe.getUiWords();
-    if (!allWords || allWords.length === 0) return;
-
-    const groupFirstWord = new Map();
-    for (const kw of allWords) {
-      if (!kw.highlightGroupId || !kw.highlightComment) continue;
-      const existing = groupFirstWord.get(kw.highlightGroupId);
-      if (!existing
-        || kw.word.bbox.top < existing.word.bbox.top
-        || (kw.word.bbox.top === existing.word.bbox.top && kw.word.bbox.left < existing.word.bbox.left)) {
-        groupFirstWord.set(kw.highlightGroupId, kw);
-      }
-    }
-
-    for (const [, kw] of groupFirstWord) addCommentIcon(kw, viewerElem);
+    if (!scribe.elem) return;
+    const pages = new Set();
+    for (const kw of scribe.getUiWords()) pages.add(kw.word.line.page.n);
+    // Marks live in the highlight fill layer, so refreshing one means rebuilding that whole layer.
+    for (const n of pages) scribe.renderHighlights(n);
   }
 
   /**
@@ -248,318 +195,73 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       document.addEventListener('keydown', paletteKeydown);
     }
 
-    commentTooltip = document.createElement('div');
-    commentTooltip.className = 'highlight-comment-tooltip';
-    commentTooltip.style.display = 'none';
-    scribe.elem.appendChild(commentTooltip);
-
-    // Mini highlight toolbar: clicking a highlight floats a small card above it.
-    // Mounted on the unzoomed outer element and positioned from the clicked word's screen rect, so it lands correctly at any zoom.
+    // ---- Comment card: the one floating surface for a highlight or a note ----
+    // Behaviors are delegated from the viewer root because marks are rebuilt with every fill-layer or notes-layer render.
     const editorHost = scribe.outerElem || scribe.elem;
-    const hlToolbar = document.createElement('div');
-    hlToolbar.className = 'scribe-hl-toolbar';
-    hlToolbar.style.display = 'none';
-    /** A press began inside the card: however far the pointer travels before release (field resize drag, text selection), the resulting click must not read as an outside click. */
-    let hlToolbarPressInside = false;
-    hlToolbar.addEventListener('mousedown', (e) => {
-      e.stopPropagation();
-      hlToolbarPressInside = true;
-      // The gesture's click (if any) fires before this timeout clears the flag.
-      document.addEventListener('mouseup', () => setTimeout(() => { hlToolbarPressInside = false; }, 0), { once: true });
-    });
-    const hlToolbarRow = document.createElement('div');
-    hlToolbarRow.className = 'scribe-hl-tb-row';
-    hlToolbar.appendChild(hlToolbarRow);
-    /** @type {?import('../viewerWordObjects.js').UiOcrWord} The clicked word whose highlight the open toolbar targets. */
-    let hlToolbarWord = null;
-    /** The user dragged the card during this open: leave it where they put it. */
-    let hlToolbarMoved = false;
-    /** A drag just ended: the gesture's trailing click must not be read as an outside click. */
-    let hlToolbarJustDragged = false;
-    /** @type {?() => void} Ends an in-flight grip drag (teardown safety). */
-    let hlToolbarDragEnd = null;
+    const cmtCard = document.createElement('div');
+    cmtCard.className = 'scribe-cmt-card';
+    cmtCard.style.display = 'none';
+    const cmtQuoteRow = document.createElement('div');
+    cmtQuoteRow.className = 'scribe-cmt-quote-row';
+    const cmtBar = document.createElement('span');
+    cmtBar.className = 'scribe-cm-bar';
+    const cmtQuote = document.createElement('span');
+    cmtQuote.className = 'scribe-cmt-quote';
+    cmtQuoteRow.append(cmtBar, cmtQuote);
+    const cmtThread = document.createElement('div');
+    cmtThread.className = 'scribe-cmt-thread';
+    // Count line standing in for the messages a preview collapses (all but the root and the latest).
+    const cmtMore = document.createElement('div');
+    cmtMore.className = 'scribe-cmt-more';
+    // The composer is the card's one writing surface: the root comment when none exists yet,
+    // otherwise a reply appended to the thread.
+    const cmtReply = document.createElement('div');
+    cmtReply.className = 'scribe-cmt-reply';
+    const cmtReplyAva = document.createElement('span');
+    cmtReplyAva.className = 'scribe-cm-ava';
+    const cmtText = document.createElement('textarea');
+    cmtText.className = 'scribe-cmt-text';
+    cmtText.rows = 1;
+    cmtText.setAttribute('aria-label', 'Comment text');
+    cmtReply.append(cmtReplyAva, cmtText);
 
-    // The card is repositionable so it can be moved off anything it covers.
-    // Two drag surfaces share this: the grip, and the blank run right of the controls (present when the comment field widens the card).
-    /** @param {MouseEvent} e */
-    const startCardDrag = (e) => {
-      e.preventDefault();
-      const h = editorHost.getBoundingClientRect();
-      const r = hlToolbar.getBoundingClientRect();
-      const dx = e.clientX - r.left;
-      const dy = e.clientY - r.top;
-      let dragMoved = false;
-      hlToolbar.classList.add('dragging');
-      /** @param {MouseEvent} ev */
-      const move = (ev) => {
-        dragMoved = true;
-        hlToolbar.style.left = `${Math.max(4, Math.min(ev.clientX - h.left - dx, h.width - r.width - 4))}px`;
-        hlToolbar.style.top = `${Math.max(4, Math.min(ev.clientY - h.top - dy, h.height - r.height - 4))}px`;
-      };
-      const up = () => {
-        hlToolbar.classList.remove('dragging');
-        document.removeEventListener('mousemove', move);
-        document.removeEventListener('mouseup', up);
-        hlToolbarDragEnd = null;
-        if (!dragMoved) return;
-        hlToolbarMoved = true;
-        hlToolbarJustDragged = true;
-        // The gesture's click fires right after mouseup.
-        // Failing that, clear on the next tick.
-        setTimeout(() => { hlToolbarJustDragged = false; }, 0);
-      };
-      document.addEventListener('mousemove', move);
-      document.addEventListener('mouseup', up);
-      hlToolbarDragEnd = up;
-    };
-
-    const tbGrip = document.createElement('span');
-    tbGrip.className = 'scribe-hl-tb-grip';
-    tbGrip.title = 'Move';
-    tbGrip.setAttribute('aria-label', 'Move card');
-    tbGrip.innerHTML = TB_GRIP_SVG;
-    hlToolbarRow.appendChild(tbGrip);
-    tbGrip.addEventListener('mousedown', startCardDrag);
-
-    /**
-     * The fill bands of the toolbar's target highlight: its group's bands, or the clicked word's own band when it belongs to no group.
-     * @returns {HTMLDivElement[]}
-     */
-    const hlToolbarBands = () => {
-      const kw = hlToolbarWord;
-      if (!kw) return [];
-      if (!kw.highlightGroupId) return kw.highlightRectElem ? [kw.highlightRectElem] : [];
-      const bands = [];
-      for (const map of scribe._highlightRectsByGroup) {
-        const arr = map && map.get(kw.highlightGroupId);
-        if (arr) bands.push(...arr);
-      }
-      return bands;
-    };
-    /** @type {HTMLDivElement[]} Ink-edge overlays marking the open card's target highlight (same feedback as the context menu's). */
-    let hlToolbarEdges = [];
-    /**
-     * Toggle the selected feedback on the toolbar's target highlight bands: the sustained lift (`scribe-hl-sel`) plus the ink edge.
-     * @param {boolean} on
-     */
-    const setHlToolbarSel = (on) => {
-      const bands = hlToolbarBands();
-      for (const band of bands) band.classList.toggle('scribe-hl-sel', on);
-      for (const el of hlToolbarEdges) el.remove();
-      hlToolbarEdges = on ? createInkEdges(bands) : [];
-    };
-
-    /**
-     * Place the open comment card beside its highlight's bands, or below them.
-     * Take whichever candidate sits nearest the clicked word, the least shift from where the user is looking.
-     * When exactly one candidate would cover the highlight, take the other instead.
-     * @param {Element} wordEl
-     */
-    const placeCardBesideHighlight = (wordEl) => {
-      const rects = hlToolbarBands().map((b) => b.getBoundingClientRect());
-      if (rects.length === 0) rects.push(wordEl.getBoundingClientRect());
-      const h = editorHost.getBoundingClientRect();
-      // The highlight's union, in host coordinates.
-      const union = {
-        left: Math.min(...rects.map((r) => r.left)) - h.left,
-        right: Math.max(...rects.map((r) => r.right)) - h.left,
-        top: Math.min(...rects.map((r) => r.top)) - h.top,
-        bottom: Math.max(...rects.map((r) => r.bottom)) - h.top,
-      };
-      const w = hlToolbar.offsetWidth;
-      const cardH = hlToolbar.offsetHeight;
-      const clampX = (x) => Math.max(4, Math.min(x, h.width - w - 4));
-      const clampY = (y) => Math.max(4, Math.min(y, h.height - cardH - 4));
-      // Candidate A (beside): right of the union (left of it when there is no room), top-aligned.
-      let aLeft = union.right + 10;
-      if (aLeft + w > h.width - 4) aLeft = union.left - w - 10;
-      aLeft = clampX(aLeft);
-      const aTop = clampY(union.top);
-      // Candidate B (below): under the union, left-aligned with the clicked word.
-      const wr = wordEl.getBoundingClientRect();
-      const bLeft = clampX(wr.left - h.left);
-      const bTop = clampY(union.bottom + 8);
-      const covers = (l, t) => l < union.right && l + w > union.left && t < union.bottom && t + cardH > union.top;
-      // Shift = the gap between the clicked word's rect and the candidate card rect (0 when they touch).
-      const wl = wr.left - h.left;
-      const wt = wr.top - h.top;
-      const dist = (l, t) => Math.hypot(
-        Math.max(0, l - (wl + wr.width), wl - (l + w)),
-        Math.max(0, t - (wt + wr.height), wt - (t + cardH)),
-      );
-      let below = dist(bLeft, bTop) < dist(aLeft, aTop);
-      if (covers(bLeft, bTop) !== covers(aLeft, aTop)) below = covers(aLeft, aTop);
-      hlToolbar.style.left = `${below ? bLeft : aLeft}px`;
-      hlToolbar.style.top = `${below ? bTop : aTop}px`;
-    };
-
-    // The comment half of the card: a grid-rows wrapper (0fr <-> 1fr) so it slides open and closed without ever leaving the card's surface.
-    const tbCommentWrap = document.createElement('div');
-    tbCommentWrap.className = 'scribe-hl-tb-comment';
-    const tbCommentInner = document.createElement('div');
-    tbCommentWrap.appendChild(tbCommentInner);
-    const editorText = document.createElement('textarea');
-    editorText.className = 'scribe-comment-editor-text';
-    editorText.rows = 2;
-    editorText.placeholder = 'Add a comment…';
-    const editorMeta = document.createElement('div');
-    editorMeta.className = 'scribe-comment-editor-meta';
-    const editorAva = document.createElement('span');
-    editorAva.className = 'scribe-comment-editor-ava';
-    const editorWho = document.createElement('span');
-    editorWho.className = 'scribe-comment-editor-who';
-    const editorWhen = document.createElement('span');
-    editorWhen.className = 'scribe-comment-editor-when';
-    editorMeta.append(editorAva, editorWho, editorWhen);
-    // No Save button: dismissal doubles as commit (see collapseComment), so the footer is just the quiet remove link.
-    const editorBtns = document.createElement('div');
-    editorBtns.className = 'scribe-comment-editor-btns';
-    const editorDelete = document.createElement('button');
-    editorDelete.type = 'button';
-    editorDelete.className = 'scribe-comment-editor-delete';
-    editorDelete.textContent = 'Remove comment';
-    editorBtns.append(editorDelete);
-    tbCommentInner.append(editorMeta, editorText, editorBtns);
-    hlToolbar.appendChild(tbCommentWrap);
-
-    // The card is the writing surface, so the field grows to fit its text instead of showing its own scrollbar.
-    // A manual corner-drag freezes that height and stops the auto-grow.
-    let commentHeightManual = false;
-    const autoGrowComment = () => {
-      if (commentHeightManual) return;
-      editorText.style.height = 'auto';
-      editorText.style.height = `${Math.min(editorText.scrollHeight, 220)}px`;
-    };
-    editorText.addEventListener('input', autoGrowComment);
-    editorText.addEventListener('mousedown', () => {
-      const h0 = editorText.offsetHeight;
-      document.addEventListener('mouseup', () => {
-        if (editorText.offsetHeight !== h0) commentHeightManual = true;
-      }, { once: true });
-    });
-
-    const commentOpen = () => hlToolbar.classList.contains('comment-open');
-    /**
-     * Prefill the comment half from the toolbar's target highlight and slide it open.
-     * @param {boolean} focus Put the cursor in the textarea (explicit comment intent, not a mere reveal).
-     */
-    const expandComment = (focus) => {
-      const kw = hlToolbarWord;
-      if (!kw) return;
-      /** @type {AnnotationHighlight | undefined} */
-      let annot;
-      if (kw.highlightGroupId) {
-        for (const a of scribe.doc.annotations.pages[kw.word.line.page.n] || []) {
-          if ((!a.type || a.type === 'highlight') && a.groupId === kw.highlightGroupId) {
-            annot = a;
-            break;
-          }
-        }
-      }
-      editorText.value = kw.highlightComment || '';
-      const author = (annot && annot.author) || '';
-      let when = '';
-      if (annot && annot.createdAt) {
-        const d = new Date(annot.createdAt);
-        /** @type {Intl.DateTimeFormatOptions} */
-        const dateOpts = { month: 'short', day: 'numeric' };
-        if (d.getFullYear() !== new Date().getFullYear()) dateOpts.year = 'numeric';
-        when = d.toLocaleDateString(undefined, dateOpts);
-      }
-      editorAva.textContent = author.split(/\s+/, 2).map((s) => s[0]).join('').toUpperCase();
-      editorAva.style.display = author ? '' : 'none';
-      editorWho.textContent = author;
-      editorWhen.textContent = when && author ? `· ${when}` : when;
-      editorMeta.style.display = author || when ? '' : 'none';
-      if (commentTooltip) commentTooltip.style.display = 'none';
-      hlToolbar.classList.add('comment-open');
-      autoGrowComment();
-      if (focus) {
-        editorText.focus();
-        editorText.select();
-      }
-    };
-    /**
-     * Fold the comment half, committing the field to the highlight on the way out.
-     * @param {boolean} [commit] False discards the edit instead (the Esc path).
-     */
-    const collapseComment = (commit = true) => {
-      const kw = hlToolbarWord;
-      if (commit && kw && commentOpen() && editorText.value.trim() !== (kw.highlightComment || '')) {
-        scribe.modifyHighlightComment([kw], editorText.value.trim());
-        updateCommentIcons();
-        if (scribe._rebuildCommentsPanel) scribe._rebuildCommentsPanel();
-      }
-      hlToolbar.classList.remove('comment-open');
-      editorText.blur();
-    };
-
-    const closeHlToolbar = () => {
-      if (!hlToolbarWord) return;
-      collapseComment(); // commits any pending edit while the target highlight is still known
-      setHlToolbarSel(false);
-      hlToolbarWord = null;
-      collapseCoins();
-      hlToolbar.style.display = 'none';
-    };
-
-    editorDelete.addEventListener('click', () => {
-      editorText.value = '';
-      collapseComment();
-    });
-    editorText.addEventListener('keydown', (e) => {
-      if (e.key === 'Escape') {
-        e.stopPropagation();
-        collapseComment(false);
-      } else if (e.key === 'Enter' && (e.ctrlKey || e.metaKey)) {
-        e.preventDefault();
-        collapseComment();
-      }
-    });
-
-    // The color control is a coin stack showing the current color on top.
-    // At rest it is a single control (one tab stop), not four targets; the coins are individually clickable only when fanned.
-    // Clicking fans them out over the card with pure transforms, so the card never resizes and the verbs never move.
-    const tbCoins = document.createElement('span');
-    tbCoins.className = 'scribe-hl-coins';
-    tbCoins.title = 'Highlight color';
-    tbCoins.setAttribute('role', 'button');
-    tbCoins.setAttribute('aria-label', 'Highlight color');
-    tbCoins.setAttribute('aria-expanded', 'false');
-    tbCoins.tabIndex = 0;
-    hlToolbarRow.appendChild(tbCoins);
+    // Verb footer, shown only on the pinned card.
+    const cmtFoot = document.createElement('div');
+    cmtFoot.className = 'scribe-cmt-foot';
+    // The coin stack is one control at rest, so it holds the only tab stop until fanning gives the coins their own.
+    const cmtCoins = document.createElement('span');
+    cmtCoins.className = 'scribe-hl-coins';
+    cmtCoins.title = 'Highlight color';
+    cmtCoins.setAttribute('role', 'button');
+    cmtCoins.setAttribute('aria-label', 'Highlight color');
+    cmtCoins.setAttribute('aria-expanded', 'false');
+    cmtCoins.tabIndex = 0;
     /** @type {Array<HTMLButtonElement>} */
-    const tbSwatches = [];
-    const coinsOpen = () => tbCoins.classList.contains('open');
+    const cmtSwatches = [];
+    const coinsOpen = () => cmtCoins.classList.contains('open');
     const expandCoins = () => {
-      tbCoins.classList.add('open');
-      tbCoins.setAttribute('aria-expanded', 'true');
-      // The coins are focusable options only while fanned.
-      // At rest the stack is the single tab stop.
-      tbSwatches.forEach((b) => { b.tabIndex = 0; });
-      // The 16px fan floats over the comment verb next to the stack.
-      // Disable it so a click aimed at a coin cannot land on it by mistake.
-      tbComment.disabled = true;
+      cmtCoins.classList.add('open');
+      cmtCoins.setAttribute('aria-expanded', 'true');
+      cmtSwatches.forEach((b) => { b.tabIndex = 0; });
     };
     const collapseCoins = () => {
-      tbCoins.classList.remove('open');
-      tbCoins.setAttribute('aria-expanded', 'false');
-      tbSwatches.forEach((b) => { b.tabIndex = -1; });
-      tbComment.disabled = false;
+      cmtCoins.classList.remove('open');
+      cmtCoins.setAttribute('aria-expanded', 'false');
+      cmtSwatches.forEach((b) => { b.tabIndex = -1; });
     };
     /**
      * Put `sw` on top of the stack (first coin, descending z behind it) and mark it active.
      * @param {HTMLButtonElement} sw
      */
     const setTopCoin = (sw) => {
-      tbCoins.prepend(sw);
+      cmtCoins.prepend(sw);
       let i = 0;
-      for (const c of tbCoins.children) {
+      for (const c of cmtCoins.children) {
         /** @type {HTMLElement} */ (c).style.setProperty('--coin-i', String(i));
-        /** @type {HTMLElement} */ (c).style.zIndex = String(tbSwatches.length - i);
+        /** @type {HTMLElement} */ (c).style.zIndex = String(cmtSwatches.length - i);
         i += 1;
       }
-      tbSwatches.forEach((b) => b.classList.toggle('active', b === sw));
+      cmtSwatches.forEach((b) => b.classList.toggle('active', b === sw));
     };
     for (const color of colors) {
       const sw = document.createElement('button');
@@ -570,250 +272,610 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       sw.title = 'Recolor highlight';
       sw.setAttribute('aria-label', 'Recolor highlight');
       sw.tabIndex = -1;
-      tbSwatches.push(sw);
-      tbCoins.appendChild(sw);
+      cmtSwatches.push(sw);
+      cmtCoins.appendChild(sw);
     }
-    setTopCoin(tbSwatches[0]);
-    // One delegated handler: a click on the resting stack only fans it, and a click on a fanned coin recolors and folds.
-    tbCoins.addEventListener('click', (e) => {
+    setTopCoin(cmtSwatches[0]);
+    const cmtSpring = document.createElement('span');
+    cmtSpring.className = 'scribe-cmt-foot-spring';
+    /**
+     * @param {string} title
+     * @param {string} svg
+     * @returns {HTMLButtonElement}
+     */
+    const makeFootButton = (title, svg) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'scribe-cmt-vb';
+      btn.title = title;
+      btn.setAttribute('aria-label', title);
+      btn.innerHTML = svg;
+      return btn;
+    };
+    const cmtPanelBtn = makeFootButton('Show in comments panel', TB_PANEL_SVG);
+    const cmtDelete = makeFootButton('Delete highlight', TB_DELETE_SVG);
+    cmtDelete.classList.add('scribe-cmt-vb-del');
+    cmtFoot.append(cmtCoins, cmtSpring, cmtPanelBtn, cmtDelete);
+    cmtCard.append(cmtQuoteRow, cmtThread, cmtFoot);
+    editorHost.appendChild(cmtCard);
+
+    /** @type {?({kind: 'highlight', kw: import('../viewerWordObjects.js').UiOcrWord, groupId: ?string, n: number} | {kind: 'note', annot: Object, n: number})} */
+    let cmtTarget = null;
+    let cmtPinned = false;
+    /** @type {?ReturnType<typeof setTimeout>} */
+    let cmtHideTimer = null;
+    /** Ink edges marking the pinned highlight (element set owned by the card). */
+    /** @type {Array<HTMLElement>} */
+    let cmtEdges = [];
+    /** The message text element currently editable in place, and its value at edit start. */
+    /** @type {?HTMLElement} */
+    let cmtEditEl = null;
+    let cmtEditOrig = '';
+    /** @type {?() => void} */
+    let cmtDragEnd = null;
+
+    const cmtGrow = () => { cmtText.style.height = 'auto'; cmtText.style.height = `${cmtText.scrollHeight}px`; };
+
+    /** The model annotation behind a card target (a group annot for highlights, the note itself). */
+    const cmtAnnot = (target) => {
+      if (target.kind === 'note') return target.annot;
+      if (!target.groupId) return null;
+      return (scribe.doc.annotations.pages[target.n] || [])
+        .find((a) => (!a.type || a.type === 'highlight') && a.groupId === target.groupId) || null;
+    };
+
+    /** The on-page mark element for a card target (marks are rebuilt per render, so always re-query). */
+    const cmtMarkEl = (target) => {
+      if (target.kind === 'highlight') {
+        if (!target.groupId) return null;
+        return scribe.elem.querySelector(`.scribe-hl-cmark[data-group-id="${target.groupId}"]`);
+      }
+      const idx = (scribe.doc.annotations.pages[target.n] || []).filter((a) => a.type === 'text').indexOf(target.annot);
+      const group = scribe.getNotesGroup(target.n);
+      return group ? group.querySelector(`.scribe-note-icon[data-note-idx="${idx}"]`) : null;
+    };
+
+    /** The pinned highlight's fill bands (group bands, else the clicked word's own band). */
+    const cmtBands = () => {
+      if (!cmtTarget || cmtTarget.kind !== 'highlight') return [];
+      const { kw, groupId, n } = cmtTarget;
+      if (groupId) {
+        const map = scribe._highlightRectsByGroup[n];
+        const arr = map && map.get(groupId);
+        if (arr && arr.length > 0) return arr;
+      }
+      return kw.highlightRectElem ? [kw.highlightRectElem] : [];
+    };
+
+    /** Ink-edge the pinned highlight's bands (the selected-object telltale the old card had). */
+    const setCmtSel = (on) => {
+      for (const el of cmtEdges) el.remove();
+      cmtEdges = on ? createInkEdges(cmtBands()) : [];
+    };
+
+    const initialsOf = (name) => name.split(/\s+/, 2).map((p) => p[0]).join('').toUpperCase();
+    const dateShort = (iso) => {
+      const d = new Date(iso);
+      /** @type {Intl.DateTimeFormatOptions} */
+      const dateOpts = { month: 'short', day: 'numeric' };
+      if (d.getFullYear() !== new Date().getFullYear()) dateOpts.year = 'numeric';
+      return d.toLocaleDateString(undefined, dateOpts);
+    };
+
+    /**
+     * One thread message: identity line (avatar, name, date) over the text.
+     * @param {string} idx - 'root' or the reply index, for edit commits.
+     */
+    const makeMsg = (idx, text, author, createdAt) => {
+      const msg = document.createElement('div');
+      msg.className = 'scribe-cmt-msg';
+      msg.dataset.reply = idx;
+      if (author || createdAt) {
+        const meta = document.createElement('div');
+        meta.className = 'scribe-cmt-meta';
+        if (author) {
+          const ava = document.createElement('span');
+          ava.className = 'scribe-cm-ava';
+          ava.textContent = initialsOf(author);
+          const who = document.createElement('span');
+          who.className = 'scribe-cm-who';
+          who.textContent = author;
+          meta.append(ava, who);
+        }
+        if (createdAt) {
+          const when = document.createElement('span');
+          when.className = 'scribe-cm-when';
+          when.textContent = `· ${dateShort(createdAt)}`;
+          meta.appendChild(when);
+        }
+        msg.appendChild(meta);
+      }
+      const mtext = document.createElement('div');
+      mtext.className = 'scribe-cmt-mtext';
+      mtext.textContent = text;
+      msg.appendChild(mtext);
+      return msg;
+    };
+
+    /** Rebuild the thread: root + replies, the preview's collapse marking, and the composer. */
+    const renderThread = (annot, kind) => {
+      cmtEditEl = null;
+      cmtThread.replaceChildren();
+      const msgs = [];
+      if (annot && annot.comment) msgs.push(makeMsg('root', annot.comment, annot.author || '', annot.createdAt || ''));
+      const replies = (annot && annot.replies) || [];
+      replies.forEach((r, i) => msgs.push(makeMsg(String(i), r.text, r.author || '', r.createdAt || '')));
+      // Unpinned previews show the root and the latest reply; the rest collapse to a count line.
+      if (msgs.length > 2) {
+        for (let i = 1; i < msgs.length - 1; i++) msgs[i].classList.add('scribe-cmt-old');
+        const hidden = msgs.length - 2;
+        cmtMore.textContent = `${hidden} earlier ${hidden === 1 ? 'reply' : 'replies'}`;
+        msgs.splice(1, 0, cmtMore);
+      }
+      for (const m of msgs) cmtThread.appendChild(m);
+      const author = scribe.opt.commentAuthor || '';
+      cmtReplyAva.textContent = initialsOf(author);
+      cmtReplyAva.style.display = author ? '' : 'none';
+      const hasRoot = !!(annot && annot.comment);
+      if (hasRoot) cmtText.placeholder = 'Reply…';
+      else cmtText.placeholder = kind === 'note' ? 'Add a note…' : 'Add a comment…';
+      cmtText.value = '';
+      cmtThread.appendChild(cmtReply);
+      cmtGrow();
+    };
+
+    const cmtFill = (target) => {
+      const annot = cmtAnnot(target);
+      if (target.kind === 'highlight') {
+        cmtQuote.textContent = target.groupId
+          ? scribe.getUiWords().filter((w) => w.highlightGroupId === target.groupId).map((w) => w.word.text).join(' ')
+          : target.kw.word.text;
+        const color = (annot && annot.color) || target.kw.highlightColor || '';
+        cmtBar.style.background = color;
+        cmtCoins.style.display = '';
+        const currentSw = cmtSwatches.find((b) => b.dataset.color === color.toLowerCase());
+        // A colour outside the palette (an imported highlight) leaves the stack order alone, nothing active.
+        if (currentSw) setTopCoin(currentSw);
+        else cmtSwatches.forEach((b) => b.classList.remove('active'));
+        cmtDelete.title = 'Delete highlight';
+        cmtDelete.setAttribute('aria-label', 'Delete highlight');
+      } else {
+        cmtQuote.textContent = `note · page ${target.n + 1}`;
+        cmtBar.style.background = 'var(--scribe-note)';
+        cmtCoins.style.display = 'none';
+        cmtDelete.title = 'Delete note';
+        cmtDelete.setAttribute('aria-label', 'Delete note');
+      }
+      // The panel verb needs the host's reveal hook.
+      cmtPanelBtn.style.display = scribe._revealCommentInPanel ? '' : 'none';
+      renderThread(annot, target.kind);
+    };
+
+    /**
+     * Place the card in the first region that lands wholly inside the document area: below, above, right, then left of the anchor.
+     * When none of the four fits, the card is clamped into that area and covers the text as a last resort.
+     * @returns {boolean} false when the anchor has no on-screen rects, leaving the card unplaced.
+     */
+    const cmtPlace = (target) => {
+      // A highlight's comment mark is left out of the geometry: it appears only once a comment is posted,
+      // so including it would jump the card the moment the writer commits a line.
+      const noteMark = target.kind === 'highlight' ? null : cmtMarkEl(target);
+      const rects = noteMark ? [noteMark.getBoundingClientRect()] : cmtBands().map((b) => b.getBoundingClientRect());
+      if (rects.length === 0) return false;
+      // Every band is kept clear, not just the last line, so a multi-line group is never straddled.
+      const anchor = rects[rects.length - 1];
+      const clearLeft = Math.min(...rects.map((r) => r.left));
+      const clearRight = Math.max(...rects.map((r) => r.right));
+      const clearTop = Math.min(...rects.map((r) => r.top));
+      const clearBottom = Math.max(...rects.map((r) => r.bottom));
+
+      cmtCard.style.display = '';
+      cmtCard.style.visibility = 'hidden';
+      cmtGrow();
+      // Zero the offsets first so `base` is the card's real coordinate origin: the host is not the containing block when it is position:static.
+      cmtCard.style.left = '0px';
+      cmtCard.style.top = '0px';
+      const base = cmtCard.getBoundingClientRect();
+      const cw = cmtCard.offsetWidth;
+      const ch = cmtCard.offsetHeight;
+      // Bound by the scrolling document area, not the viewer root, which spans the sidebar too.
+      const view = (scribe.scrollContainer || editorHost).getBoundingClientRect();
+      const minX = view.left + 4;
+      const maxX = view.right - cw - 4;
+      const minY = view.top + 4;
+      const maxY = view.bottom - ch - 4;
+      const x = Math.max(minX, Math.min(anchor.left - 10, maxX));
+      const y = Math.max(minY, Math.min(clearTop, maxY));
+      // Each spot already clears the anchor on one axis by construction, so fitting inside `view` is the only test.
+      const spots = [
+        { left: x, top: clearBottom + 6 },
+        { left: x, top: clearTop - ch - 6 },
+        { left: clearRight + 6, top: y },
+        { left: clearLeft - cw - 6, top: y },
+      ];
+      const spot = spots.find((s) => s.left >= minX && s.left <= maxX && s.top >= minY && s.top <= maxY)
+        || { left: x, top: Math.max(minY, Math.min(clearBottom + 6, maxY)) };
+      cmtCard.style.left = `${spot.left - base.left}px`;
+      cmtCard.style.top = `${spot.top - base.top}px`;
+      cmtCard.style.visibility = '';
+      return true;
+    };
+
+    const cmtSameTarget = (a, b) => !!a && !!b && a.kind === b.kind
+      && (a.kind === 'highlight' ? a.groupId === b.groupId && (a.groupId || a.kw === b.kw) : a.annot === b.annot);
+
+    // ---- in-place message editing (authorship is a label, not a permission) ----
+    const endMsgEdit = () => {
+      if (!cmtEditEl) return;
+      cmtEditEl.contentEditable = 'false';
+      cmtEditEl.classList.remove('editing');
+      cmtEditEl = null;
+    };
+    const cancelMsgEdit = () => {
+      if (!cmtEditEl) return;
+      cmtEditEl.textContent = cmtEditOrig;
+      endMsgEdit();
+    };
+    /** Write the edited message back to the model. Returns whether anything changed. */
+    const commitMsgEdit = () => {
+      if (!cmtEditEl || !cmtTarget) return false;
+      const el = cmtEditEl;
+      const next = (el.textContent || '').trim();
+      endMsgEdit();
+      if (next === cmtEditOrig.trim()) return false;
+      const annot = cmtAnnot(cmtTarget);
+      if (!annot) return false;
+      const msg = el.closest('.scribe-cmt-msg');
+      const idx = msg instanceof HTMLElement ? msg.dataset.reply : null;
+      if (idx === 'root') {
+        // Clearing the root takes the replies with it, and dismissal commits an emptied field unprompted, so revert instead of reading it as a delete.
+        if (!next && annot.replies && annot.replies.length > 0) {
+          el.textContent = cmtEditOrig;
+          return false;
+        }
+        applyRootComment(cmtTarget, next);
+      } else if (idx != null) {
+        const replies = (annot.replies || []).slice();
+        const i = Number(idx);
+        if (!next) replies.splice(i, 1);
+        else replies[i] = { ...replies[i], text: next };
+        applyReplies(cmtTarget, replies);
+      }
+      return true;
+    };
+    const beginMsgEdit = (mtextEl) => {
+      if (cmtEditEl === mtextEl) return;
+      if (commitMsgEdit()) {
+        if (scribe._rebuildCommentsPanel) scribe._rebuildCommentsPanel();
+        updateCommentIcons();
+      }
+      cmtEditEl = mtextEl;
+      cmtEditOrig = mtextEl.textContent || '';
+      mtextEl.contentEditable = 'true';
+      mtextEl.classList.add('editing');
+      mtextEl.focus();
+    };
+
+    const applyRootComment = (target, text) => {
+      if (target.kind === 'highlight') scribe.modifyHighlightComment([target.kw], text);
+      else setNoteComment(scribe, target.annot, text);
+    };
+    const applyReplies = (target, replies) => {
+      if (target.kind === 'highlight') {
+        setHighlightReplies(scribe, target.kw, replies);
+      } else if (replies.length > 0) {
+        target.annot.replies = replies;
+      } else {
+        delete target.annot.replies;
+      }
+    };
+
+    /** Post the composer's draft: the root comment when none exists, otherwise a new reply. */
+    const postComposer = () => {
+      if (!cmtTarget) return false;
+      const text = cmtText.value.trim();
+      if (!text) return false;
+      cmtText.value = '';
+      const annot = cmtAnnot(cmtTarget);
+      if (!annot || !annot.comment) {
+        applyRootComment(cmtTarget, text);
+        return true;
+      }
+      /** @type {AnnotationReply} */
+      const reply = { text, createdAt: new Date().toISOString() };
+      const author = scribe.opt.commentAuthor || '';
+      if (author) reply.author = author;
+      applyReplies(cmtTarget, [...(annot.replies || []), reply]);
+      return true;
+    };
+
+    /** Dismissal commits: any in-place message edit, then any composer draft. */
+    const cmtCommit = () => {
+      if (!cmtTarget) return false;
+      const edited = commitMsgEdit();
+      const posted = postComposer();
+      if (edited || posted) {
+        if (scribe._rebuildCommentsPanel) scribe._rebuildCommentsPanel();
+        updateCommentIcons();
+      }
+      return edited || posted;
+    };
+
+    const cmtClose = () => {
+      cancelMsgEdit();
+      cmtCard.style.display = 'none';
+      cmtCard.classList.remove('pinned');
+      cmtPinned = false;
+      cmtTarget = null;
+      collapseCoins();
+      setCmtSel(false);
+    };
+
+    const cmtShow = (target) => {
+      if (cmtHideTimer) { clearTimeout(cmtHideTimer); cmtHideTimer = null; }
+      if (cmtPinned) return; // an edit in progress owns the card
+      if (cmtSameTarget(cmtTarget, target) && cmtCard.style.display !== 'none') return;
+      cmtTarget = target;
+      cmtFill(target);
+      if (!cmtPlace(target)) cmtClose();
+    };
+
+    const cmtScheduleHide = () => {
+      if (cmtPinned) return;
+      if (cmtHideTimer) clearTimeout(cmtHideTimer);
+      // A short grace corridor so the pointer can travel from the mark into the card.
+      cmtHideTimer = setTimeout(() => { cmtHideTimer = null; if (!cmtPinned) cmtClose(); }, 160);
+    };
+
+    const cmtPin = (target) => {
+      if (cmtHideTimer) { clearTimeout(cmtHideTimer); cmtHideTimer = null; }
+      if (cmtPinned && cmtSameTarget(cmtTarget, target)) { cmtText.focus(); return; }
+      cmtPinned = false;
+      cmtTarget = target;
+      cmtFill(target);
+      // Pin the class before placing: the composer and footer only lay out on the pinned card,
+      // so measuring first would size and place the card from the preview's geometry.
+      cmtCard.classList.add('pinned');
+      if (!cmtPlace(target)) { cmtClose(); return; }
+      cmtPinned = true;
+      setCmtSel(true);
+      // Focus last so it cannot scroll the container before the card is positioned.
+      cmtText.focus();
+    };
+
+    /** Resolve the card target under an event: a comment mark, a note mark, or a commented word. */
+    const cmtTargetFromEvent = (event) => {
+      if (!(event.target instanceof Element)) return null;
+      const mark = event.target.closest('.scribe-hl-cmark');
+      if (mark) {
+        const kw = scribe.getUiWords().find((w) => w.highlightGroupId === mark.dataset.groupId);
+        return kw ? {
+          kind: 'highlight', kw, groupId: kw.highlightGroupId, n: kw.word.line.page.n,
+        } : null;
+      }
+      const noteEl = event.target.closest('.scribe-note-icon');
+      if (noteEl) {
+        const n = Number(noteEl.dataset.pageN);
+        const annot = (scribe.doc.annotations.pages[n] || []).filter((a) => a.type === 'text')[Number(noteEl.dataset.noteIdx)];
+        return annot ? { kind: 'note', annot, n } : null;
+      }
+      const wordEl = event.target.closest('.scribe-word');
+      const kw = wordEl && /** @type {any} */ (wordEl)._scribeObj;
+      if (kw && kw.highlightGroupId && kw.highlightComment) {
+        return {
+          kind: 'highlight', kw, groupId: kw.highlightGroupId, n: kw.word.line.page.n,
+        };
+      }
+      return null;
+    };
+
+    const cmtOver = (event) => { const t = cmtTargetFromEvent(event); if (t) cmtShow(t); };
+    const cmtOut = (event) => { if (cmtTargetFromEvent(event)) cmtScheduleHide(); };
+    const cmtPress = (event) => {
+      if (!(event.target instanceof Element)) return;
+      const el = event.target.closest('.scribe-hl-cmark, .scribe-note-icon');
+      if (el) {
+        // The click that ends a note-mark drag must not open the editor.
+        if (/** @type {HTMLElement} */ (el).dataset.dragged === '1') { /** @type {HTMLElement} */ (el).dataset.dragged = ''; return; }
+        event.stopPropagation();
+        const t = cmtTargetFromEvent(event);
+        if (t) cmtPin(t);
+        return;
+      }
+      // Gate on the color, not the comment: the card's footer is the only place to recolor or delete an uncommented highlight.
+      const wordEl = event.target.closest('.scribe-word');
+      const kw = wordEl && /** @type {any} */ (wordEl)._scribeObj;
+      if (!kw || !kw.highlightColor) return;
+      // A drag that leaves a text selection is a selection gesture, not a click on the object.
+      const sel = window.getSelection();
+      if (sel && !sel.isCollapsed) return;
+      event.stopPropagation();
+      cmtPin({
+        kind: 'highlight', kw, groupId: kw.highlightGroupId || null, n: kw.word.line.page.n,
+      });
+    };
+    const cmtKeyPin = (event) => {
+      if (event.key !== 'Enter' && event.key !== ' ') return;
+      if (!(event.target instanceof Element) || !event.target.closest('.scribe-hl-cmark, .scribe-note-icon')) return;
+      const t = cmtTargetFromEvent(event);
+      if (!t) return;
+      event.preventDefault();
+      cmtPin(t);
+    };
+    scribe.elem.addEventListener('mouseover', cmtOver);
+    scribe.elem.addEventListener('mouseout', cmtOut);
+    scribe.elem.addEventListener('click', cmtPress);
+    scribe.elem.addEventListener('focusin', cmtOver);
+    scribe.elem.addEventListener('focusout', cmtOut);
+    scribe.elem.addEventListener('keydown', cmtKeyPin);
+
+    cmtCard.addEventListener('mouseenter', () => { if (cmtHideTimer) { clearTimeout(cmtHideTimer); cmtHideTimer = null; } });
+    cmtCard.addEventListener('mouseleave', cmtScheduleHide);
+    cmtCard.addEventListener('mousedown', (e) => e.stopPropagation());
+    cmtCard.addEventListener('click', (e) => {
+      e.stopPropagation();
+      // An open coin fan folds when the click lands anywhere else on the card.
+      if (coinsOpen() && !(e.target instanceof Node && cmtCoins.contains(e.target))) collapseCoins();
+      // Clicking the preview is the pointer's "edit this" on the card itself, same as clicking the mark.
+      if (!cmtPinned && cmtTarget) { cmtPin(cmtTarget); return; }
+      const mtext = e.target instanceof Element && e.target.closest('.scribe-cmt-mtext');
+      if (mtext instanceof HTMLElement && cmtPinned) beginMsgEdit(mtext);
+    });
+    cmtText.addEventListener('input', cmtGrow);
+    cmtCard.addEventListener('keydown', (e) => {
+      // Keep typing out of page shortcuts.
+      e.stopPropagation();
+      if ((e.ctrlKey || e.metaKey) && e.key === 'Enter') {
+        // Do not re-place after the re-render: the card grows in place, as it already does while typing grows the field.
+        e.preventDefault();
+        if (cmtCommit() && cmtTarget) {
+          cmtFill(cmtTarget);
+          cmtText.focus();
+        }
+        return;
+      }
+      if (e.key !== 'Escape') return;
+      // Esc folds inward: an open coin fan, an in-place message edit, a composer draft, then the card.
+      if (coinsOpen()) { collapseCoins(); return; }
+      if (cmtEditEl) { cancelMsgEdit(); return; }
+      if (cmtText.value.trim()) { cmtText.value = ''; cmtGrow(); return; }
+      const markEl = cmtTarget && cmtMarkEl(cmtTarget);
+      // Focus the mark before closing, not after: once the card is unpinned the mark's focusin would re-show it as a preview.
+      if (markEl) /** @type {HTMLElement} */ (markEl).focus();
+      cmtClose();
+    });
+
+    // The quote row drags the card.
+    cmtQuoteRow.addEventListener('mousedown', (e) => {
+      e.preventDefault();
+      const r = cmtCard.getBoundingClientRect();
+      // Bounded by the document area, as in cmtPlace, so a drag cannot park the card over the sidebar.
+      const h = (scribe.scrollContainer || editorHost).getBoundingClientRect();
+      const dx = e.clientX - r.left;
+      const dy = e.clientY - r.top;
+      // Measured-origin correction, as in cmtPlace: the host may not be the containing block.
+      cmtCard.style.left = '0px';
+      cmtCard.style.top = '0px';
+      const base = cmtCard.getBoundingClientRect();
+      const move = (ev) => {
+        const left = Math.max(h.left + 4, Math.min(ev.clientX - dx, h.right - r.width - 4));
+        const top = Math.max(h.top + 4, Math.min(ev.clientY - dy, h.bottom - r.height - 4));
+        cmtCard.style.left = `${left - base.left}px`;
+        cmtCard.style.top = `${top - base.top}px`;
+      };
+      move(e);
+      const up = () => {
+        document.removeEventListener('mousemove', move);
+        document.removeEventListener('mouseup', up);
+        cmtDragEnd = null;
+      };
+      cmtDragEnd = up;
+      document.addEventListener('mousemove', move);
+      document.addEventListener('mouseup', up);
+    });
+
+    // ---- footer verbs ----
+    cmtCoins.addEventListener('click', (e) => {
+      e.stopPropagation();
       if (!coinsOpen()) {
         expandCoins();
         return;
       }
       const sw = e.target instanceof Element
         ? /** @type {?HTMLButtonElement} */ (e.target.closest('.highlight-color-btn')) : null;
-      if (sw && hlToolbarWord) {
-        setHlToolbarSel(false);
-        recolorHighlightGroup(scribe, hlToolbarWord, colors[tbSwatches.indexOf(sw)]);
-        // The recolor rebuilt the fill layer, so re-apply the lift to the fresh bands.
-        setHlToolbarSel(true);
+      if (sw && cmtTarget && cmtTarget.kind === 'highlight') {
+        const color = colors[cmtSwatches.indexOf(sw)];
+        setCmtSel(false);
+        recolorHighlightGroup(scribe, cmtTarget.kw, color);
+        // The recolor rebuilt the fill layer, so re-ink the fresh bands and recolor the quote bar.
+        setCmtSel(true);
+        cmtBar.style.background = color;
         setTopCoin(sw);
+        if (scribe._rebuildCommentsPanel) scribe._rebuildCommentsPanel();
       }
       collapseCoins();
     });
-    tbCoins.addEventListener('keydown', (e) => {
+    cmtCoins.addEventListener('keydown', (e) => {
       if (e.key !== 'Enter' && e.key !== ' ') return;
       e.preventDefault();
+      e.stopPropagation();
       if (coinsOpen()) collapseCoins();
       else expandCoins();
     });
-    /**
-     * The fan folds when the pointer commits anywhere else.
-     * @param {MouseEvent} event
-     */
-    const coinsOutsideClick = (event) => {
-      if (!coinsOpen()) return;
-      if (event.target instanceof Node && tbCoins.contains(event.target)) return;
-      collapseCoins();
-    };
-    document.addEventListener('click', coinsOutsideClick);
-
-    const tbSep = document.createElement('span');
-    tbSep.className = 'scribe-hl-tb-sep';
-    hlToolbarRow.appendChild(tbSep);
-
-    /**
-     * @param {string} title
-     * @param {string} svg
-     * @returns {HTMLButtonElement}
-     */
-    const makeTbButton = (title, svg) => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'scribe-hl-tb-btn';
-      btn.title = title;
-      btn.setAttribute('aria-label', title);
-      btn.innerHTML = svg;
-      hlToolbarRow.appendChild(btn);
-      return btn;
-    };
-
-    const tbComment = makeTbButton('Comment', TB_COMMENT_SVG);
-    tbComment.addEventListener('click', () => {
-      if (commentOpen()) {
-        collapseComment();
-        return;
+    cmtPanelBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      if (!cmtTarget || !scribe._revealCommentInPanel) return;
+      const t = cmtTarget;
+      scribe._revealCommentInPanel(t.kind === 'highlight' ? t.kw : t.annot);
+      // Opening the sidebar tweens the document inset, shifting the anchor under the still-open card.
+      // Once that settles, follow the anchor to its new spot.
+      setTimeout(() => { if (cmtTarget === t && cmtPinned) cmtPlace(t); }, 230);
+    });
+    cmtDelete.addEventListener('click', (e) => {
+      e.stopPropagation();
+      const t = cmtTarget;
+      cmtClose();
+      if (!t) return;
+      if (t.kind === 'highlight') {
+        removeHighlightGroup(scribe, t.kw);
+      } else {
+        removeNote(scribe, t.annot, t.n);
+        scribe.renderNotes(t.n);
       }
-      expandComment(false);
-      // The growing card must not cover the highlight being commented.
-      // Move it beside/below the highlight, unless the user has already dragged it somewhere deliberate.
-      const wordEl = hlToolbarWord && scribe.elem.querySelector(`.scribe-word[id="${hlToolbarWord.word.id}"]`);
-      if (!hlToolbarMoved && wordEl) placeCardBesideHighlight(wordEl);
-      editorText.focus();
-      editorText.select();
-    });
-
-    // Only shown when the host installed the panel hook (the editor with the comments sidebar enabled).
-    const tbPanel = makeTbButton('Show in comments panel', TB_PANEL_SVG);
-    tbPanel.addEventListener('click', () => {
-      const kw = hlToolbarWord;
-      if (!kw || !scribe._revealCommentInPanel) return;
-      scribe._revealCommentInPanel(kw);
-      // Opening the sidebar tweens the document inset, shifting the highlight under the still-open card.
-      // Once that settles, follow the highlight to its new spot, unless the user dragged the card somewhere deliberate.
-      setTimeout(() => {
-        if (hlToolbarWord !== kw || hlToolbarMoved) return;
-        const wordEl = scribe.elem.querySelector(`.scribe-word[id="${kw.word.id}"]`);
-        if (wordEl) placeHlToolbar(wordEl);
-      }, 230);
-    });
-
-    const tbDelete = makeTbButton('Delete highlight', TB_DELETE_SVG);
-    tbDelete.classList.add('scribe-hl-tb-delete');
-    tbDelete.addEventListener('click', () => {
-      const kw = hlToolbarWord;
-      closeHlToolbar();
-      if (kw) removeHighlightGroup(scribe, kw);
       updateCommentIcons();
+      if (scribe._rebuildCommentsPanel) scribe._rebuildCommentsPanel();
     });
 
-    // Flex filler over the blank right of the trash button, so dragging that empty run moves the card.
-    const tbDragSpace = document.createElement('span');
-    tbDragSpace.className = 'scribe-hl-tb-dragspace';
-    hlToolbarRow.appendChild(tbDragSpace);
-    tbDragSpace.addEventListener('mousedown', startCardDrag);
-
-    editorHost.appendChild(hlToolbar);
-
-    /**
-     * Position the open card for its current state: the bare pill floats above the word, the comment card sits beside/below the highlight.
-     * @param {Element} wordEl
-     */
-    const placeHlToolbar = (wordEl) => {
-      if (commentOpen()) {
-        placeCardBesideHighlight(wordEl);
-        return;
-      }
-      const a = wordEl.getBoundingClientRect();
-      const h = editorHost.getBoundingClientRect();
-      const left = Math.max(4, Math.min(a.left - h.left, h.width - hlToolbar.offsetWidth - 4));
-      let top = a.top - h.top - hlToolbar.offsetHeight - 8;
-      if (top < 4) top = a.bottom - h.top + 8;
-      hlToolbar.style.left = `${left}px`;
-      hlToolbar.style.top = `${top}px`;
+    // Capture phase, so the commit lands before the press can pin another card or start a selection.
+    const cmtOutsidePress = (event) => {
+      if (!cmtPinned) return;
+      if (event.target instanceof Node && cmtCard.contains(event.target)) return;
+      cmtCommit();
+      cmtClose();
     };
-
-    /**
-     * Open the card on the clicked highlighted word, with the group's current colour marked active and its bands lifted.
-     * @param {import('../viewerWordObjects.js').UiOcrWord} kw
-     * @param {Element} wordEl
-     * @param {boolean} [expandCommentNow] Open with the comment half expanded and focused (comment icon / context menu).
-     */
-    const openHlToolbar = (kw, wordEl, expandCommentNow = false) => {
-      // Already open on this same highlight: a tear-down and re-open would flash and jump, so handle in place.
-      if (hlToolbarWord && (hlToolbarWord === kw
-        || (kw.highlightGroupId ? hlToolbarWord.highlightGroupId === kw.highlightGroupId
-          : hlToolbarWord.highlightRectElem === kw.highlightRectElem))) {
-        if (expandCommentNow) {
-          if (!commentOpen()) {
-            expandComment(false);
-            if (!hlToolbarMoved) placeCardBesideHighlight(wordEl);
-          }
-          editorText.focus();
-          editorText.select();
-        }
-        return;
-      }
-      closeHlToolbar();
-      hlToolbarWord = kw;
-      hlToolbarMoved = false;
-      const current = (kw.highlightColor || '').toLowerCase();
-      const currentSw = tbSwatches.find((b) => b.dataset.color === current);
-      // A colour outside the palette (an imported highlight) leaves the stack order alone, nothing active.
-      if (currentSw) setTopCoin(currentSw);
-      else tbSwatches.forEach((b) => b.classList.remove('active'));
-      tbPanel.style.display = scribe._revealCommentInPanel ? '' : 'none';
-      hlToolbar.style.display = '';
-      if (expandCommentNow || kw.highlightComment) expandComment(false);
-      // A fresh open must appear at its spot, never glide from wherever the card last stood.
-      // The placement's own layout reads would otherwise start the left/top transition from that stale position.
-      hlToolbar.style.transitionProperty = 'none';
-      placeHlToolbar(wordEl);
-      hlToolbar.getBoundingClientRect(); // commit the position while transitions are off
-      hlToolbar.style.transitionProperty = '';
-      setHlToolbarSel(true);
-      // Focus last so it cannot scroll the container before the card is positioned.
-      if (expandCommentNow) {
-        editorText.focus();
-        editorText.select();
+    document.addEventListener('pointerdown', cmtOutsidePress, true);
+    // Double-click starts word text editing (editor build), so the card must not sit over the input.
+    const cmtDblclick = (event) => {
+      if (event.target instanceof Node && scribe.elem.contains(event.target) && !cmtCard.contains(event.target)) {
+        cmtCommit();
+        cmtClose();
       }
     };
-
-    // A plain click on a highlighted word opens the toolbar.
-    // Any other click closes it.
-    // A drag that leaves a text selection is a selection gesture, not a click on the highlight object.
-    /** @param {MouseEvent} event */
-    const hlToolbarClick = (event) => {
-      if (hlToolbarPressInside) return;
-      if (hlToolbarJustDragged) {
-        hlToolbarJustDragged = false;
-        return;
-      }
-      const t = event.target;
-      if (!(t instanceof Element)) return;
-      if (hlToolbar.contains(t)) return;
-      const wordEl = t.closest('.scribe-word');
-      if (!wordEl || !scribe.elem.contains(wordEl)) { closeHlToolbar(); return; }
-      const kw = /** @type {any} */ (wordEl)._scribeObj;
-      if (!kw || !kw.highlightColor) { closeHlToolbar(); return; }
-      const sel = window.getSelection();
-      if (sel && !sel.isCollapsed) { closeHlToolbar(); return; }
-      openHlToolbar(kw, wordEl);
+    document.addEventListener('dblclick', cmtDblclick);
+    // The card is anchored to a screen position, so close it as soon as the page moves under it.
+    const cmtScrollDismiss = (event) => {
+      if (cmtCard.style.display === 'none') return;
+      if (event.target instanceof Node && cmtCard.contains(event.target)) return;
+      if (cmtPinned) cmtCommit();
+      cmtClose();
     };
-    document.addEventListener('click', hlToolbarClick);
-    // Double-click starts word text editing (editor build), so the toolbar must not sit over the input.
-    /** @param {MouseEvent} event */
-    const hlToolbarDblclick = (event) => {
-      if (event.target instanceof Node && scribe.elem.contains(event.target)) closeHlToolbar();
-    };
-    document.addEventListener('dblclick', hlToolbarDblclick);
-    /** @param {KeyboardEvent} event */
-    const hlToolbarKeydown = (event) => {
-      if (event.key !== 'Escape') return;
-      // Escape folds inward: first an open coin fan, then the comment half, then the card itself.
-      if (hlToolbarWord && coinsOpen()) collapseCoins();
-      else if (hlToolbarWord && commentOpen()) collapseComment();
-      else closeHlToolbar();
-    };
-    document.addEventListener('keydown', hlToolbarKeydown);
-    // The toolbar is anchored to a screen position, so close it as soon as the page moves under it.
-    // But scrolling inside the card (the comment textarea) must not dismiss it.
-    /** @param {Event} event */
-    const hlToolbarDismiss = (event) => {
-      if (event.target instanceof Node && hlToolbar.contains(event.target)) return;
-      closeHlToolbar();
-    };
-    scribe.scrollContainer?.addEventListener('scroll', hlToolbarDismiss, { passive: true });
-    document.addEventListener('wheel', hlToolbarDismiss, { passive: true, capture: true });
+    scribe.scrollContainer?.addEventListener('scroll', cmtScrollDismiss, { passive: true });
+    document.addEventListener('wheel', cmtScrollDismiss, { passive: true, capture: true });
 
     openCommentEditor = (words) => {
       if (!words || words.length === 0) return;
       const first = words[0];
-      const wordEl = scribe.elem.querySelector(`.scribe-word[id="${first.word.id}"]`);
-      if (!wordEl) return;
-      openHlToolbar(first, wordEl, true);
+      cmtPin({
+        kind: 'highlight', kw: first, groupId: first.highlightGroupId || null, n: first.word.line.page.n,
+      });
     };
     scribe._openCommentEditor = openCommentEditor;
-    // Let other surfaces (the Comments panel) refresh the on-page comment icons after editing a comment.
+    // Let other surfaces (the Comments panel) refresh the on-page comment marks after editing a comment.
     scribe._updateCommentIcons = updateCommentIcons;
-    // A freestanding note is edited inline in its margin card, so opening its editor just places the cursor there.
+    // A freestanding note is edited in its comment card, so opening its editor pins that card.
     scribe._openNoteEditor = (annot, pageIndex) => focusNoteEditor(scribe, pageIndex, annot);
 
-    let commentIconTimer = null;
+    // Notes' single editor entry (the note tool, the Comments panel, focusNoteEditor) pins the card.
+    scribe._pinNoteCard = (annot, n) => cmtPin({ kind: 'note', annot, n });
+
     const isWordOrLine = (n) => n instanceof HTMLElement
       && (n.classList.contains('scribe-word') || n.classList.contains('scribe-line'));
     const commentObserver = new MutationObserver((mutations) => {
       const hasRemoved = mutations.some((m) => [...m.removedNodes].some(isWordOrLine));
-      if (hasRemoved) {
-        scribe.elem?.querySelectorAll('.highlight-comment-icon').forEach((el) => el.remove());
-        commentTooltip.style.display = 'none';
-        // A word teardown (page re-render, document swap) leaves the toolbar pointing at a dead word.
-        closeHlToolbar();
-      }
-      const hasAdded = mutations.some((m) => [...m.addedNodes].some(isWordOrLine));
-      if (!hasAdded) return;
-      if (commentIconTimer) clearTimeout(commentIconTimer);
-      commentIconTimer = setTimeout(() => updateCommentIcons(), 100);
+      if (!hasRemoved) return;
+      // The removed words were only anchors, so an in-flight edit still has live model objects to commit to.
+      if (cmtPinned) cmtCommit();
+      cmtClose();
     });
     commentObserver.observe(scribe.elem, { childList: true });
 
@@ -824,21 +886,24 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
         document.removeEventListener('keydown', paletteKeydown);
       }
       commentObserver.disconnect();
-      if (hlToolbarDragEnd) hlToolbarDragEnd();
-      closeHlToolbar();
-      document.removeEventListener('click', coinsOutsideClick);
-      document.removeEventListener('click', hlToolbarClick);
-      document.removeEventListener('dblclick', hlToolbarDblclick);
-      document.removeEventListener('keydown', hlToolbarKeydown);
-      document.removeEventListener('wheel', hlToolbarDismiss, true);
-      scribe.scrollContainer?.removeEventListener('scroll', hlToolbarDismiss);
-      if (hlToolbar.parentNode) hlToolbar.parentNode.removeChild(hlToolbar);
+      scribe.elem.removeEventListener('mouseover', cmtOver);
+      scribe.elem.removeEventListener('mouseout', cmtOut);
+      scribe.elem.removeEventListener('click', cmtPress);
+      scribe.elem.removeEventListener('focusin', cmtOver);
+      scribe.elem.removeEventListener('focusout', cmtOut);
+      scribe.elem.removeEventListener('keydown', cmtKeyPin);
+      document.removeEventListener('pointerdown', cmtOutsidePress, true);
+      document.removeEventListener('wheel', cmtScrollDismiss, true);
+      scribe.scrollContainer?.removeEventListener('scroll', cmtScrollDismiss);
+      if (cmtHideTimer) clearTimeout(cmtHideTimer);
+      if (cmtDragEnd) cmtDragEnd();
+      if (cmtCard.parentNode) cmtCard.parentNode.removeChild(cmtCard);
+      scribe._pinNoteCard = null;
+      document.removeEventListener('dblclick', cmtDblclick);
       scribe._openCommentEditor = null;
       scribe._openNoteEditor = null;
       scribe._updateCommentIcons = null;
       openCommentEditor = null;
-      if (commentTooltip && commentTooltip.parentNode) commentTooltip.parentNode.removeChild(commentTooltip);
-      commentTooltip = null;
       if (cursorStyleElem) {
         cursorStyleElem.remove();
         cursorStyleElem = null;
@@ -872,7 +937,7 @@ export function createNoteTool(scribe) {
     const n = scribe.state?.cp?.n ?? 0;
     const pm = scribe.doc.pageMetrics[n];
     if (!pm) return;
-    // Place the mark at the top-right of the page, clear of the edge, so the card renders in the right margin.
+    // Place the mark at the top-right of the page, clear of the edge.
     const x = Math.max(0, pm.dims.width - 46);
     const annot = createNote(scribe, n, x, 22);
     scribe.renderNotes(n);

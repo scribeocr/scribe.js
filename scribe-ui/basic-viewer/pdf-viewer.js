@@ -15,15 +15,10 @@ import {
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
 import { mergePdfs } from '../../js/export/pdf/mergePdfs.js';
 import { concatOutlines, outlineSplitSegments } from '../../js/objects/outlineObjects.js';
+import { DEBUG_MENU } from '../devFlags.js';
 
 /** Root class used to scope this app's control styles. */
 const ROOT_CLASS = 'scribe-pdf-viewer';
-
-/**
- * Compile-time gate for the developer-only Debug menu; commit it as `false`.
- * A literal `false` makes the guarded `import('.../debugMenu.js')` below dead code, so public builds tree-shake the debug module out.
- */
-const DEBUG_MENU = false;
 
 // Toolbar height bounds (px).
 const TOOLBAR_HEIGHT_DEFAULT = 40;
@@ -432,7 +427,7 @@ class ScribePDFViewer {
     // The app menu's outside-click listener is document-level, so retire it on destroy.
     if (this._appMenu) this._teardownCallbacks.push(() => this._appMenu.destroy());
 
-    // Selection-driven highlighting + comment icons (needs `scribe.elem`, so wired after init).
+    // Selection-driven highlighting + comment marks (needs `scribe.elem`, so wired after init).
     if (this._highlightTool) {
       this._teardownCallbacks.push(this._highlightTool.installBehaviors());
     }
@@ -564,10 +559,6 @@ class ScribePDFViewer {
       if (this._thumbnailPanel) this._thumbnailPanel.setActive(this.scribe.state.cp.n);
       if (this._bookmarksPanel) this._bookmarksPanel.setActive(this.scribe.state.cp.n);
       if (this._commentsPanel) this._commentsPanel.setActive(this.scribe.state.cp.n);
-      if (this._highlightTool) {
-        const ht = this._highlightTool;
-        setTimeout(() => ht.updateCommentIcons(), 250);
-      }
     };
 
     // Both panels must fully rebuild after an edit, or stale rows send a later click or delete to the wrong page.
@@ -592,11 +583,11 @@ class ScribePDFViewer {
       };
     }
 
-    // The highlight card's "show in comments panel" verb routes here.
+    // The comment card's "show in comments panel" verb routes here.
     if (this._commentsPanel) {
-      this.scribe._revealCommentInPanel = (uiWord) => {
+      this.scribe._revealCommentInPanel = /** @param {import('../js/viewerWordObjects.js').UiOcrWord | AnnotationText} target */ (target) => {
         if (this._activeSidebar !== 'comments') this._requestSidebar('comments');
-        this._commentsPanel.reveal(uiWord);
+        this._commentsPanel.reveal(target);
       };
       // A quiet rebuild after a comment/note is edited elsewhere (mini toolbar, note card), so an open panel reflects it at once.
       this.scribe._rebuildCommentsPanel = () => this._commentsPanel.rebuild();

@@ -3,7 +3,7 @@ import {
   resolveIntValue, resolveNumValue, resolveNumArray,
 } from '../../pdf/pdfPrimitives.js';
 import { stripText } from '../../pdf/contentStream.js';
-import { annotIsModelManaged } from '../../pdf/parsePdfAnnots.js';
+import { annotIsModelManaged, annotIsLiftedReply } from '../../pdf/parsePdfAnnots.js';
 import { encodeStreamObject } from './writePdfStreams.js';
 import { convertSinglePageForRegions } from './convertTextRegionsToPaths.js';
 
@@ -458,14 +458,13 @@ export function buildReplacementPageDict(
       return !annotLinkTargetsDroppedPage(Number(m[1]), objCache, keptPageObjNums);
     });
   }
-  // Drop the source Highlight/FreeText annotations lifted into the editable model.
-  // They are re-emitted via `extraAnnotRefs`, so keeping the source copy would duplicate them on export.
+  // The lifted annotations are re-emitted via `extraAnnotRefs`, so keeping a source copy would duplicate them on export.
   if (objCache && sourceAnnotRefs.length > 0) {
     sourceAnnotRefs = sourceAnnotRefs.filter((ref) => {
       const m = /^(\d+)\s+\d+\s+R$/.exec(ref);
       if (!m) return true;
       const annotText = objCache.getObjectText(Number(m[1]));
-      return !annotText || !annotIsModelManaged(annotText);
+      return !annotText || (!annotIsModelManaged(annotText) && !annotIsLiftedReply(annotText, objCache));
     });
   }
   if (extraAnnotRefs.length > 0 || sourceAnnotRefs.length > 0) {

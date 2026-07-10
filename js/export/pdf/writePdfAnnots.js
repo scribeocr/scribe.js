@@ -10,6 +10,40 @@ function skipMessage(type, err) {
 }
 
 /**
+ * Build the /Text reply objects for one parent annotation's comment thread.
+ * @param {AnnotationReply[]} replies
+ * @param {number} parentObjNum
+ * @param {string} rectStr - The parent's /Rect array contents.
+ * @param {number} startObjNum
+ * @param {boolean} omitIdentity - When true (a sanitized export), suppress `/T` and `/CreationDate`.
+ * @returns {{ objectTexts: string[], annotRefs: string[] }}
+ */
+function buildReplyObjects(replies, parentObjNum, rectStr, startObjNum, omitIdentity) {
+  const objectTexts = [];
+  const annotRefs = [];
+  let objNum = startObjNum;
+  for (const reply of replies) {
+    let str = `${objNum} 0 obj\n`;
+    str += '<</Type /Annot /Subtype /Text';
+    // /IRT makes viewers present the reply inside the parent's thread rather than as its own page icon, so it can reuse the parent's /Rect.
+    str += ` /Rect [${rectStr}]`;
+    str += ` /IRT ${parentObjNum} 0 R`;
+    str += ` /Contents <${toUtf16BeHex(reply.text || '')}>`;
+    str += ' /Name /Comment /Open false /F 4';
+    if (!omitIdentity && reply.author) str += ` /T <${toUtf16BeHex(reply.author)}>`;
+    if (!omitIdentity && reply.createdAt) {
+      const pdfDate = formatPdfDate(reply.createdAt);
+      if (pdfDate) str += ` /CreationDate (${pdfDate})`;
+    }
+    str += '>>\nendobj\n\n';
+    annotRefs.push(`${objNum} 0 R`);
+    objectTexts.push(str);
+    objNum++;
+  }
+  return { objectTexts, annotRefs };
+}
+
+/**
  * @param {AnnotationHighlight[]} annotations
  * @param {number} startObjNum
  * @param {{ width: number, height: number }} outputDims
@@ -61,9 +95,17 @@ export function buildHighlightAnnotObjects(annotations, startObjNum, outputDims,
       }
       str += '>>\nendobj\n\n';
 
+      const parentObjNum = objNum;
       annotRefs.push(`${objNum} 0 R`);
       objectTexts.push(str);
       objNum++;
+      if (annot.replies && annot.replies.length > 0) {
+        const rectStr = `${annot.bbox.left} ${pdfRectBottom} ${annot.bbox.right} ${pdfRectTop}`;
+        const replyObjs = buildReplyObjects(annot.replies, parentObjNum, rectStr, objNum, omitIdentity);
+        objectTexts.push(...replyObjs.objectTexts);
+        annotRefs.push(...replyObjs.annotRefs);
+        objNum += replyObjs.objectTexts.length;
+      }
     } catch (err) {
       warningHandler?.(skipMessage('highlight', err));
     }
@@ -113,9 +155,17 @@ export function buildTextAnnotObjects(annotations, startObjNum, outputDims, warn
       }
       str += '>>\nendobj\n\n';
 
+      const parentObjNum = objNum;
       annotRefs.push(`${objNum} 0 R`);
       objectTexts.push(str);
       objNum++;
+      if (annot.replies && annot.replies.length > 0) {
+        const rectStr = `${annot.bbox.left} ${pdfRectBottom} ${annot.bbox.right} ${pdfRectTop}`;
+        const replyObjs = buildReplyObjects(annot.replies, parentObjNum, rectStr, objNum, omitIdentity);
+        objectTexts.push(...replyObjs.objectTexts);
+        annotRefs.push(...replyObjs.annotRefs);
+        objNum += replyObjs.objectTexts.length;
+      }
     } catch (err) {
       warningHandler?.(skipMessage('text annotation', err));
     }
@@ -165,9 +215,17 @@ export function buildFreeTextAnnotObjects(annotations, startObjNum, outputDims, 
       str += ` /CA ${annot.opacity}`;
       str += '>>\nendobj\n\n';
 
+      const parentObjNum = objNum;
       annotRefs.push(`${objNum} 0 R`);
       objectTexts.push(str);
       objNum++;
+      if (annot.replies && annot.replies.length > 0) {
+        const rectStr = `${annot.bbox.left} ${pdfRectBottom} ${annot.bbox.right} ${pdfRectTop}`;
+        const replyObjs = buildReplyObjects(annot.replies, parentObjNum, rectStr, objNum, false);
+        objectTexts.push(...replyObjs.objectTexts);
+        annotRefs.push(...replyObjs.annotRefs);
+        objNum += replyObjs.objectTexts.length;
+      }
     } catch (err) {
       warningHandler?.(skipMessage('FreeText', err));
     }
@@ -277,10 +335,17 @@ export function buildShapeAnnotObjects(annotations, startObjNum, outputDims, war
       ap += `${width} w\n${pathOps}${hasFill ? 'B' : 'S'}\nQ`;
       const apObj = `${apObjNum} 0 obj\n<</Type /XObject /Subtype /Form /FormType 1 /BBox [${rect}] /Resources <<>> /Length ${ap.length}>>\nstream\n${ap}\nendstream\nendobj\n\n`;
 
+      const parentObjNum = objNum;
       annotRefs.push(`${objNum} 0 R`);
       objectTexts.push(dict);
       objectTexts.push(apObj);
       objNum += 2;
+      if (annot.replies && annot.replies.length > 0) {
+        const replyObjs = buildReplyObjects(annot.replies, parentObjNum, rect, objNum, false);
+        objectTexts.push(...replyObjs.objectTexts);
+        annotRefs.push(...replyObjs.annotRefs);
+        objNum += replyObjs.objectTexts.length;
+      }
     } catch (err) {
       warningHandler?.(skipMessage(annot.type, err));
     }
@@ -306,7 +371,7 @@ export function consolidateAnnotations(pageAnnotations, pageObj) {
     const key = annot.groupId || `style_${annot.color}_${annot.opacity}`;
     if (!groups[key]) {
       groups[key] = {
-        color: annot.color, opacity: annot.opacity, comment: annot.comment || '', author: annot.author, createdAt: annot.createdAt, annotations: [],
+        color: annot.color, opacity: annot.opacity, comment: annot.comment || '', author: annot.author, createdAt: annot.createdAt, replies: annot.replies, annotations: [],
       };
     }
     groups[key].annotations.push(annot);
@@ -397,7 +462,7 @@ export function consolidateAnnotations(pageAnnotations, pageObj) {
         currentBbox.bottom = Math.max(currentBbox.bottom, lineQuads[i].bbox.bottom);
       } else {
         result.push({
-          bbox: currentBbox, quads: currentQuads, color: group.color, opacity: group.opacity, comment: group.comment,
+          bbox: currentBbox, quads: currentQuads, color: group.color, opacity: group.opacity, comment: group.comment, replies: group.replies,
         });
         currentQuads = [{ ...lineQuads[i].bbox }];
         currentBbox = { ...lineQuads[i].bbox };
@@ -412,6 +477,7 @@ export function consolidateAnnotations(pageAnnotations, pageObj) {
       comment: group.comment,
       author: group.author,
       createdAt: group.createdAt,
+      replies: group.replies,
     });
   }
 

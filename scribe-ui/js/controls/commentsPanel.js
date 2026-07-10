@@ -11,11 +11,6 @@ const COMMENT_SVG = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="cur
 const NEW_NOTE_SVG = '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
 // Small dog-eared note glyph marking a freestanding-note row (matches the on-page note icon).
 const NOTE_MARK_SVG = '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="currentColor"><path d="M4 4h16v10l-6 6H4z"/><path d="M20 14l-6 6v-5a1 1 0 0 1 1-1z" fill="rgba(0,0,0,.22)"/></svg>';
-// Row hover verbs, drawn on the same 24-grid / 1.6px / round-cap family as the on-page card's icons.
-const PENCIL_SVG = '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">'
-  + '<path d="M13.7 6.3l4 4M5 19l.9-3.9L15.9 5.1a1.9 1.9 0 0 1 2.7 0l.3.3a1.9 1.9 0 0 1 0 2.7L8.9 18.1 5 19z"/></svg>';
-const TRASH_SVG = '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">'
-  + '<path d="M4 6.5h16M9.5 6.5V5a1.5 1.5 0 0 1 1.5-1.5h2A1.5 1.5 0 0 1 14.5 5v1.5M6 6.5l.9 11.2a2 2 0 0 0 2 1.8h6.2a2 2 0 0 0 2-1.8L18 6.5"/></svg>';
 // Outline speech bubble for the empty state (the filled COMMENT_SVG stays the toolbar toggle).
 const EMPTY_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">'
   + '<rect x="3" y="4" width="18" height="12.5" rx="2.5"/><path d="M8.5 16.5v3.2l4-3.2"/></svg>';
@@ -29,8 +24,8 @@ const QUOTE_SCROLL_SLACK_PX = 64;
  * One panel row: a highlight group (quoting the text it covers) or a freestanding note.
  * `top`/`left` are the anchor's page-space position, ordering rows within a page group.
  * @typedef {{pageIndex: number, kind: 'highlight'|'note', comment: string, author: string, createdAt: string,
- *   color: string, preview: string, groupId: ?string, annot: AnnotationHighlight | AnnotationText,
- *   top: number, left: number}} CommentRow
+ *   replies: AnnotationReply[], color: string, preview: string, groupId: ?string,
+ *   annot: AnnotationHighlight | AnnotationText, top: number, left: number}} CommentRow
  */
 
 /**
@@ -39,7 +34,7 @@ const QUOTE_SCROLL_SLACK_PX = 64;
  * @param {{ onNavigate: (pageIndex: number) => void, onResize?: (width: number, phase: 'start'|'move'|'end') => void }} handlers
  *   `onResize` fires as the right-edge handle is dragged, with the desired width and the drag phase.
  * @returns {{ panelElem: HTMLDivElement, toggleElem: HTMLSpanElement, rebuild: () => void, setActive: (pageIndex: number) => void,
- * setVisible: (v: boolean) => void, reveal: (uiWord: import('../viewerWordObjects.js').UiOcrWord) => void, destroy: () => void }}
+ * setVisible: (v: boolean) => void, reveal: (target: import('../viewerWordObjects.js').UiOcrWord | AnnotationText) => void, destroy: () => void }}
  */
 export function createCommentsPanel(scribe, { onNavigate, onResize }) {
   const panelElem = document.createElement('div');
@@ -168,6 +163,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
             comment: a.comment || '',
             author: a.author || '',
             createdAt: a.createdAt || '',
+            replies: a.replies || [],
             color: a.color || '',
             preview: '',
             groupId: null,
@@ -199,6 +195,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
           comment: a.comment || '',
           author: a.author || '',
           createdAt: a.createdAt || '',
+          replies: a.replies || [],
           color: a.color || '',
           preview: quoteText(i, groupAnns),
           groupId: a.groupId || null,
@@ -212,7 +209,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
   }
 
   /**
-   * Refresh the on-page comment icons (highlights) and note layer for `pageIndex` after a panel edit.
+   * Refresh the on-page comment marks (highlights) and note layer for `pageIndex` after a panel edit.
    * @param {number} pageIndex
    */
   function refreshOnPage(pageIndex) {
@@ -222,8 +219,8 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
   }
 
   /**
-   * Write a comment onto a highlight group directly (no UiOcrWords needed, so it works for a page not on screen).
-   * Stamps author/date on first authoring and clears them when emptied, matching the on-page editor.
+   * Write a comment onto a highlight group located by id rather than by UiOcrWord, so it works for a page not on screen.
+   * Author and date are stamped on the first non-empty comment; clearing the comment removes them and any reply thread.
    * @param {CommentRow} row
    * @param {string} comment
    */
@@ -241,10 +238,34 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
       } else {
         delete a.author;
         delete a.createdAt;
+        delete a.replies;
       }
     }
     if (row.groupId) {
       for (const kw of scribe.getUiWords()) if (kw.highlightGroupId === row.groupId) kw.highlightComment = comment;
+    }
+    refreshOnPage(row.pageIndex);
+  }
+
+  /**
+   * Write a reply thread onto a row's annotation(s), located by id rather than by UiOcrWord, so it works for a page not on screen.
+   * An empty list removes the thread.
+   * @param {CommentRow} row
+   * @param {AnnotationReply[]} replies
+   */
+  function setRowReplies(row, replies) {
+    if (row.kind === 'note') {
+      if (replies.length > 0) row.annot.replies = replies;
+      else delete row.annot.replies;
+    } else {
+      const match = row.groupId ? ((a) => a.groupId === row.groupId) : ((a) => a === row.annot);
+      for (const a of annPages()[row.pageIndex] || []) {
+        if (a.type === 'text' || (a.type && a.type !== 'highlight')) continue;
+        if (!match(a)) continue;
+        // Consumers read the thread off whichever annotation of the group they match first, so every member carries it.
+        if (replies.length > 0) a.replies = replies;
+        else delete a.replies;
+      }
     }
     refreshOnPage(row.pageIndex);
   }
@@ -294,9 +315,10 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
     refreshOnPage(row.pageIndex);
   }
 
-  // The single open in-place editor.
-  // No Save button: dismissing it commits, only Esc discards.
-  /** @type {?{row: CommentRow, rowEl: HTMLElement, ta: HTMLTextAreaElement, foldElem: HTMLDivElement, onDown: (e: PointerEvent) => void}} */
+  /**
+   * The open in-place editor, which has no Save button: clicking outside the row commits the field and Esc discards it.
+   * @type {?{row: CommentRow, rowEl: HTMLElement, ta: HTMLTextAreaElement, anchorEl: HTMLElement,
+   *   wrap: ?HTMLDivElement, foldElem: ?HTMLDivElement, target: 'root'|'new'|number, onDown: (e: PointerEvent) => void}} */
   let editState = null;
 
   /** Remove the document-level click-out listener of the open editor, if any. */
@@ -311,54 +333,109 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
   function foldEditor(save) {
     if (!editState) return;
     const {
-      row, rowEl, ta, foldElem,
+      row, rowEl, ta, anchorEl, wrap, foldElem, target,
     } = editState;
     detachEditorListener();
     const next = ta.value.trim();
     editState = null;
+    // The teardown below changes the row's height, so measure first.
+    const fromHeight = rowEl.getBoundingClientRect().height;
     ta.remove();
-    foldElem.remove();
+    if (wrap) wrap.remove();
+    if (foldElem) foldElem.remove();
     rowEl.classList.remove('editing');
-    for (const sel of ['.scribe-cm-text', '.scribe-cm-ghost']) {
-      const hidden = /** @type {?HTMLElement} */ (rowEl.querySelector(sel));
-      if (hidden) hidden.style.display = '';
+    anchorEl.style.display = '';
+
+    // Dismissal commits the field, so an emptied root would otherwise destroy the thread by accident.
+    const reverts = target === 'root' && !next && row.replies.length > 0;
+    let changed = false;
+    if (save && !reverts) {
+      if (target === 'root') {
+        if (next !== row.comment) {
+          // Setters stamp/clear author + date on the annotation; re-read the row's cached fields to match.
+          if (row.kind === 'note') setNoteComment(row, next); else setHighlightComment(row, next);
+          row.comment = row.annot.comment || '';
+          row.author = row.annot.author || '';
+          row.createdAt = row.annot.createdAt || '';
+          changed = true;
+        }
+      } else if (target === 'new') {
+        if (next) {
+          /** @type {AnnotationReply} */
+          const reply = { text: next, createdAt: new Date().toISOString() };
+          const author = (scribe.opt && scribe.opt.commentAuthor) || '';
+          if (author) reply.author = author;
+          setRowReplies(row, [...row.replies, reply]);
+          changed = true;
+        }
+      } else if (next !== row.replies[target].text) {
+        // An emptied reply is removed: unlike the root, nothing hangs below it.
+        const replies = row.replies.slice();
+        if (next) replies[target] = { ...replies[target], text: next };
+        else replies.splice(target, 1);
+        setRowReplies(row, replies);
+        changed = true;
+      }
     }
-    if (save && next !== row.comment) {
-      // Setters stamp/clear author + date on the annotation; re-read the row's cached fields to match.
-      if (row.kind === 'note') setNoteComment(row, next); else setHighlightComment(row, next);
-      row.comment = row.annot.comment || '';
-      row.author = row.annot.author || '';
-      row.createdAt = row.annot.createdAt || '';
+
+    /** @type {HTMLElement} */
+    let settled = rowEl;
+    if (changed) {
+      row.replies = row.annot.replies || [];
       // Swap only this row's element, never a full rebuild, so the click that triggered the fold keeps its target alive.
       const i = rows.indexOf(row);
-      if (i >= 0 && rowEls[i]) {
-        const fresh = renderRow(row, i);
-        rowEls[i].replaceWith(fresh);
-        rowEls[i] = fresh;
-      } else rebuild();
+      // A full rebuild drops the element mid-flight, leaving nothing to animate.
+      if (i < 0 || !rowEls[i]) { rebuild(); return; }
+      const fresh = renderRow(row, i);
+      rowEls[i].replaceWith(fresh);
+      rowEls[i] = fresh;
+      settled = fresh;
     }
+
+    const toHeight = settled.getBoundingClientRect().height;
+    if (toHeight === fromHeight) return;
+    // A long comment outgrows the row while it shrinks.
+    settled.style.overflow = 'hidden';
+    // `auto` does not interpolate, so both keyframes use the measured heights.
+    // 180ms matches the `.scribe-cm-fold` transition the footer opened on.
+    const anim = settled.animate(
+      [{ height: `${fromHeight}px` }, { height: `${toHeight}px` }],
+      { duration: 180, easing: 'ease' },
+    );
+    const restore = () => { settled.style.overflow = ''; };
+    anim.addEventListener('finish', restore);
+    anim.addEventListener('cancel', restore);
   }
 
   /**
-   * Morph a row into the comment editor.
+   * Morph one message of a row into the in-place editor.
    * @param {CommentRow} row
    * @param {HTMLElement} rowEl
+   * @param {'root'|'new'|number} target - The root comment, the new-reply composer, or the index of the reply to edit.
    */
-  function startEdit(row, rowEl) {
+  function startEdit(row, rowEl, target) {
     if (!editing()) return;
     if (editState) {
-      if (editState.row === row) return;
+      if (editState.row === row && editState.target === target) return;
       // Opening a second editor commits the first, as any click outside it does.
       foldEditor(true);
+      // The commit may have replaced this row's element or rebuilt the whole list.
+      const i = rows.indexOf(row);
+      if (i < 0) return;
+      if (rowEls[i]) rowEl = rowEls[i];
+      // Its fold animation would otherwise hold this row at the height it was collapsing toward.
+      rowEl.getAnimations().forEach((a) => a.cancel());
     }
-    for (const sel of ['.scribe-cm-text', '.scribe-cm-ghost']) {
-      const shown = /** @type {?HTMLElement} */ (rowEl.querySelector(sel));
-      if (shown) shown.style.display = 'none';
-    }
+    /** @type {?HTMLElement} */
+    let anchorEl = null;
+    if (target === 'root') anchorEl = /** @type {?HTMLElement} */ (rowEl.querySelector('.scribe-cm-text[data-msg="root"], .scribe-cm-ghost[data-ghost="root"]'));
+    else if (target === 'new') anchorEl = /** @type {?HTMLElement} */ (rowEl.querySelector('.scribe-cm-ghost[data-ghost="reply"]'));
+    else anchorEl = /** @type {?HTMLElement} */ (rowEl.querySelector(`.scribe-cm-msg[data-msg="${target}"] .scribe-cm-text`));
+    if (!anchorEl) return;
     const ta = document.createElement('textarea');
     ta.className = 'scribe-cm-field';
-    ta.value = row.comment;
-    ta.placeholder = 'Comment…';
+    ta.value = target === 'root' ? row.comment : (target === 'new' ? '' : row.replies[target].text);
+    ta.placeholder = target === 'root' ? 'Comment…' : 'Reply…';
     const autoGrow = () => {
       ta.style.height = 'auto';
       ta.style.height = `${Math.min(190, Math.max(40, ta.scrollHeight))}px`;
@@ -368,31 +445,69 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
       if (e.key === 'Escape') { e.preventDefault(); foldEditor(false); } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) { e.preventDefault(); foldEditor(true); }
       e.stopPropagation();
     });
-    const foldElem = document.createElement('div');
-    foldElem.className = 'scribe-cm-fold';
-    const foldInner = document.createElement('div');
-    const foot = document.createElement('div');
-    foot.className = 'scribe-cm-foot';
-    const removeBtn = document.createElement('button');
-    removeBtn.type = 'button';
-    removeBtn.className = 'scribe-cm-remove';
-    removeBtn.textContent = 'Remove comment';
-    removeBtn.addEventListener('click', (e) => { e.stopPropagation(); ta.value = ''; foldEditor(true); });
-    foot.append(removeBtn);
-    foldInner.appendChild(foot);
-    foldElem.appendChild(foldInner);
+    /** @type {?HTMLDivElement} */
+    let wrap = null;
+    if (target === 'new') {
+      // The composer line mirrors the on-page card's: the author's avatar beside the field.
+      wrap = document.createElement('div');
+      wrap.className = 'scribe-cm-reply';
+      const author = (scribe.opt && scribe.opt.commentAuthor) || '';
+      if (author) {
+        const ava = document.createElement('span');
+        ava.className = 'scribe-cm-ava';
+        ava.textContent = author.split(/\s+/, 2).map((s) => s[0]).join('').toUpperCase();
+        wrap.appendChild(ava);
+      }
+      wrap.appendChild(ta);
+      wrap.addEventListener('click', (e) => e.stopPropagation());
+      anchorEl.before(wrap);
+    } else {
+      anchorEl.before(ta);
+    }
+    anchorEl.style.display = 'none';
+    /** @type {?HTMLDivElement} */
+    let foldElem = null;
+    // A fresh composer has nothing to delete.
+    if (target !== 'new') {
+      foldElem = document.createElement('div');
+      foldElem.className = 'scribe-cm-fold';
+      const foldInner = document.createElement('div');
+      const foot = document.createElement('div');
+      foot.className = 'scribe-cm-foot';
+      const removeBtn = document.createElement('button');
+      removeBtn.type = 'button';
+      removeBtn.className = 'scribe-cm-remove';
+      const conversation = target === 'root' && row.replies.length > 0;
+      // A note is its conversation, so deleting the conversation deletes the note.
+      if (conversation) removeBtn.textContent = row.kind === 'note' ? 'Delete note' : 'Delete conversation';
+      else removeBtn.textContent = target === 'root' ? 'Remove comment' : 'Delete reply';
+      removeBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        if (conversation) {
+          foldEditor(false);
+          if (row.kind === 'note') deleteNote(row); else setHighlightComment(row, '');
+          rebuild();
+        } else {
+          ta.value = '';
+          foldEditor(true);
+        }
+      });
+      foot.append(removeBtn);
+      foldInner.appendChild(foot);
+      foldElem.appendChild(foldInner);
+      foldElem.addEventListener('click', (e) => e.stopPropagation());
+      rowEl.appendChild(foldElem);
+    }
     // Clicks inside the editor must not bubble into the row's navigate handler.
     ta.addEventListener('click', (e) => e.stopPropagation());
-    foldElem.addEventListener('click', (e) => e.stopPropagation());
-    rowEl.append(ta, foldElem);
-    // Click-out saves (capture phase, so it runs before whatever the click itself does).
     /** @param {PointerEvent} e */
     const onDown = (e) => {
       if (!rowEl.contains(/** @type {Node} */ (e.target))) foldEditor(true);
     };
+    // Capture phase, so the field commits before the click's own handler runs.
     document.addEventListener('pointerdown', onDown, true);
     editState = {
-      row, rowEl, ta, foldElem, onDown,
+      row, rowEl, ta, anchorEl, wrap, foldElem, target, onDown,
     };
     rowEl.getBoundingClientRect(); // commit the collapsed footer so adding the class animates the 0fr -> 1fr slide
     rowEl.classList.add('editing');
@@ -417,11 +532,12 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
       item.addEventListener('click', () => { closeMenu(); fn(); });
       menuElem.appendChild(item);
     };
-    add('Edit', () => startEdit(row, rowEl));
+    add('Edit', () => startEdit(row, rowEl, 'root'));
     if (row.kind === 'note') {
       add('Delete note', () => { deleteNote(row); rebuild(); });
     } else {
-      add('Delete comment', () => { setHighlightComment(row, ''); rebuild(); });
+      // Clearing the comment takes the reply thread with it.
+      add(row.replies.length > 0 ? 'Delete conversation' : 'Delete comment', () => { setHighlightComment(row, ''); rebuild(); });
       add('Delete highlight', () => { deleteHighlight(row); rebuild(); });
     }
     showMenuAt(x, y);
@@ -438,32 +554,8 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
     el.className = 'scribe-cm-row';
     el.dataset.page = String(row.pageIndex);
 
-    // Right slot of the lead line: the date and the editor-only hover verbs share one grid cell, so revealing the verbs never reflows the lead line.
     const rightElem = document.createElement('div');
     rightElem.className = 'scribe-cm-right';
-    if (editing()) {
-      const verbs = document.createElement('div');
-      verbs.className = 'scribe-cm-verbs';
-      const editBtn = document.createElement('button');
-      editBtn.type = 'button';
-      editBtn.className = 'scribe-cm-verb';
-      editBtn.title = row.comment ? 'Edit comment' : 'Add comment';
-      editBtn.innerHTML = PENCIL_SVG;
-      editBtn.addEventListener('click', (e) => { e.stopPropagation(); startEdit(row, el); });
-      // The trash verb deletes the whole anchor (highlight or note), not just the comment; comment-only removal is the editor's "Remove comment".
-      const delBtn = document.createElement('button');
-      delBtn.type = 'button';
-      delBtn.className = 'scribe-cm-verb scribe-cm-verb-del';
-      delBtn.title = row.kind === 'note' ? 'Delete note' : 'Delete highlight';
-      delBtn.innerHTML = TRASH_SVG;
-      delBtn.addEventListener('click', (e) => {
-        e.stopPropagation();
-        if (row.kind === 'note') deleteNote(row); else deleteHighlight(row);
-        rebuild();
-      });
-      verbs.append(editBtn, delBtn);
-      rightElem.appendChild(verbs);
-    }
 
     // The anchor line names what the comment hangs on: the quoted highlight behind a bar of its color, or the note mark.
     const anchor = document.createElement('div');
@@ -498,7 +590,6 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
       anchor.appendChild(quote);
     }
 
-    // Authored rows lead with an identity header; unauthored rows lead with the anchor line, which carries the verbs instead.
     if (row.author) {
       const top = document.createElement('div');
       top.className = 'scribe-cm-top';
@@ -520,7 +611,6 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
         when.className = 'scribe-cm-when';
         when.textContent = `· ${d.toLocaleDateString(undefined, dateOpts)}`;
         rightElem.prepend(when);
-        if (rightElem.childElementCount > 1) rightElem.classList.add('scribe-cm-right-swap');
       }
       top.appendChild(meta);
       if (rightElem.childElementCount) top.appendChild(rightElem);
@@ -533,16 +623,66 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
     if (row.comment) {
       const text = document.createElement('div');
       text.className = 'scribe-cm-text';
+      text.dataset.msg = 'root';
       text.textContent = row.comment;
+      // A single click on the row navigates, so editing takes a double-click.
+      if (editing()) text.addEventListener('dblclick', (e) => { e.stopPropagation(); startEdit(row, el, 'root'); });
       el.appendChild(text);
     } else if (editing()) {
-      // The visible way in for a comment-less row (the old blank row was double-click-only).
       const ghost = document.createElement('button');
       ghost.type = 'button';
       ghost.className = 'scribe-cm-ghost';
+      ghost.dataset.ghost = 'root';
       ghost.innerHTML = `${NEW_NOTE_SVG}<span>Add a comment…</span>`;
-      ghost.addEventListener('click', (e) => { e.stopPropagation(); startEdit(row, el); });
+      ghost.addEventListener('click', (e) => { e.stopPropagation(); startEdit(row, el, 'root'); });
       el.appendChild(ghost);
+    }
+
+    row.replies.forEach((reply, ri) => {
+      const msg = document.createElement('div');
+      msg.className = 'scribe-cm-msg';
+      msg.dataset.msg = String(ri);
+      if (reply.author || reply.createdAt) {
+        const meta = document.createElement('div');
+        meta.className = 'scribe-cm-meta';
+        if (reply.author) {
+          const ava = document.createElement('span');
+          ava.className = 'scribe-cm-ava';
+          ava.textContent = reply.author.split(/\s+/, 2).map((s) => s[0]).join('').toUpperCase();
+          const who = document.createElement('span');
+          who.className = 'scribe-cm-who';
+          who.textContent = reply.author;
+          meta.append(ava, who);
+        }
+        if (reply.createdAt) {
+          const d = new Date(reply.createdAt);
+          /** @type {Intl.DateTimeFormatOptions} */
+          const dateOpts = { month: 'short', day: 'numeric' };
+          if (d.getFullYear() !== new Date().getFullYear()) dateOpts.year = 'numeric';
+          const when = document.createElement('span');
+          when.className = 'scribe-cm-when';
+          when.textContent = `· ${d.toLocaleDateString(undefined, dateOpts)}`;
+          meta.appendChild(when);
+        }
+        msg.appendChild(meta);
+      }
+      const rtext = document.createElement('div');
+      rtext.className = 'scribe-cm-text';
+      rtext.textContent = reply.text;
+      if (editing()) rtext.addEventListener('dblclick', (e) => { e.stopPropagation(); startEdit(row, el, ri); });
+      msg.appendChild(rtext);
+      el.appendChild(msg);
+    });
+
+    // The way into the conversation: a quiet Reply line that morphs into the composer.
+    if (editing() && row.comment) {
+      const replyGhost = document.createElement('button');
+      replyGhost.type = 'button';
+      replyGhost.className = 'scribe-cm-ghost';
+      replyGhost.dataset.ghost = 'reply';
+      replyGhost.innerHTML = `${NEW_NOTE_SVG}<span>Reply…</span>`;
+      replyGhost.addEventListener('click', (e) => { e.stopPropagation(); startEdit(row, el, 'new'); });
+      el.appendChild(replyGhost);
     }
 
     el.addEventListener('click', (e) => {
@@ -552,7 +692,12 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
     });
 
     if (editing()) {
-      el.addEventListener('dblclick', (e) => { e.stopPropagation(); startEdit(row, el); });
+      el.addEventListener('dblclick', (e) => {
+        // A double-click inside a message or the open editor must not also open the root editor.
+        if (e.target instanceof Element && e.target.closest('.scribe-cm-text, .scribe-cm-field, .scribe-cm-ghost, .scribe-cm-fold, .scribe-cm-reply')) return;
+        e.stopPropagation();
+        startEdit(row, el, 'root');
+      });
       el.addEventListener('contextmenu', (e) => { e.preventDefault(); openRowMenu(row, e.clientX, e.clientY, el); });
     }
 
@@ -686,8 +831,8 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
   }
 
   /**
-   * Remove the comment entry for every selected row (editor only):
-   * a note is deleted outright, a highlight keeps its mark but loses its comment, so either way the row leaves the list.
+   * Remove the comment entry for every selected row.
+   * A note is deleted outright; a highlight keeps its mark but loses its comment and any reply thread.
    */
   function deleteSelected() {
     if (!editing() || selected.size === 0) return;
@@ -756,17 +901,19 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
   scribe.onHighlightHover = onHighlightHover;
 
   /**
-   * Scroll the panel row for a highlight into view and pulse it lit.
-   * This is the highlight card's "show in comments panel" verb.
-   * Rebuilds first so a comment saved moments ago is listed.
-   * @param {import('../viewerWordObjects.js').UiOcrWord} uiWord Any word of the target highlight.
+   * Scroll the panel row for a highlight or a note into view and pulse it lit.
+   * @param {import('../viewerWordObjects.js').UiOcrWord | AnnotationText} target
+   *   Any word of the target highlight, or the note annotation itself.
    */
-  function reveal(uiWord) {
+  function reveal(target) {
+    // The row for a just-saved comment may not exist yet.
     rebuild();
-    const i = rows.findIndex((row) => row.kind === 'highlight'
-      && (uiWord.highlightGroupId ? row.groupId === uiWord.highlightGroupId
-        : (row.pageIndex === uiWord.word.line.page.n
-          && annotMatchesWord(/** @type {AnnotationHighlight} */ (row.annot), uiWord.word.bbox))));
+    const i = 'word' in target
+      ? rows.findIndex((row) => row.kind === 'highlight'
+        && (target.highlightGroupId ? row.groupId === target.highlightGroupId
+          : (row.pageIndex === target.word.line.page.n
+            && annotMatchesWord(/** @type {AnnotationHighlight} */ (row.annot), target.word.bbox))))
+      : rows.findIndex((row) => row.kind === 'note' && row.annot === target);
     const el = i >= 0 ? rowEls[i] : null;
     if (!el) return;
     el.scrollIntoView({ block: 'nearest' });

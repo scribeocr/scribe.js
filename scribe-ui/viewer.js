@@ -17,16 +17,13 @@ import {
   applyHighlight, removeHighlight, modifyHighlightComment, updateHighlightGroupOutline,
 } from './js/viewerHighlights.js';
 import { renderPageNotes } from './js/viewerNotes.js';
+import { ensureLayerStyleSheet, COMMENT_MARK_SVG } from './js/viewerLayerStyles.js';
 import {
-  ensureLayerStyleSheet, ScribeViewerState, ScribeViewerOpts, CanvasSelection,
+  ScribeViewerState, ScribeViewerOpts, CanvasSelection,
   registerViewer, unregisterViewer, getActiveViewer, setActiveViewer,
   getDefaultViewer, getAllViewers, findViewerForTarget,
 } from './js/viewerRuntime.js';
-
-/**
- * Kept but off: with the paired gate in TessScheduler.js, turn on to trace render-dispatch order when diagnosing regressions.
- */
-const DEBUG_RENDER_SCHED = false;
+import { DEBUG_RENDER_SCHED } from '../tess/TessScheduler.js';
 
 /**
  * Per-viewer canvas controller. Owns its own scroll container, document, selection, and event state.
@@ -216,6 +213,12 @@ export class ScribeViewer {
      */
     this._highlightRectsByGroup = [];
     /**
+     * Per-page comment marks, rebuilt with the fill layer.
+     * The geometry is cached so a zoom change can re-place the marks without a rebuild.
+     * @type {Array<Array<{el: HTMLSpanElement, right: number, top: number, bottom: number, nextLeft: ?number}>>}
+     */
+    this._commentMarks = [];
+    /**
      * Called with the page index after that page's highlight fill layer is rebuilt.
      * The thumbnail panel registers here to keep its per-page highlight overlay current.
      * @type {?(n: number) => void}
@@ -381,6 +384,7 @@ export class ScribeViewer {
     this._textGroups.length = 0;
     this._highlightGroups.length = 0;
     this._highlightRectsByGroup.length = 0;
+    this._commentMarks.length = 0;
     this.textGroupsRenderIndices.length = 0;
     this._overlayGroups.length = 0;
     this._notesGroups.length = 0;
@@ -527,6 +531,9 @@ export class ScribeViewer {
   _applyZoomTransform(z) {
     this.zoomLayer.style.transform = `scale(${z})`;
     this.zoomLayer.style.setProperty('--scribe-zoom', String(z));
+    for (let n = 0; n < this._commentMarks.length; n++) {
+      if (this._commentMarks[n]) this._placeCommentMarks(n);
+    }
   }
 
   /**
@@ -2518,12 +2525,17 @@ export class ScribeViewer {
       lineArr.push(kw);
     }
 
+    // The last flushed run of each commented group, in reading order, marks where the group's comment mark goes.
+    /** @type {Map<string, {right: number, top: number, bottom: number, nextLeft: ?number, orientation: number, color: string}>} */
+    const markRuns = new Map();
+
     for (const lineWords of lineMap.values()) {
       lineWords.sort((a, b) => a.x() - b.x());
 
       /** @type {?{key: string, color: string, opacity: number, groupId: ?string, words: Array<UiOcrWord>, left: number, right: number, top: number, bottom: number, orientation: number}} */
       let run = null;
-      const flush = () => {
+      /** @param {?number} [nextLeft] Left edge of the word that ends the run on its line (null at line end). */
+      const flush = (nextLeft = null) => {
         if (!run) return;
         const group = this.getHighlightGroup(n, run.orientation);
         const rect = document.createElement('div');
@@ -2547,16 +2559,20 @@ export class ScribeViewer {
         if (run.groupId) {
           const arr = this._highlightRectsByGroup[n].get(run.groupId);
           if (arr) arr.push(rect); else this._highlightRectsByGroup[n].set(run.groupId, [rect]);
+          if (run.words[0].highlightComment) {
+            markRuns.set(run.groupId, {
+              right: run.right, top: run.top, bottom: run.bottom, nextLeft, orientation: run.orientation, color: run.color,
+            });
+          }
         }
         run = null;
       };
 
       for (const kw of lineWords) {
-        if (!kw.highlightColor) { flush(); continue; }
+        const left = kw.x() - (kw.word.visualCoords ? kw.leftSideBearing : 0);
+        if (!kw.highlightColor) { flush(left); continue; }
         const key = `${kw.highlightColor}_${kw.highlightOpacity}_${kw.highlightGroupId || ''}`;
         const fs = kw.fontSize;
-        // kw.y() is baseline - 0.6fs, not the baseline itself.
-        const left = kw.x() - (kw.word.visualCoords ? kw.leftSideBearing : 0);
         const wordBox = {
           left,
           right: left + kw.width(),
@@ -2570,13 +2586,55 @@ export class ScribeViewer {
           run.bottom = Math.max(run.bottom, wordBox.bottom);
           run.words.push(kw);
         } else {
-          flush();
+          flush(left);
           run = {
             key, color: kw.highlightColor, opacity: kw.highlightOpacity, groupId: kw.highlightGroupId, words: [kw], orientation: kw.word.line.orientation, ...wordBox,
           };
         }
       }
       flush();
+    }
+
+    this._commentMarks[n] = [];
+    for (const [groupId, m] of markRuns) {
+      const mark = document.createElement('span');
+      mark.className = 'scribe-hl-cmark';
+      mark.dataset.groupId = groupId;
+      mark.tabIndex = 0;
+      mark.setAttribute('role', 'button');
+      mark.setAttribute('aria-label', 'Comment');
+      // The band renders this hue at reduced opacity, so the solid mark reads as its saturated form.
+      mark.style.color = m.color;
+      mark.innerHTML = COMMENT_MARK_SVG;
+      // Parented to the band's orientation group, so page rotation and zoom transforms apply to both alike.
+      this.getHighlightGroup(n, m.orientation).appendChild(mark);
+      this._commentMarks[n].push({
+        el: mark, right: m.right, top: m.top, bottom: m.bottom, nextLeft: m.nextLeft,
+      });
+    }
+    this._placeCommentMarks(n);
+  }
+
+  /**
+   * Position page `n`'s comment marks for the current zoom.
+   * Call again on every zoom change: the mark keeps a constant on-screen size, so whether it fits inline depends on the zoom.
+   * @param {number} n
+   */
+  _placeCommentMarks(n) {
+    const marks = this._commentMarks[n];
+    if (!marks || marks.length === 0) return;
+    const z = this.zoomLevel || 1;
+    const px = 14 / z;
+    for (const m of marks) {
+      // 3px screen gap after the band, and the mark must clear the next word by 2px screen.
+      const fits = m.nextLeft === null || m.nextLeft - m.right >= (3 + 14 + 2) / z;
+      if (fits) {
+        m.el.style.left = `${m.right + 3 / z}px`;
+        m.el.style.top = `${(m.top + m.bottom) / 2 - px / 2}px`;
+      } else {
+        m.el.style.left = `${m.right - px * 0.75}px`;
+        m.el.style.top = `${m.top - px * 0.85}px`;
+      }
     }
   }
 

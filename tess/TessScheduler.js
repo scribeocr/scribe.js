@@ -20,7 +20,7 @@ export const MAX_STAGED_VIEWER_JOBS = 16;
 export const MAX_STAGED_THUMB_JOBS = 32;
 
 /**
- * Kept but off: with the paired gate in viewer.js, turn on to trace render-dispatch order when diagnosing regressions.
+ * Enable to print debugging messages with dispatch timings.
  */
 export const DEBUG_RENDER_SCHED = false;
 

@@ -1003,89 +1003,91 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       display: inline-flex;
     }
 
-    .${r} .highlight-comment-icon {
+    .${r} .scribe-cmt-card {
       position: absolute;
-      font-size: 14px;
-      cursor: pointer;
-      z-index: 15;
-      user-select: none;
-      pointer-events: auto;
-    }
-
-    .${r} .highlight-comment-tooltip {
-      position: absolute;
-      background: var(--scribe-ink);
-      color: var(--scribe-surface);
-      padding: 4px 8px;
-      border-radius: 4px;
-      font-size: 13px;
-      max-width: 300px;
-      white-space: pre-wrap;
-      pointer-events: none;
-      z-index: 20;
-    }
-
-    /* Mini highlight toolbar: a small card floated above a clicked highlight.
-       Its top row holds the verbs (recolor / comment / copy / delete).
-       Its lower half is the comment editor, which slides open in place (grid-rows 0fr <-> 1fr) so commenting never swaps to a separate surface. */
-    .${r} .scribe-hl-toolbar {
-      position: absolute;
-      z-index: 21;
+      width: 210px;
+      box-sizing: border-box;
       background: var(--scribe-surface);
-      border: 1px solid var(--scribe-line-strong);
+      border: 1px solid var(--scribe-line);
       border-radius: 8px;
       box-shadow: var(--scribe-menu-shadow);
-      /* Glides when it repositions beside the highlight, but a drag turns this off. */
-      transition: left .18s ease, top .18s ease;
+      padding: 9px 11px;
+      font-size: 12.5px;
+      line-height: 1.45;
+      color: var(--scribe-ink);
+      z-index: 21;
     }
-
-    .${r} .scribe-hl-toolbar.dragging {
-      transition: none;
-      user-select: none;
+    .${r} .scribe-cmt-card.pinned {
+      border-color: var(--scribe-accent);
+      box-shadow: 0 0 0 2px var(--scribe-accent-ring), var(--scribe-menu-shadow);
     }
-
-    .${r} .scribe-hl-tb-row {
-      display: flex;
-      align-items: center;
-      gap: 3px;
-      padding: 4px 5px;
+    .${r} .scribe-cmt-meta { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
+    .${r} .scribe-cmt-quote-row { display: flex; align-items: stretch; gap: 7px; margin-bottom: 5px; cursor: grab; }
+    .${r} .scribe-cmt-quote {
+      min-width: 0;
+      font-size: 11px;
+      font-style: italic;
+      color: var(--scribe-ink-3);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
     }
-
-    .${r} .scribe-hl-tb-grip {
+    /* The comment is edited in place: a seamless textarea that reads as the card's text. */
+    .${r} .scribe-cmt-text {
+      display: block;
+      box-sizing: border-box;
+      width: 100%;
+      margin: 0;
+      padding: 0;
+      border: 0;
+      outline: none;
+      resize: none;
+      overflow: hidden;
+      background: transparent;
+      font: inherit;
+      line-height: inherit;
+      color: inherit;
+      white-space: pre-wrap;
+      overflow-wrap: anywhere;
+    }
+    .${r} .scribe-cmt-text::placeholder { color: var(--scribe-ink-3); }
+    .${r} .scribe-cmt-thread { display: flex; flex-direction: column; gap: 7px; }
+    /* Long conversations scroll inside the card rather than growing it off-screen. */
+    .${r} .scribe-cmt-card.pinned .scribe-cmt-thread { max-height: 320px; overflow-y: auto; }
+    .${r} .scribe-cmt-msg .scribe-cmt-meta { margin-bottom: 2px; }
+    .${r} .scribe-cmt-mtext { white-space: pre-wrap; overflow-wrap: anywhere; }
+    .${r} .scribe-cmt-card.pinned .scribe-cmt-mtext { cursor: text; }
+    .${r} .scribe-cmt-mtext.editing { outline: none; border-radius: 3px; box-shadow: 0 0 0 2px var(--scribe-accent-ring); }
+    .${r} .scribe-cmt-more { font-size: 11px; color: var(--scribe-ink-3); }
+    .${r} .scribe-cmt-card.pinned .scribe-cmt-more { display: none; }
+    .${r} .scribe-cmt-card:not(.pinned) .scribe-cmt-msg.scribe-cmt-old { display: none; }
+    .${r} .scribe-cmt-reply { display: flex; align-items: flex-start; gap: 7px; }
+    .${r} .scribe-cmt-reply .scribe-cm-ava { margin-top: 1px; }
+    .${r} .scribe-cmt-reply .scribe-cmt-text { flex: 1 1 auto; width: auto; min-width: 0; }
+    .${r} .scribe-cmt-card:not(.pinned) .scribe-cmt-reply { display: none; }
+    .${r} .scribe-cmt-foot { display: none; align-items: center; gap: 3px; border-top: 1px solid var(--scribe-line); margin: 8px -4px 0; padding: 6px 0 0; }
+    .${r} .scribe-cmt-card.pinned .scribe-cmt-foot { display: flex; }
+    .${r} .scribe-cmt-foot-spring { flex: 1 1 auto; }
+    .${r} .scribe-cmt-vb {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: 21px;
+      width: 28px;
       height: 28px;
-      margin-right: 1px;
-      color: var(--scribe-ink-3);
-      cursor: grab;
+      padding: 0;
+      border: 0;
+      border-radius: 6px;
+      background: none;
+      color: var(--scribe-ink-2);
+      cursor: pointer;
       flex: 0 0 auto;
     }
+    .${r} .scribe-cmt-vb:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
+    .${r} .scribe-cmt-vb.scribe-cmt-vb-del:hover { color: var(--scribe-danger); }
+    .${r} .scribe-cmt-vb svg { width: 20px; height: 20px; display: block; }
 
-    .${r} .scribe-hl-tb-grip svg {
-      width: 15px;
-      height: 17px;
-      display: block;
-    }
 
-    .${r} .scribe-hl-toolbar.dragging .scribe-hl-tb-grip { cursor: grabbing; }
-
-    /* Drag surface filling the blank right of the trash button.
-       The margins net to zero against the row gap so a compact pill keeps its width; with blank space they carry the surface over the row padding to the card border. */
-    .${r} .scribe-hl-tb-dragspace {
-      flex: 1 1 auto;
-      align-self: stretch;
-      margin: -4px -5px -4px 2px;
-      cursor: grab;
-    }
-
-    .${r} .scribe-hl-toolbar.dragging .scribe-hl-tb-dragspace { cursor: grabbing; }
-
-    /* Coin-stack color control: the current color rests on top with 2.5px slivers of the others showing behind a 0.5px hairline ring.
-       It reads as one chip-stack icon and a single click target.
-       Clicking fans the coins to 16px steps in an overlay floating above the card, using pure transforms so nothing else moves or resizes.
-       The fan reaches the comment verb, which is disabled while open (see expandCoins) so it cannot be mis-clicked. */
+    /* The fan is transform-only, so this resting width never changes and the footer never reflows. */
     .${r} .scribe-hl-coins {
       position: relative;
       display: inline-flex;
@@ -1114,246 +1116,22 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
 
     .${r} .scribe-hl-coins.open .highlight-color-btn { transform: translateX(calc(var(--coin-i, 0) * 16px)); }
 
-    .${r} .scribe-hl-tb-btn:disabled {
-      background: none;
-      color: var(--scribe-ink-3);
-      cursor: default;
-    }
 
-    .${r} .scribe-hl-tb-comment {
-      display: grid;
-      grid-template-rows: 0fr;
-      transition: grid-template-rows .18s ease;
-    }
-
-    .${r} .scribe-hl-toolbar.comment-open .scribe-hl-tb-comment { grid-template-rows: 1fr; }
-
-    /* Vertical padding lives on the collapsing element and transitions with it, so the closed state is truly 0-height. */
-    .${r} .scribe-hl-tb-comment > div {
-      overflow: hidden;
-      min-height: 0;
-      display: flex;
-      flex-direction: column;
-      gap: 6px;
-      padding: 0 9px;
-      transition: padding .18s ease;
-    }
-
-    .${r} .scribe-hl-toolbar.comment-open .scribe-hl-tb-comment > div {
-      border-top: 1px solid var(--scribe-line);
-      padding: 8px 9px 8px;
-    }
-
-    .${r} .scribe-hl-tb-sep {
-      width: 1px;
-      height: 18px;
-      background: var(--scribe-line-strong);
-      margin: 0 3px;
-      flex: 0 0 auto;
-    }
-
-    .${r} .scribe-hl-tb-btn {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 28px;
-      height: 28px;
-      padding: 0;
-      border: 0;
-      border-radius: 6px;
-      background: none;
-      color: var(--scribe-ink-2);
-      cursor: pointer;
-      position: relative;
-      flex: 0 0 auto;
-    }
-
-    .${r} .scribe-hl-tb-btn:hover {
-      background: var(--scribe-hover);
-      color: var(--scribe-ink);
-    }
-
-    .${r} .scribe-hl-tb-btn.scribe-hl-tb-delete:hover {
-      color: var(--scribe-danger);
-    }
-
-    .${r} .scribe-hl-tb-btn svg {
-      width: 20px;
-      height: 20px;
-      display: block;
-    }
-
-    /* No inner text box: the card is the writing surface, so focus rings the whole card rather than an inner field. */
-    .${r} .scribe-hl-toolbar.comment-open:focus-within {
-      border-color: var(--scribe-accent);
-      box-shadow: var(--scribe-menu-shadow), 0 0 0 2px var(--scribe-accent-ring);
-    }
-    .${r} .scribe-comment-editor-text {
-      width: 100%;
-      box-sizing: border-box;
-      /* min-width: 100% keeps the field spanning the card however far the corner is dragged in, so the resize corner stays at the card edge instead of drifting inward. */
-      resize: both;
-      max-width: 420px;
-      min-width: 100%;
-      min-height: 40px;
-      max-height: 420px;
-      overflow-y: auto;
-      font: inherit;
-      font-size: 13px;
-      line-height: 1.45;
-      color: var(--scribe-ink);
-      background: none;
-      border: 0;
-      padding: 1px 2px;
-      outline: none;
-    }
-    .${r} .scribe-comment-editor-text::-webkit-resizer {
-      background: linear-gradient(-45deg, transparent 0 40%, var(--scribe-line-strong) 40% 50%, transparent 50% 65%, var(--scribe-line-strong) 65% 75%, transparent 75%);
-    }
-    .${r} .scribe-comment-editor-meta {
-      display: flex;
-      align-items: center;
-      gap: 7px;
-      font-size: 12px;
-      color: var(--scribe-ink-3);
-    }
-    .${r} .scribe-comment-editor-ava {
-      width: 18px;
-      height: 18px;
-      border-radius: 50%;
-      background: var(--scribe-accent-soft);
-      color: var(--scribe-accent);
-      font-size: 9px;
-      font-weight: 700;
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      flex: 0 0 auto;
-    }
-    .${r} .scribe-comment-editor-who {
-      font-weight: 600;
-      color: var(--scribe-ink);
-    }
-    .${r} .scribe-comment-editor-when { font-size: 11px; }
-    .${r} .scribe-comment-editor-btns {
-      display: flex;
-      align-items: center;
-      gap: 10px;
-    }
-    .${r} .scribe-comment-editor-btns button { font: inherit; cursor: pointer; }
-    /* Styled as a quiet text link, not a button, so "Remove comment" is not mistaken for the trash verb that deletes the whole highlight. */
-    .${r} button.scribe-comment-editor-delete {
-      font-size: 11.5px;
-      color: var(--scribe-ink-3);
-      border: 0;
-      background: none;
-      padding: 2px 0;
-      margin-right: auto;
-    }
-    .${r} button.scribe-comment-editor-delete:hover { color: var(--scribe-danger); }
-
-    /* Freestanding note: a small sticky at the note's point (its true position + drag handle), and a large matching sticky in the page's right margin (the same note blown up).
-       Both are sized in the notes layer's page space but kept a constant on-screen size by dividing out the zoom.
-       Hovering either adds .linked to both.
-       Sticky yellow is fixed (a sticky note is yellow in both themes, like the page is white). */
+    /* The notes layer is scaled by the zoom, so dividing it back out holds a constant on-screen size. */
     .${r} .scribe-note-icon {
       position: absolute;
-      width: calc(20px / var(--scribe-zoom, 1));
-      height: calc(20px / var(--scribe-zoom, 1));
+      width: calc(14px / var(--scribe-zoom, 1));
+      height: calc(14px / var(--scribe-zoom, 1));
       color: var(--scribe-note);
       pointer-events: auto;
       cursor: grab;
       user-select: none;
       z-index: 3;
       filter: drop-shadow(0 1px 2px rgba(30, 26, 16, .3));
-      transition: transform .12s ease, filter .12s ease;
     }
     .${r} .scribe-note-icon svg { width: 100%; height: 100%; display: block; }
     .${r} .scribe-note-icon:active { cursor: grabbing; }
-    .${r} .scribe-note-icon.linked { transform: scale(1.4); filter: drop-shadow(0 2px 5px rgba(30, 26, 16, .4)); z-index: 8; }
-
-    .${r} .scribe-note-card {
-      position: absolute;
-      left: 100%;
-      margin-left: .9em;
-      width: 13em;
-      font-size: calc(11px / var(--scribe-zoom, 1));
-      font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
-      pointer-events: auto;
-      z-index: 4;
-      /* Shadow on the unclipped outer element so it hugs the dog-eared paper (a box-shadow on the clipped paper would be cut off with the corner).
-         It is a tight contact shadow at rest and lifts on hover (see .linked). */
-      filter: drop-shadow(0 .1em .22em rgba(30, 26, 16, .34));
-      transition: transform .12s ease, filter .12s ease;
-    }
-    .${r} .scribe-note-card-paper {
-      --curl: 1.5em;
-      position: relative;
-      padding: .58em .75em 1em;
-      line-height: 1.4;
-      background: var(--scribe-note);
-      color: rgba(38, 30, 0, .9);
-      /* Dog-ear: cut the bottom-right corner, the same folded corner the small mark has. */
-      clip-path: polygon(0 0, 100% 0, 100% calc(100% - var(--curl)), calc(100% - var(--curl)) 100%, 0 100%);
-    }
-    .${r} .scribe-note-card-paper::after {
-      content: "";
-      position: absolute;
-      right: 0;
-      bottom: 0;
-      width: var(--curl);
-      height: var(--curl);
-      /* The translucent fold flap along the cut. This is the same dark fold as the mark's dog-ear. */
-      background: linear-gradient(135deg, rgba(0, 0, 0, .18) 50%, transparent 50%);
-    }
-    /* The comment is edited in place: a seamless textarea that looks like the note's text. */
-    .${r} .scribe-note-card-text {
-      display: block;
-      box-sizing: border-box;
-      width: 100%;
-      margin: 0;
-      padding: 0;
-      border: 0;
-      outline: none;
-      resize: none;
-      overflow: hidden;
-      background: transparent;
-      font: inherit;
-      line-height: inherit;
-      color: inherit;
-      white-space: pre-wrap;
-      overflow-wrap: anywhere;
-    }
-    .${r} .scribe-note-card-text::placeholder { color: rgba(38, 30, 0, .45); }
-    .${r} .scribe-note-card-meta { margin-top: .5em; font-size: .85em; color: rgba(38, 30, 0, .6); }
-    .${r} .scribe-note-card-del {
-      position: absolute;
-      top: .18em;
-      right: .3em;
-      width: 1.35em;
-      height: 1.35em;
-      padding: 0;
-      display: flex;
-      align-items: center;
-      justify-content: center;
-      border: 0;
-      border-radius: .3em;
-      background: transparent;
-      color: rgba(38, 30, 0, .55);
-      font-size: 1.15em;
-      line-height: 1;
-      cursor: pointer;
-      opacity: 0;
-      transition: opacity .1s ease, background .1s ease, color .1s ease;
-    }
-    .${r} .scribe-note-card:hover .scribe-note-card-del,
-    .${r} .scribe-note-card-text:focus ~ .scribe-note-card-del { opacity: 1; }
-    .${r} .scribe-note-card-del:hover { background: rgba(0, 0, 0, .12); color: rgba(38, 30, 0, .85); }
-    .${r} .scribe-note-card.linked {
-      transform: translateY(-.1em);
-      filter: drop-shadow(0 .24em .5em rgba(30, 26, 16, .34));
-      z-index: 9;
-    }
+    .${r} .scribe-note-icon:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: 1px; border-radius: 3px; }
 
     .${r} .vertical-separator {
       background: var(--scribe-line-strong);
@@ -2168,6 +1946,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       padding: 9px 10px;
       margin-bottom: 6px;
       cursor: pointer;
+      /* The fold animation drives height from measured border-box rects. */
+      box-sizing: border-box;
     }
     .${r} .scribe-cm-row:hover { border-color: var(--scribe-line-strong); }
     /* Hover-sync: the row whose highlight the pointer is over in the viewer. */
@@ -2220,44 +2000,10 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       font-size: 11px;
       color: var(--scribe-ink-3);
       white-space: nowrap;
-      transition: opacity .12s ease;
     }
 
-    /* Date and hover verbs share one grid cell, so the hover crossfade swaps them without reflowing the line. */
-    .${r} .scribe-cm-right { flex: 0 0 auto; margin-left: auto; display: grid; align-self: center; }
-    .${r} .scribe-cm-right > * { grid-area: 1 / 1; justify-self: end; align-self: center; }
-    .${r} .scribe-cm-verbs {
-      display: flex;
-      gap: 2px;
-      opacity: 0;
-      pointer-events: none;
-      transition: opacity .12s ease;
-    }
-    .${r} .scribe-cm-row:hover .scribe-cm-verbs,
-    .${r} .scribe-cm-row:focus-within .scribe-cm-verbs { opacity: 1; pointer-events: auto; }
-    .${r} .scribe-cm-row:hover .scribe-cm-right-swap .scribe-cm-when,
-    .${r} .scribe-cm-row:focus-within .scribe-cm-right-swap .scribe-cm-when { opacity: 0; }
-    .${r} .scribe-cm-verb {
-      display: inline-flex;
-      align-items: center;
-      justify-content: center;
-      width: 22px;
-      height: 22px;
-      padding: 0;
-      border: 0;
-      border-radius: 5px;
-      background: none;
-      color: var(--scribe-ink-2);
-      cursor: pointer;
-    }
-    .${r} .scribe-cm-verb:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
-    .${r} .scribe-cm-verb.scribe-cm-verb-del:hover { color: var(--scribe-danger); }
-    .${r} .scribe-cm-verb svg { width: 15px; height: 15px; display: block; }
-    /* No hover on touch: the verbs stay visible (and win the shared slot outright). */
-    @media (pointer: coarse) {
-      .${r} .scribe-cm-verbs { opacity: 1; pointer-events: auto; }
-      .${r} .scribe-cm-right-swap .scribe-cm-when { opacity: 0; }
-    }
+    /* Right slot of the lead line, holding the date. */
+    .${r} .scribe-cm-right { flex: 0 0 auto; margin-left: auto; align-self: center; }
 
     /* Anchor line: the quoted highlight behind a mini-swatch bar of its raw color (set inline), or the note mark. */
     .${r} .scribe-cm-anchor { display: flex; align-items: stretch; gap: 7px; margin-top: 6px; min-width: 0; }
@@ -2298,6 +2044,14 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       white-space: pre-wrap;
       overflow-wrap: anywhere;
     }
+
+    /* Reply-thread messages: the row-header identity anatomy again, once per message. */
+    .${r} .scribe-cm-msg { margin-top: 8px; }
+    .${r} .scribe-cm-msg .scribe-cm-text { margin-top: 2px; }
+    /* The reply composer line the Reply ghost morphs into: the author's avatar beside the field, as on the card. */
+    .${r} .scribe-cm-reply { display: flex; align-items: flex-start; gap: 7px; margin-top: 6px; }
+    .${r} .scribe-cm-reply .scribe-cm-ava { margin-top: 3px; }
+    .${r} .scribe-cm-reply .scribe-cm-field { flex: 1 1 auto; min-width: 0; margin-top: 0; }
 
     /* The visible way into a comment-less row. */
     .${r} .scribe-cm-ghost {

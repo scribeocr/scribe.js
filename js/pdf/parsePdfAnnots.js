@@ -17,6 +17,7 @@ export const TEXT_ANNOT_ICON_PX = 24;
  * @property {string} comment - /Contents text (UTF-16BE or PDFDocEncoding decoded), '' when absent.
  * @property {string} author - /T text, '' when absent.
  * @property {?string} createdAt - /CreationDate as UTC ISO-8601, null when absent or unparseable.
+ * @property {AnnotationReply[]} [replies] - Lifted /IRT reply thread, oldest first.
  */
 
 /**
@@ -43,6 +44,7 @@ function parseAnnotPdfString(annotText, key) {
  * @property {[number, number, number]|null} textColor - rg fill from /DA normalized 0..1, or null.
  * @property {[number, number, number]|null} fillColor - /C normalized 0..1, or null if absent.
  * @property {number} opacity - /CA, defaults to 1 when absent.
+ * @property {AnnotationReply[]} [replies] - Lifted /IRT reply thread, oldest first.
  */
 
 /**
@@ -56,6 +58,7 @@ function parseAnnotPdfString(annotText, key) {
  * @property {string} iconName - /Name icon, 'Comment' when absent.
  * @property {string} author - /T text, '' when absent.
  * @property {?string} createdAt - /CreationDate as UTC ISO-8601, null when absent or unparseable.
+ * @property {AnnotationReply[]} [replies] - Lifted /IRT reply thread, oldest first.
  */
 
 /**
@@ -70,9 +73,47 @@ export function annotIsModelManaged(annotText) {
   const flags = flagsMatch ? Number(flagsMatch[1]) : 0;
   if (flags & 1 || flags & 2 || flags & 32) return false;
   if (/\/Subtype\s*\/Highlight\b/.test(annotText) || /\/Subtype\s*\/FreeText\b/.test(annotText)) return true;
-  // A /Text annotation is lifted only when standalone.
-  // A reply (/IRT) stays a passthrough so the thread is preserved.
+  // Replies (/IRT) are excluded here because they are lifted into their root's thread instead.
   return /\/Subtype\s*\/Text\b/.test(annotText) && !/\/IRT\b/.test(annotText);
+}
+
+const IRT_RE = /\/IRT\s+(\d+)\s+\d+\s+R/;
+
+/**
+ * Walk a /Text reply's /IRT chain to its root, flattening nested reply-to-reply chains onto one thread.
+ * Null when the annotation is not a reply, or its chain is broken or cyclic.
+ * @param {string} annotText
+ * @param {import('./objectCache.js').ObjectCache} objCache
+ * @returns {?{rootRef: number, rootText: string}}
+ */
+function resolveReplyRoot(annotText, objCache) {
+  if (!/\/Subtype\s*\/Text\b/.test(annotText)) return null;
+  // /RT /Group marks grouped markup, not a comment thread.
+  if (/\/RT\s*\/Group\b/.test(annotText)) return null;
+  let irt = IRT_RE.exec(annotText);
+  if (!irt) return null;
+  // The depth cap guards malformed cyclic chains.
+  for (let depth = 0; depth < 8; depth++) {
+    const ref = Number(irt[1]);
+    const text = objCache.getObjectText(ref);
+    if (!text) return null;
+    const parentIrt = IRT_RE.exec(text);
+    if (!parentIrt) return { rootRef: ref, rootText: text };
+    irt = parentIrt;
+  }
+  return null;
+}
+
+/**
+ * True when the annotation is a comment reply whose thread root is model-managed.
+ * The reply is re-emitted with its root on export, so the source copy must be dropped.
+ * @param {string} annotText
+ * @param {import('./objectCache.js').ObjectCache} objCache
+ * @returns {boolean}
+ */
+export function annotIsLiftedReply(annotText, objCache) {
+  const root = resolveReplyRoot(annotText, objCache);
+  return !!root && annotIsModelManaged(root.rootText);
 }
 
 /**
@@ -112,11 +153,27 @@ export function extractPdfAnnotations(objCache, pageObjText) {
     };
   }
 
+  /** @type {Map<number, Array<{objNum: number, text: string, author: string, createdAt: ?string}>>} */
+  const repliesByRoot = new Map();
+
   for (const annotRef of annotRefs) {
     const annotText = objCache.getObjectText(annotRef);
     if (!annotText) continue;
 
     if (!annotIsModelManaged(annotText)) {
+      // Flags are ignored here: a reply is thread content, not a page icon.
+      const root = resolveReplyRoot(annotText, objCache);
+      if (root && annotIsModelManaged(root.rootText)) {
+        const creationDateStr = parseAnnotPdfString(annotText, 'CreationDate');
+        if (!repliesByRoot.has(root.rootRef)) repliesByRoot.set(root.rootRef, []);
+        /** @type {Array<{objNum: number, text: string, author: string, createdAt: ?string}>} */ (repliesByRoot.get(root.rootRef)).push({
+          objNum: annotRef,
+          text: parseAnnotPdfString(annotText, 'Contents'),
+          author: parseAnnotPdfString(annotText, 'T'),
+          createdAt: creationDateStr ? parsePdfDate(creationDateStr) : null,
+        });
+        continue;
+      }
       // Of these not-lifted annotations, Invisible/Hidden/NoView are dropped entirely.
       // Every other (visible, non-Highlight/FreeText) annotation passes through on export unchanged.
       const flagsMatch = /\/F\s+(\d+)(?=\s*[/>])/.exec(annotText);
@@ -194,18 +251,36 @@ export function extractPdfAnnotations(objCache, pageObjText) {
     });
   }
 
+  if (repliesByRoot.size > 0) {
+    for (const raws of [highlights, freeTexts, textAnnots]) {
+      for (const raw of raws) {
+        const found = repliesByRoot.get(raw.objNum);
+        if (!found) continue;
+        found.sort((a, b) => {
+          const da = a.createdAt || '';
+          const db = b.createdAt || '';
+          if (da !== db) return da < db ? -1 : 1;
+          // Object order breaks date ties and orders undated replies.
+          return a.objNum - b.objNum;
+        });
+        raw.replies = found.map((r) => {
+          /** @type {AnnotationReply} */
+          const reply = { text: r.text };
+          if (r.author) reply.author = r.author;
+          if (r.createdAt) reply.createdAt = r.createdAt;
+          return reply;
+        });
+      }
+    }
+  }
+
   return {
     highlights, freeTexts, textAnnots, passthroughRefs,
   };
 }
 
 /**
- * Convert a PDF user-space highlight to the pixel-space `AnnotationHighlight`
- * shape used by `scribe.data.annotations.pages[i]`. Mirrors how `parseSinglePage`
- * transforms content-space chars into pixel-space OCR coordinates — apply
- * `initialCtm` (which bakes in any /Rotate), Y-flip against the post-rotate
- * visual height, then scale.
- *
+ * Convert a PDF user-space highlight to the pixel-space `AnnotationHighlight` shape.
  * @param {PdfHighlightRaw} raw
  * @param {{ scale: number, visualHeightPts: number, initialCtm: number[], groupId: string }} transform
  * @returns {AnnotationHighlight}
@@ -215,6 +290,7 @@ export function pdfHighlightToAnnotation(raw, transform) {
     scale, visualHeightPts, initialCtm, groupId,
   } = transform;
 
+  // `initialCtm` bakes in any /Rotate, so the Y-flip is against the post-rotate visual height.
   const mapPoint = (x, y) => {
     const cx = initialCtm[0] * x + initialCtm[2] * y + initialCtm[4];
     const cy = initialCtm[1] * x + initialCtm[3] * y + initialCtm[5];
@@ -274,6 +350,7 @@ export function pdfHighlightToAnnotation(raw, transform) {
   if (raw.comment) annot.comment = raw.comment;
   if (raw.author) annot.author = raw.author;
   if (raw.createdAt) annot.createdAt = raw.createdAt;
+  if (raw.replies && raw.replies.length > 0) annot.replies = raw.replies;
   if (quads && quads.length > 0) annot.quads = quads;
   return annot;
 }
@@ -328,6 +405,7 @@ export function pdfFreeTextToAnnotation(raw, transform) {
     opacity: raw.opacity,
   };
   if (raw.fillColor) annot.fillColor = toHex(raw.fillColor);
+  if (raw.replies && raw.replies.length > 0) annot.replies = raw.replies;
   return annot;
 }
 
@@ -373,5 +451,6 @@ export function pdfTextAnnotToAnnotation(raw, transform) {
   }
   if (raw.author) annot.author = raw.author;
   if (raw.createdAt) annot.createdAt = raw.createdAt;
+  if (raw.replies && raw.replies.length > 0) annot.replies = raw.replies;
   return annot;
 }

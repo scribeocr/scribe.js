@@ -286,6 +286,7 @@ export function clearShapes(doc) {
  * @property {string} [color] - Icon color '#rrggbb'.
  * @property {string} [author]
  * @property {string} [createdAt] - UTC ISO-8601.
+ * @property {AnnotationReply[]} [replies] - Reply thread under the comment, oldest first.
  * @property {boolean} [open] - Whether the popup opens by default; false when omitted.
  */
 
@@ -311,6 +312,7 @@ export function addTextAnnots(doc, textAnnots) {
     if (spec.color) annot.color = spec.color;
     if (spec.author) annot.author = spec.author;
     if (spec.createdAt) annot.createdAt = spec.createdAt;
+    if (spec.replies && spec.replies.length > 0) annot.replies = spec.replies.map((r) => ({ ...r }));
     doc.annotations.pages[spec.page].push(annot);
     added += 1;
   }

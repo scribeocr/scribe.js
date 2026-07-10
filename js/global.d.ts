@@ -208,6 +208,15 @@ declare global {
 
     type FileNode = import("./import/nodeAdapter.js").FileNode;
 
+    /** One reply in a comment thread. Round-trips as a PDF /Text annotation with /IRT. */
+    type AnnotationReply = {
+        text: string;
+        /** Reply author (PDF /T); omitted when unauthored. */
+        author?: string;
+        /** Reply creation time, UTC ISO-8601. */
+        createdAt?: string;
+    };
+
     type AnnotationHighlight = {
         type?: 'highlight';
         bbox: bbox;
@@ -217,6 +226,8 @@ declare global {
         comment?: string;
         author?: string;
         createdAt?: string;
+        /** Reply thread under the comment, oldest first. */
+        replies?: AnnotationReply[];
         quads?: bbox[];
     };
 
@@ -232,6 +243,8 @@ declare global {
         /** Background color, '#rrggbb'; omitted = transparent. */
         fillColor?: string;
         opacity: number;
+        /** Reply thread on the annotation, oldest first. */
+        replies?: AnnotationReply[];
     };
 
     type AnnotationShapeStyle = {
@@ -248,6 +261,8 @@ declare global {
         author?: string;
         /** Comment creation time*/
         createdAt?: string;
+        /** Reply thread under the comment, oldest first. */
+        replies?: AnnotationReply[];
     };
 
     /** Geometry below is in page coordinates (top-left origin, same frame as OCR words). */
@@ -269,6 +284,8 @@ declare global {
         author?: string;
         /** Comment creation time. */
         createdAt?: string;
+        /** Reply thread under the comment, oldest first. */
+        replies?: AnnotationReply[];
         /** Whether the note popup opens by default. */
         open?: boolean;
     };

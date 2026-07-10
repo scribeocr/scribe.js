@@ -397,13 +397,38 @@ export function modifyHighlightComment(viewer, selectedWords, comment) {
       if (author && !annot.author) annot.author = author;
       if (!annot.createdAt) annot.createdAt = now;
     } else {
+      // An emptied comment that still has replies is reverted by the caller,
+      // so reaching here means an intentional delete of the whole conversation.
       delete annot.author;
       delete annot.createdAt;
+      delete annot.replies;
     }
   }
   for (const kw of viewer.getUiWords()) {
     if (kw.highlightGroupId === matchingAnnot.groupId) {
       kw.highlightComment = comment;
     }
+  }
+}
+
+/**
+ * Replace the comment reply thread on the highlight group containing `uiWord`.
+ * An empty list removes the thread.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {import('./viewerWordObjects.js').UiOcrWord} uiWord - Any word of the target group.
+ * @param {AnnotationReply[]} replies
+ */
+export function setHighlightReplies(viewer, uiWord, replies) {
+  const pageIndex = uiWord.word.line.page.n;
+  const wb = uiWord.word.bbox;
+  const matchingAnnot = (viewer.doc.annotations.pages[pageIndex] || []).find(
+    (annot) => annotMatchesWord(annot, wb),
+  );
+  if (!matchingAnnot || !matchingAnnot.groupId) return;
+  for (const annot of viewer.doc.annotations.pages[pageIndex]) {
+    if (annot.groupId !== matchingAnnot.groupId) continue;
+    // Consumers read the thread off whichever annotation of the group they match first, so every member carries it.
+    if (replies.length > 0) annot.replies = replies;
+    else delete annot.replies;
   }
 }

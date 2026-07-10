@@ -1,4 +1,4 @@
-// Debug menu: developer-only tools, loaded only when the `DEBUG_MENU` constant in pdf-viewer.js is on and stripped from public builds.
+// Debug menu: developer-only tools, installed only when `DEBUG_MENU` in scribe-ui/devFlags.js is on and stripped from public builds.
 
 /** Bug glyph for the Debug section's rows. */
 const BUG_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
