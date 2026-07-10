@@ -13,8 +13,12 @@ import { SKIPPED, DEBUG_RENDER_SCHED } from '../../tess/TessScheduler.js';
  * @property {boolean} [upscaled]
  * @property {('color'|'gray'|'binary')} [colorMode]
  * @property {number} [rotation]
- * @property {number} [rasterScale] - On-screen device-pixel density the backing store was rastered at (see `_targetRasterScale`).
- * @property {number} [srcScale] - Density of the source raster the canvas was drawn from, in device px per page-dims px.
+ * @property {number} [srcW] - Width of the source raster the canvas was drawn from.
+ * @property {number} [srcH] - Height of the source raster the canvas was drawn from.
+ * @property {number} [canvasW] - Backing-store width the canvas was built with (see `_pageCanvasBox`).
+ * @property {number} [canvasH] - Backing-store height the canvas was built with.
+ * @property {number} [cssW] - CSS width the canvas was styled with.
+ * @property {number} [cssH] - CSS height the canvas was styled with.
  * @property {number} n
  */
 
@@ -150,11 +154,11 @@ export class ViewerImageCache {
      */
     this._srcRasters = [];
     /**
-     * Density of each `_srcRasters` entry, as a fraction of the full-resolution render `getNative` returns.
+     * Requested integer pixel width of each `_srcRasters` entry; the render lands on exactly this width.
      * 0 or undefined means no raster.
      * @type {Array<number>}
      */
-    this._srcScales = [];
+    this._srcWidths = [];
     /** Re-decode dedupe for compressed `_srcRasters` wrappers (mirrors `_nativeBitmapPromises`). @type {Array<?Promise<boolean>>} */
     this._srcBitmapPromises = [];
     /** Per-page identity of the compression promise installed into `_srcRasters` (mirrors `_compressPromises`). @type {Array<?Promise<any>>} */
@@ -205,13 +209,40 @@ export class ViewerImageCache {
   }
 
   /**
-   * Backing-store density for a page canvas, capped at the source raster's density because rastering past the source's 1:1 adds no detail.
-   * @param {number} srcDensity - Source raster density in device px per page-dims px.
-   * @returns {number}
+   * Backing-store and CSS box for a page canvas drawn from a `srcW`x`srcH` source raster at the current zoom.
+   * @param {number} n - Page number
+   * @param {number} srcW - Source raster width
+   * @param {number} srcH - Source raster height
+   * @param {number} rotation - Display rotation the blit applies (degrees)
+   * @returns {{canvasW: number, canvasH: number, cssW: number, cssH: number, blitScale: number}}
    */
-  _targetRasterScale(srcDensity) {
-    const dpr = window.devicePixelRatio || 1;
-    return Math.min(srcDensity, Math.max(0.01, (this._viewer().zoomLevel || 1) * dpr));
+  _pageCanvasBox(n, srcW, srcH, rotation) {
+    const viewer = this._viewer();
+    const pageDims = viewer.doc.pageMetrics[n].dims;
+    // User rotation (multiple of 90) swaps the displayed page dimensions for 90/270.
+    const swap = (viewer.doc.pageMetrics[n].rotation || 0) % 180 === 90;
+    const dispW = swap ? pageDims.height : pageDims.width;
+    const dispH = swap ? pageDims.width : pageDims.height;
+    const displayScale = Math.max(0.01, (viewer.zoomLevel || 1) * (window.devicePixelRatio || 1));
+    if (rotation % 90 === 0 && srcW === Math.max(1, Math.round(pageDims.width * displayScale))) {
+      // Take the raster's own integers verbatim: re-rounding any of them rescales it by a fraction of a pixel, which blurs every pixel.
+      const canvasW = swap ? srcH : srcW;
+      const canvasH = swap ? srcW : srcH;
+      return {
+        canvasW, canvasH, cssW: canvasW / displayScale, cssH: canvasH / displayScale, blitScale: 1,
+      };
+    }
+    const srcDensity = srcW / pageDims.width;
+    // Past the source's 1:1 a larger backing store adds no detail.
+    const rasterScale = Math.min(srcDensity, displayScale);
+    return {
+      canvasW: Math.max(1, Math.round(dispW * rasterScale)),
+      canvasH: Math.max(1, Math.round(dispH * rasterScale)),
+      // Snapped to whole device pixels: a fractional edge makes the compositor bilinear-blur the whole bitmap.
+      cssW: Math.max(1, Math.round(dispW * displayScale)) / displayScale,
+      cssH: Math.max(1, Math.round(dispH * displayScale)) / displayScale,
+      blitScale: rasterScale / srcDensity,
+    };
   }
 
   /**
@@ -224,46 +255,49 @@ export class ViewerImageCache {
   }
 
   /**
-   * Source-raster density the current zoom calls for, capped at 1 because a render cannot add detail beyond full resolution.
+   * Source-raster width the current zoom calls for: the page's on-screen device-pixel width, capped at its full-resolution width.
+   * @param {number} n - Page number
    * @returns {number}
    */
-  _wantDensity() {
+  _wantSrcWidth(n) {
+    const viewer = this._viewer();
+    const dims = viewer.doc.pageMetrics[n].dims;
     const dpr = window.devicePixelRatio || 1;
-    return Math.min(1, Math.max(0.01, (this._viewer().zoomLevel || 1) * dpr));
+    const displayScale = Math.max(0.01, (viewer.zoomLevel || 1) * dpr);
+    return Math.max(1, Math.min(Math.round(dims.width * displayScale), dims.width));
   }
 
   /**
-   * Get page `n`'s viewer source raster, rendering from the PDF when there is none or the existing one is too coarse for the current zoom.
-   * A page measured expensive to render keeps its coarse raster, so the result can be below the density the zoom calls for.
+   * Get page `n`'s viewer source raster, rendering from the PDF when there is none at the width the current zoom calls for.
+   * A page measured expensive to render keeps its existing raster, so the result can be coarser or finer than the screen density.
    * @param {number} n - Page number
    * @returns {Promise<{image: ImageBitmap, wrapper: ImageWrapper} | typeof SKIPPED>}
    */
   async _getViewerSrc(n) {
     const viewer = this._viewer();
     const images = viewer.doc.images;
-    const wantDensity = this._wantDensity();
-    const haveScale = this._srcScales[n] ?? 0;
+    const wantW = this._wantSrcWidth(n);
+    const haveW = this._srcWidths[n] ?? 0;
     let slot = this._srcRasters[n];
-    // 2% slack so device-pixel-ratio rounding never triggers a same-density re-render.
-    const sufficient = !!slot && wantDensity <= haveScale * 1.02;
+    const sufficient = !!slot && haveW === wantW;
     if (slot && !sufficient && images.isRenderExpensive(n)) {
-      // Re-rendering an expensive page would hitch the zoom, so reuse the coarse raster (the CSS transform upscales it, soft) and sharpen it in the background.
-      this._ensureCapUpgrade(n);
+      // Re-rendering an expensive page would hitch the zoom, so reuse the off-width raster.
+      if (haveW < wantW) this._ensureCapUpgrade(n);
     } else if (!slot || !sufficient) {
-      const renderP = images.renderViewerRaster(n, wantDensity, true);
+      const renderP = images.renderViewerRaster(n, wantW, true);
       slot = renderP;
       this._srcRasters[n] = renderP;
-      this._srcScales[n] = wantDensity;
+      this._srcWidths[n] = wantW;
       this._srcBitmapPromises[n] = null;
       renderP.then((w) => {
         // Dropped from the viewer lane: clear the slot so a later request re-renders.
         if (w === SKIPPED && this._srcRasters[n] === renderP) {
           this._srcRasters[n] = null;
-          this._srcScales[n] = 0;
+          this._srcWidths[n] = 0;
         }
       }).catch(() => {});
     } else if (DEBUG_RENDER_SCHED) {
-      console.log(`[render-sched] cache hit page ${n} (viewer raster reused at ${haveScale.toFixed(2)}x)`);
+      console.log(`[render-sched] cache hit page ${n} (viewer raster reused at ${haveW}px)`);
     }
     const wrapper = await slot;
     if (!wrapper || wrapper === SKIPPED) return SKIPPED;
@@ -287,17 +321,18 @@ export class ViewerImageCache {
   _ensureCapUpgrade(n) {
     // A failed upgrade leaves its promise in place: a render this slow must not be retried on every further zoom.
     if (this._capUpgrades[n]) return;
-    if ((this._srcScales[n] ?? 0) >= 1) return;
+    const fullW = this._viewer().doc.pageMetrics[n].dims.width;
+    if ((this._srcWidths[n] ?? 0) >= fullW) return;
     const images = this._viewer().doc.images;
     this._capUpgrades[n] = (async () => {
-      const w = await images.renderViewerRaster(n, 1, false);
+      const w = await images.renderViewerRaster(n, fullW, false);
       // A failure placeholder has no bitmap, and must not replace a working raster.
       if (!w || w === SKIPPED || !(/** @type {ImageWrapper} */ (w)).imageBitmap) return;
       // Rechecked after the await: the document may have been replaced, or the raster already re-rendered at full resolution.
       if (this._viewer().doc.images !== images) return;
-      if ((this._srcScales[n] ?? 0) >= 1) return;
+      if ((this._srcWidths[n] ?? 0) >= fullW) return;
       this._srcRasters[n] = Promise.resolve(w);
-      this._srcScales[n] = 1;
+      this._srcWidths[n] = fullW;
       this._srcBitmapPromises[n] = null;
       if (this.pageCanvases[n]) this.addPageCanvas(n);
     })().catch(() => {});
@@ -311,7 +346,6 @@ export class ViewerImageCache {
    */
   async getPageCanvas(n) {
     const viewer = this._viewer();
-    const pageDims = viewer.doc.pageMetrics[n].dims;
 
     const binary = viewer.state.colorMode === 'binary';
 
@@ -341,37 +375,22 @@ export class ViewerImageCache {
     }
 
     const rotation = this._displayRotation(n, backgroundImage.rotated);
-
-    // User rotation (multiple of 90) is an extra display transform on top of the deskew angle;
-    // for 90/270 it swaps the displayed page dimensions.
-    const userRotation = viewer.doc.pageMetrics[n].rotation || 0;
-    const dispW = userRotation % 180 === 90 ? pageDims.height : pageDims.width;
-    const dispH = userRotation % 180 === 90 ? pageDims.width : pageDims.height;
-
-    // The source may be a viewer raster, a native image, or a 2x binary upscale, so read the density off the bitmap rather than assuming it.
-    const srcDensity = image.width / pageDims.width;
-
-    // Round the CSS box to whole device pixels so the raster lands on the device-pixel grid.
-    // A fractional edge lets the GPU compositor bilinear-blur the whole bitmap.
-    const displayScale = (viewer.zoomLevel || 1) * (window.devicePixelRatio || 1);
-    const rasterScale = this._targetRasterScale(srcDensity);
-    const cssW = Math.max(1, Math.round(dispW * displayScale)) / displayScale;
-    const cssH = Math.max(1, Math.round(dispH * displayScale)) / displayScale;
+    // The source may be a viewer raster, a native image, or a 2x binary upscale, so the box is derived from the bitmap's own dimensions.
+    const box = this._pageCanvasBox(n, image.width, image.height, rotation);
 
     const canvas = /** @type {HTMLCanvasElement} */ (document.createElement('canvas'));
     canvas.className = 'scribe-layer-image';
-    canvas.width = Math.max(1, Math.round(dispW * rasterScale));
-    canvas.height = Math.max(1, Math.round(dispH * rasterScale));
+    canvas.width = box.canvasW;
+    canvas.height = box.canvasH;
     Object.assign(canvas.style, {
-      position: 'absolute', left: '0', top: '0', width: `${cssW}px`, height: `${cssH}px`, pointerEvents: 'none',
+      position: 'absolute', left: '0', top: '0', width: `${box.cssW}px`, height: `${box.cssH}px`, pointerEvents: 'none',
     });
     const ctx = /** @type {CanvasRenderingContext2D} */ (canvas.getContext('2d'));
     ctx.imageSmoothingQuality = 'high';
     ctx.save();
     ctx.translate(canvas.width / 2, canvas.height / 2);
     ctx.rotate(rotation * (Math.PI / 180));
-    // Scale the source raster (`srcDensity`x display) to the backing store (`rasterScale`x display).
-    ctx.scale(rasterScale / srcDensity, rasterScale / srcDensity);
+    ctx.scale(box.blitScale, box.blitScale);
     ctx.drawImage(image, -image.width / 2, -image.height / 2);
     ctx.restore();
 
@@ -380,8 +399,12 @@ export class ViewerImageCache {
       upscaled: backgroundImage.upscaled,
       colorMode: /** @type {'color'|'gray'|'binary'} */ (backgroundImage.colorMode),
       rotation,
-      rasterScale,
-      srcScale: srcDensity,
+      srcW: image.width,
+      srcH: image.height,
+      canvasW: box.canvasW,
+      canvasH: box.canvasH,
+      cssW: box.cssW,
+      cssH: box.cssH,
       n,
     };
 
@@ -439,16 +462,27 @@ export class ViewerImageCache {
           // The rotation is baked into the raster, so a changed display rotation needs a fresh draw.
           const rotation = this._displayRotation(n, props.rotated);
           if (Math.abs((props.rotation ?? 0) - rotation) > 0.01) rerender = true;
-          // Read the density from the current source slot rather than the canvas's own, so a landed background upgrade raises the target and forces a re-raster.
-          const srcNow = this._usesViewerRaster()
-            ? (this._srcScales[n] || props.srcScale || 1)
-            : (props.srcScale ?? (props.upscaled ? 2 : 1));
-          const targetScale = this._targetRasterScale(srcNow);
-          if (props.rasterScale && Math.abs(targetScale / props.rasterScale - 1) > 0.01) rerender = true;
-          // Reusing the canvas returns before `_getViewerSrc` runs, so a too-coarse source has to be caught here as well.
-          if (!rerender && this._usesViewerRaster() && this._wantDensity() > srcNow * 1.02) {
-            if (viewer.doc.images.isRenderExpensive(n)) this._ensureCapUpgrade(n);
-            else rerender = true;
+          if (this._usesViewerRaster()) {
+            // A reused canvas never reaches `_getViewerSrc`, so an off-width source must be caught here too.
+            const wantW = this._wantSrcWidth(n);
+            const haveW = this._srcWidths[n] ?? 0;
+            if (haveW !== wantW) {
+              if (!viewer.doc.images.isRenderExpensive(n)) rerender = true;
+              else if (haveW < wantW) this._ensureCapUpgrade(n);
+            }
+            // This is the only check that redraws once a background upgrade lands, because the expensive-page branch above never sets `rerender`.
+            if (haveW && props.srcW !== haveW) rerender = true;
+          }
+          if (!rerender) {
+            if (!props.srcW || !props.srcH) {
+              rerender = true;
+            } else {
+              // Reusing a canvas whose box no longer matches the current zoom lets the compositor scale the bitmap, softening it.
+              // The box in `props` came from this same function, so an unchanged zoom compares bit-identical and needs no float tolerance.
+              const boxNow = this._pageCanvasBox(n, props.srcW, props.srcH, rotation);
+              if (boxNow.canvasW !== props.canvasW || boxNow.canvasH !== props.canvasH
+                || boxNow.cssW !== props.cssW || boxNow.cssH !== props.cssH) rerender = true;
+            }
           }
         }
       }
@@ -534,7 +568,7 @@ export class ViewerImageCache {
     this._canvasLru.clear();
     this._bitmapPages.clear();
     this._srcRasters.length = 0;
-    this._srcScales.length = 0;
+    this._srcWidths.length = 0;
     this._srcBitmapPromises.length = 0;
     this._srcCompressPromises.length = 0;
     this._capUpgrades.length = 0;

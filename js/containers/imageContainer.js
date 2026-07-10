@@ -349,25 +349,24 @@ export class ImageStore {
   };
 
   /**
-   * Render page `n` for viewer display at a fraction of its full resolution.
+   * Render page `n` for viewer display at exactly `targetWidth` pixels wide.
    * The result is not cached in `native[n]`, so `getNative` consumers (OCR, export, coordinates) still get the full-resolution render.
    * @param {number} n - Page number
-   * @param {number} scale - Fraction of full resolution (0-1]; 1 renders the same pixels `getNative` would.
+   * @param {number} targetWidth - Raster width in pixels; `pageMetrics[n].dims.width` renders the same pixels `getNative` would.
    * @param {boolean} [forViewer=true] - Render in the viewer lane: prioritized, but droppable to `SKIPPED`.
    *   Pass `false` when the render must complete.
    * @returns {Promise<ImageWrapper | typeof SKIPPED>}
    */
-  renderViewerRaster = async (n, scale, forViewer = true) => {
+  renderViewerRaster = async (n, targetWidth, forViewer = true) => {
     if (!this.inputModes.pdf) throw new Error('renderViewerRaster requires PDF input.');
     const color = scribeDocDefaults.colorMode === 'color';
     const pm = this.#pageMetrics[n];
     // Display slot `n` may hold a page copied from another document. Render it from its own source, not this doc's.
     const pdfScheduler = await this.resolveSource(pm).getScheduler();
-    const dpi = 300 * (pm.dims.width * scale) / this.pdfDims300[n].width;
     // Display slot `n` may have been reordered. Raster its source page, not its position.
     const sourcePageN = pm.sourcePageN ?? n;
     const result = await pdfScheduler.renderPdfPage({
-      pageIndex: sourcePageN, colorMode: color ? 'color' : 'gray', dpi, outputFormat: 'bitmap',
+      pageIndex: sourcePageN, colorMode: color ? 'color' : 'gray', targetWidth, outputFormat: 'bitmap',
     }, forViewer);
     if (result === SKIPPED) return SKIPPED;
     this.#recordRenderCost(n, result.perf);

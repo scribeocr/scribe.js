@@ -23,7 +23,7 @@ export async function parsePdfPage(args) {
 
 /**
  * Render a single page to an image data URL, a JPEG blob, or a transferable ImageBitmap.
- * @param {{ pageIndex: number, colorMode: string, dpi?: number, outputFormat?: 'png'|'jpeg'|'bitmap', quality?: number }} args
+ * @param {{ pageIndex: number, colorMode: string, dpi?: number, targetWidth?: number, outputFormat?: 'png'|'jpeg'|'bitmap', quality?: number }} args
  */
 export async function renderPdfPage(args) {
   return core.renderPage(args);

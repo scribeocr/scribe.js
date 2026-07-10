@@ -47,19 +47,28 @@ export class PdfCore {
 
   /**
    * Render a single page to an image data URL, a JPEG blob, or a transferable ImageBitmap.
-   * @param {{ pageIndex: number, colorMode: string, dpi?: number, outputFormat?: 'png'|'jpeg'|'bitmap', quality?: number }} args
+   * @param {{ pageIndex: number, colorMode: string, dpi?: number, targetWidth?: number,
+   * outputFormat?: 'png'|'jpeg'|'bitmap', quality?: number }} args - `targetWidth` renders the page exactly that many pixels wide, taking precedence over `dpi`.
    * @returns {Promise<{ dataUrl?: string, blob?: Blob, bitmap?: ImageBitmap, colorMode: string, ok: boolean, failReason?: string, failDetail?: string,
    *   perf?: { prepMs: number, drawMs: number, decodeMs: number, flushMs: number } }>}
    */
   async renderPage({
-    pageIndex, colorMode, dpi, outputFormat = 'png', quality = 0.6,
+    pageIndex, colorMode, dpi, targetWidth, outputFormat = 'png', quality = 0.6,
   }) {
     if (!this.#objCache || !this.#pages) throw new Error('PDF not loaded');
     // Lazy import so the renderer stays out of main-thread bundles that never render in-process.
     const { renderPdfPageAsImage } = await import('./renderPdfPage.js');
     if (typeof process !== 'undefined') await ca.getCanvasNode();
     const page = this.#pages[pageIndex];
-    return renderPdfPageAsImage(page.objText, this.#objCache, page.cropBox || page.mediaBox, pageIndex, colorMode, page.rotate, dpi, outputFormat, quality);
+    const box = page.cropBox || page.mediaBox;
+    if (targetWidth) {
+      // Deriving dpi from the same box/rotate floats renderPdfPageAsImage sizes its canvas from is what makes its ceil land on exactly `targetWidth`.
+      const widthPts = Math.abs(box[2] - box[0]);
+      const heightPts = Math.abs(box[3] - box[1]);
+      const visualWidthPts = page.rotate === 90 || page.rotate === 270 ? heightPts : widthPts;
+      dpi = (72 * targetWidth) / visualWidthPts;
+    }
+    return renderPdfPageAsImage(page.objText, this.#objCache, box, pageIndex, colorMode, page.rotate, dpi, outputFormat, quality);
   }
 
   /**
