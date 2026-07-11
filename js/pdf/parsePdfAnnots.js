@@ -90,6 +90,8 @@ function resolveReplyRoot(annotText, objCache) {
   if (!/\/Subtype\s*\/Text\b/.test(annotText)) return null;
   // /RT /Group marks grouped markup, not a comment thread.
   if (/\/RT\s*\/Group\b/.test(annotText)) return null;
+  // A /State annotation has empty /Contents, so lifting it would create a blank reply.
+  if (/\/State(?:Model)?\s*\/\w/.test(annotText)) return null;
   let irt = IRT_RE.exec(annotText);
   if (!irt) return null;
   // The depth cap guards malformed cyclic chains.

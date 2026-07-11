@@ -179,9 +179,10 @@ export function buildTextAnnotObjects(annotations, startObjNum, outputDims, warn
  * @param {number} startObjNum
  * @param {{ width: number, height: number }} outputDims
  * @param {(message: string) => void} [warningHandler] - Reports each annotation skipped on error.
+ * @param {boolean} [omitIdentity] - When true (a sanitized export), suppress `/T` and `/CreationDate` on the reply thread.
  * @returns {{ objectTexts: string[], annotRefs: string[] }} Object strings (the i-th numbered startObjNum + i) and their `/Annots` references.
  */
-export function buildFreeTextAnnotObjects(annotations, startObjNum, outputDims, warningHandler) {
+export function buildFreeTextAnnotObjects(annotations, startObjNum, outputDims, warningHandler, omitIdentity = false) {
   const objectTexts = [];
   const annotRefs = [];
   let objNum = startObjNum;
@@ -221,7 +222,7 @@ export function buildFreeTextAnnotObjects(annotations, startObjNum, outputDims, 
       objNum++;
       if (annot.replies && annot.replies.length > 0) {
         const rectStr = `${annot.bbox.left} ${pdfRectBottom} ${annot.bbox.right} ${pdfRectTop}`;
-        const replyObjs = buildReplyObjects(annot.replies, parentObjNum, rectStr, objNum, false);
+        const replyObjs = buildReplyObjects(annot.replies, parentObjNum, rectStr, objNum, omitIdentity);
         objectTexts.push(...replyObjs.objectTexts);
         annotRefs.push(...replyObjs.annotRefs);
         objNum += replyObjs.objectTexts.length;
@@ -244,9 +245,10 @@ const SHAPE_SUBTYPE = {
  * @param {number} startObjNum
  * @param {{ width: number, height: number }} outputDims
  * @param {(message: string) => void} [warningHandler] - Reports each annotation skipped on error.
+ * @param {boolean} [omitIdentity] - When true (a sanitized export), suppress `/T` and `/CreationDate` on the reply thread.
  * @returns {{ objectTexts: string[], annotRefs: string[] }} Object strings (the i-th numbered startObjNum + i) and their `/Annots` references.
  */
-export function buildShapeAnnotObjects(annotations, startObjNum, outputDims, warningHandler) {
+export function buildShapeAnnotObjects(annotations, startObjNum, outputDims, warningHandler, omitIdentity = false) {
   const objectTexts = [];
   const annotRefs = [];
   const H = outputDims.height;
@@ -341,7 +343,7 @@ export function buildShapeAnnotObjects(annotations, startObjNum, outputDims, war
       objectTexts.push(apObj);
       objNum += 2;
       if (annot.replies && annot.replies.length > 0) {
-        const replyObjs = buildReplyObjects(annot.replies, parentObjNum, rect, objNum, false);
+        const replyObjs = buildReplyObjects(annot.replies, parentObjNum, rect, objNum, omitIdentity);
         objectTexts.push(...replyObjs.objectTexts);
         annotRefs.push(...replyObjs.annotRefs);
         objNum += replyObjs.objectTexts.length;

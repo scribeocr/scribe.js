@@ -511,11 +511,11 @@ export async function rebuildPdfSubset({
         for (const t of objectTexts) allOutputObjects.push({ objNum: nextObjNum++, content: t });
         const shapeAnns = pageAnnotations.filter((a) => SHAPE_ANNOT_TYPES.has(a.type))
           .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty));
-        const shapes = buildShapeAnnotObjects(shapeAnns, nextObjNum, outputDims, warningHandler);
+        const shapes = buildShapeAnnotObjects(shapeAnns, nextObjNum, outputDims, warningHandler, !!scrub);
         for (const t of shapes.objectTexts) allOutputObjects.push({ objNum: nextObjNum++, content: t });
         const freeTextAnns = pageAnnotations.filter((a) => a.type === 'freetext')
           .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty));
-        const ft = buildFreeTextAnnotObjects(freeTextAnns, nextObjNum, outputDims, warningHandler);
+        const ft = buildFreeTextAnnotObjects(freeTextAnns, nextObjNum, outputDims, warningHandler, !!scrub);
         for (const t of ft.objectTexts) allOutputObjects.push({ objNum: nextObjNum++, content: t });
         const textAnns = pageAnnotations.filter((a) => a.type === 'text')
           .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty));
