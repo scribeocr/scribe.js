@@ -1,5 +1,9 @@
 import scribe from '../../scribe.js';
 import { ScribeViewer } from '../viewer.js';
+// Both engines are imported so `ScribeViewer.customSelection` can toggle between them at runtime.
+// Import only one for a slimmer build.
+import '../js/selection/customSelectionEngine.js';
+import '../js/selection/domSelectionEngine.js';
 import { applyHighlight } from '../js/viewerHighlights.js';
 import { destroyContextMenu } from '../js/viewerCanvasInteraction.js';
 import {

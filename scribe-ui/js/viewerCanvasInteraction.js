@@ -478,13 +478,17 @@ const deleteHighlightClick = () => {
   removeHighlightGroup(viewer, viewer.contextMenuWord);
 };
 
-/**
- * Copy the current text selection.
- * execCommand('copy') fires a trusted copy event that the app's own document 'copy' listener fills with OCR-accurate, multi-page text, so right-click Copy and Ctrl+C produce identical clipboard text.
- * A synthetic ClipboardEvent is not usable here: Firefox nulls the clipboardData passed to its constructor, so the listener would have nothing to write into.
- */
+/** Copy the current text selection. */
 const copySelectionClick = () => {
-  try { document.execCommand('copy'); } catch { /* clipboard unavailable, so nothing to copy */ }
+  const viewer = mv();
+  if (viewer.useCustomSelection) {
+    const text = viewer.textSel.getText();
+    if (text) navigator.clipboard?.writeText(text).catch(() => {});
+  } else {
+    // Native selection has no direct text handle, so execCommand('copy') fires a trusted copy event that the document listener fills with OCR-accurate, multi-page text.
+    // Not a synthetic ClipboardEvent: Firefox nulls its clipboardData, so the listener would have nothing to write.
+    try { document.execCommand('copy'); } catch { /* clipboard unavailable, so nothing to copy */ }
+  }
   hideContextMenu();
 };
 
@@ -521,7 +525,7 @@ const highlightSelectionClick = () => {
   const words = viewer.getWordsUnderTextSelection();
   if (!color || words.length === 0) return;
   applyHighlight(viewer, words, color, 0.5);
-  window.getSelection()?.removeAllRanges();
+  viewer.clearTextSelection();
 };
 
 /**
@@ -545,7 +549,7 @@ const commentSelectionClick = (event) => {
   const words = viewer.getWordsUnderTextSelection();
   if (color && words.length > 0 && viewer._openCommentEditor) {
     applyHighlight(viewer, words, color, 0.5);
-    window.getSelection()?.removeAllRanges();
+    viewer.clearTextSelection();
     viewer._openCommentEditor(words);
     return;
   }
@@ -736,8 +740,8 @@ export const hideContextMenu = () => {
 };
 
 export const contextMenuFunc = (viewer, event) => {
-  // Return before the later preventDefault so the browser's native context menu shows instead of ours.
-  if (viewer.contextMenuDisabledDebug) { hideContextMenu(); return; }
+  // The DOM selection engine leaves a native browser text selection, so bail before the preventDefault below to let the browser's own right-click menu act on it.
+  if (!viewer.useCustomSelection && !viewer.enableCanvasSelection) { hideContextMenu(); return; }
   // A right-click inside a text field (a note or comment editor, a rename box) keeps the browser's native edit menu rather than ours.
   const editableTarget = /** @type {?HTMLElement} */ (event.target);
   if (editableTarget && (editableTarget.tagName === 'INPUT' || editableTarget.tagName === 'TEXTAREA' || editableTarget.isContentEditable)) return;
@@ -767,7 +771,8 @@ export const contextMenuFunc = (viewer, event) => {
 
     // A text selection over this viewer's words (outside layout mode) enables Copy (always) and Highlight (when a highlight color is set).
     // Both are read-only-safe, so neither is gated on the editor-only enableCanvasSelection flag.
-    const hasTextSelection = !viewer.state.layoutMode && viewer.getWordsUnderTextSelection().length > 0;
+    // Keyed on whether a selection exists, not on its resolved words: resolving a whole-document selection would build every page's word objects just to grey out a menu item.
+    const hasTextSelection = !viewer.state.layoutMode && viewer.hasTextSelection();
     const enableCopy = hasTextSelection;
     const enableHighlight = hasTextSelection && !!viewer._highlightColor;
 

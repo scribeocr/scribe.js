@@ -14,7 +14,7 @@ import {
 import { getAllFileEntries } from './js/dragAndDrop.js';
 import { deleteSelectedLayoutDataTable, deleteSelectedLayoutRegion } from './js/viewerModifySelectedLayout.js';
 import {
-  applyHighlight, removeHighlight, modifyHighlightComment, updateHighlightGroupOutline,
+  annotMatchesWord, applyHighlight, removeHighlight, modifyHighlightComment, updateHighlightGroupOutline,
 } from './js/viewerHighlights.js';
 import { renderPageNotes } from './js/viewerNotes.js';
 import { ensureLayerStyleSheet, COMMENT_MARK_SVG } from './js/viewerLayerStyles.js';
@@ -74,6 +74,11 @@ export class ScribeViewer {
    */
   static scrollTextHideDistanceFraction = 0.5;
 
+  /**
+   * Serve text selection from the OCR model (`js/viewerTextSelection.js`); set false for the invisible DOM text layer with the browser's native selection.
+   */
+  static customSelection = true;
+
   /** Blank vertical space (content px) between stacked pages, applied above the first page and below each page. */
   static pageMargin = 30;
 
@@ -87,6 +92,18 @@ export class ScribeViewer {
     this.state = new ScribeViewerState();
     this.opt = new ScribeViewerOpts();
     this.CanvasSelection = new CanvasSelection(this);
+    /**
+     * The selection engine, resolved by `_sel()` from what the build registered: the model-driven engine, the invisible-text DOM engine, or null when `enableHTMLOverlay` is off.
+     * @type {?{kind: string}}
+     */
+    this._selEngine = null;
+    /** Latch for `_sel()`: the engine choice is made once, on first use after `init`. */
+    this._selEngineInit = false;
+    /**
+     * The model-driven text selection, set by the custom engine's `attach` (`js/selection/customSelectionEngine.js`) and null under the DOM engine.
+     * @type {?import('./js/viewerTextSelection.js').TextSelection}
+     */
+    this.textSel = null;
     this.imageCache = new ViewerImageCache(this);
     /** @type {import('../js/containers/scribeDoc.js').ScribeDoc} */
     this._doc = new scribe.ScribeDoc();
@@ -108,13 +125,9 @@ export class ScribeViewer {
 
     /**
      * [Debug] When `true` the text overlay is never built, unlike `textOverlayHidden` which only hides an already-built one.
+     * Meaningful only under the DOM selection engine (the built-in engine draws selection from the model, not from an overlay).
      */
     this.textOverlayDisabledDebug = false;
-
-    /**
-     * [Debug] When `true` the viewer's custom right-click menu is suppressed, so the browser's native context menu shows instead.
-     */
-    this.contextMenuDisabledDebug = false;
 
     /** @type {Array<number>} */
     this._pageStopsStart = [];
@@ -154,7 +167,9 @@ export class ScribeViewer {
     /** @type {number} */
     this._scrollLeft = 0;
     /**
-     * Settle timer for a deferred (fast-scroll or invis) text build (see `updateCurrentPage`), or null when none is pending.
+     * Settle timer for a deferred page build (see `updateCurrentPage`).
+     * A deferred word build (fast scroll, or any scroll in invis mode) or raster window (preview glide) arms it.
+     * Firing builds the landed page in full and ends any glide.
      * @type {?ReturnType<typeof setTimeout>}
      */
     this._deferredTextTimer = null;
@@ -170,13 +185,6 @@ export class ScribeViewer {
      * @type {boolean}
      */
     this._rasterTail = false;
-    /**
-     * Mid-scroll text-layer hide state, driven by `_updateScrollTextHide`.
-     * @type {?ReturnType<typeof setTimeout>}
-     */
-    this._scrollTextHideTimer = null;
-    this._scrollTextHideEngaged = false;
-    this._scrollGestureDist = 0;
     /**
      * Sized to the whole document (max display width x last page stop, times zoom) so the native scrollbar gets the right extent. Holds `zoomLayer`.
      * @type {HTMLDivElement}
@@ -207,6 +215,27 @@ export class ScribeViewer {
      * @type {Array<Object<string, HTMLDivElement>>}
      */
     this._highlightGroups = [];
+    /**
+     * Per-page selection-layer containers, indexed by page then line orientation.
+     * Holds the custom selection's rectangles and the search-match rectangles, above the highlight bands.
+     * @type {Array<Object<string, HTMLDivElement>>}
+     */
+    this._selectGroups = [];
+    /**
+     * Per-page `word.id` -> word object, built alongside `_wordObjs` so a selection can resolve ids in one step.
+     * @type {Array<Map<string, UiOcrWord>>}
+     */
+    this._wordObjMaps = [];
+    /** Pages whose search-match rectangles need redrawing on the next frame. @type {Set<number>} */
+    this._markRepaintPages = new Set();
+    /** @type {?number} */
+    this._markRepaintRaf = null;
+    /**
+     * Called after the custom text selection changes (including when it is cleared).
+     * The host UI registers here to enable or disable selection-dependent controls.
+     * @type {?() => void}
+     */
+    this.onSelectionChange = null;
     /**
      * Per-page maps from highlight group id to that group's fill rects, rebuilt with the fill layer, so hover feedback can lift every band of a group at once (including bands on other pages).
      * @type {Array<Map<string, Array<HTMLDivElement>>>}
@@ -346,14 +375,6 @@ export class ScribeViewer {
       ignoreCap: scribe.ScribeDoc.defaults.ignoreCap,
     };
 
-    /** @type {?Range} */
-    this._prevRange = null;
-    this._prevStart = null;
-    this._prevEnd = null;
-
-    // True while a native selection drag may be in flight: primary-button press to pointerup/cancel.
-    this._selDragPointerDown = false;
-
     /** @type {?EventTarget} */
     this._mouseDownTarget = null;
 
@@ -364,6 +385,76 @@ export class ScribeViewer {
     this.destroyControlsCallback = (deselect) => {};
 
     registerViewer(this);
+  }
+
+  /**
+   * The selection engines available to viewers, each registered by importing its module
+   * (`js/selection/customSelectionEngine.js`, `js/selection/domSelectionEngine.js`), so a bundle ships only the engines it imports.
+   * @type {{dom: ?{kind: string, attach: (viewer: ScribeViewer) => any}, custom: ?{kind: string, attach: (viewer: ScribeViewer) => any}}}
+   */
+  static _selectionEngines = { dom: null, custom: null };
+
+  /** @param {{kind: 'dom'|'custom', attach: (viewer: ScribeViewer) => any}} engine */
+  static registerSelectionEngine(engine) {
+    ScribeViewer._selectionEngines[engine.kind] = engine;
+  }
+
+  /**
+   * Whether text interaction is served by the model-driven `textSel` rather than the browser's native selection over invisible word spans.
+   */
+  get useCustomSelection() {
+    return this._sel()?.kind === 'custom';
+  }
+
+  /**
+   * This viewer's selection engine, resolved and installed on first use rather than at `init`.
+   * @returns {?any}
+   */
+  _sel() {
+    // Lazy because apps set enableHTMLOverlay/enableCanvasSelection after construction; the first render or pointer gesture is the first moment the choice is needed.
+    if (!this._selEngineInit && this.elem) {
+      this._selEngineInit = true;
+      this._selEngine = this._resolveSelectionEngine();
+      /** @type {any} */ (this._selEngine)?.install?.();
+    }
+    return this._selEngine;
+  }
+
+  /**
+   * Pick and attach this viewer's selection engine from what the build registered.
+   */
+  _resolveSelectionEngine() {
+    if (!this.enableHTMLOverlay) return null;
+    const { dom, custom } = ScribeViewer._selectionEngines;
+    if (this.enableCanvasSelection) {
+      // Canvas selection (the editor's marquee) builds on the word-span layer, so it needs the DOM engine.
+      if (!dom) throw new Error('enableCanvasSelection requires the DOM selection engine: import scribe-ui/js/selection/domSelectionEngine.js');
+      return dom.attach(this);
+    }
+    // Otherwise use custom, except fall to DOM when both are registered and the customSelection switch is off.
+    if (custom && (ScribeViewer.customSelection || !dom)) return custom.attach(this);
+    if (dom) return dom.attach(this);
+    throw new Error('No selection engine registered: import scribe-ui/js/selection/customSelectionEngine.js, scribe-ui/js/selection/domSelectionEngine.js, or both');
+  }
+
+  /**
+   * [Debug] Swap this viewer's selection engine live, rebuilding the text layers so already-rendered pages adopt the new one.
+   * It swaps by flipping the class-level `customSelection` switch, so both engines must be registered.
+   * @param {'custom'|'dom'} kind
+   */
+  setSelectionEngineDebug(kind) {
+    if (this._sel()?.kind === kind) return;
+    this.clearTextSelection();
+    /** @type {any} */ (this._selEngine)?.uninstall?.();
+    this.textSel?.destroy();
+    this.textSel = null;
+    this._selEngine = null;
+    this._selEngineInit = false;
+    ScribeViewer.customSelection = kind === 'custom';
+    // The overlay-disable debug flag is DOM-engine-only; clear it when leaving that engine, or pages stay overlay-less with no way to toggle it back.
+    if (kind === 'custom') this.textOverlayDisabledDebug = false;
+    this.destroyText(false);
+    this.displayPage(this.state.cp.n, false, true);
   }
 
   /** @returns {import('../js/containers/scribeDoc.js').ScribeDoc} */
@@ -389,6 +480,10 @@ export class ScribeViewer {
     this._overlayGroups.length = 0;
     this._notesGroups.length = 0;
     this.overlayGroupsRenderIndices.length = 0;
+    this._selectGroups.length = 0;
+    this._wordObjMaps.length = 0;
+    // Runs on every document swap, page reorder, rotation, and teardown, so drop the selection's now-stale cached geometry and range.
+    this.textSel?.invalidateAll();
   }
 
   /**
@@ -597,6 +692,63 @@ export class ScribeViewer {
     const { x: cx, y: cy } = this.clientToContent(clientX, clientY);
     const n = this.calcPage(cy);
     return { n, x: cx - this._pageLeft(n), y: cy - this.getPageStop(n) };
+  }
+
+  /**
+   * The rotation, in degrees, that `createGroup` applies to page `n`'s group for orientation `orientation`.
+   * @param {number} n
+   * @param {number} orientation
+   */
+  _groupRotation(n, orientation) {
+    const metrics = this.doc.pageMetrics[n];
+    const textRotation = scribe.ScribeDoc.defaults.autoRotate ? 0 : (metrics.angle || 0);
+    return textRotation + orientation * 90 + (metrics.rotation || 0);
+  }
+
+  /**
+   * Map a displayed-page point into the local space of page `n`'s orientation group, the space the OCR line and word boxes live in.
+   * Inverts the centre-rotation `createGroup` applies.
+   * @param {number} n
+   * @param {number} orientation
+   * @param {number} x
+   * @param {number} y
+   * @returns {{x: number, y: number}}
+   */
+  pageToLocal(n, orientation, x, y) {
+    const disp = this.getDisplayDims(n);
+    const dims = this.doc.pageMetrics[n].dims;
+    const localW = orientation % 2 === 1 ? dims.height : dims.width;
+    const localH = orientation % 2 === 1 ? dims.width : dims.height;
+    const rad = -this._groupRotation(n, orientation) * (Math.PI / 180);
+    const dx = x - disp.width / 2;
+    const dy = y - disp.height / 2;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    return { x: dx * cos - dy * sin + localW / 2, y: dx * sin + dy * cos + localH / 2 };
+  }
+
+  /**
+   * Map a point in page `n`'s orientation-group local space to content (page-stop) space.
+   * @param {number} n
+   * @param {number} orientation
+   * @param {number} x
+   * @param {number} y
+   * @returns {{x: number, y: number}}
+   */
+  localToContent(n, orientation, x, y) {
+    const disp = this.getDisplayDims(n);
+    const dims = this.doc.pageMetrics[n].dims;
+    const localW = orientation % 2 === 1 ? dims.height : dims.width;
+    const localH = orientation % 2 === 1 ? dims.width : dims.height;
+    const rad = this._groupRotation(n, orientation) * (Math.PI / 180);
+    const dx = x - localW / 2;
+    const dy = y - localH / 2;
+    const cos = Math.cos(rad);
+    const sin = Math.sin(rad);
+    return {
+      x: this._pageLeft(n) + disp.width / 2 + dx * cos - dy * sin,
+      y: this.getPageStop(n) + disp.height / 2 + dx * sin + dy * cos,
+    };
   }
 
   /**
@@ -943,7 +1095,11 @@ export class ScribeViewer {
       }
       const deferRaster = this._rasterDeferred ? true : (this._rasterTail ? 'current' : false);
       this.displayPage(pageNew, false, false, defer, deferRaster);
-      if (defer) {
+      // Arm the settle timer whenever the raster is deferred, even if text built immediately:
+      // only the settled render below fills the full raster window and ends the glide tail.
+      // The displayPage call above cancels any pending timer when text is not deferred,
+      // so without this re-arm a glide in a visible mode leaves previews until the next zoom.
+      if (defer || deferRaster !== false) {
         if (this._deferredTextTimer) clearTimeout(this._deferredTextTimer);
         // Fire only once the scroll position holds still.
         // A fixed delay would fire mid-glide, because at low speeds page boundaries fall further apart than the delay.
@@ -970,113 +1126,33 @@ export class ScribeViewer {
    * @returns {Set<number>}
    */
   _selectionPages() {
-    const pages = new Set();
-    const sel = document.getSelection();
-    if (!sel || sel.isCollapsed) return pages;
-    let lo = Infinity;
-    let hi = -Infinity;
-    for (let i = 0; i < sel.rangeCount; i++) {
-      const range = sel.getRangeAt(i);
-      for (const node of [range.startContainer, range.endContainer]) {
-        const el = /** @type {?HTMLElement} */ (node.nodeType === Node.ELEMENT_NODE ? node : node.parentElement);
-        const grp = /** @type {?HTMLDivElement} */ (el?.closest?.('.scribe-layer-text'));
-        if (!grp) continue;
-        for (const n of this.textGroupsRenderIndices) {
-          if (Object.values(this._textGroups[n] || {}).includes(grp)) {
-            lo = Math.min(lo, n);
-            hi = Math.max(hi, n);
-            break;
-          }
-        }
-      }
-    }
-    for (let n = lo; n <= hi; n++) pages.add(n);
-    return pages;
+    if (this.useCustomSelection) return /** @type {NonNullable<typeof this.textSel>} */ (this.textSel).pages();
+    return /** @type {any} */ (this._sel())?.pages?.() ?? new Set();
   }
 
   /**
-   * Hide the built text layers during a sustained scroll so the compositor stops re-compositing their thousands of word/filler elements on every mid-scroll frame.
+   * Hide the built text layers during a sustained scroll.
    * `_endScrollTextHide` restores them at settle.
-   *
-   * Skipped outside `invis` mode (hiding visible text blanks the page),
-   * during a selection drag (autoscroll reads the live layer each sample),
-   * and while an edit input is focused (`display: none` blurs it and commits the edit).
-   * Pages holding part of the selection stay visible while on-screen.
    * @param {number} speed - Scroll distance (px) since the previous frame.
    */
   _updateScrollTextHide(speed) {
-    this._scrollGestureDist += speed;
-    if (this._scrollTextHideTimer) clearTimeout(this._scrollTextHideTimer);
-    this._scrollTextHideTimer = setTimeout(() => this._endScrollTextHide(), ScribeViewer.scrollTextHideSettleMs);
-
-    if (!this._scrollTextHideEngaged
-      && this._scrollGestureDist < this._scrollMetrics().clientHeight * ScribeViewer.scrollTextHideDistanceFraction) return;
-
-    const editing = document.activeElement && /** @type {HTMLElement} */ (document.activeElement).isContentEditable
-      && this.elem?.contains(document.activeElement);
-    if (this.state.displayMode !== 'invis' || this._selDragPointerDown || editing) {
-      this._endScrollTextHide();
-      return;
-    }
-
-    this._scrollTextHideEngaged = true;
-    const selPages = this._selectionPages();
-    const vTop = this._scrollTop / this.zoomLevel;
-    const vBottom = (this._scrollTop + this._scrollMetrics().clientHeight) / this.zoomLevel;
-    for (const n of this.textGroupsRenderIndices) {
-      const start = this.getPageStop(n);
-      const end = this.getPageStop(n, false);
-      const onScreen = start === null || end === null || (start < vBottom && end > vTop);
-      const want = onScreen && selPages.has(n) ? '' : 'none';
-      for (const grp of Object.values(this._textGroups[n] || {})) {
-        if (grp.style.display !== want) grp.style.display = want;
-      }
-    }
+    // Only the DOM engine puts text in the DOM, so only it has word/filler elements to stop compositing mid-scroll.
+    /** @type {any} */ (this._sel())?.onScroll?.(speed);
   }
 
   /**
    * Restore every hidden text layer and reset the scroll gesture.
-   * Sweeps ALL cached groups, not just `textGroupsRenderIndices`:
-   * `destroyText` can evict a page from the render indices mid-hide while its hidden group stays cached,
-   * and a later rebuild into that group would come back invisible.
    */
   _endScrollTextHide() {
-    if (this._scrollTextHideTimer) {
-      clearTimeout(this._scrollTextHideTimer);
-      this._scrollTextHideTimer = null;
-    }
-    this._scrollGestureDist = 0;
-    if (!this._scrollTextHideEngaged) return;
-    this._scrollTextHideEngaged = false;
-    for (const groups of this._textGroups) {
-      if (!groups) continue;
-      for (const grp of Object.values(groups)) {
-        if (grp.style.display) grp.style.display = '';
-      }
-    }
+    /** @type {any} */ (this._sel())?.endScrollHide?.();
   }
 
   /**
-   * Hide the built text layers until `endInteractionTextHide`, so a host interaction that moves or re-clips the content
-   * (a sidebar resize drag) does not repaint every built word per frame.
-   * No-ops when hiding is unsafe: visible-text modes, a focused edit input, or an active selection.
+   * Hide the built text layers until `endInteractionTextHide`.
+   * Without hiding them, a host interaction that moves or re-clips the content repaints every built word each frame.
    */
   startInteractionTextHide() {
-    const editing = document.activeElement && /** @type {HTMLElement} */ (document.activeElement).isContentEditable
-      && this.elem?.contains(document.activeElement);
-    // Hiding visible text blanks the page, display:none blurs a focused edit (committing it), and a selection's layers must stay live.
-    if (this.state.displayMode !== 'invis' || editing || this._selectionPages().size) return;
-    // Take over a scroll-hide already in flight: its pending settle would otherwise restore the layers mid-interaction.
-    if (this._scrollTextHideTimer) {
-      clearTimeout(this._scrollTextHideTimer);
-      this._scrollTextHideTimer = null;
-    }
-    this._scrollTextHideEngaged = true;
-    for (const n of this.textGroupsRenderIndices) {
-      for (const grp of Object.values(this._textGroups[n] || {})) {
-        if (grp.style.display !== 'none') grp.style.display = 'none';
-      }
-    }
+    /** @type {any} */ (this._sel())?.startInteractionHide?.();
   }
 
   /** Restore the text layers hidden by `startInteractionTextHide`; sharing the scroll-hide restore keeps either hide source from leaving a group stuck hidden. */
@@ -1363,28 +1439,6 @@ export class ScribeViewer {
     zoomLayer.appendChild(marquee);
     this.selectingRectangle = marquee;
 
-    // Invisible backstop catching selection points in the dead space between and beside pages,
-    // where a point would otherwise resolve to the start of the content layer and invert the selection into "everything above the anchor".
-    // z-index -1 keeps it below the per-page fillers (see `_renderCanvasWords`), so it catches only what they cannot: the page gaps and the viewer background, not within-page dead space.
-    this.HTMLOverlayBackstopElem = document.createElement('div');
-    this.HTMLOverlayBackstopElem.className = 'endOfContent';
-    Object.assign(this.HTMLOverlayBackstopElem.style, {
-      position: 'absolute',
-      left: '-100%',
-      top: '-100%',
-      width: '300%',
-      height: '300%',
-      display: 'none',
-      pointerEvents: 'auto',
-      zIndex: '-1',
-    });
-
-    // This flag gates the backstop to an in-flight drag: `_onSelection` shows the backstop while it is set, and gesture-end listeners (viewerRuntime.js) hide it.
-    // Left visible afterward, its page-spanning hit target taxes the browser's per-frame hover hit-test, the dominant cost of scrolling after a selection.
-    scrollContainer.addEventListener('pointerdown', (event) => {
-      if (event.button === 0) this._selDragPointerDown = true;
-    });
-
     // `contextMenuFunc` lazily builds the shared menu, then shows only the actions that apply
     // (none on a read-only viewer, where it returns before suppressing the browser's own menu).
     scrollContainer.addEventListener('contextmenu', (event) => contextMenuFunc(this, event));
@@ -1411,40 +1465,43 @@ export class ScribeViewer {
     // Hovering any word of a highlight lifts every band of its group and swaps in a pointer cursor,
     // signalling the highlight is an engageable object (its actions live in the right-click menu).
     // Delegated rather than per-word so it tracks highlights applied or removed after the words were built.
-    /** @type {?{wordEl: HTMLElement, rects: Array<HTMLDivElement>}} */
-    let hlLift = null;
-    const clearHlLift = () => {
-      if (!hlLift) return;
-      for (const rect of hlLift.rects) rect.classList.remove('scribe-hl-hover');
-      hlLift.wordEl.style.cursor = '';
-      hlLift = null;
-      if (this.onHighlightHover) this.onHighlightHover(null);
-    };
-    scrollContainer.addEventListener('mouseover', (event) => {
-      const wordEl = event.target instanceof Element ? /** @type {?HTMLElement} */ (event.target.closest('.scribe-word')) : null;
-      if (hlLift && hlLift.wordEl === wordEl) return;
-      clearHlLift();
-      if (!wordEl) return;
-      const kw = /** @type {any} */ (wordEl)._scribeObj;
-      if (!kw || !kw.highlightColor) return;
-      /** @type {Array<HTMLDivElement>} */
-      const rects = [];
-      if (kw.highlightGroupId) {
-        // A group can span pages (a selection highlighted across a page break), so gather bands from every page's map.
-        for (const map of this._highlightRectsByGroup) {
-          const arr = map && map.get(kw.highlightGroupId);
-          if (arr) rects.push(...arr);
+    // The custom engine does this from geometry instead (`TextSelection._onHoverMove`), having no word elements to delegate to.
+    if (!this.useCustomSelection) {
+      /** @type {?{wordEl: HTMLElement, rects: Array<HTMLDivElement>}} */
+      let hlLift = null;
+      const clearHlLift = () => {
+        if (!hlLift) return;
+        for (const rect of hlLift.rects) rect.classList.remove('scribe-hl-hover');
+        hlLift.wordEl.style.cursor = '';
+        hlLift = null;
+        if (this.onHighlightHover) this.onHighlightHover(null);
+      };
+      scrollContainer.addEventListener('mouseover', (event) => {
+        const wordEl = event.target instanceof Element ? /** @type {?HTMLElement} */ (event.target.closest('.scribe-word')) : null;
+        if (hlLift && hlLift.wordEl === wordEl) return;
+        clearHlLift();
+        if (!wordEl) return;
+        const kw = /** @type {any} */ (wordEl)._scribeObj;
+        if (!kw || !kw.highlightColor) return;
+        /** @type {Array<HTMLDivElement>} */
+        const rects = [];
+        if (kw.highlightGroupId) {
+          // A group can span pages (a selection highlighted across a page break), so gather bands from every page's map.
+          for (const map of this._highlightRectsByGroup) {
+            const arr = map && map.get(kw.highlightGroupId);
+            if (arr) rects.push(...arr);
+          }
+        } else if (kw.highlightRectElem) {
+          // A group-less highlight (imported without ids) lifts just its own band.
+          rects.push(kw.highlightRectElem);
         }
-      } else if (kw.highlightRectElem) {
-        // A group-less highlight (imported without ids) lifts just its own band.
-        rects.push(kw.highlightRectElem);
-      }
-      for (const rect of rects) rect.classList.add('scribe-hl-hover');
-      wordEl.style.cursor = 'pointer';
-      hlLift = { wordEl, rects };
-      if (this.onHighlightHover) this.onHighlightHover(kw.highlightGroupId || null);
-    });
-    scrollContainer.addEventListener('mouseleave', clearHlLift);
+        for (const rect of rects) rect.classList.add('scribe-hl-hover');
+        wordEl.style.cursor = 'pointer';
+        hlLift = { wordEl, rects };
+        if (this.onHighlightHover) this.onHighlightHover(kw.highlightGroupId || null);
+      });
+      scrollContainer.addEventListener('mouseleave', clearHlLift);
+    }
 
     scrollContainer.addEventListener('touchstart', (event) => {
       if (this.mode !== 'select') return;
@@ -1453,6 +1510,8 @@ export class ScribeViewer {
     }, { passive: false });
 
     scrollContainer.addEventListener('touchmove', (event) => {
+      // A press-and-hold has claimed this touch for a text selection; panning it too would fight the drag.
+      if (this.useCustomSelection && this.textSel.isDragging()) { event.preventDefault(); return; }
       if (event.touches[1]) this.executePinchTouch(event);
       else if (this.drag.isDragging) this.executeDragTouch(event);
     }, { passive: false });
@@ -1509,7 +1568,10 @@ export class ScribeViewer {
 
       // If a word is being edited, the only allowed action is clicking outside the word to deselect it.
       if (editingWord) {
-        if (this._mouseDownTarget === UiText.inputWord || mouseUpTarget === UiText.inputWord) {
+        // The comparisons below match only the word, not the input element,
+        // so without inInput the opening double-click's own mouseup would close the editor instantly.
+        const inInput = UiText.input && mouseUpTarget instanceof Node && UiText.input.contains(mouseUpTarget);
+        if (inInput || this._mouseDownTarget === UiText.inputWord || mouseUpTarget === UiText.inputWord) {
           this.selecting = false;
           return;
         }
@@ -1589,7 +1651,14 @@ export class ScribeViewer {
         group.replaceChildren();
       }
     }
+    if (this._selectGroups[n]) {
+      for (const group of Object.values(this._selectGroups[n])) {
+        group.replaceChildren();
+      }
+      this.textSel?.destroyPage(n);
+    }
     this._wordObjs[n] = [];
+    this._wordObjMaps[n] = null;
 
     if (UiText.inputWord && UiText.inputWord.word.line.page.n === n && UiText.inputRemove) {
       UiText.inputRemove();
@@ -1812,14 +1881,16 @@ export class ScribeViewer {
       background: '#fff',
     });
     // Insert the container in page-index order (before the nearest already-built higher-index page, or append if none), not at the end.
-    // Native text selection spans nodes in DOM order, and containers are built lazily out of page order (n, n-1, n+1 in `displayPage`),
-    // so appending would let a cross-page selection skip a middle page.
+    // Native selection follows DOM order, but pages build lazily out of order (n, n-1, n+1 in `displayPage`), so appending would let a cross-page selection skip a middle page.
+    // The custom engine reads order from the model and does not care, but the word-editing path still uses native selection.
     let nextPc = null;
     for (let i = n + 1; i < this.pageContainerArr.length; i++) {
       if (this.pageContainerArr[i]) { nextPc = this.pageContainerArr[i]; break; }
     }
     this.zoomLayer.insertBefore(pc, nextPc);
     this.pageContainerArr[n] = pc;
+    // A page built while a selection spans it (scrolled into view mid-drag) draws its part of it now.
+    if (this.useCustomSelection && !this.textSel.isEmpty()) this.textSel.renderPage(n);
     return pc;
   }
 
@@ -1887,6 +1958,12 @@ export class ScribeViewer {
     for (const [key, group] of Object.entries(this._textGroups[n])) {
       group.style.transform = `rotate(${Number(key) * 90 + rotation + userRotation}deg)`;
     }
+    // Keep the selection groups rotated in lock-step too, so selection and match rectangles track the words.
+    if (this._selectGroups[n]) {
+      for (const [key, group] of Object.entries(this._selectGroups[n])) {
+        group.style.transform = `rotate(${Number(key) * 90 + rotation + userRotation}deg)`;
+      }
+    }
     // Keep the highlight groups rotated in lock-step with their text groups, so the band tracks the words on a skewed/rotated page.
     if (this._highlightGroups[n]) {
       for (const [key, group] of Object.entries(this._highlightGroups[n])) {
@@ -1915,6 +1992,59 @@ export class ScribeViewer {
       if (pc) pc.appendChild(group);
     }
     return this._highlightGroups[n][orientation];
+  }
+
+  /**
+   * The per-page selection layer, one group per line orientation like the highlight layer.
+   * @param {number} n
+   * @param {number} [orientation=0]
+   * @returns {?HTMLDivElement}
+   */
+  getSelectGroup(n, orientation = 0) {
+    if (!this._selectGroups[n]) this._selectGroups[n] = {};
+    if (!this._selectGroups[n][orientation]) {
+      const pc = this._ensurePageContainer(n);
+      if (!pc) return null;
+      const group = this.createGroup(n, orientation);
+      // zIndex 1 sits above the highlight bands; the layer's `multiply` blend tints a selection over a highlight without washing out the glyphs beneath.
+      group.style.zIndex = '1';
+      group.classList.add('scribe-layer-select');
+      this._selectGroups[n][orientation] = group;
+      pc.appendChild(group);
+    }
+    return this._selectGroups[n][orientation];
+  }
+
+  /**
+   * Page `n`'s word objects, keyed by word id, building them if this is the first caller to need them.
+   * @param {number} n
+   * @returns {Map<string, UiOcrWord>}
+   */
+  ensureWordObjs(n) {
+    const existing = this._wordObjMaps[n];
+    if (existing) return existing;
+    const page = this.doc.ocr.active?.[n];
+    if (!page || !this.doc.pageMetrics[n]) return new Map();
+    this._buildWordObjs(page);
+    return this._wordObjMaps[n] || new Map();
+  }
+
+  /**
+   * Redraw page `n`'s search-match rectangles once the current burst of flag changes settles.
+   * @param {number} n
+   */
+  scheduleMarkRepaint(n) {
+    if (!this.useCustomSelection) return;
+    this._markRepaintPages.add(n);
+    // viewerSearch flips activeMatch/fillBox word by word; coalescing into one rAF keeps that a single repaint.
+    if (this._markRepaintRaf !== null) return;
+    this._markRepaintRaf = requestAnimationFrame(() => {
+      this._markRepaintRaf = null;
+      for (const page of this._markRepaintPages) {
+        if (this.pageContainerArr[page]) this.textSel.renderMarks(page);
+      }
+      this._markRepaintPages.clear();
+    });
   }
 
   /** @param {number} n */
@@ -2036,39 +2166,33 @@ export class ScribeViewer {
     const n = this.state.cp.n;
     for (const offset of [-1, 0, 1]) {
       const idx = n + offset;
+      if (this.useCustomSelection && this.doc.ocr.active?.[idx]) this.ensureWordObjs(idx);
       if (this._wordObjs[idx]) words.push(...this._wordObjs[idx]);
     }
-    // A destroyed word can briefly remain in the registry; drop it so callers that measure the element
-    // (rectangle selection, recolor) never dereference a null `el`.
-    return words.filter((w) => w.el);
+    // A destroyed word can briefly linger in the registry, so drop it before a caller measuring its geometry dereferences the null `el`.
+    return words.filter((w) => !w._destroyed);
+  }
+
+  /** Drop the current text selection, whichever engine holds it. */
+  clearTextSelection() {
+    if (this.useCustomSelection) /** @type {NonNullable<typeof this.textSel>} */ (this.textSel).clear();
+    else /** @type {any} */ (this._sel())?.clear?.();
+  }
+
+  /** Whether any of this viewer's text is currently selected. */
+  hasTextSelection() {
+    if (this.useCustomSelection) return !(/** @type {NonNullable<typeof this.textSel>} */ (this.textSel).isEmpty());
+    // The native selection is window-global, so it only counts when it covers this viewer's own words.
+    return /** @type {any} */ (this._sel())?.hasSelection?.() ?? false;
   }
 
   /**
-   * The overlay words under the current browser text selection, scoped to this viewer's own overlay.
-   * The native selection is window-global, so scoping to `this.elem` keeps concurrent viewers isolated: a selection made in one viewer yields no words when another is right-clicked.
+   * The overlay words under the current text selection, scoped to this viewer.
    * @returns {Array<UiOcrWord>}
    */
   getWordsUnderTextSelection() {
-    const sel = window.getSelection();
-    if (!sel || sel.isCollapsed || sel.rangeCount === 0 || !this.elem) return [];
-    const range = sel.getRangeAt(0);
-    const idSet = new Set();
-    const wordContents = document.createRange();
-    for (const elem of this.elem.querySelectorAll('.scribe-word')) {
-      // `intersectsNode` counts an edge touch as a hit, so a full-line selection would otherwise include the next line's first word.
-      if (!range.intersectsNode(elem)) continue;
-      const clamped = range.cloneRange();
-      wordContents.selectNodeContents(elem);
-      if (clamped.compareBoundaryPoints(Range.START_TO_START, wordContents) < 0) {
-        clamped.setStart(wordContents.startContainer, wordContents.startOffset);
-      }
-      if (clamped.compareBoundaryPoints(Range.END_TO_END, wordContents) > 0) {
-        clamped.setEnd(wordContents.endContainer, wordContents.endOffset);
-      }
-      if (clamped.toString().length > 0) idSet.add(elem.id);
-    }
-    if (idSet.size === 0) return [];
-    return this.getUiWords().filter((kw) => idSet.has(kw.word.id));
+    if (this.useCustomSelection) return /** @type {NonNullable<typeof this.textSel>} */ (this.textSel).getWords();
+    return /** @type {any} */ (this._sel())?.getWords?.() ?? [];
   }
 
   getUiRegions() {
@@ -2157,34 +2281,18 @@ export class ScribeViewer {
             group.replaceChildren();
           }
         }
+        if (this._selectGroups[n]) {
+          for (const group of Object.values(this._selectGroups[n])) {
+            group.replaceChildren();
+          }
+          this.textSel?.destroyPage(n);
+        }
         this._wordObjs[n] = [];
+        this._wordObjMaps[n] = null;
         this.textGroupsRenderIndices.splice(i, 1);
         i--;
       }
     }
-  }
-
-  /** @param {Event} event */
-  _onSelection(event) {
-    // selectionchange also fires for keyboard and programmatic selection, which never need the drag-time backstop and would otherwise resurrect it outside a drag.
-    if (!this._selDragPointerDown) return;
-    const selection = document.getSelection();
-    if (!selection || selection.rangeCount === 0) return;
-
-    const range = selection.getRangeAt(0);
-
-    const focusNodeElem = selection.focusNode?.nodeType === Node.ELEMENT_NODE ? selection.focusNode : selection.focusNode?.parentNode;
-    // The drag focus lands on a filler, not just a word.
-    // Drop `.scribe-fill` and a drag past the page edge pins the selection at a stale spot.
-    const focusWordElem = /** @type {?HTMLElement} */ (/** @type {any} */ (focusNodeElem)?.closest?.('.scribe-word, .scribe-fill'));
-
-    if (!focusWordElem) return;
-
-    this.HTMLOverlayBackstopElem.style.display = '';
-
-    focusWordElem.parentNode?.insertBefore(this.HTMLOverlayBackstopElem, focusWordElem);
-
-    this._prevRange = range.cloneRange();
   }
 
   /**
@@ -2243,6 +2351,85 @@ export class ScribeViewer {
   }
 
   /**
+   * Draw the debug paragraph outlines (`opt.outlinePars`).
+   * @param {OcrPage} page
+   * @param {number} angle
+   */
+  _renderParOutlines(page, angle) {
+    if (!page.textSource || !['textract', 'abbyy', 'google_vision', 'azure_doc_intel', 'docx'].includes(page.textSource)) {
+      scribe.utils.assignParagraphs(page, angle);
+    }
+    const imageRotated = Math.abs(angle) > 0.05;
+    page.pars.forEach((par, i) => {
+      const angleAdj = imageRotated ? scribe.utils.ocr.calcLineStartAngleAdj(par.lines[0]) : { x: 0, y: 0 };
+      this._addBlockOutline(page.n, par.bbox, angleAdj, i + 1, par.reason, par.lines[0]?.orientation ?? 0, par.lines);
+    });
+  }
+
+  /**
+   * Build page `n`'s word objects without elements: the geometry, font metrics, and highlight/search state that highlight bands, search marks, and selection need.
+   * @param {OcrPage} page
+   */
+  _buildWordObjs(page) {
+    const angle = this.doc.pageMetrics[page.n].angle || 0;
+    const imageRotated = Math.abs(angle) > 0.05;
+    const pageAnnotations = this.doc.annotations.pages[page.n] || [];
+    const matchIdArr = this.state.searchMode ? scribe.utils.ocr.getMatchingWordIds(search.search, this.doc.ocr.active[page.n]) : [];
+    const activeMatchEntry = this.state.searchMode ? this._searchState.matchList[this._searchState.activeMatch] : null;
+    const activeIds = activeMatchEntry && activeMatchEntry.pageN === page.n ? new Set(activeMatchEntry.wordIds) : new Set();
+
+    /** @type {Array<UiOcrWord>} */
+    const words = [];
+    /** @type {Map<string, UiOcrWord>} */
+    const byId = new Map();
+
+    for (const lineObj of page.lines) {
+      const angleAdjLine = imageRotated ? scribe.utils.ocr.calcLineStartAngleAdj(lineObj) : { x: 0, y: 0 };
+      /** @type {?UiOcrWord} */
+      let prevWordCanvas = null;
+      for (const wordObj of lineObj.words) {
+        if (!wordObj.text) continue;
+        const angleAdjWord = imageRotated ? scribe.utils.ocr.calcWordAngleAdj(wordObj) : { x: 0, y: 0 };
+        const visualBaseline = lineObj.bbox.bottom + lineObj.baseline[1] + angleAdjLine.y + angleAdjWord.y;
+        const top = (wordObj.style.sup || wordObj.style.dropcap)
+          ? wordObj.bbox.bottom + angleAdjLine.y + angleAdjWord.y : visualBaseline;
+
+        const annot = pageAnnotations.find((a) => annotMatchesWord(a, wordObj.bbox));
+
+        const wordCanvas = new UiOcrWord({
+          visualLeft: wordObj.bbox.left + angleAdjLine.x + angleAdjWord.x,
+          yActual: top,
+          topBaseline: visualBaseline,
+          rotation: 0,
+          word: wordObj,
+          fillBox: matchIdArr.includes(wordObj.id) && !activeIds.has(wordObj.id),
+          activeMatch: activeIds.has(wordObj.id),
+          highlightColor: annot ? annot.color : null,
+          highlightOpacity: annot ? annot.opacity : 1,
+          highlightGroupId: annot ? (annot.groupId || null) : null,
+          highlightComment: annot ? (annot.comment || '') : '',
+          viewer: this,
+          dom: false,
+        });
+
+        // Words of one highlight group split the gap between them so the group reads as one continuous band, not per-word rectangles.
+        if (wordCanvas.highlightColor && prevWordCanvas && prevWordCanvas.highlightColor
+          && wordCanvas.highlightGroupId && wordCanvas.highlightGroupId === prevWordCanvas.highlightGroupId) {
+          const gap = (wordCanvas.x() - (prevWordCanvas.x() + prevWordCanvas.width())) / 2;
+          wordCanvas.highlightGapLeft = gap;
+          prevWordCanvas.highlightGapRight = gap;
+        }
+        prevWordCanvas = wordCanvas;
+        words.push(wordCanvas);
+        byId.set(wordObj.id, wordCanvas);
+      }
+    }
+
+    this._wordObjs[page.n] = words;
+    this._wordObjMaps[page.n] = byId;
+  }
+
+  /**
    * Draw OCR words for a page into the text layer.
    * @param {OcrPage} page
    */
@@ -2253,6 +2440,20 @@ export class ScribeViewer {
     this.setTextGroupRotation(page.n, textRotation);
 
     if (!this.textGroupsRenderIndices.includes(page.n)) this.textGroupsRenderIndices.push(page.n);
+
+    // Under the custom engine in `invis` mode, no text enters the DOM; highlights and search render from word objects and the engine hit-tests selection geometrically.
+    // Visible modes (proof/eval/ebook/annot) instead fall through to the span path below, where the words are the display.
+    if (this.useCustomSelection && this.state.displayMode === 'invis') {
+      if (this.opt.outlinePars) this._renderParOutlines(page, angle);
+      // Word objects exist to carry highlight and search state; a page with neither needs none.
+      const needsWords = (this.doc.annotations.pages[page.n] || []).length > 0 || this.state.searchMode;
+      if (needsWords && !this._wordObjMaps[page.n]) this._buildWordObjs(page);
+      this.renderHighlights(page.n);
+      /** @type {NonNullable<typeof this.textSel>} */ (this.textSel).renderMarks(page.n);
+      /** @type {NonNullable<typeof this.textSel>} */ (this.textSel).renderPage(page.n);
+      return;
+    }
+    if (this.useCustomSelection) this._wordObjMaps[page.n] = null;
 
     const matchIdArr = this.state.searchMode ? scribe.utils.ocr.getMatchingWordIds(search.search, this.doc.ocr.active[page.n]) : [];
 
@@ -2272,11 +2473,9 @@ export class ScribeViewer {
     const pageDims = this.doc.pageMetrics[page.n].dims;
     const renderedLines = page.lines.filter((l) => l.words.some((w) => w.text));
 
-    // A line's side territory extends from its COLUMN's edges, not its own; otherwise a short line
-    // (a paragraph's last line, a heading) fills only to its own edge and leaves a hole out to the neighboring column,
-    // breaking selection of a paragraph by releasing past its last word.
-    // A short line x-overlaps its paragraph's full-width lines, so unioning the x-overlapping lines recovers the full column width.
-    // The vertical window is bounded so a distant two-column title cannot weld the columns into one extent.
+    // Each line's horizontal extent is its COLUMN's width, not its own bbox; otherwise a short line (a paragraph's last line) leaves a selection hole out to the column edge.
+    // A short line x-overlaps its column's full-width lines, so the union recovers that width.
+    // The vertical window keeps a distant full-width title from welding separate columns into one extent.
     /** @type {Map<OcrLine, {left: number, right: number}>} */
     const colExtents = new Map();
     for (const l of renderedLines) {
@@ -2294,59 +2493,14 @@ export class ScribeViewer {
       colExtents.set(l, ext);
     }
 
-    // Territories must TILE: an overlap resolves by DOM order, which is reading order not geometry,
-    // so a filler late in reading order that overhangs a column turns a small overshoot into a selection sweeping everything between.
-    // A hole is benign by comparison, only pinning the drag at its focus, which the backstop handles.
-    // Side midpoints come from the PAIR's column extents, so adjacent columns meet at one shared edge and neither overhangs.
-    // The vertical pass runs after the side pass so it clamps only against lines that x-overlap the narrowed side span,
-    // keeping an isolated line (nothing x-overlaps its own bbox) bounded by the columns its span reaches over instead of a page-tall slab across them.
+    // Filler territories exist only for native selection, so only the DOM engine computes them.
     /** @type {Map<OcrLine, {left: number, right: number, top: number, bottom: number}>} */
-    const fillLimits = new Map();
-    for (const l of renderedLines) {
-      const lb = l.bbox;
-      const col = colExtents.get(l);
-      if (!col) continue;
-      const dilate = (lb.bottom - lb.top) * 3;
-      const lim = {
-        left: 0, right: pageDims.width, top: 0, bottom: pageDims.height,
-      };
-      for (const m of renderedLines) {
-        if (m === l) continue;
-        const mb = m.bbox;
-        const mc = colExtents.get(m);
-        if (!mc) continue;
-        if (mb.top < lb.bottom + dilate && mb.bottom > lb.top - dilate) {
-          if (mc.left >= col.right) lim.right = Math.min(lim.right, (col.right + mc.left) / 2);
-          if (mc.right <= col.left) lim.left = Math.max(lim.left, (mc.right + col.left) / 2);
-        }
-      }
-      fillLimits.set(l, lim);
-    }
-    for (const l of renderedLines) {
-      const lb = l.bbox;
-      const lim = fillLimits.get(l);
-      if (!lim) continue;
-      for (const m of renderedLines) {
-        if (m === l) continue;
-        const mb = m.bbox;
-        if (mb.left < lim.right && mb.right > lim.left) {
-          if (mb.top >= lb.bottom) lim.bottom = Math.min(lim.bottom, (lb.bottom + mb.top) / 2);
-          if (mb.bottom <= lb.top) lim.top = Math.max(lim.top, (mb.bottom + lb.top) / 2);
-        }
-      }
-    }
-    const selectText = this.state.displayMode === 'invis';
+    const fillLimits = /** @type {any} */ (this._sel())?.computeFillLimits?.(renderedLines, colExtents, pageDims)
+      ?? new Map();
+    // The custom engine owns hit-testing and selection, so its glyph spans must not be natively selectable.
+    const selectText = this.state.displayMode === 'invis' && !this.useCustomSelection;
 
-    if (this.opt.outlinePars && page) {
-      if (!page.textSource || !['textract', 'abbyy', 'google_vision', 'azure_doc_intel', 'docx'].includes(page.textSource)) {
-        scribe.utils.assignParagraphs(page, angle);
-      }
-
-      page.pars.forEach((par, i) => {
-        const angleAdj = imageRotated ? scribe.utils.ocr.calcLineStartAngleAdj(par.lines[0]) : { x: 0, y: 0 };
-        this._addBlockOutline(page.n, par.bbox, angleAdj, i + 1, par.reason, par.lines[0]?.orientation ?? 0, par.lines);
-      });
-    }
+    if (this.opt.outlinePars) this._renderParOutlines(page, angle);
 
     for (let i = 0; i < page.lines.length; i++) {
       const lineObj = page.lines[i];
@@ -2384,32 +2538,9 @@ export class ScribeViewer {
 
       const lineWords = lineObj.words.filter((w) => w.text);
       const lim = fillLimits.get(lineObj);
-      /**
-       * Append one invisible span covering the dead space [hitL, hitR] across the line band, so the gaps between words become selectable.
-       * Its single space paints nothing but carries the caret, and copying serializes it as the word break between neighbors.
-       * Selection highlighting still comes from the words' own boxes, so the filler is never visible.
-       * Invariant styles live in the shared `.scribe-fill` rule (see `ensureWordStyleSheet`); only per-filler geometry is set here.
-       * @param {number} hitL
-       * @param {number} hitR
-       */
-      const appendFiller = (hitL, hitR) => {
-        if (!lim) return;
-        const total = hitR - hitL;
-        if (total <= 0) return;
-        const fill = document.createElement('span');
-        fill.className = 'scribe-fill';
-        fill.textContent = ' ';
-        Object.assign(fill.style, {
-          left: `${hitL + angleAdjLine.x}px`,
-          top: `${lim.top + angleAdjLine.y}px`,
-          height: `${Math.max(lim.bottom - lim.top, 1)}px`,
-          lineHeight: `${Math.max(lim.bottom - lim.top, 1)}px`,
-          paddingLeft: `${total}px`,
-        });
-        fill.style.userSelect = selectText ? 'text' : 'none';
-        fill.style.setProperty('-webkit-user-select', selectText ? 'text' : 'none');
-        lineDiv.appendChild(fill);
-      };
+      /** @type {(hitL: number, hitR: number) => void} */
+      const appendFiller = /** @type {any} */ (this._sel())?.makeLineFiller?.(lineDiv, lim, angleAdjLine, selectText)
+        ?? (() => {});
       let lineWordIdx = 0;
 
       /** @type {UiOcrWord|null} */
@@ -2462,7 +2593,8 @@ export class ScribeViewer {
           highlightOpacity,
           highlightGroupId,
           highlightComment,
-          listening: !this.state.layoutMode,
+          // Paint-only under the custom engine: the spans are display, never pointer targets.
+          listening: !this.state.layoutMode && !this.useCustomSelection,
           viewer: this,
         });
 
@@ -2498,6 +2630,16 @@ export class ScribeViewer {
     }
 
     this.renderHighlights(page.n);
+
+    if (this.useCustomSelection) {
+      // The engine's consumers look words up by id.
+      // In visible modes the words already exist as spans, so index them rather than a separate dom:false `_buildWordObjs`.
+      const byId = new Map();
+      for (const kw of this._wordObjs[page.n]) byId.set(kw.word.id, kw);
+      this._wordObjMaps[page.n] = byId;
+      /** @type {NonNullable<typeof this.textSel>} */ (this.textSel).renderMarks(page.n);
+      /** @type {NonNullable<typeof this.textSel>} */ (this.textSel).renderPage(page.n);
+    }
   }
 
   /**
@@ -2806,7 +2948,9 @@ export class ScribeViewer {
   destroy() {
     unregisterViewer(this);
     this.stopAutoScroll(false);
-    if (this._scrollTextHideTimer) clearTimeout(this._scrollTextHideTimer);
+    this._endScrollTextHide();
+    /** @type {any} */ (this._selEngine)?.uninstall?.();
+    this.textSel?.destroy();
     this._clearPageDom();
     if (this.scrollContainer && this.scrollContainer.parentNode) this.scrollContainer.parentNode.removeChild(this.scrollContainer);
   }
@@ -2850,7 +2994,8 @@ const _delegatedMethods = [
   'setInitialPositionZoom', 'getPageStop', 'calcPageStops', 'getViewportCenter',
   'pan', 'zoom', 'resize', 'startDrag', 'startDragTouch', 'executeDrag', 'executeDragTouch',
   'stopDragPinch', 'executePinchTouch', 'createGroup', 'getTextGroup', 'setTextGroupRotation',
-  'getHighlightGroup', 'renderHighlights', 'getOverlayGroup', 'calcPage', 'calcSelectionImageCoords', 'getUiWords', 'getUiRegions',
+  'getHighlightGroup', 'getSelectGroup', 'renderHighlights', 'getOverlayGroup', 'calcPage', 'calcSelectionImageCoords', 'getUiWords', 'getUiRegions',
+  'getWordsUnderTextSelection', 'clearTextSelection', 'hasTextSelection', 'ensureWordObjs',
   'getUiDataColumns', 'getDataTables', 'getUiDataTables', 'destroyControls', 'destroyOverlay',
   'destroyText', 'updateCurrentPage', 'setWordColorOpacity', 'deleteSelectedWord',
   'modifySelectedWordBbox', 'modifySelectedWordStyle', 'deleteSelectedLayoutDataTable',
@@ -2867,8 +3012,8 @@ const _delegatedFields = [
   'displayPageCallback', 'onEditCallback', 'scrollContainer',
   'textGroupsRenderIndices', 'overlayGroupsRenderIndices', 'selectingRectangle', 'contextMenuWord',
   'contextMenuPointer', 'selecting', 'enableCanvasSelection', 'enableHTMLOverlay', 'bbox',
-  'mode', 'drag', 'runSetInitial', 'state', 'opt', 'CanvasSelection', 'evalStats',
-  'interactionCallback', 'destroyControlsCallback',
+  'mode', 'drag', 'runSetInitial', 'state', 'opt', 'CanvasSelection', 'textSel', 'evalStats',
+  'interactionCallback', 'destroyControlsCallback', 'onSelectionChange',
 ];
 for (const f of _delegatedFields) {
   if (Object.prototype.hasOwnProperty.call(ScribeViewer, f)) continue;

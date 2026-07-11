@@ -1,4 +1,5 @@
 // Debug menu: developer-only tools, installed only when `DEBUG_MENU` in scribe-ui/devFlags.js is on and stripped from public builds.
+import { UiText } from '../viewerWordObjects.js';
 
 /** Bug glyph for the Debug section's rows. */
 const BUG_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
@@ -26,8 +27,33 @@ export function installDebugMenu(appMenu, viewer) {
   });
   appMenu.menuElem.appendChild(header);
 
-  // The overlay is built from this flag, so toggling it requires clearing the built text and re-rendering to apply.
+  // Off (the default) = the model-driven built-in engine; On = the DOM engine, whose invisible word spans sit under the browser's native selection.
   appMenu.addToggle(
+    'DOM-based text selection',
+    BUG_SVG,
+    () => !viewer.useCustomSelection,
+    () => {
+      viewer.setSelectionEngineDebug(viewer.useCustomSelection ? 'dom' : 'custom');
+      syncOverlayRow();
+    },
+  );
+
+  // Rebuild the text layer so the mode change reaches already-rendered pages.
+  appMenu.addToggle(
+    'Proof mode (word editing)',
+    BUG_SVG,
+    () => UiText.enableEditing,
+    () => {
+      UiText.enableEditing = !UiText.enableEditing;
+      viewer.state.displayMode = UiText.enableEditing ? 'proof' : 'invis';
+      viewer.destroyText(false);
+      viewer.displayPage(viewer.state.cp.n, false, true);
+    },
+  );
+
+  // The overlay is built from this flag, so toggling rebuilds the text layer to apply.
+  // Only the DOM engine has an overlay to disable (the built-in engine draws selection from the model), so this row is greyed and inert while the built-in engine is active.
+  const overlayRow = appMenu.addToggle(
     'Disable text overlay',
     BUG_SVG,
     () => viewer.textOverlayDisabledDebug,
@@ -38,11 +64,13 @@ export function installDebugMenu(appMenu, viewer) {
     },
   );
 
-  // The flag is read live on the next right-click, so toggling it needs no re-render.
-  appMenu.addToggle(
-    'Disable custom context menu',
-    BUG_SVG,
-    () => viewer.contextMenuDisabledDebug,
-    () => { viewer.contextMenuDisabledDebug = !viewer.contextMenuDisabledDebug; },
-  );
+  const syncOverlayRow = () => {
+    const inert = viewer.useCustomSelection;
+    overlayRow.item.style.opacity = inert ? '0.45' : '';
+    overlayRow.item.style.pointerEvents = inert ? 'none' : '';
+    overlayRow.item.title = inert ? 'DOM-based text selection only' : '';
+    overlayRow.item.tabIndex = inert ? -1 : 0;
+    overlayRow.sync();
+  };
+  syncOverlayRow();
 }

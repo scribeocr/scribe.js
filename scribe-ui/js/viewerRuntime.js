@@ -1,5 +1,4 @@
 /* eslint-disable import/no-cycle */
-import scribe from '../../scribe.js';
 import { UiDataColumn, UiRegion } from './viewerLayout.js';
 import { handleKeyboardEvent } from './viewerShortcuts.js';
 
@@ -290,12 +289,7 @@ export function findViewerForTarget(target) {
 // overlay text. We dispatch each event to the viewer whose element contains the target.
 
 document.addEventListener('mouseup', () => {
-  for (const v of _allViewers) {
-    v.stopAutoScroll();
-    if (v.enableHTMLOverlay && v.HTMLOverlayBackstopElem) {
-      v.HTMLOverlayBackstopElem.style.display = 'none';
-    }
-  }
+  for (const v of _allViewers) v.stopAutoScroll();
 });
 
 // Track the cursor at the document level while autoscrolling.
@@ -320,133 +314,6 @@ document.addEventListener('mouseout', (event) => {
   if (event.relatedTarget === null) {
     for (const v of _allViewers) v.stopAutoScroll();
   }
-});
-
-document.addEventListener('touchend', () => {
-  for (const v of _allViewers) {
-    if (v.enableHTMLOverlay && v.HTMLOverlayBackstopElem) {
-      v.HTMLOverlayBackstopElem.style.display = 'none';
-    }
-  }
-});
-
-const _endSelectionGesture = () => {
-  for (const v of _allViewers) {
-    v._selDragPointerDown = false;
-    if (v.enableHTMLOverlay && v.HTMLOverlayBackstopElem) {
-      v.HTMLOverlayBackstopElem.style.display = 'none';
-    }
-  }
-};
-document.addEventListener('pointerup', _endSelectionGesture);
-document.addEventListener('pointercancel', _endSelectionGesture);
-
-const _routeSelectionEvent = (event) => {
-  const selection = document.getSelection();
-  if (!selection || selection.rangeCount === 0) return;
-  const focusNode = selection.focusNode;
-  if (!focusNode) return;
-  const target = focusNode.nodeType === Node.ELEMENT_NODE ? focusNode : focusNode.parentNode;
-  if (!target) return;
-  const v = findViewerForTarget(target);
-  if (v) v._onSelection(event);
-};
-
-document.addEventListener('selectionchange', _routeSelectionEvent);
-document.addEventListener('mousedown', _routeSelectionEvent);
-
-// Triple-click should select the whole line.
-// The words are absolutely-positioned spans, so the browser's native paragraph selection does not pick up the `.scribe-line` wrapper.
-// Select it explicitly on the final `click` of the gesture (after which no mouseup/click can collapse the selection again).
-document.addEventListener('click', (event) => {
-  if (event.detail < 3 || event.button !== 0) return;
-  const target = /** @type {any} */ (event.target);
-  const lineElem = target?.closest?.('.scribe-word')?.closest('.scribe-line');
-  if (!lineElem || !findViewerForTarget(lineElem)) return;
-  const sel = document.getSelection();
-  if (!sel) return;
-  const range = document.createRange();
-  range.selectNodeContents(lineElem);
-  sel.removeAllRanges();
-  sel.addRange(range);
-});
-
-function getElementIdsInRange(range) {
-  const elementIds = [];
-  // Non-word elements return FILTER_SKIP, not FILTER_REJECT, so the walker descends into the per-line `.scribe-line` wrappers to reach the word spans.
-  // A multi-line selection's common ancestor is the overlay root, whose direct children are those line divs.
-  const selRects = [...range.getClientRects()];
-  // A word is selected when its centre lies inside a selection rect, which keeps the copied set aligned with the highlight:
-  // it excludes a horizontally adjacent word touched only at the boundary, and the next line whose rect overlaps by a few pixels.
-  const selected = (r) => {
-    const cx = (r.left + r.right) / 2;
-    const cy = (r.top + r.bottom) / 2;
-    return selRects.some((s) => cx >= s.left && cx <= s.right && cy >= s.top && cy <= s.bottom);
-  };
-  const treeWalker = document.createTreeWalker(
-    range.commonAncestorContainer,
-    NodeFilter.SHOW_ELEMENT,
-    {
-      acceptNode(node) {
-        if (node instanceof HTMLElement && node.classList && node.classList.contains('scribe-word')) {
-          return selected(node.getBoundingClientRect()) ? NodeFilter.FILTER_ACCEPT : NodeFilter.FILTER_SKIP;
-        }
-        return NodeFilter.FILTER_SKIP;
-      },
-    },
-  );
-
-  while (treeWalker.nextNode()) {
-    const node = treeWalker.currentNode;
-    if (node instanceof HTMLElement && node.id) {
-      elementIds.push(node.id);
-    }
-  }
-
-  return elementIds;
-}
-
-document.addEventListener('copy', (e) => {
-  for (const v of _allViewers) v._endScrollTextHide();
-
-  const sel = /** @type {Selection} */ (window.getSelection());
-  const clipboardData = e.clipboardData;
-
-  if (sel.rangeCount === 0 || !clipboardData) return;
-
-  const range = sel.getRangeAt(0);
-
-  const ids = getElementIdsInRange(range);
-
-  if (ids.length === 0) return;
-
-  // Route to the viewer that owns the selection's anchor.
-  const anchorNode = sel.anchorNode;
-  if (!anchorNode) return;
-  const anchorTarget = anchorNode.nodeType === Node.ELEMENT_NODE ? anchorNode : anchorNode.parentNode;
-  if (!anchorTarget) return;
-  const v = findViewerForTarget(anchorTarget);
-  if (!v) return;
-
-  v.textGroupsRenderIndices.sort((a, b) => a - b);
-
-  // writeText prefixes every line with '\n'. Trim each page's output and drop pages with no selected words,
-  // so the clipboard text has no stray leading or trailing blank lines.
-  const pageTexts = [];
-  for (const n of v.textGroupsRenderIndices) {
-    const pageText = scribe.utils.writeText({
-      ocrCurrent: v.doc.ocr.active,
-      pageArr: [n],
-      wordIds: ids,
-    }).trim();
-    if (pageText) pageTexts.push(pageText);
-  }
-  const text = pageTexts.join('\n\n');
-
-  if (!text) return;
-
-  clipboardData.setData('text/plain', text);
-  e.preventDefault();
 });
 
 /**

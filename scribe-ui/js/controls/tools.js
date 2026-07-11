@@ -40,7 +40,7 @@ const TB_PANEL_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24
  * @param {string} cfg.rootClass - The app's root class (for scoping the cursor rule).
  * @returns {{
  *   highlightElem: HTMLSpanElement, toolbarElem: HTMLSpanElement,
- *   getSelectedOverlayWords: () => Array<import('../viewerWordObjects.js').UiOcrWord>, updateCommentIcons: () => void,
+ *   updateCommentIcons: () => void,
  *   installBehaviors: () => (() => void)
  * }}
  */
@@ -64,8 +64,14 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
   const setTipColor = (c) => { if (tipPath && c) tipPath.style.fill = c; };
   setTipColor(highlightColor);
 
-  /** Toggle the highlighter cursor on the overlay words when highlight mode is active. */
+  /** Toggle the highlighter cursor over the page's text when highlight mode is active. */
   function updateHighlightCursorStyle() {
+    if (scribe.useCustomSelection) {
+      // No word elements to hang a cursor rule on: the selection engine sets the container's cursor.
+      scribe.textSel.cursorOverride = highlightMode ? HIGHLIGHT_CURSOR : null;
+      if (!highlightMode) scribe.scrollContainer.style.cursor = '';
+      return;
+    }
     if (!cursorStyleElem) {
       cursorStyleElem = document.createElement('style');
       document.head.appendChild(cursorStyleElem);
@@ -75,16 +81,11 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       : '';
   }
 
-  /** UiOcrWord objects under the current browser text selection (via the HTML overlay). */
-  function getSelectedOverlayWords() {
-    return scribe.getWordsUnderTextSelection();
-  }
-
   function applyToSelection() {
-    const matchedWords = getSelectedOverlayWords();
+    const matchedWords = scribe.getWordsUnderTextSelection();
     if (matchedWords.length === 0 || !highlightColor) return false;
     applyHighlight(scribe, matchedWords, highlightColor, 0.5);
-    window.getSelection()?.removeAllRanges();
+    scribe.clearTextSelection();
     return true;
   }
 
@@ -643,6 +644,17 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       cmtText.focus();
     };
 
+    /**
+     * The highlighted word under an event's pointer.
+     * @param {MouseEvent} event
+     */
+    const highlightWordAt = (event) => {
+      // The custom engine has no word spans, so hit-test the highlight by page geometry rather than event.target.
+      if (scribe.useCustomSelection) return scribe.textSel.hitTestHighlight(event.clientX, event.clientY)?.kw ?? null;
+      const wordEl = /** @type {Element} */ (event.target).closest('.scribe-word');
+      return wordEl ? /** @type {any} */ (wordEl)._scribeObj : null;
+    };
+
     /** Resolve the card target under an event: a comment mark, a note mark, or a commented word. */
     const cmtTargetFromEvent = (event) => {
       if (!(event.target instanceof Element)) return null;
@@ -659,8 +671,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
         const annot = (scribe.doc.annotations.pages[n] || []).filter((a) => a.type === 'text')[Number(noteEl.dataset.noteIdx)];
         return annot ? { kind: 'note', annot, n } : null;
       }
-      const wordEl = event.target.closest('.scribe-word');
-      const kw = wordEl && /** @type {any} */ (wordEl)._scribeObj;
+      const kw = highlightWordAt(event);
       if (kw && kw.highlightGroupId && kw.highlightComment) {
         return {
           kind: 'highlight', kw, groupId: kw.highlightGroupId, n: kw.word.line.page.n,
@@ -671,6 +682,19 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
 
     const cmtOver = (event) => { const t = cmtTargetFromEvent(event); if (t) cmtShow(t); };
     const cmtOut = (event) => { if (cmtTargetFromEvent(event)) cmtScheduleHide(); };
+    // With no word spans, the pointer crosses no element boundary over the text,
+    // so a hovered commented highlight must be sampled on pointer move rather than delegated from mouseover.
+    let cmtMoveRaf = null;
+    const cmtMove = (event) => {
+      if (cmtMoveRaf !== null) return;
+      const { clientX, clientY, target } = event;
+      cmtMoveRaf = requestAnimationFrame(() => {
+        cmtMoveRaf = null;
+        const t = cmtTargetFromEvent({ clientX, clientY, target });
+        if (t) cmtShow(t);
+        else if (cmtTarget && cmtTarget.kind === 'highlight') cmtScheduleHide();
+      });
+    };
     const cmtPress = (event) => {
       if (!(event.target instanceof Element)) return;
       const el = event.target.closest('.scribe-hl-cmark, .scribe-note-icon');
@@ -683,12 +707,10 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
         return;
       }
       // Gate on the color, not the comment: the card's footer is the only place to recolor or delete an uncommented highlight.
-      const wordEl = event.target.closest('.scribe-word');
-      const kw = wordEl && /** @type {any} */ (wordEl)._scribeObj;
+      const kw = highlightWordAt(event);
       if (!kw || !kw.highlightColor) return;
       // A drag that leaves a text selection is a selection gesture, not a click on the object.
-      const sel = window.getSelection();
-      if (sel && !sel.isCollapsed) return;
+      if (scribe.hasTextSelection()) return;
       event.stopPropagation();
       cmtPin({
         kind: 'highlight', kw, groupId: kw.highlightGroupId || null, n: kw.word.line.page.n,
@@ -704,6 +726,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     };
     scribe.elem.addEventListener('mouseover', cmtOver);
     scribe.elem.addEventListener('mouseout', cmtOut);
+    if (scribe.useCustomSelection) scribe.elem.addEventListener('mousemove', cmtMove);
     scribe.elem.addEventListener('click', cmtPress);
     scribe.elem.addEventListener('focusin', cmtOver);
     scribe.elem.addEventListener('focusout', cmtOut);
@@ -888,6 +911,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       commentObserver.disconnect();
       scribe.elem.removeEventListener('mouseover', cmtOver);
       scribe.elem.removeEventListener('mouseout', cmtOut);
+      scribe.elem.removeEventListener('mousemove', cmtMove);
       scribe.elem.removeEventListener('click', cmtPress);
       scribe.elem.removeEventListener('focusin', cmtOver);
       scribe.elem.removeEventListener('focusout', cmtOut);
@@ -914,7 +938,6 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
   return {
     highlightElem,
     toolbarElem,
-    getSelectedOverlayWords,
     updateCommentIcons,
     installBehaviors,
   };

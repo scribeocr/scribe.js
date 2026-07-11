@@ -80,12 +80,13 @@ export class UiText {
    * @param {?string} [options.highlightGroupId=null] - Group ID linking annotations in the same highlight group.
    * @param {string} [options.highlightComment=''] - Comment text attached to this highlight group.
    * @param {import('../viewer.js').ScribeViewer} [options.viewer] - The viewer this word belongs to; falls back to the default viewer.
+   * @param {boolean} [options.dom=true] - Build the word's `<span>`; false under the custom selection engine, which needs the word's geometry and highlight/search state but no element.
    */
   constructor({
     x, yActual, word, rotation = 0,
     outline = false, selected = false, fillBox = false, activeMatch = false, opacity = 1, fill = 'black', dynamicWidth = false, changeTextCallback, inputTextCallback,
     highlightColor = null, highlightOpacity = 1, highlightGroupId = null, highlightComment = '',
-    viewer,
+    viewer, dom = true,
   }) {
     const _viewer = viewer || ScribeViewer.getDefault();
     ensureWordStyleSheet();
@@ -179,17 +180,25 @@ export class UiText {
 
     this.lastWidth = width;
 
-    /** @type {HTMLSpanElement} */
-    this.el = this._styleElem(document.createElement('span'), { fresh: true });
-    // Back-reference for hit-testing: `event.target.closest('.scribe-word')._scribeObj` resolves to this object.
-    /** @type {any} */ (this.el)._scribeObj = this;
+    /** Set by `destroy`, so a word evicted mid-pass is skipped rather than dereferenced. */
+    this._destroyed = false;
 
-    this.el.addEventListener('dblclick', (event) => {
-      if (!UiText.enableEditing) return;
-      if (event.button !== 0) return;
-      UiText._lastPointerClient = { x: event.clientX, y: event.clientY };
-      UiText.addTextInput(this);
-    });
+    /**
+     * The word's `<span>`, or null when the custom selection engine owns text interaction.
+     * @type {?HTMLSpanElement}
+     */
+    this.el = dom ? this._styleElem(document.createElement('span'), { fresh: true }) : null;
+    if (this.el) {
+      // Back-reference for hit-testing: `event.target.closest('.scribe-word')._scribeObj` resolves to this object.
+      /** @type {any} */ (this.el)._scribeObj = this;
+
+      this.el.addEventListener('dblclick', (event) => {
+        if (!UiText.enableEditing) return;
+        if (event.button !== 0) return;
+        UiText._lastPointerClient = { x: event.clientX, y: event.clientY };
+        UiText.addTextInput(this);
+      });
+    }
 
     this.select = () => { this.selected = true; };
     this.deselect = () => { this.selected = false; };
@@ -236,19 +245,19 @@ export class UiText {
 
   get outline() { return this._outline; }
 
-  set outline(v) { this._outline = v; if (this.el) this._applyStateStyle(); }
+  set outline(v) { this._outline = v; this._applyStateStyle(); }
 
   get selected() { return this._selected; }
 
-  set selected(v) { this._selected = v; if (this.el) this._applyStateStyle(); }
+  set selected(v) { this._selected = v; this._applyStateStyle(); }
 
   get fillBox() { return this._fillBox; }
 
-  set fillBox(v) { this._fillBox = v; if (this.el) this._applyStateStyle(); }
+  set fillBox(v) { this._fillBox = v; this._applyStateStyle(); }
 
   get activeMatch() { return this._activeMatch; }
 
-  set activeMatch(v) { this._activeMatch = v; if (this.el) this._applyStateStyle(); }
+  set activeMatch(v) { this._activeMatch = v; this._applyStateStyle(); }
 
   get highlightColor() { return this._highlightColor; }
 
@@ -272,17 +281,37 @@ export class UiText {
     }
     if (this.el && this.el.parentNode) this.el.parentNode.removeChild(this.el);
     this.el = /** @type {any} */ (null);
+    this._destroyed = true;
   }
 
   /** The element's parent (the per-line wrapper), used when attaching edit controls. */
   getParent() { return this.el ? this.el.parentNode : null; }
 
   /**
-   * Content-space axis-aligned bounding box of the rendered span (handles zoom/rotation via the live layout).
+   * Content-space axis-aligned bounding box of the word (handles zoom/rotation).
    * @returns {{x: number, y: number, width: number, height: number}}
    */
   getClientRect() {
     const v = getViewer(this);
+    if (!this.el) {
+      // Under rotation the transformed rectangle is not axis-aligned, so the box hulls all four corners.
+      const n = this.word.line.page.n;
+      const { orientation } = this.word.line;
+      const left = this._x - (this.word.visualCoords ? this.leftSideBearing : 0);
+      const corners = [
+        v.localToContent(n, orientation, left, this._y),
+        v.localToContent(n, orientation, left + this._width, this._y),
+        v.localToContent(n, orientation, left, this._y + this._height),
+        v.localToContent(n, orientation, left + this._width, this._y + this._height),
+      ];
+      const xs = corners.map((c) => c.x);
+      const ys = corners.map((c) => c.y);
+      const x = Math.min(...xs);
+      const y = Math.min(...ys);
+      return {
+        x, y, width: Math.max(...xs) - x, height: Math.max(...ys) - y,
+      };
+    }
     const r = this.el.getBoundingClientRect();
     const tl = v.clientToContent(r.left, r.top);
     const br = v.clientToContent(r.right, r.bottom);
@@ -307,7 +336,11 @@ export class UiText {
 
   /** Apply the search-match fill and selection/outline decorations from the current flags. */
   _applyStateStyle() {
-    if (!this.el) return;
+    if (!this.el) {
+      // With no span, the match fill is a rectangle in the select layer, so repaint that layer instead of restyling an element.
+      this.viewer?.scheduleMarkRepaint(this.word.line.page.n);
+      return;
+    }
     if (this._activeMatch) this.el.style.backgroundColor = '#ff990088';
     else if (this._fillBox) this.el.style.backgroundColor = '#4278f550';
     else this.el.style.backgroundColor = '';
@@ -453,10 +486,14 @@ export class UiText {
    * @param {UiText} itext
    */
   static getCursorIndex = (itext) => {
-    const r = itext.el.getBoundingClientRect();
-    const zoom = getViewer(itext).zoomLevel || 1;
-    // Pointer x relative to the word's `x()` origin (the box left, before the visual-coords side-bearing shift).
-    const relX = (UiText._lastPointerClient.x - r.left) / zoom - (itext.word.visualCoords ? itext.leftSideBearing : 0);
+    const viewer = getViewer(itext);
+    const zoom = viewer.zoomLevel || 1;
+    // The word's client-space left edge, from the span's rect when present, else computed from model geometry.
+    const left = itext.el
+      ? itext.el.getBoundingClientRect().left
+      : viewer.zoomLayer.getBoundingClientRect().left + itext.getClientRect().x * zoom;
+    // Pointer x relative to the word's box-left origin, before the visual-coords side-bearing shift.
+    const relX = (UiText._lastPointerClient.x - left) / zoom - (itext.word.visualCoords ? itext.leftSideBearing : 0);
 
     let letterIndex = 0;
     let leftI = -itext.leftSideBearing;
@@ -560,6 +597,15 @@ export class UiText {
 
     // A highlighted word that moved or resized shifts its run's band, so rebuild the page's highlight layer.
     if (wordI.highlightColor) getViewer(wordI).renderHighlights(wordI.word.line.page.n);
+
+    // The custom selection engine's text index caches this word's text and metrics, and the edit mutated the page in place, so an identity check cannot detect the staleness.
+    const viewer = getViewer(wordI);
+    if (viewer.useCustomSelection && viewer.textSel) {
+      const n = wordI.word.line.page.n;
+      viewer.textSel.invalidatePage(n);
+      viewer.scheduleMarkRepaint(n);
+      if (!viewer.textSel.isEmpty()) viewer.textSel.renderPage(n);
+    }
   };
 
   /**
@@ -618,6 +664,10 @@ export class UiText {
     // otherwise the caret cannot be placed and text cannot be selected while editing.
     inputElem.style.userSelect = 'text';
     inputElem.style.setProperty('-webkit-user-select', 'text');
+    // The input is cloned from a paint-only word (`listening: false` under the custom selection engine), so it inherits pointer events off, leaving the caret unclickable.
+    inputElem.style.pointerEvents = 'auto';
+    // The outline stroke divides by `--scribe-zoom` so the edit frame stays a hairline at any zoom, since the layer sits inside the zoom transform.
+    inputElem.style.outline = 'calc(2px / var(--scribe-zoom, 1)) solid rgba(40,123,181,1)';
 
     UiText.inputWord = itext;
     UiText.input = inputElem;
@@ -678,8 +728,11 @@ export class UiText {
       }
     });
 
-    // Append into the word's per-line wrapper so the input lives in the same page (content) space and tracks scroll/zoom.
-    const parent = itext.el.parentNode || document.body;
+    // Mount the input in the page's content space so it tracks scroll and zoom.
+    // A word with no span uses its page text group, which is the same space.
+    const parent = itext.el?.parentNode
+      || getViewer(itext).getTextGroup(itext.word.line.page.n, itext.word.line.orientation)
+      || document.body;
     parent.appendChild(UiText.input);
 
     UiText.input.focus();
@@ -747,12 +800,13 @@ export class UiOcrWord extends UiText {
    * @param {?string} [options.highlightGroupId=null]
    * @param {string} [options.highlightComment='']
    * @param {import('../viewer.js').ScribeViewer} [options.viewer]
+   * @param {boolean} [options.dom=true] - Build the word's `<span>`. See `UiText`.
    */
   constructor({
-    visualLeft, yActual, topBaseline, word, rotation,
-    outline, fillBox, activeMatch = false, listening, highlightColor = null, highlightOpacity = 1,
+    visualLeft, yActual, topBaseline, word, rotation = 0,
+    outline = false, fillBox = false, activeMatch = false, listening = true, highlightColor = null, highlightOpacity = 1,
     highlightGroupId = null, highlightComment = '',
-    viewer,
+    viewer, dom = true,
   }) {
     const { fill, opacity } = scribe.utils.ocr.getWordFillOpacity(word, viewer?.state.displayMode ?? 'invis',
       scribe.ScribeDoc.defaults.confThreshMed, scribe.ScribeDoc.defaults.confThreshHigh, scribe.ScribeDoc.defaults.overlayOpacity);
@@ -773,6 +827,7 @@ export class UiOcrWord extends UiText {
       highlightComment,
       changeTextCallback: () => {},
       viewer,
+      dom,
     });
 
     this.listening(listening);
