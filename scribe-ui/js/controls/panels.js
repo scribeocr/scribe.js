@@ -1244,17 +1244,20 @@ export function createThumbnailPanel(scribe, {
    */
   function handleThumbClick(e, n) {
     // The rail and grid both sit beside the visible document, so a plain click navigates to the page (and clears the batch).
-    if (e.shiftKey && selAnchor >= 0) {
-      const lo = Math.min(selAnchor, n);
-      const hi = Math.max(selAnchor, n);
+    if (e.shiftKey && (selAnchor >= 0 || activePage >= 0)) {
+      // Fall back to the on-screen page so a Shift-click extends a range even before any thumbnail has set an anchor.
+      const pivot = selAnchor >= 0 ? selAnchor : activePage;
+      const lo = Math.min(pivot, n);
+      const hi = Math.max(pivot, n);
       selected.clear();
       for (let i = lo; i <= hi; i++) selected.add(i);
+      selAnchor = pivot;
       syncSelectionUI();
       if (onSelect) onSelect(n);
     } else if (e.ctrlKey || e.metaKey) {
-      // Seed with the page that was plain-clicked just before this Ctrl-click so the first Ctrl-add keeps both,
-      // rather than starting the selection at the Ctrl-clicked page and dropping the original.
-      if (selected.size === 0 && selAnchor >= 0 && selAnchor < pageCount && selAnchor !== n) selected.add(selAnchor);
+      // Seed the batch with the current on-screen page so the first Ctrl-add keeps both pages instead of only the new one.
+      const seed = activePage >= 0 ? activePage : selAnchor;
+      if (selected.size === 0 && seed >= 0 && seed < pageCount && seed !== n) selected.add(seed);
       if (selected.has(n)) selected.delete(n); else selected.add(n);
       selAnchor = n;
       syncSelectionUI();

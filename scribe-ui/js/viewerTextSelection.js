@@ -890,6 +890,7 @@ export class TextSelection {
     const idx = this.index(n);
     const words = this.viewer._wordObjs[n];
     if (!idx || !words || words.length === 0) return null;
+    const wordObjs = this.viewer.ensureWordObjs(n);
     for (const [orientation, indices] of idx.byOrientation) {
       const local = this.viewer.pageToLocal(n, orientation, x, y);
       for (const li of indices) {
@@ -898,9 +899,23 @@ export class TextSelection {
         for (let wi = 0; wi < entry.boxes.length; wi++) {
           const box = entry.boxes[wi];
           if (local.x < box.left || local.x > box.right) continue;
-          const kw = this.viewer.ensureWordObjs(n).get(entry.words[wi].id);
+          const kw = wordObjs.get(entry.words[wi].id);
           if (kw && kw.highlightColor) return { kw, groupId: kw.highlightGroupId || null, n };
           return null;
+        }
+        // renderHighlights fills the gap between adjacent words only when they share color, opacity, and group.
+        // Gate the gap hit on that same identity so the whitespace is clickable exactly where the band is drawn.
+        for (let wi = 0; wi + 1 < entry.boxes.length; wi++) {
+          if (local.x <= entry.boxes[wi].right || local.x >= entry.boxes[wi + 1].left) continue;
+          const kwA = wordObjs.get(entry.words[wi].id);
+          const kwB = wordObjs.get(entry.words[wi + 1].id);
+          if (kwA && kwB && kwA.highlightColor
+            && kwA.highlightColor === kwB.highlightColor
+            && kwA.highlightOpacity === kwB.highlightOpacity
+            && (kwA.highlightGroupId || '') === (kwB.highlightGroupId || '')) {
+            return { kw: kwA, groupId: kwA.highlightGroupId || null, n };
+          }
+          break;
         }
       }
     }

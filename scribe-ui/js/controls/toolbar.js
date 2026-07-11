@@ -1389,9 +1389,9 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       box-sizing: border-box;
     }
 
-    /* Match the viewer's custom overlay scrollbar (8px thumb, same fill/radius/hover) rather than a thicker native bar. */
+    /* Thin custom bar rather than a thicker native bar. */
     .${r} .scribe-thumb-scroll::-webkit-scrollbar {
-      width: 8px;
+      width: 7px;
     }
 
     .${r} .scribe-thumb-scroll::-webkit-scrollbar-track {
@@ -1738,7 +1738,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       background: var(--scribe-hover);
     }
 
-    .${r} .scribe-bm-tree::-webkit-scrollbar { width: 8px; }
+    .${r} .scribe-bm-tree::-webkit-scrollbar { width: 5px; }
     .${r} .scribe-bm-tree::-webkit-scrollbar-track { background: transparent; }
     .${r} .scribe-bm-tree::-webkit-scrollbar-thumb { background: var(--scribe-scrollbar); border-radius: 6px; }
 
@@ -1906,7 +1906,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       padding: 6px;
       box-sizing: border-box;
     }
-    .${r} .scribe-cm-list::-webkit-scrollbar { width: 8px; }
+    .${r} .scribe-cm-list::-webkit-scrollbar { width: 5px; }
     .${r} .scribe-cm-list::-webkit-scrollbar-track { background: transparent; }
     .${r} .scribe-cm-list::-webkit-scrollbar-thumb { background: var(--scribe-scrollbar); border-radius: 6px; }
     .${r} .scribe-cm-resize {
@@ -2024,9 +2024,15 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
        A very tall quote gets .scroll (max-height set inline from QUOTE_SCROLL_MAX_PX) and scrolls inside. */
     .${r} .scribe-cm-quote.expanded { display: block; }
     .${r} .scribe-cm-quote.expanded.scroll { overflow-y: auto; overscroll-behavior: contain; }
-    .${r} .scribe-cm-quote.expanded.scroll::-webkit-scrollbar { width: 7px; }
+    .${r} .scribe-cm-quote.expanded.scroll::-webkit-scrollbar { width: 5px; }
     .${r} .scribe-cm-quote.expanded.scroll::-webkit-scrollbar-track { background: transparent; }
     .${r} .scribe-cm-quote.expanded.scroll::-webkit-scrollbar-thumb { background: var(--scribe-scrollbar); border-radius: 6px; }
+    /* Firefox lacks ::-webkit-scrollbar and shows a fat native bar in this narrow box.
+       Scope the standard thin-scrollbar fallback to non-webkit engines: setting scrollbar-width
+       unconditionally would make Chrome drop the 7px custom bar above for a wider native one. */
+    @supports not selector(::-webkit-scrollbar) {
+      .${r} .scribe-cm-quote.expanded.scroll { scrollbar-width: thin; scrollbar-color: var(--scribe-scrollbar) transparent; }
+    }
     .${r} .scribe-cm-kind {
       flex: 1 1 auto;
       display: inline-flex;

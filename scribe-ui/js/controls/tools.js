@@ -84,7 +84,9 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
   function applyToSelection() {
     const matchedWords = scribe.getWordsUnderTextSelection();
     if (matchedWords.length === 0 || !highlightColor) return false;
-    applyHighlight(scribe, matchedWords, highlightColor, 0.5);
+    // Recoloring an existing highlight is done from its own card, not by picking a color here.
+    const fresh = matchedWords.filter((w) => !w.highlightColor);
+    if (fresh.length > 0) applyHighlight(scribe, fresh, highlightColor, 0.5);
     scribe.clearTextSelection();
     return true;
   }
