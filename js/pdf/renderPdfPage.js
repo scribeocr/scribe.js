@@ -6203,8 +6203,9 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
      * Apply all clip paths from an op's clip stack to the canvas context.
      * Each clip intersects with the previous, matching PDF semantics for nested W/W* operators.
      * Text clips (from Tr modes 4-7) are skipped here — they are handled via compositing.
+     * @param {*} [skipClip] - Clip entry excluded here; the caller renders it as an anti-aliased pattern fill because Chrome's clip() is not anti-aliased.
      */
-    function applyClips(renderCtx, op) {
+    function applyClips(renderCtx, op, skipClip) {
       if (!op.clips || op.clips.length === 0) return;
       // Clip intersection is commutative, so apply the cheapest (fewest-point) clips first.
       // A simple rectangle clip applied before a complex many-bezier
@@ -6214,6 +6215,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         ? [...op.clips].sort((a, b) => (a.path ? a.path.length : 0) - (b.path ? b.path.length : 0))
         : op.clips;
       for (const clip of clips) {
+        if (clip === skipClip) continue;
         if (clip.textClip) continue; // handled separately via compositing
         if (!clip.path) continue;
         renderCtx.setTransform(
@@ -7269,6 +7271,42 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           decodeMs = performance.now() - t0;
         }
         if (!bitmap) return;
+        // Chrome's canvas clip() is not anti-aliased, so an image clipped to a curved or diagonal outline gets jagged edges.
+        // Fill the clip path with the image as a 'no-repeat' pattern instead, since path fills are anti-aliased.
+        // Rectilinear clips (axis-aligned edges only) do not jag, so they stay on the cheaper clip() path.
+        // Only one path can be pattern-filled, so when several qualify the longest wins and the rest still use clip().
+        let aaClip = null;
+        if (op.clips && op.clips.length > 0) {
+          for (const clip of op.clips) {
+            if (clip.textClip || !clip.path) continue;
+            if (aaClip && clip.path.length <= aaClip.path.length) continue;
+            const [ma, mb, mc, md] = clip.ctm;
+            // Diagonal in device space: both direction components are non-negligible relative to the magnitude (zero-length segments pass).
+            const diagonal = (x0, y0, x1, y1) => {
+              const dx = ma * (x1 - x0) + mc * (y1 - y0);
+              const dy = mb * (x1 - x0) + md * (y1 - y0);
+              return Math.min(Math.abs(dx), Math.abs(dy)) > 1e-7 * Math.max(Math.abs(dx), Math.abs(dy));
+            };
+            let needsAa = false;
+            let sx = NaN; let sy = NaN; let px = NaN; let py = NaN;
+            for (const cmd of clip.path) {
+              if (cmd.type === 'C') { needsAa = true; break; }
+              if (cmd.type === 'M') {
+                // Fill and clip implicitly close an open subpath, so test that edge too.
+                if (!Number.isNaN(px) && diagonal(px, py, sx, sy)) { needsAa = true; break; }
+                sx = cmd.x; sy = cmd.y; px = cmd.x; py = cmd.y;
+              } else if (cmd.type === 'L') {
+                if (diagonal(px, py, cmd.x, cmd.y)) { needsAa = true; break; }
+                px = cmd.x; py = cmd.y;
+              } else if (cmd.type === 'Z') {
+                if (diagonal(px, py, sx, sy)) { needsAa = true; break; }
+                px = sx; py = sy;
+              }
+            }
+            if (!needsAa && !Number.isNaN(px) && diagonal(px, py, sx, sy)) needsAa = true;
+            if (needsAa) aaClip = clip;
+          }
+        }
         rCtx.save();
         if (op.fillAlpha < 1) rCtx.globalAlpha = op.fillAlpha;
         if (op.overprint && (imageInfo.colorSpace === 'Separation')) {
@@ -7276,8 +7314,30 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         } else if (op.blendMode && op.blendMode !== 'Normal') {
           rCtx.globalCompositeOperation = pdfBlendToCanvas[op.blendMode] || op.blendMode.toLowerCase();
         }
-        applyClips(rCtx, op);
+        const aaPattern = aaClip ? rCtx.createPattern(bitmap, 'no-repeat') : null;
+        if (aaPattern) transientPatterns.push(aaPattern);
+        // If the pattern could not be created, fall back to clip() for aaClip too.
+        applyClips(rCtx, op, aaPattern ? aaClip : null);
 
+        if (aaPattern) {
+          // Canvas bakes path points into device space as they are issued, so the clip path must be built under the clip's own transform.
+          // The transform then switches to the image placement before the fill, so the pattern lands exactly where drawImage(bitmap, 0, 0, 1, 1) would.
+          rCtx.setTransform(
+            aaClip.ctm[0] * scale,
+            -aaClip.ctm[1] * scale,
+            aaClip.ctm[2] * scale,
+            -aaClip.ctm[3] * scale,
+            (aaClip.ctm[4] - boxOriginX) * scale,
+            (pageHeightPts + boxOriginY - aaClip.ctm[5]) * scale,
+          );
+          rCtx.beginPath();
+          for (const cmd of aaClip.path) {
+            if (cmd.type === 'M') rCtx.moveTo(cmd.x, cmd.y);
+            else if (cmd.type === 'L') rCtx.lineTo(cmd.x, cmd.y);
+            else if (cmd.type === 'C') rCtx.bezierCurveTo(cmd.x1, cmd.y1, cmd.x2, cmd.y2, cmd.x, cmd.y);
+            else if (cmd.type === 'Z') rCtx.closePath();
+          }
+        }
         rCtx.setTransform(
           op.ctm[0] * scale,
           -op.ctm[1] * scale,
@@ -7287,7 +7347,13 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           (pageHeightPts + boxOriginY - op.ctm[5]) * scale,
         );
         rCtx.transform(1, 0, 0, -1, 0, 1);
-        rCtx.drawImage(bitmap, 0, 0, 1, 1);
+        if (aaPattern) {
+          aaPattern.setTransform(new DOMMatrix([1 / (bitmap.width || 1), 0, 0, 1 / (bitmap.height || 1), 0, 0]));
+          rCtx.fillStyle = aaPattern;
+          rCtx.fill(aaClip.evenOdd ? 'evenodd' : 'nonzero');
+        } else {
+          rCtx.drawImage(bitmap, 0, 0, 1, 1);
+        }
         rCtx.restore();
 
         if (!cachedBitmap) {
