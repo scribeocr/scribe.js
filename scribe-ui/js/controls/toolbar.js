@@ -1459,6 +1459,17 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       position: absolute;
     }
 
+    /* Redaction marks over the thumbnail raster: solid black bars previewing what export bakes in, not the on-page red mark. */
+    .${r} .scribe-thumb-redact {
+      position: absolute;
+      pointer-events: none;
+    }
+
+    .${r} .scribe-thumb-redact span {
+      position: absolute;
+      background: #000;
+    }
+
     .${r} .scribe-thumb-label {
       color: var(--scribe-ink-3);
       font-size: 13px;

@@ -351,10 +351,14 @@ export function createThumbnailPanel(scribe, {
       imgElem.style.transform = 'rotate(180deg)';
     }
 
-    // Highlights are a separate overlay because the cached thumbnail raster never includes them.
+    // Highlights and redactions are separate overlays because the cached thumbnail raster never includes them.
     if (box) {
       const annots = (scribe.doc && scribe.doc.annotations && scribe.doc.annotations.pages[n]) || [];
       const dims = scribe.doc && scribe.doc.pageMetrics[n] && scribe.doc.pageMetrics[n].dims;
+      // Same box as the raster img above, so bands align with the possibly-rotated page.
+      const overlayCss = rot % 180 === 90
+        ? `top:50%;left:50%;width:${boxHeights[n]}px;height:${THUMB_W}px;transform:translate(-50%, -50%) rotate(${rot}deg)`
+        : (rot === 180 ? 'inset:0;transform:rotate(180deg)' : 'inset:0');
       /** @type {Array<{kind: string, color: string, opacity: number, left: number, right: number, top: number, bottom: number}>} */
       const runs = [];
       if (dims) {
@@ -390,12 +394,7 @@ export function createThumbnailPanel(scribe, {
           hlElem.className = 'scribe-thumb-hl';
           box.appendChild(hlElem);
         }
-        // Same box as the raster img above, so the bands align with the possibly-rotated page.
-        if (rot % 180 === 90) {
-          hlElem.style.cssText = `top:50%;left:50%;width:${boxHeights[n]}px;height:${THUMB_W}px;transform:translate(-50%, -50%) rotate(${rot}deg)`;
-        } else {
-          hlElem.style.cssText = rot === 180 ? 'inset:0;transform:rotate(180deg)' : 'inset:0';
-        }
+        hlElem.style.cssText = overlayCss;
         hlElem.replaceChildren(...runs.map((run) => {
           const band = document.createElement('span');
           // The thin underline/strikeout bar can go sub-pixel at thumbnail scale, hence the 1px minHeight floor.
@@ -414,6 +413,31 @@ export function createThumbnailPanel(scribe, {
             minHeight: '1px',
             background: run.color,
             opacity: `${run.opacity}`,
+          });
+          return band;
+        }));
+      }
+
+      // Redactions carry no `color`, so the highlight filter above skips them; they get their own overlay here.
+      const redacts = dims ? annots.filter((a) => a.type === 'redact' && a.bbox) : [];
+      let rdElem = thumbElem.querySelector('.scribe-thumb-redact');
+      if (redacts.length === 0) {
+        if (rdElem) rdElem.remove();
+      } else {
+        if (!rdElem) {
+          rdElem = document.createElement('div');
+          rdElem.className = 'scribe-thumb-redact';
+          box.appendChild(rdElem);
+        }
+        rdElem.style.cssText = overlayCss;
+        rdElem.replaceChildren(...redacts.map((a) => {
+          const band = document.createElement('span');
+          Object.assign(band.style, {
+            left: `${(a.bbox.left / dims.width) * 100}%`,
+            top: `${(a.bbox.top / dims.height) * 100}%`,
+            width: `${((a.bbox.right - a.bbox.left) / dims.width) * 100}%`,
+            height: `${((a.bbox.bottom - a.bbox.top) / dims.height) * 100}%`,
+            minHeight: '1px',
           });
           return band;
         }));
@@ -1593,7 +1617,7 @@ export function createThumbnailPanel(scribe, {
   function destroy() {
     destroyed = true;
     generation += 1;
-    if (scribe.onHighlightsRendered === onHighlightsRendered) scribe.onHighlightsRendered = null;
+    if (scribe.onAnnotationsRendered === onAnnotationsRendered) scribe.onAnnotationsRendered = null;
     reportThumbFocus(null);
     if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
     if (hideTimer) { clearTimeout(hideTimer); hideTimer = null; }
@@ -1618,12 +1642,12 @@ export function createThumbnailPanel(scribe, {
     panelElem.replaceChildren();
   }
 
-  // Repaint an already-mounted thumbnail when its page's highlights change; rows mounted later get them from `restyleRow`.
-  const onHighlightsRendered = (n) => {
+  // Repaint an already-mounted thumbnail when its page's highlights or redactions change; rows mounted later get them from `restyleRow`.
+  const onAnnotationsRendered = (n) => {
     const entry = mounted.get(n);
     if (entry) restyleRow(entry, n);
   };
-  scribe.onHighlightsRendered = onHighlightsRendered;
+  scribe.onAnnotationsRendered = onAnnotationsRendered;
 
   return {
     panelElem, toggleElem, rebuild, cancelCut, setActive, setVisible, setWidth, getResizeBounds, dropIndicator, insertPagesAt, destroy,

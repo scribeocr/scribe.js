@@ -249,11 +249,11 @@ export class ScribeViewer {
      */
     this._commentMarks = [];
     /**
-     * Called with the page index after that page's highlight fill layer is rebuilt.
-     * The thumbnail panel registers here to keep its per-page highlight overlay current.
+     * Called with the page index after that page's highlight or redaction layer is rebuilt.
+     * The thumbnail panel registers here to keep its overlays current.
      * @type {?(n: number) => void}
      */
-    this.onHighlightsRendered = null;
+    this.onAnnotationsRendered = null;
     /**
      * Called with a highlight group id when the pointer enters a highlight, and null when it leaves.
      * The comments panel registers here to light the hovered highlight's row.
@@ -2160,6 +2160,7 @@ export class ScribeViewer {
    */
   renderRedactions(n) {
     renderPageRedactions(this, n);
+    if (this.onAnnotationsRendered) this.onAnnotationsRendered(n);
   }
 
   /**
@@ -2720,7 +2721,7 @@ export class ScribeViewer {
       for (const group of Object.values(this._highlightGroups[n])) group.replaceChildren();
     }
     this._highlightRectsByGroup[n] = new Map();
-    if (this.onHighlightsRendered) this.onHighlightsRendered(n);
+    if (this.onAnnotationsRendered) this.onAnnotationsRendered(n);
     const words = this._wordObjs[n];
     if (!words || words.length === 0) return;
 

@@ -10,7 +10,6 @@ import { ScribePDFViewer, ScribeViewer } from '../basic-viewer/pdf-viewer.js';
 import { selectOcrPages } from '../../js/pdf/ocrPageSelection.js';
 import { outlineSplitSegments } from '../../js/objects/outlineObjects.js';
 import { createRedactTool } from '../js/controls/tools.js';
-import { makeSeparator } from '../js/controls/toolbar.js';
 import { redactWords } from '../js/viewerRedactions.js';
 
 const EDITOR_ROOT_CLASS = 'scribe-pdf-editor';
@@ -70,11 +69,10 @@ class ScribePDFEditor extends ScribePDFViewer {
         redactCueShown = true;
         this._showToast('Marked for redaction — the content is removed when you export.');
       };
+      // No toolbar button: redaction is reached through the context menu and the find bar's "Redact all".
+      // The tool is still built because that sets `scribe._redactEnabled`, the context-menu gate.
       this._redactTool = createRedactTool(this.scribe, this.pdfViewerElem, { onMark });
       this.scribe._onRedactMark = onMark;
-      if (this._toolbarButtonsElem) {
-        this._toolbarButtonsElem.append(makeSeparator(), this._redactTool.toolbarElem);
-      }
       this._teardownCallbacks.push(this._redactTool.installBehaviors());
       this._addRedactAllToSearchBar();
     }
