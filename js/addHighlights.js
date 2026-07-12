@@ -13,7 +13,7 @@ const GROUP_PREFIX = 'hl-';
  * @param {dims} dims - page dimensions.
  * @returns {bbox} bbox in page space.
  */
-function bboxToPageSpace(bbox, orientation, dims) {
+export function bboxToPageSpace(bbox, orientation, dims) {
   const { width: w, height: h } = dims;
   if (orientation === 1) {
     return {
@@ -40,8 +40,10 @@ function bboxToPageSpace(bbox, orientation, dims) {
  * @property {number} [endLine] - Last line index to highlight (0-based). If omitted, defaults to startLine.
  * @property {string} [text] - Quote text to highlight. In line mode, narrows the first/last line to the
  *   matching words. In quote-only mode (no startLine/endLine), searches the entire page for this text.
+ * @property {'highlight'|'underline'|'strikeout'} [markup='highlight'] - Markup kind: a /Highlight fill,
+ *   /Underline, or /StrikeOut line.
  * @property {string} [color='#ffff00'] - Hex color for the highlight.
- * @property {number} [opacity=0.4] - Opacity (0 to 1).
+ * @property {number} [opacity=0.4] - Opacity (0 to 1). Underline/strikeout default to 1 instead.
  * @property {string} [comment] - Comment text for the annotation.
  */
 
@@ -77,8 +79,10 @@ export function addHighlights(doc, highlights) {
       throw new Error('Each highlight must specify either startLine or text (or both).');
     }
 
+    const markup = highlight.markup || 'highlight';
     const color = highlight.color || '#ffe93b';
-    const opacity = highlight.opacity ?? 0.4;
+    // Underline/strikeout are thin strokes drawn on the text, not translucent fills behind it.
+    const opacity = highlight.opacity ?? (markup === 'highlight' ? 0.4 : 1);
     const groupId = `${GROUP_PREFIX}${highlightsApplied}`;
     const comment = highlight.comment || '';
 
@@ -122,7 +126,7 @@ export function addHighlights(doc, highlights) {
 
         for (const word of wordsToHighlight) {
           doc.annotations.pages[highlight.page].push({
-            type: 'highlight', bbox: bboxToPageSpace(word.bbox, line.orientation, pageObj.dims), color, opacity, groupId, comment,
+            type: markup, bbox: bboxToPageSpace(word.bbox, line.orientation, pageObj.dims), color, opacity, groupId, comment,
           });
         }
         totalLinesHighlighted++;
@@ -131,7 +135,7 @@ export function addHighlights(doc, highlights) {
       const matchWords = ocr.getMatchingWords(highlight.text, pageObj);
       for (const word of matchWords) {
         doc.annotations.pages[highlight.page].push({
-          type: 'highlight', bbox: bboxToPageSpace(word.bbox, word.line.orientation, pageObj.dims), color, opacity, groupId, comment,
+          type: markup, bbox: bboxToPageSpace(word.bbox, word.line.orientation, pageObj.dims), color, opacity, groupId, comment,
         });
       }
       if (matchWords.length > 0) totalLinesHighlighted++;
@@ -200,6 +204,9 @@ export function clearHighlights(doc) {
       .filter((a) => a.type === 'freetext' || !a.groupId?.startsWith(GROUP_PREFIX));
   }
 }
+
+/** Text-markup annotation type tags sharing the /QuadPoints pipeline. A missing `type` is a legacy highlight. */
+export const TEXT_MARKUP_ANNOT_TYPES = new Set(['highlight', 'underline', 'strikeout']);
 
 /** Annotation type tags emitted as vector shapes. */
 export const SHAPE_ANNOT_TYPES = new Set(['square', 'circle', 'line', 'polygon', 'polyline']);
@@ -326,5 +333,115 @@ export function addTextAnnots(doc, textAnnots) {
 export function clearTextAnnots(doc) {
   for (let p = 0; p < doc.annotations.pages.length; p++) {
     doc.annotations.pages[p] = doc.annotations.pages[p].filter((a) => a.type !== 'text');
+  }
+}
+
+/**
+ * @typedef {Object} RedactionSpec
+ * @property {number} page - Page index (0-based).
+ * @property {bbox} [bbox] - Region mode: rect to redact, page coords (top-left origin, same frame as OCR words).
+ * @property {string} [text] - Quote mode: marks every occurrence of this text on the page.
+ *   Matching is whole-word (an occurrence inside a longer word marks that whole word).
+ */
+
+/**
+ * Add redaction marks to the document.
+ *
+ * Marks are annotations: reviewable and deletable until export, and saved as-is in `.scribe` files.
+ * Every non-`.scribe` export removes the marked content from the output rather than covering it.
+ *
+ * A `bbox` spec produces one mark group; a `text` spec produces one group per occurrence.
+ *
+ * @param {ScribeDoc} doc
+ * @param {Array<RedactionSpec>} redactions
+ * @returns {{ marksAdded: number, groups: Array<{ page: number, groupId: string, bbox: bbox }> }}
+ */
+export function addRedactions(doc, redactions) {
+  // Continue numbering above every existing rd-N group so ids stay unique across
+  // calls and across a .scribe restore. (Imported PDF /Redact marks use _pdf_* ids.)
+  let groupN = 0;
+  for (const pageAnnots of doc.annotations.pages) {
+    for (const annot of pageAnnots) {
+      if (annot.type !== 'redact') continue;
+      const m = /^rd-(\d+)$/.exec(annot.groupId);
+      if (m) groupN = Math.max(groupN, Number(m[1]) + 1);
+    }
+  }
+
+  let marksAdded = 0;
+  /** @type {Array<{ page: number, groupId: string, bbox: bbox }>} */
+  const groups = [];
+
+  for (const spec of redactions) {
+    const pageAnnots = doc.annotations.pages[spec.page];
+    if (!pageAnnots) continue;
+    if (!spec.bbox && !spec.text) throw new Error('Each redaction must specify either bbox or text.');
+    if (spec.bbox && spec.text) throw new Error('A redaction must specify bbox or text, not both.');
+
+    if (spec.bbox) {
+      const groupId = `rd-${groupN++}`;
+      const bbox = {
+        left: spec.bbox.left, top: spec.bbox.top, right: spec.bbox.right, bottom: spec.bbox.bottom,
+      };
+      pageAnnots.push({ type: 'redact', bbox, groupId });
+      marksAdded++;
+      groups.push({ page: spec.page, groupId, bbox: { ...bbox } });
+      continue;
+    }
+
+    const pageObj = doc.ocr.active[spec.page];
+    if (!pageObj) continue;
+    /** @type {Map<string, OcrWord>} */
+    const wordsById = new Map();
+    for (const word of ocr.getPageWords(pageObj)) wordsById.set(word.id, word);
+
+    for (const match of ocr.getDocMatches(spec.text, [pageObj])) {
+      const groupId = `rd-${groupN++}`;
+      /** @type {Array<bbox>} */
+      const groupBboxes = [];
+      // One rect per run of adjacent same-line words, unioned in the line's orientation frame (where word bboxes live) before mapping to page space.
+      /** @type {?{ line: OcrLine, lastIdx: number, bbox: bbox }} */
+      let run = null;
+      for (const id of match.wordIds) {
+        const word = wordsById.get(id);
+        if (!word) continue;
+        const idx = word.line.words.indexOf(word);
+        if (run && word.line === run.line && idx === run.lastIdx + 1) {
+          run.bbox.left = Math.min(run.bbox.left, word.bbox.left);
+          run.bbox.top = Math.min(run.bbox.top, word.bbox.top);
+          run.bbox.right = Math.max(run.bbox.right, word.bbox.right);
+          run.bbox.bottom = Math.max(run.bbox.bottom, word.bbox.bottom);
+          run.lastIdx = idx;
+          continue;
+        }
+        if (run) groupBboxes.push(bboxToPageSpace(run.bbox, run.line.orientation, pageObj.dims));
+        run = { line: word.line, lastIdx: idx, bbox: { ...word.bbox } };
+      }
+      if (run) groupBboxes.push(bboxToPageSpace(run.bbox, run.line.orientation, pageObj.dims));
+
+      for (const bbox of groupBboxes) {
+        pageAnnots.push({ type: 'redact', bbox, groupId });
+        marksAdded++;
+      }
+      if (groupBboxes.length > 0) {
+        groups.push({ page: spec.page, groupId, bbox: calcBboxUnion(groupBboxes) });
+      }
+    }
+  }
+
+  return { marksAdded, groups };
+}
+
+/**
+ * Remove redaction marks.
+ * @param {ScribeDoc} doc
+ * @param {{ page?: number, groupId?: string }} [filter] - Omit to remove every mark.
+ *   `page` narrows to one page, `groupId` to one mark group.
+ */
+export function removeRedactions(doc, filter) {
+  for (let p = 0; p < doc.annotations.pages.length; p++) {
+    if (filter?.page != null && filter.page !== p) continue;
+    doc.annotations.pages[p] = doc.annotations.pages[p]
+      .filter((a) => a.type !== 'redact' || (filter?.groupId != null && a.groupId !== filter.groupId));
   }
 }

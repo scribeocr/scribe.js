@@ -217,8 +217,12 @@ declare global {
         createdAt?: string;
     };
 
+    /**
+     * A text-markup annotation (PDF /Highlight, /Underline, or /StrikeOut) anchored to a text range.
+     * A missing `type` is a legacy highlight; `'underline'`/`'strikeout'` are always explicit.
+     */
     type AnnotationHighlight = {
-        type?: 'highlight';
+        type?: 'highlight' | 'underline' | 'strikeout';
         bbox: bbox;
         color: string;
         opacity: number;
@@ -290,7 +294,20 @@ declare global {
         open?: boolean;
     };
 
-    type Annotation = AnnotationHighlight | AnnotationFreeText | AnnotationShape | AnnotationText;
+    /**
+     * A redaction mark: an area slated for destructive removal at export.
+     * `.scribe` saves keep the mark unapplied; every other export removes the marked content.
+     */
+    type AnnotationRedact = {
+        /** Required because writers read a missing `type` as a legacy highlight. */
+        type: 'redact';
+        /** Region to erase, page coordinates (top-left origin, same frame as OCR words). */
+        bbox: bbox;
+        /** Ties together the rects of one mark; a multi-line selection makes several, a box mark one. */
+        groupId: string;
+    };
+
+    type Annotation = AnnotationHighlight | AnnotationFreeText | AnnotationShape | AnnotationText | AnnotationRedact;
 
     // Layout objects
     type LayoutPage = import("./objects/layoutObjects.js").LayoutPage;

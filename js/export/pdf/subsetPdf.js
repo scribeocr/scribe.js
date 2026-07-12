@@ -13,7 +13,7 @@ import { ocrPageToPDFStream } from './writePdfText.js';
 import {
   buildHighlightAnnotObjects, buildFreeTextAnnotObjects, buildShapeAnnotObjects, buildTextAnnotObjects, consolidateAnnotations,
 } from './writePdfAnnots.js';
-import { SHAPE_ANNOT_TYPES } from '../../addHighlights.js';
+import { SHAPE_ANNOT_TYPES, TEXT_MARKUP_ANNOT_TYPES } from '../../addHighlights.js';
 import { encodeStreamObject } from './writePdfStreams.js';
 import {
   scrubPageDictText, scrubReferencedObject, catalogKeepEntries, defaultScrubOpts,
@@ -306,6 +306,8 @@ function replacePageResources(pageObjText, newResourcesDictText) {
  * @param {(message: string) => void} [params.warningHandler] - Reports each annotation skipped on error.
  * @param {?Array<import('../../objects/outlineObjects.js').OutlineNode>} [params.outline=null] - Bookmark tree with destinations indexed into the output page order.
  * @param {?ScrubConfig} [params.scrub=null] - When set, scrubs identifying metadata using these scrub options.
+ * @param {?Map<number, Array<[number, number, number, number]>>} [params.redactRegionsByPage=null] - Per-page user-space rects (source content coordinates)
+ *    whose content is destructively removed and covered with an opaque black box.
  */
 export async function rebuildPdfSubset({
   pdfBytes, text, objCache, xrefEntries, pages,
@@ -322,9 +324,16 @@ export async function rebuildPdfSubset({
   warningHandler,
   outline = null,
   scrub = null,
+  redactRegionsByPage = null,
 }) {
   const overlayEnabled = !!(ocrArr && pageMetricsArr && pdfFonts);
   let nextObjNum = startingNextObjNum;
+  const redactByPage = redactRegionsByPage || new Map();
+  // The redaction machinery lives in the overlay page loop below.
+  // Without it the marked content would pass through verbatim, so refuse rather than silently leak.
+  if (redactByPage.size > 0 && !overlayEnabled) {
+    throw new Error('Cannot apply redactions: rebuild was invoked without page overlay data.');
+  }
 
   // Metadata-scrub state (only when sanitizing): map image objNum -> /Filter, an OCG-relabel counter,
   // and the "keep-by-default" catalog structure keys (accessibility, page labels, viewer prefs).
@@ -356,6 +365,15 @@ export async function rebuildPdfSubset({
     }
   }
 
+  // The non-scrub rebuild already writes a minimal catalog (no /StructTreeRoot), but a scrub configured to keep the structure tree would carry it over.
+  // Tagged PDFs embed page text in /ActualText, which would leak redacted content.
+  if (redactByPage.size > 0 && catalogKeep.some((k) => k.name === 'StructTreeRoot' || k.name === 'MarkInfo')) {
+    catalogKeep = catalogKeep.filter((k) => k.name !== 'StructTreeRoot' && k.name !== 'MarkInfo');
+    if (typeof warningHandler === 'function') {
+      warningHandler('Redaction removed the document structure tree (tagged-PDF accessibility data), which can embed page text.');
+    }
+  }
+
   const regionsByPage = new Map();
   if (convertRegionsToPaths) {
     for (const r of convertRegionsToPaths) {
@@ -365,7 +383,7 @@ export async function rebuildPdfSubset({
   }
   // Pages listed in `convertFullPages` are flattened (whole-page text-to-paths).
   const fullPageSet = new Set(convertFullPages || []);
-  const conversionState = (regionsByPage.size > 0 || convertBrokenType3ToPaths)
+  const conversionState = (regionsByPage.size > 0 || convertBrokenType3ToPaths || redactByPage.size > 0)
     ? createConversionState() : null;
 
   const { pageTreeObjNums } = collectPageTreeObjNums(objCache);
@@ -391,6 +409,10 @@ export async function rebuildPdfSubset({
 
   /** @type {Set<number>} */
   const modifiedPageObjNums = new Set();
+
+  // Redacted pages' trace-text overrides (see the tracing loop below).
+  /** @type {Map<number, string>} */
+  const redactTraceTexts = new Map();
 
   // Generate overlay content for each kept page that has OCR data (only if overlay enabled)
   if (overlayEnabled) {
@@ -427,18 +449,21 @@ export async function rebuildPdfSubset({
       }
 
       const hasText = textContentObjStr && textContentObjStr.length > 0;
-      const hasAnnots = pageAnnotations.length > 0;
-      // Region conversion (`convertRegionsToPaths`), full-page flatten, and broken-Type3 all convert text to paths without an overlay text layer,
-      // so this gate must stay independent of `hasText`.
+      // Redact marks are never written as annotations (they are applied destructively), so they must not force the annots-driven page rewrite.
+      const hasAnnots = pageAnnotations.some((a) => a.type !== 'redact');
+      // Region conversion (`convertRegionsToPaths`), full-page flatten, and broken-Type3 all convert text to paths without an overlay text layer, so this gate must stay independent of `hasText`.
       const hasConvert = convertBrokenType3ToPaths || fullPageSet.has(i) || regionsByPage.has(i);
-      if (!hasText && !hasAnnots && !hasConvert) continue;
+      const hasRedact = redactByPage.has(i);
+      if (!hasText && !hasAnnots && !hasConvert && !hasRedact) continue;
 
       /** @type {string[]|null} */
       let newContentsArray = null;
       /** @type {number|null} */
       let resourcesObjNum = null;
+      /** @type {?string} */
+      let pageResourcesTraceStr = null;
 
-      if (hasText || hasConvert) {
+      if (hasText || hasConvert || hasRedact) {
         for (const font of pageFontsUsed) pdfFontsUsed.add(font);
 
         const existingContentsRefs = parseExistingContents(pageInfo.objText, objCache);
@@ -452,13 +477,14 @@ export async function rebuildPdfSubset({
           pushObj: pushOutputObj,
           humanReadable,
           convertBrokenType3ToPaths,
+          redactBboxes: redactByPage.get(i) || null,
         });
 
         // When broken-Type3 conversion is the only reason this page is here and nothing changed,
         // leave it for the copy-through loop rather than rewrite it.
         const convertChanged = stripConvertResult.refs !== existingContentsRefs
           || stripConvertResult.xobjEntries.size > 0;
-        if (!hasText && !hasAnnots && !convertChanged) continue;
+        if (!hasText && !hasAnnots && !convertChanged && !hasRedact) continue;
 
         if (hasText) {
           const qSaveStr = 'q\n';
@@ -478,7 +504,41 @@ export async function rebuildPdfSubset({
           newContentsArray = [...stripConvertResult.refs];
         }
 
-        const existingResourcesStr = resolvePageResources(pageInfo.objText, objCache);
+        // Paint the redaction boxes as the LAST content stream so they cover everything.
+        // The content itself is removed from the streams above; the box is the visible marking.
+        // Without an overlay text stream there is no balancing q/Q pair around the original content,
+        // so the box stream leads with a Q against a fresh q prepended here, the same neutralization the overlay uses for its own text.
+        if (hasRedact) {
+          if (!hasText) {
+            const qSaveStr = 'q\n';
+            const qSaveObjNum = nextObjNum++;
+            allOutputObjects.push({ objNum: qSaveObjNum, content: `${qSaveObjNum} 0 obj\n<</Length ${qSaveStr.length}>>\nstream\n${qSaveStr}endstream\nendobj\n\n` });
+            newContentsArray.unshift(`${qSaveObjNum} 0 R`);
+          }
+          const fmtN = (v) => String(Math.round(v * 10000) / 10000);
+          let boxStr = hasText ? 'q\n0 g\n' : 'Q\nq\n0 g\n';
+          for (const [bx0, by0, bx1, by1] of redactByPage.get(i)) {
+            boxStr += `${fmtN(bx0)} ${fmtN(by0)} ${fmtN(bx1 - bx0)} ${fmtN(by1 - by0)} re f\n`;
+          }
+          boxStr += 'Q\n';
+          const boxObjNum = nextObjNum++;
+          allOutputObjects.push({ objNum: boxObjNum, content: await encodeStreamObject(boxObjNum, boxStr, { humanReadable }) });
+          newContentsArray.push(`${boxObjNum} 0 R`);
+        }
+
+        let existingResourcesStr = resolvePageResources(pageInfo.objText, objCache);
+        // Per-site form aliasing (redaction): the aliased original names must leave the page's /XObject subdict,
+        // otherwise the unredacted original forms stay referenced by the rebuilt resources and copied into the output.
+        if (hasRedact && stripConvertResult.redactedFormNames && stripConvertResult.redactedFormNames.size > 0
+          && existingResourcesStr && existingResourcesStr.startsWith('<<')) {
+          const resBody = existingResourcesStr.slice(2, -2);
+          const loc = locateResourceSubdict(resBody, '/XObject', objCache);
+          if (loc) {
+            const kept = parseDictEntries(loc.body).filter((e) => !stripConvertResult.redactedFormNames.has(e.name));
+            const inner = kept.map((e) => `/${e.name} ${e.valueText}`).join(' ');
+            existingResourcesStr = `<<${resBody.slice(0, loc.startInBody)}/XObject<<${inner}>>${resBody.slice(loc.endInBody)}>>`;
+          }
+        }
         let overlayFontsStr = '';
         for (const font of pageFontsUsed) {
           overlayFontsStr += `${font.name} ${font.objN} 0 R\n`;
@@ -497,13 +557,16 @@ export async function rebuildPdfSubset({
 
         resourcesObjNum = nextObjNum++;
         allOutputObjects.push({ objNum: resourcesObjNum, content: `${resourcesObjNum} 0 obj\n${mergedResourcesStr}\nendobj\n\n` });
+        pageResourcesTraceStr = mergedResourcesStr;
       }
 
       /** @type {string[]} */
       let extraAnnotRefs = [];
       if (hasAnnots) {
         const outputDims = { width: baseWidth, height: baseHeight };
-        const highlightAnns = pageAnnotations.filter((a) => a.type == null || a.type === 'highlight');
+        // `type == null` is a legacy highlight (UI/consolidated annots omit `type`).
+        // 'redact' must never be emitted as an annotation; marks are applied destructively instead.
+        const highlightAnns = pageAnnotations.filter((a) => a.type == null || TEXT_MARKUP_ANNOT_TYPES.has(a.type));
         const consolidated = consolidateAnnotations(highlightAnns, annotationOcrArr?.[i] || pageObj);
         const pageForEmit = consolidated.length > 0 ? consolidated : highlightAnns;
         const transformed = pageForEmit.map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty));
@@ -525,9 +588,15 @@ export async function rebuildPdfSubset({
       }
 
       const newPageObj = buildReplacementPageDict(pageInfo.objNum, pageInfo.objText, newContentsArray, resourcesObjNum, pagesRootObjNum,
-        extraAnnotRefs, objCache, keptPageObjNums, pageMetricsArr[i].rotation || 0);
+        extraAnnotRefs, objCache, keptPageObjNums, pageMetricsArr[i].rotation || 0, redactByPage.get(i) || null);
       allOutputObjects.push({ objNum: pageInfo.objNum, content: newPageObj });
       modifiedPageObjNums.add(pageInfo.objNum);
+
+      // The reference trace below prefers the ORIGINAL page dict for modified pages, which would copy the original (unredacted) content streams and dropped annots into the output as orphan objects.
+      // For redacted pages, trace the replacement dict instead (plus the rebuilt resources dict, whose text holds the font/xobject refs the page still needs).
+      if (hasRedact) {
+        redactTraceTexts.set(pageInfo.objNum, pageResourcesTraceStr ? `${newPageObj}\n${pageResourcesTraceStr}` : newPageObj);
+      }
     }
 
     for (const pdfFont of pdfFontsUsed) {
@@ -578,7 +647,12 @@ export async function rebuildPdfSubset({
   for (const i of pageIndices) {
     if (i >= pages.length) continue;
     const rewritten = rewrittenPageTexts.get(pages[i].objNum);
-    tracingTexts.push(rewritten || pages[i].objText);
+    // Redacted pages trace their replacement dict, never the original: tracing the original would copy the unredacted content streams and dropped annots into the output as orphans.
+    tracingTexts.push(rewritten || redactTraceTexts.get(pages[i].objNum) || pages[i].objText);
+  }
+  // Form clones created for redaction reference fonts/images the original (untraced) form dicts used to reach, so their generated dict texts stand in for those originals here.
+  if (conversionState && Array.isArray(conversionState.redactTraceTexts)) {
+    for (const t of conversionState.redactTraceTexts) tracingTexts.push(t);
   }
 
   // Preserve the catalog's /OCProperties (optional-content configuration) on the rebuilt catalog.

@@ -5594,7 +5594,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           drawOps.push(aOp);
         }
       } else {
-        // Synthesize appearance for Highlight annotations without /AP.
+        // Synthesize appearance for text-markup annotations (Highlight/Underline/StrikeOut) without /AP.
         // Pre-parsed in extractPdfAnnotations — look up by annotRef to skip the
         // QuadPoints/color/opacity regex here.
         const highlight = highlightByRef.get(annotRef);
@@ -5606,6 +5606,35 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
               : 'rgb(255,255,0)';
             for (let qi = 0; qi + 7 < coords.length; qi += 8) {
               // QuadPoints order: upper-left, upper-right, lower-left, lower-right
+              if (highlight.subtype === 'Underline' || highlight.subtype === 'StrikeOut') {
+                // A stroke on the text (bottom edge, or midline for strikeout) uses Normal blend, because Multiply would vanish the stroke over dark glyphs.
+                const t = highlight.subtype === 'StrikeOut' ? 0.5 : 0;
+                const sx = coords[qi + 4] + (coords[qi] - coords[qi + 4]) * t;
+                const sy = coords[qi + 5] + (coords[qi + 1] - coords[qi + 5]) * t;
+                const ex = coords[qi + 6] + (coords[qi + 2] - coords[qi + 6]) * t;
+                const ey = coords[qi + 7] + (coords[qi + 3] - coords[qi + 7]) * t;
+                const quadHeight = Math.hypot(coords[qi] - coords[qi + 4], coords[qi + 1] - coords[qi + 5]);
+                drawOps.push({
+                  type: 'path',
+                  commands: [{ type: 'M', x: sx, y: sy }, { type: 'L', x: ex, y: ey }],
+                  ctm: [1, 0, 0, 1, 0, 0],
+                  fill: false,
+                  stroke: true,
+                  evenOdd: false,
+                  fillColor: hlColor,
+                  strokeColor: hlColor,
+                  lineWidth: Math.max(quadHeight * 0.07, 0.5),
+                  lineCap: 0,
+                  lineJoin: 0,
+                  miterLimit: 10,
+                  dashArray: [],
+                  dashPhase: 0,
+                  fillAlpha: 0,
+                  strokeAlpha: highlight.opacity,
+                  blendMode: 'Normal',
+                });
+                continue;
+              }
               /** @type {PathCommand[]} */
               const commands = [
                 { type: 'M', x: coords[qi], y: coords[qi + 1] },
@@ -9090,3 +9119,5 @@ export { buildFontFromCFF as _buildFontFromCFF };
 export { type1ShadingToAxial as _type1ShadingToAxial };
 export { parseShadings as _parseShadings };
 export { cssGenericForFontObj as _cssGenericForFontObj };
+export { buildPngDataUrl as _buildPngDataUrl };
+export { imageInfoToBitmap as _imageInfoToBitmap };

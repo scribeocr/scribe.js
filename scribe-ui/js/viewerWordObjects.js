@@ -79,6 +79,11 @@ export class UiText {
    * @param {number} [options.highlightOpacity=1] - Opacity for the highlight background (0-1).
    * @param {?string} [options.highlightGroupId=null] - Group ID linking annotations in the same highlight group.
    * @param {string} [options.highlightComment=''] - Comment text attached to this highlight group.
+   * @param {?('underline'|'strikeout')} [options.markupType=null] - Line-markup kind on this word, or null for none.
+   * @param {?string} [options.markupColor=null] - Line-markup color (hex string), or null for none.
+   * @param {number} [options.markupOpacity=1] - Opacity for the line markup (0-1).
+   * @param {?string} [options.markupGroupId=null] - Group ID linking annotations in the same line-markup group.
+   * @param {string} [options.markupComment=''] - Comment text attached to this line-markup group.
    * @param {import('../viewer.js').ScribeViewer} [options.viewer] - The viewer this word belongs to; falls back to the default viewer.
    * @param {boolean} [options.dom=true] - Build the word's `<span>`; false under the custom selection engine, which needs the word's geometry and highlight/search state but no element.
    */
@@ -86,6 +91,7 @@ export class UiText {
     x, yActual, word, rotation = 0,
     outline = false, selected = false, fillBox = false, activeMatch = false, opacity = 1, fill = 'black', dynamicWidth = false, changeTextCallback, inputTextCallback,
     highlightColor = null, highlightOpacity = 1, highlightGroupId = null, highlightComment = '',
+    markupType = null, markupColor = null, markupOpacity = 1, markupGroupId = null, markupComment = '',
     viewer, dom = true,
   }) {
     const _viewer = viewer || ScribeViewer.getDefault();
@@ -177,6 +183,22 @@ export class UiText {
      * @type {?HTMLDivElement}
      */
     this.highlightRectElem = null;
+
+    // The line-markup slot, mirrored separately from the highlight fill so both can render on one word.
+    // Two markups on one word are first-wins in the view only; the model and export keep both.
+    /** @type {?('underline'|'strikeout')} */
+    this.markupType = markupType;
+    /** @type {?string} */
+    this.markupColor = markupColor;
+    this.markupOpacity = markupOpacity;
+    /** @type {?string} */
+    this.markupGroupId = markupGroupId;
+    this.markupComment = markupComment;
+    /**
+     * The bar this word's line-markup run rendered into (set by `renderHighlights`, null when unmarked).
+     * @type {?HTMLDivElement}
+     */
+    this.markupRectElem = null;
 
     this.lastWidth = width;
 
@@ -595,8 +617,8 @@ export class UiText {
     // The word may have shifted or changed width. Keep its edit handles (if any) tracking its edges.
     getViewer(wordI).repositionControls();
 
-    // A highlighted word that moved or resized shifts its run's band, so rebuild the page's highlight layer.
-    if (wordI.highlightColor) getViewer(wordI).renderHighlights(wordI.word.line.page.n);
+    // A highlighted/marked word that moved or resized shifts its run's band, so rebuild the page's highlight layer.
+    if (wordI.highlightColor || wordI.markupType) getViewer(wordI).renderHighlights(wordI.word.line.page.n);
 
     // The custom selection engine's text index caches this word's text and metrics, and the edit mutated the page in place, so an identity check cannot detect the staleness.
     const viewer = getViewer(wordI);
@@ -799,6 +821,11 @@ export class UiOcrWord extends UiText {
    * @param {number} [options.highlightOpacity=1]
    * @param {?string} [options.highlightGroupId=null]
    * @param {string} [options.highlightComment='']
+   * @param {?('underline'|'strikeout')} [options.markupType=null]
+   * @param {?string} [options.markupColor=null]
+   * @param {number} [options.markupOpacity=1]
+   * @param {?string} [options.markupGroupId=null]
+   * @param {string} [options.markupComment='']
    * @param {import('../viewer.js').ScribeViewer} [options.viewer]
    * @param {boolean} [options.dom=true] - Build the word's `<span>`. See `UiText`.
    */
@@ -806,6 +833,7 @@ export class UiOcrWord extends UiText {
     visualLeft, yActual, topBaseline, word, rotation = 0,
     outline = false, fillBox = false, activeMatch = false, listening = true, highlightColor = null, highlightOpacity = 1,
     highlightGroupId = null, highlightComment = '',
+    markupType = null, markupColor = null, markupOpacity = 1, markupGroupId = null, markupComment = '',
     viewer, dom = true,
   }) {
     const { fill, opacity } = scribe.utils.ocr.getWordFillOpacity(word, viewer?.state.displayMode ?? 'invis',
@@ -825,6 +853,11 @@ export class UiOcrWord extends UiText {
       highlightOpacity,
       highlightGroupId,
       highlightComment,
+      markupType,
+      markupColor,
+      markupOpacity,
+      markupGroupId,
+      markupComment,
       changeTextCallback: () => {},
       viewer,
       dom,
@@ -867,7 +900,7 @@ export class UiOcrWord extends UiText {
     // so reposition any edit handles here too, keeping them on the word's edges.
     getViewer(this).repositionControls();
 
-    if (this.highlightColor) getViewer(this).renderHighlights(this.word.line.page.n);
+    if (this.highlightColor || this.markupType) getViewer(this).renderHighlights(this.word.line.page.n);
   }
 
   /**

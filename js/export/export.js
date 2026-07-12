@@ -12,9 +12,13 @@ import { writeText } from './writeText.js';
 import { writeHtml } from './writeHtml.js';
 import { writeAlto } from './writeAlto.js';
 import { writeMarkdown } from './writeMarkdown.js';
-import { OcrPage, removeCircularRefsOcr } from '../objects/ocrObjects.js';
+import ocr, { OcrPage, removeCircularRefsOcr, clonePageFull } from '../objects/ocrObjects.js';
 import { removeCircularRefsDataTables } from '../objects/layoutObjects.js';
 import { mayHaveBakedText, hasBrokenFontRun, isScanPage } from '../pdf/ocrPageSelection.js';
+import { bboxToPageSpace } from '../addHighlights.js';
+import { ImageWrapper, imageUtils } from '../objects/imageObjects.js';
+import { ca } from '../canvasAdapter.js';
+import { _buildPngDataUrl } from '../pdf/renderPdfPage.js';
 
 /** @typedef {import('../containers/scribeDoc.js').ScribeDoc} ScribeDoc */
 
@@ -59,6 +63,52 @@ import { mayHaveBakedText, hasBrokenFontRun, isScanPage } from '../pdf/ocrPageSe
  * @property {object} [scrubOpts] - Overrides the Balanced scrub defaults when `sanitize` is set
  *    (`stripStructTree`, `stripPageLabels`, `stripViewerPrefs`, `dropOCProperties`).
  */
+
+/**
+ * Paint redaction rects (page coords, top-left origin) as opaque black onto a page raster, returning a fresh wrapper.
+ * Used by the raster-backed exports (fresh-build PDF, HTML), whose page images contain the content itself, so a box drawn in a later layer would not remove it.
+ * @param {ImageWrapper} image
+ * @param {Array<bbox>} rects
+ * @param {dims} pageDims - Page dimensions in the same frame as `rects`.
+ * @param {number} pageAngle - The page's deskew angle in degrees (`pageMetrics.angle`).
+ * @returns {Promise<ImageWrapper>}
+ */
+async function paintRedactionsOntoImage(image, rects, pageDims, pageAngle) {
+  const drawable = image.imageBitmap || await ca.getImageBitmap(image.ensureSrc());
+  const { width, height } = imageUtils.getDims(image);
+  const canvas = await ca.createCanvas(width, height);
+  const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d'));
+  ctx.drawImage(drawable, 0, 0);
+  ctx.fillStyle = '#000000';
+
+  // Mirror the renderer's no-rotation threshold (imageContainer.js `fillPropsDefault`).
+  let angle = image.rotated ? (pageAngle || 0) : 0;
+  if (Math.abs(angle) < 0.05) angle = 0;
+  const rad = -angle * (Math.PI / 180);
+  const cos = Math.cos(rad);
+  const sin = Math.sin(rad);
+  const sx = width / pageDims.width;
+  const sy = height / pageDims.height;
+  // On a deskewed raster (image.rotated), map each rect's corners through the same rotate-about-image-center transform the renderer applied (rotateBbox in ocrObjects.js).
+  for (const r of rects) {
+    const corners = [
+      [r.left * sx, r.top * sy], [r.right * sx, r.top * sy],
+      [r.left * sx, r.bottom * sy], [r.right * sx, r.bottom * sy],
+    ];
+    let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity;
+    for (const [x, y] of corners) {
+      const xr = angle === 0 ? x : cos * (x - width / 2) - sin * (y - height / 2) + width / 2;
+      const yr = angle === 0 ? y : sin * (x - width / 2) + cos * (y - height / 2) + height / 2;
+      x0 = Math.min(x0, xr); y0 = Math.min(y0, yr); x1 = Math.max(x1, xr); y1 = Math.max(y1, yr);
+    }
+    // 1px pad so anti-aliased glyph edges at the rect boundary cannot survive.
+    ctx.fillRect(Math.floor(x0) - 1, Math.floor(y0) - 1, Math.ceil(x1 - x0) + 2, Math.ceil(y1 - y0) + 2);
+  }
+
+  const imageData = ctx.getImageData(0, 0, width, height);
+  const dataUrl = await _buildPngDataUrl(imageData, image.colorMode === 'color' ? 'color' : 'gray');
+  return new ImageWrapper(image.n, dataUrl, image.colorMode, image.rotated, image.upscaled);
+}
 
 /**
  * Export this document's OCR data to the specified format.
@@ -127,6 +177,69 @@ export async function exportData(doc, format = 'txt', options = {}) {
     ocrDownload = ocrSource;
   }
 
+  // Every export except `.scribe` (which persists the marks unapplied) is built from redaction-filtered pages.
+  // Each marked page is cloned so the live document stays unmutated (marks stay editable), and words whose page-space bbox overlaps a mark are dropped.
+  // This filters every text output, including the PDF invisible OCR layer.
+  // The same rects drive the removal from PDF page streams and page rasters further down.
+  /** @type {Map<number, Array<bbox>>} */
+  const redactRectsByPage = new Map();
+  if (format !== 'scribe') {
+    for (let i = 0; i < doc.annotations.pages.length; i++) {
+      const rects = (doc.annotations.pages[i] || []).filter((a) => a.type === 'redact').map((a) => a.bbox);
+      if (rects.length > 0) redactRectsByPage.set(i, rects);
+    }
+  }
+  if (redactRectsByPage.size > 0) {
+    if (ocrDownload === ocrSource) ocrDownload = [...ocrSource];
+    for (const [i, rects] of redactRectsByPage) {
+      const page = ocrDownload[i];
+      if (!page) continue;
+      const clone = clonePageFull(page);
+      const dropIds = [];
+      for (const line of clone.lines) {
+        for (const word of line.words) {
+          const b = bboxToPageSpace(word.bbox, line.orientation, clone.dims);
+          // All-or-nothing per word: any strict overlap drops the whole word (over-redaction beats a leak).
+          if (rects.some((r) => b.left < r.right && b.right > r.left && b.top < r.bottom && b.bottom > r.top)) {
+            dropIds.push(word.id);
+          }
+        }
+      }
+      if (dropIds.length > 0) ocr.deletePageWords(clone, dropIds);
+      ocrDownload[i] = clone;
+    }
+  }
+
+  // Annotations overlapping a mark are dropped too: a highlight or note over redacted text leaks its location, and often its content via the comment.
+  // Redact marks themselves stay in the array; the PDF writers consume them for content removal and never emit them as annotations.
+  let annotationsPagesExport = doc.annotations.pages;
+  if (redactRectsByPage.size > 0) {
+    annotationsPagesExport = doc.annotations.pages.map((pageAnnots, i) => {
+      const rects = redactRectsByPage.get(i);
+      if (!rects || !pageAnnots || pageAnnots.length === 0) return pageAnnots || [];
+      return pageAnnots.filter((a) => {
+        if (a.type === 'redact') return true;
+        let b = null;
+        if (a.type === 'line') {
+          b = {
+            left: Math.min(a.points[0], a.points[2]), top: Math.min(a.points[1], a.points[3]),
+            right: Math.max(a.points[0], a.points[2]), bottom: Math.max(a.points[1], a.points[3]),
+          };
+        } else if (a.type === 'polygon' || a.type === 'polyline') {
+          const xs = a.vertices.filter((_, k) => k % 2 === 0);
+          const ys = a.vertices.filter((_, k) => k % 2 === 1);
+          b = {
+            left: Math.min(...xs), top: Math.min(...ys), right: Math.max(...xs), bottom: Math.max(...ys),
+          };
+        } else if (a.bbox) {
+          b = a.bbox;
+        }
+        if (!b) return true;
+        return !rects.some((r) => b.left < r.right && b.right > r.left && b.top < r.bottom && b.bottom > r.top);
+      });
+    });
+  }
+
   /** @type {string|ArrayBuffer} */
   let content;
 
@@ -163,7 +276,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
           let basePdfData = doc.images.pdfData;
           let overlayOcrArr = ocrDownload;
           let overlayPageMetricsArr = doc.pageMetrics;
-          let overlayAnnotationsPages = doc.annotations.pages;
+          let overlayAnnotationsPages = annotationsPagesExport;
           let pageStats = doc.inputData.pageStats;
           let ocrAppliedArr = doc.inputData.ocrApplied;
           // Page edits (delete/reorder) make each slot's source page (`sourcePageN`) diverge from its display position,
@@ -199,7 +312,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
             }
             overlayOcrArr = pageArr.map((i) => ocrDownload[i]);
             overlayPageMetricsArr = pageArr.map((i) => doc.pageMetrics[i]);
-            overlayAnnotationsPages = pageArr.map((i) => doc.annotations.pages[i] || []);
+            overlayAnnotationsPages = pageArr.map((i) => annotationsPagesExport[i] || []);
             pageStats = fullStats ? pageArr.map((i) => fullStats[i]) : null;
             ocrAppliedArr = fullOcrApplied ? pageArr.map((i) => fullOcrApplied[i]) : null;
           }
@@ -298,6 +411,10 @@ export async function exportData(doc, format = 'txt', options = {}) {
             } else {
               image = await doc.images.nativeSrc[i];
             }
+            // The raster itself contains the redacted content, so the pixels are painted over.
+            if (redactRectsByPage.has(i)) {
+              image = await paintRedactionsOntoImage(image, redactRectsByPage.get(i), doc.pageMetrics[i].dims, doc.pageMetrics[i].angle || 0);
+            }
             images.push(image);
             doc.progressHandler({ n: i, type: 'export', info: {} });
           }
@@ -316,7 +433,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
           proofOpacity: overlayOpacity / 100,
           images,
           includeImages,
-          annotationsPages: doc.annotations.pages,
+          annotationsPages: annotationsPagesExport,
           humanReadable: humanReadablePDF,
           docFonts: doc.fonts,
           doc,
@@ -335,7 +452,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
         confThreshHigh,
         confThreshMed,
         proofOpacity: overlayOpacity / 100,
-        annotationsPages: doc.annotations.pages,
+        annotationsPages: annotationsPagesExport,
         humanReadable: humanReadablePDF,
         docFonts: doc.fonts,
         doc,
@@ -378,6 +495,10 @@ export async function exportData(doc, format = 'txt', options = {}) {
           image = await doc.images.getNative(i, props);
         } else {
           image = await doc.images.nativeSrc[i];
+        }
+        // The raster itself contains the redacted content, so the pixels are painted over.
+        if (redactRectsByPage.has(i)) {
+          image = await paintRedactionsOntoImage(image, redactRectsByPage.get(i), doc.pageMetrics[i].dims, doc.pageMetrics[i].angle || 0);
         }
         images.push(image);
       }

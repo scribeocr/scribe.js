@@ -799,7 +799,7 @@ const TOOLS = [
   },
   {
     name: 'create_highlighted_pdf',
-    description: 'Create a PDF with specified passages highlighted. '
+    description: 'Create a PDF with specified passages highlighted, underlined, or struck through. '
       + 'Line mode: provide startLine/endLine, optionally with text to narrow to specific words. '
       + 'Quote mode: provide just page and text to search and highlight matching words.',
     inputSchema: {
@@ -838,6 +838,11 @@ const TOOLS = [
               text: {
                 type: 'string',
                 description: 'Quote text to highlight. In line mode, narrows the first/last line to matching words. In quote-only mode (no startLine/endLine), searches the entire page for this text.',
+              },
+              markup: {
+                type: 'string',
+                enum: ['highlight', 'underline', 'strikeout'],
+                description: 'Markup kind: a translucent highlight fill (default), an underline, or a strikethrough line.',
               },
               color: {
                 type: 'string',

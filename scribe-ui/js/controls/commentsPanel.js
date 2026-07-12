@@ -1,9 +1,11 @@
-// Comments side panel: every comment in the document as a card, grouped under sticky per-page headers.
-// A card is either a highlight-anchored comment (quoting the highlighted text behind a bar of the highlight's color) or a freestanding note.
+// Comments side panel: every annotation in the document as a card, grouped under sticky per-page headers.
+// A card is a text markup (quoting its covered text), a freestanding note, or a redaction mark (listed for review, though it has no comment thread).
 // A sibling of the bookmarks and thumbnails rails.
 import { makeIconButton } from './toolbar.js';
 import { annotMatchesWord } from '../viewerHighlights.js';
 import { createNote } from '../viewerNotes.js';
+import { removeRedactionGroup } from '../viewerRedactions.js';
+import { bboxToPageSpace } from '../../../js/addHighlights.js';
 
 // Speech-bubble glyph for the toolbar toggle.
 const COMMENT_SVG = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="currentColor"><path d="M3 2h10a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H6.5L4 13.5V11H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/></svg>';
@@ -21,11 +23,11 @@ const QUOTE_SCROLL_MAX_PX = 160;
 const QUOTE_SCROLL_SLACK_PX = 64;
 
 /**
- * One panel row: a highlight group (quoting the text it covers) or a freestanding note.
+ * One panel row: a highlight group (quoting the text it covers), a freestanding note, or a redaction mark group.
  * `top`/`left` are the anchor's page-space position, ordering rows within a page group.
- * @typedef {{pageIndex: number, kind: 'highlight'|'note', comment: string, author: string, createdAt: string,
+ * @typedef {{pageIndex: number, kind: 'highlight'|'note'|'redact', comment: string, author: string, createdAt: string,
  *   replies: AnnotationReply[], color: string, preview: string, groupId: ?string,
- *   annot: AnnotationHighlight | AnnotationText, top: number, left: number}} CommentRow
+ *   annot: AnnotationHighlight | AnnotationText | AnnotationRedact, top: number, left: number}} CommentRow
  */
 
 /**
@@ -134,10 +136,16 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
   function quoteText(pageIndex, groupAnns) {
     const ocrPage = scribe.doc.ocr && scribe.doc.ocr.active && scribe.doc.ocr.active[pageIndex];
     if (!ocrPage || !ocrPage.lines) return '';
+    const redact = groupAnns.length > 0 && groupAnns[0].type === 'redact';
     const words = [];
     for (const line of ocrPage.lines) {
       for (const word of line.words) {
-        if (!groupAnns.some((a) => annotMatchesWord(a, word.bbox))) continue;
+        if (redact) {
+          // Any-overlap in page space, matching the export engine's drop rule, so the quote shows exactly the words the mark removes (including ones a region mark only grazes).
+          const b = bboxToPageSpace(word.bbox, line.orientation, ocrPage.dims);
+          if (!groupAnns.some((a) => b.left < a.bbox.right && b.right > a.bbox.left
+            && b.top < a.bbox.bottom && b.bottom > a.bbox.top)) continue;
+        } else if (!groupAnns.some((a) => annotMatchesWord(a, word.bbox, a.type || 'highlight'))) continue;
         words.push(word.text);
       }
     }
@@ -173,14 +181,45 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
           });
           continue;
         }
-        if (a.type && a.type !== 'highlight') continue;
-        // A highlight is listed whether or not it carries a comment, and its highlighted text is the row's quote.
-        // One row per group (a highlight spans many per-word annotations sharing a groupId).
-        // Group-less imported highlights key by their bbox so distinct ones do not collapse together.
-        const key = a.groupId || `bbox:${a.bbox.left}:${a.bbox.top}:${a.bbox.right}:${a.bbox.bottom}`;
+        if (a.type === 'redact') {
+          // Redaction marks get a row (one per group, quoting the text the export will remove) so pending redactions are reviewable here.
+          // The row has no comment thread; it exists only to locate and delete the mark.
+          const rKey = `redact|${a.groupId}`;
+          if (seenGroups.has(rKey)) continue;
+          seenGroups.add(rKey);
+          const groupAnns = anns.filter((x) => x.type === 'redact' && x.groupId === a.groupId);
+          let top = Infinity;
+          let left = Infinity;
+          for (const g of groupAnns) {
+            if (g.bbox.top < top) top = g.bbox.top;
+            if (g.bbox.left < left) left = g.bbox.left;
+          }
+          out.push({
+            pageIndex: i,
+            kind: 'redact',
+            comment: '',
+            author: '',
+            createdAt: '',
+            replies: [],
+            color: '',
+            preview: quoteText(i, groupAnns),
+            groupId: a.groupId,
+            annot: a,
+            top: top === Infinity ? 0 : top,
+            left: left === Infinity ? 0 : left,
+          });
+          continue;
+        }
+        if (a.type && a.type !== 'highlight' && a.type !== 'underline' && a.type !== 'strikeout') continue;
+        // A text markup (highlight/underline/strikeout) is listed with or without a comment; its covered text is the quote.
+        // One row per group, since a markup is many per-word annotations sharing a groupId.
+        // Group-less imported highlights key by bbox so distinct ones do not collapse.
+        // The kind is in the key and member filter because a highlight and an underline can share a groupId (`addHighlights` numbers groups per call) yet are separate markups.
+        const kind = a.type || 'highlight';
+        const key = a.groupId ? `${kind}|${a.groupId}` : `bbox:${kind}:${a.bbox.left}:${a.bbox.top}:${a.bbox.right}:${a.bbox.bottom}`;
         if (seenGroups.has(key)) continue;
         seenGroups.add(key);
-        const groupAnns = a.groupId ? anns.filter((x) => x.groupId === a.groupId) : [a];
+        const groupAnns = a.groupId ? anns.filter((x) => x.groupId === a.groupId && (x.type || 'highlight') === kind) : [a];
         // The group's topmost-leftmost box anchors the row's position, whatever order the words were swept in.
         let top = Infinity;
         let left = Infinity;
@@ -227,9 +266,11 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
   function setHighlightComment(row, comment) {
     const author = (scribe.opt && scribe.opt.commentAuthor) || '';
     const now = new Date().toISOString();
+    // The kind gate keeps a same-groupId markup of another kind (see `collectRows`) untouched.
+    const rowKind = (row.annot && row.annot.type) || 'highlight';
     const match = row.groupId ? ((a) => a.groupId === row.groupId) : ((a) => a === row.annot);
     for (const a of annPages()[row.pageIndex] || []) {
-      if (a.type === 'text' || (a.type && a.type !== 'highlight')) continue;
+      if (a.type === 'text' || (a.type || 'highlight') !== rowKind) continue;
       if (!match(a)) continue;
       a.comment = comment;
       if (comment) {
@@ -242,7 +283,10 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
       }
     }
     if (row.groupId) {
-      for (const kw of scribe.getUiWords()) if (kw.highlightGroupId === row.groupId) kw.highlightComment = comment;
+      for (const kw of scribe.getUiWords()) {
+        if (rowKind === 'highlight' && kw.highlightGroupId === row.groupId) kw.highlightComment = comment;
+        else if (rowKind !== 'highlight' && kw.markupGroupId === row.groupId) kw.markupComment = comment;
+      }
     }
     refreshOnPage(row.pageIndex);
   }
@@ -258,9 +302,10 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
       if (replies.length > 0) row.annot.replies = replies;
       else delete row.annot.replies;
     } else {
+      const rowKind = (row.annot && row.annot.type) || 'highlight';
       const match = row.groupId ? ((a) => a.groupId === row.groupId) : ((a) => a === row.annot);
       for (const a of annPages()[row.pageIndex] || []) {
-        if (a.type === 'text' || (a.type && a.type !== 'highlight')) continue;
+        if (a.type === 'text' || (a.type || 'highlight') !== rowKind) continue;
         if (!match(a)) continue;
         // Consumers read the thread off whichever annotation of the group they match first, so every member carries it.
         if (replies.length > 0) a.replies = replies;
@@ -275,17 +320,26 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
    * @param {CommentRow} row
    */
   function deleteHighlight(row) {
+    const rowKind = (row.annot && row.annot.type) || 'highlight';
     const match = row.groupId ? ((a) => a.groupId === row.groupId) : ((a) => a === row.annot);
     const page = annPages()[row.pageIndex] || [];
-    scribe.doc.annotations.pages[row.pageIndex] = page.filter((a) => !((a.type == null || a.type === 'highlight') && match(a)));
+    scribe.doc.annotations.pages[row.pageIndex] = page.filter((a) => !((a.type || 'highlight') === rowKind && match(a)));
     for (const kw of scribe.getUiWords()) {
-      const covered = (row.groupId && kw.highlightGroupId === row.groupId)
-        || (!row.groupId && annotMatchesWord(/** @type {AnnotationHighlight} */ (row.annot), kw.word.bbox));
+      const covered = (row.groupId && (rowKind === 'highlight' ? kw.highlightGroupId : kw.markupGroupId) === row.groupId)
+        || (!row.groupId && annotMatchesWord(/** @type {AnnotationHighlight} */ (row.annot), kw.word.bbox, rowKind));
       if (!covered) continue;
-      kw.highlightColor = null;
-      kw.highlightOpacity = 1;
-      kw.highlightGroupId = null;
-      kw.highlightComment = '';
+      if (rowKind === 'highlight') {
+        kw.highlightColor = null;
+        kw.highlightOpacity = 1;
+        kw.highlightGroupId = null;
+        kw.highlightComment = '';
+      } else {
+        kw.markupType = null;
+        kw.markupColor = null;
+        kw.markupOpacity = 1;
+        kw.markupGroupId = null;
+        kw.markupComment = '';
+      }
     }
     refreshOnPage(row.pageIndex);
   }
@@ -532,13 +586,22 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
       item.addEventListener('click', () => { closeMenu(); fn(); });
       menuElem.appendChild(item);
     };
+    if (row.kind === 'redact') {
+      // Deletes the whole group, including its marks on other pages.
+      add('Delete redaction', () => { removeRedactionGroup(scribe, row.groupId); rebuild(); });
+      showMenuAt(x, y);
+      return;
+    }
     add('Edit', () => startEdit(row, rowEl, 'root'));
     if (row.kind === 'note') {
       add('Delete note', () => { deleteNote(row); rebuild(); });
     } else {
       // Clearing the comment takes the reply thread with it.
       add(row.replies.length > 0 ? 'Delete conversation' : 'Delete comment', () => { setHighlightComment(row, ''); rebuild(); });
-      add('Delete highlight', () => { deleteHighlight(row); rebuild(); });
+      const rowKind = (row.annot && row.annot.type) || 'highlight';
+      const deleteLabel = rowKind === 'underline' ? 'Delete underline'
+        : (rowKind === 'strikeout' ? 'Delete strikethrough' : 'Delete highlight');
+      add(deleteLabel, () => { deleteHighlight(row); rebuild(); });
     }
     showMenuAt(x, y);
   }
@@ -557,13 +620,15 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
     const rightElem = document.createElement('div');
     rightElem.className = 'scribe-cm-right';
 
-    // The anchor line names what the comment hangs on: the quoted highlight behind a bar of its color, or the note mark.
+    // Markup rows carry no kind label: the quote renders with its own annotation applied (wash, underline, strikethrough, or redaction hatch), so it self-identifies.
+    // The kind word rides in the quote's tooltip.
     const anchor = document.createElement('div');
     anchor.className = 'scribe-cm-anchor';
     const bar = document.createElement('span');
     bar.className = 'scribe-cm-bar';
-    // Raw highlight color, not a tinted shade, matching the coin picker's swatches.
+    // Raw mark color, not a tinted shade, matching the coin picker's swatches.
     if (row.kind === 'note') bar.style.background = 'var(--scribe-note)';
+    else if (row.kind === 'redact') bar.style.background = '#d1493d';
     else if (row.color) bar.style.background = row.color;
     anchor.appendChild(bar);
     if (row.kind === 'note') {
@@ -572,21 +637,42 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
       kind.innerHTML = `${NOTE_MARK_SVG}<span>Note</span>`;
       anchor.appendChild(kind);
     } else {
+      const rowKind = row.kind === 'redact' ? 'redact' : ((row.annot && row.annot.type) || 'highlight');
       const quote = document.createElement('span');
       quote.className = 'scribe-cm-quote';
-      quote.textContent = row.preview;
-      // stopPropagation so expanding the quote does not also fire the row's edit-on-dblclick shortcut.
-      quote.addEventListener('dblclick', (e) => {
-        e.stopPropagation();
-        const expanding = !quote.classList.contains('expanded');
-        quote.classList.toggle('expanded', expanding);
-        quote.classList.remove('scroll');
-        quote.style.maxHeight = '';
-        if (expanding && quote.scrollHeight > QUOTE_SCROLL_MAX_PX + QUOTE_SCROLL_SLACK_PX) {
-          quote.classList.add('scroll');
-          quote.style.maxHeight = `${QUOTE_SCROLL_MAX_PX}px`;
+      quote.title = rowKind === 'underline' ? 'Underline'
+        : (rowKind === 'strikeout' ? 'Strikethrough' : (rowKind === 'redact' ? 'Redaction' : 'Highlight'));
+      if (rowKind === 'redact') {
+        quote.classList.add('scribe-cm-qmark', 'scribe-cm-q-rd');
+        // A region mark (drawn over a figure or scan) covers no words, so its quote falls back to a placeholder.
+        quote.textContent = row.preview || 'Region on this page';
+      } else {
+        quote.textContent = row.preview;
+        if (rowKind === 'underline') {
+          quote.classList.add('scribe-cm-q-ul');
+          if (row.color) quote.style.textDecorationColor = row.color;
+        } else if (rowKind === 'strikeout') {
+          quote.classList.add('scribe-cm-q-st');
+          if (row.color) quote.style.textDecorationColor = row.color;
+        } else if (row.color) {
+          quote.classList.add('scribe-cm-qmark');
+          quote.style.background = `color-mix(in srgb, ${row.color} var(--scribe-cm-wash, 35%), transparent)`;
         }
-      });
+      }
+      if (row.preview) {
+        // stopPropagation so expanding the quote does not also fire the row's edit-on-dblclick shortcut.
+        quote.addEventListener('dblclick', (e) => {
+          e.stopPropagation();
+          const expanding = !quote.classList.contains('expanded');
+          quote.classList.toggle('expanded', expanding);
+          quote.classList.remove('scroll');
+          quote.style.maxHeight = '';
+          if (expanding && quote.scrollHeight > QUOTE_SCROLL_MAX_PX + QUOTE_SCROLL_SLACK_PX) {
+            quote.classList.add('scroll');
+            quote.style.maxHeight = `${QUOTE_SCROLL_MAX_PX}px`;
+          }
+        });
+      }
       anchor.appendChild(quote);
     }
 
@@ -628,7 +714,8 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
       // A single click on the row navigates, so editing takes a double-click.
       if (editing()) text.addEventListener('dblclick', (e) => { e.stopPropagation(); startEdit(row, el, 'root'); });
       el.appendChild(text);
-    } else if (editing()) {
+    } else if (editing() && row.kind !== 'redact') {
+      // A redaction mark has no comment field, so its row offers no composer.
       const ghost = document.createElement('button');
       ghost.type = 'button';
       ghost.className = 'scribe-cm-ghost';
@@ -692,12 +779,14 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
     });
 
     if (editing()) {
-      el.addEventListener('dblclick', (e) => {
-        // A double-click inside a message or the open editor must not also open the root editor.
-        if (e.target instanceof Element && e.target.closest('.scribe-cm-text, .scribe-cm-field, .scribe-cm-ghost, .scribe-cm-fold, .scribe-cm-reply')) return;
-        e.stopPropagation();
-        startEdit(row, el, 'root');
-      });
+      if (row.kind !== 'redact') {
+        el.addEventListener('dblclick', (e) => {
+          // A double-click inside a message or the open editor must not also open the root editor.
+          if (e.target instanceof Element && e.target.closest('.scribe-cm-text, .scribe-cm-field, .scribe-cm-ghost, .scribe-cm-fold, .scribe-cm-reply')) return;
+          e.stopPropagation();
+          startEdit(row, el, 'root');
+        });
+      }
       el.addEventListener('contextmenu', (e) => { e.preventDefault(); openRowMenu(row, e.clientX, e.clientY, el); });
     }
 
@@ -723,6 +812,21 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
       el.addEventListener('mouseleave', () => {
         for (const band of litBands) band.classList.remove('scribe-hl-hover');
         litBands = [];
+      });
+    }
+
+    if (row.kind === 'redact') {
+      // Row->mark half of the hover sync: hovering the row washes the group's on-page marks, since redaction marks otherwise look alike.
+      /** @type {Array<Element>} */
+      let litMarks = [];
+      el.addEventListener('mouseenter', () => {
+        litMarks = [...(scribe.outerElem || document).querySelectorAll('.scribe-redact-mark')]
+          .filter((m) => /** @type {HTMLElement} */ (m).dataset.groupId === row.groupId);
+        for (const m of litMarks) m.classList.add('scribe-redact-hover');
+      });
+      el.addEventListener('mouseleave', () => {
+        for (const m of litMarks) m.classList.remove('scribe-redact-hover');
+        litMarks = [];
       });
     }
     return el;
@@ -832,13 +936,17 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
 
   /**
    * Remove the comment entry for every selected row.
-   * A note is deleted outright; a highlight keeps its mark but loses its comment and any reply thread.
+   * A note is deleted outright.
+   * A highlight keeps its mark but loses its comment and reply thread
+   * A redaction (having no comment) is deleted outright, group-wide.
    */
   function deleteSelected() {
     if (!editing() || selected.size === 0) return;
     const targets = [...selected].map((i) => rows[i]).filter(Boolean);
     for (const row of targets) {
-      if (row.kind === 'note') deleteNote(row); else setHighlightComment(row, '');
+      if (row.kind === 'note') deleteNote(row);
+      else if (row.kind === 'redact') removeRedactionGroup(scribe, row.groupId);
+      else setHighlightComment(row, '');
     }
     selected.clear();
     rebuild();
@@ -908,12 +1016,25 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
   function reveal(target) {
     // The row for a just-saved comment may not exist yet.
     rebuild();
-    const i = 'word' in target
-      ? rows.findIndex((row) => row.kind === 'highlight'
-        && (target.highlightGroupId ? row.groupId === target.highlightGroupId
-          : (row.pageIndex === target.word.line.page.n
-            && annotMatchesWord(/** @type {AnnotationHighlight} */ (row.annot), target.word.bbox))))
-      : rows.findIndex((row) => row.kind === 'note' && row.annot === target);
+    let i = -1;
+    if ('word' in target) {
+      // Try the fill before the line markup, matching the card's click-to-pin priority.
+      // Each lookup also filters on kind, since a fill and a line markup can share a groupId.
+      const rowKindOf = (row) => ((row.annot && row.annot.type) || 'highlight');
+      if (target.highlightGroupId) {
+        i = rows.findIndex((row) => row.kind === 'highlight' && row.groupId === target.highlightGroupId && rowKindOf(row) === 'highlight');
+      }
+      if (i < 0 && target.markupGroupId) {
+        i = rows.findIndex((row) => row.kind === 'highlight' && row.groupId === target.markupGroupId && rowKindOf(row) !== 'highlight');
+      }
+      if (i < 0) {
+        i = rows.findIndex((row) => row.kind === 'highlight'
+          && row.pageIndex === target.word.line.page.n
+          && annotMatchesWord(/** @type {AnnotationHighlight} */ (row.annot), target.word.bbox, (row.annot && row.annot.type) || 'highlight'));
+      }
+    } else {
+      i = rows.findIndex((row) => row.kind === 'note' && row.annot === target);
+    }
     const el = i >= 0 ? rowEls[i] : null;
     if (!el) return;
     el.scrollIntoView({ block: 'nearest' });

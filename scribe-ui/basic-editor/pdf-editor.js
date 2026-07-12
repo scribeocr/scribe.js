@@ -9,6 +9,9 @@
 import { ScribePDFViewer, ScribeViewer } from '../basic-viewer/pdf-viewer.js';
 import { selectOcrPages } from '../../js/pdf/ocrPageSelection.js';
 import { outlineSplitSegments } from '../../js/objects/outlineObjects.js';
+import { createRedactTool } from '../js/controls/tools.js';
+import { makeSeparator } from '../js/controls/toolbar.js';
+import { redactWords } from '../js/viewerRedactions.js';
 
 const EDITOR_ROOT_CLASS = 'scribe-pdf-editor';
 
@@ -34,7 +37,9 @@ const ICON_DARK = editIcon('<path d="M20.5 13.5A8 8 0 0 1 10.5 3.5 7 7 0 1 0 20.
 class ScribePDFEditor extends ScribePDFViewer {
   /**
    * @param {HTMLElement} container
-   * @param {object} [options] - Same options as `ScribePDFViewer`.
+   * @param {object} [options] - Same options as `ScribePDFViewer`, plus:
+   *   `redact` (boolean, default true) marks text or regions for destructive removal at export.
+   *   Editor-only, though marks still render in the plain viewer.
    */
   constructor(container, options = {}) {
     super(container, options);
@@ -53,6 +58,26 @@ class ScribePDFEditor extends ScribePDFViewer {
     this._initTheme();
 
     if (this.showToolbar) this._buildEditToolbar();
+
+    // Redact tool (editor-only; the marks themselves render in the core viewer for any reader).
+    /** @type {?ReturnType<typeof createRedactTool>} */
+    this._redactTool = null;
+    if (options.redact !== false) {
+      // Apply-at-export is the one non-obvious rule, so say it once, at the first mark.
+      let redactCueShown = false;
+      const onMark = () => {
+        if (redactCueShown) return;
+        redactCueShown = true;
+        this._showToast('Marked for redaction — the content is removed when you export.');
+      };
+      this._redactTool = createRedactTool(this.scribe, this.pdfViewerElem, { onMark });
+      this.scribe._onRedactMark = onMark;
+      if (this._toolbarButtonsElem) {
+        this._toolbarButtonsElem.append(makeSeparator(), this._redactTool.toolbarElem);
+      }
+      this._teardownCallbacks.push(this._redactTool.installBehaviors());
+      this._addRedactAllToSearchBar();
+    }
 
     // A bookmark edit can change how many top-level bookmarks exist, so refresh the Split button after any edit.
     const prevEditCallback = this.scribe.onEditCallback;
@@ -158,6 +183,15 @@ class ScribePDFEditor extends ScribePDFViewer {
         if (!this.doc || this.doc.pageMetrics.length === 0) return;
         exportItem.classList.add('busy');
         try {
+          // The export itself applies the marks, so the toast is the honest cue right when it happens.
+          // Never a modal: applying the user's own marks is the expected outcome, not something to confirm.
+          const redactGroups = new Set();
+          for (const pageAnnots of this.doc.annotations.pages) {
+            for (const a of pageAnnots || []) if (a.type === 'redact') redactGroups.add(a.groupId);
+          }
+          if (redactGroups.size > 0) {
+            this._showToast(`Applying ${redactGroups.size} redaction${redactGroups.size === 1 ? '' : 's'} — the marked content is removed from the exported PDF.`);
+          }
           await this.doc.download('pdf', this._baseName(), { displayMode: 'invis', addOverlay: true });
         } catch (err) {
           console.error('Export failed:', err);
@@ -220,6 +254,42 @@ class ScribePDFEditor extends ScribePDFViewer {
     this._updateRecognizeButton();
     this._updateCombineButton();
     this._updateSplitButton();
+  }
+
+  /**
+   * Add a "Redact all" action to the find bar: one mark group per search occurrence,
+   * exactly the matches the `N/M` counter shows (both read `_searchState.matchList`).
+   */
+  _addRedactAllToSearchBar() {
+    const bar = this._searchBar;
+    if (!bar || !bar.findGroupElem) return;
+    const btn = this._makeTextBtn('Redact all', 'Mark every match for redaction');
+    btn.addEventListener('click', () => {
+      const matches = this.scribe._searchState?.matchList || [];
+      if (matches.length === 0 || !this.doc) {
+        this._showToast('No matches to redact.');
+        return;
+      }
+      /** @type {Map<number, Map<string, OcrWord>>} */
+      const wordsByPage = new Map();
+      let groups = 0;
+      for (const m of matches) {
+        let pageWords = wordsByPage.get(m.pageN);
+        if (!pageWords) {
+          pageWords = new Map();
+          const page = this.doc.ocr.active[m.pageN];
+          if (page) for (const line of page.lines) for (const w of line.words) pageWords.set(w.id, w);
+          wordsByPage.set(m.pageN, pageWords);
+        }
+        const words = m.wordIds.map((id) => pageWords.get(id)).filter((w) => !!w);
+        if (words.length > 0 && redactWords(this.scribe, words) > 0) groups++;
+      }
+      if (groups > 0) this._showToast(`${groups} match${groups === 1 ? '' : 'es'} marked for redaction.`);
+      // `redactWords` skips words existing marks cover, so a repeat click adds nothing.
+      else this._showToast('All matches are already marked for redaction.');
+    });
+    // Before the close button, keeping dismissal at the bar's end.
+    bar.findGroupElem.insertBefore(btn, bar.findGroupElem.lastElementChild);
   }
 
   /**

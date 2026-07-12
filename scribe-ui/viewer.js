@@ -17,6 +17,7 @@ import {
   annotMatchesWord, applyHighlight, removeHighlight, modifyHighlightComment, updateHighlightGroupOutline,
 } from './js/viewerHighlights.js';
 import { renderPageNotes } from './js/viewerNotes.js';
+import { renderPageRedactions, updateRedactTab, hideRedactTabSoon } from './js/viewerRedactions.js';
 import { ensureLayerStyleSheet, COMMENT_MARK_SVG } from './js/viewerLayerStyles.js';
 import {
   ScribeViewerState, ScribeViewerOpts, CanvasSelection,
@@ -269,6 +270,15 @@ export class ScribeViewer {
     this._overlayGroups = [];
     /** @type {Array<?HTMLDivElement>} Per-page sticky-note layer (z above words/highlights, survives layout-mode teardown). */
     this._notesGroups = [];
+    /** @type {Array<?HTMLDivElement>} Per-page redaction-mark layer (above highlights, below notes; never blocks the pointer). */
+    this._redactGroups = [];
+    /** @type {Array<?HTMLDivElement>} Per-page redaction "Preview" tab layer, kept out of the multiply-blending mark layer so the tab label stays opaque. */
+    this._redactTabGroups = [];
+    /**
+     * State of the floating "Preview" tab over the hovered redaction mark.
+     * @type {?{el: HTMLSpanElement, n: number, groupId: string, left: number, top: number, hideT: number, pinned: boolean, on: boolean}}
+     */
+    this._redactTab = null;
     /** @type {Array<number>} */
     this.textGroupsRenderIndices = [];
     /** @type {Array<number>} */
@@ -352,6 +362,14 @@ export class ScribeViewer {
     // Null when highlighting is disabled.
     /** @type {?string} */
     this._highlightColor = null;
+
+    // Whether a redact tool is present, mirrored here for the context menu's "Redact" item.
+    /** @type {boolean} */
+    this._redactEnabled = false;
+
+    // Host callback fired after a marking gesture.
+    /** @type {?(marksAdded: number) => void} */
+    this._onRedactMark = null;
 
     this._searchState = {
       search: '',
@@ -479,6 +497,9 @@ export class ScribeViewer {
     this.textGroupsRenderIndices.length = 0;
     this._overlayGroups.length = 0;
     this._notesGroups.length = 0;
+    this._redactGroups.length = 0;
+    this._redactTabGroups.length = 0;
+    this._redactTab = null;
     this.overlayGroupsRenderIndices.length = 0;
     this._selectGroups.length = 0;
     this._wordObjMaps.length = 0;
@@ -1462,6 +1483,10 @@ export class ScribeViewer {
     // Middle-button 1:1 drag-pan (non-`invis` modes; `invis` mode uses autoscroll instead).
     scrollContainer.addEventListener('mousemove', (event) => this.executeDrag(event));
 
+    // Marks are pointer-transparent, so the "Preview" tab reveal hit-tests them on every move instead of using DOM hover.
+    scrollContainer.addEventListener('mousemove', (event) => updateRedactTab(this, event));
+    scrollContainer.addEventListener('mouseleave', () => hideRedactTabSoon(this));
+
     // Hovering any word of a highlight lifts every band of its group and swaps in a pointer cursor,
     // signalling the highlight is an engageable object (its actions live in the right-click menu).
     // Delegated rather than per-word so it tracks highlights applied or removed after the words were built.
@@ -1749,10 +1774,12 @@ export class ScribeViewer {
       }
     }
 
-    // Sticky-note icons render for the same window as words.
     this.renderNotes(n);
     if (n - 1 >= 0) this.renderNotes(n - 1);
     if (n + 1 < this.doc.ocr.active.length) this.renderNotes(n + 1);
+    this.renderRedactions(n);
+    if (n - 1 >= 0) this.renderRedactions(n - 1);
+    if (n + 1 < this.doc.ocr.active.length) this.renderRedactions(n + 1);
 
     if (scroll) {
       // Land page `n` as the current page.
@@ -2090,6 +2117,52 @@ export class ScribeViewer {
   }
 
   /**
+   * The per-page redaction-mark layer, lazily created; above highlights and text, below notes.
+   * @param {number} n
+   * @returns {?HTMLDivElement}
+   */
+  getRedactionsGroup(n) {
+    if (!this._redactGroups[n]) {
+      const group = this.createGroup(n);
+      group.style.zIndex = '2';
+      group.style.pointerEvents = 'none'; // Content under a mark stays selectable.
+      group.style.mixBlendMode = 'multiply'; // Darkens rather than covers, so the hatch reads behind the glyphs and they keep full contrast.
+      group.classList.add('scribe-layer-redact');
+      this._redactGroups[n] = group;
+      const pc = this._ensurePageContainer(n);
+      if (pc) pc.appendChild(group);
+    }
+    return this._redactGroups[n];
+  }
+
+  /**
+   * The per-page redaction "Preview" tab layer, lazily created; above the marks, unblended so the label stays opaque.
+   * @param {number} n
+   * @returns {?HTMLDivElement}
+   */
+  getRedactTabGroup(n) {
+    if (!this._redactTabGroups[n]) {
+      const group = this.createGroup(n);
+      group.style.zIndex = '2';
+      group.style.pointerEvents = 'none';
+      group.classList.add('scribe-layer-redact-tab');
+      this._redactTabGroups[n] = group;
+      const pc = this._ensurePageContainer(n);
+      if (pc) pc.appendChild(group);
+    }
+    return this._redactTabGroups[n];
+  }
+
+  /**
+   * Render page n redaction marks into their layer.
+   * No visibility gate: a mark changes what an export will contain, so every viewer must show it.
+   * @param {number} n
+   */
+  renderRedactions(n) {
+    renderPageRedactions(this, n);
+  }
+
+  /**
    * Show or hide the OCR text layer (word boxes and lines) across every page.
    * @param {boolean} [visible=true]
    */
@@ -2395,6 +2468,7 @@ export class ScribeViewer {
           ? wordObj.bbox.bottom + angleAdjLine.y + angleAdjWord.y : visualBaseline;
 
         const annot = pageAnnotations.find((a) => annotMatchesWord(a, wordObj.bbox));
+        const lineAnnot = pageAnnotations.find((a) => annotMatchesWord(a, wordObj.bbox, 'line'));
 
         const wordCanvas = new UiOcrWord({
           visualLeft: wordObj.bbox.left + angleAdjLine.x + angleAdjWord.x,
@@ -2408,6 +2482,11 @@ export class ScribeViewer {
           highlightOpacity: annot ? annot.opacity : 1,
           highlightGroupId: annot ? (annot.groupId || null) : null,
           highlightComment: annot ? (annot.comment || '') : '',
+          markupType: lineAnnot ? /** @type {'underline'|'strikeout'} */ (lineAnnot.type) : null,
+          markupColor: lineAnnot ? lineAnnot.color : null,
+          markupOpacity: lineAnnot ? lineAnnot.opacity : 1,
+          markupGroupId: lineAnnot ? (lineAnnot.groupId || null) : null,
+          markupComment: lineAnnot ? (lineAnnot.comment || '') : '',
           viewer: this,
           dom: false,
         });
@@ -2559,26 +2638,8 @@ export class ScribeViewer {
 
         const visualLeft = wordObj.bbox.left + angleAdjLine.x + angleAdjWord.x;
 
-        let highlightColor = null;
-        let highlightOpacity = 1;
-        let highlightGroupId = null;
-        let highlightComment = '';
-        for (const annot of pageAnnotations) {
-          if (!(annot.bbox.left <= wordObj.bbox.left && annot.bbox.right >= wordObj.bbox.right
-            && annot.bbox.top <= wordObj.bbox.top && annot.bbox.bottom >= wordObj.bbox.bottom)) continue;
-
-          if (annot.quads) {
-            const matchesQuad = annot.quads.some((quad) => quad.left < wordObj.bbox.right && quad.right > wordObj.bbox.left
-              && quad.top < wordObj.bbox.bottom && quad.bottom > wordObj.bbox.top);
-            if (!matchesQuad) continue;
-          }
-
-          highlightColor = annot.color;
-          highlightOpacity = annot.opacity;
-          highlightGroupId = annot.groupId || null;
-          highlightComment = annot.comment || '';
-          break;
-        }
+        const annot = pageAnnotations.find((a) => annotMatchesWord(a, wordObj.bbox));
+        const lineAnnot = pageAnnotations.find((a) => annotMatchesWord(a, wordObj.bbox, 'line'));
 
         const wordCanvas = new UiOcrWord({
           visualLeft,
@@ -2589,10 +2650,15 @@ export class ScribeViewer {
           outline: outlineWord,
           fillBox: matchIdArr.includes(wordObj.id) && !activeIds.has(wordObj.id),
           activeMatch: activeIds.has(wordObj.id),
-          highlightColor,
-          highlightOpacity,
-          highlightGroupId,
-          highlightComment,
+          highlightColor: annot ? annot.color : null,
+          highlightOpacity: annot ? annot.opacity : 1,
+          highlightGroupId: annot ? (annot.groupId || null) : null,
+          highlightComment: annot ? (annot.comment || '') : '',
+          markupType: lineAnnot ? /** @type {'underline'|'strikeout'} */ (lineAnnot.type) : null,
+          markupColor: lineAnnot ? lineAnnot.color : null,
+          markupOpacity: lineAnnot ? lineAnnot.opacity : 1,
+          markupGroupId: lineAnnot ? (lineAnnot.groupId || null) : null,
+          markupComment: lineAnnot ? (lineAnnot.comment || '') : '',
           // Paint-only under the custom engine: the spans are display, never pointer targets.
           listening: !this.state.layoutMode && !this.useCustomSelection,
           viewer: this,
@@ -2643,9 +2709,10 @@ export class ScribeViewer {
   }
 
   /**
-   * Rebuild page `n`'s highlight fill layer from the per-word highlight state on `_wordObjs[n]`.
+   * Rebuild page `n`'s highlight fill and line-markup layer from the per-word state on `_wordObjs[n]`.
    * Consecutive words on a line sharing the same highlight are merged into one rectangle,
    * so a multi-word highlight is one seamless band rather than a row of per-word rectangles.
+   * Underline/strikeout runs merge the same way, drawn as one continuous bar per run.
    * @param {number} n
    */
   renderHighlights(n) {
@@ -2661,6 +2728,7 @@ export class ScribeViewer {
     const lineMap = new Map();
     for (const kw of words) {
       kw.highlightRectElem = null;
+      kw.markupRectElem = null;
       const lineId = kw.word.line.id;
       let lineArr = lineMap.get(lineId);
       if (!lineArr) { lineArr = []; lineMap.set(lineId, lineArr); }
@@ -2710,10 +2778,52 @@ export class ScribeViewer {
         run = null;
       };
 
+      /**
+       * @type {?{key: string, type: ('underline'|'strikeout'), color: string, opacity: number, groupId: ?string,
+       *   words: Array<UiOcrWord>, left: number, right: number, top: number, bottom: number, baseline: number, maxFs: number, orientation: number}}
+       */
+      let lineRun = null;
+      /** @param {?number} [nextLeft] Left edge of the word that ends the run on its line (null at line end). */
+      const flushLine = (nextLeft = null) => {
+        if (!lineRun) return;
+        const group = this.getHighlightGroup(n, lineRun.orientation);
+        const rect = document.createElement('div');
+        const r = parseInt(lineRun.color.slice(1, 3), 16);
+        const g = parseInt(lineRun.color.slice(3, 5), 16);
+        const b = parseInt(lineRun.color.slice(5, 7), 16);
+        // One continuous bar per run, spanning the word gaps like PDF /Underline and /StrikeOut, so no gap-splitting applies here.
+        const barHeight = Math.max(lineRun.maxFs * 0.06, 1);
+        const barCenter = lineRun.type === 'underline'
+          ? lineRun.baseline + lineRun.maxFs * 0.07
+          : lineRun.baseline - lineRun.maxFs * 0.25;
+        rect.className = 'scribe-hl-band';
+        rect.style.setProperty('--scribe-hl-o', `${lineRun.opacity}`);
+        Object.assign(rect.style, {
+          position: 'absolute',
+          left: `${lineRun.left}px`,
+          top: `${barCenter - barHeight / 2}px`,
+          width: `${lineRun.right - lineRun.left}px`,
+          height: `${barHeight}px`,
+          background: `rgb(${r}, ${g}, ${b})`,
+          pointerEvents: 'none',
+        });
+        group.appendChild(rect);
+        for (const rkw of lineRun.words) rkw.markupRectElem = rect;
+        if (lineRun.groupId) {
+          const arr = this._highlightRectsByGroup[n].get(lineRun.groupId);
+          if (arr) arr.push(rect); else this._highlightRectsByGroup[n].set(lineRun.groupId, [rect]);
+          if (lineRun.words[0].markupComment) {
+            // The word-box extent (not the thin bar's) centers the comment mark on the text like a highlight's.
+            markRuns.set(lineRun.groupId, {
+              right: lineRun.right, top: lineRun.top, bottom: lineRun.bottom, nextLeft, orientation: lineRun.orientation, color: lineRun.color,
+            });
+          }
+        }
+        lineRun = null;
+      };
+
       for (const kw of lineWords) {
         const left = kw.x() - (kw.word.visualCoords ? kw.leftSideBearing : 0);
-        if (!kw.highlightColor) { flush(left); continue; }
-        const key = `${kw.highlightColor}_${kw.highlightOpacity}_${kw.highlightGroupId || ''}`;
         const fs = kw.fontSize;
         const wordBox = {
           left,
@@ -2721,20 +2831,56 @@ export class ScribeViewer {
           top: kw.y() - fs * 0.12,
           bottom: kw.y() + fs * 0.72,
         };
-        if (run && run.key === key) {
-          run.left = Math.min(run.left, wordBox.left);
-          run.right = Math.max(run.right, wordBox.right);
-          run.top = Math.min(run.top, wordBox.top);
-          run.bottom = Math.max(run.bottom, wordBox.bottom);
-          run.words.push(kw);
-        } else {
+
+        if (!kw.highlightColor) {
           flush(left);
-          run = {
-            key, color: kw.highlightColor, opacity: kw.highlightOpacity, groupId: kw.highlightGroupId, words: [kw], orientation: kw.word.line.orientation, ...wordBox,
-          };
+        } else {
+          const key = `${kw.highlightColor}_${kw.highlightOpacity}_${kw.highlightGroupId || ''}`;
+          if (run && run.key === key) {
+            run.left = Math.min(run.left, wordBox.left);
+            run.right = Math.max(run.right, wordBox.right);
+            run.top = Math.min(run.top, wordBox.top);
+            run.bottom = Math.max(run.bottom, wordBox.bottom);
+            run.words.push(kw);
+          } else {
+            flush(left);
+            run = {
+              key, color: kw.highlightColor, opacity: kw.highlightOpacity, groupId: kw.highlightGroupId, words: [kw], orientation: kw.word.line.orientation, ...wordBox,
+            };
+          }
+        }
+
+        if (!kw.markupType || !kw.markupColor) {
+          flushLine(left);
+        } else {
+          const lineKey = `${kw.markupType}_${kw.markupColor}_${kw.markupOpacity}_${kw.markupGroupId || ''}`;
+          if (lineRun && lineRun.key === lineKey) {
+            lineRun.left = Math.min(lineRun.left, wordBox.left);
+            lineRun.right = Math.max(lineRun.right, wordBox.right);
+            lineRun.top = Math.min(lineRun.top, wordBox.top);
+            lineRun.bottom = Math.max(lineRun.bottom, wordBox.bottom);
+            lineRun.baseline = Math.max(lineRun.baseline, kw.y() + fs * 0.6);
+            lineRun.maxFs = Math.max(lineRun.maxFs, fs);
+            lineRun.words.push(kw);
+          } else {
+            flushLine(left);
+            lineRun = {
+              key: lineKey,
+              type: kw.markupType,
+              color: kw.markupColor,
+              opacity: kw.markupOpacity,
+              groupId: kw.markupGroupId,
+              words: [kw],
+              orientation: kw.word.line.orientation,
+              baseline: kw.y() + fs * 0.6,
+              maxFs: fs,
+              ...wordBox,
+            };
+          }
         }
       }
       flush();
+      flushLine();
     }
 
     this._commentMarks[n] = [];
@@ -2923,21 +3069,24 @@ export class ScribeViewer {
    * @param {Array<InstanceType<typeof UiOcrWord>>} words
    * @param {string} color
    * @param {number} opacity
+   * @param {('highlight'|'underline'|'strikeout')} [kind='highlight']
    */
-  applyHighlight(words, color, opacity) { return applyHighlight(this, words, color, opacity); }
+  applyHighlight(words, color, opacity, kind = 'highlight') { return applyHighlight(this, words, color, opacity, kind); }
 
   /**
-   * Remove highlights from the given words and drop their annotation data.
+   * Remove highlights (or line markups) from the given words and drop their annotation data.
    * @param {Array<InstanceType<typeof UiOcrWord>>} words
+   * @param {('highlight'|'line')} [kind='highlight']
    */
-  removeHighlight(words) { return removeHighlight(this, words); }
+  removeHighlight(words, kind = 'highlight') { return removeHighlight(this, words, kind); }
 
   /**
-   * Set the comment on the highlight group containing the first selected word.
+   * Set the comment on the highlight (or line-markup) group containing the first selected word.
    * @param {Array<InstanceType<typeof UiOcrWord>>} words
    * @param {string} comment
+   * @param {('highlight'|'line')} [kind='highlight']
    */
-  modifyHighlightComment(words, comment) { return modifyHighlightComment(this, words, comment); }
+  modifyHighlightComment(words, comment, kind = 'highlight') { return modifyHighlightComment(this, words, comment, kind); }
 
   /** Redraw the dashed outline around the words in the currently selected highlight group. */
   updateHighlightGroupOutline() { return updateHighlightGroupOutline(this); }

@@ -333,6 +333,8 @@ class ScribePDFViewer {
         toolbarButtons.appendChild(this._highlightTool.toolbarElem);
       }
       if (this._noteTool) toolbarButtons.appendChild(this._noteTool.toolbarElem);
+      // Retained so the editor subclass can extend the center button cluster (e.g. its Redact tool).
+      this._toolbarButtonsElem = toolbarButtons;
 
       // Find / search controls (right-aligned).
       this._searchBar = createSearchBar(this.scribe, this.pdfViewerElem);

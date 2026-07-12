@@ -8,6 +8,7 @@ import {
 import {
   createNote, focusNoteEditor, removeNote, setNoteComment,
 } from '../viewerNotes.js';
+import { redactWords, redactRegion } from '../viewerRedactions.js';
 import { filesFromDropEvent } from '../dragAndDrop.js';
 
 // Filled highlighter-marker glyph (Material).
@@ -260,18 +261,24 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       cmtCoins.prepend(sw);
       let i = 0;
       for (const c of cmtCoins.children) {
+        // Skip hidden coins, or they leave a hole in the fan.
+        if (/** @type {HTMLElement} */ (c).style.display === 'none') continue;
         /** @type {HTMLElement} */ (c).style.setProperty('--coin-i', String(i));
         /** @type {HTMLElement} */ (c).style.zIndex = String(cmtSwatches.length - i);
         i += 1;
       }
       cmtSwatches.forEach((b) => b.classList.toggle('active', b === sw));
     };
-    for (const color of colors) {
+    // One extra "editorial red" coin for line markups (underline/strikeout), a color the highlight palette deliberately lacks.
+    // Hidden while the card serves a highlight.
+    const MARKUP_RED = '#e53935';
+    for (const color of [...colors, MARKUP_RED]) {
       const sw = document.createElement('button');
       sw.type = 'button';
       sw.className = 'highlight-color-btn';
       sw.style.backgroundColor = color;
       sw.dataset.color = color.toLowerCase();
+      if (color === MARKUP_RED) sw.dataset.markupOnly = '1';
       sw.title = 'Recolor highlight';
       sw.setAttribute('aria-label', 'Recolor highlight');
       sw.tabIndex = -1;
@@ -302,7 +309,10 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     cmtCard.append(cmtQuoteRow, cmtThread, cmtFoot);
     editorHost.appendChild(cmtCard);
 
-    /** @type {?({kind: 'highlight', kw: import('../viewerWordObjects.js').UiOcrWord, groupId: ?string, n: number} | {kind: 'note', annot: Object, n: number})} */
+    /**
+     * On a highlight target, `slot` selects the highlight fill (default) or the line markup (underline/strikeout) the card is editing.
+     * @type {?({kind: 'highlight', slot?: ('highlight'|'line'), kw: import('../viewerWordObjects.js').UiOcrWord, groupId: ?string, n: number} | {kind: 'note', annot: Object, n: number})}
+     */
     let cmtTarget = null;
     let cmtPinned = false;
     /** @type {?ReturnType<typeof setTimeout>} */
@@ -324,7 +334,9 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       if (target.kind === 'note') return target.annot;
       if (!target.groupId) return null;
       return (scribe.doc.annotations.pages[target.n] || [])
-        .find((a) => (!a.type || a.type === 'highlight') && a.groupId === target.groupId) || null;
+        .find((a) => (target.slot === 'line'
+          ? a.type === 'underline' || a.type === 'strikeout'
+          : !a.type || a.type === 'highlight') && a.groupId === target.groupId) || null;
     };
 
     /** The on-page mark element for a card target (marks are rebuilt per render, so always re-query). */
@@ -347,7 +359,8 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
         const arr = map && map.get(groupId);
         if (arr && arr.length > 0) return arr;
       }
-      return kw.highlightRectElem ? [kw.highlightRectElem] : [];
+      const rect = cmtTarget.slot === 'line' ? kw.markupRectElem : kw.highlightRectElem;
+      return rect ? [rect] : [];
     };
 
     /** Ink-edge the pinned highlight's bands (the selected-object telltale the old card had). */
@@ -430,18 +443,25 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     const cmtFill = (target) => {
       const annot = cmtAnnot(target);
       if (target.kind === 'highlight') {
+        const isLine = target.slot === 'line';
         cmtQuote.textContent = target.groupId
-          ? scribe.getUiWords().filter((w) => w.highlightGroupId === target.groupId).map((w) => w.word.text).join(' ')
+          ? scribe.getUiWords().filter((w) => (isLine ? w.markupGroupId : w.highlightGroupId) === target.groupId).map((w) => w.word.text).join(' ')
           : target.kw.word.text;
-        const color = (annot && annot.color) || target.kw.highlightColor || '';
+        const color = (annot && annot.color) || (isLine ? target.kw.markupColor : target.kw.highlightColor) || '';
         cmtBar.style.background = color;
         cmtCoins.style.display = '';
-        const currentSw = cmtSwatches.find((b) => b.dataset.color === color.toLowerCase());
+        for (const b of cmtSwatches) {
+          if (b.dataset.markupOnly) b.style.display = isLine ? '' : 'none';
+        }
+        const currentSw = cmtSwatches.find((b) => b.dataset.color === color.toLowerCase() && (!b.dataset.markupOnly || isLine));
         // A colour outside the palette (an imported highlight) leaves the stack order alone, nothing active.
         if (currentSw) setTopCoin(currentSw);
         else cmtSwatches.forEach((b) => b.classList.remove('active'));
-        cmtDelete.title = 'Delete highlight';
-        cmtDelete.setAttribute('aria-label', 'Delete highlight');
+        const verb = isLine
+          ? (((annot && annot.type) || target.kw.markupType) === 'strikeout' ? 'Delete strikethrough' : 'Delete underline')
+          : 'Delete highlight';
+        cmtDelete.title = verb;
+        cmtDelete.setAttribute('aria-label', verb);
       } else {
         cmtQuote.textContent = `note · page ${target.n + 1}`;
         cmtBar.style.background = 'var(--scribe-note)';
@@ -505,7 +525,9 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     };
 
     const cmtSameTarget = (a, b) => !!a && !!b && a.kind === b.kind
-      && (a.kind === 'highlight' ? a.groupId === b.groupId && (a.groupId || a.kw === b.kw) : a.annot === b.annot);
+      && (a.kind === 'highlight'
+        ? (a.slot || 'highlight') === (b.slot || 'highlight') && a.groupId === b.groupId && (a.groupId || a.kw === b.kw)
+        : a.annot === b.annot);
 
     // ---- in-place message editing (authorship is a label, not a permission) ----
     const endMsgEdit = () => {
@@ -560,12 +582,12 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     };
 
     const applyRootComment = (target, text) => {
-      if (target.kind === 'highlight') scribe.modifyHighlightComment([target.kw], text);
+      if (target.kind === 'highlight') scribe.modifyHighlightComment([target.kw], text, target.slot || 'highlight');
       else setNoteComment(scribe, target.annot, text);
     };
     const applyReplies = (target, replies) => {
       if (target.kind === 'highlight') {
-        setHighlightReplies(scribe, target.kw, replies);
+        setHighlightReplies(scribe, target.kw, replies, target.slot || 'highlight');
       } else if (replies.length > 0) {
         target.annot.replies = replies;
       } else {
@@ -663,8 +685,14 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       const mark = event.target.closest('.scribe-hl-cmark');
       if (mark) {
         const kw = scribe.getUiWords().find((w) => w.highlightGroupId === mark.dataset.groupId);
-        return kw ? {
-          kind: 'highlight', kw, groupId: kw.highlightGroupId, n: kw.word.line.page.n,
+        if (kw) {
+          return {
+            kind: 'highlight', slot: 'highlight', kw, groupId: kw.highlightGroupId, n: kw.word.line.page.n,
+          };
+        }
+        const mkw = scribe.getUiWords().find((w) => w.markupGroupId === mark.dataset.groupId);
+        return mkw ? {
+          kind: 'highlight', slot: 'line', kw: mkw, groupId: mkw.markupGroupId, n: mkw.word.line.page.n,
         } : null;
       }
       const noteEl = event.target.closest('.scribe-note-icon');
@@ -676,7 +704,12 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       const kw = highlightWordAt(event);
       if (kw && kw.highlightGroupId && kw.highlightComment) {
         return {
-          kind: 'highlight', kw, groupId: kw.highlightGroupId, n: kw.word.line.page.n,
+          kind: 'highlight', slot: 'highlight', kw, groupId: kw.highlightGroupId, n: kw.word.line.page.n,
+        };
+      }
+      if (kw && kw.markupGroupId && kw.markupComment) {
+        return {
+          kind: 'highlight', slot: 'line', kw, groupId: kw.markupGroupId, n: kw.word.line.page.n,
         };
       }
       return null;
@@ -710,12 +743,14 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       }
       // Gate on the color, not the comment: the card's footer is the only place to recolor or delete an uncommented highlight.
       const kw = highlightWordAt(event);
-      if (!kw || !kw.highlightColor) return;
+      if (!kw || (!kw.highlightColor && !kw.markupType)) return;
       // A drag that leaves a text selection is a selection gesture, not a click on the object.
       if (scribe.hasTextSelection()) return;
       event.stopPropagation();
+      // A word carrying both a fill and a line markup pins as the fill (the whole word is one target).
+      const slot = kw.highlightColor ? 'highlight' : 'line';
       cmtPin({
-        kind: 'highlight', kw, groupId: kw.highlightGroupId || null, n: kw.word.line.page.n,
+        kind: 'highlight', slot, kw, groupId: (slot === 'highlight' ? kw.highlightGroupId : kw.markupGroupId) || null, n: kw.word.line.page.n,
       });
     };
     const cmtKeyPin = (event) => {
@@ -809,9 +844,9 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       const sw = e.target instanceof Element
         ? /** @type {?HTMLButtonElement} */ (e.target.closest('.highlight-color-btn')) : null;
       if (sw && cmtTarget && cmtTarget.kind === 'highlight') {
-        const color = colors[cmtSwatches.indexOf(sw)];
+        const color = /** @type {string} */ (sw.dataset.color);
         setCmtSel(false);
-        recolorHighlightGroup(scribe, cmtTarget.kw, color);
+        recolorHighlightGroup(scribe, cmtTarget.kw, color, cmtTarget.slot || 'highlight');
         // The recolor rebuilt the fill layer, so re-ink the fresh bands and recolor the quote bar.
         setCmtSel(true);
         cmtBar.style.background = color;
@@ -842,7 +877,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       cmtClose();
       if (!t) return;
       if (t.kind === 'highlight') {
-        removeHighlightGroup(scribe, t.kw);
+        removeHighlightGroup(scribe, t.kw, t.slot || 'highlight');
       } else {
         removeNote(scribe, t.annot, t.n);
         scribe.renderNotes(t.n);
@@ -880,8 +915,10 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     openCommentEditor = (words) => {
       if (!words || words.length === 0) return;
       const first = words[0];
+      // Prefer the fill, as click-to-pin does; target the line markup only when the word has no fill.
+      const slot = first.highlightColor ? 'highlight' : (first.markupType ? 'line' : 'highlight');
       cmtPin({
-        kind: 'highlight', kw: first, groupId: first.highlightGroupId || null, n: first.word.line.page.n,
+        kind: 'highlight', slot, kw: first, groupId: (slot === 'highlight' ? first.highlightGroupId : first.markupGroupId) || null, n: first.word.line.page.n,
       });
     };
     scribe._openCommentEditor = openCommentEditor;
@@ -971,6 +1008,149 @@ export function createNoteTool(scribe) {
 
   // Placement is immediate, so there are no page-level behaviors to install.
   function installBehaviors() { return () => {}; }
+
+  return { toolbarElem, installBehaviors };
+}
+
+// Lines of text with one struck through by a solid redaction bar.
+// eslint-disable-next-line max-len
+const REDACT_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5h16M4 18.5h10"/><rect x="4" y="9.2" width="16" height="5.6" rx="1" fill="currentColor" stroke="none"/></svg>';
+
+/**
+ * Build the redact tool: a toggle button that marks content for destructive removal at export.
+ * While armed, releasing a text selection marks its words; dragging a non-text area (or Alt+drag anywhere) draws a region mark for images and figures.
+ * @param {import('../../viewer.js').ScribeViewer} scribe
+ * @param {HTMLElement} rootElem - The app's root element (for selection scope).
+ * @param {object} cfg
+ * @param {(marksAdded: number) => void} [cfg.onMark] - Called after each marking gesture.
+ * @returns {{ toolbarElem: HTMLSpanElement, installBehaviors: () => (() => void) }}
+ */
+export function createRedactTool(scribe, rootElem, { onMark } = {}) {
+  let redactMode = false;
+  // The context menu's "Redact" item is gated on the tool being present.
+  scribe._redactEnabled = true;
+
+  const toolbarElem = makeIconButton('Redact', REDACT_SVG);
+
+  function updateRedactCursor() {
+    if (scribe.useCustomSelection && scribe.textSel) {
+      scribe.textSel.cursorOverride = redactMode ? 'crosshair' : null;
+      if (!redactMode) scribe.scrollContainer.style.cursor = '';
+    } else if (scribe.scrollContainer) {
+      scribe.scrollContainer.style.cursor = redactMode ? 'crosshair' : '';
+    }
+  }
+
+  function applyToSelection() {
+    const matchedWords = scribe.getWordsUnderTextSelection();
+    if (matchedWords.length === 0) return false;
+    const added = redactWords(scribe, matchedWords.map((kw) => kw.word));
+    scribe.clearTextSelection();
+    if (added > 0 && onMark) onMark(added);
+    return true;
+  }
+
+  toolbarElem.addEventListener('click', () => {
+    if (applyToSelection()) return;
+    redactMode = !redactMode;
+    toolbarElem.classList.toggle('active', redactMode);
+    updateRedactCursor();
+  });
+
+  /**
+   * Wire the selection-driven marking and the region box-draw.
+   * Call after `scribe.init` (needs the scroll container).
+   * @returns {() => void} teardown
+   */
+  function installBehaviors() {
+    const mouseupHandler = (event) => {
+      if (!redactMode) return;
+      if (!(event.target instanceof Node) || !rootElem.contains(event.target)) return;
+      applyToSelection();
+    };
+    document.addEventListener('mouseup', mouseupHandler);
+
+    // Region box-draw in the capture phase, so it preempts the selection engine's own drag start.
+    // Alt+drag co-opts the engine's Alt=rectangle convention; a plain drag on non-text also boxes, since the engine cannot start a drag there.
+    /** @type {?{ n: number, x: number, y: number, preview: HTMLDivElement }} */
+    let drag = null;
+    const cancelDrag = () => {
+      if (drag) drag.preview.remove();
+      drag = null;
+      window.removeEventListener('pointermove', onDragMove);
+      window.removeEventListener('pointerup', onDragUp);
+    };
+    const onDragMove = (ev) => {
+      if (!drag) return;
+      const pt = scribe.clientToPage(ev.clientX, ev.clientY);
+      const x1 = pt.n === drag.n ? pt.x : (pt.n > drag.n ? Infinity : -Infinity);
+      const y1 = pt.n === drag.n ? pt.y : (pt.n > drag.n ? Infinity : -Infinity);
+      const dims = scribe.doc.pageMetrics[drag.n]?.dims;
+      const cx = Math.max(0, Math.min(dims ? dims.width : Infinity, x1));
+      const cy = Math.max(0, Math.min(dims ? dims.height : Infinity, y1));
+      drag.preview.style.left = `${Math.min(drag.x, cx)}px`;
+      drag.preview.style.top = `${Math.min(drag.y, cy)}px`;
+      drag.preview.style.width = `${Math.abs(cx - drag.x)}px`;
+      drag.preview.style.height = `${Math.abs(cy - drag.y)}px`;
+    };
+    const onDragUp = () => {
+      if (!drag) return;
+      const { n } = drag;
+      const left = parseFloat(drag.preview.style.left);
+      const top = parseFloat(drag.preview.style.top);
+      const width = parseFloat(drag.preview.style.width) || 0;
+      const height = parseFloat(drag.preview.style.height) || 0;
+      cancelDrag();
+      // Ignore sub-4px page-unit twitches (an accidental click, not a box).
+      if (width < 4 || height < 4) return;
+      if (redactRegion(scribe, n, {
+        left, top, right: left + width, bottom: top + height,
+      }) && onMark) onMark(1);
+    };
+    const pointerdownHandler = (event) => {
+      if (!redactMode || event.button !== 0) return;
+      if (drag) cancelDrag();
+      let overText = false;
+      if (!event.altKey) {
+        if (scribe.useCustomSelection && scribe.textSel) {
+          overText = scribe.textSel.isOverText(event.clientX, event.clientY);
+        } else if (event.target instanceof Element) {
+          overText = !!event.target.closest('.scribe-word, .scribe-line');
+        }
+      }
+      // Plain drag over text = normal selection (marked on mouseup); everything else = box.
+      if (overText) return;
+      event.stopPropagation();
+      event.preventDefault();
+      const pt = scribe.clientToPage(event.clientX, event.clientY);
+      const group = scribe.getRedactionsGroup(pt.n);
+      if (!group) return;
+      const preview = document.createElement('div');
+      preview.className = 'scribe-redact-preview';
+      preview.style.left = `${pt.x}px`;
+      preview.style.top = `${pt.y}px`;
+      group.appendChild(preview);
+      drag = {
+        n: pt.n, x: pt.x, y: pt.y, preview,
+      };
+      window.addEventListener('pointermove', onDragMove);
+      window.addEventListener('pointerup', onDragUp);
+    };
+    scribe.scrollContainer.addEventListener('pointerdown', pointerdownHandler, true);
+
+    const keydownHandler = (event) => {
+      if (event.key === 'Escape' && drag) cancelDrag();
+    };
+    document.addEventListener('keydown', keydownHandler);
+
+    return () => {
+      document.removeEventListener('mouseup', mouseupHandler);
+      document.removeEventListener('keydown', keydownHandler);
+      scribe.scrollContainer?.removeEventListener('pointerdown', pointerdownHandler, true);
+      cancelDrag();
+      if (scribe.textSel) scribe.textSel.cursorOverride = null;
+    };
+  }
 
   return { toolbarElem, installBehaviors };
 }

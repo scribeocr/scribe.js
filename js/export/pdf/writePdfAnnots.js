@@ -66,8 +66,9 @@ export function buildHighlightAnnotObjects(annotations, startObjNum, outputDims,
       const pdfRectTop = outputDims.height - annot.bbox.top;
       const pdfRectBottom = outputDims.height - annot.bbox.bottom;
 
+      const subtype = annot.type === 'underline' ? 'Underline' : (annot.type === 'strikeout' ? 'StrikeOut' : 'Highlight');
       let str = `${objNum} 0 obj\n`;
-      str += '<</Type /Annot /Subtype /Highlight';
+      str += `<</Type /Annot /Subtype /${subtype}`;
       str += ` /Rect [${annot.bbox.left} ${pdfRectBottom} ${annot.bbox.right} ${pdfRectTop}]`;
 
       // QuadPoints per line. If the annotation omits /quads we fall back to a
@@ -107,7 +108,7 @@ export function buildHighlightAnnotObjects(annotations, startObjNum, outputDims,
         objNum += replyObjs.objectTexts.length;
       }
     } catch (err) {
-      warningHandler?.(skipMessage('highlight', err));
+      warningHandler?.(skipMessage(annot.type || 'highlight', err));
     }
   }
 
@@ -366,14 +367,15 @@ export function buildShapeAnnotObjects(annotations, startObjNum, outputDims, war
 export function consolidateAnnotations(pageAnnotations, pageObj) {
   if (pageAnnotations.length === 0 || !pageObj || pageObj.lines.length === 0) return [];
 
-  // Group annotations by style key (color + opacity) and groupId.
+  // The type is part of the key because a groupId alone is not unique across markup types:
+  // addHighlights numbers groups per call, so `hl-0` recurs for a highlight and an underline alike.
   const groups = {};
   for (let i = 0; i < pageAnnotations.length; i++) {
     const annot = pageAnnotations[i];
-    const key = annot.groupId || `style_${annot.color}_${annot.opacity}`;
+    const key = `${annot.type || 'highlight'}|${annot.groupId || `style_${annot.color}_${annot.opacity}`}`;
     if (!groups[key]) {
       groups[key] = {
-        color: annot.color, opacity: annot.opacity, comment: annot.comment || '', author: annot.author, createdAt: annot.createdAt, replies: annot.replies, annotations: [],
+        type: annot.type, color: annot.color, opacity: annot.opacity, comment: annot.comment || '', author: annot.author, createdAt: annot.createdAt, replies: annot.replies, annotations: [],
       };
     }
     groups[key].annotations.push(annot);
@@ -463,15 +465,18 @@ export function consolidateAnnotations(pageAnnotations, pageObj) {
         currentBbox.right = Math.max(currentBbox.right, lineQuads[i].bbox.right);
         currentBbox.bottom = Math.max(currentBbox.bottom, lineQuads[i].bbox.bottom);
       } else {
-        result.push({
+        const consolidated = {
           bbox: currentBbox, quads: currentQuads, color: group.color, opacity: group.opacity, comment: group.comment, replies: group.replies,
-        });
+        };
+        // Propagate `type` through consolidation, or the writer re-defaults underline/strikeout to /Highlight.
+        if (group.type) consolidated.type = group.type;
+        result.push(consolidated);
         currentQuads = [{ ...lineQuads[i].bbox }];
         currentBbox = { ...lineQuads[i].bbox };
       }
       prevLineIndex = lineQuads[i].lineIndex;
     }
-    result.push({
+    const consolidated = {
       bbox: currentBbox,
       quads: currentQuads,
       color: group.color,
@@ -480,7 +485,9 @@ export function consolidateAnnotations(pageAnnotations, pageObj) {
       author: group.author,
       createdAt: group.createdAt,
       replies: group.replies,
-    });
+    };
+    if (group.type) consolidated.type = group.type;
+    result.push(consolidated);
   }
 
   return result;

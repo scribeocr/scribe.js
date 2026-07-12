@@ -15,6 +15,7 @@ import {
   applyHighlight, createInkEdges, removeHighlightGroup, updateHighlightGroupOutline,
 } from './viewerHighlights.js';
 import { createNote } from './viewerNotes.js';
+import { redactWords, removeRedactionGroup, hitTestRedaction } from './viewerRedactions.js';
 
 /**
  * Resolve a DOM event's target to its UI object (the `UiOcrWord`/`UiRegion`/`UiDataColumn` attached as `el._scribeObj`),
@@ -239,126 +240,102 @@ async function addWordManual(viewer, n, box) {
   viewer._wordObjs[n].push(wordCanvas);
 }
 
+// Local copy of controls/toolbar.js's lineIcon, not imported because that would cycle (toolbar.js imports viewer.js, which imports this module).
+const menuIcon = (inner) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
+
+const CM_COPY_SVG = menuIcon('<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2.5"/>');
+const CM_UNDERLINE_SVG = menuIcon('<path d="M7 4.6v6.4a5 5 0 0 0 10 0V4.6"/><path d="M6 19.4h12"/>');
+const CM_STRIKE_SVG = menuIcon('<path d="M4 12h16"/><path d="M16.4 8.1A4.2 3.1 0 0 0 12 5.6c-2.4 0-4.2 1.2-4.2 2.9M7.6 15.9A4.2 3.1 0 0 0 12 18.4c2.4 0 4.2-1.2 4.2-2.9"/>');
+const CM_COMMENT_SVG = menuIcon('<path d="M20 14.4a2 2 0 0 1-2 2H9.2L5 19.6V6.6a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2Z"/><path d="M12 8.1v4.2M9.9 10.2h4.2"/>');
+const CM_REDACT_SVG = menuIcon('<path d="M4 6.6h16"/><path d="M4 17.4h9"/><rect x="4" y="10.3" width="16" height="3.4" rx="0.5" fill="currentColor" stroke="none"/>');
+const CM_BOOKMARK_SVG = menuIcon('<path d="M7 4h10v16l-5-3.6L7 20V4Z"/>');
+const CM_TRASH_SVG = menuIcon('<path d="M5.5 7h13"/><path d="M10 7V5h4v2"/><path d="M7.5 7l.6 12.3a1 1 0 0 0 1 .7h5.8a1 1 0 0 0 1-.7L16.5 7"/>');
+const CM_SPLIT_SVG = menuIcon('<path d="M12 4.5v3.4M12 10.3v3.4M12 16.1v3.4"/><path d="M8.6 12H4M6.1 9.9 4 12l2.1 2.1"/><path d="M15.4 12H20M17.9 9.9 20 12l-2.1 2.1"/>');
+const CM_MERGE_SVG = menuIcon('<path d="M12 5v14"/><path d="M4 12h4.6M6.5 9.9 8.6 12l-2.1 2.1"/><path d="M20 12h-4.6M17.5 9.9 15.4 12l2.1 2.1"/>');
+const CM_TABLE_SVG = menuIcon('<rect x="4" y="5" width="16" height="14" rx="1.5"/><path d="M4 10h16M10.5 10v9M15.3 10v9"/>');
+// The Highlight row leads with a live color swatch (set to `viewer._highlightColor` on open) instead of a glyph.
+const CM_SWATCH_HTML = '<span class="scribe-cm-swatch"></span>';
+
 const createContextMenuHTML = () => {
   const menuDiv = document.createElement('div');
   menuDiv.id = 'scribe-context-menu';
 
-  const innerDiv = document.createElement('div');
+  /**
+   * Build one menu row: a button with a leading icon slot and a label.
+   * @param {string} id
+   * @param {string} label
+   * @param {string} slotHTML - Icon SVG (or swatch) markup for the leading 16px slot.
+   * @param {(e: MouseEvent) => void} onClick
+   * @param {boolean} [danger] - Style as the destructive row (red icon, red-tinted hover).
+   */
+  const item = (id, label, slotHTML, onClick, danger = false) => {
+    const btn = document.createElement('button');
+    btn.id = id;
+    if (danger) btn.className = 'scribe-cm-danger';
+    btn.style.display = 'none';
+    const inner = document.createElement('span');
+    // Flex layout lives on this inner span, not the button: rows are shown by setting the button's inline `display` to `initial`, which would clobber a stylesheet `display: flex` on the button.
+    inner.className = 'scribe-cm-inner';
+    const slot = document.createElement('span');
+    slot.className = 'scribe-cm-slot';
+    slot.innerHTML = slotHTML;
+    const lbl = document.createElement('span');
+    lbl.className = 'scribe-cm-lbl';
+    lbl.textContent = label;
+    inner.append(slot, lbl);
+    btn.appendChild(inner);
+    btn.addEventListener('click', onClick);
+    return btn;
+  };
 
-  const copySelectionButton = document.createElement('button');
-  copySelectionButton.id = 'contextMenuCopyButton';
-  copySelectionButton.textContent = 'Copy';
-  copySelectionButton.style.display = 'none';
-  copySelectionButton.addEventListener('click', copySelectionClick);
+  // Per-open visibility only shows or hides these rows, never reorders them, so the order here is what the user sees.
+  const groups = [
+    [
+      item('contextMenuCopyButton', 'Copy', CM_COPY_SVG, copySelectionClick),
+      item('contextMenuCopyHighlightButton', 'Copy Highlighted Text', CM_COPY_SVG, copyHighlightClick),
+      item('contextMenuCopyLayoutTableContentsButton', 'Copy Table Contents', CM_COPY_SVG, copyTableContentsClick),
+    ],
+    [
+      item('contextMenuHighlightButton', 'Highlight', CM_SWATCH_HTML, highlightSelectionClick),
+      item('contextMenuUnderlineButton', 'Underline', CM_UNDERLINE_SVG, underlineSelectionClick),
+      item('contextMenuStrikethroughButton', 'Strikethrough', CM_STRIKE_SVG, strikeoutSelectionClick),
+      item('contextMenuCommentButton', 'Comment', CM_COMMENT_SVG, commentSelectionClick),
+      item('contextMenuBookmarkButton', 'Add bookmark', CM_BOOKMARK_SVG, addBookmarkClick),
+    ],
+    [
+      item('contextMenuSplitWordButton', 'Split Word', CM_SPLIT_SVG, splitWordClick),
+      item('contextMenuMergeWordsButton', 'Merge Words', CM_MERGE_SVG, mergeWordsClick),
+      item('contextMenuDeleteWordsButton', 'Delete Words', CM_TRASH_SVG, deleteWordsClick),
+    ],
+    [
+      item('contextMenuSplitColumnButton', 'Split Column', CM_SPLIT_SVG, splitDataColumnClick),
+      item('contextMenuMergeColumnsButton', 'Merge Columns', CM_MERGE_SVG, mergeDataColumnsClick),
+      item('contextMenuMergeTablesButton', 'Merge Tables', CM_MERGE_SVG, mergeDataTablesClick),
+      item('contextMenuSplitTableButton', 'New Table from Columns', CM_TABLE_SVG, splitDataTableClick),
+      item('contextMenuDeleteLayoutTableButton', 'Delete Table', CM_TRASH_SVG, deleteLayoutDataTableClick),
+      item('contextMenuDeleteLayoutRegionButton', 'Delete', CM_TRASH_SVG, deleteLayoutRegionClick),
+    ],
+    [
+      item('contextMenuDeleteHighlightButton', 'Delete Highlight', CM_TRASH_SVG, deleteHighlightClick),
+      item('contextMenuDeleteRedactionButton', 'Delete Redaction', CM_TRASH_SVG, deleteRedactionClick),
+    ],
+    [
+      item('contextMenuRedactButton', 'Redact', CM_REDACT_SVG, redactSelectionClick, true),
+    ],
+  ];
 
-  const copyHighlightButton = document.createElement('button');
-  copyHighlightButton.id = 'contextMenuCopyHighlightButton';
-  copyHighlightButton.textContent = 'Copy Highlighted Text';
-  copyHighlightButton.style.display = 'none';
-  copyHighlightButton.addEventListener('click', copyHighlightClick);
-
-  const highlightSelectionButton = document.createElement('button');
-  highlightSelectionButton.id = 'contextMenuHighlightButton';
-  highlightSelectionButton.textContent = 'Highlight';
-  highlightSelectionButton.style.display = 'none';
-  highlightSelectionButton.addEventListener('click', highlightSelectionClick);
-
-  const commentButton = document.createElement('button');
-  commentButton.id = 'contextMenuCommentButton';
-  commentButton.textContent = 'Comment';
-  commentButton.style.display = 'none';
-  commentButton.addEventListener('click', commentSelectionClick);
-
-  const bookmarkButton = document.createElement('button');
-  bookmarkButton.id = 'contextMenuBookmarkButton';
-  bookmarkButton.textContent = 'Add bookmark';
-  bookmarkButton.style.display = 'none';
-  bookmarkButton.addEventListener('click', addBookmarkClick);
-
-  const deleteWordsButton = document.createElement('button');
-  deleteWordsButton.id = 'contextMenuDeleteWordsButton';
-  deleteWordsButton.textContent = 'Delete Words';
-  deleteWordsButton.style.display = 'none';
-  deleteWordsButton.addEventListener('click', deleteWordsClick);
-
-  const splitWordButton = document.createElement('button');
-  splitWordButton.id = 'contextMenuSplitWordButton';
-  splitWordButton.textContent = 'Split Word';
-  splitWordButton.style.display = 'none';
-  splitWordButton.addEventListener('click', splitWordClick);
-
-  const mergeWordsButton = document.createElement('button');
-  mergeWordsButton.id = 'contextMenuMergeWordsButton';
-  mergeWordsButton.textContent = 'Merge Words';
-  mergeWordsButton.style.display = 'none';
-  mergeWordsButton.addEventListener('click', mergeWordsClick);
-
-  const splitColumnButton = document.createElement('button');
-  splitColumnButton.id = 'contextMenuSplitColumnButton';
-  splitColumnButton.textContent = 'Split Column';
-  splitColumnButton.style.display = 'none';
-  splitColumnButton.addEventListener('click', splitDataColumnClick);
-
-  const mergeButton = document.createElement('button');
-  mergeButton.id = 'contextMenuMergeColumnsButton';
-  mergeButton.textContent = 'Merge Columns';
-  mergeButton.style.display = 'none';
-  mergeButton.addEventListener('click', mergeDataColumnsClick);
-
-  const deleteRegionButton = document.createElement('button');
-  deleteRegionButton.id = 'contextMenuDeleteLayoutRegionButton';
-  deleteRegionButton.textContent = 'Delete';
-  deleteRegionButton.style.display = 'none';
-  deleteRegionButton.addEventListener('click', deleteLayoutRegionClick);
-
-  const deleteTableButton = document.createElement('button');
-  deleteTableButton.id = 'contextMenuDeleteLayoutTableButton';
-  deleteTableButton.textContent = 'Delete Table';
-  deleteTableButton.style.display = 'none';
-  deleteTableButton.addEventListener('click', deleteLayoutDataTableClick);
-
-  const copyTableContentsButton = document.createElement('button');
-  copyTableContentsButton.id = 'contextMenuCopyLayoutTableContentsButton';
-  copyTableContentsButton.textContent = 'Copy Table Contents';
-  copyTableContentsButton.style.display = 'none';
-  copyTableContentsButton.addEventListener('click', copyTableContentsClick);
-
-  const mergeTablesButton = document.createElement('button');
-  mergeTablesButton.id = 'contextMenuMergeTablesButton';
-  mergeTablesButton.textContent = 'Merge Tables';
-  mergeTablesButton.style.display = 'none';
-  mergeTablesButton.addEventListener('click', mergeDataTablesClick);
-
-  const splitTableButton = document.createElement('button');
-  splitTableButton.id = 'contextMenuSplitTableButton';
-  splitTableButton.textContent = 'New Table from Columns';
-  splitTableButton.style.display = 'none';
-  splitTableButton.addEventListener('click', splitDataTableClick);
-
-  const deleteHighlightButton = document.createElement('button');
-  deleteHighlightButton.id = 'contextMenuDeleteHighlightButton';
-  deleteHighlightButton.textContent = 'Delete Highlight';
-  deleteHighlightButton.style.display = 'none';
-  deleteHighlightButton.addEventListener('click', deleteHighlightClick);
-
-  innerDiv.appendChild(copySelectionButton);
-  innerDiv.appendChild(copyHighlightButton);
-  innerDiv.appendChild(highlightSelectionButton);
-  innerDiv.appendChild(commentButton);
-  innerDiv.appendChild(bookmarkButton);
-  innerDiv.appendChild(deleteWordsButton);
-  innerDiv.appendChild(splitWordButton);
-  innerDiv.appendChild(mergeWordsButton);
-  innerDiv.appendChild(splitColumnButton);
-  innerDiv.appendChild(mergeButton);
-  innerDiv.appendChild(deleteRegionButton);
-  innerDiv.appendChild(deleteTableButton);
-  innerDiv.appendChild(copyTableContentsButton);
-  innerDiv.appendChild(mergeTablesButton);
-  innerDiv.appendChild(splitTableButton);
-  innerDiv.appendChild(deleteHighlightButton);
-
-  menuDiv.appendChild(innerDiv);
+  groups.forEach((buttons, i) => {
+    if (i > 0) {
+      const sep = document.createElement('div');
+      sep.className = 'scribe-cm-sep';
+      sep.style.display = 'none';
+      menuDiv.appendChild(sep);
+    }
+    const group = document.createElement('div');
+    group.className = 'scribe-cm-group';
+    for (const btn of buttons) group.appendChild(btn);
+    menuDiv.appendChild(group);
+  });
 
   return menuDiv;
 };
@@ -471,11 +448,36 @@ const splitDataTableClick = () => {
   viewer.destroyControls();
 };
 
+/**
+ * Which markup slot of `viewer.contextMenuWord` the menu's Delete/Copy verbs act on: its highlight fill or its line markup.
+ * @type {('highlight'|'line')}
+ */
+let contextMenuMarkupSlot = 'highlight';
+
 const deleteHighlightClick = () => {
   const viewer = mv();
   hideContextMenu();
-  // The Delete Highlight item is only offered on a highlighted word, so the guard inside `removeHighlightGroup` normally does not fire.
-  removeHighlightGroup(viewer, viewer.contextMenuWord);
+  // The delete item is only offered on a marked word, so the guard inside `removeHighlightGroup` normally does not fire.
+  removeHighlightGroup(viewer, viewer.contextMenuWord, contextMenuMarkupSlot);
+};
+
+/** Mark the words under the current text selection for redaction (destructive at export). */
+const redactSelectionClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  const words = viewer.getWordsUnderTextSelection();
+  if (words.length === 0) return;
+  const added = redactWords(viewer, words.map((kw) => kw.word));
+  viewer.clearTextSelection();
+  if (added > 0 && viewer._onRedactMark) viewer._onRedactMark(added);
+};
+
+/** Delete the redaction mark group under the right-click point (resolved at menu open). */
+const deleteRedactionClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  if (redactTarget) removeRedactionGroup(viewer, redactTarget.groupId);
+  redactTarget = null;
 };
 
 /** Copy the current text selection. */
@@ -485,24 +487,25 @@ const copySelectionClick = () => {
     const text = viewer.textSel.getText();
     if (text) navigator.clipboard?.writeText(text).catch(() => {});
   } else {
-    // Native selection has no direct text handle, so execCommand('copy') fires a trusted copy event that the document listener fills with OCR-accurate, multi-page text.
+    // Native selection exposes no text handle, so execCommand('copy') fires a trusted copy event that the document listener fills with proper OCR text.
     // Not a synthetic ClipboardEvent: Firefox nulls its clipboardData, so the listener would have nothing to write.
     try { document.execCommand('copy'); } catch { /* clipboard unavailable, so nothing to copy */ }
   }
   hideContextMenu();
 };
 
-/** Copy the right-clicked highlight's text: its group's words in reading order, one clipboard line per OCR line. */
+/** Copy the right-clicked markup's text: its group's words in reading order, one clipboard line per OCR line. */
 const copyHighlightClick = () => {
   const viewer = mv();
   hideContextMenu();
   const kw = viewer.contextMenuWord;
-  if (!kw || !kw.highlightColor) return;
+  const isLine = contextMenuMarkupSlot === 'line';
+  if (!kw || (isLine ? !kw.markupType : !kw.highlightColor)) return;
   // Snippet-level fidelity is enough here.
   const words = viewer.getUiWords()
-    .filter((w) => w.highlightColor && (kw.highlightGroupId
-      ? w.highlightGroupId === kw.highlightGroupId
-      : w.highlightRectElem === kw.highlightRectElem))
+    .filter((w) => (isLine
+      ? w.markupType && (kw.markupGroupId ? w.markupGroupId === kw.markupGroupId : w.markupRectElem === kw.markupRectElem)
+      : w.highlightColor && (kw.highlightGroupId ? w.highlightGroupId === kw.highlightGroupId : w.highlightRectElem === kw.highlightRectElem)))
     .sort((a, b) => a.word.line.page.n - b.word.line.page.n
       || a.word.line.bbox.top - b.word.line.bbox.top || a.x() - b.x());
   /** @type {Array<Array<string>>} */
@@ -528,6 +531,30 @@ const highlightSelectionClick = () => {
   viewer.clearTextSelection();
 };
 
+// Underline and strikethrough have no toolbar color tool like highlight's, so they need these hardcoded defaults.
+const UNDERLINE_COLOR_DEFAULT = '#81c784';
+const STRIKEOUT_COLOR_DEFAULT = '#e53935';
+
+/** Underline (annotation, not the word text style) the words under the current text selection. */
+const underlineSelectionClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  const words = viewer.getWordsUnderTextSelection();
+  if (words.length === 0) return;
+  applyHighlight(viewer, words, UNDERLINE_COLOR_DEFAULT, 1, 'underline');
+  viewer.clearTextSelection();
+};
+
+/** Strike through (annotation) the words under the current text selection. */
+const strikeoutSelectionClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  const words = viewer.getWordsUnderTextSelection();
+  if (words.length === 0) return;
+  applyHighlight(viewer, words, STRIKEOUT_COLOR_DEFAULT, 1, 'strikeout');
+  viewer.clearTextSelection();
+};
+
 /**
  * Comment on the highlight under the cursor, highlight the current text selection and comment on that, or (with no such target) drop a freestanding note at the click point.
  * The first two open `viewer._openCommentEditor`.
@@ -541,7 +568,7 @@ const commentSelectionClick = (event) => {
   // `_openCommentEditor` opens a highlight card that closes on any outside click at the document level.
   // Stop propagation so this menu click does not reach that closer and dismiss the card `_openCommentEditor` opens.
   event.stopPropagation();
-  if (commentTargetWord && commentTargetWord.highlightColor && viewer._openCommentEditor) {
+  if (commentTargetWord && (commentTargetWord.highlightColor || commentTargetWord.markupType) && viewer._openCommentEditor) {
     viewer._openCommentEditor([commentTargetWord]);
     return;
   }
@@ -577,9 +604,7 @@ const deleteWordsClick = () => {
   viewer.destroyControls();
 };
 
-// The context menu is built and its CSS injected on first use, so merely importing the viewer adds nothing to the host document.
-// It uses a `scribe-`-prefixed id with id-scoped CSS and is a body-level popup positioned in document coordinates,
-// so it cannot collide with host markup or styles.
+// Keep this popup `position: fixed`, never absolute: an absolute menu opened near the window bottom extends the document's scroll overflow and summons a page scrollbar.
 /** @type {?HTMLElement} */
 let menuNode = null;
 /** @type {?HTMLStyleElement} */
@@ -595,7 +620,17 @@ let contextMenuStyleElem = null;
 /** @type {HTMLButtonElement} */ let contextMenuMergeTablesButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuSplitTableButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuDeleteHighlightButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuRedactButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuDeleteRedactionButtonElem;
+
+/**
+ * The redaction mark under the right-click point, resolved when the menu opens.
+ * @type {?{ n: number, groupId: string }}
+ */
+let redactTarget = null;
 /** @type {HTMLButtonElement} */ let contextMenuHighlightButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuUnderlineButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuStrikethroughButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuCommentButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuBookmarkButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuCopyButtonElem;
@@ -632,36 +667,95 @@ function ensureContextMenu() {
   contextMenuMergeTablesButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuMergeTablesButton'));
   contextMenuSplitTableButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuSplitTableButton'));
   contextMenuDeleteHighlightButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteHighlightButton'));
+  contextMenuRedactButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuRedactButton'));
+  contextMenuDeleteRedactionButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteRedactionButton'));
   contextMenuHighlightButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuHighlightButton'));
+  contextMenuUnderlineButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuUnderlineButton'));
+  contextMenuStrikethroughButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuStrikethroughButton'));
   contextMenuCommentButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCommentButton'));
   contextMenuBookmarkButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuBookmarkButton'));
   contextMenuCopyButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCopyButton'));
   contextMenuCopyHighlightButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCopyHighlightButton'));
 
+  // This menu is body-level, so it can't inherit the viewer's `--scribe-*` tokens; contextMenuFunc mirrors them onto it on open to match the app theme.
+  // The CSS fallbacks are the light palette, so a token-less embedder still gets sane colors.
   contextMenuStyleElem = document.createElement('style');
   contextMenuStyleElem.textContent = `
     #scribe-context-menu {
       display: none;
-      position: absolute;
-      width: min-content;
-      background-color: white;
-      box-shadow: 0 0 5px grey;
-      border-radius: 3px;
+      position: fixed;
+      width: max-content;
+      min-width: 176px;
+      box-sizing: border-box;
+      padding: 5px;
+      background: var(--scribe-surface, #ffffff);
+      border: 1px solid var(--scribe-line, #e4e8ef);
+      border-radius: 8px;
+      box-shadow: var(--scribe-menu-shadow, 0 8px 24px rgba(20, 30, 60, .18));
+      font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      font-size: 12.5px;
+      line-height: 1.55;
+      color: var(--scribe-ink, #1f2530);
+      user-select: none;
+    }
+    /* Flex here blockifies the rows, which are shown inline (style.display = 'initial'), so they stack with no inline baseline gaps. */
+    #scribe-context-menu .scribe-cm-group {
+      display: flex;
+      flex-direction: column;
     }
     #scribe-context-menu button {
       width: 100%;
-      background-color: white;
+      background: none;
       border: none;
       margin: 0;
-      padding: 10px;
-      text-wrap: nowrap;
+      padding: 0;
+      font: inherit;
+      color: inherit;
       text-align: left;
     }
-    #scribe-context-menu button:hover {
-      background-color: lightgray;
+    #scribe-context-menu .scribe-cm-inner {
+      display: flex;
+      align-items: center;
+      gap: 9px;
+      padding: 4.5px 9px;
+      border-radius: 6px;
+      white-space: nowrap;
+    }
+    #scribe-context-menu button:hover .scribe-cm-inner {
+      background: var(--scribe-hover, rgba(28, 42, 68, .06));
+    }
+    #scribe-context-menu .scribe-cm-slot {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      flex: 0 0 auto;
+      width: 16px;
+      height: 16px;
+      color: var(--scribe-ink-2, #586170);
+    }
+    #scribe-context-menu .scribe-cm-swatch {
+      width: 15px;
+      height: 15px;
+      border-radius: 3px;
+      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .18);
+    }
+    #scribe-context-menu .scribe-cm-danger .scribe-cm-slot {
+      color: var(--scribe-danger, #d1493d);
+    }
+    #scribe-context-menu .scribe-cm-danger:hover .scribe-cm-inner {
+      background: var(--scribe-danger-soft, #fbe9e7);
+      color: var(--scribe-danger, #d1493d);
+    }
+    #scribe-context-menu .scribe-cm-sep {
+      height: 1px;
+      background: var(--scribe-line, #e4e8ef);
+      margin: 3px 8px;
     }`;
   document.head.appendChild(contextMenuStyleElem);
 }
+
+// The `--scribe-*` tokens mirrored onto the body-level menu on open, since it lives outside the viewer's scoped token definitions and the cascade can't reach it.
+const CONTEXT_MENU_TOKENS = ['--scribe-surface', '--scribe-line', '--scribe-ink', '--scribe-ink-2', '--scribe-hover', '--scribe-danger', '--scribe-danger-soft', '--scribe-menu-shadow'];
 
 /** Remove the shared context menu and its styles from the document. */
 export const destroyContextMenu = () => {
@@ -719,7 +813,11 @@ export const hideContextMenu = () => {
   contextMenuMergeTablesButtonElem.style.display = 'none';
   contextMenuSplitTableButtonElem.style.display = 'none';
   contextMenuDeleteHighlightButtonElem.style.display = 'none';
+  contextMenuRedactButtonElem.style.display = 'none';
+  contextMenuDeleteRedactionButtonElem.style.display = 'none';
   contextMenuHighlightButtonElem.style.display = 'none';
+  contextMenuUnderlineButtonElem.style.display = 'none';
+  contextMenuStrikethroughButtonElem.style.display = 'none';
   contextMenuCommentButtonElem.style.display = 'none';
   contextMenuBookmarkButtonElem.style.display = 'none';
   contextMenuCopyButtonElem.style.display = 'none';
@@ -750,12 +848,15 @@ export const contextMenuFunc = (viewer, event) => {
   try {
     const pointerRelative = viewer.clientToContent(event.clientX, event.clientY);
     let targetObj = eventTargetObj(event);
-    // Fill bands are pointer-transparent, so a right-click on a highlight between words lands on no word element.
-    if (!viewer.state.layoutMode && !(targetObj instanceof UiOcrWord && targetObj.highlightColor)) {
+    // Fill bands and markup bars are pointer-transparent, so a right-click on one between words lands on no word element.
+    if (!viewer.state.layoutMode && !(targetObj instanceof UiOcrWord && (targetObj.highlightColor || targetObj.markupType))) {
+      const hitRect = (rectElem) => {
+        if (!rectElem) return false;
+        const r = rectElem.getBoundingClientRect();
+        return event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom;
+      };
       for (const kw of viewer.getUiWords()) {
-        if (!kw.highlightRectElem) continue;
-        const r = kw.highlightRectElem.getBoundingClientRect();
-        if (event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom) {
+        if (hitRect(kw.highlightRectElem) || hitRect(kw.markupRectElem)) {
           targetObj = kw;
           break;
         }
@@ -769,12 +870,16 @@ export const contextMenuFunc = (viewer, event) => {
 
     viewer.contextMenuPointer = pointerRelative;
 
-    // A text selection over this viewer's words (outside layout mode) enables Copy (always) and Highlight (when a highlight color is set).
-    // Both are read-only-safe, so neither is gated on the editor-only enableCanvasSelection flag.
-    // Keyed on whether a selection exists, not on its resolved words: resolving a whole-document selection would build every page's word objects just to grey out a menu item.
+    // Copy, Highlight, and markup are read-only-safe, so none is gated on the editor-only enableCanvasSelection flag.
+    // Keyed on whether a selection exists, not its resolved words: resolving a whole-document selection would build every page's word objects just to grey out a menu item.
     const hasTextSelection = !viewer.state.layoutMode && viewer.hasTextSelection();
     const enableCopy = hasTextSelection;
     const enableHighlight = hasTextSelection && !!viewer._highlightColor;
+    const enableMarkup = hasTextSelection;
+    // Deleting a redaction is not editor-gated: a mark changes what an export contains, so any viewer must be able to remove it.
+    const enableRedact = hasTextSelection && !!viewer._redactEnabled;
+    redactTarget = !viewer.state.layoutMode ? hitTestRedaction(viewer, event.clientX, event.clientY) : null;
+    const enableDeleteRedaction = !!redactTarget;
 
     let enableSplitWord = false;
     let enableMergeWords = false;
@@ -786,9 +891,11 @@ export const contextMenuFunc = (viewer, event) => {
     if (viewer.enableCanvasSelection && !viewer.state.layoutMode && selectedUiWords.length > 0) enableDeleteWords = true;
     if (!viewer.state.layoutMode && targetObj instanceof UiOcrWord) {
       viewer.contextMenuWord = targetObj;
-      if (targetObj.highlightColor) {
+      if (targetObj.highlightColor || targetObj.markupType) {
         enableDeleteHighlight = true;
         enableCopyHighlight = true;
+        // Fill first when the word carries both, matching the comment card's click-to-pin priority.
+        contextMenuMarkupSlot = targetObj.highlightColor ? 'highlight' : 'line';
       }
       if (viewer.enableCanvasSelection) {
         if (selectedUiWords.length < 2) {
@@ -822,9 +929,10 @@ export const contextMenuFunc = (viewer, event) => {
     commentTargetWord = null;
     commentNoteTarget = null;
     if (!viewer.state.layoutMode) {
-      if (canComment && targetObj instanceof UiOcrWord && targetObj.highlightColor) {
+      if (canComment && targetObj instanceof UiOcrWord && (targetObj.highlightColor || targetObj.markupType)) {
         enableComment = true;
-        commentLabel = targetObj.highlightComment ? 'Edit comment' : 'Add comment';
+        const existing = targetObj.highlightColor ? targetObj.highlightComment : targetObj.markupComment;
+        commentLabel = existing ? 'Edit comment' : 'Add comment';
         commentTargetWord = targetObj;
       } else if (canComment && enableHighlight) {
         enableComment = true;
@@ -866,13 +974,30 @@ export const contextMenuFunc = (viewer, event) => {
     }
 
     if (!(enableMergeColumns || enableSplit || enableDeleteRegion || enableDeleteTable || enableCopyTableContents || enableMergeTables || enableSplitTable
-      || enableSplitWord || enableMergeWords || enableDeleteWords || enableDeleteHighlight || enableCopyHighlight || enableHighlight || enableComment || enableBookmark || enableCopy)) return;
+      || enableSplitWord || enableMergeWords || enableDeleteWords || enableDeleteHighlight || enableCopyHighlight || enableHighlight || enableMarkup || enableComment || enableBookmark || enableCopy
+      || enableRedact || enableDeleteRedaction)) return;
+
+    // Not btn.textContent, which would wipe the icon slot.
+    const setMenuLabel = (btn, text) => { /** @type {HTMLElement} */ (btn.querySelector('.scribe-cm-lbl')).textContent = text; };
 
     if (enableCopy) contextMenuCopyButtonElem.style.display = 'initial';
-    if (enableCopyHighlight) contextMenuCopyHighlightButtonElem.style.display = 'initial';
-    if (enableHighlight) contextMenuHighlightButtonElem.style.display = 'initial';
+    if (enableCopyHighlight) {
+      setMenuLabel(contextMenuCopyHighlightButtonElem, contextMenuMarkupSlot === 'line' ? 'Copy Marked Text' : 'Copy Highlighted Text');
+      contextMenuCopyHighlightButtonElem.style.display = 'initial';
+    }
+    if (enableHighlight) {
+      // The row's swatch shows the color this click would apply.
+      /** @type {HTMLElement} */ (contextMenuHighlightButtonElem.querySelector('.scribe-cm-swatch')).style.background = viewer._highlightColor;
+      contextMenuHighlightButtonElem.style.display = 'initial';
+    }
+    if (enableMarkup) {
+      contextMenuUnderlineButtonElem.style.display = 'initial';
+      contextMenuStrikethroughButtonElem.style.display = 'initial';
+    }
+    if (enableRedact) contextMenuRedactButtonElem.style.display = 'initial';
+    if (enableDeleteRedaction) contextMenuDeleteRedactionButtonElem.style.display = 'initial';
     if (enableComment) {
-      contextMenuCommentButtonElem.textContent = commentLabel;
+      setMenuLabel(contextMenuCommentButtonElem, commentLabel);
       contextMenuCommentButtonElem.style.display = 'initial';
     }
     if (enableBookmark) contextMenuBookmarkButtonElem.style.display = 'initial';
@@ -886,29 +1011,64 @@ export const contextMenuFunc = (viewer, event) => {
     if (enableCopyTableContents) contextMenuCopyLayoutTableContentsButtonElem.style.display = 'initial';
     if (enableMergeTables) contextMenuMergeTablesButtonElem.style.display = 'initial';
     if (enableSplitTable) contextMenuSplitTableButtonElem.style.display = 'initial';
-    if (enableDeleteHighlight) contextMenuDeleteHighlightButtonElem.style.display = 'initial';
+    if (enableDeleteHighlight) {
+      const targetKind = contextMenuMarkupSlot === 'line'
+        ? (/** @type {UiOcrWord} */ (targetObj).markupType === 'strikeout' ? 'Strikethrough' : 'Underline')
+        : 'Highlight';
+      setMenuLabel(contextMenuDeleteHighlightButtonElem, `Delete ${targetKind}`);
+      contextMenuDeleteHighlightButtonElem.style.display = 'initial';
+    }
+
+    // A separator shows only between two visible groups, so the menu never opens with a leading, trailing, or doubled separator.
+    let pendingSep = null;
+    let anyVisibleBefore = false;
+    for (const child of menuNode.children) {
+      if (child.classList.contains('scribe-cm-sep')) {
+        pendingSep = /** @type {HTMLElement} */ (child);
+        continue;
+      }
+      const groupVisible = [...child.children].some((btn) => /** @type {HTMLElement} */ (btn).style.display !== 'none');
+      if (pendingSep) {
+        pendingSep.style.display = groupVisible && anyVisibleBefore ? '' : 'none';
+        pendingSep = null;
+      }
+      anyVisibleBefore = anyVisibleBefore || groupVisible;
+    }
+
+    // Copy each viewer theme token onto the menu, removing any the host leaves unset so the stylesheet's light fallbacks take over.
+    const tokenStyles = getComputedStyle(viewer.scrollContainer);
+    for (const token of CONTEXT_MENU_TOKENS) {
+      const value = tokenStyles.getPropertyValue(token);
+      if (value) menuNode.style.setProperty(token, value);
+      else menuNode.style.removeProperty(token);
+    }
 
     event.preventDefault();
 
-    // The menu is opening on a highlight: ink its edges while it is the menu's target.
+    // The menu is opening on a highlight or line markup: ink its edges while it is the menu's target.
     clearInkEdge();
-    if (targetObj instanceof UiOcrWord && targetObj.highlightColor) {
+    if (targetObj instanceof UiOcrWord && (targetObj.highlightColor || targetObj.markupType)) {
+      const groupId = contextMenuMarkupSlot === 'line' ? targetObj.markupGroupId : targetObj.highlightGroupId;
+      const rectElem = contextMenuMarkupSlot === 'line' ? targetObj.markupRectElem : targetObj.highlightRectElem;
       /** @type {HTMLDivElement[]} */
       let bands = [];
-      if (targetObj.highlightGroupId) {
+      if (groupId) {
         for (const map of viewer._highlightRectsByGroup) {
-          const arr = map && map.get(targetObj.highlightGroupId);
+          const arr = map && map.get(groupId);
           if (arr) bands.push(...arr);
         }
-      } else if (targetObj.highlightRectElem) {
-        bands = [targetObj.highlightRectElem];
+      } else if (rectElem) {
+        bands = [rectElem];
       }
       inkEdgeElems = createInkEdges(bands);
     }
 
+    // Show first so the menu has a size, then clamp it into the viewport.
+    // No paint happens between the display flip and the final position (same task), so the menu never flashes.
     menuNode.style.display = 'initial';
-    menuNode.style.top = `${event.clientY + 4}px`;
-    menuNode.style.left = `${event.clientX + 4}px`;
+    const { width: menuW, height: menuH } = menuNode.getBoundingClientRect();
+    menuNode.style.top = `${Math.max(4, Math.min(event.clientY + 4, window.innerHeight - menuH - 4))}px`;
+    menuNode.style.left = `${Math.max(4, Math.min(event.clientX + 4, window.innerWidth - menuW - 4))}px`;
 
     // Close on the interactions a native context menu closes on (see the handler definitions).
     // Capture phase is required for scroll because the viewer's inner scroll container's scroll event does not bubble to document.

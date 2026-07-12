@@ -142,7 +142,7 @@ endobj
  * @param {boolean} humanReadable
  * @returns {string | import('./writePdfStreams.js').PdfBinaryObject} PDF XObject
  */
-const createImageXObjectPng = (objIndex, imageData, objDevN, humanReadable) => {
+export const createImageXObjectPng = (objIndex, imageData, objDevN, humanReadable) => {
   const imageBytes = new Uint8Array(imageData);
   const imageDataOutput = extractPngIdatData(imageBytes);
   const idhr = getPngIHDRInfo(imageBytes);

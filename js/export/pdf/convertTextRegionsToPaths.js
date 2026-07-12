@@ -1,6 +1,11 @@
 import {
   getPageContentStreams, findFormXObjects, parseHiddenOCMCNames, isFormOCHidden,
 } from '../../pdf/parsePdfUtils.js';
+import { parsePageImages, parseImageObject } from '../../pdf/parsePdfImages.js';
+import { _imageInfoToBitmap, _buildPngDataUrl } from '../../pdf/renderPdfPage.js';
+import { createImageXObjectPng } from './writePdfImages.js';
+import { ca } from '../../canvasAdapter.js';
+import { base64ToBytes } from '../../utils/imageUtils.js';
 import {
   bytesToLatin1, extractDict,
   resolveNumArray, parseDictEntries, matMul, decodeTextCodes,
@@ -89,6 +94,10 @@ function serializeOperand(t) {
 // Arriving inside a text object with converts pending, they force a bounce-flush so the glyphs keep their show-time paint state.
 // `w` is exempt: queued stroke widths are carried per entry.
 const PAINT_STATE_OPS = new Set(['g', 'G', 'rg', 'RG', 'k', 'K', 'sc', 'SC', 'scn', 'SCN', 'cs', 'CS', 'gs', 'd', 'M', 'j', 'J']);
+
+// Path construction and paint ops, used by vector-path redaction to catch characters drawn directly as vector paths.
+const PATH_CONSTRUCTION_OPS = new Set(['m', 'l', 'c', 'v', 'y', 're', 'h']);
+const PATH_PAINT_OPS = new Set(['S', 's', 'f', 'F', 'f*', 'B', 'B*', 'b', 'b*', 'n']);
 
 const PDF_PATH_DECIMALS = 3;
 // Transformation-matrix components need more decimals than path coordinates.
@@ -528,16 +537,23 @@ function codeToHex(code, numBytes) {
 export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, resolver, opts = {}) {
   const initialCtm = opts.initialCtm || [1, 0, 0, 1, 0, 0];
   const parentXobjects = opts.parentXobjects || null;
+  // Image XObjects in scope (name -> objNum), for redaction's pixel scrub.
+  // Unlike forms, an image can be hit-tested during the walk: its placed rect is the unit square times the CTM.
+  const parentImages = opts.parentImages || null;
   // Broken-Type3 font object numbers: glyphs drawn by these fonts are converted to paths regardless of bbox,
   // so their gibberish PUA text stops being selectable.
   const targetFontObjNums = opts.targetFontObjNums || null;
   const extGStates = opts.extGStates || null;
+  // Redaction rects (page user space): a glyph whose extent overlaps any rect is DROPPED (replaced by an advance-mimicking spacer), never converted.
+  // Independent of `bboxes`; where both apply to a glyph, redaction wins.
+  const redactBboxes = opts.redactBboxes || null;
+  const redactActive = !!(redactBboxes && redactBboxes.length > 0);
   // Glyph-identifying `%tag` comments are a debug/traceability aid (they let tests and a human reader see which (font, glyph) each inline block draws).
   // Emit them only in human-readable (uncompressed) output, never in production streams, where they would be dead weight.
   const commentGlyphs = !!opts.humanReadable;
   // Fast path: a stream with no text-show ops AND no Do ops cannot contribute to the output.
-  // Skip tokenizing multi-MB image-heavy pages.
-  if (!/\bT[jJ]\b|\bDo\b/.test(streamText)) {
+  // Redaction always tokenizes: it also has to see vector path ops, which this regex deliberately ignores.
+  if (!redactActive && !/\bT[jJ]\b|\bDo\b/.test(streamText)) {
     return {
       ok: true,
       text: streamText,
@@ -545,6 +561,8 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       usedXobj: new Map(),
       skipped: [],
       formInvocations: [],
+      imageInvocations: [],
+      verbatimImageNames: new Set(),
     };
   }
   const tokens = tokenizeContentStream(streamText);
@@ -819,8 +837,48 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
     return -W - 1000 * tcTwAdd / currentFontSize;
   }
 
+  // Per-(name, ctm) form aliases for redaction's per-site recursion.
+  /** @type {Map<string, string>} */
+  const redactFormAliases = new Map();
+  // Image invocations whose placed rect crosses a redact rect, aliased for the pixel scrub.
+  // A name that also paints outside every rect goes in verbatimImageNames, so its original entry survives.
+  /** @type {Array<{alias: string, name: string, objNum: number, ctm: number[]}>} */
+  const imageInvocations = [];
+  /** @type {Set<string>} */
+  const verbatimImageNames = new Set();
+
+  // Buffered vector path (redact mode, outside BT): serialized construction ops plus the CTM-mapped AABB of every control point, so the paint op can decide the drop.
+  /** @type {string[]} */
+  let pathBuf = [];
+  let pathIsClip = false;
+  let pathBboxKnown = true;
+  let pbx0 = Infinity; let pby0 = Infinity; let pbx1 = -Infinity; let pby1 = -Infinity;
+  const resetPathBuf = () => {
+    pathBuf = []; pathIsClip = false; pathBboxKnown = true;
+    pbx0 = Infinity; pby0 = Infinity; pbx1 = -Infinity; pby1 = -Infinity;
+  };
+  const flushPathBufVerbatim = () => {
+    for (const s of pathBuf) out.push(s);
+    resetPathBuf();
+  };
+
   for (const tok of tokens) {
     if (tok.type !== 'operator') {
+      // Inline image (BI..ID..EI, one self-contained token) crossing a redact rect: drop the whole token.
+      // Partial scrub would require decoding arbitrary inline-image filters (unsupported), and dropping the whole token over-redacts, which is the safe side.
+      if (redactActive && tok.type === 'inlineImage') {
+        let ix0 = Infinity; let iy0 = Infinity; let ix1 = -Infinity; let iy1 = -Infinity;
+        for (const [u, v] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+          const gx = u * ctm[0] + v * ctm[2] + ctm[4];
+          const gy = u * ctm[1] + v * ctm[3] + ctm[5];
+          ix0 = Math.min(ix0, gx); iy0 = Math.min(iy0, gy); ix1 = Math.max(ix1, gx); iy1 = Math.max(iy1, gy);
+        }
+        if (redactBboxes.some((b) => ix0 < b[2] && ix1 > b[0] && iy0 < b[3] && iy1 > b[1])) {
+          skipped.push({ fontObjNum: -1, charCode: -1, reason: 'redact-dropped-inline-image' });
+          changed = true;
+          continue;
+        }
+      }
       operandBuf.push(tok);
       continue;
     }
@@ -829,6 +887,68 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
     // Paint-state change with converts queued inside a text object: bounce-flush first so the queued glyphs paint with their show-time state.
     // (Outside BT, pendingConverts is always empty because ET flushes.)
     if (inBT && pendingConverts.length > 0 && PAINT_STATE_OPS.has(op)) bounceFlushInBT();
+
+    // Vector-path redaction runs only outside BT, since paths are illegal inside it.
+    // A nonconforming in-BT path keeps verbatim handling; the raster black box still covers it.
+    if (redactActive && !inBT) {
+      if (PATH_CONSTRUCTION_OPS.has(op)) {
+        const numsNeeded = op === 'c' ? 6 : (op === 'v' || op === 'y' || op === 're' ? 4 : (op === 'h' ? 0 : 2));
+        if (numsNeeded > 0) {
+          if (operandBuf.length >= numsNeeded && operandBuf.slice(-numsNeeded).every((t) => t.type === 'number')) {
+            const vals = operandBuf.slice(-numsNeeded).map((t) => t.value);
+            /** @type {Array<[number, number]>} */
+            let pts;
+            if (op === 're') {
+              pts = [[vals[0], vals[1]], [vals[0] + vals[2], vals[1]], [vals[0], vals[1] + vals[3]], [vals[0] + vals[2], vals[1] + vals[3]]];
+            } else {
+              pts = [];
+              for (let k = 0; k < vals.length; k += 2) pts.push([vals[k], vals[k + 1]]);
+            }
+            for (const [x, y] of pts) {
+              const gx = x * ctm[0] + y * ctm[2] + ctm[4];
+              const gy = x * ctm[1] + y * ctm[3] + ctm[5];
+              pbx0 = Math.min(pbx0, gx); pby0 = Math.min(pby0, gy);
+              pbx1 = Math.max(pbx1, gx); pby1 = Math.max(pby1, gy);
+            }
+          } else {
+            pathBboxKnown = false;
+          }
+        }
+        const opnd = operandBuf.map(serializeOperand).join(' ');
+        pathBuf.push(opnd.length > 0 ? `${opnd} ${op}\n` : `${op}\n`);
+        operandBuf.length = 0;
+        continue;
+      }
+      if (op === 'W' || op === 'W*') {
+        // Never drop a clip-participating path: removing it would reveal content, not remove it.
+        pathIsClip = true;
+        const opnd = operandBuf.map(serializeOperand).join(' ');
+        pathBuf.push(opnd.length > 0 ? `${opnd} ${op}\n` : `${op}\n`);
+        operandBuf.length = 0;
+        continue;
+      }
+      if (PATH_PAINT_OPS.has(op)) {
+        const intersects = pathBboxKnown
+          && redactBboxes.some((b) => pbx0 < b[2] && pbx1 > b[0] && pby0 < b[3] && pby1 > b[1]);
+        if (!pathBboxKnown && pathBuf.length > 0) {
+          // Unreadable geometry: keep the path (the box covers the rect visually) and surface a warning.
+          skipped.push({ fontObjNum: -1, charCode: -1, reason: 'redact-unverifiable-path' });
+        }
+        if (op !== 'n' && !pathIsClip && intersects && pathBuf.length > 0) {
+          resetPathBuf();
+          operandBuf.length = 0;
+          changed = true;
+          continue;
+        }
+        flushPathBufVerbatim();
+        emitVerbatim(op);
+        continue;
+      }
+      if (pathBuf.length > 0) {
+        // Any other op arriving mid-path (nonconforming stream): flush the buffer verbatim first.
+        flushPathBufVerbatim();
+      }
+    }
 
     if (op === 'q') {
       flushPendingConverts();
@@ -1049,13 +1169,57 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       // Record the invocation for the orchestrator to recurse into. CTM is captured before any state change.
       // The form's /Resources lookup happens in the orchestrator; we just track (name, current ctm) here.
       flushPendingConverts();
+      // Image XObject under redaction: alias a placement that intersects a redact rect (the orchestrator swaps in a pixel-scrubbed copy); a non-intersecting placement keeps the original.
+      if (redactActive && parentImages && operandBuf.length >= 1) {
+        const nameTok = operandBuf[operandBuf.length - 1];
+        if (nameTok && nameTok.type === 'name' && parentImages.has(nameTok.value)) {
+          let ix0 = Infinity; let iy0 = Infinity; let ix1 = -Infinity; let iy1 = -Infinity;
+          for (const [u, v] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+            const gx = u * ctm[0] + v * ctm[2] + ctm[4];
+            const gy = u * ctm[1] + v * ctm[3] + ctm[5];
+            ix0 = Math.min(ix0, gx); iy0 = Math.min(iy0, gy); ix1 = Math.max(ix1, gx); iy1 = Math.max(iy1, gy);
+          }
+          if (redactBboxes.some((b) => ix0 < b[2] && ix1 > b[0] && iy0 < b[3] && iy1 > b[1])) {
+            const key = `I:${nameTok.value} ${ctm.join(' ')}`;
+            let alias = redactFormAliases.get(key);
+            if (!alias) {
+              alias = `ScrRdI${redactFormAliases.size}`;
+              redactFormAliases.set(key, alias);
+              imageInvocations.push({
+                alias, name: nameTok.value, objNum: /** @type {number} */ (parentImages.get(nameTok.value)), ctm: ctm.slice(),
+              });
+            }
+            operandBuf[operandBuf.length - 1] = { type: 'name', value: alias };
+            changed = true;
+          } else {
+            verbatimImageNames.add(nameTok.value);
+          }
+          emitPersistVerbatim(op);
+          continue;
+        }
+      }
       if (parentXobjects && operandBuf.length >= 1) {
         const nameTok = operandBuf[operandBuf.length - 1];
         if (nameTok && nameTok.type === 'name') {
           const formObjNum = parentXobjects.get(nameTok.value);
           if (typeof formObjNum === 'number') {
+            // Redaction aliases per site (name, ctm), not per name: a form placed at several CTMs may intersect a rect at only one site,
+            // and name-deduped recursion would bake that site's result into every placement.
+            // The orchestrator points each alias at that site's clone, or back at the original when the site is untouched.
+            let alias = null;
+            if (redactActive) {
+              const key = `${nameTok.value} ${ctm.join(' ')}`;
+              alias = redactFormAliases.get(key);
+              if (!alias) {
+                alias = `ScrRdF${redactFormAliases.size}`;
+                redactFormAliases.set(key, alias);
+              }
+              operandBuf[operandBuf.length - 1] = { type: 'name', value: alias };
+              changed = true;
+            }
             formInvocations.push({
               name: nameTok.value,
+              alias,
               formObjNum,
               ctm: ctm.slice(),
               lw,
@@ -1150,10 +1314,33 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
     } else if (tr >= 4 && tr <= 7) {
       verbatimReason = `unsupported-tr-mode:${tr}`;
     }
+    // Redaction also processes shows the conversion path leaves verbatim (OC-hidden, Tr 3 invisible, Tr>=4 clip):
+    // their bytes are extractable regardless of visibility, so glyphs inside a rect must drop.
+    // Conversion itself stays gated by the original conditions.
+    const canConvert = !ocHidden && (tr === 0 || strokeMode !== null);
+
     // `ocHidden`: this show sits in an OFF optional-content block.
     // Keep it verbatim so the renderer goes on hiding it.
     // Converting it to paths would make hidden content (e.g. alternate SAR values or print marks) always visible.
-    if (!binding || !operand || ocHidden || (tr !== 0 && strokeMode === null)) {
+    if (!binding || !operand || (!redactActive && (ocHidden || (tr !== 0 && strokeMode === null)))) {
+      // Fail-closed when a show's font failed to parse: glyph geometry is uncomputable, so drop the WHOLE show if its start origin falls inside a rect grown by a line-height margin.
+      // Otherwise keep it and surface a warning.
+      if (redactActive && operand && !binding) {
+        const originMat = matMul(tm, ctm);
+        const pad = currentFontSize > 0 ? currentFontSize * 2 : 24;
+        let hit = false;
+        for (const b of redactBboxes) {
+          if (originMat[4] >= b[0] - pad && originMat[4] <= b[2] + pad && originMat[5] >= b[1] - pad && originMat[5] <= b[3] + pad) { hit = true; break; }
+        }
+        if (hit) {
+          // No advance replay without widths; later absolute positioning ops (Tm/Td/TD/T*) re-anchor, so only same-object relative text drifts.
+          skipped.push({ fontObjNum: -1, charCode: -1, reason: 'redact-dropped-unresolved-font-show' });
+          changed = true;
+          operandBuf.length = 0;
+          continue;
+        }
+        skipped.push({ fontObjNum: -1, charCode: -1, reason: 'redact-unverifiable-font' });
+      }
       if (binding && operand && verbatimReason) {
         skipped.push({ fontObjNum: binding.fontObjNum, charCode: -1, reason: verbatimReason });
       }
@@ -1206,14 +1393,52 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       const userY = trm[5];
 
       let didConvert = false;
-      let inBbox = false;
-      for (const b of bboxes) {
-        if (userX >= b[0] && userX <= b[2] && userY >= b[1] && userY <= b[3]) {
-          inBbox = true;
-          break;
+
+      // Redaction test: the glyph's approximate extent (advance width by a generous em box, biased toward over-redaction, all-or-nothing per glyph),
+      // mapped through the full render matrix and tested against every redact rect.
+      // Deliberately NOT the conversion origin-point test: a glyph whose origin sits outside a rect but whose body crosses it must still drop.
+      if (redactActive) {
+        let u1;
+        let u0;
+        let v0;
+        let v1;
+        if (binding.verticalMode) {
+          u0 = -0.6; u1 = 0.6; v0 = -1.1; v1 = 0.35;
+        } else {
+          const widthSrc = binding.isType0 && binding.charCodeToCID
+            ? (binding.charCodeToCID.get(code) ?? code)
+            : code;
+          const advEm = (binding.widths.get(widthSrc) ?? binding.defaultWidth) / 1000;
+          u0 = -0.1; u1 = advEm + 0.05; v0 = -0.3; v1 = 0.95;
+        }
+        let gx0 = Infinity; let gy0 = Infinity; let gx1 = -Infinity; let gy1 = -Infinity;
+        for (const [u, v] of [[u0, v0], [u1, v0], [u0, v1], [u1, v1]]) {
+          const gx = u * trm[0] + v * trm[2] + trm[4];
+          const gy = u * trm[1] + v * trm[3] + trm[5];
+          gx0 = Math.min(gx0, gx); gy0 = Math.min(gy0, gy); gx1 = Math.max(gx1, gx); gy1 = Math.max(gy1, gy);
+        }
+        for (const b of redactBboxes) {
+          if (gx0 < b[2] && gx1 > b[0] && gy0 < b[3] && gy1 > b[1]) {
+            // Dropped glyph: an advance-mimicking spacer keeps every retained glyph in place.
+            // The resolver is never consulted, so unembedded/broken fonts still redact.
+            didConvert = true;
+            outputElems.push({ kind: 'spacer', value: spacerForGlyphMimic(binding, code, numBytes) });
+            anyConvert = true;
+            break;
+          }
         }
       }
-      const fontTargeted = targetFontObjNums !== null && targetFontObjNums.has(binding.fontObjNum);
+
+      let inBbox = false;
+      if (!didConvert && canConvert) {
+        for (const b of bboxes) {
+          if (userX >= b[0] && userX <= b[2] && userY >= b[1] && userY <= b[3]) {
+            inBbox = true;
+            break;
+          }
+        }
+      }
+      const fontTargeted = !didConvert && canConvert && targetFontObjNums !== null && targetFontObjNums.has(binding.fontObjNum);
       if (inBbox || fontTargeted) {
         const res = resolver({ fontObjNum: binding.fontObjNum, charCode: code });
         if ('error' in res) {
@@ -1354,12 +1579,13 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   }
 
   flushPendingConverts();
+  flushPathBufVerbatim();
   if (operandBuf.length > 0) {
     for (const o of operandBuf) out.push(`${serializeOperand(o)} `);
   }
 
   return {
-    ok: true, text: changed ? out.join('') : streamText, changed, usedXobj, skipped, formInvocations,
+    ok: true, text: changed ? out.join('') : streamText, changed, usedXobj, skipped, formInvocations, imageInvocations, verbatimImageNames,
   };
 }
 
@@ -1502,6 +1728,12 @@ export function createConversionState() {
     inProgress: new Set(),
     formCloneByKey: new Map(),
     type3GlyphIndexByKey: new Map(),
+    // Dict texts the rebuild's reference trace must include for redaction: form clones whose originals are deliberately untraced, though the clones still reference live fonts/images.
+    /** @type {string[]} */
+    redactTraceTexts: [],
+    // Scrubbed-image copies, keyed by source objNum + the unit-space regions painted.
+    /** @type {Map<string, number>} */
+    imageScrubCache: new Map(),
   };
 }
 
@@ -1925,7 +2157,7 @@ function parseExtGStates(resourcesText, objCache) {
  *   used as the clone's /Resources base when the original form has none of its own.
  * @returns {string}
  */
-function buildClonedFormDictExtras(originalFormObjText, objCache, perGlyphXobjEntries, nestedFormRedirects, inheritedResourcesText) {
+function buildClonedFormDictExtras(originalFormObjText, objCache, perGlyphXobjEntries, nestedFormRedirects, inheritedResourcesText, dropXObjectNames = null) {
   const dictStart = originalFormObjText.indexOf('<<');
   if (dictStart === -1) return '';
   const dictText = extractDict(originalFormObjText, dictStart);
@@ -1972,10 +2204,199 @@ function buildClonedFormDictExtras(originalFormObjText, objCache, perGlyphXobjEn
       }
     }
   }
+  // Under per-site aliasing, the aliased original form names must disappear from the clone's /XObject subdict.
+  // A surviving entry would keep the unredacted nested original referenced (and copied into the output) though no content invokes it.
+  if (dropXObjectNames && dropXObjectNames.size > 0 && resourcesDictText && resourcesDictText.startsWith('<<')) {
+    const resBody = resourcesDictText.slice(2, -2);
+    const xobjIdx = resBody.indexOf('/XObject');
+    if (xobjIdx !== -1) {
+      let p2 = xobjIdx + '/XObject'.length;
+      while (p2 < resBody.length && /\s/.test(resBody[p2])) p2++;
+      /** @type {?string} */
+      let subBody = null;
+      let endIdx = p2;
+      if (resBody.startsWith('<<', p2)) {
+        const sub = extractDict(resBody, p2);
+        subBody = sub.slice(2, -2);
+        endIdx = p2 + sub.length;
+      } else {
+        const refMatch = /^(\d+)\s+\d+\s+R/.exec(resBody.slice(p2));
+        if (refMatch) {
+          const resolved = objCache.getObjectText(Number(refMatch[1]));
+          if (resolved) {
+            const ds = resolved.indexOf('<<');
+            if (ds !== -1) subBody = extractDict(resolved, ds).slice(2, -2);
+          }
+          endIdx = p2 + refMatch[0].length;
+        }
+      }
+      if (subBody !== null) {
+        const kept = parseDictEntries(subBody).filter((e) => !dropXObjectNames.has(e.name));
+        const inner = kept.map((e) => `/${e.name} ${e.valueText}`).join(' ');
+        resourcesDictText = `<<${resBody.slice(0, xobjIdx)}/XObject<<${inner}>>${resBody.slice(endIdx)}>>`;
+      }
+    }
+  }
+
   const mergedResources = mergeXObjectIntoResources(resourcesDictText, entriesStr, objCache);
   body = `${beforeRes}\n/Resources ${mergedResources}\n${afterRes.trimStart()}`;
 
   return body.trim();
+}
+
+/**
+ * Scrub redaction regions out of an image XObject: decode to a canvas, paint the regions black, re-encode as PNG-in-Flate, and push the copy as a new object.
+ * Any failure falls back to a 1x1 black image; whatever the encoding, the redacted pixels must never survive.
+ *
+ * @param {object} params
+ * @param {number} params.objNum - Source image XObject.
+ * @param {?Array<[number, number, number, number]>} params.unitRects - Regions in the image's unit space (u right, v up, per the PDF image placement square); null forces the fallback.
+ * @param {import('../../pdf/objectCache.js').ObjectCache} params.objCache
+ * @param {() => number} params.allocObjNum
+ * @param {(obj: {objNum: number, content: any}) => void} params.pushObj
+ * @param {boolean} params.humanReadable
+ * @returns {Promise<{objNum: number, fallback: boolean}>}
+ */
+async function scrubImageXObject({
+  objNum, unitRects, objCache, allocObjNum, pushObj, humanReadable,
+}) {
+  let newObjNum = null;
+  try {
+    // Load the Node canvas module (also installs globalThis.ImageData, which the decode below needs); a no-op in the browser.
+    // Must not depend on a prior render having run.
+    await ca.getCanvasNode();
+    if (unitRects && unitRects.length > 0) {
+      const objText = objCache.getObjectText(objNum);
+      const info = objText ? parseImageObject(objText, objNum, objCache) : null;
+      // ImageMask pixels are fill-colour stencils; re-encoding as RGB would change semantics, so masks take the fail-closed fallback below.
+      const bitmap = (info && !info.imageMask)
+        ? await _imageInfoToBitmap(info, objCache)
+        : null;
+      if (bitmap && bitmap.width > 0 && bitmap.height > 0) {
+        const w = bitmap.width;
+        const h = bitmap.height;
+        const canvas = await ca.createCanvas(w, h);
+        const ctx = /** @type {OffscreenCanvasRenderingContext2D} */ (canvas.getContext('2d'));
+        ctx.drawImage(bitmap, 0, 0);
+        ctx.fillStyle = '#000000';
+        for (const [u0, v0, u1, v1] of unitRects) {
+          // Image rows run top-down while the placement square's v runs up.
+          const x0 = Math.max(0, Math.floor(u0 * w) - 1);
+          const x1 = Math.min(w, Math.ceil(u1 * w) + 1);
+          const y0 = Math.max(0, Math.floor((1 - v1) * h) - 1);
+          const y1 = Math.min(h, Math.ceil((1 - v0) * h) + 1);
+          if (x1 > x0 && y1 > y0) ctx.fillRect(x0, y0, x1 - x0, y1 - y0);
+        }
+        const imageData = ctx.getImageData(0, 0, w, h);
+        // imageInfoToBitmap bakes any /SMask into the alpha channel, which the PNG re-encode strips, so a companion /SMask is re-emitted when any transparency survives.
+        // The painted regions are opaque by construction, destroying any text-shaped alpha inside them.
+        let hasAlpha = false;
+        for (let i = 3; i < imageData.data.length; i += 4) {
+          if (imageData.data[i] !== 255) { hasAlpha = true; break; }
+        }
+        let smaskObjNum = null;
+        if (hasAlpha) {
+          const alphaData = new ImageData(w, h);
+          for (let i = 0; i < imageData.data.length; i += 4) {
+            const a = imageData.data[i + 3];
+            alphaData.data[i] = a; alphaData.data[i + 1] = a; alphaData.data[i + 2] = a; alphaData.data[i + 3] = 255;
+          }
+          const smaskPng = base64ToBytes(await _buildPngDataUrl(alphaData, 'gray'));
+          smaskObjNum = allocObjNum();
+          pushObj({ objNum: smaskObjNum, content: createImageXObjectPng(smaskObjNum, smaskPng.buffer, undefined, humanReadable) });
+        }
+        const pngBytes = base64ToBytes(await _buildPngDataUrl(imageData, 'color'));
+        newObjNum = allocObjNum();
+        let obj = createImageXObjectPng(newObjNum, pngBytes.buffer, undefined, humanReadable);
+        if (smaskObjNum !== null) {
+          const smaskEntry = `/SMask ${smaskObjNum} 0 R\n`;
+          if (typeof obj === 'string') obj = obj.replace('>>\nstream\n', `${smaskEntry}>>\nstream\n`);
+          else obj = { ...obj, header: obj.header.replace('>>\nstream\n', `${smaskEntry}>>\nstream\n`) };
+        }
+        pushObj({ objNum: newObjNum, content: obj });
+        ca.closeDrawable(bitmap);
+      }
+    }
+  } catch {
+    newObjNum = null;
+  }
+  if (newObjNum !== null) return { objNum: newObjNum, fallback: false };
+  const fallbackObjNum = allocObjNum();
+  const streamStr = '000000>';
+  pushObj({
+    objNum: fallbackObjNum,
+    content: `${fallbackObjNum} 0 obj\n<</Type/XObject/Subtype/Image/Width 1/Height 1/ColorSpace/DeviceRGB/BitsPerComponent 8/Filter/ASCIIHexDecode/Length ${streamStr.length}>>\nstream\n${streamStr}\nendstream\nendobj\n\n`,
+  });
+  return { objNum: fallbackObjNum, fallback: true };
+}
+
+/**
+ * Point every aliased image invocation at a scrubbed copy (see the Do handler in the walk), and mark fully-replaced original names for removal from the container's /XObject dict.
+ * Shared by the page- and form-level orchestrators.
+ *
+ * @param {object} params
+ * @param {Array<{alias: string, name: string, objNum: number, ctm: number[]}>} params.imageInvocations
+ * @param {Set<string>} params.verbatimImageNames
+ * @param {ReadonlyArray<ReadonlyArray<number>>} params.redactBboxes
+ * @param {ReturnType<typeof createConversionState>} params.state
+ * @param {import('../../pdf/objectCache.js').ObjectCache} params.objCache
+ * @param {() => number} params.allocObjNum
+ * @param {(obj: {objNum: number, content: any}) => void} params.pushObj
+ * @param {boolean} params.humanReadable
+ * @param {Map<string, number>} params.aliasEntries - alias -> objNum entries (rides the formClones channel).
+ * @param {Set<string>} params.droppedNames - original names to remove from the /XObject dict.
+ * @param {Array<{fontObjNum: number, charCode: number, reason: string}>} params.skipped
+ */
+async function applyImageRedactions({
+  imageInvocations, verbatimImageNames, redactBboxes, state, objCache, allocObjNum, pushObj, humanReadable,
+  aliasEntries, droppedNames, skipped,
+}) {
+  /** @type {Map<number, {unitRects: Array<[number, number, number, number]>, aliases: Set<string>, degenerate: boolean}>} */
+  const perObj = new Map();
+  for (const inv of imageInvocations) {
+    let rec = perObj.get(inv.objNum);
+    if (!rec) {
+      rec = { unitRects: [], aliases: new Set(), degenerate: false };
+      perObj.set(inv.objNum, rec);
+    }
+    rec.aliases.add(inv.alias);
+    const [a, b, c, d, e, f] = inv.ctm;
+    const det = a * d - b * c;
+    if (!Number.isFinite(det) || Math.abs(det) < 1e-12) {
+      rec.degenerate = true;
+      continue;
+    }
+    // Inverse placement: user space -> the image's unit square.
+    const ia = d / det; const ib = -b / det; const ic = -c / det; const id = a / det;
+    const ie = (c * f - d * e) / det; const iff = (b * e - a * f) / det;
+    for (const r of redactBboxes) {
+      let u0 = Infinity; let v0 = Infinity; let u1 = -Infinity; let v1 = -Infinity;
+      for (const [x, y] of [[r[0], r[1]], [r[2], r[1]], [r[0], r[3]], [r[2], r[3]]]) {
+        const u = ia * x + ic * y + ie;
+        const v = ib * x + id * y + iff;
+        u0 = Math.min(u0, u); v0 = Math.min(v0, v); u1 = Math.max(u1, u); v1 = Math.max(v1, v);
+      }
+      u0 = Math.max(0, u0); v0 = Math.max(0, v0); u1 = Math.min(1, u1); v1 = Math.min(1, v1);
+      if (u1 > u0 && v1 > v0) rec.unitRects.push([u0, v0, u1, v1]);
+    }
+  }
+  for (const [imgObjNum, rec] of perObj) {
+    const key = `${imgObjNum}|${rec.degenerate ? 'degenerate' : rec.unitRects.map((r) => r.map((v) => v.toFixed(4)).join(',')).sort().join(';')}`;
+    let scrubbed = state.imageScrubCache.get(key);
+    if (scrubbed == null) {
+      const res = await scrubImageXObject({
+        objNum: imgObjNum, unitRects: rec.degenerate ? null : rec.unitRects, objCache, allocObjNum, pushObj, humanReadable,
+      });
+      scrubbed = res.objNum;
+      if (res.fallback) skipped.push({ fontObjNum: -1, charCode: -1, reason: 'redact-image-fallback-black' });
+      state.imageScrubCache.set(key, scrubbed);
+    }
+    for (const alias of rec.aliases) aliasEntries.set(alias, scrubbed);
+  }
+  for (const inv of imageInvocations) {
+    // Only drop an original name when NO placement kept it: a non-intersecting site still invokes the original by its source name.
+    if (!verbatimImageNames.has(inv.name)) droppedNames.add(inv.name);
+  }
 }
 
 /**
@@ -2015,8 +2436,9 @@ async function rewriteFormContentForRegions({
   formObjNum, ctm, parentFontsByTag, fontInfoByObjNum, resolver,
   bboxes, targetFontObjNums = null, state, objCache, allocObjNum, pushObj, humanReadable,
   parentResourcesText = null, initialLineWidth = null, initialDashActive = false, initialMiterLimit = null,
-  initialTextState = null,
+  initialTextState = null, redactBboxes = null,
 }) {
+  const redactActive = !!(redactBboxes && redactBboxes.length > 0);
   if (state.inProgress.has(formObjNum)) {
     return { changed: false, cloneObjNum: formObjNum, skipped: [] };
   }
@@ -2024,13 +2446,16 @@ async function rewriteFormContentForRegions({
   try {
     const formObjText = objCache.getObjectText(formObjNum);
     if (!formObjText || !/\/Subtype\s*\/Form\b/.test(formObjText)) {
+      if (redactActive && !formObjText) throw new Error('Cannot apply redactions: a Form XObject could not be read.');
       return { changed: false, cloneObjNum: formObjNum, skipped: [] };
     }
 
     // A Form whose own /OC group is OFF is never painted (the renderer skips its Do entirely).
     // Leave it unconverted so its text stays hidden, not pathed.
+    // Redaction recurses anyway: hidden content is still extractable, so glyphs inside a rect must drop even when the form never paints.
+    // The drop does not change the form's visibility.
     const offOCGs = typeof objCache.getOffOCGs === 'function' ? objCache.getOffOCGs() : new Set();
-    if (offOCGs.size > 0 && isFormOCHidden(formObjText, offOCGs, objCache)) {
+    if (offOCGs.size > 0 && isFormOCHidden(formObjText, offOCGs, objCache) && !redactActive) {
       return { changed: false, cloneObjNum: formObjNum, skipped: [] };
     }
 
@@ -2045,7 +2470,10 @@ async function rewriteFormContentForRegions({
 
     let streamBytes;
     try { streamBytes = objCache.getStreamBytes(formObjNum); } catch { streamBytes = null; }
-    if (!streamBytes) return { changed: false, cloneObjNum: formObjNum, skipped: [] };
+    if (!streamBytes) {
+      if (redactActive) throw new Error('Cannot apply redactions: a Form XObject stream could not be read.');
+      return { changed: false, cloneObjNum: formObjNum, skipped: [] };
+    }
     const streamText = bytesToLatin1(streamBytes);
 
     const fontsByTag = new Map(parentFontsByTag);
@@ -2068,10 +2496,23 @@ async function rewriteFormContentForRegions({
       formXobjectsByName.set(name, info.objNum);
     }
 
+    /** @type {?Map<string, number>} */
+    let formImagesByName = null;
+    if (redactActive) {
+      formImagesByName = new Map();
+      try {
+        for (const [name, info] of parsePageImages(formObjText, objCache, { recurseForms: false }).images) {
+          if (info && typeof info.objNum === 'number') formImagesByName.set(name, info.objNum);
+        }
+      } catch { formImagesByName = new Map(); }
+    }
+
     const smResult = rewritePageContentForRegions(streamText, fontsByTag, bboxes, resolver, {
       initialCtm: effectiveCtm,
       parentXobjects: formXobjectsByName,
+      parentImages: formImagesByName,
       targetFontObjNums,
+      redactBboxes,
       initialLineWidth,
       initialDashActive,
       initialMiterLimit,
@@ -2081,50 +2522,99 @@ async function rewriteFormContentForRegions({
       humanReadable,
     });
     if (!smResult.ok) {
+      if (redactActive) throw new Error(`Cannot apply redactions: Form XObject rewrite failed (${smResult.reason}).`);
       return { changed: false, cloneObjNum: formObjNum, skipped: [] };
     }
 
     /** @type {Map<string, number>} */
     const nestedFormClones = new Map();
     const skipped = smResult.skipped.slice();
-    // One recursion per form name, like the first-ctm-wins dedup,
-    // but pen state baked into the shared clone's emitted `w` values is a rendering error if invocations disagree,
-    // so disagreement degrades to unknown.
-    const invByName = new Map();
-    for (const inv of smResult.formInvocations) {
-      const prev = invByName.get(inv.name);
-      if (!prev) {
-        invByName.set(inv.name, {
-          formObjNum: inv.formObjNum, ctm: inv.ctm, lw: inv.lw, dashActive: inv.dashActive, ml: inv.ml, textState: inv.textState,
+    /** @type {?Set<string>} */
+    let nestedRedactedNames = null;
+    if (redactActive) {
+      // Per-site recursion, mirroring convertSinglePageForRegions (see the Do aliasing).
+      nestedRedactedNames = new Set();
+      for (const inv of smResult.formInvocations) {
+        if (!inv.alias) continue;
+        nestedRedactedNames.add(inv.name);
+        if (nestedFormClones.has(inv.alias)) continue;
+        const r = await rewriteFormContentForRegions({
+          formObjNum: inv.formObjNum,
+          ctm: inv.ctm,
+          parentFontsByTag: fontsByTag,
+          fontInfoByObjNum,
+          resolver,
+          bboxes,
+          targetFontObjNums,
+          redactBboxes,
+          state,
+          objCache,
+          allocObjNum,
+          pushObj,
+          humanReadable,
+          parentResourcesText: effectiveResources,
+          initialLineWidth: inv.lw,
+          initialDashActive: inv.dashActive,
+          initialMiterLimit: inv.ml,
+          initialTextState: inv.textState,
         });
-      } else if (prev.lw !== inv.lw || prev.dashActive !== inv.dashActive || prev.ml !== inv.ml) {
-        prev.lw = null;
-        prev.ml = null;
+        if (r.skipped && r.skipped.length > 0) skipped.push(...r.skipped);
+        nestedFormClones.set(inv.alias, r.cloneObjNum);
       }
-    }
-    for (const [invName, inv] of invByName) {
-      const r = await rewriteFormContentForRegions({
-        formObjNum: inv.formObjNum,
-        ctm: inv.ctm,
-        parentFontsByTag: fontsByTag,
-        fontInfoByObjNum,
-        resolver,
-        bboxes,
-        targetFontObjNums,
-        state,
-        objCache,
-        allocObjNum,
-        pushObj,
-        humanReadable,
-        parentResourcesText: effectiveResources,
-        initialLineWidth: inv.lw,
-        initialDashActive: inv.dashActive,
-        initialMiterLimit: inv.ml,
-        initialTextState: inv.textState,
-      });
-      if (r.skipped && r.skipped.length > 0) skipped.push(...r.skipped);
-      if (r.changed && r.cloneObjNum !== inv.formObjNum) {
-        nestedFormClones.set(invName, r.cloneObjNum);
+      if (smResult.imageInvocations && smResult.imageInvocations.length > 0) {
+        await applyImageRedactions({
+          imageInvocations: smResult.imageInvocations,
+          verbatimImageNames: smResult.verbatimImageNames || new Set(),
+          redactBboxes,
+          state,
+          objCache,
+          allocObjNum,
+          pushObj,
+          humanReadable,
+          aliasEntries: nestedFormClones,
+          droppedNames: nestedRedactedNames,
+          skipped,
+        });
+      }
+    } else {
+      // One recursion per form name, like the first-ctm-wins dedup.
+      // Pen state baked into the shared clone's `w` values would be a rendering error if invocations disagree, so disagreement degrades it to unknown.
+      const invByName = new Map();
+      for (const inv of smResult.formInvocations) {
+        const prev = invByName.get(inv.name);
+        if (!prev) {
+          invByName.set(inv.name, {
+            formObjNum: inv.formObjNum, ctm: inv.ctm, lw: inv.lw, dashActive: inv.dashActive, ml: inv.ml, textState: inv.textState,
+          });
+        } else if (prev.lw !== inv.lw || prev.dashActive !== inv.dashActive || prev.ml !== inv.ml) {
+          prev.lw = null;
+          prev.ml = null;
+        }
+      }
+      for (const [invName, inv] of invByName) {
+        const r = await rewriteFormContentForRegions({
+          formObjNum: inv.formObjNum,
+          ctm: inv.ctm,
+          parentFontsByTag: fontsByTag,
+          fontInfoByObjNum,
+          resolver,
+          bboxes,
+          targetFontObjNums,
+          state,
+          objCache,
+          allocObjNum,
+          pushObj,
+          humanReadable,
+          parentResourcesText: effectiveResources,
+          initialLineWidth: inv.lw,
+          initialDashActive: inv.dashActive,
+          initialMiterLimit: inv.ml,
+          initialTextState: inv.textState,
+        });
+        if (r.skipped && r.skipped.length > 0) skipped.push(...r.skipped);
+        if (r.changed && r.cloneObjNum !== inv.formObjNum) {
+          nestedFormClones.set(invName, r.cloneObjNum);
+        }
       }
     }
 
@@ -2143,10 +2633,13 @@ async function rewriteFormContentForRegions({
       return { changed: true, cloneObjNum: cached, skipped };
     }
     const cloneObjNum = allocObjNum();
-    const dictExtras = buildClonedFormDictExtras(formObjText, objCache, perGlyphEntries, nestedFormClones, parentResourcesText);
+    const dictExtras = buildClonedFormDictExtras(formObjText, objCache, perGlyphEntries, nestedFormClones, parentResourcesText, nestedRedactedNames);
     const cloneContent = await encodeStreamObject(cloneObjNum, smResult.text, { humanReadable, dictExtras });
     pushObj({ objNum: cloneObjNum, content: cloneContent });
     state.formCloneByKey.set(dedupKey, cloneObjNum);
+    // The rebuild's reference trace never traces the original form dict for redacted content, since that would copy the unredacted original.
+    // The clone's own dict text is traced instead: it references the fonts/images/nested clones the content still needs.
+    if (redactActive && Array.isArray(state.redactTraceTexts)) state.redactTraceTexts.push(dictExtras);
     return { changed: true, cloneObjNum, skipped };
   } finally {
     state.inProgress.delete(formObjNum);
@@ -2180,11 +2673,12 @@ async function rewriteFormContentForRegions({
  */
 export async function convertSinglePageForRegions({
   streamText, pageObjText, bboxes, state, objCache, allocObjNum, pushObj, humanReadable,
-  convertBrokenType3ToPaths = false,
+  convertBrokenType3ToPaths = false, redactBboxes = null,
 }) {
+  const redactActive = !!(redactBboxes && redactBboxes.length > 0);
   // Bbox-driven conversion needs at least one region.
   // Broken-Type3 conversion runs font-scoped with no regions, so it relaxes the empty-bbox early-out.
-  if ((!bboxes || bboxes.length === 0) && !convertBrokenType3ToPaths) return { changed: false };
+  if ((!bboxes || bboxes.length === 0) && !convertBrokenType3ToPaths && !redactActive) return { changed: false };
   const safeBboxes = bboxes || [];
 
   // Unembedded fonts convert via built-in substitute outlines (see the resolver).
@@ -2197,6 +2691,8 @@ export async function convertSinglePageForRegions({
   try {
     pageFontInfos = parsePageFonts(pageObjText, objCache);
   } catch {
+    // Conversion degrades gracefully; redaction must not silently keep the content.
+    if (redactActive) throw new Error('Cannot apply redactions: the page fonts could not be parsed.');
     return { changed: false };
   }
   if (!pageFontInfos) pageFontInfos = new Map();
@@ -2227,61 +2723,126 @@ export async function convertSinglePageForRegions({
   // Page-level forms that omit their own /Resources inherit the page's, so pass it down.
   const pageResourcesText = resolveResourcesText(pageObjText, objCache);
 
-  // Page is convertible only if it has either fonts (for direct text-show
-  // conversion) or Form XObjects (for recursion into form-borne text).
-  if (fontsByTag.size === 0 && pageXobjectsByName.size === 0) return { changed: false };
+  // Page is convertible only if it has fonts (for direct text-show conversion) or Form XObjects (for recursion into form-borne text).
+  // A redacted page runs the walk regardless: unresolved-font shows still hit the fail-closed policy, and path/image ops matter too.
+  if (fontsByTag.size === 0 && pageXobjectsByName.size === 0 && !redactActive) return { changed: false };
+
+  /** @type {?Map<string, number>} */
+  let pageImagesByName = null;
+  if (redactActive) {
+    pageImagesByName = new Map();
+    try {
+      for (const [name, info] of parsePageImages(pageObjText, objCache, { recurseForms: false }).images) {
+        if (info && typeof info.objNum === 'number') pageImagesByName.set(name, info.objNum);
+      }
+    } catch { pageImagesByName = new Map(); }
+  }
 
   const offOCGs = typeof objCache.getOffOCGs === 'function' ? objCache.getOffOCGs() : new Set();
   const smResult = rewritePageContentForRegions(streamText, fontsByTag, safeBboxes, resolver, {
     parentXobjects: pageXobjectsByName,
+    parentImages: pageImagesByName,
     targetFontObjNums,
+    redactBboxes,
     extGStates: parseExtGStates(pageResourcesText, objCache),
     hiddenOCMCNames: offOCGs.size > 0 ? parseHiddenOCMCNames(pageObjText, objCache, offOCGs) : null,
     humanReadable,
   });
-  if (!smResult.ok) return { changed: false };
+  if (!smResult.ok) {
+    if (redactActive) throw new Error(`Cannot apply redactions: page content rewrite failed (${smResult.reason}).`);
+    return { changed: false };
+  }
 
   /** @type {Map<string, number>} */
   const formClones = new Map();
   const skipped = smResult.skipped.slice();
-  // One recursion per form name (first-ctm-wins),
-  // but pen state baked into the shared clone's emitted `w` values is a rendering error if invocations disagree,
-  // so disagreement degrades to unknown.
-  const invByName = new Map();
-  for (const inv of smResult.formInvocations) {
-    const prev = invByName.get(inv.name);
-    if (!prev) {
-      invByName.set(inv.name, {
-        formObjNum: inv.formObjNum, ctm: inv.ctm, lw: inv.lw, dashActive: inv.dashActive, ml: inv.ml, textState: inv.textState,
+  /** @type {?Set<string>} */
+  let redactedFormNames = null;
+  if (redactActive) {
+    // Per-site recursion (see the aliasing at the Do handler): each invocation carries its own CTM, and its alias resolves to that site's clone or to the original when nothing changed.
+    // Content-hash dedup in the clone cache collapses sites whose rewrites are identical.
+    redactedFormNames = new Set();
+    for (const inv of smResult.formInvocations) {
+      if (!inv.alias) continue;
+      redactedFormNames.add(inv.name);
+      if (formClones.has(inv.alias)) continue;
+      const r = await rewriteFormContentForRegions({
+        formObjNum: inv.formObjNum,
+        ctm: inv.ctm,
+        parentFontsByTag: fontsByTag,
+        fontInfoByObjNum,
+        resolver,
+        bboxes: safeBboxes,
+        targetFontObjNums,
+        redactBboxes,
+        state,
+        objCache,
+        allocObjNum,
+        pushObj,
+        humanReadable,
+        parentResourcesText: pageResourcesText,
+        initialLineWidth: inv.lw,
+        initialDashActive: inv.dashActive,
+        initialMiterLimit: inv.ml,
+        initialTextState: inv.textState,
       });
-    } else if (prev.lw !== inv.lw || prev.dashActive !== inv.dashActive || prev.ml !== inv.ml) {
-      prev.lw = null;
-      prev.ml = null;
+      if (r.skipped && r.skipped.length > 0) skipped.push(...r.skipped);
+      formClones.set(inv.alias, r.cloneObjNum);
     }
-  }
-  for (const [invName, inv] of invByName) {
-    const r = await rewriteFormContentForRegions({
-      formObjNum: inv.formObjNum,
-      ctm: inv.ctm,
-      parentFontsByTag: fontsByTag,
-      fontInfoByObjNum,
-      resolver,
-      bboxes: safeBboxes,
-      targetFontObjNums,
-      state,
-      objCache,
-      allocObjNum,
-      pushObj,
-      humanReadable,
-      parentResourcesText: pageResourcesText,
-      initialLineWidth: inv.lw,
-      initialDashActive: inv.dashActive,
-      initialMiterLimit: inv.ml,
-      initialTextState: inv.textState,
-    });
-    if (r.skipped && r.skipped.length > 0) skipped.push(...r.skipped);
-    if (r.changed && r.cloneObjNum !== inv.formObjNum) {
-      formClones.set(invName, r.cloneObjNum);
+    if (smResult.imageInvocations && smResult.imageInvocations.length > 0) {
+      await applyImageRedactions({
+        imageInvocations: smResult.imageInvocations,
+        verbatimImageNames: smResult.verbatimImageNames || new Set(),
+        redactBboxes,
+        state,
+        objCache,
+        allocObjNum,
+        pushObj,
+        humanReadable,
+        aliasEntries: formClones,
+        droppedNames: redactedFormNames,
+        skipped,
+      });
+    }
+  } else {
+    // One recursion per form name (first-ctm-wins).
+    // Pen state baked into the shared clone's `w` values would be a rendering error if invocations disagree, so disagreement degrades it to unknown.
+    const invByName = new Map();
+    for (const inv of smResult.formInvocations) {
+      const prev = invByName.get(inv.name);
+      if (!prev) {
+        invByName.set(inv.name, {
+          formObjNum: inv.formObjNum, ctm: inv.ctm, lw: inv.lw, dashActive: inv.dashActive, ml: inv.ml, textState: inv.textState,
+        });
+      } else if (prev.lw !== inv.lw || prev.dashActive !== inv.dashActive || prev.ml !== inv.ml) {
+        prev.lw = null;
+        prev.ml = null;
+      }
+    }
+    for (const [invName, inv] of invByName) {
+      const r = await rewriteFormContentForRegions({
+        formObjNum: inv.formObjNum,
+        ctm: inv.ctm,
+        parentFontsByTag: fontsByTag,
+        fontInfoByObjNum,
+        resolver,
+        bboxes: safeBboxes,
+        targetFontObjNums,
+        state,
+        objCache,
+        allocObjNum,
+        pushObj,
+        humanReadable,
+        parentResourcesText: pageResourcesText,
+        initialLineWidth: inv.lw,
+        initialDashActive: inv.dashActive,
+        initialMiterLimit: inv.ml,
+        initialTextState: inv.textState,
+      });
+      if (r.skipped && r.skipped.length > 0) skipped.push(...r.skipped);
+      if (r.changed && r.cloneObjNum !== inv.formObjNum) {
+        formClones.set(invName, r.cloneObjNum);
+      }
     }
   }
 
@@ -2299,6 +2860,7 @@ export async function convertSinglePageForRegions({
     xobjEntries,
     formClones,
     skipped,
+    redactedFormNames,
   };
 }
 

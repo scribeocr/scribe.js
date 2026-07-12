@@ -9,7 +9,7 @@ import { ocrPageToPDFStream } from './writePdfText.js';
 import {
   buildHighlightAnnotObjects, buildFreeTextAnnotObjects, buildShapeAnnotObjects, buildTextAnnotObjects, consolidateAnnotations,
 } from './writePdfAnnots.js';
-import { SHAPE_ANNOT_TYPES } from '../../addHighlights.js';
+import { SHAPE_ANNOT_TYPES, TEXT_MARKUP_ANNOT_TYPES } from '../../addHighlights.js';
 import { encodeStreamObject } from './writePdfStreams.js';
 
 /**
@@ -142,8 +142,10 @@ export async function writePdf({
       confThreshMed,
       imageObjIndices: pageImageObjIndices,
       imageName,
+      // `type == null` is a legacy highlight (UI/consolidated annots omit `type`).
+      // Never emit 'redact' as an annotation; its marks are applied destructively at export instead.
       pageAnnotations: [
-        ...consolidateAnnotations((annotationsPages?.[i] || []).filter((a) => a.type == null || a.type === 'highlight'), ocrArr?.[i]),
+        ...consolidateAnnotations((annotationsPages?.[i] || []).filter((a) => a.type == null || TEXT_MARKUP_ANNOT_TYPES.has(a.type)), ocrArr?.[i]),
         ...(annotationsPages?.[i] || []).filter((a) => SHAPE_ANNOT_TYPES.has(a.type)),
         ...(annotationsPages?.[i] || []).filter((a) => a.type === 'freetext'),
         ...(annotationsPages?.[i] || []).filter((a) => a.type === 'text'),
@@ -426,7 +428,7 @@ async function ocrPageToPDF({
   // start at firstObjIndex + pdfObj.length + 1.
   if (pageAnnotations.length > 0) {
     const annotObjStart = firstObjIndex + pdfObj.length + 1;
-    const highlightAnns = pageAnnotations.filter((a) => a.type == null || a.type === 'highlight');
+    const highlightAnns = pageAnnotations.filter((a) => a.type == null || TEXT_MARKUP_ANNOT_TYPES.has(a.type));
     const { objectTexts, annotRefs } = buildHighlightAnnotObjects(highlightAnns, annotObjStart, outputDims, warningHandler);
     for (const text of objectTexts) pdfObj.push(text);
     const shapes = buildShapeAnnotObjects(pageAnnotations.filter((a) => SHAPE_ANNOT_TYPES.has(a.type)), annotObjStart + objectTexts.length, outputDims, warningHandler);

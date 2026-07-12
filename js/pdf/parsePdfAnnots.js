@@ -10,6 +10,7 @@ export const TEXT_ANNOT_ICON_PX = 24;
 /**
  * @typedef {Object} PdfHighlightRaw
  * @property {number} objNum
+ * @property {'Highlight'|'Underline'|'StrikeOut'} subtype - PDF /Subtype: the text-markup kind.
  * @property {[number, number, number, number]} rect - /Rect in pts, bottom-left origin.
  * @property {number[]|null} quadPoints - /QuadPoints: flat array of 8*N floats, pts, bottom-left origin.
  * @property {[number, number, number]|null} color - /C normalized 0..1, or null if absent.
@@ -62,17 +63,20 @@ function parseAnnotPdfString(annotText, key) {
  */
 
 /**
- * True when the annotation is one the importer lifts into the editable model: a visible Highlight, FreeText, or a standalone Text annotation (not a reply).
- * The model re-emits these on export, so `buildReplacementPageDict` must drop the source copy or the annotation duplicates each round-trip.
+ * True when the annotation is one the importer lifts into the editable model rather than passing through.
+ * The model re-emits these on export, so the source copy must be dropped or the annotation duplicates each round-trip.
  * @param {string} annotText - The raw annotation object text.
  * @returns {boolean}
  */
 export function annotIsModelManaged(annotText) {
+  // A pending /Redact counts even when the visibility flags below would hide it: a hidden redaction must still remove its content at export.
+  if (/\/Subtype\s*\/Redact\b/.test(annotText)) return true;
   // Invisible (bit 1), Hidden (bit 2), or NoView (bit 6).
   const flagsMatch = /\/F\s+(\d+)(?=\s*[/>])/.exec(annotText);
   const flags = flagsMatch ? Number(flagsMatch[1]) : 0;
   if (flags & 1 || flags & 2 || flags & 32) return false;
-  if (/\/Subtype\s*\/Highlight\b/.test(annotText) || /\/Subtype\s*\/FreeText\b/.test(annotText)) return true;
+  // /Squiggly is deliberately absent: it stays a passthrough annotation.
+  if (/\/Subtype\s*\/(?:Highlight|Underline|StrikeOut)\b/.test(annotText) || /\/Subtype\s*\/FreeText\b/.test(annotText)) return true;
   // Replies (/IRT) are excluded here because they are lifted into their root's thread instead.
   return /\/Subtype\s*\/Text\b/.test(annotText) && !/\/IRT\b/.test(annotText);
 }
@@ -133,6 +137,8 @@ export function extractPdfAnnotations(objCache, pageObjText) {
   const freeTexts = [];
   /** @type {PdfTextAnnotRaw[]} */
   const textAnnots = [];
+  /** @type {Array<{objNum: number, rect: [number, number, number, number], quadPoints: ?number[]}>} */
+  const redacts = [];
   /** @type {number[]} */
   const passthroughRefs = [];
 
@@ -151,7 +157,7 @@ export function extractPdfAnnotations(objCache, pageObjText) {
   }
   if (!annotRefs || annotRefs.length === 0) {
     return {
-      highlights, freeTexts, textAnnots, passthroughRefs,
+      highlights, freeTexts, textAnnots, redacts, passthroughRefs,
     };
   }
 
@@ -186,6 +192,7 @@ export function extractPdfAnnotations(objCache, pageObjText) {
 
     const isFreeText = /\/Subtype\s*\/FreeText\b/.test(annotText);
     const isTextAnnot = /\/Subtype\s*\/Text\b/.test(annotText);
+    const isRedact = /\/Subtype\s*\/Redact\b/.test(annotText);
 
     const rectStr = resolveArrayValue(annotText, 'Rect', objCache);
     const rectNums = rectStr ? rectStr.split(/\s+/).map(Number) : [];
@@ -194,6 +201,13 @@ export function extractPdfAnnotations(objCache, pageObjText) {
     if (!rectValid && !isTextAnnot) continue;
     /** @type {[number, number, number, number]} */
     const rect = rectValid ? [rectNums[0], rectNums[1], rectNums[2], rectNums[3]] : [0, 0, TEXT_ANNOT_ICON_PX, TEXT_ANNOT_ICON_PX];
+
+    if (isRedact) {
+      // Appearance entries (/IC, /RO, /OverlayText) are ignored because the applied redaction always paints an opaque black box.
+      const rQpStr = resolveArrayValue(annotText, 'QuadPoints', objCache);
+      redacts.push({ objNum: annotRef, rect, quadPoints: rQpStr ? rQpStr.split(/\s+/).map(Number) : null });
+      continue;
+    }
 
     const cStr = resolveArrayValue(annotText, 'C', objCache);
     const cNums = cStr ? cStr.split(/\s+/).map(Number) : null;
@@ -240,9 +254,11 @@ export function extractPdfAnnotations(objCache, pageObjText) {
     const qpStr = resolveArrayValue(annotText, 'QuadPoints', objCache);
     const quadPoints = qpStr ? qpStr.split(/\s+/).map(Number) : null;
 
+    const subtypeMatch = /\/Subtype\s*\/(Underline|StrikeOut)\b/.exec(annotText);
     const createdAtStr = parseAnnotPdfString(annotText, 'CreationDate');
     highlights.push({
       objNum: annotRef,
+      subtype: subtypeMatch ? /** @type {'Underline'|'StrikeOut'} */ (subtypeMatch[1]) : 'Highlight',
       rect,
       quadPoints,
       color,
@@ -277,8 +293,60 @@ export function extractPdfAnnotations(objCache, pageObjText) {
   }
 
   return {
-    highlights, freeTexts, textAnnots, passthroughRefs,
+    highlights, freeTexts, textAnnots, redacts, passthroughRefs,
   };
+}
+
+/**
+ * Convert a user-space /Redact annotation to pixel-space redaction marks: one per quad, or one from /Rect when there are no QuadPoints, all sharing the given group id.
+ * @param {{objNum: number, rect: [number, number, number, number], quadPoints: ?number[]}} raw
+ * @param {{ scale: number, visualHeightPts: number, initialCtm: number[], groupId: string }} transform
+ * @returns {AnnotationRedact[]}
+ */
+export function pdfRedactToAnnotations(raw, transform) {
+  const {
+    scale, visualHeightPts, initialCtm, groupId,
+  } = transform;
+  const mapPoint = (x, y) => {
+    const cx = initialCtm[0] * x + initialCtm[2] * y + initialCtm[4];
+    const cy = initialCtm[1] * x + initialCtm[3] * y + initialCtm[5];
+    return { x: cx * scale, y: (visualHeightPts - cy) * scale };
+  };
+  /** @param {Array<{x: number, y: number}>} corners @returns {bbox} */
+  const bboxFromCorners = (corners) => {
+    let left = Infinity; let right = -Infinity; let top = Infinity; let bottom = -Infinity;
+    for (const c of corners) {
+      if (c.x < left) left = c.x;
+      if (c.x > right) right = c.x;
+      if (c.y < top) top = c.y;
+      if (c.y > bottom) bottom = c.y;
+    }
+    return {
+      left, top, right, bottom,
+    };
+  };
+  /** @type {AnnotationRedact[]} */
+  const out = [];
+  if (raw.quadPoints && raw.quadPoints.length >= 8) {
+    for (let qi = 0; qi + 7 < raw.quadPoints.length; qi += 8) {
+      const corners = [
+        mapPoint(raw.quadPoints[qi], raw.quadPoints[qi + 1]),
+        mapPoint(raw.quadPoints[qi + 2], raw.quadPoints[qi + 3]),
+        mapPoint(raw.quadPoints[qi + 4], raw.quadPoints[qi + 5]),
+        mapPoint(raw.quadPoints[qi + 6], raw.quadPoints[qi + 7]),
+      ];
+      out.push({ type: 'redact', bbox: bboxFromCorners(corners), groupId });
+    }
+    return out;
+  }
+  const corners = [
+    mapPoint(raw.rect[0], raw.rect[1]),
+    mapPoint(raw.rect[2], raw.rect[1]),
+    mapPoint(raw.rect[0], raw.rect[3]),
+    mapPoint(raw.rect[2], raw.rect[3]),
+  ];
+  out.push({ type: 'redact', bbox: bboxFromCorners(corners), groupId });
+  return out;
 }
 
 /**
@@ -343,7 +411,7 @@ export function pdfHighlightToAnnotation(raw, transform) {
 
   /** @type {AnnotationHighlight} */
   const annot = {
-    type: 'highlight',
+    type: raw.subtype === 'Underline' ? 'underline' : (raw.subtype === 'StrikeOut' ? 'strikeout' : 'highlight'),
     bbox,
     color: hex,
     opacity: raw.opacity,

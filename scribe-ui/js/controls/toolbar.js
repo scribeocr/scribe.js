@@ -2033,16 +2033,37 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     @supports not selector(::-webkit-scrollbar) {
       .${r} .scribe-cm-quote.expanded.scroll { scrollbar-width: thin; scrollbar-color: var(--scribe-scrollbar) transparent; }
     }
+    /* Only note rows get a kind label (the note mark); a markup row's quote wears its markup instead. */
     .${r} .scribe-cm-kind {
       flex: 1 1 auto;
       display: inline-flex;
       align-items: center;
       gap: 5px;
       font-size: 11px;
-      font-style: italic;
+      font-weight: 500;
       color: var(--scribe-ink-3);
     }
     .${r} .scribe-cm-kind svg { width: 12px; height: 12px; color: var(--scribe-note); flex: 0 0 auto; }
+    /* The wash (--scribe-cm-wash) is theme-scaled down (dark 22%) because a full-strength yellow reads mustard on dark.
+       The text lifts one ink step so the wash never costs contrast.
+       box-decoration-break: clone wraps the wash/hatch onto each clamped line like a real mark. */
+    .${r} .scribe-cm-qmark {
+      --scribe-cm-wash: 35%;
+      color: var(--scribe-ink-2);
+      padding: 0 3px;
+      border-radius: 2px;
+      -webkit-box-decoration-break: clone;
+      box-decoration-break: clone;
+    }
+    .${r}[data-theme="dark"] .scribe-cm-qmark { --scribe-cm-wash: 22%; }
+    /* line-height 1.55 leaves room for the offset underline; the clamp box's overflow:hidden would otherwise clip it below the last line's baseline. */
+    .${r} .scribe-cm-q-ul { text-decoration: underline; text-decoration-thickness: 1.5px; text-underline-offset: 2.5px; line-height: 1.55; }
+    .${r} .scribe-cm-q-st { text-decoration: line-through; text-decoration-thickness: 1.5px; line-height: 1.55; }
+    /* Redaction quotes sit on the on-page mark's own hatch (panel-scale stroke). */
+    .${r} .scribe-cm-q-rd {
+      background: repeating-linear-gradient(45deg, rgba(209, 73, 61, .16) 0 1px, transparent 1px 6px);
+      box-shadow: inset 0 0 0 1px rgba(209, 73, 61, .38);
+    }
 
     .${r} .scribe-cm-text {
       margin-top: 6px;

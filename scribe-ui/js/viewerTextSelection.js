@@ -880,10 +880,11 @@ export class TextSelection {
   }
 
   /**
-   * The highlighted word under a client point, if any.
+   * The highlighted (or line-marked) word under a client point, if any.
+   * A word carrying both a fill and a line markup hits as the fill: the word box is one hover target, and the fill's card is the richer surface.
    * @param {number} clientX
    * @param {number} clientY
-   * @returns {?{kw: import('./viewerWordObjects.js').UiOcrWord, groupId: ?string, n: number}}
+   * @returns {?{kw: import('./viewerWordObjects.js').UiOcrWord, groupId: ?string, n: number, kind: ('highlight'|'line')}}
    */
   hitTestHighlight(clientX, clientY) {
     const { n, x, y } = this.viewer.clientToPage(clientX, clientY);
@@ -900,7 +901,16 @@ export class TextSelection {
           const box = entry.boxes[wi];
           if (local.x < box.left || local.x > box.right) continue;
           const kw = wordObjs.get(entry.words[wi].id);
-          if (kw && kw.highlightColor) return { kw, groupId: kw.highlightGroupId || null, n };
+          if (kw && kw.highlightColor) {
+            return {
+              kw, groupId: kw.highlightGroupId || null, n, kind: 'highlight',
+            };
+          }
+          if (kw && kw.markupType) {
+            return {
+              kw, groupId: kw.markupGroupId || null, n, kind: 'line',
+            };
+          }
           return null;
         }
         // renderHighlights fills the gap between adjacent words only when they share color, opacity, and group.
@@ -913,7 +923,19 @@ export class TextSelection {
             && kwA.highlightColor === kwB.highlightColor
             && kwA.highlightOpacity === kwB.highlightOpacity
             && (kwA.highlightGroupId || '') === (kwB.highlightGroupId || '')) {
-            return { kw: kwA, groupId: kwA.highlightGroupId || null, n };
+            return {
+              kw: kwA, groupId: kwA.highlightGroupId || null, n, kind: 'highlight',
+            };
+          }
+          // A line-markup bar spans the space between its words, so the gap is part of the target.
+          if (kwA && kwB && kwA.markupType
+            && kwA.markupType === kwB.markupType
+            && kwA.markupColor === kwB.markupColor
+            && kwA.markupOpacity === kwB.markupOpacity
+            && (kwA.markupGroupId || '') === (kwB.markupGroupId || '')) {
+            return {
+              kw: kwA, groupId: kwA.markupGroupId || null, n, kind: 'line',
+            };
           }
           break;
         }
@@ -1223,6 +1245,8 @@ export class TextSelection {
               const arr = map && map.get(hit.groupId);
               if (arr) rects.push(...arr);
             }
+          } else if (hit.kind === 'line' && hit.kw.markupRectElem) {
+            rects.push(hit.kw.markupRectElem);
           } else if (hit.kw.highlightRectElem) {
             rects.push(hit.kw.highlightRectElem);
           }

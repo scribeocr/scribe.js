@@ -89,16 +89,19 @@ export async function rewriteContentsStrippingInvisibleText(existingContentsRefs
  * @param {(obj: { objNum: number, content: string | Uint8Array | import('./writePdfStreams.js').PdfBinaryObject }) => void} params.pushObj
  * @param {boolean} params.humanReadable
  * @param {boolean} [params.convertBrokenType3ToPaths] - When true, convert all glyphs drawn by broken-ToUnicode Type3 fonts to paths.
+ * @param {?Array<[number, number, number, number]>} [params.redactBboxes] - User-space rects whose content (glyphs, paths, images) is destructively removed, independent of `bboxes`.
  * @returns {Promise<{
  *   refs: string[],
  *   xobjEntries: Map<string, number>,
  *   formClones: Map<string, number>,
  *   skipped: Array<{fontObjNum: number, charCode: number, reason: string}>,
+ *   redactedFormNames?: ?Set<string>,
  * }>}
  */
 export async function rewriteContentsStripAndConvert({
   existingContentsRefs, pageObjText, bboxes, conversionState,
   objCache, allocObjNum, pushObj, humanReadable, convertBrokenType3ToPaths = false,
+  redactBboxes = null,
 }) {
   /** @type {Map<string, number>} */
   const emptyXobj = new Map();
@@ -126,6 +129,10 @@ export async function rewriteContentsStripAndConvert({
     parts.push(bytesToLatin1(bytes));
   }
   if (!canMerge) {
+    // The pass-through return below is safe for conversion but for redaction would leak the content meant to be removed.
+    if (redactBboxes && redactBboxes.length > 0) {
+      throw new Error('Cannot apply redactions: a page content stream could not be read.');
+    }
     return {
       refs: existingContentsRefs, xobjEntries: emptyXobj, formClones: emptyFormClones, skipped: [],
     };
@@ -134,7 +141,12 @@ export async function rewriteContentsStripAndConvert({
   const merged = parts.join('\n');
   const { text: strippedText, dropped } = stripText(merged, { mode: 'invisible' });
 
-  const wantConvert = ((!!bboxes && bboxes.length > 0) || convertBrokenType3ToPaths) && !!conversionState;
+  // Fail closed: without conversion state the redaction is skipped, shipping the content unredacted.
+  if (redactBboxes && redactBboxes.length > 0 && !conversionState) {
+    throw new Error('Cannot apply redactions: no conversion state was created for this page.');
+  }
+  const wantRedact = !!(redactBboxes && redactBboxes.length > 0) && !!conversionState;
+  const wantConvert = (((!!bboxes && bboxes.length > 0) || convertBrokenType3ToPaths) && !!conversionState) || wantRedact;
   let workingText = strippedText;
   /** @type {Map<string, number>} */
   let xobjEntries = emptyXobj;
@@ -143,6 +155,8 @@ export async function rewriteContentsStripAndConvert({
   /** @type {Array<{fontObjNum: number, charCode: number, reason: string}>} */
   let skipped = [];
   let converted = false;
+  /** @type {?Set<string>} */
+  let redactedFormNames = null;
 
   if (wantConvert) {
     const result = await convertSinglePageForRegions({
@@ -155,8 +169,10 @@ export async function rewriteContentsStripAndConvert({
       pushObj,
       humanReadable,
       convertBrokenType3ToPaths,
+      redactBboxes,
     });
     if (result.skipped) skipped = result.skipped;
+    if (result.redactedFormNames) redactedFormNames = result.redactedFormNames;
     if (result.changed) {
       if (result.text !== undefined) workingText = result.text;
       if (result.xobjEntries) xobjEntries = result.xobjEntries;
@@ -167,7 +183,7 @@ export async function rewriteContentsStripAndConvert({
 
   if (!dropped && !converted) {
     return {
-      refs: existingContentsRefs, xobjEntries, formClones, skipped,
+      refs: existingContentsRefs, xobjEntries, formClones, skipped, redactedFormNames,
     };
   }
 
@@ -175,7 +191,7 @@ export async function rewriteContentsStripAndConvert({
   const objBin = await encodeStreamObject(newObjNum, workingText, { humanReadable });
   pushObj({ objNum: newObjNum, content: objBin });
   return {
-    refs: [`${newObjNum} 0 R`], xobjEntries, formClones, skipped,
+    refs: [`${newObjNum} 0 R`], xobjEntries, formClones, skipped, redactedFormNames,
   };
 }
 
@@ -407,10 +423,13 @@ export function composePageRotation(pageObjText, userRotation, objCache) {
  * @param {?Set<number>} [keptPageObjNums=null] - When non-null (subset rebuild),
  *   filter out source link annotations whose destination page is not in this set.
  * @param {number} [userRotation=0] - User-applied rotation (multiple of 90) composed onto the page's /Rotate.
+ * @param {?Array<[number, number, number, number]>} [redactRects=null] - User-space redaction rects for this page.
+ *   Source annotations overlapping any rect, or whose geometry cannot be read, are dropped to avoid leaking redacted content.
  */
 export function buildReplacementPageDict(
   objNum, originalObjText, newContentsArray, resourcesObjNum, parentObjNum = null,
   extraAnnotRefs = [], objCache = null, keptPageObjNums = null, userRotation = 0,
+  redactRects = null,
 ) {
   let dictStr = `${objNum} 0 obj\n<<`;
   dictStr += '/Type/Page';
@@ -456,6 +475,32 @@ export function buildReplacementPageDict(
       const m = /^(\d+)\s+\d+\s+R$/.exec(ref);
       if (!m) return true;
       return !annotLinkTargetsDroppedPage(Number(m[1]), objCache, keptPageObjNums);
+    });
+  }
+  if (redactRects && redactRects.length > 0 && objCache) {
+    sourceAnnotRefs = sourceAnnotRefs.filter((ref) => {
+      const m = /^(\d+)\s+\d+\s+R$/.exec(ref);
+      if (!m) return false;
+      const annotText = objCache.getObjectText(Number(m[1]));
+      if (!annotText) return false;
+      // /Rect and /QuadPoints share the redaction rects' user-space frame, so they compare directly.
+      const rectMatch = /\/Rect\s*\[\s*([-\d.eE]+)\s+([-\d.eE]+)\s+([-\d.eE]+)\s+([-\d.eE]+)\s*\]/.exec(annotText);
+      if (!rectMatch) return false;
+      const rx0 = Math.min(Number(rectMatch[1]), Number(rectMatch[3]));
+      const ry0 = Math.min(Number(rectMatch[2]), Number(rectMatch[4]));
+      const rx1 = Math.max(Number(rectMatch[1]), Number(rectMatch[3]));
+      const ry1 = Math.max(Number(rectMatch[2]), Number(rectMatch[4]));
+      const boxes = [[rx0, ry0, rx1, ry1]];
+      const quadsMatch = /\/QuadPoints\s*\[([-\d.eE\s]+)\]/.exec(annotText);
+      if (quadsMatch) {
+        const nums = quadsMatch[1].trim().split(/\s+/).map(Number);
+        for (let q = 0; q + 7 < nums.length; q += 8) {
+          const xs = [nums[q], nums[q + 2], nums[q + 4], nums[q + 6]];
+          const ys = [nums[q + 1], nums[q + 3], nums[q + 5], nums[q + 7]];
+          boxes.push([Math.min(...xs), Math.min(...ys), Math.max(...xs), Math.max(...ys)]);
+        }
+      }
+      return !boxes.some((b) => redactRects.some((r) => b[0] < r[2] && b[2] > r[0] && b[1] < r[3] && b[3] > r[1]));
     });
   }
   // The lifted annotations are re-emitted via `extraAnnotRefs`, so keeping a source copy would duplicate them on export.

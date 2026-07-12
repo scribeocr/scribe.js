@@ -355,17 +355,18 @@ export function createThumbnailPanel(scribe, {
     if (box) {
       const annots = (scribe.doc && scribe.doc.annotations && scribe.doc.annotations.pages[n]) || [];
       const dims = scribe.doc && scribe.doc.pageMetrics[n] && scribe.doc.pageMetrics[n].dims;
-      /** @type {Array<{color: string, opacity: number, left: number, right: number, top: number, bottom: number}>} */
+      /** @type {Array<{kind: string, color: string, opacity: number, left: number, right: number, top: number, bottom: number}>} */
       const runs = [];
       if (dims) {
         const sorted = annots
-          .filter((a) => (a.type == null || a.type === 'highlight') && a.color && a.bbox)
+          .filter((a) => (a.type == null || a.type === 'highlight' || a.type === 'underline' || a.type === 'strikeout') && a.color && a.bbox)
           .sort((a, b) => (a.bbox.top - b.bbox.top) || (a.bbox.left - b.bbox.left));
         for (const a of sorted) {
           const h = a.bbox.bottom - a.bbox.top;
           const mid = (a.bbox.top + a.bbox.bottom) / 2;
-          // Merge adjacent same-colour highlights on one line so a phrase reads as a single band, not per-word specks.
-          const run = runs.find((r) => r.color === a.color
+          const kind = a.type || 'highlight';
+          // Merge adjacent same-colour same-kind markups on one line so a phrase reads as a single band, not per-word specks.
+          const run = runs.find((r) => r.color === a.color && r.kind === kind
             && Math.abs((r.top + r.bottom) / 2 - mid) < h * 0.6
             && a.bbox.left - r.right < h * 2 && r.left - a.bbox.right < h * 2);
           if (run) {
@@ -375,7 +376,7 @@ export function createThumbnailPanel(scribe, {
             run.bottom = Math.max(run.bottom, a.bbox.bottom);
           } else {
             runs.push({
-              color: a.color, opacity: a.opacity ?? 0.5, left: a.bbox.left, right: a.bbox.right, top: a.bbox.top, bottom: a.bbox.bottom,
+              kind, color: a.color, opacity: a.opacity ?? 0.5, left: a.bbox.left, right: a.bbox.right, top: a.bbox.top, bottom: a.bbox.bottom,
             });
           }
         }
@@ -397,11 +398,20 @@ export function createThumbnailPanel(scribe, {
         }
         hlElem.replaceChildren(...runs.map((run) => {
           const band = document.createElement('span');
+          // The thin underline/strikeout bar can go sub-pixel at thumbnail scale, hence the 1px minHeight floor.
+          let top = run.top;
+          let height = run.bottom - run.top;
+          if (run.kind !== 'highlight') {
+            const barH = height * 0.12;
+            top = run.kind === 'underline' ? run.bottom - barH : (run.top + run.bottom) / 2 - barH / 2;
+            height = barH;
+          }
           Object.assign(band.style, {
             left: `${(run.left / dims.width) * 100}%`,
-            top: `${(run.top / dims.height) * 100}%`,
+            top: `${(top / dims.height) * 100}%`,
             width: `${((run.right - run.left) / dims.width) * 100}%`,
-            height: `${((run.bottom - run.top) / dims.height) * 100}%`,
+            height: `${(height / dims.height) * 100}%`,
+            minHeight: '1px',
             background: run.color,
             opacity: `${run.opacity}`,
           });

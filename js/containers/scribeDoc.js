@@ -6,6 +6,7 @@ import { clearObjectProperties, getRandomAlphanum } from '../utils/miscUtils.js'
 import {
   addHighlights as addHighlightsImpl, addFreeText as addFreeTextImpl, clearHighlights as clearHighlightsImpl,
   addShapes as addShapesImpl, clearShapes as clearShapesImpl, addTextAnnots as addTextAnnotsImpl, clearTextAnnots as clearTextAnnotsImpl,
+  addRedactions as addRedactionsImpl, removeRedactions as removeRedactionsImpl,
 } from '../addHighlights.js';
 import { renderPageStatic as renderPageStaticImpl } from '../debug.js';
 import { exportData as exportDataImpl, download as downloadImpl } from '../export/export.js';
@@ -873,6 +874,24 @@ export class ScribeDoc {
    */
   clearTextAnnots() {
     clearTextAnnotsImpl(this);
+  }
+
+  /**
+   * Add redaction marks.
+   * Marks stay reviewable/deletable (and persist in `.scribe` saves); every other export applies them by permanently removing the marked content.
+   * @param {Parameters<typeof addRedactionsImpl>[1]} redactions
+   * @returns {ReturnType<typeof addRedactionsImpl>}
+   */
+  addRedactions(redactions) {
+    return addRedactionsImpl(this, redactions);
+  }
+
+  /**
+   * Remove redaction marks (all of them, or one page's, or one group's).
+   * @param {Parameters<typeof removeRedactionsImpl>[1]} [filter]
+   */
+  removeRedactions(filter) {
+    removeRedactionsImpl(this, filter);
   }
 
   /**

@@ -14,7 +14,7 @@ import { parsePageFonts } from './fonts/parsePdfFonts.js';
 import { parsePagePaths } from './parsePdfPaths.js';
 import { detectTableRegions } from './detectPdfTables.js';
 import {
-  extractPdfAnnotations, pdfHighlightToAnnotation, pdfFreeTextToAnnotation, pdfTextAnnotToAnnotation,
+  extractPdfAnnotations, pdfHighlightToAnnotation, pdfFreeTextToAnnotation, pdfTextAnnotToAnnotation, pdfRedactToAnnotations,
 } from './parsePdfAnnots.js';
 import { cmykToRgb } from './pdfColorFunctions.js';
 import { assignParagraphs } from '../utils/reflowPars.js';
@@ -761,7 +761,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
   } = groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects, paths, scale, visualHeightPts, boxOriginX, boxOriginY);
 
   const {
-    highlights: highlightsRaw, freeTexts: freeTextsRaw, textAnnots: textAnnotsRaw, passthroughRefs,
+    highlights: highlightsRaw, freeTexts: freeTextsRaw, textAnnots: textAnnotsRaw, redacts: redactsRaw, passthroughRefs,
   } = extractPdfAnnotations(objCache, objText);
   /** @type {Annotation[]} */
   const annotations = highlightsRaw.map((raw) => pdfHighlightToAnnotation(raw, {
@@ -775,6 +775,12 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
   }
   for (const raw of textAnnotsRaw) {
     annotations.push(pdfTextAnnotToAnnotation(raw, { scale, visualHeightPts, initialCtm }));
+  }
+  // A source /Redact is a pending redaction from another tool, lifted into marks so apply-at-export honors it.
+  for (const raw of redactsRaw) {
+    annotations.push(...pdfRedactToAnnotations(raw, {
+      scale, visualHeightPts, initialCtm, groupId: `_pdf_p${n}_a${raw.objNum}`,
+    }));
   }
 
   return {

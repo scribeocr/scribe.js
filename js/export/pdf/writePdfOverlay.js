@@ -8,7 +8,7 @@ import { ocrPageToPDFStream } from './writePdfText.js';
 import {
   buildHighlightAnnotObjects, buildFreeTextAnnotObjects, buildShapeAnnotObjects, buildTextAnnotObjects, consolidateAnnotations,
 } from './writePdfAnnots.js';
-import { SHAPE_ANNOT_TYPES } from '../../addHighlights.js';
+import { SHAPE_ANNOT_TYPES, TEXT_MARKUP_ANNOT_TYPES } from '../../addHighlights.js';
 import { encodeStreamObject } from './writePdfStreams.js';
 import {
   parseTrailerInfo,
@@ -134,6 +134,56 @@ export async function overlayPdfText({
     regionsForPaths = regionsForPaths ? regionsForPaths.concat(fullRegions) : fullRegions;
   }
 
+  // Redaction marks (page-pixel frame) become per-page erase rects in source content space, by inverting the box-origin + /Rotate transform the importer bakes into its initial CTM (parseSinglePage).
+  // User rotation is NOT part of this mapping: marks live in the pre-user-rotation frame, and user rotation is written as /Rotate only (which also forces the rebuild path below).
+  /** @type {Map<number, Array<[number, number, number, number]>>} */
+  const redactRegionsByPage = new Map();
+  for (const i of effectivePageArr) {
+    const marks = (annotationsPages[i] || []).filter((a) => a.type === 'redact');
+    if (marks.length === 0) continue;
+    const dims = pageMetricsArr?.[i]?.dims;
+    if (!dims) throw new Error(`Cannot apply redactions on page ${i}: page dimensions are unknown.`);
+    const box = pages[i].cropBox || pages[i].mediaBox || [0, 0, 612, 792];
+    const contentW = Math.abs(box[2] - box[0]);
+    const contentH = Math.abs(box[3] - box[1]);
+    const ox = Math.min(box[0], box[2]);
+    const oy = Math.min(box[1], box[3]);
+    const rot = (((pages[i].rotate || 0) % 360) + 360) % 360;
+    const visW = rot % 180 === 0 ? contentW : contentH;
+    const visH = rot % 180 === 0 ? contentH : contentW;
+    /** @type {Array<[number, number, number, number]>} */
+    const rects = [];
+    for (const m of marks) {
+      const corners = [
+        [m.bbox.left, m.bbox.top], [m.bbox.right, m.bbox.top],
+        [m.bbox.left, m.bbox.bottom], [m.bbox.right, m.bbox.bottom],
+      ];
+      let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity;
+      for (const [px, py] of corners) {
+        // Pixel (top-left origin) -> visual pts (y-up) -> invert /Rotate -> content user space.
+        const vx = px * (visW / dims.width);
+        const vy = visH - py * (visH / dims.height);
+        let x; let y;
+        if (rot === 90) {
+          y = vx + oy;
+          x = contentW + ox - vy;
+        } else if (rot === 180) {
+          x = contentW + ox - vx;
+          y = contentH + oy - vy;
+        } else if (rot === 270) {
+          y = contentH + oy - vx;
+          x = vy + ox;
+        } else {
+          x = vx + ox;
+          y = vy + oy;
+        }
+        x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+      }
+      if (x1 > x0 && y1 > y0) rects.push([x0, y0, x1, y1]);
+    }
+    if (rects.length > 0) redactRegionsByPage.set(i, rects);
+  }
+
   // Step 2: Determine next available object number.
   let nextObjNum = 0;
   for (const k in xrefEntries) {
@@ -176,7 +226,8 @@ export async function overlayPdfText({
   const hasUserRotation = !!(pageMetricsArr && pageMetricsArr.some((pm) => pm && pm.rotation));
   // A metadata scrub must rebuild: incremental append would leave the source's trailer chain and every prior /Prev revision's metadata in place.
   // Rebuilding drops all of it and scrubs the copied objects.
-  if (isSubset || sourceEncrypted || sourceXrefMalformed || sourceLinearized || hasUserRotation || scrub) {
+  // Redactions must rebuild too, but as a hard security property: an incremental update PRESERVES the original file bytes, so the redacted content stays recoverable.
+  if (isSubset || sourceEncrypted || sourceXrefMalformed || sourceLinearized || hasUserRotation || scrub || redactRegionsByPage.size > 0) {
     return rebuildPdfSubset({
       pdfBytes,
       text,
@@ -204,6 +255,7 @@ export async function overlayPdfText({
       convertBrokenType3ToPaths,
       warningHandler,
       scrub,
+      redactRegionsByPage,
     });
   }
 
@@ -260,7 +312,8 @@ export async function overlayPdfText({
     }
 
     const hasText = textContentObjStr && textContentObjStr.length > 0;
-    const hasAnnots = pageAnnotations.length > 0;
+    // Redact marks are never written as annotations (they are applied destructively), so they must not force the annots-driven page rewrite.
+    const hasAnnots = pageAnnotations.some((a) => a.type !== 'redact');
     const hasConvert = regionsByPage.has(i) || convertBrokenType3ToPaths;
     if (!hasText && !hasAnnots && !hasConvert) continue;
 
@@ -342,7 +395,9 @@ export async function overlayPdfText({
     let extraAnnotRefs = [];
     if (hasAnnots) {
       const outputDims = { width: baseWidth, height: baseHeight };
-      const highlightAnns = pageAnnotations.filter((a) => a.type == null || a.type === 'highlight');
+      // `type == null` is a legacy highlight (UI/consolidated annots omit `type`).
+      // 'redact' must never be emitted as an annotation; marks are applied destructively instead.
+      const highlightAnns = pageAnnotations.filter((a) => a.type == null || TEXT_MARKUP_ANNOT_TYPES.has(a.type));
       const consolidated = consolidateAnnotations(highlightAnns, annotationOcrArr?.[i] || pageObj);
       const pageForEmit = consolidated.length > 0 ? consolidated : highlightAnns;
       const transformed = pageForEmit.map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty));
