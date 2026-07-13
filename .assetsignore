@@ -1,0 +1,12 @@
+# Deploy allowlist (gitignore syntax): `/*` ignores everything at the repo root, then each `!` re-includes one entry the app loads at runtime.
+# scrollview-web is here only because a lazy dynamic import reaches it during OCR.
+# Adding a new top-level runtime dependency means adding a matching `!` line here.
+/*
+!/index.html
+!/js/
+!/scribe-ui/
+!/scribe.js
+!/fonts/
+!/tess/
+!/lib/
+!/scrollview-web/
