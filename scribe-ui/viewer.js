@@ -7,7 +7,9 @@ import {
 import { clearObjectProperties } from '../js/utils/miscUtils.js';
 import { UiText, UiOcrWord } from './js/viewerWordObjects.js';
 import { ViewerImageCache } from './js/viewerImageCache.js';
-import { contextMenuFunc, mouseupFunc2 } from './js/viewerCanvasInteraction.js';
+import {
+  contextMenuFunc, mouseupFunc2, showTouchCallout, hideTouchCallout,
+} from './js/viewerCanvasInteraction.js';
 import {
   deleteSelectedWord, modifySelectedWordBbox, modifySelectedWordStyle,
 } from './js/viewerModifySelectedWords.js';
@@ -140,6 +142,13 @@ export class ScribeViewer {
 
     /** @type {?Function} Fired after an undo/redo, so host UI (e.g. the bookmarks panel) can refresh non-page state. */
     this.onEditCallback = null;
+
+    /**
+     * Fired after every page-structure or rotation edit made through the viewer's page verbs, including undo/redo of them.
+     * For host UI that passively mirrors the page list (the phone filmstrip, the bookmarks/comments panels) and would otherwise go stale when an edit originates elsewhere.
+     * @type {?Function}
+     */
+    this.onPageEditCallback = null;
 
     /**
      * Per-page container `<div>`s, indexed by page number. Each holds the page `<canvas>` raster,
@@ -370,6 +379,22 @@ export class ScribeViewer {
     // Host callback fired after a marking gesture.
     /** @type {?(marksAdded: number) => void} */
     this._onRedactMark = null;
+
+    /** @type {?(message: string, undo: () => void) => void} Fired after a destructive one-tap action (the touch callout's delete), with a message and an undo for the host to surface. */
+    this._onDestructiveAction = null;
+
+    // Seams for the touch action callout, so the modules that open it (the selection engine, the comment-card press routing) need not import it.
+    /** @type {?(kind: 'selection'|'markup', kw?: any, slot?: 'highlight'|'line') => void} */
+    this._touchCalloutShow = null;
+    /** @type {?() => void} */
+    this._touchCalloutHide = null;
+
+    /**
+     * Pointer type ('mouse' | 'touch' | 'pen') of the most recent canvas pointerdown.
+     * Compatibility mouse events (click, mousemove) carry no pointer type, so their handlers read it from here; per-event discrimination, never a device-level flag.
+     * @type {string}
+     */
+    this._lastPrimaryPointerType = 'mouse';
 
     this._searchState = {
       search: '',
@@ -847,6 +872,7 @@ export class ScribeViewer {
     if (n < cp) cp -= 1;
     cp = Math.max(0, Math.min(cp, this.doc.pageMetrics.length - 1));
     this._rebuildPages(cp);
+    if (this.onPageEditCallback) this.onPageEditCallback();
   }
 
   /**
@@ -866,6 +892,7 @@ export class ScribeViewer {
     else if (from < to && cp > from && cp <= to) cp -= 1;
     else if (from > to && cp >= to && cp < from) cp += 1;
     this._rebuildPages(cp, followed);
+    if (this.onPageEditCallback) this.onPageEditCallback();
   }
 
   /**
@@ -883,6 +910,7 @@ export class ScribeViewer {
     const removedBelow = valid.filter((i) => i < this.state.cp.n).length;
     const cp = Math.max(0, Math.min(this.state.cp.n - removedBelow, this.doc.pageMetrics.length - 1));
     this._rebuildPages(cp);
+    if (this.onPageEditCallback) this.onPageEditCallback();
   }
 
   /**
@@ -907,6 +935,7 @@ export class ScribeViewer {
     }
     cp = Math.max(0, Math.min(cp, this.doc.pageMetrics.length - 1));
     this._rebuildPages(cp, cpIndexInBlock >= 0);
+    if (this.onPageEditCallback) this.onPageEditCallback();
   }
 
   /**
@@ -951,6 +980,7 @@ export class ScribeViewer {
     const landing = keepCurrentPage ? (prevCp >= insertAt ? prevCp + count : prevCp) : start;
     const cp = Math.max(0, Math.min(landing, this.doc.pageMetrics.length - 1));
     this._rebuildPages(cp);
+    if (this.onPageEditCallback) this.onPageEditCallback();
     return { start, count, cp };
   }
 
@@ -969,6 +999,7 @@ export class ScribeViewer {
     this.imageCache.clear();
     this.calcPageStops();
     this.displayPage(this.state.cp.n, false, true);
+    if (this.onPageEditCallback) this.onPageEditCallback();
   }
 
   /**
@@ -979,6 +1010,7 @@ export class ScribeViewer {
     if (!this.doc || !this.opt.enablePageEditing || !this.doc.undo()) return false;
     this._rebuildPages(Math.max(0, Math.min(this.state.cp.n, this.doc.pageMetrics.length - 1)));
     if (this.onEditCallback) this.onEditCallback();
+    if (this.onPageEditCallback) this.onPageEditCallback();
     return true;
   }
 
@@ -989,6 +1021,7 @@ export class ScribeViewer {
   redo() {
     if (!this.doc || !this.opt.enablePageEditing || !this.doc.redo()) return false;
     this._rebuildPages(Math.max(0, Math.min(this.state.cp.n, this.doc.pageMetrics.length - 1)));
+    if (this.onPageEditCallback) this.onPageEditCallback();
     if (this.onEditCallback) this.onEditCallback();
     return true;
   }
@@ -1205,6 +1238,32 @@ export class ScribeViewer {
   }
 
   /**
+   * Double-tap zoom: from near the width-fit zoom, zoom to a reading zoom anchored at the tap.
+   * From anywhere else, return to width-fit.
+   * @param {{x: number, y: number}} center - Tap point in client coordinates.
+   */
+  _toggleDoubleTapZoom(center) {
+    if (!this.scrollContainer || !(this._contentWidth > 0) || !(this.zoomLevel > 0)) return;
+    const fitZoom = this.scrollContainer.clientWidth / this._contentWidth;
+    const zoomedIn = this.zoomLevel > fitZoom * 1.15;
+    const totalScale = (zoomedIn ? fitZoom : fitZoom * 2.2) / this.zoomLevel;
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      this.zoom(totalScale, center);
+      return;
+    }
+    const FRAMES = 9;
+    const weightSum = (FRAMES * (FRAMES + 1)) / 2;
+    let frame = 0;
+    const tick = () => {
+      frame++;
+      // Multiplicative ease-out: the largest factor lands on the first frame.
+      this.zoom(totalScale ** ((FRAMES - frame + 1) / weightSum), center);
+      if (frame < FRAMES) requestAnimationFrame(tick);
+    };
+    requestAnimationFrame(tick);
+  }
+
+  /**
    * Resize the canvas to new pixel dimensions.
    * @param {number} width
    * @param {number} height
@@ -1230,14 +1289,6 @@ export class ScribeViewer {
     event.preventDefault();
   }
 
-  /** @param {TouchEvent} event */
-  startDragTouch(event) {
-    this.drag.isDragging = true;
-    this.drag.lastX = event.touches[0].clientX;
-    this.drag.lastY = event.touches[0].clientY;
-    event.preventDefault();
-  }
-
   /** @param {MouseEvent} event */
   executeDrag(event) {
     if (!this.drag.isDragging) return;
@@ -1250,17 +1301,6 @@ export class ScribeViewer {
 
     this.drag.lastX = event.clientX;
     this.drag.lastY = event.clientY;
-
-    this.pan({ deltaX, deltaY });
-  }
-
-  /** @param {TouchEvent} event */
-  executeDragTouch(event) {
-    if (!this.drag.isDragging) return;
-    const deltaX = event.touches[0].clientX - this.drag.lastX;
-    const deltaY = event.touches[0].clientY - this.drag.lastY;
-    this.drag.lastX = event.touches[0].clientX;
-    this.drag.lastY = event.touches[0].clientY;
 
     this.pan({ deltaX, deltaY });
   }
@@ -1399,8 +1439,11 @@ export class ScribeViewer {
       return;
     }
 
+    // Two fingers moving together pan. The spread between them zooms, as on every native pinch surface.
+    this.pan({ deltaX: center.x - this.drag.lastCenter.x, deltaY: center.y - this.drag.lastCenter.y });
     this._zoomStage(dist / this.drag.lastDist, center);
     this.drag.lastDist = dist;
+    this.drag.lastCenter = center;
   }
 
   /**
@@ -1432,6 +1475,10 @@ export class ScribeViewer {
       height: `${height}px`,
       // Hide the native scrollbars; the custom overlay scrollbars (panels.js) are the visible UI.
       scrollbarWidth: 'none',
+      // One finger pans natively, keeping the platform's momentum.
+      touchAction: 'pan-x pan-y',
+      // Reaching the document edge must not scroll-chain into a host page or trigger pull-to-refresh.
+      overscrollBehavior: 'contain',
     });
 
     const contentSizer = document.createElement('div');
@@ -1462,7 +1509,17 @@ export class ScribeViewer {
 
     // `contextMenuFunc` lazily builds the shared menu, then shows only the actions that apply
     // (none on a read-only viewer, where it returns before suppressing the browser's own menu).
-    scrollContainer.addEventListener('contextmenu', (event) => contextMenuFunc(this, event));
+    scrollContainer.addEventListener('contextmenu', (event) => {
+      if (this.useCustomSelection && this.textSel?.isDragging()) { event.preventDefault(); return; }
+      contextMenuFunc(this, event);
+    });
+
+    // The touch action callout is the touch replacement for the context menu above.
+    this._touchCalloutShow = (kind, kw, slot) => showTouchCallout(this, kind, kw, slot);
+    this._touchCalloutHide = () => hideTouchCallout();
+    scrollContainer.addEventListener('pointerdown', (event) => {
+      this._lastPrimaryPointerType = event.pointerType || 'mouse';
+    }, { capture: true, passive: true });
 
     // On native scroll, update the current page (coalesced to one update per frame),
     // passing the per-frame scroll distance as the speed `updateCurrentPage` uses to decide whether to defer the word build.
@@ -1528,18 +1585,60 @@ export class ScribeViewer {
       scrollContainer.addEventListener('mouseleave', clearHlLift);
     }
 
+    // A single finger is left to the container's native pan.
+    // The uncancelled touchstart lets the browser synthesize the compatibility mouse events that tap-driven UI inside the canvas relies on.
     scrollContainer.addEventListener('touchstart', (event) => {
       if (this.mode !== 'select') return;
-      if (event.touches[1]) this.executePinchTouch(event);
-      else this.startDragTouch(event);
+      if (event.touches.length < 2) return;
+      event.preventDefault();
+      this.drag.isPinching = true;
+      this.drag.lastDist = null;
+      this.drag.lastCenter = null;
     }, { passive: false });
 
     scrollContainer.addEventListener('touchmove', (event) => {
-      // A press-and-hold has claimed this touch for a text selection; panning it too would fight the drag.
+      // A press-and-hold has claimed this touch for a text selection; native panning would fight the drag.
       if (this.useCustomSelection && this.textSel.isDragging()) { event.preventDefault(); return; }
-      if (event.touches[1]) this.executePinchTouch(event);
-      else if (this.drag.isDragging) this.executeDragTouch(event);
+      if (!event.touches[1]) return;
+      event.preventDefault();
+      this.executePinchTouch(event);
     }, { passive: false });
+
+    scrollContainer.addEventListener('touchend', (event) => {
+      // Lifting to fewer than two fingers ends the pinch; clearing the trackers makes a re-placed second finger start a fresh gesture instead of jumping from the stale distance.
+      if (event.touches.length < 2) {
+        this.drag.lastDist = null;
+        this.drag.lastCenter = null;
+      }
+      // The pointerup handler, which fires first, also clears this; clearing here too keeps the flag from sticking when a pointerup is retargeted or suppressed mid-gesture.
+      if (event.touches.length === 0) this.drag.isPinching = false;
+    });
+
+    // Double-tap toggles between the width-fit zoom and a reading zoom anchored at the tap point.
+    const dblTap = {
+      downX: 0, downY: 0, lastUpT: 0, lastUpX: 0, lastUpY: 0,
+    };
+    scrollContainer.addEventListener('pointerdown', (event) => {
+      if (event.pointerType !== 'touch') return;
+      dblTap.downX = event.clientX;
+      dblTap.downY = event.clientY;
+    });
+    scrollContainer.addEventListener('pointerup', (event) => {
+      if (event.pointerType !== 'touch') return;
+      if (this.mode !== 'select' || this.drag.isPinching
+        || (this.useCustomSelection && this.textSel?.isDragging())) { dblTap.lastUpT = 0; return; }
+      // Only a stationary press is a tap; a pan or fling lifts far from its press point.
+      if (Math.hypot(event.clientX - dblTap.downX, event.clientY - dblTap.downY) > 12) { dblTap.lastUpT = 0; return; }
+      const near = Math.hypot(event.clientX - dblTap.lastUpX, event.clientY - dblTap.lastUpY) < 30;
+      if (near && event.timeStamp - dblTap.lastUpT < 350) {
+        dblTap.lastUpT = 0;
+        this._toggleDoubleTapZoom({ x: event.clientX, y: event.clientY });
+      } else {
+        dblTap.lastUpT = event.timeStamp;
+        dblTap.lastUpX = event.clientX;
+        dblTap.lastUpY = event.clientY;
+      }
+    });
 
     // Marquee drag-select (editor only; `enableCanvasSelection` is false in the read-only viewer).
     scrollContainer.addEventListener('pointerdown', (event) => {
@@ -1547,7 +1646,7 @@ export class ScribeViewer {
       if (this.doc.pageMetrics.length === 0) return;
       if (event.pointerType === 'mouse' && event.button !== 0) return;
       if (!this.enableCanvasSelection) return;
-      if (ScribeViewer.isTouchScreen && this.mode === 'select') return;
+      if (event.pointerType === 'touch' && this.mode === 'select') return;
 
       this._mouseDownTarget = /** @type {any} */ (event.target);
       const start = this.clientToContent(event.clientX, event.clientY);
@@ -2196,6 +2295,22 @@ export class ScribeViewer {
     return this._pageStopsEnd.findIndex((y1) => y1 > y);
   }
 
+  /**
+   * The current vertical scroll position as a continuous fractional page index, measured at the viewport centre.
+   * Falls back to the integer current page when layout is not ready.
+   * @returns {number}
+   */
+  scrollPageFraction() {
+    if (!this.scrollContainer || !this.doc || !this.doc.pageMetrics.length) return this.state.cp.n;
+    const y = (this.scrollContainer.scrollTop + this._scrollMetrics().clientHeight / 2) / this.zoomLevel;
+    let n = this.calcPage(y);
+    if (n < 0) n = this.doc.pageMetrics.length - 1; // past the last page's end
+    const top = this._pageStopsStart[n];
+    const bot = this._pageStopsEnd[n];
+    if (top === undefined || bot === undefined || bot <= top) return n;
+    return n + Math.max(0, Math.min(1, (y - top) / (bot - top)));
+  }
+
   calcSelectionImageCoords() {
     // `this.bbox` holds the marquee in content space; reduce it to the page-local box the OCR expects.
     const left = Math.min(this.bbox.left, this.bbox.right);
@@ -2430,13 +2545,13 @@ export class ScribeViewer {
    * @param {number} angle
    */
   _renderParOutlines(page, angle) {
-    if (!page.textSource || !['textract', 'abbyy', 'google_vision', 'azure_doc_intel', 'docx'].includes(page.textSource)) {
+    if (this.doc?.inputData?.pdfType !== 'text' && (!page.textSource || !['textract', 'abbyy', 'google_vision', 'azure_doc_intel', 'docx'].includes(page.textSource))) {
       scribe.utils.assignParagraphs(page, angle);
     }
     const imageRotated = Math.abs(angle) > 0.05;
     page.pars.forEach((par, i) => {
       const angleAdj = imageRotated ? scribe.utils.ocr.calcLineStartAngleAdj(par.lines[0]) : { x: 0, y: 0 };
-      this._addBlockOutline(page.n, par.bbox, angleAdj, i + 1, par.reason, par.lines[0]?.orientation ?? 0, par.lines);
+      this._addBlockOutline(page.n, par.bbox, angleAdj, i + 1, par.reason, par.lines[0]?.orientation ?? 0, par.lines, par.type);
     });
   }
 
@@ -2931,8 +3046,19 @@ export class ScribeViewer {
    * Draw a paragraph/block outline.
    */
   // eslint-disable-next-line default-param-last
-  _addBlockOutline(n, box, angleAdj, index, label, orientation = 0, lines) {
+  _addBlockOutline(n, box, angleAdj, index, label, orientation = 0, lines, type) {
     const group = this.getTextGroup(n, orientation);
+
+    // Reserved colours and type tags match dev/annotate-paragraphs.mjs, so the on-screen review reads like the annotated PDFs.
+    // Footnotes are always purple, page furniture always red, titles always green; the cycling palette deliberately contains none of those hues.
+    const PALETTE = ['#4363d8', '#f58231', '#42d4f4', '#9a6324', '#e6b800', '#000075', '#e67e22'];
+    const color = type === 'footnote' ? '#911eb4'
+      : (type === 'header' || type === 'footer' || type === 'pagenum' || type === 'linenum') ? '#ff0000'
+        : type === 'title' ? '#0a9928'
+          : PALETTE[(index - 1) % PALETTE.length];
+    const TYPE_TAG = {
+      title: 'T', footnote: 'F', pagenum: 'P', header: 'H', footer: 'Fo', linenum: 'Ln', blockquote: 'Q', caption: 'C',
+    };
 
     const sortedLines = (lines && lines.length > 0 ? lines.map((l) => l.bbox) : [box])
       .slice()
@@ -2985,31 +3111,35 @@ export class ScribeViewer {
     const ns = 'http://www.w3.org/2000/svg';
     const svg = document.createElementNS(ns, 'svg');
     Object.assign(svg.style, {
-      position: 'absolute', left: '0', top: '0', width: '0', height: '0', overflow: 'visible', pointerEvents: 'none',
+      position: 'absolute', left: '0', top: '0', width: '100%', height: '100%', overflow: 'visible', pointerEvents: 'none',
     });
     const pointPairs = [];
     for (let i = 0; i < points.length; i += 2) pointPairs.push(`${points[i]},${points[i + 1]}`);
     const poly = document.createElementNS(ns, 'polygon');
     poly.setAttribute('points', pointPairs.join(' '));
     poly.setAttribute('fill', 'none');
-    poly.setAttribute('stroke', 'rgba(0,0,255,0.75)');
-    poly.setAttribute('stroke-width', '1');
+    poly.setAttribute('stroke', color);
+    poly.setAttribute('stroke-width', '3');
     // Keep the outline a constant device width under the zoom layer's transform, instead of scaling to sub-pixel.
     poly.setAttribute('vector-effect', 'non-scaling-stroke');
     svg.appendChild(poly);
     group.appendChild(svg);
 
-    // Numbered badge to the left of the block's top-left corner.
-    const radius = 14;
+    // Reading-order badge to the left of the block's top-left corner.
+    const indexStr = `${index}${TYPE_TAG[type] || ''}`;
+    const radius = 9;
     const badge = document.createElement('div');
     Object.assign(badge.style, {
       position: 'absolute',
-      left: `${box.left + angleAdj.x - 2 * radius - 4}px`,
+      left: `${box.left + angleAdj.x - 4}px`,
       top: `${box.top + angleAdj.y}px`,
-      width: `${2 * radius}px`,
+      transform: 'translateX(-100%)',
+      minWidth: `${2 * radius}px`,
       height: `${2 * radius}px`,
-      borderRadius: '50%',
-      background: 'rgba(0, 100, 200, 0.85)',
+      padding: `0 ${Math.round(radius * 0.55)}px`,
+      boxSizing: 'border-box',
+      borderRadius: `${radius}px`,
+      background: color,
       color: '#fff',
       font: `bold ${radius * 1.2}px Arial`,
       display: 'flex',
@@ -3017,7 +3147,7 @@ export class ScribeViewer {
       justifyContent: 'center',
       pointerEvents: 'none',
     });
-    badge.textContent = String(index);
+    badge.textContent = indexStr;
     group.appendChild(badge);
 
     if (label) {
@@ -3027,7 +3157,7 @@ export class ScribeViewer {
         left: `${box.left + angleAdj.x}px`,
         top: `${box.top + angleAdj.y}px`,
         font: '12px Arial',
-        color: 'rgba(0,0,255,0.75)',
+        color,
         whiteSpace: 'nowrap',
         pointerEvents: 'none',
       });
@@ -3104,9 +3234,6 @@ export class ScribeViewer {
     this._clearPageDom();
     if (this.scrollContainer && this.scrollContainer.parentNode) this.scrollContainer.parentNode.removeChild(this.scrollContainer);
   }
-
-  /** Detect a touchscreen (global, not per-viewer). */
-  static isTouchScreen = navigator?.maxTouchPoints > 0;
 }
 
 // Static type/utility exports.
@@ -3142,7 +3269,7 @@ ScribeViewer.getActiveViewer = () => getActiveViewer() || getDefaultViewer();
 const _delegatedMethods = [
   'init', 'displayPage', 'goToOutlineDest', 'rotatePage', 'renderWords',
   'setInitialPositionZoom', 'getPageStop', 'calcPageStops', 'getViewportCenter',
-  'pan', 'zoom', 'resize', 'startDrag', 'startDragTouch', 'executeDrag', 'executeDragTouch',
+  'pan', 'zoom', 'resize', 'startDrag', 'executeDrag',
   'stopDragPinch', 'executePinchTouch', 'createGroup', 'getTextGroup', 'setTextGroupRotation',
   'getHighlightGroup', 'getSelectGroup', 'renderHighlights', 'getOverlayGroup', 'calcPage', 'calcSelectionImageCoords', 'getUiWords', 'getUiRegions',
   'getWordsUnderTextSelection', 'clearTextSelection', 'hasTextSelection', 'ensureWordObjs',
@@ -3159,7 +3286,7 @@ for (const m of _delegatedMethods) {
 
 const _delegatedFields = [
   'elem', 'HTMLOverlayBackstopElem', 'textOverlayHidden', 'doc',
-  'displayPageCallback', 'onEditCallback', 'scrollContainer',
+  'displayPageCallback', 'onEditCallback', 'onPageEditCallback', 'scrollContainer',
   'textGroupsRenderIndices', 'overlayGroupsRenderIndices', 'selectingRectangle', 'contextMenuWord',
   'contextMenuPointer', 'selecting', 'enableCanvasSelection', 'enableHTMLOverlay', 'bbox',
   'mode', 'drag', 'runSetInitial', 'state', 'opt', 'CanvasSelection', 'textSel', 'evalStats',

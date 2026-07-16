@@ -229,47 +229,51 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     cmtText.setAttribute('aria-label', 'Comment text');
     cmtReply.append(cmtReplyAva, cmtText);
 
-    // Verb footer, shown only on the pinned card.
-    const cmtFoot = document.createElement('div');
-    cmtFoot.className = 'scribe-cmt-foot';
-    // The coin stack is one control at rest, so it holds the only tab stop until fanning gives the coins their own.
-    const cmtCoins = document.createElement('span');
-    cmtCoins.className = 'scribe-hl-coins';
-    cmtCoins.title = 'Highlight color';
-    cmtCoins.setAttribute('role', 'button');
-    cmtCoins.setAttribute('aria-label', 'Highlight color');
-    cmtCoins.setAttribute('aria-expanded', 'false');
-    cmtCoins.tabIndex = 0;
+    /**
+     * @param {string} title
+     * @param {string} svg
+     * @returns {HTMLButtonElement}
+     */
+    const makeHdButton = (title, svg) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'scribe-cmt-vb';
+      btn.title = title;
+      btn.setAttribute('aria-label', title);
+      btn.innerHTML = svg;
+      return btn;
+    };
+    const cmtPanelBtn = makeHdButton('Show in comments panel', TB_PANEL_SVG);
+    // The class lets CSS hide the panel verb on phones.
+    cmtPanelBtn.classList.add('scribe-cmt-vb-panel');
+    const cmtDelete = makeHdButton('Delete highlight', TB_DELETE_SVG);
+    cmtDelete.classList.add('scribe-cmt-vb-del');
+    const cmtHdVerbs = document.createElement('span');
+    cmtHdVerbs.className = 'scribe-cmt-hd-verbs';
+    cmtHdVerbs.append(cmtPanelBtn, cmtDelete);
+    cmtQuoteRow.appendChild(cmtHdVerbs);
+
+    // The quote bar doubles as the recolor control: activating it opens the swatch shelf.
+    cmtBar.setAttribute('aria-label', 'Highlight color');
+    cmtBar.setAttribute('aria-expanded', 'false');
+    const cmtShelf = document.createElement('div');
+    cmtShelf.className = 'scribe-cmt-shelf';
     /** @type {Array<HTMLButtonElement>} */
     const cmtSwatches = [];
-    const coinsOpen = () => cmtCoins.classList.contains('open');
-    const expandCoins = () => {
-      cmtCoins.classList.add('open');
-      cmtCoins.setAttribute('aria-expanded', 'true');
+    const shelfOpen = () => cmtShelf.classList.contains('open');
+    const expandShelf = () => {
+      cmtShelf.classList.add('open');
+      cmtBar.setAttribute('aria-expanded', 'true');
       cmtSwatches.forEach((b) => { b.tabIndex = 0; });
     };
-    const collapseCoins = () => {
-      cmtCoins.classList.remove('open');
-      cmtCoins.setAttribute('aria-expanded', 'false');
+    const collapseShelf = () => {
+      cmtShelf.classList.remove('open');
+      cmtBar.setAttribute('aria-expanded', 'false');
       cmtSwatches.forEach((b) => { b.tabIndex = -1; });
     };
-    /**
-     * Put `sw` on top of the stack (first coin, descending z behind it) and mark it active.
-     * @param {HTMLButtonElement} sw
-     */
-    const setTopCoin = (sw) => {
-      cmtCoins.prepend(sw);
-      let i = 0;
-      for (const c of cmtCoins.children) {
-        // Skip hidden coins, or they leave a hole in the fan.
-        if (/** @type {HTMLElement} */ (c).style.display === 'none') continue;
-        /** @type {HTMLElement} */ (c).style.setProperty('--coin-i', String(i));
-        /** @type {HTMLElement} */ (c).style.zIndex = String(cmtSwatches.length - i);
-        i += 1;
-      }
-      cmtSwatches.forEach((b) => b.classList.toggle('active', b === sw));
-    };
-    // One extra "editorial red" coin for line markups (underline/strikeout), a color the highlight palette deliberately lacks.
+    /** @param {?HTMLButtonElement} sw */
+    const markActiveSwatch = (sw) => { cmtSwatches.forEach((b) => b.classList.toggle('active', b === sw)); };
+    // One extra "editorial red" swatch for line markups (underline/strikeout), a color the highlight palette deliberately lacks.
     // Hidden while the card serves a highlight.
     const MARKUP_RED = '#e53935';
     for (const color of [...colors, MARKUP_RED]) {
@@ -283,30 +287,10 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       sw.setAttribute('aria-label', 'Recolor highlight');
       sw.tabIndex = -1;
       cmtSwatches.push(sw);
-      cmtCoins.appendChild(sw);
+      cmtShelf.appendChild(sw);
     }
-    setTopCoin(cmtSwatches[0]);
-    const cmtSpring = document.createElement('span');
-    cmtSpring.className = 'scribe-cmt-foot-spring';
-    /**
-     * @param {string} title
-     * @param {string} svg
-     * @returns {HTMLButtonElement}
-     */
-    const makeFootButton = (title, svg) => {
-      const btn = document.createElement('button');
-      btn.type = 'button';
-      btn.className = 'scribe-cmt-vb';
-      btn.title = title;
-      btn.setAttribute('aria-label', title);
-      btn.innerHTML = svg;
-      return btn;
-    };
-    const cmtPanelBtn = makeFootButton('Show in comments panel', TB_PANEL_SVG);
-    const cmtDelete = makeFootButton('Delete highlight', TB_DELETE_SVG);
-    cmtDelete.classList.add('scribe-cmt-vb-del');
-    cmtFoot.append(cmtCoins, cmtSpring, cmtPanelBtn, cmtDelete);
-    cmtCard.append(cmtQuoteRow, cmtThread, cmtFoot);
+    cmtQuoteRow.appendChild(cmtShelf);
+    cmtCard.append(cmtQuoteRow, cmtThread);
     editorHost.appendChild(cmtCard);
 
     /**
@@ -449,14 +433,17 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
           : target.kw.word.text;
         const color = (annot && annot.color) || (isLine ? target.kw.markupColor : target.kw.highlightColor) || '';
         cmtBar.style.background = color;
-        cmtCoins.style.display = '';
+        // Arm the bar as the recolor control.
+        cmtBar.classList.add('scribe-cmt-bar-ctl');
+        cmtBar.setAttribute('role', 'button');
+        cmtBar.tabIndex = 0;
+        cmtBar.title = 'Highlight color';
         for (const b of cmtSwatches) {
           if (b.dataset.markupOnly) b.style.display = isLine ? '' : 'none';
         }
         const currentSw = cmtSwatches.find((b) => b.dataset.color === color.toLowerCase() && (!b.dataset.markupOnly || isLine));
-        // A colour outside the palette (an imported highlight) leaves the stack order alone, nothing active.
-        if (currentSw) setTopCoin(currentSw);
-        else cmtSwatches.forEach((b) => b.classList.remove('active'));
+        // A colour outside the palette (an imported highlight) marks nothing active.
+        markActiveSwatch(currentSw || null);
         const verb = isLine
           ? (((annot && annot.type) || target.kw.markupType) === 'strikeout' ? 'Delete strikethrough' : 'Delete underline')
           : 'Delete highlight';
@@ -465,7 +452,12 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       } else {
         cmtQuote.textContent = `note · page ${target.n + 1}`;
         cmtBar.style.background = 'var(--scribe-note)';
-        cmtCoins.style.display = 'none';
+        // Notes have no color to edit: the bar is a plain marker, never a control.
+        collapseShelf();
+        cmtBar.classList.remove('scribe-cmt-bar-ctl');
+        cmtBar.removeAttribute('role');
+        cmtBar.tabIndex = -1;
+        cmtBar.removeAttribute('title');
         cmtDelete.title = 'Delete note';
         cmtDelete.setAttribute('aria-label', 'Delete note');
       }
@@ -632,7 +624,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       cmtCard.classList.remove('pinned');
       cmtPinned = false;
       cmtTarget = null;
-      collapseCoins();
+      collapseShelf();
       setCmtSel(false);
     };
 
@@ -749,6 +741,11 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       event.stopPropagation();
       // A word carrying both a fill and a line markup pins as the fill (the whole word is one target).
       const slot = kw.highlightColor ? 'highlight' : 'line';
+      // A tap gets the action callout on the mark instead. Its Comment verb opens this same card.
+      if (scribe._lastPrimaryPointerType === 'touch' && scribe._touchCalloutShow) {
+        scribe._touchCalloutShow('markup', kw, slot);
+        return;
+      }
       cmtPin({
         kind: 'highlight', slot, kw, groupId: (slot === 'highlight' ? kw.highlightGroupId : kw.markupGroupId) || null, n: kw.word.line.page.n,
       });
@@ -774,8 +771,8 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     cmtCard.addEventListener('mousedown', (e) => e.stopPropagation());
     cmtCard.addEventListener('click', (e) => {
       e.stopPropagation();
-      // An open coin fan folds when the click lands anywhere else on the card.
-      if (coinsOpen() && !(e.target instanceof Node && cmtCoins.contains(e.target))) collapseCoins();
+      // An open swatch shelf folds when the click lands anywhere else on the card.
+      if (shelfOpen() && !(e.target instanceof Node && (cmtShelf.contains(e.target) || cmtBar.contains(e.target)))) collapseShelf();
       // Clicking the preview is the pointer's "edit this" on the card itself, same as clicking the mark.
       if (!cmtPinned && cmtTarget) { cmtPin(cmtTarget); return; }
       const mtext = e.target instanceof Element && e.target.closest('.scribe-cmt-mtext');
@@ -795,8 +792,8 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
         return;
       }
       if (e.key !== 'Escape') return;
-      // Esc folds inward: an open coin fan, an in-place message edit, a composer draft, then the card.
-      if (coinsOpen()) { collapseCoins(); return; }
+      // Esc folds inward: an open swatch shelf, an in-place message edit, a composer draft, then the card.
+      if (shelfOpen()) { collapseShelf(); return; }
       if (cmtEditEl) { cancelMsgEdit(); return; }
       if (cmtText.value.trim()) { cmtText.value = ''; cmtGrow(); return; }
       const markEl = cmtTarget && cmtMarkEl(cmtTarget);
@@ -807,6 +804,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
 
     // The quote row drags the card.
     cmtQuoteRow.addEventListener('mousedown', (e) => {
+      if (e.target instanceof Element && e.target.closest('.scribe-cmt-vb, .scribe-cm-bar, .scribe-cmt-shelf')) return;
       e.preventDefault();
       const r = cmtCard.getBoundingClientRect();
       // Bounded by the document area, as in cmtPlace, so a drag cannot park the card over the sidebar.
@@ -834,13 +832,24 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       document.addEventListener('mouseup', up);
     });
 
-    // ---- footer verbs ----
-    cmtCoins.addEventListener('click', (e) => {
+    // The pinned check keeps the preview inert: hover cards show content, never controls.
+    const cmtBarToggle = () => {
+      if (!cmtPinned || !cmtTarget || cmtTarget.kind !== 'highlight') return;
+      if (shelfOpen()) collapseShelf();
+      else expandShelf();
+    };
+    cmtBar.addEventListener('click', (e) => {
       e.stopPropagation();
-      if (!coinsOpen()) {
-        expandCoins();
-        return;
-      }
+      cmtBarToggle();
+    });
+    cmtBar.addEventListener('keydown', (e) => {
+      if (e.key !== 'Enter' && e.key !== ' ') return;
+      e.preventDefault();
+      e.stopPropagation();
+      cmtBarToggle();
+    });
+    cmtShelf.addEventListener('click', (e) => {
+      e.stopPropagation();
       const sw = e.target instanceof Element
         ? /** @type {?HTMLButtonElement} */ (e.target.closest('.highlight-color-btn')) : null;
       if (sw && cmtTarget && cmtTarget.kind === 'highlight') {
@@ -850,17 +859,10 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
         // The recolor rebuilt the fill layer, so re-ink the fresh bands and recolor the quote bar.
         setCmtSel(true);
         cmtBar.style.background = color;
-        setTopCoin(sw);
+        markActiveSwatch(sw);
         if (scribe._rebuildCommentsPanel) scribe._rebuildCommentsPanel();
       }
-      collapseCoins();
-    });
-    cmtCoins.addEventListener('keydown', (e) => {
-      if (e.key !== 'Enter' && e.key !== ' ') return;
-      e.preventDefault();
-      e.stopPropagation();
-      if (coinsOpen()) collapseCoins();
-      else expandCoins();
+      collapseShelf();
     });
     cmtPanelBtn.addEventListener('click', (e) => {
       e.stopPropagation();
@@ -984,10 +986,10 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
 
 // A speech-bubble-with-plus glyph for the note tool.
 // eslint-disable-next-line max-len
-const NOTE_TOOL_SVG = '<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 0 24 24" fill="currentColor"><path d="M4 3h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H9l-4 4v-4H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zm7 3v3H8v2h3v3h2v-3h3V9h-3V6h-2z"/></svg>';
+export const NOTE_TOOL_SVG = '<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 0 24 24" fill="currentColor"><path d="M4 3h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H9l-4 4v-4H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zm7 3v3H8v2h3v3h2v-3h3V9h-3V6h-2z"/></svg>';
 
 /**
- * Build the freestanding-note tool: a toolbar button that drops a note at the top-right of the current page and puts the cursor in its inline editor.
+ * Build the freestanding-note tool: a toolbar button that drops a note at the middle of the visible viewport and puts the cursor in its inline editor.
  * The user drags the note's mark to reposition it rather than clicking to place it.
  * @param {import('../../viewer.js').ScribeViewer} scribe
  * @returns {{ toolbarElem: HTMLSpanElement, installBehaviors: () => (() => void) }}
@@ -996,12 +998,28 @@ export function createNoteTool(scribe) {
   const toolbarElem = makeIconButton('Add note', NOTE_TOOL_SVG);
 
   toolbarElem.addEventListener('click', () => {
-    const n = scribe.state?.cp?.n ?? 0;
+    // Land the note at the viewport center: the current page's top corner can be scrolled off screen, so a corner drop can appear to land on the wrong page or nowhere.
+    let n = -1;
+    let x = 0;
+    let y = 0;
+    if (scribe.scrollContainer) {
+      const r = scribe.scrollContainer.getBoundingClientRect();
+      const p = scribe.clientToPage(r.left + r.width / 2, r.top + r.height / 2);
+      if (p.n >= 0) { n = p.n; x = p.x; y = p.y; }
+    }
+    const centered = n >= 0;
+    if (!centered) n = scribe.state?.cp?.n ?? 0;
     const pm = scribe.doc.pageMetrics[n];
     if (!pm) return;
-    // Place the mark at the top-right of the page, clear of the edge.
-    const x = Math.max(0, pm.dims.width - 46);
-    const annot = createNote(scribe, n, x, 22);
+    if (centered) {
+      x = Math.max(0, Math.min(x - 12, pm.dims.width - 46));
+      y = Math.max(8, Math.min(y - 12, pm.dims.height - 46));
+    } else {
+      // Viewport center off every page (e.g. the void past the last page): top-right of the current page.
+      x = Math.max(0, pm.dims.width - 46);
+      y = 22;
+    }
+    const annot = createNote(scribe, n, x, y);
     scribe.renderNotes(n);
     focusNoteEditor(scribe, n, annot);
   });
@@ -1180,9 +1198,11 @@ export function createDropZone({
   icon.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">'
     + '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/></svg>';
 
+  // The root's coarse-pointer class swaps in the touch wording: dragging a file is not a touch gesture.
   const title = document.createElement('div');
   title.className = 'scribe-drop-title';
-  title.textContent = 'Drop a PDF to get started';
+  title.innerHTML = '<span class="scribe-drop-title-full">Drop a PDF to get started</span>'
+    + '<span class="scribe-drop-title-touch">Open a PDF to get started</span>';
 
   // Hidden native input wrapped by the styled label, so clicking "Choose file" opens the picker.
   const openFileInputElem = document.createElement('input');

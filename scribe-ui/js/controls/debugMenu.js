@@ -73,4 +73,15 @@ export function installDebugMenu(appMenu, viewer) {
     overlayRow.sync();
   };
   syncOverlayRow();
+
+  appMenu.addToggle(
+    'Outline paragraphs',
+    BUG_SVG,
+    () => viewer.opt.outlinePars,
+    () => {
+      viewer.opt.outlinePars = !viewer.opt.outlinePars;
+      viewer.destroyText(false);
+      viewer.displayPage(viewer.state.cp.n, false, true);
+    },
+  );
 }

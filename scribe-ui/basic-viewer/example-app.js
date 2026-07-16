@@ -15,8 +15,12 @@ const pdfViewerContElem = /** @type {HTMLDivElement|null} */(document.getElement
 
 const buildBootstrapViewer = () => {
   if (!pdfViewerContElem) return null;
-  if (!pdfViewerContElem.style.width) pdfViewerContElem.style.width = '100vw';
-  if (!pdfViewerContElem.style.height) pdfViewerContElem.style.height = '100vh';
+  if (!pdfViewerContElem.style.width) pdfViewerContElem.style.width = '100%';
+  if (!pdfViewerContElem.style.height) {
+    // Two assignments: browsers without dvh ignore the second and keep the vh fallback.
+    pdfViewerContElem.style.height = '100vh';
+    pdfViewerContElem.style.height = '100dvh';
+  }
   // This is a full-screen, single-viewer app, so it uses document-wide keyboard shortcuts that fire
   // regardless of where focus is on the page.
   const v = new ScribePDFViewer(pdfViewerContElem, { keyboardScope: 'global', comments: true });

@@ -12,7 +12,7 @@ import { UiText, UiOcrWord } from './viewerWordObjects.js';
 import { deleteSelectedWord } from './viewerModifySelectedWords.js';
 import { deleteSelectedLayoutDataTable, deleteSelectedLayoutRegion } from './viewerModifySelectedLayout.js';
 import {
-  applyHighlight, createInkEdges, removeHighlightGroup, updateHighlightGroupOutline,
+  applyHighlight, createInkEdges, modifyHighlightComment, removeHighlightGroup, updateHighlightGroupOutline,
 } from './viewerHighlights.js';
 import { createNote } from './viewerNotes.js';
 import { redactWords, removeRedactionGroup, hitTestRedaction } from './viewerRedactions.js';
@@ -757,13 +757,18 @@ function ensureContextMenu() {
 // The `--scribe-*` tokens mirrored onto the body-level menu on open, since it lives outside the viewer's scoped token definitions and the cascade can't reach it.
 const CONTEXT_MENU_TOKENS = ['--scribe-surface', '--scribe-line', '--scribe-ink', '--scribe-ink-2', '--scribe-hover', '--scribe-danger', '--scribe-danger-soft', '--scribe-menu-shadow'];
 
-/** Remove the shared context menu and its styles from the document. */
+/** Remove the shared context menu, the touch callout, and their styles from the document. */
 export const destroyContextMenu = () => {
   hideContextMenu();
+  hideTouchCallout();
   menuNode?.remove();
   contextMenuStyleElem?.remove();
   menuNode = null;
   contextMenuStyleElem = null;
+  calloutNode?.remove();
+  calloutStyleElem?.remove();
+  calloutNode = null;
+  calloutStyleElem = null;
   _menuViewer = null;
 };
 
@@ -837,7 +842,363 @@ export const hideContextMenu = () => {
   }
 };
 
+/** @type {?HTMLDivElement} */
+let calloutNode = null;
+/** @type {?HTMLStyleElement} */
+let calloutStyleElem = null;
+/** @type {?HTMLDivElement} */
+let calloutRow1 = null;
+/** @type {?HTMLDivElement} */
+let calloutRow2 = null;
+/** @type {Object<string, HTMLButtonElement>} */
+const calloutBtns = {};
+let calloutDismissActive = false;
+
+const CALLOUT_CHEVRON_SVG = menuIcon('<path d="M6 9.4 12 15l6-5.6"/>');
+
+const CALLOUT_EDIT_SVG = menuIcon('<path d="M5 19h4L18.2 9.8a2 2 0 0 0 0-2.8l-1.2-1.2a2 2 0 0 0-2.8 0L5 15v4Z"/><path d="M12.8 7.2l4 4"/>');
+
+const onCalloutDismissPointerDown = (/** @type {Event} */ event) => {
+  if (calloutNode && calloutNode.contains(/** @type {Node} */ (event.target))) return;
+  hideTouchCallout();
+};
+// Scrolling and zooming hide the callout (the OS convention) but keep the selection.
+const onCalloutDismiss = () => hideTouchCallout();
+const onCalloutDismissKeyDown = (/** @type {KeyboardEvent} */ event) => {
+  if (event.key === 'Escape') hideTouchCallout();
+};
+
+export const hideTouchCallout = () => {
+  if (!calloutNode || calloutNode.style.display === 'none') return;
+  clearInkEdge();
+  calloutNode.style.display = 'none';
+  _menuViewer = null;
+  if (calloutDismissActive) {
+    calloutDismissActive = false;
+    document.removeEventListener('pointerdown', onCalloutDismissPointerDown, CAPTURE);
+    document.removeEventListener('scroll', onCalloutDismiss, CAPTURE_PASSIVE);
+    document.removeEventListener('wheel', onCalloutDismiss, CAPTURE_PASSIVE);
+    document.removeEventListener('keydown', onCalloutDismissKeyDown, CAPTURE);
+    window.removeEventListener('resize', onCalloutDismiss);
+    window.removeEventListener('blur', onCalloutDismiss);
+  }
+};
+
+/** Open the in-place word editor on a single-word touch selection. */
+const calloutEditTextClick = () => {
+  const viewer = mv();
+  if (!UiText.enableEditing) return;
+  const words = viewer.getWordsUnderTextSelection();
+  if (words.length !== 1) return;
+  const kw = words[0];
+  viewer.clearTextSelection();
+  UiText.addTextInput(kw);
+};
+
+/** Delete the tapped highlight/markup group, offering Undo through the host's destructive-action toast. */
+const calloutDeleteMarkupClick = () => {
+  const viewer = mv();
+  const kw = viewer.contextMenuWord;
+  const slot = contextMenuMarkupSlot;
+  if (!kw) return;
+  const isLine = slot === 'line';
+  // Removal only clears the words' marks, so the captured objects stay valid for the undo.
+  const words = viewer.getUiWords()
+    .filter((w) => (isLine
+      ? w.markupType && (kw.markupGroupId ? w.markupGroupId === kw.markupGroupId : w.markupRectElem === kw.markupRectElem)
+      : w.highlightColor && (kw.highlightGroupId ? w.highlightGroupId === kw.highlightGroupId : w.highlightRectElem === kw.highlightRectElem)));
+  const snapshot = {
+    color: isLine ? kw.markupColor : kw.highlightColor,
+    opacity: isLine ? kw.markupOpacity : kw.highlightOpacity,
+    kind: isLine ? (kw.markupType || 'underline') : 'highlight',
+    comment: isLine ? kw.markupComment : kw.highlightComment,
+  };
+  removeHighlightGroup(viewer, kw, slot);
+  const label = isLine ? (snapshot.kind === 'strikeout' ? 'Strikethrough' : 'Underline') : 'Highlight';
+  // The callout's delete has no hover-to-verify step, so a one-tap mistake needs a one-tap way back.
+  viewer._onDestructiveAction?.(`${label} deleted.`, () => {
+    if (words.length === 0 || !snapshot.color) return;
+    applyHighlight(viewer, words, snapshot.color, snapshot.opacity ?? (isLine ? 1 : 0.5), snapshot.kind);
+    if (snapshot.comment) {
+      modifyHighlightComment(viewer, words, snapshot.comment, snapshot.kind);
+      // The comment landed after the bands drew, so redraw for its mark.
+      for (const n of new Set(words.map((w) => w.word.line.page.n))) viewer.renderHighlights(n);
+    }
+  });
+};
+
+function ensureTouchCallout() {
+  if (calloutNode) return;
+  calloutNode = document.createElement('div');
+  calloutNode.id = 'scribe-touch-callout';
+  calloutNode.style.display = 'none';
+
+  /**
+   * @param {string} key
+   * @param {string} label
+   * @param {string} slotHTML
+   * @param {(event: MouseEvent) => void} onClick
+   * @param {boolean} [danger=false]
+   */
+  const btn = (key, label, slotHTML, onClick, danger = false) => {
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.title = label;
+    el.setAttribute('aria-label', label);
+    if (danger) el.classList.add('scribe-callout-danger');
+    el.innerHTML = `<span class="scribe-callout-slot">${slotHTML}</span>`;
+    // hideTouchCallout nulls the target state the verb reads, so the verb runs first.
+    el.addEventListener('click', (event) => { onClick(event); hideTouchCallout(); });
+    calloutBtns[key] = el;
+    return el;
+  };
+
+  calloutRow2 = document.createElement('div');
+  calloutRow2.className = 'scribe-callout-row scribe-callout-row2';
+  calloutRow2.append(
+    btn('bookmark', 'Add bookmark', CM_BOOKMARK_SVG, addBookmarkClick),
+    btn('redact', 'Redact', CM_REDACT_SVG, redactSelectionClick),
+    btn('strike', 'Strikethrough', CM_STRIKE_SVG, strikeoutSelectionClick),
+    btn('edit', 'Edit text', CALLOUT_EDIT_SVG, calloutEditTextClick),
+  );
+
+  calloutRow1 = document.createElement('div');
+  calloutRow1.className = 'scribe-callout-row';
+  const vr = document.createElement('span');
+  vr.className = 'scribe-callout-vr';
+  const moreBtn = document.createElement('button');
+  moreBtn.type = 'button';
+  moreBtn.title = 'More';
+  moreBtn.setAttribute('aria-label', 'More');
+  moreBtn.setAttribute('aria-expanded', 'false');
+  moreBtn.innerHTML = `<span class="scribe-callout-slot">${CALLOUT_CHEVRON_SVG}</span>`;
+  moreBtn.addEventListener('click', () => {
+    const open = calloutRow2.style.display !== 'none';
+    calloutRow2.style.display = open ? 'none' : 'flex';
+    moreBtn.setAttribute('aria-expanded', String(!open));
+    moreBtn.classList.toggle('open', !open);
+  });
+  calloutBtns.more = moreBtn;
+  calloutRow1.append(
+    btn('copy', 'Copy', CM_COPY_SVG, copySelectionClick),
+    btn('copyhl', 'Copy highlighted text', CM_COPY_SVG, copyHighlightClick),
+    btn('highlight', 'Highlight', CM_SWATCH_HTML, highlightSelectionClick),
+    btn('underline', 'Underline', CM_UNDERLINE_SVG, underlineSelectionClick),
+    btn('comment', 'Comment', CM_COMMENT_SVG, commentSelectionClick),
+    vr,
+    btn('delete', 'Delete', CM_TRASH_SVG, calloutDeleteMarkupClick, true),
+    moreBtn,
+  );
+
+  calloutNode.append(calloutRow2, calloutRow1);
+  document.body.appendChild(calloutNode);
+
+  calloutStyleElem = document.createElement('style');
+  calloutStyleElem.textContent = `
+    #scribe-touch-callout {
+      position: fixed;
+      z-index: 60;
+      display: flex;
+      flex-direction: column;
+      align-items: center;
+      gap: 6px;
+      font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+      user-select: none;
+      -webkit-user-select: none;
+    }
+    #scribe-touch-callout .scribe-callout-row {
+      display: flex;
+      align-items: center;
+      padding: 3px;
+      background: var(--scribe-surface, #ffffff);
+      border: 1px solid var(--scribe-line, #e4e8ef);
+      border-radius: 12px;
+      box-shadow: var(--scribe-menu-shadow, 0 8px 24px rgba(20, 30, 60, .18));
+    }
+    /* .flipped (callout below the selection) reverses the rows so the tail row stays on the far side. */
+    #scribe-touch-callout.flipped { flex-direction: column-reverse; }
+    #scribe-touch-callout button {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 44px;
+      height: 42px;
+      background: none;
+      border: none;
+      margin: 0;
+      padding: 0;
+      border-radius: 9px;
+      color: var(--scribe-ink, #1f2530);
+      cursor: pointer;
+    }
+    #scribe-touch-callout button:hover { background: var(--scribe-hover, rgba(28, 42, 68, .06)); }
+    #scribe-touch-callout button.open { background: var(--scribe-hover, rgba(28, 42, 68, .06)); }
+    #scribe-touch-callout .scribe-callout-slot {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      width: 20px;
+      height: 20px;
+      color: var(--scribe-ink-2, #586170);
+    }
+    #scribe-touch-callout .scribe-callout-slot svg { width: 20px; height: 20px; }
+    #scribe-touch-callout .scribe-cm-swatch {
+      width: 18px;
+      height: 18px;
+      border-radius: 4px;
+      box-shadow: inset 0 0 0 1px rgba(0, 0, 0, .18);
+    }
+    #scribe-touch-callout .scribe-callout-danger .scribe-callout-slot { color: var(--scribe-danger, #d1493d); }
+    #scribe-touch-callout .scribe-callout-danger:hover { background: var(--scribe-danger-soft, #fbe9e7); }
+    #scribe-touch-callout .scribe-callout-vr {
+      width: 1px;
+      height: 26px;
+      background: var(--scribe-line, #e4e8ef);
+      margin: 0 2px;
+    }
+    #scribe-touch-callout button.open .scribe-callout-slot { transform: rotate(180deg); }`;
+  document.head.appendChild(calloutStyleElem);
+}
+
+/**
+ * Open the touch callout on the current selection or on a tapped highlight/markup group.
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {'selection'|'markup'} kind
+ * @param {?import('./viewerWordObjects.js').UiOcrWord} [kw] - The tapped group's word (markup kind).
+ * @param {'highlight'|'line'} [slot='highlight'] - Which of the word's marks was tapped (markup kind).
+ */
+export const showTouchCallout = (viewer, kind, kw = null, slot = 'highlight') => {
+  if (viewer.state.layoutMode) return;
+  ensureTouchCallout();
+  hideContextMenu();
+  clearInkEdge();
+  _menuViewer = viewer;
+
+  /** @type {?{left: number, top: number, right: number, bottom: number}} */
+  let anchor = null;
+  /** @type {Object<string, boolean>} */
+  const show = {
+    copy: false, copyhl: false, highlight: false, underline: false, comment: false, delete: false, bookmark: false, redact: false, strike: false, edit: false,
+  };
+
+  const editingEnabled = !!(viewer.opt && viewer.opt.enablePageEditing);
+  if (kind === 'selection') {
+    if (!viewer.hasTextSelection() || !viewer.useCustomSelection) { hideTouchCallout(); return; }
+    anchor = viewer.textSel.selectionClientRect();
+    viewer.contextMenuWord = null;
+    commentTargetWord = null;
+    commentNoteTarget = null;
+    const startPage = viewer.textSel.range?.kind === 'linear' ? viewer.textSel.range.start.n : -1;
+    bookmarkTargetPage = (viewer._addBookmark && editingEnabled) ? startPage : -1;
+    show.copy = true;
+    show.highlight = !!viewer._highlightColor;
+    show.underline = true;
+    show.strike = true;
+    show.comment = !!viewer._openCommentEditor && show.highlight;
+    show.redact = !!viewer._redactEnabled;
+    show.bookmark = bookmarkTargetPage >= 0;
+    // Resolving the words is O(selection), so gate on a small single-page range first.
+    if (UiText.enableEditing && viewer.textSel.range?.kind === 'linear') {
+      const r = viewer.textSel.range;
+      if (r.start.n === r.end.n && r.end.off - r.start.off <= 40) {
+        show.edit = viewer.getWordsUnderTextSelection().length === 1;
+      }
+    }
+  } else {
+    if (!kw) { hideTouchCallout(); return; }
+    viewer.contextMenuWord = kw;
+    contextMenuMarkupSlot = slot;
+    commentTargetWord = kw;
+    commentNoteTarget = null;
+    bookmarkTargetPage = -1;
+    show.copyhl = true;
+    show.comment = !!viewer._openCommentEditor;
+    show.delete = true;
+    const groupId = slot === 'line' ? kw.markupGroupId : kw.highlightGroupId;
+    const rectElem = slot === 'line' ? kw.markupRectElem : kw.highlightRectElem;
+    /** @type {HTMLDivElement[]} */
+    let bands = [];
+    if (groupId) {
+      for (const map of viewer._highlightRectsByGroup) {
+        const arr = map && map.get(groupId);
+        if (arr) bands.push(...arr);
+      }
+    } else if (rectElem) {
+      bands = [rectElem];
+    }
+    inkEdgeElems = createInkEdges(bands);
+    let left = Infinity; let top = Infinity; let right = -Infinity; let bottom = -Infinity;
+    for (const band of bands) {
+      const r = band.getBoundingClientRect();
+      left = Math.min(left, r.left);
+      top = Math.min(top, r.top);
+      right = Math.max(right, r.right);
+      bottom = Math.max(bottom, r.bottom);
+    }
+    if (left !== Infinity) {
+      anchor = {
+        left, top, right, bottom,
+      };
+    }
+  }
+
+  if (!anchor) { hideTouchCallout(); return; }
+  viewer.contextMenuPointer = viewer.clientToContent((anchor.left + anchor.right) / 2, (anchor.top + anchor.bottom) / 2);
+
+  for (const [key, el] of Object.entries(calloutBtns)) {
+    if (key === 'more') continue;
+    el.style.display = show[key] ? '' : 'none';
+  }
+  const tailCount = ['bookmark', 'redact', 'strike', 'edit'].filter((k) => show[k]).length;
+  calloutBtns.more.style.display = tailCount > 0 ? '' : 'none';
+  calloutBtns.more.setAttribute('aria-expanded', 'false');
+  calloutBtns.more.classList.remove('open');
+  /** @type {HTMLDivElement} */ (calloutRow2).style.display = 'none';
+  const vrElem = /** @type {HTMLElement} */ (calloutNode.querySelector('.scribe-callout-vr'));
+  vrElem.style.display = (show.delete || tailCount > 0) ? '' : 'none';
+  if (show.highlight) {
+    /** @type {HTMLElement} */ (calloutBtns.highlight.querySelector('.scribe-cm-swatch')).style.background = viewer._highlightColor;
+  }
+
+  // Theme tokens, mirrored like the context menu's (the callout is body-level, outside the viewer's scope).
+  const tokenStyles = getComputedStyle(viewer.scrollContainer);
+  for (const token of CONTEXT_MENU_TOKENS) {
+    const value = tokenStyles.getPropertyValue(token);
+    if (value) calloutNode.style.setProperty(token, value);
+    else calloutNode.style.removeProperty(token);
+  }
+
+  const hostRect = viewer.outerElem ? viewer.outerElem.getBoundingClientRect() : {
+    left: 0, top: 0, right: window.innerWidth, bottom: window.innerHeight,
+  };
+  // Show before measuring: a display:none node has no size.
+  calloutNode.style.display = 'flex';
+  calloutNode.classList.remove('flipped');
+  const { width: cw, height: ch } = calloutNode.getBoundingClientRect();
+  let top = anchor.top - ch - 10;
+  if (top < hostRect.top + 8) {
+    calloutNode.classList.add('flipped');
+    // The 26px drop clears the selection's end grips.
+    top = Math.min(anchor.bottom + 26, hostRect.bottom - ch - 8);
+  }
+  const left = Math.max(hostRect.left + 8, Math.min((anchor.left + anchor.right) / 2 - cw / 2, hostRect.right - cw - 8));
+  calloutNode.style.top = `${Math.max(hostRect.top + 8, top)}px`;
+  calloutNode.style.left = `${left}px`;
+
+  if (!calloutDismissActive) {
+    calloutDismissActive = true;
+    document.addEventListener('pointerdown', onCalloutDismissPointerDown, CAPTURE);
+    document.addEventListener('scroll', onCalloutDismiss, CAPTURE_PASSIVE);
+    document.addEventListener('wheel', onCalloutDismiss, CAPTURE_PASSIVE);
+    document.addEventListener('keydown', onCalloutDismissKeyDown, CAPTURE);
+    window.addEventListener('resize', onCalloutDismiss);
+    window.addEventListener('blur', onCalloutDismiss);
+  }
+};
+
 export const contextMenuFunc = (viewer, event) => {
+  // One target surface at a time.
+  hideTouchCallout();
   // The DOM selection engine leaves a native browser text selection, so bail before the preventDefault below to let the browser's own right-click menu act on it.
   if (!viewer.useCustomSelection && !viewer.enableCanvasSelection) { hideContextMenu(); return; }
   // A right-click inside a text field (a note or comment editor, a rename box) keeps the browser's native edit menu rather than ours.

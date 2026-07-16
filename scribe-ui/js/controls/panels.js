@@ -1,12 +1,12 @@
 // Page-area frame elements shared by the viewer and editor apps: the page-thumbnails rail and the custom overlay scrollbars.
 // Both are positioned over the viewer and driven by the stage.
 import { makeIconButton } from './toolbar.js';
-import { installPageReorder } from './pageReorder.js';
+import { installPageReorder, REORDER_SLIDE_MS } from './pageReorder.js';
 
 /** @typedef {{thumbElem: HTMLDivElement, imgElem: HTMLImageElement, url: ?string, pending: boolean}} ThumbRow */
 
 // A left column of small previews beside a larger page, evoking a thumbnails panel.
-const THUMB_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 0 24 24" fill="currentColor">
+export const THUMB_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 0 24 24" fill="currentColor">
 <rect x="4" y="3" width="7" height="5" rx="1"/>
 <rect x="4" y="10" width="7" height="5" rx="1"/>
 <rect x="4" y="17" width="7" height="4" rx="1"/>
@@ -15,6 +15,11 @@ const THUMB_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20
 const ROTATE_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="display:block;pointer-events:none;">
 <path d="M15.55 5.55L11 1v3.07C7.06 4.56 4 7.92 4 12s3.05 7.44 7 7.93v-2.02c-2.84-.48-5-2.94-5-5.91s2.16-5.43 5-5.91V10l4.55-4.45zM19.93 11c-.17-1.39-.72-2.73-1.62-3.89l-1.42 1.42c.54.75.88 1.6 1.02 2.47h2.02zM13 17.9v2.02c1.39-.17 2.74-.71 3.9-1.61l-1.44-1.44c-.75.54-1.59.89-2.46 1.03zm3.89-2.42l1.42 1.41c.9-1.16 1.45-2.5 1.62-3.89h-2.02c-.14.87-.48 1.72-1.02 2.47z"/></svg>`;
 const DELETE_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9 3v1H4v2h16V4h-5V3H9zM6 7l1 13h10l1-13H6z"/></svg>';
+// Check face of the Edit-mode selection checkbox; always in the markup, kept transparent by CSS until the page is selected.
+const CHECK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"'
+  + ' stroke-linejoin="round" aria-hidden="true"><path d="M5.5 12.5l4.3 4.3L18.5 7.5"/></svg>';
+// An X glyph for the selection bar's clear button.
+const CLEAR_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg>';
 
 // Default-Letter aspect (height/width) for rows whose page metrics are unavailable.
 const DEFAULT_ASPECT = 11 / 8.5;
@@ -37,8 +42,12 @@ const FLING_VIEWPORT_FRACTION = 0.5;
 const ACTIVE_SCROLL_DEBOUNCE_MS = 80;
 // Panel width beyond the thumbnail image: horizontal padding plus room for the panel's own scrollbar.
 const PANEL_EXTRA_W = 30;
-// Fixed thumbnail image width in px (panel width is this plus PANEL_EXTRA_W for one column). Not user-adjustable for now.
+// Thumbnail image width in px (panel width is this plus PANEL_EXTRA_W for one column).
+// The desktop rail uses THUMB_W; the phone sheet uses COMPACT_W so several columns fit its width (see setCompact).
 const THUMB_W = 200;
+const COMPACT_W = 104;
+// Column cap in the compact phone grid (higher than MAX_COLS so a landscape phone can pack more).
+const COMPACT_MAX_COLS = 6;
 // Resolution thumbnails are rasterized at; kept above THUMB_W so they stay crisp on high-DPI screens (CSS downscales).
 const RENDER_W = 300;
 // Slide duration in ms. Must match the `transition` on `.scribe-thumb-panel` so the post-hide unmount waits for it.
@@ -47,6 +56,9 @@ const SLIDE_MS = 180;
 const BATCH_BAR_H = 40;
 // Gap in px between cells (and from the panel edge) in the multi-column grid layout.
 const GRID_GAP = 14;
+// Tighter per-row overhead and vertical gap for the compact phone grid; the overhead must match the padding/label sizing under `.scribe-thumb-compact`.
+const COMPACT_ROW_OVERHEAD = 21;
+const COMPACT_VGAP = 7;
 // Most columns the panel can be widened to. The resize handle caps the panel width here; there is no full-screen mode.
 const MAX_COLS = 3;
 // Pointer travel in px before a press in the panel's empty space becomes a drag-select rather than a plain click.
@@ -55,10 +67,10 @@ const MARQUEE_THRESHOLD = 4;
 const MARQUEE_EDGE = 36;
 const MARQUEE_SPEED = 14;
 
-/** Columns of THUMB_W cells that fit in inner width `w`. @param {number} w */
-const colsFor = (w) => Math.max(1, Math.floor((w - 2 * PAD + GRID_GAP) / (THUMB_W + GRID_GAP)));
-/** Panel width in px that fits exactly `cols` columns. @param {number} cols */
-const panelWidthForCols = (cols) => cols * THUMB_W + (cols - 1) * GRID_GAP + PANEL_EXTRA_W;
+/** Columns of `cw`-wide cells that fit in inner width `w`. @param {number} w @param {number} cw */
+const colsFor = (w, cw) => Math.max(1, Math.floor((w - 2 * PAD + GRID_GAP) / (cw + GRID_GAP)));
+/** Panel width in px that fits exactly `cols` columns of `cw`-wide cells. @param {number} cols @param {number} cw */
+const panelWidthForCols = (cols, cw) => cols * cw + (cols - 1) * GRID_GAP + PANEL_EXTRA_W;
 
 /**
  * Module-scoped page clipboard for cut/copy/paste of whole pages.
@@ -88,6 +100,8 @@ function clearPageClipboard() {
  * @param {import('../../viewer.js').ScribeViewer} scribe
  * @param {object} cfg
  * @param {(n: number) => void} cfg.onSelect - Called with the page index when a thumbnail is clicked.
+ * @param {(n: number) => void} [cfg.onPageOpen] - Show page `n` in the viewer, closing any surface that covers it (the browse-mode double-tap).
+ *   Falls back to `onSelect`.
  * @param {(pageIndices: Array<number>) => void} [cfg.onExtract] - Called with the page indices to open as a new document.
  * @param {(at: number) => void} [cfg.onInsertFromFile] - Called with the gap index at which to insert pages picked from a file.
  * @param {(width: number, phase?: 'start'|'move'|'end') => void} [cfg.onResize] - Called with the panel's current visible width in px (0 when hidden).
@@ -96,14 +110,18 @@ function clearPageClipboard() {
  *   panelElem: HTMLDivElement, toggleElem: HTMLSpanElement,
  *   rebuild: (activeN?: number) => void, cancelCut: () => void, setActive: (n: number) => void,
  *   setVisible: (v: boolean) => void, setWidth: (px: number) => number,
+ *   setCompact: (on: boolean) => void, setRoomMode: (mode: ?('browse'|'edit')) => void, clearSelection: () => void,
+ *   beginStructureSlide: () => (() => void), refit: () => void,
  *   getResizeBounds: () => { min: number, max: number },
+ *   gridGeometry: () => { count: number, cols: number, cellW: number, pad: number, strideX: number,
+ *     boxLeft: (n: number) => number, boxTop: (n: number) => number, boxH: (n: number) => number, thumbTop: (n: number) => number },
  *   dropIndicator: { gapAt: (clientX: number, clientY: number) => number, show: (clientX: number, clientY: number) => number, hide: () => void },
  *   insertPagesAt: (at: number, count: number, activeN: number) => void,
  *   destroy: () => void
  * }}
  */
 export function createThumbnailPanel(scribe, {
-  onSelect, onExtract, onInsertFromFile, onResize,
+  onSelect, onPageOpen, onExtract, onInsertFromFile, onResize,
 }) {
   const panelElem = document.createElement('div');
   panelElem.className = 'scribe-thumb-panel';
@@ -150,6 +168,60 @@ export function createThumbnailPanel(scribe, {
   const batchHost = scribe.outerElem || panelElem;
   batchHost.appendChild(batchBar);
 
+  // Floating selection bar for the phone room's Edit mode: count + Clear, then Rotate + Delete.
+  // A child of the panel, unlike the pill: it never needs to overhang the panel bounds, and the panel is its positioning context in the room.
+  // Clear sits by the count, away from Delete, so dismissing a selection never borders the destructive verb.
+  const roomBar = document.createElement('div');
+  roomBar.className = 'scribe-thumb-selbar';
+  const roomBarCount = document.createElement('span');
+  roomBarCount.className = 'scribe-thumb-selbar-count';
+  const roomBarClear = document.createElement('button');
+  roomBarClear.type = 'button';
+  roomBarClear.className = 'scribe-thumb-selbar-clear';
+  roomBarClear.title = 'Clear selection';
+  roomBarClear.setAttribute('aria-label', 'Clear selection');
+  roomBarClear.innerHTML = CLEAR_SVG;
+  roomBarClear.addEventListener('click', () => clearSelection());
+  const roomBarRotate = document.createElement('button');
+  roomBarRotate.type = 'button';
+  roomBarRotate.className = 'scribe-thumb-selbar-btn';
+  roomBarRotate.innerHTML = `${ROTATE_SVG}<span>Rotate</span>`;
+  roomBarRotate.addEventListener('click', () => rotateSelection());
+  const roomBarDelete = document.createElement('button');
+  roomBarDelete.type = 'button';
+  roomBarDelete.className = 'scribe-thumb-selbar-btn scribe-thumb-selbar-delete';
+  roomBarDelete.innerHTML = `${DELETE_SVG}<span>Delete</span>`;
+  roomBarDelete.addEventListener('click', () => {
+    if (roomMode !== 'edit' || selected.size === 0 || !scribe.doc || roomBar.dataset.busy) return;
+    // Mirror deleteSelection's keep-one clamp, so a surviving page is never shown shrinking.
+    let doom = [...selected].filter((i) => i < pageCount).sort((a, b) => a - b);
+    if (doom.length >= pageCount) doom = doom.slice(0, pageCount - 1);
+    if (doom.length === 0) return;
+    roomBar.dataset.busy = '1';
+    const doomSet = new Set(doom);
+    const sliding = [];
+    for (const [n, en] of mounted) {
+      if (doomSet.has(n)) {
+        en.thumbElem.style.transition = 'transform .16s ease, opacity .16s ease';
+        en.thumbElem.style.transform = 'scale(.55)';
+        en.thumbElem.style.opacity = '0';
+      } else {
+        en.thumbElem.style.transition = `top ${REORDER_SLIDE_MS}ms ease, left ${REORDER_SLIDE_MS}ms ease`;
+        sliding.push(en);
+      }
+    }
+    // The commit deletes exactly the pages shown shrinking: a toggle racing the animation must not widen the delete.
+    setTimeout(() => {
+      selected.clear();
+      for (const i of doom) selected.add(i);
+      deleteSelection();
+      delete roomBar.dataset.busy;
+      setTimeout(() => { for (const en of sliding) en.thumbElem.style.transition = ''; }, REORDER_SLIDE_MS + 20);
+    }, 170);
+  });
+  roomBar.append(roomBarCount, roomBarClear, roomBarRotate, roomBarDelete);
+  panelElem.appendChild(roomBar);
+
   // Right-click page context menu (delete/rotate). Built once here and repopulated per open by `openContextMenu`;
   // it shares the strip's host so it is not clipped by the rail.
   const menuElem = document.createElement('div');
@@ -175,6 +247,12 @@ export function createThumbnailPanel(scribe, {
   let layoutMode = 'rail';
   // Number of grid columns: 1 in the rail, up to MAX_COLS in grid mode.
   let gridCols = 1;
+  // Effective cell width: THUMB_W in the desktop rail, COMPACT_W in the phone sheet (setCompact).
+  let cellW = THUMB_W;
+  let compact = false;
+  // Per-row overhead (padding + label) and the vertical gap between rows; tightened for the compact phone grid.
+  let rowOverhead = ROW_OVERHEAD;
+  let rowGap = GRID_GAP;
   /** @type {number[]} Per-row vertical stride in px (grid mode), indexed by row. Empty in the rail. */
   let rowStrides = [];
   // Cached because reading clientHeight/clientWidth forces a synchronous layout, and the scroll/resize paths read the viewport size every frame.
@@ -218,6 +296,15 @@ export function createThumbnailPanel(scribe, {
   let drag = null;
   // Set when a drag begins so the click that ends the same gesture does not also select; cleared on the next press.
   let suppressClick = false;
+  // Phone Pages-room interaction mode: 'browse' is read-only, 'edit' carries the mutations.
+  /** @type {?('browse'|'edit')} */
+  let roomMode = null;
+  // Timestamp of the grid's last scroll event.
+  // A press on a still-gliding grid catches the scroll and must not act on a page.
+  // Scroll events stream every frame while the grid moves, so no event within the settle window means it is at rest.
+  let lastScrollT = 0;
+  const SCROLL_SETTLE_MS = 100;
+  const gridInMotion = () => Date.now() - lastScrollT < SCROLL_SETTLE_MS;
 
   // Shared state and core callbacks handed to the drag-to-reorder subsystem. Geometry arrays and reassignable scalars
   // are exposed as live getters/setters so a write on either side is seen by the other.
@@ -232,8 +319,9 @@ export function createThumbnailPanel(scribe, {
     PAD,
     get offsets() { return offsets; },
     get heights() { return heights; },
+    get lefts() { return lefts; },
     get pageCount() { return pageCount; },
-    get THUMB_W() { return THUMB_W; },
+    get THUMB_W() { return cellW; },
     get gridCols() { return gridCols; },
     get rowStrides() { return rowStrides; },
     rowAt,
@@ -250,7 +338,15 @@ export function createThumbnailPanel(scribe, {
     updateBatchToolbar,
     remapSelection,
     closeContextMenu,
+    openContextMenu,
     cancelCut,
+    get roomMode() { return roomMode; },
+    gridInMotion,
+    peekShow,
+    peekHide,
+    openPage: (n) => (onPageOpen || onSelect)(n),
+    toggleRoomSelect,
+    setRoomSelect,
   };
   const reorder = installPageReorder(ctx);
 
@@ -274,6 +370,98 @@ export function createThumbnailPanel(scribe, {
     },
     hide() { if (dropLine) { dropLine.remove(); dropLine = null; } },
   };
+
+  // A held page previews centered over the grid; the reorder subsystem's browse gesture drives it (open on hold, scrub on slide, hide on release).
+  // Buttonless: it lives only under the finger, so the whole overlay is pointer-events: none and the scrub hit-test passes through to the cells.
+  const PEEK_W = 280; // width of the peeked page in px (a very tall page scales down to fit)
+  const PEEK_SETTLE_MS = 160; // pause on one page before its crisp display-resolution upgrade
+  /** @type {?HTMLDivElement} */
+  let peekScrim = null;
+  /** @type {?HTMLDivElement} */
+  let peekBox = null;
+  /** @type {?HTMLImageElement} */
+  let peekImg = null;
+  /** @type {?HTMLDivElement} */
+  let peekCap = null;
+  // The crisp render's object URL is owned here and revoked on replacement; the small cell rasters in `mounted` are never revoked here.
+  let peekN = -1;
+  /** @type {?ReturnType<typeof setTimeout>} */
+  let peekCrispT = null;
+  /** @type {?string} */
+  let peekCrispUrl = null;
+
+  /** Show the peek, or retarget an open one, on page `n`. @param {number} n */
+  function peekShow(n) {
+    if (!peekScrim) {
+      peekScrim = document.createElement('div');
+      peekScrim.className = 'scribe-thumb-scrim';
+      const card = document.createElement('div');
+      card.className = 'scribe-thumb-peek';
+      peekBox = document.createElement('div');
+      peekBox.className = 'scribe-thumb-peek-box';
+      peekImg = document.createElement('img');
+      peekImg.alt = '';
+      peekImg.draggable = false;
+      peekCap = document.createElement('div');
+      peekCap.className = 'scribe-thumb-peek-cap';
+      peekBox.appendChild(peekImg);
+      card.append(peekBox, peekCap);
+      peekScrim.appendChild(card);
+      panelElem.appendChild(peekScrim);
+    }
+    if (peekCrispT) { clearTimeout(peekCrispT); peekCrispT = null; }
+    peekN = n;
+    // Size from the cell's display aspect (boxHeights is rotation-aware), clamped so a very tall page never outgrows the room body under it.
+    const ratio = (boxHeights[n] || cellW) / cellW;
+    let w = PEEK_W;
+    let h = Math.round(w * ratio);
+    const maxH = viewportH - 90;
+    if (maxH > 80 && h > maxH) { w = Math.round(w * (maxH / h)); h = maxH; }
+    peekBox.style.width = `${w}px`;
+    peekBox.style.height = `${h}px`;
+    // The already-decoded grid raster, given the same rotation treatment as restyleRow (it is stored at the page's original orientation).
+    // An unrendered cell shows the bare white page and caption.
+    const entry = mounted.get(n);
+    const url = (entry && entry.url) || '';
+    peekImg.style.cssText = url ? '' : 'display:none';
+    peekImg.src = url;
+    // The previous page's crisp render is off-screen now that the small raster replaced it.
+    if (peekCrispUrl) { URL.revokeObjectURL(peekCrispUrl); peekCrispUrl = null; }
+    // Rotation styles apply even with no raster yet; the crisp upgrade below only flips `display` back on.
+    const rot = (scribe.doc && scribe.doc.pageMetrics[n] && scribe.doc.pageMetrics[n].rotation) || 0;
+    if (rot % 180 === 90) {
+      peekImg.style.position = 'absolute';
+      peekImg.style.top = '50%';
+      peekImg.style.left = '50%';
+      peekImg.style.width = `${h}px`;
+      peekImg.style.height = `${w}px`;
+      peekImg.style.transform = `translate(-50%, -50%) rotate(${rot}deg)`;
+    } else if (rot === 180) {
+      peekImg.style.transform = 'rotate(180deg)';
+    }
+    peekCap.textContent = `Page ${n + 1}`;
+    peekScrim.classList.add('on');
+    // Crisp upgrade once the finger settles: a fresh render at device resolution for the box the peek shows (the rotated case swaps the img's box, so use its longer side).
+    // Guarded so a scrub-away or release between request and resolve drops the result.
+    peekCrispT = setTimeout(() => {
+      peekCrispT = null;
+      const crispW = Math.round((rot % 180 === 90 ? h : w) * Math.min(window.devicePixelRatio || 1, 3));
+      scribe.doc?.images?.renderThumbnail(n, crispW, 0.7, true).then((blob) => {
+        if (!blob || peekN !== n || !peekScrim.classList.contains('on')) return;
+        if (peekCrispUrl) URL.revokeObjectURL(peekCrispUrl);
+        peekCrispUrl = URL.createObjectURL(blob);
+        peekImg.src = peekCrispUrl;
+        peekImg.style.display = '';
+      }).catch(() => { /* keep the small raster */ });
+    }, PEEK_SETTLE_MS);
+  }
+
+  /** Hide the peek (release/interruption). The elements stay for the next hold. */
+  function peekHide() {
+    if (peekCrispT) { clearTimeout(peekCrispT); peekCrispT = null; }
+    peekN = -1;
+    if (peekScrim) peekScrim.classList.remove('on');
+  }
 
   /**
    * Largest page index whose row top is at or above content-y `y`.
@@ -324,17 +512,19 @@ export function createThumbnailPanel(scribe, {
     // Left-anchor the cell rather than center it, so the lone rail thumbnail does not jump when a second column appears.
     thumbElem.style.left = `${lefts[n]}px`;
     thumbElem.style.right = 'auto';
-    thumbElem.style.width = `${THUMB_W}px`;
+    thumbElem.style.width = `${cellW}px`;
     thumbElem.style.top = `${PAD + offsets[n]}px`;
     thumbElem.style.height = `${heights[n]}px`;
     thumbElem.dataset.page = String(n);
     thumbElem.classList.toggle('active', n === activePage);
     thumbElem.classList.toggle('selected', selected.has(n));
     thumbElem.classList.toggle('cut', cutMarks.has(n));
+    const chk = thumbElem.querySelector('.scribe-thumb-chk');
+    if (chk) chk.setAttribute('aria-checked', String(selected.has(n)));
 
     const box = imgElem.parentElement;
     if (box) {
-      box.style.width = `${THUMB_W}px`;
+      box.style.width = `${cellW}px`;
       box.style.height = `${boxHeights[n]}px`;
     }
 
@@ -345,7 +535,7 @@ export function createThumbnailPanel(scribe, {
       imgElem.style.top = '50%';
       imgElem.style.left = '50%';
       imgElem.style.width = `${boxHeights[n]}px`;
-      imgElem.style.height = `${THUMB_W}px`;
+      imgElem.style.height = `${cellW}px`;
       imgElem.style.transform = `translate(-50%, -50%) rotate(${rot}deg)`;
     } else if (rot === 180) {
       imgElem.style.transform = 'rotate(180deg)';
@@ -357,7 +547,7 @@ export function createThumbnailPanel(scribe, {
       const dims = scribe.doc && scribe.doc.pageMetrics[n] && scribe.doc.pageMetrics[n].dims;
       // Same box as the raster img above, so bands align with the possibly-rotated page.
       const overlayCss = rot % 180 === 90
-        ? `top:50%;left:50%;width:${boxHeights[n]}px;height:${THUMB_W}px;transform:translate(-50%, -50%) rotate(${rot}deg)`
+        ? `top:50%;left:50%;width:${boxHeights[n]}px;height:${cellW}px;transform:translate(-50%, -50%) rotate(${rot}deg)`
         : (rot === 180 ? 'inset:0;transform:rotate(180deg)' : 'inset:0');
       /** @type {Array<{kind: string, color: string, opacity: number, left: number, right: number, top: number, bottom: number}>} */
       const runs = [];
@@ -464,7 +654,7 @@ export function createThumbnailPanel(scribe, {
 
     const boxElem = document.createElement('div');
     boxElem.className = 'scribe-thumb-box';
-    boxElem.style.width = `${THUMB_W}px`;
+    boxElem.style.width = `${cellW}px`;
 
     const imgElem = document.createElement('img');
     imgElem.alt = '';
@@ -480,14 +670,41 @@ export function createThumbnailPanel(scribe, {
     boxElem.addEventListener('contextmenu', (e) => {
       if (!(scribe.opt && scribe.opt.enablePageEditing)) return;
       e.preventDefault();
+      // The room's modes have no page menu: browse is read-only, and Edit mutates on the cells.
+      if (roomMode) return;
+      // The touch hold-to-lift gesture opens this menu itself on a release-in-place.
+      // Swallow the native long-press contextmenu Android fires in parallel so it does not open twice.
+      if (reorder.touchActive()) return;
       openContextMenu(e.clientX, e.clientY, idx());
     });
 
     // The whole thumbnail is draggable to reorder when page editing is on; the `grab` cursor advertises it.
     if (scribe.opt && scribe.opt.enablePageEditing) boxElem.classList.add('editable');
 
+    // Edit-mode selection checkbox, shown only under `.scribe-pages-room.editing`.
+    // A child of the row, not the box, so it can overhang the page corner (the box clips its overflow) and its press never reaches the box's drag handler.
+    const chkBtn = document.createElement('button');
+    chkBtn.type = 'button';
+    chkBtn.className = 'scribe-thumb-chk';
+    chkBtn.setAttribute('role', 'checkbox');
+    chkBtn.setAttribute('aria-checked', 'false');
+    chkBtn.setAttribute('aria-label', 'Select page');
+    chkBtn.innerHTML = CHECK_SVG;
+    // chkPress swallows the click that follows any press: a handled press already toggled, and a catch-the-scroll press must not toggle.
+    // A keyboard activation is a click with no preceding press, so it still toggles.
+    let chkPress = false;
+    chkBtn.addEventListener('pointerdown', (e) => {
+      chkPress = true;
+      reorder.onChkPointerDown(e, idx());
+    });
+    chkBtn.addEventListener('click', () => {
+      if (chkPress) { chkPress = false; return; }
+      if (roomMode === 'edit') toggleRoomSelect(idx());
+    });
+
     thumbElem.appendChild(boxElem);
     thumbElem.appendChild(labelElem);
+    thumbElem.appendChild(chkBtn);
 
     scrollElem.appendChild(thumbElem);
     const entry = {
@@ -521,6 +738,18 @@ export function createThumbnailPanel(scribe, {
   }
 
   /**
+   * The page at the centre of the scroll viewport, used both to rank the render queue and as the scheduler focus.
+   * @returns {number}
+   */
+  function focusPage() {
+    // rowAt returns the LAST page of the centre row, skewed toward later pages in a multi-column grid.
+    // The centre column keeps the distance ranking symmetric (a no-op in the 1-col rail).
+    const centerRowLast = rowAt(scrollElem.scrollTop + viewportH / 2);
+    const rowFirst = centerRowLast - (centerRowLast % gridCols);
+    return Math.max(0, Math.min(pageCount - 1, rowFirst + (gridCols >> 1)));
+  }
+
+  /**
    * Report the rail's centre page (or `null` when the rail is idle) to the render scheduler, so a staged queue dispatches the thumbnails the user is looking at before ones scrolled past.
    * Separate from the main viewer's focus because the rail can be scrolled to a different page.
    * @param {?number} n
@@ -529,12 +758,19 @@ export function createThumbnailPanel(scribe, {
     scribe.doc?.images?.pdfScheduler?.setThumbFocus(n);
   }
 
-  /** Request thumbnails for every mounted row that still lacks one. */
+  /**
+   * Request thumbnails for every mounted row that still lacks one, nearest the viewport centre first.
+   */
   function flushRenders() {
     if (destroyed || !visible) return;
-    for (const [n, entry] of mounted) {
-      if (!entry.url && !entry.pending) requestRender(n, entry);
-    }
+    const f = focusPage();
+    /** @type {Array<[number, ThumbRow]>} */
+    const pending = [];
+    for (const [n, entry] of mounted) if (!entry.url && !entry.pending) pending.push([n, entry]);
+    // The scheduler re-ranks a backlog by focus, but with idle workers each request dispatches the instant it is queued,
+    // so an ascending sweep would raster the off-screen buffer rows before the on-screen ones.
+    pending.sort((a, b) => Math.abs(a[0] - f) - Math.abs(b[0] - f));
+    for (const [n, entry] of pending) requestRender(n, entry);
   }
 
   /**
@@ -571,9 +807,7 @@ export function createThumbnailPanel(scribe, {
   function updateWindow(immediate = false) {
     if (destroyed || !visible || pageCount === 0) return;
     // Tell the scheduler which page the rail is centred on, so a backlogged queue renders on-screen thumbnails first.
-    // rowAt already returns a page index (a cell in the centre row for a multi-column grid), so it is the focus page directly.
-    // Do NOT multiply by gridCols, which is how you recover a row from a page.
-    reportThumbFocus(rowAt(scrollElem.scrollTop + viewportH / 2));
+    reportThumbFocus(focusPage());
     const [first, last] = windowRange();
     for (const [n, entry] of mounted) {
       // Keep a dragged page mounted past the scroll window, since unmounting revokes the object URL the drag ghost still shows.
@@ -589,6 +823,7 @@ export function createThumbnailPanel(scribe, {
 
   let lastScrollTop = scrollElem.scrollTop;
   function onScroll() {
+    lastScrollT = Date.now();
     closeContextMenu();
     if (selected.size >= 2) positionBatchBar();
     if (rafPending) return;
@@ -616,7 +851,7 @@ export function createThumbnailPanel(scribe, {
 
   /** Column count for the current width: as many fixed-width cells as fit the inner width, capped at MAX_COLS. @returns {number} */
   function gridColsFor() {
-    return Math.min(colsFor(viewportW || THUMB_W), MAX_COLS);
+    return Math.min(colsFor(viewportW || cellW, cellW), compact ? COMPACT_MAX_COLS : MAX_COLS);
   }
 
   /**
@@ -645,7 +880,7 @@ export function createThumbnailPanel(scribe, {
       const rotated = (((metrics[n] && metrics[n].rotation) || 0) % 180) === 90;
       let aspect = dims && dims.width ? dims.height / dims.width : DEFAULT_ASPECT;
       if (rotated && dims && dims.height) aspect = dims.width / dims.height;
-      return Math.max(1, Math.round(THUMB_W * aspect));
+      return Math.max(1, Math.round(cellW * aspect));
     };
 
     // Panel width changes only how many fixed-width cells fit, never their size.
@@ -653,6 +888,10 @@ export function createThumbnailPanel(scribe, {
     layoutMode = gridCols > 1 ? 'grid' : 'rail';
 
     if (layoutMode === 'grid') {
+      // Centre the compact grid, which is narrower than its full-width sheet.
+      // The desktop rail is sized to its columns, so only the phone sheet needs centring.
+      const gridInnerW = gridCols * cellW + (gridCols - 1) * GRID_GAP;
+      const sidePad = compact ? Math.max(PAD, Math.round((viewportW - gridInnerW) / 2)) : PAD;
       // Rows differ in height, so each row's stride is recorded here for `rowAt` to search instead of dividing by one stride.
       let rowTop = 0;
       for (let start = 0; start < pageCount; start += gridCols) {
@@ -663,11 +902,11 @@ export function createThumbnailPanel(scribe, {
           if (boxHeights[n] > rowBox) rowBox = boxHeights[n];
         }
         for (let n = start; n < end; n++) {
-          lefts[n] = PAD + (n - start) * (THUMB_W + GRID_GAP);
+          lefts[n] = sidePad + (n - start) * (cellW + GRID_GAP);
           offsets[n] = rowTop;
-          heights[n] = boxHeights[n] + ROW_OVERHEAD;
+          heights[n] = boxHeights[n] + rowOverhead;
         }
-        const stride = rowBox + ROW_OVERHEAD + GRID_GAP;
+        const stride = rowBox + rowOverhead + rowGap;
         rowStrides.push(stride);
         rowTop += stride;
       }
@@ -676,7 +915,7 @@ export function createThumbnailPanel(scribe, {
       let acc = 0;
       for (let n = 0; n < pageCount; n++) {
         boxHeights[n] = boxHeightOf(n);
-        heights[n] = boxHeights[n] + ROW_OVERHEAD;
+        heights[n] = boxHeights[n] + rowOverhead;
         lefts[n] = PAD;
         offsets[n] = acc;
         acc += heights[n];
@@ -809,10 +1048,11 @@ export function createThumbnailPanel(scribe, {
    */
   function getResizeBounds() {
     measureViewport();
-    const min = panelWidthForCols(1);
+    const maxCols = compact ? COMPACT_MAX_COLS : MAX_COLS;
+    const min = panelWidthForCols(1, cellW);
     const extraW = Math.max(0, (parseFloat(panelElem.style.width) || min) - viewportW);
     const containerW = (panelElem.parentElement && panelElem.parentElement.clientWidth) || min;
-    const max = Math.min(MAX_COLS * THUMB_W + (MAX_COLS - 1) * GRID_GAP + 2 * PAD + extraW, containerW);
+    const max = Math.min(maxCols * cellW + (maxCols - 1) * GRID_GAP + 2 * PAD + extraW, containerW);
     return { min, max };
   }
 
@@ -833,6 +1073,57 @@ export function createThumbnailPanel(scribe, {
     return applied;
   }
 
+  /**
+   * Switch cell size between the docked desktop rail (THUMB_W) and the phone sheet's compact grid (COMPACT_W).
+   * Call `refit` once the sheet is shown, to re-measure at its real width.
+   * @param {boolean} on
+   */
+  function setCompact(on) {
+    if (compact === on) return;
+    compact = on;
+    cellW = on ? COMPACT_W : THUMB_W;
+    rowOverhead = on ? COMPACT_ROW_OVERHEAD : ROW_OVERHEAD;
+    rowGap = on ? COMPACT_VGAP : GRID_GAP;
+    panelElem.classList.toggle('scribe-thumb-compact', on);
+    // Returning to the rail: shed the sheet's stretched width so the desktop rail opens at one column.
+    if (!on) panelElem.style.width = `${cellW + PANEL_EXTRA_W}px`;
+    measureViewport();
+    computeGeometry();
+    if (visible) updateWindow(true);
+  }
+
+  /**
+   * Set the phone Pages-room interaction mode: 'browse' (read-only), 'edit' (selection + drag mutations), or null to restore the desktop/tablet gestures.
+   * A mode flip tears down whatever the old mode had in flight (an open peek, a carried page, a menu).
+   * @param {?('browse'|'edit')} mode
+   */
+  function setRoomMode(mode) {
+    if (roomMode === mode) return;
+    roomMode = mode;
+    peekHide();
+    reorder.cancelDrag();
+    closeContextMenu();
+    // The selection is scoped to a mode, so every flip clears it, entering or leaving.
+    // The explicit updateBatchToolbar covers the nothing-to-clear case: bar and pill visibility key off roomMode.
+    clearSelection();
+    updateBatchToolbar();
+  }
+
+  /**
+   * Re-measure and re-lay the grid for the panel's current container width, without the animated column flip.
+   * Used when the panel is re-homed into the phone sheet (a full-width container the rail geometry didn't know about).
+   */
+  function refit() {
+    measureViewport();
+    computeGeometry();
+    // Keep already-rastered rows: cell width never changes in a refit, so the cached bitmaps stay valid, and unmounting would flash the grid white on every sheet show.
+    for (const [n, entry] of mounted) {
+      if (n >= pageCount) unmountRow(n, entry);
+      else restyleRow(entry, n);
+    }
+    if (visible) updateWindow(true);
+  }
+
   // Drag the right-edge handle to resize the panel between one column (the docked rail) and MAX_COLS columns.
   // Thumbnail size is fixed, so the width only changes how many columns fit.
   let resizeStartX = 0;
@@ -849,8 +1140,8 @@ export function createThumbnailPanel(scribe, {
   function onResizeMove(event) {
     // The upper bound uses the measured extra width (resizeExtraW), not the PANEL_EXTRA_W estimate,
     // so the real scrollbar gutter decides whether the last column fits.
-    const minPanelW = panelWidthForCols(1);
-    const maxColsInnerW = MAX_COLS * THUMB_W + (MAX_COLS - 1) * GRID_GAP + 2 * PAD;
+    const minPanelW = panelWidthForCols(1, cellW);
+    const maxColsInnerW = MAX_COLS * cellW + (MAX_COLS - 1) * GRID_GAP + 2 * PAD;
     const maxPanelW = Math.min(maxColsInnerW + resizeExtraW, resizeContainerW);
     resizeLivePanelW = Math.max(minPanelW, Math.min(maxPanelW, resizeStartPanelW + (event.clientX - resizeStartX)));
     panelElem.style.width = `${resizeLivePanelW}px`;
@@ -919,7 +1210,7 @@ export function createThumbnailPanel(scribe, {
     for (const n of marquee.base) selected.add(n);
     // The geometry arrays span all pages, not just the mounted window, so the rect selects pages scrolled out of view.
     for (let n = 0; n < pageCount; n++) {
-      if (lefts[n] < right && lefts[n] + THUMB_W > l && PAD + offsets[n] < b && PAD + offsets[n] + boxHeights[n] > t) selected.add(n);
+      if (lefts[n] < right && lefts[n] + cellW > l && PAD + offsets[n] < b && PAD + offsets[n] + boxHeights[n] > t) selected.add(n);
     }
     syncSelectionUI();
   }
@@ -1100,18 +1391,27 @@ export function createThumbnailPanel(scribe, {
 
   /** Reflect the current selection on the mounted rows and refresh the batch bar. */
   function syncSelectionUI() {
-    for (const [n, entry] of mounted) entry.thumbElem.classList.toggle('selected', selected.has(n));
+    for (const [n, entry] of mounted) {
+      entry.thumbElem.classList.toggle('selected', selected.has(n));
+      const chk = entry.thumbElem.querySelector('.scribe-thumb-chk');
+      if (chk) chk.setAttribute('aria-checked', String(selected.has(n)));
+    }
+    // While anything is selected, CSS (scoped to the room's Edit grid) demotes the active-page ring to a neutral hairline, so accent means exactly one thing there: selected.
+    panelElem.classList.toggle('scribe-thumb-hassel', selected.size > 0);
     updateBatchToolbar();
   }
 
   /** Show the floating batch strip only while the rail is visible with 2+ pages selected, and place it by the selection. */
   function updateBatchToolbar() {
-    const show = visible && selected.size >= 2;
+    // In the phone room the floating selection bar is the batch surface; the desktop pill stands down.
+    const show = visible && !roomMode && selected.size >= 2;
     batchCount.textContent = String(selected.size);
     batchBar.style.display = show ? '' : 'none';
     // Dropping below 2 selected clears the frozen anchor, so the next 2+ selection re-freezes at the row nearest center.
     if (selected.size < 2) batchAnchorClientY = null;
     if (show) positionBatchBar();
+    roomBarCount.textContent = `${selected.size} selected`;
+    roomBar.classList.toggle('on', roomMode === 'edit' && selected.size > 0);
   }
 
   /**
@@ -1150,6 +1450,240 @@ export function createThumbnailPanel(scribe, {
   function clearSelection() {
     if (selected.size === 0) return;
     selected.clear();
+    syncSelectionUI();
+  }
+
+  /**
+   * Capture every page's on-screen position keyed by page identity, ahead of a structure change that fully rebuilds the grid (the room Revert's undo unwind).
+   * The returned player, invoked after the rebuild, restores the scroll and replays the change in the grid's reorder language.
+   * @returns {() => void}
+   */
+  function beginStructureSlide() {
+    const doc = scribe.doc;
+    if (!doc) return () => {};
+    const sRect = scrollElem.getBoundingClientRect();
+    const scrollBefore = scrollElem.scrollTop;
+    // Identity is the page's sourceId:sourcePageN pair, not the pageMetrics object: undo snapshots structuredClone the metrics, so object identity does not survive an unwind.
+    // Null fields keep the container's semantics: null sourcePageN means the current index, null sourceId means the primary source.
+    // They are materialized only by the first order edit, so unwinding a document's first session restores nulls, and reading them raw would orphan every page.
+    const idOf = (d, pm, n) => {
+      if (!pm) return null;
+      const sid = pm.sourceId ?? (d.images ? d.images.primarySourceId : null) ?? 'doc';
+      return `${sid}:${pm.sourcePageN ?? n}`;
+    };
+    /** @type {Map<string, ?{left: number, top: number}>} null = duplicated key, never animate it */
+    const before = new Map();
+    /** @type {string[]} pre-change identity order, for the moved-vs-displaced split */
+    const orderBefore = [];
+    // Positions from layout geometry, not DOM rects, so movers crossing the mounted window's edge still get correct endpoints.
+    for (let n = 0; n < pageCount; n += 1) {
+      const key = idOf(doc, doc.pageMetrics[n], n);
+      if (!key) continue;
+      orderBefore.push(key);
+      before.set(key, before.has(key) ? null : {
+        left: sRect.left + lefts[n], top: sRect.top + PAD + offsets[n] - scrollBefore,
+      });
+    }
+    // On-screen image boxes: flight starts for movers, and the only surviving pixels for pages the change removes.
+    // Their <img> elements are adopted at play time, not cloned: the remount revokes unmounted thumbnails' object URLs, and a clone would re-fetch the dead URL and paint white.
+    /** @type {Map<string, {rect: DOMRect, img: HTMLImageElement}>} */
+    const visBefore = new Map();
+    for (const [n, entry] of mounted) {
+      const key = idOf(doc, doc.pageMetrics[n], n);
+      if (!key || before.get(key) === null || !entry.imgElem) continue;
+      const box = entry.imgElem.parentElement;
+      if (box) visBefore.set(key, { rect: box.getBoundingClientRect(), img: entry.imgElem });
+    }
+    return () => {
+      scrollElem.scrollTop = scrollBefore;
+      updateWindow(true);
+      const doc2 = scribe.doc;
+      if (!doc2) return;
+
+      /** @type {Map<string, number>} identity -> page index after the change */
+      const afterIndex = new Map();
+      for (let n = 0; n < doc2.pageMetrics.length; n += 1) {
+        const key = idOf(doc2, doc2.pageMetrics[n], n);
+        if (key && before.has(key) && before.get(key) !== null && !afterIndex.has(key)) afterIndex.set(key, n);
+      }
+      const travelers = new Set();
+      const seq = orderBefore.filter((k) => afterIndex.has(k));
+      if (seq.length && seq.length <= 2000) {
+        const tailVal = [];
+        const tailIdx = [];
+        const parent = new Array(seq.length).fill(-1);
+        for (let i = 0; i < seq.length; i += 1) {
+          const v = afterIndex.get(seq[i]);
+          let lo = 0;
+          let hi = tailVal.length;
+          while (lo < hi) {
+            const mid = (lo + hi) >> 1;
+            if (tailVal[mid] < v) lo = mid + 1; else hi = mid;
+          }
+          tailVal[lo] = v;
+          tailIdx[lo] = i;
+          parent[i] = lo > 0 ? tailIdx[lo - 1] : -1;
+        }
+        const crowd = new Set();
+        for (let i = tailVal.length ? tailIdx[tailVal.length - 1] : -1; i >= 0; i = parent[i]) crowd.add(i);
+        for (let i = 0; i < seq.length; i += 1) { if (!crowd.has(i)) travelers.add(seq[i]); }
+      }
+      // Displaced slides longer than this grow in instead.
+      const maxHop = scrollElem.clientHeight * 2;
+      const sRect2 = scrollElem.getBoundingClientRect();
+      const movers = [];
+      const grown = [];
+      /** @type {Array<{img: ?HTMLImageElement, adopt: ?HTMLImageElement, from: {left: number, top: number}, dest: {left: number, top: number, width: number, height: number}, el: ?HTMLElement}>} */
+      const flights = [];
+      /** @type {Array<{rect: DOMRect, img: HTMLImageElement}>} */
+      const shrinks = [];
+      const onScreen = new Set();
+      for (const [n, entry] of mounted) {
+        const key = idOf(doc2, doc2.pageMetrics[n], n);
+        if (key) onScreen.add(key);
+        const was = key ? before.get(key) : null;
+        const el = entry.thumbElem;
+        if (!was) { grown.push(el); continue; } // restored by the revert (or unidentifiable): grow in
+        const box = entry.imgElem && entry.imgElem.parentElement;
+        if (key && travelers.has(key) && box) {
+          const dest = box.getBoundingClientRect();
+          if (dest.width) {
+            // Flight start: the on-screen box if it was visible, else the old slot's geometry.
+            // The copy adopts the detached pre-change <img>. When the remount reused that element for another page, fall back to the fresh row's image.
+            const src = visBefore.get(key);
+            const from = src ? src.rect : { left: was.left, top: was.top };
+            if (Math.abs(from.left - dest.left) > 0.5 || Math.abs(from.top - dest.top) > 0.5) {
+              flights.push({
+                img: entry.imgElem,
+                adopt: src && !src.img.isConnected ? src.img : null,
+                from,
+                dest,
+                el,
+              });
+            }
+            continue;
+          }
+        }
+        const now = el.getBoundingClientRect();
+        const dx = was.left - now.left;
+        const dy = was.top - now.top;
+        if (!dx && !dy) continue;
+        if (Math.hypot(dx, dy) > maxHop) { grown.push(el); continue; }
+        movers.push({ el, dx, dy });
+      }
+      // Movers whose destination fell outside the mounted window fly off toward it; pages with no destination were removed and shrink out where they stood.
+      // A source <img> still connected means the remount reused its row for another page: skip the visual.
+      for (const [key, src] of visBefore) {
+        if (onScreen.has(key) || src.img.isConnected) continue;
+        const n2 = afterIndex.get(key);
+        if (n2 !== undefined && travelers.has(key)) {
+          flights.push({
+            img: null,
+            adopt: src.img,
+            from: src.rect,
+            dest: {
+              left: sRect2.left + lefts[n2],
+              top: sRect2.top + PAD + offsets[n2] - scrollElem.scrollTop,
+              width: src.rect.width,
+              height: src.rect.height,
+            },
+            el: null,
+          });
+        } else if (n2 === undefined) {
+          shrinks.push(src);
+        }
+      }
+      if (!movers.length && !grown.length && !flights.length && !shrinks.length) return;
+      /** @type {HTMLElement[]} */
+      const clones = [];
+      /** @type {HTMLElement[]} */
+      const shrinkClones = [];
+      /** @type {HTMLElement[]} */
+      const hiddenRows = [];
+      // Lifted copies in dealRows' exact grammar: fixed on document.body, sized to the destination, translated back to the flight start, capped the same way (pages beyond just appear).
+      const FLY_CAP = 24;
+      flights.slice(0, FLY_CAP).forEach((f, i) => {
+        const clone = document.createElement('div');
+        clone.style.cssText = 'position:fixed;margin:0;overflow:hidden;background:#fff;border-radius:2px;'
+          + `box-shadow:0 8px 22px rgba(0,0,0,.45);pointer-events:none;z-index:${9999 - i};`
+          + `left:${f.dest.left}px;top:${f.dest.top}px;width:${f.dest.width}px;height:${f.dest.height}px;`
+          + `transform:translate(${f.from.left - f.dest.left}px,${f.from.top - f.dest.top}px)`;
+        const img = f.adopt || /** @type {HTMLImageElement} */ (f.img.cloneNode(true));
+        if (!img.style.width) { img.style.width = '100%'; img.style.height = '100%'; }
+        img.style.objectFit = 'contain';
+        img.style.display = 'block';
+        clone.appendChild(img);
+        document.body.appendChild(clone);
+        clones.push(clone);
+        if (f.el) { f.el.style.opacity = '0'; hiddenRows.push(f.el); }
+      });
+      for (const src of shrinks) {
+        const clone = document.createElement('div');
+        clone.style.cssText = 'position:fixed;margin:0;overflow:hidden;background:#fff;border-radius:2px;'
+          + 'box-shadow:0 1px 3px rgba(0,0,0,.2);pointer-events:none;z-index:9998;'
+          + `left:${src.rect.left}px;top:${src.rect.top}px;width:${src.rect.width}px;height:${src.rect.height}px;`;
+        const img = src.img;
+        if (!img.style.width) { img.style.width = '100%'; img.style.height = '100%'; }
+        img.style.objectFit = 'contain';
+        img.style.display = 'block';
+        clone.appendChild(img);
+        document.body.appendChild(clone);
+        shrinkClones.push(clone);
+      }
+      for (const m of movers) {
+        m.el.style.transition = 'none';
+        m.el.style.transform = `translate(${m.dx}px, ${m.dy}px)`;
+      }
+      for (const el of grown) {
+        el.style.transition = 'none';
+        el.style.transform = 'scale(.55)';
+        el.style.opacity = '0';
+      }
+      scrollElem.getBoundingClientRect(); // commit the start frame before the transitions arm
+      requestAnimationFrame(() => {
+        for (const m of movers) {
+          m.el.style.transition = `transform ${REORDER_SLIDE_MS}ms ease`;
+          m.el.style.transform = '';
+        }
+        for (const el of grown) {
+          el.style.transition = 'transform .16s ease, opacity .16s ease';
+          el.style.transform = '';
+          el.style.opacity = '';
+        }
+        for (const clone of clones) {
+          clone.style.transition = `transform ${REORDER_SLIDE_MS}ms ease`;
+          clone.style.transform = 'translate(0, 0)';
+        }
+        for (const clone of shrinkClones) {
+          clone.style.transition = 'transform .16s ease, opacity .16s ease';
+          clone.style.transform = 'scale(.55)';
+          clone.style.opacity = '0';
+        }
+        setTimeout(() => {
+          for (const m of movers) m.el.style.transition = '';
+          for (const el of grown) el.style.transition = '';
+          for (const el of hiddenRows) el.style.opacity = '';
+          for (const clone of clones) clone.remove();
+          for (const clone of shrinkClones) clone.remove();
+        }, REORDER_SLIDE_MS + 20);
+      });
+    };
+  }
+
+  /** Toggle page `n` in the room-Edit selection (the tap-anywhere-on-the-page gesture). @param {number} n */
+  function toggleRoomSelect(n) {
+    if (selected.has(n)) selected.delete(n); else selected.add(n);
+    selAnchor = n;
+    syncSelectionUI();
+  }
+
+  /**
+   * Set page `n`'s selection to `want`, for the checkbox range paint: painting to the starting toggle's state means a slide never flip-flops.
+   * @param {number} n @param {boolean} want
+   */
+  function setRoomSelect(n, want) {
+    if (selected.has(n) === want) return;
+    if (want) selected.add(n); else selected.delete(n);
     syncSelectionUI();
   }
 
@@ -1574,16 +2108,38 @@ export function createThumbnailPanel(scribe, {
 
   /**
    * Clear the page selection on a pointerdown outside the panel and its selection UI.
-   * The batch strip and context menu are exempted too because they belong to the selection but float outside the panel.
    * @param {PointerEvent} e
    */
   function onOutsidePointerDown(e) {
     if (selected.size === 0) return;
     const t = e.target;
-    if (t instanceof Element && t.closest('.scribe-thumb-scroll, .scribe-thumb-batch, .scribe-thumb-menu, .scribe-thumb-resize')) return;
+    if (t instanceof Element && t.closest('.scribe-thumb-scroll, .scribe-thumb-batch, .scribe-thumb-selbar, .scribe-thumb-menu, .scribe-thumb-resize')) return;
     clearSelection();
   }
   batchHost.addEventListener('pointerdown', onOutsidePointerDown);
+
+  // An Edit-mode tap on the scroll area's empty space clears the selection: putting one down must not require aiming at a control.
+  // The target is checked at pointerdown because a page press's later events retarget to the scroll element once the reorder system takes pointer capture.
+  /** @type {?{x: number, y: number, t: number, scroll: number}} */
+  let voidTap = null;
+  scrollElem.addEventListener('pointerdown', (e) => {
+    voidTap = null;
+    if (roomMode !== 'edit' || selected.size === 0) return;
+    const t = e.target;
+    if (t instanceof Element && t.closest('.scribe-thumb')) return;
+    voidTap = {
+      x: e.clientX, y: e.clientY, t: Date.now(), scroll: scrollElem.scrollTop,
+    };
+  }, { passive: true });
+  scrollElem.addEventListener('pointerup', (e) => {
+    const v = voidTap;
+    voidTap = null;
+    if (!v || roomMode !== 'edit') return;
+    if (Date.now() - v.t > 350) return;
+    if (Math.hypot(e.clientX - v.x, e.clientY - v.y) > 8) return;
+    if (Math.abs(scrollElem.scrollTop - v.scroll) > 1) return;
+    clearSelection();
+  }, { passive: true });
 
   /**
    * Batch keyboard actions on the current selection: Delete/Backspace removes the selected pages, Escape clears the selection.
@@ -1632,6 +2188,8 @@ export function createThumbnailPanel(scribe, {
     viewportObserver.disconnect();
     reorder.cancelDrag();
     closeContextMenu();
+    peekHide();
+    if (peekCrispUrl) { URL.revokeObjectURL(peekCrispUrl); peekCrispUrl = null; }
     panelElem.removeEventListener('keydown', onPanelKeyDown);
     batchHost.removeEventListener('pointerdown', onOutsidePointerDown);
     document.removeEventListener('keydown', onKeyDown);
@@ -1649,8 +2207,44 @@ export function createThumbnailPanel(scribe, {
   };
   scribe.onAnnotationsRendered = onAnnotationsRendered;
 
+  /**
+   * Snapshot of the current grid layout for the phone pull-up morph, which places stand-in cells where the real thumbnails will sit once the Pages room settles.
+   * Positions are relative to the scroll content (subtract scrollTop for viewport y) and locate the white image box itself, padding included.
+   * Reflects the last computeGeometry, so call after `refit` when the panel was just re-homed.
+   */
+  function gridGeometry() {
+    const boxPadTop = compact ? 3 : 6;
+    return {
+      count: pageCount,
+      cols: gridCols,
+      cellW,
+      pad: PAD,
+      strideX: pageCount > 1 && gridCols > 1 ? lefts[1] - lefts[0] : cellW + GRID_GAP,
+      /** @param {number} n */ boxLeft: (n) => lefts[n] + 4,
+      /** @param {number} n */ boxTop: (n) => PAD + offsets[n] + boxPadTop,
+      /** @param {number} n */ boxH: (n) => boxHeights[n],
+      /** @param {number} n */ thumbTop: (n) => PAD + offsets[n],
+    };
+  }
+
   return {
-    panelElem, toggleElem, rebuild, cancelCut, setActive, setVisible, setWidth, getResizeBounds, dropIndicator, insertPagesAt, destroy,
+    panelElem,
+    toggleElem,
+    rebuild,
+    cancelCut,
+    setActive,
+    setVisible,
+    setWidth,
+    setCompact,
+    setRoomMode,
+    clearSelection,
+    beginStructureSlide,
+    refit,
+    getResizeBounds,
+    gridGeometry,
+    dropIndicator,
+    insertPagesAt,
+    destroy,
   };
 }
 

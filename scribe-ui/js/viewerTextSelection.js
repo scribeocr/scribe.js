@@ -47,7 +47,17 @@ export function ensureSelectionStyleSheet() {
   styleEl.textContent = '.scribe-layer-select{mix-blend-mode:multiply;pointer-events:none}'
     + '.scribe-sel-rect{position:absolute;background:var(--scribe-sel,#a6c8ff)}'
     + '.scribe-mark-rect{position:absolute;background:var(--scribe-match,#a9c4f5)}'
-    + '.scribe-mark-rect.scribe-mark-active{background:var(--scribe-match-active,#ffb454)}';
+    + '.scribe-mark-rect.scribe-mark-active{background:var(--scribe-match-active,#ffb454)}'
+    // The group is pointer-transparent and each handle re-enables hits, so the page still scrolls around the touch-selection grips.
+    // `--sel-handle-scale`, set to 1/zoom per render, holds the grips' drawn size constant on screen at any document zoom.
+    + '.scribe-layer-selhandles{pointer-events:none}'
+    + '.scribe-sel-handle{position:absolute;width:44px;height:44px;margin-left:-22px;pointer-events:auto;'
+    + 'touch-action:none;transform:scale(var(--sel-handle-scale,1));transform-origin:top center;cursor:grab;z-index:2}'
+    + '.scribe-sel-handle::after{content:"";position:absolute;left:50%;top:2px;width:17px;height:17px;'
+    + 'margin-left:-8.5px;border-radius:50% 50% 50% 50%;background:var(--scribe-accent,#3f76d6);'
+    + 'box-shadow:0 0 0 1.5px rgba(255,255,255,.9),0 1px 3px rgba(15,22,40,.35)}'
+    + '.scribe-sel-handle-start::after{border-top-right-radius:2px}'
+    + '.scribe-sel-handle-end::after{border-top-left-radius:2px}';
   document.head.appendChild(styleEl);
 }
 
@@ -669,7 +679,8 @@ export class TextSelection {
      */
     this.range = null;
 
-    /** @type {?{anchor: SelPoint, granularity: number, pointerId: number, box: ?{n: number, orientation: number, x: number, y: number}, editWord?: ?import('./viewerWordObjects.js').UiOcrWord}} */
+    /* eslint-disable-next-line max-len */
+    /** @type {?{anchor: SelPoint, granularity: number, pointerId: number, box: ?{n: number, orientation: number, x: number, y: number}, editWord?: ?import('./viewerWordObjects.js').UiOcrWord, touch?: boolean, clientYOffset?: number}} */
     this._drag = null;
 
     /** Last pointerdown, for the multi-click counter. */
@@ -686,6 +697,15 @@ export class TextSelection {
 
     /** A CSS cursor overriding the hover-derived one, set by the highlighter tool. @type {?string} */
     this.cursorOverride = null;
+
+    /** True while the selection was made by touch, so its adjust handles render. */
+    this._handlesOn = false;
+    /** @type {?HTMLDivElement} */
+    this._handleStartElem = null;
+    /** @type {?HTMLDivElement} */
+    this._handleEndElem = null;
+    /** @type {Array<?Object<string, HTMLDivElement>>} Handle layer groups, keyed by page then orientation. */
+    this._handleGroups = [];
 
     /** @type {?{wordId: string, rects: Array<HTMLDivElement>}} */
     this._hlLift = null;
@@ -722,8 +742,10 @@ export class TextSelection {
     }
     document.removeEventListener('copy', this._onCopy);
     this._endDrag();
+    this._hideHandles();
     this._index.length = 0;
     this._rectPool.length = 0;
+    this._handleGroups.length = 0;
     this.range = null;
   }
 
@@ -754,6 +776,8 @@ export class TextSelection {
   invalidateAll() {
     this._index.length = 0;
     this._rectPool.length = 0;
+    this._handleGroups.length = 0;
+    this._hideHandles();
     this.range = null;
   }
 
@@ -766,6 +790,11 @@ export class TextSelection {
   clear() {
     if (!this.range) return;
     this.range = null;
+    if (this._handlesOn) {
+      this._handlesOn = false;
+      this._hideHandles();
+    }
+    this.viewer._touchCalloutHide?.();
     this._renderAll();
     if (this.viewer.onSelectionChange) this.viewer.onSelectionChange();
   }
@@ -1005,6 +1034,13 @@ export class TextSelection {
     // A touch that moves is a pan, so a touch selection has to wait to see whether it holds still.
     if (event.pointerType === 'touch') { this._armTouchHold(event); return; }
 
+    // A mouse selection replaces any touch-made one, and never shows grips or the callout.
+    if (this._handlesOn) {
+      this._handlesOn = false;
+      this._hideHandles();
+      this.viewer._touchCalloutHide?.();
+    }
+
     const near = Math.abs(event.clientX - this._lastDown.x) < MULTI_CLICK_PX
       && Math.abs(event.clientY - this._lastDown.y) < MULTI_CLICK_PX;
     // `PointerEvent.detail` carries the click count only in Chrome, so the counter is kept here.
@@ -1075,7 +1111,7 @@ export class TextSelection {
     const cancel = () => {
       clearTimeout(timer);
       window.removeEventListener('pointermove', watch);
-      window.removeEventListener('pointerup', cancel);
+      window.removeEventListener('pointerup', onUp);
       window.removeEventListener('pointercancel', cancel);
     };
     /** @param {PointerEvent} move */
@@ -1083,12 +1119,33 @@ export class TextSelection {
       if (move.pointerId !== start.id) return;
       if (Math.hypot(move.clientX - start.x, move.clientY - start.y) > TOUCH_HOLD_PX) cancel();
     };
+
+    /**
+     * A release before the hold timer fires is a tap: on the selection it reopens the callout, elsewhere it clears it.
+     * @param {PointerEvent} up
+     */
+    const onUp = (up) => {
+      cancel();
+      if (up.pointerId !== start.id) return;
+      if (Math.hypot(up.clientX - start.x, up.clientY - start.y) > TOUCH_HOLD_PX) return;
+      if (this.isEmpty()) return;
+      if (this.hitTestSelectionRects(up.clientX, up.clientY)) {
+        this.viewer._touchCalloutShow?.('selection');
+      } else {
+        this.clear();
+      }
+    };
+
     const timer = setTimeout(() => {
       cancel();
       const point = this.pointAt(start.x, start.y);
       if (!point) return;
+      // The callout opens only when the gesture ends, so hide it while the grips come up.
+      this._handlesOn = true;
+      this._ensureHandles();
+      this.viewer._touchCalloutHide?.();
       this._drag = {
-        anchor: point, granularity: WORD, pointerId: start.id, box: null,
+        anchor: point, granularity: WORD, pointerId: start.id, box: null, touch: true,
       };
       this._dragClient = { x: start.x, y: start.y };
       this._setLinear(point, point, WORD);
@@ -1098,15 +1155,17 @@ export class TextSelection {
       window.addEventListener('pointercancel', this._onDragEnd);
     }, TOUCH_HOLD_MS);
     window.addEventListener('pointermove', watch);
-    window.addEventListener('pointerup', cancel);
+    window.addEventListener('pointerup', onUp);
     window.addEventListener('pointercancel', cancel);
   }
 
   /** @param {PointerEvent} event */
   _onDragMove(event) {
     if (!this._drag || event.pointerId !== this._drag.pointerId) return;
-    this._dragClient = { x: event.clientX, y: event.clientY };
-    this._extendToClient(event.clientX, event.clientY);
+    // Apply the drag's y-offset and keep `_dragClient` in sync, so autoscroll re-resolves from the same lifted point.
+    const y = event.clientY + (this._drag.clientYOffset || 0);
+    this._dragClient = { x: event.clientX, y };
+    this._extendToClient(event.clientX, y);
     if (this._autoScrollRaf === null) this._autoScrollRaf = requestAnimationFrame(this._autoScrollTick);
   }
 
@@ -1114,7 +1173,10 @@ export class TextSelection {
   _onDragEnd(event) {
     if (!this._drag || event.pointerId !== this._drag.pointerId) return;
     const editWord = this._drag.editWord;
+    const wasTouch = !!this._drag.touch;
     this._endDrag();
+    // A touch drag ending on a non-empty selection opens its action callout.
+    if (wasTouch && !this.isEmpty()) this.viewer._touchCalloutShow?.('selection');
     // A double-click's edit opens from the RELEASE, the moment a native `dblclick` fires and users are calibrated to.
     // The pointer drifts a few px between the second press and its release, and at word zoom that drift is a character of caret placement,
     // so the caret must be computed from that release, not the press.
@@ -1136,6 +1198,109 @@ export class TextSelection {
    * @returns {boolean}
    */
   isDragging() { return !!this._drag; }
+
+  /**
+   * The handle layer group for page `n` / `orientation`, created and cached on first use.
+   * @param {number} n
+   * @param {number} orientation
+   * @returns {?HTMLDivElement}
+   */
+  _handleGroup(n, orientation) {
+    if (!this._handleGroups[n]) this._handleGroups[n] = {};
+    if (!this._handleGroups[n][orientation]) {
+      const pc = this.viewer._ensurePageContainer(n);
+      if (!pc) return null;
+      // A sibling of the select layer, so the grips escape its multiply-blend and pointer-events:none.
+      const group = this.viewer.createGroup(n, orientation);
+      if (!group) return null;
+      group.style.zIndex = '3';
+      group.classList.add('scribe-layer-selhandles');
+      this._handleGroups[n][orientation] = group;
+      pc.appendChild(group);
+    }
+    return this._handleGroups[n][orientation];
+  }
+
+  /** Build the two grip elements once, each wired to start a drag anchored at the opposite end. */
+  _ensureHandles() {
+    if (this._handleStartElem) return;
+    /** @param {'start'|'end'} which */
+    const make = (which) => {
+      const el = document.createElement('div');
+      el.className = `scribe-sel-handle scribe-sel-handle-${which}`;
+      el.addEventListener('pointerdown', (event) => {
+        if (!this.range || this.range.kind !== 'linear') return;
+        event.preventDefault();
+        event.stopPropagation();
+        // A grip drag reuses the engine's drag, anchored at the far end so the pointer resolves the moving end at character granularity.
+        // The grip sits below its text line, so `clientYOffset` lifts the resolved point a grip-height.
+        // Without the lift, a grip drag would select the line beneath the one being adjusted.
+        const far = which === 'start' ? this.range.end : this.range.start;
+        this._drag = {
+          anchor: { n: far.n, off: far.off }, granularity: CHAR, pointerId: event.pointerId, box: null, touch: true, clientYOffset: -24,
+        };
+        this._dragClient = { x: event.clientX, y: event.clientY };
+        this.viewer._touchCalloutHide?.();
+        window.addEventListener('pointermove', this._onDragMove);
+        window.addEventListener('pointerup', this._onDragEnd);
+        window.addEventListener('pointercancel', this._onDragEnd);
+      });
+      return el;
+    };
+    this._handleStartElem = make('start');
+    this._handleEndElem = make('end');
+  }
+
+  /** Detach both grips from the document. */
+  _hideHandles() {
+    this._handleStartElem?.remove();
+    this._handleEndElem?.remove();
+  }
+
+  /**
+   * Client-space bounding rect of the rendered selection rectangles, or null if none are visible, for anchoring floating UI.
+   * @returns {?{left: number, top: number, right: number, bottom: number}}
+   */
+  selectionClientRect() {
+    let left = Infinity; let top = Infinity; let right = -Infinity; let bottom = -Infinity;
+    for (const pool of this._rectPool) {
+      if (!pool) continue;
+      for (const divs of Object.values(pool)) {
+        for (const div of divs) {
+          if (div.style.display === 'none' || !div.isConnected) continue;
+          const r = div.getBoundingClientRect();
+          if (r.width === 0 && r.height === 0) continue;
+          left = Math.min(left, r.left);
+          top = Math.min(top, r.top);
+          right = Math.max(right, r.right);
+          bottom = Math.max(bottom, r.bottom);
+        }
+      }
+    }
+    return left === Infinity ? null : {
+      left, top, right, bottom,
+    };
+  }
+
+  /**
+   * Whether a client point lands on one of the rendered selection rectangles.
+   * @param {number} clientX
+   * @param {number} clientY
+   * @returns {boolean}
+   */
+  hitTestSelectionRects(clientX, clientY) {
+    for (const pool of this._rectPool) {
+      if (!pool) continue;
+      for (const divs of Object.values(pool)) {
+        for (const div of divs) {
+          if (div.style.display === 'none' || !div.isConnected) continue;
+          const r = div.getBoundingClientRect();
+          if (clientX >= r.left && clientX <= r.right && clientY >= r.top && clientY <= r.bottom) return true;
+        }
+      }
+    }
+    return false;
+  }
 
   _endDrag() {
     this._drag = null;
@@ -1325,6 +1490,8 @@ export class TextSelection {
     const pool = this._rectPool[n] || (this._rectPool[n] = {});
     /** @type {Object<string, Array<SelRect>>} */
     const wanted = {};
+    /** @type {?Array<SelRect>} This page's rectangles in reading order, kept for grip placement below. */
+    let pageRects = null;
 
     if (!this.isEmpty()) {
       const idx = this.index(n);
@@ -1339,6 +1506,7 @@ export class TextSelection {
           const b = n === range.end.n ? range.end.off : idx.length;
           rects = idx.rects(a, b);
         }
+        pageRects = rects;
         for (const rect of rects) (wanted[rect.orientation] || (wanted[rect.orientation] = [])).push(rect);
       }
     }
@@ -1366,14 +1534,38 @@ export class TextSelection {
         div.style.height = `${rect.bottom - rect.top}px`;
       }
     }
+
+    // Placing the grips here means they follow the selection rectangles across every re-render (drag, zoom, selection change).
+    // The start grip sits under the first rectangle on the range's start page, the end grip under the last on its end page.
+    if (this._handlesOn && this.range && this.range.kind === 'linear' && !this.isEmpty() && pageRects && pageRects.length > 0) {
+      this._ensureHandles();
+      const scale = `${1 / (this.viewer.zoomLevel || 1)}`;
+      /**
+       * @param {HTMLDivElement} el @param {SelRect} rect @param {number} x
+       */
+      const place = (el, rect, x) => {
+        const group = this._handleGroup(n, rect.orientation);
+        if (!group) return;
+        if (el.parentElement !== group) group.appendChild(el);
+        el.style.left = `${x}px`;
+        el.style.top = `${rect.bottom}px`;
+        el.style.setProperty('--sel-handle-scale', scale);
+      };
+      if (n === this.range.start.n && this._handleStartElem) place(this._handleStartElem, pageRects[0], pageRects[0].left);
+      if (n === this.range.end.n && this._handleEndElem) {
+        const last = pageRects[pageRects.length - 1];
+        place(this._handleEndElem, last, last.right);
+      }
+    }
   }
 
   /**
-   * Forget page `n`'s pooled rectangles, whose elements went away with its layer.
+   * Forget page `n`'s pooled rectangles and handle layer, whose elements went away with its layer.
    * @param {number} n
    */
   destroyPage(n) {
     this._rectPool[n] = {};
+    this._handleGroups[n] = null;
   }
 
   /**

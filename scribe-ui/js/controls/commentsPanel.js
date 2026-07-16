@@ -36,7 +36,8 @@ const QUOTE_SCROLL_SLACK_PX = 64;
  * @param {{ onNavigate: (pageIndex: number) => void, onResize?: (width: number, phase: 'start'|'move'|'end') => void }} handlers
  *   `onResize` fires as the right-edge handle is dragged, with the desired width and the drag phase.
  * @returns {{ panelElem: HTMLDivElement, toggleElem: HTMLSpanElement, rebuild: () => void, setActive: (pageIndex: number) => void,
- * setVisible: (v: boolean) => void, reveal: (target: import('../viewerWordObjects.js').UiOcrWord | AnnotationText) => void, destroy: () => void }}
+ * setVisible: (v: boolean) => void, reveal: (target: import('../viewerWordObjects.js').UiOcrWord | AnnotationText) => void, destroy: () => void,
+ * newNote: () => void, count: () => number }}
  */
 export function createCommentsPanel(scribe, { onNavigate, onResize }) {
   const panelElem = document.createElement('div');
@@ -59,8 +60,8 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
   newBtn.className = 'scribe-cm-new';
   newBtn.title = 'New note on this page';
   newBtn.innerHTML = NEW_NOTE_SVG;
-  newBtn.addEventListener('click', (e) => {
-    e.stopPropagation();
+  // Shared by the header button and the phone sheet's header action (which replaces this header there).
+  function newNote() {
     if (!hasDoc() || !scribe.getNotesGroup) return;
     // Place at the centre of the current viewport so the new note lands on-screen.
     // Fall back to the current page.
@@ -81,6 +82,10 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
     const group = scribe.getNotesGroup(n);
     const icon = group ? group.lastElementChild : null;
     if (icon && scribe._openNoteEditor) scribe._openNoteEditor(annot, n, icon);
+  }
+  newBtn.addEventListener('click', (e) => {
+    e.stopPropagation();
+    newNote();
   });
   headerElem.append(headerTitle, countElem, newBtn);
   panelElem.appendChild(headerElem);
@@ -531,13 +536,14 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
       const removeBtn = document.createElement('button');
       removeBtn.type = 'button';
       removeBtn.className = 'scribe-cm-remove';
-      const conversation = target === 'root' && row.replies.length > 0;
-      // A note is its conversation, so deleting the conversation deletes the note.
-      if (conversation) removeBtn.textContent = row.kind === 'note' ? 'Delete note' : 'Delete conversation';
+      // A note is its conversation even when reply-less, so a note root's verb deletes the note itself.
+      // A highlight root without replies only clears its comment.
+      const deletes = target === 'root' && (row.kind === 'note' || row.replies.length > 0);
+      if (deletes) removeBtn.textContent = row.kind === 'note' ? 'Delete note' : 'Delete conversation';
       else removeBtn.textContent = target === 'root' ? 'Remove comment' : 'Delete reply';
       removeBtn.addEventListener('click', (e) => {
         e.stopPropagation();
-        if (conversation) {
+        if (deletes) {
           foldEditor(false);
           if (row.kind === 'note') deleteNote(row); else setHighlightComment(row, '');
           rebuild();
@@ -1053,6 +1059,6 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
 
   panelElem.style.display = 'none';
   return {
-    panelElem, toggleElem, rebuild, setActive, setVisible, reveal, destroy,
+    panelElem, toggleElem, rebuild, setActive, setVisible, reveal, destroy, newNote, count: () => rows.length,
   };
 }

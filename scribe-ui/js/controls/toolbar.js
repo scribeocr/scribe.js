@@ -125,8 +125,11 @@ export function createPageNav(scribe) {
   pageCountElem.style.fontVariantNumeric = 'tabular-nums';
   pageCountElem.style.paddingLeft = '0.5rem';
 
+  const pageSepElem = document.createElement('span');
+  pageSepElem.className = 'scribe-page-sep';
+  pageSepElem.textContent = '/';
   pageInputGroup.appendChild(pageNumElem);
-  pageInputGroup.appendChild(document.createTextNode(' / '));
+  pageInputGroup.appendChild(pageSepElem);
   pageInputGroup.appendChild(pageCountElem);
 
   /**
@@ -175,8 +178,8 @@ export function createZoomControls(scribe) {
   return { zoomControls, zoomInElem, zoomOutElem };
 }
 
-const ROTATE_LEFT_SVG = lineIcon('<path d="M5.5 8.25A7.5 7.5 0 1 0 12 4.5"/><path d="M8.5 4.5 12 2.8 12 6.2Z" fill="currentColor" stroke="none"/>');
-const ROTATE_RIGHT_SVG = lineIcon('<path d="M18.5 8.25A7.5 7.5 0 1 1 12 4.5"/><path d="M15.5 4.5 12 2.8 12 6.2Z" fill="currentColor" stroke="none"/>');
+export const ROTATE_LEFT_SVG = lineIcon('<path d="M5.5 8.25A7.5 7.5 0 1 0 12 4.5"/><path d="M8.5 4.5 12 2.8 12 6.2Z" fill="currentColor" stroke="none"/>');
+export const ROTATE_RIGHT_SVG = lineIcon('<path d="M18.5 8.25A7.5 7.5 0 1 1 12 4.5"/><path d="M15.5 4.5 12 2.8 12 6.2Z" fill="currentColor" stroke="none"/>');
 
 /**
  * Build the rotate-left/rotate-right control group, wired to `scribe.rotatePage` on the current page.
@@ -838,6 +841,500 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
     .${r} .scribe-app-menu-item:hover { background: var(--scribe-hover); }
     .${r} .scribe-app-menu-item.busy { opacity: .6; pointer-events: none; }
+    /* Coarse-pointer (touch-primary) sizing: platform-minimum 44px targets, and 16px input fonts because iOS zooms the page when focusing any input smaller.
+       Keyed on the state class the app constructor sets rather than a media query, so embedders and tests can force either mode. */
+    .${r}.scribe-coarse .scribe-app-menu-item { min-height: 44px; }
+    .${r}.scribe-coarse input,
+    .${r}.scribe-coarse textarea,
+    .${r}.scribe-coarse [contenteditable] { font-size: 16px; }
+    .${r}.scribe-coarse .scribe-drop-btn { min-height: 44px; }
+    /* The panel resize strips are invisible hit areas (cursor only), so widening them costs nothing visually. */
+    .${r}.scribe-coarse .scribe-thumb-resize,
+    .${r}.scribe-coarse .scribe-bm-resize,
+    .${r}.scribe-coarse .scribe-cm-resize { width: 18px; }
+
+    /* Touch priority: controls whose job lives in a gesture on touch (zoom = pinch/double-tap) or is rare enough for the app menu (rotate) leave the bar, so a single row fits tablet widths at 44px targets.
+       The app-menu rows that replace them show only then. */
+    .${r}.scribe-coarse .scribe-touch-hide,
+    .${r}.scribe-phone .scribe-touch-hide { display: none !important; }
+    .${r} .scribe-app-menu-item.scribe-touch-row { display: none; }
+    .${r}.scribe-coarse .scribe-app-menu-item.scribe-touch-row,
+    .${r}.scribe-phone .scribe-app-menu-item.scribe-touch-row { display: flex; }
+
+    /* ---- Phone layout (scribe-phone): the thumb dock replaces the top toolbar. ----
+       The dock carries the irreducible set (menu, find, page pill, panels) at the bottom in thumb reach, above the home indicator.
+       No bars above the document. */
+    .${r} .scribe-dock {
+      position: absolute;
+      left: 0; right: 0; bottom: 0;
+      /* Above the sheet (z-index 25), which slides up from behind the dock.
+         Without this the rising sheet covers the dock mid-animation and the dock pops back over it at the end. */
+      z-index: 26;
+      display: none;
+      align-items: center;
+      justify-content: space-evenly;
+      /* 56px of controls + the home-indicator safe area; border-box so offsetHeight is exactly the dock's height. */
+      height: calc(56px + env(safe-area-inset-bottom, 0px));
+      box-sizing: border-box;
+      padding-bottom: env(safe-area-inset-bottom, 0px);
+      background: var(--scribe-surface);
+      border-top: 1px solid var(--scribe-line);
+      color: var(--scribe-ink);
+    }
+    .${r}.scribe-phone .scribe-dock { display: flex; }
+    /* Dock targets are 44px regardless of pointer: this bar exists only in the phone layout. */
+    .${r} .scribe-dock .cr-icon-button { width: 44px; height: 44px; }
+    /* The page-number pill: information first, tap to go to a page.
+       44px tall: the input inside is interactive, so the pill is a touch target like its dock siblings.
+       "2 / 14" must read as one piece of text, not an input beside a label. */
+    .${r} .scribe-dock .btn-group {
+      height: 44px;
+      box-sizing: border-box;
+      padding: 0 16px;
+      border-radius: 999px;
+      background: var(--scribe-sunken);
+      border: 1px solid var(--scribe-line);
+      font-size: 16px;
+      font-weight: 600;
+      font-variant-numeric: tabular-nums;
+    }
+    /* font: inherit is load-bearing: an input does not inherit font on its own, and the "-toolbar input" font rules do not match inside the dock, so the page number would render in the browser's default font. */
+    .${r} .scribe-dock .btn-group input {
+      font: inherit;
+      border: none;
+      background: transparent;
+      color: var(--scribe-ink);
+      text-align: right;
+      padding: 0;
+      margin: 0;
+    }
+    .${r} .scribe-dock .btn-group span { font-size: 16px !important; }
+    .${r} .scribe-dock .btn-group .scribe-page-sep { color: var(--scribe-ink-3); font-weight: 500; margin: 0 5px; }
+
+    /* The app menu opens upward from the dock.
+       The app sets --scribe-phone-menu-max to the height above the dock, so a long menu scrolls in place instead of leaving the top edge. */
+    .${r}.scribe-phone .scribe-app-menu {
+      top: auto;
+      bottom: calc(100% + 10px);
+      max-height: var(--scribe-phone-menu-max, calc(100dvh - 140px));
+      overflow-y: auto;
+    }
+
+    /* Phone find bar: a full-width surface at the bottom, the mobile convention of sitting just above the keyboard.
+       The app tracks the keyboard overlap into --scribe-kb-inset (visualViewport), and the bar rides just above it, or 8px above the dock when no keyboard is up.
+       The input row wraps below the controls so it sits nearest the keyboard. */
+    .${r}.scribe-phone .scribe-search-group {
+      top: auto;
+      bottom: max(calc(64px + env(safe-area-inset-bottom, 0px)), calc(var(--scribe-kb-inset, 0px) + 8px));
+      left: 8px;
+      right: 8px;
+      flex-wrap: wrap;
+      gap: 4px;
+      padding: 8px;
+    }
+    .${r}.scribe-phone input.scribe-search-input {
+      flex: 1 1 100%;
+      order: 2;
+      height: 40px;
+      box-sizing: border-box;
+      padding: 0 10px;
+      border: 1px solid var(--scribe-line-strong);
+      border-radius: 6px;
+      background: var(--scribe-surface);
+      color: var(--scribe-ink);
+      font-size: 16px;
+      text-align: left;
+    }
+    .${r}.scribe-phone .scribe-search-count { margin-right: auto; }
+
+    /* Toasts clear the dock instead of hiding behind it. */
+    .${r}.scribe-phone .scribe-toast-stack { bottom: calc(72px + env(safe-area-inset-bottom, 0px)); }
+
+    /* ---- Phone panels: one bottom sheet hosts pages/bookmarks/comments. ----
+       There is no scrim: opening the sheet reflows the document into the space above it (_docBottomInset), so the page stays interactive and the dock stays visible to toggle the sheet closed.
+       The scrim element below is retained but never shown. */
+    .${r} .scribe-sheet-scrim {
+      position: absolute;
+      inset: 0;
+      z-index: 24;
+      background: rgba(12, 16, 26, 0.42);
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity 0.22s ease;
+    }
+    .${r} .scribe-sheet-scrim.open { opacity: 1; pointer-events: auto; }
+    .${r} .scribe-sheet {
+      position: absolute;
+      left: 0; right: 0;
+      bottom: calc(56px + env(safe-area-inset-bottom, 0px));
+      z-index: 25;
+      height: 50%;
+      display: flex;
+      flex-direction: column;
+      box-sizing: border-box;
+      background: var(--scribe-surface);
+      border-radius: 18px 18px 0 0;
+      box-shadow: var(--scribe-shadow-pop);
+      /* The hidden transform adds the dock offset: the sheet rests one dock-height above the bottom edge, so a bare 102% would leave it peeking over the dock. */
+      transform: translateY(calc(102% + 56px + env(safe-area-inset-bottom, 0px)));
+      transition: transform 0.26s cubic-bezier(0.3, 0.9, 0.3, 1), height 0.26s cubic-bezier(0.3, 0.9, 0.3, 1);
+    }
+    .${r} .scribe-sheet.open { transform: translateY(0); }
+    .${r} .scribe-sheet.full { height: calc(100% - 56px - env(safe-area-inset-bottom, 0px) - 10px); }
+    .${r} .scribe-sheet.dragging { transition: none; }
+    @media (prefers-reduced-motion: reduce) {
+      .${r} .scribe-sheet, .${r} .scribe-sheet-scrim { transition: none; }
+    }
+    /* One-row sheet header: pill cap on the top edge, tabs left, the active panel's actions right.
+       The whole row is the drag handle, and a tap on its blank parts toggles half/full. */
+    .${r} .scribe-sheet-hd {
+      position: relative;
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      flex: 0 0 auto;
+      padding: 10px 10px 5px 12px;
+      cursor: grab;
+      touch-action: none;
+    }
+    .${r} .scribe-sheet-pill {
+      position: absolute;
+      top: 5px;
+      left: 50%;
+      transform: translateX(-50%);
+      width: 40px;
+      height: 4.5px;
+      border-radius: 3px;
+      background: var(--scribe-ink-3);
+      opacity: 0.55;
+      pointer-events: none;
+    }
+    .${r} .scribe-sheet-seg { display: flex; gap: 4px; min-width: 0; }
+    .${r} .scribe-sheet-seg button {
+      min-height: 36px;
+      padding: 0 12px;
+      border: 0;
+      border-radius: 8px;
+      background: none;
+      cursor: pointer;
+      font: 600 13px/1 'Segoe UI', Tahoma, sans-serif;
+      color: var(--scribe-ink-2);
+      white-space: nowrap;
+    }
+    .${r}.scribe-coarse .scribe-sheet-seg button { min-height: 44px; font-size: 14px; }
+    .${r} .scribe-sheet-seg button.on { background: var(--scribe-active); color: var(--scribe-accent); }
+    .${r} .scribe-sheet-acts { display: flex; align-items: center; gap: 5px; margin-left: auto; }
+    .${r} .scribe-sheet-count {
+      font: 600 12px/1 'Segoe UI', Tahoma, sans-serif;
+      font-variant-numeric: tabular-nums;
+      color: var(--scribe-ink-3);
+    }
+    .${r} .scribe-sheet-act {
+      width: 36px;
+      height: 36px;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      padding: 0;
+      border: 0;
+      border-radius: 8px;
+      background: none;
+      color: var(--scribe-ink-2);
+      cursor: pointer;
+    }
+    .${r} .scribe-sheet-act:hover { background: var(--scribe-hover); }
+    .${r} .scribe-sheet-act svg { width: 16px; height: 16px; }
+    .${r}.scribe-coarse .scribe-sheet-act { width: 44px; height: 44px; }
+    .${r} .scribe-sheet-content { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+
+    /* Panels docked in the sheet: neutralize the rail geometry so each panel fills the sheet body.
+       The !important is load-bearing: the rail code positions the panels with inline styles. */
+    .${r} .scribe-sheet-content .scribe-bookmarks-panel,
+    .${r} .scribe-sheet-content .scribe-comments-panel {
+      top: 0 !important;
+      height: 100% !important;
+      width: 100% !important;
+      left: 0 !important;
+      transform: none !important;
+      border-right: none;
+      background: transparent;
+      transition: none;
+    }
+    /* The desktop panel title bars are redundant under a tab that already names the panel; their actions live in the sheet header. */
+    .${r} .scribe-sheet-content .scribe-bm-hd,
+    .${r} .scribe-sheet-content .scribe-cm-hd { display: none; }
+    .${r} .scribe-sheet-content .scribe-bm-has-header .scribe-bm-tree { top: 0; }
+    .${r} .scribe-sheet-content .scribe-cm-list { top: 0; }
+    .${r} .scribe-sheet-content .scribe-bm-resize,
+    .${r} .scribe-sheet-content .scribe-cm-resize { display: none; }
+
+    /* ---- Full-height Pages room: the companion strip's expanded state. ----
+       Slides up from behind the dock like the sheet: a header over the re-homed thumbnail panel, whose compact grid spreads across the room's full width. */
+    .${r} .scribe-pages-room {
+      position: absolute;
+      left: 0; right: 0; top: 0;
+      bottom: calc(56px + env(safe-area-inset-bottom, 0px));
+      z-index: 25;
+      display: flex;
+      flex-direction: column;
+      background: var(--scribe-canvas);
+      transform: translateY(calc(103% + 56px + env(safe-area-inset-bottom, 0px)));
+      transition: transform 0.26s cubic-bezier(0.3, 0.9, 0.3, 1);
+    }
+    .${r} .scribe-pages-room.open { transform: translateY(0); }
+    .${r} .scribe-pages-room.dragging { transition: none; }
+    /* Mid-morph the room is one stretching panel: overflow clips the parked reveal row, and the hairline makes the band it starts as pixel-identical to the strip it covers.
+       The line is an inset shadow because a border would consume 1px of the content box and shift everything down relative to the settled room. */
+    .${r} .scribe-pages-room.morphing {
+      overflow: hidden;
+      box-shadow: inset 0 1px 0 0 var(--scribe-line);
+      will-change: transform;
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .${r} .scribe-pages-room { transition: none; }
+    }
+    .${r} .scribe-room-hd {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 0 0 auto;
+      padding: 10px 6px 10px 14px;
+      background: var(--scribe-surface);
+      border-bottom: 1px solid var(--scribe-line);
+      /* Above the morph layer (z 3), so a stand-in cell riding under the header's band slides beneath it rather than painting over it, matching the settled room where the grid lives below the header. */
+      position: relative;
+      z-index: 4;
+    }
+    .${r} .scribe-room-title { font: 700 15px/1 'Segoe UI', Tahoma, sans-serif; color: var(--scribe-ink); }
+    .${r} .scribe-room-count {
+      font: 600 12px/1 'Segoe UI', Tahoma, sans-serif;
+      font-variant-numeric: tabular-nums;
+      color: var(--scribe-ink-3);
+    }
+    .${r} .scribe-room-done {
+      margin-left: auto;
+      min-height: 36px;
+      padding: 0 12px;
+      border: 0;
+      border-radius: 8px;
+      background: none;
+      color: var(--scribe-accent);
+      font: 700 13.5px/1 'Segoe UI', Tahoma, sans-serif;
+      cursor: pointer;
+    }
+    .${r} .scribe-room-done:hover { background: var(--scribe-hover); }
+    .${r}.scribe-coarse .scribe-room-done { min-height: 44px; }
+    .${r} .scribe-room-body { position: relative; flex: 1; min-height: 0; overflow: hidden; }
+    .${r} .scribe-room-body .scribe-thumb-panel {
+      top: 0 !important;
+      height: 100% !important;
+      width: 100% !important;
+      left: 0 !important;
+      transform: none !important;
+      border-right: none;
+      background: transparent;
+      transition: none;
+    }
+    .${r} .scribe-room-body .scribe-thumb-resize { display: none; }
+
+    /* ---- Room modes: browse is read-only, and Edit-to-Done carries all mutation. ----
+       Entering Edit swaps the button's label to Done and hides the room-close, so exactly one "Done" shows at a time. */
+    .${r} .scribe-room-edit {
+      margin-left: auto;
+      min-height: 36px;
+      padding: 0 12px;
+      border: 0;
+      border-radius: 8px;
+      background: none;
+      color: var(--scribe-accent);
+      font: 600 13.5px/1 'Segoe UI', Tahoma, sans-serif;
+      cursor: pointer;
+    }
+    .${r} .scribe-room-edit:hover { background: var(--scribe-hover); }
+    .${r}.scribe-coarse .scribe-room-edit { min-height: 44px; }
+    /* The Edit button owns the flexible gap while present; Done then hugs it. */
+    .${r} .scribe-room-edit ~ .scribe-room-done { margin-left: 0; }
+    .${r} .scribe-pages-room.editing .scribe-room-edit { font-weight: 700; }
+    .${r} .scribe-pages-room.editing .scribe-room-hd { box-shadow: inset 0 -2px 0 0 var(--scribe-accent); }
+
+    /* Revert-the-session: shown in Edit mode only, disabled until the session has changes.
+       While shown it owns the flexible gap, and Edit hugs it. */
+    .${r} .scribe-room-revert {
+      margin-left: auto;
+      min-height: 36px;
+      padding: 0 12px;
+      border: 0;
+      border-radius: 8px;
+      background: none;
+      color: var(--scribe-accent);
+      font: 600 13.5px/1 'Segoe UI', Tahoma, sans-serif;
+      cursor: pointer;
+      display: none;
+    }
+    .${r} .scribe-room-revert:hover:not(:disabled) { background: var(--scribe-hover); }
+    .${r} .scribe-room-revert:disabled { color: var(--scribe-ink-3); cursor: default; }
+    .${r}.scribe-coarse .scribe-room-revert { min-height: 44px; }
+    .${r} .scribe-pages-room.editing .scribe-room-revert { display: block; }
+    .${r} .scribe-pages-room.editing .scribe-room-edit { margin-left: 0; }
+
+    /* Edit-mode selection checkbox overhanging each page's top-left corner.
+       The check glyph is always in the markup: color transparent hides it at rest, and .selected turns it white. */
+    .${r} .scribe-thumb-chk {
+      position: absolute;
+      top: -5px;
+      left: -3px;
+      width: 22px;
+      height: 22px;
+      padding: 0;
+      border-radius: 50%;
+      background: var(--scribe-surface);
+      border: 1px solid var(--scribe-line-strong);
+      box-shadow: var(--scribe-page-shadow);
+      color: transparent;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+      z-index: 3;
+    }
+    .${r} .scribe-thumb-chk svg { width: 13px; height: 13px; }
+    /* Invisible hit halo: a press near the corner counts as the checkbox, so a near-miss can never wobble into a drag lift.
+       44x44 total, biased down-right into the page; the up/left reach stays inside the grid gaps, clear of neighbour tiles. */
+    .${r} .scribe-thumb-chk::before {
+      content: '';
+      position: absolute;
+      inset: -8px -14px -14px -8px;
+    }
+    .${r} .scribe-pages-room.editing .scribe-thumb-chk { display: flex; }
+    .${r} .scribe-thumb.selected .scribe-thumb-chk {
+      background: var(--scribe-accent);
+      border-color: var(--scribe-accent);
+      color: #fff;
+    }
+
+    /* Room-Edit selection: the page wears the accent ring, not the desktop lift + tint, which reads as a wash at phone cell sizes.
+       While anything is selected the active page's ring stands down to a neutral hairline, so accent means exactly one thing in the grid: selected. */
+    .${r} .scribe-pages-room .scribe-thumb.selected .scribe-thumb-box {
+      transform: none;
+      box-shadow: var(--scribe-page-shadow);
+      outline: 2.5px solid var(--scribe-accent);
+    }
+    .${r} .scribe-pages-room .scribe-thumb.selected .scribe-thumb-box::after { content: none; }
+    .${r} .scribe-pages-room .scribe-thumb-hassel .scribe-thumb.active:not(.selected) .scribe-thumb-box {
+      outline: 1px solid var(--scribe-line-strong);
+    }
+
+    /* Floating selection bar: the room-Edit batch surface, rising over the grid's bottom edge while anything is selected. */
+    .${r} .scribe-thumb-selbar {
+      position: absolute;
+      left: 10px;
+      right: 10px;
+      bottom: 10px;
+      height: 46px;
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 0 6px 0 14px;
+      box-sizing: border-box;
+      background: var(--scribe-surface);
+      border: 1px solid var(--scribe-line);
+      border-radius: 12px;
+      box-shadow: var(--scribe-menu-shadow);
+      z-index: 8;
+      font: 600 13px/1 'Segoe UI', Tahoma, sans-serif;
+      color: var(--scribe-ink-2);
+      opacity: 0;
+      transform: translateY(6px);
+      transition: opacity .16s, transform .16s;
+      pointer-events: none;
+    }
+    .${r} .scribe-thumb-selbar.on { opacity: 1; transform: none; pointer-events: auto; }
+    .${r} .scribe-thumb-selbar-count { margin-right: 2px; }
+    .${r} .scribe-thumb-selbar-clear {
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      width: 34px;
+      height: 34px;
+      margin-right: auto;
+      padding: 0;
+      border: 0;
+      border-radius: 8px;
+      background: none;
+      color: var(--scribe-ink-3);
+      cursor: pointer;
+    }
+    .${r} .scribe-thumb-selbar-clear svg { width: 15px; height: 15px; }
+    .${r} .scribe-thumb-selbar-btn {
+      display: flex;
+      align-items: center;
+      gap: 6px;
+      height: 38px;
+      padding: 0 11px;
+      border: 0;
+      border-radius: 9px;
+      background: none;
+      color: var(--scribe-accent);
+      font: 600 13px/1 'Segoe UI', Tahoma, sans-serif;
+      cursor: pointer;
+    }
+    .${r} .scribe-thumb-selbar-btn svg { width: 16px; height: 16px; }
+    .${r} .scribe-thumb-selbar-btn:hover, .${r} .scribe-thumb-selbar-clear:hover { background: var(--scribe-hover); }
+    .${r} .scribe-thumb-selbar-delete { color: var(--scribe-danger); }
+    @media (prefers-reduced-motion: reduce) {
+      .${r} .scribe-thumb-selbar { transition: none; }
+    }
+
+    /* Browse-mode page peek: a buttonless preview that lives only under a held finger.
+       pointer-events: none throughout: nothing in it is pressable, and the scrub hit-test must pass through to the cells beneath. */
+    .${r} .scribe-thumb-scrim {
+      position: absolute;
+      inset: 0;
+      background: rgba(12, 16, 26, .35);
+      z-index: 9;
+      opacity: 0;
+      pointer-events: none;
+      transition: opacity .16s;
+    }
+    .${r} .scribe-thumb-scrim.on { opacity: 1; }
+    .${r} .scribe-thumb-peek {
+      position: absolute;
+      left: 50%;
+      top: 42%;
+      transform: translate(-50%, -50%) scale(.94);
+      transition: transform .16s;
+    }
+    .${r} .scribe-thumb-scrim.on .scribe-thumb-peek { transform: translate(-50%, -50%) scale(1); }
+    .${r} .scribe-thumb-peek-box {
+      position: relative;
+      background: #fff;
+      border-radius: 4px;
+      box-shadow: var(--scribe-shadow-pop);
+      outline: 1px solid rgba(0, 0, 0, .14);
+      overflow: hidden;
+    }
+    .${r} .scribe-thumb-peek-box img {
+      width: 100%;
+      height: 100%;
+      display: block;
+      object-fit: contain;
+    }
+    .${r} .scribe-thumb-peek-cap {
+      margin-top: 8px;
+      text-align: center;
+      font: 600 12px/1 'Segoe UI', Tahoma, sans-serif;
+      color: #fff;
+      text-shadow: 0 1px 2px rgba(0, 0, 0, .45);
+    }
+    @media (prefers-reduced-motion: reduce) {
+      .${r} .scribe-thumb-scrim, .${r} .scribe-thumb-peek { transition: none; }
+    }
+
+    /* Empty state on touch: dragging a file is not a phone gesture, so the copy leads with opening. */
+    .${r} .scribe-drop-title-touch { display: none; }
+    .${r}.scribe-coarse .scribe-drop-title-touch { display: inline; }
+    .${r}.scribe-coarse .scribe-drop-title-full { display: none; }
+    .${r}.scribe-coarse .scribe-drop-hint { display: none; }
     /* Size the container, not the svg: the Open/Print lineIcons carry inline width:100% that would override a width set on the svg. */
     .${r} .scribe-app-menu-ic { display: inline-flex; flex: 0 0 auto; width: 16px; height: 16px; color: var(--scribe-ink-2); }
     .${r} .scribe-app-menu-ic svg { width: 100%; height: 100%; display: block; }
@@ -970,6 +1467,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       justify-content: center;
       color: var(--scribe-ink-3);
     }
+    /* Slim is fine for a mouse; a finger needs the platform-minimum width on the dropdown half too. */
+    .${r}.scribe-coarse .scribe-hl-split .scribe-hl-caret { width: 44px; }
 
     /* Seam divider hairline whose 14px height stays under the 15px group separators, so it reads as an intra-control line. */
     .${r} .scribe-hl-split .scribe-hl-caret::before {
@@ -1022,7 +1521,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       box-shadow: 0 0 0 2px var(--scribe-accent-ring), var(--scribe-menu-shadow);
     }
     .${r} .scribe-cmt-meta { display: flex; align-items: center; gap: 7px; margin-bottom: 5px; }
-    .${r} .scribe-cmt-quote-row { display: flex; align-items: stretch; gap: 7px; margin-bottom: 5px; cursor: grab; }
+    /* position: relative anchors the swatch shelf under the header. */
+    .${r} .scribe-cmt-quote-row { display: flex; align-items: stretch; gap: 7px; margin-bottom: 5px; cursor: grab; position: relative; }
     .${r} .scribe-cmt-quote {
       min-width: 0;
       font-size: 11px;
@@ -1065,56 +1565,47 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-cmt-reply .scribe-cm-ava { margin-top: 1px; }
     .${r} .scribe-cmt-reply .scribe-cmt-text { flex: 1 1 auto; width: auto; min-width: 0; }
     .${r} .scribe-cmt-card:not(.pinned) .scribe-cmt-reply { display: none; }
-    .${r} .scribe-cmt-foot { display: none; align-items: center; gap: 3px; border-top: 1px solid var(--scribe-line); margin: 8px -4px 0; padding: 6px 0 0; }
-    .${r} .scribe-cmt-card.pinned .scribe-cmt-foot { display: flex; }
-    .${r} .scribe-cmt-foot-spring { flex: 1 1 auto; }
+    /* Header verbs: shown pinned only, since the preview shows content, never controls. */
+    .${r} .scribe-cmt-hd-verbs { display: none; align-items: center; align-self: center; gap: 2px; flex: 0 0 auto; }
+    .${r} .scribe-cmt-card.pinned .scribe-cmt-hd-verbs { display: flex; }
     .${r} .scribe-cmt-vb {
       display: inline-flex;
       align-items: center;
       justify-content: center;
-      width: 28px;
-      height: 28px;
+      width: 20px;
+      height: 20px;
       padding: 0;
       border: 0;
-      border-radius: 6px;
+      border-radius: 5px;
       background: none;
-      color: var(--scribe-ink-2);
+      color: var(--scribe-ink-3);
       cursor: pointer;
       flex: 0 0 auto;
     }
     .${r} .scribe-cmt-vb:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
     .${r} .scribe-cmt-vb.scribe-cmt-vb-del:hover { color: var(--scribe-danger); }
-    .${r} .scribe-cmt-vb svg { width: 20px; height: 20px; display: block; }
+    .${r} .scribe-cmt-vb svg { width: 16px; height: 16px; display: block; }
+    /* The panel verb is only a reveal shortcut, and on phones it would sit one small glyph from Delete, so it hides there (the sheet stays a dock tap away). */
+    .${r}.scribe-phone .scribe-cmt-vb-panel { display: none; }
 
-
-    /* The fan is transform-only, so this resting width never changes and the footer never reflows. */
-    .${r} .scribe-hl-coins {
-      position: relative;
-      display: inline-flex;
-      align-items: center;
-      width: 27.5px; /* 20px coin + 3 x 2.5px resting slivers */
-      height: 20px;
-      flex: 0 0 auto;
-      cursor: pointer;
-    }
-
-    .${r} .scribe-hl-coins .highlight-color-btn {
+    /* The quote bar doubles as the recolor control on highlight/markup cards (cmtFill arms it). */
+    .${r} .scribe-cmt-bar-ctl { cursor: pointer; }
+    .${r} .scribe-cmt-bar-ctl:hover, .${r} .scribe-cmt-bar-ctl:focus-visible { box-shadow: 0 0 0 2px var(--scribe-accent-ring); outline: none; }
+    .${r} .scribe-cmt-shelf {
       position: absolute;
-      left: 0;
-      top: 0;
-      transform: translateX(calc(var(--coin-i, 0) * 2.5px));
-      transition: transform .16s ease, box-shadow .16s ease;
-      box-shadow: 0 0 0 0.5px var(--scribe-surface);
+      left: 8px;
+      top: calc(100% + 4px);
+      display: none;
+      align-items: center;
+      gap: 6px;
+      background: var(--scribe-surface);
+      border: 1px solid var(--scribe-line);
+      border-radius: 99px;
+      padding: 5px 9px;
+      box-shadow: var(--scribe-menu-shadow);
+      z-index: 3;
     }
-
-    .${r} .scribe-hl-coins:not(.open):hover .highlight-color-btn {
-      box-shadow: 0 0 0 0.5px var(--scribe-surface), 0 2px 6px rgba(0, 0, 0, .28);
-    }
-
-    /* Fanned coins float over the separator and verbs, and return the moment the fan folds. */
-    .${r} .scribe-hl-coins.open { z-index: 2; }
-
-    .${r} .scribe-hl-coins.open .highlight-color-btn { transform: translateX(calc(var(--coin-i, 0) * 16px)); }
+    .${r} .scribe-cmt-shelf.open { display: inline-flex; }
 
 
     /* The notes layer is scaled by the zoom, so dividing it back out holds a constant on-screen size. */
@@ -1271,6 +1762,9 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       width: 17px;
       height: 17px;
     }
+
+    /* Margins, not text spaces: a leading space in the flex row collapses asymmetrically. */
+    .${r} .scribe-page-sep { margin: 0 4px; }
 
     .${r}-toolbar input {
       background: var(--scribe-sunken);
@@ -1430,6 +1924,13 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       padding: 6px 4px;
     }
 
+    /* Tighter rows for the compact phone grid.
+       Keep the overhead in sync with COMPACT_ROW_OVERHEAD (3 pad + 2 gap + 13 label + 3 pad = 21). */
+    .${r} .scribe-thumb-compact .scribe-thumb {
+      gap: 2px;
+      padding: 3px 4px;
+    }
+
     .${r} .scribe-thumb-box {
       position: relative;
       background: #fff;
@@ -1506,6 +2007,27 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       opacity: .3;
     }
 
+    /* Touch reorder: a press swells the page a touch before it lifts, then the source hides under the carried ghost. */
+    .${r} .scribe-thumb.prelift .scribe-thumb-box {
+      transform: scale(1.06);
+    }
+
+    .${r} .scribe-thumb.lifting {
+      opacity: 0;
+      pointer-events: none;
+    }
+
+    /* Pages caught in a sweep-gathered run, before they collapse into the clump in hand. */
+    .${r} .scribe-thumb.inrun .scribe-thumb-box {
+      outline: 2.5px solid var(--scribe-accent);
+      outline-offset: -1px;
+    }
+
+    .${r} .scribe-thumb.inrun .scribe-thumb-label {
+      color: var(--scribe-accent);
+      font-weight: 700;
+    }
+
     /* A page held for a pending cut: dimmed until the cut is pasted or canceled (Escape). */
     .${r} .scribe-thumb.cut .scribe-thumb-box {
       opacity: .45;
@@ -1530,6 +2052,16 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       width: 3px;
       margin-top: 0;
       margin-left: -1.5px;
+    }
+
+    /* Drop-slot placeholder: a dashed outline marking a reorder drag's opened gap as the drop destination.
+       Kept before the rows in the DOM so the sliding crowd passes over it, never under. */
+    .${r} .scribe-thumb-slot {
+      position: absolute;
+      border: 1.5px dashed var(--scribe-line-strong);
+      border-radius: 3px;
+      box-sizing: border-box;
+      pointer-events: none;
     }
 
     /* Drag-select rubber band: a translucent accent-blue box over the rail, sized inline as the pointer drags. */
@@ -2198,6 +2730,22 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
     .${r} .scribe-toast.shown { opacity: 1; transform: translateY(0); }
     .${r} .scribe-toast.leaving { opacity: 0; transform: translateY(8px); }
+    /* Inline toast action, e.g. Undo after a delete. */
+    .${r} .scribe-toast-action {
+      flex: 0 0 auto;
+      margin: -6px -6px -6px 2px;
+      padding: 6px 10px;
+      background: none;
+      border: none;
+      border-radius: 7px;
+      color: var(--scribe-accent);
+      font: 600 13px/1 inherit;
+      font-family: inherit;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .${r} .scribe-toast-action:hover { background: var(--scribe-hover); }
+    .${r}.scribe-coarse .scribe-toast-action { min-height: 40px; padding: 6px 12px; }
 
     /* height must match MESSAGE_BANNER_HEIGHT in pdf-viewer.js (which reserves this strip from the document area) */
     .${r} .scribe-banner {

@@ -7,14 +7,16 @@ import '../js/selection/domSelectionEngine.js';
 import { applyHighlight } from '../js/viewerHighlights.js';
 import { destroyContextMenu } from '../js/viewerCanvasInteraction.js';
 import {
-  addControlStyles, makeToolbarShell, makeSeparator, createPageNav, createZoomControls, createRotateControls, createPrintControls, createOpenControls, createTabStrip, createSearchBar,
-  createAppMenu, OPEN_SVG, PRINT_SVG,
+  addControlStyles, makeToolbarShell, makeSeparator, makeIconButton, createPageNav, createZoomControls, createRotateControls, createPrintControls, createOpenControls, createTabStrip, createSearchBar,
+  createAppMenu, OPEN_SVG, PRINT_SVG, ROTATE_LEFT_SVG, ROTATE_RIGHT_SVG,
 } from '../js/controls/toolbar.js';
-import { createThumbnailPanel, createScrollbars } from '../js/controls/panels.js';
+import { createThumbnailPanel, createScrollbars, THUMB_SVG } from '../js/controls/panels.js';
+import { createCompanionStrip } from '../js/controls/companionStrip.js';
+import { createPagesMorph } from '../js/controls/pagesMorph.js';
 import { createBookmarksPanel } from '../js/controls/bookmarksPanel.js';
 import { createCommentsPanel } from '../js/controls/commentsPanel.js';
 import {
-  createHighlightTool, createNoteTool, createDropZone, openDocumentFromFile, createRedactTool,
+  createHighlightTool, createNoteTool, createDropZone, openDocumentFromFile, createRedactTool, NOTE_TOOL_SVG,
 } from '../js/controls/tools.js';
 import { redactWords } from '../js/viewerRedactions.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
@@ -33,6 +35,8 @@ const TOOLBAR_HEIGHT_MAX = 80;
 
 /** Height of the document tab strip (shown only with 2+ open tabs), in px. */
 const TAB_STRIP_HEIGHT = 30;
+
+const SHEET_PLUS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg>';
 
 /** Height of the dismissible message banner (shown below the chrome), in px. */
 const MESSAGE_BANNER_HEIGHT = 40;
@@ -67,6 +71,9 @@ const ICON_COMBINE = editIcon('<path d="M4 8h9v9H4zM11 5h9v9"/>');
 const ICON_SPLIT = editIcon('<circle cx="6" cy="7" r="2.1"/><circle cx="6" cy="17" r="2.1"/><path d="M8 8l11 8M8 16L19 8"/>');
 /** Crescent moon for the app menu's Dark mode toggle. */
 const ICON_DARK = editIcon('<path d="M20.5 13.5A8 8 0 0 1 10.5 3.5 7 7 0 1 0 20.5 13.5Z"/>');
+/** Scan corners around a letterform, for the touch-only Recognize text menu row. */
+// eslint-disable-next-line max-len
+const ICON_RECOGNIZE = editIcon('<path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16"/><path d="M9 15V9.8A0.8 0.8 0 0 1 9.8 9h4.4a0.8 0.8 0 0 1 0.8 0.8V15M9 12.6h6"/>');
 
 /**
  * @typedef {object} FitResult
@@ -111,6 +118,8 @@ class ScribePDFViewer {
    *   for a full-screen single-viewer app. `'off'` disables them.
    * @param {boolean} [options.comments=false] - Enable the note tool, comments side panel, and rendering of imported /Text sticky-note annotations.
    *   The note tool also needs `highlight` enabled.
+   * @param {boolean} [options.coarsePointer] - Size controls for a touch-primary device.
+   *   Defaults to the `(pointer: coarse)` media query; pass explicitly to override.
    * @param {boolean} [options.edit=true] - Enable editing: page ops (reorder/delete/rotate/insert), text recognition,
    *   redaction, the Export/Combine/Split app-menu actions, and the dark-mode toggle. Pass `false` for a lean read-only viewer.
    * @param {boolean} [options.redact=edit] - Enable redaction marks (context-menu "Redact" and the find bar's "Redact all").
@@ -174,6 +183,9 @@ class ScribePDFViewer {
       this.scribe.opt.enableRecognition = true;
     }
 
+    /** @type {?{imgDims: {width: number, height: number}, zoom: number, isDefaultFit: boolean, widthMode: boolean}} Last automatic fit, so a resize can re-run it. */
+    this._autoFit = null;
+
     const initWidth = width === 'auto' ? (container.clientWidth || 800) : width;
     const initHeight = height === 'auto' ? (container.clientHeight || 1000) : height;
     // Current viewer pixel size, kept in sync by `resize` so `_relayout` can recompute canvas height when the tab strip shows/hides.
@@ -203,10 +215,57 @@ class ScribePDFViewer {
       throw new Error('options.highlight must be true, false, or an object with a colors array.');
     }
 
+    this._coarsePointer = options.coarsePointer
+      ?? !!(typeof window !== 'undefined' && window.matchMedia && window.matchMedia('(pointer: coarse)').matches);
+
+    /** True while the phone layout is active: the top toolbar is replaced by the bottom dock and the side panels by the bottom sheet. */
+    this._phoneChrome = false;
+    /** @type {?HTMLDivElement} The phone bottom dock, built on first phone-mode entry. */
+    this._dockElem = null;
+    /** @type {?ReturnType<typeof createCompanionStrip>} Persistent page filmstrip + scrubber above the dock (phone only). */
+    this._companionStrip = null;
+    /** @type {?HTMLSpanElement} The dock's Panels button (opens the bottom sheet). */
+    this._sheetPanelsBtn = null;
+    /** @type {?HTMLDivElement} */
+    this._sheetElem = null;
+    /** @type {?HTMLDivElement} */
+    this._sheetScrimElem = null;
+    /** @type {?HTMLDivElement} Sheet body that hosts the re-homed bookmarks/comments panels while the phone layout is active. */
+    this._sheetContentElem = null;
+    /** @type {Partial<Record<'bookmarks'|'comments', HTMLButtonElement>>} Sheet segmented-control buttons by view. */
+    this._sheetSegBtns = {};
+    this._sheetOpen = false;
+    /** @type {'bookmarks'|'comments'} The sheet view last shown (restored on reopen). */
+    this._sheetView = 'bookmarks';
+    /** @type {?HTMLSpanElement} Comment-count chip in the sheet header (the panel title bars are hidden on phones). */
+    this._sheetCountElem = null;
+    /** @type {?HTMLButtonElement} The sheet header's action button (+): add bookmark / new note, following the active view. */
+    this._sheetActBtn = null;
+    /** @type {?HTMLDivElement} Full-height Pages room the companion strip expands into, above the dock. */
+    this._pagesRoomElem = null;
+    /** @type {?HTMLDivElement} Pages-room body that hosts the re-homed thumbnail panel while the phone layout is active. */
+    this._roomBodyElem = null;
+    /** @type {?HTMLSpanElement} */
+    this._roomCountElem = null;
+    this._roomOpen = false;
+    this._roomEditing = false;
+    /** @type {?HTMLButtonElement} Edit/Done mode toggle in the room header. */
+    this._roomEditBtn = null;
+    /** @type {?HTMLButtonElement} The room-closing Done, hidden while editing so only one "Done" shows. */
+    this._roomDoneBtn = null;
+    /** @type {?HTMLButtonElement} Revert-the-session button beside Done, shown only while editing. */
+    this._roomRevertBtn = null;
+    // Undo-stack depth at Edit entry (-1 outside Edit): Revert unwinds page ops back to exactly this depth.
+    this._roomEditBaseline = -1;
+    /** @type {?ReturnType<typeof import('../js/controls/pagesMorph.js').createPagesMorph>} Strip-to-room pull-up morph. */
+    this._pagesMorph = null;
+
     addControlStyles(ROOT_CLASS);
 
     this.pdfViewerElem = document.createElement('div');
     this.pdfViewerElem.className = ROOT_CLASS;
+    // State class, not a media query, so the coarse CSS follows the same override/test hook as the JS sizing.
+    if (this._coarsePointer) this.pdfViewerElem.classList.add('scribe-coarse');
     // The component's outer element (toolbar + canvas).
     // Lets the viewer treat a click on its own controls as "still inside the viewer" when deciding whether to relinquish keyboard focus.
     this.scribe.outerElem = this.pdfViewerElem;
@@ -225,12 +284,14 @@ class ScribePDFViewer {
     this.pdfViewerElem.style.fontFamily = '\'Segoe UI\', Tahoma, sans-serif';
 
     const toolbarHeightNum = Number(toolbarHeight);
-    const toolbarHeightResolved = Number.isFinite(toolbarHeightNum)
+    let toolbarHeightResolved = Number.isFinite(toolbarHeightNum)
       ? Math.min(TOOLBAR_HEIGHT_MAX, Math.max(TOOLBAR_HEIGHT_MIN, toolbarHeightNum))
       : TOOLBAR_HEIGHT_DEFAULT;
+    // 44px touch targets need a 56px bar (icons are sized bar - 12).
+    if (this._coarsePointer) toolbarHeightResolved = Math.max(toolbarHeightResolved, 56);
     this.toolbarHeight = showToolbar ? toolbarHeightResolved : 0;
-    // Icons/page-input/text are sized 12px shorter than the bar (~6px of vertical air above and below), clamped to [16, 32].
-    const toolbarIconSize = Math.max(16, Math.min(32, this.toolbarHeight - 12));
+    // Icons/page-input/text are sized 12px shorter than the bar (~6px of vertical air above and below), clamped to [16, 32] ([16, 44] on coarse pointers).
+    const toolbarIconSize = Math.max(16, Math.min(this._coarsePointer ? 44 : 32, this.toolbarHeight - 12));
 
     // The highlight subsystem is created whenever highlighting is enabled, independent of the toolbar,
     // so selection-driven highlighting still works with `showToolbar: false`.
@@ -264,6 +325,9 @@ class ScribePDFViewer {
     this._thumbnailPanel = showThumbnails
       ? createThumbnailPanel(this.scribe, {
         onSelect: (n) => this.scribe.displayPage(n, true, false),
+        // Browse-mode double-tap: navigate, then close the room that covers the viewer.
+        // The await matters: the close morph must anchor its collapse on the new active page, which displayPage updates asynchronously.
+        onPageOpen: async (n) => { await this.scribe.displayPage(n, true, false); this._closePagesRoom(); },
         onExtract: (pageIndices) => this.newDocumentFromPages(pageIndices),
         onInsertFromFile: (index) => this._pickFilesToInsert(index),
         // The panel's width (or hiding it) changed, so re-inset the document into the area beside it.
@@ -335,6 +399,16 @@ class ScribePDFViewer {
       appMenu.menuWrap.append(open.openControls, print.printControls);
       appMenu.addAction('Open file', OPEN_SVG, () => open.openElem.click());
       appMenu.addAction('Print', PRINT_SVG, () => print.printElem.click());
+      // Touch-only rows re-homing the controls the touch layouts drop from the bar.
+      appMenu.addAction('Rotate left', ROTATE_LEFT_SVG, () => this.scribe.rotatePage(this.scribe.state.cp.n, -90))
+        .classList.add('scribe-touch-row');
+      appMenu.addAction('Rotate right', ROTATE_RIGHT_SVG, () => this.scribe.rotatePage(this.scribe.state.cp.n, 90))
+        .classList.add('scribe-touch-row');
+      if (this._noteTool) {
+        const noteTool = this._noteTool;
+        appMenu.addAction('Add note', NOTE_TOOL_SVG, () => noteTool.toolbarElem.click())
+          .classList.add('scribe-touch-row');
+      }
       if (DEBUG_MENU) {
         import('../js/controls/debugMenu.js')
           .then(({ installDebugMenu }) => installDebugMenu(appMenu, this.scribe))
@@ -356,9 +430,16 @@ class ScribePDFViewer {
       toolbarButtons.appendChild(pageNav.prevElem);
       toolbarButtons.appendChild(pageNav.nextElem);
       toolbarButtons.appendChild(pageNav.pageInputGroup);
-      toolbarButtons.appendChild(makeSeparator());
+      // On touch, zoom lives in the pinch and double-tap gestures and rotate is rare enough for the app menu, so both clusters and their separators leave the bar.
+      const sepBeforeRotate = makeSeparator();
+      sepBeforeRotate.classList.add('scribe-touch-hide');
+      rotate.rotateControls.classList.add('scribe-touch-hide');
+      const sepBeforeZoom = makeSeparator();
+      sepBeforeZoom.classList.add('scribe-touch-hide');
+      zoom.zoomControls.classList.add('scribe-touch-hide');
+      toolbarButtons.appendChild(sepBeforeRotate);
       toolbarButtons.appendChild(rotate.rotateControls);
-      toolbarButtons.appendChild(makeSeparator());
+      toolbarButtons.appendChild(sepBeforeZoom);
       toolbarButtons.appendChild(zoom.zoomControls);
       if (this._highlightTool) {
         toolbarButtons.appendChild(makeSeparator());
@@ -397,6 +478,9 @@ class ScribePDFViewer {
       this.pageCountElem = pageNav.pageCountElem;
       this.prevElem = pageNav.prevElem;
       this.nextElem = pageNav.nextElem;
+      // Retained because the phone dock borrows the group (`_setPhoneChrome`) and must return it beside `nextElem`.
+      this._pageInputGroup = pageNav.pageInputGroup;
+      this.pageNumElem.addEventListener('input', () => this._syncDockPageNumWidth());
     }
 
     this.viewerContainer = document.createElement('div');
@@ -443,9 +527,13 @@ class ScribePDFViewer {
       this.pdfViewerElem.appendChild(cpanel);
     }
 
-    this._installFit(fit);
+    // Phone layout: the component's own size decides, so a narrow embed in a wide window behaves like a phone.
+    // The coarse-pointer height test keeps landscape phones in the phone layout: one-handed reach is about the device, not the orientation.
+    this._setPhoneChrome(initWidth <= 480 || (this._coarsePointer && initHeight <= 480));
 
-    this.scribe.init(this.viewerContainer, initWidth, initHeight - this.toolbarHeight);
+    this._installFit(fit, options.fit === undefined);
+
+    this.scribe.init(this.viewerContainer, initWidth, initHeight - this._chromeTop() - this._chromeBottom());
 
     /** @type {?(() => void)} */
     this._updateScrollbars = null;
@@ -464,6 +552,23 @@ class ScribePDFViewer {
 
     // The app menu's outside-click listener is document-level, so retire it on destroy.
     if (this._appMenu) this._teardownCallbacks.push(() => this._appMenu.destroy());
+
+    // The on-screen keyboard shrinks the visual viewport but not the layout viewport, so bottom-anchored bars (the phone find bar) would sit underneath it.
+    // --scribe-kb-inset publishes the keyboard's overlap with this component's bottom edge; the phone CSS lifts the find bar by it.
+    if (window.visualViewport) {
+      const vv = window.visualViewport;
+      const updateKbInset = () => {
+        const kbTop = vv.offsetTop + vv.height;
+        const inset = Math.max(0, Math.round(this.pdfViewerElem.getBoundingClientRect().bottom - kbTop));
+        this.pdfViewerElem.style.setProperty('--scribe-kb-inset', `${inset}px`);
+      };
+      vv.addEventListener('resize', updateKbInset);
+      vv.addEventListener('scroll', updateKbInset);
+      this._teardownCallbacks.push(() => {
+        vv.removeEventListener('resize', updateKbInset);
+        vv.removeEventListener('scroll', updateKbInset);
+      });
+    }
 
     // Selection-driven highlighting + comment marks (needs `scribe.elem`, so wired after init).
     if (this._highlightTool) {
@@ -591,26 +696,37 @@ class ScribePDFViewer {
     this.scribe.displayPageCallback = () => {
       if (origCallback) origCallback();
       if (this.pageNumElem) this.pageNumElem.value = (this.scribe.state.cp.n + 1).toString();
+      this._syncDockPageNumWidth();
       // Keep the navbar total in sync with the live page count. Every op that changes the count (paste, insert, delete, move, undo/redo) ends in displayPage, so refreshing here covers them all.
       if (this.pageCountElem && this.doc) this.pageCountElem.textContent = this.doc.inputData.pageCount.toString();
       if (this._updateScrollbars) this._updateScrollbars();
       if (this._thumbnailPanel) this._thumbnailPanel.setActive(this.scribe.state.cp.n);
       if (this._bookmarksPanel) this._bookmarksPanel.setActive(this.scribe.state.cp.n);
       if (this._commentsPanel) this._commentsPanel.setActive(this.scribe.state.cp.n);
+      if (this._companionStrip) this._companionStrip.setActive(this.scribe.state.cp.n);
     };
 
-    // Both panels must fully rebuild after an edit, or stale rows send a later click or delete to the wrong page.
+    // The thumbnail panel must fully rebuild after an undo/redo, or stale rows send a later click or delete to the wrong page.
+    // Undo/redo only: for ops the panel itself initiates it updates in place, and a rebuild mid-gesture would tear the reorder's DOM out from under the drop animation.
     const origEditCallback = this.scribe.onEditCallback;
     this.scribe.onEditCallback = () => {
       if (origEditCallback) origEditCallback();
-      if (this._bookmarksPanel) this._bookmarksPanel.rebuild();
-      if (this._commentsPanel) this._commentsPanel.rebuild();
       if (this._thumbnailPanel) {
         const len = this.scribe.doc ? this.scribe.doc.pageMetrics.length : 1;
         // The edit invalidated the page indices a pending cut captured, so cancel it.
         this._thumbnailPanel.cancelCut();
         this._thumbnailPanel.rebuild(Math.max(0, Math.min(this.scribe.state.cp.n, len - 1)));
       }
+    };
+
+    // Every page-structure or rotation edit must refresh the passive mirrors that render pages by index, or the filmstrip and the bookmarks/comments panels keep showing the pre-edit pages.
+    this.scribe.onPageEditCallback = () => {
+      if (this._bookmarksPanel) this._bookmarksPanel.rebuild();
+      if (this._commentsPanel) this._commentsPanel.rebuild();
+      if (this._companionStrip) this._companionStrip.rebuild(this.scribe.state.cp.n);
+      // Edits change the counts the sheet and room headers show.
+      if (this._sheetOpen) this._syncSheetHeader();
+      if (this._roomOpen) this._syncRoomHeader();
       // A bookmark edit can change the top-level bookmark count, so refresh the Split action.
       if (this._editEnabled) this._updateSplitButton();
     };
@@ -618,15 +734,24 @@ class ScribePDFViewer {
     // The viewer's right-click "Add bookmark" routes here.
     if (this._bookmarksPanel) {
       this.scribe._addBookmark = (pageIndex) => {
-        if (this._activeSidebar !== 'bookmarks') this._requestSidebar('bookmarks');
+        if (this._phoneChrome) {
+          this._openSheet();
+          this._showSheetView('bookmarks');
+        } else if (this._activeSidebar !== 'bookmarks') this._requestSidebar('bookmarks');
         this._bookmarksPanel.addAtPage(pageIndex);
       };
     }
 
+    // Destructive one-tap actions (the touch callout's delete) report here for a toast with Undo.
+    this.scribe._onDestructiveAction = (message, undo) => this._showToast(message, { actionLabel: 'Undo', onAction: undo });
+
     // The comment card's "show in comments panel" verb routes here.
     if (this._commentsPanel) {
       this.scribe._revealCommentInPanel = /** @param {import('../js/viewerWordObjects.js').UiOcrWord | AnnotationText} target */ (target) => {
-        if (this._activeSidebar !== 'comments') this._requestSidebar('comments');
+        if (this._phoneChrome) {
+          this._openSheet();
+          this._showSheetView('comments');
+        } else if (this._activeSidebar !== 'comments') this._requestSidebar('comments');
         this._commentsPanel.reveal(target);
       };
       // A quiet rebuild after a comment/note is edited elsewhere (mini toolbar, note card), so an open panel reflects it at once.
@@ -797,6 +922,12 @@ class ScribePDFViewer {
     // Pass the initial page so the rail mounts and renders the window around it from the first paint, rather than mounting the top,
     // then jumping (and re-rendering) once the main view's `displayPage` lands on the active page.
     if (this._thumbnailPanel) this._thumbnailPanel.rebuild(initialPage);
+    if (this._companionStrip) {
+      this._companionStrip.rebuild(initialPage);
+      this._companionStrip.setVisible(this._phoneChrome);
+      // Showing the strip changes the document's bottom inset.
+      if (this._phoneChrome && this.scribe.scrollContainer) this._relayout();
+    }
     if (this._bookmarksPanel && this._thumbnailPanel) {
       this._bookmarksPanel.rebuild();
       // Hide the toggle for a document with no bookmarks unless editing (where the user can add them).
@@ -833,6 +964,8 @@ class ScribePDFViewer {
         requestAnimationFrame(() => { tEl.style.transition = ''; });
       }
     }
+    // The panel toggles above also decide the phone sheet's tabs.
+    this._syncDockPanelsBtn();
 
     // Off the critical path: the displaced document's workers die asynchronously while the new page renders.
     // Safe because each document's workers and fonts are namespaced by a unique docId.
@@ -854,6 +987,7 @@ class ScribePDFViewer {
           const hasCommentsNow = ((doc.annotations && doc.annotations.pages) || []).some((p) => (p || []).some((a) => a.comment || a.type === 'text'));
           // Extraction can only reveal comments, never remove them, so no sidebar fallback is needed here.
           this._commentsPanel.toggleElem.style.display = (hasCommentsNow || this.scribe.opt.enablePageEditing) ? '' : 'none';
+          this._syncDockPanelsBtn();
         }
       });
     }
@@ -890,10 +1024,17 @@ class ScribePDFViewer {
 
     if (this.pageCountElem) this.pageCountElem.textContent = '0';
     if (this.pageNumElem) this.pageNumElem.value = '1';
+    this._syncDockPageNumWidth();
     if (this.dropZone) this.dropZone.style.display = '';
     if (this._thumbnailPanel) this._thumbnailPanel.rebuild();
     if (this._bookmarksPanel) this._bookmarksPanel.rebuild();
     if (this._commentsPanel) this._commentsPanel.rebuild();
+    if (this._companionStrip) {
+      this._companionStrip.rebuild();
+      this._companionStrip.setVisible(false);
+      // Hiding the strip changes the document's bottom inset.
+      if (this._phoneChrome && this.scribe.scrollContainer) this._relayout();
+    }
 
     if (terminatePrev) prev.terminate().catch(() => {});
 
@@ -1194,11 +1335,39 @@ class ScribePDFViewer {
   }
 
   /**
-   * Height of the fixed top chrome (toolbar, the tab strip when visible, and the message banner when shown), in px.
+   * Height of the fixed top bars (toolbar, the tab strip when visible, and the message banner when shown), in px.
    * @returns {number}
    */
   _chromeTop() {
-    return this.toolbarHeight + (this._tabStripVisible ? TAB_STRIP_HEIGHT : 0) + this._messageBannerHeight;
+    return (this._phoneChrome ? 0 : this.toolbarHeight) + (this._tabStripVisible ? TAB_STRIP_HEIGHT : 0) + this._messageBannerHeight;
+  }
+
+  /**
+   * Height of the fixed bottom bars (the phone dock plus the visible companion strip), in px, 0 outside the phone layout.
+   * @returns {number}
+   */
+  _chromeBottom() {
+    if (!this._phoneChrome || !this._dockElem) return 0;
+    // Before the component is attached the dock has no layout yet; 56 is its safe-area-free height.
+    const dock = this._dockElem.offsetHeight || 56;
+    // The companion strip sits above the dock while visible, so the document insets above it too.
+    const strip = this._companionStrip && this._companionStrip.stripElem.classList.contains('on')
+      ? this._companionStrip.stripElem.offsetHeight : 0;
+    return dock + strip;
+  }
+
+  /**
+   * Bottom inset for the document area, in px: the fixed bottom bars, grown to the open sheet's top edge in the phone layout.
+   * @returns {number}
+   */
+  _docBottomInset() {
+    if (this._phoneChrome && this._sheetOpen && this._sheetElem && this._dockElem) {
+      const dockH = this._dockElem.offsetHeight || 56;
+      // Capped at half the viewport so a full-height sheet tucks the page behind it rather than squeezing it to nothing.
+      const sheetH = Math.min(this._sheetElem.getBoundingClientRect().height, Math.round(this._height * 0.5));
+      return dockH + sheetH;
+    }
+    return this._chromeBottom();
   }
 
   /**
@@ -1223,8 +1392,11 @@ class ScribePDFViewer {
    * Use when the user is looking and the failure is self-evident (a file didn't open, an export didn't download): the message only adds context, so it auto-dismisses and never blocks.
    * Never a modal.
    * @param {string} message
+   * @param {object} [options]
+   * @param {string} [options.actionLabel] - Label for an inline action button.
+   * @param {() => void} [options.onAction] - Runs when the action button is pressed; the toast then dismisses.
    */
-  _showToast(message) {
+  _showToast(message, { actionLabel, onAction } = {}) {
     this._ensureMessageLayer();
     const toast = document.createElement('div');
     toast.className = 'scribe-toast';
@@ -1237,10 +1409,22 @@ class ScribePDFViewer {
       toast.classList.add('leaving');
       setTimeout(() => toast.remove(), 200);
     };
+    if (actionLabel && onAction) {
+      const actionBtn = document.createElement('button');
+      actionBtn.type = 'button';
+      actionBtn.className = 'scribe-toast-action';
+      actionBtn.textContent = actionLabel;
+      actionBtn.addEventListener('click', (e) => {
+        e.stopPropagation();
+        onAction();
+        dismiss();
+      });
+      toast.appendChild(actionBtn);
+    }
     toast.addEventListener('click', dismiss);
     this._toastStack.appendChild(toast);
     requestAnimationFrame(() => toast.classList.add('shown'));
-    setTimeout(dismiss, 6000);
+    setTimeout(dismiss, actionLabel ? 8000 : 6000);
   }
 
   /**
@@ -1280,6 +1464,10 @@ class ScribePDFViewer {
   _relayout() {
     if (!this.scribe.scrollContainer) return;
     const top = this._chromeTop();
+    // The phone app menu opens upward from the dock, and this cap keeps long menus scrolling in place instead of running off the top edge.
+    if (this._phoneChrome && this._dockElem) {
+      this.pdfViewerElem.style.setProperty('--scribe-phone-menu-max', `${Math.max(120, this._height - this._chromeBottom() - 24)}px`);
+    }
     // The banner occupies the strip just above the document area (below toolbar + tab strip).
     if (this._messageBannerHeight && this._banner) this._banner.style.top = `${top - this._messageBannerHeight}px`;
     if (this._thumbnailPanel) {
@@ -1305,7 +1493,7 @@ class ScribePDFViewer {
     const panelW = activePanel ? (parseFloat(activePanel.panelElem.style.width) || 0) : 0;
     const inset = Math.min(panelW, Math.max(0, this._width - 80));
     this.scribe.scrollContainer.style.marginLeft = `${inset}px`;
-    this.scribe.resize(this._width - inset, this._height - top);
+    this.scribe.resize(this._width - inset, this._height - top - this._docBottomInset());
     // The scrollbar refresh rereads the scroll metrics the resize above just invalidated, forcing a synchronous reflow.
     if (this._updateScrollbars && !this._sidebarDragActive) this._updateScrollbars();
   }
@@ -1512,13 +1700,563 @@ class ScribePDFViewer {
     this._height = height;
     this.pdfViewerElem.style.width = `${width}px`;
     this.pdfViewerElem.style.height = `${height}px`;
-    // The drop zone is only shown in the empty state, where the tab strip is hidden, so it tracks the toolbar.
+    // Crossing the phone threshold switches the layout before the canvas is re-measured.
+    this._setPhoneChrome(width <= 480 || (this._coarsePointer && height <= 480));
     if (this.dropZone) {
+      const dropTop = this._phoneChrome ? 0 : this.toolbarHeight;
+      this.dropZone.style.top = `${dropTop}px`;
       this.dropZone.style.width = `${width - 6}px`;
-      this.dropZone.style.height = `${height - this.toolbarHeight}px`;
+      this.dropZone.style.height = `${height - dropTop - this._chromeBottom()}px`;
     }
     // _relayout sizes the canvas and panel (its width is user-owned) and insets the document by the panel's width.
     this._relayout();
+
+    // Re-run the automatic fit only when width-fit is involved on either side of the resize and the user is still at that fit, so a user zoom is never overridden.
+    // Zooming in place (rather than re-running the fit) keeps the current reading position.
+    const af = this._autoFit;
+    if (af && af.isDefaultFit && this.scribe.scrollContainer && af.zoom > 0
+      && Math.abs(this.scribe.zoomLevel - af.zoom) / af.zoom < 0.05) {
+      const sc = this.scribe.scrollContainer;
+      // Mirrors _installFit's default branches (height fit with its 100+50 margins, width when it overflows).
+      const hZoom = (sc.clientHeight - 150) / af.imgDims.height;
+      const widthMode = hZoom * af.imgDims.width > sc.clientWidth;
+      if (widthMode || af.widthMode) {
+        const target = widthMode ? sc.clientWidth / af.imgDims.width : hZoom;
+        if (target > 0 && Math.abs(target - this.scribe.zoomLevel) / this.scribe.zoomLevel > 0.01) {
+          this.scribe.zoom(target / this.scribe.zoomLevel);
+          af.zoom = target;
+          af.widthMode = widthMode;
+        }
+      }
+    }
+  }
+
+  /**
+   * Size the page-number input to its value in the dock (a fixed width leaves a lopsided gap beside the right-aligned number); the desktop toolbar keeps its fixed box.
+   */
+  _syncDockPageNumWidth() {
+    if (!this.pageNumElem) return;
+    if (this._phoneChrome) this.pageNumElem.style.width = `${Math.max(1, this.pageNumElem.value.length) + 0.4}ch`;
+    else this.pageNumElem.style.width = '3.4em';
+  }
+
+  /**
+   * Enter or leave the phone layout: controls move between the toolbar and the bottom dock, and the panels between the side rail and the sheet / Pages room.
+   * @param {boolean} phone
+   */
+  _setPhoneChrome(phone) {
+    if (phone === this._phoneChrome) return;
+    this._phoneChrome = phone;
+    this.pdfViewerElem.classList.toggle('scribe-phone', phone);
+    if (this.toolbarElem && this._appMenu && this._searchBar) {
+      if (phone) {
+        this._buildPhoneChrome();
+        // Close the rail instantly: this runs mid-resize, where a slide would fight the relayout.
+        if (this._sidebarAnim) { cancelAnimationFrame(this._sidebarAnim.raf); this._sidebarAnim = null; }
+        if (this._activeSidebar) {
+          const openPanel = this._panelFor(this._activeSidebar);
+          this._activeSidebar = null;
+          if (openPanel) openPanel.setVisible(false);
+          if (this.scribe.scrollContainer) this.scribe.scrollContainer.style.marginLeft = '0px';
+        }
+        if (this._thumbnailPanel) this._thumbnailPanel.toggleElem.classList.remove('active');
+        if (this._bookmarksPanel) this._bookmarksPanel.toggleElem.classList.remove('active');
+        if (this._commentsPanel) this._commentsPanel.toggleElem.classList.remove('active');
+        this.toolbarElem.style.display = 'none';
+        this._dockElem.appendChild(this._appMenu.menuWrap);
+        this._dockElem.appendChild(this._searchBar.searchElem);
+        if (this._pageInputGroup) this._dockElem.appendChild(this._pageInputGroup);
+        if (this._sheetPanelsBtn) this._dockElem.appendChild(this._sheetPanelsBtn);
+        // Re-anchor the find bar from the hidden toolbar to the root, where the phone CSS pins it full-width to the top edge.
+        this.pdfViewerElem.appendChild(this._searchBar.findGroupElem);
+        // The recognition progress line rides the dock's top edge instead of the toolbar's bottom.
+        if (this._ocrProgress) this._dockElem.appendChild(this._ocrProgress);
+        if (this._sheetContentElem) {
+          for (const p of [this._bookmarksPanel, this._commentsPanel]) {
+            if (!p) continue;
+            this._sheetContentElem.appendChild(p.panelElem);
+            p.panelElem.style.display = 'none';
+          }
+        }
+        // The Pages panel lives in the strip's expanded room, not the sheet.
+        if (this._roomBodyElem && this._thumbnailPanel) {
+          this._roomBodyElem.appendChild(this._thumbnailPanel.panelElem);
+          this._thumbnailPanel.panelElem.style.display = 'none';
+        }
+        // Compact cells so the room's full width fits several columns (the desktop rail keeps the larger thumbnails).
+        // The room opens read-only: mutation waits for Edit.
+        if (this._thumbnailPanel) {
+          this._thumbnailPanel.setCompact(true);
+          this._thumbnailPanel.setRoomMode('browse');
+        }
+        this._syncDockPanelsBtn();
+        // Gate on this.doc, not scribe.doc: the latter is a truthy empty ScribeDoc from construction, which would show a blank bar before anything is opened.
+        if (this._companionStrip) {
+          this._companionStrip.setVisible(!!this.doc);
+          if (this.doc) this._companionStrip.rebuild(this.scribe.state.cp.n);
+        }
+      } else {
+        if (this._companionStrip) this._companionStrip.setVisible(false);
+        this._closeSheet(true);
+        this._closePagesRoom(true);
+        this.toolbarElem.style.display = 'flex';
+        this.toolbarElemStart.appendChild(this._appMenu.menuWrap);
+        if (this._toolbarButtonsElem && this.nextElem && this._pageInputGroup) {
+          this._toolbarButtonsElem.insertBefore(this._pageInputGroup, this.nextElem.nextSibling);
+        }
+        this.toolbarElemEnd.appendChild(this._searchBar.searchElem);
+        this.toolbarElem.appendChild(this._searchBar.findGroupElem);
+        if (this._ocrProgress) this.toolbarElem.appendChild(this._ocrProgress);
+        // The rail hides the thumbnail panel by transform and the other two by display, so only thumbnails get a visible display back.
+        for (const p of [this._thumbnailPanel, this._bookmarksPanel, this._commentsPanel]) {
+          if (!p) continue;
+          this.pdfViewerElem.appendChild(p.panelElem);
+          p.panelElem.style.display = p === this._thumbnailPanel ? '' : 'none';
+        }
+        if (this._thumbnailPanel) {
+          this._thumbnailPanel.setCompact(false);
+          this._thumbnailPanel.setRoomMode(null);
+        }
+      }
+    }
+    this._updateRecognizeButton();
+    this._syncDockPageNumWidth();
+    if (this.scribe.scrollContainer) this._relayout();
+  }
+
+  /**
+   * Build the phone UI (dock, companion strip, Pages room, bottom sheet) on first phone-mode entry, so desktop-only viewers never pay for it.
+   */
+  _buildPhoneChrome() {
+    if (this._dockElem) return;
+    const dock = document.createElement('div');
+    dock.className = 'scribe-dock';
+    this._dockElem = dock;
+    this.pdfViewerElem.appendChild(dock);
+    if (!this._thumbnailPanel) return;
+
+    // The companion strip is the phone's whole Pages surface: a tap on its pull tab or an upward drag expands it into the Pages room.
+    this._companionStrip = createCompanionStrip(this.scribe, {
+      onExpand: (phase, dy) => this._pagesRoomGesture(phase, dy),
+    });
+    this.pdfViewerElem.appendChild(this._companionStrip.stripElem);
+
+    // The full-height Pages room slides up from behind the dock and covers the document while pages are organized.
+    const room = document.createElement('div');
+    room.className = 'scribe-pages-room';
+    const roomHd = document.createElement('div');
+    roomHd.className = 'scribe-room-hd';
+    const roomTitle = document.createElement('span');
+    roomTitle.className = 'scribe-room-title';
+    roomTitle.textContent = 'Pages';
+    const roomCount = document.createElement('span');
+    roomCount.className = 'scribe-room-count';
+    const roomEdit = document.createElement('button');
+    roomEdit.type = 'button';
+    roomEdit.className = 'scribe-room-edit';
+    roomEdit.textContent = 'Edit';
+    roomEdit.addEventListener('click', () => this._setRoomEditing(!this._roomEditing));
+    this._roomEditBtn = roomEdit;
+    // Revert undoes everything this Edit session did, restoring the state at Edit entry.
+    const roomRevert = document.createElement('button');
+    roomRevert.type = 'button';
+    roomRevert.className = 'scribe-room-revert';
+    roomRevert.textContent = 'Revert';
+    roomRevert.addEventListener('click', () => {
+      const doc = this.scribe.doc;
+      if (!this._roomEditing || !doc || this._roomEditBaseline < 0) return;
+      // Captured before the unwind so the slide can animate from the pre-revert grid.
+      const playSlide = this._thumbnailPanel ? this._thumbnailPanel.beginStructureSlide() : null;
+      // Model-level undo for all but the last step, then one viewer-level undo so the view rebuilds and the refresh callbacks fire once.
+      while (doc.history.undoStack.length > this._roomEditBaseline + 1) {
+        if (!doc.undo()) break;
+      }
+      if (doc.history.undoStack.length > this._roomEditBaseline) this.scribe.undo();
+      if (playSlide) playSlide();
+      // The selection marked pages by index, and the unwind made those indices stale.
+      if (this._thumbnailPanel) this._thumbnailPanel.clearSelection();
+      this._syncRoomHeader();
+    });
+    this._roomRevertBtn = roomRevert;
+    const roomDone = document.createElement('button');
+    roomDone.type = 'button';
+    roomDone.className = 'scribe-room-done';
+    roomDone.textContent = 'Done';
+    roomDone.addEventListener('click', () => this._closePagesRoom());
+    this._roomDoneBtn = roomDone;
+    roomHd.append(roomTitle, roomCount, roomRevert, roomEdit, roomDone);
+    const roomBody = document.createElement('div');
+    roomBody.className = 'scribe-room-body';
+    room.append(roomHd, roomBody);
+    this._pagesRoomElem = room;
+    this._roomBodyElem = roomBody;
+    this._roomCountElem = roomCount;
+    this.pdfViewerElem.appendChild(room);
+
+    // The pull morphs the strip's thumbnails into the room's grid rather than sliding the room over them as a separate panel.
+    this._pagesMorph = createPagesMorph(this.scribe, {
+      roomElem: room, roomHdElem: roomHd, stripElem: this._companionStrip.stripElem, panel: this._thumbnailPanel,
+    });
+
+    const panelsBtn = makeIconButton('Panels', THUMB_SVG, 'Bookmarks and comments');
+    panelsBtn.addEventListener('click', () => { if (this._sheetOpen) this._closeSheet(); else this._openSheet(); });
+    this._sheetPanelsBtn = panelsBtn;
+
+    const scrim = document.createElement('div');
+    scrim.className = 'scribe-sheet-scrim';
+    scrim.addEventListener('click', () => this._closeSheet());
+    this._sheetScrimElem = scrim;
+
+    const sheet = document.createElement('div');
+    sheet.className = 'scribe-sheet';
+    // One-row sheet header: the hidden desktop title bars' actions move into its right slot.
+    const hd = document.createElement('div');
+    hd.className = 'scribe-sheet-hd';
+    const pill = document.createElement('div');
+    pill.className = 'scribe-sheet-pill';
+    const seg = document.createElement('div');
+    seg.className = 'scribe-sheet-seg';
+    for (const [key, label, panel] of /** @type {Array<['bookmarks'|'comments', string, any]>} */ ([
+      ['bookmarks', 'Bookmarks', this._bookmarksPanel],
+      ['comments', 'Comments', this._commentsPanel],
+    ])) {
+      if (!panel) continue;
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.textContent = label;
+      btn.addEventListener('click', () => this._showSheetView(key));
+      seg.appendChild(btn);
+      this._sheetSegBtns[key] = btn;
+    }
+    const acts = document.createElement('div');
+    acts.className = 'scribe-sheet-acts';
+    const countChip = document.createElement('span');
+    countChip.className = 'scribe-sheet-count';
+    this._sheetCountElem = countChip;
+    const actBtn = document.createElement('button');
+    actBtn.type = 'button';
+    actBtn.className = 'scribe-sheet-act';
+    actBtn.innerHTML = SHEET_PLUS_SVG;
+    actBtn.addEventListener('click', () => {
+      if (this._sheetView === 'bookmarks' && this._bookmarksPanel) this._bookmarksPanel.addAtPage();
+      else if (this._commentsPanel) this._commentsPanel.newNote();
+    });
+    this._sheetActBtn = actBtn;
+    acts.append(countChip, actBtn);
+    hd.append(pill, seg, acts);
+    const content = document.createElement('div');
+    content.className = 'scribe-sheet-content';
+    this._sheetContentElem = content;
+    sheet.append(hd, content);
+    this._sheetElem = sheet;
+    this.pdfViewerElem.append(scrim, sheet);
+
+    // Header gestures: a tap on the row's blank parts toggles half/full, and a drag resizes live and snaps to full, half, or closed on release.
+    // Capturing under a button would retarget its click to the row, so capture is immediate only off-button and deferred past the slop when the press starts on one.
+    let dragActive = false;
+    let dragStartY = 0;
+    let dragStartH = 0;
+    let dragLastH = 0;
+    let dragMoved = false;
+    let dragFromButton = false;
+    hd.addEventListener('pointerdown', (e) => {
+      dragActive = true;
+      dragStartY = e.clientY;
+      dragStartH = sheet.getBoundingClientRect().height;
+      dragMoved = false;
+      dragFromButton = !!(e.target instanceof Element && e.target.closest('button'));
+      if (!dragFromButton) {
+        try { hd.setPointerCapture(e.pointerId); } catch { /* untrusted event: move/up still arrive by bubbling */ }
+      }
+    });
+    hd.addEventListener('pointermove', (e) => {
+      if (!dragActive) return;
+      const dy = dragStartY - e.clientY;
+      if (!dragMoved && Math.abs(dy) < 6) return;
+      if (!dragMoved && dragFromButton) {
+        try { hd.setPointerCapture(e.pointerId); } catch { /* see above */ }
+      }
+      dragMoved = true;
+      sheet.classList.add('dragging');
+      const avail = this.pdfViewerElem.clientHeight;
+      dragLastH = Math.min(avail - 10, Math.max(90, dragStartH + dy));
+      sheet.style.height = `${dragLastH}px`;
+    });
+    hd.addEventListener('pointerup', () => {
+      if (!dragActive) return;
+      dragActive = false;
+      if (!dragMoved) {
+        if (dragFromButton) return;
+        sheet.classList.remove('dragging');
+        sheet.classList.toggle('full');
+        return;
+      }
+      // Flush the dragged height while transitions are still off: transitions run from the last committed style, so without this the snap would animate from the last paint, not the release point.
+      sheet.getBoundingClientRect();
+      sheet.classList.remove('dragging');
+      // Snap on the drag's own tracked height: a layout read here could land mid-animation.
+      const avail = this.pdfViewerElem.clientHeight;
+      sheet.style.height = '';
+      if (dragLastH < Math.max(140, avail * 0.28)) { this._closeSheet(); return; }
+      sheet.classList.toggle('full', dragLastH > avail * 0.72);
+    });
+    // A drag that began on a tab still composes a click on release (the capture retargets it here), so swallow it or the drag would also switch tabs.
+    hd.addEventListener('click', (e) => {
+      if (dragMoved) {
+        e.stopPropagation();
+        e.preventDefault();
+        dragMoved = false;
+      }
+    }, true);
+  }
+
+  /** Open the bottom sheet on the last-shown view. */
+  _openSheet() {
+    if (!this._sheetElem || this._sheetOpen) return;
+    // One surface at a time at the bottom edge: the sheet displaces an open Pages room.
+    this._closePagesRoom(true);
+    this._sheetOpen = true;
+    // No scrim: the sheet coexists with a lit, interactive document reflowed above it.
+    this._sheetElem.classList.add('open');
+    if (this._sheetPanelsBtn) this._sheetPanelsBtn.classList.add('active');
+    this._relayout();
+    // The desktop toggles own per-document visibility, so the tabs mirror them, falling back when the remembered view is unavailable.
+    for (const [key, btn] of Object.entries(this._sheetSegBtns)) {
+      const panel = this._panelFor(/** @type {'bookmarks'|'comments'} */ (key));
+      btn.style.display = panel && panel.toggleElem.style.display === 'none' ? 'none' : '';
+    }
+    const viewBtn = this._sheetSegBtns[this._sheetView];
+    if (!viewBtn || viewBtn.style.display === 'none') {
+      const bm = this._sheetSegBtns.bookmarks;
+      this._sheetView = (bm && bm.style.display !== 'none') ? 'bookmarks' : 'comments';
+    }
+    this._showSheetView(this._sheetView);
+  }
+
+  /**
+   * Close the bottom sheet (no-op when closed).
+   * @param {boolean} [instant=false] - Skip the slide-out, for mode flips mid-resize.
+   */
+  _closeSheet(instant = false) {
+    if (!this._sheetElem || !this._sheetOpen) return;
+    this._sheetOpen = false;
+    if (instant) {
+      this._sheetElem.style.transition = 'none';
+      this._sheetScrimElem.style.transition = 'none';
+      requestAnimationFrame(() => {
+        if (this._sheetElem) this._sheetElem.style.transition = '';
+        if (this._sheetScrimElem) this._sheetScrimElem.style.transition = '';
+      });
+    }
+    this._sheetScrimElem.classList.remove('open');
+    this._sheetElem.classList.remove('open');
+    if (this._sheetPanelsBtn) this._sheetPanelsBtn.classList.remove('active');
+    const panel = this._panelFor(this._sheetView);
+    if (panel) panel.setVisible(false);
+    this._relayout();
+  }
+
+  /**
+   * Show one view in the open sheet and point the header's action slot at it.
+   * @param {'bookmarks'|'comments'} key
+   */
+  _showSheetView(key) {
+    this._sheetView = key;
+    for (const [k, btn] of Object.entries(this._sheetSegBtns)) btn.classList.toggle('on', k === key);
+    for (const [k, panel] of /** @type {Array<['bookmarks'|'comments', any]>} */ ([
+      ['bookmarks', this._bookmarksPanel],
+      ['comments', this._commentsPanel],
+    ])) {
+      if (!panel) continue;
+      const on = k === key;
+      panel.panelElem.style.display = on ? '' : 'none';
+      panel.setVisible(on);
+    }
+    this._syncSheetHeader();
+  }
+
+  /** Refresh the sheet header's action slot: the comment count, and the +'s target and visibility. */
+  _syncSheetHeader() {
+    if (this._sheetCountElem) {
+      const n = this._sheetView === 'comments' && this._commentsPanel ? this._commentsPanel.count() : 0;
+      this._sheetCountElem.textContent = n ? String(n) : '';
+    }
+    if (this._sheetActBtn) {
+      // Creation is an editing act, so the + hides in a read-only viewer.
+      this._sheetActBtn.style.display = this.scribe.opt.enablePageEditing ? '' : 'none';
+      const label = this._sheetView === 'bookmarks' ? 'Add bookmark at current page' : 'New note on this page';
+      this._sheetActBtn.title = label;
+      this._sheetActBtn.setAttribute('aria-label', label);
+    }
+  }
+
+  /** Open the full-height Pages room, sliding it up from behind the dock. */
+  _openPagesRoom() {
+    if (!this._pagesRoomElem || this._roomOpen || !this._phoneChrome) return;
+    this._closeSheet(true);
+    this._roomOpen = true;
+    this._showPagesRoomContent();
+    // Clear any residue of an interrupted drag: a leftover inline transform (or the transition-suppressing drag class) would park the room off-position.
+    this._pagesRoomElem.classList.remove('dragging');
+    this._pagesRoomElem.style.transform = '';
+    this._pagesRoomElem.classList.add('open');
+    // The grid's columns derive from the room's full width, so refit once the slide settles.
+    setTimeout(() => { if (this._roomOpen && this._thumbnailPanel) this._thumbnailPanel.refit(); }, 300);
+  }
+
+  /** Reveal the room's thumbnail grid and set the header count (shared by the tap open and the live drag). */
+  _showPagesRoomContent() {
+    this._syncRoomHeader();
+    if (this._thumbnailPanel) {
+      this._thumbnailPanel.panelElem.style.display = '';
+      this._thumbnailPanel.setVisible(true);
+      this._thumbnailPanel.refit();
+    }
+  }
+
+  /** Keep the room header's mode-dependent parts current. */
+  _syncRoomHeader() {
+    const count = this.scribe.doc ? this.scribe.doc.inputData.pageCount : 0;
+    if (this._roomCountElem) {
+      this._roomCountElem.textContent = this._roomEditing ? 'editing' : (count ? `${count} pages` : '');
+    }
+    if (this._roomEditBtn) {
+      const canEdit = !!(this.scribe.opt && this.scribe.opt.enablePageEditing) && count > 1;
+      // While editing the button is the mode's only exit, so it never hides then.
+      this._roomEditBtn.style.display = (this._roomEditing || canEdit) ? '' : 'none';
+    }
+    if (this._roomRevertBtn) {
+      // onPageEditCallback re-runs this sync on every page op, so the enablement tracks the session live.
+      const doc = this.scribe.doc;
+      this._roomRevertBtn.disabled = !this._roomEditing || !doc || this._roomEditBaseline < 0
+        || doc.history.undoStack.length <= this._roomEditBaseline;
+    }
+  }
+
+  /**
+   * Enter or leave the room's Edit mode: browse is read-only and Edit carries every page mutation.
+   * @param {boolean} on
+   */
+  _setRoomEditing(on) {
+    if (!this._pagesRoomElem || this._roomEditing === on) return;
+    this._roomEditing = on;
+    this._roomEditBaseline = on && this.scribe.doc ? this.scribe.doc.history.undoStack.length : -1;
+    this._pagesRoomElem.classList.toggle('editing', on);
+    if (this._roomEditBtn) this._roomEditBtn.textContent = on ? 'Done' : 'Edit';
+    if (this._roomDoneBtn) this._roomDoneBtn.style.display = on ? 'none' : '';
+    this._syncRoomHeader();
+    if (this._thumbnailPanel) this._thumbnailPanel.setRoomMode(on ? 'edit' : 'browse');
+  }
+
+  /**
+   * Close the Pages room (no-op when closed).
+   * @param {boolean} [instant=false] - Skip the slide-out, for mode flips mid-resize.
+   */
+  _closePagesRoom(instant = false) {
+    // Abort before the open-guard below: a close during a live pull arrives with `_roomOpen` still false and would otherwise leave the morph standing.
+    if (this._pagesMorph) this._pagesMorph.abort();
+    this._setRoomEditing(false);
+    if (!this._pagesRoomElem || !this._roomOpen) return;
+    this._roomOpen = false;
+    // Park the covered strip on the active page first: the close must reveal it at rest, not still gliding after an in-room navigation.
+    if (this._companionStrip) this._companionStrip.park();
+    if (!instant && this._pagesMorph
+      && !(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)
+      && this._pagesMorph.beginClose()) {
+      this._pagesMorph.settle(false);
+      return;
+    }
+    if (instant) {
+      this._pagesRoomElem.style.transition = 'none';
+      requestAnimationFrame(() => { if (this._pagesRoomElem) this._pagesRoomElem.style.transition = ''; });
+    }
+    this._pagesRoomElem.classList.remove('open', 'dragging');
+    this._pagesRoomElem.style.transform = '';
+    // Release the grid's resources (thumbnails unmount their rows on hide).
+    if (this._thumbnailPanel) {
+      this._thumbnailPanel.setVisible(false);
+      this._thumbnailPanel.panelElem.style.display = 'none';
+    }
+  }
+
+  /**
+   * The companion strip's pull-up gesture: `tap` (the pull tab) toggles the room, and a drag streams `start`/`move`/`end` with its upward travel.
+   * @param {'tap'|'start'|'move'|'end'} phase
+   * @param {number} dy - Upward travel in px (positive = up).
+   */
+  _pagesRoomGesture(phase, dy) {
+    const room = this._pagesRoomElem;
+    if (!room || !this._phoneChrome) return;
+    const morph = this._pagesMorph;
+    const reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+    const travel = room.offsetHeight || 1;
+    // A live morph owns the room exclusively: only its own move/end steer it, and everything else is ignored rather than allowed to fall through to the plain-slide path and clobber the scene.
+    if (morph && morph.isActive()) {
+      if (phase === 'move' && !morph.settling()) { morph.frame(dy); return; }
+      if (phase === 'end' && !morph.settling()) {
+        morph.settle(dy > Math.min(140, travel * 0.25), (committed) => { if (committed) this._roomOpen = true; });
+      }
+      return;
+    }
+    if (phase === 'tap') {
+      if (this._roomOpen) { this._closePagesRoom(); return; }
+      if (morph && !reduceMotion) {
+        this._closeSheet(true);
+        this._showPagesRoomContent();
+        if (morph.begin()) {
+          morph.frame(0);
+          morph.settle(true, (committed) => { if (committed) this._roomOpen = true; });
+          return;
+        }
+      }
+      this._openPagesRoom();
+      return;
+    }
+    if (this._roomOpen) return; // drags only open the room
+    if (phase === 'start') {
+      this._closeSheet(true);
+      this._showPagesRoomContent();
+      if (morph && !reduceMotion && morph.begin()) {
+        morph.frame(dy);
+        return;
+      }
+      room.classList.add('dragging', 'open');
+      room.style.transform = `translateY(${Math.max(0, travel - dy)}px)`;
+      return;
+    }
+    if (phase === 'move') {
+      // Only a drag this handler started may keep moving the room: a pull whose morph was aborted mid-gesture must not resurrect it through the plain path.
+      if (room.classList.contains('dragging')) room.style.transform = `translateY(${Math.max(0, travel - dy)}px)`;
+      return;
+    }
+    // Release.
+    const commit = dy > Math.min(140, travel * 0.25);
+    if (!room.classList.contains('dragging')) return;
+    // Plain-slide path: flush the dragged position so the snap animates from the finger's release point.
+    room.getBoundingClientRect();
+    room.classList.remove('dragging');
+    room.style.transform = '';
+    if (commit) {
+      this._roomOpen = true;
+      setTimeout(() => { if (this._roomOpen && this._thumbnailPanel) this._thumbnailPanel.refit(); }, 300);
+    } else {
+      room.classList.remove('open');
+      if (this._thumbnailPanel) {
+        this._thumbnailPanel.setVisible(false);
+        this._thumbnailPanel.panelElem.style.display = 'none';
+      }
+    }
+  }
+
+  /** Hide the dock's Panels button when the sheet would have no tabs to show. */
+  _syncDockPanelsBtn() {
+    if (!this._sheetPanelsBtn) return;
+    const any = ['bookmarks', 'comments'].some((k) => {
+      const panel = this._panelFor(/** @type {'bookmarks'|'comments'} */ (k));
+      return panel && panel.toggleElem.style.display !== 'none';
+    });
+    this._sheetPanelsBtn.style.display = any ? '' : 'none';
+    if (!any && this._sheetOpen) this._closeSheet(true);
   }
 
   /**
@@ -1530,6 +2268,7 @@ class ScribePDFViewer {
   async destroy({ terminateDoc } = {}) {
     if (this.resizeObserver) this.resizeObserver.disconnect();
     if (this._sidebarAnim) { cancelAnimationFrame(this._sidebarAnim.raf); this._sidebarAnim = null; }
+    if (this._pagesMorph) this._pagesMorph.abort(); // cancels the settle rAF and revokes morph-owned thumbnail URLs
     if (this._thumbnailPanel) this._thumbnailPanel.destroy();
     if (this._bookmarksPanel) this._bookmarksPanel.destroy();
     if (this._commentsPanel) this._commentsPanel.destroy();
@@ -1558,25 +2297,32 @@ class ScribePDFViewer {
   /**
    * Install a `setInitialPositionZoom` implementation on `ScribeViewer` based on the requested fit mode.
    * @param {FitMode} fitMode
+   * @param {boolean} [isDefaultFit=false] - `fitMode` is the constructor default, not a caller choice.
+   *   Only then may the narrow-viewer width-fit override apply.
    */
-  _installFit(fitMode) {
+  _installFit(fitMode, isDefaultFit = false) {
     this.scribe.setInitialPositionZoom = (imgDims) => {
       this.scribe.runSetInitial = false;
       const sc = this.scribe.scrollContainer;
       const stageW = sc.clientWidth;
       const stageH = sc.clientHeight;
 
+      // When the default height-fit lays the page out wider than the viewport, every text line needs a horizontal pan, so the un-chosen default becomes width-fit.
+      // The criterion is the overflow itself, not a viewport-width proxy.
+      const heightFitOverflows = ((stageH - 150) / imgDims.height) * imgDims.width > stageW;
+      const effectiveMode = (isDefaultFit && heightFitOverflows) ? 'width' : fitMode;
+
       let zoom;
       // `y` is the desired gap, in screen px, from the top of the viewport to the top of the first page.
       let y;
-      if (typeof fitMode === 'function') {
-        const r = fitMode(imgDims, { width: stageW, height: stageH });
+      if (typeof effectiveMode === 'function') {
+        const r = effectiveMode(imgDims, { width: stageW, height: stageH });
         zoom = r.zoom;
         y = r.y ?? 30;
-      } else if (fitMode === 'width') {
+      } else if (effectiveMode === 'width') {
         zoom = stageW / imgDims.width;
         y = 30;
-      } else if (fitMode === 'page') {
+      } else if (effectiveMode === 'page') {
         const wZoom = stageW / imgDims.width;
         const hZoom = (stageH - 60) / imgDims.height;
         zoom = Math.min(wZoom, hZoom);
@@ -1594,6 +2340,10 @@ class ScribePDFViewer {
       const page0 = this.scribe.getPageStop(0) ?? 0;
       sc.scrollTop = Math.max(0, page0 * zoom - y);
       sc.scrollLeft = Math.max(0, (this.scribe._contentWidth * zoom - stageW) / 2);
+
+      this._autoFit = {
+        imgDims, zoom, isDefaultFit, widthMode: isDefaultFit && heightFitOverflows,
+      };
     };
   }
 
@@ -1650,8 +2400,9 @@ class ScribePDFViewer {
    */
   _buildEditToolbar() {
     // The split button is shown only when deep OCR would actually recognize a page (see `_updateRecognizeButton`), so a fully text-native document offers no recognize action.
+    // On touch layouts the split leaves the bar and the app-menu row carries recognition instead.
     const ocrSplit = document.createElement('span');
-    ocrSplit.className = 'scribe-edit-split';
+    ocrSplit.className = 'scribe-edit-split scribe-touch-hide';
     this._ocrSplit = ocrSplit;
     const ocrBtn = this._makeTextBtn('Recognize Text', 'Recognize text on every page', 'scribe-edit-split-main');
     ocrBtn.addEventListener('click', () => this._recognizeAll(ocrBtn));
@@ -1685,6 +2436,9 @@ class ScribePDFViewer {
     // Export PDF, the document-level actions (Combine / Split), and the Dark mode toggle live in the far-left app menu, which the viewer already seeded with Open / Print.
     const appMenu = this._appMenu;
     if (appMenu) {
+      // Touch-only row replacing the bar's split button.
+      this._ocrMenuItem = appMenu.addAction('Recognize text', ICON_RECOGNIZE, () => this._recognizeAll(this._ocrMenuItem));
+      this._ocrMenuItem.classList.add('scribe-touch-row');
       // The `busy` class barely shows (the menu closes on click; the browser's download UI is the real progress cue) but is kept to match the Combine / Split siblings.
       const exportItem = appMenu.addAction('Export PDF', ICON_EXPORT, async () => {
         // No-op at 0 pages (e.g. every page removed) rather than throwing deep in the PDF writer.
@@ -1754,10 +2508,12 @@ class ScribePDFViewer {
     this.toolbarElemEnd.insertBefore(rightGroup, this.toolbarElemEnd.firstChild);
 
     // A subtle recognition progress line along the toolbar's bottom edge, hidden until OCR runs.
+    // In the phone layout it rides the dock's top edge instead (and `_setPhoneChrome` moves it on flips).
     const progressBar = document.createElement('div');
     progressBar.className = 'scribe-ocr-progress';
     this._ocrProgress = progressBar;
-    this.toolbarElemEnd.parentElement?.appendChild(progressBar);
+    const progressHost = (this._phoneChrome && this._dockElem) ? this._dockElem : this.toolbarElemEnd?.parentElement;
+    progressHost?.appendChild(progressBar);
 
     this._updateRecognizeButton();
     this._updateCombineButton();
@@ -1813,9 +2569,11 @@ class ScribePDFViewer {
     return selectOcrPages(pageStats, pdfType, 'autoDeep').filter(Boolean).length;
   }
 
-  /** Show the Recognize Text button only when deep OCR would actually recognize at least one page. */
+  /** Show the recognition surfaces only when deep OCR would actually recognize at least one page. */
   _updateRecognizeButton() {
-    if (this._ocrSplit) this._ocrSplit.style.display = this._deepOcrPageCount() > 0 ? '' : 'none';
+    const pages = this._deepOcrPageCount();
+    if (this._ocrSplit) this._ocrSplit.style.display = pages > 0 ? '' : 'none';
+    if (this._ocrMenuItem) this._ocrMenuItem.style.display = pages > 0 ? '' : 'none';
   }
 
   /** Show the Combine menu item only when 2+ documents (tabs) are open. Combining one document is a no-op. */
@@ -2029,6 +2787,8 @@ class ScribePDFViewer {
         opacity: 0; pointer-events: none; z-index: 25;
         transition: transform .2s ease, opacity .3s ease;
       }
+      /* In the phone dock the line rides the top edge (the dock's bottom is the safe area). */
+      .scribe-pdf-viewer .scribe-dock .scribe-ocr-progress { bottom: auto; top: 0; }
 
     `));
     document.head.appendChild(style);

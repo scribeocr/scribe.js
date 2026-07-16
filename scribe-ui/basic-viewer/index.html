@@ -2,16 +2,23 @@
 <html lang="en">
 
 <head>
-  <meta name="viewport" content="width=device-width">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
   <style type="text/css">
-    html, body {
+    html,
+    body {
       margin: 0;
       padding: 0;
+      height: 100%;
       overflow: hidden;
+      /* No pull-to-refresh or scroll-chaining glow at the app edges. The document pans inside the viewer. */
+      overscroll-behavior: none;
     }
+
     #pdfViewerCont {
-      width: 100vw;
+      width: 100%;
       height: 100vh;
+      /* Dynamic-viewport height tracks mobile browsers' collapsing URL bar. The 100vh line above is the fallback. */
+      height: 100dvh;
     }
   </style>
   <meta charset="utf-8" />

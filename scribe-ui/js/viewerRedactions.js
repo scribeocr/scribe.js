@@ -211,12 +211,14 @@ export function hideRedactTabSoon(viewer) {
   const st = viewer._redactTab;
   if (!st || st.pinned || !st.el.isConnected) return;
   clearTimeout(st.hideT);
+  // Touch has no hover to keep the tab alive, so it must linger long enough for the next tap to reach it.
+  const linger = viewer._lastPrimaryPointerType === 'touch' ? 2500 : TAB_LINGER_MS;
   st.hideT = setTimeout(() => {
     const s = viewer._redactTab;
     if (!s || s.pinned) return;
     if (s.on) setRedactPreview(viewer, s.groupId, false);
     s.el.remove();
-  }, TAB_LINGER_MS);
+  }, linger);
 }
 
 /** Hide the tab and clear any preview immediately. */
