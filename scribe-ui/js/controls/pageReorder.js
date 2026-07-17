@@ -31,21 +31,105 @@ const GAP_HYSTERESIS = 12;
 // The settle gates only the preview; a release always commits immediately.
 const REFLOW_SETTLE_MS = 250;
 
-/**
- * @typedef {object} ThumbDrag
- * @property {number} from - Page index pressed to start the drag.
- * @property {boolean} group - Whether the whole multi-selection is moving, not just `from`.
- * @property {Set<number>} pages - Indices of every page being dragged; kept mounted so their thumbnails survive a long drag.
- * @property {number} startX @property {number} startY - Pointer position at press, for the click/drag threshold.
- * @property {boolean} started - Whether the press has crossed the threshold into a drag.
- * @property {?HTMLElement} ghost - Floating copy of the page tracking the cursor.
- * @property {?HTMLElement} line - Insertion-position accent line.
- * @property {number} gap - Current insertion gap (0..pageCount).
- * @property {number} autoDir - Edge auto-scroll direction (-1, 0, 1).
- * @property {number} rafId - Auto-scroll animation-frame handle.
- * @property {number} lastX @property {number} lastY - Last pointer position, so auto-scroll can re-place the indicator while the pointer is held still.
- * @property {number} grabDX @property {number} grabDY - Offset of the grab point within the thumbnail.
- */
+/** One in-flight mouse drag on the thumbnail rail/grid: the ghost + insertion-line front-end. */
+export class ThumbDrag {
+  /** @param {number} from @param {number} startX @param {number} startY */
+  constructor(from, startX, startY) {
+    /** Page index pressed to start the drag. */
+    this.from = from;
+    /** Whether the whole multi-selection is moving, not just `from`. */
+    this.group = false;
+    /** Indices of every page being dragged; kept mounted so their thumbnails survive a long drag. */
+    this.pages = new Set([from]);
+    /** Pointer position at press, for the click/drag threshold. */
+    this.startX = startX;
+    this.startY = startY;
+    /** Whether the press has crossed the threshold into a drag. */
+    this.started = false;
+    /** @type {?HTMLElement} Floating copy of the page tracking the cursor. */
+    this.ghost = null;
+    /** @type {?HTMLElement} Insertion-position accent line. */
+    this.line = null;
+    /** Current insertion gap (0..pageCount). */
+    this.gap = -1;
+    /** Edge auto-scroll direction (-1, 0, 1). */
+    this.autoDir = 0;
+    /** Auto-scroll animation-frame handle. */
+    this.rafId = 0;
+    /** Last pointer position, so edge auto-scroll can re-derive the gap and insertion line under a still pointer. */
+    this.lastX = startX;
+    this.lastY = startY;
+    /** Offset of the grab point within the thumbnail. */
+    this.grabDX = 0;
+    this.grabDY = 0;
+  }
+}
+
+/** One in-flight touch gesture on the thumbnail rail/grid: a hold-to-lift reorder, a sideways run sweep, a hold peek, a browse tap, or a checkbox range paint. */
+class ThumbTouch {
+  /** @param {PointerEvent} e @param {number} n - Pressed page index. @param {?('browse'|'edit')} mode - `ctx.roomMode` at press. @param {number} scrollTop - The rail's scroll position at press. */
+  constructor(e, n, mode, scrollTop) {
+    /** Page under the finger; a peek scrubs it to the hovered page. */
+    this.primaryN = n;
+    this.mode = mode;
+    /** Whether the gesture is a checkbox range paint. */
+    this.painting = false;
+    /** Selection state a paint spreads to crossed pages. */
+    this.paintWant = false;
+    /** Pointer position at press, for the slop/sweep thresholds. */
+    this.startX = e.clientX;
+    this.startY = e.clientY;
+    /** Last pointer position, so edge auto-scroll keeps working under a still finger. */
+    this.lastX = e.clientX;
+    this.lastY = e.clientY;
+    /** Pointer owning the gesture. */
+    this.pointerId = e.pointerId;
+    /** Pressed page index, the fixed end of a sweep run. */
+    this.startIdx = n;
+    /** Whether several pages are carried. */
+    this.group = false;
+    /** Indices of every carried page. */
+    this.pages = new Set([n]);
+    /** The press caught a gliding grid, so native scrolling owns the gesture. */
+    this.scrollOnly = false;
+    /** The page(s) are up and riding the ghost. */
+    this.lifted = false;
+    /** A sideways slide is gathering a contiguous run. */
+    this.sweeping = false;
+    /** The hold-to-peek preview is showing. */
+    this.peeking = false;
+    /** The pointer travelled past the menu slop while lifted, so release commits instead of opening the menu. */
+    this.moved = false;
+    /** Committed insertion gap (0..pageCount). */
+    this.gap = n;
+    /** Gap the cells last reflowed open for, or -1. */
+    this.reflowedGap = -1;
+    /** Pointer and scroll position when `gap` last committed (the hysteresis anchor). */
+    this.gapX = e.clientX;
+    this.gapY = e.clientY;
+    this.gapScroll = scrollTop;
+    /** @type {number|ReturnType<typeof setTimeout>} Hold-to-lift/peek timer; 0 when idle. */
+    this.holdT = 0;
+    /** @type {?(number|ReturnType<typeof setTimeout>)} Sweep-pause collapse timer. */
+    this.settleT = 0;
+    /** @type {number|ReturnType<typeof setTimeout>} Gap-reflow settle timer; 0 when idle. */
+    this.reflowT = 0;
+    /** Edge auto-scroll animation-frame handle; 0 when idle. */
+    this.autoRAF = 0;
+    /** @type {?HTMLDivElement} Floating copy of the carried page(s) tracking the finger. */
+    this.ghost = null;
+    /** @type {?HTMLDivElement} Insertion-position accent line. */
+    this.line = null;
+    /** Offset of the grab point within the ghost. */
+    this.grabDX = 0;
+    this.grabDY = 0;
+    /** Inclusive page bounds of the highlighted sweep run. */
+    this.runLo = n;
+    this.runHi = n;
+    /** @type {?Array<HTMLDivElement>} Dashed drop-seat outlines, one per carried page, created lazily by the reflow preview. */
+    this.slots = null;
+  }
+}
 
 /**
  * The slice of `createThumbnailPanel`'s state and callbacks the reorder subsystem reads and drives.
@@ -494,23 +578,7 @@ export function installPageReorder(ctx) {
     // Touch uses the hold-to-lift / sweep-to-gather gesture (below); the mouse keeps the ghost + insertion-line drag.
     if (e.pointerType === 'touch') { onThumbTouchStart(e, n); return; }
     if (e.button !== 0) return;
-    ctx.drag = {
-      from: n,
-      group: false,
-      pages: new Set([n]),
-      startX: e.clientX,
-      startY: e.clientY,
-      started: false,
-      ghost: null,
-      line: null,
-      gap: -1,
-      autoDir: 0,
-      rafId: 0,
-      lastX: e.clientX,
-      lastY: e.clientY,
-      grabDX: 0,
-      grabDY: 0,
-    };
+    ctx.drag = new ThumbDrag(n, e.clientX, e.clientY);
     window.addEventListener('pointermove', onDragMove);
     window.addEventListener('pointerup', onDragUp);
   }
@@ -561,7 +629,7 @@ export function installPageReorder(ctx) {
   }
 
   // A separate front-end from the mouse ghost/insertion-line drag above; both commit through reorderPages/moveSelection and settle with dealRows.
-  /** @type {?object} */
+  /** @type {?ThumbTouch} */
   let touch = null;
   let lastTouchT = 0;
   // Page and release time of the last clean browse-mode tap, for the double-tap-to-open.
@@ -574,6 +642,7 @@ export function installPageReorder(ctx) {
    * @param {number} clientX @param {number} clientY @returns {?{p: number, rect: DOMRect}}
    */
   function cellUnderPoint(clientX, clientY) {
+    if (!touch) return null;
     const el = document.elementFromPoint(clientX, clientY);
     const t = el && 'closest' in el ? el.closest('.scribe-thumb') : null;
     if (!t || !ctx.scrollElem.contains(t)) return null;
@@ -588,6 +657,7 @@ export function installPageReorder(ctx) {
    * @param {number} clientX @param {number} clientY
    */
   function updateGap(clientX, clientY) {
+    if (!touch) return;
     // Hit-testing the live (reflowed) layout, not static slot geometry, keeps the previewed gap and the committed move in agreement.
     let hit = cellUnderPoint(clientX, clientY);
     let after;
@@ -635,6 +705,7 @@ export function installPageReorder(ctx) {
    * @param {boolean} after
    */
   function placeTouchLine(hit, after) {
+    if (!touch) return;
     if (!touch.line) {
       touch.line = document.createElement('div');
       touch.line.className = 'scribe-thumb-insert';
@@ -667,6 +738,7 @@ export function installPageReorder(ctx) {
    * @param {number} gap
    */
   function previewReflow(gap) {
+    if (!touch) return;
     const sorted = [...touch.pages].sort((a, b) => a - b);
     const single = !touch.group;
     const to = single ? (gap <= touch.primaryN ? gap : gap - 1) : gap - sorted.filter((s) => s < gap).length;
@@ -747,6 +819,7 @@ export function installPageReorder(ctx) {
    * @param {Array<number>} pages @param {number} primaryN - The front page, held under the thumb.
    */
   function liftTouch(pages, primaryN) {
+    if (!touch) return;
     touch.lifted = true;
     touch.primaryN = primaryN;
     touch.group = pages.length > 1;
@@ -760,9 +833,11 @@ export function installPageReorder(ctx) {
     ctx.suppressClick = true;
     ctx.closeContextMenu();
     // Keep the lifted rows mounted through an autoscroll: updateWindow reads drag.pages.
-    ctx.drag = {
-      from: primaryN, group: touch.group, pages: new Set(pages), started: true, startX: touch.startX, startY: touch.startY,
-    };
+    const drag = new ThumbDrag(primaryN, touch.startX, touch.startY);
+    drag.group = touch.group;
+    drag.pages = new Set(pages);
+    drag.started = true;
+    ctx.drag = drag;
     for (const p of pages) {
       const en = ctx.mounted.get(p);
       if (en) { en.thumbElem.classList.remove('prelift', 'inrun'); en.thumbElem.classList.add('lifting'); }
@@ -798,6 +873,7 @@ export function installPageReorder(ctx) {
    * @param {number} clientX @param {number} clientY
    */
   function runTo(clientX, clientY) {
+    if (!touch) return;
     const u = document.elementFromPoint(clientX, clientY);
     const tile = u && 'closest' in u ? u.closest('.scribe-thumb') : null;
     if (!tile || !ctx.scrollElem.contains(tile)) return;
@@ -812,6 +888,7 @@ export function installPageReorder(ctx) {
 
   /** Collapse the highlighted run into the carried clump and hand off to the lift/drag phase. */
   function collapseRun() {
+    if (!touch) return;
     if (touch.settleT) { clearTimeout(touch.settleT); touch.settleT = null; }
     const { runLo, runHi } = touch;
     if (runHi <= runLo) return; // a single page is not a run; keep sweeping
@@ -828,6 +905,7 @@ export function installPageReorder(ctx) {
 
   /** @param {number} clientX @param {number} clientY */
   function startSweep(clientX, clientY) {
+    if (!touch) return;
     touch.sweeping = true;
     ctx.suppressClick = true;
     ctx.closeContextMenu();
@@ -879,27 +957,9 @@ export function installPageReorder(ctx) {
     e.preventDefault();
     e.stopPropagation();
     ctx.toggleRoomSelect(n);
-    touch = {
-      primaryN: n,
-      mode: 'edit',
-      painting: true,
-      paintWant: ctx.selected.has(n),
-      startX: e.clientX,
-      startY: e.clientY,
-      lastX: e.clientX,
-      lastY: e.clientY,
-      pointerId: e.pointerId,
-      lifted: false,
-      sweeping: false,
-      peeking: false,
-      moved: false,
-      holdT: 0,
-      settleT: 0,
-      reflowT: 0,
-      autoRAF: 0,
-      ghost: null,
-      line: null,
-    };
+    touch = new ThumbTouch(e, n, 'edit', ctx.scrollElem.scrollTop);
+    touch.painting = true;
+    touch.paintWant = ctx.selected.has(n);
     lastTouchT = Date.now();
     try { ctx.scrollElem.setPointerCapture(e.pointerId); } catch (_) { /* capture is best-effort */ }
     window.addEventListener('pointermove', onTouchMove);
@@ -913,29 +973,13 @@ export function installPageReorder(ctx) {
     const mode = ctx.roomMode;
     if (mode === 'browse') {
       // Browse gestures are read-only, so they run even where the reorder guard below would bail (editing disabled, single page).
-      touch = {
-        primaryN: n,
-        mode,
-        startX: e.clientX,
-        startY: e.clientY,
-        lastX: e.clientX,
-        lastY: e.clientY,
-        pointerId: e.pointerId,
-        peeking: false,
-        lifted: false,
-        sweeping: false,
-        moved: false,
-        holdT: 0,
-        settleT: 0,
-        autoRAF: 0,
-        ghost: null,
-      };
+      touch = new ThumbTouch(e, n, mode, ctx.scrollElem.scrollTop);
       // A single tap is inert in browse (opening is the double-tap's job in onTouchUp), so its click is suppressed up front.
       ctx.suppressClick = true;
       lastTouchT = Date.now();
       touch.holdT = setTimeout(() => {
-        touch.holdT = 0;
         if (!touch || touch.peeking) return;
+        touch.holdT = 0;
         try { ctx.scrollElem.setPointerCapture(touch.pointerId); } catch (_) { /* capture is best-effort */ }
         touch.peeking = true;
         ctx.peekShow(touch.primaryN);
@@ -948,38 +992,7 @@ export function installPageReorder(ctx) {
     // Reordering is an editor action needing at least two pages; otherwise a press stays a plain tap (select/navigate).
     if (!(ctx.scribe.opt && ctx.scribe.opt.enablePageEditing) || ctx.pageCount < 2) return;
     const entry = ctx.mounted.get(n);
-    touch = {
-      primaryN: n,
-      mode,
-      startX: e.clientX,
-      startY: e.clientY,
-      lastX: e.clientX,
-      lastY: e.clientY,
-      pointerId: e.pointerId,
-      startIdx: n,
-      group: false,
-      pages: new Set([n]),
-      scrollOnly: false,
-      lifted: false,
-      sweeping: false,
-      peeking: false,
-      moved: false,
-      gap: n,
-      reflowedGap: -1,
-      gapX: e.clientX,
-      gapY: e.clientY,
-      gapScroll: ctx.scrollElem.scrollTop,
-      holdT: 0,
-      settleT: 0,
-      reflowT: 0,
-      autoRAF: 0,
-      ghost: null,
-      line: null,
-      grabDX: 0,
-      grabDY: 0,
-      runLo: n,
-      runHi: n,
-    };
+    touch = new ThumbTouch(e, n, mode, ctx.scrollElem.scrollTop);
     lastTouchT = Date.now();
     if (mode === 'edit') {
       // Edit mode lifts a selected page from the first movement (onTouchMove), with no hold.
@@ -990,8 +1003,8 @@ export function installPageReorder(ctx) {
         touch.scrollOnly = true;
       } else {
         touch.holdT = setTimeout(() => {
-          touch.holdT = 0;
           if (!touch || touch.peeking || touch.lifted) return;
+          touch.holdT = 0;
           try { ctx.scrollElem.setPointerCapture(touch.pointerId); } catch (_) { /* best-effort */ }
           touch.peeking = true;
           ctx.peekShow(touch.primaryN);
@@ -1000,8 +1013,8 @@ export function installPageReorder(ctx) {
     } else {
       if (entry) entry.thumbElem.classList.add('prelift');
       touch.holdT = setTimeout(() => {
-        touch.holdT = 0;
         if (!touch || touch.lifted || touch.sweeping) return;
+        touch.holdT = 0;
         try { ctx.scrollElem.setPointerCapture(touch.pointerId); } catch (_) { /* capture is best-effort */ }
         liftTouch([n], n);
       }, LIFT_HOLD_MS);
@@ -1129,6 +1142,7 @@ export function installPageReorder(ctx) {
    *   False on interruption (pointercancel), which puts the page(s) back instead of committing the hovered gap.
    */
   function dropTouch(allowMenu, commit = true) {
+    if (!touch) return;
     stopTouchAuto();
     if (touch.reflowT) { clearTimeout(touch.reflowT); touch.reflowT = 0; }
     if (touch.line) { touch.line.remove(); touch.line = null; }
