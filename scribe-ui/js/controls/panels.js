@@ -43,7 +43,7 @@ const ACTIVE_SCROLL_DEBOUNCE_MS = 80;
 // Panel width beyond the thumbnail image: horizontal padding plus room for the panel's own scrollbar.
 const PANEL_EXTRA_W = 30;
 // Thumbnail image width in px (panel width is this plus PANEL_EXTRA_W for one column).
-// The desktop rail uses THUMB_W; the phone sheet uses COMPACT_W so several columns fit its width (see setCompact).
+// The phone grid's cell is at most COMPACT_W: screens too narrow for three such columns get a narrower cell to keep three.
 const THUMB_W = 200;
 const COMPACT_W = 104;
 // Column cap in the compact phone grid (higher than MAX_COLS so a landscape phone can pack more).
@@ -247,7 +247,6 @@ export function createThumbnailPanel(scribe, {
   let layoutMode = 'rail';
   // Number of grid columns: 1 in the rail, up to MAX_COLS in grid mode.
   let gridCols = 1;
-  // Effective cell width: THUMB_W in the desktop rail, COMPACT_W in the phone sheet (setCompact).
   let cellW = THUMB_W;
   let compact = false;
   // Per-row overhead (padding + label) and the vertical gap between rows; tightened for the compact phone grid.
@@ -883,7 +882,9 @@ export function createThumbnailPanel(scribe, {
       return Math.max(1, Math.round(cellW * aspect));
     };
 
-    // Panel width changes only how many fixed-width cells fit, never their size.
+    // The phone grid keeps at least three columns: on a screen too narrow for three COMPACT_W cells (a 360px-wide Android), the cell shrinks rather than the grid dropping to two.
+    // Otherwise panel width changes only how many fixed-width cells fit, never their size.
+    if (compact && viewportW) cellW = Math.min(COMPACT_W, Math.floor((viewportW - 2 * PAD - 2 * GRID_GAP) / 3));
     gridCols = gridColsFor();
     layoutMode = gridCols > 1 ? 'grid' : 'rail';
 
@@ -1116,7 +1117,8 @@ export function createThumbnailPanel(scribe, {
   function refit() {
     measureViewport();
     computeGeometry();
-    // Keep already-rastered rows: cell width never changes in a refit, so the cached bitmaps stay valid, and unmounting would flash the grid white on every sheet show.
+    // Keep already-rastered rows: unmounting would flash the grid white on every show.
+    // Bitmaps are RENDER_W rasters scaled by CSS, so a change in cell width never invalidates them.
     for (const [n, entry] of mounted) {
       if (n >= pageCount) unmountRow(n, entry);
       else restyleRow(entry, n);
