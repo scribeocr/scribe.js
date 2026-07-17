@@ -22,9 +22,11 @@ function ensureStyles() {
     .scribe-strip-row{flex:1;display:flex;align-items:center;gap:8px;padding:6px 8px;
       overflow-x:auto;overflow-y:hidden;scrollbar-width:none;-webkit-overflow-scrolling:touch;touch-action:pan-x;}
     .scribe-strip-row::-webkit-scrollbar{display:none;}
+    /* touch-callout and user-select off so a long press on a page image cannot raise iOS Safari's save-image sheet. */
     .scribe-strip-cell{flex:0 0 auto;width:${CELL_W}px;height:${CELL_H}px;padding:0;border:0;cursor:pointer;
       background:#fff;border-radius:2px;box-shadow:var(--scribe-page-shadow);outline:1px solid rgba(0,0,0,.12);
-      outline-offset:0;overflow:hidden;position:relative;-webkit-tap-highlight-color:transparent;}
+      outline-offset:0;overflow:hidden;position:relative;-webkit-tap-highlight-color:transparent;
+      -webkit-touch-callout:none;-webkit-user-select:none;user-select:none;}
     .scribe-strip-cell img{width:100%;height:100%;object-fit:contain;display:block;background:#fff;}
     .scribe-strip-cell.active{outline:2.5px solid var(--scribe-accent);}
     /* The wind bar: a track along the strip's top edge whose accent fill is, at rest, a short marker at the reading position's fraction of the document.

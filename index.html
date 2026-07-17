@@ -5,7 +5,8 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Scribe</title>
   <!-- Root-hosting entry for the basic viewer, duplicating /scribe-ui/basic-viewer/index.html so the app is also reachable at the site root. -->
-  <style>html,body{margin:0;padding:0;height:100%;overflow:hidden}#pdfViewerCont{position:absolute;inset:0}</style>
+  <!-- overscroll-behavior mirrors /scribe-ui/basic-viewer/index.html: no pull-to-refresh or scroll-chaining at the app edges. -->
+  <style>html,body{margin:0;padding:0;height:100%;overflow:hidden;overscroll-behavior:none}#pdfViewerCont{position:absolute;inset:0}</style>
 </head>
 <body>
   <div id="pdfViewerCont"></div>

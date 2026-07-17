@@ -1104,6 +1104,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       /* Above the morph layer (z 3), so a stand-in cell riding under the header's band slides beneath it rather than painting over it, matching the settled room where the grid lives below the header. */
       position: relative;
       z-index: 4;
+      /* Nothing native pans from the header, so the drag-down close gesture owns every touch that starts here. */
+      touch-action: none;
     }
     .${r} .scribe-room-title { font: 700 15px/1 'Segoe UI', Tahoma, sans-serif; color: var(--scribe-ink); }
     .${r} .scribe-room-count {
@@ -1137,8 +1139,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
     .${r} .scribe-room-body .scribe-thumb-resize { display: none; }
 
-    /* ---- Room modes: browse is read-only, and Edit-to-Done carries all mutation. ----
-       Entering Edit swaps the button's label to Done and hides the room-close, so exactly one "Done" shows at a time. */
+    /* Room modes: browse is read-only, and Edit-to-Save carries all mutation.
+       Entering Edit swaps the button's label to Save and hides the room-close Done, so the mode exits only through Save or Discard. */
     .${r} .scribe-room-edit {
       margin-left: auto;
       min-height: 36px;
@@ -1150,17 +1152,18 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       font: 600 13.5px/1 'Segoe UI', Tahoma, sans-serif;
       cursor: pointer;
     }
-    .${r} .scribe-room-edit:hover { background: var(--scribe-hover); }
+    .${r} .scribe-room-edit:hover:not(:disabled) { background: var(--scribe-hover); }
+    /* Save is disabled until the session has changes to commit. */
+    .${r} .scribe-room-edit:disabled { color: var(--scribe-ink-3); cursor: default; }
     .${r}.scribe-coarse .scribe-room-edit { min-height: 44px; }
     /* The Edit button owns the flexible gap while present; Done then hugs it. */
     .${r} .scribe-room-edit ~ .scribe-room-done { margin-left: 0; }
     .${r} .scribe-pages-room.editing .scribe-room-edit { font-weight: 700; }
     .${r} .scribe-pages-room.editing .scribe-room-hd { box-shadow: inset 0 -2px 0 0 var(--scribe-accent); }
 
-    /* Revert-the-session: shown in Edit mode only, disabled until the session has changes.
-       While shown it owns the flexible gap, and Edit hugs it. */
+    /* Discard-the-session: shown in Edit mode only, live for the whole session (it is also the mode's cancel).
+       Save keeps the flexible gap, and Discard hugs it at the right edge. */
     .${r} .scribe-room-revert {
-      margin-left: auto;
       min-height: 36px;
       padding: 0 12px;
       border: 0;
@@ -1175,7 +1178,6 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-room-revert:disabled { color: var(--scribe-ink-3); cursor: default; }
     .${r}.scribe-coarse .scribe-room-revert { min-height: 44px; }
     .${r} .scribe-pages-room.editing .scribe-room-revert { display: block; }
-    .${r} .scribe-pages-room.editing .scribe-room-edit { margin-left: 0; }
 
     /* Edit-mode selection checkbox overhanging each page's top-left corner.
        The check glyph is always in the markup: color transparent hides it at rest, and .selected turns it white. */
@@ -1186,6 +1188,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       width: 22px;
       height: 22px;
       padding: 0;
+      /* Some mobile browsers flash their rectangular tap highlight over the round badge. */
+      -webkit-tap-highlight-color: transparent;
       border-radius: 50%;
       background: var(--scribe-surface);
       border: 1px solid var(--scribe-line-strong);
@@ -1868,6 +1872,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       /* On the panel root so it cascades to every thumbnail image and caption, preventing a click-drag across the rail from selecting them. */
       -webkit-user-select: none;
       user-select: none;
+      /* Also inherited by every page image: without it, iOS Safari's long-press save-image callout hijacks the hold-to-preview and hold-to-reorder gestures. */
+      -webkit-touch-callout: none;
     }
 
     /* The resize handle is a sibling of this inner scroll container so it stays at the edge while the container scrolls. */
@@ -2712,6 +2718,195 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
     .${r} .scribe-cm-menu-item { padding: 7px 12px; border-radius: 5px; cursor: pointer; white-space: nowrap; }
     .${r} .scribe-cm-menu-item:hover { background: var(--scribe-hover); }
+
+    /* Compact (phone) comments: simpler tap-to-open rows, and a conversation view that slides in over the list.
+       The panel builds these elements only in compact mode (.scribe-cm-compact). */
+    .${r} .scribe-cm-compact .scribe-cm-list { padding: 8px 10px; }
+    .${r} .scribe-cmc-row {
+      border: 1px solid var(--scribe-line);
+      border-radius: 12px;
+      background: var(--scribe-surface);
+      margin: 0 0 8px;
+      padding: 0 0 11px;
+      min-height: 44px;
+      box-sizing: border-box;
+      cursor: pointer;
+      overflow: hidden;
+      user-select: none;
+    }
+    .${r} .scribe-cmc-row.lit { border-color: var(--scribe-accent); box-shadow: 0 0 0 1px var(--scribe-accent-ring); }
+    .${r} .scribe-cmc-top { display: flex; align-items: center; gap: 8px; padding: 10px 12px 0; }
+    .${r} .scribe-cmc-ava {
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: var(--scribe-accent-soft);
+      color: var(--scribe-accent);
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      font: 700 10px/1 'Segoe UI', Tahoma, sans-serif;
+      flex: 0 0 auto;
+    }
+    .${r} .scribe-cmc-who {
+      font: 600 13.5px/1.2 'Segoe UI', Tahoma, sans-serif;
+      color: var(--scribe-ink);
+      min-width: 0;
+      overflow: hidden;
+      text-overflow: ellipsis;
+      white-space: nowrap;
+    }
+    .${r} .scribe-cmc-when { font: 500 12px/1 'Segoe UI', Tahoma, sans-serif; color: var(--scribe-ink-3); flex: 0 0 auto; }
+    .${r} .scribe-cmc-kind { font: 600 12.5px/1.2 'Segoe UI', Tahoma, sans-serif; color: var(--scribe-ink-2); }
+    .${r} .scribe-cmc-pg {
+      margin-left: auto;
+      flex: 0 0 auto;
+      font: 500 12px/1 ui-monospace, 'Cascadia Mono', 'Segoe UI Mono', monospace;
+      font-variant-numeric: tabular-nums;
+      color: var(--scribe-ink-3);
+    }
+    /* The quote is styled with the row's own markup. */
+    .${r} .scribe-cmc-quote {
+      margin: 8px 12px 0;
+      padding: 2px 9px;
+      border-left: 3px solid var(--scribe-line-strong);
+      border-radius: 3px;
+      font: italic 500 13px/1.5 'Segoe UI', Tahoma, sans-serif;
+      color: var(--scribe-ink-2);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .${r} .scribe-cmc-quote.note { font-style: normal; font-weight: 600; }
+    .${r} .scribe-cmc-quote.ul { text-decoration: underline 1.5px; text-underline-offset: 2px; }
+    .${r} .scribe-cmc-quote.st { text-decoration: line-through 1.5px; }
+    .${r} .scribe-cmc-quote.rd {
+      border-left-color: #d1493d;
+      background: repeating-linear-gradient(45deg, rgba(209, 73, 61, .16) 0 1px, transparent 1px 6px);
+    }
+    .${r} .scribe-cmc-text {
+      padding: 6px 12px 0;
+      font: 400 14px/1.45 'Segoe UI', Tahoma, sans-serif;
+      color: var(--scribe-ink);
+      white-space: nowrap;
+      overflow: hidden;
+      text-overflow: ellipsis;
+    }
+    .${r} .scribe-cmc-rep { padding: 8px 12px 0; font: 600 12.5px/1 'Segoe UI', Tahoma, sans-serif; color: var(--scribe-accent); }
+    .${r} .scribe-cmc-pane {
+      position: absolute;
+      inset: 0;
+      z-index: 3;
+      display: flex;
+      flex-direction: column;
+      background: var(--scribe-surface);
+      transform: translateX(103%);
+      transition: transform 0.22s cubic-bezier(0.3, 0.9, 0.3, 1);
+    }
+    .${r} .scribe-cmc-pane.on { transform: translateX(0); }
+    @media (prefers-reduced-motion: reduce) {
+      .${r} .scribe-cmc-pane { transition: none; }
+    }
+    .${r} .scribe-cmc-back {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      padding: 2px 6px;
+      border-bottom: 1px solid var(--scribe-line);
+      flex: 0 0 auto;
+    }
+    .${r} .scribe-cmc-bk {
+      display: flex;
+      align-items: center;
+      gap: 4px;
+      min-height: 40px;
+      border: 0;
+      background: none;
+      color: var(--scribe-accent);
+      font: 600 14px/1 'Segoe UI', Tahoma, sans-serif;
+      padding: 0 10px 0 6px;
+      border-radius: 8px;
+      cursor: pointer;
+    }
+    .${r} .scribe-cmc-bk:hover { background: var(--scribe-hover); }
+    .${r} .scribe-cmc-bk svg { width: 15px; height: 15px; }
+    .${r} .scribe-cmc-jmp {
+      margin-left: auto;
+      display: flex;
+      align-items: center;
+      gap: 5px;
+      min-height: 40px;
+      border: 0;
+      background: none;
+      color: var(--scribe-accent);
+      font: 600 13px/1 'Segoe UI', Tahoma, sans-serif;
+      font-variant-numeric: tabular-nums;
+      padding: 0 10px;
+      border-radius: 8px;
+      cursor: pointer;
+      white-space: nowrap;
+    }
+    .${r} .scribe-cmc-jmp:hover { background: var(--scribe-hover); }
+    .${r} .scribe-cmc-jmp svg { width: 12px; height: 12px; }
+    .${r} .scribe-cmc-body {
+      flex: 1;
+      min-height: 0;
+      overflow-y: auto;
+      overscroll-behavior: contain;
+      padding: 12px 14px;
+    }
+    .${r} .scribe-cmc-body .scribe-cmc-quote {
+      margin: 0 0 2px;
+      white-space: normal;
+      display: -webkit-box;
+      -webkit-line-clamp: 3;
+      -webkit-box-orient: vertical;
+    }
+    .${r} .scribe-cmc-msg { display: flex; gap: 9px; margin: 12px 0 0; }
+    .${r} .scribe-cmc-msg .scribe-cmc-ava { width: 22px; height: 22px; margin-top: 1px; }
+    .${r} .scribe-cmc-mb { min-width: 0; display: flex; flex-direction: column; gap: 3px; }
+    .${r} .scribe-cmc-mh {
+      display: flex;
+      align-items: baseline;
+      gap: 6px;
+      font: 600 13px/1.2 'Segoe UI', Tahoma, sans-serif;
+      color: var(--scribe-ink);
+    }
+    .${r} .scribe-cmc-mt { font: 400 14px/1.5 'Segoe UI', Tahoma, sans-serif; color: var(--scribe-ink); overflow-wrap: anywhere; }
+    .${r} .scribe-cmc-foot { flex: 0 0 auto; border-top: 1px solid var(--scribe-line); padding: 9px 10px 10px; }
+    .${r} .scribe-cmc-comp { display: flex; align-items: flex-end; gap: 8px; }
+    .${r} .scribe-cmc-field {
+      flex: 1;
+      min-height: 38px;
+      max-height: 120px;
+      resize: none;
+      box-sizing: border-box;
+      border: 1px solid var(--scribe-line-strong);
+      border-radius: 10px;
+      background: var(--scribe-canvas);
+      color: var(--scribe-ink);
+      font: 400 14px/1.4 'Segoe UI', Tahoma, sans-serif;
+      padding: 9px 12px;
+      outline: none;
+    }
+    .${r} .scribe-cmc-field:focus { border-color: var(--scribe-accent); box-shadow: 0 0 0 1px var(--scribe-accent-ring); }
+    .${r} .scribe-cmc-send {
+      width: 38px;
+      height: 38px;
+      flex: 0 0 auto;
+      border: 0;
+      border-radius: 10px;
+      background: var(--scribe-accent);
+      color: #fff;
+      display: flex;
+      align-items: center;
+      justify-content: center;
+      cursor: pointer;
+    }
+    .${r} .scribe-cmc-send:disabled { opacity: 0.35; cursor: default; }
+    .${r} .scribe-cmc-send svg { width: 17px; height: 17px; }
+    .${r}.scribe-coarse .scribe-cmc-send { width: 44px; height: 44px; }
+    .${r}.scribe-coarse .scribe-cmc-field { min-height: 44px; }
 
     /* Message surface: transient toasts (self-evident failures) + a persistent banner (away/non-obvious) */
     .${r} .scribe-toast-stack {

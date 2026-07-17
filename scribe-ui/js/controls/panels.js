@@ -214,7 +214,7 @@ export function createThumbnailPanel(scribe, {
     setTimeout(() => {
       selected.clear();
       for (const i of doom) selected.add(i);
-      deleteSelection();
+      deleteSelection(false);
       delete roomBar.dataset.busy;
       setTimeout(() => { for (const en of sliding) en.thumbElem.style.transition = ''; }, REORDER_SLIDE_MS + 20);
     }, 170);
@@ -1330,6 +1330,7 @@ export function createThumbnailPanel(scribe, {
   function onDelete(n) {
     if (!scribe.doc || scribe.doc.pageMetrics.length <= 1) return;
     cancelCut();
+    const playSlide = beginStructureSlide();
     const snapshot = [...mounted];
     const belowActive = n < activePage ? 1 : 0;
     mounted.clear();
@@ -1345,6 +1346,7 @@ export function createThumbnailPanel(scribe, {
     }
     updateWindow();
     updateBatchToolbar();
+    playSlide();
   }
 
   /**
@@ -1454,7 +1456,7 @@ export function createThumbnailPanel(scribe, {
   }
 
   /**
-   * Capture every page's on-screen position keyed by page identity, ahead of a structure change that fully rebuilds the grid (the room Revert's undo unwind).
+   * Capture every page's on-screen position keyed by page identity, ahead of a structure change that fully rebuilds the grid.
    * The returned player, invoked after the rebuild, restores the scroll and replays the change in the grid's reorder language.
    * @returns {() => void}
    */
@@ -1670,7 +1672,7 @@ export function createThumbnailPanel(scribe, {
     };
   }
 
-  /** Toggle page `n` in the room-Edit selection (the tap-anywhere-on-the-page gesture). @param {number} n */
+  /** Toggle page `n` in the room-Edit selection. @param {number} n */
   function toggleRoomSelect(n) {
     if (selected.has(n)) selected.delete(n); else selected.add(n);
     selAnchor = n;
@@ -1849,13 +1851,18 @@ export function createThumbnailPanel(scribe, {
     updateWindow();
   }
 
-  /** Delete every selected page in place, keeping at least one page in the document. */
-  function deleteSelection() {
+  /**
+   * Delete every selected page in place, keeping at least one page in the document.
+   * @param {boolean} [animate=true] - Slide surviving rows to their new slots and shrink the removed ones out.
+   *    The room bar passes false: it stages its own shrink-then-slide beat.
+   */
+  function deleteSelection(animate = true) {
     if (selected.size === 0 || !scribe.doc) return;
     cancelCut();
     let toDelete = [...selected].filter((i) => i < pageCount).sort((a, b) => a - b);
     if (toDelete.length >= pageCount) toDelete = toDelete.slice(0, pageCount - 1);
     if (toDelete.length === 0) return;
+    const playSlide = animate ? beginStructureSlide() : null;
     const delSet = new Set(toDelete);
     const belowActive = toDelete.filter((d) => d < activePage).length;
     const snapshot = [...mounted];
@@ -1875,6 +1882,7 @@ export function createThumbnailPanel(scribe, {
     }
     updateWindow();
     updateBatchToolbar();
+    if (playSlide) playSlide();
   }
 
   /** Reflect the pending-cut marks on the mounted rows. */

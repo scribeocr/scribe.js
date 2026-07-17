@@ -558,10 +558,11 @@ export class ImageStore {
    * @param {number} n - Page index.
    * @param {number} [widthPx=150] - Target preview width in CSS px.
    * @param {number} [quality=0.6] - JPEG quality (0-1).
+   * @param {boolean} [fresh=false] - Render at exactly `widthPx`, bypassing the thumbnail cache: no cached Blob is returned (first-requested width otherwise wins) and the result is not cached.
    * @returns {Promise<?Blob>} A JPEG Blob, or `null` if the page cannot be rendered.
    */
-  renderThumbnail = (n, widthPx = 150, quality = 0.6) => {
-    if (this.thumbnails[n]) return this.thumbnails[n];
+  renderThumbnail = (n, widthPx = 150, quality = 0.6, fresh = false) => {
+    if (!fresh && this.thumbnails[n]) return this.thumbnails[n];
     if (!this.inputModes.image && !this.inputModes.pdf) return Promise.resolve(null);
 
     const p = (async () => {

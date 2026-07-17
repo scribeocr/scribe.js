@@ -241,6 +241,12 @@ class ScribePDFViewer {
     this._sheetCountElem = null;
     /** @type {?HTMLButtonElement} The sheet header's action button (+): add bookmark / new note, following the active view. */
     this._sheetActBtn = null;
+    /** @type {?(() => void)} Detaches the visual-viewport listeners of an active composer keyboard lift. */
+    this._composeLiftOff = null;
+    /** Sheet header drag in progress (or its snap still settling): the document lays out full-height behind the sheet. */
+    this._sheetDragLayout = false;
+    /** @type {?ReturnType<typeof setTimeout>} Timer restoring the sheet inset once the release snap lands. */
+    this._sheetRelayoutT = null;
     /** @type {?HTMLDivElement} Full-height Pages room the companion strip expands into, above the dock. */
     this._pagesRoomElem = null;
     /** @type {?HTMLDivElement} Pages-room body that hosts the re-homed thumbnail panel while the phone layout is active. */
@@ -249,13 +255,13 @@ class ScribePDFViewer {
     this._roomCountElem = null;
     this._roomOpen = false;
     this._roomEditing = false;
-    /** @type {?HTMLButtonElement} Edit/Done mode toggle in the room header. */
+    /** @type {?HTMLButtonElement} Edit/Save mode toggle in the room header. */
     this._roomEditBtn = null;
-    /** @type {?HTMLButtonElement} The room-closing Done, hidden while editing so only one "Done" shows. */
+    /** @type {?HTMLButtonElement} The room-closing Done, hidden while editing (Save and Discard exit the mode). */
     this._roomDoneBtn = null;
-    /** @type {?HTMLButtonElement} Revert-the-session button beside Done, shown only while editing. */
+    /** @type {?HTMLButtonElement} Discard-the-session button beside Save, shown only while editing. */
     this._roomRevertBtn = null;
-    // Undo-stack depth at Edit entry (-1 outside Edit): Revert unwinds page ops back to exactly this depth.
+    /** Undo-stack depth at Edit entry (-1 outside Edit): Discard unwinds page ops back to exactly this depth. */
     this._roomEditBaseline = -1;
     /** @type {?ReturnType<typeof import('../js/controls/pagesMorph.js').createPagesMorph>} Strip-to-room pull-up morph. */
     this._pagesMorph = null;
@@ -369,6 +375,7 @@ class ScribePDFViewer {
       ? createCommentsPanel(this.scribe, {
         onNavigate: (n) => this.scribe.displayPage(n, true, false),
         onResize: (w, phase) => this._resizeSidebar(w, phase),
+        onComposeFocus: (focused) => this._sheetComposeLift(focused),
       })
       : null;
 
@@ -1362,6 +1369,7 @@ class ScribePDFViewer {
    */
   _docBottomInset() {
     if (this._phoneChrome && this._sheetOpen && this._sheetElem && this._dockElem) {
+      if (this._sheetDragLayout) return this._chromeBottom();
       const dockH = this._dockElem.offsetHeight || 56;
       // Capped at half the viewport so a full-height sheet tucks the page behind it rather than squeezing it to nothing.
       const sheetH = Math.min(this._sheetElem.getBoundingClientRect().height, Math.round(this._height * 0.5));
@@ -1789,6 +1797,7 @@ class ScribePDFViewer {
           this._thumbnailPanel.setCompact(true);
           this._thumbnailPanel.setRoomMode('browse');
         }
+        if (this._commentsPanel) this._commentsPanel.setCompact(true);
         this._syncDockPanelsBtn();
         // Gate on this.doc, not scribe.doc: the latter is a truthy empty ScribeDoc from construction, which would show a blank bar before anything is opened.
         if (this._companionStrip) {
@@ -1817,6 +1826,7 @@ class ScribePDFViewer {
           this._thumbnailPanel.setCompact(false);
           this._thumbnailPanel.setRoomMode(null);
         }
+        if (this._commentsPanel) this._commentsPanel.setCompact(false);
       }
     }
     this._updateRecognizeButton();
@@ -1857,11 +1867,11 @@ class ScribePDFViewer {
     roomEdit.textContent = 'Edit';
     roomEdit.addEventListener('click', () => this._setRoomEditing(!this._roomEditing));
     this._roomEditBtn = roomEdit;
-    // Revert undoes everything this Edit session did, restoring the state at Edit entry.
+    // Discard unwinds everything this Edit session did and leaves Edit mode.
     const roomRevert = document.createElement('button');
     roomRevert.type = 'button';
     roomRevert.className = 'scribe-room-revert';
-    roomRevert.textContent = 'Revert';
+    roomRevert.textContent = 'Discard';
     roomRevert.addEventListener('click', () => {
       const doc = this.scribe.doc;
       if (!this._roomEditing || !doc || this._roomEditBaseline < 0) return;
@@ -1875,7 +1885,7 @@ class ScribePDFViewer {
       if (playSlide) playSlide();
       // The selection marked pages by index, and the unwind made those indices stale.
       if (this._thumbnailPanel) this._thumbnailPanel.clearSelection();
-      this._syncRoomHeader();
+      this._setRoomEditing(false);
     });
     this._roomRevertBtn = roomRevert;
     const roomDone = document.createElement('button');
@@ -1884,7 +1894,7 @@ class ScribePDFViewer {
     roomDone.textContent = 'Done';
     roomDone.addEventListener('click', () => this._closePagesRoom());
     this._roomDoneBtn = roomDone;
-    roomHd.append(roomTitle, roomCount, roomRevert, roomEdit, roomDone);
+    roomHd.append(roomTitle, roomCount, roomEdit, roomRevert, roomDone);
     const roomBody = document.createElement('div');
     roomBody.className = 'scribe-room-body';
     room.append(roomHd, roomBody);
@@ -1897,6 +1907,89 @@ class ScribePDFViewer {
     this._pagesMorph = createPagesMorph(this.scribe, {
       roomElem: room, roomHdElem: roomHd, stripElem: this._companionStrip.stripElem, panel: this._thumbnailPanel,
     });
+
+    // Drag-down on the room header is the pull-up's reverse: the open room rides the finger back down into the strip along the same morph.
+    // The gesture engages only on a decisively vertical downward pull, so a clean tap still reaches the header's buttons.
+    /** @type {?{id: number, y0: number, x0: number, base: number, active: boolean, down: number, travel: number, morph: boolean}} */
+    let hdPull = null;
+    let hdSwallowClick = false;
+    /** @param {PointerEvent} e */
+    const hdPullMove = (e) => {
+      if (!hdPull || e.pointerId !== hdPull.id) return;
+      const p = hdPull;
+      const down = e.clientY - p.y0;
+      const dx = Math.abs(e.clientX - p.x0);
+      if (!p.active) {
+        if (!(down > 12 && down > 2 * dx)) return;
+        if (!this._roomOpen || (this._pagesMorph && this._pagesMorph.isActive())) return;
+        if (this._companionStrip) this._companionStrip.park();
+        const morph = this._pagesMorph;
+        const reduceMotion = !!(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches);
+        if (morph && !reduceMotion && morph.beginClose()) {
+          p.morph = true;
+          p.travel = morph.dyFull();
+        } else {
+          p.travel = room.offsetHeight || 1;
+          room.classList.add('dragging');
+        }
+        p.active = true;
+        p.base = down;
+        hdSwallowClick = true;
+        return;
+      }
+      p.down = Math.max(0, down - p.base);
+      if (!p.morph) { room.style.transform = `translateY(${Math.min(p.travel, p.down)}px)`; return; }
+      if (this._pagesMorph) this._pagesMorph.frame(p.travel - p.down);
+    };
+    /** @param {PointerEvent} e */
+    const hdPullEnd = (e) => {
+      if (!hdPull || e.pointerId !== hdPull.id) return;
+      const p = hdPull;
+      hdPull = null;
+      window.removeEventListener('pointermove', hdPullMove);
+      window.removeEventListener('pointerup', hdPullEnd);
+      window.removeEventListener('pointercancel', hdPullEnd);
+      if (!p.active) return;
+      // On a cancel Chrome reports coordinates as (0, 0), so end at the last travel a real move reported instead.
+      const down = e.type === 'pointercancel' ? p.down : Math.max(0, e.clientY - p.y0 - p.base);
+      const commit = down > Math.min(140, p.travel * 0.25);
+      if (p.morph) {
+        const morph = this._pagesMorph;
+        if (morph) morph.settle(!commit, (stillOpen) => { if (!stillOpen) this._roomOpen = false; });
+        return;
+      }
+      // Plain-slide release: flush the dragged position so the snap animates from the finger's release point.
+      room.getBoundingClientRect();
+      room.classList.remove('dragging');
+      if (commit) {
+        this._roomOpen = false;
+        room.classList.remove('open');
+      }
+      room.style.transform = '';
+      if (!commit) return;
+      if (this._thumbnailPanel) {
+        this._thumbnailPanel.setVisible(false);
+        this._thumbnailPanel.panelElem.style.display = 'none';
+      }
+    };
+    roomHd.addEventListener('pointerdown', (e) => {
+      hdSwallowClick = false; // a stale flag from a clickless touch drag must not eat this press's tap
+      if (hdPull || !this._roomOpen || this._roomEditing) return; // editing exits only through Save or Discard
+      if (this._pagesMorph && this._pagesMorph.isActive()) return; // a live scene (an open still settling) owns the room
+      hdPull = {
+        id: e.pointerId, y0: e.clientY, x0: e.clientX, base: 0, active: false, down: 0, travel: 1, morph: false,
+      };
+      window.addEventListener('pointermove', hdPullMove);
+      window.addEventListener('pointerup', hdPullEnd);
+      window.addEventListener('pointercancel', hdPullEnd);
+    });
+    // Swallow the click an engaged drag can land on a header button (Done firing over the settle would close twice).
+    roomHd.addEventListener('click', (e) => {
+      if (!hdSwallowClick) return;
+      hdSwallowClick = false;
+      e.preventDefault();
+      e.stopPropagation();
+    }, true);
 
     const panelsBtn = makeIconButton('Panels', THUMB_SVG, 'Bookmarks and comments');
     panelsBtn.addEventListener('click', () => { if (this._sheetOpen) this._closeSheet(); else this._openSheet(); });
@@ -1952,17 +2045,22 @@ class ScribePDFViewer {
     this.pdfViewerElem.append(scrim, sheet);
 
     // Header gestures: a tap on the row's blank parts toggles half/full, and a drag resizes live and snaps to full, half, or closed on release.
+    // Below the smallest useful height the drag stops resizing and the whole card rides the finger down behind the dock, so a dismissal can be dragged to completion.
     // Capturing under a button would retarget its click to the row, so capture is immediate only off-button and deferred past the slop when the press starts on one.
     let dragActive = false;
     let dragStartY = 0;
     let dragStartH = 0;
     let dragLastH = 0;
+    let dragOver = 0;
     let dragMoved = false;
     let dragFromButton = false;
     hd.addEventListener('pointerdown', (e) => {
+      // A second concurrent touch must not re-base the gesture mid-drag.
+      if (dragActive) return;
       dragActive = true;
       dragStartY = e.clientY;
       dragStartH = sheet.getBoundingClientRect().height;
+      dragOver = 0;
       dragMoved = false;
       dragFromButton = !!(e.target instanceof Element && e.target.closest('button'));
       if (!dragFromButton) {
@@ -1976,12 +2074,39 @@ class ScribePDFViewer {
       if (!dragMoved && dragFromButton) {
         try { hd.setPointerCapture(e.pointerId); } catch { /* see above */ }
       }
+      if (!dragMoved) {
+        // For the gesture's lifetime the document lays out full-height behind the sheet, so a descending sheet reveals live pages instead of the void its inset left.
+        if (this._sheetRelayoutT) { clearTimeout(this._sheetRelayoutT); this._sheetRelayoutT = null; }
+        this._sheetDragLayout = true;
+        this._relayout();
+      }
       dragMoved = true;
       sheet.classList.add('dragging');
       const avail = this.pdfViewerElem.clientHeight;
-      dragLastH = Math.min(avail - 10, Math.max(90, dragStartH + dy));
+      const targetH = dragStartH + dy;
+      // The resize floor doubles as the release-to-close threshold, so the bottom edge detaching announces that letting go dismisses.
+      const floorH = Math.max(140, avail * 0.28);
+      dragLastH = Math.min(avail - 10, Math.max(floorH, targetH));
+      dragOver = Math.max(0, floorH - targetH);
       sheet.style.height = `${dragLastH}px`;
+      sheet.style.transform = dragOver ? `translateY(${dragOver}px)` : '';
     });
+    /** Settle a finished drag (release or cancel): snap the sheet to full, half, or closed. */
+    const settleDrag = () => {
+      sheet.getBoundingClientRect();
+      sheet.classList.remove('dragging');
+      if (dragOver > 0) {
+        this._closeSheet();
+        return;
+      }
+      sheet.style.height = '';
+      sheet.classList.toggle('full', dragLastH > this.pdfViewerElem.clientHeight * 0.72);
+      this._sheetRelayoutT = setTimeout(() => {
+        this._sheetRelayoutT = null;
+        this._sheetDragLayout = false;
+        this._relayout();
+      }, 300);
+    };
     hd.addEventListener('pointerup', () => {
       if (!dragActive) return;
       dragActive = false;
@@ -1991,14 +2116,16 @@ class ScribePDFViewer {
         sheet.classList.toggle('full');
         return;
       }
-      // Flush the dragged height while transitions are still off: transitions run from the last committed style, so without this the snap would animate from the last paint, not the release point.
-      sheet.getBoundingClientRect();
-      sheet.classList.remove('dragging');
-      // Snap on the drag's own tracked height: a layout read here could land mid-animation.
-      const avail = this.pdfViewerElem.clientHeight;
-      sheet.style.height = '';
-      if (dragLastH < Math.max(140, avail * 0.28)) { this._closeSheet(); return; }
-      sheet.classList.toggle('full', dragLastH > avail * 0.72);
+      settleDrag();
+    });
+    // A cancelled pointer (browser takeover, palm) must settle like a release, or the sheet strands mid-ride with transitions off.
+    // Settle from the tracked geometry, never the event's coordinates: Chrome reports pointercancel at (0,0).
+    hd.addEventListener('pointercancel', () => {
+      if (!dragActive) return;
+      dragActive = false;
+      if (dragMoved) settleDrag();
+      // No click composes after a cancel, so clear the flag here or the swallow guard below would eat the next real tap.
+      dragMoved = false;
     });
     // A drag that began on a tab still composes a click on release (the capture retargets it here), so swallow it or the drag would also switch tabs.
     hd.addEventListener('click', (e) => {
@@ -2016,6 +2143,12 @@ class ScribePDFViewer {
     // One surface at a time at the bottom edge: the sheet displaces an open Pages room.
     this._closePagesRoom(true);
     this._sheetOpen = true;
+    if (this._sheetElem.style.height) {
+      this._sheetElem.style.transition = 'none';
+      this._sheetElem.style.height = '';
+      this._sheetElem.getBoundingClientRect();
+      this._sheetElem.style.transition = '';
+    }
     // No scrim: the sheet coexists with a lit, interactive document reflowed above it.
     this._sheetElem.classList.add('open');
     if (this._sheetPanelsBtn) this._sheetPanelsBtn.classList.add('active');
@@ -2048,8 +2181,13 @@ class ScribePDFViewer {
         if (this._sheetScrimElem) this._sheetScrimElem.style.transition = '';
       });
     }
+    // Closed layout equals the drag's overlay layout, so clearing these here never shifts the document.
+    if (this._sheetRelayoutT) { clearTimeout(this._sheetRelayoutT); this._sheetRelayoutT = null; }
+    this._sheetDragLayout = false;
     this._sheetScrimElem.classList.remove('open');
     this._sheetElem.classList.remove('open');
+    // A keyboard lift's inline translate would hold the closed sheet on screen.
+    this._sheetComposeLift(false);
     if (this._sheetPanelsBtn) this._sheetPanelsBtn.classList.remove('active');
     const panel = this._panelFor(this._sheetView);
     if (panel) panel.setVisible(false);
@@ -2073,6 +2211,45 @@ class ScribePDFViewer {
       panel.setVisible(on);
     }
     this._syncSheetHeader();
+  }
+
+  /**
+   * Keep the sheet's composer clear of the on-screen keyboard while it has focus.
+   * @param {boolean} focused
+   */
+  _sheetComposeLift(focused) {
+    const sheet = this._sheetElem;
+    if (!sheet) return;
+    if (this._composeLiftOff) {
+      this._composeLiftOff();
+      this._composeLiftOff = null;
+    }
+    if (!focused || !this._phoneChrome) {
+      sheet.style.transform = '';
+      return;
+    }
+    const vv = window.visualViewport;
+    let lift = 0;
+    const apply = () => {
+      const rect = sheet.getBoundingClientRect();
+      const restTop = rect.top + lift;
+      const restBottom = rect.bottom + lift;
+      const keyboardTop = vv ? (vv.offsetTop + vv.height) : window.innerHeight;
+      let next = Math.max(0, restBottom - keyboardTop + 10);
+      next = Math.min(next, Math.max(0, restTop - 8));
+      if (next === lift) return;
+      lift = next;
+      sheet.style.transform = lift ? `translateY(${-lift}px)` : '';
+    };
+    apply();
+    if (vv) {
+      vv.addEventListener('resize', apply);
+      vv.addEventListener('scroll', apply);
+      this._composeLiftOff = () => {
+        vv.removeEventListener('resize', apply);
+        vv.removeEventListener('scroll', apply);
+      };
+    }
   }
 
   /** Refresh the sheet header's action slot: the comment count, and the +'s target and visibility. */
@@ -2122,14 +2299,13 @@ class ScribePDFViewer {
     }
     if (this._roomEditBtn) {
       const canEdit = !!(this.scribe.opt && this.scribe.opt.enablePageEditing) && count > 1;
-      // While editing the button is the mode's only exit, so it never hides then.
       this._roomEditBtn.style.display = (this._roomEditing || canEdit) ? '' : 'none';
+      const doc = this.scribe.doc;
+      this._roomEditBtn.disabled = this._roomEditing
+        && !(doc && this._roomEditBaseline >= 0 && doc.history.undoStack.length > this._roomEditBaseline);
     }
     if (this._roomRevertBtn) {
-      // onPageEditCallback re-runs this sync on every page op, so the enablement tracks the session live.
-      const doc = this.scribe.doc;
-      this._roomRevertBtn.disabled = !this._roomEditing || !doc || this._roomEditBaseline < 0
-        || doc.history.undoStack.length <= this._roomEditBaseline;
+      this._roomRevertBtn.disabled = !this._roomEditing;
     }
   }
 
@@ -2142,7 +2318,7 @@ class ScribePDFViewer {
     this._roomEditing = on;
     this._roomEditBaseline = on && this.scribe.doc ? this.scribe.doc.history.undoStack.length : -1;
     this._pagesRoomElem.classList.toggle('editing', on);
-    if (this._roomEditBtn) this._roomEditBtn.textContent = on ? 'Done' : 'Edit';
+    if (this._roomEditBtn) this._roomEditBtn.textContent = on ? 'Save' : 'Edit';
     if (this._roomDoneBtn) this._roomDoneBtn.style.display = on ? 'none' : '';
     this._syncRoomHeader();
     if (this._thumbnailPanel) this._thumbnailPanel.setRoomMode(on ? 'edit' : 'browse');

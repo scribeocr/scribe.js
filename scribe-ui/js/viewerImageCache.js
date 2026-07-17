@@ -7,6 +7,11 @@ import { SKIPPED, DEBUG_RENDER_SCHED } from '../../tess/TessScheduler.js';
 
 /** @typedef {import('../../js/objects/imageObjects.js').ImageWrapper} ImageWrapper */
 
+// iPadOS 13+ reports the Mac platform string, so it is told apart from a real Mac by its touch points.
+export const IOS_WEBKIT = typeof navigator !== 'undefined'
+  && (/iP(hone|ad|od)/.test(navigator.platform || '')
+    || (navigator.platform === 'MacIntel' && navigator.maxTouchPoints > 1));
+
 /**
  * @typedef {Object} ImageProperties
  * @property {boolean} [rotated]
@@ -65,21 +70,26 @@ const _initBitmapScheduler = async (numWorkers = 3) => {
  * Only the bitmap-worker scheduler is shared globally, because workers are expensive.
  */
 export class ViewerImageCache {
-  /** Number of pages ahead and behind the current page to pre-render. */
-  static cacheRenderPages = 3;
+  /**
+   * Number of pages ahead and behind the current page to pre-render.
+   * iOS gets the narrow profile here and in the two knobs below.
+   * A zoomed-in page costs ~34 MB of bitmap plus the same in canvas, and the desktop counts sum past the budget iOS kills the tab at.
+   */
+  static cacheRenderPages = IOS_WEBKIT ? 1 : 3;
 
   /**
    * Number of pages ahead and behind the current page to keep the full-resolution decoded bitmap for.
    * Also the floor within which a display canvas is never evicted.
    */
-  static cacheDeletePages = 5;
+  static cacheDeletePages = IOS_WEBKIT ? 2 : 5;
 
   /**
    * Total-bytes cap on retained display canvases, kept far beyond the bitmap window so a revisit reuses the drawn pixels instead of re-decoding (see `_cleanBitmapCache2`).
    * A byte cap self-adapts to zoom where a page count would not: canvas size scales with on-screen area x dpr^2, so this ceiling holds many pages zoomed out and few zoomed in.
    * The one knob for the memory/coverage trade-off.
+   * On iOS every retained canvas also carries a compositing surface of the same size, so the real footprint is ~2x this cap.
    */
-  static canvasCacheBytes = 256 * 1024 * 1024;
+  static canvasCacheBytes = (IOS_WEBKIT ? 32 : 256) * 1024 * 1024;
 
   /** Preview width in px; low enough to show shapes and colors, not readable text. */
   static previewWidth = 300;
@@ -169,6 +179,12 @@ export class ViewerImageCache {
      * @type {Array<?Promise<void>>}
      */
     this._capUpgrades = [];
+    /**
+     * Serializes iOS page renders across `renderAheadBehindBrowser` calls.
+     * Always kept resolving, never rejected.
+     * @type {Promise<void>}
+     */
+    this._iosRenderChain = Promise.resolve();
   }
 
   _viewer() {
@@ -264,7 +280,22 @@ export class ViewerImageCache {
     const dims = viewer.doc.pageMetrics[n].dims;
     const dpr = window.devicePixelRatio || 1;
     const displayScale = Math.max(0.01, (viewer.zoomLevel || 1) * dpr);
-    return Math.max(1, Math.min(Math.round(dims.width * displayScale), dims.width));
+    return Math.max(1, Math.min(Math.round(dims.width * displayScale), this._maxSrcWidth(n)));
+  }
+
+  /**
+   * Hard ceiling on a page's viewer raster width.
+   * iOS caps at ~1.5 viewport-widths of device pixels: full-resolution rasters are ~32 MB each on a phone, and a zoom cycle rebuilding several at once gets the tab killed.
+   * @param {number} n - Page number
+   * @returns {number}
+   */
+  _maxSrcWidth(n) {
+    const viewer = this._viewer();
+    const dims = viewer.doc.pageMetrics[n].dims;
+    if (!IOS_WEBKIT) return dims.width;
+    const dpr = window.devicePixelRatio || 1;
+    const vw = viewer.scrollContainer ? viewer.scrollContainer.clientWidth : (window.innerWidth || 800);
+    return Math.min(dims.width, Math.max(1024, Math.round(vw * dpr * 1.5)));
   }
 
   /**
@@ -285,10 +316,21 @@ export class ViewerImageCache {
       if (haveW < wantW) this._ensureCapUpgrade(n);
     } else if (!slot || !sufficient) {
       const renderP = images.renderViewerRaster(n, wantW, true);
+      // Waiting for GC to free the superseded raster lets rapid zoom cycles stack ~34 MB bitmaps faster than they collect.
+      // iOS kills the tab on the uncollected total.
+      const oldSlot = this._srcRasters[n];
       slot = renderP;
       this._srcRasters[n] = renderP;
       this._srcWidths[n] = wantW;
       this._srcBitmapPromises[n] = null;
+      if (oldSlot) {
+        Promise.resolve(oldSlot).then((old) => {
+          if (!old || old === SKIPPED || !old.imageBitmap) return;
+          if (this._drawing.has(n)) return;
+          old.imageBitmap.close();
+          old.imageBitmap = null;
+        }).catch(() => {});
+      }
       renderP.then((w) => {
         // Dropped from the viewer lane: clear the slot so a later request re-renders.
         if (w === SKIPPED && this._srcRasters[n] === renderP) {
@@ -321,7 +363,8 @@ export class ViewerImageCache {
   _ensureCapUpgrade(n) {
     // A failed upgrade leaves its promise in place: a render this slow must not be retried on every further zoom.
     if (this._capUpgrades[n]) return;
-    const fullW = this._viewer().doc.pageMetrics[n].dims.width;
+    // The iOS raster ceiling applies to this background upgrade too, or it would reintroduce the full-size rasters the ceiling exists to avoid.
+    const fullW = this._maxSrcWidth(n);
     if ((this._srcWidths[n] ?? 0) >= fullW) return;
     const images = this._viewer().doc.images;
     this._capUpgrades[n] = (async () => {
@@ -334,6 +377,9 @@ export class ViewerImageCache {
       this._srcRasters[n] = Promise.resolve(w);
       this._srcWidths[n] = fullW;
       this._srcBitmapPromises[n] = null;
+      // At deep zoom only the current page may hold a raster-cap-sized canvas, so a late-landing upgrade must not redraw a neighbor.
+      // The upgraded raster stays cached for when the page is visited.
+      if (this._iosDeepZoom() && n !== this._viewer().state.cp.n) return;
       if (this.pageCanvases[n]) this.addPageCanvas(n);
     })().catch(() => {});
   }
@@ -382,9 +428,22 @@ export class ViewerImageCache {
     canvas.className = 'scribe-layer-image';
     canvas.width = box.canvasW;
     canvas.height = box.canvasH;
+    // iOS WebKit sizes a canvas's compositing surface from its layout box x device scale, ignoring the zoom layer's down-scale.
+    // A page-sized layout box inside a zoomed-out layer then costs hundreds of MB per page and gets the tab killed.
+    // Power-of-two math cancels exactly, but the compositor still resamples by a subpixel (fine at phone density), so every non-iOS platform keeps the plain untransformed box.
+    let shrink = 1;
+    if (IOS_WEBKIT) {
+      const dpr = window.devicePixelRatio || 1;
+      while (box.cssW / shrink > box.canvasW / dpr + 0.5) shrink *= 2;
+    }
     Object.assign(canvas.style, {
-      position: 'absolute', left: '0', top: '0', width: `${box.cssW}px`, height: `${box.cssH}px`, pointerEvents: 'none',
-    });
+      position: 'absolute',
+      left: '0',
+      top: '0',
+      width: `${box.cssW / shrink}px`,
+      height: `${box.cssH / shrink}px`,
+      pointerEvents: 'none',
+    }, shrink === 1 ? {} : { transformOrigin: '0 0', transform: `scale(${shrink})` });
     const ctx = /** @type {CanvasRenderingContext2D} */ (canvas.getContext('2d'));
     ctx.imageSmoothingQuality = 'high';
     ctx.save();
@@ -517,11 +576,20 @@ export class ViewerImageCache {
         if (this.pageCanvases[n] === canvasPromise) this.pageCanvases[n] = null;
         return;
       }
-      if (this._renderSeq[n] !== seq) return;
+      if (this._renderSeq[n] !== seq) {
+        // Superseded render: the canvas was never attached, so free its backing store now.
+        /** @type {HTMLCanvasElement} */ (canvas).width = 0;
+        /** @type {HTMLCanvasElement} */ (canvas).height = 0;
+        return;
+      }
       const pc = viewer._ensurePageContainer(n);
       if (!pc) return;
       const prev = /** @type {any} */ (pc)._canvas;
       if (prev && prev !== canvas && prev.parentNode) prev.remove();
+      if (prev && prev !== canvas) {
+        prev.width = 0;
+        prev.height = 0;
+      }
       /** @type {any} */ (pc)._canvas = canvas;
       /** @type {HTMLCanvasElement} */ (canvas).style.display = viewer.state.displayMode === 'ebook' ? 'none' : '';
       // Insert behind the text/overlay groups (which carry z-index >= 1).
@@ -548,6 +616,10 @@ export class ViewerImageCache {
     canvasPromise.then((canvas) => {
       if (canvas && canvas !== SKIPPED) {
         /** @type {HTMLCanvasElement} */ (canvas).remove();
+        // Zeroing the dimensions releases the backing store now.
+        // A detached canvas otherwise holds its pixels until GC, which iOS's process kill does not wait for.
+        /** @type {HTMLCanvasElement} */ (canvas).width = 0;
+        /** @type {HTMLCanvasElement} */ (canvas).height = 0;
         if (pc && /** @type {any} */ (pc)._canvas === canvas) /** @type {any} */ (pc)._canvas = null;
       }
     }).catch(() => {});
@@ -572,6 +644,7 @@ export class ViewerImageCache {
     this._srcBitmapPromises.length = 0;
     this._srcCompressPromises.length = 0;
     this._capUpgrades.length = 0;
+    this._iosRenderChain = Promise.resolve();
     for (const url of this._previewUrls.values()) URL.revokeObjectURL(url);
     this._previewUrls.clear();
   }
@@ -630,8 +703,7 @@ export class ViewerImageCache {
     // Staged renders dispatch closest-to-focus first, so setting the focus makes the current page win a backlogged queue whatever its enqueue order.
     viewer.doc.images.pdfScheduler?.setViewerFocus(curr);
 
-    this._cleanBitmapCache(curr);
-    this._cleanBitmapCache2(curr);
+    this.sweepCaches(curr);
 
     // Skip ahead-render when a PDF is being uploaded alongside OCR data and OCR dimensions are not yet available.
     // No re-render mechanism currently exists for that case.
@@ -642,6 +714,28 @@ export class ViewerImageCache {
 
     // Send the current page first.
     // Although jobs may be reordered in the scheduler, sending them in correct order of priority still avoids issues.
+    if (IOS_WEBKIT) {
+      // One page start-to-finish at a time, chained across calls too: parallel or interleaved renders hold several ~100 MB page transients at once, and iOS kills the tab on the total.
+      // Past fit-width the ahead-render is dropped: neighbor canvases are raster-cap-sized there, and the eviction-protected window would pin an over-budget set nothing can reclaim.
+      // Previews cover the neighbors until they are scrolled to.
+      const deepZoom = this._iosDeepZoom();
+      const pages = [curr];
+      for (let i = 1; i <= (deepZoom ? 0 : radius); i++) {
+        if (curr + i < viewer.doc.images.loadCount) pages.push(curr + i);
+        if (curr - i >= 0) pages.push(curr - i);
+      }
+      if (deepZoom) this.ensurePreviewWindow(curr);
+      this._iosRenderChain = this._iosRenderChain.then(async () => {
+        for (const n of pages) {
+          // A page the view has moved away from while this call sat queued would render only to be evicted by the next sweep.
+          if (Math.abs(n - this._viewer().state.cp.n) > ViewerImageCache.cacheDeletePages) continue;
+          await this.addPageCanvas(n);
+          try { await this.pageCanvases[n]; } catch { /* per-slot handlers own render failures */ }
+        }
+      }).catch(() => { /* a dead chain link must not block every later render */ });
+      await this._iosRenderChain;
+      return;
+    }
     const resArr = [this.addPageCanvas(curr)];
     for (let i = 1; i <= radius; i++) {
       if (curr + i < viewer.doc.images.loadCount) {
@@ -711,8 +805,33 @@ export class ViewerImageCache {
       // A `src`-less wrapper's bitmap is the raster's only copy, so `_compressSlot` compresses it into a `src` before dropping it.
       if (!w || w === SKIPPED || w.src == null) return;
       if (this._drawing.has(n)) return;
-      if (w.imageBitmap) w.imageBitmap = null;
+      if (w.imageBitmap) {
+        w.imageBitmap.close();
+        w.imageBitmap = null;
+      }
     }).catch(() => {});
+  }
+
+  /**
+   * Whether the viewer sits past fit-width zoom on iOS, where every canvas is raster-cap-sized and the resident set must stay minimal.
+   * @returns {boolean}
+   */
+  _iosDeepZoom() {
+    if (!IOS_WEBKIT) return false;
+    const viewer = this._viewer();
+    const sc = viewer.scrollContainer;
+    const fitZoom = sc && viewer._contentWidth ? sc.clientWidth / viewer._contentWidth : 0;
+    return fitZoom > 0 && viewer.zoomLevel > fitZoom * 1.2;
+  }
+
+  /**
+   * Evict decoded bitmaps and over-budget canvases for pages far from `curr`.
+   * Rides every ahead-render, and the iOS deferred-raster glide path calls it directly because that path skips the ahead-render and pre-glide high-res canvases would survive the whole fling.
+   * @param {number} curr
+   */
+  sweepCaches(curr) {
+    this._cleanBitmapCache(curr);
+    this._cleanBitmapCache2(curr);
   }
 
   /** @param {number} curr */

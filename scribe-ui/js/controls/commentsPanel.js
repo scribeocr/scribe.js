@@ -16,6 +16,12 @@ const NOTE_MARK_SVG = '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="c
 // Outline speech bubble for the empty state (the filled COMMENT_SVG stays the toolbar toggle).
 const EMPTY_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">'
   + '<rect x="3" y="4" width="18" height="12.5" rx="2.5"/><path d="M8.5 16.5v3.2l4-3.2"/></svg>';
+// Back chevron for the compact conversation view's header.
+const BACK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>';
+// Outward arrow on the conversation view's "p. N" page link.
+const JUMP_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17L17 7M9 7h8v8"/></svg>';
+// Send arrow on the compact composer.
+const SEND_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6M6 12l6-6 6 6"/></svg>';
 
 // A quote up to MAX + SLACK tall shows in full; taller, it caps at MAX and scrolls inside.
 // The SLACK band keeps a quote only just over MAX from scrolling to reveal a mere sliver.
@@ -33,13 +39,15 @@ const QUOTE_SCROLL_SLACK_PX = 64;
 /**
  * Create the comments side panel.
  * @param {*} scribe - The ScribeViewer instance.
- * @param {{ onNavigate: (pageIndex: number) => void, onResize?: (width: number, phase: 'start'|'move'|'end') => void }} handlers
+ * @param {{ onNavigate: (pageIndex: number) => void, onResize?: (width: number, phase: 'start'|'move'|'end') => void,
+ *   onComposeFocus?: (focused: boolean) => void }} handlers
  *   `onResize` fires as the right-edge handle is dragged, with the desired width and the drag phase.
+ *   `onComposeFocus` fires as the compact conversation composer gains/loses focus, so the host can keep it clear of the on-screen keyboard.
  * @returns {{ panelElem: HTMLDivElement, toggleElem: HTMLSpanElement, rebuild: () => void, setActive: (pageIndex: number) => void,
- * setVisible: (v: boolean) => void, reveal: (target: import('../viewerWordObjects.js').UiOcrWord | AnnotationText) => void, destroy: () => void,
- * newNote: () => void, count: () => number }}
+ * setVisible: (v: boolean) => void, setCompact: (on: boolean) => void, reveal: (target: import('../viewerWordObjects.js').UiOcrWord | AnnotationText) => void,
+ * destroy: () => void, newNote: () => void, count: () => number }}
  */
-export function createCommentsPanel(scribe, { onNavigate, onResize }) {
+export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFocus }) {
   const panelElem = document.createElement('div');
   panelElem.className = 'scribe-comments-panel';
   panelElem.style.width = '240px';
@@ -372,6 +380,317 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
     const page = annPages()[row.pageIndex] || [];
     scribe.doc.annotations.pages[row.pageIndex] = page.filter((a) => a !== row.annot);
     refreshOnPage(row.pageIndex);
+  }
+
+  // Compact (phone) mode: simpler tap-to-open rows, and a conversation view that slides in over the list.
+  // The host flips this with the phone layout.
+  let compact = false;
+  /** The conversation open in the pane, or null while the list shows. @type {?CommentRow} */
+  let threadRow = null;
+  /**
+   * The lazily-built conversation view's elements.
+   * @type {?{elem: HTMLDivElement, body: HTMLDivElement, jump: HTMLButtonElement, foot: HTMLDivElement,
+   *   field: HTMLTextAreaElement, send: HTMLButtonElement}}
+   */
+  let pane = null;
+
+  /**
+   * Format an ISO date as "Jun 5", adding the year when it is not the current year.
+   * @param {string} iso
+   * @returns {string}
+   */
+  function shortDate(iso) {
+    if (!iso) return '';
+    const d = new Date(iso);
+    /** @type {Intl.DateTimeFormatOptions} */
+    const dateOpts = { month: 'short', day: 'numeric' };
+    if (d.getFullYear() !== new Date().getFullYear()) dateOpts.year = 'numeric';
+    return d.toLocaleDateString(undefined, dateOpts);
+  }
+
+  /**
+   * The row's quote line, styled with the row's own markup.
+   * Notes have no covered text, so their quote slot is a plain "Note" label.
+   * @param {CommentRow} row
+   * @returns {HTMLDivElement}
+   */
+  function compactQuote(row) {
+    const q = document.createElement('div');
+    q.className = 'scribe-cmc-quote';
+    if (row.kind === 'note') {
+      q.classList.add('note');
+      q.textContent = 'Note';
+      q.style.borderLeftColor = 'var(--scribe-note)';
+      return q;
+    }
+    const rowKind = row.kind === 'redact' ? 'redact' : ((row.annot && row.annot.type) || 'highlight');
+    q.textContent = row.preview || (rowKind === 'redact' ? 'Region on this page' : '');
+    q.title = rowKind === 'underline' ? 'Underline'
+      : (rowKind === 'strikeout' ? 'Strikethrough' : (rowKind === 'redact' ? 'Redaction' : 'Highlight'));
+    if (rowKind === 'redact') {
+      q.classList.add('rd');
+    } else if (row.color) {
+      q.style.borderLeftColor = row.color;
+      if (rowKind === 'underline') {
+        q.classList.add('ul');
+        q.style.textDecorationColor = row.color;
+      } else if (rowKind === 'strikeout') {
+        q.classList.add('st');
+        q.style.textDecorationColor = row.color;
+      } else {
+        q.style.background = `color-mix(in srgb, ${row.color} var(--scribe-cm-wash, 35%), transparent)`;
+      }
+    }
+    return q;
+  }
+
+  /**
+   * One message in the conversation view.
+   * @param {string} author
+   * @param {string} createdAt
+   * @param {string} text
+   * @returns {HTMLDivElement}
+   */
+  function threadMsg(author, createdAt, text) {
+    const msg = document.createElement('div');
+    msg.className = 'scribe-cmc-msg';
+    const ava = document.createElement('span');
+    ava.className = 'scribe-cmc-ava';
+    ava.textContent = (author || '?').split(/\s+/, 2).map((s) => s[0]).join('').toUpperCase();
+    const body = document.createElement('span');
+    body.className = 'scribe-cmc-mb';
+    const head = document.createElement('span');
+    head.className = 'scribe-cmc-mh';
+    head.textContent = author || 'Comment';
+    if (createdAt) {
+      const when = document.createElement('span');
+      when.className = 'scribe-cmc-when';
+      when.textContent = `· ${shortDate(createdAt)}`;
+      head.appendChild(when);
+    }
+    const textElem = document.createElement('span');
+    textElem.className = 'scribe-cmc-mt';
+    textElem.textContent = text;
+    body.append(head, textElem);
+    msg.append(ava, body);
+    return msg;
+  }
+
+  /**
+   * Fill the pane with `row`'s quote and conversation, and point its header link at the anchor page.
+   * @param {CommentRow} row
+   */
+  function renderThread(row) {
+    if (!pane) return;
+    pane.jump.innerHTML = `<span>p. ${row.pageIndex + 1}</span>${JUMP_SVG}`;
+    pane.body.textContent = '';
+    if (row.preview || row.kind === 'note' || row.kind === 'redact') pane.body.appendChild(compactQuote(row));
+    if (row.comment) pane.body.appendChild(threadMsg(row.author, row.createdAt, row.comment));
+    for (const reply of row.replies) pane.body.appendChild(threadMsg(reply.author || '', reply.createdAt || '', reply.text));
+    pane.foot.style.display = editing() ? '' : 'none';
+    pane.field.placeholder = row.comment ? 'Reply…' : 'Comment…';
+    pane.send.disabled = !pane.field.value.trim();
+  }
+
+  /**
+   * Re-render one compact list row in place, keeping the list's scroll position.
+   * @param {CommentRow} row
+   */
+  function refreshCompactRow(row) {
+    const i = rows.indexOf(row);
+    if (i < 0 || !rowEls[i]) return;
+    const fresh = renderCompactRow(row);
+    rowEls[i].replaceWith(fresh);
+    rowEls[i] = fresh;
+  }
+
+  /** Commit the composer's draft: the first message becomes the root comment, later ones append replies. */
+  function postComposer() {
+    const row = threadRow;
+    if (!row || !pane || !editing()) return;
+    const next = pane.field.value.trim();
+    if (!next) return;
+    if (!row.comment) {
+      if (row.kind === 'note') setNoteComment(row, next); else setHighlightComment(row, next);
+      // The setters stamp author + date on the annotation; copy them back into the row's cached fields.
+      const annot = /** @type {AnnotationHighlight | AnnotationText} */ (row.annot);
+      row.comment = annot.comment || '';
+      row.author = annot.author || '';
+      row.createdAt = annot.createdAt || '';
+    } else {
+      /** @type {AnnotationReply} */
+      const reply = { text: next, createdAt: new Date().toISOString() };
+      const author = (scribe.opt && scribe.opt.commentAuthor) || '';
+      if (author) reply.author = author;
+      setRowReplies(row, [...row.replies, reply]);
+      row.replies = /** @type {AnnotationHighlight | AnnotationText} */ (row.annot).replies || [];
+    }
+    pane.field.value = '';
+    pane.field.style.height = '';
+    renderThread(row);
+    refreshCompactRow(row);
+    pane.body.scrollTop = pane.body.scrollHeight;
+  }
+
+  /**
+   * Build the conversation pane on first use.
+   * @returns {NonNullable<typeof pane>}
+   */
+  function buildPane() {
+    if (pane) return pane;
+    const elem = document.createElement('div');
+    elem.className = 'scribe-cmc-pane';
+    const back = document.createElement('div');
+    back.className = 'scribe-cmc-back';
+    const backBtn = document.createElement('button');
+    backBtn.type = 'button';
+    backBtn.className = 'scribe-cmc-bk';
+    backBtn.innerHTML = `${BACK_SVG}<span>Comments</span>`;
+    backBtn.addEventListener('click', () => closeThread());
+    const jump = document.createElement('button');
+    jump.type = 'button';
+    jump.className = 'scribe-cmc-jmp';
+    jump.title = 'Show in document';
+    jump.addEventListener('click', () => { if (threadRow) onNavigate(threadRow.pageIndex); });
+    back.append(backBtn, jump);
+    const body = document.createElement('div');
+    body.className = 'scribe-cmc-body';
+    const foot = document.createElement('div');
+    foot.className = 'scribe-cmc-foot';
+    const comp = document.createElement('div');
+    comp.className = 'scribe-cmc-comp';
+    const field = document.createElement('textarea');
+    field.className = 'scribe-cmc-field';
+    field.rows = 1;
+    field.addEventListener('input', () => {
+      field.style.height = 'auto';
+      field.style.height = `${Math.min(field.scrollHeight, 120)}px`;
+      send.disabled = !field.value.trim();
+    });
+    field.addEventListener('focus', () => { if (onComposeFocus) onComposeFocus(true); });
+    // Dismissal commits, as everywhere in the app; Esc below is the one discard path.
+    field.addEventListener('blur', () => {
+      postComposer();
+      if (onComposeFocus) onComposeFocus(false);
+    });
+    field.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        field.value = '';
+        field.blur();
+      }
+      e.stopPropagation();
+    });
+    const send = document.createElement('button');
+    send.type = 'button';
+    send.className = 'scribe-cmc-send';
+    send.title = 'Send';
+    send.setAttribute('aria-label', 'Send');
+    send.innerHTML = SEND_SVG;
+    send.disabled = true;
+    // Posting from the button must not blur the field first, so the keyboard stays up for the next reply.
+    send.addEventListener('pointerdown', (e) => e.preventDefault());
+    send.addEventListener('click', postComposer);
+    comp.append(field, send);
+    foot.appendChild(comp);
+    elem.append(back, body, foot);
+    panelElem.appendChild(elem);
+    pane = {
+      elem, body, jump, foot, field, send,
+    };
+    return pane;
+  }
+
+  /**
+   * Slide the conversation view in over the list.
+   * @param {CommentRow} row
+   */
+  function openThread(row) {
+    const p = buildPane();
+    threadRow = row;
+    renderThread(row);
+    p.elem.classList.add('on');
+  }
+
+  /** Return to the list. A focused composer blurs first, committing any draft. */
+  function closeThread() {
+    if (!pane) return;
+    if (document.activeElement === pane.field) pane.field.blur();
+    threadRow = null;
+    pane.elem.classList.remove('on');
+  }
+
+  /**
+   * One row of the compact list: tapping it navigates to the anchor's page and opens the conversation view.
+   * @param {CommentRow} row
+   * @returns {HTMLDivElement}
+   */
+  function renderCompactRow(row) {
+    const el = document.createElement('div');
+    el.className = 'scribe-cmc-row';
+    el.dataset.page = String(row.pageIndex);
+    const top = document.createElement('div');
+    top.className = 'scribe-cmc-top';
+    if (row.author) {
+      const ava = document.createElement('span');
+      ava.className = 'scribe-cmc-ava';
+      ava.textContent = row.author.split(/\s+/, 2).map((s) => s[0]).join('').toUpperCase();
+      const who = document.createElement('span');
+      who.className = 'scribe-cmc-who';
+      who.textContent = row.author;
+      top.append(ava, who);
+      if (row.createdAt) {
+        const when = document.createElement('span');
+        when.className = 'scribe-cmc-when';
+        when.textContent = `· ${shortDate(row.createdAt)}`;
+        top.appendChild(when);
+      }
+    } else {
+      // Branch on row.kind before annot.type: a note's annotation type is 'text', which the markup chain would misread as a highlight.
+      const kind = document.createElement('span');
+      kind.className = 'scribe-cmc-kind';
+      const rowKind = (row.kind === 'redact' || row.kind === 'note') ? row.kind : ((row.annot && row.annot.type) || 'highlight');
+      kind.textContent = rowKind === 'note' ? 'Note'
+        : (rowKind === 'underline' ? 'Underline'
+          : (rowKind === 'strikeout' ? 'Strikethrough' : (rowKind === 'redact' ? 'Redaction' : 'Highlight')));
+      top.appendChild(kind);
+    }
+    const pg = document.createElement('span');
+    pg.className = 'scribe-cmc-pg';
+    pg.textContent = `p. ${row.pageIndex + 1}`;
+    top.appendChild(pg);
+    el.appendChild(top);
+    if (row.preview || row.kind === 'note' || row.kind === 'redact') el.appendChild(compactQuote(row));
+    if (row.comment) {
+      const text = document.createElement('div');
+      text.className = 'scribe-cmc-text';
+      text.textContent = row.comment;
+      el.appendChild(text);
+    }
+    if (row.replies.length) {
+      const rep = document.createElement('div');
+      rep.className = 'scribe-cmc-rep';
+      rep.textContent = row.replies.length > 1 ? `${row.replies.length} replies` : '1 reply';
+      el.appendChild(rep);
+    }
+    el.addEventListener('click', () => {
+      onNavigate(row.pageIndex);
+      // A redaction mark has no conversation; its row only locates the mark.
+      if (row.kind !== 'redact') openThread(row);
+    });
+    return el;
+  }
+
+  /**
+   * Switch between the desktop card list and the compact phone list.
+   * @param {boolean} on
+   */
+  function setCompact(on) {
+    if (compact === !!on) return;
+    compact = !!on;
+    panelElem.classList.toggle('scribe-cm-compact', compact);
+    closeThread();
+    if (visible) rebuild();
   }
 
   /**
@@ -848,7 +1167,11 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
     rowEls.length = 0;
     selected.clear();
     rows = [];
-    if (!hasDoc()) { countElem.textContent = ''; return; }
+    if (!hasDoc()) {
+      countElem.textContent = '';
+      if (compact && threadRow) closeThread();
+      return;
+    }
     rows = collectRows();
     // Sort by page then position, never creation order, so a highlight added atop a page never lists below an older one lower down.
     rows.sort((a, b) => a.pageIndex - b.pageIndex || a.top - b.top || a.left - b.left);
@@ -868,11 +1191,12 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
         empty.appendChild(how);
       }
       listElem.appendChild(empty);
+      if (compact && threadRow) closeThread();
       return;
     }
     let lastPage = -1;
     rows.forEach((row, i) => {
-      if (row.pageIndex !== lastPage) {
+      if (!compact && row.pageIndex !== lastPage) {
         lastPage = row.pageIndex;
         const grp = document.createElement('div');
         grp.className = 'scribe-cm-grp';
@@ -883,10 +1207,19 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
         grp.appendChild(label);
         listElem.appendChild(grp);
       }
-      const el = renderRow(row, i);
+      const el = compact ? renderCompactRow(row) : renderRow(row, i);
       rowEls[i] = el;
       listElem.appendChild(el);
     });
+    if (compact && threadRow) {
+      const prev = threadRow;
+      const again = rows.find((r) => r.annot === prev.annot)
+        || (prev.groupId ? rows.find((r) => r.kind === prev.kind && r.groupId === prev.groupId && r.pageIndex === prev.pageIndex) : null);
+      if (again) {
+        threadRow = again;
+        renderThread(again);
+      } else closeThread();
+    }
   }
 
   (scribe.outerElem || document).addEventListener('click', (e) => { if (!menuElem.contains(e.target)) closeMenu(); });
@@ -1000,7 +1333,11 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
     visible = v;
     panelElem.style.display = v ? '' : 'none';
     if (v) rebuild();
-    else { foldEditor(false); clearSelection(); }
+    else {
+      foldEditor(false);
+      clearSelection();
+      closeThread();
+    }
   }
 
   /**
@@ -1046,6 +1383,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
     el.scrollIntoView({ block: 'nearest' });
     el.classList.add('lit');
     setTimeout(() => el.classList.remove('lit'), 1600);
+    if (compact && rows[i].kind !== 'redact') openThread(rows[i]);
   }
 
   function destroy() {
@@ -1059,6 +1397,6 @@ export function createCommentsPanel(scribe, { onNavigate, onResize }) {
 
   panelElem.style.display = 'none';
   return {
-    panelElem, toggleElem, rebuild, setActive, setVisible, reveal, destroy, newNote, count: () => rows.length,
+    panelElem, toggleElem, rebuild, setActive, setVisible, setCompact, reveal, destroy, newNote, count: () => rows.length,
   };
 }

@@ -6,7 +6,7 @@ import {
 } from './js/viewerLayout.js';
 import { clearObjectProperties } from '../js/utils/miscUtils.js';
 import { UiText, UiOcrWord } from './js/viewerWordObjects.js';
-import { ViewerImageCache } from './js/viewerImageCache.js';
+import { ViewerImageCache, IOS_WEBKIT } from './js/viewerImageCache.js';
 import {
   contextMenuFunc, mouseupFunc2, showTouchCallout, hideTouchCallout,
 } from './js/viewerCanvasInteraction.js';
@@ -65,6 +65,15 @@ export class ScribeViewer {
    * Resume threshold for full rasters once deferred, below `deferRasterVelocityFraction` so the two form a hysteresis band against velocity noise flapping the strategy.
    */
   static resumeRasterVelocityFraction = 0.09;
+
+  /**
+   * The desktop `deferRasterVelocityFraction` is tuned for chunky wheel deltas and sits above fling speeds, so an iOS momentum glide would full-render every page it flies past and kill the tab.
+   * This cutoff catches any real fling while leaving deliberate reading scrolls fully rendered.
+   */
+  static iosDeferRasterVelocityFraction = 0.016;
+
+  /** Resume partner of `iosDeferRasterVelocityFraction`, below it so the two form a hysteresis band. */
+  static iosResumeRasterVelocityFraction = 0.011;
 
   /**
    * Delay (ms) after the last scroll frame before restoring the invis-mode text layers hidden during a sustained scroll (see `_updateScrollTextHide`).
@@ -341,6 +350,23 @@ export class ScribeViewer {
       /** @type {?number} */
       lastDist: null,
     };
+
+    /**
+     * Page containers hidden during an active iOS pinch.
+     * @type {Array<HTMLDivElement>}
+     */
+    this._pinchHiddenPages = [];
+
+    /**
+     * Deferred-commit state of the active iOS pinch, folded into the real zoom and scroll at release.
+     * @type {?{startZoom: number, startDist: number, startCenter: {x: number, y: number}, baseLeft: number, baseTop: number,
+     *   startScrollLeft: number, startScrollTop: number, lastCenter: {x: number, y: number}, lastScale: number,
+     *   minScale: number, moveScrollLeft: number, moveScrollTop: number}}
+     */
+    this._pinchGesture = null;
+
+    /** `performance.now()` of the last pinch end, so a two-finger lift is never misread as a double-tap. */
+    this._lastPinchEndT = 0;
 
     // Browser-style middle-button autoscroll (hold and move) for OCR viewing (`invis`) mode.
     this.autoScroll = {
@@ -1052,6 +1078,10 @@ export class ScribeViewer {
     this._applyZoomTransform(newZoom);
     this._updateContentSize();
 
+    // Force layout before the scroll writes: iOS WebKit otherwise clamps them against the pre-resize scroll range and every zoom-in step deep in a document careens toward the document start.
+    // Chromium flushes layout on the scroll write itself, so this read costs it nothing extra.
+    this._scrollMetrics();
+
     this.scrollContainer.scrollLeft = nx - (center.x - scRect.left);
     this.scrollContainer.scrollTop = ny - (center.y - scRect.top);
   }
@@ -1090,6 +1120,9 @@ export class ScribeViewer {
     if (this._rerasterTimer) clearTimeout(this._rerasterTimer);
     this._rerasterTimer = setTimeout(() => {
       this._rerasterTimer = null;
+      // Mid-pinch a finger pause would otherwise land fresh canvases inside the actively-animating layer.
+      // `_setPinching(false)` re-schedules, so the render happens once, after the gesture.
+      if (this.drag.isPinching) return;
       if (this.doc.inputData.pdfMode || this.doc.inputData.imageMode) {
         this.imageCache.renderAheadBehindBrowser(this.state.cp.n);
       }
@@ -1139,9 +1172,11 @@ export class ScribeViewer {
       const defer = this.state.displayMode === 'invis' || fast;
       // The raster strategy defers on its own, much lower cutoff than text (see the statics for why).
       // A slow scroll that never entered a glide rasters every page immediately across the full window.
+      const deferFrac = IOS_WEBKIT ? ScribeViewer.iosDeferRasterVelocityFraction : ScribeViewer.deferRasterVelocityFraction;
+      const resumeFrac = IOS_WEBKIT ? ScribeViewer.iosResumeRasterVelocityFraction : ScribeViewer.resumeRasterVelocityFraction;
       if (this._rasterDeferred) {
-        if (scrollSpeed < clientH * ScribeViewer.resumeRasterVelocityFraction) this._rasterDeferred = false;
-      } else if (scrollSpeed > clientH * ScribeViewer.deferRasterVelocityFraction) {
+        if (scrollSpeed < clientH * resumeFrac) this._rasterDeferred = false;
+      } else if (scrollSpeed > clientH * deferFrac) {
         // The full raster window is cold when a glide decelerates below the cutoff, and firing it while still moving clumps completions into the decelerating frames.
         // The tail flag limits boundary rasters to the centered page; the settled render (displayPage below) fills the full window once the scroll holds still.
         this._rasterDeferred = true;
@@ -1306,12 +1341,65 @@ export class ScribeViewer {
   }
 
   /**
+   * Flip the pinch-in-progress flag, hiding iOS's heaviest compositing layers for the duration and refreshing the view once at the end.
+   * @param {boolean} v
+   */
+  _setPinching(v) {
+    if (this.drag.isPinching === v) return;
+    this.drag.isPinching = v;
+    if (IOS_WEBKIT && this.zoomLayer) {
+      // iOS sizes each promoted surface from the unscaled layout box x device scale, so compositing every page-sized group and container while the zoom layer animates kills the tab mid-gesture.
+      // The `scribe-pinch` class hides the rotated groups and the loop below hides far-offscreen page containers, so nothing visible changes.
+      this.zoomLayer.classList.toggle('scribe-pinch', v);
+      if (v) {
+        const sc = this.scrollContainer;
+        const z = this.zoomLevel || 1;
+        const viewTop = sc.scrollTop / z;
+        const viewBottom = (sc.scrollTop + sc.clientHeight) / z;
+        /** @type {Array<HTMLDivElement>} */
+        this._pinchHiddenPages = [];
+        for (let n = 0; n < this.pageContainerArr.length; n++) {
+          const pc = this.pageContainerArr[n];
+          if (!pc) continue;
+          const top = this._pageStopsStart[n];
+          const dims = this.getDisplayDims(n);
+          if (top === undefined || !dims) continue;
+          const near = top + dims.height > viewTop - dims.height && top < viewBottom + dims.height;
+          if (!near) {
+            pc.style.display = 'none';
+            this._pinchHiddenPages.push(pc);
+          }
+        }
+      } else {
+        // Normally a no-op (the touchend 2->1 transition already committed); covers end paths that skip it, like `stopDragPinch`.
+        this._commitPinchGesture();
+        // Kill the release momentum of the native pan that iOS latched on the gesture's first finger: it outlives the fingers and clobbers the committed scroll, flinging the view away after it lands.
+        // Toggling overflow is the canonical momentum kill, and the one hidden frame changes nothing visibly.
+        const sc = this.scrollContainer;
+        if (sc && sc.style.overflow !== 'hidden') {
+          sc.style.overflow = 'hidden';
+          sc.getBoundingClientRect();
+          requestAnimationFrame(() => { sc.style.overflow = 'auto'; });
+        }
+        for (const pc of this._pinchHiddenPages || []) pc.style.display = '';
+        this._pinchHiddenPages = [];
+      }
+    }
+    if (!v) {
+      this._lastPinchEndT = performance.now();
+      // The gesture suppressed re-rastering and possibly moved the view, so refresh both now.
+      this.updateCurrentPage();
+      this._scheduleReraster();
+    }
+  }
+
+  /**
    * Stops dragging when the mouse button is released.
    * @param {Event} [event]
    */
   stopDragPinch(event) {
     this.drag.isDragging = false;
-    this.drag.isPinching = false;
+    this._setPinching(false);
     this.drag.dragDeltaTotal = 0;
     this.drag.lastCenter = null;
     this.drag.lastDist = null;
@@ -1423,7 +1511,7 @@ export class ScribeViewer {
     const touch1 = event.touches[0];
     const touch2 = event.touches[1];
     if (!touch1 || !touch2) return;
-    this.drag.isPinching = true;
+    this._setPinching(true);
     const p1 = { x: touch1.clientX, y: touch1.clientY };
     const p2 = { x: touch2.clientX, y: touch2.clientY };
 
@@ -1432,6 +1520,50 @@ export class ScribeViewer {
       y: (p1.y + p2.y) / 2,
     };
     const dist = Math.sqrt((p2.x - p1.x) ** 2 + (p2.y - p1.y) ** 2);
+
+    if (IOS_WEBKIT) {
+      // iOS latches a native pan on the first finger before the second arrives, and a scroll gesture already in progress ignores preventDefault.
+      // Per-frame scroll writes from here fight that native pan: the view shakes violently and the tile churn kills the tab.
+      // The live gesture is instead a temporary transform on the content sizer, re-anchored each frame against the native pan, and `_commitPinchGesture` folds it in at release.
+      const sc = this.scrollContainer;
+      let g = this._pinchGesture;
+      if (!g) {
+        const rect = this.contentSizer.getBoundingClientRect();
+        // Floor the gesture at the width-fit zoom: below it the scroll range collapses and the clamp teleports the view to the document start.
+        const fitZoom = this._contentWidth > 0 ? sc.clientWidth / this._contentWidth : 0;
+        g = {
+          startZoom: this.zoomLevel,
+          startDist: dist,
+          startCenter: center,
+          baseLeft: rect.left,
+          baseTop: rect.top,
+          startScrollLeft: sc.scrollLeft,
+          startScrollTop: sc.scrollTop,
+          lastCenter: center,
+          lastScale: 1,
+          minScale: fitZoom > 0 && this.zoomLevel > 0 ? Math.min(1, fitZoom / this.zoomLevel) : 0,
+          moveScrollLeft: sc.scrollLeft,
+          moveScrollTop: sc.scrollTop,
+        };
+        this._pinchGesture = g;
+        this.contentSizer.style.transformOrigin = '0 0';
+      }
+      const scale = Math.max(dist / g.startDist, g.minScale);
+      // The sizer's untransformed position, tracking any native-pan scroll movement since the gesture began.
+      const originLeft = g.baseLeft - (sc.scrollLeft - g.startScrollLeft);
+      const originTop = g.baseTop - (sc.scrollTop - g.startScrollTop);
+      // Content point under the fingers at gesture start, in sizer-local CSS px.
+      const px = g.startCenter.x - g.baseLeft;
+      const py = g.startCenter.y - g.baseTop;
+      const tx = center.x - originLeft - scale * px;
+      const ty = center.y - originTop - scale * py;
+      this.contentSizer.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
+      g.lastCenter = center;
+      g.lastScale = scale;
+      g.moveScrollLeft = sc.scrollLeft;
+      g.moveScrollTop = sc.scrollTop;
+      return;
+    }
 
     if (!this.drag.lastDist || !this.drag.lastCenter) {
       this.drag.lastCenter = center;
@@ -1444,6 +1576,39 @@ export class ScribeViewer {
     this._zoomStage(dist / this.drag.lastDist, center);
     this.drag.lastDist = dist;
     this.drag.lastCenter = center;
+  }
+
+  /**
+   * Fold the deferred iOS pinch into the real zoom + scroll in one frame.
+   * Called when the gesture drops below two fingers, so the swap happens while the picture is still glued to the fingers.
+   * No-op when no gesture is pending.
+   */
+  _commitPinchGesture() {
+    const g = this._pinchGesture;
+    if (!g) return;
+    this._pinchGesture = null;
+    if (!this.contentSizer || !this.scrollContainer) return;
+    this.contentSizer.style.transform = '';
+    const sc = this.scrollContainer;
+    const scRect = sc.getBoundingClientRect();
+    const scale = g.lastScale || 1;
+    // Belt and braces under the live floor in `executePinchTouch`: a zoom below width-fit collapses the scroll range and the clamp teleports the view to the document start.
+    const fitZoom = this._contentWidth > 0 ? sc.clientWidth / this._contentWidth : 0;
+    const newZoom = Math.max(g.startZoom * scale, fitZoom);
+    // Content point that sat under the fingers at gesture start; the transform kept it glued to `lastCenter`.
+    const contentX = (g.startScrollLeft + (g.startCenter.x - scRect.left)) / g.startZoom;
+    const contentY = (g.startScrollTop + (g.startCenter.y - scRect.top)) / g.startZoom;
+    // Any single-finger native pan since the last two-finger frame, read before the resize below.
+    // Shrinking the sizer clamps the current scroll first, and a later read would fold the clamp distance into these deltas and drag the landing toward the document start.
+    const panLeft = sc.scrollLeft - g.moveScrollLeft;
+    const panTop = sc.scrollTop - g.moveScrollTop;
+    this.zoomLevel = newZoom;
+    this._applyZoomTransform(newZoom);
+    this._updateContentSize();
+    // Fresh layout before the scroll writes, so iOS clamps them against the resized scroll range.
+    this._scrollMetrics();
+    sc.scrollLeft = contentX * newZoom - (g.lastCenter.x - scRect.left) + panLeft;
+    sc.scrollTop = contentY * newZoom - (g.lastCenter.y - scRect.top) + panTop;
   }
 
   /**
@@ -1591,7 +1756,7 @@ export class ScribeViewer {
       if (this.mode !== 'select') return;
       if (event.touches.length < 2) return;
       event.preventDefault();
-      this.drag.isPinching = true;
+      this._setPinching(true);
       this.drag.lastDist = null;
       this.drag.lastCenter = null;
     }, { passive: false });
@@ -1607,11 +1772,12 @@ export class ScribeViewer {
     scrollContainer.addEventListener('touchend', (event) => {
       // Lifting to fewer than two fingers ends the pinch; clearing the trackers makes a re-placed second finger start a fresh gesture instead of jumping from the stale distance.
       if (event.touches.length < 2) {
+        this._commitPinchGesture();
         this.drag.lastDist = null;
         this.drag.lastCenter = null;
       }
       // The pointerup handler, which fires first, also clears this; clearing here too keeps the flag from sticking when a pointerup is retargeted or suppressed mid-gesture.
-      if (event.touches.length === 0) this.drag.isPinching = false;
+      if (event.touches.length === 0) this._setPinching(false);
     });
 
     // Double-tap toggles between the width-fit zoom and a reading zoom anchored at the tap point.
@@ -1626,6 +1792,7 @@ export class ScribeViewer {
     scrollContainer.addEventListener('pointerup', (event) => {
       if (event.pointerType !== 'touch') return;
       if (this.mode !== 'select' || this.drag.isPinching
+        || performance.now() - this._lastPinchEndT < 300
         || (this.useCustomSelection && this.textSel?.isDragging())) { dblTap.lastUpT = 0; return; }
       // Only a stationary press is a tap; a pan or fling lifts far from its press point.
       if (Math.hypot(event.clientX - dblTap.downX, event.clientY - dblTap.downY) > 12) { dblTap.lastUpT = 0; return; }
@@ -1841,6 +2008,7 @@ export class ScribeViewer {
         // Full rasters are suppressed here, so the flown-past pages need a cheap preview to avoid blank.
         // Point the look-ahead in the scroll direction, the sign of the jump to `n`.
         this.imageCache.ensurePreviewWindow(n, Math.sign(n - this.state.cp.n) || 1);
+        if (IOS_WEBKIT) this.imageCache.sweepCaches(n);
       } else {
         this.imageCache.renderAheadBehindBrowser(n, deferRaster === 'current' ? 0 : undefined);
         if (!deferRaster) {

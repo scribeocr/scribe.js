@@ -22,7 +22,7 @@ const SWEEP_SETTLE_MS = 240; // pause during a sweep that collapses the gathered
 const MENU_SLOP = 8; // a lift released within this (never dragged) opens the page menu instead of moving
 
 // Phone Pages-room gestures (see ReorderContext.roomMode).
-const PEEK_HOLD_MS = 400; // still-press in browse mode before the page preview shows
+const PEEK_HOLD_MS = 400; // still-press before the page preview shows
 const DBL_TAP_MS = 300; // second browse-mode tap on the same page within this opens it in the viewer
 // Pointer + scroll travel in px since the last committed insertion gap before a different gap may commit.
 // Without it, a finger resting on a razor-thin derivation boundary (or a mid-reflow cell sliding under a still finger) re-derives alternating gaps, shuffling the preview back and forth.
@@ -81,7 +81,7 @@ const REFLOW_SETTLE_MS = 250;
  * @property {?('browse'|'edit')} roomMode - Phone Pages-room interaction mode: 'browse' is read-only, 'edit' carries the mutations.
  *   Null outside the room, which keeps the hold-to-lift/sweep/release-menu gestures.
  * @property {() => boolean} gridInMotion - Whether the grid scrolled within the last settle window; a press on a moving grid catches the scroll instead of acting.
- * @property {(n: number) => void} peekShow - Show (or scrub to) the browse-mode page preview.
+ * @property {(n: number) => void} peekShow - Show (or scrub to) the hold-to-peek page preview.
  * @property {() => void} peekHide
  * @property {(n: number) => void} openPage - Open page `n` in the viewer (browse-mode double-tap).
  * @property {(n: number) => void} toggleRoomSelect - Toggle page `n` in the room-Edit selection.
@@ -752,7 +752,7 @@ export function installPageReorder(ctx) {
     touch.group = pages.length > 1;
     touch.pages = new Set(pages);
     touch.gap = primaryN; // no-op default until a target cell is hovered
-    touch.reflowedGap = -1; // no reflow yet: the lifted page's own hidden slot marks the origin
+    touch.reflowedGap = -1; // no reflow yet
     // Gap-hysteresis anchor: travel is measured from here until the first gap commits.
     touch.gapX = touch.lastX;
     touch.gapY = touch.lastY;
@@ -785,6 +785,12 @@ export function installPageReorder(ctx) {
     touch.grabDY = Math.max(8, Math.min(rect.height - 8, touch.lastY - rect.top));
     positionGhost();
     startTouchAuto();
+    // Outline the origin from the moment of lift, so a drop that returns the page(s) home still shows a landing outline.
+    // Gate on a contiguous lift: previewReflow moves no cells at the origin there, and a scattered selection has no single home to mark.
+    if (pages[pages.length - 1] - pages[0] === pages.length - 1) {
+      previewReflow(touch.gap);
+      touch.reflowedGap = touch.gap;
+    }
   }
 
   /**
@@ -976,10 +982,21 @@ export function installPageReorder(ctx) {
     };
     lastTouchT = Date.now();
     if (mode === 'edit') {
-      // Edit mode lifts from the first movement (onTouchMove), with no hold; a clean tap toggles selection in onTouchUp, so the click is suppressed.
+      // Edit mode lifts a selected page from the first movement (onTouchMove), with no hold.
+      // Selection lives on the page's checkbox, so a press on the page itself is read-only: a clean tap is inert and a still hold peeks like browse.
       ctx.suppressClick = true;
-      // A press while the grid still glides is a catch-the-scroll gesture and must not lift.
-      if (ctx.gridInMotion()) touch.scrollOnly = true;
+      // A press while the grid still glides is a catch-the-scroll gesture and must not lift or peek.
+      if (ctx.gridInMotion()) {
+        touch.scrollOnly = true;
+      } else {
+        touch.holdT = setTimeout(() => {
+          touch.holdT = 0;
+          if (!touch || touch.peeking || touch.lifted) return;
+          try { ctx.scrollElem.setPointerCapture(touch.pointerId); } catch (_) { /* best-effort */ }
+          touch.peeking = true;
+          ctx.peekShow(touch.primaryN);
+        }, PEEK_HOLD_MS);
+      }
     } else {
       if (entry) entry.thumbElem.classList.add('prelift');
       touch.holdT = setTimeout(() => {
@@ -1019,28 +1036,34 @@ export function installPageReorder(ctx) {
       }
       return;
     }
-    if (touch.mode === 'browse') {
-      if (touch.peeking) {
-        e.preventDefault();
-        // The peek overlay is pointer-events: none while the finger is down, so this hit-test reaches the cells beneath it.
-        const el = document.elementFromPoint(e.clientX, e.clientY);
-        const t = el && 'closest' in el ? el.closest('.scribe-thumb') : null;
-        if (t && ctx.scrollElem.contains(t)) {
-          const p = Number(t.dataset.page);
-          if (Number.isFinite(p) && p !== touch.primaryN) { touch.primaryN = p; ctx.peekShow(p); }
-        }
-        return;
+    if (touch.peeking) {
+      e.preventDefault();
+      // The peek overlay is pointer-events: none while the finger is down, so this hit-test reaches the cells beneath it.
+      const el = document.elementFromPoint(e.clientX, e.clientY);
+      const t = el && 'closest' in el ? el.closest('.scribe-thumb') : null;
+      if (t && ctx.scrollElem.contains(t)) {
+        const p = Number(t.dataset.page);
+        if (Number.isFinite(p) && p !== touch.primaryN) { touch.primaryN = p; ctx.peekShow(p); }
       }
+      return;
+    }
+    if (touch.mode === 'browse') {
       // A real move before the hold fires is a scroll; it also voids any pending double-tap.
       if (Math.hypot(e.clientX - touch.startX, e.clientY - touch.startY) > LIFT_MOVE_SLOP) { lastTap = null; abortTouch(); }
       return;
     }
     if (touch.mode === 'edit') {
       if (touch.scrollOnly) return; // the press caught a moving grid; native scrolling owns the gesture
+      const n = touch.primaryN;
+      if (!ctx.selected.has(n)) {
+        // A drag on an unselected page is a plain scroll, so the gesture is abandoned to native scrolling.
+        if (Math.hypot(e.clientX - touch.startX, e.clientY - touch.startY) > LIFT_MOVE_SLOP) abortTouch();
+        return;
+      }
       if (Math.hypot(e.clientX - touch.startX, e.clientY - touch.startY) > DRAG_THRESHOLD) {
+        if (touch.holdT) { clearTimeout(touch.holdT); touch.holdT = 0; }
         try { ctx.scrollElem.setPointerCapture(touch.pointerId); } catch (_) { /* best-effort */ }
-        const n = touch.primaryN;
-        const pages = ctx.selected.has(n) && ctx.selected.size > 1 ? [...ctx.selected].sort((a, b) => a - b) : [n];
+        const pages = ctx.selected.size > 1 ? [...ctx.selected].sort((a, b) => a - b) : [n];
         liftTouch(pages, n);
       }
       return;
@@ -1063,8 +1086,8 @@ export function installPageReorder(ctx) {
   function onTouchUp(e) {
     if (!touch || e.pointerId !== touch.pointerId) return;
     if (touch.holdT) { clearTimeout(touch.holdT); touch.holdT = 0; }
+    if (touch.peeking) { ctx.peekHide(); lastTap = null; endTouch(); return; } // the preview lives only under the finger
     if (touch.mode === 'browse') {
-      if (touch.peeking) { ctx.peekHide(); lastTap = null; endTouch(); return; } // the preview lives only under the finger
       // A single tap is inert; a second on the same page within DBL_TAP_MS opens it in the viewer.
       // endTouch comes first because openPage may close the room.
       const n = touch.primaryN;
@@ -1082,11 +1105,8 @@ export function installPageReorder(ctx) {
     if (touch.sweeping) { abortTouch(); return; } // released mid-sweep before the pause: gather nothing
     if (touch.painting) { endTouch(); return; } // the paint's selection is already applied; nothing to commit
     if (touch.mode === 'edit') {
-      // Tapping anywhere on the page is its checkbox; a catch-the-scroll press is navigation and must not toggle.
-      const wasCatch = touch.scrollOnly;
-      const n = touch.primaryN;
+      // A clean Edit tap does nothing: selection is the checkbox's job, and double-tap navigation is browse-only.
       endTouch();
-      if (!wasCatch) ctx.toggleRoomSelect(n);
       return;
     }
     // Neither lifted nor swept: a plain tap, left to the click handler.

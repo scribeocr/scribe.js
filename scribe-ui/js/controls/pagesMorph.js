@@ -70,6 +70,7 @@ function ensureStyles() {
  *   begin: () => boolean,
  *   beginClose: () => boolean,
  *   frame: (dy: number) => void,
+ *   dyFull: () => number,
  *   settle: (commit: boolean, onDone?: (committed: boolean) => void) => void,
  *   isActive: () => boolean,
  *   settling: () => boolean,
@@ -437,6 +438,8 @@ export function createPagesMorph(scribe, {
     // Reverse scene: the open room collapses back into the strip.
     beginClose: () => build(true),
     frame,
+    // Full travel of the live scene in px (0 when idle), so a gesture can map finger travel onto frame().
+    dyFull: () => (scene ? scene.dyFull : 0),
     settle,
     isActive: () => !!scene,
     // A settle animation owns the scene; gesture frames must not steer it.
