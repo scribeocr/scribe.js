@@ -162,8 +162,10 @@ export function writeHtml({
       top += pageMetricsArr[g].dims.height + 10;
     }
 
-    // Do not overwrite paragraphs from Abbyy or Textract.
-    if (reflowText && (!pageObj.textSource || !['textract', 'abbyy'].includes(pageObj.textSource))) {
+    // Native-text PDFs already carry document-level analyzeLayout paragraphs from import.
+    // Re-running the per-page assignParagraphs would overwrite them.
+    const nativePdf = doc?.inputData?.pdfType === 'text';
+    if (reflowText && !nativePdf && (!pageObj.textSource || !['textract', 'abbyy'].includes(pageObj.textSource))) {
       const angle = pageMetricsArr[g].angle || 0;
       assignParagraphs(pageObj, angle);
     }

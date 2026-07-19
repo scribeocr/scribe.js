@@ -328,6 +328,8 @@ export async function exportData(doc, format = 'txt', options = {}) {
           // With routing off or categories absent (old .scribe.json sessions), the legacy defaults stand.
           /** @type {?number[]} */
           let convertFullPages = null;
+          // Broken-Type3-to-paths conversion rewrites page content and strips a scanned page's invisible OCR text.
+          // The annot overlay writes no replacement text layer, so leaving conversion on would silently delete searchable text.
           let convertBrokenType3 = displayMode !== 'annot';
           // convertDupSourceTextToPaths converts ALL text to paths by explicit request,
           // so it skips the category routing below entirely.

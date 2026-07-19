@@ -434,6 +434,10 @@ export async function rebuildPdfSubset({
       const scaleY = pixelDims ? baseHeight / pixelDims.height : 1;
       const tx = Math.min(overlayBox[0], overlayBox[2]);
       const ty = Math.min(overlayBox[1], overlayBox[3]);
+      // rotScale is cross-axis because a quarter-turn /Rotate page's pixelDims have swapped axes relative to the box.
+      // overlayAnnotationBbox uses it to map annotation coords back into unrotated MediaBox space.
+      const pageRotate = ((((pageInfo.rotate || 0) % 360) + 360) % 360);
+      const rotScale = pixelDims ? baseWidth / pixelDims.height : 1;
 
       let textContentObjStr = '';
       /** @type {Set<PdfFontInfo>} */
@@ -569,19 +573,19 @@ export async function rebuildPdfSubset({
         const highlightAnns = pageAnnotations.filter((a) => a.type == null || TEXT_MARKUP_ANNOT_TYPES.has(a.type));
         const consolidated = consolidateAnnotations(highlightAnns, annotationOcrArr?.[i] || pageObj);
         const pageForEmit = consolidated.length > 0 ? consolidated : highlightAnns;
-        const transformed = pageForEmit.map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty));
+        const transformed = pageForEmit.map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty, pageRotate, baseWidth, baseHeight, rotScale));
         const { objectTexts, annotRefs } = buildHighlightAnnotObjects(transformed, nextObjNum, outputDims, warningHandler, !!scrub);
         for (const t of objectTexts) allOutputObjects.push({ objNum: nextObjNum++, content: t });
         const shapeAnns = pageAnnotations.filter((a) => SHAPE_ANNOT_TYPES.has(a.type))
-          .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty));
+          .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty, pageRotate, baseWidth, baseHeight, rotScale));
         const shapes = buildShapeAnnotObjects(shapeAnns, nextObjNum, outputDims, warningHandler, !!scrub);
         for (const t of shapes.objectTexts) allOutputObjects.push({ objNum: nextObjNum++, content: t });
         const freeTextAnns = pageAnnotations.filter((a) => a.type === 'freetext')
-          .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty));
+          .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty, pageRotate, baseWidth, baseHeight, rotScale));
         const ft = buildFreeTextAnnotObjects(freeTextAnns, nextObjNum, outputDims, warningHandler, !!scrub);
         for (const t of ft.objectTexts) allOutputObjects.push({ objNum: nextObjNum++, content: t });
         const textAnns = pageAnnotations.filter((a) => a.type === 'text')
-          .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty));
+          .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty, pageRotate, baseWidth, baseHeight, rotScale));
         const textAnnots = buildTextAnnotObjects(textAnns, nextObjNum, outputDims, warningHandler, !!scrub);
         for (const t of textAnnots.objectTexts) allOutputObjects.push({ objNum: nextObjNum++, content: t });
         extraAnnotRefs = [...annotRefs, ...shapes.annotRefs, ...ft.annotRefs, ...textAnnots.annotRefs];

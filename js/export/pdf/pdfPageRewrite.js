@@ -567,16 +567,37 @@ export function buildReplacementPageDict(
  * @param {number} scaleY
  * @param {number} tx
  * @param {number} ty
+ * @param {number} [rotate] - the page's /Rotate (0|90|180|270); annotation coords are rotated back into unrotated MediaBox space.
+ * @param {number} [pageW] - unrotated MediaBox width (points), used for the 180/270 reflections.
+ * @param {number} [pageH] - unrotated MediaBox height (points), used for the 90/180 reflections.
+ * @param {number} [rotScale] - uniform reading-to-points scale for a quarter turn: the unrotated MediaBox width divided by the pixel frame's height.
  * @returns {Annotation}
  */
-export function overlayAnnotationBbox(annot, scaleX, scaleY, tx, ty) {
-  const transformBbox = (b) => ({
-    left: b.left * scaleX + tx,
-    right: b.right * scaleX + tx,
-    top: b.top * scaleY - ty,
-    bottom: b.bottom * scaleY - ty,
-  });
-  const transformFlat = (arr) => arr.map((v, i) => (i % 2 === 0 ? v * scaleX + tx : v * scaleY - ty));
+export function overlayAnnotationBbox(annot, scaleX, scaleY, tx, ty, rotate = 0, pageW = 0, pageH = 0, rotScale = scaleX) {
+  // Map a reading-frame pixel (px, py) into the overlay page's frame: top-left origin, y-down, in unrotated MediaBox points.
+  // The parser's reading frame is the post-rotation display frame, and the page keeps its /Rotate on export.
+  // Rotated points are therefore mapped back into unrotated MediaBox space, where the viewer's /Rotate carries them onto the content.
+  // On a quarter turn the pixel frame's axes are swapped relative to the MediaBox, so scaleX/scaleY are cross-axis and rotScale is the single uniform scale used instead.
+  // Rotated pages are assumed to have a zero CropBox origin, as essentially all do.
+  const s = rotScale;
+  const mapPt = (px, py) => {
+    if (rotate === 90) return [py * s, pageH - px * s];
+    if (rotate === 270) return [pageW - py * s, px * s];
+    if (rotate === 180) return [pageW - px * scaleX, pageH - py * scaleY];
+    return [px * scaleX + tx, py * scaleY - ty];
+  };
+  const transformBbox = (b) => {
+    const [ax, ay] = mapPt(b.left, b.top);
+    const [bx, by] = mapPt(b.right, b.bottom);
+    return {
+      left: Math.min(ax, bx), right: Math.max(ax, bx), top: Math.min(ay, by), bottom: Math.max(ay, by),
+    };
+  };
+  const transformFlat = (arr) => {
+    const out = [];
+    for (let i = 0; i + 1 < arr.length; i += 2) { const [x, y] = mapPt(arr[i], arr[i + 1]); out.push(x, y); }
+    return out;
+  };
   const out = { ...annot };
   // Line/Polygon shapes carry geometry instead of a bbox.
   if (annot.bbox) out.bbox = transformBbox(annot.bbox);
@@ -585,6 +606,7 @@ export function overlayAnnotationBbox(annot, scaleX, scaleY, tx, ty) {
   if (annot.vertices) out.vertices = transformFlat(annot.vertices);
   // FreeText font size lives in the same pixel frame as the bbox,
   // so convert it to page points alongside the rect for the text to fit its box at any scale.
-  if (annot.type === 'freetext' && typeof annot.fontSize === 'number') out.fontSize = annot.fontSize * scaleY;
+  const fontScale = (rotate === 90 || rotate === 270) ? s : scaleY;
+  if (annot.type === 'freetext' && typeof annot.fontSize === 'number') out.fontSize = annot.fontSize * fontScale;
   return out;
 }

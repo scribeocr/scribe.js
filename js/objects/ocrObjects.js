@@ -28,7 +28,7 @@ export function OcrPage(n, dims) {
   /**
    * Detected data-table regions, one bounding box per table rather than per column, in the same top-left coordinate space as line bboxes.
    * Populated only at PDF import and consumed during that same import, so OCR pages have none and a cloned page does not carry them.
-   * Exempts a table's cells from the bare-folio and line-number-column furniture rules, which would otherwise drop them from exports.
+   * Exempts a table's cells from the bare-folio and line-number-column furniture rules, which would otherwise mistype them as furniture.
    * @type {Array<{left: number, top: number, right: number, bottom: number}>}
    */
   this.tableBoxes = [];
@@ -47,7 +47,7 @@ export function OcrPage(n, dims) {
  */
 
 /**
- * Whether a paragraph is page furniture, which the reflowed-text exports (DOCX, TXT, HTML, Markdown) drop and the structural formats (hOCR, ALTO) and scribe-JSON save retain.
+ * Whether a paragraph is page furniture: a folio, a running header or footer, or a left-margin line-number column.
  * @param {?OcrPar} par
  * @returns {boolean}
  */

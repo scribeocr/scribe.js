@@ -500,6 +500,8 @@ export function parseParagraphs(docXml, footnotesMap = new Map(), stylesMap = ne
       const styleName = styleId.toLowerCase();
       if (styleName === 'title' || styleName.startsWith('heading') || styleName.startsWith('toc')) {
         parType = 'title';
+      } else if (styleName.startsWith('quote') || styleName === 'intensequote') {
+        parType = 'blockquote';
       }
     }
 
