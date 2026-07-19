@@ -5,15 +5,23 @@ const BLOCK = new Set([
   'Note', 'Footnote', 'Quote', 'Code', 'TOCI', 'Index', 'LI', 'Figure', 'Formula',
 ]);
 
-// Inline tags roll up to the nearest block ancestor, so styled runs and list labels/bodies (Lbl, LBody) stay in their paragraph.
+/** Inline tags roll up to the nearest block ancestor, so styled runs and list labels/bodies (Lbl, LBody) stay in their paragraph. */
 const INLINE = new Set([
   'Span', 'Link', 'Em', 'Strong', 'Reference', 'Annot', 'Sub', 'Sup', 'Ruby', 'Warichu',
   'Lbl', 'LBody', 'BibEntry', 'Artifact',
 ]);
 
-// Producers whose tags are synthetic OCR output rather than authored structure: they tag scanned pages line by line, so their trees carry no paragraph boundaries and are excluded.
+/** Producers whose tags are synthetic OCR output rather than authored structure: they tag scanned pages line by line, so their trees carry no paragraph boundaries and are excluded. */
 export const OCR_PRODUCER_RE = /paper\s*capture|luradocument|abbyy|finereader|kofax|readiris|omnipage|tesseract|scansoft|\bcapture\b/i;
 
+/**
+ * Extract the balanced-delimiter run starting at `start` (delimiters included), e.g. a `<<...>>` dict or `[...]` array.
+ * An unterminated run yields everything from `start` to the end.
+ * @param {string} s
+ * @param {number} start - Index of the first character of `open`.
+ * @param {string} open
+ * @param {string} close
+ */
 function extractBalanced(s, start, open, close) {
   let depth = 0; let i = start;
   while (i < s.length) {
@@ -24,7 +32,10 @@ function extractBalanced(s, start, open, close) {
   return s.slice(start);
 }
 
-/** Tokenize a PDF array/dict body into ordered tokens: {ref}, {dict}, {arr}, {num}, {null}. */
+/**
+ * Tokenize a PDF array/dict body into ordered tokens: {ref}, {dict}, {arr}, {num}, {null}.
+ * @param {string} s
+ */
 function parseTokens(s) {
   const out = []; let i = 0;
   while (i < s.length) {
@@ -41,7 +52,11 @@ function parseTokens(s) {
   return out;
 }
 
-/** Walk a PDF number tree (`/Nums` leaves, `/Kids` internal nodes) into a Map from number to value token. */
+/**
+ * Walk a PDF number tree (`/Nums` leaves, `/Kids` internal nodes) into a Map from number to value token.
+ * @param {import('./objectCache.js').ObjectCache} objCache
+ * @param {number} rootRef
+ */
 function buildNumberTree(objCache, rootRef) {
   const out = new Map();
   const seen = new Set();
@@ -68,10 +83,9 @@ function buildNumberTree(objCache, rootRef) {
 /**
  * Read a document-information dictionary field as a best-effort latin1 string.
  * Handles both literal `(...)` and hex `<...>` (UTF-16BE) forms.
- * @param {ObjectCache} objCache
+ * @param {import('./objectCache.js').ObjectCache} objCache
  * @param {Uint8Array} pdfBytes
  * @param {string} field - info-dict key without the leading slash (e.g. 'Producer', 'Creator').
- * @returns {string}
  */
 function readInfoField(objCache, pdfBytes, field) {
   try {
@@ -94,23 +108,23 @@ function readInfoField(objCache, pdfBytes, field) {
 
 /**
  * Read the document `/Producer` string (best-effort, latin1).
- * @param {ObjectCache} objCache
+ * @param {import('./objectCache.js').ObjectCache} objCache
  * @param {Uint8Array} pdfBytes
- * @returns {string}
  */
 export function readDocProducer(objCache, pdfBytes) {
   return readInfoField(objCache, pdfBytes, 'Producer');
 }
 
-// Microsoft Word, both its native PDF export and the Acrobat PDFMaker-for-Word plugin, tags exactly one struct element per Word paragraph, so the element boundary is the paragraph boundary.
-// Matched against /Creator and /Producer (e.g. "Microsoft® Word 2016", "Acrobat PDFMaker 10.1 for Word").
+/**
+ * Microsoft Word, both its native PDF export and the Acrobat PDFMaker-for-Word plugin, tags exactly one struct element per Word paragraph, so the element boundary is the paragraph boundary.
+ * Matched against /Creator and /Producer (e.g. "Microsoft® Word 2016", "Acrobat PDFMaker 10.1 for Word").
+ */
 const WORD_AUTHORED_RE = /microsoft\W{0,3}word|pdfmaker\b[^()]*?\bfor\s+word/i;
 
 /**
  * Best-effort: was this PDF authored by Microsoft Word (native export or the PDFMaker-for-Word plugin)?
- * @param {ObjectCache} objCache
+ * @param {import('./objectCache.js').ObjectCache} objCache
  * @param {Uint8Array} pdfBytes
- * @returns {boolean}
  */
 export function docAuthoredByWord(objCache, pdfBytes) {
   return WORD_AUTHORED_RE.test(readInfoField(objCache, pdfBytes, 'Creator'))
@@ -120,7 +134,7 @@ export function docAuthoredByWord(objCache, pdfBytes) {
 /**
  * Build the per-page (pageIndex, MCID) to owning-block-element map for a tagged PDF.
  *
- * @param {ObjectCache} objCache
+ * @param {import('./objectCache.js').ObjectCache} objCache
  * @param {Uint8Array} pdfBytes
  * @param {Array<{objNum: number, objText: string}>} pageObjs - page objects (index = page index).
  * @returns {Map<string, {elemNum: number, tag: string}> | null} keyed by `${pageIndex}:${mcid}`, or null when the doc has no usable structure (no StructTreeRoot/ParentTree, or an OCR producer).
@@ -153,11 +167,15 @@ export function buildStructElemMap(objCache, pdfBytes, pageObjs) {
   const tagOf = (objNum) => mapTag((/\/S\s*\/([A-Za-z0-9._]+)/.exec(objCache.getObjectText(objNum) || '') || [])[1] || '?');
   const parentOf = (objNum) => { const m = /\/P\s+(\d+)\s+\d+\s+R/.exec(objCache.getObjectText(objNum) || ''); return m ? Number(m[1]) : null; };
 
-  // Resolve an owning element up to its nearest BLOCK ancestor (through INLINE tags only).
   const ownerCache = new Map();
+  /**
+   * Resolve an owning element up to its nearest BLOCK ancestor (through INLINE tags only).
+   * @param {number} objNum
+   */
   function blockOwner(objNum) {
     if (ownerCache.has(objNum)) return ownerCache.get(objNum);
-    let cur = objNum; const seen = new Set(); let res = null;
+    /** @type {?number} */ let cur = objNum;
+    const seen = new Set(); let res = null;
     while (cur != null && !seen.has(cur)) {
       seen.add(cur);
       const tag = tagOf(cur);
@@ -182,7 +200,7 @@ export function buildStructElemMap(objCache, pdfBytes, pageObjs) {
     else return;
     const inner = arrText.startsWith('[') ? arrText.slice(1, -1) : (/\[([\s\S]*)\]/.exec(arrText) || [, ''])[1];
     parseTokens(inner).forEach((tk, mcid) => {
-      if (tk.type === 'ref') map.set(`${pageIdx}:${mcid}`, blockOwner(tk.num));
+      if (tk.type === 'ref' && tk.num != null) map.set(`${pageIdx}:${mcid}`, blockOwner(tk.num));
     });
   });
   return map.size ? map : null;

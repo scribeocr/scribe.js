@@ -2,7 +2,11 @@ import { findRootObjNum } from './parsePdfUtils.js';
 import { readDocProducer, OCR_PRODUCER_RE } from './structTree.js';
 import { normalizeHeadingText } from '../utils/miscUtils.js';
 
-/** Decode a PDF string body (literal-escape or hex, with UTF-16BE BOM support) to a JS string. */
+/**
+ * Decode a PDF string body (literal-escape or hex, with UTF-16BE BOM support) to a JS string.
+ * @param {?string} raw
+ * @param {boolean} isHex
+ */
 function decodePdfString(raw, isHex) {
   if (raw == null) return '';
   if (isHex) {
@@ -54,13 +58,21 @@ function headingShaped(title) {
   return true;
 }
 
-/** First page object number referenced by an explicit destination array `[N 0 R /XYZ ...]`. */
+/**
+ * First page object number referenced by an explicit destination array `[N 0 R /XYZ ...]`.
+ * @param {?string} arrText
+ */
 function destArrayPageObj(arrText) {
   const m = /^\s*\[\s*(\d+)\s+\d+\s+R\b/.exec(arrText || '');
   return m ? Number(m[1]) : null;
 }
 
-/** Walk a name tree (`/Names` leaves, `/Kids` internal nodes), collecting name-to-value-token entries into `out`. */
+/**
+ * Walk a name tree (`/Names` leaves, `/Kids` internal nodes), collecting name-to-value-token entries into `out`.
+ * @param {import('./objectCache.js').ObjectCache} objCache
+ * @param {number} rootRef
+ * @param {Map<string, string>} out
+ */
 function buildNameTree(objCache, rootRef, out) {
   const seen = new Set();
   function rec(objNum, depth) {
@@ -82,7 +94,13 @@ function buildNameTree(objCache, rootRef, out) {
   rec(rootRef, 0);
 }
 
-/** Resolve a named destination (from the /Names /Dests tree or the legacy catalog /Dests dict). */
+/**
+ * Resolve a named destination (from the /Names /Dests tree or the legacy catalog /Dests dict).
+ * @param {import('./objectCache.js').ObjectCache} objCache
+ * @param {Map<string, string>} nameDests
+ * @param {Map<string, string>|null} oldDests
+ * @param {string} name
+ */
 function resolveNamedDest(objCache, nameDests, oldDests, name) {
   let val = nameDests.get(name);
   if (val == null && oldDests) val = oldDests.get(name);
@@ -96,7 +114,13 @@ function resolveNamedDest(objCache, nameDests, oldDests, name) {
   return null;
 }
 
-/** Resolve a /Dest or action /D value (array | indirect ref | named: literal or name object). */
+/**
+ * Resolve a /Dest or action /D value (array | indirect ref | named: literal or name object).
+ * @param {import('./objectCache.js').ObjectCache} objCache
+ * @param {?string} val
+ * @param {Map<string, string>} nameDests
+ * @param {Map<string, string>|null} oldDests
+ */
 function resolveDest(objCache, val, nameDests, oldDests) {
   if (val == null) return null;
   val = val.trim();
@@ -112,10 +136,10 @@ function resolveDest(objCache, val, nameDests, oldDests) {
 
 /**
  * Build the per-page heading-anchor index from a document's `/Outlines`.
- * @param {ObjectCache} objCache
+ * @param {import('./objectCache.js').ObjectCache} objCache
  * @param {Uint8Array} pdfBytes
  * @param {Array<{objNum: number, objText: string}>} pageObjs - page objects in page order (index = page index).
- * @returns {Map<number, Set<string>> | null} Page index to set of normalized heading-anchor titles, or null when the document has no usable outline (none, OCR producer, or nothing resolvable).
+ * @returns Page index to set of normalized heading-anchor titles, or null when the document has no usable outline (none, OCR producer, or nothing resolvable).
  */
 export function buildOutlineHeadingIndex(objCache, pdfBytes, pageObjs) {
   const root = findRootObjNum(pdfBytes);
