@@ -1266,7 +1266,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       border: 1px solid var(--scribe-line);
       border-radius: 12px;
       box-shadow: var(--scribe-menu-shadow);
-      z-index: 8;
+      /* Above in-rail decorations (insert line 50, marquee 40), below the page context menu (60). */
+      z-index: 55;
       font: 600 13px/1 'Segoe UI', Tahoma, sans-serif;
       color: var(--scribe-ink-2);
       opacity: 0;
@@ -1317,7 +1318,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       position: absolute;
       inset: 0;
       background: rgba(12, 16, 26, .35);
-      z-index: 9;
+      /* Above the selection bar: the peek dims everything in the panel, the bar included. */
+      z-index: 56;
       opacity: 0;
       pointer-events: none;
       transition: opacity .16s;
@@ -1352,14 +1354,6 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       color: #fff;
       text-shadow: 0 1px 2px rgba(0, 0, 0, .45);
     }
-    /* Held-stack preview: rehosted on document.body to paint above the drag ghost (fixed, z-index 9999).
-       The panel's own scrim keeps the dim. */
-    .${r}.scribe-peek-lift {
-      position: fixed;
-      z-index: 10000;
-      pointer-events: none;
-    }
-    .${r} .scribe-thumb-scrim.scribe-peek-lift-scrim { background: transparent; }
     @media (prefers-reduced-motion: reduce) {
       .${r} .scribe-thumb-scrim, .${r} .scribe-thumb-peek { transition: none; }
     }

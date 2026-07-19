@@ -382,8 +382,6 @@ export function createThumbnailPanel(scribe, {
   /** @type {?HTMLDivElement} */
   let peekCard = null;
   /** @type {?HTMLDivElement} */
-  let peekLiftWrap = null;
-  /** @type {?HTMLDivElement} */
   let peekBox = null;
   /** @type {?HTMLImageElement} */
   let peekImg = null;
@@ -402,34 +400,6 @@ export function createThumbnailPanel(scribe, {
   let peekWarmBusy = false;
   let peekWarmSeq = 0;
 
-  /** Rehost the peek card on document.body while pages are lifted: the drag ghost is a fixed body child at z-index 9999, above everything inside the panel, and the peek must paint over it. */
-  function peekLiftOn() {
-    if (peekLiftWrap || !peekCard) return;
-    const rootEl = panelElem.closest('.scribe-pdf-viewer');
-    if (!(rootEl instanceof HTMLElement)) return; // unknown embedding: the card stays in the panel
-    peekLiftWrap = document.createElement('div');
-    // Copy the viewer root's classes and theme so the card's scoped styles and tokens keep applying outside the root.
-    peekLiftWrap.className = `${rootEl.className} scribe-peek-lift`;
-    const theme = rootEl.getAttribute('data-theme');
-    if (theme) peekLiftWrap.setAttribute('data-theme', theme);
-    const r = panelElem.getBoundingClientRect();
-    peekLiftWrap.style.cssText = `left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px`;
-    const host = document.createElement('div');
-    // The lift scrim is transparent; the panel's own scrim stays on behind it and keeps the dim.
-    host.className = 'scribe-thumb-scrim on scribe-peek-lift-scrim';
-    host.appendChild(peekCard);
-    peekLiftWrap.appendChild(host);
-    document.body.appendChild(peekLiftWrap);
-  }
-
-  /** Return the card to the panel scrim and drop the body-level host. */
-  function peekLiftOff() {
-    if (!peekLiftWrap) return;
-    if (peekCard && peekScrim) peekScrim.appendChild(peekCard);
-    peekLiftWrap.remove();
-    peekLiftWrap = null;
-  }
-
   /**
    * Peek card size for page `n`: the cell's display aspect (boxHeights is rotation-aware), clamped so a very tall page never outgrows the room body under it.
    * @param {number} n
@@ -447,9 +417,8 @@ export function createThumbnailPanel(scribe, {
   /**
    * Show the peek, or retarget an open one, on page `n`.
    * @param {number} n
-   * @param {boolean} [overLift] - The pages are lifted under the finger: paint the card above the drag ghost.
    */
-  function peekShow(n, overLift = false) {
+  function peekShow(n) {
     if (!peekScrim) {
       peekScrim = document.createElement('div');
       peekScrim.className = 'scribe-thumb-scrim';
@@ -495,7 +464,6 @@ export function createThumbnailPanel(scribe, {
     }
     peekCap.textContent = `Page ${n + 1}`;
     peekScrim.classList.add('on');
-    if (overLift) peekLiftOn(); else peekLiftOff();
     if (peekWarmN === n && peekWarmUrl) {
       // The press-warm render already finished: open crisp, with nothing left to load.
       peekCrispUrl = peekWarmUrl;
@@ -527,7 +495,6 @@ export function createThumbnailPanel(scribe, {
     if (peekCrispT) { clearTimeout(peekCrispT); peekCrispT = null; }
     peekN = -1;
     peekWarmEnd();
-    peekLiftOff();
     if (peekScrim) peekScrim.classList.remove('on');
   }
 
@@ -2289,7 +2256,6 @@ export function createThumbnailPanel(scribe, {
     destroyed = true;
     generation += 1;
     peekWarmEnd();
-    peekLiftOff();
     if (scribe.onAnnotationsRendered === onAnnotationsRendered) scribe.onAnnotationsRendered = null;
     reportThumbFocus(null);
     if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }

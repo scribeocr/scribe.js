@@ -169,7 +169,7 @@ class ThumbTouch {
  * @property {?('browse'|'edit')} roomMode - Phone Pages-room interaction mode: 'browse' is read-only, 'edit' carries the mutations.
  *   Null outside the room, which keeps the hold-to-lift/sweep/release-menu gestures.
  * @property {() => boolean} gridInMotion - Whether the grid scrolled within the last settle window; a press on a moving grid catches the scroll instead of acting.
- * @property {(n: number, overLift?: boolean) => void} peekShow - Show (or scrub to) the hold-to-peek page preview; overLift paints it above the drag ghost.
+ * @property {(n: number) => void} peekShow - Show (or scrub to) the hold-to-peek page preview.
  * @property {() => void} peekHide
  * @property {(n: number) => void} peekWarm - Start the preview's crisp render during a still press, ahead of the preview popping.
  * @property {() => void} peekWarmEnd - Drop a warm render the press never consumed.
@@ -1027,7 +1027,6 @@ export function installPageReorder(ctx) {
     lastTouchT = Date.now();
     if (mode === 'edit') {
       // A press on a selected page grabs it outright: the lift starts at the press itself.
-      // A hold that never travels past MENU_SLOP pops the preview over the held pages, and the first real move dismisses it while the carry continues.
       // A press on an unselected page stays read-only: a clean tap at most clears the selection, and a still hold peeks and scrubs like browse.
       ctx.suppressClick = true;
       // A press while the grid still glides is a catch-the-scroll gesture and must not lift or peek.
@@ -1037,12 +1036,6 @@ export function installPageReorder(ctx) {
         try { ctx.scrollElem.setPointerCapture(e.pointerId); } catch (_) { /* best-effort */ }
         const pages = ctx.selected.size > 1 ? [...ctx.selected].sort((a, b) => a - b) : [n];
         liftTouch(pages, n);
-        touch.holdT = setTimeout(() => {
-          if (!touch || !touch.lifted || touch.moved) return;
-          touch.holdT = 0;
-          touch.peeking = true;
-          ctx.peekShow(touch.primaryN, true);
-        }, PEEK_HOLD_MS);
       } else {
         touch.holdT = setTimeout(() => {
           if (!touch || touch.peeking || touch.lifted) return;
@@ -1051,8 +1044,6 @@ export function installPageReorder(ctx) {
           touch.peeking = true;
           ctx.peekShow(touch.primaryN);
         }, PEEK_HOLD_MS);
-      }
-      if (!touch.scrollOnly) {
         touch.warmT = setTimeout(() => {
           if (!touch) return;
           touch.warmT = 0;
@@ -1083,11 +1074,7 @@ export function installPageReorder(ctx) {
       e.preventDefault();
       positionGhost();
       updateGap(e.clientX, e.clientY);
-      if (Math.hypot(e.clientX - touch.startX, e.clientY - touch.startY) > MENU_SLOP) {
-        touch.moved = true;
-        if (touch.holdT) { clearTimeout(touch.holdT); touch.holdT = 0; }
-        if (touch.peeking) { touch.peeking = false; ctx.peekHide(); }
-      }
+      if (Math.hypot(e.clientX - touch.startX, e.clientY - touch.startY) > MENU_SLOP) touch.moved = true;
       return;
     }
     if (touch.sweeping) { e.preventDefault(); runTo(e.clientX, e.clientY); return; }
@@ -1144,12 +1131,6 @@ export function installPageReorder(ctx) {
   function onTouchUp(e) {
     if (!touch || e.pointerId !== touch.pointerId) return;
     if (touch.holdT) { clearTimeout(touch.holdT); touch.holdT = 0; }
-    // Checked before peeking: a lifted page can be previewing at the same time, and its release must both close the preview and set the pages down.
-    if (touch.lifted) {
-      if (touch.peeking) { ctx.peekHide(); lastTap = null; }
-      dropTouch(true);
-      return;
-    }
     if (touch.peeking) { ctx.peekHide(); lastTap = null; endTouch(); return; } // the preview lives only under the finger
     if (touch.mode === 'browse') {
       // A single tap is inert; a second on the same page within DBL_TAP_MS opens it in the viewer.
@@ -1165,6 +1146,7 @@ export function installPageReorder(ctx) {
       }
       return;
     }
+    if (touch.lifted) { dropTouch(true); return; }
     if (touch.sweeping) { abortTouch(); return; } // released mid-sweep before the pause: gather nothing
     if (touch.painting) { endTouch(); return; } // the paint's selection is already applied; nothing to commit
     if (touch.mode === 'edit') {
@@ -1180,13 +1162,8 @@ export function installPageReorder(ctx) {
   /** @param {PointerEvent} e */
   function onTouchCancel(e) {
     if (!touch || e.pointerId !== touch.pointerId) return;
-    if (touch.lifted) {
-      if (touch.peeking) { ctx.peekHide(); lastTap = null; }
-      dropTouch(false, false);
-      return;
-    }
     if (touch.peeking) { ctx.peekHide(); lastTap = null; abortTouch(); return; }
-    abortTouch();
+    if (touch.lifted) dropTouch(false, false); else abortTouch();
   }
 
   /**
