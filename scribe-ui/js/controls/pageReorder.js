@@ -25,7 +25,7 @@ const MENU_SLOP = 8; // a lift released within this (never dragged) opens the pa
 // Phone Pages-room gestures (see ReorderContext.roomMode).
 const PEEK_HOLD_MS = 300; // still-press before the page preview shows
 const PEEK_WARM_MS = 100; // still-press before the preview's crisp render starts warming, so it can open sharp
-const DBL_TAP_MS = 300; // second browse-mode tap on the same page within this opens it in the viewer
+const DBL_TAP_MS = 300; // second browse-mode tap on the same page within this closes the room onto that page
 // Pointer + scroll travel in px since the last committed insertion gap before a different gap may commit.
 // Without it, a finger resting on a razor-thin derivation boundary (or a mid-reflow cell sliding under a still finger) re-derives alternating gaps, shuffling the preview back and forth.
 const GAP_HYSTERESIS = 12;
@@ -173,7 +173,8 @@ class ThumbTouch {
  * @property {() => void} peekHide
  * @property {(n: number) => void} peekWarm - Start the preview's crisp render during a still press, ahead of the preview popping.
  * @property {() => void} peekWarmEnd - Drop a warm render the press never consumed.
- * @property {(n: number) => void} openPage - Open page `n` in the viewer (browse-mode double-tap).
+ * @property {(n: number) => void} openPage - Make page `n` current and close the Pages view.
+ * @property {(n: number) => void} goToPage - Make page `n` current, leaving the Pages view open.
  * @property {(n: number) => void} toggleRoomSelect - Toggle page `n` in the room-Edit selection.
  * @property {(n: number, want: boolean) => void} setRoomSelect - Set page `n`'s selection to `want` (checkbox range paint).
  * @property {() => void} clearSelection - Empty the room-Edit selection and resync the UI.
@@ -1000,21 +1001,26 @@ export function installPageReorder(ctx) {
     if (mode === 'browse') {
       // Browse gestures are read-only, so they run even where the reorder guard below would bail (editing disabled, single page).
       touch = new ThumbTouch(e, n, mode, ctx.scrollElem.scrollTop);
-      // A single tap is inert in browse (opening is the double-tap's job in onTouchUp), so its click is suppressed up front.
+      // A browse tap opens the page from onTouchUp, so the click that follows must not navigate a second time.
       ctx.suppressClick = true;
       lastTouchT = Date.now();
-      touch.holdT = setTimeout(() => {
-        if (!touch || touch.peeking) return;
-        touch.holdT = 0;
-        try { ctx.scrollElem.setPointerCapture(touch.pointerId); } catch (_) { /* capture is best-effort */ }
-        touch.peeking = true;
-        ctx.peekShow(touch.primaryN);
-      }, PEEK_HOLD_MS);
-      touch.warmT = setTimeout(() => {
-        if (!touch) return;
-        touch.warmT = 0;
-        ctx.peekWarm(touch.primaryN);
-      }, PEEK_WARM_MS);
+      // A press while the grid still glides is a catch-the-scroll gesture: it stops the motion, and opens or peeks nothing.
+      if (ctx.gridInMotion()) {
+        touch.scrollOnly = true;
+      } else {
+        touch.holdT = setTimeout(() => {
+          if (!touch || touch.peeking) return;
+          touch.holdT = 0;
+          try { ctx.scrollElem.setPointerCapture(touch.pointerId); } catch (_) { /* capture is best-effort */ }
+          touch.peeking = true;
+          ctx.peekShow(touch.primaryN);
+        }, PEEK_HOLD_MS);
+        touch.warmT = setTimeout(() => {
+          if (!touch) return;
+          touch.warmT = 0;
+          ctx.peekWarm(touch.primaryN);
+        }, PEEK_WARM_MS);
+      }
       window.addEventListener('pointermove', onTouchMove);
       window.addEventListener('pointerup', onTouchUp);
       window.addEventListener('pointercancel', onTouchCancel);
@@ -1133,16 +1139,18 @@ export function installPageReorder(ctx) {
     if (touch.holdT) { clearTimeout(touch.holdT); touch.holdT = 0; }
     if (touch.peeking) { ctx.peekHide(); lastTap = null; endTouch(); return; } // the preview lives only under the finger
     if (touch.mode === 'browse') {
-      // A single tap is inert; a second on the same page within DBL_TAP_MS opens it in the viewer.
-      // endTouch comes first because openPage may close the room.
+      // endTouch comes first because openPage may close the Pages view.
       const n = touch.primaryN;
+      const caughtScroll = touch.scrollOnly;
       const now = Date.now();
       endTouch();
+      if (caughtScroll) { lastTap = null; return; }
       if (lastTap && lastTap.n === n && now - lastTap.t <= DBL_TAP_MS) {
         lastTap = null;
         ctx.openPage(n);
       } else {
         lastTap = { n, t: now };
+        ctx.goToPage(n);
       }
       return;
     }
@@ -1150,8 +1158,12 @@ export function installPageReorder(ctx) {
     if (touch.sweeping) { abortTouch(); return; } // released mid-sweep before the pause: gather nothing
     if (touch.painting) { endTouch(); return; } // the paint's selection is already applied; nothing to commit
     if (touch.mode === 'edit') {
-      if (!ctx.selected.has(touch.primaryN)) ctx.clearSelection();
+      const n = touch.primaryN;
+      const caughtScroll = touch.scrollOnly;
+      if (!ctx.selected.has(n)) ctx.clearSelection();
       endTouch();
+      // Edit has no double-tap close to match browse, since the session exits only through Save or Discard.
+      if (!caughtScroll) ctx.goToPage(n);
       return;
     }
     // Neither lifted nor swept: a plain tap, left to the click handler.

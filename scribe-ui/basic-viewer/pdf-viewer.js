@@ -182,7 +182,11 @@ class ScribePDFViewer {
       this.scribe.opt.enableRecognition = true;
     }
 
-    /** @type {?{imgDims: {width: number, height: number}, zoom: number, isDefaultFit: boolean, widthMode: boolean}} Last automatic fit, so a resize can re-run it. */
+    /**
+     * @type {?{imgDims: {width: number, height: number}, docW: number, zoom: number, isDefaultFit: boolean, widthMode: boolean}}
+     *   Last automatic fit, so a resize can re-run it.
+     *   `docW` is the widest page, not the first.
+     */
     this._autoFit = null;
 
     const initWidth = width === 'auto' ? (container.clientWidth || 800) : width;
@@ -1721,10 +1725,11 @@ class ScribePDFViewer {
     if (af && af.isDefaultFit && this.scribe.scrollContainer && af.zoom > 0
       && Math.abs(this.scribe.zoomLevel - af.zoom) / af.zoom < 0.05) {
       const sc = this.scribe.scrollContainer;
+      const docW = this.scribe._contentWidth || af.docW;
       const hZoom = (sc.clientHeight - 150) / af.imgDims.height;
-      const widthMode = this._phoneChrome || hZoom * af.imgDims.width > sc.clientWidth;
+      const widthMode = this._phoneChrome || hZoom * docW > sc.clientWidth;
       if (widthMode || af.widthMode) {
-        const target = widthMode ? sc.clientWidth / af.imgDims.width : hZoom;
+        const target = widthMode ? sc.clientWidth / docW : hZoom;
         if (target > 0 && Math.abs(target - this.scribe.zoomLevel) / this.scribe.zoomLevel > 0.01) {
           this.scribe.zoom(target / this.scribe.zoomLevel);
           af.zoom = target;
@@ -2491,8 +2496,13 @@ class ScribePDFViewer {
       const stageW = sc.clientWidth;
       const stageH = sc.clientHeight;
 
+      // The scroll extent is the widest page, not the first one, so a document mixing page sizes must fit that width or it opens overflowing horizontally.
+      // Only `calcPageStops` computes `_contentWidth`, and on a first load nothing has needed the page stops yet.
+      this.scribe.calcPageStops();
+      const docW = this.scribe._contentWidth || imgDims.width;
+
       // The phone takes width-fit either way.
-      const heightFitOverflows = ((stageH - 150) / imgDims.height) * imgDims.width > stageW;
+      const heightFitOverflows = ((stageH - 150) / imgDims.height) * docW > stageW;
       const widthFitDefault = isDefaultFit && (this._phoneChrome || heightFitOverflows);
       const effectiveMode = widthFitDefault ? 'width' : fitMode;
 
@@ -2504,7 +2514,7 @@ class ScribePDFViewer {
         zoom = r.zoom;
         y = r.y ?? 30;
       } else if (effectiveMode === 'width') {
-        zoom = stageW / imgDims.width;
+        zoom = stageW / docW;
         y = 30;
       } else if (effectiveMode === 'page') {
         const wZoom = stageW / imgDims.width;
@@ -2526,7 +2536,7 @@ class ScribePDFViewer {
       sc.scrollLeft = Math.max(0, (this.scribe._contentWidth * zoom - stageW) / 2);
 
       this._autoFit = {
-        imgDims, zoom, isDefaultFit, widthMode: widthFitDefault,
+        imgDims, docW, zoom, isDefaultFit, widthMode: widthFitDefault,
       };
     };
   }

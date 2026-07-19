@@ -100,7 +100,7 @@ function clearPageClipboard() {
  * @param {import('../../viewer.js').ScribeViewer} scribe
  * @param {object} cfg
  * @param {(n: number) => void} cfg.onSelect - Called with the page index when a thumbnail is clicked.
- * @param {(n: number) => void} [cfg.onPageOpen] - Show page `n` in the viewer, closing any surface that covers it (the browse-mode double-tap).
+ * @param {(n: number) => void} [cfg.onPageOpen] - Show page `n` in the viewer, closing any surface that covers it.
  *   Falls back to `onSelect`.
  * @param {(pageIndices: Array<number>) => void} [cfg.onExtract] - Called with the page indices to open as a new document.
  * @param {(at: number) => void} [cfg.onInsertFromFile] - Called with the gap index at which to insert pages picked from a file.
@@ -346,6 +346,7 @@ export function createThumbnailPanel(scribe, {
     peekWarm,
     peekWarmEnd,
     openPage: (n) => (onPageOpen || onSelect)(n),
+    goToPage: (n) => onSelect && onSelect(n),
     toggleRoomSelect,
     setRoomSelect,
     clearSelection,
