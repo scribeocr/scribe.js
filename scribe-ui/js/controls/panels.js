@@ -343,6 +343,8 @@ export function createThumbnailPanel(scribe, {
     gridInMotion,
     peekShow,
     peekHide,
+    peekWarm,
+    peekWarmEnd,
     openPage: (n) => (onPageOpen || onSelect)(n),
     toggleRoomSelect,
     setRoomSelect,
@@ -378,6 +380,10 @@ export function createThumbnailPanel(scribe, {
   /** @type {?HTMLDivElement} */
   let peekScrim = null;
   /** @type {?HTMLDivElement} */
+  let peekCard = null;
+  /** @type {?HTMLDivElement} */
+  let peekLiftWrap = null;
+  /** @type {?HTMLDivElement} */
   let peekBox = null;
   /** @type {?HTMLImageElement} */
   let peekImg = null;
@@ -389,14 +395,66 @@ export function createThumbnailPanel(scribe, {
   let peekCrispT = null;
   /** @type {?string} */
   let peekCrispUrl = null;
+  // Press-warm state: a crisp render started during a still press, ahead of the preview popping.
+  let peekWarmN = -1;
+  /** @type {?string} */
+  let peekWarmUrl = null;
+  let peekWarmBusy = false;
+  let peekWarmSeq = 0;
 
-  /** Show the peek, or retarget an open one, on page `n`. @param {number} n */
-  function peekShow(n) {
+  /** Rehost the peek card on document.body while pages are lifted: the drag ghost is a fixed body child at z-index 9999, above everything inside the panel, and the peek must paint over it. */
+  function peekLiftOn() {
+    if (peekLiftWrap || !peekCard) return;
+    const rootEl = panelElem.closest('.scribe-pdf-viewer');
+    if (!(rootEl instanceof HTMLElement)) return; // unknown embedding: the card stays in the panel
+    peekLiftWrap = document.createElement('div');
+    // Copy the viewer root's classes and theme so the card's scoped styles and tokens keep applying outside the root.
+    peekLiftWrap.className = `${rootEl.className} scribe-peek-lift`;
+    const theme = rootEl.getAttribute('data-theme');
+    if (theme) peekLiftWrap.setAttribute('data-theme', theme);
+    const r = panelElem.getBoundingClientRect();
+    peekLiftWrap.style.cssText = `left:${r.left}px;top:${r.top}px;width:${r.width}px;height:${r.height}px`;
+    const host = document.createElement('div');
+    // The lift scrim is transparent; the panel's own scrim stays on behind it and keeps the dim.
+    host.className = 'scribe-thumb-scrim on scribe-peek-lift-scrim';
+    host.appendChild(peekCard);
+    peekLiftWrap.appendChild(host);
+    document.body.appendChild(peekLiftWrap);
+  }
+
+  /** Return the card to the panel scrim and drop the body-level host. */
+  function peekLiftOff() {
+    if (!peekLiftWrap) return;
+    if (peekCard && peekScrim) peekScrim.appendChild(peekCard);
+    peekLiftWrap.remove();
+    peekLiftWrap = null;
+  }
+
+  /**
+   * Peek card size for page `n`: the cell's display aspect (boxHeights is rotation-aware), clamped so a very tall page never outgrows the room body under it.
+   * @param {number} n
+   * @returns {{w: number, h: number}}
+   */
+  function peekBoxSize(n) {
+    const ratio = (boxHeights[n] || cellW) / cellW;
+    let w = PEEK_W;
+    let h = Math.round(w * ratio);
+    const maxH = viewportH - 90;
+    if (maxH > 80 && h > maxH) { w = Math.round(w * (maxH / h)); h = maxH; }
+    return { w, h };
+  }
+
+  /**
+   * Show the peek, or retarget an open one, on page `n`.
+   * @param {number} n
+   * @param {boolean} [overLift] - The pages are lifted under the finger: paint the card above the drag ghost.
+   */
+  function peekShow(n, overLift = false) {
     if (!peekScrim) {
       peekScrim = document.createElement('div');
       peekScrim.className = 'scribe-thumb-scrim';
-      const card = document.createElement('div');
-      card.className = 'scribe-thumb-peek';
+      peekCard = document.createElement('div');
+      peekCard.className = 'scribe-thumb-peek';
       peekBox = document.createElement('div');
       peekBox.className = 'scribe-thumb-peek-box';
       peekImg = document.createElement('img');
@@ -405,18 +463,14 @@ export function createThumbnailPanel(scribe, {
       peekCap = document.createElement('div');
       peekCap.className = 'scribe-thumb-peek-cap';
       peekBox.appendChild(peekImg);
-      card.append(peekBox, peekCap);
-      peekScrim.appendChild(card);
+      peekCard.append(peekBox, peekCap);
+      peekScrim.appendChild(peekCard);
       panelElem.appendChild(peekScrim);
     }
     if (peekCrispT) { clearTimeout(peekCrispT); peekCrispT = null; }
+    const firstShow = !peekScrim.classList.contains('on');
     peekN = n;
-    // Size from the cell's display aspect (boxHeights is rotation-aware), clamped so a very tall page never outgrows the room body under it.
-    const ratio = (boxHeights[n] || cellW) / cellW;
-    let w = PEEK_W;
-    let h = Math.round(w * ratio);
-    const maxH = viewportH - 90;
-    if (maxH > 80 && h > maxH) { w = Math.round(w * (maxH / h)); h = maxH; }
+    const { w, h } = peekBoxSize(n);
     peekBox.style.width = `${w}px`;
     peekBox.style.height = `${h}px`;
     // The already-decoded grid raster, given the same rotation treatment as restyleRow (it is stored at the page's original orientation).
@@ -441,7 +495,19 @@ export function createThumbnailPanel(scribe, {
     }
     peekCap.textContent = `Page ${n + 1}`;
     peekScrim.classList.add('on');
-    // Crisp upgrade once the finger settles: a fresh render at device resolution for the box the peek shows (the rotated case swaps the img's box, so use its longer side).
+    if (overLift) peekLiftOn(); else peekLiftOff();
+    if (peekWarmN === n && peekWarmUrl) {
+      // The press-warm render already finished: open crisp, with nothing left to load.
+      peekCrispUrl = peekWarmUrl;
+      peekWarmUrl = null;
+      peekWarmN = -1;
+      peekImg.src = peekCrispUrl;
+      peekImg.style.display = '';
+      return;
+    }
+    if (peekWarmN === n && peekWarmBusy) return; // the in-flight warm render applies itself on arrival
+    // Crisp upgrade: a fresh render at device resolution for the box the peek shows (the rotated case swaps the img's box, so use its longer side).
+    // Immediate on the first show; on scrub retargets it waits out the settle pause so a sweep across pages does not issue a render per page.
     // Guarded so a scrub-away or release between request and resolve drops the result.
     peekCrispT = setTimeout(() => {
       peekCrispT = null;
@@ -453,14 +519,56 @@ export function createThumbnailPanel(scribe, {
         peekImg.src = peekCrispUrl;
         peekImg.style.display = '';
       }).catch(() => { /* keep the small raster */ });
-    }, PEEK_SETTLE_MS);
+    }, firstShow ? 0 : PEEK_SETTLE_MS);
   }
 
   /** Hide the peek (release/interruption). The elements stay for the next hold. */
   function peekHide() {
     if (peekCrispT) { clearTimeout(peekCrispT); peekCrispT = null; }
     peekN = -1;
+    peekWarmEnd();
+    peekLiftOff();
     if (peekScrim) peekScrim.classList.remove('on');
+  }
+
+  /**
+   * Start the crisp peek render for page `n` while a still press is underway, so a preview that pops can open sharp instead of upgrading in view.
+   * Harmless when the press never becomes a peek: the result is held for the one press and dropped when the press ends.
+   * @param {number} n
+   */
+  function peekWarm(n) {
+    peekWarmEnd();
+    const { w, h } = peekBoxSize(n);
+    const rot = (scribe.doc && scribe.doc.pageMetrics[n] && scribe.doc.pageMetrics[n].rotation) || 0;
+    const crispW = Math.round((rot % 180 === 90 ? h : w) * Math.min(window.devicePixelRatio || 1, 3));
+    const render = scribe.doc?.images?.renderThumbnail(n, crispW, 0.7, true);
+    if (!render) return;
+    const seq = peekWarmSeq;
+    peekWarmN = n;
+    peekWarmBusy = true;
+    render.then((blob) => {
+      if (seq !== peekWarmSeq) return; // the press ended, or a newer warm superseded this one
+      peekWarmBusy = false;
+      if (!blob) { peekWarmN = -1; return; }
+      if (peekN === n && peekScrim && peekScrim.classList.contains('on')) {
+        // The peek opened while this render was in flight: apply it directly.
+        peekWarmN = -1;
+        if (peekCrispUrl) URL.revokeObjectURL(peekCrispUrl);
+        peekCrispUrl = URL.createObjectURL(blob);
+        peekImg.src = peekCrispUrl;
+        peekImg.style.display = '';
+      } else {
+        peekWarmUrl = URL.createObjectURL(blob);
+      }
+    }).catch(() => { if (seq === peekWarmSeq) { peekWarmBusy = false; peekWarmN = -1; } });
+  }
+
+  /** Drop a pending or unconsumed press-warm render (the press ended, the peek closed, or a new warm starts). */
+  function peekWarmEnd() {
+    peekWarmSeq += 1;
+    peekWarmBusy = false;
+    peekWarmN = -1;
+    if (peekWarmUrl) { URL.revokeObjectURL(peekWarmUrl); peekWarmUrl = null; }
   }
 
   /**
@@ -2180,6 +2288,8 @@ export function createThumbnailPanel(scribe, {
   function destroy() {
     destroyed = true;
     generation += 1;
+    peekWarmEnd();
+    peekLiftOff();
     if (scribe.onAnnotationsRendered === onAnnotationsRendered) scribe.onAnnotationsRendered = null;
     reportThumbFocus(null);
     if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }

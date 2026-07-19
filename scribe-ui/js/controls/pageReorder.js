@@ -23,7 +23,8 @@ const SWEEP_SETTLE_MS = 240; // pause during a sweep that collapses the gathered
 const MENU_SLOP = 8; // a lift released within this (never dragged) opens the page menu instead of moving
 
 // Phone Pages-room gestures (see ReorderContext.roomMode).
-const PEEK_HOLD_MS = 400; // still-press before the page preview shows
+const PEEK_HOLD_MS = 300; // still-press before the page preview shows
+const PEEK_WARM_MS = 100; // still-press before the preview's crisp render starts warming, so it can open sharp
 const DBL_TAP_MS = 300; // second browse-mode tap on the same page within this opens it in the viewer
 // Pointer + scroll travel in px since the last committed insertion gap before a different gap may commit.
 // Without it, a finger resting on a razor-thin derivation boundary (or a mid-reflow cell sliding under a still finger) re-derives alternating gaps, shuffling the preview back and forth.
@@ -111,6 +112,8 @@ class ThumbTouch {
     this.gapScroll = scrollTop;
     /** @type {number|ReturnType<typeof setTimeout>} Hold-to-lift/peek timer; 0 when idle. */
     this.holdT = 0;
+    /** @type {number|ReturnType<typeof setTimeout>} Peek crisp-render warm-up timer; 0 when idle. */
+    this.warmT = 0;
     /** @type {?(number|ReturnType<typeof setTimeout>)} Sweep-pause collapse timer. */
     this.settleT = 0;
     /** @type {number|ReturnType<typeof setTimeout>} Gap-reflow settle timer; 0 when idle. */
@@ -166,8 +169,10 @@ class ThumbTouch {
  * @property {?('browse'|'edit')} roomMode - Phone Pages-room interaction mode: 'browse' is read-only, 'edit' carries the mutations.
  *   Null outside the room, which keeps the hold-to-lift/sweep/release-menu gestures.
  * @property {() => boolean} gridInMotion - Whether the grid scrolled within the last settle window; a press on a moving grid catches the scroll instead of acting.
- * @property {(n: number) => void} peekShow - Show (or scrub to) the hold-to-peek page preview.
+ * @property {(n: number, overLift?: boolean) => void} peekShow - Show (or scrub to) the hold-to-peek page preview; overLift paints it above the drag ghost.
  * @property {() => void} peekHide
+ * @property {(n: number) => void} peekWarm - Start the preview's crisp render during a still press, ahead of the preview popping.
+ * @property {() => void} peekWarmEnd - Drop a warm render the press never consumed.
  * @property {(n: number) => void} openPage - Open page `n` in the viewer (browse-mode double-tap).
  * @property {(n: number) => void} toggleRoomSelect - Toggle page `n` in the room-Edit selection.
  * @property {(n: number, want: boolean) => void} setRoomSelect - Set page `n`'s selection to `want` (checkbox range paint).
@@ -274,26 +279,32 @@ function dealRows(ghost, targetEntries) {
 
 /**
  * Build the floating drag ghost on document.body: a fan of up to three page images, front on top, with a count badge.
- * @param {Array<HTMLImageElement>} imgs - Page images to stack, front first (already capped by the caller).
+ * @param {Array<{img: HTMLImageElement, dir: number}>} cards - Cards front first (already capped by the caller).
+ *   dir is -1 for a page before the grabbed one (fans left), 1 for after (fans right), 0 for the front card.
  * @param {{width: number, height: number}} rect - Size of the front card.
  * @param {number} badgeCount - Total pages moving; a badge shows when >1.
  * @returns {HTMLDivElement}
  */
-function buildGhost(imgs, rect, badgeCount) {
+function buildGhost(cards, rect, badgeCount) {
   const ghost = document.createElement('div');
   // position: fixed on document.body follows the pointer without being clipped by a transformed ancestor.
   ghost.style.cssText = 'position:fixed;margin:0;pointer-events:none;z-index:9999;'
     + `width:${rect.width}px;height:${rect.height}px`;
-  const cardCount = imgs.length;
-  // Build back-to-front so the grabbed page sits on top at the cursor and the rest fan down-right behind it.
+  const cardCount = cards.length;
+  // Depth of each fanned card within its own side, so companions on opposite sides sit at the same depth while a one-sided fan steps outward card by card.
+  const depth = [];
+  const perSide = { '-1': 0, 1: 0 };
+  for (let i = 0; i < cardCount; i += 1) depth.push(i === 0 ? 0 : (perSide[cards[i].dir] += 1));
+  // Build back-to-front so the grabbed page sits on top at the cursor, the rest fanning down behind it toward the side of the document their page comes from.
   // Only the fanned cards are tilted, keeping the front card flat so a tiny accidental drag does not flash a rotation.
   for (let i = cardCount - 1; i >= 0; i -= 1) {
     const card = document.createElement('div');
-    const off = i * 7;
+    const off = depth[i] * 7;
+    const dir = cards[i].dir || 1;
     card.style.cssText = 'position:absolute;left:0;top:0;margin:0;overflow:hidden;background:#fff;border-radius:2px;'
       + `box-shadow:0 8px 22px rgba(0,0,0,.45);width:${rect.width}px;height:${rect.height}px;opacity:.95;`
-      + `transform:translate(${off}px,${off}px) rotate(${i === 0 ? 0 : 2 + i * 3}deg);z-index:${cardCount - i}`;
-    const srcImg = imgs[i] || imgs[0];
+      + `transform:translate(${dir * off}px,${off}px) rotate(${i === 0 ? 0 : dir * (2 + depth[i] * 3)}deg);z-index:${cardCount - i}`;
+    const srcImg = cards[i].img;
     if (srcImg) {
       const img = /** @type {HTMLImageElement} */ (srcImg.cloneNode(true));
       // A rotated page carries inline sizing already.
@@ -352,6 +363,28 @@ export function installPageReorder(ctx) {
     let col = 0;
     while (col < cols && contentX > ctx.PAD + col * (ctx.THUMB_W + ctx.GRID_GAP) + ctx.THUMB_W / 2) col += 1;
     return Math.max(0, Math.min(ctx.pageCount, row * cols + col));
+  }
+
+  /**
+   * Cards for the drag ghost, front first: the grabbed page, then its nearest carried neighbours, capped at two so a large selection still shows a tidy fan.
+   * Each card is tagged with the side of the document its page comes from, so the fan mirrors the pages' real relative positions.
+   * @param {number} primaryN
+   * @param {Array<number>} pages
+   * @returns {Array<{img: HTMLImageElement, dir: number}>}
+   */
+  function ghostCards(primaryN, pages) {
+    /** @type {Array<{img: HTMLImageElement, dir: number}>} */
+    const cards = [];
+    /** @param {number} m @param {number} dir */
+    const push = (m, dir) => { const e = ctx.mounted.get(m); if (e && e.imgElem) cards.push({ img: e.imgElem, dir }); };
+    push(primaryN, 0);
+    const sorted = [...pages].sort((a, b) => a - b);
+    const k = sorted.indexOf(primaryN);
+    for (let step = 1; cards.length < 3 && (k - step >= 0 || k + step < sorted.length); step += 1) {
+      if (k - step >= 0) push(sorted[k - step], -1);
+      if (cards.length < 3 && k + step < sorted.length) push(sorted[k + step], 1);
+    }
+    return cards;
   }
 
   /**
@@ -493,20 +526,7 @@ export function installPageReorder(ctx) {
     const dimSet = d.group ? ctx.selected : new Set([d.from]);
     for (const [n, ent] of ctx.mounted) if (dimSet.has(n)) ent.thumbElem.classList.add('dragging');
 
-    // Gather the page images to stack, front first: the grabbed page, then the other selected pages, capped at 3 so dragging a large selection still shows a tidy fan rather than a deep pile.
-    const cardCount = d.group ? Math.min(3, ctx.selected.size) : 1;
-    /** @type {Array<HTMLImageElement>} */
-    const imgs = [];
-    /** @param {number} m */
-    const pushImg = (m) => { const e = ctx.mounted.get(m); if (e && e.imgElem) imgs.push(e.imgElem); };
-    pushImg(d.from);
-    if (d.group) {
-      for (const s of [...ctx.selected].sort((a, b) => a - b)) {
-        if (imgs.length >= cardCount) break;
-        if (s !== d.from) pushImg(s);
-      }
-    }
-    d.ghost = buildGhost(imgs, rect, d.group ? ctx.selected.size : 1);
+    d.ghost = buildGhost(ghostCards(d.from, d.group ? [...ctx.selected] : [d.from]), rect, d.group ? ctx.selected.size : 1);
     d.grabDX = clientX - rect.left;
     d.grabDY = clientY - rect.top;
 
@@ -858,13 +878,7 @@ export function installPageReorder(ctx) {
       : {
         left: touch.lastX - ctx.THUMB_W / 2, top: touch.lastY - ctx.THUMB_W / 2, width: ctx.THUMB_W, height: ctx.THUMB_W,
       };
-    /** @type {Array<HTMLImageElement>} */
-    const imgs = [];
-    /** @param {number} m */
-    const pushImg = (m) => { const e = ctx.mounted.get(m); if (e && e.imgElem) imgs.push(e.imgElem); };
-    pushImg(primaryN);
-    for (const p of pages) { if (imgs.length >= 3) break; if (p !== primaryN) pushImg(p); }
-    touch.ghost = buildGhost(imgs, rect, pages.length);
+    touch.ghost = buildGhost(ghostCards(primaryN, pages), rect, pages.length);
     // Grab the ghost where the thumb sits within the page, clamped so a run collapsed under an off-page finger still hangs sensibly.
     touch.grabDX = Math.max(8, Math.min(rect.width - 8, touch.lastX - rect.left));
     touch.grabDY = Math.max(8, Math.min(rect.height - 8, touch.lastY - rect.top));
@@ -927,8 +941,10 @@ export function installPageReorder(ctx) {
   function endTouch() {
     if (touch) {
       if (touch.holdT) clearTimeout(touch.holdT);
+      if (touch.warmT) clearTimeout(touch.warmT);
       if (touch.settleT) clearTimeout(touch.settleT);
       if (touch.reflowT) clearTimeout(touch.reflowT);
+      ctx.peekWarmEnd();
       stopTouchAuto();
     }
     window.removeEventListener('pointermove', onTouchMove);
@@ -994,6 +1010,11 @@ export function installPageReorder(ctx) {
         touch.peeking = true;
         ctx.peekShow(touch.primaryN);
       }, PEEK_HOLD_MS);
+      touch.warmT = setTimeout(() => {
+        if (!touch) return;
+        touch.warmT = 0;
+        ctx.peekWarm(touch.primaryN);
+      }, PEEK_WARM_MS);
       window.addEventListener('pointermove', onTouchMove);
       window.addEventListener('pointerup', onTouchUp);
       window.addEventListener('pointercancel', onTouchCancel);
@@ -1005,12 +1026,23 @@ export function installPageReorder(ctx) {
     touch = new ThumbTouch(e, n, mode, ctx.scrollElem.scrollTop);
     lastTouchT = Date.now();
     if (mode === 'edit') {
-      // Edit mode lifts a selected page from the first movement (onTouchMove), with no hold.
-      // Selection lives on the page's checkbox, so a press on the page itself is read-only: a clean tap is inert and a still hold peeks like browse.
+      // A press on a selected page grabs it outright: the lift starts at the press itself.
+      // A hold that never travels past MENU_SLOP pops the preview over the held pages, and the first real move dismisses it while the carry continues.
+      // A press on an unselected page stays read-only: a clean tap at most clears the selection, and a still hold peeks and scrubs like browse.
       ctx.suppressClick = true;
       // A press while the grid still glides is a catch-the-scroll gesture and must not lift or peek.
       if (ctx.gridInMotion()) {
         touch.scrollOnly = true;
+      } else if (ctx.selected.has(n)) {
+        try { ctx.scrollElem.setPointerCapture(e.pointerId); } catch (_) { /* best-effort */ }
+        const pages = ctx.selected.size > 1 ? [...ctx.selected].sort((a, b) => a - b) : [n];
+        liftTouch(pages, n);
+        touch.holdT = setTimeout(() => {
+          if (!touch || !touch.lifted || touch.moved) return;
+          touch.holdT = 0;
+          touch.peeking = true;
+          ctx.peekShow(touch.primaryN, true);
+        }, PEEK_HOLD_MS);
       } else {
         touch.holdT = setTimeout(() => {
           if (!touch || touch.peeking || touch.lifted) return;
@@ -1019,6 +1051,13 @@ export function installPageReorder(ctx) {
           touch.peeking = true;
           ctx.peekShow(touch.primaryN);
         }, PEEK_HOLD_MS);
+      }
+      if (!touch.scrollOnly) {
+        touch.warmT = setTimeout(() => {
+          if (!touch) return;
+          touch.warmT = 0;
+          ctx.peekWarm(touch.primaryN);
+        }, PEEK_WARM_MS);
       }
     } else {
       if (entry) entry.thumbElem.classList.add('prelift');
@@ -1044,7 +1083,11 @@ export function installPageReorder(ctx) {
       e.preventDefault();
       positionGhost();
       updateGap(e.clientX, e.clientY);
-      if (Math.hypot(e.clientX - touch.startX, e.clientY - touch.startY) > MENU_SLOP) touch.moved = true;
+      if (Math.hypot(e.clientX - touch.startX, e.clientY - touch.startY) > MENU_SLOP) {
+        touch.moved = true;
+        if (touch.holdT) { clearTimeout(touch.holdT); touch.holdT = 0; }
+        if (touch.peeking) { touch.peeking = false; ctx.peekHide(); }
+      }
       return;
     }
     if (touch.sweeping) { e.preventDefault(); runTo(e.clientX, e.clientY); return; }
@@ -1078,18 +1121,9 @@ export function installPageReorder(ctx) {
     }
     if (touch.mode === 'edit') {
       if (touch.scrollOnly) return; // the press caught a moving grid; native scrolling owns the gesture
-      const n = touch.primaryN;
-      if (!ctx.selected.has(n)) {
-        // A drag on an unselected page is a plain scroll, so the gesture is abandoned to native scrolling.
-        if (Math.hypot(e.clientX - touch.startX, e.clientY - touch.startY) > LIFT_MOVE_SLOP) abortTouch();
-        return;
-      }
-      if (Math.hypot(e.clientX - touch.startX, e.clientY - touch.startY) > DRAG_THRESHOLD) {
-        if (touch.holdT) { clearTimeout(touch.holdT); touch.holdT = 0; }
-        try { ctx.scrollElem.setPointerCapture(touch.pointerId); } catch (_) { /* best-effort */ }
-        const pages = ctx.selected.size > 1 ? [...ctx.selected].sort((a, b) => a - b) : [n];
-        liftTouch(pages, n);
-      }
+      // Only an unselected-page press reaches here unlifted, since a selected press lifts at the press itself.
+      // Its drag is a plain scroll, so the gesture is abandoned to native scrolling.
+      if (Math.hypot(e.clientX - touch.startX, e.clientY - touch.startY) > LIFT_MOVE_SLOP) abortTouch();
       return;
     }
     const dx = e.clientX - touch.startX;
@@ -1110,6 +1144,12 @@ export function installPageReorder(ctx) {
   function onTouchUp(e) {
     if (!touch || e.pointerId !== touch.pointerId) return;
     if (touch.holdT) { clearTimeout(touch.holdT); touch.holdT = 0; }
+    // Checked before peeking: a lifted page can be previewing at the same time, and its release must both close the preview and set the pages down.
+    if (touch.lifted) {
+      if (touch.peeking) { ctx.peekHide(); lastTap = null; }
+      dropTouch(true);
+      return;
+    }
     if (touch.peeking) { ctx.peekHide(); lastTap = null; endTouch(); return; } // the preview lives only under the finger
     if (touch.mode === 'browse') {
       // A single tap is inert; a second on the same page within DBL_TAP_MS opens it in the viewer.
@@ -1125,7 +1165,6 @@ export function installPageReorder(ctx) {
       }
       return;
     }
-    if (touch.lifted) { dropTouch(true); return; }
     if (touch.sweeping) { abortTouch(); return; } // released mid-sweep before the pause: gather nothing
     if (touch.painting) { endTouch(); return; } // the paint's selection is already applied; nothing to commit
     if (touch.mode === 'edit') {
@@ -1141,8 +1180,13 @@ export function installPageReorder(ctx) {
   /** @param {PointerEvent} e */
   function onTouchCancel(e) {
     if (!touch || e.pointerId !== touch.pointerId) return;
+    if (touch.lifted) {
+      if (touch.peeking) { ctx.peekHide(); lastTap = null; }
+      dropTouch(false, false);
+      return;
+    }
     if (touch.peeking) { ctx.peekHide(); lastTap = null; abortTouch(); return; }
-    if (touch.lifted) dropTouch(false, false); else abortTouch();
+    abortTouch();
   }
 
   /**

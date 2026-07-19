@@ -1352,6 +1352,14 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       color: #fff;
       text-shadow: 0 1px 2px rgba(0, 0, 0, .45);
     }
+    /* Held-stack preview: rehosted on document.body to paint above the drag ghost (fixed, z-index 9999).
+       The panel's own scrim keeps the dim. */
+    .${r}.scribe-peek-lift {
+      position: fixed;
+      z-index: 10000;
+      pointer-events: none;
+    }
+    .${r} .scribe-thumb-scrim.scribe-peek-lift-scrim { background: transparent; }
     @media (prefers-reduced-motion: reduce) {
       .${r} .scribe-thumb-scrim, .${r} .scribe-thumb-peek { transition: none; }
     }
