@@ -12,6 +12,7 @@ export const REORDER_SLIDE_MS = 160;
 const DRAG_THRESHOLD = 5;
 // Pointer distance from the scroll area's top/bottom edge that auto-scrolls the rail during a drag, and its speed.
 const AUTOSCROLL_EDGE = 36;
+const AUTOSCROLL_EDGE_BOTTOM = 90;
 const AUTOSCROLL_SPEED = 14;
 
 // Touch-reorder gesture thresholds, for any touch outside the phone room's modes: hold to lift; a sideways slide first gathers a contiguous run.
@@ -170,6 +171,7 @@ class ThumbTouch {
  * @property {(n: number) => void} openPage - Open page `n` in the viewer (browse-mode double-tap).
  * @property {(n: number) => void} toggleRoomSelect - Toggle page `n` in the room-Edit selection.
  * @property {(n: number, want: boolean) => void} setRoomSelect - Set page `n`'s selection to `want` (checkbox range paint).
+ * @property {() => void} clearSelection - Empty the room-Edit selection and resync the UI.
  */
 
 /**
@@ -589,7 +591,6 @@ export function installPageReorder(ctx) {
     if (!d) return;
     if (d.started) { moveDrag(e.clientX, e.clientY); return; }
     if (Math.abs(e.clientX - d.startX) + Math.abs(e.clientY - d.startY) < DRAG_THRESHOLD) return;
-    // Reordering is an editor action and needs at least two pages; otherwise the gesture stays a plain selection.
     if (!(ctx.scribe.opt && ctx.scribe.opt.enablePageEditing) || ctx.pageCount < 2) { cancelDrag(); return; }
     startDrag(e.clientX, e.clientY);
   }
@@ -661,21 +662,30 @@ export function installPageReorder(ctx) {
     // Hit-testing the live (reflowed) layout, not static slot geometry, keeps the previewed gap and the committed move in agreement.
     let hit = cellUnderPoint(clientX, clientY);
     let after;
-    if (hit) {
+    let firstN = 0;
+    while (firstN < ctx.pageCount && touch.pages.has(firstN)) firstN += 1;
+    const firstEntry = firstN < ctx.pageCount ? ctx.mounted.get(firstN) : null;
+    const firstBox = firstEntry && firstEntry.thumbElem.querySelector('.scribe-thumb-box');
+    const firstRect = firstBox ? firstBox.getBoundingClientRect() : null;
+    let lastN = ctx.pageCount - 1;
+    while (lastN >= 0 && touch.pages.has(lastN)) lastN -= 1;
+    const lastEntry = lastN >= 0 ? ctx.mounted.get(lastN) : null;
+    const lastBox = lastEntry && lastEntry.thumbElem.querySelector('.scribe-thumb-box');
+    const lastRect = lastBox ? lastBox.getBoundingClientRect() : null;
+    if (firstRect && (clientY < Math.min(firstRect.top + firstRect.height / 2, firstRect.top + AUTOSCROLL_EDGE_BOTTOM)
+      || (clientY <= firstRect.bottom && clientX < firstRect.left))) {
+      hit = { p: firstN, rect: firstRect };
+      after = false;
+    } else if (lastRect && (clientY > Math.max(lastRect.top + lastRect.height / 2, lastRect.bottom - AUTOSCROLL_EDGE_BOTTOM)
+      || (clientY >= lastRect.top && clientX > lastRect.right))) {
+      hit = { p: lastN, rect: lastRect };
+      after = true;
+    } else if (hit) {
       after = ctx.gridCols > 1
         ? clientX > hit.rect.left + hit.rect.width / 2
         : clientY > hit.rect.top + hit.rect.height / 2;
     } else {
-      // A null hit normally means "hold steady", but past the end of the document (below the last row, or right of the last page) it is unambiguous intent for the end gap.
-      let lastN = ctx.pageCount - 1;
-      while (lastN >= 0 && touch.pages.has(lastN)) lastN -= 1;
-      const entry = lastN >= 0 ? ctx.mounted.get(lastN) : null;
-      const box = entry && entry.thumbElem.querySelector('.scribe-thumb-box');
-      if (!box) return;
-      const r = box.getBoundingClientRect();
-      if (!(clientY > r.bottom || (clientY >= r.top && clientX > r.right))) return;
-      hit = { p: lastN, rect: r };
-      after = true;
+      return;
     }
     const gap = after ? hit.p + 1 : hit.p;
     if (gap === touch.gap) return;
@@ -802,7 +812,7 @@ export function installPageReorder(ctx) {
     const max = ctx.scrollElem.scrollHeight - ctx.scrollElem.clientHeight;
     let dir = 0;
     if (touch.lastY < rect.top + AUTOSCROLL_EDGE && ctx.scrollElem.scrollTop > 0) dir = -1;
-    else if (touch.lastY > rect.bottom - AUTOSCROLL_EDGE && ctx.scrollElem.scrollTop < max) dir = 1;
+    else if (touch.lastY > rect.bottom - AUTOSCROLL_EDGE_BOTTOM && ctx.scrollElem.scrollTop < max) dir = 1;
     if (dir) {
       ctx.scrollElem.scrollTop = Math.max(0, Math.min(max, ctx.scrollElem.scrollTop + dir * AUTOSCROLL_SPEED));
       ctx.updateWindow();
@@ -947,7 +957,7 @@ export function installPageReorder(ctx) {
   }
 
   /**
-   * Press on a page's selection checkbox (room Edit mode): toggle that page now; sliding on across further pages paints them to the same state.
+   * Press on a page's selection checkbox (room Edit mode): toggle that page now; sliding on across further checkboxes paints them to the same state.
    * Starting on the checkbox is what disambiguates painting a range from dragging a page.
    * @param {PointerEvent} e @param {number} n
    */
@@ -1042,7 +1052,8 @@ export function installPageReorder(ctx) {
       // Painted immediately per crossing, with no commit step; a cancel keeps the range.
       e.preventDefault();
       const el = document.elementFromPoint(e.clientX, e.clientY);
-      const t = el && 'closest' in el ? el.closest('.scribe-thumb') : null;
+      const chk = el && 'closest' in el ? el.closest('.scribe-thumb-chk') : null;
+      const t = chk ? chk.closest('.scribe-thumb') : null;
       if (t && ctx.scrollElem.contains(t)) {
         const p = Number(t.dataset.page);
         if (Number.isFinite(p)) ctx.setRoomSelect(p, touch.paintWant);
@@ -1118,7 +1129,7 @@ export function installPageReorder(ctx) {
     if (touch.sweeping) { abortTouch(); return; } // released mid-sweep before the pause: gather nothing
     if (touch.painting) { endTouch(); return; } // the paint's selection is already applied; nothing to commit
     if (touch.mode === 'edit') {
-      // A clean Edit tap does nothing: selection is the checkbox's job, and double-tap navigation is browse-only.
+      if (!ctx.selected.has(touch.primaryN)) ctx.clearSelection();
       endTouch();
       return;
     }
@@ -1130,7 +1141,6 @@ export function installPageReorder(ctx) {
   /** @param {PointerEvent} e */
   function onTouchCancel(e) {
     if (!touch || e.pointerId !== touch.pointerId) return;
-    // An interruption never commits: a lifted page settles back home rather than dropping at whatever gap the finger last hovered.
     if (touch.peeking) { ctx.peekHide(); lastTap = null; abortTouch(); return; }
     if (touch.lifted) dropTouch(false, false); else abortTouch();
   }
@@ -1180,7 +1190,6 @@ export function installPageReorder(ctx) {
       moved = (to < 0 || to >= ctx.pageCount) ? undefined : reorderPages(primaryN, to);
     }
     if (!moved) {
-      // Nothing committed: slide the displaced cells home and settle the ghost onto the lifted page's own slot.
       restoreReflow();
       ctx.updateWindow();
       moved = [];
@@ -1211,7 +1220,6 @@ export function installPageReorder(ctx) {
     ctx.drag = null;
   }
 
-  // `insertionGapAt`/`placeInsertLineAt` are also driven by panels.js's external-file drop preview.
   return {
     onThumbPointerDown, onChkPointerDown, cancelDrag, insertionGapAt, placeInsertLineAt, touchActive,
   };

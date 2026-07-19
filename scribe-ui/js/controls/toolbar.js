@@ -707,6 +707,10 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     /* Design tokens. Light is the default, and [data-theme="dark"] swaps to the dark palette.
        The document page itself is never themed, only the chrome. */
     .${r} {
+      /* Pinch-zoom consults the whole ancestor chain, so this single declaration keeps Safari's page zoom from engaging on any touch inside the app.
+         Engaged page zoom re-rasters the content-sized layer tree at gesture scale and jetsams the tab on iPhones.
+         The document viewer's own pinch runs on touch events, which touch-action does not suppress. */
+      touch-action: pan-x pan-y;
       --scribe-surface: #ffffff;
       --scribe-canvas: #f4f6fa;
       --scribe-sunken: #eef1f6;
@@ -847,6 +851,20 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r}.scribe-coarse input,
     .${r}.scribe-coarse textarea,
     .${r}.scribe-coarse [contenteditable] { font-size: 16px; }
+    /* A long press starts the platform's own text selection, which sweeps the zoom layer's unscaled text layout and jetsams the tab on iPhones.
+       The custom engine owns document selection, so native selection and the long-press callout stay off everywhere on touch devices. */
+    .${r}.scribe-coarse,
+    .${r}.scribe-coarse * {
+      -webkit-user-select: none;
+      user-select: none;
+      -webkit-touch-callout: none;
+    }
+    .${r}.scribe-coarse input,
+    .${r}.scribe-coarse textarea,
+    .${r}.scribe-coarse [contenteditable] {
+      -webkit-user-select: auto;
+      user-select: auto;
+    }
     .${r}.scribe-coarse .scribe-drop-btn { min-height: 44px; }
     /* The panel resize strips are invisible hit areas (cursor only), so widening them costs nothing visually. */
     .${r}.scribe-coarse .scribe-thumb-resize,
@@ -1059,6 +1077,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       border-right: none;
       background: transparent;
       transition: none;
+      /* The rail slide-in's will-change must not ride into the sheet: a composited layer filling the sheet re-allocates its backing on every frame of a height drag, which jetsams the tab on iPhones. */
+      will-change: auto;
     }
     /* The desktop panel title bars are redundant under a tab that already names the panel; their actions live in the sheet header. */
     .${r} .scribe-sheet-content .scribe-bm-hd,
@@ -1136,6 +1156,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       border-right: none;
       background: transparent;
       transition: none;
+      /* The rail slide-in's will-change is dropped here too: the panel never transforms inside the room, so promotion would only pin a panel-sized backing store. */
+      will-change: auto;
     }
     .${r} .scribe-room-body .scribe-thumb-resize { display: none; }
 
@@ -1203,11 +1225,11 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
     .${r} .scribe-thumb-chk svg { width: 13px; height: 13px; }
     /* Invisible hit halo: a press near the corner counts as the checkbox, so a near-miss can never wobble into a drag lift.
-       44x44 total, biased down-right into the page; the up/left reach stays inside the grid gaps, clear of neighbour tiles. */
+       It reaches much further right and down than up and left, because the badge overhangs the corner and a miss lands on the page below or beside it, never off the tile. */
     .${r} .scribe-thumb-chk::before {
       content: '';
       position: absolute;
-      inset: -8px -14px -14px -8px;
+      inset: -8px -26px -26px -8px;
     }
     .${r} .scribe-pages-room.editing .scribe-thumb-chk { display: flex; }
     .${r} .scribe-thumb.selected .scribe-thumb-chk {

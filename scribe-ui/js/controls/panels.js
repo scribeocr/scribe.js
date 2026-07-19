@@ -3,7 +3,9 @@
 import { makeIconButton } from './toolbar.js';
 import { installPageReorder, REORDER_SLIDE_MS } from './pageReorder.js';
 
-/** @typedef {{thumbElem: HTMLDivElement, imgElem: HTMLImageElement, url: ?string, pending: boolean}} ThumbRow */
+/**
+ * @typedef {{thumbElem: HTMLDivElement, imgElem: HTMLImageElement, url: ?string, pending: boolean}} ThumbRow
+ */
 
 // A left column of small previews beside a larger page, evoking a thumbnails panel.
 export const THUMB_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 0 24 24" fill="currentColor">
@@ -48,8 +50,6 @@ const THUMB_W = 200;
 const COMPACT_W = 104;
 // Column cap in the compact phone grid (higher than MAX_COLS so a landscape phone can pack more).
 const COMPACT_MAX_COLS = 6;
-// Resolution thumbnails are rasterized at; kept above THUMB_W so they stay crisp on high-DPI screens (CSS downscales).
-const RENDER_W = 300;
 // Slide duration in ms. Must match the `transition` on `.scribe-thumb-panel` so the post-hide unmount waits for it.
 const SLIDE_MS = 180;
 // Fallback height in px for centering the floating batch pill before it has been laid out and measured.
@@ -346,6 +346,7 @@ export function createThumbnailPanel(scribe, {
     openPage: (n) => (onPageOpen || onSelect)(n),
     toggleRoomSelect,
     setRoomSelect,
+    clearSelection,
   };
   const reorder = installPageReorder(ctx);
 
@@ -486,12 +487,12 @@ export function createThumbnailPanel(scribe, {
   }
 
   /**
-   * Revoke a mounted row's object URL, drop its DOM, and forget it.
+   * Drop a mounted row's DOM and forget it.
+   * The row's `url` is not revoked; the image container owns it.
    * @param {number} n
    * @param {ThumbRow} entry
    */
   function unmountRow(n, entry) {
-    if (entry.url) URL.revokeObjectURL(entry.url);
     entry.thumbElem.remove();
     mounted.delete(n);
   }
@@ -714,8 +715,7 @@ export function createThumbnailPanel(scribe, {
   }
 
   /**
-   * Fetch the cached JPEG Blob for row `n` and display it,
-   * unless the row was unmounted or the generation was superseded before the render resolved.
+   * Fetch page `n`'s shared thumbnail URL and display it, unless the row was unmounted or the generation was superseded before the fetch resolved.
    * @param {number} n
    * @param {ThumbRow} entry
    */
@@ -724,13 +724,12 @@ export function createThumbnailPanel(scribe, {
     if (!doc || !doc.images) return;
     entry.pending = true;
     const gen = generation;
-    // Render above the display size and let CSS downscale into the THUMB_W box, so thumbnails stay crisp on high-DPI screens.
-    doc.images.renderThumbnail(n, RENDER_W).then((blob) => {
+    doc.images.thumbnailUrl(n).then((url) => {
       if (destroyed || gen !== generation) return;
       if (mounted.get(n) !== entry) return;
-      if (!blob) { entry.pending = false; return; }
-      entry.url = URL.createObjectURL(blob);
-      entry.imgElem.src = entry.url;
+      if (!url) { entry.pending = false; return; }
+      entry.url = url;
+      entry.imgElem.src = url;
     }).catch(() => {
       if (mounted.get(n) === entry) entry.pending = false;
     });
@@ -1117,8 +1116,6 @@ export function createThumbnailPanel(scribe, {
   function refit() {
     measureViewport();
     computeGeometry();
-    // Keep already-rastered rows: unmounting would flash the grid white on every show.
-    // Bitmaps are RENDER_W rasters scaled by CSS, so a change in cell width never invalidates them.
     for (const [n, entry] of mounted) {
       if (n >= pageCount) unmountRow(n, entry);
       else restyleRow(entry, n);

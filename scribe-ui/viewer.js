@@ -358,10 +358,10 @@ export class ScribeViewer {
     this._pinchHiddenPages = [];
 
     /**
-     * Deferred-commit state of the active iOS pinch, folded into the real zoom and scroll at release.
+     * Deferred-commit state of the active iOS pinch, folded into the real zoom and scroll at final finger lift.
      * @type {?{startZoom: number, startDist: number, startCenter: {x: number, y: number}, baseLeft: number, baseTop: number,
      *   startScrollLeft: number, startScrollTop: number, lastCenter: {x: number, y: number}, lastScale: number,
-     *   minScale: number, moveScrollLeft: number, moveScrollTop: number}}
+     *   lastTx: number, lastTy: number, minScale: number, moveScrollLeft: number, moveScrollTop: number, needsRebase: boolean}}
      */
     this._pinchGesture = null;
 
@@ -1371,16 +1371,13 @@ export class ScribeViewer {
           }
         }
       } else {
-        // Normally a no-op (the touchend 2->1 transition already committed); covers end paths that skip it, like `stopDragPinch`.
-        this._commitPinchGesture();
-        // Kill the release momentum of the native pan that iOS latched on the gesture's first finger: it outlives the fingers and clobbers the committed scroll, flinging the view away after it lands.
-        // Toggling overflow is the canonical momentum kill, and the one hidden frame changes nothing visibly.
         const sc = this.scrollContainer;
         if (sc && sc.style.overflow !== 'hidden') {
           sc.style.overflow = 'hidden';
           sc.getBoundingClientRect();
           requestAnimationFrame(() => { sc.style.overflow = 'auto'; });
         }
+        this._commitPinchGesture();
         for (const pc of this._pinchHiddenPages || []) pc.style.display = '';
         this._pinchHiddenPages = [];
       }
@@ -1541,17 +1538,29 @@ export class ScribeViewer {
           startScrollTop: sc.scrollTop,
           lastCenter: center,
           lastScale: 1,
+          lastTx: 0,
+          lastTy: 0,
           minScale: fitZoom > 0 && this.zoomLevel > 0 ? Math.min(1, fitZoom / this.zoomLevel) : 0,
           moveScrollLeft: sc.scrollLeft,
           moveScrollTop: sc.scrollTop,
+          needsRebase: false,
         };
         this._pinchGesture = g;
         this.contentSizer.style.transformOrigin = '0 0';
       }
-      const scale = Math.max(dist / g.startDist, g.minScale);
       // The sizer's untransformed position, tracking any native-pan scroll movement since the gesture began.
       const originLeft = g.baseLeft - (sc.scrollLeft - g.startScrollLeft);
       const originTop = g.baseTop - (sc.scrollTop - g.startScrollTop);
+      if (g.needsRebase) {
+        // Resuming after a 2->1->2 finger drop: fold the frozen transform into the new pair's baselines so the picture does not jump.
+        g.needsRebase = false;
+        g.startCenter = {
+          x: (center.x - originLeft - g.lastTx) / g.lastScale + g.baseLeft,
+          y: (center.y - originTop - g.lastTy) / g.lastScale + g.baseTop,
+        };
+        g.startDist = dist / g.lastScale;
+      }
+      const scale = Math.max(dist / g.startDist, g.minScale);
       // Content point under the fingers at gesture start, in sizer-local CSS px.
       const px = g.startCenter.x - g.baseLeft;
       const py = g.startCenter.y - g.baseTop;
@@ -1560,6 +1569,8 @@ export class ScribeViewer {
       this.contentSizer.style.transform = `translate(${tx}px, ${ty}px) scale(${scale})`;
       g.lastCenter = center;
       g.lastScale = scale;
+      g.lastTx = tx;
+      g.lastTy = ty;
       g.moveScrollLeft = sc.scrollLeft;
       g.moveScrollTop = sc.scrollTop;
       return;
@@ -1757,6 +1768,8 @@ export class ScribeViewer {
       if (event.touches.length < 2) return;
       event.preventDefault();
       this._setPinching(true);
+      // A second finger re-landing while a deferred gesture is pending resumes it rather than starting a fresh one.
+      if (this._pinchGesture) this._pinchGesture.needsRebase = true;
       this.drag.lastDist = null;
       this.drag.lastCenter = null;
     }, { passive: false });
@@ -1770,14 +1783,27 @@ export class ScribeViewer {
     }, { passive: false });
 
     scrollContainer.addEventListener('touchend', (event) => {
-      // Lifting to fewer than two fingers ends the pinch; clearing the trackers makes a re-placed second finger start a fresh gesture instead of jumping from the stale distance.
+      // Clearing the trackers makes a re-placed second finger start a fresh gesture instead of jumping from the stale distance.
+      // The deferred iOS pinch commits only at final lift: with a finger still down the native pan owns the scroll offset and rolls back the commit's scroll writes.
       if (event.touches.length < 2) {
-        this._commitPinchGesture();
         this.drag.lastDist = null;
         this.drag.lastCenter = null;
       }
       // The pointerup handler, which fires first, also clears this; clearing here too keeps the flag from sticking when a pointerup is retargeted or suppressed mid-gesture.
       if (event.touches.length === 0) this._setPinching(false);
+    });
+
+    scrollContainer.addEventListener('touchcancel', (event) => {
+      if (event.touches.length > 0) return;
+      // The system stole the gesture, and the contract for touchcancel is abort, not commit: discard the deferred pinch and restore the pre-gesture view.
+      // Returning from the system UI then never lands on a half-applied zoom.
+      if (this._pinchGesture) {
+        this._pinchGesture = null;
+        if (this.contentSizer) this.contentSizer.style.transform = '';
+      }
+      this.drag.lastDist = null;
+      this.drag.lastCenter = null;
+      this._setPinching(false);
     });
 
     // Double-tap toggles between the width-fit zoom and a reading zoom anchored at the tap point.

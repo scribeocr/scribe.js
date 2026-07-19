@@ -114,7 +114,7 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize }) {
    * @param {number} [pageIndex]
    */
   function addBookmarkAtPage(pageIndex = currentPage()) {
-    if (!scribe.doc) return;
+    if (!hasDoc()) return;
     const id = scribe.doc.addBookmark({ title: 'New bookmark', pageIndex });
     afterEdit();
     focusRename(id);
@@ -296,7 +296,7 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize }) {
 
   // Right-click the tree's empty space to add a top-level bookmark.
   treeElem.addEventListener('contextmenu', (e) => {
-    if (!editing()) return;
+    if (!editing() || !hasDoc()) return;
     if (e.target instanceof Element && e.target.closest('.scribe-bm-row')) return;
     e.preventDefault();
     openAddMenu(e.clientX, e.clientY);

@@ -17,7 +17,7 @@ function pageNotes(viewer, n) {
 /**
  * Create a note annotation at page-local pixel point (x, y) and stamp its author and creation date.
  * @param {import('../viewer.js').ScribeViewer} viewer @param {number} n @param {number} x @param {number} y
- * @returns {Object} the new note annotation
+ * @returns {AnnotationText} the new note annotation
  */
 export function createNote(viewer, n, x, y) {
   /** @type {AnnotationText} */
@@ -39,7 +39,9 @@ export function createNote(viewer, n, x, y) {
 
 /**
  * Set a note's comment, stamping author/date on first authoring (author from viewer.opt.commentAuthor).
- * @param {import('../viewer.js').ScribeViewer} viewer @param {Object} annot @param {string} comment
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {AnnotationText} annot
+ * @param {string} comment
  */
 export function setNoteComment(viewer, annot, comment) {
   annot.comment = comment;
@@ -53,7 +55,7 @@ export function setNoteComment(viewer, annot, comment) {
 /**
  * Remove a note annotation from page n.
  * @param {import('../viewer.js').ScribeViewer} viewer
- * @param {Object} annot
+ * @param {AnnotationText} annot
  * @param {number} n
  */
 export function removeNote(viewer, annot, n) {
@@ -63,7 +65,11 @@ export function removeNote(viewer, annot, n) {
 /**
  * Drag a note icon to reposition it.
  * Converts the pointer's screen delta to page-local pixels via the zoom level, and marks the icon as dragged so the trailing click does not open the editor.
- * @param {import('../viewer.js').ScribeViewer} viewer @param {Object} annot @param {HTMLElement} icon @param {PointerEvent} event @param {number} n
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {AnnotationText} annot
+ * @param {HTMLElement} icon
+ * @param {PointerEvent} event
+ * @param {number} n
  */
 function startNoteDrag(viewer, annot, icon, event, n) {
   event.preventDefault();
@@ -127,7 +133,7 @@ export function renderPageNotes(viewer, n) {
  * Open a note's editor: its comment card, pinned with the text focused.
  * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {number} n
- * @param {Object} annot
+ * @param {AnnotationText} annot
  */
 export function focusNoteEditor(viewer, n, annot) {
   if (pageNotes(viewer, n).indexOf(annot) < 0) return;

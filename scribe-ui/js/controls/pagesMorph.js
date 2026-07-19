@@ -16,6 +16,8 @@ const FLARE_PAD = 16;
 const MIN_GROW = 48;
 // Per-frame fraction of the remaining travel the release/tap animation covers (retargetable ease-out).
 const SETTLE_RATE = 0.2;
+// Remaining travel below which the settle snaps to its endpoint and hands the room back.
+const SETTLE_SNAP_PX = 8;
 
 const clamp = (v, a, b) => Math.max(a, Math.min(b, v));
 const lerp = (a, b, t) => a + (b - a) * t;
@@ -98,7 +100,6 @@ export function createPagesMorph(scribe, {
     s.layer.remove();
     s.mtab.remove();
     stripElem.classList.remove('scribe-tab-riding');
-    for (const url of s.urls) URL.revokeObjectURL(url);
     roomHdElem.style.opacity = '';
     roomHdElem.style.pointerEvents = '';
     roomElem.style.background = '';
@@ -255,17 +256,14 @@ export function createPagesMorph(scribe, {
      * @param {HTMLImageElement} img @param {number} n
      */
     const fillThumb = (img, n) => {
-      doc.images.renderThumbnail(n, 200).then((blob) => {
-        if (!blob || scene !== s) return;
-        const url = URL.createObjectURL(blob);
-        s.urls.push(url);
+      doc.images.thumbnailUrl(n).then((url) => {
+        if (!url || scene !== s) return;
         img.src = url;
       }).catch(() => {});
     };
     const s = {
       layer,
       mtab,
-      urls: /** @type {string[]} */ ([]),
       items: /** @type {Array<object>} */ ([]),
       dy: 0,
       travel,
@@ -369,7 +367,7 @@ export function createPagesMorph(scribe, {
     s.mtab.style.transform = `translateY(${ty - TAB_H}px)`;
     const hdo = clamp((p - 0.8) / 0.2, 0, 1);
     roomHdElem.style.opacity = String(hdo);
-    roomHdElem.style.pointerEvents = hdo > 0.5 ? '' : 'none';
+    roomHdElem.style.pointerEvents = hdo > 0 ? '' : 'none';
 
     // The anchor row sits on the bar's floor until the edge's hug line reaches it, rides 1:1 under the edge, then freezes at its final resting spot while the edge sweeps on.
     const yAnchor = Math.max(s.finalYAnchor, Math.min(s.anchorFloorY, ty + HUG));
@@ -421,7 +419,7 @@ export function createPagesMorph(scribe, {
       raf = 0;
       if (scene !== s) return;
       const d = target - s.dy;
-      if (Math.abs(d) < 0.5) {
+      if (Math.abs(d) < SETTLE_SNAP_PX) {
         frame(target);
         teardown(commit);
         if (onDone) onDone(commit);

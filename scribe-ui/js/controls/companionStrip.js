@@ -3,7 +3,6 @@
 
 const CELL_H = 84;
 const CELL_W = Math.round(CELL_H * (8.5 / 11));
-const RENDER_W = 200; // rasterize above display size so cells stay crisp on high-DPI screens
 let stylesInjected = false;
 
 /** Inject the strip's scoped stylesheet once. Tokens (--scribe-*) inherit from the viewer root. */
@@ -66,6 +65,7 @@ const CHEV_UP_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" 
  *   stripElem: HTMLDivElement,
  *   setActive: (n: number) => void,
  *   park: () => void,
+ *   settle: () => void,
  *   rebuild: (page?: number) => void,
  *   setVisible: (v: boolean) => void,
  *   destroy: () => void,
@@ -98,12 +98,6 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
     tab.addEventListener('click', () => onExpand('tap', 0));
     stripElem.appendChild(tab);
 
-    // Pull-up drag from anywhere on the strip; a horizontal flip stays the row's native pan-x scroll.
-    // The steep slope gate matters: a fast horizontal flick often leads with a short upward arc, and a looser test steals the whole flick at that arc.
-    // The 12px floor sits just above the platforms' own pan slop, so steepness is measured on intent rather than first-frame tremor.
-    // Travel is re-based to zero at the engagement point (`base`): replaying the dropped slop in one frame reads as a stutter.
-    // The gesture is keyed to ONE pointer id, so a second finger or palm landing mid-pull can neither hijack the record nor orphan it.
-    // An orphaned pull leaves the room parked invisibly over the strip, eating every tap.
     /** @type {?{id: number, y0: number, x0: number, sl0: number, base: number, active: boolean, dy: number}} */
     let pull = null;
     stripElem.addEventListener('pointerdown', (e) => {
@@ -123,6 +117,8 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
           pull = null;
           return;
         }
+        // A fast horizontal flick often leads with a short upward arc, so engagement demands 2:1 steepness or the pull would steal the whole flick at that arc.
+        // The 12px floor holds the slope test past the platforms' own pan slop, so steepness is judged on intent rather than first-frame tremor.
         if (dy > 12 && dy > 2 * dx) {
           pull.active = true;
           pull.base = dy;
@@ -163,8 +159,6 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
     });
   }
 
-  /** @type {Map<number, string>} object URLs by page, revoked on rebuild/destroy. */
-  const urls = new Map();
   /** @type {HTMLButtonElement[]} */
   let cells = [];
   let pageCount = 0;
@@ -195,40 +189,33 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
    */
   function renderCell(n) {
     const cell = cells[n];
-    if (!cell || urls.has(n) || rendering.has(cell)) return;
+    if (!cell || rendering.has(cell)) return;
+    const img = cell.querySelector('img');
+    if (!img || img.src) return;
     const doc = scribe.doc;
     if (!doc || !doc.images) return;
     rendering.add(cell);
     // Failures are swallowed: `renderVisible` retries on every scroll/reveal, so a transient failure never permanently blanks a cell.
-    doc.images.renderThumbnail(n, RENDER_W).then((blob) => {
-      if (destroyed || !blob || cells[n] !== cell) return;
-      const url = URL.createObjectURL(blob);
-      urls.set(n, url);
-      const img = cell.querySelector('img');
-      if (img) img.src = url;
+    doc.images.thumbnailUrl(n).then((url) => {
+      if (destroyed || !url || cells[n] !== cell) return;
+      img.src = url;
     }).catch(() => {}).finally(() => { rendering.delete(cell); });
   }
 
   /** Render every cell currently in (or near) the strip's viewport. */
   function renderVisible() {
     if (!cells.length) return;
-    const stride = CELL_W + 8; // cell width + the row's flex gap
-    const pad = cells[0].offsetLeft; // the row's left padding, where cell 0 starts
+    geom();
     const margin = 200; // prefetch a screen-ish of cells to either side
-    const first = Math.max(0, Math.floor((row.scrollLeft - margin - pad) / stride));
-    const last = Math.min(pageCount - 1, Math.floor((row.scrollLeft + row.clientWidth + margin - pad) / stride));
+    const first = Math.max(0, Math.floor((row.scrollLeft - margin - gPad) / gStride));
+    const last = Math.min(pageCount - 1, Math.floor((row.scrollLeft + gRowW + margin - gPad) / gStride));
     // Tell the scheduler where the strip is looking, so a flick's backlog of staged thumbnails dispatches nearest-to-view first.
     // Only while showing: a hidden strip must not override the rail's live focus.
     if (stripElem.classList.contains('on')) {
-      const centre = Math.max(0, Math.min(pageCount - 1, Math.round((row.scrollLeft + row.clientWidth / 2 - pad) / stride)));
+      const centre = Math.max(0, Math.min(pageCount - 1, Math.round((row.scrollLeft + gRowW / 2 - gPad) / gStride)));
       scribe.doc?.images?.pdfScheduler?.setThumbFocus(centre);
     }
     for (let n = first; n <= last; n += 1) renderCell(n);
-  }
-
-  function revokeAll() {
-    for (const url of urls.values()) URL.revokeObjectURL(url);
-    urls.clear();
   }
 
   function stopFollow() { if (followRAF) { cancelAnimationFrame(followRAF); followRAF = 0; } }
@@ -239,9 +226,10 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
     if (destroyed) return;
     // Ease off the float model, never the scrollLeft read-back: easing off the rounded read-back stalls for good a few px short of the target.
     const diff = followTarget - followPos;
-    if (Math.abs(diff) < 0.5) { row.scrollLeft = followTarget; return; }
+    if (Math.abs(diff) < 0.5) { row.scrollLeft = followTarget; mirrorSl = row.scrollLeft; return; }
     followPos += diff * 0.2;
     row.scrollLeft = followPos;
+    mirrorSl = row.scrollLeft;
     followRAF = requestAnimationFrame(followStep);
   }
   // (Re)start the follow loop toward the current `followTarget`.
@@ -253,22 +241,43 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
     }
   }
 
+  // Measured once and reused: a parked bar still takes the scroll-event storm of a pinch,
+  // so the per-event path must stay pure arithmetic with no layout reads.
+  let geomValid = false;
+  let gPad = 8;
+  let gStride = CELL_W + 8;
+  let gRowW = 0;
+  let gMaxScroll = 0;
+  let gTrackW = 0;
+  function measureGeom() {
+    if (!cells.length || row.clientWidth === 0) return; // a hidden row would cache zeros, so keep the fallbacks and retry on the next use
+    gPad = cells[0].offsetLeft;
+    gStride = cells.length > 1 ? cells[1].offsetLeft - cells[0].offsetLeft : CELL_W + 8;
+    gRowW = row.clientWidth;
+    gMaxScroll = Math.max(0, row.scrollWidth - row.clientWidth);
+    gTrackW = stripElem.clientWidth;
+    geomValid = true;
+  }
+  function geom() { if (!geomValid) measureGeom(); }
+
   /** Strip scroll offset that centers a (possibly fractional) page in the row. */
   function targetForPage(pageFloat) {
-    const pad = cells[0] ? cells[0].offsetLeft : 8; // row left padding, where cell 0 starts
-    const stride = cells.length > 1 ? cells[1].offsetLeft - cells[0].offsetLeft : CELL_W + 8;
-    const maxScroll = Math.max(0, row.scrollWidth - row.clientWidth);
-    return Math.max(0, Math.min(maxScroll, pad + pageFloat * stride + CELL_W / 2 - row.clientWidth / 2));
+    geom();
+    return Math.max(0, Math.min(gMaxScroll, gPad + pageFloat * gStride + CELL_W / 2 - gRowW / 2));
   }
 
   // Rest and mirror share ONE target, the continuous fractional reading position, so settling can never fight the mirror.
   // (Resting on the INTEGER active cell instead walked the bar out and straight back on every same-page viewer scroll.)
   // `mirrorOffset` is the hop guard: a scroll resuming from rest carries whatever offset accrued while parked, decaying as the scroll continues.
   const REST_MS = 180;
+  // Zooms anchor at the finger, not the centre, so they shift the reading fraction by under half a page and a same-page pinch or double-tap cannot jiggle the bar.
+  const FREEZE_PAGES = 0.75;
   /** @type {ReturnType<typeof setTimeout>|null} */
   let restTimer = null;
   let resting = false; // the bar is parked (or gliding) onto the rest position
   let mirrorOffset = 0;
+  let frozenFrac = 0; // the reading position the bar last parked on
+  let mirrorSl = 0; // the last scrollLeft the mirror itself wrote
 
   /**
    * Rest the strip on the current reading position, instantly or (when `smooth`) via the ease loop.
@@ -283,9 +292,10 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
     const f = scribe.scrollPageFraction();
     const rest = Number.isFinite(f) && Math.abs(f - activePage) <= 1
       ? Math.max(0, Math.min(pageCount - 1, f)) : activePage;
+    frozenFrac = rest;
     followTarget = targetForPage(rest);
     renderVisible();
-    if (!smooth || reduceMotion()) { stopFollow(); row.scrollLeft = followTarget; onFlip(); return; }
+    if (!smooth || reduceMotion()) { stopFollow(); row.scrollLeft = followTarget; mirrorSl = row.scrollLeft; onFlip(); return; }
     startFollow();
   }
 
@@ -293,6 +303,7 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
   function restSettle() {
     restTimer = null;
     if (destroyed || userOwns() || !cells[activePage]) return;
+    if (resting) return;
     positionForActive();
   }
 
@@ -303,15 +314,23 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
     positionForActive(false);
   }
 
+  /**
+   * Glide the strip home onto the reading position's rest.
+   * A parked bar no longer unwinds on its own, so a caller that displaced the row itself must call this.
+   */
+  function settle() { positionForActive(); }
+
   // Mirror the viewer's continuous scroll: move the strip to the reader's fractional-page position.
   // A move within JUMP_GAP snaps 1:1 so the strip's velocity matches the scroll; a larger gap eases via the follow loop.
   const JUMP_GAP = (CELL_W + 8) * 3;
   function syncToViewer() {
     syncRAF = 0;
     if (destroyed || !cells.length) return;
-    // Never fight the user's own flip; the next viewer scroll re-asserts the mirror, which is also what unwinds a manual flip.
     if (userOwns()) return;
-    const target = targetForPage(scribe.scrollPageFraction());
+    const f = scribe.scrollPageFraction();
+    const frac = Number.isFinite(f) ? Math.max(0, Math.min(pageCount - 1, f)) : activePage;
+    if (resting && Math.abs(frac - frozenFrac) <= FREEZE_PAGES) { onFlip(); return; }
+    const target = targetForPage(frac);
     if (resting) {
       // Resume from the rest without a hop: carry the parked offset and let it decay below.
       resting = false;
@@ -327,6 +346,7 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
     } else {
       stopFollow();
       row.scrollLeft = target + mirrorOffset;
+      mirrorSl = row.scrollLeft;
     }
     // At the document ends the write above clamps to an unchanged scrollLeft and fires no row scroll event, so drive the wind marker explicitly.
     onFlip();
@@ -367,7 +387,6 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
   /** @param {number} [page] */
   function rebuild(page = activePage) {
     ensureScrollSync();
-    revokeAll();
     hideFeedback();
     row.textContent = '';
     cells = [];
@@ -399,6 +418,7 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
       row.appendChild(cell);
       cells.push(cell);
     }
+    geomValid = false;
     // Wait a frame so offsetLeft is real before the first center.
     // The first center jumps instantly so a restored mid-document page does not flash an unwind on load.
     requestAnimationFrame(() => { if (!destroyed) { positionForActive(false); renderVisible(); } });
@@ -413,27 +433,21 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
   function onFlip() {
     const cell = cells[activePage];
     if (pageCount < 2 || !cell) { hideFeedback(); return; }
-    const maxScroll = Math.max(0, row.scrollWidth - row.clientWidth);
-    const sl = Math.max(0, Math.min(maxScroll, row.scrollLeft));
-    // The fill measures USER-driven strip displacement only: its zero point is the continuous reading position's own mirror target.
-    // A document scroll therefore glides the marker along the track without ever widening it.
-    // (Anchoring on the INTEGER active page instead made the fill breathe on every viewer scroll: mid-page the mirror disagrees with that anchor by up to a page.)
-    // A half-cell dead zone swallows the mirror's own transients; only a deliberate flip winds the fill out.
-    // The flip's share of the remaining scroll range is renormalized to reach 0/1 exactly at the scroll extremes, so the fill's far edge marks exactly where a tap there would land the marker.
+    geom();
+    const sl = Math.max(0, Math.min(gMaxScroll, row.scrollLeft));
     const fraction = Math.max(0, Math.min(pageCount - 1, scribe.scrollPageFraction()));
     const anchorFrac = fraction / (pageCount - 1);
-    // The zero point includes the mirror's decaying resume offset: that lag is the MIRROR's motion, not the user's.
-    const zero = Math.max(0, Math.min(maxScroll, targetForPage(fraction) + mirrorOffset));
-    const DEAD = (CELL_W + 8) / 2;
+    const zero = Math.max(0, Math.min(gMaxScroll, mirrorSl));
+    const DEAD = 4;
     const d = sl - zero;
     let flipFrac = anchorFrac;
-    if (d > DEAD && zero < maxScroll) {
-      flipFrac = anchorFrac + (1 - anchorFrac) * ((d - DEAD) / Math.max(1, maxScroll - zero - DEAD));
+    if (d > DEAD && zero < gMaxScroll) {
+      flipFrac = anchorFrac + (1 - anchorFrac) * ((d - DEAD) / Math.max(1, gMaxScroll - zero - DEAD));
     } else if (d < -DEAD && zero > 0) {
       flipFrac = anchorFrac - anchorFrac * ((-d - DEAD) / Math.max(1, zero - DEAD));
     }
     flipFrac = Math.max(0, Math.min(1, flipFrac));
-    const trackW = stripElem.clientWidth;
+    const trackW = gTrackW;
     let left = Math.min(anchorFrac, flipFrac) * trackW;
     let width = Math.abs(flipFrac - anchorFrac) * trackW;
     if (width < MARKER_PX) {
@@ -450,6 +464,11 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
     onFlip();
     renderVisible();
   });
+  // A resize changes the centering math and the wind track width, so a parked bar's cached geometry and marker both go stale.
+  const geomObserver = typeof ResizeObserver !== 'undefined'
+    ? new ResizeObserver(() => { geomValid = false; onFlip(); }) : null;
+  if (geomObserver) geomObserver.observe(row);
+
   // A touch is the user taking over to flip: stop the follow so it does not fight them, and hold the mirror off until the touch and any fling it launches settle.
   // Tracked on the strip, not the row: ups and cancels still arrive here after a pull transfers pointer capture to the strip, so a hold can never leak.
   stripElem.addEventListener('pointerdown', (e) => { holdIds.add(e.pointerId); stopFollow(); }, { passive: true });
@@ -462,9 +481,13 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
   function setVisible(v) {
     stripElem.classList.toggle('on', v);
     // Wait one frame so the just-shown strip has real widths: a fill computed at the hidden strip's zero track width parks at 0.
-    if (v) requestAnimationFrame(() => { if (!destroyed) { renderVisible(); onFlip(); } });
-    // A hidden strip is idle: drop its focus hint so it stops skewing the background render order.
-    else scribe.doc?.images?.pdfScheduler?.setThumbFocus(null);
+    if (v) {
+      geomValid = false;
+      requestAnimationFrame(() => { if (!destroyed) { renderVisible(); onFlip(); } });
+    } else {
+      // A hidden strip is idle: drop its focus hint so it stops skewing the background render order.
+      scribe.doc?.images?.pdfScheduler?.setThumbFocus(null);
+    }
   }
 
   function destroy() {
@@ -473,11 +496,11 @@ export function createCompanionStrip(scribe, { onExpand } = {}) {
     if (restTimer) clearTimeout(restTimer);
     if (syncRAF) cancelAnimationFrame(syncRAF);
     if (scrollHost) scrollHost.removeEventListener('scroll', onViewerScroll);
-    revokeAll();
+    if (geomObserver) geomObserver.disconnect();
     stripElem.remove();
   }
 
   return {
-    stripElem, setActive, park, rebuild, setVisible, destroy,
+    stripElem, setActive, park, settle, rebuild, setVisible, destroy,
   };
 }

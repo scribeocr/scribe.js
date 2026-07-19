@@ -20,6 +20,9 @@ import { ca } from '../canvasAdapter.js';
 // This cap is an arbitrarily high number, and hitting indicates a logic error.
 const MAX_SKIPPED_RETRY = 32;
 
+// Above the largest size any surface displays a thumbnail at, so CSS only ever downscales and cells stay crisp on high-DPI screens.
+const THUMBNAIL_W = 300;
+
 /** @type {?boolean} */
 let _sabCapability = null;
 /**
@@ -162,6 +165,12 @@ export class ImageStore {
    * @type {Array<Promise<?Blob> | undefined>}
    */
   thumbnails = [];
+
+  /**
+   * Keyed by the Blob rather than the page index because reordering pages permutes `thumbnails`, leaving an index-keyed URL pointing at another page's image.
+   * @type {Map<Blob, string>}
+   */
+  thumbnailUrls = new Map();
 
   /**
    * Estimated cost of re-rendering each display slot (ms), from its last render with one-time work excluded.
@@ -601,6 +610,23 @@ export class ImageStore {
   };
 
   /**
+   * A single object URL for page `n`'s thumbnail, created once and reused by every display surface.
+   * @param {number} n
+   * @returns {Promise<?string>} The URL, or null if the page cannot be rendered.
+   */
+  thumbnailUrl = async (n) => {
+    const blob = await this.renderThumbnail(n, THUMBNAIL_W);
+    if (!blob) return null;
+    // Two `<img>` elements pointing at one URL share a single decode.
+    let url = this.thumbnailUrls.get(blob);
+    if (!url) {
+      url = URL.createObjectURL(blob);
+      this.thumbnailUrls.set(blob, url);
+    }
+    return url;
+  };
+
+  /**
    * @param {number} n
    * @param {ImagePropertiesRequest} [props]
    * @param {boolean} [forViewer=false] - Whether this render serves the on-screen viewer.
@@ -643,6 +669,8 @@ export class ImageStore {
   };
 
   clear = () => {
+    for (const url of this.thumbnailUrls.values()) URL.revokeObjectURL(url);
+    this.thumbnailUrls.clear();
     this.nativeSrc = [];
     this.native = [];
     this.binary = [];

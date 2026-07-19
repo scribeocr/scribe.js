@@ -72,27 +72,21 @@ const _initBitmapScheduler = async (numWorkers = 3) => {
 export class ViewerImageCache {
   /**
    * Number of pages ahead and behind the current page to pre-render.
-   * iOS gets the narrow profile here and in the two knobs below.
-   * A zoomed-in page costs ~34 MB of bitmap plus the same in canvas, and the desktop counts sum past the budget iOS kills the tab at.
    */
-  static cacheRenderPages = IOS_WEBKIT ? 1 : 3;
+  static cacheRenderPages = IOS_WEBKIT ? 2 : 3;
 
   /**
    * Number of pages ahead and behind the current page to keep the full-resolution decoded bitmap for.
    * Also the floor within which a display canvas is never evicted.
    */
-  static cacheDeletePages = IOS_WEBKIT ? 2 : 5;
+  static cacheDeletePages = IOS_WEBKIT ? 4 : 5;
 
   /**
    * Total-bytes cap on retained display canvases, kept far beyond the bitmap window so a revisit reuses the drawn pixels instead of re-decoding (see `_cleanBitmapCache2`).
    * A byte cap self-adapts to zoom where a page count would not: canvas size scales with on-screen area x dpr^2, so this ceiling holds many pages zoomed out and few zoomed in.
    * The one knob for the memory/coverage trade-off.
-   * On iOS every retained canvas also carries a compositing surface of the same size, so the real footprint is ~2x this cap.
    */
-  static canvasCacheBytes = (IOS_WEBKIT ? 32 : 256) * 1024 * 1024;
-
-  /** Preview width in px; low enough to show shapes and colors, not readable text. */
-  static previewWidth = 300;
+  static canvasCacheBytes = (IOS_WEBKIT ? 128 : 256) * 1024 * 1024;
 
   /**
    * Pages ahead whose previews are pre-warmed on each fast-scroll page change.
@@ -152,12 +146,6 @@ export class ViewerImageCache {
      */
     this._bitmapPages = new Set();
     /**
-     * Per-page object URL of the low-res preview drawn as the page container's background, so a page with no full raster shows shapes instead of blank.
-     * Revoked in `clear()`.
-     * @type {Map<number, string>}
-     */
-    this._previewUrls = new Map();
-    /**
      * Viewer-owned source rasters for the PDF display path, rendered at on-screen resolution rather than full resolution.
      * Kept out of `doc.images.native[]` so `getNative` consumers (OCR, export, coordinates) still get a full-resolution render.
      * @type {Array<?Promise<ImageWrapper|typeof SKIPPED>>}
@@ -185,6 +173,12 @@ export class ViewerImageCache {
      * @type {Promise<void>}
      */
     this._iosRenderChain = Promise.resolve();
+    /**
+     * Focus page of the newest iOS render request, anchoring the chain's stale-page check.
+     * `state.cp.n` cannot anchor it: `displayPage` updates that only after issuing the request, so a far jump would drop its own pages and leave the view blank.
+     * @type {number}
+     */
+    this._iosRenderFocus = 0;
   }
 
   _viewer() {
@@ -444,7 +438,10 @@ export class ViewerImageCache {
       height: `${box.cssH / shrink}px`,
       pointerEvents: 'none',
     }, shrink === 1 ? {} : { transformOrigin: '0 0', transform: `scale(${shrink})` });
-    const ctx = /** @type {CanvasRenderingContext2D} */ (canvas.getContext('2d'));
+    // iOS WebKit backs an accelerated 2D canvas with an IOSurface that is reclaimed asynchronously.
+    // Page turnover allocates faster than that reclaim runs, so churn accumulates toward the 2GB process kill.
+    // willReadFrequently forces a malloc backing, which frees synchronously and ends the race.
+    const ctx = /** @type {CanvasRenderingContext2D} */ (canvas.getContext('2d', IOS_WEBKIT ? { willReadFrequently: true } : undefined));
     ctx.imageSmoothingQuality = 'high';
     ctx.save();
     ctx.translate(canvas.width / 2, canvas.height / 2);
@@ -645,8 +642,6 @@ export class ViewerImageCache {
     this._srcCompressPromises.length = 0;
     this._capUpgrades.length = 0;
     this._iosRenderChain = Promise.resolve();
-    for (const url of this._previewUrls.values()) URL.revokeObjectURL(url);
-    this._previewUrls.clear();
   }
 
   /**
@@ -658,13 +653,9 @@ export class ViewerImageCache {
     // Ebook mode shows no page raster, so no preview either.
     if (viewer.state.displayMode === 'ebook') return;
     if (n < 0 || n >= viewer.doc.images.pageCount) return;
-    let url = this._previewUrls.get(n);
-    if (!url) {
-      const blob = await viewer.doc.images.renderThumbnail(n, ViewerImageCache.previewWidth, 0.6);
-      if (!blob) return;
-      url = this._previewUrls.get(n) || URL.createObjectURL(blob); // a concurrent call may have won while awaiting
-      this._previewUrls.set(n, url);
-    }
+    // The page's shared thumbnail URL, one decode also used by the page strip, page grid, and pull-up morph.
+    const url = await viewer.doc.images.thumbnailUrl(n);
+    if (!url) return;
     const pc = viewer._ensurePageContainer(n);
     const style = /** @type {?HTMLElement} */ (pc)?.style;
     if (!style || style.backgroundImage.indexOf(url) !== -1) return; // already applied (skip redundant write)
@@ -725,10 +716,11 @@ export class ViewerImageCache {
         if (curr - i >= 0) pages.push(curr - i);
       }
       if (deepZoom) this.ensurePreviewWindow(curr);
+      this._iosRenderFocus = curr;
       this._iosRenderChain = this._iosRenderChain.then(async () => {
         for (const n of pages) {
-          // A page the view has moved away from while this call sat queued would render only to be evicted by the next sweep.
-          if (Math.abs(n - this._viewer().state.cp.n) > ViewerImageCache.cacheDeletePages) continue;
+          // A page enqueued for an earlier focus the view has since moved away from would render only to be evicted by the next sweep.
+          if (Math.abs(n - this._iosRenderFocus) > ViewerImageCache.cacheDeletePages) continue;
           await this.addPageCanvas(n);
           try { await this.pageCanvases[n]; } catch { /* per-slot handlers own render failures */ }
         }

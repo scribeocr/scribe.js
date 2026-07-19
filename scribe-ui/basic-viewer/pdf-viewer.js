@@ -18,7 +18,6 @@ import { createCommentsPanel } from '../js/controls/commentsPanel.js';
 import {
   createHighlightTool, createNoteTool, createDropZone, openDocumentFromFile, createRedactTool, NOTE_TOOL_SVG,
 } from '../js/controls/tools.js';
-import { redactWords } from '../js/viewerRedactions.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
 import { mergePdfs } from '../../js/export/pdf/mergePdfs.js';
 import { concatOutlines, outlineSplitSegments } from '../../js/objects/outlineObjects.js';
@@ -122,7 +121,7 @@ class ScribePDFViewer {
    *   Defaults to the `(pointer: coarse)` media query; pass explicitly to override.
    * @param {boolean} [options.edit=true] - Enable editing: page ops (reorder/delete/rotate/insert), text recognition,
    *   redaction, the Export/Combine/Split app-menu actions, and the dark-mode toggle. Pass `false` for a lean read-only viewer.
-   * @param {boolean} [options.redact=edit] - Enable redaction marks (context-menu "Redact" and the find bar's "Redact all").
+   * @param {boolean} [options.redact=edit] - Enable redaction marks, reached through the context menu's "Redact".
    *   Defaults to `edit`. Pass `false` to keep editing on but redaction off. Ignored when `edit` is false.
    * @param {ScribeViewer} [options.scribe] - Attach to an existing `ScribeViewer` instance instead
    *   of creating a new one. Use to share state with an already-instantiated viewer.
@@ -418,7 +417,7 @@ class ScribePDFViewer {
       }
       if (DEBUG_MENU) {
         import('../js/controls/debugMenu.js')
-          .then(({ installDebugMenu }) => installDebugMenu(appMenu, this.scribe))
+          .then(({ installDebugMenu }) => installDebugMenu(appMenu, this.scribe, (files) => this.openFiles(files)))
           .catch((err) => console.error('Failed to load the debug menu:', err));
       }
       // Style the otherwise-empty start zone as a left-aligned flex row, with an 8px inset mirroring the end zone's, so the menu button sits at the left edge.
@@ -802,12 +801,9 @@ class ScribePDFViewer {
           redactCueShown = true;
           this._showToast('Marked for redaction — the content is removed when you export.');
         };
-        // No toolbar button: redaction is reached through the context menu and the find bar's "Redact all".
-        // Building the tool sets `scribe._redactEnabled`, the context-menu gate, and installs region box-draw.
         this._redactTool = createRedactTool(this.scribe, this.pdfViewerElem, { onMark });
         this.scribe._onRedactMark = onMark;
         this._teardownCallbacks.push(this._redactTool.installBehaviors());
-        this._addRedactAllToSearchBar();
       }
     }
   }
@@ -1725,9 +1721,8 @@ class ScribePDFViewer {
     if (af && af.isDefaultFit && this.scribe.scrollContainer && af.zoom > 0
       && Math.abs(this.scribe.zoomLevel - af.zoom) / af.zoom < 0.05) {
       const sc = this.scribe.scrollContainer;
-      // Mirrors _installFit's default branches (height fit with its 100+50 margins, width when it overflows).
       const hZoom = (sc.clientHeight - 150) / af.imgDims.height;
-      const widthMode = hZoom * af.imgDims.width > sc.clientWidth;
+      const widthMode = this._phoneChrome || hZoom * af.imgDims.width > sc.clientWidth;
       if (widthMode || af.widthMode) {
         const target = widthMode ? sc.clientWidth / af.imgDims.width : hZoom;
         if (target > 0 && Math.abs(target - this.scribe.zoomLevel) / this.scribe.zoomLevel > 0.01) {
@@ -1875,17 +1870,17 @@ class ScribePDFViewer {
     roomRevert.addEventListener('click', () => {
       const doc = this.scribe.doc;
       if (!this._roomEditing || !doc || this._roomEditBaseline < 0) return;
-      // Captured before the unwind so the slide can animate from the pre-revert grid.
+      const baseline = this._roomEditBaseline;
+      // Leave Edit before the unwind, so the badges lose their selected colour and disappear in one style recalc.
+      this._setRoomEditing(false);
+      // Captured after leaving Edit, so the slide starts in the same layout the rebuilt grid lands in.
       const playSlide = this._thumbnailPanel ? this._thumbnailPanel.beginStructureSlide() : null;
       // Model-level undo for all but the last step, then one viewer-level undo so the view rebuilds and the refresh callbacks fire once.
-      while (doc.history.undoStack.length > this._roomEditBaseline + 1) {
+      while (doc.history.undoStack.length > baseline + 1) {
         if (!doc.undo()) break;
       }
-      if (doc.history.undoStack.length > this._roomEditBaseline) this.scribe.undo();
+      if (doc.history.undoStack.length > baseline) this.scribe.undo();
       if (playSlide) playSlide();
-      // The selection marked pages by index, and the unwind made those indices stale.
-      if (this._thumbnailPanel) this._thumbnailPanel.clearSelection();
-      this._setRoomEditing(false);
     });
     this._roomRevertBtn = roomRevert;
     const roomDone = document.createElement('button');
@@ -1955,7 +1950,14 @@ class ScribePDFViewer {
       const commit = down > Math.min(140, p.travel * 0.25);
       if (p.morph) {
         const morph = this._pagesMorph;
-        if (morph) morph.settle(!commit, (stillOpen) => { if (!stillOpen) this._roomOpen = false; });
+        // The close may have flipped the covered strip to the browsed rows, and a parked strip does not glide back on its own.
+        if (morph) {
+          morph.settle(!commit, (stillOpen) => {
+            if (stillOpen) return;
+            this._roomOpen = false;
+            if (this._companionStrip) this._companionStrip.settle();
+          });
+        }
         return;
       }
       // Plain-slide release: flush the dragged position so the snap animates from the finger's release point.
@@ -2329,6 +2331,12 @@ class ScribePDFViewer {
    * @param {boolean} [instant=false] - Skip the slide-out, for mode flips mid-resize.
    */
   _closePagesRoom(instant = false) {
+    if (!instant && this._pagesMorph && this._pagesMorph.isActive()) {
+      this._setRoomEditing(false);
+      this._roomOpen = false;
+      this._pagesMorph.settle(false);
+      return;
+    }
     // Abort before the open-guard below: a close during a live pull arrives with `_roomOpen` still false and would otherwise leave the morph standing.
     if (this._pagesMorph) this._pagesMorph.abort();
     this._setRoomEditing(false);
@@ -2339,7 +2347,7 @@ class ScribePDFViewer {
     if (!instant && this._pagesMorph
       && !(window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches)
       && this._pagesMorph.beginClose()) {
-      this._pagesMorph.settle(false);
+      this._pagesMorph.settle(false, () => { if (this._companionStrip) this._companionStrip.settle(); });
       return;
     }
     if (instant) {
@@ -2474,7 +2482,7 @@ class ScribePDFViewer {
    * Install a `setInitialPositionZoom` implementation on `ScribeViewer` based on the requested fit mode.
    * @param {FitMode} fitMode
    * @param {boolean} [isDefaultFit=false] - `fitMode` is the constructor default, not a caller choice.
-   *   Only then may the narrow-viewer width-fit override apply.
+   *   Only then may the width-fit override apply.
    */
   _installFit(fitMode, isDefaultFit = false) {
     this.scribe.setInitialPositionZoom = (imgDims) => {
@@ -2483,10 +2491,10 @@ class ScribePDFViewer {
       const stageW = sc.clientWidth;
       const stageH = sc.clientHeight;
 
-      // When the default height-fit lays the page out wider than the viewport, every text line needs a horizontal pan, so the un-chosen default becomes width-fit.
-      // The criterion is the overflow itself, not a viewport-width proxy.
+      // The phone takes width-fit either way.
       const heightFitOverflows = ((stageH - 150) / imgDims.height) * imgDims.width > stageW;
-      const effectiveMode = (isDefaultFit && heightFitOverflows) ? 'width' : fitMode;
+      const widthFitDefault = isDefaultFit && (this._phoneChrome || heightFitOverflows);
+      const effectiveMode = widthFitDefault ? 'width' : fitMode;
 
       let zoom;
       // `y` is the desired gap, in screen px, from the top of the viewport to the top of the first page.
@@ -2518,7 +2526,7 @@ class ScribePDFViewer {
       sc.scrollLeft = Math.max(0, (this.scribe._contentWidth * zoom - stageW) / 2);
 
       this._autoFit = {
-        imgDims, zoom, isDefaultFit, widthMode: isDefaultFit && heightFitOverflows,
+        imgDims, zoom, isDefaultFit, widthMode: widthFitDefault,
       };
     };
   }
@@ -2694,39 +2702,6 @@ class ScribePDFViewer {
     this._updateRecognizeButton();
     this._updateCombineButton();
     this._updateSplitButton();
-  }
-
-  /** Add a "Redact all" action to the find bar. */
-  _addRedactAllToSearchBar() {
-    const bar = this._searchBar;
-    if (!bar || !bar.findGroupElem) return;
-    const btn = this._makeTextBtn('Redact all', 'Mark every match for redaction');
-    btn.addEventListener('click', () => {
-      const matches = this.scribe._searchState?.matchList || [];
-      if (matches.length === 0 || !this.doc) {
-        this._showToast('No matches to redact.');
-        return;
-      }
-      /** @type {Map<number, Map<string, OcrWord>>} */
-      const wordsByPage = new Map();
-      let groups = 0;
-      for (const m of matches) {
-        let pageWords = wordsByPage.get(m.pageN);
-        if (!pageWords) {
-          pageWords = new Map();
-          const page = this.doc.ocr.active[m.pageN];
-          if (page) for (const line of page.lines) for (const w of line.words) pageWords.set(w.id, w);
-          wordsByPage.set(m.pageN, pageWords);
-        }
-        const words = m.wordIds.map((id) => pageWords.get(id)).filter((w) => !!w);
-        if (words.length > 0 && redactWords(this.scribe, words) > 0) groups++;
-      }
-      if (groups > 0) this._showToast(`${groups} match${groups === 1 ? '' : 'es'} marked for redaction.`);
-      // `redactWords` skips words existing marks cover, so a repeat click adds nothing.
-      else this._showToast('All matches are already marked for redaction.');
-    });
-    // Before the close button, keeping dismissal at the bar's end.
-    bar.findGroupElem.insertBefore(btn, bar.findGroupElem.lastElementChild);
   }
 
   /**
