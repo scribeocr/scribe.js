@@ -19,14 +19,41 @@ export function OcrPage(n, dims) {
   this.pars = [];
   /** @type {Array<OcrLine>} */
   this.lines = [];
+  /**
+   * Horizontal separator rules drawn on the page (thin horizontal vector rectangles), in the same top-left coordinate space as line bboxes.
+   * Populated only at PDF import and consumed during that same import, so OCR pages have none and a cloned page does not carry them.
+   * @type {Array<{y: number, left: number, right: number}>}
+   */
+  this.rules = [];
+  /**
+   * Detected data-table regions, one bounding box per table rather than per column, in the same top-left coordinate space as line bboxes.
+   * Populated only at PDF import and consumed during that same import, so OCR pages have none and a cloned page does not carry them.
+   * Exempts a table's cells from the bare-folio and line-number-column furniture rules, which would otherwise drop them from exports.
+   * @type {Array<{left: number, top: number, right: number, bottom: number}>}
+   */
+  this.tableBoxes = [];
   /** @type {TextSource} */
   this.textSource = null;
 }
 
 /**
- * Paragraph type indicating the semantic role of the paragraph.
- * @typedef {'title' | 'body' | 'footnote'} ParType
+ * Semantic role of a paragraph.
+ * 'pagenum' is reserved for a real folio: a lone digit or roman-numeral token in the margin, e.g. "5", "- 6 -", "ii".
+ * 'header' and 'footer' are running furniture such as a running head, a court/docket stamp, or a Bates stamp, split by which half of the page they sit in.
+ * 'blockquote' is a quotation set off by indentation from both margins.
+ * 'linenum' is the left-margin column of integers, one per text line, found in legal depositions and pleadings.
+ * Use 'linenum' only when the line number occupies its own line, since one fused into a body line is marked per-word with OcrWord.lineNum instead.
+ * @typedef {'title' | 'body' | 'footnote' | 'endnote' | 'pagenum' | 'blockquote' | 'header' | 'footer' | 'linenum'} ParType
  */
+
+/**
+ * Whether a paragraph is page furniture, which the reflowed-text exports (DOCX, TXT, HTML, Markdown) drop and the structural formats (hOCR, ALTO) and scribe-JSON save retain.
+ * @param {?OcrPar} par
+ * @returns {boolean}
+ */
+export function parIsFurniture(par) {
+  return !!par && (par.type === 'pagenum' || par.type === 'header' || par.type === 'footer' || par.type === 'linenum');
+}
 
 export function ParDebugInfo() {
   /** @type {?string} */
@@ -162,6 +189,11 @@ export function OcrWord(line, id, text, bbox, poly) {
   this.compTruth = false;
   /** @type {boolean} */
   this.matchTruth = false;
+  /**
+   * @type {boolean} - If true, this word is a transcript line number fused into the start of a body line, dropped by the reflowed-text exports and retained by the structural formats.
+   * A line number occupying its own line is marked with par.type 'linenum' instead.
+   */
+  this.lineNum = false;
   /** @type {string} */
   this.id = id;
   /** @type {OcrLine} */
@@ -1175,6 +1207,7 @@ const ocr = {
   escapeXml,
   removeCircularRefsOcr,
   addCircularRefsOcr,
+  parIsFurniture,
 };
 
 export default ocr;

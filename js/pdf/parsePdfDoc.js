@@ -10,6 +10,7 @@ import {
 } from './pdfPrimitives.js';
 import { tokenizeContentStream } from './contentStream.js';
 import { ObjectCache } from './objectCache.js';
+
 import { parsePageFonts } from './fonts/parsePdfFonts.js';
 import { parsePagePaths } from './parsePdfPaths.js';
 import { detectTableRegions } from './detectPdfTables.js';
@@ -18,6 +19,9 @@ import {
 } from './parsePdfAnnots.js';
 import { cmykToRgb } from './pdfColorFunctions.js';
 import { assignParagraphs } from '../utils/reflowPars.js';
+import { analyzeLayout } from '../import/analyzeLayout.js';
+import { buildStructElemMap, stampStructIds, docAuthoredByWord } from './structTree.js';
+import { buildOutlineHeadingIndex, stampOutlineHeadings } from './outlineIndex.js';
 
 /** @typedef {import('./parsePdfUtils.js').PDFToken} PDFToken */
 /** @typedef {import('../objects/ocrObjects.js').OcrPage} OcrPage */
@@ -27,6 +31,9 @@ import { LayoutDataTable, LayoutDataColumn, LayoutDataTablePage } from '../objec
 // This is disabled for vector-graphics-heavy pages for performance reasons.
 // This does not impact path rendering--it just disables table detection/underline detection.
 const GRAPHICS_HEAVY_STREAM_BYTES = 2_000_000;
+
+// Inline and illustrative marked-content tags (/Span, /Figure, /Artifact) are excluded: they do not mark paragraph boundaries.
+const STRUCTURAL_MC_TAGS = new Set(['P', 'H', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LBody', 'Lbl', 'LI', 'Title', 'Caption', 'BlockQuote', 'Note', 'TOCI', 'Reference', 'Quote', 'Code']);
 
 /** Min height, in pt, for a vector path or image strip to count as glyph-like. */
 const PATH_TEXT_H_MIN = 3;
@@ -136,6 +143,15 @@ function isSymbolChar(text = '') {
   return text.length > 0 && SYMBOL_CHAR_RE.test(text);
 }
 
+// Fonts used essentially only for mathematics: TeX Computer Modern and Latin Modern math faces, the AMS, Euler, and formal-script alphabets, MathTime, MathJax, and OpenType "...Math" families.
+// Text Computer Modern faces (CMR, CMBX, CMTI) are deliberately not matched: they set ordinary TeX prose, which must not read as math.
+// baseName is already subset-prefix-stripped upstream, so the anchored test works.
+const MATH_FONT_RE = /^(?:CM(?:MI|SY|EX)|lm(?:mi|sy|ex)|MS[AB]M|EUF[MB]|EUS[MB]|RSFS|MT(?:MI|SY|EX))|MathJax|[A-Za-z]*Math\b/i;
+
+// Unicode near-exclusive to mathematics: the Mathematical Operators, Miscellaneous Mathematical Symbols-A/B, and Supplemental Operators blocks, the math alphanumerics, and math letterlike symbols.
+// Prose-common symbols (plus-minus, degree, section, dashes, primes) and Greek are deliberately excluded, since both are routine in ordinary text.
+const MATH_CHAR_RE = /[ℂℏℑℕ℘ℚℜℝℤℵ∀-⋿⟀-⟯⦀-⧿⨀-⫿\u{1D400}-\u{1D7FF}]/u;
+
 const BULLET_CHAR_RE = /[·•‣⁃∙■-◿・]/;
 
 function isBulletChar(text = '') {
@@ -158,6 +174,10 @@ function findDoOperators(tokens, formXObjects, initialCtm, initialTextState) {
   let tl = initialTextState ? initialTextState.tl : 0;
   let tz = initialTextState ? initialTextState.tz : 100;
   let trise = initialTextState ? initialTextState.trise : 0;
+  // Track /Artifact marked-content spans so a Form XObject invoked inside one inherits the furniture flag (matching executeTextOperators).
+  /** @type {Array<boolean>} */
+  const mcStack = [];
+  let artifactDepth = (initialTextState && initialTextState.artifact) ? 1 : 0;
   /** @type {Array<{ ctm: number[], tc: number, tw: number, tl: number, tz: number, trise: number }>} */
   const gsStack = [];
 
@@ -167,6 +187,19 @@ function findDoOperators(tokens, formXObjects, initialCtm, initialTextState) {
       continue;
     }
     switch (tok.value) {
+      case 'BDC':
+      case 'BMC': {
+        const tagTok = operandStack[0];
+        const isArtifact = !!(tagTok && tagTok.type === 'name' && tagTok.value === 'Artifact');
+        mcStack.push(isArtifact);
+        if (isArtifact) artifactDepth++;
+        break;
+      }
+      case 'EMC': {
+        const wasArtifact = mcStack.pop();
+        if (wasArtifact && artifactDepth > 0) artifactDepth--;
+        break;
+      }
       case 'q':
         ctmStack.push(ctm.slice());
         gsStack.push({
@@ -213,7 +246,7 @@ function findDoOperators(tokens, formXObjects, initialCtm, initialTextState) {
               name,
               ctm: ctm.slice(),
               textState: {
-                tc, tw, tl, tz, trise,
+                tc, tw, tl, tz, trise, artifact: artifactDepth > 0,
               },
             });
           }
@@ -537,6 +570,8 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
   let bodyReadableChars = 0;
   const bodyTop = pageHeight * 0.1;
   const bodyBottom = pageHeight * 0.9;
+  let mathFontGlyphs = 0;
+  let mathCharGlyphs = 0;
   for (const ch of chars) {
     if (brokenToUnicodeFont(ch._font)) {
       brokenRun++;
@@ -547,10 +582,18 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
     if (ch.invisible) continue;
     const cp = ch.text.codePointAt(0);
     if (cp === undefined) continue;
+    if (MATH_FONT_RE.test(ch.fontInfo.baseName || '')) mathFontGlyphs++;
+    if (MATH_CHAR_RE.test(ch.text)) mathCharGlyphs++;
     if (!((cp >= 33 && cp <= 127) || (cp >= 161 && !(cp >= 0xE000 && cp <= 0xF8FF)))) continue;
     printableVisNonBroken++;
     if (ch.y >= bodyTop && ch.y <= bodyBottom) bodyReadableChars++;
   }
+
+  // Whether this page contains mathematics, the gate for the built-up-math grouping rules.
+  // Precision matters more than recall: a false positive relaxes line grouping on a prose page, which merges headings, URLs, and table cells into neighboring lines.
+  // The Unicode arm requires an absolute count and a density floor so a few stray math characters on a long prose page cannot trip it.
+  const pageHasMath = mathFontGlyphs >= 8
+    || (mathCharGlyphs >= 6 && mathCharGlyphs >= printableVisNonBroken * 0.0008);
 
   // Parse the page's vector paths, reusing the already-computed tokens so parsePagePaths
   // doesn't re-fetch and re-tokenize the page content stream.
@@ -733,9 +776,12 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
   const underlineRects = [];
   for (const path of paths) {
     if (!path.fill && !path.stroke) continue;
+    const lineColor = path.stroke ? path.strokeColor : path.fillColor;
     let minX = Infinity; let maxX = -Infinity;
     let minY = Infinity; let maxY = -Infinity;
+    let hasCurve = false;
     for (const cmd of path.commands) {
+      if (cmd.type === 'C') hasCurve = true;
       if (cmd.type === 'M' || cmd.type === 'L') {
         if (cmd.x < minX) minX = cmd.x;
         if (cmd.x > maxX) maxX = cmd.x;
@@ -746,23 +792,85 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
     const w = maxX - minX;
     const h = maxY - minY;
     if (h < 2 && w > 10) {
-      const lineColor = path.stroke ? path.strokeColor : path.fillColor;
       underlineRects.push({
         left: (minX - boxOriginX) * scale,
         right: (maxX - boxOriginX) * scale,
         y: (visualHeightPts - (maxY - boxOriginY)) * scale,
         color: lineColor,
       });
+      continue;
+    }
+    // A drawn separator can pack several thin bars into one filled path (a decorative double rule) whose combined bbox is too tall to pass the test above.
+    // Mine the subpaths for thin, wide bars, but only when the path is curve-free and every subpath is an axis-aligned rectangle.
+    // A glyph, chart, or logo has curves or non-orthogonal edges, so this never pulls a thin sliver out of one.
+    if (hasCurve) continue;
+    /** @type {Array<Array<[number, number]>>} */
+    const subpaths = [];
+    for (const cmd of path.commands) {
+      if (cmd.type === 'M') subpaths.push([[cmd.x, cmd.y]]);
+      else if (cmd.type === 'L' && subpaths.length) subpaths[subpaths.length - 1].push([cmd.x, cmd.y]);
+    }
+    for (const pts of subpaths) {
+      if (pts.length < 4 || pts.length > 5) continue;
+      let rect = true;
+      let sMinX = Infinity; let sMaxX = -Infinity; let sMinY = Infinity; let sMaxY = -Infinity;
+      for (let si = 0; si < pts.length; si++) {
+        const [x1, y1] = pts[si];
+        const [x2, y2] = pts[(si + 1) % pts.length];
+        if (Math.abs(x2 - x1) > 0.01 && Math.abs(y2 - y1) > 0.01) { rect = false; break; }
+        if (x1 < sMinX) sMinX = x1;
+        if (x1 > sMaxX) sMaxX = x1;
+        if (y1 < sMinY) sMinY = y1;
+        if (y1 > sMaxY) sMaxY = y1;
+      }
+      if (!rect) continue;
+      if (sMaxY - sMinY < 2 && sMaxX - sMinX > 10) {
+        underlineRects.push({
+          left: (sMinX - boxOriginX) * scale,
+          right: (sMaxX - boxOriginX) * scale,
+          y: (visualHeightPts - (sMaxY - boxOriginY)) * scale,
+          color: lineColor,
+        });
+      }
     }
   }
 
   const {
     pageObj, langSet, fontSet, dataTablePage,
-  } = groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects, paths, scale, visualHeightPts, boxOriginX, boxOriginY);
+  } = groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects, paths, scale, visualHeightPts, boxOriginX, boxOriginY, pageHasMath);
+
+  // Carry the page's thin horizontal rules (same scaled top-left space as line bboxes) onto the page so analyzeLayout can split paragraphs at a drawn separator rule.
+  // Rects consumed as text underlines are excluded: on a page where every line carries a hyperlink underline, treating them as separators would shatter each paragraph into single lines.
+  pageObj.rules = underlineRects.filter((r) => !r.isUnderline).map((r) => ({ y: r.y, left: r.left, right: r.right }));
 
   const {
-    highlights: highlightsRaw, freeTexts: freeTextsRaw, textAnnots: textAnnotsRaw, redacts: redactsRaw, passthroughRefs,
+    highlights: highlightsRaw, freeTexts: freeTextsRaw, textAnnots: textAnnotsRaw, redacts: redactsRaw, links: linksRaw, passthroughRefs,
   } = extractPdfAnnotations(objCache, objText);
+
+  // Surface each /Link annotation's URL onto the words its rect covers, so text consumers (e.g. the citation-leading exemption in analyzeLayout) can see the hyperlink.
+  // The source /Link still passes through to export unchanged via passthroughRefs.
+  if (linksRaw.length > 0) {
+    const mapPoint = (x, y) => {
+      const cx = initialCtm[0] * x + initialCtm[2] * y + initialCtm[4];
+      const cy = initialCtm[1] * x + initialCtm[3] * y + initialCtm[5];
+      return { x: cx * scale, y: (visualHeightPts - cy) * scale };
+    };
+    const linkBoxes = linksRaw.map((l) => {
+      const p1 = mapPoint(l.rect[0], l.rect[1]);
+      const p2 = mapPoint(l.rect[2], l.rect[3]);
+      return {
+        left: Math.min(p1.x, p2.x), right: Math.max(p1.x, p2.x), top: Math.min(p1.y, p2.y), bottom: Math.max(p1.y, p2.y), uri: l.uri,
+      };
+    });
+    for (const line of pageObj.lines) {
+      for (const word of line.words) {
+        const cx = (word.bbox.left + word.bbox.right) / 2;
+        const cy = (word.bbox.top + word.bbox.bottom) / 2;
+        const hit = linkBoxes.find((b) => cx >= b.left && cx <= b.right && cy >= b.top && cy <= b.bottom);
+        if (hit) word.style.link = hit.uri;
+      }
+    }
+  }
   /** @type {Annotation[]} */
   const annotations = highlightsRaw.map((raw) => pdfHighlightToAnnotation(raw, {
     scale,
@@ -786,6 +894,71 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
   return {
     pageObj, langSet, fontSet, dataTablePage, pageStats, annotations, annotationPassthroughRefs: passthroughRefs,
   };
+}
+
+/**
+ * Apply the document-level paragraph/layout pass (struct-element and outline stamping, then cross-page layout analysis) to a set of already-parsed pages, in place.
+ * This is the single paragraph detector for native-text PDFs: the direct extraction path and the production worker path both call it, so both yield identical paragraphs.
+ * Best-effort: structural inputs are opportunistic, and pages with no lines are skipped.
+ *
+ * @param {ObjectCache} objCache
+ * @param {Uint8Array} pdfBytes
+ * @param {Array<{objNum: number, objText: string}>} pages - page objects (index = page index).
+ * @param {Array<{pageObj: OcrPage}|null>} results - parsed pages (index = page index), mutated in place.
+ * @param {"image"|"text"|"ocr"} [pdfType] - document text-quality class, used to disable the footnote subsystem on scanned line-numbered transcripts.
+ *   Computed by the caller because some callers' results lack the char scores needed to derive it here.
+ */
+export function applyDocParagraphLayout(objCache, pdfBytes, pages, results, pdfType = 'text') {
+  // Tagged-PDF structural signals: stamp each word with its owning structure element so analyzeLayout can group lines by paragraph element where the tags are trustworthy.
+  try {
+    const elemMap = buildStructElemMap(objCache, pdfBytes, pages);
+    if (elemMap) stampStructIds(results, elemMap);
+  } catch { /* */ }
+
+  // Document outlines (bookmarks): stamp each heading-shaped bookmark's target page so analyzeLayout can promote the matching line to a heading that geometry alone misses.
+  try {
+    const headingIndex = buildOutlineHeadingIndex(objCache, pdfBytes, pages);
+    if (headingIndex) stampOutlineHeadings(results, headingIndex);
+  } catch { /* outlines are opportunistic; never let them break text extraction */ }
+
+  // Microsoft Word emits one struct element per paragraph, so on Word-authored docs analyzeLayout can treat element boundaries as paragraph boundaries outright.
+  let elementFaithful = false;
+  try { elementFaithful = docAuthoredByWord(objCache, pdfBytes); } catch { /* best-effort */ }
+  // Stamp each page with its detected data-table regions so analyzeLayout can suppress the bare-folio and line-number-column furniture rules inside a table.
+  // A table's lone-integer cells are otherwise indistinguishable from page numbers and pleading line numbers, and would be dropped on export.
+  for (const r of results) {
+    if (!r || !r.pageObj || !r.dataTablePage) continue;
+    r.pageObj.tableBoxes = r.dataTablePage.tables.map((tbl) => {
+      let left = Infinity; let top = Infinity; let right = -Infinity; let bottom = -Infinity;
+      for (const col of tbl.boxes) {
+        const c = col.coords;
+        if (c.left < left) left = c.left;
+        if (c.top < top) top = c.top;
+        if (c.right > right) right = c.right;
+        if (c.bottom > bottom) bottom = c.bottom;
+      }
+      if (!(right > left)) return null;
+      // Trust a table as a furniture-suppression region only when its content is predominantly numeric, i.e. a genuine data table.
+      // A deposition or pleading transcript is also detected as a columnar table, but its line-number margin and folios are real furniture that must stay eligible for those rules.
+      let numeric = 0; let total = 0;
+      for (const line of r.pageObj.lines) {
+        for (const w of line.words) {
+          const cx = (w.bbox.left + w.bbox.right) / 2; const cy = (w.bbox.top + w.bbox.bottom) / 2;
+          if (cx < left || cx > right || cy < top || cy > bottom) continue;
+          total++;
+          const wt = w.text.trim();
+          if (/\d/.test(wt) && /^[\d.,%()$/-]+$/.test(wt)) numeric++;
+        }
+      }
+      if (total < 6 || numeric / total < 0.5) return null;
+      return {
+        left, top, right, bottom,
+      };
+    }).filter(Boolean);
+  }
+  // analyzeLayout assigns paragraphs and roles across all pages at once, overwriting the per-page assignParagraphs result.
+  const docPages = results.filter((r) => r && r.pageObj && r.pageObj.lines.length > 0).map((r) => r.pageObj);
+  if (docPages.length > 0) analyzeLayout(docPages, { elementFaithful, pdfType });
 }
 
 /**
@@ -822,6 +995,10 @@ export function extractPDFTextDirect(pdfBytes, options = {}) {
       results.push(parseSinglePage(pages[n], objCache, n, dpi, type3GlyphMappings));
     }
   }
+
+  let pdfType = 'text';
+  try { pdfType = determinePdfType(results.map((r) => r && r.pageStats).filter(Boolean), results.length).type; } catch { /*  */ }
+  applyDocParagraphLayout(objCache, pdfBytes, pages, results, pdfType);
 
   return results;
 }
@@ -918,6 +1095,12 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
   /** @type {Array<any>} */
   const operandStack = [];
 
+  // The PDF spec defines /Artifact marked content as non-content furniture (running heads, folios, line numbers), letting tagged docs identify furniture authoritatively instead of by geometry.
+  // inheritedTextState.artifact carries the flag into Form XObjects.
+  /** @type {Array<{tag: string, mcid: (number|null), art: boolean}>} */
+  const mcStack = [];
+  let artifactDepth = (inheritedTextState && inheritedTextState.artifact) ? 1 : 0;
+
   for (let i = 0; i < tokens.length; i++) {
     const tok = tokens[i];
 
@@ -976,15 +1159,37 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
         operandStack.length = 0;
         break;
 
+      case 'BDC':
+      case 'BMC': {
+        const tagTok = operandStack[0];
+        const tag = (tagTok && tagTok.type === 'name') ? tagTok.value : '';
+        const propsTok = operandStack[1];
+        let mcid = null;
+        if (propsTok && propsTok.type === 'dict' && typeof propsTok.value === 'string') {
+          const mm = /\/MCID\s+(\d+)/.exec(propsTok.value);
+          if (mm) mcid = parseInt(mm[1], 10);
+        }
+        const art = tag === 'Artifact';
+        mcStack.push({ tag, mcid, art });
+        if (art) artifactDepth++;
+        operandStack.length = 0;
+        break;
+      }
+
+      case 'EMC': {
+        const popped = mcStack.pop();
+        if (popped && popped.art && artifactDepth > 0) artifactDepth--;
+        operandStack.length = 0;
+        break;
+      }
+
       case 'Tf': {
         const size = operandStack.length >= 2 ? operandStack[operandStack.length - 1] : null;
         const name = operandStack.length >= 2 ? operandStack[operandStack.length - 2] : null;
         if (name && name.type === 'name' && size && size.type === 'number') {
           currentFont = fonts.get(decodePdfName(name.value)) || null;
-          // Preserve sign: PDFlib emits negative font size with Y-flip CTM and
-          // negative Tz to compose a positive overall scale. The advance
-          // calculation needs the signed size to land subsequent glyphs to the
-          // visual right; an abs() here reverses the per-line glyph order.
+          // Preserve the sign: PDFlib emits a negative font size with a Y-flip CTM and negative Tz that compose to a positive overall scale.
+          // Taking abs() here flips the sign of the glyph advances and reverses the glyph order within each line.
           fontSize = size.value;
         }
         operandStack.length = 0;
@@ -1170,11 +1375,18 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
         break;
     }
 
-    // Tag newly-added chars with the current text color and alpha.
+    // Tag newly-added chars with the current text color, alpha, artifact flag, and innermost structural tag/MCID.
     if (op === 'Tj' || op === 'TJ' || op === "'" || op === '"') {
+      const inArtifact = artifactDepth > 0;
+      let structTag = null; let mcid = null;
+      for (let s = mcStack.length - 1; s >= 0; s--) {
+        if (STRUCTURAL_MC_TAGS.has(mcStack[s].tag)) { structTag = mcStack[s].tag; mcid = mcStack[s].mcid; break; }
+      }
       for (let ci = charsBeforeOp; ci < chars.length; ci++) {
         chars[ci].textColor = textColor;
         chars[ci].alpha = fillAlpha;
+        if (inArtifact) chars[ci].artifact = true;
+        if (structTag) { chars[ci].structTag = structTag; chars[ci].mcid = mcid; }
       }
     }
   }
@@ -1272,7 +1484,11 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
     }
     // Collapse any all-whitespace mapping to a single U+0020.
     if (/^\s+$/.test(unicode)) unicode = ' ';
-    const glyphWidth = (font.widths.get(charCode) ?? font.defaultWidth) / 1000 * fontSize;
+    // A CID font's /W advances are keyed by CID, which equals the content-stream code only under Identity encoding, so a non-Identity CMap needs the lookup by mapped CID.
+    // Otherwise every code misses /W and falls to /DW, which some generators set to 0, collapsing every glyph advance to zero.
+    // Simple fonts have no charCodeToCID and keep the code-keyed lookup.
+    const widthKey = isCID && font.charCodeToCID ? (font.charCodeToCID.get(charCode) ?? charCode) : charCode;
+    const glyphWidth = (font.widths.get(widthKey) ?? font.defaultWidth) / 1000 * fontSize;
     // For placeholder-d1 Type3 fonts, font.widths reports 1 em for every glyph.
     // visualGlyphWidth is the path-derived right edge, used for the emitted rectangle only.
     // Tm advance keeps glyphWidth so cursor positioning across glyphs is unchanged.
@@ -1334,8 +1550,9 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
  * @param {number} [visualHeightPts] - page height in points
  * @param {number} [boxOriginX] - X origin of effective page box in points
  * @param {number} [boxOriginY] - Y origin of effective page box in points
+ * @param {boolean} [pageHasMath] - page contains mathematics (enables the built-up-math line rule)
  */
-export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = [], paths = [], scale = 1, visualHeightPts = 0, boxOriginX = 0, boxOriginY = 0) {
+export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = [], paths = [], scale = 1, visualHeightPts = 0, boxOriginX = 0, boxOriginY = 0, pageHasMath = false) {
   const pageObj = new ocr.OcrPage(n, { width: pageWidth, height: pageHeight });
   const langSet = new Set();
   const fontSet = new Set();
@@ -1477,6 +1694,10 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
   // superscripts (e.g., "offset ᵃ Field" where "a" bridges two baselines).
   let anchorY = chars[0]._perpDist ?? chars[0].y;
   let anchorFontSize = chars[0].fontSize;
+  // Body band of the current line, for the no-overlap cut below: the baseline and size of the line's full-size text, promoted past any leading reduced-size marker.
+  // Kept separate from anchorY/anchorFontSize so the superscript and math rules that read the anchor are unaffected.
+  let lineBodyY = chars[0].text === ' ' ? null : (chars[0]._perpDist ?? chars[0].y);
+  let lineBodySize = chars[0].text === ' ' ? 0 : chars[0].fontSize;
 
   for (let i = 1; i < chars.length; i++) {
     const ch = chars[i];
@@ -1501,6 +1722,8 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
             currentLine = [ch];
             anchorY = ch._perpDist ?? ch.y;
             anchorFontSize = ch.fontSize;
+            lineBodyY = null;
+            lineBodySize = 0;
             continue;
           }
         }
@@ -1524,12 +1747,8 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
     const prevY = compPrev._perpDist ?? compPrev.y;
     const yGap = Math.abs(chY - prevY);
     const xGap = ch.x - (compPrev.x + compPrev.width);
-    // Type3 fonts with non-standard FontMatrix (e.g. identity) can produce a
-    // Tf-derived fontSize that's much smaller than the actual glyph advance —
-    // the Tf value reflects text-space size, not the device-space em-height.
-    // For gap thresholds we need a size reference proportional to visible
-    // characters: a char's glyph advance is a safe floor, since fontSize
-    // cannot be smaller than a single char's width in any real font.
+    // Type3 fonts with a non-standard FontMatrix (e.g. identity) can carry a Tf-derived fontSize far smaller than the glyphs' device-space size.
+    // Flooring the size at the char's advance width restores a usable gap-threshold reference, and is near a no-op for normal fonts since an advance seldom exceeds the em size.
     const chSize = Math.max(ch.fontSize, ch.width);
     const prevSize = Math.max(compPrev.fontSize, compPrev.width);
     const maxFont = Math.max(chSize, prevSize);
@@ -1548,40 +1767,83 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
       && xGap > -maxFont * 0.2
       && xGap < maxFont;
 
+    // Inline mathematics sets a few glyphs off the main baseline within one visual line, and the y-jump cuts below would otherwise tear them onto their own line.
+    // The exemptions must stay narrow: a general baseline-shift exemption merges headings, captions, and table cells into adjacent lines.
+    // reducedScript: a script or fraction part set smaller than the line's body whose box still vertically intersects the anchor's band, after which the line resumes.
+    // A genuine next line is full-size or sits clear of the band (a small caption or URL on its own row does not intersect it), so it still cuts.
+    // radicalRadicand: a full-size radicand butted directly against a radical sign just below it.
+    const reducedScript = ch.fontSize < anchorFontSize * 0.85
+      && chY - ch.fontSize * 0.8 < anchorY + anchorFontSize * 0.2
+      && chY + ch.fontSize * 0.2 > anchorY - anchorFontSize * 0.8;
+    const radicalRadicand = (/^[√∛∜]$/.test(compPrev.text) || /^[√∛∜]$/.test(ch.text))
+      && fontRatio > 0.8 && fontRatio < 1.25
+      && xGap > -maxFont * 0.2 && xGap < maxFont * 0.5
+      && yGap < maxFont * 1.1;
+    // builtUpMath: built-up expressions (a fraction under a radical, nested scripts) stack glyphs at several vertical offsets within one line, beyond what reducedScript tolerates.
+    // This broader exemption is safe only because pageHasMath gates it: on pages with no mathematics it is dead code and grouping is unchanged.
+    // The envelope is measured from anchorY rather than the previous char, which may itself be a displaced numerator or radicand.
+    const mathContext = MATH_FONT_RE.test(ch.fontInfo.baseName || '')
+      || MATH_FONT_RE.test(compPrev.fontInfo.baseName || '')
+      || /^[√∛∜]$/.test(compPrev.text) || /^[√∛∜]$/.test(ch.text)
+      || ch.fontSize < anchorFontSize * 0.85 || compPrev.fontSize < anchorFontSize * 0.85
+      || (fontRatio > 0.8 && fontRatio < 1.25 && Math.abs(chY - anchorY) < anchorFontSize * 0.35);
+    // 1.3 em covers built-up stacking yet stays below one line-pitch, so the first glyph of a true next line falls outside and still cuts.
+    const withinEnvelope = Math.abs(chY - anchorY) < anchorFontSize * 1.3;
+    // Horizontal continuity: a stacked script steps backward under the body glyph it modifies by up to ~1.5 body em, while a true line return travels many body em back to the margin and still cuts.
+    // The backward bound is in body em rather than maxFont: against a tiny script glyph a maxFont bound would sit inside the backward-x cut threshold and could never suppress that cut.
+    const horizontalContinuity = xGap > -anchorFontSize * 1.5 && xGap < maxFont * 4;
+    const builtUpMath = pageHasMath && mathContext && withinEnvelope && horizontalContinuity;
+
+    const inlineMath = reducedScript || radicalRadicand || builtUpMath;
+
+    // Leading reduced-size marker: a line opening with a smaller raised glyph, e.g. a footnote reference starting its own definition ("¹ The Debtors ..."), that resumes at full size on the same row.
+    // Without this the resume reads as a size-up plus baseline jump off the still-small anchor, and the marker is torn onto its own line.
+    // The size test keeps it to lines that are still just the marker, and the small forward xGap excludes a true next line, which returns to the margin.
+    const leadingMarker = anchorFontSize < ch.fontSize * 0.85
+      && xGap > -maxFont * 0.3 && xGap < maxFont * 0.8
+      && yGap < maxFont * 0.8;
+
     let isCut = false;
 
     // Orientation change.
     if (ch.orientation !== compPrev.orientation && !inlineSymbolBoundary) isCut = true;
 
-    // Large y-jump: always a line break (too big for any superscript).
-    else if (yGap > maxFont * 0.7 || yGap > minFont * 1.5) isCut = true;
+    // No-overlap invariant: a reduced-size glyph whose baseline lies clearly outside the line's body band is on a different visual line and must cut, whatever the superscript rules below say.
+    // A true sub/superscript keeps a small offset that intersects the band.
+    // The classic catch is the next footnote's own number sitting in the inter-line gap below a short note like "Id.".
+    // Full-size glyphs are exempt since a slightly-low one still overlaps the band, and a full-size next line is already cut by the y-jump rule below.
+    // leadingMarker and builtUpMath are exempt because a resuming body line and stacked math legitimately place reduced glyphs outside the band.
+    else if (lineBodySize > 0 && !leadingMarker && !builtUpMath
+      && ch.fontSize < lineBodySize * 0.85
+      && (chY - lineBodyY > lineBodySize * 0.4 || chY - lineBodyY < -lineBodySize * 0.9)) isCut = true;
+
+    // Large y-jump: always a line break (too big for any superscript), except an inline-math excursion or a leading-marker resume that still belongs to this line.
+    else if ((yGap > maxFont * 0.7 || yGap > minFont * 1.5) && !inlineMath && !leadingMarker) isCut = true;
 
     // Large backward x-jump: moving to start of a new line.
-    else if (xGap < -maxFont * 2) isCut = true;
+    // builtUpMath is exempt: a stacked script steps backward under its body glyph, while a true line return travels far enough back to fail horizontalContinuity and still cuts.
+    else if (xGap < -maxFont * 2 && !builtUpMath) isCut = true;
 
     // Large forward x-jump: column break or distant text region.
     else if (xGap > maxFont * 4) isCut = true;
 
     // Moderate y-jump with similar font size: line break, not a superscript.
-    // x-proximity guard avoids false cuts from glyph-metric noise on adjacent
-    // chars. Looser y-threshold past one full font size of x-gap, where
-    // sustained mid-line baseline drift is implausible.
-    else if (fontRatio > 0.8 && fontRatio < 1.25
+    // The x-proximity guard avoids false cuts from glyph-metric noise on adjacent chars.
+    // The y-threshold loosens past one full font size of x-gap, where sustained mid-line baseline drift is implausible.
+    else if (!inlineMath && !leadingMarker && fontRatio > 0.8 && fontRatio < 1.25
       && (xGap < -maxFont * 0.1 || xGap > maxFont * 0.5 || yGap > minFont * 0.5)
       && yGap > (xGap > maxFont ? minFont * 0.2 : minFont * 0.3)) isCut = true;
 
-    // Large font size change with any y-gap: different text region
-    // (e.g., 40pt heading adjacent to 7pt body text).
+    // Large font size change with even a tiny y-gap: different text region (e.g., a heading beside much smaller body text).
     // Same x-proximity guard: horizontally adjacent chars stay on the same line.
-    else if (!inlineSymbolBoundary
+    // builtUpMath is exempt: a built-up expression is itself a size change beside full-size body text, and this cut would tear it apart.
+    else if (!inlineSymbolBoundary && !builtUpMath
       && yGap > minFont * 0.1 && (fontRatio > 1.75 || fontRatio < 1 / 1.75)
       && (xGap < -maxFont * 0.1 || xGap > maxFont * 0.5)) isCut = true;
 
-    // Persistent font size change: when the font size changes significantly and
-    // the new size persists for multiple subsequent characters, this is a line
-    // transition (e.g., heading → sub-heading), not a superscript. Look ahead to
-    // distinguish from a transient superscript marker that immediately reverts.
-    else if (!inlineSymbolBoundary && yGap > minFont * 0.1 && (fontRatio < 0.8 || fontRatio > 1.25)) {
+    // Persistent font size change: a size change that persists for multiple subsequent chars is a line transition (e.g., a heading into its sub-heading), not a superscript.
+    // The look-ahead distinguishes it from a transient superscript marker that immediately reverts.
+    else if (!inlineSymbolBoundary && !builtUpMath && yGap > minFont * 0.1 && (fontRatio < 0.8 || fontRatio > 1.25)) {
       let persistCount = 0;
       const targetSize = Math.min(ch.fontSize, compPrev.fontSize);
       for (let j = i + 1; j < chars.length && persistCount < 3; j++) {
@@ -1592,14 +1854,11 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
       if (persistCount >= 3) isCut = true;
     }
 
-    // Baseline drift: same-size char whose baseline shifted from the anchor,
-    // bridged by an intervening superscript (e.g. "offset ᵃ Field", or a
-    // footnote marker between a table row and a wrapped cell's first line).
-    // Independent of the chain above so the persistent-fs-change branch can't
-    // swallow it. Size match is bidirectional — a line starting with a leading
-    // superscript followed by full-size text is promoting the anchor, not
-    // drifting from it.
-    if (!isCut
+    // Baseline drift: a same-size char whose baseline shifted from the anchor, bridged by an intervening superscript (e.g. a footnote marker between a table row and a wrapped cell's first line).
+    // Kept independent of the chain above so the persistent-size-change branch cannot swallow it.
+    // The size match is bidirectional: a line starting with a leading superscript followed by full-size text is promoting the anchor, not drifting from it.
+    // builtUpMath is exempt: a same-size radical or operator entering raised from prose is an inline-math excursion, not a drifted line.
+    if (!isCut && !builtUpMath
       && ch.fontSize >= anchorFontSize * 0.8 && ch.fontSize <= anchorFontSize * 1.25
       && Math.abs(chY - anchorY) > anchorFontSize * 0.3
       && xGap > maxFont * 0.5) isCut = true;
@@ -1609,11 +1868,22 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
       currentLine = [ch];
       anchorY = chY;
       anchorFontSize = ch.fontSize;
+      lineBodyY = chY;
+      lineBodySize = ch.fontSize;
     } else {
       currentLine.push(ch);
-      // Update anchor if this is a full-size char (not a superscript/subscript)
-      if (ch.fontSize >= anchorFontSize * 0.8) {
+      // Update anchor if this is a full-size char (not a superscript/subscript).
+      // On a math page a full-size glyph raised well above the anchor, e.g. a full-size citation marker ("spectrum⁶"), is positionally a superscript and must not promote the baseline.
+      // Promoting it would make the following baseline text read as drifted from the raised anchor and torn onto its own line.
+      if (ch.fontSize >= anchorFontSize * 0.8
+        && !(pageHasMath && chY < anchorY - anchorFontSize * 0.25)) {
         anchorY = chY;
+      }
+      // Promote the body band: a same-or-larger non-space glyph is the body, superseding a smaller leading marker.
+      // A smaller glyph (a script or marker) leaves the band describing the full-size text.
+      if (ch.text !== ' ' && (lineBodySize === 0 || ch.fontSize >= lineBodySize * 0.95)) {
+        lineBodySize = Math.max(lineBodySize, ch.fontSize);
+        lineBodyY = chY;
       }
     }
   }
@@ -1737,6 +2007,65 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
     lines.splice(li + 1, 1);
   }
 
+  // Reattach out-of-order inline reference markers to the line they belong to.
+  // Some generators (web print-to-PDF among them) emit a page's superscript markers, footnote numerals and reference symbols, as a trailing block at the end of the content stream.
+  // Each lands as its own reduced-size line in a band a full-size line already occupies, which the neighbor-only superscript merges above never reach, so it strands as a standalone paragraph.
+  // Only marker-shaped content is moved, so a genuinely separate reduced-size line is never absorbed.
+  const refMarker = /^[0-9,]+$|^[®*†‡§]+$/;
+  // The "FN"+number convention sets its in-text reference at full body size but raised, so the size-gated superscript merges above never claim it and it strands the same way.
+  const fnMarker = /^FN\d{1,3}$/;
+  for (let li = lines.length - 1; li >= 0; li--) {
+    const frag = lines[li].filter((c) => c.text !== ' ');
+    if (frag.length === 0 || frag.length > 6) continue;
+    const fragText = frag.map((c) => c.text).join('');
+    const isFnMarker = fnMarker.test(fragText);
+    if (!refMarker.test(fragText) && !isFnMarker) continue;
+    let fragSize = 0;
+    let fragFamily = null;
+    let fragLeft = Infinity;
+    let fragBaseline = 0;
+    for (const c of frag) {
+      if (c.fontSize > fragSize) { fragSize = c.fontSize; fragFamily = c.fontInfo.familyName; }
+      if (c.x < fragLeft) fragLeft = c.x;
+      fragBaseline = c._perpDist ?? c.y;
+    }
+    // Find the full-size line whose band this raised marker sits in and whose x-extent contains it.
+    let best = -1;
+    let bestDist = Infinity;
+    for (let lj = 0; lj < lines.length; lj++) {
+      if (lj === li) continue;
+      const host = lineAnchorOf(lines[lj]);
+      if (!host) continue;
+      // The marker must be superscript-scaled for its host: reduced, but not below ~0.4x, since a body-size line number beside an oversized garbage line is not that line's superscript.
+      // It must also share the host's dominant text font.
+      // The FN convention is the exception: full body size, gated to near host size.
+      if (isFnMarker) {
+        if (fragSize < host.anchorFontSize * 0.7 || fragSize > host.anchorFontSize * 1.15) continue;
+      } else if (fragSize >= host.anchorFontSize * 0.85 || fragSize < host.anchorFontSize * 0.4) continue;
+      let hostFamily = null;
+      let hostMax = 0;
+      for (const c of lines[lj]) {
+        if (c.text !== ' ' && c.fontSize > hostMax) { hostMax = c.fontSize; hostFamily = c.fontInfo.familyName; }
+      }
+      if (hostFamily !== fragFamily) continue;
+      // Raised baseline: marker sits above the host baseline (y grows downward) by up to ~0.8 em.
+      const drop = host.baselineY - fragBaseline;
+      if (drop < -host.anchorFontSize * 0.1 || drop > host.anchorFontSize * 0.8) continue;
+      // x: marker starts within the host's extent, or as a trailing marker just past its right edge.
+      if (fragLeft < host.leftX - host.anchorFontSize * 0.5) continue;
+      if (fragLeft > host.rightX + host.anchorFontSize) continue;
+      if (Math.abs(drop) < bestDist) { bestDist = Math.abs(drop); best = lj; }
+    }
+    if (best < 0) continue;
+    const target = lines[best];
+    let insertIdx = target.length;
+    for (let k = 0; k < target.length; k++) {
+      if (target[k].x > fragLeft) { insertIdx = k; break; }
+    }
+    target.splice(insertIdx, 0, ...lines[li]);
+    lines.splice(li, 1);
+  }
+
   // Process each line (chars are already in stream order)
   for (const lineChars of lines) {
     // Split into words at space characters or large gaps (measured in stream order).
@@ -1759,14 +2088,8 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
           if (nextNonSpace) {
             const prevCh = currentWord[currentWord.length - 1];
             const visualGap = nextNonSpace.x - (prevCh.x + prevCh.width);
-            // A space after a comma is always a word break — commas
-            // are list/sentence delimiters and the space is real even when
-            // negative Tc compresses it below the normal gap threshold.
-            // Drop the space only when the kerning around it cancelled the
-            // glyph advance (visualGap ≈ 0) or the prev glyph's bbox overlaps
-            // the next char by less than the word-split tolerance. Justified
-            // text often shrinks real inter-word gaps to a fraction of the
-            // space-glyph advance; keep those as word breaks.
+            // The positive tolerance must stay far below the space-glyph advance: justified text often shrinks real inter-word gaps to a fraction of it.
+            // A space after a comma is never dropped, since negative Tc routinely compresses that real space to visual adjacency.
             const adjacencyTol = prevCh.fontSize * 0.15;
             const positiveTol = Math.max(prevCh.fontSize * 0.01, ch.width * 0.1);
             const isKerningArtifact = visualGap >= -adjacencyTol && visualGap < positiveTol;
@@ -1808,12 +2131,9 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
           && !(',.;:!?)]}”’'.includes(ch.text) && gap <= fontSizeMin * 0.15)) {
           wordsInitial.push(currentWord);
           currentWord = [];
-        // Split at font family change (e.g., Dingbats checkbox → Times text).
-        // Skip when chars are visually adjacent (gap near zero), since typeset documents
-        // often use a different font for punctuation (e.g., MinionPro comma between MyriadPro digits).
-        // Always split at symbol font boundaries (Webdings, Wingdings, Dingbats, Symbol)
-        // or symbol-block codepoints regardless of gap — these are icons/markers,
-        // not text characters.
+        // Split at font family change.
+        // Skip when chars are visually adjacent (gap near zero), since typeset documents often use a different font for punctuation (e.g., a MinionPro comma between MyriadPro digits).
+        // Symbol fonts and symbol-block codepoints split regardless of gap: an icon or marker glued to text is still not part of the word.
         } else if (ch.fontInfo.familyName !== prevCh.fontInfo.familyName
           && (gap > fontSizeMin * 0.15
             || isSymbolFont(ch.fontInfo)
@@ -1834,11 +2154,8 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
         } else if (fontSizeMin > 0 && Math.abs(ch.y - prevCh.y) > fontSizeMin * 0.25) {
           wordsInitial.push(currentWord);
           currentWord = [];
-        // Split at large backward x-jump — chars are at a different visual position
-        // (e.g., sidebar text followed by body text in stream order).
-        // Require ch.x < prevCh.x so we only split when the next char genuinely starts
-        // before the previous char, not when it falls within an oversized glyph bbox
-        // (e.g., curly apostrophe U+2019 with wide advance width in "Cruz's").
+        // Split at large backward x-jump: the chars are at different visual positions adjacent only in stream order (e.g., sidebar text followed by body text).
+        // ch.x < prevCh.x is required because an oversized advance width (e.g., a wide curly apostrophe U+2019) can put the next char's x inside the previous glyph's bbox with no real jump.
         } else if (gap < -ch.fontSize * 0.5 && ch.x < prevCh.x) {
           wordsInitial.push(currentWord);
           currentWord = [];
@@ -2127,6 +2444,16 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
       }
     }
 
+    // A full-size "FN"+number reference (the Westlaw footnote-marker convention) never drops in size, so the size-delta tests above miss it.
+    // The unambiguous "FN"+digits content plus a baseline raised above the line's normal baseline (y grows downward) marks it as a superscript reference.
+    if (normalBaselineY !== null) {
+      for (const w of words) {
+        if (w.sup || w.dropcap || w.chars.length === 0) continue;
+        if (!/^FN\d{1,3}$/.test(w.chars.map((c) => c.text).join(''))) continue;
+        if (w.chars[0].y < normalBaselineY - w.chars[0].fontSize * 0.2) w.sup = true;
+      }
+    }
+
     // Detect fake small caps across word boundaries.
     // Look for words with mixed font sizes where all alpha chars are uppercase.
     // Chars at the smaller font size are "fake small caps" of their lowercase equivalents.
@@ -2265,6 +2592,10 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
       wordObj.conf = 100;
       wordObj.visualCoords = false;
       wordObj.lang = wordLang;
+      // Carry the /Artifact furniture flag to the word so the layout pass can label furniture from the document's own tagging.
+      if (wordChars.some((c) => c.artifact)) wordObj.artifact = true;
+      const sChar = wordChars.find((c) => c.structTag) || null;
+      if (sChar) { wordObj.structTag = sChar.structTag; wordObj.mcid = sChar.mcid; }
 
       // Style from first alphanumeric character (matching mupdf behavior for leading punctuation)
       const firstAlphaNum = wordChars.find((c) => /[A-Za-z\d]/.test(c.text)) || wordChars[0];
@@ -2309,37 +2640,36 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
         }
       }
 
-      // Underline detection: check if a thin horizontal rectangle overlaps this word,
-      // is positioned just below the baseline, and matches the text color.
+      // Underline detection: a thin horizontal rectangle that overlaps this word, sits just below the baseline, and does not clash with the text color.
       if (underlineRects.length > 0) {
         const baselineYWord = wordChars[0].y;
         const charColor = wordChars[0].textColor;
-        // Reject rects that extend significantly past the line's text on either
-        // side — those are table-row dividers / section rules that happen to
-        // pass under this word, not text underlines. Tolerance scales with font
-        // size to allow stroke caps and trailing-space overshoot on real underlines.
+        // A rect extending well past the line's text on either side is a table-row divider or section rule passing under the word, not an underline.
+        // The tolerance absorbs the slight overshoot real underlines get from stroke caps and trailing spaces.
         const ruleOverhangLimit = wordChars[0].fontSize * 0.5;
         for (const rect of underlineRects) {
           if (rect.right > wordLeft && rect.left < wordRight
             && rect.y >= baselineYWord - wordChars[0].fontSize * 0.1
-            && rect.y <= baselineYWord + wordChars[0].fontSize * 0.25
+            && rect.y <= baselineYWord + wordChars[0].fontSize * 0.35
             && rect.left >= lineLeft - ruleOverhangLimit
             && rect.right <= lineRight + ruleOverhangLimit) {
-            // Color match: the line color must match the text fill color.
-            // Different colors indicate a decorative rule, not a text underline.
-            // Normalize across color spaces — the same black may be stored as
-            // DeviceGray [g] for the text and DeviceRGB [0,0,0] for the path.
+            // Color match: a saturated rule whose hue differs from the text is a decorative rule, not a text underline.
+            // Normalize across color spaces first, since the same black may be stored as DeviceGray for the text and DeviceRGB for the path.
+            // A grayscale rule is exempt: producers draw hyperlink underlines in neutral gray under black link text, and the overhang guard above already pins the rect within the line.
             if (rect.color && charColor) {
               const rectRgb = colorToRgb(rect.color);
               const charRgb = colorToRgb(charColor);
+              const rectGray = rectRgb && Math.max(...rectRgb) - Math.min(...rectRgb) < 0.1;
               const bothDark = rectRgb && charRgb
                 && rectRgb.every((v) => v < 0.3) && charRgb.every((v) => v < 0.3);
-              if (rectRgb && charRgb && !bothDark
+              if (rectRgb && charRgb && !bothDark && !rectGray
                 && rectRgb.some((v, ci) => Math.abs(v - charRgb[ci]) > 0.1)) {
                 continue;
               }
             }
             wordObj.style.underline = true;
+            // Mark the rect as consumed so parseSinglePage does not carry it into pageObj.rules as a paragraph separator.
+            rect.isUnderline = true;
             break;
           }
         }

@@ -118,6 +118,17 @@ export function quantile(arr, ntile) {
 }
 
 /**
+ * Normalize a heading line for an exact equality test against an outline bookmark title.
+ * @param {string} s
+ * @returns {string}
+ */
+export function normalizeHeadingText(s) {
+  // Trailing soft punctuation only: stripping internal punctuation would let distinct lines collide and promote the wrong line to a heading.
+  // A near-miss is harmless, since no match just means no promotion.
+  return (s || '').replace(/\s+/g, ' ').trim().toLowerCase().replace(/[.,:;]+$/, '');
+}
+
+/**
  *
  * @param {Array<number>} arr
  * @returns {number}

@@ -11,6 +11,8 @@ declare global {
         dropcap: boolean;
         color: string;
         opacity: number;
+        /** Target URL when the word is covered by a PDF /Link annotation; absent otherwise. */
+        link?: string;
     };
 
     // Strings representing supported sources of text.

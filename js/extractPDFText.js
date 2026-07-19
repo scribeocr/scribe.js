@@ -1,8 +1,10 @@
 import { scribeDocDefaults } from './containers/scribeDocDefaults.js';
 import { loadBuiltInFontsRaw, loadChiSimFont } from './fontContainerMain.js';
 import { addCircularRefsDataTables } from './objects/layoutObjects.js';
-import { determinePdfType } from './pdf/parsePdfDoc.js';
+import { determinePdfType, applyDocParagraphLayout } from './pdf/parsePdfDoc.js';
 import { computeRequiresOCR } from './pdf/ocrPageSelection.js';
+import { findXrefOffset, parseXref, getPageObjects } from './pdf/parsePdfUtils.js';
+import { ObjectCache } from './pdf/objectCache.js';
 
 /** @typedef {import('./containers/scribeDoc.js').ScribeDoc} ScribeDoc */
 
@@ -68,6 +70,17 @@ export async function extractInternalPDFText(doc, options = {}) {
   }
 
   doc.ocr.pdf = pageResults.map((result) => result.pageObj);
+
+  // Overwrites the per-page assignParagraphs result the workers assigned: no worker sees the whole document.
+  // Native-text only, because analyzeLayout is not yet validated on OCR text.
+  if (type === 'text') {
+    try {
+      const arr = doc.images.pdfData instanceof Uint8Array ? doc.images.pdfData : new Uint8Array(doc.images.pdfData);
+      const objCache = new ObjectCache(arr, parseXref(arr, findXrefOffset(arr)));
+      const rawPages = getPageObjects(objCache);
+      applyDocParagraphLayout(objCache, arr, rawPages, doc.ocr.pdf.map((pageObj) => ({ pageObj })), type);
+    } catch { /* */ }
+  }
 
   const tablePages = pageResults.map((result) => result.dataTablePage);
   addCircularRefsDataTables(tablePages);

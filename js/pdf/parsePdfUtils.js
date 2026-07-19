@@ -980,6 +980,58 @@ export function findRootObjNum(pdfBytes) {
 }
 
 /**
+ * Find the /Info (document information dictionary) object number from the PDF trailer.
+ * @param {Uint8Array} pdfBytes
+ * @returns {number|null}
+ */
+export function findInfoObjNum(pdfBytes) {
+  const len = pdfBytes.length;
+  const startxrefIdx = byteLastIndexOf(pdfBytes, 'startxref');
+  if (startxrefIdx === -1) return null;
+
+  const trailerIdx = byteLastIndexOf(pdfBytes, 'trailer', startxrefIdx);
+  if (trailerIdx !== -1) {
+    const trailerText = bytesToLatin1(pdfBytes, trailerIdx, startxrefIdx);
+    const m = /\/Info\s+(\d+)\s+\d+\s+R/.exec(trailerText);
+    if (m) return Number(m[1]);
+  }
+
+  // xref-stream form: the /Info ref lives in the xref-stream dictionary at the `startxref` offset.
+  let p = startxrefIdx + 9;
+  while (p < len && isPdfWhitespace(pdfBytes[p])) p++;
+  if (p < len && isAsciiDigit(pdfBytes[p])) {
+    let xrefOffset = 0;
+    while (p < len && isAsciiDigit(pdfBytes[p])) { xrefOffset = xrefOffset * 10 + (pdfBytes[p] - 0x30); p++; }
+    if (xrefOffset < len) {
+      const headerOff = byteIndexOf(pdfBytes, '%PDF');
+      const adjusted = xrefOffset + (headerOff > 0 ? headerOff : 0);
+      const headerEnd = Math.min(adjusted + 200, len);
+      let dictStart = -1;
+      for (let i = adjusted; i < headerEnd - 1; i++) {
+        if (pdfBytes[i] === 0x3C && pdfBytes[i + 1] === 0x3C) { dictStart = i; break; }
+      }
+      if (dictStart !== -1) {
+        const dictText = extractDictFromBytes(pdfBytes, dictStart);
+        const m = /\/Info\s+(\d+)\s+\d+\s+R/.exec(dictText);
+        if (m) return Number(m[1]);
+      }
+    }
+  }
+
+  let searchIdx = 0;
+  while (true) {
+    const tIdx = byteIndexOf(pdfBytes, 'trailer', searchIdx);
+    if (tIdx === -1) break;
+    const trailerText = bytesToLatin1(pdfBytes, tIdx, Math.min(tIdx + 500, len));
+    const m = /\/Info\s+(\d+)\s+\d+\s+R/.exec(trailerText);
+    if (m) return Number(m[1]);
+    searchIdx = tIdx + 7;
+  }
+
+  return null;
+}
+
+/**
  * Resolve the catalog's top-level `/Pages` page-tree-root reference.
  * @param {string} catalogText
  * @returns {RegExpExecArray|null}

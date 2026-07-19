@@ -979,6 +979,15 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         for (const [ccStr, unicode] of Object.entries(symbolToUnicode)) {
           toUnicode.set(Number(ccStr), String.fromCodePoint(unicode));
         }
+      } else {
+        // Word's Type0/Identity-H Symbol subsets emit ToUnicode entries that map each glyph to the Microsoft symbol-cmap PUA codepoint (0xF000 + symbol code) instead of real Unicode.
+        // The low byte is the Adobe Symbol position, so decode it through the same table.
+        for (const [cid, ch] of toUnicode) {
+          const cp = ch.codePointAt(0);
+          if (cp !== undefined && cp >= 0xF000 && cp <= 0xF0FF && symbolToUnicode[cp & 0xFF] !== undefined) {
+            toUnicode.set(cid, String.fromCodePoint(symbolToUnicode[cp & 0xFF]));
+          }
+        }
       }
     }
 

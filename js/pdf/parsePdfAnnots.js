@@ -1,5 +1,5 @@
 import {
-  resolveArrayValue, decodePdfString, parsePdfDate, resolveBoolValue, resolveNameValue,
+  resolveArrayValue, decodePdfString, parsePdfDate, resolveBoolValue, resolveNameValue, parsePdfLiteralString,
 } from './pdfPrimitives.js';
 
 // Bounding-box size in pixels imposed on a /Text annotation.
@@ -123,12 +123,47 @@ export function annotIsLiftedReply(annotText, objCache) {
 }
 
 /**
+ * @typedef {Object} PdfRedactRaw
+ * @property {number} objNum
+ * @property {[number, number, number, number]} rect - /Rect in pts, bottom-left origin.
+ * @property {number[]|null} quadPoints - /QuadPoints: flat array of 8*N floats, pts, bottom-left origin.
+ */
+
+/**
+ * @typedef {Object} PdfLinkRaw
+ * @property {[number, number, number, number]} rect - /Rect in pts, bottom-left origin.
+ * @property {string} uri - URL from the link's /A /URI action.
+ */
+
+/**
+ * Resolve a /Link annotation's target URL, following the /A action whether it is an indirect ref or a dict inline in the annotation.
+ * Returns null when there is no /URI action, which is the case for an internal /Dest page jump since that is not a URL.
+ * @param {string} annotText
+ * @param {import('./objectCache.js').ObjectCache} objCache
+ * @returns {?string}
+ */
+function resolveLinkUri(annotText, objCache) {
+  const refMatch = /\/A\s+(\d+)\s+\d+\s+R/.exec(annotText);
+  const actionText = refMatch ? objCache.getObjectText(Number(refMatch[1])) : annotText;
+  if (!actionText) return null;
+  // A URL can contain balanced unescaped parens, which is legal in a PDF literal string but cannot be matched by a regex.
+  const keyMatch = /\/URI\s*\(/.exec(actionText);
+  if (!keyMatch) return null;
+  const parenOpen = actionText.indexOf('(', keyMatch.index);
+  const bytes = Uint8Array.from(actionText, (c) => c.charCodeAt(0) & 0xFF);
+  const { value } = parsePdfLiteralString(bytes, parenOpen);
+  let uri = '';
+  for (const b of value) uri += String.fromCharCode(b);
+  return uri || null;
+}
+
+/**
  * Reads a page's /Annots and sorts each annotation into the highlight, free-text,
  * and standalone-text buckets the importer lifts into the editable model,
  * plus the refs of the remaining visible annotations that pass through unchanged on export.
  * @param {import('./objectCache.js').ObjectCache} objCache
  * @param {string} pageObjText
- * @returns {{ highlights: PdfHighlightRaw[], freeTexts: PdfFreeTextRaw[], textAnnots: PdfTextAnnotRaw[], passthroughRefs: number[] }}
+ * @returns {{ highlights: PdfHighlightRaw[], freeTexts: PdfFreeTextRaw[], textAnnots: PdfTextAnnotRaw[], redacts: PdfRedactRaw[], links: PdfLinkRaw[], passthroughRefs: number[] }}
  */
 export function extractPdfAnnotations(objCache, pageObjText) {
   /** @type {PdfHighlightRaw[]} */
@@ -137,8 +172,10 @@ export function extractPdfAnnotations(objCache, pageObjText) {
   const freeTexts = [];
   /** @type {PdfTextAnnotRaw[]} */
   const textAnnots = [];
-  /** @type {Array<{objNum: number, rect: [number, number, number, number], quadPoints: ?number[]}>} */
+  /** @type {PdfRedactRaw[]} */
   const redacts = [];
+  /** @type {PdfLinkRaw[]} */
+  const links = [];
   /** @type {number[]} */
   const passthroughRefs = [];
 
@@ -157,7 +194,7 @@ export function extractPdfAnnotations(objCache, pageObjText) {
   }
   if (!annotRefs || annotRefs.length === 0) {
     return {
-      highlights, freeTexts, textAnnots, redacts, passthroughRefs,
+      highlights, freeTexts, textAnnots, redacts, links, passthroughRefs,
     };
   }
 
@@ -186,7 +223,18 @@ export function extractPdfAnnotations(objCache, pageObjText) {
       // Every other (visible, non-Highlight/FreeText) annotation passes through on export unchanged.
       const flagsMatch = /\/F\s+(\d+)(?=\s*[/>])/.exec(annotText);
       const flags = flagsMatch ? Number(flagsMatch[1]) : 0;
-      if (!(flags & 1 || flags & 2 || flags & 32)) passthroughRefs.push(annotRef);
+      if (!(flags & 1 || flags & 2 || flags & 32)) {
+        passthroughRefs.push(annotRef);
+        // Extracted for the text model and left in passthroughRefs as well, so export still re-emits the source annotation verbatim.
+        if (/\/Subtype\s*\/Link\b/.test(annotText)) {
+          const linkUri = resolveLinkUri(annotText, objCache);
+          const linkRectStr = linkUri ? resolveArrayValue(annotText, 'Rect', objCache) : null;
+          const linkRect = linkRectStr ? linkRectStr.split(/\s+/).map(Number) : [];
+          if (linkUri && linkRect.length >= 4 && !linkRect.slice(0, 4).some(Number.isNaN)) {
+            links.push({ rect: [linkRect[0], linkRect[1], linkRect[2], linkRect[3]], uri: linkUri });
+          }
+        }
+      }
       continue;
     }
 
@@ -293,13 +341,13 @@ export function extractPdfAnnotations(objCache, pageObjText) {
   }
 
   return {
-    highlights, freeTexts, textAnnots, redacts, passthroughRefs,
+    highlights, freeTexts, textAnnots, redacts, links, passthroughRefs,
   };
 }
 
 /**
  * Convert a user-space /Redact annotation to pixel-space redaction marks: one per quad, or one from /Rect when there are no QuadPoints, all sharing the given group id.
- * @param {{objNum: number, rect: [number, number, number, number], quadPoints: ?number[]}} raw
+ * @param {PdfRedactRaw} raw
  * @param {{ scale: number, visualHeightPts: number, initialCtm: number[], groupId: string }} transform
  * @returns {AnnotationRedact[]}
  */
