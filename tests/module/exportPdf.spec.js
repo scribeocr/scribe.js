@@ -919,6 +919,7 @@ describe('Check addHighlights and clearHighlights.', () => {
 
 describe('Check intra-word style runs survive a visible-text PDF export -> import round-trip.', () => {
   beforeAll(async () => {
+    scribe.ScribeDoc.defaults.usePDFText.native.main = true;
     doc = await scribe.openDocument([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
 
     // No committed asset has a dash-joined style flip, so one word is rewritten in place to cover that case.
