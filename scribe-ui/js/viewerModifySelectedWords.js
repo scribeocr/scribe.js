@@ -73,6 +73,8 @@ export async function modifySelectedWordStyle(viewer, style) {
     if (style.underline !== undefined) wordI.word.style.underline = style.underline;
     if (style.smallCaps !== undefined) wordI.word.style.smallCaps = style.smallCaps;
     if (style.sup !== undefined) wordI.word.style.sup = style.sup;
+    // Runs are deltas from the word style rewritten above, so keeping them would change what they mean.
+    wordI.word.styleRuns = undefined;
 
     const fontI = _viewer.doc.fonts.getFont(wordI.word.style, wordI.word.lang);
 

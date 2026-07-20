@@ -56,6 +56,13 @@ describe('Trailing punctuation across italic/roman style boundaries (070823vanli
     );
   });
 
+  test('Roman style of the trailing comma is captured as a style run on the italic word', () => {
+    const words = doc.ocr.active[14].lines[24].words;
+    expect(words[9].style.italic, 'italic body style lost on the mixed-style word').toBe(true);
+    expect(words[9].styleRuns, 'roman trailing comma not captured as a style run on native-PDF import').toEqual([{ i: 5, style: { italic: false } }]);
+    expect(words[8].styleRuns, 'uniform-style word should carry no style runs').toBeUndefined();
+  });
+
   afterAll(async () => {
     await scribe.terminate();
   });

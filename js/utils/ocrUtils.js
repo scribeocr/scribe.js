@@ -23,6 +23,21 @@ export const calcConf = (pages, confThreshHigh = scribeDocDefaults.confThreshHig
 };
 
 /**
+ * Fields of `style` that differ from `base`.
+ * @param {Style} base
+ * @param {Style} style
+ * @returns {Partial<Style>}
+ */
+const diffStyle = (base, style) => {
+  /** @type {Partial<Style>} */
+  const delta = {};
+  for (const key of Object.keys(style)) {
+    if (style[key] !== base[key]) delta[key] = style[key];
+  }
+  return delta;
+};
+
+/**
  *
  * @param {OcrWord} word
  * @param {number} splitIndex
@@ -54,6 +69,18 @@ export function splitOcrWord(word, splitIndex, docFonts) {
     wordB.bbox.left = wordA.bbox.right;
   }
 
+  if (word.styleRuns) {
+    const runsA = word.styleRuns.filter((run) => run.i < splitIndex).map((run) => ({ i: run.i, style: { ...run.style } }));
+    wordA.styleRuns = runsA.length > 0 ? runsA : undefined;
+    // Unlike wordA, wordB's base style changed, so its deltas must be recomputed.
+    const runAtSplit = word.styleRuns.filter((run) => run.i <= splitIndex).pop();
+    const styleB = runAtSplit ? { ...word.style, ...runAtSplit.style } : { ...word.style };
+    wordB.style = styleB;
+    const runsB = word.styleRuns.filter((run) => run.i > splitIndex)
+      .map((run) => ({ i: run.i - splitIndex, style: diffStyle(styleB, { ...word.style, ...run.style }) }));
+    wordB.styleRuns = runsB.length > 0 ? runsB : undefined;
+  }
+
   wordA.text = wordA.text.split('').slice(0, splitIndex).join('');
   wordB.text = wordB.text.split('').slice(splitIndex).join('');
 
@@ -74,6 +101,22 @@ export function mergeOcrWords(words) {
   wordA.bbox.right = words[words.length - 1].bbox.right;
   wordA.text = words.map((x) => x.text).join('');
   if (wordA.chars) wordA.chars = words.flatMap((x) => x.chars || []);
+
+  const runs = wordA.styleRuns ? wordA.styleRuns.map((run) => ({ i: run.i, style: { ...run.style } })) : [];
+  let tailStyle = runs.length > 0 ? { ...wordA.style, ...runs[runs.length - 1].style } : wordA.style;
+  let offset = words[0].text.length;
+  for (let wi = 1; wi < words.length; wi++) {
+    const word = words[wi];
+    const segments = [{ i: 0, style: word.style }];
+    if (word.styleRuns) for (const run of word.styleRuns) segments.push({ i: run.i, style: { ...word.style, ...run.style } });
+    for (const segment of segments) {
+      if (Object.keys(diffStyle(tailStyle, segment.style)).length === 0) continue;
+      runs.push({ i: offset + segment.i, style: diffStyle(wordA.style, segment.style) });
+      tailStyle = segment.style;
+    }
+    offset += word.text.length;
+  }
+  wordA.styleRuns = runs.length > 0 ? runs : undefined;
   return wordA;
 }
 

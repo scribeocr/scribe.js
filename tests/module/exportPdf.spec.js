@@ -916,3 +916,46 @@ describe('Check addHighlights and clearHighlights.', () => {
     await scribe.terminate();
   });
 });
+
+describe('Check intra-word style runs survive a visible-text PDF export -> import round-trip.', () => {
+  beforeAll(async () => {
+    doc = await scribe.openDocument([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
+
+    // No committed asset has a dash-joined style flip, so one word is rewritten in place to cover that case.
+    // The bbox is narrowed to the new text's natural width, since the wider original makes the export letter-space the word enough for the reimporter to split it.
+    const craft = doc.ocr.active[1].lines[18].words[3];
+    craft.text = 'alpha—beta';
+    craft.style.italic = true;
+    craft.styleRuns = [{ i: 6, style: { italic: false } }];
+    craft.chars = null;
+    craft.bbox = {
+      left: 604, top: 2255, right: 839, bottom: 2311,
+    };
+
+    scribe.ScribeDoc.defaults.displayMode = 'ebook';
+    const pdfData = await doc.exportData('pdf');
+    scribe.ScribeDoc.defaults.displayMode = 'invis';
+    await scribe.terminate();
+    doc = await scribe.openDocument({ pdfFiles: [pdfData] });
+  });
+
+  test('Non-italic trailing comma of the italic citation survives as a style run', () => {
+    const words = doc.ocr.active[0].lines[30].words;
+    expect(words[10].text, 'mixed-style word changed on visible-text PDF round-trip').toBe('Ltd.,');
+    expect(words[10].style.italic, 'italic body style lost on visible-text PDF round-trip').toBe(true);
+    expect(words[10].styleRuns, 'intra-word style run lost on visible-text PDF round-trip').toEqual([{ i: 4, style: { italic: false } }]);
+    expect(words[11].text, 'word after the mixed-style word changed on visible-text PDF round-trip').toBe('Case');
+    expect(words[11].styleRuns, 'uniform-style word should carry no style runs after PDF round-trip').toBeUndefined();
+  });
+
+  test('Dash-joined style flip stays one word with the non-italic half captured as a style run', () => {
+    const words = doc.ocr.active[1].lines[18].words;
+    expect(words[3].text, 'dash-joined mixed-style token split or corrupted on PDF round-trip').toBe('alpha—beta');
+    expect(words[3].style.italic, 'italic first half lost on the dash-joined token').toBe(true);
+    expect(words[3].styleRuns, 'style flip at the dash not captured on PDF round-trip').toEqual([{ i: 6, style: { italic: false } }]);
+  });
+
+  afterAll(async () => {
+    await scribe.terminate();
+  });
+});

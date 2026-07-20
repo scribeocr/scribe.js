@@ -347,6 +347,7 @@ export function buildConsensusLayer(base, comparators, options = {}) {
         if (bestText !== null && bestCount >= replaceMinAgree && !tie) {
           bWord.text = bestText;
           bWord.chars = null;
+          bWord.styleRuns = undefined;
           stats.replaced += 1;
         }
       }

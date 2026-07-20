@@ -43,7 +43,7 @@ const standardizeOCRPages = (ocrArr) => {
 };
 
 describe('Check .scribe export function.', () => {
-  test('Exporting to .scribe (gzipped, default) and reimporting should restore OCR data without modification', async () => {
+  test('Exporting to .scribe (gzipped, default) and reimporting should preserve document data', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
 
     const ocrAllComp1 = standardizeOCRPages(doc.ocr.active);
@@ -51,22 +51,26 @@ describe('Check .scribe export function.', () => {
     scribe.ScribeDoc.defaults.compressScribe = true;
     const scribeData = await doc.exportData('scribe');
 
-    // Verify data is gzipped by checking magic bytes
     const dataArray = new Uint8Array(scribeData);
-    expect(dataArray[0]).toBe(0x1F);
-    expect(dataArray[1]).toBe(0x8B);
+    expect(dataArray[0], 'default .scribe export should be gzipped (magic bytes)').toBe(0x1F);
+    expect(dataArray[1], 'default .scribe export should be gzipped (magic bytes)').toBe(0x8B);
 
     await scribe.terminate();
     doc = await scribe.openDocument({ scribeFiles: [scribeData] });
 
     const ocrAllComp2 = standardizeOCRPages(doc.ocr.active);
 
-    expect(ocrAllComp1).toEqual(ocrAllComp2);
+    expect(ocrAllComp1, 'OCR data changed on gzipped .scribe round-trip').toEqual(ocrAllComp2);
+
+    const wordMixed = doc.ocr.active[0].lines[30].words[10];
+    expect(wordMixed.text, 'mixed-style word changed on .scribe round-trip').toBe('Ltd.,');
+    expect(wordMixed.styleRuns, 'intra-word style runs lost on .scribe round-trip').toEqual([{ i: 4, style: { italic: false } }]);
+
     await doc.clear();
     await scribe.terminate();
   });
 
-  test('Exporting to .scribe (non-gzipped) and reimporting should restore OCR data without modification', async () => {
+  test('Exporting to .scribe (non-gzipped) and reimporting should preserve document data', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
 
     const ocrAllComp1 = standardizeOCRPages(doc.ocr.active);
@@ -74,9 +78,8 @@ describe('Check .scribe export function.', () => {
     scribe.ScribeDoc.defaults.compressScribe = false;
     const scribeData = await doc.exportData('scribe');
 
-    // Verify data is not gzipped
-    expect(typeof scribeData).toBe('string');
-    expect(scribeData[0]).toBe('{');
+    expect(typeof scribeData, 'non-gzipped .scribe export should be a plain JSON string').toBe('string');
+    expect(scribeData[0], 'non-gzipped .scribe export should be a plain JSON string').toBe('{');
 
     const encoder = new TextEncoder();
     const scribeDataBuffer = encoder.encode(scribeData).buffer;
@@ -86,7 +89,19 @@ describe('Check .scribe export function.', () => {
 
     const ocrAllComp2 = standardizeOCRPages(doc.ocr.active);
 
-    expect(ocrAllComp1).toEqual(ocrAllComp2);
+    expect(ocrAllComp1, 'OCR data changed on non-gzipped .scribe round-trip').toEqual(ocrAllComp2);
+
+    scribe.ScribeDoc.defaults.includeCharBoxesScribe = false;
+    const scribeDataNoChars = await doc.exportData('scribe');
+    scribe.ScribeDoc.defaults.includeCharBoxesScribe = true;
+
+    await scribe.terminate();
+    doc = await scribe.openDocument({ scribeFiles: [encoder.encode(scribeDataNoChars).buffer] });
+
+    const wordMixed = doc.ocr.active[0].lines[30].words[10];
+    expect(wordMixed.chars, 'char boxes should be excluded by includeCharBoxesScribe: false').toBeUndefined();
+    expect(wordMixed.text, 'mixed-style word changed on char-box-free .scribe round-trip').toBe('Ltd.,');
+    expect(wordMixed.styleRuns, 'style runs must survive the .scribe round-trip independently of char boxes').toEqual([{ i: 4, style: { italic: false } }]);
 
     scribe.ScribeDoc.defaults.compressScribe = true;
     await doc.clear();

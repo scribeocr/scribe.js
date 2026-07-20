@@ -796,6 +796,19 @@ const convertDocumentXML = async ({
                 break;
               }
 
+              const tailStyle = lastWord.styleRuns && lastWord.styleRuns.length > 0
+                ? { ...lastWord.style, ...lastWord.styleRuns[lastWord.styleRuns.length - 1].style }
+                : lastWord.style;
+              if (tailStyle.bold !== run.styles.bold || tailStyle.italic !== run.styles.italic
+                || tailStyle.smallCaps !== run.styles.smallCaps) {
+                const delta = {};
+                if (run.styles.bold !== lastWord.style.bold) delta.bold = run.styles.bold;
+                if (run.styles.italic !== lastWord.style.italic) delta.italic = run.styles.italic;
+                if (run.styles.smallCaps !== lastWord.style.smallCaps) delta.smallCaps = run.styles.smallCaps;
+                lastWord.styleRuns = lastWord.styleRuns || [];
+                lastWord.styleRuns.push({ i: lastWord.text.length, style: delta });
+              }
+
               lastWord.text = combinedText;
               lastWord.bbox.right = Math.round(lastWord.bbox.left + combinedWidth);
               currentX = lastWord.bbox.right;

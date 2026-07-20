@@ -177,6 +177,11 @@ export function OcrWord(line, id, text, bbox, poly) {
     color: '#000000',
     opacity: 1,
   };
+  /**
+   * Initialized to `undefined` (not `null`) so uniform words serialize without the key.
+   * @type {Array<StyleRun>|undefined}
+   */
+  this.styleRuns = undefined;
   /** @type {string} */
   this.lang = 'eng';
   /** @type {number} */
@@ -766,6 +771,7 @@ function cloneWord(word) {
   if (word.poly) wordNew.poly = { ...word.poly };
   wordNew.conf = word.conf;
   wordNew.style = { ...word.style };
+  if (word.styleRuns) wordNew.styleRuns = word.styleRuns.map((run) => ({ i: run.i, style: { ...run.style } }));
   wordNew.lang = word.lang;
   wordNew.compTruth = word.compTruth;
   wordNew.matchTruth = word.matchTruth;
@@ -789,6 +795,26 @@ function cloneWord(word) {
 function cloneChar(char) {
   const charNew = new OcrChar(char.text, { ...char.bbox });
   return charNew;
+}
+
+/**
+ * Resolve a word's style runs into contiguous text segments with full styles.
+ * Returns `null` for uniform words.
+ * @param {OcrWord} word
+ * @returns {?Array<{start: number, end: number, style: Style}>}
+ */
+export function getWordStyleSegments(word) {
+  if (!word.styleRuns || word.styleRuns.length === 0) return null;
+  const segments = [];
+  let start = 0;
+  let style = word.style;
+  for (const run of word.styleRuns) {
+    segments.push({ start, end: run.i, style });
+    start = run.i;
+    style = { ...word.style, ...run.style };
+  }
+  segments.push({ start, end: word.text.length, style });
+  return segments.filter((segment) => segment.end > segment.start);
 }
 
 /**
@@ -1199,6 +1225,7 @@ const ocr = {
   cloneLine,
   cloneWord,
   cloneChar,
+  getWordStyleSegments,
   rotateLine,
   deletePageWords,
   replaceLigatures,

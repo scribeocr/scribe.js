@@ -2125,10 +2125,11 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
           currentWord.push(ch);
           continue;
         }
-        // Split at bold/italic style change, except for trailing punctuation.
+        // Split at bold/italic style change, except for adjacent trailing punctuation and dashes.
         if ((ch.fontInfo.bold !== prevCh.fontInfo.bold
           || ch.fontInfo.italic !== prevCh.fontInfo.italic)
-          && !(',.;:!?)]}”’'.includes(ch.text) && gap <= fontSizeMin * 0.15)) {
+          && !(',.;:!?)]}”’'.includes(ch.text) && gap <= fontSizeMin * 0.15)
+          && !(('—–'.includes(ch.text) || '—–'.includes(prevCh.text)) && gap <= fontSizeMin * 0.15)) {
           wordsInitial.push(currentWord);
           currentWord = [];
         // Split at font family change.
@@ -2713,6 +2714,27 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
       // Stylistic ligatures are font-rendering decoration; downstream code
       // (search, OCR diff, paragraph text) expects the component letters.
       wordObj.text = ocr.replaceLigatures(wordObj.text);
+
+      // Run indices count ligature-expanded text, matching the replaceLigatures rewrite of the word text above.
+      // A word whose first char's style differs from the word style is skipped, since a run cannot express a styled prefix.
+      if (wordChars[0].fontInfo.bold === wordObj.style.bold
+        && wordChars[0].fontInfo.italic === wordObj.style.italic
+        && wordChars[0].fontInfo.smallCaps === wordObj.style.smallCaps) {
+        let textOffset = ocr.replaceLigatures(wordChars[0].text).length;
+        for (let ci = 1; ci < wordChars.length; ci++) {
+          const prevFi = wordChars[ci - 1].fontInfo;
+          const fi = wordChars[ci].fontInfo;
+          if (fi.bold !== prevFi.bold || fi.italic !== prevFi.italic || fi.smallCaps !== prevFi.smallCaps) {
+            const delta = {};
+            if (fi.bold !== wordObj.style.bold) delta.bold = fi.bold;
+            if (fi.italic !== wordObj.style.italic) delta.italic = fi.italic;
+            if (fi.smallCaps !== wordObj.style.smallCaps) delta.smallCaps = fi.smallCaps;
+            wordObj.styleRuns = wordObj.styleRuns || [];
+            wordObj.styleRuns.push({ i: textOffset, style: delta });
+          }
+          textOffset += ocr.replaceLigatures(wordChars[ci].text).length;
+        }
+      }
 
       lineObj.words.push(wordObj);
     }

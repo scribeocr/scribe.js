@@ -15,6 +15,16 @@ declare global {
         link?: string;
     };
 
+    /**
+     * A mid-word style change, e.g. an italic title's roman trailing comma.
+     * A new style begins at text index `i` and runs to the next entry or the end of the word.
+     * Fields omitted from `style` inherit the word's own style.
+     */
+    type StyleRun = {
+        i: number;
+        style: Partial<Style>;
+    };
+
     // Strings representing supported sources of text.
     // `stext` indicates the text was extracted directly from a PDF using mupdf.
     type TextSource = null | 'tesseract' | 'textract' | 'google_vision' | 'google_doc_ai' | 'abbyy' | 'alto' | 'stext' | 'hocr' | 'text' | 'azure_doc_intel' | 'docx';

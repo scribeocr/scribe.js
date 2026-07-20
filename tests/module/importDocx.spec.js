@@ -98,11 +98,14 @@ describe('Check that font styles are preserved in docx round-trip.', () => {
     expect(foundBoldWord).toBe(true);
   });
 
-  test('Italic style is preserved in round-trip', async () => {
+  test('Italic styles are preserved in round-trip', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.xml`]);
 
     const originalItalicWord = doc.ocr.active[0].lines[30].words[0];
-    expect(originalItalicWord.style.italic).toBe(true);
+    expect(originalItalicWord.style.italic, 'fixture word must be italic for the style round-trip to be meaningful').toBe(true);
+
+    // A run word currently cannot arise from ABBYY import, which splits words at style changes.
+    originalItalicWord.styleRuns = [{ i: 3, style: { italic: false } }];
 
     const docxData = await doc.exportData('docx');
     const docxFile = new File([docxData], 'test.docx', { type: 'application/vnd.openxmlformats-officedocument.wordprocessingml.document' });
@@ -124,7 +127,12 @@ describe('Check that font styles are preserved in docx round-trip.', () => {
       if (foundItalicWord) break;
     }
 
-    expect(foundItalicWord).toBe(true);
+    expect(foundItalicWord, 'no italic word survived the docx round-trip').toBe(true);
+
+    const wordMixed = doc.ocr.active[0].lines[24].words[2];
+    expect(wordMixed.text, 'planted mixed-style word changed on docx round-trip').toBe('Inc.');
+    expect(wordMixed.style.italic, 'italic base style lost on docx round-trip').toBe(true);
+    expect(wordMixed.styleRuns, 'intra-word style run lost on docx round-trip').toEqual([{ i: 3, style: { italic: false } }]);
   });
 
   afterAll(async () => {

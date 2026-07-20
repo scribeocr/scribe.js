@@ -68,10 +68,17 @@ export function writeDocxContent({
   };
 
   // A superscript run gets no leading inter-word space, so a footnote marker stays attached to the preceding word.
+  // A word with style runs becomes one <w:r> per segment (e.g. an italic word's non-italic comma).
   const textRun = (wordObj, lead) => {
-    const sx = styleXml(wordObj.style);
-    const rPr = sx ? `<w:rPr>${sx}</w:rPr>` : '';
-    return `<w:r>${rPr}<w:t xml:space="preserve">${lead}${ocr.escapeXml(wordObj.text)}</w:t></w:r>`;
+    const segments = ocr.getWordStyleSegments(wordObj) || [{ start: 0, end: wordObj.text.length, style: wordObj.style }];
+    let runsXml = '';
+    segments.forEach((segment, index) => {
+      const sx = styleXml(segment.style);
+      const rPr = sx ? `<w:rPr>${sx}</w:rPr>` : '';
+      const leadSeg = index === 0 ? lead : '';
+      runsXml += `<w:r>${rPr}<w:t xml:space="preserve">${leadSeg}${ocr.escapeXml(wordObj.text.slice(segment.start, segment.end))}</w:t></w:r>`;
+    });
+    return runsXml;
   };
 
   const fnMarkerRe = /^[\d*†‡]{1,3}[.)\]]?$/;

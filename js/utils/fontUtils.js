@@ -1,8 +1,8 @@
 // This file contains utility functions for calculating statistics using Opentype.js font objects.
 // The only import/dependency this file should have (aside from importing misc utility functions) should be fontObjects.js.
 
-import { getPrevLine } from '../objects/ocrObjects.js';
-import { quantile } from './miscUtils.js';
+import { getPrevLine, getWordStyleSegments } from '../objects/ocrObjects.js';
+import { getStyleLookup, quantile } from './miscUtils.js';
 
 import opentype from '../font-parser/src/index.js';
 import { scribeDocDefaults } from '../containers/scribeDocDefaults.js';
@@ -27,6 +27,17 @@ export const getDistinctCharsFont = (ocrPageArr, docFonts, family, style) => {
           const wordFont = docFonts.getWordFont(ocrWord);
           if (!wordFont) continue;
           if (family && wordFont.family !== family) continue;
+          // The PDF text writer switches fonts mid-word, so each face's subset needs the chars of its own segments.
+          const segments = getWordStyleSegments(ocrWord);
+          if (segments) {
+            for (const segment of segments) {
+              if (style && getStyleLookup(segment.style) !== style) continue;
+              ocrWord.text.slice(segment.start, segment.end).split('').forEach((x) => {
+                charsAll[x] = true;
+              });
+            }
+            continue;
+          }
           // Sometimes the font is 'normal' even when the requested style is 'bold' or 'italic'.
           // For example, this currently happens for the Chinese font, which has no bold or italic variants.
           // Therefore, as a quick fix for now, only filter by style if the current style is not 'normal'.
@@ -148,7 +159,9 @@ function calcWordFontSizePrecise(wordArr, fontOpentype, nonLatin = false) {
  */
 export function addLigatures(word, docFonts, settings) {
   const ligatures = settings?.ligatures ?? scribeDocDefaults.ligatures;
-  if (word.style.smallCaps || !ligatures) return word.text.split('');
+  // A ligature glyph cannot span two fonts.
+  // Collapsing two chars into one would also desync style-run indices from the text.
+  if (word.style.smallCaps || word.styleRuns || !ligatures) return word.text.split('');
   const fontI = docFonts.getWordFont(word);
   const fontOpentype = fontI.opentype;
   return addLigaturesText(word.text, fontOpentype);

@@ -272,7 +272,15 @@ export function writeHtml({
           styleStr += 'text-transform:uppercase;';
           innerHTML = makeSmallCapsDivs(wordStr, fontSizeHTMLSmallCaps);
         } else {
-          innerHTML = wordStr;
+          const styleSegments = ocr.getWordStyleSegments(wordObj);
+          if (styleSegments) {
+            innerHTML = styleSegments.map((segment) => {
+              const fontSegment = docFonts.getFont(segment.style, wordObj.lang);
+              return `<span style="font-style:${fontSegment.fontFaceStyle};font-weight:${fontSegment.fontFaceWeight};">${wordStr.slice(segment.start, segment.end)}</span>`;
+            }).join('');
+          } else {
+            innerHTML = wordStr;
+          }
         }
 
         let leftPad = 0;

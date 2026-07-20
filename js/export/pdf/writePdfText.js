@@ -198,13 +198,18 @@ export async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode
 
       let pdfFont = wordJ.lang === 'chi_sim' ? pdfFonts.NotoSansSC.normal : pdfFonts[wordFont.family][getStyleLookup(wordJ.style)];
 
+      // Style runs resolve to per-segment fonts inside the glyph loop below.
+      const styleSegments = wordJ.lang === 'chi_sim' ? null : ocr.getWordStyleSegments(wordJ);
+      let segmentIdx = 0;
+
       // When the per-character spacing needed to fit this word in its box is large enough that a viewer would break the word while extracting its text,
       // switch to the smallest width-scaled font variant that folds the stretch into the glyphs' declared widths, leaving only a sub-threshold residual Tc.
       // The word still renders at the same overall width, with the stretch carried by wider advances instead of Tc.
       // Latin only: chi_sim uses full-width glyphs and a separate inter-word kern path.
+      // Words with style runs also keep the base fonts, since a width variant only exists for the word's own style.
       // (visualCoords words are negligible here, so the residual is computed from the advance sum directly rather than re-deriving bearings.)
       let emitCharSpacing = charSpacing;
-      if (pdfFont.type === 0 && wordJ.lang !== 'chi_sim' && charArr.length > 1 && pdfFont.widthVariants) {
+      if (pdfFont.type === 0 && wordJ.lang !== 'chi_sim' && !styleSegments && charArr.length > 1 && pdfFont.widthVariants) {
         const thresholdPx = MAX_WORD_TC_RATIO * wordFontSize;
         if (charSpacing > thresholdPx) {
           const gaps = charArr.length - 1;
@@ -311,12 +316,21 @@ export async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode
       // Non-ASCII and special characters are encoded/escaped using winEncodingLookup
       for (let k = 0; k < charArr.length; k++) {
         const letterSrc = charArr[k];
-        const letter = wordJ.style.smallCaps ? charArr[k].toUpperCase() : charArr[k];
-        const fontSizeLetter = wordJ.style.smallCaps && letterSrc !== letter ? wordFontSize * wordFont.smallCapsMult : wordFontSize;
+        let styleLetter = wordJ.style;
+        let pdfFontLetter = pdfFont;
+        if (styleSegments) {
+          // The segment ends are text indices, which match k because ligature formation is skipped for words with style runs.
+          while (segmentIdx < styleSegments.length - 1 && k >= styleSegments[segmentIdx].end) segmentIdx++;
+          styleLetter = styleSegments[segmentIdx].style;
+          pdfFontLetter = pdfFonts[wordFont.family][getStyleLookup(styleLetter)];
+          if (pdfFontLetter !== pdfFont) pdfFontsUsed.add(pdfFontLetter);
+        }
+        const letter = styleLetter.smallCaps ? charArr[k].toUpperCase() : charArr[k];
+        const fontSizeLetter = styleLetter.smallCaps && letterSrc !== letter ? wordFontSize * wordFont.smallCapsMult : wordFontSize;
 
-        // Encoding needs to come from `pdfFont`, not `wordFont`, as the `pdfFont` will have a different index when subset.
-        const baseGid = pdfFontTypeCurrent === 0 ? pdfFont.opentype.charToGlyphIndex(letter) : null;
-        const letterEnc = pdfFontTypeCurrent === 0 ? baseGid?.toString(16).padStart(4, '0') : winEncodingLookup[letter];
+        // Encoding needs to come from `pdfFontLetter`, not `wordFont`, as the `pdfFontLetter` will have a different index when subset.
+        const baseGid = pdfFontLetter.type === 0 ? pdfFontLetter.opentype.charToGlyphIndex(letter) : null;
+        const letterEnc = pdfFontLetter.type === 0 ? baseGid?.toString(16).padStart(4, '0') : winEncodingLookup[letter];
         if (letterEnc) {
           let kern = (kerningArr[k] || 0) * (-1000 / fontSizeLetter);
 
@@ -339,20 +353,24 @@ export async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode
             kern = Math.round((wordSpaceNextAdj - wordSpaceExpected + spacingAdj + angleAdjWordX) * (-1000 / wordFontSize));
           }
 
-          if (pdfFontName !== pdfFontNameCurrent || fontSizeLetter !== fontSizeLast) {
+          if (pdfFontLetter.name !== pdfFontNameCurrent || fontSizeLetter !== fontSizeLast) {
             textContentObjStr += ' ] TJ\n';
-            textContentObjStr += `${pdfFontName} ${String(fontSizeLetter)} Tf\n`;
+            textContentObjStr += `${pdfFontLetter.name} ${String(fontSizeLetter)} Tf\n`;
+            pdfFontNameCurrent = pdfFontLetter.name;
+            pdfFontTypeCurrent = pdfFontLetter.type;
+            pdfFontOpentypeCurrent = pdfFontLetter.opentype;
+            pdfFontScaleCurrent = pdfFontLetter.widthScale || 1;
             fontSizeLast = fontSizeLetter;
             textContentObjStr += `${String(Math.round(emitCharSpacing * 1e6) / 1e6)} Tc\n`;
             textContentObjStr += '[ ';
           }
 
-          if (pdfFontTypeCurrent === 0) {
+          if (pdfFontLetter.type === 0) {
             // PDF text positioning uses the integer /W widths, not the embedded font's own advances,
             // so rounding each declared width to an integer leaves a small per-glyph error that accumulates (positioning is cumulative).
             // Correct it through the TJ number, computing the advance from the same scaled value that produced the emitted `/W`:
-            // `pdfFont.widthScale` (1 for a base font) times the shared base outline's advance.
-            const advancePdfPrecise = pdfFont.opentype.charToGlyph(letter).advanceWidth * (pdfFont.widthScale || 1) * (1000 / pdfFont.opentype.unitsPerEm);
+            // `pdfFontLetter.widthScale` (1 for a base font) times the shared base outline's advance.
+            const advancePdfPrecise = pdfFontLetter.opentype.charToGlyph(letter).advanceWidth * (pdfFontLetter.widthScale || 1) * (1000 / pdfFontLetter.opentype.unitsPerEm);
             const tjAdj = kern + (Math.floor(advancePdfPrecise) - advancePdfPrecise);
             textContentObjStr += `<${letterEnc}> ${String(Math.round(tjAdj * 1e6) / 1e6)} `;
           } else {

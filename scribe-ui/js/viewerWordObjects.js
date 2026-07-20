@@ -465,7 +465,16 @@ export class UiText {
       elem.innerHTML = UiText.makeSmallCapsDivs(wordStr, fontSizeHTMLSmallCaps);
     } else {
       if (restyle) elem.style.textTransform = '';
-      elem.textContent = wordStr;
+      const styleSegments = scribe.utils.ocr.getWordStyleSegments(this.word);
+      if (styleSegments) {
+        // Each style-run segment renders in its own span with the segment's face (e.g. an italic word's non-italic comma).
+        elem.innerHTML = styleSegments.map((segment) => {
+          const fontSegment = this.viewer.doc.fonts.getFont(segment.style, this.word.lang);
+          return `<span style="font-style:${fontSegment.fontFaceStyle};font-weight:${fontSegment.fontFaceWeight};">${scribe.utils.ocr.escapeXml(wordStr.slice(segment.start, segment.end))}</span>`;
+        }).join('');
+      } else {
+        elem.textContent = wordStr;
+      }
     }
 
     if (this.word.style.underline && opacity !== 0) {
@@ -730,6 +739,8 @@ export class UiText {
       // Words are not allowed to be empty.
       if (textNew) {
         itext.word.text = textNew;
+        // Style-run indices no longer match the edited text.
+        itext.word.styleRuns = undefined;
         if (itext.changeTextCallback) itext.changeTextCallback(itext);
       }
       UiText.updateWordCanvas(itext);

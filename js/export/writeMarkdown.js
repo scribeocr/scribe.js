@@ -1,6 +1,7 @@
 import { assignParagraphs } from '../utils/reflowPars.js';
 import { extractTableContent } from '../extractTables.js';
 import { calcTableBbox } from '../objects/layoutObjects.js';
+import { getWordStyleSegments } from '../objects/ocrObjects.js';
 import { calcBoxOverlap } from '../utils/miscUtils.js';
 
 /**
@@ -219,28 +220,37 @@ export function writeMarkdown({
         const wordObj = lineObj.words[i];
         if (!wordObj) continue;
 
-        const styleKey = applyFormatting ? (wordObj.style?.bold ? 'b' : '') + (wordObj.style?.italic ? 'i' : '') : '';
-        let wordText = escapeMarkdown(wordObj.text);
-        if (applyFormatting) {
-          wordText = applySuperscript(wordText, wordObj.style);
-        }
+        const styleSegments = applyFormatting ? getWordStyleSegments(wordObj) : null;
+        const pieces = styleSegments
+          ? styleSegments.map((segment) => ({ text: wordObj.text.slice(segment.start, segment.end), style: segment.style }))
+          : [{ text: wordObj.text, style: wordObj.style }];
 
-        // Check if style changed
-        if (styleKey !== currentStyleKey && styledWords.length > 0) {
-          flushStyledWords();
-        }
+        for (let p = 0; p < pieces.length; p++) {
+          const styleKey = applyFormatting ? (pieces[p].style?.bold ? 'b' : '') + (pieces[p].style?.italic ? 'i' : '') : '';
+          let wordText = escapeMarkdown(pieces[p].text);
+          if (applyFormatting) {
+            wordText = applySuperscript(wordText, pieces[p].style);
+          }
 
-        if (newLine && !isFirstContent) {
-          flushStyledWords();
-          mdStr += '\n';
-        } else if (!isFirstContent && styledWords.length === 0) {
-          mdStr += ' ';
-        }
+          if (styleKey !== currentStyleKey && styledWords.length > 0) {
+            flushStyledWords();
+          }
 
-        newLine = false;
-        isFirstContent = false;
-        currentStyleKey = styleKey;
-        styledWords.push(wordText);
+          if (p === 0) {
+            if (newLine && !isFirstContent) {
+              flushStyledWords();
+              mdStr += '\n';
+            } else if (!isFirstContent && styledWords.length === 0) {
+              mdStr += ' ';
+            }
+
+            newLine = false;
+            isFirstContent = false;
+          }
+
+          currentStyleKey = styleKey;
+          styledWords.push(wordText);
+        }
       }
 
       // Flush remaining words at end of line
