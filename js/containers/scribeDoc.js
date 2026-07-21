@@ -23,7 +23,7 @@ import {
 } from '../recognizeConvert.js';
 import { importFiles as importFilesImpl, importFilesSupp as importFilesSuppImpl } from '../import/import.js';
 import {
-  remapOutline, cloneOutline, makeOutlineNode, findOutlineEntry, isOutlineDescendant,
+  remapOutline, cloneOutline, makeOutlineNode, findOutlineEntry, isOutlineDescendant, reassignOutlineIds,
 } from '../objects/outlineObjects.js';
 import { runOptimization as runOptimizationImpl } from '../fontEval.js';
 import { clonePageFull, reIdPage } from '../objects/ocrObjects.js';
@@ -720,6 +720,19 @@ export class ScribeDoc {
       const at = atIndex == null ? siblings.length : Math.max(0, Math.min(atIndex, siblings.length));
       siblings.splice(at, 0, e.node);
     });
+  }
+
+  /**
+   * Replace the entire outline. Recorded as one undoable step.
+   * Every node gets a fresh id, so callers may pass plain `{ title, dest, action, open, children }` trees.
+   * @param {Array<import('../objects/outlineObjects.js').OutlineNode>} nodes
+   * @returns {Array<import('../objects/outlineObjects.js').OutlineNode>} A clone of the outline being replaced.
+   */
+  replaceOutline(nodes) {
+    const prev = cloneOutline(this.outline);
+    reassignOutlineIds(nodes);
+    this.history.record(() => { setDocOutline(this, nodes); });
+    return prev;
   }
 
   /**

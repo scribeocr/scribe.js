@@ -16,12 +16,13 @@ const NOTE_MARK_SVG = '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="c
 // Outline speech bubble for the empty state (the filled COMMENT_SVG stays the toolbar toggle).
 const EMPTY_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">'
   + '<rect x="3" y="4" width="18" height="12.5" rx="2.5"/><path d="M8.5 16.5v3.2l4-3.2"/></svg>';
-// Back chevron for the compact conversation view's header.
-const BACK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round"><path d="M15 5l-7 7 7 7"/></svg>';
-// Outward arrow on the conversation view's "p. N" page link.
-const JUMP_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M7 17L17 7M9 7h8v8"/></svg>';
 // Send arrow on the compact composer.
 const SEND_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 19V6M6 12l6-6 6 6"/></svg>';
+
+// eslint-disable-next-line max-len
+const REPLY_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 8 4 12l5 4"/><path d="M4 12h9a6 6 0 0 1 6 6v2"/></svg>';
+
+const DOTS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M5.5 12h.01M12 12h.01M18.5 12h.01"/></svg>';
 
 // A quote up to MAX + SLACK tall shows in full; taller, it caps at MAX and scrolls inside.
 // The SLACK band keeps a quote only just over MAX from scrolling to reveal a mere sliver.
@@ -39,13 +40,14 @@ const QUOTE_SCROLL_SLACK_PX = 64;
 /**
  * Create the comments side panel.
  * @param {*} scribe - The ScribeViewer instance.
- * @param {{ onNavigate: (pageIndex: number) => void, onResize?: (width: number, phase: 'start'|'move'|'end') => void,
+ * @param {{ onNavigate: (dest: { pageIndex: number, yFrac?: number }) => void, onResize?: (width: number, phase: 'start'|'move'|'end') => void,
  *   onComposeFocus?: (focused: boolean) => void }} handlers
+ *   `onNavigate` receives the anchor's top edge as `yFrac`, a fraction of page height, so the host can scroll to the comment rather than the top of its page.
  *   `onResize` fires as the right-edge handle is dragged, with the desired width and the drag phase.
  *   `onComposeFocus` fires as the compact conversation composer gains/loses focus, so the host can keep it clear of the on-screen keyboard.
  * @returns {{ panelElem: HTMLDivElement, toggleElem: HTMLSpanElement, rebuild: () => void, setActive: (pageIndex: number) => void,
  * setVisible: (v: boolean) => void, setCompact: (on: boolean) => void, reveal: (target: import('../viewerWordObjects.js').UiOcrWord | AnnotationText) => void,
- * destroy: () => void, newNote: () => void, count: () => number }}
+ * destroy: () => void, newNote: () => void }}
  */
 export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFocus }) {
   const panelElem = document.createElement('div');
@@ -53,14 +55,11 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
   panelElem.style.width = '240px';
   panelElem.tabIndex = -1;
 
-  // Header: title plus a running count of comments in the document.
   const headerElem = document.createElement('div');
   headerElem.className = 'scribe-cm-hd';
   const headerTitle = document.createElement('span');
   headerTitle.className = 'scribe-cm-hd-title';
   headerTitle.textContent = 'Comments';
-  const countElem = document.createElement('span');
-  countElem.className = 'scribe-cm-hd-count';
   // "New note on this page": drops a freestanding note in the current viewport and opens its editor.
   // Only useful while editing, so a read-only viewer hides it (set in rebuild()).
   const newBtn = document.createElement('button');
@@ -95,7 +94,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     e.stopPropagation();
     newNote();
   });
-  headerElem.append(headerTitle, countElem, newBtn);
+  headerElem.append(headerTitle, newBtn);
   panelElem.appendChild(headerElem);
 
   const listElem = document.createElement('div');
@@ -261,6 +260,20 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
   }
 
   /**
+   * The row's anchor as a navigation destination.
+   * @param {CommentRow} row
+   * @returns {{pageIndex: number, yFrac?: number}}
+   */
+  function rowDest(row) {
+    const dims = scribe.doc && scribe.doc.pageMetrics && scribe.doc.pageMetrics[row.pageIndex]
+      ? scribe.doc.pageMetrics[row.pageIndex].dims : null;
+    return {
+      pageIndex: row.pageIndex,
+      yFrac: dims && dims.height > 0 ? Math.min(1, Math.max(0, row.top / dims.height)) : undefined,
+    };
+  }
+
+  /**
    * Refresh the on-page comment marks (highlights) and note layer for `pageIndex` after a panel edit.
    * @param {number} pageIndex
    */
@@ -382,17 +395,19 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     refreshOnPage(row.pageIndex);
   }
 
-  // Compact (phone) mode: simpler tap-to-open rows, and a conversation view that slides in over the list.
-  // The host flips this with the phone layout.
   let compact = false;
-  /** The conversation open in the pane, or null while the list shows. @type {?CommentRow} */
-  let threadRow = null;
+  /** The row expanded in the compact list. @type {?CommentRow} */
+  let openRow = null;
+  /** The message being edited in the expanded row: 'root' or a reply index. @type {?('root'|number)} */
+  let openEdit = null;
+  let composing = false;
+  /** Last tap on a thread message, for the double tap that opens its editor. */
+  const msgTap = { row: null, target: null, t: 0 };
   /**
-   * The lazily-built conversation view's elements.
-   * @type {?{elem: HTMLDivElement, body: HTMLDivElement, jump: HTMLButtonElement, foot: HTMLDivElement,
-   *   field: HTMLTextAreaElement, send: HTMLButtonElement}}
+   * Disc tint per participant, assigned in order of first appearance in the list.
+   * @type {Map<string, string>}
    */
-  let pane = null;
+  const avaTint = new Map();
 
   /**
    * Format an ISO date as "Jun 5", adding the year when it is not the current year.
@@ -409,20 +424,13 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
   }
 
   /**
-   * The row's quote line, styled with the row's own markup.
-   * Notes have no covered text, so their quote slot is a plain "Note" label.
+   * The row's quote line: the text the mark covers, drawn the way the mark itself draws it.
    * @param {CommentRow} row
    * @returns {HTMLDivElement}
    */
   function compactQuote(row) {
     const q = document.createElement('div');
     q.className = 'scribe-cmc-quote';
-    if (row.kind === 'note') {
-      q.classList.add('note');
-      q.textContent = 'Note';
-      q.style.borderLeftColor = 'var(--scribe-note)';
-      return q;
-    }
     const rowKind = row.kind === 'redact' ? 'redact' : ((row.annot && row.annot.type) || 'highlight');
     q.textContent = row.preview || (rowKind === 'redact' ? 'Region on this page' : '');
     q.title = rowKind === 'underline' ? 'Underline'
@@ -430,7 +438,6 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     if (rowKind === 'redact') {
       q.classList.add('rd');
     } else if (row.color) {
-      q.style.borderLeftColor = row.color;
       if (rowKind === 'underline') {
         q.classList.add('ul');
         q.style.textDecorationColor = row.color;
@@ -445,51 +452,27 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
   }
 
   /**
-   * One message in the conversation view.
-   * @param {string} author
-   * @param {string} createdAt
-   * @param {string} text
-   * @returns {HTMLDivElement}
+   * A participant's initials disc, tinted so one person is one colour throughout the list.
+   * @param {string} name
+   * @returns {HTMLSpanElement}
    */
-  function threadMsg(author, createdAt, text) {
-    const msg = document.createElement('div');
-    msg.className = 'scribe-cmc-msg';
-    const ava = document.createElement('span');
-    ava.className = 'scribe-cmc-ava';
-    ava.textContent = (author || '?').split(/\s+/, 2).map((s) => s[0]).join('').toUpperCase();
-    const body = document.createElement('span');
-    body.className = 'scribe-cmc-mb';
-    const head = document.createElement('span');
-    head.className = 'scribe-cmc-mh';
-    head.textContent = author || 'Comment';
-    if (createdAt) {
-      const when = document.createElement('span');
-      when.className = 'scribe-cmc-when';
-      when.textContent = `· ${shortDate(createdAt)}`;
-      head.appendChild(when);
-    }
-    const textElem = document.createElement('span');
-    textElem.className = 'scribe-cmc-mt';
-    textElem.textContent = text;
-    body.append(head, textElem);
-    msg.append(ava, body);
-    return msg;
+  function avatarFor(name) {
+    const el = document.createElement('span');
+    el.className = `scribe-cmc-ava scribe-cmc-ava-${avaTint.get(name) || 'a'}`;
+    el.textContent = name.split(/\s+/, 2).map((s) => s[0] || '').join('').toUpperCase();
+    return el;
   }
 
   /**
-   * Fill the pane with `row`'s quote and conversation, and point its header link at the anchor page.
-   * @param {CommentRow} row
+   * An invisible disc-sized spacer.
+   * It holds a message's avatar-gutter slot open so every message body shares one text column.
+   * @returns {HTMLSpanElement}
    */
-  function renderThread(row) {
-    if (!pane) return;
-    pane.jump.innerHTML = `<span>p. ${row.pageIndex + 1}</span>${JUMP_SVG}`;
-    pane.body.textContent = '';
-    if (row.preview || row.kind === 'note' || row.kind === 'redact') pane.body.appendChild(compactQuote(row));
-    if (row.comment) pane.body.appendChild(threadMsg(row.author, row.createdAt, row.comment));
-    for (const reply of row.replies) pane.body.appendChild(threadMsg(reply.author || '', reply.createdAt || '', reply.text));
-    pane.foot.style.display = editing() ? '' : 'none';
-    pane.field.placeholder = row.comment ? 'Reply…' : 'Comment…';
-    pane.send.disabled = !pane.field.value.trim();
+  function avatarSlot() {
+    const el = document.createElement('span');
+    el.className = 'scribe-cmc-ava';
+    el.style.visibility = 'hidden';
+    return el;
   }
 
   /**
@@ -502,13 +485,31 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     const fresh = renderCompactRow(row);
     rowEls[i].replaceWith(fresh);
     rowEls[i] = fresh;
+    // A detached field cannot take focus, so the editor and composer are focused here rather than where they are built.
+    // Focusing at build time fails silently: on a phone the keyboard simply never opens.
+    const ed = /** @type {?HTMLTextAreaElement} */ (fresh.querySelector('.scribe-cmc-ed'));
+    if (ed) {
+      // scrollHeight also reads 0 while detached, so the initial fit waits for the DOM.
+      ed.style.height = 'auto';
+      ed.style.height = `${ed.scrollHeight}px`;
+      ed.focus({ preventScroll: true });
+      ed.setSelectionRange(ed.value.length, ed.value.length);
+      return;
+    }
+    if (composing) {
+      const field = /** @type {?HTMLTextAreaElement} */ (fresh.querySelector('.scribe-cmc-field'));
+      if (field) field.focus();
+    }
   }
 
-  /** Commit the composer's draft: the first message becomes the root comment, later ones append replies. */
-  function postComposer() {
-    const row = threadRow;
-    if (!row || !pane || !editing()) return;
-    const next = pane.field.value.trim();
+  /**
+   * Commit the expanded row's draft.
+   * The first message becomes the root comment; later ones append replies.
+   * @param {CommentRow} row
+   * @param {HTMLTextAreaElement} field
+   */
+  function postReply(row, field) {
+    const next = field.value.trim();
     if (!next) return;
     if (!row.comment) {
       if (row.kind === 'note') setNoteComment(row, next); else setHighlightComment(row, next);
@@ -525,103 +526,584 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
       setRowReplies(row, [...row.replies, reply]);
       row.replies = /** @type {AnnotationHighlight | AnnotationText} */ (row.annot).replies || [];
     }
-    pane.field.value = '';
-    pane.field.style.height = '';
-    renderThread(row);
-    refreshCompactRow(row);
-    pane.body.scrollTop = pane.body.scrollHeight;
+    field.value = '';
+    composing = false;
+    refreshEased(row);
   }
 
   /**
-   * Build the conversation pane on first use.
-   * @returns {NonNullable<typeof pane>}
+   * Commit the expanded row's open message editor.
+   * Emptying a reply deletes it, but emptying the root discards the edit instead of clearing the comment.
+   * @param {CommentRow} row
+   * @param {'root'|number} target
+   * @param {string} value
    */
-  function buildPane() {
-    if (pane) return pane;
-    const elem = document.createElement('div');
-    elem.className = 'scribe-cmc-pane';
-    const back = document.createElement('div');
-    back.className = 'scribe-cmc-back';
-    const backBtn = document.createElement('button');
-    backBtn.type = 'button';
-    backBtn.className = 'scribe-cmc-bk';
-    backBtn.innerHTML = `${BACK_SVG}<span>Comments</span>`;
-    backBtn.addEventListener('click', () => closeThread());
-    const jump = document.createElement('button');
-    jump.type = 'button';
-    jump.className = 'scribe-cmc-jmp';
-    jump.title = 'Show in document';
-    jump.addEventListener('click', () => { if (threadRow) onNavigate(threadRow.pageIndex); });
-    back.append(backBtn, jump);
-    const body = document.createElement('div');
-    body.className = 'scribe-cmc-body';
-    const foot = document.createElement('div');
-    foot.className = 'scribe-cmc-foot';
-    const comp = document.createElement('div');
-    comp.className = 'scribe-cmc-comp';
+  function commitCompactEdit(row, target, value) {
+    const next = value.trim();
+    openEdit = null;
+    if (target === 'root') {
+      if (next && next !== row.comment) {
+        if (row.kind === 'note') setNoteComment(row, next); else setHighlightComment(row, next);
+        const annot = /** @type {AnnotationHighlight | AnnotationText} */ (row.annot);
+        row.comment = annot.comment || '';
+        row.author = annot.author || '';
+        row.createdAt = annot.createdAt || '';
+      }
+    } else if (next !== row.replies[target].text) {
+      const replies = row.replies.slice();
+      if (next) replies[target] = { ...replies[target], text: next };
+      else replies.splice(target, 1);
+      setRowReplies(row, replies);
+      row.replies = /** @type {AnnotationHighlight | AnnotationText} */ (row.annot).replies || [];
+    }
+    refreshEased(row);
+  }
+
+  /**
+   * Replace one message of the expanded row with a text field.
+   * @param {CommentRow} row
+   * @param {HTMLElement} msgElem - The message body the editor takes the place of.
+   * @param {'root'|number} target
+   * @param {string} value
+   */
+  function openCompactEditor(row, msgElem, target, value) {
+    openEdit = target;
+    const wrap = document.createElement('div');
+    wrap.className = 'scribe-cmc-edit';
+    // The root's editor sits in the card body, outside the drawer's click guard.
+    // A tap into the field must not read as a row tap and fold the card mid-edit.
+    wrap.addEventListener('click', (e) => e.stopPropagation());
     const field = document.createElement('textarea');
-    field.className = 'scribe-cmc-field';
+    field.className = 'scribe-cmc-ed';
+    field.value = value;
     field.rows = 1;
-    field.addEventListener('input', () => {
+    const grow = () => {
       field.style.height = 'auto';
-      field.style.height = `${Math.min(field.scrollHeight, 120)}px`;
-      send.disabled = !field.value.trim();
-    });
+      field.style.height = `${field.scrollHeight}px`;
+    };
+    field.addEventListener('input', grow);
     field.addEventListener('focus', () => { if (onComposeFocus) onComposeFocus(true); });
-    // Dismissal commits, as everywhere in the app; Esc below is the one discard path.
+    // With no Save button, leaving the field is the commit: a tap anywhere else ends the edit and keeps the draft.
+    // The flag keeps the blur a removal fires from double-committing after Esc or Ctrl+Enter already settled the edit.
+    let done = false;
     field.addEventListener('blur', () => {
-      postComposer();
       if (onComposeFocus) onComposeFocus(false);
+      if (done) return;
+      done = true;
+      commitCompactEdit(row, target, field.value);
     });
     field.addEventListener('keydown', (e) => {
       if (e.key === 'Escape') {
         e.preventDefault();
-        field.value = '';
-        field.blur();
+        done = true;
+        openEdit = null;
+        refreshEased(row);
+      } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+        e.preventDefault();
+        done = true;
+        commitCompactEdit(row, target, field.value);
       }
       e.stopPropagation();
     });
-    const send = document.createElement('button');
-    send.type = 'button';
-    send.className = 'scribe-cmc-send';
-    send.title = 'Send';
-    send.setAttribute('aria-label', 'Send');
-    send.innerHTML = SEND_SVG;
-    send.disabled = true;
-    // Posting from the button must not blur the field first, so the keyboard stays up for the next reply.
-    send.addEventListener('pointerdown', (e) => e.preventDefault());
-    send.addEventListener('click', postComposer);
-    comp.append(field, send);
-    foot.appendChild(comp);
-    elem.append(back, body, foot);
-    panelElem.appendChild(elem);
-    pane = {
-      elem, body, jump, foot, field, send,
-    };
-    return pane;
+    wrap.append(field);
+    // Swapped live (a double tap on the message), the card eases to the editor's height; during a row render the element is detached and the render's own reflow owns the motion.
+    const live = msgElem.isConnected;
+    const i = rows.indexOf(row);
+    const fromH = live && i >= 0 && rowEls[i] ? rowEls[i].getBoundingClientRect().height : -1;
+    msgElem.replaceWith(wrap);
+    grow();
+    if (live) {
+      animateRowReflow(row, fromH);
+      // A blur-committed editor must hold focus from the start, or an untouched one could never end.
+      field.focus({ preventScroll: true });
+      field.setSelectionRange(field.value.length, field.value.length);
+    }
   }
 
   /**
-   * Slide the conversation view in over the list.
+   * Delete the row's whole thread.
+   * A note vanishes; a highlight keeps its mark but sheds its comment and replies.
    * @param {CommentRow} row
    */
-  function openThread(row) {
-    const p = buildPane();
-    threadRow = row;
-    renderThread(row);
-    p.elem.classList.add('on');
-  }
-
-  /** Return to the list. A focused composer blurs first, committing any draft. */
-  function closeThread() {
-    if (!pane) return;
-    if (document.activeElement === pane.field) pane.field.blur();
-    threadRow = null;
-    pane.elem.classList.remove('on');
+  function removeRow(row) {
+    const before = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches
+      ? null : new Map();
+    if (before) rows.forEach((r, i) => { if (rowEls[i]) before.set(r.annot, rowEls[i].getBoundingClientRect().top); });
+    if (row.kind === 'note') deleteNote(row); else setHighlightComment(row, '');
+    openRow = null;
+    openEdit = null;
+    composing = false;
+    rebuild();
+    if (!before || !before.size) return;
+    /** @type {Array<[HTMLElement, number]>} */
+    const shifts = [];
+    rows.forEach((r, i) => {
+      const el = rowEls[i];
+      const from = before.get(r.annot);
+      if (!el || from === undefined) return;
+      const dy = from - el.getBoundingClientRect().top;
+      if (Math.abs(dy) >= 1) shifts.push([el, dy]);
+    });
+    if (!shifts.length) return;
+    for (const [el, dy] of shifts) el.style.transform = `translateY(${dy}px)`;
+    listElem.getBoundingClientRect();
+    for (const [el] of shifts) {
+      el.style.transition = 'transform .24s cubic-bezier(.3, .8, .3, 1)';
+      el.style.transform = '';
+    }
+    setTimeout(() => { for (const [el] of shifts) el.style.transition = ''; }, 300);
   }
 
   /**
-   * One row of the compact list: tapping it navigates to the anchor's page and opens the conversation view.
+   * Open the panel's shared context menu right-aligned under a message's dots button.
+   * @param {HTMLElement} btn
+   * @param {(add: (label: string, run: () => void, danger?: boolean) => void) => void} fill
+   */
+  function openDotsMenu(btn, fill) {
+    menuElem.textContent = '';
+    fill((label, run, danger) => {
+      const item = document.createElement('div');
+      item.className = `scribe-cm-menu-item${danger ? ' scribe-cm-menu-danger' : ''}`;
+      item.textContent = label;
+      item.addEventListener('click', (e) => {
+        e.stopPropagation();
+        closeMenu();
+        run();
+      });
+      menuElem.appendChild(item);
+    });
+    const r = btn.getBoundingClientRect();
+    showMenuAt(r.left, r.bottom + 2);
+    const host = (scribe.outerElem || panelElem).getBoundingClientRect();
+    menuElem.style.left = `${Math.max(4, r.right - menuElem.offsetWidth - host.left)}px`;
+  }
+
+  /**
+   * The expanded row's conversation below the card body.
+   * The root message itself lives in the card body, shared with the collapsed state.
+   * @param {CommentRow} row
+   * @returns {HTMLDivElement}
+   */
+  function buildDrawer(row) {
+    const drawer = document.createElement('div');
+    drawer.className = 'scribe-cmc-drawer';
+
+    /**
+     * One reply of the conversation.
+     * @param {AnnotationReply} reply
+     * @param {number} ri
+     */
+    const addMsg = (reply, ri) => {
+      const author = reply.author || 'Reviewer';
+      const createdAt = reply.createdAt || '';
+      const msg = document.createElement('div');
+      msg.className = 'scribe-cmc-msg';
+      msg.appendChild(avatarFor(author));
+      const body = document.createElement('span');
+      body.className = 'scribe-cmc-mb';
+      const head = document.createElement('span');
+      head.className = 'scribe-cmc-mh';
+      const who = document.createElement('span');
+      who.textContent = author;
+      head.appendChild(who);
+      if (createdAt) {
+        const when = document.createElement('span');
+        when.className = 'scribe-cmc-when';
+        when.textContent = `· ${shortDate(createdAt)}`;
+        head.appendChild(when);
+      }
+      if (editing()) {
+        const dots = document.createElement('button');
+        dots.type = 'button';
+        dots.className = 'scribe-cmc-dots';
+        dots.title = 'Reply actions';
+        dots.setAttribute('aria-label', 'Reply actions');
+        dots.innerHTML = DOTS_SVG;
+        dots.addEventListener('click', (e) => {
+          e.stopPropagation();
+          openDotsMenu(dots, (add) => {
+            add('Edit', () => {
+              msgTap.row = null;
+              composing = false;
+              openEdit = ri;
+              refreshEased(row);
+            });
+            add('Delete', () => {
+              openEdit = null;
+              const i = rows.indexOf(row);
+              const h = i >= 0 && rowEls[i] ? rowEls[i].getBoundingClientRect().height : -1;
+              const replies = row.replies.slice();
+              replies.splice(ri, 1);
+              setRowReplies(row, replies);
+              row.replies = row.annot.replies || [];
+              refreshCompactRow(row);
+              animateRowReflow(row, h);
+            }, true);
+          });
+        });
+        head.appendChild(dots);
+      }
+      body.appendChild(head);
+      const textElem = document.createElement('span');
+      textElem.className = 'scribe-cmc-mt';
+      textElem.textContent = reply.text;
+      body.appendChild(textElem);
+      msg.appendChild(body);
+      drawer.appendChild(msg);
+      if (openEdit === ri) openCompactEditor(row, textElem, ri, reply.text);
+      else if (editing()) {
+        // The double tap that opens the editor is counted from click events, which a phone double tap and a mouse double click both produce.
+        textElem.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const now = Date.now();
+          if (msgTap.row === row && msgTap.target === ri && now - msgTap.t < 400) {
+            msgTap.row = null;
+            openCompactEditor(row, textElem, ri, reply.text);
+          } else {
+            msgTap.row = row;
+            msgTap.target = ri;
+            msgTap.t = now;
+          }
+        });
+      }
+    };
+
+    row.replies.forEach(addMsg);
+
+    if (!editing()) return drawer;
+
+    if (composing || !row.comment) {
+      const comp = document.createElement('div');
+      comp.className = 'scribe-cmc-comp';
+      const field = document.createElement('textarea');
+      field.className = 'scribe-cmc-field';
+      field.rows = 1;
+      const answering = row.replies.length ? row.replies[row.replies.length - 1].author : '';
+      field.placeholder = row.comment ? (answering ? `Reply to ${answering}…` : 'Reply…') : 'Comment…';
+      const send = document.createElement('button');
+      send.type = 'button';
+      send.className = 'scribe-cmc-send';
+      send.title = 'Send';
+      send.setAttribute('aria-label', 'Send');
+      send.innerHTML = SEND_SVG;
+      send.disabled = true;
+      field.addEventListener('input', () => {
+        field.style.height = 'auto';
+        field.style.height = `${Math.min(field.scrollHeight, 120)}px`;
+        send.disabled = !field.value.trim();
+      });
+      field.addEventListener('focus', () => { if (onComposeFocus) onComposeFocus(true); });
+      field.addEventListener('blur', () => { if (onComposeFocus) onComposeFocus(false); });
+      field.addEventListener('keydown', (e) => {
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          field.value = '';
+          composing = false;
+          refreshEased(row);
+        } else if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
+          e.preventDefault();
+          postReply(row, field);
+        } else if (e.key === 'Enter' && !e.shiftKey && !e.altKey && !field.value.trim()) {
+          // A blank reply cannot post (the send button is disabled), so return dismisses the composer.
+          // It is the one way out on a phone, which has no Escape.
+          e.preventDefault();
+          composing = false;
+          refreshEased(row);
+        }
+        e.stopPropagation();
+      });
+      // Posting from the button must not blur the field first, so the keyboard stays up for the next reply.
+      send.addEventListener('pointerdown', (e) => e.preventDefault());
+      send.addEventListener('click', (e) => { e.stopPropagation(); postReply(row, field); });
+      comp.append(field, send);
+      drawer.appendChild(comp);
+      return drawer;
+    }
+
+    const verbs = document.createElement('div');
+    verbs.className = 'scribe-cmc-verbs';
+    const reply = document.createElement('button');
+    reply.type = 'button';
+    reply.className = 'scribe-cmc-vb';
+    reply.innerHTML = `${REPLY_SVG}<span>Reply</span>`;
+    reply.addEventListener('click', (e) => {
+      e.stopPropagation();
+      openEdit = null;
+      composing = true;
+      refreshEased(row);
+    });
+    verbs.appendChild(reply);
+    drawer.appendChild(verbs);
+    return drawer;
+  }
+
+  /**
+   * Ease a re-rendered compact row from its pre-swap height to its fresh natural height.
+   * @param {CommentRow} row
+   * @param {number} fromH - Rendered height before the swap; negative skips the animation.
+   * @param {() => void} [onSettle] - Runs once the height settles (immediately when nothing animates).
+   */
+  function animateRowReflow(row, fromH, onSettle) {
+    const i = rows.indexOf(row);
+    const el = i >= 0 ? rowEls[i] : null;
+    if (!el || fromH < 0) {
+      if (onSettle) onSettle();
+      return;
+    }
+    const toH = el.getBoundingClientRect().height;
+    if (Math.abs(toH - fromH) < 1) {
+      if (onSettle) onSettle();
+      return;
+    }
+    el.style.height = `${fromH}px`;
+    el.classList.add('scribe-cmc-reflow');
+    el.getBoundingClientRect();
+    el.style.height = `${toH}px`;
+    let settled = false;
+    const settle = () => {
+      if (settled) return;
+      settled = true;
+      el.removeEventListener('transitionend', onEnd);
+      el.classList.remove('scribe-cmc-reflow');
+      el.style.height = '';
+      if (onSettle) onSettle();
+    };
+    /** @param {TransitionEvent} e */
+    function onEnd(e) { if (e.target === el && e.propertyName === 'height') settle(); }
+    el.addEventListener('transitionend', onEnd);
+    // transitionend is lost under reduced motion or if the row leaves layout mid-flight.
+    setTimeout(settle, 320);
+  }
+
+  /**
+   * Re-render `row` easing its height, for control swaps that grow or shrink the card in place.
+   * @param {CommentRow} row
+   */
+  function refreshEased(row) {
+    const i = rows.indexOf(row);
+    const h = i >= 0 && rowEls[i] ? rowEls[i].getBoundingClientRect().height : -1;
+    refreshCompactRow(row);
+    animateRowReflow(row, h);
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    // A same-height swap (the footer verbs for the composer) has no reflow to ride, so the incoming control fades in instead.
+    const el = i >= 0 ? rowEls[i] : null;
+    if (!el || h < 0 || Math.abs(el.getBoundingClientRect().height - h) >= 1) return;
+    const incoming = el.querySelector('.scribe-cmc-comp, .scribe-cmc-edit, .scribe-cmc-verbs');
+    if (!(incoming instanceof HTMLElement)) return;
+    incoming.style.opacity = '0';
+    incoming.getBoundingClientRect();
+    incoming.style.transition = 'opacity .18s ease';
+    incoming.style.opacity = '1';
+    setTimeout(() => { incoming.style.cssText = ''; }, 240);
+  }
+
+  /**
+   * Ease `row`'s root text between its clamped and full extents, in step with the row's own reveal.
+   * @param {CommentRow} row
+   * @param {boolean} opening
+   */
+  function easeRootText(row, opening) {
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const i = rows.indexOf(row);
+    const el = i >= 0 ? rowEls[i] : null;
+    const t = el ? el.querySelector('.scribe-cmc-root > .scribe-cmc-text') : null;
+    if (!t) return;
+    // scrollHeight reads the full content height even while the resting clamp hides it.
+    const clamped = Math.round(parseFloat(getComputedStyle(t).lineHeight) * 2);
+    const full = t.scrollHeight;
+    if (full <= clamped + 2) return;
+    t.style.display = 'block';
+    t.style.webkitLineClamp = 'unset';
+    t.style.maxHeight = `${opening ? clamped : full}px`;
+    t.getBoundingClientRect();
+    t.style.transition = 'max-height .24s cubic-bezier(.3, .8, .3, 1)';
+    t.style.maxHeight = `${opening ? full : clamped}px`;
+    setTimeout(() => { t.style.cssText = ''; }, 300);
+  }
+
+  /**
+   * Dissolve `row`'s reply summary as the conversation opens; print it back in place as the card folds shut.
+   * @param {CommentRow} row
+   * @param {boolean} opening
+   */
+  function easeStrip(row, opening) {
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) return;
+    const i = rows.indexOf(row);
+    const el = i >= 0 ? rowEls[i] : null;
+    const s = el ? el.querySelector('.scribe-cmc-strip') : null;
+    if (!(s instanceof HTMLElement)) return;
+    if (!opening) {
+      // The returning summary only fades in at its resting size and place.
+      // The fold's rising edge does the moving, so nothing inside the collapsed card travels against it.
+      s.style.opacity = '0';
+      s.getBoundingClientRect();
+      s.style.transition = 'opacity .24s cubic-bezier(.3, .8, .3, 1)';
+      s.style.opacity = '1';
+      setTimeout(() => { s.style.cssText = ''; }, 300);
+      return;
+    }
+    // scrollHeight still reads the faces' height while the open state holds the strip at zero.
+    const full = `${s.scrollHeight}px`;
+    s.style.overflow = 'hidden';
+    s.style.visibility = 'visible';
+    s.style.height = full;
+    s.style.marginTop = '8px';
+    s.style.opacity = '1';
+    s.getBoundingClientRect();
+    const curve = '.24s cubic-bezier(.3, .8, .3, 1)';
+    s.style.transition = `height ${curve}, margin-top ${curve}, opacity ${curve}`;
+    s.style.height = '0';
+    s.style.marginTop = '0';
+    s.style.opacity = '0';
+    setTimeout(() => { s.style.cssText = ''; }, 300);
+  }
+
+  /**
+   * Expand `row` in place (animated), collapsing whichever row was open.
+   * @param {?CommentRow} row
+   */
+  function setOpenRow(row) {
+    const prev = openRow;
+    if (prev === row) return;
+    // A keyboard toggle never reaches the outside-click closer, so any open dots menu would outlive the re-render.
+    closeMenu();
+    openRow = row;
+    openEdit = null;
+    composing = false;
+    const elOf = (r) => {
+      const i = rows.indexOf(r);
+      return (i >= 0 && rowEls[i]) ? rowEls[i] : null;
+    };
+    const prevEl = prev ? elOf(prev) : null;
+    const prevH = prevEl ? prevEl.getBoundingClientRect().height : -1;
+    const openH = row && elOf(row) ? elOf(row).getBoundingClientRect().height : -1;
+    const listBox = listElem.getBoundingClientRect();
+    const startY = row && elOf(row) ? elOf(row).getBoundingClientRect().top - listBox.top : 0;
+    if (prev) refreshCompactRow(prev);
+    if (row) refreshCompactRow(row);
+    // Both rows now rest at their final sizes, so the pin aims at the layout the motion ends in.
+    // With the pin aimed at the starting layout instead, the row overshoots and falls back.
+    const el = row ? elOf(row) : null;
+    let targetY = 0;
+    if (el) {
+      const fin = el.getBoundingClientRect();
+      const finY = fin.top - listBox.top;
+      // A conversation usually outgrows the list, so its top is pinned to the list's top rather than nudged the minimum distance, which would leave most of the thread below the fold.
+      targetY = (fin.height > listBox.height || finY < 0) ? 0
+        : finY - Math.max(0, finY + fin.height - listBox.height);
+    }
+    // The height ease measures its target before the inner eases move the text and strip to their start values.
+    // A later measure would catch them mid-start and settle the row short.
+    if (prev) {
+      const freshEl = elOf(prev);
+      const toH = freshEl ? freshEl.getBoundingClientRect().height : -1;
+      const reduce = window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+      if (!reduce && prevEl && freshEl && toH >= 0 && Math.abs(toH - prevH) >= 1) {
+        // The collapsed render steps aside so the card folds shut over its still-painted conversation.
+        // Folding over a card re-rendered up front spends the whole ease sweeping a blank tail.
+        freshEl.replaceWith(prevEl);
+        // The summary takes its resting slot at once and fades in place while the fold clips the conversation away beneath it.
+        // Its start state must ride the same style pass as the class flip: a flush between them snaps it to resting opacity, and the fade then plays backwards.
+        const s = prevEl.querySelector('.scribe-cmc-strip');
+        if (s instanceof HTMLElement) {
+          s.style.opacity = '0';
+          s.style.transition = 'opacity .2s cubic-bezier(.3, .8, .3, 1)';
+        }
+        prevEl.classList.remove('open');
+        prevEl.setAttribute('aria-expanded', 'false');
+        prevEl.style.height = `${prevH}px`;
+        prevEl.classList.add('scribe-cmc-reflow');
+        const t = prevEl.querySelector('.scribe-cmc-root > .scribe-cmc-text');
+        const clamped = t instanceof HTMLElement ? Math.round(parseFloat(getComputedStyle(t).lineHeight) * 2) : 0;
+        // The class flip restored the resting clamp; inline overrides hold the text open so it can ease down.
+        const unclamp = t instanceof HTMLElement && t.scrollHeight > clamped + 2;
+        if (unclamp) {
+          t.style.display = 'block';
+          t.style.webkitLineClamp = 'unset';
+          t.style.maxHeight = `${t.scrollHeight}px`;
+          t.style.transition = 'max-height .2s cubic-bezier(.3, .8, .3, 1)';
+        }
+        prevEl.getBoundingClientRect();
+        prevEl.style.height = `${toH}px`;
+        // The fade and re-clamp commit after one rendered frame at their start values, so the transitions arm against that frame rather than the pre-collapse open state.
+        requestAnimationFrame(() => requestAnimationFrame(() => {
+          if (unclamp) t.style.maxHeight = `${clamped}px`;
+          if (s instanceof HTMLElement) s.style.opacity = '1';
+        }));
+        let settled = false;
+        const settle = () => {
+          if (settled) return;
+          settled = true;
+          prevEl.removeEventListener('transitionend', onEnd);
+          // The canonical collapsed render takes over; a mid-fold re-render may have replaced it.
+          const j = rows.indexOf(prev);
+          const cur = j >= 0 ? rowEls[j] : null;
+          if (prevEl.parentNode && cur && !cur.parentNode) prevEl.replaceWith(cur);
+          else prevEl.remove();
+        };
+        /** @param {TransitionEvent} e */
+        function onEnd(e) { if (e.target === prevEl && e.propertyName === 'height') settle(); }
+        prevEl.addEventListener('transitionend', onEnd);
+        setTimeout(settle, 320);
+      } else {
+        animateRowReflow(prev, prevH);
+        easeRootText(prev, false);
+        easeStrip(prev, false);
+      }
+    }
+    if (row) {
+      animateRowReflow(row, openH);
+      easeRootText(row, true);
+      easeStrip(row, true);
+    }
+    if (el) glideScroll(el, startY, targetY);
+  }
+
+  let glideSeq = 0;
+
+  /**
+   * Ease the list's scroll so the toggled row travels straight to its pinned resting place.
+   * @param {HTMLElement} el - The opened row, re-measured every frame so the collapse above it and its own growth compose into one motion.
+   * @param {number} from - The row's on-screen offset as the toggle begins.
+   * @param {number} to - The offset the pin rule chose against the final layout.
+   */
+  function glideScroll(el, from, to) {
+    const seq = ++glideSeq;
+    // Scrolled by hand rather than with scrollIntoView, which walks every scrollable ancestor and would drag the whole viewer along to bring one list row into view.
+    const place = (y) => {
+      listElem.scrollTop += (el.getBoundingClientRect().top - listElem.getBoundingClientRect().top) - y;
+    };
+    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+      place(to);
+      return;
+    }
+    // y(x) of the reveal's cubic-bezier(.3, .8, .3, 1), so the glide shares its cadence.
+    const curve = (x) => {
+      let lo = 0;
+      let hi = 1;
+      let u = x;
+      for (let k = 0; k < 24; k++) {
+        u = (lo + hi) / 2;
+        if (3 * (1 - u) * (1 - u) * u * 0.3 + 3 * (1 - u) * u * u * 0.3 + u * u * u < x) lo = u;
+        else hi = u;
+      }
+      return 3 * (1 - u) * (1 - u) * u * 0.8 + 3 * (1 - u) * u * u + u * u * u;
+    };
+    let start = 0;
+    /** @param {number} ts */
+    const step = (ts) => {
+      if (seq !== glideSeq || !el.isConnected) return;
+      if (!start) start = ts;
+      const p = Math.min(1, (ts - start) / 240);
+      place(from + (to - from) * curve(p));
+      if (p < 1) requestAnimationFrame(step);
+    };
+    requestAnimationFrame(step);
+  }
+
+  /**
+   * One row of the compact list, rendered collapsed or expanded.
+   * The collapsed form is a strict prefix of the expanded one, so opening a card only reveals the conversation below what is already showing.
    * @param {CommentRow} row
    * @returns {HTMLDivElement}
    */
@@ -629,55 +1111,143 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     const el = document.createElement('div');
     el.className = 'scribe-cmc-row';
     el.dataset.page = String(row.pageIndex);
-    const top = document.createElement('div');
-    top.className = 'scribe-cmc-top';
-    if (row.author) {
-      const ava = document.createElement('span');
-      ava.className = 'scribe-cmc-ava';
-      ava.textContent = row.author.split(/\s+/, 2).map((s) => s[0]).join('').toUpperCase();
-      const who = document.createElement('span');
-      who.className = 'scribe-cmc-who';
-      who.textContent = row.author;
-      top.append(ava, who);
-      if (row.createdAt) {
-        const when = document.createElement('span');
-        when.className = 'scribe-cmc-when';
-        when.textContent = `· ${shortDate(row.createdAt)}`;
-        top.appendChild(when);
-      }
-    } else {
-      // Branch on row.kind before annot.type: a note's annotation type is 'text', which the markup chain would misread as a highlight.
-      const kind = document.createElement('span');
-      kind.className = 'scribe-cmc-kind';
-      const rowKind = (row.kind === 'redact' || row.kind === 'note') ? row.kind : ((row.annot && row.annot.type) || 'highlight');
-      kind.textContent = rowKind === 'note' ? 'Note'
-        : (rowKind === 'underline' ? 'Underline'
-          : (rowKind === 'strikeout' ? 'Strikethrough' : (rowKind === 'redact' ? 'Redaction' : 'Highlight')));
-      top.appendChild(kind);
+    const expandable = row.kind !== 'redact';
+    const expanded = expandable && row === openRow;
+    if (expanded) el.classList.add('open');
+    if (expandable) {
+      el.tabIndex = 0;
+      el.setAttribute('role', 'button');
+      el.setAttribute('aria-expanded', String(expanded));
     }
+    const rail = document.createElement('span');
+    rail.className = 'scribe-cmc-rail';
+    rail.style.background = row.kind === 'note' ? 'var(--scribe-note)'
+      : (row.kind === 'redact' ? 'var(--scribe-danger)' : (row.color || 'var(--scribe-line-strong)'));
+    const inner = document.createElement('div');
+    inner.className = 'scribe-cmc-in';
+    el.append(rail, inner);
+
+    const head = document.createElement('div');
+    head.className = 'scribe-cmc-hd';
+    head.appendChild(avatarFor(row.author || 'Reviewer'));
+    const mh = document.createElement('span');
+    mh.className = 'scribe-cmc-mh';
+    const who = document.createElement('span');
+    who.className = 'scribe-cmc-who';
+    who.textContent = row.author || 'Reviewer';
+    mh.appendChild(who);
+    if (row.createdAt) {
+      const when = document.createElement('span');
+      when.className = 'scribe-cmc-when';
+      when.textContent = `· ${shortDate(row.createdAt)}`;
+      mh.appendChild(when);
+    }
+    head.appendChild(mh);
     const pg = document.createElement('span');
     pg.className = 'scribe-cmc-pg';
     pg.textContent = `p. ${row.pageIndex + 1}`;
-    top.appendChild(pg);
-    el.appendChild(top);
-    if (row.preview || row.kind === 'note' || row.kind === 'redact') el.appendChild(compactQuote(row));
+    head.appendChild(pg);
+    if (editing() && expandable && (row.comment || row.kind === 'note')) {
+      const dots = document.createElement('button');
+      dots.type = 'button';
+      dots.className = 'scribe-cmc-dots';
+      dots.title = 'Comment actions';
+      dots.setAttribute('aria-label', 'Comment actions');
+      dots.innerHTML = DOTS_SVG;
+      dots.addEventListener('click', (e) => {
+        e.stopPropagation();
+        openDotsMenu(dots, (add) => {
+          if (row.comment) {
+            add('Edit', () => {
+              msgTap.row = null;
+              if (openRow !== row) setOpenRow(row);
+              composing = false;
+              openEdit = 'root';
+              refreshEased(row);
+            });
+          }
+          const delLabel = row.replies.length ? 'Delete thread'
+            : (row.kind === 'note' ? 'Delete note' : 'Delete');
+          add(delLabel, () => removeRow(row), true);
+        });
+      });
+      head.appendChild(dots);
+    }
+    inner.appendChild(head);
+
+    const quote = row.kind !== 'note' && (row.preview || row.kind === 'redact') ? compactQuote(row) : null;
+    if (quote) inner.appendChild(quote);
+
     if (row.comment) {
-      const text = document.createElement('div');
-      text.className = 'scribe-cmc-text';
-      text.textContent = row.comment;
-      el.appendChild(text);
+      const rootRow = document.createElement('div');
+      rootRow.className = 'scribe-cmc-root';
+      rootRow.appendChild(avatarSlot());
+      const textElem = document.createElement('div');
+      textElem.className = 'scribe-cmc-text';
+      textElem.textContent = row.comment;
+      rootRow.appendChild(textElem);
+      inner.appendChild(rootRow);
+      if (expanded && openEdit === 'root') openCompactEditor(row, textElem, 'root', row.comment);
+      else if (expanded && editing()) {
+        // The double tap that opens the editor is counted from click events, which a phone double tap and a mouse double click both produce.
+        textElem.addEventListener('click', (e) => {
+          e.stopPropagation();
+          const now = Date.now();
+          if (msgTap.row === row && msgTap.target === 'root' && now - msgTap.t < 400) {
+            msgTap.row = null;
+            openCompactEditor(row, textElem, 'root', row.comment);
+          } else {
+            msgTap.row = row;
+            msgTap.target = 'root';
+            msgTap.t = now;
+          }
+        });
+      }
+    } else if (row.kind === 'redact') {
+      const gone = document.createElement('div');
+      gone.className = 'scribe-cmc-text gone';
+      gone.textContent = 'Removed on export';
+      inner.appendChild(gone);
     }
+
     if (row.replies.length) {
-      const rep = document.createElement('div');
-      rep.className = 'scribe-cmc-rep';
-      rep.textContent = row.replies.length > 1 ? `${row.replies.length} replies` : '1 reply';
-      el.appendChild(rep);
+      // The open row renders the reply summary too, held at zero by CSS, so the toggle can ease it away and back.
+      const strip = document.createElement('div');
+      strip.className = 'scribe-cmc-strip';
+      const faces = document.createElement('span');
+      faces.className = 'scribe-cmc-faces';
+      const seen = new Set();
+      // Newest speaker first, so the stack paints them over the people they answered.
+      for (const speaker of [{ author: row.author }, ...row.replies].reverse()) {
+        const face = speaker.author || 'Reviewer';
+        if (seen.has(face) || seen.size >= 3) continue;
+        seen.add(face);
+        faces.appendChild(avatarFor(face));
+      }
+      strip.appendChild(faces);
+      const n = document.createElement('span');
+      n.className = 'scribe-cmc-n';
+      n.textContent = row.replies.length > 1 ? `${row.replies.length} replies` : '1 reply';
+      strip.append(n);
+      inner.appendChild(strip);
     }
-    el.addEventListener('click', () => {
-      onNavigate(row.pageIndex);
-      // A redaction mark has no conversation; its row only locates the mark.
-      if (row.kind !== 'redact') openThread(row);
+
+    if (expanded) inner.appendChild(buildDrawer(row));
+
+    el.addEventListener('click', (e) => {
+      if (expanded && /** @type {HTMLElement} */ (e.target).closest('.scribe-cmc-drawer')) return;
+      onNavigate(rowDest(row));
+      if (expandable) setOpenRow(expanded ? null : row);
     });
+    if (expandable) {
+      el.addEventListener('keydown', (e) => {
+        if (e.key !== 'Enter' && e.key !== ' ') return;
+        if (/** @type {HTMLElement} */ (e.target).closest('.scribe-cmc-drawer, button')) return;
+        e.preventDefault();
+        onNavigate(rowDest(row));
+        setOpenRow(expanded ? null : row);
+      });
+    }
     return el;
   }
 
@@ -689,7 +1259,9 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     if (compact === !!on) return;
     compact = !!on;
     panelElem.classList.toggle('scribe-cm-compact', compact);
-    closeThread();
+    openRow = null;
+    openEdit = null;
+    composing = false;
     if (visible) rebuild();
   }
 
@@ -1100,7 +1672,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     el.addEventListener('click', (e) => {
       if (e.ctrlKey || e.metaKey) { toggleSelect(i); return; }
       clearSelection();
-      onNavigate(row.pageIndex);
+      onNavigate(rowDest(row));
     });
 
     if (editing()) {
@@ -1168,14 +1740,18 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     selected.clear();
     rows = [];
     if (!hasDoc()) {
-      countElem.textContent = '';
-      if (compact && threadRow) closeThread();
+      openRow = null;
       return;
     }
     rows = collectRows();
     // Sort by page then position, never creation order, so a highlight added atop a page never lists below an older one lower down.
     rows.sort((a, b) => a.pageIndex - b.pageIndex || a.top - b.top || a.left - b.left);
-    countElem.textContent = rows.length ? String(rows.length) : '';
+    avaTint.clear();
+    for (const row of rows) {
+      for (const who of [row.author || 'Reviewer', ...row.replies.map((reply) => reply.author || 'Reviewer')]) {
+        if (!avaTint.has(who)) avaTint.set(who, 'abc'[avaTint.size % 3]);
+      }
+    }
     if (rows.length === 0) {
       const empty = document.createElement('div');
       empty.className = 'scribe-cm-empty';
@@ -1191,7 +1767,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
         empty.appendChild(how);
       }
       listElem.appendChild(empty);
-      if (compact && threadRow) closeThread();
+      openRow = null;
       return;
     }
     let lastPage = -1;
@@ -1211,18 +1787,34 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
       rowEls[i] = el;
       listElem.appendChild(el);
     });
-    if (compact && threadRow) {
-      const prev = threadRow;
+    if (compact && openRow) {
+      // `collectRows` rebuilds the row objects, so the expanded row is re-found by annotation identity.
+      const prev = openRow;
       const again = rows.find((r) => r.annot === prev.annot)
         || (prev.groupId ? rows.find((r) => r.kind === prev.kind && r.groupId === prev.groupId && r.pageIndex === prev.pageIndex) : null);
+      openRow = again || null;
       if (again) {
-        threadRow = again;
-        renderThread(again);
-      } else closeThread();
+        const i = rows.indexOf(again);
+        if (rowEls[i]) {
+          const fresh = renderCompactRow(again);
+          rowEls[i].replaceWith(fresh);
+          rowEls[i] = fresh;
+        }
+      } else {
+        openEdit = null;
+        composing = false;
+      }
     }
   }
 
-  (scribe.outerElem || document).addEventListener('click', (e) => { if (!menuElem.contains(e.target)) closeMenu(); });
+  // Capture phase on the document, so a press anywhere outside dismisses the menu even when the press target's own handler stops propagation.
+  // The click leg covers keyboard-activated controls, which fire no pointer events.
+  /** @param {Event} e */
+  const dismissMenu = (e) => {
+    if (menuElem.style.display !== 'none' && !menuElem.contains(/** @type {Node} */ (e.target))) closeMenu();
+  };
+  document.addEventListener('pointerdown', dismissMenu, true);
+  document.addEventListener('click', dismissMenu, true);
 
   // Right-edge resize reports the desired width plus a drag phase to the host, which owns the shared clamp so this panel and the rail stay one width (mirrors the bookmarks panel).
   let resizeStartX = 0;
@@ -1308,6 +1900,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     if (e.key === 'Escape') {
       // The field handles Esc while focused; this catches it after focus leaves the editor.
       if (editState) { foldEditor(false); return; }
+      if (compact && openRow) { setOpenRow(null); return; }
       clearSelection();
       return;
     }
@@ -1336,7 +1929,9 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     else {
       foldEditor(false);
       clearSelection();
-      closeThread();
+      openRow = null;
+      openEdit = null;
+      composing = false;
     }
   }
 
@@ -1383,12 +1978,14 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     el.scrollIntoView({ block: 'nearest' });
     el.classList.add('lit');
     setTimeout(() => el.classList.remove('lit'), 1600);
-    if (compact && rows[i].kind !== 'redact') openThread(rows[i]);
+    if (compact && rows[i].kind !== 'redact') setOpenRow(rows[i]);
   }
 
   function destroy() {
     closeMenu();
     foldEditor(false); // drops the editor's document-level click-out listener
+    document.removeEventListener('pointerdown', dismissMenu, true);
+    document.removeEventListener('click', dismissMenu, true);
     menuElem.remove();
     panelElem.remove();
     document.removeEventListener('keydown', onKeyDown);
@@ -1397,6 +1994,6 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
 
   panelElem.style.display = 'none';
   return {
-    panelElem, toggleElem, rebuild, setActive, setVisible, setCompact, reveal, destroy, newNote, count: () => rows.length,
+    panelElem, toggleElem, rebuild, setActive, setVisible, setCompact, reveal, destroy, newNote,
   };
 }

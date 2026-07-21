@@ -2112,7 +2112,7 @@ export class ScribeViewer {
   }
 
   /**
-   * Navigate to an outline (bookmark) destination.
+   * Navigate to a within-page destination: an outline (bookmark) entry or a comment row's anchor.
    * A rotated page falls back to a plain page jump because its raster no longer shares the parse-time vertical axis that `yFrac` indexes.
    * @param {{ pageIndex: number, yFrac?: number }} dest
    */
@@ -2128,50 +2128,8 @@ export class ScribeViewer {
     }
 
     this.displayPage(n, false, false);
-    const yPx = yFrac * dims.height;
     // The same 100px lead-in displayPage's own page jump uses, so the two scroll styles agree at the page top.
-    this.scrollContainer.scrollTop = Math.max(0, (this.getPageStop(n) + yPx - 100) * this.zoomLevel);
-    this._flashDestination(n, yPx);
-  }
-
-  /**
-   * One-shot flash marking the destination at page-space `yPx` on page `n`.
-   * Styled inline and animated via WAAPI so it needs no stylesheet, working even in bare embeds.
-   * @param {number} n
-   * @param {number} yPx
-   */
-  _flashDestination(n, yPx) {
-    const pc = this._ensurePageContainer(n);
-    const dims = this.getDisplayDims(n);
-    if (!pc || !dims) return;
-    for (const prev of pc.querySelectorAll('.scribe-dest-flash')) prev.remove();
-    const el = document.createElement('div');
-    el.className = 'scribe-dest-flash';
-    // Page space is ~300 DPI, so the 90px band is ~22pt.
-    // That is roughly a heading line.
-    const h = Math.min(90, dims.height);
-    Object.assign(el.style, {
-      position: 'absolute',
-      left: '8px',
-      right: '8px',
-      top: `${Math.max(0, Math.min(yPx - h / 2, dims.height - h))}px`,
-      height: `${h}px`,
-      borderRadius: '6px',
-      background: 'var(--scribe-accent-ring, rgba(28, 98, 212, .30))',
-      pointerEvents: 'none',
-      zIndex: '6',
-    });
-    pc.appendChild(el);
-    if (window.matchMedia && window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      el.style.opacity = '0.6';
-      setTimeout(() => el.remove(), 900);
-    } else {
-      const anim = el.animate(
-        [{ opacity: 0 }, { opacity: 1, offset: 0.15 }, { opacity: 0 }],
-        { duration: 1400, easing: 'ease-out' },
-      );
-      anim.onfinish = () => el.remove();
-    }
+    this.scrollContainer.scrollTop = Math.max(0, (this.getPageStop(n) + yFrac * dims.height - 100) * this.zoomLevel);
   }
 
   /**

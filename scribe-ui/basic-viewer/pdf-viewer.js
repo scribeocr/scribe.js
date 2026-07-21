@@ -16,7 +16,7 @@ import { createPagesMorph } from '../js/controls/pagesMorph.js';
 import { createBookmarksPanel } from '../js/controls/bookmarksPanel.js';
 import { createCommentsPanel } from '../js/controls/commentsPanel.js';
 import {
-  createHighlightTool, createNoteTool, createDropZone, openDocumentFromFile, createRedactTool, NOTE_TOOL_SVG,
+  createHighlightTool, createNoteTool, createDropZone, openDocumentFromFile, createRedactTool,
 } from '../js/controls/tools.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
 import { mergePdfs } from '../../js/export/pdf/mergePdfs.js';
@@ -240,8 +240,6 @@ class ScribePDFViewer {
     this._sheetOpen = false;
     /** @type {'bookmarks'|'comments'} The sheet view last shown (restored on reopen). */
     this._sheetView = 'bookmarks';
-    /** @type {?HTMLSpanElement} Comment-count chip in the sheet header (the panel title bars are hidden on phones). */
-    this._sheetCountElem = null;
     /** @type {?HTMLButtonElement} The sheet header's action button (+): add bookmark / new note, following the active view. */
     this._sheetActBtn = null;
     /** @type {?(() => void)} Detaches the visual-viewport listeners of an active composer keyboard lift. */
@@ -370,13 +368,14 @@ class ScribePDFViewer {
         onNavigate: (dest) => this.scribe.goToOutlineDest(dest),
         // Resizing from the bookmarks view drives the shared sidebar width (see `_resizeSidebar`).
         onResize: (w, phase) => this._resizeSidebar(w, phase),
+        onRenameFocus: (focused) => { if (this._phoneChrome) this._sheetComposeLift(focused); },
       })
       : null;
 
     /** @type {?ReturnType<typeof createCommentsPanel>} */
     this._commentsPanel = (showThumbnails && comments)
       ? createCommentsPanel(this.scribe, {
-        onNavigate: (n) => this.scribe.displayPage(n, true, false),
+        onNavigate: (dest) => this.scribe.goToOutlineDest(dest),
         onResize: (w, phase) => this._resizeSidebar(w, phase),
         onComposeFocus: (focused) => this._sheetComposeLift(focused),
       })
@@ -414,14 +413,9 @@ class ScribePDFViewer {
         .classList.add('scribe-touch-row');
       appMenu.addAction('Rotate right', ROTATE_RIGHT_SVG, () => this.scribe.rotatePage(this.scribe.state.cp.n, 90))
         .classList.add('scribe-touch-row');
-      if (this._noteTool) {
-        const noteTool = this._noteTool;
-        appMenu.addAction('Add note', NOTE_TOOL_SVG, () => noteTool.toolbarElem.click())
-          .classList.add('scribe-touch-row');
-      }
       if (DEBUG_MENU) {
         import('../js/controls/debugMenu.js')
-          .then(({ installDebugMenu }) => installDebugMenu(appMenu, this.scribe, (files) => this.openFiles(files)))
+          .then(({ installDebugMenu }) => installDebugMenu(appMenu, this.scribe, (files) => this.openFiles(files), this))
           .catch((err) => console.error('Failed to load the debug menu:', err));
       }
       // Style the otherwise-empty start zone as a left-aligned flex row, with an 8px inset mirroring the end zone's, so the menu button sits at the left edge.
@@ -1798,6 +1792,7 @@ class ScribePDFViewer {
           this._thumbnailPanel.setRoomMode('browse');
         }
         if (this._commentsPanel) this._commentsPanel.setCompact(true);
+        if (this._bookmarksPanel) this._bookmarksPanel.setPhoneMode(true);
         this._syncDockPanelsBtn();
         // Gate on this.doc, not scribe.doc: the latter is a truthy empty ScribeDoc from construction, which would show a blank bar before anything is opened.
         if (this._companionStrip) {
@@ -1827,6 +1822,7 @@ class ScribePDFViewer {
           this._thumbnailPanel.setRoomMode(null);
         }
         if (this._commentsPanel) this._commentsPanel.setCompact(false);
+        if (this._bookmarksPanel) this._bookmarksPanel.setPhoneMode(false);
       }
     }
     this._updateRecognizeButton();
@@ -2030,9 +2026,6 @@ class ScribePDFViewer {
     }
     const acts = document.createElement('div');
     acts.className = 'scribe-sheet-acts';
-    const countChip = document.createElement('span');
-    countChip.className = 'scribe-sheet-count';
-    this._sheetCountElem = countChip;
     const actBtn = document.createElement('button');
     actBtn.type = 'button';
     actBtn.className = 'scribe-sheet-act';
@@ -2042,7 +2035,7 @@ class ScribePDFViewer {
       else if (this._commentsPanel) this._commentsPanel.newNote();
     });
     this._sheetActBtn = actBtn;
-    acts.append(countChip, actBtn);
+    acts.append(actBtn);
     hd.append(pill, seg, acts);
     const content = document.createElement('div');
     content.className = 'scribe-sheet-content';
@@ -2051,7 +2044,7 @@ class ScribePDFViewer {
     this._sheetElem = sheet;
     this.pdfViewerElem.append(scrim, sheet);
 
-    // Header gestures: a tap on the row's blank parts toggles half/full, and a drag resizes live and snaps to full, half, or closed on release.
+    // Header gestures: a drag resizes the sheet live and snaps back to half, or closed, on release.
     // Below the smallest useful height the drag stops resizing and the whole card rides the finger down behind the dock, so a dismissal can be dragged to completion.
     // Capturing under a button would retarget its click to the row, so capture is immediate only off-button and deferred past the slop when the press starts on one.
     let dragActive = false;
@@ -2093,12 +2086,12 @@ class ScribePDFViewer {
       const targetH = dragStartH + dy;
       // The resize floor doubles as the release-to-close threshold, so the bottom edge detaching announces that letting go dismisses.
       const floorH = Math.max(140, avail * 0.28);
-      dragLastH = Math.min(avail - 10, Math.max(floorH, targetH));
+      dragLastH = Math.min(Math.round(avail * 0.5), Math.max(floorH, targetH));
       dragOver = Math.max(0, floorH - targetH);
       sheet.style.height = `${dragLastH}px`;
       sheet.style.transform = dragOver ? `translateY(${dragOver}px)` : '';
     });
-    /** Settle a finished drag (release or cancel): snap the sheet to full, half, or closed. */
+    /** Settle a finished drag (release or cancel): snap the sheet back to its half height, or closed. */
     const settleDrag = () => {
       sheet.getBoundingClientRect();
       sheet.classList.remove('dragging');
@@ -2107,7 +2100,6 @@ class ScribePDFViewer {
         return;
       }
       sheet.style.height = '';
-      sheet.classList.toggle('full', dragLastH > this.pdfViewerElem.clientHeight * 0.72);
       this._sheetRelayoutT = setTimeout(() => {
         this._sheetRelayoutT = null;
         this._sheetDragLayout = false;
@@ -2118,9 +2110,7 @@ class ScribePDFViewer {
       if (!dragActive) return;
       dragActive = false;
       if (!dragMoved) {
-        if (dragFromButton) return;
         sheet.classList.remove('dragging');
-        sheet.classList.toggle('full');
         return;
       }
       settleDrag();
@@ -2259,12 +2249,8 @@ class ScribePDFViewer {
     }
   }
 
-  /** Refresh the sheet header's action slot: the comment count, and the +'s target and visibility. */
+  /** Refresh the sheet header's action slot: the +'s target and visibility. */
   _syncSheetHeader() {
-    if (this._sheetCountElem) {
-      const n = this._sheetView === 'comments' && this._commentsPanel ? this._commentsPanel.count() : 0;
-      this._sheetCountElem.textContent = n ? String(n) : '';
-    }
     if (this._sheetActBtn) {
       // Creation is an editing act, so the + hides in a read-only viewer.
       this._sheetActBtn.style.display = this.scribe.opt.enablePageEditing ? '' : 'none';

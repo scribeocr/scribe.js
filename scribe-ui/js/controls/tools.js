@@ -204,6 +204,8 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     const editorHost = scribe.outerElem || scribe.elem;
     const cmtCard = document.createElement('div');
     cmtCard.className = 'scribe-cmt-card';
+    // Focusable so the card can hold focus (keeping Esc-to-close alive) once a post folds the composer away.
+    cmtCard.tabIndex = -1;
     cmtCard.style.display = 'none';
     const cmtQuoteRow = document.createElement('div');
     cmtQuoteRow.className = 'scribe-cmt-quote-row';
@@ -228,6 +230,10 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     cmtText.rows = 1;
     cmtText.setAttribute('aria-label', 'Comment text');
     cmtReply.append(cmtReplyAva, cmtText);
+    const cmtReplyBtn = document.createElement('button');
+    cmtReplyBtn.type = 'button';
+    cmtReplyBtn.className = 'scribe-cmt-reply-btn';
+    cmtReplyBtn.textContent = 'Reply';
 
     /**
      * @param {string} title
@@ -299,6 +305,8 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
      */
     let cmtTarget = null;
     let cmtPinned = false;
+    /** Whether the reply composer is unfolded on a thread that already has a root comment. */
+    let cmtReplyOpen = false;
     /** @type {?ReturnType<typeof setTimeout>} */
     let cmtHideTimer = null;
     /** Ink edges marking the pinned highlight (element set owned by the card). */
@@ -363,41 +371,41 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     };
 
     /**
-     * One thread message: identity line (avatar, name, date) over the text.
+     * One thread message.
      * @param {string} idx - 'root' or the reply index, for edit commits.
      */
     const makeMsg = (idx, text, author, createdAt) => {
       const msg = document.createElement('div');
       msg.className = 'scribe-cmt-msg';
       msg.dataset.reply = idx;
-      if (author || createdAt) {
+      if (author) {
         const meta = document.createElement('div');
         meta.className = 'scribe-cmt-meta';
-        if (author) {
-          const ava = document.createElement('span');
-          ava.className = 'scribe-cm-ava';
-          ava.textContent = initialsOf(author);
-          const who = document.createElement('span');
-          who.className = 'scribe-cm-who';
-          who.textContent = author;
-          meta.append(ava, who);
-        }
-        if (createdAt) {
-          const when = document.createElement('span');
-          when.className = 'scribe-cm-when';
-          when.textContent = `· ${dateShort(createdAt)}`;
-          meta.appendChild(when);
-        }
+        const ava = document.createElement('span');
+        ava.className = 'scribe-cm-ava';
+        ava.textContent = initialsOf(author);
+        const who = document.createElement('span');
+        who.className = 'scribe-cm-who';
+        who.textContent = author;
+        meta.append(ava, who);
         msg.appendChild(meta);
       }
       const mtext = document.createElement('div');
       mtext.className = 'scribe-cmt-mtext';
       mtext.textContent = text;
       msg.appendChild(mtext);
+      if (createdAt) {
+        const foot = document.createElement('div');
+        foot.className = 'scribe-cmt-foot';
+        const when = document.createElement('span');
+        when.className = 'scribe-cm-when';
+        when.textContent = dateShort(createdAt);
+        foot.appendChild(when);
+        msg.appendChild(foot);
+      }
       return msg;
     };
 
-    /** Rebuild the thread: root + replies, the preview's collapse marking, and the composer. */
     const renderThread = (annot, kind) => {
       cmtEditEl = null;
       cmtThread.replaceChildren();
@@ -405,6 +413,16 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       if (annot && annot.comment) msgs.push(makeMsg('root', annot.comment, annot.author || '', annot.createdAt || ''));
       const replies = (annot && annot.replies) || [];
       replies.forEach((r, i) => msgs.push(makeMsg(String(i), r.text, r.author || '', r.createdAt || '')));
+      if (msgs.length) {
+        const last = msgs[msgs.length - 1];
+        let foot = last.querySelector('.scribe-cmt-foot');
+        if (!foot) {
+          foot = document.createElement('div');
+          foot.className = 'scribe-cmt-foot';
+          last.appendChild(foot);
+        }
+        foot.appendChild(cmtReplyBtn);
+      }
       // Unpinned previews show the root and the latest reply; the rest collapse to a count line.
       if (msgs.length > 2) {
         for (let i = 1; i < msgs.length - 1; i++) msgs[i].classList.add('scribe-cmt-old');
@@ -420,7 +438,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       if (hasRoot) cmtText.placeholder = 'Reply…';
       else cmtText.placeholder = kind === 'note' ? 'Add a note…' : 'Add a comment…';
       cmtText.value = '';
-      cmtThread.appendChild(cmtReply);
+      if (!hasRoot || cmtReplyOpen) cmtThread.appendChild(cmtReply);
       cmtGrow();
     };
 
@@ -623,6 +641,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       cmtCard.style.display = 'none';
       cmtCard.classList.remove('pinned');
       cmtPinned = false;
+      cmtReplyOpen = false;
       cmtTarget = null;
       collapseShelf();
       setCmtSel(false);
@@ -646,8 +665,12 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
 
     const cmtPin = (target) => {
       if (cmtHideTimer) { clearTimeout(cmtHideTimer); cmtHideTimer = null; }
-      if (cmtPinned && cmtSameTarget(cmtTarget, target)) { cmtText.focus(); return; }
+      if (cmtPinned && cmtSameTarget(cmtTarget, target)) {
+        if (cmtReply.isConnected) cmtText.focus(); else cmtCard.focus();
+        return;
+      }
       cmtPinned = false;
+      cmtReplyOpen = false;
       cmtTarget = target;
       cmtFill(target);
       // Pin the class before placing: the composer and footer only lay out on the pinned card,
@@ -657,7 +680,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       cmtPinned = true;
       setCmtSel(true);
       // Focus last so it cannot scroll the container before the card is positioned.
-      cmtText.focus();
+      if (cmtReply.isConnected) cmtText.focus(); else cmtCard.focus();
     };
 
     /**
@@ -779,6 +802,16 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       if (mtext instanceof HTMLElement && cmtPinned) beginMsgEdit(mtext);
     });
     cmtText.addEventListener('input', cmtGrow);
+    cmtReplyBtn.addEventListener('click', () => {
+      if (!cmtPinned || !cmtTarget) return;
+      if (commitMsgEdit()) {
+        if (scribe._rebuildCommentsPanel) scribe._rebuildCommentsPanel();
+        updateCommentIcons();
+      }
+      cmtReplyOpen = true;
+      cmtFill(cmtTarget);
+      cmtText.focus();
+    });
     cmtCard.addEventListener('keydown', (e) => {
       // Keep typing out of page shortcuts.
       e.stopPropagation();
@@ -786,16 +819,22 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
         // Do not re-place after the re-render: the card grows in place, as it already does while typing grows the field.
         e.preventDefault();
         if (cmtCommit() && cmtTarget) {
+          cmtReplyOpen = false;
           cmtFill(cmtTarget);
-          cmtText.focus();
+          cmtCard.focus();
         }
         return;
       }
       if (e.key !== 'Escape') return;
-      // Esc folds inward: an open swatch shelf, an in-place message edit, a composer draft, then the card.
       if (shelfOpen()) { collapseShelf(); return; }
       if (cmtEditEl) { cancelMsgEdit(); return; }
       if (cmtText.value.trim()) { cmtText.value = ''; cmtGrow(); return; }
+      if (cmtReplyOpen && cmtTarget) {
+        cmtReplyOpen = false;
+        cmtFill(cmtTarget);
+        cmtCard.focus();
+        return;
+      }
       const markEl = cmtTarget && cmtMarkEl(cmtTarget);
       // Focus the mark before closing, not after: once the card is unpinned the mark's focusin would re-show it as a preview.
       if (markEl) /** @type {HTMLElement} */ (markEl).focus();
