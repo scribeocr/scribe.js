@@ -960,3 +960,61 @@ describe('Check intra-word style runs survive a visible-text PDF export -> impor
     await scribe.terminate();
   });
 });
+
+// The overlay export wrapped the invisible text layer in a scale-only cm while keeping the page's /Rotate, so the layer sat 90 degrees out of alignment and body text selected bottom-to-top.
+// Page 1 of the fixture is the reported shape: upright body text on a /Rotate 90 page, plus a genuinely sideways margin line.
+describe('Check invisible text layer orientation on source pages with /Rotate.', () => {
+  const lineText = (line) => line.words.map((x) => x.text).join(' ');
+
+  /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+  let doc;
+  /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+  let reDoc;
+
+  beforeAll(async () => {
+    doc = await scribe.openDocument([
+      `${ASSETS_PATH}/CSF_Proposed_Budget_Book_June_2024_r8_30_all_orientations.pdf`,
+      `${ASSETS_PATH}/CSF_Proposed_Budget_Book_June_2024_r8_30_all_orientations.abbyy.xml`,
+    ]);
+    const out = /** @type {ArrayBuffer} */ (await doc.exportData('pdf', {
+      displayMode: 'invis', addOverlay: true, minPage: 1, maxPage: 1,
+    }));
+    reDoc = await scribe.openDocument({ pdfFiles: [out] });
+    await reDoc.textReady;
+  });
+
+  test('OCR text over a /Rotate source page imports in the display frame', async () => {
+    const page = doc.ocr.active[1];
+
+    const body = page.lines.filter((line) => lineText(line) === 'Mayor');
+    expect(body.length, 'the body line "Mayor" imports as one line over a /Rotate page').toBe(1);
+    expect(body[0].orientation, 'upright body text imports at orientation 0 over a /Rotate page').toBe(0);
+
+    const margin = page.lines.filter((line) => lineText(line) === 'SAN FRANCISCO: AN OVERVIEW');
+    expect(margin.length, 'the sideways margin line imports as one line over a /Rotate page').toBe(1);
+    expect(margin[0].orientation, 'the sideways margin line imports at orientation 1 over a /Rotate page').toBe(1);
+  });
+
+  test('Invisible text layer is written at display orientation on a /Rotate page', async () => {
+    const page = reDoc.ocr.active[0];
+    expect(page !== undefined, 'the exported page re-imports with a readable text layer').toBe(true);
+
+    const body = page.lines.filter((line) => lineText(line) === 'Mayor');
+    expect(body.length, 'body line "Mayor" appears in both the source text and the invisible layer').toBe(2);
+    for (const line of body) {
+      expect(line.orientation, 'body text must display upright, not rotated with the page\'s /Rotate').toBe(0);
+    }
+
+    const margin = page.lines.filter((line) => lineText(line) === 'SAN FRANCISCO: AN OVERVIEW');
+    expect(margin.length, 'the sideways margin line appears in both the source text and the invisible layer').toBe(2);
+    for (const line of margin) {
+      expect(line.orientation, 'the sideways margin line must keep orientation 1 in the exported PDF').toBe(1);
+    }
+  });
+
+  afterAll(async () => {
+    if (doc) await doc.clear();
+    if (reDoc) await reDoc.clear();
+    await scribe.terminate();
+  });
+});

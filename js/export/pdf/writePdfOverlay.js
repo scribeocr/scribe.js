@@ -298,7 +298,6 @@ export async function overlayPdfText({
     const tx = Math.min(overlayBox[0], overlayBox[2]);
     const ty = Math.min(overlayBox[1], overlayBox[3]);
     // rotScale is cross-axis because a quarter-turn /Rotate page's pixelDims have swapped axes relative to the box.
-    // overlayAnnotationBbox uses it to map annotation coords back into unrotated MediaBox space.
     const pageRotate = ((((pageInfo.rotate || 0) % 360) + 360) % 360);
     const rotScale = pixelDims ? baseWidth / pixelDims.height : 1;
 
@@ -360,7 +359,17 @@ export async function overlayPdfText({
         qSaveObjNum = allocObjNum();
         pushNewObj({ objNum: qSaveObjNum, content: `${qSaveObjNum} 0 obj\n<</Length ${qSaveStr.length}>>\nstream\n${qSaveStr}endstream\nendobj\n\n` });
 
-        const qOverlayStr = `Q\nq ${scaleX} 0 0 ${scaleY} ${tx} ${ty} cm\n${textContentObjStr}Q\n`;
+        // The text stream is in the post-rotation display frame while the page keeps its source /Rotate.
+        let overlayCm = `${scaleX} 0 0 ${scaleY} ${tx} ${ty}`;
+        if (pageRotate === 90 || pageRotate === 270) {
+          const rotScaleY = pixelDims ? baseHeight / pixelDims.width : 1;
+          overlayCm = pageRotate === 90
+            ? `0 ${rotScaleY} ${-rotScale} 0 ${tx + baseWidth} ${ty}`
+            : `0 ${-rotScaleY} ${rotScale} 0 ${tx} ${ty + baseHeight}`;
+        } else if (pageRotate === 180) {
+          overlayCm = `${-scaleX} 0 0 ${-scaleY} ${tx + baseWidth} ${ty + baseHeight}`;
+        }
+        const qOverlayStr = `Q\nq ${overlayCm} cm\n${textContentObjStr}Q\n`;
         qOverlayObjNum = allocObjNum();
         pushNewObj({ objNum: qOverlayObjNum, content: await encodeStreamObject(qOverlayObjNum, qOverlayStr, { humanReadable }) });
 
