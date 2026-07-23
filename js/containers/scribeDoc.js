@@ -18,6 +18,7 @@ import {
   recognize as recognizeImpl,
   compareOCR as compareOCRImpl,
   recognizePageImp as recognizePageImpImpl,
+  renderVis as renderVisImpl,
   evalOCRPage as evalOCRPageImpl,
   insertParsedPage as insertParsedPageImpl,
 } from '../recognizeConvert.js';
@@ -356,7 +357,12 @@ export class ScribeDoc {
     /** @type {Array<PageMetrics>} */
     this.pageMetrics = [];
 
-    /** @type {Array<Awaited<ReturnType<typeof import('../../scrollview-web/scrollview/ScrollView.js').ScrollView.prototype.getAll>>>} */
+    /**
+     * Per-page gzipped debug visualization instructions.
+     * Populated when recognition runs with `debugVis` enabled.
+     * Render to canvases on demand with `renderVis`.
+     * @type {Array<Uint8Array>}
+     */
     this.vis = [];
 
     /** @type {Array<Object<string, string>>} */
@@ -983,6 +989,15 @@ export class ScribeDoc {
    */
   recognizePageImp(n, legacy, lstm, areaMode, tessOptions = {}, debugVis = false, langs = null, vanillaMode = false) {
     return recognizePageImpImpl(this, n, legacy, lstm, areaMode, tessOptions, debugVis, langs, vanillaMode);
+  }
+
+  /**
+   * Render a page's stored debug visualizations to canvases.
+   * @param {Parameters<typeof renderVisImpl>[1]} n
+   * @returns {ReturnType<typeof renderVisImpl>}
+   */
+  renderVis(n) {
+    return renderVisImpl(this, n);
   }
 
   /**

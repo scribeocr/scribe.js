@@ -711,12 +711,8 @@ async function recognizeAllPages(doc, legacy = true, lstm = true, mainData = fal
       const res0 = await resArr[0];
 
       if (res0.recognize.debugVis) {
-        const { ScrollView } = await import('../scrollview-web/scrollview/ScrollView.js');
-        const sv = new ScrollView({
-          lightTheme: true,
-        });
-        await sv.processVisStr(res0.recognize.debugVis);
-        doc.vis[x] = await sv.getAll(true);
+        const gzStream = new Blob([res0.recognize.debugVis]).stream().pipeThrough(new CompressionStream('gzip'));
+        doc.vis[x] = new Uint8Array(await new Response(gzStream).arrayBuffer());
       }
 
       if (legacy) {
@@ -752,6 +748,26 @@ async function recognizeAllPages(doc, legacy = true, lstm = true, mainData = fal
     const oemText = 'Tesseract Legacy';
     doc.ocr.active = doc.ocr[oemText];
   }
+}
+
+/**
+ * Render a page's stored debug visualizations (`doc.vis[n]`) to canvases.
+ * Returns one entry per debug window, or `null` when the page has none stored.
+ * A single page's canvases total roughly a gigabyte at 300 DPI, so callers should not retain output across pages.
+ * @param {ScribeDoc} doc
+ * @param {number} n - Page number.
+ */
+export async function renderVis(doc, n) {
+  const visData = doc.vis[n];
+  if (!visData) return null;
+  const gunzipStream = new Blob([visData]).stream().pipeThrough(new DecompressionStream('gzip'));
+  const visStr = await new Response(gunzipStream).text();
+  const { ScrollView } = await import('../scrollview-web/scrollview/ScrollView.js');
+  const sv = new ScrollView({
+    lightTheme: true,
+  });
+  await sv.processVisStr(visStr);
+  return sv.getAll(true);
 }
 
 /**
