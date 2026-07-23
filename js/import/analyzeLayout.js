@@ -16,12 +16,19 @@ export function analyzeLayout(pages, opts = {}) {
   // Phase 1: per-line feature vectors (one entry per line, across all pages).
   /** @type {Array<LineFeat>} */
   const feats = [];
+  // Per-line style-histogram buffers, reused across lines as parallel key/weight arrays.
+  // A line carries only a couple of distinct sizes/fonts/colors, so a linear indexOf scan beats five fresh Maps per line.
+  const wSzKeys = []; const wSzWts = [];
+  const wFamKeys = []; const wFamWts = [];
+  const wColKeys = []; const wColWts = [];
+  const wParKeys = []; const wParWts = []; const wParRoles = [];
   for (let p = 0; p < pages.length; p++) {
     const page = pages[p];
     const angle = page.angle || 0;
     const sinA = Math.sin(angle * (Math.PI / 180));
     const cosA = Math.cos(angle * (Math.PI / 180));
     const pageH = page.dims?.height || 0;
+    const tBoxes = page.tableBoxes && page.tableBoxes.length ? page.tableBoxes : null;
     for (let i = 0; i < page.lines.length; i++) {
       const line = page.lines[i];
       if (!line || !line.words || line.words.length === 0) continue;
@@ -32,18 +39,14 @@ export function analyzeLayout(pages, opts = {}) {
 
       // Char-weighted dominant size / bold / italic over the line.
       let nChar = 0; let nBold = 0; let nItal = 0; let nArt = 0;
-      /** @type {Map<number, number>} */
-      const sizeWeight = new Map();
-      /** @type {Map<string, number>} */
-      const famWeight = new Map();
-      /** @type {Map<string, number>} */
-      const colorWeight = new Map();
+      wSzKeys.length = 0; wSzWts.length = 0;
+      wFamKeys.length = 0; wFamWts.length = 0;
+      wColKeys.length = 0; wColWts.length = 0;
       // Char-weighted dominant owning structure element (word.structElemId) over the line.
-      /** @type {Map<number, number>} */
-      const parWeight = new Map();
-      /** @type {Map<number, string>} */
-      const parRoleById = new Map();
-      let text = '';
+      wParKeys.length = 0; wParWts.length = 0; wParRoles.length = 0;
+      // += cons strings pay a flatten-and-copy at the first charCodeAt or regex over the text, so the line text is built flat with one join.
+      // A length-reset reused buffer joins slower than a fresh array.
+      const wTexts = [];
       for (let w = 0; w < line.words.length; w++) {
         const word = line.words[w];
         const wl = word.text.length || 1;
@@ -52,35 +55,51 @@ export function analyzeLayout(pages, opts = {}) {
         if (word.style.italic) nItal += wl;
         if (word.artifact) nArt += wl;
         const sz = word.style.size || 0;
-        if (sz) sizeWeight.set(sz, (sizeWeight.get(sz) || 0) + wl);
+        if (sz) {
+          const k = wSzKeys.indexOf(sz);
+          if (k >= 0) wSzWts[k] += wl; else { wSzKeys.push(sz); wSzWts.push(wl); }
+        }
         const fam = word.style.font || '';
-        famWeight.set(fam, (famWeight.get(fam) || 0) + wl);
+        {
+          const k = wFamKeys.indexOf(fam);
+          if (k >= 0) wFamWts[k] += wl; else { wFamKeys.push(fam); wFamWts.push(wl); }
+        }
         const col = word.style.color || '#000000';
-        colorWeight.set(col, (colorWeight.get(col) || 0) + wl);
-        if (word.structElemId != null) { parWeight.set(word.structElemId, (parWeight.get(word.structElemId) || 0) + wl); parRoleById.set(word.structElemId, word.structElemTag); }
-        text += (w ? ' ' : '') + word.text;
+        {
+          const k = wColKeys.indexOf(col);
+          if (k >= 0) wColWts[k] += wl; else { wColKeys.push(col); wColWts.push(wl); }
+        }
+        if (word.structElemId != null) {
+          const k = wParKeys.indexOf(word.structElemId);
+          if (k >= 0) { wParWts[k] += wl; wParRoles[k] = word.structElemTag; } else { wParKeys.push(word.structElemId); wParWts.push(wl); wParRoles.push(word.structElemTag); }
+        }
+        wTexts.push(word.text);
       }
+      const text = wTexts.join(' ');
       let size = 0; let sizeBest = -1;
-      for (const [sz, wt] of sizeWeight) if (wt > sizeBest) { sizeBest = wt; size = sz; }
+      for (let k = 0; k < wSzKeys.length; k++) if (wSzWts[k] > sizeBest) { sizeBest = wSzWts[k]; size = wSzKeys[k]; }
       let fontFamily = ''; let famBest = -1;
-      for (const [fam, wt] of famWeight) if (wt > famBest) { famBest = wt; fontFamily = fam; }
+      for (let k = 0; k < wFamKeys.length; k++) if (wFamWts[k] > famBest) { famBest = wFamWts[k]; fontFamily = wFamKeys[k]; }
       let color = '#000000'; let colorBest = -1;
-      for (const [c, wt] of colorWeight) if (wt > colorBest) { colorBest = wt; color = c; }
-      let structId = null; let structBest = -1;
-      for (const [id, wt] of parWeight) if (wt > structBest) { structBest = wt; structId = id; }
+      for (let k = 0; k < wColKeys.length; k++) if (wColWts[k] > colorBest) { colorBest = wColWts[k]; color = wColKeys[k]; }
+      let structId = null; let structBest = -1; let structRoleSel = null;
+      for (let k = 0; k < wParKeys.length; k++) if (wParWts[k] > structBest) { structBest = wParWts[k]; structId = wParKeys[k]; structRoleSel = wParRoles[k]; }
       const structResolved = structId != null && nChar > 0 && structBest / nChar >= 0.6;
 
-      const letters = text.replace(/[^A-Za-z]/g, '');
-      const upper = text.replace(/[^A-Z]/g, '');
-      const allCaps = letters.length >= 2 && upper.length / letters.length >= 0.8;
+      let nLetters = 0; let nUpper = 0;
+      for (let ci = 0; ci < text.length; ci++) {
+        const cc = text.charCodeAt(ci);
+        if (cc >= 65 && cc <= 90) { nLetters++; nUpper++; } else if (cc >= 97 && cc <= 122) nLetters++;
+      }
+      const allCaps = nLetters >= 2 && nUpper / nLetters >= 0.8;
 
       // Skip trailing footnote reference markers before the terminal-punctuation test, or a reference sitting after the sentence's punctuation defeats it.
       // Both marker forms qualify: a superscript digit/symbol, and the full-size baseline LEXIS "nN" form (a trailing "n4" after the sentence's punctuation).
       let lastIdx = line.words.length - 1;
       while (lastIdx > 0
         && ((line.words[lastIdx].style && line.words[lastIdx].style.sup && /^[\d*†‡]{1,3}$/.test(line.words[lastIdx].text))
-          || /^n\d{1,3}$/.test((line.words[lastIdx].text || '').trim()))) lastIdx--;
-      const endsTerminal = /[.!?:]["')”’]?$/.test((line.words[lastIdx].text || '').trim());
+          || /^\s*n\d{1,3}\s*$/.test(line.words[lastIdx].text || ''))) lastIdx--;
+      const endsTerminal = /[.!?:]["')”’]?\s*$/.test(line.words[lastIdx].text || '');
 
       feats.push({
         page: p,
@@ -103,9 +122,9 @@ export function analyzeLayout(pages, opts = {}) {
         nChar,
         allCaps,
         endsTerminal,
-        endsLetter: /[A-Za-z0-9]$/.test(text.trim()),
+        endsLetter: /[A-Za-z0-9]\s*$/.test(text),
         // The class is hyphen-minus, soft hyphen, hyphen, NB hyphen, solidus; the soft hyphen is invisible in source.
-        endsHyphen: /[-­‐‑/]$/.test(text.trim()),
+        endsHyphen: /[-­‐‑/]\s*$/.test(text),
         startsLower: /^[a-z]/.test(line.words[0].text),
         firstWordWidth: (line.words[0].bbox.right - line.words[0].bbox.left) || 0,
         firstWordSup: !!(line.words[0].style && line.words[0].style.sup),
@@ -117,10 +136,10 @@ export function analyzeLayout(pages, opts = {}) {
         topFrac: pageH ? b.top / pageH : 0,
         bottomFrac: pageH ? b.bottom / pageH : 0,
         // A table's lone-integer cells and leading index column otherwise trip the bare-folio and line-number-column rules and are dropped on export.
-        inTable: (page.tableBoxes || []).some((bx) => (left + right) / 2 >= bx.left && (left + right) / 2 <= bx.right
+        inTable: !!tBoxes && tBoxes.some((bx) => (left + right) / 2 >= bx.left && (left + right) / 2 <= bx.right
           && (b.top + b.bottom) / 2 >= bx.top && (b.top + b.bottom) / 2 <= bx.bottom),
         structId: structResolved ? structId : null,
-        structRole: structResolved ? (parRoleById.get(structId) || null) : null,
+        structRole: structResolved ? (structRoleSel || null) : null,
         // role and sigKey filled in Phase 3, sizeRatio in Phase 2
         role: 'body',
         sizeRatio: 1,
@@ -315,22 +334,28 @@ export function analyzeLayout(pages, opts = {}) {
     f.firstWordSup = !!(w0.style && w0.style.sup);
   }
 
+  /** @type {Array<Array<LineFeat>>} */
+  const pageFeatArr = Array.from({ length: pages.length }, () => []);
+  for (const f of feats) pageFeatArr[f.page].push(f);
+
   // Per-page body size takes the largest size that covers at least 30% of the page's chars, not merely the most common size.
   // Footnotes can out-mass the body in raw char count, but the body still reaches 30%.
+  const szKeys = []; const szWts = [];
   /** @type {Map<number, number>} */
   const pageBodySize = new Map();
   for (let p = 0; p < pages.length; p++) {
-    /** @type {Map<number, number>} */
-    const sc = new Map();
+    szKeys.length = 0; szWts.length = 0;
     let totalChars = 0;
-    for (const f of feats) {
-      if (f.page !== p || !f.size) continue;
-      sc.set(f.size, (sc.get(f.size) || 0) + f.nChar);
+    for (const f of pageFeatArr[p]) {
+      if (!f.size) continue;
+      const i = szKeys.indexOf(f.size);
+      if (i >= 0) szWts[i] += f.nChar; else { szKeys.push(f.size); szWts.push(f.nChar); }
       totalChars += f.nChar;
     }
     let chosen = 0; let dominant = 0; let domC = -1;
     let docBodyChars = 0;
-    for (const [sz, c] of sc) {
+    for (let i = 0; i < szKeys.length; i++) {
+      const sz = szKeys[i]; const c = szWts[i];
       if (c > domC) { domC = c; dominant = sz; }
       if (totalChars > 0 && c / totalChars >= 0.30 && sz > chosen) chosen = sz;
       if (Math.abs(sz - bodySize) <= bodySize * 0.05) docBodyChars += c;
@@ -349,30 +374,32 @@ export function analyzeLayout(pages, opts = {}) {
   // This stops a cover/divider page whose body is entirely white-on-colour from reading all its white paragraphs as headings.
   /** @type {Map<number, string>} */
   const pageBodyColor = new Map();
+  const colKeys = []; const colWts = [];
   for (let p = 0; p < pages.length; p++) {
-    /** @type {Map<string, number>} */
-    const cc = new Map();
-    for (const f of feats) {
-      if (f.page !== p || !f.nChar) continue;
-      cc.set(f.color, (cc.get(f.color) || 0) + f.nChar);
+    colKeys.length = 0; colWts.length = 0;
+    for (const f of pageFeatArr[p]) {
+      if (!f.nChar) continue;
+      const i = colKeys.indexOf(f.color);
+      if (i >= 0) colWts[i] += f.nChar; else { colKeys.push(f.color); colWts.push(f.nChar); }
     }
     let dom = '#000000'; let domC = -1;
-    for (const [c, n] of cc) if (n > domC) { domC = n; dom = c; }
+    for (let i = 0; i < colKeys.length; i++) if (colWts[i] > domC) { domC = colWts[i]; dom = colKeys[i]; }
     pageBodyColor.set(p, dom);
   }
 
   // Per-page so family-distinctness is measured against a line's own page body: a page set entirely in the heading face (a table of contents in the sans face) does not read its own lines as headings.
   /** @type {Map<number, string>} */
   const pageBodyFamily = new Map();
+  const famKeys = []; const famWts = [];
   for (let p = 0; p < pages.length; p++) {
-    /** @type {Map<string, number>} */
-    const fc = new Map();
-    for (const f of feats) {
-      if (f.page !== p || !f.nChar) continue;
-      fc.set(f.fontFamily, (fc.get(f.fontFamily) || 0) + f.nChar);
+    famKeys.length = 0; famWts.length = 0;
+    for (const f of pageFeatArr[p]) {
+      if (!f.nChar) continue;
+      const i = famKeys.indexOf(f.fontFamily);
+      if (i >= 0) famWts[i] += f.nChar; else { famKeys.push(f.fontFamily); famWts.push(f.nChar); }
     }
     let dom = ''; let domC = -1;
-    for (const [fam, n] of fc) if (n > domC) { domC = n; dom = fam; }
+    for (let i = 0; i < famKeys.length; i++) if (famWts[i] > domC) { domC = famWts[i]; dom = famKeys[i]; }
     pageBodyFamily.set(p, dom);
   }
 
@@ -391,11 +418,16 @@ export function analyzeLayout(pages, opts = {}) {
   // Per-page flush margin (not doc-level) so a footnote block or appendix at its own margin does not read as a page full of indented paragraphs.
   /** @type {Map<number, number>} */
   const pageFlush = new Map();
+  let docLeftMedian = null;
   for (let p = 0; p < pages.length; p++) {
     const pb = pageBodySize.get(p) || bodySize;
-    const pl = feats.filter((f) => f.page === p && f.nChar >= 4 && Math.abs(f.size - pb) <= pb * 0.08).map((f) => f.left);
+    const pl = [];
+    for (const f of pageFeatArr[p]) if (f.nChar >= 4 && Math.abs(f.size - pb) <= pb * 0.08) pl.push(f.left);
     const pk = clusterPeaks(pl, pb * 0.3).filter((c) => c.count >= Math.max(2, pl.length * 0.08));
-    pageFlush.set(p, pk.length ? pk[0].center : (pl.length ? Math.min(...pl) : (quantile(feats.map((ff) => ff.left), 0.5) || 0)));
+    if (pk.length) { pageFlush.set(p, pk[0].center); continue; }
+    if (pl.length) { pageFlush.set(p, Math.min(...pl)); continue; }
+    if (docLeftMedian == null) docLeftMedian = quantile(feats.map((ff) => ff.left), 0.5) || 0;
+    pageFlush.set(p, docLeftMedian);
   }
 
   // The nChar floor keeps 1-3 char fragments (a pleading's left-margin line number) from polluting the column/indent/justified model.
@@ -625,16 +657,22 @@ export function analyzeLayout(pages, opts = {}) {
         for (let wi = 1; wi < ws.length; wi++) {
           const w = ws[wi];
           const wt = (w.text || '').trim();
-          const gm = /[A-Za-z0-9][*†‡∗]{1,3}$/.exec(wt);
-          if (gm) addLabel(p, gm[0].slice(1));
-          // The Westlaw "FN"+number reference ("FN2", or glued to its host word as "flawed.FN2") anchors its note block under the number's value.
-          // Matched by content since the marker carries no sup style.
-          const fnm = /FN(\d{1,3})$/.exec(wt);
-          if (fnm) addLabel(p, fnm[1]);
-          // A literal Unicode superscript digit is superscript by codepoint, not sup style, so the styled path below skips it.
-          const um = /[⁰¹²³⁴-⁹]{1,4}$/.exec(wt);
-          if (um && !ws.some((x) => CJK_RE.test(x.text || ''))) {
-            addLabel(p, [...um[0]].map((c) => SUP_DIGIT_CHARS[c]).join(''));
+          // The three marker forms end on mutually exclusive character classes (symbol, ASCII digit, superscript digit), so one last-char check routes to at most one regex.
+          const lc = wt.charCodeAt(wt.length - 1);
+          if (lc === 42 || lc === 8224 || lc === 8225 || lc === 8727) {
+            const gm = /[A-Za-z0-9][*†‡∗]{1,3}$/.exec(wt);
+            if (gm) addLabel(p, gm[0].slice(1));
+          } else if (lc >= 48 && lc <= 57) {
+            // "FN"+number reference ("FN2", or glued to its host word as "flawed.FN2") anchors its note block under the number's value.
+            // Matched by content since the marker carries no sup style.
+            const fnm = /FN(\d{1,3})$/.exec(wt);
+            if (fnm) addLabel(p, fnm[1]);
+          } else if (lc === 185 || lc === 178 || lc === 179 || lc === 8304 || (lc >= 8308 && lc <= 8313)) {
+            // A literal Unicode superscript digit is superscript by codepoint, not sup style, so the styled path below skips it.
+            const um = /[⁰¹²³⁴-⁹]{1,4}$/.exec(wt);
+            if (um && !ws.some((x) => CJK_RE.test(x.text || ''))) {
+              addLabel(p, [...um[0]].map((c) => SUP_DIGIT_CHARS[c]).join(''));
+            }
           }
           if (!w.style || !w.style.sup) continue;
           // A preceding raised word means a uniform-size marker cluster, not a reference after running text, so skip it.
@@ -870,6 +908,10 @@ export function analyzeLayout(pages, opts = {}) {
   });
 
   // Phase 3: role classification + grouping, per page.
+  // Rebuilt rather than reusing the Phase-2 grouping because the marker-repair pass above reorders feats within a page.
+  /** @type {Array<Array<LineFeat>>} */
+  const pageFeats3 = Array.from({ length: pages.length }, () => []);
+  for (const f of feats) pageFeats3[f.page].push(f);
   // The separator rule's y marks the top of the footnote block, letting classifyRole find notes set at body size that the size-gated footnote test cannot see.
   /** @type {Map<number, number>} */
   const footnoteRuleY = new Map();
@@ -885,6 +927,7 @@ export function analyzeLayout(pages, opts = {}) {
     let y = null;
     let yAny = null;
     const pageRules = pages[p].rules || [];
+    const pf3 = pageFeats3[p];
     for (const r of pageRules) {
       if (r.left > (pageFlush.get(p) ?? bodyLeft) + bodySize) continue; // not anchored at the page's left margin
       // (per-page flush, not doc-wide bodyLeft: a running-header docket stamp left of the body can drag doc-wide bodyLeft past the true margin, so a real separator would fail this left-anchor gate)
@@ -895,7 +938,7 @@ export function analyzeLayout(pages, opts = {}) {
       if (uRight - uLeft > colWidth * 0.6) continue;
       // A text underline has the exact geometry of a footnote separator, distinguished only by lying inside a text line's bbox (on the baseline) rather than in the gap between lines.
       // Skip bbox-contained rules so an underlined sub-heading cannot seed a spurious footnote region.
-      if (feats.some((g) => g.page === p && r.y >= g.top && r.y <= g.bottom && r.left < g.right && r.right > g.left)) continue;
+      if (pf3.some((g) => r.y >= g.top && r.y <= g.bottom && r.left < g.right && r.right > g.left)) continue;
       if (yAny == null || r.y < yAny) yAny = r.y;
       if (r.y < pageH * 0.5) continue;
       if (y == null || r.y < y) y = r.y;
@@ -905,8 +948,8 @@ export function analyzeLayout(pages, opts = {}) {
     // Ungated, the underline drags every line below it into the footnote role.
     if (y != null) {
       rawSepY.set(p, y);
-      const corroborated = feats.some((f) => {
-        if (f.page !== p || f.top <= y) return false;
+      const corroborated = pf3.some((f) => {
+        if (f.top <= y) return false;
         if (f.sizeRatio <= 0.86 && /[A-Za-z]{2,}/.test(f.text)) return true;
         // A note opener: led by a marker in an active numbering sequence, superscript ("¹⁵") or regular numbered ("18.", "67.").
         // A reference-list underline has author-name-led citations below it (no enumerator), so it fails.
@@ -937,8 +980,8 @@ export function analyzeLayout(pages, opts = {}) {
     // The marker arm lets a page with no drawn rule but marked notes still locate the zone.
     // Infinity means p-1 has no note zone, so its tail is body, not an open footnote, and this is no continuation.
     let prevNoteTop = rawSepAnyY.has(p - 1) ? rawSepAnyY.get(p - 1) : Infinity;
-    for (const f of feats) {
-      if (f.page !== p - 1 || f.bottom / prevH <= 0.5 || f.lineNum) continue;
+    for (const f of pageFeats3[p - 1]) {
+      if (f.bottom / prevH <= 0.5 || f.lineNum) continue;
       if (f.firstWordSup && f.enumerator && f.enumerator.scheme === 'sup-ref'
         && supRefRun && supRefRun.active && supRefRun.sequenceValues && f.enumerator.value != null
         && supRefRun.sequenceValues.has(f.enumerator.value)) prevNoteTop = Math.min(prevNoteTop, f.top);
@@ -946,7 +989,7 @@ export function analyzeLayout(pages, opts = {}) {
     if (prevNoteTop === Infinity) continue;
     // A numbered multi-page table has rows shaped like baseline notes, and its last row reaches the page bottom unpunctuated.
     // Dropping !f.inTable would therefore read the whole table, page after page, as one giant note continuation.
-    const prevNotes = feats.filter((f) => f.page === p - 1 && f.top >= prevNoteTop && !f.inTable
+    const prevNotes = pageFeats3[p - 1].filter((f) => f.top >= prevNoteTop && !f.inTable
       && !f.allCaps && /[A-Za-z]{2,}/.test(f.text) && f.left < noteLeftMax(p - 1));
     if (!prevNotes.length) continue;
     // prevNotes is only prose below a separator-shaped rule, which over-fires on markerless matter like word indexes and deposition Q&A.
@@ -969,7 +1012,7 @@ export function analyzeLayout(pages, opts = {}) {
     // A last line much larger than the real notes is body text that reached the page bottom unpunctuated via a column break, not an open note.
     // Treating it as the open note cascades whole magazine-layout pages into the note role page after page.
     if (lastPrev.size > Math.max(...realNotes.map((g) => g.size)) * 1.15) continue;
-    const curNotes = feats.filter((f) => f.page === p && f.top > sepCur && !f.inTable
+    const curNotes = pageFeats3[p].filter((f) => f.top > sepCur && !f.inTable
       && !f.allCaps && /[A-Za-z]{2,}/.test(f.text) && f.left < noteLeftMax(p));
     if (!curNotes.length) continue;
     // p's note-zone opener: a continuation carries no active sup-ref marker (a new note would)
@@ -1001,7 +1044,13 @@ export function analyzeLayout(pages, opts = {}) {
       const stat = lineStats.get(f.page);
       stat.tot++;
       const refs = (t.match(/\b\d{1,3}:\d{1,3}\b/g) || []).length;
-      const words = (t.match(/[A-Za-z]{2,}/g) || []).length;
+      // Count of maximal letter runs of length >= 2 (what /[A-Za-z]{2,}/g matches), without materializing the match strings.
+      let words = 0; let run = 0;
+      for (let ci = 0; ci <= t.length; ci++) {
+        const cc = ci < t.length ? t.charCodeAt(ci) : 0;
+        if ((cc >= 65 && cc <= 90) || (cc >= 97 && cc <= 122)) run++;
+        else { if (run >= 2) words++; run = 0; }
+      }
       if (/(^|\s)\S+\s\(\d{1,3}\)/.test(t) || (refs >= 2 && refs >= words)) stat.conc++;
     }
     for (const [p, s] of lineStats) if (s.tot >= 8 && s.conc / s.tot >= 0.5) concordancePages.add(p);
@@ -1348,10 +1397,15 @@ export function analyzeLayout(pages, opts = {}) {
     // An all-marker "b." heading still counts, while a "[2] [3] [4]" bracket run keeps its later digits and stays excluded.
     const enumLed = !!(f.enumerator && f.enumerator.scheme !== 'sup-ref' && f.enumerator.scheme !== 'bullet');
     if (enumLed) s.enumLed++;
-    const ldText = f.enumerator && enumLed && f.text.trim().startsWith(f.enumerator.raw)
-      ? f.text.trim().slice(f.enumerator.raw.length) : f.text;
-    const letters = (ldText.match(/[A-Za-z]/g) || []).length;
-    const digits = (ldText.match(/[0-9]/g) || []).length;
+    const fTrim = f.text.trim();
+    const ldText = f.enumerator && enumLed && fTrim.startsWith(f.enumerator.raw)
+      ? fTrim.slice(f.enumerator.raw.length) : f.text;
+    let letters = 0; let digits = 0;
+    for (let ci = 0; ci < ldText.length; ci++) {
+      const cc = ldText.charCodeAt(ci);
+      if ((cc >= 65 && cc <= 90) || (cc >= 97 && cc <= 122)) letters++;
+      else if (cc >= 48 && cc <= 57) digits++;
+    }
     if (enumLed ? letters >= digits : (letters >= 2 && letters >= digits)) s.letterDom++;
     if (f.startsLower && !enumLed) s.lowerStart++;
     // A subtitle or sub-heading can separate a heading from its body, so substantial text two rows down also qualifies.
@@ -1900,7 +1954,19 @@ export function analyzeLayout(pages, opts = {}) {
       f.line.par = par;
       if (!f.lineNum) { curBodyPar = par; curBodyFirst = curParFirst; prevBody = f; }
     }
-    for (const par of parArr) par.bbox = calcBboxUnion(par.lines.map((l) => l.bbox));
+    for (const par of parArr) {
+      let uL = Infinity; let uT = Infinity; let uR = -Infinity; let uB = -Infinity;
+      for (const ln of par.lines) {
+        const bb = ln.bbox;
+        if (bb.left < uL) uL = bb.left;
+        if (bb.top < uT) uT = bb.top;
+        if (bb.right > uR) uR = bb.right;
+        if (bb.bottom > uB) uB = bb.bottom;
+      }
+      par.bbox = {
+        left: uL, top: uT, right: uR, bottom: uB,
+      };
+    }
     page.pars = parArr;
   }
 
@@ -2206,8 +2272,12 @@ function geometricBreak(f, prev, model, curParFirst) {
       return /[A-Z]/.test(t) && t === t.toUpperCase();
     });
     const leadText = lead.map((w) => w.text || '').join('');
-    const letters = (leadText.match(/[A-Za-z]/g) || []).length;
-    const digits = (leadText.match(/\d/g) || []).length;
+    let letters = 0; let digits = 0;
+    for (let ci = 0; ci < leadText.length; ci++) {
+      const cc = leadText.charCodeAt(ci);
+      if ((cc >= 65 && cc <= 90) || (cc >= 97 && cc <= 122)) letters++;
+      else if (cc >= 48 && cc <= 57) digits++;
+    }
     const bodyFamily = model.pageBodyFamily.get(f.page) || model.bodyFontFamily || '';
     const leadHeadingFace = k >= 2 && model.familyHeading && letters >= 2 && letters >= digits && !f.startsLower
       && lead.every((w) => w.style && w.style.font && w.style.font !== bodyFamily);
@@ -2563,8 +2633,8 @@ function classifyRole(f, model, colWidth, prev) {
   // The extreme-margin guard keeps an in-body citation fragment ("1229.") that wrapped onto its own line from being typed 'pagenum' and deleted on export.
   // The size guard rejects a short row of small footnote-reference markers ("1 2 3", ~0.4x body) that would likewise be deleted as a page number.
   // A small folio that tracks the page is already caught by f.folio above.
-  if (!f.inTable && /^[\d.\-—–]{1,5}$/.test(t.replace(/\s+/g, '')) && /\d/.test(t) && f.sizeRatio >= 0.5
-      && (f.topFrac < 0.08 || f.bottomFrac > 0.92)) {
+  if (!f.inTable && (f.topFrac < 0.08 || f.bottomFrac > 0.92) && f.sizeRatio >= 0.5
+      && /^[\d.\-—–]{1,5}$/.test(t.replace(/\s+/g, '')) && /\d/.test(t)) {
     // A page number cannot exceed the sheet count (plus a few uncounted cover/insert sheets), so a larger lone margin number is content, and typing it 'pagenum' would delete it on export.
     // A genuine folio above the sheet count (an excerpt of a larger document) tracks the page and is already caught by f.folio above.
     const val = parseInt(t.replace(/\D/g, ''), 10);
@@ -2572,9 +2642,10 @@ function classifyRole(f, model, colWidth, prev) {
   }
   // Roman-numeral folio.
   // Must be a canonical roman numeral, not a loose [ivxlcdm]+, so English words made only of roman-numeral letters ("civil", "mild", "did") do not false-match as a page number.
-  const romanFolio = t.replace(/[\s\-—–]/g, '');
-  if (romanFolio.length > 0 && /^m{0,3}(cm|cd|d?c{0,3})(xc|xl|l?x{0,3})(ix|iv|v?i{0,3})$/i.test(romanFolio)
-      && (f.topFrac < 0.08 || f.bottomFrac > 0.92)) return 'pagenum';
+  if (f.topFrac < 0.08 || f.bottomFrac > 0.92) {
+    const romanFolio = t.replace(/[\s\-—–]/g, '');
+    if (romanFolio.length > 0 && /^m{0,3}(cm|cd|d?c{0,3})(xc|xl|l?x{0,3})(ix|iv|v?i{0,3})$/i.test(romanFolio)) return 'pagenum';
+  }
   // "N of M" page counter (scanned exhibit/form pages), placed before the footnote rule that would otherwise claim it.
   // "of" passes that rule's letters test and the counter is small and low like a note.
   // The whole-line anchor keeps it off genuine footnotes, which open with a marker and prose and so are never a bare "N of M" line.
@@ -2652,8 +2723,12 @@ function classifyRole(f, model, colWidth, prev) {
   // A definition-list item's bold lead term can otherwise promote to a heading and split from its definition.
   if (f.structRole === 'LI') return 'body';
   if (f.inTable) return 'body';
-  const letters = (t.match(/[A-Za-z]/g) || []).length;
-  const digits = (t.match(/[0-9]/g) || []).length;
+  let letters = 0; let digits = 0;
+  for (let ci = 0; ci < t.length; ci++) {
+    const cc = t.charCodeAt(ci);
+    if ((cc >= 65 && cc <= 90) || (cc >= 97 && cc <= 122)) letters++;
+    else if (cc >= 48 && cc <= 57) digits++;
+  }
   let letterDom = letters >= 2 && letters >= digits;
   // An all-marker heading ("I.", "b.") is under-lettered, so re-judge on the text after the marker, whose letters-vs-digits test still keeps digit junk ("[2] [3] [4]") out.
   const en = f.enumerator;
@@ -2661,7 +2736,13 @@ function classifyRole(f, model, colWidth, prev) {
       && model.schemes[en.scheme] && model.schemes[en.scheme].sequenceValues
       && model.schemes[en.scheme].sequenceValues.has(en.value)) {
     const rest = t.startsWith(en.raw) ? t.slice(en.raw.length) : t;
-    letterDom = (rest.match(/[A-Za-z]/g) || []).length >= (rest.match(/[0-9]/g) || []).length;
+    let rl = 0; let rd = 0;
+    for (let ci = 0; ci < rest.length; ci++) {
+      const cc = rest.charCodeAt(ci);
+      if ((cc >= 65 && cc <= 90) || (cc >= 97 && cc <= 122)) rl++;
+      else if (cc >= 48 && cc <= 57) rd++;
+    }
+    letterDom = rl >= rd;
   }
   const col = columnFor(f.left, (model.pageColumns && model.pageColumns.get(f.page)) || null, model.bodySize);
   const short = f.width < (col ? col.width : colWidth) * 0.85;
