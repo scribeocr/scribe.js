@@ -10,7 +10,7 @@ import {
   addControlStyles, makeToolbarShell, makeSeparator, makeIconButton, createPageNav, createZoomControls, createRotateControls, createPrintControls, createOpenControls, createTabStrip, createSearchBar,
   createAppMenu, OPEN_SVG, PRINT_SVG, ROTATE_LEFT_SVG, ROTATE_RIGHT_SVG,
 } from '../js/controls/toolbar.js';
-import { createThumbnailPanel, createScrollbars, THUMB_SVG } from '../js/controls/panels.js';
+import { createThumbnailPanel, createScrollbars } from '../js/controls/panels.js';
 import { createCompanionStrip } from '../js/controls/companionStrip.js';
 import { createPagesMorph } from '../js/controls/pagesMorph.js';
 import { createBookmarksPanel } from '../js/controls/bookmarksPanel.js';
@@ -19,6 +19,7 @@ import {
   createHighlightTool, createNoteTool, createDropZone, openDocumentFromFile, createRedactTool,
 } from '../js/controls/tools.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
+import { IOS_WEBKIT } from '../js/viewerImageCache.js';
 import { mergePdfs } from '../../js/export/pdf/mergePdfs.js';
 import { concatOutlines, outlineSplitSegments } from '../../js/objects/outlineObjects.js';
 import { selectOcrPages } from '../../js/pdf/ocrPageSelection.js';
@@ -36,6 +37,13 @@ const TOOLBAR_HEIGHT_MAX = 80;
 const TAB_STRIP_HEIGHT = 30;
 
 const SHEET_PLUS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg>';
+const DOCK_PAGES_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
+  + ' stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
+  + '<rect x="4.5" y="4" width="6" height="6.5" rx="1.2"/><rect x="13.5" y="4" width="6" height="6.5" rx="1.2"/>'
+  + '<rect x="4.5" y="13.5" width="6" height="6.5" rx="1.2"/><rect x="13.5" y="13.5" width="6" height="6.5" rx="1.2"/></svg>';
+const DOCK_PANELS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
+  + ' stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
+  + '<path d="M8.5 6h11.5M8.5 12h11.5M8.5 18h7M4 6h1.2M4 12h1.2M4 18h1.2"/></svg>';
 
 /** Height of the dismissible message banner (shown below the chrome), in px. */
 const MESSAGE_BANNER_HEIGHT = 40;
@@ -123,6 +131,8 @@ class ScribePDFViewer {
    *   redaction, the Export/Combine/Split app-menu actions, and the dark-mode toggle. Pass `false` for a lean read-only viewer.
    * @param {boolean} [options.redact=edit] - Enable redaction marks, reached through the context menu's "Redact".
    *   Defaults to `edit`. Pass `false` to keep editing on but redaction off. Ignored when `edit` is false.
+   * @param {number} [options.docMemoryBudgetMB] - Device memory budget for open documents; opening past it is refused.
+   *   Defaults to 600 on iOS-class WebKit and unlimited elsewhere.
    * @param {ScribeViewer} [options.scribe] - Attach to an existing `ScribeViewer` instance instead
    *   of creating a new one. Use to share state with an already-instantiated viewer.
    */
@@ -160,13 +170,24 @@ class ScribePDFViewer {
 
     /**
      * Open documents, one per tab. The app owns these docs and terminates them on close / `destroy`.
-     * @type {Array<{ doc: import('../../js/containers/scribeDoc.js').ScribeDoc, name: string, lastPage: number }>}
+     * `asleep` marks a document whose worker pools are suspended (main-thread state retained).
+     * `waking` marks one respawning its pools during activation.
+     * `lastUse` orders tabs for the warm set.
+     * @type {Array<{ doc: import('../../js/containers/scribeDoc.js').ScribeDoc, name: string, lastPage: number, lastUse: number, asleep: boolean, waking: boolean }>}
      */
     this._tabs = [];
     /** Index of the active tab in `_tabs`, or -1 when none is open. */
     this._activeTab = -1;
     /** Whether the tab strip currently occupies layout space (shown only with 2+ tabs). */
     this._tabStripVisible = false;
+    /** Monotonic counter stamped onto a tab's `lastUse` at creation and on every activation. */
+    this._tabUseCounter = 0;
+    /**
+     * Device memory budget for open documents, in bytes. Opening past it is refused with a toast.
+     * Finite by default only on iOS-class WebKit, where jetsam kills the page well before desktop-scale memory use.
+     * @type {number}
+     */
+    this._docBudgetBytes = (options.docMemoryBudgetMB ?? (IOS_WEBKIT ? 600 : Infinity)) * 1024 * 1024;
 
     /**
      * The `ScribeViewer` instance backing this viewer. Each `ScribePDFViewer` owns its own
@@ -229,6 +250,8 @@ class ScribePDFViewer {
     this._companionStrip = null;
     /** @type {?HTMLSpanElement} The dock's Panels button (opens the bottom sheet). */
     this._sheetPanelsBtn = null;
+    /** @type {?HTMLSpanElement} The dock's Pages button (opens the Pages view). */
+    this._dockPagesBtn = null;
     /** @type {?HTMLDivElement} */
     this._sheetElem = null;
     /** @type {?HTMLDivElement} */
@@ -929,6 +952,7 @@ class ScribePDFViewer {
       // Showing the strip changes the document's bottom inset.
       if (this._phoneChrome && this.scribe.scrollContainer) this._relayout();
     }
+    this._syncDockPagesBtn();
     if (this._bookmarksPanel && this._thumbnailPanel) {
       this._bookmarksPanel.rebuild();
       // Hide the toggle for a document with no bookmarks unless editing (where the user can add them).
@@ -1036,6 +1060,7 @@ class ScribePDFViewer {
       // Hiding the strip changes the document's bottom inset.
       if (this._phoneChrome && this.scribe.scrollContainer) this._relayout();
     }
+    this._syncDockPagesBtn();
 
     if (terminatePrev) prev.terminate().catch(() => {});
 
@@ -1078,6 +1103,11 @@ class ScribePDFViewer {
     /** @type {Array<{ doc: import('../../js/containers/scribeDoc.js').ScribeDoc, name: string }>} */
     const opened = [];
     for (const pdf of pdfs) {
+      if (!this._roomForAnotherDoc(pdf.size || 0, opened)) {
+        const openN = this._tabs.length + opened.length;
+        this._showToast(`Couldn’t open “${pdf.name || 'this file'}” — ${openN} ${openN === 1 ? 'document is' : 'documents are'} already open on this device.`);
+        continue;
+      }
       let doc = null;
       try {
         // deferText: the tab displays immediately. Extraction continues behind `doc.textReady`.
@@ -1093,7 +1123,11 @@ class ScribePDFViewer {
       }
     }
     // Images/OCR/.scribe are opened together into one document, the way the core import combines them.
-    if (others.length > 0) {
+    if (others.length > 0 && !this._roomForAnotherDoc(others.reduce((a, f) => a + (f.size || 0), 0), opened)) {
+      const openN = this._tabs.length + opened.length;
+      const label = others.length === 1 ? `“${others[0].name}”` : 'the selected files';
+      this._showToast(`Couldn’t open ${label} — ${openN} ${openN === 1 ? 'document is' : 'documents are'} already open on this device.`);
+    } else if (others.length > 0) {
       let doc = null;
       try {
         doc = await scribe.openDocument(others);
@@ -1110,10 +1144,65 @@ class ScribePDFViewer {
     }
     if (opened.length === 0) return;
 
-    for (const t of opened) this._tabs.push({ doc: t.doc, name: t.name, lastPage: 0 });
+    for (const t of opened) this._tabs.push(this._newTab(t.doc, t.name));
     await this._activateTab(this._tabs.length - 1);
     // The active tab already painted. This await keeps the "openFiles resolved means all documents fully loaded" contract for callers.
     await Promise.all(opened.map((t) => t.doc.textReady));
+    // Bulk-opened documents were skipped by the demotion policy while their text extraction was in flight; now it can run.
+    this._applyTabResourcePolicy();
+  }
+
+  /**
+   * A fresh tab record for `doc`, stamped as most recently used.
+   * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
+   * @param {string} name
+   */
+  _newTab(doc, name) {
+    return { doc, name, lastPage: 0, lastUse: ++this._tabUseCounter, asleep: false, waking: false };
+  }
+
+  /**
+   * Whether another document fits under the device memory budget.
+   * @param {number} fileSize - Size of the file about to be opened, in bytes.
+   * @param {Array<{ doc: import('../../js/containers/scribeDoc.js').ScribeDoc }>} pending - Documents opened this batch but not yet in `_tabs`.
+   */
+  _roomForAnotherDoc(fileSize, pending) {
+    if (!Number.isFinite(this._docBudgetBytes)) return true;
+    let est = 0;
+    for (const { doc } of [...this._tabs, ...pending]) {
+      est += (doc.images.pdfData?.byteLength || 0) + doc.pageMetrics.length * 300_000 + 8_000_000;
+    }
+    return est + fileSize * 2 + 16_000_000 <= this._docBudgetBytes;
+  }
+
+  /**
+   * Suspend the worker pools of documents outside the warm set of most recently used tabs, marking those tabs asleep.
+   * A sleeping document keeps its main-thread state (text, edits, undo, thumbnails).
+   * Activating its tab respawns the pools.
+   */
+  _applyTabResourcePolicy() {
+    const warmN = this._phoneChrome ? 1 : 3;
+    const warm = new Set([...this._tabs].sort((a, b) => b.lastUse - a.lastUse).slice(0, warmN));
+    // Cross-document page copies share image sources, so a cold tab's source can still feed a warm document's renders.
+    const warmSources = new Set();
+    for (const tab of warm) for (const src of tab.doc.images.sources.values()) warmSources.add(src);
+    let changed = false;
+    for (const tab of this._tabs) {
+      // Pool teardown would kill an in-flight text extraction, so still-extracting documents stay warm.
+      if (warm.has(tab) || tab.waking || tab.doc._textReadySettle) continue;
+      let suspendedAny = false;
+      for (const src of tab.doc.images.sources.values()) {
+        if (!warmSources.has(src) && src.scheduler) {
+          src.suspend().catch(() => {});
+          suspendedAny = true;
+        }
+      }
+      if (suspendedAny && !tab.asleep) {
+        tab.asleep = true;
+        changed = true;
+      }
+    }
+    if (changed) this._renderTabs();
   }
 
   /**
@@ -1133,7 +1222,7 @@ class ScribePDFViewer {
       const doc = await openDocumentFromFile(new Blob([bytes], { type: 'application/pdf' }));
       const baseName = (this._activeTab >= 0 && this._tabs[this._activeTab]?.name) || 'Document';
       const name = `${baseName.replace(/\.pdf$/i, '')} (extract)`;
-      this._tabs.push({ doc, name, lastPage: 0 });
+      this._tabs.push(this._newTab(doc, name));
       await this._activateTab(this._tabs.length - 1);
     } catch (err) {
       console.error('Failed to create a document from the selected pages:', err);
@@ -1166,7 +1255,7 @@ class ScribePDFViewer {
       }
       const merged = await mergePdfs(buffers, { outline: concatOutlines(outlineParts) });
       const combinedDoc = await openDocumentFromFile(new Blob([merged], { type: 'application/pdf' }));
-      this._tabs.push({ doc: combinedDoc, name: 'Combined.pdf', lastPage: 0 });
+      this._tabs.push(this._newTab(combinedDoc, 'Combined.pdf'));
       await this._activateTab(this._tabs.length - 1);
     } catch (err) {
       console.error('Failed to combine open documents:', err);
@@ -1201,7 +1290,7 @@ class ScribePDFViewer {
       return;
     }
     const firstNewTab = this._tabs.length;
-    for (const p of pieces) this._tabs.push({ doc: p.doc, name: p.name, lastPage: 0 });
+    for (const p of pieces) this._tabs.push(this._newTab(p.doc, p.name));
     await this._activateTab(firstNewTab);
   }
 
@@ -1282,8 +1371,19 @@ class ScribePDFViewer {
     }
     const tab = this._tabs[i];
     this._activeTab = i;
+    tab.lastUse = ++this._tabUseCounter;
+    if (tab.asleep) tab.waking = true;
     this._renderTabs();
+    // Respawn the suspended pool before attaching, so the tab chip's spinner covers the slow part and the attach renders against a warm pool.
+    // Failures fall through: renders retry lazily.
+    if (tab.waking && tab.doc.images.pdfData) await tab.doc.images.getPdfScheduler().catch(() => {});
     await this.attachDocument(tab.doc, tab.lastPage, { terminatePrevious: false });
+    if (tab.waking) {
+      tab.waking = false;
+      tab.asleep = false;
+      this._renderTabs();
+    }
+    this._applyTabResourcePolicy();
   }
 
   /**
@@ -1768,6 +1868,7 @@ class ScribePDFViewer {
         this._dockElem.appendChild(this._appMenu.menuWrap);
         this._dockElem.appendChild(this._searchBar.searchElem);
         if (this._pageInputGroup) this._dockElem.appendChild(this._pageInputGroup);
+        if (this._dockPagesBtn) this._dockElem.appendChild(this._dockPagesBtn);
         if (this._sheetPanelsBtn) this._dockElem.appendChild(this._sheetPanelsBtn);
         // Re-anchor the find bar from the hidden toolbar to the root, where the phone CSS pins it full-width to the top edge.
         this.pdfViewerElem.appendChild(this._searchBar.findGroupElem);
@@ -1793,6 +1894,7 @@ class ScribePDFViewer {
         }
         if (this._commentsPanel) this._commentsPanel.setCompact(true);
         if (this._bookmarksPanel) this._bookmarksPanel.setPhoneMode(true);
+        this._syncDockPagesBtn();
         this._syncDockPanelsBtn();
         // Gate on this.doc, not scribe.doc: the latter is a truthy empty ScribeDoc from construction, which would show a blank bar before anything is opened.
         if (this._companionStrip) {
@@ -1956,6 +2058,7 @@ class ScribePDFViewer {
           morph.settle(!commit, (stillOpen) => {
             if (stillOpen) return;
             this._roomOpen = false;
+            this._syncDockPagesBtn();
             if (this._companionStrip) this._companionStrip.settle();
           });
         }
@@ -1966,6 +2069,7 @@ class ScribePDFViewer {
       room.classList.remove('dragging');
       if (commit) {
         this._roomOpen = false;
+        this._syncDockPagesBtn();
         room.classList.remove('open');
       }
       room.style.transform = '';
@@ -1994,9 +2098,14 @@ class ScribePDFViewer {
       e.stopPropagation();
     }, true);
 
-    const panelsBtn = makeIconButton('Panels', THUMB_SVG, 'Bookmarks and comments');
+    const panelsBtn = makeIconButton('Panels', DOCK_PANELS_SVG, 'Bookmarks and comments');
     panelsBtn.addEventListener('click', () => { if (this._sheetOpen) this._closeSheet(); else this._openSheet(); });
     this._sheetPanelsBtn = panelsBtn;
+
+    // Always present, even with no document, so the dock never re-flows.
+    const pagesBtn = makeIconButton('Pages', DOCK_PAGES_SVG, 'All pages');
+    pagesBtn.addEventListener('click', () => { if (this.doc) this._pagesRoomGesture('tap', 0); });
+    this._dockPagesBtn = pagesBtn;
 
     const scrim = document.createElement('div');
     scrim.className = 'scribe-sheet-scrim';
@@ -2265,6 +2374,7 @@ class ScribePDFViewer {
     if (!this._pagesRoomElem || this._roomOpen || !this._phoneChrome) return;
     this._closeSheet(true);
     this._roomOpen = true;
+    this._syncDockPagesBtn();
     this._showPagesRoomContent();
     // Clear any residue of an interrupted drag: a leftover inline transform (or the transition-suppressing drag class) would park the room off-position.
     this._pagesRoomElem.classList.remove('dragging');
@@ -2325,6 +2435,7 @@ class ScribePDFViewer {
     if (!instant && this._pagesMorph && this._pagesMorph.isActive()) {
       this._setRoomEditing(false);
       this._roomOpen = false;
+      this._syncDockPagesBtn();
       this._pagesMorph.settle(false);
       return;
     }
@@ -2333,6 +2444,7 @@ class ScribePDFViewer {
     this._setRoomEditing(false);
     if (!this._pagesRoomElem || !this._roomOpen) return;
     this._roomOpen = false;
+    this._syncDockPagesBtn();
     // Park the covered strip on the active page first: the close must reveal it at rest, not still gliding after an in-room navigation.
     if (this._companionStrip) this._companionStrip.park();
     if (!instant && this._pagesMorph
@@ -2369,7 +2481,7 @@ class ScribePDFViewer {
     if (morph && morph.isActive()) {
       if (phase === 'move' && !morph.settling()) { morph.frame(dy); return; }
       if (phase === 'end' && !morph.settling()) {
-        morph.settle(dy > Math.min(140, travel * 0.25), (committed) => { if (committed) this._roomOpen = true; });
+        morph.settle(dy > Math.min(140, travel * 0.25), (committed) => { if (committed) this._roomOpen = true; this._syncDockPagesBtn(); });
       }
       return;
     }
@@ -2380,7 +2492,7 @@ class ScribePDFViewer {
         this._showPagesRoomContent();
         if (morph.begin()) {
           morph.frame(0);
-          morph.settle(true, (committed) => { if (committed) this._roomOpen = true; });
+          morph.settle(true, (committed) => { if (committed) this._roomOpen = true; this._syncDockPagesBtn(); });
           return;
         }
       }
@@ -2413,6 +2525,7 @@ class ScribePDFViewer {
     room.style.transform = '';
     if (commit) {
       this._roomOpen = true;
+      this._syncDockPagesBtn();
       setTimeout(() => { if (this._roomOpen && this._thumbnailPanel) this._thumbnailPanel.refit(); }, 300);
     } else {
       room.classList.remove('open');
@@ -2421,6 +2534,12 @@ class ScribePDFViewer {
         this._thumbnailPanel.panelElem.style.display = 'none';
       }
     }
+  }
+
+  /** Keep the dock's Pages button tinted while the Pages view is open. */
+  _syncDockPagesBtn() {
+    if (!this._dockPagesBtn) return;
+    this._dockPagesBtn.classList.toggle('active', this._roomOpen);
   }
 
   /** Hide the dock's Panels button when the sheet would have no tabs to show. */

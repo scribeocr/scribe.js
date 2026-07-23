@@ -88,6 +88,9 @@ export class RenderSource {
   /** @type {?Promise<import('../pdfWorkerMain.js').PdfScheduler | import('../pdfWorkerMain.js').PdfSchedulerInProcess>} */
   #schedulerReady = null;
 
+  /** @type {boolean} */
+  #reloadOnWake = false;
+
   /** @type {number} Live documents referencing this source; the pool is terminated only when this returns to 0. */
   refCount = 0;
 
@@ -111,12 +114,40 @@ export class RenderSource {
   getScheduler = async () => {
     if (this.scheduler) return this.scheduler;
     if (!this.#schedulerReady) {
-      this.#schedulerReady = initPdfScheduler().then((s) => {
+      this.#schedulerReady = initPdfScheduler().then(async (s) => {
+        if (this.#reloadOnWake && this.pdfData) {
+          // Mirrors openMainPDF's buffer choice so an SAB-enabled embedder keeps sharing after a wake.
+          let pdfBytes;
+          if (opt.usePdfSharedBuffer && canUseSharedArrayBuffer()) {
+            const sab = new SharedArrayBuffer(this.pdfData.byteLength);
+            pdfBytes = new Uint8Array(sab);
+            pdfBytes.set(new Uint8Array(this.pdfData));
+          } else {
+            pdfBytes = new Uint8Array(this.pdfData);
+          }
+          await s.loadPdfInAllWorkers(pdfBytes);
+          this.#reloadOnWake = false;
+        }
         this.scheduler = s;
         return s;
       });
     }
     return this.#schedulerReady;
+  };
+
+  /**
+   * Release this source's worker pool while keeping the source reopenable.
+   * The retained `pdfData` is reloaded into a fresh pool by the next `getScheduler` call.
+   * No-op while the pool is already down.
+   * Do not call with jobs in flight (e.g. deferred text extraction), because pool teardown kills them.
+   */
+  suspend = async () => {
+    if (!this.scheduler) return;
+    const s = this.scheduler;
+    this.scheduler = null;
+    this.#schedulerReady = null;
+    this.#reloadOnWake = this.pdfData != null;
+    await s.terminate();
   };
 
   terminate = async () => {

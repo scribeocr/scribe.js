@@ -947,6 +947,8 @@ export function installPageReorder(ctx) {
       if (touch.reflowT) clearTimeout(touch.reflowT);
       ctx.peekWarmEnd();
       stopTouchAuto();
+      // A teardown reached without a terminal pointer event (e.g. the room closing mid-press) must not leave scrollElem still holding the capture.
+      try { ctx.scrollElem.releasePointerCapture(touch.pointerId); } catch (_) { /*  */ }
     }
     window.removeEventListener('pointermove', onTouchMove);
     window.removeEventListener('pointerup', onTouchUp);
@@ -1235,9 +1237,19 @@ export function installPageReorder(ctx) {
   }
 
   // Non-passive because preventDefault on the pointer events alone does not stop native scrolling once a lift/sweep/peek/paint owns the pointer.
+  // The cancelable guard skips touches that start on a touch-action:none element (checkbox, selected room page).
+  // Those arrive non-cancelable by spec, and preventDefault there only logs a console intervention warning.
   ctx.scrollElem.addEventListener('touchmove', (e) => {
-    if (touch && (touch.lifted || touch.sweeping || touch.peeking || touch.painting)) e.preventDefault();
+    if (touch && (touch.lifted || touch.sweeping || touch.peeking || touch.painting) && e.cancelable) e.preventDefault();
   }, { passive: false });
+
+  // On a real touch device a captured pointer can die without ever delivering pointerup or pointercancel.
+  // That would strand `touch` non-null and deadlock every later thumbnail gesture.
+  // lostpointercapture still fires, so treat it as a cancel.
+  // The pressed cell's lostpointercapture also bubbles up here when its implicit capture transfers to scrollElem at gesture start, so only scrollElem's own loss counts.
+  ctx.scrollElem.addEventListener('lostpointercapture', (e) => {
+    if (e.target === ctx.scrollElem) onTouchCancel(e);
+  });
 
   /** Whether a touch reorder is in progress or just ended, so panels.js can swallow a racing native long-press menu. */
   function touchActive() { return touch !== null || (Date.now() - lastTouchT < 500); }

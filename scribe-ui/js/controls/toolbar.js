@@ -492,45 +492,96 @@ export function createAppMenu(rootClass) {
  * @param {object} cfg
  * @param {(index: number) => void} cfg.onSelect - Called when a tab is clicked.
  * @param {(index: number) => void} cfg.onClose - Called when a tab's close button is clicked.
- * @returns {{ tabStripElem: HTMLDivElement, render: (tabs: Array<{ name: string }>, activeIndex: number) => void }}
+ * @returns {{ tabStripElem: HTMLDivElement, render: (tabs: Array<{ name: string, asleep?: boolean, waking?: boolean }>, activeIndex: number) => void }}
  */
 export function createTabStrip({ onSelect, onClose }) {
   const tabStripElem = document.createElement('div');
   tabStripElem.className = 'scribe-tab-strip';
 
+  const laneElem = document.createElement('div');
+  laneElem.className = 'scribe-tab-lane';
+
+  /**
+   * @param {string} icon
+   * @param {string} label
+   * @param {number} dir
+   */
+  const makePaddle = (icon, label, dir) => {
+    const paddle = document.createElement('span');
+    paddle.className = 'scribe-tab-paddle';
+    paddle.innerHTML = icon;
+    paddle.role = 'button';
+    paddle.ariaLabel = label;
+    paddle.addEventListener('click', () => {
+      laneElem.scrollBy({ left: dir * laneElem.clientWidth * 0.8 });
+    });
+    return paddle;
+  };
+  const fadeLeft = document.createElement('span');
+  fadeLeft.className = 'scribe-tab-fade left';
+  const fadeRight = document.createElement('span');
+  fadeRight.className = 'scribe-tab-fade right';
+  tabStripElem.appendChild(makePaddle(NAV_PREV_SVG, 'Scroll tabs left', -1));
+  tabStripElem.appendChild(fadeLeft);
+  tabStripElem.appendChild(laneElem);
+  tabStripElem.appendChild(fadeRight);
+  tabStripElem.appendChild(makePaddle(NAV_NEXT_SVG, 'Scroll tabs right', 1));
+
+  // A vertical wheel scrolls the lane horizontally (trackpad horizontal deltas already work natively).
+  laneElem.addEventListener('wheel', (event) => {
+    if (event.deltaY && !event.deltaX) {
+      laneElem.scrollLeft += event.deltaY;
+      event.preventDefault();
+    }
+  }, { passive: false });
+
+  const syncOverflow = () => {
+    tabStripElem.classList.toggle('overflowing', laneElem.scrollWidth > laneElem.clientWidth + 1);
+  };
+  if (typeof ResizeObserver !== 'undefined') new ResizeObserver(syncOverflow).observe(laneElem);
+
   /**
    * Rebuild the chips from the current tab list.
-   * @param {Array<{ name: string }>} tabs
+   * @param {Array<{ name: string, asleep?: boolean, waking?: boolean }>} tabs
    * @param {number} activeIndex
    */
   function render(tabs, activeIndex) {
-    tabStripElem.textContent = '';
+    laneElem.textContent = '';
     tabs.forEach((tab, i) => {
       const chip = document.createElement('div');
       chip.className = i === activeIndex ? 'scribe-tab active' : 'scribe-tab';
-      chip.title = tab.name;
+      if (tab.asleep) chip.classList.add('asleep');
+      chip.title = tab.asleep && !tab.waking ? `${tab.name} — asleep to save memory` : tab.name;
 
       const name = document.createElement('span');
       name.className = 'scribe-tab-name';
       name.textContent = tab.name;
       chip.appendChild(name);
 
-      const close = document.createElement('span');
-      close.className = 'scribe-tab-close';
-      close.textContent = '×';
-      close.role = 'button';
-      close.ariaLabel = `Close ${tab.name}`;
-      chip.appendChild(close);
+      if (tab.waking) {
+        const spin = document.createElement('span');
+        spin.className = 'scribe-tab-spin';
+        chip.appendChild(spin);
+      } else {
+        const close = document.createElement('span');
+        close.className = 'scribe-tab-close';
+        close.textContent = '×';
+        close.role = 'button';
+        close.ariaLabel = `Close ${tab.name}`;
+        chip.appendChild(close);
+        // Stop the click reaching the chip, so closing a tab never also selects it.
+        close.addEventListener('click', (event) => {
+          event.stopPropagation();
+          onClose(i);
+        });
+      }
 
       chip.addEventListener('click', () => onSelect(i));
-      // Stop the click reaching the chip, so closing a tab never also selects it.
-      close.addEventListener('click', (event) => {
-        event.stopPropagation();
-        onClose(i);
-      });
-
-      tabStripElem.appendChild(chip);
+      laneElem.appendChild(chip);
     });
+    syncOverflow();
+    const activeChip = laneElem.children[activeIndex];
+    if (activeChip) activeChip.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
 
   return { tabStripElem, render };
@@ -928,7 +979,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       padding: 0;
       margin: 0;
     }
-    .${r} .scribe-dock .btn-group span { font-size: 16px !important; }
+    /* The count span's min-width/padding are inline styles from the desktop toolbar, so zeroing them here needs !important. */
+    .${r} .scribe-dock .btn-group span { font-size: 16px !important; min-width: 0 !important; padding-left: 0 !important; }
     .${r} .scribe-dock .btn-group .scribe-page-sep { color: var(--scribe-ink-3); font-weight: 500; margin: 0 5px; }
 
     /* The app menu opens upward from the dock.
@@ -1205,6 +1257,10 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       width: 22px;
       height: 22px;
       padding: 0;
+      /* A checkbox press starts the range-paint gesture, never a scroll.
+         Declared in CSS because iOS only honors touch-action set before the touchstart.
+         WebKit cancels the pointer stream of any moving touch that could still pan, and no listener-side preventDefault can win it back. */
+      touch-action: none;
       /* Some mobile browsers flash their rectangular tap highlight over the round badge. */
       -webkit-tap-highlight-color: transparent;
       border-radius: 50%;
@@ -1232,6 +1288,11 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       border-color: var(--scribe-accent);
       color: #fff;
     }
+
+    /* A press on a selected page grabs it outright (the lift starts at the press), so no touch that lands there may become a pan.
+       Same iOS constraint as the checkbox above: touch-action must be set in CSS before the touchstart, or WebKit pointercancels the drag on the first finger movement.
+       Unselected pages keep their default touch-action, which is what lets the Edit grid still scroll. */
+    .${r} .scribe-pages-room .scribe-thumb.selected { touch-action: none; }
 
     /* Room-Edit selection: the page wears the accent ring, not the desktop lift + tint, which reads as a wash at phone cell sizes.
        While anything is selected the active page's ring stands down to a neutral hairline, so accent means exactly one thing in the grid: selected. */
@@ -1308,7 +1369,10 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
 
     /* Browse-mode page peek: a buttonless preview that lives only under a held finger.
-       pointer-events: none throughout: nothing in it is pressable, and the scrub hit-test must pass through to the cells beneath. */
+       pointer-events: none throughout: nothing in it is pressable, and the scrub hit-test must pass through to the cells beneath.
+       The hidden state also needs visibility: hidden.
+       A merely transparent full-panel overlay still claims the compositor's touch hit-test, and pointer-events: none does not remove it.
+       Chrome then treats every touch on the panel as non-cancelable scrolling, which pointercancels any hold gesture on the first movement. */
     .${r} .scribe-thumb-scrim {
       position: absolute;
       inset: 0;
@@ -1316,10 +1380,11 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       /* Above the selection bar: the peek dims everything in the panel, the bar included. */
       z-index: 56;
       opacity: 0;
+      visibility: hidden;
       pointer-events: none;
-      transition: opacity .16s;
+      transition: opacity .16s, visibility 0s .16s;
     }
-    .${r} .scribe-thumb-scrim.on { opacity: 1; }
+    .${r} .scribe-thumb-scrim.on { opacity: 1; visibility: visible; transition: opacity .16s; }
     .${r} .scribe-thumb-peek {
       position: absolute;
       left: 50%;
@@ -1394,15 +1459,56 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       width: 100%;
       background: var(--scribe-canvas);
       border-bottom: 1px solid var(--scribe-line);
+      position: relative;
+    }
+
+    .${r} .scribe-tab-lane {
+      display: flex;
+      align-items: stretch;
+      flex: 1 1 auto;
       overflow-x: auto;
       overflow-y: hidden;
-      white-space: nowrap;
+      scroll-behavior: smooth;
+      scrollbar-width: none;
     }
+    .${r} .scribe-tab-lane::-webkit-scrollbar { display: none; }
+    @media (prefers-reduced-motion: reduce) {
+      .${r} .scribe-tab-lane { scroll-behavior: auto; }
+    }
+
+    .${r} .scribe-tab-paddle {
+      flex: none;
+      width: 26px;
+      display: none;
+      align-items: center;
+      justify-content: center;
+      color: var(--scribe-ink-2);
+      cursor: pointer;
+      user-select: none;
+      z-index: 2;
+    }
+    .${r} .scribe-tab-paddle svg { width: 16px; height: 16px; }
+    .${r} .scribe-tab-paddle:hover { color: var(--scribe-ink); background: var(--scribe-hover); }
+    .${r} .scribe-tab-strip.overflowing .scribe-tab-paddle { display: flex; }
+
+    .${r} .scribe-tab-fade {
+      position: absolute;
+      top: 0;
+      bottom: 1px;
+      width: 26px;
+      pointer-events: none;
+      display: none;
+      z-index: 1;
+    }
+    .${r} .scribe-tab-fade.left { left: 26px; background: linear-gradient(90deg, var(--scribe-canvas), transparent); }
+    .${r} .scribe-tab-fade.right { right: 26px; background: linear-gradient(-90deg, var(--scribe-canvas), transparent); }
+    .${r} .scribe-tab-strip.overflowing .scribe-tab-fade { display: block; }
 
     .${r} .scribe-tab {
       display: inline-flex;
       align-items: center;
       gap: 6px;
+      min-width: 140px;
       max-width: 200px;
       padding: 0 10px;
       color: var(--scribe-ink-2);
@@ -1410,6 +1516,22 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       cursor: pointer;
       border-bottom: 2px solid transparent;
       user-select: none;
+    }
+
+    .${r} .scribe-tab.asleep .scribe-tab-name { color: var(--scribe-ink-3); }
+
+    .${r} .scribe-tab-spin {
+      flex: none;
+      width: 12px;
+      height: 12px;
+      border: 1.6px solid var(--scribe-ink-3);
+      border-top-color: transparent;
+      border-radius: 50%;
+      animation: scribe-tab-spin .7s linear infinite;
+    }
+    @keyframes scribe-tab-spin { to { transform: rotate(360deg); } }
+    @media (prefers-reduced-motion: reduce) {
+      .${r} .scribe-tab-spin { animation: none; opacity: .5; }
     }
 
     .${r} .scribe-tab:hover {
@@ -2992,7 +3114,26 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-cmc-dots svg { width: 15px; height: 15px; }
     .${r}.scribe-coarse .scribe-cmc-dots { width: 34px; height: 30px; }
     .${r} .scribe-cmc-root { display: flex; gap: 8px; margin-top: 8px; }
-    .${r} .scribe-cmc-root .scribe-cmc-edit { flex: 1; min-width: 0; }
+    .${r} .scribe-cmc-rc { flex: 1; min-width: 0; }
+    .${r} .scribe-cmc-ft { display: flex; align-items: baseline; gap: 10px; margin-top: 3px; }
+    .${r} .scribe-cmc-fd {
+      font: 500 11.5px/1.3 'Segoe UI', Tahoma, sans-serif;
+      color: var(--scribe-ink-3);
+      font-variant-numeric: tabular-nums;
+    }
+    .${r} .scribe-cmc-fr {
+      margin: 0;
+      padding: 0;
+      border: 0;
+      background: none;
+      font: 500 11.5px/1.3 'Segoe UI', Tahoma, sans-serif;
+      color: var(--scribe-accent);
+      cursor: pointer;
+      position: relative;
+    }
+    /* The verb's visual box stays a text label; the tap target extends invisibly around it. */
+    .${r} .scribe-cmc-fr::after { content: ''; position: absolute; inset: -10px -8px; }
+    .${r} .scribe-cmc-fr:hover { text-decoration: underline; }
 
     .${r} .scribe-cmc-strip { display: flex; align-items: center; gap: 8px; margin-top: 8px; }
     .${r} .scribe-cmc-row.open .scribe-cmc-strip { height: 0; margin-top: 0; opacity: 0; visibility: hidden; overflow: hidden; }
@@ -3082,31 +3223,6 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-cmc-send svg { width: 17px; height: 17px; }
     .${r}.scribe-coarse .scribe-cmc-send { width: 44px; height: 44px; }
     .${r}.scribe-coarse .scribe-cmc-field { min-height: 44px; }
-
-    /* The verb's visual box stays small, so its tap target is extended outward by negative margins and a coarse-mode ::after. */
-    .${r} .scribe-cmc-verbs {
-      display: flex;
-      align-items: center;
-      margin: 6px 0 -6px;
-    }
-    .${r} .scribe-cmc-vb {
-      display: inline-flex;
-      align-items: center;
-      gap: 7px;
-      min-height: 28px;
-      padding: 0 10px;
-      margin-left: -10px;
-      border: 0;
-      border-radius: 8px;
-      background: none;
-      color: var(--scribe-ink-2);
-      font: 600 13px/1 'Segoe UI', Tahoma, sans-serif;
-      cursor: pointer;
-    }
-    .${r} .scribe-cmc-vb:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
-    .${r} .scribe-cmc-vb svg { width: 15px; height: 15px; }
-    .${r}.scribe-coarse .scribe-cmc-vb { min-height: 32px; padding: 0 12px; margin-left: -12px; position: relative; }
-    .${r}.scribe-coarse .scribe-cmc-vb::after { content: ''; position: absolute; left: 0; right: -8px; top: -8px; bottom: -8px; }
 
     .${r} .scribe-cm-menu-danger { color: var(--scribe-danger); }
 

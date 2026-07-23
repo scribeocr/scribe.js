@@ -2102,6 +2102,11 @@ export function createThumbnailPanel(scribe, {
       // Revealing the rail should paint its thumbnails right away, not 120ms later.
       updateWindow(true);
     } else {
+      // A peek whose pointer died without a terminal event would keep `touch` set and the scrim up across a panel close and reopen, so stranded gestures are torn down on every hide.
+      // This backs up the lostpointercapture net in pageReorder.js.
+      // The identical teardown in setRoomMode fires only on mode changes.
+      peekHide();
+      reorder.cancelDrag();
       // A hidden rail must not stay the active pane, or it would keep swallowing the arrow keys.
       // Release focus so the viewer reclaims them.
       if (document.activeElement === panelElem) panelElem.blur();
