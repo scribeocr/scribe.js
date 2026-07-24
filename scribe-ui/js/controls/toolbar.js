@@ -513,7 +513,12 @@ export function createTabStrip({ onSelect, onClose }) {
     paddle.role = 'button';
     paddle.ariaLabel = label;
     paddle.addEventListener('click', () => {
-      laneElem.scrollBy({ left: dir * laneElem.clientWidth * 0.8 });
+      // iOS Safari does not clamp smooth programmatic scrolls, so edge taps would strand the lane on blank space past the tabs.
+      const target = Math.max(0, Math.min(
+        laneElem.scrollWidth - laneElem.clientWidth,
+        laneElem.scrollLeft + dir * laneElem.clientWidth * 0.8,
+      ));
+      laneElem.scrollTo({ left: target });
     });
     return paddle;
   };
@@ -1157,6 +1162,10 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       box-shadow: inset 0 1px 0 0 var(--scribe-line);
       will-change: transform;
     }
+    .${r} .scribe-pages-room.sinking {
+      box-shadow: var(--scribe-shadow-pop), inset 0 1px 0 0 var(--scribe-line);
+      will-change: transform;
+    }
     @media (prefers-reduced-motion: reduce) {
       .${r} .scribe-pages-room { transition: none; }
     }
@@ -1470,6 +1479,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       overflow-y: hidden;
       scroll-behavior: smooth;
       scrollbar-width: none;
+      /* Safari permits out-of-range scroll offsets while its edge bounce is enabled, so hard-stop the lane's edges. */
+      overscroll-behavior-x: none;
     }
     .${r} .scribe-tab-lane::-webkit-scrollbar { display: none; }
     @media (prefers-reduced-motion: reduce) {
@@ -2550,43 +2561,6 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-bm-menu-item.disabled:hover { background: none; }
     .${r} .scribe-bm-menu-item.danger { color: var(--scribe-danger); }
 
-    /* Mouse drag-to-move visuals.
-       The drop line's left edge is set from the drop depth at drag time, so no left is declared here. */
-    .${r} .scribe-bm-drop-line {
-      position: absolute;
-      right: 8px;
-      height: 0;
-      border-top: 2px solid var(--scribe-accent);
-      z-index: 9;
-      pointer-events: none;
-    }
-    .${r} .scribe-bm-drop-line::before {
-      content: '';
-      position: absolute;
-      left: -1px;
-      top: -4px;
-      width: 6px;
-      height: 6px;
-      border-radius: 50%;
-      background: var(--scribe-accent);
-    }
-    .${r} .scribe-bm-drag-ghost {
-      position: absolute;
-      z-index: 12;
-      pointer-events: none;
-      background: var(--scribe-surface);
-      border: 1px solid var(--scribe-line-strong);
-      border-radius: 6px;
-      box-shadow: var(--scribe-lift-shadow);
-      padding: 4.5px 10px;
-      font-size: 13px;
-      max-width: 200px;
-      overflow: hidden;
-      text-overflow: ellipsis;
-      white-space: nowrap;
-      opacity: .95;
-    }
-    .${r} .scribe-bm-row.scribe-bm-drag-src { opacity: .35; }
     .${r} .scribe-bm-rails { position: absolute; top: 0; left: 0; right: 0; pointer-events: none; z-index: 8; }
     .${r} .scribe-bm-rails i { position: absolute; top: 0; bottom: 0; border-left: 1px dashed var(--scribe-accent-ring); }
     .${r} .scribe-bm-rails i.on { border-left: 1.5px solid var(--scribe-accent); }
@@ -2602,7 +2576,6 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       transition: left 90ms ease, top 90ms ease;
     }
 
-    /* Touch lift: the dragged row rides the finger as a card. */
     .${r} .scribe-bm-lift {
       position: absolute;
       z-index: 12;
@@ -2634,8 +2607,6 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-bm-lift-src { visibility: hidden; }
     .${r} .scribe-bm-sliding .scribe-bm-row { transition: transform 160ms ease; }
     .${r} .scribe-bm-dragging .scribe-bm-row { cursor: grabbing; }
-    @keyframes scribe-bm-settle { 0% { background: var(--scribe-accent-soft); } 100% { background: transparent; } }
-    .${r} .scribe-bm-row.scribe-bm-settled { animation: scribe-bm-settle 900ms ease; }
     @keyframes scribe-bm-fade-in { from { opacity: 0; } to { opacity: 1; } }
     .${r} .scribe-bm-row.scribe-bm-drop-in .scribe-bm-dots,
     .${r} .scribe-bm-row.scribe-bm-drop-in .scribe-bm-twisty { animation: scribe-bm-fade-in 140ms ease; }

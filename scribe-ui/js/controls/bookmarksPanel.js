@@ -28,7 +28,7 @@ const INDENT_PX = 21;
  *   `onResize` fires as the right-edge handle is dragged, with the desired width and the drag phase: `start` (pointerdown), `move` (each pointermove), and `end` (release).
  *   `onRenameFocus` fires as an inline rename takes and releases focus, so a phone host can lift the sheet clear of the on-screen keyboard.
  * @returns {{ panelElem: HTMLDivElement, toggleElem: HTMLSpanElement, rebuild: () => void,
- * setActive: (pageIndex: number) => void, setVisible: (v: boolean) => void, destroy: () => void,
+ * setActive: () => void, setVisible: (v: boolean) => void, destroy: () => void,
  * addAtPage: (pageIndex?: number) => void, setPhoneMode: (on: boolean) => void }}
  */
 export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFocus }) {
@@ -70,7 +70,7 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
 
   const toggleElem = makeIconButton('Bookmarks', BOOKMARK_SVG);
 
-  let activePage = -1;
+  let activeRow = /** @type {?Element} */ (null);
   let visible = false;
   let phoneMode = false;
   // Bookmark node ids selected for a bulk action.
@@ -215,7 +215,7 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
 
   /**
    * Render one outline node (and, when open, its children) as indented rows.
-   * @param {{id: string, title: string, dest: {pageIndex: number}|null, children: any[], open: boolean}} node - Outline node to render.
+   * @param {{id: string, title: string, dest: {pageIndex: number, yFrac?: number}|null, children: any[], open: boolean}} node - Outline node to render.
    * @param {number} depth - Nesting depth, used to indent the row.
    * @returns {HTMLDivElement} Wrapper element holding the node's row and, when open, its rendered children.
    */
@@ -225,8 +225,8 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
     row.className = 'scribe-bm-row';
     row.style.paddingLeft = `${8 + depth * INDENT_PX}px`;
     row.dataset.page = node.dest ? String(node.dest.pageIndex) : '';
+    if (node.dest) row.dataset.yfrac = String(typeof node.dest.yFrac === 'number' ? node.dest.yFrac : 0);
     row.dataset.id = node.id;
-    if (node.dest && node.dest.pageIndex === activePage) row.classList.add('active');
     if (selected.has(node.id)) row.classList.add('selected');
     // Top-level entries (class 'top') render semibold, and title-only parents (class 'structural') render as section labels.
     if (depth === 0 && node.dest) row.classList.add('top');
@@ -340,6 +340,7 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
     headerElem.style.display = showHeader ? '' : 'none';
     panelElem.classList.toggle('scribe-bm-has-header', showHeader);
     treeElem.textContent = '';
+    activeRow = null;
     const nodes = outline();
     if (nodes.length === 0) {
       // No document loaded -> nothing to bookmark, so leave the panel blank (not even "No bookmarks yet"), matching the thumbnail rail, which is also empty before a document is open.
@@ -355,6 +356,7 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
       return;
     }
     for (const node of nodes) treeElem.appendChild(renderNode(node, 0));
+    applyActive();
   }
 
   /**
@@ -531,7 +533,7 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
         if (node.id === excludeId) continue;
         const elem = treeElem.querySelector(`.scribe-bm-row[data-id="${node.id}"]`);
         if (elem) {
-          // offsetTop, not a live rect: the touch drag's gap-opening transforms displace the rows, but hit-testing must run against the pre-drag layout.
+          // offsetTop, not a live rect: the drag's gap-opening transforms displace the rows, but hit-testing must run against the pre-drag layout.
           out.push({
             node, depth, chain, elem, top: elem.offsetTop, bottom: elem.offsetTop + elem.offsetHeight,
           });
@@ -554,32 +556,21 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
     const treeRect = treeElem.getBoundingClientRect();
     const yContent = e.clientY - treeRect.top + treeElem.scrollTop;
     let gap = 0;
-    if (drag.touch) {
-      // Hit-test in collapsed coordinates, with the lifted span removed, so a press anywhere inside that span maps to the row's own slot.
-      const cY = yContent < drag.srcTop ? yContent
-        : (yContent < drag.srcTop + drag.srcH ? drag.srcTop : yContent - drag.srcH);
-      for (const entry of entries) {
-        const cTop = entry.top > drag.srcTop ? entry.top - drag.srcH : entry.top;
-        if (cTop + (entry.bottom - entry.top) / 2 < cY) gap += 1; else break;
-      }
-    } else {
-      let best = Infinity;
-      for (let i = 0; i < entries.length; i += 1) {
-        const d = Math.abs(entries[i].top - yContent);
-        if (d < best) { best = d; gap = i; }
-      }
-      if (entries.length && Math.abs(entries[entries.length - 1].bottom - yContent) < best) gap = entries.length;
+    // Hit-test in collapsed coordinates, with the lifted span removed, so a press anywhere inside that span maps to the row's own slot.
+    const cY = yContent < drag.srcTop ? yContent
+      : (yContent < drag.srcTop + drag.srcH ? drag.srcTop : yContent - drag.srcH);
+    for (const entry of entries) {
+      const cTop = entry.top > drag.srcTop ? entry.top - drag.srcH : entry.top;
+      if (cTop + (entry.bottom - entry.top) / 2 < cY) gap += 1; else break;
     }
     const above = gap > 0 ? entries[gap - 1] : null;
     const below = gap < entries.length ? entries[gap] : null;
     // Shallower than the row below would detach it from its ancestors, and deeper than one past the row above would skip a level.
     const minDepth = below ? below.depth : 0;
     const maxDepth = above ? above.depth + 1 : 0;
-    // On touch the depth is relative to the press point, one level per indent unit of travel.
-    // The mouse's absolute mapping would read the press x as a deep indent and nest a lift released in place.
-    const raw = drag.touch
-      ? drag.ownDepth + Math.round((e.clientX - drag.pressX) / INDENT_PX)
-      : Math.round((e.clientX - treeRect.left - 8) / INDENT_PX);
+    // Depth is relative to the press point, one level per indent unit of travel.
+    // An absolute mapping would read the press x as a deep indent and nest a lift released in place.
+    const raw = drag.ownDepth + Math.round((e.clientX - drag.pressX) / INDENT_PX);
     const depth = Math.max(minDepth, Math.min(raw, maxDepth));
 
     let parent = null;
@@ -606,7 +597,7 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
 
   function startDrag() {
     const {
-      id, node, row, touch, x, y,
+      id, node, row, x, y,
     } = dragPress;
     drag = {
       id,
@@ -614,7 +605,6 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
       entries: visibleEntries(id),
       drop: null,
       srcRow: row,
-      touch,
       adoptNode: null,
       adoptElem: null,
       lastX: x,
@@ -624,84 +614,60 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
     panelElem.classList.add('scribe-bm-dragging');
     // Pointermove stops firing while the finger parks in the edge zone, so auto-scroll runs per frame instead.
     drag.scrollRaf = requestAnimationFrame(dragScrollTick);
-    if (touch) {
-      const wrapper = /** @type {HTMLElement} */ (row.parentElement);
-      drag.srcWrapper = wrapper;
-      drag.srcTop = wrapper.offsetTop;
-      drag.srcH = wrapper.offsetHeight;
-      drag.srcRowH = row.offsetHeight;
-      drag.grabDY = y - row.getBoundingClientRect().top;
-      drag.pressX = x;
-      // Inverse of renderNode's indent (8 + depth * INDENT_PX).
-      drag.ownDepth = Math.round((parseFloat(row.style.paddingLeft) - 8) / INDENT_PX);
-      const lift = document.createElement('div');
-      lift.className = 'scribe-bm-lift';
-      const clone = /** @type {HTMLElement} */ (row.cloneNode(true));
-      clone.classList.remove('active', 'selected');
-      clone.style.paddingLeft = '6px';
-      const cloneTwisty = clone.querySelector('.scribe-bm-twisty');
-      if (cloneTwisty) cloneTwisty.remove();
-      const cloneDots = clone.querySelector('.scribe-bm-dots');
-      if (cloneDots) cloneDots.remove();
-      lift.appendChild(clone);
-      drag.cloneElem = clone;
-      const carried = allIds([node]).length;
-      if (carried > 1) {
-        const badge = document.createElement('span');
-        badge.className = 'scribe-bm-lift-count';
-        badge.textContent = String(carried);
-        lift.appendChild(badge);
-      }
-      const treeRect = treeElem.getBoundingClientRect();
-      const panelRect = panelElem.getBoundingClientRect();
-      drag.treeLeft = treeRect.left - panelRect.left;
-      drag.treeW = treeRect.width;
-      // Sized for the deepest reachable level and fixed for the whole drag, so changing depth translates the card instead of resizing it.
-      const deepest = drag.entries.reduce((m, entry) => Math.max(m, entry.depth + 1), 0);
-      lift.style.width = `${drag.treeW - 28 - deepest * INDENT_PX}px`;
-      panelElem.appendChild(lift);
-      drag.ghostElem = lift;
-      const rails = document.createElement('div');
-      rails.className = 'scribe-bm-rails';
-      rails.style.height = `${treeElem.scrollHeight}px`;
-      treeElem.appendChild(rails);
-      drag.railsElem = rails;
-      drag.railsKey = '';
-      // The plate marks the slot the card will settle into.
-      const plate = document.createElement('div');
-      plate.className = 'scribe-bm-plate';
-      plate.style.width = lift.style.width;
-      plate.style.height = `${drag.srcRowH}px`;
-      plate.style.top = `${drag.srcTop}px`;
-      plate.style.left = `${22 + drag.ownDepth * INDENT_PX}px`;
-      treeElem.appendChild(plate);
-      drag.plateElem = plate;
-      wrapper.classList.add('scribe-bm-lift-src');
-      treeElem.classList.add('scribe-bm-sliding');
-      return;
+    const wrapper = /** @type {HTMLElement} */ (row.parentElement);
+    drag.srcWrapper = wrapper;
+    drag.srcTop = wrapper.offsetTop;
+    drag.srcH = wrapper.offsetHeight;
+    drag.srcRowH = row.offsetHeight;
+    drag.grabDY = y - row.getBoundingClientRect().top;
+    drag.pressX = x;
+    // Inverse of renderNode's indent (8 + depth * INDENT_PX).
+    drag.ownDepth = Math.round((parseFloat(row.style.paddingLeft) - 8) / INDENT_PX);
+    const lift = document.createElement('div');
+    lift.className = 'scribe-bm-lift';
+    const clone = /** @type {HTMLElement} */ (row.cloneNode(true));
+    clone.classList.remove('active', 'selected');
+    clone.style.paddingLeft = '6px';
+    const cloneTwisty = clone.querySelector('.scribe-bm-twisty');
+    if (cloneTwisty) cloneTwisty.remove();
+    const cloneDots = clone.querySelector('.scribe-bm-dots');
+    if (cloneDots) cloneDots.remove();
+    lift.appendChild(clone);
+    drag.cloneElem = clone;
+    const carried = allIds([node]).length;
+    if (carried > 1) {
+      const badge = document.createElement('span');
+      badge.className = 'scribe-bm-lift-count';
+      badge.textContent = String(carried);
+      lift.appendChild(badge);
     }
-    row.classList.add('scribe-bm-drag-src');
-    const ghost = document.createElement('div');
-    ghost.className = 'scribe-bm-drag-ghost';
-    ghost.textContent = node.title || '(untitled)';
-    panelElem.appendChild(ghost);
-    drag.ghostElem = ghost;
-    const line = document.createElement('div');
-    line.className = 'scribe-bm-drop-line';
-    line.style.display = 'none';
-    treeElem.appendChild(line);
-    drag.lineElem = line;
+    const treeRect = treeElem.getBoundingClientRect();
+    const panelRect = panelElem.getBoundingClientRect();
+    drag.treeLeft = treeRect.left - panelRect.left;
+    drag.treeW = treeRect.width;
+    // Sized for the deepest reachable level and fixed for the whole drag, so changing depth translates the card instead of resizing it.
+    const deepest = drag.entries.reduce((m, entry) => Math.max(m, entry.depth + 1), 0);
+    lift.style.width = `${drag.treeW - 28 - deepest * INDENT_PX}px`;
+    panelElem.appendChild(lift);
+    drag.ghostElem = lift;
     // Absolute children of a scroll container only span its viewport, so the height is set to the full scroll extent explicitly.
     const rails = document.createElement('div');
     rails.className = 'scribe-bm-rails';
     rails.style.height = `${treeElem.scrollHeight}px`;
-    for (let d = 0; d < 3; d += 1) {
-      const rail = document.createElement('i');
-      rail.style.left = `${8 + d * INDENT_PX}px`;
-      rails.appendChild(rail);
-    }
     treeElem.appendChild(rails);
     drag.railsElem = rails;
+    drag.railsKey = '';
+    // The plate marks the slot the card will settle into.
+    const plate = document.createElement('div');
+    plate.className = 'scribe-bm-plate';
+    plate.style.width = lift.style.width;
+    plate.style.height = `${drag.srcRowH}px`;
+    plate.style.top = `${drag.srcTop}px`;
+    plate.style.left = `${22 + drag.ownDepth * INDENT_PX}px`;
+    treeElem.appendChild(plate);
+    drag.plateElem = plate;
+    wrapper.classList.add('scribe-bm-lift-src');
+    treeElem.classList.add('scribe-bm-sliding');
   }
 
   /**
@@ -712,61 +678,53 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
   function updateDragVisuals(x, y) {
     const panelRect = panelElem.getBoundingClientRect();
     drag.drop = computeDrop({ clientX: x, clientY: y });
-    if (drag.touch) {
-      drag.ghostElem.style.top = `${y - panelRect.top - drag.grabDY}px`;
-      // The 22px base puts the card edge, the rails, and the plate 6px left of each depth's text.
-      const desired = drag.treeLeft + 22 + drag.ownDepth * INDENT_PX + (x - drag.pressX);
-      const legal = Math.max(
-        drag.treeLeft + 22 + drag.drop.minDepth * INDENT_PX,
-        Math.min(desired, drag.treeLeft + 22 + drag.drop.maxDepth * INDENT_PX),
-      );
-      const give = Math.max(-8, Math.min(8, (desired - legal) * 0.3));
-      drag.ghostElem.style.left = `${legal + give}px`;
-      // The gap's visual top: rows above the source slot keep their place, rows below have slid up.
-      const gapVisTop = drag.drop.lineTop > drag.srcTop ? drag.drop.lineTop - drag.srcH : drag.drop.lineTop;
-      drag.plateElem.style.top = `${gapVisTop}px`;
-      drag.plateElem.style.left = `${22 + drag.drop.depth * INDENT_PX}px`;
-      const railsKey = `${drag.drop.minDepth}:${drag.drop.maxDepth}:${drag.drop.depth}`;
-      if (railsKey !== drag.railsKey) {
-        drag.railsKey = railsKey;
-        drag.railsElem.textContent = '';
-        for (let d = drag.drop.minDepth; d <= drag.drop.maxDepth; d += 1) {
-          const rail = document.createElement('i');
-          rail.style.left = `${22 + d * INDENT_PX}px`;
-          if (d === drag.drop.depth) rail.classList.add('on');
-          drag.railsElem.appendChild(rail);
-        }
+    drag.ghostElem.style.top = `${y - panelRect.top - drag.grabDY}px`;
+    // The 22px base puts the card edge, the rails, and the plate 6px left of each depth's text.
+    const desired = drag.treeLeft + 22 + drag.ownDepth * INDENT_PX + (x - drag.pressX);
+    const legal = Math.max(
+      drag.treeLeft + 22 + drag.drop.minDepth * INDENT_PX,
+      Math.min(desired, drag.treeLeft + 22 + drag.drop.maxDepth * INDENT_PX),
+    );
+    const give = Math.max(-8, Math.min(8, (desired - legal) * 0.3));
+    drag.ghostElem.style.left = `${legal + give}px`;
+    // The gap's visual top: rows above the source slot keep their place, rows below have slid up.
+    const gapVisTop = drag.drop.lineTop > drag.srcTop ? drag.drop.lineTop - drag.srcH : drag.drop.lineTop;
+    drag.plateElem.style.top = `${gapVisTop}px`;
+    drag.plateElem.style.left = `${22 + drag.drop.depth * INDENT_PX}px`;
+    const railsKey = `${drag.drop.minDepth}:${drag.drop.maxDepth}:${drag.drop.depth}`;
+    if (railsKey !== drag.railsKey) {
+      drag.railsKey = railsKey;
+      drag.railsElem.textContent = '';
+      for (let d = drag.drop.minDepth; d <= drag.drop.maxDepth; d += 1) {
+        const rail = document.createElement('i');
+        rail.style.left = `${22 + d * INDENT_PX}px`;
+        if (d === drag.drop.depth) rail.classList.add('on');
+        drag.railsElem.appendChild(rail);
       }
-      const adopt = drag.drop.parent || null;
-      if (adopt !== drag.adoptNode) {
-        if (drag.adoptElem) drag.adoptElem.classList.remove('scribe-bm-adopt');
-        drag.adoptNode = adopt;
-        const adoptEntry = adopt ? drag.entries.find((entry) => entry.node === adopt) : null;
-        drag.adoptElem = adoptEntry ? adoptEntry.elem : null;
-        if (drag.adoptElem) drag.adoptElem.classList.add('scribe-bm-adopt');
-      }
-      // The card shows a single row even when it carries a subtree, so the gap opened for it is one row tall, not the source's full span.
-      const gapY = drag.drop.lineTop;
-      const surplus = drag.srcH - drag.srcRowH;
-      for (const entry of drag.entries) {
-        let shift = 0;
-        if (gapY > drag.srcTop) {
-          if (entry.top > drag.srcTop && entry.top < gapY) shift = -drag.srcH;
-          else if (entry.top >= gapY) shift = -surplus;
-        } else if (entry.top >= gapY && entry.top < drag.srcTop) {
-          shift = drag.srcRowH;
-        } else if (entry.top > drag.srcTop) {
-          shift = -surplus;
-        }
-        entry.elem.style.transform = shift ? `translateY(${shift}px)` : '';
-      }
-      return;
     }
-    drag.ghostElem.style.left = `${Math.min(panelRect.width - 40, x - panelRect.left + 10)}px`;
-    drag.ghostElem.style.top = `${y - panelRect.top + 8}px`;
-    drag.lineElem.style.display = 'block';
-    drag.lineElem.style.top = `${drag.drop.lineTop - 1}px`;
-    drag.lineElem.style.left = `${8 + drag.drop.depth * INDENT_PX}px`;
+    const adopt = drag.drop.parent || null;
+    if (adopt !== drag.adoptNode) {
+      if (drag.adoptElem) drag.adoptElem.classList.remove('scribe-bm-adopt');
+      drag.adoptNode = adopt;
+      const adoptEntry = adopt ? drag.entries.find((entry) => entry.node === adopt) : null;
+      drag.adoptElem = adoptEntry ? adoptEntry.elem : null;
+      if (drag.adoptElem) drag.adoptElem.classList.add('scribe-bm-adopt');
+    }
+    // The card shows a single row even when it carries a subtree, so the gap opened for it is one row tall, not the source's full span.
+    const gapY = drag.drop.lineTop;
+    const surplus = drag.srcH - drag.srcRowH;
+    for (const entry of drag.entries) {
+      let shift = 0;
+      if (gapY > drag.srcTop) {
+        if (entry.top > drag.srcTop && entry.top < gapY) shift = -drag.srcH;
+        else if (entry.top >= gapY) shift = -surplus;
+      } else if (entry.top >= gapY && entry.top < drag.srcTop) {
+        shift = drag.srcRowH;
+      } else if (entry.top > drag.srcTop) {
+        shift = -surplus;
+      }
+      entry.elem.style.transform = shift ? `translateY(${shift}px)` : '';
+    }
   }
 
   function onDragMove(e) {
@@ -810,7 +768,7 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
     if (!drag) return;
     cancelAnimationFrame(drag.scrollRaf);
     const {
-      id, node, drop, srcRow, srcWrapper, ghostElem, cloneElem, lineElem, railsElem, plateElem, touch, entries, treeLeft, adoptElem,
+      id, node, drop, srcRow, srcWrapper, ghostElem, cloneElem, railsElem, plateElem, entries, treeLeft, adoptElem,
     } = drag;
     drag = null;
     panelElem.classList.remove('scribe-bm-dragging');
@@ -821,101 +779,86 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
     // Dropping back into the row's own slot is not an edit, so it must not record an undo step.
     const commit = !!drop && e.type !== 'pointercancel'
       && !(ctx && parentId === ctx.parentId && drop.atIndex === ctx.index);
-    if (touch) {
-      railsElem.remove();
-      plateElem.remove();
-      let landed;
-      let landedWrapper;
-      if (commit) {
-        const before = new Map();
-        for (const rowEl of treeElem.querySelectorAll('.scribe-bm-row')) {
-          before.set(String(rowEl.dataset.id), rowEl.getBoundingClientRect().top);
-        }
-        treeElem.classList.remove('scribe-bm-sliding');
-        scribe.doc.moveBookmark(id, parentId, drop.atIndex);
-        afterEdit();
-        landed = /** @type {HTMLElement} */ (treeElem.querySelector(`.scribe-bm-row[data-id="${id}"]`));
-        if (!landed) {
-          // The row is missing when it landed inside a collapsed section, so open its ancestors to keep the drop in view.
-          const chainOf = (nodes, chain) => {
-            for (const n of nodes) {
-              if (n.id === id) return chain;
-              const got = chainOf(n.children, chain.concat(n));
-              if (got) return got;
-            }
-            return null;
-          };
-          for (const ancestor of chainOf(outline(), []) || []) ancestor.open = true;
-          rebuild();
-          landed = /** @type {HTMLElement} */ (treeElem.querySelector(`.scribe-bm-row[data-id="${id}"]`));
-        }
-        const blockIds = new Set(allIds([node]).map(String));
-        treeElem.classList.add('scribe-bm-sliding');
-        for (const rowEl of treeElem.querySelectorAll('.scribe-bm-row')) {
-          const rid = String(rowEl.dataset.id);
-          if (blockIds.has(rid)) continue;
-          if (!before.has(rid)) { rowEl.classList.add('scribe-bm-drop-in-child'); continue; }
-          const delta = before.get(rid) - rowEl.getBoundingClientRect().top;
-          if (Math.abs(delta) < 0.5) continue;
-          rowEl.style.transition = 'none';
-          rowEl.style.transform = `translateY(${delta}px)`;
-          rowEl.getBoundingClientRect();
-          rowEl.style.transition = '';
-          rowEl.style.transform = '';
-        }
-        landedWrapper = landed && /** @type {HTMLElement} */ (landed.parentElement);
-        if (!landedWrapper) { ghostElem.remove(); return; }
-        landedWrapper.classList.add('scribe-bm-lift-src');
-      } else {
-        for (const entry of entries) entry.elem.style.transform = '';
-        landed = srcRow;
-        landedWrapper = srcWrapper;
-      }
-      const plate = document.createElement('div');
-      plate.className = 'scribe-bm-plate';
-      plate.style.width = ghostElem.style.width;
-      plate.style.height = `${landed.offsetHeight}px`;
-      plate.style.top = `${landed.getBoundingClientRect().top - treeElem.getBoundingClientRect().top + treeElem.scrollTop}px`;
-      plate.style.left = `${parseFloat(landed.style.paddingLeft) + 14}px`;
-      treeElem.appendChild(plate);
-      cloneElem.style.transition = 'box-shadow 140ms ease, border-radius 140ms ease';
-      cloneElem.style.boxShadow = 'none';
-      cloneElem.style.borderRadius = '4px';
-      ghostElem.style.transition = 'top 140ms ease-out, left 140ms ease-out';
-      ghostElem.style.top = `${landed.getBoundingClientRect().top - panelElem.getBoundingClientRect().top}px`;
-      ghostElem.style.left = `${treeLeft + parseFloat(landed.style.paddingLeft) + 14}px`;
-      const badge = ghostElem.querySelector('.scribe-bm-lift-count');
-      if (badge instanceof HTMLElement) {
-        badge.style.transition = 'opacity 140ms ease';
-        badge.style.opacity = '0';
-      }
-      setTimeout(() => {
-        ghostElem.remove();
-        plate.remove();
-        treeElem.classList.remove('scribe-bm-sliding');
-        landedWrapper.classList.remove('scribe-bm-lift-src');
-        landed.classList.add('scribe-bm-drop-in');
-        const kids = [...landedWrapper.querySelectorAll('.scribe-bm-row')].filter((r) => r !== landed);
-        for (const kid of kids) kid.classList.add('scribe-bm-drop-in-child');
-        setTimeout(() => {
-          landed.classList.remove('scribe-bm-drop-in');
-          for (const el of treeElem.querySelectorAll('.scribe-bm-drop-in-child')) el.classList.remove('scribe-bm-drop-in-child');
-        }, 250);
-      }, 150);
-      return;
-    }
-    srcRow.classList.remove('scribe-bm-drag-src');
-    ghostElem.remove();
-    lineElem.remove();
     railsElem.remove();
-    if (!commit) return;
-    scribe.doc.moveBookmark(id, parentId, drop.atIndex);
-    afterEdit();
-    const moved = treeElem.querySelector(`.scribe-bm-row[data-id="${id}"]`);
-    if (moved) {
-      moved.classList.add('scribe-bm-settled');
-      setTimeout(() => moved.classList.remove('scribe-bm-settled'), 900);
+    plateElem.remove();
+    let landed;
+    let landedWrapper;
+    if (commit) {
+      const before = new Map();
+      for (const rowEl of treeElem.querySelectorAll('.scribe-bm-row')) {
+        before.set(String(rowEl.dataset.id), rowEl.getBoundingClientRect().top);
+      }
+      treeElem.classList.remove('scribe-bm-sliding');
+      scribe.doc.moveBookmark(id, parentId, drop.atIndex);
+      afterEdit();
+      landed = /** @type {HTMLElement} */ (treeElem.querySelector(`.scribe-bm-row[data-id="${id}"]`));
+      if (!landed) {
+        // The row is missing when it landed inside a collapsed section, so open its ancestors to keep the drop in view.
+        const chainOf = (nodes, chain) => {
+          for (const n of nodes) {
+            if (n.id === id) return chain;
+            const got = chainOf(n.children, chain.concat(n));
+            if (got) return got;
+          }
+          return null;
+        };
+        for (const ancestor of chainOf(outline(), []) || []) ancestor.open = true;
+        rebuild();
+        landed = /** @type {HTMLElement} */ (treeElem.querySelector(`.scribe-bm-row[data-id="${id}"]`));
+      }
+      const blockIds = new Set(allIds([node]).map(String));
+      treeElem.classList.add('scribe-bm-sliding');
+      for (const rowEl of treeElem.querySelectorAll('.scribe-bm-row')) {
+        const rid = String(rowEl.dataset.id);
+        if (blockIds.has(rid)) continue;
+        if (!before.has(rid)) { rowEl.classList.add('scribe-bm-drop-in-child'); continue; }
+        const delta = before.get(rid) - rowEl.getBoundingClientRect().top;
+        if (Math.abs(delta) < 0.5) continue;
+        rowEl.style.transition = 'none';
+        rowEl.style.transform = `translateY(${delta}px)`;
+        rowEl.getBoundingClientRect();
+        rowEl.style.transition = '';
+        rowEl.style.transform = '';
+      }
+      landedWrapper = landed && /** @type {HTMLElement} */ (landed.parentElement);
+      if (!landedWrapper) { ghostElem.remove(); return; }
+      landedWrapper.classList.add('scribe-bm-lift-src');
+    } else {
+      for (const entry of entries) entry.elem.style.transform = '';
+      landed = srcRow;
+      landedWrapper = srcWrapper;
     }
+    const plate = document.createElement('div');
+    plate.className = 'scribe-bm-plate';
+    plate.style.width = ghostElem.style.width;
+    plate.style.height = `${landed.offsetHeight}px`;
+    plate.style.top = `${landed.getBoundingClientRect().top - treeElem.getBoundingClientRect().top + treeElem.scrollTop}px`;
+    plate.style.left = `${parseFloat(landed.style.paddingLeft) + 14}px`;
+    treeElem.appendChild(plate);
+    cloneElem.style.transition = 'box-shadow 140ms ease, border-radius 140ms ease';
+    cloneElem.style.boxShadow = 'none';
+    cloneElem.style.borderRadius = '4px';
+    ghostElem.style.transition = 'top 140ms ease-out, left 140ms ease-out';
+    ghostElem.style.top = `${landed.getBoundingClientRect().top - panelElem.getBoundingClientRect().top}px`;
+    ghostElem.style.left = `${treeLeft + parseFloat(landed.style.paddingLeft) + 14}px`;
+    const badge = ghostElem.querySelector('.scribe-bm-lift-count');
+    if (badge instanceof HTMLElement) {
+      badge.style.transition = 'opacity 140ms ease';
+      badge.style.opacity = '0';
+    }
+    setTimeout(() => {
+      ghostElem.remove();
+      plate.remove();
+      treeElem.classList.remove('scribe-bm-sliding');
+      landedWrapper.classList.remove('scribe-bm-lift-src');
+      landed.classList.add('scribe-bm-drop-in');
+      const kids = [...landedWrapper.querySelectorAll('.scribe-bm-row')].filter((r) => r !== landed);
+      for (const kid of kids) kid.classList.add('scribe-bm-drop-in-child');
+      setTimeout(() => {
+        landed.classList.remove('scribe-bm-drop-in');
+        for (const el of treeElem.querySelectorAll('.scribe-bm-drop-in-child')) el.classList.remove('scribe-bm-drop-in-child');
+      }, 250);
+    }, 150);
   }
 
   /**
@@ -1020,26 +963,70 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
   document.addEventListener('keydown', onKeyDown);
 
   /**
-   * Cheap re-highlight of the current page's bookmark(s), without a full rebuild (which fires on edit/undo instead).
-   * @param {number} pageIndex
+   * Highlight the first bookmark, top-down, whose destination is visible in the document viewport.
    */
-  function setActive(pageIndex) {
-    activePage = pageIndex;
-    for (const row of treeElem.querySelectorAll('.scribe-bm-row')) {
-      row.classList.toggle('active', row.dataset.page !== '' && Number(row.dataset.page) === activePage);
+  function applyActive() {
+    // Navigation scrolls a destination near the viewport top, so the clicked bookmark becomes the highlight with no click-specific logic.
+    const sc = scribe.scrollContainer;
+    let best = null;
+    if (sc) {
+      const zoom = scribe.zoomLevel || 1;
+      const viewTop = sc.scrollTop;
+      const viewBottom = viewTop + sc.clientHeight;
+      let bestY = Infinity;
+      const rows = /** @type {NodeListOf<HTMLElement>} */ (treeElem.querySelectorAll('.scribe-bm-row'));
+      for (const row of rows) {
+        if (row.dataset.page === '') continue;
+        const page = Number(row.dataset.page);
+        const dims = scribe.getDisplayDims(page);
+        const pageTop = scribe.getPageStop(page);
+        if (!dims || pageTop == null) continue;
+        // Rotation invalidates the parse-time yFrac axis, so score rotated pages at the page top, where goToOutlineDest also lands them.
+        const rotated = ((scribe.doc.pageMetrics[page]?.rotation || 0) % 360) !== 0;
+        const y = (pageTop + (rotated ? 0 : Number(row.dataset.yfrac)) * dims.height) * zoom;
+        if (y >= viewTop && y < viewBottom && y < bestY) { bestY = y; best = row; }
+      }
     }
+    if (best === activeRow) return;
+    if (activeRow) activeRow.classList.remove('active');
+    if (best) best.classList.add('active');
+    activeRow = best;
+  }
+
+  /**
+   * Re-highlight for the current scroll position, without a full rebuild.
+   * The full rebuild fires on edit/undo instead.
+   */
+  function setActive() {
+    ensureScrollHook();
+    applyActive();
+  }
+
+  let activeRaf = 0;
+  const onDocScroll = () => {
+    if (!visible || activeRaf) return;
+    activeRaf = requestAnimationFrame(() => { activeRaf = 0; applyActive(); });
+  };
+  let scrollHookTarget = /** @type {?HTMLElement} */ (null);
+  // The viewer builds its scroll container after this panel, so bind the listener on first use rather than at construction.
+  function ensureScrollHook() {
+    const sc = scribe.scrollContainer;
+    if (scrollHookTarget || !sc) return;
+    scrollHookTarget = sc;
+    sc.addEventListener('scroll', onDocScroll, { passive: true });
   }
 
   function setVisible(v) {
     visible = v;
     panelElem.style.display = v ? '' : 'none';
-    if (v) rebuild();
-    else clearSelection();
+    if (v) { ensureScrollHook(); rebuild(); } else clearSelection();
   }
   function destroy() {
     closeMenu();
     menuElem.remove();
     panelElem.remove();
+    if (activeRaf) cancelAnimationFrame(activeRaf);
+    if (scrollHookTarget) scrollHookTarget.removeEventListener('scroll', onDocScroll);
     document.removeEventListener('keydown', onKeyDown);
     document.removeEventListener('pointerdown', dismissMenu, true);
     document.removeEventListener('click', dismissMenu, true);

@@ -278,6 +278,8 @@ class ScribePDFViewer {
     /** @type {?HTMLSpanElement} */
     this._roomCountElem = null;
     this._roomOpen = false;
+    /** @type {?ReturnType<typeof setTimeout>} Timer releasing the room's grid once its slide-down behind the dock lands. */
+    this._roomSlideT = null;
     this._roomEditing = false;
     /** @type {?HTMLButtonElement} Edit/Save mode toggle in the room header. */
     this._roomEditBtn = null;
@@ -728,7 +730,7 @@ class ScribePDFViewer {
       if (this.pageCountElem && this.doc) this.pageCountElem.textContent = this.doc.inputData.pageCount.toString();
       if (this._updateScrollbars) this._updateScrollbars();
       if (this._thumbnailPanel) this._thumbnailPanel.setActive(this.scribe.state.cp.n);
-      if (this._bookmarksPanel) this._bookmarksPanel.setActive(this.scribe.state.cp.n);
+      if (this._bookmarksPanel) this._bookmarksPanel.setActive();
       if (this._commentsPanel) this._commentsPanel.setActive(this.scribe.state.cp.n);
       if (this._companionStrip) this._companionStrip.setActive(this.scribe.state.cp.n);
     };
@@ -1158,7 +1160,9 @@ class ScribePDFViewer {
    * @param {string} name
    */
   _newTab(doc, name) {
-    return { doc, name, lastPage: 0, lastUse: ++this._tabUseCounter, asleep: false, waking: false };
+    return {
+      doc, name, lastPage: 0, lastUse: ++this._tabUseCounter, asleep: false, waking: false,
+    };
   }
 
   /**
@@ -1999,7 +2003,6 @@ class ScribePDFViewer {
     this._pagesRoomElem = room;
     this._roomBodyElem = roomBody;
     this._roomCountElem = roomCount;
-    this.pdfViewerElem.appendChild(room);
 
     // The pull morphs the strip's thumbnails into the room's grid rather than sliding the room over them as a separate panel.
     this._pagesMorph = createPagesMorph(this.scribe, {
@@ -2151,7 +2154,7 @@ class ScribePDFViewer {
     this._sheetContentElem = content;
     sheet.append(hd, content);
     this._sheetElem = sheet;
-    this.pdfViewerElem.append(scrim, sheet);
+    this.pdfViewerElem.append(scrim, sheet, room);
 
     // Header gestures: a drag resizes the sheet live and snaps back to half, or closed, on release.
     // Below the smallest useful height the drag stops resizing and the whole card rides the finger down behind the dock, so a dismissal can be dragged to completion.
@@ -2246,8 +2249,10 @@ class ScribePDFViewer {
   /** Open the bottom sheet on the last-shown view. */
   _openSheet() {
     if (!this._sheetElem || this._sheetOpen) return;
-    // One surface at a time at the bottom edge: the sheet displaces an open Pages room.
-    this._closePagesRoom(true);
+    // Switching from an open Pages view, the sheet is placed at rest beneath the room with no transition, and the room's slide-down is what uncovers it.
+    const uncover = this._roomOpen;
+    if (uncover) this._beginRoomSink();
+    else this._closePagesRoom(true);
     this._sheetOpen = true;
     if (this._sheetElem.style.height) {
       this._sheetElem.style.transition = 'none';
@@ -2256,7 +2261,14 @@ class ScribePDFViewer {
       this._sheetElem.style.transition = '';
     }
     // No scrim: the sheet coexists with a lit, interactive document reflowed above it.
-    this._sheetElem.classList.add('open');
+    if (uncover) {
+      this._sheetElem.style.transition = 'none';
+      this._sheetElem.classList.add('open');
+      this._sheetElem.getBoundingClientRect();
+      requestAnimationFrame(() => { if (this._sheetElem) this._sheetElem.style.transition = ''; });
+    } else {
+      this._sheetElem.classList.add('open');
+    }
     if (this._sheetPanelsBtn) this._sheetPanelsBtn.classList.add('active');
     this._relayout();
     // The desktop toggles own per-document visibility, so the tabs mirror them, falling back when the remembered view is unavailable.
@@ -2372,6 +2384,7 @@ class ScribePDFViewer {
   /** Open the full-height Pages room, sliding it up from behind the dock. */
   _openPagesRoom() {
     if (!this._pagesRoomElem || this._roomOpen || !this._phoneChrome) return;
+    this._cancelRoomSink();
     this._closeSheet(true);
     this._roomOpen = true;
     this._syncDockPagesBtn();
@@ -2427,6 +2440,41 @@ class ScribePDFViewer {
     if (this._thumbnailPanel) this._thumbnailPanel.setRoomMode(on ? 'edit' : 'browse');
   }
 
+  /** Exit the open Pages room by sliding it down behind the dock, uncovering whatever sits beneath it. */
+  _beginRoomSink() {
+    const room = this._pagesRoomElem;
+    if (!room || !this._roomOpen) return;
+    if (this._pagesMorph) this._pagesMorph.abort();
+    this._setRoomEditing(false);
+    this._roomOpen = false;
+    this._syncDockPagesBtn();
+    if (this._companionStrip) this._companionStrip.park();
+    room.classList.add('sinking');
+    room.classList.remove('open');
+    this._roomSlideT = setTimeout(() => {
+      this._roomSlideT = null;
+      room.classList.remove('sinking');
+      if (this._thumbnailPanel) {
+        this._thumbnailPanel.setVisible(false);
+        this._thumbnailPanel.panelElem.style.display = 'none';
+      }
+    }, 320);
+  }
+
+  /** Finish an in-flight sink instantly so a reopen (or mode flip) starts from the room's rest state. */
+  _cancelRoomSink() {
+    if (this._roomSlideT) { clearTimeout(this._roomSlideT); this._roomSlideT = null; }
+    const room = this._pagesRoomElem;
+    if (!room || !room.classList.contains('sinking')) return;
+    room.classList.remove('sinking');
+    room.style.transition = 'none';
+    requestAnimationFrame(() => { if (this._pagesRoomElem) this._pagesRoomElem.style.transition = ''; });
+    if (this._thumbnailPanel) {
+      this._thumbnailPanel.setVisible(false);
+      this._thumbnailPanel.panelElem.style.display = 'none';
+    }
+  }
+
   /**
    * Close the Pages room (no-op when closed).
    * @param {boolean} [instant=false] - Skip the slide-out, for mode flips mid-resize.
@@ -2441,6 +2489,7 @@ class ScribePDFViewer {
     }
     // Abort before the open-guard below: a close during a live pull arrives with `_roomOpen` still false and would otherwise leave the morph standing.
     if (this._pagesMorph) this._pagesMorph.abort();
+    this._cancelRoomSink();
     this._setRoomEditing(false);
     if (!this._pagesRoomElem || !this._roomOpen) return;
     this._roomOpen = false;
@@ -2487,12 +2536,17 @@ class ScribePDFViewer {
     }
     if (phase === 'tap') {
       if (this._roomOpen) { this._closePagesRoom(); return; }
+      this._cancelRoomSink();
       if (morph && !reduceMotion) {
-        this._closeSheet(true);
         this._showPagesRoomContent();
         if (morph.begin()) {
+          if (this._dockPagesBtn) this._dockPagesBtn.classList.add('active');
           morph.frame(0);
-          morph.settle(true, (committed) => { if (committed) this._roomOpen = true; this._syncDockPagesBtn(); });
+          morph.settle(true, (committed) => {
+            // The sheet closes only once the grown room covers it, so its relayout does not reflow the document mid-climb.
+            if (committed) { this._roomOpen = true; this._closeSheet(true); }
+            this._syncDockPagesBtn();
+          });
           return;
         }
       }
@@ -2562,6 +2616,7 @@ class ScribePDFViewer {
   async destroy({ terminateDoc } = {}) {
     if (this.resizeObserver) this.resizeObserver.disconnect();
     if (this._sidebarAnim) { cancelAnimationFrame(this._sidebarAnim.raf); this._sidebarAnim = null; }
+    if (this._roomSlideT) { clearTimeout(this._roomSlideT); this._roomSlideT = null; }
     if (this._pagesMorph) this._pagesMorph.abort(); // cancels the settle rAF and revokes morph-owned thumbnail URLs
     if (this._thumbnailPanel) this._thumbnailPanel.destroy();
     if (this._bookmarksPanel) this._bookmarksPanel.destroy();
