@@ -958,6 +958,15 @@ export function analyzeLayout(pages, opts = {}) {
           && sc.sequenceValues && sc.sequenceValues.has(f.enumerator.value));
       });
       if (corroborated) footnoteRuleY.set(p, y);
+    } else if (yAny != null) {
+      // An active-sequence superscript marker below an above-midline separator is the document's own declaration of a note region, so the rule is trusted on marker evidence alone.
+      // The small-text corroboration arm is deliberately not honored this high, or a mid-page underline over small print (a caption, a table note) would open a false note region.
+      const markerBelow = pf3.some((f) => {
+        if (f.top <= yAny || !f.firstWordSup || !f.enumerator || f.enumerator.value == null) return false;
+        const sc = schemeRuns[f.enumerator.scheme];
+        return !!(sc && sc.active && sc.sequenceValues && sc.sequenceValues.has(f.enumerator.value));
+      });
+      if (markerBelow) footnoteRuleY.set(p, yAny);
     }
   }
   model.bodyRefLabels = bodyRefLabels;
@@ -979,7 +988,7 @@ export function analyzeLayout(pages, opts = {}) {
     // Top of p-1's note zone: its separator-shaped rule, lowered to the topmost active sup-ref marker pinned to the page's lower half.
     // The marker arm lets a page with no drawn rule but marked notes still locate the zone.
     // Infinity means p-1 has no note zone, so its tail is body, not an open footnote, and this is no continuation.
-    let prevNoteTop = rawSepAnyY.has(p - 1) ? rawSepAnyY.get(p - 1) : Infinity;
+    let prevNoteTop = rawSepAnyY.get(p - 1) ?? Infinity;
     for (const f of pageFeats3[p - 1]) {
       if (f.bottom / prevH <= 0.5 || f.lineNum) continue;
       if (f.firstWordSup && f.enumerator && f.enumerator.scheme === 'sup-ref'
@@ -995,10 +1004,18 @@ export function analyzeLayout(pages, opts = {}) {
     // prevNotes is only prose below a separator-shaped rule, which over-fires on markerless matter like word indexes and deposition Q&A.
     // Requiring a real note here stops those false note zones from spilling onto the next page.
     const prevRefs = bodyRefLabels.get(p - 1);
+    // A standalone raised marker is its own letterless fragment beside the note's first text line, so prevNotes never contains it and the prose line beside it is not itself superscript-led.
+    /** @type {(feats2: LineFeat[], zoneTop: number, g: LineFeat) => boolean} */
+    const markerOnRow = (feats2, zoneTop, g) => feats2.some((m) => m !== g && !m.lineNum
+      && m.top >= zoneTop && m.top < g.bottom && m.bottom > g.top && m.left < g.left
+      && m.firstWordSup && m.enumerator && m.enumerator.scheme === 'sup-ref'
+      && supRefRun && supRefRun.active && supRefRun.sequenceValues && m.enumerator.value != null
+      && supRefRun.sequenceValues.has(m.enumerator.value));
     const realNotes = prevNotes.filter((g) => {
       if (g.firstWordSup && g.enumerator && g.enumerator.scheme === 'sup-ref' && !g.lineNum
         && supRefRun && supRefRun.active && supRefRun.sequenceValues && g.enumerator.value != null
         && supRefRun.sequenceValues.has(g.enumerator.value)) return true;
+      if (markerOnRow(pageFeats3[p - 1], prevNoteTop, g)) return true;
       if (!prevRefs) return false;
       const lead = ((g.line.words[0] && g.line.words[0].text) || '').trim().replace(/[.)\]]+$/, '');
       if (!/^[\d*†‡]{1,3}$/.test(lead) || !prevRefs.has(lead)) return false;
@@ -1015,12 +1032,13 @@ export function analyzeLayout(pages, opts = {}) {
     const curNotes = pageFeats3[p].filter((f) => f.top > sepCur && !f.inTable
       && !f.allCaps && /[A-Za-z]{2,}/.test(f.text) && f.left < noteLeftMax(p));
     if (!curNotes.length) continue;
-    // p's note-zone opener: a continuation carries no active sup-ref marker (a new note would)
+    // p's note-zone opener: a continuation carries no active sup-ref marker (a new note would), neither leading its line nor as a standalone fragment on its row.
     const opener = curNotes.reduce((a, b) => (b.top < a.top ? b : a));
     const openerIsMarker = !!(opener.firstWordSup && opener.enumerator
       && opener.enumerator.scheme === 'sup-ref'
       && supRefRun && supRefRun.active && supRefRun.sequenceValues && opener.enumerator.value != null
-      && supRefRun.sequenceValues.has(opener.enumerator.value));
+      && supRefRun.sequenceValues.has(opener.enumerator.value))
+      || markerOnRow(pageFeats3[p], sepCur, opener);
     if (openerIsMarker) continue;
     footnoteContinues.set(p, lastPrev.size);
     if (!footnoteRuleY.has(p)) footnoteRuleY.set(p, sepCur); // the continuation corroborates this page's separator
@@ -1454,14 +1472,34 @@ export function analyzeLayout(pages, opts = {}) {
         let cur = start;
         // A bare start is only the marker, which hangs left of its note column by up to a 0.5in tab, so its real column is not start.left but is learned from the first absorbed text line.
         let colRight = start.left;
+        // Below a corroborated separator everything down to the page bottom is note matter, so the region licenses the flush widening that note size alone cannot.
+        const startFnY = model.footnoteRuleY && model.footnoteRuleY.get(start.page);
+        const regionNote = startFnY != null && start.top > startFnY;
+        // A raised marker can sit a hair lower than its row-mate text, which then sorts before the marker and out of the forward walk's reach, so absorb the row-mate directly.
+        // Forward-sorting row-mates are left to the walk itself, which must pass through them to reach the note's wrapped lines.
+        if (startBare) {
+          let mate = null;
+          for (const g of sorted) {
+            if (g === start || g.role !== 'body' || g.top >= start.top || g.bottom <= start.top || g.left <= start.left) continue;
+            if (g.runningFurniture || g.lineNum || g.folio || g.inTable) continue;
+            if (!mate || g.left < mate.left) mate = g;
+          }
+          if (mate && mate.size >= start.size * 0.9 && (mate.sizeRatio <= 1.08 || mate.size <= bodySize * 1.08)
+              && !(mate.bold >= 0.9 && start.bold < 0.6)) {
+            mate.role = start.role;
+            sizeRef = mate.size;
+            colRight = Math.max(colRight, mate.left);
+            cur = mate;
+          }
+        }
         // The 80-line budget bounds the walk on cell-dense pages.
         for (let j = i + 1; j < sorted.length && j - i <= 80; j++) {
           const g = sorted[j];
           // The next note takes over as absorber when the outer loop reaches it.
           if (g.role === 'footnote' || g.role === 'endnote') break;
           // Once a bare paragraph-indent marker (tabbed in, wraps at the flush margin) has absorbed its text, the left bound widens to the page flush.
-          // That widening applies only to a note visibly below body size, so a body-sized note cannot absorb the body paragraph that follows it.
-          const leftMin = (startBare && cur !== start && sizeRef <= bodySize * 0.88
+          // That widening needs the note visibly below body size, or a separator-backed region, so a body-sized note cannot absorb the body paragraph that follows it.
+          const leftMin = (startBare && cur !== start && (sizeRef <= bodySize * 0.88 || regionNote)
             ? Math.min(start.left, (model.pageFlush.get(start.page) ?? model.bodyLeft))
             : start.left) - bodySize * 0.6;
           if (g.left < leftMin
@@ -2691,8 +2729,10 @@ function classifyRole(f, model, colWidth, prev) {
   // Catches body-size footnotes whose only superscript is the leading marker.
   // It never over-matches a stray superscript because the doc-wide sup-ref run it keys on activates only when real in-text references corroborate it.
   // Placed after the endnote rule so a dedicated endnote section keeps its endnote role.
+  // A corroborated separator can sit above the midline on a footnote-dominated page, so the region arm admits marker lines the lower-half gate would reject.
   const supRef = model.schemes['sup-ref'];
-  if (!skipNotes && noteEnvelope && supRef && supRef.active && f.bottomFrac > 0.5
+  if (!skipNotes && noteEnvelope && supRef && supRef.active
+      && (f.bottomFrac > 0.5 || (fnRuleY != null && f.top > fnRuleY))
       && !CJK_RE.test(t)
       && f.firstWordSup && f.enumerator && f.enumerator.scheme === 'sup-ref'
       && f.enumerator.value != null && supRef.sequenceValues.has(f.enumerator.value)) return 'footnote';
@@ -2777,11 +2817,13 @@ function classifyRole(f, model, colWidth, prev) {
     // A bold emphasis phrase in prose can wrap so its tail lands majority-bold and false-promotes via the qualified bold tuple.
     // That tail continues the prior body line, so demote it to body.
     const boldOnlyHeading = f.sizeRatio < 1.15 && !f.allCaps && f.bold > 0.6;
+    // Note prose runs an unfinished sentence into its tail exactly as body does, so footnote and endnote prevs count for the run-in demotions below.
+    const prevProse = !!(prev && (prev.role === 'body' || prev.role === 'footnote' || prev.role === 'endnote'));
     // Key on prev's last word being bold, not prev's overall boldness, since a run only partly bold across prev but bold at the break still continues into f.
     // An enumerator-led line is exempt: an enumerated bold heading legitimately follows a non-terminal bold line, and an emphasis tail never opens with a section marker.
     const prevLastWord = prev && prev.line.words[prev.line.words.length - 1];
     const prevLastWordBold = !!(prevLastWord && prevLastWord.style && prevLastWord.style.bold);
-    if (boldOnlyHeading && prev && prev.role === 'body' && !prev.endsTerminal
+    if (boldOnlyHeading && prevProse && !prev.endsTerminal
         && prevLastWordBold
         && !(en && en.scheme !== 'bullet' && en.scheme !== 'sup-ref')) return 'body';
     // A /P-tagged all-caps-only "heading" is an in-prose all-caps designation wrapped onto its own short line, not a section title, and the producer's /P tag is positive evidence it is body.
@@ -2792,7 +2834,7 @@ function classifyRole(f, model, colWidth, prev) {
     // A corrupt body font (no usable ToUnicode) can extract lowercase prose as uppercase glyphs.
     // An ordinary wrapped body line then reads all-caps and can promote through a caps signature as a false heading.
     // The glyphs are untrustworthy here, so discriminate a real heading from a continuation by geometry, not caps.
-    if (allCapsOnlyHeading && prev && prev.role === 'body' && prev.page === f.page) {
+    if (allCapsOnlyHeading && prevProse && prev.page === f.page) {
       const gapBefore = (model.pageParaGap && model.pageParaGap.get(f.page)) ?? model.paraGapThresh;
       // Finite gap regime: a continuation when no real gap precedes it (it sits within the body pitch).
       if (Number.isFinite(gapBefore) && f.top - prev.top < gapBefore) return 'body';
@@ -2805,7 +2847,7 @@ function classifyRole(f, model, colWidth, prev) {
     const atHangColumn = model.bodyTextLeft > model.bodyLeft + model.bodySize * 0.5
       && Math.abs(f.left - model.bodyTextLeft) < model.bodySize * 0.5;
     if (atHangColumn && f.sizeRatio < 1.15 && !f.colorDistinct && !f.familyDistinct
-        && prev && prev.role === 'body' && !prev.endsTerminal) return 'body';
+        && prevProse && !prev.endsTerminal) return 'body';
     return 'heading';
   }
   return 'body';
