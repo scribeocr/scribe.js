@@ -1553,7 +1553,11 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       background: var(--scribe-surface);
       color: var(--scribe-ink);
       border-bottom-color: var(--scribe-accent);
-      font-weight: 550;
+    }
+
+    .${r} .scribe-tab.active .scribe-tab-name {
+      /* Fake the heavier weight with a shadow, not font-weight, whose per-glyph advance widths would slide the title's characters sideways as a tab activates. */
+      text-shadow: 0 0 0.4px currentColor;
     }
 
     .${r} .scribe-tab-name {
