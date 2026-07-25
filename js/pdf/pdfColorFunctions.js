@@ -1,4 +1,4 @@
-import { resolveNumArray } from './pdfPrimitives.js';
+import { resolveNumArray, resolveIntValue, resolveNumValue } from './pdfPrimitives.js';
 
 /** @typedef {NonNullable<ReturnType<typeof parseFunction>>} ParsedFunction */
 
@@ -144,9 +144,9 @@ export function parseFunction(funcDef, objCache) {
   }
   if (!funcText) return null;
 
-  const ftMatch = /\/FunctionType\s+(\d+)/.exec(funcText);
-  if (!ftMatch) return null;
-  const type = /** @type {0|2|3|4} */ (Number(ftMatch[1]));
+  const ftype = resolveIntValue(funcText, 'FunctionType', objCache, -1);
+  if (ftype === -1) return null;
+  const type = /** @type {0|2|3|4} */ (ftype);
 
   const domain = resolveNumArray(funcText, 'Domain', objCache, [0, 1]);
   const nInputs = Math.max(1, Math.floor(domain.length / 2));
@@ -156,8 +156,7 @@ export function parseFunction(funcDef, objCache) {
   if (type === 0) {
     if (funcObjNum == null) return null;
     const size = resolveNumArray(funcText, 'Size', objCache, new Array(nInputs).fill(256));
-    const bpsMatch = /\/BitsPerSample\s+(\d+)/.exec(funcText);
-    const bps = bpsMatch ? Number(bpsMatch[1]) : 8;
+    const bps = resolveIntValue(funcText, 'BitsPerSample', objCache, 8);
     const encode = resolveNumArray(funcText, 'Encode', objCache, null);
     // Decode defaults to Range per PDF spec Table 3.36
     const decode = resolveNumArray(funcText, 'Decode', objCache, range);
@@ -172,8 +171,7 @@ export function parseFunction(funcDef, objCache) {
   if (type === 2) {
     const c0 = resolveNumArray(funcText, 'C0', objCache, [0]);
     const c1 = resolveNumArray(funcText, 'C1', objCache, [1]);
-    const nMatch = /\/N\s+([\d.]+)/.exec(funcText);
-    const N = nMatch ? Number(nMatch[1]) : 1.0;
+    const N = resolveNumValue(funcText, 'N', objCache, 1.0);
     const nOutputs = Math.max(c0.length, c1.length, 1);
     while (c0.length < nOutputs) c0.push(0);
     while (c1.length < nOutputs) c1.push(1);
@@ -185,7 +183,6 @@ export function parseFunction(funcDef, objCache) {
   if (type === 3) {
     // Stitching function: combines a sequence of 1-input sub-functions over Domain.
     // /Functions [F0 F1 ... Fn-1]   /Bounds [b1 ... bn-1]   /Encode [e0a e0b e1a e1b ...]
-    // Each sub-function can be an indirect ref or an inline <<...>> dict.
     const subFuncs = parseFunctionsArray(funcText, objCache);
     if (!subFuncs || subFuncs.length === 0) return null;
     const bounds = resolveNumArray(funcText, 'Bounds', objCache, []);
@@ -479,12 +476,9 @@ function evaluateStitching(fn, x) {
  */
 
 /**
- * Parse an alternate color space text into a structured form. Handles direct
- * names (`/DeviceRGB`), parameterized inline arrays (`[/Lab <<...>>]`), and
- * indirect references (`N 0 R`). Returns null for unrecognized text.
- *
- * @param {string} csText - Color space text. May be a single name, an array, or any
- *   chunk of text containing the alt CS marker.
+ * Parse an alternate color space text into a structured form.
+ * Unrecognized text falls back to DeviceRGB.
+ * @param {string} csText - a single name, an array, or any chunk of text containing the alt CS marker
  * @param {import('./objectCache.js').ObjectCache} objCache
  * @returns {ParsedAltCS}
  */
@@ -552,8 +546,7 @@ export function parseAltColorSpace(csText, objCache) {
       const wp = resolveNumArray(altText, 'WhitePoint', objCache, null);
       if (wp) out.labWhitePoint = wp;
     } else {
-      const nMatch = /\/N\s+(\d+)/.exec(iccObjText);
-      const n = nMatch ? Number(nMatch[1]) : (dataCS === 'CMYK' ? 4 : dataCS === 'GRAY' ? 1 : 3);
+      const n = resolveIntValue(iccObjText, 'N', objCache, dataCS === 'CMYK' ? 4 : dataCS === 'GRAY' ? 1 : 3);
       out.type = n === 4 ? 'DeviceCMYK' : n === 1 ? 'DeviceGray' : 'DeviceRGB';
       out.nComp = n;
     }
@@ -703,19 +696,12 @@ export function altCSToRGB(altCS, comp) {
  */
 
 /**
- * Parse a Separation or DeviceN color space array into its tint function and
- * alternate color space. Handles inline tint dicts, indirect refs, and the
- * various ways the alt CS can be expressed (direct name, indirect ref, or
- * inline `[/Lab <<...>>]`-style array).
- *
- * @param {string} csText - The text of the color space array (typically the
- *   contents inside `[/Separation ...]` or `[/DeviceN ...]`).
+ * Parse a Separation or DeviceN color space array into its tint function and alternate color space.
+ * @param {string} csText - the text of the color space array (typically the contents inside `[/Separation ...]` or `[/DeviceN ...]`)
  * @param {import('./objectCache.js').ObjectCache} objCache
  * @returns {ParsedTintCS}
  */
 export function parseTintColorSpace(csText, objCache) {
-  // Determine the alt CS first by scanning the array for a Device*/Cal*/Lab/ICCBased marker.
-  // Order of detection (most specific first): direct-name, indirect ref, then any text.
   /** @type {ParsedAltCS} */
   let altCS = { type: 'DeviceRGB' };
 
@@ -744,12 +730,10 @@ export function parseTintColorSpace(csText, objCache) {
     }
   }
 
-  // Find the tint function: an inline <<...>> dict containing /FunctionType,
-  // or the last indirect ref that resolves to a function dict.
   /** @type {ParsedFunction|null} */
   let tintFn = null;
   const allInlineDicts = [...csText.matchAll(/<<[^]*?>>/g)];
-  // Take the LAST inline dict (the alt CS dict, if any, comes earlier).
+  // Take the last inline dict (the alt CS dict, if any, comes earlier).
   const lastDict = allInlineDicts.length > 0 ? allInlineDicts[allInlineDicts.length - 1][0] : null;
   if (lastDict && /\/FunctionType/.test(lastDict)) {
     tintFn = parseFunction(lastDict, objCache);
@@ -773,12 +757,10 @@ export function parseTintColorSpace(csText, objCache) {
     nInputs = (dnNamesMatch[1].match(/\/[^/[\]<>(){}\s]+/g) || []).length;
   }
 
-  // Detect the common "RGBA-as-DeviceN" pattern (e.g. [/DeviceN [/Red /Green /Blue /Alpha] /DeviceRGB { pop }]):
-  // the tint transform passes the first three inputs straight through to a DeviceRGB alternate, dropping any trailing channels.
-  // Such a colorspace converts byte-for-byte to RGB, so the renderer can copy channels instead of evaluating the function per pixel
-  // (3M+ PostScript-interpreter calls on a page-sized image).
-  // Verified numerically over diverse probes rather than by inspecting the program,
-  // so identity functions (`{ }`) and stack-shuffle no-ops are all caught. A non-identity tint never matches.
+  // Detect the common RGBA-as-DeviceN pattern, e.g. [/DeviceN [/Red /Green /Blue /Alpha] /DeviceRGB { pop }].
+  // The flag lets tintSamplesToRgb copy channels byte-for-byte instead of evaluating the tint function per pixel.
+  // The check runs the tint function on the probes below rather than pattern-matching the PostScript program text.
+  // Any tint program that behaves as a passthrough qualifies, whether written as { pop }, { }, or a stack shuffle.
   let rgbPassthrough = false;
   if (tintFn && altCS.type === 'DeviceRGB' && nInputs >= 3 && tintFn.nOutputs === 3) {
     const probes = [
@@ -803,8 +785,7 @@ export function parseTintColorSpace(csText, objCache) {
 }
 
 /**
- * Build a 256-entry RGB lookup table for a single-input Separation/DeviceN
- * tint transform. Used by the renderer for fast per-pixel tint application.
+ * Build a 256-entry RGB lookup table for a single-input Separation/DeviceN tint transform.
  *
  * @param {ParsedTintCS} parsed
  * @returns {Uint8Array|null} Length 256*3, or null if no tint function.
@@ -825,9 +806,7 @@ export function buildTintLookupTable(parsed) {
 }
 
 /**
- * Convert a single set of tint components through the function and alternate
- * color space to an [r,g,b] byte triple. Used by paths that handle one color
- * value at a time (Indexed→DeviceN palette conversion, scn/SCN operator).
+ * Convert a single set of tint components through the function and alternate color space to an [r,g,b] byte triple.
  *
  * @param {ParsedTintCS} parsed
  * @param {number[]} components - Tint values in the function's input domain

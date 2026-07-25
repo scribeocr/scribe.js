@@ -718,8 +718,14 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     // Extract base font name (strip subset prefix like AAAAAA+)
     // Type3 fonts may use /Name instead of /BaseFont
     // /BaseFont can be a name (/ArialMT) or a hex string (<feff0041...> = UTF-16BE)
-    const baseNameMatch = /\/BaseFont\s*\/([^\s/<>[\]]+)/.exec(fontObj);
-    const baseNameHexMatch = !baseNameMatch && /\/BaseFont\s*<([0-9A-Fa-f]+)>/.exec(fontObj);
+    let baseNameMatch = /\/BaseFont\s*\/([^\s/<>[\]]+)/.exec(fontObj);
+    let baseNameHexMatch = !baseNameMatch && /\/BaseFont\s*<([0-9A-Fa-f]+)>/.exec(fontObj);
+    if (!baseNameMatch && !baseNameHexMatch) {
+      const bfRef = /\/BaseFont\s+(\d+)\s+\d+\s+R\b/.exec(fontObj);
+      const bfBody = bfRef ? (objCache.getObjectText(Number(bfRef[1])) || '').trim() : '';
+      baseNameMatch = /^\/([^\s/<>[\]]+)/.exec(bfBody);
+      baseNameHexMatch = !baseNameMatch && /^<([0-9A-Fa-f]+)>/.exec(bfBody);
+    }
     const nameMatch = /\/Name\s*\/([^\s/<>[\]]+)/.exec(fontObj);
     let baseNameRaw;
     if (baseNameMatch) {
@@ -797,11 +803,22 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     // characters (e.g. superscripts via Tm) to land in the wrong place.
     let predefinedCJKCMap = false;
 
+    // A predefined-CMap /Encoding may be an indirect ref to the bare name object.
+    // Materialize the name inline so the per-CMap checks below see it.
+    let fontObjEnc = fontObj;
+    {
+      const encRefM = /\/Encoding\s+(\d+)\s+\d+\s+R\b/.exec(fontObj);
+      if (encRefM) {
+        const encBody = (objCache.getObjectText(Number(encRefM[1])) || '').trim();
+        if (encBody.startsWith('/')) fontObjEnc = `${fontObj} /Encoding ${encBody}`;
+      }
+    }
+
     // Handle predefined RKSJ CMap encoding for CID fonts (e.g., /Encoding /90pv-RKSJ-H).
     // RKSJ encodes text using Shift-JIS byte sequences. When there's no ToUnicode CMap,
     // decode Shift-JIS charCodes directly to Unicode for text rendering.
     if (toUnicode.size === 0 && /\/DescendantFonts/.test(fontObj)) {
-      const rksjMatch = /\/Encoding\s*\/([\w-]*RKSJ[\w-]*)/.exec(fontObj);
+      const rksjMatch = /\/Encoding\s*\/([\w-]*RKSJ[\w-]*)/.exec(fontObjEnc);
       if (rksjMatch) {
         predefinedCJKCMap = true;
         // Codespace ranges for RKSJ CMaps (per Adobe predefined CMap definitions):
@@ -843,7 +860,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     // ToUnicode CMap, decode charCodes directly to Unicode for text rendering.
     // GB-EUC-H uses GB2312/EUC-CN encoding which is a subset of GBK, so the GBK decoder handles both.
     if (toUnicode.size === 0 && /\/DescendantFonts/.test(fontObj)) {
-      const gbkMatch = /\/Encoding\s*\/([\w-]*(?:GBK|GB-EUC|GBpc-EUC)[\w-]*)/.exec(fontObj);
+      const gbkMatch = /\/Encoding\s*\/([\w-]*(?:GBK|GB-EUC|GBpc-EUC)[\w-]*)/.exec(fontObjEnc);
       if (gbkMatch) {
         predefinedCJKCMap = true;
         // Codespace ranges for Adobe GB predefined CMaps:
@@ -874,7 +891,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     }
 
     if (toUnicode.size === 0 && /\/DescendantFonts/.test(String(fontObj))) {
-      const b5Match = /\/Encoding\s*\/(B5[\w-]*|ETen[\w-]*|ETenms[\w-]*|HKscs[\w-]*)/.exec(String(fontObj));
+      const b5Match = /\/Encoding\s*\/(B5[\w-]*|ETen[\w-]*|ETenms[\w-]*|HKscs[\w-]*)/.exec(fontObjEnc);
       if (b5Match) {
         predefinedCJKCMap = true;
         codespaceRanges = [
@@ -912,7 +929,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     // and -V/-HW variants). These encode Korean text using 2-byte EUC-KR or its UHC
     // superset; TextDecoder('euc-kr') in WHATWG covers both.
     if (toUnicode.size === 0 && /\/DescendantFonts/.test(String(fontObj))) {
-      const kscMatch = /\/Encoding\s*\/(KSC[\w-]*|UniKS[\w-]*)/.exec(String(fontObj));
+      const kscMatch = /\/Encoding\s*\/(KSC[\w-]*|UniKS[\w-]*)/.exec(fontObjEnc);
       // UniKS-UCS2-* and UniKS-UTF16-* are Unicode-based CMaps whose charCodes are the
       // Unicode codepoints directly; only the EUC-KR/UHC encodings (KSC-EUC, KSCms-UHC,
       // KSCpc-EUC) use the euc-kr codespace and decoder.
@@ -1055,12 +1072,12 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       const isType0 = /\/Subtype\s*\/Type0/.test(String(fontObj));
       const isType1Subtype = /\/Subtype\s*\/Type1\b/.test(String(fontObj));
       const isStd14Type1 = /^(Helvetica|Courier|Times-)/i.test(baseName);
-      const flagsMatch = /\/Flags\s+(-?\d+)/.exec(String(descriptorText));
+      const descFlags = resolveIntValue(String(descriptorText), 'Flags', objCache, Number.NaN);
       // For non-embedded non-Std14 Type1 fonts the Symbolic flag is the only
       // reliable signal that StandardEncoding is the wrong base. (For embedded
       // fonts the Symbolic flag is unreliable — many normal serif fonts ship
       // with it set, e.g. CenturyExpandedSC-Regular has Flags=6.)
-      const isSymbolicByFlag = flagsMatch ? (Number(flagsMatch[1]) & 4) !== 0 : false;
+      const isSymbolicByFlag = Number.isNaN(descFlags) ? false : (descFlags & 4) !== 0;
       const eligibleForStdEnc = hasFontFile || isStd14Type1 || !isSymbolicByFlag;
       if (!baseChars && !isType0 && isType1Subtype && !hasFontFile2 && !hasFontFile3 && eligibleForStdEnc && !/ZapfDingbats|Symbol|Wingdings/i.test(baseName)) {
         // Prefer the embedded Type1 PFA's own /Encoding declaration when present —
@@ -1586,7 +1603,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         }
       }
       if (wArrayContent !== null) {
-        const refPattern = /(\d+)\s+0\s+R/g;
+        const refPattern = /(\d+)\s+\d+\s+R/g;
         const replacements = [];
         for (let refMatch = refPattern.exec(wArrayContent); refMatch !== null; refMatch = refPattern.exec(wArrayContent)) {
           const refText = objCache.getObjectText(Number(refMatch[1]));
@@ -1744,7 +1761,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     // Identity-H CID font with no ToUnicode CMap (or only a partial one): build toUnicode from CIDSystemInfo.
     // Adobe-Identity CIDs are codepoints directly. Other standard Adobe orderings (Japan1, GB1, CNS1, Korea1)
     // use the published CID->Unicode tables, which also backfill gaps that a partial CMap left behind.
-    if (cidFontText && /\/Encoding\s*\/Identity-H/.test(fontObj)) {
+    if (cidFontText && /\/Encoding\s*\/Identity-H/.test(fontObjEnc)) {
       // Parse CIDSystemInfo — may be inline or indirect reference
       let cidSysText = cidFontText;
       const cidSysRef = /\/CIDSystemInfo\s+(\d+)\s+\d+\s+R/.exec(cidFontText);
@@ -1791,7 +1808,12 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
             const strippedBase = baseName.replace(/^[A-Z]{6}\+/, '');
             for (const [sibTag, sibObj] of fontEntryPairs) {
               if (sibTag === fontTag) continue;
-              const sibBaseMatch = /\/BaseFont\s*\/([^\s/<>[\]]+)/.exec(sibObj);
+              let sibBaseMatch = /\/BaseFont\s*\/([^\s/<>[\]]+)/.exec(sibObj);
+              if (!sibBaseMatch) {
+                const sibRef = /\/BaseFont\s+(\d+)\s+\d+\s+R\b/.exec(sibObj);
+                const sibBody = sibRef ? (objCache.getObjectText(Number(sibRef[1])) || '').trim() : '';
+                sibBaseMatch = /^\/([^\s/<>[\]]+)/.exec(sibBody);
+              }
               if (!sibBaseMatch) continue;
               const sibBase = sibBaseMatch[1].replace(/^[A-Z]{6}\+/, '');
               if (sibBase !== strippedBase) continue;
@@ -2204,7 +2226,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     // when toUnicode is empty, so we just need to ensure the font uses the Type0
     // rendering path (2-byte decoding) and is not skipped as a non-embedded CID font.
     if (/\/DescendantFonts/.test(fontObj)) {
-      const utf16Match = /\/Encoding\s*\/([\w-]*(?:UTF16|UCS2)[\w-]*)/.exec(fontObj);
+      const utf16Match = /\/Encoding\s*\/([\w-]*(?:UTF16|UCS2)[\w-]*)/.exec(fontObjEnc);
       if (utf16Match) {
         codespaceRanges = codespaceRanges || [{ bytes: 2, low: 0, high: 0xFFFF }];
         if (!type0Info) type0Info = { fontFile: null, cidToGidMap: 'identity' };
@@ -2229,7 +2251,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     }
 
     // Detect vertical writing mode from CMap encoding name suffix (-V).
-    const verticalMode = /\/Encoding\s*\/[\w-]+-V\b/.test(fontObj);
+    const verticalMode = /\/Encoding\s*\/[\w-]+-V\b/.test(fontObjEnc);
 
     // Some broken ToUnicode CMaps map ASCII letter charCodes to the same letter
     // with the wrong case (e.g. charCode 69 -> "e" instead of "E"). Detect a
@@ -2781,8 +2803,14 @@ export function extractType0Fonts(pdfBytes) {
 function extractType0FontFile(fontObjText, objCache) {
   // Extract font name (strip subset prefix like AAAAAA+)
   // /BaseFont can be a name (/ArialMT) or a hex string (<feff0041...> = UTF-16BE)
-  const baseNameMatch = /\/BaseFont\s*\/([^\s/<>\[\]]+)/.exec(fontObjText);
-  const baseNameHexMatch2 = !baseNameMatch && /\/BaseFont\s*<([0-9A-Fa-f]+)>/.exec(fontObjText);
+  let baseNameMatch = /\/BaseFont\s*\/([^\s/<>[\]]+)/.exec(fontObjText);
+  let baseNameHexMatch2 = !baseNameMatch && /\/BaseFont\s*<([0-9A-Fa-f]+)>/.exec(fontObjText);
+  if (!baseNameMatch && !baseNameHexMatch2) {
+    const bfRef = /\/BaseFont\s+(\d+)\s+\d+\s+R\b/.exec(fontObjText);
+    const bfBody = bfRef ? (objCache.getObjectText(Number(bfRef[1])) || '').trim() : '';
+    baseNameMatch = /^\/([^\s/<>[\]]+)/.exec(bfBody);
+    baseNameHexMatch2 = !baseNameMatch && /^<([0-9A-Fa-f]+)>/.exec(bfBody);
+  }
   let fontName;
   if (baseNameMatch) {
     fontName = baseNameMatch[1].replace(/^[A-Z]{6}\+/, '');

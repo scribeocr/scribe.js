@@ -39,11 +39,8 @@ import { createConversionState } from './convertTextRegionsToPaths.js';
 /** @typedef {import('../../containers/fontContainer.js').DocFonts} DocFonts */
 
 /**
- * Rewrite a page dict's /Annots entry to drop link annotations whose
- * destination resolves to a page that is being dropped.
- * Resolves indirect /Annots arrays by inlining them.
- * No-op when /Annots is absent or all link targets are kept.
- *
+ * Rewrite a page dict's /Annots entry to drop link annotations whose destination resolves to a dropped page.
+ * An indirect /Annots array is always inlined, even when no annotation is dropped.
  * @param {string} pageText
  * @param {import('../../pdf/objectCache.js').ObjectCache} objCache
  * @param {Set<number>} keptPageObjNums
@@ -80,10 +77,8 @@ function dropOrphanLinkAnnots(pageText, objCache, keptPageObjNums) {
 }
 
 /**
- * Walk a page's content streams and collect the names actually invoked by
- * Tf (fonts), Do (xobjects), and gs (ext-gstate) operators.
- * Only these three operators are walked — other resource-name operators
- * (cs/CS/scn/SCN/sh/BMC/BDC) are context-sensitive and intentionally skipped.
+ * Walk a page's content streams and collect the names actually invoked by Tf (fonts), Do (xobjects), and gs (ext-gstate) operators.
+ * Other resource-name operators (cs/CS/scn/SCN/sh/BMC/BDC) are context-sensitive and deliberately not walked.
  * @param {string} pageObjText
  * @param {ObjectCache} objCache
  */
@@ -136,10 +131,8 @@ function collectUsedResourceNames(pageObjText, objCache) {
     }
   };
 
-  // Form XObjects whose content streams reference resources by name resolve those
-  // names via their own /Resources first, then fall through to the page's /Resources
-  // (PDF 32000-1:2008 §7.8.3). Walk used Form XObjects recursively so fall-through
-  // names get included — otherwise pruning drops resources the page actually needs.
+  // A form XObject resolves resource names via its own /Resources first, then falls through to the page's /Resources (PDF 32000-1:2008 7.8.3).
+  // Walk used form XObjects recursively so fall-through names count as used, otherwise pruning drops resources the page actually needs.
   const visited = new Set();
   /** @param {string} xobjName */
   const recurseForm = (xobjName) => {
@@ -207,10 +200,8 @@ function locateResourceSubdict(resourcesDictBody, key, objCache) {
 }
 
 /**
- * Given a /Resources dict text (full, with outer << >>) and sets of names
- * actually used by a page's content streams, return a new /Resources dict
- * where /Font, /XObject, and /ExtGState entries are pruned to only the used
- * names. Other subdicts pass through unchanged.
+ * Prune a /Resources dict's /Font, /XObject, and /ExtGState entries to only the names a page's content streams use.
+ * Other subdicts pass through unchanged.
  * @param {string} resourcesDictText - Full /Resources dict including outer << >>
  * @param {{usedFonts: Set<string>, usedXObjects: Set<string>, usedExtGStates: Set<string>}} used
  * @param {ObjectCache} objCache
@@ -276,9 +267,8 @@ function replacePageResources(pageObjText, newResourcesDictText) {
  */
 
 /**
- * Rebuild a PDF containing only the selected pages, optionally with OCR
- * overlay text. Used instead of incremental update when exporting a proper
- * subset of pages. Unreferenced objects are excluded to reduce file size.
+ * Rebuild a PDF containing only the selected pages, optionally with OCR overlay text.
+ * Unreferenced objects are excluded.
  * @param {Object} params
  * @param {Uint8Array} params.pdfBytes
  * @param {string} params.text

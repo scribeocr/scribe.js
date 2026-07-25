@@ -9,7 +9,8 @@ import {
 } from '../parsePdfUtils.js';
 import { ObjectCache } from '../objectCache.js';
 import {
-  extractDict, extractDictFromBytes, parseDictEntries, findTopLevelKeyIndex, bytesToLatin1, byteLastIndexOf, byteIndexOf, decodePdfString,
+  extractDict, extractDictFromBytes, parseDictEntries, findTopLevelKeyIndex, bytesToLatin1, byteLastIndexOf, byteIndexOf,
+  derefStringToken, resolveArrayValue, resolveNameValue,
 } from '../pdfPrimitives.js';
 import { extractImages } from '../parsePdfImages.js';
 import { inspectJpegMetadata, inspectJpxMetadata } from './imageMetadata.js';
@@ -110,13 +111,18 @@ export function getMetadata(pdfBytes) {
   report.encrypted = /\/Encrypt\s+\d+\s+\d+\s+R/.test(trailer);
   const idM = /\/ID\s*\[\s*(<[0-9A-Fa-f\s]*>|\([^)]*\))/.exec(trailer);
   if (idM) report.docId = idM[1];
+  else {
+    const idArr = resolveArrayValue(trailer, 'ID', objCache);
+    const first = idArr && /<[0-9A-Fa-f\s]*>|\([^)]*\)/.exec(idArr);
+    if (first) report.docId = first[0];
+  }
   const infoM = /\/Info\s+(\d+)\s+\d+\s+R/.exec(trailer);
   const infoObjNum = infoM ? Number(infoM[1]) : -1;
   if (infoM) {
     const body = dictBodyOf(objCache.getObjectText(Number(infoM[1])));
     if (body) {
       const info = {};
-      for (const e of parseDictEntries(body)) info[e.name] = decodePdfString(e.valueText.trim());
+      for (const e of parseDictEntries(body)) info[e.name] = derefStringToken(e.valueText, objCache);
       if (Object.keys(info).length) report.info = info;
     }
   }
@@ -133,7 +139,7 @@ export function getMetadata(pdfBytes) {
     report.pageLabels = findTopLevelKeyIndex(catBody, '/PageLabels') !== -1;
     report.viewerPreferences = findTopLevelKeyIndex(catBody, '/ViewerPreferences') !== -1;
     const langV = topValue(catBody, '/Lang');
-    if (langV) report.lang = decodePdfString(langV);
+    if (langV) report.lang = derefStringToken(langV, objCache);
     const namesV = topValue(catBody, '/Names');
     if (namesV) {
       const namesBody = /^\d+\s+\d+\s+R/.test(namesV) ? dictBodyOf(objCache.getObjectText(Number(namesV))) : (namesV.startsWith('<<') ? namesV.slice(2, -2) : '');
@@ -160,18 +166,23 @@ export function getMetadata(pdfBytes) {
       if (findTopLevelKeyIndex(body, '/PieceInfo') !== -1) report.pieceInfo.push({ objNum });
       if (/\/Type\s*\/OCG\b/.test(text)) {
         const nameV = topValue(body, '/Name');
-        if (nameV) report.ocgs.push({ objNum, name: decodePdfString(nameV) });
+        if (nameV) report.ocgs.push({ objNum, name: derefStringToken(nameV, objCache) });
       }
       if (/\/Type\s*\/Filespec\b/.test(text)) {
         const fn = topValue(body, '/UF') || topValue(body, '/F');
-        report.embeddedFiles.push({ objNum, name: fn ? decodePdfString(fn) : '(unnamed)' });
+        report.embeddedFiles.push({ objNum, name: fn ? derefStringToken(fn, objCache) : '(unnamed)' });
       }
       if (/\/Type\s*\/Sig\b/.test(text) || (findTopLevelKeyIndex(body, '/ByteRange') !== -1 && findTopLevelKeyIndex(body, '/Contents') !== -1 && /\/(Sig|DocTimeStamp)\b/.test(text))) {
-        report.signatures.push({ objNum, subFilter: topValue(body, '/SubFilter') });
+        let subFilter = topValue(body, '/SubFilter');
+        if (subFilter && /^\d+\s+\d+\s+R$/.test(subFilter)) {
+          const name = resolveNameValue(body, 'SubFilter', objCache);
+          if (name) subFilter = `/${name}`;
+        }
+        report.signatures.push({ objNum, subFilter });
       }
       // Info-identifying keys never appear on a functional object, so a non-trailer dict carrying one is a hidden custom info dict a strip must remove.
       if (objNum !== infoObjNum && !/\/Type\s*\/(Metadata|Catalog)\b/.test(text)
-        && /\/(Author|Producer|Creator|Company|Manager)\s*[(<]/.test(body)) {
+        && /\/(Author|Producer|Creator|Company|Manager)\s*(?:[(<]|\d+\s+\d+\s+R)/.test(body)) {
         const infoKeys = parseDictEntries(body).map((e) => e.name)
           .filter((k) => ['Author', 'Producer', 'Creator', 'Company', 'Manager', 'Title', 'Subject', 'Keywords', 'Signer(s)'].includes(k));
         if (infoKeys.some((k) => ['Author', 'Producer', 'Creator', 'Company', 'Manager'].includes(k))) {
@@ -181,7 +192,7 @@ export function getMetadata(pdfBytes) {
       // /T holds the reviewer's name on a markup annotation but the field name on a Widget.
       if (/\/Type\s*\/Annot\b/.test(text) && !/\/Subtype\s*\/Widget\b/.test(text)) {
         const authorV = topValue(body, '/T');
-        if (authorV) report.annotationAuthors.push({ objNum, author: decodePdfString(authorV) });
+        if (authorV) report.annotationAuthors.push({ objNum, author: derefStringToken(authorV, objCache) });
       }
     }
   }

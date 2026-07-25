@@ -1,6 +1,6 @@
 import {
   extractDict, bytesToLatin1, findTopLevelKeyIndex,
-  resolveIntValue, resolveNumValue, resolveNumArray,
+  resolveIntValue, resolveNumValue, resolveNumArray, resolveNameValue,
 } from '../../pdf/pdfPrimitives.js';
 import { stripText } from '../../pdf/contentStream.js';
 import { annotIsModelManaged, annotIsLiftedReply } from '../../pdf/parsePdfAnnots.js';
@@ -398,7 +398,8 @@ export function composePageRotation(pageObjText, userRotation, objCache) {
   const base = resolveInheritedInt(pageObjText, 'Rotate', objCache) || 0;
   const composed = (((base + userRotation) % 360) + 360) % 360;
   if (/\/Rotate\s+-?\d+/.test(pageObjText)) {
-    return pageObjText.replace(/\/Rotate\s+-?\d+/, composed === 0 ? '' : `/Rotate ${composed}`);
+    // Replacing only the leading number of a ref-valued /Rotate would leave `/Rotate <composed> 0 R` (a bogus ref) or a dangling `0 R` behind.
+    return pageObjText.replace(/\/Rotate\s+(?:\d+\s+\d+\s+R(?![0-9A-Za-z])|-?\d+)/, composed === 0 ? '' : `/Rotate ${composed}`);
   }
   if (composed === 0) return pageObjText;
   return pageObjText.replace('<<', `<</Rotate ${composed} `);
@@ -484,16 +485,15 @@ export function buildReplacementPageDict(
       const annotText = objCache.getObjectText(Number(m[1]));
       if (!annotText) return false;
       // /Rect and /QuadPoints share the redaction rects' user-space frame, so they compare directly.
-      const rectMatch = /\/Rect\s*\[\s*([-\d.eE]+)\s+([-\d.eE]+)\s+([-\d.eE]+)\s+([-\d.eE]+)\s*\]/.exec(annotText);
-      if (!rectMatch) return false;
-      const rx0 = Math.min(Number(rectMatch[1]), Number(rectMatch[3]));
-      const ry0 = Math.min(Number(rectMatch[2]), Number(rectMatch[4]));
-      const rx1 = Math.max(Number(rectMatch[1]), Number(rectMatch[3]));
-      const ry1 = Math.max(Number(rectMatch[2]), Number(rectMatch[4]));
+      const rectArr = resolveNumArray(annotText, 'Rect', objCache, null);
+      if (!rectArr || rectArr.length < 4) return false;
+      const rx0 = Math.min(rectArr[0], rectArr[2]);
+      const ry0 = Math.min(rectArr[1], rectArr[3]);
+      const rx1 = Math.max(rectArr[0], rectArr[2]);
+      const ry1 = Math.max(rectArr[1], rectArr[3]);
       const boxes = [[rx0, ry0, rx1, ry1]];
-      const quadsMatch = /\/QuadPoints\s*\[([-\d.eE\s]+)\]/.exec(annotText);
-      if (quadsMatch) {
-        const nums = quadsMatch[1].trim().split(/\s+/).map(Number);
+      const nums = resolveNumArray(annotText, 'QuadPoints', objCache, null);
+      if (nums) {
         for (let q = 0; q + 7 < nums.length; q += 8) {
           const xs = [nums[q], nums[q + 2], nums[q + 4], nums[q + 6]];
           const ys = [nums[q + 1], nums[q + 3], nums[q + 5], nums[q + 7]];
@@ -509,7 +509,7 @@ export function buildReplacementPageDict(
       const m = /^(\d+)\s+\d+\s+R$/.exec(ref);
       if (!m) return true;
       const annotText = objCache.getObjectText(Number(m[1]));
-      return !annotText || (!annotIsModelManaged(annotText) && !annotIsLiftedReply(annotText, objCache));
+      return !annotText || (!annotIsModelManaged(annotText, objCache) && !annotIsLiftedReply(annotText, objCache));
     });
   }
   if (extraAnnotRefs.length > 0 || sourceAnnotRefs.length > 0) {
@@ -523,8 +523,8 @@ export function buildReplacementPageDict(
   const structParents = resolveIntValue(originalObjText, 'StructParents', objCache, NaN);
   if (!Number.isNaN(structParents)) dictStr += `/StructParents ${structParents}`;
 
-  const tabsMatch = /\/Tabs\s*\/(\w+)/.exec(originalObjText);
-  if (tabsMatch) dictStr += `/Tabs/${tabsMatch[1]}`;
+  const tabs = resolveNameValue(originalObjText, 'Tabs', objCache);
+  if (tabs) dictStr += `/Tabs/${tabs}`;
 
   const userUnit = resolveNumValue(originalObjText, 'UserUnit', objCache, NaN);
   if (!Number.isNaN(userUnit)) dictStr += `/UserUnit ${userUnit}`;

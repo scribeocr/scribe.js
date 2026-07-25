@@ -7,7 +7,7 @@ import {
 } from './parsePdfUtils.js';
 import { resolveItemDest, buildNameDests, setDestYFrac } from './parseOutline.js';
 import {
-  bytesToLatin1, extractDict, decodePdfName, matMul, decodeTextCodes,
+  bytesToLatin1, extractDict, decodePdfName, matMul, decodeTextCodes, resolveNumValue,
 } from './pdfPrimitives.js';
 import { tokenizeContentStream } from './contentStream.js';
 import { ObjectCache } from './objectCache.js';
@@ -122,8 +122,8 @@ function parseFillAlphaExtGStates(containerObjText, objCache) {
         continue;
       }
     }
-    const caMatch = /\/ca\s+([0-9.]+)/.exec(gsBody);
-    states.set(gsName, { fillAlpha: caMatch ? parseFloat(caMatch[1]) : null });
+    const ca = resolveNumValue(gsBody, 'ca', objCache, Number.NaN);
+    states.set(gsName, { fillAlpha: Number.isNaN(ca) ? null : ca });
   }
   return states;
 }
@@ -299,7 +299,7 @@ function extractFormXObjectText(containerObjText, containerTokens, parentFonts, 
     const mergedExtGStates = formExtGStates.size > 0
       ? new Map([...(parentExtGStates || []), ...formExtGStates])
       : parentExtGStates;
-    const formMatrix = parseFormMatrix(formObjText) || [1, 0, 0, 1, 0, 0];
+    const formMatrix = parseFormMatrix(formObjText, objCache) || [1, 0, 0, 1, 0, 0];
     const formCtm = matMul(formMatrix, doOp.ctm);
     const formTokens = tokenizeContentStream(formContentStream);
     const formChars = executeTextOperators(

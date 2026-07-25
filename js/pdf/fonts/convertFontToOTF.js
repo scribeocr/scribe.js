@@ -122,10 +122,6 @@ export function buildFontFromCFF(cffData, fontObj, encoding) {
         }
       }
       // Add PUA entries so the renderer can draw glyphs via U+E000+charCode.
-      // When /Differences is present, only add PUA entries for explicit
-      // /Differences charCodes. For non-/Differences codes, keep normal Unicode
-      // rendering unless the glyph name is non-AGL and no Unicode mapping exists
-      // (e.g. custom logo glyph names in built-in CFF encodings).
       if (charset) {
         const nameToGID = new Map();
         for (let gi = 1; gi < charset.length; gi++) {
@@ -178,9 +174,7 @@ export function buildFontFromCFF(cffData, fontObj, encoding) {
             addBaseEncodingEntry(code, gid);
           }
         }
-        // Fallback: when the CFF encoding was empty or had only invalid entries
-        // (e.g., pre-defined StandardEncoding not expanded by the parser), derive
-        // charCode→GID from StandardEncoding glyph names.
+        // Pre-defined encodings (StandardEncoding) may come back unexpanded from the parser, leaving cffBaseEncoding empty.
         if (cffBaseEncoding.size === 0) {
           for (let code = 32; code < cffStandardEncoding.length; code++) {
             const glyphName = cffStandardEncoding[code];
@@ -211,7 +205,7 @@ export function buildFontFromCFF(cffData, fontObj, encoding) {
 
         // Preserve base-encoding glyph mapping for non-AGL glyph names when no
         // Unicode mapping exists. This keeps custom logo glyphs renderable in fonts
-        // that use /Differences only for high charCodes (e.g., IBMLogo in 2620504.pdf).
+        // that use /Differences only for high charCodes.
         for (const [code, gid] of cffBaseEncoding) {
           if (diffCodeSet && diffCodeSet.has(code)) continue;
           if (fontObj.encodingUnicode?.has(code) || fontObj.toUnicode?.has(code)) continue;
@@ -318,19 +312,13 @@ export function isDefaultIgnorable(cp) {
 }
 
 /**
- * Check whether a codepoint is a combining mark or Indic-script dependent vowel/sign
- * that would render as a "dotted circle + mark" placeholder when passed to fillText()
- * without a preceding base character. Covers the Unicode General_Category Mn/Mc ranges
- * most commonly seen in PDF text: general combining diacriticals and all Indic blocks
- * (Devanagari, Bengali, Gurmukhi, Gujarati, Oriya, Tamil, Telugu, Kannada, Malayalam,
- * Sinhala, Thai, Lao, Tibetan, Myanmar, Khmer).
+ * Whether a codepoint is an Indic combining mark or dependent vowel/sign.
+ * fillText() draws these as a "dotted circle + mark" placeholder when no base character precedes them.
  * @param {number} cp
  */
 export function isCombiningOrIndicMark(cp) {
-  // Only flag as combining if the specific code point is in Indic combining-marks subranges.
-  // Signs (anusvara/visarga) and viramas are combining; base consonants/vowels are not.
-  // (Latin Combining Diacritical Marks U+0300-U+036F are NOT included to avoid affecting
-  // Latin math/academic fonts that may map precomposed glyphs via these codepoints.)
+  // Within each script block only the signs (anusvara/visarga), dependent vowel signs, and viramas combine, not base consonants or independent vowels.
+  // Latin Combining Diacritical Marks (U+0300-U+036F) are excluded because Latin math/academic fonts may map precomposed glyphs at these codepoints.
   const combiningSubranges = [
     [0x0981, 0x0983], // Bengali signs (candrabindu, anusvara, visarga)
     [0x09BC, 0x09BC], // Bengali nuqta
@@ -387,15 +375,13 @@ export function isCombiningOrIndicMark(cp) {
 }
 
 /**
- * Whether cp belongs to a script the canvas text engine complex-shapes, so a glyph drawn standalone
- * via fillText is mis-shaped and the caller must route it to the PUA instead.
+ * Whether cp belongs to a script the canvas text engine complex-shapes.
+ * A glyph from these scripts drawn standalone via fillText is mis-shaped, so callers route it to the PUA.
  * @param {number} cp
  * @returns {boolean}
  */
 export function isComplexShapingScript(cp) {
-  // The canvas shaper reorders, joins, or stacks these blocks, so a glyph keyed here draws wrong standalone
-  // even when its cmap is correct. Callers route it to the PUA to bypass shaping,
-  // which also catches obfuscated ToUnicode that scatters Latin glyphs into these blocks.
+  // PUA routing also catches obfuscated ToUnicode that scatters Latin glyphs into these blocks.
   // Precomposed Hangul (U+AC00-D7A3) and CJK ideographs are not shaped and stay on real Unicode.
   return (cp >= 0x0590 && cp <= 0x08FF) // Hebrew, Arabic, Syriac, Thaana, NKo, Samaritan, Mandaic, Arabic Ext
     || (cp >= 0x0900 && cp <= 0x109F) // Brahmic (Devanagari..Sinhala), Thai, Lao, Tibetan, Myanmar
@@ -411,38 +397,25 @@ export function isComplexShapingScript(cp) {
 }
 
 /**
- * Whether this glyph needs to be mapped through a PUA codepoint (0xE000+code).
+ * Whether this glyph needs to be mapped through a PUA codepoint.
  * The builder and the renderer both call this so their codepoint choices always agree.
- * Mapping to a PUA codepoint is necessary when the codepoint a glyph is mapped both
- * (1) is incorrect and (2) is considered a special case by the renderer (e.g. a combining mark, a default ignorable, etc.).
  * @param {number} cp - the codepoint the renderer would otherwise draw for the glyph
  * @param {number|undefined} width - the glyph's advance width from the PDF /Widths
  * @returns {boolean}
  */
 export function drawnGlyphNeedsPUA(cp, width) {
-  // A zero-width glyph is a genuine mark — leave it on its real codepoint. Only a positive-width
-  // glyph is a real base glyph that an obfuscated /Encoding mislabeled with a codepoint that
-  // misbehaves when drawn bare.
+  // A zero-width glyph is a genuine mark and stays on its real codepoint.
+  // Only a positive-width glyph is a base glyph that an obfuscated /Encoding mislabeled with a codepoint that misbehaves when drawn bare.
   if (typeof width !== 'number' || width <= 0) return false;
-  // Codepoints canvas fillText will not render standalone at their own position:
-  //  - combining/Indic marks and Latin combining diacritics (U+0300-U+036F): the shaper gives them
-  //    zero advance and stacks them on the preceding glyph (U+0300-U+036F is excluded from
-  //    isCombiningOrIndicMark, so it is listed explicitly here);
-  //  - default-ignorables (soft hyphen, ZWJ, variation selectors, BOM): render as nothing;
-  //  - complex-shaping scripts: reordered/joined, so a standalone glyph is mis-shaped.
+  // isCombiningOrIndicMark excludes U+0300-U+036F, so Latin combining diacritics get an explicit range check here.
   return isCombiningOrIndicMark(cp) || isDefaultIgnorable(cp) || isComplexShapingScript(cp)
     || (cp >= 0x300 && cp <= 0x36F);
 }
 
 /**
- * Decide the codepoint to use in the font's cmap AND the renderer's fillText()
- * for a CID glyph. Uses real Unicode from ToUnicode when available and safe;
- * falls back to PUA for combining marks, whitespace, multi-codepoint sequences,
- * and missing Unicode.
- *
- * Called by both the font builder (cmap construction) and the renderer (text string
- * construction) to guarantee they always agree.
- *
+ * Decide the codepoint used in both the font's cmap and the renderer's fillText() for a CID glyph.
+ * Returns the real ToUnicode codepoint when it draws safely standalone, otherwise a PUA codepoint.
+ * The font builder and the renderer both call this so their codepoint choices always agree.
  * @param {string|undefined} toUniStr - ToUnicode string for this CID (undefined if not mapped)
  * @param {number} cid - The CID value
  * @param {number} [width] - The CID's advance width from /W (undefined if unspecified).
@@ -453,12 +426,7 @@ export function cidCodepoint(toUniStr, cid, width) {
     const chars = [...toUniStr];
     if (chars.length === 1) {
       const cp = toUniStr.codePointAt(0) || 0;
-      // Keep the real Unicode only when canvas draws that codepoint correctly as a standalone glyph.
-      // Otherwise route it to PUA, in these cases:
-      // - control/whitespace (cp <= 0x20), combining/Indic marks, default-ignorable and format chars: canvas draws nothing, a dotted circle, or skips them
-      // - complex-shaping-script codepoints: need shaping a lone codepoint won't get, so they misrender
-      // - U+FFFD: a decode-failure placeholder; mapping it collapses every undecoded CID onto one glyph
-      // - a U+0300-036F codepoint with positive advance width: a base glyph mislabeled as a combining mark, which would otherwise stack onto the preceding glyph
+      // U+FFFD is excluded because mapping the decode-failure placeholder would collapse every undecoded CID onto one glyph.
       const latinCombiningBaseGlyph = cp >= 0x300 && cp <= 0x36F && typeof width === 'number' && width > 0;
       if (cp > 0x20 && cp !== 0xFFFD && !isCombiningOrIndicMark(cp)
         && !isDefaultIgnorable(cp) && !isComplexShapingScript(cp)
@@ -466,19 +434,16 @@ export function cidCodepoint(toUniStr, cid, width) {
         return { codepoint: cp, isPUA: false };
       }
     }
-    // Multi-codepoint, combining mark, whitespace/control, or complex-shaping script -> PUA
   }
-  // No Unicode info or needs PUA
   const pua = 0xE000 + cid <= 0xF8FF ? 0xE000 + cid : 0xF0000 + cid;
   return { codepoint: pua, isPUA: true };
 }
 
 /**
- * Decide the codepoint a simple-font (non-CID) rebuild keys a glyph under for a char code, and whether that codepoint is PUA.
- * Resolves the codepoint the renderer would draw in its normal branch (single-codepoint `encodingUnicode`, else single-codepoint ToUnicode),
- * then routes it to PUA via drawnGlyphNeedsPUA when that codepoint would not render correctly drawn bare.
- * Returns null when the code has no single-codepoint Unicode (the renderer then routes it through PUA, keyed separately).
- * Mirrors `cidCodepoint`.
+ * Decide the codepoint a simple-font (non-CID) rebuild keys a glyph under for a char code.
+ * Resolves the codepoint the renderer would draw for the code, then routes it to PUA when that codepoint would not render correctly drawn bare.
+ * Returns null when the code has no single-codepoint Unicode.
+ * Such codes render through their PUA key instead.
  * @param {PdfFontObj} fontObj
  * @param {number} charCode
  * @returns {{ codepoint: number, isPUA: boolean }|null}
@@ -497,14 +462,8 @@ export function simpleFontCodepoint(fontObj, charCode) {
 }
 
 /**
- * Additive round-trip guard. For each PDF char code that reaches a glyph, also key that glyph under `simpleFontCodepoint(code)`,
- * the codepoint the renderer draws for that code.
- * A simple-font rebuild that keys glyphs only by their own identity (a CFF charset name, or an embedded TrueType cmap codepoint)
- * otherwise leaves the renderer's drawn codepoint with no glyph when the PDF /Encoding draws a code at a different codepoint (divergence)
- * or aims several codes at one glyph (collapse).
- * Because `addEntry` fills a slot only when it is free, this never overrides an existing entry
- * and is a no-op for fonts whose rebuilt cmap already covers the drawn codepoints.
- * It does not handle collisions (two codes needing one codepoint). Those are rerouted to PUA per path.
+ * Adds a cmap entry keying each glyph under the codepoint the renderer draws for its PDF char code.
+ * A rebuild keyed only by glyph identity (charset name, embedded cmap codepoint) has no entry at the drawn codepoint when the PDF /Encoding reaches a glyph through a different one.
  * @param {PdfFontObj} fontObj
  * @param {Iterable<[number, number]>} codeToGid - PDF char code -> GID for codes the renderer can draw
  * @param {(codepoint: number, gid: number) => void} addEntry - keys codepoint -> gid if the slot is free
@@ -519,8 +478,7 @@ export function addRoundTripCodepoints(fontObj, codeToGid, addEntry, skipCodes) 
 }
 
 /**
- * Convert a Type1 PFA/PFB font to OTF by parsing charstrings into Path objects
- * via font-parser's Type1 parser, then constructing a new font.
+ * Convert a Type1 PFA/PFB font to OTF.
  * @param {Uint8Array} pfaBytes - raw PFA font program bytes
  * @param {PdfFontObj} fontObj - parsed PDF font object
  * @returns {{ otfData: ArrayBuffer, fontMatrix: number[]|null, usesPUA: boolean }|null}
@@ -531,14 +489,11 @@ export function convertType1ToOTFNew(pfaBytes, fontObj) {
     if (!parsed) return null;
 
     const glyphEncoding = new Map();
-    // Track charCodes claimed by /Differences — even when the referenced glyph is
-    // missing from the Type1 program (corrupted/subsetted font), the built-in
-    // encoding at that charCode position maps to a completely unrelated glyph.
-    // Falling through to it would render the wrong character (e.g. 'e' → 't').
+    // Codes claimed by /Differences must not fall through to the built-in encoding, even when the claimed glyph is missing from the font (corrupted or subsetted).
+    // The built-in encoding holds an unrelated glyph at that position, so falling through renders the wrong character.
     const diffCharCodes = fontObj.differences ? new Set(Object.keys(fontObj.differences).map(Number)) : null;
-    // PDF /Encoding wins over Type1 built-in encoding wins over ToUnicode→AGL.
-    // ToUnicode last because it loses glyph identity (e.g. 0x27 → U+0027 → 'quotesingle'
-    // straight, but StandardEncoding says 'quoteright' curly).
+    // PDF /Encoding wins over the Type1 built-in encoding, which wins over ToUnicode->AGL.
+    // ToUnicode ranks last because it loses glyph identity (e.g. 0x27 -> U+0027 -> 'quotesingle' straight, but StandardEncoding says 'quoteright' curly).
     if (fontObj.charCodeToGlyphName) {
       for (const [code, glyphName] of fontObj.charCodeToGlyphName) {
         if (parsed.glyphs.has(glyphName)) glyphEncoding.set(code, glyphName);
@@ -556,12 +511,9 @@ export function convertType1ToOTFNew(pfaBytes, fontObj) {
       }
     }
 
-    // If the Type1 parser extracted very few glyphs compared to the Differences entries,
-    // the eexec decryption likely failed. Return null to fall through to CSS font fallback
-    // so all characters render consistently from the same system font.
-    // Compare against Differences entries whose glyph exists in the font (not total Differences
-    // count), because subsetted fonts legitimately have many Differences entries for glyphs
-    // not in this subset (shared encoding object across pages).
+    // Far fewer mapped charCodes than /Differences glyphs found in the font means the eexec decryption likely failed.
+    // Return null so the CSS font fallback renders all characters consistently from the same system font.
+    // Only /Differences entries matched in the font are counted, because subsetted fonts sharing one encoding object across pages legitimately list glyphs absent from this subset.
     let diffMatchCount = 0;
     if (fontObj.differences) {
       for (const glyphName of Object.values(fontObj.differences)) {
@@ -570,9 +522,7 @@ export function convertType1ToOTFNew(pfaBytes, fontObj) {
     }
     if (diffMatchCount > 5 && glyphEncoding.size < diffMatchCount * 0.5) return null;
 
-    // Type1 path coords and advance widths are in font units that FontMatrix
-    // scales to em. Output OTF is fixed at unitsPerEm=1000, so multiply by
-    // fm[0]*1000 (no-op when fm[0]=0.001).
+    // The output OTF is fixed at unitsPerEm=1000, so the FontMatrix scale is baked into path coords and advance widths.
     const fm = parsed.fontMatrix;
     const isUniformDiag = fm && fm.length >= 4
       && fm[1] === 0 && fm[2] === 0
@@ -785,12 +735,8 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
         if (isPUA) usesPUA = true;
         glyphToUnicode.set(gid, codepoint);
       }
-      // Fallback: if CIDToGIDMap produced only PUA mappings (no real Unicode), the
-      // cidToUnicode was likely keyed wrong (e.g., GBK charCodes used as keys when
-      // the font uses a predefined CMap, not Identity-H). In this case, use the
-      // embedded TrueType font's own Unicode cmap instead — it directly maps Unicode
-      // to GIDs and is the most reliable source for embedded subsetted fonts.
-      // Only include GIDs that appear in the CIDToGIDMap (the subset actually used).
+      // All-PUA output despite a populated ToUnicode means cidToUnicode was likely keyed wrong, so the font's own Unicode cmap is used instead.
+      // Typically the font uses a predefined CMap (e.g. GBK), so its ToUnicode charCode keys are not valid CIDs.
       if (usesPUA && claimedUnicodes.size === 0 && fontObj.toUnicode && fontObj.toUnicode.size > 0 && tableDir.cmap) {
         const fallbackCmap = opentype.parseCmapTable(data, tableDir.cmap.offset);
         if (fallbackCmap.glyphIndexMap && fallbackCmap.platformID === 3 && fallbackCmap.encodingID !== 0) {
@@ -1162,9 +1108,7 @@ export function rebuildFontFromGlyphs(arrayBuffer, fontObj, cidToGidMap) {
     });
     newFont.outlinesFormat = 'truetype';
 
-    // Copy TrueType hinting infrastructure from the original font.
-    // Composite glyphs have instructions that reference functions in fpgm
-    // and control values in cvt — without these tables the instructions fail.
+    // Composite glyphs have instructions referencing fpgm functions and cvt control values, and those instructions fail without these tables.
     const cvtTag = tableDir['cvt '] || tableDir.cvt;
     if (cvtTag) {
       const cvt = [];

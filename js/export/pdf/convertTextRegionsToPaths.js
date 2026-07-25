@@ -8,7 +8,7 @@ import { ca } from '../../canvasAdapter.js';
 import { base64ToBytes } from '../../utils/imageUtils.js';
 import {
   bytesToLatin1, extractDict,
-  resolveNumArray, parseDictEntries, matMul, decodeTextCodes,
+  resolveNumArray, resolveNumValue, parseDictEntries, matMul, decodeTextCodes,
 } from '../../pdf/pdfPrimitives.js';
 import {
   tokenizeContentStream, formatPdfNumber,
@@ -2125,17 +2125,13 @@ function parseExtGStates(resourcesText, objCache) {
     }
     /** @type {{lw?: number, dash?: boolean, ml?: number}} */
     const rec = {};
-    const lwM = /\/LW\s+([0-9.+-]+)/.exec(gsText);
-    if (lwM) {
-      const v = parseFloat(lwM[1]);
-      if (!Number.isFinite(v) || v < 0) continue;
-      rec.lw = v;
+    const lwV = resolveNumValue(gsText, 'LW', objCache, Number.NaN);
+    if (!Number.isNaN(lwV)) {
+      if (!Number.isFinite(lwV) || lwV < 0) continue;
+      rec.lw = lwV;
     }
-    const mlM = /\/ML\s+([0-9.+-]+)/.exec(gsText);
-    if (mlM) {
-      const v = parseFloat(mlM[1]);
-      if (Number.isFinite(v)) rec.ml = v;
-    }
+    const mlV = resolveNumValue(gsText, 'ML', objCache, Number.NaN);
+    if (Number.isFinite(mlV)) rec.ml = mlV;
     const dM = /\/D\s*\[\s*\[([^\]]*)\]/.exec(gsText);
     if (dM) rec.dash = /\S/.test(dM[1]);
     out.set(entry.name, rec);

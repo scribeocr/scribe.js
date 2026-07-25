@@ -506,27 +506,43 @@ function stripObjWrapper(objText) {
   return objText.replace(/^\s*\d+\s+\d+\s+obj\s*/, '').replace(/\s*endobj[\s\S]*$/, '').trim();
 }
 
+const KEY_RE_CACHE = new Map();
+/**
+ * Return the compiled regex for `kind`+`key`, cached module-wide.
+ * Nothing is evicted, so `key` must stay within the small fixed set of dict key names.
+ * @param {string} kind - One-character namespace so different helpers can share a key.
+ * @param {string} key
+ * @param {(key: string) => RegExp} build
+ */
+function cachedKeyRe(kind, key, build) {
+  const cacheKey = kind + key;
+  let re = KEY_RE_CACHE.get(cacheKey);
+  if (!re) {
+    re = build(key);
+    KEY_RE_CACHE.set(cacheKey, re);
+  }
+  return re;
+}
+
 /**
  * Resolve an integer value from a PDF dict, handling indirect refs.
- * Checks for indirect ref pattern FIRST (superset of direct pattern) to avoid
- * capturing the object number as the value (Type B bug).
  * @param {string} dictText
  * @param {string} key - key name without leading slash
  * @param {ObjectCache|null} objCache
  * @param {number} [defaultValue=0]
  */
 export function resolveIntValue(dictText, key, objCache, defaultValue = 0) {
-  const refMatch = new RegExp(`/${key}\\s+(\\d+)\\s+\\d+\\s+R`).exec(dictText);
-  if (refMatch && objCache) {
-    const objText = objCache.getObjectText(Number(refMatch[1]));
-    if (objText) {
-      const val = /(-?\d+)/.exec(stripObjWrapper(objText));
-      if (val) return Number(val[1]);
-    }
-    return defaultValue;
+  // The alternation tries the ref form first so `/Key 12 0 R` never captures the object number as the value.
+  const m = cachedKeyRe('i', key, (k) => new RegExp(`/${k}\\s+(?:(\\d+)\\s+\\d+\\s+R(?![0-9A-Za-z])|(-?\\d+))`)).exec(dictText);
+  if (!m) return defaultValue;
+  if (m[2] !== undefined) return Number(m[2]);
+  if (!objCache) return defaultValue;
+  const objText = objCache.getObjectText(Number(m[1]));
+  if (objText) {
+    const val = /^(-?\d+)/.exec(stripObjWrapper(objText));
+    if (val) return Number(val[1]);
   }
-  const direct = new RegExp(`/${key}\\s+(-?\\d+)`).exec(dictText);
-  return direct ? Number(direct[1]) : defaultValue;
+  return defaultValue;
 }
 
 /**
@@ -537,17 +553,16 @@ export function resolveIntValue(dictText, key, objCache, defaultValue = 0) {
  * @param {number} [defaultValue=0]
  */
 export function resolveNumValue(dictText, key, objCache, defaultValue = 0) {
-  const refMatch = new RegExp(`/${key}\\s+(\\d+)\\s+\\d+\\s+R`).exec(dictText);
-  if (refMatch && objCache) {
-    const objText = objCache.getObjectText(Number(refMatch[1]));
-    if (objText) {
-      const val = /(-?[\d.]+)/.exec(stripObjWrapper(objText));
-      if (val) return Number(val[1]);
-    }
-    return defaultValue;
+  const m = cachedKeyRe('n', key, (k) => new RegExp(`/${k}\\s+(?:(\\d+)\\s+\\d+\\s+R(?![0-9A-Za-z])|(-?[\\d.]+))`)).exec(dictText);
+  if (!m) return defaultValue;
+  if (m[2] !== undefined) return Number(m[2]);
+  if (!objCache) return defaultValue;
+  const objText = objCache.getObjectText(Number(m[1]));
+  if (objText) {
+    const val = /^(-?[\d.]+)/.exec(stripObjWrapper(objText));
+    if (val) return Number(val[1]);
   }
-  const direct = new RegExp(`/${key}\\s+(-?[\\d.]+)`).exec(dictText);
-  return direct ? Number(direct[1]) : defaultValue;
+  return defaultValue;
 }
 
 /**
@@ -589,12 +604,25 @@ export function resolveArrayValue(dictText, key, objCache) {
     }
   }
   if (content === null && objCache) {
-    const refMatch = new RegExp(`/${key}\\s+(\\d+)\\s+\\d+\\s+R`).exec(dictText);
+    const refMatch = cachedKeyRe('a', key, (k) => new RegExp(`/${k}\\s+(\\d+)\\s+\\d+\\s+R(?![0-9A-Za-z])`)).exec(dictText);
     if (refMatch) {
       const objText = objCache.getObjectText(Number(refMatch[1]));
       if (objText) {
-        const arr = /\[\s*([\s\S]*?)\s*\]/.exec(stripObjWrapper(objText));
-        if (arr) content = arr[1].trim();
+        const t = stripObjWrapper(objText);
+        // Scanning for a bracket anywhere would pull an array out of a dict or stream target.
+        if (t[0] === '[') {
+          let depth = 0;
+          for (let k2 = 0; k2 < t.length; k2++) {
+            if (t[k2] === '[') depth++;
+            else if (t[k2] === ']') {
+              depth--;
+              if (depth === 0) {
+                content = t.substring(1, k2).trim();
+                break;
+              }
+            }
+          }
+        }
       }
     }
   }
@@ -603,8 +631,10 @@ export function resolveArrayValue(dictText, key, objCache) {
   if (objCache && /\d+\s+\d+\s+R/.test(content)) {
     content = content.replace(/(\d+)\s+\d+\s+R/g, (whole, num) => {
       const refText = objCache.getObjectText(Number(num));
-      const v = refText != null ? /(-?[\d.]+)/.exec(stripObjWrapper(refText)) : null;
-      return v ? v[1] : whole;
+      if (refText == null) return whole;
+      const body = stripObjWrapper(refText);
+      // A ref to a dict, array, or string target must stay a ref rather than become whatever number appears first inside it.
+      return /^-?[\d.]+$/.test(body) ? body : whole;
     });
   }
   return content;
@@ -634,16 +664,14 @@ export function resolveNumArray(dictText, key, objCache, defaultValue = null) {
  * @param {boolean} [defaultValue=false]
  */
 export function resolveBoolValue(dictText, key, objCache, defaultValue = false) {
-  const directMatch = new RegExp(`/${key}\\s+(true|false)`).exec(dictText);
-  if (directMatch) return directMatch[1] === 'true';
+  const m = cachedKeyRe('b', key, (k) => new RegExp(`/${k}\\s+(?:(true|false)\\b|(\\d+)\\s+\\d+\\s+R(?![0-9A-Za-z]))`)).exec(dictText);
+  if (!m) return defaultValue;
+  if (m[1] !== undefined) return m[1] === 'true';
   if (!objCache) return defaultValue;
-  const refMatch = new RegExp(`/${key}\\s+(\\d+)\\s+\\d+\\s+R`).exec(dictText);
-  if (refMatch) {
-    const objText = objCache.getObjectText(Number(refMatch[1]));
-    if (objText) {
-      const val = /(true|false)/.exec(stripObjWrapper(objText));
-      if (val) return val[1] === 'true';
-    }
+  const objText = objCache.getObjectText(Number(m[2]));
+  if (objText) {
+    const val = /\b(true|false)\b/.exec(stripObjWrapper(objText));
+    if (val) return val[1] === 'true';
   }
   return defaultValue;
 }
@@ -656,16 +684,114 @@ export function resolveBoolValue(dictText, key, objCache, defaultValue = false) 
  * @param {ObjectCache|null} objCache
  */
 export function resolveNameValue(dictText, key, objCache) {
-  const directMatch = new RegExp(`/${key}\\s*/([^\\s/<>\\[\\]]+)`).exec(dictText);
-  if (directMatch) return directMatch[1];
+  const m = cachedKeyRe('m', key, (k) => new RegExp(`/${k}(?:\\s*/([^\\s/<>\\[\\]]+)|\\s+(\\d+)\\s+\\d+\\s+R(?![0-9A-Za-z]))`)).exec(dictText);
+  if (!m) return null;
+  if (m[1] !== undefined) return m[1];
   if (!objCache) return null;
-  const refMatch = new RegExp(`/${key}\\s+(\\d+)\\s+\\d+\\s+R`).exec(dictText);
-  if (refMatch) {
-    const objText = objCache.getObjectText(Number(refMatch[1]));
-    if (objText) {
-      const val = /\/([^\s/<>[\]]+)/.exec(stripObjWrapper(objText));
-      if (val) return val[1];
+  const objText = objCache.getObjectText(Number(m[2]));
+  if (objText) {
+    const val = /\/([^\s/<>[\]]+)/.exec(stripObjWrapper(objText));
+    if (val) return val[1];
+  }
+  return null;
+}
+
+/**
+ * Read one balanced `(...)` literal-string token starting at `start`, honoring `\` escapes.
+ * An unterminated literal yields everything from `start` to the end.
+ * @param {string} text
+ * @param {number} start - Index of the opening `(`.
+ */
+function readLiteralToken(text, start) {
+  let depth = 0;
+  for (let j = start; j < text.length; j++) {
+    const ch = text[j];
+    if (ch === '\\') j++;
+    else if (ch === '(') depth++;
+    else if (ch === ')') {
+      depth--;
+      if (depth === 0) return text.slice(start, j + 1);
     }
+  }
+  return text.slice(start);
+}
+
+/**
+ * The string token at the start of an object body: balanced literal `(...)` or hex `<...>`, or null.
+ * @param {string} body - Object body text, already trimmed.
+ */
+function stringTokenAtStart(body) {
+  if (body[0] === '(') return readLiteralToken(body, 0);
+  if (body[0] === '<' && body[1] !== '<') {
+    const j = body.indexOf('>');
+    return j === -1 ? null : body.slice(0, j + 1);
+  }
+  return null;
+}
+
+/**
+ * Resolve a string value from a PDF dict, handling indirect refs, and decode it.
+ * Returns the decoded JS string, or null when the key is absent or its value is not a string.
+ * @param {string} dictText
+ * @param {string} key
+ * @param {ObjectCache|null} objCache
+ * @returns {?string}
+ */
+export function resolveStringValue(dictText, key, objCache) {
+  const m = cachedKeyRe('s', key, (k) => new RegExp(`/${k}\\s*(?:(\\((?:[^()\\\\]|\\\\.)*\\)|<[0-9A-Fa-f\\s]*>)|(\\d+)\\s+\\d+\\s+R(?![0-9A-Za-z]))`)).exec(dictText);
+  if (m) {
+    if (m[1] !== undefined) return decodePdfString(m[1]);
+    if (!objCache) return null;
+    const objText = objCache.getObjectText(Number(m[2]));
+    if (objText) {
+      const tok = stringTokenAtStart(stripObjWrapper(objText));
+      if (tok != null) return decodePdfString(tok);
+    }
+    return null;
+  }
+  // The literal alternative cannot match a string containing balanced inner parens
+  // ("(a(b)c)" is legal), so a miss with `/Key (` present needs a manual balanced parse.
+  const p = cachedKeyRe('p', key, (k) => new RegExp(`/${k}\\s*\\(`)).exec(dictText);
+  if (p) return decodePdfString(readLiteralToken(dictText, dictText.indexOf('(', p.index)));
+  return null;
+}
+
+/**
+ * Decode a raw dict-value token as a PDF string, resolving it first when it is an indirect ref.
+ * Like `decodePdfString`, a non-string token is returned as its source text.
+ * @param {string} token
+ * @param {ObjectCache|null} objCache
+ * @returns {string}
+ */
+export function derefStringToken(token, objCache) {
+  const t = token.trim();
+  const m = /^(\d+)\s+\d+\s+R$/.exec(t);
+  if (!m || !objCache) return decodePdfString(t);
+  const body = objCache.getObjectText(Number(m[1]));
+  if (body == null) return '';
+  const stripped = stripObjWrapper(body);
+  const tok = stringTokenAtStart(stripped);
+  return tok != null ? decodePdfString(tok) : stripped;
+}
+
+/**
+ * Resolve a dict-valued key to its `<<...>>` token text (delimiters included), handling indirect refs.
+ * Returns null when the key is absent or its value is not a dict.
+ * @param {string} dictText
+ * @param {string} key
+ * @param {ObjectCache|null} objCache
+ * @returns {?string}
+ */
+export function resolveDictValue(dictText, key, objCache) {
+  const m = cachedKeyRe('d', key, (k) => new RegExp(`/${k}(?:\\s*(<<)|\\s+(\\d+)\\s+\\d+\\s+R(?![0-9A-Za-z]))`)).exec(dictText);
+  if (!m) return null;
+  if (m[1] !== undefined) return extractDict(dictText, m.index + m[0].length - 2);
+  if (!objCache) return null;
+  const objText = objCache.getObjectText(Number(m[2]));
+  if (objText) {
+    const t = stripObjWrapper(objText);
+    // The target must BE a dict object, not merely contain one (e.g. an array of dicts).
+    if (t.startsWith('<<')) return extractDict(t, 0);
   }
   return null;
 }

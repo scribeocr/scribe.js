@@ -2,7 +2,7 @@ import {
   findXrefOffset, parseXref,
 } from './parsePdfUtils.js';
 import {
-  extractDict, resolveArrayValue, findTopLevelKeyIndex,
+  extractDict, resolveArrayValue, resolveNumArray, resolveIntValue, findTopLevelKeyIndex,
   parsePdfLiteralString,
 } from './pdfPrimitives.js';
 import { ObjectCache } from './objectCache.js';
@@ -281,8 +281,8 @@ export function parseImageObject(objText, objNum, objCache) {
   }
 
   // Check for inverted /Decode array: /Decode [1 0] means invert sample values
-  const imgDecodeMatch = /\/Decode\s*\[\s*([\d.]+)\s+([\d.]+)/.exec(objText);
-  const decodeInvert = imgDecodeMatch ? (Number(imgDecodeMatch[1]) > Number(imgDecodeMatch[2])) : false;
+  const imgDecode = resolveNumArray(objText, 'Decode', objCache, null);
+  const decodeInvert = imgDecode != null && imgDecode.length >= 2 && imgDecode[0] > imgDecode[1];
 
   // Image stream bytes are loaded lazily at render time.
   const imageData = null;
@@ -362,13 +362,14 @@ export function parseImageObject(objText, objNum, objCache) {
   let sMaskDecodeInvert = false;
   let colorKeyMask = null;
 
-  const colorKeyMatch = /\/Mask\s*\[([\d\s]+)\]/.exec(objText);
-  if (colorKeyMatch) {
-    colorKeyMask = colorKeyMatch[1].trim().split(/\s+/).map(Number);
+  // A color-key /Mask array may be inline or a ref to an array; a ref to a stream is a stencil mask instead.
+  const colorKeyContent = resolveArrayValue(objText, 'Mask', objCache);
+  if (colorKeyContent != null && /^[\d\s]+$/.test(colorKeyContent)) {
+    colorKeyMask = colorKeyContent.trim().split(/\s+/).map(Number);
   }
 
   const sMaskRefMatch = /\/SMask\s+(\d+)\s+\d+\s+R/.exec(objText);
-  const explicitMaskRefMatch = !sMaskRefMatch && !colorKeyMatch ? /\/Mask\s+(\d+)\s+\d+\s+R/.exec(objText) : null;
+  const explicitMaskRefMatch = !sMaskRefMatch && colorKeyMask == null ? /\/Mask\s+(\d+)\s+\d+\s+R/.exec(objText) : null;
   const maskRefMatch = sMaskRefMatch || explicitMaskRefMatch;
   if (maskRefMatch) {
     const sMaskObjNum = Number(maskRefMatch[1]);
@@ -414,13 +415,18 @@ export function parseImageObject(objText, objNum, objCache) {
         // The unpacking above produces 0→0, 1→255, so we must invert.
         // A /Decode [1 0] on the mask would cancel this inversion.
         const isExplicitMask = !!explicitMaskRefMatch;
-        const decodeMatch = /\/Decode\s*\[\s*([\d.]+)\s+([\d.]+)\s*\]/.exec(sMaskObjText);
-        const decodeInverted = !!decodeMatch && parseFloat(decodeMatch[1]) > parseFloat(decodeMatch[2]);
+        const maskDecode = resolveNumArray(sMaskObjText, 'Decode', objCache, null);
+        const decodeInverted = maskDecode != null && maskDecode.length >= 2 && maskDecode[0] > maskDecode[1];
         // Invert if: explicit stencil mask with default Decode, OR soft mask with /Decode [1 0]
         const shouldInvert = (isExplicitMask && isImageMask && !decodeInverted) || (!isExplicitMask && decodeInverted);
         // A DCTDecode/JPXDecode mask is still a compressed codestream here.
         // Inverting these bytes would corrupt it, so defer the inversion until imageInfoToBitmap decodes it.
-        const sMaskFilter = parseFilter(sMaskObjText);
+        let sMaskFilter = parseFilter(sMaskObjText);
+        if (!sMaskFilter) {
+          const sMaskFilterRef = /\/Filter\s+(\d+)\s+\d+\s+R/.exec(sMaskObjText);
+          const sMaskFilterText = sMaskFilterRef ? objCache.getObjectText(Number(sMaskFilterRef[1])) : null;
+          if (sMaskFilterText) sMaskFilter = parseFilter(`/Filter ${sMaskFilterText}`);
+        }
         if (shouldInvert && (sMaskFilter === 'DCTDecode' || sMaskFilter === 'JPXDecode')) {
           sMaskDecodeInvert = true;
         } else if (shouldInvert) {
@@ -618,8 +624,7 @@ function resolveICCBased(csText, objCache) {
   if (iccRefMatch) {
     const iccObjText = objCache.getObjectText(Number(iccRefMatch[1]));
     if (iccObjText) {
-      const nMatch = /\/N\s+(\d+)/.exec(iccObjText);
-      const n = nMatch ? Number(nMatch[1]) : 3;
+      const n = resolveIntValue(iccObjText, 'N', objCache, 3);
       return n === 1 ? 'DeviceGray' : n === 4 ? 'DeviceCMYK' : 'DeviceRGB';
     }
   }
@@ -824,8 +829,7 @@ export function parseIndexedColorSpace(rawCsText, objCache, objNum = null) {
     const iccRefMatch = /(\d+)\s+\d+\s+R/.exec(iccSrc);
     if (iccRefMatch) {
       const iccObjText = objCache.getObjectText(Number(iccRefMatch[1]));
-      const nMatch = iccObjText && /\/N\s+(\d+)/.exec(iccObjText);
-      const n = nMatch ? Number(nMatch[1]) : 3;
+      const n = iccObjText ? resolveIntValue(iccObjText, 'N', objCache, 3) : 3;
       paletteBase = n === 1 ? 'DeviceGray' : n === 4 ? 'DeviceCMYK' : 'DeviceRGB';
     } else {
       paletteBase = 'DeviceRGB';

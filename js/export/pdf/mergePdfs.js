@@ -13,11 +13,8 @@ import {
 import { buildOutlineObjects } from './writeOutline.js';
 
 /**
- * Extract the value of a top-level dict key from a PDF dict text. Returns the
- * raw substring (an inline `<<...>>` dict, an indirect ref `N M R`, an array,
- * or null if the key is absent). Bracket-balances inline dicts (`<<`/`>>`)
- * and arrays (`[`/`]`).
- *
+ * Extract the value of a dict key from PDF dict text.
+ * Returns the raw `<<...>>` or `N M R` substring, or null when the key is absent or its value is any other type.
  * @param {string} dictText
  * @param {string} key e.g. '/OCProperties'
  */
@@ -53,10 +50,8 @@ function extractDictKeyValue(dictText, key) {
 }
 
 /**
- * Rewrite all indirect references `N M R` in PDF dict text using an
- * oldObjNum → newObjNum map. Refs whose old obj num is not in the map are
- * left untouched.
- *
+ * Rewrite all indirect references `N M R` in PDF dict text using an oldObjNum-to-newObjNum map.
+ * Refs whose old obj num is not in the map are left untouched.
  * @param {string} dictText
  * @param {Map<number, number>} objNumMap
  */
@@ -68,10 +63,8 @@ function rewriteIndirectRefs(dictText, objNumMap) {
 }
 
 /**
- * For an encrypted source, walk a slice of `pdfBytes` and replace every PDF
- * string (`(...)` literal, `<...>` hex) with its decrypted equivalent.
+ * For an encrypted source, replace every PDF string in the slice with its decrypted equivalent.
  * Returns the latin1-decoded text.
- *
  * @param {Uint8Array} sliceBytes
  * @param {number} oldObjNum
  * @param {ObjectCache} objCache
@@ -87,9 +80,7 @@ function decryptObjectSliceToText(sliceBytes, oldObjNum, objCache, streamLength 
 }
 
 /**
- * Parse one input PDF enough to enumerate its kept pages and the set of
- * objects reachable from those pages, excluding page-tree internal nodes.
- *
+ * Parse one input PDF enough to enumerate its pages and the set of objects reachable from them, excluding page-tree internal nodes.
  * @param {ArrayBuffer | Uint8Array} input
  */
 function parseMergeSource(input) {
@@ -113,12 +104,8 @@ function parseMergeSource(input) {
 }
 
 /**
- * Merge multiple PDFs into a single PDF whose pages are the concatenation
- * of all input pages in input order. Content is preserved byte-exactly
- * (no re-rendering). Objects from each source are copied with new object
- * numbers, and indirect references inside each copied object's dict text
- * are rewritten to match.
- *
+ * Merge multiple PDFs into a single PDF whose pages are the concatenation of all input pages in input order.
+ * Page content is never re-rendered.
  * @param {Array<ArrayBuffer | Uint8Array>} pdfInputs - PDFs in merge order
  * @param {{ outline?: Array<import('../../objects/outlineObjects.js').OutlineNode> }} [options]
  *   `outline`: a bookmark tree written as the output's `/Outlines`.
@@ -132,8 +119,7 @@ export async function mergePdfs(pdfInputs, options = {}) {
   // Phase 1: parse every source and collect its copy set.
   const sources = pdfInputs.map(parseMergeSource);
 
-  // Phase 2: allocate new object numbers. Catalog/pages root first, then
-  // each source's pages in order, then each source's other referenced objs.
+  // Phase 2: allocate new object numbers.
   const catalogObjNum = 1;
   const pagesRootObjNum = 2;
   let nextObjNum = 3;
@@ -229,8 +215,6 @@ export async function mergePdfs(pdfInputs, options = {}) {
             .replace(/^\d+\s+\d+\s+obj/, `${newObjNum} 0 obj`);
           allOutputObjects.push({ objNum: newObjNum, content: `${rewritten}\n\n` });
         } else {
-          // Stream object: rewrite dict header text, copy (and decrypt) stream
-          // bytes, rewrite trailer text.
           let headerText;
           let streamBytes;
           let trailerText;
@@ -285,9 +269,7 @@ export async function mergePdfs(pdfInputs, options = {}) {
           });
         }
       } else if (entry.type === 2) {
-        // Compressed-stream objects come from object streams,
-        // which the parser already decrypts on its way in,
-        // so getObjectText is plaintext here.
+        // Compressed-stream objects come from object streams, which the parser already decrypts, so getObjectText is plaintext here.
         const objText = src.objCache.getObjectText(oldObjNum);
         if (!objText) continue;
         const rewritten = rewriteIndirectRefs(objText, map);
@@ -300,8 +282,7 @@ export async function mergePdfs(pdfInputs, options = {}) {
   }
 
   // Phase 4: catalog and pages root.
-  // Preserve the first source's /OCProperties so OCG visibility (watermarks,
-  // layered drawings) renders consistently with the source.
+  // Preserve the first source's /OCProperties so OCG visibility (watermarks, layered drawings) renders consistently with the source.
   let extraCatalogKeys = '';
   const firstSrc = sources[0];
   const firstMap = sourceMaps[0];
@@ -313,7 +294,6 @@ export async function mergePdfs(pdfInputs, options = {}) {
       if (ocpValue) extraCatalogKeys += `/OCProperties ${rewriteIndirectRefs(ocpValue, firstMap)}`;
     }
   }
-  // Bookmarks: the caller supplies `outline` with destinations indexed into the merged page order.
   if (options.outline && options.outline.length) {
     const built = buildOutlineObjects(options.outline, pageObjNumByIndex, nextObjNum);
     if (built) {
@@ -332,9 +312,8 @@ export async function mergePdfs(pdfInputs, options = {}) {
     content: `${pagesRootObjNum} 0 obj\n<</Type/Pages/Kids[${keptPageRefs.join(' ')}]/Count ${keptPageRefs.length}>>\nendobj\n\n`,
   });
 
-  // Source PDFs can ref obj numbers their own xref doesn't define;
-  // we allocate new numbers but never emit content. Backfill with null,
-  // since PDF spec resolves an undefined ref to null anyway.
+  // A source PDF can reference obj numbers its own xref never defines, leaving allocated numbers with no content to emit.
+  // Backfill those with null objects, the value the spec gives an undefined ref anyway.
   const emittedObjNums = new Set(allOutputObjects.map((o) => o.objNum));
   for (const map of sourceMaps) {
     for (const newObjNum of map.values()) {

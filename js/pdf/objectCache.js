@@ -1,6 +1,6 @@
 import {
   byteIndexOf, bytesEqualAt, bytesToLatin1, isAsciiDigit, isPdfWhitespace, matchesObjMarker,
-  objTextEnd, parsePdfHexString, parsePdfLiteralString,
+  objTextEnd, parsePdfHexString, parsePdfLiteralString, resolveArrayValue, resolveDictValue, resolveIntValue,
 } from './pdfPrimitives.js';
 import {
   aesDecrypt, computeObjectKey, rc4, setupEncryption,
@@ -356,67 +356,52 @@ export class ObjectCache {
           ? this.getObjectText(Number(ocpMatch[1]))
           : catText;
         if (ocpText) {
-          const offMatch = /\/OFF\s*\[([^\]]*)\]/.exec(ocpText);
-          if (offMatch) {
-            for (const m of offMatch[1].matchAll(/(\d+)\s+\d+\s+R/g)) off.add(Number(m[1]));
+          // The /D default-config dict holds /OFF and /AS; it may be inline or a ref.
+          const dText = resolveDictValue(ocpText, 'D', this) || ocpText;
+          const offContent = resolveArrayValue(dText, 'OFF', this);
+          if (offContent != null) {
+            for (const m of offContent.matchAll(/(\d+)\s+\d+\s+R/g)) off.add(Number(m[1]));
           }
           // AS (AutoState) — find entries with Event=/View and consult each
           // OCG's Usage.View.ViewState. We render for on-screen viewing, so any
           // OCG marked ViewState=/OFF must be hidden.
-          const asIdx = ocpText.indexOf('/AS');
-          if (asIdx !== -1) {
-            const asOpen = ocpText.indexOf('[', asIdx);
-            if (asOpen !== -1) {
-              // Bracket-balanced extraction of the AS array (may contain nested [..]).
-              let depth = 0;
-              let asEnd = -1;
-              for (let k = asOpen; k < ocpText.length; k++) {
-                const ch = ocpText[k];
-                if (ch === '[') depth++;
-                else if (ch === ']') {
-                  depth--;
-                  if (depth === 0) { asEnd = k; break; }
+          const asBody = resolveArrayValue(dText, 'AS', this);
+          if (asBody != null) {
+            // Each AS entry is a dict <</Event/View/OCGs[...]/Category[...]>>.
+            // Find top-level entries by scanning for matched << ... >> pairs.
+            let j = 0;
+            while (j < asBody.length) {
+              const dictOpen = asBody.indexOf('<<', j);
+              if (dictOpen === -1) break;
+              let dDepth = 0;
+              let dictEnd = -1;
+              for (let k = dictOpen; k < asBody.length - 1; k++) {
+                if (asBody[k] === '<' && asBody[k + 1] === '<') {
+                  dDepth++;
+                  k++;
+                } else if (asBody[k] === '>' && asBody[k + 1] === '>') {
+                  dDepth--;
+                  if (dDepth === 0) {
+                    dictEnd = k + 2;
+                    break;
+                  }
+                  k++;
                 }
               }
-              if (asEnd !== -1) {
-                const asBody = ocpText.substring(asOpen + 1, asEnd);
-                // Each AS entry is a dict <</Event/View/OCGs[...]/Category[...]>>.
-                // Find top-level entries by scanning for matched << ... >> pairs.
-                let j = 0;
-                while (j < asBody.length) {
-                  const dictOpen = asBody.indexOf('<<', j);
-                  if (dictOpen === -1) break;
-                  let dDepth = 0;
-                  let dictEnd = -1;
-                  for (let k = dictOpen; k < asBody.length - 1; k++) {
-                    if (asBody[k] === '<' && asBody[k + 1] === '<') {
-                      dDepth++;
-                      k++;
-                    } else if (asBody[k] === '>' && asBody[k + 1] === '>') {
-                      dDepth--;
-                      if (dDepth === 0) {
-                        dictEnd = k + 2;
-                        break;
-                      }
-                      k++;
-                    }
-                  }
-                  if (dictEnd === -1) break;
-                  const entry = asBody.substring(dictOpen, dictEnd);
-                  j = dictEnd;
-                  if (!/\/Event\s*\/View\b/.test(entry)) continue;
-                  const ocgsMatch = /\/OCGs\s*\[([^\]]*)\]/.exec(entry);
-                  if (!ocgsMatch) continue;
-                  for (const m of ocgsMatch[1].matchAll(/(\d+)\s+\d+\s+R/g)) {
-                    const ocgNum = Number(m[1]);
-                    const ocgText = this.getObjectText(ocgNum);
-                    if (!ocgText) continue;
-                    const viewStateMatch = /\/View\s*<<[^<>]*?\/ViewState\s*\/(\w+)/.exec(ocgText);
-                    if (viewStateMatch && viewStateMatch[1] === 'OFF') {
-                      off.add(ocgNum);
-                    }
-                  }
-                }
+              if (dictEnd === -1) break;
+              const entry = asBody.substring(dictOpen, dictEnd);
+              j = dictEnd;
+              if (!/\/Event\s*\/View\b/.test(entry)) continue;
+              const ocgsContent = resolveArrayValue(entry, 'OCGs', this);
+              if (ocgsContent == null) continue;
+              for (const m of ocgsContent.matchAll(/(\d+)\s+\d+\s+R/g)) {
+                const ocgNum = Number(m[1]);
+                const ocgText = this.getObjectText(ocgNum);
+                if (!ocgText) continue;
+                // /Usage and its /View sub-dict may each be inline or refs.
+                const usageText = resolveDictValue(ocgText, 'Usage', this);
+                const viewText = usageText && resolveDictValue(usageText, 'View', this);
+                if (viewText && /\/ViewState\s*\/OFF\b/.test(viewText)) off.add(ocgNum);
               }
             }
           }
@@ -514,12 +499,18 @@ export class ObjectCache {
     // Only /N and /First are read here, so the conversion is bounded to the dictionary.
     const objText = bytesToLatin1(bytes, offset, objTextEnd(bytes, offset, endObj));
 
-    const nMatch = /\/N\s+(\d+)/.exec(objText);
-    const firstMatch = /\/First\s+(\d+)/.exec(objText);
-    if (!nMatch || !firstMatch) return;
-
-    const n = Number(nMatch[1]);
-    const first = Number(firstMatch[1]);
+    const objStmInt = (key) => {
+      const direct = resolveIntValue(objText, key, null, -1);
+      if (direct !== -1) return direct;
+      const ref = new RegExp(`/${key}\\s+(\\d+)\\s+\\d+\\s+R(?![0-9A-Za-z])`).exec(objText);
+      const target = ref && this.xrefEntries[Number(ref[1])];
+      // A ref into an object stream would recurse into this decompression.
+      if (!target || target.type !== 1) return -1;
+      return resolveIntValue(objText, key, this, -1);
+    };
+    const n = objStmInt('N');
+    const first = objStmInt('First');
+    if (n < 0 || first < 0) return;
 
     const streamData = extractStream(bytes, offset, this, objStmNum);
     if (!streamData) return;
@@ -631,15 +622,29 @@ export class ObjectCache {
     if (pos >= endIdx) return null;
 
     let rawBytes;
+    let stringObjNum = objNum;
     if (bytes[pos] === 0x28) {
       rawBytes = parsePdfLiteralString(bytes, pos).value;
     } else if (bytes[pos] === 0x3C && pos + 1 < endIdx && bytes[pos + 1] !== 0x3C) {
       rawBytes = parsePdfHexString(bytes, pos).value;
+    } else if (isAsciiDigit(bytes[pos])) {
+      // Indirect string: parse at the target object, keyed by the target's own number.
+      const refM = /^(\d+)\s+\d+\s+R/.exec(bytesToLatin1(bytes, pos, Math.min(pos + 32, endIdx)));
+      const target = refM && this.xrefEntries[Number(refM[1])];
+      if (!target || target.type !== 1) return null;
+      const objKw = byteIndexOf(bytes, 'obj', target.offset);
+      if (objKw === -1) return null;
+      let sPos = objKw + 3;
+      while (sPos < bytes.length && isPdfWhitespace(bytes[sPos])) sPos++;
+      if (bytes[sPos] === 0x28) rawBytes = parsePdfLiteralString(bytes, sPos).value;
+      else if (bytes[sPos] === 0x3C && bytes[sPos + 1] !== 0x3C) rawBytes = parsePdfHexString(bytes, sPos).value;
+      else return null;
+      stringObjNum = Number(refM[1]);
     } else {
       return null;
     }
 
-    const decrypted = this.decryptStringBytes(rawBytes, objNum);
+    const decrypted = this.decryptStringBytes(rawBytes, stringObjNum);
     let result = '';
     for (let i = 0; i < decrypted.length; i++) result += String.fromCharCode(decrypted[i]);
     return result;

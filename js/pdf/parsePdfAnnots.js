@@ -1,5 +1,6 @@
 import {
-  resolveArrayValue, decodePdfString, parsePdfDate, resolveBoolValue, resolveNameValue, parsePdfLiteralString,
+  resolveArrayValue, parsePdfDate, resolveBoolValue, resolveNameValue, resolveNumValue, resolveIntValue,
+  resolveStringValue, parsePdfLiteralString,
 } from './pdfPrimitives.js';
 
 // Bounding-box size in pixels imposed on a /Text annotation.
@@ -22,18 +23,15 @@ export const TEXT_ANNOT_ICON_PX = 24;
  */
 
 /**
- * Read a PDF string value for `key` from an annotation object's text: hex `<...>` or literal `(...)`, decoded.
- * '' when absent.
+ * Read the decoded PDF string value for `key` from an annotation object's text.
+ * Returns '' when the key is absent.
  * @param {string} annotText
  * @param {string} key - The dict key without the leading slash, e.g. 'Contents' or 'T'.
+ * @param {import('./objectCache.js').ObjectCache} objCache
  * @returns {string}
  */
-function parseAnnotPdfString(annotText, key) {
-  const hexMatch = new RegExp(`/${key}\\s*(<[0-9A-Fa-f\\s]*>)`).exec(annotText);
-  if (hexMatch) return decodePdfString(hexMatch[1]);
-  const litMatch = new RegExp(`/${key}\\s*(\\((?:\\\\.|[^\\\\()])*\\))`).exec(annotText);
-  if (litMatch) return decodePdfString(litMatch[1]);
-  return '';
+function parseAnnotPdfString(annotText, key, objCache) {
+  return resolveStringValue(annotText, key, objCache) ?? '';
 }
 
 /**
@@ -66,14 +64,14 @@ function parseAnnotPdfString(annotText, key) {
  * True when the annotation is one the importer lifts into the editable model rather than passing through.
  * The model re-emits these on export, so the source copy must be dropped or the annotation duplicates each round-trip.
  * @param {string} annotText - The raw annotation object text.
+ * @param {import('./objectCache.js').ObjectCache} objCache
  * @returns {boolean}
  */
-export function annotIsModelManaged(annotText) {
+export function annotIsModelManaged(annotText, objCache) {
   // A pending /Redact counts even when the visibility flags below would hide it: a hidden redaction must still remove its content at export.
   if (/\/Subtype\s*\/Redact\b/.test(annotText)) return true;
   // Invisible (bit 1), Hidden (bit 2), or NoView (bit 6).
-  const flagsMatch = /\/F\s+(\d+)(?=\s*[/>])/.exec(annotText);
-  const flags = flagsMatch ? Number(flagsMatch[1]) : 0;
+  const flags = resolveIntValue(annotText, 'F', objCache, 0);
   if (flags & 1 || flags & 2 || flags & 32) return false;
   // /Squiggly is deliberately absent: it stays a passthrough annotation.
   if (/\/Subtype\s*\/(?:Highlight|Underline|StrikeOut)\b/.test(annotText) || /\/Subtype\s*\/FreeText\b/.test(annotText)) return true;
@@ -119,7 +117,7 @@ function resolveReplyRoot(annotText, objCache) {
  */
 export function annotIsLiftedReply(annotText, objCache) {
   const root = resolveReplyRoot(annotText, objCache);
-  return !!root && annotIsModelManaged(root.rootText);
+  return !!root && annotIsModelManaged(root.rootText, objCache);
 }
 
 /**
@@ -145,12 +143,19 @@ export function annotIsLiftedReply(annotText, objCache) {
  */
 function resolveLinkUri(annotText, objCache) {
   const refMatch = /\/A\s+(\d+)\s+\d+\s+R/.exec(annotText);
-  const actionText = refMatch ? objCache.getObjectText(Number(refMatch[1])) : annotText;
+  let actionText = refMatch ? objCache.getObjectText(Number(refMatch[1])) : annotText;
   if (!actionText) return null;
+  let keyMatch = /\/URI\s*\(/.exec(actionText);
+  if (!keyMatch) {
+    const uriRef = /\/URI\s+(\d+)\s+\d+\s+R/.exec(actionText);
+    const uriText = uriRef ? objCache.getObjectText(Number(uriRef[1])) : null;
+    if (!uriText) return null;
+    actionText = uriText;
+    keyMatch = { index: 0 };
+  }
   // A URL can contain balanced unescaped parens, which is legal in a PDF literal string but cannot be matched by a regex.
-  const keyMatch = /\/URI\s*\(/.exec(actionText);
-  if (!keyMatch) return null;
   const parenOpen = actionText.indexOf('(', keyMatch.index);
+  if (parenOpen === -1) return null;
   const bytes = Uint8Array.from(actionText, (c) => c.charCodeAt(0) & 0xFF);
   const { value } = parsePdfLiteralString(bytes, parenOpen);
   let uri = '';
@@ -206,24 +211,23 @@ export function extractPdfAnnotations(objCache, pageObjText) {
     const annotText = objCache.getObjectText(annotRef);
     if (!annotText) continue;
 
-    if (!annotIsModelManaged(annotText)) {
+    if (!annotIsModelManaged(annotText, objCache)) {
       // Flags are ignored here: a reply is thread content, not a page icon.
       const root = resolveReplyRoot(annotText, objCache);
-      if (root && annotIsModelManaged(root.rootText)) {
-        const creationDateStr = parseAnnotPdfString(annotText, 'CreationDate');
+      if (root && annotIsModelManaged(root.rootText, objCache)) {
+        const creationDateStr = parseAnnotPdfString(annotText, 'CreationDate', objCache);
         if (!repliesByRoot.has(root.rootRef)) repliesByRoot.set(root.rootRef, []);
         /** @type {Array<{objNum: number, text: string, author: string, createdAt: ?string}>} */ (repliesByRoot.get(root.rootRef)).push({
           objNum: annotRef,
-          text: parseAnnotPdfString(annotText, 'Contents'),
-          author: parseAnnotPdfString(annotText, 'T'),
+          text: parseAnnotPdfString(annotText, 'Contents', objCache),
+          author: parseAnnotPdfString(annotText, 'T', objCache),
           createdAt: creationDateStr ? parsePdfDate(creationDateStr) : null,
         });
         continue;
       }
       // Of these not-lifted annotations, Invisible/Hidden/NoView are dropped entirely.
       // Every other (visible, non-Highlight/FreeText) annotation passes through on export unchanged.
-      const flagsMatch = /\/F\s+(\d+)(?=\s*[/>])/.exec(annotText);
-      const flags = flagsMatch ? Number(flagsMatch[1]) : 0;
+      const flags = resolveIntValue(annotText, 'F', objCache, 0);
       if (!(flags & 1 || flags & 2 || flags & 32)) {
         passthroughRefs.push(annotRef);
         // Extracted for the text model and left in passthroughRefs as well, so export still re-emits the source annotation verbatim.
@@ -267,18 +271,16 @@ export function extractPdfAnnotations(objCache, pageObjText) {
     const color = cNums && cNums.length >= 3 && !cNums.some(Number.isNaN)
       ? [cNums[0], cNums[1], cNums[2]] : null;
 
-    const caMatch = /\/CA\s+([\d.]+)/.exec(annotText);
-    const opacity = caMatch ? Number(caMatch[1]) : 1;
+    const opacity = resolveNumValue(annotText, 'CA', objCache, 1);
 
     if (isFreeText) {
-      const daMatch = /\/DA\s*\(([^)]*)\)/.exec(annotText);
-      const da = daMatch ? daMatch[1] : '';
+      const da = resolveStringValue(annotText, 'DA', objCache) ?? '';
       const tfMatch = /([\d.]+)\s+Tf/.exec(da);
       const rgMatch = /([\d.]+)\s+([\d.]+)\s+([\d.]+)\s+rg/.exec(da);
       freeTexts.push({
         objNum: annotRef,
         rect,
-        contents: parseAnnotPdfString(annotText, 'Contents'),
+        contents: parseAnnotPdfString(annotText, 'Contents', objCache),
         fontSize: tfMatch ? Number(tfMatch[1]) : 10,
         textColor: rgMatch ? [Number(rgMatch[1]), Number(rgMatch[2]), Number(rgMatch[3])] : null,
         fillColor: color,
@@ -288,16 +290,16 @@ export function extractPdfAnnotations(objCache, pageObjText) {
     }
 
     if (isTextAnnot) {
-      const creationDateStr = parseAnnotPdfString(annotText, 'CreationDate');
+      const creationDateStr = parseAnnotPdfString(annotText, 'CreationDate', objCache);
       textAnnots.push({
         objNum: annotRef,
         rect,
         color,
         opacity,
-        contents: parseAnnotPdfString(annotText, 'Contents'),
+        contents: parseAnnotPdfString(annotText, 'Contents', objCache),
         open: resolveBoolValue(annotText, 'Open', objCache, false),
         iconName: resolveNameValue(annotText, 'Name', objCache) || 'Comment',
-        author: parseAnnotPdfString(annotText, 'T'),
+        author: parseAnnotPdfString(annotText, 'T', objCache),
         createdAt: creationDateStr ? parsePdfDate(creationDateStr) : null,
       });
       continue;
@@ -307,7 +309,7 @@ export function extractPdfAnnotations(objCache, pageObjText) {
     const quadPoints = qpStr ? qpStr.split(/\s+/).map(Number) : null;
 
     const subtypeMatch = /\/Subtype\s*\/(Underline|StrikeOut)\b/.exec(annotText);
-    const createdAtStr = parseAnnotPdfString(annotText, 'CreationDate');
+    const createdAtStr = parseAnnotPdfString(annotText, 'CreationDate', objCache);
     highlights.push({
       objNum: annotRef,
       subtype: subtypeMatch ? /** @type {'Underline'|'StrikeOut'} */ (subtypeMatch[1]) : 'Highlight',
@@ -315,8 +317,8 @@ export function extractPdfAnnotations(objCache, pageObjText) {
       quadPoints,
       color,
       opacity,
-      comment: parseAnnotPdfString(annotText, 'Contents'),
-      author: parseAnnotPdfString(annotText, 'T'),
+      comment: parseAnnotPdfString(annotText, 'Contents', objCache),
+      author: parseAnnotPdfString(annotText, 'T', objCache),
       createdAt: createdAtStr ? parsePdfDate(createdAtStr) : null,
     });
   }

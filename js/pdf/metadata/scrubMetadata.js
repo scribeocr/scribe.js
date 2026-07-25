@@ -6,7 +6,7 @@
  *
  * Companion reader: `metadataInspect.js`.
  */
-import { extractDict, parseDictEntries } from '../pdfPrimitives.js';
+import { extractDict, parseDictEntries, decodePdfString } from '../pdfPrimitives.js';
 import { extractRawStreamBytes } from '../parsePdfUtils.js';
 import { stripJpegMetadata, stripJpxMetadata } from './imageMetadata.js';
 
@@ -40,6 +40,23 @@ const INFO_STRONG = ['Author', 'Creator', 'Producer', 'Company', 'Manager'];
 // These fields are scrubbed from a dict already identified as info-like.
 // `/Title` is in the set but only dropped from such a dict, never from a functional one such as an outline item.
 const INFO_FIELDS = new Set([...INFO_STRONG, 'Title', 'Subject', 'Keywords', 'CreationDate', 'ModDate', 'Trapped']);
+
+/**
+ * The text the FILENAME_LIKE / WEB_URI_SCHEME leak tests should run on for one dict entry, with a ref to a string object resolved to its value.
+ * @param {string} valueText
+ * @param {import('../objectCache.js').ObjectCache|null} objCache
+ * @returns {string}
+ */
+function leakTestText(valueText, objCache) {
+  const t = valueText.trim();
+  const m = /^(\d+)\s+\d+\s+R$/.exec(t);
+  if (!m || !objCache) return t;
+  const body = (objCache.getObjectText(Number(m[1])) || '').trim();
+  // WEB_URI_SCHEME anchors on the open paren, so a resolved string is re-wrapped before testing.
+  if (body[0] === '(') return `(${decodePdfString(body)})`;
+  if (body[0] === '<' && body[1] !== '<') return `(${decodePdfString(body.slice(0, body.indexOf('>') + 1))})`;
+  return t;
+}
 
 /** True if a dict body is a document-information dictionary (see INFO_STRONG). */
 function bodyIsInfoLike(body) {
@@ -86,7 +103,7 @@ function bodyHasDropKey(body) {
  * Rebuild a dict body keeping only non-dropped entries.
  * @returns {{dict: string, changed: boolean}} `dict` includes the `<<`/`>>` wrapper.
  */
-function rebuildDict(body, { lengthOverride = null, ocgLabel = null } = {}) {
+function rebuildDict(body, { lengthOverride = null, ocgLabel = null, objCache = null } = {}) {
   const kept = [];
   let changed = false;
   const infoLike = bodyIsInfoLike(body);
@@ -99,17 +116,18 @@ function rebuildDict(body, { lengthOverride = null, ocgLabel = null } = {}) {
     // A markup annotation: drop the reviewer's author/date identity, keeping the comment itself.
     if (markupAnnot && ANNOT_IDENTITY.has(e.name)) { changed = true; continue; }
     if (e.name === 'Length' && lengthOverride != null) { kept.push(`/Length ${lengthOverride}`); changed = true; continue; }
-    if (e.name === 'Name' && ocgLabel && FILENAME_LIKE.test(e.valueText)) { kept.push(`/Name (${ocgLabel})`); changed = true; continue; }
+    const testText = leakTestText(e.valueText, objCache);
+    if (e.name === 'Name' && ocgLabel && FILENAME_LIKE.test(testText)) { kept.push(`/Name (${ocgLabel})`); changed = true; continue; }
     // Accessibility alt-text and actual-text often carry the source image's local path or filename.
     // Drop only when the value looks like a path or filename, keeping real descriptions.
-    if ((e.name === 'Alt' || e.name === 'ActualText') && FILENAME_LIKE.test(e.valueText)) { changed = true; continue; }
+    if ((e.name === 'Alt' || e.name === 'ActualText') && FILENAME_LIKE.test(testText)) { changed = true; continue; }
     // A /URI action targeting a local file path (not a web hyperlink) leaks the author's filesystem/software.
     // Blank it to keep the action well-formed while removing the path.
-    if (e.name === 'URI' && FILENAME_LIKE.test(e.valueText) && !WEB_URI_SCHEME.test(e.valueText.trim())) { kept.push('/URI ()'); changed = true; continue; }
+    if (e.name === 'URI' && FILENAME_LIKE.test(testText) && !WEB_URI_SCHEME.test(testText.trim())) { kept.push('/URI ()'); changed = true; continue; }
     // A string-valued /D or /Dest can embed a source filename.
     // InDesign names its cross-reference destinations "<source-file>:anchor".
     // The `(`-prefix check limits blanking to such strings, skipping array destinations `[...]` and the /OCProperties /D config dict `<<...>>` (a different use of /D).
-    if ((e.name === 'D' || e.name === 'Dest') && e.valueText.trim().startsWith('(') && FILENAME_LIKE.test(e.valueText)) { kept.push(`/${e.name} ()`); changed = true; continue; }
+    if ((e.name === 'D' || e.name === 'Dest') && testText.trim().startsWith('(') && FILENAME_LIKE.test(testText)) { kept.push(`/${e.name} ()`); changed = true; continue; }
     kept.push(`/${e.name} ${e.valueText}`);
   }
   if (lengthOverride != null && !kept.some((k) => k.startsWith('/Length '))) kept.push(`/Length ${lengthOverride}`);
@@ -158,13 +176,14 @@ export function scrubReferencedObject(pdfBytes, objCache, entry, objNum, ctx) {
   const dropKey = bodyHasDropKey(body);
   const infoLike = bodyIsInfoLike(body);
   const markupAnnot = bodyIsMarkupAnnot(body);
-  const leakyOcg = isOCG && /\/Name\s*[(<]/.test(body) && parseDictEntries(body).some((e) => e.name === 'Name' && FILENAME_LIKE.test(e.valueText));
-  const leakyAlt = /\/(?:Alt|ActualText)\s*[(<]/.test(body) && parseDictEntries(body).some((e) => (e.name === 'Alt' || e.name === 'ActualText') && FILENAME_LIKE.test(e.valueText));
+  const leakyOcg = isOCG && /\/Name\s*(?:[(<]|\d+\s+\d+\s+R)/.test(body) && parseDictEntries(body).some((e) => e.name === 'Name' && FILENAME_LIKE.test(leakTestText(e.valueText, objCache)));
+  const leakyAlt = /\/(?:Alt|ActualText)\s*(?:[(<]|\d+\s+\d+\s+R)/.test(body) && parseDictEntries(body).some((e) => (e.name === 'Alt' || e.name === 'ActualText') && FILENAME_LIKE.test(leakTestText(e.valueText, objCache)));
   // A link action carrying a filename/path: a local-file /URI, or a string-valued named destination /D or /Dest that embeds a source filename.
-  const leakyLink = /\/(?:URI|D|Dest)\s*\(/.test(body) && parseDictEntries(body).some((e) => (
-    (e.name === 'URI' && FILENAME_LIKE.test(e.valueText) && !WEB_URI_SCHEME.test(e.valueText.trim()))
-    || ((e.name === 'D' || e.name === 'Dest') && e.valueText.trim().startsWith('(') && FILENAME_LIKE.test(e.valueText))
-  ));
+  const leakyLink = /\/(?:URI|D|Dest)\s*(?:\(|\d+\s+\d+\s+R)/.test(body) && parseDictEntries(body).some((e) => {
+    const t = leakTestText(e.valueText, objCache);
+    return (e.name === 'URI' && FILENAME_LIKE.test(t) && !WEB_URI_SCHEME.test(t.trim()))
+      || ((e.name === 'D' || e.name === 'Dest') && t.trim().startsWith('(') && FILENAME_LIKE.test(t));
+  });
   const streamKw = objText.indexOf('stream', dictStart + dictText.length);
   const isStream = streamKw !== -1;
   const strippableImage = isImage && isStream && filter && (filter.includes('DCTDecode') || filter.includes('JPXDecode'));
@@ -173,7 +192,7 @@ export function scrubReferencedObject(pdfBytes, objCache, entry, objNum, ctx) {
   if (isOCG && leakyOcg) ctx.ocgCounter.n += 1;
 
   if (!isStream) {
-    const { dict, changed } = rebuildDict(body, { ocgLabel });
+    const { dict, changed } = rebuildDict(body, { ocgLabel, objCache });
     return changed ? `${objNum} 0 obj\n${dict}\nendobj\n\n` : null;
   }
 
@@ -188,7 +207,7 @@ export function scrubReferencedObject(pdfBytes, objCache, entry, objNum, ctx) {
     const stripped = stripImageStreamMetadata(data, filter);
     if (stripped.length !== data.length) data = stripped;
   }
-  const { dict } = rebuildDict(body, { lengthOverride: data.length, ocgLabel });
+  const { dict } = rebuildDict(body, { lengthOverride: data.length, ocgLabel, objCache });
   return { header: `${objNum} 0 obj\n${dict}\nstream\n`, streamData: data, trailer: '\nendstream\nendobj\n\n' };
 }
 

@@ -5,10 +5,11 @@ import {
 } from './pdfColorFunctions.js';
 import { extractPdfAnnotations } from './parsePdfAnnots.js';
 import {
-  findRootObjNum, applyPredictor, getPageContentStreams, isFormOCHidden, parseHiddenOCMCNames,
+  findRootObjNum, applyPredictor, getPageContentStreams, isFormOCHidden, parseHiddenOCMCNames, parseFormMatrix,
 } from './parsePdfUtils.js';
 import {
-  extractDict, resolveIntValue, resolveNumValue, resolveArrayValue, matMul, bytesToLatin1, decodePdfString,
+  extractDict, resolveIntValue, resolveNumValue, resolveArrayValue, resolveNumArray, resolveStringValue,
+  matMul, bytesToLatin1,
 } from './pdfPrimitives.js';
 import { parseDrawOps } from './parseDrawOps.js';
 
@@ -1815,28 +1816,6 @@ async function imageMaskToBitmap(imageInfo, fillColor, objCache) {
 }
 
 /**
- * Read a Form XObject's own /Matrix (defaults to identity).
- * Matches only the dict's top-level /Matrix. A /Matrix nested in the form's
- * /Resources (e.g. a shading pattern's matrix) must not be mistaken for it.
- * @param {string} objText - the form or appearance dict text
- * @returns {number[]} a 6-element matrix
- */
-function parseFormMatrix(objText) {
-  for (let i = 0, depth = 0; i < objText.length - 1; i++) {
-    const c2 = objText[i] + objText[i + 1];
-    if (c2 === '<<') { depth += 1; i += 1; } else if (c2 === '>>') { depth -= 1; i += 1; } else if (depth === 1 && objText.startsWith('/Matrix', i)) {
-      const m = /\/Matrix\s*\[\s*([\d.\seE+-]+)\]/.exec(objText.slice(i));
-      if (m) {
-        const parsed = m[1].trim().split(/\s+/).map(Number);
-        if (parsed.length === 6 && parsed.every((n) => Number.isFinite(n))) return parsed;
-      }
-      break;
-    }
-  }
-  return [1, 0, 0, 1, 0, 0];
-}
-
-/**
  * Compose `smask`'s snapshotted `parentCtm` with `composedBase`, returning a new wrapper without mutating the shared smask object.
  * The parentCtm was snapshotted when `/gs` set the soft mask, in the coordinate space active then.
  * When the op is later composed with parent form transforms,
@@ -2012,7 +1991,7 @@ async function flattenDrawOps(
     if (offOCGs.size > 0 && isFormOCHidden(formObjText, offOCGs, objCache)) continue;
 
     // Get the Form's own /Matrix (defaults to identity).
-    const formMatrix = parseFormMatrix(formObjText);
+    const formMatrix = parseFormMatrix(formObjText, objCache);
 
     // Compose: outerCTM * formMatrix
     const composedBase = matMul(formMatrix, op.ctm);
@@ -2476,10 +2455,10 @@ function parseExtGStates(pageObjText, objCache) {
     /** @type {ExtGStateEntry} */
     const entry = {};
     // /ca = fill alpha (non-stroking), /CA = stroke alpha (stroking)
-    const caMatch = /\/ca\s+([0-9.]+)/.exec(gsObj);
-    const CAMatch = /\/CA\s+([0-9.]+)/.exec(gsObj);
-    if (caMatch) entry.fillAlpha = parseFloat(caMatch[1]);
-    if (CAMatch) entry.strokeAlpha = parseFloat(CAMatch[1]);
+    const fillA = resolveNumValue(gsObj, 'ca', objCache, Number.NaN);
+    const strokeA = resolveNumValue(gsObj, 'CA', objCache, Number.NaN);
+    if (!Number.isNaN(fillA)) entry.fillAlpha = fillA;
+    if (!Number.isNaN(strokeA)) entry.strokeAlpha = strokeA;
 
     // /op = overprint for non-stroking, /OP = overprint for stroking
     const opMatch = /\/op\s+(true|false)/.exec(gsObj);
@@ -2528,16 +2507,16 @@ function parseExtGStates(pageObjText, objCache) {
     if (bm) entry.blendMode = bm;
 
     // /LW = line width
-    const lwMatch = /\/LW\s+([0-9.]+)/.exec(gsObj);
-    if (lwMatch) entry.lineWidth = parseFloat(lwMatch[1]);
+    const lw = resolveNumValue(gsObj, 'LW', objCache, Number.NaN);
+    if (!Number.isNaN(lw)) entry.lineWidth = lw;
 
     // /LC line cap, /LJ line join, /ML miter limit, /D [dashArray dashPhase]
-    const lcMatch = /\/LC\s+(\d+)/.exec(gsObj);
-    if (lcMatch) entry.lineCap = parseInt(lcMatch[1], 10);
-    const ljMatch = /\/LJ\s+(\d+)/.exec(gsObj);
-    if (ljMatch) entry.lineJoin = parseInt(ljMatch[1], 10);
-    const mlMatch = /\/ML\s+([0-9.]+)/.exec(gsObj);
-    if (mlMatch) entry.miterLimit = parseFloat(mlMatch[1]);
+    const lc = resolveIntValue(gsObj, 'LC', objCache, -1);
+    if (lc !== -1) entry.lineCap = lc;
+    const lj = resolveIntValue(gsObj, 'LJ', objCache, -1);
+    if (lj !== -1) entry.lineJoin = lj;
+    const ml = resolveNumValue(gsObj, 'ML', objCache, Number.NaN);
+    if (!Number.isNaN(ml)) entry.miterLimit = ml;
     const dMatch = /\/D\s*\[\s*\[([^\]]*)\]\s*([0-9.]+)\s*\]/.exec(gsObj);
     if (dMatch) {
       entry.dashArray = dMatch[1].trim() ? dMatch[1].trim().split(/\s+/).map(Number).filter((x) => Number.isFinite(x)) : [];
@@ -2563,10 +2542,10 @@ function parseExtGStates(pageObjText, objCache) {
 
     /** @type {ExtGStateEntry} */
     const entry = {};
-    const caMatch = /\/ca\s+([0-9.]+)/.exec(dictText);
-    const CAMatch = /\/CA\s+([0-9.]+)/.exec(dictText);
-    if (caMatch) entry.fillAlpha = parseFloat(caMatch[1]);
-    if (CAMatch) entry.strokeAlpha = parseFloat(CAMatch[1]);
+    const ca2 = resolveNumValue(dictText, 'ca', objCache, Number.NaN);
+    const CA2 = resolveNumValue(dictText, 'CA', objCache, Number.NaN);
+    if (!Number.isNaN(ca2)) entry.fillAlpha = ca2;
+    if (!Number.isNaN(CA2)) entry.strokeAlpha = CA2;
 
     const opMatch2 = /\/op\s+(true|false)/.exec(dictText);
     const OPMatch2 = /\/OP\s+(true|false)/.exec(dictText);
@@ -2613,16 +2592,16 @@ function parseExtGStates(pageObjText, objCache) {
     if (bm2) entry.blendMode = bm2;
 
     // /LW = line width
-    const lwMatch2 = /\/LW\s+([0-9.]+)/.exec(dictText);
-    if (lwMatch2) entry.lineWidth = parseFloat(lwMatch2[1]);
+    const lw2 = resolveNumValue(dictText, 'LW', objCache, Number.NaN);
+    if (!Number.isNaN(lw2)) entry.lineWidth = lw2;
 
     // /LC line cap, /LJ line join, /ML miter limit, /D [dashArray dashPhase]
-    const lcMatch2 = /\/LC\s+(\d+)/.exec(dictText);
-    if (lcMatch2) entry.lineCap = parseInt(lcMatch2[1], 10);
-    const ljMatch2 = /\/LJ\s+(\d+)/.exec(dictText);
-    if (ljMatch2) entry.lineJoin = parseInt(ljMatch2[1], 10);
-    const mlMatch2 = /\/ML\s+([0-9.]+)/.exec(dictText);
-    if (mlMatch2) entry.miterLimit = parseFloat(mlMatch2[1]);
+    const lc2 = resolveIntValue(dictText, 'LC', objCache, -1);
+    if (lc2 !== -1) entry.lineCap = lc2;
+    const lj2 = resolveIntValue(dictText, 'LJ', objCache, -1);
+    if (lj2 !== -1) entry.lineJoin = lj2;
+    const ml2 = resolveNumValue(dictText, 'ML', objCache, Number.NaN);
+    if (!Number.isNaN(ml2)) entry.miterLimit = ml2;
     const dMatch2 = /\/D\s*\[\s*\[([^\]]*)\]\s*([0-9.]+)\s*\]/.exec(dictText);
     if (dMatch2) {
       entry.dashArray = dMatch2[1].trim() ? dMatch2[1].trim().split(/\s+/).map(Number).filter((x) => Number.isFinite(x)) : [];
@@ -3580,8 +3559,7 @@ function buildMeshColorEvaluator(shObjText, objCache) {
   } else if (csText && /\/ICCBased/.test(csText)) {
     const iccRefMatch = /(\d+)\s+\d+\s+R/.exec(csText);
     const iccObjText = iccRefMatch ? objCache.getObjectText(Number(iccRefMatch[1])) : null;
-    const nMatch = iccObjText && /\/N\s+(\d+)/.exec(iccObjText);
-    const nComp = nMatch ? Number(nMatch[1]) : 3;
+    const nComp = iccObjText ? resolveIntValue(iccObjText, 'N', objCache, 3) : 3;
     if (nComp === 1) csConvert = grayConvert;
     else if (nComp === 4) csConvert = (c) => cmykToRgb(c[0] || 0, c[1] || 0, c[2] || 0, c[3] || 0);
     else csConvert = rgbConvert;
@@ -3885,8 +3863,7 @@ function parseShadings(pageObjText, objCache) {
     const shObjText = entry.inline || (shObjNum ? objCache.getObjectText(shObjNum) : null);
     if (!shObjText) continue;
 
-    const typeMatch = /\/ShadingType\s+(\d+)/.exec(shObjText);
-    const shadingType = typeMatch ? Number(typeMatch[1]) : 0;
+    const shadingType = resolveIntValue(shObjText, 'ShadingType', objCache, 0);
 
     if (shadingType === 4) {
       const gouraudResult = parseType4Shading(shObjText, shObjNum, objCache);
@@ -3979,8 +3956,7 @@ function parseShadings(pageObjText, objCache) {
         const iccRefMatch = /(\d+)\s+\d+\s+R/.exec(csText);
         if (iccRefMatch) {
           const iccObjText = objCache.getObjectText(Number(iccRefMatch[1]));
-          const nMatch = iccObjText && /\/N\s+(\d+)/.exec(iccObjText);
-          const nComp = nMatch ? Number(nMatch[1]) : 3;
+          const nComp = iccObjText ? resolveIntValue(iccObjText, 'N', objCache, 3) : 3;
           if (nComp === 1) { shadingCS = 'DeviceGray'; isGray = true; } else if (nComp === 4) shadingCS = 'DeviceCMYK';
           else shadingCS = 'DeviceRGB';
         }
@@ -4097,8 +4073,7 @@ function parsePatterns(pageObjText, objCache) {
     if (inlineDictText) patEntries.push({ patName, patObjNum: null, patObjText: inlineDictText });
   }
   for (const { patName, patObjNum, patObjText } of patEntries) {
-    const patTypeMatch = /\/PatternType\s+(\d+)/.exec(patObjText);
-    const patType = patTypeMatch ? Number(patTypeMatch[1]) : 0;
+    const patType = resolveIntValue(patObjText, 'PatternType', objCache, 0);
 
     if (patType === 1) {
       const bboxStr = resolveArrayValue(patObjText, 'BBox', objCache);
@@ -4191,8 +4166,7 @@ function parsePatterns(pageObjText, objCache) {
         const iccRefMatch = /(\d+)\s+\d+\s+R/.exec(patCsText);
         if (iccRefMatch) {
           const iccObjText = objCache.getObjectText(Number(iccRefMatch[1]));
-          const nMatch = iccObjText && /\/N\s+(\d+)/.exec(iccObjText);
-          const nComp = nMatch ? Number(nMatch[1]) : 3;
+          const nComp = iccObjText ? resolveIntValue(iccObjText, 'N', objCache, 3) : 3;
           patShadingCS = nComp === 1 ? 'DeviceGray' : nComp === 4 ? 'DeviceCMYK' : 'DeviceRGB';
         }
       }
@@ -4201,8 +4175,7 @@ function parsePatterns(pageObjText, objCache) {
     const patIsGray = patShadingCS === 'DeviceGray';
     const patIsCMYK = patShadingCS === 'DeviceCMYK';
 
-    const shadingTypeMatch = /\/ShadingType\s+(\d+)/.exec(shadingDict);
-    const shadingType = shadingTypeMatch ? Number(shadingTypeMatch[1]) : 0;
+    const shadingType = resolveIntValue(shadingDict, 'ShadingType', objCache, 0);
 
     // Handle Gouraud triangle mesh in patterns (type 4)
     if (shadingType === 4) {
@@ -4762,7 +4735,7 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
   }
 
   // Apply the form's own /Matrix to each op's CTM (maps form space -> user space).
-  const formMatrix = parseFormMatrix(formObjText);
+  const formMatrix = parseFormMatrix(formObjText, objCache);
   for (const op of formDrawOps) {
     if (op.ctm) op.ctm = matMul(op.ctm, formMatrix);
   }
@@ -5364,8 +5337,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       if ((rectW <= 0 || rectH <= 0) && !isLineAnnot && !isInkAnnot) continue;
 
       // Check annotation flags. Skip if hidden (bit 2), invisible (bit 1), or NoView (bit 6).
-      const flagsMatch = /\/F\s+(\d+)(?=\s*[/>])/.exec(annotText);
-      const flags = flagsMatch ? Number(flagsMatch[1]) : 0;
+      const flags = resolveIntValue(annotText, 'F', objCache, 0);
       if (flags & 1 || flags & 2 || flags & 32) continue; // Invisible, Hidden, or NoView
 
       // Get normal appearance stream reference (/AP<</N objNum 0 R>>)
@@ -5417,10 +5389,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       // Decode /V up front: both the regenerate decision and the synthesis below consume it.
       let fieldValue = null;
       if (resolvedFieldType === 'Tx' || resolvedFieldType === 'Ch') {
-        const vLitMatch = /\/V\s*(\((?:[^()\\]|\\.)*\))/.exec(annotText);
-        const vHexMatch = /\/V\s*(<[0-9A-Fa-f\s]*>)/.exec(annotText);
-        const vTok = vLitMatch ? vLitMatch[1] : (vHexMatch ? vHexMatch[1] : null);
-        if (vTok) fieldValue = decodePdfString(vTok);
+        fieldValue = resolveStringValue(annotText, 'V', objCache);
         if (fieldValue && fieldValue.charCodeAt(0) === 0xfeff) fieldValue = fieldValue.slice(1);
       }
 
@@ -5432,13 +5401,11 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       // Pushbuttons (Ff bit 17) keep theirs, having no value to regenerate.
       if (needAppearances && apObjNum !== null) {
         if (resolvedFieldType === 'Tx') {
-          const ffTxMatch = /\/Ff\s+(\d+)/.exec(annotText);
-          const txMultiline = ((ffTxMatch ? Number(ffTxMatch[1]) : 0) & 0x1000) !== 0;
+          const txMultiline = (resolveIntValue(annotText, 'Ff', objCache, 0) & 0x1000) !== 0;
           const synthCanRender = fieldValue === null || !/[^\x00-\xff]/.test(fieldValue);
           if (!txMultiline && synthCanRender) apObjNum = null;
         } else if (resolvedFieldType === 'Btn') {
-          const ffBtnMatch = /\/Ff\s+(\d+)/.exec(annotText);
-          if (!((ffBtnMatch ? Number(ffBtnMatch[1]) : 0) & 0x10000)) apObjNum = null;
+          if (!(resolveIntValue(annotText, 'Ff', objCache, 0) & 0x10000)) apObjNum = null;
         }
       }
 
@@ -5450,20 +5417,15 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         if (resolvedFieldType === 'Tx' || resolvedFieldType === 'Ch') {
           // The value was decoded once above (handles both literal and hex UTF-16BE); reuse it.
           if (fieldValue && fieldValue.length > 0) {
-            const daMatch = /\/DA\s*\(((?:[^()\\]|\\.)*)\)/.exec(annotText);
-            const da = daMatch ? daMatch[1] : '/Helvetica 10 Tf 0 g';
+            const da = resolveStringValue(annotText, 'DA', objCache) ?? '/Helvetica 10 Tf 0 g';
             const tfMatch = /\/[\w+-]+\s+([\d.]+)\s+Tf/.exec(da);
             let fontSize = tfMatch ? Number(tfMatch[1]) : 10;
             // /DA font size 0 means auto-size: pick a size that fits the field height.
             if (!fontSize) fontSize = Math.min(12, Math.max(6, rectH - 4));
             const tfEnd = da.lastIndexOf('Tf');
             const colorOps = tfEnd >= 0 ? da.slice(tfEnd + 2).trim() : '0 g';
-            const qMatch = /\/Q\s+(\d+)/.exec(annotText);
-            const quadding = qMatch ? Number(qMatch[1]) : 0;
-            const multiline = (() => {
-              const ffMatch = /\/Ff\s+(\d+)/.exec(annotText);
-              return ffMatch ? (Number(ffMatch[1]) & 0x1000) !== 0 : false;
-            })();
+            const quadding = resolveIntValue(annotText, 'Q', objCache, 0);
+            const multiline = (resolveIntValue(annotText, 'Ff', objCache, 0) & 0x1000) !== 0;
             const pad = 2;
             // Escape the value for re-emission inside a content-stream literal string.
             const esc = (s) => s.replace(/[\\()]/g, (ch) => `\\${ch}`);
@@ -5517,8 +5479,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           // exactly without a font. /AS /Off draws nothing.
           const asMatch = /\/AS\s*\/(\w+)/.exec(annotText);
           if (asMatch && asMatch[1] !== 'Off') {
-            const daMatch = /\/DA\s*\(((?:[^()\\]|\\.)*)\)/.exec(annotText);
-            const da = daMatch ? daMatch[1] : '0 g';
+            const da = resolveStringValue(annotText, 'DA', objCache) ?? '0 g';
             const tfEnd = da.lastIndexOf('Tf');
             const dotColor = tfEnd >= 0 ? da.slice(tfEnd + 2).trim() : '0 g';
             const cx = rectW / 2;
@@ -5546,13 +5507,13 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         const apSubtypeMatch = /\/Subtype\s*\/(\w+)/.exec(apObjText);
         if (apSubtypeMatch && apSubtypeMatch[1] !== 'Form') continue;
 
-        const bboxMatch = /\/BBox\s*\[\s*([\d.\-+e]+)\s+([\d.\-+e]+)\s+([\d.\-+e]+)\s+([\d.\-+e]+)\s*\]/.exec(apObjText);
-        const bbox = bboxMatch ? [Number(bboxMatch[1]), Number(bboxMatch[2]), Number(bboxMatch[3]), Number(bboxMatch[4])] : [0, 0, rectW, rectH];
+        const bboxArr = resolveNumArray(apObjText, 'BBox', objCache, null);
+        const bbox = bboxArr && bboxArr.length === 4 ? bboxArr : [0, 0, rectW, rectH];
 
         // Parse the appearance form's Matrix (defaults to identity).
         // flattenDrawOps will apply this Matrix to content coordinates, so we must
         // compute annotTransform relative to the post-Matrix BBox, not the original.
-        const apMatrix = parseFormMatrix(apObjText);
+        const apMatrix = parseFormMatrix(apObjText, objCache);
         const corners = [[bbox[0], bbox[1]], [bbox[2], bbox[1]], [bbox[0], bbox[3]], [bbox[2], bbox[3]]];
         const txArr = corners.map(([x, y]) => x * apMatrix[0] + y * apMatrix[2] + apMatrix[4]);
         const tyArr = corners.map(([x, y]) => x * apMatrix[1] + y * apMatrix[3] + apMatrix[5]);
@@ -5584,8 +5545,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         );
         // /CA is the annotation's constant opacity, parsed from the annotation dict
         // (not the appearance stream), and applies to every visible element of the annotation.
-        const annotCaMatch = /\/CA\s+([0-9.]+)/.exec(annotText);
-        const annotCA = annotCaMatch ? parseFloat(annotCaMatch[1]) : 1;
+        const annotCA = resolveNumValue(annotText, 'CA', objCache, 1);
         for (const aOp of annotFlattened) {
           if (annotCA < 1) {
             aOp.fillAlpha = (aOp.fillAlpha ?? 1) * annotCA;
@@ -5669,8 +5629,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
 
         // Synthesize appearance for Ink annotations without /AP
         if (/\/Subtype\s*\/Ink\b/.test(annotText)) {
-          const inkListMatch = /\/InkList\s*\[(\[[\s\S]*?\])\s*\]/.exec(annotText);
-          if (inkListMatch) {
+          const inkListContent = resolveArrayValue(annotText, 'InkList', objCache);
+          if (inkListContent != null) {
             const cMatchInk = /\/C\s*\[\s*([\d.]+)\s+([\d.]+)\s+([\d.]+)\s*\]/.exec(annotText);
             const inkColor = cMatchInk
               ? `rgb(${Math.round(Number(cMatchInk[1]) * 255)},${Math.round(Number(cMatchInk[2]) * 255)},${Math.round(Number(cMatchInk[3]) * 255)})`
@@ -5687,7 +5647,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
               if (dMatch) inkDash = dMatch[1].trim().split(/\s+/).map(Number);
             }
 
-            const subArrays = [...inkListMatch[1].matchAll(/\[([\d.\-+e\s]+)\]/g)];
+            const subArrays = [...inkListContent.matchAll(/\[([\d.\-+e\s]+)\]/g)];
             for (const subArr of subArrays) {
               const coords = subArr[1].trim().split(/\s+/).map(Number);
               if (coords.length < 4) continue;
@@ -5859,17 +5819,17 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         let commands;
         if (annotSubtype === 'Line') {
           // Parse /L [x1 y1 x2 y2]
-          const lMatch = /\/L\s*\[\s*([\d.\-+e]+)\s+([\d.\-+e]+)\s+([\d.\-+e]+)\s+([\d.\-+e]+)\s*\]/.exec(annotText);
-          if (!lMatch) continue;
+          const lArr = resolveNumArray(annotText, 'L', objCache, null);
+          if (!lArr || lArr.length < 4) continue;
           commands = [
-            { type: 'M', x: Number(lMatch[1]), y: Number(lMatch[2]) },
-            { type: 'L', x: Number(lMatch[3]), y: Number(lMatch[4]) },
+            { type: 'M', x: lArr[0], y: lArr[1] },
+            { type: 'L', x: lArr[2], y: lArr[3] },
           ];
         } else if (annotSubtype === 'Polygon' || annotSubtype === 'PolyLine') {
           // Parse /Vertices [x1 y1 x2 y2 ...]
-          const vertMatch = /\/Vertices\s*\[\s*([\d.\-+e\s]+)\]/.exec(annotText);
-          if (!vertMatch) continue;
-          const coords = vertMatch[1].trim().split(/\s+/).map(Number);
+          const vertContent = resolveNumArray(annotText, 'Vertices', objCache, null);
+          if (!vertContent) continue;
+          const coords = vertContent;
           if (coords.length < 4) continue;
           commands = [{ type: 'M', x: coords[0], y: coords[1] }];
           for (let i = 2; i < coords.length; i += 2) {
@@ -8338,7 +8298,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       // No fonts registered: text ops can't be bounded by opDeviceBBox, so the give-up below covers them.
       const maskOps = parseDrawOps(bytesToLatin1(streamBytes), new Map(), maskExtGStates, new Map(), maskColorSpaces,
         new Set(), new Set(), new Set(), maskShadings, maskPatterns, new Map());
-      const formMatrix = parseFormMatrix(formObjText);
+      const formMatrix = parseFormMatrix(formObjText, objCache);
       let minX = Infinity;
       let minY = Infinity;
       let maxX = -Infinity;

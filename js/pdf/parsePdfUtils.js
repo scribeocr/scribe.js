@@ -7,7 +7,8 @@ import { aesDecrypt, computeObjectKey, rc4 } from './pdfCrypto.js';
 import {
   byteIndexOf, byteLastIndexOf, bytesEqualAt, bytesToLatin1, extractDict, extractDictFromBytes,
   findTopLevelKeyIndex, isAsciiDigit, isPdfWhitespace, matchesBareXrefEntry, matchesObjHeader,
-  objTextEnd, readInt, resolveBoolValue, resolveIntValue,
+  objTextEnd, readInt, resolveBoolValue, resolveIntValue, resolveArrayValue, resolveNumArray,
+  resolveNameValue, resolveDictValue, parseDictEntries,
 } from './pdfPrimitives.js';
 
 /** @typedef {import('./objectCache.js').ObjectCache} ObjectCache */
@@ -41,11 +42,9 @@ export function findXrefOffset(pdfBytes) {
         if (bytesEqualAt(pdfBytes, checkPos, 'xref') || matchesObjHeader(pdfBytes, checkPos) || matchesBareXrefEntry(pdfBytes, checkPos)) {
           return offset;
         }
-        // Some producers write startxref values that are off by a few bytes relative to the actual xref keyword.
-        // Snap to a nearby `xref` keyword before falling back to a whole-file scan,
-        // which on a linearized PDF would land on the secondary xref at end-of-file (whose trailer is incomplete).
-        // Accept any PDF whitespace before the keyword (not just newline) — the next byte before the
-        // wrongly-pointed offset is sometimes a space.
+        // Some producers write startxref values that are off by a few bytes, so snap to a nearby `xref` keyword before falling back to a whole-file scan.
+        // On a linearized PDF that scan would land on the secondary xref at end-of-file, whose trailer is incomplete.
+        // Accept any PDF whitespace before the keyword, not just a newline, since the preceding byte is sometimes a space.
         const windowStart = Math.max(0, offset - 16);
         const windowEnd = Math.min(len, offset + 16);
         /** @param {number} p */
@@ -180,18 +179,12 @@ export function parseXref(pdfBytes, xrefOffset) {
 }
 
 /**
- * Find the boundary between an xref section and the following trailer keyword
- * (or end of file). Used to bound the byte slice we materialize as a string
- * for line-based xref-table parsing.
+ * Find an end bound for the byte slice holding the xref section at `offset`.
  * @param {Uint8Array} bytes
  * @param {number} offset
  */
 function findXrefSectionEnd(bytes, offset) {
-  // The xref section ends at "trailer" (traditional) or at the next non-xref content.
-  // Cap the search at 256 KB which is generous: an xref entry is 20 bytes, so 256 KB
-  // covers ~12,000 entries — more than enough for a single subsection header lookup.
-  // The actual section may be larger; if so, parseXrefTable's line walk will stop
-  // when it sees a non-entry line.
+  // The cap keeps a missing or far-away trailer from materializing the rest of the file as a string.
   const trailerIdx = byteIndexOf(bytes, 'trailer', offset);
   const cap = Math.min(bytes.length, offset + 256 * 1024);
   if (trailerIdx !== -1 && trailerIdx < cap) return trailerIdx + 7;
@@ -222,9 +215,8 @@ function parseXrefTable(bytes, offset, entries) {
         const entryLine = lines[i].trim();
         const entryMatch = /^(\d+)\s+(\d+)\s+(n|f)$/.exec(entryLine);
         if (!entryMatch) continue;
-        // Newer xref sections (processed first) take precedence — including
-        // free entries, since incremental updates that *delete* an obj must
-        // shadow that obj's earlier in-use entry rather than be discarded.
+        // Newer xref sections are processed first, so keeping the first entry seen gives them precedence.
+        // Free entries take precedence too, since an incremental update that deletes an obj must shadow the obj's earlier in-use entry.
         const objNum = startObj + j;
         if (entries[objNum]) continue;
         if (entryMatch[3] === 'n') {
@@ -841,8 +833,9 @@ export function extractStream(pdfBytes, objOffset, objCache = null, objNum = -1)
  * Read a Form XObject's own /Matrix.
  * Matches only the dict's top-level /Matrix, not one nested in the form's /Resources (e.g. a shading pattern's matrix).
  * @param {string} objText - the form or appearance dict text
+ * @param {ObjectCache|null} [objCache] - resolves an indirect /Matrix value
  */
-export function parseFormMatrix(objText) {
+export function parseFormMatrix(objText, objCache = null) {
   for (let i = 0, depth = 0; i < objText.length - 1; i++) {
     const c2 = objText[i] + objText[i + 1];
     if (c2 === '<<') {
@@ -852,11 +845,8 @@ export function parseFormMatrix(objText) {
       depth -= 1;
       i += 1;
     } else if (depth === 1 && objText.startsWith('/Matrix', i)) {
-      const m = /\/Matrix\s*\[\s*([\d.\seE+-]+)\]/.exec(objText.slice(i));
-      if (m) {
-        const parsed = m[1].trim().split(/\s+/).map(Number);
-        if (parsed.length === 6 && parsed.every((n) => Number.isFinite(n))) return parsed;
-      }
+      const parsed = resolveNumArray(objText.slice(i), 'Matrix', objCache, null);
+      if (parsed && parsed.length === 6 && parsed.every((n) => Number.isFinite(n))) return parsed;
       break;
     }
   }
@@ -1132,35 +1122,12 @@ function collectPages(objNum, objCache, inheritedMediaBox, inheritedCropBox, inh
     return;
   }
 
-  const mbMatch = /\/MediaBox\s*\[\s*([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s*\]/.exec(objText);
-  let mediaBox;
-  if (mbMatch) {
-    mediaBox = [Number(mbMatch[1]), Number(mbMatch[2]), Number(mbMatch[3]), Number(mbMatch[4])];
-  } else {
-    const mbRefMatch = /\/MediaBox\s+(\d+)\s+\d+\s+R/.exec(objText);
-    if (mbRefMatch) {
-      const mbObjText = objCache.getObjectText(Number(mbRefMatch[1]));
-      const mbArr = mbObjText && /\[\s*([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s*\]/.exec(mbObjText);
-      mediaBox = mbArr
-        ? [Number(mbArr[1]), Number(mbArr[2]), Number(mbArr[3]), Number(mbArr[4])]
-        : inheritedMediaBox;
-    } else {
-      mediaBox = inheritedMediaBox;
-    }
-  }
+  // resolveNumArray covers the inline, whole-value-ref, and ref-element forms alike.
+  const mbArr = resolveNumArray(objText, 'MediaBox', objCache, null);
+  const mediaBox = mbArr && mbArr.length === 4 ? mbArr : inheritedMediaBox;
 
-  const cbMatchAny = /\/CropBox\s*\[\s*([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s*\]/.exec(objText);
-  let cropBoxResolved = inheritedCropBox;
-  if (cbMatchAny) {
-    cropBoxResolved = [Number(cbMatchAny[1]), Number(cbMatchAny[2]), Number(cbMatchAny[3]), Number(cbMatchAny[4])];
-  } else {
-    const cbRefMatchAny = /\/CropBox\s+(\d+)\s+\d+\s+R/.exec(objText);
-    if (cbRefMatchAny) {
-      const cbObjText = objCache.getObjectText(Number(cbRefMatchAny[1]));
-      const cbArr = cbObjText && /\[\s*([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s*\]/.exec(cbObjText);
-      if (cbArr) cropBoxResolved = [Number(cbArr[1]), Number(cbArr[2]), Number(cbArr[3]), Number(cbArr[4])];
-    }
-  }
+  const cbArr = resolveNumArray(objText, 'CropBox', objCache, null);
+  const cropBoxResolved = cbArr && cbArr.length === 4 ? cbArr : inheritedCropBox;
 
   const hasRotate = /\/Rotate\s/.test(objText);
   const rotate = hasRotate ? ((resolveIntValue(objText, 'Rotate', objCache) % 360) + 360) % 360 : inheritedRotate;
@@ -1178,7 +1145,7 @@ function collectPages(objNum, objCache, inheritedMediaBox, inheritedCropBox, inh
   }
 
   const looksLikePagesNode = /\/Type\s*\/Pages\b/.test(objText)
-    || (/\/Kids\s*[\[<]/.test(objText) && !/\/Type\s*\/Page\b(?!s)/.test(objText));
+    || (/\/Kids\s*(?:[[<]|\d+\s+\d+\s+R)/.test(objText) && !/\/Type\s*\/Page\b(?!s)/.test(objText));
   if (looksLikePagesNode) {
     const kidsContent = getKidsArrayContent(objText, objCache);
     if (kidsContent === null) return;
@@ -1200,14 +1167,10 @@ function collectPages(objNum, objCache, inheritedMediaBox, inheritedCropBox, inh
               finalObjText = finalObjText.substring(0, lastClose) + resources + finalObjText.substring(lastClose);
             }
           }
-          const inlineMb = /\/MediaBox\s*\[\s*([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s*\]/.exec(finalObjText);
-          const inlineMediaBox = inlineMb
-            ? [Number(inlineMb[1]), Number(inlineMb[2]), Number(inlineMb[3]), Number(inlineMb[4])]
-            : mediaBox;
-          const inlineCb = /\/CropBox\s*\[\s*([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s+([\d.+-]+)\s*\]/.exec(finalObjText);
-          let inlineCropBox = inlineCb
-            ? [Number(inlineCb[1]), Number(inlineCb[2]), Number(inlineCb[3]), Number(inlineCb[4])]
-            : cropBoxResolved;
+          const inlineMbArr = resolveNumArray(finalObjText, 'MediaBox', objCache, null);
+          const inlineMediaBox = inlineMbArr && inlineMbArr.length === 4 ? inlineMbArr : mediaBox;
+          const inlineCbArr = resolveNumArray(finalObjText, 'CropBox', objCache, null);
+          let inlineCropBox = inlineCbArr && inlineCbArr.length === 4 ? inlineCbArr : cropBoxResolved;
           if (inlineCropBox && (inlineCropBox[0] < inlineMediaBox[0] || inlineCropBox[1] < inlineMediaBox[1]
             || inlineCropBox[2] > inlineMediaBox[2] || inlineCropBox[3] > inlineMediaBox[3])) {
             inlineCropBox = [
@@ -1268,17 +1231,12 @@ export function getPageObjects(objCache) {
   const pages = [];
   const pagesRootObjNum = Number(pagesRefMatch[1]);
   collectPages(pagesRootObjNum, objCache, [0, 0, 612, 792], null, 0, '', pages);
-  // Recover orphan /Type/Page objects parented directly at the pages root,
-  // since producers occasionally append a page without updating /Kids.
-  // Orphans parented at intermediate /Pages nodes are excluded —
-  // those are usually deliberately unlinked old pages.
-  // Only run recovery when /Kids traversal under-delivers vs the declared /Count.
-  // A self-consistent tree (collected == declared count) can still
-  // have orphan Page objects pointing at the root, but those are stale and
-  // must not be re-included.
+  // Recover orphan /Type/Page objects parented directly at the pages root, since producers occasionally append a page without updating /Kids.
+  // Orphans parented at intermediate /Pages nodes are excluded because those are usually deliberately unlinked old pages.
+  // Recovery is gated on the /Kids walk under-delivering the declared /Count because even a self-consistent tree can carry stale root-parented orphans that must not be re-included.
   const pagesRootText = objCache.getObjectText(pagesRootObjNum) || '';
-  const countMatch = /\/Count\s+(\d+)/.exec(pagesRootText);
-  const declaredCount = countMatch ? Number(countMatch[1]) : null;
+  const declared = resolveIntValue(pagesRootText, 'Count', objCache, -1);
+  const declaredCount = declared >= 0 ? declared : null;
   if (declaredCount !== null && pages.length >= declaredCount) return pages;
   // The /Kids walk under-delivered. Force any deferred xref repair so the orphan scan below sees the complete object set.
   // A missing page can be an object absent from the xref as parsed.
@@ -1309,7 +1267,7 @@ function collectPageTreeNodes(objNum, objCache, nodeSet) {
   const objText = objCache.getObjectText(objNum);
   if (!objText) return;
   const looksLikePagesNode = /\/Type\s*\/Pages\b/.test(objText)
-    || (/\/Kids\s*[\[<]/.test(objText) && !/\/Type\s*\/Page\b(?!s)/.test(objText));
+    || (/\/Kids\s*(?:[[<]|\d+\s+\d+\s+R)/.test(objText) && !/\/Type\s*\/Page\b(?!s)/.test(objText));
   if (looksLikePagesNode) {
     const kidsContent = getKidsArrayContent(objText, objCache);
     if (kidsContent === null) return;
@@ -1427,20 +1385,30 @@ export function isOCObjHidden(ocObjNum, offOCGs, objCache) {
   const ocText = objCache.getObjectText(ocObjNum);
   if (!ocText) return false;
   if (/\/Type\s*\/OCG/.test(ocText)) return offOCGs.has(ocObjNum);
-  if (/\/Type\s*\/OCMD/.test(ocText)) {
+  if (/\/Type\s*\/OCMD/.test(ocText)) return ocmdTextHidden(ocText, offOCGs, objCache);
+  return false;
+}
+
+/**
+ * Evaluate an OCMD dict's /OCGs membership against the OFF set under its /P policy.
+ * @param {string} ocText - The OCMD dict text.
+ * @param {Set<number>} offOCGs
+ * @param {ObjectCache} objCache
+ * @returns {boolean}
+ */
+function ocmdTextHidden(ocText, offOCGs, objCache) {
+  // /OCGs may be an inline array, a ref to an array, or a ref to a single OCG dict.
+  const arrayContent = resolveArrayValue(ocText, 'OCGs', objCache);
+  if (arrayContent == null) {
     const singleRef = /\/OCGs\s+(\d+)\s+\d+\s+R/.exec(ocText);
-    if (singleRef) return offOCGs.has(Number(singleRef[1]));
-    const arrayMatch = /\/OCGs\s*\[([^\]]*)\]/.exec(ocText);
-    if (arrayMatch) {
-      const refs = [...arrayMatch[1].matchAll(/(\d+)\s+\d+\s+R/g)].map((m) => Number(m[1]));
-      const policyMatch = /\/P\s*\/(\w+)/.exec(ocText);
-      const policy = policyMatch ? policyMatch[1] : 'AnyOn';
-      if (policy === 'AnyOn') return refs.every((r) => offOCGs.has(r));
-      if (policy === 'AllOn') return refs.some((r) => offOCGs.has(r));
-      if (policy === 'AnyOff') return !refs.some((r) => offOCGs.has(r));
-      if (policy === 'AllOff') return !refs.every((r) => offOCGs.has(r));
-    }
+    return singleRef ? offOCGs.has(Number(singleRef[1])) : false;
   }
+  const refs = [...arrayContent.matchAll(/(\d+)\s+\d+\s+R/g)].map((m) => Number(m[1]));
+  const policy = resolveNameValue(ocText, 'P', objCache) || 'AnyOn';
+  if (policy === 'AnyOn') return refs.every((r) => offOCGs.has(r));
+  if (policy === 'AllOn') return refs.some((r) => offOCGs.has(r));
+  if (policy === 'AnyOff') return !refs.some((r) => offOCGs.has(r));
+  if (policy === 'AllOff') return !refs.every((r) => offOCGs.has(r));
   return false;
 }
 
@@ -1455,8 +1423,11 @@ export function isOCObjHidden(ocObjNum, offOCGs, objCache) {
 export function isFormOCHidden(formObjText, offOCGs, objCache) {
   if (offOCGs.size === 0) return false;
   const ocMatch = /\/OC\s+(\d+)\s+\d+\s+R/.exec(formObjText);
-  if (!ocMatch) return false;
-  return isOCObjHidden(Number(ocMatch[1]), offOCGs, objCache);
+  if (ocMatch) return isOCObjHidden(Number(ocMatch[1]), offOCGs, objCache);
+  // An OCG must be indirect to appear in the OFF set, so only an inline OCMD is meaningful here.
+  const inline = resolveDictValue(formObjText, 'OC', objCache);
+  if (inline && /\/Type\s*\/OCMD/.test(inline)) return ocmdTextHidden(inline, offOCGs, objCache);
+  return false;
 }
 
 /**
@@ -1490,8 +1461,15 @@ export function parseHiddenOCMCNames(resourceOwnerText, objCache, offOCGs) {
     if (refMatch) propDictText = objCache.getObjectText(Number(refMatch[1]));
   }
   if (!propDictText) return hidden;
-  for (const m of propDictText.matchAll(/\/([^\s/<>[\]]+)\s+(\d+)\s+\d+\s+R/g)) {
-    if (isOCObjHidden(Number(m[2]), offOCGs, objCache)) hidden.add(m[1]);
+  const propBody = propDictText.trim().startsWith('<<') ? propDictText.trim().slice(2, -2) : propDictText;
+  for (const e of parseDictEntries(propBody)) {
+    const v = e.valueText.trim();
+    const refM = /^(\d+)\s+\d+\s+R$/.exec(v);
+    if (refM) {
+      if (isOCObjHidden(Number(refM[1]), offOCGs, objCache)) hidden.add(e.name);
+    } else if (v.startsWith('<<') && /\/Type\s*\/OCMD/.test(v) && ocmdTextHidden(v, offOCGs, objCache)) {
+      hidden.add(e.name);
+    }
   }
   return hidden;
 }

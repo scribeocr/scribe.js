@@ -1,5 +1,6 @@
 import { findRootObjNum } from './parsePdfUtils.js';
 import { readDocProducer, OCR_PRODUCER_RE } from './structTree.js';
+import { resolveArrayValue, resolveDictValue } from './pdfPrimitives.js';
 import { normalizeHeadingText } from '../utils/miscUtils.js';
 
 /**
@@ -75,12 +76,10 @@ function destArrayPageObj(arrText) {
  */
 function buildNameTree(objCache, rootRef, out) {
   const seen = new Set();
-  function rec(objNum, depth) {
-    if (depth > 50 || seen.has(objNum)) return; seen.add(objNum);
-    const t = objCache.getObjectText(objNum); if (!t) return;
-    const namesM = /\/Names\s*\[([\s\S]*?)\]/.exec(t);
-    if (namesM) {
-      const body = namesM[1];
+  /** @param {string} t @param {number} depth */
+  function recText(t, depth) {
+    const body = resolveArrayValue(t, 'Names', objCache);
+    if (body != null) {
       const re = /\(((?:[^()\\]|\\.)*)\)\s*(\[[\s\S]*?\]|\d+\s+\d+\s+R|<<[\s\S]*?>>)|<([0-9A-Fa-f\s]+)>\s*(\[[\s\S]*?\]|\d+\s+\d+\s+R|<<[\s\S]*?>>)/g;
       let m;
       while ((m = re.exec(body))) {
@@ -88,8 +87,14 @@ function buildNameTree(objCache, rootRef, out) {
         out.set(name, m[2] || m[4]);
       }
     }
-    const kidsM = /\/Kids\s*\[([\s\S]*?)\]/.exec(t);
-    if (kidsM) { const re = /(\d+)\s+\d+\s+R/g; let m; while ((m = re.exec(kidsM[1]))) rec(Number(m[1]), depth + 1); }
+    const kids = resolveArrayValue(t, 'Kids', objCache);
+    if (kids != null) for (const m of kids.matchAll(/(\d+)\s+\d+\s+R/g)) rec(Number(m[1]), depth + 1);
+  }
+  /** @param {number} objNum @param {number} depth */
+  function rec(objNum, depth) {
+    if (depth > 50 || seen.has(objNum)) return; seen.add(objNum);
+    const t = objCache.getObjectText(objNum); if (!t) return;
+    recText(t, depth);
   }
   rec(rootRef, 0);
 }
@@ -108,9 +113,9 @@ function resolveNamedDest(objCache, nameDests, oldDests, name) {
   let text = val;
   const refM = /^\s*(\d+)\s+\d+\s+R/.exec(val);
   if (refM) text = objCache.getObjectText(Number(refM[1])) || '';
-  const dM = /\/D\s*(\[[\s\S]*?\])/.exec(text);
-  if (dM) return destArrayPageObj(dM[1]);
   if (text.trim().startsWith('[')) return destArrayPageObj(text);
+  const dArr = resolveArrayValue(text, 'D', objCache);
+  if (dArr != null) return destArrayPageObj(`[${dArr}]`);
   return null;
 }
 
@@ -129,6 +134,8 @@ function resolveDest(objCache, val, nameDests, oldDests) {
   if (refM) { const t = objCache.getObjectText(Number(refM[1])) || ''; return t.trim().startsWith('[') ? destArrayPageObj(t) : null; }
   const litM = /^\(((?:[^()\\]|\\.)*)\)/.exec(val);
   if (litM) return resolveNamedDest(objCache, nameDests, oldDests, decodePdfString(litM[1], false));
+  const hexM = /^<([0-9A-Fa-f\s]+)>/.exec(val);
+  if (hexM) return resolveNamedDest(objCache, nameDests, oldDests, decodePdfString(hexM[1], true));
   const nameM = /^\/([^\s/<>\[\]()]+)/.exec(val);
   if (nameM) return resolveNamedDest(objCache, nameDests, oldDests, nameM[1]);
   return null;
@@ -157,14 +164,14 @@ export function buildOutlineHeadingIndex(objCache, pdfBytes, pageObjs) {
 
   // Named-destination sources: the modern /Names /Dests name tree and the legacy catalog /Dests dict.
   const nameDests = new Map();
-  const namesM = /\/Names\s+(\d+)\s+\d+\s+R/.exec(cat);
-  if (namesM) {
-    const namesDict = objCache.getObjectText(Number(namesM[1])) || '';
+  const namesDict = resolveDictValue(cat, 'Names', objCache);
+  if (namesDict) {
     const destsM = /\/Dests\s+(\d+)\s+\d+\s+R/.exec(namesDict);
     if (destsM) buildNameTree(objCache, Number(destsM[1]), nameDests);
   }
   let oldDests = null;
-  const oldDestsM = /\/Dests\s+(\d+)\s+\d+\s+R/.exec(cat);
+  // With an inline /Names dict, the flat catalog search would match the /Dests inside it and ingest a tree node as a flat dests dict.
+  const oldDestsM = nameDests.size === 0 ? /\/Dests\s+(\d+)\s+\d+\s+R/.exec(cat) : null;
   if (oldDestsM) {
     oldDests = new Map();
     const dt = objCache.getObjectText(Number(oldDestsM[1])) || '';
@@ -181,22 +188,26 @@ export function buildOutlineHeadingIndex(objCache, pdfBytes, pageObjs) {
       seen.add(cur);
       const d = objCache.getObjectText(cur) || '';
 
-      const tLit = /\/Title\s*\(((?:[^()\\]|\\.)*)\)/.exec(d);
-      const tHex = /\/Title\s*<([0-9A-Fa-f\s]+)>/.exec(d);
+      let tLit = /\/Title\s*\(((?:[^()\\]|\\.)*)\)/.exec(d);
+      let tHex = /\/Title\s*<([0-9A-Fa-f\s]+)>/.exec(d);
+      if (!tLit && !tHex) {
+        const tRef = /\/Title\s+(\d+)\s+\d+\s+R/.exec(d);
+        const rb = tRef ? (objCache.getObjectText(Number(tRef[1])) || '') : '';
+        tLit = /^\s*\(((?:[^()\\]|\\.)*)\)/.exec(rb);
+        tHex = /^\s*<([0-9A-Fa-f\s]+)>/.exec(rb);
+      }
       let title = '';
       if (tLit && (!tHex || tLit.index <= tHex.index)) title = decodePdfString(tLit[1], false);
       else if (tHex) title = decodePdfString(tHex[1], true);
 
       if (headingShaped(title)) {
         // Destination: /Dest directly, else a /GoTo action's /D.
-        const destM = /\/Dest\s*(\[[\s\S]*?\]|\(((?:[^()\\]|\\.)*)\)|\/[^\s/<>\[\]()]+|\d+\s+\d+\s+R)/.exec(d);
+        const destM = /\/Dest\s*(\[[\s\S]*?\]|\(((?:[^()\\]|\\.)*)\)|<[0-9A-Fa-f\s]+>|\/[^\s/<>[\]()]+|\d+\s+\d+\s+R)/.exec(d);
         let pageObj = destM ? resolveDest(objCache, destM[1], nameDests, oldDests) : null;
         if (pageObj == null) {
-          const aInline = /\/A\s*<<([\s\S]*?)>>/.exec(d);
-          const aRef = !aInline ? /\/A\s+(\d+)\s+\d+\s+R/.exec(d) : null;
-          const ab = aInline ? aInline[1] : (aRef ? (objCache.getObjectText(Number(aRef[1])) || '') : '');
+          const ab = resolveDictValue(d, 'A', objCache);
           if (ab && /\/S\s*\/GoTo\b/.test(ab)) {
-            const dM = /\/D\s*(\[[\s\S]*?\]|\(((?:[^()\\]|\\.)*)\)|\/[^\s/<>\[\]()]+|\d+\s+\d+\s+R)/.exec(ab);
+            const dM = /\/D\s*(\[[\s\S]*?\]|\(((?:[^()\\]|\\.)*)\)|<[0-9A-Fa-f\s]+>|\/[^\s/<>[\]()]+|\d+\s+\d+\s+R)/.exec(ab);
             if (dM) pageObj = resolveDest(objCache, dM[1], nameDests, oldDests);
           }
         }

@@ -1,4 +1,5 @@
 import { findRootObjNum, findInfoObjNum } from './parsePdfUtils.js';
+import { resolveIntValue, resolveStringValue } from './pdfPrimitives.js';
 
 const BLOCK = new Set([
   'P', 'H', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'Title', 'Caption', 'BlockQuote',
@@ -92,16 +93,7 @@ function readInfoField(objCache, pdfBytes, field) {
     const infoNum = findInfoObjNum(pdfBytes);
     if (!infoNum) return '';
     const info = objCache.getObjectText(infoNum) || '';
-    const lit = new RegExp(`/${field}\\s*\\(((?:[^()\\\\]|\\\\.)*)\\)`).exec(info);
-    if (lit) return lit[1];
-    const hex = new RegExp(`/${field}\\s*<([0-9A-Fa-f\\s]+)>`).exec(info);
-    if (hex) {
-      const h = hex[1].replace(/\s+/g, '');
-      let s = '';
-      // UTF-16BE (BOM feff) or raw bytes: strip the high zero bytes for an ASCII-ish read.
-      for (let i = 0; i < h.length; i += 2) { const c = parseInt(h.slice(i, i + 2), 16); if (c) s += String.fromCharCode(c); }
-      return s.replace(/^﻿/, '');
-    }
+    return resolveStringValue(info, field, objCache) ?? '';
   } catch { /* best-effort */ }
   return '';
 }
@@ -190,9 +182,9 @@ export function buildStructElemMap(objCache, pdfBytes, pageObjs) {
 
   const map = new Map();
   pageObjs.forEach((pg, pageIdx) => {
-    const spM = /\/StructParents\s+(\d+)/.exec(pg.objText || '');
-    if (!spM) return;
-    const valTok = parentTree.get(Number(spM[1]));
+    const sp = resolveIntValue(pg.objText || '', 'StructParents', objCache, -1);
+    if (sp === -1) return;
+    const valTok = parentTree.get(sp);
     if (!valTok) return;
     let arrText;
     if (valTok.type === 'ref') arrText = objCache.getObjectText(valTok.num) || '';

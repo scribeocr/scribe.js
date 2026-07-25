@@ -1,5 +1,6 @@
 import {
   matchesObjMarker, isPdfWhitespace, isAsciiDigit, byteIndexOf, parsePdfLiteralString, parsePdfHexString,
+  resolveIntValue, resolveNameValue, resolveDictValue, resolveBoolValue,
 } from './pdfPrimitives.js';
 
 /** @type {Uint32Array} Pre-computed T values: floor(2^32 * abs(sin(i+1))) */
@@ -980,14 +981,10 @@ export function setupEncryption(objCache) {
   const encRegion = pdfBytes.subarray(encOffset, Math.min(encOffset + 2000, pdfBytes.length));
   const encText = String.fromCharCode.apply(null, encRegion); // true latin1, no Windows-1252 remapping
 
-  const vMatch = /\/V\s+(\d+)/.exec(encText);
-  const rMatch = /\/R\s+(\d+)/.exec(encText);
-  const pMatch = /\/P\s+(-?\d+)/.exec(encText);
-  if (!vMatch || !rMatch || !pMatch) return;
-
-  const V = Number(vMatch[1]);
-  const R = Number(rMatch[1]);
-  const P = Number(pMatch[1]);
+  const V = resolveIntValue(encText, 'V', objCache, -1);
+  const R = resolveIntValue(encText, 'R', objCache, -1);
+  const P = resolveIntValue(encText, 'P', objCache, Number.NaN);
+  if (V === -1 || R === -1 || Number.isNaN(P)) return;
 
   if (V !== 1 && V !== 2 && V !== 4 && V !== 5) {
     console.warn(`[parsePdfUtils] Unsupported encryption version V=${V}, R=${R}`);
@@ -1023,8 +1020,7 @@ export function setupEncryption(objCache) {
   if (V === 4) {
     keyLength = 16;
   } else if (V === 2) {
-    const klMatch = /\/Length\s+(\d+)/.exec(encText);
-    keyLength = klMatch ? Number(klMatch[1]) / 8 : 5;
+    keyLength = resolveIntValue(encText, 'Length', objCache, 40) / 8;
   }
 
   // V=4: determine cipher mode from crypt filters (CF/StmF)
@@ -1032,17 +1028,17 @@ export function setupEncryption(objCache) {
   let cipherMode = 'RC4';
   if (V === 4) {
     // /StmF names the crypt filter for streams (default: Identity = no encryption)
-    const stmfMatch = /\/StmF\s*\/(\w+)/.exec(encText);
-    const stmfName = stmfMatch ? stmfMatch[1] : 'Identity';
+    const stmfName = resolveNameValue(encText, 'StmF', objCache) || 'Identity';
     if (stmfName === 'Identity') return; // Streams are not encrypted
     // Look up CFM in the named crypt filter dict: /CF<</StdCF<</CFM/AESV2 ...>>>>
-    const cfmMatch = new RegExp(`/${stmfName}\\s*<<[^>]*?/CFM\\s*/(\\w+)`).exec(encText);
-    cipherMode = (cfmMatch && cfmMatch[1] === 'AESV2') ? 'AESV2' : 'RC4';
+    const cfDict = resolveDictValue(encText, 'CF', objCache);
+    const filterDict = cfDict && resolveDictValue(cfDict, stmfName, objCache);
+    const cfm = filterDict && resolveNameValue(filterDict, 'CFM', objCache);
+    cipherMode = cfm === 'AESV2' ? 'AESV2' : 'RC4';
   }
 
   // Parse /EncryptMetadata (V=4 only, default true)
-  const encMetaMatch = /\/EncryptMetadata\s+(true|false)/.exec(encText);
-  const encryptMetadata = encMetaMatch ? encMetaMatch[1] !== 'false' : true;
+  const encryptMetadata = resolveBoolValue(encText, 'EncryptMetadata', objCache, true);
 
   // Parse /O (owner password hash) from raw bytes
   const O = parsePdfStringAt(pdfBytes, encOffset, encText, '/O');

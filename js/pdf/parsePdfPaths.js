@@ -107,7 +107,7 @@ function inlineFormXObjects(tokens, containerObjText, objCache, visited) {
         const formBytes = formObjText ? objCache.getStreamBytes(form.objNum) : null;
         if (formObjText && formBytes) {
           const formContentStream = bytesToLatin1(formBytes);
-          const formMatrix = parseFormMatrix(formObjText);
+          const formMatrix = parseFormMatrix(formObjText, objCache);
 
           const formTokens = tokenizeContentStream(formContentStream);
           // Recurse into nested Form XObjects

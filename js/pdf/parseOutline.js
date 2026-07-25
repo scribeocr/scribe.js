@@ -1,6 +1,8 @@
 import { makeOutlineNode } from '../objects/outlineObjects.js';
 import { findRootObjNum } from './parsePdfUtils.js';
-import { decodePdfString } from './pdfPrimitives.js';
+import {
+  decodePdfString, derefStringToken, resolveDictValue, resolveIntValue,
+} from './pdfPrimitives.js';
 
 /**
  * Parse the PDF `/Outlines` (bookmark) tree of a loaded document into the outline model.
@@ -57,13 +59,12 @@ function walkSiblings(firstObjNum, objCache, nameDests, objNumToIndex, pages, vi
 
     const { dest, action } = resolveItemDest(text, nameDests, objNumToIndex, objCache);
     if (dest) setDestYFrac(dest, pages[dest.pageIndex]);
-    const countMatch = /\/Count\s+(-?\d+)/.exec(text);
     const node = makeOutlineNode({
-      title: decodePdfString(rawValue(text, 'Title') || ''),
+      title: derefStringToken(rawValue(text, 'Title') || '', objCache),
       dest,
       action,
       // /Count is negative for a collapsed item with descendants; absent/positive means open.
-      open: !(countMatch && Number(countMatch[1]) < 0),
+      open: !(resolveIntValue(text, 'Count', objCache, 0) < 0),
     });
 
     const childFirst = refObjNum(text, 'First');
@@ -125,14 +126,7 @@ export function setDestYFrac(dest, page) {
 export function resolveItemDest(itemText, nameDests, objNumToIndex, objCache) {
   let destToken = rawValue(itemText, 'Dest');
   if (!destToken) {
-    let actionText = null;
-    const actionRef = refObjNum(itemText, 'A');
-    if (actionRef) {
-      actionText = objCache.getObjectText(actionRef);
-    } else {
-      const inline = /\/A\s*<<([\s\S]*?)>>/.exec(itemText);
-      if (inline) actionText = `<<${inline[1]}>>`;
-    }
+    const actionText = resolveDictValue(itemText, 'A', objCache);
     if (actionText) {
       if (/\/S\s*\/GoTo\b/.test(actionText)) destToken = rawValue(actionText, 'D');
       else return { dest: null, action: actionText.trim() };
@@ -197,25 +191,37 @@ function parseDestArray(arrText) {
 
 /**
  * Build a map of named-destination name -> value token from the /Names /Dests name tree and legacy /Dests dict.
- * @param {import('./objCache.js').ObjCache} objCache
+ * @param {import('./objectCache.js').ObjectCache} objCache
  * @param {string} catalogText
  * @returns {Map<string, string>}
  */
 export function buildNameDests(objCache, catalogText) {
   const nameDests = new Map();
 
-  const namesDictNum = refObjNum(catalogText, 'Names');
-  if (namesDictNum) {
-    const namesText = objCache.getObjectText(namesDictNum);
-    const destsTreeNum = namesText && refObjNum(namesText, 'Dests');
-    if (destsTreeNum) walkNameTree(destsTreeNum, objCache, nameDests, new Set());
+  const namesText = resolveDictValue(catalogText, 'Names', objCache);
+  let hasModernTree = false;
+  if (namesText) {
+    const destsTreeNum = refObjNum(namesText, 'Dests');
+    if (destsTreeNum) {
+      hasModernTree = true;
+      walkNameTree(destsTreeNum, objCache, nameDests, new Set());
+    } else {
+      const inlineRoot = resolveDictValue(namesText, 'Dests', objCache);
+      if (inlineRoot) {
+        hasModernTree = true;
+        collectNameTreeNode(inlineRoot, objCache, nameDests, new Set());
+      }
+    }
   }
 
   // Legacy: a /Dests dictionary directly in the catalog, mapping /Name -> dest.
-  const legacyNum = refObjNum(catalogText, 'Dests');
-  if (legacyNum) {
-    const legacyText = objCache.getObjectText(legacyNum);
-    if (legacyText) for (const m of legacyText.matchAll(/\/([^\s/<>()[\]]+)\s*(\[[\s\S]*?\]|\d+\s+\d+\s+R)/g)) if (!nameDests.has(m[1])) nameDests.set(m[1], m[2]);
+  // With an inline /Names dict, the flat ref search below would match the /Dests inside it and ingest a tree node as a flat dests dict.
+  if (!hasModernTree) {
+    const legacyNum = refObjNum(catalogText, 'Dests');
+    if (legacyNum) {
+      const legacyText = objCache.getObjectText(legacyNum);
+      if (legacyText) for (const m of legacyText.matchAll(/\/([^\s/<>()[\]]+)\s*(\[[\s\S]*?\]|<<[\s\S]*?>>|\d+\s+\d+\s+R)/g)) if (!nameDests.has(m[1])) nameDests.set(m[1], m[2]);
+    }
   }
   return nameDests;
 }
@@ -232,12 +238,37 @@ function walkNameTree(nodeObjNum, objCache, nameDests, visited) {
   visited.add(nodeObjNum);
   const text = objCache.getObjectText(nodeObjNum);
   if (!text) return;
+  collectNameTreeNode(text, objCache, nameDests, visited);
+}
 
-  const namesArr = rawValue(text, 'Names');
+/**
+ * Collect a single name-tree node's `/Names` pairs and recurse into its `/Kids`.
+ * @param {string} text
+ * @param {import('./objectCache.js').ObjectCache} objCache
+ * @param {Map<string, string>} nameDests
+ * @param {Set<number>} visited
+ */
+function collectNameTreeNode(text, objCache, nameDests, visited) {
+  const namesArr = arrayTokenOf(rawValue(text, 'Names'), objCache);
   if (namesArr) parseNameLeaf(namesArr.slice(1, -1), nameDests);
 
-  const kidsArr = rawValue(text, 'Kids');
+  const kidsArr = arrayTokenOf(rawValue(text, 'Kids'), objCache);
   if (kidsArr) for (const m of kidsArr.matchAll(/(\d+)\s+\d+\s+R/g)) walkNameTree(Number(m[1]), objCache, nameDests, visited);
+}
+
+/**
+ * The `[...]` token for a raw value that is either the array inline or an indirect ref to it.
+ * @param {?string} token
+ * @param {import('./objectCache.js').ObjectCache} objCache
+ * @returns {?string}
+ */
+function arrayTokenOf(token, objCache) {
+  if (!token) return null;
+  if (token[0] === '[') return token;
+  const m = /^(\d+)\s+\d+\s+R$/.exec(token);
+  if (!m) return null;
+  const body = (objCache.getObjectText(Number(m[1])) || '').trim();
+  return body[0] === '[' ? body : null;
 }
 
 /**
