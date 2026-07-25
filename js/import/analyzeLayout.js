@@ -2127,6 +2127,12 @@ function decideBreak(f, prev, model, curParFirst, structMode) {
         && f.structRole && prev.structRole && f.structRole !== prev.structRole) {
       return { newPar: true, reason: 'struct element (heading level)' };
     }
+    // A page-bottom note block can interrupt a body paragraph mid-sentence, so its lowercase continuation reads as a sentence fragment to the merges below.
+    // A footnote/endnote role boundary is the edge of a separator-corroborated note region, which no single paragraph crosses.
+    if (geo.newPar
+      && ((f.role === 'footnote' || f.role === 'endnote') !== (prev.role === 'footnote' || prev.role === 'endnote'))) {
+      return geo;
+    }
     // An element-faithful producer can fragment one running sentence across elements, so a lowercase line after a prev that did not close is a continuation and merges despite the element boundary.
     // enumeratedListItemStart exempts a lowercase enumerator ("d)") so it still splits as the real new item it is, not a continuation.
     if (model.elementFaithful) {
