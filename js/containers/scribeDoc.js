@@ -46,7 +46,7 @@ function uniqueLayers(layers) {
  */
 function densePageArrays(doc) {
   const arrs = [...uniqueLayers(doc.ocr), ...uniqueLayers(doc.ocrRaw)];
-  arrs.push(doc.pageMetrics, doc.layoutRegions.pages, doc.layoutDataTables.pages, doc.annotations.pages);
+  arrs.push(doc.pageMetrics, doc.layoutRegions.pages, doc.layoutDataTables.pages, doc.annotations.pages, doc.links.pages);
   if (Array.isArray(doc.vis)) arrs.push(doc.vis);
   if (Array.isArray(doc.convertPageWarn)) arrs.push(doc.convertPageWarn);
   // Source image (image-input docs) and per-page 300-DPI dims are full-length; rendered caches are not (see clearImageCaches).
@@ -118,20 +118,22 @@ function materializeSourceIds(doc) {
  * Call `materializeSourcePages(doc)` and `materializeSourceIds(doc)` first so the cloned `pageMetrics.sourcePageN`/`sourceId` are concrete.
  * @param {ScribeDoc} doc
  * @param {number} i - Source page index.
- * @returns {object} An independent clone bundle for page `i`.
+ * @returns An independent clone bundle for page `i`.
  */
 function clonePageBundle(doc, i) {
   // One clone per unique OCR array so aliased layers (e.g. `ocr.active === ocr.pdf`) share a single cloned page.
   const ocrCache = new Map();
+  /** @type {Object<string, ?import('../objects/ocrObjects.js').OcrPage>} */
   const ocr = {};
   for (const [engine, arr] of Object.entries(doc.ocr)) {
     if (!Array.isArray(arr) || i >= arr.length || !arr[i]) { ocr[engine] = null; continue; }
     if (!ocrCache.has(arr)) ocrCache.set(arr, clonePageFull(arr[i]));
-    ocr[engine] = ocrCache.get(arr);
+    ocr[engine] = ocrCache.get(arr) ?? null;
   }
   // Give each cloned page fresh word ids so the paste is a distinct instance, not an id-for-id twin of its source.
   // Otherwise highlight and selection, which are keyed on word id across the render window, would act on the copy and its source together.
   for (const p of new Set(Object.values(ocr))) if (p) reIdPage(p);
+  /** @type {Object<string, string>} */
   const ocrRaw = {};
   for (const [engine, arr] of Object.entries(doc.ocrRaw)) {
     ocrRaw[engine] = Array.isArray(arr) && i < arr.length ? arr[i] : '';
@@ -156,6 +158,8 @@ function clonePageBundle(doc, i) {
     layoutRegions: cloneAt(doc.layoutRegions.pages),
     layoutDataTables: cloneAt(doc.layoutDataTables.pages),
     annotations,
+    links: cloneAt(doc.links.pages),
+    srcDocId: doc.id,
     vis: cloneAt(doc.vis),
     convertPageWarn: cloneAt(doc.convertPageWarn),
     pageStats: cloneAt(doc.inputData.pageStats),
@@ -191,6 +195,36 @@ function remapOutlineByTags(doc, tags) {
   const newByOld = new Map();
   tags.forEach((old, newPos) => { if (old != null && !newByOld.has(old)) newByOld.set(old, newPos); });
   setDocOutline(doc, remapOutline(doc.outline, (old) => (newByOld.has(old) ? newByOld.get(old) : null)));
+}
+
+/**
+ * Remap every page's link destinations after a page-order edit.
+ * A link whose target page was removed is dropped.
+ * @param {ScribeDoc} doc
+ * @param {Array<?number>} tags - `tags[newPos]` is the pre-edit index of the page now at `newPos`, or null for a freshly inserted page.
+ */
+function remapLinksByTags(doc, tags) {
+  const { pages } = doc.links;
+  if (!pages.length) return;
+  const newByOld = new Map();
+  tags.forEach((old, newPos) => { if (old != null && !newByOld.has(old)) newByOld.set(old, newPos); });
+  for (let i = 0; i < pages.length; i++) {
+    const arr = pages[i];
+    if (!arr || !arr.some((l) => l.dest)) continue;
+    let changed = false;
+    // Rebuild rather than mutate so history snapshots keep their pre-edit entries.
+    /** @type {Array<PageLink>} */
+    const next = [];
+    for (const entry of arr) {
+      if (!entry.dest) { next.push(entry); continue; }
+      const ni = newByOld.get(entry.dest.pageIndex);
+      if (ni === undefined) { changed = true; continue; }
+      if (ni === entry.dest.pageIndex) { next.push(entry); continue; }
+      changed = true;
+      next.push({ ...entry, dest: { ...entry.dest, pageIndex: ni } });
+    }
+    if (changed) pages[i] = next;
+  }
 }
 
 /**
@@ -381,6 +415,14 @@ export class ScribeDoc {
     this.annotations = { pages: [] };
 
     /**
+     * Per-page clickable link regions parsed from PDF /Link annotations (internal page jumps and external URLs).
+     * `restored` marks a `.scribe`-restored state.
+     * A restored state wins over a fresh parse because it may embed page-edit remaps the source PDF's annotations do not reflect.
+     * @type {{ pages: Array<Array<PageLink>>, restored: boolean }}
+     */
+    this.links = { pages: [], restored: false };
+
+    /**
      * Document outline (bookmarks) as an editable tree; destinations are zero-based page indices.
      * Empty when the document has no bookmarks. Populated from the PDF on open (`ImageStore.openMainPDF`).
      * @type {Array<import('../objects/outlineObjects.js').OutlineNode>}
@@ -468,6 +510,7 @@ export class ScribeDoc {
       const tags = this.pageMetrics.map((_, k) => k);
       for (const arr of [...densePageArrays(this), tags]) if (i < arr.length) arr.splice(i, 1);
       remapOutlineByTags(this, tags);
+      remapLinksByTags(this, tags);
       remapThumbnails(this, tags);
       clearImageCaches(this);
       renumberPages(this);
@@ -495,6 +538,7 @@ export class ScribeDoc {
         arr.splice(to, 0, item);
       }
       remapOutlineByTags(this, tags);
+      remapLinksByTags(this, tags);
       remapThumbnails(this, tags);
       clearImageCaches(this);
       renumberPages(this);
@@ -518,6 +562,7 @@ export class ScribeDoc {
         for (const i of sorted) if (i < arr.length) arr.splice(i, 1);
       }
       remapOutlineByTags(this, tags);
+      remapLinksByTags(this, tags);
       remapThumbnails(this, tags);
       clearImageCaches(this);
       renumberPages(this);
@@ -548,6 +593,7 @@ export class ScribeDoc {
         arr.splice(Math.max(0, Math.min(to, arr.length)), 0, ...pulled);
       }
       remapOutlineByTags(this, tags);
+      remapLinksByTags(this, tags);
       remapThumbnails(this, tags);
       clearImageCaches(this);
       renumberPages(this);
@@ -559,7 +605,7 @@ export class ScribeDoc {
    * Pure: the document is not mutated apart from materializing `sourcePageN`/`sourceId`.
    * Returned bundles are fully detached, so the source pages may be edited or deleted before the bundles are pasted.
    * @param {Array<number>} indices - 0-based page indices to clone, in any order.
-   * @returns {Array<object>} One clone bundle per valid index, in ascending page order.
+   * @returns {Array<ReturnType<typeof clonePageBundle>>} One clone bundle per valid index, in ascending page order.
    */
   copyPages(indices) {
     // Copying while a deferred extraction is in flight would snapshot pages without their text,
@@ -577,7 +623,7 @@ export class ScribeDoc {
    * Each full-length per-page array is spliced in lockstep.
    * Arrays that are not full-length for this document (e.g. `images.nativeSrc` for a PDF, whose rasters come from the worker via `sourcePageN`) are left untouched,
    * mirroring how delete/move guard on per-array length.
-   * @param {Array<object>} bundles - Clone bundles from `copyPages`.
+   * @param {Array<ReturnType<typeof clonePageBundle>>} bundles - Clone bundles from `copyPages`.
    * @param {number} to - Insertion index (0..pageMetrics.length).
    */
   insertPages(bundles, to) {
@@ -611,6 +657,10 @@ export class ScribeDoc {
       spliceFull(this.layoutRegions.pages, bundles.map((b) => b.layoutRegions));
       spliceFull(this.layoutDataTables.pages, bundles.map((b) => b.layoutDataTables));
       spliceFull(this.annotations.pages, bundles.map((b) => b.annotations));
+      spliceFull(this.links.pages, bundles.map((b) => {
+        const arr = b.links || [];
+        return b.srcDocId === this.id ? arr : arr.filter((l) => !l.dest);
+      }));
       spliceFull(this.vis, bundles.map((b) => b.vis));
       spliceFull(this.convertPageWarn, bundles.map((b) => b.convertPageWarn));
       spliceFull(this.images.nativeSrc, bundles.map((b) => b.nativeSrc));
@@ -620,6 +670,7 @@ export class ScribeDoc {
       spliceFull(this.inputData.ocrApplied, bundles.map((b) => b.ocrApplied));
       spliceFull(tags, bundles.map(() => null));
       remapOutlineByTags(this, tags);
+      remapLinksByTags(this, tags);
       remapThumbnails(this, tags);
 
       // Register a copied page's foreign render source so it keeps rendering and subsetting from its origin.
@@ -788,6 +839,8 @@ export class ScribeDoc {
     clearObjectProperties(this.ocrRaw);
     this.ocrRaw.active = [];
     this.annotations.pages.length = 0;
+    this.links.pages.length = 0;
+    this.links.restored = false;
     this.layoutRegions.pages.length = 0;
     this.layoutDataTables.pages.length = 0;
     this.pageMetrics.length = 0;

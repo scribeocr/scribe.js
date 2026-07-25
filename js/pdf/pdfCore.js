@@ -17,6 +17,9 @@ export class PdfCore {
   /** @type {?ReturnType<typeof getPageObjects>} */
   #pages = null;
 
+  /** @type {?import('./parsePdfDoc.js').LinkDestInfo} */
+  #linkDestInfo = null;
+
   /**
    * Load PDF bytes and parse the document structure.
    * @param {Uint8Array | ArrayBuffer} pdfBytes
@@ -28,6 +31,8 @@ export class PdfCore {
     const xrefEntries = parseXref(arr, xrefOffset);
     this.#objCache = new ObjectCache(arr, xrefEntries);
     this.#pages = getPageObjects(this.#objCache);
+    // Shared across parsePage calls so the lazily-built named-destination map is walked at most once per document.
+    this.#linkDestInfo = { objNumToIndex: new Map(this.#pages.map((p, i) => [p.objNum, i])), pages: this.#pages, nameDests: null };
     return {
       pageCount: this.#pages.length,
       pages: this.#pages.map((p) => ({ mediaBox: p.cropBox || p.mediaBox, rotate: p.rotate })),
@@ -42,7 +47,7 @@ export class PdfCore {
    */
   parsePage({ pageIndex, dpi }) {
     if (!this.#objCache || !this.#pages) throw new Error('PDF not loaded');
-    return parseSinglePage(this.#pages[pageIndex], this.#objCache, pageIndex, dpi);
+    return parseSinglePage(this.#pages[pageIndex], this.#objCache, pageIndex, dpi, undefined, this.#linkDestInfo ?? undefined);
   }
 
   /**
@@ -89,5 +94,6 @@ export class PdfCore {
     }
     this.#objCache = null;
     this.#pages = null;
+    this.#linkDestInfo = null;
   }
 }

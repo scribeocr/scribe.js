@@ -56,6 +56,8 @@ export async function extractInternalPDFText(doc, options = {}) {
     // Merge rather than overwrite: the user may have added annotations (e.g. a highlight) while the deferred extraction was in flight.
     // Parsed annotations come first, matching document order.
     doc.annotations.pages[i] = existing && existing.length ? [...parsed, ...existing] : parsed;
+    // Restored .scribe links may embed page-edit remaps the source PDF cannot reproduce.
+    if (!doc.links.restored) doc.links.pages[i] = pageResults[i].links || [];
   }
 
   const extractPDFTextNative = usePDFText.native.main || usePDFText.native.supp;

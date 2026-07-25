@@ -680,7 +680,7 @@ export class TextSelection {
     this.range = null;
 
     /* eslint-disable-next-line max-len */
-    /** @type {?{anchor: SelPoint, granularity: number, pointerId: number, box: ?{n: number, orientation: number, x: number, y: number}, editWord?: ?import('./viewerWordObjects.js').UiOcrWord, touch?: boolean, clientYOffset?: number}} */
+    /** @type {?{anchor: SelPoint, granularity: number, pointerId: number, box: ?{n: number, orientation: number, x: number, y: number}, editWord?: ?import('./viewerWordObjects.js').UiOcrWord, linkArm?: ?PageLink, touch?: boolean, clientYOffset?: number}} */
     this._drag = null;
 
     /** Last pointerdown, for the multi-click counter. */
@@ -1081,13 +1081,16 @@ export class TextSelection {
       // A double-click captures the word to arm in-place editing, which `_onDragEnd` opens.
       const editWord = (UiText.enableEditing && this._lastDown.count === 2 && !event.altKey)
         ? this.wordAt(event.clientX, event.clientY) : null;
+      // A plain single click arms link-following, which `_onDragEnd` confirms at release.
+      const linkArm = (this._lastDown.count === 1 && !event.shiftKey && !event.ctrlKey && !event.metaKey)
+        ? this.viewer.linkAt(event.clientX, event.clientY) : null;
       // Shift-click extends from the far end of the existing selection rather than restarting it.
       let anchor = point;
       if (event.shiftKey && this.range && this.range.kind === 'linear') {
         anchor = cmpPoint(point, this.range.start) < 0 ? this.range.end : this.range.start;
       }
       this._drag = {
-        anchor, granularity, pointerId: event.pointerId, box: null, editWord,
+        anchor, granularity, pointerId: event.pointerId, box: null, editWord, linkArm,
       };
       this._setLinear(anchor, point, granularity);
     }
@@ -1173,6 +1176,7 @@ export class TextSelection {
   _onDragEnd(event) {
     if (!this._drag || event.pointerId !== this._drag.pointerId) return;
     const editWord = this._drag.editWord;
+    const linkArm = this._drag.linkArm;
     const wasTouch = !!this._drag.touch;
     this._endDrag();
     // A touch drag ending on a non-empty selection opens its action callout.
@@ -1189,6 +1193,11 @@ export class TextSelection {
         this.clear();
         UiText.addTextInput(kwUp);
       }
+    }
+    // Region containment, not exact coordinates, lets a real click's few-px drift still land on the armed link.
+    if (linkArm && event.type === 'pointerup' && this.isEmpty()
+      && this.viewer.linkAt(event.clientX, event.clientY) === linkArm) {
+      this.viewer._followLink(linkArm);
     }
     if (this.viewer.onSelectionChange) this.viewer.onSelectionChange();
   }
@@ -1424,6 +1433,7 @@ export class TextSelection {
       let cursor = '';
       if (this.cursorOverride) cursor = this.cursorOverride;
       else if (hit) cursor = 'pointer';
+      else if (this.viewer.linkAt(clientX, clientY)) cursor = 'pointer';
       else if (this.isOverText(clientX, clientY)) cursor = 'text';
       if (this.viewer.scrollContainer.style.cursor !== cursor) this.viewer.scrollContainer.style.cursor = cursor;
     });

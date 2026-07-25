@@ -122,6 +122,10 @@ export class ScribeViewer {
 
     /** @type {HTMLElement} */
     this.elem = /** @type {any} */ (null);
+    /** @type {?HTMLDivElement} */
+    this._linkStatusEl = null;
+    /** @type {?PageLink} */
+    this._linkStatusEntry = null;
     /**
      * The outer element of the UI component that owns this viewer
      * (e.g. a wrapper that also contains a toolbar), if any.
@@ -1695,7 +1699,47 @@ export class ScribeViewer {
     this._touchCalloutHide = () => hideTouchCallout();
     scrollContainer.addEventListener('pointerdown', (event) => {
       this._lastPrimaryPointerType = event.pointerType || 'mouse';
+      this._lastPointerDownClient = { x: event.clientX, y: event.clientY };
     }, { capture: true, passive: true });
+
+    // Click-to-follow for parsed /Link regions.
+    // Under the custom engine, mouse and pen clicks are confirmed in the selection engine's own pointer flow, so this handler covers only the DOM engine and touch taps.
+    scrollContainer.addEventListener('click', (event) => {
+      if (event.detail > 1) return;
+      if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      if (this.state.layoutMode || this.enableCanvasSelection) return;
+      if (event.target instanceof Element
+        && event.target.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, [contenteditable]')) return;
+      if (this.useCustomSelection) {
+        if (this._lastPrimaryPointerType !== 'touch') return;
+        if (this.textSel && !this.textSel.isEmpty()) return;
+      } else {
+        const sel = window.getSelection();
+        if (sel && !sel.isCollapsed) return;
+      }
+      const entry = this.linkAt(event.clientX, event.clientY);
+      if (!entry) return;
+      // Press and release must land on the same region, so the click that ends a drag never navigates.
+      const down = this._lastPointerDownClient;
+      if (down && this.linkAt(down.x, down.y) !== entry) return;
+      this._followLink(entry);
+    });
+
+    // Show a hovered /Link region's destination in a bottom-left status bubble.
+    let linkStatusRaf = /** @type {?number} */ (null);
+    scrollContainer.addEventListener('pointermove', (event) => {
+      if (linkStatusRaf !== null) return;
+      const {
+        clientX, clientY, buttons, pointerType,
+      } = event;
+      linkStatusRaf = requestAnimationFrame(() => {
+        linkStatusRaf = null;
+        // Touch has no hover, and a held button means a drag or selection is underway, not a hover.
+        const entry = (pointerType === 'touch' || buttons) ? null : this.linkAt(clientX, clientY);
+        this._linkStatusUpdate(entry);
+      });
+    });
+    scrollContainer.addEventListener('pointerleave', () => this._linkStatusUpdate(null));
 
     // On native scroll, update the current page (coalesced to one update per frame),
     // passing the per-frame scroll distance as the speed `updateCurrentPage` uses to decide whether to defer the word build.
@@ -1739,6 +1783,7 @@ export class ScribeViewer {
         if (hlLift && hlLift.wordEl === wordEl) return;
         clearHlLift();
         if (!wordEl) return;
+        if (this.linkAt(event.clientX, event.clientY)) wordEl.style.cursor = 'pointer';
         const kw = /** @type {any} */ (wordEl)._scribeObj;
         if (!kw || !kw.highlightColor) return;
         /** @type {Array<HTMLDivElement>} */
@@ -2130,6 +2175,83 @@ export class ScribeViewer {
     this.displayPage(n, false, false);
     // The same 100px lead-in displayPage's own page jump uses, so the two scroll styles agree at the page top.
     this.scrollContainer.scrollTop = Math.max(0, (this.getPageStop(n) + yFrac * dims.height - 100) * this.zoomLevel);
+  }
+
+  /**
+   * The parsed /Link region under a client point, or null.
+   * @param {number} clientX
+   * @param {number} clientY
+   * @returns {?PageLink}
+   */
+  linkAt(clientX, clientY) {
+    const pagesLinks = this.doc.links?.pages;
+    if (!pagesLinks || pagesLinks.length === 0) return null;
+    const { n, x, y } = this.clientToPage(clientX, clientY);
+    const arr = pagesLinks[n];
+    if (!arr || arr.length === 0 || !this.doc.pageMetrics[n]?.dims) return null;
+    // Link bboxes live in base (orientation-0) space, the frame the OCR word boxes use.
+    const local = this.pageToLocal(n, 0, x, y);
+    for (const entry of arr) {
+      const b = entry.bbox;
+      if (local.x >= b.left && local.x <= b.right && local.y >= b.top && local.y <= b.bottom) return entry;
+    }
+    return null;
+  }
+
+  /**
+   * Navigate a parsed /Link region.
+   * @param {PageLink} entry
+   */
+  _followLink(entry) {
+    this._linkStatusUpdate(null);
+    if (entry.dest) {
+      this.goToOutlineDest(entry.dest);
+    } else if (entry.uri && /^(https?:|mailto:)/i.test(entry.uri.trim())) {
+      // A PDF can carry a javascript: URI that must never execute, so only http and mailto open.
+      window.open(entry.uri, '_blank', 'noopener,noreferrer');
+    }
+  }
+
+  /**
+   * Show, update, or hide the link-status bubble.
+   * The bubble reads out a hovered link's destination in the bottom-left corner, as a browser does for a hovered hyperlink.
+   * @param {?PageLink} entry - The hovered link region, or null to hide.
+   */
+  _linkStatusUpdate(entry) {
+    if (!entry) {
+      if (this._linkStatusEl) this._linkStatusEl.style.display = 'none';
+      this._linkStatusEntry = null;
+      return;
+    }
+    if (entry === this._linkStatusEntry) return;
+    this._linkStatusEntry = entry;
+    if (!this._linkStatusEl) {
+      const el = document.createElement('div');
+      el.className = 'scribe-link-status';
+      Object.assign(el.style, {
+        position: 'absolute',
+        left: '0',
+        bottom: '0',
+        zIndex: '30',
+        maxWidth: '60%',
+        overflow: 'hidden',
+        textOverflow: 'ellipsis',
+        whiteSpace: 'nowrap',
+        background: '#f8f8f8',
+        color: '#333',
+        border: '1px solid #d0d0d0',
+        borderLeft: 'none',
+        borderBottom: 'none',
+        borderTopRightRadius: '4px',
+        padding: '2px 8px',
+        font: '12px system-ui, sans-serif',
+        pointerEvents: 'none',
+      });
+      this.elem.appendChild(el);
+      this._linkStatusEl = el;
+    }
+    this._linkStatusEl.textContent = entry.uri ? entry.uri : `Go to page ${entry.dest.pageIndex + 1}`;
+    this._linkStatusEl.style.display = 'block';
   }
 
   /**

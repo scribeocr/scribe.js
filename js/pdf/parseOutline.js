@@ -83,7 +83,7 @@ function walkSiblings(firstObjNum, objCache, nameDests, objNumToIndex, pages, vi
  * @param {{ view: Array<string|number|null>, yFrac?: number }} dest - Resolved destination, mutated in place.
  * @param {{ mediaBox: number[], cropBox: number[]|null, rotate: number }} [page] - The destination's page object.
  */
-function setDestYFrac(dest, page) {
+export function setDestYFrac(dest, page) {
   const box = page && (page.cropBox || page.mediaBox);
   if (!box || box.length !== 4) return;
 
@@ -112,17 +112,17 @@ function setDestYFrac(dest, page) {
 }
 
 /**
- * Resolve an outline item's destination to `{ dest, action }`:
+ * Resolve an outline item's or /Link annotation's destination to `{ dest, action }`:
  * - a `/Dest` (inline array, named, or indirect) or `/A /GoTo /D` -> `{ dest: { pageIndex, view } }`;
  * - a non-`GoTo` `/A` action (URI, GoToR) -> `{ action: '<<...>>' }` (opaque, re-emitted verbatim);
  * - anything unresolvable or absent -> `{ dest: null, action: null }` (structural node).
- * @param {string} itemText - Raw object text of the outline item.
+ * @param {string} itemText - Raw object text of the outline item or annotation.
  * @param {Map<string, string>} nameDests - Named-destination name to value token map.
  * @param {Map<number, number>} objNumToIndex - Page object number to page index map.
  * @param {*} objCache - Object cache exposing `getObjectText(objNum)`.
  * @returns {{dest: {pageIndex: number, view: Array<number|string|null>}|null, action: string|null}}
  */
-function resolveItemDest(itemText, nameDests, objNumToIndex, objCache) {
+export function resolveItemDest(itemText, nameDests, objNumToIndex, objCache) {
   let destToken = rawValue(itemText, 'Dest');
   if (!destToken) {
     let actionText = null;
@@ -201,7 +201,7 @@ function parseDestArray(arrText) {
  * @param {string} catalogText
  * @returns {Map<string, string>}
  */
-function buildNameDests(objCache, catalogText) {
+export function buildNameDests(objCache, catalogText) {
   const nameDests = new Map();
 
   const namesDictNum = refObjNum(catalogText, 'Names');

@@ -25,6 +25,18 @@ declare global {
         style: Partial<Style>;
     };
 
+    /**
+     * A clickable region parsed from a PDF /Link annotation.
+     * `bbox` is in the page's top-left pixel space.
+     * Exactly one of `dest` (internal page jump) or `uri` (external URL) is set.
+     * `yFrac` is the target's vertical position as a fraction of the visual page height from the top, in [0, 1].
+     */
+    type PageLink = {
+        bbox: bbox;
+        dest?: { pageIndex: number, yFrac?: number };
+        uri?: string;
+    };
+
     // Strings representing supported sources of text.
     // `stext` indicates the text was extracted directly from a PDF using mupdf.
     type TextSource = null | 'tesseract' | 'textract' | 'google_vision' | 'google_doc_ai' | 'abbyy' | 'alto' | 'stext' | 'hocr' | 'text' | 'azure_doc_intel' | 'docx';

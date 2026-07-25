@@ -132,7 +132,8 @@ export function annotIsLiftedReply(annotText, objCache) {
 /**
  * @typedef {Object} PdfLinkRaw
  * @property {[number, number, number, number]} rect - /Rect in pts, bottom-left origin.
- * @property {string} uri - URL from the link's /A /URI action.
+ * @property {string} [uri] - URL from the link's /A /URI action; absent for an internal link.
+ * @property {string} [annotText] - Raw annotation object text of a non-URI link, for the caller to resolve its /Dest or /GoTo target.
  */
 
 /**
@@ -228,10 +229,13 @@ export function extractPdfAnnotations(objCache, pageObjText) {
         // Extracted for the text model and left in passthroughRefs as well, so export still re-emits the source annotation verbatim.
         if (/\/Subtype\s*\/Link\b/.test(annotText)) {
           const linkUri = resolveLinkUri(annotText, objCache);
-          const linkRectStr = linkUri ? resolveArrayValue(annotText, 'Rect', objCache) : null;
+          const linkRectStr = resolveArrayValue(annotText, 'Rect', objCache);
           const linkRect = linkRectStr ? linkRectStr.split(/\s+/).map(Number) : [];
-          if (linkUri && linkRect.length >= 4 && !linkRect.slice(0, 4).some(Number.isNaN)) {
-            links.push({ rect: [linkRect[0], linkRect[1], linkRect[2], linkRect[3]], uri: linkUri });
+          if (linkRect.length >= 4 && !linkRect.slice(0, 4).some(Number.isNaN)) {
+            /** @type {[number, number, number, number]} */
+            const rect = [linkRect[0], linkRect[1], linkRect[2], linkRect[3]];
+            if (linkUri) links.push({ rect, uri: linkUri });
+            else links.push({ rect, annotText });
           }
         }
       }

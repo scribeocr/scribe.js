@@ -3,8 +3,9 @@ import {
   calcLang, cleanFamilyName, mean50, round3, round6,
 } from '../utils/miscUtils.js';
 import {
-  findXrefOffset, parseXref, getPageObjects, getPageContentStream, findFormXObjects, parseFormMatrix,
+  findXrefOffset, parseXref, getPageObjects, getPageContentStream, findFormXObjects, parseFormMatrix, findRootObjNum,
 } from './parsePdfUtils.js';
+import { resolveItemDest, buildNameDests, setDestYFrac } from './parseOutline.js';
 import {
   bytesToLatin1, extractDict, decodePdfName, matMul, decodeTextCodes,
 } from './pdfPrimitives.js';
@@ -389,14 +390,23 @@ export function determinePdfType(pageStats, pageCount) {
 }
 
 /**
+ * @typedef {Object} LinkDestInfo
+ * Document-level context for resolving an internal /Link annotation's destination to a page index.
+ * @property {Map<number, number>} objNumToIndex - Page object number to zero-based page index.
+ * @property {Array<{ objNum: number, mediaBox: number[], cropBox: number[]|null, rotate: number }>} pages - Page objects in document order.
+ * @property {?Map<string, string>} nameDests - Named-destination map, filled lazily on the first internal link and memoized across pages.
+ */
+
+/**
  * Process a single PDF page: parse fonts, extract text, compute type-detection scores.
  * @param {{ objText: string, mediaBox: number[], cropBox: number[]|null, rotate: number }} page
  * @param {ObjectCache} objCache
  * @param {number} n - Page index
  * @param {number} dpi
  * @param {Map<string, string>} [type3GlyphMappings] - See `extractPDFTextDirect`.
+ * @param {LinkDestInfo} [destInfo] - When present, internal /Link annotations resolve to `links` entries; without it only URI links are captured.
  */
-export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
+export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, destInfo) {
   const {
     objText, mediaBox, cropBox, rotate,
   } = page;
@@ -847,27 +857,53 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
     highlights: highlightsRaw, freeTexts: freeTextsRaw, textAnnots: textAnnotsRaw, redacts: redactsRaw, links: linksRaw, passthroughRefs,
   } = extractPdfAnnotations(objCache, objText);
 
-  // Surface each /Link annotation's URL onto the words its rect covers, so text consumers (e.g. the citation-leading exemption in analyzeLayout) can see the hyperlink.
+  // Surface each /Link annotation onto the page as a clickable region: a URL, or an internal /Dest or /GoTo target resolved to a page index and vertical position.
+  // URLs also mark the words their rect covers, so text consumers (e.g. the citation-leading exemption in analyzeLayout) can see the hyperlink.
+  // Internal links never touch words, since a word-level link marker would trip that same exemption on link-dense TOC pages.
   // The source /Link still passes through to export unchanged via passthroughRefs.
+  /** @type {PageLink[]} */
+  const pageLinks = [];
   if (linksRaw.length > 0) {
     const mapPoint = (x, y) => {
       const cx = initialCtm[0] * x + initialCtm[2] * y + initialCtm[4];
       const cy = initialCtm[1] * x + initialCtm[3] * y + initialCtm[5];
       return { x: cx * scale, y: (visualHeightPts - cy) * scale };
     };
-    const linkBoxes = linksRaw.map((l) => {
+    /** @type {Array<{left: number, top: number, right: number, bottom: number, uri: string}>} */
+    const uriBoxes = [];
+    for (const l of linksRaw) {
       const p1 = mapPoint(l.rect[0], l.rect[1]);
       const p2 = mapPoint(l.rect[2], l.rect[3]);
-      return {
-        left: Math.min(p1.x, p2.x), right: Math.max(p1.x, p2.x), top: Math.min(p1.y, p2.y), bottom: Math.max(p1.y, p2.y), uri: l.uri,
+      const bbox = {
+        left: Math.min(p1.x, p2.x), top: Math.min(p1.y, p2.y), right: Math.max(p1.x, p2.x), bottom: Math.max(p1.y, p2.y),
       };
-    });
-    for (const line of pageObj.lines) {
-      for (const word of line.words) {
-        const cx = (word.bbox.left + word.bbox.right) / 2;
-        const cy = (word.bbox.top + word.bbox.bottom) / 2;
-        const hit = linkBoxes.find((b) => cx >= b.left && cx <= b.right && cy >= b.top && cy <= b.bottom);
-        if (hit) word.style.link = hit.uri;
+      if (l.uri) {
+        pageLinks.push({ bbox, uri: l.uri });
+        uriBoxes.push({ ...bbox, uri: l.uri });
+      } else if (l.annotText && destInfo) {
+        if (!destInfo.nameDests) {
+          const catalogObjNum = findRootObjNum(objCache.pdfBytes);
+          const catalogText = (catalogObjNum && objCache.getObjectText(catalogObjNum)) || '';
+          destInfo.nameDests = buildNameDests(objCache, catalogText);
+        }
+        const { dest } = resolveItemDest(l.annotText, destInfo.nameDests, destInfo.objNumToIndex, objCache);
+        if (dest) {
+          setDestYFrac(dest, destInfo.pages[dest.pageIndex]);
+          /** @type {PageLink} */
+          const entry = { bbox, dest: { pageIndex: dest.pageIndex } };
+          if (dest.yFrac !== undefined) entry.dest.yFrac = dest.yFrac;
+          pageLinks.push(entry);
+        }
+      }
+    }
+    if (uriBoxes.length > 0) {
+      for (const line of pageObj.lines) {
+        for (const word of line.words) {
+          const cx = (word.bbox.left + word.bbox.right) / 2;
+          const cy = (word.bbox.top + word.bbox.bottom) / 2;
+          const hit = uriBoxes.find((b) => cx >= b.left && cx <= b.right && cy >= b.top && cy <= b.bottom);
+          if (hit) word.style.link = hit.uri;
+        }
       }
     }
   }
@@ -892,7 +928,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings) {
   }
 
   return {
-    pageObj, langSet, fontSet, dataTablePage, pageStats, annotations, annotationPassthroughRefs: passthroughRefs,
+    pageObj, langSet, fontSet, dataTablePage, pageStats, annotations, annotationPassthroughRefs: passthroughRefs, links: pageLinks,
   };
 }
 
@@ -979,20 +1015,22 @@ export function extractPDFTextDirect(pdfBytes, options = {}) {
   const objCache = new ObjectCache(pdfBytes, xrefEntries);
 
   const pages = getPageObjects(objCache);
+  /** @type {LinkDestInfo} */
+  const destInfo = { objNumToIndex: new Map(pages.map((p, i) => [p.objNum, i])), pages, nameDests: null };
   const results = [];
 
   if (pageIndices) {
     const pageSet = new Set(pageIndices);
     for (let n = 0; n < pages.length; n++) {
       if (pageSet.has(n)) {
-        results.push(parseSinglePage(pages[n], objCache, n, dpi, type3GlyphMappings));
+        results.push(parseSinglePage(pages[n], objCache, n, dpi, type3GlyphMappings, destInfo));
       } else {
         results.push(null);
       }
     }
   } else {
     for (let n = 0; n < pages.length; n++) {
-      results.push(parseSinglePage(pages[n], objCache, n, dpi, type3GlyphMappings));
+      results.push(parseSinglePage(pages[n], objCache, n, dpi, type3GlyphMappings, destInfo));
     }
   }
 
