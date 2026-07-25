@@ -1935,6 +1935,20 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
   //      x-adjacent, single uppercase letter.
   // The orphan is inserted at the correct x-position so word splitting groups it
   // with its spatial neighbor.
+  // Both merge cases require x-adjacency, so a line whose extent misses the orphan by more than the loosest per-char slack cannot contain a match and is skipped whole.
+  // A table page of single-digit cells makes thousands of lines orphans, and without the skip every one re-walks every char on the page.
+  const lineExtents = lines.map((lineChars) => {
+    let minX = Infinity;
+    let maxRight = -Infinity;
+    let maxFontSize = 0;
+    for (const ch of lineChars) {
+      if (ch.x < minX) minX = ch.x;
+      const r = ch.x + ch.width;
+      if (r > maxRight) maxRight = r;
+      if (ch.fontSize > maxFontSize) maxFontSize = ch.fontSize;
+    }
+    return { minX, maxRight, maxFontSize };
+  });
   for (let li = lines.length - 1; li >= 0; li--) {
     if (lines[li].length !== 1) continue;
     const orphan = lines[li][0];
@@ -1944,6 +1958,9 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
     for (let lj = 0; lj < lines.length && !merged; lj++) {
       if (lj === li) continue;
       const target = lines[lj];
+      const ext = lineExtents[lj];
+      const slack = Math.max(orphan.fontSize, ext.maxFontSize) * 0.1;
+      if (orphanRight < ext.minX - slack || orphan.x > ext.maxRight + slack) continue;
       for (const ch of target) {
         if (orphan.fontInfo.familyName !== ch.fontInfo.familyName) continue;
         const chRight = ch.x + ch.width;
@@ -1960,7 +1977,11 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
             if (target[k].x > orphan.x) { insertIdx = k; break; }
           }
           target.splice(insertIdx, 0, orphan);
+          if (orphan.x < ext.minX) ext.minX = orphan.x;
+          if (orphanRight > ext.maxRight) ext.maxRight = orphanRight;
+          if (orphan.fontSize > ext.maxFontSize) ext.maxFontSize = orphan.fontSize;
           lines.splice(li, 1);
+          lineExtents.splice(li, 1);
           merged = true;
           break;
         }
@@ -1975,7 +1996,11 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
               if (target[k].x > orphan.x) { insertIdx = k; break; }
             }
             target.splice(insertIdx, 0, orphan);
+            if (orphan.x < ext.minX) ext.minX = orphan.x;
+            if (orphanRight > ext.maxRight) ext.maxRight = orphanRight;
+            if (orphan.fontSize > ext.maxFontSize) ext.maxFontSize = orphan.fontSize;
             lines.splice(li, 1);
+            lineExtents.splice(li, 1);
             merged = true;
             break;
           }
@@ -1989,8 +2014,9 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
   // alone would also merge unrelated column-aligned lines.
   const lineAnchorOf = (lineChars) => {
     let maxSize = 0;
+    let anchorFamily = null;
     for (const ch of lineChars) {
-      if (ch.text !== ' ' && ch.fontSize > maxSize) maxSize = ch.fontSize;
+      if (ch.text !== ' ' && ch.fontSize > maxSize) { maxSize = ch.fontSize; anchorFamily = ch.fontInfo.familyName; }
     }
     if (maxSize === 0) return null;
     const ys = [];
@@ -2007,6 +2033,7 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
     ys.sort((a, b) => a - b);
     return {
       anchorFontSize: maxSize,
+      anchorFamily,
       baselineY: ys[Math.floor(ys.length / 2)],
       leftX,
       rightX,
@@ -2045,6 +2072,10 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
     lines.splice(li + 1, 1);
   }
 
+  // The reattach pass below tests every candidate fragment against every other line, so each line's anchor is computed once here and kept in step with the splices.
+  // A page of numeric table cells makes thousands of lines candidates, and recomputing anchors per pair dominates the page's extraction cost.
+  const anchors = lines.map(lineAnchorOf);
+
   // Reattach out-of-order inline reference markers to the line they belong to.
   // Some generators (web print-to-PDF among them) emit a page's superscript markers, footnote numerals and reference symbols, as a trailing block at the end of the content stream.
   // Each lands as its own reduced-size line in a band a full-size line already occupies, which the neighbor-only superscript merges above never reach, so it strands as a standalone paragraph.
@@ -2072,7 +2103,7 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
     let bestDist = Infinity;
     for (let lj = 0; lj < lines.length; lj++) {
       if (lj === li) continue;
-      const host = lineAnchorOf(lines[lj]);
+      const host = anchors[lj];
       if (!host) continue;
       // The marker must be superscript-scaled for its host: reduced, but not below ~0.4x, since a body-size line number beside an oversized garbage line is not that line's superscript.
       // It must also share the host's dominant text font.
@@ -2080,12 +2111,7 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
       if (isFnMarker) {
         if (fragSize < host.anchorFontSize * 0.7 || fragSize > host.anchorFontSize * 1.15) continue;
       } else if (fragSize >= host.anchorFontSize * 0.85 || fragSize < host.anchorFontSize * 0.4) continue;
-      let hostFamily = null;
-      let hostMax = 0;
-      for (const c of lines[lj]) {
-        if (c.text !== ' ' && c.fontSize > hostMax) { hostMax = c.fontSize; hostFamily = c.fontInfo.familyName; }
-      }
-      if (hostFamily !== fragFamily) continue;
+      if (host.anchorFamily !== fragFamily) continue;
       // Raised baseline: marker sits above the host baseline (y grows downward) by up to ~0.8 em.
       const drop = host.baselineY - fragBaseline;
       if (drop < -host.anchorFontSize * 0.1 || drop > host.anchorFontSize * 0.8) continue;
@@ -2101,7 +2127,9 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
       if (target[k].x > fragLeft) { insertIdx = k; break; }
     }
     target.splice(insertIdx, 0, ...lines[li]);
+    anchors[best] = lineAnchorOf(target);
     lines.splice(li, 1);
+    anchors.splice(li, 1);
   }
 
   // Process each line (chars are already in stream order)
