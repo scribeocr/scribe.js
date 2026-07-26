@@ -2913,7 +2913,12 @@ function classifyRole(f, model, colWidth, prev) {
     && (short || f.bold <= 0.6 || f.bold >= 0.9);
   // A solid-bold line whose style tuple is not a heading signature because the document also opens run-in items in that bold style.
   // Body text is rarely solid-bold under the boldHeading gate, so even a full-width line promotes on weight alone.
-  const fullBoldHeading = !sigMember && f.bold >= 0.9 && model.boldHeading && f.nChar <= 200 && letterDom;
+  // A document that sets whole notice paragraphs in solid bold is the exception, so a prose-shaped tuple vetoes the weight path.
+  // Both shape tests are required, since a title-case bold heading also wraps onto lowercase function words ("...of | the Evidence") yet its tuple stays majority-short.
+  const tupleStats = model.headingSigStats.get(f.sigKey);
+  const tupleProse = !!(tupleStats && tupleStats.n >= 2
+    && tupleStats.lowerStart / tupleStats.n > 0.4 && tupleStats.short / tupleStats.n < 0.5);
+  const fullBoldHeading = !sigMember && !tupleProse && f.bold >= 0.9 && model.boldHeading && f.nChar <= 200 && letterDom;
   let displaySingleton = false;
   if (!sigMember && f.sizeRatio >= 1.15 && f.nChar <= 200 && letterDom) {
     const lm = col ? col.left : (model.pageFlush.get(f.page) ?? model.bodyLeft);
@@ -2930,7 +2935,7 @@ function classifyRole(f, model, colWidth, prev) {
   // The deep-indent gate separates a real sub-heading from a flush citation connector ("v.", "e. g.") that shows the same alpha-dot enumerator form at the body margin.
   let enumSetOffHeading = false;
   if (!sigMember && en && en.scheme !== 'bullet' && en.scheme !== 'sup-ref' && f.familyDistinct) {
-    const flushL = model.pageFlush.get(f.page) ?? model.bodyLeft;
+    const flushL = col ? col.left : (model.pageFlush.get(f.page) ?? model.bodyLeft);
     enumSetOffHeading = f.left > flushL + Math.max(model.indentDelta, 0) + model.bodySize
       && letters >= 2 && letters >= digits;
   }
