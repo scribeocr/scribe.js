@@ -1305,6 +1305,103 @@ export function analyzeLayout(pages, opts = {}) {
     }
   }
 
+  // Books and reports also set note sections with full-size baseline markers ("12."), which the superscript-keyed pass above cannot see.
+  // A bare number-dot opener is ambiguous with a numbered body paragraph, so this path additionally demands the run be introduced by a notes/references heading.
+  // Computed independently of the superscript pass so documents that pass already handles cannot be perturbed.
+  const baselineOpens = (f) => !!(f.enumerator && f.enumerator.scheme === 'num-dot'
+    && f.enumerator.value != null && !f.firstWordSup
+    && !f.lineNum && !f.folio && !f.runningFurniture
+    && bodyRefLabelsDoc.has(String(f.enumerator.value)));
+  if (feats.some(baselineOpens)) {
+    /** @type {Map<number, LineFeat[]>} */
+    const byPage = new Map();
+    for (const f of feats) {
+      let arr = byPage.get(f.page);
+      if (!arr) { arr = []; byPage.set(f.page, arr); }
+      arr.push(f);
+    }
+    /** @type {Map<number, {noteLines: LineFeat[], openers: LineFeat[], values: number[], dominated: boolean}>} */
+    const notePages = new Map();
+    for (const [p, pf] of byPage) {
+      const noteLines = [];
+      /** @type {LineFeat[]} */
+      const openers = [];
+      for (let i = 0; i < pf.length; i++) {
+        if (!baselineOpens(pf[i])) continue;
+        const start = pf[i];
+        noteLines.push(start); openers.push(start);
+        // The same asymmetric absorption walk as the superscript pass.
+        for (let j = i + 1; j < pf.length; j++) {
+          const g = pf[j];
+          if (baselineOpens(g) || g.runningFurniture) break;
+          const dx = g.left - start.left;
+          if (g.sizeRatio >= 1.15 || dx < -bodySize * 0.6 || dx > bodySize * 2.5) break;
+          if (g.top - pf[j - 1].top > leading * 2.2) break;
+          noteLines.push(g);
+        }
+      }
+      if (!noteLines.length) continue;
+      const content = pf.filter((f) => !f.runningFurniture).length;
+      const values = openers.map((f) => f.enumerator.value).sort((a, b) => a - b);
+      notePages.set(p, { noteLines, openers, values, dominated: content > 0 && noteLines.length / content > 0.6 });
+    }
+    const noteDomPages = [...notePages.keys()].filter((p) => notePages.get(p).dominated).sort((a, b) => a - b);
+    /** @type {number[][]} */
+    const sectionRuns = [];
+    for (const p of noteDomPages) {
+      const lastRun = sectionRuns[sectionRuns.length - 1];
+      if (lastRun && lastRun[lastRun.length - 1] === p - 1) lastRun.push(p);
+      else sectionRuns.push([p]);
+    }
+    const noteHeadingRe = /^((end|foot)?notes(\s+to\s+.{1,40})?|references?|bibliography|works\s+cited|literature(\s+cited)?|sources|citations|list\s+of\s+(references|authorities|sources|documents))\s*[:.]?$/i;
+    for (const run of sectionRuns) {
+      if (run.length < 2) continue;
+      // A value-contiguous non-dominated neighbour page belongs to the section: its opening shares the last body page, and its tail page no longer dominates.
+      // No minimum run length for this, unlike the superscript pass, because the heading gate below already corroborates the section.
+      let first = run[0];
+      const before = notePages.get(run[0] - 1);
+      const firstVals = notePages.get(run[0]).values;
+      if (before && !before.dominated && firstVals.length && before.values.length
+        && before.values[before.values.length - 1] + 1 === firstVals[0]) first = run[0] - 1;
+      let last = run[run.length - 1];
+      const after = notePages.get(run[run.length - 1] + 1);
+      const lastVals = notePages.get(run[run.length - 1]).values;
+      if (after && !after.dominated && lastVals.length && after.values.length
+        && after.values[0] - 1 === lastVals[lastVals.length - 1]) last = run[run.length - 1] + 1;
+      // Roles are not assigned yet at this stage (classifyRole itself consumes f.endnote), so the heading is matched by its text form alone.
+      const fo = notePages.get(first).openers.slice().sort((a, b) => a.top - b.top)[0];
+      const anchored = (byPage.get(first) || []).some((f) => {
+        if (f.runningFurniture || f.folio || f.lineNum || f.top >= fo.top - 1) return false;
+        const t = (f.text || '').trim();
+        return noteHeadingRe.test(t)
+          || (t.length <= 60 && /\b(documents?|materials?|sources)\b/i.test(t) && /\b(cited|considered|reviewed|relied)\b/i.test(t));
+      });
+      if (!anchored) continue;
+      for (let p = first; p <= last; p++) {
+        const block = notePages.get(p);
+        if (block) for (const f of block.noteLines) f.endnote = true;
+      }
+      // A note's tail spills onto the section's next page above that page's first marker, where the forward walk cannot reach it.
+      // Scoped to these anchored runs: a superscript-marker note page can carry body text above its notes, which this walk must never eat.
+      for (let p = first + 1; p <= last; p++) {
+        const block = notePages.get(p);
+        if (!block) continue;
+        const fo = block.openers.slice().sort((a, b) => a.top - b.top)[0];
+        const above = (byPage.get(p) || [])
+          .filter((f) => !f.endnote && !f.runningFurniture && !f.folio && !f.lineNum && f.top < fo.top - 1)
+          .sort((a, b) => b.top - a.top);
+        let cur = fo;
+        for (const g of above) {
+          const dx = g.left - fo.left;
+          if (g.sizeRatio >= 1.15 || dx < -bodySize * 0.6 || dx > bodySize * 2.5) break;
+          if (cur.top - g.top > leading * 2.2) break;
+          g.endnote = true;
+          cur = g;
+        }
+      }
+    }
+  }
+
   // Note-style profile: the document's note conventions.
   // Doc-level gate for classifyRole's rule that admits a full-size leading number matching an in-text reference as a note.
   let baselineMarkerNotesBelowSep = 0;
@@ -1517,6 +1614,24 @@ export function analyzeLayout(pages, opts = {}) {
           g.role = start.role;
           cur = g;
         }
+      }
+    }
+    // A block quote's source-attribution line inside a note sits right of every anchor's column window, so the walks above leave it body.
+    for (const [, pf] of absorbByPage) {
+      const sorted = [...pf].sort((a, b) => a.top - b.top || a.left - b.left);
+      for (let i = 1; i < sorted.length - 1; i++) {
+        const f = sorted[i];
+        if (f.role !== 'body' || f.runningFurniture || f.lineNum || f.folio || f.inTable) continue;
+        const up = sorted[i - 1];
+        const dn = sorted[i + 1];
+        if (up.role !== dn.role || (up.role !== 'footnote' && up.role !== 'endnote')) continue;
+        if (f.top - up.top > leading * 2.2 || dn.top - f.top > leading * 2.2) continue;
+        if (Math.abs(f.size - up.size) > up.size * 0.12) continue;
+        if (f.bold >= 0.9 && up.bold < 0.6) continue;
+        // The right-edge cap keeps a second column's interleaved lines out.
+        if (f.left < Math.min(up.left, dn.left) - bodySize * 0.6
+          || f.right > Math.max(up.right, dn.right) + bodySize * 0.6) continue;
+        f.role = up.role;
       }
     }
   }
