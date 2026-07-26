@@ -297,9 +297,9 @@ const createContextMenuHTML = () => {
     ],
     [
       item('contextMenuHighlightButton', 'Highlight', CM_SWATCH_HTML, highlightSelectionClick),
+      item('contextMenuCommentButton', 'Comment', CM_COMMENT_SVG, commentSelectionClick),
       item('contextMenuUnderlineButton', 'Underline', CM_UNDERLINE_SVG, underlineSelectionClick),
       item('contextMenuStrikethroughButton', 'Strikethrough', CM_STRIKE_SVG, strikeoutSelectionClick),
-      item('contextMenuCommentButton', 'Comment', CM_COMMENT_SVG, commentSelectionClick),
       item('contextMenuBookmarkButton', 'Add bookmark', CM_BOOKMARK_SVG, addBookmarkClick),
     ],
     [

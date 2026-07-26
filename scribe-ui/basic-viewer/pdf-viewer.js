@@ -16,7 +16,7 @@ import { createPagesMorph } from '../js/controls/pagesMorph.js';
 import { createBookmarksPanel } from '../js/controls/bookmarksPanel.js';
 import { createCommentsPanel } from '../js/controls/commentsPanel.js';
 import {
-  createHighlightTool, createNoteTool, createDropZone, openDocumentFromFile, createRedactTool,
+  createHighlightTool, createDropZone, openDocumentFromFile, createRedactTool,
 } from '../js/controls/tools.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
 import { IOS_WEBKIT } from '../js/viewerImageCache.js';
@@ -334,12 +334,6 @@ class ScribePDFViewer {
       })
       : null;
 
-    // Freestanding-note tool: opt-in via `comments`, and built on the highlight tool's comment editor.
-    /** @type {?ReturnType<typeof createNoteTool>} */
-    this._noteTool = (this._highlightTool && comments)
-      ? createNoteTool(this.scribe)
-      : null;
-
     /** @type {?ReturnType<typeof createSearchBar>} */
     this._searchBar = null;
     /** @type {?ReturnType<typeof createPrintControls>} */
@@ -474,7 +468,6 @@ class ScribePDFViewer {
         toolbarButtons.appendChild(makeSeparator());
         toolbarButtons.appendChild(this._highlightTool.toolbarElem);
       }
-      if (this._noteTool) toolbarButtons.appendChild(this._noteTool.toolbarElem);
       // Retained so the editor subclass can extend the center button cluster (e.g. its Redact tool).
       this._toolbarButtonsElem = toolbarButtons;
 
@@ -602,9 +595,6 @@ class ScribePDFViewer {
     // Selection-driven highlighting + comment marks (needs `scribe.elem`, so wired after init).
     if (this._highlightTool) {
       this._teardownCallbacks.push(this._highlightTool.installBehaviors());
-    }
-    if (this._noteTool) {
-      this._teardownCallbacks.push(this._noteTool.installBehaviors());
     }
 
     // Backup mouseup listener on the document to clear selection state if mouseup happens outside the scroll container.

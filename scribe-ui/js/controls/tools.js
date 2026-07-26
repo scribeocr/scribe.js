@@ -5,9 +5,7 @@ import { makeIconButton } from './toolbar.js';
 import {
   applyHighlight, createInkEdges, recolorHighlightGroup, removeHighlightGroup, setHighlightReplies,
 } from '../viewerHighlights.js';
-import {
-  createNote, focusNoteEditor, removeNote, setNoteComment,
-} from '../viewerNotes.js';
+import { focusNoteEditor, removeNote, setNoteComment } from '../viewerNotes.js';
 import { redactWords, redactRegion } from '../viewerRedactions.js';
 import { filesFromDropEvent } from '../dragAndDrop.js';
 
@@ -968,7 +966,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     // A freestanding note is edited in its comment card, so opening its editor pins that card.
     scribe._openNoteEditor = (annot, pageIndex) => focusNoteEditor(scribe, pageIndex, annot);
 
-    // Notes' single editor entry (the note tool, the Comments panel, focusNoteEditor) pins the card.
+    // Notes' single editor entry (the Comments panel, focusNoteEditor) pins the card.
     scribe._pinNoteCard = (annot, n) => cmtPin({ kind: 'note', annot, n });
 
     const isWordOrLine = (n) => n instanceof HTMLElement
@@ -1021,52 +1019,6 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     updateCommentIcons,
     installBehaviors,
   };
-}
-
-// A speech-bubble-with-plus glyph for the note tool.
-// eslint-disable-next-line max-len
-export const NOTE_TOOL_SVG = '<svg xmlns="http://www.w3.org/2000/svg" height="20" width="20" viewBox="0 0 24 24" fill="currentColor"><path d="M4 3h16a1 1 0 0 1 1 1v12a1 1 0 0 1-1 1H9l-4 4v-4H4a1 1 0 0 1-1-1V4a1 1 0 0 1 1-1zm7 3v3H8v2h3v3h2v-3h3V9h-3V6h-2z"/></svg>';
-
-/**
- * Build the freestanding-note tool: a toolbar button that drops a note at the middle of the visible viewport and puts the cursor in its inline editor.
- * The user drags the note's mark to reposition it rather than clicking to place it.
- * @param {import('../../viewer.js').ScribeViewer} scribe
- * @returns {{ toolbarElem: HTMLSpanElement, installBehaviors: () => (() => void) }}
- */
-export function createNoteTool(scribe) {
-  const toolbarElem = makeIconButton('Add note', NOTE_TOOL_SVG);
-
-  toolbarElem.addEventListener('click', () => {
-    // Land the note at the viewport center: the current page's top corner can be scrolled off screen, so a corner drop can appear to land on the wrong page or nowhere.
-    let n = -1;
-    let x = 0;
-    let y = 0;
-    if (scribe.scrollContainer) {
-      const r = scribe.scrollContainer.getBoundingClientRect();
-      const p = scribe.clientToPage(r.left + r.width / 2, r.top + r.height / 2);
-      if (p.n >= 0) { n = p.n; x = p.x; y = p.y; }
-    }
-    const centered = n >= 0;
-    if (!centered) n = scribe.state?.cp?.n ?? 0;
-    const pm = scribe.doc.pageMetrics[n];
-    if (!pm) return;
-    if (centered) {
-      x = Math.max(0, Math.min(x - 12, pm.dims.width - 46));
-      y = Math.max(8, Math.min(y - 12, pm.dims.height - 46));
-    } else {
-      // Viewport center off every page (e.g. the void past the last page): top-right of the current page.
-      x = Math.max(0, pm.dims.width - 46);
-      y = 22;
-    }
-    const annot = createNote(scribe, n, x, y);
-    scribe.renderNotes(n);
-    focusNoteEditor(scribe, n, annot);
-  });
-
-  // Placement is immediate, so there are no page-level behaviors to install.
-  function installBehaviors() { return () => {}; }
-
-  return { toolbarElem, installBehaviors };
 }
 
 // Lines of text with one struck through by a solid redaction bar.
