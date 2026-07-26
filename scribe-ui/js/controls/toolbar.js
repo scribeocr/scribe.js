@@ -660,6 +660,7 @@ export function createSearchBar(scribe, rootElem) {
   }
 
   function openSearch() {
+    if (!scribe.doc || !scribe.doc.pageMetrics || scribe.doc.pageMetrics.length === 0) return;
     findGroupElem.style.display = 'inline-flex';
     searchElem.classList.add('active');
     scribe.state.searchMode = true;
@@ -866,6 +867,13 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
 
     .${r} .cr-icon-button.busy {
       opacity: .5;
+      pointer-events: none;
+    }
+
+    /* A control that needs an open document is dimmed in place rather than hidden, so the bar never re-flows. */
+    .${r} .cr-icon-button.disabled {
+      color: color-mix(in srgb, var(--scribe-ink-2) 50%, var(--scribe-ink-3));
+      cursor: default;
       pointer-events: none;
     }
 

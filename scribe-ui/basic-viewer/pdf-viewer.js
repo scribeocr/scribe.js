@@ -369,7 +369,14 @@ class ScribePDFViewer {
      * Which of the left sidebar's three mutually-exclusive views is open, or null when it is closed.
      * @type {'thumbnails'|'bookmarks'|'comments'|null}
      */
-    this._activeSidebar = showThumbnails ? 'thumbnails' : null;
+    this._activeSidebar = null;
+    /**
+     * The view the rail reopens on when a document arrives in the empty viewer.
+     * @type {'thumbnails'|'bookmarks'|'comments'|null}
+     */
+    this._sidebarWhenLoaded = showThumbnails ? 'thumbnails' : null;
+    // The empty viewer has no pages to list, so the rail starts closed rather than drawing its edge across the drop zone.
+    if (this._thumbnailPanel) this._thumbnailPanel.setVisible(false);
     /** @type {?{raf: number}} In-flight sidebar open/close/switch transition (its live rAF handle), or null. */
     this._sidebarAnim = null;
     /** @type {?{min: number, max: number}} Rail width bounds cached for the duration of a bookmarks/comments-view resize drag. */
@@ -552,6 +559,8 @@ class ScribePDFViewer {
     // Phone layout: the component's own size decides, so a narrow embed in a wide window behaves like a phone.
     // The coarse-pointer height test keeps landscape phones in the phone layout: one-handed reach is about the device, not the orientation.
     this._setPhoneChrome(initWidth <= 480 || (this._coarsePointer && initHeight <= 480));
+    // _setPhoneChrome above early-returns when the layout does not change, so a desktop boot applies the empty-state dimming here.
+    this._syncDocGatedControls();
 
     this._installFit(fit, options.fit === undefined);
 
@@ -714,7 +723,7 @@ class ScribePDFViewer {
     const origCallback = this.scribe.displayPageCallback;
     this.scribe.displayPageCallback = () => {
       if (origCallback) origCallback();
-      if (this.pageNumElem) this.pageNumElem.value = (this.scribe.state.cp.n + 1).toString();
+      if (this.pageNumElem) this.pageNumElem.value = this.doc ? (this.scribe.state.cp.n + 1).toString() : '';
       this._syncDockPageNumWidth();
       // Keep the navbar total in sync with the live page count. Every op that changes the count (paste, insert, delete, move, undo/redo) ends in displayPage, so refreshing here covers them all.
       if (this.pageCountElem && this.doc) this.pageCountElem.textContent = this.doc.inputData.pageCount.toString();
@@ -983,6 +992,23 @@ class ScribePDFViewer {
     }
     // The panel toggles above also decide the phone sheet's tabs.
     this._syncDockPanelsBtn();
+    this._syncDocGatedControls();
+
+    // A load is not a user toggle, so the reopened rail lands instantly rather than sliding in.
+    if (!prev && !this._phoneChrome && this._sidebarWhenLoaded) {
+      const wanted = this._panelFor(this._sidebarWhenLoaded);
+      const key = wanted && wanted.toggleElem.style.display !== 'none' ? this._sidebarWhenLoaded : 'thumbnails';
+      const panel = this._panelFor(key);
+      if (panel) {
+        this._activeSidebar = key;
+        const el = panel.panelElem;
+        el.style.transition = 'none';
+        panel.setVisible(true);
+        requestAnimationFrame(() => { el.style.transition = ''; });
+        // setVisible re-insets the document only for the thumbnail view, so the other views need this relayout.
+        if (this.scribe.scrollContainer) this._relayout();
+      }
+    }
 
     // Off the critical path: the displaced document's workers die asynchronously while the new page renders.
     // Safe because each document's workers and fonts are namespaced by a unique docId.
@@ -1039,8 +1065,8 @@ class ScribePDFViewer {
     this._ownsDoc = false;
     this.resetSearch();
 
-    if (this.pageCountElem) this.pageCountElem.textContent = '0';
-    if (this.pageNumElem) this.pageNumElem.value = '1';
+    if (this.pageCountElem) this.pageCountElem.textContent = '';
+    if (this.pageNumElem) this.pageNumElem.value = '';
     this._syncDockPageNumWidth();
     if (this.dropZone) this.dropZone.style.display = '';
     if (this._thumbnailPanel) this._thumbnailPanel.rebuild();
@@ -1052,7 +1078,20 @@ class ScribePDFViewer {
       // Hiding the strip changes the document's bottom inset.
       if (this._phoneChrome && this.scribe.scrollContainer) this._relayout();
     }
+    if (!this._phoneChrome) {
+      this._sidebarWhenLoaded = this._activeSidebar;
+      const open = this._panelFor(this._activeSidebar);
+      this._activeSidebar = null;
+      if (open) {
+        const el = open.panelElem;
+        el.style.transition = 'none';
+        open.setVisible(false);
+        requestAnimationFrame(() => { el.style.transition = ''; });
+      }
+      if (this.scribe.scrollContainer) this._relayout();
+    }
     this._syncDockPagesBtn();
+    this._syncDocGatedControls();
 
     if (terminatePrev) prev.terminate().catch(() => {});
 
@@ -1923,6 +1962,7 @@ class ScribePDFViewer {
     }
     this._updateRecognizeButton();
     this._syncDockPageNumWidth();
+    this._syncDocGatedControls();
     if (this.scribe.scrollContainer) this._relayout();
   }
 
@@ -2584,6 +2624,24 @@ class ScribePDFViewer {
   _syncDockPagesBtn() {
     if (!this._dockPagesBtn) return;
     this._dockPagesBtn.classList.toggle('active', this._roomOpen);
+  }
+
+  /** Disable the controls that need a document while none is loaded. */
+  _syncDocGatedControls() {
+    const disabled = !this.doc;
+    for (const el of [
+      this._searchBar?.searchElem,
+      this._thumbnailPanel?.toggleElem,
+      this._bookmarksPanel?.toggleElem,
+      this._commentsPanel?.toggleElem,
+      this._dockPagesBtn,
+      this._sheetPanelsBtn,
+    ]) {
+      if (!el) continue;
+      el.classList.toggle('disabled', disabled);
+      el.ariaDisabled = disabled ? 'true' : 'false';
+      el.tabIndex = disabled ? -1 : 0;
+    }
   }
 
   /** Hide the dock's Panels button when the sheet would have no tabs to show. */

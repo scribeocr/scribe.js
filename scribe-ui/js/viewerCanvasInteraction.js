@@ -1209,17 +1209,23 @@ export const contextMenuFunc = (viewer, event) => {
   try {
     const pointerRelative = viewer.clientToContent(event.clientX, event.clientY);
     let targetObj = eventTargetObj(event);
-    // Fill bands and markup bars are pointer-transparent, so a right-click on one between words lands on no word element.
+    // Fill bands and markup bars are pointer-transparent, so a right-click over one lands on no word element.
     if (!viewer.state.layoutMode && !(targetObj instanceof UiOcrWord && (targetObj.highlightColor || targetObj.markupType))) {
-      const hitRect = (rectElem) => {
-        if (!rectElem) return false;
-        const r = rectElem.getBoundingClientRect();
-        return event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom;
-      };
-      for (const kw of viewer.getUiWords()) {
-        if (hitRect(kw.highlightRectElem) || hitRect(kw.markupRectElem)) {
-          targetObj = kw;
-          break;
+      if (viewer.textSel) {
+        // Painted bands stop at the glyphs, so hit-testing them would leave the leading between two rows of one highlight untargetable.
+        targetObj = viewer.textSel.hitTestHighlight(event.clientX, event.clientY)?.kw ?? targetObj;
+      } else {
+        // The DOM engine has no line index to hit-test.
+        const hitRect = (rectElem) => {
+          if (!rectElem) return false;
+          const r = rectElem.getBoundingClientRect();
+          return event.clientX >= r.left && event.clientX <= r.right && event.clientY >= r.top && event.clientY <= r.bottom;
+        };
+        for (const kw of viewer.getUiWords()) {
+          if (hitRect(kw.highlightRectElem) || hitRect(kw.markupRectElem)) {
+            targetObj = kw;
+            break;
+          }
         }
       }
     }
