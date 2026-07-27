@@ -11,28 +11,52 @@ const DOC_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stro
   + '<path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/>'
   + '<path d="M14 3v5h5M8 13h8M8 17h5"/></svg>';
 
+/** Download arrow, matching the app menu's own Export PDF icon. */
+const EXPORT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
+  + '<path d="M12 4v10m0 0l-3.5-3.5M12 14l3.5-3.5M5 19h14"/></svg>';
+
+/**
+ * Every format the exporter writes.
+ * @type {Array<{format: 'pdf'|'docx'|'xlsx'|'html'|'txt'|'md'|'hocr'|'alto'|'scribe', label: string}>}
+ */
+const EXPORT_FORMATS = [
+  { format: 'pdf', label: 'PDF (.pdf)' },
+  { format: 'docx', label: 'Word (.docx)' },
+  { format: 'xlsx', label: 'Excel (.xlsx)' },
+  { format: 'html', label: 'HTML (.html)' },
+  { format: 'txt', label: 'Text (.txt)' },
+  { format: 'md', label: 'Markdown (.md)' },
+  { format: 'hocr', label: 'hOCR (.hocr)' },
+  { format: 'alto', label: 'ALTO XML (.xml)' },
+  { format: 'scribe', label: 'Scribe session (.scribe)' },
+];
+
 /**
  * Append a "Debug" section to the app menu: a header row plus dev-only tools.
  * @param {ReturnType<import('./toolbar.js').createAppMenu>} appMenu - The app menu built in pdf-viewer.js.
  * @param {import('../../viewer.js').ScribeViewer} viewer - The viewer whose overlay the tools act on.
  * @param {(files: File[]) => Promise<void>} openFiles - Opens the given files in the viewer.
- * @param {import('../../basic-viewer/pdf-viewer.js').ScribePDFViewer} host - The viewer host, for the sidebar panels the seeding tools reveal.
+ * @param {import('../../basic-viewer/pdf-viewer.js').ScribePDFViewer} [host] - The viewer host.
  */
 export function installDebugMenu(appMenu, viewer, openFiles, host) {
   appMenu.addSeparator();
 
-  const header = document.createElement('div');
-  header.textContent = 'Debug';
-  Object.assign(header.style, {
-    padding: '4px 11px 2px',
-    fontSize: '10.5px',
-    fontWeight: '700',
-    letterSpacing: '.06em',
-    textTransform: 'uppercase',
-    color: 'var(--scribe-ink-3)',
-    userSelect: 'none',
-  });
-  appMenu.menuElem.appendChild(header);
+  /** @param {string} text */
+  const makeHeader = (text) => {
+    const header = document.createElement('div');
+    header.textContent = text;
+    Object.assign(header.style, {
+      padding: '4px 11px 2px',
+      fontSize: '10.5px',
+      fontWeight: '700',
+      letterSpacing: '.06em',
+      textTransform: 'uppercase',
+      color: 'var(--scribe-ink-3)',
+      userSelect: 'none',
+    });
+    return header;
+  };
+  appMenu.menuElem.appendChild(makeHeader('Debug'));
 
   appMenu.addAction('Load sample PDF', DOC_SVG, async () => {
     try {
@@ -44,6 +68,51 @@ export function installDebugMenu(appMenu, viewer, openFiles, host) {
       console.error('Failed to load the sample PDF:', err);
     }
   });
+
+  const exportMenu = document.createElement('div');
+  exportMenu.className = 'scribe-app-menu';
+  exportMenu.style.display = 'none';
+  exportMenu.appendChild(makeHeader('Export as'));
+  appMenu.menuWrap.appendChild(exportMenu);
+
+  for (const { format, label } of EXPORT_FORMATS) {
+    const row = document.createElement('div');
+    row.className = 'scribe-app-menu-item';
+    row.role = 'button';
+    row.tabIndex = 0;
+    const icon = document.createElement('span');
+    icon.className = 'scribe-app-menu-ic';
+    icon.innerHTML = EXPORT_SVG;
+    row.append(icon, document.createTextNode(label));
+    row.addEventListener('mousedown', (e) => e.preventDefault());
+    row.addEventListener('click', async (e) => {
+      e.stopPropagation();
+      const doc = viewer.doc;
+      if (!doc || doc.pageMetrics.length === 0) return;
+      row.classList.add('busy');
+      try {
+        await doc.download(format, host?._baseName() || 'document', format === 'pdf' ? { displayMode: 'invis', addOverlay: true } : {});
+        exportMenu.style.display = 'none';
+      } catch (err) {
+        console.error(`Export to ${format} failed:`, err);
+        host?._showToast(`${label} export failed — ${err?.message || 'see the console'}`);
+      } finally {
+        row.classList.remove('busy');
+      }
+    });
+    exportMenu.appendChild(row);
+  }
+
+  appMenu.addAction('Export as…', EXPORT_SVG, () => { exportMenu.style.display = 'block'; });
+
+  appMenu.triggerElem.addEventListener('click', () => { exportMenu.style.display = 'none'; });
+
+  const onDocClick = (e) => {
+    if (exportMenu.style.display === 'none' || exportMenu.contains(/** @type {Node} */ (e.target))) return;
+    exportMenu.style.display = 'none';
+  };
+  document.addEventListener('click', onDocClick);
+  host?._teardownCallbacks.push(() => document.removeEventListener('click', onDocClick));
 
   // Off (the default) = the model-driven built-in engine; On = the DOM engine, whose invisible word spans sit under the browser's native selection.
   appMenu.addToggle(

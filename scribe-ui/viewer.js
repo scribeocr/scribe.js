@@ -3323,15 +3323,13 @@ export class ScribeViewer {
   _addBlockOutline(n, box, angleAdj, index, label, orientation = 0, lines, type) {
     const group = this.getTextGroup(n, orientation);
 
-    // Reserved colours and type tags match dev/annotate-paragraphs.mjs, so the on-screen review reads like the annotated PDFs.
-    // Footnotes are always purple, page furniture always red, titles always green; the cycling palette deliberately contains none of those hues.
     const PALETTE = ['#4363d8', '#f58231', '#42d4f4', '#9a6324', '#e6b800', '#000075', '#e67e22'];
-    const color = type === 'footnote' ? '#911eb4'
+    const color = type === 'footnote' || type === 'endnote' ? '#911eb4'
       : (type === 'header' || type === 'footer' || type === 'pagenum' || type === 'linenum') ? '#ff0000'
         : type === 'title' ? '#0a9928'
           : PALETTE[(index - 1) % PALETTE.length];
     const TYPE_TAG = {
-      title: 'T', footnote: 'F', pagenum: 'P', header: 'H', footer: 'Fo', linenum: 'Ln', blockquote: 'Q', caption: 'C',
+      title: 'T', footnote: 'F', endnote: 'E', pagenum: 'P', header: 'H', footer: 'Fo', linenum: 'Ln', blockquote: 'Q', caption: 'C',
     };
 
     const sortedLines = (lines && lines.length > 0 ? lines.map((l) => l.bbox) : [box])
