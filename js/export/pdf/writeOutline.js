@@ -74,7 +74,7 @@ function visibleCount(nodes) {
  * @param {Array<string|number|null>} view - Empty or non-array yields the `/Fit` default.
  * @returns {string}
  */
-function viewToPdf(view) {
+export function viewToPdf(view) {
   if (!Array.isArray(view) || view.length === 0) return ' /Fit';
   return ` ${view.map((v, i) => (i === 0 ? `/${v}` : (v === null ? 'null' : String(v)))).join(' ')}`;
 }

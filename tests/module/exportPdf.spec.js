@@ -536,7 +536,31 @@ describe('Check export for .pdf files.', () => {
 
     // A single-word highlight consolidates to one annotation regardless, so the span must cover multiple words to catch the regression.
     doc.addHighlights([{ page: 0, startLine: 0, endLine: 2 }]);
-    expect(doc.annotations.pages[0].length, 'addHighlights should emit one entry per native word for lines 0-2 (5 words)').toBe(5);
+    const markupCount = () => doc.annotations.pages[0].filter((a) => a.type !== 'link').length;
+    expect(markupCount(), 'addHighlights should emit one entry per native word for lines 0-2 (5 words)').toBe(5);
+    doc.addHighlights([{
+      page: 0, startLine: 3, markup: 'underline', color: '#81c784',
+    }]);
+    expect(markupCount(), 'the underline emits one entry per native word for line 3 (2 words)').toBe(7);
+
+    doc.addLinks([
+      {
+        page: 0,
+        bbox: {
+          left: 200, top: 300, right: 600, bottom: 360,
+        },
+        dest: { pageIndex: 2, yFrac: 0.5 },
+      },
+      {
+        page: 1,
+        bbox: {
+          left: 200, top: 300, right: 600, bottom: 360,
+        },
+        uri: 'https://example.com/added-by-test',
+      },
+    ]);
+    const linkCount = (pages) => pages.flatMap((p) => p || []).filter((a) => a.type === 'link').length;
+    expect(linkCount(doc.annotations.pages), 'addLinks adds two link annotations beside the 97 lifted source URI links').toBe(99);
 
     scribe.ScribeDoc.defaults.displayMode = 'annot';
     scribe.ScribeDoc.defaults.addOverlay = true;
@@ -561,6 +585,23 @@ describe('Check export for .pdf files.', () => {
     const highlights = doc.annotations.pages.flatMap((p) => p || []).filter((a) => a.type === 'highlight');
     expect(highlights.length, 'multi-line highlight did not consolidate to one annotation (word-level leak from the empty overlay page)').toBe(1);
     expect(highlights[0].quads.length, 'consolidated highlight lost its per-line quads (expected one per line, lines 0-2)').toBe(3);
+    const underlines = doc.annotations.pages.flatMap((p) => p || []).filter((a) => a.type === 'underline');
+    expect(underlines.length, 'the underline round-trips through the overlay path as one annotation, unmerged with the same-groupId highlight').toBe(1);
+    expect(underlines[0].quads.length, 'the single-line underline keeps one quad').toBe(1);
+
+    expect(linkCount(doc.annotations.pages), 'all 97 lifted source URI links plus the 2 added links survive the round-trip, un-duplicated').toBe(99);
+    expect(
+      doc.annotations.pages.map((p) => (p || []).filter((a) => a.type === 'link' && a.uri).length),
+      'per-page URI link counts survive (43/25/29 from the source, plus the added page-1 link)',
+    ).toEqual([43, 26, 29]);
+    const firstUriLink = (doc.annotations.pages[0] || []).find((a) => a.type === 'link' && a.uri);
+    expect(firstUriLink.uri, 'the first page-0 URI link keeps its exact target URL').toBe('https://en.wikipedia.org/wiki/Template:Taxonomy/Iris');
+    const destLinks = (doc.annotations.pages[0] || []).filter((a) => a.type === 'link' && a.dest);
+    expect(destLinks.length, 'the added internal link is the only dest link on page 0 (source internal links all dangle in this fixture)').toBe(1);
+    expect(destLinks[0].dest.pageIndex, 'the added internal link still targets page 2 after the round-trip').toBe(2);
+    expect(destLinks[0].dest.view, 'a yFrac-only added link exports as a page-level /Fit destination').toEqual(['Fit']);
+    const addedUriLink = (doc.annotations.pages[1] || []).find((a) => a.type === 'link' && a.uri === 'https://example.com/added-by-test');
+    expect(addedUriLink, 'the addLinks external link survives the round-trip with its exact URL').toBeTruthy();
 
     // The highlight now lives in both the source /Annots and the model, so export must drop the source copy or each round-trip doubles the count.
     // That only happens after a round-trip, so only this second export can catch the duplication.
@@ -572,6 +613,10 @@ describe('Check export for .pdf files.', () => {
     const reHighlights = doc.annotations.pages.flatMap((p) => p || []).filter((a) => a.type === 'highlight');
     expect(reHighlights.length, 'highlight duplicated on re-export: it survives in both the source /Annots and the model').toBe(1);
     expect(reHighlights[0].quads.length, 'consolidated highlight lost its per-line quads on the second round-trip').toBe(3);
+    const reUnderlines = doc.annotations.pages.flatMap((p) => p || []).filter((a) => a.type === 'underline');
+    expect(reUnderlines.length, 'underline duplicated on re-export: it survives in both the source /Annots and the model').toBe(1);
+    expect(reUnderlines[0].quads.length, 'the underline lost its quad on the second round-trip').toBe(1);
+    expect(linkCount(doc.annotations.pages), 'links duplicated or lost on re-export: each must survive as the lifted annotation only, with its source copy dropped').toBe(99);
 
     scribe.ScribeDoc.defaults.displayMode = 'invis';
     await doc.clear();

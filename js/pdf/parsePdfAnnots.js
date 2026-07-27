@@ -2,6 +2,7 @@ import {
   resolveArrayValue, parsePdfDate, resolveBoolValue, resolveNameValue, resolveNumValue, resolveIntValue,
   resolveStringValue, parsePdfLiteralString,
 } from './pdfPrimitives.js';
+import { resolveItemDest } from './parseOutline.js';
 
 // Bounding-box size in pixels imposed on a /Text annotation.
 // The size is nominal because the marker renders at a fixed on-screen size regardless of the box.
@@ -121,6 +122,27 @@ export function annotIsLiftedReply(annotText, objCache) {
 }
 
 /**
+ * True when the annotation is a /Link the importer lifts into the document's annotations.
+ * Export drops the source copy of every lifted link, so this verdict must match the parse-side lift.
+ * `linkDestInfo` must cover the full source page set, not an export's kept pages, or a lifted link whose target page was deleted resurrects in the output.
+ * @param {string} annotText
+ * @param {import('./objectCache.js').ObjectCache} objCache
+ * @param {{ nameDests: Map<string, string>, objNumToIndex: Map<number, number> }} linkDestInfo
+ * @returns {boolean}
+ */
+export function linkAnnotIsLifted(annotText, objCache, linkDestInfo) {
+  if (!/\/Subtype\s*\/Link\b/.test(annotText)) return false;
+  const flags = resolveIntValue(annotText, 'F', objCache, 0);
+  if (flags & 1 || flags & 2 || flags & 32) return false;
+  const rectStr = resolveArrayValue(annotText, 'Rect', objCache);
+  const rect = rectStr ? rectStr.split(/\s+/).map(Number) : [];
+  if (rect.length < 4 || rect.slice(0, 4).some(Number.isNaN)) return false;
+  if (resolveLinkUri(annotText, objCache)) return true;
+  const { dest } = resolveItemDest(annotText, linkDestInfo.nameDests, linkDestInfo.objNumToIndex, objCache);
+  return !!dest;
+}
+
+/**
  * @typedef {Object} PdfRedactRaw
  * @property {number} objNum
  * @property {[number, number, number, number]} rect - /Rect in pts, bottom-left origin.
@@ -145,6 +167,15 @@ function resolveLinkUri(annotText, objCache) {
   const refMatch = /\/A\s+(\d+)\s+\d+\s+R/.exec(annotText);
   let actionText = refMatch ? objCache.getObjectText(Number(refMatch[1])) : annotText;
   if (!actionText) return null;
+  // buildLinkAnnotObjects emits /URI as a hex string, so this branch is what makes this library's own exports re-lift.
+  const hexMatch = /\/URI\s*<(?!<)([0-9a-fA-F\s]*)>/.exec(actionText);
+  if (hexMatch) {
+    let hex = hexMatch[1].replace(/\s+/g, '');
+    if (hex.length % 2 === 1) hex += '0';
+    let uri = '';
+    for (let hi = 0; hi < hex.length; hi += 2) uri += String.fromCharCode(parseInt(hex.slice(hi, hi + 2), 16));
+    return uri || null;
+  }
   let keyMatch = /\/URI\s*\(/.exec(actionText);
   if (!keyMatch) {
     const uriRef = /\/URI\s+(\d+)\s+\d+\s+R/.exec(actionText);
@@ -226,11 +257,11 @@ export function extractPdfAnnotations(objCache, pageObjText) {
         continue;
       }
       // Of these not-lifted annotations, Invisible/Hidden/NoView are dropped entirely.
-      // Every other (visible, non-Highlight/FreeText) annotation passes through on export unchanged.
+      // Every other visible annotation passes through on export unchanged, except lifted /Links, which export drops and re-emits from the document's annotations.
       const flags = resolveIntValue(annotText, 'F', objCache, 0);
       if (!(flags & 1 || flags & 2 || flags & 32)) {
         passthroughRefs.push(annotRef);
-        // Extracted for the text model and left in passthroughRefs as well, so export still re-emits the source annotation verbatim.
+        // Links stay in passthroughRefs as well, so the renderer still paints their source appearance streams.
         if (/\/Subtype\s*\/Link\b/.test(annotText)) {
           const linkUri = resolveLinkUri(annotText, objCache);
           const linkRectStr = resolveArrayValue(annotText, 'Rect', objCache);

@@ -124,7 +124,7 @@ export class ScribeViewer {
     this.elem = /** @type {any} */ (null);
     /** @type {?HTMLDivElement} */
     this._linkStatusEl = null;
-    /** @type {?PageLink} */
+    /** @type {?AnnotationLink} */
     this._linkStatusEntry = null;
     /**
      * The outer element of the UI component that owns this viewer
@@ -2178,20 +2178,21 @@ export class ScribeViewer {
   }
 
   /**
-   * The parsed /Link region under a client point, or null.
+   * The link annotation under a client point, or null.
    * @param {number} clientX
    * @param {number} clientY
-   * @returns {?PageLink}
+   * @returns {?AnnotationLink}
    */
   linkAt(clientX, clientY) {
-    const pagesLinks = this.doc.links?.pages;
-    if (!pagesLinks || pagesLinks.length === 0) return null;
+    const pagesAnnots = this.doc.annotations?.pages;
+    if (!pagesAnnots || pagesAnnots.length === 0) return null;
     const { n, x, y } = this.clientToPage(clientX, clientY);
-    const arr = pagesLinks[n];
+    const arr = pagesAnnots[n];
     if (!arr || arr.length === 0 || !this.doc.pageMetrics[n]?.dims) return null;
     // Link bboxes live in base (orientation-0) space, the frame the OCR word boxes use.
     const local = this.pageToLocal(n, 0, x, y);
     for (const entry of arr) {
+      if (entry.type !== 'link') continue;
       const b = entry.bbox;
       if (local.x >= b.left && local.x <= b.right && local.y >= b.top && local.y <= b.bottom) return entry;
     }
@@ -2199,8 +2200,8 @@ export class ScribeViewer {
   }
 
   /**
-   * Navigate a parsed /Link region.
-   * @param {PageLink} entry
+   * Navigate a link annotation.
+   * @param {AnnotationLink} entry
    */
   _followLink(entry) {
     this._linkStatusUpdate(null);
@@ -2215,7 +2216,7 @@ export class ScribeViewer {
   /**
    * Show, update, or hide the link-status bubble.
    * The bubble reads out a hovered link's destination in the bottom-left corner, as a browser does for a hovered hyperlink.
-   * @param {?PageLink} entry - The hovered link region, or null to hide.
+   * @param {?AnnotationLink} entry - The hovered link region, or null to hide.
    */
   _linkStatusUpdate(entry) {
     if (!entry) {
@@ -2250,7 +2251,7 @@ export class ScribeViewer {
       this.elem.appendChild(el);
       this._linkStatusEl = el;
     }
-    this._linkStatusEl.textContent = entry.uri ? entry.uri : `Go to page ${entry.dest.pageIndex + 1}`;
+    this._linkStatusEl.textContent = entry.uri || (entry.dest ? `Go to page ${entry.dest.pageIndex + 1}` : '');
     this._linkStatusEl.style.display = 'block';
   }
 

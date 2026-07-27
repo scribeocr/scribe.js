@@ -3,7 +3,7 @@ import {
   resolveIntValue, resolveNumValue, resolveNumArray, resolveNameValue,
 } from '../../pdf/pdfPrimitives.js';
 import { stripText } from '../../pdf/contentStream.js';
-import { annotIsModelManaged, annotIsLiftedReply } from '../../pdf/parsePdfAnnots.js';
+import { annotIsModelManaged, annotIsLiftedReply, linkAnnotIsLifted } from '../../pdf/parsePdfAnnots.js';
 import { encodeStreamObject } from './writePdfStreams.js';
 import { convertSinglePageForRegions } from './convertTextRegionsToPaths.js';
 
@@ -426,11 +426,14 @@ export function composePageRotation(pageObjText, userRotation, objCache) {
  * @param {number} [userRotation=0] - User-applied rotation (multiple of 90) composed onto the page's /Rotate.
  * @param {?Array<[number, number, number, number]>} [redactRects=null] - User-space redaction rects for this page.
  *   Source annotations overlapping any rect, or whose geometry cannot be read, are dropped to avoid leaking redacted content.
+ * @param {?{ nameDests: Map<string, string>, objNumToIndex: Map<number, number> }} [linkDestInfo=null] - When non-null, source /Link annotations the importer lifted are dropped,
+ *   since export re-emits them from the document's annotations through `extraAnnotRefs`.
+ *   Null (a raw-bytes utility call with no lifted annotations to re-emit) keeps every source link verbatim.
  */
 export function buildReplacementPageDict(
   objNum, originalObjText, newContentsArray, resourcesObjNum, parentObjNum = null,
   extraAnnotRefs = [], objCache = null, keptPageObjNums = null, userRotation = 0,
-  redactRects = null,
+  redactRects = null, linkDestInfo = null,
 ) {
   let dictStr = `${objNum} 0 obj\n<<`;
   dictStr += '/Type/Page';
@@ -509,7 +512,8 @@ export function buildReplacementPageDict(
       const m = /^(\d+)\s+\d+\s+R$/.exec(ref);
       if (!m) return true;
       const annotText = objCache.getObjectText(Number(m[1]));
-      return !annotText || (!annotIsModelManaged(annotText, objCache) && !annotIsLiftedReply(annotText, objCache));
+      return !annotText || (!annotIsModelManaged(annotText, objCache) && !annotIsLiftedReply(annotText, objCache)
+        && !(linkDestInfo && linkAnnotIsLifted(annotText, objCache, linkDestInfo)));
     });
   }
   if (extraAnnotRefs.length > 0 || sourceAnnotRefs.length > 0) {

@@ -11,7 +11,7 @@ import { createEmbeddedFontType0 } from './writePdfFonts.js';
 import { buildOutlineObjects } from './writeOutline.js';
 import { ocrPageToPDFStream } from './writePdfText.js';
 import {
-  buildHighlightAnnotObjects, buildFreeTextAnnotObjects, buildShapeAnnotObjects, buildTextAnnotObjects, consolidateAnnotations,
+  buildHighlightAnnotObjects, buildFreeTextAnnotObjects, buildShapeAnnotObjects, buildTextAnnotObjects, buildLinkAnnotObjects, consolidateAnnotations,
 } from './writePdfAnnots.js';
 import { SHAPE_ANNOT_TYPES, TEXT_MARKUP_ANNOT_TYPES } from '../../addHighlights.js';
 import { encodeStreamObject } from './writePdfStreams.js';
@@ -35,6 +35,7 @@ import {
   annotLinkTargetsDroppedPage,
 } from './pdfPageRewrite.js';
 import { createConversionState } from './convertTextRegionsToPaths.js';
+import { buildNameDests } from '../../pdf/parseOutline.js';
 
 /** @typedef {import('../../containers/fontContainer.js').DocFonts} DocFonts */
 
@@ -384,6 +385,19 @@ export async function rebuildPdfSubset({
     if (i >= 0 && i < pages.length) keptPageObjNums.add(pages[i].objNum);
   }
 
+  // With no annotations supplied (a raw-bytes utility call), nothing re-emits links, so both stay null and source /Link objects pass through untouched.
+  /** @type {?Array<number|undefined>} */
+  let linkPageObjNums = null;
+  /** @type {?{ nameDests: Map<string, string>, objNumToIndex: Map<number, number> }} */
+  let linkDestInfo = null;
+  if (annotationsPages.length > 0) {
+    const keptIdx = new Set(pageIndices);
+    linkPageObjNums = pages.map((p, idx) => (keptIdx.has(idx) ? p.objNum : undefined));
+    const rootNumLink = findRootObjNum(pdfBytes);
+    const catTextLink = (rootNumLink != null && objCache.getObjectText(rootNumLink)) || '';
+    linkDestInfo = { nameDests: buildNameDests(objCache, catTextLink), objNumToIndex: new Map(pages.map((p, idx) => [p.objNum, idx])) };
+  }
+
   // Assign new object numbers for catalog and pages root
   const catalogObjNum = nextObjNum++;
   const pagesRootObjNum = nextObjNum++;
@@ -587,11 +601,15 @@ export async function rebuildPdfSubset({
           .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty, pageRotate, baseWidth, baseHeight, rotScale));
         const textAnnots = buildTextAnnotObjects(textAnns, nextObjNum, outputDims, warningHandler, !!scrub);
         for (const t of textAnnots.objectTexts) allOutputObjects.push({ objNum: nextObjNum++, content: t });
-        extraAnnotRefs = [...annotRefs, ...shapes.annotRefs, ...ft.annotRefs, ...textAnnots.annotRefs];
+        const linkAnns = pageAnnotations.filter((a) => a.type === 'link')
+          .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty, pageRotate, baseWidth, baseHeight, rotScale));
+        const linkAnnots = buildLinkAnnotObjects(linkAnns, nextObjNum, outputDims, linkPageObjNums || [], warningHandler);
+        for (const t of linkAnnots.objectTexts) allOutputObjects.push({ objNum: nextObjNum++, content: t });
+        extraAnnotRefs = [...annotRefs, ...shapes.annotRefs, ...ft.annotRefs, ...textAnnots.annotRefs, ...linkAnnots.annotRefs];
       }
 
       const newPageObj = buildReplacementPageDict(pageInfo.objNum, pageInfo.objText, newContentsArray, resourcesObjNum, pagesRootObjNum,
-        extraAnnotRefs, objCache, keptPageObjNums, pageMetricsArr[i].rotation || 0, redactByPage.get(i) || null);
+        extraAnnotRefs, objCache, keptPageObjNums, pageMetricsArr[i].rotation || 0, redactByPage.get(i) || null, linkDestInfo);
       allOutputObjects.push({ objNum: pageInfo.objNum, content: newPageObj });
       modifiedPageObjNums.add(pageInfo.objNum);
 

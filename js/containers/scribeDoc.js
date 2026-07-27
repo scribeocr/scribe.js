@@ -7,6 +7,7 @@ import {
   addHighlights as addHighlightsImpl, addFreeText as addFreeTextImpl, clearHighlights as clearHighlightsImpl,
   addShapes as addShapesImpl, clearShapes as clearShapesImpl, addTextAnnots as addTextAnnotsImpl, clearTextAnnots as clearTextAnnotsImpl,
   addRedactions as addRedactionsImpl, removeRedactions as removeRedactionsImpl,
+  addLinks as addLinksImpl, removeLinks as removeLinksImpl,
 } from '../addHighlights.js';
 import { renderPageStatic as renderPageStaticImpl } from '../debug.js';
 import { exportData as exportDataImpl, download as downloadImpl } from '../export/export.js';
@@ -46,7 +47,7 @@ function uniqueLayers(layers) {
  */
 function densePageArrays(doc) {
   const arrs = [...uniqueLayers(doc.ocr), ...uniqueLayers(doc.ocrRaw)];
-  arrs.push(doc.pageMetrics, doc.layoutRegions.pages, doc.layoutDataTables.pages, doc.annotations.pages, doc.links.pages);
+  arrs.push(doc.pageMetrics, doc.layoutRegions.pages, doc.layoutDataTables.pages, doc.annotations.pages);
   if (Array.isArray(doc.vis)) arrs.push(doc.vis);
   if (Array.isArray(doc.convertPageWarn)) arrs.push(doc.convertPageWarn);
   // Source image (image-input docs) and per-page 300-DPI dims are full-length; rendered caches are not (see clearImageCaches).
@@ -158,7 +159,6 @@ function clonePageBundle(doc, i) {
     layoutRegions: cloneAt(doc.layoutRegions.pages),
     layoutDataTables: cloneAt(doc.layoutDataTables.pages),
     annotations,
-    links: cloneAt(doc.links.pages),
     srcDocId: doc.id,
     vis: cloneAt(doc.vis),
     convertPageWarn: cloneAt(doc.convertPageWarn),
@@ -198,25 +198,25 @@ function remapOutlineByTags(doc, tags) {
 }
 
 /**
- * Remap every page's link destinations after a page-order edit.
+ * Remap every link annotation's destination after a page-order edit.
  * A link whose target page was removed is dropped.
  * @param {ScribeDoc} doc
  * @param {Array<?number>} tags - `tags[newPos]` is the pre-edit index of the page now at `newPos`, or null for a freshly inserted page.
  */
-function remapLinksByTags(doc, tags) {
-  const { pages } = doc.links;
+function remapAnnotationDestsByTags(doc, tags) {
+  const { pages } = doc.annotations;
   if (!pages.length) return;
   const newByOld = new Map();
   tags.forEach((old, newPos) => { if (old != null && !newByOld.has(old)) newByOld.set(old, newPos); });
   for (let i = 0; i < pages.length; i++) {
     const arr = pages[i];
-    if (!arr || !arr.some((l) => l.dest)) continue;
+    if (!arr || !arr.some((a) => a.type === 'link' && a.dest)) continue;
     let changed = false;
     // Rebuild rather than mutate so history snapshots keep their pre-edit entries.
-    /** @type {Array<PageLink>} */
+    /** @type {Array<Annotation>} */
     const next = [];
     for (const entry of arr) {
-      if (!entry.dest) { next.push(entry); continue; }
+      if (entry.type !== 'link' || !entry.dest) { next.push(entry); continue; }
       const ni = newByOld.get(entry.dest.pageIndex);
       if (ni === undefined) { changed = true; continue; }
       if (ni === entry.dest.pageIndex) { next.push(entry); continue; }
@@ -411,16 +411,11 @@ export class ScribeDoc {
     /** @type {{ pages: Array<LayoutDataTablePage> }} */
     this.layoutDataTables = { pages: [] };
 
-    /** @type {{ pages: Array<Array<Annotation>> }} */
-    this.annotations = { pages: [] };
-
     /**
-     * Per-page clickable link regions parsed from PDF /Link annotations (internal page jumps and external URLs).
-     * `restored` marks a `.scribe`-restored state.
-     * A restored state wins over a fresh parse because it may embed page-edit remaps the source PDF's annotations do not reflect.
-     * @type {{ pages: Array<Array<PageLink>>, restored: boolean }}
+     * `restored` marks a `.scribe`-restored state, which a fresh parse must not overwrite.
+     * @type {{ pages: Array<Array<Annotation>>, restored: boolean }}
      */
-    this.links = { pages: [], restored: false };
+    this.annotations = { pages: [], restored: false };
 
     /**
      * Document outline (bookmarks) as an editable tree; destinations are zero-based page indices.
@@ -510,7 +505,7 @@ export class ScribeDoc {
       const tags = this.pageMetrics.map((_, k) => k);
       for (const arr of [...densePageArrays(this), tags]) if (i < arr.length) arr.splice(i, 1);
       remapOutlineByTags(this, tags);
-      remapLinksByTags(this, tags);
+      remapAnnotationDestsByTags(this, tags);
       remapThumbnails(this, tags);
       clearImageCaches(this);
       renumberPages(this);
@@ -538,7 +533,7 @@ export class ScribeDoc {
         arr.splice(to, 0, item);
       }
       remapOutlineByTags(this, tags);
-      remapLinksByTags(this, tags);
+      remapAnnotationDestsByTags(this, tags);
       remapThumbnails(this, tags);
       clearImageCaches(this);
       renumberPages(this);
@@ -562,7 +557,7 @@ export class ScribeDoc {
         for (const i of sorted) if (i < arr.length) arr.splice(i, 1);
       }
       remapOutlineByTags(this, tags);
-      remapLinksByTags(this, tags);
+      remapAnnotationDestsByTags(this, tags);
       remapThumbnails(this, tags);
       clearImageCaches(this);
       renumberPages(this);
@@ -593,7 +588,7 @@ export class ScribeDoc {
         arr.splice(Math.max(0, Math.min(to, arr.length)), 0, ...pulled);
       }
       remapOutlineByTags(this, tags);
-      remapLinksByTags(this, tags);
+      remapAnnotationDestsByTags(this, tags);
       remapThumbnails(this, tags);
       clearImageCaches(this);
       renumberPages(this);
@@ -656,10 +651,10 @@ export class ScribeDoc {
       spliceFull(this.pageMetrics, bundles.map((b) => b.pageMetrics));
       spliceFull(this.layoutRegions.pages, bundles.map((b) => b.layoutRegions));
       spliceFull(this.layoutDataTables.pages, bundles.map((b) => b.layoutDataTables));
-      spliceFull(this.annotations.pages, bundles.map((b) => b.annotations));
-      spliceFull(this.links.pages, bundles.map((b) => {
-        const arr = b.links || [];
-        return b.srcDocId === this.id ? arr : arr.filter((l) => !l.dest);
+      spliceFull(this.annotations.pages, bundles.map((b) => {
+        // A cross-document paste drops internal links, whose page targets are meaningless in the destination document.
+        if (b.srcDocId === this.id || !Array.isArray(b.annotations)) return b.annotations;
+        return b.annotations.filter((a) => !(a.type === 'link' && a.dest));
       }));
       spliceFull(this.vis, bundles.map((b) => b.vis));
       spliceFull(this.convertPageWarn, bundles.map((b) => b.convertPageWarn));
@@ -670,7 +665,7 @@ export class ScribeDoc {
       spliceFull(this.inputData.ocrApplied, bundles.map((b) => b.ocrApplied));
       spliceFull(tags, bundles.map(() => null));
       remapOutlineByTags(this, tags);
-      remapLinksByTags(this, tags);
+      remapAnnotationDestsByTags(this, tags);
       remapThumbnails(this, tags);
 
       // Register a copied page's foreign render source so it keeps rendering and subsetting from its origin.
@@ -839,8 +834,7 @@ export class ScribeDoc {
     clearObjectProperties(this.ocrRaw);
     this.ocrRaw.active = [];
     this.annotations.pages.length = 0;
-    this.links.pages.length = 0;
-    this.links.restored = false;
+    this.annotations.restored = false;
     this.layoutRegions.pages.length = 0;
     this.layoutDataTables.pages.length = 0;
     this.pageMetrics.length = 0;
@@ -964,6 +958,23 @@ export class ScribeDoc {
    */
   removeRedactions(filter) {
     removeRedactionsImpl(this, filter);
+  }
+
+  /**
+   * Add link annotations (external URLs or internal page jumps) at fixed page positions.
+   * @param {Parameters<typeof addLinksImpl>[1]} links
+   * @returns {ReturnType<typeof addLinksImpl>}
+   */
+  addLinks(links) {
+    return addLinksImpl(this, links);
+  }
+
+  /**
+   * Remove link annotations (all of them, or one page's).
+   * @param {Parameters<typeof removeLinksImpl>[1]} [filter]
+   */
+  removeLinks(filter) {
+    removeLinksImpl(this, filter);
   }
 
   /**

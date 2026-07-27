@@ -7,7 +7,7 @@ import {
 
 import { ocrPageToPDFStream } from './writePdfText.js';
 import {
-  buildHighlightAnnotObjects, buildFreeTextAnnotObjects, buildShapeAnnotObjects, buildTextAnnotObjects, consolidateAnnotations,
+  buildHighlightAnnotObjects, buildFreeTextAnnotObjects, buildShapeAnnotObjects, buildTextAnnotObjects, buildLinkAnnotObjects, consolidateAnnotations,
 } from './writePdfAnnots.js';
 import { SHAPE_ANNOT_TYPES, TEXT_MARKUP_ANNOT_TYPES } from '../../addHighlights.js';
 import { encodeStreamObject } from './writePdfStreams.js';
@@ -115,6 +115,11 @@ export async function writePdf({
   /** @type {Array<string | import('./writePdfStreams.js').PdfBinaryObject>} */
   const pdfPageObjArr = [];
 
+  // Link annotations are emitted in a patch pass after the loop.
+  // A /Dest needs its target page's object number, which is unknown until every page is built.
+  /** @type {Array<{ linkAnns: AnnotationLink[], pageDictIdx: number, outputDims: dims }>} */
+  const linkAnnotPatches = [];
+
   const pageIndexArr = [];
   for (const i of pageArr) {
     const angle = pageMetricsArr[i].angle || 0;
@@ -159,6 +164,13 @@ export async function writePdf({
       pdfFontsUsed.add(font);
     }
 
+    const linkAnns = /** @type {AnnotationLink[]} */ ((annotationsPages?.[i] || []).filter((a) => a.type === 'link'));
+    if (linkAnns.length > 0) {
+      linkAnnotPatches.push({
+        linkAnns, pageDictIdx: pdfPageObjArr.length, outputDims: dimsLimit.width < 1 ? dims : dimsLimit,
+      });
+    }
+
     for (let j = 0; j < pdfObj.length; j++) {
       pdfPageObjArr.push(pdfObj[j]);
     }
@@ -169,6 +181,28 @@ export async function writePdf({
     objectI += pdfObj.length;
 
     doc?.progressHandler({ n: i, type: 'export', info: { } });
+  }
+
+  if (linkAnnotPatches.length > 0) {
+    // Link dests are document page indices, so a doc-index map covers exports of any page subset.
+    /** @type {Array<number|undefined>} */
+    const linkPageObjNums = [];
+    pageArr.forEach((docIdx, k) => { linkPageObjNums[docIdx] = pageIndexArr[k]; });
+    for (const patch of linkAnnotPatches) {
+      const built = buildLinkAnnotObjects(patch.linkAnns, objectI, patch.outputDims, linkPageObjNums, warningHandler);
+      if (built.annotRefs.length === 0) continue;
+      for (const t of built.objectTexts) pdfPageObjArr.push(t);
+      objectI += built.objectTexts.length;
+      let dictStr = /** @type {string} */ (pdfPageObjArr[patch.pageDictIdx]);
+      const refsStr = built.annotRefs.join(' ');
+      if (/\/Annots \[/.test(dictStr)) {
+        dictStr = dictStr.replace(/\/Annots \[([^\]]*)\]/, (m, inner) => `/Annots [${inner} ${refsStr}]`);
+      } else {
+        const at = dictStr.lastIndexOf('>>\nendobj');
+        dictStr = `${dictStr.slice(0, at)}/Annots [${refsStr}]${dictStr.slice(at)}`;
+      }
+      pdfPageObjArr[patch.pageDictIdx] = dictStr;
+    }
   }
 
   // Create font objects for fonts that are used

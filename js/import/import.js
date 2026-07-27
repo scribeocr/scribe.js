@@ -181,6 +181,7 @@ async function restoreSessionFromFile(doc, scribeFile) {
   }
   if (scribeRestoreObj.annotations) {
     doc.annotations.pages = scribeRestoreObj.annotations;
+    doc.annotations.restored = true;
   }
 
   // `.inputData` added to .scribe in June 2026, do not assume this field exists for re-imports.

@@ -50,14 +50,15 @@ export async function extractInternalPDFText(doc, options = {}) {
   const { type } = determinePdfType(pageResults.map((r) => r.pageStats), pageCount);
   doc.inputData.pdfType = type;
 
-  for (let i = 0; i < pageCount; i++) {
-    const parsed = pageResults[i].annotations || [];
-    const existing = doc.annotations.pages[i];
-    // Merge rather than overwrite: the user may have added annotations (e.g. a highlight) while the deferred extraction was in flight.
-    // Parsed annotations come first, matching document order.
-    doc.annotations.pages[i] = existing && existing.length ? [...parsed, ...existing] : parsed;
-    // Restored .scribe links may embed page-edit remaps the source PDF cannot reproduce.
-    if (!doc.links.restored) doc.links.pages[i] = pageResults[i].links || [];
+  // Restored .scribe annotations may embed page-edit remaps and user deletions a fresh lift cannot reflect, so re-merging would duplicate kept entries and resurrect deleted ones.
+  if (!doc.annotations.restored) {
+    for (let i = 0; i < pageCount; i++) {
+      const parsed = pageResults[i].annotations || [];
+      const existing = doc.annotations.pages[i];
+      // Merge rather than overwrite: the user may have added annotations (e.g. a highlight) while the deferred extraction was in flight.
+      // Parsed annotations come first, matching document order.
+      doc.annotations.pages[i] = existing && existing.length ? [...parsed, ...existing] : parsed;
+    }
   }
 
   const extractPDFTextNative = usePDFText.native.main || usePDFText.native.supp;

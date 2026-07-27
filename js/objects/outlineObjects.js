@@ -10,7 +10,8 @@
  * @property {number} pageIndex - Zero-based page index into the current page order.
  * @property {Array<string|number|null>} view - Raw PDF destination tail after the page ref (e.g. `['XYZ', -4, 796, 0]`), preserved verbatim.
  * @property {number} [yFrac] - Vertical target as a fraction of the visual page height from the top, in [0, 1].
- *   Absent when `view` carries no usable vertical position (e.g. `['Fit']`).
+ *   Absent when the vertical position is unknown.
+ *   May accompany any `view`, including a synthesized `['Fit']`, where it drives in-app navigation without being written to the PDF.
  *
  * @typedef {Object} OutlineNode
  * @property {number} id - Stable per-document node id for the editing UI and undo/redo.

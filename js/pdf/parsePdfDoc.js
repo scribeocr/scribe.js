@@ -404,7 +404,8 @@ export function determinePdfType(pageStats, pageCount) {
  * @param {number} n - Page index
  * @param {number} dpi
  * @param {Map<string, string>} [type3GlyphMappings] - See `extractPDFTextDirect`.
- * @param {LinkDestInfo} [destInfo] - When present, internal /Link annotations resolve to `links` entries; without it only URI links are captured.
+ * @param {LinkDestInfo} [destInfo] - When present, internal /Link annotations are lifted.
+ *   Without it only URI links are captured.
  */
 export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, destInfo) {
   const {
@@ -854,15 +855,14 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   pageObj.rules = underlineRects.filter((r) => !r.isUnderline).map((r) => ({ y: r.y, left: r.left, right: r.right }));
 
   const {
-    highlights: highlightsRaw, freeTexts: freeTextsRaw, textAnnots: textAnnotsRaw, redacts: redactsRaw, links: linksRaw, passthroughRefs,
+    highlights: highlightsRaw, freeTexts: freeTextsRaw, textAnnots: textAnnotsRaw, redacts: redactsRaw, links: linksRaw,
   } = extractPdfAnnotations(objCache, objText);
 
-  // Surface each /Link annotation onto the page as a clickable region: a URL, or an internal /Dest or /GoTo target resolved to a page index and vertical position.
   // URLs also mark the words their rect covers, so text consumers (e.g. the citation-leading exemption in analyzeLayout) can see the hyperlink.
   // Internal links never touch words, since a word-level link marker would trip that same exemption on link-dense TOC pages.
-  // The source /Link still passes through to export unchanged via passthroughRefs.
-  /** @type {PageLink[]} */
-  const pageLinks = [];
+  // A link that resolves to neither a URL nor a destination (exotic action, dangling dest) stays passthrough, so its source object survives export verbatim.
+  /** @type {AnnotationLink[]} */
+  const linkAnnots = [];
   if (linksRaw.length > 0) {
     const mapPoint = (x, y) => {
       const cx = initialCtm[0] * x + initialCtm[2] * y + initialCtm[4];
@@ -878,7 +878,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
         left: Math.min(p1.x, p2.x), top: Math.min(p1.y, p2.y), right: Math.max(p1.x, p2.x), bottom: Math.max(p1.y, p2.y),
       };
       if (l.uri) {
-        pageLinks.push({ bbox, uri: l.uri });
+        linkAnnots.push({ type: 'link', bbox, uri: l.uri });
         uriBoxes.push({ ...bbox, uri: l.uri });
       } else if (l.annotText && destInfo) {
         if (!destInfo.nameDests) {
@@ -889,10 +889,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
         const { dest } = resolveItemDest(l.annotText, destInfo.nameDests, destInfo.objNumToIndex, objCache);
         if (dest) {
           setDestYFrac(dest, destInfo.pages[dest.pageIndex]);
-          /** @type {PageLink} */
-          const entry = { bbox, dest: { pageIndex: dest.pageIndex } };
-          if (dest.yFrac !== undefined) entry.dest.yFrac = dest.yFrac;
-          pageLinks.push(entry);
+          linkAnnots.push({ type: 'link', bbox, dest });
         }
       }
     }
@@ -927,8 +924,10 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
     }));
   }
 
+  annotations.push(...linkAnnots);
+
   return {
-    pageObj, langSet, fontSet, dataTablePage, pageStats, annotations, annotationPassthroughRefs: passthroughRefs, links: pageLinks,
+    pageObj, langSet, fontSet, dataTablePage, pageStats, annotations,
   };
 }
 

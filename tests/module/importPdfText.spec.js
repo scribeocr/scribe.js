@@ -461,6 +461,15 @@ describe('Check direct text extraction from Iris (plant) - Wikipedia_123.pdf.', 
     expect(line.words[3].style.sup).toBe(true);
   });
 
+  test('Link annotations: external URI regions captured, dangling internal dests produce no entries', () => {
+    expect(doc.annotations.pages.length, 'annotation container spans every page').toBe(3);
+    const all = doc.annotations.pages.flat().filter((a) => a.type === 'link');
+    expect(all.filter((l) => l.uri).length, 'every external /URI link region from the source PDF is lifted into a link annotation').toBe(97);
+    // This 3-page Wikipedia excerpt kept its cite_note-* /Link annotations but dropped the References anchors they point to, so every internal link in the file dangles.
+    expect(all.filter((l) => l.dest).length, 'internal links whose named destinations are absent from the file must not fabricate entries').toBe(0);
+    expect(all[0].uri, 'the first URI link region carries its exact target URL').toBe('https://en.wikipedia.org/wiki/Template:Taxonomy/Iris');
+  });
+
   afterAll(async () => {
     await scribe.terminate();
   });
@@ -472,6 +481,98 @@ describe('Check handling of PDFs with broken encoding dictionaries.', () => {
 
     expect(doc.inputData.pdfType).toBe('image');
     expect(doc.ocr.active.length).toBe(0);
+  });
+
+  afterAll(async () => {
+    await scribe.terminate();
+  });
+});
+
+// econometrica_example.pdf is the only committed asset whose internal /Link destinations resolve, so these checks cannot ride along on an existing round-trip.
+describe('PDF internal link capture (econometrica_example.pdf).', () => {
+  const LINKS_FIXTURE = `${ASSETS_PATH}/econometrica_example.pdf`;
+
+  /** @param {import('../../js/containers/scribeDoc.js').ScribeDoc} d */
+  const linkPages = (d) => structuredClone(d.annotations.pages.map((p) => (p || []).filter((a) => a.type === 'link')));
+
+  /** @type {Array<Array<AnnotationLink>>} */ let parsed;
+  /** @type {Array<Array<AnnotationLink>>} */ let afterDup;
+  /** @type {Array<Array<AnnotationLink>>} */ let afterDelete;
+  /** @type {Array<Array<AnnotationLink>>} */ let afterUndo;
+  /** @type {Array<Array<AnnotationLink>>} */ let restoredClean;
+  /** @type {Array<Array<AnnotationLink>>} */ let restoredAfterDelete;
+  /** @type {Array<Array<AnnotationLink>>} */ let pdfRoundTrip;
+
+  beforeAll(async () => {
+    doc = await scribe.openDocument([LINKS_FIXTURE]);
+    parsed = linkPages(doc);
+    const scribeClean = /** @type {ArrayBuffer} */ (await doc.exportData('scribe'));
+    const pdfExported = /** @type {ArrayBuffer} */ (await doc.exportData('pdf'));
+
+    doc.duplicatePages([0], 0);
+    afterDup = linkPages(doc);
+    doc.deletePages([1]);
+    afterDelete = linkPages(doc);
+    const scribeAfterDelete = /** @type {ArrayBuffer} */ (await doc.exportData('scribe'));
+    doc.undo();
+    doc.undo();
+    afterUndo = linkPages(doc);
+
+    let reopened = await scribe.openDocument({ scribeFiles: [scribeClean], pdfFiles: [LINKS_FIXTURE] });
+    restoredClean = linkPages(reopened);
+    reopened = await scribe.openDocument({ scribeFiles: [scribeAfterDelete], pdfFiles: [LINKS_FIXTURE] });
+    restoredAfterDelete = linkPages(reopened);
+    reopened = await scribe.openDocument({ pdfFiles: [pdfExported] });
+    pdfRoundTrip = linkPages(reopened);
+  });
+
+  test('Internal links parse to resolved same-page dests with a vertical position', () => {
+    expect(parsed.length, 'links container spans the single page').toBe(1);
+    expect(parsed[0].length, 'the 3 resolvable footnote dests become entries; the 9 dests pointing at cut pages do not').toBe(3);
+    expect(parsed[0].every((l) => l.dest && l.dest.pageIndex === 0), 'every dest resolves to the page the named destinations point at').toBe(true);
+    expect(parsed[0].every((l) => !l.uri), 'this fixture has no external URI links').toBe(true);
+    expect(parsed[0][0], 'first link keeps its annotation rect in page pixel space, its verbatim /FitH view, and its vertical position').toEqual({
+      type: 'link',
+      bbox: {
+        left: 967.4583333333334, top: 1653.0291666666667, right: 989.2833333333334, bottom: 1685.9208333333333,
+      },
+      dest: { pageIndex: 0, view: ['FitH', 193], yFrac: 0.7250712250712251 },
+    });
+  });
+
+  test('Link entries survive a clean .scribe round-trip exactly', () => {
+    expect(restoredClean, 'links restored from .scribe match the parsed originals').toEqual(parsed);
+  });
+
+  test('Duplicating the target page remaps every dest to the surviving original', () => {
+    expect(afterDup.length, 'both pages carry a links array after duplication').toBe(2);
+    expect(afterDup[0].length, 'the duplicate keeps its 3 link entries').toBe(3);
+    expect(afterDup[1].length, 'the original keeps its 3 link entries').toBe(3);
+    expect(afterDup[0].every((l) => l.dest && l.dest.pageIndex === 1), 'the duplicate page\'s dests follow the shifted target').toBe(true);
+    expect(afterDup[1].every((l) => l.dest && l.dest.pageIndex === 1), 'the original page\'s dests follow the shifted target').toBe(true);
+  });
+
+  test('Deleting the target page drops its dead link entries', () => {
+    expect(afterDelete.length, 'one page remains after the delete').toBe(1);
+    expect(afterDelete[0].length, 'links pointing at the deleted page are dropped rather than left dangling').toBe(0);
+  });
+
+  test('.scribe restore wins over the fresh parse of the source PDF', () => {
+    expect(restoredAfterDelete[0].length, 'the saved post-edit link state is not clobbered by reparsing the original PDF').toBe(0);
+  });
+
+  test('Undo restores the original link targets exactly', () => {
+    expect(afterUndo, 'links after undoing the delete and the duplicate match the parsed originals').toEqual(parsed);
+  });
+
+  test('Lifted internal links survive a PDF export -> re-import round-trip', () => {
+    expect(pdfRoundTrip.length, 'the single page carries a link-annotation array after the round-trip').toBe(1);
+    expect(pdfRoundTrip[0].length, 'all 3 footnote links survive as link annotations, un-duplicated (source copies dropped on export)').toBe(3);
+    expect(pdfRoundTrip[0].every((l) => l.dest && l.dest.pageIndex === 0), 'every re-imported dest still resolves to page 0').toBe(true);
+    expect(
+      pdfRoundTrip[0].map((l) => l.dest.yFrac),
+      'each /FitH vertical position survives the verbatim view re-emit',
+    ).toEqual([0.7250712250712251, 0.7393162393162394, 0.7535612535612536]);
   });
 
   afterAll(async () => {

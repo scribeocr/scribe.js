@@ -680,7 +680,7 @@ export class TextSelection {
     this.range = null;
 
     /* eslint-disable-next-line max-len */
-    /** @type {?{anchor: SelPoint, granularity: number, pointerId: number, box: ?{n: number, orientation: number, x: number, y: number}, editWord?: ?import('./viewerWordObjects.js').UiOcrWord, linkArm?: ?PageLink, touch?: boolean, clientYOffset?: number}} */
+    /** @type {?{anchor: SelPoint, granularity: number, pointerId: number, box: ?{n: number, orientation: number, x: number, y: number}, editWord?: ?import('./viewerWordObjects.js').UiOcrWord, linkArm?: ?AnnotationLink, touch?: boolean, clientYOffset?: number}} */
     this._drag = null;
 
     /** Last pointerdown, for the multi-click counter. */

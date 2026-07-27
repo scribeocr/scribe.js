@@ -433,6 +433,61 @@ export function addRedactions(doc, redactions) {
 }
 
 /**
+ * @typedef {Object} LinkSpec
+ * @property {number} page - Page index (0-based).
+ * @property {bbox} bbox - Clickable region, page coords (top-left origin, same frame as OCR words).
+ * @property {string} [uri] - External URL target.
+ * @property {{ pageIndex: number, yFrac?: number, view?: Array<string|number|null> }} [dest] - Internal page target.
+ *   `view` is the raw PDF destination tail to write on export, defaulting to a page-level `['Fit']`.
+ *   `yFrac` positions in-app navigation and is not written to the PDF unless carried by `view`.
+ */
+
+/**
+ * Add link annotations to the document.
+ *
+ * Each spec targets either an external URL (`uri`) or an internal page jump (`dest`), never both.
+ *
+ * @param {ScribeDoc} doc
+ * @param {Array<LinkSpec>} links
+ * @returns {{ linksAdded: number }}
+ */
+export function addLinks(doc, links) {
+  let linksAdded = 0;
+  for (const spec of links) {
+    const pageAnnots = doc.annotations.pages[spec.page];
+    if (!pageAnnots) continue;
+    if (!spec.uri && !spec.dest) throw new Error('Each link must specify either uri or dest.');
+    if (spec.uri && spec.dest) throw new Error('A link must specify uri or dest, not both.');
+    const bbox = {
+      left: spec.bbox.left, top: spec.bbox.top, right: spec.bbox.right, bottom: spec.bbox.bottom,
+    };
+    if (spec.uri) {
+      pageAnnots.push({ type: 'link', bbox, uri: spec.uri });
+    } else {
+      /** @type {OutlineDest} */
+      const dest = { pageIndex: spec.dest.pageIndex, view: Array.isArray(spec.dest.view) ? [...spec.dest.view] : ['Fit'] };
+      if (spec.dest.yFrac !== undefined) dest.yFrac = spec.dest.yFrac;
+      pageAnnots.push({ type: 'link', bbox, dest });
+    }
+    linksAdded++;
+  }
+  return { linksAdded };
+}
+
+/**
+ * Remove link annotations.
+ * @param {ScribeDoc} doc
+ * @param {{ page?: number }} [filter] - Omit to remove every link.
+ *   `page` narrows to one page.
+ */
+export function removeLinks(doc, filter) {
+  for (let p = 0; p < doc.annotations.pages.length; p++) {
+    if (filter?.page != null && filter.page !== p) continue;
+    doc.annotations.pages[p] = doc.annotations.pages[p].filter((a) => a.type !== 'link');
+  }
+}
+
+/**
  * Remove redaction marks.
  * @param {ScribeDoc} doc
  * @param {{ page?: number, groupId?: string }} [filter] - Omit to remove every mark.

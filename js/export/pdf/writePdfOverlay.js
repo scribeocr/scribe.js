@@ -1,12 +1,12 @@
 import {
-  findXrefOffset, parseXref, sourceXrefIsWellFormed, getPageObjects,
+  findXrefOffset, parseXref, sourceXrefIsWellFormed, getPageObjects, findRootObjNum,
 } from '../../pdf/parsePdfUtils.js';
 import { byteIndexOf } from '../../pdf/pdfPrimitives.js';
 import { ObjectCache } from '../../pdf/objectCache.js';
 import { createPdfFontRefs, createEmbeddedFontType0 } from './writePdfFonts.js';
 import { ocrPageToPDFStream } from './writePdfText.js';
 import {
-  buildHighlightAnnotObjects, buildFreeTextAnnotObjects, buildShapeAnnotObjects, buildTextAnnotObjects, consolidateAnnotations,
+  buildHighlightAnnotObjects, buildFreeTextAnnotObjects, buildShapeAnnotObjects, buildTextAnnotObjects, buildLinkAnnotObjects, consolidateAnnotations,
 } from './writePdfAnnots.js';
 import { SHAPE_ANNOT_TYPES, TEXT_MARKUP_ANNOT_TYPES } from '../../addHighlights.js';
 import { encodeStreamObject } from './writePdfStreams.js';
@@ -25,6 +25,7 @@ import {
 import { createConversionState } from './convertTextRegionsToPaths.js';
 import { rebuildPdfSubset } from './subsetPdf.js';
 import { buildOutlineObjects } from './writeOutline.js';
+import { buildNameDests } from '../../pdf/parseOutline.js';
 
 /**
  * Insert OCR text layers into an existing PDF via incremental update, or
@@ -269,6 +270,19 @@ export async function overlayPdfText({
   const conversionState = (regionsByPage.size > 0 || convertBrokenType3ToPaths)
     ? createConversionState() : null;
 
+  // With no annotations supplied, nothing re-emits links, so both stay null and source /Link objects pass through untouched.
+  // This path is always the full document in source order (subsets delegate to `rebuildPdfSubset`), so the page map is the identity.
+  /** @type {?Array<number|undefined>} */
+  let linkPageObjNums = null;
+  /** @type {?{ nameDests: Map<string, string>, objNumToIndex: Map<number, number> }} */
+  let linkDestInfo = null;
+  if (annotationsPages.length > 0) {
+    linkPageObjNums = pages.map((p) => p.objNum);
+    const rootNumLink = findRootObjNum(pdfBytes);
+    const catTextLink = (rootNumLink != null && objCache.getObjectText(rootNumLink)) || '';
+    linkDestInfo = { nameDests: buildNameDests(objCache, catTextLink), objNumToIndex: new Map(pages.map((p, idx) => [p.objNum, idx])) };
+  }
+
   /** @type {Set<PdfFontInfo>} */
   const pdfFontsUsed = new Set();
 
@@ -428,10 +442,15 @@ export async function overlayPdfText({
         .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty, pageRotate, baseWidth, baseHeight, rotScale));
       const textAnnots = buildTextAnnotObjects(textAnns, nextObjNum, outputDims, warningHandler, !!scrub);
       for (const t of textAnnots.objectTexts) newObjects.push({ objNum: nextObjNum++, content: t });
-      extraAnnotRefs = [...annotRefs, ...shapes.annotRefs, ...ft.annotRefs, ...textAnnots.annotRefs];
+      const linkAnns = pageAnnotations.filter((a) => a.type === 'link')
+        .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty, pageRotate, baseWidth, baseHeight, rotScale));
+      const linkAnnots = buildLinkAnnotObjects(linkAnns, nextObjNum, outputDims, linkPageObjNums || [], warningHandler);
+      for (const t of linkAnnots.objectTexts) newObjects.push({ objNum: nextObjNum++, content: t });
+      extraAnnotRefs = [...annotRefs, ...shapes.annotRefs, ...ft.annotRefs, ...textAnnots.annotRefs, ...linkAnnots.annotRefs];
     }
 
-    const newPageObj = buildReplacementPageDict(pageInfo.objNum, pageInfo.objText, newContentsArray, resourcesObjNum, null, extraAnnotRefs, objCache);
+    const newPageObj = buildReplacementPageDict(pageInfo.objNum, pageInfo.objText, newContentsArray, resourcesObjNum, null, extraAnnotRefs, objCache,
+      null, 0, null, linkDestInfo);
     newObjects.push({ objNum: pageInfo.objNum, content: newPageObj });
   }
 

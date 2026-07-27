@@ -1,4 +1,5 @@
 import { toUtf16BeHex, formatPdfDate } from '../../pdf/pdfPrimitives.js';
+import { viewToPdf } from './writeOutline.js';
 
 /**
  * Message for an annotation skipped because emitting it threw.
@@ -230,6 +231,59 @@ export function buildFreeTextAnnotObjects(annotations, startObjNum, outputDims, 
       }
     } catch (err) {
       warningHandler?.(skipMessage('FreeText', err));
+    }
+  }
+
+  return { objectTexts, annotRefs };
+}
+
+/**
+ * Build the PDF objects for link annotations.
+ * A dest whose target page is absent from `pageObjNumByIndex` (excluded from this export) drops the whole link.
+ * @param {AnnotationLink[]} annotations
+ * @param {number} startObjNum
+ * @param {{ width: number, height: number }} outputDims
+ * @param {Array<number|undefined>} pageObjNumByIndex - Document page index -> output page object number.
+ * @param {(message: string) => void} [warningHandler] - Reports each annotation skipped on error.
+ * @returns {{ objectTexts: string[], annotRefs: string[] }} Object strings (the i-th numbered startObjNum + i) and their `/Annots` references.
+ */
+export function buildLinkAnnotObjects(annotations, startObjNum, outputDims, pageObjNumByIndex, warningHandler) {
+  const objectTexts = [];
+  const annotRefs = [];
+  let objNum = startObjNum;
+
+  for (const annot of annotations) {
+    try {
+      let target;
+      if (annot.uri) {
+        // The /URI value must be 7-bit ASCII, so non-ASCII code points are UTF-8 percent-encoded first.
+        // Hex-string emission then sidesteps literal-string escaping entirely.
+        const ascii = annot.uri.replace(/[^\x20-\x7E]/g, (c) => encodeURIComponent(c));
+        let hex = '';
+        for (let ci = 0; ci < ascii.length; ci++) hex += ascii.charCodeAt(ci).toString(16).padStart(2, '0');
+        target = ` /A <</S /URI /URI <${hex}>>>`;
+      } else if (annot.dest) {
+        const pageObjNum = pageObjNumByIndex[annot.dest.pageIndex];
+        if (pageObjNum == null) continue;
+        target = ` /Dest [${pageObjNum} 0 R${viewToPdf(annot.dest.view)}]`;
+      } else {
+        continue;
+      }
+
+      const pdfRectTop = outputDims.height - annot.bbox.top;
+      const pdfRectBottom = outputDims.height - annot.bbox.bottom;
+      let str = `${objNum} 0 obj\n`;
+      str += '<</Type /Annot /Subtype /Link';
+      str += ` /Rect [${annot.bbox.left} ${pdfRectBottom} ${annot.bbox.right} ${pdfRectTop}]`;
+      str += ' /Border [0 0 0] /F 4';
+      str += target;
+      str += '>>\nendobj\n\n';
+
+      annotRefs.push(`${objNum} 0 R`);
+      objectTexts.push(str);
+      objNum++;
+    } catch (err) {
+      warningHandler?.(skipMessage('link', err));
     }
   }
 
