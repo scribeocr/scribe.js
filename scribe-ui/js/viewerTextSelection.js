@@ -680,7 +680,7 @@ export class TextSelection {
     this.range = null;
 
     /* eslint-disable-next-line max-len */
-    /** @type {?{anchor: SelPoint, granularity: number, pointerId: number, box: ?{n: number, orientation: number, x: number, y: number}, editWord?: ?import('./viewerWordObjects.js').UiOcrWord, linkArm?: ?AnnotationLink, touch?: boolean, clientYOffset?: number}} */
+    /** @type {?{anchor: ?SelPoint, granularity: number, pointerId: number, box: ?{n: number, orientation: number, x: number, y: number}, editWord?: ?import('./viewerWordObjects.js').UiOcrWord, linkArm?: ?AnnotationLink, touch?: boolean, clientYOffset?: number}} */
     this._drag = null;
 
     /** Last pointerdown, for the multi-click counter. */
@@ -1001,7 +1001,7 @@ export class TextSelection {
   }
 
   /**
-   * Whether a client point lands inside some line's band, i.e. over selectable text.
+   * Whether a client point is directly over a line's text, the region its selection rectangle would paint.
    * @param {number} clientX
    * @param {number} clientY
    * @returns {boolean}
@@ -1010,11 +1010,14 @@ export class TextSelection {
     const { n, x, y } = this.viewer.clientToPage(clientX, clientY);
     const idx = this.index(n);
     if (!idx) return false;
+    const margin = 2 / (this.viewer.zoomLevel || 1);
     for (const [orientation, indices] of idx.byOrientation) {
       const local = this.viewer.pageToLocal(n, orientation, x, y);
       for (const li of indices) {
-        const b = idx.lines[li].band;
-        if (local.x >= b.left && local.x <= b.right && local.y >= b.top && local.y <= b.bottom) return true;
+        const entry = idx.lines[li];
+        // The bands tile the whole page for caret snapping, so testing them here would count every point as over text.
+        if (local.x >= entry.lbox.left - margin && local.x <= entry.lbox.right + margin
+          && local.y >= entry.rectTop - margin && local.y <= entry.rectBottom + margin) return true;
       }
     }
     return false;
@@ -1076,23 +1079,33 @@ export class TextSelection {
       };
       this._renderAll();
     } else {
-      const point = this.pointAt(event.clientX, event.clientY);
-      if (!point) { this.clear(); return; }
-      // A double-click captures the word to arm in-place editing, which `_onDragEnd` opens.
-      const editWord = (UiText.enableEditing && this._lastDown.count === 2 && !event.altKey)
-        ? this.wordAt(event.clientX, event.clientY) : null;
       // A plain single click arms link-following, which `_onDragEnd` confirms at release.
       const linkArm = (this._lastDown.count === 1 && !event.shiftKey && !event.ctrlKey && !event.metaKey)
         ? this.viewer.linkAt(event.clientX, event.clientY) : null;
-      // Shift-click extends from the far end of the existing selection rather than restarting it.
-      let anchor = point;
-      if (event.shiftKey && this.range && this.range.kind === 'linear') {
-        anchor = cmpPoint(point, this.range.start) < 0 ? this.range.end : this.range.start;
+      // Selectability matches the I-beam, so a dead-space press dismisses instead of snapping to the nearest caret.
+      if (!this.isOverText(event.clientX, event.clientY)) {
+        this.clear();
+        if (!linkArm) { this.viewer.scrollContainer.focus({ preventScroll: true }); return; }
+        // A link can sit over dead space, so its press still arms the release confirmation.
+        this._drag = {
+          anchor: null, granularity, pointerId: event.pointerId, box: null, editWord: null, linkArm,
+        };
+      } else {
+        const point = this.pointAt(event.clientX, event.clientY);
+        if (!point) { this.clear(); return; }
+        // A double-click captures the word to arm in-place editing, which `_onDragEnd` opens.
+        const editWord = (UiText.enableEditing && this._lastDown.count === 2 && !event.altKey)
+          ? this.wordAt(event.clientX, event.clientY) : null;
+        // Shift-click extends from the far end of the existing selection rather than restarting it.
+        let anchor = point;
+        if (event.shiftKey && this.range && this.range.kind === 'linear') {
+          anchor = cmpPoint(point, this.range.start) < 0 ? this.range.end : this.range.start;
+        }
+        this._drag = {
+          anchor, granularity, pointerId: event.pointerId, box: null, editWord, linkArm,
+        };
+        this._setLinear(anchor, point, granularity);
       }
-      this._drag = {
-        anchor, granularity, pointerId: event.pointerId, box: null, editWord, linkArm,
-      };
-      this._setLinear(anchor, point, granularity);
     }
 
     this._dragClient = { x: event.clientX, y: event.clientY };
@@ -1141,6 +1154,7 @@ export class TextSelection {
 
     const timer = setTimeout(() => {
       cancel();
+      if (!this.isOverText(start.x, start.y)) return;
       const point = this.pointAt(start.x, start.y);
       if (!point) return;
       // The callout opens only when the gesture ends, so hide it while the grips come up.
@@ -1169,7 +1183,7 @@ export class TextSelection {
     const y = event.clientY + (this._drag.clientYOffset || 0);
     this._dragClient = { x: event.clientX, y };
     this._extendToClient(event.clientX, y);
-    if (this._autoScrollRaf === null) this._autoScrollRaf = requestAnimationFrame(this._autoScrollTick);
+    if (this._autoScrollRaf === null && this._drag.anchor) this._autoScrollRaf = requestAnimationFrame(this._autoScrollTick);
   }
 
   /** @param {PointerEvent} event */
@@ -1347,6 +1361,7 @@ export class TextSelection {
       if (this.viewer.onSelectionChange) this.viewer.onSelectionChange();
       return;
     }
+    if (!drag.anchor) return;
     const point = this.pointAt(clientX, clientY);
     if (point) this._setLinear(drag.anchor, point, drag.granularity);
   }
