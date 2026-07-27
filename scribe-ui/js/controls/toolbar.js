@@ -38,6 +38,46 @@ export function makeSeparator() {
   return sep;
 }
 
+const TIME_FMT = new Intl.DateTimeFormat(undefined, { hour: 'numeric', minute: '2-digit' });
+const WEEKDAY_FMT = new Intl.DateTimeFormat(undefined, { weekday: 'short' });
+const MONTH_DAY_FMT = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric' });
+const MONTH_DAY_YEAR_FMT = new Intl.DateTimeFormat(undefined, { month: 'short', day: 'numeric', year: 'numeric' });
+const FULL_FMT = new Intl.DateTimeFormat(undefined, { dateStyle: 'long', timeStyle: 'short' });
+
+/**
+ * Render a timestamp at the specificity its age warrants.
+ * A time today, a weekday for the rest of the week, then month and day, then month, day, and year.
+ * @param {string} iso - UTC ISO-8601 instant.
+ * @param {number} [now] - Epoch ms to measure the age against.
+ * @returns {string} Empty when the timestamp is missing or unparseable.
+ */
+export function formatTimestamp(iso, now = Date.now()) {
+  const d = new Date(iso);
+  if (Number.isNaN(d.getTime())) return '';
+  const nowDate = new Date(now);
+  // Counting whole local days rather than elapsed ms keeps the tier right when a daylight-saving shift makes the day 23 hours long.
+  const days = Math.floor(Date.UTC(nowDate.getFullYear(), nowDate.getMonth(), nowDate.getDate()) / 86400000)
+    - Math.floor(Date.UTC(d.getFullYear(), d.getMonth(), d.getDate()) / 86400000);
+  if (days === 0) return TIME_FMT.format(d);
+  if (days >= 1 && days <= 6) return WEEKDAY_FMT.format(d);
+  return d.getFullYear() === nowDate.getFullYear() ? MONTH_DAY_FMT.format(d) : MONTH_DAY_YEAR_FMT.format(d);
+}
+
+/**
+ * Fill an element with a timestamp.
+ * The full date and time goes in the element's title.
+ * Leaves the element untouched when the timestamp is missing or unparseable.
+ * @param {HTMLElement} elem
+ * @param {string} iso - UTC ISO-8601 instant.
+ * @param {string} [prefix] - Separator text drawn ahead of the timestamp.
+ */
+export function setTimestamp(elem, iso, prefix = '') {
+  const text = formatTimestamp(iso);
+  if (!text) return;
+  elem.textContent = prefix + text;
+  elem.title = FULL_FMT.format(new Date(iso));
+}
+
 /**
  * Build the three-zone toolbar shell. The caller fills `start`, `center`, and `end`.
  * @param {string} rootClass - The owning app's root class (used for the toolbar's scoped class).

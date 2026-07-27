@@ -1,7 +1,7 @@
 // Document interaction tools shared by the viewer and editor apps: text highlighting
 // (toggle, color picker, comment marks), the upload drop zone, and the file-to-ScribeDoc loader.
 import scribeLib from '../../../scribe.js';
-import { makeIconButton } from './toolbar.js';
+import { makeIconButton, setTimestamp } from './toolbar.js';
 import {
   applyHighlight, createInkEdges, recolorHighlightGroup, removeHighlightGroup, setHighlightReplies,
 } from '../viewerHighlights.js';
@@ -360,13 +360,6 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
     };
 
     const initialsOf = (name) => name.split(/\s+/, 2).map((p) => p[0]).join('').toUpperCase();
-    const dateShort = (iso) => {
-      const d = new Date(iso);
-      /** @type {Intl.DateTimeFormatOptions} */
-      const dateOpts = { month: 'short', day: 'numeric' };
-      if (d.getFullYear() !== new Date().getFullYear()) dateOpts.year = 'numeric';
-      return d.toLocaleDateString(undefined, dateOpts);
-    };
 
     /**
      * One thread message.
@@ -397,7 +390,7 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
         foot.className = 'scribe-cmt-foot';
         const when = document.createElement('span');
         when.className = 'scribe-cm-when';
-        when.textContent = dateShort(createdAt);
+        setTimestamp(when, createdAt);
         foot.appendChild(when);
         msg.appendChild(foot);
       }

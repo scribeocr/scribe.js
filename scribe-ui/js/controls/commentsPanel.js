@@ -1,7 +1,7 @@
 // Comments side panel: every annotation in the document as a card, grouped under sticky per-page headers.
 // A card is a text markup (quoting its covered text), a freestanding note, or a redaction mark (listed for review, though it has no comment thread).
 // A sibling of the bookmarks and thumbnails rails.
-import { makeIconButton } from './toolbar.js';
+import { makeIconButton, setTimestamp } from './toolbar.js';
 import { annotMatchesWord } from '../viewerHighlights.js';
 import { createNote } from '../viewerNotes.js';
 import { removeRedactionGroup } from '../viewerRedactions.js';
@@ -415,20 +415,6 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
    * @type {Map<string, string>}
    */
   const avaTint = new Map();
-
-  /**
-   * Format an ISO date as "Jun 5", adding the year when it is not the current year.
-   * @param {string} iso
-   * @returns {string}
-   */
-  function shortDate(iso) {
-    if (!iso) return '';
-    const d = new Date(iso);
-    /** @type {Intl.DateTimeFormatOptions} */
-    const dateOpts = { month: 'short', day: 'numeric' };
-    if (d.getFullYear() !== new Date().getFullYear()) dateOpts.year = 'numeric';
-    return d.toLocaleDateString(undefined, dateOpts);
-  }
 
   /**
    * The row's quote line: the text the mark covers, drawn the way the mark itself draws it.
@@ -1146,7 +1132,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     if (createdAt) {
       const fd = document.createElement('span');
       fd.className = 'scribe-cmc-fd';
-      fd.textContent = shortDate(createdAt);
+      setTimestamp(fd, createdAt);
       ft.appendChild(fd);
     }
     if (verb) {
@@ -1203,7 +1189,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     if (row.kind === 'redact' && row.createdAt) {
       const when = document.createElement('span');
       when.className = 'scribe-cmc-when';
-      when.textContent = `· ${shortDate(row.createdAt)}`;
+      setTimestamp(when, row.createdAt, '· ');
       mh.appendChild(when);
     }
     head.appendChild(mh);
@@ -1678,13 +1664,9 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
       who.textContent = row.author;
       meta.append(ava, who);
       if (row.createdAt) {
-        const d = new Date(row.createdAt);
-        /** @type {Intl.DateTimeFormatOptions} */
-        const dateOpts = { month: 'short', day: 'numeric' };
-        if (d.getFullYear() !== new Date().getFullYear()) dateOpts.year = 'numeric';
         const when = document.createElement('span');
         when.className = 'scribe-cm-when';
-        when.textContent = `· ${d.toLocaleDateString(undefined, dateOpts)}`;
+        setTimestamp(when, row.createdAt, '· ');
         rightElem.prepend(when);
       }
       top.appendChild(meta);
@@ -1731,13 +1713,9 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
           meta.append(ava, who);
         }
         if (reply.createdAt) {
-          const d = new Date(reply.createdAt);
-          /** @type {Intl.DateTimeFormatOptions} */
-          const dateOpts = { month: 'short', day: 'numeric' };
-          if (d.getFullYear() !== new Date().getFullYear()) dateOpts.year = 'numeric';
           const when = document.createElement('span');
           when.className = 'scribe-cm-when';
-          when.textContent = `· ${d.toLocaleDateString(undefined, dateOpts)}`;
+          setTimestamp(when, reply.createdAt, '· ');
           meta.appendChild(when);
         }
         msg.appendChild(meta);
