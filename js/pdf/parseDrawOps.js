@@ -559,7 +559,7 @@ export function parseDrawOps(
             strokeAlpha,
             lineWidth: lineWidth * Math.sqrt(Math.abs(ctm[0] * ctm[3] - ctm[1] * ctm[2])),
           };
-          if (isNonEmbedded && !sc.applied) {
+          if (isNonEmbedded && !sc.applied && !currentFont.widthsUnreliable) {
             opObj.pdfGlyphWidth = rawWidth;
           }
           if (!fillColorExplicit) opObj.fillColorInherited = true;
@@ -675,6 +675,7 @@ export function parseDrawOps(
             : drawDefault;
         }
         const sc = applySmallCaps(drawText, trm, isNonEmbedded && !!currentFont.smallCaps);
+        /** @type {Type0TextOp} */
         const opObj = {
           type: 'type0text',
           text: sc.text,
@@ -695,7 +696,7 @@ export function parseDrawOps(
           strokeAlpha,
           lineWidth: lineWidth * Math.sqrt(Math.abs(ctm[0] * ctm[3] - ctm[1] * ctm[2])),
         };
-        if (isNonEmbedded && !sc.applied) opObj.pdfGlyphWidth = rawWidth;
+        if (isNonEmbedded && !sc.applied && !currentFont.widthsUnreliable) opObj.pdfGlyphWidth = rawWidth;
         if (!fillColorExplicit) opObj.fillColorInherited = true;
         if (!fillAlphaExplicit) opObj.fillAlphaInherited = true;
         if (!strokeColorExplicit) opObj.strokeColorInherited = true;

@@ -299,7 +299,7 @@ function extractFormXObjectText(containerObjText, containerTokens, parentFonts, 
     const mergedExtGStates = formExtGStates.size > 0
       ? new Map([...(parentExtGStates || []), ...formExtGStates])
       : parentExtGStates;
-    const formMatrix = parseFormMatrix(formObjText, objCache) || [1, 0, 0, 1, 0, 0];
+    const formMatrix = parseFormMatrix(formObjText, objCache);
     const formCtm = matMul(formMatrix, doOp.ctm);
     const formTokens = tokenizeContentStream(formContentStream);
     const formChars = executeTextOperators(

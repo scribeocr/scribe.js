@@ -115,10 +115,8 @@ function inlineFormXObjects(tokens, containerObjText, objCache, visited) {
 
           // Wrap in q/cm/Q to apply the form's Matrix and isolate state
           result.push({ type: 'operator', value: 'q' });
-          if (formMatrix) {
-            for (const v of formMatrix) result.push({ type: 'number', value: v });
-            result.push({ type: 'operator', value: 'cm' });
-          }
+          for (const v of formMatrix) result.push({ type: 'number', value: v });
+          result.push({ type: 'operator', value: 'cm' });
           for (const t of expanded) result.push(t);
           result.push({ type: 'operator', value: 'Q' });
         }

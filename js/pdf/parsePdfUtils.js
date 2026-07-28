@@ -834,6 +834,7 @@ export function extractStream(pdfBytes, objOffset, objCache = null, objNum = -1)
  * Matches only the dict's top-level /Matrix, not one nested in the form's /Resources (e.g. a shading pattern's matrix).
  * @param {string} objText - the form or appearance dict text
  * @param {ObjectCache|null} [objCache] - resolves an indirect /Matrix value
+ * @returns {number[]} the parsed matrix, or `[1, 0, 0, 1, 0, 0]` when absent
  */
 export function parseFormMatrix(objText, objCache = null) {
   for (let i = 0, depth = 0; i < objText.length - 1; i++) {
@@ -850,7 +851,7 @@ export function parseFormMatrix(objText, objCache = null) {
       break;
     }
   }
-  return null;
+  return [1, 0, 0, 1, 0, 0];
 }
 
 /**

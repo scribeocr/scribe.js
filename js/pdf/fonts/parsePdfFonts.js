@@ -1521,9 +1521,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
     }
 
-    // For Dingbats with /Differences, the charCodes in /Differences (e.g. 1, 2)
-    // are outside the standard encoding range (32-126) so applyStandardFontWidths
-    // won't cover them. Look up each glyph name's width from the AFM data.
+    // Dingbats /Differences typically remap charCodes below 32, which applyStandardFontWidths (keyed from code 32 up) leaves without widths.
     if (/ZapfDingbats/i.test(baseName) && differences) {
       for (const codeStr of Object.keys(differences)) {
         const code = Number(codeStr);
@@ -2253,9 +2251,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     // Detect vertical writing mode from CMap encoding name suffix (-V).
     const verticalMode = /\/Encoding\s*\/[\w-]+-V\b/.test(fontObjEnc);
 
-    // Some broken ToUnicode CMaps map ASCII letter charCodes to the same letter
-    // with the wrong case (e.g. charCode 69 -> "e" instead of "E"). Detect a
-    // consistent pattern so extraction can prefer encodingUnicode case safely.
+    // Some broken ToUnicode CMaps map ASCII letter charCodes to the same letter with the wrong case (e.g. charCode 69 -> "e" instead of "E").
     let preferEncodingCase = false;
     if (!cidFontText && !type3Info && toUnicode.size > 0 && encodingUnicode.size > 0) {
       let caseConflictCount = 0;
@@ -2297,12 +2293,9 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
     }
 
-    // Some PDFs encode widths as 32-bit packed values (e.g. 0x00020002 = 131074), far
-    // above any reasonable 1/1000-em width. Unclamped, they poison text-extraction bbox
-    // math and overflow uint16 hmtx entries during OTF rebuild.
-    // Type3 is exempt: widths there come from d1 * fontMatrix[0] * 1000, so a non-standard
-    // fontMatrix (e.g. identity instead of [0.001, 0, 0, 0.001, 0, 0]) can legitimately
-    // yield values >> 4000.
+    // Some PDFs encode widths as 32-bit packed values (e.g. 0x00020002 = 131074), far above any reasonable 1/1000-em width.
+    // Unclamped, they poison text-extraction bbox math and overflow uint16 hmtx entries during OTF rebuild.
+    // Type3 is exempt: widths there come from d1 * fontMatrix[0] * 1000, so a non-standard fontMatrix (e.g. identity instead of [0.001, 0, 0, 0.001, 0, 0]) can legitimately yield values >> 4000.
     if (!type3Info) {
       const SANE_MAX_WIDTH = 4000;
       let saneSum = 0; let saneCount = 0;
@@ -2322,10 +2315,44 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
     }
 
+    // Do not stretch/squeeze glyphs to match widths declared in the PDF that are patently incorrect.
+    let widthsUnreliable = false;
+    const embedded = !!(type1Info?.fontFile || type0Info?.fontFile || type3Info);
+    if (!embedded && !symbolicFlag) {
+      /** @type {Map<number, number>} */
+      const refWidths = new Map();
+      applyStandardFontWidths(baseName, refWidths);
+      let sampled = 0;
+      let firstWidth = 0;
+      let anyFar = false;
+      let allEqual = true;
+      for (const [code, w] of widths) {
+        if (!(w > 0)) continue;
+        let cp = code;
+        if (cidFontText) {
+          const u = toUnicode.get(code);
+          if (!u || u.length !== 1) continue;
+          cp = u.codePointAt(0);
+        } else if (differences && differences[code] !== undefined) {
+          continue;
+        }
+        if (cp < 33 || cp > 126) continue;
+        const ref = refWidths.get(cp);
+        if (!(ref > 0)) continue;
+        if (sampled === 0) firstWidth = w;
+        else if (w !== firstWidth) allEqual = false;
+        sampled++;
+        if (w > ref * 2 || w < ref / 2) anyFar = true;
+      }
+      // An all-equal sample is a monospace claim, not a scramble, and those fonts need the squeeze into their constant cell to render acceptably.
+      widthsUnreliable = sampled >= 8 && anyFar && !allEqual;
+    }
+
     const fontInfo = {
       baseName,
       toUnicode,
       widths,
+      widthsUnreliable,
       glyphVisualWidths,
       defaultWidth,
       ascent,
@@ -2594,11 +2621,9 @@ function parseToUnicodeCMap(cmapText, map) {
 }
 
 /**
- * Parse a CID encoding CMap and populate a charCode→CID map.
- * This handles the /Encoding reference in Type0 fonts when it's a CMap stream
- * (not a predefined name like /Identity-H).
+ * Parse a CID encoding CMap and populate a charCode->CID map.
  * @param {string} cmapText
- * @param {Map<number, number>} map - charCode → CID
+ * @param {Map<number, number>} map - charCode -> CID
  */
 function parseCIDEncodingCMap(cmapText, map) {
   // Parse begincidchar blocks: <charCode> <CID>
@@ -3065,10 +3090,7 @@ export function parseGlyphStreamPaths(streamText) {
 
   const numStack = [];
   let inTextBlock = false;
-  // Track where the current sub-path begins so `n` (end-path-no-paint, used
-  // after `W`/`W*` to apply a clip) can drop the sub-path's commands without
-  // them being filled along with subsequent painted sub-paths. Any path-paint
-  // operator (f/S/B/etc.) advances this to the post-paint index.
+  // Track where the unpainted path begins so `n` (end-path-no-paint, used after `W`/`W*` to apply a clip) can drop its commands rather than leaving them to be filled with the painted paths.
   let unpaintedStart = commands.length;
   // Current point and subpath start, in output (transformed) space: `v` needs the current point as its first control point,
   // and h/close restores it to the subpath start.
@@ -3472,9 +3494,7 @@ function buildType3OpentypeFont(objText, objCache) {
 
 /**
  * Correct character bounding boxes for Type3 fonts in parsed OCR pages.
- * The stext parser produces incorrect bboxes because the placeholder FontBBox [-10,-10,10,10]
- * is used instead of actual glyph dimensions. This function replaces those bboxes using
- * the actual glyph outlines extracted from the raw PDF.
+ * Upstream text extraction produces incorrect bboxes because the placeholder FontBBox [-10,-10,10,10] is used instead of actual glyph dimensions.
  * @param {Array<import('../../objects/ocrObjects.js').OcrPage>} pages
  * @param {{ [fontObjNum: number]: FontInfo }} type3Fonts
  */
