@@ -65,6 +65,7 @@ export async function initPdfWorker() {
     obj.loadPdfForParsing = wrap('loadPdfForParsing');
     obj.parsePdfPage = wrap('parsePdfPage');
     obj.renderPdfPage = wrap('renderPdfPage');
+    obj.getPdfFontBytes = wrap('getPdfFontBytes');
     obj.unloadPdf = wrap('unloadPdf');
 
     obj.terminate = () => worker.terminate();
@@ -94,11 +95,19 @@ export class PdfScheduler {
 
   /**
    * Dispatch a single page for rendering via the scheduler.
-   * @param {{ pageIndex: number, colorMode: string, dpi?: number, targetWidth?: number, outputFormat?: 'png'|'jpeg'|'bitmap', quality?: number }} args
-   * @param {boolean} [forViewer=false] - Whether this render serves the on-screen viewer.
-   *   Viewer renders are served ahead of background work, newest-first, and may be dropped (resolving to SKIPPED) when superseded.
+   * @param {{ pageIndex: number, colorMode: string, dpi?: number, targetWidth?: number, outputFormat?: 'png'|'jpeg'|'bitmap', quality?: number,
+   * textEdits?: ?{records: Array<TextEdit>, dims: {width: number, height: number}} }} args
+   * @param {boolean} [forViewer=false] - Viewer renders are served ahead of background work.
+   *   A superseded viewer render may be dropped, resolving to SKIPPED.
    */
   renderPdfPage = (args, forViewer = false) => this.scheduler.addJob('renderPdfPage', args, forViewer);
+
+  /**
+   * The font program the renderer draws a given embedded font with.
+   * `pageIndex` lets the answering worker resolve a font from a page it never touched itself.
+   * @param {{ fontObjNum: number, pageIndex?: number }} args
+   */
+  getPdfFontBytes = (args) => this.scheduler.addJob('getPdfFontBytes', args);
 
   /**
    * Set the page the main viewer is on, so staged viewer renders dispatch closest-to-current first.
@@ -155,6 +164,12 @@ export class PdfSchedulerInProcess {
    */
   // eslint-disable-next-line no-unused-vars
   renderPdfPage = (args, forViewer = false) => this.#core.renderPage(args);
+
+  /**
+   * The font program the renderer draws a given embedded font with, for native-text editing.
+   * @param {{ fontObjNum: number, pageIndex?: number }} args
+   */
+  getPdfFontBytes = (args) => this.#core.getFontBytes(args);
 
   /**
    * No-op: in-process renders run immediately, so there is no staged queue to prioritize.

@@ -7,6 +7,8 @@ import {
 } from '../viewerHighlights.js';
 import { focusNoteEditor, removeNote, setNoteComment } from '../viewerNotes.js';
 import { redactWords, redactRegion } from '../viewerRedactions.js';
+import { createLineEditor } from '../editTextLineEditor.js';
+import { nativeTextForPage } from '../../../js/textEdits.js';
 import { filesFromDropEvent } from '../dragAndDrop.js';
 
 // Filled highlighter-marker glyph (Material).
@@ -1306,4 +1308,552 @@ export async function openDocumentFromFile(file, { deferText = false } = {}) {
   });
   if (!deferText) await doc.textReady;
   return doc;
+}
+
+// eslint-disable-next-line max-len
+const EDIT_TEXT_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5.5h16"/><path d="M4 10h9.5"/><path d="M4 14.5h5.5"/><path d="M16.6 9.4l3.6 3.6-7.2 7.2-4.3.7.7-4.3z"/></svg>';
+
+/**
+ * The "Edit Text" mode tool.
+ * While the mode is active, lines of visible native PDF text are selectable objects that can be edited in place or deleted.
+ * @param {import('../../viewer.js').ScribeViewer} scribe
+ */
+export function createEditTextTool(scribe) {
+  let editMode = false;
+  /** @type {?ReturnType<typeof createLineEditor>} */
+  let editor = null;
+  let clearBoxSelection = () => {};
+  let renderModeChrome = () => {};
+  const toolbarElem = makeIconButton('Edit Text', EDIT_TEXT_SVG);
+  toolbarElem.classList.add('cr-labeled-button');
+  const toolbarLabelElem = document.createElement('span');
+  toolbarLabelElem.className = 'cr-btn-label';
+  toolbarLabelElem.textContent = 'Edit Text';
+  toolbarElem.appendChild(toolbarLabelElem);
+
+  const hoverElem = document.createElement('div');
+  hoverElem.className = 'scribe-edit-text-hover';
+  Object.assign(hoverElem.style, {
+    position: 'absolute',
+    border: 'calc(1.5px / var(--scribe-zoom, 1)) solid rgba(26, 115, 232, 0.75)',
+    borderRadius: '2px',
+    pointerEvents: 'none',
+    boxSizing: 'border-box',
+  });
+  const hideHover = () => hoverElem.remove();
+
+  /** @param {?import('../../../js/objects/ocrObjects.js').OcrLine} line */
+  const lineEligible = (line) => {
+    if (!line || line.words.length === 0) return false;
+    const nt = nativeTextForPage(scribe.doc, line.page);
+    return line.words.every((w) => !!nt[w.id]);
+  };
+
+  toolbarElem.addEventListener('click', () => {
+    editMode = !editMode;
+    scribe._editTextActive = editMode;
+    toolbarElem.classList.toggle('active', editMode);
+    if (scribe.textSel) scribe.textSel.cursorOverride = editMode ? 'default' : null;
+    if (editMode) {
+      scribe.clearTextSelection?.();
+      renderModeChrome();
+    } else {
+      hideHover();
+      clearBoxSelection();
+      editor?.commit().catch((e) => console.error('Edit Text: commit failed:', e));
+    }
+  });
+
+  /**
+   * Wire the mode's pointer and keyboard behaviors.
+   * Call after `scribe.init` (needs the scroll container).
+   * @returns {() => void} teardown
+   */
+  function installBehaviors() {
+    /** @param {Array<number>} pages */
+    const refreshPages = (pages) => {
+      for (const n of new Set(pages)) {
+        scribe.refreshPageRaster(n);
+        scribe.renderWords(n);
+        scribe.renderHighlights?.(n);
+        if (scribe.textSel) {
+          scribe.textSel.invalidatePage(n);
+          scribe.textSel.renderPage(n);
+        }
+      }
+      if (scribe.onEditCallback) scribe.onEditCallback();
+      validateSelection();
+      renderFrames();
+    };
+
+    /** @type {Set<import('../../../js/objects/ocrObjects.js').OcrLine>} */
+    const selected = new Set();
+    /** @type {Map<import('../../../js/objects/ocrObjects.js').OcrLine, HTMLDivElement>} */
+    const frames = new Map();
+    let lastClick = {
+      t: -1e9, x: 0, y: 0, line: /** @type {import('../../../js/objects/ocrObjects.js').OcrLine?} */ (null),
+    };
+
+    /**
+     * The drawn box for a line, sized to its visible glyphs.
+     * @param {import('../../../js/objects/ocrObjects.js').OcrLine} line
+     * @param {{left: number, right: number, top: number, bottom: number}} lbox
+     */
+    const lineDrawBox = (line, lbox) => {
+      const nt = nativeTextForPage(scribe.doc, line.page);
+      const lineBase = line.bbox.bottom + (line.baseline?.[1] || 0);
+      let top = Infinity;
+      let bottom = -Infinity;
+      for (const w of line.words) {
+        const base = nt[w.id]?.baselineY ?? lineBase;
+        const size = w.style.size || Math.abs(w.bbox.bottom - w.bbox.top) / 0.75;
+        // Declared font metrics overshoot the visible glyphs on many fonts, so a band off the word bboxes can cover neighboring lines.
+        top = Math.min(top, base - 0.75 * size);
+        bottom = Math.max(bottom, base + 0.25 * size);
+      }
+      if (!Number.isFinite(top)) top = lbox.top;
+      if (!Number.isFinite(bottom)) bottom = lbox.bottom;
+      return {
+        left: lbox.left, right: lbox.right, top, bottom,
+      };
+    };
+
+    /**
+     * The eligible line under the pointer, or null when the pointer is outside its drawn band.
+     * @param {number} clientX
+     * @param {number} clientY
+     */
+    const lineHitAt = (clientX, clientY) => {
+      if (!scribe.textSel) return null;
+      const info = scribe.textSel.lineInfoAt(clientX, clientY, lineEligible);
+      if (!info) return null;
+      const p = scribe.clientToPage(clientX, clientY);
+      if (p.n !== info.n) return null;
+      const local = scribe.pageToLocal(info.n, info.orientation, p.x, p.y);
+      const box = lineDrawBox(info.line, info.lbox);
+      const pad = 2;
+      if (local.x < box.left - pad || local.x > box.right + pad
+        || local.y < box.top - pad || local.y > box.bottom + pad) return null;
+      return info;
+    };
+
+    // Faint boxes on every eligible line show which text is native (editable) rather than baked into an image.
+    /** @type {Map<import('../../../js/objects/ocrObjects.js').OcrLine, HTMLDivElement>} */
+    const lineBoxes = new Map();
+    let lineBoxRaf = 0;
+    const clearLineBoxes = () => {
+      if (lineBoxRaf) {
+        cancelAnimationFrame(lineBoxRaf);
+        lineBoxRaf = 0;
+      }
+      for (const el of lineBoxes.values()) el.remove();
+      lineBoxes.clear();
+    };
+    const renderLineBoxesNow = () => {
+      if (!editMode || !scribe.textSel) {
+        clearLineBoxes();
+        return;
+      }
+      const openLine = editor?.isOpen() ? editor.lineOpen() : null;
+      const seen = new Set();
+      for (const n of scribe.textGroupsRenderIndices) {
+        const idx = scribe.textSel.index(n);
+        if (!idx) continue;
+        for (const e of idx.lines) {
+          if (!lineEligible(e.line) || e.line === openLine) continue;
+          const group = scribe.getTextGroup(n, e.orientation);
+          if (!group) continue;
+          let el = lineBoxes.get(e.line);
+          if (!el) {
+            el = document.createElement('div');
+            el.className = 'scribe-edit-text-lbox';
+            Object.assign(el.style, {
+              position: 'absolute',
+              border: 'calc(1px / var(--scribe-zoom, 1)) solid rgba(26, 115, 232, 0.3)',
+              borderRadius: '2px',
+              pointerEvents: 'none',
+              boxSizing: 'border-box',
+            });
+            lineBoxes.set(e.line, el);
+          }
+          // Not the selection band (rectTop/rectBottom): the band tiles the leading for gap-free drags, so a box that tall would read as overlapping its neighbors.
+          const pad = 2;
+          const box = lineDrawBox(e.line, e.lbox);
+          el.style.left = `${box.left - pad}px`;
+          el.style.top = `${box.top - pad}px`;
+          el.style.width = `${box.right - box.left + 2 * pad}px`;
+          el.style.height = `${box.bottom - box.top + 2 * pad}px`;
+          if (el.parentElement !== group) group.appendChild(el);
+          seen.add(e.line);
+        }
+      }
+      for (const [line, el] of lineBoxes) {
+        if (!seen.has(line)) {
+          el.remove();
+          lineBoxes.delete(line);
+        }
+      }
+    };
+    const scheduleLineBoxes = () => {
+      if (lineBoxRaf) return;
+      lineBoxRaf = requestAnimationFrame(() => {
+        lineBoxRaf = 0;
+        renderLineBoxesNow();
+      });
+    };
+    renderModeChrome = scheduleLineBoxes;
+
+    const entryFor = (line) => {
+      const n = line.page?.n;
+      const idx = n != null ? scribe.textSel?.index(n) : null;
+      if (!idx) return null;
+      for (const e of idx.lines) if (e.line === line) return { n, e };
+      return null;
+    };
+    // Edits and undo replace line objects, so a selection only ever keeps lines the document still has.
+    const validateSelection = () => {
+      for (const line of [...selected]) {
+        if (!line.page || !line.page.lines.includes(line)) selected.delete(line);
+      }
+    };
+    const renderFrames = () => {
+      for (const [line, el] of frames) {
+        if (!selected.has(line)) {
+          el.remove();
+          frames.delete(line);
+        }
+      }
+      for (const line of selected) {
+        const found = entryFor(line);
+        const group = found ? scribe.getTextGroup(found.n, found.e.orientation) : null;
+        if (!group) {
+          frames.get(line)?.remove();
+          continue;
+        }
+        let el = frames.get(line);
+        if (!el) {
+          el = document.createElement('div');
+          el.className = 'scribe-edit-text-frame';
+          // The word editor's selection stroke, so a selected box reads the same at both scopes.
+          Object.assign(el.style, {
+            position: 'absolute',
+            border: 'calc(2px / var(--scribe-zoom, 1)) solid rgba(40, 123, 181, 1)',
+            borderRadius: '2px',
+            pointerEvents: 'none',
+            boxSizing: 'border-box',
+          });
+          frames.set(line, el);
+        }
+        const pad = 2;
+        const box = lineDrawBox(line, found.e.lbox);
+        el.style.left = `${box.left - pad}px`;
+        el.style.top = `${box.top - pad}px`;
+        el.style.width = `${box.right - box.left + 2 * pad}px`;
+        el.style.height = `${box.bottom - box.top + 2 * pad}px`;
+        if (el.parentElement !== group) group.appendChild(el);
+      }
+      // Every path that changes lines runs through here, so the mode's hairline boxes stay in sync by riding along.
+      scheduleLineBoxes();
+    };
+    const clearSelection = () => {
+      selected.clear();
+      renderFrames();
+    };
+    clearBoxSelection = clearSelection;
+
+    const eligibleSelectedLines = () => {
+      validateSelection();
+      if (selected.size > 0) return [...selected];
+      // Touch still selects through the engine, so its lines count too.
+      const lines = new Set();
+      for (const kw of scribe.getWordsUnderTextSelection()) lines.add(kw.word.line);
+      return [...lines].filter(lineEligible);
+    };
+    const deleteSelectedLines = () => {
+      const eligible = eligibleSelectedLines();
+      if (eligible.length === 0) return false;
+      const res = scribe.doc.deleteTextLines(eligible);
+      clearSelection();
+      scribe.clearTextSelection();
+      hideHover();
+      refreshPages(res.pages);
+      return true;
+    };
+    // The context menu and touch callout offer "Delete Lines" through these while the mode is on.
+    scribe._editTextSelectedLines = eligibleSelectedLines;
+    scribe._editTextDeleteSelection = deleteSelectedLines;
+
+    /** @type {?{info: NonNullable<ReturnType<import('../viewerTextSelection.js').TextSelection['lineInfoAt']>>, x: number, y: number}} */
+    let menuTarget = null;
+    scribe._editTextMenuTarget = (clientX, clientY) => {
+      menuTarget = null;
+      if (!scribe.textSel || editor?.isOpen()) return null;
+      const info = lineHitAt(clientX, clientY);
+      if (!info) return null;
+      validateSelection();
+      if (!selected.has(info.line)) {
+        selected.clear();
+        selected.add(info.line);
+        renderFrames();
+      }
+      menuTarget = { info, x: clientX, y: clientY };
+      return menuTarget;
+    };
+    scribe._editTextEditLine = () => {
+      if (!menuTarget) return;
+      const { info, x, y } = menuTarget;
+      if (!info.line.page || !info.line.page.lines.includes(info.line)) return;
+      clearSelection();
+      hideHover();
+      editor.open(info, x, y).finally(scheduleLineBoxes);
+    };
+    scribe._editTextCopySelection = () => {
+      const lines = eligibleSelectedLines();
+      if (lines.length === 0) return;
+      lines.sort((a, b) => a.page.n - b.page.n || a.bbox.top - b.bbox.top || a.bbox.left - b.bbox.left);
+      const text = lines.map((l) => l.words.map((w) => w.text).join(' ')).join('\n');
+      navigator.clipboard?.writeText(text).catch(() => {});
+    };
+
+    editor = createLineEditor(scribe, { onCommitted: refreshPages });
+    scribe._editTextLineEditor = editor;
+
+    const hoverHandler = (ev) => {
+      if (!editMode || !scribe.useCustomSelection || !scribe.textSel) return;
+      if (editor?.isOpen()) { hideHover(); return; }
+      if (ev.buttons !== 0) { hideHover(); return; }
+      const info = lineHitAt(ev.clientX, ev.clientY);
+      if (!info) { hideHover(); return; }
+      if (selected.has(info.line)) { hideHover(); return; }
+      const group = scribe.getTextGroup(info.n, info.orientation);
+      if (!group) { hideHover(); return; }
+      // Same box and pad as the selection frame a click will draw.
+      const pad = 2;
+      const box = lineDrawBox(info.line, info.lbox);
+      hoverElem.style.left = `${box.left - pad}px`;
+      hoverElem.style.top = `${box.top - pad}px`;
+      hoverElem.style.width = `${box.right - box.left + 2 * pad}px`;
+      hoverElem.style.height = `${box.bottom - box.top + 2 * pad}px`;
+      if (hoverElem.parentElement !== group) group.appendChild(hoverElem);
+    };
+
+    /** @type {?HTMLDivElement} */
+    let marqueeEl = null;
+    const removeMarquee = () => {
+      marqueeEl?.remove();
+      marqueeEl = null;
+    };
+
+    /**
+     * Eligible lines whose boxes intersect a client-space rect, on every page the rect touches.
+     * @param {{left: number, top: number, right: number, bottom: number}} r
+     */
+    const linesInClientRect = (r) => {
+      const hits = new Set();
+      const containers = scribe.pageContainerArr || [];
+      for (let n = 0; n < containers.length; n++) {
+        const cont = containers[n];
+        if (!cont || !cont.isConnected) continue;
+        const pr = cont.getBoundingClientRect();
+        if (pr.width === 0 || pr.right < r.left || pr.left > r.right || pr.bottom < r.top || pr.top > r.bottom) continue;
+        const idx = scribe.textSel.index(n);
+        if (!idx) continue;
+        const dims = scribe.doc.pageMetrics[n].dims;
+        for (const [orientation, indices] of idx.byOrientation) {
+          let L = Infinity; let T = Infinity; let R = -Infinity; let B = -Infinity;
+          for (const [cx, cy] of [[r.left, r.top], [r.right, r.top], [r.left, r.bottom], [r.right, r.bottom]]) {
+            const loc = scribe.pageToLocal(n, orientation, ((cx - pr.left) * dims.width) / pr.width, ((cy - pr.top) * dims.height) / pr.height);
+            L = Math.min(L, loc.x); T = Math.min(T, loc.y);
+            R = Math.max(R, loc.x); B = Math.max(B, loc.y);
+          }
+          for (const li of indices) {
+            const e = idx.lines[li];
+            if (!lineEligible(e.line)) continue;
+            if (e.lbox.left < R && e.lbox.right > L && e.rectTop < B && e.rectBottom > T) hits.add(e.line);
+          }
+        }
+      }
+      return hits;
+    };
+
+    // Runs at capture and stops propagation so the engine's own pointerdown (text-drag selection, link arming) never sees a press this mode handles.
+    // Touch bails out so the engine's hold-select still works.
+    const pointerdownHandler = (ev) => {
+      if (!editMode || ev.button !== 0 || !scribe.textSel || ev.pointerType === 'touch') return;
+      const t = ev.target;
+      if (t instanceof Element && t.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, [contenteditable]')) return;
+      // The open editor owns only its text band, not its full-width canvas element.
+      if (editor?.isOpen() && editor.containsPoint(ev.clientX, ev.clientY)) return;
+      ev.stopPropagation();
+      const downX = ev.clientX;
+      const downY = ev.clientY;
+      const shift = ev.shiftKey;
+      const info = lineHitAt(downX, downY);
+      const wasOpen = editor.isOpen();
+      const base = shift ? new Set(selected) : new Set();
+      let moved = false;
+      const onMove = (mv) => {
+        if (!moved && Math.hypot(mv.clientX - downX, mv.clientY - downY) <= 4) return;
+        moved = true;
+        if (!marqueeEl) {
+          marqueeEl = document.createElement('div');
+          marqueeEl.className = 'scribe-edit-text-marquee';
+          Object.assign(marqueeEl.style, {
+            position: 'fixed',
+            zIndex: '50',
+            pointerEvents: 'none',
+            border: '1px solid var(--scribe-accent, #1c62d4)',
+            background: 'var(--scribe-active, rgba(28, 98, 212, .10))',
+          });
+          document.body.appendChild(marqueeEl);
+          hideHover();
+        }
+        const r = {
+          left: Math.min(downX, mv.clientX),
+          top: Math.min(downY, mv.clientY),
+          right: Math.max(downX, mv.clientX),
+          bottom: Math.max(downY, mv.clientY),
+        };
+        Object.assign(marqueeEl.style, {
+          left: `${r.left}px`, top: `${r.top}px`, width: `${r.right - r.left}px`, height: `${r.bottom - r.top}px`,
+        });
+        selected.clear();
+        for (const l of base) selected.add(l);
+        for (const l of linesInClientRect(r)) selected.add(l);
+        renderFrames();
+      };
+      const onUp = (uv) => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        if (moved) {
+          lastClick = {
+            t: -1e9, x: 0, y: 0, line: null,
+          };
+          removeMarquee();
+          return;
+        }
+        // If an editor was open, its own click-away hook has already committed.
+        const isDouble = !!info && info.line === lastClick.line
+          && ev.timeStamp - lastClick.t < 420 && Math.hypot(downX - lastClick.x, downY - lastClick.y) < 4;
+        lastClick = {
+          t: ev.timeStamp, x: downX, y: downY, line: info && !shift ? info.line : null,
+        };
+        if (!info) {
+          clearSelection();
+          return;
+        }
+        if (shift) {
+          if (selected.has(info.line)) selected.delete(info.line);
+          else selected.add(info.line);
+          renderFrames();
+          return;
+        }
+        if (!wasOpen && isDouble && selected.size === 1 && selected.has(info.line)) {
+          clearSelection();
+          hideHover();
+          // Opening is async (font loads); the open line sheds its hairline box once it settles.
+          editor.open(info, uv.clientX, uv.clientY).finally(scheduleLineBoxes);
+          return;
+        }
+        selected.clear();
+        selected.add(info.line);
+        renderFrames();
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+    };
+
+    const keydownHandler = (ev) => {
+      if (!editMode) return;
+      if (ev.key === 'Escape' && editor?.isOpen()) {
+        // The editor reverts and closes itself.
+        const line = editor.lineOpen();
+        queueMicrotask(() => {
+          if (editor?.isOpen() || !line || !lineEligible(line)) return;
+          if (!line.page || !line.page.lines.includes(line)) return;
+          validateSelection();
+          selected.clear();
+          selected.add(line);
+          renderFrames();
+        });
+        return;
+      }
+      const t = ev.target;
+      if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      if (ev.key === 'Escape') {
+        if (selected.size === 0) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        clearSelection();
+        return;
+      }
+      const mod = ev.ctrlKey || ev.metaKey;
+      if (mod && (ev.key === 'z' || ev.key === 'Z' || ev.key === 'y')) {
+        // Swallowed even when this history is empty, so the keys never fall through to the page-ops undo.
+        ev.preventDefault();
+        ev.stopPropagation();
+        const redo = ev.key === 'y' || ev.shiftKey;
+        const pages = redo ? scribe.doc.textEditHistory.redo() : scribe.doc.textEditHistory.undo();
+        if (pages) {
+          scribe.clearTextSelection();
+          hideHover();
+          refreshPages(pages);
+        }
+        return;
+      }
+      if (mod && (ev.key === 'c' || ev.key === 'C')) {
+        if (eligibleSelectedLines().length === 0) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        scribe._editTextCopySelection?.();
+        return;
+      }
+      if (ev.key !== 'Delete' && ev.key !== 'Backspace') return;
+      if (eligibleSelectedLines().length === 0) return;
+      ev.preventDefault();
+      ev.stopPropagation();
+      deleteSelectedLines();
+    };
+
+    let scrollRaf = 0;
+    const scrollHandler = () => {
+      if (scrollRaf || !editMode) return;
+      // Page virtualization rebuilds text groups; re-rendering re-parents any dropped frame.
+      scrollRaf = requestAnimationFrame(() => {
+        scrollRaf = 0;
+        renderFrames();
+      });
+    };
+
+    scribe.scrollContainer.addEventListener('pointermove', hoverHandler);
+    scribe.scrollContainer.addEventListener('pointerdown', pointerdownHandler, true);
+    scribe.scrollContainer.addEventListener('scroll', scrollHandler, { passive: true });
+    document.addEventListener('keydown', keydownHandler, true);
+
+    return () => {
+      scribe.scrollContainer?.removeEventListener('pointermove', hoverHandler);
+      scribe.scrollContainer?.removeEventListener('pointerdown', pointerdownHandler, true);
+      scribe.scrollContainer?.removeEventListener('scroll', scrollHandler);
+      document.removeEventListener('keydown', keydownHandler, true);
+      if (scrollRaf) cancelAnimationFrame(scrollRaf);
+      removeMarquee();
+      clearSelection();
+      clearLineBoxes();
+      clearBoxSelection = () => {};
+      renderModeChrome = () => {};
+      if (scribe.textSel) scribe.textSel.cursorOverride = null;
+      hideHover();
+      editor?.teardown();
+      editor = null;
+      scribe._editTextActive = false;
+      scribe._editTextSelectedLines = null;
+      scribe._editTextDeleteSelection = null;
+      scribe._editTextMenuTarget = null;
+      scribe._editTextEditLine = null;
+      scribe._editTextCopySelection = null;
+      scribe._editTextLineEditor = null;
+    };
+  }
+
+  return { toolbarElem, installBehaviors };
 }

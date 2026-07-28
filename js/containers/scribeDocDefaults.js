@@ -125,4 +125,10 @@ export const scribeDocDefaults = {
    * Include per-character bounding boxes (`word.chars`) in `.scribe` exports..
    */
   includeCharBoxesScribe: true,
+
+  /**
+   * Include the application `session` block (text-edit records, native-text metadata) in `.scribe` exports.
+   * Opt-in because the standard interchange format carries no app-only data.
+   */
+  scribeSession: false,
 };

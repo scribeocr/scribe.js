@@ -58,6 +58,7 @@ declare global {
         layoutDataTables: LayoutDataTablePage[];
         annotations: Annotation[][];
         pageRotations?: number[];
+        session?: ScribeSessionData;
     }
 
     type StyleLookup = ('normal' | 'bold' | 'italic' | 'boldItalic');
@@ -346,6 +347,88 @@ declare global {
     };
 
     type Annotation = AnnotationHighlight | AnnotationFreeText | AnnotationShape | AnnotationText | AnnotationRedact | AnnotationLink;
+
+    /**
+     * A native-text deletion: visible source-PDF text slated for removal.
+     * Vector paths, images, and annotations under the rects are untouched.
+     */
+    type TextEditDelete = {
+        type: 'deleteText';
+        id: string;
+        /** Regions whose glyphs are removed, page coordinates (top-left origin, same frame as OCR words). */
+        rects: bbox[];
+        /** Ties together the records of one user action. */
+        groupId?: string;
+    };
+
+    /**
+     * One run of replacement glyphs: a same-font stretch drawn at a fixed baseline origin.
+     * Geometry is in the page-pixel frame; every consumer (raster, editor, export) draws the
+     * pre-resolved glyphs verbatim, so the three surfaces cannot disagree.
+     */
+    type TextEditRun = {
+        x: number;
+        y: number;
+        /** Line orientation (quarter-turns), same convention as OCR lines. */
+        orientation: number;
+        sizePx: number;
+        /** Fill color, `#rrggbb`. */
+        color: string;
+        font: { kind: 'orig', fontObjNum: number } | { kind: 'bundled', family: string, styleKey: string };
+        /**
+         * Pre-resolved glyphs.
+         * Canvas drawing uses `cp`.
+         * The PDF export writes `gid` into Identity-H TJ runs.
+         * A tofu entry draws the missing-glyph box instead.
+         */
+        glyphs: Array<{ cp?: number, gid?: number, advEm: number, tofu?: boolean }>;
+    };
+
+    /**
+     * A native-text replacement.
+     * The covered original glyphs are suppressed exactly like a deletion, and the runs draw in their place.
+     * On export the runs are spliced at the removed glyphs' stream position, preserving reading order.
+     */
+    type TextEditReplace = {
+        type: 'replaceText';
+        id: string;
+        /** Page coordinates (top-left origin). */
+        rects: bbox[];
+        runs: TextEditRun[];
+        /** Ids of the live OCR words this record draws, so a later edit of those words folds this record. */
+        wordIds?: string[];
+        groupId?: string;
+    };
+
+    type TextEdit = TextEditDelete | TextEditReplace;
+
+    /**
+     * Parse-derived metadata for one visibly-drawn native word, stored in `doc.nativeText.pages[n]` keyed by word id.
+     * Presence of a word's entry marks it editable via the native-text pipeline.
+     * Array fields are index-aligned with the word's `chars`; record-drawn replacement words carry no arrays (their char bboxes are already exact).
+     */
+    type NativeTextWord = {
+        /** Object number of the source-PDF font that drew the word, when known. */
+        fontObjNum?: number;
+        /** Exact unrounded baseline y in page pixels; sup words keep their true raised baseline here. */
+        baselineY: number;
+        /** Per-glyph pen-origin x, unrounded; the char bbox left rounds it to an integer. */
+        penX?: number[];
+        /** Per-glyph shear ratio of faux-oblique text, 0 for unsheared glyphs. */
+        skew?: number[];
+        /** Per-glyph horizontal stretch ratio, 0 for unstretched glyphs. */
+        stretch?: number[];
+    };
+
+    /**
+     * Application session state inside a `.scribe` file: data only this application consumes.
+     * Written only when the export opts in (`scribeSession`), so standard-format consumers never see it.
+     */
+    type ScribeSessionData = {
+        v: number;
+        textEdits?: TextEdit[][];
+        nativeText?: Array<Record<string, NativeTextWord>>;
+    };
 
     type OutlineDest = import("./objects/outlineObjects.js").OutlineDest;
 

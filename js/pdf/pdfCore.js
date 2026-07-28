@@ -53,12 +53,13 @@ export class PdfCore {
   /**
    * Render a single page to an image data URL, a JPEG blob, or a transferable ImageBitmap.
    * @param {{ pageIndex: number, colorMode: string, dpi?: number, targetWidth?: number,
-   * outputFormat?: 'png'|'jpeg'|'bitmap', quality?: number }} args - `targetWidth` renders the page exactly that many pixels wide, taking precedence over `dpi`.
+   * outputFormat?: 'png'|'jpeg'|'bitmap', quality?: number,
+   * textEdits?: ?{records: Array<TextEdit>, dims: {width: number, height: number}} }} args - `targetWidth` renders the page exactly that many pixels wide, taking precedence over `dpi`.
    * @returns {Promise<{ dataUrl?: string, blob?: Blob, bitmap?: ImageBitmap, colorMode: string, ok: boolean, failReason?: string, failDetail?: string,
    *   perf?: { prepMs: number, drawMs: number, decodeMs: number, flushMs: number } }>}
    */
   async renderPage({
-    pageIndex, colorMode, dpi, targetWidth, outputFormat = 'png', quality = 0.6,
+    pageIndex, colorMode, dpi, targetWidth, outputFormat = 'png', quality = 0.6, textEdits = null,
   }) {
     if (!this.#objCache || !this.#pages) throw new Error('PDF not loaded');
     // Lazy import so the renderer stays out of main-thread bundles that never render in-process.
@@ -73,7 +74,45 @@ export class PdfCore {
       const visualWidthPts = page.rotate === 90 || page.rotate === 270 ? heightPts : widthPts;
       dpi = (72 * targetWidth) / visualWidthPts;
     }
-    return renderPdfPageAsImage(page.objText, this.#objCache, box, pageIndex, colorMode, page.rotate, dpi, outputFormat, quality);
+    return renderPdfPageAsImage(page.objText, this.#objCache, box, pageIndex, colorMode, page.rotate, dpi, outputFormat, quality, textEdits);
+  }
+
+  /**
+   * The font program the renderer draws the given embedded font with, plus the cascade inputs native-text editing needs.
+   * @param {{ fontObjNum: number, pageIndex?: number }} args - `pageIndex` is a page the font is used on, letting this instance resolve a font from a page it never parsed.
+   * @returns {Promise<?{ kind: 'original'|'rebuilt'|'none', bytes?: ArrayBuffer, allGlyphsEmpty?: boolean,
+   *   baseName: string, familyName: string, bold: boolean, italic: boolean, serifFlag: boolean|null }>}
+   *   `kind: 'none'` means the font has no usable embedded program, so editing must fall back the same way the renderer did.
+   *   Null means the `fontObjNum` is unknown.
+   */
+  async getFontBytes({ fontObjNum, pageIndex }) {
+    if (!this.#objCache) throw new Error('PDF not loaded');
+    let fontObj = this.#objCache.fontCache.get(fontObjNum);
+    if (!fontObj && pageIndex !== undefined && this.#pages?.[pageIndex]) {
+      this.parsePage({ pageIndex, dpi: 300 });
+      fontObj = this.#objCache.fontCache.get(fontObjNum);
+    }
+    if (!fontObj) return null;
+    if (!this.#objCache.fontBytesCache.has(fontObjNum) && !this.#objCache.fontConversionCache.has(fontObjNum)) {
+      const { registerFontForEditing } = await import('./renderPdfPage.js');
+      if (typeof process !== 'undefined') await ca.getCanvasNode();
+      await registerFontForEditing(fontObj, this.#objCache);
+    }
+    const meta = {
+      baseName: fontObj.baseName,
+      familyName: fontObj.familyName,
+      bold: !!fontObj.bold,
+      italic: !!fontObj.italic,
+      serifFlag: fontObj.serifFlag ?? null,
+    };
+    const entry = this.#objCache.fontBytesCache.get(fontObjNum);
+    if (!entry) return { kind: 'none', ...meta };
+    const allGlyphsEmpty = !!(fontObj.allGlyphsEmpty
+      || this.#objCache.fontConversionCache.get(fontObjNum)?.allGlyphsEmpty);
+    // Copied so the postMessage transfer can never detach the cached buffer.
+    return {
+      kind: entry.kind, bytes: entry.bytes.slice(0), allGlyphsEmpty, ...meta,
+    };
   }
 
   /**

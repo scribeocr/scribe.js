@@ -23,10 +23,19 @@ export async function parsePdfPage(args) {
 
 /**
  * Render a single page to an image data URL, a JPEG blob, or a transferable ImageBitmap.
- * @param {{ pageIndex: number, colorMode: string, dpi?: number, targetWidth?: number, outputFormat?: 'png'|'jpeg'|'bitmap', quality?: number }} args
+ * @param {{ pageIndex: number, colorMode: string, dpi?: number, targetWidth?: number, outputFormat?: 'png'|'jpeg'|'bitmap', quality?: number,
+ * textEdits?: ?{records: Array<TextEdit>, dims: {width: number, height: number}} }} args
  */
 export async function renderPdfPage(args) {
   return core.renderPage(args);
+}
+
+/**
+ * The font program the renderer draws a given embedded font with.
+ * @param {{ fontObjNum: number, pageIndex?: number }} args
+ */
+export async function getPdfFontBytes(args) {
+  return core.getFontBytes(args);
 }
 
 /**
@@ -51,11 +60,13 @@ if (parentPort) {
       loadPdfForParsing,
       parsePdfPage,
       renderPdfPage,
+      getPdfFontBytes,
       unloadPdf,
     })[func](args)
       .then((/** @type {any} */ x) => {
-        // A rendered ImageBitmap (outputFormat: 'bitmap') is transferred, not copied, to the main thread.
-        const transfer = (typeof ImageBitmap !== 'undefined' && x && x.bitmap instanceof ImageBitmap) ? [x.bitmap] : [];
+        // Font bytes are a per-call copy, so transferring them detaches nothing shared.
+        const transfer = (typeof ImageBitmap !== 'undefined' && x && x.bitmap instanceof ImageBitmap) ? [x.bitmap]
+          : (x && x.bytes instanceof ArrayBuffer ? [x.bytes] : []);
         port.postMessage({ data: x, id, status: 'resolve' }, transfer);
       })
       .catch((/** @type {any} */ err) => port.postMessage({ data: err, id, status: 'reject' }));

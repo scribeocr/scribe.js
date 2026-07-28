@@ -272,29 +272,26 @@ export async function createEmbeddedFontType1(font, firstObjIndex, italic = fals
 }
 
 /**
- * Converts a Opentype.js font object into an array of PDF objects.
- * The font is represented as a composite "Type 0" font.
+ * Converts an Opentype.js font object into an array of PDF objects representing a composite Type 0 font.
  *
- * @param {Object} options - Configuration object
- * @param {opentypeFont} options.font - Opentype.js font object
- * @param {number} options.firstObjIndex - Index for the first PDF object
- * @param {boolean} [options.italic=false] - Whether the font is italic.
- * @param {boolean} [options.humanReadable=false] - If true, emit the font
- *   file as ASCII-hex and the ToUnicode CMap uncompressed, for debugging.
- *   When false (default), both are Flate-compressed.
- * @param {Map<number, string>} [options.toUnicodeOverride] - Optional per-GID
- *   ToUnicode override. Values may be multi-codepoint strings (e.g. "fi" for a
- *   ligature). GIDs absent from the map fall back to `glyph.unicode`.
+ * @param {Object} options
+ * @param {opentypeFont} options.font
+ * @param {number} options.firstObjIndex
+ * @param {boolean} [options.italic=false]
+ * @param {boolean} [options.humanReadable=false] - If true, emit the font file as ASCII-hex and the ToUnicode CMap uncompressed, for debugging.
+ * @param {Map<number, string>} [options.toUnicodeOverride] - Per-GID ToUnicode override.
+ *   Values may be multi-codepoint strings (e.g. "fi" for a ligature).
+ *   GIDs absent from the map fall back to `glyph.unicode`.
  * @param {number} [options.widthScale=1] - Advance-width multiplier for a width-scaled variant.
- *   Scales the emitted `/W` array; 1 (default) for a base font.
  * @param {number} [options.baseDescriptorObjN] - For a width-scaled variant, the object number of the base font's shared FontDescriptor.
- *   This argument should be left empty by default.
  * @param {number} [options.baseToUnicodeObjN] - For a width-scaled variant, the object number of the base font's shared ToUnicode CMap.
+ * @param {ArrayBuffer|Uint8Array} [options.rawFontBytes] - Embed these bytes verbatim as the font file instead of re-serializing `font`.
+ *   Used for edited native text, where the embedded program must be byte-identical to the one the renderer rasterizes with.
  * @returns {Promise<Array<string | import('./writePdfStreams.js').PdfBinaryObject | null>>}
  */
 export async function createEmbeddedFontType0({
   font, firstObjIndex, italic = false, humanReadable = false, toUnicodeOverride,
-  widthScale = 1, baseDescriptorObjN, baseToUnicodeObjN,
+  widthScale = 1, baseDescriptorObjN, baseToUnicodeObjN, rawFontBytes,
 }) {
   // A width-scaled variant shares the base font's FontDescriptor (+1), FontFile (+3), and ToUnicode (+5) instead of re-embedding them.
   // It emits only the Type0 dict (+0), the scaled `/W` (+2), and the CIDFont dict (+4),
@@ -348,7 +345,9 @@ export async function createEmbeddedFontType0({
   /** @type {string | import('./writePdfStreams.js').PdfBinaryObject | null} */
   let fontFileObj = null;
   if (!variantMode) {
-    const fontBuffer = new Uint8Array(font.toArrayBuffer());
+    const fontBuffer = rawFontBytes
+      ? (rawFontBytes instanceof Uint8Array ? rawFontBytes : new Uint8Array(rawFontBytes))
+      : new Uint8Array(font.toArrayBuffer());
     fontFileObj = await encodeBinaryStreamObject(firstObjIndex + 3, fontBuffer, {
       humanReadable,
       dictExtras: `/Length1 ${String(fontBuffer.byteLength)}/Subtype/OpenType`,
@@ -358,11 +357,14 @@ export async function createEmbeddedFontType0({
   // Start 6th object: Font
   let fontObjStr = `${String(firstObjIndex + 4)} 0 obj\n`;
 
-  fontObjStr += '<</Type/Font/Subtype/CIDFontType0/CIDSystemInfo<</Registry(Adobe)/Ordering(Identity)/Supplement 0>>';
+  const truetypeOutlines = font.outlinesFormat === 'truetype';
+  fontObjStr += `<</Type/Font/Subtype/${truetypeOutlines ? 'CIDFontType2' : 'CIDFontType0'}/CIDSystemInfo<</Registry(Adobe)/Ordering(Identity)/Supplement 0>>`;
 
   fontObjStr += `/BaseFont/${namesTable.postScriptName.en}/FontDescriptor ${String(descriptorObjN)} 0 R`;
 
   fontObjStr += `/W ${String(firstObjIndex + 2)} 0 R`;
+
+  if (truetypeOutlines) fontObjStr += '/CIDToGIDMap/Identity';
 
   fontObjStr += '>>\nendobj\n\n';
 

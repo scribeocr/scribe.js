@@ -119,11 +119,11 @@ export class ViewerImageCache {
      */
     this._renderSeq = [];
     /**
-     * Pages with an in-flight `getPageCanvas` draw (holding a live reference to the bitmap).
-     * Eviction never compresses a page in this set, so a transfer can't neuter a bitmap a draw is mid-read of.
-     * @type {Set<number>}
+     * Per-page count of in-flight `getPageCanvas` draws.
+     * Back-to-back refreshes overlap two draws on one page, so this is a count, not a set.
+     * @type {Map<number, number>}
      */
-    this._drawing = new Set();
+    this._drawing = new Map();
     /**
      * Per-page identity of the compression promise installed into `native[n]`, so each page is compressed once on eviction rather than re-wrapped on every cleanup sweep.
      * A re-render replaces the slot and re-enables it.
@@ -162,11 +162,17 @@ export class ViewerImageCache {
     /** Per-page identity of the compression promise installed into `_srcRasters` (mirrors `_compressPromises`). @type {Array<?Promise<any>>} */
     this._srcCompressPromises = [];
     /**
-     * One-shot full-resolution background upgrade per expensive page (see `_ensureCapUpgrade`).
-     * Held (not cleared) after completion or failure so an expensive page is upgraded at most once.
+     * One-shot full-resolution background upgrade per expensive page.
+     * A settled promise stays in the slot as an already-attempted marker until `invalidatePage` re-arms the upgrade.
      * @type {Array<?Promise<void>>}
      */
     this._capUpgrades = [];
+    /**
+     * Per-page content generation, bumped by `invalidatePage`.
+     * An async render captures it at start and discards its result on mismatch, so pixels rendered before a content change never land.
+     * @type {Array<number>}
+     */
+    this._contentSeq = [];
     /**
      * Serializes iOS page renders across `renderAheadBehindBrowser` calls.
      * Always kept resolving, never rejected.
@@ -361,12 +367,14 @@ export class ViewerImageCache {
     const fullW = this._maxSrcWidth(n);
     if ((this._srcWidths[n] ?? 0) >= fullW) return;
     const images = this._viewer().doc.images;
+    const contentSeq = this._contentSeq[n] || 0;
     this._capUpgrades[n] = (async () => {
       const w = await images.renderViewerRaster(n, fullW, false);
       // A failure placeholder has no bitmap, and must not replace a working raster.
       if (!w || w === SKIPPED || !(/** @type {ImageWrapper} */ (w)).imageBitmap) return;
       // Rechecked after the await: the document may have been replaced, or the raster already re-rendered at full resolution.
       if (this._viewer().doc.images !== images) return;
+      if ((this._contentSeq[n] || 0) !== contentSeq) return;
       if ((this._srcWidths[n] ?? 0) >= fullW) return;
       this._srcRasters[n] = Promise.resolve(w);
       this._srcWidths[n] = fullW;
@@ -557,7 +565,7 @@ export class ViewerImageCache {
     this._renderSeq[n] = seq;
 
     // Mark the page as drawing for the whole render so eviction never transfers a bitmap this draw is mid-read of.
-    this._drawing.add(n);
+    this._drawing.set(n, (this._drawing.get(n) || 0) + 1);
     this.pageCanvasProps[n] = null;
     const canvasPromise = this.getPageCanvas(n).then((res) => {
       if (res === SKIPPED) return SKIPPED;
@@ -565,7 +573,12 @@ export class ViewerImageCache {
       return res.canvas;
     });
     this.pageCanvases[n] = canvasPromise;
-    canvasPromise.then(() => this._drawing.delete(n), () => this._drawing.delete(n));
+    const drawDone = () => {
+      const count = (this._drawing.get(n) || 0) - 1;
+      if (count > 0) this._drawing.set(n, count);
+      else this._drawing.delete(n);
+    };
+    canvasPromise.then(drawDone, drawDone);
 
     canvasPromise.then((canvas) => {
       if (canvas === SKIPPED) {
@@ -597,7 +610,37 @@ export class ViewerImageCache {
       this._canvasBytes.set(n, c.width * c.height * 4);
       this._canvasLru.delete(n);
       this._canvasLru.add(n);
-    }).catch(() => {});
+      // Fresh pixels are attached, so the swap ghost `refreshPageRaster` left covering the page comes off now.
+      viewer._removeRasterGhost(n);
+    }).catch(() => {
+      // pageCanvasProps[n] stayed null, so the reuse check would read the leftover rejected promise as a cache hit and never re-render the page.
+      if (this.pageCanvases[n] === canvasPromise) this.pageCanvases[n] = null;
+    });
+  }
+
+  /**
+   * Drop page `n`'s cached display raster and canvas after a content change.
+   * Only this viewer's copies are cleared. Document-level caches are dropped separately.
+   * @param {number} n - Page number
+   */
+  invalidatePage(n) {
+    this._contentSeq[n] = (this._contentSeq[n] || 0) + 1;
+    // Without this re-arm, an edited expensive page could never regain full resolution.
+    this._capUpgrades[n] = null;
+    const oldSlot = this._srcRasters[n];
+    this._srcRasters[n] = null;
+    this._srcWidths[n] = 0;
+    this._srcBitmapPromises[n] = null;
+    if (oldSlot) {
+      Promise.resolve(oldSlot).then((old) => {
+        if (!old || old === SKIPPED || !old.imageBitmap) return;
+        // An in-flight draw may still be blitting this bitmap; closing it mid-drawImage throws.
+        if (this._drawing.has(n)) return;
+        old.imageBitmap.close();
+        old.imageBitmap = null;
+      }).catch(() => {});
+    }
+    this.deletePageCanvas(n);
   }
 
   /** @param {number} n - Page number */

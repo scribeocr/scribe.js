@@ -4,6 +4,7 @@ import {
 import scribe from '../../scribe.js';
 import { extractPDFTextDirect } from '../../js/pdf/parsePdfDoc.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
+import { strayFields } from './_ocrFields.js';
 
 const isNode = typeof process !== 'undefined' && process.versions && process.versions.node;
 
@@ -16,27 +17,6 @@ async function readPdfBytes(pdfPath) {
   const response = await fetch(pdfPath);
   return new Uint8Array(await response.arrayBuffer());
 }
-
-/**
- * Field names an import wrote onto pages or words beyond those OcrPage and OcrWord declare.
- * The PDF parser once kept its own scratch data there: /Artifact flags, marked-content and structure ids, bookmark anchors.
- * Nothing removed them again, so every one reached the user's saved .scribe file.
- * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} d
- */
-const strayFields = (d) => {
-  const pageFields = ['angle', 'dims', 'lines', 'n', 'pars', 'rules', 'tableBoxes', 'textSource'];
-  const wordFields = ['bbox', 'chars', 'compTruth', 'conf', 'debug', 'footnoteParId', 'id', 'lang', 'line',
-    'lineNum', 'matchTruth', 'poly', 'style', 'styleRuns', 'text', 'textAlt', 'visualCoords'];
-  const page = new Set();
-  const word = new Set();
-  for (const p of d.ocr.active) {
-    Object.keys(p).filter((k) => !pageFields.includes(k)).forEach((k) => page.add(k));
-    for (const line of p.lines) {
-      for (const w of line.words) Object.keys(w).filter((k) => !wordFields.includes(k)).forEach((k) => word.add(k));
-    }
-  }
-  return { page: [...page], word: [...word] };
-};
 
 /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
 let doc;
@@ -626,6 +606,7 @@ describe('Check that PDF imports split lines correctly.', () => {
 
     // This PDF is tagged, so its /Artifact flags and marked-content ids are what once landed on the words in a previous, bugged version.
     expect(strayFields(doc).word, 'parse-time data was stamped onto OcrWord, so it serializes into every .scribe export').toEqual([]);
+    expect(strayFields(doc).char, 'parse-time data was stamped onto OcrChar, so it serializes into every .scribe export').toEqual([]);
   });
 
   test('Should correctly parse PDF lines (3rd doc)', async () => {

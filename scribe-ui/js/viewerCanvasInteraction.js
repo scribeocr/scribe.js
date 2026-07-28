@@ -244,6 +244,7 @@ async function addWordManual(viewer, n, box) {
 const menuIcon = (inner) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
 
 const CM_COPY_SVG = menuIcon('<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2.5"/>');
+const CM_EDIT_SVG = menuIcon('<path d="M4 20.5h7"/><path d="M14.5 4.5l5 5L9.5 19.5l-6 1 1-6z"/>');
 const CM_UNDERLINE_SVG = menuIcon('<path d="M7 4.6v6.4a5 5 0 0 0 10 0V4.6"/><path d="M6 19.4h12"/>');
 const CM_STRIKE_SVG = menuIcon('<path d="M4 12h16"/><path d="M16.4 8.1A4.2 3.1 0 0 0 12 5.6c-2.4 0-4.2 1.2-4.2 2.9M7.6 15.9A4.2 3.1 0 0 0 12 18.4c2.4 0 4.2-1.2 4.2-2.9"/>');
 const CM_COMMENT_SVG = menuIcon('<path d="M20 14.4a2 2 0 0 1-2 2H9.2L5 19.6V6.6a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2Z"/><path d="M12 8.1v4.2M9.9 10.2h4.2"/>');
@@ -291,6 +292,8 @@ const createContextMenuHTML = () => {
   // Per-open visibility only shows or hides these rows, never reorders them, so the order here is what the user sees.
   const groups = [
     [
+      item('contextMenuEditLineButton', 'Edit Line', CM_EDIT_SVG, editLineClick),
+      item('contextMenuCopyLineTextButton', 'Copy Line Text', CM_COPY_SVG, copyLineTextClick),
       item('contextMenuCopyButton', 'Copy', CM_COPY_SVG, copySelectionClick),
       item('contextMenuCopyHighlightButton', 'Copy Highlighted Text', CM_COPY_SVG, copyHighlightClick),
       item('contextMenuCopyLayoutTableContentsButton', 'Copy Table Contents', CM_COPY_SVG, copyTableContentsClick),
@@ -320,6 +323,7 @@ const createContextMenuHTML = () => {
       item('contextMenuDeleteRedactionButton', 'Delete Redaction', CM_TRASH_SVG, deleteRedactionClick),
     ],
     [
+      item('contextMenuDeleteTextLinesButton', 'Delete Lines', CM_TRASH_SVG, deleteTextLinesClick, true),
       item('contextMenuRedactButton', 'Redact', CM_REDACT_SVG, redactSelectionClick, true),
     ],
   ];
@@ -480,6 +484,25 @@ const deleteRedactionClick = () => {
   redactTarget = null;
 };
 
+const deleteTextLinesClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  if (viewer._editTextDeleteSelection) viewer._editTextDeleteSelection();
+};
+
+const editLineClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  if (viewer._editTextEditLine) viewer._editTextEditLine();
+};
+
+/** Copy the box-selected lines' text (Edit Text mode). */
+const copyLineTextClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  if (viewer._editTextCopySelection) viewer._editTextCopySelection();
+};
+
 /** Copy the current text selection. */
 const copySelectionClick = () => {
   const viewer = mv();
@@ -622,6 +645,7 @@ let contextMenuStyleElem = null;
 /** @type {HTMLButtonElement} */ let contextMenuDeleteHighlightButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuRedactButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuDeleteRedactionButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuDeleteTextLinesButtonElem;
 
 /**
  * The redaction mark under the right-click point, resolved when the menu opens.
@@ -634,6 +658,8 @@ let redactTarget = null;
 /** @type {HTMLButtonElement} */ let contextMenuCommentButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuBookmarkButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuCopyButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuEditLineButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuCopyLineTextButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuCopyHighlightButtonElem;
 /**
  * The highlighted word the context menu's Comment item edits, or null to comment the current text selection instead.
@@ -669,12 +695,15 @@ function ensureContextMenu() {
   contextMenuDeleteHighlightButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteHighlightButton'));
   contextMenuRedactButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuRedactButton'));
   contextMenuDeleteRedactionButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteRedactionButton'));
+  contextMenuDeleteTextLinesButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteTextLinesButton'));
   contextMenuHighlightButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuHighlightButton'));
   contextMenuUnderlineButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuUnderlineButton'));
   contextMenuStrikethroughButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuStrikethroughButton'));
   contextMenuCommentButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCommentButton'));
   contextMenuBookmarkButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuBookmarkButton'));
   contextMenuCopyButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCopyButton'));
+  contextMenuEditLineButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuEditLineButton'));
+  contextMenuCopyLineTextButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCopyLineTextButton'));
   contextMenuCopyHighlightButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCopyHighlightButton'));
 
   // This menu is body-level, so it can't inherit the viewer's `--scribe-*` tokens; contextMenuFunc mirrors them onto it on open to match the app theme.
@@ -820,6 +849,7 @@ export const hideContextMenu = () => {
   contextMenuDeleteHighlightButtonElem.style.display = 'none';
   contextMenuRedactButtonElem.style.display = 'none';
   contextMenuDeleteRedactionButtonElem.style.display = 'none';
+  contextMenuDeleteTextLinesButtonElem.style.display = 'none';
   contextMenuHighlightButtonElem.style.display = 'none';
   contextMenuUnderlineButtonElem.style.display = 'none';
   contextMenuStrikethroughButtonElem.style.display = 'none';
@@ -827,6 +857,8 @@ export const hideContextMenu = () => {
   contextMenuBookmarkButtonElem.style.display = 'none';
   contextMenuCopyButtonElem.style.display = 'none';
   contextMenuCopyHighlightButtonElem.style.display = 'none';
+  contextMenuEditLineButtonElem.style.display = 'none';
+  contextMenuCopyLineTextButtonElem.style.display = 'none';
   menuNode.style.display = 'none';
   _menuViewer = null;
 
@@ -987,6 +1019,7 @@ function ensureTouchCallout() {
     btn('comment', 'Comment', CM_COMMENT_SVG, commentSelectionClick),
     vr,
     btn('delete', 'Delete', CM_TRASH_SVG, calloutDeleteMarkupClick, true),
+    btn('deletelines', 'Delete lines', CM_TRASH_SVG, deleteTextLinesClick, true),
     moreBtn,
   );
 
@@ -1078,7 +1111,7 @@ export const showTouchCallout = (viewer, kind, kw = null, slot = 'highlight') =>
   let anchor = null;
   /** @type {Object<string, boolean>} */
   const show = {
-    copy: false, copyhl: false, highlight: false, underline: false, comment: false, delete: false, bookmark: false, redact: false, strike: false, edit: false,
+    copy: false, copyhl: false, highlight: false, underline: false, comment: false, delete: false, deletelines: false, bookmark: false, redact: false, strike: false, edit: false,
   };
 
   const editingEnabled = !!(viewer.opt && viewer.opt.enablePageEditing);
@@ -1096,6 +1129,8 @@ export const showTouchCallout = (viewer, kind, kw = null, slot = 'highlight') =>
     show.strike = true;
     show.comment = !!viewer._openCommentEditor && show.highlight;
     show.redact = !!viewer._redactEnabled;
+    show.deletelines = !!viewer._editTextActive && !!viewer._editTextSelectedLines
+      && viewer._editTextSelectedLines().length > 0;
     show.bookmark = bookmarkTargetPage >= 0;
     // Resolving the words is O(selection), so gate on a small single-page range first.
     if (UiText.enableEditing && viewer.textSel.range?.kind === 'linear') {
@@ -1155,7 +1190,7 @@ export const showTouchCallout = (viewer, kind, kw = null, slot = 'highlight') =>
   calloutBtns.more.classList.remove('open');
   /** @type {HTMLDivElement} */ (calloutRow2).style.display = 'none';
   const vrElem = /** @type {HTMLElement} */ (calloutNode.querySelector('.scribe-callout-vr'));
-  vrElem.style.display = (show.delete || tailCount > 0) ? '' : 'none';
+  vrElem.style.display = (show.delete || show.deletelines || tailCount > 0) ? '' : 'none';
   if (show.highlight) {
     /** @type {HTMLElement} */ (calloutBtns.highlight.querySelector('.scribe-cm-swatch')).style.background = viewer._highlightColor;
   }
@@ -1207,6 +1242,20 @@ export const contextMenuFunc = (viewer, event) => {
   ensureContextMenu();
   _menuViewer = viewer;
   try {
+    if (viewer._editTextActive) {
+      const lineTarget = viewer._editTextMenuTarget
+        ? viewer._editTextMenuTarget(event.clientX, event.clientY) : null;
+      if (!lineTarget) {
+        event.preventDefault();
+        hideContextMenu();
+        return;
+      }
+      contextMenuEditLineButtonElem.style.display = 'initial';
+      contextMenuCopyLineTextButtonElem.style.display = 'initial';
+      contextMenuDeleteTextLinesButtonElem.style.display = 'initial';
+      showMenuForEvent(viewer, event, null);
+      return;
+    }
     const pointerRelative = viewer.clientToContent(event.clientX, event.clientY);
     let targetObj = eventTargetObj(event);
     // Fill bands and markup bars are pointer-transparent, so a right-click over one lands on no word element.
@@ -1245,6 +1294,10 @@ export const contextMenuFunc = (viewer, event) => {
     const enableMarkup = hasTextSelection;
     // Deleting a redaction is not editor-gated: a mark changes what an export contains, so any viewer must be able to remove it.
     const enableRedact = hasTextSelection && !!viewer._redactEnabled;
+    // Mouse line selection in edit-text mode is box-based, but touch still routes through the engine's text selection.
+    // _editTextSelectedLines() resolves both, so this gate needs no hasTextSelection check.
+    const enableDeleteTextLines = !!viewer._editTextActive
+      && !!viewer._editTextSelectedLines && viewer._editTextSelectedLines().length > 0;
     redactTarget = !viewer.state.layoutMode ? hitTestRedaction(viewer, event.clientX, event.clientY) : null;
     const enableDeleteRedaction = !!redactTarget;
 
@@ -1342,7 +1395,7 @@ export const contextMenuFunc = (viewer, event) => {
 
     if (!(enableMergeColumns || enableSplit || enableDeleteRegion || enableDeleteTable || enableCopyTableContents || enableMergeTables || enableSplitTable
       || enableSplitWord || enableMergeWords || enableDeleteWords || enableDeleteHighlight || enableCopyHighlight || enableHighlight || enableMarkup || enableComment || enableBookmark || enableCopy
-      || enableRedact || enableDeleteRedaction)) return;
+      || enableRedact || enableDeleteRedaction || enableDeleteTextLines)) return;
 
     // Not btn.textContent, which would wipe the icon slot.
     const setMenuLabel = (btn, text) => { /** @type {HTMLElement} */ (btn.querySelector('.scribe-cm-lbl')).textContent = text; };
@@ -1363,6 +1416,7 @@ export const contextMenuFunc = (viewer, event) => {
     }
     if (enableRedact) contextMenuRedactButtonElem.style.display = 'initial';
     if (enableDeleteRedaction) contextMenuDeleteRedactionButtonElem.style.display = 'initial';
+    if (enableDeleteTextLines) contextMenuDeleteTextLinesButtonElem.style.display = 'initial';
     if (enableComment) {
       setMenuLabel(contextMenuCommentButtonElem, commentLabel);
       contextMenuCommentButtonElem.style.display = 'initial';
@@ -1386,70 +1440,75 @@ export const contextMenuFunc = (viewer, event) => {
       contextMenuDeleteHighlightButtonElem.style.display = 'initial';
     }
 
-    // A separator shows only between two visible groups, so the menu never opens with a leading, trailing, or doubled separator.
-    let pendingSep = null;
-    let anyVisibleBefore = false;
-    for (const child of menuNode.children) {
-      if (child.classList.contains('scribe-cm-sep')) {
-        pendingSep = /** @type {HTMLElement} */ (child);
-        continue;
-      }
-      const groupVisible = [...child.children].some((btn) => /** @type {HTMLElement} */ (btn).style.display !== 'none');
-      if (pendingSep) {
-        pendingSep.style.display = groupVisible && anyVisibleBefore ? '' : 'none';
-        pendingSep = null;
-      }
-      anyVisibleBefore = anyVisibleBefore || groupVisible;
-    }
-
-    // Copy each viewer theme token onto the menu, removing any the host leaves unset so the stylesheet's light fallbacks take over.
-    const tokenStyles = getComputedStyle(viewer.scrollContainer);
-    for (const token of CONTEXT_MENU_TOKENS) {
-      const value = tokenStyles.getPropertyValue(token);
-      if (value) menuNode.style.setProperty(token, value);
-      else menuNode.style.removeProperty(token);
-    }
-
-    event.preventDefault();
-
-    // The menu is opening on a highlight or line markup: ink its edges while it is the menu's target.
-    clearInkEdge();
-    if (targetObj instanceof UiOcrWord && (targetObj.highlightColor || targetObj.markupType)) {
-      const groupId = contextMenuMarkupSlot === 'line' ? targetObj.markupGroupId : targetObj.highlightGroupId;
-      const rectElem = contextMenuMarkupSlot === 'line' ? targetObj.markupRectElem : targetObj.highlightRectElem;
-      /** @type {HTMLDivElement[]} */
-      let bands = [];
-      if (groupId) {
-        for (const map of viewer._highlightRectsByGroup) {
-          const arr = map && map.get(groupId);
-          if (arr) bands.push(...arr);
-        }
-      } else if (rectElem) {
-        bands = [rectElem];
-      }
-      inkEdgeElems = createInkEdges(bands);
-    }
-
-    // Show first so the menu has a size, then clamp it into the viewport.
-    // No paint happens between the display flip and the final position (same task), so the menu never flashes.
-    menuNode.style.display = 'initial';
-    const { width: menuW, height: menuH } = menuNode.getBoundingClientRect();
-    menuNode.style.top = `${Math.max(4, Math.min(event.clientY + 4, window.innerHeight - menuH - 4))}px`;
-    menuNode.style.left = `${Math.max(4, Math.min(event.clientX + 4, window.innerWidth - menuW - 4))}px`;
-
-    // Close on the interactions a native context menu closes on (see the handler definitions).
-    // Capture phase is required for scroll because the viewer's inner scroll container's scroll event does not bubble to document.
-    dismissListenersActive = true;
-    document.addEventListener('pointerdown', onMenuDismissPointerDown, CAPTURE);
-    document.addEventListener('scroll', onMenuDismiss, CAPTURE_PASSIVE);
-    document.addEventListener('wheel', onMenuDismiss, CAPTURE_PASSIVE);
-    document.addEventListener('keydown', onMenuDismissKeyDown, CAPTURE);
-    window.addEventListener('resize', onMenuDismiss);
-    window.addEventListener('blur', onMenuDismiss);
+    showMenuForEvent(viewer, event, targetObj);
   } catch (e) {
     _menuViewer = null;
     throw e;
   }
+};
+
+/**
+ * @param {import('../viewer.js').ScribeViewer} viewer
+ * @param {MouseEvent} event
+ * @param {?Object} targetObj
+ */
+const showMenuForEvent = (viewer, event, targetObj) => {
+  let pendingSep = null;
+  let anyVisibleBefore = false;
+  for (const child of menuNode.children) {
+    if (child.classList.contains('scribe-cm-sep')) {
+      pendingSep = /** @type {HTMLElement} */ (child);
+      continue;
+    }
+    const groupVisible = [...child.children].some((btn) => /** @type {HTMLElement} */ (btn).style.display !== 'none');
+    if (pendingSep) {
+      pendingSep.style.display = groupVisible && anyVisibleBefore ? '' : 'none';
+      pendingSep = null;
+    }
+    anyVisibleBefore = anyVisibleBefore || groupVisible;
+  }
+
+  // Removing unset tokens keeps a previously shown viewer's values from lingering on the shared menu node.
+  const tokenStyles = getComputedStyle(viewer.scrollContainer);
+  for (const token of CONTEXT_MENU_TOKENS) {
+    const value = tokenStyles.getPropertyValue(token);
+    if (value) menuNode.style.setProperty(token, value);
+    else menuNode.style.removeProperty(token);
+  }
+
+  event.preventDefault();
+
+  clearInkEdge();
+  if (targetObj instanceof UiOcrWord && (targetObj.highlightColor || targetObj.markupType)) {
+    const groupId = contextMenuMarkupSlot === 'line' ? targetObj.markupGroupId : targetObj.highlightGroupId;
+    const rectElem = contextMenuMarkupSlot === 'line' ? targetObj.markupRectElem : targetObj.highlightRectElem;
+    /** @type {HTMLDivElement[]} */
+    let bands = [];
+    if (groupId) {
+      for (const map of viewer._highlightRectsByGroup) {
+        const arr = map && map.get(groupId);
+        if (arr) bands.push(...arr);
+      }
+    } else if (rectElem) {
+      bands = [rectElem];
+    }
+    inkEdgeElems = createInkEdges(bands);
+  }
+
+  // No paint happens between the display flip and the final position (same task), so the menu never flashes.
+  menuNode.style.display = 'initial';
+  const { width: menuW, height: menuH } = menuNode.getBoundingClientRect();
+  menuNode.style.top = `${Math.max(4, Math.min(event.clientY + 4, window.innerHeight - menuH - 4))}px`;
+  menuNode.style.left = `${Math.max(4, Math.min(event.clientX + 4, window.innerWidth - menuW - 4))}px`;
+
+  // Capture phase is required for scroll because the viewer's inner scroll container's scroll event does not bubble to document.
+  dismissListenersActive = true;
+  document.addEventListener('pointerdown', onMenuDismissPointerDown, CAPTURE);
+  document.addEventListener('scroll', onMenuDismiss, CAPTURE_PASSIVE);
+  document.addEventListener('wheel', onMenuDismiss, CAPTURE_PASSIVE);
+  document.addEventListener('keydown', onMenuDismissKeyDown, CAPTURE);
+  window.addEventListener('resize', onMenuDismiss);
+  window.addEventListener('blur', onMenuDismiss);
 };
 
 /**

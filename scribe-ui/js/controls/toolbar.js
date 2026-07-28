@@ -905,6 +905,19 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       color: var(--scribe-accent);
     }
 
+    /* An icon button grown to carry a text label, for toggles that name their mode. */
+    .${r} .cr-labeled-button {
+      width: auto;
+      padding-right: 10px;
+      align-items: center;
+    }
+
+    .${r} .cr-labeled-button .cr-btn-label {
+      font-size: 12.5px;
+      line-height: 1;
+      white-space: nowrap;
+    }
+
     .${r} .cr-icon-button.busy {
       opacity: .5;
       pointer-events: none;

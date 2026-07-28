@@ -74,6 +74,11 @@ export async function extractInternalPDFText(doc, options = {}) {
 
   doc.ocr.pdf = pageResults.map((result) => result.pageObj);
 
+  // An edited session carries updated entries a fresh parse cannot know about, so the restored ones win.
+  for (let i = 0; i < pageCount; i++) {
+    doc.nativeText.pages[i] = { ...(pageResults[i].nativeText || {}), ...(doc.nativeText.pages[i] || {}) };
+  }
+
   // Overwrites the per-page assignParagraphs result the workers assigned: no worker sees the whole document.
   // Native-text only, because analyzeLayout is not yet validated on OCR text.
   if (type === 'text') {

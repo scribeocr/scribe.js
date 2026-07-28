@@ -14,6 +14,7 @@ import {
   tokenizeContentStream, formatPdfNumber,
 } from '../../pdf/contentStream.js';
 import { parsePageFonts } from '../../pdf/fonts/parsePdfFonts.js';
+import { glyphEmBoxHitsRects, TEXT_EDIT_GLYPH_SIZE_CAP } from '../../pdf/pageGeometry.js';
 import { aglLookup } from '../../pdf/fonts/standardEncodings.js';
 import { encodeStreamObject } from './writePdfStreams.js';
 import opentype from '../../font-parser/src/index.js';
@@ -548,12 +549,21 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   // Independent of `bboxes`; where both apply to a glyph, redaction wins.
   const redactBboxes = opts.redactBboxes || null;
   const redactActive = !!(redactBboxes && redactBboxes.length > 0);
+  // Text-edit rects share redaction's glyph-drop handling but are text-only.
+  // Paths and images under them stay, and no box or pixel scrub follows.
+  const editBboxes = opts.textEditBboxes || null;
+  const editActive = !!(editBboxes && editBboxes.length > 0);
+  // Replacement operator bodies (one per replaceText record), spliced in at each record's first dropped glyph.
+  // Entries are mutated (`placed`) so the page driver can append the leftovers.
+  const editInserts = opts.textEditInserts || null;
+  const textDropActive = redactActive || editActive;
+  const markedContentProps = opts.markedContentProps || null;
   // Glyph-identifying `%tag` comments are a debug/traceability aid (they let tests and a human reader see which (font, glyph) each inline block draws).
   // Emit them only in human-readable (uncompressed) output, never in production streams, where they would be dead weight.
   const commentGlyphs = !!opts.humanReadable;
-  // Fast path: a stream with no text-show ops AND no Do ops cannot contribute to the output.
-  // Redaction always tokenizes: it also has to see vector path ops, which this regex deliberately ignores.
-  if (!redactActive && !/\bT[jJ]\b|\bDo\b/.test(streamText)) {
+  // Redaction always tokenizes, since it must also see vector path ops, which this regex deliberately ignores.
+  // Text edits always tokenize too, since `'`/`"` shows would slip past the regex.
+  if (!textDropActive && !/\bT[jJ]\b|\bDo\b/.test(streamText)) {
     return {
       ok: true,
       text: streamText,
@@ -563,6 +573,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       formInvocations: [],
       imageInvocations: [],
       verbatimImageNames: new Set(),
+      finalCtm: initialCtm.slice(),
     };
   }
   const tokens = tokenizeContentStream(streamText);
@@ -746,18 +757,26 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   }
 
   /**
-   * Flush pending glyph converts from inside a text object, pinning them to the current colour/stroke state.
-   * `Do` is illegal inside BT/ET, so close the object, flush, reopen, and restore the matrices:
-   * re-emit `Tm` for the line matrix, then a numeric TJ moves tm back to the mid-line position without touching tlm.
-   * An off-axis displacement has no TJ equivalent and is skipped.
+   * Flush pending glyph converts from inside a text object.
    */
   function bounceFlushInBT() {
+    // Paths are illegal inside a text object, so the flush must sit outside BT/ET.
     out.push('ET\n');
     flushPendingConverts();
     out.push('BT\n');
+    restoreTextPosition();
+  }
+
+  /**
+   * Re-establish the walker's text position after a fresh BT.
+   * `Tm` restores the line matrix, then a numeric TJ moves tm to the mid-line target without touching tlm.
+   * An off-axis displacement has no TJ equivalent and is skipped.
+   * @param {number[]} [targetTm] - Text matrix to restore to.
+   */
+  function restoreTextPosition(targetTm = tm) {
     out.push(`${fmt(tlm[0], PDF_MATRIX_DECIMALS)} ${fmt(tlm[1], PDF_MATRIX_DECIMALS)} ${fmt(tlm[2], PDF_MATRIX_DECIMALS)} ${fmt(tlm[3], PDF_MATRIX_DECIMALS)} ${fmt(tlm[4], PDF_MATRIX_DECIMALS)} ${fmt(tlm[5], PDF_MATRIX_DECIMALS)} Tm\n`);
-    const deltaUx = tm[4] - tlm[4];
-    const deltaUy = tm[5] - tlm[5];
+    const deltaUx = targetTm[4] - tlm[4];
+    const deltaUy = targetTm[5] - tlm[5];
     if (Math.abs(deltaUx) > 1e-6 || Math.abs(deltaUy) > 1e-6) {
       const det = tlm[0] * tlm[3] - tlm[1] * tlm[2];
       const fontScale = currentFontSize * tz / 100;
@@ -1203,12 +1222,10 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
         if (nameTok && nameTok.type === 'name') {
           const formObjNum = parentXobjects.get(nameTok.value);
           if (typeof formObjNum === 'number') {
-            // Redaction aliases per site (name, ctm), not per name: a form placed at several CTMs may intersect a rect at only one site,
-            // and name-deduped recursion would bake that site's result into every placement.
-            // The orchestrator points each alias at that site's clone, or back at the original when the site is untouched.
+            // The same form placed at several CTMs may intersect a rect at only one placement, so recursing once per name would bake that placement's rewrite into all of them.
             let alias = null;
-            if (redactActive) {
-              const key = `${nameTok.value} ${ctm.join(' ')}`;
+            if (textDropActive) {
+              const key = `${nameTok.value}\u0000${ctm.join(' ')}`;
               alias = redactFormAliases.get(key);
               if (!alias) {
                 alias = `ScrRdF${redactFormAliases.size}`;
@@ -1257,9 +1274,65 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
           nowHidden = true;
         }
       }
+      // Property lists can carry the wrapped text in readable form (/ActualText, /Alt, /E), so re-emitting them verbatim would leave struck text extractable.
+      // A span's true extent is only knowable from the shows it wraps, so the scrub is page-wide.
+      let opOut = op;
+      if (textDropActive && op === 'BDC' && operandBuf.length >= 2) {
+        const tagTok = operandBuf[operandBuf.length - 2];
+        const propTok = operandBuf[operandBuf.length - 1];
+        const sensitiveRe = /\/(ActualText|Alt|E)(?![0-9A-Za-z._#-])/;
+        if (tagTok && tagTok.type === 'name' && tagTok.value !== 'OC' && propTok) {
+          let dictText = propTok.type === 'dict' ? propTok.value
+            : (propTok.type === 'name' && markedContentProps ? markedContentProps.get(propTok.value) : undefined);
+          if (dictText !== undefined && sensitiveRe.test(dictText)) {
+            for (const key of ['ActualText', 'Alt', 'E']) {
+              const keyRe = new RegExp(`/${key}(?![0-9A-Za-z._#-])`);
+              for (let from = 0; from < dictText.length;) {
+                const rel = dictText.slice(from).search(keyRe);
+                if (rel === -1) break;
+                const start = from + rel;
+                let p = start + 1 + key.length;
+                while (p < dictText.length && /\s/.test(dictText[p])) p++;
+                let end = -1;
+                if (dictText[p] === '(') {
+                  // Parens may nest unescaped inside a literal string.
+                  let depth = 0;
+                  for (let q = p; q < dictText.length; q++) {
+                    const ch = dictText[q];
+                    if (ch === '\\') { q++; continue; }
+                    if (ch === '(') depth++;
+                    else if (ch === ')') { depth--; if (depth === 0) { end = q + 1; break; } }
+                  }
+                } else if (dictText[p] === '<' && dictText[p + 1] !== '<') {
+                  const gt = dictText.indexOf('>', p);
+                  if (gt !== -1) end = gt + 1;
+                } else {
+                  const ref = /^\d+\s+\d+\s+R(?![0-9A-Za-z])/.exec(dictText.slice(p));
+                  if (ref) end = p + ref[0].length;
+                }
+                if (end === -1) { from = start + 1; continue; }
+                dictText = dictText.slice(0, start) + dictText.slice(end);
+                from = 0;
+              }
+            }
+            // An indirect ref is illegal inside a content stream, so a dict still holding one cannot be re-emitted inline.
+            if (sensitiveRe.test(dictText) || /(^|[^0-9A-Za-z])\d+\s+\d+\s+R(?![0-9A-Za-z])/.test(dictText)) {
+              operandBuf.length -= 1;
+              opOut = 'BMC';
+            } else {
+              operandBuf[operandBuf.length - 1] = { type: 'dict', value: dictText };
+            }
+            changed = true;
+          } else if (dictText === undefined && propTok.type === 'name' && redactActive) {
+            operandBuf.length -= 1;
+            opOut = 'BMC';
+            changed = true;
+          }
+        }
+      }
       mcHiddenStack.push(nowHidden);
       ocHidden = nowHidden;
-      emitPersistVerbatim(op);
+      emitPersistVerbatim(opOut);
       continue;
     }
     if (op === 'EMC') {
@@ -1314,32 +1387,35 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
     } else if (tr >= 4 && tr <= 7) {
       verbatimReason = `unsupported-tr-mode:${tr}`;
     }
-    // Redaction also processes shows the conversion path leaves verbatim (OC-hidden, Tr 3 invisible, Tr>=4 clip):
-    // their bytes are extractable regardless of visibility, so glyphs inside a rect must drop.
-    // Conversion itself stays gated by the original conditions.
+    // Redaction and text edits also process the shows the conversion path leaves verbatim (OC-hidden, Tr 3, Tr>=4).
+    // Their bytes are extractable regardless of visibility, so glyphs inside a rect must drop.
     const canConvert = !ocHidden && (tr === 0 || strokeMode !== null);
 
     // `ocHidden`: this show sits in an OFF optional-content block.
     // Keep it verbatim so the renderer goes on hiding it.
     // Converting it to paths would make hidden content (e.g. alternate SAR values or print marks) always visible.
-    if (!binding || !operand || (!redactActive && (ocHidden || (tr !== 0 && strokeMode === null)))) {
+    if (!binding || !operand || (!textDropActive && (ocHidden || (tr !== 0 && strokeMode === null)))) {
       // Fail-closed when a show's font failed to parse: glyph geometry is uncomputable, so drop the WHOLE show if its start origin falls inside a rect grown by a line-height margin.
       // Otherwise keep it and surface a warning.
-      if (redactActive && operand && !binding) {
+      if (textDropActive && operand && !binding) {
         const originMat = matMul(tm, ctm);
         const pad = currentFontSize > 0 ? currentFontSize * 2 : 24;
-        let hit = false;
-        for (const b of redactBboxes) {
-          if (originMat[4] >= b[0] - pad && originMat[4] <= b[2] + pad && originMat[5] >= b[1] - pad && originMat[5] <= b[3] + pad) { hit = true; break; }
+        let hitRedact = false;
+        let hitEdit = false;
+        for (const b of redactBboxes || []) {
+          if (originMat[4] >= b[0] - pad && originMat[4] <= b[2] + pad && originMat[5] >= b[1] - pad && originMat[5] <= b[3] + pad) { hitRedact = true; break; }
         }
-        if (hit) {
+        for (const b of editBboxes || []) {
+          if (originMat[4] >= b[0] - pad && originMat[4] <= b[2] + pad && originMat[5] >= b[1] - pad && originMat[5] <= b[3] + pad) { hitEdit = true; break; }
+        }
+        if (hitRedact || hitEdit) {
           // No advance replay without widths; later absolute positioning ops (Tm/Td/TD/T*) re-anchor, so only same-object relative text drifts.
-          skipped.push({ fontObjNum: -1, charCode: -1, reason: 'redact-dropped-unresolved-font-show' });
+          skipped.push({ fontObjNum: -1, charCode: -1, reason: hitRedact ? 'redact-dropped-unresolved-font-show' : 'textedit-dropped-unresolved-font-show' });
           changed = true;
           operandBuf.length = 0;
           continue;
         }
-        skipped.push({ fontObjNum: -1, charCode: -1, reason: 'redact-unverifiable-font' });
+        skipped.push({ fontObjNum: -1, charCode: -1, reason: redactActive ? 'redact-unverifiable-font' : 'textedit-unverifiable-font' });
       }
       if (binding && operand && verbatimReason) {
         skipped.push({ fontObjNum: binding.fontObjNum, charCode: -1, reason: verbatimReason });
@@ -1371,6 +1447,11 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
 
     /** @type {Array<{kind: 'glyph', code: number, numBytes: number} | {kind: 'spacer', value: number}>} */
     const outputElems = [];
+    /** @type {Array<{rects: Array<[number, number, number, number]>, body: string, placed: boolean}>} */
+    const spliceNow = [];
+    let spliceElemIdx = 0;
+    /** @type {?number[]} */
+    let tmAtSplice = null;
     let anyConvert = false;
     // Per-run stroke state, computed on the first resolved glyph:
     // the 2x2 of trmPrefix * tm is translation-invariant across the run, so k, the anisotropy ratio, and the glyph-space pen width are run constants.
@@ -1394,37 +1475,29 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
 
       let didConvert = false;
 
-      // Redaction test: the glyph's approximate extent (advance width by a generous em box, biased toward over-redaction, all-or-nothing per glyph),
-      // mapped through the full render matrix and tested against every redact rect.
-      // Deliberately NOT the conversion origin-point test: a glyph whose origin sits outside a rect but whose body crosses it must still drop.
-      if (redactActive) {
-        let u1;
-        let u0;
-        let v0;
-        let v1;
-        if (binding.verticalMode) {
-          u0 = -0.6; u1 = 0.6; v0 = -1.1; v1 = 0.35;
-        } else {
-          const widthSrc = binding.isType0 && binding.charCodeToCID
-            ? (binding.charCodeToCID.get(code) ?? code)
-            : code;
-          const advEm = (binding.widths.get(widthSrc) ?? binding.defaultWidth) / 1000;
-          u0 = -0.1; u1 = advEm + 0.05; v0 = -0.3; v1 = 0.95;
-        }
-        let gx0 = Infinity; let gy0 = Infinity; let gx1 = -Infinity; let gy1 = -Infinity;
-        for (const [u, v] of [[u0, v0], [u1, v0], [u0, v1], [u1, v1]]) {
-          const gx = u * trm[0] + v * trm[2] + trm[4];
-          const gy = u * trm[1] + v * trm[3] + trm[5];
-          gx0 = Math.min(gx0, gx); gy0 = Math.min(gy0, gy); gx1 = Math.max(gx1, gx); gy1 = Math.max(gy1, gy);
-        }
-        for (const b of redactBboxes) {
-          if (gx0 < b[2] && gx1 > b[0] && gy0 < b[3] && gy1 > b[1]) {
-            // Dropped glyph: an advance-mimicking spacer keeps every retained glyph in place.
-            // The resolver is never consulted, so unembedded/broken fonts still redact.
-            didConvert = true;
-            outputElems.push({ kind: 'spacer', value: spacerForGlyphMimic(binding, code, numBytes) });
-            anyConvert = true;
-            break;
+      // The renderer suppresses edited glyphs on screen with the same em-box test, so screen and export agree per glyph.
+      if (textDropActive) {
+        const widthSrc = binding.isType0 && binding.charCodeToCID
+          ? (binding.charCodeToCID.get(code) ?? code)
+          : code;
+        const advEm = (binding.widths.get(widthSrc) ?? binding.defaultWidth) / 1000;
+        if ((redactActive && glyphEmBoxHitsRects(trm, advEm, !!binding.verticalMode, /** @type {Array<[number, number, number, number]>} */ (redactBboxes)))
+          || (editActive && glyphEmBoxHitsRects(trm, advEm, !!binding.verticalMode, /** @type {Array<[number, number, number, number]>} */ (editBboxes), TEXT_EDIT_GLYPH_SIZE_CAP))) {
+          // Dropping never consults the resolver, so glyphs in unembedded/broken fonts still drop.
+          didConvert = true;
+          outputElems.push({ kind: 'spacer', value: spacerForGlyphMimic(binding, code, numBytes) });
+          anyConvert = true;
+          if (editInserts) {
+            for (const e of editInserts) {
+              if (!e.placed && !spliceNow.includes(e) && glyphEmBoxHitsRects(trm, advEm, !!binding.verticalMode, e.rects, TEXT_EDIT_GLYPH_SIZE_CAP)) {
+                if (spliceNow.length === 0) {
+                  // The split point: before this dropped glyph's spacer, at this glyph's position.
+                  spliceElemIdx = outputElems.length - 1;
+                  tmAtSplice = tm.slice();
+                }
+                spliceNow.push(e);
+              }
+            }
           }
         }
       }
@@ -1563,18 +1636,51 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       out.push('T*\n');
     }
 
-    const parts = [];
-    let hex = '';
-    for (const e of outputElems) {
-      if (e.kind === 'glyph') {
-        hex += codeToHex(e.code, e.numBytes);
-      } else {
-        if (hex) { parts.push(`<${hex}>`); hex = ''; }
-        parts.push(fmt(e.value));
+    const emitTJ = (elems) => {
+      const parts = [];
+      let hex = '';
+      for (const e of elems) {
+        if (e.kind === 'glyph') {
+          hex += codeToHex(e.code, e.numBytes);
+        } else {
+          if (hex) { parts.push(`<${hex}>`); hex = ''; }
+          parts.push(fmt(e.value));
+        }
+      }
+      if (hex) parts.push(`<${hex}>`);
+      if (parts.length > 0) out.push(`[${parts.join(' ')}] TJ\n`);
+    };
+
+    // A non-invertible CTM leaves the entries unplaced.
+    // The page driver appends leftover entries at the end of the page stream.
+    let spliced = false;
+    if (spliceNow.length > 0 && tmAtSplice) {
+      const det = ctm[0] * ctm[3] - ctm[1] * ctm[2];
+      if (Math.abs(det) > 1e-9) {
+        emitTJ(outputElems.slice(0, spliceElemIdx));
+        out.push('ET\n');
+        const identityCtm = Math.abs(ctm[0] - 1) < 1e-12 && Math.abs(ctm[1]) < 1e-12 && Math.abs(ctm[2]) < 1e-12
+          && Math.abs(ctm[3] - 1) < 1e-12 && Math.abs(ctm[4]) < 1e-12 && Math.abs(ctm[5]) < 1e-12;
+        for (const e of spliceNow) {
+          e.placed = true;
+          out.push('q\n');
+          if (!identityCtm) {
+            const inv = [ctm[3] / det, -ctm[1] / det, -ctm[2] / det, ctm[0] / det,
+              (ctm[2] * ctm[5] - ctm[3] * ctm[4]) / det, (ctm[1] * ctm[4] - ctm[0] * ctm[5]) / det];
+            out.push(`${fmt(inv[0], PDF_MATRIX_DECIMALS)} ${fmt(inv[1], PDF_MATRIX_DECIMALS)} ${fmt(inv[2], PDF_MATRIX_DECIMALS)} ${fmt(inv[3], PDF_MATRIX_DECIMALS)} ${fmt(inv[4], PDF_MATRIX_DECIMALS)} ${fmt(inv[5], PDF_MATRIX_DECIMALS)} cm\n`);
+          }
+          out.push(e.body);
+          out.push('Q\n');
+        }
+        out.push('BT\n');
+        restoreTextPosition(tmAtSplice);
+        emitTJ(outputElems.slice(spliceElemIdx));
+        btKept = true;
+        changed = true;
+        spliced = true;
       }
     }
-    if (hex) parts.push(`<${hex}>`);
-    if (parts.length > 0) out.push(`[${parts.join(' ')}] TJ\n`);
+    if (!spliced) emitTJ(outputElems);
     operandBuf.length = 0;
   }
 
@@ -1585,7 +1691,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   }
 
   return {
-    ok: true, text: changed ? out.join('') : streamText, changed, usedXobj, skipped, formInvocations, imageInvocations, verbatimImageNames,
+    ok: true, text: changed ? out.join('') : streamText, changed, usedXobj, skipped, formInvocations, imageInvocations, verbatimImageNames, finalCtm: ctm,
   };
 }
 
@@ -2085,6 +2191,50 @@ function resolveResourcesText(objText, objCache) {
 }
 
 /**
+ * Extract the named marked-content property lists (/Properties) from a resources dict text, as raw dict text per name.
+ *
+ * @param {string | null} resourcesText
+ * @param {import('../../pdf/objectCache.js').ObjectCache} objCache
+ * @returns {Map<string, string>}
+ */
+function parseMarkedContentProps(resourcesText, objCache) {
+  /** @type {Map<string, string>} */
+  const out = new Map();
+  if (!resourcesText) return out;
+  const idx = resourcesText.indexOf('/Properties');
+  if (idx === -1) return out;
+  let p = idx + '/Properties'.length;
+  while (p < resourcesText.length && /\s/.test(resourcesText[p])) p++;
+  let dictText = null;
+  if (resourcesText.startsWith('<<', p)) {
+    dictText = extractDict(resourcesText, p);
+  } else {
+    const ref = /^(\d+)\s+\d+\s+R/.exec(resourcesText.slice(p));
+    if (ref && objCache) {
+      const resolved = objCache.getObjectText(Number(ref[1]));
+      if (resolved) {
+        const ds = resolved.indexOf('<<');
+        if (ds !== -1) dictText = extractDict(resolved, ds);
+      }
+    }
+  }
+  if (!dictText) return out;
+  for (const entry of parseDictEntries(dictText.slice(2, -2))) {
+    let propText = entry.valueText;
+    const ref = /^(\d+)\s+\d+\s+R$/.exec(propText.trim());
+    if (ref) {
+      const resolved = objCache ? objCache.getObjectText(Number(ref[1])) : null;
+      if (!resolved) continue;
+      const ds = resolved.indexOf('<<');
+      if (ds === -1) continue;
+      propText = extractDict(resolved, ds);
+    }
+    if (propText && propText.trim().startsWith('<<')) out.set(entry.key, propText.trim());
+  }
+  return out;
+}
+
+/**
  * Extract the stroke-relevant ExtGState parameters (/LW, /ML, /D) from a resources dict text.
  *
  * @param {string | null} resourcesText
@@ -2432,9 +2582,10 @@ async function rewriteFormContentForRegions({
   formObjNum, ctm, parentFontsByTag, fontInfoByObjNum, resolver,
   bboxes, targetFontObjNums = null, state, objCache, allocObjNum, pushObj, humanReadable,
   parentResourcesText = null, initialLineWidth = null, initialDashActive = false, initialMiterLimit = null,
-  initialTextState = null, redactBboxes = null,
+  initialTextState = null, redactBboxes = null, textEditBboxes = null,
 }) {
   const redactActive = !!(redactBboxes && redactBboxes.length > 0);
+  const editActive = !!(textEditBboxes && textEditBboxes.length > 0);
   if (state.inProgress.has(formObjNum)) {
     return { changed: false, cloneObjNum: formObjNum, skipped: [] };
   }
@@ -2443,15 +2594,13 @@ async function rewriteFormContentForRegions({
     const formObjText = objCache.getObjectText(formObjNum);
     if (!formObjText || !/\/Subtype\s*\/Form\b/.test(formObjText)) {
       if (redactActive && !formObjText) throw new Error('Cannot apply redactions: a Form XObject could not be read.');
+      if (editActive && !formObjText) throw new Error('Cannot apply text edits: a Form XObject could not be read.');
       return { changed: false, cloneObjNum: formObjNum, skipped: [] };
     }
 
-    // A Form whose own /OC group is OFF is never painted (the renderer skips its Do entirely).
-    // Leave it unconverted so its text stays hidden, not pathed.
-    // Redaction recurses anyway: hidden content is still extractable, so glyphs inside a rect must drop even when the form never paints.
-    // The drop does not change the form's visibility.
+    // An OC-hidden form never paints, but its text still extracts, so redaction and text edits must recurse into it anyway.
     const offOCGs = typeof objCache.getOffOCGs === 'function' ? objCache.getOffOCGs() : new Set();
-    if (offOCGs.size > 0 && isFormOCHidden(formObjText, offOCGs, objCache) && !redactActive) {
+    if (offOCGs.size > 0 && isFormOCHidden(formObjText, offOCGs, objCache) && !redactActive && !editActive) {
       return { changed: false, cloneObjNum: formObjNum, skipped: [] };
     }
 
@@ -2468,6 +2617,7 @@ async function rewriteFormContentForRegions({
     try { streamBytes = objCache.getStreamBytes(formObjNum); } catch { streamBytes = null; }
     if (!streamBytes) {
       if (redactActive) throw new Error('Cannot apply redactions: a Form XObject stream could not be read.');
+      if (editActive) throw new Error('Cannot apply text edits: a Form XObject stream could not be read.');
       return { changed: false, cloneObjNum: formObjNum, skipped: [] };
     }
     const streamText = bytesToLatin1(streamBytes);
@@ -2509,16 +2659,19 @@ async function rewriteFormContentForRegions({
       parentImages: formImagesByName,
       targetFontObjNums,
       redactBboxes,
+      textEditBboxes,
       initialLineWidth,
       initialDashActive,
       initialMiterLimit,
       initialTextState,
       extGStates: parseExtGStates(effectiveResources, objCache),
+      markedContentProps: parseMarkedContentProps(effectiveResources, objCache),
       hiddenOCMCNames: offOCGs.size > 0 ? parseHiddenOCMCNames(formObjText, objCache, offOCGs) : null,
       humanReadable,
     });
     if (!smResult.ok) {
       if (redactActive) throw new Error(`Cannot apply redactions: Form XObject rewrite failed (${smResult.reason}).`);
+      if (editActive) throw new Error(`Cannot apply text edits: Form XObject rewrite failed (${smResult.reason}).`);
       return { changed: false, cloneObjNum: formObjNum, skipped: [] };
     }
 
@@ -2527,7 +2680,7 @@ async function rewriteFormContentForRegions({
     const skipped = smResult.skipped.slice();
     /** @type {?Set<string>} */
     let nestedRedactedNames = null;
-    if (redactActive) {
+    if (redactActive || editActive) {
       // Per-site recursion, mirroring convertSinglePageForRegions (see the Do aliasing).
       nestedRedactedNames = new Set();
       for (const inv of smResult.formInvocations) {
@@ -2543,6 +2696,7 @@ async function rewriteFormContentForRegions({
           bboxes,
           targetFontObjNums,
           redactBboxes,
+          textEditBboxes,
           state,
           objCache,
           allocObjNum,
@@ -2635,7 +2789,7 @@ async function rewriteFormContentForRegions({
     state.formCloneByKey.set(dedupKey, cloneObjNum);
     // The rebuild's reference trace never traces the original form dict for redacted content, since that would copy the unredacted original.
     // The clone's own dict text is traced instead: it references the fonts/images/nested clones the content still needs.
-    if (redactActive && Array.isArray(state.redactTraceTexts)) state.redactTraceTexts.push(dictExtras);
+    if ((redactActive || editActive) && Array.isArray(state.redactTraceTexts)) state.redactTraceTexts.push(dictExtras);
     return { changed: true, cloneObjNum, skipped };
   } finally {
     state.inProgress.delete(formObjNum);
@@ -2643,15 +2797,12 @@ async function rewriteFormContentForRegions({
 }
 
 /**
- * Per-page conversion primitive.
- * Rewrites a single content-stream text (merged from possibly multiple original /Contents refs)
- * replacing text-show operators inside the supplied bboxes with Form XObject calls.
- * Caller is responsible for encoding the returned text into a stream object and for merging
- * `xobjEntries` and `formClones` into the page's /Resources.
+ * Rewrites a single page's content stream, replacing text-show operators inside the supplied bboxes with glyphs drawn as paths.
+ * The caller must encode the returned text into a stream object and merge `xobjEntries` and `formClones` into the page's /Resources.
  *
  * @param {object} params
  * @param {string} params.streamText - Merged content stream text for the page.
- * @param {string} params.pageObjText - The original page object text (used for parsePageFonts).
+ * @param {string} params.pageObjText
  * @param {ReadonlyArray<ReadonlyArray<number>>} params.bboxes - Page-relative user-space bboxes.
  * @param {ReturnType<typeof createConversionState>} params.state
  * @param {import('../../pdf/objectCache.js').ObjectCache} params.objCache
@@ -2659,22 +2810,29 @@ async function rewriteFormContentForRegions({
  * @param {(obj: {objNum: number, content: any}) => void} params.pushObj
  * @param {boolean} params.humanReadable
  * @param {boolean} [params.convertBrokenType3ToPaths] - When true, convert every glyph drawn by a broken-ToUnicode Type3 font to paths.
+ * @param {?Array<[number, number, number, number]>} [params.redactBboxes] - User-space rects whose content is destructively removed.
+ * @param {?Array<[number, number, number, number]>} [params.textEditBboxes] - User-space rects whose glyphs are removed (native-text edits).
+ * @param {?Array<{rects: Array<[number, number, number, number]>, body: string, placed: boolean}>} [params.textEditInserts]
+ *   Replacement blocks (one per replaceText record) holding absolute user-space operator bodies.
+ *   Each is spliced in at its record's first dropped glyph, or appended at the end of the page stream when unplaced.
  * @returns {Promise<{
  *   changed: boolean,
  *   text?: string,
  *   xobjEntries?: Map<string, number>,
  *   formClones?: Map<string, number>,
  *   skipped?: Array<{fontObjNum: number, charCode: number, reason: string}>,
+ *   redactedFormNames?: Set<string> | null,
  * }>}
  */
 export async function convertSinglePageForRegions({
   streamText, pageObjText, bboxes, state, objCache, allocObjNum, pushObj, humanReadable,
-  convertBrokenType3ToPaths = false, redactBboxes = null,
+  convertBrokenType3ToPaths = false, redactBboxes = null, textEditBboxes = null, textEditInserts = null,
 }) {
   const redactActive = !!(redactBboxes && redactBboxes.length > 0);
+  const editActive = !!(textEditBboxes && textEditBboxes.length > 0);
   // Bbox-driven conversion needs at least one region.
   // Broken-Type3 conversion runs font-scoped with no regions, so it relaxes the empty-bbox early-out.
-  if ((!bboxes || bboxes.length === 0) && !convertBrokenType3ToPaths && !redactActive) return { changed: false };
+  if ((!bboxes || bboxes.length === 0) && !convertBrokenType3ToPaths && !redactActive && !editActive) return { changed: false };
   const safeBboxes = bboxes || [];
 
   // Unembedded fonts convert via built-in substitute outlines (see the resolver).
@@ -2687,8 +2845,9 @@ export async function convertSinglePageForRegions({
   try {
     pageFontInfos = parsePageFonts(pageObjText, objCache);
   } catch {
-    // Conversion degrades gracefully; redaction must not silently keep the content.
+    // Redaction and text edits must not silently keep the content they were meant to remove.
     if (redactActive) throw new Error('Cannot apply redactions: the page fonts could not be parsed.');
+    if (editActive) throw new Error('Cannot apply text edits: the page fonts could not be parsed.');
     return { changed: false };
   }
   if (!pageFontInfos) pageFontInfos = new Map();
@@ -2719,9 +2878,9 @@ export async function convertSinglePageForRegions({
   // Page-level forms that omit their own /Resources inherit the page's, so pass it down.
   const pageResourcesText = resolveResourcesText(pageObjText, objCache);
 
-  // Page is convertible only if it has fonts (for direct text-show conversion) or Form XObjects (for recursion into form-borne text).
-  // A redacted page runs the walk regardless: unresolved-font shows still hit the fail-closed policy, and path/image ops matter too.
-  if (fontsByTag.size === 0 && pageXobjectsByName.size === 0 && !redactActive) return { changed: false };
+  // A redacted or text-edited page runs the walk even with no fonts or Form XObjects, since skipping it would silently keep content that must be removed.
+  // Redaction also strips path and image content.
+  if (fontsByTag.size === 0 && pageXobjectsByName.size === 0 && !redactActive && !editActive) return { changed: false };
 
   /** @type {?Map<string, number>} */
   let pageImagesByName = null;
@@ -2740,12 +2899,16 @@ export async function convertSinglePageForRegions({
     parentImages: pageImagesByName,
     targetFontObjNums,
     redactBboxes,
+    textEditBboxes,
+    textEditInserts,
     extGStates: parseExtGStates(pageResourcesText, objCache),
+    markedContentProps: parseMarkedContentProps(pageResourcesText, objCache),
     hiddenOCMCNames: offOCGs.size > 0 ? parseHiddenOCMCNames(pageObjText, objCache, offOCGs) : null,
     humanReadable,
   });
   if (!smResult.ok) {
     if (redactActive) throw new Error(`Cannot apply redactions: page content rewrite failed (${smResult.reason}).`);
+    if (editActive) throw new Error(`Cannot apply text edits: page content rewrite failed (${smResult.reason}).`);
     return { changed: false };
   }
 
@@ -2754,7 +2917,7 @@ export async function convertSinglePageForRegions({
   const skipped = smResult.skipped.slice();
   /** @type {?Set<string>} */
   let redactedFormNames = null;
-  if (redactActive) {
+  if (redactActive || editActive) {
     // Per-site recursion (see the aliasing at the Do handler): each invocation carries its own CTM, and its alias resolves to that site's clone or to the original when nothing changed.
     // Content-hash dedup in the clone cache collapses sites whose rewrites are identical.
     redactedFormNames = new Set();
@@ -2771,6 +2934,7 @@ export async function convertSinglePageForRegions({
         bboxes: safeBboxes,
         targetFontObjNums,
         redactBboxes,
+        textEditBboxes,
         state,
         objCache,
         allocObjNum,
@@ -2842,17 +3006,46 @@ export async function convertSinglePageForRegions({
     }
   }
 
-  if (!smResult.changed && formClones.size === 0) {
+  // The end-of-stream position matches the renderer's fallback append for unplaced replacements, so the export's z-order agrees with the raster.
+  let pageText = smResult.changed ? smResult.text : streamText;
+  let insertsAppended = false;
+  if (textEditInserts) {
+    const fc = smResult.finalCtm || [1, 0, 0, 1, 0, 0];
+    const det = fc[0] * fc[3] - fc[1] * fc[2];
+    let tail = '';
+    for (const e of textEditInserts) {
+      if (e.placed) continue;
+      if (Math.abs(det) <= 1e-9) {
+        skipped.push({ fontObjNum: -1, charCode: -1, reason: 'textedit-insert-degenerate-ctm' });
+        continue;
+      }
+      let cmStr = '';
+      if (!(Math.abs(fc[0] - 1) < 1e-12 && Math.abs(fc[1]) < 1e-12 && Math.abs(fc[2]) < 1e-12
+        && Math.abs(fc[3] - 1) < 1e-12 && Math.abs(fc[4]) < 1e-12 && Math.abs(fc[5]) < 1e-12)) {
+        const inv = [fc[3] / det, -fc[1] / det, -fc[2] / det, fc[0] / det,
+          (fc[2] * fc[5] - fc[3] * fc[4]) / det, (fc[1] * fc[4] - fc[0] * fc[5]) / det];
+        cmStr = `${inv.map((v) => String(Math.round(v * 1e8) / 1e8)).join(' ')} cm\n`;
+      }
+      tail += `q\n${cmStr}${e.body}Q\n`;
+      e.placed = true;
+    }
+    if (tail) {
+      pageText = `${pageText}\n${tail}`;
+      insertsAppended = true;
+    }
+  }
+
+  if (!smResult.changed && !insertsAppended && formClones.size === 0) {
     return { changed: false, skipped };
   }
 
-  // Glyphs are inlined into smResult.text, so no per-glyph Form XObjects are emitted and the page needs no added /XObject entries.
+  // Glyphs are inlined into the page text, so no per-glyph Form XObjects are emitted.
   /** @type {Map<string, number>} */
   const xobjEntries = new Map();
 
   return {
     changed: true,
-    text: smResult.text,
+    text: pageText,
     xobjEntries,
     formClones,
     skipped,

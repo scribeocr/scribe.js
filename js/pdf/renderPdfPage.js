@@ -12,6 +12,7 @@ import {
   matMul, bytesToLatin1,
 } from './pdfPrimitives.js';
 import { parseDrawOps } from './parseDrawOps.js';
+import { pageRectToContentRect, glyphEmBoxHitsRects, TEXT_EDIT_GLYPH_SIZE_CAP } from './pageGeometry.js';
 
 /** @typedef {import('./objectCache.js').ObjectCache} ObjectCache */
 /** @typedef {import('./parseDrawOps.js').DrawOp} DrawOp */
@@ -178,12 +179,54 @@ async function registerNonEmbeddedFont(fontObj, _familyName, targetMap, fontTag)
   if (!cssFamily) console.warn(`[renderPdfPage] No font data for "${fontObj.baseName}", using ${fallback} fallback`);
 }
 
+/** Bundled faces already fetched+registered for edit-text runs in this worker, by alias. */
+const bundledEditFacesEnsured = new Set();
+
 /**
- * Convert an embedded font's binary data to OTF and register it via loadFontFace.
+ * The registry alias of a bundled face named by an edit run.
+ * Matches the alias `registerNonEmbeddedFont` uses, so the two paths share one registration.
+ * @param {string} family
+ * @param {string} styleKey - 'normal'|'bold'|'italic'|'boldItalic'
+ */
+function bundledEditFaceAlias(family, styleKey) {
+  const variant = styleKey === 'normal' ? 'Regular' : styleKey === 'bold' ? 'Bold' : styleKey === 'italic' ? 'Italic' : 'BoldItalic';
+  return `_scribe_${family.toLowerCase()}_${variant.toLowerCase()}`;
+}
+
+/**
+ * Fetch and register a bundled face an edit run draws with.
+ * @param {string} family
+ * @param {string} styleKey
+ */
+async function ensureBundledEditFace(family, styleKey) {
+  const alias = bundledEditFaceAlias(family, styleKey);
+  if (bundledEditFacesEnsured.has(alias)) return;
+  const variant = styleKey === 'normal' ? 'Regular' : styleKey === 'bold' ? 'Bold' : styleKey === 'italic' ? 'Italic' : 'BoldItalic';
+  const url = new URL(`../../fonts/all/${family}-${variant}.woff`, import.meta.url);
+  let fontBytes;
+  if (typeof process !== 'undefined') {
+    const { fileURLToPath } = await import('node:url');
+    const { readFileSync } = await import('node:fs');
+    fontBytes = readFileSync(fileURLToPath(url));
+  } else {
+    fontBytes = await fetch(url).then((r) => r.arrayBuffer());
+  }
+  const face = loadFontFace(
+    alias,
+    styleKey === 'italic' || styleKey === 'boldItalic' ? 'italic' : 'normal',
+    styleKey === 'bold' || styleKey === 'boldItalic' ? 'bold' : 'normal',
+    fontBytes,
+  );
+  await face.loaded;
+  bundledEditFacesEnsured.add(alias);
+}
+
+/**
+ * Convert an embedded font's binary data to OTF and register it.
  *
  * @param {string} fontTag
- * @param {Object} fontObj - Parsed fontInfo from parsePageFonts()
- * @param {Map<string, string>} registeredFontNames - fontTag → CSS familyName (mutated)
+ * @param {Object} fontObj
+ * @param {Map<string, string>} registeredFontNames - fontTag -> CSS familyName (mutated)
  * @param {Set<string>} symbolFontTags - (mutated)
  * @param {Set<string>} cidPUATags - (mutated)
  * @param {Set<string>} rawCharCodeTags - (mutated)
@@ -265,6 +308,7 @@ async function convertAndRegisterFont(
       const face = loadFontFace(familyName, 'normal', 'normal', ab);
       await face.loaded;
       registered = true;
+      if (cacheKey != null) objCache.fontBytesCache.set(cacheKey, { bytes: ab, kind: 'original' });
     } catch (_e) {
       const numT = (fontBytes[4] << 8) | fontBytes[5];
       for (let ti = 0; ti < numT; ti++) {
@@ -283,7 +327,8 @@ async function convertAndRegisterFont(
                 usesPUA = result.usesPUA;
                 cidCollisions = result.cidCollisions;
                 registered = true;
-              } catch (_e2) { /* CFF extraction also failed */ }
+                if (cacheKey != null) objCache.fontBytesCache.set(cacheKey, { bytes: result.otfData, kind: 'rebuilt' });
+              } catch (_e2) { /* */ }
             }
           }
           break;
@@ -303,6 +348,7 @@ async function convertAndRegisterFont(
         usesPUA = result.usesPUA;
         cidCollisions = result.cidCollisions;
         registered = true;
+        if (cacheKey != null) objCache.fontBytesCache.set(cacheKey, { bytes: result.otfData, kind: 'rebuilt' });
       } catch (cffErr) {
         console.warn(`[renderPdfPage] CFF OTF load failed for "${fontObj.baseName}":`, cffErr);
       }
@@ -320,7 +366,8 @@ async function convertAndRegisterFont(
         if (fontMatrix && fontObj.type1) fontObj.type1.fontMatrix = fontMatrix;
         usesPUA = type1Result.usesPUA;
         registered = true;
-      } catch (_e) { /* Type1→OTF failed */ }
+        if (cacheKey != null) objCache.fontBytesCache.set(cacheKey, { bytes: type1Result.otfData, kind: 'rebuilt' });
+      } catch (_e) { /* OTF load failed */ }
     }
   }
 
@@ -359,6 +406,7 @@ async function convertAndRegisterFont(
         cmapType = rebuilt.cmapType || null;
         cidCollisions = rebuilt.cidCollisions;
         registered = true;
+        if (cacheKey != null) objCache.fontBytesCache.set(cacheKey, { bytes: rebuilt.otfData, kind: 'rebuilt' });
       } catch (_e) {
         console.warn(`[renderPdfPage] Rebuilt TrueType font FAILED for "${fontObj.baseName}" (${rebuilt.otfData.byteLength} bytes):`, _e?.message || _e);
       }
@@ -388,7 +436,21 @@ async function convertAndRegisterFont(
   }
 }
 
-/** @type {Record<string, GlobalCompositeOperation>} Map PDF blend mode names to Canvas globalCompositeOperation values. */
+/**
+ * Convert and register one font outside a page render.
+ * Fills `objCache.fontBytesCache` with the bytes the raster draws with.
+ * Serves native-text editing when it needs a font's program before any page using the font has rendered.
+ * @param {Object} fontObj - Parsed fontInfo from `objCache.fontCache`.
+ * @param {ObjectCache} objCache
+ */
+export async function registerFontForEditing(fontObj, objCache) {
+  const familyName = pdfFontFamilyName(objCache, fontObj.fontObjNum, 'edit');
+  await convertAndRegisterFont(
+    'editProbe', fontObj, new Map(), new Set(), new Set(), new Set(), new Map(), objCache, familyName,
+  );
+}
+
+/** @type {Record<string, GlobalCompositeOperation>} */
 const pdfBlendToCanvas = {
   Multiply: 'multiply',
   Screen: 'screen',
@@ -1869,6 +1931,7 @@ function applyFormTransform(op, composedBase) {
       const result = {
         ...op, a: trm[0], b: trm[1], c: trm[2], d: trm[3], x: trm[4], y: trm[5],
       };
+      if (op.editTrm) result.editTrm = matMul(op.editTrm, composedBase);
       if (op.clips) result.clips = op.clips.map((c) => ({ ...c, ctm: matMul(c.ctm, composedBase) }));
       composeFormRefs(result);
       return result;
@@ -1876,6 +1939,7 @@ function applyFormTransform(op, composedBase) {
     case 'type3glyph': {
       const newTransform = matMul(op.transform, composedBase);
       const result = { ...op, transform: newTransform };
+      if (op.editTrm) result.editTrm = matMul(op.editTrm, composedBase);
       if (op.clips) result.clips = op.clips.map((c) => ({ ...c, ctm: matMul(c.ctm, composedBase) }));
       composeFormRefs(result);
       return result;
@@ -5077,27 +5141,28 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
 }
 
 /**
- * Render a single PDF page to an image data URL.
+ * Render a single PDF page to an image.
  *
  * @param {string} pageObjText - Raw text of the Page object
  * @param {ObjectCache} objCache - PDF object cache
  * @param {number[]} mediaBox - Page media box [x0, y0, x1, y1]
- * @param {number} pageIndex - Page index (for ImageWrapper)
+ * @param {number} pageIndex - Page index
  * @param {'color'|'gray'} [colorMode='color'] - Output color mode
  * @param {number} [rotate=0] - Page rotation in degrees
  * @param {number} [dpi=300] - Render resolution in dots per inch
- * @param {'png'|'jpeg'|'bitmap'} [outputFormat='png'] - Output encoding: 'png' returns a base64 data URL, 'jpeg' returns a Blob, and 'bitmap' returns a transferable ImageBitmap (both browser only).
- * @param {number} [quality=0.6] - JPEG quality 0-1 (ignored for png).
+ * @param {'png'|'jpeg'|'bitmap'} [outputFormat='png'] - Output encoding
+ * @param {number} [quality=0.6] - JPEG quality 0-1
+ * @param {?{records: Array<TextEdit>, dims: {width: number, height: number}}} [textEdits] - Native-text edit records for this page plus the page dimensions in the records' page-pixel frame.
+ *   Glyphs covered by `deleteText` rects are suppressed, matching what the PDF exporter removes.
  * @returns {Promise<{dataUrl?: string, blob?: Blob, bitmap?: ImageBitmap, colorMode: string, ok: boolean, failReason?: string, failDetail?: string,
  *   perf?: {prepMs: number, drawMs: number, decodeMs: number, flushMs: number}}>}
- *   A PNG data URL (`dataUrl`, default), a JPEG `blob` ('jpeg'), or an ImageBitmap (`bitmap`, 'bitmap'), plus the effective color mode.
- *   `ok` is false when the page is a failure placeholder (blank fallback) rather than a real render.
- *   Failure placeholders are always a PNG `dataUrl` regardless of `outputFormat`.
- *   `failReason` is then one of `exception`, `memory_abort`, or `corrupt_encrypted`, with `failDetail` carrying the error text.
- *   A genuinely empty page (no draw ops) returns `ok: true`.
- *   Successful renders carry `perf`, whose `drawMs - decodeMs` estimates the recurring cost of re-rendering the page.
+ *   The rendered image in `dataUrl` ('png'), `blob` ('jpeg'), or `bitmap` ('bitmap').
+ *   `colorMode` is the mode actually used, which downgrades to 'gray' on a page with no color.
+ *   'bitmap' falls back to a PNG `dataUrl` when the canvas is not a real OffscreenCanvas (Node).
+ *   On failure `ok` is false and the image is a blank PNG `dataUrl`, whatever `outputFormat` requested.
+ *   `drawMs - decodeMs` estimates the recurring cost of re-rendering the page.
  */
-export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, pageIndex, colorMode = 'color', rotate = 0, dpi = 300, outputFormat = 'png', quality = 0.6) {
+export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, pageIndex, colorMode = 'color', rotate = 0, dpi = 300, outputFormat = 'png', quality = 0.6, textEdits = null) {
   const tRenderStart = performance.now();
   // decodeMs is a subset of drawMs, not a sibling: it counts only the decodes inside the draw loop that were admitted to the doc-wide image cache.
   const perf = {
@@ -5254,9 +5319,66 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     for (let ri = 0; ri < rawDrawOps.length; ri++) drawOps.push(rawDrawOps[ri]);
   }
 
+  // Edits are applied with the PDF exporter's own rect mapping, em-box hit test, and in-place replacement splice, so the raster shows exactly what an export keeps.
+  if (textEdits && textEdits.records?.length && textEdits.dims) {
+    /** @type {Array<{ rec: TextEdit, rects: Array<[number, number, number, number]> }>} */
+    const editEntries = [];
+    for (const rec of textEdits.records) {
+      if (!rec || (rec.type !== 'deleteText' && rec.type !== 'replaceText')) continue;
+      /** @type {Array<[number, number, number, number]>} */
+      const rects = [];
+      for (const r of rec.rects || []) {
+        const mapped = pageRectToContentRect(r, textEdits.dims, mediaBox, rotate);
+        if (mapped) rects.push(mapped);
+      }
+      if (rects.length > 0) editEntries.push({ rec, rects });
+    }
+    if (editEntries.length > 0) {
+      const placed = new Set();
+      let keep = 0;
+      for (let i = 0; i < drawOps.length; i++) {
+        const op = drawOps[i];
+        if (op.type === 'type0text' || op.type === 'type3glyph') {
+          const trm = op.editTrm || (op.type === 'type0text' ? [op.a, op.b, op.c, op.d, op.x, op.y] : op.transform);
+          const vertical = op.type === 'type0text' && !!op.vertical;
+          const advEm = op.advEm ?? 0.5;
+          let hitEntry = null;
+          for (const entry of editEntries) {
+            if (glyphEmBoxHitsRects(trm, advEm, vertical, entry.rects, TEXT_EDIT_GLYPH_SIZE_CAP)) { hitEntry = entry; break; }
+          }
+          if (hitEntry) {
+            const rec = /** @type {TextEditReplace} */ (hitEntry.rec);
+            if (rec.type === 'replaceText' && rec.runs?.length && !placed.has(rec)) {
+              placed.add(rec);
+              drawOps[keep] = {
+                type: 'editText', runs: rec.runs, dims: textEdits.dims, clips: op.clips,
+              };
+              keep += 1;
+            }
+            continue;
+          }
+        }
+        drawOps[keep] = op;
+        keep += 1;
+      }
+      drawOps.length = keep;
+      // A replacement whose rects met no glyph still draws (fail toward showing the user's text).
+      for (const entry of editEntries) {
+        const rec = /** @type {TextEditReplace} */ (entry.rec);
+        if (rec.type === 'replaceText' && rec.runs?.length && !placed.has(rec)) {
+          drawOps.push({ type: 'editText', runs: rec.runs, dims: textEdits.dims });
+        }
+      }
+      for (const op of drawOps) {
+        if (op.type !== 'editText') continue;
+        for (const run of op.runs) {
+          if (run.font.kind === 'bundled') await ensureBundledEditFace(run.font.family, run.font.styleKey);
+        }
+      }
+    }
+  }
+
   const annotsParsed = extractPdfAnnotations(objCache, pageObjText);
-  // AcroForm /NeedAppearances: when true, field appearances are out of date and must be regenerated
-  // from the field value (text) or /MK caption (buttons) rather than trusting a possibly-stale embedded /AP.
   let needAppearances = false;
   {
     const rootObjNum = findRootObjNum(objCache.pdfBytes);
@@ -7674,6 +7796,42 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           rCtx.strokeText(op.text, 0, 0);
         }
         rCtx.restore();
+      } else if (op.type === 'editText') {
+        // Run coordinates are page pixels, not the PDF points the surrounding ops use.
+        // Handing the string to the browser to shape would re-space it away from the editor and the exported PDF.
+        rCtx.save();
+        applyClips(rCtx, op);
+        const dsx = rCtx.canvas.width / op.dims.width;
+        const dsy = rCtx.canvas.height / op.dims.height;
+        for (const run of op.runs) {
+          rCtx.save();
+          rCtx.setTransform(dsx, 0, 0, dsy, 0, 0);
+          rCtx.translate(run.x, run.y);
+          if (run.orientation === 1) rCtx.rotate(Math.PI / 2);
+          else if (run.orientation === 2) rCtx.rotate(Math.PI);
+          else if (run.orientation === 3) rCtx.rotate(-Math.PI / 2);
+          const family = run.font.kind === 'orig'
+            ? `_pdf_d${objCache.docId}_f${run.font.fontObjNum}`
+            : bundledEditFaceAlias(run.font.family, run.font.styleKey);
+          rCtx.font = `${run.sizePx}px "${family}"`;
+          rCtx.textBaseline = 'alphabetic';
+          rCtx.fillStyle = run.color || '#000000';
+          let penX = 0;
+          for (const g of run.glyphs) {
+            if (g.tofu) {
+              // Same proportions as the export's tofu box.
+              const s = run.sizePx;
+              rCtx.lineWidth = 0.06 * s;
+              rCtx.strokeStyle = run.color || '#000000';
+              rCtx.strokeRect(penX + 0.07 * s, -0.72 * s, g.advEm * s - 0.14 * s, 0.72 * s);
+            } else if (g.cp !== undefined && g.cp !== 0x20) {
+              rCtx.fillText(String.fromCodePoint(g.cp), penX, 0);
+            }
+            penX += g.advEm * run.sizePx;
+          }
+          rCtx.restore();
+        }
+        rCtx.restore();
       } else if (op.type === 'path') {
         rCtx.save();
         if (op.blendMode && op.blendMode !== 'Normal') {
@@ -8771,7 +8929,9 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     // The result carries `ok: false` and `failReason` so callers can flag a failure
     // placeholder explicitly rather than inferring it from a blank-vs-baseline diff.
     renderFailed = true;
-    failDetail = err instanceof Error ? err.message : String(err);
+    // The first stack frame localizes a caught draw-loop crash, which the message alone cannot.
+    const frame = err instanceof Error && err.stack ? (err.stack.split('\n').find((l) => l.trimStart().startsWith('at ')) || '').trim() : '';
+    failDetail = (err instanceof Error ? err.message : String(err)) + (frame ? ` (${frame})` : '');
     failReason = /** @type {any} */ (err)?.renderAbort || 'exception';
     console.warn(`[renderPdfPage] page ${pageIndex} returned blank: ${failDetail}`);
   } finally {

@@ -183,6 +183,15 @@ async function restoreSessionFromFile(doc, scribeFile) {
     doc.annotations.pages = scribeRestoreObj.annotations;
     doc.annotations.restored = true;
   }
+  if (scribeRestoreObj.session) {
+    if (scribeRestoreObj.session.textEdits) doc.textEdits.pages = scribeRestoreObj.session.textEdits;
+    if (scribeRestoreObj.session.nativeText) {
+      for (let i = 0; i < scribeRestoreObj.session.nativeText.length; i++) {
+        const nt = scribeRestoreObj.session.nativeText[i];
+        if (nt) doc.nativeText.pages[i] = { ...(doc.nativeText.pages[i] || {}), ...nt };
+      }
+    }
+  }
 
   // `.inputData` added to .scribe in June 2026, do not assume this field exists for re-imports.
   // This line also skips when `inputData` has already been calculated for the active session, which is presumed more accurate.
@@ -527,6 +536,16 @@ export async function importFiles(doc, files, options = {}) {
   for (let i = 0; i < doc.inputData.pageCount; i++) {
     if (!doc.annotations.pages[i]) {
       doc.annotations.pages[i] = [];
+    }
+  }
+
+  // Full-length so page insert/delete splice these arrays in lockstep (spliceFull skips short arrays).
+  for (let i = 0; i < doc.inputData.pageCount; i++) {
+    if (!doc.textEdits.pages[i]) {
+      doc.textEdits.pages[i] = [];
+    }
+    if (!doc.nativeText.pages[i]) {
+      doc.nativeText.pages[i] = {};
     }
   }
 

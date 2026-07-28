@@ -279,7 +279,8 @@ function replacePageResources(pageObjText, newResourcesDictText) {
  * @param {number[]} params.pageIndices
  * @param {number} params.startingNextObjNum
  * @param {any[]} [params.ocrArr]
- * @param {?any[]} [params.annotationOcrArr=null] - Real per-page OCR geometry for highlight consolidation (see `overlayPdfText`). Falls back to `ocrArr`.
+ * @param {?any[]} [params.annotationOcrArr=null] - Real per-page OCR geometry for highlight consolidation.
+ *    Falls back to `ocrArr`.
  * @param {any[]} [params.pageMetricsArr]
  * @param {*} [params.pdfFonts]
  * @param {string} [params.textMode]
@@ -294,11 +295,18 @@ function replacePageResources(pageObjText, newResourcesDictText) {
  * @param {?number[]} [params.convertFullPages=null] - Page indices to flatten (whole-page conversion that also runs without overlay text).
  * @param {boolean} [params.convertBrokenType3ToPaths=false] - Convert glyphs drawn by broken-ToUnicode Type3 fonts to paths on every page.
  * @param {DocFonts} [params.docFonts] - Per-document fonts for the OCR overlay text layer.
- * @param {(message: string) => void} [params.warningHandler] - Reports each annotation skipped on error.
+ * @param {(message: string) => void} [params.warningHandler]
  * @param {?Array<import('../../objects/outlineObjects.js').OutlineNode>} [params.outline=null] - Bookmark tree with destinations indexed into the output page order.
- * @param {?ScrubConfig} [params.scrub=null] - When set, scrubs identifying metadata using these scrub options.
- * @param {?Map<number, Array<[number, number, number, number]>>} [params.redactRegionsByPage=null] - Per-page user-space rects (source content coordinates)
- *    whose content is destructively removed and covered with an opaque black box.
+ * @param {?ScrubConfig} [params.scrub=null]
+ * @param {?Map<number, Array<[number, number, number, number]>>} [params.redactRegionsByPage=null] - Per-page rects whose content is destructively removed and covered with an opaque black box.
+ *    Rects are in the source page's user space.
+ * @param {?Map<number, Array<[number, number, number, number]>>} [params.textEditRegionsByPage=null] - Per-page user-space rects whose glyphs are removed (native-text edits).
+ *    Paths, images, and annotations under the rects are untouched, and no box is painted.
+ * @param {?Map<number, Array<{rects: Array<[number, number, number, number]>, body: string, placed: boolean}>>} [params.textEditInsertsByPage=null]
+ *    Per-page replacement blocks for replaceText records, spliced in where their glyphs are dropped.
+ * @param {?Map<number, Map<string, number>>} [params.editFontRefsByPage=null] - Per-page `/EDFn` font resource entries the inserts draw with.
+ * @param {?Array<{objNum: number, content: string | Uint8Array | import('./writePdfStreams.js').PdfBinaryObject}>} [params.editFontObjects=null]
+ *    Pre-embedded edit font objects (allocated by the caller before `startingNextObjNum`).
  */
 export async function rebuildPdfSubset({
   pdfBytes, text, objCache, xrefEntries, pages,
@@ -316,14 +324,21 @@ export async function rebuildPdfSubset({
   outline = null,
   scrub = null,
   redactRegionsByPage = null,
+  textEditRegionsByPage = null,
+  textEditInsertsByPage = null,
+  editFontRefsByPage = null,
+  editFontObjects = null,
 }) {
   const overlayEnabled = !!(ocrArr && pageMetricsArr && pdfFonts);
   let nextObjNum = startingNextObjNum;
   const redactByPage = redactRegionsByPage || new Map();
-  // The redaction machinery lives in the overlay page loop below.
-  // Without it the marked content would pass through verbatim, so refuse rather than silently leak.
+  const textEditByPage = textEditRegionsByPage || new Map();
+  // The redaction and text-edit machinery lives in the overlay page loop below, so without overlay data the marked content would pass through verbatim.
   if (redactByPage.size > 0 && !overlayEnabled) {
     throw new Error('Cannot apply redactions: rebuild was invoked without page overlay data.');
+  }
+  if (textEditByPage.size > 0 && !overlayEnabled) {
+    throw new Error('Cannot apply text edits: rebuild was invoked without page overlay data.');
   }
 
   // Metadata-scrub state (only when sanitizing): map image objNum -> /Filter, an OCG-relabel counter,
@@ -356,9 +371,9 @@ export async function rebuildPdfSubset({
     }
   }
 
-  // The non-scrub rebuild already writes a minimal catalog (no /StructTreeRoot), but a scrub configured to keep the structure tree would carry it over.
-  // Tagged PDFs embed page text in /ActualText, which would leak redacted content.
-  if (redactByPage.size > 0 && catalogKeep.some((k) => k.name === 'StructTreeRoot' || k.name === 'MarkInfo')) {
+  // The structure tree can duplicate page text in /ActualText, so carrying it over would expose redacted or pre-edit text.
+  if ((redactByPage.size > 0 || textEditByPage.size > 0 || (textEditInsertsByPage?.size ?? 0) > 0)
+    && catalogKeep.some((k) => k.name === 'StructTreeRoot' || k.name === 'MarkInfo')) {
     catalogKeep = catalogKeep.filter((k) => k.name !== 'StructTreeRoot' && k.name !== 'MarkInfo');
     if (typeof warningHandler === 'function') {
       warningHandler('Redaction removed the document structure tree (tagged-PDF accessibility data), which can embed page text.');
@@ -374,7 +389,7 @@ export async function rebuildPdfSubset({
   }
   // Pages listed in `convertFullPages` are flattened (whole-page text-to-paths).
   const fullPageSet = new Set(convertFullPages || []);
-  const conversionState = (regionsByPage.size > 0 || convertBrokenType3ToPaths || redactByPage.size > 0)
+  const conversionState = (regionsByPage.size > 0 || convertBrokenType3ToPaths || redactByPage.size > 0 || textEditByPage.size > 0)
     ? createConversionState() : null;
 
   const { pageTreeObjNums } = collectPageTreeObjNums(objCache);
@@ -461,7 +476,8 @@ export async function rebuildPdfSubset({
       // Region conversion (`convertRegionsToPaths`), full-page flatten, and broken-Type3 all convert text to paths without an overlay text layer, so this gate must stay independent of `hasText`.
       const hasConvert = convertBrokenType3ToPaths || fullPageSet.has(i) || regionsByPage.has(i);
       const hasRedact = redactByPage.has(i);
-      if (!hasText && !hasAnnots && !hasConvert && !hasRedact) continue;
+      const hasTextEdits = textEditByPage.has(i);
+      if (!hasText && !hasAnnots && !hasConvert && !hasRedact && !hasTextEdits) continue;
 
       /** @type {string[]|null} */
       let newContentsArray = null;
@@ -470,7 +486,7 @@ export async function rebuildPdfSubset({
       /** @type {?string} */
       let pageResourcesTraceStr = null;
 
-      if (hasText || hasConvert || hasRedact) {
+      if (hasText || hasConvert || hasRedact || hasTextEdits) {
         for (const font of pageFontsUsed) pdfFontsUsed.add(font);
 
         const existingContentsRefs = parseExistingContents(pageInfo.objText, objCache);
@@ -485,6 +501,8 @@ export async function rebuildPdfSubset({
           humanReadable,
           convertBrokenType3ToPaths,
           redactBboxes: redactByPage.get(i) || null,
+          textEditBboxes: textEditByPage.get(i) || null,
+          textEditInserts: textEditInsertsByPage?.get(i) || null,
         });
 
         // When broken-Type3 conversion is the only reason this page is here and nothing changed,
@@ -544,9 +562,9 @@ export async function rebuildPdfSubset({
         }
 
         let existingResourcesStr = resolvePageResources(pageInfo.objText, objCache);
-        // Per-site form aliasing (redaction): the aliased original names must leave the page's /XObject subdict,
-        // otherwise the unredacted original forms stay referenced by the rebuilt resources and copied into the output.
-        if (hasRedact && stripConvertResult.redactedFormNames && stripConvertResult.redactedFormNames.size > 0
+        // The original forms still hold the removed text.
+        // Any name left in /XObject keeps them referenced, so they ship in the output.
+        if ((hasRedact || hasTextEdits) && stripConvertResult.redactedFormNames && stripConvertResult.redactedFormNames.size > 0
           && existingResourcesStr && existingResourcesStr.startsWith('<<')) {
           const resBody = existingResourcesStr.slice(2, -2);
           const loc = locateResourceSubdict(resBody, '/XObject', objCache);
@@ -559,6 +577,10 @@ export async function rebuildPdfSubset({
         let overlayFontsStr = '';
         for (const font of pageFontsUsed) {
           overlayFontsStr += `${font.name} ${font.objN} 0 R\n`;
+        }
+        const pageEditFonts = editFontRefsByPage?.get(i);
+        if (pageEditFonts) {
+          for (const [name, objN] of pageEditFonts) overlayFontsStr += `${name} ${objN} 0 R\n`;
         }
         let overlayXObjectsStr = '';
         for (const [tag, objN] of stripConvertResult.xobjEntries) {
@@ -613,9 +635,8 @@ export async function rebuildPdfSubset({
       allOutputObjects.push({ objNum: pageInfo.objNum, content: newPageObj });
       modifiedPageObjNums.add(pageInfo.objNum);
 
-      // The reference trace below prefers the ORIGINAL page dict for modified pages, which would copy the original (unredacted) content streams and dropped annots into the output as orphan objects.
-      // For redacted pages, trace the replacement dict instead (plus the rebuilt resources dict, whose text holds the font/xobject refs the page still needs).
-      if (hasRedact) {
+      // The rebuilt resources text rides along because the trace resolves refs only against the original file and would otherwise never reach the original fonts/xobjects the page still needs.
+      if (hasRedact || hasTextEdits) {
         redactTraceTexts.set(pageInfo.objNum, pageResourcesTraceStr ? `${newPageObj}\n${pageResourcesTraceStr}` : newPageObj);
       }
     }
@@ -637,6 +658,7 @@ export async function rebuildPdfSubset({
         if (obj) allOutputObjects.push({ objNum: pdfFont.objN + j, content: obj });
       }
     }
+    if (editFontObjects) for (const o of editFontObjects) allOutputObjects.push(o);
   }
 
   /** @type {Map<number, string>} */

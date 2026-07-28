@@ -70,14 +70,9 @@ export async function rewriteContentsStrippingInvisibleText(existingContentsRefs
 }
 
 /**
- * Strip invisible text and optionally convert per-glyph text inside the
- * supplied user-space bboxes to vector paths via Form XObjects.
+ * Strip invisible text and optionally convert per-glyph text inside the supplied user-space bboxes to vector paths via Form XObjects.
  *
- * Returns new content stream refs and any Form XObject /Resources entries that must be
- * merged into the page's /Resources/XObject dict.
- *
- * When `bboxes` is null or empty, this is equivalent to
- * `rewriteContentsStrippingInvisibleText` with an empty `xobjEntries`.
+ * The returned `xobjEntries` and `formClones` must be merged into the page's /Resources/XObject dict.
  *
  * @param {object} params
  * @param {string[]} params.existingContentsRefs
@@ -90,6 +85,10 @@ export async function rewriteContentsStrippingInvisibleText(existingContentsRefs
  * @param {boolean} params.humanReadable
  * @param {boolean} [params.convertBrokenType3ToPaths] - When true, convert all glyphs drawn by broken-ToUnicode Type3 fonts to paths.
  * @param {?Array<[number, number, number, number]>} [params.redactBboxes] - User-space rects whose content (glyphs, paths, images) is destructively removed, independent of `bboxes`.
+ * @param {?Array<[number, number, number, number]>} [params.textEditBboxes] - User-space rects whose glyphs are removed (native-text edits).
+ *   Vector paths, images, and annotations under these rects are untouched, and no box is painted.
+ * @param {?Array<{rects: Array<[number, number, number, number]>, body: string, placed: boolean}>} [params.textEditInserts]
+ *   Replacement blocks for replaceText records, spliced in where their glyphs are dropped.
  * @returns {Promise<{
  *   refs: string[],
  *   xobjEntries: Map<string, number>,
@@ -101,7 +100,7 @@ export async function rewriteContentsStrippingInvisibleText(existingContentsRefs
 export async function rewriteContentsStripAndConvert({
   existingContentsRefs, pageObjText, bboxes, conversionState,
   objCache, allocObjNum, pushObj, humanReadable, convertBrokenType3ToPaths = false,
-  redactBboxes = null,
+  redactBboxes = null, textEditBboxes = null, textEditInserts = null,
 }) {
   /** @type {Map<string, number>} */
   const emptyXobj = new Map();
@@ -129,9 +128,12 @@ export async function rewriteContentsStripAndConvert({
     parts.push(bytesToLatin1(bytes));
   }
   if (!canMerge) {
-    // The pass-through return below is safe for conversion but for redaction would leak the content meant to be removed.
+    // The pass-through return below is safe for conversion but for redaction or a text edit would ship content the user removed.
     if (redactBboxes && redactBboxes.length > 0) {
       throw new Error('Cannot apply redactions: a page content stream could not be read.');
+    }
+    if (textEditBboxes && textEditBboxes.length > 0) {
+      throw new Error('Cannot apply text edits: a page content stream could not be read.');
     }
     return {
       refs: existingContentsRefs, xobjEntries: emptyXobj, formClones: emptyFormClones, skipped: [],
@@ -141,12 +143,16 @@ export async function rewriteContentsStripAndConvert({
   const merged = parts.join('\n');
   const { text: strippedText, dropped } = stripText(merged, { mode: 'invisible' });
 
-  // Fail closed: without conversion state the redaction is skipped, shipping the content unredacted.
+  // Silently skipping the redaction or edit would ship the content the user removed.
   if (redactBboxes && redactBboxes.length > 0 && !conversionState) {
     throw new Error('Cannot apply redactions: no conversion state was created for this page.');
   }
+  if (textEditBboxes && textEditBboxes.length > 0 && !conversionState) {
+    throw new Error('Cannot apply text edits: no conversion state was created for this page.');
+  }
   const wantRedact = !!(redactBboxes && redactBboxes.length > 0) && !!conversionState;
-  const wantConvert = (((!!bboxes && bboxes.length > 0) || convertBrokenType3ToPaths) && !!conversionState) || wantRedact;
+  const wantEdit = !!(textEditBboxes && textEditBboxes.length > 0) && !!conversionState;
+  const wantConvert = (((!!bboxes && bboxes.length > 0) || convertBrokenType3ToPaths) && !!conversionState) || wantRedact || wantEdit;
   let workingText = strippedText;
   /** @type {Map<string, number>} */
   let xobjEntries = emptyXobj;
@@ -170,6 +176,8 @@ export async function rewriteContentsStripAndConvert({
       humanReadable,
       convertBrokenType3ToPaths,
       redactBboxes,
+      textEditBboxes,
+      textEditInserts,
     });
     if (result.skipped) skipped = result.skipped;
     if (result.redactedFormNames) redactedFormNames = result.redactedFormNames;

@@ -826,6 +826,81 @@ export class TextSelection {
   }
 
   /**
+   * The line under a client point.
+   * Every page point maps to its nearest line, so a line is returned even when the point is not over text.
+   * Gate calls on `isOverText`.
+   * When `accept` rejects the nearest line, other lines at the point are tried nearest-first.
+   * @param {number} clientX
+   * @param {number} clientY
+   * @param {?(line: import('../../js/objects/ocrObjects.js').OcrLine) => boolean} [accept]
+   * @returns {?{n: number, line: import('../../js/objects/ocrObjects.js').OcrLine, lbox: bbox, rectTop: number, rectBottom: number, orientation: number, start: number, end: number}}
+   */
+  lineInfoAt(clientX, clientY, accept = null) {
+    const pt = this.pointAt(clientX, clientY);
+    if (!pt) return null;
+    const idx = this.index(pt.n);
+    if (!idx) return null;
+    let entry = idx.lines[idx.lineForOffset(pt.off)];
+    if (entry && accept && !accept(entry.line)) {
+      const { x, y } = this.viewer.clientToPage(clientX, clientY);
+      /** @type {?{e: LineEntry, dy: number}} */
+      let best = null;
+      for (const [orientation, indices] of idx.byOrientation) {
+        const local = this.viewer.pageToLocal(pt.n, orientation, x, y);
+        for (const li of indices) {
+          const e = idx.lines[li];
+          if (!accept(e.line)) continue;
+          const lb = e.lbox;
+          if (local.x < lb.left || local.x > lb.right) continue;
+          const dy = local.y < lb.top ? lb.top - local.y : (local.y > lb.bottom ? local.y - lb.bottom : 0);
+          if (dy > lb.bottom - lb.top) continue;
+          if (!best || dy < best.dy) best = { e, dy };
+        }
+      }
+      entry = best ? best.e : null;
+    }
+    if (!entry) return null;
+    return {
+      n: pt.n,
+      line: entry.line,
+      lbox: entry.lbox,
+      // The selection band's verticals, so a hover affordance can match what selecting will paint.
+      rectTop: entry.rectTop,
+      rectBottom: entry.rectBottom,
+      orientation: entry.orientation,
+      start: entry.start,
+      end: entry.end,
+    };
+  }
+
+  /**
+   * Select the whole line under a client point.
+   * @param {number} clientX
+   * @param {number} clientY
+   * @param {boolean} [extend] - Grow the existing selection to include the line.
+   * @param {?(line: import('../../js/objects/ocrObjects.js').OcrLine) => boolean} [accept]
+   * @returns {boolean} Whether a line was selected.
+   */
+  selectLineAt(clientX, clientY, extend = false, accept = null) {
+    const info = this.lineInfoAt(clientX, clientY, accept);
+    if (!info) return false;
+    const lineStart = { n: info.n, off: info.start };
+    const lineEnd = { n: info.n, off: info.end };
+    if (extend && this.range && this.range.kind === 'linear') {
+      this.range = {
+        kind: 'linear',
+        start: cmpPoint(this.range.start, lineStart) <= 0 ? this.range.start : lineStart,
+        end: cmpPoint(this.range.end, lineEnd) >= 0 ? this.range.end : lineEnd,
+      };
+    } else {
+      this.range = { kind: 'linear', start: lineStart, end: lineEnd };
+    }
+    this._renderAll();
+    if (this.viewer.onSelectionChange) this.viewer.onSelectionChange();
+    return true;
+  }
+
+  /**
    * The selected text.
    * Within a page it is a plain substring of the page text, so word spacing and line breaks come from the model.
    * Pages join with a blank line.

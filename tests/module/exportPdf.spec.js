@@ -4,9 +4,11 @@ import {
 import scribe from '../../scribe.js';
 import { subsetPdf } from '../../js/export/pdf/subsetPdf.js';
 import { mergePdfs } from '../../js/export/pdf/mergePdfs.js';
+import { getMetadata } from '../../js/pdf/metadata/metadataInspect.js';
 import { ca } from '../../js/canvasAdapter.js';
 import { renderPdfPage } from '../_renderPdfPage.js';
 import { ASSETS_PATH, LANG_PATH } from './_paths.js';
+import { strayFields } from './_ocrFields.js';
 
 /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
 let doc;
@@ -220,6 +222,17 @@ describe('Check export for .pdf files.', () => {
       color: '#ffff00',
       opacity: 0.35,
       groupId: 'test-export-1',
+      comment: 'Flag this passage.',
+      replies: [{ text: 'Flagged and cross-checked.', author: 'M. Vahl', createdAt: '2026-07-07T10:30:00.000Z' }],
+    });
+    doc.annotations.pages[0].push({
+      type: 'underline',
+      bbox: {
+        left: 100, top: 400, right: 300, bottom: 420,
+      },
+      color: '#81c784',
+      opacity: 1,
+      groupId: 'test-export-2',
     });
 
     scribe.ScribeDoc.defaults.compressScribe = false;
@@ -230,11 +243,16 @@ describe('Check export for .pdf files.', () => {
     const encoder = new TextEncoder();
     doc = await scribe.openDocument({ scribeFiles: [encoder.encode(scribeData).buffer] });
 
-    expect(doc.annotations.pages[0].length).toBe(1);
+    expect(doc.annotations.pages[0].length, 'both the highlight and the underline survive the .scribe round-trip').toBe(2);
     expect(doc.annotations.pages[0][0].color).toBe('#ffff00');
     expect(doc.annotations.pages[0][0].opacity).toBe(0.35);
     expect(doc.annotations.pages[0][0].bbox.left).toBe(100);
     expect(doc.annotations.pages[0][0].bbox.right).toBe(300);
+    expect(doc.annotations.pages[0][0].replies?.length, 'comment replies survive the .scribe round-trip').toBe(1);
+    expect(doc.annotations.pages[0][0].replies?.[0].text, 'reply text survives the .scribe round-trip').toBe('Flagged and cross-checked.');
+    expect(doc.annotations.pages[0][1].type, 'the underline keeps its markup type through the .scribe round-trip').toBe('underline');
+    expect(doc.annotations.pages[0][1].color, 'the underline keeps its color through the .scribe round-trip').toBe('#81c784');
+    expect(doc.annotations.pages[0][1].opacity, 'the underline keeps its opacity through the .scribe round-trip').toBe(1);
 
     scribe.ScribeDoc.defaults.compressScribe = true;
     await doc.clear();
@@ -280,6 +298,49 @@ describe('Check export for .pdf files.', () => {
     expect(shapeResult.shapesAdded).toBe(4);
     expect(doc.annotations.pages[0].length).toBe(46);
 
+    for (const a of doc.annotations.pages[0]) {
+      if (!(a.type == null || a.type === 'highlight')) continue;
+      a.comment = 'Check the venue allegations against the exhibits.';
+      a.author = 'J. Rondo';
+      a.createdAt = '2026-07-06T09:00:00.000Z';
+      a.replies = [
+        { text: 'Exhibit 4 has the venue facts.', author: 'M. Vahl', createdAt: '2026-07-07T10:30:00.000Z' },
+        { text: 'Scoped the claim to Exhibit 4.', author: 'J. Rondo', createdAt: '2026-07-08T16:45:00.000Z' },
+      ];
+    }
+    doc.addTextAnnots([{
+      page: 0,
+      x: 500,
+      y: 500,
+      comment: 'Margins here are inconsistent with the exhibits.',
+      author: 'J. Rondo',
+      createdAt: '2026-07-06T09:00:00.000Z',
+      replies: [{ text: 'The exhibits use the 2019 template.', author: 'M. Vahl', createdAt: '2026-07-07T11:00:00.000Z' }],
+    }]);
+    expect(doc.annotations.pages[0].length, 'the note annotation was added').toBe(47);
+
+    // FreeText and shape annotations never write an author of their own, so their reply threads are the only place those types can leak identity through a sanitized export.
+    const ftAnnot = /** @type {AnnotationFreeText} */ (doc.annotations.pages[0].find((a) => a.type === 'freetext'));
+    ftAnnot.replies = [{ text: 'Confirmed against the caption block.', author: 'M. Vahl', createdAt: '2026-07-07T12:15:00.000Z' }];
+    const squareAnnot = /** @type {AnnotationShapeStyle} */ (doc.annotations.pages[0].find((a) => a.type === 'square'));
+    squareAnnot.replies = [{ text: 'Box the venue paragraph.', author: 'M. Vahl', createdAt: '2026-07-07T12:20:00.000Z' }];
+
+    // The underline's groupId collides with the highlight's (both are the first group of their addHighlights call, `hl-0`), so these also guard against cross-type consolidation merges.
+    // These carry no comments, replies, or authors, so the /IRT, warning, and sanitized-identity counts stay valid.
+    doc.addHighlights([
+      {
+        page: 0, startLine: 3, endLine: 4, markup: 'underline', color: '#81c784',
+      },
+      {
+        page: 0, text: 'billion in operating profit in the coming years.', markup: 'strikeout', color: '#e53935',
+      },
+    ]);
+    // Lines 3-4 have 13 + 19 words, and the quote matches the 8 words of line 5.
+    expect(doc.annotations.pages[0].length, 'the underline and strikeout emit one entry per word').toBe(87);
+
+    // Exported before the malformed shape is injected below, so the skip-path warning count stays 1.
+    const sanitizedBytes = await doc.exportData('pdf', { sanitize: true });
+
     // Inject a malformed shape past addShapes validation to exercise the export skip path.
     // @ts-expect-error - intentionally missing bbox.
     doc.annotations.pages[0].push({ type: 'square', borderColor: '#ff0000', borderWidth: 4 });
@@ -305,6 +366,9 @@ describe('Check export for .pdf files.', () => {
     // The malformed square emitted nothing (only the one valid square is present) and was reported once.
     expect(shapeText.split('/Subtype /Square').length - 1).toBe(1);
     expect(warnings.filter((w) => w.includes('Skipped') && w.includes('square')).length).toBe(1);
+    expect(shapeText.split('/IRT ').length - 1, 'each reply exports as a /Text annotation with /IRT').toBe(5);
+    expect(shapeText.split('/Subtype /Underline').length - 1, 'the underline exports as a single consolidated /Underline annotation').toBe(1);
+    expect(shapeText.split('/Subtype /StrikeOut').length - 1, 'the strikeout exports as a single consolidated /StrikeOut annotation').toBe(1);
 
     await doc.clear();
 
@@ -319,6 +383,17 @@ describe('Check export for .pdf files.', () => {
     expect(highlights[0].quads.length).toBe(3);
     expect(highlights[0].color).toBe('#ffe93b');
     expect(highlights[0].opacity).toBe(0.4);
+
+    const underlines = all.filter((a) => a.type === 'underline');
+    expect(underlines.length, 'the underline round-trips as one consolidated annotation, unmerged with the same-groupId highlight').toBe(1);
+    expect(underlines[0].quads.length, 'the underline keeps one quad per line (lines 3-4)').toBe(2);
+    expect(underlines[0].color, 'the underline color round-trips').toBe('#81c784');
+    expect(underlines[0].opacity, 'the underline defaults to full opacity').toBe(1);
+    const strikeouts = all.filter((a) => a.type === 'strikeout');
+    expect(strikeouts.length, 'the strikeout round-trips as one consolidated annotation').toBe(1);
+    expect(strikeouts[0].quads.length, 'the single-line strikeout quote keeps one quad').toBe(1);
+    expect(strikeouts[0].color, 'the strikeout color round-trips').toBe('#e53935');
+    expect(strikeouts[0].opacity, 'the strikeout defaults to full opacity').toBe(1);
 
     expect(freeTexts.length).toBe(1);
     const ft = freeTexts[0];
@@ -858,8 +933,116 @@ describe('Check export for .pdf files.', () => {
     await doc.clear();
   });
 
+  test('stripMetadata removes identifying metadata while text and page count survive re-import', async () => {
+    // The metadata-strip export is a distinct operation from the overlay exports above, so this test opens the fixture itself rather than riding along.
+    scribe.ScribeDoc.defaults.usePDFText.native.main = true;
+    scribe.ScribeDoc.defaults.keepPDFTextAlways = true;
+
+    const originalMeta = getMetadata(await readPdfBytes(`${ASSETS_PATH}/fti_filing_p25.pdf`));
+    expect(originalMeta.info?.Author, 'fixture must carry an /Info author for the strip test to be meaningful').toBe('rr615379');
+    expect(!!originalMeta.xmp.catalog, 'fixture must carry a document XMP packet').toBe(true);
+    expect(originalMeta.priorRevisions, 'fixture must carry prior incremental-save revisions to strip').toBe(2);
+
+    doc = await scribe.openDocument([`${ASSETS_PATH}/fti_filing_p25.pdf`]);
+    const strippedBytes = new Uint8Array(await doc.stripMetadata());
+    await doc.clear();
+
+    const strippedMeta = getMetadata(strippedBytes);
+    expect(strippedMeta.info, 'stripMetadata removes the /Info dictionary').toBe(null);
+    expect(strippedMeta.docId, 'stripMetadata removes the /ID file identifier').toBe(null);
+    expect(strippedMeta.xmp.catalog, 'stripMetadata removes the document XMP packet').toBe(null);
+    expect(strippedMeta.xmp.perObject.length, 'stripMetadata removes per-object XMP packets').toBe(0);
+    expect(strippedMeta.priorRevisions, 'stripMetadata collapses prior incremental-save revisions to one').toBe(1);
+
+    doc = await scribe.openDocument({ pdfFiles: [strippedBytes.buffer] });
+    expect(doc.inputData.pageCount, 'page count survives metadata strip').toBe(1);
+    expect(doc.ocr.active[0].lines[0].words[0].text, 'body text survives metadata strip').toBe('UNITED');
+
+    scribe.ScribeDoc.defaults.usePDFText.native.main = false;
+    scribe.ScribeDoc.defaults.keepPDFTextAlways = false;
+    await doc.clear();
+  });
+
   afterAll(async () => {
     await scribe.terminate();
+  });
+});
+
+describe('Redaction marks are applied destructively on export.', () => {
+  // Redaction removes content from every export, so it cannot ride along on another test's round-trip without breaking that test's own assertions.
+  /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+  let redactDoc;
+  /** @type {string} */
+  let redactTxt;
+  /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+  let redactReimportDoc;
+  /** @type {Uint8Array} */
+  let redactPdfBytes;
+
+  test('Should import document and export with a redaction mark applied', async () => {
+    // Earlier tests in this file flip the shared defaults.
+    // Quote-mode marking and the re-import check both read the PDF's native text.
+    scribe.ScribeDoc.defaults.usePDFText.native.main = true;
+    scribe.ScribeDoc.defaults.displayMode = 'invis';
+    redactDoc = await scribe.openDocument([`${ASSETS_PATH}/academic_article_1.pdf`]);
+    const res = redactDoc.addRedactions([{ page: 0, text: 'misrepresentation' }]);
+    expect(res.marksAdded, 'quote-mode redaction marks the unique target word').toBe(1);
+    // A pending replacement is drawn text a mark must catch too, on a line the assertions below ignore.
+    // The mark sits past the record's erase rects, so it covers only the replacement's painted text.
+    const editLine = redactDoc.ocr.active[0].lines.find((line) => line.words.map((w) => w.text).join(' ')
+      .startsWith('latory enforcement action.'));
+    const editBox = { ...editLine.bbox };
+    await redactDoc.replaceTextLine(editLine, 'Short text REDLEAKSENTINEL REDLEAKSENTINEL REDLEAKSENTINEL REDLEAKSENTINEL REDLEAKSENTINEL');
+    redactDoc.addRedactions([{
+      page: 0,
+      bbox: {
+        left: editBox.right + 20,
+        top: editBox.top - 8,
+        right: redactDoc.ocr.active[0].dims.width - 10,
+        bottom: editBox.bottom + 8,
+      },
+    }]);
+    redactTxt = /** @type {string} */ (await redactDoc.exportData('txt'));
+    const pdfBuf = /** @type {ArrayBuffer} */ (await redactDoc.exportData('pdf', { displayMode: 'invis', addOverlay: true }));
+    redactPdfBytes = new Uint8Array(pdfBuf);
+    redactReimportDoc = await scribe.openDocument({ pdfFiles: [pdfBuf] });
+    expect(redactReimportDoc.inputData.pageCount, 'redacted export re-imports as a 1-page PDF').toBe(1);
+  });
+
+  test('the marked word is removed from the txt export and its neighbors survive', () => {
+    expect(redactTxt.includes('misrepresentation'), 'redacted word must not reach the txt export').toBe(false);
+    expect(redactTxt.includes('cial since the passage of the Sarbanes-Oxley Act of'), 'words around the redacted word must survive').toBe(true);
+  });
+
+  test('the marked word is not extractable from the exported PDF', () => {
+    const words = [];
+    for (const line of redactReimportDoc.ocr.active[0].lines) for (const w of line.words) words.push(w.text);
+    expect(words.includes('misrepresentation'), 'redacted word must not be extractable from the exported PDF').toBe(false);
+    expect(words.includes('passage'), 'neighboring word must survive in the exported PDF').toBe(true);
+    expect(words.length, 'exact word count of the redacted page on re-import').toBe(484);
+  });
+
+  test('replacement text drawn into a mark is dropped from the exported PDF', () => {
+    const words = [];
+    for (const line of redactReimportDoc.ocr.active[0].lines) for (const w of line.words) words.push(w.text);
+    expect(words.includes('REDLEAKSENTINEL'), 'a pending replacement painted into a redaction mark reached the exported PDF').toBe(false);
+    expect(words.includes('latory'), 'the replaced line\'s original text survived the export').toBe(false);
+  });
+
+  test('the exported PDF contains no /Redact annotation and no raw copy of the word', () => {
+    let raw = '';
+    for (let i = 0; i < redactPdfBytes.length; i++) raw += String.fromCharCode(redactPdfBytes[i]);
+    expect(/\/Subtype\s*\/Redact\b/.test(raw), 'marks are applied at export, never written as /Redact annots').toBe(false);
+    expect(raw.includes('misrepresentation'), 'redacted word must not appear in the raw output bytes').toBe(false);
+  });
+
+  test('the live document keeps the word and the editable mark (apply-at-export)', () => {
+    const words = [];
+    for (const line of redactDoc.ocr.active[0].lines) for (const w of line.words) words.push(w.text);
+    expect(words.includes('misrepresentation'), 'live document must keep the word after export').toBe(true);
+    expect(redactDoc.annotations.pages[0].filter((a) => a.type === 'redact').length, 'live document must keep the redaction marks after export').toBe(2);
+    redactDoc.removeRedactions();
+    expect(redactDoc.annotations.pages[0].filter((a) => a.type === 'redact').length, 'removeRedactions clears the mark').toBe(0);
   });
 });
 
@@ -999,6 +1182,98 @@ describe('Check intra-word style runs survive a visible-text PDF export -> impor
     expect(words[3].text, 'dash-joined mixed-style token split or corrupted on PDF round-trip').toBe('alpha—beta');
     expect(words[3].style.italic, 'italic first half lost on the dash-joined token').toBe(true);
     expect(words[3].styleRuns, 'style flip at the dash not captured on PDF round-trip').toEqual([{ i: 6, style: { italic: false } }]);
+  });
+
+  afterAll(async () => {
+    await scribe.terminate();
+  });
+});
+
+// Deleting a line is a destructive edit, so this feature gets its own round-trip instead of riding an existing one.
+describe('Check native text line deletion and replacement survive .scribe persistence and apply on PDF export.', () => {
+  const lineText = (line) => line.words.map((x) => x.text).join(' ');
+
+  /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+  let restoredDoc;
+  /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+  let reDoc;
+  let strays;
+  let standardObj;
+  let sessionObj;
+
+  beforeAll(async () => {
+    scribe.ScribeDoc.defaults.usePDFText.native.main = true;
+    const srcDoc = await scribe.openDocument([`${ASSETS_PATH}/Iris (plant) - Wikipedia_123.pdf`]);
+    const target = srcDoc.ocr.active[0].lines.find((line) => lineText(line) === 'Three Iris varieties are used in the Iris flower data set');
+    await srcDoc.replaceTextLine(target, 'Several Iris varieties are used in the Iris flower data set');
+    srcDoc.deleteTextLines([srcDoc.ocr.active[0].lines[21]]);
+    strays = strayFields(srcDoc);
+    standardObj = JSON.parse(/** @type {string} */ (await srcDoc.exportData('scribe', { compressScribe: false })));
+    sessionObj = JSON.parse(/** @type {string} */ (await srcDoc.exportData('scribe', { compressScribe: false, scribeSession: true })));
+    const scribeData = await srcDoc.exportData('scribe', { scribeSession: true });
+    await srcDoc.terminate();
+    restoredDoc = await scribe.openDocument({ scribeFiles: [scribeData] });
+    const pdfData = await restoredDoc.exportData('pdf');
+    reDoc = await scribe.openDocument({ pdfFiles: [pdfData] });
+  });
+
+  test('Edited pages leave no undeclared fields on OCR words or chars', () => {
+    expect(strays.word, 'edit-time data was stamped onto OcrWord, so it serializes into every .scribe export').toEqual([]);
+    expect(strays.char, 'edit-time data was stamped onto OcrChar, so it serializes into every .scribe export').toEqual([]);
+  });
+
+  test('Standard .scribe carries no app session data while the session save carries it all', () => {
+    expect(Object.keys(standardObj).sort(), 'the standard .scribe export grew an undocumented top-level field')
+      .toEqual(['annotations', 'fontState', 'inputData', 'layoutDataTables', 'layoutRegions', 'ocr', 'outline', 'pageRotations', 'pageSourceIndices']);
+    expect(sessionObj.session?.v, 'the session block is missing from a session save').toBe(1);
+    expect(sessionObj.session?.textEdits?.[0]?.length, 'edit records are missing from the session block').toBe(2);
+    expect(sessionObj.session?.nativeText?.length, 'per-page native-text metadata is missing from the session block').toBe(3);
+    expect(Object.keys(sessionObj.session?.nativeText?.[0] || {}).length, 'native-text entries were lost from the edited page\'s session block').toBe(228);
+  });
+
+  test('Deleted line, replaced line, and their edit records survive the .scribe round-trip', () => {
+    const page = restoredDoc.ocr.active[0];
+    expect(page.lines.length, 'the deleted line returned to the restored model').toBe(43);
+    expect(page.lines.some((line) => lineText(line).includes('As well as being the scientific name')),
+      'the deleted line\'s text reappeared in the restored model').toBe(false);
+    expect(lineText(page.lines[20]), 'the line above the deletion changed on .scribe restore')
+      .toBe('Iris is a flowering plant genus of 310 accepted species [1] with');
+    expect(lineText(page.lines[21]), 'the line below the deletion changed on .scribe restore')
+      .toBe('widely used as a common name for all Iris species, as well as');
+    expect(lineText(page.lines[30]), 'the replaced line\'s corrected text was lost on .scribe restore')
+      .toBe('Several Iris varieties are used in the Iris flower data set');
+    expect(restoredDoc.textEdits.pages[0].length, 'a pending edit record was lost on .scribe restore').toBe(2);
+    expect(restoredDoc.textEdits.pages[0][0].type, 'the restored replacement record changed type').toBe('replaceText');
+    expect(restoredDoc.textEdits.pages[0][0].runs.length, 'the restored replacement record lost its draw-spec runs').toBe(11);
+    expect(restoredDoc.textEdits.pages[0][0].rects.length, 'the restored replacement record lost its per-word rects').toBe(11);
+    expect(restoredDoc.textEdits.pages[0][1].type, 'the restored deletion record changed type').toBe('deleteText');
+    expect(restoredDoc.textEdits.pages[0][1].rects.length, 'the restored deletion record lost its per-word rects').toBe(12);
+  });
+
+  test('Deleted line is gone from the exported PDF while its neighbors survive intact', () => {
+    expect(reDoc.ocr.active.length, 'page count changed on export with a pending deletion').toBe(3);
+    const page = reDoc.ocr.active[0];
+    expect(page.lines.length, 'the deleted line still exports to the PDF').toBe(43);
+    expect(page.lines.some((line) => lineText(line).includes('As well as being the scientific name')),
+      'the deleted line\'s text is still in the exported PDF').toBe(false);
+    expect(lineText(page.lines[20]), 'the line above the deletion was damaged by the export')
+      .toBe('Iris is a flowering plant genus of 310 accepted species [1] with');
+    expect(lineText(page.lines[21]), 'the line below the deletion was damaged by the export')
+      .toBe('widely used as a common name for all Iris species, as well as');
+    expect(lineText(reDoc.ocr.active[1].lines[0]), 'an untouched page was damaged by the export')
+      .toBe('Hermodactyloides');
+  });
+
+  test('Replaced line exports its corrected text in place with intact neighbors', () => {
+    const page = reDoc.ocr.active[0];
+    expect(lineText(page.lines[30]), 'the replacement text does not extract in place from the exported PDF')
+      .toBe('Several Iris varieties are used in the Iris flower data set');
+    expect(page.lines.some((line) => lineText(line).includes('Three Iris')),
+      'the replaced word\'s original text is still in the exported PDF').toBe(false);
+    expect(lineText(page.lines[29]), 'the line above the replacement was damaged by the export')
+      .toBe('dichotoma) are currently included in Iris.');
+    expect(lineText(page.lines[31]), 'the line below the replacement was damaged by the export')
+      .toBe('outlined by Ronald Fisher in his 1936 paper The use of');
   });
 
   afterAll(async () => {

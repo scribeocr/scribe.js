@@ -575,6 +575,18 @@ function replaceLigatures(text) {
   return text.replace(LIGATURE_ALL_RE, (m) => LIGATURE_MAP[m]);
 }
 
+const LIGATURE_INVERSE = Object.fromEntries(Object.entries(LIGATURE_MAP).map(([lig, expansion]) => [expansion, lig]));
+
+/**
+ * The ligature codepoint that is, or expands to, `text`.
+ * @param {string} text
+ * @returns {?string}
+ */
+function ligatureForText(text) {
+  if (LIGATURE_MAP[text]) return text;
+  return LIGATURE_INVERSE[text] || null;
+}
+
 /**
  * Escapes XML in a string
  * @param {String} string String to escape
@@ -731,7 +743,9 @@ export function clonePageFull(page) {
  * @param {OcrPage} page
  */
 export function reIdPage(page) {
-  if (!page) return;
+  /** @type {Map<string, string>} */
+  const wordIdMap = new Map();
+  if (!page) return wordIdMap;
   const lines = new Set(page.lines || []);
   for (const par of page.pars || []) {
     par.id = getRandomAlphanum(8);
@@ -739,8 +753,13 @@ export function reIdPage(page) {
   }
   for (const line of lines) {
     line.id = getRandomAlphanum(8);
-    for (const word of line.words || []) word.id = getRandomAlphanum(8);
+    for (const word of line.words || []) {
+      const newId = getRandomAlphanum(8);
+      wordIdMap.set(word.id, newId);
+      word.id = newId;
+    }
   }
+  return wordIdMap;
 }
 
 /**
@@ -1229,6 +1248,7 @@ const ocr = {
   rotateLine,
   deletePageWords,
   replaceLigatures,
+  ligatureForText,
   scaleLine,
   scalePage,
   escapeXml,

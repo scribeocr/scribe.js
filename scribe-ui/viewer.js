@@ -171,6 +171,13 @@ export class ScribeViewer {
     this.pageContainerArr = [];
 
     /**
+     * Per-page frozen copies of outgoing raster canvases.
+     * Each covers its page until a fresh canvas attaches.
+     * @type {?Object<number, ?HTMLCanvasElement>}
+     */
+    this._rasterGhosts = null;
+
+    /**
      * The scrolling viewport. `overflow:auto`; its `scrollTop/Left` is the scroll position.
      * @type {HTMLDivElement}
      */
@@ -410,6 +417,21 @@ export class ScribeViewer {
     /** @type {?(marksAdded: number) => void} */
     this._onRedactMark = null;
 
+    // Edit Text mode state, mirrored here by the tool for the context menu, touch callout, and link gating.
+    this._editTextActive = false;
+    /** @type {?() => Array<OcrLine>} */
+    this._editTextSelectedLines = null;
+    /** @type {?() => boolean} */
+    this._editTextDeleteSelection = null;
+    /** @type {?(clientX: number, clientY: number) => ?Object} Aim the edit-only context menu by selecting the line under the point, or return null when no editable line is there. */
+    this._editTextMenuTarget = null;
+    /** @type {?() => void} Open the line editor on the last menu target. */
+    this._editTextEditLine = null;
+    /** @type {?() => void} */
+    this._editTextCopySelection = null;
+    /** @type {?ReturnType<typeof import('./js/editTextLineEditor.js').createLineEditor>} */
+    this._editTextLineEditor = null;
+
     /** @type {?(message: string, undo: () => void) => void} Fired after a destructive one-tap action (the touch callout's delete), with a message and an undo for the host to surface. */
     this._onDestructiveAction = null;
 
@@ -543,6 +565,10 @@ export class ScribeViewer {
   _clearPageDom() {
     for (const pc of this.pageContainerArr) {
       if (pc) pc.remove();
+    }
+    if (this._rasterGhosts) {
+      for (const k of Object.keys(this._rasterGhosts)) this._removeRasterGhost(Number(k));
+      this._rasterGhosts = null;
     }
     this.pageContainerArr.length = 0;
     this._textGroups.length = 0;
@@ -2004,7 +2030,9 @@ export class ScribeViewer {
 
     if (this._textGroups[n]) {
       for (const group of Object.values(this._textGroups[n])) {
+        const editCanvas = group.querySelector('.scribe-edit-text-editor');
         group.replaceChildren();
+        if (editCanvas) group.appendChild(editCanvas);
       }
     }
     // Clear the highlight layer here too, so a page that loses its text (no-data early return below) does not strand stale bands.
@@ -2042,6 +2070,48 @@ export class ScribeViewer {
     if (this.doc.inputData.xmlMode[n]) {
       this._renderCanvasWords(ocrData);
     }
+  }
+
+  /**
+   * Re-render page `n`'s raster after a content change, e.g. a native-text edit.
+   * @param {number} n
+   */
+  refreshPageRaster(n) {
+    const pc = this.pageContainerArr[n];
+    const old = pc ? /** @type {?HTMLCanvasElement} */ (/** @type {any} */ (pc)._canvas) : null;
+    if (old && old.width > 0 && old.style.display !== 'none') {
+      if (!this._rasterGhosts) this._rasterGhosts = /** @type {Object<number, ?HTMLCanvasElement>} */ ({});
+      this._removeRasterGhost(n);
+      const ghost = document.createElement('canvas');
+      ghost.width = old.width;
+      ghost.height = old.height;
+      ghost.getContext('2d')?.drawImage(old, 0, 0);
+      // The copied class keeps the ghost subject to the image-layer hide rule.
+      ghost.className = old.className;
+      ghost.style.cssText = old.style.cssText;
+      pc.appendChild(ghost);
+      this._rasterGhosts[n] = ghost;
+    }
+    this.doc?.images?.invalidatePageRender(n);
+    this.imageCache.invalidatePage(n);
+    this.imageCache.addPageCanvas(n);
+    // The ghost comes off when a fresh canvas attaches (`addPageCanvas`), not when a render promise settles.
+    // A superseded or failed render settles without attaching pixels, so removing the ghost on that settlement would blank the page until the surviving render lands.
+    if (!this.imageCache.pageCanvases[n]) this._removeRasterGhost(n);
+  }
+
+  /**
+   * Drop page `n`'s frozen swap ghost.
+   * @param {number} n
+   */
+  _removeRasterGhost(n) {
+    const ghost = this._rasterGhosts?.[n];
+    if (!ghost) return;
+    /** @type {Object<number, ?HTMLCanvasElement>} */ (this._rasterGhosts)[n] = null;
+    ghost.remove();
+    // Zeroing the dimensions frees the backing store now rather than at GC.
+    ghost.width = 0;
+    ghost.height = 0;
   }
 
   /**
@@ -2184,6 +2254,7 @@ export class ScribeViewer {
    * @returns {?AnnotationLink}
    */
   linkAt(clientX, clientY) {
+    if (this._editTextActive) return null;
     const pagesAnnots = this.doc.annotations?.pages;
     if (!pagesAnnots || pagesAnnots.length === 0) return null;
     const { n, x, y } = this.clientToPage(clientX, clientY);

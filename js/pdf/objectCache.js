@@ -85,14 +85,17 @@ export class ObjectCache {
      */
     this.fontCache = new Map();
     /**
-     * Cache of converted font binaries (OTF) keyed by fontObjNum.
-     * Stores the result of buildFontFromCFF / convertType1ToOTFNew /
-     * rebuildFontFromGlyphs so each font is converted at most once per
-     * document. Not evicted — font data must persist for the document lifetime.
-     * @type {Map<number, { familyName: string, otfData: ArrayBuffer, usesPUA: boolean,
-     *   cmapType: string|null, cidCollisions: Set<number>|null, fontMatrix: number[]|null }>}
+     * Font-conversion outcomes keyed by fontObjNum.
+     * @type {Map<number, { familyName: string, usesPUA: boolean, cmapType: string|null, cidCollisions: Set<number>|null, fontMatrix: number[]|null, allGlyphsEmpty?: boolean }>}
      */
     this.fontConversionCache = new Map();
+    /**
+     * The font program bytes the renderer actually draws with, keyed by fontObjNum.
+     * Native-text editing reads these so edited glyphs come from the same outlines as the raster.
+     * Never evicted.
+     * @type {Map<number, { bytes: ArrayBuffer, kind: 'original'|'rebuilt' }>}
+     */
+    this.fontBytesCache = new Map();
     /**
      * Cache of decompressed stream bytes keyed by stream object number.
      * Populated by `getStreamBytes`. Eliminates repeat decompression when

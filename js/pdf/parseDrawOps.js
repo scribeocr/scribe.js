@@ -25,9 +25,7 @@ function hexToLatin1(hex) {
  */
 
 /**
- * Common optional fields added to ops during parsing (smask, blendMode, clips) or
- * during form XObject flattening (outerSmask). Declared on each op type to avoid
- * "property does not exist" errors from TS checking.
+ * outerSmask and groupId are set only during form XObject flattening in the renderer.
  *
  * @typedef {{ formObjNum: number, type: string, parentCtm?: number[], tr?: object|null, bc?: number[]|null }} SmaskRef
  * @typedef {{ path?: any[]|null, ctm: number[], evenOdd: boolean, textClip?: any[], fromFormObjNum?: number }} ClipEntry
@@ -42,10 +40,6 @@ function hexToLatin1(hex) {
  *   | { type: 'gouraud', triangles: Array<{vertices: number[][], colors: number[][]}>, matrix?: number[], stops?: undefined }
  *   | { type: 'mesh', patches: Array<{points: number[][][], colors: number[][]}>, matrix?: number[], stops?: undefined }} PatternShading
  *
- * Properties added during form XObject flattening (not present after initial parsing):
- * - overprint: set when ExtGState enables overprint mode
- * - fillColorInherited/strokeColorInherited: markers for form color inheritance resolution
- *
  * @typedef {{ type: 'image', name: string, ctm: number[], fillAlpha: number, strokeAlpha: number,
  *   fillColor: string, strokeColor?: string,
  *   patternShading?: PatternShading, tilingPattern?: TilingPatternRef,
@@ -54,6 +48,7 @@ function hexToLatin1(hex) {
  *   smask?: SmaskRef|null, outerSmask?: SmaskRef|null, groupId?: number,
  *   blendMode?: string, clips?: ClipEntry[] }} ImageDrawOp
  * @typedef {{ type: 'type3glyph', charProcObjNum: number, transform: number[], ctm?: number[],
+ *   advEm?: number, editTrm?: number[],
  *   fillColor: string, fillAlpha: number, strokeAlpha?: number,
  *   strokeColor?: string, type3XObjects?: { [name: string]: number },
  *   patternShading?: PatternShading, tilingPattern?: TilingPatternRef,
@@ -72,6 +67,7 @@ function hexToLatin1(hex) {
  *   smask?: SmaskRef|null, outerSmask?: SmaskRef|null, groupId?: number,
  *   blendMode?: string, clips?: ClipEntry[],
  *   pdfGlyphWidth?: number,
+ *   advEm?: number, vertical?: boolean, editTrm?: number[],
  * }} Type0TextOp
  * @typedef {{
  *   type: 'path', commands: PathCommand[], ctm: number[],
@@ -315,7 +311,8 @@ export function parseDrawOps(
       const charCode = str.charCodeAt(i);
       const glyphName = encoding[charCode];
       const charProcObjNum = glyphName ? charProcObjNums[glyphName] : undefined;
-      const glyphWidth = (currentFont.widths.get(charCode) ?? currentFont.defaultWidth) / 1000 * fontSize;
+      const rawWidth = currentFont.widths.get(charCode) ?? currentFont.defaultWidth;
+      const glyphWidth = rawWidth / 1000 * fontSize;
 
       if (charProcObjNum !== undefined && textRenderMode !== 3) {
         // Compute text rendering matrix: Trm = [fontSize, 0, 0, fontSize, 0, 0] * Tm * CTM
@@ -326,6 +323,9 @@ export function parseDrawOps(
         const type3Op = {
           type: 'type3glyph', charProcObjNum, transform, fillColor, fillAlpha, type3XObjects,
         };
+        type3Op.advEm = rawWidth / 1000;
+        // The export rewriter's glyph hit test uses the pre-FontMatrix matrix, so suppression must test the same one.
+        type3Op.editTrm = trm;
         if (!fillColorExplicit) type3Op.fillColorInherited = true;
         if (!fillAlphaExplicit) type3Op.fillAlphaInherited = true;
         ops.push(type3Op);
@@ -349,7 +349,8 @@ export function parseDrawOps(
     // (e.g. /83pv-RKSJ-H) must decode 1-byte ASCII codes as 1 byte, not 2.
     const csRanges = currentFont.codespaceRanges;
     for (const { charCode, numBytes } of decodeTextCodes(str, csRanges, 1)) {
-      const glyphWidth = (currentFont.widths.get(charCode) ?? currentFont.defaultWidth) / 1000 * fontSize;
+      const rawWidth = currentFont.widths.get(charCode) ?? currentFont.defaultWidth;
+      const glyphWidth = rawWidth / 1000 * fontSize;
       const unicode = currentFont.toUnicode.get(charCode)
         || String.fromCharCode(charCode);
       const drawText = currentFont.encodingUnicode?.get(charCode) || unicode;
@@ -377,7 +378,9 @@ export function parseDrawOps(
           strokeColor,
           strokeAlpha,
           lineWidth: lineWidth * Math.sqrt(Math.abs(ctm[0] * ctm[3] - ctm[1] * ctm[2])),
+          advEm: rawWidth / 1000,
         };
+        if (currentFont.verticalMode) textOp.vertical = true;
         if (!fillColorExplicit) textOp.fillColorInherited = true;
         if (!fillAlphaExplicit) textOp.fillAlphaInherited = true;
         if (!strokeColorExplicit) textOp.strokeColorInherited = true;
@@ -424,7 +427,8 @@ export function parseDrawOps(
     // skip drawing entirely — just advance the text position.
     const isDup = hex === lastDrawnHex && lastDrawnFontTag !== currentFontTag && lastDrawnHex.length > 0;
     for (const { charCode, numBytes } of decodeTextCodes(hexToLatin1(hex), csRanges, 2)) {
-      const glyphWidth = (currentFont.widths.get(charCode) ?? currentFont.defaultWidth) / 1000 * fontSize;
+      const rawWidth = currentFont.widths.get(charCode) ?? currentFont.defaultWidth;
+      const glyphWidth = rawWidth / 1000 * fontSize;
       if (!isDup) {
         const tuStr = currentFont.toUnicode.get(charCode);
         const encStr = currentFont.encodingUnicode?.get(charCode);
@@ -458,7 +462,9 @@ export function parseDrawOps(
             strokeColor,
             strokeAlpha,
             lineWidth: lineWidth * Math.sqrt(Math.abs(ctm[0] * ctm[3] - ctm[1] * ctm[2])),
+            advEm: rawWidth / 1000,
           };
+          if (currentFont.verticalMode) textOp.vertical = true;
           if (!fillColorExplicit) textOp.fillColorInherited = true;
           if (!fillAlphaExplicit) textOp.fillAlphaInherited = true;
           if (!strokeColorExplicit) textOp.strokeColorInherited = true;
@@ -558,7 +564,9 @@ export function parseDrawOps(
             strokeColor,
             strokeAlpha,
             lineWidth: lineWidth * Math.sqrt(Math.abs(ctm[0] * ctm[3] - ctm[1] * ctm[2])),
+            advEm: rawWidth / 1000,
           };
+          if (currentFont.verticalMode) opObj.vertical = true;
           if (isNonEmbedded && !sc.applied && !currentFont.widthsUnreliable) {
             opObj.pdfGlyphWidth = rawWidth;
           }
@@ -635,10 +643,10 @@ export function parseDrawOps(
       // A zero-width glyph has no advance in the Widths array, common in TeX fonts for unused charCodes.
       // Otherwise draw when the charCode is a symbol or a PUA reroute (either can trim to empty, which the whitespace test alone would reject), or when its default text is non-whitespace.
       if (!currentFont.allGlyphsEmpty && textRenderMode !== 3 && glyphWidth !== 0 && (isSymbol || usesPUA || (drawDefault && drawDefault.trim().length > 0))) {
-        let trm = matMul([fontSize * tz / 100, 0, 0, fontSize, 0, trise], matMul(tm, ctm));
+        const baseTrm = matMul([fontSize * tz / 100, 0, 0, fontSize, 0, trise], matMul(tm, ctm));
         // Apply non-standard FontMatrix (shear/flip) from embedded Type1 font program
         const fm = currentFont.type1.fontMatrix;
-        if (fm) trm = matMul(fm, trm);
+        const trm = fm ? matMul(fm, baseTrm) : baseTrm;
         // Pick the codepoint to draw, by branch:
         // a Symbol-encoded font draws from the 0xF000 PUA block, a PUA-reroute font (usesPUA) from the 0xE000 PUA block,
         // a Mac-cmap font (isRawCharCode) through its toUnicode/PUA logic below, and any other font from drawDefault (rerouted to PUA when the glyph would not render bare).
@@ -696,6 +704,9 @@ export function parseDrawOps(
           strokeAlpha,
           lineWidth: lineWidth * Math.sqrt(Math.abs(ctm[0] * ctm[3] - ctm[1] * ctm[2])),
         };
+        opObj.advEm = rawWidth / 1000;
+        // The export rewriter's glyph hit test uses the pre-FontMatrix matrix, so suppression must test the same one.
+        if (fm) opObj.editTrm = baseTrm;
         if (isNonEmbedded && !sc.applied && !currentFont.widthsUnreliable) opObj.pdfGlyphWidth = rawWidth;
         if (!fillColorExplicit) opObj.fillColorInherited = true;
         if (!fillAlphaExplicit) opObj.fillAlphaInherited = true;

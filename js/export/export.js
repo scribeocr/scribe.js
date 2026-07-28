@@ -41,8 +41,7 @@ import { _buildPngDataUrl } from '../pdf/renderPdfPage.js';
  * @property {boolean} [lineNumbers]
  * @property {boolean} [removeMargins]
  * @property {boolean} [includeImages]
- * @property {boolean} [convertDupSourceTextToPaths] - When overlaying onto a PDF input,
- *    convert the input PDF's vector text to glyph outlines before adding the invisible OCR text layer.
+ * @property {boolean} [convertDupSourceTextToPaths] - When overlaying onto a PDF input, convert the input PDF's vector text to glyph outlines before adding the invisible OCR text layer.
  *    Ignored unless the export uses the overlay path (PDF input, addOverlay, displayMode !== 'ebook').
  * @property {boolean} [routePageCategories] - Apply the per-page flatten/passthrough routing regardless of display mode.
  *    Defaults to true for 'invis' and false otherwise.
@@ -55,13 +54,14 @@ import { _buildPngDataUrl } from '../pdf/renderPdfPage.js';
  * @property {boolean} [includeExtraTextScribe]
  * @property {boolean} [includeCharBoxesScribe] - Include per-character bounding boxes (`word.chars`) in `.scribe` exports; default true.
  *    When false they are dropped (word text is unaffected) and readers of char geometry fall back to word-level boxes.
+ * @property {boolean} [scribeSession] - Include the application `session` block (text-edit records, native-text metadata) in `.scribe` exports.
+ *    Default false, since the standard interchange format carries no app-only data.
  * @property {string} [ocrName] - Export this named OCR layer (a key of `doc.ocr`) instead of the active one.
  * @property {'width' | 'sentence'} [docxLineSplitMode]
- * @property {boolean} [sanitize] - Strip identifying metadata (Info/XMP/PieceInfo/embedded files/image
- *    EXIF/actions/prior revisions/signatures) from the exported PDF, keeping the visible pages unchanged.
+ * @property {boolean} [sanitize] - Strip identifying metadata from the exported PDF, keeping the visible pages unchanged.
+ *    Covers Info/XMP/PieceInfo, embedded files, image EXIF, actions, prior revisions, and signatures.
  *    Only applies to the PDF-overlay export path (PDF input with addOverlay).
- * @property {object} [scrubOpts] - Overrides the Balanced scrub defaults when `sanitize` is set
- *    (`stripStructTree`, `stripPageLabels`, `stripViewerPrefs`, `dropOCProperties`).
+ * @property {object} [scrubOpts] - Overrides the Balanced scrub defaults when `sanitize` is set (`stripStructTree`, `stripPageLabels`, `stripViewerPrefs`, `dropOCProperties`).
  */
 
 /**
@@ -152,6 +152,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
   const compressScribe = options.compressScribe ?? scribeDocDefaults.compressScribe;
   const includeExtraTextScribe = options.includeExtraTextScribe ?? scribeDocDefaults.includeExtraTextScribe;
   const includeCharBoxesScribe = options.includeCharBoxesScribe ?? scribeDocDefaults.includeCharBoxesScribe;
+  const scribeSession = options.scribeSession ?? scribeDocDefaults.scribeSession;
 
   if (!pageArr) {
     if (maxPage === -1) maxPage = doc.inputData.pageCount - 1;
@@ -277,6 +278,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
           let overlayOcrArr = ocrDownload;
           let overlayPageMetricsArr = doc.pageMetrics;
           let overlayAnnotationsPages = annotationsPagesExport;
+          let overlayTextEditsPages = doc.textEdits.pages;
           let pageStats = doc.inputData.pageStats;
           let ocrAppliedArr = doc.inputData.ocrApplied;
           // Page edits (delete/reorder) make each slot's source page (`sourcePageN`) diverge from its display position,
@@ -313,6 +315,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
             overlayOcrArr = pageArr.map((i) => ocrDownload[i]);
             overlayPageMetricsArr = pageArr.map((i) => doc.pageMetrics[i]);
             overlayAnnotationsPages = pageArr.map((i) => annotationsPagesExport[i] || []);
+            overlayTextEditsPages = pageArr.map((i) => doc.textEdits.pages[i] || []);
             pageStats = fullStats ? pageArr.map((i) => fullStats[i]) : null;
             ocrAppliedArr = fullOcrApplied ? pageArr.map((i) => fullOcrApplied[i]) : null;
           }
@@ -373,6 +376,9 @@ export async function exportData(doc, format = 'txt', options = {}) {
             proofOpacity: overlayOpacity / 100,
             humanReadable: humanReadablePDF,
             annotationsPages: overlayAnnotationsPages,
+            textEditsPages: overlayTextEditsPages,
+            // Overlay arrays are display-ordered on the composed path, so map back to doc pages for font resolution.
+            getEditFont: (i, fontObjNum) => doc.images.getEditFont(composed ? pageArr[i] : i, fontObjNum),
             convertTextToPaths: convertDupSourceTextToPaths,
             convertFullPages,
             convertBrokenType3ToPaths: convertBrokenType3,
@@ -576,7 +582,13 @@ export async function exportData(doc, format = 'txt', options = {}) {
         requiresOCR: doc.inputData.requiresOCR,
         ocrApplied: doc.inputData.ocrApplied,
       },
+      /** @type {ScribeSessionData|undefined} */
+      session: undefined,
     };
+    // App-only state ships in one opt-in block, so standard-format consumers never receive it and the app save path cannot scatter it.
+    if (scribeSession) {
+      data.session = { v: 1, textEdits: doc.textEdits.pages, nativeText: doc.nativeText.pages };
+    }
     const contentStr = JSON.stringify(data);
     if (compressScribe) {
       const cs = new CompressionStream('gzip');

@@ -7,7 +7,7 @@ import {
 } from './parsePdfUtils.js';
 import { resolveItemDest, buildNameDests, setDestYFrac } from './parseOutline.js';
 import {
-  bytesToLatin1, extractDict, decodePdfName, matMul, decodeTextCodes, resolveNumValue,
+  bytesToLatin1, extractDict, decodePdfName, matMul, decodeTextCodes, resolveNumValue, findTopLevelKeyIndex,
 } from './pdfPrimitives.js';
 import { tokenizeContentStream } from './contentStream.js';
 import { ObjectCache } from './objectCache.js';
@@ -18,7 +18,7 @@ import { detectTableRegions } from './detectPdfTables.js';
 import {
   extractPdfAnnotations, pdfHighlightToAnnotation, pdfFreeTextToAnnotation, pdfTextAnnotToAnnotation, pdfRedactToAnnotations,
 } from './parsePdfAnnots.js';
-import { cmykToRgb } from './pdfColorFunctions.js';
+import { cmykToRgb, parseTintColorSpace, tintComponentsToRGB } from './pdfColorFunctions.js';
 import { assignParagraphs } from '../utils/reflowPars.js';
 import { analyzeLayout } from '../import/analyzeLayout.js';
 import { buildStructElemMap, resolveStructElems, docAuthoredByWord } from './structTree.js';
@@ -263,21 +263,70 @@ function findDoOperators(tokens, formXObjects, initialCtm, initialTextState) {
 }
 
 /**
+ * Parse the Separation/DeviceN color space entries of a page or Form XObject /Resources dict.
+ * These are the spaces a text fill color can select via `cs` + `scn`.
+ * @param {string} containerObjText
+ * @param {ObjectCache} objCache
+ * @returns {Map<string, {nInputs: number, tint: object}>}
+ */
+function parseTextColorSpaces(containerObjText, objCache) {
+  const map = new Map();
+  let resourcesText = null;
+  const resRefMatch = /\/Resources\s+(\d+)\s+\d+\s+R/.exec(containerObjText);
+  if (resRefMatch) {
+    resourcesText = objCache.getObjectText(Number(resRefMatch[1])) || null;
+  } else {
+    const resIdx = containerObjText.indexOf('/Resources');
+    if (resIdx !== -1) {
+      const dictStart = containerObjText.indexOf('<<', resIdx);
+      if (dictStart !== -1) resourcesText = extractDict(containerObjText, dictStart);
+    }
+  }
+  if (!resourcesText) return map;
+  // Nested Shading/Pattern dicts carry their own /ColorSpace keys.
+  const resBody = resourcesText.startsWith('<<') ? resourcesText.slice(2) : resourcesText;
+  const csIdx = findTopLevelKeyIndex(resBody, '/ColorSpace');
+  if (csIdx === -1) return map;
+  let csDictText = null;
+  const afterCs = resBody.substring(csIdx + 11).trim();
+  if (afterCs.startsWith('<<')) {
+    csDictText = extractDict(resBody, csIdx + 11 + resBody.substring(csIdx + 11).indexOf('<<'));
+  } else {
+    const refMatch = /^(\d+)\s+\d+\s+R/.exec(afterCs);
+    if (refMatch) csDictText = objCache.getObjectText(Number(refMatch[1]));
+  }
+  if (!csDictText) return map;
+  /** @param {string} name @param {?string} csText */
+  const addEntry = (name, csText) => {
+    if (!csText || !/\/(Separation|DeviceN)\b/.test(csText)) return;
+    const tint = parseTintColorSpace(csText, objCache);
+    if (tint && tint.tintFn) map.set(name, { nInputs: tint.nInputs, tint });
+  };
+  for (const m of csDictText.matchAll(/\/([^\s/<>[\]]+)\s+(\d+)\s+\d+\s+R/g)) {
+    addEntry(m[1], objCache.getObjectText(Number(m[2])));
+  }
+  for (const m of csDictText.matchAll(/\/([^\s/<>[\]]+)\s*(\[[^\]]*\])/g)) {
+    addEntry(m[1], m[2]);
+  }
+  return map;
+}
+
+/**
  * Recursively extract text from Form XObjects referenced by Do operators.
- * Follows nested form XObjects to arbitrary depth (with cycle detection).
- * @param {string} containerObjText - Object text of the container (page or parent form XObject)
- * @param {Array<PDFToken>} containerTokens - Tokenized content stream of the container
- * @param {Map} parentFonts - Fonts available from the parent scope
+ * @param {string} containerObjText
+ * @param {Array<PDFToken>} containerTokens
+ * @param {Map} parentFonts
  * @param {number} scale
  * @param {number} pageHeightPts
- * @param {number[]} containerCtm - CTM at the container level
+ * @param {number[]} containerCtm
  * @param {ObjectCache} objCache
- * @param {Set<number>} visited - Object numbers already visited (cycle detection)
- * @param {Map<string, { fillAlpha: ?number }>} [parentExtGStates] - ExtGState map inherited from the parent scope
- * @param {{ tc: number, tw: number, tl: number, tz: number, trise: number }} [parentTextState] - Text state inherited from the parent scope at Do time
+ * @param {Set<number>} visited
+ * @param {Map<string, { fillAlpha: ?number }>} [parentExtGStates]
+ * @param {{ tc: number, tw: number, tl: number, tz: number, trise: number }} [parentTextState]
+ * @param {Map<string, {nInputs: number, tint: object}>} [parentColorSpaces]
  */
 function extractFormXObjectText(containerObjText, containerTokens, parentFonts, scale, pageHeightPts, containerCtm,
-  objCache, visited, parentExtGStates, parentTextState) {
+  objCache, visited, parentExtGStates, parentTextState, parentColorSpaces) {
   const chars = [];
   const formXObjects = findFormXObjects(containerObjText, objCache);
   if (formXObjects.size === 0) return chars;
@@ -299,17 +348,21 @@ function extractFormXObjectText(containerObjText, containerTokens, parentFonts, 
     const mergedExtGStates = formExtGStates.size > 0
       ? new Map([...(parentExtGStates || []), ...formExtGStates])
       : parentExtGStates;
+    const formColorSpaces = parseTextColorSpaces(formObjText, objCache);
+    const mergedColorSpaces = formColorSpaces.size > 0
+      ? new Map([...(parentColorSpaces || []), ...formColorSpaces])
+      : parentColorSpaces;
     const formMatrix = parseFormMatrix(formObjText, objCache);
     const formCtm = matMul(formMatrix, doOp.ctm);
     const formTokens = tokenizeContentStream(formContentStream);
     const formChars = executeTextOperators(
-      formTokens, mergedFonts, scale, pageHeightPts, formCtm, mergedExtGStates, doOp.textState,
+      formTokens, mergedFonts, scale, pageHeightPts, formCtm, mergedExtGStates, doOp.textState, mergedColorSpaces,
     );
     for (let ci = 0; ci < formChars.length; ci++) chars.push(formChars[ci]);
 
     // Recurse into nested form XObjects within this form's content stream.
     const nestedChars = extractFormXObjectText(
-      formObjText, formTokens, mergedFonts, scale, pageHeightPts, formCtm, objCache, visited, mergedExtGStates, doOp.textState,
+      formObjText, formTokens, mergedFonts, scale, pageHeightPts, formCtm, objCache, visited, mergedExtGStates, doOp.textState, mergedColorSpaces,
     );
     for (let ci = 0; ci < nestedChars.length; ci++) chars.push(nestedChars[ci]);
   }
@@ -518,12 +571,13 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
 
   const tokens = tokenizeContentStream(contentStreamText);
   const extGStates = parseFillAlphaExtGStates(objText, objCache);
-  const chars = executeTextOperators(tokens, fonts, scale, visualHeightPts, initialCtm, extGStates);
+  const textColorSpaces = parseTextColorSpaces(objText, objCache);
+  const chars = executeTextOperators(tokens, fonts, scale, visualHeightPts, initialCtm, extGStates, undefined, textColorSpaces);
 
   // Extract text from Form XObjects referenced by Do operators in the content stream.
   // Recurse into nested form XObjects so that deeply-nested text (e.g. 3+ levels) is extracted.
   const formChars = extractFormXObjectText(
-    objText, tokens, fonts, scale, visualHeightPts, initialCtm, objCache, new Set(), extGStates,
+    objText, tokens, fonts, scale, visualHeightPts, initialCtm, objCache, new Set(), extGStates, undefined, textColorSpaces,
   );
   for (let ci = 0; ci < formChars.length; ci++) chars.push(formChars[ci]);
 
@@ -848,7 +902,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   }
 
   const {
-    pageObj, langSet, fontSet, wordSignals, dataTablePage,
+    pageObj, langSet, fontSet, wordSignals, nativeText, dataTablePage,
   } = groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects, paths, scale, visualHeightPts, boxOriginX, boxOriginY, pageHasMath);
 
   // Carry the page's thin horizontal rules (same scaled top-left space as line bboxes) onto the page so analyzeLayout can split paragraphs at a drawn separator rule.
@@ -928,7 +982,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   annotations.push(...linkAnnots);
 
   return {
-    pageObj, langSet, fontSet, wordSignals, dataTablePage, pageStats, annotations,
+    pageObj, langSet, fontSet, wordSignals, nativeText, dataTablePage, pageStats, annotations,
   };
 }
 
@@ -1124,11 +1178,12 @@ export function detectPdfType(pdfBytes) {
  * @param {number} scale - DPI scale factor (dpi/72)
  * @param {number} pageHeightPts - visual page height in PDF points (after /Rotate)
  * @param {number[]} [initialCtm] - initial CTM incorporating /Rotate transform
- * @param {Map<string, { fillAlpha: ?number }>} [extGStates] - ExtGState map (name → entry) for `gs` operator
+ * @param {Map<string, { fillAlpha: ?number }>} [extGStates]
  * @param {{ tc: number, tw: number, tl: number, tz: number, trise: number, artifact?: boolean }} [inheritedTextState] - Text state inherited at Form XObject `Do` call time
+ * @param {Map<string, {nInputs: number, tint: object}>} [colorSpaces] - Separation/DeviceN color spaces from /Resources
  * @returns {Array<PositionedChar>}
  */
-function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, extGStates, inheritedTextState) {
+function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, extGStates, inheritedTextState, colorSpaces) {
   const chars = /** @type {Array<PositionedChar>} */ ([]);
 
   // Graphics state
@@ -1136,8 +1191,12 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
   let tr = 0; // text rendering mode (0-7; mode 3 = invisible)
   /** @type {number[]} */
   let textColor = [0]; // current non-stroking (fill) color — default black
+  let fillTintCS = null;
   let fillAlpha = 1; // current non-stroking alpha (from ExtGState /ca via `gs`)
-  /** @type {Array<{ ctm: number[], tr: number, tc: number, tw: number, tz: number, tl: number, trise: number, fontSize: number, currentFont: any, textColor: number[], fillAlpha: number }>} */
+  /**
+   * @type {Array<{ ctm: number[], tr: number, tc: number, tw: number, tz: number, tl: number, trise: number,
+   *   fontSize: number, currentFont: any, textColor: number[], fillAlpha: number, fillTintCS: ?{nInputs: number, tint: object} }>}
+   */
   const gsStack = [];
 
   let tm = [1, 0, 0, 1, 0, 0]; // text matrix
@@ -1174,7 +1233,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
       // Graphics state operators
       case 'q':
         gsStack.push({
-          ctm: ctm.slice(), tr, tc, tw, tz, tl, trise, fontSize, currentFont, textColor: textColor.slice(), fillAlpha,
+          ctm: ctm.slice(), tr, tc, tw, tz, tl, trise, fontSize, currentFont, textColor: textColor.slice(), fillAlpha, fillTintCS,
         });
         operandStack.length = 0;
         break;
@@ -1193,6 +1252,7 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
           currentFont = saved.currentFont;
           textColor = saved.textColor;
           fillAlpha = saved.fillAlpha;
+          fillTintCS = saved.fillTintCS;
         }
         operandStack.length = 0;
         break;
@@ -1407,11 +1467,34 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
         break;
       }
 
-      // Non-stroking color operators (text fill color).
-      case 'g': case 'rg': case 'k': case 'sc': case 'scn':
+      // These operators also select a device color space, deselecting any named color space chosen by `cs`.
+      case 'g': case 'rg': case 'k':
         textColor = operandStack.map((t) => t.value);
+        fillTintCS = null;
         operandStack.length = 0;
         break;
+
+      case 'cs': {
+        const csName = operandStack.length >= 1 ? operandStack[operandStack.length - 1].value : '';
+        fillTintCS = (colorSpaces && colorSpaces.get(csName)) || null;
+        operandStack.length = 0;
+        break;
+      }
+
+      // Stored raw, a Separation/DeviceN component reads as gray and inverts the color (tint 1 = full ink, gray 1 = white).
+      case 'sc': case 'scn': {
+        let resolved = null;
+        if (fillTintCS) {
+          const comps = operandStack.map((t) => t.value).filter((v) => typeof v === 'number');
+          if (comps.length === fillTintCS.nInputs) {
+            const rgb = tintComponentsToRGB(fillTintCS.tint, comps);
+            if (rgb) resolved = [rgb[0] / 255, rgb[1] / 255, rgb[2] / 255];
+          }
+        }
+        textColor = resolved || operandStack.map((t) => t.value);
+        operandStack.length = 0;
+        break;
+      }
 
       // Graphics state parameters (sets non-stroking alpha via /ca).
       case 'gs': {
@@ -1566,6 +1649,12 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
     const pageY = ctm[1] * ox + ctm[3] * oy + ctm[5];
 
     if (!dropFallbackControl) {
+      // Edit previews lean their glyphs by this ratio.
+      // The italic flag alone cannot reproduce the lean.
+      const matrixShear = Math.abs(tm[2]) > Math.abs(tm[0]) * 0.05 && Math.abs(tm[1]) < Math.abs(tm[0]) * 0.05
+        ? Math.round((tm[2] / tm[0]) * 1e4) / 1e4 : 0;
+      // The drawn glyph is this many times its normal width at the emitted fontSize.
+      const matrixStretch = vScale > 0 ? Math.round(((hScale * tz) / (100 * vScale)) * 1e4) / 1e4 : 1;
       chars.push({
         text: unicode,
         x: pageX * scale,
@@ -1575,12 +1664,14 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
         fontInfo: {
           baseName: font.baseName,
           bold: font.bold || tr === 1 || tr === 2,
-          italic: font.italic || (Math.abs(tm[2]) > Math.abs(tm[0]) * 0.05 && Math.abs(tm[1]) < Math.abs(tm[0]) * 0.05),
+          italic: font.italic || matrixShear !== 0,
           smallCaps: font.smallCaps,
           familyName: font.familyName,
           ascent: font.ascent,
           descent: font.descent,
         },
+        skew: matrixShear,
+        stretch: Math.abs(matrixStretch - 1) > 0.01 ? matrixStretch : 0,
         _font: font,
         invisible: tr === 3,
         orientation,
@@ -1613,14 +1704,17 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
  */
 export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = [], paths = [], scale = 1, visualHeightPts = 0, boxOriginX = 0, boxOriginY = 0, pageHasMath = false) {
   const pageObj = new ocr.OcrPage(n, { width: pageWidth, height: pageHeight });
+  pageObj.textSource = 'stext';
   const langSet = new Set();
   const fontSet = new Set();
   /** @type {Map<OcrWord, PdfWordSignal>} */
   const wordSignals = new Map();
+  /** @type {Record<string, NativeTextWord>} */
+  const nativeText = {};
 
   if (chars.length === 0) {
     return {
-      pageObj, langSet, fontSet, wordSignals, dataTablePage: new LayoutDataTablePage(n),
+      pageObj, langSet, fontSet, wordSignals, nativeText, dataTablePage: new LayoutDataTablePage(n),
     };
   }
 
@@ -2693,6 +2787,16 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
 
       // Style from first alphanumeric character (matching mupdf behavior for leading punctuation)
       const firstAlphaNum = wordChars.find((c) => /[A-Za-z\d]/.test(c.text)) || wordChars[0];
+
+      // Presence of a native-text entry is what marks a word editable, so only visibly drawn words get one.
+      // Sup words keep their true raised y here even though their char bboxes below are normalized onto the body line.
+      if (!wordChars.some((c) => c.invisible || c.alpha === 0)) {
+        /** @type {NativeTextWord} */
+        const ntEntry = { baselineY: round3(wordChars[0].y) };
+        if (Number.isFinite(firstAlphaNum._font?.fontObjNum)) ntEntry.fontObjNum = firstAlphaNum._font.fontObjNum;
+        nativeText[wordID] = ntEntry;
+      }
+
       wordObj.style.font = firstAlphaNum.fontInfo.familyName;
       wordObj.style.bold = firstAlphaNum.fontInfo.bold;
       wordObj.style.italic = firstAlphaNum.fontInfo.italic;
@@ -2786,6 +2890,14 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
         });
       });
 
+      // Char bboxes are rounded, so edited text redrawn from them has visibly wrong letter spacing.
+      const ntEntry = nativeText[wordID];
+      if (ntEntry) {
+        ntEntry.penX = wordChars.map((c) => round3(c.x));
+        if (wordChars.some((c) => c.skew)) ntEntry.skew = wordChars.map((c) => c.skew || 0);
+        if (wordChars.some((c) => c.stretch)) ntEntry.stretch = wordChars.map((c) => c.stretch || 0);
+      }
+
       // Apply small caps lowercase restoration.
       if (wordObj.style.smallCaps && words[wi].smallCapsAlt) {
         const lgFont = words[wi].smallCapsLargeFontSize;
@@ -2870,6 +2982,6 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
   }
 
   return {
-    pageObj, langSet, fontSet, wordSignals, dataTablePage,
+    pageObj, langSet, fontSet, wordSignals, nativeText, dataTablePage,
   };
 }

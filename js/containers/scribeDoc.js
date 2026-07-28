@@ -9,6 +9,7 @@ import {
   addRedactions as addRedactionsImpl, removeRedactions as removeRedactionsImpl,
   addLinks as addLinksImpl, removeLinks as removeLinksImpl,
 } from '../addHighlights.js';
+import { deleteTextLines as deleteTextLinesImpl, replaceTextLine as replaceTextLineImpl, TextEditHistory } from '../textEdits.js';
 import { renderPageStatic as renderPageStaticImpl } from '../debug.js';
 import { exportData as exportDataImpl, download as downloadImpl } from '../export/export.js';
 import { subsetPdf, stripMetadataPdf } from '../export/pdf/subsetPdf.js';
@@ -47,7 +48,7 @@ function uniqueLayers(layers) {
  */
 function densePageArrays(doc) {
   const arrs = [...uniqueLayers(doc.ocr), ...uniqueLayers(doc.ocrRaw)];
-  arrs.push(doc.pageMetrics, doc.layoutRegions.pages, doc.layoutDataTables.pages, doc.annotations.pages);
+  arrs.push(doc.pageMetrics, doc.layoutRegions.pages, doc.layoutDataTables.pages, doc.annotations.pages, doc.textEdits.pages, doc.nativeText.pages);
   if (Array.isArray(doc.vis)) arrs.push(doc.vis);
   if (Array.isArray(doc.convertPageWarn)) arrs.push(doc.convertPageWarn);
   // Source image (image-input docs) and per-page 300-DPI dims are full-length; rendered caches are not (see clearImageCaches).
@@ -133,7 +134,13 @@ function clonePageBundle(doc, i) {
   }
   // Give each cloned page fresh word ids so the paste is a distinct instance, not an id-for-id twin of its source.
   // Otherwise highlight and selection, which are keyed on word id across the render window, would act on the copy and its source together.
-  for (const p of new Set(Object.values(ocr))) if (p) reIdPage(p);
+  // The active layer is re-id'd first so its entries win the merge: edit records reference active-layer words.
+  /** @type {Map<string, string>} */
+  const wordIdMap = new Map();
+  for (const p of new Set([ocr.active, ...Object.values(ocr)])) {
+    if (!p) continue;
+    for (const [oldId, newId] of reIdPage(p)) if (!wordIdMap.has(oldId)) wordIdMap.set(oldId, newId);
+  }
   /** @type {Object<string, string>} */
   const ocrRaw = {};
   for (const [engine, arr] of Object.entries(doc.ocrRaw)) {
@@ -152,6 +159,27 @@ function clonePageBundle(doc, i) {
       annot.groupId = groupIdMap.get(annot.groupId);
     }
   }
+
+  const textEdits = cloneAt(doc.textEdits.pages);
+  if (Array.isArray(textEdits)) {
+    const editGroupIdMap = new Map();
+    for (const rec of textEdits) {
+      if (!rec) continue;
+      rec.id = getRandomAlphanum(10);
+      if (rec.wordIds) rec.wordIds = rec.wordIds.map((/** @type {string} */ id) => wordIdMap.get(id) || id);
+      if (rec.groupId == null) continue;
+      if (!editGroupIdMap.has(rec.groupId)) editGroupIdMap.set(rec.groupId, getRandomAlphanum(10));
+      rec.groupId = editGroupIdMap.get(rec.groupId);
+    }
+  }
+
+  const nativeTextSrc = cloneAt(doc.nativeText.pages);
+  /** @type {Record<string, NativeTextWord>} */
+  const nativeText = {};
+  if (nativeTextSrc) {
+    for (const [id, entry] of Object.entries(nativeTextSrc)) nativeText[wordIdMap.get(id) || id] = entry;
+  }
+
   return {
     ocr,
     ocrRaw,
@@ -159,6 +187,8 @@ function clonePageBundle(doc, i) {
     layoutRegions: cloneAt(doc.layoutRegions.pages),
     layoutDataTables: cloneAt(doc.layoutDataTables.pages),
     annotations,
+    textEdits,
+    nativeText,
     srcDocId: doc.id,
     vis: cloneAt(doc.vis),
     convertPageWarn: cloneAt(doc.convertPageWarn),
@@ -418,6 +448,21 @@ export class ScribeDoc {
     this.annotations = { pages: [], restored: false };
 
     /**
+     * PDF export applies these destructively to the content stream.
+     * `.scribe` saves keep them unapplied.
+     * @type {{ pages: Array<Array<TextEdit>> }}
+     */
+    this.textEdits = { pages: [] };
+
+    /**
+     * Per-page native-text metadata, keyed by word id.
+     * Presence of an entry marks that word editable.
+     * Serialized only into the `.scribe` `session` block, so a default export omits it.
+     * @type {{pages: Array<Record<string, NativeTextWord>>}}
+     */
+    this.nativeText = { pages: [] };
+
+    /**
      * Document outline (bookmarks) as an editable tree; destinations are zero-based page indices.
      * Empty when the document has no bookmarks. Populated from the PDF on open (`ImageStore.openMainPDF`).
      * @type {Array<import('../objects/outlineObjects.js').OutlineNode>}
@@ -446,6 +491,8 @@ export class ScribeDoc {
 
     /** Bounded undo/redo history for this document's page operations. */
     this.history = new PageHistory(this);
+
+    this.textEditHistory = new TextEditHistory(this);
 
     /**
      * Per-document handlers consulted by emit sites during `recognize()` etc.
@@ -656,6 +703,8 @@ export class ScribeDoc {
         if (b.srcDocId === this.id || !Array.isArray(b.annotations)) return b.annotations;
         return b.annotations.filter((a) => !(a.type === 'link' && a.dest));
       }));
+      spliceFull(this.textEdits.pages, bundles.map((b) => b.textEdits ?? []));
+      spliceFull(this.nativeText.pages, bundles.map((b) => b.nativeText ?? {}));
       spliceFull(this.vis, bundles.map((b) => b.vis));
       spliceFull(this.convertPageWarn, bundles.map((b) => b.convertPageWarn));
       spliceFull(this.images.nativeSrc, bundles.map((b) => b.nativeSrc));
@@ -835,6 +884,8 @@ export class ScribeDoc {
     this.ocrRaw.active = [];
     this.annotations.pages.length = 0;
     this.annotations.restored = false;
+    this.textEdits.pages.length = 0;
+    this.nativeText.pages.length = 0;
     this.layoutRegions.pages.length = 0;
     this.layoutDataTables.pages.length = 0;
     this.pageMetrics.length = 0;
@@ -843,6 +894,7 @@ export class ScribeDoc {
     this.images.clear();
     this.fonts.clear();
     this.history.clear();
+    this.textEditHistory.clear();
   }
 
   /**
@@ -975,6 +1027,28 @@ export class ScribeDoc {
    */
   removeLinks(filter) {
     removeLinksImpl(this, filter);
+  }
+
+  /**
+   * Delete whole lines of visible native PDF text.
+   * Records one undoable step in `textEditHistory`.
+   * @param {Parameters<typeof deleteTextLinesImpl>[1]} lines
+   * @returns {ReturnType<typeof deleteTextLinesImpl>}
+   */
+  deleteTextLines(lines) {
+    return deleteTextLinesImpl(this, lines);
+  }
+
+  /**
+   * Replace a line of visible native PDF text with new text.
+   * The raster, search, selection, and every export reflect the change.
+   * Records one undoable step in `textEditHistory`.
+   * @param {Parameters<typeof replaceTextLineImpl>[1]} line
+   * @param {Parameters<typeof replaceTextLineImpl>[2]} newText
+   * @returns {ReturnType<typeof replaceTextLineImpl>}
+   */
+  replaceTextLine(line, newText) {
+    return replaceTextLineImpl(this, line, newText);
   }
 
   /**

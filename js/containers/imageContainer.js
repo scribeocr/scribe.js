@@ -285,6 +285,101 @@ export class ImageStore {
     };
   };
 
+  /**
+   * Render-only suppression rects, keyed by display slot.
+   * The viewer's line editor sets them while it is open so the raster stops drawing the line being edited.
+   * @type {Map<number, Array<bbox>>}
+   */
+  #ephemeralEditRects = new Map();
+
+  /**
+   * Set the ephemeral suppression rects for display slot `n`.
+   * The caller re-renders the page raster to apply them.
+   * @param {number} n - Page number
+   * @param {?Array<bbox>} rects
+   */
+  setEphemeralEditRects = (n, rects) => {
+    if (rects && rects.length > 0) this.#ephemeralEditRects.set(n, rects);
+    else this.#ephemeralEditRects.delete(n);
+  };
+
+  /**
+   * Text-edit payload for display slot `n`'s render jobs.
+   * @param {number} n - Page number
+   */
+  #textEditsForPage = (n) => {
+    const records = this.#doc.textEdits?.pages?.[n] || [];
+    const dims = this.#pageMetrics[n]?.dims;
+    const ephemeral = this.#ephemeralEditRects.get(n);
+    if ((records.length === 0 && !ephemeral) || !dims) return null;
+    const all = ephemeral
+      ? [...records, { type: 'deleteText', id: '_ephemeralLineEdit', rects: ephemeral }]
+      : records;
+    return { records: all, dims: { width: dims.width, height: dims.height } };
+  };
+
+  /** @type {Map<string, Promise<?{ program: ?import('../pdf/glyphResolve.js').EditFontProgram, faceName: ?string, bytes: ?ArrayBuffer }>>} */
+  #editFontCache = new Map();
+
+  /**
+   * Fetch the font program for `fontObjNum` from display slot `n`'s source document.
+   * In a browser the program is also registered as a FontFace under the returned `faceName`, so the line editor can draw with the exact outlines the raster uses.
+   * @param {number} n - Page number
+   * @param {number} fontObjNum
+   */
+  getEditFont = (n, fontObjNum) => {
+    const pm = this.#pageMetrics[n];
+    const key = `${pm?.sourceId ?? 'p'}_${fontObjNum}`;
+    let entry = this.#editFontCache.get(key);
+    if (!entry) {
+      entry = (async () => {
+        const scheduler = await this.resolveSource(pm).getScheduler();
+        // The source page index lets a pool worker that never parsed that page resolve the font.
+        const payload = await scheduler.getPdfFontBytes({ fontObjNum, pageIndex: pm?.sourcePageN ?? n });
+        // A null payload is a failed lookup, not a font without a program.
+        // Caching it would lock the editor to a fallback face for the session.
+        if (!payload) this.#editFontCache.delete(key);
+        const { parseEditFontPayload } = await import('../pdf/glyphResolve.js');
+        const program = parseEditFontPayload(payload);
+        let faceName = null;
+        if (program?.font && payload?.bytes && typeof FontFace !== 'undefined') {
+          faceName = `_edit_d${this.#doc.id}_${key}`;
+          const { loadFontFace } = await import('./fontContainer.js');
+          const face = loadFontFace(faceName, 'normal', 'normal', payload.bytes);
+          await face.loaded;
+        }
+        return { program, faceName, bytes: payload?.bytes ?? null };
+      })();
+      this.#editFontCache.set(key, entry);
+      entry.catch(() => this.#editFontCache.delete(key));
+    }
+    return entry;
+  };
+
+  /**
+   * Drop every cached raster of display slot `n`.
+   * The viewer separately drops its own display-width raster and canvas for the page.
+   * @param {number} n - Page number
+   */
+  invalidatePageRender = (n) => {
+    this.native[n] = undefined;
+    this.binary[n] = undefined;
+    this.nativeProps[n] = undefined;
+    this.binaryProps[n] = undefined;
+    const oldThumb = this.thumbnails[n];
+    this.thumbnails[n] = undefined;
+    if (oldThumb) {
+      Promise.resolve(oldThumb).then((blob) => {
+        if (!blob) return;
+        const url = this.thumbnailUrls.get(blob);
+        if (url) {
+          URL.revokeObjectURL(url);
+          this.thumbnailUrls.delete(blob);
+        }
+      }).catch(() => {});
+    }
+  };
+
   /** This document's own (primary) render source, or `null` before one is created. @returns {?RenderSource} */
   get #primarySource() {
     return this.primarySourceId != null ? this.sources.get(this.primarySourceId) ?? null : null;
@@ -376,7 +471,7 @@ export class ImageStore {
       // Bitmap output needs OffscreenCanvas, so it is browser-only and Node always renders to PNG.
       const outputFormat = wantBitmap && typeof OffscreenCanvas !== 'undefined' ? 'bitmap' : 'png';
       const result = await pdfScheduler.renderPdfPage({
-        pageIndex: sourcePageN, colorMode, dpi, outputFormat,
+        pageIndex: sourcePageN, colorMode, dpi, outputFormat, textEdits: this.#textEditsForPage(n),
       }, forViewer);
       // The render was dropped from the queue (e.g. evicted to keep the viewer lane bounded).
       if (result === SKIPPED) return SKIPPED;
@@ -406,7 +501,7 @@ export class ImageStore {
     // Display slot `n` may have been reordered. Raster its source page, not its position.
     const sourcePageN = pm.sourcePageN ?? n;
     const result = await pdfScheduler.renderPdfPage({
-      pageIndex: sourcePageN, colorMode: color ? 'color' : 'gray', targetWidth, outputFormat: 'bitmap',
+      pageIndex: sourcePageN, colorMode: color ? 'color' : 'gray', targetWidth, outputFormat: 'bitmap', textEdits: this.#textEditsForPage(n),
     }, forViewer);
     if (result === SKIPPED) return SKIPPED;
     this.#recordRenderCost(n, result.perf);
@@ -616,7 +711,7 @@ export class ImageStore {
         // Display slot `n` may have been reordered, so raster its source page, not its position.
         const sourcePageN = pm?.sourcePageN ?? n;
         const result = await pdfScheduler.renderPdfPage({
-          pageIndex: sourcePageN, colorMode: 'color', dpi, outputFormat: 'jpeg', quality,
+          pageIndex: sourcePageN, colorMode: 'color', dpi, outputFormat: 'jpeg', quality, textEdits: this.#textEditsForPage(n),
         }, false);
         return result && result !== SKIPPED ? result.blob ?? null : null;
       }
@@ -713,6 +808,13 @@ export class ImageStore {
     this.nativeProps.length = 0;
     this.binaryProps.length = 0;
     this.renderDrawMs.length = 0;
+    this.#editFontCache.clear();
+    if (typeof FontFace !== 'undefined') {
+      import('./fontContainer.js').then(({ unregisterFontFacesMatching }) => {
+        const prefix = `_edit_d${this.#doc.id}_`;
+        unregisterFontFacesMatching((family) => family.startsWith(prefix));
+      }).catch(() => {});
+    }
   };
 
   terminate = async () => {

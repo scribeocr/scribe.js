@@ -1,4 +1,5 @@
 import scribe from '../../scribe.js';
+import { nativeTextForPage } from '../../js/textEdits.js';
 import { ScribeViewer } from '../viewer.js';
 // Both engines are imported so `ScribeViewer.customSelection` can toggle between them at runtime.
 // Import only one for a slimmer build.
@@ -16,7 +17,7 @@ import { createPagesMorph } from '../js/controls/pagesMorph.js';
 import { createBookmarksPanel } from '../js/controls/bookmarksPanel.js';
 import { createCommentsPanel } from '../js/controls/commentsPanel.js';
 import {
-  createHighlightTool, createDropZone, openDocumentFromFile, createRedactTool,
+  createHighlightTool, createDropZone, openDocumentFromFile, createRedactTool, createEditTextTool,
 } from '../js/controls/tools.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
 import { IOS_WEBKIT } from '../js/viewerImageCache.js';
@@ -131,6 +132,8 @@ class ScribePDFViewer {
    *   redaction, the Export/Combine/Split app-menu actions, and the dark-mode toggle. Pass `false` for a lean read-only viewer.
    * @param {boolean} [options.redact=edit] - Enable redaction marks, reached through the context menu's "Redact".
    *   Defaults to `edit`. Pass `false` to keep editing on but redaction off. Ignored when `edit` is false.
+   * @param {boolean} [options.editText=edit] - Enable the Edit Text tool and its toolbar button.
+   *   Defaults to `edit`. Pass `false` to keep editing on but text editing off.
    * @param {number} [options.docMemoryBudgetMB] - Device memory budget for open documents; opening past it is refused.
    *   Defaults to 600 on iOS-class WebKit and unlimited elsewhere.
    * @param {ScribeViewer} [options.scribe] - Attach to an existing `ScribeViewer` instance instead
@@ -152,6 +155,7 @@ class ScribePDFViewer {
       comments = false,
       edit = true,
       redact = edit,
+      editText = edit,
     } = options;
 
     this.container = container;
@@ -827,6 +831,19 @@ class ScribePDFViewer {
         this.scribe._onRedactMark = onMark;
         this._teardownCallbacks.push(this._redactTool.installBehaviors());
       }
+
+      /** @type {?ReturnType<typeof createEditTextTool>} */
+      this._editTextTool = null;
+      if (editText) {
+        this._editTextTool = createEditTextTool(this.scribe);
+        if (this._toolbarButtonsElem) {
+          this._toolbarButtonsElem.appendChild(makeSeparator());
+          this._toolbarButtonsElem.appendChild(this._editTextTool.toolbarElem);
+        }
+        this._teardownCallbacks.push(this._editTextTool.installBehaviors());
+        // The boot-time control sync runs before this tool exists, so apply its gating now.
+        this._syncDocGatedControls();
+      }
     }
   }
 
@@ -993,6 +1010,9 @@ class ScribePDFViewer {
     // The panel toggles above also decide the phone sheet's tabs.
     this._syncDockPanelsBtn();
     this._syncDocGatedControls();
+    // Deferred text extraction can add the first visible native words after load.
+    const loadedDoc = this.doc;
+    loadedDoc?.textReady?.then(() => { if (this.doc === loadedDoc) this._syncDocGatedControls(); }).catch(() => {});
 
     // A load is not a user toggle, so the reopened rail lands instantly rather than sliding in.
     if (!prev && !this._phoneChrome && this._sidebarWhenLoaded) {
@@ -2641,6 +2661,19 @@ class ScribePDFViewer {
       el.classList.toggle('disabled', disabled);
       el.ariaDisabled = disabled ? 'true' : 'false';
       el.tabIndex = disabled ? -1 : 0;
+    }
+
+    // Deferred text extraction can add visible native text after load, so the load path re-syncs on textReady.
+    const editBtn = this._editTextTool?.toolbarElem;
+    if (editBtn) {
+      const editable = !disabled && !!this.doc.ocr?.active?.some((page) => {
+        const nt = this.doc ? nativeTextForPage(this.doc, page) : {};
+        return page?.lines?.some((line) => line.words.some((w) => nt[w.id]));
+      });
+      if (!editable && editBtn.classList.contains('active')) editBtn.click();
+      editBtn.classList.toggle('disabled', !editable);
+      editBtn.ariaDisabled = !editable ? 'true' : 'false';
+      editBtn.tabIndex = !editable ? -1 : 0;
     }
   }
 
