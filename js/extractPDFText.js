@@ -81,7 +81,8 @@ export async function extractInternalPDFText(doc, options = {}) {
       const arr = doc.images.pdfData instanceof Uint8Array ? doc.images.pdfData : new Uint8Array(doc.images.pdfData);
       const objCache = new ObjectCache(arr, parseXref(arr, findXrefOffset(arr)));
       const rawPages = getPageObjects(objCache);
-      applyDocParagraphLayout(objCache, arr, rawPages, doc.ocr.pdf.map((pageObj) => ({ pageObj })), type);
+      // Passing whole results would also hand over `dataTablePage`, which this path has never fed to the table-region pass.
+      applyDocParagraphLayout(objCache, arr, rawPages, pageResults.map(({ pageObj, wordSignals }) => ({ pageObj, wordSignals })), type);
     } catch { /* */ }
   }
 

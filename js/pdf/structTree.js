@@ -199,21 +199,18 @@ export function buildStructElemMap(objCache, pdfBytes, pageObjs) {
 }
 
 /**
- * Stamp `word.structElemId` (owning block-element object number) and `word.structElemTag` onto every word, from the resolved element map.
- * `word.mcid` and `word.structTag` come from the content stream and are left untouched: `structTag` is the raw stream tag, while `structElemTag` is the resolved tree element's tag.
- * @param {Array<{pageObj: OcrPage}|null>} results - parsed pages (index = page index), mutated in place.
+ * Fill `structElemId` and `structElemTag` on each page's word signals, from the resolved element map.
+ * @param {Array<{wordSignals?: Map<OcrWord, PdfWordSignal>}|null>} results - parsed pages (index = page index).
  * @param {Map<string, {elemNum: number, tag: string}>} elemMap
  */
-export function stampStructIds(results, elemMap) {
+export function resolveStructElems(results, elemMap) {
   for (let n = 0; n < results.length; n++) {
     const r = results[n];
-    if (!r || !r.pageObj || !r.pageObj.lines) continue;
-    for (const line of r.pageObj.lines) {
-      for (const word of line.words) {
-        if (word.mcid == null) continue;
-        const o = elemMap.get(`${n}:${word.mcid}`);
-        if (o) { word.structElemId = o.elemNum; word.structElemTag = o.tag; }
-      }
+    if (!r || !r.wordSignals) continue;
+    for (const sig of r.wordSignals.values()) {
+      if (sig.mcid == null) continue;
+      const o = elemMap.get(`${n}:${sig.mcid}`);
+      if (o) { sig.structElemId = o.elemNum; sig.structElemTag = o.tag; }
     }
   }
 }

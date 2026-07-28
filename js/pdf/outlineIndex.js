@@ -227,15 +227,3 @@ export function buildOutlineHeadingIndex(objCache, pdfBytes, pageObjs) {
   walk(Number(firstM[1]));
   return index.size ? index : null;
 }
-
-/**
- * Stamp `page.outlineHeadings` (the page's Set of normalized heading-anchor titles) from the resolved index.
- * @param {Array<{pageObj: OcrPage}|null>} results - per-page parse results (index = page index).
- * @param {Map<number, Set<string>>} headingIndex
- */
-export function stampOutlineHeadings(results, headingIndex) {
-  for (const [idx, set] of headingIndex) {
-    const r = results[idx];
-    if (r && r.pageObj) r.pageObj.outlineHeadings = set;
-  }
-}

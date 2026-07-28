@@ -17,6 +17,27 @@ async function readPdfBytes(pdfPath) {
   return new Uint8Array(await response.arrayBuffer());
 }
 
+/**
+ * Field names an import wrote onto pages or words beyond those OcrPage and OcrWord declare.
+ * The PDF parser once kept its own scratch data there: /Artifact flags, marked-content and structure ids, bookmark anchors.
+ * Nothing removed them again, so every one reached the user's saved .scribe file.
+ * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} d
+ */
+const strayFields = (d) => {
+  const pageFields = ['angle', 'dims', 'lines', 'n', 'pars', 'rules', 'tableBoxes', 'textSource'];
+  const wordFields = ['bbox', 'chars', 'compTruth', 'conf', 'debug', 'footnoteParId', 'id', 'lang', 'line',
+    'lineNum', 'matchTruth', 'poly', 'style', 'styleRuns', 'text', 'textAlt', 'visualCoords'];
+  const page = new Set();
+  const word = new Set();
+  for (const p of d.ocr.active) {
+    Object.keys(p).filter((k) => !pageFields.includes(k)).forEach((k) => page.add(k));
+    for (const line of p.lines) {
+      for (const w of line.words) Object.keys(w).filter((k) => !wordFields.includes(k)).forEach((k) => word.add(k));
+    }
+  }
+  return { page: [...page], word: [...word] };
+};
+
 /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
 let doc;
 
@@ -61,6 +82,9 @@ describe('Trailing punctuation across italic/roman style boundaries (070823vanli
     expect(words[9].style.italic, 'italic body style lost on the mixed-style word').toBe(true);
     expect(words[9].styleRuns, 'roman trailing comma not captured as a style run on native-PDF import').toEqual([{ i: 5, style: { italic: false } }]);
     expect(words[8].styleRuns, 'uniform-style word should carry no style runs').toBeUndefined();
+
+    // This PDF has bookmarks, so its heading anchors are what once landed on the pages in a previous, bugged version.
+    expect(strayFields(doc).page, 'parse-time data was stamped onto OcrPage, so it serializes into every .scribe export').toEqual([]);
   });
 
   afterAll(async () => {
@@ -599,6 +623,9 @@ describe('Check that PDF imports split lines correctly.', () => {
     // as a single word; HEAD's parser split it into 2 words and the test tolerated that.
     expect(doc.ocr.active[3].lines[105].words.length).toBe(1);
     expect(doc.ocr.active[3].lines[105].words[0].text).toBe('Anyfin');
+
+    // This PDF is tagged, so its /Artifact flags and marked-content ids are what once landed on the words in a previous, bugged version.
+    expect(strayFields(doc).word, 'parse-time data was stamped onto OcrWord, so it serializes into every .scribe export').toEqual([]);
   });
 
   test('Should correctly parse PDF lines (3rd doc)', async () => {

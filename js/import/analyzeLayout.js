@@ -9,10 +9,13 @@ const CJK_RE = /[\u1100-\u11FF\u3000-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF\uFF00-\uFF
  * Document-level layout analysis and paragraph detection for native-text PDFs, written back onto `pages` in place.
  *
  * @param {Array<OcrPage>} pages - all pages of one document, lines already in reading order.
- * @param {{ debug?: boolean, elementFaithful?: boolean, pdfType?: ("image"|"text"|"ocr") }} [opts]
+ * @param {{ debug?: boolean, elementFaithful?: boolean, pdfType?: ("image"|"text"|"ocr"),
+ *   wordSignals?: (Map<OcrWord, PdfWordSignal>|null), outlineHeadings?: (Map<OcrPage, Set<string>>|null) }} [opts]
  * @returns {object} the derived document model, for diagnostics and tests only.
  */
 export function analyzeLayout(pages, opts = {}) {
+  const wordSignals = opts.wordSignals || null;
+  const outlineHeadings = opts.outlineHeadings || null;
   // Phase 1: per-line feature vectors (one entry per line, across all pages).
   /** @type {Array<LineFeat>} */
   const feats = [];
@@ -42,7 +45,7 @@ export function analyzeLayout(pages, opts = {}) {
       wSzKeys.length = 0; wSzWts.length = 0;
       wFamKeys.length = 0; wFamWts.length = 0;
       wColKeys.length = 0; wColWts.length = 0;
-      // Char-weighted dominant owning structure element (word.structElemId) over the line.
+      // Char-weighted dominant owning structure element over the line.
       wParKeys.length = 0; wParWts.length = 0; wParRoles.length = 0;
       // += cons strings pay a flatten-and-copy at the first charCodeAt or regex over the text, so the line text is built flat with one join.
       // A length-reset reused buffer joins slower than a fresh array.
@@ -53,7 +56,8 @@ export function analyzeLayout(pages, opts = {}) {
         nChar += wl;
         if (word.style.bold) nBold += wl;
         if (word.style.italic) nItal += wl;
-        if (word.artifact) nArt += wl;
+        const sig = wordSignals ? wordSignals.get(word) : undefined;
+        if (sig && sig.artifact) nArt += wl;
         const sz = word.style.size || 0;
         if (sz) {
           const k = wSzKeys.indexOf(sz);
@@ -69,9 +73,9 @@ export function analyzeLayout(pages, opts = {}) {
           const k = wColKeys.indexOf(col);
           if (k >= 0) wColWts[k] += wl; else { wColKeys.push(col); wColWts.push(wl); }
         }
-        if (word.structElemId != null) {
-          const k = wParKeys.indexOf(word.structElemId);
-          if (k >= 0) { wParWts[k] += wl; wParRoles[k] = word.structElemTag; } else { wParKeys.push(word.structElemId); wParWts.push(wl); wParRoles.push(word.structElemTag); }
+        if (sig && sig.structElemId != null) {
+          const k = wParKeys.indexOf(sig.structElemId);
+          if (k >= 0) { wParWts[k] += wl; wParRoles[k] = sig.structElemTag; } else { wParKeys.push(sig.structElemId); wParWts.push(wl); wParRoles.push(sig.structElemTag); }
         }
         wTexts.push(word.text);
       }
@@ -1697,7 +1701,7 @@ export function analyzeLayout(pages, opts = {}) {
   // Bookmarks name headings that classifyRole cannot detect: same size and weight as body text.
   for (const f of feats) {
     if (f.role !== 'body') continue;
-    const anchors = pages[f.page] && pages[f.page].outlineHeadings;
+    const anchors = outlineHeadings && outlineHeadings.get(pages[f.page]);
     if (anchors && anchors.has(normalizeHeadingText(f.text))) f.role = 'heading';
   }
 
@@ -2146,7 +2150,7 @@ export function analyzeLayout(pages, opts = {}) {
       // A split-off leading line number shifts a transcript turn's left bbox into the testimony column, which reads as a false both-side inset, so lnSplit turns are excluded here.
       // A genuine inset quotation is not line-numbered on its own quoted lines, so it never lands in lnSplitPars and this guard drops no real block quote.
       if (hangMarkerPars.has(par) || lnSplitPars.has(par)) continue;
-      if (structQuotePars.has(par) || par.lines.some((l) => l.blockRegion) || geo) par.type = 'blockquote';
+      if (structQuotePars.has(par) || geo) par.type = 'blockquote';
     }
   }
 

@@ -21,8 +21,8 @@ import {
 import { cmykToRgb } from './pdfColorFunctions.js';
 import { assignParagraphs } from '../utils/reflowPars.js';
 import { analyzeLayout } from '../import/analyzeLayout.js';
-import { buildStructElemMap, stampStructIds, docAuthoredByWord } from './structTree.js';
-import { buildOutlineHeadingIndex, stampOutlineHeadings } from './outlineIndex.js';
+import { buildStructElemMap, resolveStructElems, docAuthoredByWord } from './structTree.js';
+import { buildOutlineHeadingIndex } from './outlineIndex.js';
 
 /** @typedef {import('./parsePdfUtils.js').PDFToken} PDFToken */
 /** @typedef {import('../objects/ocrObjects.js').OcrPage} OcrPage */
@@ -163,7 +163,7 @@ function isBulletChar(text = '') {
  * @param {Array<PDFToken>} tokens
  * @param {Map<string, { objNum: number }>} formXObjects
  * @param {number[]} initialCtm
- * @param {{ tc: number, tw: number, tl: number, tz: number, trise: number }} [initialTextState]
+ * @param {{ tc: number, tw: number, tl: number, tz: number, trise: number, artifact?: boolean }} [initialTextState]
  */
 function findDoOperators(tokens, formXObjects, initialCtm, initialTextState) {
   const doOps = [];
@@ -784,6 +784,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
     longestBrokenRun,
     pageSize: [Math.round(visualWidthPts), Math.round(visualHeightPts)],
   };
+  /** @type {Array<{left: number, right: number, y: number, color: number[], isUnderline?: boolean}>} */
   const underlineRects = [];
   for (const path of paths) {
     if (!path.fill && !path.stroke) continue;
@@ -847,7 +848,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   }
 
   const {
-    pageObj, langSet, fontSet, dataTablePage,
+    pageObj, langSet, fontSet, wordSignals, dataTablePage,
   } = groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects, paths, scale, visualHeightPts, boxOriginX, boxOriginY, pageHasMath);
 
   // Carry the page's thin horizontal rules (same scaled top-left space as line bboxes) onto the page so analyzeLayout can split paragraphs at a drawn separator rule.
@@ -927,7 +928,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   annotations.push(...linkAnnots);
 
   return {
-    pageObj, langSet, fontSet, dataTablePage, pageStats, annotations,
+    pageObj, langSet, fontSet, wordSignals, dataTablePage, pageStats, annotations,
   };
 }
 
@@ -939,21 +940,34 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
  * @param {ObjectCache} objCache
  * @param {Uint8Array} pdfBytes
  * @param {Array<{objNum: number, objText: string}>} pages - page objects (index = page index).
- * @param {Array<{pageObj: OcrPage}|null>} results - parsed pages (index = page index), mutated in place.
+ * @param {Array<{pageObj: OcrPage, wordSignals?: Map<OcrWord, PdfWordSignal>, dataTablePage?: LayoutDataTablePage}|null>} results - parsed pages (index = page index).
  * @param {"image"|"text"|"ocr"} [pdfType] - document text-quality class, used to disable the footnote subsystem on scanned line-numbered transcripts.
  *   Computed by the caller because some callers' results lack the char scores needed to derive it here.
  */
 export function applyDocParagraphLayout(objCache, pdfBytes, pages, results, pdfType = 'text') {
-  // Tagged-PDF structural signals: stamp each word with its owning structure element so analyzeLayout can group lines by paragraph element where the tags are trustworthy.
   try {
     const elemMap = buildStructElemMap(objCache, pdfBytes, pages);
-    if (elemMap) stampStructIds(results, elemMap);
+    if (elemMap) resolveStructElems(results, elemMap);
   } catch { /* */ }
 
-  // Document outlines (bookmarks): stamp each heading-shaped bookmark's target page so analyzeLayout can promote the matching line to a heading that geometry alone misses.
+  // The per-page signal maps merge into one doc-level map because analyzeLayout sees a filtered page array that no longer aligns with `results` by index.
+  /** @type {Map<OcrWord, PdfWordSignal>} */
+  const wordSignals = new Map();
+  for (const r of results) {
+    if (!r || !r.wordSignals) continue;
+    for (const [word, sig] of r.wordSignals) wordSignals.set(word, sig);
+  }
+
+  /** @type {Map<OcrPage, Set<string>>} */
+  const outlineHeadings = new Map();
   try {
     const headingIndex = buildOutlineHeadingIndex(objCache, pdfBytes, pages);
-    if (headingIndex) stampOutlineHeadings(results, headingIndex);
+    if (headingIndex) {
+      for (const [idx, set] of headingIndex) {
+        const r = results[idx];
+        if (r && r.pageObj) outlineHeadings.set(r.pageObj, set);
+      }
+    }
   } catch { /* outlines are opportunistic; never let them break text extraction */ }
 
   // Microsoft Word emits one struct element per paragraph, so on Word-authored docs analyzeLayout can treat element boundaries as paragraph boundaries outright.
@@ -989,11 +1003,15 @@ export function applyDocParagraphLayout(objCache, pdfBytes, pages, results, pdfT
       return {
         left, top, right, bottom,
       };
-    }).filter(Boolean);
+    }).filter((b) => b !== null);
   }
   // analyzeLayout assigns paragraphs and roles across all pages at once, overwriting the per-page assignParagraphs result.
   const docPages = results.filter((r) => r && r.pageObj && r.pageObj.lines.length > 0).map((r) => r.pageObj);
-  if (docPages.length > 0) analyzeLayout(docPages, { elementFaithful, pdfType });
+  if (docPages.length > 0) {
+    analyzeLayout(docPages, {
+      elementFaithful, pdfType, wordSignals: wordSignals.size ? wordSignals : null, outlineHeadings,
+    });
+  }
 }
 
 /**
@@ -1092,6 +1110,9 @@ export function detectPdfType(pdfBytes) {
  *   dirX: number, dirY: number,
  *   textColor?: number[],
  *   alpha?: number,
+ *   artifact?: boolean,
+ *   structTag?: string,
+ *   mcid?: (number|null),
  *   _perpDist?: number
  * }} PositionedChar
  */
@@ -1104,7 +1125,7 @@ export function detectPdfType(pdfBytes) {
  * @param {number} pageHeightPts - visual page height in PDF points (after /Rotate)
  * @param {number[]} [initialCtm] - initial CTM incorporating /Rotate transform
  * @param {Map<string, { fillAlpha: ?number }>} [extGStates] - ExtGState map (name → entry) for `gs` operator
- * @param {{ tc: number, tw: number, tl: number, tz: number, trise: number }} [inheritedTextState] - Text state inherited at Form XObject `Do` call time
+ * @param {{ tc: number, tw: number, tl: number, tz: number, trise: number, artifact?: boolean }} [inheritedTextState] - Text state inherited at Form XObject `Do` call time
  * @returns {Array<PositionedChar>}
  */
 function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, extGStates, inheritedTextState) {
@@ -1581,7 +1602,8 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
  * @param {number} n - page number (0-indexed)
  * @param {number} pageWidth - in pixels at target DPI
  * @param {number} pageHeight - in pixels at target DPI
- * @param {Array<{left: number, right: number, y: number, color?: number[]}>} [underlineRects] - thin horizontal rectangles for underline detection
+ * @param {Array<{left: number, right: number, y: number, color?: number[], isUnderline?: boolean}>} [underlineRects] - thin horizontal rectangles to match against words as underlines.
+ *   Matched rects are flagged in place with `isUnderline`.
  * @param {Array} [paths] - raw vector paths from parsePagePaths
  * @param {number} [scale] - DPI scale factor
  * @param {number} [visualHeightPts] - page height in points
@@ -1593,10 +1615,12 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
   const pageObj = new ocr.OcrPage(n, { width: pageWidth, height: pageHeight });
   const langSet = new Set();
   const fontSet = new Set();
+  /** @type {Map<OcrWord, PdfWordSignal>} */
+  const wordSignals = new Map();
 
   if (chars.length === 0) {
     return {
-      pageObj, langSet, fontSet, dataTablePage: new LayoutDataTablePage(n),
+      pageObj, langSet, fontSet, wordSignals, dataTablePage: new LayoutDataTablePage(n),
     };
   }
 
@@ -2658,10 +2682,14 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
       wordObj.conf = 100;
       wordObj.visualCoords = false;
       wordObj.lang = wordLang;
-      // Carry the /Artifact furniture flag to the word so the layout pass can label furniture from the document's own tagging.
-      if (wordChars.some((c) => c.artifact)) wordObj.artifact = true;
+      // On OcrWord these signals would serialize into every .scribe export and outlive their only consumer, the layout pass.
+      const artifact = wordChars.some((c) => c.artifact);
       const sChar = wordChars.find((c) => c.structTag) || null;
-      if (sChar) { wordObj.structTag = sChar.structTag; wordObj.mcid = sChar.mcid; }
+      if (artifact || sChar) {
+        wordSignals.set(wordObj, {
+          artifact, mcid: sChar?.mcid ?? null, structElemId: null, structElemTag: null,
+        });
+      }
 
       // Style from first alphanumeric character (matching mupdf behavior for leading punctuation)
       const firstAlphaNum = wordChars.find((c) => /[A-Za-z\d]/.test(c.text)) || wordChars[0];
@@ -2842,6 +2870,6 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
   }
 
   return {
-    pageObj, langSet, fontSet, dataTablePage,
+    pageObj, langSet, fontSet, wordSignals, dataTablePage,
   };
 }

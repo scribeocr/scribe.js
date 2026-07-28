@@ -29,6 +29,18 @@ declare global {
     // `stext` indicates the text was extracted directly from a PDF using mupdf.
     type TextSource = null | 'tesseract' | 'textract' | 'google_vision' | 'google_doc_ai' | 'abbyy' | 'alto' | 'stext' | 'hocr' | 'text' | 'azure_doc_intel' | 'docx';
 
+    /**
+     * Signals read from a tagged PDF's marked content and structure tree for one word.
+     * Produced while parsing and consumed by the layout pass of that same import.
+     */
+    type PdfWordSignal = {
+        artifact: boolean;
+        mcid: number | null;
+        /** Object number of the structure element owning this word, once inline tags have rolled up to their block ancestor. */
+        structElemId: number | null;
+        structElemTag: string | null;
+    };
+
     type FontState = {
         enableOpt: boolean;
         forceOpt: boolean;
