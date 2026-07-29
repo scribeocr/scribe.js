@@ -1245,12 +1245,15 @@ export const contextMenuFunc = (viewer, event) => {
     if (viewer._editTextActive) {
       const lineTarget = viewer._editTextMenuTarget
         ? viewer._editTextMenuTarget(event.clientX, event.clientY) : null;
-      if (!lineTarget) {
+      const selectedCount = !lineTarget && viewer._editTextSelectedLines
+        ? viewer._editTextSelectedLines().length : 0;
+      if (!lineTarget && selectedCount === 0) {
         event.preventDefault();
         hideContextMenu();
         return;
       }
-      contextMenuEditLineButtonElem.style.display = 'initial';
+      // Edit Line acts on the line under the cursor, so a menu opened over blank space omits it.
+      if (lineTarget) contextMenuEditLineButtonElem.style.display = 'initial';
       contextMenuCopyLineTextButtonElem.style.display = 'initial';
       contextMenuDeleteTextLinesButtonElem.style.display = 'initial';
       showMenuForEvent(viewer, event, null);
