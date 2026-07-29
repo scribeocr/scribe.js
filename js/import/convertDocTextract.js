@@ -218,13 +218,15 @@ function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, page
 
   const wordBlocks = /** @type {TextractBlock[]} */ (childIds.map((wordId) => blockMap.get(wordId)).filter((block) => block && block.BlockType === 'WORD'));
 
+  const wordPolys = /** @type {Map<string, Polygon>} */ (new Map());
+
   wordBlocks.forEach((wordBlock, wordIndex) => {
     const bboxWord = convertBoundingBox(wordBlock.Geometry.BoundingBox, pageDims);
     const id = `word_${pageNum + 1}_${lineIndex + 1}_${wordIndex + 1}`;
 
-    const poly = convertPolygon(wordBlock.Geometry.Polygon, pageDims, pageOrientation);
+    wordPolys.set(id, convertPolygon(wordBlock.Geometry.Polygon, pageDims, pageOrientation));
 
-    const wordObj = new ocr.OcrWord(lineObj, id, wordBlock.Text, bboxWord, poly);
+    const wordObj = new ocr.OcrWord(lineObj, id, wordBlock.Text, bboxWord);
     wordObj.conf = wordBlock.Confidence || 100;
 
     lineObj.words.push(wordObj);
@@ -255,12 +257,14 @@ function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, page
       word.bbox.top = pageDims.width - wordBox.right;
       word.bbox.right = wordBox.bottom;
       word.bbox.bottom = pageDims.width - wordBox.left;
-      word.poly = {
-        tl: { x: word.poly.tr.y, y: pageDims.width - word.poly.tr.x },
-        tr: { x: word.poly.br.y, y: pageDims.width - word.poly.br.x },
-        br: { x: word.poly.bl.y, y: pageDims.width - word.poly.bl.x },
-        bl: { x: word.poly.tl.y, y: pageDims.width - word.poly.tl.x },
-      };
+    });
+    wordPolys.forEach((poly, id) => {
+      wordPolys.set(id, {
+        tl: { x: poly.tr.y, y: pageDims.width - poly.tr.x },
+        tr: { x: poly.br.y, y: pageDims.width - poly.br.x },
+        br: { x: poly.bl.y, y: pageDims.width - poly.bl.x },
+        bl: { x: poly.tl.y, y: pageDims.width - poly.tl.x },
+      });
     });
     polyLine = {
       tl: { x: polyLine0.tr.y, y: pageDims.width - polyLine0.tr.x },
@@ -280,12 +284,14 @@ function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, page
       word.bbox.top = pageDims.height - wordBox.bottom;
       word.bbox.right = pageDims.width - wordBox.left;
       word.bbox.bottom = pageDims.height - wordBox.top;
-      word.poly = {
-        tl: { x: pageDims.width - word.poly.br.x, y: pageDims.height - word.poly.br.y },
-        tr: { x: pageDims.width - word.poly.bl.x, y: pageDims.height - word.poly.bl.y },
-        br: { x: pageDims.width - word.poly.tl.x, y: pageDims.height - word.poly.tl.y },
-        bl: { x: pageDims.width - word.poly.tr.x, y: pageDims.height - word.poly.tr.y },
-      };
+    });
+    wordPolys.forEach((poly, id) => {
+      wordPolys.set(id, {
+        tl: { x: pageDims.width - poly.br.x, y: pageDims.height - poly.br.y },
+        tr: { x: pageDims.width - poly.bl.x, y: pageDims.height - poly.bl.y },
+        br: { x: pageDims.width - poly.tl.x, y: pageDims.height - poly.tl.y },
+        bl: { x: pageDims.width - poly.tr.x, y: pageDims.height - poly.tr.y },
+      });
     });
     polyLine = {
       tl: { x: pageDims.width - polyLine0.br.x, y: pageDims.height - polyLine0.br.y },
@@ -305,12 +311,14 @@ function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, page
       word.bbox.top = wordBox.left;
       word.bbox.right = pageDims.height - wordBox.top;
       word.bbox.bottom = wordBox.right;
-      word.poly = {
-        tl: { x: pageDims.height - word.poly.bl.y, y: word.poly.bl.x },
-        tr: { x: pageDims.height - word.poly.tl.y, y: word.poly.tl.x },
-        br: { x: pageDims.height - word.poly.tr.y, y: word.poly.tr.x },
-        bl: { x: pageDims.height - word.poly.br.y, y: word.poly.br.x },
-      };
+    });
+    wordPolys.forEach((poly, id) => {
+      wordPolys.set(id, {
+        tl: { x: pageDims.height - poly.bl.y, y: poly.bl.x },
+        tr: { x: pageDims.height - poly.tl.y, y: poly.tl.x },
+        br: { x: pageDims.height - poly.tr.y, y: poly.tr.x },
+        bl: { x: pageDims.height - poly.br.y, y: poly.br.x },
+      });
     });
     polyLine = {
       tl: { x: pageDims.height - polyLine0.bl.y, y: polyLine0.bl.x },
@@ -326,7 +334,7 @@ function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, page
     lineObj.baseline[0] = (polyLine.br.y - polyLine.bl.y) / (polyLine.br.x - polyLine.bl.x);
   }
 
-  splitUnicodeSuperscripts(lineObj);
+  splitUnicodeSuperscripts(lineObj, wordPolys);
 
   const descCharRegex = new RegExp(`[${descCharArr.join('')}]`);
   const ascCharRegex = new RegExp(`[${ascCharArr.join('')}]`);
@@ -343,13 +351,14 @@ function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, page
 
   for (let i = 0; i < lineObj.words.length; i++) {
     const word = lineObj.words[i];
+    const wordPoly = /** @type {Polygon} */ (wordPolys.get(word.id));
 
     if (descCharRegex.test(word.text)) {
       descWords.push(word);
     }
     if (!descCharRegex.test(word.text) && (xCharRegex.test(word.text) || ascCharRegex.test(word.text))) {
       nonDescWords.push(word);
-      nonDescWordsPoly.push(word.poly);
+      nonDescWordsPoly.push(wordPoly);
     }
     // The `ascCharRegex` array purposefully does not contain `f`, as it varies wildly in height,
     // and this array was primarily created for formats where we have character-level data.
@@ -357,11 +366,11 @@ function convertLineTextract(lineBlock, blockMap, relationshipMap, pageObj, page
     if (xCharRegex.test(word.text) && !ascCharRegex.test(word.text)
       && !descCharRegex.test(word.text) && !/[fi]/.test(word.text)) {
       xOnlyWords.push(word);
-      xOnlyWordsPoly.push(word.poly);
+      xOnlyWordsPoly.push(wordPoly);
     }
     if (ascCharRegex.test(word.text) && !descCharRegex.test(word.text)) {
       ascOnlyWords.push(word);
-      ascOnlyWordsPoly.push(word.poly);
+      ascOnlyWordsPoly.push(wordPoly);
     }
     if (descCharRegex.test(word.text) && !ascCharRegex.test(word.text)) {
       descOnlyWords.push(word);

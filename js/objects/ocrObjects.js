@@ -157,9 +157,8 @@ export function WordDebugInfo() {
  * @param {string} id
  * @param {string} text
  * @param {bbox} bbox
- * @param {Polygon} [poly]
  */
-export function OcrWord(line, id, text, bbox, poly) {
+export function OcrWord(line, id, text, bbox) {
   /** @type {string} */
   this.text = text;
   /** @type {?string} */
@@ -188,8 +187,6 @@ export function OcrWord(line, id, text, bbox, poly) {
   this.conf = 0;
   /** @type {bbox} */
   this.bbox = bbox;
-  /** @type {?Polygon} */
-  this.poly = poly || null;
   /** @type {boolean} */
   this.compTruth = false;
   /** @type {boolean} */
@@ -741,6 +738,7 @@ export function clonePageFull(page) {
  * Highlight and text-selection resolve the on-screen selection to words by id, so shared ids would make them act on every copy at once.
  * Within-page links are object references, so renumbering does not break them.
  * @param {OcrPage} page
+ * @returns {Map<string, string>} Old word id -> new word id, for remapping external references such as text-edit records.
  */
 export function reIdPage(page) {
   /** @type {Map<string, string>} */
@@ -787,7 +785,6 @@ function cloneLine(line) {
  */
 function cloneWord(word) {
   const wordNew = new OcrWord(word.line, word.id, word.text, { ...word.bbox });
-  if (word.poly) wordNew.poly = { ...word.poly };
   wordNew.conf = word.conf;
   wordNew.style = { ...word.style };
   if (word.styleRuns) wordNew.styleRuns = word.styleRuns.map((run) => ({ i: run.i, style: { ...run.style } }));
@@ -1205,6 +1202,9 @@ export const updateOcrFormat = (pages) => {
         }
         // @ts-ignore
         delete word.raw;
+        // Older .scribe files carry `poly` on every word, so drop it here or it re-exports forever.
+        // @ts-ignore
+        delete word.poly;
       });
     });
   });

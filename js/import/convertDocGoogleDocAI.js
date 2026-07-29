@@ -148,15 +148,8 @@ export async function convertDocGoogleDocAI({ ocrStr, pageDims, pageNum }) {
           bottom: Math.max(...ys),
         };
 
-        const wordPoly = {
-          tl: tokenVertices[0],
-          tr: tokenVertices[1],
-          br: tokenVertices[2],
-          bl: tokenVertices[3],
-        };
-
         const wordId = `word_${n + 1}_${pageObj.lines.length + 1}_${l + 1}`;
-        const wordObj = new ocr.OcrWord(lineObj, wordId, wordText, wordBbox, wordPoly);
+        const wordObj = new ocr.OcrWord(lineObj, wordId, wordText, wordBbox);
 
         wordObj.conf = Math.round((tokenLayout.confidence || 0) * 100);
 

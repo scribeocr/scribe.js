@@ -14,8 +14,9 @@ const superscriptCharsRegex = /[⁰¹²³⁴⁵⁶⁷⁸⁹ᵃᵇᶜᵈᵉᶠᵍ
 /**
  * Splits words containing unicode superscript characters into separate words.
  * @param {OcrLine} lineObj
+ * @param {Map<string, Polygon>} [wordPolys] - Quadrilateral word bounds, keyed by word id, edited in place.
  */
-export function splitUnicodeSuperscripts(lineObj) {
+export function splitUnicodeSuperscripts(lineObj, wordPolys) {
   const newWords = [];
 
   for (let i = 0; i < lineObj.words.length; i++) {
@@ -58,6 +59,9 @@ export function splitUnicodeSuperscripts(lineObj) {
     const totalChars = text.length;
     let charOffset = 0;
 
+    // The loop overwrites this entry when it writes the first segment.
+    const wordPoly = wordPolys?.get(wordObj.id);
+
     for (let j = 0; j < segments.length; j++) {
       const segment = segments[j];
       const segmentChars = segment.text.length;
@@ -85,40 +89,39 @@ export function splitUnicodeSuperscripts(lineObj) {
       const segmentText = segment.isSup ? removeSuperscript(segment.text) : segment.text;
 
       // Calculate proportional polygon based on character position
-      let segmentPoly;
-      if (wordObj.poly) {
-        const polyWidth = wordObj.poly.tr.x - wordObj.poly.tl.x;
-        const polyBottomWidth = wordObj.poly.br.x - wordObj.poly.bl.x;
-        const polyHeight = ((wordObj.poly.bl.y - wordObj.poly.tl.y) + (wordObj.poly.br.y - wordObj.poly.tr.y)) / 2;
+      if (wordPoly) {
+        const polyWidth = wordPoly.tr.x - wordPoly.tl.x;
+        const polyBottomWidth = wordPoly.br.x - wordPoly.bl.x;
+        const polyHeight = ((wordPoly.bl.y - wordPoly.tl.y) + (wordPoly.br.y - wordPoly.tr.y)) / 2;
 
         const blY = segment.isSup
-          ? wordObj.poly.tl.y + polyHeight * supHeightRatio
-          : wordObj.poly.bl.y;
+          ? wordPoly.tl.y + polyHeight * supHeightRatio
+          : wordPoly.bl.y;
         const brY = segment.isSup
-          ? wordObj.poly.tr.y + polyHeight * supHeightRatio
-          : wordObj.poly.br.y;
+          ? wordPoly.tr.y + polyHeight * supHeightRatio
+          : wordPoly.br.y;
 
-        segmentPoly = {
+        wordPolys.set(segmentId, {
           tl: {
-            x: wordObj.poly.tl.x + polyWidth * startRatio,
-            y: wordObj.poly.tl.y,
+            x: wordPoly.tl.x + polyWidth * startRatio,
+            y: wordPoly.tl.y,
           },
           tr: {
-            x: wordObj.poly.tl.x + polyWidth * endRatio,
-            y: wordObj.poly.tr.y,
+            x: wordPoly.tl.x + polyWidth * endRatio,
+            y: wordPoly.tr.y,
           },
           bl: {
-            x: wordObj.poly.bl.x + polyBottomWidth * startRatio,
+            x: wordPoly.bl.x + polyBottomWidth * startRatio,
             y: blY,
           },
           br: {
-            x: wordObj.poly.bl.x + polyBottomWidth * endRatio,
+            x: wordPoly.bl.x + polyBottomWidth * endRatio,
             y: brY,
           },
-        };
+        });
       }
 
-      const segmentWord = new ocr.OcrWord(lineObj, segmentId, segmentText, segmentBbox, segmentPoly);
+      const segmentWord = new ocr.OcrWord(lineObj, segmentId, segmentText, segmentBbox);
       segmentWord.conf = wordObj.conf;
       segmentWord.lang = wordObj.lang;
 

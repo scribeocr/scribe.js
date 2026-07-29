@@ -109,15 +109,8 @@ export async function convertDocAzureDocIntel({ ocrStr, pageDims }) {
           bottom: Math.max(...wordY),
         };
 
-        const wordPoly = {
-          tl: { x: wordData.polygon[0], y: wordData.polygon[1] },
-          tr: { x: wordData.polygon[2], y: wordData.polygon[3] },
-          br: { x: wordData.polygon[4], y: wordData.polygon[5] },
-          bl: { x: wordData.polygon[6], y: wordData.polygon[7] },
-        };
-
         const wordId = `word_${n + 1}_${pageObj.lines.length + 1}_${j + 1}`;
-        const wordObj = new ocr.OcrWord(lineObj, wordId, wordData.content, wordBbox, wordPoly);
+        const wordObj = new ocr.OcrWord(lineObj, wordId, wordData.content, wordBbox);
 
         wordObj.conf = Math.round((wordData.confidence || 0) * 100);
 
