@@ -1583,6 +1583,54 @@ export function createEditTextTool(scribe) {
     scribe._editTextSelectedLines = eligibleSelectedLines;
     scribe._editTextDeleteSelection = deleteSelectedLines;
 
+    /** @param {'bold'|'italic'} prop */
+    const selectionStyleState = (prop) => {
+      const lines = eligibleSelectedLines();
+      let total = 0;
+      let onAll = true;
+      let clearable = false;
+      for (const line of lines) {
+        const nt = nativeTextForPage(scribe.doc, line.page);
+        for (const w of line.words) {
+          total += 1;
+          const has = prop === 'bold' ? w.style.bold : w.style.italic;
+          if (!has) { onAll = false; continue; }
+          const e = nt[w.id];
+          if (e && (prop === 'bold'
+            ? ((e.renderMode === 1 || e.renderMode === 2) && !!e.strokeWidthPx)
+            : !!(e.skew && e.skew.some((v) => v)))) clearable = true;
+        }
+      }
+      // Locked means every word already has the style baked into its face, so there is nothing a toggle could remove.
+      return { present: total > 0, on: total > 0 && onAll, locked: total > 0 && onAll && !clearable };
+    };
+    /** @param {'bold'|'italic'} prop */
+    const toggleSelectionStyle = (prop) => {
+      const lines = eligibleSelectedLines();
+      if (lines.length === 0) return;
+      /** @type {Array<import('../../../js/objects/ocrObjects.js').OcrWord>} */
+      const words = lines.flatMap((l) => l.words);
+      // Word-processor rule: any word lacking the style means the first press applies it to all.
+      const target = words.some((w) => !(prop === 'bold' ? w.style.bold : w.style.italic));
+      (async () => {
+        const pages = new Set();
+        for (const line of lines) {
+          const res = await scribe.doc.replaceTextLine(
+            line,
+            line.words.map((w) => w.text).join(' '),
+            { wordStyles: line.words.map(() => ({ [prop]: target })) },
+          );
+          if (res) for (const p of res.pages) pages.add(p);
+        }
+        if (pages.size > 0) {
+          refreshPages([...pages]);
+          renderFrames();
+        }
+      })().catch((e) => console.error('Edit Text: style toggle failed:', e));
+    };
+    scribe._editTextStyleState = selectionStyleState;
+    scribe._editTextToggleStyle = toggleSelectionStyle;
+
     /** @type {?{info: NonNullable<ReturnType<import('../viewerTextSelection.js').TextSelection['lineInfoAt']>>, x: number, y: number}} */
     let menuTarget = null;
     scribe._editTextMenuTarget = (clientX, clientY) => {
@@ -1645,7 +1693,7 @@ export function createEditTextTool(scribe) {
     };
 
     /**
-     * Eligible lines whose boxes intersect a client-space rect, on every page the rect touches.
+     * Eligible lines whose drawn boxes intersect a client-space rect, on every page the rect touches.
      * @param {{left: number, top: number, right: number, bottom: number}} r
      */
     const linesInClientRect = (r) => {
@@ -1669,7 +1717,10 @@ export function createEditTextTool(scribe) {
           for (const li of indices) {
             const e = idx.lines[li];
             if (!lineEligible(e.line)) continue;
-            if (e.lbox.left < R && e.lbox.right > L && e.rectTop < B && e.rectBottom > T) hits.add(e.line);
+            // The selection band (rectTop/rectBottom) tiles the leading, so a rect over one line would catch its neighbors.
+            const pad = 2;
+            const box = lineDrawBox(e.line, e.lbox);
+            if (box.left - pad < R && box.right + pad > L && box.top - pad < B && box.bottom + pad > T) hits.add(e.line);
           }
         }
       }
@@ -1808,6 +1859,13 @@ export function createEditTextTool(scribe) {
         scribe._editTextCopySelection?.();
         return;
       }
+      if (mod && ['b', 'B', 'i', 'I'].includes(ev.key)) {
+        if (eligibleSelectedLines().length === 0) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        toggleSelectionStyle(ev.key === 'b' || ev.key === 'B' ? 'bold' : 'italic');
+        return;
+      }
       if (ev.key !== 'Delete' && ev.key !== 'Backspace') return;
       if (eligibleSelectedLines().length === 0) return;
       ev.preventDefault();
@@ -1848,6 +1906,8 @@ export function createEditTextTool(scribe) {
       scribe._editTextActive = false;
       scribe._editTextSelectedLines = null;
       scribe._editTextDeleteSelection = null;
+      scribe._editTextStyleState = null;
+      scribe._editTextToggleStyle = null;
       scribe._editTextMenuTarget = null;
       scribe._editTextEditLine = null;
       scribe._editTextCopySelection = null;

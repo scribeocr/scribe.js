@@ -245,6 +245,9 @@ const menuIcon = (inner) => `<svg viewBox="0 0 24 24" fill="none" stroke="curren
 
 const CM_COPY_SVG = menuIcon('<rect x="8.5" y="8.5" width="11" height="11" rx="2"/><path d="M15.5 8.5V6a2 2 0 0 0-2-2h-7a2 2 0 0 0-2 2v7a2 2 0 0 0 2 2h2.5"/>');
 const CM_EDIT_SVG = menuIcon('<path d="M4 20.5h7"/><path d="M14.5 4.5l5 5L9.5 19.5l-6 1 1-6z"/>');
+const CM_BOLD_SVG = menuIcon('<path d="M8 4.5v15"/><path d="M8 4.5h5a3.4 3.4 0 0 1 0 6.8H8"/><path d="M8 11.3h5.7a3.6 3.6 0 0 1 0 7.2H8"/>');
+const CM_ITALIC_SVG = menuIcon('<path d="M10.5 4.5h7"/><path d="M6.5 19.5h7"/><path d="M14 4.5l-4 15"/>');
+const CM_CHECK_SVG = menuIcon('<path d="M5 12.5l4.8 4.8L19 7.5"/>');
 const CM_UNDERLINE_SVG = menuIcon('<path d="M7 4.6v6.4a5 5 0 0 0 10 0V4.6"/><path d="M6 19.4h12"/>');
 const CM_STRIKE_SVG = menuIcon('<path d="M4 12h16"/><path d="M16.4 8.1A4.2 3.1 0 0 0 12 5.6c-2.4 0-4.2 1.2-4.2 2.9M7.6 15.9A4.2 3.1 0 0 0 12 18.4c2.4 0 4.2-1.2 4.2-2.9"/>');
 const CM_COMMENT_SVG = menuIcon('<path d="M20 14.4a2 2 0 0 1-2 2H9.2L5 19.6V6.6a2 2 0 0 1 2-2h11a2 2 0 0 1 2 2Z"/><path d="M12 8.1v4.2M9.9 10.2h4.2"/>');
@@ -289,6 +292,15 @@ const createContextMenuHTML = () => {
     return btn;
   };
 
+  // The two style rows carry a trailing shortcut hint, which no other row needs.
+  const withHint = (btn, hint) => {
+    const h = document.createElement('span');
+    h.className = 'scribe-cm-hint';
+    h.textContent = hint;
+    btn.querySelector('.scribe-cm-inner')?.appendChild(h);
+    return btn;
+  };
+
   // Per-open visibility only shows or hides these rows, never reorders them, so the order here is what the user sees.
   const groups = [
     [
@@ -297,6 +309,10 @@ const createContextMenuHTML = () => {
       item('contextMenuCopyButton', 'Copy', CM_COPY_SVG, copySelectionClick),
       item('contextMenuCopyHighlightButton', 'Copy Highlighted Text', CM_COPY_SVG, copyHighlightClick),
       item('contextMenuCopyLayoutTableContentsButton', 'Copy Table Contents', CM_COPY_SVG, copyTableContentsClick),
+    ],
+    [
+      withHint(item('contextMenuBoldButton', 'Bold', CM_BOLD_SVG, boldToggleClick), 'Ctrl+B'),
+      withHint(item('contextMenuItalicButton', 'Italic', CM_ITALIC_SVG, italicToggleClick), 'Ctrl+I'),
     ],
     [
       item('contextMenuHighlightButton', 'Highlight', CM_SWATCH_HTML, highlightSelectionClick),
@@ -503,6 +519,20 @@ const copyLineTextClick = () => {
   if (viewer._editTextCopySelection) viewer._editTextCopySelection();
 };
 
+/** Toggle bold on the box-selected lines' words (Edit Text mode). */
+const boldToggleClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  if (viewer._editTextToggleStyle) viewer._editTextToggleStyle('bold');
+};
+
+/** Toggle italic on the box-selected lines' words (Edit Text mode). */
+const italicToggleClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  if (viewer._editTextToggleStyle) viewer._editTextToggleStyle('italic');
+};
+
 /** Copy the current text selection. */
 const copySelectionClick = () => {
   const viewer = mv();
@@ -659,6 +689,8 @@ let redactTarget = null;
 /** @type {HTMLButtonElement} */ let contextMenuBookmarkButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuCopyButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuEditLineButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuBoldButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuItalicButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuCopyLineTextButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuCopyHighlightButtonElem;
 /**
@@ -703,6 +735,8 @@ function ensureContextMenu() {
   contextMenuBookmarkButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuBookmarkButton'));
   contextMenuCopyButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCopyButton'));
   contextMenuEditLineButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuEditLineButton'));
+  contextMenuBoldButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuBoldButton'));
+  contextMenuItalicButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuItalicButton'));
   contextMenuCopyLineTextButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCopyLineTextButton'));
   contextMenuCopyHighlightButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCopyHighlightButton'));
 
@@ -774,6 +808,19 @@ function ensureContextMenu() {
     #scribe-context-menu .scribe-cm-danger:hover .scribe-cm-inner {
       background: var(--scribe-danger-soft, #fbe9e7);
       color: var(--scribe-danger, #d1493d);
+    }
+    #scribe-context-menu .scribe-cm-hint {
+      margin-left: auto;
+      padding-left: 18px;
+      font-size: 11px;
+      color: var(--scribe-ink-2, #586170);
+      opacity: 0.75;
+    }
+    #scribe-context-menu button:disabled .scribe-cm-inner {
+      opacity: 0.45;
+    }
+    #scribe-context-menu button:disabled:hover .scribe-cm-inner {
+      background: none;
     }
     #scribe-context-menu .scribe-cm-sep {
       height: 1px;
@@ -858,6 +905,12 @@ export const hideContextMenu = () => {
   contextMenuCopyButtonElem.style.display = 'none';
   contextMenuCopyHighlightButtonElem.style.display = 'none';
   contextMenuEditLineButtonElem.style.display = 'none';
+  contextMenuBoldButtonElem.style.display = 'none';
+  contextMenuBoldButtonElem.disabled = false;
+  contextMenuBoldButtonElem.title = '';
+  contextMenuItalicButtonElem.style.display = 'none';
+  contextMenuItalicButtonElem.disabled = false;
+  contextMenuItalicButtonElem.title = '';
   contextMenuCopyLineTextButtonElem.style.display = 'none';
   menuNode.style.display = 'none';
   _menuViewer = null;
@@ -1255,6 +1308,18 @@ export const contextMenuFunc = (viewer, event) => {
       // Edit Line acts on the line under the cursor, so a menu opened over blank space omits it.
       if (lineTarget) contextMenuEditLineButtonElem.style.display = 'initial';
       contextMenuCopyLineTextButtonElem.style.display = 'initial';
+      if (viewer._editTextStyleState) {
+        /** @type {Array<['bold'|'italic', HTMLButtonElement, string]>} */
+        const styleRows = [['bold', contextMenuBoldButtonElem, CM_BOLD_SVG], ['italic', contextMenuItalicButtonElem, CM_ITALIC_SVG]];
+        for (const [prop, btn, icon] of styleRows) {
+          const s = viewer._editTextStyleState(prop);
+          btn.style.display = 'initial';
+          btn.disabled = s.locked;
+          btn.title = s.locked ? `This font is only available in ${prop}.` : '';
+          const slot = btn.querySelector('.scribe-cm-slot');
+          if (slot) slot.innerHTML = s.on ? CM_CHECK_SVG : icon;
+        }
+      }
       contextMenuDeleteTextLinesButtonElem.style.display = 'initial';
       showMenuForEvent(viewer, event, null);
       return;

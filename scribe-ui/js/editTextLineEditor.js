@@ -4,16 +4,88 @@
  */
 import ocr from '../../js/objects/ocrObjects.js';
 import { resolveReplacementChar } from '../../js/pdf/glyphResolve.js';
-import { wordBandRect, nativeTextForPage } from '../../js/textEdits.js';
+import {
+  wordBandRect, nativeTextForPage, FAUX_BOLD_STROKE_EM, FAUX_OBLIQUE_SKEW,
+} from '../../js/textEdits.js';
 
 /** @typedef {import('../../js/objects/ocrObjects.js').OcrLine} OcrLine */
+
+/**
+ * One character of the line as the raster drew it.
+ * @typedef {object} EditChar
+ * @property {string} ch
+ * @property {number} x0
+ * @property {number} x1
+ * @property {number} size
+ * @property {number} baseY
+ * @property {string} face
+ * @property {string} color
+ * @property {boolean} [tofu]
+ * @property {string} [lig] - The ligature this character's cluster draws as, set on the cluster's first character.
+ * @property {boolean} [ligMember] - A later character of a ligature cluster, which holds only a caret position.
+ * @property {string} [fontStyle]
+ * @property {string} [fontWeight]
+ * @property {number} [skew]
+ * @property {number} [stretch]
+ * @property {number} [renderMode]
+ * @property {number} [strokeWidthPx]
+ * @property {string} [strokeColor]
+ */
+
+/**
+ * The line currently open for editing.
+ * @typedef {object} EditSession
+ * @property {OcrLine} line
+ * @property {number} n
+ * @property {number} orientation
+ * @property {{left: number, top: number, right: number, bottom: number}} box - The canvas's extent in the orientation group's local space.
+ * @property {number} scale - Canvas pixels per local unit.
+ * @property {number} baselineY
+ * @property {number} size
+ * @property {string} text - The live text, which edits mutate.
+ * @property {string} origText
+ * @property {Array<EditChar>} origChars
+ * @property {{program: ?import('../../js/pdf/glyphResolve.js').EditFontProgram, style: Style, size: number,
+ *   color: string, face: string, spaceAdvPx: number, renderMode?: number, strokeWidthPx?: number,
+ *   strokeColor?: string, skew?: number}} styleFromChar - The style newly typed characters take.
+ * @property {number} caret
+ * @property {?number} selAnchor
+ * @property {Float64Array} xs - Local x of each caret slot.
+ * @property {Float64Array} ys - Baseline y of each caret slot.
+ * @property {Float64Array} [szs] - Font size at each caret slot.
+ * @property {Map<number, WordToggle>} styleOv - Live bold/italic toggles keyed by word index of `text`.
+ * @property {Map<number, WordBase>} wordBase - Each word's pre-edit style state, remapped alongside `styleOv`.
+ * @property {Array<EditSnapshot>} undoStack
+ * @property {Array<EditSnapshot>} redoStack
+ * @property {boolean} composing
+ */
+
+/** @typedef {{bold?: boolean, italic?: boolean}} WordToggle */
+/** @typedef {{bold: boolean, italic: boolean, stroked: boolean, skewed: boolean}} WordBase */
+/** @typedef {{text: string, caret: number, styleOv: Map<number, WordToggle>, wordBase: Map<number, WordBase>}} EditSnapshot */
+
+/**
+ * Character spans of `text`'s whitespace-split words, `[start, end)` per word.
+ * @param {string} text
+ */
+const tokenSpans = (text) => {
+  /** @type {Array<[number, number]>} */
+  const spans = [];
+  const re = /\S+/g;
+  let m = re.exec(text);
+  while (m !== null) {
+    spans.push([m.index, m.index + m[0].length]);
+    m = re.exec(text);
+  }
+  return spans;
+};
 
 /**
  * @param {any} scribe - The viewer instance.
  * @param {{onCommitted?: (pages: Array<number>) => void}} [hooks]
  */
 export function createLineEditor(scribe, { onCommitted } = {}) {
-  /** @type {?object} */
+  /** @type {?EditSession} */
   let st = null;
 
   const canvas = document.createElement('canvas');
@@ -40,12 +112,45 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
   /** @type {?number} */
   let blinkTimer = null;
 
-  const layout = () => {
+  /** @param {EditSession} session */
+  const layout = (session) => {
     const {
-      text, origText, origChars, styleFromChar, baselineY,
-    } = st;
+      text, origText, origChars, styleFromChar, baselineY, styleOv,
+    } = session;
     const len = text.length;
     const olen = origText.length;
+    // Word index at each character of the live text, for the per-word bold/italic toggles.
+    const tokOf = new Int32Array(len + 1).fill(-1);
+    if (styleOv.size > 0) {
+      for (const [s0, s1] of tokenSpans(text).entries()) {
+        for (let i = s1[0]; i < s1[1]; i++) tokOf[i] = s0;
+      }
+    }
+
+    /**
+     * Restyle one draw descriptor per its word's live toggle.
+     * @template T
+     * @param {T} d
+     * @param {number} ti - The character's index in the live text.
+     * @returns {T}
+     */
+    const applyToggle = (d, ti) => {
+      const o = tokOf[ti] >= 0 ? styleOv.get(tokOf[ti]) : undefined;
+      if (!o) return d;
+      const dd = /** @type {{size: number, color: string, skew?: number, renderMode?: number, strokeWidthPx?: number, strokeColor?: string}} */ (d);
+      if (o.bold === true && !dd.renderMode) {
+        dd.renderMode = 2;
+        dd.strokeWidthPx = FAUX_BOLD_STROKE_EM * dd.size;
+        dd.strokeColor = dd.color;
+      } else if (o.bold === false) {
+        dd.renderMode = undefined;
+        dd.strokeWidthPx = undefined;
+        dd.strokeColor = undefined;
+      }
+      if (o.italic === true && !dd.skew) dd.skew = FAUX_OBLIQUE_SKEW;
+      else if (o.italic === false) dd.skew = 0;
+      return d;
+    };
     let p = 0;
     while (p < len && p < olen && text[p] === origText[p]) p += 1;
     // A ligature draws as one glyph on its first letter, so a boundary landing inside one decomposes the whole cluster into the flow region.
@@ -56,7 +161,7 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
 
     /** @type {Array<{ch: string, x: number, w: number, size: number, baseY: number, face: string,
      *   tofu?: boolean, color: string, fontStyle?: string, fontWeight?: string, skew?: number,
-     *   stretch?: number}>} */
+     *   stretch?: number, renderMode?: number, strokeWidthPx?: number, strokeColor?: string}>} */
     const draws = [];
     const xs = new Float64Array(len + 1);
     /**
@@ -72,7 +177,7 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
       ys[ti] = c.baseY;
       szs[ti] = c.size;
       if (c.ch !== ' ' && !c.ligMember) {
-        draws.push({
+        draws.push(applyToggle({
           ch: c.lig || c.ch,
           x: c.x0 + dx,
           w: c.x1 - c.x0,
@@ -85,7 +190,10 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
           fontWeight: c.fontWeight,
           skew: c.skew,
           stretch: c.stretch,
-        });
+          renderMode: c.renderMode,
+          strokeWidthPx: c.strokeWidthPx,
+          strokeColor: c.strokeColor,
+        }, ti));
       }
     };
 
@@ -111,7 +219,7 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
         flowX += r.advEm * mid.size;
       } else {
         const face = r.kind === 'orig' ? mid.face : (r.fontFaceName || r.family);
-        draws.push({
+        draws.push(applyToggle({
           ch,
           x: flowX,
           w: r.advEm * mid.size,
@@ -121,7 +229,11 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
           color: mid.color,
           fontStyle: r.kind !== 'orig' && mid.style.italic ? 'italic' : '',
           fontWeight: r.kind !== 'orig' && mid.style.bold ? 'bold' : '',
-        });
+          skew: mid.skew,
+          renderMode: mid.renderMode,
+          strokeWidthPx: mid.strokeWidthPx,
+          strokeColor: mid.strokeColor,
+        }, i));
         flowX += r.advEm * mid.size;
       }
     }
@@ -144,6 +256,7 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
     };
   };
 
+  /** @returns {?[number, number]} */
   const selRange = () => {
     if (!st || st.selAnchor == null || st.selAnchor === st.caret) return null;
     return st.selAnchor < st.caret ? [st.selAnchor, st.caret] : [st.caret, st.selAnchor];
@@ -153,11 +266,12 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
     if (!st) return;
     const {
       draws, xs, ys, szs,
-    } = layout();
+    } = layout(st);
     st.xs = xs;
     st.ys = ys;
     st.szs = szs;
     const cx = canvas.getContext('2d');
+    if (!cx) return;
     cx.setTransform(1, 0, 0, 1, 0, 0);
     cx.clearRect(0, 0, canvas.width, canvas.height);
     cx.setTransform(st.scale, 0, 0, st.scale, -st.box.left * st.scale, -st.box.top * st.scale);
@@ -179,15 +293,21 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
         // Style keywords and conditional family quoting mirror the raster's substituted-text path.
         cx.font = `${d.fontStyle || 'normal'} ${d.fontWeight || 'normal'} ${d.size}px ${/[",]/.test(d.face) ? d.face : `"${d.face}"`}`;
         cx.fillStyle = d.color;
-        if (d.skew || (d.stretch && d.stretch !== 1)) {
+        // Faux-bold chars re-stroke the outlines like the raster (mode 2 fills then strokes; mode 1 strokes only).
+        const strokeW = (d.renderMode === 1 || d.renderMode === 2) && d.strokeWidthPx ? d.strokeWidthPx : 0;
+        const transformed = !!(d.skew || (d.stretch && d.stretch !== 1));
+        if (transformed) {
           cx.save();
           if (d.skew) cx.transform(1, 0, -d.skew, 1, d.skew * d.baseY, 0);
           if (d.stretch && d.stretch !== 1) cx.transform(d.stretch, 0, 0, 1, d.x * (1 - d.stretch), 0);
-          cx.fillText(d.ch, d.x, d.baseY);
-          cx.restore();
-        } else {
-          cx.fillText(d.ch, d.x, d.baseY);
         }
+        if (d.renderMode !== 1) cx.fillText(d.ch, d.x, d.baseY);
+        if (strokeW > 0) {
+          cx.strokeStyle = d.strokeColor || d.color;
+          cx.lineWidth = strokeW;
+          cx.strokeText(d.ch, d.x, d.baseY);
+        }
+        if (transformed) cx.restore();
       }
     }
     if (caretBlinkOn && !sel) {
@@ -212,29 +332,131 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
     }, 550);
   };
 
+  /** @param {number} i */
   const setCaret = (i) => {
+    if (!st) return;
     st.caret = Math.max(0, Math.min(st.text.length, i));
     restartBlink();
     draw();
   };
 
   const pushUndo = () => {
-    st.undoStack.push({ text: st.text, caret: st.caret });
+    if (!st) return;
+    st.undoStack.push({
+      text: st.text, caret: st.caret, styleOv: new Map(st.styleOv), wordBase: new Map(st.wordBase),
+    });
     if (st.undoStack.length > 200) st.undoStack.shift();
     st.redoStack.length = 0;
   };
 
+  /**
+   * Shift the per-word toggle and base maps across a text edit at `pos` that removed `removedLen` characters.
+   * Words the edit touched collapse to the tokens now spanning that region and inherit the first touched word's state.
+   * @param {string} oldText
+   * @param {string} newText
+   * @param {number} pos
+   * @param {number} removedLen
+   */
+  const remapWordMaps = (oldText, newText, pos, removedLen) => {
+    if (!st || (st.styleOv.size === 0 && st.wordBase.size === 0)) return;
+    const oldSpans = tokenSpans(oldText);
+    const newSpans = tokenSpans(newText);
+    const endPos = pos + removedLen;
+    let wA = oldSpans.length;
+    let wB = -1;
+    for (let k = 0; k < oldSpans.length; k++) {
+      if (oldSpans[k][1] >= pos && oldSpans[k][0] <= endPos) {
+        wA = Math.min(wA, k);
+        wB = Math.max(wB, k);
+      }
+    }
+    const delta = newSpans.length - oldSpans.length;
+    /**
+     * @template T
+     * @param {Map<number, T>} map
+     */
+    const remapOne = (map) => {
+      /** @type {Map<number, T>} */
+      const next = new Map();
+      for (const [k, v] of map) {
+        if (k < wA) next.set(k, v);
+        else if (wB < 0 || k > wB) next.set(k + delta, v);
+        else if (k === wA) {
+          for (let t = wA; t <= wB + delta && t < newSpans.length; t++) {
+            if (!next.has(t)) next.set(t, v);
+          }
+        }
+      }
+      return next;
+    };
+    st.styleOv = remapOne(st.styleOv);
+    st.wordBase = remapOne(st.wordBase);
+  };
+
+  /**
+   * Toggle bold/italic on the words under the selection (or the caret's word), word-processor style.
+   * A style baked into the word's face cannot toggle off; such words are left unchanged.
+   * @param {'bold'|'italic'} prop
+   */
+  const toggleWordStyle = (prop) => {
+    if (!st) return;
+    const s = st;
+    const spans = tokenSpans(s.text);
+    if (spans.length === 0) return;
+    const sel = selRange();
+    /** @type {Array<number>} */
+    const targets = [];
+    if (sel) {
+      for (let k = 0; k < spans.length; k++) if (spans[k][0] < sel[1] && spans[k][1] > sel[0]) targets.push(k);
+    } else {
+      let k = spans.findIndex((sp2) => sp2[0] <= s.caret && s.caret <= sp2[1]);
+      if (k === -1) {
+        for (let j = spans.length - 1; j >= 0; j--) if (spans[j][1] < s.caret) { k = j; break; }
+      }
+      targets.push(k === -1 ? 0 : k);
+    }
+    /** @param {number} k */
+    const base = (k) => s.wordBase.get(k) || {
+      bold: false, italic: false, stroked: false, skewed: false,
+    };
+    /** @param {number} k */
+    const eff = (k) => {
+      const o = s.styleOv.get(k);
+      return o && o[prop] !== undefined ? !!o[prop] : !!base(k)[prop];
+    };
+    // Any word lacking the style means the first press applies it to all.
+    const target = targets.some((k) => !eff(k));
+    pushUndo();
+    for (const k of targets) {
+      const b = base(k);
+      /** @type {WordToggle} */
+      const o = { ...(s.styleOv.get(k) || {}) };
+      if (target === !!b[prop]) delete o[prop];
+      else if (target) o[prop] = true;
+      else if (prop === 'bold' ? b.stroked : b.skewed) o[prop] = false;
+      else delete o[prop];
+      if (o.bold === undefined && o.italic === undefined) s.styleOv.delete(k);
+      else s.styleOv.set(k, o);
+    }
+    draw();
+  };
+
+  /** @param {string} chunk */
   const insertText = (chunk) => {
+    if (!st) return;
     const clean = chunk.replace(/[\r\n\t]/g, ' ');
     if (!clean) return;
     pushUndo();
     const sel = selRange();
+    const before = st.text;
     if (sel) {
       st.text = st.text.slice(0, sel[0]) + clean + st.text.slice(sel[1]);
       st.caret = sel[0] + clean.length;
       st.selAnchor = null;
+      remapWordMaps(before, st.text, sel[0], sel[1] - sel[0]);
     } else {
       st.text = st.text.slice(0, st.caret) + clean + st.text.slice(st.caret);
+      remapWordMaps(before, st.text, st.caret, 0);
       st.caret += clean.length;
     }
     restartBlink();
@@ -243,10 +465,13 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
 
   /** @param {[number, number]} sel */
   const deleteRange = (sel) => {
+    if (!st) return;
     pushUndo();
+    const before = st.text;
     st.text = st.text.slice(0, sel[0]) + st.text.slice(sel[1]);
     st.caret = sel[0];
     st.selAnchor = null;
+    remapWordMaps(before, st.text, sel[0], sel[1] - sel[0]);
     restartBlink();
     draw();
   };
@@ -312,24 +537,32 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
   const commit = async () => {
     if (!st) return;
     const {
-      line, n, text, origText,
+      line, n, text, origText, styleOv,
     } = st;
-    if (text.trim() === origText || text.trim() === origText.trim()) {
+    const hasToggles = [...styleOv.values()].some((o) => o.bold !== undefined || o.italic !== undefined);
+    if ((text.trim() === origText || text.trim() === origText.trim()) && !hasToggles) {
       close();
       return;
     }
+    const wordStyles = hasToggles
+      ? tokenSpans(text).map((value, k) => {
+        const o = styleOv.get(k);
+        return o && (o.bold !== undefined || o.italic !== undefined) ? o : null;
+      })
+      : null;
     detachInput();
     st = null;
+    // A newer session may have opened on this page while replaceTextLine ran and now owns the rects.
+    // Clearing them would redraw that session's original text under its editor.
+    const ownedElsewhere = () => !!st && st.n === n;
     try {
-      const res = await scribe.doc.replaceTextLine(line, text);
-      // A newer session may have opened on this page while replaceTextLine ran and now owns the rects.
-      // Clearing them would redraw that session's original text under its editor.
-      if (!st || st.n !== n) scribe.doc.images.setEphemeralEditRects(n, null);
+      const res = await scribe.doc.replaceTextLine(line, text, wordStyles ? { wordStyles } : undefined);
+      if (!ownedElsewhere()) scribe.doc.images.setEphemeralEditRects(n, null);
       if (res && onCommitted) onCommitted(res.pages);
       else scribe.refreshPageRaster(n);
       removeCanvasAfterRefresh(n);
     } catch (e) {
-      if (!st || st.n !== n) scribe.doc.images.setEphemeralEditRects(n, null);
+      if (!ownedElsewhere()) scribe.doc.images.setEphemeralEditRects(n, null);
       scribe.refreshPageRaster(n);
       removeCanvasAfterRefresh(n);
       throw e;
@@ -361,9 +594,13 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
       const to = ev.shiftKey ? st.undoStack : st.redoStack;
       const prev = from.pop();
       if (prev) {
-        to.push({ text: st.text, caret: st.caret });
+        to.push({
+          text: st.text, caret: st.caret, styleOv: new Map(st.styleOv), wordBase: new Map(st.wordBase),
+        });
         st.text = prev.text;
         st.caret = prev.caret;
+        st.styleOv = new Map(prev.styleOv);
+        st.wordBase = new Map(prev.wordBase);
         st.selAnchor = null;
         restartBlink();
         draw();
@@ -383,6 +620,11 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
         ev.preventDefault();
         navigator.clipboard?.writeText(st.text.slice(sel[0], sel[1])).catch(() => {});
       }
+      return;
+    }
+    if (mod && ['b', 'B', 'i', 'I'].includes(ev.key)) {
+      ev.preventDefault();
+      toggleWordStyle(ev.key === 'b' || ev.key === 'B' ? 'bold' : 'italic');
       return;
     }
     if (mod) return;
@@ -406,8 +648,10 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
       if (sel) { deleteRange(sel); return; }
       if (st.caret > 0) {
         pushUndo();
+        const before = st.text;
         st.text = st.text.slice(0, st.caret - 1) + st.text.slice(st.caret);
         st.caret -= 1;
+        remapWordMaps(before, st.text, st.caret, 1);
         restartBlink();
         draw();
       }
@@ -419,7 +663,9 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
       if (sel) { deleteRange(sel); return; }
       if (st.caret < st.text.length) {
         pushUndo();
+        const before = st.text;
         st.text = st.text.slice(0, st.caret) + st.text.slice(st.caret + 1);
+        remapWordMaps(before, st.text, st.caret, 1);
         restartBlink();
         draw();
       }
@@ -441,47 +687,77 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
     onInput();
   };
 
-  const slotAtClient = (clientX) => {
+  /**
+   * @param {EditSession} session
+   * @param {number} clientX
+   */
+  const slotAtClient = (session, clientX) => {
     const rect = canvas.getBoundingClientRect();
-    const localX = st.box.left + (clientX - rect.left) / (rect.width / (st.box.right - st.box.left));
+    const localX = session.box.left + (clientX - rect.left) / (rect.width / (session.box.right - session.box.left));
     let best = 0;
     let bestDist = Infinity;
-    for (let i = 0; i < st.xs.length; i++) {
-      const d = Math.abs(localX - st.xs[i]);
+    for (let i = 0; i < session.xs.length; i++) {
+      const d = Math.abs(localX - session.xs[i]);
       if (d < bestDist) { bestDist = d; best = i; }
     }
     return best;
   };
 
-  // Double clicks are detected manually because preventing the pointerdown's default suppresses dblclick events.
-  let lastCanvasDown = { t: -1e9, x: 0 };
+  // Repeat clicks are counted manually because preventing the pointerdown's default suppresses dblclick events.
+  let lastCanvasDown = { t: -1e9, x: 0, count: 0 };
   const onCanvasPointerdown = (ev) => {
     if (!st || !containsPoint(ev.clientX, ev.clientY)) return;
     ev.stopPropagation();
     ev.preventDefault();
-    const isDouble = ev.timeStamp - lastCanvasDown.t < 420 && Math.abs(ev.clientX - lastCanvasDown.x) < 4;
-    lastCanvasDown = { t: ev.timeStamp, x: ev.clientX };
+    const repeat = ev.timeStamp - lastCanvasDown.t < 420 && Math.abs(ev.clientX - lastCanvasDown.x) < 4;
+    const count = repeat ? Math.min(lastCanvasDown.count + 1, 3) : 1;
+    lastCanvasDown = { t: ev.timeStamp, x: ev.clientX, count };
     hiddenInput.focus({ preventScroll: true });
-    if (isDouble && st.text) {
-      let i = Math.max(0, Math.min(slotAtClient(ev.clientX), st.text.length - 1));
-      if (st.text[i] === ' ' && i > 0 && st.text[i - 1] !== ' ') i -= 1;
+    const session = st;
+
+    /**
+     * An offset grown out to the click count's unit, which is the character itself, its word, or the whole line.
+     * @param {number} off
+     * @returns {{start: number, end: number}}
+     */
+    const unit = (off) => {
+      const { text } = session;
+      if (count === 1) return { start: off, end: off };
+      if (count === 3) return { start: 0, end: text.length };
+      let i = Math.max(0, Math.min(off, text.length - 1));
+      if (text[i] === ' ' && i > 0 && text[i - 1] !== ' ') i -= 1;
       let a = i;
       let b = i;
-      while (a > 0 && st.text[a - 1] !== ' ') a -= 1;
-      while (b < st.text.length && st.text[b] !== ' ') b += 1;
-      st.selAnchor = a;
-      st.caret = b;
-      draw();
-      return;
-    }
-    const anchor = slotAtClient(ev.clientX);
-    st.selAnchor = null;
-    setCaret(anchor);
+      while (a > 0 && text[a - 1] !== ' ') a -= 1;
+      while (b < text.length && text[b] !== ' ') b += 1;
+      return { start: a, end: b };
+    };
+
+    const anchor = slotAtClient(session, ev.clientX);
+    /** @param {number} focus */
+    const select = (focus) => {
+      const a = unit(anchor);
+      const f = unit(focus);
+      const start = focus >= anchor ? a.start : f.start;
+      const end = focus >= anchor ? f.end : a.end;
+      if (start === end) {
+        session.selAnchor = null;
+        session.caret = start;
+        return;
+      }
+      // The caret rides the end the pointer is on, so a later shift+arrow extends from where the drag stopped.
+      session.selAnchor = focus >= anchor ? start : end;
+      session.caret = focus >= anchor ? end : start;
+    };
+
+    select(anchor);
+    restartBlink();
+    draw();
+    /** @param {PointerEvent} mv */
     const onMove = (mv) => {
-      if (!st) return;
-      const slot = slotAtClient(mv.clientX);
-      st.selAnchor = slot === anchor ? null : anchor;
-      st.caret = slot;
+      // A session that opened mid-drag must not receive writes from this one.
+      if (st !== session) return;
+      select(slotAtClient(session, mv.clientX));
       draw();
     };
     const onUp = () => {
@@ -545,7 +821,7 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
     const dims = page.dims;
     const nt = nativeTextForPage(scribe.doc, page);
 
-    /** @type {Map<number, {program: ?object, faceName: ?string}>} */
+    /** @type {Map<number|undefined, {program: ?import('../../js/pdf/glyphResolve.js').EditFontProgram, faceName: ?string}>} */
     const fonts = new Map();
     for (const w of line.words) {
       const f = nt[w.id]?.fontObjNum;
@@ -556,16 +832,19 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
     /**
      * @type {Array<{ch: string, x0: number, x1: number, size: number, baseY: number, face: string,
      *   color: string, tofu?: boolean, lig?: string, ligMember?: boolean, fontStyle?: string,
-     *   fontWeight?: string, skew?: number, stretch?: number}>}
+     *   fontWeight?: string, skew?: number, stretch?: number, renderMode?: number,
+     *   strokeWidthPx?: number, strokeColor?: string}>}
      */
     const origChars = [];
     let origText = '';
     for (let wi = 0; wi < line.words.length; wi++) {
       const w = line.words[wi];
       const size = w.style.size || Math.abs(w.bbox.bottom - w.bbox.top) / 0.75;
-      const baseY = nt[w.id]?.baselineY ?? baselineY;
+      const wNt = nt[w.id];
+      const baseY = wNt?.baselineY ?? baselineY;
       const color = w.style.color || '#000000';
-      const ef = fonts.get(nt[w.id]?.fontObjNum);
+      const ef = fonts.get(wNt?.fontObjNum);
+      const wStroked = !!(wNt && (wNt.renderMode === 1 || wNt.renderMode === 2) && wNt.strokeWidthPx);
       if (wi > 0) {
         const prev = line.words[wi - 1];
         origChars.push({
@@ -573,6 +852,11 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
         });
         origText += ' ';
       }
+      // A faux-bold word's boldness is its stroke, so substitute faces pick weight from the font's own flag; a bold substitute plus the stroke would double-bold.
+      const wResolveStyle = wStroked && !ef?.program?.bold && w.style.bold ? { ...w.style, bold: false } : w.style;
+      const wStroke = wStroked && wNt
+        ? { renderMode: wNt.renderMode, strokeWidthPx: wNt.strokeWidthPx, strokeColor: wNt.strokeColor }
+        : {};
       // An embedded face carries its style in its glyphs, so the italic/bold keywords go only on a fallback face.
       const charFace = (ch) => {
         let face = ef.faceName;
@@ -580,12 +864,12 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
         let fontStyle = '';
         let fontWeight = '';
         if (!face) {
-          const r = resolveReplacementChar(ch, ef.program, w.style);
+          const r = resolveReplacementChar(ch, ef.program, wResolveStyle);
           if (r.kind === 'tofu') tofu = true;
           else {
             face = r.fontFaceName || r.family;
-            if (w.style.italic) fontStyle = 'italic';
-            if (w.style.bold) fontWeight = 'bold';
+            if (wResolveStyle.italic) fontStyle = 'italic';
+            if (wResolveStyle.bold) fontWeight = 'bold';
           }
         }
         return {
@@ -620,6 +904,7 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
               fontWeight: f.fontWeight,
               skew: wSkew?.[ei] || 0,
               stretch: wStretch?.[ei] || 0,
+              ...wStroke,
             });
             origText += seg;
             continue;
@@ -628,15 +913,28 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
           // The rest of its entries only hold caret positions.
           const ligCh = ocr.ligatureForText(entries[ei].text);
           const ligOk = !!(ligCh && ef.faceName
-            && resolveReplacementChar(ligCh, ef.program, w.style).kind === 'orig');
+            && resolveReplacementChar(ligCh, ef.program, wResolveStyle).kind === 'orig');
           for (let j = 0; j < seg.length; j++) {
             const x0 = pen + ((eb.right - pen) * j) / seg.length;
             const x1 = pen + ((eb.right - pen) * (j + 1)) / seg.length;
             const f = ligOk ? {
               face: ef.faceName, tofu: false, fontStyle: '', fontWeight: '',
             } : charFace(seg[j]);
+            /** @type {(typeof origChars)[number]} */
             const entry = {
-              ch: seg[j], x0, x1, size, baseY, face: f.face, color, tofu: f.tofu, fontStyle: f.fontStyle, fontWeight: f.fontWeight, skew: wSkew?.[ei] || 0, stretch: wStretch?.[ei] || 0,
+              ch: seg[j],
+              x0,
+              x1,
+              size,
+              baseY,
+              face: f.face || '',
+              color,
+              tofu: f.tofu,
+              fontStyle: f.fontStyle,
+              fontWeight: f.fontWeight,
+              skew: wSkew?.[ei] || 0,
+              stretch: wStretch?.[ei] || 0,
+              ...wStroke,
             };
             if (ligOk && j === 0) entry.lig = ligCh;
             if (ligOk && j > 0) entry.ligMember = true;
@@ -648,13 +946,13 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
         let cxPos = w.bbox.left;
         for (let ci = 0; ci < w.text.length; ci++) {
           const ch = w.text[ci];
-          const r = resolveReplacementChar(ch, ef.program, w.style);
+          const r = resolveReplacementChar(ch, ef.program, wResolveStyle);
           const x0 = cxPos;
           const x1 = cxPos + r.advEm * size;
           cxPos = x1;
           const f = charFace(ch);
           origChars.push({
-            ch, x0, x1, size, baseY, face: f.face, color, tofu: f.tofu, fontStyle: f.fontStyle, fontWeight: f.fontWeight,
+            ch, x0, x1, size, baseY, face: f.face, color, tofu: f.tofu, fontStyle: f.fontStyle, fontWeight: f.fontWeight, ...wStroke,
           });
           origText += ch;
         }
@@ -663,8 +961,25 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
 
     const styleFromWord = line.words[0];
     const sfSize = styleFromWord.style.size || Math.abs(styleFromWord.bbox.bottom - styleFromWord.bbox.top) / 0.75;
-    const sfFonts = fonts.get(nt[styleFromWord.id]?.fontObjNum);
-    const sp = resolveReplacementChar(' ', sfFonts.program, styleFromWord.style);
+    const sfNt = nt[styleFromWord.id];
+    const sfFonts = fonts.get(sfNt?.fontObjNum);
+    const sfStroked = !!(sfNt && (sfNt.renderMode === 1 || sfNt.renderMode === 2) && sfNt.strokeWidthPx);
+    const sfStyle = sfStroked && !sfFonts?.program?.bold && styleFromWord.style.bold
+      ? { ...styleFromWord.style, bold: false } : styleFromWord.style;
+    const sp = resolveReplacementChar(' ', sfFonts.program, sfStyle);
+
+    // Base style state per word, so live toggles know each word's current state and what can toggle off.
+    /** @type {Map<number, WordBase>} */
+    const wordBase = new Map();
+    line.words.forEach((w, k) => {
+      const e = nt[w.id];
+      wordBase.set(k, {
+        bold: !!w.style.bold,
+        italic: !!w.style.italic,
+        stroked: !!(e && (e.renderMode === 1 || e.renderMode === 2) && e.strokeWidthPx),
+        skewed: !!(e && e.skew && e.skew.some((v) => v)),
+      });
+    });
 
     // A zero descriptor descent puts char bbox bottoms at the baseline, so a canvas sized from the bboxes would clip descenders.
     let inkTop = baselineY - 1.3 * sfSize;
@@ -741,16 +1056,22 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
       origChars,
       styleFromChar: {
         program: sfFonts.program,
-        style: styleFromWord.style,
+        style: sfStyle,
         size: sfSize,
         color: styleFromWord.style.color || '#000000',
         face: sfFonts.faceName || '',
         spaceAdvPx: (sp.kind === 'tofu' ? 0.25 : sp.advEm) * sfSize,
+        renderMode: sfStroked && sfNt ? sfNt.renderMode : undefined,
+        strokeWidthPx: sfStroked && sfNt ? sfNt.strokeWidthPx : undefined,
+        strokeColor: sfStroked && sfNt ? sfNt.strokeColor : undefined,
+        skew: sfNt?.skew?.find((v) => v) || undefined,
       },
       caret: 0,
       selAnchor: null,
       xs: new Float64Array(origText.length + 1),
       ys: new Float64Array(origText.length + 1),
+      styleOv: new Map(),
+      wordBase,
       undoStack: [],
       redoStack: [],
       composing: false,

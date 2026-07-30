@@ -312,9 +312,17 @@ export class ImageStore {
     const dims = this.#pageMetrics[n]?.dims;
     const ephemeral = this.#ephemeralEditRects.get(n);
     if ((records.length === 0 && !ephemeral) || !dims) return null;
-    const all = ephemeral
-      ? [...records, { type: 'deleteText', id: '_ephemeralLineEdit', rects: ephemeral }]
-      : records;
+    if (!ephemeral) return { records, dims: { width: dims.width, height: dims.height } };
+    // The editor draws the edited line's text live, so keeping an overlapping replacement's runs would draw it twice.
+    const all = records.map((rec) => {
+      if (rec.type !== 'replaceText') return rec;
+      const covered = (rec.rects || []).some((r) => ephemeral.some((e) => r.left < e.right && r.right > e.left && r.top < e.bottom && r.bottom > e.top));
+      if (!covered) return rec;
+      return {
+        type: 'deleteText', id: rec.id, groupId: rec.groupId, rects: rec.rects,
+      };
+    });
+    all.push({ type: 'deleteText', id: '_ephemeralLineEdit', rects: ephemeral });
     return { records: all, dims: { width: dims.width, height: dims.height } };
   };
 

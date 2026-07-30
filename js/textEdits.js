@@ -231,17 +231,21 @@ export function deleteTextLines(doc, lines) {
   return { pages: entryPages.map((p) => p.n), groupId };
 }
 
+export const FAUX_BOLD_STROKE_EM = 0.025;
+export const FAUX_OBLIQUE_SKEW = 0.25;
+
 /**
- * Replace a line's text with `newText`.
+ * Replace a line's text with `newText`, optionally toggling bold/italic per word.
  * Deletes the changed words' original glyphs and lays out the new words as pre-resolved glyph runs in one `replaceText` record.
  * The renderer and the PDF export both execute that record, so the raster and the file cannot diverge.
  * Records one undoable step in `doc.textEditHistory`.
  * @param {ScribeDoc} doc
  * @param {OcrLine} line - A live line from `doc.ocr.active` pages.
  * @param {string} newText - The line's replacement text; empty deletes the line.
- * @returns {Promise<?{pages: Array<number>, groupId: string}>} Affected pages and the action's group id, or null when the text is unchanged.
+ * @param {{wordStyles?: Array<?{bold?: boolean, italic?: boolean}>}} [opts] - Per-word style toggles, index-aligned with the whitespace-split words of `newText`; null entries inherit.
+ * @returns {Promise<?{pages: Array<number>, groupId: string}>} Affected pages and the action's group id, or null when nothing changes.
  */
-export async function replaceTextLine(doc, line, newText) {
+export async function replaceTextLine(doc, line, newText, opts) {
   if (!line || !line.page || !line.words || line.words.length === 0) throw new Error('replaceTextLine: not a live line.');
   const nt = nativeTextForPage(doc, line.page);
   for (const w of line.words) {
@@ -249,6 +253,20 @@ export async function replaceTextLine(doc, line, newText) {
   }
   const newTexts = String(newText).trim().split(/\s+/).filter((t) => t.length > 0);
   if (newTexts.length === 0) return deleteTextLines(doc, [line]);
+  const wordStylesIn = opts?.wordStyles || null;
+  // A toggle counts as a change only when it can alter the word's drawn state, so no-op toggles never force a redraw.
+  /** @type {(w: OcrWord, ov: ?{bold?: boolean, italic?: boolean} | undefined) => boolean} */
+  const styleChangeAt = (w, ov) => {
+    if (!ov) return false;
+    const e = nt[w.id];
+    const stroked = !!(e && (e.renderMode === 1 || e.renderMode === 2) && e.strokeWidthPx);
+    const skewed = !!(e && e.skew && e.skew.some((v) => v));
+    if (ov.bold === true && !w.style.bold) return true;
+    if (ov.bold === false && stroked) return true;
+    if (ov.italic === true && !w.style.italic) return true;
+    if (ov.italic === false && skewed) return true;
+    return false;
+  };
 
   const page = line.page;
   const n = page.n;
@@ -261,10 +279,11 @@ export async function replaceTextLine(doc, line, newText) {
   const nlen = newTexts.length;
 
   let i0 = 0;
-  while (i0 < olen && i0 < nlen && oldTexts[i0] === newTexts[i0]) i0 += 1;
+  while (i0 < olen && i0 < nlen && oldTexts[i0] === newTexts[i0] && !styleChangeAt(oldWords[i0], wordStylesIn?.[i0])) i0 += 1;
   if (i0 === olen && i0 === nlen) return null;
   let k = 0;
-  while (k < olen - i0 && k < nlen - i0 && oldTexts[olen - 1 - k] === newTexts[nlen - 1 - k]) k += 1;
+  while (k < olen - i0 && k < nlen - i0 && oldTexts[olen - 1 - k] === newTexts[nlen - 1 - k]
+    && !styleChangeAt(oldWords[olen - 1 - k], wordStylesIn?.[nlen - 1 - k])) k += 1;
 
   // A word drawn by a prior replaceText record has no original stream glyphs, so the redraw must span every such word and fold its record into this one.
   const backing = backingRecordByWordId(doc.textEdits.pages[n]);
@@ -357,6 +376,28 @@ export async function replaceTextLine(doc, line, newText) {
     const program = await programFor(srcEntry?.fontObjNum);
     // The flat line baseline would drop a raised sup word onto the body text.
     const wordBaseY = srcEntry?.baselineY ?? baselineY;
+    const color = wordStyleSrc.style.color || '#000000';
+    const ov = wordStylesIn?.[m] || null;
+    const srcStroked = !!(srcEntry && (srcEntry.renderMode === 1 || srcEntry.renderMode === 2) && srcEntry.strokeWidthPx);
+    /** @type {?{renderMode: number, strokeWidthPx: number, strokeColor?: string}} */
+    let strokeState = srcStroked && srcEntry
+      ? { renderMode: /** @type {number} */ (srcEntry.renderMode), strokeWidthPx: /** @type {number} */ (srcEntry.strokeWidthPx), strokeColor: srcEntry.strokeColor }
+      : null;
+    if (ov?.bold === true && !srcStroked && !wordStyleSrc.style.bold) {
+      strokeState = { renderMode: 2, strokeWidthPx: Math.round(FAUX_BOLD_STROKE_EM * s * 1000) / 1000, strokeColor: color };
+    } else if (ov?.bold === false) {
+      strokeState = null;
+    }
+    let skewFinal = srcEntry?.skew?.find((v) => v) || 0;
+    if (ov?.italic === true && !wordStyleSrc.style.italic) skewFinal = FAUX_OBLIQUE_SKEW;
+    else if (ov?.italic === false) skewFinal = 0;
+    const finalBold = ov && ov.bold !== undefined ? (ov.bold ? true : !!program?.bold) : wordStyleSrc.style.bold;
+    const finalItalic = ov && ov.italic !== undefined ? (ov.italic ? true : !!program?.italic) : wordStyleSrc.style.italic;
+    // A faux word's boldness is the stroke and its lean the shear, so substitute faces resolve without them; a styled substitute plus the synthesized state would double up.
+    /** @type {{bold?: boolean, italic?: boolean, size?: number}} */
+    let resolveStyle = { ...wordStyleSrc.style, bold: finalBold, italic: finalItalic };
+    if (strokeState && !program?.bold && resolveStyle.bold) resolveStyle = { ...resolveStyle, bold: false };
+    if (skewFinal && !program?.italic && resolveStyle.italic) resolveStyle = { ...resolveStyle, italic: false };
 
     let x;
     if (src && m < i0) {
@@ -408,7 +449,7 @@ export async function replaceTextLine(doc, line, newText) {
       const lig = ligAt ? ligAt.get(ci) : undefined;
       if (lig) {
         // A substitute face's ligature would sit in a different typeface than the letters around it.
-        const lr = resolveReplacementChar(lig.ch, program, wordStyleSrc.style);
+        const lr = resolveReplacementChar(lig.ch, program, resolveStyle);
         if (lr.kind === 'orig') {
           ch = newTexts[m].slice(ci, ci + lig.len);
           r = lr;
@@ -417,7 +458,7 @@ export async function replaceTextLine(doc, line, newText) {
       }
       if (!r) {
         ch = String.fromCodePoint(/** @type {number} */ (newTexts[m].codePointAt(ci)));
-        r = resolveReplacementChar(ch, program, wordStyleSrc.style);
+        r = resolveReplacementChar(ch, program, resolveStyle);
         ci += ch.length;
       }
       if (r.kind === 'tofu') {
@@ -459,7 +500,6 @@ export async function replaceTextLine(doc, line, newText) {
       }
     }
 
-    const color = wordStyleSrc.style.color || '#000000';
     /** @type {?TextEditRun} */
     let run = null;
     /** @type {?string} */
@@ -474,9 +514,17 @@ export async function replaceTextLine(doc, line, newText) {
       }
       if (!run) {
         const org = localPointToPage(cx, wordBaseY);
-        run = {
+        /** @type {TextEditRun} */
+        const newRun = {
           x: org.x, y: org.y, orientation: o, sizePx: s, color, font: r.font || { kind: 'orig', fontObjNum: srcEntry?.fontObjNum }, glyphs: [],
         };
+        if (strokeState) {
+          newRun.renderMode = strokeState.renderMode;
+          newRun.strokeWidthPx = strokeState.strokeWidthPx;
+          if (strokeState.strokeColor) newRun.strokeColor = strokeState.strokeColor;
+        }
+        if (skewFinal) newRun.skew = skewFinal;
+        run = newRun;
         runs.push(run);
       }
       run.glyphs.push(r.tofu ? { tofu: true, advEm: r.advEm } : { cp: r.cp, gid: r.gid, advEm: r.advEm });
@@ -509,17 +557,26 @@ export async function replaceTextLine(doc, line, newText) {
       word.visualCoords = true;
       word.chars = chars;
     }
-    // Redrawn words keep a native-text entry (staying editable) but no per-glyph arrays: their fresh char bboxes are already exact.
+    if (ov && (ov.bold !== undefined || ov.italic !== undefined)) {
+      word.style = { ...word.style, bold: finalBold, italic: finalItalic };
+    }
+    // Stroke width and shear have no home in the word style, so only the entry can carry them into a later edit.
     /** @type {NativeTextWord} */
     const wordEntry = { baselineY: nt[word.id] ? nt[word.id].baselineY : wordBaseY };
     const entryFontObjNum = nt[word.id] ? nt[word.id].fontObjNum : nt[styleFrom.id]?.fontObjNum;
     if (entryFontObjNum !== undefined) wordEntry.fontObjNum = entryFontObjNum;
+    if (strokeState) {
+      wordEntry.renderMode = strokeState.renderMode;
+      wordEntry.strokeWidthPx = strokeState.strokeWidthPx;
+      if (strokeState.strokeColor) wordEntry.strokeColor = strokeState.strokeColor;
+    }
+    if (skewFinal) wordEntry.skew = chars.map(() => skewFinal);
     redrawnEntries.push(wordEntry);
     redrawnWords.push(word);
 
     pen = cx;
     prevOldIdx = curOld;
-    const sp = resolveReplacementChar(' ', program, wordStyleSrc.style);
+    const sp = resolveReplacementChar(' ', program, resolveStyle);
     prevSpaceAdvPx = (sp.kind === 'tofu' ? 0.25 : sp.advEm) * s;
   }
   const redrawOldEndFinal = realigned ? realignStartOld : olen;

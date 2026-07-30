@@ -1164,6 +1164,9 @@ export function detectPdfType(pdfBytes) {
  *   dirX: number, dirY: number,
  *   textColor?: number[],
  *   alpha?: number,
+ *   renderMode?: number,
+ *   strokeWidthPx?: number,
+ *   strokeColor?: number[],
  *   artifact?: boolean,
  *   structTag?: string,
  *   mcid?: (number|null),
@@ -1193,9 +1196,14 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
   let textColor = [0]; // current non-stroking (fill) color — default black
   let fillTintCS = null;
   let fillAlpha = 1; // current non-stroking alpha (from ExtGState /ca via `gs`)
+  /** @type {number[]} */
+  let strokeColor = [0];
+  let strokeTintCS = null;
+  let lineWidth = 1;
   /**
    * @type {Array<{ ctm: number[], tr: number, tc: number, tw: number, tz: number, tl: number, trise: number,
-   *   fontSize: number, currentFont: any, textColor: number[], fillAlpha: number, fillTintCS: ?{nInputs: number, tint: object} }>}
+   *   fontSize: number, currentFont: any, textColor: number[], fillAlpha: number, fillTintCS: ?{nInputs: number, tint: object},
+   *   strokeColor: number[], strokeTintCS: ?{nInputs: number, tint: object}, lineWidth: number }>}
    */
   const gsStack = [];
 
@@ -1233,7 +1241,21 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
       // Graphics state operators
       case 'q':
         gsStack.push({
-          ctm: ctm.slice(), tr, tc, tw, tz, tl, trise, fontSize, currentFont, textColor: textColor.slice(), fillAlpha, fillTintCS,
+          ctm: ctm.slice(),
+          tr,
+          tc,
+          tw,
+          tz,
+          tl,
+          trise,
+          fontSize,
+          currentFont,
+          textColor: textColor.slice(),
+          fillAlpha,
+          fillTintCS,
+          strokeColor: strokeColor.slice(),
+          strokeTintCS,
+          lineWidth,
         });
         operandStack.length = 0;
         break;
@@ -1253,6 +1275,9 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
           textColor = saved.textColor;
           fillAlpha = saved.fillAlpha;
           fillTintCS = saved.fillTintCS;
+          strokeColor = saved.strokeColor;
+          strokeTintCS = saved.strokeTintCS;
+          lineWidth = saved.lineWidth;
         }
         operandStack.length = 0;
         break;
@@ -1474,9 +1499,22 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
         operandStack.length = 0;
         break;
 
+      case 'G': case 'RG': case 'K':
+        strokeColor = operandStack.map((t) => t.value);
+        strokeTintCS = null;
+        operandStack.length = 0;
+        break;
+
       case 'cs': {
         const csName = operandStack.length >= 1 ? operandStack[operandStack.length - 1].value : '';
         fillTintCS = (colorSpaces && colorSpaces.get(csName)) || null;
+        operandStack.length = 0;
+        break;
+      }
+
+      case 'CS': {
+        const csName = operandStack.length >= 1 ? operandStack[operandStack.length - 1].value : '';
+        strokeTintCS = (colorSpaces && colorSpaces.get(csName)) || null;
         operandStack.length = 0;
         break;
       }
@@ -1495,6 +1533,25 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
         operandStack.length = 0;
         break;
       }
+
+      case 'SC': case 'SCN': {
+        let resolved = null;
+        if (strokeTintCS) {
+          const comps = operandStack.map((t) => t.value).filter((v) => typeof v === 'number');
+          if (comps.length === strokeTintCS.nInputs) {
+            const rgb = tintComponentsToRGB(strokeTintCS.tint, comps);
+            if (rgb) resolved = [rgb[0] / 255, rgb[1] / 255, rgb[2] / 255];
+          }
+        }
+        strokeColor = resolved || operandStack.map((t) => t.value);
+        operandStack.length = 0;
+        break;
+      }
+
+      case 'w':
+        if (operandStack.length >= 1) lineWidth = operandStack[operandStack.length - 1].value;
+        operandStack.length = 0;
+        break;
 
       // Graphics state parameters (sets non-stroking alpha via /ca).
       case 'gs': {
@@ -1523,9 +1580,17 @@ function executeTextOperators(tokens, fonts, scale, pageHeightPts, initialCtm, e
       for (let s = mcStack.length - 1; s >= 0; s--) {
         if (STRUCTURAL_MC_TAGS.has(mcStack[s].tag)) { structTag = mcStack[s].tag; mcid = mcStack[s].mcid; break; }
       }
+      // Faux-bold state: modes 1/2 stroke the glyph outlines with the pen in user space, so the effective width scales with the CTM, not the text matrix.
+      const stroked = tr === 1 || tr === 2;
+      const strokeWidthPx = stroked ? lineWidth * Math.sqrt(Math.abs(ctm[0] * ctm[3] - ctm[1] * ctm[2])) * scale : 0;
       for (let ci = charsBeforeOp; ci < chars.length; ci++) {
         chars[ci].textColor = textColor;
         chars[ci].alpha = fillAlpha;
+        if (stroked) {
+          chars[ci].renderMode = tr;
+          chars[ci].strokeWidthPx = strokeWidthPx;
+          chars[ci].strokeColor = strokeColor;
+        }
         if (inArtifact) chars[ci].artifact = true;
         if (structTag) { chars[ci].structTag = structTag; chars[ci].mcid = mcid; }
       }
@@ -2794,6 +2859,13 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
         /** @type {NativeTextWord} */
         const ntEntry = { baselineY: round3(wordChars[0].y) };
         if (Number.isFinite(firstAlphaNum._font?.fontObjNum)) ntEntry.fontObjNum = firstAlphaNum._font.fontObjNum;
+        // Faux-bold words are redrawn with the same stroke, or the edit visibly thins them.
+        if ((firstAlphaNum.renderMode === 1 || firstAlphaNum.renderMode === 2) && firstAlphaNum.strokeWidthPx > 0) {
+          ntEntry.renderMode = firstAlphaNum.renderMode;
+          ntEntry.strokeWidthPx = round3(firstAlphaNum.strokeWidthPx);
+          const strokeRgb = firstAlphaNum.strokeColor ? colorToRgb(firstAlphaNum.strokeColor) : null;
+          if (strokeRgb) ntEntry.strokeColor = rgbToHex(strokeRgb);
+        }
         nativeText[wordID] = ntEntry;
       }
 

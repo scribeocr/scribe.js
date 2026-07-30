@@ -1040,15 +1040,16 @@ export class ScribeDoc {
   }
 
   /**
-   * Replace a line of visible native PDF text with new text.
+   * Replace a line of visible native PDF text with new text, optionally toggling bold/italic per word.
    * The raster, search, selection, and every export reflect the change.
    * Records one undoable step in `textEditHistory`.
    * @param {Parameters<typeof replaceTextLineImpl>[1]} line
    * @param {Parameters<typeof replaceTextLineImpl>[2]} newText
+   * @param {Parameters<typeof replaceTextLineImpl>[3]} [opts]
    * @returns {ReturnType<typeof replaceTextLineImpl>}
    */
-  replaceTextLine(line, newText) {
-    return replaceTextLineImpl(this, line, newText);
+  replaceTextLine(line, newText, opts) {
+    return replaceTextLineImpl(this, line, newText, opts);
   }
 
   /**

@@ -349,7 +349,7 @@ declare global {
     type Annotation = AnnotationHighlight | AnnotationFreeText | AnnotationShape | AnnotationText | AnnotationRedact | AnnotationLink;
 
     /**
-     * A native-text deletion: visible source-PDF text slated for removal.
+     * Visible source-PDF text slated for removal.
      * Vector paths, images, and annotations under the rects are untouched.
      */
     type TextEditDelete = {
@@ -362,9 +362,9 @@ declare global {
     };
 
     /**
-     * One run of replacement glyphs: a same-font stretch drawn at a fixed baseline origin.
-     * Geometry is in the page-pixel frame; every consumer (raster, editor, export) draws the
-     * pre-resolved glyphs verbatim, so the three surfaces cannot disagree.
+     * One same-font stretch of replacement glyphs, drawn from a fixed baseline origin.
+     * Geometry is in the page-pixel frame.
+     * Consumers draw the glyphs verbatim, so the raster, editor, and export cannot disagree.
      */
     type TextEditRun = {
         x: number;
@@ -374,6 +374,14 @@ declare global {
         sizePx: number;
         /** Fill color, `#rrggbb`. */
         color: string;
+        /** Text render mode of the replaced faux-bold text: 1 = stroke only, 2 = fill + stroke. Absent for plain filled text. */
+        renderMode?: number;
+        /** Stroke pen width in page pixels, present with `renderMode`. */
+        strokeWidthPx?: number;
+        /** Stroke color, `#rrggbb`; black when absent. */
+        strokeColor?: string;
+        /** Shear ratio of faux-oblique text (x offset per unit above the baseline). Absent for upright text. */
+        skew?: number;
         font: { kind: 'orig', fontObjNum: number } | { kind: 'bundled', family: string, styleKey: string };
         /**
          * Pre-resolved glyphs.
@@ -385,8 +393,7 @@ declare global {
     };
 
     /**
-     * A native-text replacement.
-     * The covered original glyphs are suppressed exactly like a deletion, and the runs draw in their place.
+     * Visible source-PDF text replaced by the record's runs, with the originals suppressed exactly like a deletion.
      * On export the runs are spliced at the removed glyphs' stream position, preserving reading order.
      */
     type TextEditReplace = {
@@ -403,26 +410,30 @@ declare global {
     type TextEdit = TextEditDelete | TextEditReplace;
 
     /**
-     * Parse-derived metadata for one visibly-drawn native word, stored in `doc.nativeText.pages[n]` keyed by word id.
-     * Presence of a word's entry marks it editable via the native-text pipeline.
-     * Array fields are index-aligned with the word's `chars`; record-drawn replacement words carry no arrays (their char bboxes are already exact).
+     * Parse-derived metadata for one visibly-drawn native word.
+     * Array fields are index-aligned with the word's `chars`.
      */
     type NativeTextWord = {
-        /** Object number of the source-PDF font that drew the word, when known. */
         fontObjNum?: number;
-        /** Exact unrounded baseline y in page pixels; sup words keep their true raised baseline here. */
+        /** Unrounded baseline y in page pixels. */
         baselineY: number;
-        /** Per-glyph pen-origin x, unrounded; the char bbox left rounds it to an integer. */
+        /** Per-glyph pen-origin x, unrounded. */
         penX?: number[];
         /** Per-glyph shear ratio of faux-oblique text, 0 for unsheared glyphs. */
         skew?: number[];
         /** Per-glyph horizontal stretch ratio, 0 for unstretched glyphs. */
         stretch?: number[];
+        /** Text render mode of faux-bold text: 1 = stroke only, 2 = fill + stroke. Absent for plain filled text. */
+        renderMode?: number;
+        /** Stroke pen width in page pixels, present with `renderMode`. */
+        strokeWidthPx?: number;
+        /** Stroke color, `#rrggbb`; black when absent. */
+        strokeColor?: string;
     };
 
     /**
-     * Application session state inside a `.scribe` file: data only this application consumes.
-     * Written only when the export opts in (`scribeSession`), so standard-format consumers never see it.
+     * Data inside a `.scribe` file that only this application consumes.
+     * Written only when the export opts in with `scribeSession`, so standard-format consumers never see it.
      */
     type ScribeSessionData = {
         v: number;

@@ -256,6 +256,9 @@ export async function overlayPdfText({
         }
         let tofuOps = '';
         let textOps = '';
+        // Text state persists across the record's runs, so a stroked run must be reset before a following plain run.
+        let prevRenderMode = 0;
+        let anyStroked = false;
         for (const run of rec.runs) {
           let fontObj;
           let rawBytes = null;
@@ -341,14 +344,32 @@ export async function overlayPdfText({
           }
           if (hexRun) parts.push(`<${hexRun}>`);
           if (parts.some((p) => p.startsWith('<'))) {
-            const tmStr = `${fmtN(F[0] * s)} ${fmtN(F[1] * s)} ${fmtN(U[0] * s)} ${fmtN(U[1] * s)} ${fmtN(origin[0])} ${fmtN(origin[1])}`;
-            textOps += `${colorStr} rg\n${fontEntry.name} 1 Tf\n${tmStr} Tm\n[${parts.join(' ')}] TJ\n`;
+            // A faux-oblique run leans by adding the shear ratio of the flow vector to the up column, the same form producers emit.
+            const sk = run.skew || 0;
+            const tmStr = `${fmtN(F[0] * s)} ${fmtN(F[1] * s)} ${fmtN((U[0] + sk * F[0]) * s)} ${fmtN((U[1] + sk * F[1]) * s)} ${fmtN(origin[0])} ${fmtN(origin[1])}`;
+            // Faux-bold replacements restore the original's fill+stroke state; the pen width converts from page px like the tofu box above.
+            const strokedRun = (run.renderMode === 1 || run.renderMode === 2) && run.strokeWidthPx;
+            let strokeOps = '';
+            if (strokedRun) {
+              anyStroked = true;
+              const hexStroke = /^#([0-9a-f]{6})$/i.exec(run.strokeColor || '');
+              const strokeColorStr = hexStroke
+                ? [0, 2, 4].map((p) => fmtN(parseInt(hexStroke[1].slice(p, p + 2), 16) / 255)).join(' ')
+                : '0 0 0';
+              strokeOps = `${run.renderMode} Tr\n${strokeColorStr} RG\n${fmtN(run.strokeWidthPx * Math.hypot(F[0], F[1]))} w\n`;
+              prevRenderMode = run.renderMode;
+            } else if (prevRenderMode !== 0) {
+              strokeOps = '0 Tr\n';
+              prevRenderMode = 0;
+            }
+            textOps += `${colorStr} rg\n${strokeOps}${fontEntry.name} 1 Tf\n${tmStr} Tm\n[${parts.join(' ')}] TJ\n`;
           }
         }
         let body = '';
         if (tofuOps) body += `[] 0 d\n${tofuOps}`;
         // The splice's q/Q means inherited text state only needs zeroing, never restoring.
-        if (textOps) body += `BT\n0 Tc 0 Tw 100 Tz 0 Tr 0 Ts\n${textOps}ET\n`;
+        // Stroked runs also reset the dash and join to the defaults their capture assumed.
+        if (textOps) body += `BT\n0 Tc 0 Tw 100 Tz 0 Tr 0 Ts\n${anyStroked ? '[] 0 d 0 j 0 J\n' : ''}${textOps}ET\n`;
         if (body) entries.push({ rects, body, placed: false });
       }
       if (entries.length > 0) {

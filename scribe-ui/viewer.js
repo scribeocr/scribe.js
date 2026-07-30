@@ -423,6 +423,10 @@ export class ScribeViewer {
     this._editTextSelectedLines = null;
     /** @type {?() => boolean} */
     this._editTextDeleteSelection = null;
+    /** @type {?(prop: 'bold'|'italic') => {present: boolean, on: boolean, locked: boolean}} Bold/italic state of the selected lines' words, for the context menu's check and locked rows. */
+    this._editTextStyleState = null;
+    /** @type {?(prop: 'bold'|'italic') => void} Toggle bold/italic on every word of the selected lines. */
+    this._editTextToggleStyle = null;
     /** @type {?(clientX: number, clientY: number) => ?Object} Aim the edit-only context menu by selecting the line under the point, or return null when no editable line is there. */
     this._editTextMenuTarget = null;
     /** @type {?() => void} Open the line editor on the last menu target. */

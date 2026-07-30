@@ -7810,12 +7810,16 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           if (run.orientation === 1) rCtx.rotate(Math.PI / 2);
           else if (run.orientation === 2) rCtx.rotate(Math.PI);
           else if (run.orientation === 3) rCtx.rotate(-Math.PI / 2);
+          // Faux-oblique replacements lean like the original: the transform shears about the baseline the run draws on.
+          if (run.skew) rCtx.transform(1, 0, -run.skew, 1, 0, 0);
           const family = run.font.kind === 'orig'
             ? `_pdf_d${objCache.docId}_f${run.font.fontObjNum}`
             : bundledEditFaceAlias(run.font.family, run.font.styleKey);
           rCtx.font = `${run.sizePx}px "${family}"`;
           rCtx.textBaseline = 'alphabetic';
           rCtx.fillStyle = run.color || '#000000';
+          // Faux-bold replacements re-stroke the glyph outlines like the original (mode 2 fills then strokes; mode 1 strokes only).
+          const strokeW = (run.renderMode === 1 || run.renderMode === 2) && run.strokeWidthPx > 0 ? run.strokeWidthPx : 0;
           let penX = 0;
           for (const g of run.glyphs) {
             if (g.tofu) {
@@ -7825,7 +7829,13 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
               rCtx.strokeStyle = run.color || '#000000';
               rCtx.strokeRect(penX + 0.07 * s, -0.72 * s, g.advEm * s - 0.14 * s, 0.72 * s);
             } else if (g.cp !== undefined && g.cp !== 0x20) {
-              rCtx.fillText(String.fromCodePoint(g.cp), penX, 0);
+              const glyphStr = String.fromCodePoint(g.cp);
+              if (run.renderMode !== 1) rCtx.fillText(glyphStr, penX, 0);
+              if (strokeW > 0) {
+                rCtx.strokeStyle = run.strokeColor || '#000000';
+                rCtx.lineWidth = strokeW;
+                rCtx.strokeText(glyphStr, penX, 0);
+              }
             }
             penX += g.advEm * run.sizePx;
           }

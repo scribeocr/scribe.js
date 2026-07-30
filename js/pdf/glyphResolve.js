@@ -66,10 +66,18 @@ export function resolveReplacementChar(ch, orig, style) {
   if (orig?.font) {
     const gid = orig.font.charToGlyphIndex(ch);
     if (gid > 0) {
-      const advEm = orig.font.glyphs.get(gid).advanceWidth / orig.font.unitsPerEm;
-      return {
-        kind: 'orig', codepoint, gid, advEm,
-      };
+      const glyph = orig.font.glyphs.get(gid);
+      // A subset font keeps its whole cmap but strips the outlines it never drew, so a mapped glyph can still be blank.
+      // Accepting a blank one paints a correctly sized gap where the typed character should be.
+      // Whitespace is blank in every font, and its original advance is what holds the edited line's spacing.
+      const drawable = /\s/.test(ch) || !!glyph.isComposite
+        || (glyph.path?.commands || []).some((c) => c.type === 'L' || c.type === 'C' || c.type === 'Q');
+      if (drawable) {
+        const advEm = glyph.advanceWidth / orig.font.unitsPerEm;
+        return {
+          kind: 'orig', codepoint, gid, advEm,
+        };
+      }
     }
   }
 
