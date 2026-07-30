@@ -1390,9 +1390,6 @@ export function createEditTextTool(scribe) {
     const selected = new Set();
     /** @type {Map<import('../../../js/objects/ocrObjects.js').OcrLine, HTMLDivElement>} */
     const frames = new Map();
-    let lastClick = {
-      t: -1e9, x: 0, y: 0, line: /** @type {import('../../../js/objects/ocrObjects.js').OcrLine?} */ (null),
-    };
 
     /**
      * The drawn box for a line, sized to its visible glyphs.
@@ -1460,7 +1457,7 @@ export function createEditTextTool(scribe) {
         const idx = scribe.textSel.index(n);
         if (!idx) continue;
         for (const e of idx.lines) {
-          if (!lineEligible(e.line) || e.line === openLine) continue;
+          if (!lineEligible(e.line) || e.line === openLine || selected.has(e.line)) continue;
           const group = scribe.getTextGroup(n, e.orientation);
           if (!group) continue;
           let el = lineBoxes.get(e.line);
@@ -1523,6 +1520,7 @@ export function createEditTextTool(scribe) {
           frames.delete(line);
         }
       }
+      let zoom = 0;
       for (const line of selected) {
         const found = entryFor(line);
         const group = found ? scribe.getTextGroup(found.n, found.e.orientation) : null;
@@ -1534,11 +1532,11 @@ export function createEditTextTool(scribe) {
         if (!el) {
           el = document.createElement('div');
           el.className = 'scribe-edit-text-frame';
-          // The word editor's selection stroke, so a selected box reads the same at both scopes.
           Object.assign(el.style, {
             position: 'absolute',
-            border: 'calc(2px / var(--scribe-zoom, 1)) solid rgba(40, 123, 181, 1)',
-            borderRadius: '2px',
+            border: 'calc(1.5px / var(--scribe-zoom, 1)) solid var(--scribe-accent, #1c62d4)',
+            borderRadius: 'calc(3px / var(--scribe-zoom, 1))',
+            background: 'var(--scribe-active, rgba(28, 98, 212, .10))',
             pointerEvents: 'none',
             boxSizing: 'border-box',
           });
@@ -1546,10 +1544,25 @@ export function createEditTextTool(scribe) {
         }
         const pad = 2;
         const box = lineDrawBox(line, found.e.lbox);
-        el.style.left = `${box.left - pad}px`;
-        el.style.top = `${box.top - pad}px`;
-        el.style.width = `${box.right - box.left + 2 * pad}px`;
-        el.style.height = `${box.bottom - box.top + 2 * pad}px`;
+        if (!zoom) zoom = parseFloat(getComputedStyle(group).getPropertyValue('--scribe-zoom')) || 1;
+        let left = box.left - pad;
+        let top = box.top - pad;
+        let w = box.right - box.left + 2 * pad;
+        let h = box.bottom - box.top + 2 * pad;
+        const minW = 22 / zoom;
+        const minH = 18 / zoom;
+        if (w < minW) {
+          left -= (minW - w) / 2;
+          w = minW;
+        }
+        if (h < minH) {
+          top -= (minH - h) / 2;
+          h = minH;
+        }
+        el.style.left = `${left}px`;
+        el.style.top = `${top}px`;
+        el.style.width = `${w}px`;
+        el.style.height = `${h}px`;
         if (el.parentElement !== group) group.appendChild(el);
       }
       // Every path that changes lines runs through here, so the mode's hairline boxes stay in sync by riding along.
@@ -1557,6 +1570,7 @@ export function createEditTextTool(scribe) {
     };
     const clearSelection = () => {
       selected.clear();
+      hideEditHint();
       renderFrames();
     };
     clearBoxSelection = clearSelection;
@@ -1665,6 +1679,84 @@ export function createEditTextTool(scribe) {
 
     editor = createLineEditor(scribe, { onCommitted: refreshPages });
     scribe._editTextLineEditor = editor;
+
+    /**
+     * Open the sole selected line in the editor from a keyboard action.
+     * @param {{caretEnd?: boolean}} openOpts
+     */
+    const openSelectedForEdit = (openOpts) => {
+      validateSelection();
+      if (selected.size !== 1) return;
+      const line = [...selected][0];
+      const found = entryFor(line);
+      if (!found) return;
+      const info = {
+        n: found.n, line, lbox: found.e.lbox, orientation: found.e.orientation, start: found.e.start,
+      };
+      clearSelection();
+      hideHover();
+      editor.open(info, null, null, openOpts).finally(scheduleLineBoxes);
+    };
+
+    const flashSelection = () => {
+      for (const el of frames.values()) {
+        const zoom = parseFloat(getComputedStyle(el).getPropertyValue('--scribe-zoom')) || 1;
+        el.animate([
+          { boxShadow: 'none' },
+          { boxShadow: `0 0 0 ${3 / zoom}px var(--scribe-accent-ring, rgba(28, 98, 212, .30))` },
+          { boxShadow: 'none' },
+        ], { duration: 300, iterations: 2 });
+      }
+    };
+
+    /** @type {?HTMLDivElement} */
+    let hintElem = null;
+    let hintTimer = 0;
+    const hideEditHint = () => {
+      if (hintTimer) clearTimeout(hintTimer);
+      hintTimer = 0;
+      hintElem?.remove();
+      hintElem = null;
+    };
+    const showEditHint = () => {
+      let anchor = null;
+      for (const el of frames.values()) {
+        if (el.isConnected) {
+          anchor = el;
+          break;
+        }
+      }
+      if (!anchor) return;
+      hideEditHint();
+      const r = anchor.getBoundingClientRect();
+      hintElem = document.createElement('div');
+      hintElem.className = 'scribe-edit-text-hint';
+      hintElem.textContent = 'To edit the text, press Enter or double-click the line.';
+      Object.assign(hintElem.style, {
+        position: 'fixed',
+        zIndex: '60',
+        background: 'var(--scribe-surface, #ffffff)',
+        color: 'var(--scribe-ink, #1f2530)',
+        border: '1px solid var(--scribe-line, #e4e8ef)',
+        borderRadius: '7px',
+        padding: '7px 11px',
+        fontSize: '12px',
+        lineHeight: '1.35',
+        boxShadow: 'var(--scribe-menu-shadow, 0 8px 24px rgba(20, 30, 60, .18))',
+        pointerEvents: 'none',
+        maxWidth: '300px',
+        transition: 'opacity .3s',
+      });
+      scribe.scrollContainer.appendChild(hintElem);
+      const hw = hintElem.getBoundingClientRect();
+      hintElem.style.left = `${Math.max(6, Math.min(r.left, window.innerWidth - hw.width - 6))}px`;
+      hintElem.style.top = `${Math.max(4, r.top - hw.height - 8)}px`;
+      hintTimer = window.setTimeout(() => {
+        if (!hintElem) return;
+        hintElem.style.opacity = '0';
+        hintTimer = window.setTimeout(hideEditHint, 350);
+      }, 2600);
+    };
 
     const hoverHandler = (ev) => {
       if (!editMode || !scribe.useCustomSelection || !scribe.textSel) return;
@@ -1777,18 +1869,10 @@ export function createEditTextTool(scribe) {
         window.removeEventListener('pointermove', onMove);
         window.removeEventListener('pointerup', onUp);
         if (moved) {
-          lastClick = {
-            t: -1e9, x: 0, y: 0, line: null,
-          };
           removeMarquee();
           return;
         }
         // If an editor was open, its own click-away hook has already committed.
-        const isDouble = !!info && info.line === lastClick.line
-          && ev.timeStamp - lastClick.t < 420 && Math.hypot(downX - lastClick.x, downY - lastClick.y) < 4;
-        lastClick = {
-          t: ev.timeStamp, x: downX, y: downY, line: info && !shift ? info.line : null,
-        };
         if (!info) {
           clearSelection();
           return;
@@ -1799,7 +1883,8 @@ export function createEditTextTool(scribe) {
           renderFrames();
           return;
         }
-        if (!wasOpen && isDouble && selected.size === 1 && selected.has(info.line)) {
+        // A double-click needs no timing window because its second click is already a click on the sole selected line.
+        if (!wasOpen && selected.size === 1 && selected.has(info.line)) {
           clearSelection();
           hideHover();
           // Opening is async (font loads); the open line sheds its hairline box once it settles.
@@ -1866,15 +1951,36 @@ export function createEditTextTool(scribe) {
         toggleSelectionStyle(ev.key === 'b' || ev.key === 'B' ? 'bold' : 'italic');
         return;
       }
-      if (ev.key !== 'Delete' && ev.key !== 'Backspace') return;
-      if (eligibleSelectedLines().length === 0) return;
-      ev.preventDefault();
-      ev.stopPropagation();
-      deleteSelectedLines();
+      if (ev.key === 'Enter' || ev.key === 'F2') {
+        validateSelection();
+        if (selected.size !== 1) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        openSelectedForEdit({ caretEnd: true });
+        return;
+      }
+      if (ev.key === 'Delete' || ev.key === 'Backspace') {
+        if (eligibleSelectedLines().length === 0) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        // Backspace on a single box-selected line is inert, because a text-flavored key must not destroy a line.
+        // Delete still deletes, as does either key across a multi-selection.
+        if (ev.key === 'Backspace' && selected.size === 1) return;
+        deleteSelectedLines();
+        return;
+      }
+      if (!mod && !ev.altKey && ev.key.length === 1) {
+        if (eligibleSelectedLines().length === 0) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        flashSelection();
+        showEditHint();
+      }
     };
 
     let scrollRaf = 0;
     const scrollHandler = () => {
+      if (hintElem) hideEditHint();
       if (scrollRaf || !editMode) return;
       // Page virtualization rebuilds text groups; re-rendering re-parents any dropped frame.
       scrollRaf = requestAnimationFrame(() => {

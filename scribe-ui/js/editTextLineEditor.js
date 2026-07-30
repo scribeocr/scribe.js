@@ -111,6 +111,8 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
   let caretBlinkOn = true;
   /** @type {?number} */
   let blinkTimer = null;
+  // The editing field draws only while a session is live, never on the lingering post-close canvas.
+  let fieldOn = false;
 
   /** @param {EditSession} session */
   const layout = (session) => {
@@ -276,6 +278,40 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
     cx.clearRect(0, 0, canvas.width, canvas.height);
     cx.setTransform(st.scale, 0, 0, st.scale, -st.box.left * st.scale, -st.box.top * st.scale);
     cx.textBaseline = 'alphabetic';
+    if (fieldOn && xs.length > 0) {
+      let left = Infinity;
+      let right = -Infinity;
+      let top = Infinity;
+      let bottom = -Infinity;
+      for (let i = 0; i < xs.length; i++) {
+        const size = szs[i] || st.size;
+        left = Math.min(left, xs[i]);
+        right = Math.max(right, xs[i]);
+        top = Math.min(top, ys[i] - 0.75 * size);
+        bottom = Math.max(bottom, ys[i] + 0.25 * size);
+      }
+      const dpr = window.devicePixelRatio || 1;
+      // The band and 2-unit pad match the mode's line boxes, so the field lands exactly where the hairline sat.
+      const pad = 2;
+      const radius = (3 * dpr) / st.scale;
+      cx.save();
+      cx.beginPath();
+      if (cx.roundRect) cx.roundRect(left - pad, top - pad, right - left + 2 * pad, bottom - top + 2 * pad, radius);
+      else cx.rect(left - pad, top - pad, right - left + 2 * pad, bottom - top + 2 * pad);
+      // Canvas ignores the transform for shadow blur and offset, so these hold a constant screen size at any zoom.
+      cx.shadowColor = 'rgba(20, 30, 60, 0.22)';
+      cx.shadowBlur = 5 * dpr;
+      cx.shadowOffsetY = dpr;
+      cx.fillStyle = '#ffffff';
+      cx.fill();
+      cx.shadowColor = 'rgba(0, 0, 0, 0)';
+      cx.shadowBlur = 0;
+      cx.shadowOffsetY = 0;
+      cx.strokeStyle = '#c9d2de';
+      cx.lineWidth = dpr / st.scale;
+      cx.stroke();
+      cx.restore();
+    }
     const sel = selRange();
     if (sel) {
       // On the page's white this fill matches the multiply-blended wash the page-level selection layer draws.
@@ -484,6 +520,7 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
     if (blinkTimer) clearInterval(blinkTimer);
     blinkTimer = null;
     caretBlinkOn = false;
+    fieldOn = false;
     if (st) st.selAnchor = null;
     draw();
     hiddenInput.remove();
@@ -811,10 +848,11 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
   /**
    * Open the editor on a line.
    * @param {{n: number, line: OcrLine, lbox: bbox, orientation: number, start: number}} info - `lineInfoAt` result for the clicked point.
-   * @param {number} clientX
-   * @param {number} clientY
+   * @param {?number} clientX - Null for a keyboard-initiated open.
+   * @param {?number} clientY
+   * @param {{caretEnd?: boolean}} [openOpts] - Place the caret at the end, for keyboard-initiated opens.
    */
-  const open = async (info, clientX, clientY) => {
+  const open = async (info, clientX, clientY, openOpts = {}) => {
     if (st) await commit();
     const { line, n, orientation } = info;
     const page = line.page;
@@ -1077,9 +1115,10 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
       composing: false,
     };
 
-    const pt = scribe.textSel?.pointAt?.(clientX, clientY);
+    const pt = clientX != null && clientY != null ? scribe.textSel?.pointAt?.(clientX, clientY) : null;
     const off = pt && pt.n === n ? pt.off - info.start : 0;
     st.caret = Math.max(0, Math.min(origText.length, off));
+    if (openOpts.caretEnd) st.caret = origText.length;
 
     const rects = line.words.map((w) => wordBandRect(w.bbox, w.chars, orientation, dims));
     scribe.doc.images.setEphemeralEditRects(n, rects);
@@ -1088,6 +1127,7 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
     document.addEventListener('pointerdown', onDocPointerdown, true);
     hiddenInput.value = '';
     hiddenInput.focus({ preventScroll: true });
+    fieldOn = true;
     restartBlink();
     draw();
   };
