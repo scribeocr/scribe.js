@@ -81,7 +81,8 @@ export class PdfCore {
    * The font program the renderer draws the given embedded font with, plus the cascade inputs native-text editing needs.
    * @param {{ fontObjNum: number, pageIndex?: number }} args - `pageIndex` is a page the font is used on, letting this instance resolve a font from a page it never parsed.
    * @returns {Promise<?{ kind: 'original'|'rebuilt'|'none', bytes?: ArrayBuffer, allGlyphsEmpty?: boolean,
-   *   baseName: string, familyName: string, bold: boolean, italic: boolean, serifFlag: boolean|null }>}
+   *   baseName: string, familyName: string, bold: boolean, italic: boolean, serifFlag: boolean|null,
+   *   italicAngleDeg: ?number, capHeightPdf: ?number, xHeightPdf: ?number, stemV: ?number }>}
    *   `kind: 'none'` means the font has no usable embedded program, so editing must fall back the same way the renderer did.
    *   Null means the `fontObjNum` is unknown.
    */
@@ -104,6 +105,10 @@ export class PdfCore {
       bold: !!fontObj.bold,
       italic: !!fontObj.italic,
       serifFlag: fontObj.serifFlag ?? null,
+      italicAngleDeg: fontObj.italicAngleDeg ?? null,
+      capHeightPdf: fontObj.capHeightPdf ?? null,
+      xHeightPdf: fontObj.xHeightPdf ?? null,
+      stemV: fontObj.stemV ?? null,
     };
     const entry = this.#objCache.fontBytesCache.get(fontObjNum);
     if (!entry) return { kind: 'none', ...meta };

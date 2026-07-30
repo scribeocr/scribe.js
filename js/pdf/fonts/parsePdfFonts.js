@@ -760,6 +760,10 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     // Used as last-resort fallback when CSS font name matching fails.
     let serifFlag = false;
     let symbolicFlag = false;
+    let italicAngleDeg = null;
+    let capHeightPdf = null;
+    let xHeightPdf = null;
+    let stemV = null;
 
     // Parse ToUnicode CMap — can be an indirect reference (N 0 R) or a name (/Identity-H)
     const toUnicode = new Map();
@@ -1652,6 +1656,14 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         }
         if (fontFlags & 2) serifFlag = true;
         if (fontFlags & 4) symbolicFlag = true;
+        const descAngle = resolveNumValue(fdText, 'ItalicAngle', objCache);
+        if (descAngle && Math.abs(descAngle) < 45) italicAngleDeg = descAngle;
+        const descCapH = resolveNumValue(fdText, 'CapHeight', objCache);
+        if (descCapH > 0) capHeightPdf = descCapH;
+        const descXH = resolveNumValue(fdText, 'XHeight', objCache);
+        if (descXH > 0) xHeightPdf = descXH;
+        const descStemV = resolveNumValue(fdText, 'StemV', objCache);
+        if (descStemV > 0) stemV = descStemV;
 
         // Extract FontFile2 for CIDFontType2 fonts (TrueType-based composite fonts)
         const isCIDFontType2 = /\/Subtype\s*\/CIDFontType2/.test(cidFontText);
@@ -1965,6 +1977,14 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         }
         if (fontFlags & 2) serifFlag = true;
         if (fontFlags & 4) symbolicFlag = true;
+        const descAngle = resolveNumValue(fdText, 'ItalicAngle', objCache);
+        if (descAngle && Math.abs(descAngle) < 45) italicAngleDeg = descAngle;
+        const descCapH = resolveNumValue(fdText, 'CapHeight', objCache);
+        if (descCapH > 0) capHeightPdf = descCapH;
+        const descXH = resolveNumValue(fdText, 'XHeight', objCache);
+        if (descXH > 0) xHeightPdf = descXH;
+        const descStemV = resolveNumValue(fdText, 'StemV', objCache);
+        if (descStemV > 0) stemV = descStemV;
 
         // Use MissingWidth from FontDescriptor as defaultWidth for charCodes
         // not covered by the /Widths array (PDF spec §9.6.2, default 0).
@@ -2383,6 +2403,10 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       hasOwnToUnicode: toUnicode.size > 0,
       serifFlag,
       symbolicFlag,
+      italicAngleDeg,
+      capHeightPdf,
+      xHeightPdf,
+      stemV,
       verticalMode,
       preferEncodingCase,
       fontObjNum,

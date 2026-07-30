@@ -382,6 +382,11 @@ declare global {
         strokeColor?: string;
         /** Shear ratio of faux-oblique text (x offset per unit above the baseline). Absent for upright text. */
         skew?: number;
+        /**
+         * Horizontal glyph scale of a fitted substitute face.
+         * The run's `advEm` values already include it.
+         */
+        stretch?: number;
         font: { kind: 'orig', fontObjNum: number } | { kind: 'bundled', family: string, styleKey: string };
         /**
          * Pre-resolved glyphs.

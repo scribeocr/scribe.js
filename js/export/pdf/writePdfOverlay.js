@@ -258,6 +258,7 @@ export async function overlayPdfText({
         let textOps = '';
         // Text state persists across the record's runs, so a stroked run must be reset before a following plain run.
         let prevRenderMode = 0;
+        let prevTz = 100;
         let anyStroked = false;
         for (const run of rec.runs) {
           let fontObj;
@@ -306,6 +307,7 @@ export async function overlayPdfText({
 
           // The numeric corrections cancel the integer rounding of the /W widths, keeping the pen exactly on the record's advEm chain.
           // The renderer steps the same chain, so drift here would shift the exported text off the rendered layout.
+          const st = run.stretch || 1;
           const parts = [];
           let hexRun = '';
           let penPx = 0;
@@ -315,7 +317,7 @@ export async function overlayPdfText({
               hexRun += g.gid.toString(16).padStart(4, '0');
               const gRec = fontObj.glyphs.glyphs[String(g.gid)];
               const declaredW = gRec ? Math.round(gRec.advanceWidth * (1000 / upem)) : Math.round(g.advEm * 1000);
-              const corr = declaredW - g.advEm * 1000;
+              const corr = declaredW - (g.advEm * 1000) / st;
               if (Math.abs(corr) > 0.001) {
                 parts.push(`<${hexRun}>`);
                 hexRun = '';
@@ -326,7 +328,7 @@ export async function overlayPdfText({
                 parts.push(`<${hexRun}>`);
                 hexRun = '';
               }
-              parts.push(fmtN(-g.advEm * 1000));
+              parts.push(fmtN(-(g.advEm * 1000) / st));
               if (g.tofu) {
                 const bx0 = penPx + 0.07 * s;
                 const bx1 = penPx + g.advEm * s - 0.07 * s;
@@ -362,7 +364,12 @@ export async function overlayPdfText({
               strokeOps = '0 Tr\n';
               prevRenderMode = 0;
             }
-            textOps += `${colorStr} rg\n${strokeOps}${fontEntry.name} 1 Tf\n${tmStr} Tm\n[${parts.join(' ')}] TJ\n`;
+            let tzOps = '';
+            if (st * 100 !== prevTz) {
+              tzOps = `${fmtN(st * 100)} Tz\n`;
+              prevTz = st * 100;
+            }
+            textOps += `${colorStr} rg\n${strokeOps}${tzOps}${fontEntry.name} 1 Tf\n${tmStr} Tm\n[${parts.join(' ')}] TJ\n`;
           }
         }
         let body = '';
@@ -455,7 +462,8 @@ export async function overlayPdfText({
       regionsByPage.get(r.page).push(r.bbox);
     }
   }
-  const conversionState = (regionsByPage.size > 0 || convertBrokenType3ToPaths || textEditRegionsByPage.size > 0)
+  const conversionState = (regionsByPage.size > 0 || convertBrokenType3ToPaths || textEditRegionsByPage.size > 0
+    || textEditInsertsByPage.size > 0)
     ? createConversionState() : null;
 
   // With no annotations supplied, nothing re-emits links, so both stay null and source /Link objects pass through untouched.
@@ -520,7 +528,7 @@ export async function overlayPdfText({
     // Redact marks are never written as annotations (they are applied destructively), so they must not force the annots-driven page rewrite.
     const hasAnnots = pageAnnotations.some((a) => a.type !== 'redact');
     const hasConvert = regionsByPage.has(i) || convertBrokenType3ToPaths;
-    const hasTextEdits = textEditRegionsByPage.has(i);
+    const hasTextEdits = textEditRegionsByPage.has(i) || textEditInsertsByPage.has(i);
     if (!hasText && !hasAnnots && !hasConvert && !hasTextEdits) continue;
 
     /** @type {string[]|null} */

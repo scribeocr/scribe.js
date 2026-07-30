@@ -132,7 +132,7 @@ export async function rewriteContentsStripAndConvert({
     if (redactBboxes && redactBboxes.length > 0) {
       throw new Error('Cannot apply redactions: a page content stream could not be read.');
     }
-    if (textEditBboxes && textEditBboxes.length > 0) {
+    if ((textEditBboxes && textEditBboxes.length > 0) || (textEditInserts && textEditInserts.length > 0)) {
       throw new Error('Cannot apply text edits: a page content stream could not be read.');
     }
     return {
@@ -147,11 +147,13 @@ export async function rewriteContentsStripAndConvert({
   if (redactBboxes && redactBboxes.length > 0 && !conversionState) {
     throw new Error('Cannot apply redactions: no conversion state was created for this page.');
   }
-  if (textEditBboxes && textEditBboxes.length > 0 && !conversionState) {
+  if (((textEditBboxes && textEditBboxes.length > 0) || (textEditInserts && textEditInserts.length > 0)) && !conversionState) {
     throw new Error('Cannot apply text edits: no conversion state was created for this page.');
   }
   const wantRedact = !!(redactBboxes && redactBboxes.length > 0) && !!conversionState;
-  const wantEdit = !!(textEditBboxes && textEditBboxes.length > 0) && !!conversionState;
+  // Inserts count too: a pure append has no erase rects but still needs the splice pass to place or append its body.
+  const wantEdit = !!((textEditBboxes && textEditBboxes.length > 0) || (textEditInserts && textEditInserts.length > 0))
+    && !!conversionState;
   const wantConvert = (((!!bboxes && bboxes.length > 0) || convertBrokenType3ToPaths) && !!conversionState) || wantRedact || wantEdit;
   let workingText = strippedText;
   /** @type {Map<string, number>} */

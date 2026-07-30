@@ -2,6 +2,7 @@
  * The Edit Text mode's live line editor.
  * A per-line canvas overlay draws the line being edited while the page raster re-renders with that line suppressed.
  */
+import { ensureGlyphSetForText } from '../../js/fontContainerMain.js';
 import ocr from '../../js/objects/ocrObjects.js';
 import { resolveReplacementChar } from '../../js/pdf/glyphResolve.js';
 import {
@@ -45,9 +46,8 @@ import {
  * @property {string} text - The live text, which edits mutate.
  * @property {string} origText
  * @property {Array<EditChar>} origChars
- * @property {{program: ?import('../../js/pdf/glyphResolve.js').EditFontProgram, style: Style, size: number,
- *   color: string, face: string, spaceAdvPx: number, renderMode?: number, strokeWidthPx?: number,
- *   strokeColor?: string, skew?: number}} styleFromChar - The style newly typed characters take.
+ * @property {WordMid} styleFromChar - The style newly typed characters take.
+ * @property {Array<WordMid>} [wordMids] - Per-word typed-character styles, index-aligned with the line's words.
  * @property {number} caret
  * @property {?number} selAnchor
  * @property {Float64Array} xs - Local x of each caret slot.
@@ -58,6 +58,12 @@ import {
  * @property {Array<EditSnapshot>} undoStack
  * @property {Array<EditSnapshot>} redoStack
  * @property {boolean} composing
+ */
+
+/**
+ * @typedef {{program: ?import('../../js/pdf/glyphResolve.js').EditFontProgram, style: Style, size: number,
+ *   color: string, face: string, spaceAdvPx: number, renderMode?: number, strokeWidthPx?: number,
+ *   strokeColor?: string, skew?: number}} WordMid
  */
 
 /** @typedef {{bold?: boolean, italic?: boolean}} WordToggle */
@@ -203,13 +209,19 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
 
     let flowX = p < olen ? origChars[p].x0 : (olen > 0 ? origChars[olen - 1].x1 : 0);
     const flowBaseY = p < olen ? origChars[p].baseY : (olen > 0 ? origChars[olen - 1].baseY : baselineY);
-    const mid = styleFromChar;
+    // Typed characters must resolve against the word they land in exactly as the commit does, or a multi-font line previews differently from what it commits as.
+    // Past the last original word, both sides fall back to that word's style.
+    const mids = session.wordMids && session.wordMids.length > 0 ? session.wordMids : [styleFromChar];
+    let flowWi = 0;
+    for (let i = 0; i < p; i++) if (text[i] === ' ') flowWi += 1;
     for (let i = p; i < len - sfx; i++) {
       const ch = text[i];
+      const mid = mids[Math.min(flowWi, mids.length - 1)];
       xs[i] = flowX;
       ys[i] = flowBaseY;
       szs[i] = mid.size;
       if (ch === ' ') {
+        flowWi += 1;
         flowX += mid.spaceAdvPx;
         continue;
       }
@@ -220,18 +232,20 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
         });
         flowX += r.advEm * mid.size;
       } else {
-        const face = r.kind === 'orig' ? mid.face : (r.fontFaceName || r.family);
+        const face = (r.kind === 'orig' ? mid.face : (r.fontFaceName || r.family)) || '';
+        const fitMult = (r.kind === 'bundled' ? r.sizeMult : 1) || 1;
         draws.push(applyToggle({
           ch,
           x: flowX,
           w: r.advEm * mid.size,
-          size: mid.size,
+          size: mid.size * fitMult,
           baseY: flowBaseY,
           face,
           color: mid.color,
           fontStyle: r.kind !== 'orig' && mid.style.italic ? 'italic' : '',
           fontWeight: r.kind !== 'orig' && mid.style.bold ? 'bold' : '',
           skew: mid.skew,
+          stretch: r.kind === 'bundled' && r.stretch !== 1 ? r.stretch : undefined,
           renderMode: mid.renderMode,
           strokeWidthPx: mid.strokeWidthPx,
           strokeColor: mid.strokeColor,
@@ -251,7 +265,7 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
     } else {
       xs[len] = flowX;
       ys[len] = flowBaseY;
-      szs[len] = mid.size;
+      szs[len] = mids[Math.min(flowWi, mids.length - 1)].size;
     }
     return {
       draws, xs, ys, szs, firstDiff: p,
@@ -497,6 +511,9 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
     }
     restartBlink();
     draw();
+    ensureGlyphSetForText(clean)
+      .then((widened) => { if (widened) draw(); })
+      .catch((e) => console.error('Edit Text: wider glyph set failed to load:', e));
   };
 
   /** @param {[number, number]} sel */
@@ -901,6 +918,9 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
         let tofu = false;
         let fontStyle = '';
         let fontWeight = '';
+        // A subset face has only the glyphs this document drew with it, so a character its program cannot map falls back to a substitute.
+        const prog = ef?.program;
+        if (face && prog && resolveReplacementChar(ch, prog, wResolveStyle).kind !== 'orig') face = null;
         if (!face) {
           const r = resolveReplacementChar(ch, ef.program, wResolveStyle);
           if (r.kind === 'tofu') tofu = true;
@@ -997,14 +1017,28 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
       }
     }
 
-    const styleFromWord = line.words[0];
-    const sfSize = styleFromWord.style.size || Math.abs(styleFromWord.bbox.bottom - styleFromWord.bbox.top) / 0.75;
-    const sfNt = nt[styleFromWord.id];
-    const sfFonts = fonts.get(sfNt?.fontObjNum);
-    const sfStroked = !!(sfNt && (sfNt.renderMode === 1 || sfNt.renderMode === 2) && sfNt.strokeWidthPx);
-    const sfStyle = sfStroked && !sfFonts?.program?.bold && styleFromWord.style.bold
-      ? { ...styleFromWord.style, bold: false } : styleFromWord.style;
-    const sp = resolveReplacementChar(' ', sfFonts.program, sfStyle);
+    /** @type {Array<WordMid>} */
+    const wordMids = line.words.map((w) => {
+      const wSize = w.style.size || Math.abs(w.bbox.bottom - w.bbox.top) / 0.75;
+      const e = nt[w.id];
+      const wf = fonts.get(e?.fontObjNum);
+      const stroked = !!(e && (e.renderMode === 1 || e.renderMode === 2) && e.strokeWidthPx);
+      const wStyle = stroked && !wf?.program?.bold && w.style.bold ? { ...w.style, bold: false } : w.style;
+      const wsp = resolveReplacementChar(' ', wf?.program || null, wStyle);
+      return {
+        program: wf?.program || null,
+        style: wStyle,
+        size: wSize,
+        color: w.style.color || '#000000',
+        face: wf?.faceName || '',
+        spaceAdvPx: (wsp.kind === 'tofu' ? 0.25 : wsp.advEm) * wSize,
+        renderMode: stroked && e ? e.renderMode : undefined,
+        strokeWidthPx: stroked && e ? e.strokeWidthPx : undefined,
+        strokeColor: stroked && e ? e.strokeColor : undefined,
+        skew: e?.skew?.find((v) => v) || undefined,
+      };
+    });
+    const sfSize = wordMids[0].size;
 
     // Base style state per word, so live toggles know each word's current state and what can toggle off.
     /** @type {Map<number, WordBase>} */
@@ -1092,18 +1126,8 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
       text: origText,
       origText,
       origChars,
-      styleFromChar: {
-        program: sfFonts.program,
-        style: sfStyle,
-        size: sfSize,
-        color: styleFromWord.style.color || '#000000',
-        face: sfFonts.faceName || '',
-        spaceAdvPx: (sp.kind === 'tofu' ? 0.25 : sp.advEm) * sfSize,
-        renderMode: sfStroked && sfNt ? sfNt.renderMode : undefined,
-        strokeWidthPx: sfStroked && sfNt ? sfNt.strokeWidthPx : undefined,
-        strokeColor: sfStroked && sfNt ? sfNt.strokeColor : undefined,
-        skew: sfNt?.skew?.find((v) => v) || undefined,
-      },
+      styleFromChar: wordMids[0],
+      wordMids,
       caret: 0,
       selAnchor: null,
       xs: new Float64Array(origText.length + 1),

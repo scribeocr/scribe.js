@@ -46,11 +46,29 @@ export async function loadBuiltInFontsRaw(glyphSet = 'latin') {
 }
 
 /**
+ * Widen the loaded built-in glyph set if `text` contains a character it has no glyph for.
+ * @param {string} text
+ * @returns {Promise<boolean>} Whether a wider set was loaded.
+ */
+export async function ensureGlyphSetForText(text) {
+  if (loadedGlyphSet === 'all' || !GlobalFonts.raw) return false;
+  // Every face in the latin build carries the same cmap, so any one of them answers for the whole build.
+  const probe = GlobalFonts.raw.NimbusRoman?.normal?.opentype;
+  if (!probe) return false;
+  for (const ch of text) {
+    if (ch.charCodeAt(0) <= 32) continue;
+    if (probe.charToGlyphIndex(ch) === 0) {
+      await loadBuiltInFontsRaw('all');
+      return true;
+    }
+  }
+  return false;
+}
+
+/**
  * @param {'latin'|'all'} glyphSet
  */
 async function loadBuiltInFontsRawInner(glyphSet) {
-  loadedGlyphSet = glyphSet;
-
   // Note: this function is intentionally verbose, and should not be refactored to generate the paths dynamically.
   // Build systems will not be able to resolve the paths if they are generated dynamically.
   let /** @type {Promise<ArrayBuffer>} */carlitoNormal;
@@ -217,6 +235,9 @@ async function loadBuiltInFontsRawInner(glyphSet) {
   };
 
   GlobalFonts.raw = await /** @type {FontContainer} */(/** @type {any} */(loadFontsFromSource(srcObj)));
+
+  // Recording this before the load resolves would make a failed upgrade look like a success, and the early return in loadBuiltInFontsRaw would then refuse to retry.
+  loadedGlyphSet = glyphSet;
 
   // This assumes that the scheduler `init` method has at least started.
   if (gs.schedulerReady === null && !opt.inProcess) console.warn('Failed to load fonts to workers as workers have not been initialized yet.');

@@ -85,6 +85,31 @@ export function base14ToBundledFont(baseName, { bold = false, italic = false } =
 }
 
 /**
+ * Resolve a font name to a bundled family the Base14 mapping cannot reach.
+ * @param {string} baseName - PDF BaseFont name
+ * @param {{ bold?: boolean, italic?: boolean }} [hints]
+ * @returns {?{ family: string, variant: 'Regular'|'Bold'|'Italic'|'BoldItalic',
+ *   url: URL, alias: string, faceWeight: 'normal'|'bold', faceStyle: 'normal'|'italic' }}
+ */
+export function extendedFamilyToBundledFont(baseName, { bold = false, italic = false } = {}) {
+  const name = (baseName || '').replace(/^[A-Z]{6}\+/, '');
+  let family;
+  let stem;
+  if (/century\s?gothic|avant\s?garde|avantgarde|futura/i.test(name)) { family = 'Gothic'; stem = 'URWGothicBook'; } else if (/century\s?sch|schoolbook|schlbk|new\s?century/i.test(name)) { family = 'Century'; stem = 'Century'; } else if (/palatino|book\s?antiqua/i.test(name)) { family = 'Palatino'; stem = 'Palatino'; } else if (/garamond/i.test(name)) { family = 'Garamond'; stem = 'Garamond'; } else if (/calibri|carlito/i.test(name)) { family = 'Carlito'; stem = 'Carlito'; } else return null;
+  const isBold = bold || /bold|black/i.test(name);
+  const isItalic = italic || /italic|oblique/i.test(name);
+  const variant = isBold && isItalic ? 'BoldItalic' : isBold ? 'Bold' : isItalic ? 'Italic' : 'Regular';
+  return {
+    family,
+    variant,
+    url: new URL(`../../../fonts/all/${stem}-${variant}.woff`, import.meta.url),
+    alias: `_scribe_${family.toLowerCase()}_${variant.toLowerCase()}`,
+    faceWeight: isBold ? 'bold' : 'normal',
+    faceStyle: isItalic ? 'italic' : 'normal',
+  };
+}
+
+/**
  * Build a bundled-font descriptor by CSS classification, for non-Base14 fonts
  * whose names resemble standard families (e.g. Garamond, Bookman, Roboto).
  *

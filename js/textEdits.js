@@ -1,4 +1,5 @@
 import { bboxToPageSpace } from './addHighlights.js';
+import { ensureGlyphSetForText } from './fontContainerMain.js';
 import ocr, { OcrWord, OcrChar } from './objects/ocrObjects.js';
 import { resolveReplacementChar } from './pdf/glyphResolve.js';
 import { getRandomAlphanum } from './utils/miscUtils.js';
@@ -253,6 +254,8 @@ export async function replaceTextLine(doc, line, newText, opts) {
   }
   const newTexts = String(newText).trim().split(/\s+/).filter((t) => t.length > 0);
   if (newTexts.length === 0) return deleteTextLines(doc, [line]);
+  // Awaited, so a character typed faster than the wider set downloads is never committed as a tofu box.
+  await ensureGlyphSetForText(newText);
   const wordStylesIn = opts?.wordStyles || null;
   // A toggle counts as a change only when it can alter the word's drawn state, so no-op toggles never force a redraw.
   /** @type {(w: OcrWord, ov: ?{bold?: boolean, italic?: boolean} | undefined) => boolean} */
@@ -289,7 +292,10 @@ export async function replaceTextLine(doc, line, newText, opts) {
   const backing = backingRecordByWordId(doc.textEdits.pages[n]);
   const backedIdx = [];
   for (let m = 0; m < olen; m++) if (backing.has(oldWords[m].id)) backedIdx.push(m);
-  const rs = Math.min(i0, backedIdx.length ? backedIdx[0] : i0);
+  let rs = Math.min(i0, backedIdx.length ? backedIdx[0] : i0);
+  // A pure append would make a record with no erase rects, leaving the splice nothing to anchor on in the source stream.
+  // Redrawing the last original word gives the appended text the same in-place anchor as every other edit.
+  if (rs === olen) rs = olen - 1;
   const lastBacked = backedIdx.length ? backedIdx[backedIdx.length - 1] : -1;
   const realignStartOld = Math.max(olen - k, lastBacked + 1);
 
@@ -337,13 +343,7 @@ export async function replaceTextLine(doc, line, newText, opts) {
   const redrawnEntries = [];
   let newRedrawEnd = nlen;
   let realigned = false;
-  let pen = rs < olen ? wordPenLeft(rs) : oldBoxes[olen - 1].right;
-  if (rs === olen) {
-    const last = oldWords[olen - 1];
-    const lastSize = last.style.size || Math.abs(oldBoxes[olen - 1].bottom - oldBoxes[olen - 1].top) / 0.75;
-    const sp = resolveReplacementChar(' ', await programFor(nt[last.id]?.fontObjNum), last.style);
-    pen += (sp.kind === 'tofu' ? 0.25 : sp.advEm) * lastSize;
-  }
+  let pen = wordPenLeft(rs);
   let suffixDelta = 0;
   let inSuffix = false;
   let prevOldIdx = rs > 0 ? rs - 1 : null;
@@ -440,7 +440,7 @@ export async function replaceTextLine(doc, line, newText, opts) {
       if (recon !== oldT) ligAt = null;
     }
 
-    /** @type {Array<{ch: string, cp?: number, gid?: number, advEm: number, tofu?: boolean, top: number, bottom: number, faceKey: string, font: ?object}>} */
+    /** @type {Array<{ch: string, cp?: number, gid?: number, advEm: number, sizeMult?: number, stretch?: number, tofu?: boolean, top: number, bottom: number, faceKey: string, font: ?object}>} */
     const resolved = [];
     let ci = 0;
     while (ci < newTexts[m].length) {
@@ -485,13 +485,16 @@ export async function replaceTextLine(doc, line, newText, opts) {
           yMin = 0;
         }
         const upem = fontObj.unitsPerEm;
+        const drawMult = r.kind === 'bundled' ? (r.sizeMult || 1) : 1;
         resolved.push({
           ch,
           cp: r.codepoint,
           gid: r.gid,
           advEm: r.advEm,
-          top: wordBaseY - (yMax / upem) * s,
-          bottom: wordBaseY - (yMin / upem) * s,
+          sizeMult: drawMult,
+          stretch: r.kind === 'bundled' ? (r.stretch || 1) : 1,
+          top: wordBaseY - (yMax / upem) * s * drawMult,
+          bottom: wordBaseY - (yMin / upem) * s * drawMult,
           faceKey: r.kind === 'orig' ? 'o' : `b:${r.family}:${r.styleKey}`,
           font: r.kind === 'orig'
             ? { kind: 'orig', fontObjNum: srcEntry?.fontObjNum }
@@ -504,6 +507,9 @@ export async function replaceTextLine(doc, line, newText, opts) {
     let run = null;
     /** @type {?string} */
     let runFaceKey = null;
+    // Run glyph advances are stored per em of the run's own size, which for fitted substitutes differs from the word size by sizeMult.
+    // Layout math here stays in word-size units.
+    let runSizeMult = 1;
     let cx = x;
     /** @type {Array<OcrChar>} */
     const chars = [];
@@ -514,9 +520,10 @@ export async function replaceTextLine(doc, line, newText, opts) {
       }
       if (!run) {
         const org = localPointToPage(cx, wordBaseY);
+        runSizeMult = r.sizeMult || 1;
         /** @type {TextEditRun} */
         const newRun = {
-          x: org.x, y: org.y, orientation: o, sizePx: s, color, font: r.font || { kind: 'orig', fontObjNum: srcEntry?.fontObjNum }, glyphs: [],
+          x: org.x, y: org.y, orientation: o, sizePx: s * runSizeMult, color, font: r.font || { kind: 'orig', fontObjNum: srcEntry?.fontObjNum }, glyphs: [],
         };
         if (strokeState) {
           newRun.renderMode = strokeState.renderMode;
@@ -524,10 +531,11 @@ export async function replaceTextLine(doc, line, newText, opts) {
           if (strokeState.strokeColor) newRun.strokeColor = strokeState.strokeColor;
         }
         if (skewFinal) newRun.skew = skewFinal;
+        if (r.stretch && r.stretch !== 1) newRun.stretch = r.stretch;
         run = newRun;
         runs.push(run);
       }
-      run.glyphs.push(r.tofu ? { tofu: true, advEm: r.advEm } : { cp: r.cp, gid: r.gid, advEm: r.advEm });
+      run.glyphs.push(r.tofu ? { tofu: true, advEm: r.advEm / runSizeMult } : { cp: r.cp, gid: r.gid, advEm: r.advEm / runSizeMult });
       chars.push(new OcrChar(r.ch, {
         left: cx, right: cx + r.advEm * s, top: r.top, bottom: r.bottom,
       }));

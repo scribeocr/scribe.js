@@ -389,7 +389,8 @@ export async function rebuildPdfSubset({
   }
   // Pages listed in `convertFullPages` are flattened (whole-page text-to-paths).
   const fullPageSet = new Set(convertFullPages || []);
-  const conversionState = (regionsByPage.size > 0 || convertBrokenType3ToPaths || redactByPage.size > 0 || textEditByPage.size > 0)
+  const conversionState = (regionsByPage.size > 0 || convertBrokenType3ToPaths || redactByPage.size > 0 || textEditByPage.size > 0
+    || (textEditInsertsByPage?.size ?? 0) > 0)
     ? createConversionState() : null;
 
   const { pageTreeObjNums } = collectPageTreeObjNums(objCache);
@@ -476,7 +477,7 @@ export async function rebuildPdfSubset({
       // Region conversion (`convertRegionsToPaths`), full-page flatten, and broken-Type3 all convert text to paths without an overlay text layer, so this gate must stay independent of `hasText`.
       const hasConvert = convertBrokenType3ToPaths || fullPageSet.has(i) || regionsByPage.has(i);
       const hasRedact = redactByPage.has(i);
-      const hasTextEdits = textEditByPage.has(i);
+      const hasTextEdits = textEditByPage.has(i) || !!textEditInsertsByPage?.has(i);
       if (!hasText && !hasAnnots && !hasConvert && !hasRedact && !hasTextEdits) continue;
 
       /** @type {string[]|null} */

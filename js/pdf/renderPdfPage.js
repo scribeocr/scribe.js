@@ -202,7 +202,9 @@ async function ensureBundledEditFace(family, styleKey) {
   const alias = bundledEditFaceAlias(family, styleKey);
   if (bundledEditFacesEnsured.has(alias)) return;
   const variant = styleKey === 'normal' ? 'Regular' : styleKey === 'bold' ? 'Bold' : styleKey === 'italic' ? 'Italic' : 'BoldItalic';
-  const url = new URL(`../../fonts/all/${family}-${variant}.woff`, import.meta.url);
+  // The Gothic family's font files keep their URW stem.
+  const stem = family === 'Gothic' ? 'URWGothicBook' : family;
+  const url = new URL(`../../fonts/all/${stem}-${variant}.woff`, import.meta.url);
   let fontBytes;
   if (typeof process !== 'undefined') {
     const { fileURLToPath } = await import('node:url');
@@ -5331,7 +5333,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         const mapped = pageRectToContentRect(r, textEdits.dims, mediaBox, rotate);
         if (mapped) rects.push(mapped);
       }
-      if (rects.length > 0) editEntries.push({ rec, rects });
+      // A pure append (a word added past the line's last word) erases nothing, so its record has no rects but must still draw.
+      if (rects.length > 0 || (rec.type === 'replaceText' && rec.runs?.length)) editEntries.push({ rec, rects });
     }
     if (editEntries.length > 0) {
       const placed = new Set();
@@ -7812,6 +7815,9 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           else if (run.orientation === 3) rCtx.rotate(-Math.PI / 2);
           // Faux-oblique replacements lean like the original: the transform shears about the baseline the run draws on.
           if (run.skew) rCtx.transform(1, 0, -run.skew, 1, 0, 0);
+          // Pen steps divide the scale back out so device spacing stays on the advEm chain.
+          const stretch = run.stretch || 1;
+          if (stretch !== 1) rCtx.transform(stretch, 0, 0, 1, 0, 0);
           const family = run.font.kind === 'orig'
             ? `_pdf_d${objCache.docId}_f${run.font.fontObjNum}`
             : bundledEditFaceAlias(run.font.family, run.font.styleKey);
@@ -7822,12 +7828,13 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           const strokeW = (run.renderMode === 1 || run.renderMode === 2) && run.strokeWidthPx > 0 ? run.strokeWidthPx : 0;
           let penX = 0;
           for (const g of run.glyphs) {
+            const step = (g.advEm * run.sizePx) / stretch;
             if (g.tofu) {
               // Same proportions as the export's tofu box.
               const s = run.sizePx;
               rCtx.lineWidth = 0.06 * s;
               rCtx.strokeStyle = run.color || '#000000';
-              rCtx.strokeRect(penX + 0.07 * s, -0.72 * s, g.advEm * s - 0.14 * s, 0.72 * s);
+              rCtx.strokeRect(penX + 0.07 * s, -0.72 * s, step - 0.14 * s, 0.72 * s);
             } else if (g.cp !== undefined && g.cp !== 0x20) {
               const glyphStr = String.fromCodePoint(g.cp);
               if (run.renderMode !== 1) rCtx.fillText(glyphStr, penX, 0);
@@ -7837,7 +7844,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
                 rCtx.strokeText(glyphStr, penX, 0);
               }
             }
-            penX += g.advEm * run.sizePx;
+            penX += step;
           }
           rCtx.restore();
         }

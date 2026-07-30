@@ -2829,7 +2829,8 @@ export async function convertSinglePageForRegions({
   convertBrokenType3ToPaths = false, redactBboxes = null, textEditBboxes = null, textEditInserts = null,
 }) {
   const redactActive = !!(redactBboxes && redactBboxes.length > 0);
-  const editActive = !!(textEditBboxes && textEditBboxes.length > 0);
+  // Inserts alone activate the edit pass: a pure append erases nothing but must still be spliced or appended.
+  const editActive = !!(textEditBboxes && textEditBboxes.length > 0) || !!(textEditInserts && textEditInserts.length > 0);
   // Bbox-driven conversion needs at least one region.
   // Broken-Type3 conversion runs font-scoped with no regions, so it relaxes the empty-bbox early-out.
   if ((!bboxes || bboxes.length === 0) && !convertBrokenType3ToPaths && !redactActive && !editActive) return { changed: false };
