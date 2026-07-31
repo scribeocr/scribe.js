@@ -602,13 +602,17 @@ export async function importFiles(doc, files, options = {}) {
         await doc.runOptimization(doc.ocr.active);
       }
     });
-  } else if (!scribeFiles[0] && doc.inputData.pdfMode && (usePDFText.native.main || usePDFText.native.supp || usePDFText.ocr.main || usePDFText.ocr.supp || keepPDFTextAlways)) {
+  }
+
+  // A PDF still needs parsing when an OCR file accompanies it.
+  if (!scribeFiles[0] && doc.inputData.pdfMode && (usePDFText.native.main || usePDFText.native.supp || usePDFText.ocr.main || usePDFText.ocr.supp || keepPDFTextAlways)) {
+    const extractOptions = { usePDFText, keepPDFTextAlways, supplemental: xmlModeImport };
     if (deferText) {
       // `terminate()` and `clear()` resolve this still-pending promise to null via `_textReadySettle`, so waiters never hang when the worker pool is torn down mid-extraction.
       // Extraction errors also resolve to null rather than reject, so awaiting `textReady` never throws.
       doc.textReady = new Promise((resolve) => {
         doc._textReadySettle = () => resolve(null);
-        extractInternalPDFText(doc, { usePDFText, keepPDFTextAlways }).then(
+        extractInternalPDFText(doc, extractOptions).then(
           (res) => {
             doc._textReadySettle = null;
             resolve(res);
@@ -621,7 +625,7 @@ export async function importFiles(doc, files, options = {}) {
         );
       });
     } else {
-      await extractInternalPDFText(doc, { usePDFText, keepPDFTextAlways });
+      await extractInternalPDFText(doc, extractOptions);
     }
   }
 }

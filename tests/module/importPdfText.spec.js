@@ -506,6 +506,10 @@ describe('PDF internal link capture (econometrica_example.pdf).', () => {
   /** @type {Array<Array<AnnotationLink>>} */ let restoredClean;
   /** @type {Array<Array<AnnotationLink>>} */ let restoredAfterDelete;
   /** @type {Array<Array<AnnotationLink>>} */ let pdfRoundTrip;
+  /** @type {Array<Array<AnnotationLink>>} */ let withOcrFile;
+  /** @type {?('text'|'ocr'|'image')} */ let withOcrFilePdfType;
+  /** @type {number} */ let withOcrFileNativeWords;
+  /** @type {number} */ let withOcrFileActiveWords;
 
   beforeAll(async () => {
     doc = await scribe.openDocument([LINKS_FIXTURE]);
@@ -528,6 +532,13 @@ describe('PDF internal link capture (econometrica_example.pdf).', () => {
     restoredAfterDelete = linkPages(reopened);
     reopened = await scribe.openDocument({ pdfFiles: [pdfExported] });
     pdfRoundTrip = linkPages(reopened);
+
+    // `skipFontOpt` skips an optimization pass these assertions never read, so the parse is identical to the import above.
+    const withOcr = await scribe.openDocument([LINKS_FIXTURE, `${ASSETS_PATH}/econometrica_example.abbyy.xml`], { skipFontOpt: true });
+    withOcrFile = linkPages(withOcr);
+    withOcrFilePdfType = withOcr.inputData.pdfType;
+    withOcrFileNativeWords = (withOcr.ocr.pdf?.[0]?.lines || []).reduce((n, l) => n + l.words.length, 0);
+    withOcrFileActiveWords = withOcr.ocr.active[0].lines.reduce((n, l) => n + l.words.length, 0);
   });
 
   test('Internal links parse to resolved same-page dests with a vertical position', () => {
@@ -577,6 +588,15 @@ describe('PDF internal link capture (econometrica_example.pdf).', () => {
       pdfRoundTrip[0].map((l) => l.dest.yFrac),
       'each /FitH vertical position survives the verbatim view re-emit',
     ).toEqual([0.7250712250712251, 0.7393162393162394, 0.7535612535612536]);
+  });
+
+  // Regression: a PDF imported with an OCR file had its own annotations discarded, so an export wrote none of them.
+  test('A PDF supplied with an OCR file keeps its own annotations and native text, and the OCR file stays active', () => {
+    expect(withOcrFile[0].length, 'the PDF\'s own link annotations are dropped when an OCR file accompanies it').toBe(3);
+    expect(withOcrFile, 'an accompanying OCR file must not change which links the PDF parse produces').toEqual(parsed);
+    expect(withOcrFilePdfType, 'the text/image verdict is not computed when an OCR file accompanies the PDF').toBe('text');
+    expect(withOcrFileNativeWords, 'the PDF\'s own text layer is not retained alongside the OCR file').toBe(516);
+    expect(withOcrFileActiveWords, 'the supplied OCR file must stay the active layer rather than be replaced by the PDF\'s native text').toBe(532);
   });
 
   afterAll(async () => {

@@ -345,7 +345,10 @@ export async function exportData(doc, format = 'txt', options = {}) {
           // convertDupSourceTextToPaths converts ALL text to paths by explicit request,
           // so it skips the category routing below entirely.
           const routeCategories = options.routePageCategories ?? (displayMode === 'invis');
-          if (routeCategories && !convertDupSourceTextToPaths && pageStats && pageStats.length > 0
+          // Routing empties a clean page's overlay on the assumption that its text is already on the page, which holds only for text from the PDF's own parse.
+          // A `.scribe` restore also stores its layer under this name but runs no parse, so `ocr.pdf` is what tells the two apart.
+          const suppliedOcrLayer = !!doc.ocr.pdf && ocrSource === doc.ocr['User Upload'];
+          if (routeCategories && !convertDupSourceTextToPaths && !suppliedOcrLayer && pageStats && pageStats.length > 0
             && (overlayOcrArr.length === 0 || overlayOcrArr.length === pageStats.length)) {
             // `flagged` marks each page that is a flattening candidate: it holds content the native text layer cannot surface
             // (`mayHaveBakedText`, `hasBrokenFontRun`, or `isScanPage`) and was OCR'd (`ocrApplied[i]`).

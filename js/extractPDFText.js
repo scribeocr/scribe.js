@@ -17,12 +17,15 @@ import { ObjectCache } from './pdf/objectCache.js';
  * @param {boolean} [options.keepPDFTextAlways]
  *    Always convert and retain the PDF text even if it would otherwise be discarded.
  *    Defaults to `scribeDocDefaults.keepPDFTextAlways`.
+ * @param {boolean} [options.supplemental]
+ *    Another source already owns the active text layer, so the parsed text is retained beside it rather than replacing it.
  */
 export async function extractInternalPDFText(doc, options = {}) {
   if (!doc.images.pdfData) throw new Error('No PDF data loaded');
 
   const usePDFText = options.usePDFText ?? scribeDocDefaults.usePDFText;
   const keepPDFTextAlways = options.keepPDFTextAlways ?? scribeDocDefaults.keepPDFTextAlways;
+  const supplemental = options.supplemental ?? false;
 
   const pdfScheduler = await doc.images.getPdfScheduler();
   const pageCount = doc.images.pageCount;
@@ -94,7 +97,8 @@ export async function extractInternalPDFText(doc, options = {}) {
   const tablePages = pageResults.map((result) => result.dataTablePage);
   addCircularRefsDataTables(tablePages);
   for (let i = 0; i < tablePages.length; i++) {
-    doc.layoutDataTables.pages[i] = tablePages[i];
+    // An accompanying OCR file may carry its own tables, which the parse must not overwrite.
+    if (Object.keys(doc.layoutDataTables.pages[i]?.tables || {}).length === 0) doc.layoutDataTables.pages[i] = tablePages[i];
   }
 
   const fontPromiseArr = [loadBuiltInFontsRaw()];
@@ -103,8 +107,9 @@ export async function extractInternalPDFText(doc, options = {}) {
   }
   await Promise.all(fontPromiseArr);
 
-  const isMainData = (type === 'text' && usePDFText.native.main)
-    || (type === 'ocr' && usePDFText.ocr.main);
+  const isMainData = !supplemental
+    && ((type === 'text' && usePDFText.native.main)
+      || (type === 'ocr' && usePDFText.ocr.main));
 
   for (let n = 0; n < doc.ocr.pdf.length; n++) {
     if (isMainData && doc.ocr.pdf[n] && doc.pageMetrics[n]) {
