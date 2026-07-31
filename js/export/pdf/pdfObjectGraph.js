@@ -1,5 +1,8 @@
-import { extractRawStreamBytes } from '../../pdf/parsePdfUtils.js';
-import { extractDict, parsePdfLiteralString, parsePdfHexString } from '../../pdf/pdfPrimitives.js';
+import { extractRawStreamBytes, findInfoObjNum } from '../../pdf/parsePdfUtils.js';
+import {
+  extractDict, parsePdfLiteralString, parsePdfHexString, parseDictEntries, toUtf16BeHex, formatPdfDate,
+} from '../../pdf/pdfPrimitives.js';
+import { md5 } from '../../pdf/pdfCrypto.js';
 
 /**
  * Walk a byte range and decrypt every PDF literal `(...)` and hex `<...>` string,
@@ -66,8 +69,12 @@ export function decryptObjectStrings(bytes, objNum, objCache) {
   return new Uint8Array(out);
 }
 
+const TRAILER_ID_RE = /\/ID\s*\[\s*<([0-9A-Fa-f\s]*)>\s*<[0-9A-Fa-f\s]*>\s*\]/;
+const TRAILER_INFO_RE = /\/Info\s+(\d{1,10})\s+(\d{1,10})\s+R/;
+
 /**
- * Parse the trailer dict to extract /Root reference and /Size.
+ * Parse the trailer dict's /Root, /Size, /Info and /ID.
+ * `id0Hex` is the permanent file identifier as bare uppercase hex, without the enclosing angle brackets.
  * @param {string} text
  * @param {number} xrefOffset
  */
@@ -83,7 +90,9 @@ export function parseTrailerInfo(text, xrefOffset) {
     // Traditional trailer
     const trailerStart = text.indexOf('trailer', xrefOffset);
     if (trailerStart === -1) {
-      return { rootRef: '1 0 R', size: 1 };
+      return {
+        rootRef: '1 0 R', size: 1, infoRef: null, id0Hex: null,
+      };
     }
     const dictStart = text.indexOf('<<', trailerStart);
     dictText = extractDict(text, dictStart);
@@ -91,11 +100,116 @@ export function parseTrailerInfo(text, xrefOffset) {
 
   const rootMatch = /\/Root\s+(\d+)\s+(\d+)\s+R/.exec(dictText);
   const sizeMatch = /\/Size\s+(\d+)/.exec(dictText);
+  const infoMatch = TRAILER_INFO_RE.exec(dictText);
+  const idMatch = TRAILER_ID_RE.exec(dictText);
+  let id0Hex = idMatch ? idMatch[1].replace(/\s+/g, '').toUpperCase() : null;
+  if (id0Hex && id0Hex.length % 2) id0Hex += '0';
 
   return {
     rootRef: rootMatch ? `${rootMatch[1]} ${rootMatch[2]} R` : '1 0 R',
     size: sizeMatch ? Number(sizeMatch[1]) : 1,
+    infoRef: infoMatch ? `${infoMatch[1]} ${infoMatch[2]} R` : null,
+    id0Hex,
   };
+}
+
+/**
+ * @typedef {Object} TrailerExtras
+ * @property {?string} [infoRef] - Reference to the document information dictionary, e.g. "1 0 R".
+ * @property {?[string, string]} [idHexPair] - File-identifier elements as bare hex, permanent first.
+ */
+
+/**
+ * Serialize the document-level trailer entries.
+ * @param {TrailerExtras} extras
+ */
+function trailerExtraEntries(extras) {
+  const info = extras.infoRef ? `/Info ${extras.infoRef}` : '';
+  const id = extras.idHexPair ? `/ID [<${extras.idHexPair[0]}><${extras.idHexPair[1]}>]` : '';
+  return `${info}${id}`;
+}
+
+/** A file-identifier element, as 32 uppercase hex digits. */
+export function fileIdHex(bytes) {
+  let out = '';
+  for (const b of md5(bytes)) out += b.toString(16).toUpperCase().padStart(2, '0');
+  return out;
+}
+
+/** Placeholder written in place of a file identifier the writer patches in once the body bytes exist. */
+export const FILE_ID_PLACEHOLDER = '0'.repeat(32);
+
+/**
+ * Overwrite the file-identifier placeholders in an already-assembled output buffer with the hash of its body.
+ * The identifier lives in the trailer, so it cannot be inside the range it hashes.
+ * @param {Uint8Array} result - The complete output, body and trailer.
+ * @param {string} trailerStr - The trailer text as written, used to locate the placeholders.
+ * @param {number} trailerStart - Byte offset of `trailerStr` within `result`.
+ * @param {number} bodyStart - First byte of the range identifying this revision.
+ * @param {number} bodyEnd - One past its last byte.
+ */
+export function patchFileId(result, trailerStr, trailerStart, bodyStart, bodyEnd) {
+  const idIdx = trailerStr.indexOf('/ID [<');
+  if (idIdx === -1) return;
+  const hex = fileIdHex(result.subarray(bodyStart, bodyEnd));
+  // Only placeholders match, so a carried permanent identifier is left alone and a first write patches both elements.
+  let at = trailerStr.indexOf(FILE_ID_PLACEHOLDER, idIdx);
+  while (at !== -1) {
+    for (let i = 0; i < hex.length; i++) result[trailerStart + at + i] = hex.charCodeAt(i);
+    at = trailerStr.indexOf(FILE_ID_PLACEHOLDER, at + FILE_ID_PLACEHOLDER.length);
+  }
+}
+
+/**
+ * Read the source's document information dictionary body, without the `<<`/`>>` wrapper.
+ * @param {Uint8Array} pdfBytes
+ * @param {import('../../pdf/objectCache.js').ObjectCache} objCache
+ * @returns {?string}
+ */
+export function readSourceInfoBody(pdfBytes, objCache) {
+  const objNum = findInfoObjNum(pdfBytes);
+  if (!objNum) return null;
+  const objText = objCache.getObjectText(objNum);
+  const start = objText ? objText.indexOf('<<') : -1;
+  if (start === -1) return null;
+  const dict = extractDict(objText, start);
+  return dict ? dict.slice(2, -2) : null;
+}
+
+// PDF 2.0 names are UTF-8 byte sequences, so a key is encoded before escaping.
+// Escaping UTF-16 code units instead would write `Caf#E9` for `Café`, and bare surrogate halves above U+FFFF.
+const NAME_SAFE = /[A-Za-z0-9_.-]/;
+
+/**
+ * Build the output document information dictionary body from the source's entries plus caller overrides.
+ * @param {?string} sourceInfoBody - Body of the source /Info dict, or null when the file has none.
+ * @param {?Object<string, ?string>} docInfo - Caller entries; a null value drops that key.
+ * @returns {?string} The dict body, or null when there is nothing to write.
+ */
+export function buildInfoDictBody(sourceInfoBody, docInfo) {
+  const overrides = new Map(Object.entries(docInfo || {}));
+  const entries = [];
+
+  if (sourceInfoBody) {
+    // Copied verbatim because decoding and re-encoding would not round-trip a name value, a number, or an indirect reference.
+    for (const e of parseDictEntries(sourceInfoBody)) {
+      if (!overrides.has(e.name)) entries.push(`/${e.name} ${e.valueText.trim()}`);
+    }
+  }
+
+  for (const [name, value] of overrides) {
+    if (value === null || value === undefined) continue;
+    let safeName = '';
+    for (const byte of new TextEncoder().encode(name)) {
+      const char = String.fromCharCode(byte);
+      safeName += NAME_SAFE.test(char) ? char : `#${byte.toString(16).toUpperCase().padStart(2, '0')}`;
+    }
+    const isDate = name === 'CreationDate' || name === 'ModDate';
+    const text = isDate && !value.startsWith('D:') ? (formatPdfDate(value) || value) : value;
+    entries.push(`/${safeName} <${toUtf16BeHex(text)}>`);
+  }
+
+  return entries.length ? entries.join(' ') : null;
 }
 
 /**
@@ -106,8 +220,9 @@ export function parseTrailerInfo(text, xrefOffset) {
  * @param {string} rootRef - The /Root reference e.g. "1 0 R"
  * @param {number} newXrefOffset - Byte offset where this xref section starts
  * @param {number[]} [freedObjNums=[]] - Object numbers to mark deleted (free entries).
+ * @param {TrailerExtras} [extras] - Document-level entries the added trailer carries forward.
  */
-export function buildIncrementalXrefAndTrailer(entries, totalSize, prevXrefOffset, rootRef, newXrefOffset, freedObjNums = []) {
+export function buildIncrementalXrefAndTrailer(entries, totalSize, prevXrefOffset, rootRef, newXrefOffset, freedObjNums = [], extras = {}) {
   const liveSorted = entries.slice().sort((a, b) => a.objNum - b.objNum);
 
   /** @type {Array<{objNum: number, status: 'n' | 'f', offset: number}>} */
@@ -143,7 +258,7 @@ export function buildIncrementalXrefAndTrailer(entries, totalSize, prevXrefOffse
   }
 
   xrefStr += 'trailer\n';
-  xrefStr += `<</Size ${totalSize}/Root ${rootRef}/Prev ${prevXrefOffset}>>\n`;
+  xrefStr += `<</Size ${totalSize}/Root ${rootRef}/Prev ${prevXrefOffset}${trailerExtraEntries(extras)}>>\n`;
   xrefStr += 'startxref\n';
   xrefStr += `${newXrefOffset}\n`;
   xrefStr += '%%EOF\n';
@@ -210,8 +325,9 @@ export function traceReferencedObjects(startingTexts, objCache, excludeObjNums, 
  * @param {number} totalSize
  * @param {string} rootRef - e.g. "5 0 R"
  * @param {number} xrefOffset
+ * @param {TrailerExtras} [extras] - Document-level entries the output trailer carries.
  */
-export function buildFullXrefAndTrailer(entries, totalSize, rootRef, xrefOffset) {
+export function buildFullXrefAndTrailer(entries, totalSize, rootRef, xrefOffset, extras = {}) {
   const sorted = entries.slice().sort((a, b) => a.objNum - b.objNum);
 
   let xrefStr = 'xref\n';
@@ -238,7 +354,7 @@ export function buildFullXrefAndTrailer(entries, totalSize, rootRef, xrefOffset)
   }
 
   xrefStr += 'trailer\n';
-  xrefStr += `<</Size ${totalSize}/Root ${rootRef}>>\n`;
+  xrefStr += `<</Size ${totalSize}/Root ${rootRef}${trailerExtraEntries(extras)}>>\n`;
   xrefStr += 'startxref\n';
   xrefStr += `${xrefOffset}\n`;
   xrefStr += '%%EOF\n';

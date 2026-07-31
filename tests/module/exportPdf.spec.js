@@ -39,6 +39,20 @@ async function readPdfBytes(pdfPath) {
 }
 
 /**
+ * Read both elements of the output trailer's `/ID` array.
+ * `getMetadata` reports only the first.
+ * @param {ArrayBuffer|Uint8Array} data
+ * @returns {?[string, string]}
+ */
+function trailerIdPair(data) {
+  const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+  const text = new TextDecoder('latin1').decode(bytes);
+  const tail = text.slice(text.lastIndexOf('trailer'));
+  const m = /\/ID\s*\[\s*<([0-9A-Fa-f]*)>\s*<([0-9A-Fa-f]*)>\s*\]/.exec(tail);
+  return m ? [m[1], m[2]] : null;
+}
+
+/**
  * Decode a `data:image/png;base64,...` URL into raw PNG bytes (Node + browser).
  * @param {string} dataUrl
  * @returns {Uint8Array}
@@ -71,6 +85,10 @@ describe('Check export for .pdf files.', () => {
     }));
 
     const exportedPdf = await doc.exportData('pdf');
+
+    const freshId = trailerIdPair(exportedPdf);
+    expect(freshId !== null, 'a freshly built PDF must carry a file identifier').toBe(true);
+    expect(freshId[0], 'a first write must set both file identifier elements alike').toBe(freshId[1]);
 
     scribe.ScribeDoc.defaults.displayMode = 'ebook';
 
@@ -408,6 +426,83 @@ describe('Check export for .pdf files.', () => {
     expect(ft.bbox.right).toBe(400);
     // The /Rect Y-flip round-trip (H - (H - 80)) leaves ~1e-13 float noise.
     expect(ft.bbox.bottom).toBeCloseTo(80, 10);
+
+    const ftReplies = ft.replies || [];
+    expect(ftReplies.length, 'the FreeText comment thread round-trips through /IRT annots').toBe(1);
+    expect(ftReplies[0].text, 'FreeText reply text survives').toBe('Confirmed against the caption block.');
+    expect(ftReplies[0].author, 'FreeText reply author survives an unsanitized export').toBe('M. Vahl');
+    expect(ftReplies[0].createdAt, 'FreeText reply creation date survives an unsanitized export').toBe('2026-07-07T12:15:00.000Z');
+
+    const notes = all.filter((a) => a.type === 'text');
+    expect(notes.length, 'the note annotation round-trips').toBe(1);
+    expect(highlights[0].comment, 'the highlight comment round-trips').toBe('Check the venue allegations against the exhibits.');
+    const hlReplies = highlights[0].replies || [];
+    expect(hlReplies.length, 'the highlight comment thread round-trips through /IRT annots').toBe(2);
+    expect(hlReplies[0].text, 'first reply text survives').toBe('Exhibit 4 has the venue facts.');
+    expect(hlReplies[0].author, 'first reply author survives').toBe('M. Vahl');
+    expect(hlReplies[0].createdAt, 'first reply creation date survives').toBe('2026-07-07T10:30:00.000Z');
+    expect(hlReplies[1].text, 'replies stay in chronological order').toBe('Scoped the claim to Exhibit 4.');
+    expect(hlReplies[1].author, 'second reply author survives').toBe('J. Rondo');
+    const noteReplies = notes[0].replies || [];
+    expect(noteReplies.length, 'the note thread round-trips').toBe(1);
+    expect(noteReplies[0].text, 'note reply text survives').toBe('The exhibits use the 2019 template.');
+
+    // Acrobat writes a follow-up as a reply to a reply, a nesting our own export never emits.
+    const hlObjMatch = /(\d+) 0 obj\s*<<\/Type \/Annot \/Subtype \/Highlight/.exec(shapeText);
+    expect(hlObjMatch, 'the exported highlight annotation object was found').toBeTruthy();
+    const hlObjNum = Number(hlObjMatch[1]);
+    const irtNeedle = `/IRT ${hlObjNum} 0 R`;
+    const firstIrt = shapeText.indexOf(irtNeedle);
+    const secondIrt = shapeText.indexOf(irtNeedle, firstIrt + 1);
+    expect(secondIrt > 0, 'both highlight replies target the root').toBe(true);
+    // Replies are emitted consecutively after their parent, so the first reply is hlObjNum + 1.
+    const nestedNeedle = `/IRT ${hlObjNum + 1} 0 R`;
+    expect(nestedNeedle.length, 'patched ref keeps byte length (xref offsets unchanged)').toBe(irtNeedle.length);
+    const patchedStr = shapeText.slice(0, secondIrt) + nestedNeedle + shapeText.slice(secondIrt + irtNeedle.length);
+    const patched = Uint8Array.from(patchedStr, (c) => c.charCodeAt(0));
+    await doc.clear();
+    doc = await scribe.openDocument({ pdfFiles: [patched.buffer] });
+    const all2 = doc.annotations.pages.flatMap((p) => p || []);
+    const hl2 = all2.filter((a) => a.type === 'highlight');
+    expect(hl2.length, 'the highlight still imports from the patched file').toBe(1);
+    expect((hl2[0].replies || []).length, 'a nested reply chain flattens into the root thread').toBe(2);
+    expect((hl2[0].replies || [])[1]?.text, 'flattened thread keeps chronological order').toBe('Scoped the claim to Exhibit 4.');
+
+    // A review-state annotation (ISO 32000-2 12.5.6.3) is a /Text with /IRT that records a status on the thread rather than a message in it.
+    // Acrobat leaves its /Contents empty, so lifting one as a reply would destroy the state and inject a blank message.
+    const replyKeys = '/Name /Comment /Open false /F 4';
+    const stateKeys = '/StateModel/Marked/State/Marked';
+    expect(stateKeys.length, 'patched keys keep byte length (xref offsets unchanged)').toBe(replyKeys.length);
+    const stateObjStart = shapeText.indexOf(`${hlObjNum + 2} 0 obj`);
+    expect(stateObjStart > 0, 'the second highlight reply object was found').toBe(true);
+    const keysAt = shapeText.indexOf(replyKeys, stateObjStart);
+    expect(keysAt > stateObjStart, 'the reply keys to overwrite were found').toBe(true);
+    const stateStr = shapeText.slice(0, keysAt) + stateKeys + shapeText.slice(keysAt + replyKeys.length);
+    const stateBytes = Uint8Array.from(stateStr, (c) => c.charCodeAt(0));
+    await doc.clear();
+    doc = await scribe.openDocument({ pdfFiles: [stateBytes.buffer] });
+    const all3 = doc.annotations.pages.flatMap((p) => p || []);
+    const hl3 = all3.filter((a) => a.type === 'highlight');
+    expect(hl3.length, 'the highlight still imports from the state-patched file').toBe(1);
+    expect((hl3[0].replies || []).length, 'a review-state annotation is not lifted into the thread as a reply').toBe(1);
+    expect((hl3[0].replies || [])[0]?.text, 'the sibling state annotation leaves the real reply intact').toBe('Exhibit 4 has the venue facts.');
+    expect(all3.filter((a) => a.type === 'text').length, 'a review-state annotation is not lifted as a standalone note').toBe(1);
+
+    await doc.clear();
+    doc = await scribe.openDocument({ pdfFiles: [new Uint8Array(sanitizedBytes).buffer] });
+    const allS = doc.annotations.pages.flatMap((p) => p || []);
+    const ftS = allS.filter((a) => a.type === 'freetext');
+    expect(ftS.length, 'the FreeText annotation survives a sanitized export').toBe(1);
+    const ftSReplies = ftS[0].replies || [];
+    expect(ftSReplies.length, 'the FreeText thread survives a sanitized export').toBe(1);
+    expect(ftSReplies[0].text, 'a sanitized export keeps the FreeText reply text').toBe('Confirmed against the caption block.');
+    expect(ftSReplies[0].author, 'a sanitized export omits the FreeText reply author').toBe(undefined);
+    expect(ftSReplies[0].createdAt, 'a sanitized export omits the FreeText reply timestamp').toBe(undefined);
+    const hlS = allS.filter((a) => a.type === 'highlight');
+    expect((hlS[0].replies || [])[0]?.author, 'a sanitized export omits the highlight reply author').toBe(undefined);
+    // Shape annotations are not re-parsed into the model, so their thread is checked in the bytes.
+    const sanitizedText = new TextDecoder('latin1').decode(new Uint8Array(sanitizedBytes));
+    expect(sanitizedText.split('/T <').length - 1, 'a sanitized export writes no annotation author anywhere').toBe(0);
     await doc.clear();
   });
 
@@ -510,12 +605,34 @@ describe('Check export for .pdf files.', () => {
 
     scribe.ScribeDoc.defaults.displayMode = 'invis';
     scribe.ScribeDoc.defaults.addOverlay = true;
-    const fullExportPdf = /** @type {ArrayBuffer} */ (await doc.exportData('pdf'));
+    const fullExportPdf = /** @type {ArrayBuffer} */ (await doc.exportData('pdf', { docInfo: { Creator: 'scribe-test v1' } }));
     const fullExportSize = fullExportPdf.byteLength;
 
     const exportedPdf = /** @type {ArrayBuffer} */ (await doc.exportData('pdf', { minPage: 1, maxPage: 2 }));
     expect(exportedPdf.byteLength).toBeGreaterThan(1000);
     expect(exportedPdf.byteLength).toBeLessThan(fullExportSize);
+
+    // The full export appends incrementally; the page subset forces the object-level rebuild.
+    const fullMeta = getMetadata(new Uint8Array(fullExportPdf));
+    expect(fullMeta.info?.Title, 'source /Info Title lost on an incremental overlay export').toBe('Iris (plant) - Wikipedia');
+    expect(fullMeta.info?.Producer, 'source /Info Producer lost on an incremental overlay export').toBe('Skia/PDF m144');
+    expect(fullMeta.info?.Creator, 'docInfo did not override the source /Info Creator').toBe('scribe-test v1');
+    expect(fullMeta.docId, 'a source with no /ID must not gain one on the incremental path').toBe(null);
+
+    const subsetMeta = getMetadata(new Uint8Array(exportedPdf));
+    expect(subsetMeta.info?.Title, 'source /Info Title lost on a rebuild export').toBe('Iris (plant) - Wikipedia');
+    expect(subsetMeta.info?.Producer, 'source /Info Producer lost on a rebuild export').toBe('Skia/PDF m144');
+    expect(subsetMeta.info?.Creator, 'source /Info Creator lost on a rebuild export with no docInfo')
+      .toBe('Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/144.0.0.0 Safari/537.36');
+    expect(subsetMeta.lang, 'catalog /Lang lost on a rebuild export').toBe('en');
+    expect(subsetMeta.structTree, 'catalog /StructTreeRoot lost on a rebuild export').toBe(true);
+    expect(subsetMeta.viewerPreferences, 'catalog /ViewerPreferences lost on a rebuild export').toBe(true);
+
+    // A subset export writes twice: the rebuild mints an identifier, then the overlay updates its changing element.
+    const subsetId = trailerIdPair(exportedPdf);
+    expect(subsetId !== null, 'a rebuild export must write a file identifier').toBe(true);
+    expect(subsetId.map((element) => element.length), 'each file identifier element must be 16 bytes of hex').toEqual([32, 32]);
+    expect(subsetId[1] === subsetId[0], 'the changing /ID element must differ from the permanent one after the overlay update').toBe(false);
 
     await doc.clear();
     scribe.ScribeDoc.defaults.usePDFText.native.main = true;
@@ -844,6 +961,10 @@ describe('Check export for .pdf files.', () => {
     scribe.ScribeDoc.defaults.displayMode = 'proof';
     scribe.ScribeDoc.defaults.addOverlay = true;
     const exportedPdf = /** @type {ArrayBuffer} */ (await doc.exportData('pdf'));
+
+    // This fixture carries both an XMP packet and an /ID, which a rebuild must not drop as a side effect.
+    const exportedMeta = getMetadata(new Uint8Array(exportedPdf));
+    expect(exportedMeta.docId, 'source /ID first element must be carried unchanged').toBe('<678EED841A000148BA25DAE34641AA49>');
 
     await doc.clear();
     scribe.ScribeDoc.defaults.usePDFText.native.main = true;
@@ -1290,6 +1411,8 @@ describe('Check invisible text layer orientation on source pages with /Rotate.',
   let doc;
   /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
   let reDoc;
+  /** @type {ArrayBuffer} */
+  let exportedBytes;
 
   beforeAll(async () => {
     doc = await scribe.openDocument([
@@ -1299,8 +1422,20 @@ describe('Check invisible text layer orientation on source pages with /Rotate.',
     const out = /** @type {ArrayBuffer} */ (await doc.exportData('pdf', {
       displayMode: 'invis', addOverlay: true, minPage: 1, maxPage: 1,
     }));
+    exportedBytes = out;
     reDoc = await scribe.openDocument({ pdfFiles: [out] });
     await reDoc.textReady;
+  });
+
+  test('Document metadata survives a page-subset rebuild', () => {
+    const meta = getMetadata(new Uint8Array(exportedBytes));
+    expect(meta.info?.Producer, 'source /Info Producer lost on a page-subset rebuild').toBe('Adobe PDF Library 17.0');
+    expect(meta.info?.Creator, 'source /Info Creator lost on a page-subset rebuild').toBe('Adobe InDesign 19.4 (Macintosh)');
+
+    expect(meta.docId, 'source /ID first element must be carried unchanged through a rebuild').toBe('<425F4742D93EEB4A910796B59A49E64B>');
+    const idPair = trailerIdPair(exportedBytes);
+    expect(idPair !== null, 'a rebuild export must write a file identifier').toBe(true);
+    expect(idPair[1] === idPair[0], 'the changing /ID element must differ from the permanent one after an edit').toBe(false);
   });
 
   test('OCR text over a /Rotate source page imports in the display frame', async () => {

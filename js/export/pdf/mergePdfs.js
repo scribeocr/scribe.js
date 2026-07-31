@@ -9,6 +9,10 @@ import {
   buildFullXrefAndTrailer,
   locateObjectByteRange,
   decryptObjectStrings,
+  buildInfoDictBody,
+  readSourceInfoBody,
+  patchFileId,
+  FILE_ID_PLACEHOLDER,
 } from './pdfObjectGraph.js';
 import { buildOutlineObjects } from './writeOutline.js';
 
@@ -144,6 +148,11 @@ export async function mergePdfs(pdfInputs, options = {}) {
     }
     sourceMaps.push(map);
   }
+
+  // Metadata comes from the first input, matching how the merge keeps only the first source's optional-content layers.
+  // The identifier is fresh because a merge is a new document, not a revision of any input.
+  const infoBody = buildInfoDictBody(readSourceInfoBody(sources[0].pdfBytes, sources[0].objCache), null);
+  const infoObjNum = infoBody ? nextObjNum++ : 0;
 
   // Phase 3: emit all copied objects with rewritten references.
   /** @type {Array<{objNum: number, content: string | Uint8Array | import('./writePdfStreams.js').PdfBinaryObject}>} */
@@ -311,6 +320,7 @@ export async function mergePdfs(pdfInputs, options = {}) {
     objNum: pagesRootObjNum,
     content: `${pagesRootObjNum} 0 obj\n<</Type/Pages/Kids[${keptPageRefs.join(' ')}]/Count ${keptPageRefs.length}>>\nendobj\n\n`,
   });
+  if (infoBody) allOutputObjects.push({ objNum: infoObjNum, content: `${infoObjNum} 0 obj\n<<${infoBody}>>\nendobj\n\n` });
 
   // A source PDF can reference obj numbers its own xref never defines, leaving allocated numbers with no content to emit.
   // Backfill those with null objects, the value the spec gives an undefined ref anyway.
@@ -370,7 +380,8 @@ export async function mergePdfs(pdfInputs, options = {}) {
   const newXrefOffset = byteLen;
   let totalSize = nextObjNum;
   for (const o of allOutputObjects) if (o.objNum + 1 > totalSize) totalSize = o.objNum + 1;
-  const xrefStr = buildFullXrefAndTrailer(xrefEntryList, totalSize, `${catalogObjNum} 0 R`, newXrefOffset);
+  const xrefStr = buildFullXrefAndTrailer(xrefEntryList, totalSize, `${catalogObjNum} 0 R`, newXrefOffset,
+    { infoRef: infoBody ? `${infoObjNum} 0 R` : null, idHexPair: [FILE_ID_PLACEHOLDER, FILE_ID_PLACEHOLDER] });
   parts.push(xrefStr);
   byteLen += xrefStr.length;
 
@@ -386,6 +397,8 @@ export async function mergePdfs(pdfInputs, options = {}) {
       writeOffset += part.length;
     }
   }
+
+  patchFileId(result, xrefStr, newXrefOffset, 0, newXrefOffset);
 
   return result.buffer;
 }

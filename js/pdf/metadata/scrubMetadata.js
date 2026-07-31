@@ -158,9 +158,9 @@ export function scrubPageDictText(pageText) {
  * @param {import('../objectCache.js').ObjectCache} objCache
  * @param {{type:number, offset:number}} entry
  * @param {number} objNum
- * @param {{imageFilter:(n:number)=>string|null, ocgCounter:{n:number}}} ctx
+ * @param {{imageFilter:(n:number)=>string|null, ocgCounter:{n:number}}} scrubState
  */
-export function scrubReferencedObject(pdfBytes, objCache, entry, objNum, ctx) {
+export function scrubReferencedObject(pdfBytes, objCache, entry, objNum, scrubState) {
   const objText = objCache.getObjectText(objNum);
   if (!objText) return null;
   const dictStart = objText.indexOf('<<');
@@ -169,8 +169,8 @@ export function scrubReferencedObject(pdfBytes, objCache, entry, objNum, ctx) {
   const body = dictText.slice(2, -2);
 
   const isOCG = /\/Type\s*\/OCG\b/.test(objText);
-  const ocgLabel = isOCG ? `Layer ${ctx.ocgCounter.n + 1}` : null;
-  const filter = ctx.imageFilter ? ctx.imageFilter(objNum) : null;
+  const ocgLabel = isOCG ? `Layer ${scrubState.ocgCounter.n + 1}` : null;
+  const filter = scrubState.imageFilter ? scrubState.imageFilter(objNum) : null;
   const isImage = /\/Subtype\s*\/Image\b/.test(objText);
 
   const dropKey = bodyHasDropKey(body);
@@ -189,7 +189,7 @@ export function scrubReferencedObject(pdfBytes, objCache, entry, objNum, ctx) {
   const strippableImage = isImage && isStream && filter && (filter.includes('DCTDecode') || filter.includes('JPXDecode'));
 
   if (!dropKey && !infoLike && !markupAnnot && !leakyOcg && !strippableImage && !leakyAlt && !leakyLink) return null;
-  if (isOCG && leakyOcg) ctx.ocgCounter.n += 1;
+  if (isOCG && leakyOcg) scrubState.ocgCounter.n += 1;
 
   if (!isStream) {
     const { dict, changed } = rebuildDict(body, { ocgLabel, objCache });

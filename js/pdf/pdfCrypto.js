@@ -26,7 +26,7 @@ const MD5_S = [
  * @param {Uint8Array} data
  * @returns {Uint8Array} 16-byte hash
  */
-function md5(data) {
+export function md5(data) {
   const len = data.length;
   const bitLen = len * 8;
   const padLen = ((56 - (len + 1) % 64) + 64) % 64;

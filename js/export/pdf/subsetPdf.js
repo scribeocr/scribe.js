@@ -23,6 +23,11 @@ import {
   traceReferencedObjects,
   buildFullXrefAndTrailer,
   copyRawObjectBytes,
+  parseTrailerInfo,
+  buildInfoDictBody,
+  readSourceInfoBody,
+  patchFileId,
+  FILE_ID_PLACEHOLDER,
 } from './pdfObjectGraph.js';
 import {
   parseExistingContents,
@@ -307,6 +312,7 @@ function replacePageResources(pageObjText, newResourcesDictText) {
  * @param {?Map<number, Map<string, number>>} [params.editFontRefsByPage=null] - Per-page `/EDFn` font resource entries the inserts draw with.
  * @param {?Array<{objNum: number, content: string | Uint8Array | import('./writePdfStreams.js').PdfBinaryObject}>} [params.editFontObjects=null]
  *    Pre-embedded edit font objects (allocated by the caller before `startingNextObjNum`).
+ * @param {?Object<string, ?string>} [params.docInfo=null] - Document information entries overriding the source's; a null value drops that key.
  */
 export async function rebuildPdfSubset({
   pdfBytes, text, objCache, xrefEntries, pages,
@@ -328,6 +334,7 @@ export async function rebuildPdfSubset({
   textEditInsertsByPage = null,
   editFontRefsByPage = null,
   editFontObjects = null,
+  docInfo = null,
 }) {
   const overlayEnabled = !!(ocrArr && pageMetricsArr && pdfFonts);
   let nextObjNum = startingNextObjNum;
@@ -341,35 +348,41 @@ export async function rebuildPdfSubset({
     throw new Error('Cannot apply text edits: rebuild was invoked without page overlay data.');
   }
 
-  // Metadata-scrub state (only when sanitizing): map image objNum -> /Filter, an OCG-relabel counter,
-  // and the "keep-by-default" catalog structure keys (accessibility, page labels, viewer prefs).
-  let scrubCtx = null;
-  /** @type {Array<{ name: string, valueText: string, tracing: string }>} */
-  let catalogKeep = [];
+  let scrubState = null;
   let droppedSigCount = 0;
   if (scrub) {
-    const opts = scrub.opts || {};
     let imageMap = new Map();
     try { for (const [n, meta] of Object.entries(extractImages(pdfBytes) || {})) imageMap.set(Number(n), meta.filter || null); } catch { imageMap = new Map(); }
-    scrubCtx = { imageFilter: (n) => imageMap.get(n) || null, ocgCounter: { n: 0 } };
-    const rootNum0 = findRootObjNum(pdfBytes);
-    const catText0 = rootNum0 != null ? objCache.getObjectText(rootNum0) : null;
-    const catStart0 = catText0 ? catText0.indexOf('<<') : -1;
-    const catBody0 = catStart0 !== -1 ? extractDict(catText0, catStart0).slice(2, -2) : '';
-    if (catBody0) {
-      catalogKeep = catalogKeepEntries(catBody0, opts);
-      // On a full identity subset with no supplied outline, the source /Outlines' /Dest refs still resolve (kept pages keep their object numbers), so carry it forward verbatim.
-      // A subset or reorder rebuilds bookmarks from the remapped `outline` instead (buildOutlineObjects below).
-      const identityPages = pageIndices.length === pages.length && pageIndices.every((v, i) => v === i);
-      if (identityPages && !outline) {
-        const outlinesEntry = parseDictEntries(catBody0).find((e) => e.name === 'Outlines');
-        const outlineRef = outlinesEntry && outlinesEntry.valueText.trim();
-        if (outlineRef && /^\d+\s+\d+\s+R$/.test(outlineRef)) {
-          catalogKeep.push({ name: 'Outlines', valueText: outlineRef, tracing: outlineRef });
-        }
+    scrubState = { imageFilter: (n) => imageMap.get(n) || null, ocgCounter: { n: 0 } };
+  }
+
+  // The rebuilt catalog is written from scratch, so document-level keys survive only by being listed here.
+  /** @type {Array<{ name: string, valueText: string, tracing: string }>} */
+  let catalogKeep = [];
+  const rootNum0 = findRootObjNum(pdfBytes);
+  const catText0 = rootNum0 != null ? objCache.getObjectText(rootNum0) : null;
+  const catStart0 = catText0 ? catText0.indexOf('<<') : -1;
+  const catBody0 = catStart0 !== -1 ? extractDict(catText0, catStart0).slice(2, -2) : '';
+  if (catBody0) {
+    catalogKeep = catalogKeepEntries(catBody0, scrub?.opts || {});
+    if (!scrub) {
+      const xmpEntry = parseDictEntries(catBody0).find((e) => e.name === 'Metadata');
+      if (xmpEntry) catalogKeep.push({ name: 'Metadata', valueText: xmpEntry.valueText, tracing: xmpEntry.valueText });
+    }
+    // On a full identity subset with no supplied outline, the source /Outlines' /Dest refs still resolve (kept pages keep their object numbers), so carry it forward verbatim.
+    // A subset or reorder rebuilds bookmarks from the remapped `outline` instead (buildOutlineObjects below).
+    const identityPages = pageIndices.length === pages.length && pageIndices.every((v, i) => v === i);
+    if (identityPages && !outline) {
+      const outlinesEntry = parseDictEntries(catBody0).find((e) => e.name === 'Outlines');
+      const outlineRef = outlinesEntry && outlinesEntry.valueText.trim();
+      if (outlineRef && /^\d+\s+\d+\s+R$/.test(outlineRef)) {
+        catalogKeep.push({ name: 'Outlines', valueText: outlineRef, tracing: outlineRef });
       }
     }
   }
+
+  const infoBody = scrub ? null : buildInfoDictBody(readSourceInfoBody(pdfBytes, objCache), docInfo);
+  const { id0Hex: sourceId0Hex } = parseTrailerInfo(text, findXrefOffset(pdfBytes));
 
   // The structure tree can duplicate page text in /ActualText, so carrying it over would expose redacted or pre-edit text.
   if ((redactByPage.size > 0 || textEditByPage.size > 0 || (textEditInsertsByPage?.size ?? 0) > 0)
@@ -417,6 +430,7 @@ export async function rebuildPdfSubset({
   // Assign new object numbers for catalog and pages root
   const catalogObjNum = nextObjNum++;
   const pagesRootObjNum = nextObjNum++;
+  const infoObjNum = infoBody ? nextObjNum++ : 0;
 
   /** @type {Set<PdfFontInfo>} */
   const pdfFontsUsed = new Set();
@@ -706,6 +720,8 @@ export async function rebuildPdfSubset({
   const catText = rootObjNum != null ? objCache.getObjectText(rootObjNum) : null;
   // Trace the keep-by-default catalog structure (accessibility, page labels, viewer prefs) so the scrub does not orphan and silently strip it.
   for (const k of catalogKeep) if (k.tracing) tracingTexts.push(k.tracing);
+  // A preserved /Info value can itself be a reference to a string object, which the trace has to reach.
+  if (infoBody) tracingTexts.push(infoBody);
   if (catText && !(scrub && scrub.opts && scrub.opts.dropOCProperties)) {
     const ocIdx = catText.indexOf('/OCProperties');
     if (ocIdx >= 0) {
@@ -745,7 +761,7 @@ export async function rebuildPdfSubset({
       const objTextForScrub = objCache.getObjectText(objNum);
       if (objTextForScrub && /\/Type\s*\/(Metadata|Filespec|EmbeddedFile)\b/.test(objTextForScrub)) continue;
       if (objTextForScrub && /\/Type\s*\/Sig\b/.test(objTextForScrub)) { droppedSigCount += 1; continue; }
-      const replacement = scrubReferencedObject(pdfBytes, objCache, entry, objNum, scrubCtx);
+      const replacement = scrubReferencedObject(pdfBytes, objCache, entry, objNum, scrubState);
       if (replacement != null) { allOutputObjects.push({ objNum, content: replacement }); continue; }
     }
 
@@ -787,6 +803,7 @@ export async function rebuildPdfSubset({
   const catalogKeepEntry = catalogKeep.map((k) => `/${k.name} ${k.valueText}`).join(' ');
   allOutputObjects.push({ objNum: catalogObjNum, content: `${catalogObjNum} 0 obj\n<</Type/Catalog/Pages ${pagesRootObjNum} 0 R${ocPropertiesEntry ? ` ${ocPropertiesEntry}` : ''}${catalogKeepEntry ? ` ${catalogKeepEntry}` : ''}${outlineEntry}>>\nendobj\n\n` });
   allOutputObjects.push({ objNum: pagesRootObjNum, content: `${pagesRootObjNum} 0 obj\n<</Type/Pages/Kids[${keptPageRefs.join(' ')}]/Count ${keptPageRefs.length}>>\nendobj\n\n` });
+  if (infoBody) allOutputObjects.push({ objNum: infoObjNum, content: `${infoObjNum} 0 obj\n<<${infoBody}>>\nendobj\n\n` });
 
   // Build the new PDF
   const pdfHeader = '%PDF-1.7\n';
@@ -822,7 +839,10 @@ export async function rebuildPdfSubset({
   for (const o of allOutputObjects) {
     if (o.objNum + 1 > totalSize) totalSize = o.objNum + 1;
   }
-  const xrefStr = buildFullXrefAndTrailer(xrefEntryList, totalSize, `${catalogObjNum} 0 R`, newXrefOffset);
+  // The output is a derivative of the same source document, so it keeps the permanent element and recomputes the changing one.
+  const idHexPair = scrub ? null : /** @type {[string, string]} */ ([sourceId0Hex || FILE_ID_PLACEHOLDER, FILE_ID_PLACEHOLDER]);
+  const xrefStr = buildFullXrefAndTrailer(xrefEntryList, totalSize, `${catalogObjNum} 0 R`, newXrefOffset,
+    { infoRef: infoBody ? `${infoObjNum} 0 R` : null, idHexPair });
   parts.push(xrefStr);
   byteLen += xrefStr.length;
 
@@ -839,6 +859,8 @@ export async function rebuildPdfSubset({
       writeOffset += part.length;
     }
   }
+
+  patchFileId(result, xrefStr, newXrefOffset, 0, newXrefOffset);
 
   return result.buffer;
 }

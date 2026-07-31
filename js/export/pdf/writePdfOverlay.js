@@ -15,6 +15,10 @@ import { encodeStreamObject } from './writePdfStreams.js';
 import {
   parseTrailerInfo,
   buildIncrementalXrefAndTrailer,
+  buildInfoDictBody,
+  readSourceInfoBody,
+  patchFileId,
+  FILE_ID_PLACEHOLDER,
 } from './pdfObjectGraph.js';
 import {
   parseExistingContents,
@@ -65,6 +69,7 @@ import { buildNameDests } from '../../pdf/parseOutline.js';
  *   Null leaves the source's bookmarks unchanged; an empty array strips them.
  * @param {?{ opts?: ReturnType<typeof import('../../pdf/metadata/scrubMetadata.js').defaultScrubOpts> }} [params.scrub=null]
  *   When set, scrubs identifying metadata and forces a full rebuild.
+ * @param {?Object<string, ?string>} [params.docInfo=null] - Document information entries overriding the source's; a null value drops that key.
  * @returns {Promise<ArrayBuffer>}
  */
 export async function overlayPdfText({
@@ -91,6 +96,7 @@ export async function overlayPdfText({
   warningHandler,
   outline = null,
   scrub = null,
+  docInfo = null,
 }) {
   const pdfBytes = new Uint8Array(basePdfData);
   // Local latin1 view used by overlayPdfText's downstream helpers.
@@ -103,7 +109,7 @@ export async function overlayPdfText({
   // The object-number scan below needs the complete xref, so finish the deferred repair.
   objCache.ensureXrefRepaired();
   const pages = getPageObjects(objCache);
-  const { rootRef } = parseTrailerInfo(text, xrefOffset);
+  const { rootRef, infoRef: sourceInfoRef, id0Hex: sourceId0Hex } = parseTrailerInfo(text, xrefOffset);
 
   // Default to all pages in the source PDF when pageArr is not supplied.
   const effectivePageArr = pageArr
@@ -452,6 +458,7 @@ export async function overlayPdfText({
       textEditInsertsByPage,
       editFontRefsByPage,
       editFontObjects,
+      docInfo,
     });
   }
 
@@ -712,6 +719,17 @@ export async function overlayPdfText({
     }
   }
 
+  // An incremental append leaves the source's own /Info object addressable, so the trailer only has to point at it again.
+  let outInfoRef = sourceInfoRef;
+  if (docInfo) {
+    const infoBody = buildInfoDictBody(readSourceInfoBody(pdfBytes, objCache), docInfo);
+    if (infoBody) {
+      const infoObjNum = nextObjNum++;
+      allNewObjects.push({ objNum: infoObjNum, content: `${infoObjNum} 0 obj\n<<${infoBody}>>\nendobj\n\n` });
+      outInfoRef = `${infoObjNum} 0 R`;
+    }
+  }
+
   if (allNewObjects.length === 0) return basePdfData;
 
   /** @type {(string | Uint8Array)[]} */
@@ -745,7 +763,11 @@ export async function overlayPdfText({
     if (o.objNum + 1 > totalSize) totalSize = o.objNum + 1;
   }
 
-  const trailerStr = buildIncrementalXrefAndTrailer(newXrefEntries, totalSize, xrefOffset, rootRef, newXrefOffset);
+  // A source with no identifier gains none, because a permanent element invented at revision time would not identify the original document.
+  const idHexPair = sourceId0Hex ? /** @type {[string, string]} */ ([sourceId0Hex, FILE_ID_PLACEHOLDER]) : null;
+  const trailerStr = buildIncrementalXrefAndTrailer(newXrefEntries, totalSize, xrefOffset, rootRef, newXrefOffset,
+    [], { infoRef: outInfoRef, idHexPair });
+  const trailerStart = pdfBytes.length + appendByteLen;
   appendParts.push(trailerStr);
   appendByteLen += trailerStr.length;
 
@@ -762,6 +784,10 @@ export async function overlayPdfText({
       offset += part.length;
     }
   }
+
+  // The hash covers only the appended revision, not the whole file.
+  // The source bytes are carried verbatim, so hashing them again would cost a full pass over the input on every export.
+  patchFileId(result, trailerStr, trailerStart, pdfBytes.length, newXrefOffset);
 
   return result.buffer;
 }

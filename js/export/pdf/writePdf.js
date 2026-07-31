@@ -11,6 +11,7 @@ import {
 } from './writePdfAnnots.js';
 import { SHAPE_ANNOT_TYPES, TEXT_MARKUP_ANNOT_TYPES } from '../../addHighlights.js';
 import { encodeStreamObject } from './writePdfStreams.js';
+import { buildInfoDictBody, patchFileId, FILE_ID_PLACEHOLDER } from './pdfObjectGraph.js';
 
 /**
  * Create a PDF from an array of ocrPage objects.
@@ -38,6 +39,8 @@ import { encodeStreamObject } from './writePdfStreams.js';
  * @param {import('../../containers/fontContainer.js').DocFonts} [params.docFonts] - Per-document fonts.
  * @param {?import('../../containers/scribeDoc.js').ScribeDoc} [params.doc=null] - Owning document for progress reporting.
  * @param {(message: string) => void} [params.warningHandler] - Reports each annotation skipped on error.
+ * @param {?Object<string, ?string>} [params.docInfo=null] - Document information entries.
+ *   There is no source document here, so the output carries only what the caller supplies.
  *
  * A valid PDF will be created if an empty array is provided for `ocrArr`, as long as `pageArr` is non-empty.
  */
@@ -62,6 +65,7 @@ export async function writePdf({
   docFonts,
   doc = null,
   warningHandler,
+  docInfo = null,
 }) {
   if (!GlobalFonts.raw) throw new Error('No fonts loaded.');
 
@@ -279,7 +283,12 @@ export async function writePdf({
   for (const imgObj of pdfImageObjStrArr) pushObj(imgObj);
   for (const pageObj of pdfPageObjArr) pushObj(pageObj);
 
-  const objCount = 2 + pdfFontRefs.length * 6 + pdfImageObjStrArr.length + pdfPageObjArr.length + 1;
+  // The information dictionary goes last, at the highest free number.
+  // Object numbers are baked as text into the objects already generated above, and nothing renumbers them, so inserting anywhere else would silently misdirect those references.
+  const infoBody = buildInfoDictBody(null, docInfo);
+  if (infoBody) pushObj(`${objectI} 0 obj\n<<${infoBody}>>\nendobj\n\n`);
+
+  const objCount = 2 + pdfFontRefs.length * 6 + pdfImageObjStrArr.length + pdfPageObjArr.length + 1 + (infoBody ? 1 : 0);
 
   const xrefOffset = byteLen;
 
@@ -293,9 +302,12 @@ export async function writePdf({
     }
   }
 
+  // A first write sets both identifier elements to the same value.
+  const infoEntry = infoBody ? `\n      /Info ${objectI} 0 R` : '';
   xrefStr += `trailer
   <<  /Root 1 0 R
       /Size ${objCount}
+      /ID [<${FILE_ID_PLACEHOLDER}><${FILE_ID_PLACEHOLDER}>]${infoEntry}
   >>
 startxref
 ${xrefOffset}
@@ -316,6 +328,8 @@ ${xrefOffset}
       writeOffset += part.length;
     }
   }
+
+  patchFileId(result, xrefStr, xrefOffset, 0, xrefOffset);
 
   return result.buffer;
 }

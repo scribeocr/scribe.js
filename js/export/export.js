@@ -62,6 +62,9 @@ import { _buildPngDataUrl } from '../pdf/renderPdfPage.js';
  *    Covers Info/XMP/PieceInfo, embedded files, image EXIF, actions, prior revisions, and signatures.
  *    Only applies to the PDF-overlay export path (PDF input with addOverlay).
  * @property {object} [scrubOpts] - Overrides the Balanced scrub defaults when `sanitize` is set (`stripStructTree`, `stripPageLabels`, `stripViewerPrefs`, `dropOCProperties`).
+ * @property {?Object<string, ?string>} [docInfo] - Document information entries (`Title`, `Author`, `Creator`, ...) written into the exported PDF.
+ *    Entries the input already carries are preserved; these override same-named ones, and a null value removes a key.
+ *    Ignored when `sanitize` is set, which removes document metadata outright.
  */
 
 /**
@@ -256,6 +259,11 @@ export async function exportData(doc, format = 'txt', options = {}) {
     // A non-null scrub forces the overlay writer onto its rebuild path.
     const scrub = options.sanitize ? { opts: { ...defaultScrubOpts(), ...(options.scrubOpts || {}) } } : null;
 
+    const docInfo = options.docInfo ?? null;
+    if (docInfo && scrub) {
+      console.warn('docInfo is not applied when sanitize is set, which removes document metadata; ignoring.');
+    }
+
     const dimsLimit = { width: -1, height: -1 };
     if (standardizePageSize) {
       for (const i of pageArr) {
@@ -386,6 +394,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
             warningHandler,
             outline: outlineForOutput,
             scrub,
+            docInfo,
           });
         } catch (error) {
           // Never fall back to rasterizing PDF input: it bakes vector/text pages into images and destroys searchable text.
@@ -446,6 +455,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
           docFonts: doc.fonts,
           doc,
           warningHandler,
+          docInfo,
         });
       }
     } else {
@@ -465,6 +475,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
         docFonts: doc.fonts,
         doc,
         warningHandler,
+        docInfo,
       });
     }
   } else if (format === 'hocr') {
