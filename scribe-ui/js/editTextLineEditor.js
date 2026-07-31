@@ -744,28 +744,36 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
   /**
    * @param {EditSession} session
    * @param {number} clientX
+   * @param {number} clientY
    */
-  const slotAtClient = (session, clientX) => {
-    const rect = canvas.getBoundingClientRect();
-    const localX = session.box.left + (clientX - rect.left) / (rect.width / (session.box.right - session.box.left));
+  const slotAtClient = (session, clientX, clientY) => {
+    // clientToPage would resolve the page from the pointer, so a drag running past this page's edge would re-base onto its neighbor.
+    const c = scribe.clientToContent(clientX, clientY);
+    const local = scribe.pageToLocal(session.n, session.orientation,
+      c.x - scribe._pageLeft(session.n), c.y - scribe.getPageStop(session.n));
     let best = 0;
     let bestDist = Infinity;
     for (let i = 0; i < session.xs.length; i++) {
-      const d = Math.abs(localX - session.xs[i]);
+      const d = Math.abs(local.x - session.xs[i]);
       if (d < bestDist) { bestDist = d; best = i; }
     }
     return best;
   };
 
   // Repeat clicks are counted manually because preventing the pointerdown's default suppresses dblclick events.
-  let lastCanvasDown = { t: -1e9, x: 0, count: 0 };
+  let lastCanvasDown = {
+    t: -1e9, x: 0, y: 0, count: 0,
+  };
   const onCanvasPointerdown = (ev) => {
     if (!st || !containsPoint(ev.clientX, ev.clientY)) return;
     ev.stopPropagation();
     ev.preventDefault();
-    const repeat = ev.timeStamp - lastCanvasDown.t < 420 && Math.abs(ev.clientX - lastCanvasDown.x) < 4;
+    const repeat = ev.timeStamp - lastCanvasDown.t < 420
+      && Math.hypot(ev.clientX - lastCanvasDown.x, ev.clientY - lastCanvasDown.y) < 4;
     const count = repeat ? Math.min(lastCanvasDown.count + 1, 3) : 1;
-    lastCanvasDown = { t: ev.timeStamp, x: ev.clientX, count };
+    lastCanvasDown = {
+      t: ev.timeStamp, x: ev.clientX, y: ev.clientY, count,
+    };
     hiddenInput.focus({ preventScroll: true });
     const session = st;
 
@@ -787,7 +795,7 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
       return { start: a, end: b };
     };
 
-    const anchor = slotAtClient(session, ev.clientX);
+    const anchor = slotAtClient(session, ev.clientX, ev.clientY);
     /** @param {number} focus */
     const select = (focus) => {
       const a = unit(anchor);
@@ -811,7 +819,7 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
     const onMove = (mv) => {
       // A session that opened mid-drag must not receive writes from this one.
       if (st !== session) return;
-      select(slotAtClient(session, mv.clientX));
+      select(slotAtClient(session, mv.clientX, mv.clientY));
       draw();
     };
     const onUp = () => {
@@ -1071,17 +1079,30 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
     const unitsW = orientation % 2 === 0 ? dims.width : dims.height;
     const unitsH = orientation % 2 === 0 ? dims.height : dims.width;
     const rasterEl = /** @type {?HTMLCanvasElement} */ (scribe.pageContainerArr?.[n]?.querySelector('canvas.scribe-layer-image'));
-    const grect = group.getBoundingClientRect();
+    // Quarter turns from the group's rotation, with its skew term dropped because skew never swaps axes.
+    const q = ((orientation + Math.round((scribe.doc.pageMetrics[n].rotation || 0) / 90)) % 4 + 4) % 4;
+    /**
+     * A client rect read on the group's local axes.
+     * `left`/`top` are the edges local x and y start at, negated where that axis runs against its screen axis.
+     * @param {DOMRect} r
+     */
+    const localRect = (r) => ({
+      left: q === 0 ? r.left : q === 1 ? r.top : q === 2 ? -r.right : -r.bottom,
+      top: q === 0 ? r.top : q === 1 ? -r.right : q === 2 ? -r.bottom : r.left,
+      width: q % 2 === 1 ? r.height : r.width,
+      height: q % 2 === 1 ? r.width : r.height,
+    });
+    const grect = localRect(group.getBoundingClientRect());
     // The raster renders at a rounded integer width with compensated CSS, so ideal zoom coordinates drift from its real frame by up to a pixel across the page.
-    // Rotation is baked into the raster canvas, so it is oriented like the group and needs no axis swaps.
-    const rr = rasterEl && rasterEl.width > 0 ? rasterEl.getBoundingClientRect() : grect;
+    // It is a child of the page container and stays on the screen axes while the group is rotated.
+    const rr = rasterEl && rasterEl.width > 0 ? localRect(rasterEl.getBoundingClientRect()) : grect;
     const guxR = rr.width / unitsW;
     const guyR = rr.height / unitsH;
     const gux = grect.width / unitsW;
     const guy = grect.height / unitsH;
     // Draw at the raster's backing density while the compositor upscales it.
     // Its glyph rows are quantized to that grid.
-    const bsY = rasterEl && rasterEl.width > 0 ? rasterEl.height / unitsH : 0;
+    const bsY = rasterEl && rasterEl.width > 0 ? (q % 2 === 1 ? rasterEl.width : rasterEl.height) / unitsH : 0;
     const scale = bsY > 0 ? Math.min(guyR * dpr, bsY) : guyR * dpr;
     // The origin should sit on a whole cell of the raster's backing grid and on an integer device pixel, but a fractional upscale cannot satisfy both everywhere.
     // A fractional device origin resolves to either neighboring pixel as scroll phase changes, so the preview can land a pixel off the raster.
