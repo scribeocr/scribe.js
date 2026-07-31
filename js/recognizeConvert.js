@@ -61,6 +61,7 @@ export function ocrAddsNewText(nativePage, ocrPage) {
  * Build the canonical 'Combined' layer for a partial page selection and point `active` at it.
  * Per page it keeps the engine's OCR, or falls back to native (PDF) text when the keep/discard gate finds the OCR adds nothing the native layer lacks.
  * Every page is cloned, so editing 'Combined' cannot corrupt the source layers it draws from.
+ * `doc.inputData.ocrApplied` is modified in place to narrow to the pages this leaves OCR-backed.
  * A no-op when OCR ran on every page, when the document carries user-uploaded OCR, or when no page was OCR'd.
  * @param {ScribeDoc} doc
  * @param {OcrPage[]} source - The engine's full-document OCR layer ('Tesseract Combined' or a custom model's).
@@ -80,9 +81,13 @@ function buildCombinedLayer(doc, source, ocrPageMask, gateApplies, fullOcr) {
     const ocrPage = source[i];
     let chosen;
     if (ocrPageMask[i] && ocrPage) {
-      chosen = (gateApplies && nat && !ocrAddsNewText(nat, ocrPage)) ? nat : ocrPage;
+      const keepOcr = !(gateApplies && nat && !ocrAddsNewText(nat, ocrPage));
+      chosen = keepOcr ? ocrPage : nat;
+      // The searchable-PDF export reads this flag to pick pages to flatten.
+      if (!keepOcr) doc.inputData.ocrApplied[i] = false;
     } else {
       chosen = nat || ocrPage;
+      if (nat) doc.inputData.ocrApplied[i] = false;
     }
     if (chosen) {
       combined[i] = ocr.clonePage(chosen);

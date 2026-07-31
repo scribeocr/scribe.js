@@ -275,7 +275,7 @@ async function readFileContent(filePath) {
 }
 
 describe('autoDeep gate wiring through a custom OCR model', () => {
-  test('discards a custom model\'s OCR on a text-native page that adds no new text, keeping native', async () => {
+  test('discards a custom model\'s OCR on a text-native page that adds no new text, and exports that page untouched', async () => {
     // intel page 6 is a text-native page carrying a photo. autoDeep selects it, but the photo's OCR adds
     // nothing the native layer lacks. The stub stands in for a cloud model (Textract/Vision/etc.).
     StubOcrModel.hocr = await readFileContent(`${ASSETS_PATH}/intel-history-1996-annual-report.p6.tesseract.hocr`);
@@ -294,6 +294,17 @@ describe('autoDeep gate wiring through a custom OCR model', () => {
     expect(intelDoc.ocr.active[6]).not.toBe(intelDoc.ocr.pdf[6]); // a clone, so GUI edits cannot corrupt native
     // Non-destructive: the model's own layer still holds its parsed OCR for page 6, available to export.
     expect(intelDoc.ocr['Mock Cloud OCR'][6].lines.length).toBe(104);
+
+    // Regression: the export keyed on the pages sent to OCR, not the pages whose OCR was kept.
+    // That flattened this page to outlines and re-typeset its text, splitting "4004" into four words.
+    const exportedPdf = await intelDoc.exportData('pdf', { pageArr: [6] });
+    const reimported = await scribe.openDocument({ pdfFiles: [exportedPdf] });
+    const page = reimported.ocr.pdf[0];
+    const wordCount = page.lines.reduce((total, line) => total + line.words.length, 0);
+    expect(wordCount, 'exporting a gate-rejected page destroyed its word segmentation').toBe(337);
+    expect(page.lines[11].words.map((w) => w.text).join(' '), 'exporting a gate-rejected page re-typeset its text').toBe('4004');
+    await reimported.terminate();
+
     await intelDoc.terminate();
   }, 60000);
 

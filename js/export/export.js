@@ -352,7 +352,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
             && (overlayOcrArr.length === 0 || overlayOcrArr.length === pageStats.length)) {
             // `flagged` marks each page that is a flattening candidate: it holds content the native text layer cannot surface
             // (`mayHaveBakedText`, `hasBrokenFontRun`, or `isScanPage`) and was OCR'd (`ocrApplied[i]`).
-            // Gating on `ocrApplied` leaves a skipped or never-OCR'd page unflattened so its native text stays extractable.
+            // Gating on `ocrApplied` leaves every page whose text is native unflattened, so that text stays extractable.
             // With no `ocrApplied` array, nothing is flattened.
             const flagged = pageStats.map((s, i) => !!(s && (mayHaveBakedText(s) || hasBrokenFontRun(s) || isScanPage(s)))
               && !!(ocrAppliedArr && ocrAppliedArr[i]));
