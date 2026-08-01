@@ -1248,6 +1248,9 @@ export function detectPdfType(pdfBytes) {
  *   fontInfo: { baseName: string, bold: boolean, italic: boolean, smallCaps: boolean,
  *     familyName: string, ascent: number, descent: number },
  *   _font?: any,
+ *   superior?: boolean,
+ *   skew?: number,
+ *   stretch?: number,
  *   invisible: boolean,
  *   orientation: number,
  *   dirX: number, dirY: number,
@@ -1809,7 +1812,11 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
         ? Math.round((tm[2] / tm[0]) * 1e4) / 1e4 : 0;
       // The drawn glyph is this many times its normal width at the emitted fontSize.
       const matrixStretch = vScale > 0 ? Math.round(((hScale * tz) / (100 * vScale)) * 1e4) / 1e4 : 1;
+      // OpenType superior figures (InDesign's sups feature) draw the superscript entirely in glyph ink.
+      // The stream declares the surrounding size on the shared baseline, so glyph identity is the only superscript evidence.
+      const glyphName = font.charCodeToGlyphName ? font.charCodeToGlyphName.get(charCode) : undefined;
       chars.push({
+        superior: glyphName !== undefined && /\.(superior|sups)$/.test(glyphName),
         text: unicode,
         x: pageX * scale,
         y: (pageHeightPts - pageY) * scale,
@@ -2592,6 +2599,9 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
         if (Number.isFinite(baselineDelta) && Number.isFinite(sizeDelta)
           && ((baselineDelta < -0.25 && sizeDelta < -0.05) || (baselineDelta > 0.25 && sizeDelta > 0.05))) {
           splitPoints.push({ index: ci, sizeDelta });
+        } else if (!!prev.superior !== !!curr.superior) {
+          // A superior-glyph boundary carries no size or baseline delta, so segment supness resolves by the flag itself rather than the delta rules.
+          splitPoints.push({ index: ci, sizeDelta: 0, bySuperior: true });
         } else if (ci === 1 && /[A-Z]/.test(prev.text) && curr.fontSize < prev.fontSize
           && prev.fontSize > 0 && Math.abs(baselineDelta) < 0.1) {
           // Fake small caps detection: font size decrease after first uppercase letter, no baseline shift.
@@ -2626,9 +2636,9 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
       }
 
       if (splitPoints.length === 0) {
-        // No superscript boundary — push as a single word.
+        // A word set entirely in superior glyphs (a standalone note marker) is superscript with no boundary to detect.
         words.push({
-          chars: wordChars, sup: false, dropcap: false, smallCapsAlt: smallCapsAltActive, smallCapsAltTitleCase: false, smallCapsLargeFontSize: 0,
+          chars: wordChars, sup: wordChars.every((c) => c.superior), dropcap: false, smallCapsAlt: smallCapsAltActive, smallCapsAltTitleCase: false, smallCapsLargeFontSize: 0,
         });
       } else {
         // Split at each superscript boundary.
@@ -2639,6 +2649,8 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
             let supForSegment;
             if (forceSupForSplits) {
               supForSegment = true;
+            } else if (sp.bySuperior) {
+              supForSegment = !!wordChars[start].superior;
             } else if (sp.sizeDelta > 0) {
               supForSegment = prevWasSup;
             } else {
@@ -2653,8 +2665,7 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
             prevWasSup = supForSegment;
           }
           start = sp.index;
-          // After splitting, the next segment's sup status is determined by the direction of the transition.
-          prevWasSup = forceSupForSplits ? true : sp.sizeDelta < 0;
+          prevWasSup = sp.bySuperior ? !!wordChars[sp.index].superior : (forceSupForSplits ? true : sp.sizeDelta < 0);
         }
         // Remaining chars after last split point.
         if (start < wordChars.length) {
