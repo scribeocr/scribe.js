@@ -1398,14 +1398,6 @@ export function parseHeadTable(data, start) {
 }
 
 export function makeHeadTable(options) {
-  // Apple Mac timestamp epoch is 01/01/1904 not 01/01/1970
-  const timestamp = Math.round(new Date().getTime() / 1000) + 2082844800;
-  let createdTimestamp = timestamp;
-
-  if (options.createdTimestamp) {
-    createdTimestamp = options.createdTimestamp + 2082844800;
-  }
-
   const o = options || {};
   const d = new Array(54);
   let p = 0;
@@ -1416,11 +1408,14 @@ export function makeHeadTable(options) {
   writeUint16(d, p, o.flags !== undefined ? o.flags : 0); p += 2; // flags
   writeUint16(d, p, o.unitsPerEm !== undefined ? o.unitsPerEm : 1000); p += 2; // unitsPerEm
   // created (LONGDATETIME = 8 bytes: 4 zero bytes + 4 byte timestamp)
-  const created = o.created !== undefined ? o.created : createdTimestamp;
+  // Every embedded font is rebuilt at export, so a wall-clock stamp here would make the same document export different bytes on every run.
+  // `createdTimestamp` is a Unix time, while `created` is already in the table's 1904-based epoch.
+  const created = o.created !== undefined ? o.created
+    : (o.createdTimestamp !== undefined ? o.createdTimestamp + 2082844800 : 0);
   d[p] = 0; d[p + 1] = 0; d[p + 2] = 0; d[p + 3] = 0;
   writeUint32(d, p + 4, created); p += 8;
   // modified (LONGDATETIME)
-  const modified = o.modified !== undefined ? o.modified : timestamp;
+  const modified = o.modified !== undefined ? o.modified : 0;
   d[p] = 0; d[p + 1] = 0; d[p + 2] = 0; d[p + 3] = 0;
   writeUint32(d, p + 4, modified); p += 8;
   writeInt16(d, p, o.xMin !== undefined ? o.xMin : 0); p += 2;
