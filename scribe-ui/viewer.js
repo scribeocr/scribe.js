@@ -20,6 +20,8 @@ import {
 } from './js/viewerHighlights.js';
 import { renderPageNotes } from './js/viewerNotes.js';
 import { renderPageRedactions, updateRedactTab, hideRedactTabSoon } from './js/viewerRedactions.js';
+import { renderPageFormFields } from './js/viewerFormFields.js';
+import { renderPageFillItems, selectedFillItem, deselectFillItem } from './js/viewerFillSign.js';
 import { ensureLayerStyleSheet, COMMENT_MARK_SVG } from './js/viewerLayerStyles.js';
 import {
   ScribeViewerState, ScribeViewerOpts, CanvasSelection,
@@ -155,6 +157,12 @@ export class ScribeViewer {
 
     /** @type {?Function} Fired after an undo/redo, so host UI (e.g. the bookmarks panel) can refresh non-page state. */
     this.onEditCallback = null;
+    /**
+     * Host hook for a click on an unsigned signature field.
+     * Unsigned fields render as clickable sign-here targets only when a host sets this.
+     * @type {?(n: number, row: Object) => void}
+     */
+    this.onSignatureFieldClick = null;
 
     /**
      * Fired after every page-structure or rotation edit made through the viewer's page verbs, including undo/redo of them.
@@ -301,6 +309,10 @@ export class ScribeViewer {
     this._notesGroups = [];
     /** @type {Array<?HTMLDivElement>} Per-page redaction-mark layer (above highlights, below notes; never blocks the pointer). */
     this._redactGroups = [];
+    /** @type {Array<?HTMLDivElement>} */
+    this._fieldGroups = [];
+    /** @type {Array<?HTMLDivElement>} Per-page fill & sign items layer. */
+    this._itemGroups = [];
     /** @type {Array<?HTMLDivElement>} Per-page redaction "Preview" tab layer, kept out of the multiply-blending mark layer so the tab label stays opaque. */
     this._redactTabGroups = [];
     /**
@@ -583,6 +595,8 @@ export class ScribeViewer {
     this._overlayGroups.length = 0;
     this._notesGroups.length = 0;
     this._redactGroups.length = 0;
+    this._fieldGroups.length = 0;
+    this._itemGroups.length = 0;
     this._redactTabGroups.length = 0;
     this._redactTab = null;
     this.overlayGroupsRenderIndices.length = 0;
@@ -1724,6 +1738,13 @@ export class ScribeViewer {
       contextMenuFunc(this, event);
     });
 
+    // The fill & sign palette stops an armed placement press in its capture handler, so this bubble-phase listener never deselects during placement.
+    scrollContainer.addEventListener('pointerdown', (event) => {
+      if (!selectedFillItem(this)) return;
+      if (event.target instanceof Element && event.target.closest('.scribe-item')) return;
+      deselectFillItem(this);
+    });
+
     // The touch action callout is the touch replacement for the context menu above.
     this._touchCalloutShow = (kind, kw, slot) => showTouchCallout(this, kind, kw, slot);
     this._touchCalloutHide = () => hideTouchCallout();
@@ -2192,6 +2213,12 @@ export class ScribeViewer {
     this.renderRedactions(n);
     if (n - 1 >= 0) this.renderRedactions(n - 1);
     if (n + 1 < this.doc.ocr.active.length) this.renderRedactions(n + 1);
+    this.renderFormFields(n);
+    if (n - 1 >= 0) this.renderFormFields(n - 1);
+    if (n + 1 < this.doc.ocr.active.length) this.renderFormFields(n + 1);
+    this.renderFillItems(n);
+    if (n - 1 >= 0) this.renderFillItems(n - 1);
+    if (n + 1 < this.doc.ocr.active.length) this.renderFillItems(n + 1);
 
     if (scroll) {
       // Land page `n` as the current page.
@@ -2610,6 +2637,57 @@ export class ScribeViewer {
   renderRedactions(n) {
     renderPageRedactions(this, n);
     if (this.onAnnotationsRendered) this.onAnnotationsRendered(n);
+  }
+
+  /**
+   * The per-page form-field overlay layer.
+   * @param {number} n
+   * @returns {?HTMLDivElement}
+   */
+  getFieldsGroup(n) {
+    if (!this._fieldGroups[n]) {
+      const group = this.createGroup(n);
+      group.style.zIndex = '2';
+      group.style.pointerEvents = 'none';
+      group.classList.add('scribe-layer-fields');
+      this._fieldGroups[n] = group;
+      const pc = this._ensurePageContainer(n);
+      if (pc) pc.appendChild(group);
+    }
+    return this._fieldGroups[n];
+  }
+
+  /** @param {number} n */
+  renderFormFields(n) {
+    if (!this.opt.enableForms) return;
+    renderPageFormFields(this, n);
+  }
+
+  /**
+   * The per-page fill & sign items layer, lazily created.
+   * @param {number} n
+   * @returns {?HTMLDivElement}
+   */
+  getItemsGroup(n) {
+    if (!this._itemGroups[n]) {
+      const group = this.createGroup(n);
+      group.style.zIndex = '2';
+      group.style.pointerEvents = 'none';
+      group.classList.add('scribe-layer-items');
+      this._itemGroups[n] = group;
+      const pc = this._ensurePageContainer(n);
+      if (pc) pc.appendChild(group);
+    }
+    return this._itemGroups[n];
+  }
+
+  /**
+   * Render page n fill & sign items and freetext/shape comment rows into their layer.
+   * @param {number} n
+   */
+  renderFillItems(n) {
+    if (!this.opt.enableForms) return;
+    renderPageFillItems(this, n);
   }
 
   /**

@@ -964,6 +964,71 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
     .${r} .scribe-app-menu-item:hover { background: var(--scribe-hover); }
     .${r} .scribe-app-menu-item.busy { opacity: .6; pointer-events: none; }
+    .${r} .scribe-app-menu-item.disabled { color: var(--scribe-ink-3); cursor: default; }
+    .${r} .scribe-app-menu-item.disabled:hover { background: none; }
+
+    /* Fill & Sign: FS2b floating pill palette (draggable; phone raises it above the dock). */
+    .${r} .scribe-fs-pal { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 30;
+      background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 10px;
+      box-shadow: var(--scribe-menu-shadow); padding: 4px; display: flex; gap: 2px; align-items: center; cursor: grab; }
+    .${r} .scribe-fs-grip { width: 18px; height: 24px; color: var(--scribe-ink-3); display: flex; align-items: center; justify-content: center; }
+    .${r} .scribe-fs-grip svg { width: 16px; height: 16px; fill: currentColor; }
+    .${r}.scribe-phone .scribe-fs-pal { bottom: 74px; }
+    .${r} .scribe-fs-menu { position: absolute; bottom: calc(100% + 6px); right: 0; min-width: 210px;
+      background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 8px;
+      box-shadow: var(--scribe-menu-shadow); padding: 4px; z-index: 31; }
+    .${r} .scribe-fs-menu-item { display: flex; align-items: center; gap: 8px; padding: 6px 8px; border-radius: 5px;
+      cursor: pointer; color: var(--scribe-ink); font-size: 12.5px; }
+    .${r} .scribe-fs-menu-item:hover { background: var(--scribe-hover); }
+    .${r} .scribe-fs-menu-prev { flex: 1; height: 30px; display: flex; align-items: center; }
+    .${r} .scribe-fs-menu-prev svg, .${r} .scribe-fs-menu-prev img { max-width: 150px; max-height: 30px; }
+    .${r} .scribe-fs-menu-del { width: 20px; height: 20px; border-radius: 4px; display: flex; align-items: center;
+      justify-content: center; color: var(--scribe-ink-3); font-size: 14px; }
+    .${r} .scribe-fs-menu-del:hover { background: var(--scribe-hover); color: #d1493d; }
+    .${r} .scribe-fs-menu-ic { width: 18px; height: 18px; display: flex; }
+    .${r} .scribe-fs-menu-ic svg { width: 16px; height: 16px; }
+
+    /* Fill & Sign: FS3a centered signature dialog. The drawing/preview surfaces stay paper-white in
+       both themes — a signature is made on paper. */
+    .${r} .scribe-fs-scrim { position: absolute; inset: 0; background: rgba(15, 18, 26, .42); z-index: 60;
+      display: flex; align-items: center; justify-content: center; }
+    .${r} .scribe-fs-dialog { width: min(620px, calc(100% - 32px)); background: var(--scribe-surface);
+      border: 1px solid var(--scribe-line); border-radius: 12px; box-shadow: var(--scribe-menu-shadow);
+      padding: 16px; color: var(--scribe-ink); }
+    .${r} .scribe-fs-dlg-title { font-size: 15px; font-weight: 650; margin-bottom: 10px; }
+    .${r} .scribe-fs-dlg-body { display: grid; }
+    .${r} .scribe-fs-dlg-body > * { grid-area: 1 / 1; }
+    .${r} .scribe-fs-pane-off { visibility: hidden; pointer-events: none; }
+    .${r} .scribe-fs-tabs { display: flex; gap: 2px; border-bottom: 1px solid var(--scribe-line); margin-bottom: 12px; }
+    .${r} .scribe-fs-tab { appearance: none; background: none; border: none; padding: 7px 12px; font-size: 13px;
+      color: var(--scribe-ink-2); cursor: pointer; border-bottom: 2px solid transparent; margin-bottom: -1px; }
+    .${r} .scribe-fs-tab.active { color: var(--scribe-accent); border-bottom-color: var(--scribe-accent); font-weight: 650; }
+    .${r} .scribe-fs-draw { width: 560px; max-width: 100%; height: 180px; border: 1px dashed var(--scribe-line-strong);
+      border-radius: 8px; background: #fff; cursor: crosshair; display: block; touch-action: none; }
+    .${r} .scribe-fs-btn { appearance: none; background: none; border: 1px solid var(--scribe-line-strong);
+      border-radius: 7px; padding: 7px 14px; font-size: 13px; color: var(--scribe-ink); cursor: pointer; margin-top: 8px; }
+    .${r} .scribe-fs-btn:hover { background: var(--scribe-hover); }
+    .${r} .scribe-fs-btn-primary { background: var(--scribe-accent); border-color: var(--scribe-accent); color: #fff; font-weight: 650; }
+    .${r} .scribe-fs-dlg-foot { display: flex; justify-content: flex-end; gap: 8px; margin-top: 14px; }
+    .${r} .scribe-fs-type-input { width: 100%; box-sizing: border-box; font-size: 14px; padding: 8px 10px;
+      border: 1px solid var(--scribe-line-strong); border-radius: 7px; background: var(--scribe-surface); color: var(--scribe-ink); }
+    .${r} .scribe-fs-fonts { display: flex; gap: 6px; margin: 10px 0; flex-wrap: wrap; }
+    .${r} .scribe-fs-font { appearance: none; background: none; border: 1px solid var(--scribe-line); border-radius: 7px;
+      padding: 0 10px; font-size: 16px; color: var(--scribe-ink); cursor: pointer;
+      height: 34px; line-height: 1; display: inline-flex; align-items: center; }
+    .${r} .scribe-fs-font.active { border-color: var(--scribe-accent); box-shadow: 0 0 0 2px var(--scribe-accent-ring); }
+    .${r} .scribe-fs-type-preview { height: 88px; box-sizing: border-box; line-height: 1.2;
+      display: flex; align-items: center; justify-content: center;
+      font-size: 44px; border: 1px dashed var(--scribe-line-strong); border-radius: 8px; background: #fff;
+      color: #101010; padding: 8px; overflow: hidden; }
+    .${r} .scribe-fs-bgtoggle { display: flex; gap: 6px; align-items: center; font-size: 12.5px;
+      color: var(--scribe-ink-2); margin: 8px 0; }
+    /* Capped so a tall upload cannot outgrow the drawing pane and resize the dialog under the user.
+       Only the displayed size shrinks — the saved PNG comes from the canvas backing store. */
+    .${r} .scribe-fs-img-preview { background: repeating-conic-gradient(#eceff4 0 25%, #fff 0 50%) 0 0/16px 16px;
+      border: 1px dashed var(--scribe-line-strong); border-radius: 8px; display: block; max-width: 100%;
+      max-height: 150px; }
+    .${r} .scribe-fs-file { font-size: 12.5px; color: var(--scribe-ink-2); display: block; margin-bottom: 4px; }
     /* Coarse-pointer (touch-primary) sizing: platform-minimum 44px targets, and 16px input fonts because iOS zooms the page when focusing any input smaller.
        Keyed on the state class the app constructor sets rather than a media query, so embedders and tests can force either mode. */
     .${r}.scribe-coarse .scribe-app-menu-item { min-height: 44px; }

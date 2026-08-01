@@ -16,6 +16,7 @@ import {
 } from './viewerHighlights.js';
 import { createNote } from './viewerNotes.js';
 import { redactWords, removeRedactionGroup, hitTestRedaction } from './viewerRedactions.js';
+import { fillItemFromTarget, selectFillItem, deleteSelectedFillItem } from './viewerFillSign.js';
 
 /**
  * Resolve a DOM event's target to its UI object (the `UiOcrWord`/`UiRegion`/`UiDataColumn` attached as `el._scribeObj`),
@@ -337,6 +338,7 @@ const createContextMenuHTML = () => {
     [
       item('contextMenuDeleteHighlightButton', 'Delete Highlight', CM_TRASH_SVG, deleteHighlightClick),
       item('contextMenuDeleteRedactionButton', 'Delete Redaction', CM_TRASH_SVG, deleteRedactionClick),
+      item('contextMenuDeleteFillItemButton', 'Delete', CM_TRASH_SVG, deleteFillItemClick),
     ],
     [
       item('contextMenuDeleteTextLinesButton', 'Delete Lines', CM_TRASH_SVG, deleteTextLinesClick, true),
@@ -498,6 +500,12 @@ const deleteRedactionClick = () => {
   hideContextMenu();
   if (redactTarget) removeRedactionGroup(viewer, redactTarget.groupId);
   redactTarget = null;
+};
+
+const deleteFillItemClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  deleteSelectedFillItem(viewer);
 };
 
 const deleteTextLinesClick = () => {
@@ -675,6 +683,7 @@ let contextMenuStyleElem = null;
 /** @type {HTMLButtonElement} */ let contextMenuDeleteHighlightButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuRedactButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuDeleteRedactionButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuDeleteFillItemButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuDeleteTextLinesButtonElem;
 
 /**
@@ -727,6 +736,7 @@ function ensureContextMenu() {
   contextMenuDeleteHighlightButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteHighlightButton'));
   contextMenuRedactButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuRedactButton'));
   contextMenuDeleteRedactionButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteRedactionButton'));
+  contextMenuDeleteFillItemButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteFillItemButton'));
   contextMenuDeleteTextLinesButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteTextLinesButton'));
   contextMenuHighlightButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuHighlightButton'));
   contextMenuUnderlineButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuUnderlineButton'));
@@ -896,6 +906,7 @@ export const hideContextMenu = () => {
   contextMenuDeleteHighlightButtonElem.style.display = 'none';
   contextMenuRedactButtonElem.style.display = 'none';
   contextMenuDeleteRedactionButtonElem.style.display = 'none';
+  contextMenuDeleteFillItemButtonElem.style.display = 'none';
   contextMenuDeleteTextLinesButtonElem.style.display = 'none';
   contextMenuHighlightButtonElem.style.display = 'none';
   contextMenuUnderlineButtonElem.style.display = 'none';
@@ -1325,9 +1336,10 @@ export const contextMenuFunc = (viewer, event) => {
       return;
     }
     const pointerRelative = viewer.clientToContent(event.clientX, event.clientY);
+    const fillItemTarget = !viewer.state.layoutMode ? fillItemFromTarget(event.target) : null;
     let targetObj = eventTargetObj(event);
     // Fill bands and markup bars are pointer-transparent, so a right-click over one lands on no word element.
-    if (!viewer.state.layoutMode && !(targetObj instanceof UiOcrWord && (targetObj.highlightColor || targetObj.markupType))) {
+    if (!viewer.state.layoutMode && !fillItemTarget && !(targetObj instanceof UiOcrWord && (targetObj.highlightColor || targetObj.markupType))) {
       if (viewer.textSel) {
         // Painted bands stop at the glyphs, so hit-testing them would leave the leading between two rows of one highlight untargetable.
         targetObj = viewer.textSel.hitTestHighlight(event.clientX, event.clientY)?.kw ?? targetObj;
@@ -1368,6 +1380,7 @@ export const contextMenuFunc = (viewer, event) => {
       && !!viewer._editTextSelectedLines && viewer._editTextSelectedLines().length > 0;
     redactTarget = !viewer.state.layoutMode ? hitTestRedaction(viewer, event.clientX, event.clientY) : null;
     const enableDeleteRedaction = !!redactTarget;
+    const enableDeleteFillItem = !!fillItemTarget;
 
     let enableSplitWord = false;
     let enableMergeWords = false;
@@ -1463,7 +1476,7 @@ export const contextMenuFunc = (viewer, event) => {
 
     if (!(enableMergeColumns || enableSplit || enableDeleteRegion || enableDeleteTable || enableCopyTableContents || enableMergeTables || enableSplitTable
       || enableSplitWord || enableMergeWords || enableDeleteWords || enableDeleteHighlight || enableCopyHighlight || enableHighlight || enableMarkup || enableComment || enableBookmark || enableCopy
-      || enableRedact || enableDeleteRedaction || enableDeleteTextLines)) return;
+      || enableRedact || enableDeleteRedaction || enableDeleteFillItem || enableDeleteTextLines)) return;
 
     // Not btn.textContent, which would wipe the icon slot.
     const setMenuLabel = (btn, text) => { /** @type {HTMLElement} */ (btn.querySelector('.scribe-cm-lbl')).textContent = text; };
@@ -1484,6 +1497,11 @@ export const contextMenuFunc = (viewer, event) => {
     }
     if (enableRedact) contextMenuRedactButtonElem.style.display = 'initial';
     if (enableDeleteRedaction) contextMenuDeleteRedactionButtonElem.style.display = 'initial';
+    if (enableDeleteFillItem) {
+      // The Delete row acts on the selection, not on the right-click target.
+      selectFillItem(viewer, fillItemTarget.n, fillItemTarget.row);
+      contextMenuDeleteFillItemButtonElem.style.display = 'initial';
+    }
     if (enableDeleteTextLines) contextMenuDeleteTextLinesButtonElem.style.display = 'initial';
     if (enableComment) {
       setMenuLabel(contextMenuCommentButtonElem, commentLabel);

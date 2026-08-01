@@ -1,6 +1,6 @@
 import {
   resolveArrayValue, parsePdfDate, resolveBoolValue, resolveNameValue, resolveNumValue, resolveIntValue,
-  resolveStringValue, parsePdfLiteralString,
+  resolveStringValue, parsePdfLiteralString, resolveDictValue, decodePdfString,
 } from './pdfPrimitives.js';
 import { resolveItemDest } from './parseOutline.js';
 
@@ -195,12 +195,31 @@ function resolveLinkUri(annotText, objCache) {
 }
 
 /**
- * Reads a page's /Annots and sorts each annotation into the highlight, free-text,
- * and standalone-text buckets the importer lifts into the editable model,
- * plus the refs of the remaining visible annotations that pass through unchanged on export.
+ * @typedef {Object} PdfWidgetRaw
+ * @property {number} objNum
+ * @property {number} rootRef - Topmost /Parent object number, or the widget itself when parentless.
+ * @property {number} valueRef - Object number where write-back places /V.
+ * @property {[number, number, number, number]} rect - /Rect in pts, bottom-left origin.
+ * @property {?string} ft - /FT, inherited.
+ * @property {string} name - Fully-qualified field name, or '(unnamed)' when no level declares /T.
+ * @property {?string} value - Decoded /V, with an unchecked /Btn (/Off) normalized to null.
+ * @property {boolean} signed
+ * @property {number} ff - Field flags (/Ff), inherited.
+ * @property {number} flags - Annotation flags (/F).
+ * @property {?number} maxLen - /MaxLen, inherited.
+ * @property {number} quadding - /Q text alignment, inherited.
+ * @property {?string} da - /DA default-appearance string, inherited.
+ * @property {?string} onState - Checkbox/radio on-state name from the widget's own /AP /N states.
+ * @property {?string[]} options - /Ch option display strings from /Opt, inherited.
+ */
+
+/**
+ * Sorts a page's /Annots into the buckets the importer lifts, plus the refs of the remaining visible annotations.
+ * Lifting a Widget into `widgets` does not remove it from `passthroughRefs`, so its source object still renders and survives export.
  * @param {import('./objectCache.js').ObjectCache} objCache
  * @param {string} pageObjText
- * @returns {{ highlights: PdfHighlightRaw[], freeTexts: PdfFreeTextRaw[], textAnnots: PdfTextAnnotRaw[], redacts: PdfRedactRaw[], links: PdfLinkRaw[], passthroughRefs: number[] }}
+ * @returns {{ highlights: PdfHighlightRaw[], freeTexts: PdfFreeTextRaw[], textAnnots: PdfTextAnnotRaw[],
+ *   redacts: PdfRedactRaw[], links: PdfLinkRaw[], widgets: PdfWidgetRaw[], passthroughRefs: number[] }}
  */
 export function extractPdfAnnotations(objCache, pageObjText) {
   /** @type {PdfHighlightRaw[]} */
@@ -213,6 +232,8 @@ export function extractPdfAnnotations(objCache, pageObjText) {
   const redacts = [];
   /** @type {PdfLinkRaw[]} */
   const links = [];
+  /** @type {PdfWidgetRaw[]} */
+  const widgets = [];
   /** @type {number[]} */
   const passthroughRefs = [];
 
@@ -231,7 +252,7 @@ export function extractPdfAnnotations(objCache, pageObjText) {
   }
   if (!annotRefs || annotRefs.length === 0) {
     return {
-      highlights, freeTexts, textAnnots, redacts, links, passthroughRefs,
+      highlights, freeTexts, textAnnots, redacts, links, widgets, passthroughRefs,
     };
   }
 
@@ -256,9 +277,137 @@ export function extractPdfAnnotations(objCache, pageObjText) {
         });
         continue;
       }
+      const flags = resolveIntValue(annotText, 'F', objCache, 0);
+
+      if (/\/Subtype\s*\/Widget\b/.test(annotText)) {
+        try {
+          const chainTexts = [annotText];
+          const chainRefs = [annotRef];
+          let cur = annotText;
+          let rootRef = annotRef;
+          const visitedParents = new Set([annotRef]);
+          for (let depth = 0; depth < 16; depth++) {
+            const pm = /\/Parent\s+(\d+)\s+\d+\s+R/.exec(cur);
+            if (!pm) break;
+            const parentNum = Number(pm[1]);
+            if (visitedParents.has(parentNum)) break;
+            visitedParents.add(parentNum);
+            const parentText = objCache.getObjectText(parentNum);
+            if (!parentText) break;
+            rootRef = parentNum;
+            chainTexts.push(parentText);
+            chainRefs.push(parentNum);
+            cur = parentText;
+          }
+
+          let ft = null;
+          for (const t of chainTexts) { if (/\/FT(?![A-Za-z0-9])/.test(t)) { ft = resolveNameValue(t, 'FT', objCache); break; } }
+          let ff = 0;
+          for (const t of chainTexts) { if (/\/Ff(?![A-Za-z0-9])/.test(t)) { ff = resolveIntValue(t, 'Ff', objCache, 0); break; } }
+          let maxLen = null;
+          for (const t of chainTexts) { if (/\/MaxLen(?![A-Za-z0-9])/.test(t)) { maxLen = resolveIntValue(t, 'MaxLen', objCache, 0) || null; break; } }
+          let quadding = 0;
+          for (const t of chainTexts) { if (/\/Q(?![A-Za-z0-9])/.test(t)) { quadding = resolveIntValue(t, 'Q', objCache, 0); break; } }
+          let da = null;
+          for (const t of chainTexts) { if (/\/DA(?![A-Za-z0-9])/.test(t)) { da = resolveStringValue(t, 'DA', objCache); break; } }
+          const nameParts = [];
+          // The fully-qualified field name is every level's own /T, root-to-leaf.
+          for (const t of chainTexts) { if (/\/T(?![A-Za-z0-9])/.test(t)) nameParts.push(resolveStringValue(t, 'T', objCache) || ''); }
+          const name = nameParts.length ? nameParts.reverse().join('.') : '(unnamed)';
+
+          const vLevelText = chainTexts.find((t) => /\/V(?![A-Za-z0-9])/.test(t)) || null;
+          let value = null;
+          let signed = false;
+          if (vLevelText) {
+            if (ft === 'Btn') {
+              value = resolveNameValue(vLevelText, 'V', objCache);
+            } else if (ft === 'Sig') {
+              signed = resolveDictValue(vLevelText, 'V', objCache) !== null;
+            } else {
+              value = resolveStringValue(vLevelText, 'V', objCache);
+              if (value == null && ft === 'Ch') {
+                const arr = resolveArrayValue(vLevelText, 'V', objCache);
+                if (arr != null) {
+                  const parts = [...arr.matchAll(/\((?:[^()\\]|\\.)*\)|<[0-9A-Fa-f\s]*>/g)].map((m) => decodePdfString(m[0]));
+                  if (parts.length > 0) value = parts.join('; ');
+                }
+              }
+            }
+            if (value && value.charCodeAt(0) === 0xfeff) value = value.slice(1);
+          }
+          if (ft === 'Btn' && value === 'Off') value = null;
+
+          // A /V written to the widget rather than the leaf /T node leaves the field itself unfilled.
+          let valueRef = annotRef;
+          const vIdx = chainTexts.findIndex((t) => /\/V(?![A-Za-z0-9])/.test(t));
+          if (vIdx >= 0) {
+            valueRef = chainRefs[vIdx];
+          } else {
+            const tIdx = chainTexts.findIndex((t) => /\/T(?![A-Za-z0-9])/.test(t));
+            if (tIdx >= 0) valueRef = chainRefs[tIdx];
+          }
+
+          let onState = null;
+          if (ft === 'Btn' && !(ff & 0x10000)) {
+            const apText = resolveDictValue(annotText, 'AP', objCache);
+            const nText = apText ? resolveDictValue(apText, 'N', objCache) : null;
+            // A /N carrying /BBox is a single appearance stream, so scanning it for state names would pick up its own dict keys.
+            if (nText && !/\/BBox(?![A-Za-z0-9])/.test(nText)) {
+              for (const m of nText.matchAll(/\/([^\s/<>[\]()]+)\s+\d+\s+\d+\s+R/g)) {
+                const state = m[1].replace(/#([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+                if (state !== 'Off') { onState = state; break; }
+              }
+            }
+            if (onState == null && value != null) onState = value;
+          }
+
+          let options = null;
+          if (ft === 'Ch') {
+            const optLevel = chainTexts.find((t) => /\/Opt(?![A-Za-z0-9])/.test(t));
+            const optArr = optLevel ? resolveArrayValue(optLevel, 'Opt', objCache) : null;
+            if (optArr != null) {
+              options = [];
+              // The last string of an [export, display] pair is the user-visible text.
+              for (const m of optArr.matchAll(/\[((?:\((?:[^()\\]|\\.)*\)|<[0-9A-Fa-f\s]*>|[^\]])*)\]|\((?:[^()\\]|\\.)*\)|<[0-9A-Fa-f\s]*>/g)) {
+                let entry = m[0];
+                if (m[1] !== undefined) {
+                  const strs = [...m[1].matchAll(/\((?:[^()\\]|\\.)*\)|<[0-9A-Fa-f\s]*>/g)];
+                  if (strs.length === 0) continue;
+                  entry = strs[strs.length - 1][0];
+                }
+                let s = decodePdfString(entry);
+                if (s && s.charCodeAt(0) === 0xfeff) s = s.slice(1);
+                options.push(s);
+              }
+            }
+          }
+
+          const wRectStr = resolveArrayValue(annotText, 'Rect', objCache);
+          const wRectNums = wRectStr ? wRectStr.split(/\s+/).map(Number) : [];
+          if (wRectNums.length >= 4 && !wRectNums.slice(0, 4).some(Number.isNaN)) {
+            widgets.push({
+              objNum: annotRef,
+              rootRef,
+              valueRef,
+              rect: [wRectNums[0], wRectNums[1], wRectNums[2], wRectNums[3]],
+              ft,
+              name,
+              value,
+              signed,
+              ff,
+              flags,
+              maxLen,
+              quadding,
+              da,
+              onState,
+              options,
+            });
+          }
+        } catch { /* skip this malformed widget */ }
+      }
+
       // Of these not-lifted annotations, Invisible/Hidden/NoView are dropped entirely.
       // Every other visible annotation passes through on export unchanged, except lifted /Links, which export drops and re-emits from the document's annotations.
-      const flags = resolveIntValue(annotText, 'F', objCache, 0);
       if (!(flags & 1 || flags & 2 || flags & 32)) {
         passthroughRefs.push(annotRef);
         // Links stay in passthroughRefs as well, so the renderer still paints their source appearance streams.
@@ -378,7 +527,7 @@ export function extractPdfAnnotations(objCache, pageObjText) {
   }
 
   return {
-    highlights, freeTexts, textAnnots, redacts, links, passthroughRefs,
+    highlights, freeTexts, textAnnots, redacts, links, widgets, passthroughRefs,
   };
 }
 

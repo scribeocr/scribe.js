@@ -2,6 +2,7 @@
 // Renders scribe.doc.outline as a navigable tree: clicking a bookmark jumps to its destination.
 // Rows are text-first, like a book's table of contents: hierarchy comes from indentation and type (top-level entries semibold, title-only parents as section labels), not per-row icons.
 import { makeIconButton } from './toolbar.js';
+import { nestHeadingOutline } from '../../../js/objects/outlineObjects.js';
 
 // A bookmark-ribbon glyph for the toolbar toggle.
 const BOOKMARK_SVG = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="currentColor"><path d="M4 2a1 1 0 0 0-1 1v11l5-3 5 3V3a1 1 0 0 0-1-1H4z"/></svg>';
@@ -18,6 +19,71 @@ const DOTS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 // A touch press-drag scrolls the list, so a touch drag arms only after a still press this long.
 const LIFT_HOLD_MS = 250;
 const INDENT_PX = 21;
+
+/** @typedef {import('../../../js/objects/outlineObjects.js').OutlineNode} OutlineNode */
+
+/**
+ * A press on a row that may still become a drag: a mouse press promotes once the pointer moves, a touch press once it holds still.
+ * @typedef {Object} BookmarkDragPress
+ * @property {number} id - The pressed node's id.
+ * @property {OutlineNode} node
+ * @property {HTMLElement} row - The pressed row, which the drag lifts from.
+ * @property {number} x - Pointer clientX at the press.
+ * @property {number} y - Pointer clientY at the press.
+ * @property {?ReturnType<typeof setTimeout>} holdT - Hold-to-lift timer, null on a mouse press and once the hold has fired.
+ * @property {boolean} touch - Whether the press came from touch.
+ */
+
+/**
+ * One visible row a drag can drop against, in the tree's pre-drag layout coordinates.
+ * @typedef {Object} BookmarkDragEntry
+ * @property {OutlineNode} node
+ * @property {number} depth
+ * @property {Array<OutlineNode>} chain - `chain[k]` is the ancestor at depth k.
+ * @property {HTMLElement} elem - The rendered row.
+ * @property {number} top
+ * @property {number} bottom
+ */
+
+/**
+ * Where a drag would land: a gap between visible rows, at the depth the pointer's x has chosen.
+ * @typedef {Object} BookmarkDropTarget
+ * @property {?OutlineNode} parent - The node the row would nest under, null at top level.
+ * @property {number} atIndex - Insertion index among the parent's children, with the dragged node removed.
+ * @property {number} depth - The chosen depth, clamped to the legal range.
+ * @property {number} minDepth - Shallowest depth legal for this gap.
+ * @property {number} maxDepth - Deepest depth legal for this gap.
+ * @property {number} lineTop - The gap's y in the pre-drag layout.
+ */
+
+/**
+ * A live row drag: the lifted card, the slot it would settle into, and the pre-drag geometry the hit tests run against.
+ * @typedef {Object} BookmarkDrag
+ * @property {number} id - The dragged node's id.
+ * @property {OutlineNode} node
+ * @property {Array<BookmarkDragEntry>} entries - Every visible row except the dragged one and its subtree.
+ * @property {?BookmarkDropTarget} drop - Where the drag would land, null until the first pointer move.
+ * @property {HTMLElement} srcRow - The row the drag lifted from.
+ * @property {?OutlineNode} adoptNode - The node currently marked as the adopting parent.
+ * @property {?HTMLElement} adoptElem - That node's row.
+ * @property {number} lastX - Last pointer clientX, so edge auto-scroll can re-derive the drop under a still pointer.
+ * @property {number} lastY
+ * @property {number} scrollRaf - Edge auto-scroll animation-frame handle.
+ * @property {HTMLElement} srcWrapper - The source row's wrapper, which spans its subtree.
+ * @property {number} srcTop - The wrapper's offsetTop before the lift.
+ * @property {number} srcH - The wrapper's height, the span the lift removes.
+ * @property {number} srcRowH - The row's own height, the gap the card opens.
+ * @property {number} grabDY - Offset of the grab point within the row.
+ * @property {number} pressX - Pointer clientX at the press, the origin for depth travel.
+ * @property {number} ownDepth - The dragged row's depth at the press.
+ * @property {HTMLElement} cloneElem - The row copy inside the card.
+ * @property {number} treeLeft - The tree's left edge, relative to the panel.
+ * @property {number} treeW - The tree's width.
+ * @property {HTMLElement} ghostElem - The floating card tracking the pointer.
+ * @property {HTMLElement} railsElem - Container for the legal-depth rails.
+ * @property {string} railsKey - The depth range the rails were last built for.
+ * @property {HTMLElement} plateElem - Marker for the slot the card will settle into.
+ */
 
 /**
  * Create the bookmarks (document outline) side panel.
@@ -87,8 +153,8 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
 
   /**
    * Walk the outline for the node with `id`, returning its location among its siblings.
-   * @param {string} id
-   * @returns {{ node: Object, parentId: (string|null), index: number, siblings: Array<Object>, grandparentId: (string|null) }|null}
+   * @param {?number} id - Null for the parent of a top-level node, which has no entry to find.
+   * @returns {{ node: OutlineNode, parentId: ?number, index: number, siblings: Array<OutlineNode>, grandparentId: ?number }|null}
    */
   function context(id) {
     const search = (nodes, parentId, grandparentId) => {
@@ -396,7 +462,7 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
 
   /**
    * Detected content headings usable as bookmarks, in reading order.
-   * @returns {Array<{title: string, pageIndex: number, yFrac: ?number}>}
+   * @returns {Array<{title: string, pageIndex: number, yFrac: ?number, level: ?number}>}
    */
   function availableHeadings() {
     if (!scribe.doc || !scribe.doc.inputData || scribe.doc.inputData.pdfType !== 'text') return [];
@@ -411,7 +477,9 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
         if (!text || text.length > 150) continue;
         const pageHeight = page.dims && page.dims.height;
         const yFrac = pageHeight && par.bbox ? Math.max(0, Math.min(1, par.bbox.top / pageHeight)) : null;
-        out.push({ title: text, pageIndex: n, yFrac });
+        out.push({
+          title: text, pageIndex: n, yFrac, level: par.headingLevel ?? null,
+        });
       }
     }
     return out;
@@ -431,18 +499,12 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
   function generateFromHeadings() {
     const headings = availableHeadings();
     if (!headings.length) return;
-    const nodes = headings.map((h) => ({
-      title: h.title,
-      dest: { pageIndex: h.pageIndex, view: ['Fit'], yFrac: h.yFrac ?? undefined },
-      action: null,
-      open: true,
-      children: [],
-    }));
+    const nodes = nestHeadingOutline(headings);
     const prev = scribe.doc.replaceOutline(nodes);
     afterEdit();
     if (scribe._onDestructiveAction) {
       scribe._onDestructiveAction(
-        `Added ${nodes.length} bookmark${nodes.length === 1 ? '' : 's'} from document headings.`,
+        `Added ${headings.length} bookmark${headings.length === 1 ? '' : 's'} from document headings.`,
         () => { scribe.doc.replaceOutline(prev); afterEdit(); },
       );
     }
@@ -508,7 +570,9 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
   });
 
   // Drag a row to move it: vertical position picks the slot, horizontal position picks the nesting depth.
+  /** @type {?BookmarkDragPress} */
   let dragPress = null;
+  /** @type {?BookmarkDrag} */
   let drag = null;
   let dragClickGuard = false;
   const lastTap = { id: null, t: 0 };
@@ -523,15 +587,15 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
   /**
    * The outline flattened to its visible rows (open branches only), excluding `excludeId` and its subtree.
    * @param {number} excludeId
-   * @returns {Array<{node: Object, depth: number, chain: Array<Object>, elem: HTMLElement, top: number, bottom: number}>}
-   *   Each visible node with its depth, ancestor chain (`chain[k]` = the ancestor at depth k), and rendered row.
+   * @returns {Array<BookmarkDragEntry>}
    */
   function visibleEntries(excludeId) {
+    /** @type {Array<BookmarkDragEntry>} */
     const out = [];
     const walk = (nodes, depth, chain) => {
       for (const node of nodes) {
         if (node.id === excludeId) continue;
-        const elem = treeElem.querySelector(`.scribe-bm-row[data-id="${node.id}"]`);
+        const elem = /** @type {?HTMLElement} */ (treeElem.querySelector(`.scribe-bm-row[data-id="${node.id}"]`));
         if (elem) {
           // offsetTop, not a live rect: the drag's gap-opening transforms displace the rows, but hit-testing must run against the pre-drag layout.
           out.push({
@@ -548,19 +612,22 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
   /**
    * Resolve the pointer to a drop target: a gap between visible rows, at the depth chosen by x.
    * `atIndex` counts siblings with the dragged node already removed, matching how `moveBookmark` splices out before inserting.
+   * @param {BookmarkDrag} dragState - The live drag.
    * @param {{clientX: number, clientY: number}} e - Pointer position (a PointerEvent, or plain coordinates at the hold-lift).
-   * @returns {{parent: ?Object, atIndex: number, depth: number, minDepth: number, maxDepth: number, lineTop: number}}
+   * @returns {BookmarkDropTarget}
    */
-  function computeDrop(e) {
-    const { entries } = drag;
+  function computeDrop(dragState, e) {
+    const {
+      id, entries, srcTop, srcH, ownDepth, pressX,
+    } = dragState;
     const treeRect = treeElem.getBoundingClientRect();
     const yContent = e.clientY - treeRect.top + treeElem.scrollTop;
     let gap = 0;
     // Hit-test in collapsed coordinates, with the lifted span removed, so a press anywhere inside that span maps to the row's own slot.
-    const cY = yContent < drag.srcTop ? yContent
-      : (yContent < drag.srcTop + drag.srcH ? drag.srcTop : yContent - drag.srcH);
+    const cY = yContent < srcTop ? yContent
+      : (yContent < srcTop + srcH ? srcTop : yContent - srcH);
     for (const entry of entries) {
-      const cTop = entry.top > drag.srcTop ? entry.top - drag.srcH : entry.top;
+      const cTop = entry.top > srcTop ? entry.top - srcH : entry.top;
       if (cTop + (entry.bottom - entry.top) / 2 < cY) gap += 1; else break;
     }
     const above = gap > 0 ? entries[gap - 1] : null;
@@ -570,9 +637,10 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
     const maxDepth = above ? above.depth + 1 : 0;
     // Depth is relative to the press point, one level per indent unit of travel.
     // An absolute mapping would read the press x as a deep indent and nest a lift released in place.
-    const raw = drag.ownDepth + Math.round((e.clientX - drag.pressX) / INDENT_PX);
+    const raw = ownDepth + Math.round((e.clientX - pressX) / INDENT_PX);
     const depth = Math.max(minDepth, Math.min(raw, maxDepth));
 
+    /** @type {?OutlineNode} */
     let parent = null;
     let atIndex = 0;
     if (above) {
@@ -583,7 +651,7 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
         parent = depth === 0 ? null : above.chain[depth - 1];
         const siblings = parent ? parent.children : outline();
         for (const sibling of siblings) {
-          if (sibling.id === drag.id) continue;
+          if (sibling.id === id) continue;
           atIndex += 1;
           if (sibling === after) break;
         }
@@ -595,11 +663,16 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
     };
   }
 
-  function startDrag() {
+  /**
+   * Lift the pressed row: build the floating card, depth rails, and drop plate, and capture the pre-drag geometry the hit tests run against.
+   * @param {BookmarkDragPress} press
+   * @returns {BookmarkDrag}
+   */
+  function startDrag(press) {
     const {
       id, node, row, x, y,
-    } = dragPress;
-    drag = {
+    } = press;
+    const dragState = /** @type {BookmarkDrag} */ ({
       id,
       node,
       entries: visibleEntries(id),
@@ -609,20 +682,20 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
       adoptElem: null,
       lastX: x,
       lastY: y,
-    };
+    });
     closeMenu();
     panelElem.classList.add('scribe-bm-dragging');
     // Pointermove stops firing while the finger parks in the edge zone, so auto-scroll runs per frame instead.
-    drag.scrollRaf = requestAnimationFrame(dragScrollTick);
+    dragState.scrollRaf = requestAnimationFrame(dragScrollTick);
     const wrapper = /** @type {HTMLElement} */ (row.parentElement);
-    drag.srcWrapper = wrapper;
-    drag.srcTop = wrapper.offsetTop;
-    drag.srcH = wrapper.offsetHeight;
-    drag.srcRowH = row.offsetHeight;
-    drag.grabDY = y - row.getBoundingClientRect().top;
-    drag.pressX = x;
+    dragState.srcWrapper = wrapper;
+    dragState.srcTop = wrapper.offsetTop;
+    dragState.srcH = wrapper.offsetHeight;
+    dragState.srcRowH = row.offsetHeight;
+    dragState.grabDY = y - row.getBoundingClientRect().top;
+    dragState.pressX = x;
     // Inverse of renderNode's indent (8 + depth * INDENT_PX).
-    drag.ownDepth = Math.round((parseFloat(row.style.paddingLeft) - 8) / INDENT_PX);
+    dragState.ownDepth = Math.round((parseFloat(row.style.paddingLeft) - 8) / INDENT_PX);
     const lift = document.createElement('div');
     lift.className = 'scribe-bm-lift';
     const clone = /** @type {HTMLElement} */ (row.cloneNode(true));
@@ -633,7 +706,7 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
     const cloneDots = clone.querySelector('.scribe-bm-dots');
     if (cloneDots) cloneDots.remove();
     lift.appendChild(clone);
-    drag.cloneElem = clone;
+    dragState.cloneElem = clone;
     const carried = allIds([node]).length;
     if (carried > 1) {
       const badge = document.createElement('span');
@@ -643,31 +716,32 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
     }
     const treeRect = treeElem.getBoundingClientRect();
     const panelRect = panelElem.getBoundingClientRect();
-    drag.treeLeft = treeRect.left - panelRect.left;
-    drag.treeW = treeRect.width;
+    dragState.treeLeft = treeRect.left - panelRect.left;
+    dragState.treeW = treeRect.width;
     // Sized for the deepest reachable level and fixed for the whole drag, so changing depth translates the card instead of resizing it.
-    const deepest = drag.entries.reduce((m, entry) => Math.max(m, entry.depth + 1), 0);
-    lift.style.width = `${drag.treeW - 28 - deepest * INDENT_PX}px`;
+    const deepest = dragState.entries.reduce((m, entry) => Math.max(m, entry.depth + 1), 0);
+    lift.style.width = `${dragState.treeW - 28 - deepest * INDENT_PX}px`;
     panelElem.appendChild(lift);
-    drag.ghostElem = lift;
+    dragState.ghostElem = lift;
     // Absolute children of a scroll container only span its viewport, so the height is set to the full scroll extent explicitly.
     const rails = document.createElement('div');
     rails.className = 'scribe-bm-rails';
     rails.style.height = `${treeElem.scrollHeight}px`;
     treeElem.appendChild(rails);
-    drag.railsElem = rails;
-    drag.railsKey = '';
+    dragState.railsElem = rails;
+    dragState.railsKey = '';
     // The plate marks the slot the card will settle into.
     const plate = document.createElement('div');
     plate.className = 'scribe-bm-plate';
     plate.style.width = lift.style.width;
-    plate.style.height = `${drag.srcRowH}px`;
-    plate.style.top = `${drag.srcTop}px`;
-    plate.style.left = `${22 + drag.ownDepth * INDENT_PX}px`;
+    plate.style.height = `${dragState.srcRowH}px`;
+    plate.style.top = `${dragState.srcTop}px`;
+    plate.style.left = `${22 + dragState.ownDepth * INDENT_PX}px`;
     treeElem.appendChild(plate);
-    drag.plateElem = plate;
+    dragState.plateElem = plate;
     wrapper.classList.add('scribe-bm-lift-src');
     treeElem.classList.add('scribe-bm-sliding');
+    return dragState;
   }
 
   /**
@@ -676,8 +750,9 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
    * @param {number} y - Pointer clientY.
    */
   function updateDragVisuals(x, y) {
+    if (!drag) return;
     const panelRect = panelElem.getBoundingClientRect();
-    drag.drop = computeDrop({ clientX: x, clientY: y });
+    drag.drop = computeDrop(drag, { clientX: x, clientY: y });
     drag.ghostElem.style.top = `${y - panelRect.top - drag.grabDY}px`;
     // The 22px base puts the card edge, the rails, and the plate 6px left of each depth's text.
     const desired = drag.treeLeft + 22 + drag.ownDepth * INDENT_PX + (x - drag.pressX);
@@ -736,7 +811,7 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
         return;
       }
       if (Math.abs(e.clientX - dragPress.x) + Math.abs(e.clientY - dragPress.y) < 5) return;
-      startDrag();
+      drag = startDrag(dragPress);
     }
     e.preventDefault();
     drag.lastX = e.clientX;
@@ -873,16 +948,16 @@ export function createBookmarksPanel(scribe, { onNavigate, onResize, onRenameFoc
     if (!editing() || e.button !== 0) return;
     if (e.target instanceof Element && e.target.closest('.scribe-bm-twisty, .scribe-bm-rename, .scribe-bm-dots')) return;
     dragPress = {
-      id: node.id, node, row, x: e.clientX, y: e.clientY, holdT: 0, touch: e.pointerType === 'touch',
+      id: node.id, node, row, x: e.clientX, y: e.clientY, holdT: null, touch: e.pointerType === 'touch',
     };
     if (dragPress.touch) {
       const { pointerId } = e;
       dragPress.holdT = setTimeout(() => {
         if (!dragPress || drag) return;
-        dragPress.holdT = 0;
+        dragPress.holdT = null;
         // Capturing on the tree keeps the browser routing the held touch to us.
         try { treeElem.setPointerCapture(pointerId); } catch { /* pointer already released or untrusted */ }
-        startDrag();
+        drag = startDrag(dragPress);
         updateDragVisuals(dragPress.x, dragPress.y);
       }, LIFT_HOLD_MS);
     }

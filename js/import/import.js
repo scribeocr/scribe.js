@@ -1,5 +1,6 @@
 import { opt } from '../containers/app.js';
 import { scribeDocDefaults } from '../containers/scribeDocDefaults.js';
+import { markFillTextRefs } from '../fillSign.js';
 import { GlobalFonts } from '../containers/fontContainer.js';
 import {
   enableOpt,
@@ -185,6 +186,7 @@ async function restoreSessionFromFile(doc, scribeFile) {
   }
   if (scribeRestoreObj.session) {
     if (scribeRestoreObj.session.textEdits) doc.textEdits.pages = scribeRestoreObj.session.textEdits;
+    if (scribeRestoreObj.session.fillText) markFillTextRefs(doc, scribeRestoreObj.session.fillText);
     if (scribeRestoreObj.session.nativeText) {
       for (let i = 0; i < scribeRestoreObj.session.nativeText.length; i++) {
         const nt = scribeRestoreObj.session.nativeText[i];

@@ -67,6 +67,11 @@ export class ScribeViewerOpts {
      * When off, notes still import into the model and round-trip on export.
      */
     this.enableComments = false;
+    /**
+     * Whether this viewer draws the form-field overlay.
+     * When off, fields still import into the document's annotations and round-trip on export.
+     */
+    this.enableForms = false;
   }
 }
 

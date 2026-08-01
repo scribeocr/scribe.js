@@ -371,6 +371,7 @@ export function handleKeyboardEvent(viewer, event) {
   }
 
   if (event.key === 'Tab') {
+    if (activeElem && activeElem.closest('.scribe-field')) return;
     if (event.shiftKey) {
       selectPrevWord(_viewer);
     } else {

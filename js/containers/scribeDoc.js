@@ -9,6 +9,10 @@ import {
   addRedactions as addRedactionsImpl, removeRedactions as removeRedactionsImpl,
   addLinks as addLinksImpl, removeLinks as removeLinksImpl,
 } from '../addHighlights.js';
+import { setFormValue as setFormValueImpl } from '../formFields.js';
+import {
+  addInk as addInkImpl, addStamp as addStampImpl, addFillText as addFillTextImpl, syncFillText as syncFillTextImpl,
+} from '../fillSign.js';
 import { deleteTextLines as deleteTextLinesImpl, replaceTextLine as replaceTextLineImpl, TextEditHistory } from '../textEdits.js';
 import { renderPageStatic as renderPageStaticImpl } from '../debug.js';
 import { exportData as exportDataImpl, download as downloadImpl } from '../export/export.js';
@@ -953,6 +957,58 @@ export class ScribeDoc {
    */
   addFreeText(annotations) {
     return addFreeTextImpl(this, annotations);
+  }
+
+  /**
+   * Set a form field's value by its fully-qualified name.
+   * Regenerates the field's lifted words in the page text.
+   * @param {Parameters<typeof setFormValueImpl>[1]} name
+   * @param {Parameters<typeof setFormValueImpl>[2]} value
+   * @returns {ReturnType<typeof setFormValueImpl>}
+   */
+  setFormValue(name, value) {
+    return setFormValueImpl(this, name, value);
+  }
+
+  /**
+   * Place a drawn fill & sign item on page n.
+   * @param {Parameters<typeof addInkImpl>[1]} n
+   * @param {Parameters<typeof addInkImpl>[2]} item
+   * @returns {ReturnType<typeof addInkImpl>}
+   */
+  addInk(n, item) {
+    return addInkImpl(this, n, item);
+  }
+
+  /**
+   * Place an image fill & sign item on page n.
+   * @param {Parameters<typeof addStampImpl>[1]} n
+   * @param {Parameters<typeof addStampImpl>[2]} item
+   * @returns {ReturnType<typeof addStampImpl>}
+   */
+  addStamp(n, item) {
+    return addStampImpl(this, n, item);
+  }
+
+  /**
+   * Place a typed-text fill & sign item on page n.
+   * PDF export flattens it into page content instead of writing a FreeText annotation.
+   * @param {Parameters<typeof addFillTextImpl>[1]} n
+   * @param {Parameters<typeof addFillTextImpl>[2]} item
+   * @returns {ReturnType<typeof addFillTextImpl>}
+   */
+  addFillText(n, item) {
+    return addFillTextImpl(this, n, item);
+  }
+
+  /**
+   * Regenerate a fill-text row's bbox and lifted words after its contents or position change.
+   * @param {Parameters<typeof syncFillTextImpl>[1]} n
+   * @param {Parameters<typeof syncFillTextImpl>[2]} row
+   * @param {Parameters<typeof syncFillTextImpl>[3]} [prevBbox]
+   */
+  syncFillText(n, row, prevBbox) {
+    syncFillTextImpl(this, n, row, prevBbox);
   }
 
   /**

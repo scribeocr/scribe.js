@@ -55,8 +55,15 @@ export async function extractInternalPDFText(doc, options = {}) {
 
   // Restored .scribe annotations may embed page-edit remaps and user deletions a fresh lift cannot reflect, so re-merging would duplicate kept entries and resurrect deleted ones.
   if (!doc.annotations.restored) {
+    // The same widget object can be listed on several pages, but it is one field.
+    const seenFieldRefs = new Set();
     for (let i = 0; i < pageCount; i++) {
-      const parsed = pageResults[i].annotations || [];
+      const parsed = (pageResults[i].annotations || []).filter((a) => {
+        if (a.type !== 'field' || a.srcRef == null) return true;
+        if (seenFieldRefs.has(a.srcRef)) return false;
+        seenFieldRefs.add(a.srcRef);
+        return true;
+      });
       const existing = doc.annotations.pages[i];
       // Merge rather than overwrite: the user may have added annotations (e.g. a highlight) while the deferred extraction was in flight.
       // Parsed annotations come first, matching document order.

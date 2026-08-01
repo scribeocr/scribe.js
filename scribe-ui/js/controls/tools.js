@@ -8,6 +8,7 @@ import {
 import { focusNoteEditor, removeNote, setNoteComment } from '../viewerNotes.js';
 import { redactWords, redactRegion } from '../viewerRedactions.js';
 import { createLineEditor } from '../editTextLineEditor.js';
+import { createFillSignPalette, ICON_FILLSIGN } from '../viewerFillSign.js';
 import { nativeTextForPage } from '../../../js/textEdits.js';
 import { filesFromDropEvent } from '../dragAndDrop.js';
 
@@ -2022,4 +2023,44 @@ export function createEditTextTool(scribe) {
   }
 
   return { toolbarElem, installBehaviors };
+}
+
+/**
+ * Toolbar control that toggles the Fill & Sign palette for placing checks, crosses, and signatures.
+ * @param {Object} app - The owning ScribePDFViewer.
+ * @returns {{ toolbarElem: HTMLElement, installBehaviors: () => (() => void), isOpen: () => boolean, close: () => void }}
+ */
+export function createFillSignTool(app) {
+  const toolbarElem = makeIconButton('Fill & Sign', ICON_FILLSIGN);
+  /** @type {?ReturnType<typeof createFillSignPalette>} */
+  let palette = null;
+  let open = false;
+  const setOpen = (next) => {
+    open = next;
+    toolbarElem.classList.toggle('active', open);
+    if (open) {
+      if (!palette) {
+        palette = createFillSignPalette(app);
+        app.pdfViewerElem.appendChild(palette.elem);
+      }
+      palette.show();
+    } else if (palette) {
+      palette.hide();
+    }
+  };
+  toolbarElem.addEventListener('click', () => {
+    if (toolbarElem.classList.contains('disabled')) return;
+    setOpen(!open);
+  });
+
+  function installBehaviors() {
+    return () => {
+      if (palette) palette.destroy();
+      palette = null;
+    };
+  }
+
+  return {
+    toolbarElem, installBehaviors, isOpen: () => open, close: () => setOpen(false),
+  };
 }

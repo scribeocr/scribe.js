@@ -6,6 +6,8 @@ import { ScribeViewer } from '../viewer.js';
 import '../js/selection/customSelectionEngine.js';
 import '../js/selection/domSelectionEngine.js';
 import { applyHighlight } from '../js/viewerHighlights.js';
+import { getHighlightFields, setHighlightFields, docHasFormFields } from '../js/viewerFormFields.js';
+import { signIntoField } from '../js/viewerFillSign.js';
 import { destroyContextMenu } from '../js/viewerCanvasInteraction.js';
 import {
   addControlStyles, makeToolbarShell, makeSeparator, makeIconButton, createPageNav, createZoomControls, createRotateControls, createPrintControls, createOpenControls, createTabStrip, createSearchBar,
@@ -18,6 +20,7 @@ import { createBookmarksPanel } from '../js/controls/bookmarksPanel.js';
 import { createCommentsPanel } from '../js/controls/commentsPanel.js';
 import {
   createHighlightTool, createDropZone, openDocumentFromFile, createRedactTool, createEditTextTool,
+  createFillSignTool,
 } from '../js/controls/tools.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
 import { IOS_WEBKIT } from '../js/viewerImageCache.js';
@@ -79,6 +82,7 @@ const ICON_COMBINE = editIcon('<path d="M4 8h9v9H4zM11 5h9v9"/>');
 const ICON_SPLIT = editIcon('<circle cx="6" cy="7" r="2.1"/><circle cx="6" cy="17" r="2.1"/><path d="M8 8l11 8M8 16L19 8"/>');
 /** Crescent moon for the app menu's Dark mode toggle. */
 const ICON_DARK = editIcon('<path d="M20.5 13.5A8 8 0 0 1 10.5 3.5 7 7 0 1 0 20.5 13.5Z"/>');
+const ICON_FIELDS = editIcon('<rect x="3.5" y="7.5" width="17" height="9" rx="1.2"/><path d="M7 12h5"/>');
 /** Scan corners around a letterform, for the touch-only Recognize text menu row. */
 // eslint-disable-next-line max-len
 const ICON_RECOGNIZE = editIcon('<path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16"/><path d="M9 15V9.8A0.8 0.8 0 0 1 9.8 9h4.4a0.8 0.8 0 0 1 0.8 0.8V15M9 12.6h6"/>');
@@ -202,6 +206,7 @@ class ScribePDFViewer {
     this.scribe = options.scribe || new ScribeViewer();
     this.scribe.opt.keyboardScope = keyboardScope;
     this.scribe.opt.enableComments = comments;
+    this.scribe.opt.enableForms = true;
     if (edit) {
       this.scribe.opt.enablePageEditing = true;
       this.scribe.opt.enableRecognition = true;
@@ -844,6 +849,21 @@ class ScribePDFViewer {
         // The boot-time control sync runs before this tool exists, so apply its gating now.
         this._syncDocGatedControls();
       }
+
+      this._fillSignTool = createFillSignTool(this);
+      if (this._toolbarButtonsElem) this._toolbarButtonsElem.appendChild(this._fillSignTool.toolbarElem);
+      this._teardownCallbacks.push(this._fillSignTool.installBehaviors());
+      const exclusiveToolBtns = [this._redactTool?.toolbarElem, this._editTextTool?.toolbarElem, this._fillSignTool.toolbarElem]
+        .filter((b) => !!b);
+      for (const btn of exclusiveToolBtns) {
+        btn.addEventListener('click', () => {
+          if (!btn.classList.contains('active')) return;
+          for (const other of exclusiveToolBtns) {
+            if (other !== btn && other.classList.contains('active')) other.click();
+          }
+        });
+      }
+      this.scribe.onSignatureFieldClick = (n, row) => signIntoField(this, n, row);
     }
   }
 
@@ -2649,6 +2669,7 @@ class ScribePDFViewer {
   /** Disable the controls that need a document while none is loaded. */
   _syncDocGatedControls() {
     const disabled = !this.doc;
+    if (disabled && this._fillSignTool?.isOpen()) this._fillSignTool.close();
     for (const el of [
       this._searchBar?.searchElem,
       this._thumbnailPanel?.toggleElem,
@@ -2656,11 +2677,20 @@ class ScribePDFViewer {
       this._commentsPanel?.toggleElem,
       this._dockPagesBtn,
       this._sheetPanelsBtn,
+      this._fillSignTool?.toolbarElem,
     ]) {
       if (!el) continue;
       el.classList.toggle('disabled', disabled);
       el.ariaDisabled = disabled ? 'true' : 'false';
       el.tabIndex = disabled ? -1 : 0;
+    }
+
+    const fieldsItem = this._fieldsToggleItem;
+    if (fieldsItem) {
+      const hasFields = !disabled && docHasFormFields(this.doc);
+      fieldsItem.classList.toggle('disabled', !hasFields);
+      fieldsItem.ariaDisabled = !hasFields ? 'true' : 'false';
+      fieldsItem.tabIndex = !hasFields ? -1 : 0;
     }
 
     // Deferred text extraction can add visible native text after load, so the load path re-syncs on textReady.
@@ -2935,6 +2965,11 @@ class ScribePDFViewer {
       // The switch reflects the theme in effect each time the menu opens.
       appMenu.addSeparator();
       appMenu.addToggle('Dark mode', ICON_DARK, () => this._effectiveTheme() === 'dark', () => this._toggleDarkMode());
+      const fieldsToggle = appMenu.addToggle('Highlight fields', ICON_FIELDS, () => getHighlightFields(), () => {
+        if (this._fieldsToggleItem?.classList.contains('disabled')) return;
+        setHighlightFields(this.scribe, !getHighlightFields());
+      });
+      this._fieldsToggleItem = fieldsToggle.item;
     }
 
     const rightGroup = document.createElement('span');

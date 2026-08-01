@@ -65,10 +65,9 @@ export async function filesFromDropEvent(event) {
     .map((x) => x.value);
 }
 
-// Get all the entries (files or sub-directories) in a directory
-// by calling readEntries until it returns empty array
 async function readAllDirectoryEntries(directoryReader) {
   const entries = [];
+  // Each readEntries call returns only a batch of the directory's entries.
   let readEntries = await readEntriesPromise(directoryReader);
   while (readEntries.length > 0) {
     entries.push(...readEntries);
@@ -77,9 +76,6 @@ async function readAllDirectoryEntries(directoryReader) {
   return entries;
 }
 
-// Wrap readEntries in a promise to make working with readEntries easier
-// readEntries will return only some of the entries in a directory
-// e.g. Chrome returns at most 100 entries at a time
 async function readEntriesPromise(directoryReader) {
   try {
     return await new Promise((resolve, reject) => {

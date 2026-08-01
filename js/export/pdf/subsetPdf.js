@@ -10,11 +10,13 @@ import { ObjectCache } from '../../pdf/objectCache.js';
 import { createEmbeddedFontType0 } from './writePdfFonts.js';
 import { buildOutlineObjects } from './writeOutline.js';
 import { ocrPageToPDFStream } from './writePdfText.js';
+import { isFillTextRow, isFillTextLine } from '../../fillSign.js';
 import {
   buildHighlightAnnotObjects, buildFreeTextAnnotObjects, buildShapeAnnotObjects, buildTextAnnotObjects, buildLinkAnnotObjects, consolidateAnnotations,
 } from './writePdfAnnots.js';
 import { SHAPE_ANNOT_TYPES, TEXT_MARKUP_ANNOT_TYPES } from '../../addHighlights.js';
 import { encodeStreamObject } from './writePdfStreams.js';
+import { buildFillItemOps } from './writeFillSignItems.js';
 import {
   scrubPageDictText, scrubReferencedObject, catalogKeepEntries, defaultScrubOpts,
 } from '../../pdf/metadata/scrubMetadata.js';
@@ -274,7 +276,6 @@ function replacePageResources(pageObjText, newResourcesDictText) {
 
 /**
  * Rebuild a PDF containing only the selected pages, optionally with OCR overlay text.
- * Unreferenced objects are excluded.
  * @param {Object} params
  * @param {Uint8Array} params.pdfBytes
  * @param {string} params.text
@@ -313,6 +314,8 @@ function replacePageResources(pageObjText, newResourcesDictText) {
  * @param {?Array<{objNum: number, content: string | Uint8Array | import('./writePdfStreams.js').PdfBinaryObject}>} [params.editFontObjects=null]
  *    Pre-embedded edit font objects (allocated by the caller before `startingNextObjNum`).
  * @param {?Object<string, ?string>} [params.docInfo=null] - Document information entries overriding the source's; a null value drops that key.
+ * @param {?ReturnType<typeof import('./writePdfFormFields.js').buildFormFieldUpdates>} [params.formFieldUpdates=null]
+ *    Replacement widget objects carrying edited form-field values, plus the catalog /AcroForm entry to synthesize when the source has none.
  */
 export async function rebuildPdfSubset({
   pdfBytes, text, objCache, xrefEntries, pages,
@@ -335,6 +338,7 @@ export async function rebuildPdfSubset({
   editFontRefsByPage = null,
   editFontObjects = null,
   docInfo = null,
+  formFieldUpdates = null,
 }) {
   const overlayEnabled = !!(ocrArr && pageMetricsArr && pdfFonts);
   let nextObjNum = startingNextObjNum;
@@ -472,27 +476,54 @@ export async function rebuildPdfSubset({
       const pageRotate = ((((pageInfo.rotate || 0) % 360) + 360) % 360);
       const rotScale = pixelDims ? baseWidth / pixelDims.height : 1;
 
+      const fillResult = await buildFillItemOps({
+        pageAnnotations, pixelDims: pixelDims || null, allocObjNum, pushObj: pushOutputObj, humanReadable, warningHandler,
+      });
+
+      const fillTextActive = pageAnnotations.some((a) => a.type === 'freetext' && isFillTextRow(a));
+
       let textContentObjStr = '';
+      let fillTextObjStr = '';
       /** @type {Set<PdfFontInfo>} */
       let pageFontsUsed = new Set();
       if (pageObj && pageObj.lines.length > 0 && textMode !== 'annot') {
         const angle = pageMetricsArr[i].angle || 0;
-        const res = await ocrPageToPDFStream(
-          pageObj, pixelDims, pdfFonts, /** @type {'ebook'|'eval'|'proof'|'invis'} */ (textMode), angle, docFonts,
-          rotateText, rotateBackground, confThreshHigh, confThreshMed,
-        );
-        textContentObjStr = res.textContentObjStr || '';
-        pageFontsUsed = res.pdfFontsUsed;
+        // Fill-text lines are re-emitted as a visible stream below, so keeping them in the main layer would make the text extract twice.
+        const mainPage = fillTextActive ? { ...pageObj, lines: pageObj.lines.filter((l) => !isFillTextLine(l)) } : pageObj;
+        if (mainPage.lines.length > 0) {
+          const res = await ocrPageToPDFStream(
+            mainPage, pixelDims, pdfFonts, /** @type {'ebook'|'eval'|'proof'|'invis'} */ (textMode), angle, docFonts,
+            rotateText, rotateBackground, confThreshHigh, confThreshMed,
+          );
+          textContentObjStr = res.textContentObjStr || '';
+          pageFontsUsed = res.pdfFontsUsed;
+        }
+      }
+      // /GSF resets fill alpha in case the main layer's invisible-text ExtGState precedes it.
+      if (fillTextActive && pageObj && pixelDims) {
+        const fillLines = pageObj.lines.filter((l) => isFillTextLine(l));
+        if (fillLines.length > 0) {
+          const res = await ocrPageToPDFStream(
+            { ...pageObj, lines: fillLines }, pixelDims, pdfFonts, 'ebook', 0, docFonts,
+            false, false, confThreshHigh, confThreshMed,
+          );
+          if (res.textContentObjStr) {
+            fillTextObjStr = `/GSF gs\n${res.textContentObjStr}`;
+            for (const f of res.pdfFontsUsed) pageFontsUsed.add(f);
+          }
+        }
       }
 
       const hasText = textContentObjStr && textContentObjStr.length > 0;
-      // Redact marks are never written as annotations (they are applied destructively), so they must not force the annots-driven page rewrite.
-      const hasAnnots = pageAnnotations.some((a) => a.type !== 'redact');
+      // Redact marks, ink/stamp items, and fill-text freetext rows reach the output as page content rather than annotations, so they must not count here.
+      const hasAnnots = pageAnnotations.some((a) => a.type !== 'redact' && a.type !== 'ink' && a.type !== 'stamp'
+        && !(a.type === 'freetext' && isFillTextRow(a)));
+      const hasFill = !!fillResult || !!fillTextObjStr;
       // Region conversion (`convertRegionsToPaths`), full-page flatten, and broken-Type3 all convert text to paths without an overlay text layer, so this gate must stay independent of `hasText`.
       const hasConvert = convertBrokenType3ToPaths || fullPageSet.has(i) || regionsByPage.has(i);
       const hasRedact = redactByPage.has(i);
       const hasTextEdits = textEditByPage.has(i) || !!textEditInsertsByPage?.has(i);
-      if (!hasText && !hasAnnots && !hasConvert && !hasRedact && !hasTextEdits) continue;
+      if (!hasText && !hasAnnots && !hasConvert && !hasRedact && !hasTextEdits && !hasFill) continue;
 
       /** @type {string[]|null} */
       let newContentsArray = null;
@@ -501,7 +532,7 @@ export async function rebuildPdfSubset({
       /** @type {?string} */
       let pageResourcesTraceStr = null;
 
-      if (hasText || hasConvert || hasRedact || hasTextEdits) {
+      if (hasText || hasConvert || hasRedact || hasTextEdits || hasFill) {
         for (const font of pageFontsUsed) pdfFontsUsed.add(font);
 
         const existingContentsRefs = parseExistingContents(pageInfo.objText, objCache);
@@ -524,9 +555,9 @@ export async function rebuildPdfSubset({
         // leave it for the copy-through loop rather than rewrite it.
         const convertChanged = stripConvertResult.refs !== existingContentsRefs
           || stripConvertResult.xobjEntries.size > 0;
-        if (!hasText && !hasAnnots && !convertChanged && !hasRedact) continue;
+        if (!hasText && !hasAnnots && !convertChanged && !hasRedact && !hasFill) continue;
 
-        if (hasText) {
+        if (hasText || hasFill) {
           const qSaveStr = 'q\n';
           const qSaveObjNum = nextObjNum++;
           allOutputObjects.push({ objNum: qSaveObjNum, content: `${qSaveObjNum} 0 obj\n<</Length ${qSaveStr.length}>>\nstream\n${qSaveStr}endstream\nendobj\n\n` });
@@ -541,7 +572,7 @@ export async function rebuildPdfSubset({
           } else if (pageRotate === 180) {
             overlayCm = `${-scaleX} 0 0 ${-scaleY} ${tx + baseWidth} ${ty + baseHeight}`;
           }
-          const qOverlayStr = `Q\nq ${overlayCm} cm\n${textContentObjStr}Q\n`;
+          const qOverlayStr = `Q\nq ${overlayCm} cm\n${textContentObjStr}${fillTextObjStr}${fillResult ? fillResult.ops : ''}Q\n`;
           const qOverlayObjNum = nextObjNum++;
           allOutputObjects.push({ objNum: qOverlayObjNum, content: await encodeStreamObject(qOverlayObjNum, qOverlayStr, { humanReadable }) });
 
@@ -559,14 +590,14 @@ export async function rebuildPdfSubset({
         // Without an overlay text stream there is no balancing q/Q pair around the original content,
         // so the box stream leads with a Q against a fresh q prepended here, the same neutralization the overlay uses for its own text.
         if (hasRedact) {
-          if (!hasText) {
+          if (!hasText && !hasFill) {
             const qSaveStr = 'q\n';
             const qSaveObjNum = nextObjNum++;
             allOutputObjects.push({ objNum: qSaveObjNum, content: `${qSaveObjNum} 0 obj\n<</Length ${qSaveStr.length}>>\nstream\n${qSaveStr}endstream\nendobj\n\n` });
             newContentsArray.unshift(`${qSaveObjNum} 0 R`);
           }
           const fmtN = (v) => String(Math.round(v * 10000) / 10000);
-          let boxStr = hasText ? 'q\n0 g\n' : 'Q\nq\n0 g\n';
+          let boxStr = (hasText || hasFill) ? 'q\n0 g\n' : 'Q\nq\n0 g\n';
           for (const [bx0, by0, bx1, by1] of redactByPage.get(i)) {
             boxStr += `${fmtN(bx0)} ${fmtN(by0)} ${fmtN(bx1 - bx0)} ${fmtN(by1 - by0)} re f\n`;
           }
@@ -606,7 +637,9 @@ export async function rebuildPdfSubset({
             overlayXObjectsStr += `/${name} ${objN} 0 R\n`;
           }
         }
-        const overlayExtGStateStr = hasText ? `/GSO0 <</ca 0.0>>/GSO1 <</ca ${proofOpacity}>>` : '';
+        if (fillResult) overlayXObjectsStr += fillResult.xobjEntriesStr;
+        const overlayExtGStateStr = (hasText ? `/GSO0 <</ca 0.0>>/GSO1 <</ca ${proofOpacity}>>` : '')
+          + (fillTextObjStr ? '/GSF <</ca 1 /CA 1>>' : '');
         const mergedResourcesStr = mergeResources(existingResourcesStr, overlayFontsStr, overlayExtGStateStr, objCache, overlayXObjectsStr);
 
         resourcesObjNum = nextObjNum++;
@@ -630,7 +663,7 @@ export async function rebuildPdfSubset({
           .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty, pageRotate, baseWidth, baseHeight, rotScale));
         const shapes = buildShapeAnnotObjects(shapeAnns, nextObjNum, outputDims, warningHandler, !!scrub);
         for (const t of shapes.objectTexts) allOutputObjects.push({ objNum: nextObjNum++, content: t });
-        const freeTextAnns = pageAnnotations.filter((a) => a.type === 'freetext')
+        const freeTextAnns = pageAnnotations.filter((a) => a.type === 'freetext' && !isFillTextRow(a))
           .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty, pageRotate, baseWidth, baseHeight, rotScale));
         const ft = buildFreeTextAnnotObjects(freeTextAnns, nextObjNum, outputDims, warningHandler, !!scrub);
         for (const t of ft.objectTexts) allOutputObjects.push({ objNum: nextObjNum++, content: t });
@@ -736,6 +769,27 @@ export async function rebuildPdfSubset({
     }
   }
 
+  let acroFormEntry = '';
+  if (catText && !scrub) {
+    const acroRefM = /\/AcroForm\s+(\d+)\s+(\d+)\s+R/.exec(catText);
+    if (acroRefM) {
+      acroFormEntry = `/AcroForm ${acroRefM[1]} ${acroRefM[2]} R`;
+      tracingTexts.push(`${acroRefM[1]} ${acroRefM[2]} R`);
+    } else {
+      const acroIdx = catText.indexOf('/AcroForm');
+      if (acroIdx >= 0) {
+        const acroDict = extractDict(catText, catText.indexOf('<<', acroIdx));
+        if (acroDict) { acroFormEntry = `/AcroForm ${acroDict}`; tracingTexts.push(acroDict); }
+      }
+    }
+  }
+  if (!acroFormEntry && formFieldUpdates?.catalogInsertRef) acroFormEntry = formFieldUpdates.catalogInsertRef.trim();
+  // Replacements reuse the source object numbers, so the dedupe below drops the unedited originals from the verbatim-copy set.
+  if (formFieldUpdates) {
+    for (const [objNum, content] of formFieldUpdates.replacements) allOutputObjects.push({ objNum, content });
+    for (const o of formFieldUpdates.newObjects) allOutputObjects.push(o);
+  }
+
   // When scrubbing, scrubPageDictText strips the scrub's drop-keys from the text the BFS scans,
   // so the trace skips refs under those keys (e.g. a StructElem's /Info to a document-properties dict)
   // and their targets orphan instead of being copied verbatim.
@@ -801,7 +855,7 @@ export async function rebuildPdfSubset({
   }
 
   const catalogKeepEntry = catalogKeep.map((k) => `/${k.name} ${k.valueText}`).join(' ');
-  allOutputObjects.push({ objNum: catalogObjNum, content: `${catalogObjNum} 0 obj\n<</Type/Catalog/Pages ${pagesRootObjNum} 0 R${ocPropertiesEntry ? ` ${ocPropertiesEntry}` : ''}${catalogKeepEntry ? ` ${catalogKeepEntry}` : ''}${outlineEntry}>>\nendobj\n\n` });
+  allOutputObjects.push({ objNum: catalogObjNum, content: `${catalogObjNum} 0 obj\n<</Type/Catalog/Pages ${pagesRootObjNum} 0 R${ocPropertiesEntry ? ` ${ocPropertiesEntry}` : ''}${acroFormEntry ? ` ${acroFormEntry}` : ''}${catalogKeepEntry ? ` ${catalogKeepEntry}` : ''}${outlineEntry}>>\nendobj\n\n` });
   allOutputObjects.push({ objNum: pagesRootObjNum, content: `${pagesRootObjNum} 0 obj\n<</Type/Pages/Kids[${keptPageRefs.join(' ')}]/Count ${keptPageRefs.length}>>\nendobj\n\n` });
   if (infoBody) allOutputObjects.push({ objNum: infoObjNum, content: `${infoObjNum} 0 obj\n<<${infoBody}>>\nendobj\n\n` });
 

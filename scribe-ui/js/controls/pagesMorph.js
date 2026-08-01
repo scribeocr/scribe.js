@@ -59,6 +59,48 @@ function ensureStyles() {
 }
 
 /**
+ * One page's participating cell: the DOM the frame loop writes, plus its geometry at the open endpoint.
+ * @typedef {object} MorphCell
+ * @property {HTMLDivElement} el
+ * @property {HTMLImageElement} img
+ * @property {HTMLDivElement} lbl
+ * @property {number} d - Column offset from the anchor row's middle column, in cells.
+ * @property {number} rot - Page rotation in degrees.
+ * @property {number} flare - Extra grow-phase spread carrying a non-anchor-row cell past the room's side edge, in px.
+ * @property {number} row - Grid row index.
+ * @property {number} boxH - Image-box height in px.
+ * @property {number} gx - Viewer-relative x of the box.
+ * @property {number} fy - Viewer-relative y of the box.
+ * @property {boolean} active - Whether this is the page the main viewer shows.
+ */
+
+/**
+ * A live morph: its cells, the arithmetic linking the film and open endpoints, and the room state the frame loop drives.
+ * @typedef {object} MorphScene
+ * @property {HTMLDivElement} layer - Container for the cells, parented to the room.
+ * @property {HTMLDivElement} mtab - Stand-in pull tab riding the room's top edge.
+ * @property {MorphCell[]} items
+ * @property {number} dy - Current travel in px.
+ * @property {number} travel - The room's full height in px.
+ * @property {number} lead - Height of the strip band the room covers at both endpoints.
+ * @property {number} dyFull - Travel between the film and open endpoints, in px.
+ * @property {number} growPx - Travel the grow phase spans, in px.
+ * @property {number} filmW - Strip cell width in px.
+ * @property {number} filmH - Strip cell height in px.
+ * @property {number} strideF - Strip cell-to-cell stride in px.
+ * @property {number} strideG - Grid cell-to-cell stride in px.
+ * @property {number} cellW - Grid cell width in px.
+ * @property {number} cxF - Viewer-relative x centre of the anchor row's middle column on the strip.
+ * @property {number} cxG - The same column's centre in the grid.
+ * @property {number} growBottom - Viewer-relative y of the film cells' bottom edge, the bar's floor.
+ * @property {number} aRow - Grid row index of the anchor row.
+ * @property {number} anchorFloorY - Viewer-relative y the grown anchor row rests at before the edge picks it up.
+ * @property {number} finalYAnchor - Viewer-relative y of the anchor row at the open endpoint.
+ * @property {HTMLDivElement} row - The strip's scrolling row, re-read per frame so the film follows a late scroll.
+ * @property {number} scroll0 - The row's scrollLeft when the scene was built.
+ */
+
+/**
  * Build the strip-to-room morph controller.
  * The caller owns the gesture and the settled states; the morph owns the room's transform, background, and header visibility from `begin()` until the settle (or abort) hands the room back.
  * @param {import('../../viewer.js').ScribeViewer} scribe
@@ -84,7 +126,7 @@ export function createPagesMorph(scribe, {
 }) {
   ensureStyles();
 
-  /** @type {?object} Live morph scene. */
+  /** @type {?MorphScene} */
   let scene = null;
   let raf = 0;
 
@@ -128,7 +170,7 @@ export function createPagesMorph(scribe, {
     if (scene) return false; // a live scene means the room already owns a gesture or settle
     const doc = scribe.doc;
     const pageCount = doc && doc.inputData ? doc.inputData.pageCount : 0;
-    const row = stripElem.querySelector('.scribe-strip-row');
+    const row = /** @type {?HTMLDivElement} */ (stripElem.querySelector('.scribe-strip-row'));
     if (!pageCount || !row || !row.childElementCount) return false;
     const geo = panel.gridGeometry();
     if (!geo || !geo.cols || geo.count !== pageCount) return false;
@@ -149,7 +191,7 @@ export function createPagesMorph(scribe, {
     const activeN = scribe.state && scribe.state.cp ? scribe.state.cp.n : -1;
 
     // Film geometry: cells are uniform, so one measured cell anchors the whole row arithmetically.
-    const cells = row.querySelectorAll('.scribe-strip-cell');
+    const cells = /** @type {NodeListOf<HTMLButtonElement>} */ (row.querySelectorAll('.scribe-strip-cell'));
     if (cells.length !== pageCount) return false;
     const filmW = cells[0].offsetWidth;
     const filmH = cells[0].offsetHeight;
@@ -264,7 +306,7 @@ export function createPagesMorph(scribe, {
     const s = {
       layer,
       mtab,
-      items: /** @type {Array<object>} */ ([]),
+      items: /** @type {MorphCell[]} */ ([]),
       dy: 0,
       travel,
       lead,

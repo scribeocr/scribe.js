@@ -7,9 +7,12 @@ import { ObjectCache } from '../../pdf/objectCache.js';
 import { createPdfFontRefs, createEmbeddedFontType0 } from './writePdfFonts.js';
 import { GlobalFonts } from '../../containers/fontContainer.js';
 import { ocrPageToPDFStream } from './writePdfText.js';
+import { isFillTextRow, isFillTextLine } from '../../fillSign.js';
 import {
   buildHighlightAnnotObjects, buildFreeTextAnnotObjects, buildShapeAnnotObjects, buildTextAnnotObjects, buildLinkAnnotObjects, consolidateAnnotations,
 } from './writePdfAnnots.js';
+import { buildFormFieldUpdates } from './writePdfFormFields.js';
+import { buildFillItemOps } from './writeFillSignItems.js';
 import { SHAPE_ANNOT_TYPES, TEXT_MARKUP_ANNOT_TYPES } from '../../addHighlights.js';
 import { encodeStreamObject } from './writePdfStreams.js';
 import {
@@ -422,9 +425,18 @@ export async function overlayPdfText({
   const isSubset = effectivePageArr.length !== pages.length
     || effectivePageArr.some((v, idx) => v !== idx);
   const hasUserRotation = !!(pageMetricsArr && pageMetricsArr.some((pm) => pm && pm.rotation));
-  // A metadata scrub must rebuild: incremental append would leave the source's trailer chain and every prior /Prev revision's metadata in place.
-  // Rebuilding drops all of it and scrubs the copied objects.
-  // Redactions must rebuild too, but as a hard security property: an incremental update PRESERVES the original file bytes, so the redacted content stays recoverable.
+  // Scrub and redaction must rebuild because an incremental update preserves the source bytes, leaving the old metadata and the redacted content recoverable.
+  const formFieldUpdates = buildFormFieldUpdates({
+    objCache,
+    pages,
+    pageIndices: effectivePageArr,
+    annotationsPages,
+    startingNextObjNum: nextObjNum,
+    catalogObjNum: findRootObjNum(pdfBytes),
+    warningHandler,
+  });
+  nextObjNum = formFieldUpdates.nextObjNum;
+
   if (isSubset || sourceEncrypted || sourceXrefMalformed || sourceLinearized || hasUserRotation || scrub || redactRegionsByPage.size > 0) {
     return rebuildPdfSubset({
       pdfBytes,
@@ -459,6 +471,7 @@ export async function overlayPdfText({
       editFontRefsByPage,
       editFontObjects,
       docInfo,
+      formFieldUpdates,
     });
   }
 
@@ -518,32 +531,59 @@ export async function overlayPdfText({
     const pageRotate = ((((pageInfo.rotate || 0) % 360) + 360) % 360);
     const rotScale = pixelDims ? baseWidth / pixelDims.height : 1;
 
+    const fillResult = await buildFillItemOps({
+      pageAnnotations, pixelDims: pixelDims || null, allocObjNum, pushObj: pushNewObj, humanReadable, warningHandler,
+    });
+
+    const fillTextActive = pageAnnotations.some((a) => a.type === 'freetext' && isFillTextRow(a));
+
     let textContentObjStr = '';
+    let fillTextObjStr = '';
     /** @type {Set<PdfFontInfo>} */
     let pageFontsUsed = new Set();
     if (pageObj && pageObj.lines.length > 0 && textMode !== 'annot' && pixelDims) {
       const angle = pageMetrics?.angle || 0;
-      const res = await ocrPageToPDFStream(
-        pageObj, pixelDims, pdfFonts, textMode, angle, docFonts,
-        rotateText, rotateBackground, confThreshHigh, confThreshMed,
-      );
-      textContentObjStr = res.textContentObjStr || '';
-      pageFontsUsed = res.pdfFontsUsed;
+      // The fill-text lines are re-emitted as visible text below, so leaving them in the main layer would duplicate the text on export.
+      const mainPage = fillTextActive ? { ...pageObj, lines: pageObj.lines.filter((l) => !isFillTextLine(l)) } : pageObj;
+      if (mainPage.lines.length > 0) {
+        const res = await ocrPageToPDFStream(
+          mainPage, pixelDims, pdfFonts, textMode, angle, docFonts,
+          rotateText, rotateBackground, confThreshHigh, confThreshMed,
+        );
+        textContentObjStr = res.textContentObjStr || '';
+        pageFontsUsed = res.pdfFontsUsed;
+      }
+    }
+    // /GSF resets fill alpha, which an invisible-mode main text stream leaves at 0 in the graphics state both streams share.
+    if (fillTextActive && pageObj && pixelDims) {
+      const fillLines = pageObj.lines.filter((l) => isFillTextLine(l));
+      if (fillLines.length > 0) {
+        const res = await ocrPageToPDFStream(
+          { ...pageObj, lines: fillLines }, pixelDims, pdfFonts, 'ebook', 0, docFonts,
+          false, false, confThreshHigh, confThreshMed,
+        );
+        if (res.textContentObjStr) {
+          fillTextObjStr = `/GSF gs\n${res.textContentObjStr}`;
+          for (const f of res.pdfFontsUsed) pageFontsUsed.add(f);
+        }
+      }
     }
 
     const hasText = textContentObjStr && textContentObjStr.length > 0;
-    // Redact marks are never written as annotations (they are applied destructively), so they must not force the annots-driven page rewrite.
-    const hasAnnots = pageAnnotations.some((a) => a.type !== 'redact');
+    // These types are applied to the page content rather than written as annotations.
+    const hasAnnots = pageAnnotations.some((a) => a.type !== 'redact' && a.type !== 'ink' && a.type !== 'stamp'
+      && !(a.type === 'freetext' && isFillTextRow(a)));
+    const hasFill = !!fillResult || !!fillTextObjStr;
     const hasConvert = regionsByPage.has(i) || convertBrokenType3ToPaths;
     const hasTextEdits = textEditRegionsByPage.has(i) || textEditInsertsByPage.has(i);
-    if (!hasText && !hasAnnots && !hasConvert && !hasTextEdits) continue;
+    if (!hasText && !hasAnnots && !hasConvert && !hasTextEdits && !hasFill) continue;
 
     /** @type {string[]|null} */
     let newContentsArray = null;
     /** @type {number|null} */
     let resourcesObjNum = null;
 
-    if (hasText || hasConvert || hasTextEdits) {
+    if (hasText || hasConvert || hasTextEdits || hasFill) {
       for (const font of pageFontsUsed) pdfFontsUsed.add(font);
 
       const existingContentsRefs = parseExistingContents(pageInfo.objText, objCache);
@@ -568,13 +608,13 @@ export async function overlayPdfText({
         || stripConvertResult.xobjEntries.size > 0;
       // A flatten page (fullPageSet) that came out unchanged is left untouched.
       // An explicitly supplied region is re-emitted rather than skipped.
-      if (!hasText && !hasAnnots && !convertChanged && (!regionsByPage.has(i) || fullPageSet.has(i))) continue;
+      if (!hasText && !hasAnnots && !convertChanged && !hasFill && (!regionsByPage.has(i) || fullPageSet.has(i))) continue;
 
       /** @type {string[]} */
       const contentsArray = [];
       let qSaveObjNum = null;
       let qOverlayObjNum = null;
-      if (hasText) {
+      if (hasText || hasFill) {
         const qSaveStr = 'q\n';
         qSaveObjNum = allocObjNum();
         pushNewObj({ objNum: qSaveObjNum, content: `${qSaveObjNum} 0 obj\n<</Length ${qSaveStr.length}>>\nstream\n${qSaveStr}endstream\nendobj\n\n` });
@@ -589,7 +629,7 @@ export async function overlayPdfText({
         } else if (pageRotate === 180) {
           overlayCm = `${-scaleX} 0 0 ${-scaleY} ${tx + baseWidth} ${ty + baseHeight}`;
         }
-        const qOverlayStr = `Q\nq ${overlayCm} cm\n${textContentObjStr}Q\n`;
+        const qOverlayStr = `Q\nq ${overlayCm} cm\n${textContentObjStr}${fillTextObjStr}${fillResult ? fillResult.ops : ''}Q\n`;
         qOverlayObjNum = allocObjNum();
         pushNewObj({ objNum: qOverlayObjNum, content: await encodeStreamObject(qOverlayObjNum, qOverlayStr, { humanReadable }) });
 
@@ -621,7 +661,9 @@ export async function overlayPdfText({
           overlayXObjectsStr += `/${name} ${objN} 0 R\n`;
         }
       }
-      const overlayExtGStateStr = hasText ? `/GSO0 <</ca 0.0>>/GSO1 <</ca ${proofOpacity}>>` : '';
+      if (fillResult) overlayXObjectsStr += fillResult.xobjEntriesStr;
+      const overlayExtGStateStr = (hasText ? `/GSO0 <</ca 0.0>>/GSO1 <</ca ${proofOpacity}>>` : '')
+        + (fillTextObjStr ? '/GSF <</ca 1 /CA 1>>' : '');
       const mergedResourcesStr = mergeResources(existingResourcesStr, overlayFontsStr, overlayExtGStateStr, objCache, overlayXObjectsStr);
 
       resourcesObjNum = allocObjNum();
@@ -644,7 +686,7 @@ export async function overlayPdfText({
         .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty, pageRotate, baseWidth, baseHeight, rotScale));
       const shapes = buildShapeAnnotObjects(shapeAnns, nextObjNum, outputDims, warningHandler, !!scrub);
       for (const t of shapes.objectTexts) newObjects.push({ objNum: nextObjNum++, content: t });
-      const freeTextAnns = pageAnnotations.filter((a) => a.type === 'freetext')
+      const freeTextAnns = pageAnnotations.filter((a) => a.type === 'freetext' && !isFillTextRow(a))
         .map((a) => overlayAnnotationBbox(a, scaleX, scaleY, tx, ty, pageRotate, baseWidth, baseHeight, rotScale));
       const ft = buildFreeTextAnnotObjects(freeTextAnns, nextObjNum, outputDims, warningHandler, !!scrub);
       for (const t of ft.objectTexts) newObjects.push({ objNum: nextObjNum++, content: t });
@@ -663,6 +705,9 @@ export async function overlayPdfText({
       null, 0, null, linkDestInfo);
     newObjects.push({ objNum: pageInfo.objNum, content: newPageObj });
   }
+
+  for (const [objNum, content] of formFieldUpdates.replacements) newObjects.push({ objNum, content });
+  for (const o of formFieldUpdates.newObjects) newObjects.push(o);
 
   // Step 5: Create font objects for fonts that are actually used
   /** @type {Array<{objNum: number, content: string | import('./writePdfStreams.js').PdfBinaryObject}>} */
@@ -697,7 +742,7 @@ export async function overlayPdfText({
     const editsApplied = textEditRegionsByPage.size > 0 || textEditInsertsByPage.size > 0;
     const stripStruct = editsApplied && !!catalogText && /\/(StructTreeRoot|MarkInfo)\b/.test(catalogText);
     const wantOutline = !!(outline && catalogText && (outline.length || /\/Outlines\b/.test(catalogText)));
-    if (catalogText && (wantOutline || stripStruct)) {
+    if (catalogText && (wantOutline || stripStruct || formFieldUpdates.catalogInsertRef)) {
       let outlineRef = '';
       if (outline && outline.length) {
         const built = buildOutlineObjects(outline, effectivePageArr.map((i) => pages[i].objNum), nextObjNum);
@@ -714,7 +759,7 @@ export async function overlayPdfText({
           .replace(/\s*\/MarkInfo\s+(?:\d+\s+\d+\s+R|<<[^>]*>>)/, '');
       }
       const closeIdx = stripped.lastIndexOf('>>');
-      const newCatalog = `${stripped.slice(0, closeIdx)}${outlineRef}${stripped.slice(closeIdx)}`;
+      const newCatalog = `${stripped.slice(0, closeIdx)}${outlineRef}${formFieldUpdates.catalogInsertRef}${stripped.slice(closeIdx)}`;
       allNewObjects.push({ objNum: catalogObjNum, content: `${catalogObjNum} 0 obj\n${newCatalog}\nendobj\n\n` });
     }
   }

@@ -1105,9 +1105,8 @@ export class TextSelection {
     // Non-primary buttons belong to the pan and the context menu.
     if (event.button !== 0) return;
     if (this.viewer.state.layoutMode || this.viewer.enableCanvasSelection) return;
-    // Comment marks, note marks, the comment card and editable fields own their own pointer gestures.
     if (event.target instanceof Element
-      && event.target.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, [contenteditable]')) return;
+      && event.target.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, .scribe-field, .scribe-item, [contenteditable]')) return;
 
     // A touch that moves is a pan, so a touch selection has to wait to see whether it holds still.
     if (event.pointerType === 'touch') { this._armTouchHold(event); return; }

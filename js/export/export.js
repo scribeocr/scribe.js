@@ -1,4 +1,5 @@
 import { scribeDocDefaults } from '../containers/scribeDocDefaults.js';
+import { collectFillTextRefs, isFillTextLine } from '../fillSign.js';
 import { reorderOcrPage } from '../modifyOCR.js';
 import { saveAs } from '../utils/miscUtils.js';
 import { writePdf } from './pdf/writePdf.js';
@@ -369,7 +370,13 @@ export async function exportData(doc, format = 'txt', options = {}) {
                 convertFullPages.push(i);
                 return p;
               }
-              return new OcrPage(i, p?.dims || overlayPageMetricsArr[i].dims);
+              // The overlay draws typed fill text from lifted fill-text lines, so dropping them would silently lose it from the export.
+              const np = new OcrPage(i, p?.dims || overlayPageMetricsArr[i].dims);
+              if (hasWords) {
+                const keep = p.lines.filter(isFillTextLine);
+                if (keep.length > 0) np.lines = keep;
+              }
+              return np;
             });
             convertBrokenType3 = false;
           }
@@ -601,7 +608,9 @@ export async function exportData(doc, format = 'txt', options = {}) {
     };
     // App-only state ships in one opt-in block, so standard-format consumers never receive it and the app save path cannot scatter it.
     if (scribeSession) {
-      data.session = { v: 1, textEdits: doc.textEdits.pages, nativeText: doc.nativeText.pages };
+      data.session = {
+        v: 1, textEdits: doc.textEdits.pages, nativeText: doc.nativeText.pages, fillText: collectFillTextRefs(doc),
+      };
     }
     const contentStr = JSON.stringify(data);
     if (compressScribe) {

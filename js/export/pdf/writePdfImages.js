@@ -74,7 +74,7 @@ function extractPngIdatData(pngBytes) {
  * @param {boolean} humanReadable
  * @returns {string | import('./writePdfStreams.js').PdfBinaryObject} PDF XObject
  */
-const createImageXObjectJpeg = (objIndex, imageData, width, height, humanReadable) => {
+export const createImageXObjectJpeg = (objIndex, imageData, width, height, humanReadable) => {
   const imageBytes = new Uint8Array(imageData);
   let dict = `${String(objIndex)} 0 obj\n`;
   dict += '<</Type /XObject\n';

@@ -346,7 +346,85 @@ declare global {
         uri?: string;
     };
 
-    type Annotation = AnnotationHighlight | AnnotationFreeText | AnnotationShape | AnnotationText | AnnotationRedact | AnnotationLink;
+    /**
+     * An AcroForm field, lifted from a source-PDF Widget annotation.
+     * The filled value of a text/choice field also appears in the page's OCR text as ordinary words.
+     */
+    type AnnotationField = {
+        type: 'field';
+        fieldType: 'text' | 'checkbox' | 'radio' | 'choice' | 'signature' | 'button';
+        /**
+         * Fully-qualified field name.
+         * Each level's /T, root-to-leaf, joined with '.'.
+         */
+        name: string;
+        /** Widget rect, page coordinates (top-left origin, same frame as OCR words). */
+        bbox: bbox;
+        /**
+         * Current field value.
+         * A multi-select choice field's selected options are joined into one '; '-separated string.
+         */
+        value: string | null;
+        /** Source widget object number in the originating PDF. */
+        srcRef?: number;
+        readOnly?: boolean;
+        /** Field flag bit 2. */
+        required?: boolean;
+        /** Text field flag bit 13. */
+        multiline?: boolean;
+        /** Text field flag bit 25. */
+        comb?: boolean;
+        /** Cell count for comb fields. */
+        maxLen?: number;
+        signed?: boolean;
+        /**
+         * Widget carries the hidden or no-view annotation flag.
+         * Its value is not lifted into the page's OCR text.
+         */
+        hidden?: boolean;
+        /**
+         * Text alignment from /Q.
+         * 1 is centered, 2 is right-aligned, absent is left.
+         */
+        quadding?: number;
+        /** /DA default-appearance string. */
+        da?: string;
+        /** Checkbox/radio on-state name. */
+        onState?: string;
+        /**
+         * Choice-field option list from /Opt.
+         * Export/display pairs contribute only the display string, so `value` may be an export value missing from this list.
+         */
+        options?: string[];
+    };
+
+    /**
+     * A drawn fill & sign item.
+     * PDF export flattens it into page content.
+     */
+    type AnnotationInk = {
+        type: 'ink';
+        /** Stroke polylines in page coordinates (top-left origin). */
+        strokes: Array<Array<[number, number]>>;
+        width: number;
+        /** Stroke color, '#RRGGBB'. */
+        color?: string;
+        /** Extent of the strokes padded by half the stroke width. */
+        bbox: bbox;
+    };
+
+    /**
+     * A placed image fill & sign item, such as an uploaded or typed signature.
+     * PDF export flattens it into page content.
+     */
+    type AnnotationStamp = {
+        type: 'stamp';
+        bbox: bbox;
+        /** PNG or JPEG data URL. */
+        imageData: string;
+    };
+
+    type Annotation = AnnotationHighlight | AnnotationFreeText | AnnotationShape | AnnotationText | AnnotationRedact | AnnotationLink | AnnotationField | AnnotationInk | AnnotationStamp;
 
     /**
      * Visible source-PDF text slated for removal.
@@ -444,6 +522,8 @@ declare global {
         v: number;
         textEdits?: TextEdit[][];
         nativeText?: Array<Record<string, NativeTextWord>>;
+        /** `[page, index]` positions in `doc.annotations.pages` of the `freetext` rows that are fill & sign typed text. */
+        fillText?: Array<[number, number]>;
     };
 
     type OutlineDest = import("./objects/outlineObjects.js").OutlineDest;

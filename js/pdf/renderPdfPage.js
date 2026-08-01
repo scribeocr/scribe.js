@@ -1127,14 +1127,10 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
         }
       }
     } else if (components === 1 && colorSpace === 'Indexed' && imageInfo.palette) {
-      // Indexed color space: each pixel value is an index into the PDF palette.
-      // decodeJPX MSB-aligns each decoded sample to 8 bits (sample << (8 - precision)) as a display convenience,
-      // but the palette index is the raw reconstructed sample at the component bit depth
-      // (T.800 G.1.2 inverse DC level shift yields 0..2^precision-1).
-      // For sub-8-bit JPX, recover the index by reversing that alignment.
       const palette = imageInfo.palette;
       const base = imageInfo.paletteBase || 'DeviceRGB';
       const nComp = base === 'DeviceCMYK' ? 4 : (base === 'DeviceGray' || base === 'CalGray' ? 1 : 3);
+      // decodeJPX MSB-aligns sub-8-bit samples to 8 bits, so the palette index is the sample shifted back down.
       const jpxPrecision = decoded.precision ? decoded.precision[0] : 8;
       const idxShift = jpxPrecision < 8 ? (8 - jpxPrecision) : 0;
       // Only the CMYK branch reads rgbPal, so it stays empty for the non-CMYK bases that index `palette` directly.
@@ -1272,11 +1268,8 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
     bitsPerComponent = 8;
   }
 
-  // Fast path for very large 1-bit grayscale scans (JBIG2/CCITTFax): box-average the packed bits straight to the device draw size.
-  // The general path's cost is dominated not by the final draw but by building a full-resolution RGBA buffer and then creating an ImageBitmap from it.
-  // Averaging the 1-bit source directly into a draw-size RGBA is one pass over 8x less memory and skips both the giant allocation and the large-bitmap upload.
-  // A 1-bit soft mask at the same resolution (the MRC foreground/background pairing) is area-averaged into alpha in the same pass.
-  // Restricted to plain DeviceGray/CalGray with no transparent-white key, colour-key mask, or ICC transform, so no downstream per-pixel post-processing is bypassed.
+  // The general path's cost on a huge scan is the full-resolution RGBA buffer and its ImageBitmap, not the draw, so box-average the packed bits straight to draw size.
+  // This returns before the per-pixel post-processing further down, so the gate must exclude every feature that needs it.
   const mask11 = sMask && sMaskWidth === width && sMaskHeight === height;
   if (bitsPerComponent === 1 && (colorSpace === 'DeviceGray' || colorSpace === 'CalGray')
     && !imageInfo.transparentWhite && (!(sMask && sMaskWidth && sMaskHeight) || mask11)
@@ -1386,8 +1379,7 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
     rgbaData = new Uint8ClampedArray(width * height * 4);
     const rowBytes = Math.ceil(width * bitsPerComponent / 8);
     // imageData can be short of width*height (truncated FlateDecode tail).
-    // Out-of-range reads return undefined, and palette[NaN]=0 then paints
-    // those pixels solid black, so cap iteration to leave the tail transparent.
+    // Out-of-range reads yield an undefined index that paints solid black, so cap iteration to leave the tail transparent.
     const maxBytes = imageData ? imageData.length : 0;
     const validRows = rowBytes > 0 ? Math.min(height, Math.floor(maxBytes / rowBytes)) : height;
     // Only the CMYK branch reads rgbPal, so it stays empty for the non-CMYK bases that index `palette` directly.
@@ -1672,11 +1664,7 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
       }
     }
   } else {
-    // Default: DeviceRGB / ICCBased / DeviceN
-    // Use known component counts for named color spaces. Data-length inference is a
-    // fallback only — it can be wrong when the PNG predictor uses sub-byte BPC that
-    // causes fractional-byte row padding, making decoded data slightly shorter than
-    // width*height*components.
+    // imageData.length can differ from width*height*components on padded or truncated data, so infer the component count only when the color space does not name one.
     let components;
     if (colorSpace === 'DeviceRGB' || colorSpace === 'CalRGB' || colorSpace === 'ICCBased') {
       components = 3;
@@ -1709,9 +1697,6 @@ async function imageInfoToBitmap(imageInfo, objCache, maxW = 0, maxH = 0, roi = 
     }
   }
 
-  // Apply ICC profile color transform if present (converts profile RGB → sRGB).
-  // The transform linearizes using the profile's gamma, applies the profile's
-  // RGB→XYZ matrix, then converts XYZ to sRGB with standard sRGB primaries.
   if (imageInfo.iccTransform && rgbaData) {
     const { gamma, matrix: m } = imageInfo.iccTransform;
     // Precompute linearization LUTs (gamma curves) for each channel
@@ -6352,9 +6337,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     }
 
     /**
-     * Clip the canvas to the region where an axial (type 2) gradient is defined,
-     * respecting the /Extend array. When Extend[i] is false, the gradient does not
-     * paint beyond that endpoint, so we clip to the half-plane on the valid side.
+     * Clip the canvas to the region where an axial (type 2) gradient is defined.
      * @param {OffscreenCanvasRenderingContext2D} renderCtx
      * @param {number[]} coords - [x0, y0, x1, y1]
      * @param {boolean[]} extend - [extendStart, extendEnd]
@@ -6421,15 +6404,12 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     }
 
     /**
-     * Fill the half-plane "behind" a Type 3 radial gradient's inner circle with the
-     * first stop colour when Extend[0] is true.
-     * Canvas2D's radial gradient leaves pixels transparent where the parameter ω resolves negative
-     * (i.e. the side of the apex opposite the outer circle).
-     * PDF spec §8.7.4.5.4 requires those pixels to take the inner-edge colour when Extend[0] is true.
+     * Fill the half-plane "behind" a Type 3 radial gradient's inner circle with the first stop colour when Extend[0] is true.
      * @param {OffscreenCanvasRenderingContext2D} renderCtx
      * @param {{coords: number[], extend: boolean[], stops: {offset: number, color: string}[]}} sh
      */
     function fillRadialExtendBehind(renderCtx, sh) {
+      // Canvas2D leaves the radial gradient transparent behind the apex, where its parameter resolves negative.
       if (!sh.extend || !sh.extend[0]) return;
       const [x0, y0, r0, x1, y1] = sh.coords;
       if (Math.abs(r0) > 1e-9) return;
@@ -6474,9 +6454,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       mCtx.fillStyle = 'white';
       for (const ch of chars) {
         mCtx.save();
-        // Use the same transform convention as normal text rendering:
-        // 1px font (transform already includes fontSize via TRM), and
-        // (-c, +d) sign convention matching the type0text rendering path.
+        // Mirrors the type0text path's transform, sign flips included, so the mask lands on the same pixels as the rendered glyphs.
         mCtx.setTransform(
           ch.a * scale,
           -ch.b * scale,
@@ -6485,9 +6463,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           (ch.x - boxOriginX) * scale,
           (pageHeightPts + boxOriginY - ch.y) * scale,
         );
-        // fontFamily may already be a multi-family CSS list with embedded quotes
-        // (e.g., '"Courier New", Courier, monospace'). Wrap plain identifiers in
-        // quotes; use pre-formatted family lists as-is.
+        // fontFamily may already be a full CSS family list with embedded quotes, e.g. '"Courier New", Courier, monospace'.
+        // Size is 1px because the transform above already carries the font size through the text rendering matrix.
         mCtx.font = /[",]/.test(ch.fontFamily)
           ? `1px ${ch.fontFamily}`
           : `1px "${ch.fontFamily}"`;
@@ -6497,10 +6474,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     }
 
     /**
-     * Translate every position component of a draw op (its ctm/transform/text
-     * origin, clip ctms, and smask parentCtm) by (dxPdf, dyPdf) in PDF user
-     * space, returning a shallow copy. Lets an op render into a tight bbox-sized
-     * canvas placed at the bbox origin.
+     * Translate every position component of a draw op by (dxPdf, dyPdf) in PDF user space.
+     * Lets an op render into a tight bbox-sized canvas placed at the bbox origin.
      * @param {any} op
      * @param {number} dxPdf
      * @param {number} dyPdf
@@ -6639,9 +6614,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     }
 
     /**
-     * Device-pixel bounding box enclosing a text-clip's glyphs, padded and
-     * clamped to the page. Returns null if it cannot be measured. Uses the same
-     * transform convention as `drawTextClipMask`.
+     * Device-pixel bounding box enclosing a text-clip's glyphs, padded and clamped to the page.
      * @param {Array<{text:string,fontFamily:string,a:number,b:number,c:number,d:number,x:number,y:number}>} chars
      * @returns {{x:number,y:number,w:number,h:number}|null}
      */
@@ -6662,6 +6635,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         for (let ci = 0; ci < 4; ci++) {
           const lx = corners[ci][0];
           const ly = corners[ci][1];
+          // This must stay in lockstep with drawTextClipMask's transform or the measured box will not enclose what gets drawn.
           const dx = ch.a * scale * lx - ch.c * scale * ly + (ch.x - boxOriginX) * scale;
           const dy = -ch.b * scale * lx + ch.d * scale * ly + (pageHeightPts + boxOriginY - ch.y) * scale;
           if (dx < minX) minX = dx;
@@ -7071,12 +7045,11 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     const glyphPathCache = new Map();
 
     /**
-     * Render a path op synchronously. This is the hot path for pages with many
-     * vector elements (e.g., 73K circles). Avoids async/await overhead that
-     * would otherwise create 73K microtask transitions.
+     * Render a path op synchronously.
      * @returns {boolean} true if handled, false if caller should use renderSingleOp
      */
     function renderPathOpSync(rCtx, op) {
+      // Duplicated from the async path to avoid one microtask transition per op on pages with tens of thousands of vector elements.
       if (op.type !== 'path') return false;
       if (op.stroke && (op.strokePatternShading || op.strokeTilingPattern)) return false;
       rCtx.save();
@@ -7103,10 +7076,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         if (op.tilingPattern) {
           const tileCvs = tilingPatternCache.get(tileKeyOf(op.tilingPattern));
           if (tileCvs) {
-            // Use ctx.createPattern + setTransform + fillRect rather than per-tile
-            // drawImage calls. Patterns with small tile bbox can require hundreds of
-            // thousands of draws per page; the native pattern API collapses that
-            // into a single fillRect.
+            // A small tile bbox can mean hundreds of thousands of tiles per page, so fill them with one native pattern instead of drawing each tile.
             const tp = op.tilingPattern;
             const bboxW = tp.bbox[2] - tp.bbox[0];
             const bboxH = tp.bbox[3] - tp.bbox[1];
@@ -7117,8 +7087,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             const sy = bboxH / tileH * scale;
 
             rCtx.save();
-            // Clip is captured under the path-to-device CTM; switch to
-            // identity so the pattern matrix below is in device pixels.
+            // The clip must be taken before the reset below, while the CTM still maps path space to device.
+            // Identity then leaves the pattern matrix working in device pixels.
             rCtx.clip(op.evenOdd ? 'evenodd' : 'nonzero');
             rCtx.setTransform(1, 0, 0, 1, 0, 0);
             const canvasPat = rCtx.createPattern(tileCvs, 'repeat');
@@ -7660,12 +7630,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           }
         }
 
-        // PDF spec §8.7.4.5.3: an axial shading with Extend=[false,false] must
-        // not paint past its coordinate endpoints. The clip is applied here in
-        // user-space coordinates before the per-glyph transform is set; Canvas
-        // stores clips in device coordinates so the clip region survives the
-        // subsequent setTransform, and glyph origins past the gradient's end
-        // are correctly blanked instead of being painted with the last stop.
+        // Canvas stores clips in device coordinates, so this clip survives the per-glyph setTransform below.
         if (op.patternShading && op.patternShading.type === 2
             && op.patternShading.extend
             && (!op.patternShading.extend[0] || !op.patternShading.extend[1])
@@ -7712,13 +7677,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
               (tp.matrix[0] * tp.bbox[0] + tp.matrix[2] * (tp.bbox[1] + bboxH) + tp.matrix[4] - boxOriginX) * scale,
               (pageHeightPts + boxOriginY - tp.matrix[1] * tp.bbox[0] - tp.matrix[3] * (tp.bbox[1] + bboxH) - tp.matrix[5]) * scale,
             ]);
-            // Text rendering can't use the identity-CTM trick because fillText needs the
-            // per-glyph transform set above (font-size scaling, glyph origin, hScale).
-            // CanvasPattern.setTransform's matrix is composed with the canvas CTM at paint
-            // time, so passing dm directly would be multiplied by the per-glyph scale
-            // (~625 for 150pt glyphs at 300 DPI), blowing one source pixel up to cover
-            // the whole glyph and producing a flat-color fill. Premultiply dm by the
-            // current CTM's inverse so the compositions cancel: paint = CTM × (CTM⁻¹ × dm) = dm.
+            // CanvasPattern.setTransform composes with the canvas CTM at paint time.
+            // Passing dm directly would scale it again by the per-glyph transform, flattening the fill to one color.
             const ctmNow = rCtx.getTransform();
             const composed = ctmNow.inverse().multiply(dm);
             canvasPat.setTransform(composed);
@@ -7728,8 +7688,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           }
         } else if (op.patternShading) {
           const sh = op.patternShading;
-          // Shading coords are in pattern space. Map to page space via sh.matrix,
-          // then to text canvas-local space via the inverse of the text transform.
           const det = op.a * op.d - op.b * op.c;
           if (det !== 0 && sh.coords && sh.stops) {
             const shMat = sh.matrix;
@@ -8153,10 +8111,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       }
     }
 
-    // Gouraud ShadingType 4 pattern fills are rendered per-op in renderPathOpSync,
-    // interleaved with wireframe strokes in paint order. Each fill calls
-    // renderGouraudTriangles with the composedBase × patternMatrix transform.
-    // Pre-compute the clip bounds once for use by all gouraud ops.
     let gouraudClipBounds = null;
     {
       for (const op of drawOps) {
@@ -8181,10 +8135,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       }
     }
 
-    // Group consecutive draw ops by their SMask state for masked rendering.
-    // Ops with the same SMask are rendered together to a temp canvas, masked, then composited.
-    // When ops have an outerSmask (form-level mask that wraps ops with their own inner smask),
-    // group by outerSmask so the form's combined output gets the outer mask applied once.
     const opGroups = [];
     {
       let prevKey = '';
@@ -8192,10 +8142,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         const outerSmask = op.outerSmask || null;
         const smask = op.smask || null;
         const groupId = op.groupId || null;
-        // Break consecutive ops by transparency-groupId first, then by outer/inner SMask key.
-        // Each transparency group renders to a private canvas and composites back with
-        // its own blendMode/alpha/SMask captured at flatten time.
-        // SMask-only groupings remain for forms that have an SMask without a /Group dictionary.
+        // Forms can carry an SMask without a /Group dictionary, so the smask key stays alongside the group key.
+        // outerSmask is a form-level mask over ops that have their own inner smask, and keying on it applies the outer mask to the whole form once.
         const groupKey = groupId !== null ? `g:${groupId}` : '';
         const smaskKey = outerSmask ? `outer:${outerSmask.formObjNum}` : (smask ? String(smask.formObjNum) : '');
         const key = `${groupKey}|${smaskKey}`;
@@ -8282,10 +8230,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             // Disposing here leaves a freed 1x1 canvas that SIGSEGVs the next composite.
             subCtx.globalCompositeOperation = 'source-over';
           }
-          // Preserve the blend mode from the sub-group's ops so the masked content
-          // blends correctly against the target canvas. Without this, Screen-blended
-          // white rects are composited with source-over, covering the image with white
-          // instead of brightening it through the gradient mask.
+          // Blending inside the isolated sub-canvas never sees the target, so re-apply the ops' blend mode when compositing the sub-canvas back.
           const subBlend = sub.ops[0]?.blendMode;
           if (subBlend && subBlend !== 'Normal') {
             targetCtx.globalCompositeOperation = pdfBlendToCanvas[subBlend] || subBlend.toLowerCase();
@@ -8299,20 +8244,14 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       }
     }
 
-    // Stack of active group canvases. Bottom is the page's main canvas; each
-    // entry above is a transparency group's private buffer. When the next
-    // opGroup belongs to a different group chain, we pop and composite up to
-    // the common ancestor, then push fresh canvases down to the target depth.
-    // `offX`/`offY` are the device-pixel origin of a tight group buffer and
-    // `w`/`h` its size (full-page values for non-tight buffers).
+    // Bottom entry is the page canvas and is never popped, and every entry above it is a transparency-group buffer.
+    // A tight buffer sets offX/offY/w/h to its device-pixel box, while a full-page buffer carries the page size, which is how tightness is detected later.
     /** @type {Array<{ctx: OffscreenCanvasRenderingContext2D, canvas: any, groupId: number|null, offX: number, offY: number, w: number, h: number}>} */
     const ctxStack = [{
       ctx, canvas: null, groupId: null, offX: 0, offY: 0, w: canvasWidth, h: canvasHeight,
     }];
 
-    // The Node.js canvas package defers drawImage(canvas) compositing and retains each
-    // source surface until the destination is read back.
-    // Read back one pixel from every live stack canvas periodically so retained sources are released.
+    // The Node.js canvas package defers drawImage(canvas) compositing and retains each source surface until the destination is read back.
     let compositeFlushCounter = 0;
     const flushComposites = () => {
       if ((++compositeFlushCounter % 12) !== 0) return;
@@ -8377,17 +8316,14 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     };
 
     /**
-     * Render a soft-masked op group into a buffer sized to a device-pixel bbox and
-     * composite it into the current stack buffer at that offset.
-     * Each op is shifted into the bbox's local space, the smask is built at the same bbox,
-     * and `destination-in` applies it. Returns false if the mask could not be built.
+     * Render a soft-masked op group into a buffer sized to a device-pixel bbox and composite it into the current stack buffer at that offset.
      * @param {Array<any>} ops
      * @param {any} smask
      * @param {number} bx
      * @param {number} by
      * @param {number} bw
      * @param {number} bh
-     * @returns {Promise<boolean>}
+     * @returns {Promise<boolean>} false if the mask could not be built
      */
     async function compositeTightSmaskGroup(ops, smask, bx, by, bw, bh) {
       const mask = await renderSMaskToCanvas(
@@ -8420,14 +8356,14 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     }
 
     /**
-     * Device-pixel bbox outside which the soft mask is guaranteed zero, or null.
-     * The masked result is content*mask, so this bounds the visible output even when the content's own extent is unknown (an unclipped standalone shading).
-     * Returns null unless the outside-content backdrop resolves to mask byte 0 (matching renderSMaskToCanvas's byte math) and every mask op is bounded by opDeviceBBox.
-     * The declared form /BBox cannot substitute, because our renderer does not clip mask content to it.
+     * Device-pixel bbox outside which the soft mask is guaranteed zero.
+     * The masked result is content*mask, so this bounds the visible output even when the content's own extent is unknown.
+     * Returns null unless the backdrop outside the mask content resolves to zero and every mask op has a computable bbox.
      * @param {any} smaskInfo
      * @returns {Promise<{x:number,y:number,w:number,h:number}|null>}
      */
     async function smaskOutsideZeroContentBBox(smaskInfo) {
+      // The declared form /BBox cannot substitute here, because the renderer does not clip mask content to it.
       const trFn = smaskInfo.tr || null;
       const clamp01 = (v) => Math.max(0, Math.min(1, v));
       let outsideByte;
@@ -8515,10 +8451,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       };
     }
 
-    // Size each isolatable group's buffer to its content bbox.
-    // Soft-mask groups qualify too: the result is content*mask,
-    // which is zero where the content is transparent,
-    // so clamping the buffer (and its mask) to the content bbox is lossless.
+    // A soft-masked group can be clamped to its content bbox too, because content*mask is zero wherever the content is transparent.
     /** @type {Map<number, {x:number,y:number,w:number,h:number}>} */
     const groupTightBBox = new Map();
     {
@@ -8528,9 +8461,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         const chain = getGroupChain(og.groupId);
         for (const dop of og.ops) {
           const bb = opDeviceBBox(dop);
-          // Pattern/shading fills are positioned by a page- or device-space matrix
-          // that shiftOpBy does not move, so they cannot render into a shifted tight
-          // buffer. Keep groups that contain them full-page.
+          // shiftOpBy does not move a pattern or shading matrix, so those fills would land wrong in a shifted tight buffer.
           const dpAny = /** @type {any} */ (dop);
           const untightable = !!(dop.outerSmask || dop.patternShading || dop.tilingPattern
             || dpAny.strokePatternShading || dpAny.strokeTilingPattern);
@@ -8557,9 +8488,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         const y = Math.max(0, Math.floor(e.minY) - 2);
         const right = Math.min(canvasWidth, Math.ceil(e.maxX) + 2);
         const bottom = Math.min(canvasHeight, Math.ceil(e.maxY) + 2);
-        // Content entirely outside the page clamps to a degenerate rect.
-        // A 1x1 buffer composited at its off-page origin contributes nothing
-        // and needs no full-page allocation.
+        // Content entirely off-page clamps to a degenerate rect.
+        // The resulting 1x1 buffer composites at its off-page origin and contributes nothing.
         const w = Math.max(1, right - x);
         const h = Math.max(1, bottom - y);
         if (w * h < canvasWidth * canvasHeight) {
@@ -8593,8 +8523,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
 
       const currentEntry = ctxStack[ctxStack.length - 1];
       const currentCtx = currentEntry.ctx;
-      // Device-pixel origin of the current buffer. When it is a tight group buffer,
-      // smask groups composited below must land at coordinates relative to it.
       const curOffX = currentEntry.offX;
       const curOffY = currentEntry.offY;
 
@@ -8623,11 +8551,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         currentCtx.drawImage(groupCanvas, -curOffX, -curOffY);
         ca.closeDrawable(groupCanvas);
       } else if (group.smask) {
-      // Fast path: when a smask group contains a single image op whose destination
-      // rectangle is small compared to the page, avoid allocating a full-page OffscreenCanvas.
-      // Instead render to a bbox-sized tight canvas and build the
-      // smask at the same tight size. Critical for pages where many per-image
-      // soft masks each allocated a full-page canvas.
+      // A page with many per-image soft masks allocates a full-page canvas for each one, so mask a bbox-sized canvas instead.
         const fastOp = (group.ops.length === 1
         && group.ops[0].type === 'image'
         && /** @type {any} */ (group.ops[0]).ctm
@@ -8665,10 +8589,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           const bboxH = bboxBottom - bboxY;
 
           if (bboxW > 0 && bboxH > 0 && bboxW * bboxH < canvasWidth * canvasHeight / 4) {
-          // Render the smask at bbox size instead of full-page. Each smask on this
-          // class of page is typically unique per image op, so there's no benefit to
-          // caching a full-page version in smaskCanvasCache — build it tight and
-          // throw it away.
+          // These masks are unique per image op, so a smaskCanvasCache entry would never be hit and would just retain a canvas per image.
             const fastBbox = {
               x: bboxX,
               y: bboxY,
@@ -8715,14 +8636,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           }
         }
 
-        // Form-XObject bbox fast path: when every op in this smask group came
-        // from the same top-level /Fmn Do and the form's /BBox projects to a
-        // small fraction of the page in canvas pixels, render into a tight
-        // canvas sized to that bbox instead of a full-page canvas. Each op's
-        // translation components and clip CTMs are shifted by (-bboxX,+bboxY)
-        // in PDF user-space so the output lands at (0,0) of the tight canvas.
-        // Key case: glossy magazine covers where 20+ shaded-ring Form XObjects
-        // each wrap a luminosity mask, and each bbox covers ~1% of the page.
+        // A clip entry carrying fromFormObjNum is the form's /BBox, so ops that share one can render into a canvas sized to it.
         let formBBoxFastHandled = false;
         if (!group.ops.some((o) => getTextClip(o))) {
           const firstFormClip = (() => {
@@ -8782,11 +8696,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         }
         if (formBBoxFastHandled) continue;
 
-        // General tight path: when the fast paths above did not match but every op is
-        // bounded and shiftable (no pattern/stroke-pattern fill, inner mask, or text clip),
-        // size the buffer to the union of op device bboxes.
-        // Catches masked content like a single clipped shading that is neither
-        // a single image nor a shared-form-clip group.
         let generalTightHandled = false;
         if (!group.ops.some((o) => getTextClip(o))) {
           let uMinX = Infinity;
@@ -8876,8 +8785,6 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           currentCtx.globalCompositeOperation = 'source-over';
         }
       } else {
-        // When the target is a tight group buffer, shift each op into the buffer's
-        // local space (it is composited back at its offset in popAndComposite).
         const tgtEntry = ctxStack[ctxStack.length - 1];
         const grpShift = tgtEntry.offX !== 0 || tgtEntry.offY !== 0;
         const grpDx = -tgtEntry.offX / scale;
@@ -8885,12 +8792,8 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         for (let opIdx = 0; opIdx < group.ops.length; opIdx++) {
           const op = grpShift ? shiftOpBy(group.ops[opIdx], grpDx, grpDy) : group.ops[opIdx];
 
-          // Gouraud ops render normally through renderPathOpSync (no skip).
-
           const textClipCharsForOp = getTextClip(op);
 
-          // Text clips usually cover a tiny label-sized region.
-          // Render the op and its glyph mask into a canvas sized to the glyph bbox.
           if (textClipCharsForOp) {
             const tb = textClipDeviceBBox(textClipCharsForOp);
             if (tb && tb.w > 0 && tb.h > 0 && tb.w * tb.h < canvasWidth * canvasHeight / 4) {
@@ -8942,9 +8845,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       await popAndComposite();
     }
   } catch (err) {
-    // Return a blank page instead so the process never crashes and the page is still present.
-    // The result carries `ok: false` and `failReason` so callers can flag a failure
-    // placeholder explicitly rather than inferring it from a blank-vs-baseline diff.
+    // Callers need ok:false and failReason to flag a failure placeholder, since a blank page is otherwise indistinguishable from a genuinely blank one.
     renderFailed = true;
     // The first stack frame localizes a caught draw-loop crash, which the message alone cannot.
     const frame = err instanceof Error && err.stack ? (err.stack.split('\n').find((l) => l.trimStart().startsWith('at ')) || '').trim() : '';
@@ -9033,12 +8934,7 @@ for (let n = 0; n < 256; n++) {
   crcTable[n] = c;
 }
 
-// Node's native CRC-32 is ~11× faster than the JS table-lookup version on
-// large inputs (measured: 3.5 ms vs 39 ms for 25 MB on Node 20). On the
-// fast PNG path the IDAT chunk is ~25 MB per page, so this single swap is
-// the difference between the fast path being net-faster and net-slower
-// than the compressed path. Falls back to the JS implementation in
-// browsers (no native CRC32 API).
+// Native CRC-32 is what keeps the fast PNG path net-faster than the compressed path, because its IDAT chunk runs to tens of megabytes per page.
 const zlibCrc32 = (typeof process !== 'undefined' && typeof process.versions?.node === 'string')
   ? (await import('node:zlib')).crc32
   : null;
@@ -9071,28 +8967,21 @@ function makePngChunk(type, data) {
   return chunk;
 }
 
-// Hoist Node zlib.deflateSync at module load so the hot path stays
-// microtask-free. In browsers this resolves to null and we use
-// CompressionStream (compressed) or writeStoredZlib (fast) instead.
+// Resolved once at module load so the hot path does not pay a dynamic import per call.
 const zlibDeflateSync = (typeof process !== 'undefined' && typeof process.versions?.node === 'string')
   ? (await import('node:zlib')).deflateSync
   : null;
 
 /**
  * Apply PNG Up filter (type 2) to RGBA pixel data while stripping alpha.
- * Output: one filter-type byte (2) per row followed by width*channels pixel
- * bytes. Row 0 has no predecessor so its bytes are the raw stripped pixels.
- *
- * Hand-tuned for V8: running source/destination pointers, the y=0 case
- * split out, and an unrolled 2-pixel inner loop in the color branch. About
- * 35% faster than the per-pixel-index form on typical page-sized inputs.
- *
  * @param {Uint8ClampedArray|Uint8Array} data - RGBA pixel bytes, length w*h*4
  * @param {number} width
  * @param {number} height
  * @param {boolean} isGray - produce single-channel output from R component
+ * @returns {Uint8Array} one filter-type byte (2) per row, followed by width*channels pixel bytes
  */
 function filterUpStripAlpha(data, width, height, isGray) {
+  // Rewriting the running pointers and unrolled inner loop as per-pixel indexing costs about a third of the throughput on page-sized inputs.
   const channels = isGray ? 1 : 3;
   const raw = new Uint8Array(height * (1 + width * channels));
   let d = 0;
@@ -9151,20 +9040,12 @@ const PNG_DEFLATE_LEVEL = 4;
 
 /**
  * Deflate for the compressed PNG path.
- * Node: zlib.deflateSync (sync, level `PNG_DEFLATE_LEVEL`), ~10% faster than piping
- * through CompressionStream because we avoid microtask overhead.
- * Browser: CompressionStream('deflate') (async). It exposes no level control,
- * so the browser path is unaffected by `PNG_DEFLATE_LEVEL`.
- *
- * We deliberately did NOT extract pako deflate for the browser sync path.
- * A sync pako.deflate at default level runs ~4× slower than CompressionStream
- * on typical page-sized inputs. This is different from inflate.
- *
  * @param {Uint8Array} raw
  * @returns {Promise<Uint8Array>|Uint8Array}
  */
 function deflateCompressed(raw) {
   if (zlibDeflateSync) return zlibDeflateSync(raw, { level: PNG_DEFLATE_LEVEL });
+  // CompressionStream exposes no level control, so PNG_DEFLATE_LEVEL does not reach the browser path.
   return deflateViaCompressionStream(raw);
 }
 
@@ -9192,14 +9073,7 @@ async function deflateViaCompressionStream(raw) {
 }
 
 /**
- * Assemble a PNG byte stream (signature + IHDR + IDAT + IEND) from an
- * already-deflated IDAT payload and convert it to a base64 data URL.
- * Shared between the compressed and fast encoder paths.
- *
- * Base64: Node uses Buffer.from(...).toString('base64') which is ~400×
- * faster than the String.fromCharCode + btoa loop. Browsers keep the loop
- * since Buffer isn't available.
- *
+ * Assemble a PNG byte stream from an already-deflated IDAT payload and convert it to a base64 data URL.
  * @param {number} width
  * @param {number} height
  * @param {boolean} isGray
@@ -9227,6 +9101,7 @@ function assemblePngDataUrl(width, height, isGray, compressedData) {
   pngBytes.set(idatChunk, pos); pos += idatChunk.length;
   pngBytes.set(iendChunk, pos);
 
+  // Buffer's native base64 is far faster than the String.fromCharCode plus btoa loop below, so this branch is not redundant.
   if (typeof Buffer !== 'undefined') {
     return `data:image/png;base64,${Buffer.from(pngBytes.buffer, pngBytes.byteOffset, pngBytes.byteLength).toString('base64')}`;
   }
