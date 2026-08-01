@@ -171,9 +171,19 @@ export function analyzeLayout(pages, opts = {}) {
   // Phase 2: document style model.
   /** @type {Map<number, number>} */
   const sizeChars = new Map();
-  for (const f of feats) if (f.size) sizeChars.set(f.size, (sizeChars.get(f.size) || 0) + f.nChar);
-  let bodySize = 0; let bodySizeChars = -1;
-  for (const [sz, c] of sizeChars) if (c > bodySizeChars) { bodySizeChars = c; bodySize = sz; }
+  let sizeCharsTotal = 0;
+  for (const f of feats) {
+    if (!f.size) continue;
+    sizeChars.set(f.size, (sizeChars.get(f.size) || 0) + f.nChar);
+    sizeCharsTotal += f.nChar;
+  }
+  // In note-heavy documents the small note type out-masses the body, and a note-sized bodySize reads every true body line as oversized display text.
+  let sizeMode = 0; let sizeModeChars = -1; let bodySize = 0;
+  for (const [sz, c] of sizeChars) {
+    if (c > sizeModeChars) { sizeModeChars = c; sizeMode = sz; }
+    if (sizeCharsTotal > 0 && c / sizeCharsTotal >= 0.30 && sz > bodySize) bodySize = sz;
+  }
+  if (!bodySize) bodySize = sizeMode;
   if (!bodySize) bodySize = quantile(feats.map((f) => f.size).filter(Boolean), 0.5) || 10;
 
   // Line numbers: the integer column down the left margin of legal depositions/pleadings/transcripts, one per text line, dropped as furniture from reflowed text.
@@ -367,7 +377,7 @@ export function analyzeLayout(pages, opts = {}) {
     let pb = chosen || dominant || bodySize;
     // The document's own body size wins when it is present on the page in quantity yet a smaller note regime out-masses it and would take the >=30% test.
     // Without this an endnote-heavy page reads its own body as oversized and mis-promotes ordinary lines to display headings.
-    if (bodySize > pb && totalChars > 0 && docBodyChars / totalChars >= 0.15) pb = bodySize;
+    if (bodySize > pb && totalChars > 0 && docBodyChars / totalChars >= 0.10) pb = bodySize;
     pageBodySize.set(p, pb);
   }
 
@@ -1403,6 +1413,47 @@ export function analyzeLayout(pages, opts = {}) {
           cur = g;
         }
       }
+    }
+    // A page-bottom run of these same baseline markers with no notes heading is a plain footnote tail, not an endnote section.
+    // Region evidence replaces the missing separator rule.
+    // The whole region is the note block, so a long note's continuation paragraphs stay notes.
+    for (const [p, pf] of byPage) {
+      const rp = bodyRefLabels.get(p);
+      if (!rp) continue;
+      const regionContent = pf.filter((f) => !f.runningFurniture && !f.folio && !f.lineNum && f.nChar >= 2);
+      const opener = regionContent
+        .filter((f) => baselineOpens(f) && !f.endnote && !f.inTable && f.sizeRatio <= 0.86
+          && rp.has(String(f.enumerator.value))
+          && !regionContent.some((g) => g.top > f.top && g.size > f.size * 1.15))
+        .sort((a, b) => a.top - b.top)[0];
+      if (!opener) continue;
+      for (const f of regionContent) if (f.top >= opener.top && !f.inTable) f.footnoteBlock = true;
+    }
+    // A note that spills across the page break continues at the bottom of the next page with no marker, so the opener-keyed loop above cannot reach it.
+    // The previous page's open block (its last content line mid-sentence) is the evidence tying the next page's bottom run to the note.
+    // Ascending page order chains a note spilling across several pages.
+    for (let p = 1; p < pages.length; p++) {
+      const prevPf = byPage.get(p - 1);
+      const pf = byPage.get(p);
+      if (!prevPf || !pf) continue;
+      const prevContent = prevPf.filter((f) => !f.runningFurniture && !f.folio && !f.lineNum && f.nChar >= 2);
+      const prevLast = prevContent.reduce((a, b) => (!a || b.top > a.top ? b : a), null);
+      if (!prevLast || !prevLast.footnoteBlock || prevLast.endsTerminal) continue;
+      const content = pf.filter((f) => !f.runningFurniture && !f.folio && !f.lineNum && f.nChar >= 2);
+      const marked = content.filter((f) => f.footnoteBlock);
+      const regionTop = marked.length ? Math.min(...marked.map((f) => f.top)) : Infinity;
+      const zone = content.filter((f) => f.top < regionTop).sort((a, b) => a.top - b.top);
+      const tail = [];
+      // Walking up from the zone's bottom keeps the run bottom-anchored, so a small-type block with body text below it never qualifies.
+      let belowTop = regionTop;
+      for (let i = zone.length - 1; i >= 0; i--) {
+        const f = zone[i];
+        if (f.inTable || f.sizeRatio > 0.86) break;
+        if (Number.isFinite(belowTop) && belowTop - f.top > leading * 2.2) break;
+        tail.unshift(f);
+        belowTop = f.top;
+      }
+      for (const f of tail) f.footnoteBlock = true;
     }
   }
 
