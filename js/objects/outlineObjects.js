@@ -41,6 +41,37 @@ export function makeOutlineNode({
 }
 
 /**
+ * Build a nested outline tree from detected headings.
+ * @param {Array<{title: string, pageIndex: number, yFrac: ?number, level: ?number}>} headings
+ * @param {number} [minCoverage] - Leveled fraction below which the result is flat.
+ * @returns {Array<OutlineNode>}
+ */
+export function nestHeadingOutline(headings, minCoverage = 0) {
+  const leveled = headings.filter((h) => h.level != null).length;
+  // The coverage floor is off by default because a level is only assigned where the document already showed a coherent ladder.
+  // Junk-heavy documents legitimately carry many unleveled title paragraphs around a solid ladder.
+  const flat = leveled < 3 || leveled / headings.length < minCoverage;
+  /** @type {Array<OutlineNode>} */
+  const roots = [];
+  /** @type {Array<{node: OutlineNode, level: number}>} */
+  const stack = [];
+  let last = 1;
+  for (const h of headings) {
+    const node = makeOutlineNode({
+      title: h.title,
+      dest: { pageIndex: h.pageIndex, view: ['Fit'], yFrac: h.yFrac ?? undefined },
+    });
+    const level = flat ? 1 : (h.level ?? last);
+    last = level;
+    while (stack.length && stack[stack.length - 1].level >= level) stack.pop();
+    if (stack.length) stack[stack.length - 1].node.children.push(node);
+    else roots.push(node);
+    stack.push({ node, level });
+  }
+  return roots;
+}
+
+/**
  * Assign a fresh id to every node so an incoming outline has ids unique within this module's counter.
  * The ids may come from another counter, such as the parse worker's separate module instance.
  * Mutates in place and returns the same array.
