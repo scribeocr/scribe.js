@@ -90,6 +90,15 @@ describe('Check export for .pdf files.', () => {
     expect(freshId !== null, 'a freshly built PDF must carry a file identifier').toBe(true);
     expect(freshId[0], 'a first write must set both file identifier elements alike').toBe(freshId[1]);
 
+    const freshText = new TextDecoder('latin1').decode(new Uint8Array(exportedPdf));
+    const xrefOffset = Number(/startxref\s+(\d+)/.exec(freshText.slice(freshText.lastIndexOf('startxref')))[1]);
+    const xrefHeader = /^xref\n(\d+) (\d+)\n/.exec(freshText.slice(xrefOffset));
+    expect(xrefHeader && xrefHeader[1], 'a fresh build writes one cross-reference subsection starting at object 0').toBe('0');
+    expect(xrefHeader[2], 'the cross-reference subsection must cover every object in the fresh build').toBe('318');
+    const entriesStart = xrefOffset + xrefHeader[0].length;
+    expect(freshText.indexOf('trailer', entriesStart) - entriesStart,
+      'ISO 32000-2 7.5.4 requires every cross-reference entry to be exactly 20 bytes, so 318 entries occupy 6360').toBe(6360);
+
     scribe.ScribeDoc.defaults.displayMode = 'ebook';
 
     await doc.clear();

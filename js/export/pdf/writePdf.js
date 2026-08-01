@@ -292,13 +292,14 @@ export async function writePdf({
 
   const xrefOffset = byteLen;
 
+  // The trailing space pads each entry to the 20 bytes the spec requires.
   let xrefStr = `xref\n0 ${objCount}\n`;
-  xrefStr += '0000000000 65535 f\n';
+  xrefStr += '0000000000 65535 f \n';
   for (let i = 0; i < xrefArr.length; i++) {
     if (xrefArr[i].type === 'obj') {
-      xrefStr += `${String(xrefArr[i].offset).padStart(10, '0')} 00000 n\n`;
+      xrefStr += `${String(xrefArr[i].offset).padStart(10, '0')} 00000 n \n`;
     } else {
-      xrefStr += '0000000000 65535 f\n';
+      xrefStr += '0000000000 65535 f \n';
     }
   }
 
