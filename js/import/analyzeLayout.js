@@ -992,9 +992,32 @@ export function analyzeLayout(pages, opts = {}) {
   const supRefRun = schemeRuns['sup-ref'];
   // note prose below a separator, excluding a centred folio/footer (anchored left of the note column)
   const noteLeftMax = (q) => (pageFlush.get(q) ?? bodyLeft) + bodySize * 4;
+  // The open-note test below reads an unpunctuated final line as a note left unfinished, which presumes this document's notes normally end punctuated.
+  // Citation-style notes (a bare page or Bates number) flout that convention, so it is first measured on notes that are provably complete.
+  // A note followed by another marker on the same page cannot be open.
+  const isNoteOpener = (f, pageH) => !f.lineNum && f.bottom / pageH > 0.5
+    && f.firstWordSup && f.enumerator && f.enumerator.scheme === 'sup-ref'
+    && supRefRun && supRefRun.active && supRefRun.sequenceValues
+    && f.enumerator.value != null && supRefRun.sequenceValues.has(f.enumerator.value);
+  let completedNotes = 0;
+  let completedUnpunct = 0;
+  for (let q = 0; q < pages.length; q++) {
+    const qh = pages[q].dims?.height || 0;
+    if (!qh) continue;
+    const openers = pageFeats3[q].filter((f) => isNoteOpener(f, qh)).sort((a, b) => a.top - b.top);
+    for (let k = 0; k + 1 < openers.length; k++) {
+      const zone = pageFeats3[q].filter((f) => !f.inTable && !f.lineNum
+        && f.left < noteLeftMax(q) && f.top >= openers[k].top && f.top < openers[k + 1].top);
+      if (!zone.length) continue;
+      const last = zone.reduce((a, b) => (b.top > a.top ? b : a));
+      completedNotes += 1;
+      if (!/[.!?)”’"']\s*$/.test(last.text.trim())) completedUnpunct += 1;
+    }
+  }
+  const notesEndUnpunct = completedNotes >= 2 && completedUnpunct * 2 > completedNotes;
   for (let p = 1; p < pages.length; p++) {
     // rawSepAnyY takes the separator at any height with no low-on-page guard because the cross-page continuation test below is the real gate.
-    // That test requires an open footnote on p-1, so a high separator alone cannot open a spurious region.
+    // That test requires an open footnote on p-1 and a bottom-anchored note zone on p, since an open note alone does not stop a high separator opening a spurious region.
     const sepCur = rawSepAnyY.get(p);
     if (sepCur == null) continue;
     const prevH = pages[p - 1].dims?.height || 0;
@@ -1039,13 +1062,16 @@ export function analyzeLayout(pages, opts = {}) {
     if (!realNotes.length) continue;
     // an open note reaches the page bottom and ends without terminal punctuation
     const lastPrev = prevNotes.reduce((a, b) => (b.bottom > a.bottom ? b : a));
-    if (lastPrev.bottom / prevH <= 0.8 || /[.!?)”’"']\s*$/.test(lastPrev.text.trim())) continue;
+    if (notesEndUnpunct || lastPrev.bottom / prevH <= 0.8 || /[.!?)”’"']\s*$/.test(lastPrev.text.trim())) continue;
     // A last line much larger than the real notes is body text that reached the page bottom unpunctuated via a column break, not an open note.
     // Treating it as the open note cascades whole magazine-layout pages into the note role page after page.
     if (lastPrev.size > Math.max(...realNotes.map((g) => g.size)) * 1.15) continue;
     const curNotes = pageFeats3[p].filter((f) => f.top > sepCur && !f.inTable
       && !f.allCaps && /[A-Za-z]{2,}/.test(f.text) && f.left < noteLeftMax(p));
     if (!curNotes.length) continue;
+    // A continued note is bottom-anchored like any footnote, so a zone whose last line leaves most of the page blank below it is not one.
+    const curH = pages[p].dims?.height || 0;
+    if (!curH || Math.max(...curNotes.map((f) => f.bottom)) / curH < 0.75) continue;
     // p's note-zone opener: a continuation carries no active sup-ref marker (a new note would), neither leading its line nor as a standalone fragment on its row.
     const opener = curNotes.reduce((a, b) => (b.top < a.top ? b : a));
     const openerIsMarker = !!(opener.firstWordSup && opener.enumerator
@@ -1171,9 +1197,12 @@ export function analyzeLayout(pages, opts = {}) {
     // A section running-footer or section head is exempt because its contiguous run is positive evidence in its own right.
     const belowRecurrenceGate = keyPages.size < Math.max(3, contentPageCount * 0.25) && !sectionFooter;
     if (belowRecurrenceGate && !sectionHead) continue;
+    // Majority rather than any single instance, so one spurious superscript inside a genuine Bates run cannot exempt the whole stamp.
+    const supLed = insts.filter((i) => i.sup).length * 2 >= insts.length;
+    const pageTracking = !supLed && best >= Math.max(3, keyPages.size * 0.6);
     // Furniture established by a page-tracking number (offset recurrence or a section running-footer), as opposed to the text-only section-head / style paths below.
-    const numberBased = sectionFooter || best >= Math.max(3, keyPages.size * 0.6);
-    let furniture = sectionFooter || sectionHead || best >= Math.max(3, keyPages.size * 0.6);
+    const numberBased = sectionFooter || pageTracking;
+    let furniture = sectionFooter || sectionHead || pageTracking;
     if (!furniture) {
       // Style alone (short + all-caps or bold) can still match real running content, so the prose guard excludes a mixed-case line that reads as an unfinished sentence.
       const allCapsKey = insts.filter((i) => i.allCaps).length * 2 >= insts.length;
@@ -1182,7 +1211,8 @@ export function analyzeLayout(pages, opts = {}) {
       const rep = insts[0].text.trim();
       const prose = !allCapsKey && rep.split(/\s+/).length >= 4
         && (/^[\p{Ll}),;]/u.test(rep) || !/[.!?]["')\]]*$/.test(rep) || /[,;(–-]$/.test(rep));
-      furniture = (allCapsKey || boldKey) && shortMark && !prose;
+      // An all-caps Bates-citation note ("7 ACME000227") passes the caps and length tests, so a superscript-led key is excluded here too.
+      furniture = (allCapsKey || boldKey) && shortMark && !prose && !supLed;
     }
     if (furniture) {
       furnitureKeys.add(key);
