@@ -76,6 +76,30 @@ The "raw" fonts live in `raw/`. These are fonts downloaded from various 3rd part
 		- mupdf: `resources/fonts/urw/StandardSymbolsPS.cff`
 	- Built by `script/generate_fonts.sh` without any subsetting (kept as-is from the source) and written to `prod/StandardSymbolsPS.woff`. Used to substitute the Base14 `Symbol` font when a PDF references it without embedding.
 
+## Signature Fonts
+Script fonts for the Fill & Sign typed-signature dialog. Unlike the fonts above, these are only ever consumed by the browser (`FontFace` plus canvas rasterization to PNG) and never pass through the in-repo font tooling. Built files in `fonts/signature/`.
+
+- Alex Brush
+	- Source: Google Fonts
+		- https://fonts.google.com/specimen/Alex+Brush
+	- Files:
+		- `signature/AlexBrush-Regular.ttf`
+- Bad Script
+	- Source: Google Fonts
+		- https://fonts.google.com/specimen/Bad+Script
+	- Files:
+		- `signature/BadScript-Regular.ttf`
+- Ms Madi
+	- Source: Google Fonts
+		- https://fonts.google.com/specimen/Ms+Madi
+	- Files:
+		- `signature/MsMadi-Regular.ttf`
+- Sacramento
+	- Source: Google Fonts
+		- https://fonts.google.com/specimen/Sacramento
+	- Files:
+		- `signature/Sacramento-Regular.ttf`
+
 # Font Generation
 The fonts included in the live site are standardized versions of the raw fonts found in `raw/`.  The appearance of the fonts should not change, however modifications are made to either (1) reduce file sizes or (2) standardize the fonts to make working with them easier.  For example, all files are converted to `.woff` (compressed and optimized for web) and subset to include a standard set of characters.  The following 4 bash scripts are used to create the fonts used by the application.
 
@@ -94,6 +118,11 @@ The vast majority of the glyphs in the raw fonts are unused by most users.  Ther
 	- For URW Base 35 fonts (Nimbus\*, C059, P052, URWGothic): every codepoint present in the source font.  The URW sources are small enough that keeping everything is cheap.
 	- For Carlito and EBGaramond: `Latin` + Cyrillic + Greek (`charSetCyrillic.txt` + `charSetGreek.txt`).  Their TTF sources carry large tails of rarely-used glyphs, so they stay subset to keep file sizes reasonable.
 	- In both cases ligature features are still stripped.
+
+- `Signature`
+	- Latin set only, with no `Latin`/`All` split; each font keeps whatever subset of that list its source actually covers.
+	- Ligature features are kept, unlike the sets above. Browsers shape typed signatures as whole runs, and these script fonts substitute `fi`/`ffi` ligature forms.
+	- Output is `.woff2` rather than `.woff`. The in-repo font parser reads WOFF1 (zlib) but not WOFF2 (brotli); signature fonts never pass through it, so they can take WOFF2's ~18% smaller output.
 
 Note that CJK fonts are handled in a different manner, as these require entirely separate font files.
 

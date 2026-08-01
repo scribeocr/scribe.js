@@ -59,10 +59,10 @@ function pxPerPt(viewer, n) {
 }
 
 export const SIGNATURE_FONTS = [
-  { name: 'Alex Brush', file: 'AlexBrush-Regular.ttf' },
-  { name: 'Bad Script', file: 'BadScript-Regular.ttf' },
-  { name: 'Ms Madi', file: 'MsMadi-Regular.ttf' },
-  { name: 'Sacramento', file: 'Sacramento-Regular.ttf' },
+  { name: 'Alex Brush', file: 'AlexBrush-Regular.woff2' },
+  { name: 'Bad Script', file: 'BadScript-Regular.woff2' },
+  { name: 'Ms Madi', file: 'MsMadi-Regular.woff2' },
+  { name: 'Sacramento', file: 'Sacramento-Regular.woff2' },
 ];
 let fontsLoaded = null;
 

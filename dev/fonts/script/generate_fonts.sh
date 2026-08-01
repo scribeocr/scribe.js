@@ -149,3 +149,16 @@ mv "$proc_fonts_dir"/latin/URWGothic-Book.woff "$proc_fonts_dir"/latin/URWGothic
 mv "$proc_fonts_dir"/latin/URWGothic-BookOblique.woff "$proc_fonts_dir"/latin/URWGothicBook-Italic.woff
 mv "$proc_fonts_dir"/latin/URWGothic-Demi.woff "$proc_fonts_dir"/latin/URWGothicBook-Bold.woff
 mv "$proc_fonts_dir"/latin/URWGothic-DemiOblique.woff "$proc_fonts_dir"/latin/URWGothicBook-BoldItalic.woff
+
+## Unlike the fonts above, signature fonts are only consumed by the browser and never parsed by the in-repo font tooling.
+## Ligature features are kept because the browser shapes typed signatures as whole runs, and these script fonts substitute fi/ffi forms.
+## The output is WOFF2, which the in-repo parser cannot read but compresses smaller than WOFF.
+mkdir -p "$proc_fonts_dir/signature"
+for file in "$raw_fonts_dir"/signature/*.ttf; do
+    filename=$(basename "$file")
+    filename_without_extension="${filename%.*}"
+    echo "Processing $file"
+    file_temp_sig="$temp_dir/$filename_without_extension.sig.ttf"
+    hb-subset --glyph-names --output-file="$file_temp_sig" --text="$LATINBASE$LATINEXT" "$file"
+    fontforge -quiet -lang=ff -c 'Open($1); Generate($2)' "$file_temp_sig" "$proc_fonts_dir/signature/$filename_without_extension.woff2"
+done
