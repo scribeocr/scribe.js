@@ -4827,239 +4827,231 @@ export const symbolToUnicode = {
   254: 0x23AD,
 };
 
+// Wingdings charCode → Unicode, per the official mapping in proposal N4384 (UTC L2/12-368).
+// 0xFF (Windows logo) was never encoded, so it has no entry.
 export const wingdingsToUnicode = {
   32: 0x0020, // space
-  33: 0x270F, // ✏ pencil
-  34: 0x2702, // ✂ scissors
-  35: 0x2701, // ✁ upper-blade scissors
+  33: 0x1F589, // 🖉 lower left pencil
+  34: 0x2702, // ✂ black scissors
+  35: 0x2701, // ✁ upper blade scissors
   36: 0x1F453, // 👓 eyeglasses
-  37: 0x1F514, // 🔔 bell
-  38: 0x1F4D6, // 📖 book
+  37: 0x1F56D, // 🕭 ringing bell
+  38: 0x1F56E, // 🕮 open book
   39: 0x1F56F, // 🕯 candle
-  40: 0x1F4DE, // 📞 telephone receiver
+  40: 0x1F57F, // 🕿 black touchtone telephone
   41: 0x2706, // ✆ telephone location sign
-  42: 0x1F4EA, // 📪 closed mailbox
-  43: 0x1F4EB, // 📫 open mailbox
-  44: 0x1F4EC, // 📬 open mailbox with raised flag
-  45: 0x1F4ED, // 📭 open mailbox with lowered flag
-  46: 0x1F5CF, // 🗏 page
-  47: 0x1F5D0, // 🗐 pages
-  48: 0x1F5C4, // 🗄 file cabinet
-  49: 0x231B, // ⌛ hourglass
-  50: 0x2328, // ⌨ keyboard
-  51: 0x1F5B1, // 🖱 mouse
-  52: 0x1F5B2, // 🖲 trackball
-  53: 0x1F4BB, // 💻 computer
-  54: 0x1F4C0, // 💀 — actually hard disk
-  55: 0x1F5AB, // 🖫 floppy disk (3.5")
-  56: 0x1F5AC, // 🖬 floppy disk (5.25")
-  57: 0x270D, // ✍ writing hand
-  58: 0x1F58E, // 🖎 — left writing hand
-  59: 0x270C, // ✌ victory hand
-  60: 0x1F44C, // 👌 OK hand
-  61: 0x1F44D, // 👍 thumbs up
-  62: 0x1F44E, // 👎 thumbs down
-  63: 0x261C, // ☜ left pointing
-  64: 0x261E, // ☞ right pointing
-  65: 0x261D, // ☝ up pointing
-  66: 0x261F, // ☟ down pointing
-  67: 0x270B, // ✋ raised hand
-  68: 0x263A, // ☺ smiley
-  69: 0x1F610, // 😐 neutral face
-  70: 0x2639, // ☹ frowning face
-  71: 0x1F4A3, // 💣 bomb
-  72: 0x2620, // ☠ skull and crossbones
-  73: 0x1F3F3, // 🏳 white flag
-  74: 0x1F3F1, // 🏱 pennant
-  75: 0x2708, // ✈ airplane
-  76: 0x263C, // ☼ sun
-  77: 0x1F4A7, // 💧 droplet
-  78: 0x2744, // ❄ snowflake
-  79: 0x271E, // ✞ cross
-  80: 0x2720, // ✠ Maltese cross
-  81: 0x2721, // ✡ Star of David
-  82: 0x262A, // ☪ star and crescent
-  83: 0x262F, // ☯ yin yang
-  84: 0x0950, // ॐ Om
-  85: 0x2638, // ☸ wheel of dharma
-  86: 0x2648, // ♈ Aries
-  87: 0x2649, // ♉ Taurus
-  88: 0x264A, // ♊ Gemini
-  89: 0x264B, // ♋ Cancer
-  90: 0x264C, // ♌ Leo
-  91: 0x264D, // ♍ Virgo
-  92: 0x264E, // ♎ Libra
-  93: 0x264F, // ♏ Scorpio
-  94: 0x2650, // ♐ Sagittarius
-  95: 0x2651, // ♑ Capricorn
-  96: 0x2652, // ♒ Aquarius
-  97: 0x2653, // ♓ Pisces
-  // 98-111: various symbols
-  98: 0x0026,
-  99: 0x0026,
-  100: 0x25CF,
-  101: 0x25CB,
-  102: 0x1F549,
-  103: 0x25C6,
-  104: 0x25C7,
-  105: 0x25A0,
-  106: 0x25A1,
-  107: 0x25A1,
-  108: 0x2751,
-  109: 0x2752,
-  110: 0x2B27,
-  111: 0x2327,
-  // 112-124: various
-  112: 0x2BB9,
-  113: 0x2318,
-  114: 0x1F3F5,
-  115: 0x1F3F6,
-  116: 0x2756,
-  117: 0x1F568,
-  118: 0x1F569,
-  119: 0x1F56A,
-  120: 0x1F56B,
-  121: 0x1F56C,
-  122: 0x1F56D,
-  123: 0x24EA,
-  124: 0x2460,
-  125: 0x2461,
-  126: 0x2462,
-  // 128-137: circled numbers 4-10, negative circled numbers
-  128: 0x2463,
-  129: 0x2464,
-  130: 0x2465,
-  131: 0x2466,
-  132: 0x2467,
-  133: 0x2468,
-  134: 0x2469,
-  135: 0x2776,
-  136: 0x2777,
-  137: 0x2778,
-  138: 0x2779,
-  139: 0x277A,
-  140: 0x277B,
-  141: 0x277C,
-  142: 0x277D,
-  143: 0x277E,
-  144: 0x277F,
-  // 145-181: arrows and special symbols
-  145: 0x1F662,
-  146: 0x1F660,
-  147: 0x1F661,
-  148: 0x1F663,
-  149: 0x1F65E,
-  150: 0x1F65C,
-  151: 0x1F65D,
-  152: 0x1F65F,
-  153: 0x00B7,
-  154: 0x2022,
-  155: 0x25AA,
-  156: 0x25FE,
-  157: 0x25B2,
-  158: 0x25BC,
-  159: 0x25C4,
-  160: 0x25BA,
-  161: 0x2605,
-  162: 0x2736,
-  163: 0x2734,
-  164: 0x2739,
-  165: 0x2735,
-  166: 0x2B51,
-  167: 0x2B52,
-  168: 0x2B53,
-  169: 0x2B54,
-  170: 0x2B5A,
-  171: 0x2716,
-  172: 0x2B5C,
-  173: 0x2B50,
-  174: 0x2B5E,
-  175: 0x2B5F,
-  176: 0x29EB,
-  177: 0x25C6,
-  178: 0x2756,
-  179: 0x2B25,
-  180: 0x2327,
-  181: 0x2BB9,
-  // 182-199: circles, squares, arrows
-  182: 0x2B1F,
-  183: 0x2B20,
-  184: 0x2B21,
-  185: 0x2B22,
-  186: 0x25CB,
-  187: 0x25CF,
-  188: 0x25A1,
-  189: 0x25A0,
-  190: 0x2B23,
-  191: 0x25C7,
-  192: 0x25C6,
-  193: 0x2B25,
-  194: 0x2B26,
-  195: 0x2B27,
-  196: 0x2217,
-  197: 0x2B29,
-  198: 0x2318,
-  199: 0x2BC1,
-  // 200-215: arrows
-  200: 0x27E1,
-  201: 0x2B2D,
-  202: 0x2B2E,
-  203: 0x2B2F,
-  204: 0x2B30,
-  205: 0x21E6,
-  206: 0x21E8,
-  207: 0x21E7,
-  208: 0x21E9,
-  209: 0x2B1A,
-  210: 0x21E6,
-  211: 0x21E8,
-  212: 0x21E7,
-  213: 0x21E9,
-  214: 0x25AD,
-  215: 0x25AB,
-  216: 0x2B12,
-  217: 0x2B13,
-  218: 0x2B14,
-  219: 0x2B15,
-  220: 0x2B16,
-  221: 0x2B17,
-  222: 0x2B18,
-  223: 0x2B19,
-  224: 0x2B51,
-  225: 0x2B52,
-  226: 0x2B53,
-  227: 0x2B54,
-  // 228-239: various arrows and shapes
-  228: 0x1F678,
-  229: 0x1F679,
-  230: 0x1F67A,
-  231: 0x1F67B,
-  232: 0x1F668,
-  233: 0x1F669,
-  234: 0x1F66A,
-  235: 0x1F66B,
-  236: 0x1F66C,
-  237: 0x1F66D,
-  238: 0x1F66E,
-  239: 0x1F66F,
-  // 240-249: additional shapes
-  240: 0x232B,
-  241: 0x2326,
-  242: 0x2B48,
-  243: 0x2B4C,
-  244: 0x27A2,
-  245: 0x27B2,
-  246: 0x2B60,
-  247: 0x2B62,
-  248: 0x2B61,
-  249: 0x2B63,
-  // 250-255: checkmarks and crosses (the critical range for this fix)
-  250: 0x1F5F6, // 🗶 — ballot X heavy
-  251: 0x2714, // ✔ heavy check mark
+  42: 0x1F582, // 🖂 back of envelope
+  43: 0x1F583, // 🖃 stamped envelope
+  44: 0x1F4EA, // 📪 closed mailbox with
+  45: 0x1F4EB, // 📫 closed mailbox with raised
+  46: 0x1F4EC, // 📬 open mailbox with raised
+  47: 0x1F4ED, // 📭 open mailbox with lowered
+  48: 0x1F5C0, // 🗀 folder
+  49: 0x1F5C1, // 🗁 open folder
+  50: 0x1F5CE, // 🗎 document
+  51: 0x1F5CF, // 🗏 page
+  52: 0x1F5D0, // 🗐 pages
+  53: 0x1F5C4, // 🗄 file cabinet
+  54: 0x23F3, // ⏳ hourglass with flowing
+  55: 0x1F5AE, // 🖮 wired keyboard
+  56: 0x1F5B0, // 🖰 two button mouse
+  57: 0x1F5B2, // 🖲 trackball
+  58: 0x1F5B3, // 🖳 old personal computer
+  59: 0x1F5B4, // 🖴 hard disk
+  60: 0x1F5AB, // 🖫 white hard shell floppy
+  61: 0x1F5AC, // 🖬 soft shell floppy disk
+  62: 0x2707, // ✇ tape drive
+  63: 0x270D, // ✍ writing hand
+  64: 0x1F58E, // 🖎 left writing hand
+  65: 0x270C, // ✌ victory hand
+  66: 0x1F58F, // 🖏 turned ok hand sign
+  67: 0x1F44D, // 👍 thumbs up sign
+  68: 0x1F44E, // 👎 thumbs down sign
+  69: 0x261C, // ☜ white left pointing index
+  70: 0x261E, // ☞ white right pointing index
+  71: 0x261D, // ☝ white up pointing index
+  72: 0x1F597, // 🖗 white down pointing left hand index
+  73: 0x1F590, // 🖐 raised hand with fingers splayed
+  74: 0x263A, // ☺ white smiling face
+  75: 0x1F610, // 😐 neutral face
+  76: 0x2639, // ☹ white frowning face
+  77: 0x1F4A3, // 💣 bomb
+  78: 0x1F571, // 🕱 black skull and crossbones
+  79: 0x1F3F3, // 🏳 waving white flag
+  80: 0x1F3F1, // 🏱 white pennant
+  81: 0x2708, // ✈ airplane
+  82: 0x263C, // ☼ white sun with rays
+  83: 0x1F322, // 🌢 black droplet
+  84: 0x2744, // ❄ snowflake
+  85: 0x1F546, // 🕆 white latin cross
+  86: 0x271E, // ✞ shadowed white latin cross
+  87: 0x1F548, // 🕈 celtic cross
+  88: 0x2720, // ✠ maltese cross
+  89: 0x2721, // ✡ star of david
+  90: 0x262A, // ☪ star and crescent
+  91: 0x262F, // ☯ yin yang
+  92: 0x1F549, // 🕉 om symbol
+  93: 0x2638, // ☸ wheel of dharma
+  94: 0x2648, // ♈ aries
+  95: 0x2649, // ♉ taurus
+  96: 0x264A, // ♊ gemini
+  97: 0x264B, // ♋ cancer
+  98: 0x264C, // ♌ leo
+  99: 0x264D, // ♍ virgo
+  100: 0x264E, // ♎ libra
+  101: 0x264F, // ♏ scorpius
+  102: 0x2650, // ♐ sagittarius
+  103: 0x2651, // ♑ capricorn
+  104: 0x2652, // ♒ aquarius
+  105: 0x2653, // ♓ pisces
+  106: 0x1F670, // 🙰 script ligature et ornament
+  107: 0x1F675, // 🙵 swash ampersand ornament
+  108: 0x26AB, // ⚫ medium black circle
+  109: 0x1F53E, // 🔾 lower right shadowed white circle
+  110: 0x25FC, // ◼ black medium square
+  111: 0x1F78F, // 🞏 medium white square
+  112: 0x1F790, // 🞐 bold white square
+  113: 0x2751, // ❑ lower right shadowed white
+  114: 0x2752, // ❒ upper right shadowed white square
+  115: 0x1F79F, // 🞟 black medium small lozenge
+  116: 0x29EB, // ⧫ black lozenge
+  117: 0x25C6, // ◆ black diamond
+  118: 0x2756, // ❖ black diamond minus white x
+  119: 0x1F799, // 🞙 black medium small diamond
+  120: 0x2327, // ⌧ x in a rectangle box
+  121: 0x2BB9, // ⮹ up arrowhead in a rectangle box
+  122: 0x2318, // ⌘ place of interest sign
+  123: 0x1F3F5, // 🏵 rosette
+  124: 0x1F3F6, // 🏶 black rosette
+  125: 0x1F676, // 🙶 sans-serif heavy double turned comma quotation
+  126: 0x1F677, // 🙷 sans-serif heavy double comma quotation mark
+  128: 0x1F10B, // 🄋 dingbat circled sans-serif
+  129: 0x2780, // ➀ dingbat circled sans-serif
+  130: 0x2781, // ➁ dingbat circled sans-serif
+  131: 0x2782, // ➂ dingbat circled sans-serif
+  132: 0x2783, // ➃ dingbat circled sans-serif
+  133: 0x2784, // ➄ dingbat circled sans-serif
+  134: 0x2785, // ➅ dingbat circled sans-serif
+  135: 0x2786, // ➆ dingbat circled sans-serif
+  136: 0x2787, // ➇ dingbat circled sans-serif
+  137: 0x2788, // ➈ dingbat circled sans-serif
+  138: 0x2789, // ➉ dingbat circled sans-serif
+  139: 0x1F10C, // 🄌 dingbat negative circled sans
+  140: 0x278A, // ➊ dingbat negative circled
+  141: 0x278B, // ➋ dingbat negative circled
+  142: 0x278C, // ➌ dingbat negative circled
+  143: 0x278D, // ➍ dingbat negative circled
+  144: 0x278E, // ➎ dingbat negative circled
+  145: 0x278F, // ➏ dingbat negative circled
+  146: 0x2790, // ➐ dingbat negative circled
+  147: 0x2791, // ➑ dingbat negative circled
+  148: 0x2792, // ➒ dingbat negative circled
+  149: 0x2793, // ➓ dingbat negative circled
+  150: 0x1F662, // 🙢 north east pointing bud
+  151: 0x1F660, // 🙠 north west pointing bud
+  152: 0x1F661, // 🙡 south west pointing bud
+  153: 0x1F663, // 🙣 south east pointing bud
+  154: 0x1F65E, // 🙞 heavy north east pointing
+  155: 0x1F65C, // 🙜 heavy north west pointing
+  156: 0x1F65D, // 🙝 heavy south west pointing
+  157: 0x1F65F, // 🙟 heavy south east pointing
+  158: 0x2219, // ∙ bullet operator
+  159: 0x2022, // • bullet
+  160: 0x2B1D, // ⬝ black very small square
+  161: 0x2B58, // ⭘ heavy circle
+  162: 0x1F786, // 🞆 bold white circle
+  163: 0x1F788, // 🞈 very heavy white circle
+  164: 0x1F78A, // 🞊 white circle containing
+  165: 0x1F78B, // 🞋 round target
+  166: 0x1F53F, // 🔿 upper right shadowed white
+  167: 0x25AA, // ▪ black small square
+  168: 0x1F78E, // 🞎 light white square
+  169: 0x1F7C1, // 🟁 medium three pointed black
+  170: 0x1F7C5, // 🟅 medium four pointed black
+  171: 0x2605, // ★ black star
+  172: 0x1F7CB, // 🟋 medium six pointed black
+  173: 0x1F7CF, // 🟏 heavy eight pointed black
+  174: 0x1F7D3, // 🟓 heavy twelve pointed black
+  175: 0x1F7D1, // 🟑 heavy eight pointed pinwheel
+  176: 0x2BD0, // ⯐ square position indicator
+  177: 0x2316, // ⌖ position indicator
+  178: 0x2BCE, // ⯎ white four pointed cusp
+  179: 0x2BCF, // ⯏ rotated white four pointed
+  180: 0x2BD1, // ⯑ uncertainty sign
+  181: 0x272A, // ✪ circled white star
+  182: 0x2730, // ✰ shadowed white star
+  183: 0x1F550, // 🕐 clock face one oclock
+  184: 0x1F551, // 🕑 clock face two oclock
+  185: 0x1F552, // 🕒 clock face three oclock
+  186: 0x1F553, // 🕓 clock face four oclock
+  187: 0x1F554, // 🕔 clock face five oclock
+  188: 0x1F555, // 🕕 clock face six oclock
+  189: 0x1F556, // 🕖 clock face seven oclock
+  190: 0x1F557, // 🕗 clock face eight oclock
+  191: 0x1F558, // 🕘 clock face nine oclock
+  192: 0x1F559, // 🕙 clock face ten oclock
+  193: 0x1F55A, // 🕚 clock face eleven oclock
+  194: 0x1F55B, // 🕛 clock face twelve oclock
+  195: 0x2BB0, // ⮰ ribbon arrow down left
+  196: 0x2BB1, // ⮱ ribbon arrow down right
+  197: 0x2BB2, // ⮲ ribbon arrow up left
+  198: 0x2BB3, // ⮳ ribbon arrow up right
+  199: 0x2BB4, // ⮴ ribbon arrow left up
+  200: 0x2BB5, // ⮵ ribbon arrow right up
+  201: 0x2BB6, // ⮶ ribbon arrow left down
+  202: 0x2BB7, // ⮷ ribbon arrow right down
+  203: 0x1F66A, // 🙪 solid quilt square ornament
+  204: 0x1F66B, // 🙫 solid quilt square ornament in black square
+  205: 0x1F655, // 🙕 turned south west pointing leaf
+  206: 0x1F654, // 🙔 turned north west pointing leaf
+  207: 0x1F657, // 🙗 turned south east pointing leaf
+  208: 0x1F656, // 🙖 turned north east pointing leaf
+  209: 0x1F650, // 🙐 north west pointing leaf
+  210: 0x1F651, // 🙑 south west pointing leaf
+  211: 0x1F652, // 🙒 north east pointing leaf
+  212: 0x1F653, // 🙓 south east pointing leaf
+  213: 0x232B, // ⌫ erase to the left
+  214: 0x2326, // ⌦ erase to the right
+  215: 0x2B98, // ⮘ three-d top-lighted leftwards
+  216: 0x2B9A, // ⮚ three-d top-lighted rightwards
+  217: 0x2B99, // ⮙ three-d right-lighted upwards
+  218: 0x2B9B, // ⮛ three-d left-lighted downwards
+  219: 0x2B88, // ⮈ leftwards black circled white arrow
+  220: 0x2B8A, // ⮊ rightwards black circled white arrow
+  221: 0x2B89, // ⮉ upwards black circled white arrow
+  222: 0x2B8B, // ⮋ downwards black circled white arrow
+  223: 0x1F868, // 🡨 wide-headed leftwards barb arrow
+  224: 0x1F86A, // 🡪 wide-headed rightwards barb arrow
+  225: 0x1F869, // 🡩 wide-headed upwards barb arrow
+  226: 0x1F86B, // 🡫 wide-headed downwards barb arrow
+  227: 0x1F86C, // 🡬 wide-headed north west barb arrow
+  228: 0x1F86D, // 🡭 wide-headed north east barb arrow
+  229: 0x1F86F, // 🡯 wide-headed south west barb arrow
+  230: 0x1F86E, // 🡮 wide-headed south east barb arrow
+  231: 0x1F878, // 🡸 wide-headed leftwards heavy barb arrow
+  232: 0x1F87A, // 🡺 wide-headed rightwards heavy barb
+  233: 0x1F879, // 🡹 wide-headed upwards heavy barb arrow
+  234: 0x1F87B, // 🡻 wide-headed downwards heavy barb
+  235: 0x1F87C, // 🡼 wide-headed north west heavy barb
+  236: 0x1F87D, // 🡽 wide-headed north east heavy barb
+  237: 0x1F87F, // 🡿 wide-headed south west heavy barb
+  238: 0x1F87E, // 🡾 wide-headed south east heavy barb
+  239: 0x21E6, // ⇦ leftwards white arrow
+  240: 0x21E8, // ⇨ rightwards white arrow
+  241: 0x21E7, // ⇧ upwards white arrow
+  242: 0x21E9, // ⇩ downwards white arrow
+  243: 0x2B04, // ⬄ left right white arrow
+  244: 0x21F3, // ⇳ up down white arrow
+  245: 0x2B01, // ⬁ north west white arrow
+  246: 0x2B00, // ⬀ north east white arrow
+  247: 0x2B03, // ⬃ south west white arrow
+  248: 0x2B02, // ⬂ south east white arrow
+  249: 0x1F8AC, // 🢬 white arrow shaft width one
+  250: 0x1F8AD, // 🢭 white arrow shaft width two thirds
+  251: 0x1F5F6, // 🗶 ballot bold script x
   252: 0x2713, // ✓ check mark
-  253: 0x2612, // ☒ ballot box with X
-  254: 0x2611, // ☑ ballot box with check
-  255: 0x2B1C, // ⬜ white large square
+  253: 0x1F5F7, // 🗷 ballot box with bold script x
+  254: 0x1F5F9, // 🗹 ballot box with bold check
 };
 
 /**

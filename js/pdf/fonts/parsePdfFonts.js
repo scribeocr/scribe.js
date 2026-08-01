@@ -966,6 +966,30 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     // or if a fallback heuristic is being applied.
     const hasAuthoritativeToUnicode = toUnicode.size > 0 || toUnicodeIsIdentity;
 
+    let encodingText = fontObj;
+    {
+      const encRefMatch = /\/Encoding\s+(\d+)\s+\d+\s+R/.exec(fontObj);
+      if (encRefMatch) {
+        const encObj = objCache.getObjectText(Number(encRefMatch[1]));
+        if (encObj) encodingText = encObj;
+      }
+    }
+    let descriptorText = fontObj;
+    {
+      const descRefMatch = /\/FontDescriptor\s+(\d+)\s+\d+\s+R/.exec(fontObj);
+      if (descRefMatch) {
+        const dt = objCache.getObjectText(Number(descRefMatch[1]));
+        if (dt) descriptorText = dt;
+      }
+    }
+    const baseChars = (/\/Encoding\s*\/MacRomanEncoding/.test(fontObj) || /\/BaseEncoding\s*\/MacRomanEncoding/.test(encodingText)) ? macRomanChars
+      : (/\/Encoding\s*\/WinAnsiEncoding/.test(fontObj) || /\/BaseEncoding\s*\/WinAnsiEncoding/.test(encodingText) ? win1252Chars : null);
+    const descFlags = resolveIntValue(String(descriptorText), 'Flags', objCache, Number.NaN);
+    const isSymbolicByFlag = Number.isNaN(descFlags) ? false : (descFlags & 4) !== 0;
+    // PDF spec §9.6.6.4: a nonsymbolic font's named /Encoding is authoritative, while a symbolic font's /Encoding is ignored.
+    // Quartz re-encodes Symbol and Wingdings subsets to MacRoman and clears the Symbolic flag, so the built-in charts below would map every charCode to the wrong symbol.
+    const namedEncodingAuthoritative = !!baseChars && !isSymbolicByFlag;
+
     // Wingdings fonts: PDF producers often embed broken ToUnicode CMaps that map
     // charCodes to Latin-1 or MacRoman equivalents instead of the correct Wingdings
     // Unicode symbols. Two patterns exist:
@@ -975,13 +999,17 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     //       is the Wingdings glyph position. The codepoint >0xFF can't be a lookup key.
     // Strategy: try the codepoint as Wingdings key first (handles A), fall back to
     // the charCode itself (handles B), and populate missing entries from the table.
-    if (/^(?:.*\+)?Wingdings(?:-\w+)?$/i.test(baseName)) {
+    if (!namedEncodingAuthoritative && /^(?:.*\+)?Wingdings(?:-\w+)?$/i.test(baseName)) {
       for (const [cid, ch] of toUnicode) {
         const cp = ch.codePointAt(0);
+        // Case B fires only when the mapped codepoint is the charCode's own rendering under Latin-1, WinAnsi, or MacRoman, the fingerprint of a byte pushed through a text encoding.
+        // Subset fonts re-index charCodes and still map them correctly, so an unguarded case B would overwrite those valid entries.
+        const wrongEncodingArtifact = ch === String.fromCharCode(cid)
+          || (cid >= 32 && cid <= 255 && (ch === win1252Chars[cid - 32] || ch === macRomanChars[cid - 32]));
         if (cp !== undefined && cp <= 0xFF && wingdingsToUnicode[cp] !== undefined) {
           // Case A: codepoint is a Latin-1 char that doubles as a Wingdings position
           toUnicode.set(cid, String.fromCodePoint(wingdingsToUnicode[cp]));
-        } else if (wingdingsToUnicode[cid] !== undefined) {
+        } else if (wrongEncodingArtifact && wingdingsToUnicode[cid] !== undefined) {
           // Case B: charCode is the Wingdings position, codepoint is a wrong encoding
           toUnicode.set(cid, String.fromCodePoint(wingdingsToUnicode[cid]));
         }
@@ -994,7 +1022,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     }
 
     // Symbol font built-in encoding.
-    if (/^Symbol(?:[-,]\w+|[A-Za-z\d]*)$/i.test(baseName)) {
+    if (!namedEncodingAuthoritative && /^Symbol(?:[-,]\w+|[A-Za-z\d]*)$/i.test(baseName)) {
       const broken = toUnicode.size > 0 && toUnicode.get(65) === 'A';
       if (broken || toUnicode.size === 0) {
         for (const [ccStr, unicode] of Object.entries(symbolToUnicode)) {
@@ -1028,17 +1056,7 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
     let hasFontFile2 = false;
     let hasFontFile3 = false;
     {
-      // Resolve the Encoding: may be a predefined name, an inline dict, or an indirect reference
-      let encodingText = fontObj;
-      const encRefMatch = /\/Encoding\s+(\d+)\s+\d+\s+R/.exec(fontObj);
-      if (encRefMatch) {
-        const encObj = objCache.getObjectText(Number(encRefMatch[1]));
-        if (encObj) encodingText = encObj;
-      }
-
       // Build encodingUnicode from base encoding (always, regardless of ToUnicode)
-      const baseChars = (/\/Encoding\s*\/MacRomanEncoding/.test(fontObj) || /\/BaseEncoding\s*\/MacRomanEncoding/.test(encodingText)) ? macRomanChars
-        : (/\/Encoding\s*\/WinAnsiEncoding/.test(fontObj) || /\/BaseEncoding\s*\/WinAnsiEncoding/.test(encodingText) ? win1252Chars : null);
       if (baseChars) {
         for (let code = 32; code <= 255; code++) {
           const ch = baseChars[code - 32];
@@ -1061,13 +1079,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       // the font's built-in encoding (StandardEncoding for Type1). Only apply for Type1 PFA
       // fonts (/FontFile in descriptor), NOT CFF (/FontFile3) — CFF fonts handle their own
       // encoding via buildFontFromCFF's PUA cmap, and StandardEncoding entries would conflict.
-      // Resolve the descriptor to check /FontFile vs /FontFile3.
-      let descriptorText = fontObj;
-      const descRefMatch = /\/FontDescriptor\s+(\d+)\s+\d+\s+R/.exec(fontObj);
-      if (descRefMatch) {
-        const dt = objCache.getObjectText(Number(descRefMatch[1]));
-        if (dt) descriptorText = dt;
-      }
       hasFontFile = /\/FontFile\s+\d+\s+\d+\s+R/.test(String(descriptorText));
       hasFontFile2 = /\/FontFile2\s+\d+\s+\d+\s+R/.test(String(descriptorText));
       hasFontFile3 = /\/FontFile3\s+\d+\s+\d+\s+R/.test(String(descriptorText));
@@ -1076,12 +1087,10 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       const isType0 = /\/Subtype\s*\/Type0/.test(String(fontObj));
       const isType1Subtype = /\/Subtype\s*\/Type1\b/.test(String(fontObj));
       const isStd14Type1 = /^(Helvetica|Courier|Times-)/i.test(baseName);
-      const descFlags = resolveIntValue(String(descriptorText), 'Flags', objCache, Number.NaN);
       // For non-embedded non-Std14 Type1 fonts the Symbolic flag is the only
       // reliable signal that StandardEncoding is the wrong base. (For embedded
       // fonts the Symbolic flag is unreliable — many normal serif fonts ship
       // with it set, e.g. CenturyExpandedSC-Regular has Flags=6.)
-      const isSymbolicByFlag = Number.isNaN(descFlags) ? false : (descFlags & 4) !== 0;
       const eligibleForStdEnc = hasFontFile || isStd14Type1 || !isSymbolicByFlag;
       if (!baseChars && !isType0 && isType1Subtype && !hasFontFile2 && !hasFontFile3 && eligibleForStdEnc && !/ZapfDingbats|Symbol|Wingdings/i.test(baseName)) {
         // Prefer the embedded Type1 PFA's own /Encoding declaration when present —
@@ -1415,11 +1424,10 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
       }
     }
 
-    // Wingdings encodingUnicode correction: the base encoding (MacRoman/WinAnsi) and
-    // Differences→AGL produce wrong Unicode for Wingdings glyphs in encodingUnicode.
-    // Apply the same correction as the toUnicode block above so that code paths
-    // which prefer encodingUnicode (e.g. parsePdfDoc text extraction) get correct values.
-    if (/^(?:.*\+)?Wingdings(?:-\w+)?$/i.test(baseName)) {
+    // A Wingdings font's declared MacRoman/WinAnsi encoding resolves through AGL to meaningless Latin characters, so the chart must correct encodingUnicode as well.
+    // Case B needs no wrong-encoding-artifact guard here, unlike the toUnicode block above.
+    // encodingUnicode is keyed by content-stream codes from a declared encoding, so the code is the glyph position by construction.
+    if (!namedEncodingAuthoritative && /^(?:.*\+)?Wingdings(?:-\w+)?$/i.test(baseName)) {
       for (const [cid, ch] of encodingUnicode) {
         const cp = ch.codePointAt(0);
         if (cp !== undefined && cp <= 0xFF && wingdingsToUnicode[cp] !== undefined) {
