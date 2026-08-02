@@ -24,6 +24,23 @@ export const TEXT_ANNOT_ICON_PX = 24;
  */
 
 /**
+ * @typedef {Object} PdfShapeRaw
+ * @property {number} objNum
+ * @property {'Square'|'Circle'|'Line'|'Polygon'|'PolyLine'} subtype - PDF /Subtype: the shape kind.
+ * @property {[number, number, number, number]} rect - /Rect in pts, bottom-left origin.
+ * @property {[number, number, number]|null} color - /C stroke color normalized 0..1, or null if absent.
+ * @property {[number, number, number]|null} interiorColor - /IC fill color normalized 0..1, or null if absent.
+ * @property {number} opacity - /CA, defaults to 1 when absent.
+ * @property {number} borderWidth - /BS /W in pts, defaults to 1 when absent.
+ * @property {number[]|null} points - /L endpoints in pts for a Line, null otherwise.
+ * @property {number[]|null} vertices - /Vertices in pts for a Polygon or PolyLine, null otherwise.
+ * @property {string} comment - /Contents text (UTF-16BE or PDFDocEncoding decoded), '' when absent.
+ * @property {string} author - /T text, '' when absent.
+ * @property {?string} createdAt - /CreationDate as UTC ISO-8601, null when absent or unparseable.
+ * @property {AnnotationReply[]} [replies] - Lifted /IRT reply thread, oldest first.
+ */
+
+/**
  * Read the decoded PDF string value for `key` from an annotation object's text.
  * Returns '' when the key is absent.
  * @param {string} annotText
@@ -61,6 +78,27 @@ function parseAnnotPdfString(annotText, key, objCache) {
  * @property {AnnotationReply[]} [replies] - Lifted /IRT reply thread, oldest first.
  */
 
+const SHAPE_SUBTYPE_RE = /\/Subtype\s*\/(Square|Circle|Line|Polygon|PolyLine)\b/;
+
+/**
+ * True when a shape annotation carries only properties the writer reproduces.
+ * Those are stroke and interior color, opacity, border width, and geometry.
+ * A shape that fails this keeps its source object, because re-emitting it would redraw it from that subset alone.
+ * @param {string} annotText
+ * @returns {boolean}
+ */
+function shapeIsReproducible(annotText) {
+  // Cloudy borders (/BE), rect insets (/RD), line endings (/LE), rich-text bodies (/RC), and blend modes (/BM) have no representation in the model.
+  if (/\/(?:BE|RD|LE|RC|BM)(?![A-Za-z0-9])/.test(annotText)) return false;
+  // The writer emits a solid border of one width, so a dashed or non-solid /BS is out of reach.
+  const bs = /\/BS\s*<<([^>]*)>>/.exec(annotText);
+  if (bs && (/\/D(?![A-Za-z0-9])/.test(bs[1]) || /\/S\s*\/(?!S\b)/.test(bs[1]))) return false;
+  // A legacy /Border array carries its dash pattern in a fourth element.
+  const border = /\/Border\s*\[([^\]]*)\]/.exec(annotText);
+  if (border && border[1].trim() && border[1].trim().split(/\s+/).length > 3) return false;
+  return true;
+}
+
 /**
  * True when the annotation is one the importer lifts into the editable model rather than passing through.
  * The model re-emits these on export, so the source copy must be dropped or the annotation duplicates each round-trip.
@@ -76,6 +114,7 @@ export function annotIsModelManaged(annotText, objCache) {
   if (flags & 1 || flags & 2 || flags & 32) return false;
   // /Squiggly is deliberately absent: it stays a passthrough annotation.
   if (/\/Subtype\s*\/(?:Highlight|Underline|StrikeOut)\b/.test(annotText) || /\/Subtype\s*\/FreeText\b/.test(annotText)) return true;
+  if (SHAPE_SUBTYPE_RE.test(annotText)) return shapeIsReproducible(annotText);
   // Replies (/IRT) are excluded here because they are lifted into their root's thread instead.
   return /\/Subtype\s*\/Text\b/.test(annotText) && !/\/IRT\b/.test(annotText);
 }
@@ -219,7 +258,7 @@ function resolveLinkUri(annotText, objCache) {
  * @param {import('./objectCache.js').ObjectCache} objCache
  * @param {string} pageObjText
  * @returns {{ highlights: PdfHighlightRaw[], freeTexts: PdfFreeTextRaw[], textAnnots: PdfTextAnnotRaw[],
- *   redacts: PdfRedactRaw[], links: PdfLinkRaw[], widgets: PdfWidgetRaw[], passthroughRefs: number[] }}
+ *   shapes: PdfShapeRaw[], redacts: PdfRedactRaw[], links: PdfLinkRaw[], widgets: PdfWidgetRaw[], passthroughRefs: number[] }}
  */
 export function extractPdfAnnotations(objCache, pageObjText) {
   /** @type {PdfHighlightRaw[]} */
@@ -228,6 +267,8 @@ export function extractPdfAnnotations(objCache, pageObjText) {
   const freeTexts = [];
   /** @type {PdfTextAnnotRaw[]} */
   const textAnnots = [];
+  /** @type {PdfShapeRaw[]} */
+  const shapes = [];
   /** @type {PdfRedactRaw[]} */
   const redacts = [];
   /** @type {PdfLinkRaw[]} */
@@ -252,7 +293,7 @@ export function extractPdfAnnotations(objCache, pageObjText) {
   }
   if (!annotRefs || annotRefs.length === 0) {
     return {
-      highlights, freeTexts, textAnnots, redacts, links, widgets, passthroughRefs,
+      highlights, freeTexts, textAnnots, shapes, redacts, links, widgets, passthroughRefs,
     };
   }
 
@@ -453,6 +494,32 @@ export function extractPdfAnnotations(objCache, pageObjText) {
 
     const opacity = resolveNumValue(annotText, 'CA', objCache, 1);
 
+    const shapeMatch = SHAPE_SUBTYPE_RE.exec(annotText);
+    if (shapeMatch) {
+      const icStr = resolveArrayValue(annotText, 'IC', objCache);
+      const icNums = icStr ? icStr.split(/\s+/).map(Number) : null;
+      const lStr = resolveArrayValue(annotText, 'L', objCache);
+      const vStr = resolveArrayValue(annotText, 'Vertices', objCache);
+      const bsWidth = /\/BS\s*<<([^>]*)>>/.exec(annotText);
+      const shapeCreatedAt = parseAnnotPdfString(annotText, 'CreationDate', objCache);
+      shapes.push({
+        objNum: annotRef,
+        subtype: /** @type {'Square'|'Circle'|'Line'|'Polygon'|'PolyLine'} */ (shapeMatch[1]),
+        rect,
+        color,
+        interiorColor: icNums && icNums.length >= 3 && !icNums.some(Number.isNaN)
+          ? [icNums[0], icNums[1], icNums[2]] : null,
+        opacity,
+        borderWidth: bsWidth ? (resolveNumValue(bsWidth[1], 'W', objCache, 1) ?? 1) : 1,
+        points: lStr ? lStr.split(/\s+/).map(Number) : null,
+        vertices: vStr ? vStr.split(/\s+/).map(Number) : null,
+        comment: parseAnnotPdfString(annotText, 'Contents', objCache),
+        author: parseAnnotPdfString(annotText, 'T', objCache),
+        createdAt: shapeCreatedAt ? parsePdfDate(shapeCreatedAt) : null,
+      });
+      continue;
+    }
+
     if (isFreeText) {
       const da = resolveStringValue(annotText, 'DA', objCache) ?? '';
       const tfMatch = /([\d.]+)\s+Tf/.exec(da);
@@ -504,7 +571,7 @@ export function extractPdfAnnotations(objCache, pageObjText) {
   }
 
   if (repliesByRoot.size > 0) {
-    for (const raws of [highlights, freeTexts, textAnnots]) {
+    for (const raws of [highlights, freeTexts, textAnnots, shapes]) {
       for (const raw of raws) {
         const found = repliesByRoot.get(raw.objNum);
         if (!found) continue;
@@ -527,7 +594,7 @@ export function extractPdfAnnotations(objCache, pageObjText) {
   }
 
   return {
-    highlights, freeTexts, textAnnots, redacts, links, widgets, passthroughRefs,
+    highlights, freeTexts, textAnnots, shapes, redacts, links, widgets, passthroughRefs,
   };
 }
 
@@ -757,4 +824,75 @@ export function pdfTextAnnotToAnnotation(raw, transform) {
   if (raw.createdAt) annot.createdAt = raw.createdAt;
   if (raw.replies && raw.replies.length > 0) annot.replies = raw.replies;
   return annot;
+}
+
+/**
+ * Convert a PDF user-space shape annotation to the pixel-space `AnnotationShape` model.
+ *
+ * @param {PdfShapeRaw} raw
+ * @param {{ scale: number, visualHeightPts: number, initialCtm: number[] }} transform
+ * @returns {AnnotationShape}
+ */
+export function pdfShapeToAnnotation(raw, transform) {
+  const { scale, visualHeightPts, initialCtm } = transform;
+
+  const mapPoint = (x, y) => {
+    const cx = initialCtm[0] * x + initialCtm[2] * y + initialCtm[4];
+    const cy = initialCtm[1] * x + initialCtm[3] * y + initialCtm[5];
+    return { x: cx * scale, y: (visualHeightPts - cy) * scale };
+  };
+  const toHex = (rgb) => `#${rgb.map((c) => Math.round(Math.max(0, Math.min(1, c)) * 255).toString(16).padStart(2, '0')).join('')}`;
+
+  /** @type {AnnotationShapeStyle} */
+  const style = {
+    borderColor: toHex(raw.color || [0, 0, 0]),
+    opacity: raw.opacity,
+    // The stroke is a distance, so it scales into the bbox's pixel frame like a FreeText font size.
+    borderWidth: raw.borderWidth * scale * Math.hypot(initialCtm[2], initialCtm[3]),
+  };
+  if (raw.interiorColor) style.fillColor = toHex(raw.interiorColor);
+  if (raw.comment) style.comment = raw.comment;
+  if (raw.author) style.author = raw.author;
+  if (raw.createdAt) style.createdAt = raw.createdAt;
+  if (raw.replies && raw.replies.length > 0) style.replies = raw.replies;
+
+  // The writer re-emits this geometry, so falling back to the bbox would flatten a line or polygon onto the rectangle that bounds it.
+  if (raw.subtype === 'Line' && raw.points && raw.points.length >= 4) {
+    const a = mapPoint(raw.points[0], raw.points[1]);
+    const b = mapPoint(raw.points[2], raw.points[3]);
+    return { ...style, type: 'line', points: [a.x, a.y, b.x, b.y] };
+  }
+  if ((raw.subtype === 'Polygon' || raw.subtype === 'PolyLine') && raw.vertices && raw.vertices.length >= 4) {
+    const vertices = [];
+    for (let i = 0; i + 1 < raw.vertices.length; i += 2) {
+      const p = mapPoint(raw.vertices[i], raw.vertices[i + 1]);
+      vertices.push(p.x, p.y);
+    }
+    return { ...style, type: raw.subtype === 'Polygon' ? 'polygon' : 'polyline', vertices };
+  }
+
+  // The writer pads /Rect outward by the border width, so undo that here or every round-trip grows the box.
+  // It stays in points because /Rect has not been mapped into the pixel frame yet.
+  const inset = raw.borderWidth;
+  const corners = [
+    mapPoint(raw.rect[0] + inset, raw.rect[1] + inset),
+    mapPoint(raw.rect[2] - inset, raw.rect[1] + inset),
+    mapPoint(raw.rect[0] + inset, raw.rect[3] - inset),
+    mapPoint(raw.rect[2] - inset, raw.rect[3] - inset),
+  ];
+  let left = Infinity; let right = -Infinity;
+  let top = Infinity; let bottom = -Infinity;
+  for (const c of corners) {
+    if (c.x < left) left = c.x;
+    if (c.x > right) right = c.x;
+    if (c.y < top) top = c.y;
+    if (c.y > bottom) bottom = c.y;
+  }
+  return {
+    ...style,
+    type: raw.subtype === 'Circle' ? 'circle' : 'square',
+    bbox: {
+      left, top, right, bottom,
+    },
+  };
 }

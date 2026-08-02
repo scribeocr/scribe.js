@@ -622,5 +622,7 @@ export function overlayAnnotationBbox(annot, scaleX, scaleY, tx, ty, rotate = 0,
   // so convert it to page points alongside the rect for the text to fit its box at any scale.
   const fontScale = (rotate === 90 || rotate === 270) ? s : scaleY;
   if (annot.type === 'freetext' && typeof annot.fontSize === 'number') out.fontSize = annot.fontSize * fontScale;
+  // A shape's stroke is a distance in that same pixel frame, so it converts with the geometry it outlines.
+  if (typeof annot.borderWidth === 'number') out.borderWidth = annot.borderWidth * fontScale;
   return out;
 }

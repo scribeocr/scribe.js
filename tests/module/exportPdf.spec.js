@@ -350,6 +350,7 @@ describe('Check export for .pdf files.', () => {
     const ftAnnot = /** @type {AnnotationFreeText} */ (doc.annotations.pages[0].find((a) => a.type === 'freetext'));
     ftAnnot.replies = [{ text: 'Confirmed against the caption block.', author: 'M. Vahl', createdAt: '2026-07-07T12:15:00.000Z' }];
     const squareAnnot = /** @type {AnnotationShapeStyle} */ (doc.annotations.pages[0].find((a) => a.type === 'square'));
+    squareAnnot.comment = 'Venue paragraph boxed for review.';
     squareAnnot.replies = [{ text: 'Box the venue paragraph.', author: 'M. Vahl', createdAt: '2026-07-07T12:20:00.000Z' }];
 
     // The underline's groupId collides with the highlight's (both are the first group of their addHighlights call, `hl-0`), so these also guard against cross-type consolidation merges.
@@ -378,14 +379,14 @@ describe('Check export for .pdf files.', () => {
     const pdfBytes = await doc.exportData('pdf');
     scribe.opt.warningHandler = prevWarn;
 
-    // Shapes are written into the exported PDF (they are not re-parsed back into the model on import).
     // complaint_1's base MediaBox is 612x792 over 2550x3300 OCR space, so page coords scale by 0.24 and flip in y.
     const shapeText = new TextDecoder('latin1').decode(new Uint8Array(pdfBytes));
-    expect(shapeText).toContain('/Subtype /Square /Rect [42 630 294 738] /C [1 0 0]');
-    expect(shapeText).toContain('/Subtype /Circle /Rect [330 558 510 738] /C [0 0 1] /IC [0 1 0] /CA 0.4');
-    expect(shapeText).toContain('/Subtype /Line /Rect [38 518 562 538] /C [0 0 0]');
+    expect(shapeText, 'the square border width is written in points, not pixel-frame units').toContain('/BS <</W 1.44>>');
+    expect(shapeText).toContain('/Subtype /Square /Rect [46.56 634.56 289.44 733.44] /C [1 0 0]');
+    expect(shapeText).toContain('/Subtype /Circle /Rect [334.56 562.56 505.44 733.44] /C [0 0 1] /IC [0 1 0] /CA 0.4');
+    expect(shapeText).toContain('/Subtype /Line /Rect [45.6 525.6 554.4 530.4] /C [0 0 0]');
     expect(shapeText).toContain('/L [48 528 552 528]');
-    expect(shapeText).toContain('/Subtype /Polygon /Rect [102 270 330 462] /C [1 0 1]');
+    expect(shapeText).toContain('/Subtype /Polygon /Rect [106.56 274.56 325.44 457.44] /C [1 0 1]');
     expect(shapeText).toContain('/Vertices [108 456 324 456 216 276]');
     // One /AP appearance Form XObject per shape; only the circle is filled (/IC).
     expect(shapeText.split('/Subtype /Form').length - 1).toBe(4);
@@ -441,6 +442,23 @@ describe('Check export for .pdf files.', () => {
     expect(ftReplies[0].text, 'FreeText reply text survives').toBe('Confirmed against the caption block.');
     expect(ftReplies[0].author, 'FreeText reply author survives an unsanitized export').toBe('M. Vahl');
     expect(ftReplies[0].createdAt, 'FreeText reply creation date survives an unsanitized export').toBe('2026-07-07T12:15:00.000Z');
+
+    // A shape comment that reaches the exported bytes but not the model leaves our own reader redrawing the box with none of its text.
+    const squares = all.filter((a) => a.type === 'square');
+    expect(squares.length, 'the square is lifted into the model on re-import, not left as opaque passthrough bytes').toBe(1);
+    expect(squares[0].comment, 'the shape comment reaches the model, so the reader can show it').toBe('Venue paragraph boxed for review.');
+    expect(squares[0].borderColor, 'the square border color round-trips').toBe('#ff0000');
+    expect(squares[0].borderWidth, 'the square border width round-trips in the frame it was authored in').toBeCloseTo(6, 10);
+    const sqReplies = squares[0].replies || [];
+    expect(sqReplies.length, 'the shape comment thread round-trips through /IRT annots').toBe(1);
+    expect(sqReplies[0].text, 'shape reply text survives').toBe('Box the venue paragraph.');
+    expect(sqReplies[0].author, 'shape reply author survives an unsanitized export').toBe('M. Vahl');
+    const circles = all.filter((a) => a.type === 'circle');
+    expect(circles.length, 'the circle is lifted into the model on re-import').toBe(1);
+    expect(circles[0].fillColor, 'the circle interior color round-trips').toBe('#00ff00');
+    expect(circles[0].opacity, 'the circle opacity round-trips').toBe(0.4);
+    expect(all.filter((a) => a.type === 'line').length, 'the line is lifted into the model on re-import').toBe(1);
+    expect(all.filter((a) => a.type === 'polygon').length, 'the polygon is lifted into the model on re-import').toBe(1);
 
     const notes = all.filter((a) => a.type === 'text');
     expect(notes.length, 'the note annotation round-trips').toBe(1);
@@ -509,7 +527,10 @@ describe('Check export for .pdf files.', () => {
     expect(ftSReplies[0].createdAt, 'a sanitized export omits the FreeText reply timestamp').toBe(undefined);
     const hlS = allS.filter((a) => a.type === 'highlight');
     expect((hlS[0].replies || [])[0]?.author, 'a sanitized export omits the highlight reply author').toBe(undefined);
-    // Shape annotations are not re-parsed into the model, so their thread is checked in the bytes.
+    const sqS = allS.filter((a) => a.type === 'square');
+    expect(sqS.length, 'the square survives a sanitized export').toBe(1);
+    expect((sqS[0].replies || [])[0]?.text, 'a sanitized export keeps the shape reply text').toBe('Box the venue paragraph.');
+    expect((sqS[0].replies || [])[0]?.author, 'a sanitized export omits the shape reply author').toBe(undefined);
     const sanitizedText = new TextDecoder('latin1').decode(new Uint8Array(sanitizedBytes));
     expect(sanitizedText.split('/T <').length - 1, 'a sanitized export writes no annotation author anywhere').toBe(0);
     await doc.clear();

@@ -27,11 +27,40 @@ const QUOTE_SCROLL_MAX_PX = 160;
 const QUOTE_SCROLL_SLACK_PX = 64;
 
 /**
- * One panel row: a highlight group (quoting the text it covers), a freestanding note, or a redaction mark group.
+ * Annotation types listed as drawn marks: shapes, free text, ink, and stamps.
+ * Links and form fields are excluded because each has its own editing surface elsewhere.
+ */
+const MARK_TYPES = new Set(['square', 'circle', 'line', 'polygon', 'polyline', 'freetext', 'ink', 'stamp']);
+
+const MARK_LABEL = {
+  square: 'Box', circle: 'Ellipse', line: 'Line', polygon: 'Polygon', polyline: 'Polyline', freetext: 'Text box', ink: 'Drawing', stamp: 'Stamp',
+};
+
+/**
+ * The topmost-leftmost page-space point of an annotation, whatever geometry it carries.
+ * @param {Object} annot
+ * @returns {{top: number, left: number}}
+ */
+function annotAnchor(annot) {
+  if (annot.bbox) return { top: annot.bbox.top, left: annot.bbox.left };
+  const coords = Array.isArray(annot.points) ? annot.points : annot.vertices;
+  if (!Array.isArray(coords) || coords.length < 2) return { top: 0, left: 0 };
+  let top = Infinity;
+  let left = Infinity;
+  for (let i = 0; i + 1 < coords.length; i += 2) {
+    if (coords[i] < left) left = coords[i];
+    if (coords[i + 1] < top) top = coords[i + 1];
+  }
+  return { top, left };
+}
+
+/**
+ * One panel row: a highlight group (quoting the text it covers), a freestanding note, a redaction mark group, or a drawn mark (shape, free text, ink, stamp).
  * `top`/`left` are the anchor's page-space position, ordering rows within a page group.
- * @typedef {{pageIndex: number, kind: 'highlight'|'note'|'redact', comment: string, author: string, createdAt: string,
- *   replies: AnnotationReply[], color: string, preview: string, groupId: ?string,
- *   annot: AnnotationHighlight | AnnotationText | AnnotationRedact, top: number, left: number}} CommentRow
+ * `readOnly` rows are listed so they can be found and read, but carry no editable comment thread.
+ * @typedef {{pageIndex: number, kind: 'highlight'|'note'|'redact'|'mark', comment: string, author: string, createdAt: string,
+ *   replies: AnnotationReply[], color: string, preview: string, groupId: ?string, readOnly: boolean,
+ *   annot: AnnotationHighlight | AnnotationText | AnnotationRedact | AnnotationShape | AnnotationFreeText, top: number, left: number}} CommentRow
  */
 
 /**
@@ -145,11 +174,11 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
   function quoteText(pageIndex, groupAnns) {
     const ocrPage = scribe.doc.ocr && scribe.doc.ocr.active && scribe.doc.ocr.active[pageIndex];
     if (!ocrPage || !ocrPage.lines) return '';
-    const redact = groupAnns.length > 0 && groupAnns[0].type === 'redact';
+    const byArea = groupAnns.length > 0 && (groupAnns[0].type === 'redact' || MARK_TYPES.has(groupAnns[0].type));
     const words = [];
     for (const line of ocrPage.lines) {
       for (const word of line.words) {
-        if (redact) {
+        if (byArea) {
           // Any-overlap in page space, matching the export engine's drop rule, so the quote shows exactly the words the mark removes (including ones a region mark only grazes).
           const b = bboxToPageSpace(word.bbox, line.orientation, ocrPage.dims);
           if (!groupAnns.some((a) => b.left < a.bbox.right && b.right > a.bbox.left
@@ -177,6 +206,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
           out.push({
             pageIndex: i,
             kind: 'note',
+            readOnly: false,
             comment: a.comment || '',
             author: a.author || '',
             createdAt: a.createdAt || '',
@@ -206,6 +236,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
           out.push({
             pageIndex: i,
             kind: 'redact',
+            readOnly: true,
             comment: '',
             author: '',
             createdAt: '',
@@ -216,6 +247,26 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
             annot: a,
             top: top === Infinity ? 0 : top,
             left: left === Infinity ? 0 : left,
+          });
+          continue;
+        }
+        if (MARK_TYPES.has(a.type)) {
+          // A drawn mark is listed whether or not it carries a comment, since every other reader shows its /Contents and an uncommented mark still has to be findable here.
+          const anchor = annotAnchor(a);
+          out.push({
+            pageIndex: i,
+            kind: 'mark',
+            comment: a.comment || a.contents || '',
+            author: a.author || '',
+            createdAt: a.createdAt || '',
+            replies: a.replies || [],
+            color: a.borderColor || a.fillColor || '',
+            preview: a.bbox ? quoteText(i, [a]) : '',
+            groupId: null,
+            readOnly: true,
+            annot: a,
+            top: anchor.top,
+            left: anchor.left,
           });
           continue;
         }
@@ -240,6 +291,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
         out.push({
           pageIndex: i,
           kind: 'highlight',
+          readOnly: false,
           comment: a.comment || '',
           author: a.author || '',
           createdAt: a.createdAt || '',
@@ -1093,7 +1145,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
    * @returns {boolean}
    */
   function rowFolds(row) {
-    if (row.kind === 'redact') return false;
+    if (row.readOnly && !row.comment && !row.replies.length) return false;
     if (row === openRow) return true;
     if (row.replies.length) return true;
     const i = rows.indexOf(row);
@@ -1110,7 +1162,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
   function syncCompactAria(row) {
     const i = rows.indexOf(row);
     const el = i >= 0 ? rowEls[i] : null;
-    if (!el || row.kind === 'redact') return;
+    if (!el || (row.readOnly && !row.comment && !row.replies.length)) return;
     if (rowFolds(row)) el.setAttribute('aria-expanded', String(row === openRow));
     else el.removeAttribute('aria-expanded');
   }
@@ -1161,7 +1213,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     const el = document.createElement('div');
     el.className = 'scribe-cmc-row';
     el.dataset.page = String(row.pageIndex);
-    const interactive = row.kind !== 'redact';
+    const interactive = row.kind !== 'redact' || !!row.comment || row.replies.length > 0;
     const expanded = interactive && row === openRow;
     if (expanded) el.classList.add('open');
     if (interactive) {
@@ -1197,7 +1249,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     pg.className = 'scribe-cmc-pg';
     pg.textContent = `p. ${row.pageIndex + 1}`;
     head.appendChild(pg);
-    if (editing() && interactive && (row.comment || row.kind === 'note')) {
+    if (editing() && interactive && !row.readOnly && (row.comment || row.kind === 'note')) {
       const dots = document.createElement('button');
       dots.type = 'button';
       dots.className = 'scribe-cmc-dots';
@@ -1227,7 +1279,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     }
     inner.appendChild(head);
 
-    const quote = row.kind !== 'note' && (row.preview || row.kind === 'redact') ? compactQuote(row) : null;
+    const quote = row.kind !== 'note' && (row.preview || row.readOnly) ? compactQuote(row) : null;
     if (quote) inner.appendChild(quote);
 
     if (row.comment) {
@@ -1245,7 +1297,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
       rootRow.appendChild(col);
       inner.appendChild(rootRow);
       if (openEdit === 'root' && editRow === row) openCompactEditor(row, textElem, 'root', row.comment);
-      else if (editing()) {
+      else if (editing() && !row.readOnly) {
         // The double tap that opens the editor is counted from click events, which a phone double tap and a mouse double click both produce.
         textElem.addEventListener('click', (e) => {
           // A folding card's resting summary belongs to the row tap. Its text edits only once the card is open.
@@ -1269,7 +1321,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
       gone.className = 'scribe-cmc-text gone';
       gone.textContent = 'Removed on export';
       inner.appendChild(gone);
-    } else if (row.kind !== 'note' && (row.createdAt || editing())) {
+    } else if (row.kind !== 'note' && !row.readOnly && (row.createdAt || editing())) {
       // An uncommented highlight or markup has no message, but the foot still anchors the date and the Comment verb.
       // An empty note gets no verb since its resting composer below is the affordance.
       const rootRow = document.createElement('div');
@@ -1567,6 +1619,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
       showMenuAt(x, y);
       return;
     }
+    if (row.readOnly) return;
     add('Edit', () => startEdit(row, rowEl, 'root'));
     if (row.kind === 'note') {
       add('Delete note', () => { deleteNote(row); rebuild(); });
@@ -1605,6 +1658,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     if (row.kind === 'note') bar.style.background = 'var(--scribe-note)';
     else if (row.kind === 'redact') bar.style.background = '#d1493d';
     else if (row.color) bar.style.background = row.color;
+    else if (row.kind === 'mark') bar.style.background = 'var(--scribe-line-strong)';
     anchor.appendChild(bar);
     if (row.kind === 'note') {
       const kind = document.createElement('span');
@@ -1616,8 +1670,12 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
       const quote = document.createElement('span');
       quote.className = 'scribe-cm-quote';
       quote.title = rowKind === 'underline' ? 'Underline'
-        : (rowKind === 'strikeout' ? 'Strikethrough' : (rowKind === 'redact' ? 'Redaction' : 'Highlight'));
-      if (rowKind === 'redact') {
+        : (rowKind === 'strikeout' ? 'Strikethrough' : (rowKind === 'redact' ? 'Redaction' : (MARK_LABEL[rowKind] || 'Highlight')));
+      if (row.kind === 'mark') {
+        quote.classList.add('scribe-cm-qmark');
+        if (row.color) quote.style.background = `color-mix(in srgb, ${row.color} var(--scribe-cm-wash, 35%), transparent)`;
+        quote.textContent = row.preview || `${MARK_LABEL[rowKind] || 'Mark'} on this page`;
+      } else if (rowKind === 'redact') {
         quote.classList.add('scribe-cm-qmark', 'scribe-cm-q-rd');
         // A region mark (drawn over a figure or scan) covers no words, so its quote falls back to a placeholder.
         quote.textContent = row.preview || 'Region on this page';
@@ -1683,10 +1741,9 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
       text.dataset.msg = 'root';
       text.textContent = row.comment;
       // A single click on the row navigates, so editing takes a double-click.
-      if (editing()) text.addEventListener('dblclick', (e) => { e.stopPropagation(); startEdit(row, el, 'root'); });
+      if (editing() && !row.readOnly) text.addEventListener('dblclick', (e) => { e.stopPropagation(); startEdit(row, el, 'root'); });
       el.appendChild(text);
-    } else if (editing() && row.kind !== 'redact') {
-      // A redaction mark has no comment field, so its row offers no composer.
+    } else if (editing() && !row.readOnly) {
       const ghost = document.createElement('button');
       ghost.type = 'button';
       ghost.className = 'scribe-cm-ghost';
@@ -1723,13 +1780,13 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
       const rtext = document.createElement('div');
       rtext.className = 'scribe-cm-text';
       rtext.textContent = reply.text;
-      if (editing()) rtext.addEventListener('dblclick', (e) => { e.stopPropagation(); startEdit(row, el, ri); });
+      if (editing() && !row.readOnly) rtext.addEventListener('dblclick', (e) => { e.stopPropagation(); startEdit(row, el, ri); });
       msg.appendChild(rtext);
       el.appendChild(msg);
     });
 
     // The way into the conversation: a quiet Reply line that morphs into the composer.
-    if (editing() && row.comment) {
+    if (editing() && !row.readOnly && row.comment) {
       const replyGhost = document.createElement('button');
       replyGhost.type = 'button';
       replyGhost.className = 'scribe-cm-ghost';
