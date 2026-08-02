@@ -887,9 +887,11 @@ export function createFillSignPalette(app) {
     const t = document.activeElement;
     if (t instanceof HTMLElement && (t instanceof HTMLInputElement || t instanceof HTMLTextAreaElement || t.isContentEditable)) return;
     if (e.key === 'Escape') {
-      if (menu) { closeMenu(); return; }
-      if (armed) { disarm(); return; }
-      deselectFillItem(viewer);
+      // Each consumed Escape is preventDefaulted, so the editor's mode-exit handler leaves Fill & Sign open.
+      // A press with nothing left to close falls through to it and exits the mode.
+      if (menu) { e.preventDefault(); closeMenu(); return; }
+      if (armed) { e.preventDefault(); disarm(); return; }
+      if (selectedFillItem(viewer)) { e.preventDefault(); deselectFillItem(viewer); }
     } else if ((e.key === 'Delete' || e.key === 'Backspace') && selectedFillItem(viewer)) {
       e.preventDefault();
       deleteSelectedFillItem(viewer);
@@ -898,6 +900,8 @@ export function createFillSignPalette(app) {
 
   let dragOff = null;
   pal.addEventListener('pointerdown', (down) => {
+    // Hosted in the mode bar the palette is fixed chrome; only the floating pill drags.
+    if (pal.closest('.scribe-mode-banner')) return;
     if (down.target instanceof Element && down.target.closest('.cr-icon-button, .scribe-fs-menu')) return;
     const r = pal.getBoundingClientRect();
     dragOff = { x: down.clientX - r.left, y: down.clientY - r.top };
@@ -919,7 +923,8 @@ export function createFillSignPalette(app) {
 
   const show = () => {
     pal.style.display = '';
-    document.addEventListener('keydown', onKey);
+    // Registered in the capture phase because this palette is created after the mode-exit handler, and its Escape ladder must run first.
+    document.addEventListener('keydown', onKey, true);
     viewer.scrollContainer?.addEventListener('pointerdown', onScrollPress, true);
     viewer.scrollContainer?.addEventListener('pointermove', onScrollMove);
     viewer.scrollContainer?.addEventListener('pointerleave', onScrollLeave);
@@ -930,7 +935,7 @@ export function createFillSignPalette(app) {
     closeMenu();
     closeFillTextEditor(viewer);
     deselectFillItem(viewer);
-    document.removeEventListener('keydown', onKey);
+    document.removeEventListener('keydown', onKey, true);
     viewer.scrollContainer?.removeEventListener('pointerdown', onScrollPress, true);
     viewer.scrollContainer?.removeEventListener('pointermove', onScrollMove);
     viewer.scrollContainer?.removeEventListener('pointerleave', onScrollLeave);

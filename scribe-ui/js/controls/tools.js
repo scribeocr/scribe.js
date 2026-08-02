@@ -1,7 +1,9 @@
 // Document interaction tools shared by the viewer and editor apps: text highlighting
 // (toggle, color picker, comment marks), the upload drop zone, and the file-to-ScribeDoc loader.
 import scribeLib from '../../../scribe.js';
-import { makeIconButton, setTimestamp } from './toolbar.js';
+import {
+  makeIconButton, setTimestamp, EDIT_PAGES_SVG, RECOGNIZE_SVG,
+} from './toolbar.js';
 import {
   applyHighlight, createInkEdges, recolorHighlightGroup, removeHighlightGroup, setHighlightReplies,
 } from '../viewerHighlights.js';
@@ -194,7 +196,12 @@ export function createHighlightTool(scribe, rootElem, { colors, defaultColor, ro
       if (t instanceof Node && (paletteElem.contains(t) || (caretElem && caretElem.contains(t)))) return;
       closePalette();
     };
-    const paletteKeydown = (event) => { if (event.key === 'Escape') closePalette(); };
+    const paletteKeydown = (event) => {
+      if (event.key !== 'Escape' || !paletteElem || !paletteElem.classList.contains('open')) return;
+      // A consumed Escape is preventDefaulted, so the mode-exit handler leaves the active mode on.
+      event.preventDefault();
+      closePalette();
+    };
     if (paletteElem) {
       document.addEventListener('click', paletteOutsideClick);
       document.addEventListener('keydown', paletteKeydown);
@@ -2027,11 +2034,16 @@ export function createEditTextTool(scribe) {
 
 /**
  * Toolbar control that toggles the Fill & Sign palette for placing checks, crosses, and signatures.
- * @param {Object} app - The owning ScribePDFViewer.
- * @returns {{ toolbarElem: HTMLElement, installBehaviors: () => (() => void), isOpen: () => boolean, close: () => void }}
+ * @param {import('../../basic-viewer/pdf-viewer.js').ScribePDFViewer} app
+ * @returns {{ toolbarElem: HTMLElement, installBehaviors: () => (() => void), isOpen: () => boolean, close: () => void, paletteElem: () => ?HTMLElement }}
  */
 export function createFillSignTool(app) {
   const toolbarElem = makeIconButton('Fill & Sign', ICON_FILLSIGN);
+  toolbarElem.classList.add('cr-labeled-button');
+  const toolbarLabelElem = document.createElement('span');
+  toolbarLabelElem.className = 'cr-btn-label';
+  toolbarLabelElem.textContent = 'Fill & Sign';
+  toolbarElem.appendChild(toolbarLabelElem);
   /** @type {?ReturnType<typeof createFillSignPalette>} */
   let palette = null;
   let open = false;
@@ -2061,6 +2073,68 @@ export function createFillSignTool(app) {
   }
 
   return {
-    toolbarElem, installBehaviors, isOpen: () => open, close: () => setOpen(false),
+    toolbarElem,
+    installBehaviors,
+    isOpen: () => open,
+    close: () => setOpen(false),
+    paletteElem: () => (palette ? palette.elem : null),
   };
+}
+
+/**
+ * The "Edit Pages" mode tool.
+ * While the mode is active the thumbnail rail arms its page mutations: drag to reorder, select to rotate or delete.
+ * Out of the mode the rail is navigation-only, so a click goes to the page and a drag scrolls.
+ * @param {import('../../basic-viewer/pdf-viewer.js').ScribePDFViewer} app
+ * @returns {{ toolbarElem: HTMLElement, isActive: () => boolean, close: () => void }}
+ */
+export function createEditPagesTool(app) {
+  const toolbarElem = makeIconButton('Edit Pages', EDIT_PAGES_SVG);
+  toolbarElem.classList.add('cr-labeled-button');
+  const toolbarLabelElem = document.createElement('span');
+  toolbarLabelElem.className = 'cr-btn-label';
+  toolbarLabelElem.textContent = 'Edit Pages';
+  toolbarElem.appendChild(toolbarLabelElem);
+  // The rail gates its mutations on this mode only once the control exists, so hosts without it keep the always-armed rail.
+  app.scribe._editPagesGate = true;
+  let active = false;
+  const setActive = (next) => {
+    if (active === next) return;
+    active = next;
+    toolbarElem.classList.toggle('active', active);
+    // Dress and widen before any auto-open.
+    // The open animation reads the panel width when it starts, so this order slides the rail in at the mode's final width.
+    app._thumbnailPanel?.setPageEditMode(active);
+    if (active && app._activeSidebar !== 'thumbnails') app._requestSidebar('thumbnails');
+  };
+  toolbarElem.addEventListener('click', () => {
+    if (toolbarElem.classList.contains('disabled')) return;
+    setActive(!active);
+  });
+  return { toolbarElem, isActive: () => active, close: () => setActive(false) };
+}
+
+/**
+ * The "Recognize Text" mode tool.
+ * The mode's banner carries its working surface — the recognition language and the Start control — so this tool is only the row button and its active state.
+ * @returns {{ toolbarElem: HTMLElement, isActive: () => boolean, close: () => void }}
+ */
+export function createRecognizeTextTool() {
+  const toolbarElem = makeIconButton('Recognize Text', RECOGNIZE_SVG);
+  toolbarElem.classList.add('cr-labeled-button');
+  const toolbarLabelElem = document.createElement('span');
+  toolbarLabelElem.className = 'cr-btn-label';
+  toolbarLabelElem.textContent = 'Recognize Text';
+  toolbarElem.appendChild(toolbarLabelElem);
+  let active = false;
+  const setActive = (next) => {
+    if (active === next) return;
+    active = next;
+    toolbarElem.classList.toggle('active', active);
+  };
+  toolbarElem.addEventListener('click', () => {
+    if (toolbarElem.classList.contains('disabled')) return;
+    setActive(!active);
+  });
+  return { toolbarElem, isActive: () => active, close: () => setActive(false) };
 }

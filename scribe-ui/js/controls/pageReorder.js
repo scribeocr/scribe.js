@@ -64,6 +64,10 @@ export class ThumbDrag {
     /** Offset of the grab point within the thumbnail. */
     this.grabDX = 0;
     this.grabDY = 0;
+    /** Whether the drag scrolls the rail instead of reordering, which is what an unarmed rail does. */
+    this.scrollMode = false;
+    /** Rail scrollTop anchor for a scroll-mode drag. */
+    this.scroll0 = 0;
   }
 }
 
@@ -168,6 +172,9 @@ class ThumbTouch {
  * @property {() => void} cancelCut
  * @property {?('browse'|'edit')} roomMode - Phone Pages-room interaction mode: 'browse' is read-only, 'edit' carries the mutations.
  *   Null outside the room, which keeps the hold-to-lift/sweep/release-menu gestures.
+ * @property {boolean} pageEditMode - Whether the desktop Edit Pages mode is on.
+ * @property {() => boolean} pageEditArmed - Whether page mutations are armed (Edit Pages mode on, in the room, or an ungated host).
+ *   An unarmed rail turns the mouse drag into a scroll and disables the touch lift.
  * @property {() => boolean} gridInMotion - Whether the grid scrolled within the last settle window; a press on a moving grid catches the scroll instead of acting.
  * @property {(n: number) => void} peekShow - Show (or scrub to) the hold-to-peek page preview.
  * @property {() => void} peekHide
@@ -175,9 +182,9 @@ class ThumbTouch {
  * @property {() => void} peekWarmEnd - Drop a warm render the press never consumed.
  * @property {(n: number) => void} openPage - Make page `n` current and close the Pages view.
  * @property {(n: number) => void} goToPage - Make page `n` current, leaving the Pages view open.
- * @property {(n: number) => void} toggleRoomSelect - Toggle page `n` in the room-Edit selection.
- * @property {(n: number, want: boolean) => void} setRoomSelect - Set page `n`'s selection to `want` (checkbox range paint).
- * @property {() => void} clearSelection - Empty the room-Edit selection and resync the UI.
+ * @property {(n: number) => void} togglePageSelect - Toggle page `n` in the checkbox selection.
+ * @property {(n: number, want: boolean) => void} setPageSelect - Set page `n`'s selection to `want` (checkbox range paint).
+ * @property {() => void} clearSelection - Empty the page selection and resync the UI.
  */
 
 /**
@@ -610,9 +617,18 @@ export function installPageReorder(ctx) {
   function onDragMove(e) {
     const d = ctx.drag;
     if (!d) return;
+    if (d.scrollMode) { ctx.scrollElem.scrollTop = d.scroll0 - (e.clientY - d.startY); return; }
     if (d.started) { moveDrag(e.clientX, e.clientY); return; }
     if (Math.abs(e.clientX - d.startX) + Math.abs(e.clientY - d.startY) < DRAG_THRESHOLD) return;
-    if (!(ctx.scribe.opt && ctx.scribe.opt.enablePageEditing) || ctx.pageCount < 2) { cancelDrag(); return; }
+    if (!ctx.pageEditArmed()) {
+      // The press became a scroll, so its release must not also navigate.
+      d.scrollMode = true;
+      d.started = true;
+      d.scroll0 = ctx.scrollElem.scrollTop + (e.clientY - d.startY);
+      ctx.suppressClick = true;
+      return;
+    }
+    if (ctx.pageCount < 2) { cancelDrag(); return; }
     startDrag(e.clientX, e.clientY);
   }
 
@@ -622,7 +638,7 @@ export function installPageReorder(ctx) {
     window.removeEventListener('pointerup', onDragUp);
     const d = ctx.drag;
     ctx.drag = null;
-    if (!d || !d.started) return;
+    if (!d || !d.started || d.scrollMode) return;
     // Keep the ghost (it lives on document.body, so the panel does not clip it) and fly it into the drop slot, with the placed row hidden until it lands.
     // Animating the ghost rather than the in-rail row keeps the part of the page dragged out over the viewer from being clipped at the panel edge mid-animation.
     endDragVisuals(d, true);
@@ -976,16 +992,18 @@ export function installPageReorder(ctx) {
   }
 
   /**
-   * Press on a page's selection checkbox (room Edit mode): toggle that page now; sliding on across further checkboxes paints them to the same state.
+   * Press on a page's selection checkbox, in the room's Edit mode or the desktop Edit Pages mode: toggle that page now; sliding on across further checkboxes paints them to the same state.
    * Starting on the checkbox is what disambiguates painting a range from dragging a page.
    * @param {PointerEvent} e @param {number} n
    */
   function onChkPointerDown(e, n) {
-    if (touch || ctx.roomMode !== 'edit') return;
-    if (ctx.gridInMotion()) return; // native scrolling owns it; the badge's click handler swallows the tail
+    if (touch || !(ctx.roomMode === 'edit' || ctx.pageEditMode)) return;
+    // A room press on a still-gliding grid catches the scroll, and the badge's click handler swallows the tail.
+    // Desktop wheel scrolls share the motion window, so their presses must still land.
+    if (ctx.roomMode === 'edit' && ctx.gridInMotion()) return;
     e.preventDefault();
     e.stopPropagation();
-    ctx.toggleRoomSelect(n);
+    ctx.togglePageSelect(n);
     touch = new ThumbTouch(e, n, 'edit', ctx.scrollElem.scrollTop);
     touch.painting = true;
     touch.paintWant = ctx.selected.has(n);
@@ -1029,7 +1047,7 @@ export function installPageReorder(ctx) {
       return;
     }
     // Reordering is an editor action needing at least two pages; otherwise a press stays a plain tap (select/navigate).
-    if (!(ctx.scribe.opt && ctx.scribe.opt.enablePageEditing) || ctx.pageCount < 2) return;
+    if (!ctx.pageEditArmed() || ctx.pageCount < 2) return;
     const entry = ctx.mounted.get(n);
     touch = new ThumbTouch(e, n, mode, ctx.scrollElem.scrollTop);
     lastTouchT = Date.now();
@@ -1094,7 +1112,7 @@ export function installPageReorder(ctx) {
       const t = chk ? chk.closest('.scribe-thumb') : null;
       if (t && ctx.scrollElem.contains(t)) {
         const p = Number(t.dataset.page);
-        if (Number.isFinite(p)) ctx.setRoomSelect(p, touch.paintWant);
+        if (Number.isFinite(p)) ctx.setPageSelect(p, touch.paintWant);
       }
       return;
     }

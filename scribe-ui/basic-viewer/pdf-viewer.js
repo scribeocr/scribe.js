@@ -20,7 +20,7 @@ import { createBookmarksPanel } from '../js/controls/bookmarksPanel.js';
 import { createCommentsPanel } from '../js/controls/commentsPanel.js';
 import {
   createHighlightTool, createDropZone, openDocumentFromFile, createRedactTool, createEditTextTool,
-  createFillSignTool,
+  createFillSignTool, createEditPagesTool, createRecognizeTextTool,
 } from '../js/controls/tools.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
 import { IOS_WEBKIT } from '../js/viewerImageCache.js';
@@ -49,7 +49,27 @@ const DOCK_PANELS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentCol
   + ' stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
   + '<path d="M8.5 6h11.5M8.5 12h11.5M8.5 18h7M4 6h1.2M4 12h1.2M4 18h1.2"/></svg>';
 
-/** Height of the dismissible message banner (shown below the chrome), in px. */
+/** Height of the mode bar (the strip carrying the active tool mode's identity, description, and controls), in px, matching its CSS. */
+const MODE_BANNER_HEIGHT = 40;
+
+/** Height of the mode-overflow tray row, in px, matching its CSS. */
+const MODE_TRAY_HEIGHT = 40;
+
+/** Minimum px of air between the centered viewing cluster and the nearer edge cluster before mode buttons fold into the tray. */
+const MODE_MIN_AIR = 40;
+
+/** Air required to keep the rotate pair in the centered viewing cluster. */
+const ROTATE_MIN_AIR = 80;
+
+/** Double chevrons for the mode-overflow arrow: down opens the tray of hidden tools, up hides it. */
+const MORE_TOOLS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
+  + ' stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
+  + '<path d="M6 5.5l6 5 6-5M6 12.5l6 5 6-5"/></svg>';
+const HIDE_TOOLS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
+  + ' stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
+  + '<path d="M6 10.5l6-5 6 5M6 17.5l6-5 6 5"/></svg>';
+
+/** Height of the dismissible message banner, in px, matching its CSS. */
 const MESSAGE_BANNER_HEIGHT = 40;
 
 /** Close glyph for the message banner's dismiss button. */
@@ -67,7 +87,7 @@ const SIDEBAR_ANIM_MS = 180;
 /** localStorage key for the persisted theme setting ('system' | 'light' | 'dark'). */
 const THEME_STORAGE_KEY = 'scribe-theme';
 
-/** Chevron-down for the Recognize Text split button's language caret. */
+/** Chevron-down for the Recognize Text mode's language button. */
 const CARET_SVG = '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M7 10l5 5 5-5z" fill="currentColor"/></svg>';
 
 /**
@@ -188,6 +208,7 @@ class ScribePDFViewer {
     this._activeTab = -1;
     /** Whether the tab strip currently occupies layout space (shown only with 2+ tabs). */
     this._tabStripVisible = false;
+    this._modeTrayOpen = false;
     /** Monotonic counter stamped onto a tab's `lastUse` at creation and on every activation. */
     this._tabUseCounter = 0;
     /**
@@ -393,9 +414,6 @@ class ScribePDFViewer {
     /** True while a sidebar resize drag (any view) is in flight, so `_relayout` skips the scrollbar refresh per move. */
     this._sidebarDragActive = false;
 
-    /** Height the message banner currently claims from the document area (0 when hidden). */
-    this._messageBannerHeight = 0;
-
     /** @type {?ReturnType<typeof createBookmarksPanel>} */
     this._bookmarksPanel = showThumbnails
       ? createBookmarksPanel(this.scribe, {
@@ -426,6 +444,8 @@ class ScribePDFViewer {
 
       const toolbarButtons = document.createElement('div');
       toolbarButtons.className = 'col-md order-2 my-auto';
+      // Never wrap to a second line inside the fixed-height bar; instead the horizontal overflow is measured and the trailing mode buttons collapse into the tray.
+      toolbarButtons.style.whiteSpace = 'nowrap';
 
       const pageNav = createPageNav(this.scribe);
       const zoom = createZoomControls(this.scribe);
@@ -460,10 +480,10 @@ class ScribePDFViewer {
       toolbarElemStart.appendChild(appMenu.menuWrap);
 
       if (this._thumbnailPanel) {
-        toolbarButtons.appendChild(this._thumbnailPanel.toggleElem);
-        if (this._bookmarksPanel) toolbarButtons.appendChild(this._bookmarksPanel.toggleElem);
-        if (this._commentsPanel) toolbarButtons.appendChild(this._commentsPanel.toggleElem);
-        toolbarButtons.appendChild(makeSeparator());
+        toolbarElemStart.appendChild(makeSeparator());
+        toolbarElemStart.appendChild(this._thumbnailPanel.toggleElem);
+        if (this._bookmarksPanel) toolbarElemStart.appendChild(this._bookmarksPanel.toggleElem);
+        if (this._commentsPanel) toolbarElemStart.appendChild(this._commentsPanel.toggleElem);
       }
 
       toolbarButtons.appendChild(pageNav.prevElem);
@@ -480,11 +500,12 @@ class ScribePDFViewer {
       toolbarButtons.appendChild(rotate.rotateControls);
       toolbarButtons.appendChild(sepBeforeZoom);
       toolbarButtons.appendChild(zoom.zoomControls);
+      this._rotateControls = rotate.rotateControls;
+      this._sepBeforeRotate = sepBeforeRotate;
       if (this._highlightTool) {
         toolbarButtons.appendChild(makeSeparator());
         toolbarButtons.appendChild(this._highlightTool.toolbarElem);
       }
-      // Retained so the editor subclass can extend the center button cluster (e.g. its Redact tool).
       this._toolbarButtonsElem = toolbarButtons;
 
       // Find / search controls (right-aligned).
@@ -757,7 +778,10 @@ class ScribePDFViewer {
     };
 
     // Every page-structure or rotation edit must refresh the passive mirrors that render pages by index, or the filmstrip and the bookmarks/comments panels keep showing the pre-edit pages.
-    this.scribe.onPageEditCallback = () => {
+    this.scribe.onPageEditCallback = (kind) => {
+      // Rotation can originate outside the rail (the page context menu, the touch menu rows), and its thumbs would keep the old aspect.
+      // A structural edit's refresh would restyle rows mid-slide, and the rail already updates itself in place for those.
+      if (kind === 'rotate' && this._thumbnailPanel) this._thumbnailPanel.refit();
       if (this._bookmarksPanel) this._bookmarksPanel.rebuild();
       if (this._commentsPanel) this._commentsPanel.rebuild();
       if (this._companionStrip) this._companionStrip.rebuild(this.scribe.state.cp.n);
@@ -837,33 +861,94 @@ class ScribePDFViewer {
         this._teardownCallbacks.push(this._redactTool.installBehaviors());
       }
 
+      /** @type {?HTMLSpanElement} */
+      this._modeRowElem = null;
+      if (this.toolbarElemEnd && this._searchBar) {
+        const modeRow = document.createElement('span');
+        modeRow.style.display = 'inline-flex';
+        modeRow.style.alignItems = 'center';
+        this._modeRowElem = modeRow;
+        this.toolbarElemEnd.insertBefore(modeRow, this._searchBar.searchElem);
+        this.toolbarElemEnd.insertBefore(makeSeparator(), this._searchBar.searchElem);
+      }
+
       /** @type {?ReturnType<typeof createEditTextTool>} */
       this._editTextTool = null;
       if (editText) {
         this._editTextTool = createEditTextTool(this.scribe);
-        if (this._toolbarButtonsElem) {
-          this._toolbarButtonsElem.appendChild(makeSeparator());
-          this._toolbarButtonsElem.appendChild(this._editTextTool.toolbarElem);
-        }
+        if (this._modeRowElem) this._modeRowElem.appendChild(this._editTextTool.toolbarElem);
         this._teardownCallbacks.push(this._editTextTool.installBehaviors());
-        // The boot-time control sync runs before this tool exists, so apply its gating now.
-        this._syncDocGatedControls();
       }
 
       this._fillSignTool = createFillSignTool(this);
-      if (this._toolbarButtonsElem) this._toolbarButtonsElem.appendChild(this._fillSignTool.toolbarElem);
+      if (this._modeRowElem) this._modeRowElem.appendChild(this._fillSignTool.toolbarElem);
       this._teardownCallbacks.push(this._fillSignTool.installBehaviors());
-      const exclusiveToolBtns = [this._redactTool?.toolbarElem, this._editTextTool?.toolbarElem, this._fillSignTool.toolbarElem]
-        .filter((b) => !!b);
+
+      /** @type {?ReturnType<typeof createEditPagesTool>} */
+      this._editPagesTool = null;
+      if (this._modeRowElem && this._thumbnailPanel) {
+        this._editPagesTool = createEditPagesTool(this);
+        this._modeRowElem.appendChild(this._editPagesTool.toolbarElem);
+      }
+
+      /** @type {?ReturnType<typeof createRecognizeTextTool>} */
+      this._recognizeTool = null;
+      if (this._modeRowElem) {
+        this._recognizeTool = createRecognizeTextTool();
+        this._modeRowElem.appendChild(this._recognizeTool.toolbarElem);
+      }
+
+      if (this._editTextTool) this._editTextTool.toolbarElem.dataset.modeHint = 'Click a line to select it · double-click to edit';
+      this._fillSignTool.toolbarElem.dataset.modeHint = 'Place checks, crosses, and signatures';
+      if (this._editPagesTool) this._editPagesTool.toolbarElem.dataset.modeHint = 'Drag pages to reorder · select pages to delete';
+      if (this._recognizeTool) this._recognizeTool.toolbarElem.dataset.modeHint = 'Makes scanned pages selectable and searchable';
+
+      // Mode buttons that do not fit the bar collapse, in order, into a full-width tray row behind this arrow (see `_syncModeOverflow`).
+      if (this._modeRowElem && this._tabStripElem) {
+        const arrow = makeIconButton('More tools', MORE_TOOLS_SVG);
+        arrow.style.display = 'none';
+        arrow.addEventListener('click', () => this._setModeTrayOpen(!this._modeTrayOpen));
+        this._modeTrayArrow = arrow;
+        this._modeRowElem.appendChild(arrow);
+        const tray = document.createElement('div');
+        tray.className = 'scribe-mode-tray';
+        this._modeTrayElem = tray;
+        this.pdfViewerElem.insertBefore(tray, this._tabStripElem);
+      }
+
+      const exclusiveToolBtns = [this._redactTool?.toolbarElem, this._editTextTool?.toolbarElem, this._fillSignTool.toolbarElem,
+        this._editPagesTool?.toolbarElem, this._recognizeTool?.toolbarElem].filter((b) => !!b);
+      this._exclusiveToolBtns = exclusiveToolBtns;
       for (const btn of exclusiveToolBtns) {
         btn.addEventListener('click', () => {
-          if (!btn.classList.contains('active')) return;
-          for (const other of exclusiveToolBtns) {
-            if (other !== btn && other.classList.contains('active')) other.click();
+          if (btn.classList.contains('active')) {
+            for (const other of exclusiveToolBtns) {
+              if (other !== btn && other.classList.contains('active')) other.click();
+            }
           }
+          this._syncModeBanner();
         });
       }
+
+      // Escape exits the active tool mode, once every closer surface (find bar, editors, menus, selections) has passed on the press.
+      // Each of those consumers marks a used Escape with preventDefault, so an unconsumed press is the mode's to take.
+      const onModeEscape = (e) => {
+        if (e.key !== 'Escape' || e.defaultPrevented) return;
+        const t = e.target;
+        if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+        const activeBtn = exclusiveToolBtns.find((b) => b.classList.contains('active') && b.isConnected);
+        if (activeBtn) {
+          e.preventDefault();
+          activeBtn.click();
+        }
+      };
+      document.addEventListener('keydown', onModeEscape);
+      this._teardownCallbacks.push(() => document.removeEventListener('keydown', onModeEscape));
+
       this.scribe.onSignatureFieldClick = (n, row) => signIntoField(this, n, row);
+      // The boot-time sync ran before these tools existed, so apply the empty-viewer gating to them now.
+      this._syncDocGatedControls();
+      this._syncModeOverflow();
     }
   }
 
@@ -931,21 +1016,16 @@ class ScribePDFViewer {
 
   /**
    * Import a document into the viewer.
-   * The viewer creates and **owns** the resulting document,
-   * so it is terminated automatically on the next import, on `detachDoc`, or on `destroy`.
-   * Accepts a `File`, `Blob`, `ArrayBuffer`, `Uint8Array`, or a filesystem path string (Node only).
+   * The viewer creates and **owns** the resulting document, so it is terminated automatically on the next import, on `detachDoc`, or on `destroy`.
    * Raw byte inputs (`ArrayBuffer`, `Uint8Array`, non-File `Blob`) are treated as PDFs.
-   * @param {File | Blob | ArrayBuffer | Uint8Array | string} file
+   * @param {File | Blob | ArrayBuffer | Uint8Array | string} file - A filesystem path string is Node only.
    * @param {number} [initialPage=0]
    * @param {object} [options]
-   * @param {boolean} [options.terminatePrevious] - Force-terminate (`true`) or force-retain (`false`) the outgoing document,
-   *   overriding the default (terminate only a document the viewer created).
+   * @param {boolean} [options.terminatePrevious] - Force-terminate (`true`) or force-retain (`false`) the outgoing document, overriding the default (terminate only a document the viewer created).
    * @returns {Promise<?import('../../js/containers/scribeDoc.js').ScribeDoc>} The displaced document, or `null` if there was none.
    */
   async importFile(file, initialPage = 0, { terminatePrevious } = {}) {
-    // `deferText` paints the first page before text extraction finishes.
-    // The trailing `await doc.textReady` keeps this method's "resolved means fully loaded" contract for programmatic callers,
-    // even though the UI already painted and never waits on it.
+    // The trailing `await doc.textReady` keeps a resolved promise meaning fully loaded, since `deferText` lets the UI paint before extraction finishes.
     const doc = await openDocumentFromFile(file, { deferText: true });
     const displaced = await this._setDoc(doc, initialPage, true, terminatePrevious);
     await doc.textReady;
@@ -954,11 +1034,6 @@ class ScribePDFViewer {
 
   /**
    * Wire `doc` into the viewer and display `initialPage`, deciding the outgoing document's fate.
-   * Shared by `attachDocument` (`owns=false`) and `importFile` (`owns=true`).
-   *
-   * The outgoing document's view is reset by the `scribe.doc` setter (which calls `clear()`) regardless.
-   * Its resources are terminated only when `terminatePrevious` says so, defaulting to "terminate iff
-   * the viewer owned it". Termination is always non-blocking, so the new page never waits on teardown.
    * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
    * @param {number} initialPage
    * @param {boolean} owns - Whether the viewer created `doc`.
@@ -1303,11 +1378,9 @@ class ScribePDFViewer {
   }
 
   /**
-   * Open a new document (tab) that concatenates every open document's pages, in tab order.
-   * Each source is exported to a self-contained PDF capturing its current edits
-   * (page order, rotation, bookmarks, highlights, OCR), the exports are merged object-level (never rasterized), and the result is re-imported as a new tab.
+   * Open a new document (tab) that concatenates every open document's pages, in tab order, with their current edits.
    * The source tabs stay open and unchanged.
-   * Each source becomes a top-level bookmark named after its tab, with that source's own bookmarks nested beneath, so combining preserves the inputs' navigation.
+   * Each source becomes a top-level bookmark named after its tab, with that source's own bookmarks nested beneath.
    * @returns {Promise<void>}
    */
   async combineOpenDocuments() {
@@ -1336,8 +1409,7 @@ class ScribePDFViewer {
   }
 
   /**
-   * Split the active document at its top-level bookmarks: each segment (see `outlineSplitSegments`) is exported to its own self-contained PDF,
-   * carrying that range's own nested bookmarks, and opened as a new tab named after its bookmark.
+   * Split the active document at its top-level bookmarks, opening each segment as a new tab named after its bookmark.
    * The original document stays open.
    * A no-op unless the split would yield 2+ documents.
    * @returns {Promise<void>}
@@ -1388,9 +1460,6 @@ class ScribePDFViewer {
 
   /**
    * Insert the pages of one or more files (PDFs and/or images) into the active document at `index`, in place.
-   * Each file is opened as a throwaway document and its pages are copied in object-level (undoable per file), then the throwaway is terminated.
-   * The inserted pages keep rendering and exporting from its retained (refcounted) render source.
-   * PDFs are inserted individually, then any images as one grouped block, mirroring the Open button.
    * @param {FileList|Array<File>} files
    * @param {number} index - Insertion index in the active document (0..pageCount).
    * @returns {Promise<void>}
@@ -1419,14 +1488,12 @@ class ScribePDFViewer {
         if (range) landingCp = range.cp;
         at += bundles.length;
       }
-      // Update the rail in place (shift the rows below the insertion down and mount the new pages) rather than a full `rebuild`, which would blank and re-render every thumbnail and reset the scroll.
-      // Use pastePages' returned landing, not state.cp.n (stale here because the rebuild's displayPage is async),
-      // so the rail keeps the reader's page highlighted even when the block lands above it and shifts it down.
       if (at > at0 && this._thumbnailPanel) this._thumbnailPanel.insertPagesAt(at0, at - at0, landingCp);
     } catch (err) {
       console.error('Failed to insert pages from file:', err);
       this._showToast('Couldn’t insert the file — it couldn’t be loaded.');
     } finally {
+      // Safe because the inserted pages render and export from each throwaway's refcounted source, which outlives this terminate.
       await Promise.all(temps.map((d) => d.terminate().catch(() => {})));
     }
   }
@@ -1509,11 +1576,107 @@ class ScribePDFViewer {
   }
 
   /**
-   * Height of the fixed top bars (toolbar, the tab strip when visible, and the message banner when shown), in px.
+   * Fit the bar to its width, preserving the centered viewing cluster's separation from the edge clusters.
+   * The rotate pair sheds first, then mode buttons collapse into the tray in order.
+   */
+  _syncModeOverflow() {
+    const row = this._modeRowElem;
+    const arrow = this._modeTrayArrow;
+    const tray = this._modeTrayElem;
+    // Restore everything to the row first, so the measurements below see the full bar.
+    if (row && arrow && tray) {
+      while (tray.firstChild) row.insertBefore(tray.firstChild, arrow);
+      row.appendChild(arrow);
+      arrow.style.display = 'none';
+    }
+    // The phone layout hides the bar, so nothing overflows and the tray must not linger as a stray strip.
+    if (this._phoneChrome) {
+      if (tray) { this._setModeTrayOpen(false); this._syncModeTrayArrow(); }
+      return;
+    }
+    if (!this.toolbarElem) return;
+    // The air a truly centered viewing cluster would keep from the nearer edge cluster.
+    // The edge zones stretch to fill the bar, so their contents are measured rather than their boxes.
+    const air = () => {
+      const bar = this.toolbarElem.clientWidth;
+      const center = this._toolbarButtonsElem ? this._toolbarButtonsElem.offsetWidth : 0;
+      const sLast = this.toolbarElemStart.lastElementChild;
+      const startW = sLast ? sLast.getBoundingClientRect().right - this.toolbarElemStart.getBoundingClientRect().left : 0;
+      const eFirst = this.toolbarElemEnd.firstElementChild;
+      const endW = eFirst ? this.toolbarElemEnd.getBoundingClientRect().right - eFirst.getBoundingClientRect().left : 0;
+      return (bar - center) / 2 - Math.max(startW, endW);
+    };
+    if (this._rotateControls) {
+      this._rotateControls.style.display = '';
+      if (this._sepBeforeRotate) this._sepBeforeRotate.style.display = '';
+      if (air() < ROTATE_MIN_AIR) {
+        this._rotateControls.style.display = 'none';
+        if (this._sepBeforeRotate) this._sepBeforeRotate.style.display = 'none';
+      }
+    }
+    if (!row || !arrow || !tray) return;
+    const modeBtns = [...row.children].filter((el) => (this._exclusiveToolBtns || []).includes(el));
+    if (air() < MODE_MIN_AIR && modeBtns.length) {
+      arrow.style.display = '';
+      for (let i = modeBtns.length - 1; i >= 0 && air() < MODE_MIN_AIR; i--) tray.insertBefore(modeBtns[i], tray.firstChild);
+    }
+    if (!tray.firstChild) {
+      arrow.style.display = 'none';
+      this._setModeTrayOpen(false);
+    } else if (modeBtns.some((b) => b.classList.contains('active') && tray.contains(b))) {
+      // A widening can also strand an active mode in the tray, so the stays-open rule is enforced here too.
+      this._setModeTrayOpen(true);
+    }
+    this._syncModeTrayArrow();
+  }
+
+  /**
+   * Open or close the mode-overflow tray row.
+   * Closing while a tray mode is active exits that mode, since its button would otherwise vanish while the mode stays on.
+   * @param {boolean} on
+   */
+  _setModeTrayOpen(on) {
+    if (!this._modeTrayElem || this._modeTrayOpen === on) return;
+    this._modeTrayOpen = on;
+    if (!on) {
+      const activeBtn = (this._exclusiveToolBtns || []).find((b) => b.classList.contains('active') && this._modeTrayElem.contains(b));
+      if (activeBtn) activeBtn.click();
+    }
+    this._modeTrayElem.classList.toggle('on', on);
+    this._syncModeTrayArrow();
+    this._relayout();
+  }
+
+  /** Point the tray arrow at its state: chevrons toward the action, tinted while the tray is open or a tray mode is active. */
+  _syncModeTrayArrow() {
+    const arrow = this._modeTrayArrow;
+    if (!arrow) return;
+    const trayModeOn = !!(this._exclusiveToolBtns || []).find((b) => b.classList.contains('active') && this._modeTrayElem.contains(b));
+    arrow.classList.toggle('active', this._modeTrayOpen || trayModeOn);
+    const ic = arrow.querySelector('.cr-icon');
+    if (ic) ic.innerHTML = this._modeTrayOpen ? HIDE_TOOLS_SVG : MORE_TOOLS_SVG;
+    arrow.title = this._modeTrayOpen ? 'Hide extra tools' : 'More tools';
+  }
+
+  /**
+   * Height of the fixed top bars (the toolbar, its open mode-overflow tray, and the tab strip when visible), in px.
+   * Both banners are excluded: they float over the document area rather than reserving height.
    * @returns {number}
    */
   _chromeTop() {
-    return (this._phoneChrome ? 0 : this.toolbarHeight) + (this._tabStripVisible ? TAB_STRIP_HEIGHT : 0) + this._messageBannerHeight;
+    return (this._phoneChrome ? 0 : this.toolbarHeight + (this._modeTrayOpen ? MODE_TRAY_HEIGHT : 0))
+      + (this._tabStripVisible ? TAB_STRIP_HEIGHT : 0);
+  }
+
+  /** Stack the overlay banners across the top of the document area, the mode banner above the message banner. */
+  _positionBanners() {
+    const top = this._chromeTop();
+    if (this._modeBanner) this._modeBanner.style.top = `${top}px`;
+    const modeH = (this._modeBanner && this._modeBanner.style.display !== 'none') ? MODE_BANNER_HEIGHT : 0;
+    if (this._banner) this._banner.style.top = `${top + modeH}px`;
+    const messageH = (this._banner && this._banner.style.display !== 'none') ? MESSAGE_BANNER_HEIGHT : 0;
+    // The banners span the sidebar too, so the rail reserves leading scroll space for them to keep its first row's controls reachable.
+    if (this._thumbnailPanel) this._thumbnailPanel.setTopInset(modeH + messageH);
   }
 
   /**
@@ -1603,9 +1766,8 @@ class ScribePDFViewer {
   }
 
   /**
-   * Show a persistent, dismissible banner below the chrome.
-   * Use when the user may be away from the screen or the failure is not self-evident (e.g. recognition failed while they stepped away):
-   * it resizes the document area and waits to be acknowledged rather than auto-dismissing.
+   * Show a persistent, dismissible banner over the top of the document area.
+   * Use when the user may be away from the screen or the failure is not self-evident (e.g. recognition failed while they stepped away): it waits to be acknowledged rather than auto-dismissing.
    * Only one banner shows at a time, so a new message replaces the current one.
    * @param {string} message
    */
@@ -1623,16 +1785,140 @@ class ScribePDFViewer {
     close.addEventListener('click', () => this._hideBanner());
     this._banner.append(text, close);
     this._banner.style.display = 'flex';
-    this._messageBannerHeight = MESSAGE_BANNER_HEIGHT;
-    this._relayout();
+    this._positionBanners();
   }
 
-  /** Hide the message banner and give its height back to the document area. */
+  /** Hide the message banner and give back the space the banner stack reserved for it. */
   _hideBanner() {
-    if (!this._banner || this._messageBannerHeight === 0) return;
+    if (!this._banner) return;
     this._banner.style.display = 'none';
-    this._messageBannerHeight = 0;
-    this._relayout();
+    this._positionBanners();
+  }
+
+  /**
+   * Reflect the active tool mode in the banner floating over the top of the document area: its name, hint, and Done.
+   * The banner is hidden while no mode is on.
+   */
+  _syncModeBanner() {
+    // A tool with no hint (the unmounted Redact button) gets no banner, so the hint doubles as the banner-eligibility test.
+    const activeBtn = (this._exclusiveToolBtns || []).find((b) => b.classList.contains('active') && b.dataset.modeHint) || null;
+    if (!activeBtn) {
+      if (this._modeBanner) this._modeBanner.style.display = 'none';
+      if (this._recognizeExtras) this._recognizeExtras.remove();
+      // The palette returns to its floating home so the closed bar holds nothing.
+      const idlePal = this._fillSignTool?.paletteElem();
+      if (idlePal && idlePal.parentElement !== this.pdfViewerElem) this.pdfViewerElem.appendChild(idlePal);
+      this._modeBannerBtn = null;
+      this._syncModeTrayArrow();
+      this._positionBanners();
+      return;
+    }
+    if (!this._modeBanner) {
+      const banner = document.createElement('div');
+      banner.className = 'scribe-mode-banner';
+      const ic = document.createElement('span');
+      ic.className = 'scribe-mode-banner-ic';
+      const name = document.createElement('span');
+      name.className = 'scribe-mode-banner-name';
+      const dot = document.createElement('span');
+      dot.className = 'scribe-mode-banner-dot';
+      dot.textContent = '·';
+      const hint = document.createElement('span');
+      hint.className = 'scribe-mode-banner-hint';
+      const done = document.createElement('button');
+      done.type = 'button';
+      done.className = 'scribe-mode-banner-done';
+      done.append('Done', Object.assign(document.createElement('kbd'), { textContent: 'Esc' }));
+      done.addEventListener('click', () => { if (this._modeBannerBtn) this._modeBannerBtn.click(); });
+      banner.append(ic, name, dot, hint, done);
+      this.pdfViewerElem.appendChild(banner);
+      this._modeBanner = banner;
+      this._modeBannerParts = {
+        ic, name, hint, done,
+      };
+    }
+    this._modeBannerBtn = activeBtn;
+    this._modeBannerParts.ic.innerHTML = activeBtn.querySelector('.cr-icon')?.innerHTML || '';
+    this._modeBannerParts.name.textContent = activeBtn.title;
+    this._modeBannerParts.hint.textContent = activeBtn.dataset.modeHint;
+
+    // Fill & Sign's placement palette is bar chrome: it mounts before Done while its mode is active.
+    // The phone layout has no bar, so there the palette keeps its floating pill above the dock.
+    const fsPal = this._fillSignTool ? this._fillSignTool.paletteElem() : null;
+    if (fsPal) {
+      const inBar = activeBtn === this._fillSignTool.toolbarElem && !this._phoneChrome;
+      if (inBar) {
+        if (fsPal.parentElement !== this._modeBanner) this._modeBanner.insertBefore(fsPal, this._modeBannerParts.done);
+      } else if (fsPal.parentElement !== this.pdfViewerElem) {
+        this.pdfViewerElem.appendChild(fsPal);
+      }
+    }
+
+    // The Recognize Text mode runs from its banner, so the language and Start controls mount while it is the active mode.
+    if (this._recognizeTool && activeBtn === this._recognizeTool.toolbarElem) {
+      if (!this._recognizeExtras) {
+        const tools = document.createElement('span');
+        tools.className = 'scribe-mode-banner-tools';
+        const langWrap = document.createElement('span');
+        langWrap.className = 'scribe-mode-banner-langwrap';
+        const langBtn = document.createElement('button');
+        langBtn.type = 'button';
+        langBtn.className = 'scribe-mode-banner-lang';
+        langBtn.title = 'Recognition language';
+        const langLabel = document.createElement('span');
+        const langMenu = document.createElement('div');
+        langMenu.className = 'scribe-edit-menu';
+        langMenu.style.display = 'none';
+        const current = this.scribe.opt.langs?.[0] || 'eng';
+        /** @type {Array<HTMLDivElement>} */
+        const langItems = [];
+        for (const [code, label] of [['eng', 'English'], ['deu', 'German'], ['fra', 'French'], ['spa', 'Spanish'], ['ita', 'Italian']]) {
+          const item = document.createElement('div');
+          item.className = 'scribe-edit-menu-item';
+          item.textContent = label;
+          if (code === current) { item.classList.add('selected'); langLabel.textContent = label; }
+          item.addEventListener('mousedown', (e) => e.preventDefault());
+          item.addEventListener('click', () => {
+            this.scribe.opt.langs = [code];
+            langLabel.textContent = label;
+            for (const it of langItems) it.classList.toggle('selected', it === item);
+            langMenu.style.display = 'none';
+            langBtn.classList.remove('active');
+          });
+          langItems.push(item);
+          langMenu.appendChild(item);
+        }
+        if (!langLabel.textContent) langLabel.textContent = current;
+        const caret = document.createElement('span');
+        caret.innerHTML = CARET_SVG;
+        langBtn.append(langLabel, caret);
+        this._wireDropdown(langBtn, langMenu);
+        langWrap.append(langBtn, langMenu);
+        const runBtn = document.createElement('button');
+        runBtn.type = 'button';
+        runBtn.className = 'scribe-mode-banner-run';
+        runBtn.textContent = 'Start';
+        runBtn.addEventListener('click', () => {
+          if (runBtn.classList.contains('busy') || runBtn.disabled) return;
+          this._recognizeAll(runBtn);
+        });
+        this._recognizeRunBtn = runBtn;
+        tools.append(langWrap, runBtn);
+        this._recognizeExtras = tools;
+      }
+      const pages = this._deepOcrPageCount();
+      if (pages === 0) this._modeBannerParts.hint.textContent = 'Text is already selectable on every page';
+      this._recognizeRunBtn.disabled = pages === 0;
+      if (!this._recognizeExtras.parentElement) this._modeBanner.insertBefore(this._recognizeExtras, this._modeBannerParts.done);
+    } else if (this._recognizeExtras) {
+      this._recognizeExtras.remove();
+    }
+
+    this._modeBanner.style.display = 'flex';
+    // A mode whose button lives in the tray keeps the tray open while active, so the active button stays visible.
+    if (this._modeTrayElem && this._modeTrayElem.contains(activeBtn)) this._setModeTrayOpen(true);
+    else this._syncModeTrayArrow();
+    this._positionBanners();
   }
 
   /** Re-apply canvas and thumbnail-panel sizing from the current dimensions and chrome height. */
@@ -1643,8 +1929,7 @@ class ScribePDFViewer {
     if (this._phoneChrome && this._dockElem) {
       this.pdfViewerElem.style.setProperty('--scribe-phone-menu-max', `${Math.max(120, this._height - this._chromeBottom() - 24)}px`);
     }
-    // The banner occupies the strip just above the document area (below toolbar + tab strip).
-    if (this._messageBannerHeight && this._banner) this._banner.style.top = `${top - this._messageBannerHeight}px`;
+    this._positionBanners();
     if (this._thumbnailPanel) {
       this._thumbnailPanel.panelElem.style.top = `${top}px`;
       this._thumbnailPanel.panelElem.style.height = `${this._height - top}px`;
@@ -1877,8 +2162,9 @@ class ScribePDFViewer {
     this.pdfViewerElem.style.height = `${height}px`;
     // Crossing the phone threshold switches the layout before the canvas is re-measured.
     this._setPhoneChrome(width <= 480 || (this._coarsePointer && height <= 480));
+    this._syncModeOverflow();
     if (this.dropZone) {
-      const dropTop = this._phoneChrome ? 0 : this.toolbarHeight;
+      const dropTop = this._phoneChrome ? 0 : this.toolbarHeight + (this._modeTrayOpen ? MODE_TRAY_HEIGHT : 0);
       this.dropZone.style.top = `${dropTop}px`;
       this.dropZone.style.width = `${width - 6}px`;
       this.dropZone.style.height = `${height - dropTop - this._chromeBottom()}px`;
@@ -1979,7 +2265,7 @@ class ScribePDFViewer {
         this._closeSheet(true);
         this._closePagesRoom(true);
         this.toolbarElem.style.display = 'flex';
-        this.toolbarElemStart.appendChild(this._appMenu.menuWrap);
+        this.toolbarElemStart.insertBefore(this._appMenu.menuWrap, this.toolbarElemStart.firstChild);
         if (this._toolbarButtonsElem && this.nextElem && this._pageInputGroup) {
           this._toolbarButtonsElem.insertBefore(this._pageInputGroup, this.nextElem.nextSibling);
         }
@@ -2670,6 +2956,8 @@ class ScribePDFViewer {
   _syncDocGatedControls() {
     const disabled = !this.doc;
     if (disabled && this._fillSignTool?.isOpen()) this._fillSignTool.close();
+    if (disabled && this._editPagesTool?.isActive()) this._editPagesTool.close();
+    if (disabled && this._recognizeTool?.isActive()) this._recognizeTool.close();
     for (const el of [
       this._searchBar?.searchElem,
       this._thumbnailPanel?.toggleElem,
@@ -2678,6 +2966,8 @@ class ScribePDFViewer {
       this._dockPagesBtn,
       this._sheetPanelsBtn,
       this._fillSignTool?.toolbarElem,
+      this._editPagesTool?.toolbarElem,
+      this._recognizeTool?.toolbarElem,
     ]) {
       if (!el) continue;
       el.classList.toggle('disabled', disabled);
@@ -2705,6 +2995,8 @@ class ScribePDFViewer {
       editBtn.ariaDisabled = !editable ? 'true' : 'false';
       editBtn.tabIndex = !editable ? -1 : 0;
     }
+    // The closes above can end a mode without a button click, so refresh the banner here too.
+    this._syncModeBanner();
   }
 
   /** Hide the dock's Panels button when the sheet would have no tabs to show. */
@@ -2813,32 +3105,6 @@ class ScribePDFViewer {
   }
 
   /**
-   * Build a flat text button styled by the editor CSS, optionally with a leading icon.
-   * @param {string} label
-   * @param {string} title
-   * @param {string} [extraClass]
-   * @param {string} [iconSvg] - SVG markup for a leading icon.
-   * @returns {HTMLSpanElement}
-   */
-  _makeTextBtn(label, title, extraClass, iconSvg) {
-    const btn = document.createElement('span');
-    btn.className = extraClass ? `scribe-edit-btn ${extraClass}` : 'scribe-edit-btn';
-    if (iconSvg) {
-      const ic = document.createElement('span');
-      ic.className = 'scribe-edit-btn-ic';
-      ic.innerHTML = iconSvg;
-      btn.appendChild(ic);
-    }
-    // A text node (not textContent) so the leading icon survives.
-    if (label) btn.appendChild(document.createTextNode(label));
-    btn.title = title;
-    btn.role = 'button';
-    btn.tabIndex = 0;
-    btn.addEventListener('mousedown', (e) => e.preventDefault());
-    return btn;
-  }
-
-  /**
    * Wire a toggle element to open/close a menu, closing it on any outside click.
    * @param {HTMLElement} toggleEl
    * @param {HTMLElement} menuEl
@@ -2860,44 +3126,10 @@ class ScribePDFViewer {
   }
 
   /**
-   * Build the edit toolbar's right zone: a Recognize Text split button whose main face runs recognition and whose caret opens a language menu.
-   * Also populate the far-left app menu with Export PDF, Combine, Split, and the dark-mode toggle.
+   * Build the edit toolbar's document actions and recognition surfaces.
+   * Recognition itself lives in the Recognize Text tool mode; here only the touch app-menu row and the progress line are mounted.
    */
   _buildEditToolbar() {
-    // The split button is shown only when deep OCR would actually recognize a page (see `_updateRecognizeButton`), so a fully text-native document offers no recognize action.
-    // On touch layouts the split leaves the bar and the app-menu row carries recognition instead.
-    const ocrSplit = document.createElement('span');
-    ocrSplit.className = 'scribe-edit-split scribe-touch-hide';
-    this._ocrSplit = ocrSplit;
-    const ocrBtn = this._makeTextBtn('Recognize Text', 'Recognize text on every page', 'scribe-edit-split-main');
-    ocrBtn.addEventListener('click', () => this._recognizeAll(ocrBtn));
-    const ocrCaret = this._makeTextBtn('', 'Recognition language', 'scribe-edit-split-caret');
-    ocrCaret.innerHTML = CARET_SVG;
-
-    const langMenu = document.createElement('div');
-    langMenu.className = 'scribe-edit-menu';
-    langMenu.style.display = 'none';
-    const current = this.scribe.opt.langs?.[0] || 'eng';
-    /** @type {Array<HTMLDivElement>} */
-    const langItems = [];
-    for (const [code, label] of [['eng', 'English'], ['deu', 'German'], ['fra', 'French'], ['spa', 'Spanish'], ['ita', 'Italian']]) {
-      const item = document.createElement('div');
-      item.className = 'scribe-edit-menu-item';
-      item.textContent = label;
-      if (code === current) item.classList.add('selected');
-      item.addEventListener('mousedown', (e) => e.preventDefault());
-      item.addEventListener('click', () => {
-        this.scribe.opt.langs = [code];
-        for (const it of langItems) it.classList.toggle('selected', it === item);
-        langMenu.style.display = 'none';
-        ocrCaret.classList.remove('active');
-      });
-      langItems.push(item);
-      langMenu.appendChild(item);
-    }
-    this._wireDropdown(ocrCaret, langMenu);
-    ocrSplit.append(ocrBtn, ocrCaret, langMenu);
-
     // Export PDF, the document-level actions (Combine / Split), and the Dark mode toggle live in the far-left app menu, which the viewer already seeded with Open / Print.
     const appMenu = this._appMenu;
     if (appMenu) {
@@ -2972,11 +3204,6 @@ class ScribePDFViewer {
       this._fieldsToggleItem = fieldsToggle.item;
     }
 
-    const rightGroup = document.createElement('span');
-    rightGroup.className = 'scribe-edit-group';
-    rightGroup.append(ocrSplit);
-    this.toolbarElemEnd.insertBefore(rightGroup, this.toolbarElemEnd.firstChild);
-
     // A subtle recognition progress line along the toolbar's bottom edge, hidden until OCR runs.
     // In the phone layout it rides the dock's top edge instead (and `_setPhoneChrome` moves it on flips).
     const progressBar = document.createElement('div');
@@ -2992,13 +3219,13 @@ class ScribePDFViewer {
 
   /**
    * Pages deep OCR would recognize for the current document, or 0 when there is none.
-   * Drives the Recognize Text button's visibility and the progress bar's page total.
+   * Drives the Recognize Text mode's Start state, the touch menu row's visibility, and the progress bar's page total.
    * @returns {number}
    */
   _deepOcrPageCount() {
     const doc = this.doc;
     if (!doc) return 0;
-    // While a deferred import's stats are still extracting, return 0 so the Recognize button stays hidden instead of flashing on then vanishing.
+    // While a deferred import's stats are still extracting, return 0 so the recognition surfaces start quiet instead of flashing on then vanishing.
     // `_setDoc` re-runs this once `textReady` lands.
     if (doc._textReadySettle) return 0;
     const { pageStats, pageCount, pdfType } = doc.inputData;
@@ -3006,11 +3233,9 @@ class ScribePDFViewer {
     return selectOcrPages(pageStats, pdfType, 'autoDeep').filter(Boolean).length;
   }
 
-  /** Show the recognition surfaces only when deep OCR would actually recognize at least one page. */
+  /** Show the touch app-menu recognition row only when deep OCR would actually recognize at least one page. */
   _updateRecognizeButton() {
-    const pages = this._deepOcrPageCount();
-    if (this._ocrSplit) this._ocrSplit.style.display = pages > 0 ? '' : 'none';
-    if (this._ocrMenuItem) this._ocrMenuItem.style.display = pages > 0 ? '' : 'none';
+    if (this._ocrMenuItem) this._ocrMenuItem.style.display = this._deepOcrPageCount() > 0 ? '' : 'none';
   }
 
   /** Show the Combine menu item only when 2+ documents (tabs) are open. Combining one document is a no-op. */
@@ -3081,6 +3306,7 @@ class ScribePDFViewer {
       await doc.recognize({ langs: this.scribe.opt.langs, ocrPages: 'autoDeep' });
       ok = true;
       await this.scribe.displayPage(this.scribe.state.cp.n, false, true);
+      this._showToast('Text recognized — you can now select and search it.');
     } catch (err) {
       console.error('OCR failed:', err);
       // A banner, not a toast: recognition is a long async job the user may have stepped away from.
@@ -3094,6 +3320,9 @@ class ScribePDFViewer {
         setTimeout(() => { bar.style.opacity = '0'; }, ok ? 250 : 0);
         setTimeout(() => { bar.style.transform = 'scaleX(0)'; }, 600);
       }
+      // The finished job is the mode's whole point, so success closes the mode; the sync also re-enables Edit Text now that recognized text exists.
+      if (ok && this._recognizeTool?.isActive()) this._recognizeTool.close();
+      this._syncDocGatedControls();
     }
   }
 
@@ -3165,43 +3394,7 @@ class ScribePDFViewer {
     ScribePDFViewer._editStyleAdded = true;
     const style = document.createElement('style');
     style.appendChild(document.createTextNode(`
-      .scribe-pdf-viewer .scribe-edit-group {
-        display: inline-flex;
-        align-items: center;
-        gap: 8px;
-        margin-right: 6px;
-      }
-      .scribe-pdf-viewer .scribe-edit-btn {
-        cursor: pointer;
-        user-select: none;
-        box-sizing: border-box;
-        gap: 6px;
-        padding: 0 10px;
-        height: var(--scribe-icon-size, 28px);
-        display: inline-flex;
-        align-items: center;
-        justify-content: center;
-        border-radius: 6px;
-        font-size: 13px;
-        color: var(--scribe-ink);
-        white-space: nowrap;
-      }
-      .scribe-pdf-viewer .scribe-edit-btn:hover { background: var(--scribe-hover); }
-      .scribe-pdf-viewer .scribe-edit-btn.active { background: var(--scribe-active); }
-      .scribe-pdf-viewer .scribe-edit-btn.busy { opacity: .6; pointer-events: none; }
-      .scribe-pdf-viewer .scribe-edit-btn-ic { display: inline-flex; align-items: center; }
-      .scribe-pdf-viewer .scribe-edit-btn-ic svg { width: 16px; height: 16px; display: block; color: var(--scribe-ink-2); }
-
-      /* OCR split button: one pill with a main face and a caret, divided by a hairline. */
-      .scribe-pdf-viewer .scribe-edit-split { position: relative; display: inline-flex; align-items: stretch; }
-      .scribe-pdf-viewer .scribe-edit-split-main { border-radius: 6px 0 0 6px; padding: 0 8px 0 10px; }
-      .scribe-pdf-viewer .scribe-edit-split-caret { border-radius: 0 6px 6px 0; padding: 0 5px; }
-      .scribe-pdf-viewer .scribe-edit-split-caret::before {
-        content: ''; position: absolute; left: 0; top: 6px; bottom: 6px; width: 1px; background: var(--scribe-line-strong);
-      }
-      .scribe-pdf-viewer .scribe-edit-split-caret svg { display: block; }
-
-      /* Language menu under the recognition-language caret. */
+      /* Language menu under the Recognize Text mode's language button. */
       .scribe-pdf-viewer .scribe-edit-menu {
         position: absolute; top: calc(100% + 6px); right: 0; min-width: 150px; padding: 4px;
         background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 8px;

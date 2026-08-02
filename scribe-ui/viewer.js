@@ -160,14 +160,15 @@ export class ScribeViewer {
     /**
      * Host hook for a click on an unsigned signature field.
      * Unsigned fields render as clickable sign-here targets only when a host sets this.
-     * @type {?(n: number, row: Object) => void}
+     * @type {?(n: number, row: AnnotationField) => void}
      */
     this.onSignatureFieldClick = null;
 
     /**
      * Fired after every page-structure or rotation edit made through the viewer's page verbs, including undo/redo of them.
      * For host UI that passively mirrors the page list (the phone filmstrip, the bookmarks/comments panels) and would otherwise go stale when an edit originates elsewhere.
-     * @type {?Function}
+     * Rotation edits pass 'rotate', so a host can refresh surfaces that are unsafe to touch during structural edits' animations.
+     * @type {?(kind?: 'rotate') => void}
      */
     this.onPageEditCallback = null;
 
@@ -447,6 +448,11 @@ export class ScribeViewer {
     this._editTextCopySelection = null;
     /** @type {?ReturnType<typeof import('./js/editTextLineEditor.js').createLineEditor>} */
     this._editTextLineEditor = null;
+
+    // Whether an Edit Pages control gates the thumbnail rail's page mutations.
+    // Hosts without one keep a rail that is always armed under `enablePageEditing`.
+    /** @type {boolean} */
+    this._editPagesGate = false;
 
     /** @type {?(message: string, undo: () => void) => void} Fired after a destructive one-tap action (the touch callout's delete), with a message and an undo for the host to surface. */
     this._onDestructiveAction = null;
@@ -903,6 +909,7 @@ export class ScribeViewer {
 
     this.calcPageStops();
     this.displayPage(this.state.cp.n, false, true);
+    if (this.onPageEditCallback) this.onPageEditCallback('rotate');
   }
 
   /**
@@ -1073,7 +1080,7 @@ export class ScribeViewer {
     this.imageCache.clear();
     this.calcPageStops();
     this.displayPage(this.state.cp.n, false, true);
-    if (this.onPageEditCallback) this.onPageEditCallback();
+    if (this.onPageEditCallback) this.onPageEditCallback('rotate');
   }
 
   /**

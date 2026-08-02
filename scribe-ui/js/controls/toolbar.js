@@ -129,6 +129,14 @@ export function makeToolbarShell(rootClass, toolbarHeight, iconSize) {
  */
 const lineIcon = (inner) => `<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true">${inner}</svg>`;
 
+export const EDIT_PAGES_SVG = lineIcon('<rect x="3.5" y="3.5" width="8" height="10.5" rx="1"/><rect x="12.5" y="10" width="8" height="10.5" rx="1"/>'
+  + '<path d="M14 5.5h4"/><path d="M18 3.9 21 5.5 18 7.1Z" fill="currentColor" stroke="none"/>'
+  + '<path d="M10 18.5H6"/><path d="M6 16.9 3 18.5 6 20.1Z" fill="currentColor" stroke="none"/>');
+
+/** Scan corners around a letterform, for the Recognize Text mode. */
+export const RECOGNIZE_SVG = lineIcon('<path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16"/>'
+  + '<path d="M9 15V9.8A0.8 0.8 0 0 1 9.8 9h4.4a0.8 0.8 0 0 1 0.8 0.8V15M9 12.6h6"/>');
+
 const NAV_PREV_SVG = lineIcon('<path d="M15 6l-6 6 6 6"/>');
 const NAV_NEXT_SVG = lineIcon('<path d="M9 6l6 6-6 6"/>');
 
@@ -1417,7 +1425,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       position: absolute;
       inset: -8px -26px -26px -8px;
     }
-    .${r} .scribe-pages-room.editing .scribe-thumb-chk { display: flex; }
+    .${r} .scribe-pages-room.editing .scribe-thumb-chk,
+    .${r} .scribe-thumb-editmode .scribe-thumb-chk { display: flex; }
     .${r} .scribe-thumb.selected .scribe-thumb-chk {
       background: var(--scribe-accent);
       border-color: var(--scribe-accent);
@@ -2301,7 +2310,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       font-weight: 600;
     }
 
-    .${r} .scribe-thumb-box.editable {
+    .${r} .scribe-thumb-armed .scribe-thumb-box {
       cursor: grab;
     }
 
@@ -3381,7 +3390,6 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-toast-action:hover { background: var(--scribe-hover); }
     .${r}.scribe-coarse .scribe-toast-action { min-height: 40px; padding: 6px 12px; }
 
-    /* height must match MESSAGE_BANNER_HEIGHT in pdf-viewer.js (which reserves this strip from the document area) */
     .${r} .scribe-banner {
       position: absolute; left: 0; right: 0; height: 40px; z-index: 35;
       display: flex; align-items: center; gap: 10px; padding: 0 14px;
@@ -3396,6 +3404,59 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
     .${r} .scribe-banner-close:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
     .${r} .scribe-banner-close svg { width: 16px; height: 16px; display: block; }
+
+    .${r} .scribe-mode-banner {
+      position: absolute; left: 0; right: 0; height: 40px; z-index: 35; box-sizing: border-box;
+      display: flex; align-items: center; gap: 8px; padding: 0 10px 0 14px;
+      background: var(--scribe-accent-soft); border-bottom: 1px solid var(--scribe-line);
+      color: var(--scribe-ink); user-select: none;
+    }
+    .${r} .scribe-mode-banner-ic { display: inline-flex; width: 17px; height: 17px; color: var(--scribe-accent); flex: none; }
+    .${r} .scribe-mode-banner-name { font-size: 12.5px; font-weight: 650; white-space: nowrap; }
+    .${r} .scribe-mode-banner-dot { color: var(--scribe-ink-3); }
+    .${r} .scribe-mode-banner-hint { font-size: 12px; color: var(--scribe-ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+    .${r} .scribe-mode-banner-done {
+      margin-left: auto; flex: none; display: inline-flex; align-items: center; gap: 6px;
+      padding: 3px 12px; border: none; border-radius: 6px; background: transparent;
+      font: inherit; font-size: 12.5px; font-weight: 650; color: var(--scribe-accent); cursor: pointer;
+    }
+    .${r} .scribe-mode-banner-done:hover { background: var(--scribe-active); }
+    .${r} .scribe-mode-banner-done kbd {
+      font-family: inherit; font-size: 10.5px; font-weight: 600; color: var(--scribe-ink-3);
+      border: 1px solid var(--scribe-line-strong); border-radius: 4px; padding: 0 4px; line-height: 1.5;
+    }
+    .${r} .scribe-mode-banner-tools { margin-left: auto; display: inline-flex; align-items: center; gap: 6px; flex: none; }
+    .${r} .scribe-mode-banner-tools + .scribe-mode-banner-done { margin-left: 0; }
+
+    /* The Fill & Sign palette hosted in the mode bar: the pill chrome comes off and the signature menu opens downward. */
+    .${r} .scribe-mode-banner .scribe-fs-pal {
+      position: relative; left: auto; bottom: auto; transform: none; z-index: auto;
+      background: none; border: none; border-radius: 0; box-shadow: none; padding: 0;
+      cursor: default; margin-left: auto; flex: none;
+    }
+    .${r} .scribe-mode-banner .scribe-fs-grip { display: none; }
+    .${r} .scribe-mode-banner .scribe-fs-pal + .scribe-mode-banner-done { margin-left: 0; }
+    .${r} .scribe-mode-banner .scribe-fs-menu { bottom: auto; top: calc(100% + 6px); right: 0; }
+    .${r} .scribe-mode-banner-langwrap { position: relative; display: inline-flex; }
+    .${r} .scribe-mode-banner-lang {
+      display: inline-flex; align-items: center; gap: 4px; padding: 3px 8px; border: none; border-radius: 6px;
+      background: transparent; font: inherit; font-size: 12px; color: var(--scribe-ink-2); cursor: pointer;
+    }
+    .${r} .scribe-mode-banner-lang:hover, .${r} .scribe-mode-banner-lang.active { background: var(--scribe-active); }
+    .${r} .scribe-mode-banner-lang svg { display: block; }
+    .${r} .scribe-mode-banner-run {
+      flex: none; display: inline-flex; align-items: center; padding: 2px 12px; border: 1px solid var(--scribe-accent);
+      border-radius: 6px; background: transparent; font: inherit; font-size: 12.5px; font-weight: 650; color: var(--scribe-accent); cursor: pointer;
+    }
+    .${r} .scribe-mode-banner-run:not(:disabled):hover { background: var(--scribe-active); }
+    .${r} .scribe-mode-banner-run:disabled { color: var(--scribe-ink-3); border-color: var(--scribe-line-strong); cursor: default; }
+    .${r} .scribe-mode-banner-run.busy { opacity: .6; pointer-events: none; }
+
+    .${r} .scribe-mode-tray {
+      height: 40px; box-sizing: border-box; display: none; align-items: center; justify-content: center; gap: 4px;
+      background: var(--scribe-surface); border-bottom: 1px solid var(--scribe-line); position: relative; z-index: 9;
+    }
+    .${r} .scribe-mode-tray.on { display: flex; }
   `;
 
   style.appendChild(document.createTextNode(css));

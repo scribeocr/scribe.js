@@ -14,8 +14,12 @@ export const THUMB_SVG = `<svg xmlns="http://www.w3.org/2000/svg" height="20" wi
 <rect x="4" y="17" width="7" height="4" rx="1"/>
 <rect x="14" y="3" width="6" height="18" rx="1" opacity="0.55"/>
 </svg>`;
+// eslint-disable-next-line max-len
+const ROTATE_PATH = '<path d="M15.55 5.55L11 1v3.07C7.06 4.56 4 7.92 4 12s3.05 7.44 7 7.93v-2.02c-2.84-.48-5-2.94-5-5.91s2.16-5.43 5-5.91V10l4.55-4.45zM19.93 11c-.17-1.39-.72-2.73-1.62-3.89l-1.42 1.42c.54.75.88 1.6 1.02 2.47h2.02zM13 17.9v2.02c1.39-.17 2.74-.71 3.9-1.61l-1.44-1.44c-.75.54-1.59.89-2.46 1.03zm3.89-2.42l1.42 1.41c.9-1.16 1.45-2.5 1.62-3.89h-2.02c-.14.87-.48 1.72-1.02 2.47z"/>';
 const ROTATE_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="display:block;pointer-events:none;">
-<path d="M15.55 5.55L11 1v3.07C7.06 4.56 4 7.92 4 12s3.05 7.44 7 7.93v-2.02c-2.84-.48-5-2.94-5-5.91s2.16-5.43 5-5.91V10l4.55-4.45zM19.93 11c-.17-1.39-.72-2.73-1.62-3.89l-1.42 1.42c.54.75.88 1.6 1.02 2.47h2.02zM13 17.9v2.02c1.39-.17 2.74-.71 3.9-1.61l-1.44-1.44c-.75.54-1.59.89-2.46 1.03zm3.89-2.42l1.42 1.41c.9-1.16 1.45-2.5 1.62-3.89h-2.02c-.14.87-.48 1.72-1.02 2.47z"/></svg>`;
+${ROTATE_PATH}</svg>`;
+const ROTATE_CCW_SVG = `<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor" style="display:block;pointer-events:none;">
+<g transform="translate(24 0) scale(-1 1)">${ROTATE_PATH}</g></svg>`;
 const DELETE_SVG = '<svg viewBox="0 0 24 24" width="14" height="14" fill="currentColor"><path d="M9 3v1H4v2h16V4h-5V3H9zM6 7l1 13h10l1-13H6z"/></svg>';
 // Check face of the Edit-mode selection checkbox; always in the markup, kept transparent by CSS until the page is selected.
 const CHECK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"'
@@ -110,7 +114,8 @@ function clearPageClipboard() {
  *   panelElem: HTMLDivElement, toggleElem: HTMLSpanElement,
  *   rebuild: (activeN?: number) => void, cancelCut: () => void, setActive: (n: number) => void,
  *   setVisible: (v: boolean) => void, setWidth: (px: number) => number,
- *   setCompact: (on: boolean) => void, setRoomMode: (mode: ?('browse'|'edit')) => void, clearSelection: () => void,
+ *   setCompact: (on: boolean) => void, setRoomMode: (mode: ?('browse'|'edit')) => void,
+ *   setPageEditMode: (on: boolean) => void, setTopInset: (px: number) => void, clearSelection: () => void,
  *   beginStructureSlide: () => (() => void), refit: () => void,
  *   getResizeBounds: () => { min: number, max: number },
  *   gridGeometry: () => { count: number, cols: number, cellW: number, pad: number, strideX: number,
@@ -152,9 +157,14 @@ export function createThumbnailPanel(scribe, {
   batchBar.style.display = 'none';
   const batchCount = document.createElement('span');
   batchCount.className = 'scribe-thumb-batch-count';
+  const batchRotateLeftBtn = document.createElement('button');
+  batchRotateLeftBtn.className = 'scribe-thumb-batch-btn';
+  batchRotateLeftBtn.title = 'Rotate selected pages left';
+  batchRotateLeftBtn.innerHTML = ROTATE_CCW_SVG;
+  batchRotateLeftBtn.addEventListener('click', () => rotateSelection(-90));
   const batchRotateBtn = document.createElement('button');
   batchRotateBtn.className = 'scribe-thumb-batch-btn';
-  batchRotateBtn.title = 'Rotate selected pages';
+  batchRotateBtn.title = 'Rotate selected pages right';
   batchRotateBtn.innerHTML = ROTATE_SVG;
   batchRotateBtn.addEventListener('click', () => rotateSelection());
   const batchDeleteBtn = document.createElement('button');
@@ -162,7 +172,7 @@ export function createThumbnailPanel(scribe, {
   batchDeleteBtn.title = 'Delete selected pages';
   batchDeleteBtn.innerHTML = DELETE_SVG;
   batchDeleteBtn.addEventListener('click', () => deleteSelection());
-  batchBar.append(batchCount, batchRotateBtn, batchDeleteBtn);
+  batchBar.append(batchCount, batchRotateLeftBtn, batchRotateBtn, batchDeleteBtn);
   // Mount the strip on the viewer root (a sibling of the panel) rather than inside it: the panel clips its overflow,
   // so a child could not sit beside the rail. The root shares the panel's positioning context and the scoped styles.
   const batchHost = scribe.outerElem || panelElem;
@@ -298,6 +308,14 @@ export function createThumbnailPanel(scribe, {
   // Phone Pages-room interaction mode: 'browse' is read-only, 'edit' carries the mutations.
   /** @type {?('browse'|'edit')} */
   let roomMode = null;
+  // Desktop Edit Pages mode: the rail's page mutations (reorder, select, delete, menus) arm only while it is on.
+  let pageEditMode = false;
+  // Height of the host chrome overlaying the rail's top edge, which the scrollport starts below.
+  let topInset = 0;
+  // Hosts that never install an Edit Pages control have no gate, so their rail stays armed under `enablePageEditing` alone.
+  // The phone room is exempt either way, since its own Edit mode governs there.
+  const pageEditArmed = () => !!(scribe.opt && scribe.opt.enablePageEditing)
+    && (roomMode !== null || pageEditMode || !scribe._editPagesGate);
   // Timestamp of the grid's last scroll event.
   // A press on a still-gliding grid catches the scroll and must not act on a page.
   // Scroll events stream every frame while the grid moves, so no event within the settle window means it is at rest.
@@ -340,6 +358,8 @@ export function createThumbnailPanel(scribe, {
     openContextMenu,
     cancelCut,
     get roomMode() { return roomMode; },
+    get pageEditMode() { return pageEditMode; },
+    pageEditArmed,
     gridInMotion,
     peekShow,
     peekHide,
@@ -347,8 +367,8 @@ export function createThumbnailPanel(scribe, {
     peekWarmEnd,
     openPage: (n) => (onPageOpen || onSelect)(n),
     goToPage: (n) => onSelect && onSelect(n),
-    toggleRoomSelect,
-    setRoomSelect,
+    togglePageSelect,
+    setPageSelect,
     clearSelection,
   };
   const reorder = installPageReorder(ctx);
@@ -744,6 +764,7 @@ export function createThumbnailPanel(scribe, {
     // A press that never crosses the reorder drag threshold stays a plain click, because suppressClick is set only once a drag begins.
     boxElem.addEventListener('pointerdown', (e) => reorder.onThumbPointerDown(e, idx()));
     boxElem.addEventListener('contextmenu', (e) => {
+      // The menu is offered whenever page editing is enabled, so pages can be rotated or copied without entering the Edit Pages mode.
       if (!(scribe.opt && scribe.opt.enablePageEditing)) return;
       e.preventDefault();
       // The room's modes have no page menu: browse is read-only, and Edit mutates on the cells.
@@ -754,10 +775,7 @@ export function createThumbnailPanel(scribe, {
       openContextMenu(e.clientX, e.clientY, idx());
     });
 
-    // The whole thumbnail is draggable to reorder when page editing is on; the `grab` cursor advertises it.
-    if (scribe.opt && scribe.opt.enablePageEditing) boxElem.classList.add('editable');
-
-    // Edit-mode selection checkbox, shown only under `.scribe-pages-room.editing`.
+    // Edit-mode selection checkbox, shown under `.scribe-pages-room.editing` and `.scribe-thumb-editmode`.
     // A child of the row, not the box, so it can overhang the page corner (the box clips its overflow) and its press never reaches the box's drag handler.
     const chkBtn = document.createElement('button');
     chkBtn.type = 'button';
@@ -769,13 +787,25 @@ export function createThumbnailPanel(scribe, {
     // chkPress swallows the click that follows any press: a handled press already toggled, and a catch-the-scroll press must not toggle.
     // A keyboard activation is a click with no preceding press, so it still toggles.
     let chkPress = false;
+    // The genuine tail click arrives synchronously with its pointerup, before a zero timeout runs.
+    // A paint drag released elsewhere delivers no click here, so without the deferred reset the stranded flag would swallow the next keyboard activation.
+    const chkPressEnd = () => {
+      window.removeEventListener('pointerup', chkPressEnd);
+      window.removeEventListener('pointercancel', chkPressEnd);
+      setTimeout(() => { chkPress = false; }, 0);
+    };
     chkBtn.addEventListener('pointerdown', (e) => {
       chkPress = true;
+      window.addEventListener('pointerup', chkPressEnd);
+      window.addEventListener('pointercancel', chkPressEnd);
       reorder.onChkPointerDown(e, idx());
     });
     chkBtn.addEventListener('click', () => {
-      if (chkPress) { chkPress = false; return; }
-      if (roomMode === 'edit') toggleRoomSelect(idx());
+      const pressed = chkPress;
+      chkPress = false;
+      // The press itself toggled (onChkPointerDown), so a pressed click is the swallowed tail.
+      // A keyboard activation is a click with no preceding press, so it toggles here.
+      if (!pressed && (roomMode === 'edit' || pageEditMode)) togglePageSelect(idx());
     });
 
     thumbElem.appendChild(boxElem);
@@ -899,7 +929,7 @@ export function createThumbnailPanel(scribe, {
   function onScroll() {
     lastScrollT = Date.now();
     closeContextMenu();
-    if (selected.size >= 2) positionBatchBar();
+    if (selected.size > 0) positionBatchBar();
     if (rafPending) return;
     rafPending = true;
     requestAnimationFrame(() => {
@@ -925,7 +955,9 @@ export function createThumbnailPanel(scribe, {
 
   /** Column count for the current width: as many fixed-width cells as fit the inner width, capped at MAX_COLS. @returns {number} */
   function gridColsFor() {
-    return Math.min(colsFor(viewportW || cellW, cellW), compact ? COMPACT_MAX_COLS : MAX_COLS);
+    // A width glide lays out for its destination from the first frame, so the column flip plays alongside the moving edge instead of trailing it.
+    // The panel's overflow clipping reveals the far column progressively as the edge travels.
+    return Math.min(colsFor(widthAnimViewportW || viewportW || cellW, cellW), compact ? COMPACT_MAX_COLS : MAX_COLS);
   }
 
   /**
@@ -963,13 +995,15 @@ export function createThumbnailPanel(scribe, {
     gridCols = gridColsFor();
     layoutMode = gridCols > 1 ? 'grid' : 'rail';
 
+    // Offsets start at `topInset`, the leading space reserved for host chrome overlaying the rail's top edge.
+    // Baking it into the offsets shifts every consumer consistently: row tops, hit tests, slides, and the scroll range.
     if (layoutMode === 'grid') {
       // Centre the compact grid, which is narrower than its full-width sheet.
       // The desktop rail is sized to its columns, so only the phone sheet needs centring.
       const gridInnerW = gridCols * cellW + (gridCols - 1) * GRID_GAP;
       const sidePad = compact ? Math.max(PAD, Math.round((viewportW - gridInnerW) / 2)) : PAD;
       // Rows differ in height, so each row's stride is recorded here for `rowAt` to search instead of dividing by one stride.
-      let rowTop = 0;
+      let rowTop = topInset;
       for (let start = 0; start < pageCount; start += gridCols) {
         const end = Math.min(pageCount, start + gridCols);
         let rowBox = 1;
@@ -988,7 +1022,7 @@ export function createThumbnailPanel(scribe, {
       }
       total = rowTop;
     } else {
-      let acc = 0;
+      let acc = topInset;
       for (let n = 0; n < pageCount; n++) {
         boxHeights[n] = boxHeightOf(n);
         heights[n] = boxHeights[n] + rowOverhead;
@@ -1183,6 +1217,77 @@ export function createThumbnailPanel(scribe, {
     // The explicit updateBatchToolbar covers the nothing-to-clear case: bar and pill visibility key off roomMode.
     clearSelection();
     updateBatchToolbar();
+    syncArmedCursor();
+  }
+
+  /** Reflect the arming state as the grab cursor on the thumbnails. */
+  function syncArmedCursor() {
+    panelElem.classList.toggle('scribe-thumb-armed', roomMode === null && pageEditArmed());
+  }
+  // The Edit Pages control installs its gate after the panel is built, so read the arming state once the host finishes wiring.
+  queueMicrotask(syncArmedCursor);
+
+  // Width the mode widened the rail to, or 0 when it left the width alone.
+  let pageEditAppliedW = 0;
+  let preEditWidth = 0;
+
+  /**
+   * Enter or leave the desktop Edit Pages mode.
+   * The rail arms its page mutations, gains hover check circles, and widens to two columns for the duration.
+   * @param {boolean} on
+   */
+  function setPageEditMode(on) {
+    if (pageEditMode === on) return;
+    pageEditMode = on;
+    reorder.cancelDrag();
+    closeContextMenu();
+    clearSelection();
+    panelElem.classList.toggle('scribe-thumb-editmode', on);
+    syncArmedCursor();
+    if (on) {
+      // A glide still in flight is already committed to its target, so the toggle reasons from that width, not the mid-glide one.
+      preEditWidth = widthAnim ? widthAnimTarget : (parseFloat(panelElem.style.width) || 0);
+      const target = panelWidthForCols(2, cellW);
+      if (!compact && preEditWidth > 0 && preEditWidth < target) {
+        // Pin the anchor exactly as a handle drag does, so the glide's reflow re-centres the same pages across the column change.
+        pinResizeAnchor();
+        pageEditAppliedW = animateWidthTo(target);
+        // A hidden rail skips reflow's anchored re-centre, so without this the reveal would land on the wrong pages.
+        if (!visible && resizeAnchorPage >= 0) {
+          scrollElem.scrollTop = Math.max(0, PAD + offsets[resizeAnchorPage] + resizeAnchorFrac * heights[resizeAnchorPage] - viewportH / 2);
+        }
+      } else {
+        pageEditAppliedW = 0;
+      }
+    } else if (pageEditAppliedW > 0) {
+      // Undo the widen unless the user resized the rail during the mode.
+      const cur = widthAnim ? widthAnimTarget : (parseFloat(panelElem.style.width) || 0);
+      if (Math.abs(cur - pageEditAppliedW) < 1) {
+        pinResizeAnchor();
+        animateWidthTo(preEditWidth);
+      }
+      pageEditAppliedW = 0;
+    }
+    if (visible) updateWindow(true);
+  }
+
+  /**
+   * Reserve leading space in the rail's scroll content for host chrome that overlays its top edge.
+   * At the top of the scroll range the first row starts below the chrome, keeping its controls reachable.
+   * Scrolled away from the top, rows pass beneath the chrome like any content under a fixed header, so the rail keeps its full height.
+   * @param {number} px
+   */
+  function setTopInset(px) {
+    const next = Math.max(0, Math.round(px));
+    if (topInset === next) return;
+    const delta = next - topInset;
+    topInset = next;
+    computeGeometry();
+    // Mid-scroll the change must not move the rows on screen, so the scroll position absorbs it.
+    // At the top the rows shift down to clear the chrome (or back up to reclaim its space).
+    if (scrollElem.scrollTop > 0) scrollElem.scrollTop += delta;
+    for (const [n, entry] of mounted) restyleRow(entry, n);
+    if (visible) updateWindow(true);
   }
 
   /**
@@ -1208,6 +1313,76 @@ export function createThumbnailPanel(scribe, {
   // The page pinned at drag start, plus its fractional position, so every reflow re-centers the same page.
   let resizeAnchorPage = -1;
   let resizeAnchorFrac = 0;
+
+  /** Pin the viewport-centre page (preferring the active page) so the next reflows re-centre it across column changes. */
+  function pinResizeAnchor() {
+    const centerY = scrollElem.scrollTop + viewportH / 2;
+    resizeAnchorPage = activePage >= 0 && activePage < pageCount
+      ? activePage
+      : (pageCount > 0 ? rowAt(Math.max(0, centerY - PAD)) : -1);
+    resizeAnchorFrac = resizeAnchorPage >= 0 && heights[resizeAnchorPage]
+      ? Math.max(0, Math.min(1, (centerY - (PAD + offsets[resizeAnchorPage])) / heights[resizeAnchorPage])) : 0;
+  }
+
+  // In-flight Edit Pages width glide (its rAF handle), or 0, plus the width it is gliding to.
+  let widthAnim = 0;
+  let widthAnimTarget = 0;
+  // The glide destination's viewport width, fed to gridColsFor while the glide runs; 0 outside one.
+  let widthAnimViewportW = 0;
+
+  /** Stop an in-flight width glide at its current width, closing the host's drag regime. */
+  function cancelWidthAnim() {
+    if (!widthAnim) return;
+    cancelAnimationFrame(widthAnim);
+    widthAnim = 0;
+    widthAnimViewportW = 0;
+    if (onResize) onResize(parseFloat(panelElem.style.width) || 0, 'end');
+  }
+
+  /**
+   * Glide the panel width to `px` over the column-flip duration, as if the handle were dragged there quickly.
+   * Each frame runs the drag pipeline, so the panel edge, the document inset, and the mid-glide column flip all move together.
+   * @param {number} px
+   * @returns {number} The clamped target width.
+   */
+  function animateWidthTo(px) {
+    cancelWidthAnim();
+    const { min, max } = getResizeBounds();
+    const to = Math.max(min, Math.min(max, px));
+    const from = parseFloat(panelElem.style.width) || 0;
+    if (!visible || from <= 0) {
+      setWidth(to);
+      if (onResize) onResize(to);
+      return to;
+    }
+    if (onResize) onResize(from, 'start');
+    widthAnimTarget = to;
+    // The panel's extra width (border + scrollbar gutter) is constant across the glide, so the destination viewport width is the current one shifted by the width delta.
+    measureViewport();
+    widthAnimViewportW = Math.max(1, viewportW + (to - from));
+    const t0 = performance.now();
+    const step = (now) => {
+      // Clamped below as well: a rAF timestamp is the frame's vsync time and can predate t0, and a negative t would swing the eased width past `from` for a frame.
+      const t = Math.max(0, Math.min(1, (now - t0) / SLIDE_MS));
+      const eased = 1 - (1 - t) ** 3;
+      panelElem.style.width = `${Math.round(from + (to - from) * eased)}px`;
+      measureViewport();
+      reflow();
+      if (t < 1) {
+        if (onResize) onResize(parseFloat(panelElem.style.width), 'move');
+        widthAnim = requestAnimationFrame(step);
+      } else {
+        widthAnim = 0;
+        widthAnimViewportW = 0;
+        updateWindow(true);
+        if (onResize) onResize(to, 'end');
+      }
+    };
+    // The first step runs synchronously so the flip and its anchored scroll commit now.
+    // The caller's mode-banner sync recomputes geometry in the same task, and it would otherwise swallow the pending flip.
+    step(t0);
+    return to;
+  }
   // The panel's extra width (scrollbar gutter + padding + border) measured at drag start.
   let resizeExtraW = 0;
 
@@ -1236,18 +1411,14 @@ export function createThumbnailPanel(scribe, {
 
   resizeHandle.addEventListener('pointerdown', (event) => {
     event.preventDefault();
+    cancelWidthAnim();
     resizeStartX = event.clientX;
     resizeStartPanelW = panelElem.getBoundingClientRect().width;
     resizeLivePanelW = resizeStartPanelW;
     resizeContainerW = (panelElem.parentElement && panelElem.parentElement.clientWidth) || resizeStartPanelW;
     measureViewport();
     resizeExtraW = resizeStartPanelW - viewportW;
-    const centerY = scrollElem.scrollTop + viewportH / 2;
-    resizeAnchorPage = activePage >= 0 && activePage < pageCount
-      ? activePage
-      : (pageCount > 0 ? rowAt(Math.max(0, centerY - PAD)) : -1);
-    resizeAnchorFrac = resizeAnchorPage >= 0 && heights[resizeAnchorPage]
-      ? Math.max(0, Math.min(1, (centerY - (PAD + offsets[resizeAnchorPage])) / heights[resizeAnchorPage])) : 0;
+    pinResizeAnchor();
     if (onResize) onResize(resizeStartPanelW, 'start');
     window.addEventListener('pointermove', onResizeMove);
     window.addEventListener('pointerup', onResizeEnd);
@@ -1255,10 +1426,6 @@ export function createThumbnailPanel(scribe, {
     window.addEventListener('pointercancel', onResizeEnd);
   });
 
-  // Drag-to-select: a press in the panel's empty space rubber-bands a rectangle that selects every page it covers.
-  // A press that never crosses the threshold is a plain click, which clears the selection.
-  // Holding Shift/Ctrl/Cmd unions the covered pages with the existing selection instead of replacing it.
-  // Touch is left to scroll.
   const marqueeElem = document.createElement('div');
   marqueeElem.className = 'scribe-thumb-marquee';
   marqueeElem.style.display = 'none';
@@ -1351,11 +1518,13 @@ export function createThumbnailPanel(scribe, {
 
   /** @param {PointerEvent} e */
   function onMarqueePointerDown(e) {
+    // A touch drag scrolls the rail, and the marquee's pointermove preventDefault would block that.
     if (e.pointerType === 'touch') return;
     if (e.pointerType === 'mouse' && e.button !== 0) return;
+    if (!pageEditArmed()) return;
     const target = e.target;
-    // A press on a thumbnail is its own click/reorder gesture; the marquee only starts in the panel's empty space.
-    if (target instanceof Element && target.closest('.scribe-thumb-box')) return;
+    // A press on a thumbnail or its check circle is its own gesture, so the marquee only starts in the panel's empty space.
+    if (target instanceof Element && target.closest('.scribe-thumb-box, .scribe-thumb-chk')) return;
     const rect = scrollElem.getBoundingClientRect();
     // clientWidth excludes the scrollbar, so a press at or beyond it is on the scrollbar.
     // Skip the marquee there, or scrolling the bar would clear the selection.
@@ -1377,7 +1546,7 @@ export function createThumbnailPanel(scribe, {
   scrollElem.addEventListener('pointerdown', onMarqueePointerDown);
   // Right-clicking a gap between thumbnails (or the empty space) offers to paste or insert a file at that position.
   scrollElem.addEventListener('contextmenu', (e) => {
-    if (!(scribe.opt && scribe.opt.enablePageEditing) || !scribe.doc) return;
+    if (!pageEditArmed() || !scribe.doc) return;
     if (e.target instanceof Element && e.target.closest('.scribe-thumb-box')) return;
     e.preventDefault();
     openGapMenu(e.clientX, e.clientY);
@@ -1425,10 +1594,8 @@ export function createThumbnailPanel(scribe, {
   }
 
   /**
-   * Reflect an in-place insertion of `count` pages at index `at`: the rows at or after `at` shift down by `count` (reusing their already-decoded thumbnails),
-   * the scroll position is kept, the new pages are mounted, and `activeN` stays highlighted.
-   * Called after the document has already grown (e.g. by `pastePages`), so the rail re-lays in place instead of tearing down and re-rendering every row like `rebuild`.
-   * The only visible change is the new pages.
+   * Update the rail for `count` pages inserted at index `at`.
+   * The document must already contain them.
    * @param {number} at
    * @param {number} count
    * @param {number} activeN - Page to keep current (index in the grown document).
@@ -1478,14 +1645,15 @@ export function createThumbnailPanel(scribe, {
     updateBatchToolbar();
   }
 
-  /** Show the floating batch strip only while the rail is visible with 2+ pages selected, and place it by the selection. */
+  /** Show the floating batch strip only while the rail is visible with pages selected, and place it by the selection. */
   function updateBatchToolbar() {
     // In the phone room the floating selection bar is the batch surface; the desktop pill stands down.
-    const show = visible && !roomMode && selected.size >= 2;
+    // In the mode a single check-circle click is a deliberate selection, so the strip appears at one page rather than two.
+    const show = visible && !roomMode && selected.size >= (pageEditMode ? 1 : 2);
     batchCount.textContent = String(selected.size);
     batchBar.style.display = show ? '' : 'none';
-    // Dropping below 2 selected clears the frozen anchor, so the next 2+ selection re-freezes at the row nearest center.
-    if (selected.size < 2) batchAnchorClientY = null;
+    // Clearing the selection clears the frozen anchor, so the next selection re-freezes at the row nearest center.
+    if (selected.size === 0) batchAnchorClientY = null;
     if (show) positionBatchBar();
     roomBarCount.textContent = `${selected.size} selected`;
     roomBar.classList.toggle('on', roomMode === 'edit' && selected.size > 0);
@@ -1497,7 +1665,7 @@ export function createThumbnailPanel(scribe, {
    * Grid mode pins it inside the panel's right edge, since 'just right of the thumbnail' would fall between columns; the single-column rail puts it just right of the panel.
    */
   function positionBatchBar() {
-    if (selected.size < 2) return;
+    if (selected.size === 0) return;
     const hostRect = batchHost.getBoundingClientRect();
     const panelRect = panelElem.getBoundingClientRect();
     const scrollRect = scrollElem.getBoundingClientRect();
@@ -1540,9 +1708,7 @@ export function createThumbnailPanel(scribe, {
     if (!doc) return () => {};
     const sRect = scrollElem.getBoundingClientRect();
     const scrollBefore = scrollElem.scrollTop;
-    // Identity is the page's sourceId:sourcePageN pair, not the pageMetrics object: undo snapshots structuredClone the metrics, so object identity does not survive an unwind.
-    // Null fields keep the container's semantics: null sourcePageN means the current index, null sourceId means the primary source.
-    // They are materialized only by the first order edit, so unwinding a document's first session restores nulls, and reading them raw would orphan every page.
+    // Undo restores structured clones of `pageMetrics`, so identity across a change must be the sourceId/sourcePageN pair, not the metrics object.
     const idOf = (d, pm, n) => {
       if (!pm) return null;
       const sid = pm.sourceId ?? (d.images ? d.images.primarySourceId : null) ?? 'doc';
@@ -1747,8 +1913,11 @@ export function createThumbnailPanel(scribe, {
     };
   }
 
-  /** Toggle page `n` in the room-Edit selection. @param {number} n */
-  function toggleRoomSelect(n) {
+  /**
+   * Toggle page `n` in the checkbox selection, shared by the room's Edit mode and the desktop Edit Pages mode.
+   * @param {number} n
+   */
+  function togglePageSelect(n) {
     if (selected.has(n)) selected.delete(n); else selected.add(n);
     selAnchor = n;
     syncSelectionUI();
@@ -1758,7 +1927,7 @@ export function createThumbnailPanel(scribe, {
    * Set page `n`'s selection to `want`, for the checkbox range paint: painting to the starting toggle's state means a slide never flip-flops.
    * @param {number} n @param {boolean} want
    */
-  function setRoomSelect(n, want) {
+  function setPageSelect(n, want) {
     if (selected.has(n) === want) return;
     if (want) selected.add(n); else selected.delete(n);
     syncSelectionUI();
@@ -1843,14 +2012,12 @@ export function createThumbnailPanel(scribe, {
   }
 
   /**
-   * Context menu for the rail's gaps and empty space: paste or insert a file at the position under the cursor.
-   * A right-click between two pages therefore inserts there, not at the end.
-   * The insertion line marks that gap (the "here" the items refer to) for as long as the menu is open, which also tells the user they clicked a gap rather than a page.
+   * Context menu for the rail's gaps and empty space, offering to paste or insert a file at the gap under the cursor.
    * @param {number} clientX
    * @param {number} clientY
    */
   function openGapMenu(clientX, clientY) {
-    if (!(scribe.opt && scribe.opt.enablePageEditing) || !scribe.doc) return;
+    if (!pageEditArmed() || !scribe.doc) return;
     clearContextHighlight();
     const gap = dropIndicator.show(clientX, clientY);
     menuElem.replaceChildren();
@@ -1889,7 +2056,7 @@ export function createThumbnailPanel(scribe, {
    */
   function handleThumbClick(e, n) {
     // The rail and grid both sit beside the visible document, so a plain click navigates to the page (and clears the batch).
-    if (e.shiftKey && (selAnchor >= 0 || activePage >= 0)) {
+    if (pageEditArmed() && e.shiftKey && (selAnchor >= 0 || activePage >= 0)) {
       // Fall back to the on-screen page so a Shift-click extends a range even before any thumbnail has set an anchor.
       const pivot = selAnchor >= 0 ? selAnchor : activePage;
       const lo = Math.min(pivot, n);
@@ -1899,7 +2066,7 @@ export function createThumbnailPanel(scribe, {
       selAnchor = pivot;
       syncSelectionUI();
       if (onSelect) onSelect(n);
-    } else if (e.ctrlKey || e.metaKey) {
+    } else if (pageEditArmed() && (e.ctrlKey || e.metaKey)) {
       // Seed the batch with the current on-screen page so the first Ctrl-add keeps both pages instead of only the new one.
       const seed = activePage >= 0 ? activePage : selAnchor;
       if (selected.size === 0 && seed >= 0 && seed < pageCount && seed !== n) selected.add(seed);
@@ -2010,10 +2177,6 @@ export function createThumbnailPanel(scribe, {
 
   /**
    * Paste the clipboard's pages as a contiguous block at `insertIndex`.
-   * A copy is a pure insertion, as calm as an insert-from-file drop: the reader keeps their page,
-   * the rail scroll stays put, and nothing is auto-selected, so the only visible change is the new pages appearing at `insertIndex`.
-   * A cut is a move: it also removes the source rows, re-lays the rail, and lands on and selects the relocated block.
-   * A cut is consumed (the clipboard is cleared), but a copy can be pasted again.
    * @param {number} insertIndex
    */
   function pasteAt(insertIndex) {
@@ -2034,10 +2197,6 @@ export function createThumbnailPanel(scribe, {
       selAnchor = range.start;
       syncSelectionUI();
     } else {
-      // A copy is a pure insertion, so keep the reader on their page: insertPagesAt gets range.cp
-      // because the viewer's own state.cp.n is stale here while the rebuild's displayPage is still async.
-      // Clear the selection because insertPagesAt shifts the pre-paste selection up by the inserted block,
-      // so without this the accent ring would stay on the originals at their new indices, reading as if those pages had moved.
       insertPagesAt(range.start, range.count, range.cp);
       selected.clear();
       selAnchor = -1;
@@ -2060,9 +2219,7 @@ export function createThumbnailPanel(scribe, {
     if (cur) cur.thumbElem.classList.add('active');
     if (!visible || pageCount === 0 || !heights[n]) return;
 
-    // Defer scrolling the active thumb into view onto a settle timer.
     // The viewer's per-page word build dirties layout at every page-boundary crossing, so an inline scroll-into-view would force a reflow at each one.
-    // Coalesced, it runs once after scrolling settles, on clean layout.
     if (activeScrollTimer) clearTimeout(activeScrollTimer);
     activeScrollTimer = setTimeout(() => {
       activeScrollTimer = null;
@@ -2081,9 +2238,10 @@ export function createThumbnailPanel(scribe, {
     if (!visible || pageCount === 0 || n < 0 || !heights[n]) return;
     const top = offsets[n];
     const bottom = top + heights[n];
-    const viewTop = scrollElem.scrollTop - PAD;
-    const viewBottom = viewTop + viewportH;
-    if (top < viewTop) scrollElem.scrollTop = Math.max(0, top + PAD - 8);
+    // Host chrome overlays the first `topInset` px of the scrollport, so a row scrolled up must land below it, not under it.
+    const viewTop = scrollElem.scrollTop + topInset - PAD;
+    const viewBottom = scrollElem.scrollTop - PAD + viewportH;
+    if (top < viewTop) scrollElem.scrollTop = Math.max(0, top + PAD - 8 - topInset);
     else if (bottom > viewBottom) scrollElem.scrollTop = bottom + PAD - viewportH + 8;
     updateWindow(true);
   }
@@ -2124,11 +2282,7 @@ export function createThumbnailPanel(scribe, {
   }
 
   /**
-   * Keyboard handler for the thumbnail rail, active only while focus is within the panel.
-   * Arrow keys navigate the grid visually: left/right step one page, and up/down move by a full row (`gridCols` pages).
-   * Home/End jump to the ends.
-   * Each move mirrors a plain thumbnail click, or with Shift extends the batch selection from the anchor.
-   * Stops propagation on handled keys so the viewer's own arrow-key word navigation does not also fire.
+   * Keyboard handler for the thumbnail rail.
    * @param {KeyboardEvent} e
    */
   function onPanelKeyDown(e) {
@@ -2136,7 +2290,7 @@ export function createThumbnailPanel(scribe, {
 
     // Cut/copy/paste pages (editor-only). Cmd on Mac via metaKey.
     // Handled here while the rail has focus, so it does not collide with the document-level word-text copy handler (which ignores the non-text panel selection anyway).
-    if ((e.ctrlKey || e.metaKey) && !e.altKey && scribe.opt.enablePageEditing && scribe.opt.keyboardScope !== 'off') {
+    if ((e.ctrlKey || e.metaKey) && !e.altKey && pageEditArmed() && scribe.opt.keyboardScope !== 'off') {
       const key = e.key.toLowerCase();
       if (key === 'x' || key === 'c') {
         const targets = selected.size ? [...selected] : (activePage >= 0 ? [activePage] : []);
@@ -2240,7 +2394,7 @@ export function createThumbnailPanel(scribe, {
     const t = /** @type {?HTMLElement} */ (e.target);
     const inEditable = !!(t && (t.tagName === 'INPUT' || t.tagName === 'TEXTAREA' || t.isContentEditable));
     // Select every page (Ctrl/Cmd+A) while the rail is the open sidebar, overriding the browser's page-wide select-all.
-    if (!inEditable && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'a' && scribe.opt.keyboardScope !== 'off') {
+    if (!inEditable && (e.ctrlKey || e.metaKey) && !e.altKey && !e.shiftKey && e.key.toLowerCase() === 'a' && pageEditArmed() && scribe.opt.keyboardScope !== 'off') {
       e.preventDefault();
       selected.clear();
       for (let i = 0; i < pageCount; i += 1) selected.add(i);
@@ -2248,7 +2402,14 @@ export function createThumbnailPanel(scribe, {
       syncSelectionUI();
       return;
     }
-    if (e.key === 'Escape') { closeContextMenu(); clearSelection(); return; }
+    if (e.key === 'Escape') {
+      // A consumed Escape is preventDefaulted, so the viewer's mode-exit handler leaves the mode on.
+      const acted = menuElem.style.display !== 'none' || selected.size > 0;
+      closeContextMenu();
+      clearSelection();
+      if (acted) e.preventDefault();
+      return;
+    }
     if (selected.size === 0 || inEditable) return;
     if (e.key === 'Delete' || e.key === 'Backspace') {
       e.preventDefault();
@@ -2275,6 +2436,7 @@ export function createThumbnailPanel(scribe, {
       marquee = null;
     }
     viewportObserver.disconnect();
+    if (widthAnim) cancelAnimationFrame(widthAnim);
     reorder.cancelDrag();
     closeContextMenu();
     peekHide();
@@ -2297,9 +2459,9 @@ export function createThumbnailPanel(scribe, {
   scribe.onAnnotationsRendered = onAnnotationsRendered;
 
   /**
-   * Snapshot of the current grid layout for the phone pull-up morph, which places stand-in cells where the real thumbnails will sit once the Pages room settles.
-   * Positions are relative to the scroll content (subtract scrollTop for viewport y) and locate the white image box itself, padding included.
-   * Reflects the last computeGeometry, so call after `refit` when the panel was just re-homed.
+   * Snapshot of the current grid layout.
+   * Positions are in scroll-content space, not viewport space.
+   * Call after `refit` when the panel was just re-homed, or the positions describe the old layout.
    */
   function gridGeometry() {
     const boxPadTop = compact ? 3 : 6;
@@ -2326,6 +2488,8 @@ export function createThumbnailPanel(scribe, {
     setWidth,
     setCompact,
     setRoomMode,
+    setPageEditMode,
+    setTopInset,
     clearSelection,
     beginStructureSlide,
     refit,

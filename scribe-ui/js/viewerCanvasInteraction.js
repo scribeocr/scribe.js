@@ -258,6 +258,8 @@ const CM_TRASH_SVG = menuIcon('<path d="M5.5 7h13"/><path d="M10 7V5h4v2"/><path
 const CM_SPLIT_SVG = menuIcon('<path d="M12 4.5v3.4M12 10.3v3.4M12 16.1v3.4"/><path d="M8.6 12H4M6.1 9.9 4 12l2.1 2.1"/><path d="M15.4 12H20M17.9 9.9 20 12l-2.1 2.1"/>');
 const CM_MERGE_SVG = menuIcon('<path d="M12 5v14"/><path d="M4 12h4.6M6.5 9.9 8.6 12l-2.1 2.1"/><path d="M20 12h-4.6M17.5 9.9 15.4 12l2.1 2.1"/>');
 const CM_TABLE_SVG = menuIcon('<rect x="4" y="5" width="16" height="14" rx="1.5"/><path d="M4 10h16M10.5 10v9M15.3 10v9"/>');
+const CM_ROTATE_L_SVG = menuIcon('<path d="M5.5 8.25A7.5 7.5 0 1 0 12 4.5"/><path d="M8.5 4.5 12 2.8 12 6.2Z" fill="currentColor" stroke="none"/>');
+const CM_ROTATE_R_SVG = menuIcon('<path d="M18.5 8.25A7.5 7.5 0 1 1 12 4.5"/><path d="M15.5 4.5 12 2.8 12 6.2Z" fill="currentColor" stroke="none"/>');
 // The Highlight row leads with a live color swatch (set to `viewer._highlightColor` on open) instead of a glyph.
 const CM_SWATCH_HTML = '<span class="scribe-cm-swatch"></span>';
 
@@ -321,6 +323,8 @@ const createContextMenuHTML = () => {
       item('contextMenuUnderlineButton', 'Underline', CM_UNDERLINE_SVG, underlineSelectionClick),
       item('contextMenuStrikethroughButton', 'Strikethrough', CM_STRIKE_SVG, strikeoutSelectionClick),
       item('contextMenuBookmarkButton', 'Add bookmark', CM_BOOKMARK_SVG, addBookmarkClick),
+      item('contextMenuRotatePageLeftButton', 'Rotate page left', CM_ROTATE_L_SVG, rotatePageLeftClick),
+      item('contextMenuRotatePageRightButton', 'Rotate page right', CM_ROTATE_R_SVG, rotatePageRightClick),
     ],
     [
       item('contextMenuSplitWordButton', 'Split Word', CM_SPLIT_SVG, splitWordClick),
@@ -658,6 +662,18 @@ const addBookmarkClick = () => {
   if (viewer._addBookmark && bookmarkTargetPage >= 0) viewer._addBookmark(bookmarkTargetPage);
 };
 
+const rotatePageLeftClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  if (rotateTargetPage >= 0) viewer.rotatePage(rotateTargetPage, -90);
+};
+
+const rotatePageRightClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  if (rotateTargetPage >= 0) viewer.rotatePage(rotateTargetPage, 90);
+};
+
 const deleteWordsClick = () => {
   hideContextMenu();
   const viewer = mv();
@@ -697,6 +713,8 @@ let redactTarget = null;
 /** @type {HTMLButtonElement} */ let contextMenuCommentButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuBookmarkButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuCopyButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuRotatePageLeftButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuRotatePageRightButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuEditLineButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuBoldButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuItalicButtonElem;
@@ -717,6 +735,10 @@ let commentNoteTarget = null;
 // The page the Add-bookmark item targets, or -1.
 // Reset on every `contextMenuFunc`.
 let bookmarkTargetPage = -1;
+
+// The page the Rotate items target, or -1.
+// Reset on every `contextMenuFunc`.
+let rotateTargetPage = -1;
 
 function ensureContextMenu() {
   if (menuNode) return;
@@ -743,6 +765,8 @@ function ensureContextMenu() {
   contextMenuStrikethroughButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuStrikethroughButton'));
   contextMenuCommentButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCommentButton'));
   contextMenuBookmarkButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuBookmarkButton'));
+  contextMenuRotatePageLeftButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuRotatePageLeftButton'));
+  contextMenuRotatePageRightButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuRotatePageRightButton'));
   contextMenuCopyButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuCopyButton'));
   contextMenuEditLineButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuEditLineButton'));
   contextMenuBoldButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuBoldButton'));
@@ -887,7 +911,8 @@ const onMenuDismissPointerDown = (/** @type {Event} */ event) => {
 const onMenuDismiss = () => hideContextMenu();
 
 const onMenuDismissKeyDown = (/** @type {KeyboardEvent} */ event) => {
-  if (event.key === 'Escape') hideContextMenu();
+  // preventDefault marks the Escape used, so the viewer's mode-exit handler does not also fire.
+  if (event.key === 'Escape') { event.preventDefault(); hideContextMenu(); }
 };
 
 export const hideContextMenu = () => {
@@ -913,6 +938,8 @@ export const hideContextMenu = () => {
   contextMenuStrikethroughButtonElem.style.display = 'none';
   contextMenuCommentButtonElem.style.display = 'none';
   contextMenuBookmarkButtonElem.style.display = 'none';
+  contextMenuRotatePageLeftButtonElem.style.display = 'none';
+  contextMenuRotatePageRightButtonElem.style.display = 'none';
   contextMenuCopyButtonElem.style.display = 'none';
   contextMenuCopyHighlightButtonElem.style.display = 'none';
   contextMenuEditLineButtonElem.style.display = 'none';
@@ -961,7 +988,8 @@ const onCalloutDismissPointerDown = (/** @type {Event} */ event) => {
 // Scrolling and zooming hide the callout (the OS convention) but keep the selection.
 const onCalloutDismiss = () => hideTouchCallout();
 const onCalloutDismissKeyDown = (/** @type {KeyboardEvent} */ event) => {
-  if (event.key === 'Escape') hideTouchCallout();
+  // preventDefault marks the Escape used, so the viewer's mode-exit handler does not also fire.
+  if (event.key === 'Escape') { event.preventDefault(); hideTouchCallout(); }
 };
 
 export const hideTouchCallout = () => {
@@ -1448,6 +1476,11 @@ export const contextMenuFunc = (viewer, event) => {
     const enableBookmark = !!viewer._addBookmark && editingEnabled && !!pagePoint;
     bookmarkTargetPage = enableBookmark ? pagePoint.n : -1;
 
+    // A page-level action, so a right-click targeting a selection, highlight, fill item, or redaction omits it.
+    const enableRotatePage = editingEnabled && !!pagePoint && !hasTextSelection && !fillItemTarget && !redactTarget
+      && !(targetObj instanceof UiOcrWord && (targetObj.highlightColor || targetObj.markupType));
+    rotateTargetPage = enableRotatePage ? pagePoint.n : -1;
+
     const selectedTables = viewer.CanvasSelection.getDataTables();
 
     let enableMergeTables = false;
@@ -1476,7 +1509,7 @@ export const contextMenuFunc = (viewer, event) => {
 
     if (!(enableMergeColumns || enableSplit || enableDeleteRegion || enableDeleteTable || enableCopyTableContents || enableMergeTables || enableSplitTable
       || enableSplitWord || enableMergeWords || enableDeleteWords || enableDeleteHighlight || enableCopyHighlight || enableHighlight || enableMarkup || enableComment || enableBookmark || enableCopy
-      || enableRedact || enableDeleteRedaction || enableDeleteFillItem || enableDeleteTextLines)) return;
+      || enableRedact || enableDeleteRedaction || enableDeleteFillItem || enableDeleteTextLines || enableRotatePage)) return;
 
     // Not btn.textContent, which would wipe the icon slot.
     const setMenuLabel = (btn, text) => { /** @type {HTMLElement} */ (btn.querySelector('.scribe-cm-lbl')).textContent = text; };
@@ -1508,6 +1541,10 @@ export const contextMenuFunc = (viewer, event) => {
       contextMenuCommentButtonElem.style.display = 'initial';
     }
     if (enableBookmark) contextMenuBookmarkButtonElem.style.display = 'initial';
+    if (enableRotatePage) {
+      contextMenuRotatePageLeftButtonElem.style.display = 'initial';
+      contextMenuRotatePageRightButtonElem.style.display = 'initial';
+    }
     if (enableMergeWords) contextMenuMergeWordsButtonElem.style.display = 'initial';
     if (enableSplitWord) contextMenuSplitWordButtonElem.style.display = 'initial';
     if (enableDeleteWords) contextMenuDeleteWordsButtonElem.style.display = 'initial';
