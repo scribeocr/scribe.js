@@ -149,7 +149,10 @@ export function removeHighlight(viewer, selectedWords, kind = 'highlight') {
   }
   if (kind === 'highlight') updateHighlightGaps(viewer, selectedWords);
   updateHighlightGroupOutline(viewer);
-  for (const p of new Set(selectedWords.map((kw) => kw.word.line.page.n))) viewer.renderHighlights(p);
+  for (const p of new Set(selectedWords.map((kw) => kw.word.line.page.n))) {
+    viewer.renderHighlights(p);
+    viewer.annotationsEdited(p);
+  }
   UiOcrWord.updateUI();
 }
 
@@ -288,7 +291,10 @@ export function applyHighlight(viewer, selectedWords, color, opacity, kind = 'hi
 
   if (kind === 'highlight') updateHighlightGaps(viewer, selectedWords);
   updateHighlightGroupOutline(viewer);
-  for (const p of pageWordsMap.keys()) viewer.renderHighlights(p);
+  for (const p of pageWordsMap.keys()) {
+    viewer.renderHighlights(p);
+    viewer.annotationsEdited(p);
+  }
   UiOcrWord.updateUI();
   // Surface the new highlight in an open comments panel (it lists highlights with or without a comment).
   if (viewer._rebuildCommentsPanel) viewer._rebuildCommentsPanel();
@@ -384,6 +390,7 @@ export function removeHighlightGroup(viewer, uiWord, kind = 'highlight') {
 
   updateHighlightGroupOutline(viewer);
   viewer.renderHighlights(n);
+  viewer.annotationsEdited(n);
   UiOcrWord.updateUI();
   // Drop the deleted highlight's row from an open comments panel.
   if (viewer._rebuildCommentsPanel) viewer._rebuildCommentsPanel();
@@ -414,6 +421,7 @@ export function recolorHighlightGroup(viewer, uiWord, color, kind = 'highlight')
   }
 
   viewer.renderHighlights(n);
+  viewer.annotationsEdited(n);
   UiOcrWord.updateUI();
   // Refresh the row's color swatch in an open comments panel.
   if (viewer._rebuildCommentsPanel) viewer._rebuildCommentsPanel();

@@ -649,6 +649,7 @@ const commentSelectionClick = (event) => {
     const { n, x, y } = commentNoteTarget;
     const annot = createNote(viewer, n, x, y);
     viewer.renderNotes(n);
+    viewer.annotationsEdited(n);
     // Refresh the Comments panel so the new note is listed, then focus its inline editor last so the rebuild does not steal focus.
     if (viewer.onEditCallback) viewer.onEditCallback();
     viewer._openNoteEditor(annot, n);

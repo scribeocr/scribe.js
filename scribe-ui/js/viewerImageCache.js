@@ -103,6 +103,12 @@ export class ViewerImageCache {
   constructor(viewer) {
     /** @type {?import('../viewer.js').ScribeViewer} */
     this.viewer = viewer || null;
+    /**
+     * Per-instance override of the retained-canvas byte cap; `null` uses the class default.
+     * An auxiliary viewer (e.g. a preview pane) sets this so it never competes with the main viewer for memory.
+     * @type {?number}
+     */
+    this.canvasCacheBytes = null;
     /** @type {Array<?Promise<HTMLCanvasElement|symbol>>} */
     this.pageCanvases = [];
     /** @type {Array<?ImageProperties>} */
@@ -904,14 +910,15 @@ export class ViewerImageCache {
       }
     }
 
+    const cap = this.canvasCacheBytes ?? ViewerImageCache.canvasCacheBytes;
     let total = 0;
     for (const bytes of this._canvasBytes.values()) total += bytes;
-    if (total <= ViewerImageCache.canvasCacheBytes) return;
+    if (total <= cap) return;
 
     // Evict least-recently-viewed canvases (skipping the protected window) until back under the cap.
     const toEvict = [];
     for (const n of this._canvasLru) {
-      if (total <= ViewerImageCache.canvasCacheBytes) break;
+      if (total <= cap) break;
       if (Math.abs(curr - n) <= ViewerImageCache.cacheDeletePages) continue;
       toEvict.push(n);
       total -= (this._canvasBytes.get(n) || 0);

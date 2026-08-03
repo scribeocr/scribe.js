@@ -293,6 +293,12 @@ export class ScribeViewer {
      */
     this.onAnnotationsRendered = null;
     /**
+     * Called with the page index after the user edits that page's annotations.
+     * Hosts register here to mark the document dirty for saving.
+     * @type {?(n: number) => void}
+     */
+    this.onAnnotationsEdited = null;
+    /**
      * Called with a highlight group id when the pointer enters a highlight, and null when it leaves.
      * The comments panel registers here to light the hovered highlight's row.
      * @type {?(groupId: ?string) => void}
@@ -3257,6 +3263,16 @@ export class ScribeViewer {
       /** @type {NonNullable<typeof this.textSel>} */ (this.textSel).renderMarks(page.n);
       /** @type {NonNullable<typeof this.textSel>} */ (this.textSel).renderPage(page.n);
     }
+  }
+
+  /**
+   * The signal every annotation-mutating tool emits after changing `doc.annotations`.
+   * On a provisional document an edit is a deliberate act, so it starts the full load.
+   * @param {number} pageN
+   */
+  annotationsEdited(pageN) {
+    if (this.doc && this.doc.id < 0) this.doc._requestHydration?.();
+    this.onAnnotationsEdited?.(pageN);
   }
 
   /**

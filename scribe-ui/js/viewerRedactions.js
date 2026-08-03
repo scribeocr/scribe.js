@@ -84,7 +84,10 @@ export function redactWords(viewer, words) {
     run = { line: word.line, lastIdx: idx, bbox: { ...word.bbox } };
   }
   flushRun();
-  for (const n of pages) viewer.renderRedactions(n);
+  for (const n of pages) {
+    viewer.renderRedactions(n);
+    viewer.annotationsEdited(n);
+  }
   // Surface the new mark in an open comments panel (marks are listed like highlights).
   if (viewer._rebuildCommentsPanel) viewer._rebuildCommentsPanel();
   return added;
@@ -117,6 +120,7 @@ export function redactRegion(viewer, n, box) {
     groupId: nextGroupId(viewer),
   });
   viewer.renderRedactions(n);
+  viewer.annotationsEdited(n);
   if (viewer._rebuildCommentsPanel) viewer._rebuildCommentsPanel();
   return true;
 }
@@ -136,6 +140,7 @@ export function removeRedactionGroup(viewer, groupId) {
     if (kept.length !== pageAnnots.length) {
       viewer.doc.annotations.pages[n] = kept;
       viewer.renderRedactions(n);
+      viewer.annotationsEdited(n);
       removed = true;
     }
   }

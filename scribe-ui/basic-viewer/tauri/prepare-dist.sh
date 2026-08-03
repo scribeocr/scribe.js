@@ -19,8 +19,9 @@ for dir in fonts js lib scrollview-web tess; do
   cp -r "$SCRIBE_JS_ROOT/$dir" "$DIST/$dir"
 done
 
-# scribe-ui: top-level files + js + basic-viewer (excluding electron/tauri subdirs)
-cp "$SCRIBE_UI_ROOT/viewer.js" "$DIST/scribe-ui/"
+# scribe-ui: top-level files + js + library + basic-viewer (excluding electron/tauri subdirs)
+cp "$SCRIBE_UI_ROOT"/*.js "$DIST/scribe-ui/"
 cp -r "$SCRIBE_UI_ROOT/js" "$DIST/scribe-ui/js"
+cp -r "$SCRIBE_UI_ROOT/library" "$DIST/scribe-ui/library"
 cp "$SCRIBE_UI_ROOT"/basic-viewer/*.js "$DIST/scribe-ui/basic-viewer/"
 cp "$SCRIBE_UI_ROOT"/basic-viewer/*.html "$DIST/scribe-ui/basic-viewer/"

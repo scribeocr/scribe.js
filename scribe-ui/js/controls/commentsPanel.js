@@ -110,6 +110,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     if (n == null || n < 0) return;
     const annot = createNote(scribe, n, x, y);
     if (scribe.renderNotes) scribe.renderNotes(n);
+    if (scribe.annotationsEdited) scribe.annotationsEdited(n);
     rebuild();
     // Anchor the editor on the freshly-rendered icon (the note was pushed last -> the layer's last child).
     const group = scribe.getNotesGroup(n);
@@ -330,6 +331,7 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     if (scribe._updateCommentIcons) scribe._updateCommentIcons();
     if (scribe.renderNotes && pageIndex >= 0) scribe.renderNotes(pageIndex);
     if (scribe.renderHighlights && pageIndex >= 0) scribe.renderHighlights(pageIndex);
+    if (scribe.annotationsEdited && pageIndex >= 0) scribe.annotationsEdited(pageIndex);
   }
 
   /**

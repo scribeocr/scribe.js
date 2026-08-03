@@ -95,7 +95,9 @@ export function makeToolbarShell(rootClass, toolbarHeight, iconSize) {
   toolbarElem.style.color = 'var(--scribe-ink)';
   toolbarElem.style.display = 'flex';
   toolbarElem.style.position = 'relative';
-  toolbarElem.style.zIndex = '10';
+  // The toolbar is a stacking context, so its dropdowns can never out-stack a sibling overlay.
+  // This must stay above the library surface at z-index 30, or the app menu opens invisibly behind it.
+  toolbarElem.style.zIndex = '40';
   toolbarElem.style.lineHeight = `${iconSize}px`;
   toolbarElem.style.backgroundColor = 'var(--scribe-surface)';
   toolbarElem.style.borderBottom = '1px solid var(--scribe-line)';
@@ -377,7 +379,7 @@ export function createPrintControls(scribe, rootElem) {
       if (scribe.opt.keyboardScope === 'off') return;
       const target = event.target instanceof Node ? event.target : null;
       const insideThis = !!(target && rootElem.contains(target));
-      const isActive = ScribeViewer.getActiveViewer() === scribe;
+      const isActive = ScribeViewer.getActiveViewer() === (/** @type {any} */ (scribe)._routedTarget || scribe);
       const inScope = scribe.opt.keyboardScope === 'global' ? isActive : (insideThis || isActive);
       if (!inScope) return;
       event.preventDefault();
@@ -429,7 +431,7 @@ export function createOpenControls(scribe, rootElem, onFiles) {
       if (scribe.opt.keyboardScope === 'off') return;
       const target = event.target instanceof Node ? event.target : null;
       const insideThis = !!(target && rootElem.contains(target));
-      const isActive = ScribeViewer.getActiveViewer() === scribe;
+      const isActive = ScribeViewer.getActiveViewer() === (/** @type {any} */ (scribe)._routedTarget || scribe);
       const inScope = scribe.opt.keyboardScope === 'global' ? isActive : (insideThis || isActive);
       if (!inScope) return;
       event.preventDefault();
@@ -652,7 +654,7 @@ const CLOSE_SVG = lineIcon('<path d="M6 6l12 12M18 6L6 18"/>');
  * @returns {{
  *   searchElem: HTMLSpanElement, findGroupElem: HTMLSpanElement,
  *   searchInputElem: HTMLInputElement, searchCounterElem: HTMLSpanElement,
- *   openSearch: () => void, closeSearch: () => void, runSearch: (q: string) => Promise<void>,
+ *   openSearch: () => void, closeSearch: () => void, runSearch: (q: string, targetPageN?: number) => Promise<void>,
  *   updateSearchCounter: () => void, resetSearch: () => void,
  *   installFindShortcut: () => (() => void)
  * }}
@@ -691,8 +693,12 @@ export function createSearchBar(scribe, rootElem) {
     else searchCounterElem.textContent = `${s.activeMatch + 1}/${s.matchList.length}`;
   }
 
-  /** @param {string} query */
-  async function runSearch(query) {
+  /**
+   * @param {string} query
+   * @param {number} [targetPageN] - Land on this page's first match instead of the document's
+   *   first, so a search primed from a known hit page doesn't yank the reader elsewhere.
+   */
+  async function runSearch(query, targetPageN) {
     const doc = scribe.doc;
     if (!doc || doc.pageMetrics.length === 0) return;
     // Deferred-import text may still be extracting, so searching now would falsely report "No results".
@@ -704,7 +710,12 @@ export function createSearchBar(scribe, rootElem) {
     scribe.state.searchMode = true;
     findText(scribe, query);
     updateSearchCounter();
-    if (scribe._searchState.matchList.length) await goToMatch(scribe, 0);
+    const { matchList } = scribe._searchState;
+    if (matchList.length) {
+      const onTarget = targetPageN != null ? matchList.findIndex((m) => m.pageN === targetPageN) : -1;
+      await goToMatch(scribe, onTarget >= 0 ? onTarget : 0);
+      updateSearchCounter();
+    }
   }
 
   function openSearch() {
@@ -769,7 +780,7 @@ export function createSearchBar(scribe, rootElem) {
       if (scribe.opt.keyboardScope === 'off') return;
       const target = event.target instanceof Node ? event.target : null;
       const insideThis = !!(target && rootElem.contains(target));
-      const isActive = ScribeViewer.getActiveViewer() === scribe;
+      const isActive = ScribeViewer.getActiveViewer() === (/** @type {any} */ (scribe)._routedTarget || scribe);
       const inScope = scribe.opt.keyboardScope === 'global' ? isActive : (insideThis || isActive);
       if (!inScope) return;
       event.preventDefault();

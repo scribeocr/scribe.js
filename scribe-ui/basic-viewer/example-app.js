@@ -10,8 +10,12 @@
 import {
   scribe, ScribeViewer, ScribePDFViewer, applyHighlight,
 } from './pdf-viewer.js';
+import { DOCUMENT_LIBRARY } from '../devFlags.js';
 
 const pdfViewerContElem = /** @type {HTMLDivElement|null} */(document.getElementById('pdfViewerCont'));
+
+// The library is desktop-only for now, and the shells inject their bridge globals before any page script runs, so this reads true by the time the viewer is built.
+const inDesktopShell = !!(/** @type {any} */ (window).electronAPI || /** @type {any} */ (window).__TAURI__);
 
 const buildBootstrapViewer = () => {
   if (!pdfViewerContElem) return null;
@@ -23,7 +27,7 @@ const buildBootstrapViewer = () => {
   }
   // This is a full-screen, single-viewer app, so it uses document-wide keyboard shortcuts that fire
   // regardless of where focus is on the page.
-  const v = new ScribePDFViewer(pdfViewerContElem, { keyboardScope: 'global', comments: true });
+  const v = new ScribePDFViewer(pdfViewerContElem, { keyboardScope: 'global', comments: true, library: inDesktopShell || DOCUMENT_LIBRARY });
   // Expose key modules on `globalThis.df` for debugging and tests. Not part of the public API.
   // Use the module imports/exports instead.
   globalThis.df = {

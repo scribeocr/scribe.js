@@ -197,6 +197,7 @@ function refreshItems(viewer, n) {
   viewer.renderFillItems(n);
   // A placed item can cover an unsigned signature field, whose sign-here affordance then drops.
   viewer.renderFormFields(n);
+  viewer.annotationsEdited(n);
   if (viewer.onEditCallback) viewer.onEditCallback();
 }
 

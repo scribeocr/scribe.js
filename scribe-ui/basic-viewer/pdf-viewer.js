@@ -23,6 +23,7 @@ import {
   createFillSignTool, createEditPagesTool, createRecognizeTextTool,
 } from '../js/controls/tools.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
+import { SeedDoc } from '../js/seedDoc.js';
 import { IOS_WEBKIT } from '../js/viewerImageCache.js';
 import { mergePdfs } from '../../js/export/pdf/mergePdfs.js';
 import { concatOutlines, outlineSplitSegments } from '../../js/objects/outlineObjects.js';
@@ -158,6 +159,9 @@ class ScribePDFViewer {
    *   Defaults to `edit`. Pass `false` to keep editing on but redaction off. Ignored when `edit` is false.
    * @param {boolean} [options.editText=edit] - Enable the Edit Text tool and its toolbar button.
    *   Defaults to `edit`. Pass `false` to keep editing on but text editing off.
+   * @param {boolean} [options.library=false] - Enable the document library: a full-screen surface for browsing,
+   *   searching, and managing a user-chosen local folder of PDFs, with edits persisted to `.scribe` sidecar files.
+   *   Requires the File System Access API (Chromium); on other browsers the option is silently ignored.
    * @param {number} [options.docMemoryBudgetMB] - Device memory budget for open documents; opening past it is refused.
    *   Defaults to 600 on iOS-class WebKit and unlimited elsewhere.
    * @param {ScribeViewer} [options.scribe] - Attach to an existing `ScribeViewer` instance instead
@@ -180,6 +184,7 @@ class ScribePDFViewer {
       edit = true,
       redact = edit,
       editText = edit,
+      library = false,
     } = options;
 
     this.container = container;
@@ -355,17 +360,44 @@ class ScribePDFViewer {
     // Icons/page-input/text are sized 12px shorter than the bar (~6px of vertical air above and below), clamped to [16, 32] ([16, 44] on coarse pointers).
     const toolbarIconSize = Math.max(16, Math.min(this._coarsePointer ? 44 : 32, this.toolbarHeight - 12));
 
+    // The top-bar tools act through this indirection so a host can point them at an embedded viewer while its surface covers the main one.
+    // Methods bind to the routed instance at call time, but construction-time subscriptions stay on the main viewer.
+    // That is why passive displays like the page counter do not follow the route.
+    /** @type {?() => ?import('../viewer.js').ScribeViewer} */
+    this._toolbarRoute = null;
+    const routedScribe = /** @type {import('../viewer.js').ScribeViewer} */ (new Proxy(this.scribe, {
+      get: (target, prop) => {
+        const s = /** @type {any} */ (this._toolbarRoute?.() || this.scribe);
+        // `===` cannot see through a proxy, so the guards in toolbar.js that compare against the active viewer read the resolved instance from this property.
+        if (prop === '_routedTarget') return s;
+        const v = s[prop];
+        return typeof v === 'function' ? v.bind(s) : v;
+      },
+      set: (target, prop, value) => {
+        /** @type {any} */ (this._toolbarRoute?.() || this.scribe)[prop] = value;
+        return true;
+      },
+    }));
+
     // The highlight subsystem is created whenever highlighting is enabled, independent of the toolbar,
     // so selection-driven highlighting still works with `showToolbar: false`.
     /** @type {?ReturnType<typeof createHighlightTool>} */
     this._highlightTool = highlightColors
-      ? createHighlightTool(this.scribe, this.pdfViewerElem, {
+      ? createHighlightTool(routedScribe, this.pdfViewerElem, {
         colors: highlightColors, defaultColor: defaultHighlightColor ?? highlightColors[0], rootClass: ROOT_CLASS,
       })
       : null;
 
     /** @type {?ReturnType<typeof createSearchBar>} */
     this._searchBar = null;
+    /** @type {?{destroy: () => void}} Handle from the dynamically imported library feature. */
+    this._library = null;
+    this._destroyed = false;
+    /**
+     * Callbacks the library registers so tab lifecycle events can checkpoint-save `.scribe` sidecars.
+     * @type {?{docOpened?: () => void, saveTabIfDirty?: (tab: Object) => Promise<void>, saveAllDirty?: () => Promise<void>}}
+     */
+    this._libraryHooks = null;
     /** @type {?ReturnType<typeof createPrintControls>} */
     this._print = null;
     /** @type {?ReturnType<typeof createOpenControls>} */
@@ -447,10 +479,10 @@ class ScribePDFViewer {
       // Never wrap to a second line inside the fixed-height bar; instead the horizontal overflow is measured and the trailing mode buttons collapse into the tray.
       toolbarButtons.style.whiteSpace = 'nowrap';
 
-      const pageNav = createPageNav(this.scribe);
-      const zoom = createZoomControls(this.scribe);
-      const rotate = createRotateControls(this.scribe);
-      const print = createPrintControls(this.scribe, this.pdfViewerElem);
+      const pageNav = createPageNav(routedScribe);
+      const zoom = createZoomControls(routedScribe);
+      const rotate = createRotateControls(routedScribe);
+      const print = createPrintControls(routedScribe, this.pdfViewerElem);
       this._print = print;
       const open = createOpenControls(this.scribe, this.pdfViewerElem, (files) => this.openFiles(files));
       this._open = open;
@@ -464,9 +496,9 @@ class ScribePDFViewer {
       appMenu.addAction('Open file', OPEN_SVG, () => open.openElem.click());
       appMenu.addAction('Print', PRINT_SVG, () => print.printElem.click());
       // Touch-only rows re-homing the controls the touch layouts drop from the bar.
-      appMenu.addAction('Rotate left', ROTATE_LEFT_SVG, () => this.scribe.rotatePage(this.scribe.state.cp.n, -90))
+      appMenu.addAction('Rotate left', ROTATE_LEFT_SVG, () => routedScribe.rotatePage(routedScribe.state.cp.n, -90))
         .classList.add('scribe-touch-row');
-      appMenu.addAction('Rotate right', ROTATE_RIGHT_SVG, () => this.scribe.rotatePage(this.scribe.state.cp.n, 90))
+      appMenu.addAction('Rotate right', ROTATE_RIGHT_SVG, () => routedScribe.rotatePage(routedScribe.state.cp.n, 90))
         .classList.add('scribe-touch-row');
       if (DEBUG_MENU) {
         import('../js/controls/debugMenu.js')
@@ -509,7 +541,7 @@ class ScribePDFViewer {
       this._toolbarButtonsElem = toolbarButtons;
 
       // Find / search controls (right-aligned).
-      this._searchBar = createSearchBar(this.scribe, this.pdfViewerElem);
+      this._searchBar = createSearchBar(routedScribe, this.pdfViewerElem);
       // The find bar floats (absolute) under the toolbar, so it must hang off `toolbarElem` (the positioned ancestor) rather than the right-zone flex row.
       // Otherwise showing it would reflow the other controls.
       toolbarElem.appendChild(this._searchBar.findGroupElem);
@@ -721,17 +753,22 @@ class ScribePDFViewer {
           if (this._thumbnailPanel) this._thumbnailPanel.dropIndicator.hide();
         }
       };
-      // A drop fires no matching `dragleave`, so clean up here.
+      // A drop fires no matching `dragleave`, so the visuals clean up on the drop itself, in the capture phase.
+      // A descendant that claims the drop with stopPropagation (the library surface does) would otherwise strand the armed overlay behind it until the surface hides.
+      // Running before the bubble handler is safe because gapAt reads grid geometry, not the indicator visuals.
+      /** @param {DragEvent} event */
+      const onDropCapture = (event) => {
+        if (!isFileDrag(event)) return;
+        hideDragOverlay();
+        if (this._thumbnailPanel) this._thumbnailPanel.dropIndicator.hide();
+      };
       // The overlay is `pointer-events:none`, so the drop lands on the canvas/rail and bubbles to this root listener.
       /** @param {DragEvent} event */
       const onDrop = async (event) => {
         if (!this.doc || !isFileDrag(event)) return;
         event.preventDefault();
-        // Resolve the target from the drop point before tearing down the drag visuals (the gap geometry is read synchronously).
         const overRail = overThumbnailRail(event.clientX, event.clientY);
         const gap = overRail ? this._thumbnailPanel.dropIndicator.gapAt(event.clientX, event.clientY) : -1;
-        hideDragOverlay();
-        if (this._thumbnailPanel) this._thumbnailPanel.dropIndicator.hide();
         const files = await filesFromDropEvent(event);
         if (files.length === 0) return;
         if (overRail) await this.insertPagesFromFiles(files, gap);
@@ -741,11 +778,13 @@ class ScribePDFViewer {
       this.pdfViewerElem.addEventListener('dragenter', onDragEnter);
       this.pdfViewerElem.addEventListener('dragover', onDragOver);
       this.pdfViewerElem.addEventListener('dragleave', onDragLeave);
+      this.pdfViewerElem.addEventListener('drop', onDropCapture, true);
       this.pdfViewerElem.addEventListener('drop', onDrop);
       this._teardownCallbacks.push(() => {
         this.pdfViewerElem.removeEventListener('dragenter', onDragEnter);
         this.pdfViewerElem.removeEventListener('dragover', onDragOver);
         this.pdfViewerElem.removeEventListener('dragleave', onDragLeave);
+        this.pdfViewerElem.removeEventListener('drop', onDropCapture, true);
         this.pdfViewerElem.removeEventListener('drop', onDrop);
       });
     }
@@ -950,6 +989,15 @@ class ScribePDFViewer {
       this._syncDocGatedControls();
       this._syncModeOverflow();
     }
+
+    // The library is Chromium-only (File System Access API) and dynamically imported so disabled or unsupported viewers never fetch its code or styles.
+    if (library && typeof window !== 'undefined' && 'showDirectoryPicker' in window) {
+      import('../library/libraryView.js')
+        .then(({ installLibrary }) => {
+          if (!this._destroyed) this._library = installLibrary(this);
+        })
+        .catch((err) => console.error('Failed to load the document library.', err));
+    }
   }
 
   /** Currently displayed page index (0-based). */
@@ -1033,6 +1081,188 @@ class ScribePDFViewer {
   }
 
   /**
+   * Open a document provisionally, painting it from pre-rendered assets before the real document exists.
+   * The real document later replaces the seed in place, at the same scroll and zoom.
+   * Pages outside the seed's window show placeholders until hydration, and scrolling to one forces the load immediately.
+   * Resolves at first paint.
+   * The returned `primed` settles once the window pages' word geometry has landed, so text is selectable and searchable.
+   * `hydrated` settles when the real document has replaced the seed or the load failed, and `cancel` abandons hydration.
+   * @param {import('../js/seedDoc.js').ProvisionalSeed} seed
+   * @returns {Promise<{primed: Promise<void>, hydrated: Promise<void>, cancel: () => void}>}
+   */
+  async openProvisional(seed) {
+    const seedDoc = new SeedDoc(seed);
+    // Fonts back the word-object layer (search marks, carets).
+    // The call is memoized process-wide, so it is not awaited here.
+    scribe.init({ font: true }).catch(() => {});
+
+    let started = false;
+    let cancelled = false;
+    /** @type {(doc: any) => void} */
+    let resolveReal = () => {};
+    /** @type {(err: any) => void} */
+    let rejectReal = () => {};
+    /** @type {Promise<any>} */
+    const realDocP = new Promise((res, rej) => { resolveReal = res; rejectReal = rej; });
+    // The public handle reports completion without exposing the document.
+    // A cancelled hydration rejects, which is settled state rather than an error worth crashing on.
+    realDocP.catch(() => {});
+    const hydrated = realDocP.then(() => undefined);
+    hydrated.catch(() => {});
+
+    const initialPage = seed.initialPage ?? 0;
+    const tab = await this._openDocAsTab(seedDoc, seed.name || 'Document', { provisional: true, lastPage: initialPage });
+    // Word geometry lands moments after the raster, so the text layer has to be rebuilt when it does.
+    const primed = seedDoc.prime().then(() => {
+      if (!cancelled && this.doc === seedDoc) this.scribe.displayPage(this.scribe.state.cp.n, false, true);
+    });
+
+    const start = () => {
+      if (started) return realDocP;
+      started = true;
+      (async () => {
+        const loaded = await seed.load();
+        const realDoc = Array.isArray(loaded) ? await scribe.openDocument(loaded, { deferText: true }) : loaded;
+        if (cancelled) {
+          realDoc?.close?.().catch(() => {});
+          throw new Error('Hydration cancelled.');
+        }
+        await this._hydrateSwap(tab, seedDoc, realDoc);
+        return realDoc;
+      })().then(resolveReal, (err) => {
+        if (!cancelled) this._showToast(`Couldn't load “${seed.name || 'this document'}” — the preview stays available.`);
+        rejectReal(err);
+      });
+      return realDocP;
+    };
+    seedDoc._requestHydration = start;
+
+    // Only user-visible navigation accelerates hydration, so the viewer's own render-ahead reaching outside the window resolves to placeholders instead.
+    const sc = this.scribe.scrollContainer;
+    const onScroll = () => {
+      const n = this.scribe.state.cp.n;
+      if (this.doc === seedDoc && (n < seed.window.from || n > seed.window.to)) start();
+    };
+    sc.addEventListener('scroll', onScroll);
+    realDocP.catch(() => {}).finally(() => sc.removeEventListener('scroll', onScroll));
+
+    const cancel = () => {
+      if (cancelled) return;
+      cancelled = true;
+      sc.removeEventListener('scroll', onScroll);
+      rejectReal(new Error('Hydration cancelled.'));
+    };
+    // A seed closed by a tab close or a viewer destroy must never go on to hydrate.
+    seedDoc._onClose = cancel;
+
+    if ((seed.hydration || 'eager') === 'eager') setTimeout(start, 0);
+    return { primed, hydrated, cancel };
+  }
+
+  /**
+   * Replace a provisional tab's seed with the hydrated document in place.
+   * When the seed's geometry was truthful, the swap preserves scroll and zoom exactly and re-anchors a linear text selection whose text survived unchanged.
+   * A snapshot of the on-screen canvases veils the viewport until the real render lands.
+   * A geometry mismatch degrades to a plain re-open at the current page.
+   * @param {object} tab
+   * @param {SeedDoc} seedDoc
+   * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} realDoc
+   */
+  async _hydrateSwap(tab, seedDoc, realDoc) {
+    tab.doc = realDoc;
+    tab.provisional = false;
+    // A successful swap retires the seed on purpose, so its close must not read as a cancel.
+    seedDoc._onClose = null;
+    // Annotations made on the seed move to the real document, because the pointer UI writes doc.annotations directly.
+    // A page whose baseline came from the seed's annots callback replaces the real page wholesale, so removals count.
+    // Every other page appends its session additions.
+    for (let n = 0; n < seedDoc.annotations.pages.length; n++) {
+      const seedPage = seedDoc.annotations.pages[n];
+      if (seedDoc._annotBaseline.has(n)) realDoc.annotations.pages[n] = seedPage;
+      else if (seedPage.length) realDoc.annotations.pages[n] = (realDoc.annotations.pages[n] || []).concat(seedPage);
+    }
+    if (this.doc !== seedDoc) {
+      // A background tab swaps silently, and activation attaches the real document normally.
+      await seedDoc.close();
+      return;
+    }
+    const sc = this.scribe.scrollContainer;
+    const zoom = this.scribe.zoomLevel;
+    const { scrollTop, scrollLeft } = sc;
+    const cpN = this.scribe.state.cp.n;
+    const geometryMatches = realDoc.inputData.pageCount === seedDoc.inputData.pageCount
+      && Math.abs(realDoc.pageMetrics[0].dims.width - seedDoc.pageMetrics[0].dims.width) < 1
+      && Math.abs(realDoc.pageMetrics[0].dims.height - seedDoc.pageMetrics[0].dims.height) < 1;
+
+    const textSel = this.scribe.textSel;
+    const sel = geometryMatches && textSel && textSel.range?.kind === 'linear'
+      ? { start: { ...textSel.range.start }, end: { ...textSel.range.end }, text: textSel.getText() }
+      : null;
+    const veil = geometryMatches ? this._buildSwapVeil() : null;
+
+    try {
+      await this.attachDocument(realDoc, cpN, { terminatePrevious: false });
+      if (geometryMatches) {
+        if (this.scribe.zoomLevel !== zoom) {
+          this.scribe.zoomLevel = zoom;
+          this.scribe._applyZoomTransform(zoom);
+          this.scribe.calcPageStops();
+        }
+        sc.scrollTop = scrollTop;
+        sc.scrollLeft = scrollLeft;
+        await this.scribe.displayPage(cpN, false, true);
+        if (sel && this.scribe.textSel) {
+          const ts = this.scribe.textSel;
+          ts.range = { kind: 'linear', start: sel.start, end: sel.end };
+          ts._renderAll();
+          if (ts.getText() !== sel.text) ts.clear();
+        }
+      }
+      await seedDoc.close();
+      if (veil) {
+        const pc = this.scribe.imageCache.pageCanvases[cpN];
+        if (pc) await Promise.race([pc, new Promise((r) => { setTimeout(r, 2000); })]);
+        await new Promise((r) => { requestAnimationFrame(() => r(null)); });
+      }
+    } finally {
+      veil?.remove();
+    }
+  }
+
+  /**
+   * A snapshot of the visible page canvases, absolutely positioned over the viewport.
+   * The hydration swap's clear-and-re-render then happens behind an image of exactly what was showing.
+   * @returns {?HTMLCanvasElement}
+   */
+  _buildSwapVeil() {
+    const sc = this.scribe.scrollContainer;
+    const scRect = sc.getBoundingClientRect();
+    if (!scRect.width || !scRect.height) return null;
+    const rootRect = this.pdfViewerElem.getBoundingClientRect();
+    const dpr = Math.min(window.devicePixelRatio || 1, 3);
+    const canvas = document.createElement('canvas');
+    canvas.width = Math.round(scRect.width * dpr);
+    canvas.height = Math.round(scRect.height * dpr);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) return null;
+    ctx.scale(dpr, dpr);
+    ctx.fillStyle = getComputedStyle(sc).backgroundColor || '#fff';
+    ctx.fillRect(0, 0, scRect.width, scRect.height);
+    for (const el of sc.querySelectorAll('canvas')) {
+      const r = el.getBoundingClientRect();
+      if (r.bottom < scRect.top || r.top > scRect.bottom || !r.width || !r.height) continue;
+      try {
+        ctx.drawImage(el, r.left - scRect.left, r.top - scRect.top, r.width, r.height);
+      } catch { /* An undrawable (zero-sized) canvas contributes nothing. */ }
+    }
+    canvas.className = 'scribe-swap-veil';
+    canvas.style.cssText = `position:absolute;left:${scRect.left - rootRect.left}px;top:${scRect.top - rootRect.top}px;`
+      + `width:${scRect.width}px;height:${scRect.height}px;z-index:20;pointer-events:none;`;
+    this.pdfViewerElem.appendChild(canvas);
+    return canvas;
+  }
+
+  /**
    * Wire `doc` into the viewer and display `initialPage`, deciding the outgoing document's fate.
    * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
    * @param {number} initialPage
@@ -1049,6 +1279,7 @@ class ScribePDFViewer {
     this._ownsDoc = owns;
     this.scribe.doc = doc;
     this.resetSearch();
+    this._libraryHooks?.docOpened?.();
 
     for (let i = 0; i < doc.inputData.pageCount; i++) {
       if (!doc.annotations.pages[i]) doc.annotations.pages[i] = [];
@@ -1310,6 +1541,21 @@ class ScribePDFViewer {
   }
 
   /**
+   * Attach an externally opened document as a new tab and activate it.
+   * The viewer takes ownership and closes the document when the tab closes.
+   * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
+   * @param {string} name
+   * @param {Object} [extra] - Additional fields carried on the tab (e.g. the library's `libraryHash`).
+   * @returns {Promise<Object>} The created tab.
+   */
+  async _openDocAsTab(doc, name, extra = {}) {
+    const tab = { ...this._newTab(doc, name), ...extra };
+    this._tabs.push(tab);
+    await this._activateTab(this._tabs.length - 1);
+    return tab;
+  }
+
+  /**
    * Whether another document fits under the device memory budget.
    * @param {number} fileSize - Size of the file about to be opened, in bytes.
    * @param {Array<{ doc: import('../../js/containers/scribeDoc.js').ScribeDoc }>} pending - Documents opened this batch but not yet in `_tabs`.
@@ -1508,6 +1754,8 @@ class ScribePDFViewer {
     if (i < 0 || i >= this._tabs.length) return;
     if (this._activeTab >= 0 && this._activeTab < this._tabs.length) {
       this._tabs[this._activeTab].lastPage = this.scribe.state.cp.n;
+      // The outgoing tab's sidecar saves in the background, and its document stays alive across the switch.
+      this._libraryHooks?.saveTabIfDirty?.(this._tabs[this._activeTab]).catch(() => {});
     }
     const tab = this._tabs[i];
     this._activeTab = i;
@@ -1535,7 +1783,9 @@ class ScribePDFViewer {
     if (i < 0 || i >= this._tabs.length) return;
     const wasActive = i === this._activeTab;
     const [removed] = this._tabs.splice(i, 1);
-    removed.doc.close().catch(() => {});
+    // A library tab with unsaved edits writes its sidecar first, and closes only once that settles.
+    Promise.resolve(this._libraryHooks?.saveTabIfDirty?.(removed)).catch(() => {})
+      .then(() => removed.doc.close().catch(() => {}));
 
     if (this._tabs.length === 0) {
       this._activeTab = -1;
@@ -3017,6 +3267,15 @@ class ScribePDFViewer {
    *   overriding the default (terminate only a document the viewer created).
    */
   async destroy({ terminateDoc } = {}) {
+    this._destroyed = true;
+    if (this._libraryHooks?.saveAllDirty) {
+      // Flush unsaved library sidecars while the docs are still alive.
+      try { await this._libraryHooks.saveAllDirty(); } catch { /* Best effort; teardown continues. */ }
+    }
+    if (this._library) {
+      this._library.destroy();
+      this._library = null;
+    }
     if (this.resizeObserver) this.resizeObserver.disconnect();
     if (this._sidebarAnim) { cancelAnimationFrame(this._sidebarAnim.raf); this._sidebarAnim = null; }
     if (this._roomSlideT) { clearTimeout(this._roomSlideT); this._roomSlideT = null; }
