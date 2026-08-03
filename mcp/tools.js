@@ -54,7 +54,7 @@ async function ensureFileLoaded(filePath, dataFilePath) {
     dataFilePath = currentDataFile;
   }
   if (!currentDoc || currentFile !== filePath || currentDataFile !== (dataFilePath || null)) {
-    if (currentDoc) await currentDoc.terminate();
+    if (currentDoc) await currentDoc.close();
     const filesToImport = [filePath];
     if (dataFilePath) filesToImport.push(dataFilePath);
     currentDoc = await scribe.openDocument(filesToImport);
@@ -646,7 +646,7 @@ async function convertDocxToJson({ file, outputPath, lineSplitMode }) {
     : filePath.replace(/\.docx$/i, '.scribe.json');
 
   // Open a fresh doc so the lineSplitMode override applies during import.
-  if (currentDoc) await currentDoc.terminate();
+  if (currentDoc) await currentDoc.close();
   currentDoc = await scribe.openDocument([filePath], lineSplitMode ? { docxLineSplitMode: lineSplitMode } : undefined);
   currentFile = filePath;
   currentDataFile = null;
@@ -1120,7 +1120,7 @@ const toolHandlers = {
 export { TOOLS, toolHandlers, ensureFileLoaded };
 
 export async function resetState() {
-  if (currentDoc) await currentDoc.terminate();
+  if (currentDoc) await currentDoc.close();
   currentDoc = null;
   currentFile = null;
   currentDataFile = null;

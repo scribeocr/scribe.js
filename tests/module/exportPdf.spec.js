@@ -1362,7 +1362,7 @@ describe('Check native text line deletion and replacement survive .scribe persis
     standardObj = JSON.parse(/** @type {string} */ (await srcDoc.exportData('scribe', { compressScribe: false })));
     sessionObj = JSON.parse(/** @type {string} */ (await srcDoc.exportData('scribe', { compressScribe: false, scribeSession: true })));
     const scribeData = await srcDoc.exportData('scribe', { scribeSession: true });
-    await srcDoc.terminate();
+    await srcDoc.close();
     restoredDoc = await scribe.openDocument({ scribeFiles: [scribeData] });
     const pdfData = await restoredDoc.exportData('pdf');
     reDoc = await scribe.openDocument({ pdfFiles: [pdfData] });

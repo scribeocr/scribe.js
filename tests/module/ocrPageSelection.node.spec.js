@@ -36,9 +36,11 @@ const selectedIdx = (mask) => mask.map((v, i) => (v ? i : -1)).filter((i) => i >
 /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
 let doc;
 
+// `doc` stays open so the assertion covers terminate() closing a live document's own worker pool.
 afterAll(async () => {
-  if (doc) await doc.terminate();
   await scribe.terminate();
+  const liveWorkerPorts = process.getActiveResourcesInfo().filter((r) => r === 'MessagePort').length;
+  expect(liveWorkerPorts, 'scribe.terminate() left worker threads running, so a Node process using scribe would never exit').toBe(0);
 }, 30000);
 
 describe('per-page OCR selection on a text-native deck (TSLA investor deck)', () => {
@@ -160,7 +162,7 @@ const BROKEN_PAGES = range(12, 15);
 let mixedDoc;
 
 afterAll(async () => {
-  if (mixedDoc) await mixedDoc.terminate();
+  if (mixedDoc) await mixedDoc.close();
 }, 30000);
 
 describe('page-category signals on a mixed text / scan / broken-encoding document', () => {
@@ -220,8 +222,8 @@ describe('autoDeep OCR keep/discard gate', () => {
     expect(selectOcrPages(stats, pdfDoc.inputData.pdfType, 'autoDeep')[6]).toBe(true);
     const ocrDoc = await scribe.openDocument([`${ASSETS_PATH}/intel-history-1996-annual-report.p6.tesseract.hocr`]);
     expect(ocrAddsNewText(pdfDoc.ocr.pdf[6], ocrDoc.ocr.active[0])).toBe(false);
-    await pdfDoc.terminate();
-    await ocrDoc.terminate();
+    await pdfDoc.close();
+    await ocrDoc.close();
   });
 
   test('keeps OCR on scan and broken-encoding pages, whose native layer is useless', async () => {
@@ -240,9 +242,9 @@ describe('autoDeep OCR keep/discard gate', () => {
     expect(ocrAddsNewText(pdfDoc.ocr.pdf[12], scribe.utils.ocr.clonePage(pdfDoc.ocr.pdf[12]))).toBe(false);
     expect(ocrAddsNewText(pdfDoc.ocr.pdf[8], ocr8.ocr.active[0])).toBe(true);
     expect(ocrAddsNewText(pdfDoc.ocr.pdf[12], ocr12.ocr.active[0])).toBe(true);
-    await pdfDoc.terminate();
-    await ocr8.terminate();
-    await ocr12.terminate();
+    await pdfDoc.close();
+    await ocr8.close();
+    await ocr12.close();
   });
 });
 
@@ -303,9 +305,9 @@ describe('autoDeep gate wiring through a custom OCR model', () => {
     const wordCount = page.lines.reduce((total, line) => total + line.words.length, 0);
     expect(wordCount, 'exporting a gate-rejected page destroyed its word segmentation').toBe(337);
     expect(page.lines[11].words.map((w) => w.text).join(' '), 'exporting a gate-rejected page re-typeset its text').toBe('4004');
-    await reimported.terminate();
+    await reimported.close();
 
-    await intelDoc.terminate();
+    await intelDoc.close();
   }, 60000);
 
   test('keeps a custom model\'s OCR on a scan page whose native layer is useless', async () => {
@@ -325,6 +327,6 @@ describe('autoDeep gate wiring through a custom OCR model', () => {
     expect(candDoc.ocr.active[8].lines.length).toBe(37);
     expect(candDoc.ocr.active[8]).not.toBe(candDoc.ocr['Mock Cloud OCR'][8]); // a clone, edit-isolated
     expect(candDoc.ocr.pdf[8].lines.length).toBe(1); // native untouched
-    await candDoc.terminate();
+    await candDoc.close();
   }, 60000);
 });

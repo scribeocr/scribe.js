@@ -1127,7 +1127,7 @@ class ScribePDFViewer {
 
     // Off the critical path: the displaced document's workers die asynchronously while the new page renders.
     // Safe because each document's workers and fonts are namespaced by a unique docId.
-    if (terminatePrev && displaced) displaced.terminate().catch(() => {});
+    if (terminatePrev && displaced) displaced.close().catch(() => {});
 
     this.scribe.runSetInitial = true;
     await this.scribe.displayPage(initialPage, initialPage > 0);
@@ -1208,7 +1208,7 @@ class ScribePDFViewer {
     this._syncDockPagesBtn();
     this._syncDocGatedControls();
 
-    if (terminatePrev) prev.terminate().catch(() => {});
+    if (terminatePrev) prev.close().catch(() => {});
 
     // The now-empty viewer has nothing to recognize.
     if (this._editEnabled) this._updateRecognizeButton();
@@ -1264,7 +1264,7 @@ class ScribePDFViewer {
       } catch (err) {
         // The cause is unknown here (a read error like NotFound, unusable bytes, an internal format we don't handle, ...), so the message stays generic.
         console.error(`Failed to open ${pdf.name}:`, err);
-        if (doc) await doc.terminate().catch(() => {});
+        if (doc) await doc.close().catch(() => {});
         this._showToast(`Couldn't open “${pdf.name}” — the file couldn't be loaded.`);
       }
     }
@@ -1282,7 +1282,7 @@ class ScribePDFViewer {
         opened.push({ doc, name });
       } catch (err) {
         console.error('Failed to open files:', err);
-        if (doc) await doc.terminate().catch(() => {});
+        if (doc) await doc.close().catch(() => {});
         const single = others.length === 1;
         const label = single ? `“${others[0].name}”` : 'the selected files';
         this._showToast(`Couldn't open ${label} — ${single ? 'the file' : 'they'} couldn't be loaded.`);
@@ -1431,7 +1431,7 @@ class ScribePDFViewer {
       }
     } catch (err) {
       console.error('Failed to split the document at its bookmarks:', err);
-      await Promise.all(pieces.map((p) => p.doc.terminate().catch(() => {})));
+      await Promise.all(pieces.map((p) => p.doc.close().catch(() => {})));
       return;
     }
     const firstNewTab = this._tabs.length;
@@ -1493,8 +1493,8 @@ class ScribePDFViewer {
       console.error('Failed to insert pages from file:', err);
       this._showToast('Couldn’t insert the file — it couldn’t be loaded.');
     } finally {
-      // Safe because the inserted pages render and export from each throwaway's refcounted source, which outlives this terminate.
-      await Promise.all(temps.map((d) => d.terminate().catch(() => {})));
+      // Safe because the inserted pages render and export from each throwaway's refcounted source, which outlives this close.
+      await Promise.all(temps.map((d) => d.close().catch(() => {})));
     }
   }
 
@@ -1535,7 +1535,7 @@ class ScribePDFViewer {
     if (i < 0 || i >= this._tabs.length) return;
     const wasActive = i === this._activeTab;
     const [removed] = this._tabs.splice(i, 1);
-    removed.doc.terminate().catch(() => {});
+    removed.doc.close().catch(() => {});
 
     if (this._tabs.length === 0) {
       this._activeTab = -1;
@@ -3027,15 +3027,15 @@ class ScribePDFViewer {
     // Teardown callbacks remove the document-level listeners and the highlight tool's observer/tooltip/cursor style.
     for (const cb of this._teardownCallbacks) cb();
     this._teardownCallbacks = [];
-    // The app owns every tab's document (opened via attachDocument with owns=false), so terminate them all here.
+    // The app owns every tab's document (opened via attachDocument with owns=false), so close them all here.
     for (const tab of this._tabs) {
-      try { await tab.doc.terminate(); } catch { /* ignore */ }
+      try { await tab.doc.close(); } catch { /* ignore */ }
     }
     this._tabs = [];
     this._activeTab = -1;
     if (this.doc) {
       if (terminateDoc ?? this._ownsDoc) {
-        try { await this.doc.terminate(); } catch { /* ignore */ }
+        try { await this.doc.close(); } catch { /* ignore */ }
       }
       this.doc = null;
     }

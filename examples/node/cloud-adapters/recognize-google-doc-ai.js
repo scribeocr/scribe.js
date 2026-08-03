@@ -44,6 +44,5 @@ if (!filePath) {
   const text = await doc.exportData('text');
   console.log(text);
 
-  await doc.terminate();
   await scribe.terminate();
 })();

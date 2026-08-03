@@ -45,6 +45,5 @@ const output = outputPath || filePath.replace(/\.[^.]+$/, '_ocr.pdf');
   await doc.download('pdf', output);
   console.log(`Searchable PDF written to ${output}`);
 
-  await doc.terminate();
   await scribe.terminate();
 })();

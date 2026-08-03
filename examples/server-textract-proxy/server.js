@@ -249,7 +249,7 @@ const handleOCR = async (req, res) => {
     writeNDJSON({ error: { message: e && e.message ? e.message : String(e) } });
     throw e;
   } finally {
-    try { if (doc) await doc.terminate(); } catch (_) { /* ignore */ }
+    try { if (doc) await doc.close(); } catch (_) { /* ignore */ }
     if (!res.writableEnded) res.end();
     log('request closed');
   }

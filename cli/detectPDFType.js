@@ -36,6 +36,5 @@ export const detectPDFType = async (pdfFile, outputPath) => {
 
   console.log('PDF Type:', type);
 
-  await doc.terminate();
   await scribe.terminate();
 };

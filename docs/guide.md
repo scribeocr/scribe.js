@@ -90,7 +90,6 @@ for (const word of doc.ocr.active[0].lines.flatMap((line) => line.words)) {
 // Write a searchable PDF.
 await doc.download('pdf', 'receipt.pdf');
 
-await doc.terminate();
 await scribe.terminate();
 ```
 
@@ -124,10 +123,13 @@ const contract = await scribe.openDocument(['contract.pdf']);
 Scribe.js has two tiers of resources.
 
 - **Shared resources** — the OCR worker pool and the built-in fonts. These are process-wide and
-  loaded lazily on first use. `scribe.init()` can pre-load them to remove first-use latency, and
-  `scribe.terminate()` releases them.
+  loaded lazily on first use. `scribe.init()` can pre-load them to remove first-use latency.
 - **Per-document resources** — each document's PDF renderer, image cache, and optimized fonts.
-  `doc.terminate()` releases these for one document without touching the shared pool.
+  `doc.close()` releases these for one document without touching the shared pool or any other
+  document, which is what you want when one document is finished but the program keeps running.
+
+`scribe.terminate()` releases both tiers: it closes every document still open, then the shared
+pool. One call is enough to shut Scribe.js down.
 
 A typical full lifecycle:
 
@@ -136,12 +138,15 @@ await scribe.init({ ocr: true, font: true }); // optional pre-load
 const doc = await scribe.openDocument(files);
 await doc.recognize();
 await doc.download('pdf', 'out.pdf');
-await doc.terminate();   // release this document
-await scribe.terminate(); // release shared resources (e.g. before process exit)
+await scribe.terminate();                     // release shared resources after all work is completed
 ```
 
-You do not have to call `init` — resources load on demand. You should call `doc.terminate()` and
-`scribe.terminate()` when finished, especially in Node.js, so the process can exit.
+You do not have to call `init` as resources load on demand. You do have to call
+`scribe.terminate()` when finished, especially in Node.js: worker threads keep the event loop
+alive, so without it the process never exits.
+
+Nothing is permanently torn down. A later `openDocument` re-initializes whatever it needs, so
+`scribe.terminate()` is safe to call between batches, not just at the end of the program.
 
 ### Reusing a document for several PDFs
 
@@ -166,8 +171,7 @@ for (const path of pdfPaths) {
   doc.clear();                  // reset state; workers are kept alive
 }
 
-await doc.terminate();          // finally release the workers
-await scribe.terminate();
+await scribe.terminate();       // release shared resources after all work is completed
 ```
 
 For workflows with several documents open at the same time, create separate `ScribeDoc`
@@ -350,7 +354,6 @@ await doc.recognize({
 });
 
 console.log(await doc.exportData('text'));
-await doc.terminate();
 await scribe.terminate();
 ```
 

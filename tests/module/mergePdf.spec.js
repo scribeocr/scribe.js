@@ -36,7 +36,7 @@ describe('Check PDF merge preserves page count.', () => {
 
       scribe.ScribeDoc.defaults.displayMode = 'proof';
       pdfBuffers.push(await doc.exportData('pdf'));
-      await doc.terminate();
+      await doc.close();
     }
 
     const sourcePages = pdfBuffers.map((b) => countPdfPages(b));
@@ -55,12 +55,12 @@ describe('Check PDF merge preserves page count.', () => {
     const docA = await scribe.openDocument([`${ASSETS_PATH}/scribe_test_pdf1.pdf`]);
     docA.addHighlights([{ page: 0, startLine: 0, endLine: 1 }]);
     const pdfA = await docA.exportData('pdf');
-    await docA.terminate();
+    await docA.close();
 
     const docB = await scribe.openDocument([`${ASSETS_PATH}/scribe_test_pdf1.pdf`]);
     docB.addHighlights([{ page: 0, startLine: 2, endLine: 2 }]);
     const pdfB = await docB.exportData('pdf');
-    await docB.terminate();
+    await docB.close();
 
     const pagesA = countPdfPages(pdfA);
     const pagesB = countPdfPages(pdfB);
@@ -75,7 +75,7 @@ describe('Check PDF merge preserves page count.', () => {
     expect(highlightsSecondSource.length).toBe(1);
 
     scribe.ScribeDoc.defaults.usePDFText.ocr.main = false;
-    await docMerged.terminate();
+    await docMerged.close();
   });
 
   afterAll(async () => {

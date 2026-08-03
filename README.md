@@ -31,6 +31,7 @@ The `scribe.extractText` function is a simple function that extracts text from i
 ```js
 const text = await scribe.extractText(['https://tesseract.projectnaptha.com/img/eng_bw.png']);
 console.log(text);
+await scribe.terminate();                               // release everything after all recognition completed, so a Node process can exit
 ```
 
 For full control, create a new document object using `openDocument` and use the object's methods to extract text and transform the document. The example below imports an image, recognizes text, and exports a searchable PDF with an invisible text layer.
@@ -39,7 +40,7 @@ For full control, create a new document object using `openDocument` and use the 
 const doc = await scribe.openDocument(['receipt.png']); // image, PDF, or existing OCR file(s)
 await doc.recognize({ langs: ['eng'] });                // run OCR
 await doc.download('pdf', 'receipt.pdf');               // write a searchable PDF
-await doc.terminate();
+await scribe.terminate();                               // release everything after all recognition completed, so a Node process can exit
 ```
 
 When using Scribe.js in the browser, all files must be served from the same origin as the file importing Scribe.js.  This means that importing Scribe.js from a CDN will not work.  There is no UMD version.

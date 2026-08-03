@@ -27,7 +27,7 @@ import {
 import { assignParagraphs } from './js/utils/reflowPars.js';
 import { writeXlsx, writeXlsxFromRows } from './js/export/writeTabular.js';
 import { calcColumnBounds, detectTablesInPage, makeTableFromBbox } from './js/utils/detectTables.js';
-import { ScribeDoc } from './js/containers/scribeDoc.js';
+import { ScribeDoc, liveDocs } from './js/containers/scribeDoc.js';
 
 /**
  * Initialize the program and optionally pre-load shared resources.
@@ -116,7 +116,7 @@ const extractText = async (files, langs = ['eng'], outputFormat = 'txt', options
   const skipRecPDFTextOCR = options?.skipRecPDFTextOCR ?? false;
   const doc = await openDocument(files);
   if (!doc.inputData.xmlMode[0] && !doc.inputData.imageMode && !doc.inputData.pdfMode) {
-    await doc.terminate();
+    await doc.close();
     throw new Error('No relevant files to process.');
   }
   const skipRecPDF = depSkipSet && doc.inputData.pdfMode
@@ -124,7 +124,7 @@ const extractText = async (files, langs = ['eng'], outputFormat = 'txt', options
   const skipRecOCR = doc.inputData.xmlMode[0] && !doc.inputData.imageMode && !doc.inputData.pdfMode;
   if (!skipRecPDF && !skipRecOCR) await doc.recognize({ langs, ocrPages, usePDFText });
   const output = await doc.exportData(outputFormat);
-  await doc.terminate();
+  await doc.close();
   return output;
 };
 
@@ -154,7 +154,7 @@ const warnLegacy = (name) => {
  */
 const importFiles = async (files, options) => {
   warnLegacy('importFiles');
-  if (legacyDoc) await legacyDoc.terminate();
+  if (legacyDoc) await legacyDoc.close();
   await init({ font: true });
   legacyDoc = new ScribeDoc();
   return legacyDoc.importFiles(files, options);
@@ -208,13 +208,13 @@ const exportData = async (format, options) => {
 };
 
 /**
- * @deprecated Call `doc.terminate()` on a `ScribeDoc` from `scribe.openDocument(...)` instead.
+ * @deprecated Call `doc.close()` on a `ScribeDoc` from `scribe.openDocument(...)` instead.
  * Terminates the implicit document held by the legacy `scribe.importFiles` flow, if any.
  */
 const clear = async () => {
   warnLegacy('clear');
   if (legacyDoc) {
-    await legacyDoc.terminate();
+    await legacyDoc.close();
     legacyDoc = null;
   }
 };
@@ -387,11 +387,28 @@ class utils {
 }
 
 /**
- * Terminate the shared resources (the general/OCR worker pool and built-in fonts).
- * Per-document resources are released with `doc.terminate()`.
+ * Release every resource Scribe.js holds.
+ * Closes each open document, then the shared general/OCR worker pool and the built-in fonts.
+ * Call this before a Node process exits.
+ * Nothing is permanently torn down, so a later `openDocument` re-initializes what it needs.
+ * To release a single document while the rest of the program keeps running, use `doc.close()`.
  * @public
  */
 const terminate = async () => {
+  // Each document holds its own PDF worker pool, and in Node those threads keep the event loop alive on their own.
+  // Skipping them here would leave the process running after a caller asked to shut down.
+  /** @type {Array<ScribeDoc>} */
+  const docs = [];
+  for (const ref of liveDocs) {
+    const doc = ref.deref();
+    if (doc) {
+      docs.push(doc);
+    } else {
+      liveDocs.delete(ref);
+    }
+  }
+  await Promise.all(docs.map((doc) => doc.close()));
+
   await gs.terminate();
   GlobalFonts.raw = null;
 };

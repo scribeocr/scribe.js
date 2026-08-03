@@ -84,8 +84,13 @@ Returns `Promise<string \| ArrayBuffer>`.
 
 ### `scribe.terminate()`
 
-Terminate shared resources (the general/OCR worker pool and built-in fonts). Per-document
-resources are released with [`doc.terminate()`](#docterminate). Returns `Promise<void>`.
+Release every resource Scribe.js holds: each open document (via [`doc.close()`](#docclose)), then
+the shared general/OCR worker pool and built-in fonts. Call this before a Node process exits —
+worker threads keep the event loop alive, so a process that skips it never exits.
+
+A later [`openDocument`](#scribeopendocumentfiles) re-initializes the shared resources.
+To release one document while the rest of the program keeps running, use
+[`doc.close()`](#docclose) instead. Returns `Promise<void>`.
 
 ---
 
@@ -315,14 +320,22 @@ import multiple PDFs in sequence. Returns `Promise<void>`. (Async)
 
 Reset all of this document's OCR text, layout, image caches, and font registrations. Keeps the
 PDF worker pool alive so the document can be re-used for another file via
-[`importFiles`](#docimportfilesfiles). Use [`terminate`](#docterminate) instead to also release
-the workers.
+[`importFiles`](#docimportfilesfiles). Use [`close`](#docclose) instead to also release the
+workers.
+
+#### `doc.close()`
+
+Release this document's resources: terminate its PDF worker pool, clear its image cache, and drop
+its optimized fonts. Does not touch the shared OCR pool, the built-in fonts, or any other document
+(use [`scribe.terminate`](#scribeterminate) for those). The document itself stays usable — a later
+[`importFiles`](#docimportfilesfiles) spawns a fresh pool. Returns `Promise<void>`. (Async)
 
 #### `doc.terminate()`
 
-Release this document's resources: terminate its PDF worker pool, clear its image cache, and drop
-its optimized fonts. Does not touch the shared OCR pool or built-in fonts (use
-[`scribe.terminate`](#scribeterminate) for those). Returns `Promise<void>`. (Async)
+**Deprecated — use [`close`](#docclose).** An alias for `close`, kept for compatibility; it warns
+once per process. Renamed because callers read `doc.terminate()` as a synonym for
+[`scribe.terminate`](#scribeterminate) and expected either one alone to release everything.
+Returns `Promise<void>`. (Async)
 
 ---
 

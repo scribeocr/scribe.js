@@ -159,7 +159,7 @@ describe('Check Node.js commands.', () => {
           }
         }
       }
-      await doc.terminate();
+      await doc.close();
     }, 20000);
 
     it('writes the expected output PDF to the requested directory', () => {
@@ -396,7 +396,7 @@ describe('Subset CLI command.', () => {
     pageCount = doc.inputData.pageCount;
     page0Text = /** @type {string} */ (await doc.exportData('text', { minPage: 0, maxPage: 0 }));
     page1Text = /** @type {string} */ (await doc.exportData('text', { minPage: 1, maxPage: 1 }));
-    await doc.terminate();
+    await doc.close();
   }, 20000);
 
   it('writes the subset PDF to the requested path', () => {

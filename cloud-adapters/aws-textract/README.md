@@ -36,7 +36,6 @@ await doc.recognize({
 });
 
 console.log(await doc.exportData('text'));
-await doc.terminate();
 await scribe.terminate();
 ```
 

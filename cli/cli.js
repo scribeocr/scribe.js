@@ -214,7 +214,6 @@ export const renderCLI = async (inputFile, outputDir, options) => {
         fs.writeFileSync(`${outputDir}/${stem}-${n}.png`, new Uint8Array(Buffer.from(dataUrl.split(',')[1], 'base64')));
       }
     } finally {
-      await doc.terminate();
       await scribe.terminate();
     }
     process.exitCode = 0;

@@ -32,12 +32,12 @@ parentPort.on('message', async ({ inputPath }) => {
     const doc = await scribe.openDocument([inputPath]);
     // Image-based PDFs (no extractable text, no OCR layer) would export an empty result; skip the export when requested.
     if (config.skipImageBased && doc.inputData.pdfType === 'image') {
-      await doc.terminate();
+      await doc.close();
       parentPort.postMessage({ ok: true, skipReason: 'imageBased' });
       return;
     }
     const text = await doc.exportData(exportFormat, exportOptions);
-    await doc.terminate();
+    await doc.close();
     // A parse that yields no text still resolves here as a successful empty extraction.
     // A parse failure instead throws and is reported by the catch below.
     parentPort.postMessage({ ok: true, text });

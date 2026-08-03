@@ -60,6 +60,5 @@ export const extract = async (inputFile, output, options) => {
     await doc.download(format, outputPath, { includeCharBoxesScribe });
   }
 
-  await doc.terminate();
   await scribe.terminate();
 };

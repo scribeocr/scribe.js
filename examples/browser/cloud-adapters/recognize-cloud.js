@@ -64,6 +64,5 @@ elm.addEventListener('change', async () => {
 
   const text = await doc.exportData('text');
   output.textContent = text;
-  await doc.terminate();
   await scribe.terminate();
 });

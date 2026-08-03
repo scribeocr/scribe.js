@@ -98,7 +98,7 @@ describe('Check preserveSpacing text export.', () => {
   });
 
   afterAll(async () => {
-    await doc.terminate();
+    await doc.close();
     await scribe.terminate();
   });
 });

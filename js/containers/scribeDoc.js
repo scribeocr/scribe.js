@@ -404,6 +404,18 @@ class PageHistory {
 let docIdCounter = 0;
 
 /**
+ * Every document created in this process.
+ * `scribe.terminate()` closes these, so releasing the shared pool cannot strand a document's PDF workers.
+ * A document stays listed after `close()`, because a closed document can import another file and spawn a new pool.
+ * @type {Set<WeakRef<ScribeDoc>>}
+ */
+export const liveDocs = new Set();
+
+const liveDocsFinalizer = new FinalizationRegistry((/** @type {WeakRef<ScribeDoc>} */ ref) => liveDocs.delete(ref));
+
+let warnedDocTerminate = false;
+
+/**
  * A single document being processed, holding its imported pages, OCR text, layout, and fonts.
  */
 export class ScribeDoc {
@@ -412,6 +424,10 @@ export class ScribeDoc {
   constructor() {
     /** Process-unique id, used to namespace this document's fonts in shared registries. */
     this.id = ++docIdCounter;
+
+    const selfRef = new WeakRef(this);
+    liveDocs.add(selfRef);
+    liveDocsFinalizer.register(this, selfRef);
 
     /** Input modes and basic file metadata for this document. */
     this.inputData = new InputData();
@@ -902,17 +918,27 @@ export class ScribeDoc {
   }
 
   /**
-   * Release this document's resources: terminate its PDF worker pool, clear its image cache, and
-   * drop this document's optimized fonts from the main thread and the shared general-pool workers.
+   * Release this document's resources.
+   * Terminates its PDF worker pool, clears its image cache, and drops its optimized fonts from the main thread and the shared general-pool workers.
    * Does not touch the shared general/OCR pool or the process-wide built-in fonts.
+   * The document remains usable, and a later `importFiles` spawns a fresh pool.
    */
-  async terminate() {
+  async close() {
     // In-flight extraction jobs die with the worker pool below and never settle `textReady`, so settle it now to let waiters proceed rather than hang.
     this._textReadySettle?.();
     this._textReadySettle = null;
     await this.images.terminate();
     this.fonts.clear();
     await dropFromWorkers(this.fonts);
+  }
+
+  /** @deprecated Use `doc.close()`. */
+  async terminate() {
+    if (!warnedDocTerminate) {
+      warnedDocTerminate = true;
+      opt.warningHandler('doc.terminate() is deprecated and will be removed in a future release. Use doc.close() instead.');
+    }
+    return this.close();
   }
 
   /**
