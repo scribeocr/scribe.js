@@ -211,8 +211,13 @@ class ScribePDFViewer {
     this._tabs = [];
     /** Index of the active tab in `_tabs`, or -1 when none is open. */
     this._activeTab = -1;
-    /** Whether the tab strip currently occupies layout space (shown only with 2+ tabs). */
+    /** Whether the tab strip currently occupies layout space. */
     this._tabStripVisible = false;
+    /**
+     * Open-tab count at which the strip appears.
+     * The library lowers it to 1 so its pinned Library tab has a home.
+     */
+    this._tabStripMinTabs = 2;
     this._modeTrayOpen = false;
     /** Monotonic counter stamped onto a tab's `lastUse` at creation and on every activation. */
     this._tabUseCounter = 0;
@@ -360,30 +365,11 @@ class ScribePDFViewer {
     // Icons/page-input/text are sized 12px shorter than the bar (~6px of vertical air above and below), clamped to [16, 32] ([16, 44] on coarse pointers).
     const toolbarIconSize = Math.max(16, Math.min(this._coarsePointer ? 44 : 32, this.toolbarHeight - 12));
 
-    // The top-bar tools act through this indirection so a host can point them at an embedded viewer while its surface covers the main one.
-    // Methods bind to the routed instance at call time, but construction-time subscriptions stay on the main viewer.
-    // That is why passive displays like the page counter do not follow the route.
-    /** @type {?() => ?import('../viewer.js').ScribeViewer} */
-    this._toolbarRoute = null;
-    const routedScribe = /** @type {import('../viewer.js').ScribeViewer} */ (new Proxy(this.scribe, {
-      get: (target, prop) => {
-        const s = /** @type {any} */ (this._toolbarRoute?.() || this.scribe);
-        // `===` cannot see through a proxy, so the guards in toolbar.js that compare against the active viewer read the resolved instance from this property.
-        if (prop === '_routedTarget') return s;
-        const v = s[prop];
-        return typeof v === 'function' ? v.bind(s) : v;
-      },
-      set: (target, prop, value) => {
-        /** @type {any} */ (this._toolbarRoute?.() || this.scribe)[prop] = value;
-        return true;
-      },
-    }));
-
     // The highlight subsystem is created whenever highlighting is enabled, independent of the toolbar,
     // so selection-driven highlighting still works with `showToolbar: false`.
     /** @type {?ReturnType<typeof createHighlightTool>} */
     this._highlightTool = highlightColors
-      ? createHighlightTool(routedScribe, this.pdfViewerElem, {
+      ? createHighlightTool(this.scribe, this.pdfViewerElem, {
         colors: highlightColors, defaultColor: defaultHighlightColor ?? highlightColors[0], rootClass: ROOT_CLASS,
       })
       : null;
@@ -395,7 +381,7 @@ class ScribePDFViewer {
     this._destroyed = false;
     /**
      * Callbacks the library registers so tab lifecycle events can checkpoint-save `.scribe` sidecars.
-     * @type {?{docOpened?: () => void, saveTabIfDirty?: (tab: Object) => Promise<void>, saveAllDirty?: () => Promise<void>}}
+     * @type {?{docOpened?: () => void, emptied?: () => void, saveTabIfDirty?: (tab: Object) => Promise<void>, saveAllDirty?: () => Promise<void>}}
      */
     this._libraryHooks = null;
     /** @type {?ReturnType<typeof createPrintControls>} */
@@ -479,10 +465,10 @@ class ScribePDFViewer {
       // Never wrap to a second line inside the fixed-height bar; instead the horizontal overflow is measured and the trailing mode buttons collapse into the tray.
       toolbarButtons.style.whiteSpace = 'nowrap';
 
-      const pageNav = createPageNav(routedScribe);
-      const zoom = createZoomControls(routedScribe);
-      const rotate = createRotateControls(routedScribe);
-      const print = createPrintControls(routedScribe, this.pdfViewerElem);
+      const pageNav = createPageNav(this.scribe);
+      const zoom = createZoomControls(this.scribe);
+      const rotate = createRotateControls(this.scribe);
+      const print = createPrintControls(this.scribe, this.pdfViewerElem);
       this._print = print;
       const open = createOpenControls(this.scribe, this.pdfViewerElem, (files) => this.openFiles(files));
       this._open = open;
@@ -496,9 +482,9 @@ class ScribePDFViewer {
       appMenu.addAction('Open file', OPEN_SVG, () => open.openElem.click());
       appMenu.addAction('Print', PRINT_SVG, () => print.printElem.click());
       // Touch-only rows re-homing the controls the touch layouts drop from the bar.
-      appMenu.addAction('Rotate left', ROTATE_LEFT_SVG, () => routedScribe.rotatePage(routedScribe.state.cp.n, -90))
+      appMenu.addAction('Rotate left', ROTATE_LEFT_SVG, () => this.scribe.rotatePage(this.scribe.state.cp.n, -90))
         .classList.add('scribe-touch-row');
-      appMenu.addAction('Rotate right', ROTATE_RIGHT_SVG, () => routedScribe.rotatePage(routedScribe.state.cp.n, 90))
+      appMenu.addAction('Rotate right', ROTATE_RIGHT_SVG, () => this.scribe.rotatePage(this.scribe.state.cp.n, 90))
         .classList.add('scribe-touch-row');
       if (DEBUG_MENU) {
         import('../js/controls/debugMenu.js')
@@ -541,7 +527,7 @@ class ScribePDFViewer {
       this._toolbarButtonsElem = toolbarButtons;
 
       // Find / search controls (right-aligned).
-      this._searchBar = createSearchBar(routedScribe, this.pdfViewerElem);
+      this._searchBar = createSearchBar(this.scribe, this.pdfViewerElem);
       // The find bar floats (absolute) under the toolbar, so it must hang off `toolbarElem` (the positioned ancestor) rather than the right-zone flex row.
       // Otherwise showing it would reflow the other controls.
       toolbarElem.appendChild(this._searchBar.findGroupElem);
@@ -1791,6 +1777,7 @@ class ScribePDFViewer {
       this._activeTab = -1;
       this._renderTabs();
       this.detachDoc({ terminate: false });
+      this._libraryHooks?.emptied?.();
       return;
     }
     if (wasActive) {
@@ -1803,9 +1790,9 @@ class ScribePDFViewer {
     }
   }
 
-  /** Re-render the tab strip and toggle its visibility (shown only with 2+ tabs). */
+  /** Re-render the tab strip and toggle its visibility. */
   _renderTabs() {
-    this._setTabStripVisible(this._tabs.length >= 2);
+    this._setTabStripVisible(this._tabs.length >= this._tabStripMinTabs);
     if (this._tabStrip) this._tabStrip.render(this._tabs, this._activeTab);
     // Combine needs 2+ tabs and Split tracks the active document, so refresh both when the strip changes.
     if (this._editEnabled) {

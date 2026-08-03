@@ -2,7 +2,7 @@
 // Loaded by dynamic import behind the `library` option, so viewers without it never fetch this module or its styles.
 
 import scribeLib from '../../scribe.js';
-import { makeIconButton } from '../js/controls/toolbar.js';
+import { ZOOM_IN_SVG, ZOOM_OUT_SVG } from '../js/controls/toolbar.js';
 import { openDocumentFromFile } from '../js/controls/tools.js';
 import { findText, goToMatch } from '../js/viewerSearch.js';
 import { REORDER_SLIDE_MS } from '../js/controls/pageReorder.js';
@@ -11,8 +11,9 @@ import { LibraryStore } from './libraryStore.js';
 import { LibraryIndex } from './librarySearch.js';
 import { LibraryIngest } from './libraryIngest.js';
 
+// Filled rather than stroked because outlined spines collapse into double-line mush at the pinned tab's 16px.
 // eslint-disable-next-line max-len
-const LIBRARY_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M4 4.5h3v15H4zM9.5 4.5h3v15h-3zM15.2 5.1l2.9-.8 3.9 14.5-2.9.8z"/></svg>';
+const LIBRARY_SVG = '<svg viewBox="0 0 24 24" fill="currentColor" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><rect x="3" y="3.5" width="3.8" height="17" rx="0.9"/><rect x="8.8" y="3.5" width="3.8" height="17" rx="0.9"/><path d="M13.7 3.9 17.4 3.1 20.9 19.7 17.2 20.5Z"/></svg>';
 // eslint-disable-next-line max-len
 const FOLDER_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M3.5 6.5a1.5 1.5 0 0 1 1.5-1.5h4l2 2.5h8a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5z"/></svg>';
 
@@ -83,6 +84,10 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-surface { position: absolute; left: 0; right: 0; bottom: 0; z-index: 30; background: var(--scribe-canvas); color: var(--scribe-ink); display: flex; flex-direction: column; overflow: hidden; font-size: 14px; }
 .scribe-pdf-viewer .scribe-library-header { display: flex; align-items: center; gap: 8px; min-height: 44px; box-sizing: border-box; padding: 4px 14px 4px 18px; border-bottom: 1px solid var(--scribe-line); background: var(--scribe-surface); flex-wrap: wrap; }
 .scribe-pdf-viewer .scribe-library-header h2 { font-size: 14px; font-weight: 600; margin: 0; }
+.scribe-pdf-viewer .scribe-library-bar-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.scribe-pdf-viewer .scribe-library-bar-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
+.scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field { width: 196px; flex: 0 1 auto; min-width: 106px; }
+.scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-search { width: 100%; min-width: 0; flex: 1; }
 .scribe-pdf-viewer .scribe-library-count { color: var(--scribe-ink-3); font-size: 13px; }
 .scribe-pdf-viewer .scribe-library-field { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; margin-left: auto; background: var(--scribe-sunken); border: 1px solid var(--scribe-line-strong); border-radius: 5px; box-sizing: border-box; }
 .scribe-pdf-viewer .scribe-library-field:focus-within { border-color: var(--scribe-accent); }
@@ -216,6 +221,14 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-pv-x { width: 26px; height: 26px; flex-shrink: 0; padding: 5px; border-radius: 7px; border: none; background: none; color: var(--scribe-ink-3); cursor: pointer; }
 .scribe-pdf-viewer .scribe-library-pv-x:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
 .scribe-pdf-viewer .scribe-library-pv-x svg { width: 100%; height: 100%; display: block; }
+.scribe-pdf-viewer .scribe-library-pv-zoom { width: 26px; height: 26px; flex-shrink: 0; padding: 5px; border-radius: 7px; border: none; background: none; color: var(--scribe-ink-2); cursor: pointer; }
+.scribe-pdf-viewer .scribe-library-pv-zoom:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
+.scribe-pdf-viewer .scribe-library-pv-zoom svg { width: 100%; height: 100%; display: block; }
+.scribe-pdf-viewer .scribe-library-pv-find { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 7px; background: var(--scribe-sunken); border: 1px solid var(--scribe-line-strong); border-radius: 5px; box-sizing: border-box; flex: 0 1 auto; min-width: 70px; }
+.scribe-pdf-viewer .scribe-library-pv-find:focus-within { border-color: var(--scribe-accent); }
+.scribe-pdf-viewer .scribe-library-pv-find > svg { width: 13px; height: 13px; color: var(--scribe-ink-3); flex-shrink: 0; }
+.scribe-pdf-viewer .scribe-library-pv-find input { border: none; background: none; outline: none; color: var(--scribe-ink); font: inherit; font-size: 12.5px; width: 96px; min-width: 0; padding: 0; caret-color: var(--scribe-accent); }
+.scribe-pdf-viewer .scribe-library-pv-find input::placeholder { color: var(--scribe-ink-3); }
 .scribe-pdf-viewer .scribe-library-pv-stage { flex: 1; overflow: hidden; display: flex; position: relative; }
 .scribe-pdf-viewer .scribe-library-pv-viewer { flex: 1; min-width: 0; min-height: 0; position: relative; }
 .scribe-pdf-viewer .scribe-library-pv-empty { color: var(--scribe-ink-3); font-size: 13px; margin: auto; }
@@ -438,14 +451,43 @@ export function installLibrary(viewer) {
   const body = document.createElement('div');
   body.className = 'scribe-library-body';
 
-  surface.appendChild(header);
+  // With a toolbar present the library takes over that bar, so the header's controls are re-parented into it rather than stacking a second bar.
+  /** @type {?HTMLElement} */
+  let barTitle = null;
+  /** @type {?HTMLElement} */
+  let barControls = null;
+  if (viewer.toolbarElem) {
+    barTitle = document.createElement('span');
+    barTitle.className = 'scribe-library-bar-title';
+    barTitle.style.display = 'none';
+    const barSep = document.createElement('span');
+    barSep.className = 'vertical-separator';
+    barTitle.appendChild(barSep);
+    barTitle.appendChild(crumbsElem);
+    barTitle.appendChild(countElem);
+    // Placed after the app menu so the zone's last child stays visible, which is what the bar's overflow measurement reads.
+    viewer.toolbarElemStart.insertBefore(barTitle, viewer._appMenu ? viewer._appMenu.menuWrap.nextSibling : viewer.toolbarElemStart.firstChild);
+    barControls = document.createElement('span');
+    barControls.className = 'scribe-library-bar-controls';
+    barControls.style.display = 'none';
+    for (const el of [searchField, viewSeg, sortWrap, previewBtn, headerSep, addBtn, refreshBtn]) barControls.appendChild(el);
+    viewer.toolbarElemEnd.appendChild(barControls);
+    surface.appendChild(fileInput);
+  } else {
+    surface.appendChild(header);
+  }
   surface.appendChild(progressElem);
   surface.appendChild(body);
   viewer.pdfViewerElem.appendChild(surface);
 
-  const toggleBtn = makeIconButton('Library', LIBRARY_SVG);
-  if (viewer._toolbarButtonsElem) {
-    viewer._toolbarButtonsElem.insertBefore(toggleBtn, viewer._toolbarButtonsElem.firstChild);
+  const homeTab = document.createElement('div');
+  homeTab.className = 'scribe-tab pinned';
+  homeTab.title = 'Library';
+  homeTab.innerHTML = `<span class="scribe-tab-icon">${LIBRARY_SVG}</span><span class="scribe-tab-name">Library</span>`;
+  if (viewer._tabStrip) {
+    viewer._tabStrip.setPinnedTab(homeTab);
+    viewer._tabStripMinTabs = 1;
+    viewer._renderTabs();
   }
 
   // --- Layout -------------------------------------------------------------
@@ -456,17 +498,55 @@ export function installLibrary(viewer) {
   const resizeObserver = new ResizeObserver(updateChrome);
   resizeObserver.observe(viewer.pdfViewerElem);
 
+  /** @type {Array<{el: HTMLElement, display: string}>} */
+  let hiddenBarElems = [];
+  let barSwapped = false;
+
+  /** Replace the toolbar's document controls with the library's own fragments, leaving the app menu in place. */
+  const swapBarIn = () => {
+    if (!barTitle || !barControls || barSwapped) return;
+    barSwapped = true;
+    const hide = (el) => {
+      hiddenBarElems.push({ el, display: el.style.display });
+      el.style.display = 'none';
+    };
+    for (const el of [...viewer.toolbarElemStart.children]) {
+      if (el !== viewer._appMenu?.menuWrap && el !== barTitle) hide(/** @type {HTMLElement} */ (el));
+    }
+    if (viewer._toolbarButtonsElem) hide(viewer._toolbarButtonsElem);
+    for (const el of [...viewer.toolbarElemEnd.children]) {
+      if (el !== barControls) hide(/** @type {HTMLElement} */ (el));
+    }
+    barTitle.style.display = '';
+    barControls.style.display = '';
+  };
+  const swapBarOut = () => {
+    if (!barSwapped) return;
+    barSwapped = false;
+    /** @type {HTMLElement} */ (barTitle).style.display = 'none';
+    /** @type {HTMLElement} */ (barControls).style.display = 'none';
+    for (const { el, display } of hiddenBarElems) el.style.display = display;
+    hiddenBarElems = [];
+    // A resize while the bar was swapped measured hidden controls, so re-shed against the restored bar.
+    viewer._syncModeOverflow?.();
+  };
+
   const showSurface = () => {
     visible = true;
     updateChrome();
+    viewer._exclusiveToolBtns?.find((b) => b.classList.contains('active'))?.click();
+    viewer._searchBar?.closeSearch();
+    viewer._setModeTrayOpen?.(false);
+    swapBarIn();
+    viewer._tabStrip?.setPinnedActive(true);
     surface.style.display = 'flex';
-    toggleBtn.classList.add('active');
   };
   const hideSurface = () => {
     visible = false;
     closeCardMenu();
+    swapBarOut();
+    viewer._tabStrip?.setPinnedActive(false);
     surface.style.display = 'none';
-    toggleBtn.classList.remove('active');
   };
 
   // --- Persistence helpers ------------------------------------------------
@@ -1571,6 +1651,10 @@ export function installLibrary(viewer) {
     const pane = document.createElement('div');
     pane.className = 'scribe-library-pv';
     pane.innerHTML = '<div class="scribe-library-pv-head" style="display:none;"><span class="t"></span><span class="m"></span><span class="grow"></span>'
+      + `<button class="scribe-library-pv-zoom" type="button" data-zoom-out aria-label="Zoom out" title="Zoom out">${ZOOM_OUT_SVG}</button>`
+      + `<button class="scribe-library-pv-zoom" type="button" data-zoom-in aria-label="Zoom in" title="Zoom in">${ZOOM_IN_SVG}</button>`
+      + `<span class="scribe-library-pv-find">${FIELD_SEARCH_SVG}<input type="text" placeholder="Find" aria-label="Find in the previewed document"></span>`
+      + '<span class="vertical-separator"></span>'
       + '<button class="scribe-library-pv-open" type="button">Open<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
       + 'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17L17 7M9 7h8v8"/></svg></button>'
       + '<button class="scribe-library-pv-x" type="button" aria-label="Close preview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" '
@@ -1582,6 +1666,7 @@ export function installLibrary(viewer) {
     const pvEmpty = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-empty'));
     const pvHost = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-viewer'));
     const pvFoot = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-foot'));
+    const pvFindInput = /** @type {HTMLInputElement} */ (pane.querySelector('.scribe-library-pv-find input'));
     /** @type {?import('../basic-viewer/pdf-viewer.js').ScribePDFViewer} */
     let paneViewer = null;
     let token = 0;
@@ -1611,6 +1696,50 @@ export function installLibrary(viewer) {
         await ps.displayPage(target.pageN, true, false);
       }
     };
+
+    /** @type {HTMLElement} */ (pane.querySelector('[data-zoom-in]')).addEventListener('click', () => {
+      if (paneViewer?.doc) paneViewer.scribe.zoom(1.1, paneViewer.scribe.getViewportCenter());
+    });
+    /** @type {HTMLElement} */ (pane.querySelector('[data-zoom-out]')).addEventListener('click', () => {
+      if (paneViewer?.doc) paneViewer.scribe.zoom(0.9, paneViewer.scribe.getViewportCenter());
+    });
+    let pvFindLast = '';
+    const pvClearFind = () => {
+      pvFindLast = '';
+      if (!paneViewer?.doc) return;
+      const ps = paneViewer.scribe;
+      if (ps._searchState.search) findText(ps, '');
+      ps.state.searchMode = false;
+    };
+    const pvRunFind = async () => {
+      if (!paneViewer?.doc) return;
+      const ps = paneViewer.scribe;
+      const q = pvFindInput.value.trim();
+      if (!q) return;
+      if (q !== pvFindLast) {
+        pvFindLast = q;
+        ps.state.searchMode = true;
+        findText(ps, q);
+        const idx = ps._searchState.matchList.findIndex((m) => m.pageN >= ps.state.cp.n);
+        await goToMatch(ps, idx >= 0 ? idx : 0);
+      } else {
+        await goToMatch(ps, ps._searchState.activeMatch + 1);
+      }
+    };
+    pvFindInput.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        pvRunFind();
+      } else if (e.key === 'Escape' && pvFindInput.value) {
+        e.preventDefault();
+        e.stopPropagation();
+        pvFindInput.value = '';
+        pvClearFind();
+      }
+    });
+    pvFindInput.addEventListener('input', () => {
+      if (!pvFindInput.value.trim()) pvClearFind();
+    });
 
     /**
      * Release the pane's current document, saving one that holds session edits back to its sidecar.
@@ -1664,6 +1793,10 @@ export function installLibrary(viewer) {
     const show = async (target) => {
       const t = ++token;
       const gen = previewGen;
+      if (!current || current.hash !== target.hash) {
+        pvFindInput.value = '';
+        pvFindLast = '';
+      }
       pvHead.style.display = '';
       pvFoot.style.display = '';
       /** @type {HTMLElement} */ (pvHead.querySelector('.t')).textContent = target.title;
@@ -2614,12 +2747,10 @@ export function installLibrary(viewer) {
 
   // --- Event wiring -------------------------------------------------------
 
-  toggleBtn.addEventListener('click', () => {
-    if (visible) hideSurface();
-    else {
-      showSurface();
-      render();
-    }
+  homeTab.addEventListener('click', () => {
+    if (visible) return;
+    showSurface();
+    render();
   });
 
   /** @type {?HTMLElement} */
@@ -2812,13 +2943,6 @@ export function installLibrary(viewer) {
     const tab = viewer._tabs[viewer._activeTab];
     if (tab?.libraryHash) tab.libraryDirty = true;
   };
-  // While the surface is up with a document previewing, the shared top-bar tools act on the pane's embedded viewer instead of the main one.
-  viewer._toolbarRoute = () => {
-    if (!visible || !mountedPane) return null;
-    const pv = mountedPane.viewerRef();
-    return pv && mountedPane.shownHash() ? pv.scribe : null;
-  };
-
   const autosaveTimer = window.setInterval(() => {
     saveTabIfDirty(viewer._tabs[viewer._activeTab]);
   }, AUTOSAVE_INTERVAL_MS);
@@ -2828,9 +2952,26 @@ export function installLibrary(viewer) {
   };
   window.addEventListener('pagehide', onPageHide);
 
+  // While the library has the window, find means its filter field, so this claims the shortcut ahead of the toolbar's find bar.
+  const onFindShortcut = (e) => {
+    if (!visible) return;
+    if (!((e.key === 'f' || e.key === 'F') && (e.ctrlKey || e.metaKey) && !e.altKey)) return;
+    e.preventDefault();
+    e.stopPropagation();
+    searchInput.focus();
+    searchInput.select();
+  };
+  document.addEventListener('keydown', onFindShortcut, true);
+
   viewer._libraryHooks = {
     docOpened: () => {
       if (visible) hideSurface();
+    },
+    emptied: () => {
+      if (!visible) {
+        showSurface();
+        render();
+      }
     },
     saveTabIfDirty,
     saveAllDirty: async () => {
@@ -2866,11 +3007,13 @@ export function installLibrary(viewer) {
       destroyed = true;
       renderPending = false;
       if (dragState) endDrag(false);
+      if (visible) hideSurface();
       closeCardMenu();
       ingest?.cancel();
       resizeObserver.disconnect();
       window.clearInterval(autosaveTimer);
       window.removeEventListener('pagehide', onPageHide);
+      document.removeEventListener('keydown', onFindShortcut, true);
       viewer.pdfViewerElem.removeEventListener('input', onInput, true);
       // Flush, don't drop: a cancelled debounce would lose the last manifest/index update.
       if (manifestTimer !== null) {
@@ -2888,9 +3031,14 @@ export function installLibrary(viewer) {
       if (mountedPane) mountedPane.destroy();
       clearPreviewResources();
       surface.remove();
-      toggleBtn.remove();
+      barTitle?.remove();
+      barControls?.remove();
+      if (viewer._tabStrip) {
+        viewer._tabStrip.setPinnedTab(null);
+        viewer._tabStripMinTabs = 2;
+        viewer._renderTabs();
+      }
       openFolderItem?.remove();
-      viewer._toolbarRoute = null;
       viewer.scribe.onAnnotationsEdited = null;
       viewer._libraryHooks = null;
     },

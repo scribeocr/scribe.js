@@ -206,8 +206,8 @@ export function createPageNav(scribe) {
   };
 }
 
-const ZOOM_OUT_SVG = lineIcon('<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5M8.5 11h5"/>');
-const ZOOM_IN_SVG = lineIcon('<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5M11 8.5v5M8.5 11h5"/>');
+export const ZOOM_OUT_SVG = lineIcon('<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5M8.5 11h5"/>');
+export const ZOOM_IN_SVG = lineIcon('<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5M11 8.5v5M8.5 11h5"/>');
 
 /**
  * Build the zoom-out/zoom-in control group, wired to `scribe.zoom` about the stage center.
@@ -379,7 +379,7 @@ export function createPrintControls(scribe, rootElem) {
       if (scribe.opt.keyboardScope === 'off') return;
       const target = event.target instanceof Node ? event.target : null;
       const insideThis = !!(target && rootElem.contains(target));
-      const isActive = ScribeViewer.getActiveViewer() === (/** @type {any} */ (scribe)._routedTarget || scribe);
+      const isActive = ScribeViewer.getActiveViewer() === scribe;
       const inScope = scribe.opt.keyboardScope === 'global' ? isActive : (insideThis || isActive);
       if (!inScope) return;
       event.preventDefault();
@@ -431,7 +431,7 @@ export function createOpenControls(scribe, rootElem, onFiles) {
       if (scribe.opt.keyboardScope === 'off') return;
       const target = event.target instanceof Node ? event.target : null;
       const insideThis = !!(target && rootElem.contains(target));
-      const isActive = ScribeViewer.getActiveViewer() === (/** @type {any} */ (scribe)._routedTarget || scribe);
+      const isActive = ScribeViewer.getActiveViewer() === scribe;
       const inScope = scribe.opt.keyboardScope === 'global' ? isActive : (insideThis || isActive);
       if (!inScope) return;
       event.preventDefault();
@@ -542,7 +542,8 @@ export function createAppMenu(rootClass) {
  * @param {object} cfg
  * @param {(index: number) => void} cfg.onSelect - Called when a tab is clicked.
  * @param {(index: number) => void} cfg.onClose - Called when a tab's close button is clicked.
- * @returns {{ tabStripElem: HTMLDivElement, render: (tabs: Array<{ name: string, asleep?: boolean, waking?: boolean }>, activeIndex: number) => void }}
+ * @returns {{ tabStripElem: HTMLDivElement, render: (tabs: Array<{ name: string, asleep?: boolean, waking?: boolean }>, activeIndex: number) => void,
+ *   setPinnedTab: (elem: ?HTMLElement) => void, setPinnedActive: (on: boolean) => void }}
  */
 export function createTabStrip({ onSelect, onClose }) {
   const tabStripElem = document.createElement('div');
@@ -590,10 +591,46 @@ export function createTabStrip({ onSelect, onClose }) {
     }
   }, { passive: false });
 
+  /** @type {?HTMLSpanElement} */
+  let pinnedWrap = null;
+
   const syncOverflow = () => {
     tabStripElem.classList.toggle('overflowing', laneElem.scrollWidth > laneElem.clientWidth + 1);
+    // The left fade's CSS offset reads this width, so it starts at the lane instead of under the pinned tab.
+    if (pinnedWrap) tabStripElem.style.setProperty('--scribe-tab-pin-w', `${pinnedWrap.offsetWidth}px`);
   };
   if (typeof ResizeObserver !== 'undefined') new ResizeObserver(syncOverflow).observe(laneElem);
+
+  /**
+   * Mount `elem` as a pinned tab ahead of the scroll lane.
+   * Pass null to unmount it.
+   * @param {?HTMLElement} elem
+   */
+  function setPinnedTab(elem) {
+    if (pinnedWrap) {
+      pinnedWrap.remove();
+      pinnedWrap = null;
+      tabStripElem.style.removeProperty('--scribe-tab-pin-w');
+    }
+    if (!elem) return;
+    pinnedWrap = document.createElement('span');
+    pinnedWrap.className = 'scribe-tab-pin';
+    pinnedWrap.appendChild(elem);
+    const sep = document.createElement('span');
+    sep.className = 'scribe-tab-pin-sep';
+    pinnedWrap.appendChild(sep);
+    tabStripElem.insertBefore(pinnedWrap, tabStripElem.firstChild);
+    syncOverflow();
+  }
+
+  /**
+   * Light the pinned tab as the active one.
+   * While on, the lane's active chip renders inactive, since the pinned tab's surface covers the document.
+   * @param {boolean} on
+   */
+  function setPinnedActive(on) {
+    tabStripElem.classList.toggle('pin-active', on);
+  }
 
   /**
    * Rebuild the chips from the current tab list.
@@ -639,7 +676,9 @@ export function createTabStrip({ onSelect, onClose }) {
     if (activeChip) activeChip.scrollIntoView({ block: 'nearest', inline: 'nearest' });
   }
 
-  return { tabStripElem, render };
+  return {
+    tabStripElem, render, setPinnedTab, setPinnedActive,
+  };
 }
 
 const SEARCH_SVG = lineIcon('<circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/>');
@@ -780,7 +819,7 @@ export function createSearchBar(scribe, rootElem) {
       if (scribe.opt.keyboardScope === 'off') return;
       const target = event.target instanceof Node ? event.target : null;
       const insideThis = !!(target && rootElem.contains(target));
-      const isActive = ScribeViewer.getActiveViewer() === (/** @type {any} */ (scribe)._routedTarget || scribe);
+      const isActive = ScribeViewer.getActiveViewer() === scribe;
       const inScope = scribe.opt.keyboardScope === 'global' ? isActive : (insideThis || isActive);
       if (!inScope) return;
       event.preventDefault();
@@ -1657,7 +1696,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       display: none;
       z-index: 1;
     }
-    .${r} .scribe-tab-fade.left { left: 26px; background: linear-gradient(90deg, var(--scribe-canvas), transparent); }
+    .${r} .scribe-tab-fade.left { left: calc(26px + var(--scribe-tab-pin-w, 0px)); background: linear-gradient(90deg, var(--scribe-canvas), transparent); }
     .${r} .scribe-tab-fade.right { right: 26px; background: linear-gradient(-90deg, var(--scribe-canvas), transparent); }
     .${r} .scribe-tab-strip.overflowing .scribe-tab-fade { display: block; }
 
@@ -1676,6 +1715,24 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
 
     .${r} .scribe-tab.asleep .scribe-tab-name { color: var(--scribe-ink-3); }
+
+    .${r} .scribe-tab-pin { display: flex; align-items: stretch; flex: none; }
+    .${r} .scribe-tab-pin .scribe-tab { min-width: 0; }
+    .${r} .scribe-tab-pin-sep { width: 1px; background: var(--scribe-line-strong); margin: 6px 4px; flex-shrink: 0; }
+    .${r} .scribe-tab-icon { width: 16px; height: 16px; flex-shrink: 0; display: inline-flex; }
+    .${r} .scribe-tab-icon svg { width: 100%; height: 100%; display: block; }
+    .${r} .scribe-tab-strip.pin-active .scribe-tab-pin .scribe-tab {
+      background: var(--scribe-surface);
+      color: var(--scribe-accent);
+      border-bottom-color: var(--scribe-accent);
+    }
+    .${r} .scribe-tab-strip.pin-active .scribe-tab-pin .scribe-tab-name { text-shadow: 0 0 .4px currentColor; }
+    .${r} .scribe-tab-strip.pin-active .scribe-tab-lane .scribe-tab.active {
+      background: none;
+      color: var(--scribe-ink-2);
+      border-bottom-color: transparent;
+    }
+    .${r} .scribe-tab-strip.pin-active .scribe-tab-lane .scribe-tab.active .scribe-tab-name { text-shadow: none; }
 
     .${r} .scribe-tab-spin {
       flex: none;
