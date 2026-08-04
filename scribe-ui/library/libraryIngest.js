@@ -40,9 +40,14 @@ export class LibraryIngest {
   async scan() {
     const seen = new Set();
     const dirs = [];
+    const others = [];
     for await (const f of this.store.listFiles()) {
       if (f.kind === 'dir') {
         dirs.push(f.relPath);
+        continue;
+      }
+      if (f.kind === 'other') {
+        others.push(f.relPath);
         continue;
       }
       seen.add(f.relPath);
@@ -75,6 +80,7 @@ export class LibraryIngest {
       if (!seen.has(relPath) && entry.status !== 'missing') entry.status = 'missing';
     }
     this.manifest.dirs = dirs.sort();
+    this.manifest.others = others.sort();
     await this.store.writeManifest(this.manifest);
   }
 

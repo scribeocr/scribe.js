@@ -33,13 +33,9 @@ export function findText(viewer, text) {
   const _viewer = viewer || ScribeViewer.getDefault();
   const s = _viewer._searchState;
   s.search = text.trim();
-  if (s.search) {
-    s.matchList = scribe.utils.ocr.getDocMatches(s.search, _viewer.doc.ocr.active);
-    s.activeMatch = s.matchList.length ? 0 : -1;
-  } else {
-    s.matchList = [];
-    s.activeMatch = -1;
-  }
+  s.matchList = s.search ? scribe.utils.ocr.getDocMatches(s.search, _viewer.doc.ocr.active) : [];
+  // Selecting a match belongs to goToMatch, so a recompute can refresh highlights without adopting one.
+  s.activeMatch = -1;
   applyHighlights(_viewer);
 }
 
@@ -115,7 +111,9 @@ export function nextMatch(viewer) {
  */
 export function prevMatch(viewer) {
   const _viewer = viewer || ScribeViewer.getDefault();
-  return goToMatch(_viewer, _viewer._searchState.activeMatch - 1);
+  const i = _viewer._searchState.activeMatch;
+  // With no match active yet, "previous" is the last match, which index -1 wraps to.
+  return goToMatch(_viewer, i < 0 ? -1 : i - 1);
 }
 
 /**

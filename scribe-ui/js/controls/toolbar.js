@@ -693,7 +693,7 @@ const CLOSE_SVG = lineIcon('<path d="M6 6l12 12M18 6L6 18"/>');
  * @returns {{
  *   searchElem: HTMLSpanElement, findGroupElem: HTMLSpanElement,
  *   searchInputElem: HTMLInputElement, searchCounterElem: HTMLSpanElement,
- *   openSearch: () => void, closeSearch: () => void, runSearch: (q: string, targetPageN?: number) => Promise<void>,
+ *   openSearch: () => void, closeSearch: () => void, runSearch: (q: string, targetPageN?: number, navigate?: boolean) => Promise<void>,
  *   updateSearchCounter: () => void, resetSearch: () => void,
  *   installFindShortcut: () => (() => void)
  * }}
@@ -736,8 +736,9 @@ export function createSearchBar(scribe, rootElem) {
    * @param {string} query
    * @param {number} [targetPageN] - Land on this page's first match instead of the document's
    *   first, so a search primed from a known hit page doesn't yank the reader elsewhere.
+   * @param {boolean} [navigate] - Pass false to refresh the matches and highlights without moving the view.
    */
-  async function runSearch(query, targetPageN) {
+  async function runSearch(query, targetPageN, navigate = true) {
     const doc = scribe.doc;
     if (!doc || doc.pageMetrics.length === 0) return;
     // Deferred-import text may still be extracting, so searching now would falsely report "No results".
@@ -749,6 +750,7 @@ export function createSearchBar(scribe, rootElem) {
     scribe.state.searchMode = true;
     findText(scribe, query);
     updateSearchCounter();
+    if (!navigate) return;
     const { matchList } = scribe._searchState;
     if (matchList.length) {
       const onTarget = targetPageN != null ? matchList.findIndex((m) => m.pageN === targetPageN) : -1;
@@ -764,7 +766,8 @@ export function createSearchBar(scribe, rootElem) {
     scribe.state.searchMode = true;
     searchInputElem.focus();
     searchInputElem.select();
-    if (searchInputElem.value.trim()) runSearch(searchInputElem.value);
+    // A retained query gets its highlights back, but the view must not move until the user types or steps through matches.
+    if (searchInputElem.value.trim()) runSearch(searchInputElem.value, undefined, false);
   }
 
   function closeSearch() {

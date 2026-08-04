@@ -16,6 +16,8 @@ import { LibraryIngest } from './libraryIngest.js';
 const LIBRARY_SVG = '<svg viewBox="0 0 24 24" fill="currentColor" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><rect x="3" y="3.5" width="3.8" height="17" rx="0.9"/><rect x="8.8" y="3.5" width="3.8" height="17" rx="0.9"/><path d="M13.7 3.9 17.4 3.1 20.9 19.7 17.2 20.5Z"/></svg>';
 // eslint-disable-next-line max-len
 const FOLDER_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M3.5 6.5a1.5 1.5 0 0 1 1.5-1.5h4l2 2.5h8a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5z"/></svg>';
+// eslint-disable-next-line max-len
+const FILE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%;" aria-hidden="true"><path d="M6.5 3.5h7l5 5v11a1 1 0 0 1-1 1h-11a1 1 0 0 1-1-1v-15a1 1 0 0 1 1-1z"/><path d="M13.5 3.5v5h5"/></svg>';
 
 // eslint-disable-next-line max-len
 const FIELD_SEARCH_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>';
@@ -65,6 +67,7 @@ const MUTATOR_METHODS = [
 
 const PREVIEW_STORAGE_KEY = 'scribe-library-preview';
 const VIEW_STORAGE_KEY = 'scribe-library-view';
+const OTHERS_STORAGE_KEY = 'scribe-library-others';
 
 const SORT_DEFAULT_DIR = {
   name: 1, added: -1, opened: -1, pages: 1, custom: 1,
@@ -86,9 +89,13 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-header h2 { font-size: 14px; font-weight: 600; margin: 0; }
 .scribe-pdf-viewer .scribe-library-bar-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
 .scribe-pdf-viewer .scribe-library-bar-controls { display: flex; align-items: center; gap: 8px; min-width: 0; }
-.scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field { width: 196px; flex: 0 1 auto; min-width: 106px; }
+/* Only the field yields under bar pressure, so the rungs below decide what else goes. */
+.scribe-pdf-viewer .scribe-library-bar-controls > * { flex-shrink: 0; }
+.scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field { flex: 0 1 196px; min-width: 106px; }
+/* A grown flex-basis alone is invisible to the content-sized zone, which sizes the field to its own max-content, so the focus growth comes from a definite input width. */
+.scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field:focus-within { flex: 1 1 320px; max-width: 320px; }
 .scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-search { width: 100%; min-width: 0; flex: 1; }
-.scribe-pdf-viewer .scribe-library-count { color: var(--scribe-ink-3); font-size: 13px; }
+.scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field:focus-within .scribe-library-search { width: 290px; }
 .scribe-pdf-viewer .scribe-library-field { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; margin-left: auto; background: var(--scribe-sunken); border: 1px solid var(--scribe-line-strong); border-radius: 5px; box-sizing: border-box; }
 .scribe-pdf-viewer .scribe-library-field:focus-within { border-color: var(--scribe-accent); }
 .scribe-pdf-viewer .scribe-library-field > svg { width: 15px; height: 15px; color: var(--scribe-ink-3); flex-shrink: 0; }
@@ -97,6 +104,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-hint { display: none; font-size: 11.5px; color: var(--scribe-ink-3); white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-field:focus-within .scribe-library-hint { display: inline; }
 .scribe-pdf-viewer .scribe-library-hint kbd { font-family: inherit; border: 1px solid var(--scribe-line-strong); border-bottom-width: 2px; border-radius: 4px; padding: 0 4px; font-size: 10.5px; color: var(--scribe-ink-2); background: var(--scribe-surface); }
+.scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field.hint-tight .scribe-library-hint { display: none; }
 .scribe-pdf-viewer .scribe-library-clear { display: none; width: 17px; height: 17px; padding: 2px; border: none; background: none; color: var(--scribe-ink-3); cursor: pointer; border-radius: 4px; }
 .scribe-pdf-viewer .scribe-library-field.has-text .scribe-library-clear { display: block; }
 .scribe-pdf-viewer .scribe-library-clear:hover { color: var(--scribe-ink); background: var(--scribe-hover); }
@@ -120,6 +128,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-menu-item:hover { background: var(--scribe-hover); }
 .scribe-pdf-viewer .scribe-library-menu-item svg { width: 15px; height: 15px; color: var(--scribe-accent); visibility: hidden; flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-menu-item.on svg { visibility: visible; }
+.scribe-pdf-viewer .scribe-library-menu-sep { height: 1px; background: var(--scribe-line); margin: 4px 6px; }
 .scribe-pdf-viewer .scribe-library-seg { display: inline-flex; height: 28px; border: 1px solid var(--scribe-line-strong); border-radius: 7px; overflow: hidden; background: var(--scribe-sunken); }
 .scribe-pdf-viewer .scribe-library-seg button { width: 32px; border: none; background: none; color: var(--scribe-ink-3); padding: 5px 0; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
 .scribe-pdf-viewer .scribe-library-seg button svg { width: 16px; height: 16px; }
@@ -244,13 +253,45 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-crumb.drop { background: color-mix(in srgb, var(--scribe-accent) 16%, var(--scribe-surface)); box-shadow: inset 0 0 0 1.5px var(--scribe-accent); color: var(--scribe-ink); }
 .scribe-pdf-viewer .scribe-library-crumbs .sep { color: var(--scribe-ink-3); font-weight: 400; padding: 0 2px; }
 .scribe-pdf-viewer .scribe-library-crumbs .cur { overflow: hidden; text-overflow: ellipsis; }
-.scribe-pdf-viewer .scribe-library-card.folder .fthumb { aspect-ratio: 3 / 4; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--scribe-ink) 5%, var(--scribe-canvas)); color: var(--scribe-ink-2); }
-.scribe-pdf-viewer .scribe-library-card.folder .fthumb .fi { width: 46px; height: 46px; }
+.scribe-pdf-viewer .scribe-library-card.folder .fstrip { display: flex; gap: 6px; padding: 10px; background: color-mix(in srgb, var(--scribe-ink) 5%, var(--scribe-canvas)); position: relative; }
+.scribe-pdf-viewer .scribe-library-card.folder .fstrip img { width: 52px; height: 69px; object-fit: cover; object-position: top; background: #fff; border: 1px solid var(--scribe-line-strong); box-sizing: border-box; display: block; }
+.scribe-pdf-viewer .scribe-library-card.folder .fstrip .empty { height: 69px; display: flex; align-items: center; color: var(--scribe-ink-3); }
+.scribe-pdf-viewer .scribe-library-card.folder .fstrip .empty .fi { width: 26px; height: 26px; }
+.scribe-pdf-viewer .scribe-library-card.folder.drop .fstrip::after { content: ''; position: absolute; inset: 0; background: color-mix(in srgb, var(--scribe-accent) 26%, transparent); pointer-events: none; }
+.scribe-pdf-viewer .scribe-library-card.folder .title .fi { display: inline-block; width: 15px; height: 15px; vertical-align: -3px; margin-right: 5px; color: var(--scribe-ink-2); }
+.scribe-pdf-viewer .scribe-library-card.folder .meta.hasatt { opacity: 1; color: var(--scribe-ink-3); }
+.scribe-pdf-viewer .scribe-library-card.folder .meta .att, .scribe-pdf-viewer .scribe-library-row.folder .att { color: var(--scribe-ink-2); font-weight: 600; }
+.scribe-pdf-viewer .scribe-library-card.folder .meta .att.bad, .scribe-pdf-viewer .scribe-library-row.folder .att.bad { color: var(--scribe-danger); }
+.scribe-pdf-viewer .scribe-library-row.folder .roll { color: var(--scribe-ink-3); font-variant-numeric: tabular-nums; font-size: 12.5px; }
+.scribe-pdf-viewer .scribe-library-row.folder .roll.pg { font-size: 13px; }
+.scribe-pdf-viewer .scribe-library-row.folder .cnt { display: inline-flex; align-items: baseline; gap: 5px; color: var(--scribe-ink-3); font-size: 12.5px; flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-row .fi { width: 18px; height: 18px; color: var(--scribe-ink-2); flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-row.cf .fthumb { width: 40px; height: 52px; display: flex; align-items: center; justify-content: center; color: var(--scribe-ink-2); flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-row.cf .fthumb .fi { width: 26px; height: 26px; }
 .scribe-pdf-viewer .scribe-library-card.folder.drop { background: color-mix(in srgb, var(--scribe-accent) 14%, var(--scribe-surface)); border-color: var(--scribe-accent); box-shadow: inset 0 0 0 1px var(--scribe-accent); }
 .scribe-pdf-viewer .scribe-library-row.folder.drop { background: color-mix(in srgb, var(--scribe-accent) 14%, var(--scribe-surface)); box-shadow: inset 0 0 0 2px var(--scribe-accent); }
+.scribe-pdf-viewer .scribe-library-card.other { cursor: default; opacity: .55; }
+.scribe-pdf-viewer .scribe-library-card.other:hover { border-color: color-mix(in srgb, var(--scribe-ink) 14%, transparent); }
+.scribe-pdf-viewer .scribe-library-card.other .fthumb { aspect-ratio: 3 / 4; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--scribe-ink) 5%, var(--scribe-canvas)); color: var(--scribe-ink-3); }
+.scribe-pdf-viewer .scribe-library-card.other .fthumb .fi { width: 46px; height: 46px; }
+.scribe-pdf-viewer .scribe-library-row.other { cursor: default; opacity: .55; }
+.scribe-pdf-viewer .scribe-library-row.other:hover { background: none; }
+/* Keep these rungs last in the stylesheet, since a base rule declared later out-cascades one at equal specificity. */
+.scribe-pdf-viewer .scribe-library-bar { container: scribe-bar / inline-size; }
+@container scribe-bar (max-width: 820px) {
+  .scribe-pdf-viewer .scribe-library-sort-lbl { display: none; }
+}
+@container scribe-bar (max-width: 730px) {
+  .scribe-pdf-viewer .scribe-library-add-lbl { display: none; }
+}
+@container scribe-bar (max-width: 560px) {
+  .scribe-pdf-viewer .scribe-library-bar-controls { gap: 5px; }
+  .scribe-pdf-viewer .scribe-library-bar-controls .vertical-separator { display: none; }
+  .scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field { min-width: 84px; }
+  .scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-field > svg { display: none; }
+  .scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-seg button { width: 26px; }
+  .scribe-pdf-viewer .scribe-library-bar-controls .scribe-library-hbtn { padding: 0 7px; }
+}
 `;
   document.head.appendChild(style);
 };
@@ -280,6 +321,11 @@ export function installLibrary(viewer) {
   try {
     const storedView = window.localStorage.getItem(VIEW_STORAGE_KEY);
     if (storedView === 'list' || storedView === 'compact') viewMode = storedView;
+  } catch { /* localStorage unavailable. */ }
+  /** Whether the browse views also list the folder's non-PDF files. */
+  let showOthers = false;
+  try {
+    showOthers = window.localStorage.getItem(OTHERS_STORAGE_KEY) === '1';
   } catch { /* localStorage unavailable. */ }
   let filterText = '';
   /** Directory shown while browsing, relative to the library root; '' is the root itself. */
@@ -333,9 +379,6 @@ export function installLibrary(viewer) {
   crumbsElem.className = 'scribe-library-crumbs';
   crumbsElem.textContent = 'Library';
   header.appendChild(crumbsElem);
-  const countElem = document.createElement('span');
-  countElem.className = 'scribe-library-count';
-  header.appendChild(countElem);
 
   const searchField = document.createElement('span');
   searchField.className = 'scribe-library-field';
@@ -356,6 +399,11 @@ export function installLibrary(viewer) {
   clearBtn.innerHTML = FIELD_CLEAR_SVG;
   searchField.appendChild(clearBtn);
   header.appendChild(searchField);
+  // A container query here would zero the field's contribution to the content-sized bar zone and pin it at its minimum width, so the signal comes from a resize observer.
+  const hintObserver = new ResizeObserver((entries) => {
+    searchField.classList.toggle('hint-tight', entries[0].contentRect.width < 250);
+  });
+  hintObserver.observe(searchField);
 
   const viewSeg = document.createElement('span');
   viewSeg.className = 'scribe-library-seg';
@@ -387,6 +435,7 @@ export function installLibrary(viewer) {
     + '<span class="ghost" aria-hidden="true">Name</span><span class="ghost" aria-hidden="true">Date added</span>'
     + '<span class="ghost" aria-hidden="true">Last opened</span><span class="ghost" aria-hidden="true">Pages</span>'
     + `<span class="ghost" aria-hidden="true">Custom</span></span>${CHEVRON_SVG}`;
+  sortBtn.title = 'Sort';
   sortBtn.setAttribute('aria-label', 'Sort');
   sortBtn.setAttribute('aria-haspopup', 'menu');
   const sortLabelElem = /** @type {HTMLElement} */ (sortBtn.querySelector('.cur'));
@@ -405,6 +454,14 @@ export function installLibrary(viewer) {
     sortMenu.appendChild(item);
     sortItems.push(item);
   }
+  const sortMenuSep = document.createElement('div');
+  sortMenuSep.className = 'scribe-library-menu-sep';
+  sortMenu.appendChild(sortMenuSep);
+  const othersItem = document.createElement('div');
+  othersItem.className = 'scribe-library-menu-item';
+  othersItem.setAttribute('role', 'menuitemcheckbox');
+  othersItem.innerHTML = `${MENU_CHECK_SVG}Show other files`;
+  sortMenu.appendChild(othersItem);
   sortWrap.appendChild(sortBtn);
   sortWrap.appendChild(sortMenu);
   header.appendChild(sortWrap);
@@ -422,7 +479,10 @@ export function installLibrary(viewer) {
 
   const addBtn = document.createElement('button');
   addBtn.className = 'scribe-library-hbtn';
-  addBtn.innerHTML = `${PLUS_SVG}Add PDFs`;
+  // The label is a span so the bar's shed rules can hide it on a tight bar.
+  addBtn.innerHTML = `${PLUS_SVG}<span class="scribe-library-add-lbl">Add PDFs</span>`;
+  addBtn.title = 'Add PDFs';
+  addBtn.setAttribute('aria-label', 'Add PDFs');
   header.appendChild(addBtn);
 
   const refreshBtn = document.createElement('button');
@@ -464,7 +524,6 @@ export function installLibrary(viewer) {
     barSep.className = 'vertical-separator';
     barTitle.appendChild(barSep);
     barTitle.appendChild(crumbsElem);
-    barTitle.appendChild(countElem);
     // Placed after the app menu so the zone's last child stays visible, which is what the bar's overflow measurement reads.
     viewer.toolbarElemStart.insertBefore(barTitle, viewer._appMenu ? viewer._appMenu.menuWrap.nextSibling : viewer.toolbarElemStart.firstChild);
     barControls = document.createElement('span');
@@ -501,6 +560,7 @@ export function installLibrary(viewer) {
   /** @type {Array<{el: HTMLElement, display: string}>} */
   let hiddenBarElems = [];
   let barSwapped = false;
+  let priorEndZoneFlex = '';
 
   /** Replace the toolbar's document controls with the library's own fragments, leaving the app menu in place. */
   const swapBarIn = () => {
@@ -519,6 +579,11 @@ export function installLibrary(viewer) {
     }
     barTitle.style.display = '';
     barControls.style.display = '';
+    // The stock end zone takes half the bar and never shrinks below its content, so a tight bar pushes the library's controls off the edge.
+    priorEndZoneFlex = viewer.toolbarElemEnd.style.flex;
+    viewer.toolbarElemEnd.style.flex = '0 1 auto';
+    viewer.toolbarElemEnd.style.minWidth = '0';
+    viewer.toolbarElem?.classList.add('scribe-library-bar');
   };
   const swapBarOut = () => {
     if (!barSwapped) return;
@@ -527,6 +592,9 @@ export function installLibrary(viewer) {
     /** @type {HTMLElement} */ (barControls).style.display = 'none';
     for (const { el, display } of hiddenBarElems) el.style.display = display;
     hiddenBarElems = [];
+    viewer.toolbarElemEnd.style.flex = priorEndZoneFlex;
+    viewer.toolbarElemEnd.style.minWidth = '';
+    viewer.toolbarElem?.classList.remove('scribe-library-bar');
     // A resize while the bar was swapped measured hidden controls, so re-shed against the restored bar.
     viewer._syncModeOverflow?.();
   };
@@ -684,7 +752,6 @@ export function installLibrary(viewer) {
       }
       card.appendChild(connectBtn);
       body.appendChild(card);
-      countElem.textContent = '';
       return;
     }
 
@@ -698,8 +765,6 @@ export function installLibrary(viewer) {
     for (const p of selectedPaths) {
       if (!manifest.docs[p] && !(p.endsWith('/') && dirSet.has(p.slice(0, -1)))) selectedPaths.delete(p);
     }
-    countElem.textContent = `${entries.length} document${entries.length === 1 ? '' : 's'}`;
-    countElem.title = `Folder: ${store.root.name}`;
 
     if (fullTextResults) {
       renderResults();
@@ -728,8 +793,13 @@ export function installLibrary(viewer) {
       const cut = dir.lastIndexOf('/');
       return (cut < 0 ? '' : dir.slice(0, cut)) === currentDir;
     }).sort((a, b) => a.localeCompare(b) * (sortMode === 'name' ? sortDir : 1));
+    const shownOthers = !showOthers ? [] : (manifest.others ?? []).filter((p) => {
+      if (filter) return p.toLowerCase().includes(filter);
+      const cut = p.lastIndexOf('/');
+      return (cut < 0 ? '' : p.slice(0, cut)) === currentDir;
+    }).sort((a, b) => (a.split('/').pop() || a).localeCompare(b.split('/').pop() || b));
 
-    if (!entries.length && !dirSet.size) {
+    if (!entries.length && !dirSet.size && !shownOthers.length) {
       const empty = document.createElement('div');
       empty.className = 'scribe-library-empty';
       empty.textContent = 'No PDFs in this folder yet. Drop files here or use “Add PDFs”.';
@@ -740,13 +810,13 @@ export function installLibrary(viewer) {
     if (viewMode === 'list' || viewMode === 'compact') {
       mainGridElem = null;
       gridPaths = [];
-      const host = renderList(shownDirs, shown);
-      if (!shown.length && filter) {
+      const host = renderList(shownDirs, shown, shownOthers);
+      if (!shown.length && !shownOthers.length && filter) {
         const empty = document.createElement('div');
         empty.className = 'scribe-library-empty';
         empty.textContent = 'No names match. Press Enter to search inside the documents.';
         host.appendChild(empty);
-      } else if (currentDir && !shownDirs.length && !shown.length) {
+      } else if (currentDir && !shownDirs.length && !shown.length && !shownOthers.length) {
         const empty = document.createElement('div');
         empty.className = 'scribe-library-empty';
         empty.textContent = 'This folder is empty.';
@@ -767,29 +837,58 @@ export function installLibrary(viewer) {
       grid.className = 'scribe-library-grid';
       for (const [relPath, entry] of recent) grid.appendChild(buildCard(relPath, entry, false));
       body.appendChild(grid);
-      const allLabel = document.createElement('div');
-      allLabel.className = 'scribe-library-section-label';
-      allLabel.textContent = 'All documents';
-      body.appendChild(allLabel);
+      // With folders present, the branch below labels the document grid itself.
+      if (!shownDirs.length) {
+        const allLabel = document.createElement('div');
+        allLabel.className = 'scribe-library-section-label';
+        allLabel.textContent = 'All documents';
+        body.appendChild(allLabel);
+      }
     }
 
+    if (shownDirs.length) {
+      const dirLabel = document.createElement('div');
+      dirLabel.className = 'scribe-library-section-label';
+      dirLabel.textContent = `Folders · ${shownDirs.length}`;
+      body.appendChild(dirLabel);
+      const dirGrid = document.createElement('div');
+      dirGrid.className = 'scribe-library-grid folders';
+      for (const dir of shownDirs) dirGrid.appendChild(buildFolderCard(dir));
+      body.appendChild(dirGrid);
+      if (shown.length) {
+        const docLabel = document.createElement('div');
+        docLabel.className = 'scribe-library-section-label';
+        docLabel.textContent = `Documents · ${shown.length}`;
+        body.appendChild(docLabel);
+      }
+    }
     const grid = document.createElement('div');
     grid.className = 'scribe-library-grid main';
-    for (const dir of shownDirs) grid.appendChild(buildFolderCard(dir));
     for (const [relPath, entry] of shown) grid.appendChild(buildCard(relPath, entry, !filter));
     body.appendChild(grid);
     mainGridElem = grid;
     gridPaths = shown.map(([p]) => p);
-    if (!shown.length && filter) {
+    if (!shown.length && !shownOthers.length && filter) {
       const empty = document.createElement('div');
       empty.className = 'scribe-library-empty';
       empty.textContent = 'No names match. Press Enter to search inside the documents.';
       body.appendChild(empty);
-    } else if (currentDir && !shownDirs.length && !shown.length) {
+    } else if (currentDir && !shownDirs.length && !shown.length && !shownOthers.length) {
       const empty = document.createElement('div');
       empty.className = 'scribe-library-empty';
       empty.textContent = 'This folder is empty.';
       body.appendChild(empty);
+    }
+    if (shownOthers.length) {
+      // The main grid's drag-reorder math indexes its children against gridPaths, so these cards need a grid of their own.
+      const otherLabel = document.createElement('div');
+      otherLabel.className = 'scribe-library-section-label';
+      otherLabel.textContent = 'Other files';
+      body.appendChild(otherLabel);
+      const otherGrid = document.createElement('div');
+      otherGrid.className = 'scribe-library-grid';
+      for (const relPath of shownOthers) otherGrid.appendChild(buildOtherCard(relPath));
+      body.appendChild(otherGrid);
     }
   };
 
@@ -1053,7 +1152,12 @@ export function installLibrary(viewer) {
         return;
       }
       if (Date.now() < suppressClickUntil) return;
-      const paths = [...(card.parentElement?.querySelectorAll(':scope > .scribe-library-card') ?? [])]
+      // The Recent strip repeats documents from the grid below it, so a range spanning both would run over duplicate paths.
+      const inBands = !!card.parentElement
+        && (card.parentElement.classList.contains('folders') || card.parentElement.classList.contains('main'));
+      const paths = (inBands
+        ? [...body.querySelectorAll('.scribe-library-grid.folders > .scribe-library-card, .scribe-library-grid.main > .scribe-library-card')]
+        : [...(card.parentElement?.querySelectorAll(':scope > .scribe-library-card') ?? [])])
         .map((el) => /** @type {HTMLElement} */ (el).dataset.relPath ?? '');
       applyClickSelection(e, relPath, paths);
     });
@@ -1075,6 +1179,85 @@ export function installLibrary(viewer) {
   };
 
   /**
+   * Counts, aggregates, ingest-state tallies, and cover entries over a folder's direct children.
+   * @param {string} dirPath
+   */
+  const dirStatsOf = (dirPath) => {
+    const stats = {
+      docs: 0,
+      subdirs: 0,
+      pages: 0,
+      added: 0,
+      lastOpened: 0,
+      failed: 0,
+      missing: 0,
+      queued: 0,
+      changed: 0,
+      scanned: 0,
+      /** @type {import('./libraryStore.js').LibraryDocEntry[]} */
+      covers: [],
+    };
+    if (!manifest) return stats;
+    /** @type {Array<[string, import('./libraryStore.js').LibraryDocEntry]>} */
+    const children = [];
+    for (const [p, entry] of Object.entries(manifest.docs)) {
+      const cut = p.lastIndexOf('/');
+      if ((cut < 0 ? '' : p.slice(0, cut)) !== dirPath) continue;
+      children.push([p, entry]);
+      stats.docs++;
+      stats.pages += entry.pageCount || 0;
+      if (entry.added > stats.added) stats.added = entry.added;
+      if (entry.lastOpened > stats.lastOpened) stats.lastOpened = entry.lastOpened;
+      // Same ladder as the card badges, so a queued scan counts as queued rather than scanned.
+      if (entry.status === 'missing') stats.missing++;
+      else if (entry.status === 'changed') stats.changed++;
+      else if (entry.status === 'error') stats.failed++;
+      else if (entry.status === 'pending') stats.queued++;
+      else if (entry.requiresOCR) stats.scanned++;
+    }
+    for (const dir of manifest.dirs ?? []) {
+      const cut = dir.lastIndexOf('/');
+      if ((cut < 0 ? '' : dir.slice(0, cut)) === dirPath) stats.subdirs++;
+    }
+    // Name order keeps the strip from reshuffling whenever the sort mode changes.
+    children.sort(([a], [b]) => titleOf(a).localeCompare(titleOf(b)));
+    stats.covers = children.slice(0, 3).map(([, entry]) => entry);
+    return stats;
+  };
+
+  /**
+   * Fill `host` with a folder's summary line.
+   * @param {HTMLElement} host
+   * @param {ReturnType<typeof dirStatsOf>} stats
+   */
+  const fillFolderSummary = (host, stats) => {
+    const parts = [];
+    if (stats.docs) parts.push(`${stats.docs} document${stats.docs === 1 ? '' : 's'}`);
+    if (stats.subdirs) parts.push(`${stats.subdirs} folder${stats.subdirs === 1 ? '' : 's'}`);
+    const base = document.createElement('span');
+    base.textContent = parts.length ? parts.join(' · ') : 'Empty';
+    host.appendChild(base);
+    const danger = [];
+    if (stats.failed) danger.push(`${stats.failed} failed`);
+    if (stats.missing) danger.push(`${stats.missing} missing`);
+    const soft = [];
+    if (stats.queued) soft.push(`${stats.queued} queued`);
+    if (stats.changed) soft.push(`${stats.changed} changed`);
+    if (stats.scanned) soft.push(`${stats.scanned} need${stats.scanned === 1 ? 's' : ''} text recognition`);
+    for (const [text, bad] of [[danger.join(' · '), true], [soft.join(' · '), false]]) {
+      if (!text) continue;
+      const sep = document.createElement('span');
+      sep.textContent = '·';
+      host.appendChild(sep);
+      const att = document.createElement('span');
+      att.className = bad ? 'att bad' : 'att';
+      att.textContent = /** @type {string} */ (text);
+      host.appendChild(att);
+    }
+    if (danger.length || soft.length) host.classList.add('hasatt');
+  };
+
+  /**
    * A subdirectory as a grid card.
    * Folders are keyed in the selection set as `path/`, so the trailing slash keeps them apart from document paths.
    * @param {string} dirPath
@@ -1087,23 +1270,33 @@ export function installLibrary(viewer) {
     card.dataset.dirTarget = dirPath;
     if (selectedPaths.has(`${dirPath}/`)) card.classList.add('selected');
 
-    const icon = document.createElement('div');
-    icon.className = 'fthumb';
-    icon.innerHTML = `<span class="fi">${FOLDER_SVG}</span>`;
-    card.appendChild(icon);
+    const stats = dirStatsOf(dirPath);
+    const strip = document.createElement('div');
+    strip.className = 'fstrip';
+    if (stats.covers.length) {
+      for (const entry of stats.covers) {
+        const img = document.createElement('img');
+        img.alt = '';
+        img.draggable = false;
+        setThumbSrc(img, entry);
+        strip.appendChild(img);
+      }
+    } else {
+      strip.innerHTML = `<span class="empty"><span class="fi">${FOLDER_SVG}</span></span>`;
+    }
+    card.appendChild(strip);
 
     const cardBody = document.createElement('div');
     cardBody.className = 'body';
     const title = document.createElement('div');
     title.className = 'title';
-    title.textContent = dirPath.split('/').pop() || dirPath;
+    title.innerHTML = `<span class="fi">${FOLDER_SVG}</span>`;
+    title.appendChild(document.createTextNode(dirPath.split('/').pop() || dirPath));
     title.title = dirPath;
     cardBody.appendChild(title);
     const meta = document.createElement('div');
     meta.className = 'meta';
-    let n = 0;
-    if (manifest) for (const p of Object.keys(manifest.docs)) if (p.startsWith(`${dirPath}/`)) n++;
-    meta.textContent = n ? `${n} document${n === 1 ? '' : 's'}` : 'Empty';
+    fillFolderSummary(meta, stats);
     cardBody.appendChild(meta);
     card.appendChild(cardBody);
 
@@ -1117,7 +1310,7 @@ export function installLibrary(viewer) {
         return;
       }
       if (Date.now() < suppressClickUntil) return;
-      const paths = [...(card.parentElement?.querySelectorAll(':scope > .scribe-library-card') ?? [])]
+      const paths = [...body.querySelectorAll('.scribe-library-grid.folders > .scribe-library-card, .scribe-library-grid.main > .scribe-library-card')]
         .map((el) => /** @type {HTMLElement} */ (el).dataset.relPath ?? '');
       applyClickSelection(e, `${dirPath}/`, paths);
     });
@@ -1133,6 +1326,39 @@ export function installLibrary(viewer) {
       if (dragState) return;
       openCardMenu(e.clientX, e.clientY, `${dirPath}/`, card);
     });
+    return card;
+  };
+
+  /**
+   * A non-PDF file as an inert grid card.
+   * @param {string} relPath
+   */
+  const buildOtherCard = (relPath) => {
+    const name = relPath.split('/').pop() || relPath;
+    const card = document.createElement('div');
+    card.className = 'scribe-library-card other';
+    card.title = 'Not a PDF — Scribe can’t open it';
+
+    const icon = document.createElement('div');
+    icon.className = 'fthumb';
+    icon.innerHTML = `<span class="fi">${FILE_SVG}</span>`;
+    card.appendChild(icon);
+
+    const cardBody = document.createElement('div');
+    cardBody.className = 'body';
+    const title = document.createElement('div');
+    title.className = 'title';
+    title.textContent = name;
+    cardBody.appendChild(title);
+    const meta = document.createElement('div');
+    meta.className = 'meta';
+    const extBadge = document.createElement('span');
+    extBadge.className = 'scribe-library-badge';
+    const dot = name.lastIndexOf('.');
+    extBadge.textContent = dot > 0 ? name.slice(dot + 1).toUpperCase() : 'FILE';
+    meta.appendChild(extBadge);
+    cardBody.appendChild(meta);
+    card.appendChild(cardBody);
     return card;
   };
 
@@ -1247,7 +1473,7 @@ export function installLibrary(viewer) {
   };
 
   /**
-   * A subdirectory as a list row: folder icon and name, then blank data cells.
+   * A subdirectory as a list row.
    * @param {string} dirPath
    */
   const buildFolderRow = (dirPath) => {
@@ -1258,6 +1484,7 @@ export function installLibrary(viewer) {
     row.dataset.relPath = `${dirPath}/`;
     row.dataset.dirTarget = dirPath;
     if (selectedPaths.has(`${dirPath}/`)) row.classList.add('selected');
+    const stats = dirStatsOf(dirPath);
 
     const nm = document.createElement('span');
     nm.className = 'nm';
@@ -1273,13 +1500,43 @@ export function installLibrary(viewer) {
       const stack = document.createElement('span');
       stack.className = 'tt';
       stack.appendChild(title);
+      const meta = document.createElement('span');
+      meta.className = 'm2';
+      fillFolderSummary(meta, stats);
+      stack.appendChild(meta);
       nm.appendChild(stack);
     } else {
       nm.insertAdjacentHTML('beforeend', `<span class="fi">${FOLDER_SVG}</span>`);
       nm.appendChild(title);
+      const cnt = document.createElement('span');
+      cnt.className = 'cnt';
+      fillFolderSummary(cnt, stats);
+      nm.appendChild(cnt);
     }
     row.appendChild(nm);
-    for (let i = 0; i < (comfortable ? 3 : 4); i++) row.appendChild(document.createElement('span'));
+
+    /** @param {number} t */
+    const fmtDate = (t) => (t > 0
+      ? new Date(t).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })
+      : '—');
+    const pagesCell = document.createElement('span');
+    pagesCell.className = stats.pages ? 'roll pg' : 'none';
+    pagesCell.textContent = stats.pages ? String(stats.pages) : '—';
+    row.appendChild(pagesCell);
+    const addedCell = document.createElement('span');
+    addedCell.className = stats.added > 0 ? 'roll' : 'none';
+    addedCell.textContent = fmtDate(stats.added);
+    row.appendChild(addedCell);
+    const openedCell = document.createElement('span');
+    openedCell.className = stats.lastOpened > 0 ? 'roll' : 'none';
+    openedCell.textContent = fmtDate(stats.lastOpened);
+    row.appendChild(openedCell);
+    if (!comfortable) {
+      const statusCell = document.createElement('span');
+      statusCell.className = 'none';
+      statusCell.textContent = '—';
+      row.appendChild(statusCell);
+    }
 
     const open = () => {
       if (Date.now() < suppressClickUntil) return;
@@ -1311,12 +1568,61 @@ export function installLibrary(viewer) {
   };
 
   /**
-   * The list views: a sortable column header, folder rows, then one row per document.
+   * A non-PDF file as an inert list row.
+   * @param {string} relPath
+   */
+  const buildOtherRow = (relPath) => {
+    const comfortable = viewMode === 'list';
+    const name = relPath.split('/').pop() || relPath;
+    const row = document.createElement('div');
+    row.className = comfortable ? 'scribe-library-row cf other' : 'scribe-library-row other';
+    row.title = 'Not a PDF — Scribe can’t open it';
+
+    const badge = document.createElement('span');
+    badge.className = 'scribe-library-badge';
+    const dot = name.lastIndexOf('.');
+    badge.textContent = dot > 0 ? name.slice(dot + 1).toUpperCase() : 'FILE';
+
+    const nm = document.createElement('span');
+    nm.className = 'nm';
+    const title = document.createElement('span');
+    title.className = 't';
+    title.textContent = name;
+    if (comfortable) {
+      const icon = document.createElement('span');
+      icon.className = 'fthumb';
+      icon.innerHTML = `<span class="fi">${FILE_SVG}</span>`;
+      nm.appendChild(icon);
+      const stack = document.createElement('span');
+      stack.className = 'tt';
+      stack.appendChild(title);
+      const meta = document.createElement('span');
+      meta.className = 'm2';
+      meta.appendChild(badge);
+      stack.appendChild(meta);
+      nm.appendChild(stack);
+    } else {
+      nm.insertAdjacentHTML('beforeend', `<span class="fi">${FILE_SVG}</span>`);
+      nm.appendChild(title);
+    }
+    row.appendChild(nm);
+    for (let i = 0; i < 3; i++) row.appendChild(document.createElement('span'));
+    if (!comfortable) {
+      const statusCell = document.createElement('span');
+      statusCell.appendChild(badge);
+      row.appendChild(statusCell);
+    }
+    return row;
+  };
+
+  /**
+   * The list views: a sortable column header, folder rows, one row per document, then any inert non-PDF rows.
    * @param {string[]} shownDirs
    * @param {Array<[string, import('./libraryStore.js').LibraryDocEntry]>} shown
+   * @param {string[]} shownOthers
    * @returns {HTMLElement} The element hosting the rows, for the caller's empty-state notes.
    */
-  const renderList = (shownDirs, shown) => {
+  const renderList = (shownDirs, shown, shownOthers) => {
     body.classList.add('list-mode');
     const comfortable = viewMode === 'list';
     /** @type {HTMLElement} */
@@ -1391,6 +1697,7 @@ export function installLibrary(viewer) {
     const rows = document.createElement('div');
     for (const dir of shownDirs) rows.appendChild(buildFolderRow(dir));
     for (const [relPath, entry] of shown) rows.appendChild(buildRow(relPath, entry));
+    for (const relPath of shownOthers) rows.appendChild(buildOtherRow(relPath));
     host.appendChild(rows);
     if (listPane) {
       const entry = listPreviewPath && manifest ? manifest.docs[listPreviewPath] : null;
@@ -2862,6 +3169,21 @@ export function installLibrary(viewer) {
     render();
   };
   for (const item of sortItems) item.addEventListener('click', onSortItemClick);
+  const syncOthersItem = () => {
+    othersItem.classList.toggle('on', showOthers);
+    othersItem.setAttribute('aria-checked', String(showOthers));
+  };
+  syncOthersItem();
+  othersItem.addEventListener('click', () => {
+    showOthers = !showOthers;
+    try {
+      window.localStorage.setItem(OTHERS_STORAGE_KEY, showOthers ? '1' : '0');
+    } catch { /* localStorage unavailable. */ }
+    syncOthersItem();
+    closeSortMenu();
+    sortBtn.focus();
+    render();
+  });
 
   const syncViewUI = () => {
     gridViewBtn.classList.toggle('on', viewMode === 'grid');
@@ -2952,14 +3274,26 @@ export function installLibrary(viewer) {
   };
   window.addEventListener('pagehide', onPageHide);
 
-  // While the library has the window, find means its filter field, so this claims the shortcut ahead of the toolbar's find bar.
+  // Pointer and focus both feed the flag, since clicks on the pane's page land on non-focusable elements and leave focus where it was.
+  let paneEngaged = false;
+  const trackEngagement = (e) => {
+    paneEngaged = !!(mountedPane && e.target instanceof Node && mountedPane.pane.contains(e.target));
+  };
+  surface.addEventListener('pointerdown', trackEngagement, true);
+  surface.addEventListener('focusin', trackEngagement, true);
+
+  // While the library has the window, this claims the shortcut ahead of the toolbar's find bar.
   const onFindShortcut = (e) => {
     if (!visible) return;
     if (!((e.key === 'f' || e.key === 'F') && (e.ctrlKey || e.metaKey) && !e.altKey)) return;
     e.preventDefault();
     e.stopPropagation();
-    searchInput.focus();
-    searchInput.select();
+    const paneFind = paneEngaged && mountedPane
+      ? /** @type {?HTMLInputElement} */ (mountedPane.pane.querySelector('.scribe-library-pv-find input'))
+      : null;
+    const findTarget = paneFind || searchInput;
+    findTarget.focus();
+    findTarget.select();
   };
   document.addEventListener('keydown', onFindShortcut, true);
 
@@ -3011,6 +3345,7 @@ export function installLibrary(viewer) {
       closeCardMenu();
       ingest?.cancel();
       resizeObserver.disconnect();
+      hintObserver.disconnect();
       window.clearInterval(autosaveTimer);
       window.removeEventListener('pagehide', onPageHide);
       document.removeEventListener('keydown', onFindShortcut, true);

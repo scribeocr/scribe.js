@@ -3574,7 +3574,8 @@ class ScribePDFViewer {
 
   /**
    * Read the persisted theme setting.
-   * @returns {'system' | 'light' | 'dark'} The stored theme, or 'system' (follow the OS) when nothing is persisted.
+   * Light is the default even when the OS prefers dark, since the document pages are never themed and dark bars would frame a white page.
+   * @returns {'system' | 'light' | 'dark'} The stored theme, or 'light' when nothing is persisted.
    */
   // eslint-disable-next-line class-methods-use-this
   _readThemeSetting() {
@@ -3582,7 +3583,7 @@ class ScribePDFViewer {
       const v = window.localStorage.getItem(THEME_STORAGE_KEY);
       if (v === 'system' || v === 'light' || v === 'dark') return v;
     } catch { /* localStorage unavailable (private mode / sandbox). Fall through to default. */ }
-    return 'system';
+    return 'light';
   }
 
   /** Resolve the setting + OS preference, apply `data-theme` to the root, and start tracking OS changes. */
@@ -3624,10 +3625,7 @@ class ScribePDFViewer {
     this._applyTheme();
   }
 
-  /**
-   * Toggle Dark mode: flip to the opposite of the theme currently in effect, taking over from the OS default in the direction the user sees.
-   * This becomes an explicit ('light' | 'dark') preference.
-   */
+  /** Toggle Dark mode, persisting the result as an explicit preference. */
   _toggleDarkMode() {
     this._setThemeSetting(this._effectiveTheme() === 'dark' ? 'light' : 'dark');
   }

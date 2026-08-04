@@ -18,9 +18,10 @@ if (toolbarButtons) toolbarButtons.style.webkitAppRegion = 'no-drag';
 const closeBtn = document.createElement('button');
 closeBtn.innerHTML = '&#x2715;';
 closeBtn.title = 'Close';
-closeBtn.style.cssText = 'background:none;border:none;color:#fff;font-size:20px;cursor:pointer;padding:8px 16px;-webkit-app-region:no-drag;';
-closeBtn.addEventListener('mouseenter', () => { closeBtn.style.background = '#e81123'; });
-closeBtn.addEventListener('mouseleave', () => { closeBtn.style.background = 'none'; });
+// The glyph inherits the toolbar ink so it stays legible in both themes, and flips to white only over the red hover fill.
+closeBtn.style.cssText = 'background:none;border:none;color:inherit;font-size:20px;cursor:pointer;padding:8px 16px;-webkit-app-region:no-drag;';
+closeBtn.addEventListener('mouseenter', () => { closeBtn.style.background = '#e81123'; closeBtn.style.color = '#fff'; });
+closeBtn.addEventListener('mouseleave', () => { closeBtn.style.background = 'none'; closeBtn.style.color = 'inherit'; });
 closeBtn.addEventListener('click', () => window.__TAURI__.window.getCurrentWindow().close());
 pdfViewer.toolbarElemEnd.appendChild(closeBtn);
 

@@ -30,6 +30,7 @@ const MANIFEST_FILE = 'index.json';
  * @property {number} version
  * @property {Object<string, LibraryDocEntry>} docs
  * @property {string[]} [dirs] - Every subdirectory seen at the last folder scan, empty ones included.
+ * @property {string[]} [others] - Every non-PDF file seen at the last folder scan, for the optional "Other files" listing.
  */
 
 /** @returns {Promise<IDBDatabase>} */
@@ -221,14 +222,15 @@ export class LibraryStore {
   }
 
   /**
-   * Walk the library folder, yielding every subdirectory and PDF and skipping dot-directories.
-   * @returns {AsyncGenerator<{relPath: string, name: string, kind: 'dir'} | {relPath: string, name: string, kind: 'file', size: number, mtime: number}>}
+   * Walk the library folder, yielding every subdirectory and file and skipping dot-directories.
+   * Entries of kind 'other' are for listing only and must never be ingested.
+   * @returns {AsyncGenerator<{relPath: string, name: string, kind: 'dir' | 'other'} | {relPath: string, name: string, kind: 'file', size: number, mtime: number}>}
    */
   async* listFiles() {
     /**
      * @param {FileSystemDirectoryHandle} dir
      * @param {string} prefix
-     * @returns {AsyncGenerator<{relPath: string, name: string, kind: 'dir'} | {relPath: string, name: string, kind: 'file', size: number, mtime: number}>}
+     * @returns {AsyncGenerator<{relPath: string, name: string, kind: 'dir' | 'other'} | {relPath: string, name: string, kind: 'file', size: number, mtime: number}>}
      */
     async function* walk(dir, prefix) {
       // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
@@ -242,6 +244,8 @@ export class LibraryStore {
           yield {
             relPath: `${prefix}${name}`, name, kind: 'file', size: file.size, mtime: file.lastModified,
           };
+        } else {
+          yield { relPath: `${prefix}${name}`, name, kind: 'other' };
         }
       }
     }
