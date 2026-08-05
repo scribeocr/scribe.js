@@ -9,4 +9,6 @@ contextBridge.exposeInMainWorld('electronAPI', {
   onLoadFile: (callback) => ipcRenderer.on('load-file', (_event, data) => callback(data)),
   onNavigate: (callback) => ipcRenderer.on('viewer-navigate', (_event, data) => callback(data)),
   onHighlight: (callback) => ipcRenderer.on('viewer-highlight', (_event, data) => callback(data)),
+  getPowerState: () => ipcRenderer.invoke('power-state'),
+  onPowerChanged: (callback) => ipcRenderer.on('power-changed', (_event, data) => callback(data)),
 });

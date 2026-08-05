@@ -1,4 +1,6 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const {
+  app, BrowserWindow, ipcMain, session, powerMonitor,
+} = require('electron');
 const path = require('path');
 const fs = require('fs');
 
@@ -75,6 +77,9 @@ ipcMain.handle('read-file', async (_event, filePath) => {
   return fs.readFileSync(filePath);
 });
 
+// Power state feeds the library's warm-lane gate, so speculative rendering never runs on battery.
+ipcMain.handle('power-state', () => ({ onBattery: powerMonitor.isOnBatteryPower() }));
+
 // Single-instance lock: if another instance is launched, forward its args
 // to the existing window instead of opening a second window.
 const gotTheLock = app.requestSingleInstanceLock();
@@ -91,7 +96,21 @@ if (!gotTheLock) {
     }
   });
 
-  app.whenReady().then(createWindow);
+  app.whenReady().then(() => {
+    // These headers make the renderer crossOriginIsolated, which is what lets PDF bytes be shared across workers instead of cloned per worker.
+    session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
+      callback({
+        responseHeaders: {
+          ...details.responseHeaders,
+          'Cross-Origin-Opener-Policy': ['same-origin'],
+          'Cross-Origin-Embedder-Policy': ['require-corp'],
+        },
+      });
+    });
+    powerMonitor.on('on-battery', () => mainWindow?.webContents.send('power-changed', { onBattery: true }));
+    powerMonitor.on('on-ac', () => mainWindow?.webContents.send('power-changed', { onBattery: false }));
+    createWindow();
+  });
 
   app.on('window-all-closed', () => {
     app.quit();

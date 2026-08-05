@@ -7,6 +7,9 @@ const MANIFEST_VERSION = 1;
 const INDEX_FILE = 'search-index.json.gz';
 const MANIFEST_FILE = 'index.json';
 
+/** Byte cap for stored page rasters, enforced by the artifact sweep. */
+export const RASTER_BUDGET_BYTES = 1.5 * 1024 * 1024 * 1024;
+
 /**
  * One document's record in the library manifest.
  * Entries are keyed by path relative to the library root.
@@ -20,9 +23,13 @@ const MANIFEST_FILE = 'index.json';
  * @property {'pending'|'indexed'|'error'|'missing'|'changed'} status
  * @property {boolean} requiresOCR
  * @property {string} [error] - Failure message when status is 'error'.
+ * @property {'interrupted'|'parse'} [errorKind] - Failure class when status is 'error'.
+ *    Interrupted failures get one automatic retry at the next scan.
+ * @property {boolean} [retried] - Set once the automatic retry for an interrupted failure has been spent.
  * @property {number} [order] - Manual position under the Custom sort; absent until the user first drag-reorders.
  * @property {Array<[number, number, number]>} [pageDims] - Per-page `[width, height, rotation]` in points, captured at ingest.
- * @property {number} [pageRasterW] - Pixel width the stored page rasters were rendered at.
+ * @property {number} [pageRasterW] - Pixel width of the stored page rasters.
+ *    Read from older manifests, never written.
  */
 
 /**
@@ -136,6 +143,10 @@ export class LibraryStore {
     this.thumbsDir = null;
     /** @type {?FileSystemDirectoryHandle} */
     this.pagesDir = null;
+    /** @type {?number} Running byte total of stored page rasters. Null until the first sweep establishes it. */
+    this.rasterBytes = null;
+    /** @type {number} Byte cap the sweep enforces on stored page rasters. */
+    this.rasterBudget = RASTER_BUDGET_BYTES;
   }
 
   static isSupported() {
@@ -373,6 +384,7 @@ export class LibraryStore {
   async writePageRaster(hash, n, blob) {
     const dir = await /** @type {FileSystemDirectoryHandle} */ (this.pagesDir).getDirectoryHandle(hash, { create: true });
     await writeFileIn(dir, `${n}.jpg`, blob);
+    if (this.rasterBytes !== null) this.rasterBytes += blob.size;
   }
 
   /** @param {string} hash @param {number} n @returns {Promise<?Blob>} */
@@ -388,6 +400,8 @@ export class LibraryStore {
   /** @param {string} hash */
   async deletePageRasters(hash) {
     await /** @type {FileSystemDirectoryHandle} */ (this.pagesDir).removeEntry(hash, { recursive: true }).catch(() => {});
+    // The deleted set's size is unknown here, so the running total is stale until the next sweep.
+    this.rasterBytes = null;
   }
 
   /** @param {Object} indexData - Serialized search index. */
@@ -404,5 +418,57 @@ export class LibraryStore {
     } catch {
       return null;
     }
+  }
+
+  /**
+   * Delete derived artifacts no manifest entry references, then evict page rasters past the byte budget.
+   * Orphans appear when a changed file re-ingests under a new hash.
+   * Eviction removes whole documents, least recently opened first.
+   * Also establishes `rasterBytes`, the running total that `writePageRaster` keeps current between sweeps.
+   * @param {LibraryManifest} manifest
+   */
+  async sweepArtifacts(manifest) {
+    /** @type {Map<string, number>} Referenced hash -> most recent open (falling back to added time). */
+    const lastUse = new Map();
+    for (const e of Object.values(manifest.docs)) {
+      if (e.hash) lastUse.set(e.hash, Math.max(lastUse.get(e.hash) || 0, e.lastOpened || 0, e.added || 0));
+    }
+    const flatDirs = /** @type {Array<[?FileSystemDirectoryHandle, string]>} */ ([
+      [this.docsDir, '.scribe'], [this.textDir, '.txt.gz'], [this.thumbsDir, '.jpg'],
+    ]);
+    for (const [dir, ext] of flatDirs) {
+      if (!dir) continue;
+      // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
+      for await (const [name] of dir.entries()) {
+        if (name.endsWith(ext) && !lastUse.has(name.slice(0, -ext.length))) await deleteFileIn(dir, name);
+      }
+    }
+    const pagesDir = this.pagesDir;
+    if (!pagesDir) return;
+    /** @type {Array<{hash: string, bytes: number, use: number}>} */
+    const kept = [];
+    let total = 0;
+    // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
+    for await (const [hash, handle] of pagesDir.entries()) {
+      if (handle.kind !== 'directory') continue;
+      if (!lastUse.has(hash)) {
+        await pagesDir.removeEntry(hash, { recursive: true }).catch(() => {});
+        continue;
+      }
+      let bytes = 0;
+      // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
+      for await (const [, fileHandle] of handle.entries()) {
+        if (fileHandle.kind === 'file') bytes += (await fileHandle.getFile()).size;
+      }
+      kept.push({ hash, bytes, use: lastUse.get(hash) || 0 });
+      total += bytes;
+    }
+    kept.sort((a, b) => a.use - b.use);
+    for (const rec of kept) {
+      if (total <= this.rasterBudget) break;
+      await pagesDir.removeEntry(rec.hash, { recursive: true }).catch(() => {});
+      total -= rec.bytes;
+    }
+    this.rasterBytes = total;
   }
 }

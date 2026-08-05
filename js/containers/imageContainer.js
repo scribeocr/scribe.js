@@ -94,6 +94,9 @@ export class RenderSource {
   /** @type {number} Live documents referencing this source; the pool is terminated only when this returns to 0. */
   refCount = 0;
 
+  /** @type {?number} Fixed worker-pool size for this source. Null uses the global sizing. */
+  workerN = null;
+
   /**
    * The source document's optimized substitute fonts, carried for overlay fidelity of pages copied out of it.
    * Placeholder in v1 (the basic editor is invisible-text-only), populated when font fidelity lands.
@@ -114,7 +117,7 @@ export class RenderSource {
   getScheduler = async () => {
     if (this.scheduler) return this.scheduler;
     if (!this.#schedulerReady) {
-      this.#schedulerReady = initPdfScheduler().then(async (s) => {
+      this.#schedulerReady = initPdfScheduler(this.workerN ?? undefined).then(async (s) => {
         if (this.#reloadOnWake && this.pdfData) {
           // Mirrors openMainPDF's buffer choice so an SAB-enabled embedder keeps sharing after a wake.
           let pdfBytes;
@@ -736,10 +739,13 @@ export class ImageStore {
       return blob;
     })();
 
-    this.thumbnails[n] = p;
-    // Clear the cache slot if the render failed, so a later call can retry.
-    p.then((r) => { if (r === null && this.thumbnails[n] === p) this.thumbnails[n] = undefined; })
-      .catch(() => { if (this.thumbnails[n] === p) this.thumbnails[n] = undefined; });
+    // Whole-document render passes come through here, so caching fresh renders would hold an entire book of Blobs until close.
+    if (!fresh) {
+      this.thumbnails[n] = p;
+      // Clear the cache slot if the render failed, so a later call can retry.
+      p.then((r) => { if (r === null && this.thumbnails[n] === p) this.thumbnails[n] = undefined; })
+        .catch(() => { if (this.thumbnails[n] === p) this.thumbnails[n] = undefined; });
+    }
     return p;
   };
 
@@ -843,9 +849,11 @@ export class ImageStore {
    * @param {Object} [options]
    * @param {boolean} [options.usePdfSharedBuffer] - Share the loaded PDF across PDF workers via
    *    SharedArrayBuffer instead of cloning per worker. Defaults to `opt.usePdfSharedBuffer`.
+   * @param {number} [options.pdfWorkerN] - Fixed worker-pool size for this document's source.
    */
   openMainPDF = async (fileData, options = {}) => {
     const usePdfSharedBuffer = options.usePdfSharedBuffer ?? opt.usePdfSharedBuffer;
+    if (options.pdfWorkerN) this.#ensurePrimarySource().workerN = options.pdfWorkerN;
 
     /** @type {ArrayBuffer} */
     let arrayBuffer;

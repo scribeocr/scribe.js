@@ -17,8 +17,19 @@ export async function initPdfWorker() {
   }
 
   return new Promise((resolve, reject) => {
+    /** @type {?Error} */
+    let workerError = null;
+
+    // A dead worker never answers, so every pending promise must reject or callers hang forever.
     const errorHandler = (err) => {
       console.error(err);
+      const message = (err && typeof err === 'object' && 'message' in err && err.message) || 'PDF worker crashed.';
+      workerError = new Error(String(message));
+      workerError.name = 'WorkerCrashError';
+      for (const id of Object.keys(workerPromises)) {
+        workerPromises[id].reject(workerError);
+        delete workerPromises[id];
+      }
     };
 
     if (typeof process === 'undefined') {
@@ -54,6 +65,7 @@ export async function initPdfWorker() {
 
     function wrap(func) {
       return function (...args) {
+        if (workerError) return Promise.reject(workerError);
         return new Promise((innerResolve, innerReject) => {
           const id = promiseId++;
           workerPromises[id] = { resolve: innerResolve, reject: innerReject, func };
@@ -70,7 +82,7 @@ export async function initPdfWorker() {
 
     obj.terminate = () => worker.terminate();
 
-    ready.then(() => resolve(obj));
+    ready.then(() => resolve(obj), reject);
   });
 }
 

@@ -9,7 +9,8 @@ import { REORDER_SLIDE_MS } from '../js/controls/pageReorder.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
 import { LibraryStore } from './libraryStore.js';
 import { LibraryIndex } from './librarySearch.js';
-import { LibraryIngest } from './libraryIngest.js';
+import { LibraryIngest, PAGE_RASTER_WIDTH } from './libraryIngest.js';
+import { DocSessions } from './docSession.js';
 
 // Filled rather than stroked because outlined spines collapse into double-line mush at the pinned tab's 16px.
 // eslint-disable-next-line max-len
@@ -240,6 +241,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-pv-find input::placeholder { color: var(--scribe-ink-3); }
 .scribe-pdf-viewer .scribe-library-pv-stage { flex: 1; overflow: hidden; display: flex; position: relative; }
 .scribe-pdf-viewer .scribe-library-pv-viewer { flex: 1; min-width: 0; min-height: 0; position: relative; }
+.scribe-pdf-viewer .scribe-library-pv-veil { position: absolute; inset: 0; z-index: 5; background-color: var(--scribe-canvas); background-size: 100% 100%; transition: opacity 0.15s; pointer-events: none; }
 .scribe-pdf-viewer .scribe-library-pv-empty { color: var(--scribe-ink-3); font-size: 13px; margin: auto; }
 .scribe-pdf-viewer .scribe-library-pv-foot { display: flex; align-items: center; gap: 8px; height: 34px; flex-shrink: 0; box-sizing: border-box; padding: 0 12px; background: var(--scribe-surface); border-top: 1px solid var(--scribe-line); font-size: 12.5px; color: var(--scribe-ink-2); }
 .scribe-pdf-viewer .scribe-library-pv-foot button { border: none; background: none; color: var(--scribe-ink-2); font: inherit; font-size: 12.5px; cursor: pointer; border-radius: 6px; padding: 3px 8px; }
@@ -343,8 +345,7 @@ export function installLibrary(viewer) {
   /** @type {?string} Doc shown in the list-view preview pane. */
   let listPreviewPath = null;
   let listPreviewPage = 0;
-  /** @type {Map<string, string>} hash -> object URL for card thumbnails. */
-  const thumbUrls = new Map();
+  const sessions = new DocSessions();
   /** @type {?number} */
   let manifestTimer = null;
   /** @type {?number} */
@@ -640,6 +641,11 @@ export function installLibrary(viewer) {
    * @param {?{doc: Object, libraryHash?: string, libraryDirty?: boolean, librarySaving?: boolean}} tab
    */
   const saveTabIfDirty = async (tab) => {
+    // This checkpoint is the only per-tab exit hook, so clean tabs persist their visited rasters here too.
+    if (tab?.libraryHash && store && manifest) {
+      const entry = Object.values(manifest.docs).find((e) => e.hash === tab.libraryHash);
+      if (entry) persistRasterWindow(tab.doc, entry, /** @type {any} */ (tab).lastPage ?? 0);
+    }
     if (!tab || !tab.libraryHash || !tab.libraryDirty || tab.librarySaving || !store) return;
     tab.librarySaving = true;
     tab.libraryDirty = false;
@@ -647,6 +653,7 @@ export function installLibrary(viewer) {
       // Sidecars are this application's session store, so they carry app-side state (pending text edits, native-text metadata) that a default export drops.
       const data = await /** @type {any} */ (tab.doc).exportData('scribe', { scribeSession: true });
       await store.writeSidecar(tab.libraryHash, data);
+      sessions.dropSidecar(tab.libraryHash);
     } catch {
       tab.libraryDirty = true;
     } finally {
@@ -717,13 +724,17 @@ export function installLibrary(viewer) {
     }
     closeCardMenu();
     syncCrumbs();
+    // The retained results view snapshots its scroll state before the detach below, so a reattach can restore it.
+    if (resultsView && resultsView.wrap.isConnected) resultsView.snapshot();
     body.textContent = '';
     body.classList.remove('results-mode', 'list-mode', 'split-mode');
     listPane = null;
     // Tearing the pane down drops the embedded viewer and its painted pages, so it survives every re-render of a view that still hosts it.
     if (mountedPane && !fullTextResults && !(listPreviewOn && viewMode !== 'grid')) mountedPane.destroy();
-    // Preview docs hold worker pools; free them whenever no mounted view uses the pane.
-    if (!fullTextResults && !(listPreviewOn && viewMode !== 'grid')) clearPreviewResources();
+    if (!fullTextResults && resultsView) {
+      resultsView.dispose();
+      resultsView = null;
+    }
     if (!store || !manifest) {
       const card = document.createElement('div');
       card.className = 'scribe-library-card-wall';
@@ -946,20 +957,14 @@ export function installLibrary(viewer) {
    * @param {import('./libraryStore.js').LibraryDocEntry} entry
    */
   const setThumbSrc = (img, entry) => {
-    const cachedUrl = thumbUrls.get(entry.hash);
+    if (!entry.hash) return;
+    const cachedUrl = sessions.coverUrlNow(entry.hash);
     if (cachedUrl) {
       img.src = cachedUrl;
       return;
     }
-    if (!entry.hash || !store) return;
-    store.readThumb(entry.hash).then((blob) => {
-      if (destroyed || !blob) return;
-      let url = thumbUrls.get(entry.hash);
-      if (!url) {
-        url = URL.createObjectURL(blob);
-        thumbUrls.set(entry.hash, url);
-      }
-      img.src = url;
+    sessions.cover(entry.hash).then((url) => {
+      if (!destroyed && url) img.src = url;
     }).catch(() => {});
   };
 
@@ -1036,7 +1041,11 @@ export function installLibrary(viewer) {
       });
       addItem('Re-index', false, async () => {
         if (!ingest) return;
-        for (const p of paths) await ingest.enqueue(p);
+        for (const p of paths) {
+          const hash = manifest?.docs[p]?.hash;
+          if (hash) sessions.invalidate(hash);
+          await ingest.enqueue(p);
+        }
         render();
         ingest.start();
       });
@@ -1059,11 +1068,7 @@ export function installLibrary(viewer) {
               store.deleteSidecar(entry.hash), store.deleteTextCache(entry.hash), store.deleteThumb(entry.hash),
               store.deletePageRasters(entry.hash),
             ]).catch(() => {});
-            const url = thumbUrls.get(entry.hash);
-            if (url) {
-              URL.revokeObjectURL(url);
-              thumbUrls.delete(entry.hash);
-            }
+            sessions.invalidate(entry.hash);
             saveIndexSoon();
           }
         }
@@ -1133,6 +1138,7 @@ export function installLibrary(viewer) {
       reindexBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
         if (!ingest) return;
+        if (entry.hash) sessions.invalidate(entry.hash);
         await ingest.enqueue(relPath);
         render();
         ingest.start();
@@ -1710,90 +1716,46 @@ export function installLibrary(viewer) {
     return host;
   };
 
-  // Preview documents are full imports, so a small most-recently-used cache bounds worker/memory cost.
-  /** @type {Map<string, Promise<import('../../js/containers/scribeDoc.js').ScribeDoc>>} */
-  const previewDocs = new Map();
-  /** @type {Map<string, string>} `${hash}:${pageN}:${width}` -> object URL of the rendered page. */
-  const pageRenderUrls = new Map();
-  let previewGen = 0;
+  /**
+   * The retained search-results view: the built DOM plus its interaction state.
+   * Keeping it lets an unchanged result set reattach instead of rebuilding.
+   * @type {?{results: Object, pv: Object, wrap: HTMLElement, snapshot: () => void, attach: () => void, dispose: () => void}}
+   */
+  let resultsView = null;
+  /** Abandons in-flight result-row work when a fresh results build replaces the old one. */
+  let resultsGen = 0;
 
   /**
+   * The pooled live document for a legacy entry that cannot seed (no stored pageDims), loading it on first use.
    * @param {string} relPath
    * @param {string} hash
    */
-  const getPreviewDoc = (relPath, hash) => {
-    let p = previewDocs.get(hash);
-    if (p) {
-      previewDocs.delete(hash);
-      previewDocs.set(hash, p);
-      return p;
-    }
-    p = /** @type {LibraryStore} */ (store).readFile(relPath).then((file) => openDocumentFromFile(file));
-    previewDocs.set(hash, p);
-    while (previewDocs.size > 2) {
-      const [oldHash, oldP] = previewDocs.entries().next().value;
-      previewDocs.delete(oldHash);
-      oldP.then((d) => d.close()).catch(() => {});
-    }
-    return p;
-  };
-
-  const clearPreviewResources = () => {
-    previewGen++;
-    for (const p of previewDocs.values()) p.then((d) => d.close()).catch(() => {});
-    previewDocs.clear();
-    for (const url of pageRenderUrls.values()) URL.revokeObjectURL(url);
-    pageRenderUrls.clear();
-    sidecarCache.clear();
-  };
+  const sessionDoc = (relPath, hash) => sessions.liveDocOrLoad(
+    hash,
+    () => /** @type {LibraryStore} */ (store).readFile(relPath).then((file) => openDocumentFromFile(file)),
+  );
 
   /**
-   * @param {string} relPath
-   * @param {string} hash
+   * Persist the two pages either side of `pageN` from an open document, so the next open of that spot paints instantly.
+   * Skipped when the document's pages were edited, since stored rasters are keyed by the ingested page order.
+   * @param {Object} doc
+   * @param {import('./libraryStore.js').LibraryDocEntry} entry
    * @param {number} pageN
-   * @param {number} width
-   * @returns {Promise<?string>} Object URL, cached per page and width across queries.
    */
-  const renderPageUrl = async (relPath, hash, pageN, width) => {
-    const key = `${hash}:${pageN}:${width}`;
-    const cached = pageRenderUrls.get(key);
-    if (cached) return cached;
-    const doc = await getPreviewDoc(relPath, hash);
-    // fresh: the container's thumbnail cache serves one width per page, but preview and list thumbs need different widths.
-    const blob = await doc.images.renderThumbnail(pageN, width, 0.75, true);
-    if (!blob) return null;
-    const again = pageRenderUrls.get(key);
-    if (again) return again;
-    const url = URL.createObjectURL(blob);
-    pageRenderUrls.set(key, url);
-    return url;
-  };
-
-  /** @type {Map<string, Promise<?{ocr: ?Array<Object>, annotations: ?Array<Array<Object>>}>>} hash -> parsed sidecar content. */
-  const sidecarCache = new Map();
-
-  /**
-   * The stored sidecar's parsed word geometry and annotations, for seeding without an import.
-   * @param {string} hash
-   * @returns {Promise<?{ocr: ?Array<Object>, annotations: ?Array<Array<Object>>}>}
-   */
-  const sidecarData = (hash) => {
-    let p = sidecarCache.get(hash);
-    if (!p) {
-      p = /** @type {LibraryStore} */ (store).readSidecar(hash).then(async (data) => {
-        if (!data) return null;
-        const json = JSON.parse(await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('gzip'))).text());
-        return {
-          ocr: Array.isArray(json.ocr) ? json.ocr : null,
-          annotations: Array.isArray(json.annotations) ? json.annotations : null,
-        };
-      }).catch(() => null);
-      sidecarCache.set(hash, p);
-      while (sidecarCache.size > 4) {
-        sidecarCache.delete(sidecarCache.keys().next().value);
+  const persistRasterWindow = (doc, entry, pageN) => {
+    const d = /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */ (doc);
+    if (!store || !entry?.hash || !d || d.id < 0) return;
+    if (d.pageMetrics.length !== entry.pageCount) return;
+    if (store.rasterBytes !== null && store.rasterBytes > store.rasterBudget) return;
+    const s = store;
+    const { hash, pageCount } = entry;
+    (async () => {
+      for (let n = Math.max(0, pageN - 2); n <= Math.min(pageCount - 1, pageN + 2); n++) {
+        if (await s.readPageRaster(hash, n)) continue;
+        const raster = await d.images.renderThumbnail(n, PAGE_RASTER_WIDTH, 0.75, true);
+        if (raster) await s.writePageRaster(hash, n, raster);
       }
-    }
-    return p;
+    })().catch(() => {});
   };
 
   /**
@@ -1814,7 +1776,7 @@ export function installLibrary(viewer) {
       }
       return files;
     };
-    if (entry.pageDims && !previewDocs.has(entry.hash)) {
+    if (entry.pageDims && !sessions.hasLive(entry.hash)) {
       const pageCount = entry.pageDims.length;
       return {
         pageCount,
@@ -1823,15 +1785,15 @@ export function installLibrary(viewer) {
         window: { from: Math.max(0, pageN - 2), to: Math.min(pageCount - 1, pageN + 2) },
         name: titleOf(relPath),
         raster: (n) => /** @type {LibraryStore} */ (store).readPageRaster(entry.hash, n),
-        ocr: (n) => sidecarData(entry.hash).then((s) => s?.ocr?.[n] ?? null),
+        ocr: (n) => sessions.sidecar(entry.hash).then((s) => s?.ocr?.[n] ?? null),
         // Copies, never the cached arrays: seed session edits must not leak into the cache.
-        annots: (n) => sidecarData(entry.hash).then((s) => (s
+        annots: (n) => sessions.sidecar(entry.hash).then((s) => (s
           ? (s.annotations?.[n] ?? []).map((a) => ({ ...a, bbox: { ...a.bbox } })) : null)),
         load,
         hydration: 'on-demand',
       };
     }
-    const doc = await getPreviewDoc(relPath, entry.hash);
+    const doc = await sessionDoc(relPath, entry.hash);
     const pageCount = doc.pageMetrics.length;
     return {
       pageCount,
@@ -1839,9 +1801,9 @@ export function installLibrary(viewer) {
       initialPage: pageN,
       window: { from: Math.max(0, pageN - 2), to: Math.min(pageCount - 1, pageN + 2) },
       name: titleOf(relPath),
-      raster: (n) => renderPageUrl(relPath, entry.hash, n, 900),
-      ocr: async (n) => (await getPreviewDoc(relPath, entry.hash)).ocr.active?.[n] ?? null,
-      annots: async (n) => ((await getPreviewDoc(relPath, entry.hash)).annotations.pages[n] ?? [])
+      raster: (n) => sessions.pageImage(entry.hash, n),
+      ocr: async (n) => (await sessionDoc(relPath, entry.hash)).ocr.active?.[n] ?? null,
+      annots: async (n) => ((await sessionDoc(relPath, entry.hash)).annotations.pages[n] ?? [])
         .map((a) => ({ ...a, bbox: { ...a.bbox } })),
       load,
       hydration: 'on-demand',
@@ -1850,18 +1812,18 @@ export function installLibrary(viewer) {
 
   /**
    * Word boxes for every occurrence of the query on a page, for painting match marks over a render.
-   * @param {import('../../js/containers/scribeDoc.js').ScribeDoc} doc
-   * @param {number} pageN
+   * Accepts a live `OcrPage` or a raw sidecar page, anything with `lines[].words[].{text, bbox}`.
+   * @param {?{lines: Array<Object>, dims?: {width: number, height: number}}} page
+   * @param {?{width: number, height: number}} dims - Page dimensions when the page object carries none.
    * @param {string} query
    * @returns {?{dims: {width: number, height: number}, rects: Array<{left: number, top: number, right: number, bottom: number}>, per: number}}
    */
-  const getMatchRects = (doc, pageN, query) => {
-    const page = doc.ocr.active?.[pageN];
-    if (!page) return null;
+  const getMatchRects = (page, dims, query) => {
+    if (!page || !Array.isArray(page.lines) || !dims) return null;
     const tokens = query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((t) => t.length);
     if (!tokens.length) return null;
     const words = [];
-    for (const line of page.lines) for (const w of line.words) words.push(w);
+    for (const line of page.lines) for (const w of (line.words || [])) if (w && w.text && w.bbox) words.push(w);
     const norm = (s) => s.toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
     const rects = [];
     for (let i = 0; i + tokens.length <= words.length; i++) {
@@ -1876,7 +1838,7 @@ export function installLibrary(viewer) {
       if (!ok) continue;
       for (let j = 0; j < tokens.length; j++) rects.push(words[i + j].bbox);
     }
-    return { dims: page.dims, rects, per: tokens.length };
+    return { dims: page.dims || dims, rects, per: tokens.length };
   };
 
   /**
@@ -2058,6 +2020,15 @@ export function installLibrary(viewer) {
       const doc = paneViewer.doc;
       const dirty = paneDirty;
       paneDirty = false;
+      // A clean hydrated document goes back to the session pool instead of closing, so returning to it is free.
+      if (!dirty && hash && doc.id >= 0) {
+        paneViewer._tabs.length = 0;
+        paneViewer._activeTab = -1;
+        paneViewer._renderTabs();
+        paneViewer.detachDoc({ terminate: false });
+        sessions.adoptLive(hash, doc);
+        return;
+      }
       if (!dirty || !hash || !store) {
         if (paneViewer._tabs.length) paneViewer._closeTab(0);
         return;
@@ -2072,8 +2043,9 @@ export function installLibrary(viewer) {
         try {
           real = doc.id < 0 ? await /** @type {any} */ (doc)._requestHydration() : doc;
           await /** @type {LibraryStore} */ (store).writeSidecar(hash, await /** @type {any} */ (real).exportData('scribe', { scribeSession: true }));
-          sidecarCache.delete(hash);
-        } finally {
+          sessions.dropSidecar(hash);
+          sessions.adoptLive(hash, /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */ (real));
+        } catch {
           await /** @type {any} */ (real || doc).close?.();
         }
       })().catch(() => {});
@@ -2081,6 +2053,7 @@ export function installLibrary(viewer) {
 
     const showEmpty = () => {
       token++;
+      endVeil();
       releaseDoc(current ? current.hash : null);
       current = null;
       lastTarget = null;
@@ -2097,9 +2070,87 @@ export function installLibrary(viewer) {
      * @param {{relPath: string, hash: string, entry: import('./libraryStore.js').LibraryDocEntry,
      *   pageN: number, query: ?string, title: string, meta: string, pos: string, jump?: boolean}} target
      */
+    /** @type {?number} */
+    let dwellTimer = null;
+    const DWELL_LOAD_MS = 2500;
+
+    /**
+     * Arm the dwell load.
+     * Lingering on a page with no stored raster is what loads the image, so rapid flipping stays free.
+     * @param {{hash: string, pageN: number}} target
+     * @param {number} t
+     */
+    const armDwell = async (target, t) => {
+      if (dwellTimer !== null) {
+        clearTimeout(dwellTimer);
+        dwellTimer = null;
+      }
+      if (!store || !paneViewer?.doc || paneViewer.doc.id >= 0) return;
+      if (await store.readPageRaster(target.hash, target.pageN)) return;
+      if (t !== token) return;
+      dwellTimer = window.setTimeout(() => {
+        dwellTimer = null;
+        if (t === token && paneViewer?.doc && paneViewer.doc.id < 0) /** @type {any} */ (paneViewer.doc)._requestHydration?.();
+      }, DWELL_LOAD_MS);
+    };
+
+    /** @type {?{elem: HTMLElement, timers: number[]}} */
+    let veil = null;
+
+    /**
+     * Remove the veil.
+     * With `v` given, only when it is still the one that call created.
+     * @param {HTMLElement} [v]
+     */
+    const endVeil = (v) => {
+      if (!veil || (v && veil.elem !== v)) return;
+      for (const timer of veil.timers) clearTimeout(timer);
+      veil.elem.remove();
+      veil = null;
+    };
+
+    /**
+     * Freeze the pane's current pixels while the next target prepares underneath, so the swap reveals already anchored.
+     * A dim after 400ms signals a slow preparation, and a 2s cap reveals whatever exists rather than reading as a dead click.
+     * @returns {HTMLElement}
+     */
+    const beginVeil = () => {
+      endVeil();
+      const cover = document.createElement('div');
+      cover.className = 'scribe-library-pv-veil';
+      const rect = pvHost.getBoundingClientRect();
+      if (rect.width && rect.height) {
+        const snap = document.createElement('canvas');
+        const dpr = window.devicePixelRatio || 1;
+        snap.width = Math.round(rect.width * dpr);
+        snap.height = Math.round(rect.height * dpr);
+        const ctx = snap.getContext('2d');
+        if (ctx) {
+          ctx.scale(dpr, dpr);
+          let drew = false;
+          for (const c of pvHost.querySelectorAll('canvas')) {
+            const cr = c.getBoundingClientRect();
+            if (!cr.width || !cr.height || cr.bottom < rect.top || cr.top > rect.bottom) continue;
+            try {
+              ctx.drawImage(c, cr.left - rect.left, cr.top - rect.top, cr.width, cr.height);
+              drew = true;
+            } catch { /* A zero-sized or unreadable canvas leaves that page blank in the freeze. */ }
+          }
+          // A background image rather than a canvas child, so anything polling for the viewer's canvases never matches the veil.
+          if (drew) cover.style.backgroundImage = `url(${snap.toDataURL()})`;
+        }
+      }
+      const timers = [
+        window.setTimeout(() => { cover.style.opacity = '0.5'; }, 400),
+        window.setTimeout(() => endVeil(cover), 2000),
+      ];
+      pvHost.appendChild(cover);
+      veil = { elem: cover, timers };
+      return cover;
+    };
+
     const show = async (target) => {
       const t = ++token;
-      const gen = previewGen;
       if (!current || current.hash !== target.hash) {
         pvFindInput.value = '';
         pvFindLast = '';
@@ -2137,10 +2188,33 @@ export function installLibrary(viewer) {
           if (current.handle) await current.handle.primed;
           if (t !== token) return;
           await applyQueryAndPage(target);
+          current.anchorTop = paneViewer.scribe.scrollContainer.scrollTop;
+          endVeil();
+          const entry = manifest?.docs[target.relPath];
+          if (paneViewer.doc && paneViewer.doc.id >= 0 && entry) persistRasterWindow(paneViewer.doc, entry, target.pageN);
+          else armDwell(target, t);
+          return;
+        }
+        const pooled = sessions.takeLive(target.hash);
+        if (pooled) {
+          const cover = beginVeil();
+          releaseDoc(current ? current.hash : null);
+          current = null;
+          await paneViewer._openDocAsTab(pooled, titleOf(target.relPath), { lastPage: target.pageN });
+          if (t !== token) return;
+          current = {
+            relPath: target.relPath, hash: target.hash, pageN: target.pageN, query: target.query, handle: null, window: null,
+          };
+          await applyQueryAndPage(target);
+          current.anchorTop = paneViewer.scribe.scrollContainer.scrollTop;
+          endVeil(cover);
+          const entry = manifest?.docs[target.relPath];
+          if (entry) persistRasterWindow(paneViewer.doc, entry, target.pageN);
           return;
         }
         const seed = await makeSeed(target.relPath, target.entry, target.pageN);
-        if (gen !== previewGen || t !== token) return;
+        if (t !== token) return;
+        const cover = beginVeil();
         const prevDoc = paneViewer.doc;
         /** @type {?{pages: Array<Array<Object>>, baseline: Set<number>}} */
         let carried = null;
@@ -2163,24 +2237,41 @@ export function installLibrary(viewer) {
             ? Promise.resolve(carriedPages.pages[n].map((a) => ({ ...a, bbox: { ...a.bbox } })))
             : Promise.resolve(baseAnnots ? baseAnnots(n) : null)),
         } : seed);
-        if (gen !== previewGen || t !== token) return;
+        if (t !== token) return;
         current = {
           relPath: target.relPath, hash: target.hash, pageN: target.pageN, query: target.query, handle, window: seed.window,
         };
         await handle.primed;
         if (t !== token) return;
         await applyQueryAndPage(target);
+        current.anchorTop = paneViewer.scribe.scrollContainer.scrollTop;
+        endVeil(cover);
+        armDwell(target, t);
         handle.hydrated.then(() => {
-          // The swap rebuilt the word objects, so re-derive the matches from the real document at whatever page the reader has reached.
-          if (!(current && current.handle === handle && current.query && paneViewer?.doc)) return;
+          if (!(current && current.handle === handle && paneViewer?.doc)) return;
           const ps = /** @type {NonNullable<typeof paneViewer>} */ (paneViewer).scribe;
-          ps.state.searchMode = true;
-          findText(ps, current.query);
-          const idx = ps._searchState.matchList.findIndex((m) => m.pageN === ps.state.cp.n);
-          if (idx >= 0) goToMatch(ps, idx);
+          const sc = ps.scrollContainer;
+          // Once the reader scrolled away from the anchored spot, hydration must not yank them back.
+          const readerMoved = current.anchorTop != null && Math.abs(sc.scrollTop - current.anchorTop) > 2;
+          if (current.query) {
+            // The swap rebuilt the word objects, so re-derive the matches from the real document at whatever page the reader has reached.
+            ps.state.searchMode = true;
+            findText(ps, current.query);
+            if (!readerMoved) {
+              const idx = ps._searchState.matchList.findIndex((m) => m.pageN === ps.state.cp.n);
+              if (idx >= 0) {
+                Promise.resolve(goToMatch(ps, idx)).then(() => {
+                  if (current && current.handle === handle) current.anchorTop = sc.scrollTop;
+                }).catch(() => {});
+              }
+            }
+          }
+          const entry = manifest?.docs[current.relPath];
+          if (entry) persistRasterWindow(paneViewer.doc, entry, ps.state.cp.n);
         }).catch(() => {});
       } catch {
-        if (gen === previewGen && t === token) {
+        if (t === token) {
+          endVeil();
           pvHost.style.display = 'none';
           pvEmpty.textContent = 'This page could not be rendered.';
           pvEmpty.style.display = '';
@@ -2213,6 +2304,11 @@ export function installLibrary(viewer) {
 
     const destroy = () => {
       token++;
+      endVeil();
+      if (dwellTimer !== null) {
+        clearTimeout(dwellTimer);
+        dwellTimer = null;
+      }
       releaseDoc(current ? current.hash : null);
       current = null;
       if (paneViewer) {
@@ -2255,10 +2351,10 @@ export function installLibrary(viewer) {
         return d;
       },
       isDirty: () => paneDirty,
-      /** Finish a provisional pane's load in place, so promotion can adopt the edited doc. */
+      /** Finish a provisional pane's load in place, so promotion adopts the document instead of the tab re-importing it. */
       finishHydration: async () => {
         const doc = /** @type {any} */ (paneViewer?.doc);
-        if (doc && doc.id < 0 && paneDirty && doc._requestHydration) {
+        if (doc && doc.id < 0 && doc._requestHydration) {
           await doc._requestHydration().catch(() => {});
         }
       },
@@ -2316,7 +2412,18 @@ export function installLibrary(viewer) {
 
   const renderResults = () => {
     const results = /** @type {Array<{hash: string, pages: number[]}>} */ (fullTextResults);
-    const gen = ++previewGen;
+    // The same result set reattaches the retained view untouched.
+    if (resultsView && resultsView.results === results && resultsView.pv === mountedPane) {
+      body.classList.add('results-mode');
+      body.appendChild(resultsView.wrap);
+      resultsView.attach();
+      return;
+    }
+    if (resultsView) {
+      resultsView.dispose();
+      resultsView = null;
+    }
+    const myGen = ++resultsGen;
     body.classList.add('results-mode');
     const { wrap, left: listEl } = buildPreviewSplit(400, () => resultsListWidth, (w) => { resultsListWidth = w; });
     body.appendChild(wrap);
@@ -2335,7 +2442,6 @@ export function installLibrary(viewer) {
     backBtn.className = 'scribe-library-back';
     backBtn.textContent = '‹ Back';
     backBtn.addEventListener('click', () => {
-      clearPreviewResources();
       fullTextResults = null;
       searchInput.value = '';
       searchField.classList.remove('has-text');
@@ -2405,19 +2511,23 @@ export function installLibrary(viewer) {
     /** @type {Array<{relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, hash: string, pageN: number, img: HTMLElement}>} */
     const thumbQueue = [];
     let thumbsRunning = false;
+    // A row must never import a document, so it draws only on the stored raster and sidecar.
     const pumpThumbs = async () => {
       if (thumbsRunning) return;
       thumbsRunning = true;
       while (thumbQueue.length) {
-        if (gen !== previewGen) break;
+        if (myGen !== resultsGen) break;
         const t = /** @type {NonNullable<typeof thumbQueue[0]>} */ (thumbQueue.shift());
         try {
-          const url = await renderPageUrl(t.relPath, t.hash, t.pageN, 112);
-          if (gen !== previewGen || !url) continue;
-          const doc = await getPreviewDoc(t.relPath, t.hash);
-          if (gen !== previewGen) break;
-          t.img.innerHTML = `<img alt="" src="${url}">${markOverlayHTML(getMatchRects(doc, t.pageN, fullTextQuery))}`;
-        } catch { /* A failed render leaves the placeholder page blank. */ }
+          const url = await sessions.pageImage(t.hash, t.pageN);
+          if (myGen !== resultsGen) break;
+          const side = await sessions.sidecar(t.hash);
+          if (myGen !== resultsGen) break;
+          const page = side?.ocr?.[t.pageN] ?? null;
+          const pd = t.entry.pageDims?.[t.pageN];
+          const marks = markOverlayHTML(getMatchRects(page, pd ? { width: pd[0], height: pd[1] } : null, fullTextQuery));
+          if (url || marks) t.img.innerHTML = `${url ? `<img alt="" src="${url}">` : ''}${marks}`;
+        } catch { /* A failed read leaves the placeholder page blank. */ }
       }
       thumbsRunning = false;
     };
@@ -2513,7 +2623,7 @@ export function installLibrary(viewer) {
           docRef: { relPath: docRef.relPath, entry: docRef.entry, hash: result.hash }, perPage, total,
         };
       }));
-      if (gen !== previewGen) return;
+      if (myGen !== resultsGen) return;
 
       const ranked = /** @type {NonNullable<typeof infos[0]>[]} */ (infos.filter(Boolean));
       ranked.sort((a, b) => b.total - a.total);
@@ -2577,6 +2687,39 @@ export function installLibrary(viewer) {
       }
       pumpThumbs();
     })();
+
+    const pv2 = mountedPane;
+    let listScrollTop = 0;
+    let paneScrollTop = 0;
+    let paneScrollLeft = 0;
+    const paneScroller = () => {
+      const host = /** @type {any} */ (pv2 && pv2.pane.querySelector('.scribe-library-pv-viewer'));
+      return host?.scribeViewer?.scribe?.scrollContainer ?? null;
+    };
+    resultsView = {
+      results,
+      pv: pv2,
+      wrap,
+      snapshot: () => {
+        listScrollTop = listEl.scrollTop;
+        const sc = paneScroller();
+        if (sc) {
+          paneScrollTop = sc.scrollTop;
+          paneScrollLeft = sc.scrollLeft;
+        }
+      },
+      attach: () => {
+        listEl.scrollTop = listScrollTop;
+        const sc = paneScroller();
+        if (sc) {
+          sc.scrollTop = paneScrollTop;
+          sc.scrollLeft = paneScrollLeft;
+        }
+      },
+      dispose: () => {
+        resultsGen++;
+      },
+    };
   };
 
   // --- Drag-to-reorder ----------------------------------------------------
@@ -2916,9 +3059,22 @@ export function installLibrary(viewer) {
       }
       return;
     }
-    // Preview promotion: a pane already showing this document hands its work to the tab instead of the tab re-importing it.
-    // A pane holding unsaved edits always promotes, since a fresh import would drop those edits.
-    if (mountedPane && mountedPane.shownHash() === entry.hash && (target.pageN != null || mountedPane.isDirty())) {
+    const pooled = entry.hash ? sessions.takeLive(entry.hash) : null;
+    if (pooled) {
+      entry.lastOpened = Date.now();
+      saveManifestSoon();
+      const tab = await viewer._openDocAsTab(pooled, titleOf(relPath), { libraryHash: entry.hash, lastPage: target.pageN ?? 0 });
+      wrapMutators(pooled, tab);
+      persistRasterWindow(pooled, entry, target.pageN ?? 0);
+      if (target.query && viewer._searchBar) {
+        viewer._searchBar.openSearch();
+        viewer._searchBar.searchInputElem.value = target.query;
+        await viewer._searchBar.runSearch(target.query, target.pageN);
+      }
+      return;
+    }
+    // Preview promotion: a pane already showing this document finishes its load and hands it to the tab, so Open never re-imports.
+    if (mountedPane && mountedPane.shownHash() === entry.hash) {
       try {
         await mountedPane.finishHydration();
         const handoffDoc = mountedPane.takeHydratedDoc();
@@ -2928,6 +3084,7 @@ export function installLibrary(viewer) {
           const tab = await viewer._openDocAsTab(handoffDoc, titleOf(relPath), { libraryHash: entry.hash, lastPage: target.pageN ?? 0 });
           if (mountedPane.takeDirty()) tab.libraryDirty = true;
           wrapMutators(handoffDoc, tab);
+          persistRasterWindow(handoffDoc, entry, target.pageN ?? 0);
           mountedPane.reshow();
           if (target.query && viewer._searchBar) {
             viewer._searchBar.openSearch();
@@ -2936,7 +3093,7 @@ export function installLibrary(viewer) {
           }
           return;
         }
-        if (previewDocs.has(entry.hash) || entry.pageDims) {
+        if (entry.pageDims) {
           entry.lastOpened = Date.now();
           saveManifestSoon();
           const seed = await makeSeed(relPath, entry, target.pageN);
@@ -2949,6 +3106,7 @@ export function installLibrary(viewer) {
           }
           handle.hydrated.then(() => {
             wrapMutators(tab.doc, tab);
+            persistRasterWindow(tab.doc, entry, target.pageN ?? 0);
             if (target.query && viewer._searchBar) viewer._searchBar.runSearch(target.query, target.pageN);
           }).catch(() => {});
           return;
@@ -2984,6 +3142,7 @@ export function installLibrary(viewer) {
     // Opening straight at the target page, since a `lastPage: 0` open followed by a jump would visibly double-paint.
     const tab = await viewer._openDocAsTab(doc, titleOf(relPath), { libraryHash: entry.hash, lastPage: target.pageN ?? 0 });
     wrapMutators(doc, tab);
+    persistRasterWindow(doc, entry, target.pageN ?? 0);
     if (target.query && viewer._searchBar) {
       viewer._searchBar.openSearch();
       viewer._searchBar.searchInputElem.value = target.query;
@@ -2996,9 +3155,34 @@ export function installLibrary(viewer) {
   /** @type {?FileSystemDirectoryHandle} */
   let pendingHandle = null;
 
+  /** @type {?number} Trailing debounce for grid rebuilds during bulk indexing. */
+  let ingestRenderTimer = null;
+
+  // Warm-lane gate inputs: the cushion renders only while the app is visible but idle, never on battery, and under a session cap when no power signal exists.
+  const WARM_IDLE_MS = 30 * 1000;
+  const WARM_SESSION_PAGES = 150;
+  let lastInteraction = Date.now();
+  const noteInteraction = () => { lastInteraction = Date.now(); };
+  document.addEventListener('pointerdown', noteInteraction, true);
+  document.addEventListener('keydown', noteInteraction, true);
+  document.addEventListener('wheel', noteInteraction, { capture: true, passive: true });
+  /** @type {?boolean} */
+  let onBattery = null;
+  const shell = /** @type {any} */ (window).electronAPI;
+  shell?.getPowerState?.().then((/** @type {any} */ s) => { onBattery = !!s?.onBattery; }).catch(() => {});
+  shell?.onPowerChanged?.((/** @type {any} */ s) => {
+    onBattery = !!s?.onBattery;
+    ingest?.start();
+  });
+  const onVisibilityChange = () => { ingest?.start(); };
+  document.addEventListener('visibilitychange', onVisibilityChange);
+  // The gate opening is not an event, so a slow tick is what resumes warm work once the reader goes idle.
+  const warmTimer = window.setInterval(() => { ingest?.start(); }, 15 * 1000);
+
   /** @param {LibraryStore} s */
   const openLibrary = async (s) => {
     store = s;
+    sessions.connect(s);
     currentDir = '';
     await store.init();
     manifest = await store.readManifest();
@@ -3023,7 +3207,21 @@ export function installLibrary(viewer) {
       },
       onDocDone: () => {
         saveIndexSoon();
-        if (visible) render();
+        // One rebuild per burst rather than per document, and never while results are shown.
+        if (!visible || fullTextResults) return;
+        if (ingestRenderTimer === null) {
+          ingestRenderTimer = window.setTimeout(() => {
+            ingestRenderTimer = null;
+            if (visible && !fullTextResults) render();
+          }, 300);
+        }
+      },
+      warmGate: () => {
+        if (document.visibilityState !== 'visible') return false;
+        if (Date.now() - lastInteraction < WARM_IDLE_MS) return false;
+        if (onBattery === true) return false;
+        if (onBattery === null && ingest && ingest.warmPagesDone >= WARM_SESSION_PAGES) return false;
+        return true;
       },
     });
     render();
@@ -3087,9 +3285,11 @@ export function installLibrary(viewer) {
       for (const tab of viewer._tabs) {
         if (tab.libraryHash) tab.libraryHash = undefined;
       }
-      for (const url of thumbUrls.values()) URL.revokeObjectURL(url);
-      thumbUrls.clear();
-      clearPreviewResources();
+      sessions.reset();
+      if (resultsView) {
+        resultsView.dispose();
+        resultsView = null;
+      }
       selectedPaths.clear();
       selAnchor = null;
       filterText = '';
@@ -3206,7 +3406,9 @@ export function installLibrary(viewer) {
       window.localStorage.setItem(VIEW_STORAGE_KEY, mode);
     } catch { /* localStorage unavailable. */ }
     syncViewUI();
-    render();
+    // The results view is mode-independent, so a toggle there must not rebuild anything.
+    // The new mode applies when the reader goes back to the grid.
+    if (!fullTextResults) render();
   };
   gridViewBtn.addEventListener('click', () => setViewMode('grid'));
   listViewBtn.addEventListener('click', () => setViewMode('list'));
@@ -3217,7 +3419,7 @@ export function installLibrary(viewer) {
       window.localStorage.setItem(PREVIEW_STORAGE_KEY, listPreviewOn ? '1' : '0');
     } catch { /* localStorage unavailable. */ }
     syncViewUI();
-    render();
+    if (!fullTextResults) render();
   });
 
   addBtn.addEventListener('click', () => {
@@ -3347,6 +3549,15 @@ export function installLibrary(viewer) {
       resizeObserver.disconnect();
       hintObserver.disconnect();
       window.clearInterval(autosaveTimer);
+      window.clearInterval(warmTimer);
+      if (ingestRenderTimer !== null) {
+        window.clearTimeout(ingestRenderTimer);
+        ingestRenderTimer = null;
+      }
+      document.removeEventListener('pointerdown', noteInteraction, true);
+      document.removeEventListener('keydown', noteInteraction, true);
+      document.removeEventListener('wheel', noteInteraction, { capture: true });
+      document.removeEventListener('visibilitychange', onVisibilityChange);
       window.removeEventListener('pagehide', onPageHide);
       document.removeEventListener('keydown', onFindShortcut, true);
       viewer.pdfViewerElem.removeEventListener('input', onInput, true);
@@ -3361,10 +3572,12 @@ export function installLibrary(viewer) {
         indexTimer = null;
         if (store) store.writeSearchIndex(index.serialize()).catch(() => {});
       }
-      for (const url of thumbUrls.values()) URL.revokeObjectURL(url);
-      thumbUrls.clear();
       if (mountedPane) mountedPane.destroy();
-      clearPreviewResources();
+      sessions.reset();
+      if (resultsView) {
+        resultsView.dispose();
+        resultsView = null;
+      }
       surface.remove();
       barTitle?.remove();
       barControls?.remove();

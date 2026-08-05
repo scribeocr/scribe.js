@@ -322,6 +322,7 @@ async function _restoreSessionFromLegacyHocr(doc, ocrData) {
  * @param {boolean} [options.keepPDFTextAlways]
  * @param {boolean} [options.skipFontOpt]
  * @param {boolean} [options.usePdfSharedBuffer]
+ * @param {number} [options.pdfWorkerN] - Fixed PDF worker-pool size for this document.
  * @param {'width' | 'sentence'} [options.docxLineSplitMode]
  * @param {boolean} [options.deferText] - Resolve once the PDF is renderable, running text extraction in the background behind `doc.textReady` instead of blocking on it.
  *   PDF inputs only.
@@ -448,7 +449,7 @@ export async function importFiles(doc, files, options = {}) {
 
   if (doc.inputData.pdfMode) {
     // If no XML data is provided, page sizes are calculated using muPDF alone
-    await doc.images.openMainPDF(pdfFiles[0], { usePdfSharedBuffer });
+    await doc.images.openMainPDF(pdfFiles[0], { usePdfSharedBuffer, pdfWorkerN: options.pdfWorkerN });
 
     pageCountImage = doc.images.pageCount;
     doc.images.loadCount = doc.images.pageCount;

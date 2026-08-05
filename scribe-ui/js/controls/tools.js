@@ -1280,9 +1280,11 @@ export function createDropZone({
  * @param {boolean} [options.deferText] - Resolve as soon as the document is renderable, leaving text extraction running behind `doc.textReady` (see `importFiles`).
  *    For open-and-display paths only.
  *    Callers that read the document's text right after opening must leave this unset.
+ * @param {boolean} [options.skipFontOpt] - Skip font optimization.
+ *    Safe only for callers that read text and never render styled overlays.
  * @returns {Promise<import('../../../js/containers/scribeDoc.js').ScribeDoc>}
  */
-export async function openDocumentFromFile(file, { deferText = false } = {}) {
+export async function openDocumentFromFile(file, { deferText = false, skipFontOpt = false } = {}) {
   /** @type {Parameters<typeof scribeLib.openDocument>[0]} */
   let input;
   if (file instanceof ArrayBuffer) {
@@ -1300,7 +1302,7 @@ export async function openDocumentFromFile(file, { deferText = false } = {}) {
     throw new Error('openDocumentFromFile: input must be File, Blob, ArrayBuffer, Uint8Array, or a filesystem path string.');
   }
 
-  const doc = await scribeLib.openDocument(input, deferText ? { deferText: true } : undefined);
+  const doc = await scribeLib.openDocument(input, (deferText || skipFontOpt) ? { deferText, skipFontOpt } : undefined);
 
   // A pure viewer never runs recognize(), so an image-based PDF's active (selectable) text layer would stay empty.
   // When nothing else has filled it, fall back to the PDF's own parsed text, copying each page's deskew angle so the text overlay aligns.

@@ -1,6 +1,10 @@
 import {
   ScribeViewer, pdfViewer, handleHighlights, handleLoadFile,
 } from '../example-app.js';
+import { scribe } from '../pdf-viewer.js';
+
+// The shell serves COOP/COEP headers, so PDF bytes can be shared across workers instead of cloned per worker.
+scribe.opt.usePdfSharedBuffer = true;
 
 // Set up frameless window drag regions
 pdfViewer.toolbarElem.style.webkitAppRegion = 'drag';
