@@ -13,6 +13,9 @@ export function ensureLayerStyleSheet() {
   styleEl.textContent = '.scribe-hide-text-layer .scribe-layer-text{display:none}'
     + '.scribe-hide-overlay-layer .scribe-layer-overlay{display:none}'
     + '.scribe-hide-image-layer .scribe-layer-image{display:none!important}'
+    // A native selection anchored in the page container reaches the raster, and WebKit paints the whole page image blue.
+    // Chrome leaves the canvas out of the range, so this rule looks like a no-op there.
+    + '.scribe-layer-image{user-select:none;-webkit-user-select:none}'
     // Set on the zoom layer during an active iOS pinch: rotated page-sized groups each cost a full unscaled-layout surface, so they sit out the pinch.
     + '.scribe-zoom.scribe-pinch .scribe-group{display:none!important}'
     + '.scribe-hl-band{opacity:var(--scribe-hl-o,1);transition:opacity .12s ease}'
