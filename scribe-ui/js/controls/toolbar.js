@@ -195,8 +195,9 @@ export function createPageNav(scribe) {
     );
   };
 
-  nextElem.addEventListener('click', () => { slideIcon(nextElem, 1); scribe.displayPage(scribe.state.cp.n + 1, true, false); });
-  prevElem.addEventListener('click', () => { slideIcon(prevElem, -1); scribe.displayPage(scribe.state.cp.n - 1, true, false); });
+  // Step by row, not page, so in two-page view "next" always moves the view (the facing page is already on screen).
+  nextElem.addEventListener('click', () => { slideIcon(nextElem, 1); scribe.displayPage(scribe.rowStep(scribe.state.cp.n, 1), true, false); });
+  prevElem.addEventListener('click', () => { slideIcon(prevElem, -1); scribe.displayPage(scribe.rowStep(scribe.state.cp.n, -1), true, false); });
   pageNumElem.addEventListener('keyup', (event) => {
     if (event.key === 'Enter') scribe.displayPage(parseInt(pageNumElem.value, 10) - 1, true, false);
   });
@@ -1120,6 +1121,8 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
        The app-menu rows that replace them show only then. */
     .${r}.scribe-coarse .scribe-touch-hide,
     .${r}.scribe-phone .scribe-touch-hide { display: none !important; }
+    /* Phone-only hide, for a control tablets keep. The phone layout forces single-page view, so only it drops the two-page toggle. */
+    .${r}.scribe-phone .scribe-phone-hide { display: none !important; }
     .${r} .scribe-app-menu-item.scribe-touch-row { display: none; }
     .${r}.scribe-coarse .scribe-app-menu-item.scribe-touch-row,
     .${r}.scribe-phone .scribe-app-menu-item.scribe-touch-row { display: flex; }

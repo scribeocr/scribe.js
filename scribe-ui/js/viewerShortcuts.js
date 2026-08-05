@@ -343,13 +343,13 @@ export function handleKeyboardEvent(viewer, event) {
   }
 
   if (event.key === 'PageUp') {
-    _viewer.displayPage(_viewer.state.cp.n - 1, true, false);
+    _viewer.displayPage(_viewer.rowStep(_viewer.state.cp.n, -1), true, false);
     event.preventDefault();
     return;
   }
 
   if (event.key === 'PageDown') {
-    _viewer.displayPage(_viewer.state.cp.n + 1, true, false);
+    _viewer.displayPage(_viewer.rowStep(_viewer.state.cp.n, 1), true, false);
     event.preventDefault();
     return;
   }

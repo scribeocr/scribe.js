@@ -71,7 +71,7 @@ const _initBitmapScheduler = async (numWorkers = 3) => {
  */
 export class ViewerImageCache {
   /**
-   * Number of pages ahead and behind the current page to pre-render.
+   * Number of rows ahead and behind the current row to pre-render.
    */
   static cacheRenderPages = IOS_WEBKIT ? 2 : 3;
 
@@ -89,12 +89,12 @@ export class ViewerImageCache {
   static canvasCacheBytes = (IOS_WEBKIT ? 128 : 256) * 1024 * 1024;
 
   /**
-   * Pages ahead whose previews are pre-warmed on each fast-scroll page change.
+   * Rows ahead whose previews are pre-warmed on each fast-scroll page change.
    * Bounded on purpose: a whole-document background pass competed with the scroll and never let the pipeline settle.
    */
   static previewAhead = 20;
 
-  /** Pages behind the current page kept previewed, so a brief reverse or a rebuilt container is covered. */
+  /** Rows behind the current one kept previewed, so a brief reverse or a rebuilt container is covered. */
   static previewBehind = 4;
 
   /**
@@ -715,25 +715,62 @@ export class ViewerImageCache {
   }
 
   /**
-   * Show previews for the current page and a look-ahead in the scroll direction, rendering any not yet cached.
+   * Show previews for the current row and a look-ahead in the scroll direction, rendering any not yet cached.
+   * The window is measured in rows, so two-page view keeps the same look-ahead distance rather than half of it.
    * @param {number} curr
    * @param {number} [dir=1] - Scroll direction (+1 down, -1 up).
    */
   ensurePreviewWindow(curr, dir = 1) {
+    const viewer = this._viewer();
     const ahead = ViewerImageCache.previewAhead;
     const behind = ViewerImageCache.previewBehind;
-    const lo = dir >= 0 ? curr - behind : curr - ahead;
-    const hi = dir >= 0 ? curr + ahead : curr + behind;
-    for (let i = lo; i <= hi; i++) {
-      if (i >= 0) this.showPreview(i);
+    const r = viewer.rowOfPage(curr);
+    if (r === null) {
+      const lo = dir >= 0 ? curr - behind : curr - ahead;
+      const hi = dir >= 0 ? curr + ahead : curr + behind;
+      for (let i = lo; i <= hi; i++) {
+        if (i >= 0) this.showPreview(i);
+      }
+      return;
     }
+    const loR = r - (dir >= 0 ? behind : ahead);
+    const hiR = r + (dir >= 0 ? ahead : behind);
+    for (let ri = Math.max(0, loR); ri <= hiR; ri++) {
+      for (const n of viewer.rowPages(ri)) this.showPreview(n);
+    }
+  }
+
+  /**
+   * Pages of the rows within `radiusRows` of `curr`'s row, nearest rows first and ahead before behind.
+   * Excludes `curr` itself and any page outside the loaded range.
+   * @param {number} curr
+   * @param {number} radiusRows
+   * @returns {Array<number>}
+   */
+  _rowWindowPages(curr, radiusRows) {
+    const viewer = this._viewer();
+    const out = [];
+    const push = (n) => {
+      if (n !== curr && n >= 0 && n < viewer.doc.images.loadCount) out.push(n);
+    };
+    const r = viewer.rowOfPage(curr);
+    if (r === null) {
+      for (let i = 1; i <= radiusRows; i++) { push(curr + i); push(curr - i); }
+      return out;
+    }
+    for (const n of viewer.rowPages(r)) push(n);
+    for (let i = 1; i <= radiusRows; i++) {
+      for (const n of viewer.rowPages(r + i)) push(n);
+      for (const n of viewer.rowPages(r - i)) push(n);
+    }
+    return out;
   }
 
   /**
    * Render the current page and a few pages ahead and behind.
    * Bitmaps for distant pages are freed.
    * @param {number} curr
-   * @param {number} [radius=ViewerImageCache.cacheRenderPages] - Pages to render on each side of `curr`.
+   * @param {number} [radius=ViewerImageCache.cacheRenderPages] - Rows to render on each side of `curr`'s row.
    *   Pass 0 (render only `curr`) in the tail of a fast-scroll glide, so a window of full-page renders does not clump into the decelerating frames.
    *   Cache sweeps run regardless.
    */
@@ -759,11 +796,7 @@ export class ViewerImageCache {
       // Past fit-width the ahead-render is dropped: neighbor canvases are raster-cap-sized there, and the eviction-protected window would pin an over-budget set nothing can reclaim.
       // Previews cover the neighbors until they are scrolled to.
       const deepZoom = this._iosDeepZoom();
-      const pages = [curr];
-      for (let i = 1; i <= (deepZoom ? 0 : radius); i++) {
-        if (curr + i < viewer.doc.images.loadCount) pages.push(curr + i);
-        if (curr - i >= 0) pages.push(curr - i);
-      }
+      const pages = [curr, ...((deepZoom || radius === 0) ? [] : this._rowWindowPages(curr, radius))];
       if (deepZoom) this.ensurePreviewWindow(curr);
       this._iosRenderFocus = curr;
       this._iosRenderChain = this._iosRenderChain.then(async () => {
@@ -778,12 +811,9 @@ export class ViewerImageCache {
       return;
     }
     const resArr = [this.addPageCanvas(curr)];
-    for (let i = 1; i <= radius; i++) {
-      if (curr + i < viewer.doc.images.loadCount) {
-        resArr.push(this.addPageCanvas(curr + i));
-      }
-      if (curr - i >= 0) {
-        resArr.push(this.addPageCanvas(curr - i));
+    if (radius > 0) {
+      for (const n of this._rowWindowPages(curr, radius)) {
+        resArr.push(this.addPageCanvas(n));
       }
     }
 

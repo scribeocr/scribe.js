@@ -88,6 +88,9 @@ const SIDEBAR_ANIM_MS = 180;
 /** localStorage key for the persisted theme setting ('system' | 'light' | 'dark'). */
 const THEME_STORAGE_KEY = 'scribe-theme';
 
+/** localStorage key for the page-layout preference: 'single' | 'double', with an optional '-cover' suffix remembering book pairing. */
+const PAGE_LAYOUT_STORAGE_KEY = 'scribe-page-layout';
+
 /** Chevron-down for the Recognize Text mode's language button. */
 const CARET_SVG = '<svg viewBox="0 0 24 24" width="12" height="12" aria-hidden="true"><path d="M7 10l5 5 5-5z" fill="currentColor"/></svg>';
 
@@ -104,6 +107,10 @@ const ICON_SPLIT = editIcon('<circle cx="6" cy="7" r="2.1"/><circle cx="6" cy="1
 /** Crescent moon for the app menu's Dark mode toggle. */
 const ICON_DARK = editIcon('<path d="M20.5 13.5A8 8 0 0 1 10.5 3.5 7 7 0 1 0 20.5 13.5Z"/>');
 const ICON_FIELDS = editIcon('<rect x="3.5" y="7.5" width="17" height="9" rx="1.2"/><path d="M7 12h5"/>');
+/** Open book for the toolbar's two-page (side-by-side) view toggle. */
+const ICON_TWO_PAGE = editIcon('<path d="M12 6.1C10.4 4.8 7.9 4.3 4.5 4.5v13.7c3.4-.2 5.9.3 7.5 1.7 1.6-1.4 4.1-1.9 7.5-1.7V4.5c-3.4-.2-5.9.3-7.5 1.6Z"/><path d="M12 6.1v13.8"/>');
+/** Facing-page pair for the app menu's cover-page row. */
+const ICON_COVER_ALONE = editIcon('<rect x="3.5" y="5" width="7.6" height="14" rx="1"/><rect x="12.9" y="5" width="7.6" height="14" rx="1"/>');
 /** Scan corners around a letterform, for the touch-only Recognize text menu row. */
 // eslint-disable-next-line max-len
 const ICON_RECOGNIZE = editIcon('<path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16"/><path d="M9 15V9.8A0.8 0.8 0 0 1 9.8 9h4.4a0.8 0.8 0 0 1 0.8 0.8V15M9 12.6h6"/>');
@@ -242,6 +249,14 @@ class ScribePDFViewer {
       this.scribe.opt.enablePageEditing = true;
       this.scribe.opt.enableRecognition = true;
     }
+
+    /**
+     * Persisted page-layout preference.
+     * The `-cover` suffix survives single-page mode, so re-entering two-page view restores book pairing.
+     * @type {'single'|'double'|'single-cover'|'double-cover'}
+     */
+    this._pageLayoutSetting = this._readPageLayoutSetting();
+    this._applyPageLayoutPref();
 
     /**
      * @type {?{imgDims: {width: number, height: number}, docW: number, zoom: number, isDefaultFit: boolean, widthMode: boolean}}
@@ -518,6 +533,13 @@ class ScribePDFViewer {
       toolbarButtons.appendChild(rotate.rotateControls);
       toolbarButtons.appendChild(sepBeforeZoom);
       toolbarButtons.appendChild(zoom.zoomControls);
+      // Hidden only by the phone layout, which forces single-page view.
+      // Tablets keep it, since no gesture covers a layout switch the way pinch covers zoom.
+      const twoPageBtn = makeIconButton('Two page view', ICON_TWO_PAGE);
+      twoPageBtn.classList.add('scribe-phone-hide');
+      twoPageBtn.addEventListener('click', () => this._togglePageLayout());
+      toolbarButtons.appendChild(twoPageBtn);
+      this._twoPageBtn = twoPageBtn;
       this._rotateControls = rotate.rotateControls;
       this._sepBeforeRotate = sepBeforeRotate;
       if (this._highlightTool) {
@@ -553,6 +575,12 @@ class ScribePDFViewer {
       this.toolbarElemEnd = toolbarElemEnd;
       this.pageNumElem = pageNav.pageNumElem;
       this.pageCountElem = pageNav.pageCountElem;
+      // A two-page range is not a typeable value, so focus swaps in the plain cursor page and blur restores the range.
+      this.pageNumElem.addEventListener('focus', () => {
+        if (this.doc) this.pageNumElem.value = (this.scribe.state.cp.n + 1).toString();
+        this.pageNumElem.select();
+      });
+      this.pageNumElem.addEventListener('blur', () => this._syncPageNumDisplay());
       this.prevElem = pageNav.prevElem;
       this.nextElem = pageNav.nextElem;
       // Retained because the phone dock borrows the group (`_setPhoneChrome`) and must return it beside `nextElem`.
@@ -778,7 +806,7 @@ class ScribePDFViewer {
     const origCallback = this.scribe.displayPageCallback;
     this.scribe.displayPageCallback = () => {
       if (origCallback) origCallback();
-      if (this.pageNumElem) this.pageNumElem.value = this.doc ? (this.scribe.state.cp.n + 1).toString() : '';
+      this._syncPageNumDisplay();
       this._syncDockPageNumWidth();
       // Keep the navbar total in sync with the live page count. Every op that changes the count (paste, insert, delete, move, undo/redo) ends in displayPage, so refreshing here covers them all.
       if (this.pageCountElem && this.doc) this.pageCountElem.textContent = this.doc.inputData.pageCount.toString();
@@ -1192,7 +1220,7 @@ class ScribePDFViewer {
         if (this.scribe.zoomLevel !== zoom) {
           this.scribe.zoomLevel = zoom;
           this.scribe._applyZoomTransform(zoom);
-          this.scribe.calcPageStops();
+          this.scribe.calcPageLayout();
         }
         sc.scrollTop = scrollTop;
         sc.scrollLeft = scrollLeft;
@@ -2445,6 +2473,8 @@ class ScribePDFViewer {
   _setPhoneChrome(phone) {
     if (phone === this._phoneChrome) return;
     this._phoneChrome = phone;
+    // The phone layout forces single-page view, and leaving it restores the persisted preference.
+    this._applyPageLayoutPref();
     this.pdfViewerElem.classList.toggle('scribe-phone', phone);
     if (this.toolbarElem && this._appMenu && this._searchBar) {
       if (phone) {
@@ -3197,6 +3227,7 @@ class ScribePDFViewer {
     if (disabled && this._recognizeTool?.isActive()) this._recognizeTool.close();
     for (const el of [
       this._searchBar?.searchElem,
+      this._twoPageBtn,
       this._thumbnailPanel?.toggleElem,
       this._bookmarksPanel?.toggleElem,
       this._commentsPanel?.toggleElem,
@@ -3306,8 +3337,8 @@ class ScribePDFViewer {
       const stageH = sc.clientHeight;
 
       // The scroll extent is the widest page, not the first one, so a document mixing page sizes must fit that width or it opens overflowing horizontally.
-      // Only `calcPageStops` computes `_contentWidth`, and on a first load nothing has needed the page stops yet.
-      this.scribe.calcPageStops();
+      // Only `calcPageLayout` computes `_contentWidth`, and on a first load nothing has needed the page layout yet.
+      this.scribe.calcPageLayout();
       const docW = this.scribe._contentWidth || imgDims.width;
 
       // The phone takes width-fit either way.
@@ -3442,6 +3473,10 @@ class ScribePDFViewer {
       // Flipping the toggle sets an explicit light/dark preference that overrides the system default.
       // The switch reflects the theme in effect each time the menu opens.
       appMenu.addSeparator();
+      // The row shows only while pages are paired, so it never describes a state that is not on screen.
+      const coverToggle = appMenu.addToggle('Separate cover page', ICON_COVER_ALONE, () => this.scribe.state.coverAlone, () => this._toggleCoverAlone());
+      this._coverToggleItem = coverToggle.item;
+      this._syncPageLayoutControls();
       appMenu.addToggle('Dark mode', ICON_DARK, () => this._effectiveTheme() === 'dark', () => this._toggleDarkMode());
       const fieldsToggle = appMenu.addToggle('Highlight fields', ICON_FIELDS, () => getHighlightFields(), () => {
         if (this._fieldsToggleItem?.classList.contains('disabled')) return;
@@ -3570,6 +3605,93 @@ class ScribePDFViewer {
       if (ok && this._recognizeTool?.isActive()) this._recognizeTool.close();
       this._syncDocGatedControls();
     }
+  }
+
+  /**
+   * Read the persisted page-layout preference.
+   * @returns {'single'|'double'|'single-cover'|'double-cover'}
+   */
+  // eslint-disable-next-line class-methods-use-this
+  _readPageLayoutSetting() {
+    try {
+      const v = window.localStorage.getItem(PAGE_LAYOUT_STORAGE_KEY);
+      if (v === 'single' || v === 'double' || v === 'single-cover' || v === 'double-cover') return v;
+    } catch { /* localStorage unavailable (private mode / sandbox). Fall through to default. */ }
+    return 'single';
+  }
+
+  /** Persist the current page-layout preference. */
+  _writePageLayoutSetting() {
+    try { window.localStorage.setItem(PAGE_LAYOUT_STORAGE_KEY, this._pageLayoutSetting); } catch { /* localStorage unavailable. The choice just won't persist. */ }
+  }
+
+  /** Push the persisted layout preference into the viewer, except that the phone layout always forces single-page. */
+  _applyPageLayoutPref() {
+    const two = !this._phoneChrome && this._pageLayoutSetting.startsWith('double');
+    this.scribe.setPagesPerRow(two ? 2 : 1, this._pageLayoutSetting.endsWith('-cover'));
+    this._syncPageLayoutControls();
+  }
+
+  /** Flip single/two-page view from the toolbar toggle and persist the choice. */
+  _togglePageLayout() {
+    if (this._twoPageBtn?.classList.contains('disabled')) return;
+    const two = this.scribe.state.pagesPerRow !== 2;
+    const cover = this._pageLayoutSetting.endsWith('-cover');
+    this._pageLayoutSetting = (two ? 'double' : 'single') + (cover ? '-cover' : '');
+    this._writePageLayoutSetting();
+    this._setPageLayout(two ? 2 : 1, cover);
+  }
+
+  /** Flip book pairing from the app menu's cover row and persist it. */
+  _toggleCoverAlone() {
+    const two = this.scribe.state.pagesPerRow === 2;
+    const cover = !this._pageLayoutSetting.endsWith('-cover');
+    this._pageLayoutSetting = (two ? 'double' : 'single') + (cover ? '-cover' : '');
+    this._writePageLayoutSetting();
+    if (two) this._setPageLayout(2, cover);
+  }
+
+  /**
+   * Apply a page-layout change, refitting the zoom only while the user is still at the automatic fit.
+   * A manual zoom survives the switch, with just the cursor's row kept in view.
+   * @param {1|2} pagesPerRow
+   * @param {boolean} coverAlone
+   */
+  _setPageLayout(pagesPerRow, coverAlone) {
+    const s = this.scribe;
+    const af = this._autoFit;
+    const atAutoFit = !!(af && af.zoom > 0 && s.scrollContainer && s.zoomLevel > 0
+      && Math.abs(s.zoomLevel - af.zoom) / af.zoom < 0.05);
+    if (atAutoFit && this.doc) s.runSetInitial = true;
+    s.setPagesPerRow(pagesPerRow, coverAlone);
+    this._syncPageLayoutControls();
+  }
+
+  /** Reflect the current page layout in its controls. */
+  _syncPageLayoutControls() {
+    const two = this.scribe.state.pagesPerRow === 2;
+    if (this._twoPageBtn) this._twoPageBtn.classList.toggle('active', two);
+    if (this._coverToggleItem) this._coverToggleItem.style.display = two ? '' : 'none';
+    this._syncPageNumDisplay();
+  }
+
+  /**
+   * Fill the page box with the visible row's page range in two-page view, or with the cursor page otherwise.
+   * A focused box is left alone, since focus swaps in the plain cursor number for editing.
+   */
+  _syncPageNumDisplay() {
+    if (!this.pageNumElem) return;
+    if (document.activeElement === this.pageNumElem) return;
+    if (!this.doc) { this.pageNumElem.value = ''; return; }
+    const s = this.scribe;
+    const cp = s.state.cp.n;
+    let text = (cp + 1).toString();
+    if (s.state.pagesPerRow === 2) {
+      const row = s.rowOfPage(cp);
+      const pages = row === null ? [] : s.rowPages(row);
+      if (pages.length > 1) text = `${pages[0] + 1}–${pages[pages.length - 1] + 1}`;
+    }
+    this.pageNumElem.value = text;
   }
 
   /**

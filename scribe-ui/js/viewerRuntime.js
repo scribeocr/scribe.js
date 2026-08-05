@@ -14,6 +14,14 @@ export class ScribeViewerState {
      * @type {'invis'|'ebook'|'eval'|'proof'|'annot'}
      */
     this.displayMode = 'invis';
+    /** @type {1|2} */
+    this.pagesPerRow = 1;
+    /** In two-page view, lay out page 0 in a row of its own so scanned books show true facing pages. */
+    this.coverAlone = false;
+    /**
+     * The navigation cursor: the page that navigation and page-scoped operations act on.
+     * Scrolling moves it only when the viewport-center row changes, to that row's first page.
+     */
     this.cp = { n: 0 };
   }
 }

@@ -456,7 +456,7 @@ function applyLayoutRegions(viewer, srcN, minN, maxN) {
       value.page = viewer.doc.layoutRegions.pages[i];
     }
     viewer.doc.layoutRegions.pages[i].boxes = boxes;
-    if (Math.abs(i - viewer.state.cp.n) < 2) {
+    if (viewer.rowDistance(i, viewer.state.cp.n) < 2) {
       renderLayoutBoxes(viewer, i);
     }
   }
@@ -479,7 +479,7 @@ function applyLayoutDataTables(viewer, srcN, minN, maxN) {
       x.page = viewer.doc.layoutDataTables.pages[i];
     });
     viewer.doc.layoutDataTables.pages[i].tables = tables;
-    if (Math.abs(i - viewer.state.cp.n) < 2) {
+    if (viewer.rowDistance(i, viewer.state.cp.n) < 2) {
       renderLayoutBoxes(viewer, i);
     }
   }

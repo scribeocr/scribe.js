@@ -151,6 +151,18 @@ export class ScribeViewer {
     this._pageStopsStart = [];
     /** @type {Array<number>} */
     this._pageStopsEnd = [];
+    /**
+     * Layout rows: each holds 1-2 consecutive pages sharing one vertical band.
+     * @type {Array<{start: number, count: number}>}
+     */
+    this._rows = [];
+    /** @type {Array<number>} Page index -> its row index. */
+    this._pageRow = [];
+    /** @type {Array<number>} Page index -> its x origin in content space. */
+    this._pageLefts = [];
+    /** Largest row extents, in content px. */
+    this._maxRowWidth = 0;
+    this._maxRowHeight = 0;
 
     /** @type {?Function} */
     this.displayPageCallback = null;
@@ -630,8 +642,7 @@ export class ScribeViewer {
 
     this._highlightOutlineRects.length = 0;
 
-    this._pageStopsStart.length = 0;
-    this._pageStopsEnd.length = 0;
+    this._invalidateLayout();
 
     this.imageCache.clear();
 
@@ -663,7 +674,7 @@ export class ScribeViewer {
     if (start && this._pageStopsStart[n]) return this._pageStopsStart[n];
     if (!start && this._pageStopsEnd[n]) return this._pageStopsEnd[n];
 
-    this.calcPageStops();
+    this.calcPageLayout();
 
     if (start && this._pageStopsStart[n]) return this._pageStopsStart[n];
     if (!start && this._pageStopsEnd[n]) return this._pageStopsEnd[n];
@@ -678,35 +689,191 @@ export class ScribeViewer {
    */
   _panGutter() {
     if (!this.opt.freePan) return { x: 0, y: 0 };
-    let maxWidth = 0;
-    let maxHeight = 0;
-    for (let i = 0; i < this.doc.pageMetrics.length; i++) {
-      const dims = this.getDisplayDims(i);
-      if (!dims) continue;
-      if (dims.width > maxWidth) maxWidth = dims.width;
-      if (dims.height > maxHeight) maxHeight = dims.height;
-    }
     const k = ScribeViewer.freePanGutterFraction;
-    return { x: maxWidth * k, y: maxHeight * k };
+    return { x: this._maxRowWidth * k, y: this._maxRowHeight * k };
   }
 
-  calcPageStops() {
+  /**
+   * Partition the document into rows and lay them out, filling the per-page stops, x origins, and row indices.
+   * Each row is centered as a unit, and its members are top-aligned, so a page's stop is also its container's top.
+   */
+  calcPageLayout() {
     const margin = ScribeViewer.pageMargin;
-    const gutter = this._panGutter();
-    let y = gutter.y + margin;
-    let maxWidth = 0;
-    for (let i = 0; i < this.doc.pageMetrics.length; i++) {
-      this._pageStopsStart[i] = y;
-      const dims = this.getDisplayDims(i);
-      if (!dims) return;
+    const perRow = this.state.pagesPerRow === 2 ? 2 : 1;
 
-      y += dims.height + margin;
-      this._pageStopsEnd[i] = y;
-      if (dims.width > maxWidth) maxWidth = dims.width;
+    this._rows.length = 0;
+    this._pageRow.length = 0;
+    this._pageLefts.length = 0;
+
+    const nPages = this.doc.pageMetrics.length;
+    /** @type {Array<{start: number, count: number, width: number, height: number}>} */
+    const rows = [];
+    let maxRowWidth = 0;
+    let maxRowHeight = 0;
+    let complete = true;
+    for (let i = 0; i < nPages;) {
+      const count = Math.min(perRow === 2 && this.state.coverAlone && i === 0 ? 1 : perRow, nPages - i);
+      let width = 0;
+      let height = 0;
+      for (let k = 0; k < count; k++) {
+        const dims = this.getDisplayDims(i + k);
+        if (!dims) { complete = false; break; }
+        width += dims.width + (k > 0 ? margin : 0);
+        if (dims.height > height) height = dims.height;
+      }
+      if (!complete) break;
+      rows.push({
+        start: i, count, width, height,
+      });
+      if (width > maxRowWidth) maxRowWidth = width;
+      if (height > maxRowHeight) maxRowHeight = height;
+      i += count;
     }
-    this._contentWidth = maxWidth + gutter.x * 2;
+    this._maxRowWidth = maxRowWidth;
+    this._maxRowHeight = maxRowHeight;
+
+    const gutter = this._panGutter();
+    if (complete) this._contentWidth = maxRowWidth + gutter.x * 2;
+
+    let y = gutter.y + margin;
+    for (let r = 0; r < rows.length; r++) {
+      const row = rows[r];
+      this._rows.push({ start: row.start, count: row.count });
+      let x = (this._contentWidth - row.width) / 2;
+      for (let k = 0; k < row.count; k++) {
+        const n = row.start + k;
+        this._pageRow[n] = r;
+        this._pageStopsStart[n] = y;
+        this._pageStopsEnd[n] = y + row.height + margin;
+        this._pageLefts[n] = x;
+        x += /** @type {dims} */ (this.getDisplayDims(n)).width + margin;
+      }
+      y += row.height + margin;
+    }
+    if (!complete) return;
     this._contentHeight = y + gutter.y;
     this._updateContentSize();
+  }
+
+  /**
+   * Row index of page `n`, or null while the page has no computed layout (no dims yet).
+   * @param {number} n
+   * @returns {?number}
+   */
+  rowOfPage(n) {
+    if (this._pageRow[n] === undefined) this.calcPageLayout();
+    return this._pageRow[n] ?? null;
+  }
+
+  /**
+   * The page indices of row `rowIdx`, in reading order. Empty for an out-of-range row.
+   * @param {number} rowIdx
+   * @returns {Array<number>}
+   */
+  rowPages(rowIdx) {
+    const row = this._rows[rowIdx];
+    if (!row) return [];
+    const out = [];
+    for (let k = 0; k < row.count; k++) out.push(row.start + k);
+    return out;
+  }
+
+  /**
+   * Distance between two pages' rows.
+   * Falls back to page distance while either page has no layout yet.
+   * @param {number} a
+   * @param {number} b
+   * @returns {number}
+   */
+  rowDistance(a, b) {
+    const ra = this.rowOfPage(a);
+    const rb = this.rowOfPage(b);
+    if (ra === null || rb === null) return Math.abs(a - b);
+    return Math.abs(ra - rb);
+  }
+
+  /**
+   * Pages of the rows within `rowRadius` of page `n`'s row, in index order.
+   * @param {number} n
+   * @param {number} [rowRadius=1]
+   * @returns {Array<number>}
+   */
+  windowPages(n, rowRadius = 1) {
+    const r = this.rowOfPage(n);
+    const out = [];
+    if (r === null) {
+      const last = this.doc.pageMetrics.length - 1;
+      for (let i = Math.max(0, n - rowRadius); i <= Math.min(last, n + rowRadius); i++) out.push(i);
+      return out;
+    }
+    for (let ri = Math.max(0, r - rowRadius); ri <= Math.min(this._rows.length - 1, r + rowRadius); ri++) {
+      const row = this._rows[ri];
+      for (let k = 0; k < row.count; k++) out.push(row.start + k);
+    }
+    return out;
+  }
+
+  /**
+   * First page of the row `dir` rows from page `n`'s, the next/prev navigation target.
+   * At a document edge the result is deliberately out of range, so the caller's `displayPage` bounds guard owns the no-op and still fires its callback.
+   * @param {number} n
+   * @param {number} dir - +1 or -1.
+   * @returns {number}
+   */
+  rowStep(n, dir) {
+    const r = this.rowOfPage(n);
+    if (r === null) return n + dir;
+    const row = this._rows[r + dir];
+    if (row) return row.start;
+    return dir > 0 ? this.doc.pageMetrics.length : -1;
+  }
+
+  /**
+   * Displayed dims of row `rowIdx` as one block, its width including the inter-page gutter and its height the tallest member.
+   * Null when the row is out of range or a member has no dims.
+   * @param {number} rowIdx
+   * @returns {?dims}
+   */
+  rowDisplayDims(rowIdx) {
+    const row = this._rows[rowIdx];
+    if (!row) return null;
+    let width = 0;
+    let height = 0;
+    for (let k = 0; k < row.count; k++) {
+      const dims = this.getDisplayDims(row.start + k);
+      if (!dims) return null;
+      width += dims.width + (k > 0 ? ScribeViewer.pageMargin : 0);
+      if (dims.height > height) height = dims.height;
+    }
+    return { width, height };
+  }
+
+  /** Drop the computed layout (rows, stops, lefts) so the next query recomputes it. */
+  _invalidateLayout() {
+    this._pageStopsStart.length = 0;
+    this._pageStopsEnd.length = 0;
+    this._rows.length = 0;
+    this._pageRow.length = 0;
+    this._pageLefts.length = 0;
+  }
+
+  /**
+   * Switch between the single-page column and two-page (side-by-side) view.
+   * The cursor's row is re-anchored on screen, and the zoom is left alone for the host to refit.
+   * @param {1|2} pagesPerRow
+   * @param {boolean} [coverAlone] - Lay out page 0 alone, for book-style facing pages. Kept unchanged when omitted.
+   */
+  setPagesPerRow(pagesPerRow, coverAlone = this.state.coverAlone) {
+    if (pagesPerRow !== 1 && pagesPerRow !== 2) return;
+    if (this.state.pagesPerRow === pagesPerRow && this.state.coverAlone === coverAlone) return;
+    this.state.pagesPerRow = pagesPerRow;
+    this.state.coverAlone = coverAlone;
+    if (!this.scrollContainer || !this.doc || this.doc.pageMetrics.length === 0) return;
+    this.destroyControls();
+    this._invalidateLayout();
+    this.calcPageLayout();
+    this.displayPage(this.state.cp.n, true, false);
+    this._scheduleReraster();
   }
 
   /**
@@ -732,15 +899,16 @@ export class ScribeViewer {
     const sizerH = `${this._contentHeight * z}px`;
     if (this.contentSizer.style.width !== sizerW) this.contentSizer.style.width = sizerW;
     if (this.contentSizer.style.height !== sizerH) this.contentSizer.style.height = sizerH;
-    // Containers built before `calcPageStops` finalized `_contentWidth` can keep a stale centering, so re-center all to `eff`.
+    // Containers built before `calcPageLayout` finalized `_contentWidth` can keep a stale position, so re-place all.
     // The write guards read inline style (no forced layout), so skipping unmoved pages costs nothing.
-    // Read `_pageStopsStart` directly, since `getPageStop` could re-enter `calcPageStops`.
+    // Read the layout arrays directly, since `_pageLeft`/`getPageStop` could re-enter `calcPageLayout`.
     for (let n = 0; n < this.pageContainerArr.length; n++) {
       const pc = this.pageContainerArr[n];
       if (!pc) continue;
-      const dims = this.getDisplayDims(n);
-      const left = `${dims ? this._snapToDevice((eff - dims.width) / 2) : 0}px`;
-      if (pc.style.left !== left) pc.style.left = left;
+      if (this._pageLefts[n] !== undefined) {
+        const left = `${this._snapToDevice(this._pageLefts[n])}px`;
+        if (pc.style.left !== left) pc.style.left = left;
+      }
       if (this._pageStopsStart[n] !== undefined) {
         const top = `${this._snapToDevice(this._pageStopsStart[n])}px`;
         if (pc.style.top !== top) pc.style.top = top;
@@ -764,13 +932,13 @@ export class ScribeViewer {
   }
 
   /**
-   * Left offset that centers page `n` within the content width rather than the viewport, keeping page positions viewport-independent so a resize never moves them.
+   * Left offset of page `n` within the content width (its row centered as a unit), keeping page positions viewport-independent so a resize never moves them.
    * @param {number} n
    * @returns {number}
    */
   _pageLeft(n) {
-    const dims = this.getDisplayDims(n);
-    return dims ? (this._contentWidth - dims.width) / 2 : 0;
+    if (this._pageLefts[n] === undefined) this.calcPageLayout();
+    return this._pageLefts[n] ?? 0;
   }
 
   /**
@@ -822,8 +990,35 @@ export class ScribeViewer {
    */
   clientToPage(clientX, clientY) {
     const { x: cx, y: cy } = this.clientToContent(clientX, clientY);
-    const n = this.calcPage(cy);
+    const n = this.pageAtContentPoint(cx, cy);
     return { n, x: cx - this._pageLeft(n), y: cy - this.getPageStop(n) };
+  }
+
+  /**
+   * The page at a content-space point, resolving x within the row so a point on the facing page lands on it.
+   * A point in a margin or the inter-page gutter resolves to the nearest member.
+   * @param {number} cx
+   * @param {number} cy
+   * @returns {number} Page index, or -1 past the last row.
+   */
+  pageAtContentPoint(cx, cy) {
+    const first = this.calcPage(cy);
+    if (first < 0) return first;
+    const r = this.rowOfPage(first);
+    const row = r === null ? null : this._rows[r];
+    if (!row || row.count === 1) return first;
+    let best = first;
+    let bestDist = Infinity;
+    for (let k = 0; k < row.count; k++) {
+      const n = row.start + k;
+      const left = this._pageLefts[n];
+      const dims = this.getDisplayDims(n);
+      if (left === undefined || !dims) continue;
+      if (cx >= left && cx < left + dims.width) return n;
+      const d = cx < left ? left - cx : cx - (left + dims.width);
+      if (d < bestDist) { bestDist = d; best = n; }
+    }
+    return best;
   }
 
   /**
@@ -909,11 +1104,10 @@ export class ScribeViewer {
     pm.rotation = ((((pm.rotation || 0) + deltaDeg) % 360) + 360) % 360;
 
     this._clearPageDom();
-    this._pageStopsStart.length = 0;
-    this._pageStopsEnd.length = 0;
+    this._invalidateLayout();
     this.imageCache.clear();
 
-    this.calcPageStops();
+    this.calcPageLayout();
     this.displayPage(this.state.cp.n, false, true);
     if (this.onPageEditCallback) this.onPageEditCallback('rotate');
   }
@@ -926,11 +1120,10 @@ export class ScribeViewer {
    */
   _rebuildPages(cp, follow = false) {
     this._clearPageDom();
-    this._pageStopsStart.length = 0;
-    this._pageStopsEnd.length = 0;
+    this._invalidateLayout();
     this.imageCache.clear();
 
-    this.calcPageStops();
+    this.calcPageLayout();
 
     // The scroll position survives the rebuild, so leave it unless `follow` is set (`cp` was the moved page, chase it)
     // or `cp` has scrolled out of the viewport.
@@ -1081,10 +1274,9 @@ export class ScribeViewer {
     if (!this.doc) return;
     if (!this.doc.rotatePages(indices, deltaDeg)) return;
     this._clearPageDom();
-    this._pageStopsStart.length = 0;
-    this._pageStopsEnd.length = 0;
+    this._invalidateLayout();
     this.imageCache.clear();
-    this.calcPageStops();
+    this.calcPageLayout();
     this.displayPage(this.state.cp.n, false, true);
     if (this.onPageEditCallback) this.onPageEditCallback('rotate');
   }
@@ -1224,7 +1416,9 @@ export class ScribeViewer {
     const y = (this._scrollTop + this._scrollMetrics().clientHeight / 2) / this.zoomLevel;
     const pageNew = this.calcPage(y);
 
-    if (this.state.cp.n !== pageNew && pageNew >= 0) {
+    // Row-stable cursor: while the center row still holds the cursor's page, scrolling must not move it.
+    // Without this, an explicitly navigated right-hand page would snap back to its row's first page.
+    if (pageNew >= 0 && this.state.cp.n !== pageNew && this.rowDistance(this.state.cp.n, pageNew) > 0) {
       // Defer the word build when the page changes too fast to read: update the page now and (re)arm a settle timer, so a fast sweep builds only the landing page.
       // Invis mode always defers (its text is invisible).
       // Visible modes defer only above the speed threshold, so a normal slow scroll builds immediately.
@@ -2042,7 +2236,7 @@ export class ScribeViewer {
     // Populate `_contentWidth`/`_contentHeight` and size the content sizer before the scroll writes below.
     // Without this, on the first call both are still 0, so the content sizer gets zero height and the browser clamps the centering scroll to 0,
     // opening the document far below the viewport.
-    this.calcPageStops();
+    this.calcPageLayout();
     // `_contentWidth` is symmetric about the document centre (equal free-pan gutters), so centering it centers the document.
     // `scrollTop` skips the top gutter so the first page starts at the top of the viewport, not below a band of free-pan blank space.
     this.scrollContainer.scrollLeft = Math.max(0, (this._contentWidth * zoom - this.scrollContainer.clientWidth) / 2);
@@ -2177,7 +2371,9 @@ export class ScribeViewer {
     }
 
     if (this.runSetInitial) {
-      this.setInitialPositionZoom(this.doc.pageMetrics[n].dims);
+      const rowIdx = this.rowOfPage(n);
+      const rowDims = rowIdx === null ? null : this.rowDisplayDims(rowIdx);
+      this.setInitialPositionZoom(rowDims || this.doc.pageMetrics[n].dims);
     }
 
     // Issue the raster request before the synchronous word-DOM build so render workers can start on the target page instead of waiting.
@@ -2207,41 +2403,39 @@ export class ScribeViewer {
 
     this.textOverlayHidden = false;
 
-    if (!deferText) {
-      if (refresh || !this.textGroupsRenderIndices.includes(n)) {
-        await this.renderWords(n);
-      }
+    // Re-check the bounds at each use rather than baking them into the list.
+    // The awaits below yield, so a document swapped or shrunk meanwhile must not receive renders for pages it no longer has.
+    const windowArr = [n, ...this.windowPages(n).filter((p) => p !== n)];
+    const inDoc = (p) => p < this.doc.pageMetrics.length && (p === n || p < this.doc.ocr.active.length);
 
-      if (n - 1 >= 0 && (refresh || !this.textGroupsRenderIndices.includes(n - 1))) {
-        await this.renderWords(n - 1);
-      }
-      if (n + 1 < this.doc.ocr.active.length && (refresh || !this.textGroupsRenderIndices.includes(n + 1))) {
-        await this.renderWords(n + 1);
+    if (!deferText) {
+      for (const p of windowArr) {
+        if (!inDoc(p)) continue;
+        if (refresh || !this.textGroupsRenderIndices.includes(p)) {
+          await this.renderWords(p);
+        }
       }
     }
 
-    this.renderNotes(n);
-    if (n - 1 >= 0) this.renderNotes(n - 1);
-    if (n + 1 < this.doc.ocr.active.length) this.renderNotes(n + 1);
-    this.renderRedactions(n);
-    if (n - 1 >= 0) this.renderRedactions(n - 1);
-    if (n + 1 < this.doc.ocr.active.length) this.renderRedactions(n + 1);
-    this.renderFormFields(n);
-    if (n - 1 >= 0) this.renderFormFields(n - 1);
-    if (n + 1 < this.doc.ocr.active.length) this.renderFormFields(n + 1);
-    this.renderFillItems(n);
-    if (n - 1 >= 0) this.renderFillItems(n - 1);
-    if (n + 1 < this.doc.ocr.active.length) this.renderFillItems(n + 1);
+    for (const p of windowArr) {
+      if (!inDoc(p)) continue;
+      this.renderNotes(p);
+      this.renderRedactions(p);
+      this.renderFormFields(p);
+      this.renderFillItems(p);
+    }
 
     if (scroll) {
       // Land page `n` as the current page.
-      // The scroll fires `updateCurrentPage`, which picks the page at the viewport centre.
-      // Top-aligning a short page with the usual 100px gap would put that centre in the next page,
-      // so top-align only tall pages and centre short ones to keep `n` current.
-      const dims = this.getDisplayDims(n);
+      // The scroll fires `updateCurrentPage`, which picks the row at the viewport centre.
+      // Top-aligning a short row with the usual 100px gap would put that centre in the next row,
+      // so top-align only tall rows and centre short ones to keep `n` current.
+      const rowIdx = this.rowOfPage(n);
+      const rowDims = rowIdx === null ? null : this.rowDisplayDims(rowIdx);
+      const height = rowDims ? rowDims.height : this.getDisplayDims(n)?.height;
       const pageTop = this.getPageStop(n);
       const halfView = this._scrollMetrics().clientHeight / (2 * this.zoomLevel);
-      const top = dims && halfView > dims.height + 100 ? pageTop + dims.height / 2 - halfView : pageTop - 100;
+      const top = height && halfView > height + 100 ? pageTop + height / 2 - halfView : pageTop - 100;
       this.scrollContainer.scrollTop = Math.max(0, top * this.zoomLevel);
     }
 
@@ -2258,14 +2452,11 @@ export class ScribeViewer {
     if (this.displayPageCallback) this.displayPageCallback();
 
     if (this.state.layoutMode && !deferText) {
-      if (refresh || !this.overlayGroupsRenderIndices.includes(n)) {
-        layout.renderLayoutBoxes(this, n);
-      }
-      if (n - 1 >= 0 && (refresh || !this.overlayGroupsRenderIndices.includes(n - 1))) {
-        layout.renderLayoutBoxes(this, n - 1);
-      }
-      if (n + 1 < this.doc.ocr.active.length && (refresh || !this.overlayGroupsRenderIndices.includes(n + 1))) {
-        layout.renderLayoutBoxes(this, n + 1);
+      for (const p of windowArr) {
+        if (!inDoc(p)) continue;
+        if (refresh || !this.overlayGroupsRenderIndices.includes(p)) {
+          layout.renderLayoutBoxes(this, p);
+        }
       }
     }
   }
@@ -2381,7 +2572,7 @@ export class ScribeViewer {
     if (pc) return pc;
     const disp = this.getDisplayDims(n);
     if (!disp) return null;
-    // Resolve the page stop first: it runs `calcPageStops`, which sets `_contentWidth` that `_pageLeft` reads to center the page.
+    // Resolve the page stop first: it runs `calcPageLayout`, which fills the `_pageLefts` the next line reads.
     const top = this._snapToDevice(this.getPageStop(n));
     const left = this._snapToDevice(this._pageLeft(n));
     pc = document.createElement('div');
@@ -2728,10 +2919,13 @@ export class ScribeViewer {
     this.elem?.classList.toggle('scribe-hide-image-layer', !visible);
   }
 
-  /** @param {number} y */
+  /**
+   * The page at a content-space y: the first page of the row whose band contains it.
+   * @param {number} y
+   */
   calcPage(y) {
     if (this._pageStopsEnd[this._pageStopsEnd.length - 1] === undefined) {
-      this.calcPageStops();
+      this.calcPageLayout();
     }
     return this._pageStopsEnd.findIndex((y1) => y1 > y);
   }
@@ -2749,14 +2943,17 @@ export class ScribeViewer {
     const top = this._pageStopsStart[n];
     const bot = this._pageStopsEnd[n];
     if (top === undefined || bot === undefined || bot <= top) return n;
-    return n + Math.max(0, Math.min(1, (y - top) / (bot - top)));
+    // Crossing a row advances the fraction by the row's page count, keeping the index continuous over pages.
+    const r = this._pageRow[n];
+    const count = r === undefined ? 1 : (this._rows[r]?.count ?? 1);
+    return n + Math.max(0, Math.min(1, (y - top) / (bot - top))) * count;
   }
 
   calcSelectionImageCoords() {
     // `this.bbox` holds the marquee in content space; reduce it to the page-local box the OCR expects.
     const left = Math.min(this.bbox.left, this.bbox.right);
     const top = Math.min(this.bbox.top, this.bbox.bottom);
-    const n = this.calcPage(top);
+    const n = this.pageAtContentPoint(left, top);
 
     const canvasCoordsPage = {
       left: left - this._pageLeft(n),
@@ -2793,9 +2990,7 @@ export class ScribeViewer {
   getUiWords() {
     /** @type {Array<UiOcrWord>} */
     const words = [];
-    const n = this.state.cp.n;
-    for (const offset of [-1, 0, 1]) {
-      const idx = n + offset;
+    for (const idx of this.windowPages(this.state.cp.n)) {
       if (this.useCustomSelection && this.doc.ocr.active?.[idx]) this.ensureWordObjs(idx);
       if (this._wordObjs[idx]) words.push(...this._wordObjs[idx]);
     }
@@ -2828,9 +3023,8 @@ export class ScribeViewer {
   getUiRegions() {
     /** @type {Array<UiRegion>} */
     const regions = [];
-    const n = this.state.cp.n;
-    for (const offset of [-1, 0, 1]) {
-      const group = this._overlayGroups[n + offset];
+    for (const idx of this.windowPages(this.state.cp.n)) {
+      const group = this._overlayGroups[idx];
       if (!group) continue;
       group.querySelectorAll('[data-scribe-kind="layout"]').forEach((el) => {
         const obj = /** @type {any} */ (el)._scribeObj;
@@ -2843,9 +3037,8 @@ export class ScribeViewer {
   getUiDataColumns() {
     /** @type {Array<UiDataColumn>} */
     const columns = [];
-    const n = this.state.cp.n;
-    for (const offset of [-1, 0, 1]) {
-      const group = this._overlayGroups[n + offset];
+    for (const idx of this.windowPages(this.state.cp.n)) {
+      const group = this._overlayGroups[idx];
       if (!group) continue;
       group.querySelectorAll('[data-scribe-kind="layout"]').forEach((el) => {
         const obj = /** @type {any} */ (el)._scribeObj;
@@ -2885,7 +3078,7 @@ export class ScribeViewer {
   destroyOverlay(outsideViewOnly = true) {
     for (let i = 0; i < this.overlayGroupsRenderIndices.length; i++) {
       const n = this.overlayGroupsRenderIndices[i];
-      if (Math.abs(n - this.state.cp.n) > 1 || !outsideViewOnly) {
+      if (this.rowDistance(n, this.state.cp.n) > 1 || !outsideViewOnly) {
         this._overlayGroups[n]?.replaceChildren();
         this._regionObjs[n] = [];
         this._dataColumnObjs[n] = [];
@@ -3717,7 +3910,7 @@ ScribeViewer.getActiveViewer = () => getActiveViewer() || getDefaultViewer();
 
 const _delegatedMethods = [
   'init', 'displayPage', 'goToOutlineDest', 'rotatePage', 'renderWords',
-  'setInitialPositionZoom', 'getPageStop', 'calcPageStops', 'getViewportCenter',
+  'setInitialPositionZoom', 'getPageStop', 'calcPageLayout', 'setPagesPerRow', 'getViewportCenter',
   'pan', 'zoom', 'resize', 'startDrag', 'executeDrag',
   'stopDragPinch', 'executePinchTouch', 'createGroup', 'getTextGroup', 'setTextGroupRotation',
   'getHighlightGroup', 'getSelectGroup', 'renderHighlights', 'getOverlayGroup', 'calcPage', 'calcSelectionImageCoords', 'getUiWords', 'getUiRegions',
