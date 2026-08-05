@@ -57,6 +57,9 @@ import { _buildPngDataUrl } from '../pdf/renderPdfPage.js';
  *    When false they are dropped (word text is unaffected) and readers of char geometry fall back to word-level boxes.
  * @property {boolean} [scribeSession] - Include the application `session` block (text-edit records, native-text metadata) in `.scribe` exports.
  *    Default false, since the standard interchange format carries no app-only data.
+ * @property {number} [scribeSegmentThreshold] - Character count above which a compressed `.scribe` uses the segmented layout
+ *    (header line plus one JSON record per page) instead of a single JSON document; default 400,000,000.
+ *    The default keeps every single-JSON file under the JavaScript string limit that a reader must fit it into.
  * @property {string} [ocrName] - Export this named OCR layer (a key of `doc.ocr`) instead of the active one.
  * @property {'width' | 'sentence'} [docxLineSplitMode]
  * @property {boolean} [sanitize] - Strip identifying metadata from the exported PDF, keeping the visible pages unchanged.
@@ -114,6 +117,99 @@ async function paintRedactionsOntoImage(image, rects, pageDims, pageAngle) {
   return new ImageWrapper(image.n, dataUrl, image.colorMode, image.rotated, image.upscaled);
 }
 
+// Transport granularity only: this batch size does not affect the output bytes.
+const SCRIBE_ENCODE_BATCH = 4 * 1024 * 1024;
+
+/**
+ * Yield the `.scribe` single-JSON layout as string chunks.
+ * Pages are cloned and stringified one at a time, so no clone or string is ever document-sized.
+ * Concatenated output is byte-identical to `JSON.stringify({ ocr, ...envelope })`.
+ * @param {Array<OcrPage>} ocrPages
+ * @param {{includeText: boolean, includeCharBoxes: boolean}} cloneOpts
+ * @param {Record<string, any>} envelope - Every top-level `.scribe` field except `ocr`.
+ */
+function* scribeJsonChunks(ocrPages, cloneOpts, envelope) {
+  yield '{"ocr":[';
+  for (let i = 0; i < ocrPages.length; i++) {
+    if (i > 0) yield ',';
+    const page = ocrPages[i] ? removeCircularRefsOcr([ocrPages[i]], cloneOpts)[0] : null;
+    yield page ? JSON.stringify(page) : 'null';
+  }
+  yield ']';
+  const rest = JSON.stringify(envelope);
+  yield rest === '{}' ? '}' : `,${rest.slice(1)}`;
+}
+
+/**
+ * Yield the `.scribe` segmented layout as string chunks.
+ * Line 1 is a header of the doc-level fields, followed by one newline-separated JSON record per page.
+ * Every line parses on its own, so a reader never needs the whole document as one string.
+ * @param {Array<OcrPage>} ocrPages
+ * @param {{includeText: boolean, includeCharBoxes: boolean}} cloneOpts
+ * @param {Record<string, any>} envelope
+ */
+function* scribeSegmentChunks(ocrPages, cloneOpts, envelope) {
+  const header = {
+    scribeSegments: 1,
+    pageCount: ocrPages.length,
+    fontState: envelope.fontState,
+    layoutRegions: envelope.layoutRegions,
+    layoutDataTables: envelope.layoutDataTables,
+    annotations: envelope.annotations,
+    pageRotations: envelope.pageRotations,
+    pageSourceIndices: envelope.pageSourceIndices,
+    outline: envelope.outline,
+    inputData: envelope.inputData,
+    session: envelope.session ? { v: envelope.session.v, fillText: envelope.session.fillText } : undefined,
+  };
+  yield JSON.stringify(header);
+  const textEdits = envelope.session?.textEdits || [];
+  const nativeText = envelope.session?.nativeText || [];
+  for (let i = 0; i < ocrPages.length; i++) {
+    const page = ocrPages[i] ? removeCircularRefsOcr([ocrPages[i]], cloneOpts)[0] : null;
+    /** @type {Record<string, any>} */
+    const rec = { i, ocr: page };
+    if (envelope.session) {
+      rec.textEdits = textEdits[i] ?? null;
+      rec.nativeText = nativeText[i] ?? null;
+    }
+    yield '\n';
+    yield JSON.stringify(rec);
+  }
+}
+
+/**
+ * Stream string chunks through a gzip CompressionStream.
+ * With `charLimit` set, aborts the stream and returns null once the chunks exceed it.
+ * @param {Iterable<string>} chunks
+ * @param {number} [charLimit]
+ * @returns {Promise<?ArrayBuffer>}
+ */
+async function compressStringChunks(chunks, charLimit) {
+  const cs = new CompressionStream('gzip');
+  const outPromise = new Response(cs.readable).arrayBuffer();
+  const writer = cs.writable.getWriter();
+  const encoder = new TextEncoder();
+  let pending = '';
+  let total = 0;
+  for (const chunk of chunks) {
+    total += chunk.length;
+    if (charLimit && total > charLimit) {
+      writer.abort().catch(() => {});
+      outPromise.catch(() => {});
+      return null;
+    }
+    pending += chunk;
+    if (pending.length >= SCRIBE_ENCODE_BATCH) {
+      await writer.write(encoder.encode(pending));
+      pending = '';
+    }
+  }
+  if (pending) await writer.write(encoder.encode(pending));
+  await writer.close();
+  return outPromise;
+}
+
 /**
  * Export this document's OCR data to the specified format.
  *
@@ -157,6 +253,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
   const includeExtraTextScribe = options.includeExtraTextScribe ?? scribeDocDefaults.includeExtraTextScribe;
   const includeCharBoxesScribe = options.includeCharBoxesScribe ?? scribeDocDefaults.includeCharBoxesScribe;
   const scribeSession = options.scribeSession ?? scribeDocDefaults.scribeSession;
+  const scribeSegmentThreshold = options.scribeSegmentThreshold ?? scribeDocDefaults.scribeSegmentThreshold;
 
   if (!pageArr) {
     if (maxPage === -1) maxPage = doc.inputData.pageCount - 1;
@@ -588,8 +685,8 @@ export async function exportData(doc, format = 'txt', options = {}) {
       doc,
     });
   } else if (format === 'scribe') {
-    const data = {
-      ocr: removeCircularRefsOcr(ocrDownload, { includeText: includeExtraTextScribe, includeCharBoxes: includeCharBoxesScribe }),
+    /** @type {Record<string, any>} */
+    const envelope = {
       fontState: doc.fonts.state,
       layoutRegions: doc.layoutRegions.pages,
       layoutDataTables: removeCircularRefsDataTables(doc.layoutDataTables.pages),
@@ -608,17 +705,26 @@ export async function exportData(doc, format = 'txt', options = {}) {
     };
     // App-only state ships in one opt-in block, so standard-format consumers never receive it and the app save path cannot scatter it.
     if (scribeSession) {
-      data.session = {
+      envelope.session = {
         v: 1, textEdits: doc.textEdits.pages, nativeText: doc.nativeText.pages, fillText: collectFillTextRefs(doc),
       };
     }
-    const contentStr = JSON.stringify(data);
+    const cloneOpts = { includeText: includeExtraTextScribe, includeCharBoxes: includeCharBoxesScribe };
     if (compressScribe) {
-      const cs = new CompressionStream('gzip');
-      const compressedStream = new Blob([new TextEncoder().encode(contentStr)]).stream().pipeThrough(cs);
-      content = await new Response(compressedStream).arrayBuffer();
+      content = await compressStringChunks(scribeJsonChunks(ocrDownload, cloneOpts, envelope), scribeSegmentThreshold)
+        ?? await compressStringChunks(scribeSegmentChunks(ocrDownload, cloneOpts, envelope));
     } else {
-      content = contentStr;
+      // A document whose JSON cannot exist as one string (V8 caps strings at 2^29 - 24) has no uncompressed form.
+      const parts = [];
+      let total = 0;
+      for (const chunk of scribeJsonChunks(ocrDownload, cloneOpts, envelope)) {
+        total += chunk.length;
+        if (total > 536_870_888) {
+          throw new Error('This document\'s JSON exceeds the JavaScript string limit, so it cannot be exported as uncompressed .scribe.json; export compressed .scribe instead.');
+        }
+        parts.push(chunk);
+      }
+      content = parts.join('');
     }
   }
 

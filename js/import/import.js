@@ -166,9 +166,97 @@ export const importImageFilesP = async (files) => {
  * @returns {Promise<number[]|null>} Per-page user rotations from the .scribe (or null if absent).
  */
 async function restoreSessionFromFile(doc, scribeFile) {
-  const scribeRestoreStr = await readOcrFile(scribeFile);
+  /** @type {?Uint8Array} */
+  let scribeBytes = null;
+  if (scribeFile instanceof ArrayBuffer) scribeBytes = new Uint8Array(scribeFile);
+  // @ts-ignore - `fileData` is not on the parameter's declared union.
+  else if (scribeFile?.fileData instanceof Uint8Array) scribeBytes = scribeFile.fileData;
+  else if (typeof File !== 'undefined' && scribeFile instanceof File) scribeBytes = new Uint8Array(await scribeFile.arrayBuffer());
+
   /** @type {ScribeSaveData} */
-  const scribeRestoreObj = JSON.parse(scribeRestoreStr);
+  let scribeRestoreObj;
+  if (!scribeBytes) {
+    scribeRestoreObj = JSON.parse(await readOcrFile(scribeFile));
+  } else {
+    const isGzipped = scribeBytes[0] === 0x1F && scribeBytes[1] === 0x8B;
+
+    let head = '';
+    if (isGzipped) {
+      const sniffReader = new Blob([scribeBytes]).stream().pipeThrough(new DecompressionStream('gzip')).getReader();
+      const sniffDecoder = new TextDecoder('utf-8');
+      let part = await sniffReader.read();
+      while (!part.done && head.length < 32) {
+        head += sniffDecoder.decode(part.value, { stream: true });
+        part = await sniffReader.read();
+      }
+      await sniffReader.cancel().catch(() => {});
+    } else {
+      head = new TextDecoder('utf-8').decode(scribeBytes.subarray(0, 32));
+    }
+
+    if (!head.startsWith('{"scribeSegments"')) {
+      try {
+        scribeRestoreObj = JSON.parse(await readOcrFile(scribeFile));
+      } catch (err) {
+        if (err instanceof RangeError || /string longer/.test(String(/** @type {?} */ (err)?.message))) throw new Error('This .scribe file is too large to import.');
+        throw err;
+      }
+    } else {
+      let stream = new Blob([scribeBytes]).stream();
+      if (isGzipped) stream = stream.pipeThrough(new DecompressionStream('gzip'));
+      const reader = stream.getReader();
+      const decoder = new TextDecoder('utf-8');
+
+      /** @type {?Record<string, any>} */
+      let assembled = null;
+      const applyHeader = (line) => {
+        const header = line ? JSON.parse(line) : {};
+        const n = header.pageCount || 0;
+        assembled = {
+          ocr: new Array(n).fill(null),
+          fontState: header.fontState,
+          layoutRegions: header.layoutRegions,
+          layoutDataTables: header.layoutDataTables,
+          annotations: header.annotations,
+          pageRotations: header.pageRotations,
+          pageSourceIndices: header.pageSourceIndices,
+          outline: header.outline,
+          inputData: header.inputData,
+          session: header.session ? { ...header.session, textEdits: new Array(n).fill(null), nativeText: new Array(n).fill(null) } : undefined,
+        };
+      };
+      const applyRecord = (line) => {
+        if (!line) return;
+        const rec = JSON.parse(line);
+        assembled.ocr[rec.i] = rec.ocr ?? null;
+        if (assembled.session) {
+          if (rec.textEdits !== undefined) assembled.session.textEdits[rec.i] = rec.textEdits;
+          if (rec.nativeText !== undefined) assembled.session.nativeText[rec.i] = rec.nativeText;
+        }
+      };
+
+      let remainder = '';
+      const feedText = (text) => {
+        const lines = (remainder + text).split('\n');
+        remainder = /** @type {string} */ (lines.pop());
+        for (const line of lines) (assembled ? applyRecord : applyHeader)(line);
+      };
+      // Node's Blob.stream() can hand back the whole payload as one chunk, and a single decode call cannot return more characters than the string limit.
+      // The streaming decoder carries multi-byte characters across slice boundaries, so bounded slices are safe.
+      const DECODE_SLICE = 16 * 1024 * 1024;
+      let part = await reader.read();
+      while (!part.done) {
+        for (let sliceStart = 0; sliceStart < part.value.length; sliceStart += DECODE_SLICE) {
+          feedText(decoder.decode(part.value.subarray(sliceStart, Math.min(sliceStart + DECODE_SLICE, part.value.length)), { stream: true }));
+        }
+        part = await reader.read();
+      }
+      const tail = remainder + decoder.decode();
+      if (!assembled) applyHeader(tail);
+      else applyRecord(tail);
+      scribeRestoreObj = /** @type {ScribeSaveData} */ (assembled);
+    }
+  }
   if (scribeRestoreObj.fontState) {
     objectAssignDefined(doc.fonts.state, scribeRestoreObj.fontState);
     await doc.runOptimization(doc.ocr.active);
