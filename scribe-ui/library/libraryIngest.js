@@ -36,7 +36,7 @@ export class LibraryIngest {
     this.warmGate = warmGate || null;
     /** @type {Array<{relPath: string, kind: 'ingest'|'verify'}>} Explicit user requests. Always drained first. */
     this.userLane = [];
-    /** @type {Array<{relPath: string, kind: 'ingest'|'verify'|'upgrade'}>} Scan-discovered work. Discarded by cancel. */
+    /** @type {Array<{relPath: string, kind: 'ingest'|'verify'|'upgrade'}>} Scan-discovered work. */
     this.discoveryLane = [];
     /**
      * Cushion candidates for the warm lane.
@@ -49,6 +49,8 @@ export class LibraryIngest {
     this.done = 0;
     /** @type {number} Pages rendered by the warm lane since construction, for the gate's session cap. */
     this.warmPagesDone = 0;
+    /** Keeps warm work off after a cancel, since an enqueue resets the plan and would otherwise revive it. */
+    this.warmCancelled = false;
   }
 
   /**
@@ -107,6 +109,7 @@ export class LibraryIngest {
     this.manifest.others = others.sort();
     await this.store.writeManifest(this.manifest);
     this.warmLane = null;
+    this.warmCancelled = false;
     this.store.sweepArtifacts(this.manifest).catch(() => {});
   }
 
@@ -134,12 +137,15 @@ export class LibraryIngest {
   }
 
   /**
-   * Discard the scan-discovered backlog and pending warm work.
-   * Explicit user requests keep running.
+   * Discard every queued lane.
+   * The document already in flight still finishes.
    */
   cancel() {
+    this.userLane.length = 0;
     this.discoveryLane.length = 0;
     this.warmLane = [];
+    this.warmCancelled = true;
+    this.done = 0;
   }
 
   /**
@@ -310,7 +316,7 @@ export class LibraryIngest {
    * @returns {Promise<boolean>} Whether a document was cushioned. False ends the run.
    */
   async _warmNext() {
-    if (!this.warmGate || !this.warmGate()) return false;
+    if (this.warmCancelled || !this.warmGate || !this.warmGate()) return false;
     if (this.warmLane === null) {
       this.warmLane = Object.entries(this.manifest.docs)
         .filter(([, e]) => e.status === 'indexed' && e.hash && e.pageDims && e.pageCount > 0)

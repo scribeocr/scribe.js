@@ -1021,8 +1021,29 @@ export function installLibrary(viewer) {
       });
       menuElem.appendChild(item);
     };
+    /**
+     * Add the Index or Re-index item for `docPaths`.
+     * @param {string[]} docPaths
+     */
+    const addIndexItem = (docPaths) => {
+      const statusOf = (/** @type {string} */ p) => manifest?.docs[p]?.status;
+      const stale = docPaths.filter((p) => ['pending', 'changed', 'error'].includes(statusOf(p) ?? ''));
+      const targets = stale.length ? stale : docPaths.filter((p) => statusOf(p) === 'indexed');
+      if (!targets.length) return;
+      addItem(stale.length ? 'Index' : 'Re-index', false, async () => {
+        if (!ingest) return;
+        for (const p of targets) {
+          const hash = manifest?.docs[p]?.hash;
+          if (hash) sessions.invalidate(hash);
+          await ingest.enqueue(p);
+        }
+        render();
+        ingest.start();
+      });
+    };
     if (relPath.endsWith('/')) {
       addItem('Open', false, () => openDir(relPath.slice(0, -1)));
+      addIndexItem(Object.keys(manifest.docs).filter((p) => p.startsWith(relPath)));
     } else {
       const multi = selectedPaths.has(relPath) && selectedPaths.size >= 2;
       // Folder keys in a mixed selection drop out here: these actions are document verbs.
@@ -1039,16 +1060,7 @@ export function installLibrary(viewer) {
           if (entry) await openEntry(p, entry);
         }
       });
-      addItem('Re-index', false, async () => {
-        if (!ingest) return;
-        for (const p of paths) {
-          const hash = manifest?.docs[p]?.hash;
-          if (hash) sessions.invalidate(hash);
-          await ingest.enqueue(p);
-        }
-        render();
-        ingest.start();
-      });
+      addIndexItem(paths);
       menuElem.appendChild(document.createElement('hr')).className = 'scribe-thumb-menu-divider';
       addItem('Remove from library', true, async () => {
         if (!store || !manifest) return;
@@ -1130,12 +1142,12 @@ export function installLibrary(viewer) {
     cardBody.appendChild(meta);
     card.appendChild(cardBody);
 
-    if (entry.status === 'changed' || entry.status === 'error') {
+    if (entry.status === 'pending' || entry.status === 'changed' || entry.status === 'error') {
       const actions = document.createElement('div');
       actions.className = 'actions';
-      const reindexBtn = document.createElement('button');
-      reindexBtn.textContent = 'Re-index';
-      reindexBtn.addEventListener('click', async (e) => {
+      const indexBtn = document.createElement('button');
+      indexBtn.textContent = 'Index';
+      indexBtn.addEventListener('click', async (e) => {
         e.stopPropagation();
         if (!ingest) return;
         if (entry.hash) sessions.invalidate(entry.hash);
@@ -1143,7 +1155,7 @@ export function installLibrary(viewer) {
         render();
         ingest.start();
       });
-      actions.appendChild(reindexBtn);
+      actions.appendChild(indexBtn);
       card.appendChild(actions);
     }
 
