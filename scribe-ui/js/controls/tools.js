@@ -1530,7 +1530,6 @@ export function createEditTextTool(scribe) {
           frames.delete(line);
         }
       }
-      let zoom = 0;
       for (const line of selected) {
         const found = entryFor(line);
         const group = found ? scribe.getTextGroup(found.n, found.e.orientation) : null;
@@ -1554,25 +1553,10 @@ export function createEditTextTool(scribe) {
         }
         const pad = 2;
         const box = lineDrawBox(line, found.e.lbox);
-        if (!zoom) zoom = parseFloat(getComputedStyle(group).getPropertyValue('--scribe-zoom')) || 1;
-        let left = box.left - pad;
-        let top = box.top - pad;
-        let w = box.right - box.left + 2 * pad;
-        let h = box.bottom - box.top + 2 * pad;
-        const minW = 22 / zoom;
-        const minH = 18 / zoom;
-        if (w < minW) {
-          left -= (minW - w) / 2;
-          w = minW;
-        }
-        if (h < minH) {
-          top -= (minH - h) / 2;
-          h = minH;
-        }
-        el.style.left = `${left}px`;
-        el.style.top = `${top}px`;
-        el.style.width = `${w}px`;
-        el.style.height = `${h}px`;
+        el.style.left = `${box.left - pad}px`;
+        el.style.top = `${box.top - pad}px`;
+        el.style.width = `${box.right - box.left + 2 * pad}px`;
+        el.style.height = `${box.bottom - box.top + 2 * pad}px`;
         if (el.parentElement !== group) group.appendChild(el);
       }
       // Every path that changes lines runs through here, so the mode's hairline boxes stay in sync by riding along.
