@@ -203,7 +203,16 @@ export function calcLang(str) {
   return 'eng';
 }
 
-// Reads OCR files, which may be compressed as .gz or uncompressed
+/**
+ * @param {Uint8Array} bytes
+ * @returns {Promise<Uint8Array>}
+ */
+async function gunzipBytes(bytes) {
+  // Node's zlib decompresses several times faster than DecompressionStream, which is the largest single cost in opening a saved session.
+  if (typeof process !== 'undefined') return (await import('node:zlib')).gunzipSync(bytes);
+  const decompressedStream = new Blob([bytes]).stream().pipeThrough(new DecompressionStream('gzip'));
+  return new Uint8Array(await new Response(decompressedStream).arrayBuffer());
+}
 
 /**
  * Reads an OCR file, which may be compressed as .gz or uncompressed.
@@ -216,13 +225,9 @@ export async function readOcrFile(file) {
     const fileUint8Array = new Uint8Array(file);
 
     const isGzipped = fileUint8Array[0] === 0x1F && fileUint8Array[1] === 0x8B;
-    if (isGzipped) {
-      const ds = new DecompressionStream('gzip');
-      const decompressedStream = new Blob([file]).stream().pipeThrough(ds);
-      file = await new Response(decompressedStream).arrayBuffer();
-    }
+    const bytes = isGzipped ? await gunzipBytes(fileUint8Array) : fileUint8Array;
     const decoder = new TextDecoder('utf-8');
-    return decoder.decode(file);
+    return decoder.decode(bytes);
   }
 
   // Any string is assumed to be the file contents.
@@ -234,12 +239,7 @@ export async function readOcrFile(file) {
     const arrayBuffer = await file.arrayBuffer();
     const fileUint8Array = new Uint8Array(arrayBuffer);
     const isGzipped = fileUint8Array[0] === 0x1F && fileUint8Array[1] === 0x8B;
-    if (isGzipped) {
-      const ds = new DecompressionStream('gzip');
-      const decompressedStream = new Blob([arrayBuffer]).stream().pipeThrough(ds);
-      const decompressed = await new Response(decompressedStream).arrayBuffer();
-      return new TextDecoder('utf-8').decode(decompressed);
-    }
+    if (isGzipped) return new TextDecoder('utf-8').decode(await gunzipBytes(fileUint8Array));
     const decoder = new TextDecoder('utf-8');
     return decoder.decode(arrayBuffer);
   }
@@ -248,11 +248,7 @@ export async function readOcrFile(file) {
     if (!file?.fileData?.toString) throw new Error('Invalid input. Must be a FileNode, ArrayBuffer, or string.');
     const buf = file.fileData;
     // Decompress gzipped data (e.g. a compressed `.scribe`), detected by magic bytes as in the branches above.
-    if (buf[0] === 0x1F && buf[1] === 0x8B) {
-      const ds = new DecompressionStream('gzip');
-      const decompressed = await new Response(new Blob([buf]).stream().pipeThrough(ds)).arrayBuffer();
-      return new TextDecoder('utf-8').decode(decompressed);
-    }
+    if (buf[0] === 0x1F && buf[1] === 0x8B) return new TextDecoder('utf-8').decode(await gunzipBytes(buf));
     // @ts-ignore
     return buf.toString();
   }
