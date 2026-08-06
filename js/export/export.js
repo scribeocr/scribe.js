@@ -13,7 +13,7 @@ import { writeText } from './writeText.js';
 import { writeHtml } from './writeHtml.js';
 import { writeAlto } from './writeAlto.js';
 import { writeMarkdown } from './writeMarkdown.js';
-import ocr, { OcrPage, removeCircularRefsOcr, clonePageFull } from '../objects/ocrObjects.js';
+import ocr, { OcrPage, clonePageFull } from '../objects/ocrObjects.js';
 import { removeCircularRefsDataTables } from '../objects/layoutObjects.js';
 import { mayHaveBakedText, hasBrokenFontRun, isScanPage } from '../pdf/ocrPageSelection.js';
 import { bboxToPageSpace } from '../addHighlights.js';
@@ -121,19 +121,57 @@ async function paintRedactionsOntoImage(image, rects, pageDims, pageAngle) {
 const SCRIBE_ENCODE_BATCH = 4 * 1024 * 1024;
 
 /**
+ * Convert one page into the plain object `.scribe` serializes.
+ * Nested values (bboxes, chars, styles) are shared with the live page, so mutating anything below the top level of the result corrupts the open document.
+ * @param {OcrPage} page
+ * @param {{includeText: boolean, includeCharBoxes: boolean}} serializeOpts
+ */
+function pageForScribe(page, { includeText, includeCharBoxes }) {
+  /** @type {Record<string, unknown>} */
+  const pageCopy = { ...page };
+  pageCopy.pars = page.pars.map((par) => {
+    const { page: key, lines: key2, ...rest } = par;
+    /** @type {Record<string, unknown>} */
+    const p = rest;
+    if (par.debug && !par.debug.raw && !par.debug.sourceType && !par.debug.sourceStyle) delete p.debug;
+    if (includeText) p.text = ocr.getParText(par);
+    p.lineIds = par.lines.map((line) => line.id);
+    return p;
+  });
+  pageCopy.lines = page.lines.map((line) => {
+    const { page: key, par: key2, ...rest } = line;
+    /** @type {Record<string, unknown>} */
+    const l = rest;
+    l.words = line.words.map((word) => {
+      const { line: key3, ...wordRest } = word;
+      /** @type {Record<string, unknown>} */
+      const w = wordRest;
+      if (!includeCharBoxes) delete w.chars;
+      if (word.debug && !word.debug.raw) delete w.debug;
+      return w;
+    });
+    if (line.debug && !line.debug.raw) delete l.debug;
+    if (includeText) l.text = ocr.getLineText(line);
+    if (line.par) l.parId = line.par.id;
+    return l;
+  });
+  if (includeText) pageCopy.text = ocr.getPageText(page);
+  return pageCopy;
+}
+
+/**
  * Yield the `.scribe` single-JSON layout as string chunks.
- * Pages are cloned and stringified one at a time, so no clone or string is ever document-sized.
+ * Pages are serialized one at a time, so no string is ever document-sized.
  * Concatenated output is byte-identical to `JSON.stringify({ ocr, ...envelope })`.
  * @param {Array<OcrPage>} ocrPages
- * @param {{includeText: boolean, includeCharBoxes: boolean}} cloneOpts
+ * @param {{includeText: boolean, includeCharBoxes: boolean}} serializeOpts
  * @param {Record<string, any>} envelope - Every top-level `.scribe` field except `ocr`.
  */
-function* scribeJsonChunks(ocrPages, cloneOpts, envelope) {
+function* scribeJsonChunks(ocrPages, serializeOpts, envelope) {
   yield '{"ocr":[';
   for (let i = 0; i < ocrPages.length; i++) {
     if (i > 0) yield ',';
-    const page = ocrPages[i] ? removeCircularRefsOcr([ocrPages[i]], cloneOpts)[0] : null;
-    yield page ? JSON.stringify(page) : 'null';
+    yield ocrPages[i] ? JSON.stringify(pageForScribe(ocrPages[i], serializeOpts)) : 'null';
   }
   yield ']';
   const rest = JSON.stringify(envelope);
@@ -145,10 +183,10 @@ function* scribeJsonChunks(ocrPages, cloneOpts, envelope) {
  * Line 1 is a header of the doc-level fields, followed by one newline-separated JSON record per page.
  * Every line parses on its own, so a reader never needs the whole document as one string.
  * @param {Array<OcrPage>} ocrPages
- * @param {{includeText: boolean, includeCharBoxes: boolean}} cloneOpts
+ * @param {{includeText: boolean, includeCharBoxes: boolean}} serializeOpts
  * @param {Record<string, any>} envelope
  */
-function* scribeSegmentChunks(ocrPages, cloneOpts, envelope) {
+function* scribeSegmentChunks(ocrPages, serializeOpts, envelope) {
   const header = {
     scribeSegments: 1,
     pageCount: ocrPages.length,
@@ -166,7 +204,7 @@ function* scribeSegmentChunks(ocrPages, cloneOpts, envelope) {
   const textEdits = envelope.session?.textEdits || [];
   const nativeText = envelope.session?.nativeText || [];
   for (let i = 0; i < ocrPages.length; i++) {
-    const page = ocrPages[i] ? removeCircularRefsOcr([ocrPages[i]], cloneOpts)[0] : null;
+    const page = ocrPages[i] ? pageForScribe(ocrPages[i], serializeOpts) : null;
     /** @type {Record<string, any>} */
     const rec = { i, ocr: page };
     if (envelope.session) {
@@ -709,15 +747,15 @@ export async function exportData(doc, format = 'txt', options = {}) {
         v: 1, textEdits: doc.textEdits.pages, nativeText: doc.nativeText.pages, fillText: collectFillTextRefs(doc),
       };
     }
-    const cloneOpts = { includeText: includeExtraTextScribe, includeCharBoxes: includeCharBoxesScribe };
+    const serializeOpts = { includeText: includeExtraTextScribe, includeCharBoxes: includeCharBoxesScribe };
     if (compressScribe) {
-      content = await compressStringChunks(scribeJsonChunks(ocrDownload, cloneOpts, envelope), scribeSegmentThreshold)
-        ?? await compressStringChunks(scribeSegmentChunks(ocrDownload, cloneOpts, envelope));
+      content = await compressStringChunks(scribeJsonChunks(ocrDownload, serializeOpts, envelope), scribeSegmentThreshold)
+        ?? await compressStringChunks(scribeSegmentChunks(ocrDownload, serializeOpts, envelope));
     } else {
       // A document whose JSON cannot exist as one string (V8 caps strings at 2^29 - 24) has no uncompressed form.
       const parts = [];
       let total = 0;
-      for (const chunk of scribeJsonChunks(ocrDownload, cloneOpts, envelope)) {
+      for (const chunk of scribeJsonChunks(ocrDownload, serializeOpts, envelope)) {
         total += chunk.length;
         if (total > 536_870_888) {
           throw new Error('This document\'s JSON exceeds the JavaScript string limit, so it cannot be exported as uncompressed .scribe.json; export compressed .scribe instead.');
