@@ -1,5 +1,6 @@
 {
-  "name": "scribe-viewer",
+  "name": "viewer-21",
+  "productName": "21 Viewer",
   "version": "0.1.0",
   "type": "commonjs",
   "main": "main.js",

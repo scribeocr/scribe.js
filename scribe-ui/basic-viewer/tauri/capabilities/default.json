@@ -1,6 +1,6 @@
 {
   "identifier": "default",
-  "description": "Default capabilities for the Scribe Viewer",
+  "description": "Default capabilities for 21 Viewer",
   "windows": ["main"],
   "permissions": [
     "core:window:allow-close",

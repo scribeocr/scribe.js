@@ -218,6 +218,8 @@ class ScribePDFViewer {
     this._tabs = [];
     /** Index of the active tab in `_tabs`, or -1 when none is open. */
     this._activeTab = -1;
+    /** Last active-document name announced via the `scribe-active-doc-change` event, or null when none was open. */
+    this._announcedDocName = null;
     /** Whether the tab strip currently occupies layout space. */
     this._tabStripVisible = false;
     /**
@@ -1826,6 +1828,12 @@ class ScribePDFViewer {
     if (this._editEnabled) {
       this._updateCombineButton();
       this._updateSplitButton();
+    }
+    // Every tab mutation passes through here, so this is where the embedding page learns which document is active.
+    const activeName = (this._activeTab >= 0 && this._tabs[this._activeTab]?.name) || null;
+    if (activeName !== this._announcedDocName) {
+      this._announcedDocName = activeName;
+      this.container.dispatchEvent(new CustomEvent('scribe-active-doc-change', { detail: { name: activeName }, bubbles: true }));
     }
   }
 

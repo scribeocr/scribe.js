@@ -21,4 +21,4 @@ else
 fi
 
 echo ""
-echo "Build complete. Binary at: basic-viewer/tauri/target/release/scribe-viewer-tauri"
+echo "Build complete. Binary at: basic-viewer/tauri/target/release/viewer-21-tauri"

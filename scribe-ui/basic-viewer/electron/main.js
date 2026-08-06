@@ -23,6 +23,10 @@ function createWindow() {
     width: 900,
     height: 1100,
     frame: false,
+    title: '21 Viewer',
+    // Windows and Linux take the window icon from here.
+    // macOS ignores it and uses the icon from the app bundle instead.
+    icon: path.join(__dirname, '../icons/icon-512.png'),
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,

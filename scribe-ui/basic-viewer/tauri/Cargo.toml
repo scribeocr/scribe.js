@@ -1,5 +1,5 @@
 [package]
-name = "scribe-viewer-tauri"
+name = "viewer-21-tauri"
 version = "0.1.0"
 edition = "2021"
 

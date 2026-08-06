@@ -28,6 +28,14 @@ pdfViewer.toolbarElemEnd.appendChild(closeBtn);
 const { listen } = window.__TAURI__.event;
 const { invoke } = window.__TAURI__.core;
 
+// Tauri does not mirror `document.title` onto the native window, so the app layer's title has to be pushed across by hand.
+// The window is frameless, so the title surfaces in the taskbar and window switcher rather than on a title bar.
+const titleElem = document.querySelector('title');
+if (titleElem) {
+  new MutationObserver(() => window.__TAURI__.window.getCurrentWindow().setTitle(document.title))
+    .observe(titleElem, { childList: true });
+}
+
 const readFileTauri = async (filePath) => {
   const bytes = await invoke('read_file', { path: filePath });
   const name = filePath.split(/[\\/]/).pop();

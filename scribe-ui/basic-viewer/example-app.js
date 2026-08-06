@@ -42,6 +42,11 @@ const buildBootstrapViewer = () => {
 /** @type {ScribePDFViewer|null} */
 const pdfViewer = buildBootstrapViewer();
 
+pdfViewerContElem?.addEventListener('scribe-active-doc-change', (e) => {
+  const name = /** @type {CustomEvent} */ (e).detail?.name;
+  document.title = name ? `${name} — 21 Viewer` : '21 Viewer';
+});
+
 let currentFile = null;
 async function handleLoadFile(file, page, readFileFn) {
   if (!pdfViewer) throw new Error('handleLoadFile requires the auto-instantiated viewer. Use ScribePDFViewer + importFile directly when embedding.');
