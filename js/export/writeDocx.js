@@ -110,14 +110,7 @@ export function writeDocxContent({
     const pageObj = ocrCurrent[g];
     if (!pageObj || pageObj.lines.length === 0) continue;
 
-    // Native-text PDFs already carry analyzeLayout paragraphs from import; re-running the per-page detector here would discard them.
-    // reflowPars still serves OCR/.hocr input.
-    // An uploaded OCR layer never carries them, even when the PDF beneath it was parsed as native text.
-    const nativePdf = doc?.inputData?.pdfType === 'text' && doc.ocr.active !== doc.ocr['User Upload'];
-    if (reflowText && !nativePdf && (!pageObj.textSource || !['textract', 'abbyy', 'google_vision', 'azure_doc_intel', 'docx'].includes(pageObj.textSource))) {
-      const angle = pageMetrics[g].angle || 0;
-      assignParagraphs(pageObj, angle);
-    }
+    if (reflowText && pageObj.pars.length === 0) assignParagraphs(pageObj, pageMetrics[g].angle || 0);
 
     for (let h = 0; h < pageObj.lines.length; h++) {
       const lineObj = pageObj.lines[h];

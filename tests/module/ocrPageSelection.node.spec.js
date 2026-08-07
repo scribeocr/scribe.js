@@ -335,6 +335,16 @@ describe('autoDeep gate wiring through a custom OCR model', () => {
     expect(candDoc.ocr.active[8].lines.length).toBe(37);
     expect(candDoc.ocr.active[8]).not.toBe(candDoc.ocr['Mock Cloud OCR'][8]); // a clone, edit-isolated
     expect(candDoc.ocr.pdf[8].lines.length).toBe(1); // native untouched
+
+    // The kept page's OCR carries no analyzed paragraphs, so reflow falls back to per-page break detection.
+    // The zero-pars check is not a correctness claim: it guards this test's own premise, which breaks if hOCR conversion ever starts building paragraphs.
+    expect(candDoc.ocr.active[8].pars.length, 'the kept page carries stored paragraphs, so the break-count assertion below no longer exercises the reflow fallback').toBe(0);
+    const keptTxt = /** @type {string} */ (await candDoc.exportData('txt', { reflow: true, pageArr: [8] }));
+    expect((keptTxt.match(/\n/g) || []).length, 'a kept-OCR page exported reflowed text as a single run-on block').toBe(27);
+    const parsNative = candDoc.ocr.active[0].pars;
+    const nativeTxt = /** @type {string} */ (await candDoc.exportData('txt', { reflow: true, pageArr: [0] }));
+    expect((nativeTxt.match(/\n/g) || []).length, 'analyzed paragraphs stopped driving a native page\'s reflowed export').toBe(candDoc.ocr.active[0].pars.length - 1);
+    expect(candDoc.ocr.active[0].pars, 'reflow export rebuilt the analyzed paragraphs on a native page').toBe(parsNative);
     await candDoc.close();
   }, 60000);
 });

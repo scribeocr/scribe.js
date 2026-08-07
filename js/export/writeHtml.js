@@ -162,14 +162,7 @@ export function writeHtml({
       top += pageMetricsArr[g].dims.height + 10;
     }
 
-    // Native-text PDFs already carry document-level analyzeLayout paragraphs from import.
-    // Re-running the per-page assignParagraphs would overwrite them.
-    // An uploaded OCR layer never carries them, even when the PDF beneath it was parsed as native text.
-    const nativePdf = doc?.inputData?.pdfType === 'text' && doc.ocr.active !== doc.ocr['User Upload'];
-    if (reflowText && !nativePdf && (!pageObj.textSource || !['textract', 'abbyy'].includes(pageObj.textSource))) {
-      const angle = pageMetricsArr[g].angle || 0;
-      assignParagraphs(pageObj, angle);
-    }
+    if (reflowText && pageObj.pars.length === 0) assignParagraphs(pageObj, pageMetricsArr[g].angle || 0);
 
     let parCurrent = pageObj.lines[0].par;
     let wordObjPrev = /** @type {?OcrWord} */ (null);

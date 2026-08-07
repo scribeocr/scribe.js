@@ -131,14 +131,7 @@ export function writeMarkdown({
 
     const pageObj = ocrCurrent[g];
 
-    // Native-text PDFs already carry document-level analyzeLayout paragraphs from import.
-    // Re-running the per-page assignParagraphs would overwrite them.
-    // An uploaded OCR layer never carries them, even when the PDF beneath it was parsed as native text.
-    const nativePdf = doc?.inputData?.pdfType === 'text' && doc.ocr.active !== doc.ocr['User Upload'];
-    if (reflowText && !nativePdf && (!pageObj.textSource || !['textract', 'abbyy', 'google_vision', 'azure_doc_intel', 'docx'].includes(pageObj.textSource))) {
-      const angle = pageMetrics[g].angle || 0;
-      assignParagraphs(pageObj, angle);
-    }
+    if (reflowText && pageObj.pars.length === 0) assignParagraphs(pageObj, pageMetrics[g].angle || 0);
 
     // Add page break marker between pages (except before first page)
     // There is no official markdown syntax for page breaks,
