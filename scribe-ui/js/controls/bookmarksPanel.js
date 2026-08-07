@@ -4,8 +4,8 @@
 import { makeIconButton } from './toolbar.js';
 import { nestHeadingOutline } from '../../../js/objects/outlineObjects.js';
 
-// A bookmark-ribbon glyph for the toolbar toggle.
-const BOOKMARK_SVG = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="currentColor"><path d="M4 2a1 1 0 0 0-1 1v11l5-3 5 3V3a1 1 0 0 0-1-1H4z"/></svg>';
+// A bookmark-ribbon glyph for the toolbar toggle (also the view's tab in the unified sidebar's switch strip).
+export const BOOKMARK_SVG = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="currentColor"><path d="M4 2a1 1 0 0 0-1 1v11l5-3 5 3V3a1 1 0 0 0-1-1H4z"/></svg>';
 // Disclosure chevron for expandable rows, stroked to match the toolbar's icon language.
 // Points right when collapsed.
 // The `.open` class rotates it to point down.

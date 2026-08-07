@@ -7,8 +7,8 @@ import { createNote } from '../viewerNotes.js';
 import { removeRedactionGroup } from '../viewerRedactions.js';
 import { bboxToPageSpace } from '../../../js/addHighlights.js';
 
-// Speech-bubble glyph for the toolbar toggle.
-const COMMENT_SVG = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="currentColor"><path d="M3 2h10a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H6.5L4 13.5V11H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/></svg>';
+// Speech-bubble glyph for the toolbar toggle (also the view's tab in the unified sidebar's switch strip).
+export const COMMENT_SVG = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="currentColor"><path d="M3 2h10a1 1 0 0 1 1 1v7a1 1 0 0 1-1 1H6.5L4 13.5V11H3a1 1 0 0 1-1-1V3a1 1 0 0 1 1-1z"/></svg>';
 // Plus glyph for the header "new note on this page" button (also the row's ghost "Add a comment" affordance).
 const NEW_NOTE_SVG = '<svg viewBox="0 0 24 24" width="1em" height="1em" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>';
 // Small dog-eared note glyph marking a freestanding-note row (matches the on-page note icon).

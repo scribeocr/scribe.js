@@ -14,16 +14,26 @@ pdfViewer.toolbarElemEnd.setAttribute('data-tauri-drag-region', '');
 const toolbarButtons = pdfViewer.toolbarElem.querySelector('.col-md');
 if (toolbarButtons) toolbarButtons.style.webkitAppRegion = 'no-drag';
 
-// Add close button
-const closeBtn = document.createElement('button');
-closeBtn.innerHTML = '&#x2715;';
-closeBtn.title = 'Close';
-// The glyph inherits the toolbar ink so it stays legible in both themes, and flips to white only over the red hover fill.
-closeBtn.style.cssText = 'background:none;border:none;color:inherit;font-size:20px;cursor:pointer;padding:8px 16px;-webkit-app-region:no-drag;';
-closeBtn.addEventListener('mouseenter', () => { closeBtn.style.background = '#e81123'; closeBtn.style.color = '#fff'; });
-closeBtn.addEventListener('mouseleave', () => { closeBtn.style.background = 'none'; closeBtn.style.color = 'inherit'; });
-closeBtn.addEventListener('click', () => window.__TAURI__.window.getCurrentWindow().close());
-pdfViewer.toolbarElemEnd.appendChild(closeBtn);
+const isMac = navigator.platform.startsWith('Mac');
+if (isMac) {
+  // The macOS window is decorated with the native traffic lights overlaying the toolbar, so inset the leading cluster clear of them.
+  pdfViewer.toolbarElemStart.style.paddingLeft = '96px';
+  // On macOS the system menu bar carries the app commands and one toggle opens the sidebar, matching how Mac viewers lay out this corner.
+  pdfViewer.setUnifiedSidebar(true);
+  pdfViewer.setMenuButtonVisible(false);
+  pdfViewer.setModeTrack(true);
+} else {
+  // Frameless on Windows and Linux, so the shell supplies the close button.
+  const closeBtn = document.createElement('button');
+  closeBtn.innerHTML = '&#x2715;';
+  closeBtn.title = 'Close';
+  // The glyph inherits the toolbar ink so it stays legible in both themes, and flips to white only over the red hover fill.
+  closeBtn.style.cssText = 'background:none;border:none;color:inherit;font-size:20px;cursor:pointer;padding:8px 16px;-webkit-app-region:no-drag;';
+  closeBtn.addEventListener('mouseenter', () => { closeBtn.style.background = '#e81123'; closeBtn.style.color = '#fff'; });
+  closeBtn.addEventListener('mouseleave', () => { closeBtn.style.background = 'none'; closeBtn.style.color = 'inherit'; });
+  closeBtn.addEventListener('click', () => window.__TAURI__.window.getCurrentWindow().close());
+  pdfViewer.toolbarElemEnd.appendChild(closeBtn);
+}
 
 const { listen } = window.__TAURI__.event;
 const { invoke } = window.__TAURI__.core;
@@ -49,6 +59,14 @@ const enqueue = (fn) => { eventQueue = eventQueue.then(fn); };
 listen('load-file', (event) => enqueue(() => handleLoadFile(event.payload.file, event.payload.page, readFileTauri)));
 listen('viewer-navigate', (event) => enqueue(() => ScribeViewer.displayPage(event.payload.page, true, false)));
 listen('viewer-highlight', (event) => enqueue(() => handleHighlights(event.payload.highlights)));
+
+if (isMac) {
+  // Native menu items route back through the same command handlers the in-window menu uses, and their enabled/checked state follows the app.
+  listen('menu-action', (event) => enqueue(() => pdfViewer.runMenuCommand(event.payload)));
+  const pushMenuState = () => { invoke('sync_menu', { state: pdfViewer.getMenuState() }).catch(() => {}); };
+  document.addEventListener('scribe-menu-state-change', pushMenuState);
+  pushMenuState();
+}
 
 // Pull initial args (the Rust backend stores them so we avoid race conditions).
 const initial = await invoke('get_initial_args');

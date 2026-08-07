@@ -15,6 +15,8 @@
         "title": "21 Viewer",
         "width": 900,
         "height": 1100,
+        "minWidth": 620,
+        "minHeight": 440,
         "decorations": false,
         "url": "scribe-ui/basic-viewer/tauri.html"
       }
@@ -25,6 +27,21 @@
   },
   "bundle": {
     "active": true,
+    "fileAssociations": [
+      {
+        "ext": ["pdf"],
+        "name": "PDF document",
+        "description": "PDF document",
+        "mimeType": "application/pdf",
+        "role": "Viewer"
+      },
+      {
+        "ext": ["scribe"],
+        "name": "Scribe document",
+        "description": "Scribe OCR document",
+        "role": "Editor"
+      }
+    ],
     "icon": [
       "icons/32x32.png",
       "icons/128x128.png",
@@ -36,6 +53,7 @@
   "plugins": {
     "cli": {
       "args": [
+        { "name": "path", "index": 1, "takesValue": true },
         { "name": "file", "takesValue": true, "short": "f" },
         { "name": "action", "takesValue": true, "short": "a" },
         { "name": "page", "takesValue": true, "short": "p" },

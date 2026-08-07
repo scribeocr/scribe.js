@@ -2578,6 +2578,66 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
 
     /* Mirrors the thumbnail panel's dock geometry, chrome, and slide: the two form one sidebar. */
+    /* Unified sidebar mode: one toolbar button opens the sidebar and this strip picks the view, so the per-view toolbar toggles leave the bar. */
+    .${r}.scribe-unified-sidebar .scribe-view-toggle { display: none; }
+
+    /* A desktop shell whose native menus carry the app commands hides the in-window menu button.
+       Hidden by class rather than inline style, because the library's bar swap snapshots and restores inline display and would resurface it. */
+    .${r}.scribe-menu-button-hidden .scribe-app-menu-wrap,
+    .${r}.scribe-menu-button-hidden .scribe-menu-sep { display: none; }
+
+    /* The library home swaps the bar over to its own controls, so the sidebar toggle sits that state out like the other document controls. */
+    .${r} .scribe-library-bar .scribe-sidebar-toggle { display: none; }
+
+    /* View-switch strip pinned above the open sidebar view. */
+    .${r} .scribe-sbtabs {
+      position: absolute;
+      left: 0;
+      height: 36px;
+      box-sizing: border-box;
+      padding: 4px 6px;
+      background: var(--scribe-canvas);
+      border-right: 1px solid var(--scribe-line);
+      border-bottom: 1px solid var(--scribe-line);
+      z-index: 8;
+      will-change: transform;
+    }
+
+    .${r} .scribe-sbtabs-track {
+      display: flex;
+      gap: 2px;
+      height: 100%;
+      box-sizing: border-box;
+      background: var(--scribe-sunken);
+      border-radius: 7px;
+      padding: 2px;
+    }
+
+    .${r} .scribe-sbtab {
+      flex: 1 1 0;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      border-radius: 5px;
+      color: var(--scribe-ink-3);
+      cursor: pointer;
+    }
+
+    .${r} .scribe-sbtab:hover { color: var(--scribe-ink); }
+
+    .${r} .scribe-sbtab.on {
+      background: var(--scribe-surface);
+      color: var(--scribe-accent);
+      box-shadow: 0 1px 2px rgba(20, 30, 60, .14);
+    }
+
+    .${r} .scribe-sbtab svg {
+      width: 15px;
+      height: 15px;
+      display: block;
+      pointer-events: none;
+    }
+
     .${r} .scribe-bookmarks-panel {
       position: absolute;
       left: 0;
@@ -3531,6 +3591,37 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       background: var(--scribe-surface); border-bottom: 1px solid var(--scribe-line); position: relative; z-index: 9;
     }
     .${r} .scribe-mode-tray.on { display: flex; }
+
+    /* The mac shell's mode drop-down: the sidebar strip's material at bar scale. */
+    .${r} .scribe-mode-track-wrap { position: relative; display: inline-flex; }
+    .${r} .scribe-mode-track-el {
+      display: inline-flex; align-items: stretch; height: 27px; box-sizing: border-box;
+      background: var(--scribe-sunken); border-radius: 7px; padding: 2px;
+    }
+    .${r} .scribe-mode-track-row1 { display: inline-flex; gap: 2px; justify-content: space-between; flex: 1 1 auto; }
+    .${r} .scribe-mode-track-more { display: none; }
+    .${r} .scribe-mode-track-el.open {
+      position: absolute; top: 0; right: 0; z-index: 30; height: auto;
+      flex-direction: column; align-items: stretch; box-shadow: var(--scribe-menu-shadow);
+    }
+    .${r} .scribe-mode-track-el.open .scribe-mode-track-more { display: flex; flex-direction: column; gap: 2px; margin-top: 2px; }
+    .${r} .scribe-mode-track-row { display: flex; gap: 2px; }
+    /* The value cell and the list rows share one left-aligned column, so the icons line up down the open control. */
+    .${r} .scribe-mode-track-row1 .cr-icon-button:first-child,
+    .${r} .scribe-mode-track-row .cr-icon-button { flex: 1 1 auto; justify-content: flex-start; }
+    .${r} .scribe-mode-track-el .cr-icon-button { height: 23px; width: auto; border-radius: 5px; color: var(--scribe-ink-2); align-items: center; }
+    .${r} .scribe-mode-track-el .cr-labeled-button { padding: 0 9px 0 5px; }
+    .${r} .scribe-mode-track-el .cr-icon-button:hover { background: none; color: var(--scribe-ink); }
+    /* The track's ink override above outranks the shared .disabled rule, so the dim is restated here. */
+    .${r} .scribe-mode-track-el .cr-icon-button.disabled { color: color-mix(in srgb, var(--scribe-ink-2) 50%, var(--scribe-ink-3)); }
+    .${r} .scribe-mode-track-el .cr-icon-button.active,
+    .${r} .scribe-mode-track-el .cr-icon-button.active:hover {
+      background: var(--scribe-surface); color: var(--scribe-accent);
+      box-shadow: 0 1px 2px rgba(20, 30, 60, .14);
+    }
+    .${r} .scribe-mode-track-el .cr-icon { width: 17px; height: 17px; }
+    .${r} .scribe-mode-track-el .cr-btn-label { font-size: 12px; }
+    .${r} .scribe-mode-track-chev { padding: 0 6px; }
   `;
 
   style.appendChild(document.createTextNode(css));

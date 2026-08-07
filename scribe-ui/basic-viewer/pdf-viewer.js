@@ -16,8 +16,8 @@ import {
 import { createThumbnailPanel, createScrollbars } from '../js/controls/panels.js';
 import { createCompanionStrip } from '../js/controls/companionStrip.js';
 import { createPagesMorph } from '../js/controls/pagesMorph.js';
-import { createBookmarksPanel } from '../js/controls/bookmarksPanel.js';
-import { createCommentsPanel } from '../js/controls/commentsPanel.js';
+import { createBookmarksPanel, BOOKMARK_SVG } from '../js/controls/bookmarksPanel.js';
+import { createCommentsPanel, COMMENT_SVG } from '../js/controls/commentsPanel.js';
 import {
   createHighlightTool, createDropZone, openDocumentFromFile, createRedactTool, createEditTextTool,
   createFillSignTool, createEditPagesTool, createRecognizeTextTool,
@@ -50,6 +50,18 @@ const DOCK_PANELS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentCol
   + ' stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
   + '<path d="M8.5 6h11.5M8.5 12h11.5M8.5 18h7M4 6h1.2M4 12h1.2M4 18h1.2"/></svg>';
 
+const SIDEBAR_TOGGLE_SVG = '<svg viewBox="0 0 24 24" width="20" height="20" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
+  + ' stroke-linejoin="round" style="pointer-events:none;display:block" aria-hidden="true">'
+  + '<rect x="3.5" y="4.5" width="17" height="15" rx="2.5"/><path d="M9.5 4.5v15"/></svg>';
+
+/** Contact-sheet grid for the unified sidebar's thumbnails tab, which cannot reuse the rail glyph because that is the mode's toolbar toggle. */
+const SIDEBAR_PAGES_SVG = '<svg viewBox="0 0 16 16" width="1em" height="1em" fill="currentColor">'
+  + '<rect x="2.3" y="2.3" width="5.1" height="5.1" rx="1"/><rect x="8.6" y="2.3" width="5.1" height="5.1" rx="1"/>'
+  + '<rect x="2.3" y="8.6" width="5.1" height="5.1" rx="1"/><rect x="8.6" y="8.6" width="5.1" height="5.1" rx="1"/></svg>';
+
+/** Height of the unified sidebar's view-switch strip, in px, matching its CSS. */
+const SIDEBAR_TABS_HEIGHT = 36;
+
 /** Height of the mode bar (the strip carrying the active tool mode's identity, description, and controls), in px, matching its CSS. */
 const MODE_BANNER_HEIGHT = 40;
 
@@ -69,6 +81,21 @@ const MORE_TOOLS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColo
 const HIDE_TOOLS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
   + ' stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
   + '<path d="M6 10.5l6-5 6 5M6 17.5l6-5 6 5"/></svg>';
+
+const TRACK_MORE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
+  + ' stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
+  + '<path d="M7.5 10l4.5 4.5L16.5 10"/></svg>';
+const TRACK_LESS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
+  + ' stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
+  + '<path d="M7.5 14.5 12 10l4.5 4.5"/></svg>';
+
+/**
+ * Pointer glyph for the mode drop-down's View item.
+ * The path sits off the box's geometric center so the arrow's ink centroid lands on the optical center.
+ */
+const TRACK_VIEW_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
+  + ' stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
+  + '<path d="M8.4 4.4v12.6l3.2-2.9 2.1 4.9 2.5-1.1-2.1-4.8h4.3z"/></svg>';
 
 /** Height of the dismissible message banner, in px, matching its CSS. */
 const MESSAGE_BANNER_HEIGHT = 40;
@@ -228,6 +255,21 @@ class ScribePDFViewer {
      */
     this._tabStripMinTabs = 2;
     this._modeTrayOpen = false;
+    /** Whether the mac shell's mode drop-down replaces the labeled mode buttons and their overflow tray. */
+    this._modeTrack = false;
+    this._modeTrackOpen = false;
+    /** @type {?HTMLElement} */
+    this._modeTrackWrap = null;
+    /** @type {?HTMLElement} */
+    this._modeTrackEl = null;
+    /** @type {?HTMLElement} */
+    this._modeTrackRow1 = null;
+    /** @type {?HTMLElement} */
+    this._modeTrackMore = null;
+    /** @type {?HTMLElement} */
+    this._modeTrackChev = null;
+    /** @type {?HTMLElement} */
+    this._modeTrackViewBtn = null;
     /** Monotonic counter stamped onto a tab's `lastUse` at creation and on every activation. */
     this._tabUseCounter = 0;
     /**
@@ -448,6 +490,19 @@ class ScribePDFViewer {
     this._sidebarResizeBounds = null;
     /** True while a sidebar resize drag (any view) is in flight, so `_relayout` skips the scrollbar refresh per move. */
     this._sidebarDragActive = false;
+    /** Whether the sidebar runs in its unified mode: one toolbar toggle opens it, and the view is picked from a switch strip inside it. */
+    this._unifiedSidebar = false;
+    /**
+     * The view the unified toggle reopens: the last view that was open.
+     * @type {'thumbnails'|'bookmarks'|'comments'}
+     */
+    this._lastSidebarView = 'thumbnails';
+    /** @type {?HTMLSpanElement} The unified mode's single sidebar toggle, standing in for the hidden per-view toggles. */
+    this._sidebarToggleElem = null;
+    /** @type {?HTMLDivElement} The unified mode's view-switch strip, pinned above the open view. */
+    this._sidebarTabsElem = null;
+    /** @type {Object<string, HTMLSpanElement>} The strip's tabs by view key. */
+    this._sidebarTabElems = {};
 
     /** @type {?ReturnType<typeof createBookmarksPanel>} */
     this._bookmarksPanel = showThumbnails
@@ -496,12 +551,22 @@ class ScribePDFViewer {
       open.openControls.style.display = 'none';
       print.printControls.style.display = 'none';
       appMenu.menuWrap.append(open.openControls, print.printControls);
-      appMenu.addAction('Open file', OPEN_SVG, () => open.openElem.click());
-      appMenu.addAction('Print', PRINT_SVG, () => print.printElem.click());
+      /**
+       * The app's command handlers by id, shared between the in-window app menu and a desktop shell's native menus.
+       * @type {Object<string, () => (void | Promise<void>)>}
+       */
+      this._menuCommands = {
+        open: () => open.openElem.click(),
+        print: () => print.printElem.click(),
+        'rotate-left': () => this.scribe.rotatePage(this.scribe.state.cp.n, -90),
+        'rotate-right': () => this.scribe.rotatePage(this.scribe.state.cp.n, 90),
+      };
+      appMenu.addAction('Open file', OPEN_SVG, this._menuCommands.open);
+      appMenu.addAction('Print', PRINT_SVG, this._menuCommands.print);
       // Touch-only rows re-homing the controls the touch layouts drop from the bar.
-      appMenu.addAction('Rotate left', ROTATE_LEFT_SVG, () => this.scribe.rotatePage(this.scribe.state.cp.n, -90))
+      appMenu.addAction('Rotate left', ROTATE_LEFT_SVG, this._menuCommands['rotate-left'])
         .classList.add('scribe-touch-row');
-      appMenu.addAction('Rotate right', ROTATE_RIGHT_SVG, () => this.scribe.rotatePage(this.scribe.state.cp.n, 90))
+      appMenu.addAction('Rotate right', ROTATE_RIGHT_SVG, this._menuCommands['rotate-right'])
         .classList.add('scribe-touch-row');
       if (DEBUG_MENU) {
         import('../js/controls/debugMenu.js')
@@ -515,7 +580,13 @@ class ScribePDFViewer {
       toolbarElemStart.appendChild(appMenu.menuWrap);
 
       if (this._thumbnailPanel) {
-        toolbarElemStart.appendChild(makeSeparator());
+        const startSeparator = makeSeparator();
+        // Marker classes let the unified mode and the shells' hidden-menu mode hide these by CSS.
+        startSeparator.classList.add('scribe-menu-sep');
+        toolbarElemStart.appendChild(startSeparator);
+        this._thumbnailPanel.toggleElem.classList.add('scribe-view-toggle');
+        if (this._bookmarksPanel) this._bookmarksPanel.toggleElem.classList.add('scribe-view-toggle');
+        if (this._commentsPanel) this._commentsPanel.toggleElem.classList.add('scribe-view-toggle');
         toolbarElemStart.appendChild(this._thumbnailPanel.toggleElem);
         if (this._bookmarksPanel) toolbarElemStart.appendChild(this._bookmarksPanel.toggleElem);
         if (this._commentsPanel) toolbarElemStart.appendChild(this._commentsPanel.toggleElem);
@@ -1371,6 +1442,8 @@ class ScribePDFViewer {
         if (this.scribe.scrollContainer) this._relayout();
       }
     }
+    // Loads can change the sidebar's open view and which views a document offers, so the unified toggle and strip resync here.
+    this._syncUnifiedSidebar();
 
     // Off the critical path: the displaced document's workers die asynchronously while the new page renders.
     // Safe because each document's workers and fonts are namespaced by a unique docId.
@@ -1393,6 +1466,7 @@ class ScribePDFViewer {
           // Extraction can only reveal comments, never remove them, so no sidebar fallback is needed here.
           this._commentsPanel.toggleElem.style.display = (hasCommentsNow || this.scribe.opt.enablePageEditing) ? '' : 'none';
           this._syncDockPanelsBtn();
+          this._syncUnifiedSidebar();
         }
       });
     }
@@ -1452,6 +1526,7 @@ class ScribePDFViewer {
       }
       if (this.scribe.scrollContainer) this._relayout();
     }
+    this._syncUnifiedSidebar();
     this._syncDockPagesBtn();
     this._syncDocGatedControls();
 
@@ -1887,6 +1962,12 @@ class ScribePDFViewer {
         if (this._sepBeforeRotate) this._sepBeforeRotate.style.display = 'none';
       }
     }
+    // The mode drop-down keeps one fixed width at every bar width, so the overflow fit leaves it alone.
+    // The exception: a control composed while the library view hid the bar measured zero and is unpinned, so the first sync that sees it laid out re-measures it.
+    if (this._modeTrack && this._modeTrackWrap) {
+      if (this._modeTrackEl && !this._modeTrackEl.style.width && this._modeTrackWrap.offsetWidth) this._syncModeTrackValue();
+      return;
+    }
     if (!row || !arrow || !tray) return;
     const modeBtns = [...row.children].filter((el) => (this._exclusiveToolBtns || []).includes(el));
     if (air() < MODE_MIN_AIR && modeBtns.length) {
@@ -1945,11 +2026,20 @@ class ScribePDFViewer {
   _positionBanners() {
     const top = this._chromeTop();
     if (this._modeBanner) this._modeBanner.style.top = `${top}px`;
+    // The mode track's open envelope hangs over the banner's trailing corner, so the banner's content ends before it.
+    if (this._modeBanner) {
+      const pad = (this._modeTrackOpen && this._modeTrackEl)
+        ? Math.ceil(this._modeBanner.getBoundingClientRect().right - this._modeTrackEl.getBoundingClientRect().left) + 12
+        : 0;
+      this._modeBanner.style.paddingRight = pad > 0 ? `${pad}px` : '';
+    }
     const modeH = (this._modeBanner && this._modeBanner.style.display !== 'none') ? MODE_BANNER_HEIGHT : 0;
     if (this._banner) this._banner.style.top = `${top + modeH}px`;
     const messageH = (this._banner && this._banner.style.display !== 'none') ? MESSAGE_BANNER_HEIGHT : 0;
     // The banners span the sidebar too, so the rail reserves leading scroll space for them to keep its first row's controls reachable.
-    if (this._thumbnailPanel) this._thumbnailPanel.setTopInset(modeH + messageH);
+    // The unified strip's band already holds the rows that much lower, so only the overlap past it needs reserving.
+    const stripH = (this._unifiedSidebar && !this._phoneChrome) ? SIDEBAR_TABS_HEIGHT : 0;
+    if (this._thumbnailPanel) this._thumbnailPanel.setTopInset(Math.max(0, modeH + messageH - stripH));
   }
 
   /**
@@ -2083,6 +2173,7 @@ class ScribePDFViewer {
       if (idlePal && idlePal.parentElement !== this.pdfViewerElem) this.pdfViewerElem.appendChild(idlePal);
       this._modeBannerBtn = null;
       this._syncModeTrayArrow();
+      if (this._modeTrack && this._modeTrackWrap) this._syncModeTrackValue();
       this._positionBanners();
       return;
     }
@@ -2191,6 +2282,7 @@ class ScribePDFViewer {
     // A mode whose button lives in the tray keeps the tray open while active, so the active button stays visible.
     if (this._modeTrayElem && this._modeTrayElem.contains(activeBtn)) this._setModeTrayOpen(true);
     else this._syncModeTrayArrow();
+    if (this._modeTrack && this._modeTrackWrap) this._syncModeTrackValue();
     this._positionBanners();
   }
 
@@ -2203,17 +2295,21 @@ class ScribePDFViewer {
       this.pdfViewerElem.style.setProperty('--scribe-phone-menu-max', `${Math.max(120, this._height - this._chromeBottom() - 24)}px`);
     }
     this._positionBanners();
+    // In unified mode the view-switch strip owns a band under the toolbar, and every view starts below it.
+    const stripH = (this._unifiedSidebar && !this._phoneChrome) ? SIDEBAR_TABS_HEIGHT : 0;
+    const panelTop = top + stripH;
+    if (this._sidebarTabsElem) this._sidebarTabsElem.style.top = `${top}px`;
     if (this._thumbnailPanel) {
-      this._thumbnailPanel.panelElem.style.top = `${top}px`;
-      this._thumbnailPanel.panelElem.style.height = `${this._height - top}px`;
+      this._thumbnailPanel.panelElem.style.top = `${panelTop}px`;
+      this._thumbnailPanel.panelElem.style.height = `${this._height - panelTop}px`;
     }
     if (this._bookmarksPanel) {
-      this._bookmarksPanel.panelElem.style.top = `${top}px`;
-      this._bookmarksPanel.panelElem.style.height = `${this._height - top}px`;
+      this._bookmarksPanel.panelElem.style.top = `${panelTop}px`;
+      this._bookmarksPanel.panelElem.style.height = `${this._height - panelTop}px`;
     }
     if (this._commentsPanel) {
-      this._commentsPanel.panelElem.style.top = `${top}px`;
-      this._commentsPanel.panelElem.style.height = `${this._height - top}px`;
+      this._commentsPanel.panelElem.style.top = `${panelTop}px`;
+      this._commentsPanel.panelElem.style.height = `${this._height - panelTop}px`;
     }
     // A sidebar animation owns the document inset and canvas size on its own clock, so don't fight it here.
     // The panel top/height set above are still safe to keep in sync every frame.
@@ -2224,6 +2320,7 @@ class ScribePDFViewer {
       : (this._activeSidebar === 'bookmarks' ? this._bookmarksPanel
         : (this._activeSidebar === 'comments' ? this._commentsPanel : null));
     const panelW = activePanel ? (parseFloat(activePanel.panelElem.style.width) || 0) : 0;
+    if (this._sidebarTabsElem && activePanel) this._sidebarTabsElem.style.width = `${panelW}px`;
     const inset = Math.min(panelW, Math.max(0, this._width - 80));
     this.scribe.scrollContainer.style.marginLeft = `${inset}px`;
     this.scribe.resize(this._width - inset, this._height - top - this._docBottomInset());
@@ -2258,6 +2355,7 @@ class ScribePDFViewer {
     if (this._bookmarksPanel) this._bookmarksPanel.toggleElem.classList.toggle('active', next === 'bookmarks');
     if (this._commentsPanel) this._commentsPanel.toggleElem.classList.toggle('active', next === 'comments');
     this._transitionSidebar(prev, next);
+    this._syncUnifiedSidebar();
   }
 
   /**
@@ -2330,6 +2428,8 @@ class ScribePDFViewer {
     const toW = toEl ? (parseFloat(toEl.style.width) || 0) : 0;
     const top = this._chromeTop();
     const isSwitch = !!fromPanel && !!toPanel;
+    // The strip rides the sidebar: it slides with the view on open/close and holds still through a switch's crossfade.
+    const strip = (this._unifiedSidebar && !this._phoneChrome) ? this._sidebarTabsElem : null;
 
     const setInset = (/** @type {number} */ raw) => {
       const inset = Math.min(Math.max(0, raw), Math.max(0, this._width - 80));
@@ -2347,6 +2447,10 @@ class ScribePDFViewer {
         fromEl.style.transition = 'none';
         fromPanel.setVisible(false); // releases focus, unmounts thumbnails after its own slide window, snaps off-screen
         fromEl.style.opacity = '';
+      }
+      if (strip) {
+        strip.style.transform = '';
+        strip.style.display = toEl ? '' : 'none';
       }
       requestAnimationFrame(() => {
         if (toEl) toEl.style.transition = '';
@@ -2371,6 +2475,13 @@ class ScribePDFViewer {
       fromEl.style.opacity = '1';
       fromEl.style.transform = 'translateX(0)';
     }
+    if (strip) {
+      if (toEl) strip.style.width = `${toW}px`;
+      if (!isSwitch) {
+        strip.style.display = '';
+        strip.style.transform = toEl ? `translateX(-${toW}px)` : 'translateX(0)';
+      }
+    }
     setInset(fromW); // start at the outgoing width (0 when opening from closed)
 
     /** @type {?number} */
@@ -2384,14 +2495,304 @@ class ScribePDFViewer {
         if (fromEl) fromEl.style.opacity = String(1 - e);
       } else if (toEl) {
         toEl.style.transform = `translateX(-${toW * (1 - e)}px)`; // slide the incoming view in
+        if (strip) strip.style.transform = toEl.style.transform;
       } else if (fromEl) {
         fromEl.style.transform = `translateX(-${fromW * e}px)`; // slide the outgoing view out
+        if (strip) strip.style.transform = fromEl.style.transform;
       }
       setInset(fromW + (toW - fromW) * e);
       // Keep looping only while this transition is still the current one; an interrupt/destroy replaces or nulls it.
       if (p < 1) { if (this._sidebarAnim === anim) anim.raf = requestAnimationFrame(frame); } else cleanup();
     };
     anim.raf = requestAnimationFrame(frame);
+  }
+
+  /**
+   * Switch the sidebar between its default mode (one toolbar toggle per view) and the unified mode the desktop shells use,
+   * where a single toolbar button opens the sidebar and the view is picked from a switch strip inside it.
+   * @param {boolean} enabled
+   */
+  setUnifiedSidebar(enabled) {
+    if (!this._thumbnailPanel || !this.toolbarElemStart || enabled === this._unifiedSidebar) return;
+    this._unifiedSidebar = enabled;
+    this.pdfViewerElem.classList.toggle('scribe-unified-sidebar', enabled);
+    if (enabled && !this._sidebarToggleElem) {
+      const toggle = makeIconButton('Show sidebar', SIDEBAR_TOGGLE_SVG);
+      // The marker class sits the toggle out of the library home's swapped bar alongside the other document controls.
+      toggle.classList.add('scribe-sidebar-toggle');
+      toggle.addEventListener('click', () => {
+        if (toggle.classList.contains('disabled')) return;
+        if (this._activeSidebar) {
+          this._requestSidebar(this._activeSidebar);
+          return;
+        }
+        const last = this._panelFor(this._lastSidebarView);
+        this._requestSidebar((last && last.toggleElem.style.display !== 'none') ? this._lastSidebarView : 'thumbnails');
+      });
+      this._sidebarToggleElem = toggle;
+
+      const tabs = document.createElement('div');
+      tabs.className = 'scribe-sbtabs';
+      tabs.style.display = 'none';
+      const track = document.createElement('div');
+      track.className = 'scribe-sbtabs-track';
+      tabs.appendChild(track);
+      /** @type {Array<['thumbnails'|'bookmarks'|'comments', string, string]>} */
+      const views = [
+        ['thumbnails', 'Page thumbnails', SIDEBAR_PAGES_SVG],
+        ['bookmarks', 'Bookmarks', BOOKMARK_SVG],
+        ['comments', 'Comments', COMMENT_SVG],
+      ];
+      for (const [key, label, svg] of views) {
+        if (!this._panelFor(key)) continue;
+        const tab = document.createElement('span');
+        tab.className = 'scribe-sbtab';
+        tab.title = label;
+        tab.role = 'button';
+        tab.tabIndex = 0;
+        tab.ariaLabel = label;
+        tab.innerHTML = svg;
+        tab.addEventListener('click', () => { if (key !== this._activeSidebar) this._requestSidebar(key); });
+        this._sidebarTabElems[key] = tab;
+        track.appendChild(tab);
+      }
+      this._sidebarTabsElem = tabs;
+      this.pdfViewerElem.appendChild(tabs);
+    }
+    if (this._sidebarToggleElem) {
+      // Present in the bar only while the mode is on, so the trailing-edge overflow measurement never reads a hidden last child.
+      if (enabled) this.toolbarElemStart.appendChild(this._sidebarToggleElem);
+      else this._sidebarToggleElem.remove();
+    }
+    // Leaving the mode retires the strip; the sync below only manages it while the mode is on.
+    if (!enabled && this._sidebarTabsElem) this._sidebarTabsElem.style.display = 'none';
+    this._syncUnifiedSidebar();
+    this._syncDocGatedControls();
+    if (this.scribe.scrollContainer) this._relayout();
+  }
+
+  /** Reflect the sidebar's state on the unified mode's toggle and switch strip (a no-op outside the mode). */
+  _syncUnifiedSidebar() {
+    if (!this._unifiedSidebar || !this._sidebarToggleElem) return;
+    if (this._activeSidebar) this._lastSidebarView = this._activeSidebar;
+    const open = this._activeSidebar !== null;
+    this._sidebarToggleElem.classList.toggle('active', open);
+    this._sidebarToggleElem.title = open ? 'Hide sidebar' : 'Show sidebar';
+    this._sidebarToggleElem.ariaLabel = this._sidebarToggleElem.title;
+    for (const [key, tab] of Object.entries(this._sidebarTabElems)) {
+      tab.classList.toggle('on', key === this._activeSidebar);
+      const panel = this._panelFor(/** @type {'thumbnails'|'bookmarks'|'comments'} */ (key));
+      tab.style.display = (panel && panel.toggleElem.style.display !== 'none') ? '' : 'none';
+    }
+    // A running transition owns the strip's visibility, so only the resting state is set here.
+    if (this._sidebarTabsElem && !this._sidebarAnim) {
+      this._sidebarTabsElem.style.display = (open && !this._phoneChrome) ? '' : 'none';
+    }
+  }
+
+  /**
+   * Show or hide the in-window app menu button (a desktop shell hides it after moving its commands into native menus).
+   * @param {boolean} visible
+   */
+  setMenuButtonVisible(visible) {
+    this.pdfViewerElem.classList.toggle('scribe-menu-button-hidden', !visible);
+  }
+
+  /**
+   * Switch the exclusive tool modes between their default row of labeled buttons and the mac shells' compact drop-down.
+   * In the drop-down form the bar shows the current selection (the active mode, or View while none is on) and the other modes list one per row beneath it.
+   * @param {boolean} enabled
+   */
+  setModeTrack(enabled) {
+    if (this._modeTrack === !!enabled || !this._modeRowElem) return;
+    this._modeTrack = !!enabled;
+    if (enabled && !this._modeTrackWrap) {
+      const wrap = document.createElement('span');
+      wrap.className = 'scribe-mode-track-wrap';
+      const track = document.createElement('span');
+      track.className = 'scribe-mode-track-el';
+      const row1 = document.createElement('span');
+      row1.className = 'scribe-mode-track-row1';
+      const more = document.createElement('div');
+      more.className = 'scribe-mode-track-more';
+      const chev = makeIconButton('More tools', TRACK_MORE_SVG);
+      chev.classList.add('scribe-mode-track-chev');
+      chev.addEventListener('click', () => this._setModeTrackOpen(!this._modeTrackOpen));
+      row1.appendChild(chev);
+      track.append(row1, more);
+      wrap.appendChild(track);
+      this._modeTrackWrap = wrap;
+      this._modeTrackEl = track;
+      this._modeTrackRow1 = row1;
+      this._modeTrackMore = more;
+      this._modeTrackChev = chev;
+      const view = makeIconButton('View', TRACK_VIEW_SVG);
+      view.classList.add('cr-labeled-button');
+      const viewLabel = document.createElement('span');
+      viewLabel.className = 'cr-btn-label';
+      viewLabel.textContent = 'View';
+      view.appendChild(viewLabel);
+      // In the list, View is the exit pick.
+      // In the bar it is the resting value, and the capture handler below owns its clicks.
+      view.addEventListener('click', () => {
+        if (!more.contains(view)) return;
+        const active = (this._exclusiveToolBtns || []).find((b) => b.classList.contains('active'));
+        if (active) active.click();
+        else this._setModeTrackOpen(false);
+      });
+      this._modeTrackViewBtn = view;
+      // A user click anywhere on the bar control (the value or the chevron) toggles the list instead of triggering the value button's own action.
+      // Only trusted events are taken, so the app's own programmatic clicks (mode exits, exclusivity, Escape) still reach the buttons.
+      const onValueClick = (e) => {
+        if (!e.isTrusted || chev.classList.contains('disabled') || !row1.contains(/** @type {Node} */ (e.target))) return;
+        e.stopPropagation();
+        e.preventDefault();
+        this._setModeTrackOpen(!this._modeTrackOpen);
+      };
+      wrap.addEventListener('click', onValueClick, true);
+      const onDocClick = (e) => {
+        if (!this._modeTrackOpen || wrap.contains(/** @type {Node} */ (e.target))) return;
+        this._setModeTrackOpen(false);
+      };
+      document.addEventListener('click', onDocClick);
+      this._teardownCallbacks.push(() => document.removeEventListener('click', onDocClick));
+      // The capture phase consumes the press before the global mode-exit Escape, so closing the list never also exits the active mode.
+      const onKey = (e) => {
+        if (e.key !== 'Escape' || e.defaultPrevented || !this._modeTrackOpen) return;
+        e.preventDefault();
+        this._setModeTrackOpen(false);
+      };
+      document.addEventListener('keydown', onKey, true);
+      this._teardownCallbacks.push(() => document.removeEventListener('keydown', onKey, true));
+    }
+    const wrap = this._modeTrackWrap;
+    if (!wrap) return;
+    if (enabled) {
+      this._setModeTrayOpen(false);
+      this._modeRowElem.insertBefore(wrap, this._modeRowElem.firstChild);
+      this._syncModeTrackValue();
+      // The control may be created after the last document-gate sync, so the current gate is applied here.
+      this._syncDocGatedControls();
+    } else {
+      this._setModeTrackOpen(false);
+      for (const btn of (this._exclusiveToolBtns || [])) {
+        if (wrap.contains(btn)) this._modeRowElem.insertBefore(btn, this._modeTrayArrow || null);
+      }
+      wrap.remove();
+    }
+    this._syncModeOverflow();
+  }
+
+  /**
+   * Open or close the drop-down's list.
+   * Closing never changes which mode is on.
+   * @param {boolean} on
+   */
+  _setModeTrackOpen(on) {
+    const track = this._modeTrackEl;
+    const chev = this._modeTrackChev;
+    if (!track || !chev || this._modeTrackOpen === on) return;
+    if (on && chev.classList.contains('disabled')) return;
+    this._modeTrackOpen = on;
+    track.classList.toggle('open', on);
+    const ic = chev.querySelector('.cr-icon');
+    if (ic) ic.innerHTML = on ? TRACK_LESS_SVG : TRACK_MORE_SVG;
+    chev.title = on ? 'Hide extra tools' : 'More tools';
+    this._positionBanners();
+  }
+
+  /**
+   * Compose the mode drop-down's value and list, and pin its width.
+   * The control is sized to its widest possible value, so neither opening nor a new selection changes its width.
+   */
+  _syncModeTrackValue() {
+    const wrap = this._modeTrackWrap;
+    const track = this._modeTrackEl;
+    const row1 = this._modeTrackRow1;
+    const more = this._modeTrackMore;
+    const chev = this._modeTrackChev;
+    const view = this._modeTrackViewBtn;
+    if (!wrap || !track || !row1 || !more || !chev || !view) return;
+    this._setModeTrackOpen(false);
+    const btns = (this._exclusiveToolBtns || []).filter((b) => b.isConnected);
+    const active = btns.find((b) => b.classList.contains('active')) || null;
+    // Pull everything back to row one before wiping the old rows, so no button node is discarded with them.
+    for (const b of btns) row1.insertBefore(b, chev);
+    row1.insertBefore(view, chev);
+    more.textContent = '';
+    // Measure every candidate as the lone value, out of flow so a tight bar cannot squeeze the sample.
+    const candidates = [view, ...btns];
+    wrap.style.width = '';
+    wrap.style.height = '';
+    track.style.width = '';
+    track.style.position = 'fixed';
+    track.style.visibility = 'hidden';
+    for (const b of candidates) b.style.display = 'none';
+    let width = 0;
+    for (const b of candidates) {
+      b.style.display = '';
+      width = Math.max(width, Math.ceil(track.getBoundingClientRect().width));
+      b.style.display = 'none';
+    }
+    for (const b of candidates) b.style.display = '';
+    const height = track.offsetHeight;
+    track.style.position = '';
+    track.style.visibility = '';
+    // A bar hidden by the library view measures zero, so the control stays unpinned and the first overflow sync that sees it laid out re-measures.
+    if (width > 0) {
+      track.style.width = `${width}px`;
+      wrap.style.width = `${width}px`;
+      wrap.style.height = `${height}px`;
+    }
+    const listRow = (el) => {
+      const rowDiv = document.createElement('div');
+      rowDiv.className = 'scribe-mode-track-row';
+      rowDiv.appendChild(el);
+      more.appendChild(rowDiv);
+    };
+    if (active) listRow(view);
+    for (const b of btns) {
+      if (b !== active) listRow(b);
+    }
+  }
+
+  /**
+   * Run one of the app's menu commands by id, for a desktop shell routing its native menu items here.
+   * Ids unknown or unavailable in this viewer configuration are ignored.
+   * @param {string} id
+   * @returns {void | Promise<void>}
+   */
+  runMenuCommand(id) {
+    const fn = this._menuCommands?.[id];
+    if (fn) return fn();
+    return undefined;
+  }
+
+  /**
+   * The state a desktop shell needs to enable and check its native menu items.
+   * @returns {{docOpen: boolean, recognize: boolean, combine: boolean, split: boolean,
+   *   coverEnabled: boolean, coverChecked: boolean, darkChecked: boolean,
+   *   fieldsEnabled: boolean, fieldsChecked: boolean}}
+   */
+  getMenuState() {
+    const doc = this.doc;
+    return {
+      docOpen: !!doc,
+      recognize: !!doc && this._deepOcrPageCount() > 0,
+      combine: this._tabs.length >= 2,
+      split: !!doc && outlineSplitSegments(doc.outline || [], doc.pageMetrics.length).length >= 2,
+      coverEnabled: this.scribe.state.pagesPerRow === 2,
+      coverChecked: !!this.scribe.state.coverAlone,
+      darkChecked: this._effectiveTheme() === 'dark',
+      fieldsEnabled: !!doc && docHasFormFields(doc),
+      fieldsChecked: !!getHighlightFields(),
+    };
+  }
+
+  /** Broadcast the current menu state so a listening desktop shell can refresh its native menus. */
+  _notifyMenuState() {
+    if (!this._menuCommands) return;
+    this.pdfViewerElem.dispatchEvent(new CustomEvent('scribe-menu-state-change', { detail: this.getMenuState(), bubbles: true }));
   }
 
   /** Open the find bar, enable search highlighting, and focus the input. */
@@ -2563,6 +2964,7 @@ class ScribePDFViewer {
     }
     this._updateRecognizeButton();
     this._syncDockPageNumWidth();
+    this._syncUnifiedSidebar();
     this._syncDocGatedControls();
     if (this.scribe.scrollContainer) this._relayout();
   }
@@ -3239,11 +3641,14 @@ class ScribePDFViewer {
       this._thumbnailPanel?.toggleElem,
       this._bookmarksPanel?.toggleElem,
       this._commentsPanel?.toggleElem,
+      this._sidebarToggleElem,
       this._dockPagesBtn,
       this._sheetPanelsBtn,
       this._fillSignTool?.toolbarElem,
       this._editPagesTool?.toolbarElem,
       this._recognizeTool?.toolbarElem,
+      this._modeTrackViewBtn,
+      this._modeTrackChev,
     ]) {
       if (!el) continue;
       el.classList.toggle('disabled', disabled);
@@ -3273,6 +3678,7 @@ class ScribePDFViewer {
     }
     // The closes above can end a mode without a button click, so refresh the banner here too.
     this._syncModeBanner();
+    this._notifyMenuState();
   }
 
   /** Hide the dock's Panels button when the sheet would have no tabs to show. */
@@ -3419,10 +3825,11 @@ class ScribePDFViewer {
     const appMenu = this._appMenu;
     if (appMenu) {
       // Touch-only row replacing the bar's split button.
-      this._ocrMenuItem = appMenu.addAction('Recognize text', ICON_RECOGNIZE, () => this._recognizeAll(this._ocrMenuItem));
+      this._menuCommands.recognize = () => { if (this._ocrMenuItem) this._recognizeAll(this._ocrMenuItem); };
+      this._ocrMenuItem = appMenu.addAction('Recognize text', ICON_RECOGNIZE, this._menuCommands.recognize);
       this._ocrMenuItem.classList.add('scribe-touch-row');
       // The `busy` class barely shows (the menu closes on click; the browser's download UI is the real progress cue) but is kept to match the Combine / Split siblings.
-      const exportItem = appMenu.addAction('Export PDF', ICON_EXPORT, async () => {
+      this._menuCommands['export-pdf'] = async () => {
         // No-op at 0 pages (e.g. every page removed) rather than throwing deep in the PDF writer.
         if (!this.doc || this.doc.pageMetrics.length === 0) return;
         exportItem.classList.add('busy');
@@ -3443,25 +3850,27 @@ class ScribePDFViewer {
         } finally {
           exportItem.classList.remove('busy');
         }
-      });
+      };
+      const exportItem = appMenu.addAction('Export PDF', ICON_EXPORT, this._menuCommands['export-pdf']);
 
       // Separator before the document actions, hidden when neither Combine nor Split currently applies.
       this._appMenuDocSep = appMenu.addSeparator();
 
       // Combine every open document (tab) into one. Shown only when 2+ tabs are open (see `_updateCombineButton`).
-      const combineItem = appMenu.addAction('Combine open documents', ICON_COMBINE, async () => {
+      this._menuCommands.combine = async () => {
         combineItem.classList.add('busy');
         try {
           await this.combineOpenDocuments();
         } finally {
           combineItem.classList.remove('busy');
         }
-      });
+      };
+      const combineItem = appMenu.addAction('Combine open documents', ICON_COMBINE, this._menuCommands.combine);
       combineItem.dataset.action = 'combine';
       this._combineItem = combineItem;
 
       // Split the active document into one file per top-level bookmark. Shown only when it would yield 2+ files (see `_updateSplitButton`).
-      const splitItem = appMenu.addAction('Split at bookmarks', ICON_SPLIT, async () => {
+      this._menuCommands.split = async () => {
         const doc = this.doc;
         if (!doc) return;
         const count = outlineSplitSegments(doc.outline || [], doc.pageMetrics.length).length;
@@ -3474,7 +3883,8 @@ class ScribePDFViewer {
         } finally {
           splitItem.classList.remove('busy');
         }
-      });
+      };
+      const splitItem = appMenu.addAction('Split at bookmarks', ICON_SPLIT, this._menuCommands.split);
       splitItem.dataset.action = 'split';
       this._splitItem = splitItem;
 
@@ -3482,14 +3892,18 @@ class ScribePDFViewer {
       // The switch reflects the theme in effect each time the menu opens.
       appMenu.addSeparator();
       // The row shows only while pages are paired, so it never describes a state that is not on screen.
-      const coverToggle = appMenu.addToggle('Separate cover page', ICON_COVER_ALONE, () => this.scribe.state.coverAlone, () => this._toggleCoverAlone());
-      this._coverToggleItem = coverToggle.item;
-      this._syncPageLayoutControls();
-      appMenu.addToggle('Dark mode', ICON_DARK, () => this._effectiveTheme() === 'dark', () => this._toggleDarkMode());
-      const fieldsToggle = appMenu.addToggle('Highlight fields', ICON_FIELDS, () => getHighlightFields(), () => {
+      this._menuCommands['cover-alone'] = () => this._toggleCoverAlone();
+      this._menuCommands['dark-mode'] = () => this._toggleDarkMode();
+      this._menuCommands['highlight-fields'] = () => {
         if (this._fieldsToggleItem?.classList.contains('disabled')) return;
         setHighlightFields(this.scribe, !getHighlightFields());
-      });
+        this._notifyMenuState();
+      };
+      const coverToggle = appMenu.addToggle('Separate cover page', ICON_COVER_ALONE, () => this.scribe.state.coverAlone, this._menuCommands['cover-alone']);
+      this._coverToggleItem = coverToggle.item;
+      this._syncPageLayoutControls();
+      appMenu.addToggle('Dark mode', ICON_DARK, () => this._effectiveTheme() === 'dark', this._menuCommands['dark-mode']);
+      const fieldsToggle = appMenu.addToggle('Highlight fields', ICON_FIELDS, () => getHighlightFields(), this._menuCommands['highlight-fields']);
       this._fieldsToggleItem = fieldsToggle.item;
     }
 
@@ -3525,12 +3939,14 @@ class ScribePDFViewer {
   /** Show the touch app-menu recognition row only when deep OCR would actually recognize at least one page. */
   _updateRecognizeButton() {
     if (this._ocrMenuItem) this._ocrMenuItem.style.display = this._deepOcrPageCount() > 0 ? '' : 'none';
+    this._notifyMenuState();
   }
 
   /** Show the Combine menu item only when 2+ documents (tabs) are open. Combining one document is a no-op. */
   _updateCombineButton() {
     if (this._combineItem) this._combineItem.style.display = this._tabs.length >= 2 ? '' : 'none';
     this._updateDocSeparator();
+    this._notifyMenuState();
   }
 
   /** Show the Split menu item only when the active document's top-level bookmarks would yield 2+ files. */
@@ -3541,6 +3957,7 @@ class ScribePDFViewer {
       this._splitItem.style.display = count >= 2 ? '' : 'none';
     }
     this._updateDocSeparator();
+    this._notifyMenuState();
   }
 
   /** Hide the app menu's document-actions separator when neither Combine nor Split applies, so it never leaves a stray rule. */
@@ -3681,6 +4098,7 @@ class ScribePDFViewer {
     if (this._twoPageBtn) this._twoPageBtn.classList.toggle('active', two);
     if (this._coverToggleItem) this._coverToggleItem.style.display = two ? '' : 'none';
     this._syncPageNumDisplay();
+    this._notifyMenuState();
   }
 
   /**
@@ -3743,6 +4161,7 @@ class ScribePDFViewer {
   _applyTheme() {
     if (this._effectiveTheme() === 'dark') this.pdfViewerElem.setAttribute('data-theme', 'dark');
     else this.pdfViewerElem.removeAttribute('data-theme');
+    this._notifyMenuState();
   }
 
   /**

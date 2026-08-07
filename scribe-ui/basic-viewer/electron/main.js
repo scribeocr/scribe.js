@@ -1,5 +1,5 @@
 const {
-  app, BrowserWindow, ipcMain, session, powerMonitor,
+  app, BrowserWindow, ipcMain, session, powerMonitor, nativeTheme, Menu, shell,
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -8,12 +8,16 @@ let mainWindow;
 
 /**
  * Parse --key=value arguments from an argv array.
+ * A bare positional .pdf/.scribe path is a file to open (what a double-clicked file association passes on Windows and Linux).
+ * @param {string[]} argv
+ * @returns {Object<string, string>}
  */
 function parseArgs(argv) {
   const args = {};
-  for (const arg of argv) {
+  for (const arg of argv.slice(1)) {
     const match = arg.match(/^--(\w+)=(.+)$/);
     if (match) args[match[1]] = match[2];
+    else if (!args.file && /\.(pdf|scribe)$/i.test(arg) && fs.existsSync(arg)) args.file = arg;
   }
   return args;
 }
@@ -22,28 +26,61 @@ function createWindow() {
   mainWindow = new BrowserWindow({
     width: 900,
     height: 1100,
-    frame: false,
+    minWidth: 620,
+    minHeight: 440,
+    // macOS: decorated window with the native traffic lights overlaying the toolbar.
+    // Windows and Linux: frameless, with the close button the renderer supplies.
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : { frame: false }),
     title: '21 Viewer',
+    // Match the app's canvas token so the first paint does not flash a mismatched color.
+    backgroundColor: nativeTheme.shouldUseDarkColors ? '#12151b' : '#f4f6fa',
     // Windows and Linux take the window icon from here.
     // macOS ignores it and uses the icon from the app bundle instead.
     icon: path.join(__dirname, '../icons/icon-512.png'),
+    show: false,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
       sandbox: false,
     },
   });
+  mainWindow.once('ready-to-show', () => mainWindow?.show());
+
+  // Native cut/copy/paste menu in editable fields, which Electron does not provide on its own.
+  // Scoped to editables: the app draws its own menus elsewhere (bookmarks, comments, layout boxes).
+  mainWindow.webContents.on('context-menu', (_event, params) => {
+    if (!params.isEditable) return;
+    Menu.buildFromTemplate([
+      { role: 'cut' }, { role: 'copy' }, { role: 'paste' },
+      { type: 'separator' }, { role: 'selectAll' },
+    ]).popup();
+  });
 
   mainWindow.loadFile(path.join(__dirname, 'electron.html'));
 
   mainWindow.webContents.on('did-finish-load', () => {
-    sendArgsToRenderer(parseArgs(process.argv));
+    rendererReady = true;
+    if (pendingOpenFile) {
+      sendArgsToRenderer({ file: pendingOpenFile });
+      pendingOpenFile = null;
+    } else {
+      sendArgsToRenderer(parseArgs(process.argv));
+    }
   });
 
   mainWindow.on('closed', () => {
     mainWindow = null;
   });
 }
+
+// macOS delivers file opens (double-click, "Open With", drag onto the Dock icon) as events rather than argv, and they can arrive before the renderer has its listeners.
+let pendingOpenFile = null;
+let rendererReady = false;
+app.on('open-file', (event, filePath) => {
+  event.preventDefault();
+  if (rendererReady && mainWindow) sendArgsToRenderer({ file: filePath });
+  else pendingOpenFile = filePath;
+});
 
 function sendArgsToRenderer(args) {
   if (!mainWindow) return;
@@ -70,11 +107,34 @@ function sendArgsToRenderer(args) {
 
   // Default: load file
   if (!args.file) return;
+  const file = path.resolve(args.file);
+  // Feeds the File menu's native Open Recent submenu on macOS.
+  app.addRecentDocument(file);
   mainWindow.webContents.send('load-file', {
-    file: path.resolve(args.file),
+    file,
     page: parseInt(args.page || '0', 10),
   });
 }
+
+// The renderer pushes menu state whenever it changes, so the macOS menu items grey and check to match the app.
+ipcMain.on('menu-state', (_event, state) => {
+  const menu = Menu.getApplicationMenu();
+  if (!menu) return;
+  const set = (id, props) => {
+    const item = menu.getMenuItemById(id);
+    if (item) Object.assign(item, props);
+  };
+  set('print', { enabled: state.docOpen });
+  set('export-pdf', { enabled: state.docOpen });
+  set('rotate-left', { enabled: state.docOpen });
+  set('rotate-right', { enabled: state.docOpen });
+  set('recognize', { enabled: state.recognize });
+  set('combine', { enabled: state.combine });
+  set('split', { enabled: state.split });
+  set('cover-alone', { enabled: state.coverEnabled, checked: state.coverChecked });
+  set('highlight-fields', { enabled: state.fieldsEnabled, checked: state.fieldsChecked });
+  set('dark-mode', { checked: state.darkChecked });
+});
 
 // Handle file reads from the renderer process.
 ipcMain.handle('read-file', async (_event, filePath) => {
@@ -101,6 +161,56 @@ if (!gotTheLock) {
   });
 
   app.whenReady().then(() => {
+    // macOS gets a real application menu carrying the app's commands; the in-window menu button is hidden there.
+    // Other platforms keep the in-window menu, and their window styling is unchanged.
+    if (process.platform === 'darwin') {
+      const send = (id) => () => mainWindow?.webContents.send('menu-action', id);
+      Menu.setApplicationMenu(Menu.buildFromTemplate([
+        { role: 'appMenu' },
+        {
+          label: 'File',
+          submenu: [
+            { id: 'open', label: 'Open…', accelerator: 'CmdOrCtrl+O', click: send('open') },
+            { label: 'Open Recent', role: 'recentDocuments', submenu: [{ label: 'Clear Menu', role: 'clearRecentDocuments' }] },
+            { type: 'separator' },
+            { role: 'close' },
+            { type: 'separator' },
+            { id: 'recognize', label: 'Recognize Text…', enabled: false, click: send('recognize') },
+            { id: 'export-pdf', label: 'Export as PDF…', enabled: false, click: send('export-pdf') },
+            { id: 'combine', label: 'Combine Open Documents…', enabled: false, click: send('combine') },
+            { id: 'split', label: 'Split at Bookmarks', enabled: false, click: send('split') },
+            { type: 'separator' },
+            { id: 'print', label: 'Print…', accelerator: 'CmdOrCtrl+P', enabled: false, click: send('print') },
+          ],
+        },
+        {
+          label: 'Edit',
+          submenu: [
+            { role: 'undo' }, { role: 'redo' },
+            { type: 'separator' },
+            { role: 'cut' }, { role: 'copy' }, { role: 'paste' }, { role: 'selectAll' },
+          ],
+        },
+        {
+          label: 'View',
+          submenu: [
+            { id: 'rotate-left', label: 'Rotate Left', accelerator: 'Shift+CmdOrCtrl+L', enabled: false, click: send('rotate-left') },
+            { id: 'rotate-right', label: 'Rotate Right', accelerator: 'Shift+CmdOrCtrl+R', enabled: false, click: send('rotate-right') },
+            { type: 'separator' },
+            { id: 'cover-alone', label: 'Separate Cover Page', type: 'checkbox', enabled: false, click: send('cover-alone') },
+            { id: 'highlight-fields', label: 'Highlight Fields', type: 'checkbox', enabled: false, click: send('highlight-fields') },
+            { id: 'dark-mode', label: 'Dark Mode', type: 'checkbox', click: send('dark-mode') },
+            { type: 'separator' },
+            { role: 'togglefullscreen' },
+          ],
+        },
+        { role: 'windowMenu' },
+        {
+          role: 'help',
+          submenu: [{ label: '21 Viewer Website', click: () => shell.openExternal('https://viewer.21.ai') }],
+        },
+      ]));
+    }
     // These headers make the renderer crossOriginIsolated, which is what lets PDF bytes be shared across workers instead of cloned per worker.
     session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
       callback({
