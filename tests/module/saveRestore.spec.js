@@ -46,6 +46,78 @@ describe('Check .scribe export function.', () => {
   test('Exporting to .scribe (gzipped, default) and reimporting should preserve document data', async () => {
     doc = await scribe.openDocument([`${ASSETS_PATH}/E.D.Mich._2_12-cv-13821-AC-DRG_1_0.pdf`]);
 
+    // clonePage fidelity guard, on this test's freshly parsed page.
+    // standardizeOCRPages snapshots layers with clonePage, so a lossy clone silently narrows every comparison in this file to the fields it copies.
+    // A restored document cannot host this check: its pages are revived plain objects, so a field added to the OCR constructors but forgotten in the clone would be absent from both sides.
+    {
+      expect(doc.ocr.active[0].textSource, 'fixture page 0 carries stext provenance').toBe('stext');
+      expect(doc.ocr.active[0].pars.length, 'fixture page 0 carries 14 analyzed paragraphs').toBe(14);
+      expect(doc.ocr.active[0].lines.filter((l) => l.par).length, 'every fixture line belongs to a paragraph').toBe(39);
+
+      // Stamping the live page would corrupt the export comparison below, so the guard runs on a detached copy.
+      const orig = structuredClone(doc.ocr.active[0]);
+
+      // The sentinel pass below cannot fill empty arrays or fields that need a valid value, so populate those by hand first.
+      orig.angle = 1.5;
+      orig.rules.push({ y: 100, left: 50, right: 500 });
+      orig.tableBoxes.push({
+        left: 10, top: 20, right: 300, bottom: 400,
+      });
+      const line0 = orig.lines[0];
+      line0.orientation = 3;
+      const word0 = line0.words[0];
+      word0.textAlt = 'alt';
+      word0.lineNum = true;
+      word0.styleRuns = [{ i: 1, style: { bold: true } }];
+      orig.pars[0].type = 'footnote';
+      orig.pars[0].parNum = '1';
+      orig.pars[0].headingLevel = 2;
+      orig.pars[0].footnoteRefId = word0.id;
+      word0.footnoteParId = orig.pars[0].id;
+
+      // Stamp every defaulted field, so a field the clone forgets cannot pass the comparison by matching the constructor default on both sides.
+      const skipStamp = new Set(['chars', 'styleRuns', 'par', 'page', 'line']);
+      const stamped = new Set();
+      /** @param {any} obj */
+      const stamp = (obj) => {
+        if (!obj || typeof obj !== 'object' || stamped.has(obj)) return;
+        stamped.add(obj);
+        for (const k of Object.keys(obj)) {
+          if (skipStamp.has(k)) continue;
+          const v = obj[k];
+          if (v === null || v === undefined || v === '') obj[k] = `sentinel-${k}`;
+          else if (v === false) obj[k] = true;
+          else if (v === 0) obj[k] = 7;
+          else if (typeof v === 'object') stamp(v);
+        }
+      };
+      stamp(orig);
+
+      const clone = scribe.utils.ocr.clonePage(orig);
+
+      // An expect() per node is too slow on a graph this size, so expect() runs only once a mismatch is found.
+      const seen = new Map();
+      /** @param {any} a @param {any} b @param {string} path */
+      const compare = (a, b, path) => {
+        if (a === null || typeof a !== 'object') {
+          if (!Object.is(a, b)) expect(b, `clonePage dropped or altered ${path}`).toBe(a);
+          return;
+        }
+        if (seen.has(a)) {
+          if (b !== seen.get(a)) expect(b, `back-reference ${path} points into the original graph instead of the clone`).toBe(seen.get(a));
+          return;
+        }
+        seen.set(a, b);
+        if (b === a) expect(b, `clonePage aliased ${path} to the original object`).not.toBe(a);
+        if (b === null || typeof b !== 'object') expect(typeof b, `clonePage dropped the object at ${path}`).toBe('object');
+        for (const k of Object.keys(a)) compare(a[k], b[k], `${path}.${k}`);
+      };
+      compare(orig, clone, 'page');
+
+      clone.lines[0].words[0].text = 'MUTATED';
+      expect(orig.lines[0].words[0].text, 'editing the clone leaves the original word intact').not.toBe('MUTATED');
+    }
+
     const ocrAllComp1 = standardizeOCRPages(doc.ocr.active);
 
     scribe.ScribeDoc.defaults.compressScribe = true;

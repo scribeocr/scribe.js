@@ -33,7 +33,7 @@ import {
   remapOutline, cloneOutline, makeOutlineNode, findOutlineEntry, isOutlineDescendant, reassignOutlineIds,
 } from '../objects/outlineObjects.js';
 import { runOptimization as runOptimizationImpl } from '../fontEval.js';
-import { clonePageFull, reIdPage } from '../objects/ocrObjects.js';
+import { clonePage, reIdPage } from '../objects/ocrObjects.js';
 
 /**
  * The distinct OCR/raw-OCR layer arrays.
@@ -133,7 +133,7 @@ function clonePageBundle(doc, i) {
   const ocr = {};
   for (const [engine, arr] of Object.entries(doc.ocr)) {
     if (!Array.isArray(arr) || i >= arr.length || !arr[i]) { ocr[engine] = null; continue; }
-    if (!ocrCache.has(arr)) ocrCache.set(arr, clonePageFull(arr[i]));
+    if (!ocrCache.has(arr)) ocrCache.set(arr, clonePage(arr[i]));
     ocr[engine] = ocrCache.get(arr) ?? null;
   }
   // Give each cloned page fresh word ids so the paste is a distinct instance, not an id-for-id twin of its source.

@@ -20,7 +20,13 @@ const standardizeOCRPages = (ocrArr) => {
   const ocrArrCopy = ocrArr.map((x) => scribe.utils.ocr.clonePage(x));
 
   ocrArrCopy.forEach((page) => {
+    // HOCR carries no paragraphs and no importer tag.
+    // The page angle is recomputed from rounded baselines on import, so it does not round-trip exactly.
+    page.angle = 0;
+    page.pars = [];
+    page.textSource = null;
     page.lines.forEach((line) => {
+      line.par = null;
       // HOCR does not preserve line IDs
       line.id = '';
       line.debug = new scribe.utils.ocr.LineDebugInfo();

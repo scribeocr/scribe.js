@@ -91,7 +91,6 @@ function buildCombinedLayer(doc, source, ocrPageMask, gateApplies, fullOcr) {
     }
     if (chosen) {
       combined[i] = ocr.clonePage(chosen);
-      combined[i].angle = chosen.angle;
     } else {
       combined[i] = new OcrPage(i, doc.pageMetrics[i].dims);
     }

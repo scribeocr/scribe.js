@@ -21,13 +21,13 @@ export function OcrPage(n, dims) {
   this.lines = [];
   /**
    * Horizontal separator rules drawn on the page (thin horizontal vector rectangles), in the same top-left coordinate space as line bboxes.
-   * Populated only at PDF import and consumed during that same import, so OCR pages have none and a cloned page does not carry them.
+   * Populated only at PDF import and consumed during that same import, so OCR pages have none.
    * @type {Array<{y: number, left: number, right: number}>}
    */
   this.rules = [];
   /**
    * Detected data-table regions, one bounding box per table rather than per column, in the same top-left coordinate space as line bboxes.
-   * Populated only at PDF import and consumed during that same import, so OCR pages have none and a cloned page does not carry them.
+   * Populated only at PDF import and consumed during that same import, so OCR pages have none.
    * Exempts a table's cells from the bare-folio and line-number-column furniture rules, which would otherwise mistype them as furniture.
    * @type {Array<{left: number, top: number, right: number, bottom: number}>}
    */
@@ -710,27 +710,38 @@ function rotateLine(line, angle, dims = null, useCharLevel = false) {
 }
 
 /**
- * Clones page object.
- * @param {OcrPage} page
- */
-function clonePage(page) {
-  const pageNew = new OcrPage(page.n, { ...page.dims });
-  for (const line of page.lines) {
-    const lineNew = cloneLine(line);
-    lineNew.page = pageNew;
-    pageNew.lines.push(lineNew);
-  }
-  return pageNew;
-}
-
-/**
- * Deep-clones a page including its paragraphs, lines, words, and chars, with every back-reference rebuilt.
- * Unlike `clonePage`, which drops `pars` and `line.par`, this is a complete, faithful duplicate.
+ * Clones a page and its paragraphs, lines, words, and chars.
+ * Back-references (`line.page`, `line.par`, `word.line`) are rebuilt onto the clone's own objects.
  * @param {OcrPage} page
  * @returns {OcrPage}
  */
-export function clonePageFull(page) {
-  return addCircularRefsOcr(removeCircularRefsOcr([page]))[0];
+export function clonePage(page) {
+  const pageNew = new OcrPage(page.n, { ...page.dims });
+  pageNew.angle = page.angle;
+  pageNew.textSource = page.textSource;
+  pageNew.rules = (page.rules || []).map((rule) => ({ ...rule }));
+  pageNew.tableBoxes = (page.tableBoxes || []).map((box) => ({ ...box }));
+  const lineMap = new Map();
+  for (const line of page.lines) {
+    const lineNew = cloneLine(line);
+    lineNew.page = pageNew;
+    lineMap.set(line, lineNew);
+    pageNew.lines.push(lineNew);
+  }
+  for (const par of page.pars || []) {
+    const parNew = new OcrPar(pageNew, { ...par.bbox });
+    parNew.lines = par.lines.map((line) => lineMap.get(line)).filter(Boolean);
+    parNew.id = par.id;
+    parNew.reason = par.reason;
+    parNew.type = par.type;
+    parNew.parNum = par.parNum;
+    parNew.footnoteRefId = par.footnoteRefId;
+    parNew.headingLevel = par.headingLevel;
+    Object.assign(parNew.debug, par.debug);
+    for (const lineNew of parNew.lines) lineNew.par = parNew;
+    pageNew.pars.push(parNew);
+  }
+  return pageNew;
 }
 
 /**
@@ -768,7 +779,8 @@ export function reIdPage(page) {
 function cloneLine(line) {
   const lineNew = new OcrLine(line.page, { ...line.bbox }, line.baseline.slice(), line.ascHeight, line.xHeight);
   lineNew.id = line.id;
-  lineNew.debug.raw = line.debug.raw;
+  lineNew.orientation = line.orientation;
+  Object.assign(lineNew.debug, line.debug);
   for (const word of line.words) {
     const wordNew = cloneWord(word);
     wordNew.line = lineNew;
@@ -780,19 +792,20 @@ function cloneLine(line) {
 /**
  * Clones word.  Does not clone line or page.
  * Should be used rather than `structuredClone` for performance reasons.
- * TODO: Rewrite this so it is dynamic and does not break every time we edit the properties of OcrWord.
  * @param {OcrWord} word
  */
 function cloneWord(word) {
   const wordNew = new OcrWord(word.line, word.id, word.text, { ...word.bbox });
+  wordNew.textAlt = word.textAlt;
   wordNew.conf = word.conf;
   wordNew.style = { ...word.style };
   if (word.styleRuns) wordNew.styleRuns = word.styleRuns.map((run) => ({ i: run.i, style: { ...run.style } }));
   wordNew.lang = word.lang;
   wordNew.compTruth = word.compTruth;
   wordNew.matchTruth = word.matchTruth;
+  wordNew.lineNum = word.lineNum;
   wordNew.visualCoords = word.visualCoords;
-  wordNew.debug.raw = word.debug.raw;
+  Object.assign(wordNew.debug, word.debug);
   wordNew.footnoteParId = word.footnoteParId;
   if (word.chars) {
     wordNew.chars = [];
@@ -1239,7 +1252,6 @@ const ocr = {
   getNextLine,
   getWordFillOpacity,
   clonePage,
-  clonePageFull,
   reIdPage,
   cloneLine,
   cloneWord,

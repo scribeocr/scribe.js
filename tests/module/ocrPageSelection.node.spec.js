@@ -297,6 +297,11 @@ describe('autoDeep gate wiring through a custom OCR model', () => {
     // Non-destructive: the model's own layer still holds its parsed OCR for page 6, available to export.
     expect(intelDoc.ocr['Mock Cloud OCR'][6].lines.length).toBe(104);
 
+    expect(intelDoc.ocr.active[6].textSource, 'a gate-reverted page keeps its stext provenance tag through partial recognition').toBe('stext');
+    expect(intelDoc.ocr.active[6].pars.length, 'a gate-reverted page keeps its analyzed paragraphs through partial recognition').toBe(26);
+    expect(intelDoc.ocr.active[12].textSource, 'a page never selected for OCR keeps its stext provenance tag through partial recognition').toBe('stext');
+    expect(intelDoc.ocr.active[12].pars.length, 'a page never selected for OCR keeps its analyzed paragraphs through partial recognition').toBe(58);
+
     // Regression: the export keyed on the pages sent to OCR, not the pages whose OCR was kept.
     // That flattened this page to outlines and re-typeset its text, splitting "4004" into four words.
     const exportedPdf = await intelDoc.exportData('pdf', { pageArr: [6] });

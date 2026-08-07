@@ -283,7 +283,7 @@ export function buildConsensusLayer(base, comparators, options = {}) {
     if (!basePage) continue;
 
     // Clone so the source base layer is never mutated. Voting runs on the clone's own words/ids.
-    const outPage = ocr.clonePageFull(basePage);
+    const outPage = ocr.clonePage(basePage);
     const baseWords = ocr.getPageWords(outPage);
 
     // Assign each comparator's words to the base word each most sits inside.

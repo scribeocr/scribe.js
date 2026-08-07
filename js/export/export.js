@@ -13,7 +13,7 @@ import { writeText } from './writeText.js';
 import { writeHtml } from './writeHtml.js';
 import { writeAlto } from './writeAlto.js';
 import { writeMarkdown } from './writeMarkdown.js';
-import ocr, { OcrPage, clonePageFull } from '../objects/ocrObjects.js';
+import ocr, { OcrPage, clonePage } from '../objects/ocrObjects.js';
 import { removeCircularRefsDataTables } from '../objects/layoutObjects.js';
 import { mayHaveBakedText, hasBrokenFontRun, isScanPage } from '../pdf/ocrPageSelection.js';
 import { bboxToPageSpace } from '../addHighlights.js';
@@ -334,7 +334,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
     for (const [i, rects] of redactRectsByPage) {
       const page = ocrDownload[i];
       if (!page) continue;
-      const clone = clonePageFull(page);
+      const clone = clonePage(page);
       const dropIds = [];
       for (const line of clone.lines) {
         for (const word of line.words) {
