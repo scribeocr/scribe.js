@@ -1,13 +1,55 @@
 {
   "name": "viewer-21",
   "productName": "21 Viewer",
+  "description": "Document viewer for PDFs and scanned documents",
+  "author": "21",
   "version": "0.1.0",
   "type": "commonjs",
   "main": "main.js",
   "scripts": {
-    "start": "electron ."
+    "start": "electron .",
+    "dist": "bash build.sh"
   },
   "dependencies": {
     "electron": "^33.0.0"
+  },
+  "build": {
+    "appId": "ai.21.viewer",
+    "productName": "21 Viewer",
+    "directories": {
+      "app": "staging",
+      "output": "dist"
+    },
+    "asar": true,
+    "fileAssociations": [
+      {
+        "ext": "pdf",
+        "name": "PDF document",
+        "role": "Viewer",
+        "mimeType": "application/pdf"
+      },
+      {
+        "ext": "scribe",
+        "name": "Scribe document",
+        "role": "Editor"
+      }
+    ],
+    "mac": {
+      "identity": null,
+      "category": "public.app-category.productivity",
+      "target": [
+        "dmg",
+        "zip"
+      ]
+    },
+    "win": {
+      "target": "nsis"
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  },
+  "devDependencies": {
+    "electron-builder": "^26.15.3"
   }
 }
