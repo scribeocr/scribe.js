@@ -50,7 +50,7 @@ describe('Check .scribe export function.', () => {
     // standardizeOCRPages snapshots layers with clonePage, so a lossy clone silently narrows every comparison in this file to the fields it copies.
     // A restored document cannot host this check: its pages are revived plain objects, so a field added to the OCR constructors but forgotten in the clone would be absent from both sides.
     {
-      expect(doc.ocr.active[0].textSource, 'fixture page 0 carries stext provenance').toBe('stext');
+      expect(doc.ocr.active[0].textSource, 'fixture page 0 carries the pdf text source').toBe('pdf');
       expect(doc.ocr.active[0].pars.length, 'fixture page 0 carries 14 analyzed paragraphs').toBe(14);
       expect(doc.ocr.active[0].lines.filter((l) => l.par).length, 'every fixture line belongs to a paragraph').toBe(39);
 
@@ -174,6 +174,13 @@ describe('Check .scribe export function.', () => {
     expect(wordMixed.chars, 'char boxes should be excluded by includeCharBoxesScribe: false').toBeUndefined();
     expect(wordMixed.text, 'mixed-style word changed on char-box-free .scribe round-trip').toBe('Ltd.,');
     expect(wordMixed.styleRuns, 'style runs must survive the .scribe round-trip independently of char boxes').toEqual([{ i: 4, style: { italic: false } }]);
+
+    const scribeStr = /** @type {string} */ (scribeData);
+    expect(scribeStr.includes('"textSource":"pdf"'), 'the .scribe export no longer serializes textSource, so the legacy-tag round-trip below is vacuous').toBe(true);
+    const legacyScribeData = scribeStr.replaceAll('"textSource":"pdf"', '"textSource":"stext"');
+    await scribe.terminate();
+    doc = await scribe.openDocument({ scribeFiles: [encoder.encode(legacyScribeData).buffer] });
+    expect(doc.ocr.active[0].textSource, "a legacy .scribe 'stext' tag must restore as 'pdf'").toBe('pdf');
 
     scribe.ScribeDoc.defaults.compressScribe = true;
     await doc.clear();

@@ -25,9 +25,9 @@ declare global {
         style: Partial<Style>;
     };
 
-    // Strings representing supported sources of text.
-    // `stext` indicates the text was extracted directly from a PDF using mupdf.
-    type TextSource = null | 'tesseract' | 'textract' | 'google_vision' | 'google_doc_ai' | 'abbyy' | 'alto' | 'stext' | 'hocr' | 'text' | 'azure_doc_intel' | 'docx';
+    // The kind of file or data a page's text layer was imported from.
+    // `stext` is the legacy spelling of `pdf`, remapped when older files are restored.
+    type TextSource = null | 'pdf' | 'tesseract' | 'textract' | 'google_vision' | 'google_doc_ai' | 'abbyy' | 'alto' | 'stext' | 'hocr' | 'text' | 'azure_doc_intel' | 'docx';
 
     /**
      * Signals read from a tagged PDF's marked content and structure tree for one word.

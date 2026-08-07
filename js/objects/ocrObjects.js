@@ -1192,6 +1192,7 @@ export const addCircularRefsOcr = (pages) => {
 export const updateOcrFormat = (pages) => {
   pages.forEach((page) => {
     if (!page) return;
+    if (page.textSource === 'stext') page.textSource = 'pdf';
     page.lines.forEach((line) => {
       if (!line.debug) {
         line.debug = new LineDebugInfo();

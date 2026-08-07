@@ -1868,7 +1868,7 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
  */
 export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects = [], paths = [], scale = 1, visualHeightPts = 0, boxOriginX = 0, boxOriginY = 0, pageHasMath = false) {
   const pageObj = new ocr.OcrPage(n, { width: pageWidth, height: pageHeight });
-  pageObj.textSource = 'stext';
+  pageObj.textSource = 'pdf';
   const langSet = new Set();
   const fontSet = new Set();
   /** @type {Map<OcrWord, PdfWordSignal>} */

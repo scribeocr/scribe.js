@@ -139,7 +139,7 @@ function backingRecordByWordId(records) {
  * @returns {Record<string, NativeTextWord>}
  */
 export function nativeTextForPage(doc, page) {
-  if (!page || page.textSource !== 'stext') return {};
+  if (!page || page.textSource !== 'pdf') return {};
   return doc.nativeText.pages[page.n] || {};
 }
 
