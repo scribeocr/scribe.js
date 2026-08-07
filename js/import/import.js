@@ -175,6 +175,8 @@ async function restoreSessionFromFile(doc, scribeFile) {
 
   /** @type {ScribeSaveData} */
   let scribeRestoreObj;
+  // Segmented restores normalize pages inside applyRecord, so the whole-document sweeps below are skipped.
+  let segmentedNormalized = false;
   if (!scribeBytes) {
     scribeRestoreObj = JSON.parse(await readOcrFile(scribeFile));
   } else {
@@ -228,6 +230,11 @@ async function restoreSessionFromFile(doc, scribeFile) {
       const applyRecord = (line) => {
         if (!line) return;
         const rec = JSON.parse(line);
+        // Normalizing each page while it is still hot from JSON.parse avoids a second pass over gigabytes of cold heap.
+        if (rec.ocr) {
+          updateOcrFormat([rec.ocr]);
+          addCircularRefsOcr([rec.ocr]);
+        }
         assembled.ocr[rec.i] = rec.ocr ?? null;
         if (assembled.session) {
           if (rec.textEdits !== undefined) assembled.session.textEdits[rec.i] = rec.textEdits;
@@ -235,26 +242,47 @@ async function restoreSessionFromFile(doc, scribeFile) {
         }
       };
 
-      let remainder = '';
-      const feedText = (text) => {
-        const lines = (remainder + text).split('\n');
-        remainder = /** @type {string} */ (lines.pop());
-        for (const line of lines) (assembled ? applyRecord : applyHeader)(line);
+      // Decoding chunks to strings and joining them re-copies every record, which made large restores GC-bound.
+      // Splitting on '\n' at the byte level is safe because that byte cannot appear inside a multi-byte UTF-8 character.
+      /** @type {Uint8Array[]} Byte segments since the last completed line. */
+      let pendingBytes = [];
+      let pendingLen = 0;
+      const applyLineBytes = (segTail) => {
+        let recBytes = segTail;
+        if (pendingLen) {
+          recBytes = new Uint8Array(pendingLen + segTail.length);
+          let off = 0;
+          for (const p of pendingBytes) { recBytes.set(p, off); off += p.length; }
+          recBytes.set(segTail, off);
+          pendingBytes = [];
+          pendingLen = 0;
+        }
+        const line = decoder.decode(recBytes);
+        if (!assembled) applyHeader(line);
+        else applyRecord(line);
       };
-      // Node's Blob.stream() can hand back the whole payload as one chunk, and a single decode call cannot return more characters than the string limit.
-      // The streaming decoder carries multi-byte characters across slice boundaries, so bounded slices are safe.
-      const DECODE_SLICE = 16 * 1024 * 1024;
+      const feedBytes = (chunk) => {
+        let start = 0;
+        let nl = chunk.indexOf(0x0A, start);
+        while (nl !== -1) {
+          applyLineBytes(chunk.subarray(start, nl));
+          start = nl + 1;
+          nl = chunk.indexOf(0x0A, start);
+        }
+        if (start < chunk.length) {
+          const rest = chunk.subarray(start);
+          pendingBytes.push(rest);
+          pendingLen += rest.length;
+        }
+      };
       let part = await reader.read();
       while (!part.done) {
-        for (let sliceStart = 0; sliceStart < part.value.length; sliceStart += DECODE_SLICE) {
-          feedText(decoder.decode(part.value.subarray(sliceStart, Math.min(sliceStart + DECODE_SLICE, part.value.length)), { stream: true }));
-        }
+        feedBytes(part.value);
         part = await reader.read();
       }
-      const tail = remainder + decoder.decode();
-      if (!assembled) applyHeader(tail);
-      else applyRecord(tail);
+      if (pendingLen) applyLineBytes(new Uint8Array(0));
       scribeRestoreObj = /** @type {ScribeSaveData} */ (assembled);
+      segmentedNormalized = true;
     }
   }
   if (scribeRestoreObj.fontState) {
@@ -278,7 +306,11 @@ async function restoreSessionFromFile(doc, scribeFile) {
     if (scribeRestoreObj.session.nativeText) {
       for (let i = 0; i < scribeRestoreObj.session.nativeText.length; i++) {
         const nt = scribeRestoreObj.session.nativeText[i];
-        if (nt) doc.nativeText.pages[i] = { ...(doc.nativeText.pages[i] || {}), ...nt };
+        if (!nt) continue;
+        // A fresh restore has no existing entry to merge into.
+        // Rebuilding these per-word dictionaries via spread anyway costs seconds on multi-thousand-page documents.
+        const existing = doc.nativeText.pages[i];
+        doc.nativeText.pages[i] = existing && Object.keys(existing).length ? { ...existing, ...nt } : nt;
       }
     }
   }
@@ -300,8 +332,10 @@ async function restoreSessionFromFile(doc, scribeFile) {
 
   const oemName = 'User Upload';
   if (!doc.ocr[oemName]) doc.ocr[oemName] = Array(doc.inputData.pageCount);
-  updateOcrFormat(scribeRestoreObj.ocr);
-  addCircularRefsOcr(scribeRestoreObj.ocr);
+  if (!segmentedNormalized) {
+    updateOcrFormat(scribeRestoreObj.ocr);
+    addCircularRefsOcr(scribeRestoreObj.ocr);
+  }
   doc.ocr[oemName] = scribeRestoreObj.ocr;
   doc.ocr.active = doc.ocr[oemName];
 

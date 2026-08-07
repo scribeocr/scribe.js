@@ -138,6 +138,23 @@ describe('Check .scribe export function.', () => {
     expect(wordMixed.text, 'mixed-style word changed on .scribe round-trip').toBe('Ltd.,');
     expect(wordMixed.styleRuns, 'intra-word style runs lost on .scribe round-trip').toEqual([{ i: 4, style: { italic: false } }]);
 
+    // No fixture is large enough to reach the segmented layout naturally, so the threshold is forced down to route this document through the segmented writer and reader.
+    const scribeDataSeg = await doc.exportData('scribe', { scribeSegmentThreshold: 1 });
+    const segHeadReader = new Blob([scribeDataSeg]).stream().pipeThrough(new DecompressionStream('gzip')).getReader();
+    const segHead = new TextDecoder().decode((await segHeadReader.read()).value).slice(0, 32);
+    await segHeadReader.cancel().catch(() => {});
+    expect(segHead.startsWith('{"scribeSegments"'), 'forced-threshold .scribe export must use the segmented layout, or the round-trip below silently tests the single-JSON reader').toBe(true);
+
+    await scribe.terminate();
+    doc = await scribe.openDocument({ scribeFiles: [scribeDataSeg] });
+
+    expect(standardizeOCRPages(doc.ocr.active), 'OCR data changed on segmented .scribe round-trip').toEqual(ocrAllComp1);
+    expect(doc.ocr.active[0].textSource, 'textSource lost by the segmented reader’s per-page normalization').toBe('pdf');
+    expect(doc.ocr.active[0].lines.filter((l) => l.par).length, 'paragraph references not restored by the segmented reader').toBe(39);
+    const wordMixedSeg = doc.ocr.active[0].lines[30].words[10];
+    expect(wordMixedSeg.text, 'mixed-style word changed on segmented .scribe round-trip').toBe('Ltd.,');
+    expect(wordMixedSeg.styleRuns, 'intra-word style runs lost on segmented .scribe round-trip').toEqual([{ i: 4, style: { italic: false } }]);
+
     await doc.clear();
     await scribe.terminate();
   });
