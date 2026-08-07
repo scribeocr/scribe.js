@@ -331,6 +331,12 @@ export class LibraryStore {
     return file ? file.arrayBuffer() : null;
   }
 
+  /** @param {string} hash @returns {Promise<?number>} Byte size of the stored sidecar without reading it, or null when absent. */
+  async sidecarSize(hash) {
+    const file = await readFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.scribe`);
+    return file ? file.size : null;
+  }
+
   /** @param {string} hash */
   async deleteSidecar(hash) {
     await deleteFileIn(/** @type {FileSystemDirectoryHandle} */ (this.docsDir), `${hash}.scribe`);

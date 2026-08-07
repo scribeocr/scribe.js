@@ -78,6 +78,11 @@ const AUTOSAVE_INTERVAL_MS = 60000;
 const RESULT_DOC_LIMIT = 20;
 const RESULT_PAGES_PER_DOC = 4;
 const SNIPPET_RADIUS = 70;
+/**
+ * Compressed-sidecar byte cap for background hit warming.
+ * Importing a document restores its whole sidecar, so documents past this only get rasters from a preview or open the user asked for.
+ */
+const WARM_SIDECAR_LIMIT = 8 * 1024 * 1024;
 
 let stylesInjected = false;
 const addLibraryStyles = () => {
@@ -1731,7 +1736,7 @@ export function installLibrary(viewer) {
   /**
    * The retained search-results view: the built DOM plus its interaction state.
    * Keeping it lets an unchanged result set reattach instead of rebuilding.
-   * @type {?{results: Object, pv: Object, wrap: HTMLElement, snapshot: () => void, attach: () => void, dispose: () => void}}
+   * @type {?{results: Object, pv: Object, wrap: HTMLElement, snapshot: () => void, attach: () => void, repump: () => void, dispose: () => void}}
    */
   let resultsView = null;
   /** Abandons in-flight result-row work when a fresh results build replaces the old one. */
@@ -1767,6 +1772,8 @@ export function installLibrary(viewer) {
         const raster = await d.images.renderThumbnail(n, PAGE_RASTER_WIDTH, 0.75, true);
         if (raster) await s.writePageRaster(hash, n, raster);
       }
+      // Freshly persisted pages may belong to blank search-result rows.
+      resultsView?.repump();
     })().catch(() => {});
   };
 
@@ -1790,17 +1797,23 @@ export function installLibrary(viewer) {
     };
     if (entry.pageDims && !sessions.hasLive(entry.hash)) {
       const pageCount = entry.pageDims.length;
+      const from = Math.max(0, pageN - 2);
+      const to = Math.min(pageCount - 1, pageN + 2);
+      // One pass warms the whole seed window, so the per-page reads below hit the cache instead of each re-reading the sidecar.
+      sessions.sidecarPages(entry.hash, Array.from({ length: to - from + 1 }, (_, i) => from + i)).catch(() => {});
       return {
         pageCount,
         pageDims: entry.pageDims.map(([width, height, rotation]) => ({ width, height, rotation })),
         initialPage: pageN,
-        window: { from: Math.max(0, pageN - 2), to: Math.min(pageCount - 1, pageN + 2) },
+        window: { from, to },
         name: titleOf(relPath),
         raster: (n) => /** @type {LibraryStore} */ (store).readPageRaster(entry.hash, n),
-        ocr: (n) => sessions.sidecar(entry.hash).then((s) => s?.ocr?.[n] ?? null),
+        ocr: (n) => sessions.sidecarPages(entry.hash, [n]).then((m) => m.get(n)?.ocr ?? null),
         // Copies, never the cached arrays: seed session edits must not leak into the cache.
-        annots: (n) => sessions.sidecar(entry.hash).then((s) => (s
-          ? (s.annotations?.[n] ?? []).map((a) => ({ ...a, bbox: { ...a.bbox } })) : null)),
+        annots: (n) => sessions.sidecarPages(entry.hash, [n]).then((m) => {
+          const side = m.get(n);
+          return side ? (side.annotations ?? []).map((a) => ({ ...a, bbox: { ...a.bbox } })) : null;
+        }),
         load,
         hydration: 'on-demand',
       };
@@ -2429,6 +2442,8 @@ export function installLibrary(viewer) {
       body.classList.add('results-mode');
       body.appendChild(resultsView.wrap);
       resultsView.attach();
+      // Rasters may have landed since the rows were built (a preview, a full open), so blank rows retry.
+      resultsView.repump();
       return;
     }
     if (resultsView) {
@@ -2520,28 +2535,128 @@ export function installLibrary(viewer) {
       }
     });
 
-    /** @type {Array<{relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, hash: string, pageN: number, img: HTMLElement}>} */
+    /**
+     * One hit row's thumbnail work item. `marks` caches the overlay HTML after the first sidecar read;
+     * `warmed` records that the background warmer already spent its one render attempt on this page.
+     * @typedef {{relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, hash: string, pageN: number, img: HTMLElement, marks?: string, warmed?: boolean}} ThumbItem
+     */
+    /** @type {Array<ThumbItem>} */
     const thumbQueue = [];
     let thumbsRunning = false;
-    // A row must never import a document, so it draws only on the stored raster and sidecar.
+    /** @type {Array<ThumbItem>} Rows whose stored raster was absent at pump time, kept for the warmer and for repump retries. */
+    const rasterless = [];
+    let warmRunning = false;
+    // The pump never imports a document: it paints stored rasters and sidecar marks, and leaves missing rasters to warmHits.
     const pumpThumbs = async () => {
       if (thumbsRunning) return;
       thumbsRunning = true;
       while (thumbQueue.length) {
         if (myGen !== resultsGen) break;
-        const t = /** @type {NonNullable<typeof thumbQueue[0]>} */ (thumbQueue.shift());
-        try {
-          const url = await sessions.pageImage(t.hash, t.pageN);
+        const first = /** @type {NonNullable<typeof thumbQueue[0]>} */ (thumbQueue.shift());
+        // Every queued page of this document reads in one sidecar pass.
+        const batch = [first];
+        for (let i = 0; i < thumbQueue.length;) {
+          if (thumbQueue[i].hash === first.hash) batch.push(thumbQueue.splice(i, 1)[0]);
+          else i++;
+        }
+        const needMarks = batch.filter((b) => b.marks === undefined);
+        /** @type {?Map<number, {ocr: ?Object, annotations: ?Array<Object>}>} */
+        let side = null;
+        if (needMarks.length) {
+          try {
+            side = await sessions.sidecarPages(first.hash, needMarks.map((b) => b.pageN));
+          } catch { /* An unreadable sidecar leaves the marks off. */ }
+        }
+        for (const t of batch) {
           if (myGen !== resultsGen) break;
-          const side = await sessions.sidecar(t.hash);
-          if (myGen !== resultsGen) break;
-          const page = side?.ocr?.[t.pageN] ?? null;
-          const pd = t.entry.pageDims?.[t.pageN];
-          const marks = markOverlayHTML(getMatchRects(page, pd ? { width: pd[0], height: pd[1] } : null, fullTextQuery));
-          if (url || marks) t.img.innerHTML = `${url ? `<img alt="" src="${url}">` : ''}${marks}`;
-        } catch { /* A failed read leaves the placeholder page blank. */ }
+          try {
+            if (t.marks === undefined) {
+              const page = side?.get(t.pageN)?.ocr ?? null;
+              const pd = t.entry.pageDims?.[t.pageN];
+              t.marks = markOverlayHTML(getMatchRects(page, pd ? { width: pd[0], height: pd[1] } : null, fullTextQuery));
+            }
+            const url = await sessions.pageImage(t.hash, t.pageN);
+            if (myGen !== resultsGen) break;
+            if (url || t.marks) t.img.innerHTML = `${url ? `<img alt="" src="${url}">` : ''}${t.marks}`;
+            if (!url && !rasterless.includes(t)) rasterless.push(t);
+          } catch { /* A failed read leaves the placeholder page blank. */ }
+        }
       }
       thumbsRunning = false;
+      if (myGen === resultsGen && rasterless.some((r) => !r.warmed)) warmHits();
+    };
+
+    // Renders the missing hit-page rasters, one bounded import at a time.
+    // Each import restores that document's whole sidecar, so the gates below keep warming from running alongside a load the reader is waiting on.
+    const warmHits = async () => {
+      if (warmRunning) return;
+      warmRunning = true;
+      while (myGen === resultsGen && store) {
+        if (store.rasterBytes !== null && store.rasterBytes > store.rasterBudget) break;
+        if (document.visibilityState !== 'visible') {
+          const resume = () => {
+            document.removeEventListener('visibilitychange', resume);
+            warmHits();
+          };
+          document.addEventListener('visibilitychange', resume);
+          break;
+        }
+        const paneDoc = pv.viewerRef()?.doc;
+        if (paneDoc && paneDoc.id < 0) {
+          // A provisional preview can start its full load at any moment, so poll until it settles or closes.
+          window.setTimeout(warmHits, 4000);
+          break;
+        }
+        const busyHash = pv.shownHash();
+        const idx = rasterless.findIndex((r) => !r.warmed && r.hash !== busyHash);
+        if (idx < 0) break;
+        const first = /** @type {ThumbItem} */ (rasterless.splice(idx, 1)[0]);
+        const batch = [first];
+        for (let i = 0; i < rasterless.length;) {
+          if (!rasterless[i].warmed && rasterless[i].hash === first.hash) batch.push(rasterless.splice(i, 1)[0]);
+          else i++;
+        }
+        const sidecarBytes = await store.sidecarSize(first.hash);
+        if (sidecarBytes !== null && sidecarBytes > WARM_SIDECAR_LIMIT) {
+          // Too big to import in the background, but the rows stay tracked so a preview or open can still fill them.
+          for (const t of batch) {
+            t.warmed = true;
+            rasterless.push(t);
+          }
+          continue;
+        }
+        /** @type {?import('../../js/containers/scribeDoc.js').ScribeDoc} */
+        let doc = null;
+        let owned = false;
+        try {
+          doc = sessions.peekLive(first.hash);
+          if (!doc) {
+            const files = /** @type {Array<File>} */ ([await store.readFile(first.relPath)]);
+            const sidecar = await store.readSidecar(first.hash);
+            if (sidecar) files.push(new File([sidecar], `${first.hash}.scribe`));
+            if (myGen !== resultsGen) break;
+            doc = await scribeLib.openDocument(files, { deferText: true, skipFontOpt: true, pdfWorkerN: 1 });
+            owned = true;
+          }
+          // Stored rasters are keyed by the ingested page order, so a document that no longer matches its entry must stay blank.
+          if (doc.pageMetrics.length !== first.entry.pageCount) continue;
+          for (const t of batch) {
+            if (myGen !== resultsGen) break;
+            t.warmed = true;
+            if (!(await store.readPageRaster(t.hash, t.pageN))) {
+              const raster = await doc.images.renderThumbnail(t.pageN, PAGE_RASTER_WIDTH, 0.75, true);
+              if (!raster) continue;
+              await store.writePageRaster(t.hash, t.pageN, raster);
+            }
+            thumbQueue.push(t);
+            pumpThumbs();
+          }
+        } catch { /* A document that fails to open leaves its rows blank. */
+        } finally {
+          if (owned && doc) await doc.close().catch(() => {});
+        }
+      }
+      warmRunning = false;
     };
 
     /**
@@ -2727,6 +2842,11 @@ export function installLibrary(viewer) {
           sc.scrollTop = paneScrollTop;
           sc.scrollLeft = paneScrollLeft;
         }
+      },
+      repump: () => {
+        if (myGen !== resultsGen || !rasterless.length) return;
+        thumbQueue.push(...rasterless.splice(0));
+        pumpThumbs();
       },
       dispose: () => {
         resultsGen++;

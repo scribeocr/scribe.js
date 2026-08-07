@@ -1,10 +1,15 @@
 // Per-document sessions for the library: one owner for the in-memory state of each content hash.
-// Persistent artifacts stay in LibraryStore, so a surface rebuild never discards live documents, parsed sidecars, or decoded image URLs.
+// Persistent artifacts stay in LibraryStore, so a surface rebuild never discards live documents, parsed sidecar pages, or decoded image URLs.
 
 /** How many idle live documents the pool keeps open before evicting the least recently used. */
 const MAX_IDLE_LIVE = 2;
-/** How many parsed sidecars stay cached, each holding a whole document's word geometry. */
-const MAX_SIDECARS = 4;
+/** How many parsed sidecar pages stay cached across all sessions. Must comfortably exceed one read-ahead window. */
+const MAX_SIDECAR_PAGES = 64;
+/**
+ * Decompressed character cap for parsing a single-JSON sidecar whole.
+ * Documents past it yield no sidecar data rather than a renderer-sized JSON graph.
+ */
+const SIDECAR_JSON_CHAR_LIMIT = 64 * 1024 * 1024;
 /** How many page-image object URLs stay alive across all sessions. */
 const MAX_PAGE_URLS = 400;
 
@@ -25,8 +30,16 @@ class DocSession {
     this.livePromise = null;
     /** @type {?import('../../js/containers/scribeDoc.js').ScribeDoc} Resolved pool document, null while loading or absent. */
     this.liveDoc = null;
-    /** @type {?Promise<?{ocr: ?Array<Object>, annotations: ?Array<Array<Object>>}>} */
-    this.sidecarPromise = null;
+    /** @type {Map<number, {ocr: ?Object, annotations: ?Array<Object>}>} */
+    this.sidecarPages = new Map();
+    /** @type {?Promise<void>} Tail of the serialized sidecar-read chain, so concurrent page requests share one pass. */
+    this.sidecarPass = null;
+    /** Bumped when the stored sidecar changes, so an in-flight pass never caches stale pages. */
+    this.sidecarEpoch = 0;
+    /** Whether the stored sidecar was missing or unparseable. */
+    this.sidecarBroken = false;
+    /** Whether the sidecar's single-JSON form exceeds the parse budget. */
+    this.sidecarTooBig = false;
     /** @type {?string} */
     this.coverUrl = null;
     /** @type {?Promise<?string>} */
@@ -43,8 +56,8 @@ export class DocSessions {
     /** @type {?import('./libraryStore.js').LibraryStore} */
     this.store = null;
     this.useTick = 0;
-    /** @type {Array<DocSession>} Sessions holding a parsed sidecar, oldest first. */
-    this.sidecarOrder = [];
+    /** @type {Array<{session: DocSession, n: number}>} Sidecar-page cache order, oldest first. */
+    this.sidecarPageOrder = [];
     /** @type {Array<{session: DocSession, n: number}>} Page-URL creation order, oldest first. */
     this.urlOrder = [];
   }
@@ -136,30 +149,165 @@ export class DocSessions {
   }
 
   /**
-   * Parsed sidecar content for seeds, previews, and match marks.
+   * Parsed sidecar content for selected pages: raw OCR page objects and annotation arrays, for seeds, previews, and match marks.
+   * Requesting pages one at a time is cheap, since misses are batched into a streaming read that never retains a whole-document sidecar graph.
+   * A page with no readable sidecar data is absent from the result.
    * @param {string} hash
-   * @returns {Promise<?{ocr: ?Array<Object>, annotations: ?Array<Array<Object>>}>}
+   * @param {number[]} pageNs
+   * @returns {Promise<Map<number, {ocr: ?Object, annotations: ?Array<Object>}>>}
    */
-  sidecar(hash) {
+  async sidecarPages(hash, pageNs) {
     const s = this.session(hash);
-    if (!s.sidecarPromise) {
-      const store = this.store;
-      if (!store) return Promise.resolve(null);
-      s.sidecarPromise = store.readSidecar(hash).then(async (data) => {
-        if (!data) return null;
-        const json = JSON.parse(await new Response(new Blob([data]).stream().pipeThrough(new DecompressionStream('gzip'))).text());
-        return {
-          ocr: Array.isArray(json.ocr) ? json.ocr : null,
-          annotations: Array.isArray(json.annotations) ? json.annotations : null,
-        };
-      }).catch(() => null);
-      this.sidecarOrder.push(s);
-      while (this.sidecarOrder.length > MAX_SIDECARS) {
-        const old = /** @type {DocSession} */ (this.sidecarOrder.shift());
-        if (old !== s) old.sidecarPromise = null;
+    /** @type {Map<number, {ocr: ?Object, annotations: ?Array<Object>}>} */
+    const result = new Map();
+    /** @type {number[]} */
+    let missing = [];
+    const collect = () => {
+      missing = [];
+      for (const n of pageNs) {
+        if (result.has(n)) continue;
+        const entry = s.sidecarPages.get(n);
+        if (entry) result.set(n, entry);
+        else missing.push(n);
       }
-    }
-    return s.sidecarPromise;
+    };
+    collect();
+    if (!missing.length || s.sidecarBroken || s.sidecarTooBig || !this.store) return result;
+    const pass = (s.sidecarPass || Promise.resolve()).then(async () => {
+      collect();
+      if (!missing.length || s.sidecarBroken || s.sidecarTooBig) return;
+      // A pass costs a full decompression however few pages it keeps, so each miss drags a read-ahead window into the same pass.
+      // Large batches already amortize that cost, so they are not padded.
+      let wanted = missing;
+      if (missing.length <= 8) {
+        const padded = new Set();
+        for (const n of missing) for (let k = Math.max(0, n - 2); k <= n + 29; k++) padded.add(k);
+        if (padded.size <= 48) wanted = [...padded];
+      }
+      const epoch = s.sidecarEpoch;
+      /** @type {?ReadableStreamDefaultReader<Uint8Array>} */
+      let reader = null;
+      /** @type {Map<number, {ocr: ?Object, annotations: ?Array<Object>}>} */
+      const found = new Map();
+      try {
+        const data = this.store ? await this.store.readSidecar(s.hash) : null;
+        if (!data) {
+          s.sidecarBroken = true;
+          return;
+        }
+        const bytes = new Uint8Array(data);
+        const isGzipped = bytes[0] === 0x1F && bytes[1] === 0x8B;
+        let stream = new Blob([bytes]).stream();
+        if (isGzipped) stream = stream.pipeThrough(new DecompressionStream('gzip'));
+        reader = stream.getReader();
+        const decoder = new TextDecoder('utf-8');
+
+        const SEG_SNIFF = '{"scribeSegments"';
+        let buf = '';
+        let part = await reader.read();
+        while (!part.done && buf.length < SEG_SNIFF.length) {
+          buf += decoder.decode(part.value, { stream: true });
+          part = await reader.read();
+        }
+
+        if (buf.startsWith(SEG_SNIFF)) {
+          // Segmented layout: a header line of doc-level fields (annotations included), then one JSON record per page.
+          const want = new Set(wanted);
+          /** @type {?Array<Array<Object>>} */
+          let headerAnnots = null;
+          let gotHeader = false;
+          /** @type {string[]} Decoded text since the last completed line. */
+          let pending = [];
+          /** @param {string} line */
+          const feedLine = (line) => {
+            if (!gotHeader) {
+              gotHeader = true;
+              const header = line ? JSON.parse(line) : {};
+              headerAnnots = Array.isArray(header.annotations) ? header.annotations : null;
+              // Read-ahead can pad past the last page, and those pages are never found, so the read would run to the end of the file waiting for them.
+              if (Number.isInteger(header.pageCount)) {
+                for (const p of [...want]) if (p >= header.pageCount) want.delete(p);
+              }
+              return;
+            }
+            const m = /^\{"i":(\d+)[,}]/.exec(line);
+            if (!m || !want.has(+m[1])) return;
+            const rec = JSON.parse(line);
+            found.set(rec.i, { ocr: rec.ocr ?? null, annotations: null });
+            want.delete(rec.i);
+          };
+          // Lines are page-sized while chunks are small, so concatenating per chunk re-copies each line once per chunk, which is quadratic.
+          let pendingLen = 0;
+          /** @param {string} chunk */
+          const feedText = (chunk) => {
+            pending.push(chunk);
+            pendingLen += chunk.length;
+            if (pendingLen > SIDECAR_JSON_CHAR_LIMIT) throw new Error('Sidecar record exceeds the parse budget.');
+            if (!chunk.includes('\n')) return;
+            const lines = pending.join('').split('\n');
+            pending = [lines.pop() ?? ''];
+            pendingLen = pending[0].length;
+            for (const line of lines) feedLine(line);
+          };
+          feedText(buf);
+          while (!part.done && (!gotHeader || want.size)) {
+            feedText(decoder.decode(part.value, { stream: true }));
+            part = await reader.read();
+          }
+          if (part.done) {
+            pending.push(decoder.decode());
+            const tail = pending.join('');
+            if (tail) feedLine(tail);
+          }
+          for (const n of wanted) {
+            const entry = found.get(n) || { ocr: null, annotations: null };
+            entry.annotations = headerAnnots?.[n] ?? null;
+            found.set(n, entry);
+          }
+        } else {
+          // The single-JSON layout has no per-page boundaries, so the whole graph must be parsed and then dropped once the wanted pages are plucked.
+          const parts = [buf];
+          let total = buf.length;
+          while (total <= SIDECAR_JSON_CHAR_LIMIT && !part.done) {
+            const chunk = decoder.decode(part.value, { stream: true });
+            total += chunk.length;
+            parts.push(chunk);
+            part = await reader.read();
+          }
+          if (total > SIDECAR_JSON_CHAR_LIMIT) {
+            s.sidecarTooBig = true;
+            return;
+          }
+          parts.push(decoder.decode());
+          const json = JSON.parse(parts.join(''));
+          const ocrArr = Array.isArray(json.ocr) ? json.ocr : null;
+          const annotsArr = Array.isArray(json.annotations) ? json.annotations : null;
+          for (const n of wanted) found.set(n, { ocr: ocrArr?.[n] ?? null, annotations: annotsArr?.[n] ?? null });
+        }
+      } catch {
+        s.sidecarBroken = true;
+        found.clear();
+      } finally {
+        reader?.cancel().catch(() => {});
+      }
+      if (s.sidecarEpoch === epoch) {
+        for (const [n, entry] of found) {
+          if (!s.sidecarPages.has(n)) {
+            this.sidecarPageOrder.push({ session: s, n });
+            while (this.sidecarPageOrder.length > MAX_SIDECAR_PAGES) {
+              const old = /** @type {{session: DocSession, n: number}} */ (this.sidecarPageOrder.shift());
+              old.session.sidecarPages.delete(old.n);
+            }
+          }
+          s.sidecarPages.set(n, entry);
+        }
+      }
+      for (const [n, entry] of found) result.set(n, entry);
+    });
+    s.sidecarPass = pass.then(() => {}, () => {});
+    await pass;
+    collect();
+    return result;
   }
 
   /**
@@ -169,7 +317,11 @@ export class DocSessions {
    */
   dropSidecar(hash) {
     const s = this.map.get(hash);
-    if (s) s.sidecarPromise = null;
+    if (!s) return;
+    s.sidecarPages.clear();
+    s.sidecarEpoch++;
+    s.sidecarBroken = false;
+    s.sidecarTooBig = false;
   }
 
   /**
@@ -256,7 +408,7 @@ export class DocSessions {
       if (s.coverUrl) URL.revokeObjectURL(s.coverUrl);
     }
     this.map.clear();
-    this.sidecarOrder.length = 0;
+    this.sidecarPageOrder.length = 0;
     this.urlOrder.length = 0;
   }
 
