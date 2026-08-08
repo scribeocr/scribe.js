@@ -6,17 +6,14 @@ import { scribe } from '../pdf-viewer.js';
 // The shell serves COOP/COEP headers, so PDF bytes can be shared across workers instead of cloned per worker.
 scribe.opt.usePdfSharedBuffer = true;
 
-// Set up frameless window drag regions
+// Controls move in and out of the start and end zones at runtime, so the exemption covers whatever is in a zone rather than a fixed list of the controls present today.
+// It reaches every descendant because the mode drop-down and its rows sit inside wrapper spans that a children-only selector would not pass through.
 pdfViewer.toolbarElem.style.webkitAppRegion = 'drag';
-pdfViewer.toolbarElemStart.style.webkitAppRegion = 'drag';
-pdfViewer.toolbarElemEnd.style.webkitAppRegion = 'drag';
-
-const toolbarButtons = pdfViewer.toolbarElem.querySelector('.col-md');
-if (toolbarButtons) toolbarButtons.style.webkitAppRegion = 'no-drag';
-
-// The library swaps its own controls into the drag-region toolbar zones, so they must opt back out or every click drags the window.
+pdfViewer.toolbarElemStart.classList.add('scribe-shell-drag-zone');
+pdfViewer.toolbarElemEnd.classList.add('scribe-shell-drag-zone');
 const dragOptOut = document.createElement('style');
-dragOptOut.textContent = '.scribe-library-bar-title, .scribe-library-bar-controls { -webkit-app-region: no-drag; }';
+dragOptOut.textContent = '.scribe-shell-drag-zone > *, .scribe-shell-drag-zone > * *, .col-md, .col-md *, '
+  + '.scribe-search-group, .scribe-search-group * { -webkit-app-region: no-drag; }';
 document.head.appendChild(dragOptOut);
 
 const isMac = navigator.platform.startsWith('Mac');
