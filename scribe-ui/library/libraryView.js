@@ -140,10 +140,16 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-seg button svg { width: 16px; height: 16px; }
 .scribe-pdf-viewer .scribe-library-seg button:hover { color: var(--scribe-ink); }
 .scribe-pdf-viewer .scribe-library-seg button.on { background: var(--scribe-surface); color: var(--scribe-accent); box-shadow: inset 0 0 0 1px var(--scribe-line-strong); }
-.scribe-pdf-viewer .scribe-library-btn { padding: 6px 12px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--scribe-ink) 25%, transparent); background: var(--scribe-surface); color: var(--scribe-ink); cursor: pointer; font-size: 13px; }
+.scribe-pdf-viewer .scribe-library-btn { padding: 6px 12px; border-radius: 6px; border: 1px solid color-mix(in srgb, var(--scribe-ink) 25%, transparent); background: var(--scribe-surface); color: var(--scribe-ink); cursor: pointer; font: inherit; font-size: 13px; }
 .scribe-pdf-viewer .scribe-library-btn:hover { background: color-mix(in srgb, var(--scribe-ink) 8%, var(--scribe-surface)); }
 .scribe-pdf-viewer .scribe-library-btn.primary { background: var(--scribe-accent); border-color: var(--scribe-accent); color: #fff; }
-.scribe-pdf-viewer .scribe-library-progress { display: none; align-items: center; gap: 10px; padding: 8px 18px; font-size: 13px; background: color-mix(in srgb, var(--scribe-accent) 12%, var(--scribe-surface)); border-bottom: 1px solid color-mix(in srgb, var(--scribe-ink) 12%, transparent); }
+.scribe-pdf-viewer .scribe-library-progress { display: none; position: relative; height: 34px; grid-template-columns: auto minmax(0, 1fr) auto; align-items: center; gap: 10px; padding: 0 12px 0 18px; font-size: 13px; background: var(--scribe-surface); border-bottom: 1px solid var(--scribe-line); }
+.scribe-pdf-viewer .scribe-library-progress-count { font-weight: 600; color: var(--scribe-ink); white-space: nowrap; font-variant-numeric: tabular-nums; }
+.scribe-pdf-viewer .scribe-library-progress-name { color: var(--scribe-ink-2); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.scribe-pdf-viewer .scribe-library-progress-stop { height: 24px; padding: 0 9px; border: none; border-radius: 7px; background: none; color: var(--scribe-ink-2); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
+.scribe-pdf-viewer .scribe-library-progress-stop:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
+.scribe-pdf-viewer .scribe-library-progress-stop:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: 1px; }
+.scribe-pdf-viewer .scribe-library-progress-hair { position: absolute; left: 0; bottom: -1px; height: 2px; background: var(--scribe-accent); transition: width 0.28s ease; }
 .scribe-pdf-viewer .scribe-library-body { flex: 1; overflow-y: auto; padding: 16px 18px; }
 .scribe-pdf-viewer .scribe-library-section-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.6; margin: 4px 0 10px; }
 .scribe-pdf-viewer .scribe-library-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 190px)); justify-content: center; gap: 14px; margin-bottom: 22px; position: relative; }
@@ -507,12 +513,19 @@ export function installLibrary(viewer) {
 
   const progressElem = document.createElement('div');
   progressElem.className = 'scribe-library-progress';
-  const progressText = document.createElement('span');
-  progressElem.appendChild(progressText);
-  const cancelBtn = document.createElement('button');
-  cancelBtn.className = 'scribe-library-btn';
-  cancelBtn.textContent = 'Cancel';
-  progressElem.appendChild(cancelBtn);
+  const progressCount = document.createElement('span');
+  progressCount.className = 'scribe-library-progress-count';
+  progressElem.appendChild(progressCount);
+  const progressName = document.createElement('span');
+  progressName.className = 'scribe-library-progress-name';
+  progressElem.appendChild(progressName);
+  const stopBtn = document.createElement('button');
+  stopBtn.className = 'scribe-library-progress-stop';
+  stopBtn.textContent = 'Stop';
+  progressElem.appendChild(stopBtn);
+  const progressHair = document.createElement('div');
+  progressHair.className = 'scribe-library-progress-hair';
+  progressElem.appendChild(progressHair);
 
   const body = document.createElement('div');
   body.className = 'scribe-library-body';
@@ -3346,8 +3359,10 @@ export function installLibrary(viewer) {
           render();
           return;
         }
-        progressElem.style.display = 'flex';
-        progressText.textContent = `Indexing ${done}/${total} — ${current}`;
+        progressElem.style.display = 'grid';
+        progressCount.textContent = `Indexing ${done} of ${total}`;
+        progressName.textContent = current.split('/').pop() || current;
+        progressHair.style.width = `${(done / total) * 100}%`;
       },
       onDocDone: () => {
         saveIndexSoon();
@@ -3582,7 +3597,7 @@ export function installLibrary(viewer) {
     ingest.start();
   });
 
-  cancelBtn.addEventListener('click', () => {
+  stopBtn.addEventListener('click', () => {
     ingest?.cancel();
     progressElem.style.display = 'none';
   });
