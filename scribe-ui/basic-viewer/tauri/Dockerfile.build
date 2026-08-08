@@ -15,4 +15,7 @@ RUN apt-get update && apt-get install -y \
     libxdo-dev \
     && rm -rf /var/lib/apt/lists/*
 
+# The bundler lives in the Tauri CLI, not in cargo build.
+RUN cargo install tauri-cli --version '^2' --locked
+
 WORKDIR /app

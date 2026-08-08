@@ -4,8 +4,6 @@
   "version": "0.1.0",
   "identifier": "ai.21.viewer",
   "build": {
-    "beforeBuildCommand": "bash tauri/prepare-dist.sh",
-    "beforeDevCommand": "bash tauri/prepare-dist.sh",
     "frontendDist": "dist"
   },
   "app": {
