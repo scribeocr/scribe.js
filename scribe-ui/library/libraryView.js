@@ -3171,6 +3171,9 @@ export function installLibrary(viewer) {
     }
   };
 
+  /** Hashes (or paths, for legacy entries) with an open in flight, so a click storm during a slow load cannot stack duplicate imports. */
+  const openingDocs = new Set();
+
   /**
    * @param {string} relPath
    * @param {import('./libraryStore.js').LibraryDocEntry} entry
@@ -3178,107 +3181,116 @@ export function installLibrary(viewer) {
    */
   const openEntry = async (relPath, entry, target = {}) => {
     if (!store || !manifest) return;
-    const openIdx = entry.hash ? viewer._tabs.findIndex((t) => t.libraryHash === entry.hash) : -1;
-    if (openIdx >= 0) {
-      entry.lastOpened = Date.now();
-      saveManifestSoon();
-      await viewer._activateTab(openIdx);
-      if (target.pageN != null) await viewer.scribe.displayPage(target.pageN, true, false);
-      if (target.query && viewer._searchBar) {
-        viewer._searchBar.openSearch();
-        viewer._searchBar.searchInputElem.value = target.query;
-        await viewer._searchBar.runSearch(target.query, target.pageN);
+    const openKey = entry.hash || relPath;
+    if (openingDocs.has(openKey)) return;
+    openingDocs.add(openKey);
+    try {
+      const openIdx = entry.hash ? viewer._tabs.findIndex((t) => t.libraryHash === entry.hash) : -1;
+      if (openIdx >= 0) {
+        entry.lastOpened = Date.now();
+        saveManifestSoon();
+        await viewer._activateTab(openIdx);
+        if (target.pageN != null) await viewer.scribe.displayPage(target.pageN, true, false);
+        if (target.query && viewer._searchBar) {
+          viewer._searchBar.openSearch();
+          viewer._searchBar.searchInputElem.value = target.query;
+          await viewer._searchBar.runSearch(target.query, target.pageN);
+        }
+        return;
       }
-      return;
-    }
-    const pooled = entry.hash ? sessions.takeLive(entry.hash) : null;
-    if (pooled) {
-      entry.lastOpened = Date.now();
-      saveManifestSoon();
-      const tab = await viewer._openDocAsTab(pooled, titleOf(relPath), { libraryHash: entry.hash, lastPage: target.pageN ?? 0 });
-      wrapMutators(pooled, tab);
-      persistRasterWindow(pooled, entry, target.pageN ?? 0);
-      if (target.query && viewer._searchBar) {
-        viewer._searchBar.openSearch();
-        viewer._searchBar.searchInputElem.value = target.query;
-        await viewer._searchBar.runSearch(target.query, target.pageN);
+      const pooled = entry.hash ? sessions.takeLive(entry.hash) : null;
+      if (pooled) {
+        entry.lastOpened = Date.now();
+        saveManifestSoon();
+        const tab = await viewer._openDocAsTab(pooled, titleOf(relPath), { libraryHash: entry.hash, lastPage: target.pageN ?? 0 });
+        wrapMutators(pooled, tab);
+        persistRasterWindow(pooled, entry, target.pageN ?? 0);
+        if (target.query && viewer._searchBar) {
+          viewer._searchBar.openSearch();
+          viewer._searchBar.searchInputElem.value = target.query;
+          await viewer._searchBar.runSearch(target.query, target.pageN);
+        }
+        return;
       }
-      return;
-    }
-    // Preview promotion: a pane already showing this document finishes its load and hands it to the tab, so Open never re-imports.
-    if (mountedPane && mountedPane.shownHash() === entry.hash) {
+      // A pane already showing this document hands its loaded copy to the tab, so opening never re-imports.
+      if (mountedPane && mountedPane.shownHash() === entry.hash) {
+        try {
+          await mountedPane.finishHydration();
+          const handoffDoc = mountedPane.takeHydratedDoc();
+          if (handoffDoc) {
+            entry.lastOpened = Date.now();
+            saveManifestSoon();
+            const tab = await viewer._openDocAsTab(handoffDoc, titleOf(relPath), { libraryHash: entry.hash, lastPage: target.pageN ?? 0 });
+            if (mountedPane.takeDirty()) tab.libraryDirty = true;
+            wrapMutators(handoffDoc, tab);
+            persistRasterWindow(handoffDoc, entry, target.pageN ?? 0);
+            mountedPane.reshow();
+            if (target.query && viewer._searchBar) {
+              viewer._searchBar.openSearch();
+              viewer._searchBar.searchInputElem.value = target.query;
+              await viewer._searchBar.runSearch(target.query, target.pageN);
+            }
+            return;
+          }
+        } catch { /* Promotion failed; the seeded open below covers it. */ }
+      }
+      // Stored page dims, rasters, and sidecar pages paint immediately while the real document hydrates behind them.
+      // The tab also exists from the first click, so repeats activate it instead of starting another import.
+      if (entry.pageDims) {
+        entry.lastOpened = Date.now();
+        saveManifestSoon();
+        const seed = await makeSeed(relPath, entry, target.pageN ?? 0);
+        const handle = await viewer.openProvisional({ ...seed, hydration: 'eager' });
+        const tab = viewer._tabs[viewer._activeTab];
+        tab.libraryHash = entry.hash;
+        if (target.query && viewer._searchBar) {
+          viewer._searchBar.openSearch();
+          viewer._searchBar.searchInputElem.value = target.query;
+        }
+        handle.hydrated.then(() => {
+          wrapMutators(tab.doc, tab);
+          persistRasterWindow(tab.doc, entry, target.pageN ?? 0);
+          if (target.query && viewer._searchBar) viewer._searchBar.runSearch(target.query, target.pageN);
+        }).catch(() => {});
+        return;
+      }
+      /** @type {File} */
+      let pdfFile;
       try {
-        await mountedPane.finishHydration();
-        const handoffDoc = mountedPane.takeHydratedDoc();
-        if (handoffDoc) {
-          entry.lastOpened = Date.now();
-          saveManifestSoon();
-          const tab = await viewer._openDocAsTab(handoffDoc, titleOf(relPath), { libraryHash: entry.hash, lastPage: target.pageN ?? 0 });
-          if (mountedPane.takeDirty()) tab.libraryDirty = true;
-          wrapMutators(handoffDoc, tab);
-          persistRasterWindow(handoffDoc, entry, target.pageN ?? 0);
-          mountedPane.reshow();
-          if (target.query && viewer._searchBar) {
-            viewer._searchBar.openSearch();
-            viewer._searchBar.searchInputElem.value = target.query;
-            await viewer._searchBar.runSearch(target.query, target.pageN);
-          }
-          return;
-        }
-        if (entry.pageDims) {
-          entry.lastOpened = Date.now();
-          saveManifestSoon();
-          const seed = await makeSeed(relPath, entry, target.pageN);
-          const handle = await viewer.openProvisional({ ...seed, hydration: 'eager' });
-          const tab = viewer._tabs[viewer._activeTab];
-          tab.libraryHash = entry.hash;
-          if (target.query && viewer._searchBar) {
-            viewer._searchBar.openSearch();
-            viewer._searchBar.searchInputElem.value = target.query;
-          }
-          handle.hydrated.then(() => {
-            wrapMutators(tab.doc, tab);
-            persistRasterWindow(tab.doc, entry, target.pageN ?? 0);
-            if (target.query && viewer._searchBar) viewer._searchBar.runSearch(target.query, target.pageN);
-          }).catch(() => {});
-          return;
-        }
-      } catch { /* Promotion failed; the plain open below covers it. */ }
-    }
-    /** @type {File} */
-    let pdfFile;
-    try {
-      pdfFile = await store.readFile(relPath);
-    } catch {
-      entry.status = 'missing';
+        pdfFile = await store.readFile(relPath);
+      } catch {
+        entry.status = 'missing';
+        saveManifestSoon();
+        render();
+        viewer._showToast(`Couldn't open “${titleOf(relPath)}” — the file is no longer at ${relPath}.`);
+        return;
+      }
+      const files = [pdfFile];
+      if (entry.hash) {
+        const sidecar = await store.readSidecar(entry.hash);
+        if (sidecar) files.push(new File([sidecar], `${entry.hash}.scribe`));
+      }
+      /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+      let doc;
+      try {
+        doc = await scribeLib.openDocument(files, { deferText: true });
+      } catch (err) {
+        viewer._showToast(`Couldn't open “${titleOf(relPath)}” — ${err instanceof Error ? err.message : 'the file could not be loaded'}.`);
+        return;
+      }
+      entry.lastOpened = Date.now();
       saveManifestSoon();
-      render();
-      viewer._showToast(`Couldn't open “${titleOf(relPath)}” — the file is no longer at ${relPath}.`);
-      return;
-    }
-    const files = [pdfFile];
-    if (entry.hash) {
-      const sidecar = await store.readSidecar(entry.hash);
-      if (sidecar) files.push(new File([sidecar], `${entry.hash}.scribe`));
-    }
-    /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
-    let doc;
-    try {
-      doc = await scribeLib.openDocument(files, { deferText: true });
-    } catch (err) {
-      viewer._showToast(`Couldn't open “${titleOf(relPath)}” — ${err instanceof Error ? err.message : 'the file could not be loaded'}.`);
-      return;
-    }
-    entry.lastOpened = Date.now();
-    saveManifestSoon();
-    // Opening straight at the target page, since a `lastPage: 0` open followed by a jump would visibly double-paint.
-    const tab = await viewer._openDocAsTab(doc, titleOf(relPath), { libraryHash: entry.hash, lastPage: target.pageN ?? 0 });
-    wrapMutators(doc, tab);
-    persistRasterWindow(doc, entry, target.pageN ?? 0);
-    if (target.query && viewer._searchBar) {
-      viewer._searchBar.openSearch();
-      viewer._searchBar.searchInputElem.value = target.query;
-      await viewer._searchBar.runSearch(target.query, target.pageN);
+      // Opening straight at the target page, since a `lastPage: 0` open followed by a jump would visibly double-paint.
+      const tab = await viewer._openDocAsTab(doc, titleOf(relPath), { libraryHash: entry.hash, lastPage: target.pageN ?? 0 });
+      wrapMutators(doc, tab);
+      persistRasterWindow(doc, entry, target.pageN ?? 0);
+      if (target.query && viewer._searchBar) {
+        viewer._searchBar.openSearch();
+        viewer._searchBar.searchInputElem.value = target.query;
+        await viewer._searchBar.runSearch(target.query, target.pageN);
+      }
+    } finally {
+      openingDocs.delete(openKey);
     }
   };
 
