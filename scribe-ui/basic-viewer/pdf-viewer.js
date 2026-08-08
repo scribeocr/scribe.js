@@ -82,12 +82,10 @@ const HIDE_TOOLS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColo
   + ' stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
   + '<path d="M6 10.5l6-5 6 5M6 17.5l6-5 6 5"/></svg>';
 
-const TRACK_MORE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
+// The up/down pair is the macOS marker for a pop-up showing the current choice, where a single chevron would mean a pull-down menu of actions.
+const TRACK_MENU_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
   + ' stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
-  + '<path d="M7.5 10l4.5 4.5L16.5 10"/></svg>';
-const TRACK_LESS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"'
-  + ' stroke-linejoin="round" style="pointer-events:none;display:block;width:100%;height:100%" aria-hidden="true">'
-  + '<path d="M7.5 14.5 12 10l4.5 4.5"/></svg>';
+  + '<path d="M8.4 9.7 12 6.1l3.6 3.6M8.4 14.3 12 17.9l3.6-3.6"/></svg>';
 
 /**
  * Pointer glyph for the mode drop-down's View item.
@@ -412,7 +410,7 @@ class ScribePDFViewer {
     this.pdfViewerElem.style.position = 'relative';
     this.pdfViewerElem.style.overflow = 'hidden';
     this.pdfViewerElem.style.backgroundColor = 'var(--scribe-canvas)';
-    this.pdfViewerElem.style.fontFamily = '\'Segoe UI\', Tahoma, sans-serif';
+    this.pdfViewerElem.style.fontFamily = '-apple-system, system-ui, \'Segoe UI\', sans-serif';
 
     const toolbarHeightNum = Number(toolbarHeight);
     let toolbarHeightResolved = Number.isFinite(toolbarHeightNum)
@@ -536,6 +534,9 @@ class ScribePDFViewer {
       toolbarButtons.className = 'col-md order-2 my-auto';
       // Never wrap to a second line inside the fixed-height bar; instead the horizontal overflow is measured and the trailing mode buttons collapse into the tray.
       toolbarButtons.style.whiteSpace = 'nowrap';
+      // As an inline line box, the strut's font metrics would push these middle-aligned controls fractions of a pixel off the bar's center line.
+      toolbarButtons.style.display = 'flex';
+      toolbarButtons.style.alignItems = 'center';
 
       const pageNav = createPageNav(this.scribe);
       const zoom = createZoomControls(this.scribe);
@@ -2615,7 +2616,7 @@ class ScribePDFViewer {
       row1.className = 'scribe-mode-track-row1';
       const more = document.createElement('div');
       more.className = 'scribe-mode-track-more';
-      const chev = makeIconButton('More tools', TRACK_MORE_SVG);
+      const chev = makeIconButton('More tools', TRACK_MENU_SVG);
       chev.classList.add('scribe-mode-track-chev');
       chev.addEventListener('click', () => this._setModeTrackOpen(!this._modeTrackOpen));
       row1.appendChild(chev);
@@ -2695,8 +2696,6 @@ class ScribePDFViewer {
     if (on && chev.classList.contains('disabled')) return;
     this._modeTrackOpen = on;
     track.classList.toggle('open', on);
-    const ic = chev.querySelector('.cr-icon');
-    if (ic) ic.innerHTML = on ? TRACK_LESS_SVG : TRACK_MORE_SVG;
     chev.title = on ? 'Hide extra tools' : 'More tools';
     this._positionBanners();
   }

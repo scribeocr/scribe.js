@@ -154,6 +154,7 @@ export function createPageNav(scribe) {
   const pageInputGroup = document.createElement('div');
   pageInputGroup.className = 'btn-group';
   pageInputGroup.style.display = 'inline-flex';
+  pageInputGroup.style.verticalAlign = 'middle';
   // Center the items on the cross axis so the "/" text node and page-count span align with the input's vertically centered value.
   // Under the default stretch they top-align their glyphs and the "/ N" total rides visibly higher than the page number.
   pageInputGroup.style.alignItems = 'center';
@@ -171,7 +172,7 @@ export function createPageNav(scribe) {
   pageCountElem.style.display = 'inline-block';
   pageCountElem.style.minWidth = '2.6em';
   pageCountElem.style.textAlign = 'left';
-  pageCountElem.style.fontSize = '14px';
+  pageCountElem.style.fontSize = '13px';
   pageCountElem.style.fontVariantNumeric = 'tabular-nums';
   pageCountElem.style.paddingLeft = '0.5rem';
 
@@ -217,6 +218,8 @@ export const ZOOM_IN_SVG = lineIcon('<circle cx="11" cy="11" r="6.5"/><path d="M
  */
 export function createZoomControls(scribe) {
   const zoomControls = document.createElement('span');
+  zoomControls.style.display = 'inline-flex';
+  zoomControls.style.alignItems = 'center';
   const zoomOutElem = makeIconButton('Zoom out', ZOOM_OUT_SVG);
   const zoomInElem = makeIconButton('Zoom in', ZOOM_IN_SVG);
 
@@ -1282,7 +1285,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       border-radius: 8px;
       background: none;
       cursor: pointer;
-      font: 600 13px/1 'Segoe UI', Tahoma, sans-serif;
+      font: 600 13px/1 -apple-system, system-ui, 'Segoe UI', sans-serif;
       color: var(--scribe-ink-2);
       white-space: nowrap;
     }
@@ -1373,9 +1376,9 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       /* Nothing native pans from the header, so the drag-down close gesture owns every touch that starts here. */
       touch-action: none;
     }
-    .${r} .scribe-room-title { font: 700 15px/1 'Segoe UI', Tahoma, sans-serif; color: var(--scribe-ink); }
+    .${r} .scribe-room-title { font: 700 15px/1 -apple-system, system-ui, 'Segoe UI', sans-serif; color: var(--scribe-ink); }
     .${r} .scribe-room-count {
-      font: 600 12px/1 'Segoe UI', Tahoma, sans-serif;
+      font: 600 12px/1 -apple-system, system-ui, 'Segoe UI', sans-serif;
       font-variant-numeric: tabular-nums;
       color: var(--scribe-ink-3);
     }
@@ -1387,7 +1390,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       border-radius: 8px;
       background: none;
       color: var(--scribe-accent);
-      font: 700 13.5px/1 'Segoe UI', Tahoma, sans-serif;
+      font: 700 13.5px/1 -apple-system, system-ui, 'Segoe UI', sans-serif;
       cursor: pointer;
     }
     .${r} .scribe-room-done:hover { background: var(--scribe-hover); }
@@ -1417,7 +1420,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       border-radius: 8px;
       background: none;
       color: var(--scribe-accent);
-      font: 600 13.5px/1 'Segoe UI', Tahoma, sans-serif;
+      font: 600 13.5px/1 -apple-system, system-ui, 'Segoe UI', sans-serif;
       cursor: pointer;
     }
     .${r} .scribe-room-edit:hover:not(:disabled) { background: var(--scribe-hover); }
@@ -1438,7 +1441,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       border-radius: 8px;
       background: none;
       color: var(--scribe-accent);
-      font: 600 13.5px/1 'Segoe UI', Tahoma, sans-serif;
+      font: 600 13.5px/1 -apple-system, system-ui, 'Segoe UI', sans-serif;
       cursor: pointer;
       display: none;
     }
@@ -1524,7 +1527,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       box-shadow: var(--scribe-menu-shadow);
       /* Above in-rail decorations (insert line 50, marquee 40), below the page context menu (60). */
       z-index: 55;
-      font: 600 13px/1 'Segoe UI', Tahoma, sans-serif;
+      font: 600 13px/1 -apple-system, system-ui, 'Segoe UI', sans-serif;
       color: var(--scribe-ink-2);
       opacity: 0;
       transform: translateY(6px);
@@ -1558,7 +1561,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       border-radius: 9px;
       background: none;
       color: var(--scribe-accent);
-      font: 600 13px/1 'Segoe UI', Tahoma, sans-serif;
+      font: 600 13px/1 -apple-system, system-ui, 'Segoe UI', sans-serif;
       cursor: pointer;
     }
     .${r} .scribe-thumb-selbar-btn svg { width: 16px; height: 16px; }
@@ -1610,7 +1613,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-thumb-peek-cap {
       margin-top: 8px;
       text-align: center;
-      font: 600 12px/1 'Segoe UI', Tahoma, sans-serif;
+      font: 600 12px/1 -apple-system, system-ui, 'Segoe UI', sans-serif;
       color: #fff;
       text-shadow: 0 1px 2px rgba(0, 0, 0, .45);
     }
@@ -2014,6 +2017,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       margin-left: 10px;
       margin-right: 10px;
       display: inline-block;
+      vertical-align: middle;
     }
 
     /* Empty-state drop zone shown when no document is loaded. */
@@ -2156,13 +2160,21 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       caret-color: var(--scribe-accent);
       color: var(--scribe-ink);
       font-family: inherit;
-      line-height: inherit;
+      font-size: 13px;
+      /* Without an explicit height the inherited line-height inflates the field to 34px, off the bar's 28px control line. */
+      height: 28px;
+      box-sizing: border-box;
+      line-height: 22px;
       margin: 0 4px;
       outline: 0;
       padding: 2px 4px;
       text-align: center;
+      vertical-align: middle;
       width: 5ch;
     }
+    .${r}-toolbar .scribe-page-sep { font-size: 13px; }
+    /* The mode-button overflow fold measures these children, so they must never flex-shrink below their natural widths. */
+    .${r}-toolbar .col-md > * { flex: 0 0 auto; }
 
     /* Floating find widget: opening it overlays content instead of reflowing the right-zone controls. */
     .${r} .scribe-search-group {
@@ -2919,7 +2931,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       border: 1px solid var(--scribe-line-strong);
       background: var(--scribe-surface);
       color: var(--scribe-ink);
-      font: 600 12px/1 'Segoe UI', Tahoma, sans-serif;
+      font: 600 12px/1 -apple-system, system-ui, 'Segoe UI', sans-serif;
       padding: 7px 12px;
       border-radius: 6px;
       cursor: pointer;
@@ -3294,7 +3306,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       display: flex;
       align-items: center;
       justify-content: center;
-      font: 700 8px/1 'Segoe UI', Tahoma, sans-serif;
+      font: 700 8px/1 -apple-system, system-ui, 'Segoe UI', sans-serif;
       flex: 0 0 auto;
     }
     .${r} .scribe-cmc-ava-b { background: #dff0e6; color: #2c6b45; }
@@ -3302,7 +3314,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r}[data-theme="dark"] .scribe-cmc-ava-b { background: #1e3527; color: #8fd6ac; }
     .${r}[data-theme="dark"] .scribe-cmc-ava-c { background: #3a2620; color: #e2a68e; }
     .${r} .scribe-cmc-quote {
-      font: italic 500 11.5px/1.45 'Segoe UI', Tahoma, sans-serif;
+      font: italic 500 11.5px/1.45 -apple-system, system-ui, 'Segoe UI', sans-serif;
       color: var(--scribe-ink-2);
       display: -webkit-box;
       -webkit-line-clamp: 1;
@@ -3318,7 +3330,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-cmc-quote.st { text-decoration: line-through 1.5px; }
     .${r} .scribe-cmc-quote.rd { background: repeating-linear-gradient(45deg, rgba(209, 73, 61, .16) 0 1px, transparent 1px 6px); }
     .${r} .scribe-cmc-text {
-      font: 400 16px/1.45 'Segoe UI', Tahoma, sans-serif;
+      font: 400 16px/1.45 -apple-system, system-ui, 'Segoe UI', sans-serif;
       color: var(--scribe-ink);
       overflow: hidden;
       overflow-wrap: anywhere;
@@ -3329,13 +3341,13 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       -webkit-line-clamp: 2;
       -webkit-box-orient: vertical;
     }
-    .${r} .scribe-cmc-text.gone { font: 600 11.5px/1 'Segoe UI', Tahoma, sans-serif; color: var(--scribe-danger); margin-top: 8px; }
+    .${r} .scribe-cmc-text.gone { font: 600 11.5px/1 -apple-system, system-ui, 'Segoe UI', sans-serif; color: var(--scribe-danger); margin-top: 8px; }
     .${r} .scribe-cmc-hd { display: flex; align-items: center; gap: 8px; min-width: 0; }
     .${r} .scribe-cmc-who { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
     .${r} .scribe-cmc-pg {
       margin-left: auto;
       flex: 0 0 auto;
-      font: 500 11.5px/1 'Segoe UI', Tahoma, sans-serif;
+      font: 500 11.5px/1 -apple-system, system-ui, 'Segoe UI', sans-serif;
       color: var(--scribe-ink-3);
       font-variant-numeric: tabular-nums;
     }
@@ -3361,7 +3373,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-cmc-rc { flex: 1; min-width: 0; }
     .${r} .scribe-cmc-ft { display: flex; align-items: baseline; gap: 10px; margin-top: 3px; }
     .${r} .scribe-cmc-fd {
-      font: 500 11.5px/1.3 'Segoe UI', Tahoma, sans-serif;
+      font: 500 11.5px/1.3 -apple-system, system-ui, 'Segoe UI', sans-serif;
       color: var(--scribe-ink-3);
       font-variant-numeric: tabular-nums;
     }
@@ -3370,7 +3382,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       padding: 0;
       border: 0;
       background: none;
-      font: 500 11.5px/1.3 'Segoe UI', Tahoma, sans-serif;
+      font: 500 11.5px/1.3 -apple-system, system-ui, 'Segoe UI', sans-serif;
       color: var(--scribe-accent);
       cursor: pointer;
       position: relative;
@@ -3389,7 +3401,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-cmc-faces .scribe-cmc-ava:last-child { margin-left: 0; }
     .${r} .scribe-cmc-n {
       flex: 0 0 auto;
-      font: 600 11.5px/1 'Segoe UI', Tahoma, sans-serif;
+      font: 600 11.5px/1 -apple-system, system-ui, 'Segoe UI', sans-serif;
       color: var(--scribe-ink-3);
       font-variant-numeric: tabular-nums;
     }
@@ -3417,17 +3429,17 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       display: flex;
       align-items: center;
       gap: 6px;
-      font: 600 13px/1.2 'Segoe UI', Tahoma, sans-serif;
+      font: 600 13px/1.2 -apple-system, system-ui, 'Segoe UI', sans-serif;
       color: var(--scribe-ink);
     }
     .${r} .scribe-cmc-when {
-      font: 500 11.5px/1 'Segoe UI', Tahoma, sans-serif;
+      font: 500 11.5px/1 -apple-system, system-ui, 'Segoe UI', sans-serif;
       color: var(--scribe-ink-3);
       flex: 0 0 auto;
       font-variant-numeric: tabular-nums;
     }
     /* 16px because the edit field that replaces this text is pinned there, and a message that resized the moment you edited it would be a visible jump. */
-    .${r} .scribe-cmc-mt { font: 400 16px/1.45 'Segoe UI', Tahoma, sans-serif; color: var(--scribe-ink); overflow-wrap: anywhere; }
+    .${r} .scribe-cmc-mt { font: 400 16px/1.45 -apple-system, system-ui, 'Segoe UI', sans-serif; color: var(--scribe-ink); overflow-wrap: anywhere; }
     .${r} .scribe-cmc-comp { display: flex; align-items: flex-end; gap: 8px; margin-top: 16px; }
     .${r} .scribe-cmc-field {
       flex: 1;
@@ -3439,7 +3451,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       border-radius: 8px;
       background: var(--scribe-surface);
       color: var(--scribe-ink);
-      font: 400 16px/1.4 'Segoe UI', Tahoma, sans-serif;
+      font: 400 16px/1.4 -apple-system, system-ui, 'Segoe UI', sans-serif;
       padding: 8px 12px;
       outline: none;
     }
@@ -3485,7 +3497,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       box-shadow: 0 0 0 6px var(--scribe-surface);
       color: var(--scribe-ink);
       /* Must stay identical to .scribe-cmc-mt, or the words move the moment editing begins. */
-      font: 400 16px/1.45 'Segoe UI', Tahoma, sans-serif;
+      font: 400 16px/1.45 -apple-system, system-ui, 'Segoe UI', sans-serif;
       overflow-wrap: anywhere;
       outline: none;
     }
@@ -3595,7 +3607,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     /* The mac shell's mode drop-down: the sidebar strip's material at bar scale. */
     .${r} .scribe-mode-track-wrap { position: relative; display: inline-flex; }
     .${r} .scribe-mode-track-el {
-      display: inline-flex; align-items: stretch; height: 27px; box-sizing: border-box;
+      display: inline-flex; align-items: stretch; height: 28px; box-sizing: border-box;
       background: var(--scribe-sunken); border-radius: 7px; padding: 2px;
     }
     .${r} .scribe-mode-track-row1 { display: inline-flex; gap: 2px; justify-content: space-between; flex: 1 1 auto; }
@@ -3609,8 +3621,9 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     /* The value cell and the list rows share one left-aligned column, so the icons line up down the open control. */
     .${r} .scribe-mode-track-row1 .cr-icon-button:first-child,
     .${r} .scribe-mode-track-row .cr-icon-button { flex: 1 1 auto; justify-content: flex-start; }
-    .${r} .scribe-mode-track-el .cr-icon-button { height: 23px; width: auto; border-radius: 5px; color: var(--scribe-ink-2); align-items: center; }
-    .${r} .scribe-mode-track-el .cr-labeled-button { padding: 0 9px 0 5px; }
+    .${r} .scribe-mode-track-el .cr-icon-button { height: 24px; width: auto; border-radius: 5px; color: var(--scribe-ink-2); align-items: center; }
+    .${r} .scribe-mode-track-el .cr-labeled-button { padding: 0 9px 0 5px; gap: 5px; }
+    .${r} .scribe-mode-track-row1 .cr-icon-button:first-child:not(.active):not(.disabled) { color: var(--scribe-ink); }
     .${r} .scribe-mode-track-el .cr-icon-button:hover { background: none; color: var(--scribe-ink); }
     /* The track's ink override above outranks the shared .disabled rule, so the dim is restated here. */
     .${r} .scribe-mode-track-el .cr-icon-button.disabled { color: color-mix(in srgb, var(--scribe-ink-2) 50%, var(--scribe-ink-3)); }
@@ -3620,7 +3633,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       box-shadow: 0 1px 2px rgba(20, 30, 60, .14);
     }
     .${r} .scribe-mode-track-el .cr-icon { width: 17px; height: 17px; }
-    .${r} .scribe-mode-track-el .cr-btn-label { font-size: 12px; }
+    .${r} .scribe-mode-track-el .cr-btn-label { font-size: 13px; }
     .${r} .scribe-mode-track-chev { padding: 0 6px; }
   `;
 
