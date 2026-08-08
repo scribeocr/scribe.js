@@ -84,6 +84,19 @@ export function ensureLayerStyleSheet() {
     + '.scribe-field-input{position:absolute;inset:0;width:100%;height:100%;box-sizing:border-box;'
     + 'border:none;outline:none;margin:0;background:#fff;color:#141414;resize:none;'
     + 'font-family:Helvetica,Arial,sans-serif;line-height:1.15;border-radius:inherit}'
+    // Comb editing: the input turns fully transparent and a live cover beneath it renders the per-cell spans.
+    // The caret is drawn as a bar on the active cell boundary.
+    + '.scribe-field-input-comb{background:transparent;color:transparent;caret-color:transparent}'
+    + '.scribe-field-input-comb::selection{background:transparent;color:transparent}'
+    + '.scribe-field-combedit{background-color:#fff}'
+    + '.scribe-field-combsep{position:absolute;top:0;bottom:0;width:calc(1px/var(--scribe-zoom,1));'
+    + 'margin-left:calc(-0.5px/var(--scribe-zoom,1));background:#6b6b6b}'
+    + '.scribe-field-caret{position:absolute;width:calc(1.5px/var(--scribe-zoom,1));'
+    + 'margin-left:calc(-0.75px/var(--scribe-zoom,1));background:#1c62d4;pointer-events:none;'
+    + 'animation:scribe-field-caret-blink 1.1s steps(1) infinite}'
+    + '.scribe-field-caret-off{display:none}'
+    + '.scribe-field-combsel{background:rgba(28,98,212,.28)}'
+    + '@keyframes scribe-field-caret-blink{0%,50%{opacity:1}50.01%,100%{opacity:0}}'
     // The choice popover is not drawn on the page, so it uses the theme tokens rather than the hardcoded page-space colors.
     + '.scribe-field-pop{position:fixed;z-index:1000;max-height:260px;overflow-y:auto;padding:4px;box-sizing:border-box;'
     + 'background:var(--scribe-surface,#fff);border:1px solid var(--scribe-line,#e4e8ef);'
@@ -103,6 +116,13 @@ export function ensureLayerStyleSheet() {
     + '.scribe-item-ink path{fill:none;stroke-linecap:round;stroke-linejoin:round}'
     + '.scribe-item-img{position:absolute;inset:0;width:100%;height:100%;user-select:none;-webkit-user-drag:none}'
     + '.scribe-item-ghost{pointer-events:none;opacity:.6}'
+    // Detected fillable spots reuse the live field overlay's border and wash, page-space and never themed.
+    // The snap variant is the armed ghost's landing ring.
+    + '.scribe-fd-target{position:absolute;pointer-events:none;box-sizing:border-box;'
+    + 'border:calc(1px/var(--scribe-zoom,1)) solid rgb(103,144,213);background:rgba(28,98,212,.16)}'
+    + '.scribe-fd-snap{position:absolute;pointer-events:none;box-sizing:border-box;'
+    + 'border:calc(1.5px/var(--scribe-zoom,1)) solid #1c62d4;background:rgba(28,98,212,.10);'
+    + 'box-shadow:0 0 0 calc(2px/var(--scribe-zoom,1)) rgba(28,98,212,.25)}'
     // The font and 1.2 line-height mirror the Helvetica layout `syncFillText` uses for the lifted words, so the item matches the exported PDF.
     + '.scribe-item-text{font-family:Helvetica,Arial,sans-serif;line-height:1.2;white-space:pre;color:#000}'
     + '.scribe-item-text-editing{position:absolute;pointer-events:auto;cursor:text;user-select:text;'

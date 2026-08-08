@@ -12,6 +12,7 @@ import {
 import { setFormValue as setFormValueImpl } from '../formFields.js';
 import {
   addInk as addInkImpl, addStamp as addStampImpl, addFillText as addFillTextImpl, syncFillText as syncFillTextImpl,
+  detectFillTargets as detectFillTargetsImpl,
 } from '../fillSign.js';
 import { deleteTextLines as deleteTextLinesImpl, replaceTextLine as replaceTextLineImpl, TextEditHistory } from '../textEdits.js';
 import { renderPageStatic as renderPageStaticImpl } from '../debug.js';
@@ -1025,6 +1026,15 @@ export class ScribeDoc {
    */
   addFillText(n, item) {
     return addFillTextImpl(this, n, item);
+  }
+
+  /**
+   * Detect fillable areas (checkboxes, blank lines) on page n from the document's own content.
+   * @param {Parameters<typeof detectFillTargetsImpl>[1]} n
+   * @returns {ReturnType<typeof detectFillTargetsImpl>}
+   */
+  detectFillTargets(n) {
+    return detectFillTargetsImpl(this, n);
   }
 
   /**

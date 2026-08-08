@@ -1,5 +1,10 @@
 import { extractPdfAnnotations } from '../../pdf/parsePdfAnnots.js';
 import { layoutFieldValue } from '../../pdf/formFieldLayout.js';
+import { applyStandardFontWidths } from '../../pdf/fonts/standardFontMetrics.js';
+
+// Helvetica AFM advances (1000-em units) for centering comb characters in their cells, matching the viewer cover's per-cell text-align: center.
+const helvWidths = new Map();
+const helvDefaultWidth = applyStandardFontWidths('Helvetica', helvWidths) ?? 500;
 
 /**
  * Skips one PDF value starting at `j` and returns the index just past it.
@@ -197,9 +202,19 @@ export function buildFormFieldUpdates({
       const colorOps = tfEnd >= 0 ? raw.da.slice(tfEnd + 2).trim() : '0 g';
       const esc = (s) => s.replace(/[\\()]/g, (ch) => `\\${ch}`);
       let textCommands = '';
+      const combN = row.comb ? (row.maxLen ?? raw.maxLen) : null;
       for (const ll of layout.lines) {
-        if (row.comb) {
-          for (const wd of ll.words) textCommands += `1 0 0 1 ${wd.x0.toFixed(2)} ${ll.y.toFixed(2)} Tm (${esc(wd.text)}) Tj `;
+        if (combN > 0) {
+          // One glyph per cell, advance-centered like the viewer cover's text-align: center.
+          const cellW = rectW / combN;
+          for (const wd of ll.words) {
+            const start = Math.round(wd.x0 / cellW);
+            for (let i = 0; i < wd.text.length; i++) {
+              const chW = layout.fontSize * ((helvWidths.get(wd.text.charCodeAt(i)) ?? helvDefaultWidth) / 1000);
+              const x = (start + i) * cellW + (cellW - chW) / 2;
+              textCommands += `1 0 0 1 ${x.toFixed(2)} ${ll.y.toFixed(2)} Tm (${esc(wd.text[i])}) Tj `;
+            }
+          }
         } else {
           textCommands += `1 0 0 1 ${ll.x.toFixed(2)} ${ll.y.toFixed(2)} Tm (${esc(ll.text)}) Tj `;
         }

@@ -1,4 +1,5 @@
 import { scribeDocDefaults } from './containers/scribeDocDefaults.js';
+import { setPageFillShapes } from './fillSign.js';
 import { loadBuiltInFontsRaw, loadChiSimFont } from './fontContainerMain.js';
 import { addCircularRefsDataTables } from './objects/layoutObjects.js';
 import { determinePdfType, applyDocParagraphLayout } from './pdf/parsePdfDoc.js';
@@ -87,6 +88,13 @@ export async function extractInternalPDFText(doc, options = {}) {
   // An edited session carries updated entries a fresh parse cannot know about, so the restored ones win.
   for (let i = 0; i < pageCount; i++) {
     doc.nativeText.pages[i] = { ...(pageResults[i].nativeText || {}), ...(doc.nativeText.pages[i] || {}) };
+    setPageFillShapes(doc.ocr.pdf[i], {
+      squares: pageResults[i].fillSquares,
+      marks: pageResults[i].fillMarks,
+      marksOverflow: pageResults[i].fillMarksOverflow,
+      images: pageResults[i].fillImages,
+      glyphBoxes: pageResults[i].fillGlyphBoxes,
+    });
   }
 
   // Overwrites the per-page assignParagraphs result the workers assigned: no worker sees the whole document.

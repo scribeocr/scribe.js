@@ -21,6 +21,7 @@ import {
   scrubPageDictText, scrubReferencedObject, catalogKeepEntries, defaultScrubOpts,
 } from '../../pdf/metadata/scrubMetadata.js';
 import { extractImages } from '../../pdf/parsePdfImages.js';
+import { extractPdfAnnotations } from '../../pdf/parsePdfAnnots.js';
 import {
   traceReferencedObjects,
   buildFullXrefAndTrailer,
@@ -316,6 +317,8 @@ function replacePageResources(pageObjText, newResourcesDictText) {
  * @param {?Object<string, ?string>} [params.docInfo=null] - Document information entries overriding the source's; a null value drops that key.
  * @param {?ReturnType<typeof import('./writePdfFormFields.js').buildFormFieldUpdates>} [params.formFieldUpdates=null]
  *    Replacement widget objects carrying edited form-field values, plus the catalog /AcroForm entry to synthesize when the source has none.
+ * @param {boolean} [params.flattenFormFields=false] - Paint each visible widget's current appearance into page content,
+ *    drop the widget annotations, and omit /AcroForm from the rebuilt catalog.
  */
 export async function rebuildPdfSubset({
   pdfBytes, text, objCache, xrefEntries, pages,
@@ -339,6 +342,7 @@ export async function rebuildPdfSubset({
   editFontObjects = null,
   docInfo = null,
   formFieldUpdates = null,
+  flattenFormFields = false,
 }) {
   const overlayEnabled = !!(ocrArr && pageMetricsArr && pdfFonts);
   let nextObjNum = startingNextObjNum;
@@ -350,6 +354,9 @@ export async function rebuildPdfSubset({
   }
   if (textEditByPage.size > 0 && !overlayEnabled) {
     throw new Error('Cannot apply text edits: rebuild was invoked without page overlay data.');
+  }
+  if (flattenFormFields && !overlayEnabled) {
+    throw new Error('Cannot flatten form fields: rebuild was invoked without page overlay data.');
   }
 
   let scrubState = null;
@@ -452,6 +459,12 @@ export async function rebuildPdfSubset({
   /** @type {Map<number, string>} */
   const redactTraceTexts = new Map();
 
+  // Appearance streams the flatten bake references, so synthesized ones still ship when the widgets that owned them do not.
+  /** @type {Set<number>} */
+  const bakedApObjNums = new Set();
+  /** @type {Set<number>} */
+  const patchSubtypeApObjNums = new Set();
+
   // Generate overlay content for each kept page that has OCR data (only if overlay enabled)
   if (overlayEnabled) {
     for (const i of pageIndices) {
@@ -514,6 +527,74 @@ export async function rebuildPdfSubset({
         }
       }
 
+      // Flattening bakes each visible widget's current normal appearance into page content at its /Rect, so the printed look survives while the interactive field is removed below.
+      /** @type {?{ops: string, xobjRefs: Map<string, number>, dropObjNums: Set<number>}} */
+      let widgetBake = null;
+      if (flattenFormFields) {
+        const { widgets } = extractPdfAnnotations(objCache, pageInfo.objText);
+        if (widgets.length > 0) {
+          const xobjRefs = new Map();
+          const dropObjNums = new Set();
+          const redactRects = redactByPage.get(i) || null;
+          const fmtN = (v) => String(Math.round(v * 10000) / 10000);
+          let ops = '';
+          for (const w of widgets) {
+            dropObjNums.add(w.objNum);
+            // Hidden / NoView widgets are removed without painting, matching how they display.
+            if (w.flags & 2 || w.flags & 32) continue;
+            let apNum = w.apRef;
+            const repl = formFieldUpdates?.replacements.get(w.objNum);
+            if (repl) {
+              if (w.ft === 'Btn') {
+                const asM = /\/AS\s*\/([^\s/<>[\]()]+)/.exec(repl);
+                const state = asM ? asM[1].replace(/#([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16))) : null;
+                apNum = state != null && w.apStates && w.apStates[state] != null ? w.apStates[state] : null;
+              } else {
+                const apM = /\/AP\s*<<\s*\/N\s+(\d+)\s+\d+\s+R\s*>>/.exec(repl);
+                if (apM) {
+                  apNum = Number(apM[1]);
+                } else if (typeof warningHandler === 'function') {
+                  warningHandler(`The value of form field "${w.name}" cannot be drawn by the appearance synthesizer, so the flattened page keeps the field's previous appearance.`);
+                }
+              }
+            }
+            if (apNum == null) continue;
+            const rx0 = Math.min(w.rect[0], w.rect[2]);
+            const ry0 = Math.min(w.rect[1], w.rect[3]);
+            const rx1 = Math.max(w.rect[0], w.rect[2]);
+            const ry1 = Math.max(w.rect[1], w.rect[3]);
+            // A widget under a redaction rect is removed without baking, since its appearance can carry redacted content.
+            if (redactRects && redactRects.some((r) => rx0 < r[2] && rx1 > r[0] && ry0 < r[3] && ry1 > r[1])) continue;
+            let apText = objCache.getObjectText(apNum);
+            // A synthesized appearance lives in formFieldUpdates.newObjects rather than the source file.
+            if (!apText) apText = formFieldUpdates?.newObjects.find((o) => o.objNum === apNum && typeof o.content === 'string')?.content ?? null;
+            if (!apText) continue;
+            const bboxM = /\/BBox\s*\[([^\]]*)\]/.exec(apText);
+            const bbox = bboxM ? bboxM[1].trim().split(/\s+/).map(Number) : null;
+            if (!bbox || bbox.length < 4 || bbox.some(Number.isNaN)) continue;
+            const matrixM = /\/Matrix\s*\[([^\]]*)\]/.exec(apText);
+            const mtx = matrixM ? matrixM[1].trim().split(/\s+/).map(Number) : [1, 0, 0, 1, 0, 0];
+            // PDF 32000-1:2008 12.5.5: the appearance's /BBox transformed by its /Matrix is fitted to the widget's /Rect.
+            let tbx0 = Infinity; let tby0 = Infinity; let tbx1 = -Infinity; let tby1 = -Infinity;
+            for (const [x, y] of [[bbox[0], bbox[1]], [bbox[2], bbox[1]], [bbox[0], bbox[3]], [bbox[2], bbox[3]]]) {
+              const txp = mtx[0] * x + mtx[2] * y + mtx[4];
+              const typ = mtx[1] * x + mtx[3] * y + mtx[5];
+              tbx0 = Math.min(tbx0, txp); tby0 = Math.min(tby0, typ);
+              tbx1 = Math.max(tbx1, txp); tby1 = Math.max(tby1, typ);
+            }
+            const sx = tbx1 - tbx0 > 1e-6 ? (rx1 - rx0) / (tbx1 - tbx0) : 1;
+            const sy = tby1 - tby0 > 1e-6 ? (ry1 - ry0) / (tby1 - tby0) : 1;
+            const tag = `WgtAP${apNum}`;
+            xobjRefs.set(tag, apNum);
+            bakedApObjNums.add(apNum);
+            if (!/\/Subtype\s*\/Form\b/.test(apText)) patchSubtypeApObjNums.add(apNum);
+            ops += `q ${fmtN(sx)} 0 0 ${fmtN(sy)} ${fmtN(rx0 - tbx0 * sx)} ${fmtN(ry0 - tby0 * sy)} cm /${tag} Do Q\n`;
+          }
+          widgetBake = { ops, xobjRefs, dropObjNums };
+        }
+      }
+      const hasWidgetBake = !!widgetBake;
+
       const hasText = textContentObjStr && textContentObjStr.length > 0;
       // Redact marks, ink/stamp items, and fill-text freetext rows reach the output as page content rather than annotations, so they must not count here.
       const hasAnnots = pageAnnotations.some((a) => a.type !== 'redact' && a.type !== 'ink' && a.type !== 'stamp'
@@ -523,7 +604,7 @@ export async function rebuildPdfSubset({
       const hasConvert = convertBrokenType3ToPaths || fullPageSet.has(i) || regionsByPage.has(i);
       const hasRedact = redactByPage.has(i);
       const hasTextEdits = textEditByPage.has(i) || !!textEditInsertsByPage?.has(i);
-      if (!hasText && !hasAnnots && !hasConvert && !hasRedact && !hasTextEdits && !hasFill) continue;
+      if (!hasText && !hasAnnots && !hasConvert && !hasRedact && !hasTextEdits && !hasFill && !hasWidgetBake) continue;
 
       /** @type {string[]|null} */
       let newContentsArray = null;
@@ -532,7 +613,7 @@ export async function rebuildPdfSubset({
       /** @type {?string} */
       let pageResourcesTraceStr = null;
 
-      if (hasText || hasConvert || hasRedact || hasTextEdits || hasFill) {
+      if (hasText || hasConvert || hasRedact || hasTextEdits || hasFill || hasWidgetBake) {
         for (const font of pageFontsUsed) pdfFontsUsed.add(font);
 
         const existingContentsRefs = parseExistingContents(pageInfo.objText, objCache);
@@ -555,7 +636,7 @@ export async function rebuildPdfSubset({
         // leave it for the copy-through loop rather than rewrite it.
         const convertChanged = stripConvertResult.refs !== existingContentsRefs
           || stripConvertResult.xobjEntries.size > 0;
-        if (!hasText && !hasAnnots && !convertChanged && !hasRedact && !hasFill) continue;
+        if (!hasText && !hasAnnots && !convertChanged && !hasRedact && !hasFill && !hasWidgetBake) continue;
 
         if (hasText || hasFill) {
           const qSaveStr = 'q\n';
@@ -585,19 +666,37 @@ export async function rebuildPdfSubset({
           newContentsArray = [...stripConvertResult.refs];
         }
 
+        // Whether the streams so far leave the graphics state at the page default.
+        // The overlay sandwich ends at base, while raw source refs can leave dangling saves.
+        let contentAtBaseState = !!(hasText || hasFill);
+
+        if (widgetBake && widgetBake.ops) {
+          if (!contentAtBaseState) {
+            const qSaveStr = 'q\n';
+            const qSaveObjNum = nextObjNum++;
+            allOutputObjects.push({ objNum: qSaveObjNum, content: `${qSaveObjNum} 0 obj\n<</Length ${qSaveStr.length}>>\nstream\n${qSaveStr}endstream\nendobj\n\n` });
+            newContentsArray.unshift(`${qSaveObjNum} 0 R`);
+          }
+          const bakeStr = `${contentAtBaseState ? 'q\n' : 'Q\nq\n'}${widgetBake.ops}Q\n`;
+          const bakeObjNum = nextObjNum++;
+          allOutputObjects.push({ objNum: bakeObjNum, content: await encodeStreamObject(bakeObjNum, bakeStr, { humanReadable }) });
+          newContentsArray.push(`${bakeObjNum} 0 R`);
+          contentAtBaseState = true;
+        }
+
         // Paint the redaction boxes as the LAST content stream so they cover everything.
         // The content itself is removed from the streams above; the box is the visible marking.
         // Without an overlay text stream there is no balancing q/Q pair around the original content,
         // so the box stream leads with a Q against a fresh q prepended here, the same neutralization the overlay uses for its own text.
         if (hasRedact) {
-          if (!hasText && !hasFill) {
+          if (!contentAtBaseState) {
             const qSaveStr = 'q\n';
             const qSaveObjNum = nextObjNum++;
             allOutputObjects.push({ objNum: qSaveObjNum, content: `${qSaveObjNum} 0 obj\n<</Length ${qSaveStr.length}>>\nstream\n${qSaveStr}endstream\nendobj\n\n` });
             newContentsArray.unshift(`${qSaveObjNum} 0 R`);
           }
           const fmtN = (v) => String(Math.round(v * 10000) / 10000);
-          let boxStr = (hasText || hasFill) ? 'q\n0 g\n' : 'Q\nq\n0 g\n';
+          let boxStr = contentAtBaseState ? 'q\n0 g\n' : 'Q\nq\n0 g\n';
           for (const [bx0, by0, bx1, by1] of redactByPage.get(i)) {
             boxStr += `${fmtN(bx0)} ${fmtN(by0)} ${fmtN(bx1 - bx0)} ${fmtN(by1 - by0)} re f\n`;
           }
@@ -638,6 +737,9 @@ export async function rebuildPdfSubset({
           }
         }
         if (fillResult) overlayXObjectsStr += fillResult.xobjEntriesStr;
+        if (widgetBake) {
+          for (const [tag, objN] of widgetBake.xobjRefs) overlayXObjectsStr += `/${tag} ${objN} 0 R\n`;
+        }
         const overlayExtGStateStr = (hasText ? `/GSO0 <</ca 0.0>>/GSO1 <</ca ${proofOpacity}>>` : '')
           + (fillTextObjStr ? '/GSF <</ca 1 /CA 1>>' : '');
         const mergedResourcesStr = mergeResources(existingResourcesStr, overlayFontsStr, overlayExtGStateStr, objCache, overlayXObjectsStr);
@@ -679,12 +781,14 @@ export async function rebuildPdfSubset({
       }
 
       const newPageObj = buildReplacementPageDict(pageInfo.objNum, pageInfo.objText, newContentsArray, resourcesObjNum, pagesRootObjNum,
-        extraAnnotRefs, objCache, keptPageObjNums, pageMetricsArr[i].rotation || 0, redactByPage.get(i) || null, linkDestInfo);
+        extraAnnotRefs, objCache, keptPageObjNums, pageMetricsArr[i].rotation || 0, redactByPage.get(i) || null, linkDestInfo,
+        widgetBake ? widgetBake.dropObjNums : null);
       allOutputObjects.push({ objNum: pageInfo.objNum, content: newPageObj });
       modifiedPageObjNums.add(pageInfo.objNum);
 
       // The rebuilt resources text rides along because the trace resolves refs only against the original file and would otherwise never reach the original fonts/xobjects the page still needs.
-      if (hasRedact || hasTextEdits) {
+      // Flattened pages trace their replacement dict too, so the dropped widget and field objects orphan instead of being copied.
+      if (hasRedact || hasTextEdits || hasWidgetBake) {
         redactTraceTexts.set(pageInfo.objNum, pageResourcesTraceStr ? `${newPageObj}\n${pageResourcesTraceStr}` : newPageObj);
       }
     }
@@ -707,6 +811,23 @@ export async function rebuildPdfSubset({
       }
     }
     if (editFontObjects) for (const o of editFontObjects) allOutputObjects.push(o);
+  }
+
+  // An appearance stream may omit /Subtype, which readers tolerate for an annotation appearance but not for a page-content XObject.
+  // Such streams ship as patched copies under their original numbers.
+  for (const apNum of patchSubtypeApObjNums) {
+    const entry = xrefEntries[apNum];
+    if (!entry || entry.type !== 1) continue;
+    const raw = copyRawObjectBytes(pdfBytes, text, objCache, entry, apNum);
+    if (!raw) continue;
+    const dictStart = bytesToLatin1(raw).indexOf('<<');
+    if (dictStart === -1) continue;
+    const insert = '/Subtype/Form';
+    const patched = new Uint8Array(raw.length + insert.length);
+    patched.set(raw.subarray(0, dictStart + 2), 0);
+    for (let ci = 0; ci < insert.length; ci++) patched[dictStart + 2 + ci] = insert.charCodeAt(ci);
+    patched.set(raw.subarray(dictStart + 2), dictStart + 2 + insert.length);
+    allOutputObjects.push({ objNum: apNum, content: patched });
   }
 
   /** @type {Map<number, string>} */
@@ -770,7 +891,7 @@ export async function rebuildPdfSubset({
   }
 
   let acroFormEntry = '';
-  if (catText && !scrub) {
+  if (catText && !scrub && !flattenFormFields) {
     const acroRefM = /\/AcroForm\s+(\d+)\s+(\d+)\s+R/.exec(catText);
     if (acroRefM) {
       acroFormEntry = `/AcroForm ${acroRefM[1]} ${acroRefM[2]} R`;
@@ -783,11 +904,14 @@ export async function rebuildPdfSubset({
       }
     }
   }
-  if (!acroFormEntry && formFieldUpdates?.catalogInsertRef) acroFormEntry = formFieldUpdates.catalogInsertRef.trim();
+  if (!acroFormEntry && !flattenFormFields && formFieldUpdates?.catalogInsertRef) acroFormEntry = formFieldUpdates.catalogInsertRef.trim();
   // Replacements reuse the source object numbers, so the dedupe below drops the unedited originals from the verbatim-copy set.
-  if (formFieldUpdates) {
+  // A flatten ships neither, keeping only the appearance streams its bake references.
+  if (formFieldUpdates && !flattenFormFields) {
     for (const [objNum, content] of formFieldUpdates.replacements) allOutputObjects.push({ objNum, content });
     for (const o of formFieldUpdates.newObjects) allOutputObjects.push(o);
+  } else if (formFieldUpdates) {
+    for (const o of formFieldUpdates.newObjects) if (bakedApObjNums.has(o.objNum)) allOutputObjects.push(o);
   }
 
   // When scrubbing, scrubPageDictText strips the scrub's drop-keys from the text the BFS scans,

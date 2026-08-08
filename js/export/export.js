@@ -66,6 +66,9 @@ import { _buildPngDataUrl } from '../pdf/renderPdfPage.js';
  *    Covers Info/XMP/PieceInfo, embedded files, image EXIF, actions, prior revisions, and signatures.
  *    Only applies to the PDF-overlay export path (PDF input with addOverlay).
  * @property {object} [scrubOpts] - Overrides the Balanced scrub defaults when `sanitize` is set (`stripStructTree`, `stripPageLabels`, `stripViewerPrefs`, `dropOCProperties`).
+ * @property {boolean} [flattenFormFields] - Bake each form field's current appearance (including values set via `setFormValue`) into the page content
+ *    and remove the interactive fields, so the export is no longer fillable.
+ *    Only applies to the PDF-overlay export path (PDF input with addOverlay); other PDF paths already write no interactive fields.
  * @property {?Object<string, ?string>} [docInfo] - Document information entries (`Title`, `Author`, `Creator`, ...) written into the exported PDF.
  *    Entries the input already carries are preserved; these override same-named ones, and a null value removes a key.
  *    Ignored when `sanitize` is set, which removes document metadata outright.
@@ -540,6 +543,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
             outline: outlineForOutput,
             scrub,
             docInfo,
+            flattenFormFields: options.flattenFormFields ?? false,
           });
         } catch (error) {
           // Never fall back to rasterizing PDF input: it bakes vector/text pages into images and destroys searchable text.

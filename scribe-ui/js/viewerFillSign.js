@@ -165,6 +165,91 @@ const itemElems = new WeakMap();
  */
 const ghostByViewer = new WeakMap();
 
+// Detected fillable areas: printed blanks and empty checkboxes offered as click-to-fill spots while the Fill & Sign palette is open.
+
+/**
+ * Detected-target cache per viewer, page to target list.
+ * Caching for the whole palette session is safe because Fill & Sign is mode-exclusive with text editing, so page text cannot change underneath it.
+ * @type {WeakMap<object, Map<number, Array<Object>>>}
+ */
+const fdTargetsByViewer = new WeakMap();
+
+/**
+ * The one hover/snap overlay per viewer, registered like the ghost so item re-renders restore it.
+ * @type {WeakMap<object, {el: HTMLDivElement, n: number}>}
+ */
+const fdOverlayByViewer = new WeakMap();
+
+/** Detected fill targets for a page, computed on first use. */
+function fdTargets(viewer, n) {
+  let byPage = fdTargetsByViewer.get(viewer);
+  if (!byPage) {
+    byPage = new Map();
+    fdTargetsByViewer.set(viewer, byPage);
+    // An import may still be extracting text, and pages hovered before their text lands cache as empty.
+    // Dropping the cache once extraction settles lets later hovers recompute.
+    viewer.doc?.textReady?.then?.(() => fdTargetsByViewer.delete(viewer));
+  }
+  if (!byPage.has(n)) byPage.set(n, viewer.doc?.detectFillTargets?.(n) || []);
+  return byPage.get(n);
+}
+
+const FD_OCCUPYING = new Set(['ink', 'stamp', 'freetext', 'field']);
+
+/**
+ * Whether a detected target is covered by a placed fill item or a live form field, whose own interactions must win there.
+ */
+function fdSuppressed(viewer, n, t) {
+  for (const row of viewer.doc.annotations.pages[n] || []) {
+    const b = row.bbox;
+    if (b && FD_OCCUPYING.has(row.type)
+      && b.left < t.bbox.right && t.bbox.left < b.right && b.top < t.bbox.bottom && t.bbox.top < b.bottom) return true;
+  }
+  return false;
+}
+
+/**
+ * The unsuppressed detected target at page point (x, y), or null.
+ * Checkboxes get a generous pad, since a 9 pt box is a tiny pointer target at page zoom.
+ */
+function fdHitTarget(viewer, n, x, y) {
+  const r = pxPerPt(viewer, n);
+  for (const t of fdTargets(viewer, n)) {
+    const pad = (t.kind === 'checkbox' ? 3 : 1) * r;
+    if (x < t.bbox.left - pad || x > t.bbox.right + pad || y < t.bbox.top - pad || y > t.bbox.bottom + pad) continue;
+    if (fdSuppressed(viewer, n, t)) continue;
+    return t;
+  }
+  return null;
+}
+
+/**
+ * Show the detected-spot overlay at a target bbox, or hide it when `spec` is null.
+ * The overlay is a hover wash, or the armed ghost's landing ring when `spec.snap`.
+ */
+function setFdOverlay(viewer, spec) {
+  let reg = fdOverlayByViewer.get(viewer);
+  if (!spec) {
+    if (reg) {
+      reg.el.remove();
+      reg.n = -1;
+    }
+    return;
+  }
+  if (!reg) {
+    reg = { el: document.createElement('div'), n: -1 };
+    fdOverlayByViewer.set(viewer, reg);
+  }
+  reg.el.className = spec.snap ? 'scribe-fd-snap' : 'scribe-fd-target';
+  reg.el.style.left = `${spec.bbox.left}px`;
+  reg.el.style.top = `${spec.bbox.top}px`;
+  reg.el.style.width = `${spec.bbox.right - spec.bbox.left}px`;
+  reg.el.style.height = `${spec.bbox.bottom - spec.bbox.top}px`;
+  reg.n = spec.n;
+  const group = viewer.getItemsGroup(spec.n);
+  if (group && reg.el.parentNode !== group) group.appendChild(reg.el);
+}
+
 /**
  * The placed fill & sign item (ink, stamp, or typed text) whose rendered element contains `target`, or null.
  * @param {?EventTarget} target
@@ -493,6 +578,8 @@ export function renderPageFillItems(viewer, n) {
 
   const ghost = ghostByViewer.get(viewer);
   if (ghost && ghost.n === n) group.appendChild(ghost.el);
+  const fdOv = fdOverlayByViewer.get(viewer);
+  if (fdOv && fdOv.n === n) group.appendChild(fdOv.el);
 }
 
 /**
@@ -827,11 +914,40 @@ export function createFillSignPalette(app) {
     refreshItems(viewer, n);
   };
 
+  // The armed check/cross ghost's current snap onto a detected checkbox, or null when free.
+  /** @type {?{n: number, left: number, top: number, side: number, bbox: Object}} */
+  let snapState = null;
+
   // While armed, the press is handled in the capture phase and stopped there, so text selection never sees it.
   const onScrollPress = (e) => {
     if (e.button !== 0) return;
     if (e.target instanceof Element && (pal.contains(e.target))) return;
-    if (!armed) return;
+    if (!armed) {
+      // An unarmed click directly on a detected spot fills it: a check fitted to the box, or the text editor opened on the blank line.
+      // Clicks anywhere else keep their meaning, and clicks on existing items or live fields stay theirs.
+      if (e.target instanceof Element && e.target.closest('.scribe-item, .scribe-field')) return;
+      const pt = viewer.clientToPage(e.clientX, e.clientY);
+      if (pt == null || pt.n == null || pt.n < 0) return;
+      const hit = fdHitTarget(viewer, pt.n, pt.x, pt.y);
+      if (!hit) return;
+      e.preventDefault();
+      e.stopPropagation();
+      setFdOverlay(viewer, null);
+      if (hit.kind === 'checkbox') {
+        const side = Math.min(hit.bbox.right - hit.bbox.left, hit.bbox.bottom - hit.bbox.top);
+        placeMarkInSquare(pt.n, 'cross', (hit.bbox.left + hit.bbox.right) / 2 - side / 2,
+          (hit.bbox.top + hit.bbox.bottom) / 2 - side / 2, side);
+      } else {
+        const r = pxPerPt(viewer, pt.n);
+        const fontSize = Math.min(FILL_TEXT_PT * r, hit.bbox.bottom - hit.bbox.top);
+        // Anchored so the text baseline sits just above the blank's drawn line, where handwriting would go.
+        const row = viewer.doc.addFillText(pt.n, {
+          x: hit.bbox.left + 0.5 * r, y: hit.bbox.bottom - fontSize * 0.93, contents: '', fontSize,
+        });
+        openFillTextEditor(viewer, pt.n, row);
+      }
+      return;
+    }
     const pt = viewer.clientToPage(e.clientX, e.clientY);
     if (pt == null || pt.n == null || pt.n < 0) return;
     e.preventDefault();
@@ -852,6 +968,10 @@ export function createFillSignPalette(app) {
       });
       disarm();
       openFillTextEditor(viewer, pt.n, row);
+    } else if (snapState && snapState.n === pt.n) {
+      // The snapped ghost places into the detected box exactly.
+      // Check/cross placement stays armed: forms need many of them.
+      placeMarkInSquare(pt.n, armed.kind, snapState.left, snapState.top, snapState.side);
     } else {
       // Check/cross placement stays armed: forms need many of them.
       const box = CHECK_BOX_PT * r;
@@ -860,18 +980,68 @@ export function createFillSignPalette(app) {
   };
 
   const onScrollMove = (e) => {
-    if (!armed || !ghostElem) return;
     const pt = viewer.clientToPage(e.clientX, e.clientY);
     const onPage = pt != null && pt.n != null && pt.n >= 0;
+    if (!armed) {
+      // Hovering a detected spot reveals just that spot, so the page otherwise looks untouched.
+      const hit = onPage ? fdHitTarget(viewer, pt.n, pt.x, pt.y) : null;
+      setFdOverlay(viewer, hit ? { n: pt.n, bbox: hit.bbox } : null);
+      if (viewer.textSel) {
+        const want = hit ? (hit.kind === 'checkbox' ? 'pointer' : 'text') : null;
+        if (want) viewer.textSel.cursorOverride = want;
+        else if (viewer.textSel.cursorOverride === 'pointer' || viewer.textSel.cursorOverride === 'text') {
+          viewer.textSel.cursorOverride = null;
+        }
+      }
+      return;
+    }
+    if (!ghostElem) return;
     const group = onPage ? viewer.getItemsGroup(pt.n) : null;
     if (!group) {
       ghostElem.remove();
       if (ghostReg) ghostReg.n = -1;
+      snapState = null;
+      setFdOverlay(viewer, null);
       return;
     }
     if (ghostElem.parentNode !== group) group.appendChild(ghostElem);
     if (ghostReg) ghostReg.n = pt.n;
     const r = pxPerPt(viewer, pt.n);
+    // Within reach of a detected checkbox, the check/cross ghost adopts the box's exact position and size, and the box shows the snap ring.
+    snapState = null;
+    if (armed.kind === 'check' || armed.kind === 'cross') {
+      let best = null;
+      let bestD = Infinity;
+      for (const t of fdTargets(viewer, pt.n)) {
+        if (t.kind !== 'checkbox' || fdSuppressed(viewer, pt.n, t)) continue;
+        const tw = t.bbox.right - t.bbox.left;
+        const th = t.bbox.bottom - t.bbox.top;
+        const d = Math.hypot(pt.x - (t.bbox.left + tw / 2), pt.y - (t.bbox.top + th / 2));
+        if (d <= 1.5 * Math.max(tw, th) && d < bestD) {
+          bestD = d;
+          best = t;
+        }
+      }
+      if (best) {
+        const side = Math.min(best.bbox.right - best.bbox.left, best.bbox.bottom - best.bbox.top);
+        snapState = {
+          n: pt.n,
+          left: (best.bbox.left + best.bbox.right) / 2 - side / 2,
+          top: (best.bbox.top + best.bbox.bottom) / 2 - side / 2,
+          side,
+          bbox: best.bbox,
+        };
+      }
+    }
+    if (snapState) {
+      ghostElem.style.width = `${snapState.side}px`;
+      ghostElem.style.height = `${snapState.side}px`;
+      ghostElem.style.left = `${snapState.left}px`;
+      ghostElem.style.top = `${snapState.top}px`;
+      setFdOverlay(viewer, { n: pt.n, bbox: snapState.bbox, snap: true });
+      return;
+    }
+    setFdOverlay(viewer, null);
     const w = ghostPtW * r;
     const h = ghostPtH * r;
     ghostElem.style.width = `${w}px`;
@@ -882,6 +1052,8 @@ export function createFillSignPalette(app) {
   const onScrollLeave = () => {
     ghostElem?.remove();
     if (ghostReg) ghostReg.n = -1;
+    snapState = null;
+    setFdOverlay(viewer, null);
   };
 
   const onKey = (e) => {
@@ -936,6 +1108,12 @@ export function createFillSignPalette(app) {
     closeMenu();
     closeFillTextEditor(viewer);
     deselectFillItem(viewer);
+    fdTargetsByViewer.delete(viewer);
+    setFdOverlay(viewer, null);
+    snapState = null;
+    if (viewer.textSel && (viewer.textSel.cursorOverride === 'pointer' || viewer.textSel.cursorOverride === 'text')) {
+      viewer.textSel.cursorOverride = null;
+    }
     document.removeEventListener('keydown', onKey, true);
     viewer.scrollContainer?.removeEventListener('pointerdown', onScrollPress, true);
     viewer.scrollContainer?.removeEventListener('pointermove', onScrollMove);

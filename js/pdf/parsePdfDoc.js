@@ -13,7 +13,7 @@ import { tokenizeContentStream } from './contentStream.js';
 import { layoutFieldValue } from './formFieldLayout.js';
 import { ObjectCache } from './objectCache.js';
 
-import { parsePageFonts } from './fonts/parsePdfFonts.js';
+import { parsePageFonts, glyphInkBox } from './fonts/parsePdfFonts.js';
 import { parsePagePaths } from './parsePdfPaths.js';
 import { detectTableRegions } from './detectPdfTables.js';
 import {
@@ -841,19 +841,73 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   };
   /** @type {Array<{left: number, right: number, y: number, color: number[], isUnderline?: boolean}>} */
   const underlineRects = [];
+  // Small squares drawn as paths are raw material for fillable-area detection, collected here because this loop already walks and rect-classifies every subpath.
+  // The context gates that separate a form checkbox from chart and table furniture live in the detector, not here.
+  /** @type {Array<{left: number, top: number, right: number, bottom: number, stroke: boolean}>} */
+  const fillSquares = [];
+  // Ink that can sit inside or over a checkbox, so detection can withhold boxes that are already marked.
+  // Thin long lines (rules, table borders) are excluded, since crossing a box is not marking it.
+  /** @type {Array<{left: number, top: number, right: number, bottom: number}>} */
+  const fillMarks = [];
+  // Overflowing the mark cap is itself a signal: a page with hundreds of ink marks is dense vector art, where a drawn square is furniture rather than a form checkbox.
+  let fillMarksOverflow = false;
+  const pushFillMark = (x0, y0, x1, y1) => {
+    const mw = x1 - x0;
+    const mh = y1 - y0;
+    if (!(mw > 0.2) || !(mh > 0.2) || mw > 50 || mh > 50) return;
+    if (Math.min(mw, mh) < 1.5 && Math.max(mw, mh) > 10) return;
+    if (fillMarks.length >= 500) {
+      fillMarksOverflow = true;
+      return;
+    }
+    fillMarks.push({
+      left: (x0 - boxOriginX) * scale,
+      top: (visualHeightPts - (y1 - boxOriginY)) * scale,
+      right: (x1 - boxOriginX) * scale,
+      bottom: (visualHeightPts - (y0 - boxOriginY)) * scale,
+    });
+  };
   for (const path of paths) {
     if (!path.fill && !path.stroke) continue;
     const lineColor = path.stroke ? path.strokeColor : path.fillColor;
+    const fc = path.fill ? path.fillColor : null;
+    // A dark or colored fill can never read as an empty checkbox; it is ink that can mark one.
+    // Value semantics differ by color space: gray/RGB are brightness (1 = white), while CMYK and named-space tints are coverage (1 = full ink).
+    // Lab-style triples carry lightness 0-100 in the first component.
+    let inkFill = false;
+    if (fc) {
+      const cs = path.fillColorSpace || '';
+      if (fc.length === 4) inkFill = Math.max(...fc) > 0.15;
+      else if (fc.length === 1) inkFill = cs === 'gray' ? fc[0] < 0.85 : fc[0] > 0.15;
+      else if (fc.length === 3) inkFill = fc.some((v) => v > 1.5) ? fc[0] < 85 : Math.min(...fc) < 0.85;
+    }
+    const drawsInk = !!path.stroke || inkFill;
     let minX = Infinity; let maxX = -Infinity;
     let minY = Infinity; let maxY = -Infinity;
     let hasCurve = false;
+    // Full extents (curve endpoints and controls included) for the ink-mark bbox.
+    // The thin-bar separator test below keeps its M/L-only extents.
+    let fMinX = Infinity; let fMaxX = -Infinity;
+    let fMinY = Infinity; let fMaxY = -Infinity;
     for (const cmd of path.commands) {
-      if (cmd.type === 'C') hasCurve = true;
+      if (cmd.type === 'C') {
+        hasCurve = true;
+        for (const [cx, cy] of [[cmd.x1, cmd.y1], [cmd.x2, cmd.y2], [cmd.x, cmd.y]]) {
+          if (cx < fMinX) fMinX = cx;
+          if (cx > fMaxX) fMaxX = cx;
+          if (cy < fMinY) fMinY = cy;
+          if (cy > fMaxY) fMaxY = cy;
+        }
+      }
       if (cmd.type === 'M' || cmd.type === 'L') {
         if (cmd.x < minX) minX = cmd.x;
         if (cmd.x > maxX) maxX = cmd.x;
         if (cmd.y < minY) minY = cmd.y;
         if (cmd.y > maxY) maxY = cmd.y;
+        if (cmd.x < fMinX) fMinX = cmd.x;
+        if (cmd.x > fMaxX) fMaxX = cmd.x;
+        if (cmd.y < fMinY) fMinY = cmd.y;
+        if (cmd.y > fMaxY) fMaxY = cmd.y;
       }
     }
     const w = maxX - minX;
@@ -870,7 +924,11 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
     // A drawn separator can pack several thin bars into one filled path (a decorative double rule) whose combined bbox is too tall to pass the test above.
     // Mine the subpaths for thin, wide bars, but only when the path is curve-free and every subpath is an axis-aligned rectangle.
     // A glyph, chart, or logo has curves or non-orthogonal edges, so this never pulls a thin sliver out of one.
-    if (hasCurve) continue;
+    if (hasCurve) {
+      // A curved painted path at mark size is a drawn check, dot, or ring.
+      if (drawsInk) pushFillMark(fMinX, fMinY, fMaxX, fMaxY);
+      continue;
+    }
     /** @type {Array<Array<[number, number]>>} */
     const subpaths = [];
     for (const cmd of path.commands) {
@@ -878,32 +936,76 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
       else if (cmd.type === 'L' && subpaths.length) subpaths[subpaths.length - 1].push([cmd.x, cmd.y]);
     }
     for (const pts of subpaths) {
-      if (pts.length < 4 || pts.length > 5) continue;
-      let rect = true;
       let sMinX = Infinity; let sMaxX = -Infinity; let sMinY = Infinity; let sMaxY = -Infinity;
-      for (let si = 0; si < pts.length; si++) {
-        const [x1, y1] = pts[si];
-        const [x2, y2] = pts[(si + 1) % pts.length];
-        if (Math.abs(x2 - x1) > 0.01 && Math.abs(y2 - y1) > 0.01) { rect = false; break; }
-        if (x1 < sMinX) sMinX = x1;
-        if (x1 > sMaxX) sMaxX = x1;
-        if (y1 < sMinY) sMinY = y1;
-        if (y1 > sMaxY) sMaxY = y1;
+      for (const [px, py] of pts) {
+        if (px < sMinX) sMinX = px;
+        if (px > sMaxX) sMaxX = px;
+        if (py < sMinY) sMinY = py;
+        if (py > sMaxY) sMaxY = py;
       }
-      if (!rect) continue;
-      if (sMaxY - sMinY < 2 && sMaxX - sMinX > 10) {
+      let rect = pts.length >= 4 && pts.length <= 5;
+      if (rect) {
+        for (let si = 0; si < pts.length; si++) {
+          const [x1, y1] = pts[si];
+          const [x2, y2] = pts[(si + 1) % pts.length];
+          if (Math.abs(x2 - x1) > 0.01 && Math.abs(y2 - y1) > 0.01) { rect = false; break; }
+        }
+      }
+      if (!rect) {
+        // Bare line and polyline subpaths are the check and X strokes themselves.
+        if (drawsInk) pushFillMark(sMinX, sMinY, sMaxX, sMaxY);
+        continue;
+      }
+      const sw = sMaxX - sMinX;
+      const sh = sMaxY - sMinY;
+      if (sh < 2 && sw > 10) {
         underlineRects.push({
           left: (sMinX - boxOriginX) * scale,
           right: (sMaxX - boxOriginX) * scale,
           y: (visualHeightPts - (sMaxY - boxOriginY)) * scale,
           color: lineColor,
         });
+      } else if (sw >= 5 && sw <= 24 && sh >= 5 && sh <= 24 && sw / sh > 0.7 && sw / sh < 1.43
+        && fillSquares.length < 200 && !inkFill) {
+        fillSquares.push({
+          left: (sMinX - boxOriginX) * scale,
+          top: (visualHeightPts - (sMaxY - boxOriginY)) * scale,
+          right: (sMaxX - boxOriginX) * scale,
+          bottom: (visualHeightPts - (sMinY - boxOriginY)) * scale,
+          stroke: !!path.stroke,
+        });
+      } else if (inkFill) {
+        // A colored filled rectangle can cover a stroked twin that did qualify as a candidate.
+        pushFillMark(sMinX, sMinY, sMaxX, sMaxY);
       }
     }
   }
+  // Producers draw one visible checkbox as a white-filled path plus a stroked path with identical geometry.
+  // Collapsing those pairs keeps one drawn box to one candidate.
+  const squaresByKey = new Map();
+  for (const sq of fillSquares) {
+    const key = `${Math.round(sq.left)},${Math.round(sq.top)},${Math.round(sq.right)},${Math.round(sq.bottom)}`;
+    const prev = squaresByKey.get(key);
+    if (prev) prev.stroke = prev.stroke || sq.stroke;
+    else squaresByKey.set(key, sq);
+  }
+  const fillSquaresDeduped = [...squaresByKey.values()];
+
+  // Image placements in the same page-pixel space, so detection can withhold a box whose interior is painted by a raster.
+  /** @type {Array<{left: number, top: number, right: number, bottom: number}>} */
+  const fillImages = [];
+  for (const p of mergedPlacements) {
+    if (fillImages.length >= 100) break;
+    fillImages.push({
+      left: (p.left - boxOriginX) * scale,
+      top: (visualHeightPts - (p.top - boxOriginY)) * scale,
+      right: (p.right - boxOriginX) * scale,
+      bottom: (visualHeightPts - (p.bottom - boxOriginY)) * scale,
+    });
+  }
 
   const {
-    pageObj, langSet, fontSet, wordSignals, nativeText, dataTablePage,
+    pageObj, langSet, fontSet, wordSignals, nativeText, dataTablePage, fillGlyphBoxes,
   } = groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects, paths, scale, visualHeightPts, boxOriginX, boxOriginY, pageHasMath);
 
   // Carry the page's thin horizontal rules (same scaled top-left space as line bboxes) onto the page so analyzeLayout can split paragraphs at a drawn separator rule.
@@ -1074,7 +1176,7 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   }
 
   return {
-    pageObj, langSet, fontSet, wordSignals, nativeText, dataTablePage, pageStats, annotations,
+    pageObj, langSet, fontSet, wordSignals, nativeText, dataTablePage, pageStats, annotations, fillSquares: fillSquaresDeduped, fillMarks, fillMarksOverflow, fillImages, fillGlyphBoxes,
   };
 }
 
@@ -1837,6 +1939,7 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
         skew: matrixShear,
         stretch: Math.abs(matrixStretch - 1) > 0.01 ? matrixStretch : 0,
         _font: font,
+        _charCode: charCode,
         invisible: tr === 3,
         orientation,
         dirX,
@@ -1875,10 +1978,13 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
   const wordSignals = new Map();
   /** @type {Record<string, NativeTextWord>} */
   const nativeText = {};
+  // Drawn extents of lone symbol glyphs, so the fill detector can offer the box a reader sees rather than the font's em box.
+  /** @type {Array<{id: string, bbox: {left: number, top: number, right: number, bottom: number}}>} */
+  const fillGlyphBoxes = [];
 
   if (chars.length === 0) {
     return {
-      pageObj, langSet, fontSet, wordSignals, nativeText, dataTablePage: new LayoutDataTablePage(n),
+      pageObj, langSet, fontSet, wordSignals, nativeText, dataTablePage: new LayoutDataTablePage(n), fillGlyphBoxes,
     };
   }
 
@@ -2940,6 +3046,25 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
       };
 
       const wordID = `word_${n + 1}_${pageObj.lines.length + 1}_${wi + 1}`;
+
+      // Where a lone symbol glyph is actually drawn, for the fill detector's checkbox arm.
+      // The bbox above is the descriptor's em box, which for symbol fonts describes the Latin face they were cut from, so a checkbox glyph's square can sit a quarter of its height below it.
+      // Latin codepoints are skipped because no box glyph is one, and measuring every "a" and "1" would mean parsing outlines for every text font in the document.
+      if (wordChars.length === 1 && !wordChars[0].orientation && wordText.codePointAt(0) > 0xFF) {
+        const glyphChar = wordChars[0];
+        const ink = glyphChar._font ? glyphInkBox(glyphChar._font, glyphChar._charCode) : null;
+        if (ink) {
+          fillGlyphBoxes.push({
+            id: wordID,
+            bbox: {
+              left: Math.round(glyphChar.x + ink.left * glyphChar.fontSize),
+              top: Math.round(glyphChar.y - ink.yMax * glyphChar.fontSize),
+              right: Math.round(glyphChar.x + ink.right * glyphChar.fontSize),
+              bottom: Math.round(glyphChar.y - ink.yMin * glyphChar.fontSize),
+            },
+          });
+        }
+      }
       const wordObj = new ocr.OcrWord(lineObj, wordID, wordText, wordBbox);
       wordObj.conf = 100;
       wordObj.visualCoords = false;
@@ -3157,6 +3282,6 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
   }
 
   return {
-    pageObj, langSet, fontSet, wordSignals, nativeText, dataTablePage,
+    pageObj, langSet, fontSet, wordSignals, nativeText, dataTablePage, fillGlyphBoxes,
   };
 }

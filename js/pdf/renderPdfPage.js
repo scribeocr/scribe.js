@@ -25,7 +25,7 @@ import { pageRectToContentRect, glyphEmBoxHitsRects, TEXT_EDIT_GLYPH_SIZE_CAP } 
 /** @typedef {import('./parseDrawOps.js').ClipEntry} ClipEntry */
 import { inflate as pakoInflate, inflatePartial as pakoInflatePartial } from '../../lib/pako-inflate.js';
 import { parsePageFonts, parseGlyphStreamPaths } from './fonts/parsePdfFonts.js';
-import { standardFontToCSS } from './fonts/standardFontMetrics.js';
+import { standardFontToCSS, applyStandardFontWidths } from './fonts/standardFontMetrics.js';
 import {
   base14ToBundledFont, cssFamilyToBundledFont, genericToBundledFont, cssGenericForFontObj,
 } from './fonts/base14Substitution.js';
@@ -36,6 +36,10 @@ import {
   rebuildFontFromGlyphs, buildFontFromCFF, convertType1ToOTFNew,
 } from './fonts/convertFontToOTF.js';
 import { ca } from '../canvasAdapter.js';
+
+// Helvetica AFM advances (1000-em units) for centering synthesized comb-field characters in their cells, matching the exported appearance and the viewer cover.
+const combHelvWidths = new Map();
+const combHelvDefaultWidth = applyStandardFontWidths('Helvetica', combHelvWidths) ?? 500;
 
 /**
  * Linearly interpolate an RGB value from a tint transform sample table.
@@ -5535,7 +5539,12 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             const tfEnd = da.lastIndexOf('Tf');
             const colorOps = tfEnd >= 0 ? da.slice(tfEnd + 2).trim() : '0 g';
             const quadding = resolveIntValue(annotText, 'Q', objCache, 0);
-            const multiline = (resolveIntValue(annotText, 'Ff', objCache, 0) & 0x1000) !== 0;
+            const synthFf = resolveIntValue(annotText, 'Ff', objCache, 0);
+            const multiline = (synthFf & 0x1000) !== 0;
+            // Comb (Ff bit 25) with /MaxLen draws one character per cell.
+            // Read like the importer's gate: Tx only, no /Parent walk, matching the Ff read above.
+            const combMaxLen = resolvedFieldType === 'Tx' && !multiline && (synthFf & 0x1000000)
+              ? resolveIntValue(annotText, 'MaxLen', objCache, 0) : 0;
             const pad = 2;
             // Escape the value for re-emission inside a content-stream literal string.
             const esc = (s) => s.replace(/[\\()]/g, (ch) => `\\${ch}`);
@@ -5566,6 +5575,18 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
                 textCommands += ` (${esc(lines[li])}) Tj`;
                 ty -= leading;
               }
+            } else if (combMaxLen > 0) {
+              // One glyph per comb cell, advance-centered like the exported appearance.
+              // Comb layout is left-packed by character index, so quadding does not apply.
+              const cellW = rectW / combMaxLen;
+              const ty = Math.max(pad, (rectH - fontSize) / 2 + fontSize * 0.2);
+              const ops = [];
+              for (const m of fieldValue.matchAll(/\S/g)) {
+                const chW = fontSize * ((combHelvWidths.get(m[0].charCodeAt(0)) ?? combHelvDefaultWidth) / 1000);
+                const x = m.index * cellW + (cellW - chW) / 2;
+                ops.push(`1 0 0 1 ${x.toFixed(2)} ${ty.toFixed(2)} Tm (${esc(m[0])}) Tj`);
+              }
+              textCommands = ops.join(' ');
             } else {
               const textW = fieldValue.length * avgCharW;
               let tx = pad;

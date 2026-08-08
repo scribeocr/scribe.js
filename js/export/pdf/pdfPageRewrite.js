@@ -439,11 +439,12 @@ export function composePageRotation(pageObjText, userRotation, objCache) {
  * @param {?{ nameDests: Map<string, string>, objNumToIndex: Map<number, number> }} [linkDestInfo=null] - When non-null, source /Link annotations the importer lifted are dropped,
  *   since export re-emits them from the document's annotations through `extraAnnotRefs`.
  *   Null (a raw-bytes utility call with no lifted annotations to re-emit) keeps every source link verbatim.
+ * @param {?Set<number>} [dropAnnotObjNums=null] - Source annotation object numbers to omit from /Annots (flattened form widgets).
  */
 export function buildReplacementPageDict(
   objNum, originalObjText, newContentsArray, resourcesObjNum, parentObjNum = null,
   extraAnnotRefs = [], objCache = null, keptPageObjNums = null, userRotation = 0,
-  redactRects = null, linkDestInfo = null,
+  redactRects = null, linkDestInfo = null, dropAnnotObjNums = null,
 ) {
   let dictStr = `${objNum} 0 obj\n<<`;
   dictStr += '/Type/Page';
@@ -514,6 +515,12 @@ export function buildReplacementPageDict(
         }
       }
       return !boxes.some((b) => redactRects.some((r) => b[0] < r[2] && b[2] > r[0] && b[1] < r[3] && b[3] > r[1]));
+    });
+  }
+  if (dropAnnotObjNums && dropAnnotObjNums.size > 0) {
+    sourceAnnotRefs = sourceAnnotRefs.filter((ref) => {
+      const m = /^(\d+)\s+\d+\s+R$/.exec(ref);
+      return !m || !dropAnnotObjNums.has(Number(m[1]));
     });
   }
   // The lifted annotations are re-emitted via `extraAnnotRefs`, so keeping a source copy would duplicate them on export.

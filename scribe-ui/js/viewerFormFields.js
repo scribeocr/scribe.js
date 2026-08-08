@@ -73,6 +73,49 @@ function fieldLayoutPx(row, value) {
 }
 
 /**
+ * Fill a cover element with the comb rendering of `value`: the cell separators plus one centered span per character.
+ * Shared by the committed cover and the live editing mirror so the two render identically and committing cannot move anything.
+ * @param {HTMLElement} cover
+ * @param {AnnotationField} row
+ * @param {string} value
+ * @returns {{cellW: number, fontPx: number, top: number}} Cell width, font size, and span top in
+ *   page px, for the caret bar.
+ */
+function renderCombCover(cover, row, value) {
+  const { layout, rectHpx, fontPx } = fieldLayoutPx(row, value);
+  const cellW = (row.bbox.right - row.bbox.left) / (row.maxLen || 1);
+  // The cover hides the comb separators printed on the page, so it redraws them.
+  // Each is its own element with a device-pixel width, because a 1-page-px gradient stripe vanishes or aliases into stray lines once the page is displayed below full size.
+  for (let b = 1; b < (row.maxLen || 1); b++) {
+    const sep = document.createElement('div');
+    sep.className = 'scribe-field-combsep';
+    sep.style.left = `${b * cellW}px`;
+    cover.appendChild(sep);
+  }
+  const cellWpt = cellW / PX_PER_PT;
+  let top = 0;
+  for (const ll of layout.lines) {
+    const baselineTop = rectHpx - ll.y * PX_PER_PT;
+    top = baselineTop - layout.fontSize * 0.8 * PX_PER_PT;
+    for (const wd of ll.words) {
+      for (let i = 0; i < wd.text.length; i++) {
+        const span = document.createElement('span');
+        span.className = 'scribe-field-covertext';
+        span.textContent = wd.text[i];
+        span.dataset.i = String(Math.round(wd.x0 / cellWpt) + i);
+        span.style.left = `${wd.x0 * PX_PER_PT + i * cellW}px`;
+        span.style.width = `${cellW}px`;
+        span.style.textAlign = 'center';
+        span.style.top = `${top}px`;
+        span.style.fontSize = `${fontPx}px`;
+        cover.appendChild(span);
+      }
+    }
+  }
+  return { cellW, fontPx, top };
+}
+
+/**
  * Render (or re-render) page n's form-field overlay.
  * @param {import('../viewer.js').ScribeViewer} viewer
  * @param {number} n
@@ -148,37 +191,22 @@ export function renderPageFormFields(viewer, n) {
           }
         }
       } else if (row.value) {
-        const { layout, rectHpx, fontPx } = fieldLayoutPx(row, row.value);
-        const combCellW = row.comb && row.maxLen ? (row.bbox.right - row.bbox.left) / row.maxLen : 0;
-        if (combCellW) {
-          // The cover hides the comb separators printed on the page.
-          cover.style.backgroundImage = `repeating-linear-gradient(90deg, transparent 0 ${combCellW - 1}px, #6b6b6b ${combCellW - 1}px ${combCellW}px)`;
-        }
-        for (const ll of layout.lines) {
-          const baselineTop = rectHpx - ll.y * PX_PER_PT;
-          const spanTop = `${baselineTop - layout.fontSize * 0.8 * PX_PER_PT}px`;
-          if (combCellW) {
-            for (const wd of ll.words) {
-              for (let i = 0; i < wd.text.length; i++) {
-                const span = document.createElement('span');
-                span.className = 'scribe-field-covertext';
-                span.textContent = wd.text[i];
-                span.style.left = `${wd.x0 * PX_PER_PT + i * combCellW}px`;
-                span.style.width = `${combCellW}px`;
-                span.style.textAlign = 'center';
-                span.style.top = spanTop;
-                span.style.fontSize = `${fontPx}px`;
-                cover.appendChild(span);
-              }
+        if (row.comb && row.maxLen) {
+          renderCombCover(cover, row, row.value);
+        } else {
+          const { layout, rectHpx, fontPx } = fieldLayoutPx(row, row.value);
+          for (const ll of layout.lines) {
+            const baselineTop = rectHpx - ll.y * PX_PER_PT;
+            const spanTop = `${baselineTop - layout.fontSize * 0.8 * PX_PER_PT}px`;
+            if (ll.text) {
+              const span = document.createElement('span');
+              span.className = 'scribe-field-covertext';
+              span.textContent = ll.text;
+              span.style.left = `${ll.x * PX_PER_PT}px`;
+              span.style.top = spanTop;
+              span.style.fontSize = `${fontPx}px`;
+              cover.appendChild(span);
             }
-          } else if (ll.text) {
-            const span = document.createElement('span');
-            span.className = 'scribe-field-covertext';
-            span.textContent = ll.text;
-            span.style.left = `${ll.x * PX_PER_PT}px`;
-            span.style.top = spanTop;
-            span.style.fontSize = `${fontPx}px`;
-            cover.appendChild(span);
           }
         }
       }
@@ -282,12 +310,50 @@ export function renderPageFormFields(viewer, n) {
       ed.style.padding = row.multiline ? `${2 * PX_PER_PT}px ${2 * PX_PER_PT}px` : `0 ${2 * PX_PER_PT}px`;
       if (row.quadding === 1) ed.style.textAlign = 'center';
       else if (row.quadding === 2) ed.style.textAlign = 'right';
+      const comb = !!(row.comb && row.maxLen && !row.multiline);
+      /** @type {?HTMLDivElement} */
+      let liveCover = null;
+      /** @type {?HTMLDivElement} */
+      let caretEl = null;
+      /** @type {?() => void} */
+      let onSelChange = null;
+      if (comb) {
+        // The input keeps all key/paste/IME/undo semantics but renders nothing.
+        // The live cover beneath it draws the same per-cell spans as the committed cover, so typed characters land in their cells immediately and committing cannot move anything.
+        ed.classList.add('scribe-field-input-comb');
+        // Comb layout is left-packed by character index, so quadding does not apply.
+        ed.style.textAlign = 'left';
+        liveCover = document.createElement('div');
+        liveCover.className = 'scribe-field-cover scribe-field-combedit';
+        el.appendChild(liveCover);
+        caretEl = document.createElement('div');
+        caretEl.className = 'scribe-field-caret';
+        el.appendChild(caretEl);
+      }
+      const syncCombDisplay = () => {
+        if (!liveCover || !caretEl) return;
+        liveCover.replaceChildren();
+        const { cellW, fontPx: cellFontPx, top } = renderCombCover(liveCover, row, ed.value);
+        const selStart = ed.selectionStart ?? ed.value.length;
+        const selEnd = ed.selectionEnd ?? selStart;
+        for (const s of liveCover.querySelectorAll('.scribe-field-covertext')) {
+          const idx = Number(/** @type {HTMLElement} */ (s).dataset.i);
+          s.classList.toggle('scribe-field-combsel', idx >= selStart && idx < selEnd);
+        }
+        caretEl.style.left = `${selStart * cellW}px`;
+        caretEl.style.top = `${top}px`;
+        caretEl.style.height = `${cellFontPx}px`;
+        caretEl.classList.toggle('scribe-field-caret-off', selStart !== selEnd || document.activeElement !== ed);
+      };
       let closed = false;
       const close = (commit) => {
         if (closed) return;
         closed = true;
         const next = ed.value;
         ed.remove();
+        liveCover?.remove();
+        caretEl?.remove();
+        if (onSelChange) document.removeEventListener('selectionchange', onSelChange);
         if (commit && commitValue(viewer, row, next)) return; // committing re-renders the overlay, replacing `el`
         el.focus({ preventScroll: true });
       };
@@ -301,12 +367,32 @@ export function renderPageFormFields(viewer, n) {
         }
       });
       ed.addEventListener('blur', () => close(true));
+      if (comb) {
+        ed.addEventListener('input', syncCombDisplay);
+        onSelChange = () => syncCombDisplay();
+        document.addEventListener('selectionchange', onSelChange);
+        // The transparent input's own proportional metrics would misplace clicks, so map them to the nearest cell boundary instead.
+        el.addEventListener('pointerdown', (e) => {
+          if (closed) return;
+          e.preventDefault();
+          const r = el.getBoundingClientRect();
+          const idx = Math.round(((e.clientX - r.left) / r.width) * (row.maxLen || 1));
+          ed.focus({ preventScroll: true });
+          ed.setSelectionRange(idx, idx);
+          syncCombDisplay();
+        });
+        ed.addEventListener('dblclick', () => {
+          ed.select();
+          syncCombDisplay();
+        });
+      }
       el.appendChild(ed);
       ed.focus({ preventScroll: true });
       if (seed == null) {
         const end = ed.value.length;
         ed.setSelectionRange(end, end);
       }
+      if (comb) syncCombDisplay();
     };
 
     el.addEventListener('click', () => {

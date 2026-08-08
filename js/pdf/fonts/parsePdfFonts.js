@@ -147,6 +147,95 @@ function buildEmptyGlyphSetFromTrueType(fontFile) {
   }
 }
 
+/** Per-font TrueType outline readers, built on first use. */
+const glyphInkReaders = new WeakMap();
+
+/**
+ * Where a glyph's outline actually sits, read from the embedded TrueType `glyf` entry's own bounding box.
+ * The font descriptor is no substitute: symbol fonts routinely declare the Latin ascent/descent of the face they were derived from, which the drawn glyph ignores entirely.
+ *
+ * @param {Object} fontInfo - Parsed font.
+ * @param {number} charCode
+ * @returns {?{left: number, right: number, yMin: number, yMax: number}} Em fractions: x from the
+ *   pen origin, y upward from the baseline. Null when the outline is unavailable (no embedded
+ *   program, CFF or Type1 charstrings, unresolvable glyph id, or a blank glyph).
+ */
+export function glyphInkBox(fontInfo, charCode) {
+  let reader = glyphInkReaders.get(fontInfo);
+  if (reader === undefined) {
+    reader = null;
+    const program = fontInfo.type0?.fontFile || fontInfo.type1?.fontFile;
+    const sfntTrueType = program && program.length > 4
+      && ((program[0] === 0 && program[1] === 1 && program[2] === 0 && program[3] === 0)
+        || (program[0] === 0x74 && program[1] === 0x72 && program[2] === 0x75 && program[3] === 0x65));
+    if (sfntTrueType) {
+      try {
+        const data = new DataView(program.buffer, program.byteOffset, program.byteLength);
+        const dir = opentype.readSfntTableDirectory(data);
+        const unitsPerEm = dir.head ? data.getUint16(dir.head.offset + 18) : 0;
+        if (dir.glyf && dir.loca && dir.maxp && unitsPerEm > 0) {
+          // Simple fonts address glyphs by character code through the font's own cmap.
+          // A symbol cmap (3,0) keys its codes into the F0xx private-use block.
+          let codeToGid = null;
+          let symbolCmap = false;
+          if (!fontInfo.type0 && dir.cmap) {
+            const cmap = opentype.parseCmapTable(data, dir.cmap.offset);
+            codeToGid = cmap?.glyphIndexMap || null;
+            symbolCmap = cmap?.platformID === 3 && cmap?.encodingID === 0;
+          }
+          reader = {
+            data,
+            glyfOffset: dir.glyf.offset,
+            locaOffset: dir.loca.offset,
+            longLoca: data.getUint16(dir.head.offset + 50) !== 0,
+            numGlyphs: data.getUint16(dir.maxp.offset + 4),
+            unitsPerEm,
+            codeToGid,
+            symbolCmap,
+          };
+        }
+      } catch {
+        reader = null;
+      }
+    }
+    glyphInkReaders.set(fontInfo, reader);
+  }
+  if (!reader) return null;
+
+  let gid = -1;
+  if (fontInfo.type0) {
+    const cid = fontInfo.charCodeToCID?.get(charCode) ?? charCode;
+    const cidToGid = fontInfo.type0.cidToGidMap;
+    if (cidToGid instanceof Uint8Array) {
+      gid = cid * 2 + 1 < cidToGid.length ? (cidToGid[cid * 2] << 8) | cidToGid[cid * 2 + 1] : -1;
+    } else {
+      gid = cid;
+    }
+  } else if (reader.codeToGid) {
+    const symbolGid = reader.symbolCmap ? reader.codeToGid[0xF000 | charCode] : undefined;
+    gid = symbolGid ?? reader.codeToGid[charCode] ?? -1;
+  }
+  if (!(gid >= 0) || gid >= reader.numGlyphs) return null;
+
+  const { data } = reader;
+  const start = reader.longLoca
+    ? data.getUint32(reader.locaOffset + gid * 4)
+    : data.getUint16(reader.locaOffset + gid * 2) * 2;
+  const end = reader.longLoca
+    ? data.getUint32(reader.locaOffset + (gid + 1) * 4)
+    : data.getUint16(reader.locaOffset + (gid + 1) * 2) * 2;
+  // A glyph with no contour data past its 10-byte header draws nothing.
+  if (end - start < 10 || reader.glyfOffset + end > data.byteLength) return null;
+  const entry = reader.glyfOffset + start;
+  const upem = reader.unitsPerEm;
+  return {
+    left: data.getInt16(entry + 2) / upem,
+    yMin: data.getInt16(entry + 4) / upem,
+    right: data.getInt16(entry + 6) / upem,
+    yMax: data.getInt16(entry + 8) / upem,
+  };
+}
+
 /**
  * Decide whether an embedded TrueType subset's high-byte encoding is MacRoman
  * or Win1252 by comparing the PDF /Widths array against the standard-font AFM

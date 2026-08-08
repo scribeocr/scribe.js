@@ -250,6 +250,8 @@ function resolveLinkUri(annotText, objCache) {
  * @property {?string} da - /DA default-appearance string, inherited.
  * @property {?string} onState - Checkbox/radio on-state name from the widget's own /AP /N states.
  * @property {?string[]} options - /Ch option display strings from /Opt, inherited.
+ * @property {?number} apRef - Object number of the /AP /N appearance stream for the widget's current state.
+ * @property {?Object<string, number>} apStates - State name to stream object number when /AP /N is a per-state dict.
  */
 
 /**
@@ -423,6 +425,27 @@ export function extractPdfAnnotations(objCache, pageObjText) {
             }
           }
 
+          let apRef = null;
+          let apStates = null;
+          const apDictText = resolveDictValue(annotText, 'AP', objCache);
+          if (apDictText) {
+            const nText = resolveDictValue(apDictText, 'N', objCache);
+            // A /N carrying /BBox is the appearance stream itself; otherwise it is a per-state dict.
+            if (nText && /\/BBox(?![A-Za-z0-9])/.test(nText)) {
+              const nRefM = /\/N\s+(\d+)\s+\d+\s+R/.exec(apDictText);
+              if (nRefM) apRef = Number(nRefM[1]);
+            } else if (nText) {
+              apStates = {};
+              for (const m of nText.matchAll(/\/([^\s/<>[\]()]+)\s+(\d+)\s+\d+\s+R/g)) {
+                const state = m[1].replace(/#([0-9A-Fa-f]{2})/g, (_, h) => String.fromCharCode(parseInt(h, 16)));
+                apStates[state] = Number(m[2]);
+              }
+              const as = resolveNameValue(annotText, 'AS', objCache);
+              const current = as ?? (ft === 'Btn' ? (value != null && onState != null ? onState : 'Off') : null);
+              if (current != null && apStates[current] != null) apRef = apStates[current];
+            }
+          }
+
           const wRectStr = resolveArrayValue(annotText, 'Rect', objCache);
           const wRectNums = wRectStr ? wRectStr.split(/\s+/).map(Number) : [];
           if (wRectNums.length >= 4 && !wRectNums.slice(0, 4).some(Number.isNaN)) {
@@ -442,6 +465,8 @@ export function extractPdfAnnotations(objCache, pageObjText) {
               da,
               onState,
               options,
+              apRef,
+              apStates,
             });
           }
         } catch { /* skip this malformed widget */ }

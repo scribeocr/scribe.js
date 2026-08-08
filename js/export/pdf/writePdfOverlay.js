@@ -73,6 +73,8 @@ import { buildNameDests } from '../../pdf/parseOutline.js';
  * @param {?{ opts?: ReturnType<typeof import('../../pdf/metadata/scrubMetadata.js').defaultScrubOpts> }} [params.scrub=null]
  *   When set, scrubs identifying metadata and forces a full rebuild.
  * @param {?Object<string, ?string>} [params.docInfo=null] - Document information entries overriding the source's; a null value drops that key.
+ * @param {boolean} [params.flattenFormFields=false] - Paint each visible form widget's current appearance into the page content,
+ *   then remove the widget annotations and the catalog's /AcroForm, so fields stop being interactive. Forces a full rebuild.
  * @returns {Promise<ArrayBuffer>}
  */
 export async function overlayPdfText({
@@ -100,6 +102,7 @@ export async function overlayPdfText({
   outline = null,
   scrub = null,
   docInfo = null,
+  flattenFormFields = false,
 }) {
   const pdfBytes = new Uint8Array(basePdfData);
   // Local latin1 view used by overlayPdfText's downstream helpers.
@@ -437,7 +440,8 @@ export async function overlayPdfText({
   });
   nextObjNum = formFieldUpdates.nextObjNum;
 
-  if (isSubset || sourceEncrypted || sourceXrefMalformed || sourceLinearized || hasUserRotation || scrub || redactRegionsByPage.size > 0) {
+  if (isSubset || sourceEncrypted || sourceXrefMalformed || sourceLinearized || hasUserRotation || scrub || redactRegionsByPage.size > 0
+    || flattenFormFields) {
     return rebuildPdfSubset({
       pdfBytes,
       text,
@@ -472,6 +476,7 @@ export async function overlayPdfText({
       editFontObjects,
       docInfo,
       formFieldUpdates,
+      flattenFormFields,
     });
   }
 
