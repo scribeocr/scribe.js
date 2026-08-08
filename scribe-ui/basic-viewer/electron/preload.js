@@ -2,6 +2,7 @@ const { contextBridge, ipcRenderer } = require('electron');
 const path = require('path');
 
 contextBridge.exposeInMainWorld('electronAPI', {
+  platform: process.platform,
   readFile: async (filePath) => {
     const data = await ipcRenderer.invoke('read-file', filePath);
     return { buffer: data, name: path.basename(filePath) };
@@ -13,4 +14,12 @@ contextBridge.exposeInMainWorld('electronAPI', {
   sendMenuState: (state) => ipcRenderer.send('menu-state', state),
   getPowerState: () => ipcRenderer.invoke('power-state'),
   onPowerChanged: (callback) => ipcRenderer.on('power-changed', (_event, data) => callback(data)),
+  minimize: () => ipcRenderer.send('window-minimize'),
+  toggleMaximize: () => ipcRenderer.send('window-maximize-toggle'),
+  toggleFullScreen: () => ipcRenderer.send('window-fullscreen-toggle'),
+  onMaximizedChange: (callback) => ipcRenderer.on('window-maximized', (_event, on) => callback(on)),
+  onFullScreenChange: (callback) => ipcRenderer.on('window-fullscreen', (_event, on) => callback(on)),
+  onRecentFiles: (callback) => ipcRenderer.on('recent-files', (_event, files) => callback(files)),
+  openRecent: (filePath) => ipcRenderer.send('open-recent', filePath),
+  clearRecent: () => ipcRenderer.send('clear-recent'),
 });

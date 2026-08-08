@@ -11,7 +11,7 @@ import { signIntoField } from '../js/viewerFillSign.js';
 import { destroyContextMenu } from '../js/viewerCanvasInteraction.js';
 import {
   addControlStyles, makeToolbarShell, makeSeparator, makeIconButton, createPageNav, createZoomControls, createRotateControls, createPrintControls, createOpenControls, createTabStrip, createSearchBar,
-  createAppMenu, OPEN_SVG, PRINT_SVG, ROTATE_LEFT_SVG, ROTATE_RIGHT_SVG,
+  createAppMenu, OPEN_SVG, PRINT_SVG, RECENT_SVG, ROTATE_LEFT_SVG, ROTATE_RIGHT_SVG,
 } from '../js/controls/toolbar.js';
 import { createThumbnailPanel, createScrollbars } from '../js/controls/panels.js';
 import { createCompanionStrip } from '../js/controls/companionStrip.js';
@@ -562,8 +562,11 @@ class ScribePDFViewer {
         'rotate-left': () => this.scribe.rotatePage(this.scribe.state.cp.n, -90),
         'rotate-right': () => this.scribe.rotatePage(this.scribe.state.cp.n, 90),
       };
-      appMenu.addAction('Open file', OPEN_SVG, this._menuCommands.open);
-      appMenu.addAction('Print', PRINT_SVG, this._menuCommands.print);
+      const accelMod = navigator.platform?.startsWith('Mac') ? '⌘' : 'Ctrl+';
+      appMenu.addAction('Open file', OPEN_SVG, this._menuCommands.open, `${accelMod}O`);
+      // Populated by a desktop shell through `setRecentFiles`, and so left empty and hidden on the web, which cannot reopen paths.
+      this._recentFilesSubmenu = appMenu.addSubmenu('Open recent', RECENT_SVG);
+      appMenu.addAction('Print', PRINT_SVG, this._menuCommands.print, `${accelMod}P`);
       // Touch-only rows re-homing the controls the touch layouts drop from the bar.
       appMenu.addAction('Rotate left', ROTATE_LEFT_SVG, this._menuCommands['rotate-left'])
         .classList.add('scribe-touch-row');
@@ -995,8 +998,10 @@ class ScribePDFViewer {
         modeRow.style.display = 'inline-flex';
         modeRow.style.alignItems = 'center';
         this._modeRowElem = modeRow;
-        this.toolbarElemEnd.insertBefore(modeRow, this._searchBar.searchElem);
-        this.toolbarElemEnd.insertBefore(makeSeparator(), this._searchBar.searchElem);
+        // A phone-layout boot has already re-homed the search control into the dock, so only anchor on it while it is still in the end zone.
+        const searchAnchor = this._searchBar.searchElem.parentElement === this.toolbarElemEnd ? this._searchBar.searchElem : null;
+        this.toolbarElemEnd.insertBefore(modeRow, searchAnchor);
+        this.toolbarElemEnd.insertBefore(makeSeparator(), searchAnchor);
       }
 
       /** @type {?ReturnType<typeof createEditTextTool>} */
@@ -2509,7 +2514,7 @@ class ScribePDFViewer {
   }
 
   /**
-   * Switch the sidebar between its default mode (one toolbar toggle per view) and the unified mode the desktop shells use,
+   * Switch the sidebar between its default mode (one toolbar toggle per view) and the desktop layout's unified mode,
    * where a single toolbar button opens the sidebar and the view is picked from a switch strip inside it.
    * @param {boolean} enabled
    */
@@ -2600,7 +2605,32 @@ class ScribePDFViewer {
   }
 
   /**
-   * Switch the exclusive tool modes between their default row of labeled buttons and the mac shells' compact drop-down.
+   * Populate the app menu's "Open recent" submenu, for a desktop shell that can reopen files by path.
+   * The row stays hidden while the list is empty, so surfaces that never call this never show it.
+   * @param {Array<{label: string, open: () => void}>} files - Most recent first.
+   * @param {() => void} [onClear] - Invoked by the submenu's "Clear list" row.
+   */
+  setRecentFiles(files, onClear) {
+    if (!this._recentFilesSubmenu) return;
+    /** @type {Array<'sep' | {label: string, onClick: () => void}>} */
+    const rows = files.map((f) => ({ label: f.label, onClick: f.open }));
+    if (rows.length && onClear) rows.push('sep', { label: 'Clear list', onClick: onClear });
+    this._recentFilesSubmenu.setItems(rows);
+  }
+
+  /**
+   * Close the active document's tab, for a desktop shell's close-tab shortcut.
+   * Fewer than two documents open is refused, leaving the caller to close its window instead.
+   * @returns {boolean} Whether a tab was closed.
+   */
+  closeActiveDocument() {
+    if (this._tabs.length < 2) return false;
+    this._closeTab(this._activeTab);
+    return true;
+  }
+
+  /**
+   * Switch the exclusive tool modes between their default row of labeled buttons and the desktop layout's compact drop-down.
    * In the drop-down form the bar shows the current selection (the active mode, or View while none is on) and the other modes list one per row beneath it.
    * @param {boolean} enabled
    */
@@ -2768,7 +2798,7 @@ class ScribePDFViewer {
   }
 
   /**
-   * The state a desktop shell needs to enable and check its native menu items.
+   * The state a desktop shell needs to enable and check its native menu items and tint its window controls.
    * @returns {{docOpen: boolean, recognize: boolean, combine: boolean, split: boolean,
    *   coverEnabled: boolean, coverChecked: boolean, darkChecked: boolean,
    *   fieldsEnabled: boolean, fieldsChecked: boolean}}
@@ -2944,7 +2974,8 @@ class ScribePDFViewer {
         if (this._toolbarButtonsElem && this.nextElem && this._pageInputGroup) {
           this._toolbarButtonsElem.insertBefore(this._pageInputGroup, this.nextElem.nextSibling);
         }
-        this.toolbarElemEnd.appendChild(this._searchBar.searchElem);
+        // A desktop shell may have appended its window controls to the end zone, and the search control re-enters before them.
+        this.toolbarElemEnd.insertBefore(this._searchBar.searchElem, this.toolbarElemEnd.querySelector('.scribe-shell-corner'));
         this.toolbarElem.appendChild(this._searchBar.findGroupElem);
         if (this._ocrProgress) this.toolbarElem.appendChild(this._ocrProgress);
         // The rail hides the thumbnail panel by transform and the other two by display, so only thumbnails get a visible display back.

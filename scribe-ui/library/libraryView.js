@@ -151,6 +151,9 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-progress-stop:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: 1px; }
 .scribe-pdf-viewer .scribe-library-progress-hair { position: absolute; left: 0; bottom: -1px; height: 2px; background: var(--scribe-accent); transition: width 0.28s ease; }
 .scribe-pdf-viewer .scribe-library-body { flex: 1; overflow-y: auto; padding: 16px 18px; }
+.scribe-pdf-viewer .scribe-library-body::-webkit-scrollbar { width: 7px; }
+.scribe-pdf-viewer .scribe-library-body::-webkit-scrollbar-track { background: transparent; }
+.scribe-pdf-viewer .scribe-library-body::-webkit-scrollbar-thumb { background: var(--scribe-scrollbar); border-radius: 6px; }
 .scribe-pdf-viewer .scribe-library-section-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.6; margin: 4px 0 10px; }
 .scribe-pdf-viewer .scribe-library-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 190px)); justify-content: center; gap: 14px; margin-bottom: 22px; position: relative; }
 .scribe-pdf-viewer .scribe-library-card { border: 1px solid color-mix(in srgb, var(--scribe-ink) 14%, transparent); border-radius: 8px; background: var(--scribe-surface); cursor: pointer; overflow: hidden; display: flex; flex-direction: column; position: relative; touch-action: pan-y; user-select: none; }
@@ -206,6 +209,9 @@ const addLibraryStyles = () => {
 }
 .scribe-pdf-viewer .scribe-library-results { flex: 1; display: flex; min-height: 0; min-width: 0; font-size: 13px; }
 .scribe-pdf-viewer .scribe-library-rlist { width: clamp(280px, var(--scribe-library-rlist-w, 400px), calc(100% - 320px)); box-sizing: border-box; flex-shrink: 0; overflow-y: auto; border-right: 1px solid var(--scribe-line); background: var(--scribe-surface); outline: none; }
+.scribe-pdf-viewer .scribe-library-rlist::-webkit-scrollbar { width: 5px; }
+.scribe-pdf-viewer .scribe-library-rlist::-webkit-scrollbar-track { background: transparent; }
+.scribe-pdf-viewer .scribe-library-rlist::-webkit-scrollbar-thumb { background: var(--scribe-scrollbar); border-radius: 6px; }
 .scribe-pdf-viewer .scribe-library-rsplit { flex: 0 0 7px; margin: 0 -3px; position: relative; z-index: 4; cursor: col-resize; touch-action: none; }
 .scribe-pdf-viewer .scribe-library-rsplit::before { content: ''; position: absolute; left: 2px; top: 0; bottom: 0; width: 3px; background: var(--scribe-accent); opacity: 0; transition: opacity 0.08s; }
 .scribe-pdf-viewer .scribe-library-rsplit:hover::before { opacity: 1; transition-delay: 0.25s; }
@@ -544,12 +550,15 @@ export function installLibrary(viewer) {
     barTitle.appendChild(barSep);
     barTitle.appendChild(crumbsElem);
     // Placed after the app menu so the zone's last child stays visible, which is what the bar's overflow measurement reads.
-    viewer.toolbarElemStart.insertBefore(barTitle, viewer._appMenu ? viewer._appMenu.menuWrap.nextSibling : viewer.toolbarElemStart.firstChild);
+    // A phone-layout boot re-homes the app menu into the dock, so only anchor on it while it is still in the start zone.
+    const menuInBar = viewer._appMenu && viewer._appMenu.menuWrap.parentElement === viewer.toolbarElemStart;
+    viewer.toolbarElemStart.insertBefore(barTitle, menuInBar ? viewer._appMenu.menuWrap.nextSibling : viewer.toolbarElemStart.firstChild);
     barControls = document.createElement('span');
     barControls.className = 'scribe-library-bar-controls';
     barControls.style.display = 'none';
     for (const el of [searchField, viewSeg, sortWrap, previewBtn, headerSep, addBtn, refreshBtn]) barControls.appendChild(el);
-    viewer.toolbarElemEnd.appendChild(barControls);
+    // A desktop shell's window controls stay the end zone's last element, so the library bar mounts before them.
+    viewer.toolbarElemEnd.insertBefore(barControls, viewer.toolbarElemEnd.querySelector('.scribe-shell-corner'));
     surface.appendChild(fileInput);
   } else {
     surface.appendChild(header);
@@ -581,7 +590,7 @@ export function installLibrary(viewer) {
   let barSwapped = false;
   let priorEndZoneFlex = '';
 
-  /** Replace the toolbar's document controls with the library's own fragments, leaving the app menu in place. */
+  /** Replace the toolbar's document controls with the library's own fragments, leaving the app menu and any shell window controls in place. */
   const swapBarIn = () => {
     if (!barTitle || !barControls || barSwapped) return;
     barSwapped = true;
@@ -594,7 +603,7 @@ export function installLibrary(viewer) {
     }
     if (viewer._toolbarButtonsElem) hide(viewer._toolbarButtonsElem);
     for (const el of [...viewer.toolbarElemEnd.children]) {
-      if (el !== barControls) hide(/** @type {HTMLElement} */ (el));
+      if (el !== barControls && !el.classList.contains('scribe-shell-corner')) hide(/** @type {HTMLElement} */ (el));
     }
     barTitle.style.display = '';
     barControls.style.display = '';

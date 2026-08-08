@@ -18,13 +18,13 @@ const isMac = navigator.platform.startsWith('Mac');
 if (isMac) {
   // The macOS window is decorated with the native traffic lights overlaying the toolbar, so inset the leading cluster clear of them.
   pdfViewer.toolbarElemStart.style.paddingLeft = '96px';
-  // On macOS the system menu bar carries the app commands and one toggle opens the sidebar, matching how Mac viewers lay out this corner.
-  pdfViewer.setUnifiedSidebar(true);
+  // The system menu bar carries the app commands there, so the in-window menu button retires.
   pdfViewer.setMenuButtonVisible(false);
-  pdfViewer.setModeTrack(true);
 } else {
   // Frameless on Windows and Linux, so the shell supplies the close button.
   const closeBtn = document.createElement('button');
+  // The marker keeps later end-zone inserts, such as leaving the phone layout, from landing right of the window controls.
+  closeBtn.classList.add('scribe-shell-corner');
   closeBtn.innerHTML = '&#x2715;';
   closeBtn.title = 'Close';
   // The glyph inherits the toolbar ink so it stays legible in both themes, and flips to white only over the red hover fill.

@@ -398,6 +398,8 @@ export function createPrintControls(scribe, rootElem) {
 
 export const OPEN_SVG = lineIcon('<path d="M3 7a2 2 0 0 1 2-2h3.5l2 2H19a2 2 0 0 1 2 2v8a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V7Z"/>');
 
+export const RECENT_SVG = lineIcon('<circle cx="12" cy="12" r="7.5"/><path d="M12 8.6v3.9l2.7 2"/>');
+
 /**
  * Build the "Open" control: a button (and a hidden multi-file input) that hands the chosen files to `onFiles`,
  * plus a scoped Ctrl/Cmd+O shortcut that opens the same picker.
@@ -456,8 +458,9 @@ const MENU_SVG = lineIcon('<path d="M4 7h16M4 12h16M4 17h16"/>');
  * @param {string} rootClass - The owning app's root class, unused today but kept for symmetry with the other factories.
  * @returns {{
  *   menuWrap: HTMLSpanElement, triggerElem: HTMLSpanElement, menuElem: HTMLDivElement,
- *   addAction: (label: string, iconSvg: string, onClick: () => void) => HTMLDivElement,
+ *   addAction: (label: string, iconSvg: string, onClick: () => void, accel?: string) => HTMLDivElement,
  *   addToggle: (label: string, iconSvg: string, getState: () => boolean, onToggle: () => void) => { item: HTMLDivElement, sync: () => void },
+ *   addSubmenu: (label: string, iconSvg: string) => { wrap: HTMLDivElement, setItems: (rows: Array<'sep' | { label: string, onClick: () => void }>) => void },
  *   addSeparator: () => HTMLDivElement, close: () => void, destroy: () => void,
  * }}
  */
@@ -483,6 +486,7 @@ export function createAppMenu(rootClass) {
   const close = () => {
     menuElem.style.display = 'none';
     triggerElem.classList.remove('active');
+    for (const w of menuElem.querySelectorAll('.scribe-app-menu-subwrap.sub-open')) w.classList.remove('sub-open');
   };
   triggerElem.addEventListener('click', (e) => { e.stopPropagation(); if (isOpen()) close(); else open(); });
   const onDocClick = (e) => {
@@ -505,11 +509,58 @@ export function createAppMenu(rootClass) {
     return item;
   };
 
-  const addAction = (label, iconSvg, onClick) => {
+  const addAction = (label, iconSvg, onClick, accel) => {
     const item = makeRow(label, iconSvg);
+    if (accel) {
+      const accelElem = document.createElement('span');
+      accelElem.className = 'scribe-app-menu-accel';
+      accelElem.textContent = accel;
+      item.appendChild(accelElem);
+    }
     item.addEventListener('click', (e) => { e.stopPropagation(); close(); onClick(); });
     menuElem.appendChild(item);
     return item;
+  };
+
+  const addSubmenu = (label, iconSvg) => {
+    const wrap = document.createElement('div');
+    wrap.className = 'scribe-app-menu-subwrap';
+    const row = makeRow(label, iconSvg);
+    const chev = document.createElement('span');
+    chev.className = 'scribe-app-menu-subchev';
+    chev.textContent = '›';
+    row.appendChild(chev);
+    const sub = document.createElement('div');
+    sub.className = 'scribe-app-menu scribe-app-menu-sub';
+    wrap.append(row, sub);
+    // Click as well as hover, for keyboards and touch.
+    row.addEventListener('click', (e) => { e.stopPropagation(); wrap.classList.toggle('sub-open'); });
+    wrap.addEventListener('mouseenter', () => wrap.classList.add('sub-open'));
+    wrap.addEventListener('mouseleave', () => wrap.classList.remove('sub-open'));
+    const setItems = (rows) => {
+      sub.textContent = '';
+      for (const r of rows) {
+        if (r === 'sep') {
+          const sep = document.createElement('div');
+          sep.className = 'scribe-app-menu-sep';
+          sub.appendChild(sep);
+          continue;
+        }
+        const item = document.createElement('div');
+        item.className = 'scribe-app-menu-item';
+        item.role = 'button';
+        item.tabIndex = 0;
+        item.textContent = r.label;
+        item.addEventListener('mousedown', (e) => e.preventDefault());
+        item.addEventListener('click', (e) => { e.stopPropagation(); close(); r.onClick(); });
+        sub.appendChild(item);
+      }
+      // An empty submenu hides its whole row rather than opening onto nothing.
+      wrap.style.display = rows.length ? '' : 'none';
+    };
+    setItems([]);
+    menuElem.appendChild(wrap);
+    return { wrap, setItems };
   };
 
   const addToggle = (label, iconSvg, getState, onToggle) => {
@@ -537,7 +588,7 @@ export function createAppMenu(rootClass) {
   const destroy = () => document.removeEventListener('click', onDocClick);
 
   return {
-    menuWrap, triggerElem, menuElem, addAction, addToggle, addSeparator, close, destroy,
+    menuWrap, triggerElem, menuElem, addAction, addToggle, addSubmenu, addSeparator, close, destroy,
   };
 }
 
@@ -1031,6 +1082,11 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-app-menu-item.busy { opacity: .6; pointer-events: none; }
     .${r} .scribe-app-menu-item.disabled { color: var(--scribe-ink-3); cursor: default; }
     .${r} .scribe-app-menu-item.disabled:hover { background: none; }
+    .${r} .scribe-app-menu-accel { margin-left: auto; padding-left: 26px; font-size: 12px; color: var(--scribe-ink-3); }
+    .${r} .scribe-app-menu-subwrap { position: relative; }
+    .${r} .scribe-app-menu-subchev { margin-left: auto; padding-left: 26px; font-size: 14px; line-height: 1; color: var(--scribe-ink-3); }
+    .${r} .scribe-app-menu-sub { display: none; left: calc(100% - 6px); top: -5px; min-width: 190px; }
+    .${r} .scribe-app-menu-subwrap.sub-open .scribe-app-menu-sub { display: block; }
 
     /* Fill & Sign: FS2b floating pill palette (draggable; phone raises it above the dock). */
     .${r} .scribe-fs-pal { position: absolute; left: 50%; bottom: 14px; transform: translateX(-50%); z-index: 30;
@@ -3609,7 +3665,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
     .${r} .scribe-mode-tray.on { display: flex; }
 
-    /* The mac shell's mode drop-down: the sidebar strip's material at bar scale. */
+    /* The desktop layout's mode drop-down: the sidebar strip's material at bar scale. */
     .${r} .scribe-mode-track-wrap { position: relative; display: inline-flex; }
     .${r} .scribe-mode-track-el {
       display: inline-flex; align-items: stretch; height: 28px; box-sizing: border-box;

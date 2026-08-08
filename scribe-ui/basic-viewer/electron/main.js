@@ -1,5 +1,5 @@
 const {
-  app, BrowserWindow, ipcMain, powerMonitor, nativeTheme, Menu, shell, protocol, net,
+  app, BrowserWindow, ipcMain, powerMonitor, nativeTheme, Menu, shell, protocol, net, screen,
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
@@ -19,6 +19,41 @@ protocol.registerSchemesAsPrivileged([{
 
 let mainWindow;
 
+// The Linux window is transparent so the renderer can round its corners the way GNOME rounds every window.
+if (process.platform === 'linux') app.commandLine.appendSwitch('enable-transparent-visuals');
+
+// Window bounds, the maximize flag, and the recent-files list survive relaunches here.
+const shellStatePath = path.join(app.getPath('userData'), 'shell-state.json');
+let shellState = { bounds: null, isMaximized: false, recentFiles: [] };
+try {
+  shellState = { ...shellState, ...JSON.parse(fs.readFileSync(shellStatePath, 'utf8')) };
+} catch { /* First run, or an unreadable state file: start from the defaults. */ }
+function saveShellState() {
+  try { fs.writeFileSync(shellStatePath, JSON.stringify(shellState)); } catch { /* A failed save only loses state memory. */ }
+}
+
+// The values of the app's --scribe-surface/--scribe-ink tokens, so the Windows caption buttons sit on the bar seamlessly.
+// Electron takes literals here, so a token change must be mirrored.
+const overlayColors = (dark) => (dark
+  ? { color: '#1c2028', symbolColor: '#e8ebf2' }
+  : { color: '#ffffff', symbolColor: '#1f2530' });
+
+function pushRecentFiles() {
+  if (!mainWindow) return;
+  mainWindow.webContents.send('recent-files', shellState.recentFiles.map((f) => ({ path: f, label: path.basename(f) })));
+}
+
+// Feeds the macOS Open Recent menu, the Windows jump list, and the in-window menu's Open recent submenu.
+function recordRecentFile(file) {
+  // Windows paths compare case-insensitively, so a re-open with different casing must not duplicate the entry.
+  const key = process.platform === 'win32' ? file.toLowerCase() : file;
+  shellState.recentFiles = [file, ...shellState.recentFiles
+    .filter((f) => (process.platform === 'win32' ? f.toLowerCase() : f) !== key)].slice(0, 10);
+  saveShellState();
+  app.addRecentDocument(file);
+  pushRecentFiles();
+}
+
 /**
  * Parse --key=value arguments from an argv array.
  * A bare positional .pdf/.scribe path is a file to open (what a double-clicked file association passes on Windows and Linux).
@@ -36,17 +71,37 @@ function parseArgs(argv) {
 }
 
 function createWindow() {
+  // A remembered position must still be mostly on some connected display, or the window comes back stranded off-screen.
+  let restoredBounds = shellState.bounds;
+  if (restoredBounds) {
+    const visible = screen.getAllDisplays().some((d) => {
+      const a = d.workArea;
+      return restoredBounds.x < a.x + a.width - 40 && restoredBounds.x + restoredBounds.width > a.x + 40
+        && restoredBounds.y >= a.y - 20 && restoredBounds.y < a.y + a.height - 40;
+    });
+    if (!visible) restoredBounds = null;
+  }
+  const { workArea } = screen.getPrimaryDisplay();
   mainWindow = new BrowserWindow({
-    width: 900,
-    height: 1100,
+    width: restoredBounds ? restoredBounds.width : 900,
+    // The portrait default must still fit a 1080p work area on first run.
+    height: restoredBounds ? restoredBounds.height : Math.min(1100, workArea.height - 40),
+    ...(restoredBounds ? { x: restoredBounds.x, y: restoredBounds.y } : {}),
     minWidth: 620,
     minHeight: 440,
     // macOS: decorated window with the native traffic lights overlaying the toolbar.
-    // Windows and Linux: frameless, with the close button the renderer supplies.
-    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' } : { frame: false }),
+    // Windows: hidden title bar with the native caption buttons, which is what keeps the Snap Layouts flyout.
+    // Linux: frameless, with the caption trio the renderer supplies.
+    ...(process.platform === 'darwin' ? { titleBarStyle: 'hiddenInset' }
+      : process.platform === 'win32' ? {
+        titleBarStyle: 'hidden',
+        titleBarOverlay: { height: 40, ...overlayColors(nativeTheme.shouldUseDarkColors) },
+      } : { frame: false, transparent: true }),
     title: '21 Viewer',
     // Match the app's canvas token so the first paint does not flash a mismatched color.
-    backgroundColor: nativeTheme.shouldUseDarkColors ? '#12151b' : '#f4f6fa',
+    // Linux stays fully transparent, since any opaque fill would square off the renderer's rounded corners.
+    backgroundColor: process.platform === 'linux' ? '#00000000'
+      : nativeTheme.shouldUseDarkColors ? '#12151b' : '#f4f6fa',
     // Windows and Linux take the window icon from here.
     // macOS ignores it and uses the icon from the app bundle instead.
     icon: path.join(__dirname, '../icons/icon-512.png'),
@@ -57,7 +112,32 @@ function createWindow() {
       sandbox: false,
     },
   });
+  if (shellState.isMaximized) mainWindow.maximize();
   mainWindow.once('ready-to-show', () => mainWindow?.show());
+
+  let saveTimer = null;
+  const noteBounds = () => {
+    if (!mainWindow) return;
+    shellState.bounds = mainWindow.getNormalBounds();
+    shellState.isMaximized = mainWindow.isMaximized();
+    clearTimeout(saveTimer);
+    saveTimer = setTimeout(saveShellState, 500);
+  };
+  mainWindow.on('resize', noteBounds);
+  mainWindow.on('move', noteBounds);
+  // The Linux caption trio swaps its maximize glyph for a restore glyph while maximized, and the rounded corners square off.
+  mainWindow.on('maximize', () => { noteBounds(); mainWindow?.webContents.send('window-maximized', true); });
+  mainWindow.on('unmaximize', () => { noteBounds(); mainWindow?.webContents.send('window-maximized', false); });
+  mainWindow.on('enter-full-screen', () => mainWindow?.webContents.send('window-fullscreen', true));
+  mainWindow.on('leave-full-screen', () => mainWindow?.webContents.send('window-fullscreen', false));
+  mainWindow.on('close', () => {
+    clearTimeout(saveTimer);
+    if (mainWindow) {
+      shellState.bounds = mainWindow.getNormalBounds();
+      shellState.isMaximized = mainWindow.isMaximized();
+    }
+    saveShellState();
+  });
 
   // A remote page navigated into this window would inherit the preload bridge and its read-any-path IPC.
   mainWindow.webContents.setWindowOpenHandler(({ url }) => {
@@ -84,6 +164,7 @@ function createWindow() {
 
   mainWindow.webContents.on('did-finish-load', () => {
     rendererReady = true;
+    pushRecentFiles();
     if (pendingOpenFile) {
       sendArgsToRenderer({ file: pendingOpenFile });
       pendingOpenFile = null;
@@ -132,8 +213,7 @@ function sendArgsToRenderer(args) {
   // Default: load file
   if (!args.file) return;
   const file = path.resolve(args.file);
-  // Feeds the File menu's native Open Recent submenu on macOS.
-  app.addRecentDocument(file);
+  recordRecentFile(file);
   mainWindow.webContents.send('load-file', {
     file,
     page: parseInt(args.page || '0', 10),
@@ -141,7 +221,9 @@ function sendArgsToRenderer(args) {
 }
 
 // The renderer pushes menu state whenever it changes, so the macOS menu items grey and check to match the app.
+// The Windows overlay follows the app's own dark-mode setting, which the OS theme does not track.
 ipcMain.on('menu-state', (_event, state) => {
+  if (process.platform === 'win32' && mainWindow) mainWindow.setTitleBarOverlay(overlayColors(!!state.darkChecked));
   const menu = Menu.getApplicationMenu();
   if (!menu) return;
   const set = (id, props) => {
@@ -167,6 +249,24 @@ ipcMain.handle('read-file', async (_event, filePath) => {
 
 // Power state feeds the library's warm-lane gate, so speculative rendering never runs on battery.
 ipcMain.handle('power-state', () => ({ onBattery: powerMonitor.isOnBatteryPower() }));
+
+ipcMain.on('window-minimize', () => mainWindow?.minimize());
+ipcMain.on('window-maximize-toggle', () => {
+  if (!mainWindow) return;
+  if (mainWindow.isMaximized()) mainWindow.unmaximize();
+  else mainWindow.maximize();
+});
+ipcMain.on('window-fullscreen-toggle', () => mainWindow?.setFullScreen(!mainWindow.isFullScreen()));
+
+ipcMain.on('open-recent', (_event, file) => {
+  if (typeof file === 'string' && fs.existsSync(file)) sendArgsToRenderer({ file });
+});
+ipcMain.on('clear-recent', () => {
+  shellState.recentFiles = [];
+  saveShellState();
+  app.clearRecentDocuments();
+  pushRecentFiles();
+});
 
 // Single-instance lock: if another instance is launched, forward its args
 // to the existing window instead of opening a second window.
@@ -234,6 +334,10 @@ if (!gotTheLock) {
           submenu: [{ label: '21 Viewer Website', click: () => shell.openExternal('https://viewer.21.ai') }],
         },
       ]));
+    } else {
+      // Electron otherwise installs its default menu, whose accelerators fire even though a frameless window never draws it.
+      // Ctrl+W quits, Ctrl+R reloads and loses the session, and Ctrl+0 and Ctrl+plus/minus drive Chromium page zoom over the app's own.
+      Menu.setApplicationMenu(null);
     }
     // These headers make the renderer crossOriginIsolated, which is what lets PDF bytes be shared across workers instead of cloned per worker.
     // The isolation headers must be set only here: adding a webRequest hook as well stacks duplicate values ("require-corp, require-corp"), which silently voids the policies.
