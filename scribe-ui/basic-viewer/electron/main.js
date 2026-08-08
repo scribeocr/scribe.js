@@ -1,8 +1,21 @@
 const {
-  app, BrowserWindow, ipcMain, session, powerMonitor, nativeTheme, Menu, shell,
+  app, BrowserWindow, ipcMain, powerMonitor, nativeTheme, Menu, shell, protocol, net,
 } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const { pathToFileURL } = require('url');
+
+// Module workers must be same-origin under COEP, and file:// origins are opaque, so every worker dies at spawn.
+// Serving the bundle over a registered scheme gives the app a real origin, which is what makes crossOriginIsolated PDF sharing possible.
+const APP_SCHEME = 'app';
+// Both dev (repo checkout) and the packaged staging tree keep main.js at scribe-ui/basic-viewer/electron/, three levels below the bundle root.
+const APP_ROOT = path.join(__dirname, '..', '..', '..');
+protocol.registerSchemesAsPrivileged([{
+  scheme: APP_SCHEME,
+  privileges: {
+    standard: true, secure: true, supportFetchAPI: true, corsEnabled: true, stream: true,
+  },
+}]);
 
 let mainWindow;
 
@@ -46,6 +59,17 @@ function createWindow() {
   });
   mainWindow.once('ready-to-show', () => mainWindow?.show());
 
+  // A remote page navigated into this window would inherit the preload bridge and its read-any-path IPC.
+  mainWindow.webContents.setWindowOpenHandler(({ url }) => {
+    if (/^https?:\/\//.test(url)) shell.openExternal(url);
+    return { action: 'deny' };
+  });
+  mainWindow.webContents.on('will-navigate', (event, url) => {
+    if (url.startsWith(`${APP_SCHEME}://`)) return;
+    event.preventDefault();
+    if (/^https?:\/\//.test(url)) shell.openExternal(url);
+  });
+
   // Native cut/copy/paste menu in editable fields, which Electron does not provide on its own.
   // Scoped to editables: the app draws its own menus elsewhere (bookmarks, comments, layout boxes).
   mainWindow.webContents.on('context-menu', (_event, params) => {
@@ -56,7 +80,7 @@ function createWindow() {
     ]).popup();
   });
 
-  mainWindow.loadFile(path.join(__dirname, 'electron.html'));
+  mainWindow.loadURL(`${APP_SCHEME}://bundle/scribe-ui/basic-viewer/electron/electron.html`);
 
   mainWindow.webContents.on('did-finish-load', () => {
     rendererReady = true;
@@ -212,14 +236,18 @@ if (!gotTheLock) {
       ]));
     }
     // These headers make the renderer crossOriginIsolated, which is what lets PDF bytes be shared across workers instead of cloned per worker.
-    session.defaultSession.webRequest.onHeadersReceived((details, callback) => {
-      callback({
-        responseHeaders: {
-          ...details.responseHeaders,
-          'Cross-Origin-Opener-Policy': ['same-origin'],
-          'Cross-Origin-Embedder-Policy': ['require-corp'],
-        },
-      });
+    // The isolation headers must be set only here: adding a webRequest hook as well stacks duplicate values ("require-corp, require-corp"), which silently voids the policies.
+    // A webRequest hook cannot replace this either, since it never decorates worker-script responses, which must carry COEP themselves to spawn.
+    protocol.handle(APP_SCHEME, async (request) => {
+      const { pathname } = new URL(request.url);
+      const target = path.normalize(path.join(APP_ROOT, decodeURIComponent(pathname)));
+      if (!target.startsWith(APP_ROOT + path.sep)) return new Response('Not found', { status: 404 });
+      const res = await net.fetch(pathToFileURL(target).toString());
+      const headers = new Headers(res.headers);
+      headers.set('Cross-Origin-Opener-Policy', 'same-origin');
+      headers.set('Cross-Origin-Embedder-Policy', 'require-corp');
+      headers.set('Cross-Origin-Resource-Policy', 'same-origin');
+      return new Response(res.body, { status: res.status, headers });
     });
     powerMonitor.on('on-battery', () => mainWindow?.webContents.send('power-changed', { onBattery: true }));
     powerMonitor.on('on-ac', () => mainWindow?.webContents.send('power-changed', { onBattery: false }));
