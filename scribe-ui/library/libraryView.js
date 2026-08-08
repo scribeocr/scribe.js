@@ -146,7 +146,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-progress { display: none; align-items: center; gap: 10px; padding: 8px 18px; font-size: 13px; background: color-mix(in srgb, var(--scribe-accent) 12%, var(--scribe-surface)); border-bottom: 1px solid color-mix(in srgb, var(--scribe-ink) 12%, transparent); }
 .scribe-pdf-viewer .scribe-library-body { flex: 1; overflow-y: auto; padding: 16px 18px; }
 .scribe-pdf-viewer .scribe-library-section-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.6; margin: 4px 0 10px; }
-.scribe-pdf-viewer .scribe-library-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 1fr)); gap: 14px; margin-bottom: 22px; position: relative; }
+.scribe-pdf-viewer .scribe-library-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 190px)); justify-content: center; gap: 14px; margin-bottom: 22px; position: relative; }
 .scribe-pdf-viewer .scribe-library-card { border: 1px solid color-mix(in srgb, var(--scribe-ink) 14%, transparent); border-radius: 8px; background: var(--scribe-surface); cursor: pointer; overflow: hidden; display: flex; flex-direction: column; position: relative; touch-action: pan-y; user-select: none; }
 .scribe-pdf-viewer .scribe-library-card.dragging { opacity: 0.35; }
 .scribe-library-ghost { position: fixed; z-index: 100; pointer-events: none; transform: scale(1.03); box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35); border-radius: 8px; overflow: hidden; font-size: 14px; color: var(--scribe-ink); }
