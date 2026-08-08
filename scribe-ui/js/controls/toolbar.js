@@ -2573,6 +2573,11 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       background: var(--scribe-danger-soft);
     }
 
+    .${r} .scribe-thumb-menu-item.disabled {
+      color: var(--scribe-ink-3);
+      pointer-events: none;
+    }
+
     .${r} .scribe-thumb-menu-header {
       padding: 5px 12px 6px;
       font-size: 11px;

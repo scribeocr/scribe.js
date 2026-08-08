@@ -52,6 +52,10 @@ const PANEL_EXTRA_W = 30;
 // The phone grid's cell is at most COMPACT_W: screens too narrow for three such columns get a narrower cell to keep three.
 const THUMB_W = 200;
 const COMPACT_W = 104;
+// The 300px thumbnail rasters are already stretched at THUMB_W on 2x displays, so raising the ceiling above it would only ship blur.
+const THUMB_W_MIN = 110;
+const THUMB_SIZE_STEP = 30;
+const THUMB_SIZE_STORAGE_KEY = 'scribe-thumb-size';
 // Column cap in the compact phone grid (higher than MAX_COLS so a landscape phone can pack more).
 const COMPACT_MAX_COLS = 6;
 // Slide duration in ms. Must match the `transition` on `.scribe-thumb-panel` so the post-hide unmount waits for it.
@@ -128,9 +132,15 @@ function clearPageClipboard() {
 export function createThumbnailPanel(scribe, {
   onSelect, onPageOpen, onExtract, onInsertFromFile, onResize,
 }) {
+  let desktopCellW = THUMB_W;
+  try {
+    const stored = parseInt(window.localStorage.getItem(THUMB_SIZE_STORAGE_KEY) || '', 10);
+    if (stored >= THUMB_W_MIN && stored <= THUMB_W) desktopCellW = stored;
+  } catch { /* localStorage unavailable. */ }
+
   const panelElem = document.createElement('div');
   panelElem.className = 'scribe-thumb-panel';
-  panelElem.style.width = `${THUMB_W + PANEL_EXTRA_W}px`;
+  panelElem.style.width = `${desktopCellW + PANEL_EXTRA_W}px`;
   // Focusable so the rail can take focus and claim the arrow keys for page navigation when active, with `:focus-within` marking the current page.
   // `-1` keeps it out of the tab order, so the rail is focused by clicking a thumb rather than by Tab.
   panelElem.tabIndex = -1;
@@ -257,7 +267,9 @@ export function createThumbnailPanel(scribe, {
   let layoutMode = 'rail';
   // Number of grid columns: 1 in the rail, up to MAX_COLS in grid mode.
   let gridCols = 1;
-  let cellW = THUMB_W;
+  let cellW = desktopCellW;
+  // Cell width the geometry arrays were last laid out with, which trails `cellW` during a size glide.
+  let laidCellW = cellW;
   let compact = false;
   // Per-row overhead (padding + label) and the vertical gap between rows; tightened for the compact phone grid.
   let rowOverhead = ROW_OVERHEAD;
@@ -764,15 +776,15 @@ export function createThumbnailPanel(scribe, {
     // A press that never crosses the reorder drag threshold stays a plain click, because suppressClick is set only once a drag begins.
     boxElem.addEventListener('pointerdown', (e) => reorder.onThumbPointerDown(e, idx()));
     boxElem.addEventListener('contextmenu', (e) => {
-      // The menu is offered whenever page editing is enabled, so pages can be rotated or copied without entering the Edit Pages mode.
-      if (!(scribe.opt && scribe.opt.enablePageEditing)) return;
       e.preventDefault();
       // The room's modes have no page menu: browse is read-only, and Edit mutates on the cells.
       if (roomMode) return;
       // The touch hold-to-lift gesture opens this menu itself on a release-in-place.
       // Swallow the native long-press contextmenu Android fires in parallel so it does not open twice.
       if (reorder.touchActive()) return;
-      openContextMenu(e.clientX, e.clientY, idx());
+      // The page menu is offered whenever page editing is enabled, so pages can be rotated or copied without entering the Edit Pages mode.
+      if (scribe.opt && scribe.opt.enablePageEditing) openContextMenu(e.clientX, e.clientY, idx());
+      else if (!compact) openSizeMenu(e.clientX, e.clientY);
     });
 
     // Edit-mode selection checkbox, shown under `.scribe-pages-room.editing` and `.scribe-thumb-editmode`.
@@ -976,6 +988,7 @@ export function createThumbnailPanel(scribe, {
     if (!doc || pageCount === 0) {
       total = 0;
       spacer.style.height = '0px';
+      laidCellW = cellW;
       return;
     }
     const metrics = doc.pageMetrics || [];
@@ -1033,6 +1046,7 @@ export function createThumbnailPanel(scribe, {
       total = acc;
     }
     spacer.style.height = `${total}px`;
+    laidCellW = cellW;
   }
 
   /**
@@ -1042,6 +1056,8 @@ export function createThumbnailPanel(scribe, {
   function rebuild(activeN = -1) {
     // The panel keeps its current width across documents. ComputeGeometry re-derives the columns for that width below.
     generation += 1;
+    cancelSizeAnim();
+    if (!compact) cellW = desktopCellW;
     if (renderTimer) { clearTimeout(renderTimer); renderTimer = null; }
     clearMounted();
     // A rebuild means the document changed, so the old page indices no longer refer to the same pages.
@@ -1066,16 +1082,24 @@ export function createThumbnailPanel(scribe, {
 
   /**
    * Re-lay the rows for a new column count.
+   * @param {boolean} [force] Re-lay even at the same column count, for a changed cell width.
    */
-  function reflow() {
-    if (pageCount === 0 || gridColsFor() === gridCols) return;
-    // Settle any slide still in flight (a fast drag can re-cross a boundary mid-animation) before measuring.
-    finishColumnFlip();
+  function reflow(force) {
+    const colsChanged = gridColsFor() !== gridCols;
+    if (pageCount === 0 || (!force && !colsChanged)) return;
+    // Captured before the old slide is settled, so the rects hold each cell's live on-screen pose and a new slide starts where the eye left off.
+    /** @type {?Map<number, DOMRect>} */
+    let liveStarts = null;
+    if (colsChanged && columnFlip) {
+      liveStarts = new Map();
+      for (const [n, entry] of mounted) liveStarts.set(n, entry.thumbElem.getBoundingClientRect());
+    }
+    if (colsChanged) finishColumnFlip();
 
     // The slide derives each cell's start from the pre-relayout geometry and scroll, so snapshot them.
     // computeGeometry reassigns the arrays, so holding the references keeps the old ones intact.
     const before = {
-      offsets, lefts, scrollTop: scrollElem.scrollTop, mounted: new Set(mounted.keys()),
+      offsets, lefts, scrollTop: scrollElem.scrollTop, mounted: new Set(mounted.keys()), cellW: laidCellW,
     };
 
     computeGeometry();
@@ -1095,29 +1119,51 @@ export function createThumbnailPanel(scribe, {
     for (const [n, entry] of mounted) restyleRow(entry, n);
     scheduleRenders(true);
 
-    playColumnFlip(before, first, last);
+    if (colsChanged) playColumnFlip(before, first, last, liveStarts);
   }
 
   /**
    * Slide the mounted cells from their old column positions into their new slots.
    * An entering cell had no old position and could sit far off-screen,
    * so its start is pinned just beyond the nearest edge to slide in rather than streak across the viewport.
-   * @param {{offsets: Array<number>, lefts: Array<number>, scrollTop: number, mounted: Set<number>}} before
+   * @param {{offsets: Array<number>, lefts: Array<number>, scrollTop: number, mounted: Set<number>, cellW: number}} before
    * @param {number} first @param {number} last
+   * @param {?Map<number, DOMRect>} [liveStarts] Live on-screen poses to start from, replacing the pre-relayout geometry.
    */
-  function playColumnFlip(before, first, last) {
+  function playColumnFlip(before, first, last, liveStarts) {
     const newScrollTop = scrollElem.scrollTop;
+    const scale = before.cellW / cellW;
+    // All rects are read before any transform is written, so the reads share one forced layout instead of thrashing.
+    /** @type {Map<number, {dx: number, dy: number, s: number}>} */
+    const retargets = new Map();
+    if (liveStarts) {
+      for (const [n, entry] of mounted) {
+        const live = liveStarts.get(n);
+        if (!live) continue;
+        const now = entry.thumbElem.getBoundingClientRect();
+        if (now.width <= 0) continue;
+        retargets.set(n, { dx: live.left - now.left, dy: live.top - now.top, s: live.width / now.width });
+      }
+    }
     /** @type {Array<HTMLElement>} */
     const animated = [];
     for (const [n, entry] of mounted) {
-      const newTop = PAD + offsets[n] - newScrollTop;
-      let oldTop = PAD + before.offsets[n] - before.scrollTop;
-      if (!before.mounted.has(n)) oldTop = Math.max(-0.5 * viewportH, Math.min(1.5 * viewportH, oldTop));
-      const dx = before.lefts[n] - lefts[n];
-      const dy = oldTop - newTop;
-      if (Math.round(dx) === 0 && Math.round(dy) === 0) continue;
+      let dx, dy, s;
+      const retarget = retargets.get(n);
+      if (retarget) {
+        ({ dx, dy, s } = retarget);
+      } else {
+        const newTop = PAD + offsets[n] - newScrollTop;
+        let oldTop = PAD + before.offsets[n] - before.scrollTop;
+        if (!before.mounted.has(n)) oldTop = Math.max(-0.5 * viewportH, Math.min(1.5 * viewportH, oldTop));
+        dx = before.lefts[n] - lefts[n];
+        dy = oldTop - newTop;
+        s = scale;
+      }
+      if (Math.abs(s - 1) < 0.002 && Math.abs(dx) < 0.5 && Math.abs(dy) < 0.5) continue;
       entry.thumbElem.style.transition = 'none';
-      entry.thumbElem.style.transform = `translate(${dx}px, ${dy}px)`;
+      if (s !== 1) entry.thumbElem.style.transformOrigin = '0 0';
+      entry.thumbElem.style.transform = `translate(${dx}px, ${dy}px)${s !== 1 ? ` scale(${s})` : ''}`;
       animated.push(entry.thumbElem);
     }
     /** @type {Set<number>} */
@@ -1141,7 +1187,7 @@ export function createThumbnailPanel(scribe, {
   function finishColumnFlip() {
     if (!columnFlip) return;
     clearTimeout(columnFlip.timer);
-    for (const el of columnFlip.animated) { el.style.transition = ''; el.style.transform = ''; }
+    for (const el of columnFlip.animated) { el.style.transition = ''; el.style.transform = ''; el.style.transformOrigin = ''; }
     for (const n of columnFlip.leaving) { const e = mounted.get(n); if (e) unmountRow(n, e); }
     columnFlip = null;
   }
@@ -1183,6 +1229,63 @@ export function createThumbnailPanel(scribe, {
     return applied;
   }
 
+  // A wheel or pinch stream only re-aims `sizeAnimTarget`, so a flood of events adds no layout work.
+  // Relaying on every event instead starves paint on large documents.
+  let sizeAnim = 0;
+  let sizeAnimTarget = 0;
+  let sizeAnimFrom = 0;
+  let sizeAnimT0 = 0;
+
+  function cancelSizeAnim() {
+    if (!sizeAnim) return;
+    cancelAnimationFrame(sizeAnim);
+    sizeAnim = 0;
+  }
+
+  /**
+   * Set the desktop rail's cell width.
+   * The value is clamped to the size bounds, persisted, and glided into place.
+   * @param {number} px
+   */
+  function setThumbSize(px) {
+    const next = Math.max(THUMB_W_MIN, Math.min(THUMB_W, Math.round(px)));
+    if (next === desktopCellW) return;
+    desktopCellW = next;
+    try { window.localStorage.setItem(THUMB_SIZE_STORAGE_KEY, String(next)); } catch { /* localStorage unavailable. */ }
+    // The phone grid sizes its own cells, so the new width applies once back on the desktop rail.
+    if (compact) return;
+    if (!visible) {
+      cancelSizeAnim();
+      cellW = next;
+      computeGeometry();
+      return;
+    }
+    sizeAnimTarget = next;
+    sizeAnimFrom = cellW;
+    sizeAnimT0 = performance.now();
+    if (sizeAnim) return;
+    pinResizeAnchor();
+    const step = (now) => {
+      const t = Math.max(0, Math.min(1, (now - sizeAnimT0) / SLIDE_MS));
+      const eased = 1 - (1 - t) ** 3;
+      cellW = sizeAnimFrom + (sizeAnimTarget - sizeAnimFrom) * eased;
+      measureViewport();
+      reflow(true);
+      if (t < 1) {
+        sizeAnim = requestAnimationFrame(step);
+        return;
+      }
+      sizeAnim = 0;
+      cellW = sizeAnimTarget;
+      updateWindow(true);
+      const { min, max } = getResizeBounds();
+      const cur = widthAnim ? widthAnimTarget : (parseFloat(panelElem.style.width) || 0);
+      if (cur < min) animateWidthTo(min);
+      else if (cur > max) animateWidthTo(max);
+    };
+    sizeAnim = requestAnimationFrame(step);
+  }
+
   /**
    * Switch cell size between the docked desktop rail (THUMB_W) and the phone sheet's compact grid (COMPACT_W).
    * Call `refit` once the sheet is shown, to re-measure at its real width.
@@ -1191,7 +1294,8 @@ export function createThumbnailPanel(scribe, {
   function setCompact(on) {
     if (compact === on) return;
     compact = on;
-    cellW = on ? COMPACT_W : THUMB_W;
+    cancelSizeAnim();
+    cellW = on ? COMPACT_W : desktopCellW;
     rowOverhead = on ? COMPACT_ROW_OVERHEAD : ROW_OVERHEAD;
     rowGap = on ? COMPACT_VGAP : GRID_GAP;
     panelElem.classList.toggle('scribe-thumb-compact', on);
@@ -1426,6 +1530,17 @@ export function createThumbnailPanel(scribe, {
     window.addEventListener('pointercancel', onResizeEnd);
   });
 
+  // A trackpad pinch arrives as a ctrl-modified wheel, so this one handler covers both gestures.
+  // The 1px floor keeps a slow pinch's fractional deltas from rounding away to nothing.
+  panelElem.addEventListener('wheel', (e) => {
+    if (!(e.ctrlKey || e.metaKey) || e.altKey) return;
+    if (compact || roomMode) return;
+    e.preventDefault();
+    const delta = Math.max(-30, Math.min(30, -e.deltaY)) * 0.4;
+    if (delta === 0) return;
+    setThumbSize(desktopCellW + (delta > 0 ? Math.max(1, delta) : Math.min(-1, delta)));
+  }, { passive: false });
+
   const marqueeElem = document.createElement('div');
   marqueeElem.className = 'scribe-thumb-marquee';
   marqueeElem.style.display = 'none';
@@ -1546,10 +1661,16 @@ export function createThumbnailPanel(scribe, {
   scrollElem.addEventListener('pointerdown', onMarqueePointerDown);
   // Right-clicking a gap between thumbnails (or the empty space) offers to paste or insert a file at that position.
   scrollElem.addEventListener('contextmenu', (e) => {
-    if (!pageEditArmed() || !scribe.doc) return;
+    if (!scribe.doc) return;
     if (e.target instanceof Element && e.target.closest('.scribe-thumb-box')) return;
+    if (pageEditArmed()) {
+      e.preventDefault();
+      openGapMenu(e.clientX, e.clientY);
+      return;
+    }
+    if (roomMode || compact) return;
     e.preventDefault();
-    openGapMenu(e.clientX, e.clientY);
+    openSizeMenu(e.clientX, e.clientY);
   });
 
   /**
@@ -1999,6 +2120,10 @@ export function createThumbnailPanel(scribe, {
         () => onExtract(multi ? [...selected].sort((a, b) => a - b) : [n]));
     }
     addItem(multi ? 'Delete' : 'Delete page', true, () => (multi ? deleteSelection() : onDelete(n)));
+    if (!compact) {
+      menuElem.appendChild(document.createElement('hr')).className = 'scribe-thumb-menu-divider';
+      appendSizeMenuItems();
+    }
 
     // Show first so the menu has measurable dimensions, then clamp it inside the host.
     menuElem.style.display = '';
@@ -2031,7 +2156,51 @@ export function createThumbnailPanel(scribe, {
     };
     if (canPaste()) addItem('Paste here', () => pasteAt(gap));
     if (onInsertFromFile) addItem('Insert file here', () => onInsertFromFile(gap));
+    if (!compact) {
+      // Without a positional action, the insertion line would mark a spot nothing acts on.
+      if (menuElem.firstChild) menuElem.appendChild(document.createElement('hr')).className = 'scribe-thumb-menu-divider';
+      else dropIndicator.hide();
+      appendSizeMenuItems();
+    }
     if (!menuElem.firstChild) { clearContextHighlight(); return; } // nothing to offer at this gap
+
+    menuElem.style.display = '';
+    const hostRect = batchHost.getBoundingClientRect();
+    const left = Math.min(clientX - hostRect.left, hostRect.width - menuElem.offsetWidth - 4);
+    const top = Math.min(clientY - hostRect.top, hostRect.height - menuElem.offsetHeight - 4);
+    menuElem.style.left = `${Math.max(4, left)}px`;
+    menuElem.style.top = `${Math.max(4, top)}px`;
+    setTimeout(() => document.addEventListener('pointerdown', onMenuOutsidePointer), 0);
+  }
+
+  /** Append the "Smaller/Larger thumbnails" rows to the menu being built. */
+  function appendSizeMenuItems() {
+    /** @param {string} label @param {number} dir */
+    const addSizeItem = (label, dir) => {
+      const item = document.createElement('div');
+      const atBound = dir < 0 ? desktopCellW <= THUMB_W_MIN : desktopCellW >= THUMB_W;
+      item.className = atBound ? 'scribe-thumb-menu-item disabled' : 'scribe-thumb-menu-item';
+      item.textContent = label;
+      item.addEventListener('click', () => { closeContextMenu(); setThumbSize(desktopCellW + dir * THUMB_SIZE_STEP); });
+      menuElem.appendChild(item);
+    };
+    addSizeItem('Smaller thumbnails', -1);
+    addSizeItem('Larger thumbnails', 1);
+  }
+
+  /**
+   * Context menu holding only the thumbnail-size rows, for right-clicks with no page actions to offer.
+   * @param {number} clientX
+   * @param {number} clientY
+   */
+  function openSizeMenu(clientX, clientY) {
+    clearContextHighlight();
+    menuElem.replaceChildren();
+    const header = document.createElement('div');
+    header.className = 'scribe-thumb-menu-header';
+    header.textContent = 'Thumbnails';
+    menuElem.appendChild(header);
+    appendSizeMenuItems();
 
     menuElem.style.display = '';
     const hostRect = batchHost.getBoundingClientRect();
@@ -2437,6 +2606,7 @@ export function createThumbnailPanel(scribe, {
     }
     viewportObserver.disconnect();
     if (widthAnim) cancelAnimationFrame(widthAnim);
+    cancelSizeAnim();
     reorder.cancelDrag();
     closeContextMenu();
     peekHide();
