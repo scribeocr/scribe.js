@@ -14,6 +14,12 @@ cp -r "$SCRIPT_DIR/../tauri/dist/." "$STAGING/"
 cp "$SCRIPT_DIR/main.js" "$SCRIPT_DIR/preload.js" "$SCRIPT_DIR/electron.html" "$SCRIPT_DIR/electron-entry.js" \
    "$STAGING/scribe-ui/basic-viewer/electron/"
 
+# Electron pins its Chromium, so the feature detection in tess/worker-script/index.js can only ever select the relaxedsimd cores.
+# The prune stays out of prepare-dist.sh because the Tauri shell runs on the host webview, which may need the plain SIMD fallbacks.
+for f in tesseract-core tesseract-core-lstm tesseract-core-simd tesseract-core-simd-lstm; do
+  rm "$STAGING/tess/core/$f.js" "$STAGING/tess/core/$f.wasm"
+done
+
 cat > "$STAGING/package.json" <<'JSON'
 {
   "name": "viewer-21",
@@ -27,7 +33,7 @@ cat > "$STAGING/package.json" <<'JSON'
 JSON
 
 cd "$SCRIPT_DIR"
-npx electron-builder
+npx electron-builder "$@"
 
 echo ""
 echo "Build complete. Artifacts under: scribe-ui/basic-viewer/electron/dist/"

@@ -10,9 +10,6 @@
     "start": "electron .",
     "dist": "bash build.sh"
   },
-  "dependencies": {
-    "electron": "^33.0.0"
-  },
   "build": {
     "appId": "ai.21.viewer",
     "productName": "21 Viewer",
@@ -21,6 +18,9 @@
       "output": "dist"
     },
     "asar": true,
+    "electronLanguages": [
+      "en-US"
+    ],
     "fileAssociations": [
       {
         "ext": "pdf",
@@ -50,6 +50,7 @@
     }
   },
   "devDependencies": {
+    "electron": "^33.0.0",
     "electron-builder": "^26.15.3"
   }
 }

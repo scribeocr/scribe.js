@@ -13,10 +13,22 @@ DIST="$SCRIPT_DIR/dist"
 rm -rf "$DIST"
 mkdir -p "$DIST/scribe-ui/basic-viewer"
 
-# scribe.js: top-level files (entry point + siblings) and runtime subdirectories
-find "$SCRIBE_JS_ROOT" -maxdepth 1 -type f -name '*.js' -exec cp {} "$DIST/" \;
-for dir in fonts js lib scrollview-web tess; do
+cp "$SCRIBE_JS_ROOT/scribe.js" "$DIST/"
+for dir in fonts js lib; do
   cp -r "$SCRIBE_JS_ROOT/$dir" "$DIST/$dir"
+done
+
+# core-vanilla is skipped because the viewer never enables vanillaMode.
+mkdir -p "$DIST/tess"
+cp "$SCRIBE_JS_ROOT"/tess/*.js "$DIST/tess/"
+cp -r "$SCRIBE_JS_ROOT/tess/worker-script" "$DIST/tess/worker-script"
+cp -r "$SCRIBE_JS_ROOT/tess/core" "$DIST/tess/core"
+
+# The rest of the directory is a standalone demo app and its node_modules, which the viewer never loads.
+mkdir -p "$DIST/scrollview-web"
+cp "$SCRIBE_JS_ROOT/scrollview-web/draw.js" "$SCRIBE_JS_ROOT/scrollview-web/LICENSE" "$DIST/scrollview-web/"
+for dir in scrollview src util; do
+  cp -r "$SCRIBE_JS_ROOT/scrollview-web/$dir" "$DIST/scrollview-web/$dir"
 done
 
 # scribe-ui: top-level files + js + library + basic-viewer (excluding electron/tauri subdirs)
