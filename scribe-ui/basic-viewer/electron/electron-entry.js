@@ -14,6 +14,11 @@ pdfViewer.toolbarElemEnd.style.webkitAppRegion = 'drag';
 const toolbarButtons = pdfViewer.toolbarElem.querySelector('.col-md');
 if (toolbarButtons) toolbarButtons.style.webkitAppRegion = 'no-drag';
 
+// The library swaps its own controls into the drag-region toolbar zones, so they must opt back out or every click drags the window.
+const dragOptOut = document.createElement('style');
+dragOptOut.textContent = '.scribe-library-bar-title, .scribe-library-bar-controls { -webkit-app-region: no-drag; }';
+document.head.appendChild(dragOptOut);
+
 const isMac = navigator.platform.startsWith('Mac');
 if (isMac) {
   // The macOS window is decorated with the native traffic lights overlaying the toolbar, so inset the leading cluster clear of them.
