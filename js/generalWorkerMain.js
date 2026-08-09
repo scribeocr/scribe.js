@@ -18,8 +18,19 @@ export async function initGeneralWorker() {
   }
 
   return new Promise((resolve, reject) => {
+    /** @type {?Error} */
+    let workerError = null;
+
+    // A dead worker never answers, so every pending promise must reject or callers hang forever.
     const errorHandler = (err) => {
       console.error(err);
+      const message = (err && typeof err === 'object' && 'message' in err && err.message) || 'General worker crashed.';
+      workerError = new Error(String(message));
+      workerError.name = 'WorkerCrashError';
+      for (const id of Object.keys(workerPromises)) {
+        workerPromises[id].reject(workerError);
+        delete workerPromises[id];
+      }
     };
 
     if (typeof process === 'undefined') {
@@ -64,6 +75,7 @@ export async function initGeneralWorker() {
      */
     function wrap(func) {
       return function (...args) {
+        if (workerError) return Promise.reject(workerError);
         return new Promise((innerResolve, innerReject) => {
           const id = promiseId++;
           workerPromises[id] = { resolve: innerResolve, reject: innerReject, func };
@@ -79,6 +91,7 @@ export async function initGeneralWorker() {
      */
     function wrap2(func) {
       return function (...args) {
+        if (workerError) return [Promise.reject(workerError), Promise.reject(workerError)];
         const id = promiseId++;
         const promiseB = new Promise((innerResolve, innerReject) => {
           workerPromises[`${id}b`] = { resolve: innerResolve, reject: innerReject, func };
@@ -122,9 +135,18 @@ export async function initGeneralWorker() {
     obj.updateFontContWorker = wrap('updateFontContWorker');
     obj.dropFontsWorker = wrap('dropFontsWorker');
 
-    obj.terminate = () => worker.terminate();
+    // A killed worker never answers, so teardown rejects outstanding calls too.
+    obj.terminate = () => {
+      workerError = new Error('General worker terminated.');
+      workerError.name = 'WorkerTerminatedError';
+      for (const id of Object.keys(workerPromises)) {
+        workerPromises[id].reject(workerError);
+        delete workerPromises[id];
+      }
+      return worker.terminate();
+    };
 
-    ready.then(() => resolve(obj));
+    ready.then(() => resolve(obj), reject);
   });
 }
 

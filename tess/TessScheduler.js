@@ -37,6 +37,8 @@ export class TessScheduler {
 
   #jobQueue = [];
 
+  #terminated = false;
+
   /**
    * Page index the main viewer is on (the current page), or `null` when unset.
    * When set, staged viewer jobs dispatch closest-to-focus first and lane eviction drops the farthest job.
@@ -82,6 +84,10 @@ export class TessScheduler {
 
   getQueueLen() {
     return this.#jobQueue.length;
+  }
+
+  getRunningLen() {
+    return Object.keys(this.#runningWorkers).length;
   }
 
   getNumWorkers() {
@@ -162,6 +168,8 @@ export class TessScheduler {
       const job = {
         id, action, payload, forViewer, queuedAt: 0, dispatchedAt: 0,
       };
+      // Lets teardown settle this job while it is running on a worker that is about to be killed.
+      job.settleSkipped = () => resolve(SKIPPED);
       if (DEBUG_RENDER_SCHED && action === 'renderPdfPage') {
         job.queuedAt = performance.now();
         const kind = payload?.outputFormat === 'jpeg' ? 'thumbnail' : 'page';
@@ -198,7 +206,7 @@ export class TessScheduler {
       jobFunction.pageIndex = payload?.pageIndex;
       // Thumbnail renders are the only 'jpeg' output.
       jobFunction.isThumb = action === 'renderPdfPage' && payload?.outputFormat === 'jpeg';
-      // Lets the bounded-lane eviction below settle a dropped (never-run) job.
+      // Settles a staged job that will never run (lane eviction or pool teardown).
       jobFunction.drop = () => {
         if (DEBUG_RENDER_SCHED && action === 'renderPdfPage') {
           const kind = payload?.outputFormat === 'jpeg' ? 'thumbnail' : 'page';
@@ -277,6 +285,7 @@ export class TessScheduler {
   }
 
   async addJob(action, payload, forViewer = false) {
+    if (this.#terminated) return SKIPPED;
     if (this.getNumWorkers() === 0) {
       throw Error(`[${this.#id}]: You need to have at least one worker before adding jobs`);
     }
@@ -284,10 +293,19 @@ export class TessScheduler {
     return this.#queue(action, payload, forViewer);
   }
 
+  /**
+   * Tear the pool down.
+   * Staged and in-flight jobs settle to SKIPPED, the codebase's "dropped, ask again" contract, so no caller waits forever.
+   */
   async terminate() {
-    const terminatePromises = Object.keys(this.#workers)
-      .map((wid) => this.#workers[wid].terminate());
-    await Promise.all(terminatePromises);
+    this.#terminated = true;
+    const staged = this.#jobQueue;
     this.#jobQueue = [];
+    for (const job of staged) job.drop();
+    for (const job of Object.values(this.#runningWorkers)) job.settleSkipped();
+    const workers = Object.values(this.#workers);
+    this.#workers = {};
+    this.#runningWorkers = {};
+    await Promise.all(workers.map((w) => w.terminate()));
   }
 }

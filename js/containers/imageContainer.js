@@ -117,7 +117,7 @@ export class RenderSource {
   getScheduler = async () => {
     if (this.scheduler) return this.scheduler;
     if (!this.#schedulerReady) {
-      this.#schedulerReady = initPdfScheduler(this.workerN ?? undefined).then(async (s) => {
+      const spawn = initPdfScheduler(this.workerN ?? undefined).then(async (s) => {
         if (this.#reloadOnWake && this.pdfData) {
           // Mirrors openMainPDF's buffer choice so an SAB-enabled embedder keeps sharing after a wake.
           let pdfBytes;
@@ -134,6 +134,11 @@ export class RenderSource {
         this.scheduler = s;
         return s;
       });
+      // A failed spawn must not poison the source for the session, so the next call retries.
+      spawn.catch(() => {
+        if (this.#schedulerReady === spawn) this.#schedulerReady = null;
+      });
+      this.#schedulerReady = spawn;
     }
     return this.#schedulerReady;
   };
@@ -145,6 +150,8 @@ export class RenderSource {
    * Do not call with jobs in flight (e.g. deferred text extraction), because pool teardown kills them.
    */
   suspend = async () => {
+    // A pool mid-spawn has no `scheduler` yet, so returning here would leak the finished pool unreachable.
+    if (!this.scheduler && this.#schedulerReady) await this.#schedulerReady.catch(() => {});
     if (!this.scheduler) return;
     const s = this.scheduler;
     this.scheduler = null;
@@ -154,6 +161,7 @@ export class RenderSource {
   };
 
   terminate = async () => {
+    if (!this.scheduler && this.#schedulerReady) await this.#schedulerReady.catch(() => {});
     if (this.scheduler) {
       await this.scheduler.terminate();
       this.scheduler = null;

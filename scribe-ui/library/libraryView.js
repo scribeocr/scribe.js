@@ -82,7 +82,13 @@ const SNIPPET_RADIUS = 70;
  * Compressed-sidecar byte cap for background hit warming.
  * Importing a document restores its whole sidecar, so documents past this only get rasters from a preview or open the user asked for.
  */
-const WARM_SIDECAR_LIMIT = 8 * 1024 * 1024;
+const WARM_SIDECAR_LIMIT = 16 * 1024 * 1024;
+/**
+ * PDF byte cap for warming a result document in the background.
+ * Larger files fill on preview or open instead.
+ * Sized to admit 500+ page books, which run 25-45MB and top the ranking for generic queries.
+ */
+const WARM_PDF_LIMIT = 64 * 1024 * 1024;
 
 let stylesInjected = false;
 const addLibraryStyles = () => {
@@ -244,6 +250,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-pv-head .grow { flex: 1; }
 .scribe-pdf-viewer .scribe-library-pv-open { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 7px; border: none; background: none; color: var(--scribe-ink-2); font: inherit; font-size: 12.5px; cursor: pointer; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-pv-open:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
+.scribe-pdf-viewer .scribe-library-pv-open:disabled { opacity: 0.6; cursor: default; background: none; color: var(--scribe-ink-2); }
 .scribe-pdf-viewer .scribe-library-pv-open svg { width: 14px; height: 14px; }
 .scribe-pdf-viewer .scribe-library-pv-x { width: 26px; height: 26px; flex-shrink: 0; padding: 5px; border-radius: 7px; border: none; background: none; color: var(--scribe-ink-3); cursor: pointer; }
 .scribe-pdf-viewer .scribe-library-pv-x:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
@@ -260,6 +267,9 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-pv-viewer { flex: 1; min-width: 0; min-height: 0; position: relative; }
 .scribe-pdf-viewer .scribe-library-pv-veil { position: absolute; inset: 0; z-index: 5; background-color: var(--scribe-canvas); background-size: 100% 100%; transition: opacity 0.15s; pointer-events: none; }
 .scribe-pdf-viewer .scribe-library-pv-empty { color: var(--scribe-ink-3); font-size: 13px; margin: auto; }
+.scribe-pdf-viewer .scribe-library-pv-loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--scribe-ink-3); font-size: 13px; pointer-events: none; }
+.scribe-pdf-viewer .scribe-library-pv-loading-spin { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--scribe-ink-3); border-top-color: transparent; animation: scribe-library-pv-spin 0.8s linear infinite; }
+@keyframes scribe-library-pv-spin { to { transform: rotate(360deg); } }
 .scribe-pdf-viewer .scribe-library-pv-foot { display: flex; align-items: center; gap: 8px; height: 34px; flex-shrink: 0; box-sizing: border-box; padding: 0 12px; background: var(--scribe-surface); border-top: 1px solid var(--scribe-line); font-size: 12.5px; color: var(--scribe-ink-2); }
 .scribe-pdf-viewer .scribe-library-pv-foot button { border: none; background: none; color: var(--scribe-ink-2); font: inherit; font-size: 12.5px; cursor: pointer; border-radius: 6px; padding: 3px 8px; }
 .scribe-pdf-viewer .scribe-library-pv-foot button:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
@@ -1679,9 +1689,20 @@ export function installLibrary(viewer) {
       listPane = ensurePane('list', 'Select a document to preview it here', '‹ Previous page', 'Next page ›');
       split.wrap.appendChild(listPane.pane);
       const previewEntry = () => (listPreviewPath && manifest ? manifest.docs[listPreviewPath] : null);
-      listPane.onOpen = () => {
+      listPane.onOpen = async () => {
         const entry = previewEntry();
-        if (entry && listPreviewPath) openEntry(listPreviewPath, entry, { pageN: listPreviewPage });
+        if (!entry || !listPreviewPath) return;
+        const pane = listPane;
+        if (!pane) return;
+        const label = pane.openBtn.innerHTML;
+        /** @type {HTMLButtonElement} */ (pane.openBtn).disabled = true;
+        pane.openBtn.textContent = 'Opening…';
+        try {
+          await openEntry(listPreviewPath, entry, { pageN: listPreviewPage });
+        } finally {
+          pane.openBtn.innerHTML = label;
+          /** @type {HTMLButtonElement} */ (pane.openBtn).disabled = false;
+        }
       };
       listPane.onClose = () => {
         listPreviewPath = null;
@@ -1775,6 +1796,40 @@ export function installLibrary(viewer) {
   );
 
   /**
+   * Count of imports the user is actively waiting on, such as a pane hydration or an open.
+   * Background raster work pauses while this is nonzero.
+   */
+  let userLoadsActive = 0;
+  /** @type {Array<() => void>} */
+  const userIdleWaiters = [];
+  const beginUserLoad = () => { userLoadsActive++; };
+  const endUserLoad = () => {
+    userLoadsActive = Math.max(0, userLoadsActive - 1);
+    if (userLoadsActive === 0) while (userIdleWaiters.length) /** @type {() => void} */ (userIdleWaiters.shift())();
+  };
+  const userLoadIdle = () => (userLoadsActive === 0 ? Promise.resolve() : new Promise((resolve) => { userIdleWaiters.push(resolve); }));
+
+  /**
+   * Count a provisional document's eventual hydration as a user-facing load.
+   * Wraps `_requestHydration` so every trigger (dwell, click, scroll, promotion, save) pauses background warming for its duration.
+   * @param {Object} seedDoc
+   */
+  const countHydration = (seedDoc) => {
+    const inner = seedDoc._requestHydration;
+    if (!inner) return;
+    let counted = false;
+    seedDoc._requestHydration = () => {
+      const p = inner();
+      if (!counted) {
+        counted = true;
+        beginUserLoad();
+        Promise.resolve(p).catch(() => {}).finally(endUserLoad);
+      }
+      return p;
+    };
+  };
+
+  /**
    * Persist the two pages either side of `pageN` from an open document, so the next open of that spot paints instantly.
    * Skipped when the document's pages were edited, since stored rasters are keyed by the ingested page order.
    * @param {Object} doc
@@ -1790,6 +1845,7 @@ export function installLibrary(viewer) {
     const { hash, pageCount } = entry;
     (async () => {
       for (let n = Math.max(0, pageN - 2); n <= Math.min(pageCount - 1, pageN + 2); n++) {
+        await userLoadIdle();
         if (await s.readPageRaster(hash, n)) continue;
         const raster = await d.images.renderThumbnail(n, PAGE_RASTER_WIDTH, 0.75, true);
         if (raster) await s.writePageRaster(hash, n, raster);
@@ -1840,7 +1896,14 @@ export function installLibrary(viewer) {
         hydration: 'on-demand',
       };
     }
-    const doc = await sessionDoc(relPath, entry.hash);
+    beginUserLoad();
+    /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+    let doc;
+    try {
+      doc = await sessionDoc(relPath, entry.hash);
+    } finally {
+      endUserLoad();
+    }
     const pageCount = doc.pageMetrics.length;
     return {
       pageCount,
@@ -1975,11 +2038,13 @@ export function installLibrary(viewer) {
       + 'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17L17 7M9 7h8v8"/></svg></button>'
       + '<button class="scribe-library-pv-x" type="button" aria-label="Close preview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" '
       + 'stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg></button></div>'
-      + `<div class="scribe-library-pv-stage"><div class="scribe-library-pv-empty">${emptyText}</div><div class="scribe-library-pv-viewer" style="display:none;"></div></div>`
+      + `<div class="scribe-library-pv-stage"><div class="scribe-library-pv-empty">${emptyText}</div><div class="scribe-library-pv-viewer" style="display:none;"></div>`
+      + '<div class="scribe-library-pv-loading" style="display:none;"><div class="scribe-library-pv-loading-spin"></div>Loading page…</div></div>'
       + `<div class="scribe-library-pv-foot" style="display:none;"><button type="button" data-prev>${prevLabel}</button><button type="button" data-next>${nextLabel}</button>`
       + '<span class="grow"></span><span data-pos></span></div>';
     const pvHead = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-head'));
     const pvEmpty = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-empty'));
+    const pvLoading = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-loading'));
     const pvHost = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-viewer'));
     const pvFoot = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-foot'));
     const pvFindInput = /** @type {HTMLInputElement} */ (pane.querySelector('.scribe-library-pv-find input'));
@@ -2107,6 +2172,7 @@ export function installLibrary(viewer) {
       pvHead.style.display = 'none';
       pvFoot.style.display = 'none';
       pvHost.style.display = 'none';
+      pvLoading.style.display = 'none';
       pvEmpty.textContent = emptyText;
       pvEmpty.style.display = '';
     };
@@ -2115,7 +2181,7 @@ export function installLibrary(viewer) {
      * Preview a page in the embedded viewer, painting match marks when a query is given.
      * A `jump` target lands on far pages by re-seeding; without it, a page outside the seeded window accelerates the full load as scrolling there would.
      * @param {{relPath: string, hash: string, entry: import('./libraryStore.js').LibraryDocEntry,
-     *   pageN: number, query: ?string, title: string, meta: string, pos: string, jump?: boolean}} target
+     *   pageN: number, query: ?string, title: string, meta: string, pos: string, jump?: boolean, immediate?: boolean}} target
      */
     /** @type {?number} */
     let dwellTimer = null;
@@ -2126,8 +2192,9 @@ export function installLibrary(viewer) {
      * Lingering on a page with no stored raster is what loads the image, so rapid flipping stays free.
      * @param {{hash: string, pageN: number}} target
      * @param {number} t
+     * @param {boolean} [immediate] Load now instead of after the dwell, for an explicit click on this hit.
      */
-    const armDwell = async (target, t) => {
+    const armDwell = async (target, t, immediate = false) => {
       if (dwellTimer !== null) {
         clearTimeout(dwellTimer);
         dwellTimer = null;
@@ -2135,9 +2202,18 @@ export function installLibrary(viewer) {
       if (!store || !paneViewer?.doc || paneViewer.doc.id >= 0) return;
       if (await store.readPageRaster(target.hash, target.pageN)) return;
       if (t !== token) return;
+      const hydrate = () => {
+        if (!(t === token && paneViewer?.doc && paneViewer.doc.id < 0)) return;
+        pvLoading.style.display = '';
+        /** @type {any} */ (paneViewer.doc)._requestHydration?.();
+      };
+      if (immediate) {
+        hydrate();
+        return;
+      }
       dwellTimer = window.setTimeout(() => {
         dwellTimer = null;
-        if (t === token && paneViewer?.doc && paneViewer.doc.id < 0) /** @type {any} */ (paneViewer.doc)._requestHydration?.();
+        hydrate();
       }, DWELL_LOAD_MS);
     };
 
@@ -2208,6 +2284,7 @@ export function installLibrary(viewer) {
       /** @type {HTMLElement} */ (pvHead.querySelector('.m')).textContent = target.meta;
       /** @type {HTMLElement} */ (pvFoot.querySelector('[data-pos]')).textContent = target.pos;
       pvEmpty.style.display = 'none';
+      pvLoading.style.display = 'none';
       pvHost.style.display = '';
       if (!paneViewer) {
         paneViewer = new /** @type {any} */ (viewer.constructor)(pvHost, {
@@ -2221,6 +2298,8 @@ export function installLibrary(viewer) {
         pvHost.addEventListener('input', () => { paneDirty = true; }, true);
       }
       lastTarget = target;
+      // Background warming yields for the whole show, because the seed build and priming run before any hydration exists to count.
+      beginUserLoad();
       try {
         // Clicking a result on a far page of the same provisional document re-seeds around that page instead of forcing the full load.
         const jumpOutsideSeed = !!(current && paneViewer.doc && paneViewer.doc.id < 0
@@ -2239,7 +2318,7 @@ export function installLibrary(viewer) {
           endVeil();
           const entry = manifest?.docs[target.relPath];
           if (paneViewer.doc && paneViewer.doc.id >= 0 && entry) persistRasterWindow(paneViewer.doc, entry, target.pageN);
-          else armDwell(target, t);
+          else armDwell(target, t, target.immediate);
           return;
         }
         const pooled = sessions.takeLive(target.hash);
@@ -2285,15 +2364,22 @@ export function installLibrary(viewer) {
             : Promise.resolve(baseAnnots ? baseAnnots(n) : null)),
         } : seed);
         if (t !== token) return;
+        countHydration(paneViewer.doc);
         current = {
           relPath: target.relPath, hash: target.hash, pageN: target.pageN, query: target.query, handle, window: seed.window,
         };
+        // An explicit click on an unwarmed hit starts its full load here, in parallel with the seed's priming.
+        // Priming can stream megabytes of sidecar for a big document, and the reader is already waiting.
+        if (target.immediate) armDwell(target, t, true);
         await handle.primed;
         if (t !== token) return;
         await applyQueryAndPage(target);
         current.anchorTop = paneViewer.scribe.scrollContainer.scrollTop;
         endVeil(cover);
-        armDwell(target, t);
+        if (!target.immediate) armDwell(target, t);
+        handle.hydrated.finally(() => {
+          if (t === token) pvLoading.style.display = 'none';
+        }).catch(() => {});
         handle.hydrated.then(() => {
           if (!(current && current.handle === handle && paneViewer?.doc)) return;
           const ps = /** @type {NonNullable<typeof paneViewer>} */ (paneViewer).scribe;
@@ -2320,9 +2406,12 @@ export function installLibrary(viewer) {
         if (t === token) {
           endVeil();
           pvHost.style.display = 'none';
+          pvLoading.style.display = 'none';
           pvEmpty.textContent = 'This page could not be rendered.';
           pvEmpty.style.display = '';
         }
+      } finally {
+        endUserLoad();
       }
     };
 
@@ -2512,7 +2601,7 @@ export function installLibrary(viewer) {
     const hits = [];
     let active = -1;
 
-    const selectHit = (i) => {
+    const selectHit = (i, { immediate = false } = {}) => {
       active = i;
       hits.forEach((h, j) => h.row.classList.toggle('on', j === i));
       if (i < 0) {
@@ -2531,13 +2620,22 @@ export function installLibrary(viewer) {
         meta: `Page ${h.pageN + 1} · ${h.count} match${h.count === 1 ? '' : 'es'}`,
         pos: `Result ${i + 1} of ${hits.length}`,
         jump: true,
+        immediate,
       });
     };
 
-    const openActive = () => {
+    const openActive = async () => {
       if (active < 0) return;
       const h = hits[active];
-      openEntry(h.relPath, h.entry, { pageN: h.pageN, query: fullTextQuery });
+      const label = pv.openBtn.innerHTML;
+      /** @type {HTMLButtonElement} */ (pv.openBtn).disabled = true;
+      pv.openBtn.textContent = 'Opening…';
+      try {
+        await openEntry(h.relPath, h.entry, { pageN: h.pageN, query: fullTextQuery });
+      } finally {
+        pv.openBtn.innerHTML = label;
+        /** @type {HTMLButtonElement} */ (pv.openBtn).disabled = false;
+      }
     };
     pv.onOpen = openActive;
     pv.onClose = () => selectHit(-1);
@@ -2568,6 +2666,21 @@ export function installLibrary(viewer) {
     /** @type {Array<ThumbItem>} Rows whose stored raster was absent at pump time, kept for the warmer and for repump retries. */
     const rasterless = [];
     let warmRunning = false;
+    /**
+     * Overlay a row's match marks once its document's sidecar pass lands, over whatever raster already painted.
+     * @param {ThumbItem} t
+     * @param {?string} url
+     * @param {Promise<?Map<number, {ocr: ?Object, annotations: ?Array<Object>}>>} sidePass
+     */
+    const paintLateMarks = (t, url, sidePass) => {
+      sidePass.then((side) => {
+        if (myGen !== resultsGen || t.marks !== undefined) return;
+        const page = side?.get(t.pageN)?.ocr ?? null;
+        const pd = t.entry.pageDims?.[t.pageN];
+        t.marks = markOverlayHTML(getMatchRects(page, pd ? { width: pd[0], height: pd[1] } : null, fullTextQuery));
+        if (t.marks) t.img.innerHTML = `${url ? `<img alt="" src="${url}">` : ''}${t.marks}`;
+      });
+    };
     // The pump never imports a document: it paints stored rasters and sidecar marks, and leaves missing rasters to warmHits.
     const pumpThumbs = async () => {
       if (thumbsRunning) return;
@@ -2581,26 +2694,20 @@ export function installLibrary(viewer) {
           if (thumbQueue[i].hash === first.hash) batch.push(thumbQueue.splice(i, 1)[0]);
           else i++;
         }
+        // Stored rasters paint before the sidecar pass lands, because a multi-MB sidecar must not hold up rows that already have images.
         const needMarks = batch.filter((b) => b.marks === undefined);
-        /** @type {?Map<number, {ocr: ?Object, annotations: ?Array<Object>}>} */
-        let side = null;
-        if (needMarks.length) {
-          try {
-            side = await sessions.sidecarPages(first.hash, needMarks.map((b) => b.pageN));
-          } catch { /* An unreadable sidecar leaves the marks off. */ }
-        }
+        /** @type {?Promise<?Map<number, {ocr: ?Object, annotations: ?Array<Object>}>>} */
+        const sidePass = needMarks.length
+          ? sessions.sidecarPages(first.hash, needMarks.map((b) => b.pageN)).catch(() => null)
+          : null;
         for (const t of batch) {
           if (myGen !== resultsGen) break;
           try {
-            if (t.marks === undefined) {
-              const page = side?.get(t.pageN)?.ocr ?? null;
-              const pd = t.entry.pageDims?.[t.pageN];
-              t.marks = markOverlayHTML(getMatchRects(page, pd ? { width: pd[0], height: pd[1] } : null, fullTextQuery));
-            }
             const url = await sessions.pageImage(t.hash, t.pageN);
             if (myGen !== resultsGen) break;
-            if (url || t.marks) t.img.innerHTML = `${url ? `<img alt="" src="${url}">` : ''}${t.marks}`;
+            if (url || t.marks) t.img.innerHTML = `${url ? `<img alt="" src="${url}">` : ''}${t.marks || ''}`;
             if (!url && !rasterless.includes(t)) rasterless.push(t);
+            if (t.marks === undefined && sidePass) paintLateMarks(t, url, sidePass);
           } catch { /* A failed read leaves the placeholder page blank. */ }
         }
       }
@@ -2610,6 +2717,9 @@ export function installLibrary(viewer) {
 
     // Renders the missing hit-page rasters, one bounded import at a time.
     // Each import restores that document's whole sidecar, so the gates below keep warming from running alongside a load the reader is waiting on.
+    const resumeWarm = () => {
+      if (myGen === resultsGen) warmHits();
+    };
     const warmHits = async () => {
       if (warmRunning) return;
       warmRunning = true;
@@ -2623,14 +2733,19 @@ export function installLibrary(viewer) {
           document.addEventListener('visibilitychange', resume);
           break;
         }
-        const paneDoc = pv.viewerRef()?.doc;
-        if (paneDoc && paneDoc.id < 0) {
-          // A provisional preview can start its full load at any moment, so poll until it settles or closes.
-          window.setTimeout(warmHits, 4000);
+        // A provisional pane showing a stored raster may never hydrate, so it does not count as a user load.
+        if (userLoadsActive > 0) {
+          userLoadIdle().then(resumeWarm);
           break;
         }
         const busyHash = pv.shownHash();
-        const idx = rasterless.findIndex((r) => !r.warmed && r.hash !== busyHash);
+        const listRect = listEl.getBoundingClientRect();
+        let idx = rasterless.findIndex((r) => {
+          if (r.warmed || r.hash === busyHash) return false;
+          const rect = r.img.getBoundingClientRect();
+          return rect.bottom > listRect.top && rect.top < listRect.bottom && rect.height > 0;
+        });
+        if (idx < 0) idx = rasterless.findIndex((r) => !r.warmed && r.hash !== busyHash);
         if (idx < 0) break;
         const first = /** @type {ThumbItem} */ (rasterless.splice(idx, 1)[0]);
         const batch = [first];
@@ -2639,7 +2754,7 @@ export function installLibrary(viewer) {
           else i++;
         }
         const sidecarBytes = await store.sidecarSize(first.hash);
-        if (sidecarBytes !== null && sidecarBytes > WARM_SIDECAR_LIMIT) {
+        if ((sidecarBytes !== null && sidecarBytes > WARM_SIDECAR_LIMIT) || first.entry.size > WARM_PDF_LIMIT) {
           // Too big to import in the background, but the rows stay tracked so a preview or open can still fill them.
           for (const t of batch) {
             t.warmed = true;
@@ -2656,6 +2771,8 @@ export function installLibrary(viewer) {
             const files = /** @type {Array<File>} */ ([await store.readFile(first.relPath)]);
             const sidecar = await store.readSidecar(first.hash);
             if (sidecar) files.push(new File([sidecar], `${first.hash}.scribe`));
+            // A click can land after this iteration passed the top-of-loop gate, so re-check before the expensive import.
+            await userLoadIdle();
             if (myGen !== resultsGen) break;
             doc = await scribeLib.openDocument(files, { deferText: true, skipFontOpt: true, pdfWorkerN: 1 });
             owned = true;
@@ -2664,6 +2781,7 @@ export function installLibrary(viewer) {
           if (doc.pageMetrics.length !== first.entry.pageCount) continue;
           for (const t of batch) {
             if (myGen !== resultsGen) break;
+            await userLoadIdle();
             t.warmed = true;
             if (!(await store.readPageRaster(t.hash, t.pageN))) {
               const raster = await doc.images.renderThumbnail(t.pageN, PAGE_RASTER_WIDTH, 0.75, true);
@@ -2714,7 +2832,7 @@ export function installLibrary(viewer) {
       };
       hits.splice(insertAt, 0, hit);
       row.addEventListener('click', () => {
-        selectHit(hits.indexOf(hit));
+        selectHit(hits.indexOf(hit), { immediate: true });
         listEl.focus();
       });
       thumbQueue.push({
@@ -3262,17 +3380,32 @@ export function installLibrary(viewer) {
         entry.lastOpened = Date.now();
         saveManifestSoon();
         const seed = await makeSeed(relPath, entry, target.pageN ?? 0);
-        const handle = await viewer.openProvisional({ ...seed, hydration: 'eager' });
+        beginUserLoad();
+        /** @type {{primed: Promise<void>, hydrated: Promise<void>, cancel: () => void}} */
+        let handle;
+        try {
+          handle = await viewer.openProvisional({ ...seed, hydration: 'eager' });
+        } catch (err) {
+          endUserLoad();
+          throw err;
+        }
+        handle.hydrated.catch(() => {}).finally(endUserLoad);
         const tab = viewer._tabs[viewer._activeTab];
         tab.libraryHash = entry.hash;
+        // At adoption time rather than on `hydrated`, so no edit can slip between the swap and dirty tracking.
+        tab.onDocHydrated = (d) => wrapMutators(d, tab);
         if (target.query && viewer._searchBar) {
           viewer._searchBar.openSearch();
           viewer._searchBar.searchInputElem.value = target.query;
         }
         handle.hydrated.then(() => {
-          wrapMutators(tab.doc, tab);
           persistRasterWindow(tab.doc, entry, target.pageN ?? 0);
-          if (target.query && viewer._searchBar) viewer._searchBar.runSearch(target.query, target.pageN);
+          // The swap re-attaches the document, and attaching resets the find bar, so the query primes again here.
+          if (target.query && viewer._searchBar) {
+            viewer._searchBar.openSearch();
+            viewer._searchBar.searchInputElem.value = target.query;
+            viewer._searchBar.runSearch(target.query, target.pageN);
+          }
         }).catch(() => {});
         return;
       }
@@ -3294,11 +3427,14 @@ export function installLibrary(viewer) {
       }
       /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
       let doc;
+      beginUserLoad();
       try {
         doc = await scribeLib.openDocument(files, { deferText: true });
       } catch (err) {
         viewer._showToast(`Couldn't open “${titleOf(relPath)}” — ${err instanceof Error ? err.message : 'the file could not be loaded'}.`);
         return;
+      } finally {
+        endUserLoad();
       }
       entry.lastOpened = Date.now();
       saveManifestSoon();

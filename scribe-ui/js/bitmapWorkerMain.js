@@ -15,8 +15,19 @@ export async function initBitmapWorker() {
   }
 
   return new Promise((resolve, reject) => {
+    /** @type {?Error} */
+    let workerError = null;
+
+    // A dead worker never answers, so every pending promise must reject or callers hang forever.
     const errorHandler = (err) => {
       console.error(err);
+      const message = (err && typeof err === 'object' && 'message' in err && err.message) || 'Bitmap worker crashed.';
+      workerError = new Error(String(message));
+      workerError.name = 'WorkerCrashError';
+      for (const id of Object.keys(workerPromises)) {
+        workerPromises[id].reject(workerError);
+        delete workerPromises[id];
+      }
     };
 
     if (typeof process === 'undefined') {
@@ -61,6 +72,7 @@ export async function initBitmapWorker() {
      */
     function wrap(func, transferPayload = false) {
       return function (...args) {
+        if (workerError) return Promise.reject(workerError);
         return new Promise((innerResolve, innerReject) => {
           const id = promiseId++;
           workerPromises[id] = { resolve: innerResolve, reject: innerReject, func };
@@ -74,8 +86,17 @@ export async function initBitmapWorker() {
     obj.getImageBitmap = wrap('getImageBitmap');
     obj.compressBitmap = wrap('compressBitmap', true);
 
-    obj.terminate = () => worker.terminate();
+    // A killed worker never answers, so teardown rejects outstanding calls too.
+    obj.terminate = () => {
+      workerError = new Error('Bitmap worker terminated.');
+      workerError.name = 'WorkerTerminatedError';
+      for (const id of Object.keys(workerPromises)) {
+        workerPromises[id].reject(workerError);
+        delete workerPromises[id];
+      }
+      return worker.terminate();
+    };
 
-    ready.then(() => resolve(obj));
+    ready.then(() => resolve(obj), reject);
   });
 }

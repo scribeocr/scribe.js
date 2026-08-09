@@ -2303,6 +2303,8 @@ export class ScribeViewer {
     if (this.doc.inputData.xmlMode[n]) {
       // Word geometry is measured against the built-in fonts, which the fast open paths (deferText imports, provisional seeds) start loading without awaiting.
       await loadBuiltInFontsRaw();
+      // A document swapped or re-recognized during the await must not paint this page's stale words.
+      if (this.doc.ocr.active?.[n] !== ocrData) return;
       this._renderCanvasWords(ocrData);
     }
   }

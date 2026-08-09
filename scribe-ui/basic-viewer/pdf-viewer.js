@@ -152,6 +152,8 @@ const ICON_RECOGNIZE = editIcon('<path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.
  */
 
 class ScribePDFViewer {
+  static _coreErrorsWired = false;
+
   /**
    * @param {HTMLElement} container - Element the viewer mounts into. The viewer fills it.
    * @param {object} [options]
@@ -242,7 +244,8 @@ class ScribePDFViewer {
      * `asleep` marks a document whose worker pools are suspended (main-thread state retained).
      * `waking` marks one respawning its pools during activation.
      * `lastUse` orders tabs for the warm set.
-     * @type {Array<{ doc: import('../../js/containers/scribeDoc.js').ScribeDoc, name: string, lastPage: number, lastUse: number, asleep: boolean, waking: boolean }>}
+     * @type {Array<{ doc: import('../../js/containers/scribeDoc.js').ScribeDoc, name: string, lastPage: number, lastUse: number,
+     *   asleep: boolean, waking: boolean, onDocHydrated?: (doc: Object) => void }>}
      */
     this._tabs = [];
     /** Index of the active tab in `_tabs`, or -1 when none is open. */
@@ -940,6 +943,22 @@ class ScribePDFViewer {
     // Destructive one-tap actions (the touch callout's delete) report here for a toast with Undo.
     this.scribe._onDestructiveAction = (message, undo) => this._showToast(message, { actionLabel: 'Undo', onAction: undo });
 
+    // First viewer wins, so embedded pane viewers never steal the app-level error handler.
+    if (!ScribePDFViewer._coreErrorsWired) {
+      ScribePDFViewer._coreErrorsWired = true;
+      let lastCoreToast = '';
+      let lastCoreToastAt = 0;
+      scribe.opt.errorHandler = (err) => {
+        console.error(err);
+        const message = typeof err === 'string' ? err : String((err && /** @type {any} */ (err).message) || 'Something went wrong in the document engine.');
+        // A broken document can fail once per page, so identical messages collapse into one toast.
+        if (message === lastCoreToast && Date.now() - lastCoreToastAt < 10000) return;
+        lastCoreToast = message;
+        lastCoreToastAt = Date.now();
+        this._showToast(message);
+      };
+    }
+
     // The comment card's "show in comments panel" verb routes here.
     if (this._commentsPanel) {
       this.scribe._revealCommentInPanel = /** @param {import('../js/viewerWordObjects.js').UiOcrWord | AnnotationText} target */ (target) => {
@@ -1238,7 +1257,8 @@ class ScribePDFViewer {
     const sc = this.scribe.scrollContainer;
     const onScroll = () => {
       const n = this.scribe.state.cp.n;
-      if (this.doc === seedDoc && (n < seed.window.from || n > seed.window.to)) start();
+      // Through `_requestHydration` rather than `start` directly, so a host that wrapped the hook sees every trigger.
+      if (this.doc === seedDoc && (n < seed.window.from || n > seed.window.to)) seedDoc._requestHydration?.();
     };
     sc.addEventListener('scroll', onScroll);
     realDocP.catch(() => {}).finally(() => sc.removeEventListener('scroll', onScroll));
@@ -1252,7 +1272,7 @@ class ScribePDFViewer {
     // A seed closed by a tab close or a viewer destroy must never go on to hydrate.
     seedDoc._onClose = cancel;
 
-    if ((seed.hydration || 'eager') === 'eager') setTimeout(start, 0);
+    if ((seed.hydration || 'eager') === 'eager') setTimeout(() => seedDoc._requestHydration?.(), 0);
     return { primed, hydrated, cancel };
   }
 
@@ -1268,6 +1288,9 @@ class ScribePDFViewer {
   async _hydrateSwap(tab, seedDoc, realDoc) {
     tab.doc = realDoc;
     tab.provisional = false;
+    // Fired synchronously with the adoption rather than on `hydrated`.
+    // A mutation arriving during the swap's paint tail must not escape the host's tracking.
+    tab.onDocHydrated?.(realDoc);
     // A successful swap retires the seed on purpose, so its close must not read as a cancel.
     seedDoc._onClose = null;
     // Annotations made on the seed move to the real document, because the pointer UI writes doc.annotations directly.
@@ -1687,7 +1710,9 @@ class ScribePDFViewer {
       if (warm.has(tab) || tab.waking || tab.doc._textReadySettle) continue;
       let suspendedAny = false;
       for (const src of tab.doc.images.sources.values()) {
-        if (!warmSources.has(src) && src.scheduler) {
+        // A source with staged or running jobs drains first, because suspending it drops those renders.
+        // The policy re-runs on the next tab switch, so a drained source is suspended then.
+        if (!warmSources.has(src) && src.scheduler && !src.scheduler.busy) {
           src.suspend().catch(() => {});
           suspendedAny = true;
         }
@@ -1864,8 +1889,14 @@ class ScribePDFViewer {
     if (tab.asleep) tab.waking = true;
     this._renderTabs();
     // Respawn the suspended pool before attaching, so the tab chip's spinner covers the slow part and the attach renders against a warm pool.
-    // Failures fall through: renders retry lazily.
-    if (tab.waking && tab.doc.images.pdfData) await tab.doc.images.getPdfScheduler().catch(() => {});
+    // Bounded by a timeout so the spinner always ends.
+    // On timeout or failure the attach proceeds and renders retry lazily.
+    if (tab.waking && tab.doc.images.pdfData) {
+      const respawn = tab.doc.images.getPdfScheduler().catch(() => {
+        this._showToast(`Couldn't restart the page renderer for “${tab.name}” — pages will retry as they come into view.`);
+      });
+      await Promise.race([respawn, new Promise((resolve) => { setTimeout(resolve, 10000); })]);
+    }
     await this.attachDocument(tab.doc, tab.lastPage, { terminatePrevious: false });
     if (tab.waking) {
       tab.waking = false;

@@ -80,7 +80,16 @@ export async function initPdfWorker() {
     obj.getPdfFontBytes = wrap('getPdfFontBytes');
     obj.unloadPdf = wrap('unloadPdf');
 
-    obj.terminate = () => worker.terminate();
+    // A killed worker never answers, so teardown rejects outstanding calls too.
+    obj.terminate = () => {
+      workerError = new Error('PDF worker terminated.');
+      workerError.name = 'WorkerTerminatedError';
+      for (const id of Object.keys(workerPromises)) {
+        workerPromises[id].reject(workerError);
+        delete workerPromises[id];
+      }
+      return worker.terminate();
+    };
 
     ready.then(() => resolve(obj), reject);
   });
@@ -149,6 +158,10 @@ export class PdfScheduler {
     await Promise.all(this.workers.map((w) => w.unloadPdf({})));
   };
 
+  get busy() {
+    return this.scheduler.getQueueLen() > 0 || this.scheduler.getRunningLen() > 0;
+  }
+
   async terminate() {
     await this.scheduler.terminate();
   }
@@ -204,6 +217,12 @@ export class PdfSchedulerInProcess {
   loadPdfInAllWorkers = (pdfBytes) => this.#core.load(pdfBytes);
 
   unloadPdfInAllWorkers = () => this.#core.unload();
+
+  /** In-process operations run on the calling thread, so there is never staged work to drain. */
+  // eslint-disable-next-line class-methods-use-this
+  get busy() {
+    return false;
+  }
 
   async terminate() {
     await this.#core.unload();
