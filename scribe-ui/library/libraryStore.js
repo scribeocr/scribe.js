@@ -10,6 +10,11 @@ const MANIFEST_FILE = 'index.json';
 /** Byte cap for stored page rasters, enforced by the artifact sweep. */
 export const RASTER_BUDGET_BYTES = 1.5 * 1024 * 1024 * 1024;
 
+// Display names are always the file name, never PDF metadata.
+// Info Titles in the wild are word-processor template paths, "untitled", and similar junk.
+/** @param {string} relPath */
+export const titleOf = (relPath) => (relPath.split('/').pop() || relPath).replace(/\.pdf$/i, '');
+
 /**
  * One document's record in the library manifest.
  * Entries are keyed by path relative to the library root.

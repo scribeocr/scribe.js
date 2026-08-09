@@ -2,15 +2,14 @@
 // Loaded by dynamic import behind the `library` option, so viewers without it never fetch this module or its styles.
 
 import scribeLib from '../../scribe.js';
-import { ZOOM_IN_SVG, ZOOM_OUT_SVG } from '../js/controls/toolbar.js';
-import { openDocumentFromFile } from '../js/controls/tools.js';
-import { findText, goToMatch } from '../js/viewerSearch.js';
-import { REORDER_SLIDE_MS } from '../js/controls/pageReorder.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
-import { LibraryStore } from './libraryStore.js';
+import { LibraryStore, titleOf } from './libraryStore.js';
 import { LibraryIndex } from './librarySearch.js';
-import { LibraryIngest, PAGE_RASTER_WIDTH } from './libraryIngest.js';
+import { LibraryIngest } from './libraryIngest.js';
 import { DocSessions } from './docSession.js';
+import { buildPreviewSplit, createPreviewPanes } from './libraryPreviewPane.js';
+import { createResultsView } from './libraryResultsView.js';
+import { createDragReorder } from './libraryDragReorder.js';
 
 // Filled rather than stroked because outlined spines collapse into double-line mush at the pinned tab's 16px.
 // eslint-disable-next-line max-len
@@ -41,20 +40,6 @@ const VIEW_COMPACT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentCo
 // eslint-disable-next-line max-len
 const PREVIEW_PANEL_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="1.5"/><path d="M13.5 4.5v15"/></svg>';
 
-// Display names are always the file name, never PDF metadata.
-// Info Titles in the wild are word-processor template paths, "untitled", and similar junk.
-/** @param {string} relPath */
-const titleOf = (relPath) => (relPath.split('/').pop() || relPath).replace(/\.pdf$/i, '');
-
-// Card drag thresholds, matching the Pages-view gesture grammar so the two surfaces feel identical.
-const DRAG_THRESHOLD = 5;
-const LIFT_HOLD_MS = 250;
-const LIFT_MOVE_SLOP = 9;
-const MENU_SLOP = 8;
-const GAP_HYSTERESIS = 12;
-const AUTOSCROLL_EDGE = 36;
-const AUTOSCROLL_SPEED = 14;
-
 // ScribeDoc methods that mutate persisted state.
 const MUTATOR_METHODS = [
   'addHighlights', 'addFreeText', 'addShapes', 'addTextAnnots', 'addRedactions', 'removeRedactions',
@@ -75,20 +60,6 @@ const SORT_DEFAULT_DIR = {
 };
 
 const AUTOSAVE_INTERVAL_MS = 60000;
-const RESULT_DOC_LIMIT = 20;
-const RESULT_PAGES_PER_DOC = 4;
-const SNIPPET_RADIUS = 70;
-/**
- * Compressed-sidecar byte cap for background hit warming.
- * Importing a document restores its whole sidecar, so documents past this only get rasters from a preview or open the user asked for.
- */
-const WARM_SIDECAR_LIMIT = 16 * 1024 * 1024;
-/**
- * PDF byte cap for warming a result document in the background.
- * Larger files fill on preview or open instead.
- * Sized to admit 500+ page books, which run 25-45MB and top the ranking for generic queries.
- */
-const WARM_PDF_LIMIT = 64 * 1024 * 1024;
 
 let stylesInjected = false;
 const addLibraryStyles = () => {
@@ -362,7 +333,6 @@ export function installLibrary(viewer) {
   /** @type {?Array<{hash: string, pages: number[]}>} Full-text results, or null for the browse grid. */
   let fullTextResults = null;
   let fullTextQuery = '';
-  let resultsListWidth = 400;
   /** Split width while a list view hosts the preview pane. */
   let listPreviewWidth = 700;
   let listPreviewOn = false;
@@ -378,18 +348,6 @@ export function installLibrary(viewer) {
   /** @type {?number} */
   let indexTimer = null;
   let destroyed = false;
-  /** @type {?Object} In-flight card drag. */
-  let dragState = null;
-  /** Render requested while a drag held the grid frozen; replayed when the drag ends. */
-  let renderPending = false;
-  /** Relative paths in the main grid's current display order (the drag's reorder base). */
-  let gridPaths = [];
-  /** @type {?HTMLElement} */
-  let mainGridElem = null;
-  /** Clicks are ignored until this time right after a drag, so the drop doesn't open a card. */
-  let suppressClickUntil = 0;
-  /** When the last touch drag ended, so the native long-press contextmenu racing it is swallowed. */
-  let lastTouchDragT = 0;
   /** @type {Set<string>} Selected cards, keyed by manifest path so a doc's Recent-strip duplicate highlights too. */
   const selectedPaths = new Set();
   /** @type {?string} Pivot card for Shift ranges. */
@@ -681,7 +639,7 @@ export function installLibrary(viewer) {
     // This checkpoint is the only per-tab exit hook, so clean tabs persist their visited rasters here too.
     if (tab?.libraryHash && store && manifest) {
       const entry = Object.values(manifest.docs).find((e) => e.hash === tab.libraryHash);
-      if (entry) persistRasterWindow(tab.doc, entry, /** @type {any} */ (tab).lastPage ?? 0);
+      if (entry) panes.persistRasterWindow(tab.doc, entry, /** @type {any} */ (tab).lastPage ?? 0);
     }
     if (!tab || !tab.libraryHash || !tab.libraryDirty || tab.librarySaving || !store) return;
     tab.librarySaving = true;
@@ -755,23 +713,18 @@ export function installLibrary(viewer) {
 
   const render = () => {
     // A rebuild mid-drag would pull the dragged card out from under the pointer.
-    if (dragState && dragState.started) {
-      renderPending = true;
-      return;
-    }
+    if (drag.deferRender()) return;
     closeCardMenu();
     syncCrumbs();
     // The retained results view snapshots its scroll state before the detach below, so a reattach can restore it.
-    if (resultsView && resultsView.wrap.isConnected) resultsView.snapshot();
+    results.snapshot();
     body.textContent = '';
     body.classList.remove('results-mode', 'list-mode', 'split-mode');
     listPane = null;
     // Tearing the pane down drops the embedded viewer and its painted pages, so it survives every re-render of a view that still hosts it.
-    if (mountedPane && !fullTextResults && !(listPreviewOn && viewMode !== 'grid')) mountedPane.destroy();
-    if (!fullTextResults && resultsView) {
-      resultsView.dispose();
-      resultsView = null;
-    }
+    const pane = panes.mounted();
+    if (pane && !fullTextResults && !(listPreviewOn && viewMode !== 'grid')) pane.destroy();
+    if (!fullTextResults) results.dispose();
     if (!store || !manifest) {
       const card = document.createElement('div');
       card.className = 'scribe-library-card-wall';
@@ -815,7 +768,7 @@ export function installLibrary(viewer) {
     }
 
     if (fullTextResults) {
-      renderResults();
+      results.render();
       return;
     }
 
@@ -856,8 +809,7 @@ export function installLibrary(viewer) {
     }
 
     if (viewMode === 'list' || viewMode === 'compact') {
-      mainGridElem = null;
-      gridPaths = [];
+      drag.setMainGrid(null, []);
       const host = renderList(shownDirs, shown, shownOthers);
       if (!shown.length && !shownOthers.length && filter) {
         const empty = document.createElement('div');
@@ -914,8 +866,7 @@ export function installLibrary(viewer) {
     grid.className = 'scribe-library-grid main';
     for (const [relPath, entry] of shown) grid.appendChild(buildCard(relPath, entry, !filter));
     body.appendChild(grid);
-    mainGridElem = grid;
-    gridPaths = shown.map(([p]) => p);
+    drag.setMainGrid(grid, shown.map(([p]) => p));
     if (!shown.length && !shownOthers.length && filter) {
       const empty = document.createElement('div');
       empty.className = 'scribe-library-empty';
@@ -951,7 +902,7 @@ export function installLibrary(viewer) {
 
   const SELECTION_KEEP_SELECTOR = '.scribe-library-card, .scribe-library-row, .scribe-library-lhead, button, input, select';
   body.addEventListener('click', (e) => {
-    if (Date.now() < suppressClickUntil) return;
+    if (drag.clickSuppressed()) return;
     if (/** @type {Element} */ (e.target).closest(SELECTION_KEEP_SELECTOR)) return;
     if (!selectedPaths.size) return;
     selectedPaths.clear();
@@ -1149,7 +1100,7 @@ export function installLibrary(viewer) {
     card.tabIndex = 0;
     card.dataset.relPath = relPath;
     if (selectedPaths.has(relPath)) card.classList.add('selected');
-    if (draggable) card.addEventListener('pointerdown', (e) => beginCardDrag(e, relPath, card));
+    if (draggable) card.addEventListener('pointerdown', (e) => drag.beginCardDrag(e, relPath, card));
 
     const img = document.createElement('img');
     img.className = 'thumb';
@@ -1197,7 +1148,7 @@ export function installLibrary(viewer) {
     }
 
     const open = () => {
-      if (Date.now() < suppressClickUntil) return;
+      if (drag.clickSuppressed()) return;
       openEntry(relPath, entry);
     };
     // Touch keeps tap-to-open; select-then-double-click is a pointer-and-keyboard scheme.
@@ -1206,7 +1157,7 @@ export function installLibrary(viewer) {
         open();
         return;
       }
-      if (Date.now() < suppressClickUntil) return;
+      if (drag.clickSuppressed()) return;
       // The Recent strip repeats documents from the grid below it, so a range spanning both would run over duplicate paths.
       const inBands = !!card.parentElement
         && (card.parentElement.classList.contains('folders') || card.parentElement.classList.contains('main'));
@@ -1227,7 +1178,7 @@ export function installLibrary(viewer) {
       e.preventDefault();
       // The touch hold-to-lift gesture opens this menu itself on a release-in-place.
       // Swallow the native long-press contextmenu Android fires in parallel so it does not open twice.
-      if (dragState || Date.now() - lastTouchDragT < 500) return;
+      if (drag.active() || drag.touchDragRecent()) return;
       openCardMenu(e.clientX, e.clientY, relPath, card);
     });
     return card;
@@ -1356,7 +1307,7 @@ export function installLibrary(viewer) {
     card.appendChild(cardBody);
 
     const open = () => {
-      if (Date.now() < suppressClickUntil) return;
+      if (drag.clickSuppressed()) return;
       openDir(dirPath);
     };
     card.addEventListener('click', (e) => {
@@ -1364,7 +1315,7 @@ export function installLibrary(viewer) {
         open();
         return;
       }
-      if (Date.now() < suppressClickUntil) return;
+      if (drag.clickSuppressed()) return;
       const paths = [...body.querySelectorAll('.scribe-library-grid.folders > .scribe-library-card, .scribe-library-grid.main > .scribe-library-card')]
         .map((el) => /** @type {HTMLElement} */ (el).dataset.relPath ?? '');
       applyClickSelection(e, `${dirPath}/`, paths);
@@ -1378,7 +1329,7 @@ export function installLibrary(viewer) {
     });
     card.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      if (dragState) return;
+      if (drag.active()) return;
       openCardMenu(e.clientX, e.clientY, `${dirPath}/`, card);
     });
     return card;
@@ -1430,7 +1381,7 @@ export function installLibrary(viewer) {
     row.dataset.relPath = relPath;
     if (selectedPaths.has(relPath)) row.classList.add('selected');
     // Rows drag for moving into folders only; reordering is a grid-under-Custom affair.
-    row.addEventListener('pointerdown', (e) => beginCardDrag(e, relPath, row));
+    row.addEventListener('pointerdown', (e) => drag.beginCardDrag(e, relPath, row));
 
     let badge = '';
     if (entry.status === 'missing') badge = '<span class="scribe-library-badge error">Missing</span>';
@@ -1497,7 +1448,7 @@ export function installLibrary(viewer) {
     }
 
     const open = () => {
-      if (Date.now() < suppressClickUntil) return;
+      if (drag.clickSuppressed()) return;
       openEntry(relPath, entry);
     };
     row.addEventListener('click', (e) => {
@@ -1505,7 +1456,7 @@ export function installLibrary(viewer) {
         open();
         return;
       }
-      if (Date.now() < suppressClickUntil) return;
+      if (drag.clickSuppressed()) return;
       const paths = [...(row.parentElement?.querySelectorAll(':scope > .scribe-library-row') ?? [])]
         .map((el) => /** @type {HTMLElement} */ (el).dataset.relPath ?? '');
       // Preview first: syncSelectionUI keeps the previewed document selected, so listPreviewPath must already point at this row.
@@ -1521,7 +1472,7 @@ export function installLibrary(viewer) {
     });
     row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      if (dragState || Date.now() - lastTouchDragT < 500) return;
+      if (drag.active() || drag.touchDragRecent()) return;
       openCardMenu(e.clientX, e.clientY, relPath, row);
     });
     return row;
@@ -1594,7 +1545,7 @@ export function installLibrary(viewer) {
     }
 
     const open = () => {
-      if (Date.now() < suppressClickUntil) return;
+      if (drag.clickSuppressed()) return;
       openDir(dirPath);
     };
     row.addEventListener('click', (e) => {
@@ -1602,7 +1553,7 @@ export function installLibrary(viewer) {
         open();
         return;
       }
-      if (Date.now() < suppressClickUntil) return;
+      if (drag.clickSuppressed()) return;
       const paths = [...(row.parentElement?.querySelectorAll(':scope > .scribe-library-row') ?? [])]
         .map((el) => /** @type {HTMLElement} */ (el).dataset.relPath ?? '');
       applyClickSelection(e, `${dirPath}/`, paths);
@@ -1616,7 +1567,7 @@ export function installLibrary(viewer) {
     });
     row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
-      if (dragState) return;
+      if (drag.active()) return;
       openCardMenu(e.clientX, e.clientY, `${dirPath}/`, row);
     });
     return row;
@@ -1686,7 +1637,7 @@ export function installLibrary(viewer) {
       body.classList.add('split-mode');
       const split = buildPreviewSplit(700, () => listPreviewWidth, (w) => { listPreviewWidth = w; });
       body.appendChild(split.wrap);
-      listPane = ensurePane('list', 'Select a document to preview it here', '‹ Previous page', 'Next page ›');
+      listPane = panes.ensurePane('list', 'Select a document to preview it here', '‹ Previous page', 'Next page ›');
       split.wrap.appendChild(listPane.pane);
       const previewEntry = () => (listPreviewPath && manifest ? manifest.docs[listPreviewPath] : null);
       listPane.onOpen = async () => {
@@ -1776,750 +1727,7 @@ export function installLibrary(viewer) {
     return host;
   };
 
-  /**
-   * The retained search-results view: the built DOM plus its interaction state.
-   * Keeping it lets an unchanged result set reattach instead of rebuilding.
-   * @type {?{results: Object, pv: Object, wrap: HTMLElement, snapshot: () => void, attach: () => void, repump: () => void, dispose: () => void}}
-   */
-  let resultsView = null;
-  /** Abandons in-flight result-row work when a fresh results build replaces the old one. */
-  let resultsGen = 0;
-
-  /**
-   * The pooled live document for a legacy entry that cannot seed (no stored pageDims), loading it on first use.
-   * @param {string} relPath
-   * @param {string} hash
-   */
-  const sessionDoc = (relPath, hash) => sessions.liveDocOrLoad(
-    hash,
-    () => /** @type {LibraryStore} */ (store).readFile(relPath).then((file) => openDocumentFromFile(file)),
-  );
-
-  /**
-   * Count of imports the user is actively waiting on, such as a pane hydration or an open.
-   * Background raster work pauses while this is nonzero.
-   */
-  let userLoadsActive = 0;
-  /** @type {Array<() => void>} */
-  const userIdleWaiters = [];
-  const beginUserLoad = () => { userLoadsActive++; };
-  const endUserLoad = () => {
-    userLoadsActive = Math.max(0, userLoadsActive - 1);
-    if (userLoadsActive === 0) while (userIdleWaiters.length) /** @type {() => void} */ (userIdleWaiters.shift())();
-  };
-  const userLoadIdle = () => (userLoadsActive === 0 ? Promise.resolve() : new Promise((resolve) => { userIdleWaiters.push(resolve); }));
-
-  /**
-   * Count a provisional document's eventual hydration as a user-facing load.
-   * Wraps `_requestHydration` so every trigger (dwell, click, scroll, promotion, save) pauses background warming for its duration.
-   * @param {Object} seedDoc
-   */
-  const countHydration = (seedDoc) => {
-    const inner = seedDoc._requestHydration;
-    if (!inner) return;
-    let counted = false;
-    seedDoc._requestHydration = () => {
-      const p = inner();
-      if (!counted) {
-        counted = true;
-        beginUserLoad();
-        Promise.resolve(p).catch(() => {}).finally(endUserLoad);
-      }
-      return p;
-    };
-  };
-
-  /**
-   * Persist the two pages either side of `pageN` from an open document, so the next open of that spot paints instantly.
-   * Skipped when the document's pages were edited, since stored rasters are keyed by the ingested page order.
-   * @param {Object} doc
-   * @param {import('./libraryStore.js').LibraryDocEntry} entry
-   * @param {number} pageN
-   */
-  const persistRasterWindow = (doc, entry, pageN) => {
-    const d = /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */ (doc);
-    if (!store || !entry?.hash || !d || d.id < 0) return;
-    if (d.pageMetrics.length !== entry.pageCount) return;
-    if (store.rasterBytes !== null && store.rasterBytes > store.rasterBudget) return;
-    const s = store;
-    const { hash, pageCount } = entry;
-    (async () => {
-      for (let n = Math.max(0, pageN - 2); n <= Math.min(pageCount - 1, pageN + 2); n++) {
-        await userLoadIdle();
-        if (await s.readPageRaster(hash, n)) continue;
-        const raster = await d.images.renderThumbnail(n, PAGE_RASTER_WIDTH, 0.75, true);
-        if (raster) await s.writePageRaster(hash, n, raster);
-      }
-      // Freshly persisted pages may belong to blank search-result rows.
-      resultsView?.repump();
-    })().catch(() => {});
-  };
-
-  /**
-   * Build an `openProvisional` seed for a page of a library document.
-   * Hydration stays on-demand so that flipping through documents never pays for a full import.
-   * @param {string} relPath
-   * @param {import('./libraryStore.js').LibraryDocEntry} entry
-   * @param {number} pageN
-   * @returns {Promise<import('../js/seedDoc.js').ProvisionalSeed>}
-   */
-  const makeSeed = async (relPath, entry, pageN) => {
-    const load = async () => {
-      const pdfFile = await /** @type {LibraryStore} */ (store).readFile(relPath);
-      const files = [pdfFile];
-      if (entry.hash) {
-        const sidecar = await /** @type {LibraryStore} */ (store).readSidecar(entry.hash);
-        if (sidecar) files.push(new File([sidecar], `${entry.hash}.scribe`));
-      }
-      return files;
-    };
-    if (entry.pageDims && !sessions.hasLive(entry.hash)) {
-      const pageCount = entry.pageDims.length;
-      const from = Math.max(0, pageN - 2);
-      const to = Math.min(pageCount - 1, pageN + 2);
-      // One pass warms the whole seed window, so the per-page reads below hit the cache instead of each re-reading the sidecar.
-      sessions.sidecarPages(entry.hash, Array.from({ length: to - from + 1 }, (_, i) => from + i)).catch(() => {});
-      return {
-        pageCount,
-        pageDims: entry.pageDims.map(([width, height, rotation]) => ({ width, height, rotation })),
-        initialPage: pageN,
-        window: { from, to },
-        name: titleOf(relPath),
-        raster: (n) => /** @type {LibraryStore} */ (store).readPageRaster(entry.hash, n),
-        ocr: (n) => sessions.sidecarPages(entry.hash, [n]).then((m) => m.get(n)?.ocr ?? null),
-        // Copies, never the cached arrays: seed session edits must not leak into the cache.
-        annots: (n) => sessions.sidecarPages(entry.hash, [n]).then((m) => {
-          const side = m.get(n);
-          return side ? (side.annotations ?? []).map((a) => ({ ...a, bbox: { ...a.bbox } })) : null;
-        }),
-        load,
-        hydration: 'on-demand',
-      };
-    }
-    beginUserLoad();
-    /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
-    let doc;
-    try {
-      doc = await sessionDoc(relPath, entry.hash);
-    } finally {
-      endUserLoad();
-    }
-    const pageCount = doc.pageMetrics.length;
-    return {
-      pageCount,
-      pageDims: doc.pageMetrics.map((pm) => ({ width: pm.dims.width, height: pm.dims.height, rotation: pm.rotation || 0 })),
-      initialPage: pageN,
-      window: { from: Math.max(0, pageN - 2), to: Math.min(pageCount - 1, pageN + 2) },
-      name: titleOf(relPath),
-      raster: (n) => sessions.pageImage(entry.hash, n),
-      ocr: async (n) => (await sessionDoc(relPath, entry.hash)).ocr.active?.[n] ?? null,
-      annots: async (n) => ((await sessionDoc(relPath, entry.hash)).annotations.pages[n] ?? [])
-        .map((a) => ({ ...a, bbox: { ...a.bbox } })),
-      load,
-      hydration: 'on-demand',
-    };
-  };
-
-  /**
-   * Word boxes for every occurrence of the query on a page, for painting match marks over a render.
-   * Accepts a live `OcrPage` or a raw sidecar page, anything with `lines[].words[].{text, bbox}`.
-   * @param {?{lines: Array<Object>, dims?: {width: number, height: number}}} page
-   * @param {?{width: number, height: number}} dims - Page dimensions when the page object carries none.
-   * @param {string} query
-   * @returns {?{dims: {width: number, height: number}, rects: Array<{left: number, top: number, right: number, bottom: number}>, per: number}}
-   */
-  const getMatchRects = (page, dims, query) => {
-    if (!page || !Array.isArray(page.lines) || !dims) return null;
-    const tokens = query.toLowerCase().split(/[^\p{L}\p{N}]+/u).filter((t) => t.length);
-    if (!tokens.length) return null;
-    const words = [];
-    for (const line of page.lines) for (const w of (line.words || [])) if (w && w.text && w.bbox) words.push(w);
-    const norm = (s) => s.toLowerCase().replace(/^[^\p{L}\p{N}]+|[^\p{L}\p{N}]+$/gu, '');
-    const rects = [];
-    for (let i = 0; i + tokens.length <= words.length; i++) {
-      let ok = true;
-      for (let j = 0; j < tokens.length; j++) {
-        const t = norm(words[i + j].text);
-        if (!(j === tokens.length - 1 ? t.startsWith(tokens[j]) : t === tokens[j])) {
-          ok = false;
-          break;
-        }
-      }
-      if (!ok) continue;
-      for (let j = 0; j < tokens.length; j++) rects.push(words[i + j].bbox);
-    }
-    return { dims: page.dims || dims, rects, per: tokens.length };
-  };
-
-  /**
-   * @param {?ReturnType<typeof getMatchRects>} m
-   * @returns {string} Absolutely positioned percent-unit mark spans, the first occurrence in the active color.
-   */
-  const markOverlayHTML = (m) => {
-    if (!m || !m.rects.length) return '';
-    let html = '';
-    for (let i = 0; i < m.rects.length; i++) {
-      const r = m.rects[i];
-      const act = i < m.per ? ' act' : '';
-      html += `<span class="scribe-mark${act}" style="left:${(r.left / m.dims.width) * 100}%;top:${(r.top / m.dims.height) * 100}%;`
-        + `width:${((r.right - r.left) / m.dims.width) * 100}%;height:${((r.bottom - r.top) / m.dims.height) * 100}%;"></span>`;
-    }
-    return html;
-  };
-
-  /**
-   * The split shell shared by the search-results view and the list-view preview: a resizable left column, a drag sash, and room for the caller-appended right pane.
-   * @param {number} defaultWidth
-   * @param {() => number} getWidth
-   * @param {(w: number) => void} setWidth
-   */
-  const buildPreviewSplit = (defaultWidth, getWidth, setWidth) => {
-    const wrap = document.createElement('div');
-    wrap.className = 'scribe-library-results';
-    wrap.style.setProperty('--scribe-library-rlist-w', `${getWidth()}px`);
-    const left = document.createElement('div');
-    left.className = 'scribe-library-rlist';
-    wrap.appendChild(left);
-    const sash = document.createElement('div');
-    sash.className = 'scribe-library-rsplit';
-    sash.setAttribute('role', 'separator');
-    sash.setAttribute('aria-orientation', 'vertical');
-    sash.setAttribute('aria-label', 'Resize the preview split');
-    sash.addEventListener('pointerdown', (e) => {
-      if (e.button !== 0) return;
-      e.preventDefault();
-      const startX = e.clientX;
-      const startW = left.getBoundingClientRect().width;
-      sash.classList.add('drag');
-      wrap.classList.add('rsplit-drag');
-      const onMove = (ev) => {
-        // Clamp to the same bounds as the CSS width clamp so dragging past an edge has no dead travel on the way back.
-        setWidth(Math.round(Math.max(280, Math.min(startW + ev.clientX - startX, wrap.getBoundingClientRect().width - 320))));
-        wrap.style.setProperty('--scribe-library-rlist-w', `${getWidth()}px`);
-      };
-      const onUp = () => {
-        sash.classList.remove('drag');
-        wrap.classList.remove('rsplit-drag');
-        window.removeEventListener('pointermove', onMove);
-        window.removeEventListener('pointerup', onUp);
-        window.removeEventListener('pointercancel', onUp);
-      };
-      window.addEventListener('pointermove', onMove);
-      window.addEventListener('pointerup', onUp);
-      window.addEventListener('pointercancel', onUp);
-    });
-    sash.addEventListener('dblclick', () => {
-      setWidth(defaultWidth);
-      wrap.style.setProperty('--scribe-library-rlist-w', `${defaultWidth}px`);
-    });
-    wrap.appendChild(sash);
-    return { wrap, left };
-  };
-
-  /** @type {?Object} The single mounted preview pane (results view or list view), or null. */
-  let mountedPane = null;
-
-  /**
-   * The right-side preview pane shared by search results and the list views.
-   * The embedded viewer is read-only and seeded through `openProvisional`, so it paints before the document has been imported.
-   * @param {string} emptyText
-   * @param {string} prevLabel
-   * @param {string} nextLabel
-   */
-  const buildPreviewPane = (emptyText, prevLabel, nextLabel) => {
-    const pane = document.createElement('div');
-    pane.className = 'scribe-library-pv';
-    pane.innerHTML = '<div class="scribe-library-pv-head" style="display:none;"><span class="t"></span><span class="m"></span><span class="grow"></span>'
-      + `<button class="scribe-library-pv-zoom" type="button" data-zoom-out aria-label="Zoom out" title="Zoom out">${ZOOM_OUT_SVG}</button>`
-      + `<button class="scribe-library-pv-zoom" type="button" data-zoom-in aria-label="Zoom in" title="Zoom in">${ZOOM_IN_SVG}</button>`
-      + `<span class="scribe-library-pv-find">${FIELD_SEARCH_SVG}<input type="text" placeholder="Find" aria-label="Find in the previewed document"></span>`
-      + '<span class="vertical-separator"></span>'
-      + '<button class="scribe-library-pv-open" type="button">Open<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
-      + 'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17L17 7M9 7h8v8"/></svg></button>'
-      + '<button class="scribe-library-pv-x" type="button" aria-label="Close preview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" '
-      + 'stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg></button></div>'
-      + `<div class="scribe-library-pv-stage"><div class="scribe-library-pv-empty">${emptyText}</div><div class="scribe-library-pv-viewer" style="display:none;"></div>`
-      + '<div class="scribe-library-pv-loading" style="display:none;"><div class="scribe-library-pv-loading-spin"></div>Loading page…</div></div>'
-      + `<div class="scribe-library-pv-foot" style="display:none;"><button type="button" data-prev>${prevLabel}</button><button type="button" data-next>${nextLabel}</button>`
-      + '<span class="grow"></span><span data-pos></span></div>';
-    const pvHead = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-head'));
-    const pvEmpty = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-empty'));
-    const pvLoading = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-loading'));
-    const pvHost = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-viewer'));
-    const pvFoot = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-foot'));
-    const pvFindInput = /** @type {HTMLInputElement} */ (pane.querySelector('.scribe-library-pv-find input'));
-    /** @type {?import('../basic-viewer/pdf-viewer.js').ScribePDFViewer} */
-    let paneViewer = null;
-    let token = 0;
-    /** @type {?{relPath: string, hash: string, pageN: number, query: ?string, handle: ?Object, window: ?{from: number, to: number}}} */
-    let current = null;
-    /** True when the shown document has session edits that are not yet in its sidecar. */
-    let paneDirty = false;
-    /** @type {?Object} Last show target, for re-seeding after a doc handoff. */
-    let lastTarget = null;
-
-    /**
-     * Land on the target page and paint (or clear) the query's match marks.
-     * A seeded document only has words for its window pages, so the marks stay partial until hydration re-runs this.
-     * @param {{pageN: number, query: ?string}} target
-     */
-    const applyQueryAndPage = async (target) => {
-      const ps = /** @type {NonNullable<typeof paneViewer>} */ (paneViewer).scribe;
-      if (target.query) {
-        ps.state.searchMode = true;
-        findText(ps, target.query);
-        const idx = ps._searchState.matchList.findIndex((m) => m.pageN === target.pageN);
-        if (idx >= 0) await goToMatch(ps, idx);
-        else await ps.displayPage(target.pageN, true, false);
-      } else {
-        if (ps._searchState.search) findText(ps, '');
-        ps.state.searchMode = false;
-        await ps.displayPage(target.pageN, true, false);
-      }
-    };
-
-    /** @type {HTMLElement} */ (pane.querySelector('[data-zoom-in]')).addEventListener('click', () => {
-      if (paneViewer?.doc) paneViewer.scribe.zoom(1.1, paneViewer.scribe.getViewportCenter());
-    });
-    /** @type {HTMLElement} */ (pane.querySelector('[data-zoom-out]')).addEventListener('click', () => {
-      if (paneViewer?.doc) paneViewer.scribe.zoom(0.9, paneViewer.scribe.getViewportCenter());
-    });
-    let pvFindLast = '';
-    const pvClearFind = () => {
-      pvFindLast = '';
-      if (!paneViewer?.doc) return;
-      const ps = paneViewer.scribe;
-      if (ps._searchState.search) findText(ps, '');
-      ps.state.searchMode = false;
-    };
-    const pvRunFind = async () => {
-      if (!paneViewer?.doc) return;
-      const ps = paneViewer.scribe;
-      const q = pvFindInput.value.trim();
-      if (!q) return;
-      if (q !== pvFindLast) {
-        pvFindLast = q;
-        ps.state.searchMode = true;
-        findText(ps, q);
-        const idx = ps._searchState.matchList.findIndex((m) => m.pageN >= ps.state.cp.n);
-        await goToMatch(ps, idx >= 0 ? idx : 0);
-      } else {
-        await goToMatch(ps, ps._searchState.activeMatch + 1);
-      }
-    };
-    pvFindInput.addEventListener('keydown', (e) => {
-      if (e.key === 'Enter') {
-        e.preventDefault();
-        pvRunFind();
-      } else if (e.key === 'Escape' && pvFindInput.value) {
-        e.preventDefault();
-        e.stopPropagation();
-        pvFindInput.value = '';
-        pvClearFind();
-      }
-    });
-    pvFindInput.addEventListener('input', () => {
-      if (!pvFindInput.value.trim()) pvClearFind();
-    });
-
-    /**
-     * Release the pane's current document, saving one that holds session edits back to its sidecar.
-     * A still-provisional document finishes loading first, since the swap into the real document is what carries its annotations.
-     * @param {?string} hash
-     */
-    const releaseDoc = (hash) => {
-      if (!paneViewer || !paneViewer.doc) return;
-      const doc = paneViewer.doc;
-      const dirty = paneDirty;
-      paneDirty = false;
-      // A clean hydrated document goes back to the session pool instead of closing, so returning to it is free.
-      if (!dirty && hash && doc.id >= 0) {
-        paneViewer._tabs.length = 0;
-        paneViewer._activeTab = -1;
-        paneViewer._renderTabs();
-        paneViewer.detachDoc({ terminate: false });
-        sessions.adoptLive(hash, doc);
-        return;
-      }
-      if (!dirty || !hash || !store) {
-        if (paneViewer._tabs.length) paneViewer._closeTab(0);
-        return;
-      }
-      paneViewer._tabs.length = 0;
-      paneViewer._activeTab = -1;
-      paneViewer._renderTabs();
-      paneViewer.detachDoc({ terminate: false });
-      (async () => {
-        /** @type {?Object} */
-        let real = null;
-        try {
-          real = doc.id < 0 ? await /** @type {any} */ (doc)._requestHydration() : doc;
-          await /** @type {LibraryStore} */ (store).writeSidecar(hash, await /** @type {any} */ (real).exportData('scribe', { scribeSession: true }));
-          sessions.dropSidecar(hash);
-          sessions.adoptLive(hash, /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */ (real));
-        } catch {
-          await /** @type {any} */ (real || doc).close?.();
-        }
-      })().catch(() => {});
-    };
-
-    const showEmpty = () => {
-      token++;
-      endVeil();
-      releaseDoc(current ? current.hash : null);
-      current = null;
-      lastTarget = null;
-      pvHead.style.display = 'none';
-      pvFoot.style.display = 'none';
-      pvHost.style.display = 'none';
-      pvLoading.style.display = 'none';
-      pvEmpty.textContent = emptyText;
-      pvEmpty.style.display = '';
-    };
-
-    /**
-     * Preview a page in the embedded viewer, painting match marks when a query is given.
-     * A `jump` target lands on far pages by re-seeding; without it, a page outside the seeded window accelerates the full load as scrolling there would.
-     * @param {{relPath: string, hash: string, entry: import('./libraryStore.js').LibraryDocEntry,
-     *   pageN: number, query: ?string, title: string, meta: string, pos: string, jump?: boolean, immediate?: boolean}} target
-     */
-    /** @type {?number} */
-    let dwellTimer = null;
-    const DWELL_LOAD_MS = 2500;
-
-    /**
-     * Arm the dwell load.
-     * Lingering on a page with no stored raster is what loads the image, so rapid flipping stays free.
-     * @param {{hash: string, pageN: number}} target
-     * @param {number} t
-     * @param {boolean} [immediate] Load now instead of after the dwell, for an explicit click on this hit.
-     */
-    const armDwell = async (target, t, immediate = false) => {
-      if (dwellTimer !== null) {
-        clearTimeout(dwellTimer);
-        dwellTimer = null;
-      }
-      if (!store || !paneViewer?.doc || paneViewer.doc.id >= 0) return;
-      if (await store.readPageRaster(target.hash, target.pageN)) return;
-      if (t !== token) return;
-      const hydrate = () => {
-        if (!(t === token && paneViewer?.doc && paneViewer.doc.id < 0)) return;
-        pvLoading.style.display = '';
-        /** @type {any} */ (paneViewer.doc)._requestHydration?.();
-      };
-      if (immediate) {
-        hydrate();
-        return;
-      }
-      dwellTimer = window.setTimeout(() => {
-        dwellTimer = null;
-        hydrate();
-      }, DWELL_LOAD_MS);
-    };
-
-    /** @type {?{elem: HTMLElement, timers: number[]}} */
-    let veil = null;
-
-    /**
-     * Remove the veil.
-     * With `v` given, only when it is still the one that call created.
-     * @param {HTMLElement} [v]
-     */
-    const endVeil = (v) => {
-      if (!veil || (v && veil.elem !== v)) return;
-      for (const timer of veil.timers) clearTimeout(timer);
-      veil.elem.remove();
-      veil = null;
-    };
-
-    /**
-     * Freeze the pane's current pixels while the next target prepares underneath, so the swap reveals already anchored.
-     * A dim after 400ms signals a slow preparation, and a 2s cap reveals whatever exists rather than reading as a dead click.
-     * @returns {HTMLElement}
-     */
-    const beginVeil = () => {
-      endVeil();
-      const cover = document.createElement('div');
-      cover.className = 'scribe-library-pv-veil';
-      const rect = pvHost.getBoundingClientRect();
-      if (rect.width && rect.height) {
-        const snap = document.createElement('canvas');
-        const dpr = window.devicePixelRatio || 1;
-        snap.width = Math.round(rect.width * dpr);
-        snap.height = Math.round(rect.height * dpr);
-        const ctx = snap.getContext('2d');
-        if (ctx) {
-          ctx.scale(dpr, dpr);
-          let drew = false;
-          for (const c of pvHost.querySelectorAll('canvas')) {
-            const cr = c.getBoundingClientRect();
-            if (!cr.width || !cr.height || cr.bottom < rect.top || cr.top > rect.bottom) continue;
-            try {
-              ctx.drawImage(c, cr.left - rect.left, cr.top - rect.top, cr.width, cr.height);
-              drew = true;
-            } catch { /* A zero-sized or unreadable canvas leaves that page blank in the freeze. */ }
-          }
-          // A background image rather than a canvas child, so anything polling for the viewer's canvases never matches the veil.
-          if (drew) cover.style.backgroundImage = `url(${snap.toDataURL()})`;
-        }
-      }
-      const timers = [
-        window.setTimeout(() => { cover.style.opacity = '0.5'; }, 400),
-        window.setTimeout(() => endVeil(cover), 2000),
-      ];
-      pvHost.appendChild(cover);
-      veil = { elem: cover, timers };
-      return cover;
-    };
-
-    const show = async (target) => {
-      const t = ++token;
-      if (!current || current.hash !== target.hash) {
-        pvFindInput.value = '';
-        pvFindLast = '';
-      }
-      pvHead.style.display = '';
-      pvFoot.style.display = '';
-      /** @type {HTMLElement} */ (pvHead.querySelector('.t')).textContent = target.title;
-      /** @type {HTMLElement} */ (pvHead.querySelector('.m')).textContent = target.meta;
-      /** @type {HTMLElement} */ (pvFoot.querySelector('[data-pos]')).textContent = target.pos;
-      pvEmpty.style.display = 'none';
-      pvLoading.style.display = 'none';
-      pvHost.style.display = '';
-      if (!paneViewer) {
-        paneViewer = new /** @type {any} */ (viewer.constructor)(pvHost, {
-          edit: false, showToolbar: false, showDropZone: false, showThumbnails: false, fit: 'width',
-        });
-        // The pane must never compete with the main viewer for canvas memory.
-        /** @type {NonNullable<typeof paneViewer>} */ (paneViewer).scribe.imageCache.canvasCacheBytes = 64 * 1024 * 1024;
-        /** @type {any} */ (pvHost).scribeViewer = paneViewer;
-        // Annotation gestures and comment text edits in the pane checkpoint like tab edits do.
-        /** @type {NonNullable<typeof paneViewer>} */ (paneViewer).scribe.onAnnotationsEdited = () => { paneDirty = true; };
-        pvHost.addEventListener('input', () => { paneDirty = true; }, true);
-      }
-      lastTarget = target;
-      // Background warming yields for the whole show, because the seed build and priming run before any hydration exists to count.
-      beginUserLoad();
-      try {
-        // Clicking a result on a far page of the same provisional document re-seeds around that page instead of forcing the full load.
-        const jumpOutsideSeed = !!(current && paneViewer.doc && paneViewer.doc.id < 0
-          && target.jump && current.window
-          && (target.pageN < current.window.from || target.pageN > current.window.to));
-        if (current && current.hash === target.hash && paneViewer.doc && !jumpOutsideSeed) {
-          // A re-render landing on the same page and query must leave the reader's scroll and paint untouched.
-          const samePlace = current.pageN === target.pageN && current.query === target.query;
-          current.pageN = target.pageN;
-          current.query = target.query;
-          if (samePlace) return;
-          if (current.handle) await current.handle.primed;
-          if (t !== token) return;
-          await applyQueryAndPage(target);
-          current.anchorTop = paneViewer.scribe.scrollContainer.scrollTop;
-          endVeil();
-          const entry = manifest?.docs[target.relPath];
-          if (paneViewer.doc && paneViewer.doc.id >= 0 && entry) persistRasterWindow(paneViewer.doc, entry, target.pageN);
-          else armDwell(target, t, target.immediate);
-          return;
-        }
-        const pooled = sessions.takeLive(target.hash);
-        if (pooled) {
-          const cover = beginVeil();
-          releaseDoc(current ? current.hash : null);
-          current = null;
-          await paneViewer._openDocAsTab(pooled, titleOf(target.relPath), { lastPage: target.pageN });
-          if (t !== token) return;
-          current = {
-            relPath: target.relPath, hash: target.hash, pageN: target.pageN, query: target.query, handle: null, window: null,
-          };
-          await applyQueryAndPage(target);
-          current.anchorTop = paneViewer.scribe.scrollContainer.scrollTop;
-          endVeil(cover);
-          const entry = manifest?.docs[target.relPath];
-          if (entry) persistRasterWindow(paneViewer.doc, entry, target.pageN);
-          return;
-        }
-        const seed = await makeSeed(target.relPath, target.entry, target.pageN);
-        if (t !== token) return;
-        const cover = beginVeil();
-        const prevDoc = paneViewer.doc;
-        /** @type {?{pages: Array<Array<Object>>, baseline: Set<number>}} */
-        let carried = null;
-        if (current && current.hash === target.hash && prevDoc && prevDoc.id < 0 && paneDirty) {
-          // Re-seeding the same edited document carries its unsaved session annotations into the new seed, and the dirty flag stays for the real save.
-          carried = {
-            pages: prevDoc.annotations.pages.map((page) => page.map((a) => ({ ...a, bbox: { ...a.bbox } }))),
-            baseline: new Set(prevDoc._annotBaseline),
-          };
-          if (paneViewer._tabs.length) paneViewer._closeTab(0);
-        } else {
-          releaseDoc(current ? current.hash : null);
-        }
-        current = null;
-        const baseAnnots = seed.annots;
-        const carriedPages = carried;
-        const handle = await paneViewer.openProvisional(carriedPages ? {
-          ...seed,
-          annots: (n) => (carriedPages.baseline.has(n) || carriedPages.pages[n].length
-            ? Promise.resolve(carriedPages.pages[n].map((a) => ({ ...a, bbox: { ...a.bbox } })))
-            : Promise.resolve(baseAnnots ? baseAnnots(n) : null)),
-        } : seed);
-        if (t !== token) return;
-        countHydration(paneViewer.doc);
-        current = {
-          relPath: target.relPath, hash: target.hash, pageN: target.pageN, query: target.query, handle, window: seed.window,
-        };
-        // An explicit click on an unwarmed hit starts its full load here, in parallel with the seed's priming.
-        // Priming can stream megabytes of sidecar for a big document, and the reader is already waiting.
-        if (target.immediate) armDwell(target, t, true);
-        await handle.primed;
-        if (t !== token) return;
-        await applyQueryAndPage(target);
-        current.anchorTop = paneViewer.scribe.scrollContainer.scrollTop;
-        endVeil(cover);
-        if (!target.immediate) armDwell(target, t);
-        handle.hydrated.finally(() => {
-          if (t === token) pvLoading.style.display = 'none';
-        }).catch(() => {});
-        handle.hydrated.then(() => {
-          if (!(current && current.handle === handle && paneViewer?.doc)) return;
-          const ps = /** @type {NonNullable<typeof paneViewer>} */ (paneViewer).scribe;
-          const sc = ps.scrollContainer;
-          // Once the reader scrolled away from the anchored spot, hydration must not yank them back.
-          const readerMoved = current.anchorTop != null && Math.abs(sc.scrollTop - current.anchorTop) > 2;
-          if (current.query) {
-            // The swap rebuilt the word objects, so re-derive the matches from the real document at whatever page the reader has reached.
-            ps.state.searchMode = true;
-            findText(ps, current.query);
-            if (!readerMoved) {
-              const idx = ps._searchState.matchList.findIndex((m) => m.pageN === ps.state.cp.n);
-              if (idx >= 0) {
-                Promise.resolve(goToMatch(ps, idx)).then(() => {
-                  if (current && current.handle === handle) current.anchorTop = sc.scrollTop;
-                }).catch(() => {});
-              }
-            }
-          }
-          const entry = manifest?.docs[current.relPath];
-          if (entry) persistRasterWindow(paneViewer.doc, entry, ps.state.cp.n);
-        }).catch(() => {});
-      } catch {
-        if (t === token) {
-          endVeil();
-          pvHost.style.display = 'none';
-          pvLoading.style.display = 'none';
-          pvEmpty.textContent = 'This page could not be rendered.';
-          pvEmpty.style.display = '';
-        }
-      } finally {
-        endUserLoad();
-      }
-    };
-
-    const shownHash = () => (current ? current.hash : null);
-
-    /**
-     * Hand the pane's hydrated document to the caller for promotion into a main-viewer tab.
-     * Returns null while the pane is still provisional or empty.
-     * @returns {?import('../../js/containers/scribeDoc.js').ScribeDoc}
-     */
-    const takeHydratedDoc = () => {
-      if (!paneViewer || !current || !paneViewer.doc || paneViewer.doc.id < 0) return null;
-      const doc = paneViewer.doc;
-      paneViewer._tabs.length = 0;
-      paneViewer._activeTab = -1;
-      paneViewer._renderTabs();
-      paneViewer.detachDoc({ terminate: false });
-      current = null;
-      return doc;
-    };
-
-    /** Re-seed the last shown target, so the pane is not blank after a doc handoff. */
-    const reshow = () => {
-      if (lastTarget) show(lastTarget);
-    };
-
-    const destroy = () => {
-      token++;
-      endVeil();
-      if (dwellTimer !== null) {
-        clearTimeout(dwellTimer);
-        dwellTimer = null;
-      }
-      releaseDoc(current ? current.hash : null);
-      current = null;
-      if (paneViewer) {
-        paneViewer.destroy();
-        paneViewer = null;
-      }
-      if (mountedPane === self) mountedPane = null;
-    };
-
-    const self = {
-      pane,
-      openBtn: /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-open')),
-      closeBtn: /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-x')),
-      prevBtn: /** @type {HTMLElement} */ (pane.querySelector('[data-prev]')),
-      nextBtn: /** @type {HTMLElement} */ (pane.querySelector('[data-next]')),
-      /** Which view hosts this pane ('results' | 'list'); reuse is only within a kind. */
-      kind: '',
-      /** The query the results view last rendered with, so a new search resets the pane. */
-      shownQuery: '',
-      /** @type {?() => void} Rebound on every host render; a reused pane must never stack listeners. */
-      onOpen: null,
-      /** @type {?() => void} */
-      onClose: null,
-      /** @type {?() => void} */
-      onPrev: null,
-      /** @type {?() => void} */
-      onNext: null,
-      show,
-      showEmpty,
-      shownHash,
-      takeHydratedDoc,
-      reshow,
-      destroy,
-      /** The embedded viewer, for routing the shared top-bar tools at the previewed doc. */
-      viewerRef: () => paneViewer,
-      /** Consume the dirty flag; the caller owns the save. */
-      takeDirty: () => {
-        const d = paneDirty;
-        paneDirty = false;
-        return d;
-      },
-      isDirty: () => paneDirty,
-      /** Finish a provisional pane's load in place, so promotion adopts the document instead of the tab re-importing it. */
-      finishHydration: async () => {
-        const doc = /** @type {any} */ (paneViewer?.doc);
-        if (doc && doc.id < 0 && doc._requestHydration) {
-          await doc._requestHydration().catch(() => {});
-        }
-      },
-    };
-    self.openBtn.addEventListener('click', () => self.onOpen?.());
-    self.closeBtn.addEventListener('click', () => self.onClose?.());
-    self.prevBtn.addEventListener('click', () => self.onPrev?.());
-    self.nextBtn.addEventListener('click', () => self.onNext?.());
-    mountedPane = self;
-    return self;
-  };
-
-  /**
-   * The pane for a hosting view, reusing the mounted one when the same kind re-renders.
-   * A List/Compact switch or an ingest-progress re-render must not tear down the embedded viewer or its painted pages.
-   * @param {string} kind
-   * @param {string} emptyText
-   * @param {string} prevLabel
-   * @param {string} nextLabel
-   */
-  const ensurePane = (kind, emptyText, prevLabel, nextLabel) => {
-    if (mountedPane && mountedPane.kind === kind) return mountedPane;
-    if (mountedPane) mountedPane.destroy();
-    const pv = buildPreviewPane(emptyText, prevLabel, nextLabel);
-    pv.kind = kind;
-    return pv;
-  };
-
-  /** @type {?ReturnType<typeof buildPreviewPane>} Pane mounted by the list views, or null when absent. */
+  /** @type {?Object} Preview pane mounted by the list views, or null when absent. */
   let listPane = null;
 
   /**
@@ -2544,753 +1752,6 @@ export function installLibrary(viewer) {
       pos: `Page ${pageN + 1} of ${pages}`,
       jump,
     });
-  };
-
-  const renderResults = () => {
-    const results = /** @type {Array<{hash: string, pages: number[]}>} */ (fullTextResults);
-    // The same result set reattaches the retained view untouched.
-    if (resultsView && resultsView.results === results && resultsView.pv === mountedPane) {
-      body.classList.add('results-mode');
-      body.appendChild(resultsView.wrap);
-      resultsView.attach();
-      // Rasters may have landed since the rows were built (a preview, a full open), so blank rows retry.
-      resultsView.repump();
-      return;
-    }
-    if (resultsView) {
-      resultsView.dispose();
-      resultsView = null;
-    }
-    const myGen = ++resultsGen;
-    body.classList.add('results-mode');
-    const { wrap, left: listEl } = buildPreviewSplit(400, () => resultsListWidth, (w) => { resultsListWidth = w; });
-    body.appendChild(wrap);
-    listEl.tabIndex = 0;
-    listEl.setAttribute('aria-label', 'Search results');
-
-    const summary = document.createElement('div');
-    summary.className = 'scribe-library-rsummary';
-    const summaryN = document.createElement('span');
-    summaryN.className = 'n';
-    summaryN.textContent = results.length
-      ? `${results.length} document${results.length === 1 ? '' : 's'}`
-      : `No results for “${fullTextQuery}”`;
-    summary.appendChild(summaryN);
-    const backBtn = document.createElement('button');
-    backBtn.className = 'scribe-library-back';
-    backBtn.textContent = '‹ Back';
-    backBtn.addEventListener('click', () => {
-      fullTextResults = null;
-      searchInput.value = '';
-      searchField.classList.remove('has-text');
-      filterText = '';
-      render();
-    });
-    summary.appendChild(backBtn);
-    listEl.appendChild(summary);
-
-    const pv = ensurePane('results', 'Select a result to preview it here', '‹ Previous result', 'Next result ›');
-    if (pv.shownQuery !== fullTextQuery) pv.showEmpty();
-    pv.shownQuery = fullTextQuery;
-    wrap.appendChild(pv.pane);
-
-    const byHash = new Map();
-    if (manifest) for (const [relPath, e] of Object.entries(manifest.docs)) byHash.set(e.hash, { relPath, entry: e });
-
-    /** @type {Array<{relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, hash: string, pageN: number, count: number, row: HTMLElement}>} */
-    const hits = [];
-    let active = -1;
-
-    const selectHit = (i, { immediate = false } = {}) => {
-      active = i;
-      hits.forEach((h, j) => h.row.classList.toggle('on', j === i));
-      if (i < 0) {
-        pv.showEmpty();
-        return;
-      }
-      const h = hits[i];
-      h.row.scrollIntoView({ block: 'nearest' });
-      pv.show({
-        relPath: h.relPath,
-        hash: h.hash,
-        entry: h.entry,
-        pageN: h.pageN,
-        query: fullTextQuery,
-        title: titleOf(h.relPath),
-        meta: `Page ${h.pageN + 1} · ${h.count} match${h.count === 1 ? '' : 'es'}`,
-        pos: `Result ${i + 1} of ${hits.length}`,
-        jump: true,
-        immediate,
-      });
-    };
-
-    const openActive = async () => {
-      if (active < 0) return;
-      const h = hits[active];
-      const label = pv.openBtn.innerHTML;
-      /** @type {HTMLButtonElement} */ (pv.openBtn).disabled = true;
-      pv.openBtn.textContent = 'Opening…';
-      try {
-        await openEntry(h.relPath, h.entry, { pageN: h.pageN, query: fullTextQuery });
-      } finally {
-        pv.openBtn.innerHTML = label;
-        /** @type {HTMLButtonElement} */ (pv.openBtn).disabled = false;
-      }
-    };
-    pv.onOpen = openActive;
-    pv.onClose = () => selectHit(-1);
-    pv.onPrev = () => { if (active > 0) selectHit(active - 1); };
-    pv.onNext = () => { if (active < hits.length - 1) selectHit(active + 1); };
-    listEl.addEventListener('keydown', (e) => {
-      if (e.key === 'ArrowDown') {
-        e.preventDefault();
-        if (active < hits.length - 1) selectHit(active + 1);
-      } else if (e.key === 'ArrowUp') {
-        e.preventDefault();
-        if (active > 0) selectHit(active - 1);
-      } else if (e.key === 'Enter') {
-        openActive();
-      } else if (e.key === 'Escape') {
-        selectHit(-1);
-      }
-    });
-
-    /**
-     * One hit row's thumbnail work item. `marks` caches the overlay HTML after the first sidecar read;
-     * `warmed` records that the background warmer already spent its one render attempt on this page.
-     * @typedef {{relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, hash: string, pageN: number, img: HTMLElement, marks?: string, warmed?: boolean}} ThumbItem
-     */
-    /** @type {Array<ThumbItem>} */
-    const thumbQueue = [];
-    let thumbsRunning = false;
-    /** @type {Array<ThumbItem>} Rows whose stored raster was absent at pump time, kept for the warmer and for repump retries. */
-    const rasterless = [];
-    let warmRunning = false;
-    /**
-     * Overlay a row's match marks once its document's sidecar pass lands, over whatever raster already painted.
-     * @param {ThumbItem} t
-     * @param {?string} url
-     * @param {Promise<?Map<number, {ocr: ?Object, annotations: ?Array<Object>}>>} sidePass
-     */
-    const paintLateMarks = (t, url, sidePass) => {
-      sidePass.then((side) => {
-        if (myGen !== resultsGen || t.marks !== undefined) return;
-        const page = side?.get(t.pageN)?.ocr ?? null;
-        const pd = t.entry.pageDims?.[t.pageN];
-        t.marks = markOverlayHTML(getMatchRects(page, pd ? { width: pd[0], height: pd[1] } : null, fullTextQuery));
-        if (t.marks) t.img.innerHTML = `${url ? `<img alt="" src="${url}">` : ''}${t.marks}`;
-      });
-    };
-    // The pump never imports a document: it paints stored rasters and sidecar marks, and leaves missing rasters to warmHits.
-    const pumpThumbs = async () => {
-      if (thumbsRunning) return;
-      thumbsRunning = true;
-      while (thumbQueue.length) {
-        if (myGen !== resultsGen) break;
-        const first = /** @type {NonNullable<typeof thumbQueue[0]>} */ (thumbQueue.shift());
-        // Every queued page of this document reads in one sidecar pass.
-        const batch = [first];
-        for (let i = 0; i < thumbQueue.length;) {
-          if (thumbQueue[i].hash === first.hash) batch.push(thumbQueue.splice(i, 1)[0]);
-          else i++;
-        }
-        // Stored rasters paint before the sidecar pass lands, because a multi-MB sidecar must not hold up rows that already have images.
-        const needMarks = batch.filter((b) => b.marks === undefined);
-        /** @type {?Promise<?Map<number, {ocr: ?Object, annotations: ?Array<Object>}>>} */
-        const sidePass = needMarks.length
-          ? sessions.sidecarPages(first.hash, needMarks.map((b) => b.pageN)).catch(() => null)
-          : null;
-        for (const t of batch) {
-          if (myGen !== resultsGen) break;
-          try {
-            const url = await sessions.pageImage(t.hash, t.pageN);
-            if (myGen !== resultsGen) break;
-            if (url || t.marks) t.img.innerHTML = `${url ? `<img alt="" src="${url}">` : ''}${t.marks || ''}`;
-            if (!url && !rasterless.includes(t)) rasterless.push(t);
-            if (t.marks === undefined && sidePass) paintLateMarks(t, url, sidePass);
-          } catch { /* A failed read leaves the placeholder page blank. */ }
-        }
-      }
-      thumbsRunning = false;
-      if (myGen === resultsGen && rasterless.some((r) => !r.warmed)) warmHits();
-    };
-
-    // Renders the missing hit-page rasters, one bounded import at a time.
-    // Each import restores that document's whole sidecar, so the gates below keep warming from running alongside a load the reader is waiting on.
-    const resumeWarm = () => {
-      if (myGen === resultsGen) warmHits();
-    };
-    const warmHits = async () => {
-      if (warmRunning) return;
-      warmRunning = true;
-      while (myGen === resultsGen && store) {
-        if (store.rasterBytes !== null && store.rasterBytes > store.rasterBudget) break;
-        if (document.visibilityState !== 'visible') {
-          const resume = () => {
-            document.removeEventListener('visibilitychange', resume);
-            warmHits();
-          };
-          document.addEventListener('visibilitychange', resume);
-          break;
-        }
-        // A provisional pane showing a stored raster may never hydrate, so it does not count as a user load.
-        if (userLoadsActive > 0) {
-          userLoadIdle().then(resumeWarm);
-          break;
-        }
-        const busyHash = pv.shownHash();
-        const listRect = listEl.getBoundingClientRect();
-        let idx = rasterless.findIndex((r) => {
-          if (r.warmed || r.hash === busyHash) return false;
-          const rect = r.img.getBoundingClientRect();
-          return rect.bottom > listRect.top && rect.top < listRect.bottom && rect.height > 0;
-        });
-        if (idx < 0) idx = rasterless.findIndex((r) => !r.warmed && r.hash !== busyHash);
-        if (idx < 0) break;
-        const first = /** @type {ThumbItem} */ (rasterless.splice(idx, 1)[0]);
-        const batch = [first];
-        for (let i = 0; i < rasterless.length;) {
-          if (!rasterless[i].warmed && rasterless[i].hash === first.hash) batch.push(rasterless.splice(i, 1)[0]);
-          else i++;
-        }
-        const sidecarBytes = await store.sidecarSize(first.hash);
-        if ((sidecarBytes !== null && sidecarBytes > WARM_SIDECAR_LIMIT) || first.entry.size > WARM_PDF_LIMIT) {
-          // Too big to import in the background, but the rows stay tracked so a preview or open can still fill them.
-          for (const t of batch) {
-            t.warmed = true;
-            rasterless.push(t);
-          }
-          continue;
-        }
-        /** @type {?import('../../js/containers/scribeDoc.js').ScribeDoc} */
-        let doc = null;
-        let owned = false;
-        try {
-          doc = sessions.peekLive(first.hash);
-          if (!doc) {
-            const files = /** @type {Array<File>} */ ([await store.readFile(first.relPath)]);
-            const sidecar = await store.readSidecar(first.hash);
-            if (sidecar) files.push(new File([sidecar], `${first.hash}.scribe`));
-            // A click can land after this iteration passed the top-of-loop gate, so re-check before the expensive import.
-            await userLoadIdle();
-            if (myGen !== resultsGen) break;
-            doc = await scribeLib.openDocument(files, { deferText: true, skipFontOpt: true, pdfWorkerN: 1 });
-            owned = true;
-          }
-          // Stored rasters are keyed by the ingested page order, so a document that no longer matches its entry must stay blank.
-          if (doc.pageMetrics.length !== first.entry.pageCount) continue;
-          for (const t of batch) {
-            if (myGen !== resultsGen) break;
-            await userLoadIdle();
-            t.warmed = true;
-            if (!(await store.readPageRaster(t.hash, t.pageN))) {
-              const raster = await doc.images.renderThumbnail(t.pageN, PAGE_RASTER_WIDTH, 0.75, true);
-              if (!raster) continue;
-              await store.writePageRaster(t.hash, t.pageN, raster);
-            }
-            thumbQueue.push(t);
-            pumpThumbs();
-          }
-        } catch { /* A document that fails to open leaves its rows blank. */
-        } finally {
-          if (owned && doc) await doc.close().catch(() => {});
-        }
-      }
-      warmRunning = false;
-    };
-
-    /**
-     * @param {{relPath: string, entry: import('./libraryStore.js').LibraryDocEntry, hash: string}} docRef
-     * @param {number} pageN
-     * @param {{count: number, snippet: DocumentFragment}} info
-     * @param {number} insertAt - Position in `hits`, so expanded rows keep list order for stepping.
-     * @returns {HTMLElement}
-     */
-    const buildHitRow = (docRef, pageN, info, insertAt) => {
-      const row = document.createElement('div');
-      row.className = 'scribe-library-hit';
-      const ph = document.createElement('span');
-      ph.className = 'ph';
-      row.appendChild(ph);
-      const hm = document.createElement('span');
-      hm.className = 'hm';
-      const ht = document.createElement('span');
-      ht.className = 'ht';
-      ht.append(`Page ${pageN + 1} `);
-      const htMeta = document.createElement('span');
-      htMeta.className = 'm';
-      htMeta.textContent = `· ${info.count} match${info.count === 1 ? '' : 'es'}`;
-      ht.appendChild(htMeta);
-      hm.appendChild(ht);
-      const sn = document.createElement('span');
-      sn.className = 'sn';
-      sn.appendChild(info.snippet);
-      hm.appendChild(sn);
-      row.appendChild(hm);
-      const hit = {
-        relPath: docRef.relPath, entry: docRef.entry, hash: docRef.hash, pageN, count: info.count, row,
-      };
-      hits.splice(insertAt, 0, hit);
-      row.addEventListener('click', () => {
-        selectHit(hits.indexOf(hit), { immediate: true });
-        listEl.focus();
-      });
-      thumbQueue.push({
-        relPath: docRef.relPath, entry: docRef.entry, hash: docRef.hash, pageN, img: ph,
-      });
-      return row;
-    };
-
-    (async () => {
-      if (!store || !results.length) return;
-      const infos = await Promise.all(results.map(async (result) => {
-        const docRef = byHash.get(result.hash);
-        if (!docRef) return null;
-        const text = await store.readTextCache(result.hash).catch(() => null);
-        if (text === null) return null;
-        const pagesText = text.split('\f');
-        const queryLower = fullTextQuery.toLowerCase();
-        const perPage = result.pages.map((pageN) => {
-          const pageText = pagesText[pageN] || '';
-          const lower = pageText.toLowerCase();
-          let needle = queryLower;
-          const starts = [];
-          let at = lower.indexOf(needle);
-          if (at < 0) {
-            needle = queryLower.split(/[^\p{L}\p{N}]+/u).find((t) => t.length >= 2) || '';
-            at = needle ? lower.indexOf(needle) : -1;
-          }
-          while (at >= 0) {
-            starts.push(at);
-            at = lower.indexOf(needle, at + needle.length);
-          }
-          const snippet = document.createDocumentFragment();
-          if (!starts.length) {
-            snippet.append(pageText.slice(0, SNIPPET_RADIUS * 2));
-          } else {
-            const winStart = Math.max(0, starts[0] - SNIPPET_RADIUS);
-            const winEnd = Math.min(pageText.length, starts[0] + needle.length + SNIPPET_RADIUS);
-            let pos = winStart;
-            if (winStart > 0) snippet.append('…');
-            for (const s of starts) {
-              if (s < winStart || s + needle.length > winEnd) continue;
-              snippet.append(pageText.slice(pos, s));
-              const bold = document.createElement('b');
-              bold.textContent = pageText.slice(s, s + needle.length);
-              snippet.appendChild(bold);
-              pos = s + needle.length;
-            }
-            snippet.append(pageText.slice(pos, winEnd));
-            if (winEnd < pageText.length) snippet.append('…');
-          }
-          return { pageN, count: Math.max(starts.length, 1), snippet };
-        });
-        const total = perPage.reduce((sum, pp) => sum + pp.count, 0);
-        return {
-          docRef: { relPath: docRef.relPath, entry: docRef.entry, hash: result.hash }, perPage, total,
-        };
-      }));
-      if (myGen !== resultsGen) return;
-
-      const ranked = /** @type {NonNullable<typeof infos[0]>[]} */ (infos.filter(Boolean));
-      ranked.sort((a, b) => b.total - a.total);
-      const totalMatches = ranked.reduce((sum, r) => sum + r.total, 0);
-      summaryN.textContent = `${totalMatches} match${totalMatches === 1 ? '' : 'es'} · ${ranked.length} document${ranked.length === 1 ? '' : 's'}`;
-
-      const appendDocGroup = (info) => {
-        const d = info.docRef;
-        const head = document.createElement('div');
-        head.className = 'scribe-library-rdoc';
-        head.append(`${titleOf(d.relPath)} `);
-        const meta = document.createElement('span');
-        meta.className = 'm';
-        const dateMatch = /^(\d{4})-(\d{2})-(\d{2})[ _]/.exec(d.relPath.split('/').pop() || '');
-        const datePart = dateMatch
-          ? `${new Date(+dateMatch[1], +dateMatch[2] - 1, +dateMatch[3]).toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' })} · `
-          : '';
-        meta.textContent = `${datePart}${d.entry.pageCount} page${d.entry.pageCount === 1 ? '' : 's'} · ${info.total} match${info.total === 1 ? '' : 'es'} on ${info.perPage.length} page${info.perPage.length === 1 ? '' : 's'}`;
-        head.appendChild(meta);
-        listEl.appendChild(head);
-        const shownNow = info.perPage.slice(0, RESULT_PAGES_PER_DOC);
-        for (const pp of shownNow) listEl.appendChild(buildHitRow(d, pp.pageN, pp, hits.length));
-        const rest = info.perPage.slice(RESULT_PAGES_PER_DOC);
-        if (rest.length) {
-          const more = document.createElement('button');
-          more.className = 'scribe-library-rmore';
-          more.type = 'button';
-          more.textContent = `+ ${rest.length} more page${rest.length === 1 ? '' : 's'}`;
-          more.addEventListener('click', () => {
-            // Anchor on the preceding row at click time: earlier expansions shift positions in `hits`.
-            let prev = more.previousElementSibling;
-            while (prev && !prev.classList.contains('scribe-library-hit')) prev = prev.previousElementSibling;
-            let at = prev ? hits.findIndex((h) => h.row === prev) + 1 : hits.length;
-            for (const pp of rest) {
-              const row = buildHitRow(d, pp.pageN, pp, at);
-              more.before(row);
-              at++;
-            }
-            more.remove();
-            pumpThumbs();
-          });
-          listEl.appendChild(more);
-        }
-      };
-
-      const firstBatch = ranked.slice(0, RESULT_DOC_LIMIT);
-      for (const info of firstBatch) appendDocGroup(info);
-      const restDocs = ranked.slice(RESULT_DOC_LIMIT);
-      if (restDocs.length) {
-        const moreDocs = document.createElement('button');
-        moreDocs.className = 'scribe-library-rmore';
-        moreDocs.type = 'button';
-        moreDocs.style.paddingLeft = '16px';
-        moreDocs.textContent = `+ ${restDocs.length} more document${restDocs.length === 1 ? '' : 's'}`;
-        moreDocs.addEventListener('click', () => {
-          moreDocs.remove();
-          for (const info of restDocs) appendDocGroup(info);
-          pumpThumbs();
-        });
-        listEl.appendChild(moreDocs);
-      }
-      pumpThumbs();
-    })();
-
-    const pv2 = mountedPane;
-    let listScrollTop = 0;
-    let paneScrollTop = 0;
-    let paneScrollLeft = 0;
-    const paneScroller = () => {
-      const host = /** @type {any} */ (pv2 && pv2.pane.querySelector('.scribe-library-pv-viewer'));
-      return host?.scribeViewer?.scribe?.scrollContainer ?? null;
-    };
-    resultsView = {
-      results,
-      pv: pv2,
-      wrap,
-      snapshot: () => {
-        listScrollTop = listEl.scrollTop;
-        const sc = paneScroller();
-        if (sc) {
-          paneScrollTop = sc.scrollTop;
-          paneScrollLeft = sc.scrollLeft;
-        }
-      },
-      attach: () => {
-        listEl.scrollTop = listScrollTop;
-        const sc = paneScroller();
-        if (sc) {
-          sc.scrollTop = paneScrollTop;
-          sc.scrollLeft = paneScrollLeft;
-        }
-      },
-      repump: () => {
-        if (myGen !== resultsGen || !rasterless.length) return;
-        thumbQueue.push(...rasterless.splice(0));
-        pumpThumbs();
-      },
-      dispose: () => {
-        resultsGen++;
-      },
-    };
-  };
-
-  // --- Drag-to-reorder ----------------------------------------------------
-
-  const blockTouchScroll = (e) => {
-    if (dragState?.started) e.preventDefault();
-  };
-
-  /**
-   * Insertion gap (0..cards.length) for a pointer position.
-   * @param {HTMLElement[]} cards
-   * @param {number} x
-   * @param {number} y
-   */
-  const gapAt = (cards, x, y) => {
-    let best = -1;
-    let bestDist = Infinity;
-    let bestRect = null;
-    for (let i = 0; i < cards.length; i++) {
-      const r = cards[i].getBoundingClientRect();
-      const d = (x - (r.left + r.width / 2)) ** 2 + (y - (r.top + r.height / 2)) ** 2;
-      if (d < bestDist) {
-        bestDist = d;
-        best = i;
-        bestRect = r;
-      }
-    }
-    if (best < 0) return 0;
-    return best + (x > /** @type {DOMRect} */ (bestRect).left + /** @type {DOMRect} */ (bestRect).width / 2 ? 1 : 0);
-  };
-
-  const startDragVisuals = (d) => {
-    d.started = true;
-    const rect = d.cardElem.getBoundingClientRect();
-    d.grabDX = d.startX - rect.left;
-    d.grabDY = d.startY - rect.top;
-    const clone = /** @type {HTMLElement} */ (d.cardElem.cloneNode(true));
-    clone.style.width = '100%';
-    clone.style.height = '100%';
-    clone.style.boxSizing = 'border-box';
-    // On document.body the ghost sits outside the viewer root, so it carries the scope class, theme, and font itself for the scoped card rules and tokens to apply.
-    d.ghost = document.createElement('div');
-    d.ghost.className = 'scribe-library-ghost scribe-pdf-viewer';
-    const theme = viewer.pdfViewerElem.getAttribute('data-theme');
-    if (theme) d.ghost.setAttribute('data-theme', theme);
-    d.ghost.style.fontFamily = getComputedStyle(viewer.pdfViewerElem).fontFamily;
-    d.ghost.style.width = `${rect.width}px`;
-    d.ghost.style.height = `${rect.height}px`;
-    d.ghost.appendChild(clone);
-    document.body.appendChild(d.ghost);
-    d.cardElem.classList.add('dragging');
-    if (d.canReorder && mainGridElem) {
-      d.line = document.createElement('div');
-      d.line.className = 'scribe-library-insert-line';
-      mainGridElem.appendChild(d.line);
-      updateGap(d, true);
-    }
-    positionGhost(d);
-    updateDropTarget(d);
-  };
-
-  const positionGhost = (d) => {
-    if (d.ghost) {
-      d.ghost.style.left = `${d.lastX - d.grabDX}px`;
-      d.ghost.style.top = `${d.lastY - d.grabDY}px`;
-    }
-  };
-
-  /**
-   * Resolve the folder card, row, or ancestor breadcrumb under the pointer into the drag's move destination.
-   * The document's own folder never targets, so dropping there reads as a no-op rather than a move.
-   * @param {Object} d
-   */
-  const updateDropTarget = (d) => {
-    const under = document.elementFromPoint(d.lastX, d.lastY);
-    const target = under && /** @type {?HTMLElement} */ (under.closest('[data-dir-target]'));
-    const cut = d.relPath.lastIndexOf('/');
-    const parent = cut < 0 ? '' : d.relPath.slice(0, cut);
-    const elem = target && target.dataset.dirTarget !== parent ? target : null;
-    if (elem !== d.dropElem) {
-      d.dropElem?.classList.remove('drop');
-      d.dropElem = elem;
-      d.dropElem?.classList.add('drop');
-      if (d.line) d.line.style.display = d.dropElem ? 'none' : '';
-    }
-    d.dropDir = d.dropElem ? (d.dropElem.dataset.dirTarget ?? null) : null;
-  };
-
-  /** @param {Object} d @param {boolean} [force] - Commit the derived gap even under the hysteresis threshold. */
-  const updateGap = (d, force = false) => {
-    if (!mainGridElem || !d.line) return;
-    const cards = /** @type {HTMLElement[]} */ ([...mainGridElem.querySelectorAll(':scope > .scribe-library-card:not(.folder)')]);
-    const gap = gapAt(cards, d.lastX, d.lastY);
-    if (gap !== d.gap && (force || d.sinceGap >= GAP_HYSTERESIS)) {
-      d.gap = gap;
-      d.sinceGap = 0;
-      const anchor = cards[Math.min(gap, cards.length - 1)];
-      if (anchor) {
-        const before = gap < cards.length;
-        d.line.style.left = `${before ? anchor.offsetLeft - 8 : anchor.offsetLeft + anchor.offsetWidth + 5}px`;
-        d.line.style.top = `${anchor.offsetTop}px`;
-        d.line.style.height = `${anchor.offsetHeight}px`;
-      }
-    }
-  };
-
-  const autoScrollTick = () => {
-    const d = dragState;
-    if (!d || !d.autoDir) {
-      if (d) d.rafId = 0;
-      return;
-    }
-    body.scrollTop += d.autoDir * AUTOSCROLL_SPEED;
-    d.sinceGap += AUTOSCROLL_SPEED;
-    updateGap(d);
-    updateDropTarget(d);
-    d.rafId = requestAnimationFrame(autoScrollTick);
-  };
-
-  const onDragMove = (e) => {
-    const d = dragState;
-    if (!d) return;
-    d.sinceGap += Math.hypot(e.clientX - d.lastX, e.clientY - d.lastY);
-    d.lastX = e.clientX;
-    d.lastY = e.clientY;
-    if (!d.started) {
-      const dist = Math.hypot(e.clientX - d.startX, e.clientY - d.startY);
-      if (d.isTouch) {
-        // Travel before the hold fires reads as a scroll.
-        if (dist > LIFT_MOVE_SLOP) endDrag(false);
-        return;
-      }
-      if (dist <= DRAG_THRESHOLD) return;
-      startDragVisuals(d);
-    }
-    positionGhost(d);
-    updateGap(d);
-    updateDropTarget(d);
-    if (Math.hypot(e.clientX - d.startX, e.clientY - d.startY) > MENU_SLOP) d.moved = true;
-    const bodyRect = body.getBoundingClientRect();
-    if (e.clientY < bodyRect.top + AUTOSCROLL_EDGE) d.autoDir = -1;
-    else if (e.clientY > bodyRect.bottom - AUTOSCROLL_EDGE) d.autoDir = 1;
-    else d.autoDir = 0;
-    if (d.autoDir && !d.rafId) d.rafId = requestAnimationFrame(autoScrollTick);
-  };
-
-  const onDragUp = () => endDrag(true);
-  const onDragCancel = () => endDrag(false);
-
-  /** @param {boolean} commit */
-  const endDrag = (commit) => {
-    const d = dragState;
-    if (!d) return;
-    dragState = null;
-    window.clearTimeout(d.holdTimer);
-    window.removeEventListener('pointermove', onDragMove);
-    window.removeEventListener('pointerup', onDragUp);
-    window.removeEventListener('pointercancel', onDragCancel);
-    document.removeEventListener('touchmove', blockTouchScroll);
-    if (d.rafId) cancelAnimationFrame(d.rafId);
-    d.ghost?.remove();
-    d.line?.remove();
-    d.dropElem?.classList.remove('drop');
-    d.cardElem.classList.remove('dragging');
-    if (d.started) {
-      suppressClickUntil = Date.now() + 350;
-      if (d.isTouch) {
-        lastTouchDragT = Date.now();
-        // A lift released without ever dragging opens the card menu, the touch home for Remove.
-        if (commit && !d.moved) {
-          if (renderPending) {
-            renderPending = false;
-            render();
-          }
-          openCardMenu(d.startX, d.startY, d.relPath, d.cardElem);
-          return;
-        }
-      }
-      if (commit && d.dropDir != null && manifest) {
-        const { relPath, dropDir } = d;
-        renderPending = false;
-        (async () => {
-          const entry = manifest && manifest.docs[relPath];
-          if (!entry || !store || !manifest) return;
-          try {
-            const moved = await store.moveFile(relPath, dropDir);
-            delete manifest.docs[relPath];
-            manifest.docs[moved.relPath] = entry;
-            // The copy re-stamps the file; recording the new mtime avoids a pointless verify on the next scan.
-            entry.mtime = moved.mtime;
-            saveManifestSoon();
-          } catch (err) {
-            viewer._showToast(`Couldn't move “${titleOf(relPath)}” — ${err instanceof Error ? err.message : 'the file could not be moved'}.`);
-          }
-          selectedPaths.delete(relPath);
-          render();
-        })();
-        return;
-      }
-      if (commit && d.canReorder && d.gap >= 0 && manifest) {
-        const paths = gridPaths.slice();
-        const fromIdx = paths.indexOf(d.relPath);
-        const to = d.gap > fromIdx ? d.gap - 1 : d.gap;
-        if (fromIdx >= 0 && to !== fromIdx) {
-          paths.splice(fromIdx, 1);
-          paths.splice(to, 0, d.relPath);
-          // The displayed order becomes the manual order wholesale, so every doc in the folder gets a concrete position the first time one is placed.
-          paths.forEach((p, i) => {
-            const entry = manifest.docs[p];
-            if (entry) entry.order = i;
-          });
-          saveManifestSoon();
-          const beforeRects = new Map();
-          for (const el of mainGridElem?.querySelectorAll(':scope > .scribe-library-card') ?? []) {
-            beforeRects.set(/** @type {HTMLElement} */ (el).dataset.relPath, el.getBoundingClientRect());
-          }
-          renderPending = false;
-          render();
-          // Slide each card from its old slot so the move reads as a move.
-          const moved = [];
-          for (const el of mainGridElem?.querySelectorAll(':scope > .scribe-library-card') ?? []) {
-            const prev = beforeRects.get(/** @type {HTMLElement} */ (el).dataset.relPath);
-            if (!prev) continue;
-            const now = el.getBoundingClientRect();
-            const dx = prev.left - now.left;
-            const dy = prev.top - now.top;
-            if (!dx && !dy) continue;
-            const elem = /** @type {HTMLElement} */ (el);
-            elem.style.transition = 'none';
-            elem.style.transform = `translate(${dx}px, ${dy}px)`;
-            moved.push(elem);
-          }
-          // A synchronous layout read commits the translated positions before the slide-back transition arms.
-          if (moved.length && mainGridElem) mainGridElem.getBoundingClientRect();
-          for (const elem of moved) {
-            elem.style.transition = `transform ${REORDER_SLIDE_MS}ms ease`;
-            elem.style.transform = '';
-            elem.addEventListener('transitionend', () => {
-              elem.style.transition = '';
-            }, { once: true });
-          }
-          return;
-        }
-      }
-    }
-    if (renderPending) {
-      renderPending = false;
-      render();
-    }
-  };
-
-  /**
-   * @param {PointerEvent} e
-   * @param {string} relPath
-   * @param {HTMLElement} card
-   */
-  const beginCardDrag = (e, relPath, card) => {
-    if (dragState || fullTextResults || filterText.trim()) return;
-    if (e.pointerType === 'mouse' && e.button !== 0) return;
-    // A sloppy modifier-click must land as a selection click, never arm a reorder drag.
-    if (e.shiftKey || e.ctrlKey || e.metaKey) return;
-    if (e.target instanceof Element && e.target.closest('.actions')) return;
-    const isTouch = e.pointerType !== 'mouse';
-    dragState = {
-      relPath,
-      cardElem: card,
-      startX: e.clientX,
-      startY: e.clientY,
-      lastX: e.clientX,
-      lastY: e.clientY,
-      started: false,
-      moved: false,
-      canReorder: sortMode === 'custom' && viewMode === 'grid',
-      /** @type {?string} Move destination while over a folder or crumb; null means none. */
-      dropDir: null,
-      /** @type {?HTMLElement} */ dropElem: null,
-      /** @type {?HTMLElement} */ ghost: null,
-      /** @type {?HTMLElement} */ line: null,
-      gap: -1,
-      sinceGap: 0,
-      autoDir: 0,
-      rafId: 0,
-      holdTimer: 0,
-      isTouch,
-      grabDX: 0,
-      grabDY: 0,
-    };
-    if (isTouch) {
-      dragState.holdTimer = window.setTimeout(() => {
-        const d = dragState;
-        if (d && !d.started) {
-          startDragVisuals(d);
-          document.addEventListener('touchmove', blockTouchScroll, { passive: false });
-        }
-      }, LIFT_HOLD_MS);
-    }
-    window.addEventListener('pointermove', onDragMove);
-    window.addEventListener('pointerup', onDragUp);
-    window.addEventListener('pointercancel', onDragCancel);
   };
 
   // --- Opening documents --------------------------------------------------
@@ -3344,7 +1805,7 @@ export function installLibrary(viewer) {
         saveManifestSoon();
         const tab = await viewer._openDocAsTab(pooled, titleOf(relPath), { libraryHash: entry.hash, lastPage: target.pageN ?? 0 });
         wrapMutators(pooled, tab);
-        persistRasterWindow(pooled, entry, target.pageN ?? 0);
+        panes.persistRasterWindow(pooled, entry, target.pageN ?? 0);
         if (target.query && viewer._searchBar) {
           viewer._searchBar.openSearch();
           viewer._searchBar.searchInputElem.value = target.query;
@@ -3353,18 +1814,19 @@ export function installLibrary(viewer) {
         return;
       }
       // A pane already showing this document hands its loaded copy to the tab, so opening never re-imports.
-      if (mountedPane && mountedPane.shownHash() === entry.hash) {
+      const pane = panes.mounted();
+      if (pane && pane.shownHash() === entry.hash) {
         try {
-          await mountedPane.finishHydration();
-          const handoffDoc = mountedPane.takeHydratedDoc();
+          await pane.finishHydration();
+          const handoffDoc = pane.takeHydratedDoc();
           if (handoffDoc) {
             entry.lastOpened = Date.now();
             saveManifestSoon();
             const tab = await viewer._openDocAsTab(handoffDoc, titleOf(relPath), { libraryHash: entry.hash, lastPage: target.pageN ?? 0 });
-            if (mountedPane.takeDirty()) tab.libraryDirty = true;
+            if (pane.takeDirty()) tab.libraryDirty = true;
             wrapMutators(handoffDoc, tab);
-            persistRasterWindow(handoffDoc, entry, target.pageN ?? 0);
-            mountedPane.reshow();
+            panes.persistRasterWindow(handoffDoc, entry, target.pageN ?? 0);
+            pane.reshow();
             if (target.query && viewer._searchBar) {
               viewer._searchBar.openSearch();
               viewer._searchBar.searchInputElem.value = target.query;
@@ -3379,17 +1841,17 @@ export function installLibrary(viewer) {
       if (entry.pageDims) {
         entry.lastOpened = Date.now();
         saveManifestSoon();
-        const seed = await makeSeed(relPath, entry, target.pageN ?? 0);
-        beginUserLoad();
+        const seed = await panes.makeSeed(relPath, entry, target.pageN ?? 0);
+        panes.beginUserLoad();
         /** @type {{primed: Promise<void>, hydrated: Promise<void>, cancel: () => void}} */
         let handle;
         try {
           handle = await viewer.openProvisional({ ...seed, hydration: 'eager' });
         } catch (err) {
-          endUserLoad();
+          panes.endUserLoad();
           throw err;
         }
-        handle.hydrated.catch(() => {}).finally(endUserLoad);
+        handle.hydrated.catch(() => {}).finally(panes.endUserLoad);
         const tab = viewer._tabs[viewer._activeTab];
         tab.libraryHash = entry.hash;
         // At adoption time rather than on `hydrated`, so no edit can slip between the swap and dirty tracking.
@@ -3399,7 +1861,7 @@ export function installLibrary(viewer) {
           viewer._searchBar.searchInputElem.value = target.query;
         }
         handle.hydrated.then(() => {
-          persistRasterWindow(tab.doc, entry, target.pageN ?? 0);
+          panes.persistRasterWindow(tab.doc, entry, target.pageN ?? 0);
           // The swap re-attaches the document, and attaching resets the find bar, so the query primes again here.
           if (target.query && viewer._searchBar) {
             viewer._searchBar.openSearch();
@@ -3427,21 +1889,21 @@ export function installLibrary(viewer) {
       }
       /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
       let doc;
-      beginUserLoad();
+      panes.beginUserLoad();
       try {
         doc = await scribeLib.openDocument(files, { deferText: true });
       } catch (err) {
         viewer._showToast(`Couldn't open “${titleOf(relPath)}” — ${err instanceof Error ? err.message : 'the file could not be loaded'}.`);
         return;
       } finally {
-        endUserLoad();
+        panes.endUserLoad();
       }
       entry.lastOpened = Date.now();
       saveManifestSoon();
       // Opening straight at the target page, since a `lastPage: 0` open followed by a jump would visibly double-paint.
       const tab = await viewer._openDocAsTab(doc, titleOf(relPath), { libraryHash: entry.hash, lastPage: target.pageN ?? 0 });
       wrapMutators(doc, tab);
-      persistRasterWindow(doc, entry, target.pageN ?? 0);
+      panes.persistRasterWindow(doc, entry, target.pageN ?? 0);
       if (target.query && viewer._searchBar) {
         viewer._searchBar.openSearch();
         viewer._searchBar.searchInputElem.value = target.query;
@@ -3451,6 +1913,48 @@ export function installLibrary(viewer) {
       openingDocs.delete(openKey);
     }
   };
+
+  // --- Subsystems ---------------------------------------------------------
+
+  // Constructed here rather than beside their first use, because they capture `render`, `openCardMenu`, and `openEntry` by value.
+  const panes = createPreviewPanes({
+    viewer,
+    sessions,
+    getStore: () => store,
+    getManifest: () => manifest,
+    onRastersStored: () => results.repump(),
+  });
+
+  const results = createResultsView({
+    body,
+    sessions,
+    panes,
+    getStore: () => store,
+    getManifest: () => manifest,
+    getResults: () => /** @type {Array<{hash: string, pages: number[]}>} */ (fullTextResults),
+    getQuery: () => fullTextQuery,
+    openEntry,
+    onBack: () => {
+      fullTextResults = null;
+      searchInput.value = '';
+      searchField.classList.remove('has-text');
+      filterText = '';
+      render();
+    },
+  });
+
+  const drag = createDragReorder({
+    viewer,
+    body,
+    selectedPaths,
+    getManifest: () => manifest,
+    getStore: () => store,
+    saveManifestSoon,
+    render,
+    openCardMenu,
+    dragAllowed: () => !fullTextResults && !filterText.trim(),
+    reorderAllowed: () => sortMode === 'custom' && viewMode === 'grid',
+  });
 
   // --- Ingest wiring ------------------------------------------------------
 
@@ -3590,10 +2094,7 @@ export function installLibrary(viewer) {
         if (tab.libraryHash) tab.libraryHash = undefined;
       }
       sessions.reset();
-      if (resultsView) {
-        resultsView.dispose();
-        resultsView = null;
-      }
+      results.dispose();
       selectedPaths.clear();
       selAnchor = null;
       filterText = '';
@@ -3783,7 +2284,8 @@ export function installLibrary(viewer) {
   // Pointer and focus both feed the flag, since clicks on the pane's page land on non-focusable elements and leave focus where it was.
   let paneEngaged = false;
   const trackEngagement = (e) => {
-    paneEngaged = !!(mountedPane && e.target instanceof Node && mountedPane.pane.contains(e.target));
+    const pane = panes.mounted();
+    paneEngaged = !!(pane && e.target instanceof Node && pane.pane.contains(e.target));
   };
   surface.addEventListener('pointerdown', trackEngagement, true);
   surface.addEventListener('focusin', trackEngagement, true);
@@ -3794,8 +2296,9 @@ export function installLibrary(viewer) {
     if (!((e.key === 'f' || e.key === 'F') && (e.ctrlKey || e.metaKey) && !e.altKey)) return;
     e.preventDefault();
     e.stopPropagation();
-    const paneFind = paneEngaged && mountedPane
-      ? /** @type {?HTMLInputElement} */ (mountedPane.pane.querySelector('.scribe-library-pv-find input'))
+    const pane = panes.mounted();
+    const paneFind = paneEngaged && pane
+      ? /** @type {?HTMLInputElement} */ (pane.pane.querySelector('.scribe-library-pv-find input'))
       : null;
     const findTarget = paneFind || searchInput;
     findTarget.focus();
@@ -3845,8 +2348,7 @@ export function installLibrary(viewer) {
   return {
     destroy() {
       destroyed = true;
-      renderPending = false;
-      if (dragState) endDrag(false);
+      drag.cancel();
       if (visible) hideSurface();
       closeCardMenu();
       ingest?.cancel();
@@ -3876,12 +2378,9 @@ export function installLibrary(viewer) {
         indexTimer = null;
         if (store) store.writeSearchIndex(index.serialize()).catch(() => {});
       }
-      if (mountedPane) mountedPane.destroy();
+      panes.mounted()?.destroy();
       sessions.reset();
-      if (resultsView) {
-        resultsView.dispose();
-        resultsView = null;
-      }
+      results.dispose();
       surface.remove();
       barTitle?.remove();
       barControls?.remove();
