@@ -1,5 +1,4 @@
 import { opt } from './containers/app.js';
-import { GlobalFonts } from './containers/fontContainer.js';
 import { TessScheduler } from '../tess/TessScheduler.js';
 
 /**
@@ -338,9 +337,6 @@ export class gs {
 
     await Promise.all(resArr);
 
-    // The font loader pushes the built-in fonts only to a pool that already started initializing, so a pool created after the fonts loaded must pull them here.
-    await syncBuiltInFontsToWorkers();
-
     return;
   };
 
@@ -412,24 +408,4 @@ export class gs {
     gs.schedulerReadyTesseract = null;
     gs.loadedBuiltInFontsRawWorker = false;
   };
-}
-
-/**
- * Push the process-wide built-in raw fonts (`GlobalFonts.raw`) to every worker.
- * These are shared across all documents, so they are stored globally in each worker (no `docId`).
- */
-export async function syncBuiltInFontsToWorkers() {
-  if (!GlobalFonts.raw || !gs.schedulerInner) return;
-
-  const input = { opt: false, kind: 'raw', src: {} };
-  for (const [key, value] of Object.entries(GlobalFonts.raw)) {
-    if (!value || !value.normal) continue;
-    input.src[key] = { normal: value.normal.src };
-    if (value.italic) input.src[key].italic = value.italic.src;
-    if (value.bold) input.src[key].bold = value.bold.src;
-    if (value.boldItalic) input.src[key].boldItalic = value.boldItalic.src;
-  }
-
-  await Promise.all(gs.schedulerInner.workers.map((worker) => worker.loadFontsWorker(input)));
-  gs.loadedBuiltInFontsRawWorker = true;
 }

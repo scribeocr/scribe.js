@@ -26,7 +26,6 @@ import { filesFromDropEvent } from '../js/dragAndDrop.js';
 import { SeedDoc } from '../js/seedDoc.js';
 import { IOS_WEBKIT } from '../js/viewerImageCache.js';
 import { mergePdfs } from '../../js/export/pdf/mergePdfs.js';
-import { loadBuiltInFontsRaw } from '../../js/fontContainerMain.js';
 import { concatOutlines, outlineSplitSegments } from '../../js/objects/outlineObjects.js';
 import { selectOcrPages } from '../../js/pdf/ocrPageSelection.js';
 import { DEBUG_MENU } from '../devFlags.js';
@@ -221,8 +220,8 @@ class ScribePDFViewer {
     } = options;
 
     // Warm the built-in fonts now, since the word layer of a fast first open (a library seed, a deferText import) otherwise waits on them.
-    // A failure is dropped because the render path retries the same memoized load when it needs the fonts.
-    loadBuiltInFontsRaw().catch(() => {});
+    // Through `init` rather than a bare font load, because fonts that finish loading before any worker pool has started never reach the workers.
+    scribe.init({ font: true }).catch(() => {});
 
     this.container = container;
     this.showToolbar = showToolbar;
