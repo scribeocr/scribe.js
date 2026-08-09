@@ -5,6 +5,7 @@ import {
   UiDataColumn, UiLayout, UiRegion, layout,
 } from './js/viewerLayout.js';
 import { clearObjectProperties } from '../js/utils/miscUtils.js';
+import { loadBuiltInFontsRaw } from '../js/fontContainerMain.js';
 import { UiText, UiOcrWord } from './js/viewerWordObjects.js';
 import { ViewerImageCache, IOS_WEBKIT } from './js/viewerImageCache.js';
 import {
@@ -2300,6 +2301,8 @@ export class ScribeViewer {
     }
 
     if (this.doc.inputData.xmlMode[n]) {
+      // Word geometry is measured against the built-in fonts, which the fast open paths (deferText imports, provisional seeds) start loading without awaiting.
+      await loadBuiltInFontsRaw();
       this._renderCanvasWords(ocrData);
     }
   }

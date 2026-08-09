@@ -6,8 +6,7 @@ import {
   loadFontsFromSource,
   loadOpentype,
 } from './containers/fontContainer.js';
-import { opt } from './containers/app.js';
-import { gs } from './generalWorkerMain.js';
+import { gs, syncBuiltInFontsToWorkers } from './generalWorkerMain.js';
 
 /** @typedef {import('./containers/fontContainer.js').DocFonts} DocFonts */
 
@@ -239,33 +238,12 @@ async function loadBuiltInFontsRawInner(glyphSet) {
   // Recording this before the load resolves would make a failed upgrade look like a success, and the early return in loadBuiltInFontsRaw would then refuse to retry.
   loadedGlyphSet = glyphSet;
 
-  // This assumes that the scheduler `init` method has at least started.
-  if (gs.schedulerReady === null && !opt.inProcess) console.warn('Failed to load fonts to workers as workers have not been initialized yet.');
   await gs.schedulerReady;
   // A new glyphset was loaded, so push the (process-wide) raw fonts to every worker.
+  // When no pool has started yet this push no-ops, and `gs.init` performs it instead once the pool spawns.
   await syncBuiltInFontsToWorkers();
 
   return;
-}
-
-/**
- * Push the process-wide built-in raw fonts (`GlobalFonts.raw`) to every worker.
- * These are shared across all documents, so they are stored globally in each worker (no `docId`).
- */
-export async function syncBuiltInFontsToWorkers() {
-  if (!GlobalFonts.raw || !gs.schedulerInner) return;
-
-  const input = { opt: false, kind: 'raw', src: {} };
-  for (const [key, value] of Object.entries(GlobalFonts.raw)) {
-    if (!value || !value.normal) continue;
-    input.src[key] = { normal: value.normal.src };
-    if (value.italic) input.src[key].italic = value.italic.src;
-    if (value.bold) input.src[key].bold = value.bold.src;
-    if (value.boldItalic) input.src[key].boldItalic = value.boldItalic.src;
-  }
-
-  await Promise.all(gs.schedulerInner.workers.map((worker) => worker.loadFontsWorker(input)));
-  gs.loadedBuiltInFontsRawWorker = true;
 }
 
 let chiReadyRes;
