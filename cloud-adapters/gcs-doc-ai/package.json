@@ -26,5 +26,8 @@
   "files": [
     "RecognitionModelGoogleDocAI.js",
     "LICENSE"
-  ]
+  ],
+  "overrides": {
+    "brace-expansion": "2.1.2"
+  }
 }
