@@ -94,10 +94,62 @@ class MockTextractDocumentModeModel {
 
   static async* recognizeDocument(doc, options = {}) {
     MockTextractDocumentModeModel.lastDocInput = doc;
+    yield { progress: { stage: 'open', pct: 0 } };
     for (let i = 0; i < MockTextractDocumentModeModel.fixturePages.length; i++) {
+      if (i === 3) yield { pageNum: 3, progress: { stage: 'analysis', pct: 43 } };
       yield { pageNum: i, rawData: MockTextractDocumentModeModel.fixturePages[i] };
     }
   }
+}
+
+class PageSelectionDocModeModel {
+  static config = {
+    name: 'Page Selection DocMode',
+    outputFormat: 'textract',
+    documentMode: true,
+    documentModePageSelection: true,
+  };
+
+  static fixturePages = [];
+
+  static lastInput = null;
+
+  static async* recognizeDocument(input) {
+    PageSelectionDocModeModel.lastInput = input;
+    // These two entries name unselected pages, which the library must drop.
+    yield { pageNum: 2, progress: { stage: 'analysis', pct: 20 } };
+    yield { pageNum: 0, rawData: PageSelectionDocModeModel.fixturePages[0] };
+    for (const n of input.pages) {
+      yield { pageNum: n, rawData: PageSelectionDocModeModel.fixturePages[n] };
+    }
+  }
+}
+
+class UnderYieldDocModeModel {
+  static config = {
+    name: 'Under Yield DocMode',
+    outputFormat: 'textract',
+    documentMode: true,
+  };
+
+  static fixturePages = [];
+
+  static async* recognizeDocument() {
+    for (let i = 0; i < 3; i++) {
+      yield { pageNum: i, rawData: UnderYieldDocModeModel.fixturePages[i] };
+    }
+  }
+}
+
+class AllFailDocModeModel {
+  static config = {
+    name: 'All Fail DocMode',
+    outputFormat: 'textract',
+    documentMode: true,
+  };
+
+  // eslint-disable-next-line no-empty-function
+  static async* recognizeDocument() {}
 }
 
 class FailingModel {
@@ -274,6 +326,7 @@ describe('Check custom model recognition with Textract format.', () => {
 describe('Check custom model recognition in documentMode (Textract).', () => {
   let preRenderSpyCalls = 0;
   let originalPreRender;
+  const recognizeMsgs = [];
 
   beforeAll(async () => {
     const txDir = `${ASSETS_PATH}/trident_v_connecticut_general/awsTextract`;
@@ -295,10 +348,16 @@ describe('Check custom model recognition in documentMode (Textract).', () => {
       return originalPreRender.apply(this, args);
     };
 
+    const originalProgressHandler = scribe.opt.progressHandler;
+    scribe.opt.progressHandler = (msg) => {
+      if (msg && msg.type === 'recognize') recognizeMsgs.push(msg);
+    };
+
     try {
       await doc.recognize({ model: MockTextractDocumentModeModel });
     } finally {
       doc.images.preRenderRange = originalPreRender;
+      scribe.opt.progressHandler = originalProgressHandler;
     }
   });
 
@@ -333,6 +392,141 @@ describe('Check custom model recognition in documentMode (Textract).', () => {
 
   test('Should set active OCR to the documentMode model results', async () => {
     expect(doc.ocr.active).toBe(doc.ocr['Mock Textract DocumentMode']);
+  });
+
+  test('Should forward non-terminal progress entries to progressHandler', async () => {
+    const progressMsgs = recognizeMsgs.filter((m) => m.info && m.info.status === 'progress');
+    expect(progressMsgs.length, 'both progress entries reach progressHandler').toBe(2);
+    expect(progressMsgs[0].n, 'a document-level stage entry has no page number').toBe(undefined);
+    expect(progressMsgs[0].info.stage, 'the document-level stage name is forwarded').toBe('open');
+    expect(progressMsgs[0].info.pct, 'the document-level pct is forwarded').toBe(0);
+    expect(progressMsgs[0].info.engineName, 'progress messages carry the engine name').toBe('Mock Textract DocumentMode');
+    expect(typeof progressMsgs[0].info.timestamp, 'progress messages carry a timestamp').toBe('number');
+    expect(progressMsgs[1].n, 'a page-scoped progress entry keeps its page number').toBe(3);
+    expect(progressMsgs[1].info.stage, 'the page-scoped stage name is forwarded').toBe('analysis');
+    expect(progressMsgs[1].info.pct, 'the page-scoped pct is forwarded').toBe(43);
+  });
+
+  test('Should not count progress entries toward per-page received events', async () => {
+    const receivedMsgs = recognizeMsgs.filter((m) => m.info && m.info.status === 'received');
+    expect(receivedMsgs.length, 'exactly one received event per terminal entry').toBe(PAGE_COUNT);
+  });
+
+  afterAll(async () => {
+    await scribe.terminate();
+  });
+});
+
+describe('Check documentMode page selection and missing-page accounting.', () => {
+  // Each recognize() call reassigns doc.ocr.active and doc.inputData.ocrApplied.
+  let selectionLayer;
+  let selectionCombined;
+  let selectionOcrApplied;
+  const selectionMsgs = [];
+  const selectionWarnings = [];
+  let underYieldLayer;
+  const underYieldWarnings = [];
+  let allFailError = null;
+
+  beforeAll(async () => {
+    const txDir = `${ASSETS_PATH}/trident_v_connecticut_general/awsTextract`;
+    const fixturePages = [];
+    for (let i = 0; i < PAGE_COUNT; i++) {
+      const filename = `trident_v_connecticut_general_${String(i).padStart(3, '0')}-AwsTextractLayoutSync.json`;
+      fixturePages[i] = await readFileContent(`${txDir}/${filename}`);
+    }
+    PageSelectionDocModeModel.fixturePages = fixturePages;
+    PageSelectionDocModeModel.lastInput = null;
+    UnderYieldDocModeModel.fixturePages = fixturePages;
+
+    doc = await scribe.openDocument([`${ASSETS_PATH}/trident_v_connecticut_general.pdf`]);
+
+    const originalProgressHandler = scribe.opt.progressHandler;
+    const originalWarningHandler = scribe.opt.warningHandler;
+    try {
+      scribe.opt.progressHandler = (msg) => {
+        if (msg && msg.type === 'recognize') selectionMsgs.push(msg);
+      };
+      scribe.opt.warningHandler = (msg) => selectionWarnings.push(msg);
+      await doc.recognize({
+        model: PageSelectionDocModeModel,
+        ocrPages: [false, true, false, false, false, false, true],
+      });
+      selectionLayer = doc.ocr.active;
+      selectionCombined = doc.ocr.Combined;
+      selectionOcrApplied = doc.inputData.ocrApplied.slice();
+
+      scribe.opt.progressHandler = originalProgressHandler;
+      scribe.opt.warningHandler = (msg) => underYieldWarnings.push(msg);
+      await doc.recognize({ model: UnderYieldDocModeModel });
+      underYieldLayer = doc.ocr.active;
+
+      scribe.opt.warningHandler = () => {};
+      try {
+        await doc.recognize({ model: AllFailDocModeModel });
+      } catch (err) {
+        allFailError = err;
+      }
+    } finally {
+      scribe.opt.progressHandler = originalProgressHandler;
+      scribe.opt.warningHandler = originalWarningHandler;
+    }
+  });
+
+  test('Should pass the selected page list to the model', async () => {
+    expect(PageSelectionDocModeModel.lastInput.pages, 'the flagged model receives the 0-based selected page indices').toEqual([1, 6]);
+    expect(PageSelectionDocModeModel.lastInput.pageCount, 'the input still describes the whole document').toBe(PAGE_COUNT);
+  });
+
+  test('Should apply the model OCR to selected pages', async () => {
+    // Page 6 is the one page where native and OCR text differ at the first word ('57' vs '570').
+    expect(selectionLayer[6].lines[0].words[0].text, 'a selected page carries the model OCR text').toBe('570');
+    expect(selectionLayer[6].lines.length, 'a selected page has the OCR line count, not the native one').toBe(100);
+    expect(selectionLayer[1].lines[0].words[0].text, 'the other selected page carries the model OCR text').toBe('565');
+    expect(selectionLayer[1].lines.length, 'the other selected page has the OCR line count').toBe(33);
+  });
+
+  test('Should keep native text on unselected pages', async () => {
+    // Line counts distinguish the sources: native page 0 has 339 lines, the model OCR 98.
+    expect(selectionLayer[0].lines.length, 'an unselected page keeps the native line count even when the model yields it anyway').toBe(339);
+    expect(selectionLayer[0].lines[0].words[0].text, 'an unselected page keeps the native text').toBe('564');
+    expect(selectionLayer[5].lines.length, 'a never-yielded unselected page keeps the native line count').toBe(362);
+    expect(selectionLayer[5].lines[0].words[0].text, 'a never-yielded unselected page keeps the native text').toBe('569');
+    expect(selectionLayer, 'a partial selection assembles the Combined layer').toBe(selectionCombined);
+  });
+
+  test('Should narrow ocrApplied to the selection', async () => {
+    expect(selectionOcrApplied, 'ocrApplied matches the page selection exactly').toEqual([false, true, false, false, false, false, true]);
+  });
+
+  test('Should drop entries for unselected pages with a single warning', async () => {
+    expect(selectionWarnings.length, 'the flag suppresses the whole-PDF warning, leaving only the dropped-entry warning').toBe(1);
+    expect(selectionWarnings[0], 'the dropped unselected result is reported once').toBe('Document-mode model returned results for unselected page(s) (0); they were ignored.');
+    const progressMsgs = selectionMsgs.filter((m) => m.info && m.info.status === 'progress');
+    expect(progressMsgs.length, 'progress entries for unselected pages are dropped, not forwarded').toBe(0);
+    const receivedNs = selectionMsgs.filter((m) => m.info && m.info.status === 'received').map((m) => m.n);
+    expect(receivedNs, 'received events fire only for selected pages').toEqual([1, 6]);
+  });
+
+  test('Should keep the OCR data of pages that yielded', async () => {
+    expect(underYieldLayer[0].lines.length, 'a yielded page keeps its OCR data').toBe(98);
+    expect(underYieldLayer[0].lines[0].words[0].text, 'a yielded page keeps its OCR text').toBe('564');
+    expect(underYieldLayer[2].lines.length, 'the last yielded page keeps its OCR data').toBe(102);
+  });
+
+  test('Should treat never-yielded pages as failed pages, not silent holes', async () => {
+    for (const n of [3, 4, 5, 6]) {
+      expect(underYieldLayer[n], `page ${n} is an empty page object, not an undefined hole`).toBeTruthy();
+      expect(underYieldLayer[n].lines.length, `page ${n} has no OCR lines after the model skipped it`).toBe(0);
+    }
+    expect(underYieldWarnings.length, 'four per-page failure warnings plus one summary').toBe(5);
+    expect(underYieldWarnings[0], 'a never-yielded page gets the standard per-page failure warning').toBe('Recognition failed for page 3: no result was returned for this page.');
+    expect(underYieldWarnings[4], 'the failure summary lists every never-yielded page').toBe('Recognition failed for 4 page(s) (3, 4, 5, 6). These pages will have no OCR data.');
+  });
+
+  test('Should throw when the model yields no pages at all', async () => {
+    expect(allFailError, 'a model that never yields a terminal entry fails the run').not.toBeNull();
+    expect(allFailError.message, 'the all-pages-failed error names the cause').toBe('Recognition failed for all pages. Last error message: no result was returned for this page.');
   });
 
   afterAll(async () => {

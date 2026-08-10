@@ -826,8 +826,9 @@ async function convertModelRawPage(doc, rawData, n, model) {
  * @param {Object} [options.modelOptions]
  * @param {AbortSignal} [options.signal]
  * @param {?boolean[]} [ocrPageMask=null] - Per-page mask from `recognize`.
- *   The whole-PDF API cannot select individual pages, so the mask is applied at document granularity.
- *   No page selected skips OCR entirely. Any other selection OCRs the whole PDF, with a warning when the selection was partial.
+ *   No page selected skips OCR entirely.
+ *   Models with `documentModePageSelection` are sent only the selected pages.
+ *   Every other model is sent the whole PDF, and the selection is applied to its results afterwards.
  */
 async function recognizeCustomModelDocumentMode(doc, options, ocrPageMask = null) {
   const model = options.model;
@@ -849,39 +850,71 @@ async function recognizeCustomModelDocumentMode(doc, options, ocrPageMask = null
     doc.ocr.active = doc.ocr[engineName];
     return doc.ocr.active;
   }
-  if (ocrPageMask && !ocrPageMask.every(Boolean)) {
-    const ocrCount = ocrPageMask.filter(Boolean).length;
-    doc.warningHandler({ message: `Document-mode recognition OCRs the whole PDF; per-page OCR selection (${ocrCount}/${doc.inputData.pageCount} selected) cannot be applied and all pages will be sent.` });
+  const pageSelection = model.config.documentModePageSelection && ocrPageMask && !ocrPageMask.every(Boolean) ? ocrPageMask : null;
+
+  // Filling `ocrApplied` here would mark unselected pages OCR-applied, which the searchable-PDF export reads to pick pages to flatten.
+  if (pageSelection) {
+    for (let n = 0; n < doc.inputData.pageCount; n++) {
+      if (!pageSelection[n]) doc.ocr[engineName][n] = (doc.ocr.pdf && doc.ocr.pdf[n]) || new OcrPage(n, doc.pageMetrics[n].dims);
+    }
+  } else {
+    if (ocrPageMask && !ocrPageMask.every(Boolean)) {
+      const ocrCount = ocrPageMask.filter(Boolean).length;
+      doc.warningHandler({ message: `This document-mode model does not support per-page selection, so all ${doc.inputData.pageCount} pages will be sent to the model; the OCR selection (${ocrCount}/${doc.inputData.pageCount}) still determines which results are kept.` });
+    }
+    // The whole PDF is OCR'd in document mode, so every page's active layer becomes OCR.
+    doc.inputData.ocrApplied = Array(doc.inputData.pageCount).fill(true);
   }
-  // The whole PDF is OCR'd in document mode, so every page's active layer becomes OCR.
-  doc.inputData.ocrApplied = Array(doc.inputData.pageCount).fill(true);
 
   throwIfAborted(signal);
 
   const pageDims = doc.pageMetrics.map((m) => m.dims);
   const pdfBytes = doc.inputData.pdfMode && doc.images.pdfData ? new Uint8Array(doc.images.pdfData) : null;
 
-  const stream = await model.recognizeDocument(
-    { pdfBytes, pageCount: doc.inputData.pageCount, pageDims },
-    modelOptionsWithSignal,
-  );
+  const docInput = { pdfBytes, pageCount: doc.inputData.pageCount, pageDims };
+  if (pageSelection) docInput.pages = [...Array(doc.inputData.pageCount).keys()].filter((n) => pageSelection[n]);
+
+  const stream = await model.recognizeDocument(docInput, modelOptionsWithSignal);
 
   const failedPagesDoc = [];
   let lastErrMsg = '';
   let docAborted = false;
+  const terminalPages = new Set();
+  const droppedPages = new Set();
   try {
     for await (const entry of stream) {
       if (signal && signal.aborted) { docAborted = true; break; }
       if (!entry) continue;
+      if (entry.progress) {
+        if (pageSelection && entry.pageNum != null && !pageSelection[entry.pageNum]) continue;
+        doc.progressHandler({
+          n: entry.pageNum,
+          type: 'recognize',
+          info: {
+            status: 'progress', stage: entry.progress.stage, pct: entry.progress.pct, engineName, timestamp: Date.now(),
+          },
+        });
+        continue;
+      }
+      if (entry.pageNum == null || (!entry.error && entry.rawData === undefined)) {
+        doc.warningHandler({ message: 'Document-mode model yielded an entry with no rawData, error, or progress; it was ignored.' });
+        continue;
+      }
+      if (pageSelection && !pageSelection[entry.pageNum]) {
+        droppedPages.add(entry.pageNum);
+        continue;
+      }
       if (entry.error) {
         const errMsg = entry.error.message || String(entry.error);
         failedPagesDoc.push(entry.pageNum);
         lastErrMsg = errMsg;
+        terminalPages.add(entry.pageNum);
         doc.warningHandler({ message: `Recognition failed for page ${entry.pageNum}: ${errMsg}`, page: entry.pageNum });
         doc.ocr[engineName][entry.pageNum] = new OcrPage(entry.pageNum, doc.pageMetrics[entry.pageNum].dims);
         continue;
       }
       const { pageNum, rawData } = entry;
+      terminalPages.add(pageNum);
       if (scribeDocDefaults.keepRawData) doc.ocrRaw[engineName][pageNum] = rawData;
       doc.progressHandler({
         n: pageNum, type: 'recognize', info: { status: 'received', engineName, timestamp: Date.now() },
@@ -905,7 +938,22 @@ async function recognizeCustomModelDocumentMode(doc, options, ocrPageMask = null
   // model's own early-return terminated the for-await loop first.
   throwIfAborted(signal);
 
-  if (failedPagesDoc.length === doc.inputData.pageCount) {
+  if (droppedPages.size > 0) {
+    doc.warningHandler({ message: `Document-mode model returned results for unselected page(s) (${[...droppedPages].sort((a, b) => a - b).join(', ')}); they were ignored.` });
+  }
+
+  // Without this, a model that ends the stream without answering every page leaves `undefined` holes in the active layer.
+  for (let n = 0; n < doc.inputData.pageCount; n++) {
+    if (pageSelection && !pageSelection[n]) continue;
+    if (terminalPages.has(n)) continue;
+    failedPagesDoc.push(n);
+    lastErrMsg = 'no result was returned for this page.';
+    doc.warningHandler({ message: `Recognition failed for page ${n}: no result was returned for this page.`, page: n });
+    doc.ocr[engineName][n] = new OcrPage(n, doc.pageMetrics[n].dims);
+  }
+
+  const expectedPageCount = pageSelection ? pageSelection.filter(Boolean).length : doc.inputData.pageCount;
+  if (failedPagesDoc.length === expectedPageCount) {
     throw new Error(`Recognition failed for all pages. Last error message: ${lastErrMsg}`);
   }
   if (failedPagesDoc.length > 0) {

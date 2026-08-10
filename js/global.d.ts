@@ -228,6 +228,10 @@ declare global {
             elapsedMs?: number;
             responsesReceived?: number;
             timestamp?: number;
+            /** Engine-defined stage name, on `status: 'progress'` messages from document-mode models. */
+            stage?: string;
+            /** Document-scoped completion percentage (0-100), on `status: 'progress'` messages. */
+            pct?: number;
         };
     }
 
@@ -701,12 +705,37 @@ declare global {
         name: string;
         outputFormat: RecognitionOutputFormat | null;
         rateLimit?: { tps: number } | { rpm: number };
+        /** Recognize the whole document in one `recognizeDocument` call instead of per-image dispatch. */
+        documentMode?: boolean;
+        /** The model honors the `pages` input and recognizes only those pages. */
+        documentModePageSelection?: boolean;
     }
+
+    /**
+     * One entry in a document-mode result stream.
+     * Progress entries omit `pageNum` for document-level stages.
+     */
+    type RecognitionDocumentEntry = {
+        pageNum: number;
+        rawData?: string;
+        error?: Error;
+    } | {
+        pageNum?: number;
+        progress: { stage?: string; pct?: number };
+    };
 
     interface RecognitionModel {
         config: RecognitionModelConfig;
         recognizeImage(imageData: Uint8Array | ArrayBuffer, options?: any): Promise<RecognitionResult>;
-        recognizeDocument?(documentData: Uint8Array | ArrayBuffer, options?: any): Promise<RecognitionResult>;
+        /**
+         * Called instead of `recognizeImage` when `config.documentMode` is set.
+         * `pdfBytes` is null for image-mode documents.
+         * `pages` is set only for `documentModePageSelection` models on a partial selection.
+         */
+        recognizeDocument?(
+            input: { pdfBytes: Uint8Array | null; pageCount: number; pageDims: dims[]; pages?: number[] },
+            options?: any,
+        ): AsyncIterable<RecognitionDocumentEntry> | Promise<AsyncIterable<RecognitionDocumentEntry>>;
         convertPage?(rawData: string, n: number): Promise<{
             pageObj: OcrPage;
             dataTables: LayoutDataTablePage;
