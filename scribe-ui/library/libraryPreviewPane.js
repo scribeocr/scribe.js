@@ -199,9 +199,11 @@ export function createPreviewPanes({
    * @param {string} relPath
    * @param {import('./libraryStore.js').LibraryDocEntry} entry
    * @param {number} pageN
+   * @param {?import('../../js/containers/scribeDoc.js').ScribeDoc} [liveDoc] - A document already open in a main-viewer tab.
+   *   The seed then draws pages, text, and annotations from it, so any page paints without a second import.
    * @returns {Promise<import('../js/seedDoc.js').ProvisionalSeed>}
    */
-  const makeSeed = async (relPath, entry, pageN) => {
+  const makeSeed = async (relPath, entry, pageN, liveDoc = null) => {
     const load = async () => {
       const pdfFile = await /** @type {import('./libraryStore.js').LibraryStore} */ (getStore()).readFile(relPath);
       const files = [pdfFile];
@@ -211,6 +213,24 @@ export function createPreviewPanes({
       }
       return files;
     };
+    if (liveDoc) {
+      const pageCount = liveDoc.pageMetrics.length;
+      const n0 = Math.min(pageN, pageCount - 1);
+      return {
+        pageCount,
+        pageDims: liveDoc.pageMetrics.map((pm) => ({ width: pm.dims.width, height: pm.dims.height, rotation: pm.rotation || 0 })),
+        initialPage: n0,
+        window: { from: Math.max(0, n0 - 2), to: Math.min(pageCount - 1, n0 + 2) },
+        name: titleOf(relPath),
+        // A closed tab leaves the render rejecting, and null degrades that page to a placeholder instead of an error.
+        raster: (n) => liveDoc.images.renderThumbnail(n, PAGE_RASTER_WIDTH, 0.75, true).catch(() => null),
+        ocr: async (n) => liveDoc.ocr.active?.[n] ?? null,
+        // Copies, never the live arrays: seed session edits must not leak into the tab's document.
+        annots: async (n) => (liveDoc.annotations.pages[n] ?? []).map((a) => ({ ...a, bbox: { ...a.bbox } })),
+        load,
+        hydration: 'on-demand',
+      };
+    }
     if (entry.pageDims && !sessions.hasLive(entry.hash)) {
       const pageCount = entry.pageDims.length;
       const from = Math.max(0, pageN - 2);
@@ -293,12 +313,28 @@ export function createPreviewPanes({
     /** @type {?import('../basic-viewer/pdf-viewer.js').ScribePDFViewer} */
     let paneViewer = null;
     let token = 0;
-    /** @type {?{relPath: string, hash: string, pageN: number, query: ?string, handle: ?Object, window: ?{from: number, to: number}}} */
+    /** @type {?{relPath: string, hash: string, pageN: number, query: ?string, handle: ?Object, window: ?{from: number, to: number}, live: ?Object}} */
     let current = null;
     /** True when the shown document has session edits that are not yet in its sidecar. */
     let paneDirty = false;
     /** @type {?Object} Last show target, for re-seeding after a doc handoff. */
     let lastTarget = null;
+    let liveLocked = false;
+    const onLockedContextMenu = (e) => {
+      e.preventDefault();
+      e.stopPropagation();
+    };
+    /**
+     * Turn the pane's annotation lock on or off.
+     * @param {boolean} locked
+     */
+    const setLiveLocked = (locked) => {
+      if (locked === liveLocked) return;
+      liveLocked = locked;
+      pane.classList.toggle('scribe-library-pv-live', locked);
+      if (locked) pvHost.addEventListener('contextmenu', onLockedContextMenu, true);
+      else pvHost.removeEventListener('contextmenu', onLockedContextMenu, true);
+    };
 
     /**
      * Land on the target page and paint (or clear) the query's match marks.
@@ -396,7 +432,9 @@ export function createPreviewPanes({
         /** @type {?Object} */
         let real = null;
         try {
-          real = doc.id < 0 ? await /** @type {any} */ (doc)._requestHydration() : doc;
+          // A live-backed seed's `_requestHydration` re-seeds rather than loads, so the save prefers the real loader kept under `_hydrateForSave`.
+          const dAny = /** @type {any} */ (doc);
+          real = doc.id < 0 ? await (dAny._hydrateForSave ?? dAny._requestHydration)() : doc;
           await store.writeSidecar(hash, await /** @type {any} */ (real).exportData('scribe', { scribeSession: true, includeCharBoxesScribe: false }));
           sessions.dropSidecar(hash);
           sessions.adoptLive(hash, /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */ (real));
@@ -409,6 +447,7 @@ export function createPreviewPanes({
     const showEmpty = () => {
       token++;
       endVeil();
+      setLiveLocked(false);
       releaseDoc(current ? current.hash : null);
       current = null;
       lastTarget = null;
@@ -516,6 +555,13 @@ export function createPreviewPanes({
      *   pageN: number, query: ?string, title: string, meta: string, pos: string, jump?: boolean, immediate?: boolean}} target
      */
     const show = async (target) => {
+      // A width-fit while the surface is hidden commits zoom 0, which no later resize repairs.
+      // Record the target for the reshow that runs when the surface is shown again.
+      if (!pane.clientWidth) {
+        token++;
+        lastTarget = target;
+        return;
+      }
       const t = ++token;
       if (!current || current.hash !== target.hash) {
         pvFindInput.value = '';
@@ -548,7 +594,14 @@ export function createPreviewPanes({
         const jumpOutsideSeed = !!(current && paneViewer.doc && paneViewer.doc.id < 0
           && target.jump && current.window
           && (target.pageN < current.window.from || target.pageN > current.window.to));
-        if (current && current.hash === target.hash && paneViewer.doc && !jumpOutsideSeed) {
+        const liveTab = target.hash
+          ? viewer._tabs.find((tab) => tab.libraryHash === target.hash && !tab.provisional && !tab.asleep)
+          : null;
+        const liveDoc = liveTab && liveTab.doc && liveTab.doc.id >= 0 ? liveTab.doc : null;
+        // A closed or reopened tab leaves the seed's callbacks bound to a dead document.
+        // Zoom 0 means the last show finished while the surface was hidden, so the existing paint cannot be kept.
+        if (current && current.hash === target.hash && paneViewer.doc && !jumpOutsideSeed
+          && current.live === liveDoc && paneViewer.scribe.zoomLevel > 0) {
           // A re-render landing on the same page and query must leave the reader's scroll and paint untouched.
           const samePlace = current.pageN === target.pageN && current.query === target.query;
           current.pageN = target.pageN;
@@ -563,18 +616,22 @@ export function createPreviewPanes({
           endVeil();
           const entry = getManifest()?.docs[target.relPath];
           if (paneViewer.doc && paneViewer.doc.id >= 0 && entry) persistRasterWindow(paneViewer.doc, entry, target.pageN);
-          else armDwell(target, t, target.immediate);
+          else if (current.live && entry) persistRasterWindow(current.live, entry, target.pageN);
+          else if (!current.live) armDwell(target, t, target.immediate);
           return;
         }
-        const pooled = sessions.takeLive(target.hash);
+        // With an open tab, the live-backed seed below is the single source of truth.
+        // A stale pool copy is left idle for eviction.
+        const pooled = liveDoc ? null : sessions.takeLive(target.hash);
         if (pooled) {
           const cover = beginVeil();
           releaseDoc(current ? current.hash : null);
           current = null;
           await paneViewer._openDocAsTab(pooled, titleOf(target.relPath), { lastPage: target.pageN });
           if (t !== token) return;
+          setLiveLocked(false);
           current = {
-            relPath: target.relPath, hash: target.hash, pageN: target.pageN, query: target.query, handle: null, window: null,
+            relPath: target.relPath, hash: target.hash, pageN: target.pageN, query: target.query, handle: null, window: null, live: null,
           };
           await applyQueryAndPage(target);
           current.anchorTop = paneViewer.scribe.scrollContainer.scrollTop;
@@ -583,7 +640,7 @@ export function createPreviewPanes({
           if (entry) persistRasterWindow(paneViewer.doc, entry, target.pageN);
           return;
         }
-        const seed = await makeSeed(target.relPath, target.entry, target.pageN);
+        const seed = await makeSeed(target.relPath, target.entry, target.pageN, liveDoc);
         if (t !== token) return;
         const cover = beginVeil();
         const prevDoc = paneViewer.doc;
@@ -609,19 +666,49 @@ export function createPreviewPanes({
             : Promise.resolve(baseAnnots ? baseAnnots(n) : null)),
         } : seed);
         if (t !== token) return;
-        countHydration(paneViewer.doc);
+        // The seed reads from the open tab's document, so annotation edits made here would diverge from the copy the tab saves.
+        setLiveLocked(!!liveDoc);
+        if (liveDoc) {
+          const seedDoc = /** @type {any} */ (paneViewer.doc);
+          const loadForSave = seedDoc._requestHydration;
+          // The release-time save is the one consumer that may still load for real, so a leaked edit is never dropped.
+          seedDoc._hydrateForSave = () => {
+            beginUserLoad();
+            const p = loadForSave();
+            Promise.resolve(p).catch(() => {}).finally(endUserLoad);
+            return p;
+          };
+          // Every other hydration trigger re-seeds around the reader's page instead of loading.
+          // The document is already open in a tab, so a second import is never paid.
+          let reseeding = false;
+          seedDoc._requestHydration = () => {
+            const n = paneViewer ? paneViewer.scribe.state.cp.n : 0;
+            if (!reseeding && lastTarget && current && current.handle === handle && paneViewer?.doc === seedDoc
+              && current.window && (n < current.window.from || n > current.window.to)) {
+              reseeding = true;
+              Promise.resolve(show({ ...lastTarget, pageN: n, jump: true })).finally(() => { reseeding = false; });
+            }
+            return Promise.resolve();
+          };
+        } else {
+          countHydration(paneViewer.doc);
+        }
         current = {
-          relPath: target.relPath, hash: target.hash, pageN: target.pageN, query: target.query, handle, window: seed.window,
+          relPath: target.relPath, hash: target.hash, pageN: target.pageN, query: target.query, handle, window: seed.window, live: liveDoc,
         };
         // An explicit click on an unwarmed hit starts its full load here, in parallel with the seed's priming.
         // Priming can stream megabytes of sidecar for a big document, and the reader is already waiting.
-        if (target.immediate) armDwell(target, t, true);
+        // A live-backed seed renders every page from the open tab's document, so the dwell load has nothing to accelerate.
+        if (target.immediate && !liveDoc) armDwell(target, t, true);
         await handle.primed;
         if (t !== token) return;
         await applyQueryAndPage(target);
         current.anchorTop = paneViewer.scribe.scrollContainer.scrollTop;
         endVeil(cover);
-        if (!target.immediate) armDwell(target, t);
+        if (liveDoc) {
+          const entry = getManifest()?.docs[target.relPath];
+          if (entry) persistRasterWindow(liveDoc, entry, target.pageN);
+        } else if (!target.immediate) armDwell(target, t);
         handle.hydrated.finally(() => {
           if (t === token) pvLoading.style.display = 'none';
         }).catch(() => {});
@@ -678,7 +765,10 @@ export function createPreviewPanes({
       return doc;
     };
 
-    /** Re-seed the last shown target, so the pane is not blank after a doc handoff. */
+    /**
+     * Replay the last shown target.
+     * Repaints a pane left stale by a doc handoff or by a show that arrived while the surface was hidden.
+     */
     const reshow = () => {
       if (lastTarget) show(lastTarget);
     };

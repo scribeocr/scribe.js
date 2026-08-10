@@ -265,6 +265,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-pv-find input::placeholder { color: var(--scribe-ink-3); }
 .scribe-pdf-viewer .scribe-library-pv-stage { flex: 1; overflow: hidden; display: flex; position: relative; }
 .scribe-pdf-viewer .scribe-library-pv-viewer { flex: 1; min-width: 0; min-height: 0; position: relative; }
+.scribe-pdf-viewer .scribe-library-pv.scribe-library-pv-live .scribe-cmt-card { display: none !important; }
 .scribe-pdf-viewer .scribe-library-pv-veil { position: absolute; inset: 0; z-index: 5; background-color: var(--scribe-canvas); background-size: 100% 100%; transition: opacity 0.15s; pointer-events: none; }
 .scribe-pdf-viewer .scribe-library-pv-empty { color: var(--scribe-ink-3); font-size: 13px; margin: auto; }
 .scribe-pdf-viewer .scribe-library-pv-loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--scribe-ink-3); font-size: 13px; pointer-events: none; }
@@ -685,6 +686,8 @@ export function installLibrary(viewer) {
     swapBarIn();
     viewer._tabStrip?.setPinnedActive(true);
     surface.style.display = 'flex';
+    // A show that arrived while the surface was hidden only recorded its target, so replay it now that the pane has real dimensions.
+    panes.mounted()?.reshow();
   };
   const hideSurface = () => {
     visible = false;
@@ -852,7 +855,14 @@ export function installLibrary(viewer) {
     }
   };
 
-  const render = () => {
+  /** View identity of the last render, so a same-view rebuild can restore its scroll. */
+  let lastRenderKey = '';
+
+  /**
+   * Rebuild the library surface for the current mode and state.
+   * @param {{revealSelection?: boolean}} [opts] - `revealSelection` scrolls the previewed (or first selected) item into view, for returns from a doc tab.
+   */
+  const render = (opts) => {
     // A rebuild mid-drag would pull the dragged card out from under the pointer.
     if (drag.deferRender()) return;
     // A rebuild also replaces the header a column divider is sizing.
@@ -871,6 +881,26 @@ export function installLibrary(viewer) {
     const keptPane = !fullTextResults && listPreviewOn && viewMode !== 'grid' ? panes.mounted() : null;
     const keptPaneSc = keptPane && keptPane.kind === 'list' ? keptPane.viewerRef()?.scribe.scrollContainer : null;
     const keptPaneSpot = keptPaneSc ? { top: keptPaneSc.scrollTop, left: keptPaneSc.scrollLeft, doc: keptPane.viewerRef().doc } : null;
+    const renderKey = fullTextResults
+      ? 'results'
+      : `browse|${currentDir}|${viewMode}|${listPreviewOn ? 1 : 0}|${sortMode}|${sortDir}|${filterText.trim().toLowerCase()}`;
+    const keepScroll = !fullTextResults && renderKey === lastRenderKey;
+    const priorBodyTop = keepScroll ? body.scrollTop : 0;
+    const priorListTop = keepScroll ? (body.querySelector('.scribe-library-rlist')?.scrollTop ?? 0) : 0;
+    lastRenderKey = renderKey;
+    const revealSelection = !!(opts && opts.revealSelection);
+    const restoreScroll = () => {
+      if (keepScroll) {
+        body.scrollTop = priorBodyTop;
+        const rlist = body.querySelector('.scribe-library-rlist');
+        if (rlist) rlist.scrollTop = priorListTop;
+      }
+      if (revealSelection) {
+        const item = (listPreviewPath && body.querySelector(`[data-rel-path="${CSS.escape(listPreviewPath)}"]`))
+          || body.querySelector('[data-rel-path].selected');
+        item?.scrollIntoView({ block: 'nearest' });
+      }
+    };
     body.textContent = '';
     body.classList.remove('results-mode', 'list-mode', 'split-mode');
     listPane = null;
@@ -981,6 +1011,7 @@ export function installLibrary(viewer) {
         empty.textContent = 'This folder is empty.';
         host.appendChild(empty);
       }
+      restoreScroll();
       return;
     }
 
@@ -1048,6 +1079,7 @@ export function installLibrary(viewer) {
       for (const relPath of shownOthers) otherGrid.appendChild(buildOtherCard(relPath));
       body.appendChild(otherGrid);
     }
+    restoreScroll();
   };
 
   /** Restyle every visible card and list row to the selection set. */
@@ -2360,7 +2392,6 @@ export function installLibrary(viewer) {
             if (pane.takeDirty()) tab.libraryDirty = true;
             wrapMutators(handoffDoc, tab);
             panes.persistRasterWindow(handoffDoc, entry, target.pageN ?? 0);
-            pane.reshow();
             if (target.query && viewer._searchBar) {
               viewer._searchBar.openSearch();
               viewer._searchBar.searchInputElem.value = target.query;
@@ -2600,7 +2631,7 @@ export function installLibrary(viewer) {
   homeTab.addEventListener('click', () => {
     if (visible) return;
     showSurface();
-    render();
+    render({ revealSelection: true });
   });
 
   /** @type {?HTMLElement} */
@@ -2879,7 +2910,7 @@ export function installLibrary(viewer) {
     emptied: () => {
       if (!visible) {
         showSurface();
-        render();
+        render({ revealSelection: true });
       }
     },
     saveTabIfDirty,
