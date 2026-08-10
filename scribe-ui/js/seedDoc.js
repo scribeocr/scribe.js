@@ -17,6 +17,7 @@ import {
  *   A null resolution leaves the page a pending placeholder until hydration.
  * @property {(n: number) => Promise<?Object>} [ocr] - Word geometry for a page, at minimum `{dims, lines: [{words: [{text, bbox}]}]}`.
  *   Providing it makes that page's text selectable, copyable, and findable.
+ *   A line of rotated text must also carry its `orientation` (0-3) and give its word bboxes in that orientation's frame.
  * @property {(n: number) => Promise<?Array<Object>>} [annots] - The page's existing annotations.
  *   A page that resolves, even to `[]`, replaces the real document's page at the swap, so removals count.
  *   Pages that do not resolve append their session additions instead.
@@ -187,6 +188,7 @@ export class SeedDoc {
             bottom: Math.max(...words.map((w) => w.bbox.bottom)),
           };
           const line = new OcrLine(page, lineBbox, lineLike.baseline || [0, 0], lineLike.ascHeight ?? null, lineLike.xHeight ?? null);
+          line.orientation = lineLike.orientation || 0;
           for (const w of words) {
             const word = new OcrWord(line, w.id || `seed-${n}-${page.lines.length}-${line.words.length}`, w.text, w.bbox);
             if (w.style) Object.assign(word.style, w.style);
