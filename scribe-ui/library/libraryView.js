@@ -762,6 +762,10 @@ export function installLibrary(viewer) {
     syncCrumbs();
     // The retained results view snapshots its scroll state before the detach below, so a reattach can restore it.
     results.snapshot();
+    // The body wipe detaches a kept list pane, and a detached scroll container forgets its offset.
+    const keptPane = !fullTextResults && listPreviewOn && viewMode !== 'grid' ? panes.mounted() : null;
+    const keptPaneSc = keptPane && keptPane.kind === 'list' ? keptPane.viewerRef()?.scribe.scrollContainer : null;
+    const keptPaneSpot = keptPaneSc ? { top: keptPaneSc.scrollTop, left: keptPaneSc.scrollLeft, doc: keptPane.viewerRef().doc } : null;
     body.textContent = '';
     body.classList.remove('results-mode', 'list-mode', 'split-mode');
     listPane = null;
@@ -855,6 +859,12 @@ export function installLibrary(viewer) {
     if (viewMode === 'list' || viewMode === 'compact') {
       drag.setMainGrid(null, []);
       const host = renderList(shownDirs, shown, shownOthers);
+      if (keptPaneSpot && panes.mounted() === keptPane && keptPane.viewerRef()?.doc === keptPaneSpot.doc) {
+        // renderList's re-show of the same spot takes the same-place fast path, which repaints nothing, so only this write-back restores the scroll.
+        const sc = keptPane.viewerRef().scribe.scrollContainer;
+        sc.scrollTop = keptPaneSpot.top;
+        sc.scrollLeft = keptPaneSpot.left;
+      }
       if (!shown.length && !shownOthers.length && filter) {
         const empty = document.createElement('div');
         empty.className = 'scribe-library-empty';
@@ -2202,7 +2212,10 @@ export function installLibrary(viewer) {
       onProgress: ({ done, total, current }) => {
         if (!current) {
           progressElem.style.display = 'none';
-          render();
+          // The queue also drains here after idle ticks and warm-only passes, which change nothing a card or row displays.
+          if (done > 0) render();
+          // Warmed rasters can fill result rows that were blank at pump time.
+          else results.repump();
           return;
         }
         progressElem.style.display = 'grid';
