@@ -277,8 +277,10 @@ export class LibraryIngest {
             if (thumb) await this.store.writeThumb(hash, thumb);
           } catch { /* A failed thumbnail leaves a blank card. */ }
           // Sidecars are this application's own session store, so app-side state such as pending text edits belongs in them.
+          // Per-character boxes are half a sidecar's bytes, so they are dropped here.
+          // A document reopened from its sidecar has word boxes only.
           try {
-            await this.store.writeSidecar(hash, await doc.exportData('scribe', { scribeSession: true }));
+            await this.store.writeSidecar(hash, await doc.exportData('scribe', { scribeSession: true, includeCharBoxesScribe: false }));
             delete entry.sidecarError;
           } catch (err) {
             // A document without a sidecar still indexes and reopens from its source file, losing only saved session state.

@@ -397,7 +397,7 @@ export function createPreviewPanes({
         let real = null;
         try {
           real = doc.id < 0 ? await /** @type {any} */ (doc)._requestHydration() : doc;
-          await store.writeSidecar(hash, await /** @type {any} */ (real).exportData('scribe', { scribeSession: true }));
+          await store.writeSidecar(hash, await /** @type {any} */ (real).exportData('scribe', { scribeSession: true, includeCharBoxesScribe: false }));
           sessions.dropSidecar(hash);
           sessions.adoptLive(hash, /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */ (real));
         } catch {
