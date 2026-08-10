@@ -553,6 +553,8 @@ export function createPreviewPanes({
           const samePlace = current.pageN === target.pageN && current.query === target.query;
           current.pageN = target.pageN;
           current.query = target.query;
+          // A folder rename or move can re-path the same document, and the hydration write-back looks its entry up by path.
+          current.relPath = target.relPath;
           if (samePlace) return;
           if (current.handle) await current.handle.primed;
           if (t !== token) return;

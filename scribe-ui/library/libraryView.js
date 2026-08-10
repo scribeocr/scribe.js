@@ -3,7 +3,7 @@
 
 import scribeLib from '../../scribe.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
-import { LibraryStore, titleOf } from './libraryStore.js';
+import { LibraryStore, folderNameProblem, titleOf } from './libraryStore.js';
 import { LibraryIndex } from './librarySearch.js';
 import { LibraryIngest } from './libraryIngest.js';
 import { DocSessions } from './docSession.js';
@@ -28,7 +28,11 @@ const SORT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" str
 const CHEVRON_SVG = '<svg class="chev" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 9l6 6 6-6"/></svg>';
 const PLUS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg>';
 // eslint-disable-next-line max-len
+const FOLDER_PLUS_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3.5 6.5a1.5 1.5 0 0 1 1.5-1.5h4l2 2.5h8a1.5 1.5 0 0 1 1.5 1.5v9a1.5 1.5 0 0 1-1.5 1.5H5a1.5 1.5 0 0 1-1.5-1.5z"/><path d="M12 10.75v5M9.5 13.25h5"/></svg>';
+// eslint-disable-next-line max-len
 const REFRESH_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M19.5 12a7.5 7.5 0 1 1-2.2-5.3M17.3 3v3.7H13.6"/></svg>';
+// eslint-disable-next-line max-len
+const IMPORT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v9M8.5 9.5 12 13l3.5-3.5"/><path d="M4.5 15.5V18a1.5 1.5 0 0 0 1.5 1.5h12a1.5 1.5 0 0 0 1.5-1.5v-2.5"/></svg>';
 // eslint-disable-next-line max-len
 const MENU_CHECK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 12.5l4.3 4.3L18.5 7.5"/></svg>';
 // eslint-disable-next-line max-len
@@ -122,6 +126,9 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-menu-item svg { width: 15px; height: 15px; color: var(--scribe-accent); visibility: hidden; flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-menu-item.on svg { visibility: visible; }
 .scribe-pdf-viewer .scribe-library-menu-sep { height: 1px; background: var(--scribe-line); margin: 4px 6px; }
+/* Verb and crumb menus show their row icons outright, unlike the sort menu's hidden-until-checked marks. */
+.scribe-pdf-viewer .scribe-library-new-menu .scribe-library-menu-item svg, .scribe-pdf-viewer .scribe-library-crumb-menu .scribe-library-menu-item svg { visibility: visible; color: var(--scribe-ink-2); }
+.scribe-pdf-viewer .scribe-library-crumb-menu { left: 0; right: auto; }
 .scribe-pdf-viewer .scribe-library-seg { display: inline-flex; height: 28px; border: 1px solid var(--scribe-line-strong); border-radius: 7px; overflow: hidden; background: var(--scribe-sunken); }
 .scribe-pdf-viewer .scribe-library-seg button { width: 32px; border: none; background: none; color: var(--scribe-ink-3); padding: 5px 0; cursor: pointer; display: inline-flex; align-items: center; justify-content: center; }
 .scribe-pdf-viewer .scribe-library-seg button svg { width: 16px; height: 16px; }
@@ -292,6 +299,9 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-row.cf .fthumb .fi { width: 26px; height: 26px; }
 .scribe-pdf-viewer .scribe-library-card.folder.drop { background: color-mix(in srgb, var(--scribe-accent) 14%, var(--scribe-surface)); border-color: var(--scribe-accent); box-shadow: inset 0 0 0 1px var(--scribe-accent); }
 .scribe-pdf-viewer .scribe-library-row.folder.drop { background: color-mix(in srgb, var(--scribe-accent) 14%, var(--scribe-surface)); box-shadow: inset 0 0 0 2px var(--scribe-accent); }
+.scribe-pdf-viewer .scribe-library-rename { font: inherit; color: var(--scribe-ink); background: var(--scribe-canvas); border: 1px solid var(--scribe-accent); border-radius: 4px; outline: none; box-sizing: border-box; padding: 0 3px; margin: -1px 0; min-width: 0; }
+.scribe-pdf-viewer .scribe-library-card .title .scribe-library-rename { width: calc(100% - 20px); }
+.scribe-pdf-viewer .scribe-library-row .scribe-library-rename { flex: 1 1 auto; width: 100%; }
 .scribe-pdf-viewer .scribe-library-card.other { cursor: default; opacity: .55; }
 .scribe-pdf-viewer .scribe-library-card.other:hover { border-color: color-mix(in srgb, var(--scribe-ink) 14%, transparent); }
 .scribe-pdf-viewer .scribe-library-card.other .fthumb { aspect-ratio: 3 / 4; display: flex; align-items: center; justify-content: center; background: color-mix(in srgb, var(--scribe-ink) 5%, var(--scribe-canvas)); color: var(--scribe-ink-3); }
@@ -305,6 +315,7 @@ const addLibraryStyles = () => {
 }
 @container scribe-bar (max-width: 730px) {
   .scribe-pdf-viewer .scribe-library-add-lbl { display: none; }
+  .scribe-pdf-viewer .scribe-library-new svg.chev { display: none; }
 }
 @container scribe-bar (max-width: 560px) {
   .scribe-pdf-viewer .scribe-library-bar-controls { gap: 5px; }
@@ -387,6 +398,13 @@ export function installLibrary(viewer) {
   /** @type {?number} */
   let indexTimer = null;
   let destroyed = false;
+  /**
+   * A folder create or rename in flight.
+   * Refresh scans, new drags, and further folder operations wait for it.
+   */
+  let fsOpBusy = false;
+  /** Set while a folder-rename editor is mounted, so a second editor cannot open over it. */
+  let renameEditing = false;
   /** @type {Set<string>} Selected cards, keyed by manifest path so a doc's Recent-strip duplicate highlights too. */
   const selectedPaths = new Set();
   /** @type {?string} Pivot card for Shift ranges. */
@@ -502,13 +520,37 @@ export function installLibrary(viewer) {
   headerSep.className = 'vertical-separator';
   header.appendChild(headerSep);
 
-  const addBtn = document.createElement('button');
-  addBtn.className = 'scribe-library-hbtn';
-  // The label is a span so the bar's shed rules can hide it on a tight bar.
-  addBtn.innerHTML = `${PLUS_SVG}<span class="scribe-library-add-lbl">Add PDFs</span>`;
-  addBtn.title = 'Add PDFs';
-  addBtn.setAttribute('aria-label', 'Add PDFs');
-  header.appendChild(addBtn);
+  // The label and chevron shed at the bar's narrow rung, leaving the plain icon form.
+  const newWrap = document.createElement('span');
+  newWrap.className = 'scribe-library-sort scribe-library-new';
+  const newBtn = document.createElement('button');
+  newBtn.className = 'scribe-library-hbtn';
+  newBtn.innerHTML = `${PLUS_SVG}<span class="scribe-library-add-lbl">New</span>${CHEVRON_SVG}`;
+  newBtn.title = 'New';
+  newBtn.setAttribute('aria-label', 'New');
+  newBtn.setAttribute('aria-haspopup', 'menu');
+  const newMenu = document.createElement('div');
+  newMenu.className = 'scribe-library-menu scribe-library-new-menu';
+  newMenu.setAttribute('role', 'menu');
+  newMenu.style.display = 'none';
+  const newFolderItem = document.createElement('div');
+  newFolderItem.className = 'scribe-library-menu-item';
+  newFolderItem.setAttribute('role', 'menuitem');
+  newFolderItem.innerHTML = FOLDER_PLUS_SVG;
+  newFolderItem.appendChild(document.createTextNode('New folder'));
+  newMenu.appendChild(newFolderItem);
+  const newMenuSep = document.createElement('div');
+  newMenuSep.className = 'scribe-library-menu-sep';
+  newMenu.appendChild(newMenuSep);
+  const addPdfsItem = document.createElement('div');
+  addPdfsItem.className = 'scribe-library-menu-item';
+  addPdfsItem.setAttribute('role', 'menuitem');
+  addPdfsItem.innerHTML = IMPORT_SVG;
+  addPdfsItem.appendChild(document.createTextNode('Add PDFs…'));
+  newMenu.appendChild(addPdfsItem);
+  newWrap.appendChild(newBtn);
+  newWrap.appendChild(newMenu);
+  header.appendChild(newWrap);
 
   const refreshBtn = document.createElement('button');
   refreshBtn.className = 'scribe-library-hicon';
@@ -563,7 +605,7 @@ export function installLibrary(viewer) {
     barControls = document.createElement('span');
     barControls.className = 'scribe-library-bar-controls';
     barControls.style.display = 'none';
-    for (const el of [searchField, viewSeg, sortWrap, previewBtn, headerSep, addBtn, refreshBtn]) barControls.appendChild(el);
+    for (const el of [searchField, viewSeg, sortWrap, previewBtn, headerSep, newWrap, refreshBtn]) barControls.appendChild(el);
     // A desktop shell's window controls stay the end zone's last element, so the library bar mounts before them.
     viewer.toolbarElemEnd.insertBefore(barControls, viewer.toolbarElemEnd.querySelector('.scribe-shell-corner'));
     surface.appendChild(fileInput);
@@ -728,11 +770,71 @@ export function installLibrary(viewer) {
     rootBtn.dataset.dirTarget = '';
     rootBtn.addEventListener('click', () => openDir(''));
     crumbsElem.appendChild(rootBtn);
-    for (let i = 0; i < segs.length; i++) {
+    const addSep = () => {
       const sep = document.createElement('span');
       sep.className = 'sep';
       sep.textContent = '›';
       crumbsElem.appendChild(sep);
+    };
+    // Collapsed ancestors stop being drop targets, the tradeoff for bounding the crumb width at any depth.
+    const hidden = segs.length >= 3 ? segs.length - 2 : 0;
+    if (hidden) {
+      addSep();
+      const midWrap = document.createElement('span');
+      midWrap.className = 'scribe-library-sort';
+      const midBtn = document.createElement('button');
+      midBtn.className = 'scribe-library-crumb';
+      midBtn.textContent = '…';
+      midBtn.title = segs.slice(0, hidden).join(' › ');
+      midBtn.setAttribute('aria-label', 'Hidden folders');
+      midBtn.setAttribute('aria-haspopup', 'menu');
+      const midMenu = document.createElement('div');
+      midMenu.className = 'scribe-library-menu scribe-library-crumb-menu';
+      midMenu.setAttribute('role', 'menu');
+      midMenu.style.display = 'none';
+      /** @param {PointerEvent} e */
+      const onMidOutside = (e) => {
+        if (!midWrap.contains(/** @type {Node} */ (e.target))) closeMid();
+      };
+      /** @param {KeyboardEvent} e */
+      const onMidKey = (e) => {
+        if (e.key === 'Escape') closeMid();
+      };
+      const closeMid = () => {
+        midMenu.style.display = 'none';
+        document.removeEventListener('pointerdown', onMidOutside);
+        document.removeEventListener('keydown', onMidKey);
+      };
+      for (let i = 0; i < hidden; i++) {
+        const item = document.createElement('div');
+        item.className = 'scribe-library-menu-item';
+        item.setAttribute('role', 'menuitem');
+        item.innerHTML = FOLDER_SVG;
+        // The shared folder glyph carries inline 100% sizing for card use, which would balloon in a menu row.
+        /** @type {SVGElement} */ (item.querySelector('svg')).style.cssText = 'width:15px;height:15px;';
+        item.appendChild(document.createTextNode(segs[i]));
+        const path = segs.slice(0, i + 1).join('/');
+        item.addEventListener('click', () => {
+          closeMid();
+          openDir(path);
+        });
+        midMenu.appendChild(item);
+      }
+      midBtn.addEventListener('click', () => {
+        if (midMenu.style.display !== 'none') {
+          closeMid();
+          return;
+        }
+        midMenu.style.display = '';
+        document.addEventListener('pointerdown', onMidOutside);
+        document.addEventListener('keydown', onMidKey);
+      });
+      midWrap.appendChild(midBtn);
+      midWrap.appendChild(midMenu);
+      crumbsElem.appendChild(midWrap);
+    }
+    for (let i = hidden; i < segs.length; i++) {
+      addSep();
       if (i === segs.length - 1) {
         const cur = document.createElement('span');
         cur.className = 'cur';
@@ -758,6 +860,9 @@ export function installLibrary(viewer) {
       colRenderPending = true;
       return;
     }
+    // A rebuild would tear down a mounted rename editor mid-typing.
+    // Every editor exit ends in a render, so nothing is lost by skipping this one.
+    if (renameEditing) return;
     closeCardMenu();
     syncCrumbs();
     // The retained results view snapshots its scroll state before the detach below, so a reattach can restore it.
@@ -851,7 +956,7 @@ export function installLibrary(viewer) {
     if (!entries.length && !dirSet.size && !shownOthers.length) {
       const empty = document.createElement('div');
       empty.className = 'scribe-library-empty';
-      empty.textContent = 'No PDFs in this folder yet. Drop files here or use “Add PDFs”.';
+      empty.textContent = 'No PDFs in this folder yet. Drop files here or use “New › Add PDFs”.';
       body.appendChild(empty);
       return;
     }
@@ -1085,6 +1190,7 @@ export function installLibrary(viewer) {
     };
     if (relPath.endsWith('/')) {
       addItem('Open', false, () => openDir(relPath.slice(0, -1)));
+      addItem('Rename', false, () => startFolderRename(relPath.slice(0, -1), card));
       addIndexItem(Object.keys(manifest.docs).filter((p) => p.startsWith(relPath)));
     } else {
       const multi = selectedPaths.has(relPath) && selectedPaths.size >= 2;
@@ -1380,6 +1486,10 @@ export function installLibrary(viewer) {
     });
     card.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') open();
+      else if (e.key === 'F2') {
+        e.preventDefault();
+        startFolderRename(dirPath, card);
+      }
     });
     card.addEventListener('contextmenu', (e) => {
       e.preventDefault();
@@ -1618,6 +1728,10 @@ export function installLibrary(viewer) {
     });
     row.addEventListener('keydown', (e) => {
       if (e.key === 'Enter') open();
+      else if (e.key === 'F2') {
+        e.preventDefault();
+        startFolderRename(dirPath, row);
+      }
     });
     row.addEventListener('contextmenu', (e) => {
       e.preventDefault();
@@ -1674,6 +1788,219 @@ export function installLibrary(viewer) {
     }
     return row;
   };
+
+  // --- Folder operations --------------------------------------------------
+
+  /**
+   * Swap the folder's title text for an input, committing on Enter or blur and cancelling on Escape.
+   * A `fresh` folder was just created under a placeholder name, so cancelling removes it again while it is still empty.
+   * @param {string} dirPath
+   * @param {HTMLElement} hostElem - The folder's grid card or list row.
+   * @param {boolean} [fresh]
+   */
+  const startFolderRename = (dirPath, hostElem, fresh = false) => {
+    if (renameEditing || fsOpBusy) return;
+    const target = hostElem.classList.contains('scribe-library-card')
+      ? [...(hostElem.querySelector('.body .title')?.childNodes ?? [])].find((n) => n.nodeType === Node.TEXT_NODE)
+      : hostElem.querySelector('.nm .t');
+    if (!target) return;
+    renameEditing = true;
+    // The folder must not take drops mid-edit.
+    // Every exit path below rebuilds, which restores the attribute.
+    delete hostElem.dataset.dirTarget;
+    const oldName = dirPath.split('/').pop() || dirPath;
+    const input = document.createElement('input');
+    input.className = 'scribe-library-rename';
+    input.value = oldName;
+    input.setAttribute('aria-label', 'Folder name');
+    target.replaceWith(input);
+    input.focus();
+    input.select();
+    let done = false;
+    /** @param {boolean} save @param {boolean} [viaEnter] */
+    const finish = async (save, viaEnter = false) => {
+      if (done) return;
+      const name = input.value.trim();
+      if (save && name && name !== oldName) {
+        const problem = folderNameProblem(name);
+        if (!problem) {
+          done = true;
+          /** @type {HTMLInputElement} */ (input).disabled = true;
+          renameEditing = false;
+          await commitFolderRename(dirPath, name);
+          return;
+        }
+        viewer._showToast(`Couldn't rename “${oldName}” — ${problem}.`);
+        if (viaEnter) {
+          // The reader is mid-typing, so an invalid Enter keeps the editor open for a correction.
+          input.select();
+          return;
+        }
+      }
+      done = true;
+      renameEditing = false;
+      if (fresh && !save) {
+        // The removal is non-recursive, so it refuses if anything landed inside while the editor was open.
+        try {
+          const cut = dirPath.lastIndexOf('/');
+          const parent = await store?.dirAt(cut < 0 ? '' : dirPath.slice(0, cut));
+          await parent?.removeEntry(dirPath.slice(cut + 1));
+          if (manifest?.dirs) manifest.dirs = manifest.dirs.filter((d) => d !== dirPath);
+          saveManifestSoon();
+        } catch { /* The folder gained contents, so it stays under its placeholder name. */ }
+      }
+      render();
+    };
+    input.addEventListener('keydown', (e) => {
+      if (e.key === 'Enter') {
+        e.preventDefault();
+        finish(true, true);
+      } else if (e.key === 'Escape') {
+        e.preventDefault();
+        finish(false);
+      }
+      e.stopPropagation();
+    });
+    input.addEventListener('blur', () => finish(true));
+    for (const type of ['click', 'dblclick', 'pointerdown']) input.addEventListener(type, (e) => e.stopPropagation());
+    input.addEventListener('contextmenu', (e) => e.stopPropagation());
+  };
+
+  /**
+   * Rename the folder on disk, then re-key every path-shaped record that pointed under it.
+   * Entry objects move to their new keys untouched, so hashes, statuses, and custom order survive and nothing re-ingests.
+   * @param {string} oldDirPath
+   * @param {string} newName
+   */
+  const commitFolderRename = async (oldDirPath, newName) => {
+    if (!store || !manifest || fsOpBusy) {
+      render();
+      return;
+    }
+    fsOpBusy = true;
+    // A drag armed by the same pointerdown that blurred the editor must die before the disk move it could race.
+    drag.cancel();
+    if (ingest) ingest.paused = true;
+    const cut = oldDirPath.lastIndexOf('/');
+    const newDirPath = cut < 0 ? newName : `${oldDirPath.slice(0, cut)}/${newName}`;
+    const oldName = oldDirPath.slice(cut + 1);
+    /** @type {Map<string, number>} */
+    let mtimes;
+    try {
+      mtimes = await store.renameDir(oldDirPath, newDirPath);
+    } catch (err) {
+      viewer._showToast(`Couldn't rename “${oldName}” — ${err instanceof Error ? err.message : 'the folder could not be renamed'}.`);
+      if (ingest) {
+        ingest.paused = false;
+        // The failure may have left a partial transfer, and a scan reconciles whatever state the disk is in.
+        await ingest.scan().catch(() => {});
+      }
+      fsOpBusy = false;
+      render();
+      ingest?.start();
+      return;
+    }
+    /** @param {string} p */
+    const rekey = (p) => {
+      if (p === oldDirPath) return newDirPath;
+      return p.startsWith(`${oldDirPath}/`) ? newDirPath + p.slice(oldDirPath.length) : p;
+    };
+    // No await may land inside this re-key, or the artifact sweep could observe an entry-less hash and delete its data files.
+    for (const p of Object.keys(manifest.docs)) {
+      const np = rekey(p);
+      if (np === p) continue;
+      const entry = manifest.docs[p];
+      delete manifest.docs[p];
+      manifest.docs[np] = entry;
+      // The transfer stamps a fresh file time, and without the matching entry time the next scan would queue a pointless verify.
+      entry.mtime = mtimes.get(np) ?? entry.mtime;
+    }
+    manifest.dirs = (manifest.dirs ?? []).map(rekey).sort();
+    manifest.others = (manifest.others ?? []).map(rekey).sort();
+    ingest?.renameDirPrefix(oldDirPath, newDirPath);
+    const selected = [...selectedPaths];
+    selectedPaths.clear();
+    for (const p of selected) selectedPaths.add(p.endsWith('/') ? `${rekey(p.slice(0, -1))}/` : rekey(p));
+    if (selAnchor) selAnchor = selAnchor.endsWith('/') ? `${rekey(selAnchor.slice(0, -1))}/` : rekey(selAnchor);
+    if (listPreviewPath) listPreviewPath = rekey(listPreviewPath);
+    currentDir = rekey(currentDir);
+    try {
+      await store.writeManifest(manifest);
+    } catch {
+      saveManifestSoon();
+    }
+    if (ingest) ingest.paused = false;
+    fsOpBusy = false;
+    render();
+    ingest?.start();
+  };
+
+  /** Create a placeholder-named folder in the browsed directory and drop its card straight into rename. */
+  const createNewFolder = async () => {
+    if (!store || !manifest || fsOpBusy || renameEditing) return;
+    // A filter or search hides folder cards, so creating one returns to the browse view first.
+    if (fullTextResults || filterText) {
+      fullTextResults = null;
+      filterText = '';
+      searchInput.value = '';
+      searchField.classList.remove('has-text');
+    }
+    fsOpBusy = true;
+    let relPath = '';
+    try {
+      relPath = await store.createDir('New folder', currentDir);
+    } catch (err) {
+      viewer._showToast(`Couldn't create a folder — ${err instanceof Error ? err.message : 'the folder could not be created'}.`);
+      return;
+    } finally {
+      fsOpBusy = false;
+    }
+    // The card only mounts for listed dirs, so the manifest learns the path before the render below.
+    manifest.dirs = [...(manifest.dirs ?? []), relPath].sort();
+    saveManifestSoon();
+    render();
+    const host = /** @type {?HTMLElement} */ (body.querySelector(`[data-rel-path="${CSS.escape(`${relPath}/`)}"]`));
+    if (!host) return;
+    host.scrollIntoView({ block: 'nearest' });
+    startFolderRename(relPath, host, true);
+  };
+
+  /**
+   * Open the blank-area menu at the cursor, offering to create a folder in the browsed directory.
+   * @param {number} clientX
+   * @param {number} clientY
+   */
+  const openSurfaceMenu = (clientX, clientY) => {
+    closeCardMenu();
+    menuElem.replaceChildren();
+    const item = document.createElement('div');
+    item.className = 'scribe-thumb-menu-item';
+    item.textContent = 'New folder';
+    item.addEventListener('click', () => {
+      closeCardMenu();
+      createNewFolder();
+    });
+    menuElem.appendChild(item);
+    menuElem.style.display = '';
+    const hostRect = surface.getBoundingClientRect();
+    const left = Math.min(clientX - hostRect.left, hostRect.width - menuElem.offsetWidth - 4);
+    const top = Math.min(clientY - hostRect.top, hostRect.height - menuElem.offsetHeight - 4);
+    menuElem.style.left = `${Math.max(4, left)}px`;
+    menuElem.style.top = `${Math.max(4, top)}px`;
+    setTimeout(() => document.addEventListener('pointerdown', onMenuOutside), 0);
+    document.addEventListener('keydown', onMenuKey);
+  };
+
+  // Blank-area right-click is the thumbnail view's create gesture.
+  // The list views use the New menu instead.
+  body.addEventListener('contextmenu', (e) => {
+    if (viewMode !== 'grid' || fullTextResults || filterText.trim()) return;
+    if (!store || !manifest || fsOpBusy || renameEditing) return;
+    if (drag.active() || drag.touchDragRecent()) return;
+    if (/** @type {Element} */ (e.target).closest('.scribe-library-card, .scribe-library-row, .scribe-thumb-menu, button, input')) return;
+    e.preventDefault();
+    openSurfaceMenu(e.clientX, e.clientY);
+  });
 
   /**
    * The list views: a sortable column header, folder rows, one row per document, then any inert non-PDF rows.
@@ -2159,7 +2486,7 @@ export function installLibrary(viewer) {
     saveManifestSoon,
     render,
     openCardMenu,
-    dragAllowed: () => !fullTextResults && !filterText.trim(),
+    dragAllowed: () => !fullTextResults && !filterText.trim() && !fsOpBusy,
     reorderAllowed: () => sortMode === 'custom' && viewMode === 'grid',
   });
 
@@ -2437,9 +2764,37 @@ export function installLibrary(viewer) {
     if (!fullTextResults) render();
   });
 
-  addBtn.addEventListener('click', () => {
-    if (!store) return;
-    fileInput.click();
+  const closeNewMenu = () => {
+    newMenu.style.display = 'none';
+    document.removeEventListener('pointerdown', onNewOutside);
+    document.removeEventListener('keydown', onNewKey);
+  };
+  /** @param {PointerEvent} e */
+  const onNewOutside = (e) => {
+    if (!newWrap.contains(/** @type {Node} */ (e.target))) closeNewMenu();
+  };
+  /** @param {KeyboardEvent} e */
+  const onNewKey = (e) => {
+    if (e.key !== 'Escape') return;
+    closeNewMenu();
+    newBtn.focus();
+  };
+  newBtn.addEventListener('click', () => {
+    if (newMenu.style.display !== 'none') {
+      closeNewMenu();
+      return;
+    }
+    newMenu.style.display = '';
+    document.addEventListener('pointerdown', onNewOutside);
+    document.addEventListener('keydown', onNewKey);
+  });
+  newFolderItem.addEventListener('click', () => {
+    closeNewMenu();
+    createNewFolder();
+  });
+  addPdfsItem.addEventListener('click', () => {
+    closeNewMenu();
+    if (store) fileInput.click();
   });
   fileInput.addEventListener('change', () => {
     if (fileInput.files?.length) startIngestFiles([...fileInput.files]);
@@ -2447,7 +2802,8 @@ export function installLibrary(viewer) {
   });
 
   refreshBtn.addEventListener('click', async () => {
-    if (!ingest) return;
+    // A scan over a half-renamed tree would mint duplicate entries, so refresh waits out any folder operation.
+    if (!ingest || fsOpBusy) return;
     await ingest.scan();
     render();
     ingest.start();

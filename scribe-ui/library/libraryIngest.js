@@ -51,6 +51,10 @@ export class LibraryIngest {
     this.warmPagesDone = 0;
     /** Keeps warm work off after a cancel, since an enqueue resets the plan and would otherwise revive it. */
     this.warmCancelled = false;
+    /** When set, start() stops draining after the in-flight task, so a folder operation can run against a quiet queue. */
+    this.paused = false;
+    /** @type {?{relPath: string, kind: 'ingest'|'verify'|'upgrade'}} */
+    this.current = null;
   }
 
   /**
@@ -149,19 +153,39 @@ export class LibraryIngest {
   }
 
   /**
+   * Re-key queued work after an in-app directory rename, so pending tasks follow their files.
+   * The in-flight task raced the disk move, so it is requeued at its new path in case its read failed.
+   * @param {string} oldDir
+   * @param {string} newDir
+   */
+  renameDirPrefix(oldDir, newDir) {
+    const oldPrefix = `${oldDir}/`;
+    /** @param {string} p */
+    const rekey = (p) => (p.startsWith(oldPrefix) ? newDir + p.slice(oldDir.length) : p);
+    for (const t of this.userLane) t.relPath = rekey(t.relPath);
+    for (const t of this.discoveryLane) t.relPath = rekey(t.relPath);
+    this.warmLane = null;
+    if (this.current && rekey(this.current.relPath) !== this.current.relPath) {
+      this.discoveryLane.unshift({ relPath: rekey(this.current.relPath), kind: this.current.kind });
+    }
+  }
+
+  /**
    * Process the lanes serially: user, then discovery, then warm.
    * Safe to call when already running.
    */
   async start() {
-    if (this.running) return;
+    if (this.running || this.paused) return;
     this.running = true;
     let manifestPending = false;
     let manifestWrittenAt = 0;
     try {
       let idle = false;
       while (!idle) {
+        if (this.paused) break;
         const task = this.userLane.shift() || this.discoveryLane.shift();
         if (task) {
+          this.current = task;
           this.done++;
           this.onProgress?.({ done: this.done, total: this.done + this.userLane.length + this.discoveryLane.length, current: task.relPath });
           if (task.kind === 'verify') await this._verify(task.relPath);
@@ -175,6 +199,7 @@ export class LibraryIngest {
             await this.store.writeManifest(this.manifest);
           }
           this.onDocDone?.(task.relPath);
+          this.current = null;
           continue;
         }
         if (manifestPending) {
@@ -185,6 +210,7 @@ export class LibraryIngest {
       }
     } finally {
       this.running = false;
+      this.current = null;
       this.onProgress?.({ done: this.done, total: this.done + this.userLane.length + this.discoveryLane.length, current: '' });
       this.done = 0;
     }

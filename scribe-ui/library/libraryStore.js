@@ -16,6 +16,23 @@ export const RASTER_BUDGET_BYTES = 1.5 * 1024 * 1024 * 1024;
 export const titleOf = (relPath) => (relPath.split('/').pop() || relPath).replace(/\.pdf$/i, '');
 
 /**
+ * Why `name` can't be used as a folder name, or null when it can.
+ * @param {string} name
+ * @returns {?string}
+ */
+export const folderNameProblem = (name) => {
+  if (!name) return 'the name is empty';
+  if (/[/\\]/.test(name)) return 'folder names can\'t contain slashes';
+  // Dot-names are skipped by the folder walk, so the folder and its contents would vanish from the library.
+  if (name.startsWith('.')) return 'folder names can\'t start with a period';
+  // Windows rejects these even where the current filesystem allows them, and a library folder can move between the two.
+  // eslint-disable-next-line no-control-regex
+  if (/[<>:"|?*\u0000-\u001f]/.test(name)) return 'folder names can\'t contain < > : " | ? or *';
+  if (/[. ]$/.test(name)) return 'folder names can\'t end with a period or space';
+  return null;
+};
+
+/**
  * One document's record in the library manifest.
  * Entries are keyed by path relative to the library root.
  * @typedef {Object} LibraryDocEntry
@@ -132,6 +149,23 @@ const freeNameIn = async (dir, name) => {
     candidate = `${stem} (${n})${ext}`;
   }
   throw new Error(`Couldn't find a free name for “${name}” — 999 numbered copies already exist.`);
+};
+
+/**
+ * First unused folder name in `dir`, either `base` itself or a numbered variant of it.
+ * Entries of both handle kinds count as collisions.
+ * @param {FileSystemDirectoryHandle} dir
+ * @param {string} base
+ */
+const freeFolderNameIn = async (dir, base) => {
+  let candidate = base;
+  for (let n = 2; n < 1000; n++) {
+    const taken = await dir.getFileHandle(candidate).then(() => true, () => false)
+      || await dir.getDirectoryHandle(candidate).then(() => true, () => false);
+    if (!taken) return candidate;
+    candidate = `${base} (${n})`;
+  }
+  throw new Error(`Couldn't find a free name for “${base}” — 999 numbered copies already exist.`);
 };
 
 export class LibraryStore {
@@ -310,6 +344,104 @@ export class LibraryStore {
     const written = await (await dest.getFileHandle(candidate)).getFile();
     await srcDir.removeEntry(name);
     return { relPath: destDir ? `${destDir}/${candidate}` : candidate, mtime: written.lastModified };
+  }
+
+  /**
+   * Create a new subdirectory in the library folder.
+   * A name collision gets a numbered suffix rather than resolving the existing entry.
+   * @param {string} name
+   * @param {string} [parentRel] - Parent directory relative to the root; the root when omitted.
+   * @returns {Promise<string>} The relative path of the created directory.
+   */
+  async createDir(name, parentRel = '') {
+    const problem = folderNameProblem(name);
+    if (problem) throw new Error(problem);
+    const parent = await this.dirAt(parentRel);
+    const candidate = await freeFolderNameIn(parent, name);
+    await parent.getDirectoryHandle(candidate, { create: true });
+    return parentRel ? `${parentRel}/${candidate}` : candidate;
+  }
+
+  /**
+   * Rename or move a directory, transferring its entire contents to the new path.
+   * An interrupted transfer can duplicate files but never lose them.
+   * @param {string} oldRel
+   * @param {string} newRel
+   * @returns {Promise<Map<string, number>>} Timestamp of every transferred file, keyed by its new relative path.
+   */
+  async renameDir(oldRel, newRel) {
+    const oldCut = oldRel.lastIndexOf('/');
+    const newCut = newRel.lastIndexOf('/');
+    const oldName = oldRel.slice(oldCut + 1);
+    const newName = newRel.slice(newCut + 1);
+    const problem = folderNameProblem(newName);
+    if (problem) throw new Error(problem);
+    const oldParent = await this.dirAt(oldCut < 0 ? '' : oldRel.slice(0, oldCut));
+    const newParent = await this.dirAt(newCut < 0 ? '' : newRel.slice(0, newCut));
+    const src = await oldParent.getDirectoryHandle(oldName);
+    if (await newParent.getFileHandle(newName).then(() => true, () => false)) throw new Error('a file with that name already exists');
+    const existing = await newParent.getDirectoryHandle(newName).then((h) => h, () => null);
+    if (existing && !(await existing.isSameEntry(src))) throw new Error('a folder with that name already exists');
+    if (existing) {
+      // A case-insensitive filesystem resolved the source itself, so creating the new name would transfer the tree into itself.
+      // The temp name stays visible to the folder walk, so an interrupted hop cannot hide files.
+      const tempName = await freeFolderNameIn(oldParent, `${newName}.renaming`);
+      const prefix = oldCut < 0 ? '' : `${oldRel.slice(0, oldCut)}/`;
+      await this.renameDir(oldRel, `${prefix}${tempName}`);
+      return this.renameDir(`${prefix}${tempName}`, newRel);
+    }
+    const dest = await newParent.getDirectoryHandle(newName, { create: true });
+    /** @type {Map<string, number>} */
+    const moved = new Map();
+    /** @type {Array<{srcDir: FileSystemDirectoryHandle, destDir: FileSystemDirectoryHandle, name: string, viaMove: boolean}>} */
+    const placed = [];
+    /** @type {?boolean} Whether file handles support move() here, decided by the first file. */
+    let canMove = null;
+    // The walk reads raw entries() rather than listFiles, so dot-files the library skips still travel with the folder.
+    /**
+     * @param {FileSystemDirectoryHandle} from
+     * @param {FileSystemDirectoryHandle} to
+     * @param {string} prefix
+     */
+    const transfer = async (from, to, prefix) => {
+      // @ts-ignore - entries() is missing from lib.dom's FileSystemDirectoryHandle.
+      for await (const [name, handle] of from.entries()) {
+        if (handle.kind === 'directory') {
+          await transfer(handle, await to.getDirectoryHandle(name, { create: true }), `${prefix}${name}/`);
+          continue;
+        }
+        let viaMove = false;
+        if (canMove !== false && typeof handle.move === 'function') {
+          try {
+            await handle.move(to);
+            canMove = true;
+            viaMove = true;
+          } catch (err) {
+            if (canMove === true) throw err;
+            canMove = false;
+          }
+        } else if (canMove === null) canMove = false;
+        if (!viaMove) await writeFileIn(to, name, await handle.getFile());
+        placed.push({
+          srcDir: from, destDir: to, name, viaMove,
+        });
+        moved.set(`${prefix}${name}`, (await (await to.getFileHandle(name)).getFile()).lastModified);
+      }
+    };
+    try {
+      await transfer(src, dest, `${newRel}/`);
+    } catch (err) {
+      for (const p of placed.reverse()) {
+        try {
+          if (p.viaMove) await /** @type {any} */ (await p.destDir.getFileHandle(p.name)).move(p.srcDir);
+          else await deleteFileIn(p.destDir, p.name);
+        } catch { /* Rollback is best-effort, and the next scan adopts whatever stays split. */ }
+      }
+      await newParent.removeEntry(newName, { recursive: true }).catch(() => {});
+      throw err;
+    }
+    await oldParent.removeEntry(oldName, { recursive: true });
+    return moved;
   }
 
   /**
