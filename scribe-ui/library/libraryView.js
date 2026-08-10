@@ -54,6 +54,16 @@ const MUTATOR_METHODS = [
 const PREVIEW_STORAGE_KEY = 'scribe-library-preview';
 const VIEW_STORAGE_KEY = 'scribe-library-view';
 const OTHERS_STORAGE_KEY = 'scribe-library-others';
+const COLS_STORAGE_KEY = 'scribe-library-cols';
+
+/**
+ * List-view columns, left to right, per view mode.
+ * Name carries no `def` because it is sized to fill whatever the other columns leave.
+ */
+const LIST_COLUMNS = {
+  list: [{ min: 180 }, { min: 56, def: 90 }, { min: 56, def: 130 }, { min: 56, def: 130 }],
+  compact: [{ min: 140 }, { min: 56, def: 80 }, { min: 56, def: 110 }, { min: 56, def: 120 }, { min: 56, def: 120 }],
+};
 
 const SORT_DEFAULT_DIR = {
   name: 1, added: -1, opened: -1, pages: 1, custom: 1,
@@ -151,21 +161,32 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-card:hover .actions, .scribe-pdf-viewer .scribe-library-card:focus-within .actions { display: flex; }
 .scribe-pdf-viewer .scribe-library-card .actions button { border: none; border-radius: 5px; background: rgba(20, 20, 20, 0.65); color: #fff; cursor: pointer; font-size: 12px; padding: 3px 7px; }
 .scribe-pdf-viewer .scribe-library-body.list-mode { padding: 0; }
-.scribe-pdf-viewer .scribe-library-lhead { position: sticky; top: 0; z-index: 2; display: grid; grid-template-columns: minmax(240px, 1fr) 70px 110px 110px 120px; align-items: center; height: 30px; padding: 0 18px; border-bottom: 1px solid var(--scribe-line); background: var(--scribe-surface); color: var(--scribe-ink-2); font-size: 12px; font-weight: 600; user-select: none; }
-.scribe-pdf-viewer .scribe-library-lhead.cols-cf { grid-template-columns: minmax(260px, 1fr) 90px 130px 130px; }
-.scribe-pdf-viewer .scribe-library-hc { display: inline-flex; align-items: center; gap: 4px; cursor: pointer; border-radius: 4px; padding: 2px 6px; margin-left: -6px; }
-.scribe-pdf-viewer .scribe-library-hc:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
-.scribe-pdf-viewer .scribe-library-hc .ar { font-size: 10px; visibility: hidden; }
-.scribe-pdf-viewer .scribe-library-hc.on { color: var(--scribe-ink); }
-.scribe-pdf-viewer .scribe-library-hc.on .ar { visibility: visible; }
-.scribe-pdf-viewer .scribe-library-row { display: grid; grid-template-columns: minmax(240px, 1fr) 70px 110px 110px 120px; align-items: center; height: 34px; padding: 0 18px; cursor: pointer; border-bottom: 1px solid color-mix(in srgb, var(--scribe-line) 55%, transparent); font-size: 13px; user-select: none; touch-action: pan-y; }
+.scribe-pdf-viewer .scribe-library-lhead { position: sticky; top: 0; z-index: 2; display: grid; grid-template-columns: var(--scribe-library-cols, minmax(240px, 1fr) 70px 110px 110px 120px); min-width: min-content; align-items: stretch; height: 30px; padding: 0 8px; border-bottom: 1px solid var(--scribe-line); background: var(--scribe-surface); color: var(--scribe-ink-2); font-size: 12px; font-weight: 600; user-select: none; }
+.scribe-pdf-viewer .scribe-library-lhead.cols-cf { grid-template-columns: var(--scribe-library-cols, minmax(260px, 1fr) 90px 130px 130px); }
+/* The 8px edge and the 10px cell inset add up to the 18px gutter the rest of the library uses. */
+.scribe-pdf-viewer .scribe-library-lhead > * { position: relative; display: flex; align-items: center; gap: 4px; min-width: 0; padding: 0 10px; white-space: nowrap; }
+.scribe-pdf-viewer .scribe-library-lhead > [data-sort-key] { cursor: pointer; }
+.scribe-pdf-viewer .scribe-library-lhead > [data-sort-key]:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
+.scribe-pdf-viewer .scribe-library-lhead > [data-sort-key]:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: -2px; }
+.scribe-pdf-viewer .scribe-library-lhead .lbl { overflow: hidden; text-overflow: ellipsis; }
+.scribe-pdf-viewer .scribe-library-lhead .ar { font-size: 10px; flex-shrink: 0; }
+.scribe-pdf-viewer .scribe-library-lhead > .on { color: var(--scribe-ink); }
+.scribe-pdf-viewer .scribe-library-hres { position: absolute; top: 0; right: -4px; width: 9px; height: 100%; z-index: 3; cursor: col-resize; touch-action: none; }
+.scribe-pdf-viewer .scribe-library-hres::before { content: ''; position: absolute; left: 4px; top: 0; bottom: 0; width: 1px; background: var(--scribe-line); }
+.scribe-pdf-viewer .scribe-library-hres:hover::before, .scribe-pdf-viewer .scribe-library-hres.drag::before { left: 3px; width: 3px; background: var(--scribe-accent); }
+.scribe-pdf-viewer .scribe-library-hres:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: -1px; }
+.scribe-pdf-viewer .scribe-library-cols-drag { user-select: none; }
+.scribe-pdf-viewer .scribe-library-cols-drag * { cursor: col-resize !important; }
+.scribe-pdf-viewer.scribe-coarse .scribe-library-hres { display: none; }
+.scribe-pdf-viewer .scribe-library-row { display: grid; grid-template-columns: var(--scribe-library-cols, minmax(240px, 1fr) 70px 110px 110px 120px); min-width: min-content; align-items: center; height: 34px; padding: 0 8px; cursor: pointer; border-bottom: 1px solid color-mix(in srgb, var(--scribe-line) 55%, transparent); font-size: 13px; user-select: none; touch-action: pan-y; }
+.scribe-pdf-viewer .scribe-library-row > * { min-width: 0; padding: 0 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-row:hover { background: var(--scribe-hover); }
 .scribe-pdf-viewer .scribe-library-row.selected { background: var(--scribe-active); box-shadow: inset 2px 0 0 var(--scribe-accent); }
 .scribe-pdf-viewer .scribe-library-row.context { outline: 1px solid var(--scribe-accent); outline-offset: -1px; }
 .scribe-pdf-viewer .scribe-library-row:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: -2px; }
 .scribe-pdf-viewer .scribe-library-row .nm { display: flex; align-items: center; gap: 10px; min-width: 0; }
 .scribe-pdf-viewer .scribe-library-row .nm .t { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
-.scribe-pdf-viewer .scribe-library-row.cf { grid-template-columns: minmax(260px, 1fr) 90px 130px 130px; height: 64px; }
+.scribe-pdf-viewer .scribe-library-row.cf { grid-template-columns: var(--scribe-library-cols, minmax(260px, 1fr) 90px 130px 130px); height: 64px; }
 .scribe-pdf-viewer .scribe-library-row.cf .nm { gap: 12px; }
 .scribe-pdf-viewer .scribe-library-row.cf .nm img { width: 40px; height: 52px; object-fit: cover; object-position: top; border: 1px solid var(--scribe-line); border-radius: 3px; background: #fff; flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-row.cf .nm .tt { min-width: 0; }
@@ -183,6 +204,7 @@ const addLibraryStyles = () => {
 @container (max-width: 685px) {
   .scribe-pdf-viewer .scribe-library-lhead, .scribe-pdf-viewer .scribe-library-lhead.cols-cf, .scribe-pdf-viewer .scribe-library-row, .scribe-pdf-viewer .scribe-library-row.cf { grid-template-columns: minmax(120px, 1fr) 70px; }
   .scribe-pdf-viewer .scribe-library-lhead > :nth-child(n+3), .scribe-pdf-viewer .scribe-library-row > :nth-child(n+3) { display: none; }
+  .scribe-pdf-viewer .scribe-library-hres { display: none; }
 }
 .scribe-pdf-viewer .scribe-library-results { flex: 1; display: flex; min-height: 0; min-width: 0; font-size: 13px; }
 .scribe-pdf-viewer .scribe-library-rlist { width: clamp(280px, var(--scribe-library-rlist-w, 400px), calc(100% - 320px)); box-sizing: border-box; flex-shrink: 0; overflow-y: auto; border-right: 1px solid var(--scribe-line); background: var(--scribe-surface); outline: none; }
@@ -327,6 +349,23 @@ export function installLibrary(viewer) {
   try {
     showOthers = window.localStorage.getItem(OTHERS_STORAGE_KEY) === '1';
   } catch { /* localStorage unavailable. */ }
+  /** @type {{list: ?number[], compact: ?number[]}} List column widths in px, null until the first list render sizes them. */
+  const colWidths = { list: null, compact: null };
+  /** Whether the user has resized a column in each mode, which a seeded width alone does not set. */
+  const colSized = { list: false, compact: false };
+  try {
+    const stored = JSON.parse(window.localStorage.getItem(COLS_STORAGE_KEY) || '{}');
+    for (const mode of ['list', 'compact']) {
+      const w = stored[mode];
+      if (Array.isArray(w) && w.length === LIST_COLUMNS[mode].length && w.every((n) => Number.isFinite(n) && n > 0)) {
+        colWidths[mode] = w.map((n) => Math.round(n));
+        colSized[mode] = true;
+      }
+    }
+  } catch { /* localStorage unavailable, or the stored value is not JSON. */ }
+  let colDragActive = false;
+  let colRenderPending = false;
+  let colSuppressClickUntil = 0;
   let filterText = '';
   /** Directory shown while browsing, relative to the library root; '' is the root itself. */
   let currentDir = '';
@@ -714,6 +753,11 @@ export function installLibrary(viewer) {
   const render = () => {
     // A rebuild mid-drag would pull the dragged card out from under the pointer.
     if (drag.deferRender()) return;
+    // A rebuild also replaces the header a column divider is sizing.
+    if (colDragActive) {
+      colRenderPending = true;
+      return;
+    }
     closeCardMenu();
     syncCrumbs();
     // The retained results view snapshots its scroll state before the detach below, so a reattach can restore it.
@@ -1674,30 +1718,174 @@ export function installLibrary(viewer) {
     }
     const head = document.createElement('div');
     head.className = comfortable ? 'scribe-library-lhead cols-cf' : 'scribe-library-lhead';
-    for (const [key, label] of [['name', 'Name'], ['pages', 'Pages'], ['added', 'Added'], ['opened', 'Last opened']]) {
+    const rows = document.createElement('div');
+    const cols = LIST_COLUMNS[viewMode];
+    // Only a mode the user has resized is written, so the other keeps re-fitting Name to the window on later visits.
+    const saveCols = () => {
+      try {
+        const sized = {};
+        for (const mode of ['list', 'compact']) if (colSized[mode]) sized[mode] = colWidths[mode];
+        window.localStorage.setItem(COLS_STORAGE_KEY, JSON.stringify(sized));
+      } catch { /* localStorage unavailable. */ }
+    };
+    const availCols = () => host.clientWidth - 16;
+    /**
+     * Lay the stored widths out across the visible width.
+     * The result always adds up to it exactly, so nothing can scroll sideways.
+     * Any squeeze is display-only, so a width the reader chose returns once there is room.
+     * @param {number} avail
+     * @param {number} slackIdx - Column that gives and takes the difference first.
+     * @returns {?number[]} The widths as laid out.
+     */
+    const paintCols = (avail, slackIdx) => {
+      const stored = colWidths[viewMode];
+      if (!stored || avail <= 0) {
+        host.style.removeProperty('--scribe-library-cols');
+        return null;
+      }
+      const eff = stored.map((n, j) => Math.max(cols[j].min, Math.round(n)));
+      let diff = avail - eff.reduce((sum, n) => sum + n, 0);
+      const take = Math.max(cols[slackIdx].min - eff[slackIdx], diff);
+      eff[slackIdx] += take;
+      diff -= take;
+      for (let j = eff.length - 1; j >= 0 && diff < 0; j--) {
+        if (j !== slackIdx) {
+          const give = Math.max(cols[j].min - eff[j], diff);
+          eff[j] += give;
+          diff -= give;
+        }
+      }
+      host.style.setProperty('--scribe-library-cols', eff.map((n) => `${n}px`).join(' '));
+      [...head.children].forEach((cell, j) => cell.querySelector('.scribe-library-hres')?.setAttribute('aria-valuenow', String(eff[j])));
+      return eff;
+    };
+    /**
+     * Resize column `i` to `px`.
+     * @param {number} i
+     * @param {number} px
+     * @param {number} avail
+     */
+    const resizeCol = (i, px, avail) => {
+      const stored = colWidths[viewMode];
+      if (!stored) return;
+      colSized[viewMode] = true;
+      let leftSum = 0;
+      for (let j = 0; j < i; j++) leftSum += stored[j];
+      let rightMin = 0;
+      for (let j = i + 1; j < stored.length; j++) rightMin += cols[j].min;
+      // Capping at the room the right-hand minimums leave is what keeps the last boundary inside the view.
+      stored[i] = Math.max(cols[i].min, Math.min(avail - leftSum - rightMin, Math.round(px)));
+      // Only this column is stored mid-gesture, so the squeeze the others take is undone if the drag comes back.
+      paintCols(avail, stored.length - 1);
+    };
+    // Settling on the laid-out widths leaves the total already fitted, so a later re-render cannot shift the table.
+    const commitCols = (avail) => {
+      const w = colWidths[viewMode];
+      if (!w) return;
+      const eff = paintCols(avail, w.length - 1);
+      if (eff) colWidths[viewMode] = eff;
+    };
+    const headCols = [['name', 'Name'], ['pages', 'Pages'], ['added', 'Added'], ['opened', 'Last opened']];
+    if (!comfortable) headCols.push([null, 'Status']);
+    headCols.forEach(([key, label], i) => {
       const cell = document.createElement('span');
-      const hc = document.createElement('span');
-      hc.className = sortMode === key ? 'scribe-library-hc on' : 'scribe-library-hc';
-      hc.tabIndex = 0;
-      hc.setAttribute('role', 'button');
-      hc.dataset.sortKey = key;
-      hc.appendChild(document.createTextNode(label));
-      const ar = document.createElement('span');
-      ar.className = 'ar';
-      ar.textContent = sortDir === 1 ? '▲' : '▼';
-      hc.appendChild(ar);
-      cell.appendChild(hc);
+      const lbl = document.createElement('span');
+      lbl.className = 'lbl';
+      lbl.textContent = label;
+      cell.appendChild(lbl);
+      if (key) {
+        cell.tabIndex = 0;
+        cell.setAttribute('role', 'button');
+        cell.dataset.sortKey = key;
+        // Only the sorted column carries an arrow, so the others keep their full width for the label.
+        if (sortMode === key) {
+          cell.className = 'on';
+          const ar = document.createElement('span');
+          ar.className = 'ar';
+          ar.textContent = sortDir === 1 ? '▲' : '▼';
+          cell.appendChild(ar);
+        }
+      }
+
+      // The last column is the one that flexes to the right edge, so there is no boundary of its own to drag.
+      if (i === headCols.length - 1) {
+        head.appendChild(cell);
+        return;
+      }
+      const handle = document.createElement('span');
+      handle.className = 'scribe-library-hres';
+      handle.tabIndex = 0;
+      handle.setAttribute('role', 'separator');
+      handle.setAttribute('aria-orientation', 'vertical');
+      handle.setAttribute('aria-label', `Resize the ${label} column`);
+      handle.setAttribute('aria-valuemin', String(cols[i].min));
+      /** @param {number} px */
+      const setW = (px) => resizeCol(i, px, availCols());
+      handle.addEventListener('pointerdown', (e) => {
+        if (e.button !== 0 || !colWidths[viewMode]) return;
+        e.preventDefault();
+        const startX = e.clientX;
+        const startW = cell.getBoundingClientRect().width;
+        const avail = availCols();
+        colDragActive = true;
+        handle.classList.add('drag');
+        host.classList.add('scribe-library-cols-drag');
+        const onMove = (ev) => {
+          colSuppressClickUntil = Date.now() + 350;
+          resizeCol(i, startW + ev.clientX - startX, avail);
+        };
+        const onUp = () => {
+          colDragActive = false;
+          handle.classList.remove('drag');
+          host.classList.remove('scribe-library-cols-drag');
+          window.removeEventListener('pointermove', onMove);
+          window.removeEventListener('pointerup', onUp);
+          window.removeEventListener('pointercancel', onUp);
+          commitCols(avail);
+          saveCols();
+          if (colRenderPending) {
+            colRenderPending = false;
+            render();
+          }
+        };
+        window.addEventListener('pointermove', onMove);
+        window.addEventListener('pointerup', onUp);
+        window.addEventListener('pointercancel', onUp);
+      });
+      handle.addEventListener('dblclick', () => {
+        const w = colWidths[viewMode];
+        if (!w) return;
+        // Each row is its own grid, so all of them have to be read.
+        const probe = w.map((n, j) => (j === i ? 'max-content' : `${n}px`));
+        host.style.setProperty('--scribe-library-cols', probe.join(' '));
+        let fit = cell.getBoundingClientRect().width;
+        for (const row of rows.children) {
+          const rc = row.children[i];
+          if (rc) fit = Math.max(fit, rc.getBoundingClientRect().width);
+        }
+        setW(Math.ceil(fit));
+        commitCols(availCols());
+        saveCols();
+      });
+      handle.addEventListener('keydown', (e) => {
+        if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
+        e.preventDefault();
+        const w = colWidths[viewMode];
+        if (!w) return;
+        setW(w[i] + (e.key === 'ArrowRight' ? 1 : -1) * (e.shiftKey ? 4 : 16));
+        commitCols(availCols());
+        saveCols();
+      });
+      cell.appendChild(handle);
       head.appendChild(cell);
-    }
-    if (!comfortable) {
-      const statusHead = document.createElement('span');
-      statusHead.textContent = 'Status';
-      head.appendChild(statusHead);
-    }
+    });
     const onHeaderActivate = (e) => {
-      const hc = e.target instanceof Element && e.target.closest('.scribe-library-hc');
-      if (!hc || !(hc instanceof HTMLElement)) return;
-      const key = hc.dataset.sortKey ?? 'name';
+      if (!(e.target instanceof Element) || e.target.closest('.scribe-library-hres')) return;
+      // A divider drag that starts and ends inside one cell still fires a click on it.
+      if (Date.now() < colSuppressClickUntil) return;
+      const cell = e.target.closest('[data-sort-key]');
+      if (!(cell instanceof HTMLElement)) return;
+      const key = cell.dataset.sortKey ?? 'name';
       if (sortMode === key) sortDir = -sortDir;
       else {
         sortMode = key;
@@ -1711,11 +1899,20 @@ export function installLibrary(viewer) {
       if (e.key === 'Enter') onHeaderActivate(e);
     });
     host.appendChild(head);
-    const rows = document.createElement('div');
     for (const dir of shownDirs) rows.appendChild(buildFolderRow(dir));
     for (const [relPath, entry] of shown) rows.appendChild(buildRow(relPath, entry));
     for (const relPath of shownOthers) rows.appendChild(buildOtherRow(relPath));
     host.appendChild(rows);
+    // Measure the scrolling host, never the header, which reports its own overflow once it carries wide tracks.
+    const avail = availCols();
+    if (avail > 0 && (!colSized[viewMode] || !colWidths[viewMode])) {
+      // An untouched table is fitted from the defaults every render, so it stays flush through window resizes and through opening the preview pane beside it.
+      const rest = cols.slice(1).reduce((sum, c) => sum + c.def, 0);
+      colWidths[viewMode] = [Math.max(cols[0].min, Math.round(avail - rest)), ...cols.slice(1).map((c) => c.def)];
+    }
+    // Name is where a reader wants a window resize to land, so it takes the difference outside a drag.
+    const laid = paintCols(avail, 0);
+    if (laid) colWidths[viewMode] = laid;
     if (listPane) {
       const entry = listPreviewPath && manifest ? manifest.docs[listPreviewPath] : null;
       if (entry && listPreviewPath) {
