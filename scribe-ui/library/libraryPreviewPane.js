@@ -2,7 +2,6 @@
 // with its own find bar, zoom, page nav, and match marks. Search results and the list views both mount one.
 // Seeding rather than importing is what lets a reader flip through documents without paying for a full load each time.
 
-import { ZOOM_IN_SVG, ZOOM_OUT_SVG } from '../js/controls/toolbar.js';
 import { openDocumentFromFile } from '../js/controls/tools.js';
 import { findText, goToMatch } from '../js/viewerSearch.js';
 import { PAGE_RASTER_WIDTH } from './libraryIngest.js';
@@ -10,6 +9,12 @@ import { titleOf } from './libraryStore.js';
 
 // eslint-disable-next-line max-len
 const PANE_FIND_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="11" cy="11" r="6.5"/><path d="M16 16l4.5 4.5"/></svg>';
+
+// The zoom pair is drawn as bare signs rather than reusing the toolbar's lens icons.
+// A lens's interior +/- falls below legibility at the 18px inset scale these buttons render at.
+const PANE_ZOOM_OUT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 12h12"/></svg>';
+// eslint-disable-next-line max-len
+const PANE_ZOOM_IN_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 6v12M6 12h12"/></svg>';
 
 /** How long a reader lingers on a rasterless page before it loads for real. */
 const DWELL_LOAD_MS = 2500;
@@ -285,30 +290,26 @@ export function createPreviewPanes({
    * The right-side preview pane shared by search results and the list views.
    * The embedded viewer is read-only and seeded through `openProvisional`, so it paints before the document has been imported.
    * @param {string} emptyText
-   * @param {string} prevLabel
-   * @param {string} nextLabel
    */
-  const buildPreviewPane = (emptyText, prevLabel, nextLabel) => {
+  const buildPreviewPane = (emptyText) => {
     const pane = document.createElement('div');
     pane.className = 'scribe-library-pv';
     pane.innerHTML = '<div class="scribe-library-pv-head" style="display:none;"><span class="t"></span><span class="m"></span><span class="grow"></span>'
-      + `<button class="scribe-library-pv-zoom" type="button" data-zoom-out aria-label="Zoom out" title="Zoom out">${ZOOM_OUT_SVG}</button>`
-      + `<button class="scribe-library-pv-zoom" type="button" data-zoom-in aria-label="Zoom in" title="Zoom in">${ZOOM_IN_SVG}</button>`
+      + `<button class="scribe-library-pv-zoom" type="button" data-zoom-out aria-label="Zoom out" title="Zoom out">${PANE_ZOOM_OUT_SVG}</button>`
+      + `<button class="scribe-library-pv-zoom" type="button" data-zoom-in aria-label="Zoom in" title="Zoom in">${PANE_ZOOM_IN_SVG}</button>`
       + `<span class="scribe-library-pv-find">${PANE_FIND_SVG}<input type="text" placeholder="Find" aria-label="Find in the previewed document"></span>`
       + '<span class="vertical-separator"></span>'
-      + '<button class="scribe-library-pv-open" type="button">Open<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" '
+      + '<button class="scribe-library-pv-open" type="button">Open<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" '
       + 'stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17L17 7M9 7h8v8"/></svg></button>'
       + '<button class="scribe-library-pv-x" type="button" aria-label="Close preview"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" '
-      + 'stroke-width="2" stroke-linecap="round" aria-hidden="true"><path d="M6.5 6.5l11 11M17.5 6.5l-11 11"/></svg></button></div>'
+      + 'stroke-width="1.6" stroke-linecap="round" aria-hidden="true"><path d="M6 6l12 12M18 6L6 18"/></svg></button></div>'
       + `<div class="scribe-library-pv-stage"><div class="scribe-library-pv-empty">${emptyText}</div><div class="scribe-library-pv-viewer" style="display:none;"></div>`
-      + '<div class="scribe-library-pv-loading" style="display:none;"><div class="scribe-library-pv-loading-spin"></div>Loading page…</div></div>'
-      + `<div class="scribe-library-pv-foot" style="display:none;"><button type="button" data-prev>${prevLabel}</button><button type="button" data-next>${nextLabel}</button>`
-      + '<span class="grow"></span><span data-pos></span></div>';
+      + '<div class="scribe-library-pv-loading" style="display:none;"><div class="scribe-library-pv-loading-spin"></div>Loading page…</div></div>';
     const pvHead = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-head'));
+    const pvMeta = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-head .m'));
     const pvEmpty = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-empty'));
     const pvLoading = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-loading'));
     const pvHost = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-viewer'));
-    const pvFoot = /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-foot'));
     const pvFindInput = /** @type {HTMLInputElement} */ (pane.querySelector('.scribe-library-pv-find input'));
     /** @type {?import('../basic-viewer/pdf-viewer.js').ScribePDFViewer} */
     let paneViewer = null;
@@ -452,7 +453,6 @@ export function createPreviewPanes({
       current = null;
       lastTarget = null;
       pvHead.style.display = 'none';
-      pvFoot.style.display = 'none';
       pvHost.style.display = 'none';
       pvLoading.style.display = 'none';
       pvEmpty.textContent = emptyText;
@@ -548,11 +548,17 @@ export function createPreviewPanes({
       return cover;
     };
 
+    const syncPosMeta = () => {
+      const d = paneViewer?.doc;
+      if (d && d.pageMetrics.length) pvMeta.textContent = `Page ${paneViewer.scribe.state.cp.n + 1} of ${d.pageMetrics.length}`;
+    };
+
     /**
      * Preview a page in the embedded viewer, painting match marks when a query is given.
      * A `jump` target lands on far pages by re-seeding; without it, a page outside the seeded window accelerates the full load as scrolling there would.
+     * `target.meta` seeds the head's position line, which then tracks the reader's page.
      * @param {{relPath: string, hash: string, entry: import('./libraryStore.js').LibraryDocEntry,
-     *   pageN: number, query: ?string, title: string, meta: string, pos: string, jump?: boolean, immediate?: boolean}} target
+     *   pageN: number, query: ?string, title: string, meta: string, jump?: boolean, immediate?: boolean}} target
      */
     const show = async (target) => {
       // A width-fit while the surface is hidden commits zoom 0, which no later resize repairs.
@@ -568,10 +574,10 @@ export function createPreviewPanes({
         pvFindLast = '';
       }
       pvHead.style.display = '';
-      pvFoot.style.display = '';
       /** @type {HTMLElement} */ (pvHead.querySelector('.t')).textContent = target.title;
-      /** @type {HTMLElement} */ (pvHead.querySelector('.m')).textContent = target.meta;
-      /** @type {HTMLElement} */ (pvFoot.querySelector('[data-pos]')).textContent = target.pos;
+      // A host re-render of the already-shown document carries a stale initial position once the reader has scrolled, so the live state wins.
+      if (current && current.hash === target.hash && paneViewer?.doc) syncPosMeta();
+      else pvMeta.textContent = target.meta;
       pvEmpty.style.display = 'none';
       pvLoading.style.display = 'none';
       pvHost.style.display = '';
@@ -585,6 +591,11 @@ export function createPreviewPanes({
         // Annotation gestures and comment text edits in the pane checkpoint like tab edits do.
         /** @type {NonNullable<typeof paneViewer>} */ (paneViewer).scribe.onAnnotationsEdited = () => { paneDirty = true; };
         pvHost.addEventListener('input', () => { paneDirty = true; }, true);
+        const innerDisplay = paneViewer.scribe.displayPageCallback;
+        paneViewer.scribe.displayPageCallback = () => {
+          innerDisplay?.();
+          syncPosMeta();
+        };
       }
       lastTarget = target;
       // Background warming yields for the whole show, because the seed build and priming run before any hydration exists to count.
@@ -793,8 +804,6 @@ export function createPreviewPanes({
       pane,
       openBtn: /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-open')),
       closeBtn: /** @type {HTMLElement} */ (pane.querySelector('.scribe-library-pv-x')),
-      prevBtn: /** @type {HTMLElement} */ (pane.querySelector('[data-prev]')),
-      nextBtn: /** @type {HTMLElement} */ (pane.querySelector('[data-next]')),
       /** Which view hosts this pane ('results' | 'list'); reuse is only within a kind. */
       kind: '',
       /** The query the results view last rendered with, so a new search resets the pane. */
@@ -803,10 +812,6 @@ export function createPreviewPanes({
       onOpen: null,
       /** @type {?() => void} */
       onClose: null,
-      /** @type {?() => void} */
-      onPrev: null,
-      /** @type {?() => void} */
-      onNext: null,
       show,
       showEmpty,
       shownHash,
@@ -832,8 +837,6 @@ export function createPreviewPanes({
     };
     self.openBtn.addEventListener('click', () => self.onOpen?.());
     self.closeBtn.addEventListener('click', () => self.onClose?.());
-    self.prevBtn.addEventListener('click', () => self.onPrev?.());
-    self.nextBtn.addEventListener('click', () => self.onNext?.());
     mountedPane = self;
     return self;
   };
@@ -844,13 +847,11 @@ export function createPreviewPanes({
      * A List/Compact switch or an ingest-progress re-render must not tear down the embedded viewer or its painted pages.
      * @param {string} kind
      * @param {string} emptyText
-     * @param {string} prevLabel
-     * @param {string} nextLabel
      */
-    ensurePane: (kind, emptyText, prevLabel, nextLabel) => {
+    ensurePane: (kind, emptyText) => {
       if (mountedPane && mountedPane.kind === kind) return mountedPane;
       if (mountedPane) mountedPane.destroy();
-      const pv = buildPreviewPane(emptyText, prevLabel, nextLabel);
+      const pv = buildPreviewPane(emptyText);
       pv.kind = kind;
       return pv;
     },

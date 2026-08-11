@@ -244,24 +244,24 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-mark { position: absolute; background: #4278f550; }
 .scribe-pdf-viewer .scribe-mark.act { background: #ff990088; }
 .scribe-pdf-viewer .scribe-library-pv { flex: 1; display: flex; flex-direction: column; min-width: 0; }
-.scribe-pdf-viewer .scribe-library-pv-head { display: flex; align-items: center; gap: 10px; height: 40px; flex-shrink: 0; box-sizing: border-box; padding: 0 12px; background: var(--scribe-surface); border-bottom: 1px solid var(--scribe-line); }
+.scribe-pdf-viewer .scribe-library-pv-head { display: flex; align-items: center; gap: 8px; height: 40px; flex-shrink: 0; box-sizing: border-box; padding: 0 12px; background: var(--scribe-surface); border-bottom: 1px solid var(--scribe-line); }
 .scribe-pdf-viewer .scribe-library-pv-head .t { font-weight: 600; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-pv-head .m { color: var(--scribe-ink-3); white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-pv-head .grow { flex: 1; }
-.scribe-pdf-viewer .scribe-library-pv-open { display: inline-flex; align-items: center; gap: 6px; height: 26px; padding: 0 10px; border-radius: 7px; border: none; background: none; color: var(--scribe-ink-2); font: inherit; font-size: 12.5px; cursor: pointer; white-space: nowrap; }
+.scribe-pdf-viewer .scribe-library-pv-open { display: inline-flex; align-items: center; gap: 7px; height: 28px; padding: 0 10px; border-radius: 7px; border: none; background: none; color: var(--scribe-ink-2); font: inherit; font-size: 13px; cursor: pointer; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-pv-open:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
 .scribe-pdf-viewer .scribe-library-pv-open:disabled { opacity: 0.6; cursor: default; background: none; color: var(--scribe-ink-2); }
-.scribe-pdf-viewer .scribe-library-pv-open svg { width: 14px; height: 14px; }
-.scribe-pdf-viewer .scribe-library-pv-x { width: 26px; height: 26px; flex-shrink: 0; padding: 5px; border-radius: 7px; border: none; background: none; color: var(--scribe-ink-3); cursor: pointer; }
+.scribe-pdf-viewer .scribe-library-pv-open svg { width: 15px; height: 15px; }
+.scribe-pdf-viewer .scribe-library-pv-x { width: 28px; height: 28px; flex-shrink: 0; padding: 5px; border-radius: 7px; border: none; background: none; color: var(--scribe-ink-2); cursor: pointer; }
 .scribe-pdf-viewer .scribe-library-pv-x:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
 .scribe-pdf-viewer .scribe-library-pv-x svg { width: 100%; height: 100%; display: block; }
-.scribe-pdf-viewer .scribe-library-pv-zoom { width: 26px; height: 26px; flex-shrink: 0; padding: 5px; border-radius: 7px; border: none; background: none; color: var(--scribe-ink-2); cursor: pointer; }
+.scribe-pdf-viewer .scribe-library-pv-zoom { width: 28px; height: 28px; flex-shrink: 0; padding: 5px; border-radius: 7px; border: none; background: none; color: var(--scribe-ink-2); cursor: pointer; }
 .scribe-pdf-viewer .scribe-library-pv-zoom:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
 .scribe-pdf-viewer .scribe-library-pv-zoom svg { width: 100%; height: 100%; display: block; }
-.scribe-pdf-viewer .scribe-library-pv-find { display: inline-flex; align-items: center; gap: 5px; height: 26px; padding: 0 7px; background: var(--scribe-sunken); border: 1px solid var(--scribe-line-strong); border-radius: 5px; box-sizing: border-box; flex: 0 1 auto; min-width: 70px; }
+.scribe-pdf-viewer .scribe-library-pv-find { display: inline-flex; align-items: center; gap: 6px; height: 28px; padding: 0 8px; background: var(--scribe-sunken); border: 1px solid var(--scribe-line-strong); border-radius: 5px; box-sizing: border-box; flex: 0 1 auto; min-width: 76px; }
 .scribe-pdf-viewer .scribe-library-pv-find:focus-within { border-color: var(--scribe-accent); }
-.scribe-pdf-viewer .scribe-library-pv-find > svg { width: 13px; height: 13px; color: var(--scribe-ink-3); flex-shrink: 0; }
-.scribe-pdf-viewer .scribe-library-pv-find input { border: none; background: none; outline: none; color: var(--scribe-ink); font: inherit; font-size: 12.5px; width: 96px; min-width: 0; padding: 0; caret-color: var(--scribe-accent); }
+.scribe-pdf-viewer .scribe-library-pv-find > svg { width: 15px; height: 15px; color: var(--scribe-ink-3); flex-shrink: 0; }
+.scribe-pdf-viewer .scribe-library-pv-find input { border: none; background: none; outline: none; color: var(--scribe-ink); font: inherit; font-size: 13px; width: 96px; min-width: 0; padding: 0; caret-color: var(--scribe-accent); }
 .scribe-pdf-viewer .scribe-library-pv-find input::placeholder { color: var(--scribe-ink-3); }
 .scribe-pdf-viewer .scribe-library-pv-stage { flex: 1; overflow: hidden; display: flex; position: relative; }
 .scribe-pdf-viewer .scribe-library-pv-viewer { flex: 1; min-width: 0; min-height: 0; position: relative; }
@@ -271,10 +271,6 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-pv-loading { position: absolute; inset: 0; display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 10px; color: var(--scribe-ink-3); font-size: 13px; pointer-events: none; }
 .scribe-pdf-viewer .scribe-library-pv-loading-spin { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--scribe-ink-3); border-top-color: transparent; animation: scribe-library-pv-spin 0.8s linear infinite; }
 @keyframes scribe-library-pv-spin { to { transform: rotate(360deg); } }
-.scribe-pdf-viewer .scribe-library-pv-foot { display: flex; align-items: center; gap: 8px; height: 34px; flex-shrink: 0; box-sizing: border-box; padding: 0 12px; background: var(--scribe-surface); border-top: 1px solid var(--scribe-line); font-size: 12.5px; color: var(--scribe-ink-2); }
-.scribe-pdf-viewer .scribe-library-pv-foot button { border: none; background: none; color: var(--scribe-ink-2); font: inherit; font-size: 12.5px; cursor: pointer; border-radius: 6px; padding: 3px 8px; }
-.scribe-pdf-viewer .scribe-library-pv-foot button:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
-.scribe-pdf-viewer .scribe-library-pv-foot .grow { flex: 1; }
 .scribe-pdf-viewer .scribe-library-surface.drag-over { outline: 2px dashed var(--scribe-accent); outline-offset: -8px; }
 .scribe-pdf-viewer .scribe-library-crumbs { display: flex; align-items: center; gap: 1px; font-size: 14px; font-weight: 600; min-width: 0; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-crumb { border: none; background: none; padding: 3px 7px; border-radius: 6px; font: inherit; color: var(--scribe-ink-2); cursor: pointer; }
@@ -310,6 +306,18 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-row.other { cursor: default; opacity: .55; }
 .scribe-pdf-viewer .scribe-library-row.other:hover { background: none; }
 /* Keep these rungs last in the stylesheet, since a base rule declared later out-cascades one at equal specificity. */
+.scribe-pdf-viewer .scribe-library-pv-head { container: scribe-pv / inline-size; }
+/* A pane dragged toward its 320px minimum would otherwise push Close past the right edge. */
+@container scribe-pv (max-width: 470px) {
+  .scribe-pdf-viewer .scribe-library-pv-head .m { display: none; }
+}
+@container scribe-pv (max-width: 400px) {
+  .scribe-pdf-viewer .scribe-library-pv-head .vertical-separator { display: none; }
+}
+@container scribe-pv (max-width: 350px) {
+  .scribe-pdf-viewer .scribe-library-pv-find { min-width: 58px; }
+  .scribe-pdf-viewer .scribe-library-pv-find > svg { display: none; }
+}
 .scribe-pdf-viewer .scribe-library-bar { container: scribe-bar / inline-size; }
 @container scribe-bar (max-width: 820px) {
   .scribe-pdf-viewer .scribe-library-sort-lbl { display: none; }
@@ -2050,7 +2058,7 @@ export function installLibrary(viewer) {
       body.classList.add('split-mode');
       const split = buildPreviewSplit(700, () => listPreviewWidth, (w) => { listPreviewWidth = w; });
       body.appendChild(split.wrap);
-      listPane = panes.ensurePane('list', 'Select a document to preview it here', '‹ Previous page', 'Next page ›');
+      listPane = panes.ensurePane('list', 'Select a document to preview it here');
       split.wrap.appendChild(listPane.pane);
       const previewEntry = () => (listPreviewPath && manifest ? manifest.docs[listPreviewPath] : null);
       listPane.onOpen = async () => {
@@ -2072,17 +2080,6 @@ export function installLibrary(viewer) {
         listPreviewPath = null;
         listPane?.showEmpty();
       };
-      /** @param {number} d */
-      const stepPage = (d) => {
-        const entry = previewEntry();
-        if (!entry || !listPreviewPath) return;
-        const n = listPreviewPage + d;
-        if (n < 0 || n >= (entry.pageCount || 1)) return;
-        // Stepping is scroll-like: past the seeded window it loads rather than re-seeds.
-        showListPreview(listPreviewPath, entry, n, false);
-      };
-      listPane.onPrev = () => stepPage(-1);
-      listPane.onNext = () => stepPage(1);
       host = split.left;
     }
     const head = document.createElement('div');
@@ -2314,8 +2311,7 @@ export function installLibrary(viewer) {
       pageN,
       query: null,
       title: titleOf(relPath),
-      meta: `${pages} page${pages === 1 ? '' : 's'}`,
-      pos: `Page ${pageN + 1} of ${pages}`,
+      meta: `Page ${pageN + 1} of ${pages}`,
       jump,
     });
   };

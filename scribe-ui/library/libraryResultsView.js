@@ -89,7 +89,7 @@ export function createResultsView({
     summary.appendChild(backBtn);
     listEl.appendChild(summary);
 
-    const pv = panes.ensurePane('results', 'Select a result to preview it here', '‹ Previous result', 'Next result ›');
+    const pv = panes.ensurePane('results', 'Select a result to preview it here');
     if (pv.shownQuery !== fullTextQuery) pv.showEmpty();
     pv.shownQuery = fullTextQuery;
     wrap.appendChild(pv.pane);
@@ -117,8 +117,7 @@ export function createResultsView({
         pageN: h.pageN,
         query: fullTextQuery,
         title: titleOf(h.relPath),
-        meta: `Page ${h.pageN + 1} · ${h.count} match${h.count === 1 ? '' : 'es'}`,
-        pos: `Result ${i + 1} of ${hits.length}`,
+        meta: `Page ${h.pageN + 1} of ${h.entry.pageCount || 1}`,
         jump: true,
         immediate,
       });
@@ -139,8 +138,6 @@ export function createResultsView({
     };
     pv.onOpen = openActive;
     pv.onClose = () => selectHit(-1);
-    pv.onPrev = () => { if (active > 0) selectHit(active - 1); };
-    pv.onNext = () => { if (active < hits.length - 1) selectHit(active + 1); };
     listEl.addEventListener('keydown', (e) => {
       if (e.key === 'ArrowDown') {
         e.preventDefault();
