@@ -159,9 +159,9 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-card { border: 1px solid color-mix(in srgb, var(--scribe-ink) 14%, transparent); border-radius: 8px; background: var(--scribe-surface); cursor: pointer; overflow: hidden; display: flex; flex-direction: column; position: relative; touch-action: pan-y; user-select: none; }
 /* The lifted item vacates its place rather than being removed, so the slot it held stays open for the length of the drag. */
 .scribe-pdf-viewer .scribe-library-card.dragging, .scribe-pdf-viewer .scribe-library-row.dragging { visibility: hidden; }
-.scribe-library-ghost { position: fixed; z-index: 100; pointer-events: none; box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35); border-radius: 8px; overflow: hidden; font-size: 14px; color: var(--scribe-ink); transition: opacity 0.12s ease; }
-/* Solid over anything that cannot take the file, and see-through only over a folder, whose highlight sits underneath it. */
-.scribe-library-ghost.over-drop { opacity: 0.85; }
+/* A cloned list row brings no background of its own, so without this the ghost renders as bare floating text. */
+.scribe-library-ghost { position: fixed; z-index: 100; pointer-events: none; background: var(--scribe-surface); box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35); border-radius: 8px; overflow: hidden; font-size: 14px; color: var(--scribe-ink); transition: opacity 0.12s ease; }
+.scribe-library-ghost.over-drop { opacity: 0.7; }
 .scribe-pdf-viewer .scribe-library-insert-line { position: absolute; width: 3px; border-radius: 2px; background: var(--scribe-accent); z-index: 5; pointer-events: none; }
 /* The :where() guard costs no specificity, so suppressing hover mid-drag cannot outrank the selected and drop rules below. */
 .scribe-pdf-viewer .scribe-library-card:hover:where(.scribe-library-surface:not(.card-drag) *), .scribe-pdf-viewer .scribe-library-card:focus-visible { border-color: var(--scribe-accent); outline: none; }

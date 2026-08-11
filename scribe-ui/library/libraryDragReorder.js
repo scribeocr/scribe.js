@@ -17,6 +17,7 @@ const AUTOSCROLL_SPEED = 14;
  * Install card drag-to-reorder over the library grid.
  * @param {Object} deps
  * @param {import('../basic-viewer/pdf-viewer.js').ScribePDFViewer} deps.viewer
+ * @param {HTMLElement} deps.surface - Library root, flagged with a class for the length of a drag.
  * @param {HTMLElement} deps.body - Scrolling surface the cards live in, and the autoscroll target.
  * @param {Set<string>} deps.selectedPaths
  * @param {() => ?import('./libraryStore.js').LibraryManifest} deps.getManifest
@@ -28,7 +29,7 @@ const AUTOSCROLL_SPEED = 14;
  * @param {() => boolean} deps.reorderAllowed - Whether the current sort and view support manual ordering.
  */
 export function createDragReorder({
-  viewer, body, selectedPaths, getManifest, getStore, saveManifestSoon, render, openCardMenu, dragAllowed, reorderAllowed,
+  viewer, surface, body, selectedPaths, getManifest, getStore, saveManifestSoon, render, openCardMenu, dragAllowed, reorderAllowed,
 }) {
   /** @type {?Object} In-flight card drag. */
   let dragState = null;
@@ -79,6 +80,16 @@ export function createDragReorder({
     clone.style.width = '100%';
     clone.style.height = '100%';
     clone.style.boxSizing = 'border-box';
+    // A row's track widths and its dropped columns are both decided by the list host the ghost is about to leave behind.
+    // Neither follows the clone to document.body, so both are carried over from what the source row resolved to.
+    const rowStyle = getComputedStyle(d.cardElem);
+    if (rowStyle.display === 'grid') {
+      clone.style.gridTemplateColumns = rowStyle.gridTemplateColumns;
+      const cells = [...d.cardElem.children];
+      [...clone.children].forEach((cell, i) => {
+        if (getComputedStyle(cells[i]).display === 'none') /** @type {HTMLElement} */ (cell).style.display = 'none';
+      });
+    }
     // On document.body the ghost sits outside the viewer root, so it carries the scope class, theme, and font itself for the scoped card rules and tokens to apply.
     d.ghost = document.createElement('div');
     d.ghost.className = 'scribe-library-ghost scribe-pdf-viewer';
@@ -90,6 +101,7 @@ export function createDragReorder({
     d.ghost.appendChild(clone);
     document.body.appendChild(d.ghost);
     d.cardElem.classList.add('dragging');
+    surface.classList.add('card-drag');
     if (d.canReorder && mainGridElem) {
       d.line = document.createElement('div');
       d.line.className = 'scribe-library-insert-line';
@@ -122,6 +134,7 @@ export function createDragReorder({
       d.dropElem?.classList.remove('drop');
       d.dropElem = elem;
       d.dropElem?.classList.add('drop');
+      d.ghost?.classList.toggle('over-drop', !!d.dropElem);
       if (d.line) d.line.style.display = d.dropElem ? 'none' : '';
     }
     d.dropDir = d.dropElem ? (d.dropElem.dataset.dirTarget ?? null) : null;
@@ -205,6 +218,7 @@ export function createDragReorder({
     d.line?.remove();
     d.dropElem?.classList.remove('drop');
     d.cardElem.classList.remove('dragging');
+    surface.classList.remove('card-drag');
     if (d.started) {
       suppressClickUntil = Date.now() + 350;
       if (d.isTouch) {
