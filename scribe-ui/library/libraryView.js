@@ -69,6 +69,12 @@ const LIST_COLUMNS = {
   compact: [{ min: 140 }, { min: 56, def: 80 }, { min: 56, def: 110 }, { min: 56, def: 120 }, { min: 56, def: 120 }],
 };
 
+/**
+ * Column indexes in the order the layout drops them when there is no room left, least useful first.
+ * A page count is the least of these, and Name is absent because it is the column everything else yields to.
+ */
+const COL_DROP_ORDER = { list: [1, 3, 2], compact: [1, 4, 3, 2] };
+
 const SORT_DEFAULT_DIR = {
   name: 1, added: -1, opened: -1, pages: 1, custom: 1,
 };
@@ -151,10 +157,14 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-section-label { font-size: 12px; font-weight: 600; text-transform: uppercase; letter-spacing: 0.05em; opacity: 0.6; margin: 4px 0 10px; }
 .scribe-pdf-viewer .scribe-library-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(170px, 190px)); justify-content: center; gap: 14px; margin-bottom: 22px; position: relative; }
 .scribe-pdf-viewer .scribe-library-card { border: 1px solid color-mix(in srgb, var(--scribe-ink) 14%, transparent); border-radius: 8px; background: var(--scribe-surface); cursor: pointer; overflow: hidden; display: flex; flex-direction: column; position: relative; touch-action: pan-y; user-select: none; }
-.scribe-pdf-viewer .scribe-library-card.dragging { opacity: 0.35; }
-.scribe-library-ghost { position: fixed; z-index: 100; pointer-events: none; transform: scale(1.03); box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35); border-radius: 8px; overflow: hidden; font-size: 14px; color: var(--scribe-ink); }
+/* The lifted item vacates its place rather than being removed, so the slot it held stays open for the length of the drag. */
+.scribe-pdf-viewer .scribe-library-card.dragging, .scribe-pdf-viewer .scribe-library-row.dragging { visibility: hidden; }
+.scribe-library-ghost { position: fixed; z-index: 100; pointer-events: none; box-shadow: 0 12px 28px rgba(0, 0, 0, 0.35); border-radius: 8px; overflow: hidden; font-size: 14px; color: var(--scribe-ink); transition: opacity 0.12s ease; }
+/* Solid over anything that cannot take the file, and see-through only over a folder, whose highlight sits underneath it. */
+.scribe-library-ghost.over-drop { opacity: 0.85; }
 .scribe-pdf-viewer .scribe-library-insert-line { position: absolute; width: 3px; border-radius: 2px; background: var(--scribe-accent); z-index: 5; pointer-events: none; }
-.scribe-pdf-viewer .scribe-library-card:hover, .scribe-pdf-viewer .scribe-library-card:focus-visible { border-color: var(--scribe-accent); outline: none; }
+/* The :where() guard costs no specificity, so suppressing hover mid-drag cannot outrank the selected and drop rules below. */
+.scribe-pdf-viewer .scribe-library-card:hover:where(.scribe-library-surface:not(.card-drag) *), .scribe-pdf-viewer .scribe-library-card:focus-visible { border-color: var(--scribe-accent); outline: none; }
 .scribe-pdf-viewer .scribe-library-card.selected { border-color: var(--scribe-accent); box-shadow: 0 0 0 1px var(--scribe-accent); background: color-mix(in srgb, var(--scribe-accent) 7%, var(--scribe-surface)); }
 .scribe-pdf-viewer .scribe-library-card.context { border-color: var(--scribe-accent); }
 .scribe-pdf-viewer .scribe-library-card .thumb { width: 100%; aspect-ratio: 3 / 4; object-fit: contain; background: color-mix(in srgb, var(--scribe-ink) 5%, var(--scribe-canvas)); display: block; }
@@ -165,7 +175,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-badge.warn { background: #c77d0a; color: #fff; }
 .scribe-pdf-viewer .scribe-library-badge.error { background: #b3372f; color: #fff; }
 .scribe-pdf-viewer .scribe-library-card .actions { position: absolute; top: 6px; right: 6px; display: none; gap: 4px; }
-.scribe-pdf-viewer .scribe-library-card:hover .actions, .scribe-pdf-viewer .scribe-library-card:focus-within .actions { display: flex; }
+.scribe-pdf-viewer .scribe-library-card:hover:where(.scribe-library-surface:not(.card-drag) *) .actions, .scribe-pdf-viewer .scribe-library-card:focus-within .actions { display: flex; }
 .scribe-pdf-viewer .scribe-library-card .actions button { border: none; border-radius: 5px; background: rgba(20, 20, 20, 0.65); color: #fff; cursor: pointer; font-size: 12px; padding: 3px 7px; }
 .scribe-pdf-viewer .scribe-library-body.list-mode { padding: 0; }
 .scribe-pdf-viewer .scribe-library-lhead { position: sticky; top: 0; z-index: 2; display: grid; grid-template-columns: var(--scribe-library-cols, minmax(240px, 1fr) 70px 110px 110px 120px); min-width: min-content; align-items: stretch; height: 30px; padding: 0 8px; border-bottom: 1px solid var(--scribe-line); background: var(--scribe-surface); color: var(--scribe-ink-2); font-size: 12px; font-weight: 600; user-select: none; }
@@ -187,7 +197,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer.scribe-coarse .scribe-library-hres { display: none; }
 .scribe-pdf-viewer .scribe-library-row { display: grid; grid-template-columns: var(--scribe-library-cols, minmax(240px, 1fr) 70px 110px 110px 120px); min-width: min-content; align-items: center; height: 34px; padding: 0 8px; cursor: pointer; border-bottom: 1px solid color-mix(in srgb, var(--scribe-line) 55%, transparent); font-size: 13px; user-select: none; touch-action: pan-y; }
 .scribe-pdf-viewer .scribe-library-row > * { min-width: 0; padding: 0 10px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.scribe-pdf-viewer .scribe-library-row:hover { background: var(--scribe-hover); }
+.scribe-pdf-viewer .scribe-library-row:hover:where(.scribe-library-surface:not(.card-drag) *) { background: var(--scribe-hover); }
 .scribe-pdf-viewer .scribe-library-row.selected { background: var(--scribe-active); box-shadow: inset 2px 0 0 var(--scribe-accent); }
 .scribe-pdf-viewer .scribe-library-row.context { outline: 1px solid var(--scribe-accent); outline-offset: -1px; }
 .scribe-pdf-viewer .scribe-library-row:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: -2px; }
@@ -208,11 +218,14 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-card-wall p { margin: 0 0 20px; opacity: 0.75; line-height: 1.5; }
 .scribe-pdf-viewer .scribe-library-body.results-mode, .scribe-pdf-viewer .scribe-library-body.split-mode { padding: 0; overflow: hidden; display: flex; }
 .scribe-pdf-viewer .scribe-library-body.split-mode .scribe-library-rlist { container-type: inline-size; }
-@container (max-width: 685px) {
-  .scribe-pdf-viewer .scribe-library-lhead, .scribe-pdf-viewer .scribe-library-lhead.cols-cf, .scribe-pdf-viewer .scribe-library-row, .scribe-pdf-viewer .scribe-library-row.cf { grid-template-columns: minmax(120px, 1fr) 70px; }
-  .scribe-pdf-viewer .scribe-library-lhead > :nth-child(n+3), .scribe-pdf-viewer .scribe-library-row > :nth-child(n+3) { display: none; }
-  .scribe-pdf-viewer .scribe-library-hres { display: none; }
-}
+/* Columns the layout dropped to keep the name readable.
+   Their tracks are gone, so the cells have to go with them. */
+.scribe-pdf-viewer .scribe-library-cols-drop-1 .scribe-library-lhead > :nth-child(2), .scribe-pdf-viewer .scribe-library-cols-drop-1 .scribe-library-row > :nth-child(2) { display: none; }
+.scribe-pdf-viewer .scribe-library-cols-drop-2 .scribe-library-lhead > :nth-child(3), .scribe-pdf-viewer .scribe-library-cols-drop-2 .scribe-library-row > :nth-child(3) { display: none; }
+.scribe-pdf-viewer .scribe-library-cols-drop-3 .scribe-library-lhead > :nth-child(4), .scribe-pdf-viewer .scribe-library-cols-drop-3 .scribe-library-row > :nth-child(4) { display: none; }
+.scribe-pdf-viewer .scribe-library-cols-drop-4 .scribe-library-lhead > :nth-child(5), .scribe-pdf-viewer .scribe-library-cols-drop-4 .scribe-library-row > :nth-child(5) { display: none; }
+/* Dividers move width between columns, which is meaningless once the layout is dropping them to fit. */
+.scribe-pdf-viewer .scribe-library-cols-dropped .scribe-library-hres { display: none; }
 .scribe-pdf-viewer .scribe-library-results { flex: 1; display: flex; min-height: 0; min-width: 0; font-size: 13px; }
 .scribe-pdf-viewer .scribe-library-rlist { width: clamp(280px, var(--scribe-library-rlist-w, 400px), calc(100% - 320px)); box-sizing: border-box; flex-shrink: 0; overflow-y: auto; border-right: 1px solid var(--scribe-line); background: var(--scribe-surface); outline: none; }
 .scribe-pdf-viewer .scribe-library-rlist::-webkit-scrollbar { width: 5px; }
@@ -290,7 +303,8 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-card.folder .meta .att.bad, .scribe-pdf-viewer .scribe-library-row.folder .att.bad { color: var(--scribe-danger); }
 .scribe-pdf-viewer .scribe-library-row.folder .roll { color: var(--scribe-ink-3); font-variant-numeric: tabular-nums; font-size: 12.5px; }
 .scribe-pdf-viewer .scribe-library-row.folder .roll.pg { font-size: 13px; }
-.scribe-pdf-viewer .scribe-library-row.folder .cnt { display: inline-flex; align-items: baseline; gap: 5px; color: var(--scribe-ink-3); font-size: 12.5px; flex-shrink: 0; }
+/* The folder name outranks its tally, so the tally gives up all of its width before the name gives up any. */
+.scribe-pdf-viewer .scribe-library-row.folder .cnt { display: inline-flex; align-items: baseline; gap: 5px; color: var(--scribe-ink-3); font-size: 12.5px; flex-shrink: 1000; min-width: 0; overflow: hidden; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-row .fi { width: 18px; height: 18px; color: var(--scribe-ink-2); flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-row.cf .fthumb { width: 40px; height: 52px; display: flex; align-items: center; justify-content: center; color: var(--scribe-ink-2); flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-row.cf .fthumb .fi { width: 26px; height: 26px; }
@@ -305,6 +319,8 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-card.other .fthumb .fi { width: 46px; height: 46px; }
 .scribe-pdf-viewer .scribe-library-row.other { cursor: default; opacity: .55; }
 .scribe-pdf-viewer .scribe-library-row.other:hover { background: none; }
+/* Placed after the inert-item rungs above so a live drag still reads as a drag over them. */
+.scribe-pdf-viewer .scribe-library-surface.card-drag, .scribe-pdf-viewer .scribe-library-surface.card-drag * { cursor: grabbing; }
 /* Keep these rungs last in the stylesheet, since a base rule declared later out-cascades one at equal specificity. */
 .scribe-pdf-viewer .scribe-library-pv-head { container: scribe-pv / inline-size; }
 /* A pane dragged toward its 320px minimum would otherwise push Close past the right edge. */
@@ -386,6 +402,10 @@ export function installLibrary(viewer) {
   let colDragActive = false;
   let colRenderPending = false;
   let colSuppressClickUntil = 0;
+  /** @type {?ResizeObserver} Repaints the list columns when the panel around them changes width. */
+  let colsObserver = null;
+  let colSettleTimer = 0;
+  let colProjectRaf = 0;
   let filterText = '';
   /** Directory shown while browsing, relative to the library root; '' is the root itself. */
   let currentDir = '';
@@ -881,6 +901,8 @@ export function installLibrary(viewer) {
     // A rebuild would tear down a mounted rename editor mid-typing.
     // Every editor exit ends in a render, so nothing is lost by skipping this one.
     if (renameEditing) return;
+    // A settle pending from the outgoing list would commit its layout onto whatever mode renders next.
+    window.clearTimeout(colSettleTimer);
     closeCardMenu();
     syncCrumbs();
     // The retained results view snapshots its scroll state before the detach below, so a reattach can restore it.
@@ -2095,6 +2117,21 @@ export function installLibrary(viewer) {
       } catch { /* localStorage unavailable. */ }
     };
     const availCols = () => host.clientWidth - 16;
+    /** @type {?number[]} The widths currently on screen. */
+    let colLaid = null;
+    /** @type {?number[]} Content widths per column. */
+    let colFits = null;
+    /** @type {Set<number>} Columns dropped because showing them would have cost the name its width. */
+    let colHidden = new Set();
+    /** Width the middle row's name needs. */
+    let colNameTypical = 0;
+    const applyCols = (eff) => {
+      colLaid = eff;
+      host.style.setProperty('--scribe-library-cols', eff.filter((n, j) => !colHidden.has(j)).map((n) => `${n}px`).join(' '));
+      for (let j = 1; j < cols.length; j++) host.classList.toggle(`scribe-library-cols-drop-${j}`, colHidden.has(j));
+      host.classList.toggle('scribe-library-cols-dropped', colHidden.size > 0);
+      [...head.children].forEach((cell, j) => cell.querySelector('.scribe-library-hres')?.setAttribute('aria-valuenow', String(eff[j])));
+    };
     /**
      * Lay the stored widths out across the visible width.
      * The result always adds up to it exactly, so nothing can scroll sideways.
@@ -2107,6 +2144,7 @@ export function installLibrary(viewer) {
       const stored = colWidths[viewMode];
       if (!stored || avail <= 0) {
         host.style.removeProperty('--scribe-library-cols');
+        colLaid = null;
         return null;
       }
       const eff = stored.map((n, j) => Math.max(cols[j].min, Math.round(n)));
@@ -2121,9 +2159,104 @@ export function installLibrary(viewer) {
           diff -= give;
         }
       }
-      host.style.setProperty('--scribe-library-cols', eff.map((n) => `${n}px`).join(' '));
-      [...head.children].forEach((cell, j) => cell.querySelector('.scribe-library-hres')?.setAttribute('aria-valuenow', String(eff[j])));
+      applyCols(eff);
       return eff;
+    };
+    // Each row is its own grid, so all of them have to be read.
+    const measureFits = () => {
+      // A cell left hidden by the previous pass measures zero, so every column has to be on screen before reading.
+      colHidden = new Set();
+      for (let j = 1; j < cols.length; j++) host.classList.remove(`scribe-library-cols-drop-${j}`);
+      host.classList.remove('scribe-library-cols-dropped');
+      host.style.setProperty('--scribe-library-cols', cols.map(() => 'max-content').join(' '));
+      const fit = cols.map(() => 0);
+      const measure = (rowEl) => [...rowEl.children].forEach((cell, j) => {
+        fit[j] = Math.max(fit[j], cell.getBoundingClientRect().width);
+      });
+      measure(head);
+      const nameWidths = [];
+      for (const row of rows.children) {
+        measure(row);
+        nameWidths.push(row.children[0].getBoundingClientRect().width);
+      }
+      // The widest name is one outlier away from being useless as a threshold, so the middle one stands in for the rows.
+      nameWidths.sort((a, b) => a - b);
+      colNameTypical = nameWidths.length ? Math.ceil(nameWidths[Math.floor(nameWidths.length / 2)]) : 0;
+      return fit.map(Math.ceil);
+    };
+    /**
+     * Fit the stored widths to the visible width outside a drag.
+     * Extra room first restores columns squeezed below their content width, rightmost first, and the rest goes to Name.
+     * A shortfall comes out of the whitespace each column holds above its content, in proportion to how much that is.
+     * When that is not enough, whole columns are dropped rather than the name being cut.
+     * @param {number} avail
+     * @returns {?number[]} The widths as laid out.
+     */
+    const projectCols = (avail) => {
+      const stored = colWidths[viewMode];
+      if (!stored || avail <= 0) {
+        host.style.removeProperty('--scribe-library-cols');
+        colLaid = null;
+        return null;
+      }
+      colHidden = new Set();
+      const eff = stored.map((n, j) => Math.max(cols[j].min, Math.round(n)));
+      let diff = avail - eff.reduce((sum, n) => sum + n, 0);
+      if (diff !== 0 && !colFits) colFits = measureFits();
+      const fits = colFits;
+      if (diff > 0 && fits) {
+        for (let j = eff.length - 1; j >= 1 && diff > 0; j--) {
+          const give = Math.min(diff, Math.max(0, fits[j] - eff[j]));
+          eff[j] += give;
+          diff -= give;
+        }
+      }
+      if (diff > 0) {
+        eff[0] += diff;
+      } else if (diff < 0) {
+        let need = -diff;
+        // A column showing a two-digit page count holds far more whitespace than a title that is already clipped, so spend whitespace before anything truncates.
+        const air = eff.map((n, j) => (fits ? Math.max(0, n - Math.max(cols[j].min, fits[j])) : 0));
+        const airTotal = air.reduce((sum, n) => sum + n, 0);
+        if (airTotal > 0) {
+          const spend = Math.min(need, airTotal);
+          let acc = 0;
+          let spent = 0;
+          for (let j = 0; j < eff.length; j++) {
+            acc += air[j];
+            const give = Math.min(air[j], Math.round((acc * spend) / airTotal) - spent);
+            eff[j] -= give;
+            spent += give;
+          }
+          need -= spent;
+        }
+        // A page count squeezed to a stub is worth less than the name it would cost, so drop it whole instead.
+        for (const j of COL_DROP_ORDER[viewMode]) {
+          if (need <= 0) break;
+          colHidden.add(j);
+          need -= eff[j];
+          eff[j] = 0;
+        }
+        // A drop usually frees more than was needed, and the name is where the surplus belongs.
+        eff[0] = Math.max(cols[0].min, eff[0] - need);
+      }
+      // A page count is worth less than the name text it displaces even when it fits, so it also goes once half the names are cut off.
+      if (fits && !colHidden.has(1) && eff[0] < colNameTypical) {
+        colHidden.add(1);
+        eff[0] += eff[1];
+        eff[1] = 0;
+      }
+      applyCols(eff);
+      return eff;
+    };
+    // A squeeze must not rewrite what the reader chose, so only growth settles into the stored widths.
+    const settleColsIfGrown = () => {
+      const stored = colWidths[viewMode];
+      if (!stored || !colSized[viewMode] || !colLaid || colDragActive || colHidden.size) return;
+      if (colLaid.reduce((sum, n) => sum + n, 0) >= stored.reduce((sum, n) => sum + n, 0)) {
+        colWidths[viewMode] = colLaid.slice();
+        saveCols();
+      }
     };
     /**
      * Resize column `i` to `px`.
@@ -2190,6 +2323,8 @@ export function installLibrary(viewer) {
       handle.addEventListener('pointerdown', (e) => {
         if (e.button !== 0 || !colWidths[viewMode]) return;
         e.preventDefault();
+        // The screen can sit below the stored widths, so a drag re-anchors them to what the reader sees.
+        if (colLaid) colWidths[viewMode] = colLaid.slice();
         const startX = e.clientX;
         const startW = cell.getBoundingClientRect().width;
         const avail = availCols();
@@ -2219,8 +2354,9 @@ export function installLibrary(viewer) {
         window.addEventListener('pointercancel', onUp);
       });
       handle.addEventListener('dblclick', () => {
+        if (!colWidths[viewMode]) return;
+        if (colLaid) colWidths[viewMode] = colLaid.slice();
         const w = colWidths[viewMode];
-        if (!w) return;
         // Each row is its own grid, so all of them have to be read.
         const probe = w.map((n, j) => (j === i ? 'max-content' : `${n}px`));
         host.style.setProperty('--scribe-library-cols', probe.join(' '));
@@ -2236,8 +2372,9 @@ export function installLibrary(viewer) {
       handle.addEventListener('keydown', (e) => {
         if (e.key !== 'ArrowLeft' && e.key !== 'ArrowRight') return;
         e.preventDefault();
+        if (!colWidths[viewMode]) return;
+        if (colLaid) colWidths[viewMode] = colLaid.slice();
         const w = colWidths[viewMode];
-        if (!w) return;
         setW(w[i] + (e.key === 'ArrowRight' ? 1 : -1) * (e.shiftKey ? 4 : 16));
         commitCols(availCols());
         saveCols();
@@ -2272,13 +2409,26 @@ export function installLibrary(viewer) {
     // Measure the scrolling host, never the header, which reports its own overflow once it carries wide tracks.
     const avail = availCols();
     if (avail > 0 && (!colSized[viewMode] || !colWidths[viewMode])) {
-      // An untouched table is fitted from the defaults every render, so it stays flush through window resizes and through opening the preview pane beside it.
-      const rest = cols.slice(1).reduce((sum, c) => sum + c.def, 0);
-      colWidths[viewMode] = [Math.max(cols[0].min, Math.round(avail - rest)), ...cols.slice(1).map((c) => c.def)];
+      // A flat default hands a one-to-three-digit page count the same width as a date, so the data columns are sized to their own content instead.
+      if (!colFits) colFits = measureFits();
+      const rest = cols.slice(1).map((c, j) => (colFits ? Math.max(c.min, colFits[j + 1]) : c.def));
+      colWidths[viewMode] = [Math.max(cols[0].min, Math.round(avail - rest.reduce((sum, n) => sum + n, 0))), ...rest];
     }
-    // Name is where a reader wants a window resize to land, so it takes the difference outside a drag.
-    const laid = paintCols(avail, 0);
-    if (laid) colWidths[viewMode] = laid;
+    projectCols(avail);
+    settleColsIfGrown();
+    // The sash and the window resize without a render, so width changes reach the columns through this observer.
+    colsObserver?.disconnect();
+    colsObserver = new ResizeObserver(() => {
+      if (colDragActive) return;
+      // Painting inside the observer callback re-triggers it in the same delivery, which the browser reports as a resize-loop error.
+      cancelAnimationFrame(colProjectRaf);
+      colProjectRaf = requestAnimationFrame(() => {
+        if (!colDragActive) projectCols(availCols());
+      });
+      window.clearTimeout(colSettleTimer);
+      colSettleTimer = window.setTimeout(settleColsIfGrown, 250);
+    });
+    colsObserver.observe(host);
     if (listPane) {
       const entry = listPreviewPath && manifest ? manifest.docs[listPreviewPath] : null;
       if (entry && listPreviewPath) {
@@ -2506,6 +2656,7 @@ export function installLibrary(viewer) {
 
   const drag = createDragReorder({
     viewer,
+    surface,
     body,
     selectedPaths,
     getManifest: () => manifest,
@@ -2947,6 +3098,9 @@ export function installLibrary(viewer) {
       ingest?.cancel();
       resizeObserver.disconnect();
       hintObserver.disconnect();
+      colsObserver?.disconnect();
+      window.clearTimeout(colSettleTimer);
+      cancelAnimationFrame(colProjectRaf);
       window.clearInterval(autosaveTimer);
       window.clearInterval(warmTimer);
       if (ingestRenderTimer !== null) {
