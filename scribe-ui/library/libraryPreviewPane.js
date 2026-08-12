@@ -583,7 +583,7 @@ export function createPreviewPanes({
       pvHost.style.display = '';
       if (!paneViewer) {
         paneViewer = new /** @type {any} */ (viewer.constructor)(pvHost, {
-          edit: false, showToolbar: false, showDropZone: false, showThumbnails: false, fit: 'width',
+          edit: false, showToolbar: false, showDropZone: false, showSidebar: false, fit: 'width',
         });
         // The pane must never compete with the main viewer for canvas memory.
         /** @type {NonNullable<typeof paneViewer>} */ (paneViewer).scribe.imageCache.canvasCacheBytes = 64 * 1024 * 1024;

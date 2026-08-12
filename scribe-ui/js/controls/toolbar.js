@@ -2651,8 +2651,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     }
 
     /* Mirrors the thumbnail panel's dock geometry, chrome, and slide: the two form one sidebar. */
-    /* Unified sidebar mode: one toolbar button opens the sidebar and this strip picks the view, so the per-view toolbar toggles leave the bar. */
-    .${r}.scribe-unified-sidebar .scribe-view-toggle { display: none; }
+    /* One toolbar button opens the sidebar, and this strip picks which view it shows. */
 
     /* A desktop shell whose native menus carry the app commands hides the in-window menu button.
        Hidden by class rather than inline style, because the library's bar swap snapshots and restores inline display and would resurface it. */
@@ -3659,13 +3658,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r} .scribe-mode-banner-run:disabled { color: var(--scribe-ink-3); border-color: var(--scribe-line-strong); cursor: default; }
     .${r} .scribe-mode-banner-run.busy { opacity: .6; pointer-events: none; }
 
-    .${r} .scribe-mode-tray {
-      height: 40px; box-sizing: border-box; display: none; align-items: center; justify-content: center; gap: 4px;
-      background: var(--scribe-surface); border-bottom: 1px solid var(--scribe-line); position: relative; z-index: 9;
-    }
-    .${r} .scribe-mode-tray.on { display: flex; }
-
-    /* The desktop layout's mode drop-down: the sidebar strip's material at bar scale. */
+    /* The mode drop-down: the sidebar strip's material at bar scale. */
     .${r} .scribe-mode-track-wrap { position: relative; display: inline-flex; }
     .${r} .scribe-mode-track-el {
       display: inline-flex; align-items: stretch; height: 28px; box-sizing: border-box;

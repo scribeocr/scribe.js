@@ -710,7 +710,6 @@ export function installLibrary(viewer) {
     updateChrome();
     viewer._exclusiveToolBtns?.find((b) => b.classList.contains('active'))?.click();
     viewer._searchBar?.closeSearch();
-    viewer._setModeTrayOpen?.(false);
     swapBarIn();
     viewer._tabStrip?.setPinnedActive(true);
     surface.style.display = 'flex';
