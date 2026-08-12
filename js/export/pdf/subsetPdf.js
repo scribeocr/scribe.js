@@ -309,6 +309,8 @@ function replacePageResources(pageObjText, newResourcesDictText) {
  *    Rects are in the source page's user space.
  * @param {?Map<number, Array<[number, number, number, number]>>} [params.textEditRegionsByPage=null] - Per-page user-space rects whose glyphs are removed (native-text edits).
  *    Paths, images, and annotations under the rects are untouched, and no box is painted.
+ * @param {?Map<number, {rects: Array<[number, number, number, number]>, pts: Array<{u: ?string, x: number, y: number, f: ?number}>, tol: number}>} [params.textEditGatedByPage=null]
+ *    Per-page identity-gated edit rects: a rect removes only glyphs matching the deleted text's identities.
  * @param {?Map<number, Array<{rects: Array<[number, number, number, number]>, body: string, placed: boolean}>>} [params.textEditInsertsByPage=null]
  *    Per-page replacement blocks for replaceText records, spliced in where their glyphs are dropped.
  * @param {?Map<number, Map<string, number>>} [params.editFontRefsByPage=null] - Per-page `/EDFn` font resource entries the inserts draw with.
@@ -337,6 +339,7 @@ export async function rebuildPdfSubset({
   scrub = null,
   redactRegionsByPage = null,
   textEditRegionsByPage = null,
+  textEditGatedByPage = null,
   textEditInsertsByPage = null,
   editFontRefsByPage = null,
   editFontObjects = null,
@@ -348,11 +351,12 @@ export async function rebuildPdfSubset({
   let nextObjNum = startingNextObjNum;
   const redactByPage = redactRegionsByPage || new Map();
   const textEditByPage = textEditRegionsByPage || new Map();
+  const textEditGated = textEditGatedByPage || new Map();
   // The redaction and text-edit machinery lives in the overlay page loop below, so without overlay data the marked content would pass through verbatim.
   if (redactByPage.size > 0 && !overlayEnabled) {
     throw new Error('Cannot apply redactions: rebuild was invoked without page overlay data.');
   }
-  if (textEditByPage.size > 0 && !overlayEnabled) {
+  if ((textEditByPage.size > 0 || textEditGated.size > 0) && !overlayEnabled) {
     throw new Error('Cannot apply text edits: rebuild was invoked without page overlay data.');
   }
   if (flattenFormFields && !overlayEnabled) {
@@ -396,7 +400,7 @@ export async function rebuildPdfSubset({
   const { id0Hex: sourceId0Hex } = parseTrailerInfo(text, findXrefOffset(pdfBytes));
 
   // The structure tree can duplicate page text in /ActualText, so carrying it over would expose redacted or pre-edit text.
-  if ((redactByPage.size > 0 || textEditByPage.size > 0 || (textEditInsertsByPage?.size ?? 0) > 0)
+  if ((redactByPage.size > 0 || textEditByPage.size > 0 || textEditGated.size > 0 || (textEditInsertsByPage?.size ?? 0) > 0)
     && catalogKeep.some((k) => k.name === 'StructTreeRoot' || k.name === 'MarkInfo')) {
     catalogKeep = catalogKeep.filter((k) => k.name !== 'StructTreeRoot' && k.name !== 'MarkInfo');
     if (typeof warningHandler === 'function') {
@@ -414,7 +418,7 @@ export async function rebuildPdfSubset({
   // Pages listed in `convertFullPages` are flattened (whole-page text-to-paths).
   const fullPageSet = new Set(convertFullPages || []);
   const conversionState = (regionsByPage.size > 0 || convertBrokenType3ToPaths || redactByPage.size > 0 || textEditByPage.size > 0
-    || (textEditInsertsByPage?.size ?? 0) > 0)
+    || textEditGated.size > 0 || (textEditInsertsByPage?.size ?? 0) > 0)
     ? createConversionState() : null;
 
   const { pageTreeObjNums } = collectPageTreeObjNums(objCache);
@@ -603,7 +607,7 @@ export async function rebuildPdfSubset({
       // Region conversion (`convertRegionsToPaths`), full-page flatten, and broken-Type3 all convert text to paths without an overlay text layer, so this gate must stay independent of `hasText`.
       const hasConvert = convertBrokenType3ToPaths || fullPageSet.has(i) || regionsByPage.has(i);
       const hasRedact = redactByPage.has(i);
-      const hasTextEdits = textEditByPage.has(i) || !!textEditInsertsByPage?.has(i);
+      const hasTextEdits = textEditByPage.has(i) || textEditGated.has(i) || !!textEditInsertsByPage?.has(i);
       if (!hasText && !hasAnnots && !hasConvert && !hasRedact && !hasTextEdits && !hasFill && !hasWidgetBake) continue;
 
       /** @type {string[]|null} */
@@ -629,6 +633,7 @@ export async function rebuildPdfSubset({
           convertBrokenType3ToPaths,
           redactBboxes: redactByPage.get(i) || null,
           textEditBboxes: textEditByPage.get(i) || null,
+          textEditGated: textEditGated.get(i) || null,
           textEditInserts: textEditInsertsByPage?.get(i) || null,
         });
 

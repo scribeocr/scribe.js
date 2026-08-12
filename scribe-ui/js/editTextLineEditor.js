@@ -6,7 +6,7 @@ import { ensureGlyphSetForText } from '../../js/fontContainerMain.js';
 import ocr from '../../js/objects/ocrObjects.js';
 import { resolveReplacementChar } from '../../js/pdf/glyphResolve.js';
 import {
-  wordBandRect, nativeTextForPage, FAUX_BOLD_STROKE_EM, FAUX_OBLIQUE_SKEW,
+  wordBandRect, nativeTextForPage, glyphIdentitiesForWords, FAUX_BOLD_STROKE_EM, FAUX_OBLIQUE_SKEW,
 } from '../../js/textEdits.js';
 
 /** @typedef {import('../../js/objects/ocrObjects.js').OcrLine} OcrLine */
@@ -1166,7 +1166,9 @@ export function createLineEditor(scribe, { onCommitted } = {}) {
     if (openOpts.caretEnd) st.caret = origText.length;
 
     const rects = line.words.map((w) => wordBandRect(w.bbox, w.chars, orientation, dims));
-    scribe.doc.images.setEphemeralEditRects(n, rects);
+    // The open line's identities keep the ephemeral suppression from blanking visually-overlapping other text.
+    const glyphs = glyphIdentitiesForWords(nativeTextForPage(scribe.doc, line.page), line.words, orientation, dims);
+    scribe.doc.images.setEphemeralEditRects(n, rects, glyphs);
     scribe.refreshPageRaster(n);
 
     document.addEventListener('pointerdown', onDocPointerdown, true);

@@ -52,29 +52,124 @@ export function wordBandRect(b, chars, orientation, dims) {
 }
 
 /**
- * Finds words on lines not in `excludeLines` whose middle band sits on any of `rects`.
- * Some producers draw a row twice, e.g. a visible layer plus an alpha-0 duplicate.
- * The exported PDF drops the duplicate's glyphs via the same rects, so the duplicate words must be deleted as well or the app keeps finding text the export no longer contains.
+ * Map a local-frame point to page space.
+ * @param {number} x
+ * @param {number} y
+ * @param {number} o - Line orientation (quarter-turns).
+ * @param {{width: number, height: number}} dims
+ */
+const localPointToPageSpace = (x, y, o, dims) => (o === 1 ? { x: dims.width - y, y: x }
+  : o === 2 ? { x: dims.width - x, y: dims.height - y }
+    : o === 3 ? { x: y, y: dims.height - x } : { x, y });
+
+/**
+ * Build the glyph identities a delete/replace record carries for `words`, in page space.
+ * Record-drawn words have no pen origins, so their rounded char-box lefts stand in within the strike tolerance.
+ * @param {Record<string, NativeTextWord>} nt - The page's native-text entries.
+ * @param {Array<OcrWord>} words
+ * @param {number} orientation - The words' line orientation.
+ * @param {{width: number, height: number}} dims
+ * @returns {Array<TextEditGlyphWord>}
+ */
+export function glyphIdentitiesForWords(nt, words, orientation, dims) {
+  /** @type {Array<TextEditGlyphWord>} */
+  const out = [];
+  for (const w of words) {
+    const e = nt[w.id];
+    const chars = w.chars && w.chars.length > 0 ? w.chars.map((c) => c.text) : [w.text];
+    const penX = e?.penX && e.penX.length === chars.length
+      ? e.penX
+      : (w.chars && w.chars.length > 0 ? w.chars.map((c) => c.bbox.left) : [w.bbox.left]);
+    const baseY = e?.baselineY ?? w.bbox.bottom;
+    /** @type {TextEditGlyphWord} */
+    const gw = {
+      chars, x: [], y: [],
+    };
+    for (const px of penX) {
+      const p = localPointToPageSpace(px, baseY, orientation, dims);
+      gw.x.push(p.x);
+      gw.y.push(p.y);
+    }
+    if (e && Number.isFinite(e.fontObjNum)) gw.fontObjNum = e.fontObjNum;
+    out.push(gw);
+  }
+  return out;
+}
+
+/**
+ * Finds coincident twin words on lines not in `excludeLines`.
+ * A twin's middle band sits on one of `rects` and its text is a degraded copy of the deleted text at that spot.
+ * Some producers draw a row twice: a visible layer plus an alpha-0 duplicate, a faux-bold second pass, or white text-shadow halo copies.
+ * The exported PDF drops the twin's glyphs via the deleted text's identities, so the twin words must be deleted as well or the app keeps finding text the export no longer contains.
  * @param {OcrPage} page
  * @param {Set<OcrLine>} excludeLines
  * @param {Array<bbox>} rects - Page-space delete rects.
- * @returns {Array<{line: OcrLine, ids: Array<string>, boxes: Array<bbox>}>}
+ * @param {Array<TextEditGlyphWord>} deletedGlyphs - Page-space identities of the deleted words.
+ * @param {Record<string, NativeTextWord>} ntPage - The page's native-text entries, for candidate baselines.
+ * @returns {Array<{line: OcrLine, ids: Array<string>, boxes: Array<bbox>, words: Array<OcrWord>}>}
  */
-function findSuperimposedWords(page, excludeLines, rects) {
-  /** @type {Array<{line: OcrLine, ids: Array<string>, boxes: Array<bbox>}>} */
+function findSuperimposedWords(page, excludeLines, rects, deletedGlyphs, ntPage) {
+  const foldChar = (s) => ocr.replaceLigatures(s).toLowerCase().replace(/[^a-z0-9]/g, '');
+  /** @type {Array<{u: string, x: number, y: number}>} */
+  const delChars = [];
+  for (const gw of deletedGlyphs) {
+    for (let i = 0; i < gw.chars.length; i++) delChars.push({ u: foldChar(gw.chars[i]), x: gw.x[i], y: gw.y[i] });
+  }
+  delChars.sort((a, b) => a.x - b.x);
+  const isSubseq = (/** @type {string} */ a, /** @type {string} */ b) => {
+    let i = 0;
+    for (const c of b) { if (c === a[i]) i += 1; if (i === a.length) return true; }
+    return a.length === 0;
+  };
+  const PAD = 40;
+  /** @type {Array<{line: OcrLine, ids: Array<string>, boxes: Array<bbox>, words: Array<OcrWord>}>} */
   const hits = [];
   for (const other of page.lines) {
     if (excludeLines.has(other)) continue;
-    /** @type {?{line: OcrLine, ids: Array<string>, boxes: Array<bbox>}} */
+    /** @type {?{line: OcrLine, ids: Array<string>, boxes: Array<bbox>, words: Array<OcrWord>}} */
     let entry = null;
     for (const w of other.words) {
       const band = wordBandRect(w.bbox, w.chars, other.orientation, page.dims);
       const hit = rects.some((r) => Math.min(band.bottom, r.bottom) > Math.max(band.top, r.top)
         && Math.min(band.right, r.right) - Math.max(band.left, r.left) >= 0.6 * (band.right - band.left));
-      if (hit) {
-        entry ??= { line: other, ids: [], boxes: [] };
+      if (!hit) continue;
+      const box = bboxToPageSpace(w.bbox, other.orientation, page.dims);
+      const size = w.style.size || Math.abs(w.bbox.bottom - w.bbox.top);
+      const baseTol = Math.max(3, 0.5 * size);
+      const localBaseY = ntPage[w.id]?.baselineY ?? w.bbox.bottom;
+      const baseY = localPointToPageSpace(w.bbox.left, localBaseY, other.orientation, page.dims).y;
+      const windowChars = delChars.filter((c) => c.x >= box.left - PAD && c.x <= box.right + PAD && Math.abs(c.y - baseY) <= baseTol);
+      let twin = false;
+      if (windowChars.length > 0) {
+        const wCharList = w.chars && w.chars.length > 0 ? w.chars : null;
+        if (wCharList) {
+          // A coincident twin sits at the same draw position, so both axes use the tight tolerance.
+          // The loose `baseTol` above only pre-filters the window for the subsequence branch.
+          let anyAlnum = false;
+          twin = wCharList.every((c) => {
+            const u = foldChar(c.text);
+            if (u.length === 0) return true;
+            anyAlnum = true;
+            const cp = localPointToPageSpace(c.bbox.left, localBaseY, other.orientation, page.dims);
+            return windowChars.some((d) => d.u === u && Math.abs(d.x - cp.x) <= 3.5 && Math.abs(d.y - cp.y) <= 3.5);
+          }) && anyAlnum;
+        }
+        if (!twin) {
+          const winText = windowChars.map((c) => c.u).join('');
+          const wText = foldChar(w.text);
+          if (wText.length >= 3) {
+            const [lo, hi] = wText.length <= winText.length ? [wText, winText] : [winText, wText];
+            twin = isSubseq(lo, hi);
+          }
+        }
+      }
+      if (twin) {
+        entry ??= {
+          line: other, ids: [], boxes: [], words: [],
+        };
         entry.ids.push(w.id);
-        entry.boxes.push(bboxToPageSpace(w.bbox, other.orientation, page.dims));
+        entry.boxes.push(box);
+        entry.words.push(w);
       }
     }
     if (entry) hits.push(entry);
@@ -180,36 +275,45 @@ export function deleteTextLines(doc, lines) {
     const lineSnaps = [];
     /** @type {Array<bbox>} */
     const deletedWordBoxes = [];
+    /** @type {Array<TextEditGlyphWord>} */
+    const glyphs = [];
+    const nt = nativeTextForPage(doc, page);
     for (const line of pageLines) {
       for (const w of line.words) {
         rects.push(wordBandRect(w.bbox, w.chars, line.orientation, page.dims));
         wordIds.push(w.id);
         deletedWordBoxes.push(bboxToPageSpace(w.bbox, line.orientation, page.dims));
       }
+      glyphs.push(...glyphIdentitiesForWords(nt, line.words, line.orientation, page.dims));
       lineSnaps.push({ index: page.lines.indexOf(line), snap: snapshotLine(line) });
     }
-    // A removed replaceText record's rects fold into this delete record so the stream glyphs the replace had suppressed stay suppressed.
+    // A removed replaceText record's rects and glyph identities fold into this delete record so the stream glyphs the replace had suppressed stay suppressed.
     /** @type {Array<{index: number, record: TextEdit}>} */
     const replacedRecords = [];
     const backing = backingRecordByWordId(doc.textEdits.pages[n]);
     const backingIds = new Set();
     for (const line of pageLines) for (const w of line.words) { const rid = backing.get(w.id); if (rid) backingIds.add(rid); }
+    // Folding a legacy record (no identities) forces the merged record geometric, or its rects would stop striking anything.
+    let carriedLegacy = false;
     if (backingIds.size > 0 && doc.textEdits.pages[n]) {
       const recs = doc.textEdits.pages[n];
       for (let ri = recs.length - 1; ri >= 0; ri--) {
         if (backingIds.has(recs[ri].id)) {
           replacedRecords.push({ index: ri, record: recs[ri] });
           for (const r of recs[ri].rects || []) rects.push(r);
+          if (recs[ri].glyphs) glyphs.push(...recs[ri].glyphs);
+          else carriedLegacy = true;
           recs.splice(ri, 1);
         }
       }
       replacedRecords.reverse();
     }
-    const twins = findSuperimposedWords(page, new Set(pageLines), rects);
+    const twins = findSuperimposedWords(page, new Set(pageLines), rects, glyphs, nt);
     for (const t of twins) {
       lineSnaps.push({ index: page.lines.indexOf(t.line), snap: snapshotLine(t.line) });
       wordIds.push(...t.ids);
       deletedWordBoxes.push(...t.boxes);
+      glyphs.push(...glyphIdentitiesForWords(nt, t.words, t.line.orientation, page.dims));
     }
     const annots = removeMarkupOnBoxes(doc, n, deletedWordBoxes);
     // Ascending order so undo can re-splice at the recorded indices left to right.
@@ -218,6 +322,7 @@ export function deleteTextLines(doc, lines) {
     const record = {
       type: 'deleteText', id: getRandomAlphanum(10), groupId, rects,
     };
+    if (!carriedLegacy) record.glyphs = glyphs;
     if (!doc.textEdits.pages[n]) doc.textEdits.pages[n] = [];
     doc.textEdits.pages[n].push(record);
     ocr.deletePageWords(page, wordIds.slice());
@@ -334,6 +439,7 @@ export async function replaceTextLine(doc, line, newText, opts) {
   const oldBoxes = lineSnaps[0].snap.words.map((w) => w.bbox);
   // Anchoring redraws to the rounded bbox left instead of the exact penX shifts glyphs by up to half a pixel.
   const wordPenLeft = (idx) => nt[lineSnaps[0].snap.words[idx].id]?.penX?.[0] ?? oldBoxes[idx].left;
+  const oldIdentities = lineSnaps[0].snap.words.map((w) => glyphIdentitiesForWords(nt, [w], o, dims)[0]);
 
   /** @type {Array<TextEditRun>} */
   const runs = [];
@@ -604,16 +710,25 @@ export async function replaceTextLine(doc, line, newText, opts) {
   const replacedRecords = [];
   /** @type {Array<bbox>} */
   const carriedRects = [];
+  /** @type {Array<TextEditGlyphWord>} */
+  const recordGlyphs = [];
+  // Folding a legacy record (no identities) forces the merged record geometric, or its rects would stop striking anything.
+  let carriedLegacy = false;
   if (priorBackingIds.size > 0 && doc.textEdits.pages[n]) {
     const recs = doc.textEdits.pages[n];
     for (let ri = recs.length - 1; ri >= 0; ri--) {
       if (priorBackingIds.has(recs[ri].id)) {
         replacedRecords.push({ index: ri, record: recs[ri] });
         for (const r of recs[ri].rects || []) carriedRects.push(r);
+        if (recs[ri].glyphs) recordGlyphs.push(...recs[ri].glyphs);
+        else carriedLegacy = true;
         recs.splice(ri, 1);
       }
     }
     replacedRecords.reverse();
+  }
+  for (let m = rs; m < redrawOldEndFinal; m++) {
+    if (!backing.has(lineSnaps[0].snap.words[m].id)) recordGlyphs.push(oldIdentities[m]);
   }
 
   line.words = [...oldWords.slice(0, rs), ...redrawnWords, ...(realigned ? oldWords.slice(realignStartOld) : [])];
@@ -621,6 +736,7 @@ export async function replaceTextLine(doc, line, newText, opts) {
   ocr.updateLineBbox(line);
 
   // Runs are empty only when the new text is a strict word-prefix of the old, i.e. the edit is a pure tail deletion.
+  /** @type {TextEdit} */
   const record = runs.length > 0
     ? {
       type: 'replaceText', id: recordId, groupId, rects: [...carriedRects, ...newBands], runs, wordIds: redrawnWords.map((w) => w.id),
@@ -628,16 +744,18 @@ export async function replaceTextLine(doc, line, newText, opts) {
     : {
       type: 'deleteText', id: recordId, groupId, rects: [...carriedRects, ...newBands],
     };
+  if (!carriedLegacy) record.glyphs = recordGlyphs;
   if (!doc.textEdits.pages[n]) doc.textEdits.pages[n] = [];
   doc.textEdits.pages[n].push(record);
 
   /** @type {Array<string>} */
   const twinIds = [];
-  const twins = findSuperimposedWords(page, new Set([line]), newBands);
+  const twins = findSuperimposedWords(page, new Set([line]), newBands, recordGlyphs, doc.nativeText.pages[n] || {});
   for (const t of twins) {
     lineSnaps.push({ index: page.lines.indexOf(t.line), snap: snapshotLine(t.line) });
     twinIds.push(...t.ids);
     removedWordBoxes.push(...t.boxes);
+    recordGlyphs.push(...glyphIdentitiesForWords(doc.nativeText.pages[n] || {}, t.words, t.line.orientation, page.dims));
   }
   if (twinIds.length > 0) ocr.deletePageWords(page, twinIds.slice());
   const annots = removeMarkupOnBoxes(doc, n, removedWordBoxes);

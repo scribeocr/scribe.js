@@ -299,18 +299,20 @@ export class ImageStore {
   /**
    * Render-only suppression rects, keyed by display slot.
    * The viewer's line editor sets them while it is open so the raster stops drawing the line being edited.
-   * @type {Map<number, Array<bbox>>}
+   * @type {Map<number, {rects: Array<bbox>, glyphs: ?Array<TextEditGlyphWord>}>}
    */
   #ephemeralEditRects = new Map();
 
   /**
    * Set the ephemeral suppression rects for display slot `n`.
    * The caller re-renders the page raster to apply them.
+   * With `glyphs`, the rects suppress only the open line's own glyphs, so overlapping other-layer text keeps drawing while the editor is open.
    * @param {number} n - Page number
    * @param {?Array<bbox>} rects
+   * @param {?Array<TextEditGlyphWord>} [glyphs]
    */
-  setEphemeralEditRects = (n, rects) => {
-    if (rects && rects.length > 0) this.#ephemeralEditRects.set(n, rects);
+  setEphemeralEditRects = (n, rects, glyphs = null) => {
+    if (rects && rects.length > 0) this.#ephemeralEditRects.set(n, { rects, glyphs: glyphs && glyphs.length > 0 ? glyphs : null });
     else this.#ephemeralEditRects.delete(n);
   };
 
@@ -327,13 +329,19 @@ export class ImageStore {
     // The editor draws the edited line's text live, so keeping an overlapping replacement's runs would draw it twice.
     const all = records.map((rec) => {
       if (rec.type !== 'replaceText') return rec;
-      const covered = (rec.rects || []).some((r) => ephemeral.some((e) => r.left < e.right && r.right > e.left && r.top < e.bottom && r.bottom > e.top));
+      const covered = (rec.rects || []).some((r) => ephemeral.rects.some((e) => r.left < e.right && r.right > e.left && r.top < e.bottom && r.bottom > e.top));
       if (!covered) return rec;
-      return {
+      /** @type {TextEditDelete} */
+      const asDelete = {
         type: 'deleteText', id: rec.id, groupId: rec.groupId, rects: rec.rects,
       };
+      if (rec.glyphs) asDelete.glyphs = rec.glyphs;
+      return asDelete;
     });
-    all.push({ type: 'deleteText', id: '_ephemeralLineEdit', rects: ephemeral });
+    /** @type {TextEditDelete} */
+    const ephemeralRec = { type: 'deleteText', id: '_ephemeralLineEdit', rects: ephemeral.rects };
+    if (ephemeral.glyphs) ephemeralRec.glyphs = ephemeral.glyphs;
+    all.push(ephemeralRec);
     return { records: all, dims: { width: dims.width, height: dims.height } };
   };
 

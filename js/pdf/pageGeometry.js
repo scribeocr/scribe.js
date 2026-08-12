@@ -3,6 +3,8 @@
  * A native-text edit or redaction must suppress exactly the same glyphs on screen and in the exported file.
  */
 
+import ocr from '../objects/ocrObjects.js';
+
 /**
  * Map a rect from the page-pixel frame (top-left origin, the frame OCR words and edit records live in) to content-stream user space.
  * Inverts the box-origin + /Rotate transform the importer bakes into its initial CTM.
@@ -49,6 +51,70 @@ export function pagePointToContentPoint(px, py, dims, box, rotate) {
   if (rot === 180) return [contentW + ox - vx, contentH + oy - vy];
   if (rot === 270) return [vy + ox, contentH + oy - vx];
   return [vx + ox, vy + oy];
+}
+
+/**
+ * Normalize one glyph's unicode string for identity comparison.
+ * @param {?string} s
+ * @returns {?string} Null when the string carries no comparable unicode (empty, or Private Use Area).
+ */
+export function foldGlyphText(s) {
+  if (!s) return null;
+  for (const ch of s) {
+    const cp = /** @type {number} */ (ch.codePointAt(0));
+    if (cp >= 0xE000 && cp <= 0xF8FF) return null;
+  }
+  const folded = ocr.replaceLigatures(s).toLowerCase();
+  return folded.length > 0 ? folded : null;
+}
+
+/**
+ * Map a text-edit record's glyph identities into content user space, the frame the strike tests glyph origins in.
+ * @param {Array<TextEditGlyphWord>} glyphWords
+ * @param {{width: number, height: number}} dims
+ * @param {number[]} box
+ * @param {number} rotate
+ * @returns {{pts: Array<{u: ?string, x: number, y: number, f: ?number}>, tol: number}}
+ */
+export function mapTextEditGlyphs(glyphWords, dims, box, rotate) {
+  /** @type {Array<{u: ?string, x: number, y: number, f: ?number}>} */
+  const pts = [];
+  for (const gw of glyphWords) {
+    const f = Number.isFinite(gw.fontObjNum) ? /** @type {number} */ (gw.fontObjNum) : null;
+    for (let i = 0; i < gw.chars.length; i++) {
+      const [x, y] = pagePointToContentPoint(gw.x[i], gw.y[i], dims, box, rotate);
+      pts.push({
+        u: foldGlyphText(gw.chars[i]), x, y, f,
+      });
+    }
+  }
+  const [ax, ay] = pagePointToContentPoint(0, 0, dims, box, rotate);
+  const [bx, by] = pagePointToContentPoint(1, 0, dims, box, rotate);
+  const tol = 2 * Math.hypot(bx - ax, by - ay);
+  return { pts, tol };
+}
+
+/**
+ * Whether a strike-candidate glyph matches a recorded deleted glyph: origin within tolerance, font agreeing when both sides know it, and unicode agreeing when both sides have usable unicode.
+ * A glyph with no usable unicode falls back to the origin and font test rather than matching or missing outright.
+ * @param {{pts: Array<{u: ?string, x: number, y: number, f: ?number}>, tol: number}} gate
+ * @param {?string} u - The candidate glyph's raw unicode string (un-normalized).
+ * @param {?number} fontObjNum
+ * @param {number} x - Glyph origin, content user space.
+ * @param {number} y
+ */
+export function glyphIdentityMatches(gate, u, fontObjNum, x, y) {
+  const uG = foldGlyphText(u);
+  for (const p of gate.pts) {
+    if (Math.abs(x - p.x) > gate.tol || Math.abs(y - p.y) > gate.tol) continue;
+    if (p.f !== null && fontObjNum !== null && fontObjNum !== undefined && p.f !== fontObjNum) continue;
+    if (uG !== null && p.u !== null) {
+      if (uG === p.u) return true;
+      continue;
+    }
+    return true;
+  }
+  return false;
 }
 
 /**

@@ -87,6 +87,8 @@ export async function rewriteContentsStrippingInvisibleText(existingContentsRefs
  * @param {?Array<[number, number, number, number]>} [params.redactBboxes] - User-space rects whose content (glyphs, paths, images) is destructively removed, independent of `bboxes`.
  * @param {?Array<[number, number, number, number]>} [params.textEditBboxes] - User-space rects whose glyphs are removed (native-text edits).
  *   Vector paths, images, and annotations under these rects are untouched, and no box is painted.
+ * @param {?{rects: Array<[number, number, number, number]>, pts: Array<{u: ?string, x: number, y: number, f: ?number}>, tol: number}} [params.textEditGated]
+ *   Identity-gated edit rects: a rect removes only glyphs matching the deleted text's identities.
  * @param {?Array<{rects: Array<[number, number, number, number]>, body: string, placed: boolean}>} [params.textEditInserts]
  *   Replacement blocks for replaceText records, spliced in where their glyphs are dropped.
  * @returns {Promise<{
@@ -100,7 +102,7 @@ export async function rewriteContentsStrippingInvisibleText(existingContentsRefs
 export async function rewriteContentsStripAndConvert({
   existingContentsRefs, pageObjText, bboxes, conversionState,
   objCache, allocObjNum, pushObj, humanReadable, convertBrokenType3ToPaths = false,
-  redactBboxes = null, textEditBboxes = null, textEditInserts = null,
+  redactBboxes = null, textEditBboxes = null, textEditGated = null, textEditInserts = null,
 }) {
   /** @type {Map<string, number>} */
   const emptyXobj = new Map();
@@ -132,7 +134,7 @@ export async function rewriteContentsStripAndConvert({
     if (redactBboxes && redactBboxes.length > 0) {
       throw new Error('Cannot apply redactions: a page content stream could not be read.');
     }
-    if ((textEditBboxes && textEditBboxes.length > 0) || (textEditInserts && textEditInserts.length > 0)) {
+    if ((textEditBboxes && textEditBboxes.length > 0) || (textEditGated && textEditGated.rects.length > 0) || (textEditInserts && textEditInserts.length > 0)) {
       throw new Error('Cannot apply text edits: a page content stream could not be read.');
     }
     return {
@@ -147,12 +149,12 @@ export async function rewriteContentsStripAndConvert({
   if (redactBboxes && redactBboxes.length > 0 && !conversionState) {
     throw new Error('Cannot apply redactions: no conversion state was created for this page.');
   }
-  if (((textEditBboxes && textEditBboxes.length > 0) || (textEditInserts && textEditInserts.length > 0)) && !conversionState) {
+  if (((textEditBboxes && textEditBboxes.length > 0) || (textEditGated && textEditGated.rects.length > 0) || (textEditInserts && textEditInserts.length > 0)) && !conversionState) {
     throw new Error('Cannot apply text edits: no conversion state was created for this page.');
   }
   const wantRedact = !!(redactBboxes && redactBboxes.length > 0) && !!conversionState;
   // Inserts count too: a pure append has no erase rects but still needs the splice pass to place or append its body.
-  const wantEdit = !!((textEditBboxes && textEditBboxes.length > 0) || (textEditInserts && textEditInserts.length > 0))
+  const wantEdit = !!((textEditBboxes && textEditBboxes.length > 0) || (textEditGated && textEditGated.rects.length > 0) || (textEditInserts && textEditInserts.length > 0))
     && !!conversionState;
   const wantConvert = (((!!bboxes && bboxes.length > 0) || convertBrokenType3ToPaths) && !!conversionState) || wantRedact || wantEdit;
   let workingText = strippedText;
@@ -179,6 +181,7 @@ export async function rewriteContentsStripAndConvert({
       convertBrokenType3ToPaths,
       redactBboxes,
       textEditBboxes,
+      textEditGated,
       textEditInserts,
     });
     if (result.skipped) skipped = result.skipped;

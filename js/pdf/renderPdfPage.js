@@ -12,7 +12,9 @@ import {
   matMul, bytesToLatin1,
 } from './pdfPrimitives.js';
 import { parseDrawOps } from './parseDrawOps.js';
-import { pageRectToContentRect, glyphEmBoxHitsRects, TEXT_EDIT_GLYPH_SIZE_CAP } from './pageGeometry.js';
+import {
+  pageRectToContentRect, glyphEmBoxHitsRects, mapTextEditGlyphs, glyphIdentityMatches, TEXT_EDIT_GLYPH_SIZE_CAP,
+} from './pageGeometry.js';
 
 /** @typedef {import('./objectCache.js').ObjectCache} ObjectCache */
 /** @typedef {import('./parseDrawOps.js').DrawOp} DrawOp */
@@ -5312,7 +5314,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
 
   // Edits are applied with the PDF exporter's own rect mapping, em-box hit test, and in-place replacement splice, so the raster shows exactly what an export keeps.
   if (textEdits && textEdits.records?.length && textEdits.dims) {
-    /** @type {Array<{ rec: TextEdit, rects: Array<[number, number, number, number]> }>} */
+    /** @type {Array<{ rec: TextEdit, rects: Array<[number, number, number, number]>, gate: ?{pts: Array<{u: ?string, x: number, y: number, f: ?number}>, tol: number} }>} */
     const editEntries = [];
     for (const rec of textEdits.records) {
       if (!rec || (rec.type !== 'deleteText' && rec.type !== 'replaceText')) continue;
@@ -5322,8 +5324,9 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         const mapped = pageRectToContentRect(r, textEdits.dims, mediaBox, rotate);
         if (mapped) rects.push(mapped);
       }
+      const gate = rec.glyphs ? mapTextEditGlyphs(rec.glyphs, textEdits.dims, mediaBox, rotate) : null;
       // A pure append (a word added past the line's last word) erases nothing, so its record has no rects but must still draw.
-      if (rects.length > 0 || (rec.type === 'replaceText' && rec.runs?.length)) editEntries.push({ rec, rects });
+      if (rects.length > 0 || (rec.type === 'replaceText' && rec.runs?.length)) editEntries.push({ rec, rects, gate });
     }
     if (editEntries.length > 0) {
       const placed = new Set();
@@ -5335,8 +5338,15 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
           const vertical = op.type === 'type0text' && !!op.vertical;
           const advEm = op.advEm ?? 0.5;
           let hitEntry = null;
+          const opFontMatch = op.type === 'type0text' && typeof op.fontFamily === 'string' ? /_f(\d+)$/.exec(op.fontFamily) : null;
+          const opFontObjNum = opFontMatch ? Number(opFontMatch[1]) : null;
+          const opText = op.type === 'type0text' ? (op.text || null) : null;
           for (const entry of editEntries) {
-            if (glyphEmBoxHitsRects(trm, advEm, vertical, entry.rects, TEXT_EDIT_GLYPH_SIZE_CAP)) { hitEntry = entry; break; }
+            // A gated entry skips the size cap because its identity match is the precision guard.
+            if (!glyphEmBoxHitsRects(trm, advEm, vertical, entry.rects, entry.gate ? undefined : TEXT_EDIT_GLYPH_SIZE_CAP)) continue;
+            if (entry.gate && !glyphIdentityMatches(entry.gate, opText, opFontObjNum, trm[4], trm[5])) continue;
+            hitEntry = entry;
+            break;
           }
           if (hitEntry) {
             const rec = /** @type {TextEditReplace} */ (hitEntry.rec);

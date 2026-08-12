@@ -431,6 +431,20 @@ declare global {
     type Annotation = AnnotationHighlight | AnnotationFreeText | AnnotationShape | AnnotationText | AnnotationRedact | AnnotationLink | AnnotationField | AnnotationInk | AnnotationStamp;
 
     /**
+     * One removed word's glyph identities.
+     * The arrays are index-aligned per glyph, with positions in the page-pixel frame.
+     */
+    type TextEditGlyphWord = {
+        /** Per-glyph unicode strings (a ligature glyph is one entry). */
+        chars: string[];
+        /** Per-glyph pen-origin x. */
+        x: number[];
+        /** Per-glyph pen-origin (baseline) y. */
+        y: number[];
+        fontObjNum?: number;
+    };
+
+    /**
      * Visible source-PDF text slated for removal.
      * Vector paths, images, and annotations under the rects are untouched.
      */
@@ -439,6 +453,11 @@ declare global {
         id: string;
         /** Regions whose glyphs are removed, page coordinates (top-left origin, same frame as OCR words). */
         rects: bbox[];
+        /**
+         * When present, a rect removes only the glyphs matching these identities, so visually-overlapping other text survives.
+         * Records without identities (legacy sessions) remove every glyph under their rects.
+         */
+        glyphs?: TextEditGlyphWord[];
         /** Ties together the records of one user action. */
         groupId?: string;
     };
@@ -489,6 +508,8 @@ declare global {
         /** Page coordinates (top-left origin). */
         rects: bbox[];
         runs: TextEditRun[];
+        /** The replaced originals' glyph identities, gated at the strike exactly as on a deleteText record. */
+        glyphs?: TextEditGlyphWord[];
         /** Ids of the live OCR words this record draws, so a later edit of those words folds this record. */
         wordIds?: string[];
         groupId?: string;

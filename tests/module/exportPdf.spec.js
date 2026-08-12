@@ -1399,6 +1399,7 @@ describe('Check native text line deletion and replacement survive .scribe persis
     expect(restoredDoc.textEdits.pages[0][0].rects.length, 'the restored replacement record lost its per-word rects').toBe(11);
     expect(restoredDoc.textEdits.pages[0][1].type, 'the restored deletion record changed type').toBe('deleteText');
     expect(restoredDoc.textEdits.pages[0][1].rects.length, 'the restored deletion record lost its per-word rects').toBe(12);
+    expect(restoredDoc.textEdits.pages[0][1].glyphs.length, 'the restored deletion record lost its glyph identities, so its rects would strike overlapping layers geometrically').toBe(12);
   });
 
   test('Deleted line is gone from the exported PDF while its neighbors survive intact', () => {
@@ -1428,6 +1429,241 @@ describe('Check native text line deletion and replacement survive .scribe persis
   });
 
   afterAll(async () => {
+    await scribe.terminate();
+  });
+});
+
+// This needs its own round-trip because no other committed fixture has overlapping text layers.
+// The asset stacks three complete web-article PDFs: pages 0-2 hold the menu and banner overlaps, pages 3-7 the faux-bold ghost copies, and pages 8-14 the white halo copies.
+// The halo fonts on pages 8-14 have an em box far larger than the deletion band, which is the geometry a size-capped strike wrongly spares.
+describe('Check deleting one of two visually-overlapping text layers removes only that layer on PDF export.', () => {
+  const lineText = (line) => line.words.map((x) => x.text).join(' ');
+
+  /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+  let reDoc;
+
+  beforeAll(async () => {
+    scribe.ScribeDoc.defaults.usePDFText.native.main = true;
+    const editDoc = await scribe.openDocument([`${ASSETS_PATH}/online-articles-text-overlap.pdf`]);
+    const find = (n, prefix) => {
+      const line = editDoc.ocr.active[n].lines.find((l) => lineText(l).startsWith(prefix));
+      if (!line) throw new Error(`fixture line not found on page ${n}: ${prefix}`);
+      return line;
+    };
+    // A plain line with no overlapping layer.
+    editDoc.deleteTextLines([find(1, 'Bais Naftoli honored Baca')]);
+    // The banner overprints two body lines in its own font, and the nav menu overprints one of those lines in a different font.
+    editDoc.deleteTextLines([find(1, 'SUPPORT THE JEWISH JOURNAL')]);
+    editDoc.deleteTextLines([find(1, 'HOME NEWS OPINION HOLLYWOOD CULTURE BLOG')]);
+    // Both target lines have a coincident faux-bold second draw the deletion must fold.
+    editDoc.deleteTextLines([find(6, 'SFGate Screen Name:')]);
+    editDoc.deleteTextLines([find(6, 'Sign On to post your comment.')]);
+    // The sentence carries six white halo copies of its bold phrase, all of which must fold.
+    editDoc.deleteTextLines([find(8, 'Justice made public this month')]);
+    const pdfData = await editDoc.exportData('pdf');
+    await editDoc.close();
+    reDoc = await scribe.openDocument({ pdfFiles: [pdfData] });
+  });
+
+  afterAll(async () => {
+    await reDoc.close();
+  });
+
+  test('A plain non-overlapping line deletes cleanly with intact neighbors', () => {
+    const lines = reDoc.ocr.active[1].lines.map(lineText);
+    expect(lines.some((t) => t.includes('Bais Naftoli honored Baca')), 'the deleted plain line is still in the exported PDF').toBe(false);
+    expect(lines.some((t) => t === '50 years of service to the county community and for his longstanding friendship to'),
+      'a neighbor of the deleted plain line was damaged').toBe(true);
+  });
+
+  test('Body text survives deleting the different-font menu printed across it', () => {
+    const lines = reDoc.ocr.active[1].lines.map(lineText);
+    expect(lines.some((t) => t.includes('HOME NEWS OPINION HOLLYWOOD CULTURE BLOG')), 'the deleted menu line is still in the exported PDF').toBe(false);
+    expect(lines.some((t) => t === 'what fate may await him. The 74-year-old member of the Catholic community said'),
+      'the body line under the deleted menu was co-deleted').toBe(true);
+  });
+
+  test('Body text survives deleting a same-font banner printed over it', () => {
+    const lines = reDoc.ocr.active[1].lines.map(lineText);
+    expect(lines.some((t) => t.includes('SUPPORT THE JEWISH JOURNAL')), 'the deleted banner line is still in the exported PDF').toBe(false);
+    expect(lines.some((t) => t === 'Actress Zooey Deschanel converts to Judaism'),
+      'the headline under the deleted same-font banner was co-deleted').toBe(true);
+    expect(lines.some((t) => t === 'what fate may await him. The 74-year-old member of the Catholic community said'),
+      'the body line under the deleted same-font banner was co-deleted').toBe(true);
+  });
+
+  test('Faux-bold ghost copies fold with the deleted text and merged real text survives', () => {
+    const lines = reDoc.ocr.active[6].lines.map(lineText);
+    expect(lines.some((t) => t.includes('SFGate Screen Name:')), 'the deleted line is still in the exported PDF').toBe(false);
+    expect(lines.some((t) => t.includes('SF ate Sc een Name:')), 'the faux-bold ghost copy was stranded by the deletion').toBe(false);
+    expect(lines.some((t) => t.includes('Sign On to post')), 'the deleted comment-prompt line is still in the exported PDF').toBe(false);
+    expect(lines.some((t) => t.includes('yo omm t')), 'the merged ghost copy was stranded by the deletion').toBe(false);
+    expect(lines.some((t) => t.includes('Not Registered?')), 'real text sharing a line with a ghost copy was co-deleted').toBe(true);
+  });
+
+  test('White text-shadow halo copies fold with the deleted sentence', () => {
+    const lines = reDoc.ocr.active[8].lines.map(lineText);
+    expect(lines.some((t) => t.includes('Justice made public')), 'the deleted sentence is still in the exported PDF').toBe(false);
+    expect(lines.some((t) => t.includes('antit ust lawsuit') || t.includes('antitrust lawsu it')),
+      'a hidden white halo copy of the deleted sentence was stranded').toBe(false);
+    expect(lines.some((t) => t.includes('against the company; the government redacted how')),
+      'the line after the deleted sentence was co-deleted').toBe(true);
+  });
+});
+
+// The replacement pipeline must carry the source's faux-bold stroke state, or every edited word visibly thins in the raster and the exported file.
+// The fixture's DFKaiShu does not self-report bold, so the re-imported bold flag regresses too when the stroke is dropped.
+// This needs its own round-trip: no other committed round-trip imports stroked text, and the edit is destructive.
+describe('Check faux-bold (stroked) native text keeps its weight through edit and PDF export.', () => {
+  const lineText = (line) => line.words.map((x) => x.text).join(' ');
+
+  /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+  let editDoc;
+  /** @type {import('../../js/containers/scribeDoc.js').ScribeDoc} */
+  let editReDoc;
+  /** @type {string} */
+  let exportRaw;
+  /** @type {number} */
+  let inkOriginal;
+  /** @type {number} */
+  let inkRedrawn;
+  /** @type {number} */
+  let inkPlainTwin;
+  /** @type {number} */
+  let inkBoldToggled;
+  /** @type {number} */
+  let inkAppended;
+
+  /**
+   * Dark pixels inside a page-px bbox of a rendered page data URL, composited on white.
+   * @param {string} dataUrl
+   * @param {bbox} box
+   * @param {{width: number, height: number}} dims
+   */
+  const inkInBox = async (dataUrl, box, dims) => {
+    const img = await ca.createImageBitmapFromData(dataUrlToPngBytes(dataUrl));
+    const sx = img.width / dims.width;
+    const sy = img.height / dims.height;
+    const x = Math.floor(box.left * sx) - 2;
+    const y = Math.floor(box.top * sy) - 2;
+    const w = Math.ceil((box.right - box.left) * sx) + 4;
+    const h = Math.ceil((box.bottom - box.top) * sy) + 4;
+    const canvas = ca.makeCanvas(w, h);
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#ffffff';
+    ctx.fillRect(0, 0, w, h);
+    ctx.drawImage(img, x, y, w, h, 0, 0, w, h);
+    const data = ctx.getImageData(0, 0, w, h).data;
+    let ink = 0;
+    for (let i = 0; i < data.length; i += 4) {
+      if (data[i] < 128) ink += 1;
+    }
+    return ink;
+  };
+
+  beforeAll(async () => {
+    scribe.ScribeDoc.defaults.usePDFText.native.main = true;
+    // Uncompressed streams let the splice assertions read the replacement's drawing state directly.
+    scribe.ScribeDoc.defaults.humanReadablePDF = true;
+    editDoc = await scribe.openDocument([`${ASSETS_PATH}/chi_eng_mixed_sample.pdf`]);
+    const page = editDoc.ocr.active[0];
+    const line = page.lines[2];
+    // 隔 already appears stroked at word 13 of the same line, so the redrawn glyph's weight can be compared against an untouched copy in the same render.
+    await editDoc.replaceTextLine(line, line.words.map((w, i) => (i === 18 ? '隔' : w.text)).join(' '));
+    // A second edit of the same line folds the first record, so word 18 now redraws from its post-edit entry rather than the source stream.
+    await editDoc.replaceTextLine(line, line.words.map((w, i) => (i === 21 ? '利' : w.text)).join(' '));
+    // Style-only toggles on plain words: bold synthesizes the faux-bold stroke, italic synthesizes the standard shear.
+    const boldLine = page.lines[18];
+    await editDoc.replaceTextLine(boldLine, lineText(boldLine), { wordStyles: boldLine.words.map((w, i) => (i === 4 ? { bold: true } : null)) });
+    const italicLine = page.lines[17];
+    await editDoc.replaceTextLine(italicLine, lineText(italicLine), { wordStyles: italicLine.words.map((w, i) => (i === 4 ? { italic: true } : null)) });
+    // A word appended past the line's last word erases nothing, so its record carries no rects.
+    const appendLine = page.lines[4];
+    await editDoc.replaceTextLine(appendLine, `${lineText(appendLine)} APPENDSENTINEL`);
+    if (isNode) {
+      const img = await editDoc.images.getNative(0, { rotated: false, upscaled: false });
+      inkOriginal = await inkInBox(img.src, line.words[13].bbox, page.dims);
+      inkRedrawn = await inkInBox(img.src, line.words[18].bbox, page.dims);
+      inkPlainTwin = await inkInBox(img.src, italicLine.words[0].bbox, page.dims);
+      inkBoldToggled = await inkInBox(img.src, boldLine.words[4].bbox, page.dims);
+      inkAppended = await inkInBox(img.src, appendLine.words[appendLine.words.length - 1].bbox, page.dims);
+    }
+    const pdfData = /** @type {ArrayBuffer} */ (await editDoc.exportData('pdf'));
+    exportRaw = new TextDecoder('latin1').decode(new Uint8Array(pdfData));
+    editReDoc = await scribe.openDocument({ pdfFiles: [pdfData] });
+  });
+
+  test('Replaced word extracts in place from the exported PDF with its faux-bold neighbors intact', () => {
+    expect(lineText(editReDoc.ocr.active[0].lines[2]), 'the replacement text does not extract in place from the exported PDF')
+      .toBe('嚴 重 特 殊 傳 染 性 肺 炎 指 定 處 所 隔 離 通 知 書 隔 提 審 利 利 告 知');
+  });
+
+  test('Replaced word re-imports as bold like the stroked text it replaced', () => {
+    const words = editReDoc.ocr.active[0].lines[2].words;
+    expect(words[18].style.bold, 'the folded first edit lost the faux-bold (render mode 2) weight on export').toBe(true);
+    expect(words[21].style.bold, 'the second edit lost the faux-bold (render mode 2) weight on export').toBe(true);
+    expect(words[13].style.bold, 'an untouched faux-bold word lost its weight on export').toBe(true);
+  });
+
+  test('Redrawn glyph keeps the original faux-bold ink weight in the rendered raster', () => {
+    if (!isNode) return;
+    // An exact pixel count would pin the renderer's antialiasing, not the invariant; the band asserts equal weight within AA noise.
+    // Fill-only drawing of this glyph measures ~0.59 of the stroked original's ink.
+    const ratio = inkRedrawn / inkOriginal;
+    expect(ratio, 'the redrawn glyph renders lighter than the untouched copy of the same stroked glyph').toBeGreaterThan(0.9);
+    expect(ratio, 'the redrawn glyph renders heavier than the untouched copy of the same stroked glyph').toBeLessThan(1.15);
+  });
+
+  test('Exported replacement draws with the original stroke state', () => {
+    const tfIdx = exportRaw.indexOf('/EDF0 1 Tf');
+    expect(tfIdx !== -1, 'the replacement splice is missing from the exported PDF').toBe(true);
+    const body = exportRaw.slice(exportRaw.lastIndexOf('0 Tc 0 Tw 100 Tz 0 Tr 0 Ts', tfIdx), tfIdx);
+    expect(body.includes('2 Tr'), 'the exported replacement must draw fill+stroke (2 Tr) like the stroked original').toBe(true);
+    // The source pen is 0.456; the page-pixel frame the runs live in quantizes it by <0.1%.
+    expect(body.includes('0.455908 w'), 'the original stroke width must round-trip into the exported replacement').toBe(true);
+    expect(body.includes('0 0 0 RG'), 'the original stroke color must round-trip into the exported replacement').toBe(true);
+  });
+
+  test('Bold toggle on a plain word re-imports as bold and draws heavier than its plain twin', () => {
+    const line = editReDoc.ocr.active[0].lines[18];
+    expect(lineText(line), 'the bold-toggled line must keep its text in place')
+      .toBe('public, please comply with the following regulations regarding designated residence isolation (home');
+    expect(line.words[4].style.bold, 'a bold toggle on plain native text must survive export and re-import').toBe(true);
+    expect(line.words[3].style.bold, 'a neighbor of the bold-toggled word must stay plain').toBe(false);
+    if (!isNode) return;
+    // The toggled "the" is compared against the untouched "the" one line up at the same size; a plain redraw would measure ~1.0.
+    const ratio = inkBoldToggled / inkPlainTwin;
+    expect(ratio, 'the bold-toggled word must draw heavier than its plain twin').toBeGreaterThan(1.15);
+    expect(ratio, 'the bold-toggled word must stay in faux-bold range, not double weight').toBeLessThan(1.9);
+  });
+
+  test('Word appended past the end of a line survives export and draws in the raster', () => {
+    expect(lineText(editReDoc.ocr.active[0].lines[4]), 'a pure-append replacement must extract in place from the exported PDF')
+      .toBe('and Right to Petition for Habeas Corpus Relief APPENDSENTINEL');
+    if (!isNode) return;
+    // The appended word measures ~13100 ink px when drawn; an exact count would pin antialiasing, and near zero means it was dropped.
+    expect(inkAppended, 'a pure-append replacement must draw in the rendered raster').toBeGreaterThan(6500);
+  });
+
+  test('Italic toggle on a plain word re-imports as italic with the synthesized shear', () => {
+    const line = editReDoc.ocr.active[0].lines[17];
+    expect(lineText(line), 'the italic-toggled line must keep its text in place')
+      .toBe('the spread of the disease and protect the health and safety of your friends, family members and the');
+    expect(line.words[4].style.italic, 'an italic toggle on plain native text must survive export and re-import').toBe(true);
+    expect(line.words[3].style.italic, 'a neighbor of the italic-toggled word must stay upright').toBe(false);
+    const entry = editReDoc.nativeText.pages[0][line.words[4].id];
+    expect(entry && entry.skew && entry.skew[0], 'the synthesized shear ratio must round-trip through the exported text matrix').toBe(0.25);
+  });
+
+  test('Style-only toggles draw the synthesized stroke and shear in the export splice', () => {
+    // Synthesized pen: 0.025 em at the word's 50px size, converted to content units like the captured stroke above.
+    expect(exportRaw.includes('0.29994 w'), 'the synthesized faux-bold pen width is missing from the export splice').toBe(true);
+    // Sheared Tm: the up-column picks up 0.25 of the flow vector.
+    expect(exportRaw.includes('11.997582 0 2.999395 12 '), 'the synthesized shear is missing from the exported text matrix').toBe(true);
+  });
+
+  afterAll(async () => {
+    scribe.ScribeDoc.defaults.humanReadablePDF = false;
     await scribe.terminate();
   });
 });

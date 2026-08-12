@@ -2,7 +2,7 @@ import {
   findXrefOffset, parseXref, sourceXrefIsWellFormed, getPageObjects, findRootObjNum,
 } from '../../pdf/parsePdfUtils.js';
 import { byteIndexOf } from '../../pdf/pdfPrimitives.js';
-import { pageRectToContentRect, pagePointToContentPoint } from '../../pdf/pageGeometry.js';
+import { pageRectToContentRect, pagePointToContentPoint, mapTextEditGlyphs } from '../../pdf/pageGeometry.js';
 import { ObjectCache } from '../../pdf/objectCache.js';
 import { createPdfFontRefs, createEmbeddedFontType0 } from './writePdfFonts.js';
 import { GlobalFonts } from '../../containers/fontContainer.js';
@@ -167,6 +167,8 @@ export async function overlayPdfText({
   // Unlike redact rects, text-edit rects erase glyphs only and do not force the rebuild path.
   /** @type {Map<number, Array<[number, number, number, number]>>} */
   const textEditRegionsByPage = new Map();
+  /** @type {Map<number, {rects: Array<[number, number, number, number]>, pts: Array<{u: ?string, x: number, y: number, f: ?number}>, tol: number}>} */
+  const textEditGatedByPage = new Map();
   /** @type {Map<number, Array<TextEditReplace>>} */
   const replaceRecordsByPage = new Map();
   for (const i of effectivePageArr) {
@@ -177,17 +179,27 @@ export async function overlayPdfText({
     const box = pages[i].cropBox || pages[i].mediaBox || [0, 0, 612, 792];
     /** @type {Array<[number, number, number, number]>} */
     const rects = [];
+    /** @type {Array<[number, number, number, number]>} */
+    const gatedRects = [];
+    /** @type {Array<TextEditGlyphWord>} */
+    const gatedGlyphWords = [];
     for (const rec of records) {
+      const target = rec.glyphs ? gatedRects : rects;
       for (const r of rec.rects || []) {
         const mapped = pageRectToContentRect(r, dims, box, pages[i].rotate || 0);
-        if (mapped) rects.push(mapped);
+        if (mapped) target.push(mapped);
       }
+      if (rec.glyphs) gatedGlyphWords.push(...rec.glyphs);
       if (rec.type === 'replaceText' && rec.runs?.length) {
         if (!replaceRecordsByPage.has(i)) replaceRecordsByPage.set(i, []);
         replaceRecordsByPage.get(i).push(/** @type {TextEditReplace} */ (rec));
       }
     }
     if (rects.length > 0) textEditRegionsByPage.set(i, rects);
+    if (gatedRects.length > 0) {
+      const { pts, tol } = mapTextEditGlyphs(gatedGlyphWords, dims, box, pages[i].rotate || 0);
+      textEditGatedByPage.set(i, { rects: gatedRects, pts, tol });
+    }
   }
 
   // Step 2: Determine next available object number.
@@ -471,6 +483,7 @@ export async function overlayPdfText({
       scrub,
       redactRegionsByPage,
       textEditRegionsByPage,
+      textEditGatedByPage,
       textEditInsertsByPage,
       editFontRefsByPage,
       editFontObjects,
@@ -488,7 +501,7 @@ export async function overlayPdfText({
     }
   }
   const conversionState = (regionsByPage.size > 0 || convertBrokenType3ToPaths || textEditRegionsByPage.size > 0
-    || textEditInsertsByPage.size > 0)
+    || textEditGatedByPage.size > 0 || textEditInsertsByPage.size > 0)
     ? createConversionState() : null;
 
   // With no annotations supplied, nothing re-emits links, so both stay null and source /Link objects pass through untouched.
@@ -580,7 +593,7 @@ export async function overlayPdfText({
       && !(a.type === 'freetext' && isFillTextRow(a)));
     const hasFill = !!fillResult || !!fillTextObjStr;
     const hasConvert = regionsByPage.has(i) || convertBrokenType3ToPaths;
-    const hasTextEdits = textEditRegionsByPage.has(i) || textEditInsertsByPage.has(i);
+    const hasTextEdits = textEditRegionsByPage.has(i) || textEditGatedByPage.has(i) || textEditInsertsByPage.has(i);
     if (!hasText && !hasAnnots && !hasConvert && !hasTextEdits && !hasFill) continue;
 
     /** @type {string[]|null} */
@@ -603,6 +616,7 @@ export async function overlayPdfText({
         humanReadable,
         convertBrokenType3ToPaths,
         textEditBboxes: textEditRegionsByPage.get(i) || null,
+        textEditGated: textEditGatedByPage.get(i) || null,
         textEditInserts: textEditInsertsByPage.get(i) || null,
       });
 
@@ -744,7 +758,7 @@ export async function overlayPdfText({
   {
     const catalogObjNum = Number((/^(\d+)/.exec(rootRef) || [])[1]);
     const catalogText = catalogObjNum ? objCache.getObjectText(catalogObjNum) : null;
-    const editsApplied = textEditRegionsByPage.size > 0 || textEditInsertsByPage.size > 0;
+    const editsApplied = textEditRegionsByPage.size > 0 || textEditGatedByPage.size > 0 || textEditInsertsByPage.size > 0;
     const stripStruct = editsApplied && !!catalogText && /\/(StructTreeRoot|MarkInfo)\b/.test(catalogText);
     const wantOutline = !!(outline && catalogText && (outline.length || /\/Outlines\b/.test(catalogText)));
     if (catalogText && (wantOutline || stripStruct || formFieldUpdates.catalogInsertRef)) {
