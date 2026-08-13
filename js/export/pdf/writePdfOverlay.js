@@ -105,8 +105,6 @@ export async function overlayPdfText({
   flattenFormFields = false,
 }) {
   const pdfBytes = new Uint8Array(basePdfData);
-  // Local latin1 view used by overlayPdfText's downstream helpers.
-  const text = new TextDecoder('latin1').decode(pdfBytes);
 
   // Step 1: Parse the base PDF structure
   const xrefOffset = findXrefOffset(pdfBytes);
@@ -115,7 +113,7 @@ export async function overlayPdfText({
   // The object-number scan below needs the complete xref, so finish the deferred repair.
   objCache.ensureXrefRepaired();
   const pages = getPageObjects(objCache);
-  const { rootRef, infoRef: sourceInfoRef, id0Hex: sourceId0Hex } = parseTrailerInfo(text, xrefOffset);
+  const { rootRef, infoRef: sourceInfoRef, id0Hex: sourceId0Hex } = parseTrailerInfo(pdfBytes, xrefOffset);
 
   // Default to all pages in the source PDF when pageArr is not supplied.
   const effectivePageArr = pageArr
@@ -456,7 +454,6 @@ export async function overlayPdfText({
     || flattenFormFields) {
     return rebuildPdfSubset({
       pdfBytes,
-      text,
       objCache,
       xrefEntries,
       pages,

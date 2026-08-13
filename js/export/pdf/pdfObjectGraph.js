@@ -1,6 +1,7 @@
 import { extractRawStreamBytes, findInfoObjNum } from '../../pdf/parsePdfUtils.js';
 import {
-  extractDict, parsePdfLiteralString, parsePdfHexString, parseDictEntries, toUtf16BeHex, formatPdfDate,
+  extractDict, extractDictFromBytes, byteIndexOf, bytesToLatin1,
+  parsePdfLiteralString, parsePdfHexString, parseDictEntries, toUtf16BeHex, formatPdfDate,
 } from '../../pdf/pdfPrimitives.js';
 import { md5 } from '../../pdf/pdfCrypto.js';
 
@@ -75,27 +76,27 @@ const TRAILER_INFO_RE = /\/Info\s+(\d{1,10})\s+(\d{1,10})\s+R/;
 /**
  * Parse the trailer dict's /Root, /Size, /Info and /ID.
  * `id0Hex` is the permanent file identifier as bare uppercase hex, without the enclosing angle brackets.
- * @param {string} text
+ * @param {Uint8Array} pdfBytes
  * @param {number} xrefOffset
  */
-export function parseTrailerInfo(text, xrefOffset) {
-  const atOffset = text.substring(xrefOffset, xrefOffset + 50);
+export function parseTrailerInfo(pdfBytes, xrefOffset) {
+  const atOffset = bytesToLatin1(pdfBytes, xrefOffset, Math.min(xrefOffset + 50, pdfBytes.length));
   let dictText;
 
   if (/^\d+ \d+ obj/.test(atOffset)) {
     // Xref stream: the dict is in the stream object itself
-    const dictStart = text.indexOf('<<', xrefOffset);
-    dictText = extractDict(text, dictStart);
+    const dictStart = byteIndexOf(pdfBytes, '<<', xrefOffset);
+    dictText = dictStart === -1 ? '' : extractDictFromBytes(pdfBytes, dictStart);
   } else {
     // Traditional trailer
-    const trailerStart = text.indexOf('trailer', xrefOffset);
+    const trailerStart = byteIndexOf(pdfBytes, 'trailer', xrefOffset);
     if (trailerStart === -1) {
       return {
         rootRef: '1 0 R', size: 1, infoRef: null, id0Hex: null,
       };
     }
-    const dictStart = text.indexOf('<<', trailerStart);
-    dictText = extractDict(text, dictStart);
+    const dictStart = byteIndexOf(pdfBytes, '<<', trailerStart);
+    dictText = dictStart === -1 ? '' : extractDictFromBytes(pdfBytes, dictStart);
   }
 
   const rootMatch = /\/Root\s+(\d+)\s+(\d+)\s+R/.exec(dictText);
@@ -365,23 +366,24 @@ export function buildFullXrefAndTrailer(entries, totalSize, rootRef, xrefOffset,
 /**
  * Locate a type-1 object's exact byte range in the source PDF.
  * @param {Uint8Array} pdfBytes
- * @param {string} text
  * @param {import('../../pdf/objectCache.js').ObjectCache} objCache
  * @param {{type: number, offset: number}} entry
  */
-export function locateObjectByteRange(pdfBytes, text, objCache, entry) {
+export function locateObjectByteRange(pdfBytes, objCache, entry) {
   const offset = entry.offset;
   let searchFrom = offset;
   let streamStart = offset;
   let streamEnd = offset;
 
-  const streamKw = text.indexOf('stream', offset);
-  const firstEndObj = text.indexOf('endobj', offset);
+  const firstEndObj = byteIndexOf(pdfBytes, 'endobj', offset);
   if (firstEndObj === -1) return null;
+  // The bound is load-bearing, not a duplicate of the comparison below.
+  // Without it the scan runs to end of file on every non-stream object, chasing the very common byte `s` the whole way.
+  const streamKw = byteIndexOf(pdfBytes, 'stream', offset, firstEndObj + 'stream'.length);
 
   if (streamKw !== -1 && streamKw < firstEndObj) {
     // Stream object: use /Length to skip past stream data.
-    const headerText = text.substring(offset, streamKw);
+    const headerText = bytesToLatin1(pdfBytes, offset, streamKw);
     const indirectLenMatch = /\/Length\s+(\d+)\s+\d+\s+R/.exec(headerText);
     const directLenMatch = /\/Length\s+(\d+)/.exec(headerText);
     let streamLength = 0;
@@ -402,7 +404,7 @@ export function locateObjectByteRange(pdfBytes, text, objCache, entry) {
     searchFrom = streamEnd;
   }
 
-  const endObjPos = text.indexOf('endobj', searchFrom);
+  const endObjPos = byteIndexOf(pdfBytes, 'endobj', searchFrom);
   if (endObjPos === -1) return null;
   return {
     start: offset,
@@ -418,13 +420,12 @@ export function locateObjectByteRange(pdfBytes, text, objCache, entry) {
  * is usable in an output PDF that doesn't carry the source's /Encrypt dict.
  *
  * @param {Uint8Array} pdfBytes
- * @param {string} text
  * @param {import('../../pdf/objectCache.js').ObjectCache} objCache
  * @param {{type: number, offset: number}} entry
  * @param {number} [objNum=-1] - Required when copying from an encrypted source.
  */
-export function copyRawObjectBytes(pdfBytes, text, objCache, entry, objNum = -1) {
-  const range = locateObjectByteRange(pdfBytes, text, objCache, entry);
+export function copyRawObjectBytes(pdfBytes, objCache, entry, objNum = -1) {
+  const range = locateObjectByteRange(pdfBytes, objCache, entry);
   if (!range) return null;
 
   const isEncrypted = !!objCache.encryptionKey && objNum >= 0 && objNum !== objCache.encryptObjNum;
@@ -473,12 +474,12 @@ export function copyRawObjectBytes(pdfBytes, text, objCache, entry, objNum = -1)
     // PDF spec permits 0/1/2 EOL bytes between stream data and `endstream`.
     // Accept the source's /Length when the gap matches any of those,
     // otherwise rewrite it to the actual byte count so strict readers don't reject the stream.
-    const dictText = text.substring(range.start, range.start + (range.streamStart - range.start));
+    const dictText = bytesToLatin1(pdfBytes, range.start, range.streamStart);
     const streamKw = dictText.lastIndexOf('stream');
     const headerStr = streamKw >= 0 ? dictText.substring(0, streamKw) : dictText;
     const declaredMatch = /\/Length\s+(\d+)(?!\s+\d+\s+R)/.exec(headerStr);
     const declared = declaredMatch ? Number(declaredMatch[1]) : null;
-    const endStreamIdx = text.indexOf('endstream', range.streamStart);
+    const endStreamIdx = byteIndexOf(pdfBytes, 'endstream', range.streamStart);
     if (endStreamIdx >= 0) {
       let actualLength;
       if (declared !== null) {

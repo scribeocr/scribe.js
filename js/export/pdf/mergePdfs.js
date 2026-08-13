@@ -2,7 +2,7 @@ import {
   findXrefOffset, parseXref, extractRawStreamBytes, findRootObjNum,
   getPageObjects, collectPageTreeObjNums,
 } from '../../pdf/parsePdfUtils.js';
-import { bytesToLatin1 } from '../../pdf/pdfPrimitives.js';
+import { bytesToLatin1, byteIndexOf } from '../../pdf/pdfPrimitives.js';
 import { ObjectCache } from '../../pdf/objectCache.js';
 import {
   traceReferencedObjects,
@@ -89,7 +89,6 @@ function decryptObjectSliceToText(sliceBytes, oldObjNum, objCache, streamLength 
  */
 function parseMergeSource(input) {
   const pdfBytes = input instanceof Uint8Array ? input : new Uint8Array(input);
-  const text = new TextDecoder('latin1').decode(pdfBytes);
 
   const xrefOffset = findXrefOffset(pdfBytes);
   const xrefEntries = parseXref(pdfBytes, xrefOffset);
@@ -103,7 +102,7 @@ function parseMergeSource(input) {
   for (const page of pages) copySet.add(page.objNum);
 
   return {
-    pdfBytes, text, xrefEntries, objCache, pages, copySet,
+    pdfBytes, xrefEntries, objCache, pages, copySet,
   };
 }
 
@@ -175,7 +174,7 @@ export async function mergePdfs(pdfInputs, options = {}) {
       const entry = src.xrefEntries[page.objNum];
       if (isEncryptedSrc && page.objNum !== src.objCache.encryptObjNum
           && entry && entry.type === 1 && entry.offset !== undefined) {
-        const range = locateObjectByteRange(src.pdfBytes, src.text, src.objCache,
+        const range = locateObjectByteRange(src.pdfBytes, src.objCache,
           /** @type {{type: number, offset: number}} */ (entry));
         if (!range) continue;
         const slice = src.pdfBytes.subarray(range.start, range.end);
@@ -208,7 +207,7 @@ export async function mergePdfs(pdfInputs, options = {}) {
       const isObjEncrypted = isEncryptedSrc && oldObjNum !== src.objCache.encryptObjNum;
 
       if (entry.type === 1) {
-        const range = locateObjectByteRange(src.pdfBytes, src.text, src.objCache, entry);
+        const range = locateObjectByteRange(src.pdfBytes, src.objCache, entry);
         if (!range) continue;
 
         const isStream = range.streamStart !== range.start;
@@ -218,7 +217,7 @@ export async function mergePdfs(pdfInputs, options = {}) {
             const slice = src.pdfBytes.subarray(range.start, range.end);
             objText = decryptObjectSliceToText(slice, oldObjNum, src.objCache);
           } else {
-            objText = src.text.substring(range.start, range.end);
+            objText = bytesToLatin1(src.pdfBytes, range.start, range.end);
           }
           const rewritten = rewriteIndirectRefs(objText, map)
             .replace(/^\d+\s+\d+\s+obj/, `${newObjNum} 0 obj`);
@@ -242,10 +241,10 @@ export async function mergePdfs(pdfInputs, options = {}) {
           } else {
             // PDF allows an optional EOL (CR / LF / CRLF) between stream data and endstream,
             // which is not counted in /Length.
-            const headerStr = src.text.substring(range.start, range.streamStart - 7);
+            const headerStr = bytesToLatin1(src.pdfBytes, range.start, range.streamStart - 7);
             const declaredMatch = /\/Length\s+(\d+)(?!\s+\d+\s+R)/.exec(headerStr);
             const declared = declaredMatch ? Number(declaredMatch[1]) : null;
-            const endStreamIdx = src.text.indexOf('endstream', range.streamStart);
+            const endStreamIdx = byteIndexOf(src.pdfBytes, 'endstream', range.streamStart);
             let actualLength = range.streamEnd - range.streamStart;
             if (endStreamIdx >= 0) {
               if (declared !== null) {
@@ -260,7 +259,7 @@ export async function mergePdfs(pdfInputs, options = {}) {
                 actualLength = endStreamIdx - range.streamStart;
               }
             }
-            const fullHeader = src.text.substring(range.start, range.streamStart);
+            const fullHeader = bytesToLatin1(src.pdfBytes, range.start, range.streamStart);
             headerText = fullHeader.replace(/\/Length\s+\d+(?:\s+\d+\s+R)?/, `/Length ${actualLength}`);
             streamBytes = src.pdfBytes.subarray(range.streamStart, range.streamStart + actualLength);
             trailerText = '\nendstream\nendobj';

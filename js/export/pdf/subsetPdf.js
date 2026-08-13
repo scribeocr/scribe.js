@@ -279,7 +279,6 @@ function replacePageResources(pageObjText, newResourcesDictText) {
  * Rebuild a PDF containing only the selected pages, optionally with OCR overlay text.
  * @param {Object} params
  * @param {Uint8Array} params.pdfBytes
- * @param {string} params.text
  * @param {ObjectCache} params.objCache
  * @param {Object} params.xrefEntries
  * @param {any[]} params.pages
@@ -323,7 +322,7 @@ function replacePageResources(pageObjText, newResourcesDictText) {
  *    drop the widget annotations, and omit /AcroForm from the rebuilt catalog.
  */
 export async function rebuildPdfSubset({
-  pdfBytes, text, objCache, xrefEntries, pages,
+  pdfBytes, objCache, xrefEntries, pages,
   pageIndices, startingNextObjNum,
   ocrArr, annotationOcrArr = null, pageMetricsArr, pdfFonts,
   textMode, rotateText, rotateBackground,
@@ -397,7 +396,7 @@ export async function rebuildPdfSubset({
   }
 
   const infoBody = scrub ? null : buildInfoDictBody(readSourceInfoBody(pdfBytes, objCache), docInfo);
-  const { id0Hex: sourceId0Hex } = parseTrailerInfo(text, findXrefOffset(pdfBytes));
+  const { id0Hex: sourceId0Hex } = parseTrailerInfo(pdfBytes, findXrefOffset(pdfBytes));
 
   // The structure tree can duplicate page text in /ActualText, so carrying it over would expose redacted or pre-edit text.
   if ((redactByPage.size > 0 || textEditByPage.size > 0 || textEditGated.size > 0 || (textEditInsertsByPage?.size ?? 0) > 0)
@@ -823,7 +822,7 @@ export async function rebuildPdfSubset({
   for (const apNum of patchSubtypeApObjNums) {
     const entry = xrefEntries[apNum];
     if (!entry || entry.type !== 1) continue;
-    const raw = copyRawObjectBytes(pdfBytes, text, objCache, entry, apNum);
+    const raw = copyRawObjectBytes(pdfBytes, objCache, entry, apNum);
     if (!raw) continue;
     const dictStart = bytesToLatin1(raw).indexOf('<<');
     if (dictStart === -1) continue;
@@ -949,7 +948,7 @@ export async function rebuildPdfSubset({
     }
 
     if (entry.type === 1) {
-      const rawCopy = copyRawObjectBytes(pdfBytes, text, objCache, entry, objNum);
+      const rawCopy = copyRawObjectBytes(pdfBytes, objCache, entry, objNum);
       if (!rawCopy) continue;
       allOutputObjects.push({ objNum, content: rawCopy });
     } else if (entry.type === 2) {
@@ -1060,7 +1059,6 @@ export async function rebuildPdfSubset({
  */
 export async function subsetPdf(basePdfData, pageIndices, options = {}) {
   const pdfBytes = basePdfData instanceof Uint8Array ? basePdfData : new Uint8Array(basePdfData);
-  const text = new TextDecoder('latin1').decode(pdfBytes);
 
   const xrefOffset = findXrefOffset(pdfBytes);
   const xrefEntries = parseXref(pdfBytes, xrefOffset);
@@ -1085,7 +1083,6 @@ export async function subsetPdf(basePdfData, pageIndices, options = {}) {
 
   return rebuildPdfSubset({
     pdfBytes,
-    text,
     objCache,
     xrefEntries,
     pages,
