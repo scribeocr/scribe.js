@@ -246,6 +246,19 @@ describe('Extract CLI command.', () => {
     expect(fs.readFileSync(outputPath, 'utf8')).toContain('WHISTLEBLOWERS');
   }, 15000);
 
+  // Regression gate: the converter that lays out a text document runs in a general worker, and the in-process CLI never pre-warms that pool.
+  // The pool must still receive the built-in fonts, or the converter throws inside the worker and the command silently produces no file.
+  it('Should extract text from a markdown file.', async () => {
+    const outputPath = `${tmpUnique.get()}/markdown-field-guide.txt`;
+
+    await extractCLI(`${ASSETS_PATH}/markdown-field-guide.md`, outputPath, { format: 'txt' });
+
+    expect(fs.existsSync(outputPath), 'extracting a markdown file must write its output file').toBe(true);
+    const lines = fs.readFileSync(outputPath, 'utf8').split('\n');
+    expect(lines[0], 'the markdown heading must extract as plain text without its marker').toBe('Coastal Survey Field Guide');
+    expect(lines[5], 'a bullet item must extract without its marker').toBe('A charged phone with the survey app installed');
+  }, 30000);
+
   // Regression gate: cli/extract.js must enable `usePDFText.ocr.main` so OCR-layer PDFs
   // (image pages with an invisible text layer) actually surface their text.
   it('Should extract text from a PDF whose pages are images with an invisible OCR layer.', async () => {

@@ -22,6 +22,10 @@ const detectOcrFormat = (ocrStr, ext) => {
     } if (ext === 'stext') {
       return 'stext';
     }
+    // Markdown legitimately contains XML and HTML inside code blocks, which the content sniffing below would read as hOCR, so the extension settles it first.
+    if (ext === 'md') {
+      return 'md';
+    }
   }
 
   // Check whether input is ALTO XML
@@ -149,7 +153,7 @@ export async function importOCRFiles(ocrFilesAll) {
       hocrRaw = ocrFilesContent.split(/(?=<page)/).slice(1);
     } else if (format === 'stext') {
       hocrRaw = ocrFilesContent.split(/(?=<page)/).slice(1);
-    } else if (format === 'text') {
+    } else if (format === 'text' || format === 'md') {
       hocrRaw = [ocrFilesContent];
     } else if (format === 'docx') {
       // For .docx, pass the full file contents to the read function.

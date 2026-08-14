@@ -176,7 +176,8 @@ scribe.ScribeDoc()` followed by [`doc.importFiles`](#docimportfilesfiles).
 #### `doc.importFiles(files)`
 
 Import files into this document, replacing any current contents. A single array is sorted by
-extension; `ArrayBuffer` inputs require a [`SortedInputFiles`](#sortedinputfiles) object.
+extension; `ArrayBuffer` inputs require a [`SortedInputFiles`](#sortedinputfiles) object. See
+[Supported input types](./guide.md#supported-input-types) for the extensions accepted.
 
 | Parameter | Type |
 | --- | --- |

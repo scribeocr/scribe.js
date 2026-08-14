@@ -446,7 +446,7 @@ async function convertOCRPage(ocrRaw, n, format, scribeMode = false) {
     res = await gs.convertPageStext({ ocrStr: ocrRaw, n });
   } else if (format === 'text') {
     res = await gs.convertPageText({ textStr: ocrRaw });
-  } else if (format === 'docx') {
+  } else if (format === 'docx' || format === 'md') {
     console.error('format does not support page-level import.');
     // res = await gs.convertDocDocx({ docxData: ocrRaw });
   } else {
@@ -596,27 +596,15 @@ export async function convertOCR(doc, ocrRawArr, mainData, format, engineName, s
     return;
   }
 
-  if (format === 'text') {
-    const res = await gs.convertPageText({ textStr: ocrRawArr[0] });
-
-    if (res.length > doc.inputData.pageCount) doc.inputData.pageCount = res.length;
-
-    for (let i = 0; i < res.length; i++) {
-      if (!doc.layoutRegions.pages[i]) doc.layoutRegions.pages[i] = new LayoutPage(i);
+  if (format === 'text' || format === 'docx' || format === 'md') {
+    let res;
+    if (format === 'text') {
+      res = await gs.convertPageText({ textStr: ocrRawArr[0] });
+    } else if (format === 'docx') {
+      res = await gs.convertDocDocx({ docxData: ocrRawArr[0], lineSplitMode: docxLineSplitMode, docId: doc.id });
+    } else {
+      res = await gs.convertDocMd({ mdStr: ocrRawArr[0] });
     }
-
-    for (let i = 0; i < res.length; i++) {
-      if (!doc.layoutDataTables.pages[i]) doc.layoutDataTables.pages[i] = new LayoutDataTablePage(i);
-    }
-
-    for (let n = 0; n < res.length; n++) {
-      await convertPageCallback(doc, res[n], n, mainData, engineName);
-    }
-    return;
-  }
-
-  if (format === 'docx') {
-    const res = await gs.convertDocDocx({ docxData: ocrRawArr[0], lineSplitMode: docxLineSplitMode, docId: doc.id });
 
     if (res.length > doc.inputData.pageCount) doc.inputData.pageCount = res.length;
 

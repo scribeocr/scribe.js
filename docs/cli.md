@@ -42,7 +42,10 @@ The rest of this page lists every command and flag.
 | `debug <files...> [out_dir]` | Write Tesseract debug visualizations. |
 
 Every command accepts a PDF and, where relevant, one or more OCR files (`.hocr` or Abbyy
-`.xml`).
+`.xml`). `extract` also accepts a text document in place of the PDF — `.txt`, `.docx`, or `.md` —
+which it lays out onto pages before writing the requested format. This is single-file mode only;
+`--dir` batches PDFs and images. The full list of importable types is under
+[Supported input types](./guide.md#supported-input-types).
 
 ## Common flags
 

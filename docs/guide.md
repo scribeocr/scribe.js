@@ -216,7 +216,7 @@ Alongside the OCR text, a document carries:
 | --- | --- |
 | Images | `.png`, `.jpg`, `.jpeg` |
 | PDF | `.pdf` |
-| OCR data | `.hocr`, `.xml` (Abbyy/ALTO), `.html`, `.stext`, `.json` (AWS Textract / Google Vision), `.txt`, `.docx`, `.gz` (gzipped XML) |
+| OCR data | `.hocr`, `.xml` (Abbyy/ALTO), `.html`, `.stext`, `.json` (AWS Textract / Google Vision), `.txt`, `.docx`, `.md`, `.gz` (gzipped XML) |
 | Sessions | `.scribe`, `.scribe.json` |
 
 Notes:
@@ -224,6 +224,14 @@ Notes:
 - A PDF and image files cannot be imported together, and only one PDF is imported at a time.
 - Importing an image together with an OCR file (e.g. a `.png` plus its `.hocr`) loads the text
   over the image without re-running OCR.
+- `.txt`, `.docx`, and `.md` have no pages of their own, so they are laid out onto US Letter pages
+  as they are imported.
+- Markdown import covers ATX (`#`) and setext (`===`/`---`) headings, paragraphs, bold and italic,
+  inline code, fenced code blocks, bullet and numbered lists, block quotes, and links. Markers are
+  removed from the imported text: a heading becomes a `title` paragraph, a list marker becomes the
+  paragraph's `parNum`, a link keeps its text and drops its URL from the flowed text, and an image
+  is dropped along with its alt text. Nested lists are indented but are not otherwise nested.
+  Tables, raw HTML, and footnote syntax are not interpreted and import as plain text.
 
 ### Passing files
 

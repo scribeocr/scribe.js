@@ -233,8 +233,8 @@ export async function readOcrFile(file) {
   // Any string is assumed to be the file contents.
   if (typeof file === 'string') return file;
 
-  // The `typeof process` condition is necessary to avoid error in Node.js versions <20, where `File` is not defined.
-  if (typeof process === 'undefined' && file instanceof File) {
+  // The `globalThis.File` condition is necessary to avoid error in Node.js versions <20, where `File` is not defined.
+  if (globalThis.File && file instanceof File) {
     // Check for gzip magic bytes instead of relying on filename
     const arrayBuffer = await file.arrayBuffer();
     const fileUint8Array = new Uint8Array(arrayBuffer);

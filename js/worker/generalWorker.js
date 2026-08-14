@@ -9,6 +9,7 @@ import { convertDocGoogleDocAI } from '../import/convertDocGoogleDocAI.js';
 import { convertPageGoogleVision } from '../import/convertPageGoogleVision.js';
 import { convertPageText } from '../import/convertPageText.js';
 import { convertDocDocx } from '../import/convertDocDocx.js';
+import { convertDocMd } from '../import/convertDocMd.js';
 
 import {
   DocFonts, GlobalFonts, loadFontsFromSource, setActiveDocFonts, unregisterFontFacesMatching,
@@ -480,6 +481,7 @@ const handleMessage = async (data) => {
     convertPageBlocks,
     convertPageText,
     convertDocDocx,
+    convertDocMd,
 
     // Optimize font functions
     optimizeFont,

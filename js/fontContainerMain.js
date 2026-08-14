@@ -26,7 +26,11 @@ let loadedGlyphSet = null;
 export async function loadBuiltInFontsRaw(glyphSet = 'latin') {
   // Return early if the font set is already loaded, or a superset of the requested set is loaded.
   if (GlobalFonts.raw && (loadedGlyphSet === glyphSet
-    || loadedGlyphSet === 'all' && glyphSet === 'latin')) return;
+    || loadedGlyphSet === 'all' && glyphSet === 'latin')) {
+    // A worker pool started after this font load, or restarted after a terminate, never received these fonts.
+    if (gs.schedulerInner && !gs.loadedBuiltInFontsRawWorker) await syncBuiltInFontsToWorkers();
+    return;
+  }
 
   // Coalesce with an in-flight call if it's loading the same or a superset.
   // Without this, multiple concurrent calls to `loadBuiltInFontsRaw` (e.g. from `convertPageCallback` during multi-page import) can each trigger a full load.

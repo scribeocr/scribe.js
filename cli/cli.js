@@ -79,7 +79,8 @@ export const evalInternalCLI = async (files, options) => {
 
 /**
  *
- * @param {string} inputFile - Path to PDF file or directory.
+ * @param {string} inputFile - Path to a PDF, a text document (`.txt`, `.docx`, `.md`), or a directory with `--dir`.
+ *    Directory mode covers PDFs and images only.
  * @param {?string} [outputDir='.'] - Output directory.
  * @param {Object} [options]
  * @param {"pdf" | "hocr" | "docx" | "xlsx" | "txt" | "text" | "html" | "md" | "scribe" | "scribe.json"} [options.format]

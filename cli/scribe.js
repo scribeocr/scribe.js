@@ -35,7 +35,7 @@ program
 
 program
   .command('extract')
-  .argument('<input_file>', 'Input PDF file or directory (with --dir).')
+  .argument('<input_file>', 'Input PDF or text document (.txt, .docx, .md), or a directory with --dir (PDFs and images only).')
   .argument('[output]', 'Output file, or output directory with --dir. Defaults to <input>-<format>/ for --dir, else the current directory.')
   .addOption(new Option('-f, --format <ext>', 'Output format.').choices(['pdf', 'hocr', 'docx', 'xlsx', 'txt', 'text', 'html', 'md', 'scribe', 'scribe.json']).default('txt'))
   .option('-r, --reflow', 'Reflow text by combining lines into paragraphs.')

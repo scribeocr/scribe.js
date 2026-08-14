@@ -23,7 +23,7 @@ const { subsetPdf } = await import(pathToFileURL(resolve(__dirname, '..', 'js', 
 const { mergePdfs } = await import(pathToFileURL(resolve(__dirname, '..', 'js', 'export', 'pdf', 'mergePdfs.js')).href);
 
 const SUPPORTED_EXTENSIONS = ['.pdf', '.png', '.jpg', '.jpeg', '.gif', '.webp', '.bmp', '.tiff', '.tif'];
-const DATA_EXTENSIONS = ['.scribe.json', '.json', '.json.gz', '.hocr', '.xml', '.stext', '.txt', '.docx'];
+const DATA_EXTENSIONS = ['.scribe.json', '.json', '.json.gz', '.hocr', '.xml', '.stext', '.txt', '.docx', '.md'];
 
 // The MCP session operates on one current document at a time. Operations are serialized so that one
 // tool call cannot swap the current document out from under another.
