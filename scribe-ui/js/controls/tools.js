@@ -1242,6 +1242,8 @@ export function createDropZone({
   let highlightActiveCt = 0;
   dropZone.addEventListener('dragover', (event) => {
     event.preventDefault();
+    // This guard sits below preventDefault so a drop is always allowed here, since the zone is the app's primary way to open a file.
+    if (!event.dataTransfer || ![...event.dataTransfer.types].includes('Files')) return;
     dropZone.classList.add('highlight');
     highlightActiveCt++;
   });

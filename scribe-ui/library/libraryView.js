@@ -34,6 +34,8 @@ const REFRESH_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" 
 // eslint-disable-next-line max-len
 const IMPORT_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 4v9M8.5 9.5 12 13l3.5-3.5"/><path d="M4.5 15.5V18a1.5 1.5 0 0 0 1.5 1.5h12a1.5 1.5 0 0 0 1.5-1.5v-2.5"/></svg>';
 // eslint-disable-next-line max-len
+const IMAGE_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="4.5" width="17" height="15" rx="1.5"/><circle cx="8.8" cy="9.3" r="1.6"/><path d="M3.5 16.5l5.2-4.6 3.9 3.4 3.1-2.6 4.8 4"/></svg>';
+// eslint-disable-next-line max-len
 const MENU_CHECK_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M5.5 12.5l4.3 4.3L18.5 7.5"/></svg>';
 // eslint-disable-next-line max-len
 const VIEW_GRID_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/></svg>';
@@ -285,6 +287,8 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-pv-loading-spin { width: 22px; height: 22px; border-radius: 50%; border: 2px solid var(--scribe-ink-3); border-top-color: transparent; animation: scribe-library-pv-spin 0.8s linear infinite; }
 @keyframes scribe-library-pv-spin { to { transform: rotate(360deg); } }
 .scribe-pdf-viewer .scribe-library-surface.drag-over { outline: 2px dashed var(--scribe-accent); outline-offset: -8px; }
+.scribe-pdf-viewer .scribe-library-drop-hint { position: absolute; left: 50%; top: 54%; transform: translate(-50%, -50%); z-index: 5; background: var(--scribe-surface); border: 1px solid var(--scribe-line); border-radius: 9px; box-shadow: var(--scribe-shadow-pop); padding: 10px 16px; font-size: 13px; color: var(--scribe-ink); pointer-events: none; display: flex; align-items: center; gap: 9px; white-space: nowrap; }
+.scribe-pdf-viewer .scribe-library-drop-hint svg { width: 17px; height: 17px; color: var(--scribe-ink-2); flex-shrink: 0; }
 .scribe-pdf-viewer .scribe-library-crumbs { display: flex; align-items: center; gap: 1px; font-size: 14px; font-weight: 600; min-width: 0; white-space: nowrap; }
 .scribe-pdf-viewer .scribe-library-crumb { border: none; background: none; padding: 3px 7px; border-radius: 6px; font: inherit; color: var(--scribe-ink-2); cursor: pointer; }
 .scribe-pdf-viewer .scribe-library-crumb:first-child { margin-left: -7px; }
@@ -568,6 +572,12 @@ export function installLibrary(viewer) {
   newFolderItem.innerHTML = FOLDER_PLUS_SVG;
   newFolderItem.appendChild(document.createTextNode('New folder'));
   newMenu.appendChild(newFolderItem);
+  const newPdfItem = document.createElement('div');
+  newPdfItem.className = 'scribe-library-menu-item';
+  newPdfItem.setAttribute('role', 'menuitem');
+  newPdfItem.innerHTML = IMAGE_SVG;
+  newPdfItem.appendChild(document.createTextNode('New PDF from images…'));
+  newMenu.appendChild(newPdfItem);
   const newMenuSep = document.createElement('div');
   newMenuSep.className = 'scribe-library-menu-sep';
   newMenu.appendChild(newMenuSep);
@@ -594,6 +604,13 @@ export function installLibrary(viewer) {
   fileInput.accept = 'application/pdf,.pdf';
   fileInput.style.display = 'none';
   header.appendChild(fileInput);
+
+  const imageInput = document.createElement('input');
+  imageInput.type = 'file';
+  imageInput.multiple = true;
+  imageInput.accept = 'image/png,image/jpeg,.png,.jpg,.jpeg';
+  imageInput.style.display = 'none';
+  header.appendChild(imageInput);
 
   const progressElem = document.createElement('div');
   progressElem.className = 'scribe-library-progress';
@@ -638,6 +655,7 @@ export function installLibrary(viewer) {
     // A desktop shell's window controls stay the end zone's last element, so the library bar mounts before them.
     viewer.toolbarElemEnd.insertBefore(barControls, viewer.toolbarElemEnd.querySelector('.scribe-shell-corner'));
     surface.appendChild(fileInput);
+    surface.appendChild(imageInput);
   } else {
     surface.appendChild(header);
   }
@@ -2754,6 +2772,55 @@ export function installLibrary(viewer) {
   };
 
   /** @param {File[]} files */
+  const isImageName = (name) => /\.(png|jpe?g)$/i.test(name || '');
+
+  let creatingPdf = false;
+
+  /**
+   * Author a PDF from image files, write it into the browsed folder, and open it as a tab.
+   * @param {File[]} files - Non-images are dropped. The rest become pages in name order.
+   */
+  const createPdfFromImages = async (files) => {
+    if (!store || !ingest || creatingPdf) return;
+    // Match the importer's name sort so the derived file name is page 1's image.
+    const images = files.filter((f) => isImageName(f.name))
+      .sort((a, b) => ((a.name > b.name) ? 1 : ((b.name > a.name) ? -1 : 0)));
+    if (!images.length) return;
+    creatingPdf = true;
+    try {
+      let data;
+      try {
+        const scratch = await scribeLib.openDocument(images);
+        try {
+          data = await scratch.exportData('pdf');
+        } finally {
+          await scratch.close();
+        }
+      } catch (err) {
+        viewer._showToast(`Couldn't create a PDF from ${images.length === 1 ? 'the image' : `${images.length} images`} — ${err instanceof Error ? err.message : 'the images could not be read'}.`);
+        return;
+      }
+      const baseName = images[0].name.replace(/\.[^.]+$/, '');
+      let relPath;
+      try {
+        relPath = await store.importSourceFile(`${baseName}.pdf`, new Blob([data], { type: 'application/pdf' }), currentDir);
+      } catch (err) {
+        viewer._showToast(`Couldn't add “${baseName}.pdf” — ${err instanceof Error ? err.message : 'the file could not be written'}.`);
+        return;
+      }
+      const written = await store.readFile(relPath);
+      await ingest.enqueue(relPath, { size: written.size, mtime: written.lastModified });
+      selectedPaths.clear();
+      selectedPaths.add(relPath);
+      selAnchor = relPath;
+      render({ revealSelection: true });
+      ingest.start();
+      await openEntry(relPath, manifest.docs[relPath]);
+    } finally {
+      creatingPdf = false;
+    }
+  };
+
   const startIngestFiles = async (files) => {
     if (!store || !ingest) return;
     const pdfs = files.filter((f) => (f.name || '').toLowerCase().endsWith('.pdf'));
@@ -2970,6 +3037,10 @@ export function installLibrary(viewer) {
     closeNewMenu();
     createNewFolder();
   });
+  newPdfItem.addEventListener('click', () => {
+    closeNewMenu();
+    if (store) imageInput.click();
+  });
   addPdfsItem.addEventListener('click', () => {
     closeNewMenu();
     if (store) fileInput.click();
@@ -2977,6 +3048,10 @@ export function installLibrary(viewer) {
   fileInput.addEventListener('change', () => {
     if (fileInput.files?.length) startIngestFiles([...fileInput.files]);
     fileInput.value = '';
+  });
+  imageInput.addEventListener('change', () => {
+    if (imageInput.files?.length) createPdfFromImages([...imageInput.files]);
+    imageInput.value = '';
   });
 
   refreshBtn.addEventListener('click', async () => {
@@ -2992,17 +3067,84 @@ export function installLibrary(viewer) {
     progressElem.style.display = 'none';
   });
 
+  const dropHint = document.createElement('div');
+  dropHint.className = 'scribe-library-drop-hint';
+  dropHint.innerHTML = IMAGE_SVG;
+  const dropHintText = document.createElement('span');
+  dropHint.appendChild(dropHintText);
+  dropHint.style.display = 'none';
+  surface.appendChild(dropHint);
+
+  // `dataTransfer.files` stays empty until the drop, so `types` is the only way to spot a file drag while it is still moving.
+  /** @param {DragEvent} e */
+  const isFileDrag = (e) => !!e.dataTransfer && [...e.dataTransfer.types].includes('Files');
+
+  /** @type {?number} */
+  let dragClearTimer = null;
+  const clearDragState = () => {
+    if (dragClearTimer !== null) {
+      window.clearTimeout(dragClearTimer);
+      dragClearTimer = null;
+    }
+    surface.classList.remove('drag-over');
+    dropHint.style.display = 'none';
+  };
+
   surface.addEventListener('dragover', (e) => {
+    // preventDefault on dragover is what marks the surface as a drop target, so it has to stay behind this guard.
+    if (!isFileDrag(e)) return;
     e.preventDefault();
+    if (dragClearTimer !== null) {
+      window.clearTimeout(dragClearTimer);
+      dragClearTimer = null;
+    }
     surface.classList.add('drag-over');
+    // Mid-drag the payload exposes MIME types but never file names, so the count has to go by type.
+    let imageN = 0;
+    let otherN = 0;
+    for (const item of e.dataTransfer?.items ?? []) {
+      if (item.kind !== 'file') continue;
+      if (item.type === 'image/png' || item.type === 'image/jpeg') imageN += 1;
+      else otherN += 1;
+    }
+    if (imageN && !otherN) {
+      const label = `${imageN === 1 ? '1 image' : `${imageN} images`} — drop to create a PDF`;
+      if (dropHintText.textContent !== label) dropHintText.textContent = label;
+      dropHint.style.display = '';
+    } else {
+      dropHint.style.display = 'none';
+    }
   });
-  surface.addEventListener('dragleave', () => surface.classList.remove('drag-over'));
+  surface.addEventListener('dragleave', (e) => {
+    // dragleave bubbles from every descendant, so crossing between two cards fires one here with the cursor still inside.
+    // A depth counter like the viewer root's would strand its count when a finished ingest rebuilds the cards mid-drag, losing a leave.
+    const r = surface.getBoundingClientRect();
+    if (e.clientX < r.left || e.clientX >= r.right || e.clientY < r.top || e.clientY >= r.bottom) {
+      clearDragState();
+      return;
+    }
+    // A drag can end without ever leaving (Esc, or a drop another handler claims), reporting a last position inside and then going quiet.
+    // The drag model repeats dragover at least every 350ms, so 600ms cannot fire during a live drag.
+    if (dragClearTimer === null) dragClearTimer = window.setTimeout(clearDragState, 600);
+  });
   surface.addEventListener('drop', async (e) => {
+    if (!isFileDrag(e)) return;
     e.preventDefault();
     e.stopPropagation();
-    surface.classList.remove('drag-over');
+    clearDragState();
     if (!store) return;
-    startIngestFiles(await filesFromDropEvent(e));
+    const files = await filesFromDropEvent(e);
+    // A drag can name 'Files' and still resolve to nothing, e.g. an empty folder.
+    // There is no unsupported file to name, so there is nothing worth saying.
+    if (!files.length) return;
+    const images = files.filter((f) => isImageName(f.name));
+    const pdfs = files.filter((f) => (f.name || '').toLowerCase().endsWith('.pdf'));
+    if (!images.length && !pdfs.length) {
+      viewer._showToast('The library holds PDFs — none of the dropped files were PDFs or images.');
+      return;
+    }
+    if (pdfs.length) await startIngestFiles(pdfs);
+    if (images.length) await createPdfFromImages(images);
   });
 
   // Word-text and comment edits commit through editable elements rather than ScribeDoc methods, so any input event marks the active library tab dirty.
