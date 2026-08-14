@@ -193,6 +193,7 @@ describe('Check export for .pdf files.', () => {
       if (mode === 'invis') {
         expect([...colors]).toEqual(['#000000']);
         expect([...opacities]).toEqual([0]);
+        expect(doc.inputData.pdfType, 'a searchable (invis) export must re-import as an OCR-layer document, not text-native').toBe('ocr');
       } else {
         // Confidence buckets in the source PDF text default to high → green
         // (#00ff80) at proofOpacity 0.8 since no recognise pass was run.
@@ -401,6 +402,10 @@ describe('Check export for .pdf files.', () => {
     await doc.clear();
 
     doc = await scribe.openDocument({ pdfFiles: [new Uint8Array(pdfBytes).buffer] });
+
+    // The pdfType verdict counts only render mode 3 as invisible, so hiding the layer with a zero-alpha ExtGState instead would silently make this text-native.
+    expect(doc.inputData.pdfType, 'a searchable (invis) export must re-import as an OCR-layer document, not text-native').toBe('ocr');
+
     const all = doc.annotations.pages.flatMap((p) => p || []);
     const highlights = all.filter((a) => a.type === 'highlight');
     const freeTexts = all.filter((a) => a.type === 'freetext');
@@ -1365,7 +1370,10 @@ describe('Check native text line deletion and replacement survive .scribe persis
     await srcDoc.close();
     restoredDoc = await scribe.openDocument({ scribeFiles: [scribeData] });
     const pdfData = await restoredDoc.exportData('pdf');
+    // The edited export converts the source text to paths and carries the text as an invisible OCR layer, so re-importing it requires trusting that layer as main text.
+    scribe.ScribeDoc.defaults.usePDFText.ocr.main = true;
     reDoc = await scribe.openDocument({ pdfFiles: [pdfData] });
+    scribe.ScribeDoc.defaults.usePDFText.ocr.main = false;
   });
 
   test('Edited pages leave no undeclared fields on OCR words or chars', () => {
@@ -1689,7 +1697,10 @@ describe('Check invisible text layer orientation on source pages with /Rotate.',
       displayMode: 'invis', addOverlay: true, minPage: 1, maxPage: 1,
     }));
     exportedBytes = out;
+    // The export carries its text as an invisible OCR layer, so re-importing it requires trusting that layer as main text.
+    scribe.ScribeDoc.defaults.usePDFText.ocr.main = true;
     reDoc = await scribe.openDocument({ pdfFiles: [out] });
+    scribe.ScribeDoc.defaults.usePDFText.ocr.main = false;
     await reDoc.textReady;
   });
 

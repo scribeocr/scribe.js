@@ -42,13 +42,14 @@ export async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode
   // Start 1st object: Text Content
   let textContentObjStr = '';
 
-  if (textMode === 'invis') {
-    textContentObjStr += '/GSO0 gs\n';
-  } else if (['proof', 'eval'].includes(textMode)) {
+  if (['proof', 'eval'].includes(textMode)) {
     textContentObjStr += '/GSO1 gs\n';
   }
 
   textContentObjStr += 'BT\n';
+
+  // Visibility checks key on the render mode, not on fill alpha, so a layer hidden with an ExtGState `ca 0` reads back as visible text.
+  if (textMode === 'invis') textContentObjStr += '3 Tr\n';
 
   // Move cursor to top of the page
   textContentObjStr += `1 0 0 1 0 ${String(outputDims.height)} Tm\n`;
@@ -426,15 +427,20 @@ export async function ocrPageToPDFStream(pageObj, outputDims, pdfFonts, textMode
     textContentObjStr += ' ] TJ\n';
   }
 
+  // Text state persists across a page's concatenated streams, so without this reset a later visible stream would inherit mode 3 and draw nothing.
+  if (textMode === 'invis') textContentObjStr += '0 Tr\n';
+
   textContentObjStr += 'ET\n';
 
-  // Add underlines
-  underlines.forEach((underline) => {
-    const underlineThickness = underline.bold ? Math.ceil(underline.fontSize / 12) : Math.ceil(underline.fontSize / 24);
-    const underlineOffset = Math.ceil(underline.fontSize / 12) + underlineThickness;
+  // Underline rects paint at any text render mode, so the invisible layer must skip them.
+  if (textMode !== 'invis') {
+    underlines.forEach((underline) => {
+      const underlineThickness = underline.bold ? Math.ceil(underline.fontSize / 12) : Math.ceil(underline.fontSize / 24);
+      const underlineOffset = Math.ceil(underline.fontSize / 12) + underlineThickness;
 
-    textContentObjStr += `\n${String(underline.left)} ${String(outputDims.height - underline.top - underlineOffset)} ${String(underline.right - underline.left)} ${underlineThickness} re\nf\n`;
-  });
+      textContentObjStr += `\n${String(underline.left)} ${String(outputDims.height - underline.top - underlineOffset)} ${String(underline.right - underline.left)} ${underlineThickness} re\nf\n`;
+    });
+  }
 
   return { textContentObjStr, pdfFontsUsed };
 }

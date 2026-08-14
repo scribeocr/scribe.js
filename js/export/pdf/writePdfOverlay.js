@@ -569,7 +569,7 @@ export async function overlayPdfText({
         pageFontsUsed = res.pdfFontsUsed;
       }
     }
-    // /GSF resets fill alpha, which an invisible-mode main text stream leaves at 0 in the graphics state both streams share.
+    // /GSF resets fill alpha, which a proof/eval-mode main text stream sets in the graphics state both streams share.
     if (fillTextActive && pageObj && pixelDims) {
       const fillLines = pageObj.lines.filter((l) => isFillTextLine(l));
       if (fillLines.length > 0) {
@@ -678,7 +678,7 @@ export async function overlayPdfText({
         }
       }
       if (fillResult) overlayXObjectsStr += fillResult.xobjEntriesStr;
-      const overlayExtGStateStr = (hasText ? `/GSO0 <</ca 0.0>>/GSO1 <</ca ${proofOpacity}>>` : '')
+      const overlayExtGStateStr = (hasText && ['proof', 'eval'].includes(textMode) ? `/GSO1 <</ca ${proofOpacity}>>` : '')
         + (fillTextObjStr ? '/GSF <</ca 1 /CA 1>>' : '');
       const mergedResourcesStr = mergeResources(existingResourcesStr, overlayFontsStr, overlayExtGStateStr, objCache, overlayXObjectsStr);
 

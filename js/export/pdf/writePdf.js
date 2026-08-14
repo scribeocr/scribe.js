@@ -459,10 +459,9 @@ async function ocrPageToPDF({
       resourceDictObjStr += imageResourceStr;
 
       // Use `GSO` prefix to avoid conflicts with other graphics states, which are normally named `/GS[n]` by convention.
-      resourceDictObjStr += '/ExtGState<<';
-      resourceDictObjStr += '/GSO0 <</ca 0.0>>';
-      resourceDictObjStr += `/GSO1 <</ca ${proofOpacity}>>`;
-      resourceDictObjStr += '>>';
+      if (['proof', 'eval'].includes(textMode)) {
+        resourceDictObjStr += `/ExtGState<</GSO1 <</ca ${proofOpacity}>>>>`;
+      }
 
       resourceDictObjStr += '>>\nendobj\n\n';
 

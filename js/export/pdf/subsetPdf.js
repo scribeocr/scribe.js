@@ -515,7 +515,7 @@ export async function rebuildPdfSubset({
           pageFontsUsed = res.pdfFontsUsed;
         }
       }
-      // /GSF resets fill alpha in case the main layer's invisible-text ExtGState precedes it.
+      // /GSF resets fill alpha in case a proof/eval-mode main layer's ExtGState precedes it.
       if (fillTextActive && pageObj && pixelDims) {
         const fillLines = pageObj.lines.filter((l) => isFillTextLine(l));
         if (fillLines.length > 0) {
@@ -744,7 +744,7 @@ export async function rebuildPdfSubset({
         if (widgetBake) {
           for (const [tag, objN] of widgetBake.xobjRefs) overlayXObjectsStr += `/${tag} ${objN} 0 R\n`;
         }
-        const overlayExtGStateStr = (hasText ? `/GSO0 <</ca 0.0>>/GSO1 <</ca ${proofOpacity}>>` : '')
+        const overlayExtGStateStr = (hasText && ['proof', 'eval'].includes(textMode) ? `/GSO1 <</ca ${proofOpacity}>>` : '')
           + (fillTextObjStr ? '/GSF <</ca 1 /CA 1>>' : '');
         const mergedResourcesStr = mergeResources(existingResourcesStr, overlayFontsStr, overlayExtGStateStr, objCache, overlayXObjectsStr);
 
