@@ -138,8 +138,15 @@ describe('Check .scribe export function.', () => {
     expect(wordMixed.text, 'mixed-style word changed on .scribe round-trip').toBe('Ltd.,');
     expect(wordMixed.styleRuns, 'intra-word style runs lost on .scribe round-trip').toEqual([{ i: 4, style: { italic: false } }]);
 
-    // No fixture is large enough to reach the segmented layout naturally, so the threshold is forced down to route this document through the segmented writer and reader.
-    const scribeDataSeg = await doc.exportData('scribe', { scribeSegmentThreshold: 1 });
+    // No fixture is large enough to reach the segmented layout naturally, so both exports below force the threshold down to one character.
+    doc.addHighlights([{ page: 0, startLine: 0, endLine: 2 }]);
+    const scribeDataThresholdOnly = await doc.exportData('scribe', { scribeSegmentThreshold: 1 });
+    const thresholdOnlyHeadReader = new Blob([scribeDataThresholdOnly]).stream().pipeThrough(new DecompressionStream('gzip')).getReader();
+    const thresholdOnlyHead = new TextDecoder().decode((await thresholdOnlyHeadReader.read()).value).slice(0, 32);
+    await thresholdOnlyHeadReader.cancel().catch(() => {});
+    expect(thresholdOnlyHead.startsWith('{"ocr":'), 'without the scribeSegments opt-in a compressed export must stay a single JSON document even past scribeSegmentThreshold').toBe(true);
+
+    const scribeDataSeg = await doc.exportData('scribe', { scribeSegments: true, scribeSegmentThreshold: 1 });
     const segHeadReader = new Blob([scribeDataSeg]).stream().pipeThrough(new DecompressionStream('gzip')).getReader();
     const segHead = new TextDecoder().decode((await segHeadReader.read()).value).slice(0, 32);
     await segHeadReader.cancel().catch(() => {});
@@ -154,6 +161,7 @@ describe('Check .scribe export function.', () => {
     const wordMixedSeg = doc.ocr.active[0].lines[30].words[10];
     expect(wordMixedSeg.text, 'mixed-style word changed on segmented .scribe round-trip').toBe('Ltd.,');
     expect(wordMixedSeg.styleRuns, 'intra-word style runs lost on segmented .scribe round-trip').toEqual([{ i: 4, style: { italic: false } }]);
+    expect(doc.annotations.pages[0].length, 'highlight annotations lost on segmented .scribe round-trip').toBe(12);
 
     await doc.clear();
     await scribe.terminate();

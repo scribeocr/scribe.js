@@ -127,7 +127,13 @@ export const scribeDocDefaults = {
   includeCharBoxesScribe: true,
 
   /**
-   * Character count above which a compressed `.scribe` uses the segmented layout (a header line plus one JSON record per page) instead of a single JSON document.
+   * Allow compressed `.scribe` exports above `scribeSegmentThreshold` to use the segmented layout (a header line plus one JSON record per page) instead of a single JSON document.
+   * Off by default because the standard interchange form is a single JSON document at every size, which any JSON tooling can read.
+   */
+  scribeSegments: false,
+
+  /**
+   * Character count above which a compressed `.scribe` export with `scribeSegments` set switches to the segmented layout.
    * The default leaves headroom under the JavaScript string limit a single-JSON reader has to fit the whole payload into.
    */
   scribeSegmentThreshold: 400_000_000,

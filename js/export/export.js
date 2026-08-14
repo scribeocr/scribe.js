@@ -57,9 +57,12 @@ import { _buildPngDataUrl } from '../pdf/renderPdfPage.js';
  *    When false they are dropped (word text is unaffected) and readers of char geometry fall back to word-level boxes.
  * @property {boolean} [scribeSession] - Include the application `session` block (text-edit records, native-text metadata) in `.scribe` exports.
  *    Default false, since the standard interchange format carries no app-only data.
- * @property {number} [scribeSegmentThreshold] - Character count above which a compressed `.scribe` uses the segmented layout
- *    (header line plus one JSON record per page) instead of a single JSON document; default 400,000,000.
+ * @property {boolean} [scribeSegments] - Allow compressed `.scribe` exports above `scribeSegmentThreshold` to use the segmented layout instead of a single JSON document; default false.
+ *    Off, an export is a single JSON document whatever its size.
+ *    A file past the JavaScript string limit then has no JavaScript reader, this library included, and is meant for consumers in other languages.
+ * @property {number} [scribeSegmentThreshold] - Character count above which a compressed `.scribe` export with `scribeSegments` set switches to the segmented layout; default 400,000,000.
  *    The default keeps every single-JSON file under the JavaScript string limit that a reader must fit it into.
+ *    Ignored without `scribeSegments`.
  * @property {string} [ocrName] - Export this named OCR layer (a key of `doc.ocr`) instead of the active one.
  * @property {'width' | 'sentence'} [docxLineSplitMode]
  * @property {boolean} [sanitize] - Strip identifying metadata from the exported PDF, keeping the visible pages unchanged.
@@ -294,6 +297,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
   const includeExtraTextScribe = options.includeExtraTextScribe ?? scribeDocDefaults.includeExtraTextScribe;
   const includeCharBoxesScribe = options.includeCharBoxesScribe ?? scribeDocDefaults.includeCharBoxesScribe;
   const scribeSession = options.scribeSession ?? scribeDocDefaults.scribeSession;
+  const scribeSegments = options.scribeSegments ?? scribeDocDefaults.scribeSegments;
   const scribeSegmentThreshold = options.scribeSegmentThreshold ?? scribeDocDefaults.scribeSegmentThreshold;
 
   if (!pageArr) {
@@ -753,8 +757,12 @@ export async function exportData(doc, format = 'txt', options = {}) {
     }
     const serializeOpts = { includeText: includeExtraTextScribe, includeCharBoxes: includeCharBoxesScribe };
     if (compressScribe) {
-      content = await compressStringChunks(scribeJsonChunks(ocrDownload, serializeOpts, envelope), scribeSegmentThreshold)
-        ?? await compressStringChunks(scribeSegmentChunks(ocrDownload, serializeOpts, envelope));
+      // Streaming page chunks lets this branch emit a single JSON document of any size, including past what a JavaScript reader can re-import.
+      // Capping it here would put the interchange format back behind a layout only this library reads.
+      content = scribeSegments
+        ? (await compressStringChunks(scribeJsonChunks(ocrDownload, serializeOpts, envelope), scribeSegmentThreshold)
+          ?? await compressStringChunks(scribeSegmentChunks(ocrDownload, serializeOpts, envelope)))
+        : await compressStringChunks(scribeJsonChunks(ocrDownload, serializeOpts, envelope));
     } else {
       // A document whose JSON cannot exist as one string (V8 caps strings at 2^29 - 24) has no uncompressed form.
       const parts = [];

@@ -197,10 +197,23 @@ async function restoreSessionFromFile(doc, scribeFile) {
     }
 
     if (!head.startsWith('{"scribeSegments"')) {
+      // A single-JSON payload has to fit in one JavaScript string, which V8 caps at 2^29 - 24 characters.
+      // Default exports past that cap are written on purpose, for consumers that parse them outside JavaScript.
+      const STRING_CAP = 536_870_888;
+      const tooLargeError = () => new Error('This .scribe file stores the document as a single JSON string longer than JavaScript supports, so it cannot be imported here. '
+        + 'Re-export it with the scribeSegments option, or process it with non-JavaScript JSON tooling.');
+      // The gzip ISIZE trailer gives the decompressed size mod 2^32, so it can understate a huge file but never overstate a small one.
+      // No character takes more than four UTF-8 bytes, so a payload above four times the cap is certainly too long to parse.
+      const utf8Len = isGzipped
+        ? new DataView(scribeBytes.buffer, scribeBytes.byteOffset + scribeBytes.length - 4, 4).getUint32(0, true)
+        : scribeBytes.length;
+      if (utf8Len > STRING_CAP * 4) throw tooLargeError();
       try {
         scribeRestoreObj = JSON.parse(await readOcrFile(scribeFile));
       } catch (err) {
-        if (err instanceof RangeError || /string longer/.test(String(/** @type {?} */ (err)?.message))) throw new Error('This .scribe file is too large to import.');
+        // Node surfaces an over-cap TextDecoder.decode as a bogus invalid-encoding TypeError, so that error code only maps to the size error when the payload is actually past the cap.
+        const overCapDecodeFailure = /** @type {?} */ (err)?.code === 'ERR_ENCODING_INVALID_ENCODED_DATA' && utf8Len > STRING_CAP;
+        if (err instanceof RangeError || overCapDecodeFailure || /string longer|Invalid string length/.test(String(/** @type {?} */ (err)?.message))) throw tooLargeError();
         throw err;
       }
     } else {

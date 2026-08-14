@@ -757,7 +757,8 @@ export function installLibrary(viewer) {
     tab.libraryDirty = false;
     try {
       // Sidecars are this application's session store, so they carry app-side state (pending text edits, native-text metadata) that a default export drops.
-      const data = await /** @type {any} */ (tab.doc).exportData('scribe', { scribeSession: true, includeCharBoxesScribe: false });
+      // They opt into the segmented layout so a session of any size stays reloadable.
+      const data = await /** @type {any} */ (tab.doc).exportData('scribe', { scribeSession: true, scribeSegments: true, includeCharBoxesScribe: false });
       await store.writeSidecar(tab.libraryHash, data);
       sessions.dropSidecar(tab.libraryHash);
     } catch {
