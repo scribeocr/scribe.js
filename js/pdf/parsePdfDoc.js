@@ -1886,7 +1886,10 @@ function showLiteralString(str, font, fontSize, tm, ctm, tc, tw, tz, tr, trise, 
       fallbackUsed = true;
     }
     // Collapse any all-whitespace mapping to a single U+0020.
+    // Producers also pad a visible glyph's mapping with the break that followed it in their source, as in <0065000A> for a line-final "e".
+    // Spacing between words comes from glyph positions here, so that padding would only end up inside a word.
     if (/^\s+$/.test(unicode)) unicode = ' ';
+    else unicode = unicode.replace(/^\s+|\s+$/g, '');
     // A CID font's /W advances are keyed by CID, which equals the content-stream code only under Identity encoding, so a non-Identity CMap needs the lookup by mapped CID.
     // Otherwise every code misses /W and falls to /DW, which some generators set to 0, collapsing every glyph advance to zero.
     // Simple fonts have no charCodeToCID and keep the code-keyed lookup.

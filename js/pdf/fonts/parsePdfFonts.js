@@ -1202,6 +1202,10 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
         let gHexExtendedCount = 0;
         let gHexNonDecimalCount = 0;
         let gDec3Count = 0;
+        // The decimal reading of a C-name only resolves from /C32 up, so names in the control-code slots prove the slot-index convention.
+        let cDecCount = 0;
+        let cDecSlotNameCount = 0;
+        let cDecControlCount = 0;
         // A letter-bearing 4-hex name like /006e proves the font names glyphs by Unicode codepoint, so digit-only siblings like /0054 are hex positions too, not decimal byte values.
         // TeX-shaped names like /a224 are valid 4-hex strings and must not count as proof.
         let hex4LetterCount = 0;
@@ -1228,10 +1232,17 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
             // A 3-digit G-name (G100-G255) cannot be a 2-hex-digit identity name, so its presence rules out the hex-identity reading.
             const gDec3Match = /^G(\d{3,})$/.exec(gn);
             if (gDec3Match && Number(gDec3Match[1]) <= 0xFF) gDec3Count++;
+            const cDecMatch = /^C(\d{1,5})$/.exec(gn);
+            if (cDecMatch) {
+              cDecCount++;
+              if (Number(cDecMatch[1]) === prescanCharCode) cDecSlotNameCount++;
+              if (Number(cDecMatch[1]) < 0x20) cDecControlCount++;
+            }
             prescanCharCode++;
           }
         }
         const useNumericNameAsAscii = numericCount >= 2 && largeOffsetCount * 2 >= numericCount && hex4LetterCount === 0;
+        const cNamesAreSlotIndices = cDecCount > 0 && cDecSlotNameCount === cDecCount && cDecControlCount > 0;
         const useGHexAsIdentity = gHexCount > 0
           && gHexWin1252Count === gHexCount
           && (gHexNonDecimalCount > 0 || gHexExtendedCount > 0)
@@ -1258,9 +1269,12 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
                 if (cp > 0 && cp <= 0xFFFF) unicodeStr = String.fromCodePoint(cp);
               }
             }
-            // A Cnnnn glyph name is ambiguous between two producer conventions: decimal (/C0097 is 'a') and hex identity (/C75 at charCode 117 is that charCode).
-            // aglLookup already read it as decimal, so replace that when the hex reading equals the charCode.
-            {
+            // A slot-index name carries no character, so it must not fill a code the ToUnicode CMap lacks either.
+            if (cNamesAreSlotIndices && /^C[0-9a-fA-F]{1,5}$/.test(glyphName)) {
+              unicodeStr = null;
+            } else {
+              // A Cnnnn glyph name is ambiguous between two producer conventions: decimal (/C0097 is 'a') and hex identity (/C75 at charCode 117 is that charCode).
+              // aglLookup already read it as decimal, so replace that when the hex reading equals the charCode.
               const cMatch = /^C([0-9a-fA-F]{1,5})$/.exec(glyphName);
               if (cMatch) {
                 const hexCode = parseInt(cMatch[1], 16);
@@ -1317,11 +1331,6 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
                 && existingUnicode !== undefined
                 && existingUnicode !== unicodeStr;
 
-              // A Cnnnn name encodes its character deterministically, so it beats a conflicting ToUnicode entry even when the CMap is authoritative.
-              const shouldOverrideWithCPrefix = /^C[0-9a-fA-F]{1,5}$/.test(glyphName)
-                && existingUnicode !== undefined
-                && existingUnicode !== unicodeStr;
-
               const shouldOverrideWithGHex = /^G[0-9a-fA-F]{2}$/.test(glyphName)
                 && useGHexAsIdentity
                 && existingUnicode !== undefined
@@ -1344,9 +1353,10 @@ export function parsePageFonts(pageObjText, objCache, type3GlyphMappings) {
                 && existingIsPUA
                 && !resolvedIsPUA;
 
+              // A C-name never overrides an authoritative ToUnicode entry, it only fills a code the CMap lacks.
+              // The Cnnnn conventions are producer-private, and in practice a name that disagrees with the CMap is the one that is wrong.
               if (!toUnicode.has(charCode)
                 || shouldOverrideFallbackToUnicode
-                || shouldOverrideWithCPrefix
                 || shouldOverrideWithGHex
                 || shouldOverrideBrokenPUA) {
                 toUnicode.set(charCode, unicodeStr);
