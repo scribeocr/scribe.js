@@ -1,9 +1,48 @@
 import { OcrPar, OcrLine } from '../objects/ocrObjects.js';
-import { quantile, calcBboxUnion, normalizeHeadingText } from '../utils/miscUtils.js';
+import {
+  quantile, calcBboxUnion, normalizeHeadingText, cleanFamilyName,
+} from '../utils/miscUtils.js';
 
 // Superscript-digit footnote markers are unreliable in CJK text, where ordinary digits get spuriously flagged as superscript, so every digit-convention site skips CJK lines.
 // The symbol footnote convention (asterisks, daggers) is script-neutral, so do not extend this gate to it.
 const CJK_RE = /[\u1100-\u11FF\u3000-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF\uFF00-\uFFEF]/;
+
+// Weight and foundry suffixes register one typeface under several names (a bold face under its own name), so cross-family tests compare collapsed cores.
+const FAMILY_STYLE_TOKENS = new Set([
+  'bold', 'italic', 'oblique', 'light', 'ultralight', 'thin', 'medium', 'heavy', 'black', 'semibold', 'demibold', 'demi',
+  'extrabold', 'book', 'regular', 'roman', 'condensed', 'cond', 'narrow', 'expanded', 'it', 'bd', 'lt', 'md', 'hv', 'blk', 'obl', 'mt', 'ps', 'psmt',
+]);
+// 'roman' strips only as a separated token above, or TimesNewRoman would lose its tail here.
+const FAMILY_STYLE_SUFFIXES = [
+  'psmt', 'ps', 'mt', 'bolditalic', 'boldoblique', 'semibold', 'demibold', 'extrabold', 'bold', 'italic', 'oblique',
+  'condensed', 'light', 'black', 'heavy', 'medium', 'book', 'regular',
+];
+
+/**
+ * Collapse a font family name to its typeface identity, erasing subset prefixes and style or foundry suffixes.
+ * Obfuscated per-style subset names (the AdvTT pattern) and TeX Computer Modern faces collapse to one core per scheme, since their raw names differ per style or optical size.
+ * @param {string} fam
+ */
+const familyCore = (fam) => {
+  let s = cleanFamilyName((fam || '').replace(/^[A-Z]{6}\+/, '')).toLowerCase();
+  if (/^advtt[0-9a-f]{6,10}(\.[a-z]{1,3})?$/.test(s)) return 'advtt';
+  if (/^cm[a-z]{1,4}\d*$/.test(s)) return 'cm';
+  const dot = /^(.*)\.(b|i|bi|sc)$/.exec(s);
+  if (dot) s = dot[1];
+  let core = s.split(/[-_,\s]+/).filter((p) => p && !FAMILY_STYLE_TOKENS.has(p)).join('');
+  let stripped = true;
+  while (stripped && core.length > 4) {
+    stripped = false;
+    for (const suf of FAMILY_STYLE_SUFFIXES) {
+      if (core.length - suf.length >= 4 && core.endsWith(suf)) {
+        core = core.slice(0, -suf.length);
+        stripped = true;
+        break;
+      }
+    }
+  }
+  return core;
+};
 
 /**
  * Document-level layout analysis and paragraph detection for native-text PDFs, written back onto `pages` in place.
@@ -417,16 +456,24 @@ export function analyzeLayout(pages, opts = {}) {
     pageBodyFamily.set(p, dom);
   }
 
-  // Bold or all-caps stands out as a heading only on a page whose body is not itself bold/caps, so prevalence is measured per page.
-  /** @type {Map<number, {tot: number, bold: number, caps: number}>} */
+  // Bold, caps, italic, or underline stands out as a heading mark only on a page whose body is not itself set that way, so prevalence is measured per page.
+  /** @type {Map<number, {tot: number, bold: number, caps: number, ital: number, und: number}>} */
   const pageStyleChars = new Map();
   for (const f of feats) {
     if (f.sizeRatio < 0.92 || f.sizeRatio > 1.08) continue;
     let acc = pageStyleChars.get(f.page);
-    if (!acc) { acc = { tot: 0, bold: 0, caps: 0 }; pageStyleChars.set(f.page, acc); }
+    if (!acc) {
+      acc = {
+        tot: 0, bold: 0, caps: 0, ital: 0, und: 0,
+      };
+      pageStyleChars.set(f.page, acc);
+    }
     acc.tot += f.nChar;
     if (f.bold > 0.6) acc.bold += f.nChar;
     if (f.allCaps) acc.caps += f.nChar;
+    if (f.italic > 0.6) acc.ital += f.nChar;
+    const undWords = f.line.words.filter((w) => w.style && w.style.underline).length;
+    if (f.line.words.length && undWords / f.line.words.length > 0.6) acc.und += f.nChar;
   }
 
   // Per-page flush margin (not doc-level) so a footnote block or appendix at its own margin does not read as a page full of indented paragraphs.
@@ -632,6 +679,21 @@ export function analyzeLayout(pages, opts = {}) {
   for (const f of feats) {
     f.familyDistinct = familyHeading && !!f.fontFamily && f.fontFamily !== (pageBodyFamily.get(f.page) || bodyFontFamily);
   }
+
+  /** @type {Map<string, string>} */
+  const familyCoreByName = new Map();
+  for (const f of feats) {
+    let core = familyCoreByName.get(f.fontFamily);
+    if (core === undefined) {
+      core = familyCore(f.fontFamily);
+      familyCoreByName.set(f.fontFamily, core);
+    }
+    f.familyCore = core;
+  }
+  /** @type {Map<number, string>} */
+  const pageBodyCore = new Map();
+  for (const [p, fam] of pageBodyFamily) pageBodyCore.set(p, familyCoreByName.get(fam) ?? familyCore(fam));
+  const bodyCore = familyCore(bodyFontFamily);
 
   // Disable the footnote subsystem on scanned line-numbered transcripts: OCR-baked margin line numbers get misread as footnote markers and cascade whole pages of testimony into the 'footnote' role.
   // The 'scanned' half of the gate spares born-digital line-numbered briefs (pdfType 'text') carrying real footnotes.
@@ -1387,7 +1449,9 @@ export function analyzeLayout(pages, opts = {}) {
       if (!noteLines.length) continue;
       const content = pf.filter((f) => !f.runningFurniture).length;
       const values = openers.map((f) => f.enumerator.value).sort((a, b) => a - b);
-      notePages.set(p, { noteLines, openers, values, dominated: content > 0 && noteLines.length / content > 0.6 });
+      notePages.set(p, {
+        noteLines, openers, values, dominated: content > 0 && noteLines.length / content > 0.6,
+      });
     }
     const noteDomPages = [...notePages.keys()].filter((p) => notePages.get(p).dominated).sort((a, b) => a - b);
     /** @type {number[][]} */
@@ -1568,6 +1632,36 @@ export function analyzeLayout(pages, opts = {}) {
     }
   }
 
+  // A document can reserve a face for sub-body bold headings: bold, below body in nominal size, and in a family other than the body face on every such line.
+  // Prose set that way shows lowercase wrap starts and citation faces end lines terminally, so a qualifying face must stay clean on both fractions.
+  // Family names are only trustworthy for born-digital text, so the exemption never builds for recognized documents.
+  /** @type {Map<string, {n: number, lowStart: number, endsTerm: number, distinct: number}>} */
+  const subBoldGroups = new Map();
+  if (opts.pdfType === 'text') {
+    for (const f of feats) {
+      if (f.lineNum || f.folio || f.inTable || f.artifact || f.runningFurniture || f.endnote || f.footnoteBlock) continue;
+      if (!(f.bold > 0.6 && f.sizeRatio < 0.95)) continue;
+      const key = `${Math.round(f.size * 2) / 2}|${f.familyCore}`;
+      let g = subBoldGroups.get(key);
+      if (!g) {
+        g = {
+          n: 0, lowStart: 0, endsTerm: 0, distinct: 0,
+        };
+        subBoldGroups.set(key, g);
+      }
+      g.n++;
+      const enumLed = !!(f.enumerator && f.enumerator.scheme !== 'sup-ref' && f.enumerator.scheme !== 'bullet');
+      if (f.startsLower && !enumLed) g.lowStart++;
+      if (f.endsTerminal) g.endsTerm++;
+      if (f.familyCore !== (pageBodyCore.get(f.page) || bodyCore)) g.distinct++;
+    }
+  }
+  /** @type {Set<string>} */
+  const subBodyBoldFaces = new Set();
+  for (const [key, g] of subBoldGroups) {
+    if (g.n >= 3 && g.lowStart / g.n <= 0.1 && g.endsTerm / g.n <= 0.1 && g.distinct === g.n) subBodyBoldFaces.add(key);
+  }
+
   // Furniture, folios, line numbers, table cells, and note blocks are excluded so a style tuple shared between those roles and headings is judged on its content instances only.
   // The table detector owns cell detection, so heading rules here do not compensate for the cells it misses.
   /** @type {Map<string, {n: number, short: number, strong: number, weak: number, weakBig: number, enumLed: number, letterDom: number, lowerStart: number, headsBody: number}>} */
@@ -1586,7 +1680,8 @@ export function analyzeLayout(pages, opts = {}) {
     const col = columnFor(f.left, pageColumns.get(f.page) || null, bodySize);
     if (f.width < (col ? col.width : colWidth) * 0.85) s.short++;
     const st = pageStyleChars.get(f.page);
-    const boldDistinct = f.bold > 0.6 && (!st || !st.tot || st.bold / st.tot < 0.3);
+    const boldDistinct = f.bold > 0.6 && f.sizeRatio >= 0.95 && (!st || !st.tot || st.bold / st.tot < 0.3);
+    // Caps take no size floor because an all-caps line reads as heading-sized even below body size.
     const capsDistinct = f.allCaps && (!st || !st.tot || st.caps / st.tot < 0.3);
     if (f.sizeRatio >= 1.15 || boldDistinct || capsDistinct) s.strong++;
     else if ((f.familyDistinct || f.colorDistinct) && f.sizeRatio >= 0.95) {
@@ -1627,6 +1722,10 @@ export function analyzeLayout(pages, opts = {}) {
   }
   model.headingSigs = headingSigs;
   model.headingSigStats = sigStats;
+  model.pageStyleChars = pageStyleChars;
+  model.pageBodyCore = pageBodyCore;
+  model.bodyCore = bodyCore;
+  model.subBodyBoldFaces = subBodyBoldFaces;
 
   // Classify in reading order so each line sees the already-classified line above it on the same page.
   for (let i = 0; i < feats.length; i++) {
@@ -1913,6 +2012,105 @@ export function analyzeLayout(pages, opts = {}) {
   const pageRules = new Map();
   for (let p = 0; p < pages.length; p++) pageRules.set(p, pages[p].rules || []);
   model.pageRules = pageRules;
+
+  // Hanging-indent reference lists (a list of cases, a bibliography): entries open at the flush margin and wrap to one shallow hang column, set solid and ragged right.
+  // The shape inverts the document's indent convention — here the indent column marks a continuation and the flush margin an entry start — so runs are detected on positive evidence
+  // and geometricBreak applies the inverted reading only inside them.
+  const refListTol = bodySize * 0.5;
+  /** @type {Array<{page:number, flush:number, hang:?number, lines:Array<LineFeat>, evidenced:boolean, qualified:boolean}>} */
+  const refListRuns = [];
+  for (const [p, pf] of featByPage) {
+    const flushP = pageFlush.get(p) ?? bodyLeft;
+    const pitchP = Math.max(pageBodyPitch.get(p) || 0, leading);
+    /** @type {?{page:number, flush:number, hang:?number, lines:Array<LineFeat>}} */
+    let run = null;
+    const flushRun = () => {
+      const cur = run;
+      run = null;
+      if (!cur || cur.lines.length < 8) return;
+      // A reference list opens at the doc margin or at a detected column's left, where a signature or address block sits at an arbitrary offset (often the page's own most-common left).
+      const pcols = pageColumns.get(p);
+      const colAligned = Math.abs(cur.flush - bodyLeft) <= bodySize
+        || (!!pcols && pcols.some((c) => Math.abs(cur.flush - c.left) <= bodySize));
+      if (!colAligned) return;
+      // Width is judged in the run's own frame, not the doc's: a list inside a narrower column or box still wraps at its own margin, and doc-frame tests would read every such line as short.
+      const runRight = Math.max(...cur.lines.map((ln) => ln.right));
+      const runWidth = runRight - cur.flush;
+      /** @param {LineFeat} ln */
+      const early = (ln) => ln.right < runRight - runWidth * 0.12;
+      const hangLines = cur.lines.filter((ln) => ln.left > cur.flush + refListTol);
+      const flushLines = cur.lines.length - hangLines.length;
+      // A hang line's predecessor ran the measure out (that is why the entry wrapped), where a first-line-indented opener or a one-line dialogue paragraph follows an early-ending final.
+      // The full-predecessor test is what separates the two shapes, since both put short indented lines at one column.
+      const hangPrevFull = hangLines.filter((ln) => cur.lines[cur.lines.indexOf(ln) - 1].right >= runRight - runWidth * 0.25).length;
+      const earlyHang = hangLines.filter(early).length;
+      const earlyFlush = cur.lines.filter((ln) => ln.left <= cur.flush + refListTol && early(ln)).length;
+      // A near-full line ending on a bare letter is mid-sentence, and in a true hanging list its continuation always lands on the hang column, never at flush.
+      // One flush line after such a predecessor means the run mixes flush-wrapping prose and must not qualify, or the entry rule would cut those sentences at each line.
+      // Digit ends are exempt because entries legitimately end on cite and page numbers near the margin; case is not consulted, since caseless scripts wrap the same way.
+      const flushSentenceCont = cur.lines.some((ln, i) => i > 0 && ln.left <= cur.flush + refListTol
+        && /\p{L}\s*$/u.test(cur.lines[i - 1].text)
+        && cur.lines[i - 1].right >= runRight - runWidth * 0.25);
+      if (flushSentenceCont) return;
+      const evidenced = hangLines.length >= 2 && hangPrevFull >= hangLines.length * 0.75
+        && earlyHang >= hangLines.length * 0.65
+        && cur.lines.filter(early).length >= cur.lines.length * 0.3;
+      // A spillover page whose entries all fit one line shows no hang of its own, so it may only chain to an evidenced neighbour below.
+      const chainable = earlyFlush >= flushLines * 0.6
+        && (hangLines.length === 0 || earlyHang >= hangLines.length * 0.5);
+      if (evidenced || chainable) refListRuns.push({ ...cur, evidenced, qualified: evidenced });
+    };
+    for (const ln of pf) {
+      const okBase = ln.role === 'body' && Math.abs(ln.size - bodySize) <= bodySize * 0.25;
+      const atFlush = okBase && Math.abs(ln.left - flushP) < refListTol;
+      if (run) {
+        const dt = ln.top - run.lines[run.lines.length - 1].top;
+        const atHang = okBase && ln.left > flushP + refListTol
+          && (run.hang == null ? ln.left < flushP + bodySize * 4 : Math.abs(ln.left - run.hang) < refListTol);
+        if (dt > 0 && dt <= pitchP * 1.35 && (atFlush || atHang)) {
+          if (atHang && run.hang == null) run.hang = ln.left;
+          run.lines.push(ln);
+          continue;
+        }
+        flushRun();
+      }
+      if (atFlush) {
+        run = {
+          page: p, flush: flushP, hang: null, lines: [ln],
+        };
+      }
+    }
+    flushRun();
+  }
+  const refRunsByPage = new Map();
+  for (const r of refListRuns) {
+    if (!refRunsByPage.has(r.page)) refRunsByPage.set(r.page, []);
+    refRunsByPage.get(r.page).push(r);
+  }
+  // Hang evidence travels along chains of adjacent-page runs at one flush, until a fixed point, so a multi-page list qualifies its hangless spillover pages.
+  let refChainGrew = true;
+  while (refChainGrew) {
+    refChainGrew = false;
+    for (const r of refListRuns) {
+      if (r.qualified) continue;
+      const pageRuns = refRunsByPage.get(r.page);
+      const prevRuns = refRunsByPage.get(r.page - 1);
+      const nextRuns = refRunsByPage.get(r.page + 1);
+      const fromPrev = pageRuns[0] === r && prevRuns && prevRuns[prevRuns.length - 1].qualified
+        && Math.abs(prevRuns[prevRuns.length - 1].flush - r.flush) <= refListTol;
+      const fromNext = pageRuns[pageRuns.length - 1] === r && nextRuns && nextRuns[0].qualified
+        && Math.abs(nextRuns[0].flush - r.flush) <= refListTol;
+      if (fromPrev || fromNext) {
+        r.qualified = true;
+        refChainGrew = true;
+      }
+    }
+  }
+  for (const r of refListRuns) {
+    if (!r.qualified) continue;
+    const runRef = { flush: r.flush, hang: r.hang };
+    for (const ln of r.lines) ln.refListRun = runRef;
+  }
 
   // inInsetRun marks >=2 consecutive same-column lines at one left edge, separating a block quote from a lone first-line indent for the per-line quote rules that run where the region pass declined.
   // Whether that margin is inset is established elsewhere (bothSideInset), not here.
@@ -2557,6 +2755,13 @@ function geometricBreak(f, prev, model, curParFirst) {
         && Math.abs(f.top - prev.top) < Math.max(prev.height, f.height) * 1.8) {
       return { newPar: false, reason: '' };
     }
+    // A deeper enumerator-led line in a different weight or slant opens a subordinate heading-ladder level, not a wrap of the heading above.
+    // A wrapped heading tail never opens with its own marker, so the marker plus the style change is decisive.
+    if (f.enumerator && f.enumerator.scheme !== 'bullet' && f.enumerator.scheme !== 'sup-ref'
+        && f.left > prev.left + model.bodySize * 0.5
+        && ((f.bold > 0.6) !== (prev.bold > 0.6) || (f.italic > 0.6) !== (prev.italic > 0.6))) {
+      return { newPar: true, reason: 'heading ladder step' };
+    }
     const headCols = model.pageColumns && model.pageColumns.get(f.page);
     // A title line is symmetric (li~=ri) whether visibly centered (large equal margins) or a wrapped line filling nearly the full column (tiny equal margins).
     // A flush-left body line is asymmetric (li~=0, ri large).
@@ -2760,6 +2965,15 @@ function geometricBreak(f, prev, model, curParFirst) {
   if (curParFirst && curParFirst.enumerator && curParFirst.enumerator.scheme === 'bullet'
       && !startsContinuation && f.left < curParFirst.left - model.bodySize * 0.5) {
     return { newPar: true, reason: 'list outdent' };
+  }
+
+  // Inside a hanging-list run (model pass) the convention inverts the rules below: the hang column is always a wrap, and a flush line always opens the next entry.
+  // The entry break must not defer to an early right edge or a capitalized opener, since a solid ragged list separates entries by the flush margin alone ("duPont" after a full-width entry).
+  if (f.refListRun && prev.refListRun === f.refListRun && prev.page === f.page) {
+    if (f.left > f.refListRun.flush + model.bodySize * 0.5) {
+      return { newPar: false, reason: 'hang-list continuation' };
+    }
+    if (!prev.endsHyphen) return { newPar: true, reason: 'hang-list entry' };
   }
 
   // A genuine first-line indent is indented relative to its own paragraph: the continuation below pops back leftward to flush (the same principle the model's indent detector uses).
@@ -3003,7 +3217,13 @@ function classifyRole(f, model, colWidth, prev) {
   const tupleStats = model.headingSigStats.get(f.sigKey);
   const tupleProse = !!(tupleStats && tupleStats.n >= 2
     && tupleStats.lowerStart / tupleStats.n > 0.4 && tupleStats.short / tupleStats.n < 0.5);
-  const fullBoldHeading = !sigMember && !tupleProse && f.bold >= 0.9 && model.boldHeading && f.nChar <= 200 && letterDom;
+  // An all-caps line reads as heading-sized even when set below body size.
+  // So does a line in a face the document reserves for sub-body bold headings, since such faces are chosen to read heading-like against the body family.
+  const subBodyHeadFace = f.sizeRatio < 0.95
+    && f.familyCore !== (model.pageBodyCore.get(f.page) || model.bodyCore)
+    && model.subBodyBoldFaces.has(`${Math.round(f.size * 2) / 2}|${f.familyCore}`);
+  const fullBoldHeading = !sigMember && !tupleProse && f.bold >= 0.9 && model.boldHeading && f.nChar <= 200 && letterDom
+    && (f.sizeRatio >= 0.95 || f.allCaps || subBodyHeadFace);
   let displaySingleton = false;
   if (!sigMember && f.sizeRatio >= 1.15 && f.nChar <= 200 && letterDom) {
     const lm = col ? col.left : (model.pageFlush.get(f.page) ?? model.bodyLeft);
@@ -3019,10 +3239,26 @@ function classifyRole(f, model, colWidth, prev) {
   // Form-based sub-heading path for a heading face the signature model cannot qualify because the document sets prose in it too.
   // The deep-indent gate separates a real sub-heading from a flush citation connector ("v.", "e. g.") that shows the same alpha-dot enumerator form at the body margin.
   let enumSetOffHeading = false;
-  if (!sigMember && en && en.scheme !== 'bullet' && en.scheme !== 'sup-ref' && f.familyDistinct) {
-    const flushL = col ? col.left : (model.pageFlush.get(f.page) ?? model.bodyLeft);
-    enumSetOffHeading = f.left > flushL + Math.max(model.indentDelta, 0) + model.bodySize
-      && letters >= 2 && letters >= digits;
+  if (!sigMember && en && en.scheme !== 'bullet' && en.scheme !== 'sup-ref') {
+    // Italic or underline on the words after the marker also sets a heading face off, judged against the page's own prevalence like bold and caps.
+    // The marker word is skipped because producers set the enumerator roman and un-underlined, which drags a short heading's whole-line fraction below any threshold.
+    // Bracketed lines are excluded: enumerated template lines set placeholder instructions in italic ("[insert other relevant factor]"), and those are not headings.
+    let styleSetOff = f.familyDistinct;
+    if (!styleSetOff && !f.text.includes('[')) {
+      const rest = f.line.words.slice(1);
+      const stHere = model.pageStyleChars && model.pageStyleChars.get(f.page);
+      if (rest.length && stHere && stHere.tot) {
+        const italFrac = rest.filter((w) => w.style && w.style.italic).length / rest.length;
+        const undFrac = rest.filter((w) => w.style && w.style.underline).length / rest.length;
+        styleSetOff = (italFrac > 0.6 && stHere.ital / stHere.tot < 0.3)
+          || (undFrac > 0.6 && stHere.und / stHere.tot < 0.3);
+      }
+    }
+    if (styleSetOff) {
+      const flushL = col ? col.left : (model.pageFlush.get(f.page) ?? model.bodyLeft);
+      enumSetOffHeading = f.left > flushL + Math.max(model.indentDelta, 0) + model.bodySize
+        && letters >= 2 && letters >= digits;
+    }
   }
   if (sigMember || fullBoldHeading || displaySingleton || enumSetOffHeading) {
     // A bold emphasis phrase in prose can wrap so its tail lands majority-bold and false-promotes via the qualified bold tuple.
@@ -3393,6 +3629,10 @@ function enumeratedListItemStart(f, model) {
  * @property {Map<number, ?Array<{left: number, right: number, width: number}>>} pageColumns
  * @property {Set<string>} headingSigs - style tuples qualified to make headings.
  * @property {Map<string, {n: number, short: number, strong: number, weak: number, weakBig: number, enumLed: number, letterDom: number, lowerStart: number, headsBody: number}>} headingSigStats
+ * @property {Map<number, {tot: number, bold: number, caps: number, ital: number, und: number}>} pageStyleChars - per-page style-char prevalence for the distinctness tests.
+ * @property {Map<number, string>} pageBodyCore - collapsed family core of each page's dominant body face.
+ * @property {string} bodyCore - collapsed family core of the document body face.
+ * @property {Set<string>} subBodyBoldFaces - size|family-core groups the document reserves for sub-body bold headings.
  * @property {Map<number, Array<{y: number, left: number, right: number}>>} pageRules - drawn horizontal separator rules per page.
  */
 
@@ -3413,6 +3653,7 @@ function enumeratedListItemStart(f, model) {
  * @property {number} italic
  * @property {boolean} artifact
  * @property {string} fontFamily
+ * @property {string} familyCore - collapsed typeface identity of fontFamily.
  * @property {string} color - char-weighted dominant text colour of the line (hex).
  * @property {boolean} colorDistinct - colour differs from the page body colour in a monochrome doc.
  * @property {boolean} familyDistinct - font family differs from the page body family in a family-dominated doc.
@@ -3449,6 +3690,7 @@ function enumeratedListItemStart(f, model) {
  * @property {boolean} hangMarker - short outdented lead (a transcript "Q."/"A." speaker marker or hanging-list lead) with its body text on the same row.
  * @property {boolean} [rowFragment] - small same-row marker token (a note reference beside a taller line) routed out of the top-to-bottom flow.
  * @property {boolean} [inInsetRun] - line sits in a run of >=2 consecutive lines sharing one left edge.
+ * @property {?{flush:number, hang:?number}} [refListRun] - hanging-list run membership (a reference list or bibliography): flush opens an entry, the hang column continues it.
  * @property {boolean} [footnoteOpener] - bare-integer note opener confirmed by the page's note-number chain.
  * @property {boolean} [lnSplit] - a leading line number was split off this line, shifting its left bbox right.
  */
