@@ -14,7 +14,9 @@ import {
   addInk as addInkImpl, addStamp as addStampImpl, addFillText as addFillTextImpl, syncFillText as syncFillTextImpl,
   detectFillTargets as detectFillTargetsImpl,
 } from '../fillSign.js';
-import { deleteTextLines as deleteTextLinesImpl, replaceTextLine as replaceTextLineImpl, TextEditHistory } from '../textEdits.js';
+import {
+  deleteTextLines as deleteTextLinesImpl, replaceTextLine as replaceTextLineImpl, deleteImages as deleteImagesImpl, ContentEditHistory,
+} from '../textEdits.js';
 import { renderPageStatic as renderPageStaticImpl } from '../debug.js';
 import { exportData as exportDataImpl, download as downloadImpl } from '../export/export.js';
 import { subsetPdf, stripMetadataPdf } from '../export/pdf/subsetPdf.js';
@@ -53,7 +55,7 @@ function uniqueLayers(layers) {
  */
 function densePageArrays(doc) {
   const arrs = [...uniqueLayers(doc.ocr), ...uniqueLayers(doc.ocrRaw)];
-  arrs.push(doc.pageMetrics, doc.layoutRegions.pages, doc.layoutDataTables.pages, doc.annotations.pages, doc.textEdits.pages, doc.nativeText.pages);
+  arrs.push(doc.pageMetrics, doc.layoutRegions.pages, doc.layoutDataTables.pages, doc.annotations.pages, doc.contentEdits.pages, doc.nativeText.pages);
   if (Array.isArray(doc.vis)) arrs.push(doc.vis);
   if (Array.isArray(doc.convertPageWarn)) arrs.push(doc.convertPageWarn);
   // Source image (image-input docs) and per-page 300-DPI dims are full-length; rendered caches are not (see clearImageCaches).
@@ -165,10 +167,10 @@ function clonePageBundle(doc, i) {
     }
   }
 
-  const textEdits = cloneAt(doc.textEdits.pages);
-  if (Array.isArray(textEdits)) {
+  const contentEdits = cloneAt(doc.contentEdits.pages);
+  if (Array.isArray(contentEdits)) {
     const editGroupIdMap = new Map();
-    for (const rec of textEdits) {
+    for (const rec of contentEdits) {
       if (!rec) continue;
       rec.id = getRandomAlphanum(10);
       if (rec.wordIds) rec.wordIds = rec.wordIds.map((/** @type {string} */ id) => wordIdMap.get(id) || id);
@@ -195,7 +197,7 @@ function clonePageBundle(doc, i) {
     layoutRegions: cloneAt(doc.layoutRegions.pages),
     layoutDataTables: cloneAt(doc.layoutDataTables.pages),
     annotations,
-    textEdits,
+    contentEdits,
     nativeText,
     srcDocId: doc.id,
     vis: cloneAt(doc.vis),
@@ -474,9 +476,9 @@ export class ScribeDoc {
     /**
      * PDF export applies these destructively to the content stream.
      * `.scribe` saves keep them unapplied.
-     * @type {{ pages: Array<Array<TextEdit>> }}
+     * @type {{ pages: Array<Array<ContentEdit>> }}
      */
-    this.textEdits = { pages: [] };
+    this.contentEdits = { pages: [] };
 
     /**
      * Per-page native-text metadata, keyed by word id.
@@ -516,7 +518,7 @@ export class ScribeDoc {
     /** Bounded undo/redo history for this document's page operations. */
     this.history = new PageHistory(this);
 
-    this.textEditHistory = new TextEditHistory(this);
+    this.contentEditHistory = new ContentEditHistory(this);
 
     /**
      * Per-document handlers consulted by emit sites during `recognize()` etc.
@@ -727,7 +729,7 @@ export class ScribeDoc {
         if (b.srcDocId === this.id || !Array.isArray(b.annotations)) return b.annotations;
         return b.annotations.filter((a) => !(a.type === 'link' && a.dest));
       }));
-      spliceFull(this.textEdits.pages, bundles.map((b) => b.textEdits ?? []));
+      spliceFull(this.contentEdits.pages, bundles.map((b) => b.contentEdits ?? []));
       spliceFull(this.nativeText.pages, bundles.map((b) => b.nativeText ?? {}));
       spliceFull(this.vis, bundles.map((b) => b.vis));
       spliceFull(this.convertPageWarn, bundles.map((b) => b.convertPageWarn));
@@ -908,7 +910,7 @@ export class ScribeDoc {
     this.ocrRaw.active = [];
     this.annotations.pages.length = 0;
     this.annotations.restored = false;
-    this.textEdits.pages.length = 0;
+    this.contentEdits.pages.length = 0;
     this.nativeText.pages.length = 0;
     this.layoutRegions.pages.length = 0;
     this.layoutDataTables.pages.length = 0;
@@ -918,7 +920,7 @@ export class ScribeDoc {
     this.images.clear();
     this.fonts.clear();
     this.history.clear();
-    this.textEditHistory.clear();
+    this.contentEditHistory.clear();
   }
 
   /**
@@ -1126,7 +1128,7 @@ export class ScribeDoc {
 
   /**
    * Delete whole lines of visible native PDF text.
-   * Records one undoable step in `textEditHistory`.
+   * Records one undoable step in `contentEditHistory`.
    * @param {Parameters<typeof deleteTextLinesImpl>[1]} lines
    * @returns {ReturnType<typeof deleteTextLinesImpl>}
    */
@@ -1137,7 +1139,7 @@ export class ScribeDoc {
   /**
    * Replace a line of visible native PDF text with new text, optionally toggling bold/italic per word.
    * The raster, search, selection, and every export reflect the change.
-   * Records one undoable step in `textEditHistory`.
+   * Records one undoable step in `contentEditHistory`.
    * @param {Parameters<typeof replaceTextLineImpl>[1]} line
    * @param {Parameters<typeof replaceTextLineImpl>[2]} newText
    * @param {Parameters<typeof replaceTextLineImpl>[3]} [opts]
@@ -1145,6 +1147,15 @@ export class ScribeDoc {
    */
   replaceTextLine(line, newText, opts) {
     return replaceTextLineImpl(this, line, newText, opts);
+  }
+
+  /**
+   * Delete the image placements matching the given extents, as one undoable step.
+   * @param {Parameters<typeof deleteImagesImpl>[1]} items
+   * @returns {ReturnType<typeof deleteImagesImpl>}
+   */
+  deleteImages(items) {
+    return deleteImagesImpl(this, items);
   }
 
   /**

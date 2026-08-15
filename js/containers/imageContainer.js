@@ -317,11 +317,11 @@ export class ImageStore {
   };
 
   /**
-   * Text-edit payload for display slot `n`'s render jobs.
+   * Content-edit payload for display slot `n`'s render jobs.
    * @param {number} n - Page number
    */
-  #textEditsForPage = (n) => {
-    const records = this.#doc.textEdits?.pages?.[n] || [];
+  #editsForPage = (n) => {
+    const records = this.#doc.contentEdits?.pages?.[n] || [];
     const dims = this.#pageMetrics[n]?.dims;
     const ephemeral = this.#ephemeralEditRects.get(n);
     if ((records.length === 0 && !ephemeral) || !dims) return null;
@@ -498,7 +498,7 @@ export class ImageStore {
       // Bitmap output needs OffscreenCanvas, so it is browser-only and Node always renders to PNG.
       const outputFormat = wantBitmap && typeof OffscreenCanvas !== 'undefined' ? 'bitmap' : 'png';
       const result = await pdfScheduler.renderPdfPage({
-        pageIndex: sourcePageN, colorMode, dpi, outputFormat, textEdits: this.#textEditsForPage(n),
+        pageIndex: sourcePageN, colorMode, dpi, outputFormat, edits: this.#editsForPage(n),
       }, forViewer);
       // The render was dropped from the queue (e.g. evicted to keep the viewer lane bounded).
       if (result === SKIPPED) return SKIPPED;
@@ -528,7 +528,7 @@ export class ImageStore {
     // Display slot `n` may have been reordered. Raster its source page, not its position.
     const sourcePageN = pm.sourcePageN ?? n;
     const result = await pdfScheduler.renderPdfPage({
-      pageIndex: sourcePageN, colorMode: color ? 'color' : 'gray', targetWidth, outputFormat: 'bitmap', textEdits: this.#textEditsForPage(n),
+      pageIndex: sourcePageN, colorMode: color ? 'color' : 'gray', targetWidth, outputFormat: 'bitmap', edits: this.#editsForPage(n),
     }, forViewer);
     if (result === SKIPPED) return SKIPPED;
     this.#recordRenderCost(n, result.perf);
@@ -738,7 +738,7 @@ export class ImageStore {
         // Display slot `n` may have been reordered, so raster its source page, not its position.
         const sourcePageN = pm?.sourcePageN ?? n;
         const result = await pdfScheduler.renderPdfPage({
-          pageIndex: sourcePageN, colorMode: 'color', dpi, outputFormat: 'jpeg', quality, textEdits: this.#textEditsForPage(n),
+          pageIndex: sourcePageN, colorMode: 'color', dpi, outputFormat: 'jpeg', quality, edits: this.#editsForPage(n),
         }, false);
         return result && result !== SKIPPED ? result.blob ?? null : null;
       }

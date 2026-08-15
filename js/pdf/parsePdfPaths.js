@@ -47,7 +47,7 @@ import { ObjectCache } from './objectCache.js';
  *   `tokenizeContentStream(getPageContentStream(...))`. Pass when the caller
  *   has already tokenized the page content stream to avoid duplicating that
  *   work; omit otherwise.
- * @param {{ imagePlacements?: Array<{left: number, bottom: number, right: number, top: number}> }} [collect]
+ * @param {{ imagePlacements?: Array<{left: number, bottom: number, right: number, top: number, objNum?: number}>, initialCtm?: number[] }} [collect]
  *   Optional out-collector. When `imagePlacements` is present, every image
  *   placement (a `Do` surviving form inlining, or an inline image) is appended
  *   as its unit square through the live CTM, in PDF points (y-up).
@@ -81,9 +81,12 @@ export function parsePagePaths(pageObjText, objCache, prefetchedTokens, collect)
  * @param {Set<number>} visited - cycle detection
  */
 function inlineFormXObjects(tokens, containerObjText, objCache, visited) {
-  // Find Form XObjects available in the container's Resources
-  const forms = findFormXObjects(containerObjText, objCache);
-  if (forms.size === 0) return tokens;
+  // Find Form XObjects available in the container's Resources.
+  // XObject names are scoped to their own container, so this recursive walk is the only place an image `Do` can be resolved to an object number.
+  /** @type {Map<string, number>} */
+  const imageObjNums = new Map();
+  const forms = findFormXObjects(containerObjText, objCache, imageObjNums);
+  if (forms.size === 0 && imageObjNums.size === 0) return tokens;
 
   const result = [];
   const operandStack = [];
@@ -97,6 +100,13 @@ function inlineFormXObjects(tokens, containerObjText, objCache, visited) {
 
     if (tok.value === 'Do' && operandStack.length >= 1) {
       const name = operandStack[operandStack.length - 1].value;
+      const imageObjNum = imageObjNums.get(name);
+      if (imageObjNum !== undefined) {
+        // The caller's prefetched tokens are shared with other walks, so the identity goes on a fresh token instead of onto `tok`.
+        result.push({ type: 'operator', value: 'Do', imageObjNum });
+        operandStack.length = 0;
+        continue;
+      }
       const form = forms.get(name);
       if (form && !visited.has(form.objNum)) {
         // Remove the XObject name operand we already pushed
@@ -177,7 +187,7 @@ function ctmScale(ctm) {
  * Process tokenized content-stream operators and collect painted paths.
  *
  * @param {Array<import('./parsePdfDoc.js').PDFToken>} tokens
- * @param {{ imagePlacements?: Array<{left: number, bottom: number, right: number, top: number}> }} [collect]
+ * @param {{ imagePlacements?: Array<{left: number, bottom: number, right: number, top: number, objNum?: number}>, initialCtm?: number[] }} [collect]
  * @returns {PaintedPath[]}
  */
 function executePathOperators(tokens, collect) {
@@ -218,12 +228,14 @@ function executePathOperators(tokens, collect) {
   /**
    * Record the placed footprint of an image by transforming the unit square through the live CTM.
    * An image always paints the unit square (PDF 32000-2 section 8.9.4), so its pixel dimensions do not affect the footprint.
+   * @param {number} [objNum]
    */
-  function recordImagePlacement() {
+  function recordImagePlacement(objNum) {
     if (!collect || !collect.imagePlacements) return;
+    const effCtm = collect.initialCtm ? matMul(ctm, collect.initialCtm) : ctm;
     const corners = [
-      transformPoint(0, 0, ctm), transformPoint(1, 0, ctm),
-      transformPoint(0, 1, ctm), transformPoint(1, 1, ctm),
+      transformPoint(0, 0, effCtm), transformPoint(1, 0, effCtm),
+      transformPoint(0, 1, effCtm), transformPoint(1, 1, effCtm),
     ];
     let minX = Infinity; let maxX = -Infinity;
     let minY = Infinity; let maxY = -Infinity;
@@ -233,9 +245,11 @@ function executePathOperators(tokens, collect) {
       if (p.y < minY) minY = p.y;
       if (p.y > maxY) maxY = p.y;
     }
-    collect.imagePlacements.push({
+    const placement = {
       left: minX, bottom: minY, right: maxX, top: maxY,
-    });
+    };
+    if (objNum !== undefined) placement.objNum = objNum;
+    collect.imagePlacements.push(placement);
   }
 
   function emitPath(fill, stroke, evenOdd) {
@@ -306,7 +320,7 @@ function executePathOperators(tokens, collect) {
       case 'Do':
         // Form XObjects were inlined before this walk (parsePagePaths), so a surviving Do is an image
         // (or an unresolvable form, whose unit-square footprint at a typical identity CTM is negligible).
-        recordImagePlacement();
+        recordImagePlacement(tok.imageObjNum);
         operandStack.length = 0;
         break;
 

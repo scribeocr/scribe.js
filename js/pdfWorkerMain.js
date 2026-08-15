@@ -117,7 +117,7 @@ export class PdfScheduler {
   /**
    * Dispatch a single page for rendering via the scheduler.
    * @param {{ pageIndex: number, colorMode: string, dpi?: number, targetWidth?: number, outputFormat?: 'png'|'jpeg'|'bitmap', quality?: number,
-   * textEdits?: ?{records: Array<TextEdit>, dims: {width: number, height: number}} }} args
+   * edits?: ?{records: Array<ContentEdit>, dims: {width: number, height: number}} }} args
    * @param {boolean} [forViewer=false] - Viewer renders are served ahead of background work.
    *   A superseded viewer render may be dropped, resolving to SKIPPED.
    */

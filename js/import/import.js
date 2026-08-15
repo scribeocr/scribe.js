@@ -237,7 +237,7 @@ async function restoreSessionFromFile(doc, scribeFile) {
           pageSourceIndices: header.pageSourceIndices,
           outline: header.outline,
           inputData: header.inputData,
-          session: header.session ? { ...header.session, textEdits: new Array(n).fill(null), nativeText: new Array(n).fill(null) } : undefined,
+          session: header.session ? { ...header.session, contentEdits: new Array(n).fill(null), nativeText: new Array(n).fill(null) } : undefined,
         };
       };
       const applyRecord = (line) => {
@@ -250,7 +250,9 @@ async function restoreSessionFromFile(doc, scribeFile) {
         }
         assembled.ocr[rec.i] = rec.ocr ?? null;
         if (assembled.session) {
-          if (rec.textEdits !== undefined) assembled.session.textEdits[rec.i] = rec.textEdits;
+          // `textEdits` is the pre-rename key, still present in older saved sessions.
+          const recEdits = rec.contentEdits !== undefined ? rec.contentEdits : rec.textEdits;
+          if (recEdits !== undefined) assembled.session.contentEdits[rec.i] = recEdits;
           if (rec.nativeText !== undefined) assembled.session.nativeText[rec.i] = rec.nativeText;
         }
       };
@@ -314,7 +316,9 @@ async function restoreSessionFromFile(doc, scribeFile) {
     doc.annotations.restored = true;
   }
   if (scribeRestoreObj.session) {
-    if (scribeRestoreObj.session.textEdits) doc.textEdits.pages = scribeRestoreObj.session.textEdits;
+    // `textEdits` is the pre-rename key, still present in older saved sessions.
+    const sessionEdits = scribeRestoreObj.session.contentEdits || scribeRestoreObj.session.textEdits;
+    if (sessionEdits) doc.contentEdits.pages = sessionEdits;
     if (scribeRestoreObj.session.fillText) markFillTextRefs(doc, scribeRestoreObj.session.fillText);
     if (scribeRestoreObj.session.nativeText) {
       for (let i = 0; i < scribeRestoreObj.session.nativeText.length; i++) {
@@ -681,8 +685,8 @@ export async function importFiles(doc, files, options = {}) {
 
   // Full-length so page insert/delete splice these arrays in lockstep (spliceFull skips short arrays).
   for (let i = 0; i < doc.inputData.pageCount; i++) {
-    if (!doc.textEdits.pages[i]) {
-      doc.textEdits.pages[i] = [];
+    if (!doc.contentEdits.pages[i]) {
+      doc.contentEdits.pages[i] = [];
     }
     if (!doc.nativeText.pages[i]) {
       doc.nativeText.pages[i] = {};

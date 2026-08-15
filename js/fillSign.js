@@ -228,7 +228,7 @@ export function addStamp(doc, n, item) {
  *   squares?: Array<{left: number, top: number, right: number, bottom: number, stroke: boolean}>,
  *   marks?: Array<{left: number, top: number, right: number, bottom: number}>,
  *   marksOverflow?: boolean,
- *   images?: Array<{left: number, top: number, right: number, bottom: number}>,
+ *   images?: Array<{left: number, top: number, right: number, bottom: number, sites: Array<{left: number, top: number, right: number, bottom: number, objNum?: number}>}>,
  *   glyphBoxes?: Array<{id: string, bbox: {left: number, top: number, right: number, bottom: number}}>,
  * }>}
  */
@@ -240,6 +240,16 @@ export function setPageFillShapes(pageObj, shapes) {
     || shapes?.glyphBoxes?.length)) {
     fillShapesByPage.set(pageObj, shapes);
   }
+}
+
+/**
+ * The image placements parsed from a page, in the page-pixel frame.
+ * One placement is one visual image, holding a site for each draw that contributes to it.
+ * @param {?OcrPage} pageObj
+ * @returns {Array<{left: number, top: number, right: number, bottom: number, sites: Array<{left: number, top: number, right: number, bottom: number, objNum?: number}>}>}
+ */
+export function pageImagePlacements(pageObj) {
+  return (pageObj && fillShapesByPage.get(pageObj)?.images) || [];
 }
 
 // Units: pt thresholds convert through the page's px-per-pt scale, em thresholds scale by the candidate's own word height, and frac thresholds are fractions of the named quantity.

@@ -12,6 +12,7 @@ import { redactWords, redactRegion } from '../viewerRedactions.js';
 import { createLineEditor } from '../editTextLineEditor.js';
 import { createFillSignPalette, ICON_FILLSIGN } from '../viewerFillSign.js';
 import { nativeTextForPage } from '../../../js/textEdits.js';
+import { pageImagePlacements } from '../../../js/fillSign.js';
 import { filesFromDropEvent } from '../dragAndDrop.js';
 
 // Filled highlighter-marker glyph (Material).
@@ -1925,7 +1926,7 @@ export function createEditTextTool(scribe) {
         ev.preventDefault();
         ev.stopPropagation();
         const redo = ev.key === 'y' || ev.shiftKey;
-        const pages = redo ? scribe.doc.textEditHistory.redo() : scribe.doc.textEditHistory.undo();
+        const pages = redo ? scribe.doc.contentEditHistory.redo() : scribe.doc.contentEditHistory.undo();
         if (pages) {
           scribe.clearTextSelection();
           hideHover();
@@ -2014,6 +2015,363 @@ export function createEditTextTool(scribe) {
       scribe._editTextEditLine = null;
       scribe._editTextCopySelection = null;
       scribe._editTextLineEditor = null;
+    };
+  }
+
+  return { toolbarElem, installBehaviors };
+}
+
+// eslint-disable-next-line max-len
+const IMAGE_EDIT_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="1.5"/><circle cx="9" cy="10" r="1.6"/><path d="M3.5 16.5l4.8-4.3 3.4 3 3.6-3.4 5.2 4.7"/></svg>';
+
+/**
+ * Toolbar control that toggles the Edit Images mode for selecting and deleting a page's image placements.
+ * @param {import('../../viewer.js').ScribeViewer} scribe
+ */
+export function createImageEditTool(scribe) {
+  let imageMode = false;
+  const toolbarElem = makeIconButton('Edit Images', IMAGE_EDIT_SVG);
+  toolbarElem.classList.add('cr-labeled-button');
+  const toolbarLabelElem = document.createElement('span');
+  toolbarLabelElem.className = 'cr-btn-label';
+  toolbarLabelElem.textContent = 'Edit Images';
+  toolbarElem.appendChild(toolbarLabelElem);
+
+  /** @type {Map<{left: number, top: number, right: number, bottom: number}, number>} */
+  const selected = new Map();
+  /** @type {Map<object, HTMLElement>} */
+  const frames = new Map();
+  /** @type {?HTMLElement} */
+  let hoverEl = null;
+  /** @type {?HTMLDivElement} */
+  let marqueeEl = null;
+
+  const makeBox = () => {
+    const el = document.createElement('div');
+    Object.assign(el.style, {
+      position: 'absolute',
+      borderRadius: 'calc(3px / var(--scribe-zoom, 1))',
+      pointerEvents: 'none',
+      boxSizing: 'border-box',
+    });
+    return el;
+  };
+
+  const placementsForPage = (n) => {
+    const page = scribe.doc?.ocr?.pdf?.[n];
+    const dims = page?.dims;
+    if (!page || !dims) return [];
+    const records = scribe.doc.contentEdits.pages[n] || [];
+    const pad = 2;
+    // A placement covering nearly the whole page is the scan that is the page, so deleting it would blank the page.
+    return pageImagePlacements(page).filter((e) => (e.right - e.left) * (e.bottom - e.top) < dims.width * dims.height * 0.95
+      && !records.some((r) => r.type === 'deleteImage'
+        && Math.abs(e.left - r.rect.left) <= pad && Math.abs(e.top - r.rect.top) <= pad
+        && Math.abs(e.right - r.rect.right) <= pad && Math.abs(e.bottom - r.rect.bottom) <= pad));
+  };
+
+  const placementAt = (clientX, clientY) => {
+    const pt = scribe.clientToPage(clientX, clientY);
+    if (!pt) return null;
+    let best = null;
+    for (const e of placementsForPage(pt.n)) {
+      if (pt.x >= e.left && pt.x <= e.right && pt.y >= e.top && pt.y <= e.bottom) {
+        const area = (e.right - e.left) * (e.bottom - e.top);
+        if (!best || area < best.area) best = { n: pt.n, entry: e, area };
+      }
+    }
+    return best;
+  };
+
+  const positionBox = (el, n, entry) => {
+    const pad = 2;
+    el.style.left = `${entry.left - pad}px`;
+    el.style.top = `${entry.top - pad}px`;
+    el.style.width = `${entry.right - entry.left + 2 * pad}px`;
+    el.style.height = `${entry.bottom - entry.top + 2 * pad}px`;
+    const group = scribe.getTextGroup(n, 0);
+    if (group && el.parentElement !== group) group.appendChild(el);
+  };
+
+  const validateSelection = () => {
+    const pools = new Map();
+    for (const [entry, n] of selected) {
+      let pool = pools.get(n);
+      if (!pool) {
+        pool = new Set(placementsForPage(n));
+        pools.set(n, pool);
+      }
+      if (!pool.has(entry)) selected.delete(entry);
+    }
+  };
+
+  const renderFrames = () => {
+    for (const [entry, el] of frames) {
+      if (!selected.has(entry)) {
+        el.remove();
+        frames.delete(entry);
+      }
+    }
+    for (const [entry, n] of selected) {
+      let el = frames.get(entry);
+      if (!el) {
+        el = makeBox();
+        el.className = 'scribe-image-edit-frame';
+        el.style.border = 'calc(2px / var(--scribe-zoom, 1)) solid var(--scribe-accent, #1c62d4)';
+        el.style.boxShadow = '0 0 0 calc(1px / var(--scribe-zoom, 1)) rgba(255, 255, 255, .9), '
+          + 'inset 0 0 0 calc(1px / var(--scribe-zoom, 1)) rgba(255, 255, 255, .9)';
+        el.style.background = 'var(--scribe-active, rgba(28, 98, 212, .10))';
+        frames.set(entry, el);
+      }
+      positionBox(el, n, entry);
+    }
+  };
+
+  const renderHover = (hit) => {
+    if (!hit || selected.has(hit.entry)) {
+      hoverEl?.remove();
+      hoverEl = null;
+      return;
+    }
+    if (!hoverEl) {
+      hoverEl = makeBox();
+      hoverEl.className = 'scribe-image-edit-hover';
+      hoverEl.style.border = 'calc(1.5px / var(--scribe-zoom, 1)) dashed var(--scribe-accent, #1c62d4)';
+      hoverEl.style.boxShadow = '0 0 0 calc(1px / var(--scribe-zoom, 1)) rgba(255, 255, 255, .75)';
+    }
+    positionBox(hoverEl, hit.n, hit.entry);
+  };
+
+  const removeMarquee = () => {
+    marqueeEl?.remove();
+    marqueeEl = null;
+  };
+
+  const clearChrome = () => {
+    selected.clear();
+    for (const el of frames.values()) el.remove();
+    frames.clear();
+    hoverEl?.remove();
+    hoverEl = null;
+    removeMarquee();
+  };
+
+  toolbarElem.addEventListener('click', () => {
+    imageMode = !imageMode;
+    scribe._imageEditActive = imageMode;
+    toolbarElem.classList.toggle('active', imageMode);
+    if (!imageMode) clearChrome();
+  });
+
+  /**
+   * Wire the mode's pointer and keyboard behaviors.
+   * Call after `scribe.init` (needs the scroll container).
+   * @returns {() => void} teardown
+   */
+  function installBehaviors() {
+    /** @param {Array<number>} pages */
+    const refreshPages = (pages) => {
+      for (const n of new Set(pages)) scribe.refreshPageRaster(n);
+      if (scribe.onEditCallback) scribe.onEditCallback();
+      validateSelection();
+      renderFrames();
+    };
+    const deleteSelected = () => {
+      validateSelection();
+      if (selected.size === 0) return;
+      const items = [...selected].map(([entry, n]) => ({
+        n,
+        rect: {
+          left: entry.left, top: entry.top, right: entry.right, bottom: entry.bottom,
+        },
+      }));
+      const res = scribe.doc?.deleteImages(items);
+      clearChrome();
+      if (res) refreshPages(res.pages);
+    };
+
+    /** @param {{left: number, top: number, right: number, bottom: number}} r */
+    const placementsInClientRect = (r) => {
+      const hits = new Map();
+      const containers = scribe.pageContainerArr || [];
+      for (let n = 0; n < containers.length; n++) {
+        const cont = containers[n];
+        if (!cont || !cont.isConnected) continue;
+        const pr = cont.getBoundingClientRect();
+        if (pr.width === 0 || pr.right < r.left || pr.left > r.right || pr.bottom < r.top || pr.top > r.bottom) continue;
+        const dims = scribe.doc?.ocr?.pdf?.[n]?.dims;
+        if (!dims) continue;
+        const L = ((r.left - pr.left) * dims.width) / pr.width;
+        const R = ((r.right - pr.left) * dims.width) / pr.width;
+        const T = ((r.top - pr.top) * dims.height) / pr.height;
+        const B = ((r.bottom - pr.top) * dims.height) / pr.height;
+        for (const e of placementsForPage(n)) {
+          if (e.left < R && e.right > L && e.top < B && e.bottom > T) hits.set(e, n);
+        }
+      }
+      return hits;
+    };
+
+    const moveHandler = (/** @type {PointerEvent} */ ev) => {
+      if (!imageMode || marqueeEl) return;
+      if (ev.buttons !== 0) {
+        renderHover(null);
+        return;
+      }
+      renderHover(placementAt(ev.clientX, ev.clientY));
+    };
+    // Runs at capture and stops propagation on mouse and pen presses, so the engine's text-drag selection never sees a press this mode handles.
+    // A touch press that misses every placement is left to the engine, so panning still works.
+    const downHandler = (/** @type {PointerEvent} */ ev) => {
+      if (!imageMode || ev.button !== 0) return;
+      const hit = placementAt(ev.clientX, ev.clientY);
+      if (ev.pointerType === 'touch') {
+        if (!hit) {
+          if (selected.size > 0) {
+            selected.clear();
+            renderFrames();
+          }
+          return;
+        }
+        ev.stopPropagation();
+        ev.preventDefault();
+        selected.clear();
+        selected.set(hit.entry, hit.n);
+        renderHover(null);
+        renderFrames();
+        return;
+      }
+      ev.stopPropagation();
+      const downX = ev.clientX;
+      const downY = ev.clientY;
+      const shift = ev.shiftKey;
+      const base = shift ? new Map(selected) : new Map();
+      let moved = false;
+      const onMove = (/** @type {PointerEvent} */ mv) => {
+        if (!moved && Math.hypot(mv.clientX - downX, mv.clientY - downY) <= 4) return;
+        moved = true;
+        if (!marqueeEl) {
+          marqueeEl = document.createElement('div');
+          marqueeEl.className = 'scribe-image-edit-marquee';
+          Object.assign(marqueeEl.style, {
+            position: 'fixed',
+            zIndex: '50',
+            pointerEvents: 'none',
+            border: '1px solid var(--scribe-accent, #1c62d4)',
+            background: 'var(--scribe-active, rgba(28, 98, 212, .10))',
+          });
+          document.body.appendChild(marqueeEl);
+          renderHover(null);
+        }
+        const r = {
+          left: Math.min(downX, mv.clientX),
+          top: Math.min(downY, mv.clientY),
+          right: Math.max(downX, mv.clientX),
+          bottom: Math.max(downY, mv.clientY),
+        };
+        Object.assign(marqueeEl.style, {
+          left: `${r.left}px`, top: `${r.top}px`, width: `${r.right - r.left}px`, height: `${r.bottom - r.top}px`,
+        });
+        selected.clear();
+        for (const [e, n] of base) selected.set(e, n);
+        for (const [e, n] of placementsInClientRect(r)) selected.set(e, n);
+        renderFrames();
+      };
+      const onUp = () => {
+        window.removeEventListener('pointermove', onMove);
+        window.removeEventListener('pointerup', onUp);
+        if (moved) {
+          removeMarquee();
+          return;
+        }
+        if (!hit) {
+          if (selected.size > 0) {
+            selected.clear();
+            renderFrames();
+          }
+          return;
+        }
+        if (shift) {
+          if (selected.has(hit.entry)) selected.delete(hit.entry);
+          else selected.set(hit.entry, hit.n);
+          renderFrames();
+          return;
+        }
+        selected.clear();
+        selected.set(hit.entry, hit.n);
+        renderHover(null);
+        renderFrames();
+      };
+      window.addEventListener('pointermove', onMove);
+      window.addEventListener('pointerup', onUp);
+    };
+    const keyHandler = (/** @type {KeyboardEvent} */ ev) => {
+      if (!imageMode) return;
+      const t = ev.target;
+      if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
+      if (ev.key === 'Escape' && selected.size > 0) {
+        ev.preventDefault();
+        ev.stopPropagation();
+        selected.clear();
+        renderFrames();
+        return;
+      }
+      if (ev.key === 'Delete' || ev.key === 'Backspace') {
+        validateSelection();
+        if (selected.size === 0) return;
+        ev.preventDefault();
+        ev.stopPropagation();
+        deleteSelected();
+        return;
+      }
+      const mod = ev.ctrlKey || ev.metaKey;
+      if (mod && (ev.key === 'z' || ev.key === 'Z' || ev.key === 'y' || ev.key === 'Y')) {
+        // Swallowed even when the history is empty, so the keys never fall through to the page-ops undo.
+        ev.preventDefault();
+        ev.stopPropagation();
+        const redo = ev.key === 'y' || ev.key === 'Y' || ev.shiftKey;
+        const pages = redo ? scribe.doc.contentEditHistory.redo() : scribe.doc.contentEditHistory.undo();
+        clearChrome();
+        if (pages) refreshPages(pages);
+      }
+    };
+    // Virtualization rebuilds the page groups on scroll, so the frames re-parent themselves onto the new ones.
+    const scrollHandler = () => {
+      if (!imageMode) return;
+      renderFrames();
+      renderHover(null);
+    };
+    scribe.scrollContainer.addEventListener('pointermove', moveHandler);
+    scribe.scrollContainer.addEventListener('pointerdown', downHandler, true);
+    document.addEventListener('keydown', keyHandler, true);
+    scribe.scrollContainer.addEventListener('scroll', scrollHandler);
+    scribe._imageEditMenuTarget = (clientX, clientY) => {
+      const hit = placementAt(clientX, clientY);
+      if (!hit) return null;
+      validateSelection();
+      if (!selected.has(hit.entry)) {
+        selected.clear();
+        selected.set(hit.entry, hit.n);
+        renderHover(null);
+        renderFrames();
+      }
+      return { count: selected.size };
+    };
+    scribe._imageEditSelectedCount = () => {
+      validateSelection();
+      return selected.size;
+    };
+    scribe._imageEditDeleteSelection = deleteSelected;
+    return () => {
+      scribe.scrollContainer.removeEventListener('pointermove', moveHandler);
+      scribe.scrollContainer.removeEventListener('pointerdown', downHandler, true);
+      document.removeEventListener('keydown', keyHandler, true);
+      scribe.scrollContainer.removeEventListener('scroll', scrollHandler);
+      scribe._imageEditActive = false;
+      scribe._imageEditMenuTarget = null;
+      scribe._imageEditSelectedCount = null;
+      scribe._imageEditDeleteSelection = null;
+      clearChrome();
     };
   }
 

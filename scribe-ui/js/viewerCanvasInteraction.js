@@ -346,6 +346,7 @@ const createContextMenuHTML = () => {
     ],
     [
       item('contextMenuDeleteTextLinesButton', 'Delete Lines', CM_TRASH_SVG, deleteTextLinesClick, true),
+      item('contextMenuDeleteImageButton', 'Delete Image', CM_TRASH_SVG, deleteImageClick, true),
       item('contextMenuRedactButton', 'Redact', CM_REDACT_SVG, redactSelectionClick, true),
     ],
   ];
@@ -516,6 +517,12 @@ const deleteTextLinesClick = () => {
   const viewer = mv();
   hideContextMenu();
   if (viewer._editTextDeleteSelection) viewer._editTextDeleteSelection();
+};
+
+const deleteImageClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  if (viewer._imageEditDeleteSelection) viewer._imageEditDeleteSelection();
 };
 
 const editLineClick = () => {
@@ -702,6 +709,7 @@ let contextMenuStyleElem = null;
 /** @type {HTMLButtonElement} */ let contextMenuDeleteRedactionButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuDeleteFillItemButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuDeleteTextLinesButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuDeleteImageButtonElem;
 
 /**
  * The redaction mark under the right-click point, resolved when the menu opens.
@@ -761,6 +769,7 @@ function ensureContextMenu() {
   contextMenuDeleteRedactionButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteRedactionButton'));
   contextMenuDeleteFillItemButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteFillItemButton'));
   contextMenuDeleteTextLinesButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteTextLinesButton'));
+  contextMenuDeleteImageButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteImageButton'));
   contextMenuHighlightButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuHighlightButton'));
   contextMenuUnderlineButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuUnderlineButton'));
   contextMenuStrikethroughButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuStrikethroughButton'));
@@ -782,6 +791,7 @@ function ensureContextMenu() {
     #scribe-context-menu {
       display: none;
       position: fixed;
+      z-index: 60;
       width: max-content;
       min-width: 176px;
       box-sizing: border-box;
@@ -934,6 +944,7 @@ export const hideContextMenu = () => {
   contextMenuDeleteRedactionButtonElem.style.display = 'none';
   contextMenuDeleteFillItemButtonElem.style.display = 'none';
   contextMenuDeleteTextLinesButtonElem.style.display = 'none';
+  contextMenuDeleteImageButtonElem.style.display = 'none';
   contextMenuHighlightButtonElem.style.display = 'none';
   contextMenuUnderlineButtonElem.style.display = 'none';
   contextMenuStrikethroughButtonElem.style.display = 'none';
@@ -1361,6 +1372,23 @@ export const contextMenuFunc = (viewer, event) => {
         }
       }
       contextMenuDeleteTextLinesButtonElem.style.display = 'initial';
+      showMenuForEvent(viewer, event, null);
+      return;
+    }
+    if (viewer._imageEditActive) {
+      const imageTarget = viewer._imageEditMenuTarget
+        ? viewer._imageEditMenuTarget(event.clientX, event.clientY) : null;
+      const imageCount = imageTarget
+        ? imageTarget.count
+        : (viewer._imageEditSelectedCount ? viewer._imageEditSelectedCount() : 0);
+      if (imageCount === 0) {
+        event.preventDefault();
+        hideContextMenu();
+        return;
+      }
+      /** @type {HTMLElement} */ (contextMenuDeleteImageButtonElem.querySelector('.scribe-cm-lbl'))
+        .textContent = imageCount > 1 ? `Delete ${imageCount} Images` : 'Delete Image';
+      contextMenuDeleteImageButtonElem.style.display = 'initial';
       showMenuForEvent(viewer, event, null);
       return;
     }

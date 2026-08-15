@@ -515,7 +515,30 @@ declare global {
         groupId?: string;
     };
 
-    type TextEdit = TextEditDelete | TextEditReplace;
+    /** One image placement a `deleteImage` record removes. */
+    type ImageDeleteSite = {
+        left: number;
+        top: number;
+        right: number;
+        bottom: number;
+        /** Source image XObject number, absent for an inline image. */
+        objNum?: number;
+    };
+
+    /**
+     * An image deletion applied to the raster and to PDF exports.
+     * The `rect` only locates the deletion, and a drawn image is removed only when it also matches a site's identity, so visually-overlapping other images survive.
+     */
+    type ImageEditDelete = {
+        type: 'deleteImage';
+        id: string;
+        /** Merged placement extent, page coordinates (top-left origin, same frame as OCR words). */
+        rect: bbox;
+        sites: ImageDeleteSite[];
+        groupId?: string;
+    };
+
+    type ContentEdit = TextEditDelete | TextEditReplace | ImageEditDelete;
 
     /**
      * Parse-derived metadata for one visibly-drawn native word.
@@ -545,7 +568,9 @@ declare global {
      */
     type ScribeSessionData = {
         v: number;
-        textEdits?: TextEdit[][];
+        contentEdits?: ContentEdit[][];
+        /** Pre-rename key for `contentEdits`, read from sessions saved before 2026-08 and never written. */
+        textEdits?: ContentEdit[][];
         nativeText?: Array<Record<string, NativeTextWord>>;
         /** `[page, index]` positions in `doc.annotations.pages` of the `freetext` rows that are fill & sign typed text. */
         fillText?: Array<[number, number]>;

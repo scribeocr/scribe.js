@@ -13,7 +13,7 @@ import {
 } from './pdfPrimitives.js';
 import { parseDrawOps } from './parseDrawOps.js';
 import {
-  pageRectToContentRect, glyphEmBoxHitsRects, mapTextEditGlyphs, glyphIdentityMatches, TEXT_EDIT_GLYPH_SIZE_CAP,
+  pageRectToContentRect, glyphEmBoxHitsRects, mapTextEditGlyphs, glyphIdentityMatches, mapImageDelete, imageDrawMatchesDelete, TEXT_EDIT_GLYPH_SIZE_CAP,
 } from './pageGeometry.js';
 
 /** @typedef {import('./objectCache.js').ObjectCache} ObjectCache */
@@ -5145,7 +5145,7 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
  * @param {number} [dpi=300] - Render resolution in dots per inch
  * @param {'png'|'jpeg'|'bitmap'} [outputFormat='png'] - Output encoding
  * @param {number} [quality=0.6] - JPEG quality 0-1
- * @param {?{records: Array<TextEdit>, dims: {width: number, height: number}}} [textEdits] - Native-text edit records for this page plus the page dimensions in the records' page-pixel frame.
+ * @param {?{records: Array<ContentEdit>, dims: {width: number, height: number}}} [edits] - Edit records for this page plus the page dimensions in the records' page-pixel frame.
  *   Glyphs covered by `deleteText` rects are suppressed, matching what the PDF exporter removes.
  * @returns {Promise<{dataUrl?: string, blob?: Blob, bitmap?: ImageBitmap, colorMode: string, ok: boolean, failReason?: string, failDetail?: string,
  *   perf?: {prepMs: number, drawMs: number, decodeMs: number, flushMs: number}}>}
@@ -5155,7 +5155,7 @@ async function renderSMaskToCanvas(smaskInfo, objCache, canvasWidth, canvasHeigh
  *   On failure `ok` is false and the image is a blank PNG `dataUrl`, whatever `outputFormat` requested.
  *   `drawMs - decodeMs` estimates the recurring cost of re-rendering the page.
  */
-export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, pageIndex, colorMode = 'color', rotate = 0, dpi = 300, outputFormat = 'png', quality = 0.6, textEdits = null) {
+export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, pageIndex, colorMode = 'color', rotate = 0, dpi = 300, outputFormat = 'png', quality = 0.6, edits = null) {
   const tRenderStart = performance.now();
   // decodeMs is a subset of drawMs, not a sibling: it counts only the decodes inside the draw loop that were admitted to the doc-wide image cache.
   const perf = {
@@ -5313,18 +5313,32 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
   }
 
   // Edits are applied with the PDF exporter's own rect mapping, em-box hit test, and in-place replacement splice, so the raster shows exactly what an export keeps.
-  if (textEdits && textEdits.records?.length && textEdits.dims) {
-    /** @type {Array<{ rec: TextEdit, rects: Array<[number, number, number, number]>, gate: ?{pts: Array<{u: ?string, x: number, y: number, f: ?number}>, tol: number} }>} */
+  if (edits && edits.records?.length && edits.dims) {
+    /**
+     * @type {Array<{ rec: ContentEdit, rects: Array<[number, number, number, number]>,
+     *   gate: ?{pts: Array<{u: ?string, x: number, y: number, f: ?number}>, tol: number},
+     *   imageGate?: ?ReturnType<typeof mapImageDelete> }>}
+     */
     const editEntries = [];
-    for (const rec of textEdits.records) {
-      if (!rec || (rec.type !== 'deleteText' && rec.type !== 'replaceText')) continue;
+    for (const rec of edits.records) {
+      if (!rec) continue;
+      if (rec.type === 'deleteImage') {
+        const imageGate = mapImageDelete(rec, edits.dims, mediaBox, rotate);
+        if (imageGate) {
+          editEntries.push({
+            rec, rects: [], gate: null, imageGate,
+          });
+        }
+        continue;
+      }
+      if (rec.type !== 'deleteText' && rec.type !== 'replaceText') continue;
       /** @type {Array<[number, number, number, number]>} */
       const rects = [];
       for (const r of rec.rects || []) {
-        const mapped = pageRectToContentRect(r, textEdits.dims, mediaBox, rotate);
+        const mapped = pageRectToContentRect(r, edits.dims, mediaBox, rotate);
         if (mapped) rects.push(mapped);
       }
-      const gate = rec.glyphs ? mapTextEditGlyphs(rec.glyphs, textEdits.dims, mediaBox, rotate) : null;
+      const gate = rec.glyphs ? mapTextEditGlyphs(rec.glyphs, edits.dims, mediaBox, rotate) : null;
       // A pure append (a word added past the line's last word) erases nothing, so its record has no rects but must still draw.
       if (rects.length > 0 || (rec.type === 'replaceText' && rec.runs?.length)) editEntries.push({ rec, rects, gate });
     }
@@ -5333,6 +5347,14 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       let keep = 0;
       for (let i = 0; i < drawOps.length; i++) {
         const op = drawOps[i];
+        if (op.type === 'image' || op.type === 'inlineImage') {
+          const opObjNum = op.type === 'image' ? (images.get(op.name)?.objNum ?? null) : null;
+          let imageHit = false;
+          for (const entry of editEntries) {
+            if (entry.imageGate && imageDrawMatchesDelete(op.ctm, entry.imageGate, opObjNum)) { imageHit = true; break; }
+          }
+          if (imageHit) continue;
+        }
         if (op.type === 'type0text' || op.type === 'type3glyph') {
           const trm = op.editTrm || (op.type === 'type0text' ? [op.a, op.b, op.c, op.d, op.x, op.y] : op.transform);
           const vertical = op.type === 'type0text' && !!op.vertical;
@@ -5353,7 +5375,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             if (rec.type === 'replaceText' && rec.runs?.length && !placed.has(rec)) {
               placed.add(rec);
               drawOps[keep] = {
-                type: 'editText', runs: rec.runs, dims: textEdits.dims, clips: op.clips,
+                type: 'editText', runs: rec.runs, dims: edits.dims, clips: op.clips,
               };
               keep += 1;
             }
@@ -5368,7 +5390,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
       for (const entry of editEntries) {
         const rec = /** @type {TextEditReplace} */ (entry.rec);
         if (rec.type === 'replaceText' && rec.runs?.length && !placed.has(rec)) {
-          drawOps.push({ type: 'editText', runs: rec.runs, dims: textEdits.dims });
+          drawOps.push({ type: 'editText', runs: rec.runs, dims: edits.dims });
         }
       }
       for (const op of drawOps) {

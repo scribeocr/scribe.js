@@ -118,6 +118,54 @@ export function glyphIdentityMatches(gate, u, fontObjNum, x, y) {
 }
 
 /**
+ * Map a deleteImage record into content user space for the strike test.
+ * @param {ImageEditDelete} rec
+ * @param {{width: number, height: number}} dims
+ * @param {number[]} box
+ * @param {number} rotate
+ * @returns {?{rect: [number, number, number, number], sites: Array<{objNum: ?number, rect: [number, number, number, number]}>, tol: number}}
+ */
+export function mapImageDelete(rec, dims, box, rotate) {
+  const rect = pageRectToContentRect(rec.rect, dims, box, rotate);
+  if (!rect) return null;
+  const sites = [];
+  for (const s of rec.sites || []) {
+    const r = pageRectToContentRect(s, dims, box, rotate);
+    if (r) sites.push({ objNum: Number.isFinite(s.objNum) ? /** @type {number} */ (s.objNum) : null, rect: r });
+  }
+  if (sites.length === 0) return null;
+  const [ax, ay] = pagePointToContentPoint(0, 0, dims, box, rotate);
+  const [bx, by] = pagePointToContentPoint(1, 0, dims, box, rotate);
+  const tol = 2 * Math.hypot(bx - ax, by - ay);
+  return { rect, sites, tol };
+}
+
+/**
+ * Whether an image draw is one of a deleteImage record's placements.
+ * A draw matching no site survives, so a bystander image inside the rect is never removed.
+ * @param {number[]} ctm - The draw's full CTM.
+ * @param {{rect: [number, number, number, number], sites: Array<{objNum: ?number, rect: [number, number, number, number]}>, tol: number}} gate
+ * @param {?number} objNum - The drawn image's object number, or null when unresolved.
+ */
+export function imageDrawMatchesDelete(ctm, gate, objNum) {
+  let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity;
+  for (const [u, v] of [[0, 0], [1, 0], [0, 1], [1, 1]]) {
+    const x = u * ctm[0] + v * ctm[2] + ctm[4];
+    const y = u * ctm[1] + v * ctm[3] + ctm[5];
+    x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+  }
+  const t = gate.tol;
+  if (x0 < gate.rect[0] - t || y0 < gate.rect[1] - t || x1 > gate.rect[2] + t || y1 > gate.rect[3] + t) return false;
+  for (const s of gate.sites) {
+    if (Math.abs(x0 - s.rect[0]) > t || Math.abs(y0 - s.rect[1]) > t
+      || Math.abs(x1 - s.rect[2]) > t || Math.abs(y1 - s.rect[3]) > t) continue;
+    if (s.objNum !== null && objNum !== null && objNum !== undefined && s.objNum !== objNum) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
  * Whether a glyph's approximate extent intersects any rect, in content user space.
  * The test is biased toward over-matching.
  * A glyph whose origin sits outside a rect but whose body crosses it must still count.

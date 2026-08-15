@@ -668,15 +668,20 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   const imagePlacements = [];
   const paths = contentStreamText.length > GRAPHICS_HEAVY_STREAM_BYTES
     ? []
-    : parsePagePaths(objText, objCache, tokens, { imagePlacements });
+    : parsePagePaths(objText, objCache, tokens, { imagePlacements, initialCtm });
   if (contentStreamText.length > GRAPHICS_HEAVY_STREAM_BYTES) {
     // Heavy streams skip path extraction (cost), but image placements must still be collected:
     // a scanned page must not lose its full-page-image classification (largestImageFrac).
     let ctmH = initialCtm.slice();
     const ctmStackH = [];
     const numsH = [];
+    /** @type {Map<string, number>} */
+    const imageObjNumsH = new Map();
+    findFormXObjects(objText, objCache, imageObjNumsH);
+    let lastNameH = null;
     for (const t of tokens) {
       if (t.type === 'number') { numsH.push(t.value); continue; }
+      if (t.type === 'name') { lastNameH = t.value; numsH.length = 0; continue; }
       if (t.type === 'inlineImage' || (t.type === 'operator' && t.value === 'Do')) {
         const corners = [
           [ctmH[4], ctmH[5]],
@@ -692,13 +697,16 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
           if (py < minY) minY = py;
           if (py > maxY) maxY = py;
         }
-        imagePlacements.push({
+        const placementH = {
           left: minX, bottom: minY, right: maxX, top: maxY,
-        });
+        };
+        if (t.type === 'operator' && lastNameH !== null && imageObjNumsH.has(lastNameH)) placementH.objNum = imageObjNumsH.get(lastNameH);
+        imagePlacements.push(placementH);
+        lastNameH = null;
         numsH.length = 0;
         continue;
       }
-      if (t.type !== 'operator') { numsH.length = 0; continue; }
+      if (t.type !== 'operator') { lastNameH = null; numsH.length = 0; continue; }
       if (t.value === 'q') ctmStackH.push(ctmH.slice());
       else if (t.value === 'Q') { if (ctmStackH.length > 0) ctmH = ctmStackH.pop(); } else if (t.value === 'cm' && numsH.length >= 6) {
         const nh = numsH.length;
@@ -711,29 +719,41 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
           e * ctmH[0] + fv * ctmH[2] + ctmH[4], e * ctmH[1] + fv * ctmH[3] + ctmH[5],
         ];
       }
+      lastNameH = null;
       numsH.length = 0;
     }
   }
 
   // Reassemble band-sliced images before classifying: producers often draw one picture as dozens of contiguous horizontal strips.
-  /** @type {Array<{left: number, bottom: number, right: number, top: number}>} */
+  /** @type {Array<{left: number, bottom: number, right: number, top: number, sites: Array<{left: number, bottom: number, right: number, top: number, objNum?: number}>}>} */
   const mergedPlacements = [];
   const placementCols = new Map();
   for (const p of imagePlacements) {
     const key = `${Math.round(p.left * 2)}_${Math.round((p.right - p.left) * 2)}`;
     if (!placementCols.has(key)) placementCols.set(key, []);
-    placementCols.get(key).push({ ...p });
+    placementCols.get(key).push(p);
   }
+  const placementSite = (p) => {
+    const site = {
+      left: p.left, bottom: p.bottom, right: p.right, top: p.top,
+    };
+    if (p.objNum !== undefined) site.objNum = p.objNum;
+    return site;
+  };
+  const mergedFrom = (p) => ({
+    left: p.left, bottom: p.bottom, right: p.right, top: p.top, sites: [placementSite(p)],
+  });
   for (const group of placementCols.values()) {
     group.sort((a, b) => b.top - a.top);
-    let cur = group[0];
+    let cur = mergedFrom(group[0]);
     for (let gi = 1; gi < group.length; gi++) {
       const nxt = group[gi];
       if (cur.bottom - nxt.top <= 1.5) {
         if (nxt.bottom < cur.bottom) cur.bottom = nxt.bottom;
+        cur.sites.push(placementSite(nxt));
       } else {
         mergedPlacements.push(cur);
-        cur = nxt;
+        cur = mergedFrom(nxt);
       }
     }
     mergedPlacements.push(cur);
@@ -992,16 +1012,24 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   const fillSquaresDeduped = [...squaresByKey.values()];
 
   // Image placements in the same page-pixel space, so detection can withhold a box whose interior is painted by a raster.
-  /** @type {Array<{left: number, top: number, right: number, bottom: number}>} */
+  /** @type {Array<{left: number, top: number, right: number, bottom: number, sites: Array<{left: number, top: number, right: number, bottom: number, objNum?: number}>}>} */
   const fillImages = [];
+  // Both collectors bake `initialCtm` into the placements, so subtracting the box origin again here would double-shift them.
+  const placementToPagePx = (p) => ({
+    left: p.left * scale,
+    top: (visualHeightPts - p.top) * scale,
+    right: p.right * scale,
+    bottom: (visualHeightPts - p.bottom) * scale,
+  });
   for (const p of mergedPlacements) {
     if (fillImages.length >= 100) break;
-    fillImages.push({
-      left: (p.left - boxOriginX) * scale,
-      top: (visualHeightPts - (p.top - boxOriginY)) * scale,
-      right: (p.right - boxOriginX) * scale,
-      bottom: (visualHeightPts - (p.bottom - boxOriginY)) * scale,
+    const entry = placementToPagePx(p);
+    entry.sites = p.sites.map((s) => {
+      const site = placementToPagePx(s);
+      if (s.objNum !== undefined) site.objNum = s.objNum;
+      return site;
     });
+    fillImages.push(entry);
   }
 
   const {

@@ -91,18 +91,22 @@ export async function rewriteContentsStrippingInvisibleText(existingContentsRefs
  *   Identity-gated edit rects: a rect removes only glyphs matching the deleted text's identities.
  * @param {?Array<{rects: Array<[number, number, number, number]>, body: string, placed: boolean}>} [params.textEditInserts]
  *   Replacement blocks for replaceText records, spliced in where their glyphs are dropped.
+ * @param {?Array<{rect: [number, number, number, number], sites: Array<{objNum: ?number, rect: [number, number, number, number]}>, tol: number}>} [params.imageDeletes]
+ *   An image draw is dropped when it falls inside an entry's rect and matches one of that entry's sites.
  * @returns {Promise<{
  *   refs: string[],
  *   xobjEntries: Map<string, number>,
  *   formClones: Map<string, number>,
  *   skipped: Array<{fontObjNum: number, charCode: number, reason: string}>,
  *   redactedFormNames?: ?Set<string>,
+ *   deletedImageObjNums?: Set<number>,
+ *   supersededContentObjNums?: number[],
  * }>}
  */
 export async function rewriteContentsStripAndConvert({
   existingContentsRefs, pageObjText, bboxes, conversionState,
   objCache, allocObjNum, pushObj, humanReadable, convertBrokenType3ToPaths = false,
-  redactBboxes = null, textEditBboxes = null, textEditGated = null, textEditInserts = null,
+  redactBboxes = null, textEditBboxes = null, textEditGated = null, textEditInserts = null, imageDeletes = null,
 }) {
   /** @type {Map<string, number>} */
   const emptyXobj = new Map();
@@ -130,12 +134,15 @@ export async function rewriteContentsStripAndConvert({
     parts.push(bytesToLatin1(bytes));
   }
   if (!canMerge) {
-    // The pass-through return below is safe for conversion but for redaction or a text edit would ship content the user removed.
+    // The pass-through return below is safe for conversion but for redaction or a content edit would ship content the user removed.
     if (redactBboxes && redactBboxes.length > 0) {
       throw new Error('Cannot apply redactions: a page content stream could not be read.');
     }
     if ((textEditBboxes && textEditBboxes.length > 0) || (textEditGated && textEditGated.rects.length > 0) || (textEditInserts && textEditInserts.length > 0)) {
       throw new Error('Cannot apply text edits: a page content stream could not be read.');
+    }
+    if (imageDeletes && imageDeletes.length > 0) {
+      throw new Error('Cannot apply image deletions: a page content stream could not be read.');
     }
     return {
       refs: existingContentsRefs, xobjEntries: emptyXobj, formClones: emptyFormClones, skipped: [],
@@ -152,11 +159,15 @@ export async function rewriteContentsStripAndConvert({
   if (((textEditBboxes && textEditBboxes.length > 0) || (textEditGated && textEditGated.rects.length > 0) || (textEditInserts && textEditInserts.length > 0)) && !conversionState) {
     throw new Error('Cannot apply text edits: no conversion state was created for this page.');
   }
+  if (imageDeletes && imageDeletes.length > 0 && !conversionState) {
+    throw new Error('Cannot apply image deletions: no conversion state was created for this page.');
+  }
   const wantRedact = !!(redactBboxes && redactBboxes.length > 0) && !!conversionState;
   // Inserts count too: a pure append has no erase rects but still needs the splice pass to place or append its body.
   const wantEdit = !!((textEditBboxes && textEditBboxes.length > 0) || (textEditGated && textEditGated.rects.length > 0) || (textEditInserts && textEditInserts.length > 0))
     && !!conversionState;
-  const wantConvert = (((!!bboxes && bboxes.length > 0) || convertBrokenType3ToPaths) && !!conversionState) || wantRedact || wantEdit;
+  const wantImageDelete = !!(imageDeletes && imageDeletes.length > 0) && !!conversionState;
+  const wantConvert = (((!!bboxes && bboxes.length > 0) || convertBrokenType3ToPaths) && !!conversionState) || wantRedact || wantEdit || wantImageDelete;
   let workingText = strippedText;
   /** @type {Map<string, number>} */
   let xobjEntries = emptyXobj;
@@ -167,6 +178,10 @@ export async function rewriteContentsStripAndConvert({
   let converted = false;
   /** @type {?Set<string>} */
   let redactedFormNames = null;
+  /** @type {Set<number>} */
+  let deletedImageObjNums = new Set();
+  /** @type {Set<string>} */
+  let deletedImageNames = new Set();
 
   if (wantConvert) {
     const result = await convertSinglePageForRegions({
@@ -183,9 +198,12 @@ export async function rewriteContentsStripAndConvert({
       textEditBboxes,
       textEditGated,
       textEditInserts,
+      imageDeletes,
     });
     if (result.skipped) skipped = result.skipped;
     if (result.redactedFormNames) redactedFormNames = result.redactedFormNames;
+    if (result.deletedImageObjNums) deletedImageObjNums = result.deletedImageObjNums;
+    if (result.deletedImageNames) deletedImageNames = result.deletedImageNames;
     if (result.changed) {
       if (result.text !== undefined) workingText = result.text;
       if (result.xobjEntries) xobjEntries = result.xobjEntries;
@@ -196,15 +214,18 @@ export async function rewriteContentsStripAndConvert({
 
   if (!dropped && !converted) {
     return {
-      refs: existingContentsRefs, xobjEntries, formClones, skipped, redactedFormNames,
+      refs: existingContentsRefs, xobjEntries, formClones, skipped, redactedFormNames, deletedImageObjNums, deletedImageNames, supersededContentObjNums: [],
     };
   }
 
   const newObjNum = allocObjNum();
   const objBin = await encodeStreamObject(newObjNum, workingText, { humanReadable });
   pushObj({ objNum: newObjNum, content: objBin });
+  const supersededContentObjNums = existingContentsRefs
+    .map((ref) => Number((/^(\d+)\s+\d+\s+R$/.exec(ref) || [])[1]))
+    .filter((n) => Number.isFinite(n));
   return {
-    refs: [`${newObjNum} 0 R`], xobjEntries, formClones, skipped, redactedFormNames,
+    refs: [`${newObjNum} 0 R`], xobjEntries, formClones, skipped, redactedFormNames, deletedImageObjNums, deletedImageNames, supersededContentObjNums,
   };
 }
 
@@ -249,19 +270,22 @@ export function resolvePageResources(pageObjText, objCache) {
  * @param {string} key  e.g. '/Font' or '/ExtGState'
  * @param {string} newEntries
  * @param {?import('../../pdf/objectCache.js').ObjectCache} objCache
+ * @param {?(dictBody: string) => string} [filterInner] - Applied to the existing dict's body before the merge.
+ *   A dict that cannot be resolved is left unfiltered, so its entries survive.
  */
-function mergeResourceKey(inner, key, newEntries, objCache) {
-  if (!newEntries) return inner;
+function mergeResourceKey(inner, key, newEntries, objCache, filterInner = null) {
+  if (!newEntries && !filterInner) return inner;
   const idx = findTopLevelKeyIndex(inner, key);
   // Use a newline (not just a space) before any appended/spliced content so a trailing
   // `%` line-comment in `inner` doesn't swallow our content.
   // Same reason we put a newline before the closing `>>` we synthesise.
-  if (idx < 0) return `${inner}\n${key}<<${newEntries}>>`;
+  if (idx < 0) return newEntries ? `${inner}\n${key}<<${newEntries}>>` : inner;
   let p = idx + key.length;
   while (p < inner.length && /\s/.test(inner[p])) p++;
   if (inner.startsWith('<<', p)) {
     const dict = extractDict(inner, p);
-    const merged = `${dict.slice(0, -2)}\n${newEntries}\n>>`;
+    const body = filterInner ? filterInner(dict.slice(2, -2)) : dict.slice(2, -2);
+    const merged = `<<${body}\n${newEntries}\n>>`;
     return inner.slice(0, p) + merged + inner.slice(p + dict.length);
   }
   const refMatch = /^(\d+)\s+\d+\s+R/.exec(inner.slice(p));
@@ -271,9 +295,10 @@ function mergeResourceKey(inner, key, newEntries, objCache) {
       // Resolved object text may be just the dict body or wrapped — strip
       // any surrounding `<< >>` and splice into our inline dict.
       const trimmed = resolved.trim();
-      const inner2 = trimmed.startsWith('<<') && trimmed.endsWith('>>')
+      let inner2 = trimmed.startsWith('<<') && trimmed.endsWith('>>')
         ? trimmed.slice(2, -2).trim()
         : trimmed;
+      if (filterInner) inner2 = filterInner(inner2);
       const merged = `<<${inner2}\n${newEntries}\n>>`;
       return inner.slice(0, p) + merged + inner.slice(p + refMatch[0].length);
     }
@@ -281,7 +306,7 @@ function mergeResourceKey(inner, key, newEntries, objCache) {
   // Couldn't resolve — leave the original slot alone and append a duplicate
   // key. PDF readers honor the last entry for duplicate keys, so the new
   // (overlay) fonts/ExtGStates win.
-  return `${inner}\n${key}<<${newEntries}>>`;
+  return newEntries ? `${inner}\n${key}<<${newEntries}>>` : inner;
 }
 
 /**
@@ -290,12 +315,24 @@ function mergeResourceKey(inner, key, newEntries, objCache) {
  * @param {string} overlayExtGStateStr
  * @param {?import('../../pdf/objectCache.js').ObjectCache} [objCache=null]
  * @param {string} [overlayXObjectsStr='']
+ * @param {?Set<string>} [dropXObjectNames=null] - Image names to remove from the /XObject dict.
+ *   A name still drawn by a surviving placement must not appear here.
  */
-export function mergeResources(existingDict, overlayFontsStr, overlayExtGStateStr, objCache = null, overlayXObjectsStr = '') {
+export function mergeResources(existingDict, overlayFontsStr, overlayExtGStateStr, objCache = null, overlayXObjectsStr = '', dropXObjectNames = null) {
   let inner = existingDict.slice(2, -2).trim();
   inner = mergeResourceKey(inner, '/Font', overlayFontsStr, objCache);
   inner = mergeResourceKey(inner, '/ExtGState', overlayExtGStateStr, objCache);
-  inner = mergeResourceKey(inner, '/XObject', overlayXObjectsStr, objCache);
+  const dropFilter = dropXObjectNames && dropXObjectNames.size > 0
+    ? (/** @type {string} */ body) => {
+      let out = body;
+      for (const name of dropXObjectNames) {
+        const escaped = name.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+        out = out.replace(new RegExp(`/${escaped}\\s+\\d+\\s+\\d+\\s+R`, 'g'), '');
+      }
+      return out;
+    }
+    : null;
+  inner = mergeResourceKey(inner, '/XObject', overlayXObjectsStr, objCache, dropFilter);
   // Newline before `>>` so any trailing `%` line-comment in `inner` ends before the close.
   return `<<${inner}\n>>`;
 }
@@ -416,6 +453,57 @@ export function composePageRotation(pageObjText, userRotation, objCache) {
   }
   if (composed === 0) return pageObjText;
   return pageObjText.replace('<<', `<</Rotate ${composed} `);
+}
+
+/**
+ * Collect a page's /Annots refs, resolving an indirect array through the cache.
+ * @param {string} pageObjText
+ * @param {import('../../pdf/objectCache.js').ObjectCache|null} objCache
+ * @returns {string[]}
+ */
+function collectSourceAnnotRefs(pageObjText, objCache) {
+  const indirectMatch = /\/Annots\s+(\d+)\s+\d+\s+R/.exec(pageObjText);
+  /** @type {string[]} */
+  const refs = [];
+  if (indirectMatch && objCache) {
+    const arrayText = objCache.getObjectText(Number(indirectMatch[1]));
+    if (arrayText) for (const m of arrayText.matchAll(/(\d+\s+\d+\s+R)/g)) refs.push(m[1]);
+    return refs;
+  }
+  const arrayMatch = /\/Annots\s*\[([\s\S]*?)\]/.exec(pageObjText);
+  if (arrayMatch) for (const m of arrayMatch[1].matchAll(/(\d+\s+\d+\s+R)/g)) refs.push(m[1]);
+  return refs;
+}
+
+/**
+ * True when the importer lifted this annotation into the editable model.
+ * Export re-emits the lifted copy from there, so the source object must be dropped.
+ * @param {string} annotText
+ * @param {import('../../pdf/objectCache.js').ObjectCache} objCache
+ * @param {?{ nameDests: Map<string, string>, objNumToIndex: Map<number, number> }} linkDestInfo - Null keeps every source /Link, for a caller with no lifted links to re-emit.
+ * @returns {boolean}
+ */
+function annotIsLifted(annotText, objCache, linkDestInfo) {
+  return annotIsModelManaged(annotText, objCache) || annotIsLiftedReply(annotText, objCache)
+    || (!!linkDestInfo && linkAnnotIsLifted(annotText, objCache, linkDestInfo));
+}
+
+/**
+ * True when a page's source /Annots still holds annotations the importer lifted into the editable model.
+ * A page whose lifted annotations were all deleted has none left to re-emit, so nothing else marks it as changed.
+ * Copying it through verbatim would bring the deleted annotations back from the source array, so it must be rebuilt on this verdict alone.
+ * @param {string} pageObjText
+ * @param {import('../../pdf/objectCache.js').ObjectCache} objCache
+ * @param {?{ nameDests: Map<string, string>, objNumToIndex: Map<number, number> }} linkDestInfo
+ * @returns {boolean}
+ */
+export function pageHasLiftedSourceAnnots(pageObjText, objCache, linkDestInfo) {
+  return collectSourceAnnotRefs(pageObjText, objCache).some((ref) => {
+    const m = /^(\d+)\s+\d+\s+R$/.exec(ref);
+    if (!m) return false;
+    const annotText = objCache.getObjectText(Number(m[1]));
+    return !!annotText && annotIsLifted(annotText, objCache, linkDestInfo);
+  });
 }
 
 /**

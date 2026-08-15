@@ -1,4 +1,5 @@
 import { bboxToPageSpace } from './addHighlights.js';
+import { pageImagePlacements } from './fillSign.js';
 import { ensureGlyphSetForText } from './fontContainerMain.js';
 import ocr, { OcrWord, OcrChar } from './objects/ocrObjects.js';
 import { resolveReplacementChar } from './pdf/glyphResolve.js';
@@ -215,7 +216,7 @@ function removeMarkupOnBoxes(doc, n, wordBoxes) {
 /**
  * Word id → backing record id, from one page's edit records.
  * Words listed in a replaceText record's `wordIds` exist only as that record's runs, so editing or deleting them must fold the record.
- * @param {Array<TextEdit>} [records]
+ * @param {Array<ContentEdit>} [records]
  * @returns {Map<string, string>}
  */
 function backingRecordByWordId(records) {
@@ -241,7 +242,7 @@ export function nativeTextForPage(doc, page) {
 /**
  * Deletes whole lines of visible native PDF text.
  * The words are also removed from the live OCR data, so search and text exports reflect the deletion immediately.
- * Records one undoable step in `doc.textEditHistory`.
+ * Records one undoable step in `doc.contentEditHistory`.
  * @param {ScribeDoc} doc
  * @param {Array<OcrLine>} lines - Live lines from `doc.ocr.active` pages.
  * @returns {{pages: Array<number>, groupId: string}} Affected page indices (for viewer refresh) and the action's group id.
@@ -288,15 +289,15 @@ export function deleteTextLines(doc, lines) {
       lineSnaps.push({ index: page.lines.indexOf(line), snap: snapshotLine(line) });
     }
     // A removed replaceText record's rects and glyph identities fold into this delete record so the stream glyphs the replace had suppressed stay suppressed.
-    /** @type {Array<{index: number, record: TextEdit}>} */
+    /** @type {Array<{index: number, record: ContentEdit}>} */
     const replacedRecords = [];
-    const backing = backingRecordByWordId(doc.textEdits.pages[n]);
+    const backing = backingRecordByWordId(doc.contentEdits.pages[n]);
     const backingIds = new Set();
     for (const line of pageLines) for (const w of line.words) { const rid = backing.get(w.id); if (rid) backingIds.add(rid); }
     // Folding a legacy record (no identities) forces the merged record geometric, or its rects would stop striking anything.
     let carriedLegacy = false;
-    if (backingIds.size > 0 && doc.textEdits.pages[n]) {
-      const recs = doc.textEdits.pages[n];
+    if (backingIds.size > 0 && doc.contentEdits.pages[n]) {
+      const recs = doc.contentEdits.pages[n];
       for (let ri = recs.length - 1; ri >= 0; ri--) {
         if (backingIds.has(recs[ri].id)) {
           replacedRecords.push({ index: ri, record: recs[ri] });
@@ -323,8 +324,8 @@ export function deleteTextLines(doc, lines) {
       type: 'deleteText', id: getRandomAlphanum(10), groupId, rects,
     };
     if (!carriedLegacy) record.glyphs = glyphs;
-    if (!doc.textEdits.pages[n]) doc.textEdits.pages[n] = [];
-    doc.textEdits.pages[n].push(record);
+    if (!doc.contentEdits.pages[n]) doc.contentEdits.pages[n] = [];
+    doc.contentEdits.pages[n].push(record);
     ocr.deletePageWords(page, wordIds.slice());
     const ntPage = doc.nativeText.pages[n];
     if (ntPage) for (const id of wordIds) delete ntPage[id];
@@ -333,7 +334,7 @@ export function deleteTextLines(doc, lines) {
       n, record, wordIds, lineSnaps, annots, replacedRecords, ntBefore, ntAfter,
     });
   }
-  doc.textEditHistory.record({ groupId, pages: entryPages });
+  doc.contentEditHistory.record({ groupId, pages: entryPages });
   return { pages: entryPages.map((p) => p.n), groupId };
 }
 
@@ -344,7 +345,7 @@ export const FAUX_OBLIQUE_SKEW = 0.25;
  * Replace a line's text with `newText`, optionally toggling bold/italic per word.
  * Deletes the changed words' original glyphs and lays out the new words as pre-resolved glyph runs in one `replaceText` record.
  * The renderer and the PDF export both execute that record, so the raster and the file cannot diverge.
- * Records one undoable step in `doc.textEditHistory`.
+ * Records one undoable step in `doc.contentEditHistory`.
  * @param {ScribeDoc} doc
  * @param {OcrLine} line - A live line from `doc.ocr.active` pages.
  * @param {string} newText - The line's replacement text; empty deletes the line.
@@ -394,7 +395,7 @@ export async function replaceTextLine(doc, line, newText, opts) {
     && !styleChangeAt(oldWords[olen - 1 - k], wordStylesIn?.[nlen - 1 - k])) k += 1;
 
   // A word drawn by a prior replaceText record has no original stream glyphs, so the redraw must span every such word and fold its record into this one.
-  const backing = backingRecordByWordId(doc.textEdits.pages[n]);
+  const backing = backingRecordByWordId(doc.contentEdits.pages[n]);
   const backedIdx = [];
   for (let m = 0; m < olen; m++) if (backing.has(oldWords[m].id)) backedIdx.push(m);
   let rs = Math.min(i0, backedIdx.length ? backedIdx[0] : i0);
@@ -706,7 +707,7 @@ export async function replaceTextLine(doc, line, newText, opts) {
     removedWordBoxes.push(bboxToPageSpace(oldBoxes[m], o, dims));
   }
 
-  /** @type {Array<{index: number, record: TextEdit}>} */
+  /** @type {Array<{index: number, record: ContentEdit}>} */
   const replacedRecords = [];
   /** @type {Array<bbox>} */
   const carriedRects = [];
@@ -714,8 +715,8 @@ export async function replaceTextLine(doc, line, newText, opts) {
   const recordGlyphs = [];
   // Folding a legacy record (no identities) forces the merged record geometric, or its rects would stop striking anything.
   let carriedLegacy = false;
-  if (priorBackingIds.size > 0 && doc.textEdits.pages[n]) {
-    const recs = doc.textEdits.pages[n];
+  if (priorBackingIds.size > 0 && doc.contentEdits.pages[n]) {
+    const recs = doc.contentEdits.pages[n];
     for (let ri = recs.length - 1; ri >= 0; ri--) {
       if (priorBackingIds.has(recs[ri].id)) {
         replacedRecords.push({ index: ri, record: recs[ri] });
@@ -736,7 +737,7 @@ export async function replaceTextLine(doc, line, newText, opts) {
   ocr.updateLineBbox(line);
 
   // Runs are empty only when the new text is a strict word-prefix of the old, i.e. the edit is a pure tail deletion.
-  /** @type {TextEdit} */
+  /** @type {ContentEdit} */
   const record = runs.length > 0
     ? {
       type: 'replaceText', id: recordId, groupId, rects: [...carriedRects, ...newBands], runs, wordIds: redrawnWords.map((w) => w.id),
@@ -745,8 +746,8 @@ export async function replaceTextLine(doc, line, newText, opts) {
       type: 'deleteText', id: recordId, groupId, rects: [...carriedRects, ...newBands],
     };
   if (!carriedLegacy) record.glyphs = recordGlyphs;
-  if (!doc.textEdits.pages[n]) doc.textEdits.pages[n] = [];
-  doc.textEdits.pages[n].push(record);
+  if (!doc.contentEdits.pages[n]) doc.contentEdits.pages[n] = [];
+  doc.contentEdits.pages[n].push(record);
 
   /** @type {Array<string>} */
   const twinIds = [];
@@ -772,7 +773,7 @@ export async function replaceTextLine(doc, line, newText, opts) {
   for (const { snap } of lineAfterSnaps) for (const w of snap.words) sweepIds.push(w.id);
   for (const w of oldWords) sweepIds.push(w.id);
 
-  doc.textEditHistory.record({
+  doc.contentEditHistory.record({
     groupId,
     pages: [{
       n, record, wordIds: twinIds, lineSnaps, lineAfterSnaps, sweepIds, annots, replacedRecords, ntBefore, ntAfter,
@@ -782,11 +783,49 @@ export async function replaceTextLine(doc, line, newText, opts) {
 }
 
 /**
- * Bounded undo/redo for native-text edits.
- * Page structure ops have a separate `PageHistory`.
- * Its snapshots carry the record arrays, so text-edit records survive page undo/redo.
+ * Delete the image placements whose merged extents match the given rects, as one undoable action.
+ * @param {ScribeDoc} doc
+ * @param {Array<{n: number, rect: bbox}>} items - Placement extents to delete, page-pixel frame.
+ * @returns {?{pages: Array<number>}} Affected page indices, or null when no placement matches.
  */
-export class TextEditHistory {
+export function deleteImages(doc, items) {
+  const pad = 2;
+  const groupId = getRandomAlphanum(10);
+  /** @type {Array<{n: number, record: ImageEditDelete}>} */
+  const pageRecords = [];
+  for (const { n, rect } of items) {
+    if (pageRecords.some((p) => p.n === n && Math.abs(p.record.rect.left - rect.left) <= pad
+      && Math.abs(p.record.rect.top - rect.top) <= pad && Math.abs(p.record.rect.right - rect.right) <= pad
+      && Math.abs(p.record.rect.bottom - rect.bottom) <= pad)) continue;
+    const placements = pageImagePlacements(doc.ocr?.pdf?.[n]);
+    const picked = placements.filter((e) => Math.abs(e.left - rect.left) <= pad && Math.abs(e.top - rect.top) <= pad
+      && Math.abs(e.right - rect.right) <= pad && Math.abs(e.bottom - rect.bottom) <= pad);
+    if (picked.length === 0) continue;
+    /** @type {ImageEditDelete} */
+    const record = {
+      type: 'deleteImage',
+      id: getRandomAlphanum(10),
+      rect: {
+        left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom,
+      },
+      sites: picked.flatMap((e) => e.sites.map((s) => ({ ...s }))),
+      groupId,
+    };
+    if (!doc.contentEdits.pages[n]) doc.contentEdits.pages[n] = [];
+    doc.contentEdits.pages[n].push(record);
+    pageRecords.push({ n, record });
+  }
+  if (pageRecords.length === 0) return null;
+  doc.contentEditHistory.record({ groupId, pages: pageRecords });
+  return { pages: [...new Set(pageRecords.map((p) => p.n))] };
+}
+
+/**
+ * Bounded undo/redo for content edits (native text and images).
+ * Page structure ops have a separate `PageHistory`.
+ * Its snapshots carry the record arrays, so content-edit records survive page undo/redo.
+ */
+export class ContentEditHistory {
   static LIMIT = 100;
 
   /** @param {ScribeDoc} doc */
@@ -801,19 +840,27 @@ export class TextEditHistory {
   /** @param {object} entry */
   record(entry) {
     this.undoStack.push(entry);
-    if (this.undoStack.length > TextEditHistory.LIMIT) this.undoStack.shift();
+    if (this.undoStack.length > ContentEditHistory.LIMIT) this.undoStack.shift();
     this.redoStack.length = 0;
   }
 
   /**
-   * Undo the last text-edit action.
+   * Undo the last content-edit action.
    * @returns {?Array<number>} Affected page indices, or null when nothing was undone.
    */
   undo() {
     const entry = this.undoStack.pop();
     if (!entry) return null;
     for (const p of entry.pages) {
-      const recs = this.doc.textEdits.pages[p.n];
+      if (p.record?.type === 'deleteImage') {
+        const imgRecs = this.doc.contentEdits.pages[p.n];
+        if (imgRecs) {
+          const idx = imgRecs.findIndex((r) => r && r.id === p.record.id);
+          if (idx !== -1) imgRecs.splice(idx, 1);
+        }
+        continue;
+      }
+      const recs = this.doc.contentEdits.pages[p.n];
       if (recs) {
         const idx = recs.findIndex((r) => r && r.id === p.record.id);
         if (idx !== -1) recs.splice(idx, 1);
@@ -851,15 +898,19 @@ export class TextEditHistory {
   }
 
   /**
-   * Re-apply the last undone text-edit action.
+   * Re-apply the last undone content-edit action.
    * @returns {?Array<number>} Affected page indices, or null when nothing was redone.
    */
   redo() {
     const entry = this.redoStack.pop();
     if (!entry) return null;
     for (const p of entry.pages) {
-      if (!this.doc.textEdits.pages[p.n]) this.doc.textEdits.pages[p.n] = [];
-      const recs = this.doc.textEdits.pages[p.n];
+      if (!this.doc.contentEdits.pages[p.n]) this.doc.contentEdits.pages[p.n] = [];
+      const recs = this.doc.contentEdits.pages[p.n];
+      if (p.record?.type === 'deleteImage') {
+        recs.push(p.record);
+        continue;
+      }
       if (p.replacedRecords) {
         for (const { record } of p.replacedRecords) {
           const idx = recs.findIndex((r) => r && r.id === record.id);

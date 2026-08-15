@@ -468,6 +468,14 @@ export class ScribeViewer {
     /** @type {?ReturnType<typeof import('./js/editTextLineEditor.js').createLineEditor>} */
     this._editTextLineEditor = null;
 
+    this._imageEditActive = false;
+    /** @type {?(clientX: number, clientY: number) => ?Object} Aim the image-edit context menu by selecting the placement under the point, or return null when none is there. */
+    this._imageEditMenuTarget = null;
+    /** @type {?() => number} */
+    this._imageEditSelectedCount = null;
+    /** @type {?() => void} */
+    this._imageEditDeleteSelection = null;
+
     // Whether an Edit Pages control gates the thumbnail rail's page mutations.
     // Hosts without one keep a rail that is always armed under `enablePageEditing`.
     /** @type {boolean} */
@@ -2491,7 +2499,7 @@ export class ScribeViewer {
    * @returns {?AnnotationLink}
    */
   linkAt(clientX, clientY) {
-    if (this._editTextActive) return null;
+    if (this._editTextActive || this._imageEditActive) return null;
     const pagesAnnots = this.doc.annotations?.pages;
     if (!pagesAnnots || pagesAnnots.length === 0) return null;
     const { n, x, y } = this.clientToPage(clientX, clientY);

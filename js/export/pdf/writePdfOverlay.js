@@ -2,7 +2,9 @@ import {
   findXrefOffset, parseXref, sourceXrefIsWellFormed, getPageObjects, findRootObjNum,
 } from '../../pdf/parsePdfUtils.js';
 import { byteIndexOf } from '../../pdf/pdfPrimitives.js';
-import { pageRectToContentRect, pagePointToContentPoint, mapTextEditGlyphs } from '../../pdf/pageGeometry.js';
+import {
+  pageRectToContentRect, pagePointToContentPoint, mapTextEditGlyphs, mapImageDelete,
+} from '../../pdf/pageGeometry.js';
 import { ObjectCache } from '../../pdf/objectCache.js';
 import { createPdfFontRefs, createEmbeddedFontType0 } from './writePdfFonts.js';
 import { GlobalFonts } from '../../containers/fontContainer.js';
@@ -21,6 +23,8 @@ import {
   buildInfoDictBody,
   readSourceInfoBody,
   patchFileId,
+  locateObjectByteRange,
+  traceReferencedObjects,
   FILE_ID_PLACEHOLDER,
 } from './pdfObjectGraph.js';
 import {
@@ -30,6 +34,7 @@ import {
   mergeResources,
   buildReplacementPageDict,
   overlayAnnotationBbox,
+  pageHasLiftedSourceAnnots,
 } from './pdfPageRewrite.js';
 import { createConversionState } from './convertTextRegionsToPaths.js';
 import { rebuildPdfSubset } from './subsetPdf.js';
@@ -56,9 +61,9 @@ import { buildNameDests } from '../../pdf/parseOutline.js';
  * @param {number} [params.proofOpacity=0.8]
  * @param {boolean} [params.humanReadable=false]
  * @param {Array<Array<Annotation>>} [params.annotationsPages=[]]
- * @param {Array<Array<TextEdit>>} [params.textEditsPages=[]] - Native-text edit records, applied destructively (text-only) to the page content streams.
+ * @param {Array<Array<ContentEdit>>} [params.contentEditsPages=[]] - Text and image edit records, applied destructively to the page content streams.
  * @param {?(pageIndex: number, fontObjNum: number) => Promise<?{program: ?import('../../pdf/glyphResolve.js').EditFontProgram, bytes: ?ArrayBuffer}>} [params.getEditFont=null]
- *   Resolves the font program a replaceText record's runs were resolved against, with `pageIndex` in the same page space as `textEditsPages`.
+ *   Resolves the font program a replaceText record's runs were resolved against, with `pageIndex` in the same page space as `contentEditsPages`.
  *   Required when any record carries replacement runs.
  * @param {?Array<{ page: number, bbox: [number, number, number, number] }>} [params.convertRegionsToPaths=null]
  *   Source-PDF text whose glyph origin falls inside any of these user-space bboxes is converted to paths.
@@ -91,7 +96,7 @@ export async function overlayPdfText({
   proofOpacity = 0.8,
   humanReadable = false,
   annotationsPages = [],
-  textEditsPages = [],
+  contentEditsPages = [],
   getEditFont = null,
   convertRegionsToPaths = null,
   convertTextToPaths = false,
@@ -170,7 +175,7 @@ export async function overlayPdfText({
   /** @type {Map<number, Array<TextEditReplace>>} */
   const replaceRecordsByPage = new Map();
   for (const i of effectivePageArr) {
-    const records = (textEditsPages[i] || []).filter((r) => r && (r.type === 'deleteText' || r.type === 'replaceText'));
+    const records = (contentEditsPages[i] || []).filter((r) => r && (r.type === 'deleteText' || r.type === 'replaceText'));
     if (records.length === 0) continue;
     const dims = pageMetricsArr?.[i]?.dims;
     if (!dims) throw new Error(`Cannot apply text edits on page ${i}: page dimensions are unknown.`);
@@ -198,6 +203,22 @@ export async function overlayPdfText({
       const { pts, tol } = mapTextEditGlyphs(gatedGlyphWords, dims, box, pages[i].rotate || 0);
       textEditGatedByPage.set(i, { rects: gatedRects, pts, tol });
     }
+  }
+
+  /** @type {Map<number, Array<{rect: [number, number, number, number], sites: Array<{objNum: ?number, rect: [number, number, number, number]}>, tol: number}>>} */
+  const imageDeleteByPage = new Map();
+  for (const i of effectivePageArr) {
+    const records = (contentEditsPages[i] || []).filter((r) => r && r.type === 'deleteImage');
+    if (records.length === 0) continue;
+    const dims = pageMetricsArr?.[i]?.dims;
+    if (!dims) throw new Error(`Cannot apply image deletions on page ${i}: page dimensions are unknown.`);
+    const box = pages[i].cropBox || pages[i].mediaBox || [0, 0, 612, 792];
+    const gates = [];
+    for (const rec of records) {
+      const gate = mapImageDelete(/** @type {ImageEditDelete} */ (rec), dims, box, pages[i].rotate || 0);
+      if (gate) gates.push(gate);
+    }
+    if (gates.length > 0) imageDeleteByPage.set(i, gates);
   }
 
   // Step 2: Determine next available object number.
@@ -482,6 +503,7 @@ export async function overlayPdfText({
       textEditRegionsByPage,
       textEditGatedByPage,
       textEditInsertsByPage,
+      imageDeleteByPage,
       editFontRefsByPage,
       editFontObjects,
       docInfo,
@@ -490,6 +512,9 @@ export async function overlayPdfText({
     });
   }
 
+  /** @type {Set<number>} */
+  const scrubObjNums = new Set();
+
   const regionsByPage = new Map();
   if (regionsForPaths) {
     for (const r of regionsForPaths) {
@@ -497,7 +522,7 @@ export async function overlayPdfText({
       regionsByPage.get(r.page).push(r.bbox);
     }
   }
-  const conversionState = (regionsByPage.size > 0 || convertBrokenType3ToPaths || textEditRegionsByPage.size > 0
+  const conversionState = (regionsByPage.size > 0 || convertBrokenType3ToPaths || imageDeleteByPage.size > 0 || textEditRegionsByPage.size > 0
     || textEditGatedByPage.size > 0 || textEditInsertsByPage.size > 0)
     ? createConversionState() : null;
 
@@ -591,14 +616,18 @@ export async function overlayPdfText({
     const hasFill = !!fillResult || !!fillTextObjStr;
     const hasConvert = regionsByPage.has(i) || convertBrokenType3ToPaths;
     const hasTextEdits = textEditRegionsByPage.has(i) || textEditGatedByPage.has(i) || textEditInsertsByPage.has(i);
-    if (!hasText && !hasAnnots && !hasConvert && !hasTextEdits && !hasFill) continue;
+    // Deleting a page's last annotation leaves nothing to re-emit, so no condition above marks the page as changed.
+    // Its source /Annots still holds the lifted copies, which a skip here would pass through and resurrect.
+    const hasLiftedAnnotsToDrop = annotationsPages.length > 0 && pageHasLiftedSourceAnnots(pageInfo.objText, objCache, linkDestInfo);
+    const hasImageDeletes = imageDeleteByPage.has(i);
+    if (!hasText && !hasAnnots && !hasConvert && !hasTextEdits && !hasImageDeletes && !hasFill && !hasLiftedAnnotsToDrop) continue;
 
     /** @type {string[]|null} */
     let newContentsArray = null;
     /** @type {number|null} */
     let resourcesObjNum = null;
 
-    if (hasText || hasConvert || hasTextEdits || hasFill) {
+    if (hasText || hasConvert || hasTextEdits || hasImageDeletes || hasFill) {
       for (const font of pageFontsUsed) pdfFontsUsed.add(font);
 
       const existingContentsRefs = parseExistingContents(pageInfo.objText, objCache);
@@ -615,7 +644,12 @@ export async function overlayPdfText({
         textEditBboxes: textEditRegionsByPage.get(i) || null,
         textEditGated: textEditGatedByPage.get(i) || null,
         textEditInserts: textEditInsertsByPage.get(i) || null,
+        imageDeletes: imageDeleteByPage.get(i) || null,
       });
+      if (hasTextEdits || hasImageDeletes) {
+        for (const o of stripConvertResult.supersededContentObjNums || []) scrubObjNums.add(o);
+      }
+      for (const o of stripConvertResult.deletedImageObjNums || []) scrubObjNums.add(o);
 
       // When broken-Type3 conversion is the *only* reason this page is here
       // (no overlay text, no annotations, no explicit region) and nothing actually changed,
@@ -680,7 +714,11 @@ export async function overlayPdfText({
       if (fillResult) overlayXObjectsStr += fillResult.xobjEntriesStr;
       const overlayExtGStateStr = (hasText && ['proof', 'eval'].includes(textMode) ? `/GSO1 <</ca ${proofOpacity}>>` : '')
         + (fillTextObjStr ? '/GSF <</ca 1 /CA 1>>' : '');
-      const mergedResourcesStr = mergeResources(existingResourcesStr, overlayFontsStr, overlayExtGStateStr, objCache, overlayXObjectsStr);
+      // A name left in /XObject keeps a dead image reachable, so the byte scrub below would spare it.
+      const imageDeleteDropNames = hasImageDeletes && stripConvertResult.redactedFormNames && stripConvertResult.redactedFormNames.size > 0
+        ? stripConvertResult.redactedFormNames : null;
+      const mergedResourcesStr = mergeResources(existingResourcesStr, overlayFontsStr, overlayExtGStateStr, objCache, overlayXObjectsStr,
+        imageDeleteDropNames);
 
       resourcesObjNum = allocObjNum();
       pushNewObj({ objNum: resourcesObjNum, content: `${resourcesObjNum} 0 obj\n${mergedResourcesStr}\nendobj\n\n` });
@@ -834,6 +872,38 @@ export async function overlayPdfText({
 
   const result = new Uint8Array(pdfBytes.length + appendByteLen);
   result.set(pdfBytes);
+
+  // The source xref stays live in an incremental update, so a dead object is overwritten in place with a same-length stub rather than removed.
+  if (scrubObjNums.size > 0) {
+    for (const n of [...scrubObjNums]) {
+      const t = objCache.getObjectText(n);
+      const sm = t && /\/SMask\s+(\d+)\s+\d+\s+R/.exec(t);
+      if (sm) scrubObjNums.add(Number(sm[1]));
+    }
+    // An image dropped from this page can still be drawn on another, so a candidate the updated document still reaches is spared.
+    // The trace resolves references against the original file, so leaving the superseded objects in the walk would keep the dead objects reachable through them.
+    const supersededObjNums = new Set(allNewObjects.map((o) => o.objNum));
+    const startingTexts = [`<</Root ${rootRef}/Info ${outInfoRef || ''}>>`];
+    for (const o of allNewObjects) {
+      const c = o.content;
+      if (typeof c === 'string') startingTexts.push(c);
+      else if (c && typeof c.header === 'string') startingTexts.push(c.header + (typeof c.trailer === 'string' ? c.trailer : ''));
+    }
+    const reachable = traceReferencedObjects(startingTexts, objCache, supersededObjNums);
+    for (const n of [...scrubObjNums]) {
+      if (reachable.has(n)) scrubObjNums.delete(n);
+    }
+    for (const n of scrubObjNums) {
+      const entry = xrefEntries[n];
+      if (!entry || entry.type !== 1) continue;
+      const range = locateObjectByteRange(pdfBytes, objCache, entry);
+      if (!range) continue;
+      const stub = `${n} 0 obj\n<</Length 0>>\nstream\nendstream\nendobj`;
+      if (range.end - range.start < stub.length) continue;
+      result.fill(0x20, range.start, range.end);
+      for (let si = 0; si < stub.length; si++) result[range.start + si] = stub.charCodeAt(si);
+    }
+  }
   let offset = pdfBytes.length;
   for (const part of appendParts) {
     if (typeof part === 'string') {

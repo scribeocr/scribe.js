@@ -1,5 +1,6 @@
 import scribe from '../../scribe.js';
 import { nativeTextForPage } from '../../js/textEdits.js';
+import { pageImagePlacements } from '../../js/fillSign.js';
 import { ScribeViewer } from '../viewer.js';
 // Both engines are imported so `ScribeViewer.customSelection` can toggle between them at runtime.
 // Import only one for a slimmer build.
@@ -20,7 +21,7 @@ import { createBookmarksPanel, BOOKMARK_SVG } from '../js/controls/bookmarksPane
 import { createCommentsPanel, COMMENT_SVG } from '../js/controls/commentsPanel.js';
 import {
   createHighlightTool, createDropZone, openDocumentFromFile, createRedactTool, createEditTextTool,
-  createFillSignTool, createEditPagesTool, createRecognizeTextTool,
+  createImageEditTool, createFillSignTool, createEditPagesTool, createRecognizeTextTool,
 } from '../js/controls/tools.js';
 import { filesFromDropEvent } from '../js/dragAndDrop.js';
 import { SeedDoc } from '../js/seedDoc.js';
@@ -1102,6 +1103,14 @@ class ScribePDFViewer {
         this._teardownCallbacks.push(this._editTextTool.installBehaviors());
       }
 
+      /** @type {?ReturnType<typeof createImageEditTool>} */
+      this._imageEditTool = null;
+      if (editText) {
+        this._imageEditTool = createImageEditTool(this.scribe);
+        if (this._modeTrackRow1) this._modeTrackRow1.insertBefore(this._imageEditTool.toolbarElem, this._modeTrackChev);
+        this._teardownCallbacks.push(this._imageEditTool.installBehaviors());
+      }
+
       this._fillSignTool = createFillSignTool(this);
       if (this._modeTrackRow1) this._modeTrackRow1.insertBefore(this._fillSignTool.toolbarElem, this._modeTrackChev);
       this._teardownCallbacks.push(this._fillSignTool.installBehaviors());
@@ -1121,12 +1130,13 @@ class ScribePDFViewer {
       }
 
       if (this._editTextTool) this._editTextTool.toolbarElem.dataset.modeHint = 'Click a line to select it · double-click to edit';
+      if (this._imageEditTool) this._imageEditTool.toolbarElem.dataset.modeHint = 'Click or drag to select images · Delete or right-click removes them';
       this._fillSignTool.toolbarElem.dataset.modeHint = 'Place checks, crosses, and signatures';
       if (this._editPagesTool) this._editPagesTool.toolbarElem.dataset.modeHint = 'Drag pages to reorder · select pages to delete';
       if (this._recognizeTool) this._recognizeTool.toolbarElem.dataset.modeHint = 'Makes scanned pages selectable and searchable';
 
-      const exclusiveToolBtns = [this._redactTool?.toolbarElem, this._editTextTool?.toolbarElem, this._fillSignTool.toolbarElem,
-        this._editPagesTool?.toolbarElem, this._recognizeTool?.toolbarElem].filter((b) => !!b);
+      const exclusiveToolBtns = [this._redactTool?.toolbarElem, this._editTextTool?.toolbarElem, this._imageEditTool?.toolbarElem,
+        this._fillSignTool.toolbarElem, this._editPagesTool?.toolbarElem, this._recognizeTool?.toolbarElem].filter((b) => !!b);
       this._exclusiveToolBtns = exclusiveToolBtns;
       for (const btn of exclusiveToolBtns) {
         btn.addEventListener('click', () => {
@@ -3585,6 +3595,19 @@ class ScribePDFViewer {
       editBtn.classList.toggle('disabled', !editable);
       editBtn.ariaDisabled = !editable ? 'true' : 'false';
       editBtn.tabIndex = !editable ? -1 : 0;
+    }
+    const imageBtn = this._imageEditTool?.toolbarElem;
+    if (imageBtn) {
+      // The area cut mirrors the tool's own picker, so the button never enables where no image can be selected.
+      const hasImages = !disabled && !!this.doc?.ocr?.pdf?.some((page) => {
+        const dims = page?.dims;
+        if (!dims) return false;
+        return pageImagePlacements(page).some((e) => (e.right - e.left) * (e.bottom - e.top) < dims.width * dims.height * 0.95);
+      });
+      if (!hasImages && imageBtn.classList.contains('active')) imageBtn.click();
+      imageBtn.classList.toggle('disabled', !hasImages);
+      imageBtn.ariaDisabled = !hasImages ? 'true' : 'false';
+      imageBtn.tabIndex = !hasImages ? -1 : 0;
     }
     // The closes above can end a mode without a button click, so refresh the banner here too.
     this._syncModeBanner();

@@ -54,12 +54,12 @@ export class PdfCore {
    * Render a single page to an image data URL, a JPEG blob, or a transferable ImageBitmap.
    * @param {{ pageIndex: number, colorMode: string, dpi?: number, targetWidth?: number,
    * outputFormat?: 'png'|'jpeg'|'bitmap', quality?: number,
-   * textEdits?: ?{records: Array<TextEdit>, dims: {width: number, height: number}} }} args - `targetWidth` renders the page exactly that many pixels wide, taking precedence over `dpi`.
+   * edits?: ?{records: Array<ContentEdit>, dims: {width: number, height: number}} }} args - `targetWidth` renders the page exactly that many pixels wide, taking precedence over `dpi`.
    * @returns {Promise<{ dataUrl?: string, blob?: Blob, bitmap?: ImageBitmap, colorMode: string, ok: boolean, failReason?: string, failDetail?: string,
    *   perf?: { prepMs: number, drawMs: number, decodeMs: number, flushMs: number } }>}
    */
   async renderPage({
-    pageIndex, colorMode, dpi, targetWidth, outputFormat = 'png', quality = 0.6, textEdits = null,
+    pageIndex, colorMode, dpi, targetWidth, outputFormat = 'png', quality = 0.6, edits = null,
   }) {
     if (!this.#objCache || !this.#pages) throw new Error('PDF not loaded');
     // Lazy import so the renderer stays out of main-thread bundles that never render in-process.
@@ -74,7 +74,7 @@ export class PdfCore {
       const visualWidthPts = page.rotate === 90 || page.rotate === 270 ? heightPts : widthPts;
       dpi = (72 * targetWidth) / visualWidthPts;
     }
-    return renderPdfPageAsImage(page.objText, this.#objCache, box, pageIndex, colorMode, page.rotate, dpi, outputFormat, quality, textEdits);
+    return renderPdfPageAsImage(page.objText, this.#objCache, box, pageIndex, colorMode, page.rotate, dpi, outputFormat, quality, edits);
   }
 
   /**

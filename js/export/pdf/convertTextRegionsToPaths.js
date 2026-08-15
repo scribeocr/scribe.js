@@ -14,7 +14,9 @@ import {
   tokenizeContentStream, formatPdfNumber,
 } from '../../pdf/contentStream.js';
 import { parsePageFonts } from '../../pdf/fonts/parsePdfFonts.js';
-import { glyphEmBoxHitsRects, glyphIdentityMatches, TEXT_EDIT_GLYPH_SIZE_CAP } from '../../pdf/pageGeometry.js';
+import {
+  glyphEmBoxHitsRects, glyphIdentityMatches, imageDrawMatchesDelete, TEXT_EDIT_GLYPH_SIZE_CAP,
+} from '../../pdf/pageGeometry.js';
 import { aglLookup } from '../../pdf/fonts/standardEncodings.js';
 import { encodeStreamObject } from './writePdfStreams.js';
 import opentype from '../../font-parser/src/index.js';
@@ -559,6 +561,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   // Replacement operator bodies (one per replaceText record), spliced in at each record's first dropped glyph.
   // Entries are mutated (`placed`) so the page driver can append the leftovers.
   const editInserts = opts.textEditInserts || null;
+  const imageDeletes = opts.imageDeletes && opts.imageDeletes.length > 0 ? opts.imageDeletes : null;
   const textDropActive = redactActive || editActive;
   const markedContentProps = opts.markedContentProps || null;
   // Glyph-identifying `%tag` comments are a debug/traceability aid (they let tests and a human reader see which (font, glyph) each inline block draws).
@@ -566,7 +569,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   const commentGlyphs = !!opts.humanReadable;
   // Redaction always tokenizes, since it must also see vector path ops, which this regex deliberately ignores.
   // Text edits always tokenize too, since `'`/`"` shows would slip past the regex.
-  if (!textDropActive && !/\bT[jJ]\b|\bDo\b/.test(streamText)) {
+  if (!textDropActive && !imageDeletes && !/\bT[jJ]\b|\bDo\b/.test(streamText)) {
     return {
       ok: true,
       text: streamText,
@@ -576,6 +579,9 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       formInvocations: [],
       imageInvocations: [],
       verbatimImageNames: new Set(),
+      imageDeleteDroppedNames: new Set(),
+      imageDeleteKeptNames: new Set(),
+      imageDeleteDroppedObjNums: new Set(),
       finalCtm: initialCtm.slice(),
     };
   }
@@ -868,6 +874,13 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   const imageInvocations = [];
   /** @type {Set<string>} */
   const verbatimImageNames = new Set();
+  // The same name can be dropped at one placement and kept at another, so the driver prunes a /XObject entry only when no kept placement remains.
+  /** @type {Set<string>} */
+  const imageDeleteDroppedNames = new Set();
+  /** @type {Set<string>} */
+  const imageDeleteKeptNames = new Set();
+  /** @type {Set<number>} */
+  const imageDeleteDroppedObjNums = new Set();
 
   // Buffered vector path (redact mode, outside BT): serialized construction ops plus the CTM-mapped AABB of every control point, so the paint op can decide the drop.
   /** @type {string[]} */
@@ -886,6 +899,17 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
 
   for (const tok of tokens) {
     if (tok.type !== 'operator') {
+      if (imageDeletes && tok.type === 'inlineImage') {
+        let dropDelete = false;
+        for (const g of imageDeletes) {
+          if (imageDrawMatchesDelete(ctm, g, null)) { dropDelete = true; break; }
+        }
+        if (dropDelete) {
+          skipped.push({ fontObjNum: -1, charCode: -1, reason: 'imagedelete-dropped-inline-image' });
+          changed = true;
+          continue;
+        }
+      }
       // Inline image (BI..ID..EI, one self-contained token) crossing a redact rect: drop the whole token.
       // Partial scrub would require decoding arbitrary inline-image filters (unsupported), and dropping the whole token over-redacts, which is the safe side.
       if (redactActive && tok.type === 'inlineImage') {
@@ -1191,6 +1215,26 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
       // Record the invocation for the orchestrator to recurse into. CTM is captured before any state change.
       // The form's /Resources lookup happens in the orchestrator; we just track (name, current ctm) here.
       flushPendingConverts();
+      // Deletion is checked before the redaction alias below, so a draw that is both deleted and redacted is removed outright instead of replaced by a scrubbed copy.
+      if (imageDeletes && parentImages && operandBuf.length >= 1) {
+        const nameTok = operandBuf[operandBuf.length - 1];
+        if (nameTok && nameTok.type === 'name' && parentImages.has(nameTok.value)) {
+          const imgObjNum = /** @type {number} */ (parentImages.get(nameTok.value));
+          let dropDelete = false;
+          for (const g of imageDeletes) {
+            if (imageDrawMatchesDelete(ctm, g, imgObjNum)) { dropDelete = true; break; }
+          }
+          if (dropDelete) {
+            operandBuf.pop();
+            imageDeleteDroppedNames.add(nameTok.value);
+            imageDeleteDroppedObjNums.add(imgObjNum);
+            skipped.push({ fontObjNum: -1, charCode: -1, reason: 'imagedelete-dropped-image' });
+            changed = true;
+            continue;
+          }
+          imageDeleteKeptNames.add(nameTok.value);
+        }
+      }
       // Image XObject under redaction: alias a placement that intersects a redact rect (the orchestrator swaps in a pixel-scrubbed copy); a non-intersecting placement keeps the original.
       if (redactActive && parentImages && operandBuf.length >= 1) {
         const nameTok = operandBuf[operandBuf.length - 1];
@@ -1227,7 +1271,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
           if (typeof formObjNum === 'number') {
             // The same form placed at several CTMs may intersect a rect at only one placement, so recursing once per name would bake that placement's rewrite into all of them.
             let alias = null;
-            if (textDropActive) {
+            if (textDropActive || imageDeletes) {
               const key = `${nameTok.value}\u0000${ctm.join(' ')}`;
               alias = redactFormAliases.get(key);
               if (!alias) {
@@ -1706,7 +1750,18 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   }
 
   return {
-    ok: true, text: changed ? out.join('') : streamText, changed, usedXobj, skipped, formInvocations, imageInvocations, verbatimImageNames, finalCtm: ctm,
+    ok: true,
+    text: changed ? out.join('') : streamText,
+    changed,
+    usedXobj,
+    skipped,
+    formInvocations,
+    imageInvocations,
+    verbatimImageNames,
+    imageDeleteDroppedNames,
+    imageDeleteKeptNames,
+    imageDeleteDroppedObjNums,
+    finalCtm: ctm,
   };
 }
 
@@ -2597,10 +2652,11 @@ async function rewriteFormContentForRegions({
   formObjNum, ctm, parentFontsByTag, fontInfoByObjNum, resolver,
   bboxes, targetFontObjNums = null, state, objCache, allocObjNum, pushObj, humanReadable,
   parentResourcesText = null, initialLineWidth = null, initialDashActive = false, initialMiterLimit = null,
-  initialTextState = null, redactBboxes = null, textEditBboxes = null, textEditGated = null, glyphUnicode = null,
+  initialTextState = null, redactBboxes = null, textEditBboxes = null, textEditGated = null, glyphUnicode = null, imageDeletes = null,
 }) {
   const redactActive = !!(redactBboxes && redactBboxes.length > 0);
   const editActive = !!(textEditBboxes && textEditBboxes.length > 0) || !!(textEditGated && textEditGated.rects.length > 0);
+  const imageDeleteActive = !!(imageDeletes && imageDeletes.length > 0);
   if (state.inProgress.has(formObjNum)) {
     return { changed: false, cloneObjNum: formObjNum, skipped: [] };
   }
@@ -2659,7 +2715,7 @@ async function rewriteFormContentForRegions({
 
     /** @type {?Map<string, number>} */
     let formImagesByName = null;
-    if (redactActive) {
+    if (redactActive || imageDeleteActive) {
       formImagesByName = new Map();
       try {
         for (const [name, info] of parsePageImages(formObjText, objCache, { recurseForms: false }).images) {
@@ -2677,6 +2733,7 @@ async function rewriteFormContentForRegions({
       textEditBboxes,
       textEditGated,
       glyphUnicode,
+      imageDeletes,
       initialLineWidth,
       initialDashActive,
       initialMiterLimit,
@@ -2689,15 +2746,18 @@ async function rewriteFormContentForRegions({
     if (!smResult.ok) {
       if (redactActive) throw new Error(`Cannot apply redactions: Form XObject rewrite failed (${smResult.reason}).`);
       if (editActive) throw new Error(`Cannot apply text edits: Form XObject rewrite failed (${smResult.reason}).`);
+      if (imageDeleteActive) throw new Error(`Cannot apply image deletions: Form XObject rewrite failed (${smResult.reason}).`);
       return { changed: false, cloneObjNum: formObjNum, skipped: [] };
     }
 
     /** @type {Map<string, number>} */
     const nestedFormClones = new Map();
     const skipped = smResult.skipped.slice();
+    /** @type {Set<number>} */
+    const deletedImageObjNums = new Set();
     /** @type {?Set<string>} */
     let nestedRedactedNames = null;
-    if (redactActive || editActive) {
+    if (redactActive || editActive || imageDeleteActive) {
       // Per-site recursion, mirroring convertSinglePageForRegions (see the Do aliasing).
       nestedRedactedNames = new Set();
       for (const inv of smResult.formInvocations) {
@@ -2716,6 +2776,7 @@ async function rewriteFormContentForRegions({
           textEditBboxes,
           textEditGated,
           glyphUnicode,
+          imageDeletes,
           state,
           objCache,
           allocObjNum,
@@ -2728,8 +2789,13 @@ async function rewriteFormContentForRegions({
           initialTextState: inv.textState,
         });
         if (r.skipped && r.skipped.length > 0) skipped.push(...r.skipped);
+        if (r.deletedImageObjNums) for (const o of r.deletedImageObjNums) deletedImageObjNums.add(o);
         nestedFormClones.set(inv.alias, r.cloneObjNum);
       }
+      for (const name of smResult.imageDeleteDroppedNames || []) {
+        if (!(smResult.imageDeleteKeptNames && smResult.imageDeleteKeptNames.has(name))) nestedRedactedNames.add(name);
+      }
+      for (const o of smResult.imageDeleteDroppedObjNums || []) deletedImageObjNums.add(o);
       if (smResult.imageInvocations && smResult.imageInvocations.length > 0) {
         await applyImageRedactions({
           imageInvocations: smResult.imageInvocations,
@@ -2788,7 +2854,9 @@ async function rewriteFormContentForRegions({
     }
 
     if (!smResult.changed && nestedFormClones.size === 0) {
-      return { changed: false, cloneObjNum: formObjNum, skipped };
+      return {
+        changed: false, cloneObjNum: formObjNum, skipped, deletedImageObjNums,
+      };
     }
 
     // Glyphs are inlined into smResult.text; the clone needs no per-glyph
@@ -2799,7 +2867,9 @@ async function rewriteFormContentForRegions({
     const dedupKey = makeCloneDedupKey(formObjNum, smResult.text, perGlyphEntries, nestedFormClones);
     const cached = state.formCloneByKey.get(dedupKey);
     if (cached != null) {
-      return { changed: true, cloneObjNum: cached, skipped };
+      return {
+        changed: true, cloneObjNum: cached, skipped, deletedImageObjNums,
+      };
     }
     const cloneObjNum = allocObjNum();
     const dictExtras = buildClonedFormDictExtras(formObjText, objCache, perGlyphEntries, nestedFormClones, parentResourcesText, nestedRedactedNames);
@@ -2808,8 +2878,10 @@ async function rewriteFormContentForRegions({
     state.formCloneByKey.set(dedupKey, cloneObjNum);
     // The rebuild's reference trace never traces the original form dict for redacted content, since that would copy the unredacted original.
     // The clone's own dict text is traced instead: it references the fonts/images/nested clones the content still needs.
-    if ((redactActive || editActive) && Array.isArray(state.redactTraceTexts)) state.redactTraceTexts.push(dictExtras);
-    return { changed: true, cloneObjNum, skipped };
+    if ((redactActive || editActive || imageDeleteActive) && Array.isArray(state.redactTraceTexts)) state.redactTraceTexts.push(dictExtras);
+    return {
+      changed: true, cloneObjNum, skipped, deletedImageObjNums,
+    };
   } finally {
     state.inProgress.delete(formObjNum);
   }
@@ -2848,14 +2920,16 @@ async function rewriteFormContentForRegions({
 export async function convertSinglePageForRegions({
   streamText, pageObjText, bboxes, state, objCache, allocObjNum, pushObj, humanReadable,
   convertBrokenType3ToPaths = false, redactBboxes = null, textEditBboxes = null, textEditGated = null, textEditInserts = null,
+  imageDeletes = null,
 }) {
   const redactActive = !!(redactBboxes && redactBboxes.length > 0);
   // Inserts alone activate the edit pass: a pure append erases nothing but must still be spliced or appended.
   const editActive = !!(textEditBboxes && textEditBboxes.length > 0) || !!(textEditGated && textEditGated.rects.length > 0)
     || !!(textEditInserts && textEditInserts.length > 0);
+  const imageDeleteActive = !!(imageDeletes && imageDeletes.length > 0);
   // Bbox-driven conversion needs at least one region.
   // Broken-Type3 conversion runs font-scoped with no regions, so it relaxes the empty-bbox early-out.
-  if ((!bboxes || bboxes.length === 0) && !convertBrokenType3ToPaths && !redactActive && !editActive) return { changed: false };
+  if ((!bboxes || bboxes.length === 0) && !convertBrokenType3ToPaths && !redactActive && !editActive && !imageDeleteActive) return { changed: false };
   const safeBboxes = bboxes || [];
 
   // Unembedded fonts convert via built-in substitute outlines (see the resolver).
@@ -2868,9 +2942,10 @@ export async function convertSinglePageForRegions({
   try {
     pageFontInfos = parsePageFonts(pageObjText, objCache);
   } catch {
-    // Redaction and text edits must not silently keep the content they were meant to remove.
+    // Redaction and content edits must not silently keep the content they were meant to remove.
     if (redactActive) throw new Error('Cannot apply redactions: the page fonts could not be parsed.');
     if (editActive) throw new Error('Cannot apply text edits: the page fonts could not be parsed.');
+    if (imageDeleteActive) throw new Error('Cannot apply image deletions: the page fonts could not be parsed.');
     return { changed: false };
   }
   if (!pageFontInfos) pageFontInfos = new Map();
@@ -2909,13 +2984,13 @@ export async function convertSinglePageForRegions({
   // Page-level forms that omit their own /Resources inherit the page's, so pass it down.
   const pageResourcesText = resolveResourcesText(pageObjText, objCache);
 
-  // A redacted or text-edited page runs the walk even with no fonts or Form XObjects, since skipping it would silently keep content that must be removed.
+  // A redacted or content-edited page runs the walk even with no fonts or Form XObjects, since skipping it would silently keep content that must be removed.
   // Redaction also strips path and image content.
-  if (fontsByTag.size === 0 && pageXobjectsByName.size === 0 && !redactActive && !editActive) return { changed: false };
+  if (fontsByTag.size === 0 && pageXobjectsByName.size === 0 && !redactActive && !editActive && !imageDeleteActive) return { changed: false };
 
   /** @type {?Map<string, number>} */
   let pageImagesByName = null;
-  if (redactActive) {
+  if (redactActive || imageDeleteActive) {
     pageImagesByName = new Map();
     try {
       for (const [name, info] of parsePageImages(pageObjText, objCache, { recurseForms: false }).images) {
@@ -2934,6 +3009,7 @@ export async function convertSinglePageForRegions({
     textEditGated,
     glyphUnicode,
     textEditInserts,
+    imageDeletes,
     extGStates: parseExtGStates(pageResourcesText, objCache),
     markedContentProps: parseMarkedContentProps(pageResourcesText, objCache),
     hiddenOCMCNames: offOCGs.size > 0 ? parseHiddenOCMCNames(pageObjText, objCache, offOCGs) : null,
@@ -2942,15 +3018,20 @@ export async function convertSinglePageForRegions({
   if (!smResult.ok) {
     if (redactActive) throw new Error(`Cannot apply redactions: page content rewrite failed (${smResult.reason}).`);
     if (editActive) throw new Error(`Cannot apply text edits: page content rewrite failed (${smResult.reason}).`);
+    if (imageDeleteActive) throw new Error(`Cannot apply image deletions: page content rewrite failed (${smResult.reason}).`);
     return { changed: false };
   }
 
   /** @type {Map<string, number>} */
   const formClones = new Map();
   const skipped = smResult.skipped.slice();
+  /** @type {Set<number>} */
+  const deletedImageObjNums = new Set();
+  /** @type {Set<string>} */
+  const deletedImageNames = new Set();
   /** @type {?Set<string>} */
   let redactedFormNames = null;
-  if (redactActive || editActive) {
+  if (redactActive || editActive || imageDeleteActive) {
     // Per-site recursion (see the aliasing at the Do handler): each invocation carries its own CTM, and its alias resolves to that site's clone or to the original when nothing changed.
     // Content-hash dedup in the clone cache collapses sites whose rewrites are identical.
     redactedFormNames = new Set();
@@ -2970,6 +3051,7 @@ export async function convertSinglePageForRegions({
         textEditBboxes,
         textEditGated,
         glyphUnicode,
+        imageDeletes,
         state,
         objCache,
         allocObjNum,
@@ -2982,8 +3064,16 @@ export async function convertSinglePageForRegions({
         initialTextState: inv.textState,
       });
       if (r.skipped && r.skipped.length > 0) skipped.push(...r.skipped);
+      if (r.deletedImageObjNums) for (const o of r.deletedImageObjNums) deletedImageObjNums.add(o);
       formClones.set(inv.alias, r.cloneObjNum);
     }
+    for (const name of smResult.imageDeleteDroppedNames || []) {
+      if (!(smResult.imageDeleteKeptNames && smResult.imageDeleteKeptNames.has(name))) {
+        redactedFormNames.add(name);
+        deletedImageNames.add(name);
+      }
+    }
+    for (const o of smResult.imageDeleteDroppedObjNums || []) deletedImageObjNums.add(o);
     if (smResult.imageInvocations && smResult.imageInvocations.length > 0) {
       await applyImageRedactions({
         imageInvocations: smResult.imageInvocations,
@@ -3085,6 +3175,8 @@ export async function convertSinglePageForRegions({
     formClones,
     skipped,
     redactedFormNames,
+    deletedImageObjNums,
+    deletedImageNames,
   };
 }
 

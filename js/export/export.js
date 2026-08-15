@@ -207,14 +207,14 @@ function* scribeSegmentChunks(ocrPages, serializeOpts, envelope) {
     session: envelope.session ? { v: envelope.session.v, fillText: envelope.session.fillText } : undefined,
   };
   yield JSON.stringify(header);
-  const textEdits = envelope.session?.textEdits || [];
+  const contentEdits = envelope.session?.contentEdits || [];
   const nativeText = envelope.session?.nativeText || [];
   for (let i = 0; i < ocrPages.length; i++) {
     const page = ocrPages[i] ? pageForScribe(ocrPages[i], serializeOpts) : null;
     /** @type {Record<string, any>} */
     const rec = { i, ocr: page };
     if (envelope.session) {
-      rec.textEdits = textEdits[i] ?? null;
+      rec.contentEdits = contentEdits[i] ?? null;
       rec.nativeText = nativeText[i] ?? null;
     }
     yield '\n';
@@ -429,7 +429,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
           let overlayOcrArr = ocrDownload;
           let overlayPageMetricsArr = doc.pageMetrics;
           let overlayAnnotationsPages = annotationsPagesExport;
-          let overlayTextEditsPages = doc.textEdits.pages;
+          let overlayContentEditsPages = doc.contentEdits.pages;
           let pageStats = doc.inputData.pageStats;
           let ocrAppliedArr = doc.inputData.ocrApplied;
           // Page edits (delete/reorder) make each slot's source page (`sourcePageN`) diverge from its display position,
@@ -466,7 +466,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
             overlayOcrArr = pageArr.map((i) => ocrDownload[i]);
             overlayPageMetricsArr = pageArr.map((i) => doc.pageMetrics[i]);
             overlayAnnotationsPages = pageArr.map((i) => annotationsPagesExport[i] || []);
-            overlayTextEditsPages = pageArr.map((i) => doc.textEdits.pages[i] || []);
+            overlayContentEditsPages = pageArr.map((i) => doc.contentEdits.pages[i] || []);
             pageStats = fullStats ? pageArr.map((i) => fullStats[i]) : null;
             ocrAppliedArr = fullOcrApplied ? pageArr.map((i) => fullOcrApplied[i]) : null;
           }
@@ -536,7 +536,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
             proofOpacity: overlayOpacity / 100,
             humanReadable: humanReadablePDF,
             annotationsPages: overlayAnnotationsPages,
-            textEditsPages: overlayTextEditsPages,
+            contentEditsPages: overlayContentEditsPages,
             // Overlay arrays are display-ordered on the composed path, so map back to doc pages for font resolution.
             getEditFont: (i, fontObjNum) => doc.images.getEditFont(composed ? pageArr[i] : i, fontObjNum),
             convertTextToPaths: convertDupSourceTextToPaths,
@@ -752,7 +752,7 @@ export async function exportData(doc, format = 'txt', options = {}) {
     // App-only state ships in one opt-in block, so standard-format consumers never receive it and the app save path cannot scatter it.
     if (scribeSession) {
       envelope.session = {
-        v: 1, textEdits: doc.textEdits.pages, nativeText: doc.nativeText.pages, fillText: collectFillTextRefs(doc),
+        v: 1, contentEdits: doc.contentEdits.pages, nativeText: doc.nativeText.pages, fillText: collectFillTextRefs(doc),
       };
     }
     const serializeOpts = { includeText: includeExtraTextScribe, includeCharBoxes: includeCharBoxesScribe };

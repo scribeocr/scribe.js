@@ -859,8 +859,9 @@ export function parseFormMatrix(objText, objCache = null) {
  * Shared by parsePdfDoc and parsePdfPaths.
  * @param {string} containerObjText
  * @param {ObjectCache} objCache
+ * @param {Map<string, number>} [imagesOut] - When given, also filled with the container's image XObjects as name -> object number.
  */
-export function findFormXObjects(containerObjText, objCache) {
+export function findFormXObjects(containerObjText, objCache, imagesOut) {
   const forms = new Map();
 
   // Resolve Resources (may be inline or an indirect reference)
@@ -910,6 +911,8 @@ export function findFormXObjects(containerObjText, objCache) {
     if (!entryObjText) continue;
     if (/\/Subtype\s*\/Form/.test(entryObjText)) {
       forms.set(tag, { objNum });
+    } else if (imagesOut && /\/Subtype\s*\/Image/.test(entryObjText)) {
+      imagesOut.set(tag, objNum);
     }
   }
 

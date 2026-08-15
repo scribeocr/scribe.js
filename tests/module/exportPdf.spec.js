@@ -4,6 +4,7 @@ import {
 import scribe from '../../scribe.js';
 import { subsetPdf } from '../../js/export/pdf/subsetPdf.js';
 import { mergePdfs } from '../../js/export/pdf/mergePdfs.js';
+import { pageImagePlacements } from '../../js/fillSign.js';
 import { getMetadata } from '../../js/pdf/metadata/metadataInspect.js';
 import { ca } from '../../js/canvasAdapter.js';
 import { renderPdfPage } from '../_renderPdfPage.js';
@@ -1363,6 +1364,13 @@ describe('Check native text line deletion and replacement survive .scribe persis
     const target = srcDoc.ocr.active[0].lines.find((line) => lineText(line) === 'Three Iris varieties are used in the Iris flower data set');
     await srcDoc.replaceTextLine(target, 'Several Iris varieties are used in the Iris flower data set');
     srcDoc.deleteTextLines([srcDoc.ocr.active[0].lines[21]]);
+    const photoA = pageImagePlacements(srcDoc.ocr.pdf[1])[0];
+    srcDoc.deleteImages([{
+      n: 1,
+      rect: {
+        left: photoA.left, top: photoA.top, right: photoA.right, bottom: photoA.bottom,
+      },
+    }]);
     strays = strayFields(srcDoc);
     standardObj = JSON.parse(/** @type {string} */ (await srcDoc.exportData('scribe', { compressScribe: false })));
     sessionObj = JSON.parse(/** @type {string} */ (await srcDoc.exportData('scribe', { compressScribe: false, scribeSession: true })));
@@ -1385,7 +1393,8 @@ describe('Check native text line deletion and replacement survive .scribe persis
     expect(Object.keys(standardObj).sort(), 'the standard .scribe export grew an undocumented top-level field')
       .toEqual(['annotations', 'fontState', 'inputData', 'layoutDataTables', 'layoutRegions', 'ocr', 'outline', 'pageRotations', 'pageSourceIndices']);
     expect(sessionObj.session?.v, 'the session block is missing from a session save').toBe(1);
-    expect(sessionObj.session?.textEdits?.[0]?.length, 'edit records are missing from the session block').toBe(2);
+    expect(sessionObj.session?.contentEdits?.[0]?.length, 'edit records are missing from the session block').toBe(2);
+    expect(sessionObj.session?.contentEdits?.[1]?.length, 'the image-delete record is missing from the session block').toBe(1);
     expect(sessionObj.session?.nativeText?.length, 'per-page native-text metadata is missing from the session block').toBe(3);
     expect(Object.keys(sessionObj.session?.nativeText?.[0] || {}).length, 'native-text entries were lost from the edited page\'s session block').toBe(228);
   });
@@ -1401,13 +1410,17 @@ describe('Check native text line deletion and replacement survive .scribe persis
       .toBe('widely used as a common name for all Iris species, as well as');
     expect(lineText(page.lines[30]), 'the replaced line\'s corrected text was lost on .scribe restore')
       .toBe('Several Iris varieties are used in the Iris flower data set');
-    expect(restoredDoc.textEdits.pages[0].length, 'a pending edit record was lost on .scribe restore').toBe(2);
-    expect(restoredDoc.textEdits.pages[0][0].type, 'the restored replacement record changed type').toBe('replaceText');
-    expect(restoredDoc.textEdits.pages[0][0].runs.length, 'the restored replacement record lost its draw-spec runs').toBe(11);
-    expect(restoredDoc.textEdits.pages[0][0].rects.length, 'the restored replacement record lost its per-word rects').toBe(11);
-    expect(restoredDoc.textEdits.pages[0][1].type, 'the restored deletion record changed type').toBe('deleteText');
-    expect(restoredDoc.textEdits.pages[0][1].rects.length, 'the restored deletion record lost its per-word rects').toBe(12);
-    expect(restoredDoc.textEdits.pages[0][1].glyphs.length, 'the restored deletion record lost its glyph identities, so its rects would strike overlapping layers geometrically').toBe(12);
+    expect(restoredDoc.contentEdits.pages[0].length, 'a pending edit record was lost on .scribe restore').toBe(2);
+    expect(restoredDoc.contentEdits.pages[0][0].type, 'the restored replacement record changed type').toBe('replaceText');
+    expect(restoredDoc.contentEdits.pages[0][0].runs.length, 'the restored replacement record lost its draw-spec runs').toBe(11);
+    expect(restoredDoc.contentEdits.pages[0][0].rects.length, 'the restored replacement record lost its per-word rects').toBe(11);
+    expect(restoredDoc.contentEdits.pages[0][1].type, 'the restored deletion record changed type').toBe('deleteText');
+    expect(restoredDoc.contentEdits.pages[0][1].rects.length, 'the restored deletion record lost its per-word rects').toBe(12);
+    expect(restoredDoc.contentEdits.pages[0][1].glyphs.length, 'the restored deletion record lost its glyph identities, so its rects would strike overlapping layers geometrically').toBe(12);
+    expect(restoredDoc.contentEdits.pages[1].length, 'the pending image-delete record was lost on .scribe restore').toBe(1);
+    expect(restoredDoc.contentEdits.pages[1][0].type, 'the restored image-delete record changed type').toBe('deleteImage');
+    expect(restoredDoc.contentEdits.pages[1][0].sites.length, 'the restored image-delete record lost its placement site').toBe(1);
+    expect(restoredDoc.contentEdits.pages[1][0].sites[0].objNum, 'the restored image-delete record lost its site identity, so its rect would strike overlapping images geometrically').toBe(69);
   });
 
   test('Deleted line is gone from the exported PDF while its neighbors survive intact', () => {
@@ -1468,6 +1481,15 @@ describe('Check deleting one of two visually-overlapping text layers removes onl
     editDoc.deleteTextLines([find(6, 'Sign On to post your comment.')]);
     // The sentence carries six white halo copies of its bold phrase, all of which must fold.
     editDoc.deleteTextLines([find(8, 'Justice made public this month')]);
+    // The page-3 masthead is the one placement that genuinely overlaps others, so deleting it exercises the site-identity gate rather than plain geometry.
+    const masthead = pageImagePlacements(editDoc.ocr.pdf[3])
+      .find((e) => Math.round(e.left) === 167 && Math.round(e.top) === 192);
+    editDoc.deleteImages([{
+      n: 3,
+      rect: {
+        left: masthead.left, top: masthead.top, right: masthead.right, bottom: masthead.bottom,
+      },
+    }]);
     const pdfData = await editDoc.exportData('pdf');
     await editDoc.close();
     reDoc = await scribe.openDocument({ pdfFiles: [pdfData] });
@@ -1507,6 +1529,18 @@ describe('Check deleting one of two visually-overlapping text layers removes onl
     expect(lines.some((t) => t.includes('Sign On to post')), 'the deleted comment-prompt line is still in the exported PDF').toBe(false);
     expect(lines.some((t) => t.includes('yo omm t')), 'the merged ghost copy was stranded by the deletion').toBe(false);
     expect(lines.some((t) => t.includes('Not Registered?')), 'real text sharing a line with a ghost copy was co-deleted').toBe(true);
+  });
+
+  test('Deleted image is gone from the exported PDF while the two images it overlapped survive', () => {
+    const p3 = pageImagePlacements(reDoc.ocr.pdf[3]);
+    expect(p3.length, 'the image-delete page has the wrong placement count in the exported PDF').toBe(17);
+    expect(p3.some((e) => Math.abs(e.left - 166.7) <= 2 && Math.abs(e.top - 191.7) <= 2
+      && Math.abs(e.right - 2408.3) <= 2 && Math.abs(e.bottom - 466.7) <= 2),
+    'the deleted image still draws in the exported PDF').toBe(false);
+    const overlapped = [[2345.8, 2375], [2375, 2404.2]].map(([left, right]) => p3.find((e) => Math.abs(e.left - left) <= 2
+      && Math.abs(e.right - right) <= 2 && Math.abs(e.top - 433.3) <= 2 && Math.abs(e.bottom - 608.3) <= 2));
+    expect(overlapped.filter(Boolean).length, 'an image the deleted one overlapped was co-deleted, so the strike used geometry instead of site identity').toBe(2);
+    expect(lineText(reDoc.ocr.active[3].lines[0]), 'the image-delete page\'s text was damaged by the export').toBe('2/25/08 1:46 PM');
   });
 
   test('White text-shadow halo copies fold with the deleted sentence', () => {
