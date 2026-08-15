@@ -2156,12 +2156,9 @@ export class ScribeViewer {
       this.selecting = true;
     });
 
-    // The editor drives every drag (pan, marquee-select, box/handle resize) through pointer events, so the browser's native drag gesture is never wanted here.
-    // Left alone it fires when a mousedown-drag begins on an existing text selection (e.g. one left by triple-click line-select or word editing),
-    // showing a confusing "no-drop" cursor over a drop that can never happen.
-    scrollContainer.addEventListener('dragstart', (event) => {
-      if (this.enableCanvasSelection) event.preventDefault();
-    });
+    // A native drag beginning inside an existing selection pointercancels the pointer gesture already underway, so the new selection dies a character or two in under a "no-drop" cursor.
+    // Under the custom engine that selection is the browser's own and invisible, left by an earlier drag across selectable text on the page.
+    scrollContainer.addEventListener('dragstart', (event) => event.preventDefault());
 
     scrollContainer.addEventListener('pointermove', (event) => {
       if (!this.selecting) return;
