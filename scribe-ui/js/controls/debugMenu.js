@@ -90,8 +90,17 @@ export function installDebugMenu(appMenu, viewer, openFiles, host) {
       const doc = viewer.doc;
       if (!doc || doc.pageMetrics.length === 0) return;
       row.classList.add('busy');
+      /** @type {import('../../../js/export/export.js').ExportOptions} */
+      const options = {};
+      if (format === 'pdf') {
+        options.displayMode = 'invis';
+        options.addOverlay = true;
+      } else if (format === 'html') {
+        // This export requests no page image, so the searchable-PDF default of hidden text would produce a blank file.
+        options.displayMode = 'ebook';
+      }
       try {
-        await doc.download(format, host?._baseName() || 'document', format === 'pdf' ? { displayMode: 'invis', addOverlay: true } : {});
+        await doc.download(format, host?._baseName() || 'document', options);
         exportMenu.style.display = 'none';
       } catch (err) {
         console.error(`Export to ${format} failed:`, err);
