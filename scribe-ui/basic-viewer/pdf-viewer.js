@@ -2407,10 +2407,11 @@ class ScribePDFViewer {
     const panelW = activePanel ? (parseFloat(activePanel.panelElem.style.width) || 0) : 0;
     if (this._sidebarTabsElem && activePanel) this._sidebarTabsElem.style.width = `${panelW}px`;
     const inset = Math.min(panelW, Math.max(0, this._width - 80));
-    // The open panel insets the document from the right, and the overlay scrollbar rides in with it.
     const rightW = (this._automatePanel && this._automatePanel.isOpen())
       ? Math.min(this._automatePanel.width, Math.max(0, this._width - inset - 80)) : 0;
+    // Both overlay tracks are positioned against the full-width container, so each is moved to the document's edge by hand.
     if (this._vScrollTrack) this._vScrollTrack.style.right = `${rightW}px`;
+    if (this._hScrollTrack) this._hScrollTrack.style.left = `${inset}px`;
     this.scribe.scrollContainer.style.marginLeft = `${inset}px`;
     this.scribe.resize(this._width - inset - rightW, this._height - top - this._docBottomInset());
     // The scrollbar refresh rereads the scroll metrics the resize above just invalidated, forcing a synchronous reflow.
@@ -2525,6 +2526,8 @@ class ScribePDFViewer {
       // The open Automate panel keeps its right inset through the sidebar animation.
       const rightW = (this._automatePanel && this._automatePanel.isOpen())
         ? Math.min(this._automatePanel.width, Math.max(0, this._width - inset - 80)) : 0;
+      // Only the document's left edge travels during the slide, so the vertical track keeps the offset `_relayout` gave it.
+      if (this._hScrollTrack) this._hScrollTrack.style.left = `${inset}px`;
       this.scribe.scrollContainer.style.marginLeft = `${inset}px`;
       this.scribe.resize(this._width - inset - rightW, this._height - top);
     };
