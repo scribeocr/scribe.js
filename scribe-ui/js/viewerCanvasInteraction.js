@@ -262,6 +262,7 @@ const CM_ROTATE_L_SVG = menuIcon('<path d="M5.5 8.25A7.5 7.5 0 1 0 12 4.5"/><pat
 const CM_ROTATE_R_SVG = menuIcon('<path d="M18.5 8.25A7.5 7.5 0 1 1 12 4.5"/><path d="M15.5 4.5 12 2.8 12 6.2Z" fill="currentColor" stroke="none"/>');
 // The Highlight row leads with a live color swatch (set to `viewer._highlightColor` on open) instead of a glyph.
 const CM_SWATCH_HTML = '<span class="scribe-cm-swatch"></span>';
+const CM_AUTOMATE_SVG = menuIcon('<path d="M5 7.2l5.6 4.8L5 16.8z"/><path d="M14 7.5h5.5M14 12h5.5M14 16.5h3.5"/>');
 
 const createContextMenuHTML = () => {
   const menuDiv = document.createElement('div');
@@ -301,6 +302,15 @@ const createContextMenuHTML = () => {
     h.className = 'scribe-cm-hint';
     h.textContent = hint;
     btn.querySelector('.scribe-cm-inner')?.appendChild(h);
+    return btn;
+  };
+
+  // The trailing glyph marks a row that opens the Automate panel rather than acting on the selection itself.
+  const withAutomateGlyph = (btn) => {
+    const g = document.createElement('span');
+    g.className = 'scribe-cm-autoglyph';
+    g.innerHTML = CM_AUTOMATE_SVG;
+    btn.querySelector('.scribe-cm-inner')?.appendChild(g);
     return btn;
   };
 
@@ -348,6 +358,10 @@ const createContextMenuHTML = () => {
       item('contextMenuDeleteTextLinesButton', 'Delete Lines', CM_TRASH_SVG, deleteTextLinesClick, true),
       item('contextMenuDeleteImageButton', 'Delete Image', CM_TRASH_SVG, deleteGraphicsClick, true),
       item('contextMenuRedactButton', 'Redact', CM_REDACT_SVG, redactSelectionClick, true),
+    ],
+    // The automation hand-offs stay last, and the group stays short.
+    [
+      withAutomateGlyph(item('contextMenuRedactEverywhereButton', 'Redact everywhere…', CM_REDACT_SVG, redactEverywhereClick)),
     ],
   ];
 
@@ -497,6 +511,18 @@ const redactSelectionClick = () => {
   const added = redactWords(viewer, words.map((kw) => kw.word));
   viewer.clearTextSelection();
   if (added > 0 && viewer._onRedactMark) viewer._onRedactMark(added);
+};
+
+/**
+ * Open the Automate panel with Redact terms staged from the selection captured at menu open.
+ * Nothing runs from here, so Run stays a deliberate click.
+ */
+const redactEverywhereClick = () => {
+  const viewer = mv();
+  hideContextMenu();
+  if (!viewer._automatePanel || !redactEverywhereTerm) return;
+  viewer._automatePanel.stageRedactTerms(redactEverywhereTerm);
+  viewer.clearTextSelection();
 };
 
 /** Delete the redaction mark group under the right-click point (resolved at menu open). */
@@ -718,6 +744,13 @@ let contextMenuStyleElem = null;
 /** @type {HTMLButtonElement} */ let contextMenuDeleteFillItemButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuDeleteTextLinesButtonElem;
 /** @type {HTMLButtonElement} */ let contextMenuDeleteImageButtonElem;
+/** @type {HTMLButtonElement} */ let contextMenuRedactEverywhereButtonElem;
+
+/**
+ * The short selection text the Redact-everywhere row would stage as a term.
+ * Empty when the selection is too long to read as a term. Reset on every `contextMenuFunc`.
+ */
+let redactEverywhereTerm = '';
 
 /**
  * The redaction mark under the right-click point, resolved when the menu opens.
@@ -778,6 +811,7 @@ function ensureContextMenu() {
   contextMenuDeleteFillItemButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteFillItemButton'));
   contextMenuDeleteTextLinesButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteTextLinesButton'));
   contextMenuDeleteImageButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuDeleteImageButton'));
+  contextMenuRedactEverywhereButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuRedactEverywhereButton'));
   contextMenuHighlightButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuHighlightButton'));
   contextMenuUnderlineButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuUnderlineButton'));
   contextMenuStrikethroughButtonElem = /** @type {HTMLButtonElement} */(document.getElementById('contextMenuStrikethroughButton'));
@@ -866,6 +900,19 @@ function ensureContextMenu() {
       margin-left: auto;
       padding-left: 18px;
       font-size: 11px;
+      color: var(--scribe-ink-2, #586170);
+      opacity: 0.75;
+    }
+    #scribe-context-menu .scribe-cm-autoglyph {
+      margin-left: auto;
+      display: inline-flex;
+      align-items: center;
+      justify-content: flex-end;
+      flex: 0 0 auto;
+      box-sizing: content-box;
+      width: 14px;
+      height: 14px;
+      padding-left: 18px;
       color: var(--scribe-ink-2, #586170);
       opacity: 0.75;
     }
@@ -970,6 +1017,7 @@ export const hideContextMenu = () => {
   contextMenuItalicButtonElem.disabled = false;
   contextMenuItalicButtonElem.title = '';
   contextMenuCopyLineTextButtonElem.style.display = 'none';
+  contextMenuRedactEverywhereButtonElem.style.display = 'none';
   menuNode.style.display = 'none';
   _menuViewer = null;
 
@@ -1462,6 +1510,15 @@ export const contextMenuFunc = (viewer, event) => {
     const enableMarkup = hasTextSelection;
     // Deleting a redaction is not editor-gated: a mark changes what an export contains, so any viewer must be able to remove it.
     const enableRedact = hasTextSelection && !!viewer._redactEnabled;
+    // Only a short selection reads as a term worth redacting everywhere.
+    // The label carries no match count, since nothing has scanned yet and a number would promise work not done.
+    redactEverywhereTerm = '';
+    if (enableRedact && viewer._automatePanel) {
+      const raw = viewer.useCustomSelection ? viewer.textSel.getText() : (window.getSelection()?.toString() ?? '');
+      const term = raw.replace(/\s+/g, ' ').trim();
+      if (term && term.length <= 40 && term.split(' ').length <= 3) redactEverywhereTerm = term;
+    }
+    const enableRedactEverywhere = !!redactEverywhereTerm;
     // Mouse line selection in edit-text mode is box-based, but touch still routes through the engine's text selection.
     // _editTextSelectedLines() resolves both, so this gate needs no hasTextSelection check.
     const enableDeleteTextLines = !!viewer._editTextActive
@@ -1569,7 +1626,7 @@ export const contextMenuFunc = (viewer, event) => {
 
     if (!(enableMergeColumns || enableSplit || enableDeleteRegion || enableDeleteTable || enableCopyTableContents || enableMergeTables || enableSplitTable
       || enableSplitWord || enableMergeWords || enableDeleteWords || enableDeleteHighlight || enableCopyHighlight || enableHighlight || enableMarkup || enableComment || enableBookmark || enableCopy
-      || enableRedact || enableDeleteRedaction || enableDeleteFillItem || enableDeleteTextLines || enableRotatePage)) return;
+      || enableRedact || enableDeleteRedaction || enableDeleteFillItem || enableDeleteTextLines || enableRotatePage || enableRedactEverywhere)) return;
 
     // Not btn.textContent, which would wipe the icon slot.
     const setMenuLabel = (btn, text) => { /** @type {HTMLElement} */ (btn.querySelector('.scribe-cm-lbl')).textContent = text; };
@@ -1589,6 +1646,11 @@ export const contextMenuFunc = (viewer, event) => {
       contextMenuStrikethroughButtonElem.style.display = 'initial';
     }
     if (enableRedact) contextMenuRedactButtonElem.style.display = 'initial';
+    if (enableRedactEverywhere) {
+      const shown = redactEverywhereTerm.length > 24 ? `${redactEverywhereTerm.slice(0, 24)}…` : redactEverywhereTerm;
+      setMenuLabel(contextMenuRedactEverywhereButtonElem, `Redact "${shown}" everywhere…`);
+      contextMenuRedactEverywhereButtonElem.style.display = 'initial';
+    }
     if (enableDeleteRedaction) contextMenuDeleteRedactionButtonElem.style.display = 'initial';
     if (enableDeleteFillItem) {
       // The Delete row acts on the selection, not on the right-click target.

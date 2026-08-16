@@ -10,3 +10,6 @@ export const DEBUG_MENU = false;
  * The desktop shells enable it on their own, so this only matters for exercising it in a plain browser.
  */
 export const DOCUMENT_LIBRARY = false;
+
+/** Enable the Automate panel in the basic viewer's bootstrap app. */
+export const AUTOMATE = false;

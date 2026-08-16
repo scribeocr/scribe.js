@@ -126,6 +126,8 @@ const ICON_COVER_ALONE = editIcon('<rect x="3.5" y="5" width="7.6" height="14" r
 /** Scan corners around a letterform, for the touch-only Recognize text menu row. */
 // eslint-disable-next-line max-len
 const ICON_RECOGNIZE = editIcon('<path d="M4 8V5.5A1.5 1.5 0 0 1 5.5 4H8M16 4h2.5A1.5 1.5 0 0 1 20 5.5V8M20 16v2.5a1.5 1.5 0 0 1-1.5 1.5H16M8 20H5.5A1.5 1.5 0 0 1 4 18.5V16"/><path d="M9 15V9.8A0.8 0.8 0 0 1 9.8 9h4.4a0.8 0.8 0 0 1 0.8 0.8V15M9 12.6h6"/>');
+// The Automate glyph, duplicated here (like the other app-menu icons) so the menu row needs no import from the flag-gated panel module.
+const ICON_AUTOMATE = editIcon('<path d="M5 7.2l5.6 4.8L5 16.8z"/><path d="M14 7.5h5.5M14 12h5.5M14 16.5h3.5"/>');
 
 /**
  * @typedef {object} FitResult
@@ -181,6 +183,10 @@ class ScribePDFViewer {
    *   Defaults to `edit`. Pass `false` to keep editing on but redaction off. Ignored when `edit` is false.
    * @param {boolean} [options.editText=edit] - Enable the Edit Text tool and its toolbar button.
    *   Defaults to `edit`. Pass `false` to keep editing on but text editing off.
+   * @param {boolean} [options.automate=false] - Enable the Automate panel, a right-docked surface for running document automations.
+   *   It adds a toolbar opener, an app-menu row, and hand-off rows in the selection menu.
+   *   Requires `edit`.
+   *   Under construction.
    * @param {boolean} [options.library=false] - Enable the document library: a full-screen surface for browsing,
    *   searching, and managing a user-chosen local folder of PDFs, with edits persisted to `.scribe` sidecar files.
    *   Requires the File System Access API (Chromium); on other browsers the option is silently ignored.
@@ -206,6 +212,7 @@ class ScribePDFViewer {
       edit = true,
       redact = edit,
       editText = edit,
+      automate = false,
       library = false,
     } = options;
 
@@ -491,6 +498,12 @@ class ScribePDFViewer {
     this._sidebarTabsElem = null;
     /** @type {Object<string, HTMLSpanElement>} The strip's tabs by view key. */
     this._sidebarTabElems = {};
+    /** @type {?ReturnType<typeof import('../js/controls/automatePanel.js').createAutomatePanel>} The Automate panel (right dock), or null until its module loads. */
+    this._automatePanel = null;
+    /** Whether the Automate surface is on: its toolbar opener, app-menu row, and selection-menu hand-offs. */
+    this._automateEnabled = edit && automate;
+    /** @type {?Promise<void>} Resolves once the panel exists, so the app-menu row works during the module's load. */
+    this._automateReady = null;
 
     /** @type {?ReturnType<typeof createBookmarksPanel>} */
     this._bookmarksPanel = showSidebar
@@ -1027,6 +1040,29 @@ class ScribePDFViewer {
         this._redactTool = createRedactTool(this.scribe, this.pdfViewerElem, { onMark });
         this.scribe._onRedactMark = onMark;
         this._teardownCallbacks.push(this._redactTool.installBehaviors());
+      }
+
+      // Dynamically imported so viewers with the surface off never fetch its code or styles.
+      if (this._automateEnabled) {
+        this._automateReady = import('../js/controls/automatePanel.js')
+          .then(({ createAutomatePanel }) => {
+            if (this._destroyed) return;
+            this._automatePanel = createAutomatePanel(this, ROOT_CLASS, { onLayoutChange: () => this._relayout() });
+            // The context menu reads the panel off the viewer, like the other editor-installed hooks.
+            this.scribe._automatePanel = this._automatePanel;
+            this.pdfViewerElem.appendChild(this._automatePanel.panelElem);
+            if (this.toolbarElemStart) {
+              const automateSep = makeSeparator();
+              // Marker class so the library home's swapped bar hides the separator along with the opener.
+              automateSep.classList.add('scribe-automate-sep');
+              this.toolbarElemStart.appendChild(automateSep);
+              this.toolbarElemStart.appendChild(this._automatePanel.toggleElem);
+            }
+            // The bar's centered cluster is measured against the start zone, which just grew.
+            this._syncModeOverflow();
+            this._teardownCallbacks.push(() => this._automatePanel?.destroy());
+          })
+          .catch((err) => console.error('Failed to load the Automate panel.', err));
       }
 
       // The exclusive tool modes live in a compact drop-down, composed by `_syncModeTrackValue`.
@@ -2210,6 +2246,7 @@ class ScribePDFViewer {
   _syncModeBanner() {
     // A tool with no hint (the unmounted Redact button) gets no banner, so the hint doubles as the banner-eligibility test.
     const activeBtn = (this._exclusiveToolBtns || []).find((b) => b.classList.contains('active') && b.dataset.modeHint) || null;
+    if (this._automatePanel) this._automatePanel.syncMode(activeBtn ? activeBtn.title : null);
     if (!activeBtn) {
       if (this._modeBanner) this._modeBanner.style.display = 'none';
       if (this._recognizeExtras) this._recognizeExtras.remove();
@@ -2352,6 +2389,13 @@ class ScribePDFViewer {
       this._commentsPanel.panelElem.style.top = `${panelTop}px`;
       this._commentsPanel.panelElem.style.height = `${this._height - panelTop}px`;
     }
+    if (this._automatePanel) {
+      this._automatePanel.panelElem.style.top = `${top}px`;
+      this._automatePanel.panelElem.style.height = `${this._height - top}px`;
+      // The panel is desktop-only, so the phone layout reclaims its width.
+      // Closing re-enters `_relayout` once with the panel already closed, so the recursion ends there.
+      if (this._phoneChrome && this._automatePanel.isOpen()) this._automatePanel.close();
+    }
     // A sidebar animation owns the document inset and canvas size on its own clock, so don't fight it here.
     // The panel top/height set above are still safe to keep in sync every frame.
     if (this._sidebarAnim) return;
@@ -2363,8 +2407,12 @@ class ScribePDFViewer {
     const panelW = activePanel ? (parseFloat(activePanel.panelElem.style.width) || 0) : 0;
     if (this._sidebarTabsElem && activePanel) this._sidebarTabsElem.style.width = `${panelW}px`;
     const inset = Math.min(panelW, Math.max(0, this._width - 80));
+    // The open panel insets the document from the right, and the overlay scrollbar rides in with it.
+    const rightW = (this._automatePanel && this._automatePanel.isOpen())
+      ? Math.min(this._automatePanel.width, Math.max(0, this._width - inset - 80)) : 0;
+    if (this._vScrollTrack) this._vScrollTrack.style.right = `${rightW}px`;
     this.scribe.scrollContainer.style.marginLeft = `${inset}px`;
-    this.scribe.resize(this._width - inset, this._height - top - this._docBottomInset());
+    this.scribe.resize(this._width - inset - rightW, this._height - top - this._docBottomInset());
     // The scrollbar refresh rereads the scroll metrics the resize above just invalidated, forcing a synchronous reflow.
     if (this._updateScrollbars && !this._sidebarDragActive) this._updateScrollbars();
   }
@@ -2474,8 +2522,11 @@ class ScribePDFViewer {
 
     const setInset = (/** @type {number} */ raw) => {
       const inset = Math.min(Math.max(0, raw), Math.max(0, this._width - 80));
+      // The open Automate panel keeps its right inset through the sidebar animation.
+      const rightW = (this._automatePanel && this._automatePanel.isOpen())
+        ? Math.min(this._automatePanel.width, Math.max(0, this._width - inset - 80)) : 0;
       this.scribe.scrollContainer.style.marginLeft = `${inset}px`;
-      this.scribe.resize(this._width - inset, this._height - top);
+      this.scribe.resize(this._width - inset - rightW, this._height - top);
     };
 
     const cleanup = () => {
@@ -3824,6 +3875,16 @@ class ScribePDFViewer {
       const splitItem = appMenu.addAction('Split at bookmarks', ICON_SPLIT, this._menuCommands.split);
       splitItem.dataset.action = 'split';
       this._splitItem = splitItem;
+
+      // The automation surface's single opener; individual automations never get menu rows of their own.
+      // Awaiting the load lets a click land during the panel module's fetch.
+      if (this._automateEnabled) {
+        this._menuCommands.automate = async () => {
+          await this._automateReady;
+          this._automatePanel?.open();
+        };
+        appMenu.addAction('Automate…', ICON_AUTOMATE, this._menuCommands.automate);
+      }
 
       // Flipping the toggle sets an explicit light/dark preference that overrides the system default.
       // The switch reflects the theme in effect each time the menu opens.

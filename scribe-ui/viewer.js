@@ -457,6 +457,10 @@ export class ScribeViewer {
     /** @type {?(marksAdded: number) => void} */
     this._onRedactMark = null;
 
+    // The host's Automate panel, mirrored here for the context menu's hand-off rows.
+    /** @type {?ReturnType<typeof import('./js/controls/automatePanel.js').createAutomatePanel>} */
+    this._automatePanel = null;
+
     // Edit Text mode state, mirrored here by the tool for the context menu, touch callout, and link gating.
     this._editTextActive = false;
     /** @type {?() => Array<OcrLine>} */

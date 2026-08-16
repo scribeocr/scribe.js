@@ -10,7 +10,7 @@
 import {
   scribe, ScribeViewer, ScribePDFViewer, applyHighlight,
 } from './pdf-viewer.js';
-import { DOCUMENT_LIBRARY } from '../devFlags.js';
+import { DOCUMENT_LIBRARY, AUTOMATE } from '../devFlags.js';
 
 const pdfViewerContElem = /** @type {HTMLDivElement|null} */(document.getElementById('pdfViewerCont'));
 
@@ -27,7 +27,9 @@ const buildBootstrapViewer = () => {
   }
   // This is a full-screen, single-viewer app, so it uses document-wide keyboard shortcuts that fire
   // regardless of where focus is on the page.
-  const v = new ScribePDFViewer(pdfViewerContElem, { keyboardScope: 'global', comments: true, library: inDesktopShell || DOCUMENT_LIBRARY });
+  const v = new ScribePDFViewer(pdfViewerContElem, {
+    keyboardScope: 'global', comments: true, library: inDesktopShell || DOCUMENT_LIBRARY, automate: AUTOMATE,
+  });
   // Expose key modules on `globalThis.df` for debugging and tests. Not part of the public API.
   // Use the module imports/exports instead.
   globalThis.df = {
