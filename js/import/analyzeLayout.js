@@ -7,6 +7,14 @@ import {
 // The symbol footnote convention (asterisks, daggers) is script-neutral, so do not extend this gate to it.
 const CJK_RE = /[\u1100-\u11FF\u3000-\u9FFF\uAC00-\uD7AF\uF900-\uFAFF\uFF00-\uFFEF]/;
 
+// Symbol and math faces legitimately interleave with prose, so family-switch rules skip them.
+// The trailing alternative is unanchored, so any core containing "math" (LucidaNewMath, CambriaMath) matches too.
+const SPECIALTY_FAMILY_RE = /^(symbol|wingdings|webdings|zapfdingbats|dingbats|quivira|mtextra|mtmi|mtsy|mtsyn|mtex|euclid|msam|msbm|mathematicalpi|cmmath|eufm|eusm|eusb|rsfs|rmtmi|txsy|txex|txmi|pxsy|pxex|pxmi|fontawesome|bubbledoticg|upsyscommon|sonyps|audiofour)$|math/;
+// A bare resource tag (f42, tt0, c2_0), a long digit run, a file-name-shaped core, or a generator placeholder name carries no real family identity, so it cannot support a family-switch inference.
+const FAMILY_UNTRUSTED_RE = /^(f|tt?|c)\d+(_\d+)?$|\d{3,}|\.(tmp|ttf|otf|pfb|pfa)$|^(unknown|font|munged|mergepro|glyphless)$|^cidfont|^t3font|^fo\d+s\d+$/;
+// Only letters and digits vote for a line's break-rule typeface, because punctuation and symbol runs (form underscores, dot leaders) say nothing about the face the text is set in.
+const ALNUM_CHAR_RE = /[\p{L}\p{N}]/gu;
+
 // Weight and foundry suffixes register one typeface under several names (a bold face under its own name), so cross-family tests compare collapsed cores.
 const FAMILY_STYLE_TOKENS = new Set([
   'bold', 'italic', 'oblique', 'light', 'ultralight', 'thin', 'medium', 'heavy', 'black', 'semibold', 'demibold', 'demi',
@@ -25,8 +33,12 @@ const FAMILY_STYLE_SUFFIXES = [
  */
 const familyCore = (fam) => {
   let s = cleanFamilyName((fam || '').replace(/^[A-Z]{6}\+/, '')).toLowerCase();
-  if (/^advtt[0-9a-f]{6,10}(\.[a-z]{1,3})?$/.test(s)) return 'advtt';
+  if (/^adv(tt[0-9a-f]{6,10}|ot[0-9a-z]{4,12}|ps?[0-9a-z]{2,12})(\.[a-z]{1,3})?$/.test(s)) return 'adv';
+  if (/^cm(mi|sy|ex|bsy|mib)\d*$/.test(s)) return 'cmmath';
   if (/^cm[a-z]{1,4}\d*$/.test(s)) return 'cm';
+  if (/palladio/.test(s)) return 'palladio';
+  if (/^times$/.test(s) || /^nimbusroman/.test(s)) return 'timesnewroman';
+  if (/^nimbussans/.test(s)) return 'helvetica';
   const dot = /^(.*)\.(b|i|bi|sc)$/.exec(s);
   if (dot) s = dot[1];
   let core = s.split(/[-_,\s]+/).filter((p) => p && !FAMILY_STYLE_TOKENS.has(p)).join('');
@@ -41,6 +53,7 @@ const familyCore = (fam) => {
       }
     }
   }
+  if (core === 'timesnew') return 'timesnewroman';
   return core;
 };
 
@@ -49,12 +62,14 @@ const familyCore = (fam) => {
  *
  * @param {Array<OcrPage>} pages - all pages of one document, lines already in reading order.
  * @param {{ debug?: boolean, elementFaithful?: boolean, pdfType?: ("image"|"text"|"ocr"),
- *   wordSignals?: (Map<OcrWord, PdfWordSignal>|null), outlineHeadings?: (Map<OcrPage, Set<string>>|null) }} [opts]
+ *   wordSignals?: (Map<OcrWord, PdfWordSignal>|null), outlineHeadings?: (Map<OcrPage, Set<string>>|null),
+ *   fullPageImagePages?: (boolean[]|null) }} [opts]
  * @returns {object} the derived document model, for diagnostics and tests only.
  */
 export function analyzeLayout(pages, opts = {}) {
   const wordSignals = opts.wordSignals || null;
   const outlineHeadings = opts.outlineHeadings || null;
+  const fullPageImagePages = opts.fullPageImagePages || null;
   // Phase 1: per-line feature vectors (one entry per line, across all pages).
   /** @type {Array<LineFeat>} */
   const feats = [];
@@ -62,6 +77,7 @@ export function analyzeLayout(pages, opts = {}) {
   // A line carries only a couple of distinct sizes/fonts/colors, so a linear indexOf scan beats five fresh Maps per line.
   const wSzKeys = []; const wSzWts = [];
   const wFamKeys = []; const wFamWts = [];
+  const wAlnKeys = []; const wAlnWts = [];
   const wColKeys = []; const wColWts = [];
   const wParKeys = []; const wParWts = []; const wParRoles = [];
   for (let p = 0; p < pages.length; p++) {
@@ -80,9 +96,10 @@ export function analyzeLayout(pages, opts = {}) {
       const right = b.right * cosA - sinA * b.bottom;
 
       // Char-weighted dominant size / bold / italic over the line.
-      let nChar = 0; let nBold = 0; let nItal = 0; let nArt = 0;
+      let nChar = 0; let nBold = 0; let nItal = 0; let nArt = 0; let nAlnum = 0; let famTaint = false;
       wSzKeys.length = 0; wSzWts.length = 0;
       wFamKeys.length = 0; wFamWts.length = 0;
+      wAlnKeys.length = 0; wAlnWts.length = 0;
       wColKeys.length = 0; wColWts.length = 0;
       // Char-weighted dominant owning structure element over the line.
       wParKeys.length = 0; wParWts.length = 0; wParRoles.length = 0;
@@ -107,6 +124,14 @@ export function analyzeLayout(pages, opts = {}) {
           const k = wFamKeys.indexOf(fam);
           if (k >= 0) wFamWts[k] += wl; else { wFamKeys.push(fam); wFamWts.push(wl); }
         }
+        const alnMatch = word.text.match(ALNUM_CHAR_RE);
+        if (alnMatch) {
+          nAlnum += alnMatch.length;
+          const k = wAlnKeys.indexOf(fam);
+          if (k >= 0) wAlnWts[k] += alnMatch.length; else { wAlnKeys.push(fam); wAlnWts.push(alnMatch.length); }
+          // Invisible words come from an OCR layer and broken-ToUnicode fonts are degraded, so neither one's family name is author typography.
+          if (word.style.opacity === 0 || (sig && sig.brokenFont)) famTaint = true;
+        }
         const col = word.style.color || '#000000';
         {
           const k = wColKeys.indexOf(col);
@@ -123,6 +148,8 @@ export function analyzeLayout(pages, opts = {}) {
       for (let k = 0; k < wSzKeys.length; k++) if (wSzWts[k] > sizeBest) { sizeBest = wSzWts[k]; size = wSzKeys[k]; }
       let fontFamily = ''; let famBest = -1;
       for (let k = 0; k < wFamKeys.length; k++) if (wFamWts[k] > famBest) { famBest = wFamWts[k]; fontFamily = wFamKeys[k]; }
+      let famAln = ''; let famAlnBest = -1;
+      for (let k = 0; k < wAlnKeys.length; k++) if (wAlnWts[k] > famAlnBest) { famAlnBest = wAlnWts[k]; famAln = wAlnKeys[k]; }
       let color = '#000000'; let colorBest = -1;
       for (let k = 0; k < wColKeys.length; k++) if (wColWts[k] > colorBest) { colorBest = wColWts[k]; color = wColKeys[k]; }
       let structId = null; let structBest = -1; let structRoleSel = null;
@@ -160,6 +187,9 @@ export function analyzeLayout(pages, opts = {}) {
         italic: nChar ? nItal / nChar : 0,
         artifact: nChar ? nArt / nChar >= 0.6 : false,
         fontFamily,
+        famAln,
+        nAlnum,
+        famTaint,
         color,
         text,
         nChar,
@@ -689,6 +719,14 @@ export function analyzeLayout(pages, opts = {}) {
       familyCoreByName.set(f.fontFamily, core);
     }
     f.familyCore = core;
+    let alnCore = familyCoreByName.get(f.famAln);
+    if (alnCore === undefined) {
+      alnCore = familyCore(f.famAln);
+      familyCoreByName.set(f.famAln, alnCore);
+    }
+    // Text on a full-page image is treated as a scan's OCR layer, so its family names are not trusted as author typography.
+    const famTrusted = !f.famTaint && !(fullPageImagePages && fullPageImagePages[f.page]);
+    f.famRule = famTrusted && f.nAlnum >= 4 && alnCore && alnCore.length >= 2 && !SPECIALTY_FAMILY_RE.test(alnCore) && !FAMILY_UNTRUSTED_RE.test(alnCore) ? alnCore : '';
   }
   /** @type {Map<number, string>} */
   const pageBodyCore = new Map();
@@ -1726,6 +1764,7 @@ export function analyzeLayout(pages, opts = {}) {
   model.pageBodyCore = pageBodyCore;
   model.bodyCore = bodyCore;
   model.subBodyBoldFaces = subBodyBoldFaces;
+  model.nativeText = opts.pdfType === 'text';
 
   // Classify in reading order so each line sees the already-classified line above it on the same page.
   for (let i = 0; i < feats.length; i++) {
@@ -2358,7 +2397,20 @@ export function analyzeLayout(pages, opts = {}) {
       const inlineLN = !f.lineNum && !!immPrev && immPrev.lineNum
         && Math.abs(f.top - immPrev.top) < Math.min(f.height, immPrev.height) * 0.5;
       const prev = inlineLN ? prevBody : immPrev;
-      const { newPar, reason } = decideBreak(f, prev, model, inlineLN ? curBodyFirst : curParFirst, structMode);
+      let breakRes = decideBreak(f, prev, model, inlineLN ? curBodyFirst : curParFirst, structMode);
+      // Native-text paragraphs do not change typeface mid-paragraph, so a letter-vote family switch between stacked lines overrides any stylistic merge.
+      // Vertically overlapping lines are one visual row, and struct-tagged lines are the structure tree's to group, so neither pair is split here.
+      // A hyphen-carry or a lowercase line after an unterminated one is mid-sentence, where a face change is emphasis or an inline token, not a boundary.
+      // A script flip (a Latin line inside CJK text) swaps the dominant face for script reasons alone.
+      if (!breakRes.newPar && model.nativeText && prev && prev.page === f.page
+          && f.structId == null && prev.structId == null
+          && f.famRule && prev.famRule && f.famRule !== prev.famRule
+          && !prev.endsHyphen && !(f.startsLower && !prev.endsTerminal)
+          && CJK_RE.test(prev.text) === CJK_RE.test(f.text)
+          && Math.min(prev.bottom, f.bottom) - Math.max(prev.top, f.top) < Math.min(f.height, prev.height) * 0.25) {
+        breakRes = { newPar: true, reason: 'family switch' };
+      }
+      const { newPar, reason } = breakRes;
       /** @type {OcrPar} */
       let par;
       if (!f.lineNum && !newPar && curBodyPar) {
@@ -3633,6 +3685,7 @@ function enumeratedListItemStart(f, model) {
  * @property {Map<number, string>} pageBodyCore - collapsed family core of each page's dominant body face.
  * @property {string} bodyCore - collapsed family core of the document body face.
  * @property {Set<string>} subBodyBoldFaces - size|family-core groups the document reserves for sub-body bold headings.
+ * @property {boolean} nativeText - the document parses as born-digital text (pdfType 'text').
  * @property {Map<number, Array<{y: number, left: number, right: number}>>} pageRules - drawn horizontal separator rules per page.
  */
 
@@ -3654,6 +3707,10 @@ function enumeratedListItemStart(f, model) {
  * @property {boolean} artifact
  * @property {string} fontFamily
  * @property {string} familyCore - collapsed typeface identity of fontFamily.
+ * @property {string} famAln - dominant family among the line's letter and digit characters.
+ * @property {number} nAlnum - count of letter and digit characters on the line.
+ * @property {boolean} famTaint - a letter-voting word is invisible or drawn from a broken-ToUnicode font.
+ * @property {string} famRule - famAln's core when eligible as family-switch evidence, else ''.
  * @property {string} color - char-weighted dominant text colour of the line (hex).
  * @property {boolean} colorDistinct - colour differs from the page body colour in a monochrome doc.
  * @property {boolean} familyDistinct - font family differs from the page body family in a family-dominated doc.

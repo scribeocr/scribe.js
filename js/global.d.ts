@@ -30,7 +30,7 @@ declare global {
     type TextSource = null | 'pdf' | 'tesseract' | 'textract' | 'google_vision' | 'google_doc_ai' | 'abbyy' | 'alto' | 'stext' | 'hocr' | 'text' | 'azure_doc_intel' | 'docx' | 'md';
 
     /**
-     * Signals read from a tagged PDF's marked content and structure tree for one word.
+     * Parse-time signals for one word.
      * Produced while parsing and consumed by the layout pass of that same import.
      */
     type PdfWordSignal = {
@@ -39,6 +39,8 @@ declare global {
         /** Object number of the structure element owning this word, once inline tags have rolled up to their block ancestor. */
         structElemId: number | null;
         structElemTag: string | null;
+        /** A character of this word is drawn from a font whose ToUnicode is majority-broken. */
+        brokenFont: boolean;
     };
 
     type FontState = {

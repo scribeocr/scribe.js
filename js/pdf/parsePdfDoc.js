@@ -10,6 +10,7 @@ import {
   bytesToLatin1, extractDict, decodePdfName, matMul, decodeTextCodes, resolveNumValue, findTopLevelKeyIndex,
 } from './pdfPrimitives.js';
 import { tokenizeContentStream } from './contentStream.js';
+import { isFullPageImage } from './ocrPageSelection.js';
 import { layoutFieldValue } from './formFieldLayout.js';
 import { ObjectCache } from './objectCache.js';
 
@@ -451,6 +452,42 @@ export function determinePdfType(pageStats, pageCount) {
  * @property {?Map<string, string>} nameDests - Named-destination map, filled lazily on the first internal link and memoized across pages.
  */
 
+const brokenFontCache = new WeakMap();
+const brokenToUnicodeFont = (f) => {
+  if (!f || !f.toUnicode || f.toUnicode.size === 0) return false;
+  const cached = brokenFontCache.get(f);
+  if (cached !== undefined) return cached;
+  const fillerHashes = new Set();
+  // Subset producers pad Type3 fonts by stamping one filler outline across many charCodes, so glyphs sharing an outline are skipped rather than counted as mappings.
+  if (f.type3) {
+    const enc = f.type3.encoding || {};
+    const glyphs = f.type3.glyphs || {};
+    const hashCount = new Map();
+    for (const [cc] of f.toUnicode) {
+      const g = glyphs[enc[cc]];
+      if (g && g.pathHash) hashCount.set(g.pathHash, (hashCount.get(g.pathHash) || 0) + 1);
+    }
+    for (const [hash, count] of hashCount) {
+      if (count >= 3) fillerHashes.add(hash);
+    }
+  }
+  let mapped = 0;
+  let broken = 0;
+  for (const [cc, str] of f.toUnicode) {
+    if (fillerHashes.size > 0) {
+      const g = f.type3.glyphs?.[f.type3.encoding?.[cc]];
+      if (g && g.pathHash && fillerHashes.has(g.pathHash)) continue;
+    }
+    mapped++;
+    if (!str) continue;
+    const cp = str.codePointAt(0);
+    if ((cp >= 0xE000 && cp <= 0xF8FF) || cp === 0xFFFD) broken++;
+  }
+  const isBroken = broken >= 3 && broken >= mapped * 0.5;
+  brokenFontCache.set(f, isBroken);
+  return isBroken;
+};
+
 /**
  * Process a single PDF page: parse fonts, extract text, compute type-detection scores.
  * @param {{ objText: string, mediaBox: number[], cropBox: number[]|null, rotate: number }} page
@@ -465,41 +502,31 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   const {
     objText, mediaBox, cropBox, rotate,
   } = page;
-  // Use CropBox when available — it defines the visible region.
-  // Content outside the CropBox (e.g. printer slug metadata) should not be extracted.
   const effectiveBox = cropBox || mediaBox;
   // Box corners may be stored in either order, so use absolute size and a lower-left origin.
   const contentWidthPts = Math.abs(effectiveBox[2] - effectiveBox[0]);
   const contentHeightPts = Math.abs(effectiveBox[3] - effectiveBox[1]);
 
-  // Compute initial CTM and visual page dimensions based on /Rotate.
-  // /Rotate specifies clockwise rotation for display.
-  // When the effective box origin is non-zero (e.g. CropBox [36 36 648 828]),
-  // bake a translation into the initial CTM so that coordinates are relative
-  // to the box origin. This matches how the renderer handles CropBox offsets.
+  // Baking the box origin into the CTM matches how the renderer handles CropBox offsets.
   const boxOriginX = Math.min(effectiveBox[0], effectiveBox[2]);
   const boxOriginY = Math.min(effectiveBox[1], effectiveBox[3]);
   let initialCtm = [1, 0, 0, 1, -boxOriginX, -boxOriginY];
   let visualWidthPts = contentWidthPts;
   let visualHeightPts = contentHeightPts;
   if (rotate === 90) {
-    // 90° CW: content (x,y) → visual (y, W-x)
     initialCtm = [0, -1, 1, 0, -boxOriginY, contentWidthPts + boxOriginX];
     visualWidthPts = contentHeightPts;
     visualHeightPts = contentWidthPts;
   } else if (rotate === 180) {
-    // 180°: content (x,y) → visual (W-x, H-y)
     initialCtm = [-1, 0, 0, -1, contentWidthPts + boxOriginX, contentHeightPts + boxOriginY];
   } else if (rotate === 270) {
-    // 270° CW (= 90° CCW): content (x,y) → visual (H-y, x)
     initialCtm = [0, 1, -1, 0, contentHeightPts + boxOriginY, -boxOriginX];
     visualWidthPts = contentHeightPts;
     visualHeightPts = contentWidthPts;
   }
 
-  // Cap page width at 3500px to match the renderer (renderPdfPage.js) and
-  // imageContainer.js. Without this, wide pages produce text positions in a
-  // larger coordinate space than the rendered image, causing overlay misalignment.
+  // The width cap matches renderPdfPage.js and imageContainer.js.
+  // Without it, wide pages produce text positions in a larger coordinate space than the rendered image, misaligning the overlay.
   const maxWidth = 3500;
   const scale300 = dpi / 72;
   const fullWidth = Math.round(visualWidthPts * scale300);
@@ -509,45 +536,6 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   const pageHeight = Math.round(visualHeightPts * scale);
 
   const fonts = parsePageFonts(objText, objCache, type3GlyphMappings);
-
-  // Classify a font's ToUnicode as broken as a font (criterion 3 input):
-  // at least 3 mappings to PUA placeholders (U+E000-U+F8FF) or U+FFFD and at least half of all mappings broken.
-  // Type3 `.notdef` filler glyphs (one outline stamped across >=3 charCodes by subset producers)
-  // are excluded from both counts so producer padding is not mistaken for brokenness.
-  const brokenFontCache = new WeakMap();
-  const brokenToUnicodeFont = (f) => {
-    if (!f || !f.toUnicode || f.toUnicode.size === 0) return false;
-    const cached = brokenFontCache.get(f);
-    if (cached !== undefined) return cached;
-    const fillerHashes = new Set();
-    if (f.type3) {
-      const enc = f.type3.encoding || {};
-      const glyphs = f.type3.glyphs || {};
-      const hashCount = new Map();
-      for (const [cc] of f.toUnicode) {
-        const g = glyphs[enc[cc]];
-        if (g && g.pathHash) hashCount.set(g.pathHash, (hashCount.get(g.pathHash) || 0) + 1);
-      }
-      for (const [hash, count] of hashCount) {
-        if (count >= 3) fillerHashes.add(hash);
-      }
-    }
-    let mapped = 0;
-    let broken = 0;
-    for (const [cc, str] of f.toUnicode) {
-      if (fillerHashes.size > 0) {
-        const g = f.type3.glyphs?.[f.type3.encoding?.[cc]];
-        if (g && g.pathHash && fillerHashes.has(g.pathHash)) continue;
-      }
-      mapped++;
-      if (!str) continue;
-      const cp = str.codePointAt(0);
-      if ((cp >= 0xE000 && cp <= 0xF8FF) || cp === 0xFFFD) broken++;
-    }
-    const isBroken = broken >= 3 && broken >= mapped * 0.5;
-    brokenFontCache.set(f, isBroken);
-    return isBroken;
-  };
 
   const contentStreamText = getPageContentStream(objText, objCache);
   if (!contentStreamText) {
@@ -575,16 +563,12 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   const textColorSpaces = parseTextColorSpaces(objText, objCache);
   const chars = executeTextOperators(tokens, fonts, scale, visualHeightPts, initialCtm, extGStates, undefined, textColorSpaces);
 
-  // Extract text from Form XObjects referenced by Do operators in the content stream.
-  // Recurse into nested form XObjects so that deeply-nested text (e.g. 3+ levels) is extracted.
   const formChars = extractFormXObjectText(
     objText, tokens, fonts, scale, visualHeightPts, initialCtm, objCache, new Set(), extGStates, undefined, textColorSpaces,
   );
   for (let ci = 0; ci < formChars.length; ci++) chars.push(formChars[ci]);
 
-  // Remove chars outside the visible page bounds (e.g. printer slug metadata
-  // placed above the CropBox). Use a generous margin (1 fontSize) to avoid
-  // clipping chars that slightly overhang the boundary.
+  // Producers place slug metadata outside the CropBox, which must not reach the extracted text.
   for (let i = chars.length - 1; i >= 0; i--) {
     const ch = chars[i];
     const margin = ch.fontSize || 0;
@@ -595,9 +579,9 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   }
 
   // The dedup bucket scales with font size because narrow adjacent chars can sit less than 1 unit apart.
-  // A 3×3 neighborhood check catches positions that straddle a bucket boundary.
+  // A 3x3 neighborhood check catches positions that straddle a bucket boundary.
   // The (x, y) bucket packs into one integer Map key rather than a per-char string, avoiding that allocation.
-  const DEDUP_COORD_OFF = 33554432; // 2^25, biases the bucket indices non-negative (above any index = page px / 0.25 min bucket)
+  const DEDUP_COORD_OFF = 33554432; // 2^25, biases bucket indices non-negative and sits above any index the 0.25 minimum bucket size can produce
   const DEDUP_COORD_MUL = 67108864; // 2^26, spaces the x bucket above the y bucket so the two never overlap
   /** @type {Map<string, Map<string, Map<number, Set<number>>>>} */
   const seenByText = new Map();
@@ -1282,10 +1266,12 @@ export function applyDocParagraphLayout(objCache, pdfBytes, pages, results, pdfT
     }).filter((b) => b !== null);
   }
   // analyzeLayout assigns paragraphs and roles across all pages at once, overwriting the per-page assignParagraphs result.
-  const docPages = results.filter((r) => r && r.pageObj && r.pageObj.lines.length > 0).map((r) => r.pageObj);
+  const kept = results.filter((r) => r && r.pageObj && r.pageObj.lines.length > 0);
+  const docPages = kept.map((r) => r.pageObj);
   if (docPages.length > 0) {
     analyzeLayout(docPages, {
       elementFaithful, pdfType, wordSignals: wordSignals.size ? wordSignals : null, outlineHeadings,
+      fullPageImagePages: kept.map((r) => (r.pageStats ? isFullPageImage(r.pageStats) : false)),
     });
   }
 }
@@ -2068,11 +2054,8 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
         const prev = result[dupeIdx];
         if (ch.fontInfo.bold) prev.fontInfo.bold = true;
         if (!ch.invisible) prev.invisible = false;
-        // For offset-overlap (stroke+fill): keep the later-emitted glyph's
-        // position. The stroke is typically drawn first (wider/offset for
-        // outline) and the fill drawn on top at the visually-correct position.
-        // Using the fill's position avoids misaligning the surviving glyph
-        // and breaking adjacent word-spacing.
+        // The stroke is emitted first at a wider, offset position and the fill drawn on top where the glyph visually belongs, so the later position is the correct one.
+        // Keeping the stroke's geometry would skew the x-gaps that word splitting reads later.
         if (dupeKind === 'overlap') {
           prev.x = ch.x;
           prev.y = ch.y;
@@ -2087,22 +2070,18 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
     return result;
   })();
 
-  // Transform coordinates for non-zero orientations into a "virtual horizontal" system
-  // so the same line-grouping and word-splitting logic works for all orientations.
-  // The transformations preserve ascent/descent behavior in the virtual y-direction.
+  // Orientations 1, 2 and 3 are quarter turns: text reads downward, leftward and upward on screen.
+  // Remapping them into a virtual horizontal system lets the line grouping and word splitting below assume horizontal text.
   for (const ch of chars) {
     if (ch.orientation === 1) {
-      // Orientation 1 (text going downward on screen): virtualX = y, virtualY = pageWidth - x
       const vx = ch.y;
       const vy = pageWidth - ch.x;
       ch.x = vx;
       ch.y = vy;
     } else if (ch.orientation === 2) {
-      // Orientation 2 (text going leftward): virtualX = pageWidth - x, virtualY = pageHeight - y
       ch.x = pageWidth - ch.x;
       ch.y = pageHeight - ch.y;
     } else if (ch.orientation === 3) {
-      // Orientation 3 (text going upward on screen): virtualX = pageHeight - y, virtualY = x
       const vx = pageHeight - ch.y;
       const vy = ch.x;
       ch.x = vx;
@@ -2110,9 +2089,7 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
     }
   }
 
-  // Compute average text direction for orientation-0 chars to enable rotation-aware line grouping.
-  // For near-horizontal text, perpDist ≈ y so grouping is unchanged from pure y-sort.
-  // For rotated text (e.g., 5° page tilt), perpDist correctly groups chars along rotated baselines.
+  // Grouping on distance perpendicular to the average text direction keeps slightly rotated text from splitting one baseline across many lines.
   let avgDirX = 0;
   let avgDirY = 0;
   let orient0Count = 0;
@@ -2131,23 +2108,15 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
     avgDirX = 1; avgDirY = 0;
   }
 
-  // For orientation-0 chars, compute perpendicular distance from the average text direction.
   for (const ch of chars) {
     if (ch.orientation === 0) {
       ch._perpDist = -ch.x * avgDirY + ch.y * avgDirX;
     }
   }
 
-  // Split chars into lines by processing in stream order and placing cuts.
-  // Superscripts (small y-jump + font size change) are kept inline — no cut.
-  // Space characters are added to the current line without cut evaluation,
-  // since their font metrics can be unreliable (intermediate font sizes that
-  // mask the actual text-to-superscript font ratio change).
   const lines = [];
   let currentLine = [chars[0]];
-  // Track the line's anchor baseline: the y-position of the first full-size
-  // (non-superscript) char. Used to detect baseline shifts masked by bridging
-  // superscripts (e.g., "offset ᵃ Field" where "a" bridges two baselines).
+  // The anchor holds the baseline and size of the line's first full-size char, so a superscript sitting between two baselines cannot bridge them into one line.
   let anchorY = chars[0]._perpDist ?? chars[0].y;
   let anchorFontSize = chars[0].fontSize;
   // Body band of the current line, for the no-overlap cut below: the baseline and size of the line's full-size text, promoted past any leading reduced-size marker.
@@ -2158,10 +2127,8 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
   for (let i = 1; i < chars.length; i++) {
     const ch = chars[i];
 
-    // A space at a new fontSize AND a y-jump belongs to what follows, not the
-    // prior line — otherwise orphan-merge below can re-attach the next char
-    // via the bridging space. Both gates required: same-fontSize y-jumps are
-    // routine in multi-column tables and must not cut here.
+    // Without this cut, the orphan-merge pass below re-attaches the next char through the bridging space.
+    // The font-size gate is required because same-size y-jumps are routine in multi-column tables.
     if (ch.text === ' ') {
       let lastNonSpace = null;
       for (let j = currentLine.length - 1; j >= 0; j--) {
@@ -2204,18 +2171,14 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
     const yGap = Math.abs(chY - prevY);
     const xGap = ch.x - (compPrev.x + compPrev.width);
     // Type3 fonts with a non-standard FontMatrix (e.g. identity) can carry a Tf-derived fontSize far smaller than the glyphs' device-space size.
-    // Flooring the size at the char's advance width restores a usable gap-threshold reference, and is near a no-op for normal fonts since an advance seldom exceeds the em size.
+    // The floor is near a no-op for normal fonts, whose advance seldom exceeds the em size.
     const chSize = Math.max(ch.fontSize, ch.width);
     const prevSize = Math.max(compPrev.fontSize, compPrev.width);
     const maxFont = Math.max(chSize, prevSize);
     const minFont = Math.min(chSize, prevSize);
-    // Ratio checks compare Tf directly so that a same-font page (even one with
-    // collapsed fontSize) still has fontRatio ≈ 1 and doesn't trigger false
-    // size-change cuts from natural advance variation (e.g. "i" vs "M").
+    // The ratio compares Tf directly rather than the floored sizes, so natural advance variation ("i" vs "M") cannot read as a size change.
     const fontRatio = ch.fontSize / compPrev.fontSize;
-    // Inline symbol glyphs (e.g., Webdings arrows between regular words) can carry
-    // a different orientation/font size while still belonging to the same visual line.
-    // Treat close symbol/text boundaries as inline to avoid fragmenting one sentence.
+    // Symbol glyphs set inline, such as Webdings arrows between words, can report a different orientation and font size while still belonging to the same visual line.
     const symbolBoundary = isSymbolFont(ch.fontInfo)
       || isSymbolFont(compPrev.fontInfo);
     const inlineSymbolBoundary = symbolBoundary
@@ -2261,7 +2224,6 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
 
     let isCut = false;
 
-    // Orientation change.
     if (ch.orientation !== compPrev.orientation && !inlineSymbolBoundary) isCut = true;
 
     // No-overlap invariant: a reduced-size glyph whose baseline lies clearly outside the line's body band is on a different visual line and must cut, whatever the superscript rules below say.
@@ -2273,14 +2235,12 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
       && ch.fontSize < lineBodySize * 0.85
       && (chY - lineBodyY > lineBodySize * 0.4 || chY - lineBodyY < -lineBodySize * 0.9)) isCut = true;
 
-    // Large y-jump: always a line break (too big for any superscript), except an inline-math excursion or a leading-marker resume that still belongs to this line.
+    // A y-jump this large is beyond any superscript offset, so it is a line break.
     else if ((yGap > maxFont * 0.7 || yGap > minFont * 1.5) && !inlineMath && !leadingMarker) isCut = true;
 
-    // Large backward x-jump: moving to start of a new line.
     // builtUpMath is exempt: a stacked script steps backward under its body glyph, while a true line return travels far enough back to fail horizontalContinuity and still cuts.
     else if (xGap < -maxFont * 2 && !builtUpMath) isCut = true;
 
-    // Large forward x-jump: column break or distant text region.
     else if (xGap > maxFont * 4) isCut = true;
 
     // Moderate y-jump with similar font size: line break, not a superscript.
@@ -2291,14 +2251,12 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
       && yGap > (xGap > maxFont ? minFont * 0.2 : minFont * 0.3)) isCut = true;
 
     // Large font size change with even a tiny y-gap: different text region (e.g., a heading beside much smaller body text).
-    // Same x-proximity guard: horizontally adjacent chars stay on the same line.
     // builtUpMath is exempt: a built-up expression is itself a size change beside full-size body text, and this cut would tear it apart.
     else if (!inlineSymbolBoundary && !builtUpMath
       && yGap > minFont * 0.1 && (fontRatio > 1.75 || fontRatio < 1 / 1.75)
       && (xGap < -maxFont * 0.1 || xGap > maxFont * 0.5)) isCut = true;
 
     // Persistent font size change: a size change that persists for multiple subsequent chars is a line transition (e.g., a heading into its sub-heading), not a superscript.
-    // The look-ahead distinguishes it from a transient superscript marker that immediately reverts.
     else if (!inlineSymbolBoundary && !builtUpMath && yGap > minFont * 0.1 && (fontRatio < 0.8 || fontRatio > 1.25)) {
       let persistCount = 0;
       const targetSize = Math.min(ch.fontSize, compPrev.fontSize);
@@ -2328,7 +2286,6 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
       lineBodySize = ch.fontSize;
     } else {
       currentLine.push(ch);
-      // Update anchor if this is a full-size char (not a superscript/subscript).
       // On a math page a full-size glyph raised well above the anchor, e.g. a full-size citation marker ("spectrum⁶"), is positionally a superscript and must not promote the baseline.
       // Promoting it would make the following baseline text read as drifted from the raised anchor and torn onto its own line.
       if (ch.fontSize >= anchorFontSize * 0.8
@@ -2336,7 +2293,6 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
         anchorY = chY;
       }
       // Promote the body band: a same-or-larger non-space glyph is the body, superseding a smaller leading marker.
-      // A smaller glyph (a script or marker) leaves the band describing the full-size text.
       if (ch.text !== ' ' && (lineBodySize === 0 || ch.fontSize >= lineBodySize * 0.95)) {
         lineBodySize = Math.max(lineBodySize, ch.fontSize);
         lineBodyY = chY;
@@ -2345,14 +2301,9 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
   }
   if (currentLine.length > 0) lines.push(currentLine);
 
-  // Merge orphan single-char lines into adjacent lines. PDF generators sometimes
-  // emit characters far from their neighbors in stream order, creating spurious
-  // single-char lines. Two cases are handled:
-  //  (a) Same-size punctuation (e.g., curly quotes): same font, same size, baseline-adjacent.
-  //  (b) Drop caps (e.g., large "T" before "he"): same font, orphan >2x larger, top-aligned,
-  //      x-adjacent, single uppercase letter.
-  // The orphan is inserted at the correct x-position so word splitting groups it
-  // with its spatial neighbor.
+  // PDF generators sometimes emit characters far from their neighbors in stream order, creating spurious single-char lines.
+  // The two merges below recover same-size punctuation, such as a curly quote, and drop caps, such as a large "T" before "he".
+  // The orphan is inserted at its x-position in the target line so word splitting groups it with its spatial neighbor.
   // Both merge cases require x-adjacency, so a line whose extent misses the orphan by more than the loosest per-char slack cannot contain a match and is skipped whole.
   // A table page of single-digit cells makes thousands of lines orphans, and without the skip every one re-walks every char on the page.
   const lineExtents = lines.map((lineChars) => {
@@ -2428,8 +2379,7 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
   }
 
   // Merge line fragments split by an inline superscript's y-shift.
-  // The superscript-size check is the gating signal — same baseline + small gap
-  // alone would also merge unrelated column-aligned lines.
+  // The superscript-size check is what gates the merge, because a shared baseline and small gap alone would also merge unrelated column-aligned lines.
   const lineAnchorOf = (lineChars) => {
     let maxSize = 0;
     let anchorFamily = null;
@@ -2464,10 +2414,8 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
     const anchorSize = Math.max(a.anchorFontSize, b.anchorFontSize);
     const gap = b.leftX - a.rightX;
     if (gap < -anchorSize * 0.1 || gap > anchorSize) continue;
-    // A sup-sized continuation sitting above the previous line reports its baselineY at the shifted sup baseline,
-    // not the body baseline.
-    // Loosen the tolerance only in that geometry,
-    // so a small sub-heading next to a heading with a real column gap is not merged into it.
+    // A sup-sized continuation reports its baselineY at the shifted superscript baseline, not the body baseline.
+    // The looser tolerance is confined to that geometry so a small sub-heading beside a heading with a real column gap is not merged into it.
     const smallerIsA = a.anchorFontSize < b.anchorFontSize * 0.85;
     const smallerIsB = b.anchorFontSize < a.anchorFontSize * 0.85;
     const supContinuation = Math.abs(gap) < anchorSize * 0.1
@@ -2824,8 +2772,7 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
       }
     }
 
-    // Drop cap detection: a single-char word whose font size is >2x the next word's font size
-    // and whose baseline is lower (the letter extends downward spanning multiple lines).
+    // A drop cap descends across several lines, so its baseline sits below the following word's.
     for (let i = 0; i < words.length; i++) {
       if (words[i].sup || words[i].chars.length !== 1) continue;
       const nextIdx = i + 1;
@@ -2837,12 +2784,6 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
       }
     }
 
-    // Word-level superscript detection: compare consecutive words for font size + baseline differences.
-    // This catches superscripts that are already separate words after line merging and word splitting.
-    // Only consider short words (<=4 chars) as superscript candidates to avoid false positives from garbled lines.
-    // Skip drop cap words when searching for comparison neighbors.
-    // Guard: if the word immediately following the candidate has a similar font size (within 10%),
-    // this is a persistent size transition (e.g., heading → sub-heading), not a superscript.
     let supChanged = true;
     while (supChanged) {
       supChanged = false;
@@ -3103,9 +3044,10 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
       // On OcrWord these signals would serialize into every .scribe export and outlive their only consumer, the layout pass.
       const artifact = wordChars.some((c) => c.artifact);
       const sChar = wordChars.find((c) => c.structTag) || null;
-      if (artifact || sChar) {
+      const brokenFont = wordChars.some((c) => brokenToUnicodeFont(c._font));
+      if (artifact || sChar || brokenFont) {
         wordSignals.set(wordObj, {
-          artifact, mcid: sChar?.mcid ?? null, structElemId: null, structElemTag: null,
+          artifact, mcid: sChar?.mcid ?? null, structElemId: null, structElemTag: null, brokenFont,
         });
       }
 
