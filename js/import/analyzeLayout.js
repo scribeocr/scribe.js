@@ -1655,11 +1655,12 @@ export function analyzeLayout(pages, opts = {}) {
       const f = arr[i];
       f.gapAbove = Infinity;
       f.belowFeat = null;
+      f.aboveFeat = null;
       for (let j = i - 1; j >= 0 && i - j <= 80; j--) {
         const g = arr[j];
         if (f.top - g.top <= Math.min(f.height, g.height) * 0.5) continue; // same row (other column/fragment)
         if (f.top - g.top > leading * 3.5) break;
-        if (g.left < f.right && f.left < g.right) { f.gapAbove = f.top - g.bottom; break; }
+        if (g.left < f.right && f.left < g.right) { f.gapAbove = f.top - g.bottom; f.aboveFeat = g; break; }
       }
       for (let j = i + 1; j < arr.length && j - i <= 80; j++) {
         const g = arr[j];
@@ -3284,8 +3285,31 @@ function classifyRole(f, model, colWidth, prev) {
     const ri = rm - f.right;
     const centered = li > model.bodySize && ri > model.bodySize
       && Math.abs(li - ri) < Math.max(model.bodySize * 1.5, Math.min(li, ri) * 0.6);
+    // The size precondition above is the only thing holding body prose out of this rule, since a short line, a gap above and centring are all shapes an ordinary paragraph produces.
+    // It fails on a page carrying several articles at different sizes, where the page body size comes from whichever article holds the most text and the rest read as display type.
+    // Centring has to be gated with the other two, or a centred quote keeps some of its lines as headings and is shredded into alternating blocks.
+    // Each walk is capped so it does not scan the page length once per line.
+    // The cap stays above the run-length threshold below, so only the lowercase share is a local estimate.
+    let runLen = 1;
+    let runLower = f.startsLower ? 1 : 0;
+    for (let cur = f, n = 0; n < 20; n++) {
+      const up = cur.aboveFeat;
+      if (!up || Math.abs(cur.size - up.size) > Math.max(cur.size, up.size) * 0.05) break;
+      runLen++;
+      if (up.startsLower) runLower++;
+      cur = up;
+    }
+    for (let cur = f, n = 0; n < 20; n++) {
+      const dn = cur.belowFeat;
+      if (!dn || Math.abs(cur.size - dn.size) > Math.max(cur.size, dn.size) * 0.05) break;
+      runLen++;
+      if (dn.startsLower) runLower++;
+      cur = dn;
+    }
+    // A wrapped prose line resumes lowercase where a stacked heading or label never does, so the share separates a column of body text from a block of same-size headings.
+    const proseRun = runLen >= 5 && runLower / runLen >= 0.3;
     // A line at >= 2.5x body size is display text on size alone: a giant stamp's bbox spans the column and overlaps neighbours, defeating every shape test.
-    displaySingleton = short || centered || (f.gapAbove ?? Infinity) > model.leading * 1.2
+    displaySingleton = (!proseRun && (short || centered || (f.gapAbove ?? Infinity) > model.leading * 1.2))
       || f.sizeRatio >= 2.5;
   }
   // Form-based sub-heading path for a heading face the signature model cannot qualify because the document sets prose in it too.
@@ -3717,6 +3741,7 @@ function enumeratedListItemStart(f, model) {
  * @property {string} sigKey - style-tuple key (size|flags|family|color) for the heading-signature model, filled in Phase 3.
  * @property {number} [gapAbove] - gap to the nearest horizontally-overlapping line above (Infinity when none in window).
  * @property {?LineFeat} [belowFeat] - nearest horizontally-overlapping line below within the window.
+ * @property {?LineFeat} [aboveFeat] - nearest horizontally-overlapping line above within the window.
  * @property {string} text
  * @property {number} nChar
  * @property {boolean} allCaps
