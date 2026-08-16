@@ -2212,7 +2212,6 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
     const yGap = Math.abs(chY - prevY);
     const xGap = ch.x - (compPrev.x + compPrev.width);
     // Type3 fonts with a non-standard FontMatrix (e.g. identity) can carry a Tf-derived fontSize far smaller than the glyphs' device-space size.
-    // The floor is near a no-op for normal fonts, whose advance seldom exceeds the em size.
     const chSize = Math.max(ch.fontSize, ch.width);
     const prevSize = Math.max(compPrev.fontSize, compPrev.width);
     const maxFont = Math.max(chSize, prevSize);
@@ -2227,11 +2226,8 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
       && xGap > -maxFont * 0.2
       && xGap < maxFont;
 
-    // Inline mathematics sets a few glyphs off the main baseline within one visual line, and the y-jump cuts below would otherwise tear them onto their own line.
-    // The exemptions must stay narrow: a general baseline-shift exemption merges headings, captions, and table cells into adjacent lines.
-    // reducedScript: a script or fraction part set smaller than the line's body whose box still vertically intersects the anchor's band, after which the line resumes.
-    // A genuine next line is full-size or sits clear of the band (a small caption or URL on its own row does not intersect it), so it still cuts.
-    // radicalRadicand: a full-size radicand butted directly against a radical sign just below it.
+    // Inline mathematics sets a few glyphs off the main baseline within one visual line, so the y-jump cuts below would tear them onto their own line without these exemptions.
+    // The exemptions must stay narrow, since a general baseline-shift exemption merges headings, captions, and table cells into adjacent lines.
     const reducedScript = ch.fontSize < anchorFontSize * 0.85
       && chY - ch.fontSize * 0.8 < anchorY + anchorFontSize * 0.2
       && chY + ch.fontSize * 0.2 > anchorY - anchorFontSize * 0.8;
@@ -2258,7 +2254,6 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
 
     // Leading reduced-size marker: a line opening with a smaller raised glyph, e.g. a footnote reference starting its own definition ("¹ The Debtors ..."), that resumes at full size on the same row.
     // Without this the resume reads as a size-up plus baseline jump off the still-small anchor, and the marker is torn onto its own line.
-    // The size test keeps it to lines that are still just the marker, and the small forward xGap excludes a true next line, which returns to the margin.
     const leadingMarker = anchorFontSize < ch.fontSize * 0.85
       && xGap > -maxFont * 0.3 && xGap < maxFont * 0.8
       && yGap < maxFont * 0.8;
@@ -2276,28 +2271,24 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
       && ch.fontSize < lineBodySize * 0.85
       && (chY - lineBodyY > lineBodySize * 0.4 || chY - lineBodyY < -lineBodySize * 0.9)) isCut = true;
 
-    // A y-jump this large is beyond any superscript offset, so it is a line break.
     else if ((yGap > maxFont * 0.7 || yGap > minFont * 1.5) && !inlineMath && !leadingMarker) isCut = true;
 
-    // builtUpMath is exempt: a stacked script steps backward under its body glyph, while a true line return travels far enough back to fail horizontalContinuity and still cuts.
     else if (xGap < -maxFont * 2 && !builtUpMath) isCut = true;
 
     else if (xGap > maxFont * 4) isCut = true;
 
-    // Moderate y-jump with similar font size: line break, not a superscript.
     // The x-proximity guard avoids false cuts from glyph-metric noise on adjacent chars.
     // The y-threshold loosens past one full font size of x-gap, where sustained mid-line baseline drift is implausible.
     else if (!inlineMath && !leadingMarker && fontRatio > 0.8 && fontRatio < 1.25
       && (xGap < -maxFont * 0.1 || xGap > maxFont * 0.5 || yGap > minFont * 0.5)
       && yGap > (xGap > maxFont ? minFont * 0.2 : minFont * 0.3)) isCut = true;
 
-    // Large font size change with even a tiny y-gap: different text region (e.g., a heading beside much smaller body text).
-    // builtUpMath is exempt: a built-up expression is itself a size change beside full-size body text, and this cut would tear it apart.
+    // builtUpMath is exempt because a built-up expression is itself a size change beside full-size body text, and this cut would tear it apart.
     else if (!inlineSymbolBoundary && !builtUpMath
       && yGap > minFont * 0.1 && (fontRatio > 1.75 || fontRatio < 1 / 1.75)
       && (xGap < -maxFont * 0.1 || xGap > maxFont * 0.5)) isCut = true;
 
-    // Persistent font size change: a size change that persists for multiple subsequent chars is a line transition (e.g., a heading into its sub-heading), not a superscript.
+    // A size change that persists for several chars is a line transition, not a one-off superscript.
     else if (!inlineSymbolBoundary && !builtUpMath && yGap > minFont * 0.1 && (fontRatio < 0.8 || fontRatio > 1.25)) {
       let persistCount = 0;
       const targetSize = Math.min(ch.fontSize, compPrev.fontSize);
@@ -2333,7 +2324,6 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
         && !(pageHasMath && chY < anchorY - anchorFontSize * 0.25)) {
         anchorY = chY;
       }
-      // Promote the body band: a same-or-larger non-space glyph is the body, superseding a smaller leading marker.
       if (ch.text !== ' ' && (lineBodySize === 0 || ch.fontSize >= lineBodySize * 0.95)) {
         lineBodySize = Math.max(lineBodySize, ch.fontSize);
         lineBodyY = chY;
@@ -2343,7 +2333,6 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
   if (currentLine.length > 0) lines.push(currentLine);
 
   // PDF generators sometimes emit characters far from their neighbors in stream order, creating spurious single-char lines.
-  // The two merges below recover same-size punctuation, such as a curly quote, and drop caps, such as a large "T" before "he".
   // The orphan is inserted at its x-position in the target line so word splitting groups it with its spatial neighbor.
   // Both merge cases require x-adjacency, so a line whose extent misses the orphan by more than the loosest per-char slack cannot contain a match and is skipped whole.
   // A table page of single-digit cells makes thousands of lines orphans, and without the skip every one re-walks every char on the page.
@@ -2539,17 +2528,113 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
     anchors.splice(li, 1);
   }
 
-  // Process each line (chars are already in stream order)
+  // Some producers emit no space glyphs and justify so tightly that word gaps fall under the 0.15 em fallback, so whole sentences would extract as one token.
+  // For each such font on this page, find the empty band separating its intra-word gap cluster from its word-gap cluster and split at that per-font threshold instead.
+  // The guards are what keep kerned faces (small gaps forming a continuum, not two clusters) and letter-spaced faces (all gaps wide) at the 0.15 rule.
+  /** @type {Map<string, number>} */
+  const wordGapThresholds = new Map();
+  {
+    const keyOf = (c) => `${(c.fontInfo && c.fontInfo.familyName) || '?'}|${Math.round(c.fontSize)}`;
+    const fontStats = new Map();
+    for (const lineChars of lines) {
+      let prevNS = null;
+      for (const c of lineChars) {
+        const k = keyOf(c);
+        let st = fontStats.get(k);
+        if (!st) { st = { chars: 0, spaces: 0, ratios: [] }; fontStats.set(k, st); }
+        st.chars++;
+        if (c.text === ' ') { st.spaces++; continue; }
+        if (prevNS && c.fontSize > 0
+          && prevNS.fontInfo.familyName === c.fontInfo.familyName) {
+          st.ratios.push((c.x - (prevNS.x + prevNS.width)) / c.fontSize);
+        }
+        prevNS = c;
+      }
+    }
+    for (const [k, st] of fontStats) {
+      // A font with real spaces already has its word boundaries, and its small gaps are kerning that must not be cut.
+      if (st.chars < 100 || st.spaces > 0 || st.ratios.length < 200) continue;
+      // The scan probes ~90 candidate bands, so the guards read a sorted copy with prefix sums rather than re-filtering the ratios each probe.
+      const a = st.ratios.slice().sort((p, q) => p - q);
+      const nR = a.length;
+      const prefix = new Float64Array(nR + 1);
+      for (let i = 0; i < nR; i++) prefix[i + 1] = prefix[i] + a[i];
+      const idxOf = (v) => {
+        let lo = 0;
+        let hi = nR;
+        while (lo < hi) { const mid = (lo + hi) >> 1; if (a[mid] < v) lo = mid + 1; else hi = mid; }
+        return lo;
+      };
+      let theta;
+      for (const w of [0.04, 0.03, 0.02]) {
+        for (let x = 0.02; x <= 0.16 && theta === undefined; x += 0.005) {
+          const iX = idxOf(x);
+          if ((idxOf(x + w) - iX) / nR >= 0.005) continue;
+          const iLo = idxOf(x + w);
+          const iHi = idxOf(0.45 + 1e-9);
+          const share = (iHi - iLo) / nR;
+          if (share < 0.03 || share > 0.40) continue;
+          if (iX / nR < 0.5) continue;
+          const aMean = (prefix[iHi] - prefix[iLo]) / (iHi - iLo);
+          if (aMean - x < 0.08) continue;
+          // A thin tail of kern or ligature gaps reaching into the window means the band cuts through real words, so the intra-word cluster must end well below it.
+          if (iX > 0 && a[Math.min(iX - 1, Math.floor(0.995 * iX))] > x - 0.015) continue;
+          theta = x + w / 2;
+        }
+        if (theta !== undefined) break;
+      }
+      if (theta !== undefined && theta < 0.15) wordGapThresholds.set(k, theta);
+    }
+    // Word gaps occur at word frequency and produce word-shaped pieces.
+    // Simulate each accepted threshold over its own font's runs; letter stubs mean it is cutting words, so the font reverts to 0.15.
+    if (wordGapThresholds.size > 0) {
+      const pieceStats = new Map();
+      for (const lineChars of lines) {
+        let prevNS = null;
+        let runKey = null;
+        let piece = 0;
+        const closePiece = (k) => {
+          if (piece === 0 || k === null) return;
+          let st = pieceStats.get(k);
+          if (!st) { st = { n: 0, len: 0, single: 0 }; pieceStats.set(k, st); }
+          st.n++;
+          st.len += piece;
+          if (piece === 1) st.single++;
+          piece = 0;
+        };
+        for (const c of lineChars) {
+          if (c.text === ' ') { closePiece(runKey); prevNS = null; runKey = null; continue; }
+          const k = keyOf(c);
+          const th = wordGapThresholds.get(k);
+          if (th === undefined || (prevNS && prevNS.fontInfo.familyName !== c.fontInfo.familyName)) {
+            closePiece(runKey); prevNS = c; runKey = null; continue;
+          }
+          if (prevNS && c.fontSize > 0) {
+            const r = (c.x - (prevNS.x + prevNS.width)) / c.fontSize;
+            if (r > th) closePiece(k);
+          }
+          runKey = k;
+          if (/[A-Za-zÀ-ɏ]/.test(c.text)) piece++;
+          prevNS = c;
+        }
+        closePiece(runKey);
+      }
+      for (const [k, st] of pieceStats) {
+        if (st.n > 0 && (st.len / st.n < 3.2 || st.single / st.n > 0.2)) wordGapThresholds.delete(k);
+      }
+    }
+  }
+  // Combining and spacing-modifier marks are positioned with gaps that are accent placement, not word spacing, so a boundary touching one never splits under the per-font thresholds.
+  const WORDGAP_MARK_RE = /[\u0060\u00A8\u00B4\u02BB\u02BC\u02C6-\u02DF\u0300-\u036F]/;
+
   for (const lineChars of lines) {
-    // Split into words at space characters or large gaps (measured in stream order).
     const wordsInitial = [];
     let currentWord = [];
+    const adaptiveSplitAfter = new Set();
     for (let i = 0; i < lineChars.length; i++) {
       const ch = lineChars[i];
       if (ch.text === ' ') {
-        // Check if this space is a real word break or a TJ kerning artifact.
-        // If the next non-space char is visually close to where the space sits,
-        // the space was inserted by TJ kerning but doesn't represent a word gap.
+        // A space glyph can be TJ kerning rather than a real word gap.
         if (currentWord.length > 0) {
           let nextNonSpace = null;
           for (let j = i + 1; j < lineChars.length; j++) {
@@ -2561,11 +2646,11 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
           if (nextNonSpace) {
             const prevCh = currentWord[currentWord.length - 1];
             const visualGap = nextNonSpace.x - (prevCh.x + prevCh.width);
-            // The positive tolerance must stay far below the space-glyph advance: justified text often shrinks real inter-word gaps to a fraction of it.
-            // A space after a comma is never dropped, since negative Tc routinely compresses that real space to visual adjacency.
+            // The positive tolerance must stay far below the space-glyph advance, since justified text often shrinks real inter-word gaps to a fraction of it.
             const adjacencyTol = prevCh.fontSize * 0.15;
             const positiveTol = Math.max(prevCh.fontSize * 0.01, ch.width * 0.1);
             const isKerningArtifact = visualGap >= -adjacencyTol && visualGap < positiveTol;
+            // A space after a comma is never dropped, since negative Tc routinely compresses that real space to visual adjacency.
             if (isKerningArtifact && prevCh.text !== ',') {
               continue;
             }
@@ -2575,20 +2660,17 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
         }
         continue;
       }
-      // Check for word boundaries between consecutive chars in stream order.
       if (currentWord.length > 0) {
         const prevCh = currentWord[currentWord.length - 1];
         const gap = ch.x - (prevCh.x + prevCh.width);
         const fontSizeMin = Math.min(ch.fontSize, prevCh.fontSize);
-        // Sentence-terminal + em-dash is a definitional break ("COMMITTEES.—The…"),
-        // not a closed compound ("respond—this"). Split the em-dash off as its own word.
+        // Sentence-terminal plus em-dash is a definitional break ("COMMITTEES.—The…"), not a closed compound ("respond—this").
         if (ch.text === '—' && /[.!?]/.test(prevCh.text)) {
           wordsInitial.push(currentWord);
           wordsInitial.push([ch]);
           currentWord = [];
           continue;
         }
-        // List bullet sitting alone in front of a letter/digit.
         // Same-family bullets share size/gap with the following glyph, so the family-change rule can't catch them.
         if (currentWord.length === 1
           && isBulletChar(prevCh.text)
@@ -2598,7 +2680,6 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
           currentWord.push(ch);
           continue;
         }
-        // Split at bold/italic style change, except for adjacent trailing punctuation and dashes.
         if ((ch.fontInfo.bold !== prevCh.fontInfo.bold
           || ch.fontInfo.italic !== prevCh.fontInfo.italic)
           && !(',.;:!?)]}”’'.includes(ch.text) && gap <= fontSizeMin * 0.15)
@@ -2650,11 +2731,41 @@ export function groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRec
             wordsInitial.push(currentWord);
             currentWord = [];
           }
+        // Per-font word-gap threshold for zero-space fonts (derived above).
+        // Last in the ladder so it decides only boundaries no existing rule claims, which keeps every current split intact and makes the added splits cleanly removable by the backstop below.
+        // A split landing before a dash would cut inside a compound token, so those boundaries never split here.
+        } else if (wordGapThresholds.size > 0
+          && ch.fontInfo.familyName === prevCh.fontInfo.familyName
+          && !/[-\u2010\u2011\u2013\u2014]/.test(ch.text)
+          && !WORDGAP_MARK_RE.test(ch.text) && !WORDGAP_MARK_RE.test(prevCh.text)) {
+          const th = wordGapThresholds.get(`${ch.fontInfo.familyName || '?'}|${Math.round(ch.fontSize)}`);
+          if (th !== undefined && gap > ch.fontSize * th) {
+            adaptiveSplitAfter.add(prevCh);
+            wordsInitial.push(currentWord);
+            currentWord = [];
+          }
         }
       }
       currentWord.push(ch);
     }
     if (currentWord.length > 0) wordsInitial.push(currentWord);
+    // Word gaps cannot slice Latin text into single letters.
+    // A line whose adaptive splits leave it mostly one-letter tokens is letter-spaced or stretch-justified, so undo exactly those splits.
+    if (adaptiveSplitAfter.size > 0) {
+      let single = 0;
+      for (const w of wordsInitial) {
+        if (w.length === 1 && /[A-Za-z]/.test(w[0].text)) single++;
+      }
+      if (single / wordsInitial.length > 0.4) {
+        for (let wi = wordsInitial.length - 2; wi >= 0; wi--) {
+          const w = wordsInitial[wi];
+          if (adaptiveSplitAfter.has(w[w.length - 1])) {
+            w.push(...wordsInitial[wi + 1]);
+            wordsInitial.splice(wi + 1, 1);
+          }
+        }
+      }
+    }
 
     // Sort words by x-position of their first character so line reads left-to-right.
     wordsInitial.sort((a, b) => a[0].x - b[0].x);

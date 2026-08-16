@@ -1,12 +1,8 @@
 // Standalone basic-viewer application bootstrap.
 // Loaded directly by `index.html` and built on by `tauri-entry.js` and `electron-entry.js`.
-// It auto-instantiates a full-screen `ScribePDFViewer` on the page's `#pdfViewerCont` element and wires up the file-loading
-// and highlight helpers the desktop shells drive over IPC.
 //
-// This is NOT the file to import when embedding a viewer in your own page.
+// This is not the file to import when embedding a viewer in your own page, since importing it builds a full-screen viewer and writes `globalThis.df`.
 // Import `ScribePDFViewer` from `./pdf-viewer.js` and construct it yourself.
-// That module is the reusable component and runs no bootstrap,
-// instantiates nothing on load, and never writes to `globalThis`.
 import {
   scribe, ScribeViewer, ScribePDFViewer, applyHighlight,
 } from './pdf-viewer.js';
@@ -25,8 +21,6 @@ const buildBootstrapViewer = () => {
     pdfViewerContElem.style.height = '100vh';
     pdfViewerContElem.style.height = '100dvh';
   }
-  // This is a full-screen, single-viewer app, so it uses document-wide keyboard shortcuts that fire
-  // regardless of where focus is on the page.
   const v = new ScribePDFViewer(pdfViewerContElem, {
     keyboardScope: 'global', comments: true, library: inDesktopShell || DOCUMENT_LIBRARY, automate: AUTOMATE,
   });
