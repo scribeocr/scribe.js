@@ -334,7 +334,7 @@ export function deleteTextLines(doc, lines) {
       n, record, wordIds, lineSnaps, annots, replacedRecords, ntBefore, ntAfter,
     });
   }
-  doc.contentEditHistory.record({ groupId, pages: entryPages });
+  doc.contentEditHistory.record({ groupId, pages: entryPages }, 'Deleted text');
   return { pages: entryPages.map((p) => p.n), groupId };
 }
 
@@ -778,7 +778,7 @@ export async function replaceTextLine(doc, line, newText, opts) {
     pages: [{
       n, record, wordIds: twinIds, lineSnaps, lineAfterSnaps, sweepIds, annots, replacedRecords, ntBefore, ntAfter,
     }],
-  });
+  }, 'Edited text');
   return { pages: [n], groupId };
 }
 
@@ -817,7 +817,12 @@ export function deleteGraphics(doc, items) {
     pageRecords.push({ n, record });
   }
   if (pageRecords.length === 0) return null;
-  doc.contentEditHistory.record({ groupId, pages: pageRecords });
+  const kinds = new Set(pageRecords.map((p) => p.record.type));
+  const graphicsLabel = kinds.size > 1 ? 'Deleted graphics'
+    : (kinds.has('deleteImage')
+      ? (pageRecords.length === 1 ? 'Deleted image' : 'Deleted images')
+      : (pageRecords.length === 1 ? 'Deleted graphic' : 'Deleted graphics'));
+  doc.contentEditHistory.record({ groupId, pages: pageRecords }, graphicsLabel);
   return { pages: [...new Set(pageRecords.map((p) => p.n))] };
 }
 
@@ -848,11 +853,21 @@ export class ContentEditHistory {
     this.redoStack = [];
   }
 
-  /** @param {object} entry */
-  record(entry) {
+  /**
+   * Record one content edit as an undoable step.
+   * @param {object} entry
+   * @param {string} [label] - Description of the edit for the undo timeline, e.g. "Deleted image".
+   */
+  record(entry, label = 'Edited content') {
     this.undoStack.push(entry);
     if (this.undoStack.length > ContentEditHistory.LIMIT) this.undoStack.shift();
     this.redoStack.length = 0;
+    this.doc.docHistory.record({
+      surface: 'content',
+      label,
+      undo: () => this.undo(),
+      redo: () => this.redo(),
+    });
   }
 
   /**

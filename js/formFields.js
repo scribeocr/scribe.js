@@ -13,6 +13,16 @@ const PX_PER_PT = 300 / 72;
  * @returns {number} Number of widget rows updated.
  */
 export function setFormValue(doc, name, value) {
+  let prevSeen = false;
+  let prev = null;
+  const fieldPages = [];
+  for (let n = 0; n < doc.annotations.pages.length; n++) {
+    for (const row of doc.annotations.pages[n] || []) {
+      if (row.type !== 'field' || row.name !== name) continue;
+      if (!prevSeen) { prev = row.value; prevSeen = true; }
+      if (!fieldPages.includes(n)) fieldPages.push(n);
+    }
+  }
   let updated = 0;
   for (let n = 0; n < doc.annotations.pages.length; n++) {
     const rows = doc.annotations.pages[n] || [];
@@ -82,6 +92,16 @@ export function setFormValue(doc, name, value) {
         else pageObj.lines.splice(insertAt, 0, lineObj);
       }
     }
+  }
+  if (updated > 0) {
+    // An array snapshot cannot undo this: the fill lifts words into the text layer, which only re-running the fill regenerates.
+    // Re-entering here from that undo records nothing, since the timeline suspends recording while it restores an entry.
+    doc.docHistory.record({
+      surface: 'form',
+      label: value === '' || value == null ? 'Cleared a form field' : 'Filled a form field',
+      undo: () => { setFormValue(doc, name, prev); return fieldPages; },
+      redo: () => { setFormValue(doc, name, value); return fieldPages; },
+    });
   }
   return updated;
 }

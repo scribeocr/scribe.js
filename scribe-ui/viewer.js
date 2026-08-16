@@ -1308,25 +1308,52 @@ export class ScribeViewer {
   }
 
   /**
-   * Undo the last page operation (delete/move/reorder/insert/paste/duplicate/rotate) and rebuild the view.
+   * Undo the most recent edit on any surface and refresh the view to match.
+   * Page and outline entries are skipped when the host disabled page editing.
    * @returns {boolean} Whether anything was undone.
    */
   undo() {
-    if (!this.doc || !this.opt.enablePageEditing || !this.doc.undo()) return false;
-    this._rebuildPages(Math.max(0, Math.min(this.state.cp.n, this.doc.pageMetrics.length - 1)));
-    if (this.onEditCallback) this.onEditCallback();
-    if (this.onPageEditCallback) this.onPageEditCallback();
-    return true;
+    return this._applyHistory('undo');
   }
 
   /**
-   * Redo the last undone page operation and rebuild the view.
+   * Re-apply the most recently undone edit and refresh the view to match.
    * @returns {boolean} Whether anything was redone.
    */
   redo() {
-    if (!this.doc || !this.opt.enablePageEditing || !this.doc.redo()) return false;
-    this._rebuildPages(Math.max(0, Math.min(this.state.cp.n, this.doc.pageMetrics.length - 1)));
-    if (this.onPageEditCallback) this.onPageEditCallback();
+    return this._applyHistory('redo');
+  }
+
+  /**
+   * Pop one entry from the document's unified history and refresh the view to match.
+   * @param {'undo'|'redo'} dir
+   * @returns {boolean}
+   */
+  _applyHistory(dir) {
+    if (!this.doc) return false;
+    const stack = dir === 'undo' ? this.doc.docHistory.undoStack : this.doc.docHistory.redoStack;
+    const top = stack[stack.length - 1];
+    if (!top) return false;
+    if (top.surface === 'page' && !this.opt.enablePageEditing) return false;
+    const res = this.doc.docHistory[dir]();
+    if (!res) return false;
+    if (res.surface === 'page' || !res.pages) {
+      this._rebuildPages(Math.max(0, Math.min(this.state.cp.n, this.doc.pageMetrics.length - 1)));
+      if (this.onEditCallback) this.onEditCallback();
+      if (this.onPageEditCallback) this.onPageEditCallback();
+      return true;
+    }
+    for (const n of new Set(res.pages)) {
+      this.refreshPageRaster(n);
+      this.renderWords(n);
+      this.renderHighlights(n);
+      this.renderNotes(n);
+      this.renderFillItems(n);
+      if (this.textSel) {
+        this.textSel.invalidatePage(n);
+        this.textSel.renderPage(n);
+      }
+    }
     if (this.onEditCallback) this.onEditCallback();
     return true;
   }

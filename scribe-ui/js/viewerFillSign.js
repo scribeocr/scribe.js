@@ -314,14 +314,44 @@ export function deselectFillItem(viewer) {
 export function deleteSelectedFillItem(viewer) {
   const sel = selectionByViewer.get(viewer);
   if (!sel) return false;
+  const doc = viewer.doc;
+  const isText = sel.row.type === 'freetext' && isFillTextRow(sel.row);
+  const contents = sel.row.contents;
   // A typed-text item's lifted words go with it.
-  if (sel.row.type === 'freetext' && isFillTextRow(sel.row)) {
+  if (isText) {
     sel.row.contents = '';
-    viewer.doc.syncFillText(sel.n, sel.row);
+    doc.syncFillText(sel.n, sel.row);
   }
-  const rows = viewer.doc.annotations.pages[sel.n] || [];
+  const rows = doc.annotations.pages[sel.n] || [];
   const idx = rows.indexOf(sel.row);
   if (idx >= 0) rows.splice(idx, 1);
+  // An array snapshot cannot undo this: a typed-text row's lifted words only sweep and regenerate through the sync path.
+  if (idx >= 0) {
+    const { n, row } = sel;
+    doc.docHistory.record({
+      surface: 'annot',
+      label: 'Deleted item',
+      undo: () => {
+        const at = Math.min(idx, (doc.annotations.pages[n] || []).length);
+        (doc.annotations.pages[n] || []).splice(at, 0, row);
+        if (isText) {
+          row.contents = contents;
+          doc.syncFillText(n, row);
+        }
+        return [n];
+      },
+      redo: () => {
+        if (isText) {
+          row.contents = '';
+          doc.syncFillText(n, row);
+        }
+        const cur = doc.annotations.pages[n] || [];
+        const i = cur.indexOf(row);
+        if (i >= 0) cur.splice(i, 1);
+        return [n];
+      },
+    });
+  }
   selectionByViewer.delete(viewer);
   refreshItems(viewer, sel.n);
   return true;

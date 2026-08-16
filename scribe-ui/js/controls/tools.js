@@ -1923,15 +1923,14 @@ export function createEditTextTool(scribe) {
       }
       const mod = ev.ctrlKey || ev.metaKey;
       if (mod && (ev.key === 'z' || ev.key === 'Z' || ev.key === 'y')) {
-        // Swallowed even when this history is empty, so the keys never fall through to the page-ops undo.
         ev.preventDefault();
         ev.stopPropagation();
         const redo = ev.key === 'y' || ev.shiftKey;
-        const pages = redo ? scribe.doc.contentEditHistory.redo() : scribe.doc.contentEditHistory.undo();
-        if (pages) {
-          scribe.clearTextSelection();
-          hideHover();
-          refreshPages(pages);
+        scribe.clearTextSelection();
+        hideHover();
+        if (redo ? scribe.redo() : scribe.undo()) {
+          validateSelection();
+          renderFrames();
         }
         return;
       }
@@ -2379,13 +2378,14 @@ export function createGraphicsEditTool(scribe) {
       }
       const mod = ev.ctrlKey || ev.metaKey;
       if (mod && (ev.key === 'z' || ev.key === 'Z' || ev.key === 'y' || ev.key === 'Y')) {
-        // Swallowed even when the history is empty, so the keys never fall through to the page-ops undo.
         ev.preventDefault();
         ev.stopPropagation();
         const redo = ev.key === 'y' || ev.key === 'Y' || ev.shiftKey;
-        const pages = redo ? scribe.doc.contentEditHistory.redo() : scribe.doc.contentEditHistory.undo();
         clearChrome();
-        if (pages) refreshPages(pages);
+        if (redo ? scribe.redo() : scribe.undo()) {
+          validateSelection();
+          renderFrames();
+        }
       }
     };
     // Virtualization rebuilds the page groups on scroll, so the frames re-parent themselves onto the new ones.

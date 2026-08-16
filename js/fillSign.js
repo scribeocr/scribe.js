@@ -145,6 +145,28 @@ export function addFillText(doc, n, item) {
   doc.annotations.pages[n].push(row);
   fillTextRows.add(row);
   syncFillText(doc, n, row);
+  // An array snapshot cannot undo this: the row lifts words into the text layer, which only a sweep and resync clears.
+  // The row keeps its text through that sweep, so a redo can re-place it unchanged.
+  doc.docHistory.record({
+    surface: 'annot',
+    label: 'Added text',
+    undo: () => {
+      const contents = row.contents;
+      row.contents = '';
+      syncFillText(doc, n, row);
+      row.contents = contents;
+      const rows = doc.annotations.pages[n] || [];
+      const idx = rows.indexOf(row);
+      if (idx >= 0) rows.splice(idx, 1);
+      return [n];
+    },
+    redo: () => {
+      while (doc.annotations.pages.length <= n) doc.annotations.pages.push([]);
+      doc.annotations.pages[n].push(row);
+      syncFillText(doc, n, row);
+      return [n];
+    },
+  });
   return row;
 }
 
@@ -185,7 +207,9 @@ export function addInk(doc, n, item) {
     },
   };
   while (doc.annotations.pages.length <= n) doc.annotations.pages.push([]);
+  const undoSnap = doc.docHistory.snapshotAnnots(doc.annotations, [n]);
   doc.annotations.pages[n].push(row);
+  doc.docHistory.recordAnnots(undoSnap, 'Added mark');
   return row;
 }
 
@@ -212,7 +236,9 @@ export function addStamp(doc, n, item) {
     imageData: item.imageData,
   };
   while (doc.annotations.pages.length <= n) doc.annotations.pages.push([]);
+  const undoSnap = doc.docHistory.snapshotAnnots(doc.annotations, [n]);
   doc.annotations.pages[n].push(row);
+  doc.docHistory.recordAnnots(undoSnap, 'Added signature');
   return row;
 }
 

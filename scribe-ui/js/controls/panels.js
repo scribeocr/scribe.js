@@ -2282,6 +2282,13 @@ export function createThumbnailPanel(scribe, {
     selAnchor = -1; // The anchor page may be among those deleted, so a later Shift-click should re-anchor rather than extend from a stale index.
 
     scribe.deletePages(toDelete);
+    // The phone room stays silent because its deletions are provisional behind the room's own Save and Discard.
+    if (roomMode !== 'edit') {
+      scribe._onDestructiveAction?.(
+        `Deleted ${toDelete.length === 1 ? '1 page' : `${toDelete.length} pages`}.`,
+        () => scribe.undo(),
+      );
+    }
     computeGeometry();
     if (activePage >= 0) activePage = Math.max(0, Math.min(activePage - belowActive, pageCount - 1));
 

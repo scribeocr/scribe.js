@@ -327,12 +327,12 @@ export function handleKeyboardEvent(viewer, event) {
     return;
   }
 
-  // Undo / redo of page operations: Ctrl/Cmd+Z (undo), Ctrl/Cmd+Shift+Z or Ctrl/Cmd+Y (redo).
-  // Only claimed when the host enabled page editing, so a viewer-only app leaves the browser default alone.
+  // A viewer-only app with nothing recorded leaves Ctrl+Z to the browser, so the host page's own undo still works.
   {
     const key = typeof event.key === 'string' ? event.key.toLowerCase() : '';
     if ((event.ctrlKey || event.metaKey) && !event.altKey && (key === 'z' || key === 'y')) {
-      if (_viewer.opt.enablePageEditing) {
+      const history = _viewer.doc?.docHistory;
+      if (_viewer.opt.enablePageEditing || (history && (history.canUndo || history.canRedo))) {
         if (key === 'y' || event.shiftKey) _viewer.redo(); else _viewer.undo();
         event.preventDefault();
         event.stopPropagation();

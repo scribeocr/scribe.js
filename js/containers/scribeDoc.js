@@ -371,8 +371,9 @@ class PageHistory {
    * Re-entrant: a page op invoked from within another recorded op is folded into the outer step rather than recorded separately,
    * so a composite edit (e.g. a cut = insert + delete) becomes a single undo.
    * @param {() => void} fn
+   * @param {string} [label] - Description of the step for the undo timeline, e.g. "Deleted 3 pages".
    */
-  record(fn) {
+  record(fn, label = 'Edited pages') {
     if (this.suspended) { fn(); return; }
     const before = capturePageState(this.doc);
     this.suspended = true;
@@ -381,6 +382,13 @@ class PageHistory {
     this.undoStack.push({ before, after });
     if (this.undoStack.length > PageHistory.LIMIT) this.undoStack.shift();
     this.redoStack.length = 0;
+    // The timeline entry delegates back to this stack rather than replacing it, so its depth stays a valid baseline for callers that unwind a group of page ops back to a saved depth.
+    this.doc.docHistory.record({
+      surface: 'page',
+      label,
+      undo: () => { this.undo(); },
+      redo: () => { this.redo(); },
+    });
   }
 
   /** Undo the last recorded page operation. @returns {boolean} whether anything was undone. */
@@ -399,6 +407,115 @@ class PageHistory {
     restorePageState(this.doc, step.after);
     this.undoStack.push(step);
     return true;
+  }
+
+  clear() {
+    this.undoStack.length = 0;
+    this.redoStack.length = 0;
+  }
+}
+
+/**
+ * The document's single undo/redo timeline, ordered across every editing surface.
+ * Each surface keeps its own restore logic and registers one entry here per user action.
+ */
+export class DocHistory {
+  static LIMIT = 100;
+
+  constructor() {
+    /** @type {Array<{surface: string, label: string, undo: () => any, redo: () => any}>} */
+    this.undoStack = [];
+    /** @type {Array<{surface: string, label: string, undo: () => any, redo: () => any}>} */
+    this.redoStack = [];
+    // Undo handlers re-enter the same mutation functions that record entries, so recording is suspended while one is restoring.
+    this.suspended = false;
+  }
+
+  get canUndo() { return this.undoStack.length > 0; }
+
+  get canRedo() { return this.redoStack.length > 0; }
+
+  /** @param {{surface: string, label: string, undo: () => any, redo: () => any}} entry */
+  record(entry) {
+    if (this.suspended) return;
+    this.undoStack.push(entry);
+    if (this.undoStack.length > DocHistory.LIMIT) this.undoStack.shift();
+    this.redoStack.length = 0;
+  }
+
+  /**
+   * Undo the most recent action on any surface.
+   * @returns {?{surface: string, label: string, pages: ?Array<number>}} What was undone, or null when the timeline is empty.
+   *   `pages` lists the page indices the action touched, or is null when the caller should rebuild the whole view.
+   */
+  undo() {
+    const entry = this.undoStack.pop();
+    if (!entry) return null;
+    this.suspended = true;
+    let pages = null;
+    try {
+      const res = entry.undo();
+      if (Array.isArray(res)) pages = res;
+    } finally {
+      this.suspended = false;
+    }
+    this.redoStack.push(entry);
+    return { surface: entry.surface, label: entry.label, pages };
+  }
+
+  /**
+   * Re-apply the most recently undone action.
+   * @returns {?{surface: string, label: string, pages: ?Array<number>}}
+   */
+  redo() {
+    const entry = this.redoStack.pop();
+    if (!entry) return null;
+    this.suspended = true;
+    let pages = null;
+    try {
+      const res = entry.redo();
+      if (Array.isArray(res)) pages = res;
+    } finally {
+      this.suspended = false;
+    }
+    this.undoStack.push(entry);
+    return { surface: entry.surface, label: entry.label, pages };
+  }
+
+  /**
+   * Capture the annotation rows an edit is about to touch, to pair with a `recordAnnots` call after the mutation.
+   * @param {{ pages: Array<Array<object>> }} annotations - The document's annotation store.
+   * @param {?Array<number>} ns - Page indices the edit may touch; null means every page.
+   * @returns {{ annotations: object, list: Array<number>, before: Array<Array<object>> }}
+   */
+  // eslint-disable-next-line class-methods-use-this
+  snapshotAnnots(annotations, ns) {
+    const list = [...new Set(ns ?? annotations.pages.map((_, i) => i))]
+      .filter((n) => n >= 0 && n < annotations.pages.length);
+    // Rows are captured by reference, so code holding a row reference still matches it after an undo or redo.
+    return { annotations, list, before: list.map((n) => (annotations.pages[n] || []).slice()) };
+  }
+
+  /**
+   * Record the annotation edit performed since `snapshotAnnots` as one undoable entry.
+   * @param {ReturnType<DocHistory['snapshotAnnots']>} snap
+   * @param {string} label - Description of the edit for the undo timeline, e.g. "Added highlight".
+   */
+  recordAnnots(snap, label) {
+    const { annotations, list, before } = snap;
+    const after = list.map((n) => (annotations.pages[n] || []).slice());
+    const changed = [];
+    for (let i = 0; i < list.length; i++) {
+      if (before[i].length !== after[i].length || before[i].some((row, j) => row !== after[i][j])) changed.push(i);
+    }
+    if (changed.length === 0) return;
+    // Both directions install copies, so the captured arrays stay pristine across repeated undo and redo cycles.
+    this.record({
+      surface: 'annot',
+      label,
+      undo: () => { changed.forEach((i) => { annotations.pages[list[i]] = before[i].slice(); }); return changed.map((i) => list[i]); },
+      redo: () => { changed.forEach((i) => { annotations.pages[list[i]] = after[i].slice(); }); return changed.map((i) => list[i]); },
+    });
   }
 
   clear() {
@@ -516,6 +633,8 @@ export class ScribeDoc {
     this.images = new ImageStore(this);
 
     /** Bounded undo/redo history for this document's page operations. */
+    this.docHistory = new DocHistory();
+
     this.history = new PageHistory(this);
 
     this.contentEditHistory = new ContentEditHistory(this);
@@ -584,7 +703,7 @@ export class ScribeDoc {
       renumberPages(this);
       this.inputData.pageCount = this.pageMetrics.length;
       this.images.pageCount = this.pageMetrics.length;
-    });
+    }, 'Deleted page');
   }
 
   /**
@@ -610,7 +729,7 @@ export class ScribeDoc {
       remapThumbnails(this, tags);
       clearImageCaches(this);
       renumberPages(this);
-    });
+    }, 'Moved page');
   }
 
   /**
@@ -636,7 +755,7 @@ export class ScribeDoc {
       renumberPages(this);
       this.inputData.pageCount = this.pageMetrics.length;
       this.images.pageCount = this.pageMetrics.length;
-    });
+    }, `Deleted ${sorted.length === 1 ? 'page' : `${sorted.length} pages`}`);
   }
 
   /**
@@ -665,7 +784,7 @@ export class ScribeDoc {
       remapThumbnails(this, tags);
       clearImageCaches(this);
       renumberPages(this);
-    });
+    }, `Moved ${sorted.length === 1 ? 'page' : `${sorted.length} pages`}`);
   }
 
   /**
@@ -756,7 +875,7 @@ export class ScribeDoc {
       renumberPages(this);
       this.inputData.pageCount = this.pageMetrics.length;
       this.images.pageCount = this.pageMetrics.length;
-    });
+    }, `Inserted ${bundles.length === 1 ? 'page' : `${bundles.length} pages`}`);
   }
 
   /**
@@ -783,7 +902,7 @@ export class ScribeDoc {
         const pm = this.pageMetrics[n];
         pm.rotation = ((((pm.rotation || 0) + deltaDeg) % 360) + 360) % 360;
       }
-    });
+    }, `Rotated ${targets.length === 1 ? 'page' : `${targets.length} pages`}`);
     return true;
   }
 
@@ -802,7 +921,7 @@ export class ScribeDoc {
       const siblings = parentId == null ? this.outline : (findOutlineEntry(this.outline, parentId)?.node.children ?? this.outline);
       const at = atIndex == null ? siblings.length : Math.max(0, Math.min(atIndex, siblings.length));
       siblings.splice(at, 0, node);
-    });
+    }, 'Added bookmark');
     return node.id;
   }
 
@@ -813,7 +932,7 @@ export class ScribeDoc {
    */
   renameBookmark(id, title) {
     if (!findOutlineEntry(this.outline, id)) return;
-    this.history.record(() => { findOutlineEntry(this.outline, id).node.title = title; });
+    this.history.record(() => { findOutlineEntry(this.outline, id).node.title = title; }, 'Renamed bookmark');
   }
 
   /**
@@ -825,7 +944,7 @@ export class ScribeDoc {
     if (!findOutlineEntry(this.outline, id)) return;
     this.history.record(() => {
       findOutlineEntry(this.outline, id).node.dest = pageIndex == null ? null : { pageIndex, view: ['Fit'] };
-    });
+    }, 'Changed bookmark destination');
   }
 
   /**
@@ -846,7 +965,7 @@ export class ScribeDoc {
       const siblings = parentId == null ? this.outline : (findOutlineEntry(this.outline, parentId)?.node.children ?? this.outline);
       const at = atIndex == null ? siblings.length : Math.max(0, Math.min(atIndex, siblings.length));
       siblings.splice(at, 0, e.node);
-    });
+    }, 'Moved bookmark');
   }
 
   /**
@@ -858,7 +977,7 @@ export class ScribeDoc {
   replaceOutline(nodes) {
     const prev = cloneOutline(this.outline);
     reassignOutlineIds(nodes);
-    this.history.record(() => { setDocOutline(this, nodes); });
+    this.history.record(() => { setDocOutline(this, nodes); }, 'Replaced bookmarks');
     return prev;
   }
 
@@ -873,26 +992,26 @@ export class ScribeDoc {
         const e = findOutlineEntry(this.outline, id);
         if (e) e.siblings.splice(e.index, 1);
       }
-    });
+    }, 'Deleted bookmarks');
   }
 
   /**
-   * Undo the last page/outline operation (delete/move/reorder/insert/paste/duplicate/rotate/bookmark edit).
+   * Undo the most recent edit on any surface: page and outline operations, content edits, annotation changes, and form fills.
    * @returns {boolean} Whether anything was undone (so a caller can skip a redundant rebuild).
    */
-  undo() { return this.history.undo(); }
+  undo() { return !!this.docHistory.undo(); }
 
   /**
-   * Redo the last undone page operation.
+   * Re-apply the most recently undone edit.
    * @returns {boolean} Whether anything was redone.
    */
-  redo() { return this.history.redo(); }
+  redo() { return !!this.docHistory.redo(); }
 
-  /** Whether there is a page operation available to undo. */
-  get canUndo() { return this.history.canUndo; }
+  /** Whether there is an edit available to undo. */
+  get canUndo() { return this.docHistory.canUndo; }
 
-  /** Whether there is an undone page operation available to redo. */
-  get canRedo() { return this.history.canRedo; }
+  /** Whether there is an undone edit available to redo. */
+  get canRedo() { return this.docHistory.canRedo; }
 
   /**
    * Reset all of this document's data.
@@ -919,6 +1038,7 @@ export class ScribeDoc {
     this.convertPageWarn.length = 0;
     this.images.clear();
     this.fonts.clear();
+    this.docHistory.clear();
     this.history.clear();
     this.contentEditHistory.clear();
   }

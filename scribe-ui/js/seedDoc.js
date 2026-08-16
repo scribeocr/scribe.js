@@ -68,6 +68,18 @@ export class SeedDoc {
     this.history = {
       undoStack: [], redoStack: [], canUndo: false, canRedo: false, undo() {}, redo() {}, record: (fn) => fn(),
     };
+    this.docHistory = {
+      undoStack: [],
+      redoStack: [],
+      canUndo: false,
+      canRedo: false,
+      undo() { return null; },
+      redo() { return null; },
+      record() {},
+      snapshotAnnots() { return null; },
+      recordAnnots() {},
+      clear() {},
+    };
 
     // While `_textReadySettle` is truthy the viewer treats the document as still loading, so search waits on `textReady` and Recognize stays hidden.
     /** @type {?() => void} */

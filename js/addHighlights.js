@@ -66,6 +66,7 @@ export function bboxToPageSpace(bbox, orientation, dims) {
  * }}
  */
 export function addHighlights(doc, highlights) {
+  const undoSnap = doc.docHistory.snapshotAnnots(doc.annotations, highlights.map((h) => h.page));
   let highlightsApplied = 0;
   let totalLinesHighlighted = 0;
   /** @type {Array<{ page: number, groupId: string, bbox: bbox }>} */
@@ -149,6 +150,7 @@ export function addHighlights(doc, highlights) {
     highlightsApplied++;
   }
 
+  doc.docHistory.recordAnnots(undoSnap, highlights.length === 1 ? 'Added highlight' : 'Added highlights');
   return { highlightsApplied, totalLinesHighlighted, groups };
 }
 
@@ -172,6 +174,7 @@ export function addHighlights(doc, highlights) {
  * @returns {{ annotationsAdded: number }}
  */
 export function addFreeText(doc, annotations) {
+  const undoSnap = doc.docHistory.snapshotAnnots(doc.annotations, annotations.map((a) => a.page));
   let annotationsAdded = 0;
   for (const annot of annotations) {
     if (!annot.bbox || typeof annot.contents !== 'string') {
@@ -191,6 +194,7 @@ export function addFreeText(doc, annotations) {
     });
     annotationsAdded++;
   }
+  doc.docHistory.recordAnnots(undoSnap, annotations.length === 1 ? 'Added text box' : 'Added text boxes');
   return { annotationsAdded };
 }
 
@@ -199,10 +203,12 @@ export function addFreeText(doc, annotations) {
  * @param {ScribeDoc} doc
  */
 export function clearHighlights(doc) {
+  const undoSnap = doc.docHistory.snapshotAnnots(doc.annotations, null);
   for (let p = 0; p < doc.annotations.pages.length; p++) {
     doc.annotations.pages[p] = doc.annotations.pages[p]
       .filter((a) => a.type === 'freetext' || !a.groupId?.startsWith(GROUP_PREFIX));
   }
+  doc.docHistory.recordAnnots(undoSnap, 'Removed highlights');
 }
 
 /** Text-markup annotation type tags sharing the /QuadPoints pipeline. A missing `type` is a legacy highlight. */
@@ -232,6 +238,7 @@ export const SHAPE_ANNOT_TYPES = new Set(['square', 'circle', 'line', 'polygon',
  * @returns {{ shapesAdded: number }}
  */
 export function addShapes(doc, shapes) {
+  const undoSnap = doc.docHistory.snapshotAnnots(doc.annotations, shapes.map((s) => s.page));
   let shapesAdded = 0;
   for (const shape of shapes) {
     if (!SHAPE_ANNOT_TYPES.has(shape.type)) {
@@ -271,6 +278,7 @@ export function addShapes(doc, shapes) {
     }
     shapesAdded++;
   }
+  doc.docHistory.recordAnnots(undoSnap, shapes.length === 1 ? 'Added shape' : 'Added shapes');
   return { shapesAdded };
 }
 
@@ -279,9 +287,11 @@ export function addShapes(doc, shapes) {
  * @param {ScribeDoc} doc
  */
 export function clearShapes(doc) {
+  const undoSnap = doc.docHistory.snapshotAnnots(doc.annotations, null);
   for (let p = 0; p < doc.annotations.pages.length; p++) {
     doc.annotations.pages[p] = doc.annotations.pages[p].filter((a) => !SHAPE_ANNOT_TYPES.has(a.type));
   }
+  doc.docHistory.recordAnnots(undoSnap, 'Removed shapes');
 }
 
 /**
@@ -304,6 +314,7 @@ export function clearShapes(doc) {
  * @returns {{ added: number }}
  */
 export function addTextAnnots(doc, textAnnots) {
+  const undoSnap = doc.docHistory.snapshotAnnots(doc.annotations, textAnnots.map((t) => t.page));
   let added = 0;
   for (const spec of textAnnots) {
     if (!doc.annotations.pages[spec.page]) continue;
@@ -323,6 +334,7 @@ export function addTextAnnots(doc, textAnnots) {
     doc.annotations.pages[spec.page].push(annot);
     added += 1;
   }
+  doc.docHistory.recordAnnots(undoSnap, textAnnots.length === 1 ? 'Added note' : 'Added notes');
   return { added };
 }
 
@@ -331,9 +343,11 @@ export function addTextAnnots(doc, textAnnots) {
  * @param {ScribeDoc} doc
  */
 export function clearTextAnnots(doc) {
+  const undoSnap = doc.docHistory.snapshotAnnots(doc.annotations, null);
   for (let p = 0; p < doc.annotations.pages.length; p++) {
     doc.annotations.pages[p] = doc.annotations.pages[p].filter((a) => a.type !== 'text');
   }
+  doc.docHistory.recordAnnots(undoSnap, 'Removed notes');
 }
 
 /**
@@ -357,6 +371,7 @@ export function clearTextAnnots(doc) {
  * @returns {{ marksAdded: number, groups: Array<{ page: number, groupId: string, bbox: bbox }> }}
  */
 export function addRedactions(doc, redactions) {
+  const undoSnap = doc.docHistory.snapshotAnnots(doc.annotations, redactions.map((r) => r.page));
   // Continue numbering above every existing rd-N group so ids stay unique across
   // calls and across a .scribe restore. (Imported PDF /Redact marks use _pdf_* ids.)
   let groupN = 0;
@@ -429,6 +444,7 @@ export function addRedactions(doc, redactions) {
     }
   }
 
+  doc.docHistory.recordAnnots(undoSnap, 'Marked for redaction');
   return { marksAdded, groups };
 }
 
@@ -452,6 +468,7 @@ export function addRedactions(doc, redactions) {
  * @returns {{ linksAdded: number }}
  */
 export function addLinks(doc, links) {
+  const undoSnap = doc.docHistory.snapshotAnnots(doc.annotations, links.map((l) => l.page));
   let linksAdded = 0;
   for (const spec of links) {
     const pageAnnots = doc.annotations.pages[spec.page];
@@ -471,6 +488,7 @@ export function addLinks(doc, links) {
     }
     linksAdded++;
   }
+  doc.docHistory.recordAnnots(undoSnap, links.length === 1 ? 'Added link' : 'Added links');
   return { linksAdded };
 }
 
@@ -481,10 +499,12 @@ export function addLinks(doc, links) {
  *   `page` narrows to one page.
  */
 export function removeLinks(doc, filter) {
+  const undoSnap = doc.docHistory.snapshotAnnots(doc.annotations, filter?.page != null ? [filter.page] : null);
   for (let p = 0; p < doc.annotations.pages.length; p++) {
     if (filter?.page != null && filter.page !== p) continue;
     doc.annotations.pages[p] = doc.annotations.pages[p].filter((a) => a.type !== 'link');
   }
+  doc.docHistory.recordAnnots(undoSnap, 'Removed links');
 }
 
 /**
@@ -494,9 +514,11 @@ export function removeLinks(doc, filter) {
  *   `page` narrows to one page, `groupId` to one mark group.
  */
 export function removeRedactions(doc, filter) {
+  const undoSnap = doc.docHistory.snapshotAnnots(doc.annotations, filter?.page != null ? [filter.page] : null);
   for (let p = 0; p < doc.annotations.pages.length; p++) {
     if (filter?.page != null && filter.page !== p) continue;
     doc.annotations.pages[p] = doc.annotations.pages[p]
       .filter((a) => a.type !== 'redact' || (filter?.groupId != null && a.groupId !== filter.groupId));
   }
+  doc.docHistory.recordAnnots(undoSnap, 'Removed redaction marks');
 }

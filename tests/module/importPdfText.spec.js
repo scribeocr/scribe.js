@@ -503,6 +503,7 @@ describe('PDF internal link capture (econometrica_example.pdf).', () => {
   /** @type {Array<Array<AnnotationLink>>} */ let afterDup;
   /** @type {Array<Array<AnnotationLink>>} */ let afterDelete;
   /** @type {Array<Array<AnnotationLink>>} */ let afterUndo;
+  /** @type {Object<string, Array<number>>} */ let cross;
   /** @type {Array<Array<AnnotationLink>>} */ let restoredClean;
   /** @type {Array<Array<AnnotationLink>>} */ let restoredAfterDelete;
   /** @type {Array<Array<AnnotationLink>>} */ let pdfRoundTrip;
@@ -525,6 +526,27 @@ describe('PDF internal link capture (econometrica_example.pdf).', () => {
     doc.undo();
     doc.undo();
     afterUndo = linkPages(doc);
+
+    const snap = () => [doc.pageMetrics.length, doc.annotations.pages[0].length, doc.ocr.active[0].lines.length];
+    cross = { start: snap() };
+    doc.duplicatePages([0], 0);
+    doc.addHighlights([{ page: 0, startLine: 0 }]);
+    doc.deleteTextLines([doc.ocr.active[0].lines[2]]);
+    cross.afterEdits = snap();
+    doc.undo();
+    cross.afterUndo1 = snap();
+    doc.undo();
+    cross.afterUndo2 = snap();
+    doc.undo();
+    cross.afterUndo3 = snap();
+    doc.redo();
+    doc.redo();
+    doc.redo();
+    cross.afterRedos = snap();
+    doc.undo();
+    doc.undo();
+    doc.undo();
+    cross.final = snap();
 
     let reopened = await scribe.openDocument({ scribeFiles: [scribeClean], pdfFiles: [LINKS_FIXTURE] });
     restoredClean = linkPages(reopened);
@@ -578,6 +600,16 @@ describe('PDF internal link capture (econometrica_example.pdf).', () => {
 
   test('Undo restores the original link targets exactly', () => {
     expect(afterUndo, 'links after undoing the delete and the duplicate match the parsed originals').toEqual(parsed);
+  });
+
+  test('Undo and redo walk page, annotation, and content edits as one ordered history', () => {
+    expect(cross.start, 'fixture drifted: expected 1 page, 3 link rows, 51 lines before the cross-surface edits').toEqual([1, 3, 51]);
+    expect(cross.afterEdits, 'the duplicate + highlights + line deletion did not land as expected').toEqual([2, 11, 50]);
+    expect(cross.afterUndo1, 'first undo must revert only the newest edit (the text deletion)').toEqual([2, 11, 51]);
+    expect(cross.afterUndo2, 'second undo must remove the highlight rows while keeping the duplicated page').toEqual([2, 3, 51]);
+    expect(cross.afterUndo3, 'third undo must remove the duplicated page, restoring the imported state').toEqual([1, 3, 51]);
+    expect(cross.afterRedos, 'redo x3 must re-apply all three edits in order').toEqual([2, 11, 50]);
+    expect(cross.final, 'a second full unwind must restore the imported state exactly').toEqual([1, 3, 51]);
   });
 
   test('Lifted internal links survive a PDF export -> re-import round-trip', () => {
