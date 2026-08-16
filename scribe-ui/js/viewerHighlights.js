@@ -206,84 +206,28 @@ export function applyHighlight(viewer, selectedWords, color, opacity, kind = 'hi
     });
 
     if (wordsWithoutAnnot.length > 0) {
-      const allWords = viewer.getUiWords();
-      const selectedSet = new Set(wordsWithoutAnnot.map((kw) => kw.word.id));
-
-      const lineMap = new Map();
+      const groupId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
       for (const kw of wordsWithoutAnnot) {
-        const lineId = kw.word.line.id;
-        if (!lineMap.has(lineId)) lineMap.set(lineId, []);
-        lineMap.get(lineId).push(kw);
-      }
-
-      for (const words of lineMap.values()) {
-        words.sort((a, b) => a.x() - b.x());
-      }
-
-      const lineRuns = [];
-      for (const [lineId, words] of lineMap) {
-        const lineAllWords = allWords.filter((kw) => kw.word.line.id === lineId);
-        lineAllWords.sort((a, b) => a.x() - b.x());
-
-        let currentRun = [words[0]];
-        for (let i = 1; i < words.length; i++) {
-          const prev = words[i - 1];
-          const curr = words[i];
-          const hasGap = lineAllWords.some((kw) => !selectedSet.has(kw.word.id)
-            && kw.x() > prev.x() && kw.x() < curr.x());
-          if (hasGap) {
-            lineRuns.push({ lineId, words: currentRun });
-            currentRun = [curr];
-          } else {
-            currentRun.push(curr);
-          }
-        }
-        lineRuns.push({ lineId, words: currentRun });
-      }
-
-      lineRuns.sort((a, b) => a.words[0].word.line.bbox.top - b.words[0].word.line.bbox.top);
-
-      const groups = [[lineRuns[0]]];
-      for (let i = 1; i < lineRuns.length; i++) {
-        const prevGroup = groups[groups.length - 1];
-        const prevRun = prevGroup[prevGroup.length - 1];
-        const currRun = lineRuns[i];
-        const prevBottom = prevRun.words[0].word.line.bbox.bottom;
-        const currTop = currRun.words[0].word.line.bbox.top;
-        const lineHeight = prevRun.words[0].word.line.bbox.bottom - prevRun.words[0].word.line.bbox.top;
-        if (currTop - prevBottom < lineHeight * 2) {
-          prevGroup.push(currRun);
+        const wb = kw.word.bbox;
+        /** @type {AnnotationHighlight} */
+        const annot = {
+          bbox: {
+            left: wb.left, top: wb.top, right: wb.right, bottom: wb.bottom,
+          },
+          color,
+          opacity,
+          groupId,
+          comment: '',
+        };
+        // UI highlights stay type-less (legacy form); line markups are always explicit.
+        if (kind !== 'highlight') annot.type = kind;
+        viewer.doc.annotations.pages[pageIndex].push(annot);
+        if (kind === 'highlight') {
+          kw.highlightGroupId = groupId;
+          kw.highlightComment = '';
         } else {
-          groups.push([currRun]);
-        }
-      }
-
-      for (const group of groups) {
-        const groupId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-        for (const run of group) {
-          for (const kw of run.words) {
-            const wb = kw.word.bbox;
-            /** @type {AnnotationHighlight} */
-            const annot = {
-              bbox: {
-                left: wb.left, top: wb.top, right: wb.right, bottom: wb.bottom,
-              },
-              color,
-              opacity,
-              groupId,
-              comment: '',
-            };
-            // UI highlights stay type-less (legacy form); line markups are always explicit.
-            if (kind !== 'highlight') annot.type = kind;
-            viewer.doc.annotations.pages[pageIndex].push(annot);
-            if (kind === 'highlight') {
-              kw.highlightGroupId = groupId;
-              kw.highlightComment = '';
-            } else {
-              kw.markupGroupId = groupId;
-              kw.markupComment = '';
-            }
-          }
+          kw.markupGroupId = groupId;
+          kw.markupComment = '';
         }
       }
     }
