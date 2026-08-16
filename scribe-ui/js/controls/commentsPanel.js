@@ -346,19 +346,20 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     // The kind gate keeps a same-groupId markup of another kind (see `collectRows`) untouched.
     const rowKind = (row.annot && row.annot.type) || 'highlight';
     const match = row.groupId ? ((a) => a.groupId === row.groupId) : ((a) => a === row.annot);
-    for (const a of annPages()[row.pageIndex] || []) {
-      if (a.type === 'text' || (a.type || 'highlight') !== rowKind) continue;
-      if (!match(a)) continue;
-      a.comment = comment;
-      if (comment) {
-        if (author && !a.author) a.author = author;
-        if (!a.createdAt) a.createdAt = now;
-      } else {
-        delete a.author;
-        delete a.createdAt;
-        delete a.replies;
+    const targetRows = (annPages()[row.pageIndex] || []).filter((a) => !(a.type === 'text' || (a.type || 'highlight') !== rowKind) && match(a));
+    scribe.doc.docHistory.recordAnnotFields(targetRows, ['comment', 'author', 'createdAt', 'replies'], [row.pageIndex], 'Edited comment', () => {
+      for (const a of targetRows) {
+        a.comment = comment;
+        if (comment) {
+          if (author && !a.author) a.author = author;
+          if (!a.createdAt) a.createdAt = now;
+        } else {
+          delete a.author;
+          delete a.createdAt;
+          delete a.replies;
+        }
       }
-    }
+    });
     if (row.groupId) {
       for (const kw of scribe.getUiWords()) {
         if (rowKind === 'highlight' && kw.highlightGroupId === row.groupId) kw.highlightComment = comment;
@@ -375,20 +376,17 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
    * @param {AnnotationReply[]} replies
    */
   function setRowReplies(row, replies) {
-    if (row.kind === 'note') {
-      if (replies.length > 0) row.annot.replies = replies;
-      else delete row.annot.replies;
-    } else {
-      const rowKind = (row.annot && row.annot.type) || 'highlight';
-      const match = row.groupId ? ((a) => a.groupId === row.groupId) : ((a) => a === row.annot);
-      for (const a of annPages()[row.pageIndex] || []) {
-        if (a.type === 'text' || (a.type || 'highlight') !== rowKind) continue;
-        if (!match(a)) continue;
+    const rowKind = (row.annot && row.annot.type) || 'highlight';
+    const match = row.groupId ? ((a) => a.groupId === row.groupId) : ((a) => a === row.annot);
+    const targetRows = row.kind === 'note' ? [row.annot]
+      : (annPages()[row.pageIndex] || []).filter((a) => !(a.type === 'text' || (a.type || 'highlight') !== rowKind) && match(a));
+    scribe.doc.docHistory.recordAnnotFields(targetRows, ['replies'], [row.pageIndex], 'Edited comment', () => {
+      for (const a of targetRows) {
         // Consumers read the thread off whichever annotation of the group they match first, so every member carries it.
         if (replies.length > 0) a.replies = replies;
         else delete a.replies;
       }
-    }
+    });
     refreshOnPage(row.pageIndex);
   }
 
@@ -400,7 +398,9 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
     const rowKind = (row.annot && row.annot.type) || 'highlight';
     const match = row.groupId ? ((a) => a.groupId === row.groupId) : ((a) => a === row.annot);
     const page = annPages()[row.pageIndex] || [];
+    const undoSnap = scribe.doc.docHistory.snapshotAnnots(scribe.doc.annotations, [row.pageIndex]);
     scribe.doc.annotations.pages[row.pageIndex] = page.filter((a) => !((a.type || 'highlight') === rowKind && match(a)));
+    scribe.doc.docHistory.recordAnnots(undoSnap, rowKind === 'highlight' ? 'Removed highlight' : 'Removed markup');
     for (const kw of scribe.getUiWords()) {
       const covered = (row.groupId && (rowKind === 'highlight' ? kw.highlightGroupId : kw.markupGroupId) === row.groupId)
         || (!row.groupId && annotMatchesWord(/** @type {AnnotationHighlight} */ (row.annot), kw.word.bbox, rowKind));
@@ -428,11 +428,13 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
    */
   function setNoteComment(row, comment) {
     const author = (scribe.opt && scribe.opt.commentAuthor) || '';
-    row.annot.comment = comment;
-    if (comment) {
-      if (author && !row.annot.author) row.annot.author = author;
-      if (!row.annot.createdAt) row.annot.createdAt = new Date().toISOString();
-    }
+    scribe.doc.docHistory.recordAnnotFields([row.annot], ['comment', 'author', 'createdAt'], [row.pageIndex], 'Edited note', () => {
+      row.annot.comment = comment;
+      if (comment) {
+        if (author && !row.annot.author) row.annot.author = author;
+        if (!row.annot.createdAt) row.annot.createdAt = new Date().toISOString();
+      }
+    });
     refreshOnPage(row.pageIndex);
   }
 
@@ -442,7 +444,9 @@ export function createCommentsPanel(scribe, { onNavigate, onResize, onComposeFoc
    */
   function deleteNote(row) {
     const page = annPages()[row.pageIndex] || [];
+    const undoSnap = scribe.doc.docHistory.snapshotAnnots(scribe.doc.annotations, [row.pageIndex]);
     scribe.doc.annotations.pages[row.pageIndex] = page.filter((a) => a !== row.annot);
+    scribe.doc.docHistory.recordAnnots(undoSnap, 'Removed note');
     refreshOnPage(row.pageIndex);
   }
 

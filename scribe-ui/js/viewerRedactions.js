@@ -54,6 +54,7 @@ export function redactWords(viewer, words) {
     return !redactionCovers(viewer, page.n, bboxToPageSpace(word.bbox, word.line.orientation, page.dims));
   });
   if (newWords.length === 0) return 0;
+  const undoSnap = viewer.doc.docHistory.snapshotAnnots(viewer.doc.annotations, [...new Set(newWords.map((word) => word.line.page.n))]);
   const groupId = nextGroupId(viewer);
   const pages = new Set();
   let added = 0;
@@ -84,6 +85,7 @@ export function redactWords(viewer, words) {
     run = { line: word.line, lastIdx: idx, bbox: { ...word.bbox } };
   }
   flushRun();
+  viewer.doc.docHistory.recordAnnots(undoSnap, 'Marked for redaction');
   for (const n of pages) {
     viewer.renderRedactions(n);
     viewer.annotationsEdited(n);
@@ -112,6 +114,7 @@ export function redactRegion(viewer, n, box) {
     left, top, right, bottom,
   })) return false;
   if (!viewer.doc.annotations.pages[n]) viewer.doc.annotations.pages[n] = [];
+  const undoSnap = viewer.doc.docHistory.snapshotAnnots(viewer.doc.annotations, [n]);
   viewer.doc.annotations.pages[n].push({
     type: 'redact',
     bbox: {
@@ -119,6 +122,7 @@ export function redactRegion(viewer, n, box) {
     },
     groupId: nextGroupId(viewer),
   });
+  viewer.doc.docHistory.recordAnnots(undoSnap, 'Marked for redaction');
   viewer.renderRedactions(n);
   viewer.annotationsEdited(n);
   if (viewer._rebuildCommentsPanel) viewer._rebuildCommentsPanel();
@@ -133,6 +137,7 @@ export function redactRegion(viewer, n, box) {
  */
 export function removeRedactionGroup(viewer, groupId) {
   let removed = false;
+  const undoSnap = viewer.doc.docHistory.snapshotAnnots(viewer.doc.annotations, null);
   for (let n = 0; n < viewer.doc.annotations.pages.length; n++) {
     const pageAnnots = viewer.doc.annotations.pages[n];
     if (!pageAnnots || pageAnnots.length === 0) continue;
@@ -144,6 +149,7 @@ export function removeRedactionGroup(viewer, groupId) {
       removed = true;
     }
   }
+  if (removed) viewer.doc.docHistory.recordAnnots(undoSnap, 'Removed redaction mark');
   // Drop the deleted mark's row from an open comments panel, and the tab if it was anchored here.
   if (removed && viewer._rebuildCommentsPanel) viewer._rebuildCommentsPanel();
   if (removed && viewer._redactTab && viewer._redactTab.groupId === groupId) hideRedactTabNow(viewer);

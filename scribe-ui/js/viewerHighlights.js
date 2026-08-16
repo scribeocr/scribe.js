@@ -140,6 +140,7 @@ export function removeHighlight(viewer, selectedWords, kind = 'highlight') {
       kw.markupOpacity = 1;
     }
   }
+  const undoSnap = viewer.doc.docHistory.snapshotAnnots(viewer.doc.annotations, [...new Set(selectedWords.map((kw) => kw.word.line.page.n))]);
   for (const kw of selectedWords) {
     const n = kw.word.line.page.n;
     const wb = kw.word.bbox;
@@ -147,6 +148,7 @@ export function removeHighlight(viewer, selectedWords, kind = 'highlight') {
       (annot) => !annotMatchesWord(annot, wb, kind),
     );
   }
+  viewer.doc.docHistory.recordAnnots(undoSnap, kind === 'highlight' ? 'Removed highlight' : 'Removed markup');
   if (kind === 'highlight') updateHighlightGaps(viewer, selectedWords);
   updateHighlightGroupOutline(viewer);
   for (const p of new Set(selectedWords.map((kw) => kw.word.line.page.n))) {
@@ -174,64 +176,80 @@ export function applyHighlight(viewer, selectedWords, color, opacity, kind = 'hi
     pageWordsMap.get(n).push(kw);
   }
 
-  for (const [pageIndex, pageSelWords] of pageWordsMap) {
-    for (const kw of pageSelWords) {
-      const wb = kw.word.bbox;
-      const existingAnnot = viewer.doc.annotations.pages[pageIndex].find(
-        (annot) => annotMatchesWord(annot, wb, kind),
-      );
-      if (existingAnnot) {
-        existingAnnot.color = color;
-        existingAnnot.opacity = opacity;
-        if (!existingAnnot.groupId) {
-          existingAnnot.groupId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-          existingAnnot.comment = existingAnnot.comment || '';
+  const anyNew = selectedWords.some((kw) => !viewer.doc.annotations.pages[kw.word.line.page.n].some(
+    (annot) => annotMatchesWord(annot, kw.word.bbox, kind),
+  ));
+  const label = `${anyNew ? 'Added' : 'Recolored'} ${kind}`;
+  viewer.doc.docHistory.group(label, () => {
+    for (const [pageIndex, pageSelWords] of pageWordsMap) {
+      /** @type {Array<AnnotationHighlight>} */
+      const existingRows = [];
+      for (const kw of pageSelWords) {
+        const annot = viewer.doc.annotations.pages[pageIndex].find((a) => annotMatchesWord(a, kw.word.bbox, kind));
+        if (annot && !existingRows.includes(annot)) existingRows.push(annot);
+      }
+      viewer.doc.docHistory.recordAnnotFields(existingRows, ['color', 'opacity', 'groupId', 'comment'], [pageIndex], label, () => {
+        for (const kw of pageSelWords) {
+          const wb = kw.word.bbox;
+          const existingAnnot = viewer.doc.annotations.pages[pageIndex].find(
+            (annot) => annotMatchesWord(annot, wb, kind),
+          );
+          if (existingAnnot) {
+            existingAnnot.color = color;
+            existingAnnot.opacity = opacity;
+            if (!existingAnnot.groupId) {
+              existingAnnot.groupId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+              existingAnnot.comment = existingAnnot.comment || '';
+            }
+          }
+          if (kind === 'highlight') {
+            kw.highlightColor = color;
+            kw.highlightOpacity = opacity;
+          } else {
+            kw.markupType = kind;
+            kw.markupColor = color;
+            kw.markupOpacity = opacity;
+          }
         }
-      }
-      if (kind === 'highlight') {
-        kw.highlightColor = color;
-        kw.highlightOpacity = opacity;
-      } else {
-        kw.markupType = kind;
-        kw.markupColor = color;
-        kw.markupOpacity = opacity;
-      }
-    }
+      });
 
-    const wordsWithoutAnnot = pageSelWords.filter((kw) => {
-      const wb = kw.word.bbox;
-      return !viewer.doc.annotations.pages[pageIndex].some(
-        (annot) => annotMatchesWord(annot, wb, kind),
-      );
-    });
-
-    if (wordsWithoutAnnot.length > 0) {
-      const groupId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
-      for (const kw of wordsWithoutAnnot) {
+      const wordsWithoutAnnot = pageSelWords.filter((kw) => {
         const wb = kw.word.bbox;
-        /** @type {AnnotationHighlight} */
-        const annot = {
-          bbox: {
-            left: wb.left, top: wb.top, right: wb.right, bottom: wb.bottom,
-          },
-          color,
-          opacity,
-          groupId,
-          comment: '',
-        };
-        // UI highlights stay type-less (legacy form); line markups are always explicit.
-        if (kind !== 'highlight') annot.type = kind;
-        viewer.doc.annotations.pages[pageIndex].push(annot);
-        if (kind === 'highlight') {
-          kw.highlightGroupId = groupId;
-          kw.highlightComment = '';
-        } else {
-          kw.markupGroupId = groupId;
-          kw.markupComment = '';
+        return !viewer.doc.annotations.pages[pageIndex].some(
+          (annot) => annotMatchesWord(annot, wb, kind),
+        );
+      });
+
+      if (wordsWithoutAnnot.length > 0) {
+        const undoSnap = viewer.doc.docHistory.snapshotAnnots(viewer.doc.annotations, [pageIndex]);
+        const groupId = `${Date.now()}-${Math.random().toString(36).slice(2, 7)}`;
+        for (const kw of wordsWithoutAnnot) {
+          const wb = kw.word.bbox;
+          /** @type {AnnotationHighlight} */
+          const annot = {
+            bbox: {
+              left: wb.left, top: wb.top, right: wb.right, bottom: wb.bottom,
+            },
+            color,
+            opacity,
+            groupId,
+            comment: '',
+          };
+          // UI highlights stay type-less (legacy form); line markups are always explicit.
+          if (kind !== 'highlight') annot.type = kind;
+          viewer.doc.annotations.pages[pageIndex].push(annot);
+          if (kind === 'highlight') {
+            kw.highlightGroupId = groupId;
+            kw.highlightComment = '';
+          } else {
+            kw.markupGroupId = groupId;
+            kw.markupComment = '';
+          }
         }
+        viewer.doc.docHistory.recordAnnots(undoSnap, label);
       }
     }
-  }
+  });
 
   if (kind === 'highlight') updateHighlightGaps(viewer, selectedWords);
   updateHighlightGroupOutline(viewer);
@@ -307,7 +325,9 @@ export function removeHighlightGroup(viewer, uiWord, kind = 'highlight') {
   if (!uiWord) return;
   if (kind === 'highlight' ? !uiWord.highlightColor : !uiWord.markupType) return;
   const { n, groupId, annots } = groupAnnotations(viewer, uiWord, kind);
+  const undoSnap = viewer.doc.docHistory.snapshotAnnots(viewer.doc.annotations, [n]);
   viewer.doc.annotations.pages[n] = (viewer.doc.annotations.pages[n] || []).filter((annot) => !annots.includes(annot));
+  viewer.doc.docHistory.recordAnnots(undoSnap, kind === 'highlight' ? 'Removed highlight' : 'Removed markup');
 
   for (const kw of viewer.getUiWords()) {
     // A pasted copy of this page has identical word geometry, so without this page scope the bbox match below would also clear the copy's independent highlight.
@@ -351,7 +371,9 @@ export function recolorHighlightGroup(viewer, uiWord, color, kind = 'highlight')
   if (!uiWord) return;
   if (kind === 'highlight' ? !uiWord.highlightColor : !uiWord.markupType) return;
   const { n, groupId, annots } = groupAnnotations(viewer, uiWord, kind);
-  for (const annot of annots) annot.color = color;
+  viewer.doc.docHistory.recordAnnotFields(annots, ['color'], [n], kind === 'highlight' ? 'Recolored highlight' : 'Recolored markup', () => {
+    for (const annot of annots) annot.color = color;
+  });
 
   for (const kw of viewer.getUiWords()) {
     // Page scope for the same reason as `removeHighlightGroup`: a pasted copy has identical word geometry.
@@ -389,22 +411,25 @@ export function modifyHighlightComment(viewer, selectedWords, comment, kind = 'h
   if (!matchingAnnot || !matchingAnnot.groupId) return;
   const author = viewer.opt.commentAuthor || '';
   const now = new Date().toISOString();
-  for (const annot of viewer.doc.annotations.pages[pageIndex]) {
-    if (annot.groupId !== matchingAnnot.groupId) continue;
-    // A same-groupId annot of a different kind is a separate markup (`hl-0` recurs across `addHighlights` calls), so the edit must not leak onto it.
-    if ((annot.type ?? 'highlight') !== (matchingAnnot.type ?? 'highlight')) continue;
-    annot.comment = comment;
-    if (comment) {
-      if (author && !annot.author) annot.author = author;
-      if (!annot.createdAt) annot.createdAt = now;
-    } else {
-      // An emptied comment that still has replies is reverted by the caller,
-      // so reaching here means an intentional delete of the whole conversation.
-      delete annot.author;
-      delete annot.createdAt;
-      delete annot.replies;
+  // A same-groupId annot of a different kind is a separate markup (`hl-0` recurs across `addHighlights` calls), so the edit must not leak onto it.
+  const rows = viewer.doc.annotations.pages[pageIndex].filter(
+    (annot) => annot.groupId === matchingAnnot.groupId && (annot.type ?? 'highlight') === (matchingAnnot.type ?? 'highlight'),
+  );
+  viewer.doc.docHistory.recordAnnotFields(rows, ['comment', 'author', 'createdAt', 'replies'], [pageIndex], 'Edited comment', () => {
+    for (const annot of rows) {
+      annot.comment = comment;
+      if (comment) {
+        if (author && !annot.author) annot.author = author;
+        if (!annot.createdAt) annot.createdAt = now;
+      } else {
+        // An emptied comment that still has replies is reverted by the caller,
+        // so reaching here means an intentional delete of the whole conversation.
+        delete annot.author;
+        delete annot.createdAt;
+        delete annot.replies;
+      }
     }
-  }
+  });
   for (const kw of viewer.getUiWords()) {
     if (kind === 'highlight' && kw.highlightGroupId === matchingAnnot.groupId) {
       kw.highlightComment = comment;
@@ -429,12 +454,15 @@ export function setHighlightReplies(viewer, uiWord, replies, kind = 'highlight')
     (annot) => annotMatchesWord(annot, wb, kind),
   );
   if (!matchingAnnot || !matchingAnnot.groupId) return;
-  for (const annot of viewer.doc.annotations.pages[pageIndex]) {
-    if (annot.groupId !== matchingAnnot.groupId) continue;
-    // A same-groupId annot of another kind is a different markup, never part of this thread.
-    if ((annot.type ?? 'highlight') !== (matchingAnnot.type ?? 'highlight')) continue;
-    // Consumers read the thread off whichever annotation of the group they match first, so every member carries it.
-    if (replies.length > 0) annot.replies = replies;
-    else delete annot.replies;
-  }
+  // A same-groupId annot of another kind is a different markup, never part of this thread.
+  const rows = viewer.doc.annotations.pages[pageIndex].filter(
+    (annot) => annot.groupId === matchingAnnot.groupId && (annot.type ?? 'highlight') === (matchingAnnot.type ?? 'highlight'),
+  );
+  viewer.doc.docHistory.recordAnnotFields(rows, ['replies'], [pageIndex], 'Edited comment', () => {
+    for (const annot of rows) {
+      // Consumers read the thread off whichever annotation of the group they match first, so every member carries it.
+      if (replies.length > 0) annot.replies = replies;
+      else delete annot.replies;
+    }
+  });
 }

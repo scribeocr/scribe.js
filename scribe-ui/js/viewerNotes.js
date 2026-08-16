@@ -33,7 +33,9 @@ export function createNote(viewer, n, x, y) {
   const author = viewer.opt && viewer.opt.commentAuthor;
   if (author) annot.author = author;
   if (!viewer.doc.annotations.pages[n]) viewer.doc.annotations.pages[n] = [];
+  const undoSnap = viewer.doc.docHistory.snapshotAnnots(viewer.doc.annotations, [n]);
   viewer.doc.annotations.pages[n].push(annot);
+  viewer.doc.docHistory.recordAnnots(undoSnap, 'Added note');
   return annot;
 }
 
@@ -44,12 +46,15 @@ export function createNote(viewer, n, x, y) {
  * @param {string} comment
  */
 export function setNoteComment(viewer, annot, comment) {
-  annot.comment = comment;
-  const author = viewer.opt && viewer.opt.commentAuthor;
-  if (comment) {
-    if (author && !annot.author) annot.author = author;
-    if (!annot.createdAt) annot.createdAt = new Date().toISOString();
-  }
+  const n = viewer.doc.annotations.pages.findIndex((p) => p && p.includes(annot));
+  viewer.doc.docHistory.recordAnnotFields([annot], ['comment', 'author', 'createdAt'], n >= 0 ? [n] : [], 'Edited note', () => {
+    annot.comment = comment;
+    const author = viewer.opt && viewer.opt.commentAuthor;
+    if (comment) {
+      if (author && !annot.author) annot.author = author;
+      if (!annot.createdAt) annot.createdAt = new Date().toISOString();
+    }
+  });
 }
 
 /**
@@ -59,7 +64,9 @@ export function setNoteComment(viewer, annot, comment) {
  * @param {number} n
  */
 export function removeNote(viewer, annot, n) {
+  const undoSnap = viewer.doc.docHistory.snapshotAnnots(viewer.doc.annotations, [n]);
   viewer.doc.annotations.pages[n] = (viewer.doc.annotations.pages[n] || []).filter((a) => a !== annot);
+  viewer.doc.docHistory.recordAnnots(undoSnap, 'Removed note');
 }
 
 /**
@@ -96,7 +103,20 @@ function startNoteDrag(viewer, annot, icon, event, n) {
   const onUp = () => {
     window.removeEventListener('pointermove', onMove);
     window.removeEventListener('pointerup', onUp);
-    if (moved) icon.dataset.dragged = '1';
+    if (moved) {
+      icon.dataset.dragged = '1';
+      // The drag mutated the bbox in place, so the entry captures value copies rather than the live object.
+      const from = {
+        left: origLeft, top: origTop, right: origLeft + TEXT_ANNOT_ICON_PX, bottom: origTop + TEXT_ANNOT_ICON_PX,
+      };
+      const to = { ...annot.bbox };
+      viewer.doc.docHistory.record({
+        surface: 'annot',
+        label: 'Moved note',
+        undo: () => { Object.assign(annot.bbox, from); return [n]; },
+        redo: () => { Object.assign(annot.bbox, to); return [n]; },
+      });
+    }
   };
   window.addEventListener('pointermove', onMove);
   window.addEventListener('pointerup', onUp);

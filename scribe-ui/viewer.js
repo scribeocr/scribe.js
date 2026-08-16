@@ -1349,11 +1349,16 @@ export class ScribeViewer {
       this.renderHighlights(n);
       this.renderNotes(n);
       this.renderFillItems(n);
+      this.renderRedactions(n);
+      this.renderFormFields(n);
+      this.annotationsEdited(n);
       if (this.textSel) {
         this.textSel.invalidatePage(n);
         this.textSel.renderPage(n);
       }
     }
+    // The tools rebuild the comments panel directly after annotation edits, so undo makes the same call.
+    if (this._rebuildCommentsPanel) this._rebuildCommentsPanel();
     if (this.onEditCallback) this.onEditCallback();
     return true;
   }

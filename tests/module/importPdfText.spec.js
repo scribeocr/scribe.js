@@ -548,6 +548,17 @@ describe('PDF internal link capture (econometrica_example.pdf).', () => {
     doc.undo();
     cross.final = snap();
 
+    doc.docHistory.group('Added highlights', () => {
+      doc.addHighlights([{ page: 0, startLine: 0 }]);
+      doc.addHighlights([{ page: 0, startLine: 4 }]);
+    });
+    cross.groupAfter = snap();
+    doc.undo();
+    cross.groupUndone = snap();
+    doc.redo();
+    cross.groupRedone = snap();
+    doc.undo();
+
     let reopened = await scribe.openDocument({ scribeFiles: [scribeClean], pdfFiles: [LINKS_FIXTURE] });
     restoredClean = linkPages(reopened);
     reopened = await scribe.openDocument({ scribeFiles: [scribeAfterDelete], pdfFiles: [LINKS_FIXTURE] });
@@ -610,6 +621,12 @@ describe('PDF internal link capture (econometrica_example.pdf).', () => {
     expect(cross.afterUndo3, 'third undo must remove the duplicated page, restoring the imported state').toEqual([1, 3, 51]);
     expect(cross.afterRedos, 'redo x3 must re-apply all three edits in order').toEqual([2, 11, 50]);
     expect(cross.final, 'a second full unwind must restore the imported state exactly').toEqual([1, 3, 51]);
+  });
+
+  test('A grouped edit is undone and redone as one step', () => {
+    expect(cross.groupAfter, 'the grouped highlight additions did not land as expected').toEqual([1, 16, 51]);
+    expect(cross.groupUndone, 'one undo must remove everything the grouped edit added').toEqual([1, 3, 51]);
+    expect(cross.groupRedone, 'one redo must restore everything the grouped edit added').toEqual([1, 16, 51]);
   });
 
   test('Lifted internal links survive a PDF export -> re-import round-trip', () => {

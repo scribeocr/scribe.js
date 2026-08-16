@@ -429,6 +429,8 @@ export class DocHistory {
     this.redoStack = [];
     // Undo handlers re-enter the same mutation functions that record entries, so recording is suspended while one is restoring.
     this.suspended = false;
+    /** @type {?Array<{surface: string, label: string, undo: () => any, redo: () => any}>} */
+    this._fold = null;
   }
 
   get canUndo() { return this.undoStack.length > 0; }
@@ -438,9 +440,88 @@ export class DocHistory {
   /** @param {{surface: string, label: string, undo: () => any, redo: () => any}} entry */
   record(entry) {
     if (this.suspended) return;
+    if (this._fold) { this._fold.push(entry); return; }
     this.undoStack.push(entry);
     if (this.undoStack.length > DocHistory.LIMIT) this.undoStack.shift();
     this.redoStack.length = 0;
+  }
+
+  /**
+   * Run `fn` and fold every entry it records into one undoable step.
+   * `fn` must be synchronous.
+   * A group left open across an await would fold unrelated edits recorded in the gap into this step.
+   * A group opened inside another group folds into the outer one.
+   * @param {string} label - Description of the step for the undo timeline, e.g. "Marked for redaction".
+   * @param {() => any} fn
+   * @returns {any} `fn`'s return value.
+   */
+  group(label, fn) {
+    if (this.suspended || this._fold) return fn();
+    this._fold = [];
+    let result;
+    try {
+      result = fn();
+    } finally {
+      const entries = this._fold;
+      this._fold = null;
+      if (entries.length === 1) this.record({ ...entries[0], label });
+      if (entries.length > 1) {
+        // A child that returns no page list forces a full rebuild for the whole step.
+        const runAll = (list, dir) => {
+          let pages = [];
+          for (const e of list) {
+            const res = e[dir]();
+            if (pages && Array.isArray(res)) pages.push(...res);
+            else pages = null;
+          }
+          return pages;
+        };
+        const reversed = entries.slice().reverse();
+        this.record({
+          surface: 'group',
+          label,
+          undo: () => runAll(reversed, 'undo'),
+          redo: () => runAll(entries, 'redo'),
+        });
+      }
+    }
+    return result;
+  }
+
+  /**
+   * Record a field-level edit to existing annotation rows as one undoable entry.
+   * `recordAnnots` cannot see field edits, since it captures rows by reference, so field-editing callers use this instead.
+   * @param {Array<object>} rows - The annotation rows `fn` may edit.
+   * @param {Array<string>} fields - The property names `fn` may change.
+   * @param {Array<number>} pages - The page indices the rows live on.
+   * @param {string} label - Description of the edit for the undo timeline, e.g. "Edited comment".
+   * @param {() => any} fn
+   * @returns {any} `fn`'s return value.
+   */
+  recordAnnotFields(rows, fields, pages, label, fn) {
+    if (this.suspended) return fn();
+    // A null cell means the field was absent, so undo/redo restore absence with delete rather than writing undefined.
+    const capture = () => rows.map((r) => fields.map((f) => (f in r ? { value: r[f] } : null)));
+    const before = capture();
+    const result = fn();
+    const after = capture();
+    const changed = before.some((row, i) => row.some((cell, j) => {
+      const a = after[i][j];
+      return (cell === null) !== (a === null) || (cell !== null && a !== null && cell.value !== a.value);
+    }));
+    if (!changed) return result;
+    const apply = (snap) => () => {
+      rows.forEach((r, i) => fields.forEach((f, j) => {
+        const cell = snap[i][j];
+        if (cell === null) delete r[f];
+        else r[f] = cell.value;
+      }));
+      return pages.slice();
+    };
+    this.record({
+      surface: 'annot', label, undo: apply(before), redo: apply(after),
+    });
+    return result;
   }
 
   /**
@@ -586,6 +667,8 @@ export class ScribeDoc {
 
     /**
      * `restored` marks a `.scribe`-restored state, which a fresh parse must not overwrite.
+     * Every mutation of these arrays must record on `docHistory` (`snapshotAnnots`/`recordAnnots`, or `recordAnnotFields` for field edits).
+     * An unrecorded mutation is silently destroyed when a later undo restores its page's array.
      * @type {{ pages: Array<Array<Annotation>>, restored: boolean }}
      */
     this.annotations = { pages: [], restored: false };

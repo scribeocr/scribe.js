@@ -78,6 +78,10 @@ export class SeedDoc {
       record() {},
       snapshotAnnots() { return null; },
       recordAnnots() {},
+      // Unlike the no-op stubs around them, these two must run `fn`.
+      // A no-op would silently drop the mutation the caller wrapped.
+      group(label, fn) { return fn(); },
+      recordAnnotFields(rows, fields, pages, label, fn) { return fn(); },
       clear() {},
     };
 

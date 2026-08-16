@@ -158,30 +158,37 @@ export async function run(host, params, progress) {
     if (viewer.doc !== doc) return { rows: [{ kind: 'info', text: 'The document changed before the run started.' }] };
   }
   const pageCount = doc.pageMetrics.length;
-  let occurrences = 0;
-  let marks = 0;
-  const pagesHit = new Set();
-  let firstHitPage = -1;
+  /** @type {Array<Array<OcrWord>>} */
+  const found = [];
   for (let n = 0; n < pageCount; n++) {
     const page = doc.ocr.active[n];
     if (page) {
       for (const term of params.terms) {
-        for (const occ of findOccurrences(page, term, params)) {
-          occurrences++;
-          // One call per occurrence, so each occurrence becomes its own deletable mark group.
-          const added = redactWords(viewer, occ);
-          if (added > 0) {
-            marks += added;
-            pagesHit.add(n);
-            if (firstHitPage < 0) firstHitPage = n;
-          }
-        }
+        for (const occ of findOccurrences(page, term, params)) found.push(occ);
       }
     }
     progress((n + 1) / pageCount, `Scanning page ${n + 1} of ${pageCount}`);
     // Yield between pages so the progress line paints and the app stays responsive on large documents.
     if (n % 5 === 4) await new Promise((resolve) => { setTimeout(resolve, 0); });
   }
+
+  const occurrences = found.length;
+  let marks = 0;
+  const pagesHit = new Set();
+  let firstHitPage = -1;
+  // Staging runs after the scan, in one synchronous pass, so the group fold cannot swallow unrelated edits made during a scan yield.
+  doc.docHistory.group('Marked for redaction', () => {
+    for (const occ of found) {
+      // One call per occurrence, so each occurrence becomes its own deletable mark group.
+      const added = redactWords(viewer, occ);
+      if (added > 0) {
+        marks += added;
+        const n = occ[0].line.page.n;
+        pagesHit.add(n);
+        if (firstHitPage < 0) firstHitPage = n;
+      }
+    }
+  });
 
   /** @type {Array<import('./registry.js').AutomationOutcomeRow>} */
   const rows = [];
