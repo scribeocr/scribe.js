@@ -15,7 +15,7 @@ import {
   detectFillTargets as detectFillTargetsImpl,
 } from '../fillSign.js';
 import {
-  deleteTextLines as deleteTextLinesImpl, replaceTextLine as replaceTextLineImpl, deleteImages as deleteImagesImpl, ContentEditHistory,
+  deleteTextLines as deleteTextLinesImpl, replaceTextLine as replaceTextLineImpl, deleteImages as deleteImagesImpl, deleteGraphics as deleteGraphicsImpl, ContentEditHistory,
 } from '../textEdits.js';
 import { renderPageStatic as renderPageStaticImpl } from '../debug.js';
 import { exportData as exportDataImpl, download as downloadImpl } from '../export/export.js';
@@ -1156,6 +1156,15 @@ export class ScribeDoc {
    */
   deleteImages(items) {
     return deleteImagesImpl(this, items);
+  }
+
+  /**
+   * Delete the image and path placements matching the given extents, as one undoable step.
+   * @param {Parameters<typeof deleteGraphicsImpl>[1]} items
+   * @returns {ReturnType<typeof deleteGraphicsImpl>}
+   */
+  deleteGraphics(items) {
+    return deleteGraphicsImpl(this, items);
   }
 
   /**

@@ -346,7 +346,7 @@ const createContextMenuHTML = () => {
     ],
     [
       item('contextMenuDeleteTextLinesButton', 'Delete Lines', CM_TRASH_SVG, deleteTextLinesClick, true),
-      item('contextMenuDeleteImageButton', 'Delete Image', CM_TRASH_SVG, deleteImageClick, true),
+      item('contextMenuDeleteImageButton', 'Delete Image', CM_TRASH_SVG, deleteGraphicsClick, true),
       item('contextMenuRedactButton', 'Redact', CM_REDACT_SVG, redactSelectionClick, true),
     ],
   ];
@@ -519,10 +519,18 @@ const deleteTextLinesClick = () => {
   if (viewer._editTextDeleteSelection) viewer._editTextDeleteSelection();
 };
 
-const deleteImageClick = () => {
+const deleteGraphicsClick = () => {
   const viewer = mv();
   hideContextMenu();
-  if (viewer._imageEditDeleteSelection) viewer._imageEditDeleteSelection();
+  if (viewer._graphicsEditDeleteSelection) viewer._graphicsEditDeleteSelection();
+};
+
+/** @param {{count: number, images: number, paths: number}} counts */
+const graphicsDeleteLabel = (counts) => {
+  if (counts.count === 1) return counts.paths === 1 ? 'Delete Shape' : 'Delete Image';
+  if (counts.paths === 0) return `Delete ${counts.count} Images`;
+  if (counts.images === 0) return `Delete ${counts.count} Shapes`;
+  return `Delete ${counts.count} Objects`;
 };
 
 const editLineClick = () => {
@@ -1124,6 +1132,7 @@ function ensureTouchCallout() {
     vr,
     btn('delete', 'Delete', CM_TRASH_SVG, calloutDeleteMarkupClick, true),
     btn('deletelines', 'Delete lines', CM_TRASH_SVG, deleteTextLinesClick, true),
+    btn('deletegraphics', 'Delete', CM_TRASH_SVG, deleteGraphicsClick, true),
     moreBtn,
   );
 
@@ -1198,9 +1207,9 @@ function ensureTouchCallout() {
 }
 
 /**
- * Open the touch callout on the current selection or on a tapped highlight/markup group.
+ * Open the touch callout on the current selection, a tapped highlight/markup group, or the graphics-edit selection.
  * @param {import('../viewer.js').ScribeViewer} viewer
- * @param {'selection'|'markup'} kind
+ * @param {'selection'|'markup'|'graphics'} kind
  * @param {?import('./viewerWordObjects.js').UiOcrWord} [kw] - The tapped group's word (markup kind).
  * @param {'highlight'|'line'} [slot='highlight'] - Which of the word's marks was tapped (markup kind).
  */
@@ -1215,11 +1224,34 @@ export const showTouchCallout = (viewer, kind, kw = null, slot = 'highlight') =>
   let anchor = null;
   /** @type {Object<string, boolean>} */
   const show = {
-    copy: false, copyhl: false, highlight: false, underline: false, comment: false, delete: false, deletelines: false, bookmark: false, redact: false, strike: false, edit: false,
+    copy: false,
+    copyhl: false,
+    highlight: false,
+    underline: false,
+    comment: false,
+    delete: false,
+    deletelines: false,
+    deletegraphics: false,
+    bookmark: false,
+    redact: false,
+    strike: false,
+    edit: false,
   };
 
   const editingEnabled = !!(viewer.opt && viewer.opt.enablePageEditing);
-  if (kind === 'selection') {
+  if (kind === 'graphics') {
+    const counts = viewer._graphicsEditSelectedCounts ? viewer._graphicsEditSelectedCounts() : { count: 0, images: 0, paths: 0 };
+    anchor = counts.count > 0 && viewer._graphicsEditSelectionAnchor ? viewer._graphicsEditSelectionAnchor() : null;
+    if (!anchor) { hideTouchCallout(); return; }
+    viewer.contextMenuWord = null;
+    commentTargetWord = null;
+    commentNoteTarget = null;
+    bookmarkTargetPage = -1;
+    show.deletegraphics = true;
+    const label = graphicsDeleteLabel(counts);
+    calloutBtns.deletegraphics.title = label;
+    calloutBtns.deletegraphics.setAttribute('aria-label', label);
+  } else if (kind === 'selection') {
     if (!viewer.hasTextSelection() || !viewer.useCustomSelection) { hideTouchCallout(); return; }
     anchor = viewer.textSel.selectionClientRect();
     viewer.contextMenuWord = null;
@@ -1294,7 +1326,7 @@ export const showTouchCallout = (viewer, kind, kw = null, slot = 'highlight') =>
   calloutBtns.more.classList.remove('open');
   /** @type {HTMLDivElement} */ (calloutRow2).style.display = 'none';
   const vrElem = /** @type {HTMLElement} */ (calloutNode.querySelector('.scribe-callout-vr'));
-  vrElem.style.display = (show.delete || show.deletelines || tailCount > 0) ? '' : 'none';
+  vrElem.style.display = ((show.delete || show.deletelines || show.deletegraphics || tailCount > 0) && (show.copy || show.copyhl || show.highlight)) ? '' : 'none';
   if (show.highlight) {
     /** @type {HTMLElement} */ (calloutBtns.highlight.querySelector('.scribe-cm-swatch')).style.background = viewer._highlightColor;
   }
@@ -1375,19 +1407,18 @@ export const contextMenuFunc = (viewer, event) => {
       showMenuForEvent(viewer, event, null);
       return;
     }
-    if (viewer._imageEditActive) {
-      const imageTarget = viewer._imageEditMenuTarget
-        ? viewer._imageEditMenuTarget(event.clientX, event.clientY) : null;
-      const imageCount = imageTarget
-        ? imageTarget.count
-        : (viewer._imageEditSelectedCount ? viewer._imageEditSelectedCount() : 0);
-      if (imageCount === 0) {
+    if (viewer._graphicsEditActive) {
+      const graphicsTarget = viewer._graphicsEditMenuTarget
+        ? viewer._graphicsEditMenuTarget(event.clientX, event.clientY) : null;
+      const counts = graphicsTarget
+        || (viewer._graphicsEditSelectedCounts ? viewer._graphicsEditSelectedCounts() : { count: 0, images: 0, paths: 0 });
+      if (counts.count === 0) {
         event.preventDefault();
         hideContextMenu();
         return;
       }
       /** @type {HTMLElement} */ (contextMenuDeleteImageButtonElem.querySelector('.scribe-cm-lbl'))
-        .textContent = imageCount > 1 ? `Delete ${imageCount} Images` : 'Delete Image';
+        .textContent = graphicsDeleteLabel(counts);
       contextMenuDeleteImageButtonElem.style.display = 'initial';
       showMenuForEvent(viewer, event, null);
       return;

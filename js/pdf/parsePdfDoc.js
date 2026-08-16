@@ -30,10 +30,13 @@ import { buildOutlineHeadingIndex } from './outlineIndex.js';
 /** @typedef {import('../objects/ocrObjects.js').OcrPage} OcrPage */
 import { LayoutDataTable, LayoutDataColumn, LayoutDataTablePage } from '../objects/layoutObjects.js';
 
-// Paths are normally parsed synchronously on import and used for (1) table detection and (2) underline detection.
-// This is disabled for vector-graphics-heavy pages for performance reasons.
-// This does not impact path rendering--it just disables table detection/underline detection.
+// Above this size a page skips path parsing, which disables table detection, underline detection, and the path-edit inventory (the page reports path-ineligible).
+// Path rendering is unaffected.
 const GRAPHICS_HEAVY_STREAM_BYTES = 2_000_000;
+
+// A page whose grouped path placements exceed this cap reports path-ineligible instead of exposing a partial inventory.
+// Designed reports measure ~650 placements per page and chart pages ~1,250, so real documents fit under it.
+const PATH_PLACEMENT_CAP = 2000;
 
 // Inline and illustrative marked-content tags (/Span, /Figure, /Artifact) are excluded: they do not mark paragraph boundaries.
 const STRUCTURAL_MC_TAGS = new Set(['P', 'H', 'H1', 'H2', 'H3', 'H4', 'H5', 'H6', 'LBody', 'Lbl', 'LI', 'Title', 'Caption', 'BlockQuote', 'Note', 'TOCI', 'Reference', 'Quote', 'Code']);
@@ -639,21 +642,19 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
     if (ch.y >= bodyTop && ch.y <= bodyBottom) bodyReadableChars++;
   }
 
-  // Whether this page contains mathematics, the gate for the built-up-math grouping rules.
-  // Precision matters more than recall: a false positive relaxes line grouping on a prose page, which merges headings, URLs, and table cells into neighboring lines.
-  // The Unicode arm requires an absolute count and a density floor so a few stray math characters on a long prose page cannot trip it.
+  // A false positive relaxes line grouping on a prose page, which merges headings, URLs, and table cells into neighboring lines.
   const pageHasMath = mathFontGlyphs >= 8
     || (mathCharGlyphs >= 6 && mathCharGlyphs >= printableVisNonBroken * 0.0008);
 
-  // Parse the page's vector paths, reusing the already-computed tokens so parsePagePaths
-  // doesn't re-fetch and re-tokenize the page content stream.
-  // Image placements (Criterion 1) are collected in the same walk.
+  const graphicsHeavy = contentStreamText.length > GRAPHICS_HEAVY_STREAM_BYTES;
   /** @type {Array<{left: number, bottom: number, right: number, top: number}>} */
   const imagePlacements = [];
-  const paths = contentStreamText.length > GRAPHICS_HEAVY_STREAM_BYTES
+  /** @type {Array<{left: number, bottom: number, right: number, top: number, paint: 'f'|'s'|'fs', commands: number}>} */
+  const pathPlacements = [];
+  const paths = graphicsHeavy
     ? []
-    : parsePagePaths(objText, objCache, tokens, { imagePlacements, initialCtm });
-  if (contentStreamText.length > GRAPHICS_HEAVY_STREAM_BYTES) {
+    : parsePagePaths(objText, objCache, tokens, { imagePlacements, pathPlacements, initialCtm });
+  if (graphicsHeavy) {
     // Heavy streams skip path extraction (cost), but image placements must still be collected:
     // a scanned page must not lose its full-page-image classification (largestImageFrac).
     let ctmH = initialCtm.slice();
@@ -1016,6 +1017,32 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
     fillImages.push(entry);
   }
 
+  // Co-extent paint ops group into one placement holding a site per op, so one visible mark is one selectable entry.
+  /** @type {Array<{left: number, top: number, right: number, bottom: number, sites: Array<{left: number, top: number, right: number, bottom: number, paint: 'f'|'s'|'fs', commands: number}>}>} */
+  let fillPaths = [];
+  const fillPathsByKey = new Map();
+  for (const p of pathPlacements) {
+    const site = placementToPagePx(p);
+    site.paint = p.paint;
+    site.commands = p.commands;
+    const key = `${Math.round(site.left)},${Math.round(site.top)},${Math.round(site.right)},${Math.round(site.bottom)}`;
+    const prev = fillPathsByKey.get(key);
+    if (prev) {
+      prev.sites.push(site);
+    } else {
+      const entry = {
+        left: site.left, top: site.top, right: site.right, bottom: site.bottom, sites: [site],
+      };
+      fillPathsByKey.set(key, entry);
+      fillPaths.push(entry);
+    }
+  }
+  let fillPathsIneligible = graphicsHeavy;
+  if (fillPaths.length > PATH_PLACEMENT_CAP) {
+    fillPaths = [];
+    fillPathsIneligible = true;
+  }
+
   const {
     pageObj, langSet, fontSet, wordSignals, nativeText, dataTablePage, fillGlyphBoxes,
   } = groupCharsIntoPage(chars, n, pageWidth, pageHeight, underlineRects, paths, scale, visualHeightPts, boxOriginX, boxOriginY, pageHasMath);
@@ -1188,7 +1215,21 @@ export function parseSinglePage(page, objCache, n, dpi, type3GlyphMappings, dest
   }
 
   return {
-    pageObj, langSet, fontSet, wordSignals, nativeText, dataTablePage, pageStats, annotations, fillSquares: fillSquaresDeduped, fillMarks, fillMarksOverflow, fillImages, fillGlyphBoxes,
+    pageObj,
+    langSet,
+    fontSet,
+    wordSignals,
+    nativeText,
+    dataTablePage,
+    pageStats,
+    annotations,
+    fillSquares: fillSquaresDeduped,
+    fillMarks,
+    fillMarksOverflow,
+    fillImages,
+    fillPaths,
+    fillPathsIneligible,
+    fillGlyphBoxes,
   };
 }
 

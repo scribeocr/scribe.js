@@ -341,6 +341,7 @@ export async function rebuildPdfSubset({
   textEditGatedByPage = null,
   textEditInsertsByPage = null,
   imageDeleteByPage = null,
+  pathDeleteByPage = null,
   editFontRefsByPage = null,
   editFontObjects = null,
   docInfo = null,
@@ -353,12 +354,16 @@ export async function rebuildPdfSubset({
   const textEditByPage = textEditRegionsByPage || new Map();
   const textEditGated = textEditGatedByPage || new Map();
   const imageDeletes = imageDeleteByPage || new Map();
+  const pathDeletes = pathDeleteByPage || new Map();
   // The redaction and content-edit machinery lives in the overlay page loop below, so without overlay data the marked content would pass through verbatim.
   if (redactByPage.size > 0 && !overlayEnabled) {
     throw new Error('Cannot apply redactions: rebuild was invoked without page overlay data.');
   }
   if (imageDeletes.size > 0 && !overlayEnabled) {
     throw new Error('Cannot apply image deletions: rebuild was invoked without page overlay data.');
+  }
+  if (pathDeletes.size > 0 && !overlayEnabled) {
+    throw new Error('Cannot apply path deletions: rebuild was invoked without page overlay data.');
   }
   if ((textEditByPage.size > 0 || textEditGated.size > 0) && !overlayEnabled) {
     throw new Error('Cannot apply text edits: rebuild was invoked without page overlay data.');
@@ -422,7 +427,7 @@ export async function rebuildPdfSubset({
   // Pages listed in `convertFullPages` are flattened (whole-page text-to-paths).
   const fullPageSet = new Set(convertFullPages || []);
   const conversionState = (regionsByPage.size > 0 || convertBrokenType3ToPaths || redactByPage.size > 0 || textEditByPage.size > 0
-    || textEditGated.size > 0 || (textEditInsertsByPage?.size ?? 0) > 0 || imageDeletes.size > 0)
+    || textEditGated.size > 0 || (textEditInsertsByPage?.size ?? 0) > 0 || imageDeletes.size > 0 || pathDeletes.size > 0)
     ? createConversionState() : null;
 
   const { pageTreeObjNums } = collectPageTreeObjNums(objCache);
@@ -613,7 +618,8 @@ export async function rebuildPdfSubset({
       const hasRedact = redactByPage.has(i);
       const hasTextEdits = textEditByPage.has(i) || textEditGated.has(i) || !!textEditInsertsByPage?.has(i);
       const hasImageDeletes = imageDeletes.has(i);
-      if (!hasText && !hasAnnots && !hasConvert && !hasRedact && !hasTextEdits && !hasImageDeletes && !hasFill && !hasWidgetBake) continue;
+      const hasPathDeletes = pathDeletes.has(i);
+      if (!hasText && !hasAnnots && !hasConvert && !hasRedact && !hasTextEdits && !hasImageDeletes && !hasPathDeletes && !hasFill && !hasWidgetBake) continue;
 
       /** @type {string[]|null} */
       let newContentsArray = null;
@@ -622,7 +628,7 @@ export async function rebuildPdfSubset({
       /** @type {?string} */
       let pageResourcesTraceStr = null;
 
-      if (hasText || hasConvert || hasRedact || hasTextEdits || hasImageDeletes || hasFill || hasWidgetBake) {
+      if (hasText || hasConvert || hasRedact || hasTextEdits || hasImageDeletes || hasPathDeletes || hasFill || hasWidgetBake) {
         for (const font of pageFontsUsed) pdfFontsUsed.add(font);
 
         const existingContentsRefs = parseExistingContents(pageInfo.objText, objCache);
@@ -639,6 +645,7 @@ export async function rebuildPdfSubset({
           redactBboxes: redactByPage.get(i) || null,
           textEditBboxes: textEditByPage.get(i) || null,
           imageDeletes: imageDeletes.get(i) || null,
+          pathDeletes: pathDeletes.get(i) || null,
           textEditGated: textEditGated.get(i) || null,
           textEditInserts: textEditInsertsByPage?.get(i) || null,
         });
@@ -720,7 +727,7 @@ export async function rebuildPdfSubset({
         let existingResourcesStr = resolvePageResources(pageInfo.objText, objCache);
         // The original forms still hold the removed text.
         // Any name left in /XObject keeps them referenced, so they ship in the output.
-        if ((hasRedact || hasTextEdits || hasImageDeletes) && stripConvertResult.redactedFormNames && stripConvertResult.redactedFormNames.size > 0
+        if ((hasRedact || hasTextEdits || hasImageDeletes || hasPathDeletes) && stripConvertResult.redactedFormNames && stripConvertResult.redactedFormNames.size > 0
           && existingResourcesStr && existingResourcesStr.startsWith('<<')) {
           const resBody = existingResourcesStr.slice(2, -2);
           const loc = locateResourceSubdict(resBody, '/XObject', objCache);
@@ -799,7 +806,7 @@ export async function rebuildPdfSubset({
 
       // The rebuilt resources text rides along because the trace resolves refs only against the original file and would otherwise never reach the original fonts/xobjects the page still needs.
       // Flattened pages trace their replacement dict too, so the dropped widget and field objects orphan instead of being copied.
-      if (hasRedact || hasTextEdits || hasImageDeletes || hasWidgetBake) {
+      if (hasRedact || hasTextEdits || hasImageDeletes || hasPathDeletes || hasWidgetBake) {
         redactTraceTexts.set(pageInfo.objNum, pageResourcesTraceStr ? `${newPageObj}\n${pageResourcesTraceStr}` : newPageObj);
       }
     }

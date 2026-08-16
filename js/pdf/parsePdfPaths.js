@@ -39,18 +39,19 @@ import { ObjectCache } from './objectCache.js';
  */
 
 /**
+ * One painted path's hull AABB and identity signals, collected for the path-edit inventory.
+ * @typedef {{left: number, bottom: number, right: number, top: number, paint: 'f'|'s'|'fs', commands: number}} PathPlacement
+ */
+
+/**
  * Extract all painted vector paths from a single page.
  *
- * @param {string} pageObjText – raw text of the Page object
+ * @param {string} pageObjText - raw text of the Page object
  * @param {ObjectCache} objCache
- * @param {Array} [prefetchedTokens] - Tokens from
- *   `tokenizeContentStream(getPageContentStream(...))`. Pass when the caller
- *   has already tokenized the page content stream to avoid duplicating that
- *   work; omit otherwise.
- * @param {{ imagePlacements?: Array<{left: number, bottom: number, right: number, top: number, objNum?: number}>, initialCtm?: number[] }} [collect]
- *   Optional out-collector. When `imagePlacements` is present, every image
- *   placement (a `Do` surviving form inlining, or an inline image) is appended
- *   as its unit square through the live CTM, in PDF points (y-up).
+ * @param {Array} [prefetchedTokens] - tokens from `tokenizeContentStream(getPageContentStream(...))`
+ * @param {{ imagePlacements?: Array<{left: number, bottom: number, right: number, top: number, objNum?: number}>, pathPlacements?: Array<PathPlacement>, initialCtm?: number[] }} [collect]
+ *   When `imagePlacements` is present, every image placement (a `Do` surviving form inlining, or an inline image) is appended as its unit square through the live CTM, in PDF points (y-up).
+ *   When `pathPlacements` is present, every painted path is appended as its hull AABB through the live CTM, in the same frame.
  * @returns {PaintedPath[]}
  */
 export function parsePagePaths(pageObjText, objCache, prefetchedTokens, collect) {
@@ -61,8 +62,6 @@ export function parsePagePaths(pageObjText, objCache, prefetchedTokens, collect)
     tokens = tokenizeContentStream(contentStreamText);
   }
 
-  // Inline Form XObject content at Do operator sites so that vector paths
-  // inside Form XObjects are extracted with the correct CTM.
   const expanded = inlineFormXObjects(tokens, pageObjText, objCache, new Set());
 
   return executePathOperators(expanded, collect);
@@ -70,10 +69,7 @@ export function parsePagePaths(pageObjText, objCache, prefetchedTokens, collect)
 
 /**
  * Resolve Form XObject references in a token stream by inlining their content.
- * Each `Do` operator that references a Form XObject is replaced with
- * `q`, the form's /Matrix as a `cm` operator, the form's content tokens,
- * and `Q`. This allows executePathOperators to process paths inside
- * Form XObjects with the correct CTM.
+ * Paths inside a form then execute under the form's /Matrix concatenated onto the CTM live at the `Do` site.
  *
  * @param {Array} tokens - tokenized content stream
  * @param {string} containerObjText - object text of the container (page or form)
@@ -81,7 +77,6 @@ export function parsePagePaths(pageObjText, objCache, prefetchedTokens, collect)
  * @param {Set<number>} visited - cycle detection
  */
 function inlineFormXObjects(tokens, containerObjText, objCache, visited) {
-  // Find Form XObjects available in the container's Resources.
   // XObject names are scoped to their own container, so this recursive walk is the only place an image `Do` can be resolved to an object number.
   /** @type {Map<string, number>} */
   const imageObjNums = new Map();
@@ -109,7 +104,6 @@ function inlineFormXObjects(tokens, containerObjText, objCache, visited) {
       }
       const form = forms.get(name);
       if (form && !visited.has(form.objNum)) {
-        // Remove the XObject name operand we already pushed
         result.pop();
 
         visited.add(form.objNum);
@@ -120,10 +114,8 @@ function inlineFormXObjects(tokens, containerObjText, objCache, visited) {
           const formMatrix = parseFormMatrix(formObjText, objCache);
 
           const formTokens = tokenizeContentStream(formContentStream);
-          // Recurse into nested Form XObjects
           const expanded = inlineFormXObjects(formTokens, formObjText, objCache, visited);
 
-          // Wrap in q/cm/Q to apply the form's Matrix and isolate state
           result.push({ type: 'operator', value: 'q' });
           for (const v of formMatrix) result.push({ type: 'number', value: v });
           result.push({ type: 'operator', value: 'cm' });
@@ -187,7 +179,7 @@ function ctmScale(ctm) {
  * Process tokenized content-stream operators and collect painted paths.
  *
  * @param {Array<import('./parsePdfDoc.js').PDFToken>} tokens
- * @param {{ imagePlacements?: Array<{left: number, bottom: number, right: number, top: number, objNum?: number}>, initialCtm?: number[] }} [collect]
+ * @param {{ imagePlacements?: Array<{left: number, bottom: number, right: number, top: number, objNum?: number}>, pathPlacements?: Array<PathPlacement>, initialCtm?: number[] }} [collect]
  * @returns {PaintedPath[]}
  */
 function executePathOperators(tokens, collect) {
@@ -296,6 +288,46 @@ function executePathOperators(tokens, collect) {
       dashPhase,
     });
 
+    // The renderer and the export walker must compute this same box, or a delete silently stops matching its path.
+    if (collect && collect.pathPlacements && cmds.length >= 2) {
+      let minX = Infinity; let maxX = -Infinity;
+      let minY = Infinity; let maxY = -Infinity;
+      for (const cmd of cmds) {
+        if (cmd.type === 'Z') continue;
+        if (cmd.type === 'C') {
+          if (cmd.x1 < minX) minX = cmd.x1; if (cmd.x1 > maxX) maxX = cmd.x1;
+          if (cmd.y1 < minY) minY = cmd.y1; if (cmd.y1 > maxY) maxY = cmd.y1;
+          if (cmd.x2 < minX) minX = cmd.x2; if (cmd.x2 > maxX) maxX = cmd.x2;
+          if (cmd.y2 < minY) minY = cmd.y2; if (cmd.y2 > maxY) maxY = cmd.y2;
+        }
+        if (cmd.x < minX) minX = cmd.x; if (cmd.x > maxX) maxX = cmd.x;
+        if (cmd.y < minY) minY = cmd.y; if (cmd.y > maxY) maxY = cmd.y;
+      }
+      if (minX <= maxX) {
+        if (collect.initialCtm) {
+          const corners = [
+            transformPoint(minX, minY, collect.initialCtm), transformPoint(maxX, minY, collect.initialCtm),
+            transformPoint(minX, maxY, collect.initialCtm), transformPoint(maxX, maxY, collect.initialCtm),
+          ];
+          minX = Infinity; maxX = -Infinity; minY = Infinity; maxY = -Infinity;
+          for (const p of corners) {
+            if (p.x < minX) minX = p.x;
+            if (p.x > maxX) maxX = p.x;
+            if (p.y < minY) minY = p.y;
+            if (p.y > maxY) maxY = p.y;
+          }
+        }
+        collect.pathPlacements.push({
+          left: minX,
+          bottom: minY,
+          right: maxX,
+          top: maxY,
+          paint: fill && stroke ? 'fs' : (fill ? 'f' : 's'),
+          commands: cmds.length,
+        });
+      }
+    }
+
     currentPath = [];
   }
 
@@ -318,8 +350,7 @@ function executePathOperators(tokens, collect) {
     switch (op) {
       // ── XObjects ─────────────────────────────────────────────────
       case 'Do':
-        // Form XObjects were inlined before this walk (parsePagePaths), so a surviving Do is an image
-        // (or an unresolvable form, whose unit-square footprint at a typical identity CTM is negligible).
+        // Form XObjects were inlined before this walk (parsePagePaths), so a surviving `Do` is an image or a form that could not be inlined.
         recordImagePlacement(tok.imageObjNum);
         operandStack.length = 0;
         break;

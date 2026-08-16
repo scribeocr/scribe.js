@@ -166,6 +166,57 @@ export function imageDrawMatchesDelete(ctm, gate, objNum) {
 }
 
 /**
+ * Map a deletePath record into content user space for the strike test.
+ * @param {PathEditDelete} rec
+ * @param {{width: number, height: number}} dims
+ * @param {number[]} box
+ * @param {number} rotate
+ * @returns {?{rect: [number, number, number, number], sites: Array<{rect: [number, number, number, number], paint: string, commands: number}>, tol: number}}
+ */
+export function mapPathDelete(rec, dims, box, rotate) {
+  // Corner mapping rather than `pageRectToContentRect`, which drops the zero-height extent a stroked hairline legitimately has.
+  const mapRect = (r) => {
+    let x0 = Infinity; let y0 = Infinity; let x1 = -Infinity; let y1 = -Infinity;
+    for (const [px, py] of [[r.left, r.top], [r.right, r.top], [r.left, r.bottom], [r.right, r.bottom]]) {
+      const [x, y] = pagePointToContentPoint(px, py, dims, box, rotate);
+      x0 = Math.min(x0, x); y0 = Math.min(y0, y); x1 = Math.max(x1, x); y1 = Math.max(y1, y);
+    }
+    return /** @type {[number, number, number, number]} */ ([x0, y0, x1, y1]);
+  };
+  const sites = [];
+  for (const s of rec.sites || []) {
+    // A malformed site (hand-edited session) is dropped, so the strike fails toward keeping content.
+    if (typeof s.commands !== 'number' || (s.paint !== 'f' && s.paint !== 's' && s.paint !== 'fs')) continue;
+    sites.push({ rect: mapRect(s), paint: s.paint, commands: s.commands });
+  }
+  if (sites.length === 0) return null;
+  const [ax, ay] = pagePointToContentPoint(0, 0, dims, box, rotate);
+  const [bx, by] = pagePointToContentPoint(1, 0, dims, box, rotate);
+  const tol = 2 * Math.hypot(bx - ax, by - ay);
+  return { rect: mapRect(rec.rect), sites, tol };
+}
+
+/**
+ * Whether a painted path draw is one of a deletePath record's sites.
+ * A draw matching no site survives, so a bystander path inside the rect is never removed.
+ * @param {[number, number, number, number]} hull - The draw's hull AABB in content user space, curve control points included.
+ * @param {{rect: [number, number, number, number], sites: Array<{rect: [number, number, number, number], paint: string, commands: number}>, tol: number}} gate
+ * @param {'f'|'s'|'fs'} paint
+ * @param {number} commands
+ */
+export function pathDrawMatchesDelete(hull, gate, paint, commands) {
+  const t = gate.tol;
+  if (hull[0] < gate.rect[0] - t || hull[1] < gate.rect[1] - t || hull[2] > gate.rect[2] + t || hull[3] > gate.rect[3] + t) return false;
+  for (const s of gate.sites) {
+    if (Math.abs(hull[0] - s.rect[0]) > t || Math.abs(hull[1] - s.rect[1]) > t
+      || Math.abs(hull[2] - s.rect[2]) > t || Math.abs(hull[3] - s.rect[3]) > t) continue;
+    if (s.paint !== paint || s.commands !== commands) continue;
+    return true;
+  }
+  return false;
+}
+
+/**
  * Whether a glyph's approximate extent intersects any rect, in content user space.
  * The test is biased toward over-matching.
  * A glyph whose origin sits outside a rect but whose body crosses it must still count.

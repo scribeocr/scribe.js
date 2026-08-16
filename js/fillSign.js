@@ -229,6 +229,8 @@ export function addStamp(doc, n, item) {
  *   marks?: Array<{left: number, top: number, right: number, bottom: number}>,
  *   marksOverflow?: boolean,
  *   images?: Array<{left: number, top: number, right: number, bottom: number, sites: Array<{left: number, top: number, right: number, bottom: number, objNum?: number}>}>,
+ *   paths?: Array<{left: number, top: number, right: number, bottom: number, sites: Array<{left: number, top: number, right: number, bottom: number, paint: 'f'|'s'|'fs', commands: number}>}>,
+ *   pathsIneligible?: boolean,
  *   glyphBoxes?: Array<{id: string, bbox: {left: number, top: number, right: number, bottom: number}}>,
  * }>}
  */
@@ -237,7 +239,7 @@ const fillShapesByPage = new WeakMap();
 /** Import hook that attaches a page's drawn shapes from the PDF parse. */
 export function setPageFillShapes(pageObj, shapes) {
   if (pageObj && (shapes?.squares?.length || shapes?.marks?.length || shapes?.images?.length
-    || shapes?.glyphBoxes?.length)) {
+    || shapes?.paths?.length || shapes?.pathsIneligible || shapes?.glyphBoxes?.length)) {
     fillShapesByPage.set(pageObj, shapes);
   }
 }
@@ -250,6 +252,26 @@ export function setPageFillShapes(pageObj, shapes) {
  */
 export function pageImagePlacements(pageObj) {
   return (pageObj && fillShapesByPage.get(pageObj)?.images) || [];
+}
+
+/**
+ * The painted vector-path placements parsed from a page, in the page-pixel frame.
+ * One placement is one visual mark, holding a site for each paint op drawn at its extent.
+ * @param {?OcrPage} pageObj
+ * @returns {Array<{left: number, top: number, right: number, bottom: number, sites: Array<{left: number, top: number, right: number, bottom: number, paint: 'f'|'s'|'fs', commands: number}>}>}
+ */
+export function pagePathPlacements(pageObj) {
+  return (pageObj && fillShapesByPage.get(pageObj)?.paths) || [];
+}
+
+/**
+ * Whether the page's path inventory is unavailable.
+ * True when a graphics-heavy stream skipped path extraction or the placement count overflowed the cap.
+ * @param {?OcrPage} pageObj
+ * @returns {boolean}
+ */
+export function pagePathsIneligible(pageObj) {
+  return !!(pageObj && fillShapesByPage.get(pageObj)?.pathsIneligible);
 }
 
 // Units: pt thresholds convert through the page's px-per-pt scale, em thresholds scale by the candidate's own word height, and frac thresholds are fractions of the named quantity.

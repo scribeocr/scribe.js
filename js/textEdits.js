@@ -1,5 +1,5 @@
 import { bboxToPageSpace } from './addHighlights.js';
-import { pageImagePlacements } from './fillSign.js';
+import { pageImagePlacements, pagePathPlacements } from './fillSign.js';
 import { ensureGlyphSetForText } from './fontContainerMain.js';
 import ocr, { OcrWord, OcrChar } from './objects/ocrObjects.js';
 import { resolveReplacementChar } from './pdf/glyphResolve.js';
@@ -783,27 +783,28 @@ export async function replaceTextLine(doc, line, newText, opts) {
 }
 
 /**
- * Delete the image placements whose merged extents match the given rects, as one undoable action.
+ * Delete the image and path placements whose extents match the given rects, as one undoable action.
  * @param {ScribeDoc} doc
- * @param {Array<{n: number, rect: bbox}>} items - Placement extents to delete, page-pixel frame.
+ * @param {Array<{n: number, rect: bbox, kind: 'image'|'path'}>} items - Placement extents to delete, page-pixel frame.
  * @returns {?{pages: Array<number>}} Affected page indices, or null when no placement matches.
  */
-export function deleteImages(doc, items) {
+export function deleteGraphics(doc, items) {
   const pad = 2;
   const groupId = getRandomAlphanum(10);
-  /** @type {Array<{n: number, record: ImageEditDelete}>} */
+  /** @type {Array<{n: number, record: ImageEditDelete|PathEditDelete}>} */
   const pageRecords = [];
-  for (const { n, rect } of items) {
-    if (pageRecords.some((p) => p.n === n && Math.abs(p.record.rect.left - rect.left) <= pad
+  for (const { n, rect, kind } of items) {
+    const type = kind === 'path' ? 'deletePath' : 'deleteImage';
+    if (pageRecords.some((p) => p.n === n && p.record.type === type && Math.abs(p.record.rect.left - rect.left) <= pad
       && Math.abs(p.record.rect.top - rect.top) <= pad && Math.abs(p.record.rect.right - rect.right) <= pad
       && Math.abs(p.record.rect.bottom - rect.bottom) <= pad)) continue;
-    const placements = pageImagePlacements(doc.ocr?.pdf?.[n]);
+    const placements = kind === 'path' ? pagePathPlacements(doc.ocr?.pdf?.[n]) : pageImagePlacements(doc.ocr?.pdf?.[n]);
     const picked = placements.filter((e) => Math.abs(e.left - rect.left) <= pad && Math.abs(e.top - rect.top) <= pad
       && Math.abs(e.right - rect.right) <= pad && Math.abs(e.bottom - rect.bottom) <= pad);
     if (picked.length === 0) continue;
-    /** @type {ImageEditDelete} */
+    /** @type {ImageEditDelete|PathEditDelete} */
     const record = {
-      type: 'deleteImage',
+      type,
       id: getRandomAlphanum(10),
       rect: {
         left: rect.left, top: rect.top, right: rect.right, bottom: rect.bottom,
@@ -821,7 +822,17 @@ export function deleteImages(doc, items) {
 }
 
 /**
- * Bounded undo/redo for content edits (native text and images).
+ * Delete the image placements whose merged extents match the given rects, as one undoable action.
+ * @param {ScribeDoc} doc
+ * @param {Array<{n: number, rect: bbox}>} items - Placement extents to delete, page-pixel frame.
+ * @returns {?{pages: Array<number>}} Affected page indices, or null when no placement matches.
+ */
+export function deleteImages(doc, items) {
+  return deleteGraphics(doc, items.map((it) => ({ n: it.n, rect: it.rect, kind: /** @type {'image'} */ ('image') })));
+}
+
+/**
+ * Bounded undo/redo for content edits (native text, images, and paths).
  * Page structure ops have a separate `PageHistory`.
  * Its snapshots carry the record arrays, so content-edit records survive page undo/redo.
  */
@@ -852,7 +863,7 @@ export class ContentEditHistory {
     const entry = this.undoStack.pop();
     if (!entry) return null;
     for (const p of entry.pages) {
-      if (p.record?.type === 'deleteImage') {
+      if (p.record?.type === 'deleteImage' || p.record?.type === 'deletePath') {
         const imgRecs = this.doc.contentEdits.pages[p.n];
         if (imgRecs) {
           const idx = imgRecs.findIndex((r) => r && r.id === p.record.id);
@@ -907,7 +918,7 @@ export class ContentEditHistory {
     for (const p of entry.pages) {
       if (!this.doc.contentEdits.pages[p.n]) this.doc.contentEdits.pages[p.n] = [];
       const recs = this.doc.contentEdits.pages[p.n];
-      if (p.record?.type === 'deleteImage') {
+      if (p.record?.type === 'deleteImage' || p.record?.type === 'deletePath') {
         recs.push(p.record);
         continue;
       }

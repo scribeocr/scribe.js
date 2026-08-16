@@ -12,7 +12,8 @@ import { redactWords, redactRegion } from '../viewerRedactions.js';
 import { createLineEditor } from '../editTextLineEditor.js';
 import { createFillSignPalette, ICON_FILLSIGN } from '../viewerFillSign.js';
 import { nativeTextForPage } from '../../../js/textEdits.js';
-import { pageImagePlacements } from '../../../js/fillSign.js';
+import { pageImagePlacements, pagePathPlacements } from '../../../js/fillSign.js';
+import { showTouchCallout, hideTouchCallout } from '../viewerCanvasInteraction.js';
 import { filesFromDropEvent } from '../dragAndDrop.js';
 
 // Filled highlighter-marker glyph (Material).
@@ -2025,19 +2026,19 @@ export function createEditTextTool(scribe) {
 const IMAGE_EDIT_SVG = '<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="3.5" y="5" width="17" height="14" rx="1.5"/><circle cx="9" cy="10" r="1.6"/><path d="M3.5 16.5l4.8-4.3 3.4 3 3.6-3.4 5.2 4.7"/></svg>';
 
 /**
- * Toolbar control that toggles the Edit Images mode for selecting and deleting a page's image placements.
+ * Toolbar control that toggles the Edit Graphics mode for selecting and deleting a page's image and path placements.
  * @param {import('../../viewer.js').ScribeViewer} scribe
  */
-export function createImageEditTool(scribe) {
-  let imageMode = false;
-  const toolbarElem = makeIconButton('Edit Images', IMAGE_EDIT_SVG);
+export function createGraphicsEditTool(scribe) {
+  let graphicsMode = false;
+  const toolbarElem = makeIconButton('Edit Graphics', IMAGE_EDIT_SVG);
   toolbarElem.classList.add('cr-labeled-button');
   const toolbarLabelElem = document.createElement('span');
   toolbarLabelElem.className = 'cr-btn-label';
-  toolbarLabelElem.textContent = 'Edit Images';
+  toolbarLabelElem.textContent = 'Edit Graphics';
   toolbarElem.appendChild(toolbarLabelElem);
 
-  /** @type {Map<{left: number, top: number, right: number, bottom: number}, number>} */
+  /** @type {Map<{left: number, top: number, right: number, bottom: number}, {n: number, kind: 'image'|'path'}>} */
   const selected = new Map();
   /** @type {Map<object, HTMLElement>} */
   const frames = new Map();
@@ -2063,21 +2064,44 @@ export function createImageEditTool(scribe) {
     if (!page || !dims) return [];
     const records = scribe.doc.contentEdits.pages[n] || [];
     const pad = 2;
-    // A placement covering nearly the whole page is the scan that is the page, so deleting it would blank the page.
-    return pageImagePlacements(page).filter((e) => (e.right - e.left) * (e.bottom - e.top) < dims.width * dims.height * 0.95
-      && !records.some((r) => r.type === 'deleteImage'
-        && Math.abs(e.left - r.rect.left) <= pad && Math.abs(e.top - r.rect.top) <= pad
-        && Math.abs(e.right - r.rect.right) <= pad && Math.abs(e.bottom - r.rect.bottom) <= pad));
+    const areaCap = dims.width * dims.height * 0.95;
+    const pending = (/** @type {string} */ type, /** @type {{left: number, top: number, right: number, bottom: number}} */ e) => records.some((r) => r.type === type
+      && Math.abs(e.left - r.rect.left) <= pad && Math.abs(e.top - r.rect.top) <= pad
+      && Math.abs(e.right - r.rect.right) <= pad && Math.abs(e.bottom - r.rect.bottom) <= pad);
+    /** @type {Array<{kind: 'image'|'path', e: {left: number, top: number, right: number, bottom: number}}>} */
+    const out = [];
+    // A placement covering nearly the whole page is the scan or the page background, so deleting it would blank the page.
+    for (const e of pageImagePlacements(page)) {
+      if ((e.right - e.left) * (e.bottom - e.top) < areaCap && !pending('deleteImage', e)) out.push({ kind: 'image', e });
+    }
+    for (const e of pagePathPlacements(page)) {
+      if ((e.right - e.left) * (e.bottom - e.top) < areaCap && !pending('deletePath', e)) out.push({ kind: 'path', e });
+    }
+    return out;
   };
 
   const placementAt = (clientX, clientY) => {
     const pt = scribe.clientToPage(clientX, clientY);
     if (!pt) return null;
+    // Hairline rules have near-zero extents, so thin path targets get a minimum hit band of ~4 css px per side.
+    let slop = 4;
+    const cont = scribe.pageContainerArr?.[pt.n];
+    const dims = scribe.doc?.ocr?.pdf?.[pt.n]?.dims;
+    if (cont && cont.isConnected && dims) {
+      const pr = cont.getBoundingClientRect();
+      if (pr.width > 0) slop = (4 * dims.width) / pr.width;
+    }
     let best = null;
-    for (const e of placementsForPage(pt.n)) {
-      if (pt.x >= e.left && pt.x <= e.right && pt.y >= e.top && pt.y <= e.bottom) {
-        const area = (e.right - e.left) * (e.bottom - e.top);
-        if (!best || area < best.area) best = { n: pt.n, entry: e, area };
+    for (const { kind, e } of placementsForPage(pt.n)) {
+      const sx = kind === 'path' && (e.right - e.left) < slop * 2 ? slop : 0;
+      const sy = kind === 'path' && (e.bottom - e.top) < slop * 2 ? slop : 0;
+      if (pt.x >= e.left - sx && pt.x <= e.right + sx && pt.y >= e.top - sy && pt.y <= e.bottom + sy) {
+        const area = (e.right - e.left + 2 * sx) * (e.bottom - e.top + 2 * sy);
+        if (!best || area < best.area) {
+          best = {
+            n: pt.n, entry: e, kind, area,
+          };
+        }
       }
     }
     return best;
@@ -2095,11 +2119,11 @@ export function createImageEditTool(scribe) {
 
   const validateSelection = () => {
     const pools = new Map();
-    for (const [entry, n] of selected) {
-      let pool = pools.get(n);
+    for (const [entry, sel] of selected) {
+      let pool = pools.get(sel.n);
       if (!pool) {
-        pool = new Set(placementsForPage(n));
-        pools.set(n, pool);
+        pool = new Set(placementsForPage(sel.n).map((p) => p.e));
+        pools.set(sel.n, pool);
       }
       if (!pool.has(entry)) selected.delete(entry);
     }
@@ -2112,18 +2136,18 @@ export function createImageEditTool(scribe) {
         frames.delete(entry);
       }
     }
-    for (const [entry, n] of selected) {
+    for (const [entry, sel] of selected) {
       let el = frames.get(entry);
       if (!el) {
         el = makeBox();
-        el.className = 'scribe-image-edit-frame';
+        el.className = 'scribe-graphics-edit-frame';
         el.style.border = 'calc(2px / var(--scribe-zoom, 1)) solid var(--scribe-accent, #1c62d4)';
         el.style.boxShadow = '0 0 0 calc(1px / var(--scribe-zoom, 1)) rgba(255, 255, 255, .9), '
           + 'inset 0 0 0 calc(1px / var(--scribe-zoom, 1)) rgba(255, 255, 255, .9)';
         el.style.background = 'var(--scribe-active, rgba(28, 98, 212, .10))';
         frames.set(entry, el);
       }
-      positionBox(el, n, entry);
+      positionBox(el, sel.n, entry);
     }
   };
 
@@ -2135,7 +2159,7 @@ export function createImageEditTool(scribe) {
     }
     if (!hoverEl) {
       hoverEl = makeBox();
-      hoverEl.className = 'scribe-image-edit-hover';
+      hoverEl.className = 'scribe-graphics-edit-hover';
       hoverEl.style.border = 'calc(1.5px / var(--scribe-zoom, 1)) dashed var(--scribe-accent, #1c62d4)';
       hoverEl.style.boxShadow = '0 0 0 calc(1px / var(--scribe-zoom, 1)) rgba(255, 255, 255, .75)';
     }
@@ -2157,10 +2181,13 @@ export function createImageEditTool(scribe) {
   };
 
   toolbarElem.addEventListener('click', () => {
-    imageMode = !imageMode;
-    scribe._imageEditActive = imageMode;
-    toolbarElem.classList.toggle('active', imageMode);
-    if (!imageMode) clearChrome();
+    graphicsMode = !graphicsMode;
+    scribe._graphicsEditActive = graphicsMode;
+    toolbarElem.classList.toggle('active', graphicsMode);
+    if (!graphicsMode) {
+      clearChrome();
+      hideTouchCallout();
+    }
   });
 
   /**
@@ -2179,15 +2206,39 @@ export function createImageEditTool(scribe) {
     const deleteSelected = () => {
       validateSelection();
       if (selected.size === 0) return;
-      const items = [...selected].map(([entry, n]) => ({
-        n,
+      const items = [...selected].map(([entry, sel]) => ({
+        n: sel.n,
         rect: {
           left: entry.left, top: entry.top, right: entry.right, bottom: entry.bottom,
         },
+        kind: sel.kind,
       }));
-      const res = scribe.doc?.deleteImages(items);
+      const res = scribe.doc?.deleteGraphics(items);
       clearChrome();
+      hideTouchCallout();
       if (res) refreshPages(res.pages);
+    };
+    const selectionAnchor = () => {
+      let anchor = null;
+      for (const [entry, sel] of selected) {
+        const cont = scribe.pageContainerArr?.[sel.n];
+        const dims = scribe.doc?.ocr?.pdf?.[sel.n]?.dims;
+        if (!cont || !cont.isConnected || !dims) continue;
+        const pr = cont.getBoundingClientRect();
+        const r = {
+          left: pr.left + (entry.left * pr.width) / dims.width,
+          top: pr.top + (entry.top * pr.height) / dims.height,
+          right: pr.left + (entry.right * pr.width) / dims.width,
+          bottom: pr.top + (entry.bottom * pr.height) / dims.height,
+        };
+        anchor = anchor ? {
+          left: Math.min(anchor.left, r.left),
+          top: Math.min(anchor.top, r.top),
+          right: Math.max(anchor.right, r.right),
+          bottom: Math.max(anchor.bottom, r.bottom),
+        } : r;
+      }
+      return anchor;
     };
 
     /** @param {{left: number, top: number, right: number, bottom: number}} r */
@@ -2205,15 +2256,15 @@ export function createImageEditTool(scribe) {
         const R = ((r.right - pr.left) * dims.width) / pr.width;
         const T = ((r.top - pr.top) * dims.height) / pr.height;
         const B = ((r.bottom - pr.top) * dims.height) / pr.height;
-        for (const e of placementsForPage(n)) {
-          if (e.left < R && e.right > L && e.top < B && e.bottom > T) hits.set(e, n);
+        for (const { kind, e } of placementsForPage(n)) {
+          if (e.left <= R && e.right >= L && e.top <= B && e.bottom >= T) hits.set(e, { n, kind });
         }
       }
       return hits;
     };
 
     const moveHandler = (/** @type {PointerEvent} */ ev) => {
-      if (!imageMode || marqueeEl) return;
+      if (!graphicsMode || marqueeEl) return;
       if (ev.buttons !== 0) {
         renderHover(null);
         return;
@@ -2223,22 +2274,24 @@ export function createImageEditTool(scribe) {
     // Runs at capture and stops propagation on mouse and pen presses, so the engine's text-drag selection never sees a press this mode handles.
     // A touch press that misses every placement is left to the engine, so panning still works.
     const downHandler = (/** @type {PointerEvent} */ ev) => {
-      if (!imageMode || ev.button !== 0) return;
+      if (!graphicsMode || ev.button !== 0) return;
       const hit = placementAt(ev.clientX, ev.clientY);
       if (ev.pointerType === 'touch') {
         if (!hit) {
           if (selected.size > 0) {
             selected.clear();
             renderFrames();
+            hideTouchCallout();
           }
           return;
         }
         ev.stopPropagation();
         ev.preventDefault();
         selected.clear();
-        selected.set(hit.entry, hit.n);
+        selected.set(hit.entry, { n: hit.n, kind: hit.kind });
         renderHover(null);
         renderFrames();
+        showTouchCallout(scribe, 'graphics');
         return;
       }
       ev.stopPropagation();
@@ -2252,7 +2305,7 @@ export function createImageEditTool(scribe) {
         moved = true;
         if (!marqueeEl) {
           marqueeEl = document.createElement('div');
-          marqueeEl.className = 'scribe-image-edit-marquee';
+          marqueeEl.className = 'scribe-graphics-edit-marquee';
           Object.assign(marqueeEl.style, {
             position: 'fixed',
             zIndex: '50',
@@ -2273,8 +2326,8 @@ export function createImageEditTool(scribe) {
           left: `${r.left}px`, top: `${r.top}px`, width: `${r.right - r.left}px`, height: `${r.bottom - r.top}px`,
         });
         selected.clear();
-        for (const [e, n] of base) selected.set(e, n);
-        for (const [e, n] of placementsInClientRect(r)) selected.set(e, n);
+        for (const [e, sel] of base) selected.set(e, sel);
+        for (const [e, sel] of placementsInClientRect(r)) selected.set(e, sel);
         renderFrames();
       };
       const onUp = () => {
@@ -2293,12 +2346,12 @@ export function createImageEditTool(scribe) {
         }
         if (shift) {
           if (selected.has(hit.entry)) selected.delete(hit.entry);
-          else selected.set(hit.entry, hit.n);
+          else selected.set(hit.entry, { n: hit.n, kind: hit.kind });
           renderFrames();
           return;
         }
         selected.clear();
-        selected.set(hit.entry, hit.n);
+        selected.set(hit.entry, { n: hit.n, kind: hit.kind });
         renderHover(null);
         renderFrames();
       };
@@ -2306,7 +2359,7 @@ export function createImageEditTool(scribe) {
       window.addEventListener('pointerup', onUp);
     };
     const keyHandler = (/** @type {KeyboardEvent} */ ev) => {
-      if (!imageMode) return;
+      if (!graphicsMode) return;
       const t = ev.target;
       if (t instanceof HTMLElement && (t.isContentEditable || /^(INPUT|TEXTAREA|SELECT)$/.test(t.tagName))) return;
       if (ev.key === 'Escape' && selected.size > 0) {
@@ -2337,41 +2390,51 @@ export function createImageEditTool(scribe) {
     };
     // Virtualization rebuilds the page groups on scroll, so the frames re-parent themselves onto the new ones.
     const scrollHandler = () => {
-      if (!imageMode) return;
+      if (!graphicsMode) return;
       renderFrames();
       renderHover(null);
+    };
+    const selectionCounts = () => {
+      validateSelection();
+      let images = 0;
+      let paths = 0;
+      for (const sel of selected.values()) {
+        if (sel.kind === 'path') paths += 1;
+        else images += 1;
+      }
+      return { count: selected.size, images, paths };
     };
     scribe.scrollContainer.addEventListener('pointermove', moveHandler);
     scribe.scrollContainer.addEventListener('pointerdown', downHandler, true);
     document.addEventListener('keydown', keyHandler, true);
     scribe.scrollContainer.addEventListener('scroll', scrollHandler);
-    scribe._imageEditMenuTarget = (clientX, clientY) => {
+    scribe._graphicsEditMenuTarget = (clientX, clientY) => {
       const hit = placementAt(clientX, clientY);
       if (!hit) return null;
       validateSelection();
       if (!selected.has(hit.entry)) {
         selected.clear();
-        selected.set(hit.entry, hit.n);
+        selected.set(hit.entry, { n: hit.n, kind: hit.kind });
         renderHover(null);
         renderFrames();
       }
-      return { count: selected.size };
+      return selectionCounts();
     };
-    scribe._imageEditSelectedCount = () => {
-      validateSelection();
-      return selected.size;
-    };
-    scribe._imageEditDeleteSelection = deleteSelected;
+    scribe._graphicsEditSelectedCounts = selectionCounts;
+    scribe._graphicsEditDeleteSelection = deleteSelected;
+    scribe._graphicsEditSelectionAnchor = selectionAnchor;
     return () => {
       scribe.scrollContainer.removeEventListener('pointermove', moveHandler);
       scribe.scrollContainer.removeEventListener('pointerdown', downHandler, true);
       document.removeEventListener('keydown', keyHandler, true);
       scribe.scrollContainer.removeEventListener('scroll', scrollHandler);
-      scribe._imageEditActive = false;
-      scribe._imageEditMenuTarget = null;
-      scribe._imageEditSelectedCount = null;
-      scribe._imageEditDeleteSelection = null;
+      scribe._graphicsEditActive = false;
+      scribe._graphicsEditMenuTarget = null;
+      scribe._graphicsEditSelectedCounts = null;
+      scribe._graphicsEditDeleteSelection = null;
+      scribe._graphicsEditSelectionAnchor = null;
       clearChrome();
+      hideTouchCallout();
     };
   }
 

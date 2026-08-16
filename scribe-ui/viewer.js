@@ -468,13 +468,18 @@ export class ScribeViewer {
     /** @type {?ReturnType<typeof import('./js/editTextLineEditor.js').createLineEditor>} */
     this._editTextLineEditor = null;
 
-    this._imageEditActive = false;
-    /** @type {?(clientX: number, clientY: number) => ?Object} Aim the image-edit context menu by selecting the placement under the point, or return null when none is there. */
-    this._imageEditMenuTarget = null;
-    /** @type {?() => number} */
-    this._imageEditSelectedCount = null;
+    this._graphicsEditActive = false;
+    /**
+     * Aim the graphics-edit context menu by selecting the placement under the point, or return null when none is there.
+     * @type {?(clientX: number, clientY: number) => ?{count: number, images: number, paths: number}}
+     */
+    this._graphicsEditMenuTarget = null;
+    /** @type {?() => {count: number, images: number, paths: number}} */
+    this._graphicsEditSelectedCounts = null;
     /** @type {?() => void} */
-    this._imageEditDeleteSelection = null;
+    this._graphicsEditDeleteSelection = null;
+    /** @type {?() => ?{left: number, top: number, right: number, bottom: number}} Client-rect union of the graphics selection, anchoring the touch callout. */
+    this._graphicsEditSelectionAnchor = null;
 
     // Whether an Edit Pages control gates the thumbnail rail's page mutations.
     // Hosts without one keep a rail that is always armed under `enablePageEditing`.
@@ -2499,7 +2504,7 @@ export class ScribeViewer {
    * @returns {?AnnotationLink}
    */
   linkAt(clientX, clientY) {
-    if (this._editTextActive || this._imageEditActive) return null;
+    if (this._editTextActive || this._graphicsEditActive) return null;
     const pagesAnnots = this.doc.annotations?.pages;
     if (!pagesAnnots || pagesAnnots.length === 0) return null;
     const { n, x, y } = this.clientToPage(clientX, clientY);

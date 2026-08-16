@@ -540,7 +540,32 @@ declare global {
         groupId?: string;
     };
 
-    type ContentEdit = TextEditDelete | TextEditReplace | ImageEditDelete;
+    /** One painted-path draw a `deletePath` record removes. */
+    type PathDeleteSite = {
+        left: number;
+        top: number;
+        right: number;
+        bottom: number;
+        /** Paint kind: fill, stroke, or both. */
+        paint: 'f' | 's' | 'fs';
+        /** Command count of the draw's construction run after rectangle and shorthand-curve expansion. */
+        commands: number;
+    };
+
+    /**
+     * A painted-path deletion applied to the raster and to PDF exports.
+     * The `rect` only locates the deletion, and a drawn path is removed only when it also agrees with a site's extent, paint kind, and command count, so a bystander path inside the rect survives.
+     */
+    type PathEditDelete = {
+        type: 'deletePath';
+        id: string;
+        /** Placement extent, page coordinates (top-left origin, same frame as OCR words). */
+        rect: bbox;
+        sites: PathDeleteSite[];
+        groupId?: string;
+    };
+
+    type ContentEdit = TextEditDelete | TextEditReplace | ImageEditDelete | PathEditDelete;
 
     /**
      * Parse-derived metadata for one visibly-drawn native word.

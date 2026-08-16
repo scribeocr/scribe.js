@@ -13,7 +13,7 @@ import {
 } from './pdfPrimitives.js';
 import { parseDrawOps } from './parseDrawOps.js';
 import {
-  pageRectToContentRect, glyphEmBoxHitsRects, mapTextEditGlyphs, glyphIdentityMatches, mapImageDelete, imageDrawMatchesDelete, TEXT_EDIT_GLYPH_SIZE_CAP,
+  pageRectToContentRect, glyphEmBoxHitsRects, mapTextEditGlyphs, glyphIdentityMatches, mapImageDelete, imageDrawMatchesDelete, mapPathDelete, pathDrawMatchesDelete, TEXT_EDIT_GLYPH_SIZE_CAP,
 } from './pageGeometry.js';
 
 /** @typedef {import('./objectCache.js').ObjectCache} ObjectCache */
@@ -5317,7 +5317,7 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
     /**
      * @type {Array<{ rec: ContentEdit, rects: Array<[number, number, number, number]>,
      *   gate: ?{pts: Array<{u: ?string, x: number, y: number, f: ?number}>, tol: number},
-     *   imageGate?: ?ReturnType<typeof mapImageDelete> }>}
+     *   imageGate?: ?ReturnType<typeof mapImageDelete>, pathGate?: ?ReturnType<typeof mapPathDelete> }>}
      */
     const editEntries = [];
     for (const rec of edits.records) {
@@ -5327,6 +5327,15 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
         if (imageGate) {
           editEntries.push({
             rec, rects: [], gate: null, imageGate,
+          });
+        }
+        continue;
+      }
+      if (rec.type === 'deletePath') {
+        const pathGate = mapPathDelete(rec, edits.dims, mediaBox, rotate);
+        if (pathGate) {
+          editEntries.push({
+            rec, rects: [], gate: null, pathGate,
           });
         }
         continue;
@@ -5354,6 +5363,29 @@ export async function renderPdfPageAsImage(pageObjText, objCache, mediaBox, page
             if (entry.imageGate && imageDrawMatchesDelete(op.ctm, entry.imageGate, opObjNum)) { imageHit = true; break; }
           }
           if (imageHit) continue;
+        }
+        if (op.type === 'path') {
+          let hull = null;
+          let pathHit = false;
+          for (const entry of editEntries) {
+            if (!entry.pathGate) continue;
+            if (!hull) {
+              let hx0 = Infinity; let hy0 = Infinity; let hx1 = -Infinity; let hy1 = -Infinity;
+              for (const cmd of op.commands) {
+                if (cmd.type === 'Z') continue;
+                const pts = cmd.type === 'C' ? [[cmd.x1, cmd.y1], [cmd.x2, cmd.y2], [cmd.x, cmd.y]] : [[cmd.x, cmd.y]];
+                for (const [cx2, cy2] of pts) {
+                  const gx = cx2 * op.ctm[0] + cy2 * op.ctm[2] + op.ctm[4];
+                  const gy = cx2 * op.ctm[1] + cy2 * op.ctm[3] + op.ctm[5];
+                  hx0 = Math.min(hx0, gx); hy0 = Math.min(hy0, gy); hx1 = Math.max(hx1, gx); hy1 = Math.max(hy1, gy);
+                }
+              }
+              hull = [hx0, hy0, hx1, hy1];
+            }
+            const paint = op.fill && op.stroke ? 'fs' : (op.fill ? 'f' : 's');
+            if (pathDrawMatchesDelete(hull, entry.pathGate, paint, op.commands.length)) { pathHit = true; break; }
+          }
+          if (pathHit) continue;
         }
         if (op.type === 'type0text' || op.type === 'type3glyph') {
           const trm = op.editTrm || (op.type === 'type0text' ? [op.a, op.b, op.c, op.d, op.x, op.y] : op.transform);

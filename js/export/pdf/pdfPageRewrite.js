@@ -93,6 +93,8 @@ export async function rewriteContentsStrippingInvisibleText(existingContentsRefs
  *   Replacement blocks for replaceText records, spliced in where their glyphs are dropped.
  * @param {?Array<{rect: [number, number, number, number], sites: Array<{objNum: ?number, rect: [number, number, number, number]}>, tol: number}>} [params.imageDeletes]
  *   An image draw is dropped when it falls inside an entry's rect and matches one of that entry's sites.
+ * @param {?Array<{rect: [number, number, number, number], sites: Array<{rect: [number, number, number, number], paint: string, commands: number}>, tol: number}>} [params.pathDeletes]
+ *   A painted path is dropped when its hull falls inside an entry's rect and agrees with a site's extent, paint kind, and command count.
  * @returns {Promise<{
  *   refs: string[],
  *   xobjEntries: Map<string, number>,
@@ -106,7 +108,7 @@ export async function rewriteContentsStrippingInvisibleText(existingContentsRefs
 export async function rewriteContentsStripAndConvert({
   existingContentsRefs, pageObjText, bboxes, conversionState,
   objCache, allocObjNum, pushObj, humanReadable, convertBrokenType3ToPaths = false,
-  redactBboxes = null, textEditBboxes = null, textEditGated = null, textEditInserts = null, imageDeletes = null,
+  redactBboxes = null, textEditBboxes = null, textEditGated = null, textEditInserts = null, imageDeletes = null, pathDeletes = null,
 }) {
   /** @type {Map<string, number>} */
   const emptyXobj = new Map();
@@ -144,6 +146,9 @@ export async function rewriteContentsStripAndConvert({
     if (imageDeletes && imageDeletes.length > 0) {
       throw new Error('Cannot apply image deletions: a page content stream could not be read.');
     }
+    if (pathDeletes && pathDeletes.length > 0) {
+      throw new Error('Cannot apply path deletions: a page content stream could not be read.');
+    }
     return {
       refs: existingContentsRefs, xobjEntries: emptyXobj, formClones: emptyFormClones, skipped: [],
     };
@@ -162,12 +167,16 @@ export async function rewriteContentsStripAndConvert({
   if (imageDeletes && imageDeletes.length > 0 && !conversionState) {
     throw new Error('Cannot apply image deletions: no conversion state was created for this page.');
   }
+  if (pathDeletes && pathDeletes.length > 0 && !conversionState) {
+    throw new Error('Cannot apply path deletions: no conversion state was created for this page.');
+  }
   const wantRedact = !!(redactBboxes && redactBboxes.length > 0) && !!conversionState;
   // Inserts count too: a pure append has no erase rects but still needs the splice pass to place or append its body.
   const wantEdit = !!((textEditBboxes && textEditBboxes.length > 0) || (textEditGated && textEditGated.rects.length > 0) || (textEditInserts && textEditInserts.length > 0))
     && !!conversionState;
   const wantImageDelete = !!(imageDeletes && imageDeletes.length > 0) && !!conversionState;
-  const wantConvert = (((!!bboxes && bboxes.length > 0) || convertBrokenType3ToPaths) && !!conversionState) || wantRedact || wantEdit || wantImageDelete;
+  const wantPathDelete = !!(pathDeletes && pathDeletes.length > 0) && !!conversionState;
+  const wantConvert = (((!!bboxes && bboxes.length > 0) || convertBrokenType3ToPaths) && !!conversionState) || wantRedact || wantEdit || wantImageDelete || wantPathDelete;
   let workingText = strippedText;
   /** @type {Map<string, number>} */
   let xobjEntries = emptyXobj;
@@ -199,6 +208,7 @@ export async function rewriteContentsStripAndConvert({
       textEditGated,
       textEditInserts,
       imageDeletes,
+      pathDeletes,
     });
     if (result.skipped) skipped = result.skipped;
     if (result.redactedFormNames) redactedFormNames = result.redactedFormNames;

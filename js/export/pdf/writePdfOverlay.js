@@ -3,7 +3,7 @@ import {
 } from '../../pdf/parsePdfUtils.js';
 import { byteIndexOf } from '../../pdf/pdfPrimitives.js';
 import {
-  pageRectToContentRect, pagePointToContentPoint, mapTextEditGlyphs, mapImageDelete,
+  pageRectToContentRect, pagePointToContentPoint, mapTextEditGlyphs, mapImageDelete, mapPathDelete,
 } from '../../pdf/pageGeometry.js';
 import { ObjectCache } from '../../pdf/objectCache.js';
 import { createPdfFontRefs, createEmbeddedFontType0 } from './writePdfFonts.js';
@@ -61,7 +61,7 @@ import { buildNameDests } from '../../pdf/parseOutline.js';
  * @param {number} [params.proofOpacity=0.8]
  * @param {boolean} [params.humanReadable=false]
  * @param {Array<Array<Annotation>>} [params.annotationsPages=[]]
- * @param {Array<Array<ContentEdit>>} [params.contentEditsPages=[]] - Text and image edit records, applied destructively to the page content streams.
+ * @param {Array<Array<ContentEdit>>} [params.contentEditsPages=[]] - Text, image, and path edit records, applied destructively to the page content streams.
  * @param {?(pageIndex: number, fontObjNum: number) => Promise<?{program: ?import('../../pdf/glyphResolve.js').EditFontProgram, bytes: ?ArrayBuffer}>} [params.getEditFont=null]
  *   Resolves the font program a replaceText record's runs were resolved against, with `pageIndex` in the same page space as `contentEditsPages`.
  *   Required when any record carries replacement runs.
@@ -219,6 +219,22 @@ export async function overlayPdfText({
       if (gate) gates.push(gate);
     }
     if (gates.length > 0) imageDeleteByPage.set(i, gates);
+  }
+
+  /** @type {Map<number, Array<{rect: [number, number, number, number], sites: Array<{rect: [number, number, number, number], paint: string, commands: number}>, tol: number}>>} */
+  const pathDeleteByPage = new Map();
+  for (const i of effectivePageArr) {
+    const records = (contentEditsPages[i] || []).filter((r) => r && r.type === 'deletePath');
+    if (records.length === 0) continue;
+    const dims = pageMetricsArr?.[i]?.dims;
+    if (!dims) throw new Error(`Cannot apply path deletions on page ${i}: page dimensions are unknown.`);
+    const box = pages[i].cropBox || pages[i].mediaBox || [0, 0, 612, 792];
+    const gates = [];
+    for (const rec of records) {
+      const gate = mapPathDelete(/** @type {PathEditDelete} */ (rec), dims, box, pages[i].rotate || 0);
+      if (gate) gates.push(gate);
+    }
+    if (gates.length > 0) pathDeleteByPage.set(i, gates);
   }
 
   // Step 2: Determine next available object number.
@@ -504,6 +520,7 @@ export async function overlayPdfText({
       textEditGatedByPage,
       textEditInsertsByPage,
       imageDeleteByPage,
+      pathDeleteByPage,
       editFontRefsByPage,
       editFontObjects,
       docInfo,
@@ -522,7 +539,7 @@ export async function overlayPdfText({
       regionsByPage.get(r.page).push(r.bbox);
     }
   }
-  const conversionState = (regionsByPage.size > 0 || convertBrokenType3ToPaths || imageDeleteByPage.size > 0 || textEditRegionsByPage.size > 0
+  const conversionState = (regionsByPage.size > 0 || convertBrokenType3ToPaths || imageDeleteByPage.size > 0 || pathDeleteByPage.size > 0 || textEditRegionsByPage.size > 0
     || textEditGatedByPage.size > 0 || textEditInsertsByPage.size > 0)
     ? createConversionState() : null;
 
@@ -620,14 +637,15 @@ export async function overlayPdfText({
     // Its source /Annots still holds the lifted copies, which a skip here would pass through and resurrect.
     const hasLiftedAnnotsToDrop = annotationsPages.length > 0 && pageHasLiftedSourceAnnots(pageInfo.objText, objCache, linkDestInfo);
     const hasImageDeletes = imageDeleteByPage.has(i);
-    if (!hasText && !hasAnnots && !hasConvert && !hasTextEdits && !hasImageDeletes && !hasFill && !hasLiftedAnnotsToDrop) continue;
+    const hasPathDeletes = pathDeleteByPage.has(i);
+    if (!hasText && !hasAnnots && !hasConvert && !hasTextEdits && !hasImageDeletes && !hasPathDeletes && !hasFill && !hasLiftedAnnotsToDrop) continue;
 
     /** @type {string[]|null} */
     let newContentsArray = null;
     /** @type {number|null} */
     let resourcesObjNum = null;
 
-    if (hasText || hasConvert || hasTextEdits || hasImageDeletes || hasFill) {
+    if (hasText || hasConvert || hasTextEdits || hasImageDeletes || hasPathDeletes || hasFill) {
       for (const font of pageFontsUsed) pdfFontsUsed.add(font);
 
       const existingContentsRefs = parseExistingContents(pageInfo.objText, objCache);
@@ -645,8 +663,9 @@ export async function overlayPdfText({
         textEditGated: textEditGatedByPage.get(i) || null,
         textEditInserts: textEditInsertsByPage.get(i) || null,
         imageDeletes: imageDeleteByPage.get(i) || null,
+        pathDeletes: pathDeleteByPage.get(i) || null,
       });
-      if (hasTextEdits || hasImageDeletes) {
+      if (hasTextEdits || hasImageDeletes || hasPathDeletes) {
         for (const o of stripConvertResult.supersededContentObjNums || []) scrubObjNums.add(o);
       }
       for (const o of stripConvertResult.deletedImageObjNums || []) scrubObjNums.add(o);

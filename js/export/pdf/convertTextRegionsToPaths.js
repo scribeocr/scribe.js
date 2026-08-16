@@ -15,7 +15,7 @@ import {
 } from '../../pdf/contentStream.js';
 import { parsePageFonts } from '../../pdf/fonts/parsePdfFonts.js';
 import {
-  glyphEmBoxHitsRects, glyphIdentityMatches, imageDrawMatchesDelete, TEXT_EDIT_GLYPH_SIZE_CAP,
+  glyphEmBoxHitsRects, glyphIdentityMatches, imageDrawMatchesDelete, pathDrawMatchesDelete, TEXT_EDIT_GLYPH_SIZE_CAP,
 } from '../../pdf/pageGeometry.js';
 import { aglLookup } from '../../pdf/fonts/standardEncodings.js';
 import { encodeStreamObject } from './writePdfStreams.js';
@@ -562,14 +562,15 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   // Entries are mutated (`placed`) so the page driver can append the leftovers.
   const editInserts = opts.textEditInserts || null;
   const imageDeletes = opts.imageDeletes && opts.imageDeletes.length > 0 ? opts.imageDeletes : null;
+  const pathDeletes = opts.pathDeletes && opts.pathDeletes.length > 0 ? opts.pathDeletes : null;
   const textDropActive = redactActive || editActive;
   const markedContentProps = opts.markedContentProps || null;
   // Glyph-identifying `%tag` comments are a debug/traceability aid (they let tests and a human reader see which (font, glyph) each inline block draws).
   // Emit them only in human-readable (uncompressed) output, never in production streams, where they would be dead weight.
   const commentGlyphs = !!opts.humanReadable;
-  // Redaction always tokenizes, since it must also see vector path ops, which this regex deliberately ignores.
+  // Redaction and path deletion always tokenize, since they must see vector path ops, which this regex deliberately ignores.
   // Text edits always tokenize too, since `'`/`"` shows would slip past the regex.
-  if (!textDropActive && !imageDeletes && !/\bT[jJ]\b|\bDo\b/.test(streamText)) {
+  if (!textDropActive && !imageDeletes && !pathDeletes && !/\bT[jJ]\b|\bDo\b/.test(streamText)) {
     return {
       ok: true,
       text: streamText,
@@ -882,14 +883,17 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
   /** @type {Set<number>} */
   const imageDeleteDroppedObjNums = new Set();
 
-  // Buffered vector path (redact mode, outside BT): serialized construction ops plus the CTM-mapped AABB of every control point, so the paint op can decide the drop.
+  // Buffered vector path (redact or path-delete mode, outside BT): serialized construction ops plus the CTM-mapped AABB of every control point, so the paint op can decide the drop.
   /** @type {string[]} */
   let pathBuf = [];
   let pathIsClip = false;
   let pathBboxKnown = true;
+  // Command count under the parser's expansion, where `re` counts 5 and a shorthand curve counts 1.
+  // A deletePath site carries the parser's count as an identity signal, so this one must match it.
+  let pathCmdCount = 0;
   let pbx0 = Infinity; let pby0 = Infinity; let pbx1 = -Infinity; let pby1 = -Infinity;
   const resetPathBuf = () => {
-    pathBuf = []; pathIsClip = false; pathBboxKnown = true;
+    pathBuf = []; pathIsClip = false; pathBboxKnown = true; pathCmdCount = 0;
     pbx0 = Infinity; pby0 = Infinity; pbx1 = -Infinity; pby1 = -Infinity;
   };
   const flushPathBufVerbatim = () => {
@@ -934,9 +938,9 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
     // (Outside BT, pendingConverts is always empty because ET flushes.)
     if (inBT && pendingConverts.length > 0 && PAINT_STATE_OPS.has(op)) bounceFlushInBT();
 
-    // Vector-path redaction runs only outside BT, since paths are illegal inside it.
+    // Vector-path redaction and path deletion run only outside BT, since paths are illegal inside it.
     // A nonconforming in-BT path keeps verbatim handling; the raster black box still covers it.
-    if (redactActive && !inBT) {
+    if ((redactActive || pathDeletes) && !inBT) {
       if (PATH_CONSTRUCTION_OPS.has(op)) {
         const numsNeeded = op === 'c' ? 6 : (op === 'v' || op === 'y' || op === 're' ? 4 : (op === 'h' ? 0 : 2));
         if (numsNeeded > 0) {
@@ -956,9 +960,12 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
               pbx0 = Math.min(pbx0, gx); pby0 = Math.min(pby0, gy);
               pbx1 = Math.max(pbx1, gx); pby1 = Math.max(pby1, gy);
             }
+            pathCmdCount += op === 're' ? 5 : 1;
           } else {
             pathBboxKnown = false;
           }
+        } else {
+          pathCmdCount += 1;
         }
         const opnd = operandBuf.map(serializeOperand).join(' ');
         pathBuf.push(opnd.length > 0 ? `${opnd} ${op}\n` : `${op}\n`);
@@ -974,14 +981,33 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
         continue;
       }
       if (PATH_PAINT_OPS.has(op)) {
-        const intersects = pathBboxKnown
+        const intersects = pathBboxKnown && redactActive
           && redactBboxes.some((b) => pbx0 < b[2] && pbx1 > b[0] && pby0 < b[3] && pby1 > b[1]);
-        if (!pathBboxKnown && pathBuf.length > 0) {
-          // Unreadable geometry: keep the path (the box covers the rect visually) and surface a warning.
-          skipped.push({ fontObjNum: -1, charCode: -1, reason: 'redact-unverifiable-path' });
+        const closes = op === 's' || op === 'b' || op === 'b*';
+        let deleteHit = false;
+        if (pathDeletes && pathBboxKnown && op !== 'n' && pathBuf.length > 0) {
+          const paint = (op === 'S' || op === 's') ? 's' : (op === 'f' || op === 'F' || op === 'f*') ? 'f' : 'fs';
+          const commands = pathCmdCount + (closes ? 1 : 0);
+          for (const g of pathDeletes) {
+            if (pathDrawMatchesDelete([pbx0, pby0, pbx1, pby1], g, paint, commands)) { deleteHit = true; break; }
+          }
         }
-        if (op !== 'n' && !pathIsClip && intersects && pathBuf.length > 0) {
+        if (!pathBboxKnown && pathBuf.length > 0) {
+          // Unreadable geometry: keep the path and surface a warning.
+          // Redaction's raster box still covers the rect, and a missed path delete is visible and recoverable.
+          skipped.push({ fontObjNum: -1, charCode: -1, reason: redactActive ? 'redact-unverifiable-path' : 'path-delete-unverifiable-path' });
+        }
+        if (op !== 'n' && !pathIsClip && (intersects || deleteHit) && pathBuf.length > 0) {
           resetPathBuf();
+          operandBuf.length = 0;
+          changed = true;
+          continue;
+        }
+        if (op !== 'n' && pathIsClip && deleteHit && pathBuf.length > 0) {
+          // Degrading the paint op to a no-paint op keeps the clip while the ink goes.
+          // Close-variant paints close before painting, so `h` keeps the closed outline in the clip.
+          flushPathBufVerbatim();
+          out.push(closes ? 'h n\n' : 'n\n');
           operandBuf.length = 0;
           changed = true;
           continue;
@@ -1271,7 +1297,7 @@ export function rewritePageContentForRegions(streamText, fontsByTag, bboxes, res
           if (typeof formObjNum === 'number') {
             // The same form placed at several CTMs may intersect a rect at only one placement, so recursing once per name would bake that placement's rewrite into all of them.
             let alias = null;
-            if (textDropActive || imageDeletes) {
+            if (textDropActive || imageDeletes || pathDeletes) {
               const key = `${nameTok.value}\u0000${ctm.join(' ')}`;
               alias = redactFormAliases.get(key);
               if (!alias) {
@@ -2652,11 +2678,12 @@ async function rewriteFormContentForRegions({
   formObjNum, ctm, parentFontsByTag, fontInfoByObjNum, resolver,
   bboxes, targetFontObjNums = null, state, objCache, allocObjNum, pushObj, humanReadable,
   parentResourcesText = null, initialLineWidth = null, initialDashActive = false, initialMiterLimit = null,
-  initialTextState = null, redactBboxes = null, textEditBboxes = null, textEditGated = null, glyphUnicode = null, imageDeletes = null,
+  initialTextState = null, redactBboxes = null, textEditBboxes = null, textEditGated = null, glyphUnicode = null, imageDeletes = null, pathDeletes = null,
 }) {
   const redactActive = !!(redactBboxes && redactBboxes.length > 0);
   const editActive = !!(textEditBboxes && textEditBboxes.length > 0) || !!(textEditGated && textEditGated.rects.length > 0);
   const imageDeleteActive = !!(imageDeletes && imageDeletes.length > 0);
+  const pathDeleteActive = !!(pathDeletes && pathDeletes.length > 0);
   if (state.inProgress.has(formObjNum)) {
     return { changed: false, cloneObjNum: formObjNum, skipped: [] };
   }
@@ -2666,6 +2693,7 @@ async function rewriteFormContentForRegions({
     if (!formObjText || !/\/Subtype\s*\/Form\b/.test(formObjText)) {
       if (redactActive && !formObjText) throw new Error('Cannot apply redactions: a Form XObject could not be read.');
       if (editActive && !formObjText) throw new Error('Cannot apply text edits: a Form XObject could not be read.');
+      if (pathDeleteActive && !formObjText) throw new Error('Cannot apply path deletions: a Form XObject could not be read.');
       return { changed: false, cloneObjNum: formObjNum, skipped: [] };
     }
 
@@ -2689,6 +2717,7 @@ async function rewriteFormContentForRegions({
     if (!streamBytes) {
       if (redactActive) throw new Error('Cannot apply redactions: a Form XObject stream could not be read.');
       if (editActive) throw new Error('Cannot apply text edits: a Form XObject stream could not be read.');
+      if (pathDeleteActive) throw new Error('Cannot apply path deletions: a Form XObject stream could not be read.');
       return { changed: false, cloneObjNum: formObjNum, skipped: [] };
     }
     const streamText = bytesToLatin1(streamBytes);
@@ -2734,6 +2763,7 @@ async function rewriteFormContentForRegions({
       textEditGated,
       glyphUnicode,
       imageDeletes,
+      pathDeletes,
       initialLineWidth,
       initialDashActive,
       initialMiterLimit,
@@ -2747,6 +2777,7 @@ async function rewriteFormContentForRegions({
       if (redactActive) throw new Error(`Cannot apply redactions: Form XObject rewrite failed (${smResult.reason}).`);
       if (editActive) throw new Error(`Cannot apply text edits: Form XObject rewrite failed (${smResult.reason}).`);
       if (imageDeleteActive) throw new Error(`Cannot apply image deletions: Form XObject rewrite failed (${smResult.reason}).`);
+      if (pathDeleteActive) throw new Error(`Cannot apply path deletions: Form XObject rewrite failed (${smResult.reason}).`);
       return { changed: false, cloneObjNum: formObjNum, skipped: [] };
     }
 
@@ -2757,7 +2788,7 @@ async function rewriteFormContentForRegions({
     const deletedImageObjNums = new Set();
     /** @type {?Set<string>} */
     let nestedRedactedNames = null;
-    if (redactActive || editActive || imageDeleteActive) {
+    if (redactActive || editActive || imageDeleteActive || pathDeleteActive) {
       // Per-site recursion, mirroring convertSinglePageForRegions (see the Do aliasing).
       nestedRedactedNames = new Set();
       for (const inv of smResult.formInvocations) {
@@ -2777,6 +2808,7 @@ async function rewriteFormContentForRegions({
           textEditGated,
           glyphUnicode,
           imageDeletes,
+          pathDeletes,
           state,
           objCache,
           allocObjNum,
@@ -2878,7 +2910,7 @@ async function rewriteFormContentForRegions({
     state.formCloneByKey.set(dedupKey, cloneObjNum);
     // The rebuild's reference trace never traces the original form dict for redacted content, since that would copy the unredacted original.
     // The clone's own dict text is traced instead: it references the fonts/images/nested clones the content still needs.
-    if ((redactActive || editActive || imageDeleteActive) && Array.isArray(state.redactTraceTexts)) state.redactTraceTexts.push(dictExtras);
+    if ((redactActive || editActive || imageDeleteActive || pathDeleteActive) && Array.isArray(state.redactTraceTexts)) state.redactTraceTexts.push(dictExtras);
     return {
       changed: true, cloneObjNum, skipped, deletedImageObjNums,
     };
@@ -2920,16 +2952,17 @@ async function rewriteFormContentForRegions({
 export async function convertSinglePageForRegions({
   streamText, pageObjText, bboxes, state, objCache, allocObjNum, pushObj, humanReadable,
   convertBrokenType3ToPaths = false, redactBboxes = null, textEditBboxes = null, textEditGated = null, textEditInserts = null,
-  imageDeletes = null,
+  imageDeletes = null, pathDeletes = null,
 }) {
   const redactActive = !!(redactBboxes && redactBboxes.length > 0);
   // Inserts alone activate the edit pass: a pure append erases nothing but must still be spliced or appended.
   const editActive = !!(textEditBboxes && textEditBboxes.length > 0) || !!(textEditGated && textEditGated.rects.length > 0)
     || !!(textEditInserts && textEditInserts.length > 0);
   const imageDeleteActive = !!(imageDeletes && imageDeletes.length > 0);
+  const pathDeleteActive = !!(pathDeletes && pathDeletes.length > 0);
   // Bbox-driven conversion needs at least one region.
   // Broken-Type3 conversion runs font-scoped with no regions, so it relaxes the empty-bbox early-out.
-  if ((!bboxes || bboxes.length === 0) && !convertBrokenType3ToPaths && !redactActive && !editActive && !imageDeleteActive) return { changed: false };
+  if ((!bboxes || bboxes.length === 0) && !convertBrokenType3ToPaths && !redactActive && !editActive && !imageDeleteActive && !pathDeleteActive) return { changed: false };
   const safeBboxes = bboxes || [];
 
   // Unembedded fonts convert via built-in substitute outlines (see the resolver).
@@ -2946,6 +2979,7 @@ export async function convertSinglePageForRegions({
     if (redactActive) throw new Error('Cannot apply redactions: the page fonts could not be parsed.');
     if (editActive) throw new Error('Cannot apply text edits: the page fonts could not be parsed.');
     if (imageDeleteActive) throw new Error('Cannot apply image deletions: the page fonts could not be parsed.');
+    if (pathDeleteActive) throw new Error('Cannot apply path deletions: the page fonts could not be parsed.');
     return { changed: false };
   }
   if (!pageFontInfos) pageFontInfos = new Map();
@@ -2986,7 +3020,7 @@ export async function convertSinglePageForRegions({
 
   // A redacted or content-edited page runs the walk even with no fonts or Form XObjects, since skipping it would silently keep content that must be removed.
   // Redaction also strips path and image content.
-  if (fontsByTag.size === 0 && pageXobjectsByName.size === 0 && !redactActive && !editActive && !imageDeleteActive) return { changed: false };
+  if (fontsByTag.size === 0 && pageXobjectsByName.size === 0 && !redactActive && !editActive && !imageDeleteActive && !pathDeleteActive) return { changed: false };
 
   /** @type {?Map<string, number>} */
   let pageImagesByName = null;
@@ -3010,6 +3044,7 @@ export async function convertSinglePageForRegions({
     glyphUnicode,
     textEditInserts,
     imageDeletes,
+    pathDeletes,
     extGStates: parseExtGStates(pageResourcesText, objCache),
     markedContentProps: parseMarkedContentProps(pageResourcesText, objCache),
     hiddenOCMCNames: offOCGs.size > 0 ? parseHiddenOCMCNames(pageObjText, objCache, offOCGs) : null,
@@ -3019,6 +3054,7 @@ export async function convertSinglePageForRegions({
     if (redactActive) throw new Error(`Cannot apply redactions: page content rewrite failed (${smResult.reason}).`);
     if (editActive) throw new Error(`Cannot apply text edits: page content rewrite failed (${smResult.reason}).`);
     if (imageDeleteActive) throw new Error(`Cannot apply image deletions: page content rewrite failed (${smResult.reason}).`);
+    if (pathDeleteActive) throw new Error(`Cannot apply path deletions: page content rewrite failed (${smResult.reason}).`);
     return { changed: false };
   }
 
@@ -3031,7 +3067,7 @@ export async function convertSinglePageForRegions({
   const deletedImageNames = new Set();
   /** @type {?Set<string>} */
   let redactedFormNames = null;
-  if (redactActive || editActive || imageDeleteActive) {
+  if (redactActive || editActive || imageDeleteActive || pathDeleteActive) {
     // Per-site recursion (see the aliasing at the Do handler): each invocation carries its own CTM, and its alias resolves to that site's clone or to the original when nothing changed.
     // Content-hash dedup in the clone cache collapses sites whose rewrites are identical.
     redactedFormNames = new Set();
@@ -3052,6 +3088,7 @@ export async function convertSinglePageForRegions({
         textEditGated,
         glyphUnicode,
         imageDeletes,
+        pathDeletes,
         state,
         objCache,
         allocObjNum,

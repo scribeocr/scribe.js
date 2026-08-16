@@ -93,6 +93,8 @@ export async function extractInternalPDFText(doc, options = {}) {
       marks: pageResults[i].fillMarks,
       marksOverflow: pageResults[i].fillMarksOverflow,
       images: pageResults[i].fillImages,
+      paths: pageResults[i].fillPaths,
+      pathsIneligible: pageResults[i].fillPathsIneligible,
       glyphBoxes: pageResults[i].fillGlyphBoxes,
     });
   }
