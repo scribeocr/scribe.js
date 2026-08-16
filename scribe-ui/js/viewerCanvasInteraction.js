@@ -807,7 +807,7 @@ function ensureContextMenu() {
       background: var(--scribe-surface, #ffffff);
       border: 1px solid var(--scribe-line, #e4e8ef);
       border-radius: 8px;
-      box-shadow: var(--scribe-menu-shadow, 0 8px 24px rgba(20, 30, 60, .18));
+      box-shadow: var(--scribe-menu-shadow, 0 4px 14px rgba(20, 30, 60, .13));
       font-family: system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
       font-size: 12.5px;
       line-height: 1.55;
@@ -1159,7 +1159,7 @@ function ensureTouchCallout() {
       background: var(--scribe-surface, #ffffff);
       border: 1px solid var(--scribe-line, #e4e8ef);
       border-radius: 12px;
-      box-shadow: var(--scribe-menu-shadow, 0 8px 24px rgba(20, 30, 60, .18));
+      box-shadow: var(--scribe-menu-shadow, 0 4px 14px rgba(20, 30, 60, .13));
     }
     /* .flipped (callout below the selection) reverses the rows so the tail row stays on the far side. */
     #scribe-touch-callout.flipped { flex-direction: column-reverse; }

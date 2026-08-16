@@ -1002,7 +1002,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       --scribe-danger-soft: #fbe9e7;
       --scribe-scrollbar: rgba(28, 42, 68, .26);
       --scribe-shadow-pop: 0 8px 28px rgba(20, 30, 60, .17);
-      --scribe-menu-shadow: 0 8px 24px rgba(20, 30, 60, .18);
+      --scribe-menu-shadow: 0 4px 14px rgba(20, 30, 60, .13);
       --scribe-page-shadow: 0 1px 3px rgba(30, 26, 16, .18);
       --scribe-lift-shadow: 0 10px 24px rgba(20, 30, 60, .30);
       --scribe-plate: rgba(28, 42, 68, .09);
@@ -1028,7 +1028,7 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       --scribe-danger-soft: #33201d;
       --scribe-scrollbar: rgba(255, 255, 255, .26);
       --scribe-shadow-pop: 0 10px 30px rgba(0, 0, 0, .55);
-      --scribe-menu-shadow: 0 8px 24px rgba(0, 0, 0, .5);
+      --scribe-menu-shadow: 0 4px 14px rgba(0, 0, 0, .45);
       --scribe-page-shadow: 0 1px 3px rgba(0, 0, 0, .5);
       --scribe-lift-shadow: 0 12px 28px rgba(0, 0, 0, .7);
       --scribe-plate: rgba(255, 255, 255, .09);

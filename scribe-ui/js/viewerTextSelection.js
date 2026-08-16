@@ -1153,8 +1153,9 @@ export class TextSelection {
       };
       this._renderAll();
     } else {
-      // A plain single click arms link-following, which `_onDragEnd` confirms at release.
-      const linkArm = (this._lastDown.count === 1 && !event.shiftKey && !event.ctrlKey && !event.metaKey)
+      // A single click arms link-following, which `_onDragEnd` confirms at release.
+      // Ctrl/Cmd still arms so the release confirm can apply the ask bypass.
+      const linkArm = (this._lastDown.count === 1 && !event.shiftKey)
         ? this.viewer.linkAt(event.clientX, event.clientY) : null;
       // Selectability matches the I-beam, so a dead-space press dismisses instead of snapping to the nearest caret.
       if (!this.isOverText(event.clientX, event.clientY)) {
@@ -1285,7 +1286,7 @@ export class TextSelection {
     // Region containment, not exact coordinates, lets a real click's few-px drift still land on the armed link.
     if (linkArm && event.type === 'pointerup' && this.isEmpty()
       && this.viewer.linkAt(event.clientX, event.clientY) === linkArm) {
-      this.viewer._followLink(linkArm);
+      this.viewer._linkActivate(linkArm, event);
     }
     if (this.viewer.onSelectionChange) this.viewer.onSelectionChange();
   }

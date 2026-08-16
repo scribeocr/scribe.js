@@ -1740,7 +1740,7 @@ export function createEditTextTool(scribe) {
         padding: '7px 11px',
         fontSize: '12px',
         lineHeight: '1.35',
-        boxShadow: 'var(--scribe-menu-shadow, 0 8px 24px rgba(20, 30, 60, .18))',
+        boxShadow: 'var(--scribe-menu-shadow, 0 4px 14px rgba(20, 30, 60, .13))',
         pointerEvents: 'none',
         maxWidth: '300px',
         transition: 'opacity .3s',

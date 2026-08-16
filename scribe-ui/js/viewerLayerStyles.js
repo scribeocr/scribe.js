@@ -100,7 +100,7 @@ export function ensureLayerStyleSheet() {
     // The choice popover is not drawn on the page, so it uses the theme tokens rather than the hardcoded page-space colors.
     + '.scribe-field-pop{position:fixed;z-index:1000;max-height:260px;overflow-y:auto;padding:4px;box-sizing:border-box;'
     + 'background:var(--scribe-surface,#fff);border:1px solid var(--scribe-line,#e4e8ef);'
-    + 'border-radius:8px;box-shadow:var(--scribe-menu-shadow,0 8px 24px rgba(20,30,60,.18))}'
+    + 'border-radius:8px;box-shadow:var(--scribe-menu-shadow,0 4px 14px rgba(20,30,60,.13))}'
     + '.scribe-field-pop-item{padding:5px 10px;border-radius:5px;cursor:pointer;'
     + 'font:12.5px system-ui,-apple-system,sans-serif;color:var(--scribe-ink,#1f2530);'
     + 'white-space:pre;max-width:min(420px,90vw);overflow:hidden;text-overflow:ellipsis}'

@@ -129,6 +129,14 @@ export class ScribeViewer {
     this._linkStatusEl = null;
     /** @type {?AnnotationLink} */
     this._linkStatusEntry = null;
+    /** @type {?HTMLButtonElement} */
+    this._linkConfirmEl = null;
+    /** @type {?((event: PointerEvent) => void)} */
+    this._linkConfirmDocDown = null;
+    /** @type {?(() => void)} */
+    this._linkConfirmScroll = null;
+    /** @type {boolean} */
+    this._linkConfirmHover = false;
     /**
      * The outer element of the UI component that owns this viewer
      * (e.g. a wrapper that also contains a toolbar), if any.
@@ -1978,7 +1986,8 @@ export class ScribeViewer {
     // Under the custom engine, mouse and pen clicks are confirmed in the selection engine's own pointer flow, so this handler covers only the DOM engine and touch taps.
     scrollContainer.addEventListener('click', (event) => {
       if (event.detail > 1) return;
-      if (event.ctrlKey || event.metaKey || event.shiftKey || event.altKey) return;
+      // Ctrl/Cmd stays live as the ask bypass.
+      if (event.shiftKey || event.altKey) return;
       if (this.state.layoutMode || this.enableCanvasSelection) return;
       if (event.target instanceof Element
         && event.target.closest('.scribe-hl-cmark, .scribe-note-icon, .scribe-cmt-card, [contenteditable]')) return;
@@ -1994,7 +2003,7 @@ export class ScribeViewer {
       // Press and release must land on the same region, so the click that ends a drag never navigates.
       const down = this._lastPointerDownClient;
       if (down && this.linkAt(down.x, down.y) !== entry) return;
-      this._followLink(entry);
+      this._linkActivate(entry, event);
     });
 
     // Show a hovered /Link region's destination in a bottom-left status bubble.
@@ -2006,6 +2015,8 @@ export class ScribeViewer {
       } = event;
       linkStatusRaf = requestAnimationFrame(() => {
         linkStatusRaf = null;
+        // A sample queued just before the pointer crossed onto the strip would land after its mouseenter and wrongly hide the readout, so the strip's hover claim wins over this deferred path.
+        if (this._linkConfirmHover) return;
         // Touch has no hover, and a held button means a drag or selection is underway, not a hover.
         const entry = (pointerType === 'touch' || buttons) ? null : this.linkAt(clientX, clientY);
         this._linkStatusUpdate(entry);
@@ -2532,6 +2543,174 @@ export class ScribeViewer {
       // A PDF can carry a javascript: URI that must never execute, so only http and mailto open.
       window.open(entry.uri, '_blank', 'noopener,noreferrer');
     }
+  }
+
+  /**
+   * Route an activated link annotation.
+   * Internal destinations navigate at once, external targets ask first.
+   * Holding Ctrl/Cmd during the click skips the ask.
+   * @param {AnnotationLink} entry
+   * @param {{clientX: number, clientY: number, ctrlKey: boolean, metaKey: boolean}} event - The confirming pointer or click event.
+   */
+  _linkActivate(entry, event) {
+    if (entry.dest) {
+      this._followLink(entry);
+      return;
+    }
+    // The same scheme allowlist `_followLink` enforces, applied up front so blocked URIs get no ask either.
+    if (!entry.uri || !/^(https?:|mailto:)/i.test(entry.uri.trim())) return;
+    if (event.ctrlKey || event.metaKey) {
+      this._followLink(entry);
+      return;
+    }
+    this._linkConfirmShow(entry, event);
+  }
+
+  /**
+   * Show the click-to-open confirm strip under an external link.
+   * The whole strip is the open control.
+   * Esc, scrolling, or a press anywhere else dismisses it.
+   * @param {AnnotationLink} entry
+   * @param {{clientX: number, clientY: number}} event - The click the strip is answering, used to resolve the page.
+   */
+  _linkConfirmShow(entry, event) {
+    this._linkConfirmHide(false);
+    const uri = /** @type {string} */ (entry.uri).trim();
+    if (!document.getElementById('scribe-link-confirm-style')) {
+      const style = document.createElement('style');
+      style.id = 'scribe-link-confirm-style';
+      // Token vars resolve when the app stylesheet is present and fall back to the light palette when the viewer is embedded bare.
+      style.textContent = `
+        .scribe-link-confirm {
+          position: absolute; z-index: 31; box-sizing: border-box;
+          display: flex; align-items: center; gap: 8px;
+          height: 34px; padding: 0 12px;
+          background: var(--scribe-surface, #ffffff); color: var(--scribe-ink, #1f2530);
+          border: 1px solid var(--scribe-line, #e4e8ef); border-radius: 6px;
+          box-shadow: var(--scribe-menu-shadow, 0 4px 14px rgba(20, 30, 60, .13));
+          font: 12.5px -apple-system, system-ui, 'Segoe UI', sans-serif;
+          cursor: pointer; appearance: none; text-align: left;
+          opacity: 0; transform: translateY(-2px); transition: opacity .1s ease, transform .1s ease;
+        }
+        .scribe-link-confirm.scribe-link-confirm-in { opacity: 1; transform: none; }
+        /* The hover token is a translucent tint, so it layers over the opaque surface rather than replacing it. */
+        .scribe-link-confirm:hover { background-image: linear-gradient(var(--scribe-hover, rgba(28, 42, 68, .06)), var(--scribe-hover, rgba(28, 42, 68, .06))); }
+        .scribe-link-confirm:focus-visible {
+          outline: none;
+          box-shadow: 0 0 0 2px var(--scribe-accent-ring, rgba(28, 98, 212, .30)), var(--scribe-menu-shadow, 0 4px 14px rgba(20, 30, 60, .13));
+        }
+        .scribe-link-confirm-url { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .scribe-link-confirm-url .scribe-link-confirm-dim { color: var(--scribe-ink-3, #98a1b0); }
+        .scribe-link-confirm-url .scribe-link-confirm-host { color: var(--scribe-ink, #1f2530); font-weight: 600; }
+        .scribe-link-confirm-arrow { flex: none; width: 13px; height: 13px; color: var(--scribe-accent, #1c62d4); }
+        @media (prefers-reduced-motion: reduce) { .scribe-link-confirm { transition: none; } }
+      `;
+      document.head.appendChild(style);
+    }
+
+    // Min/max of the two mapped corners keeps the link rect upright on rotated pages.
+    const { n } = this.clientToPage(event.clientX, event.clientY);
+    const b = entry.bbox;
+    const p1 = this.localToContent(n, 0, b.left, b.top);
+    const p2 = this.localToContent(n, 0, b.right, b.bottom);
+    const zl = this.zoomLayer.getBoundingClientRect();
+    const z = this.zoomLevel;
+    const link = {
+      left: zl.left + Math.min(p1.x, p2.x) * z,
+      top: zl.top + Math.min(p1.y, p2.y) * z,
+      bottom: zl.top + Math.max(p1.y, p2.y) * z,
+    };
+
+    let scheme = '';
+    let host = uri;
+    let path = '';
+    const m = uri.match(/^(https?:\/\/)([^/?#]*)(.*)$/i);
+    if (m) {
+      [, scheme, host, path] = m;
+    } else if (/^mailto:/i.test(uri)) {
+      scheme = uri.slice(0, 'mailto:'.length);
+      host = uri.slice('mailto:'.length);
+    }
+    const el = document.createElement('button');
+    el.type = 'button';
+    el.className = 'scribe-link-confirm';
+    el.setAttribute('aria-label', `Open ${uri}`);
+    const urlElem = document.createElement('span');
+    urlElem.className = 'scribe-link-confirm-url';
+    for (const [cls, text] of [['scribe-link-confirm-dim', scheme], ['scribe-link-confirm-host', host], ['scribe-link-confirm-dim', path]]) {
+      if (!text) continue;
+      const piece = document.createElement('span');
+      piece.className = cls;
+      piece.textContent = text;
+      urlElem.appendChild(piece);
+    }
+    const arrow = document.createElement('span');
+    arrow.className = 'scribe-link-confirm-arrow';
+    arrow.innerHTML = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" style="display:block;width:100%;height:100%;" aria-hidden="true"><path d="M7 17 17 7M9 7h8v8"/></svg>';
+    el.append(urlElem, arrow);
+    this.elem.appendChild(el);
+    this._linkConfirmEl = el;
+
+    const elemRect = this.elem.getBoundingClientRect();
+    const sc = this.scrollContainer.getBoundingClientRect();
+    el.style.maxWidth = `${Math.min(460, sc.width - 16)}px`;
+    const w = el.offsetWidth;
+    const x = Math.min(Math.max(link.left, sc.left + 8), sc.right - w - 8) - elemRect.left;
+    let y = link.bottom + 4 - elemRect.top;
+    if (y + el.offsetHeight > sc.bottom - elemRect.top - 8) y = link.top - elemRect.top - el.offsetHeight - 4;
+    el.style.left = `${x}px`;
+    el.style.top = `${y}px`;
+    requestAnimationFrame(() => el.classList.add('scribe-link-confirm-in'));
+    el.focus({ preventScroll: true });
+
+    el.addEventListener('click', (e) => {
+      e.stopPropagation();
+      this._linkConfirmHide(true);
+      this._followLink(entry);
+    });
+    el.addEventListener('keydown', (e) => {
+      if (e.key !== 'Escape') return;
+      e.stopPropagation();
+      this._linkConfirmHide(true);
+    });
+    // The strip truncates long URLs, so hovering it reads out the full target in the status bubble.
+    // The hover flag gives these handlers authority over the bubble, which the frame-deferred scroll-area hover path yields to.
+    el.addEventListener('mouseenter', () => {
+      this._linkConfirmHover = true;
+      this._linkStatusUpdate(entry);
+    });
+    el.addEventListener('mouseleave', () => {
+      this._linkConfirmHover = false;
+      this._linkStatusUpdate(null);
+    });
+    this._linkConfirmDocDown = (e) => {
+      if (this._linkConfirmEl && e.target instanceof Node && !this._linkConfirmEl.contains(e.target)) this._linkConfirmHide(false);
+    };
+    document.addEventListener('pointerdown', this._linkConfirmDocDown, true);
+    this._linkConfirmScroll = () => this._linkConfirmHide(false);
+    this.scrollContainer.addEventListener('scroll', this._linkConfirmScroll, { passive: true });
+  }
+
+  /**
+   * Remove the link confirm strip and its listeners.
+   * @param {boolean} refocus - Whether to hand keyboard focus back to the document.
+   */
+  _linkConfirmHide(refocus) {
+    if (this._linkConfirmDocDown) {
+      document.removeEventListener('pointerdown', this._linkConfirmDocDown, true);
+      this._linkConfirmDocDown = null;
+    }
+    if (this._linkConfirmScroll) {
+      this.scrollContainer.removeEventListener('scroll', this._linkConfirmScroll);
+      this._linkConfirmScroll = null;
+    }
+    if (!this._linkConfirmEl) return;
+    this._linkConfirmEl.remove();
+    this._linkConfirmEl = null;
+    // The strip can vanish while the pointer rests on it, where no mouseleave will fire, so its hover claim and bubble readout clear here.
+    this._linkConfirmHover = false;
+    this._linkStatusUpdate(null);
+    if (refocus) this.scrollContainer.focus({ preventScroll: true });
   }
 
   /**
@@ -3885,6 +4064,7 @@ export class ScribeViewer {
   destroy() {
     unregisterViewer(this);
     this.stopAutoScroll(false);
+    this._linkConfirmHide(false);
     this._endScrollTextHide();
     /** @type {any} */ (this._selEngine)?.uninstall?.();
     this.textSel?.destroy();
