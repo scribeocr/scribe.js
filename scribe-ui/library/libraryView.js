@@ -90,6 +90,8 @@ const addLibraryStyles = () => {
   const style = document.createElement('style');
   style.textContent = `
 .scribe-pdf-viewer .scribe-library-surface { position: absolute; left: 0; right: 0; bottom: 0; z-index: 30; background: var(--scribe-canvas); color: var(--scribe-ink); display: flex; flex-direction: column; overflow: hidden; font-size: 14px; }
+.scribe-pdf-viewer .scribe-library-surface { -webkit-user-select: none; user-select: none; }
+.scribe-pdf-viewer .scribe-library-surface input, .scribe-pdf-viewer .scribe-library-surface textarea, .scribe-pdf-viewer .scribe-library-surface [contenteditable] { -webkit-user-select: auto; user-select: auto; }
 .scribe-pdf-viewer .scribe-library-header { display: flex; align-items: center; gap: 8px; min-height: 44px; box-sizing: border-box; padding: 4px 14px 4px 18px; border-bottom: 1px solid var(--scribe-line); background: var(--scribe-surface); flex-wrap: wrap; }
 .scribe-pdf-viewer .scribe-library-header h2 { font-size: 14px; font-weight: 600; margin: 0; }
 .scribe-pdf-viewer .scribe-library-bar-title { display: flex; align-items: center; gap: 8px; min-width: 0; }
@@ -152,7 +154,7 @@ const addLibraryStyles = () => {
 .scribe-pdf-viewer .scribe-library-progress-stop:hover { background: var(--scribe-hover); color: var(--scribe-ink); }
 .scribe-pdf-viewer .scribe-library-progress-stop:focus-visible { outline: 2px solid var(--scribe-accent); outline-offset: 1px; }
 .scribe-pdf-viewer .scribe-library-progress-hair { position: absolute; left: 0; bottom: -1px; height: 2px; background: var(--scribe-accent); transition: width 0.28s ease; }
-.scribe-pdf-viewer .scribe-library-body { flex: 1; overflow-y: auto; padding: 16px 18px; }
+.scribe-pdf-viewer .scribe-library-body { flex: 1; overflow-y: auto; overflow-x: hidden; padding: 16px 18px; }
 .scribe-pdf-viewer .scribe-library-body::-webkit-scrollbar { width: 7px; }
 .scribe-pdf-viewer .scribe-library-body::-webkit-scrollbar-track { background: transparent; }
 .scribe-pdf-viewer .scribe-library-body::-webkit-scrollbar-thumb { background: var(--scribe-scrollbar); border-radius: 6px; }
@@ -229,7 +231,7 @@ const addLibraryStyles = () => {
 /* Dividers move width between columns, which is meaningless once the layout is dropping them to fit. */
 .scribe-pdf-viewer .scribe-library-cols-dropped .scribe-library-hres { display: none; }
 .scribe-pdf-viewer .scribe-library-results { flex: 1; display: flex; min-height: 0; min-width: 0; font-size: 13px; }
-.scribe-pdf-viewer .scribe-library-rlist { width: clamp(280px, var(--scribe-library-rlist-w, 400px), calc(100% - 320px)); box-sizing: border-box; flex-shrink: 0; overflow-y: auto; border-right: 1px solid var(--scribe-line); background: var(--scribe-surface); outline: none; }
+.scribe-pdf-viewer .scribe-library-rlist { width: clamp(280px, var(--scribe-library-rlist-w, 400px), calc(100% - 320px)); box-sizing: border-box; flex-shrink: 0; overflow-y: auto; overflow-x: hidden; border-right: 1px solid var(--scribe-line); background: var(--scribe-surface); outline: none; }
 .scribe-pdf-viewer .scribe-library-rlist::-webkit-scrollbar { width: 5px; }
 .scribe-pdf-viewer .scribe-library-rlist::-webkit-scrollbar-track { background: transparent; }
 .scribe-pdf-viewer .scribe-library-rlist::-webkit-scrollbar-thumb { background: var(--scribe-scrollbar); border-radius: 6px; }

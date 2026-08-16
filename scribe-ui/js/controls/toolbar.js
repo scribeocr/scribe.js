@@ -687,18 +687,76 @@ export function createTabStrip({ onSelect, onClose }) {
     tabStripElem.classList.toggle('pin-active', on);
   }
 
+  // Mounted on the viewer root lazily, since the strip has no parent yet at build time.
+  const menuElem = document.createElement('div');
+  menuElem.className = 'scribe-tab-menu';
+  menuElem.style.display = 'none';
+
+  function closeTabMenu() {
+    menuElem.style.display = 'none';
+    document.removeEventListener('pointerdown', onTabMenuOutside);
+    document.removeEventListener('keydown', onTabMenuKey);
+  }
+  /** @param {PointerEvent} e */
+  function onTabMenuOutside(e) {
+    if (menuElem.contains(/** @type {Node} */ (e.target))) return;
+    closeTabMenu();
+  }
+  /** @param {KeyboardEvent} e */
+  function onTabMenuKey(e) {
+    if (e.key === 'Escape') closeTabMenu();
+  }
+
+  /**
+   * Open the tab context menu at the cursor.
+   * @param {number} clientX @param {number} clientY
+   * @param {string} name - The tab's document name.
+   */
+  function openTabMenu(clientX, clientY, name) {
+    const host = tabStripElem.parentElement;
+    if (!host) return;
+    if (menuElem.parentElement !== host) host.appendChild(menuElem);
+    menuElem.replaceChildren();
+    const item = document.createElement('div');
+    item.className = 'scribe-tab-menu-item';
+    item.textContent = 'Copy name';
+    item.addEventListener('click', () => {
+      closeTabMenu();
+      navigator.clipboard?.writeText(name);
+    });
+    menuElem.appendChild(item);
+    // Show first so the menu has measurable dimensions, then clamp it inside the host.
+    menuElem.style.display = '';
+    const hostRect = host.getBoundingClientRect();
+    const left = Math.min(clientX - hostRect.left, hostRect.width - menuElem.offsetWidth - 4);
+    const top = Math.min(clientY - hostRect.top, hostRect.height - menuElem.offsetHeight - 4);
+    menuElem.style.left = `${Math.max(4, left)}px`;
+    menuElem.style.top = `${Math.max(4, top)}px`;
+    // Deferred so the pointer sequence that opened the menu cannot immediately dismiss it.
+    setTimeout(() => {
+      document.addEventListener('pointerdown', onTabMenuOutside);
+      document.addEventListener('keydown', onTabMenuKey);
+    }, 0);
+  }
+
   /**
    * Rebuild the chips from the current tab list.
    * @param {Array<{ name: string, asleep?: boolean, waking?: boolean }>} tabs
    * @param {number} activeIndex
    */
   function render(tabs, activeIndex) {
+    // A menu left open over the rebuilt strip would still copy the name it captured from the old chip.
+    closeTabMenu();
     laneElem.textContent = '';
     tabs.forEach((tab, i) => {
       const chip = document.createElement('div');
       chip.className = i === activeIndex ? 'scribe-tab active' : 'scribe-tab';
       if (tab.asleep) chip.classList.add('asleep');
       chip.title = tab.asleep && !tab.waking ? `${tab.name} — asleep to save memory` : tab.name;
+      chip.addEventListener('contextmenu', (event) => {
+        event.preventDefault();
+        openTabMenu(event.clientX, event.clientY, tab.name);
+      });
 
       const name = document.createElement('span');
       name.className = 'scribe-tab-name';
@@ -1851,6 +1909,23 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
       color: var(--scribe-ink);
     }
 
+    /* Right-click menu on a document tab, mounted on the viewer root and placed at the cursor by JS. */
+    .${r} .scribe-tab-menu {
+      position: absolute;
+      min-width: 150px;
+      padding: 4px;
+      background: var(--scribe-surface);
+      border: 1px solid var(--scribe-line);
+      border-radius: 8px;
+      box-shadow: var(--scribe-menu-shadow);
+      z-index: 60;
+      font-size: 13px;
+      color: var(--scribe-ink);
+      user-select: none;
+    }
+    .${r} .scribe-tab-menu-item { padding: 7px 12px; border-radius: 5px; cursor: pointer; white-space: nowrap; }
+    .${r} .scribe-tab-menu-item:hover { background: var(--scribe-hover); }
+
     .${r} .highlight-color-btn {
       width: 20px;
       height: 20px;
@@ -2231,6 +2306,17 @@ export function addControlStyles(rootClass = 'scribe-pdf-viewer') {
     .${r}-toolbar .scribe-page-sep { font-size: 13px; }
     /* The mode-button overflow fold measures these children, so they must never flex-shrink below their natural widths. */
     .${r}-toolbar .col-md > * { flex: 0 0 auto; }
+
+    .${r}-toolbar {
+      -webkit-user-select: none;
+      user-select: none;
+    }
+    .${r}-toolbar input,
+    .${r}-toolbar textarea,
+    .${r}-toolbar [contenteditable] {
+      -webkit-user-select: auto;
+      user-select: auto;
+    }
 
     /* Floating find widget: opening it overlays content instead of reflowing the right-zone controls. */
     .${r} .scribe-search-group {

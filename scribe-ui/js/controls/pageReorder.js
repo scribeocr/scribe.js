@@ -218,12 +218,13 @@ function multiMoveIndex(oi, sortedSel, to) {
  * Call before the rows are restyled to their new positions.
  * @param {Array<[number, ThumbRow]>} snapshot - The [oldIndex, row] pairs being repositioned.
  * @param {Set<number>} movedOld - Old indices of the dragged page(s), which fly in rather than slide.
+ * @param {?Set<number>} noSlide - Old indices to leave un-slid, whose screen position the caller holds fixed itself.
  */
-function slideRows(snapshot, movedOld) {
+function slideRows(snapshot, movedOld, noSlide) {
   /** @type {Array<ThumbRow>} */
   const sliding = [];
   for (const [oi, entry] of snapshot) {
-    if (movedOld.has(oi)) continue;
+    if (movedOld.has(oi) || (noSlide && noSlide.has(oi))) continue;
     // Cells move in both axes when the grid reflows around a drop, so slide top and left (left is a no-op in the rail).
     entry.thumbElem.style.transition = `top ${REORDER_SLIDE_MS}ms ease, left ${REORDER_SLIDE_MS}ms ease`;
     sliding.push(entry);
@@ -425,6 +426,57 @@ export function installPageReorder(ctx) {
   }
 
   /**
+   * Camera anchor for a drop whose source rows all sit above the scroll viewport.
+   * Such a drop removes content from above the view, so restoring the absolute scroll would leave the camera over different pages.
+   * Returns null for any other drop, which keeps the plain absolute restore.
+   * @param {Set<number>} movedOld - Old indices of the pages being moved.
+   * @param {Array<[number, ThumbRow]>} snapshot - The mounted [oldIndex, row] pairs at drop time.
+   * @returns {?{anchorOld: number, anchorTop: number, tops: Map<number, number>, lefts: Map<number, number>}}
+   *   The anchor's old index and row top, plus each mounted row's old top/left for the slide-suppression check.
+   */
+  function farMoveAnchor(movedOld, snapshot) {
+    const vTop = ctx.scrollElem.scrollTop - ctx.PAD;
+    for (const m of movedOld) {
+      if (ctx.offsets[m] + ctx.heights[m] > vTop) return null;
+    }
+    let anchorOld = -1;
+    for (let n = 0; n < ctx.pageCount; n++) {
+      if (!movedOld.has(n) && ctx.offsets[n] + ctx.heights[n] > vTop) { anchorOld = n; break; }
+    }
+    if (anchorOld < 0) return null;
+    const tops = new Map();
+    const lefts = new Map();
+    for (const [oi] of snapshot) {
+      tops.set(oi, ctx.offsets[oi]);
+      lefts.set(oi, ctx.lefts[oi]);
+    }
+    return {
+      anchorOld, anchorTop: ctx.offsets[anchorOld], tops, lefts,
+    };
+  }
+
+  /**
+   * Scroll target and slide-suppression set for a far drop, from the pre-move `farMoveAnchor` capture.
+   * Rows the compensation already holds in place on screen must not also slide, while rows near the seam still do.
+   * @param {{anchorOld: number, anchorTop: number, tops: Map<number, number>, lefts: Map<number, number>}} far
+   * @param {number} keepScroll - The scroll position at drop time.
+   * @param {Array<[number, ThumbRow]>} snapshot
+   * @param {Set<number>} movedOld
+   * @param {(oi: number) => number} remap - Old index to new index for this move.
+   * @returns {{scrollTarget: number, noSlide: Set<number>}}
+   */
+  function farMoveScroll(far, keepScroll, snapshot, movedOld, remap) {
+    const delta = ctx.offsets[remap(far.anchorOld)] - far.anchorTop;
+    const noSlide = new Set();
+    for (const [oi] of snapshot) {
+      if (movedOld.has(oi)) continue;
+      const ni = remap(oi);
+      if (Math.abs(ctx.offsets[ni] - far.tops.get(oi) - delta) < 0.5 && ctx.lefts[ni] === far.lefts.get(oi)) noSlide.add(oi);
+    }
+    return { scrollTarget: keepScroll + delta, noSlide };
+  }
+
+  /**
    * Move a page and update the rail in place, reusing the already-decoded thumbnails.
    * A full `rebuild` would revoke and re-render every image, flashing the rail white, so instead it permutes the existing images,
    * relocating and relabelling rows rather than tearing them down.
@@ -438,6 +490,8 @@ export function installPageReorder(ctx) {
     const keepScroll = ctx.scrollElem.scrollTop;
     const snapshot = [...ctx.mounted];
     const movedOld = new Set([from]);
+    // Captured before the move rewrites the geometry arrays.
+    const far = farMoveAnchor(movedOld, snapshot);
     ctx.mounted.clear();
 
     ctx.scribe.movePage(from, to);
@@ -446,8 +500,9 @@ export function installPageReorder(ctx) {
     if (ctx.activePage >= 0) ctx.activePage = newIndexFor(ctx.activePage, from, to);
     ctx.remapSelection((s) => newIndexFor(s, from, to));
 
+    const landing = far ? farMoveScroll(far, keepScroll, snapshot, movedOld, (oi) => newIndexFor(oi, from, to)) : null;
     // The pages the drop displaces slide around it (the dragged page itself is flown in by the ghost on release).
-    slideRows(snapshot, movedOld);
+    slideRows(snapshot, movedOld, landing && landing.noSlide);
     /** @type {Array<ThumbRow>} */
     const movedEntries = [];
     for (const [oi, entry] of snapshot) {
@@ -459,7 +514,7 @@ export function installPageReorder(ctx) {
       if (movedOld.has(oi)) movedEntries.push(entry);
     }
 
-    ctx.scrollElem.scrollTop = keepScroll;
+    ctx.scrollElem.scrollTop = landing ? landing.scrollTarget : keepScroll;
     ctx.updateWindow();
     ctx.updateBatchToolbar();
     return movedEntries;
@@ -481,6 +536,8 @@ export function installPageReorder(ctx) {
     const keepScroll = ctx.scrollElem.scrollTop;
     const snapshot = [...ctx.mounted];
     const movedOld = new Set(sortedSel);
+    // Captured before the move rewrites the geometry arrays.
+    const far = farMoveAnchor(movedOld, snapshot);
     ctx.mounted.clear();
 
     ctx.scribe.movePages(sortedSel, to);
@@ -488,8 +545,9 @@ export function installPageReorder(ctx) {
     if (ctx.activePage >= 0) ctx.activePage = multiMoveIndex(ctx.activePage, sortedSel, to);
     ctx.remapSelection((s) => multiMoveIndex(s, sortedSel, to));
 
+    const landing = far ? farMoveScroll(far, keepScroll, snapshot, movedOld, (oi) => multiMoveIndex(oi, sortedSel, to)) : null;
     // The pages the drop displaces slide around them (the dragged pages are flown in by the ghost on release).
-    slideRows(snapshot, movedOld);
+    slideRows(snapshot, movedOld, landing && landing.noSlide);
     /** @type {Array<ThumbRow>} */
     const movedEntries = [];
     for (const [oi, entry] of snapshot) {
@@ -502,7 +560,7 @@ export function installPageReorder(ctx) {
       if (movedOld.has(oi)) movedEntries.push(entry);
     }
 
-    ctx.scrollElem.scrollTop = keepScroll;
+    ctx.scrollElem.scrollTop = landing ? landing.scrollTarget : keepScroll;
     ctx.updateWindow();
     ctx.updateBatchToolbar();
     return movedEntries;

@@ -13,7 +13,10 @@ pdfViewer.toolbarElemStart.classList.add('scribe-shell-drag-zone');
 pdfViewer.toolbarElemEnd.classList.add('scribe-shell-drag-zone');
 const dragOptOut = document.createElement('style');
 dragOptOut.textContent = '.scribe-shell-drag-zone > *, .scribe-shell-drag-zone > * *, .col-md, .col-md *, '
-  + '.scribe-search-group, .scribe-search-group * { -webkit-app-region: no-drag; }';
+  + '.scribe-search-group, .scribe-search-group * { -webkit-app-region: no-drag; }'
+  + ' .scribe-library-bar-title, .scribe-library-bar-title * { -webkit-app-region: drag; }'
+  + ' .scribe-library-bar-title button, .scribe-library-bar-title button *,'
+  + ' .scribe-library-bar-title .scribe-library-menu, .scribe-library-bar-title .scribe-library-menu * { -webkit-app-region: no-drag; }';
 document.head.appendChild(dragOptOut);
 
 const { platform } = window.electronAPI;

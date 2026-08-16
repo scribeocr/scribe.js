@@ -2075,20 +2075,16 @@ class ScribePDFViewer {
   _positionBanners() {
     const top = this._chromeTop();
     if (this._modeBanner) this._modeBanner.style.top = `${top}px`;
-    // The mode track's open envelope hangs over the banner's trailing corner, so the banner's content ends before it.
-    if (this._modeBanner) {
-      const pad = (this._modeTrackOpen && this._modeTrackEl)
-        ? Math.ceil(this._modeBanner.getBoundingClientRect().right - this._modeTrackEl.getBoundingClientRect().left) + 12
-        : 0;
-      this._modeBanner.style.paddingRight = pad > 0 ? `${pad}px` : '';
-    }
     const modeH = (this._modeBanner && this._modeBanner.style.display !== 'none') ? MODE_BANNER_HEIGHT : 0;
     if (this._banner) this._banner.style.top = `${top + modeH}px`;
     const messageH = (this._banner && this._banner.style.display !== 'none') ? MESSAGE_BANNER_HEIGHT : 0;
     // The banners span the sidebar too, so the rail reserves leading scroll space for them to keep its first row's controls reachable.
     // The view-switch strip's band already holds the rows that much lower, so only the overlap past it needs reserving.
     const stripH = (this._sidebarTabsElem && !this._phoneChrome) ? SIDEBAR_TABS_HEIGHT : 0;
-    if (this._thumbnailPanel) this._thumbnailPanel.setTopInset(Math.max(0, modeH + messageH - stripH));
+    // Edit Pages needs the reserve on desktop, since its selection checkboxes overhang the first row's top edge.
+    const railModeH = (this._phoneChrome || messageH > 0 || (this._editPagesTool && this._editPagesTool.isActive()))
+      ? modeH : 0;
+    if (this._thumbnailPanel) this._thumbnailPanel.setTopInset(Math.max(0, railModeH + messageH - stripH));
   }
 
   /**
@@ -2617,7 +2613,6 @@ class ScribePDFViewer {
     this._modeTrackOpen = on;
     track.classList.toggle('open', on);
     chev.title = on ? 'Hide extra tools' : 'More tools';
-    this._positionBanners();
   }
 
   /**
