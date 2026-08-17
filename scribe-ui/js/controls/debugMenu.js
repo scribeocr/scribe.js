@@ -1,6 +1,7 @@
 // Debug menu: developer-only tools, installed only when `DEBUG_MENU` in scribe-ui/devFlags.js is on and stripped from public builds.
 import { UiText } from '../viewerWordObjects.js';
 import { makeOutlineNode } from '../../../js/objects/outlineObjects.js';
+import { saveAs } from '../../../js/utils/miscUtils.js';
 
 /** Bug glyph for the Debug section's rows. */
 const BUG_SVG = '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true">'
@@ -113,6 +114,15 @@ export function installDebugMenu(appMenu, viewer, openFiles, host) {
   }
 
   appMenu.addAction('Export as…', EXPORT_SVG, () => { exportMenu.style.display = 'block'; });
+
+  appMenu.addAction('Export assistant chat log', EXPORT_SVG, async () => {
+    const envelope = viewer._automatePanel?.exportTrace?.(viewer.doc);
+    if (!envelope) {
+      host?._showToast('No assistant chat to export.');
+      return;
+    }
+    await saveAs(JSON.stringify(envelope, null, 2), `${(host?._baseName() || 'document').replace(/\.\w{1,6}$/, '')}-assistant-trace.json`);
+  });
 
   appMenu.triggerElem.addEventListener('click', () => { exportMenu.style.display = 'none'; });
 

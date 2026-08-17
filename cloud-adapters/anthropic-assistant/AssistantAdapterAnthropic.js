@@ -40,7 +40,7 @@ export class AssistantAdapterAnthropic {
    * @returns {AsyncGenerator<import('../../scribe-ui/js/assistant/assistant.js').AdapterEvent>}
    */
   async* send({
-    system, messages, tools, signal,
+    system, messages, tools, signal, trace,
   }) {
     const body = {
       model: this.model,
@@ -64,6 +64,9 @@ export class AssistantAdapterAnthropic {
       })),
     };
 
+    trace?.add('wire-request', {
+      url: `${this.baseUrl}/v1/messages`, model: body.model, maxTokens: body.max_tokens, messageCount: body.messages.length, toolCount: body.tools.length,
+    });
     const resp = await fetch(`${this.baseUrl}/v1/messages`, {
       method: 'POST',
       headers: {
@@ -75,12 +78,16 @@ export class AssistantAdapterAnthropic {
       body: JSON.stringify(body),
       signal,
     });
+    trace?.add('wire-status', { status: resp.status });
     if (!resp.ok) {
+      let raw = '';
+      try { raw = await resp.text(); } catch { /* unreadable body */ }
       let message = `Anthropic API error ${resp.status}`;
       try {
-        const err = await resp.json();
+        const err = JSON.parse(raw);
         if (err?.error?.message) message += `: ${err.error.message}`;
       } catch { /* non-JSON error body */ }
+      trace?.add('wire-error', { status: resp.status, body: raw });
       throw new Error(message);
     }
 
@@ -98,16 +105,32 @@ export class AssistantAdapterAnthropic {
       buffer = lines.pop();
       for (const line of lines) {
         if (!line.startsWith('data:')) continue;
-        const ev = JSON.parse(line.slice(5));
-        if (ev.type === 'error') throw new Error(`Anthropic API error: ${ev.error?.message || 'unknown'}`);
-        if (ev.type === 'content_block_start' && ev.content_block?.type === 'tool_use') {
-          toolBlocks[ev.index] = { id: ev.content_block.id, name: ev.content_block.name, json: '' };
+        let ev;
+        try {
+          ev = JSON.parse(line.slice(5));
+        } catch (parseErr) {
+          trace?.add('wire-parse-error', { line });
+          throw parseErr;
+        }
+        if (ev.type === 'error') {
+          trace?.add('wire-error', { status: null, body: JSON.stringify(ev.error ?? null) });
+          throw new Error(`Anthropic API error: ${ev.error?.message || 'unknown'}`);
+        }
+        if (ev.type === 'message_start') {
+          trace?.add('wire-usage', { usage: ev.message?.usage ?? null, stopReason: ev.message?.stop_reason ?? null });
+        } else if (ev.type === 'message_delta') {
+          trace?.add('wire-usage', { usage: ev.usage ?? null, stopReason: ev.delta?.stop_reason ?? null });
+        } else if (ev.type === 'content_block_start') {
+          trace?.add('wire-block', { index: ev.index, type: ev.content_block?.type ?? null });
+          if (ev.content_block?.type === 'tool_use') toolBlocks[ev.index] = { id: ev.content_block.id, name: ev.content_block.name, json: '' };
         } else if (ev.type === 'content_block_delta') {
           if (ev.delta?.type === 'text_delta') yield { type: 'text', text: ev.delta.text };
           else if (ev.delta?.type === 'input_json_delta' && toolBlocks[ev.index]) toolBlocks[ev.index].json += ev.delta.partial_json;
         } else if (ev.type === 'content_block_stop' && toolBlocks[ev.index]) {
           const t = toolBlocks[ev.index];
           delete toolBlocks[ev.index];
+          // The accumulated JSON is recorded before the parse, so a malformed tool input is diagnosable from the trace.
+          trace?.add('wire-block', { index: ev.index, type: 'tool_use', inputJson: t.json });
           yield { type: 'tool_call', call: { id: t.id, name: t.name, params: t.json ? JSON.parse(t.json) : {} } };
         }
       }

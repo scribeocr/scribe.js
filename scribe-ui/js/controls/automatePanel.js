@@ -1,6 +1,7 @@
 import { makeIconButton, formatTimestamp } from './toolbar.js';
 import { AUTOMATIONS, CATEGORY_ORDER, MODE_GROUPS } from '../automations/registry.js';
 import { runAssistantTurn } from '../assistant/assistant.js';
+import { makeAssistantTrace, buildTraceEnvelope } from '../assistant/trace.js';
 import { VERBS, navigateToReceipt } from '../assistant/verbs.js';
 import { CODE_FONT_FAMILY, collectMdRefs, parseMdBlocks } from '../../../js/utils/parseMd.js';
 
@@ -266,8 +267,9 @@ function addAutomateStyles(rootClass) {
  * Build the Automate panel and its toolbar opener.
  * @param {import('../../basic-viewer/pdf-viewer.js').ScribePDFViewer} app
  * @param {string} rootClass
- * @param {{onLayoutChange: () => void, onResize: (width: number, phase: 'start'|'move'|'end') => void}} hooks
+ * @param {{onLayoutChange: () => void, onResize: (width: number, phase: 'start'|'move'|'end') => void, assistantTrace?: boolean}} hooks
  *   `onResize` reports the width a left-edge drag asks for, which the host clamps and applies.
+ *   `assistantTrace` turns on the dev-only conversation trace that `exportTrace` returns.
  */
 export function createAutomatePanel(app, rootClass, hooks) {
   addAutomateStyles(rootClass);
@@ -629,7 +631,9 @@ export function createAutomatePanel(app, rootClass, hooks) {
   /**
    * One conversation per document, alive for the document session and gone with it.
    * `listElem` (display: contents) holds the conversation's rows so they lay out as thread items directly.
-   * @type {WeakMap<Object, {messages: Array, listElem: HTMLElement, running: boolean, abort: ?AbortController, unseen: boolean, prose: ?HTMLElement, proseSrc: string, rail: ?HTMLElement}>}
+   * `adapter` holds whichever adapter the last turn ran on, for the export envelope's descriptor.
+   * @type {WeakMap<Object, {messages: Array, listElem: HTMLElement, running: boolean, abort: ?AbortController, unseen: boolean,
+   *   prose: ?HTMLElement, proseSrc: string, rail: ?HTMLElement, trace: ?import('../assistant/trace.js').AssistantTrace, adapter: ?Object}>}
    */
   const convos = new WeakMap();
 
@@ -640,7 +644,16 @@ export function createAutomatePanel(app, rootClass, hooks) {
     let c = convos.get(doc);
     if (!c) {
       c = {
-        messages: [], listElem: document.createElement('div'), running: false, abort: null, unseen: false, prose: null, proseSrc: '', rail: null,
+        messages: [],
+        listElem: document.createElement('div'),
+        running: false,
+        abort: null,
+        unseen: false,
+        prose: null,
+        proseSrc: '',
+        rail: null,
+        trace: hooks.assistantTrace ? makeAssistantTrace() : null,
+        adapter: null,
       };
       c.listElem.style.display = 'contents';
       convos.set(doc, c);
@@ -951,6 +964,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
   async function runTurn(doc, c, adapter, ask) {
     c.running = true;
     c.abort = new AbortController();
+    c.adapter = adapter;
     activeAborts.add(c.abort);
     syncComposer();
     syncStrip();
@@ -962,6 +976,7 @@ export function createAutomatePanel(app, rootClass, hooks) {
         messages: c.messages,
         ask,
         signal: c.abort.signal,
+        trace: c.trace ?? undefined,
         onText: (delta) => {
           if (!c.prose) {
             const p = document.createElement('div');
@@ -1251,6 +1266,22 @@ export function createAutomatePanel(app, rootClass, hooks) {
       if (name === modeName) return;
       modeName = name;
       if (openState && view === 'rest') paintCatalog();
+    },
+    /**
+     * The document's conversation trace as a versioned envelope, for the dev-only log export.
+     * Null when tracing is off or the document has no conversation.
+     * @param {?import('../../../js/containers/scribeDoc.js').ScribeDoc} doc
+     */
+    exportTrace: (doc) => {
+      if (!doc) return null;
+      const c = convos.get(doc);
+      if (!c?.trace) return null;
+      return buildTraceEnvelope(c.trace, {
+        adapter: c.adapter,
+        doc: { baseName: app._baseName(), pageCount: doc.pageMetrics.length },
+        flags: { automate: true, assistantTrace: true },
+        messages: c.messages,
+      });
     },
     /**
      * Open the panel with Redact terms staged from a selection, for the selection menu's hand-off row.

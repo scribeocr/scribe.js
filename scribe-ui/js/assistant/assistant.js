@@ -42,6 +42,7 @@ import { VERBS, runVerb } from './verbs.js';
  * @property {Array<AssistantMessage>} messages
  * @property {Array<{name: string, description: string, params: Object}>} tools - Generated from the verb registry.
  * @property {AbortSignal} [signal]
+ * @property {import('./trace.js').AssistantTrace} [trace] - When present, adapters may record wire-level entries into it.
  */
 
 /**
@@ -78,6 +79,8 @@ const SYSTEM_PROMPT = 'You are the document assistant inside a PDF editor, actin
  * @param {Array<AssistantMessage>} opts.messages - The thread so far; not mutated.
  * @param {string} opts.ask - The user's message.
  * @param {AbortSignal} [opts.signal] - Stops between events; the thread may then end on unanswered tool calls, which the next turn must not resend.
+ * @param {import('./trace.js').AssistantTrace} [opts.trace] - Records the turn's events as they happen, so even a thrown turn leaves a full record.
+ * @param {number} [opts.maxSteps] - Overrides the model-turn cap, for harness runs studying pathological loops.
  * @param {(delta: string) => void} [opts.onText] - Streamed reply text.
  * @param {(info: {call: AdapterToolCall, caption: string}) => void} [opts.onVerbStart] - Fired as each verb begins; `caption` is the registry's working phrasing.
  * @param {(info: {call: AdapterToolCall, res: import('./verbs.js').VerbResult}) => void} [opts.onVerbEnd] - Fired as each verb settles, success or refusal.
@@ -85,52 +88,79 @@ const SYSTEM_PROMPT = 'You are the document assistant inside a PDF editor, actin
  * @returns {Promise<Array<AssistantMessage>>} The extended thread, ready for the next turn.
  */
 export async function runAssistantTurn({
-  host, adapter, messages, ask, signal, onText, onVerbStart, onVerbEnd, onReceipt,
+  host, adapter, messages, ask, signal, trace, maxSteps, onText, onVerbStart, onVerbEnd, onReceipt,
 }) {
   const tools = VERBS.map((v) => ({ name: v.name, description: v.description, params: v.params }));
   const thread = [...messages, { role: 'user', content: [{ type: 'text', text: ask }] }];
+  trace?.add('turn-start', { ask });
 
-  for (let step = 0; step < MAX_STEPS; step++) {
-    if (signal?.aborted) break;
-    /** @type {AssistantMessage['content']} */
-    const assistantContent = [];
-    /** @type {Array<AdapterToolCall>} */
-    const calls = [];
-    for await (const ev of adapter.send({
-      system: SYSTEM_PROMPT, messages: thread, tools, signal,
-    })) {
-      if (ev.type === 'text') {
-        const last = assistantContent[assistantContent.length - 1];
-        if (last && last.type === 'text') last.text += ev.text;
-        else assistantContent.push({ type: 'text', text: ev.text });
-        if (onText) onText(ev.text);
-      } else if (ev.type === 'tool_call') {
-        assistantContent.push({ type: 'tool_call', call: ev.call });
-        calls.push(ev.call);
-      }
-    }
-    if (assistantContent.length > 0) thread.push({ role: 'assistant', content: assistantContent });
-    if (calls.length === 0) break;
-
-    /** @type {AssistantMessage['content']} */
-    const results = [];
-    for (const call of calls) {
+  let reason = 'max-steps';
+  try {
+    let sentLen = 0;
+    for (let step = 0; step < (maxSteps || MAX_STEPS); step++) {
       if (signal?.aborted) break;
-      if (onVerbStart) {
-        const entry = VERBS.find((v) => v.name === call.name);
-        let caption = 'Working…';
-        try { if (entry?.caption) caption = entry.caption(call.params || {}); } catch { /* malformed params; the verb's own error follows */ }
-        onVerbStart({ call, caption });
+      // The recorded suffix reconstructs the thread exactly only because the loop appends to it and never rewrites earlier messages.
+      trace?.add('request', { step, messages: thread.slice(step === 0 ? 0 : sentLen) });
+      sentLen = thread.length;
+      /** @type {AssistantMessage['content']} */
+      const assistantContent = [];
+      /** @type {Array<AdapterToolCall>} */
+      const calls = [];
+      for await (const ev of adapter.send({
+        system: SYSTEM_PROMPT, messages: thread, tools, signal, trace,
+      })) {
+        if (ev.type === 'text') {
+          const last = assistantContent[assistantContent.length - 1];
+          if (last && last.type === 'text') last.text += ev.text;
+          else assistantContent.push({ type: 'text', text: ev.text });
+          if (onText) onText(ev.text);
+        } else if (ev.type === 'tool_call') {
+          assistantContent.push({ type: 'tool_call', call: ev.call });
+          calls.push(ev.call);
+        }
       }
-      const res = await runVerb(host, call.name, call.params);
-      if (onVerbEnd) onVerbEnd({ call, res });
-      if (res.receipt && onReceipt) onReceipt(res.receipt);
-      results.push({
-        type: 'tool_result', id: call.id, result: res.result, isError: res.isError || false,
-      });
+      if (assistantContent.length > 0) {
+        thread.push({ role: 'assistant', content: assistantContent });
+        trace?.add('assistant-message', { content: assistantContent });
+      }
+      if (calls.length === 0) {
+        reason = 'completed';
+        break;
+      }
+
+      /** @type {AssistantMessage['content']} */
+      const results = [];
+      for (const call of calls) {
+        if (signal?.aborted) break;
+        if (onVerbStart || trace) {
+          const entry = VERBS.find((v) => v.name === call.name);
+          let caption = 'Working…';
+          try { if (entry?.caption) caption = entry.caption(call.params || {}); } catch { /* malformed params; the verb's own error follows */ }
+          if (onVerbStart) onVerbStart({ call, caption });
+          trace?.add('verb-start', { name: call.name, params: call.params, caption });
+        }
+        const verbT0 = Date.now();
+        const res = await runVerb(host, call.name, call.params);
+        trace?.add('verb-end', {
+          name: call.name, ms: Date.now() - verbT0, isError: !!res.isError, result: res.result, receipt: res.receipt ?? null,
+        });
+        if (onVerbEnd) onVerbEnd({ call, res });
+        if (res.receipt && onReceipt) onReceipt(res.receipt);
+        results.push({
+          type: 'tool_result', id: call.id, result: res.result, isError: res.isError || false,
+        });
+      }
+      if (results.length > 0) thread.push({ role: 'user', content: results });
+      if (signal?.aborted) break;
     }
-    if (results.length > 0) thread.push({ role: 'user', content: results });
-    if (signal?.aborted) break;
+    if (signal?.aborted) reason = 'aborted';
+    trace?.add('turn-end', { reason });
+    return thread;
+  } catch (err) {
+    trace?.add('turn-end', {
+      reason: signal?.aborted ? 'aborted' : 'error',
+      error: { message: err instanceof Error ? err.message : String(err), stack: err instanceof Error ? err.stack ?? null : null },
+    });
+    throw err;
   }
-  return thread;
 }

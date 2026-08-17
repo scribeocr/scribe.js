@@ -1065,6 +1065,7 @@ class ScribePDFViewer {
             this._automatePanel = createAutomatePanel(this, ROOT_CLASS, {
               onLayoutChange: () => this._relayout(),
               onResize: (w, phase) => this._resizeAutomate(w, phase),
+              assistantTrace: DEBUG_MENU,
             });
             // The context menu reads the panel off the viewer, like the other editor-installed hooks.
             this.scribe._automatePanel = this._automatePanel;
